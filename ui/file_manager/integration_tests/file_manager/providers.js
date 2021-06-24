@@ -2,31 +2,33 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import {RootPath, sendTestMessage} from '../test_util.js';
+import {testcase} from '../testcase.js';
 
-(() => {
-  /**
-   * Returns provider name of the given testing provider manifest viz., the
-   * the value of the name field in the |manifest| file.
-   * @param {string} manifest Testing provider manifest file name.
-   * @return {string} Testing provider name.
-   */
-  function getProviderNameForTest(manifest) {
-    if (manifest === 'manifest.json') {
-      return 'Files Testing Provider test extension';
-    }
-    if (manifest === 'manifest_multiple_mounts.json') {
-      return 'Files Testing Provider multiple mounts test extension';
-    }
-    if (manifest === 'manifest_source_device.json') {
-      return 'Files Testing Provider device test extension';
-    }
-    if (manifest === 'manifest_source_file.json') {
-      return 'Files Testing Provider file test extension';
-    }
+import {IGNORE_APP_ERRORS, remoteCall, setupAndWaitUntilReady} from './background.js';
 
-    throw new Error('unknown mainfest: '.concat(manifest));
+/**
+ * Returns provider name of the given testing provider manifest viz., the
+ * the value of the name field in the |manifest| file.
+ * @param {string} manifest Testing provider manifest file name.
+ * @return {string} Testing provider name.
+ */
+function getProviderNameForTest(manifest) {
+  if (manifest === 'manifest.json') {
+    return 'Files Testing Provider test extension';
   }
+  if (manifest === 'manifest_multiple_mounts.json') {
+    return 'Files Testing Provider multiple mounts test extension';
+  }
+  if (manifest === 'manifest_source_device.json') {
+    return 'Files Testing Provider device test extension';
+  }
+  if (manifest === 'manifest_source_file.json') {
+    return 'Files Testing Provider file test extension';
+  }
+
+  throw new Error('unknown mainfest: '.concat(manifest));
+}
 
   /**
    * Initializes the provider extension.
@@ -41,26 +43,10 @@
   }
 
   /**
-   * Clicks on the gear menu.
-   */
-  async function clickGearMenu(appId) {
-    const newServiceMenuItem = '#gear-menu-newservice:not([hidden])';
-
-    // Open the gear menu by clicking the gear button.
-    chrome.test.assertTrue(
-        !!await remoteCall.callRemoteTestUtil(
-            'fakeMouseClick', appId, ['#gear-button']),
-        'fakeMouseClick failed');
-
-    // Wait for Add new service menu item to appear in the gear menu.
-    return remoteCall.waitForElement(appId, newServiceMenuItem);
-  }
-
-  /**
-   * Clicks on the "Add new services" menu button.
+   * Clicks on the "Services" menu button.
    */
   async function showProvidersMenu(appId) {
-    const newServiceMenuItem = '#gear-menu-newservice:not([hidden])';
+    const providersMenuItem = '#gear-menu-providers:not([hidden])';
 
     // Open the gear menu by clicking the gear button.
     chrome.test.assertTrue(
@@ -68,13 +54,13 @@
             'fakeMouseClick', appId, ['#gear-button']),
         'fakeMouseClick failed');
 
-    // Wait for Add new service menu item to appear.
-    await remoteCall.waitForElement(appId, newServiceMenuItem);
+    // Wait for providers menu item to appear.
+    await remoteCall.waitForElement(appId, providersMenuItem);
 
     // Click the menu item.
     chrome.test.assertTrue(
         !!await remoteCall.callRemoteTestUtil(
-            'fakeMouseClick', appId, [newServiceMenuItem]),
+            'fakeMouseClick', appId, [providersMenuItem]),
         'fakeMouseClick failed');
   }
 
@@ -115,17 +101,16 @@
     const appId = await setUpProvider(manifest);
     await showProvidersMenu(appId);
 
-    // Wait for providers menu and new service menu item to appear.
+    // Wait for providers menu to appear.
     let result = await remoteCall.waitForElement(
-        appId,
-        '#add-new-services-menu:not([hidden]) cr-menu-item:first-child span');
+        appId, '#providers-menu:not([hidden]) cr-menu-item:first-child span');
 
     // Click to install test provider.
     chrome.test.assertEq(providerName, result.text);
     chrome.test.assertTrue(
         !!await remoteCall.callRemoteTestUtil(
             'fakeMouseClick', appId,
-            ['#add-new-services-menu cr-menu-item:first-child span']),
+            ['#providers-menu cr-menu-item:first-child span']),
         'fakeMouseClick failed');
 
     await confirmVolume(appId, false /* ejectExpected */);
@@ -135,32 +120,23 @@
     if (multipleMounts) {
       await showProvidersMenu(appId);
       const selector =
-          '#add-new-services-menu:not([hidden]) cr-menu-item:first-child ' +
+          '#providers-menu:not([hidden]) cr-menu-item:first-child ' +
           'span';
       result = await remoteCall.waitForElement(appId, selector);
       chrome.test.assertEq(providerName, result.text);
       return;
     }
 
-    // If !multipleMounts and !isSmbEnabled, we open the gear menu and check the
-    // "add new service" menu item. add-new-servuces goes directly to
-    // install-new-extension, however install-new-service command uses webview
-    // which doesn't work in the integration tests.
     const isSmbEnabled =
         await sendTestMessage({name: 'isSmbEnabled'}) === 'true';
     if (!isSmbEnabled) {
-      await clickGearMenu(appId);
-      const selector = '#gear-menu:not([hidden]) ' +
-          'cr-menu-item[command="#install-new-extension"]';
-      result = await remoteCall.waitForElement(appId, selector);
       return;
     }
 
     // If !multipleMounts but isSmbEnabled, we display the provider menu and
     // check the provider is not listed.
     await showProvidersMenu(appId);
-    const selector =
-        '#add-new-services-menu:not([hidden]) cr-menu-item:first-child ' +
+    const selector = '#providers-menu:not([hidden]) cr-menu-item:first-child ' +
         'span';
     result = await remoteCall.waitForElement(appId, selector);
     chrome.test.assertFalse(providerName === result.text);
@@ -168,7 +144,7 @@
 
   /**
    * Tests that a provided extension with |manifest| is not available in the
-   * button menu, but it's mounted automatically.
+   * providers menu, but it's mounted automatically.
    *
    * @param {string} manifest Name of the manifest file for the providing
    *     extension.
@@ -176,39 +152,49 @@
   async function requestMountNotInMenuInternal(manifest) {
     const appId = await setUpProvider(manifest);
     await confirmVolume(appId, true /* ejectExpected */);
-    const element = await clickGearMenu(appId);
 
     const isSmbEnabled =
         await sendTestMessage({name: 'isSmbEnabled'}) === 'true';
 
+    // Open the gear menu by clicking the gear button.
+    chrome.test.assertTrue(
+        !!await remoteCall.callRemoteTestUtil(
+            'fakeMouseClick', appId, ['#gear-button']),
+        'fakeMouseClick failed');
+
+    // The providers menu item should be hidden if Smb is disabled, since there
+    // are no providers to show.
+    const providersMenuItem = isSmbEnabled ?
+        '#gear-menu-providers:not([hidden])' :
+        '#gear-menu-providers[hidden]';
+    const element = await remoteCall.waitForElement(appId, providersMenuItem);
+
     if (!isSmbEnabled) {
-      // Here we only check these attributes because the menu item calls
-      // Webstore using webview which doesn't work in the integration test.
-      chrome.test.assertEq('Install new service', element.text);
-      // Since there is no FSP provider, there should be no add-new-service
-      // sub-menu, it should instead point to CWS install-new-extension.
-      chrome.test.assertEq(
-          '#install-new-extension', element.attributes.command);
       return;
     }
 
-    // Since a provider is installed (here isSmbEnabled), we need to test that
-    // 'add-new-service' sub-menu does not contain the |manifest| provider.
-    chrome.test.assertTrue(isSmbEnabled);
-    chrome.test.assertEq('Add new service', element.text);
-    chrome.test.assertEq('#new-service', element.attributes.command);
-    chrome.test.assertEq(
-        '#add-new-services-menu', element.attributes['sub-menu']);
+    const isDevtoolsCoverageActive =
+        await sendTestMessage({name: 'isDevtoolsCoverageActive'});
+    const expectedServicesText = isDevtoolsCoverageActive === 'true' ?
+        '$i18n{SHOW_PROVIDERS_BUTTON_LABEL}' :
+        'Services';
 
-    // Extract 'add-new-service' sub-menu items.
-    const selector = ['#add-new-services-menu[hidden] cr-menu-item'];
+    // Since a provider is installed (here isSmbEnabled), we need to test that
+    // 'providers-menu' sub-menu does not contain the |manifest| provider.
+    chrome.test.assertTrue(isSmbEnabled);
+    chrome.test.assertEq(expectedServicesText, element.text);
+    chrome.test.assertEq(
+        '#show-providers-submenu', element.attributes['command']);
+    chrome.test.assertEq('#providers-menu', element.attributes['sub-menu']);
+
+    // Extract 'providers-menu' sub-menu items.
+    const selector = ['#providers-menu[hidden] cr-menu-item'];
     const submenu = await remoteCall.callRemoteTestUtil(
         'queryAllElements', appId, selector);
 
     // Check the sub-menu do not contain the |manifest| provider.
-    chrome.test.assertEq(2, submenu.length);
+    chrome.test.assertEq(1, submenu.length);
     chrome.test.assertEq('SMB file share', submenu[0].text);
-    chrome.test.assertEq('Install new service', submenu[1].text);
   }
 
   /**
@@ -275,4 +261,3 @@
     // ejected.
     return IGNORE_APP_ERRORS;
   };
-})();

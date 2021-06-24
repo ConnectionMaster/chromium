@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/safe_browsing/renderer/threat_dom_details.h"
+#include "components/safe_browsing/content/renderer/threat_dom_details.h"
 
 #include <memory>
 #include "base/strings/string_split.h"
@@ -10,8 +10,8 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/chrome_render_view_test.h"
-#include "components/safe_browsing/common/safe_browsing.mojom.h"
-#include "components/safe_browsing/features.h"
+#include "components/safe_browsing/content/common/safe_browsing.mojom.h"
+#include "components/safe_browsing/core/features.h"
 #include "components/variations/variations_associated_data.h"
 #include "content/public/renderer/render_view.h"
 #include "net/base/escape.h"
@@ -25,21 +25,12 @@ std::unique_ptr<base::test::ScopedFeatureList> SetupTagAndAttributeFeature() {
   std::map<std::string, std::string> feature_params;
   feature_params[std::string(safe_browsing::kTagAndAttributeParamName)] =
       "div,foo,div,baz,div,attr2,div,attr3,div,longattr4,div,attr5,div,attr6";
-  variations::AssociateVariationParams(
-      safe_browsing::kThreatDomDetailsTagAndAttributeFeature.name, "Group",
-      feature_params);
-  base::FieldTrial* trial = base::FieldTrialList::CreateFieldTrial(
-      safe_browsing::kThreatDomDetailsTagAndAttributeFeature.name, "Group");
-  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-  feature_list->InitializeFromCommandLine(
-      safe_browsing::kThreatDomDetailsTagAndAttributeFeature.name,
-      std::string());
-  feature_list->AssociateReportingFieldTrial(
-      safe_browsing::kThreatDomDetailsTagAndAttributeFeature.name,
-      base::FeatureList::OVERRIDE_ENABLE_FEATURE, trial);
   std::unique_ptr<base::test::ScopedFeatureList> scoped_list(
       new base::test::ScopedFeatureList);
-  scoped_list->InitWithFeatureList(std::move(feature_list));
+  scoped_list->InitWithFeaturesAndParameters(
+      {{safe_browsing::kThreatDomDetailsTagAndAttributeFeature,
+        feature_params}},
+      {});
   return scoped_list;
 }
 
@@ -56,16 +47,14 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
   std::unique_ptr<base::test::ScopedFeatureList> feature_list =
       SetupTagAndAttributeFeature();
   std::unique_ptr<safe_browsing::ThreatDOMDetails> details(
-      safe_browsing::ThreatDOMDetails::Create(view_->GetMainRenderFrame(),
+      safe_browsing::ThreatDOMDetails::Create(GetMainRenderFrame(),
                                               registry_.get()));
   // Lower kMaxNodes and kMaxAttributes for the test. Loading 500 subframes in a
   // debug build takes a while.
   safe_browsing::ThreatDOMDetails::kMaxNodes = 50;
   safe_browsing::ThreatDOMDetails::kMaxAttributes = 5;
 
-  const char urlprefix[] = "data:text/html;charset=utf-8,";
-  const char kMaxNodesExceededMetric[] =
-      "SafeBrowsing.ThreatReport.MaxNodesExceededInFrame";
+  const char kUrlPrefix[] = "data:text/html;charset=utf-8,";
   {
     // A page with an internal script
     std::string html = "<html><head><script></script></head></html>";
@@ -75,13 +64,11 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
     details->ExtractResources(&params);
     ASSERT_EQ(1u, params.size());
     auto* param = params[0].get();
-    EXPECT_EQ(GURL(urlprefix + net::EscapeQueryParamValue(html, false)),
+    EXPECT_EQ(GURL(kUrlPrefix + net::EscapeQueryParamValue(html, false)),
               param->url);
     EXPECT_EQ(0, param->node_id);
     EXPECT_EQ(0, param->parent_node_id);
     EXPECT_TRUE(param->child_node_ids.empty());
-
-    histograms.ExpectBucketCount(kMaxNodesExceededMetric, false, 1);
   }
 
   {
@@ -93,7 +80,7 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
     std::string html = "<html><head><script src=\"" + script1_url.spec() +
                        "\"></script><script src=\"" + script2_url.spec() +
                        "\"></script></head></html>";
-    GURL url(urlprefix + net::EscapeQueryParamValue(html, false));
+    GURL url(kUrlPrefix + net::EscapeQueryParamValue(html, false));
 
     LoadHTML(html.c_str());
     std::vector<safe_browsing::mojom::ThreatDOMDetailsNodePtr> params;
@@ -140,17 +127,17 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
     // divs with attribute bar. So div foo will be collected and contain iframe1
     // and div baz as children.
     std::string iframe2_html = "<html><body>iframe2</body></html>";
-    GURL iframe2_url(urlprefix + iframe2_html);
+    GURL iframe2_url(kUrlPrefix + iframe2_html);
     std::string iframe1_html = "<iframe src=\"" +
                                net::EscapeForHTML(iframe2_url.spec()) +
                                "\"></iframe>";
-    GURL iframe1_url(urlprefix + iframe1_html);
+    GURL iframe1_url(kUrlPrefix + iframe1_html);
     std::string html =
         "<html><head><div foo=1 foo2=2><img foo=1><div bar=1><div baz=1></div>"
         "<iframe src=\"" +
         net::EscapeForHTML(iframe1_url.spec()) +
         "\"></iframe></div></div></head></html>";
-    GURL url(urlprefix + net::EscapeQueryParamValue(html, false));
+    GURL url(kUrlPrefix + net::EscapeQueryParamValue(html, false));
 
     LoadHTML(html.c_str());
     std::vector<safe_browsing::mojom::ThreatDOMDetailsNodePtr> params;
@@ -208,11 +195,11 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
     std::string html;
     for (int i = 0; i < 55; ++i) {
       // The iframe contents is just a number.
-      GURL iframe_url(base::StringPrintf("%s%d", urlprefix, i));
+      GURL iframe_url(base::StringPrintf("%s%d", kUrlPrefix, i));
       html += "<iframe src=\"" + net::EscapeForHTML(iframe_url.spec()) +
               "\"></iframe>";
     }
-    GURL url(urlprefix + html);
+    GURL url(kUrlPrefix + html);
 
     LoadHTML(html.c_str());
     base::HistogramTester histograms;
@@ -228,8 +215,6 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
       EXPECT_EQ(0, param.parent_node_id);
       EXPECT_TRUE(param.child_node_ids.empty());
     }
-
-    histograms.ExpectBucketCount(kMaxNodesExceededMetric, true, 1);
   }
 
   {
@@ -237,11 +222,11 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
     std::string html;
     for (int i = 0; i < 55; ++i) {
       // The iframe contents is just a number.
-      GURL script_url(base::StringPrintf("%s%d", urlprefix, i));
+      GURL script_url(base::StringPrintf("%s%d", kUrlPrefix, i));
       html += "<script src=\"" + net::EscapeForHTML(script_url.spec()) +
               "\"></script>";
     }
-    GURL url(urlprefix + html);
+    GURL url(kUrlPrefix + html);
 
     LoadHTML(html.c_str());
     base::HistogramTester histograms;
@@ -257,8 +242,6 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
       EXPECT_EQ(0, param.parent_node_id);
       EXPECT_TRUE(param.child_node_ids.empty());
     }
-
-    histograms.ExpectBucketCount(kMaxNodesExceededMetric, true, 1);
   }
 
   {
@@ -270,7 +253,7 @@ TEST_F(ThreatDOMDetailsTest, Everything) {
     LoadHTML(html.c_str());
     std::vector<safe_browsing::mojom::ThreatDOMDetailsNodePtr> params;
     details->ExtractResources(&params);
-    GURL url = GURL(urlprefix + net::EscapeQueryParamValue(html, false));
+    GURL url = GURL(kUrlPrefix + net::EscapeQueryParamValue(html, false));
     ASSERT_EQ(2u, params.size());
     auto* param = params[0].get();
     EXPECT_TRUE(param->url.is_empty());
@@ -309,9 +292,9 @@ TEST_F(ThreatDOMDetailsTest, DefaultTagAndAttributesList) {
   feature_list->InitAndDisableFeature(
       safe_browsing::kThreatDomDetailsTagAndAttributeFeature);
   std::unique_ptr<safe_browsing::ThreatDOMDetails> details(
-      safe_browsing::ThreatDOMDetails::Create(view_->GetMainRenderFrame(),
+      safe_browsing::ThreatDOMDetails::Create(GetMainRenderFrame(),
                                               registry_.get()));
-  const char urlprefix[] = "data:text/html;charset=utf-8,";
+  const char kUrlPrefix[] = "data:text/html;charset=utf-8,";
 
   // A page with some divs containing an iframe which itself contains an
   // iframe. Tag "img foo" exists to ensure we honour both the tag name and
@@ -329,13 +312,13 @@ TEST_F(ThreatDOMDetailsTest, DefaultTagAndAttributesList) {
   // since it is the direct child of the main frame, but it would not
   // go inside of the iframe.
   std::string iframe2_html = "<html><body>iframe2</body></html>";
-  GURL iframe2_url(urlprefix + iframe2_html);
+  GURL iframe2_url(kUrlPrefix + iframe2_html);
   std::string html =
       "<html><head><div data-google-query-id=foo><div id=bar>"
       "<iframe id=baz><iframe src=\"" +
       net::EscapeForHTML(iframe2_url.spec()) +
       "\"></iframe></iframe></div></div></head></html>";
-  GURL url(urlprefix + net::EscapeQueryParamValue(html, false));
+  GURL url(kUrlPrefix + net::EscapeQueryParamValue(html, false));
 
   LoadHTML(html.c_str());
   std::vector<safe_browsing::mojom::ThreatDOMDetailsNodePtr> params;
@@ -391,3 +374,25 @@ TEST_F(ThreatDOMDetailsTest, DefaultTagAndAttributesList) {
   EXPECT_EQ(0, param->parent_node_id);
   EXPECT_TRUE(param->child_node_ids.empty());
 }
+
+TEST_F(ThreatDOMDetailsTest, CheckTagAndAttributeListIsSorted) {
+  std::unique_ptr<safe_browsing::ThreatDOMDetails> details(
+      safe_browsing::ThreatDOMDetails::Create(GetMainRenderFrame(),
+                                              registry_.get()));
+  std::vector<safe_browsing::TagAndAttributesItem> tag_and_attr_list =
+      details->GetTagAndAttributesListForTest();
+  bool is_sorted;
+  std::vector<std::string> tag_names;
+  EXPECT_TRUE(!tag_and_attr_list.empty());
+  for (auto item : tag_and_attr_list) {
+    tag_names.push_back(item.tag_name);
+    EXPECT_TRUE(!item.attributes.empty());
+    // Check that list of attributes is sorted.
+    is_sorted = std::is_sorted(item.attributes.begin(), item.attributes.end());
+    EXPECT_TRUE(is_sorted);
+  }
+  // Check that the tags are sorted.
+  is_sorted = std::is_sorted(tag_names.begin(), tag_names.end());
+  EXPECT_TRUE(is_sorted);
+}
+

@@ -4,12 +4,13 @@
 
 #include "content/browser/media/flinging_renderer.h"
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/time/time.h"
 #include "base/version.h"
 #include "media/base/media_controller.h"
 #include "media/base/mock_filters.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -53,7 +54,8 @@ class FlingingRendererTest : public testing::Test {
     EXPECT_CALL(*flinging_controller_, RemoveMediaStatusObserver(_));
 
     renderer_ = base::WrapUnique(new FlingingRenderer(
-        std::unique_ptr<media::FlingingController>(flinging_controller_)));
+        std::unique_ptr<media::FlingingController>(flinging_controller_),
+        mojo::NullRemote()));
 
     renderer_->Initialize(nullptr, &renderer_client_, base::DoNothing());
   }

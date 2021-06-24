@@ -6,75 +6,138 @@
 
 #include <utility>
 
-#include "third_party/blink/renderer/core/content_capture/content_holder.h"
-#include "third_party/blink/renderer/core/content_capture/sent_nodes.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 
 namespace blink {
 
+namespace {
+bool IsConstantStreamingEnabled() {
+  return base::FeatureList::IsEnabled(
+      features::kContentCaptureConstantStreaming);
+}
+
+}  // namespace
+
 TaskSession::DocumentSession::DocumentSession(const Document& document,
-                                              SentNodes& sent_nodes,
                                               SentNodeCountCallback& callback)
-    : document_(&document), sent_nodes_(&sent_nodes), callback_(callback) {}
+    : document_(&document), callback_(callback) {}
 
 TaskSession::DocumentSession::~DocumentSession() {
   if (callback_.has_value())
     callback_.value().Run(total_sent_nodes_);
 }
 
-void TaskSession::DocumentSession::AddNodeHolder(cc::NodeHolder node_holder) {
-  captured_content_.push_back(node_holder);
+bool TaskSession::DocumentSession::AddDetachedNode(const Node& node) {
+  // Only notify the detachment of visible node which shall be in |sent_nodes|
+  // or |changed_nodes|.
+  // Take the node out of |sent_nodes| or |changed_nodes|, otherwise, the |node|
+  // would be found invisible in next capturing and be reported as the removed
+  // node again.
+  if (sent_nodes_.Take(&node) || changed_nodes_.Take(&node)) {
+    detached_nodes_.emplace_back(reinterpret_cast<int64_t>(&node));
+    return true;
+  }
+  return false;
 }
 
-void TaskSession::DocumentSession::AddDetachedNode(int64_t id) {
-  detached_nodes_.push_back(id);
-}
-
-std::vector<int64_t> TaskSession::DocumentSession::MoveDetachedNodes() {
+WebVector<int64_t> TaskSession::DocumentSession::MoveDetachedNodes() {
   return std::move(detached_nodes_);
 }
 
-scoped_refptr<blink::ContentHolder>
-TaskSession::DocumentSession::GetNextUnsentContentHolder() {
-  scoped_refptr<ContentHolder> content_holder;
-  while (!captured_content_.empty() && !content_holder) {
-    auto node_holder = captured_content_.back();
-    if (node_holder.type == cc::NodeHolder::Type::kID) {
-      Node* node = DOMNodeIds::NodeForId(node_holder.id);
-      if (node && node->GetLayoutObject() && !sent_nodes_->HasSent(*node)) {
-        sent_nodes_->OnSent(*node);
-        content_holder = base::MakeRefCounted<ContentHolder>(*node);
-      }
-    } else if (node_holder.type == cc::NodeHolder::Type::kTextHolder &&
-               node_holder.text_holder) {
-      content_holder = scoped_refptr<ContentHolder>(
-          static_cast<ContentHolder*>(node_holder.text_holder.get()));
-      if (content_holder && content_holder->IsValid() &&
-          !content_holder->HasSent()) {
-        content_holder->SetHasSent();
-      } else {
-        content_holder.reset();
-      }
+ContentHolder* TaskSession::DocumentSession::GetNextUnsentNode() {
+  while (!captured_content_.IsEmpty()) {
+    auto node = captured_content_.begin()->key;
+    const gfx::Rect rect = captured_content_.Take(node);
+    if (node && node->GetLayoutObject() && !sent_nodes_.Contains(node)) {
+      sent_nodes_.insert(WeakMember<const Node>(node));
+      total_sent_nodes_++;
+      return MakeGarbageCollected<ContentHolder>(node, rect);
     }
-    captured_content_.pop_back();
   }
-  if (content_holder)
-    total_sent_nodes_++;
-  return content_holder;
+  return nullptr;
 }
 
-void TaskSession::DocumentSession::Trace(blink::Visitor* visitor) {
-  visitor->Trace(sent_nodes_);
+ContentHolder* TaskSession::DocumentSession::GetNextChangedNode() {
+  while (!changed_content_.IsEmpty()) {
+    auto node = changed_content_.begin()->key;
+    const gfx::Rect rect = changed_content_.Take(node);
+    if (node.Get() && node->GetLayoutObject()) {
+      sent_nodes_.insert(WeakMember<const Node>(node));
+      total_sent_nodes_++;
+      return MakeGarbageCollected<ContentHolder>(node, rect);
+    }
+  }
+  return nullptr;
+}
+
+bool TaskSession::DocumentSession::AddChangedNode(Node& node) {
+  // No need to save the node that hasn't been sent because it will be captured
+  // once being on screen.
+  if (sent_nodes_.Contains(&node)) {
+    changed_nodes_.insert(WeakMember<const Node>(&node));
+    return true;
+  }
+  return false;
+}
+
+void TaskSession::DocumentSession::OnContentCaptured(
+    Node& node,
+    const gfx::Rect& visual_rect) {
+  if (changed_nodes_.Take(&node)) {
+    changed_content_.Set(WeakMember<Node>(&node), visual_rect);
+    if (IsConstantStreamingEnabled())
+      sent_nodes_.Take(&node);
+  } else {
+    if (IsConstantStreamingEnabled()) {
+      if (auto value = sent_nodes_.Take(&node))
+        visible_sent_nodes_.insert(value);
+      else
+        captured_content_.Set(WeakMember<Node>(&node), visual_rect);
+    } else {
+      if (!sent_nodes_.Contains(&node))
+        captured_content_.Set(WeakMember<Node>(&node), visual_rect);
+      // else |node| has been sent and unchanged.
+    }
+  }
+}
+
+void TaskSession::DocumentSession::OnGroupingComplete() {
+  if (!IsConstantStreamingEnabled())
+    return;
+
+  // All nodes in |sent_nodes_| aren't visible any more, remove them.
+  for (auto weak_node : sent_nodes_) {
+    if (auto* node = weak_node.Get())
+      detached_nodes_.emplace_back(reinterpret_cast<int64_t>(node));
+  }
+  // |visible_sent_nodes_| are still visible and moved to |sent_nodes_|.
+  sent_nodes_.swap(visible_sent_nodes_);
+  visible_sent_nodes_.clear();
+  // Any node in |changed_nodes_| isn't visible any more and shall be clear.
+  changed_nodes_.clear();
+}
+
+void TaskSession::DocumentSession::Trace(Visitor* visitor) const {
+  visitor->Trace(captured_content_);
+  visitor->Trace(changed_content_);
   visitor->Trace(document_);
+  visitor->Trace(sent_nodes_);
+  visitor->Trace(visible_sent_nodes_);
+  visitor->Trace(changed_nodes_);
 }
 
 void TaskSession::DocumentSession::Reset() {
+  changed_content_.clear();
   captured_content_.clear();
-  detached_nodes_.clear();
+  detached_nodes_.Clear();
+  sent_nodes_.clear();
+  visible_sent_nodes_.clear();
+  changed_nodes_.clear();
 }
 
-TaskSession::TaskSession(SentNodes& sent_nodes) : sent_nodes_(sent_nodes) {}
+TaskSession::TaskSession() = default;
 
 TaskSession::DocumentSession* TaskSession::GetNextUnsentDocumentSession() {
   for (auto& doc : to_document_session_.Values()) {
@@ -87,54 +150,44 @@ TaskSession::DocumentSession* TaskSession::GetNextUnsentDocumentSession() {
 }
 
 void TaskSession::SetCapturedContent(
-    const std::vector<cc::NodeHolder>& captured_content) {
+    const Vector<cc::NodeInfo>& captured_content) {
   DCHECK(!HasUnsentData());
-  DCHECK(!captured_content.empty());
+  DCHECK(!captured_content.IsEmpty());
   GroupCapturedContentByDocument(captured_content);
   has_unsent_data_ = true;
 }
 
 void TaskSession::GroupCapturedContentByDocument(
-    const std::vector<cc::NodeHolder>& captured_content) {
-  for (const cc::NodeHolder& node_holder : captured_content) {
-    if (const Node* node = GetNodeIf(false /* sent */, node_holder)) {
-      EnsureDocumentSession(node->GetDocument()).AddNodeHolder(node_holder);
+    const Vector<cc::NodeInfo>& captured_content) {
+  // In rare cases, the same node could have multiple entries in the
+  // |captured_content|, but the visual_rect are almost same, we just let the
+  // later replace the previous.
+  for (const auto& i : captured_content) {
+    if (Node* node = DOMNodeIds::NodeForId(i.node_id)) {
+      EnsureDocumentSession(node->GetDocument())
+          .OnContentCaptured(*node, i.visual_rect);
     }
+  }
+  for (auto doc_session : to_document_session_.Values()) {
+    doc_session->OnGroupingComplete();
   }
 }
 
-void TaskSession::OnNodeDetached(const cc::NodeHolder& node_holder) {
-  if (const Node* node = GetNodeIf(true /* sent */, node_holder)) {
-    EnsureDocumentSession(node->GetDocument())
-        .AddDetachedNode(reinterpret_cast<int64_t>(&node));
+void TaskSession::OnNodeDetached(const Node& node) {
+  if (EnsureDocumentSession(node.GetDocument()).AddDetachedNode(node))
     has_unsent_data_ = true;
-  }
 }
 
-const Node* TaskSession::GetNodeIf(bool sent,
-                                   const cc::NodeHolder& node_holder) const {
-  Node* node = nullptr;
-  if (node_holder.type == cc::NodeHolder::Type::kID) {
-    node = DOMNodeIds::NodeForId(node_holder.id);
-    if (node && (sent_nodes_->HasSent(*node) == sent))
-      return node;
-  } else if (node_holder.type == cc::NodeHolder::Type::kTextHolder) {
-    ContentHolder* content_holder =
-        static_cast<ContentHolder*>(node_holder.text_holder.get());
-    if (content_holder && content_holder->IsValid() &&
-        (content_holder->HasSent() == sent)) {
-      return content_holder->GetNode();
-    }
-  }
-  return nullptr;
+void TaskSession::OnNodeChanged(Node& node) {
+  if (EnsureDocumentSession(node.GetDocument()).AddChangedNode(node))
+    has_unsent_data_ = true;
 }
 
 TaskSession::DocumentSession& TaskSession::EnsureDocumentSession(
     const Document& doc) {
   DocumentSession* doc_session = GetDocumentSession(doc);
   if (!doc_session) {
-    doc_session =
-        MakeGarbageCollected<DocumentSession>(doc, *sent_nodes_, callback_);
+    doc_session = MakeGarbageCollected<DocumentSession>(doc, callback_);
     to_document_session_.insert(&doc, doc_session);
   }
   return *doc_session;
@@ -148,8 +201,7 @@ TaskSession::DocumentSession* TaskSession::GetDocumentSession(
   return it->value;
 }
 
-void TaskSession::Trace(blink::Visitor* visitor) {
-  visitor->Trace(sent_nodes_);
+void TaskSession::Trace(Visitor* visitor) const {
   visitor->Trace(to_document_session_);
 }
 

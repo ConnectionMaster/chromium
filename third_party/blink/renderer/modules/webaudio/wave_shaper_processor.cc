@@ -30,8 +30,11 @@
 namespace blink {
 
 WaveShaperProcessor::WaveShaperProcessor(float sample_rate,
-                                         unsigned number_of_channels)
-    : AudioDSPKernelProcessor(sample_rate, number_of_channels),
+                                         unsigned number_of_channels,
+                                         unsigned render_quantum_frames)
+    : AudioDSPKernelProcessor(sample_rate,
+                              number_of_channels,
+                              render_quantum_frames),
       oversample_(kOverSampleNone) {}
 
 WaveShaperProcessor::~WaveShaperProcessor() {
@@ -97,12 +100,8 @@ void WaveShaperProcessor::Process(const AudioBus* source,
     return;
   }
 
-  bool channel_count_matches =
-      source->NumberOfChannels() == destination->NumberOfChannels() &&
-      source->NumberOfChannels() == kernels_.size();
-  DCHECK(channel_count_matches);
-  if (!channel_count_matches)
-    return;
+  DCHECK_EQ(source->NumberOfChannels(), destination->NumberOfChannels());
+  DCHECK_EQ(source->NumberOfChannels(), kernels_.size());
 
   // The audio thread can't block on this lock, so we call tryLock() instead.
   MutexTryLocker try_locker(process_lock_);

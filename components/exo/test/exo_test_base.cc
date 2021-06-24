@@ -5,40 +5,71 @@
 #include "components/exo/test/exo_test_base.h"
 
 #include "ash/shell.h"
-#include "components/exo/test/exo_test_helper.h"
-#include "components/exo/test/test_client_controlled_state_delegate.h"
+#include "components/exo/buffer.h"
+#include "components/exo/shell_surface.h"
+#include "components/exo/surface.h"
 #include "components/exo/wm_helper.h"
 #include "components/exo/wm_helper_chromeos.h"
+#include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "components/viz/service/surfaces/surface_manager.h"
+#include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
 #include "ui/base/ime/init/input_method_factory.h"
+#include "ui/compositor/test/in_process_context_factory.h"
 #include "ui/wm/core/wm_core_switches.h"
 
 namespace exo {
 namespace test {
+namespace {
+
+class TestPropertyResolver : public WMHelper::AppPropertyResolver {
+ public:
+  TestPropertyResolver() = default;
+  TestPropertyResolver(const TestPropertyResolver& other) = delete;
+  TestPropertyResolver& operator=(const TestPropertyResolver& other) = delete;
+  ~TestPropertyResolver() override = default;
+
+  // AppPropertyResolver:
+  void PopulateProperties(
+      const Params& params,
+      ui::PropertyHandler& out_properties_container) override {
+    if (params.app_id == "arc")
+      out_properties_container.SetProperty(aura::client::kAppType,
+                                           (int)ash::AppType::ARC_APP);
+  }
+};
+
+}  // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // ExoTestBase, public:
 
-ExoTestBase::ExoTestBase()
-    : exo_test_helper_(new ExoTestHelper),
-      scale_mode_(ui::ScopedAnimationDurationScaleMode::ZERO_DURATION) {}
+ExoTestBase::ExoTestBase() = default;
 
-ExoTestBase::~ExoTestBase() {}
+ExoTestBase::~ExoTestBase() = default;
 
 void ExoTestBase::SetUp() {
-  ui::SetUpInputMethodFactoryForTesting();
   AshTestBase::SetUp();
-  wm_helper_ =
-      std::make_unique<WMHelperChromeOS>(ash::Shell::Get()->aura_env());
-  WMHelper::SetInstance(wm_helper_.get());
-  test::TestClientControlledStateDelegate::InstallFactory();
+  wm_helper_ = std::make_unique<WMHelperChromeOS>();
+  wm_helper_->RegisterAppPropertyResolver(
+      base::WrapUnique(new TestPropertyResolver()));
 }
 
 void ExoTestBase::TearDown() {
-  test::TestClientControlledStateDelegate::UninstallFactory();
-  WMHelper::SetInstance(nullptr);
   wm_helper_.reset();
   AshTestBase::TearDown();
+}
+
+viz::SurfaceManager* ExoTestBase::GetSurfaceManager() {
+  return static_cast<ui::InProcessContextFactory*>(
+             aura::Env::GetInstance()->context_factory())
+      ->GetFrameSinkManager()
+      ->surface_manager();
+}
+
+gfx::Point ExoTestBase::GetOriginOfShellSurface(
+    const ShellSurfaceBase* shell_surface) {
+  return shell_surface->GetWidget()->GetWindowBoundsInScreen().origin();
 }
 
 }  // namespace test

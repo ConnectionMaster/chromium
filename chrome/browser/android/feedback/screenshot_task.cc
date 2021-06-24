@@ -7,7 +7,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
-#include "jni/ScreenshotTask_jni.h"
+#include "chrome/android/chrome_jni_headers/ScreenshotTask_jni.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/android/window_android.h"
 #include "ui/gfx/geometry/rect.h"
@@ -48,8 +48,8 @@ void JNI_ScreenshotTask_GrabWindowSnapshotAsync(
   gfx::Rect window_bounds(window_width, window_height);
   ui::GrabWindowSnapshotAsyncPNG(
       window_android, window_bounds,
-      base::Bind(&JNI_ScreenshotTask_SnapshotCallback, env,
-                 ScopedJavaGlobalRef<jobject>(env, jcallback)));
+      base::BindOnce(&JNI_ScreenshotTask_SnapshotCallback, env,
+                     ScopedJavaGlobalRef<jobject>(env, jcallback)));
 }
 
 }  // namespace android

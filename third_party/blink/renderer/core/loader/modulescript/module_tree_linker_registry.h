@@ -14,13 +14,14 @@ namespace blink {
 class ModuleTreeLinker;
 
 // ModuleTreeLinkerRegistry keeps active ModuleTreeLinkers alive.
-class CORE_EXPORT ModuleTreeLinkerRegistry
+class CORE_EXPORT ModuleTreeLinkerRegistry final
     : public GarbageCollected<ModuleTreeLinkerRegistry>,
       public NameClient {
  public:
   ModuleTreeLinkerRegistry() = default;
+  ~ModuleTreeLinkerRegistry() final = default;
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
   const char* NameInHeapSnapshot() const override {
     return "ModuleTreeLinkerRegistry";
   }
@@ -35,4 +36,4 @@ class CORE_EXPORT ModuleTreeLinkerRegistry
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_MODULESCRIPT_MODULE_TREE_LINKER_REGISTRY_H_

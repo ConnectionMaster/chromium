@@ -4,9 +4,10 @@
 
 #include "net/proxy_resolution/mock_proxy_resolver.h"
 
+#include <memory>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
 
 namespace net {
 
@@ -48,6 +49,7 @@ MockAsyncProxyResolver::~MockAsyncProxyResolver() = default;
 
 int MockAsyncProxyResolver::GetProxyForURL(
     const GURL& url,
+    const NetworkIsolationKey& network_isolation_key,
     ProxyInfo* results,
     CompletionOnceCallback callback,
     std::unique_ptr<Request>* request,
@@ -55,7 +57,7 @@ int MockAsyncProxyResolver::GetProxyForURL(
   std::unique_ptr<Job> job(new Job(this, url, results, std::move(callback)));
 
   pending_jobs_.push_back(job.get());
-  request->reset(new RequestImpl(std::move(job)));
+  *request = std::make_unique<RequestImpl>(std::move(job));
 
   // Test code completes the request by calling job->CompleteNow().
   return ERR_IO_PENDING;
@@ -146,7 +148,7 @@ int MockAsyncProxyResolverFactory::CreateProxyResolver(
       new Request(this, pac_script, resolver, std::move(callback));
   pending_requests_.push_back(request);
 
-  request_handle->reset(new Job(request));
+  *request_handle = std::make_unique<Job>(request);
 
   // Test code completes the request by calling request->CompleteNow().
   return ERR_IO_PENDING;
@@ -169,13 +171,15 @@ ForwardingProxyResolver::ForwardingProxyResolver(ProxyResolver* impl)
     : impl_(impl) {
 }
 
-int ForwardingProxyResolver::GetProxyForURL(const GURL& query_url,
-                                            ProxyInfo* results,
-                                            CompletionOnceCallback callback,
-                                            std::unique_ptr<Request>* request,
-                                            const NetLogWithSource& net_log) {
-  return impl_->GetProxyForURL(query_url, results, std::move(callback), request,
-                               net_log);
+int ForwardingProxyResolver::GetProxyForURL(
+    const GURL& query_url,
+    const NetworkIsolationKey& network_isolation_key,
+    ProxyInfo* results,
+    CompletionOnceCallback callback,
+    std::unique_ptr<Request>* request,
+    const NetLogWithSource& net_log) {
+  return impl_->GetProxyForURL(query_url, network_isolation_key, results,
+                               std::move(callback), request, net_log);
 }
 
 }  // namespace net

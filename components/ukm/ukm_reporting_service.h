@@ -12,8 +12,9 @@
 #include <string>
 
 #include "base/macros.h"
-#include "components/metrics/persisted_logs.h"
 #include "components/metrics/reporting_service.h"
+#include "components/metrics/unsent_log_store.h"
+#include "third_party/metrics_proto/ukm/report.pb.h"
 
 class PrefService;
 class PrefRegistrySimple;
@@ -39,9 +40,9 @@ class UkmReportingService : public metrics::ReportingService {
   // types we'll be using.
   static void RegisterPrefs(PrefRegistrySimple* registry);
 
-  metrics::PersistedLogs* ukm_log_store() { return &persisted_logs_; }
-  const metrics::PersistedLogs* ukm_log_store() const {
-    return &persisted_logs_;
+  metrics::UnsentLogStore* ukm_log_store() { return &unsent_log_store_; }
+  const metrics::UnsentLogStore* ukm_log_store() const {
+    return &unsent_log_store_;
   }
 
  private:
@@ -56,10 +57,11 @@ class UkmReportingService : public metrics::ReportingService {
   void LogResponseOrErrorCode(int response_code,
                               int error_code,
                               bool was_https) override;
-  void LogSuccess(size_t log_size) override;
+  void LogSuccessLogSize(size_t log_size) override;
+  void LogSuccessMetadata(const std::string& staged_log) override;
   void LogLargeRejection(size_t log_size) override;
 
-  metrics::PersistedLogs persisted_logs_;
+  metrics::UnsentLogStore unsent_log_store_;
 
   DISALLOW_COPY_AND_ASSIGN(UkmReportingService);
 };

@@ -5,11 +5,14 @@
 #ifndef UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_H_
 #define UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_H_
 
+#include <ostream>
+#include <string>
+
 #include "base/callback.h"
 #include "base/lazy_instance.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
-#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_export.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_mode_observer.h"
@@ -57,21 +60,14 @@ class AX_EXPORT AXPlatformNode {
   // the addition of an AXMode flag.
   static void NotifyAddAXModeFlags(AXMode mode_flags);
 
-  // Must be called by native suggestion code when there are suggestions which
-  // could be presented in a popup, even if the popup is not presently visible.
-  // The availability of the popup changes the interactions that will occur
-  // (down arrow will move the focus into the suggestion popup). An example of a
-  // suggestion popup is seen in the Autofill feature.
-  // TODO(crbug.com/865101) Remove this once the autofill state works.
-  static void OnInputSuggestionsAvailable();
-  // Must be called when the system goes from a state of having an available
-  // suggestion popup to none available. If the suggestion popup is still
-  // available but just hidden, this method should not be called.
-  // TODO(crbug.com/865101) Remove this once the autofill state works.
-  static void OnInputSuggestionsUnavailable();
+  // Helper static function to update the AXMode. This is called when flags
+  // are removed. It doesn't currently notify global observers.
+  static void SetAXMode(AXMode new_mode);
 
-  // TODO(crbug.com/865101) Remove this once the autofill state works.
-  static bool HasInputSuggestions();
+  // Since |ax_mode_| is a static, calling NotifyAddAXModeFlags in a test can
+  // cause downstream tests to be flaky. This helper function puts |ax_mode_|
+  // in the default state.
+  static void ResetAxModeForTesting();
 
   // Return the focused object in any UI popup overlaying content, or null.
   static gfx::NativeViewAccessible GetPopupFocusOverride();
@@ -94,9 +90,9 @@ class AX_EXPORT AXPlatformNode {
   // this object.
   virtual void NotifyAccessibilityEvent(ax::mojom::Event event_type) = 0;
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Fire a platform-specific notification to announce |text|.
-  virtual void AnnounceText(const base::string16& text) = 0;
+  virtual void AnnounceText(const std::u16string& text) = 0;
 #endif
 
   // Return this object's delegate.
@@ -105,14 +101,29 @@ class AX_EXPORT AXPlatformNode {
   // Return true if this object is equal to or a descendant of |ancestor|.
   virtual bool IsDescendantOf(AXPlatformNode* ancestor) const = 0;
 
-  // Return the unique ID
+  // Set |this| as the primary web contents for the window.
+  void SetIsPrimaryWebContentsForWindow(bool is_primary);
+  bool IsPrimaryWebContentsForWindow() const;
+
+  // Return the unique ID.
   int32_t GetUniqueId() const;
+
+  // Creates a string representation of this node's data.
+  std::string ToString();
+
+  // Returns a string representation of the subtree of nodes rooted at this
+  // node.
+  std::string SubtreeToString();
+
+  friend std::ostream& operator<<(std::ostream& stream, AXPlatformNode& node);
 
  protected:
   AXPlatformNode();
   virtual ~AXPlatformNode();
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(AtkUtilAuraLinuxTest, KeySnooping);
+
   // Global ObserverList for AXMode changes.
   static base::LazyInstance<
       base::ObserverList<AXModeObserver>::Unchecked>::Leaky ax_mode_observers_;
@@ -122,15 +133,25 @@ class AX_EXPORT AXPlatformNode {
 
   static AXMode ax_mode_;
 
-  static bool has_input_suggestions_;
-
   // This allows UI menu popups like to act as if they are focused in the
   // exposed platform accessibility API, even though actual focus remains in
   // underlying content.
   static gfx::NativeViewAccessible popup_focus_override_;
 
+  bool is_primary_web_contents_for_window_ = false;
+
   DISALLOW_COPY_AND_ASSIGN(AXPlatformNode);
 };
+
+namespace testing {
+class ScopedAxModeSetter {
+ public:
+  explicit ScopedAxModeSetter(AXMode new_mode) {
+    AXPlatformNode::SetAXMode(new_mode);
+  }
+  ~ScopedAxModeSetter() { AXPlatformNode::ResetAxModeForTesting(); }
+};
+}  // namespace testing
 
 }  // namespace ui
 

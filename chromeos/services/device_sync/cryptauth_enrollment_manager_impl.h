@@ -6,15 +6,17 @@
 #define CHROMEOS_SERVICES_DEVICE_SYNC_CRYPTAUTH_ENROLLMENT_MANAGER_IMPL_H_
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
 #include "base/time/time.h"
 #include "chromeos/services/device_sync/cryptauth_enrollment_manager.h"
+#include "chromeos/services/device_sync/cryptauth_feature_type.h"
 #include "chromeos/services/device_sync/cryptauth_gcm_manager.h"
 #include "chromeos/services/device_sync/proto/cryptauth_api.pb.h"
 #include "chromeos/services/device_sync/sync_scheduler.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -57,7 +59,7 @@ class CryptAuthEnrollmentManagerImpl : public CryptAuthEnrollmentManager,
  public:
   class Factory {
    public:
-    static std::unique_ptr<CryptAuthEnrollmentManager> NewInstance(
+    static std::unique_ptr<CryptAuthEnrollmentManager> Create(
         base::Clock* clock,
         std::unique_ptr<CryptAuthEnrollerFactory> enroller_factory,
         std::unique_ptr<multidevice::SecureMessageDelegate>
@@ -66,18 +68,18 @@ class CryptAuthEnrollmentManagerImpl : public CryptAuthEnrollmentManager,
         CryptAuthGCMManager* gcm_manager,
         PrefService* pref_service);
 
-    static void SetInstanceForTesting(Factory* factory);
+    static void SetFactoryForTesting(Factory* factory);
 
    protected:
     virtual ~Factory();
-    virtual std::unique_ptr<CryptAuthEnrollmentManager> BuildInstance(
+    virtual std::unique_ptr<CryptAuthEnrollmentManager> CreateInstance(
         base::Clock* clock,
         std::unique_ptr<CryptAuthEnrollerFactory> enroller_factory,
         std::unique_ptr<multidevice::SecureMessageDelegate>
             secure_message_delegate,
         const cryptauth::GcmDeviceInfo& device_info,
         CryptAuthGCMManager* gcm_manager,
-        PrefService* pref_service);
+        PrefService* pref_service) = 0;
 
    private:
     static Factory* factory_instance_;
@@ -91,7 +93,8 @@ class CryptAuthEnrollmentManagerImpl : public CryptAuthEnrollmentManager,
   // CryptAuthEnrollmentManager:
   void Start() override;
   void ForceEnrollmentNow(
-      cryptauth::InvocationReason invocation_reason) override;
+      cryptauth::InvocationReason invocation_reason,
+      const absl::optional<std::string>& session_id) override;
   bool IsEnrollmentValid() const override;
   base::Time GetLastEnrollmentTime() const override;
   base::TimeDelta GetTimeToNextAttempt() const override;
@@ -128,7 +131,9 @@ class CryptAuthEnrollmentManagerImpl : public CryptAuthEnrollmentManager,
  private:
   // CryptAuthGCMManager::Observer:
   void OnGCMRegistrationResult(bool success) override;
-  void OnReenrollMessage() override;
+  void OnReenrollMessage(
+      const absl::optional<std::string>& session_id,
+      const absl::optional<CryptAuthFeatureType>& feature_type) override;
 
   // Callback when a new keypair is generated.
   void OnKeyPairGenerated(const std::string& public_key,
@@ -182,7 +187,7 @@ class CryptAuthEnrollmentManagerImpl : public CryptAuthEnrollmentManager,
   // instance will be created for each individual attempt.
   std::unique_ptr<CryptAuthEnroller> cryptauth_enroller_;
 
-  base::WeakPtrFactory<CryptAuthEnrollmentManagerImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<CryptAuthEnrollmentManagerImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CryptAuthEnrollmentManagerImpl);
 };

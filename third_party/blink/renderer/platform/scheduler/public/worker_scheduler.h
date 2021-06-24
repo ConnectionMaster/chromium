@@ -7,10 +7,11 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
+#include "base/task/sequence_manager/task_queue.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 namespace scheduler {
@@ -34,12 +35,12 @@ class PLATFORM_EXPORT WorkerScheduler : public FrameOrWorkerScheduler {
 
    public:
     PauseHandle(base::WeakPtr<WorkerScheduler>);
+    PauseHandle(const PauseHandle&) = delete;
+    PauseHandle& operator=(const PauseHandle&) = delete;
     ~PauseHandle();
 
    private:
     base::WeakPtr<WorkerScheduler> scheduler_;
-
-    DISALLOW_COPY_AND_ASSIGN(PauseHandle);
   };
 
   std::unique_ptr<PauseHandle> Pause() WARN_UNUSED_RESULT;
@@ -65,6 +66,11 @@ class PLATFORM_EXPORT WorkerScheduler : public FrameOrWorkerScheduler {
                              const SchedulingPolicy& policy) override;
   void OnStoppedUsingFeature(SchedulingPolicy::Feature feature,
                              const SchedulingPolicy& policy) override;
+
+  // FrameOrWorkerScheduler implementation:
+  void SetPreemptedForCooperativeScheduling(Preempted) override {}
+  std::unique_ptr<WebSchedulingTaskQueue> CreateWebSchedulingTaskQueue(
+      WebSchedulingPriority) override;
 
  protected:
   scoped_refptr<NonMainThreadTaskQueue> ThrottleableTaskQueue();
@@ -94,6 +100,12 @@ class PLATFORM_EXPORT WorkerScheduler : public FrameOrWorkerScheduler {
   scoped_refptr<NonMainThreadTaskQueue> pausable_task_queue_;
   scoped_refptr<NonMainThreadTaskQueue> unpausable_task_queue_;
 
+  using TaskQueueVoterMap = std::map<
+      scoped_refptr<NonMainThreadTaskQueue>,
+      std::unique_ptr<base::sequence_manager::TaskQueue::QueueEnabledVoter>>;
+
+  TaskQueueVoterMap task_runners_;
+
   SchedulingLifecycleState lifecycle_state_ =
       SchedulingLifecycleState::kNotThrottled;
 
@@ -101,7 +113,7 @@ class PLATFORM_EXPORT WorkerScheduler : public FrameOrWorkerScheduler {
 
   bool is_disposed_ = false;
   uint32_t paused_count_ = 0;
-  base::WeakPtrFactory<WorkerScheduler> weak_factory_;
+  base::WeakPtrFactory<WorkerScheduler> weak_factory_{this};
 };
 
 }  // namespace scheduler

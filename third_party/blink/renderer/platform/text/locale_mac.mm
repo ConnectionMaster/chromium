@@ -37,9 +37,11 @@
 #include "base/memory/ptr_util.h"
 #include "base/stl_util.h"
 #include "third_party/blink/renderer/platform/language.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
 #include "third_party/blink/renderer/platform/wtf/date_math.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "ui/base/ui_base_features.h"
 
 namespace blink {
 
@@ -123,7 +125,7 @@ const Vector<String>& LocaleMac::MonthLabels() {
   NSArray* array = [ShortDateFormatter() monthSymbols];
   if ([array count] == 12) {
     for (unsigned i = 0; i < 12; ++i)
-      month_labels_.push_back(String([array objectAtIndex:i]));
+      month_labels_.push_back(String(array[i]));
     return month_labels_;
   }
   for (unsigned i = 0; i < base::size(WTF::kMonthFullName); ++i)
@@ -135,10 +137,10 @@ const Vector<String>& LocaleMac::WeekDayShortLabels() {
   if (!week_day_short_labels_.IsEmpty())
     return week_day_short_labels_;
   week_day_short_labels_.ReserveCapacity(7);
-  NSArray* array = [ShortDateFormatter() shortWeekdaySymbols];
+  NSArray* array = [ShortDateFormatter() veryShortWeekdaySymbols];
   if ([array count] == 7) {
     for (unsigned i = 0; i < 7; ++i)
-      week_day_short_labels_.push_back(String([array objectAtIndex:i]));
+      week_day_short_labels_.push_back(String(array[i]));
     return week_day_short_labels_;
   }
   for (unsigned i = 0; i < base::size(WTF::kWeekdayName); ++i) {
@@ -251,7 +253,7 @@ const Vector<String>& LocaleMac::ShortMonthLabels() {
   NSArray* array = [ShortDateFormatter() shortMonthSymbols];
   if ([array count] == 12) {
     for (unsigned i = 0; i < 12; ++i)
-      short_month_labels_.push_back([array objectAtIndex:i]);
+      short_month_labels_.push_back(array[i]);
     return short_month_labels_;
   }
   for (unsigned i = 0; i < base::size(WTF::kMonthName); ++i)
@@ -266,7 +268,7 @@ const Vector<String>& LocaleMac::StandAloneMonthLabels() {
   if ([array count] == 12) {
     stand_alone_month_labels_.ReserveCapacity(12);
     for (unsigned i = 0; i < 12; ++i)
-      stand_alone_month_labels_.push_back([array objectAtIndex:i]);
+      stand_alone_month_labels_.push_back(array[i]);
     return stand_alone_month_labels_;
   }
   stand_alone_month_labels_ = ShortMonthLabels();
@@ -280,7 +282,7 @@ const Vector<String>& LocaleMac::ShortStandAloneMonthLabels() {
   if ([array count] == 12) {
     short_stand_alone_month_labels_.ReserveCapacity(12);
     for (unsigned i = 0; i < 12; ++i)
-      short_stand_alone_month_labels_.push_back([array objectAtIndex:i]);
+      short_stand_alone_month_labels_.push_back(array[i]);
     return short_stand_alone_month_labels_;
   }
   short_stand_alone_month_labels_ = ShortMonthLabels();

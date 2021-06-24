@@ -1,4 +1,3 @@
-region
-++document
-++++group
-++++++textbox Name='Name'
+Document
+++Group IsControlElement=false
+++++Edit Name='Name'

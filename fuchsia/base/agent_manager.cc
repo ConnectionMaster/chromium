@@ -8,13 +8,13 @@
 
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/logging.h"
+#include "base/strings/string_piece.h"
 
 namespace cr_fuchsia {
 
-AgentManager::AgentManager(
-    const base::fuchsia::ServiceDirectoryClient* incoming)
+AgentManager::AgentManager(const sys::ServiceDirectory* incoming)
     : component_context_(
-          incoming->ConnectToService<fuchsia::modular::ComponentContext>()) {}
+          incoming->Connect<fuchsia::modular::ComponentContext>()) {}
 
 AgentManager::~AgentManager() = default;
 
@@ -23,16 +23,17 @@ void AgentManager::ConnectToAgentServiceUnsafe(base::StringPiece agent,
                                                zx::channel request) {
   auto it = agents_.find(agent);
   if (it == agents_.end()) {
-    it = agents_.emplace(agent.as_string(), AgentConnection()).first;
-    component_context_->ConnectToAgent(agent.as_string(),
-                                       it->second.services.NewRequest(),
-                                       it->second.controller.NewRequest());
+    it = agents_.emplace(agent, AgentConnection()).first;
+    component_context_->DeprecatedConnectToAgent(
+        std::string(agent), it->second.services.NewRequest(),
+        it->second.controller.NewRequest());
     it->second.services.set_error_handler(
-        [agent = agent.as_string()](zx_status_t status) {
-          ZX_LOG(FATAL, status) << "Agent disconnected: " << agent;
+        [this, agent = std::string(agent)](zx_status_t status) {
+          ZX_LOG(WARNING, status) << "Agent disconnected: " << agent;
+          agents_.erase(agent);
         });
   }
-  it->second.services->ConnectToService(interface.as_string(),
+  it->second.services->ConnectToService(std::string(interface),
                                         std::move(request));
 }
 

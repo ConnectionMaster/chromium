@@ -9,11 +9,10 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
-#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/origin_util.h"
 #include "net/base/url_util.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
 
 namespace extensions {
 
@@ -38,14 +37,15 @@ DesktopCaptureChooseDesktopMediaFunction::
     ~DesktopCaptureChooseDesktopMediaFunction() {
 }
 
-bool DesktopCaptureChooseDesktopMediaFunction::RunAsync() {
+ExtensionFunction::ResponseAction
+DesktopCaptureChooseDesktopMediaFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(args_->GetSize() > 0);
 
   EXTENSION_FUNCTION_VALIDATE(args_->GetInteger(0, &request_id_));
-  DesktopCaptureRequestsRegistry::GetInstance()->AddRequest(
-      render_frame_host()->GetProcess()->GetID(), request_id_, this);
+  DesktopCaptureRequestsRegistry::GetInstance()->AddRequest(source_process_id(),
+                                                            request_id_, this);
 
-  args_->Remove(0, NULL);
+  args_->EraseListIter(args_->GetList().begin());
 
   std::unique_ptr<api::desktop_capture::ChooseDesktopMedia::Params> params =
       api::desktop_capture::ChooseDesktopMedia::Params::Create(*args_);
@@ -54,39 +54,37 @@ bool DesktopCaptureChooseDesktopMediaFunction::RunAsync() {
   // |web_contents| is the WebContents for which the stream is created, and will
   // also be used to determine where to show the picker's UI.
   content::WebContents* web_contents = NULL;
-  base::string16 target_name;
+  std::u16string target_name;
   GURL origin;
   if (params->target_tab) {
     if (!params->target_tab->url) {
-      error_ = kDesktopCaptureApiNoUrlError;
-      return false;
+      return RespondNow(Error(kDesktopCaptureApiNoUrlError));
     }
     origin = GURL(*(params->target_tab->url)).GetOrigin();
 
     if (!origin.is_valid()) {
-      error_ = kDesktopCaptureApiInvalidOriginError;
-      return false;
+      return RespondNow(Error(kDesktopCaptureApiInvalidOriginError));
     }
 
     if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
             ::switches::kAllowHttpScreenCapture) &&
-        !content::IsOriginSecure(origin)) {
-      error_ = kDesktopCaptureApiTabUrlNotSecure;
-      return false;
+        !network::IsUrlPotentiallyTrustworthy(origin)) {
+      return RespondNow(Error(kDesktopCaptureApiTabUrlNotSecure));
     }
-    target_name = base::UTF8ToUTF16(content::IsOriginSecure(origin) ?
-        net::GetHostAndOptionalPort(origin) : origin.spec());
+    target_name = base::UTF8ToUTF16(network::IsUrlPotentiallyTrustworthy(origin)
+                                        ? net::GetHostAndOptionalPort(origin)
+                                        : origin.spec());
 
     if (!params->target_tab->id ||
         *params->target_tab->id == api::tabs::TAB_ID_NONE) {
-      error_ = kDesktopCaptureApiNoTabIdError;
-      return false;
+      return RespondNow(Error(kDesktopCaptureApiNoTabIdError));
     }
 
-    if (!ExtensionTabUtil::GetTabById(*(params->target_tab->id), GetProfile(),
-                                      true, NULL, NULL, &web_contents, NULL)) {
-      error_ = kDesktopCaptureApiInvalidTabIdError;
-      return false;
+    if (!ExtensionTabUtil::GetTabById(
+            *(params->target_tab->id),
+            Profile::FromBrowserContext(browser_context()), true,
+            &web_contents)) {
+      return RespondNow(Error(kDesktopCaptureApiInvalidTabIdError));
     }
     DCHECK(web_contents);
   } else {

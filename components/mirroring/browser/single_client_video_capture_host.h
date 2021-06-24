@@ -17,6 +17,7 @@
 #include "content/public/browser/video_capture_device_launcher.h"
 #include "media/capture/mojom/video_capture.mojom.h"
 #include "media/capture/video/video_frame_receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 using media::VideoCaptureParams;
 using media::VideoCaptureDevice;
@@ -38,48 +39,46 @@ class SingleClientVideoCaptureHost final
   using DeviceLauncherCreateCallback = base::RepeatingCallback<
       std::unique_ptr<content::VideoCaptureDeviceLauncher>()>;
   SingleClientVideoCaptureHost(const std::string& device_id,
-                               blink::MediaStreamType type,
+                               blink::mojom::MediaStreamType type,
                                DeviceLauncherCreateCallback callback);
   ~SingleClientVideoCaptureHost() override;
 
   // media::mojom::VideoCaptureHost implementations
   // |device_id| and |session_id| are ignored since there will be only one
   // device and one client.
-  void Start(int32_t device_id,
-             int32_t session_id,
+  void Start(const base::UnguessableToken& device_id,
+             const base::UnguessableToken& session_id,
              const VideoCaptureParams& params,
-             media::mojom::VideoCaptureObserverPtr observer) override;
-  void Stop(int32_t device_id) override;
-  void Pause(int32_t device_id) override;
-  void Resume(int32_t device_id,
-              int32_t session_id,
+             mojo::PendingRemote<media::mojom::VideoCaptureObserver> observer)
+      override;
+  void Stop(const base::UnguessableToken& device_id) override;
+  void Pause(const base::UnguessableToken& device_id) override;
+  void Resume(const base::UnguessableToken& device_id,
+              const base::UnguessableToken& session_id,
               const VideoCaptureParams& params) override;
-  void RequestRefreshFrame(int32_t device_id) override;
-  void ReleaseBuffer(int32_t device_id,
+  void RequestRefreshFrame(const base::UnguessableToken& device_id) override;
+  void ReleaseBuffer(const base::UnguessableToken& device_id,
                      int32_t buffer_id,
-                     double consumer_resource_utilization) override;
+                     const media::VideoCaptureFeedback& feedback) override;
   void GetDeviceSupportedFormats(
-      int32_t device_id,
-      int32_t session_id,
+      const base::UnguessableToken& device_id,
+      const base::UnguessableToken& session_id,
       GetDeviceSupportedFormatsCallback callback) override;
-  void GetDeviceFormatsInUse(int32_t device_id,
-                             int32_t session_id,
+  void GetDeviceFormatsInUse(const base::UnguessableToken& device_id,
+                             const base::UnguessableToken& session_id,
                              GetDeviceFormatsInUseCallback callback) override;
-  void OnFrameDropped(int32_t device_id,
+  void OnFrameDropped(const base::UnguessableToken& device_id,
                       media::VideoCaptureFrameDropReason reason) override;
-  void OnLog(int32_t device_id, const std::string& message) override;
+  void OnLog(const base::UnguessableToken& device_id,
+             const std::string& message) override;
 
   // media::VideoFrameReceiver implementations
   using Buffer = VideoCaptureDevice::Client::Buffer;
   void OnNewBuffer(int buffer_id,
                    media::mojom::VideoBufferHandlePtr buffer_handle) override;
   void OnFrameReadyInBuffer(
-      int buffer_id,
-      int frame_feedback_id,
-      std::unique_ptr<
-          VideoCaptureDevice::Client::Buffer::ScopedAccessPermission>
-          buffer_read_permission,
-      media::mojom::VideoFrameInfoPtr frame_info) override;
+      media::ReadyFrameInBuffer frame,
+      std::vector<media::ReadyFrameInBuffer> scaled_frames) override;
   void OnBufferRetired(int buffer_id) override;
   void OnError(media::VideoCaptureError error) override;
   void OnFrameDropped(media::VideoCaptureFrameDropReason reason) override;
@@ -96,13 +95,13 @@ class SingleClientVideoCaptureHost final
  private:
   // Reports the |consumer_resource_utilization| and removes the buffer context.
   void OnFinishedConsumingBuffer(int buffer_context_id,
-                                 double consumer_resource_utilization);
+                                 const media::VideoCaptureFeedback& feedback);
 
   const std::string device_id_;
-  const blink::MediaStreamType type_;
+  const blink::mojom::MediaStreamType type_;
   const DeviceLauncherCreateCallback device_launcher_callback_;
 
-  media::mojom::VideoCaptureObserverPtr observer_;
+  mojo::Remote<media::mojom::VideoCaptureObserver> observer_;
   std::unique_ptr<content::LaunchedVideoCaptureDevice> launched_device_;
 
   // Unique ID assigned for the next buffer provided by OnNewBufferHandle().
@@ -128,7 +127,7 @@ class SingleClientVideoCaptureHost final
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<SingleClientVideoCaptureHost> weak_factory_;
+  base::WeakPtrFactory<SingleClientVideoCaptureHost> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SingleClientVideoCaptureHost);
 };

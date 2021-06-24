@@ -4,18 +4,23 @@
 
 #include "chrome/browser/media/webrtc/tab_desktop_media_list.h"
 
+#include <memory>
+
 #include "base/command_line.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/media/webrtc/desktop_media_list_observer.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/test/base/fake_profile_manager.h"
 #include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -24,38 +29,24 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
-#endif  // defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/login/users/scoped_test_user_manager.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 using content::WebContents;
 using content::WebContentsTester;
 
 namespace {
 
-static const int kDefaultSourceCount = 2;
-static const int kThumbnailSize = 50;
-
-class UnittestProfileManager : public ::ProfileManagerWithoutInit {
- public:
-  explicit UnittestProfileManager(const base::FilePath& user_data_dir)
-      : ::ProfileManagerWithoutInit(user_data_dir) {}
-
- protected:
-  Profile* CreateProfileHelper(const base::FilePath& file_path) override {
-    if (!base::PathExists(file_path)) {
-      if (!base::CreateDirectory(file_path))
-        return NULL;
-    }
-    return new TestingProfile(file_path, NULL);
-  }
-};
+constexpr int kDefaultSourceCount = 2;
+constexpr int kThumbnailSize = 50;
 
 // Create a greyscale image with certain size and grayscale value.
 gfx::Image CreateGrayscaleImage(gfx::Size size, uint8_t greyscale_value) {
@@ -92,6 +83,7 @@ class MockObserver : public DesktopMediaListObserver {
   MOCK_METHOD2(OnSourceNameChanged, void(DesktopMediaList* list, int index));
   MOCK_METHOD2(OnSourceThumbnailChanged,
                void(DesktopMediaList* list, int index));
+  MOCK_METHOD1(OnAllSourcesFound, void(DesktopMediaList* list));
 
   void VerifyAndClearExpectations() {
     testing::Mock::VerifyAndClearExpectations(this);
@@ -123,22 +115,16 @@ class TabDesktopMediaListTest : public testing::Test {
     WebContentsTester::For(contents.get())
         ->SetLastActiveTime(base::TimeTicks::Now());
 
-    // Get or create the transient NavigationEntry and add a title and a
-    // favicon to it.
+    // Get or create a NavigationEntry and add a title and a favicon to it.
     content::NavigationEntry* entry =
-        contents->GetController().GetTransientEntry();
+        contents->GetController().GetLastCommittedEntry();
     if (!entry) {
-      std::unique_ptr<content::NavigationEntry> entry_new =
-          content::NavigationController::CreateNavigationEntry(
-              GURL("chrome://blank"), content::Referrer(),
-              ui::PAGE_TRANSITION_LINK, false, std::string(), profile_,
-              nullptr /* blob_url_loader_factory */);
-
-      contents->GetController().SetTransientEntry(std::move(entry_new));
-      entry = contents->GetController().GetTransientEntry();
+      content::NavigationSimulator::NavigateAndCommitFromBrowser(
+          contents.get(), GURL("chrome://blank"));
+      entry = contents->GetController().GetLastCommittedEntry();
     }
 
-    contents->UpdateTitleForEntry(entry, base::ASCIIToUTF16("Test tab"));
+    contents->UpdateTitleForEntry(entry, u"Test tab");
 
     content::FaviconStatus favicon_info;
     favicon_info.image =
@@ -150,14 +136,13 @@ class TabDesktopMediaListTest : public testing::Test {
   }
 
   void SetUp() override {
-    manually_added_web_contents_.clear();
-    rvh_test_enabler_.reset(new content::RenderViewHostTestEnabler());
+    rvh_test_enabler_ = std::make_unique<content::RenderViewHostTestEnabler>();
     // Create a new temporary directory, and store the path.
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     TestingBrowserProcess::GetGlobal()->SetProfileManager(
-        new UnittestProfileManager(temp_dir_.GetPath()));
+        std::make_unique<FakeProfileManager>(temp_dir_.GetPath()));
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
     cl->AppendSwitch(switches::kTestType);
 #endif
@@ -171,7 +156,7 @@ class TabDesktopMediaListTest : public testing::Test {
 
     // Create browser.
     Browser::CreateParams profile_params(profile_, true);
-    browser_ = CreateBrowserWithTestWindowForParams(&profile_params);
+    browser_ = CreateBrowserWithTestWindowForParams(profile_params);
     ASSERT_TRUE(browser_);
     for (int i = 0; i < kDefaultSourceCount; i++) {
       AddWebcontents(i + 1);
@@ -184,19 +169,19 @@ class TabDesktopMediaListTest : public testing::Test {
     // necessary. https://crbug.com/832879.
     TabStripModel* tab_strip_model = browser_->tab_strip_model();
     for (WebContents* contents : manually_added_web_contents_) {
-      tab_strip_model->DetachWebContentsAt(
+      tab_strip_model->DetachAndDeleteWebContentsAt(
           tab_strip_model->GetIndexOfWebContents(contents));
     }
     manually_added_web_contents_.clear();
 
     browser_.reset();
-    TestingBrowserProcess::GetGlobal()->SetProfileManager(NULL);
+    TestingBrowserProcess::GetGlobal()->SetProfileManager(nullptr);
     base::RunLoop().RunUntilIdle();
     rvh_test_enabler_.reset();
   }
 
   void CreateDefaultList() {
-    list_.reset(new TabDesktopMediaList());
+    list_ = std::make_unique<TabDesktopMediaList>();
     list_->SetThumbnailSize(gfx::Size(kThumbnailSize, kThumbnailSize));
 
     // Set update period to reduce the time it takes to run tests.
@@ -250,11 +235,11 @@ class TabDesktopMediaListTest : public testing::Test {
   std::unique_ptr<TabDesktopMediaList> list_;
   std::vector<WebContents*> manually_added_web_contents_;
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
-#if defined(OS_CHROMEOS)
-  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
-  chromeos::ScopedTestUserManager test_user_manager_;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  ash::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
+  ash::ScopedTestUserManager test_user_manager_;
 #endif
 
   DISALLOW_COPY_AND_ASSIGN(TabDesktopMediaListTest);
@@ -281,14 +266,8 @@ TEST_F(TabDesktopMediaListTest, RemoveTab) {
   TabStripModel* tab_strip_model = browser_->tab_strip_model();
   ASSERT_TRUE(tab_strip_model);
   std::unique_ptr<WebContents> released_web_contents =
-      tab_strip_model->DetachWebContentsAt(kDefaultSourceCount - 1);
-  for (auto it = manually_added_web_contents_.begin();
-       it != manually_added_web_contents_.end(); ++it) {
-    if (*it == released_web_contents.get()) {
-      manually_added_web_contents_.erase(it);
-      break;
-    }
-  }
+      tab_strip_model->DetachWebContentsAtForInsertion(kDefaultSourceCount - 1);
+  base::Erase(manually_added_web_contents_, released_web_contents.get());
 
   EXPECT_CALL(observer_, OnSourceRemoved(list_.get(), 0))
       .WillOnce(
@@ -336,15 +315,15 @@ TEST_F(TabDesktopMediaListTest, UpdateTitle) {
       tab_strip_model->GetWebContentsAt(kDefaultSourceCount - 1);
   ASSERT_TRUE(contents);
   content::NavigationController& controller = contents->GetController();
-  contents->UpdateTitleForEntry(controller.GetTransientEntry(),
-                                base::ASCIIToUTF16("New test tab"));
+  contents->UpdateTitleForEntry(controller.GetLastCommittedEntry(),
+                                u"New test tab");
 
   EXPECT_CALL(observer_, OnSourceNameChanged(list_.get(), 0))
       .WillOnce(QuitMessageLoop());
 
   base::RunLoop().Run();
 
-  EXPECT_EQ(list_->GetSource(0).name, base::UTF8ToUTF16("New test tab"));
+  EXPECT_EQ(list_->GetSource(0).name, u"New test tab");
 
   list_.reset();
 }
@@ -361,7 +340,8 @@ TEST_F(TabDesktopMediaListTest, UpdateThumbnail) {
 
   content::FaviconStatus favicon_info;
   favicon_info.image = CreateGrayscaleImage(gfx::Size(10, 10), 100);
-  contents->GetController().GetTransientEntry()->GetFavicon() = favicon_info;
+  contents->GetController().GetLastCommittedEntry()->GetFavicon() =
+      favicon_info;
 
   EXPECT_CALL(observer_, OnSourceThumbnailChanged(list_.get(), 0))
       .WillOnce(QuitMessageLoop());

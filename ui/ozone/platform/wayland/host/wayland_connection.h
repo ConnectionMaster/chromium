@@ -5,138 +5,148 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_CONNECTION_H_
 #define UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_CONNECTION_H_
 
-#include <map>
+#include <time.h>
 #include <memory>
-#include <string>
 #include <vector>
 
-#include "base/files/file.h"
-#include "base/message_loop/message_pump_libevent.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "ui/events/platform/platform_event_source.h"
-#include "ui/gfx/buffer_types.h"
-#include "ui/gfx/native_widget_types.h"
+#include "base/time/time.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/events/event.h"
 #include "ui/ozone/platform/wayland/common/wayland_object.h"
-#include "ui/ozone/platform/wayland/host/wayland_cursor_position.h"
-#include "ui/ozone/platform/wayland/host/wayland_data_device.h"
-#include "ui/ozone/platform/wayland/host/wayland_data_device_manager.h"
+#include "ui/ozone/platform/wayland/host/wayland_clipboard.h"
+#include "ui/ozone/platform/wayland/host/wayland_data_drag_controller.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_source.h"
-#include "ui/ozone/platform/wayland/host/wayland_keyboard.h"
-#include "ui/ozone/platform/wayland/host/wayland_output.h"
-#include "ui/ozone/platform/wayland/host/wayland_pointer.h"
-#include "ui/ozone/platform/wayland/host/wayland_touch.h"
-#include "ui/ozone/public/interfaces/wayland/wayland_connection.mojom.h"
-#include "ui/ozone/public/platform_clipboard.h"
+#include "ui/ozone/platform/wayland/host/wayland_window_manager.h"
+
+struct wl_cursor;
+struct wl_event_queue;
+
+namespace gfx {
+class Point;
+}
+
+namespace wl {
+class WaylandProxy;
+}
 
 namespace ui {
 
-class WaylandBufferManager;
-class WaylandShmBufferManager;
+class DeviceHotplugEventObserver;
+class OrgKdeKwinIdle;
+class WaylandBufferManagerHost;
+class WaylandCursor;
+class WaylandCursorBufferListener;
+class WaylandDrm;
+class WaylandEventSource;
+class WaylandKeyboard;
 class WaylandOutputManager;
-class WaylandWindow;
+class WaylandPointer;
+class WaylandShm;
+class WaylandTouch;
+class WaylandZAuraShell;
+class WaylandZcrCursorShapes;
+class WaylandZwpPointerGestures;
 class WaylandZwpLinuxDmabuf;
+class WaylandDataDeviceManager;
+class WaylandCursorPosition;
+class WaylandWindowDragController;
+class GtkPrimarySelectionDeviceManager;
+class GtkShell1;
+class ZwpPrimarySelectionDeviceManager;
+class XdgForeignWrapper;
 
-// TODO(crbug.com/942203): factor out PlatformClipboard to a separate class.
-class WaylandConnection : public PlatformEventSource,
-                          public PlatformClipboard,
-                          public ozone::mojom::WaylandConnection,
-                          public base::MessagePumpLibevent::FdWatcher {
+class WaylandConnection {
  public:
+  // Stores the last serial and the event type it is associated with.
+  struct EventSerial {
+    uint32_t serial = 0;
+    EventType event_type = EventType::ET_UNKNOWN;
+  };
+
   WaylandConnection();
-  ~WaylandConnection() override;
+  WaylandConnection(const WaylandConnection&) = delete;
+  WaylandConnection& operator=(const WaylandConnection&) = delete;
+  ~WaylandConnection();
 
   bool Initialize();
-  bool StartProcessingEvents();
-
-  // ozone::mojom::WaylandConnection overrides:
-  //
-  // These overridden methods below are invoked by the GPU when hardware
-  // accelerated rendering is used.
-  void SetWaylandConnectionClient(
-      ozone::mojom::WaylandConnectionClientAssociatedPtrInfo client) override;
-  //
-  // Called by the GPU and asks to import a wl_buffer based on a gbm file
-  // descriptor.
-  void CreateZwpLinuxDmabuf(base::File file,
-                            uint32_t width,
-                            uint32_t height,
-                            const std::vector<uint32_t>& strides,
-                            const std::vector<uint32_t>& offsets,
-                            uint32_t format,
-                            const std::vector<uint64_t>& modifiers,
-                            uint32_t planes_count,
-                            uint32_t buffer_id) override;
-  // Called by the GPU to destroy the imported wl_buffer with a |buffer_id|.
-  void DestroyZwpLinuxDmabuf(uint32_t buffer_id) override;
-  // Called by the GPU and asks to attach a wl_buffer with a |buffer_id| to a
-  // WaylandWindow with the specified |widget|.
-  // Calls OnSubmission and OnPresentation on successful swap and pixels
-  // presented.
-  void ScheduleBufferSwap(gfx::AcceleratedWidget widget,
-                          uint32_t buffer_id,
-                          const gfx::Rect& damage_region) override;
-  // These overridden methods below are invoked by the GPU when hardware
-  // accelerated rendering is not used. Check comments in the
-  // ui/ozone/public/interfaces/wayland/wayland_connection.mojom.
-  void CreateShmBufferForWidget(gfx::AcceleratedWidget widget,
-                                base::File file,
-                                uint64_t length,
-                                const gfx::Size& size) override;
-  void PresentShmBufferForWidget(gfx::AcceleratedWidget widget,
-                                 const gfx::Rect& damage) override;
-  void DestroyShmBuffer(gfx::AcceleratedWidget widget) override;
-
-  // These methods are exclusively used by the WaylandBufferManager to notify
-  // the |client_associated_ptr_| about buffer swaps' results.
-  // TODO(msisov): move these and the above mojo methods into the
-  // WaylandBufferManager and establish end-to-end communication with
-  // WaylandBufferManagerGpu and WaylandBufferManagerHost instead (basically, to
-  // avoid having the WaylandConnection as proxy in between).
-  // https://crbug.com/947411
-  void OnSubmission(gfx::AcceleratedWidget widget,
-                    uint32_t buffer_id,
-                    const gfx::SwapResult& swap_result);
-  void OnPresentation(gfx::AcceleratedWidget widget,
-                      uint32_t buffer_id,
-                      const gfx::PresentationFeedback& feedback);
 
   // Schedules a flush of the Wayland connection.
   void ScheduleFlush();
 
+  // Calls wl_display_roundtrip_queue. Might be required during initialization
+  // of some objects that should block until they are initialized.
+  void RoundTripQueue();
+
+  // Sets a callback that that shutdowns the browser in case of unrecoverable
+  // error. Called by WaylandEventWatcher.
+  void SetShutdownCb(base::OnceCallback<void()> shutdown_cb);
+
+  // A correct display must be chosen when creating objects or calling
+  // roundrips.  That is, all the methods that deal with polling, pulling event
+  // queues, etc, must use original display. All the other methods that create
+  // various wayland objects must use |display_wrapper_| so that the new objects
+  // are associated with the correct event queue. Otherwise, they will use a
+  // default event queue, which we do not use. See the comment below about the
+  // |event_queue_|.
   wl_display* display() const { return display_.get(); }
+  wl_display* display_wrapper() const {
+    return reinterpret_cast<wl_display*>(wrapped_display_.get());
+  }
   wl_compositor* compositor() const { return compositor_.get(); }
+  // The server version of the compositor interface (might be higher than the
+  // version binded).
+  uint32_t compositor_version() const { return compositor_version_; }
   wl_subcompositor* subcompositor() const { return subcompositor_.get(); }
-  wl_shm* shm() const { return shm_.get(); }
-  xdg_shell* shell() const { return shell_.get(); }
+  wp_viewporter* viewporter() const { return viewporter_.get(); }
+  xdg_wm_base* shell() const { return shell_.get(); }
   zxdg_shell_v6* shell_v6() const { return shell_v6_.get(); }
   wl_seat* seat() const { return seat_.get(); }
-  wl_data_device* data_device() const { return data_device_->data_device(); }
   wp_presentation* presentation() const { return presentation_.get(); }
   zwp_text_input_manager_v1* text_input_manager_v1() const {
     return text_input_manager_v1_.get();
   }
+  zwp_linux_explicit_synchronization_v1* linux_explicit_synchronization_v1()
+      const {
+    return linux_explicit_synchronization_.get();
+  }
+  zxdg_decoration_manager_v1* xdg_decoration_manager_v1() const {
+    return xdg_decoration_manager_.get();
+  }
+  zcr_extended_drag_v1* extended_drag_v1() const {
+    return extended_drag_v1_.get();
+  }
 
-  WaylandWindow* GetWindow(gfx::AcceleratedWidget widget) const;
-  WaylandWindow* GetWindowWithLargestBounds() const;
-  WaylandWindow* GetCurrentFocusedWindow() const;
-  WaylandWindow* GetCurrentKeyboardFocusedWindow() const;
-  void AddWindow(gfx::AcceleratedWidget widget, WaylandWindow* window);
-  void RemoveWindow(gfx::AcceleratedWidget widget);
+  void set_serial(uint32_t serial, EventType event_type) {
+    serial_ = {serial, event_type};
+  }
+  uint32_t serial() const { return serial_.serial; }
+  EventSerial event_serial() const { return serial_; }
 
-  void set_serial(uint32_t serial) { serial_ = serial; }
-  uint32_t serial() const { return serial_; }
+  void set_pointer_enter_serial(uint32_t serial) {
+    pointer_enter_serial_ = serial;
+  }
+  uint32_t pointer_enter_serial() const { return pointer_enter_serial_; }
+
+  void SetPlatformCursor(wl_cursor* cursor_data, int buffer_scale);
+
+  void SetCursorBufferListener(WaylandCursorBufferListener* listener);
 
   void SetCursorBitmap(const std::vector<SkBitmap>& bitmaps,
-                       const gfx::Point& location);
+                       const gfx::Point& hotspot_in_dips,
+                       int buffer_scale);
 
-  int GetKeyboardModifiers() const;
+  WaylandEventSource* event_source() const { return event_source_.get(); }
+
+  // Returns the current touch, which may be null.
+  WaylandTouch* touch() const { return touch_.get(); }
 
   // Returns the current pointer, which may be null.
   WaylandPointer* pointer() const { return pointer_.get(); }
 
-  WaylandDataSource* drag_data_source() const {
-    return dragdrop_data_source_.get();
-  }
+  // Returns the current keyboard, which may be null.
+  WaylandKeyboard* keyboard() const { return keyboard_.get(); }
+
+  WaylandClipboard* clipboard() const { return clipboard_.get(); }
 
   WaylandOutputManager* wayland_output_manager() const {
     return wayland_output_manager_.get();
@@ -147,90 +157,91 @@ class WaylandConnection : public PlatformEventSource,
     return wayland_cursor_position_.get();
   }
 
-  WaylandBufferManager* buffer_manager() const { return buffer_manager_.get(); }
+  WaylandBufferManagerHost* buffer_manager_host() const {
+    return buffer_manager_host_.get();
+  }
+
+  WaylandZAuraShell* zaura_shell() const { return zaura_shell_.get(); }
+
+  WaylandZcrCursorShapes* zcr_cursor_shapes() const {
+    return zcr_cursor_shapes_.get();
+  }
 
   WaylandZwpLinuxDmabuf* zwp_dmabuf() const { return zwp_dmabuf_.get(); }
 
-  // Clipboard implementation.
-  PlatformClipboard* GetPlatformClipboard();
-  void DataSourceCancelled();
-  void SetClipboardData(const std::string& contents,
-                        const std::string& mime_type);
-  void UpdateClipboardSequenceNumber();
+  WaylandDrm* drm() const { return drm_.get(); }
 
-  // PlatformClipboard.
-  void OfferClipboardData(
-      const PlatformClipboard::DataMap& data_map,
-      PlatformClipboard::OfferDataClosure callback) override;
-  void RequestClipboardData(
-      const std::string& mime_type,
-      PlatformClipboard::DataMap* data_map,
-      PlatformClipboard::RequestDataClosure callback) override;
-  void GetAvailableMimeTypes(
-      PlatformClipboard::GetMimeTypesClosure callback) override;
-  bool IsSelectionOwner() override;
-  void SetSequenceNumberUpdateCb(
-      PlatformClipboard::SequenceNumberUpdateCb cb) override;
+  WaylandShm* shm() const { return shm_.get(); }
 
-  // Returns bound pointer to own mojo interface.
-  ozone::mojom::WaylandConnectionPtr BindInterface();
+  WaylandWindowManager* wayland_window_manager() {
+    return &wayland_window_manager_;
+  }
 
-  // Unbinds the interface and clears the state of the |buffer_manager_|. Used
-  // only when the GPU channel, which uses the mojo pipe to this interface, is
-  // destroyed.
-  void OnChannelDestroyed();
+  WaylandDataDeviceManager* data_device_manager() const {
+    return data_device_manager_.get();
+  }
 
-  std::vector<gfx::BufferFormat> GetSupportedBufferFormats();
+  GtkPrimarySelectionDeviceManager* gtk_primary_selection_device_manager()
+      const {
+    return gtk_primary_selection_device_manager_.get();
+  }
 
-  void SetTerminateGpuCallback(
-      base::OnceCallback<void(std::string)> terminate_gpu_cb);
+  GtkShell1* gtk_shell1() { return gtk_shell1_.get(); }
 
-  // Starts drag with |data| to be delivered, |operation| supported by the
-  // source side initiated the dragging.
-  void StartDrag(const ui::OSExchangeData& data, int operation);
-  // Finishes drag and drop session. It happens when WaylandDataSource gets
-  // 'OnDnDFinished' or 'OnCancel', which means the drop is performed or
-  // canceled on others.
-  void FinishDragSession(uint32_t dnd_action, WaylandWindow* source_window);
-  // Delivers the data owned by Chromium which initiates drag-and-drop. |buffer|
-  // is an output parameter and it should be filled with the data corresponding
-  // to mime_type.
-  void DeliverDragData(const std::string& mime_type, std::string* buffer);
-  // Requests the data to the platform when Chromium gets drag-and-drop started
-  // by others. Once reading the data from platform is done, |callback| should
-  // be called with the data.
-  void RequestDragData(const std::string& mime_type,
-                       base::OnceCallback<void(const std::string&)> callback);
+  OrgKdeKwinIdle* org_kde_kwin_idle() { return org_kde_kwin_idle_.get(); }
+
+  ZwpPrimarySelectionDeviceManager* zwp_primary_selection_device_manager()
+      const {
+    return zwp_primary_selection_device_manager_.get();
+  }
+
+  WaylandDataDragController* data_drag_controller() const {
+    return data_drag_controller_.get();
+  }
+
+  WaylandWindowDragController* window_drag_controller() const {
+    return window_drag_controller_.get();
+  }
+
+  XdgForeignWrapper* xdg_foreign() const { return xdg_foreign_.get(); }
 
   // Returns true when dragging is entered or started.
-  bool IsDragInProgress();
+  bool IsDragInProgress() const;
 
-  // Resets flags and keyboard modifiers.
-  //
-  // This method is specially handy for cases when the WaylandPointer state is
-  // modified by a POINTER_DOWN event, but the respective POINTER_UP event is
-  // not delivered.
-  void ResetPointerFlags();
+  // Creates a new wl_surface.
+  wl::Object<wl_surface> CreateSurface();
+
+  // base::TimeTicks::Now() in posix uses CLOCK_MONOTONIC, wp_presentation
+  // timestamps are in clk_id sent in wp_presentation.clock_id event. This
+  // converts wp_presentation timestamp to base::TimeTicks.
+  // The approximation relies on presentation timestamp to be close to current
+  // time. The further it is from current time and the bigger the speed
+  // difference between the two clock domains, the bigger the conversion error.
+  // Conversion error due to system load is biased and unbounded.
+  base::TimeTicks ConvertPresentationTime(uint32_t tv_sec_hi,
+                                          uint32_t tv_sec_lo,
+                                          uint32_t tv_nsec);
+
+  const std::vector<std::pair<std::string, uint32_t>>& available_globals()
+      const {
+    return available_globals_;
+  }
 
  private:
-  // WaylandInputMethodContextFactory needs access to DispatchUiEvent
-  friend class WaylandInputMethodContextFactory;
+  friend class WaylandConnectionTestApi;
 
   void Flush();
-  void DispatchUiEvent(Event* event);
+  void UpdateInputDevices(wl_seat* seat, uint32_t capabilities);
 
-  // PlatformEventSource
-  void OnDispatcherListChanged() override;
+  // Initialize data-related objects if required protocol objects are already
+  // in place, i.e: wl_seat and wl_data_device_manager.
+  void CreateDataObjectsIfReady();
 
-  // base::MessagePumpLibevent::FdWatcher
-  void OnFileCanReadWithoutBlocking(int fd) override;
-  void OnFileCanWriteWithoutBlocking(int fd) override;
+  // Creates WaylandKeyboard with the currently acquired protocol objects, if
+  // possible. Returns true iff WaylandKeyboard was created.
+  bool CreateKeyboard();
 
-  // Terminates the GPU process on invalid data received
-  void TerminateGpuProcess(std::string reason);
-
-  // Make sure data device is properly initialized
-  void EnsureDataDevice();
+  DeviceHotplugEventObserver* GetHotplugEventObserver();
 
   // wl_registry_listener
   static void Global(void* data,
@@ -247,62 +258,92 @@ class WaylandConnection : public PlatformEventSource,
   // zxdg_shell_v6_listener
   static void PingV6(void* data, zxdg_shell_v6* zxdg_shell_v6, uint32_t serial);
 
-  // xdg_shell_listener
-  static void Ping(void* data, xdg_shell* shell, uint32_t serial);
+  // xdg_wm_base_listener
+  static void Ping(void* data, xdg_wm_base* shell, uint32_t serial);
 
-  std::map<gfx::AcceleratedWidget, WaylandWindow*> window_map_;
+  // xdg_wm_base_listener
+  static void ClockId(void* data, wp_presentation* shell_v6, uint32_t clk_id);
 
+  uint32_t compositor_version_ = 0;
   wl::Object<wl_display> display_;
+  wl::Object<wl_proxy> wrapped_display_;
+  wl::Object<wl_event_queue> event_queue_;
   wl::Object<wl_registry> registry_;
   wl::Object<wl_compositor> compositor_;
   wl::Object<wl_subcompositor> subcompositor_;
   wl::Object<wl_seat> seat_;
-  wl::Object<wl_shm> shm_;
-  wl::Object<xdg_shell> shell_;
+  wl::Object<xdg_wm_base> shell_;
   wl::Object<zxdg_shell_v6> shell_v6_;
   wl::Object<wp_presentation> presentation_;
+  wl::Object<wp_viewporter> viewporter_;
+  wl::Object<zcr_keyboard_extension_v1> keyboard_extension_v1_;
   wl::Object<zwp_text_input_manager_v1> text_input_manager_v1_;
+  wl::Object<zwp_linux_explicit_synchronization_v1>
+      linux_explicit_synchronization_;
+  wl::Object<zxdg_decoration_manager_v1> xdg_decoration_manager_;
+  wl::Object<zcr_extended_drag_v1> extended_drag_v1_;
 
-  std::unique_ptr<WaylandDataDeviceManager> data_device_manager_;
-  std::unique_ptr<WaylandDataDevice> data_device_;
-  std::unique_ptr<WaylandDataSource> clipboard_data_source_;
-  std::unique_ptr<WaylandDataSource> dragdrop_data_source_;
+  // Event source instance. Must be declared before input objects so it
+  // outlives them so thus being able to properly handle their destruction.
+  std::unique_ptr<WaylandEventSource> event_source_;
+
+  // Input device objects.
   std::unique_ptr<WaylandKeyboard> keyboard_;
-  std::unique_ptr<WaylandOutputManager> wayland_output_manager_;
   std::unique_ptr<WaylandPointer> pointer_;
   std::unique_ptr<WaylandTouch> touch_;
-  std::unique_ptr<WaylandCursorPosition> wayland_cursor_position_;
-  std::unique_ptr<WaylandShmBufferManager> shm_buffer_manager_;
-  std::unique_ptr<WaylandZwpLinuxDmabuf> zwp_dmabuf_;
 
-  // Objects that are using when GPU runs in own process.
-  std::unique_ptr<WaylandBufferManager> buffer_manager_;
+  std::unique_ptr<WaylandCursor> cursor_;
+  std::unique_ptr<WaylandDataDeviceManager> data_device_manager_;
+  std::unique_ptr<WaylandOutputManager> wayland_output_manager_;
+  std::unique_ptr<WaylandCursorPosition> wayland_cursor_position_;
+  std::unique_ptr<WaylandZAuraShell> zaura_shell_;
+  std::unique_ptr<WaylandZcrCursorShapes> zcr_cursor_shapes_;
+  std::unique_ptr<WaylandZwpPointerGestures> wayland_zwp_pointer_gestures_;
+  std::unique_ptr<WaylandZwpLinuxDmabuf> zwp_dmabuf_;
+  std::unique_ptr<WaylandDrm> drm_;
+  std::unique_ptr<WaylandShm> shm_;
+  std::unique_ptr<WaylandBufferManagerHost> buffer_manager_host_;
+  std::unique_ptr<XdgForeignWrapper> xdg_foreign_;
+
+  // Clipboard-related objects. |clipboard_| must be declared after all
+  // DeviceManager instances it depends on, otherwise tests may crash with
+  // UAFs while attempting to access already destroyed manager pointers.
+  std::unique_ptr<GtkPrimarySelectionDeviceManager>
+      gtk_primary_selection_device_manager_;
+  std::unique_ptr<ZwpPrimarySelectionDeviceManager>
+      zwp_primary_selection_device_manager_;
+  std::unique_ptr<WaylandClipboard> clipboard_;
+
+  std::unique_ptr<GtkShell1> gtk_shell1_;
+
+  // Objects specific to KDE Plasma desktop environment.
+  std::unique_ptr<OrgKdeKwinIdle> org_kde_kwin_idle_;
+
+  std::unique_ptr<WaylandDataDragController> data_drag_controller_;
+  std::unique_ptr<WaylandWindowDragController> window_drag_controller_;
+
+  // Describes the clock domain that wp_presentation timestamps are in.
+  uint32_t presentation_clk_id_ = CLOCK_MONOTONIC;
+
+  // Helper class that lets input emulation access some data of objects
+  // that Wayland holds. For example, wl_surface and others. It's only
+  // created when platform window test config is set.
+  std::unique_ptr<wl::WaylandProxy> wayland_proxy_;
+
+  // Manages Wayland windows.
+  WaylandWindowManager wayland_window_manager_;
+
+  WaylandCursorBufferListener* listener_ = nullptr;
 
   bool scheduled_flush_ = false;
-  bool watching_ = false;
-  base::MessagePumpLibevent::FdWatchController controller_;
 
-  uint32_t serial_ = 0;
+  EventSerial serial_;
 
-  // Holds a temporary instance of the client's clipboard content
-  // so that we can asynchronously write to it.
-  PlatformClipboard::DataMap* data_map_ = nullptr;
+  uint32_t pointer_enter_serial_ = 0;
 
-  // Notifies whenever clipboard sequence number is changed. Can be empty if not
-  // set.
-  PlatformClipboard::SequenceNumberUpdateCb update_sequence_cb_;
-
-  // Stores the callback to be invoked upon data reading from clipboard.
-  RequestDataClosure read_clipboard_closure_;
-
-  ozone::mojom::WaylandConnectionClientAssociatedPtr client_associated_ptr_;
-  mojo::Binding<ozone::mojom::WaylandConnection> binding_;
-
-  // A callback, which is used to terminate a GPU process in case of invalid
-  // data sent by the GPU to the browser process.
-  base::OnceCallback<void(std::string)> terminate_gpu_cb_;
-
-  DISALLOW_COPY_AND_ASSIGN(WaylandConnection);
+  // Global Wayland interfaces available in the current session, with their
+  // versions.
+  std::vector<std::pair<std::string, uint32_t>> available_globals_;
 };
 
 }  // namespace ui

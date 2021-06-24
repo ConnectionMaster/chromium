@@ -5,7 +5,7 @@
 #include "remoting/host/linux/certificate_watcher.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_util.h"
 #include "base/hash/hash.h"
 #include "base/location.h"
@@ -112,9 +112,10 @@ void CertDbContentWatcher::StartWatching() {
   current_hash_ = ComputeHash();
 
   // base::Unretained() is safe since this class owns the FileWatcher.
-  file_watcher_->Watch(cert_watch_path_, true,
-                       base::Bind(&CertDbContentWatcher::OnCertDirectoryChanged,
-                                  base::Unretained(this)));
+  file_watcher_->Watch(
+      cert_watch_path_, base::FilePathWatcher::Type::kRecursive,
+      base::BindRepeating(&CertDbContentWatcher::OnCertDirectoryChanged,
+                          base::Unretained(this)));
 
   read_timer_.reset(new base::DelayTimer(FROM_HERE, delay_, this,
                                          &CertDbContentWatcher::OnTimer));
@@ -169,13 +170,12 @@ CertDbContentWatcher::HashValue CertDbContentWatcher::ComputeHash() {
 }
 
 CertificateWatcher::CertificateWatcher(
-    const base::Closure& restart_action,
+    const base::RepeatingClosure& restart_action,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner)
     : restart_action_(restart_action),
       caller_task_runner_(base::ThreadTaskRunnerHandle::Get()),
       io_task_runner_(io_task_runner),
-      delay_(base::TimeDelta::FromSeconds(kReadDelayInSeconds)),
-      weak_factory_(this) {
+      delay_(base::TimeDelta::FromSeconds(kReadDelayInSeconds)) {
   if (!base::PathService::Get(base::DIR_HOME, &cert_watch_path_)) {
     LOG(FATAL) << "Failed to get path of the home directory.";
   }

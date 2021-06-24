@@ -7,10 +7,13 @@
 
 #include <memory>
 
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "net/base/net_export.h"
-
-class GURL;
+#include "net/http/structured_headers.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace base {
 class Value;
@@ -18,68 +21,39 @@ class Value;
 
 namespace net {
 
+class NetworkIsolationKey;
 class ReportingContext;
+
+// Tries to parse a Reporting-Endpoints header. Returns base::nullopt if parsing
+// failed and the header should be ignored; otherwise returns a (possibly
+// empty) mapping of endpoint names to URLs.
+NET_EXPORT
+absl::optional<base::flat_map<std::string, std::string>>
+ParseReportingEndpoints(const std::string& header);
 
 class NET_EXPORT ReportingHeaderParser {
  public:
-  // Histograms.  These are mainly used in test cases to verify that interesting
-  // events occurred.
-
-  static const char kHeaderOutcomeHistogram[];
-  static const char kHeaderEndpointGroupOutcomeHistogram[];
-  static const char kHeaderEndpointOutcomeHistogram[];
-
-  enum class HeaderOutcome {
-    DISCARDED_NO_REPORTING_SERVICE = 0,
-    DISCARDED_INVALID_SSL_INFO = 1,
-    DISCARDED_CERT_STATUS_ERROR = 2,
-    DISCARDED_JSON_TOO_BIG = 3,
-    DISCARDED_JSON_INVALID = 4,
-    PARSED = 5,
-
-    MAX
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class ReportingHeaderType {
+    kReportTo = 0,
+    kReportToInvalid = 1,
+    kMaxValue = kReportToInvalid,
   };
 
-  enum class HeaderEndpointGroupOutcome {
-    DISCARDED_NOT_DICTIONARY = 0,
-    DISCARDED_GROUP_NOT_STRING = 1,
-    DISCARDED_TTL_MISSING = 2,
-    DISCARDED_TTL_NOT_INTEGER = 3,
-    DISCARDED_TTL_NEGATIVE = 4,
-    DISCARDED_ENDPOINTS_MISSING = 5,
-    DISCARDED_ENDPOINTS_NOT_LIST = 6,
+  static void ParseReportToHeader(
+      ReportingContext* context,
+      const NetworkIsolationKey& network_isolation_key,
+      const GURL& url,
+      std::unique_ptr<base::Value> value);
 
-    PARSED = 7,
+  static void ProcessParsedReportingEndpointsHeader(
+      ReportingContext* context,
+      const NetworkIsolationKey& network_isolation_key,
+      const url::Origin& origin,
+      base::flat_map<std::string, std::string> parsed_header);
 
-    MAX
-  };
-
-  enum class HeaderEndpointOutcome {
-    DISCARDED_NOT_DICTIONARY = 0,
-    DISCARDED_URL_MISSING = 1,
-    DISCARDED_URL_NOT_STRING = 2,
-    DISCARDED_URL_INVALID = 3,
-    DISCARDED_URL_INSECURE = 4,
-    DISCARDED_PRIORITY_NOT_INTEGER = 5,
-    DISCARDED_WEIGHT_NOT_INTEGER = 6,
-    DISCARDED_WEIGHT_NOT_POSITIVE = 7,
-
-    REMOVED = 8,
-    SET_REJECTED_BY_DELEGATE = 9,
-    SET = 10,
-
-    MAX
-  };
-
-  static void RecordHeaderDiscardedForNoReportingService();
-  static void RecordHeaderDiscardedForInvalidSSLInfo();
-  static void RecordHeaderDiscardedForCertStatusError();
-  static void RecordHeaderDiscardedForJsonInvalid();
-  static void RecordHeaderDiscardedForJsonTooBig();
-
-  static void ParseHeader(ReportingContext* context,
-                          const GURL& url,
-                          std::unique_ptr<base::Value> value);
+  static void RecordReportingHeaderType(ReportingHeaderType header_type);
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(ReportingHeaderParser);

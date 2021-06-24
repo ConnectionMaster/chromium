@@ -9,7 +9,6 @@
 
 #include <string>
 
-#include "base/logging.h"
 #include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -49,6 +48,15 @@ TEST(CompressionUtilsTest, GzipUncompression) {
 
   std::string uncompressed_data;
   EXPECT_TRUE(GzipUncompress(compressed_data, &uncompressed_data));
+
+  std::string golden_data(reinterpret_cast<const char*>(kData),
+                          base::size(kData));
+  EXPECT_EQ(golden_data, uncompressed_data);
+}
+
+TEST(CompressionUtilsTest, GzipUncompressionFromSpanToString) {
+  std::string uncompressed_data;
+  EXPECT_TRUE(GzipUncompress(kCompressedData, &uncompressed_data));
 
   std::string golden_data(reinterpret_cast<const char*>(kData),
                           base::size(kData));

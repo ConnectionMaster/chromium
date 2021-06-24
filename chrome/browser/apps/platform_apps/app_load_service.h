@@ -14,6 +14,7 @@
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/extension_registry_observer.h"
+#include "extensions/common/extension_id.h"
 
 namespace content {
 class BrowserContext;
@@ -42,6 +43,8 @@ class AppLoadService : public KeyedService,
   };
 
   explicit AppLoadService(content::BrowserContext* context);
+  AppLoadService(const AppLoadService&) = delete;
+  AppLoadService& operator=(const AppLoadService&) = delete;
   ~AppLoadService() override;
 
   // KeyedService support:
@@ -88,8 +91,6 @@ class AppLoadService : public KeyedService,
   std::map<std::string, PostReloadAction> post_reload_actions_;
   content::NotificationRegistrar registrar_;
   content::BrowserContext* context_;
-
-  DISALLOW_COPY_AND_ASSIGN(AppLoadService);
 };
 
 }  // namespace apps

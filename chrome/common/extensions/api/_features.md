@@ -14,17 +14,17 @@ behavioral features, such as web accessible resources or event pages.
 ## Files
 
 There are four different feature files used:
-* [\_api\_features](https://chromium.googlesource.com/chromium/src/+/master/chrome/common/extensions/api/_api_features.json):
+* [\_api\_features](https://chromium.googlesource.com/chromium/src/+/main/chrome/common/extensions/api/_api_features.json):
 Specifies the requirements for API availability. If an extension doesn't satisfy
 the requirements, the API will not be accessible in the extension's code.
-* [\_permission\_features](https://chromium.googlesource.com/chromium/src/+/master/chrome/common/extensions/api/_permission_features.json):
+* [\_permission\_features](https://chromium.googlesource.com/chromium/src/+/main/chrome/common/extensions/api/_permission_features.json):
 Specifies the requirements for permission availability. If an extension doesn't
 satisfy the requirements, the permission will not be granted and the extension
 will have an install warning.
-* [\_manifest\_features](https://chromium.googlesource.com/chromium/src/+/master/chrome/common/extensions/api/_manifest_features.json):
+* [\_manifest\_features](https://chromium.googlesource.com/chromium/src/+/main/chrome/common/extensions/api/_manifest_features.json):
 Specifies the requirements for manifest entry availability. If an extension
 doesn't satisfy the requirements, the extension will fail to load with an error.
-* [\_behavior\_features](https://chromium.googlesource.com/chromium/src/+/master/extensions/common/api/_behavior_features.json):
+* [\_behavior\_features](https://chromium.googlesource.com/chromium/src/+/main/extensions/common/api/_behavior_features.json):
 Specifies the requirements for miscellaneous extension behaviors. This should
 typically not be used.
 
@@ -165,9 +165,9 @@ most one alias.
 For complex features, `alias` property will be set to the `alias` value of the
 first component simple feature that has it set.
 
-### blacklist
+### blocklist
 
-The `blacklist` property specifies a list of ID hashes for extensions that
+The `blocklist` property specifies a list of ID hashes for extensions that
 cannot access a feature. See ID Hashes in this document for how to generate
 these hashes.
 
@@ -190,6 +190,15 @@ present for the feature to be available.
 Accepted values are a single string for the command line switch (without the
 preceeding '--').
 
+### feature\_flag
+
+The `feature_flag` property specifies the name of a `base::Feature` flag that
+must be enabled for the feature to be available. This can be used to implement a
+remote kill switch for the feature. These feature flags should be defined at
+[feature_flags.cc](https://source.chromium.org/chromium/chromium/src/+/main:extensions/common/features/feature_flags.cc).
+
+Accepted value is a single string for the feature flag.
+
 ### component\_extensions\_auto\_granted
 
 The `component_extensions_auto_granted` specifies whether or not component
@@ -202,11 +211,14 @@ The only accepted value is the bool `false` (since true is the default).
 
 The `contexts` property specifies which JavaScript contexts can access the
 feature. All API features must specify at least one context, and only API
-features can specify contexts.
+features can specify contexts. The only exception to this are dummy namespaces
+like `manifestTypes` etc. which can specify an empty list as its `contexts`
+property.
 
 Accepted values are a list of strings from `blessed_extension`,
 `blessed_web_page`, `content_script`, `extension_service_worker`,
-`lock_screen_extension`, `web_page`, `webui`, and `unblessed_extension`.
+`lock_screen_extension`, `web_page`, `webui`, `webui_untrusted`, and
+`unblessed_extension`.
 
 The `lock_screen_extension` context is used instead of `blessed_extension`
 context for extensions on the Chrome OS lock screen. Other extensions related
@@ -245,15 +257,16 @@ that can use the feature.  It is very common for certain features to only be
 allowed in certain extension classes, rather than available to all types.
 
 Accepted values are lists of strings from `extension`, `hosted_app`,
-`legacy_packaged_app`, `platform_app`, `shared_module`, and `theme`.
+`legacy_packaged_app`, `platform_app`, `shared_module`, `theme`, and
+`login_screen_extension`.
 
 ### location
 
 The `location` property specifies the required install location of the
 extension.
 
-Accepted values are a single string from `component`, `external_component`, and
-`policy`.
+Accepted values are a single string from `component`, `external_component`,
+`policy`, and `unpacked`.
 
 ### internal
 
@@ -286,8 +299,8 @@ The `min_manifest_version` property specifies the minimum manifest version to be
 allowed to access a feature. Extensions with a lesser manifest version cannot
 access the feature.
 
-The only accepted value is `2`, as this is currently the highest possible
-manifest version.
+Accepted values are `2` and `3`, as 3 is currently the highest possible manifest
+version.
 
 ### noparent
 
@@ -301,8 +314,8 @@ The only accepted value is the bool `true`.
 The `platforms` property specifies the properties the feature should be
 available on.
 
-The accepted values are lists of strings from `chromeos`, `mac`, `linux`, and
-`win`.
+The accepted values are lists of strings from `chromeos`, `mac`, `lacros`,
+`linux`, and `win`.
 
 ### session\_types
 
@@ -320,7 +333,7 @@ The accepted values are lists of strings from `regular`, `kiosk` and
 `regular` session is a session launched for a regular, authenticated user.
 
 `kiosk` session is a session launched for a kiosk app - an app that runs on its
-own, in full control of the current session. 
+own, in full control of the current session.
 
 `kiosk.autolaunched` represents auto-launched kiosk session - a kiosk session
 that is launched automatically from Chrome OS login screen, without any user
@@ -337,19 +350,19 @@ documentation.
 For complex features, `source` property will be set to the `source` value of the
 first component simple feature that has it set.
 
-### whitelist
+### allowlist
 
-The `whitelist` property specifies a list of ID hashes for extensions that
+The `allowlist` property specifies a list of ID hashes for extensions that
 are the only extensions allowed to access a feature.
 
 Accepted values are lists of id hashes.
 
 ## ID Hashes
 
-Instead of listing the ID directly in the whitelist or blacklist section, we
+Instead of listing the ID directly in the allowlist or blocklist section, we
 use an uppercased SHA1 hash of the id.
 
-To generate a new whitelisted ID for an extension ID, do the following in bash:
+To generate a new allowlist ID for an extension ID, do the following in bash:
 ```
 $ echo -n "aaaabbbbccccddddeeeeffffgggghhhh" | \
      sha1sum | tr '[:lower:]' '[:upper:]'
@@ -361,10 +374,10 @@ The output should be something like:
 9A0417016F345C934A1A88F55CA17C05014EEEBA  -
 ```
 
-Add the ID to the whitelist or blacklist for the desired feature. It is also
+Add the ID to the allowlist or blocklist for the desired feature. It is also
 often useful to link the crbug next to the id hash, e.g.:
 ```
-"whitelist": [
+"allowlist": [
   "9A0417016F345C934A1A88F55CA17C05014EEEBA"  // crbug.com/<num>
 ]
 ```

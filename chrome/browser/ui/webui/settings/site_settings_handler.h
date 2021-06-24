@@ -10,18 +10,21 @@
 #include <set>
 #include <string>
 
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browsing_data/cookies_tree_model.h"
-#include "chrome/browser/permissions/chooser_context_base.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
+#include "chrome/browser/web_applications/components/app_registrar.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/content_settings/core/browser/content_settings_observer.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/permissions/object_permission_context_base.h"
+#include "components/prefs/pref_store.h"
 #include "content/public/browser/host_zoom_map.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
 #include "ppapi/buildflags/buildflags.h"
-
-class HostContentSettingsMap;
-class Profile;
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class PrefChangeRegistrar;
 
@@ -32,13 +35,15 @@ class ListValue;
 namespace settings {
 
 // Chrome "ContentSettings" settings page UI handler.
-class SiteSettingsHandler : public SettingsPageUIHandler,
-                            public content_settings::Observer,
-                            public content::NotificationObserver,
-                            public ChooserContextBase::PermissionObserver,
-                            public CookiesTreeModel::Observer {
+class SiteSettingsHandler
+    : public SettingsPageUIHandler,
+      public content_settings::Observer,
+      public ProfileObserver,
+      public permissions::ObjectPermissionContextBase::PermissionObserver,
+      public CookiesTreeModel::Observer {
  public:
-  explicit SiteSettingsHandler(Profile* profile);
+  explicit SiteSettingsHandler(Profile* profile,
+                               web_app::AppRegistrar& web_app_registrar);
   ~SiteSettingsHandler() override;
 
   // SettingsPageUIHandler:
@@ -55,37 +60,29 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   // WebUI
   void TreeNodesAdded(ui::TreeModel* model,
                       ui::TreeModelNode* parent,
-                      int start,
-                      int count) override;
+                      size_t start,
+                      size_t count) override;
   void TreeNodesRemoved(ui::TreeModel* model,
                         ui::TreeModelNode* parent,
-                        int start,
-                        int count) override;
+                        size_t start,
+                        size_t count) override;
   void TreeNodeChanged(ui::TreeModel* model, ui::TreeModelNode* node) override;
   void TreeModelEndBatch(CookiesTreeModel* model) override;
-
-#if defined(OS_CHROMEOS)
-  // Alert the Javascript that the |kEnableDRM| pref has changed.
-  void OnPrefEnableDrmChanged();
-#endif
 
   // content_settings::Observer:
   void OnContentSettingChanged(const ContentSettingsPattern& primary_pattern,
                                const ContentSettingsPattern& secondary_pattern,
-                               ContentSettingsType content_type,
-                               const std::string& resource_identifier) override;
+                               ContentSettingsType content_type) override;
 
-  // content::NotificationObserver:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
+  // ProfileObserver:
+  void OnOffTheRecordProfileCreated(Profile* off_the_record) override;
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
-  // ChooserContextBase::PermissionObserver implementation:
-  void OnChooserObjectPermissionChanged(
-      ContentSettingsType guard_content_settings_type,
+  // ObjectPermissionContextBase::PermissionObserver implementation:
+  void OnObjectPermissionChanged(
+      absl::optional<ContentSettingsType> guard_content_settings_type,
       ContentSettingsType data_content_settings_type) override;
 
-  // content::HostZoomMap subscription.
   void OnZoomLevelChanged(const content::HostZoomMap::ZoomLevelChange& change);
 
  private:
@@ -109,11 +106,17 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, ExceptionHelpers);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, ExtensionDisplayName);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, GetAllSites);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, GetRecentSitePermissions);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, OnStorageFetched);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, GetAndSetDefault);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, GetAndSetForInvalidURLs);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, GetAndSetOriginPermissions);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, Incognito);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, IncognitoExceptions);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest,
+                           ResetCategoryPermissionForEmbargoedOrigins);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest,
+                           ResetCategoryPermissionForInvalidOrigins);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, Origins);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, Patterns);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, PatternsAndContentType);
@@ -121,6 +124,13 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, ZoomLevels);
   FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest,
                            HandleClearEtldPlus1DataAndCookies);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, CookieSettingDescription);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, HandleGetFormattedBytes);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest,
+                           NotificationPermissionRevokeUkm);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest, ExcludeWebUISchemesInLists);
+  FRIEND_TEST_ALL_PREFIXES(SiteSettingsHandlerTest,
+                           IncludeWebUISchemesInGetOriginPermissions);
 
   // Creates the CookiesTreeModel if necessary.
   void EnsureCookiesTreeModelCreated();
@@ -134,7 +144,7 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   // stores the information in the |all_sites_map| and |origin_size_map|.
   void GetOriginStorage(
       std::map<std::string, std::set<std::string>>* all_sites_map,
-      std::map<std::string, int>* origin_size_map);
+      std::map<std::string, int64_t>* origin_size_map);
 
   // Calculates the number of cookies for each etld+1 and each origin, and
   // stores the information in the |all_sites_map| and |origin_cookie_map|.
@@ -158,6 +168,22 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   // data, which will send the list of sites with cookies or usage data to
   // the front end when fetching finished.
   void HandleGetAllSites(const base::ListValue* args);
+
+  // Returns a list of content settings types that are controlled via a standard
+  // permissions UI and should be made visible to the user. There is a single
+  // nullable string argument, which represents an associated origin. See
+  // `SiteSettingsPrefsBrowserProxy#getCategoryList`.
+  void HandleGetCategoryList(const base::ListValue* args);
+
+  // Returns a string for display describing the current cookie settings.
+  void HandleGetCookieSettingDescription(const base::ListValue* args);
+
+  // Returns a list containing the most recent permission changes for the
+  // content types that are visiblein settings, grouped by origin/profile
+  // (incognito, regular) combinations, limited to N origin/profile pairings.
+  // This includes permission changes made by embargo, but does not include
+  // permissions enforced via policy.
+  void HandleGetRecentSitePermissions(const base::ListValue* args);
 
   // Called when the list of origins using storage has been fetched, and sends
   // this list back to the front end.
@@ -184,14 +210,13 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   void HandleGetOriginPermissions(const base::ListValue* args);
   void HandleSetOriginPermissions(const base::ListValue* args);
 
-  // Clears the Flash data setting used to remember if the user has changed the
-  // Flash permission for an origin.
-  void HandleClearFlashPref(const base::ListValue* args);
-
   // Handles setting and resetting an origin permission.
   void HandleResetCategoryPermissionForPattern(const base::ListValue* args);
   void HandleSetCategoryPermissionForPattern(const base::ListValue* args);
 
+  // TODO(andypaicu, crbug.com/880684): Update to only expect a list of three
+  // arguments, replacing the current (requesting,embedding) arguments with
+  // simply (origin) and update all call sites.
   // Handles resetting a chooser exception for the given site.
   void HandleResetChooserExceptionForSite(const base::ListValue* args);
 
@@ -236,13 +261,18 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
 
   void ClearAllSitesMapForTesting();
 
-  Profile* profile_;
+  // Notifies the JS side the effective cookies setting has changed and
+  // provides the updated description label for display.
+  void SendCookieSettingDescription();
 
-  content::NotificationRegistrar notification_registrar_;
+  Profile* profile_;
+  web_app::AppRegistrar& app_registrar_;
+
+  base::ScopedMultiSourceObservation<Profile, ProfileObserver>
+      observed_profiles_{this};
 
   // Keeps track of events related to zooming.
-  std::unique_ptr<content::HostZoomMap::Subscription>
-      host_zoom_map_subscription_;
+  base::CallbackListSubscription host_zoom_map_subscription_;
 
   // The host for which to fetch usage.
   std::string usage_host_;
@@ -251,11 +281,15 @@ class SiteSettingsHandler : public SettingsPageUIHandler,
   std::string clearing_origin_;
 
   // Change observer for content settings.
-  ScopedObserver<HostContentSettingsMap, content_settings::Observer> observer_;
+  base::ScopedMultiSourceObservation<HostContentSettingsMap,
+                                     content_settings::Observer>
+      observations_{this};
 
   // Change observer for chooser permissions.
-  ScopedObserver<ChooserContextBase, ChooserContextBase::PermissionObserver>
-      chooser_observer_;
+  base::ScopedMultiSourceObservation<
+      permissions::ObjectPermissionContextBase,
+      permissions::ObjectPermissionContextBase::PermissionObserver>
+      chooser_observations_{this};
 
   // Change observer for prefs.
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;

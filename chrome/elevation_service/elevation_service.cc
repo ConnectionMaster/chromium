@@ -15,13 +15,14 @@
 
 extern "C" int WINAPI wWinMain(HINSTANCE instance,
                                HINSTANCE prev_instance,
-                               base::char16* command_line,
+                               wchar_t* command_line,
                                int show_command) {
   // Initialize the CommandLine singleton from the environment.
   base::CommandLine::Init(0, nullptr);
 
   logging::LoggingSettings settings;
-  settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+  settings.logging_dest =
+      logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   logging::InitLogging(settings);
 
   // The exit manager is in charge of calling the dtors of singletons.

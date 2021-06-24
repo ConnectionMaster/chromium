@@ -11,9 +11,11 @@
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/viz/host/viz_host_export.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "services/viz/privileged/interfaces/compositing/display_private.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace viz {
@@ -27,23 +29,29 @@ class VIZ_HOST_EXPORT HostDisplayClient : public mojom::DisplayClient {
   explicit HostDisplayClient(gfx::AcceleratedWidget widget);
   ~HostDisplayClient() override;
 
-  mojom::DisplayClientPtr GetBoundPtr(
+  mojo::PendingRemote<mojom::DisplayClient> GetBoundRemote(
       scoped_refptr<base::SingleThreadTaskRunner> task_runner);
 
  private:
   // mojom::DisplayClient implementation:
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   void OnDisplayReceivedCALayerParams(
       const gfx::CALayerParams& ca_layer_params) override;
 #endif
 
 #if defined(OS_WIN)
   void CreateLayeredWindowUpdater(
-      mojom::LayeredWindowUpdaterRequest request) override;
+      mojo::PendingReceiver<mojom::LayeredWindowUpdater> receiver) override;
 #endif
 
-  mojo::Binding<mojom::DisplayClient> binding_;
-#if defined(OS_MACOSX) || defined(OS_WIN)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  void DidCompleteSwapWithNewSize(const gfx::Size& size) override;
+#endif
+
+  mojo::Receiver<mojom::DisplayClient> receiver_{this};
+#if defined(OS_APPLE) || defined(OS_WIN)
   gfx::AcceleratedWidget widget_;
 #endif
 

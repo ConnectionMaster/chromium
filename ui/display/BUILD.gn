@@ -2,12 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/jumbo.gni")
+import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/ui.gni")
 import("//testing/test.gni")
 import("//ui/display/display.gni")
 
-jumbo_component("display") {
+component("display") {
   sources = [
     "display.cc",
     "display.h",
@@ -28,33 +28,63 @@ jumbo_component("display") {
     "display_observer.h",
     "display_switches.cc",
     "display_switches.h",
-    "ios/screen_ios.mm",
-    "mac/screen_mac.mm",
+    "display_transform.cc",
+    "display_transform.h",
+    "scoped_display_for_new_windows.cc",
+    "scoped_display_for_new_windows.h",
     "screen.cc",
     "screen.h",
-    "screen_android.cc",
-    "screen_aura.cc",
     "screen_base.cc",
     "screen_base.h",
+    "screen_info.cc",
+    "screen_info.h",
+    "screen_infos.cc",
+    "screen_infos.h",
+    "tablet_state.h",
     "unified_desktop_utils.cc",
     "unified_desktop_utils.h",
-    "win/color_profile_reader.cc",
-    "win/color_profile_reader.h",
-    "win/display_info.cc",
-    "win/display_info.h",
-    "win/dpi.cc",
-    "win/dpi.h",
-    "win/scaling_util.cc",
-    "win/scaling_util.h",
-    "win/screen_win.cc",
-    "win/screen_win.h",
-    "win/screen_win_display.cc",
-    "win/screen_win_display.h",
-    "win/uwp_text_scale_factor.cc",
-    "win/uwp_text_scale_factor.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+  if (is_android) {
+    sources += [ "screen_android.cc" ]
+  }
+
+  if (is_mac) {
+    sources += [
+      "mac/display_link_mac.cc",
+      "mac/display_link_mac.h",
+      "mac/screen_mac.mm",
+    ]
+  }
+
+  if (is_win) {
+    sources += [
+      "win/base_window_finder_win.cc",
+      "win/base_window_finder_win.h",
+      "win/color_profile_reader.cc",
+      "win/color_profile_reader.h",
+      "win/display_info.cc",
+      "win/display_info.h",
+      "win/dpi.cc",
+      "win/dpi.h",
+      "win/local_process_window_finder_win.cc",
+      "win/local_process_window_finder_win.h",
+      "win/scaling_util.cc",
+      "win/scaling_util.h",
+      "win/screen_win.cc",
+      "win/screen_win.h",
+      "win/screen_win_display.cc",
+      "win/screen_win_display.h",
+      "win/topmost_window_finder_win.cc",
+      "win/topmost_window_finder_win.h",
+      "win/uwp_text_scale_factor.cc",
+      "win/uwp_text_scale_factor.h",
+    ]
+  }
+
+  if (is_ios) {
+    sources += [ "ios/screen_ios.mm" ]
+  }
 
   defines = [ "DISPLAY_IMPLEMENTATION" ]
 
@@ -66,7 +96,9 @@ jumbo_component("display") {
 
   deps = [
     "//base",
+    "//build:chromeos_buildflags",
     "//mojo/public/cpp/bindings:struct_traits",
+    "//ui/display/mojom:mojom_shared_cpp_sources",
     "//ui/display/util",
     "//ui/gfx",
     "//ui/gfx/geometry",
@@ -77,14 +109,15 @@ jumbo_component("display") {
     output_name = "ui_display"
   }
 
-  if (!use_aura) {
-    sources -= [ "screen_aura.cc" ]
+  if (use_aura) {
+    sources += [ "screen_aura.cc" ]
   }
 
   if (is_mac) {
-    libs = [
+    frameworks = [
       "AppKit.framework",
       "CoreGraphics.framework",
+      "QuartzCore.framework",
     ]
   }
 }
@@ -98,18 +131,17 @@ component("display_manager_test_api") {
 
   defines = [ "DISPLAY_IMPLEMENTATION" ]
 
-  public_deps = [
-    "//ui/display/manager",
-  ]
+  public_deps = [ "//ui/display/manager" ]
 
   deps = [
     "//base",
+    "//build:chromeos_buildflags",
     "//ui/display",
     "//ui/display/types",
   ]
 }
 
-jumbo_static_library("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "test/display_matchers.cc",
@@ -119,9 +151,23 @@ jumbo_static_library("test_support") {
     "test/scoped_screen_override.h",
     "test/test_screen.cc",
     "test/test_screen.h",
-    "win/test/screen_util_win.cc",
-    "win/test/screen_util_win.h",
   ]
+
+  if (is_win) {
+    sources += [
+      "win/test/scoped_screen_win.cc",
+      "win/test/scoped_screen_win.h",
+      "win/test/screen_util_win.cc",
+      "win/test/screen_util_win.h",
+    ]
+  }
+
+  if (is_mac) {
+    sources += [
+      "mac/test/test_screen_mac.h",
+      "mac/test/test_screen_mac.mm",
+    ]
+  }
 
   if (build_display_configuration) {
     sources += [
@@ -158,7 +204,6 @@ jumbo_static_library("test_support") {
 # This test covers all testable components in display.
 test("display_unittests") {
   sources = [
-    "display_change_notifier_unittest.cc",
     "display_layout_builder_unittest.cc",
     "display_layout_unittest.cc",
     "display_list_unittest.cc",
@@ -167,19 +212,27 @@ test("display_unittests") {
     "manager/display_manager_utilities_unittest.cc",
     "manager/json_converter_unittest.cc",
     "manager/managed_display_info_unittest.cc",
-    "mojo/display_struct_traits_unittest.cc",
+    "mojom/display_list_mojom_traits_unittest.cc",
+    "mojom/display_mojom_traits_unittest.cc",
+    "mojom/screen_infos_mojom_traits_unittest.cc",
     "screen_unittest.cc",
     "unified_desktop_utils_unittests.cc",
     "util/display_util_unittest.cc",
     "util/edid_parser_unittest.cc",
-    "win/scaling_util_unittest.cc",
-    "win/screen_win_unittest.cc",
   ]
+
+  if (is_win) {
+    sources += [
+      "win/scaling_util_unittest.cc",
+      "win/screen_win_unittest.cc",
+    ]
+  }
 
   if (build_display_configuration) {
     sources += [
       "manager/apply_content_protection_task_unittest.cc",
       "manager/configure_displays_task_unittest.cc",
+      "manager/content_protection_manager_unittest.cc",
       "manager/display_change_observer_unittest.cc",
       "manager/display_configurator_unittest.cc",
       "manager/display_utils_unittest.cc",
@@ -196,13 +249,15 @@ test("display_unittests") {
     ":test_support",
     "//base",
     "//base/test:test_support",
+    "//build:chromeos_buildflags",
     "//cc/base",
     "//mojo/core/test:run_all_unittests",
+    "//mojo/public/cpp/test_support:test_utils",
     "//testing/gmock",
     "//testing/gtest",
     "//ui/display/fake",
     "//ui/display/manager",
-    "//ui/display/mojo:interfaces",
+    "//ui/display/mojom",
     "//ui/display/types",
     "//ui/display/util",
     "//ui/events:test_support",
@@ -211,13 +266,13 @@ test("display_unittests") {
     "//ui/gfx/geometry",
   ]
 
-  if (is_android) {
+  if (!is_android) {
     # Do not run display_change_notifier_unittest.cc on Android because it
     # does not compile display_observer.cc
-    sources -= [ "display_change_notifier_unittest.cc" ]
+    sources += [ "display_change_notifier_unittest.cc" ]
   }
 
-  if (is_chromeos) {
-    deps += [ "//chromeos" ]
+  if (is_chromeos_ash) {
+    deps += [ "//ash/constants" ]
   }
 }

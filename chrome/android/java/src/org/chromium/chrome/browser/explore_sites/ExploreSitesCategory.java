@@ -8,10 +8,11 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.support.annotation.IntDef;
+
+import androidx.annotation.IntDef;
 
 import org.chromium.base.annotations.CalledByNative;
-import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.components.embedder_support.util.UrlConstants;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -26,8 +27,6 @@ public class ExploreSitesCategory {
     // The ID to use when creating placeholder icons on the NTP when there is no data or the More
     // button.
     private static final int PLACEHOLDER_ID = -1;
-
-    static final int MAX_COLUMNS = 4;
 
     // This enum must match the numbering for ExploreSites.CategoryClick in histograms.xml.  Do not
     // reorder or remove items, only add new items before NUM_ENTRIES.
@@ -80,7 +79,7 @@ public class ExploreSitesCategory {
     private int mInteractionCount;
     // Populated only for ESP.
     private List<ExploreSitesSite> mSites;
-    private int mNumBlacklisted;
+    private int mNumRemoved;
 
     /**
      * Creates an explore sites category data structure.
@@ -140,35 +139,44 @@ public class ExploreSitesCategory {
 
     public void addSite(ExploreSitesSite site) {
         mSites.add(site);
-        if (site.getModel().get(ExploreSitesSite.BLACKLISTED_KEY)) {
-            mNumBlacklisted++;
+        if (site.getModel().get(ExploreSitesSite.BLOCKED_KEY)) {
+            mNumRemoved++;
         }
     }
 
     public int getNumDisplayed() {
-        return mSites.size() - mNumBlacklisted;
+        return mSites.size() - mNumRemoved;
     }
 
-    public int getMaxRows() {
-        return mSites.size() / MAX_COLUMNS;
+    /**
+     * Get the number of rows that could be filled completely with sites, if no site is blocked.
+     * @param numColumns - number of columns wide the layout holding this category is. This
+     *                   parameter must not be zero.
+     */
+    public int getMaxRows(int numColumns) {
+        return mSites.size() / numColumns;
+    }
+
+    public int getNumberRemoved() {
+        return mNumRemoved;
     }
 
     public boolean removeSite(int tileIndex) {
         if (tileIndex > mSites.size() || tileIndex < 0) return false;
 
-        // Find the siteIndex for the tileIndex by skipping over blacklisted sites.
+        // Find the siteIndex for the tileIndex by skipping over blocked sites.
         int siteIndex = 0;
         int validSiteCount = 0;
         while (siteIndex < mSites.size()) {
-            // Skipping over blacklisted sites, look for the nth unblacklisted site.
-            if (!mSites.get(siteIndex).getModel().get(ExploreSitesSite.BLACKLISTED_KEY)) {
+            // Skipping over blocked sites, look for the nth allowed site.
+            if (!mSites.get(siteIndex).getModel().get(ExploreSitesSite.BLOCKED_KEY)) {
                 validSiteCount++;
             }
 
             // When we find the nth valid site, we have found the site index matching the tile.
             // TileIndex is 0 based, validSiteCount is 1 based, so we add 1 to the tileIndex.
             if (tileIndex + 1 == validSiteCount
-                    && !mSites.get(siteIndex).getModel().get(ExploreSitesSite.BLACKLISTED_KEY)) {
+                    && !mSites.get(siteIndex).getModel().get(ExploreSitesSite.BLOCKED_KEY)) {
                 break;
             }
 
@@ -176,7 +184,7 @@ public class ExploreSitesCategory {
         }
         if (siteIndex >= mSites.size()) return false;
 
-        mSites.get(siteIndex).getModel().set(ExploreSitesSite.BLACKLISTED_KEY, true);
+        mSites.get(siteIndex).getModel().set(ExploreSitesSite.BLOCKED_KEY, true);
 
         // Reset the tile indices to account for removed tile.
         mSites.get(siteIndex).getModel().set(
@@ -184,12 +192,12 @@ public class ExploreSitesCategory {
 
         for (int i = siteIndex; i < mSites.size(); ++i) {
             ExploreSitesSite site = mSites.get(i);
-            if (!mSites.get(i).getModel().get(ExploreSitesSite.BLACKLISTED_KEY)) {
+            if (!mSites.get(i).getModel().get(ExploreSitesSite.BLOCKED_KEY)) {
                 site.getModel().set(ExploreSitesSite.TILE_INDEX_KEY, tileIndex);
                 tileIndex++;
             }
         }
-        mNumBlacklisted++;
+        mNumRemoved++;
         return true;
     }
 

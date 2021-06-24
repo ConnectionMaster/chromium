@@ -5,8 +5,9 @@
 #include "ash/wm/overview/scoped_overview_animation_settings.h"
 
 #include "ash/metrics/histogram_macros.h"
+#include "ash/public/cpp/metrics_util.h"
 #include "ash/wm/overview/overview_constants.h"
-#include "base/lazy_instance.h"
+#include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
 #include "ui/aura/window.h"
@@ -36,25 +37,16 @@ constexpr base::TimeDelta kFadeOut = base::TimeDelta::FromMilliseconds(100);
 constexpr base::TimeDelta kFromHomeLauncherDelay =
     base::TimeDelta::FromMilliseconds(250);
 constexpr base::TimeDelta kHomeLauncherTransition =
-    base::TimeDelta::FromMilliseconds(250);
-
-// Time it takes for the selector widget to move to the next target. The same
-// time is used for fading out shield widget when the overview mode is opened
-// or closed.
-constexpr base::TimeDelta kOverviewSelectorTransition =
-    base::TimeDelta::FromMilliseconds(250);
+    base::TimeDelta::FromMilliseconds(350);
 
 // Time duration of the show animation of the drop target.
-constexpr base::TimeDelta kDropTargetFadeIn =
+constexpr base::TimeDelta kDropTargetFade =
     base::TimeDelta::FromMilliseconds(250);
 
-// Duration of the show/hide animation of the overview title bar.
-constexpr base::TimeDelta kOverviewTitleFade =
-    base::TimeDelta::FromMilliseconds(167);
-
-// Delay before the show animation of the overview title bar.
-constexpr base::TimeDelta kOverviewTitleFadeInDelay =
-    base::TimeDelta::FromMilliseconds(83);
+// Time duration to fade in overview windows when a window drag slows down or
+// stops.
+constexpr base::TimeDelta kFadeInOnWindowDrag =
+    base::TimeDelta::FromMilliseconds(350);
 
 base::TimeDelta GetAnimationDuration(OverviewAnimationType animation_type) {
   switch (animation_type) {
@@ -69,6 +61,7 @@ base::TimeDelta GetAnimationDuration(OverviewAnimationType animation_type) {
     case OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_ON_EXIT:
     case OVERVIEW_ANIMATION_RESTORE_WINDOW:
     case OVERVIEW_ANIMATION_RESTORE_WINDOW_ZERO:
+    case OVERVIEW_ANIMATION_SPAWN_ITEM_IN_OVERVIEW:
       return kTransition;
     case OVERVIEW_ANIMATION_CLOSING_OVERVIEW_ITEM:
       return kCloseScale;
@@ -77,101 +70,22 @@ base::TimeDelta GetAnimationDuration(OverviewAnimationType animation_type) {
     case OVERVIEW_ANIMATION_ENTER_FROM_HOME_LAUNCHER:
     case OVERVIEW_ANIMATION_EXIT_TO_HOME_LAUNCHER:
       return kHomeLauncherTransition;
-    case OVERVIEW_ANIMATION_DROP_TARGET_FADE_IN:
-      return kDropTargetFadeIn;
+    case OVERVIEW_ANIMATION_DROP_TARGET_FADE:
+      return kDropTargetFade;
     case OVERVIEW_ANIMATION_NO_RECENTS_FADE:
-    case OVERVIEW_ANIMATION_SELECTION_WINDOW_SHADOW:
-    case OVERVIEW_ANIMATION_SELECTION_WINDOW:
-      return kOverviewSelectorTransition;
-    case OVERVIEW_ANIMATION_OVERVIEW_TITLE_FADE_IN:
-    case OVERVIEW_ANIMATION_OVERVIEW_TITLE_FADE_OUT:
-      return kOverviewTitleFade;
-  };
+      return kTransition;
+    case OVERVIEW_ANIMATION_OPACITY_ON_WINDOW_DRAG:
+      return kFadeInOnWindowDrag;
+  }
   NOTREACHED();
   return base::TimeDelta();
 }
 
-class OverviewEnterMetricsReporter : public ui::AnimationMetricsReporter {
- public:
-  OverviewEnterMetricsReporter() = default;
-  ~OverviewEnterMetricsReporter() override = default;
-
-  void Report(int value) override {
-    UMA_HISTOGRAM_PERCENTAGE("Ash.WindowSelector.AnimationSmoothness.Enter",
-                             value);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(OverviewEnterMetricsReporter);
-};
-
-class OverviewExitMetricsReporter : public ui::AnimationMetricsReporter {
- public:
-  OverviewExitMetricsReporter() = default;
-  ~OverviewExitMetricsReporter() override = default;
-
-  void Report(int value) override {
-    UMA_HISTOGRAM_PERCENTAGE("Ash.WindowSelector.AnimationSmoothness.Exit",
-                             value);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(OverviewExitMetricsReporter);
-};
-
-class OverviewCloseMetricsReporter : public ui::AnimationMetricsReporter {
- public:
-  OverviewCloseMetricsReporter() = default;
-  ~OverviewCloseMetricsReporter() override = default;
-
-  void Report(int value) override {
-    UMA_HISTOGRAM_PERCENTAGE("Ash.WindowSelector.AnimationSmoothness.Close",
-                             value);
-    UMA_HISTOGRAM_PERCENTAGE_IN_CLAMSHELL(
-        "Ash.Overview.AnimationSmoothness.Close.ClamshellMode", value);
-    UMA_HISTOGRAM_PERCENTAGE_IN_TABLET(
-        "Ash.Overview.AnimationSmoothness.Close.TabletMode", value);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(OverviewCloseMetricsReporter);
-};
-
-base::LazyInstance<OverviewEnterMetricsReporter>::Leaky g_reporter_enter =
-    LAZY_INSTANCE_INITIALIZER;
-base::LazyInstance<OverviewExitMetricsReporter>::Leaky g_reporter_exit =
-    LAZY_INSTANCE_INITIALIZER;
-base::LazyInstance<OverviewCloseMetricsReporter>::Leaky g_reporter_close =
-    LAZY_INSTANCE_INITIALIZER;
-
-ui::AnimationMetricsReporter* GetMetricsReporter(
-    OverviewAnimationType animation_type) {
-  switch (animation_type) {
-    case OVERVIEW_ANIMATION_NONE:
-    case OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_IN_OVERVIEW:
-    case OVERVIEW_ANIMATION_DROP_TARGET_FADE_IN:
-    case OVERVIEW_ANIMATION_NO_RECENTS_FADE:
-    case OVERVIEW_ANIMATION_SELECTION_WINDOW_SHADOW:
-    case OVERVIEW_ANIMATION_SELECTION_WINDOW:
-    case OVERVIEW_ANIMATION_OVERVIEW_TITLE_FADE_IN:
-    case OVERVIEW_ANIMATION_OVERVIEW_TITLE_FADE_OUT:
-      return nullptr;
-    case OVERVIEW_ANIMATION_ENTER_OVERVIEW_MODE_FADE_IN:
-    case OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_ON_ENTER:
-    case OVERVIEW_ANIMATION_ENTER_FROM_HOME_LAUNCHER:
-      return g_reporter_enter.Pointer();
-    case OVERVIEW_ANIMATION_EXIT_OVERVIEW_MODE_FADE_OUT:
-    case OVERVIEW_ANIMATION_RESTORE_WINDOW:
-    case OVERVIEW_ANIMATION_RESTORE_WINDOW_ZERO:
-    case OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_ON_EXIT:
-    case OVERVIEW_ANIMATION_EXIT_TO_HOME_LAUNCHER:
-      return g_reporter_exit.Pointer();
-    case OVERVIEW_ANIMATION_CLOSING_OVERVIEW_ITEM:
-    case OVERVIEW_ANIMATION_CLOSE_OVERVIEW_ITEM:
-      return g_reporter_close.Pointer();
-  }
-  NOTREACHED();
-  return nullptr;
+void ReportCloseSmoothness(int smoothness) {
+  UMA_HISTOGRAM_PERCENTAGE_IN_CLAMSHELL(
+      "Ash.Overview.AnimationSmoothness.Close.ClamshellMode", smoothness);
+  UMA_HISTOGRAM_PERCENTAGE_IN_TABLET(
+      "Ash.Overview.AnimationSmoothness.Close.TabletMode", smoothness);
 }
 
 }  // namespace
@@ -208,6 +122,7 @@ ScopedOverviewAnimationSettings::ScopedOverviewAnimationSettings(
     case OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_IN_OVERVIEW:
     case OVERVIEW_ANIMATION_LAYOUT_OVERVIEW_ITEMS_ON_EXIT:
     case OVERVIEW_ANIMATION_RESTORE_WINDOW:
+    case OVERVIEW_ANIMATION_SPAWN_ITEM_IN_OVERVIEW:
       animation_settings_->SetTweenType(gfx::Tween::EASE_OUT);
       animation_settings_->SetPreemptionStrategy(
           ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
@@ -227,48 +142,39 @@ ScopedOverviewAnimationSettings::ScopedOverviewAnimationSettings(
       animation_settings_->SetTweenType(gfx::Tween::FAST_OUT_SLOW_IN);
       animation_settings_->SetPreemptionStrategy(
           ui::LayerAnimator::ENQUEUE_NEW_ANIMATION);
-      animator->SchedulePauseForProperties(
-          kFromHomeLauncherDelay, ui::LayerAnimationElement::OPACITY |
-                                      ui::LayerAnimationElement::TRANSFORM);
+      // Add animation delay when entering from home launcher.
+      animator->SchedulePauseForProperties(kFromHomeLauncherDelay,
+                                           ui::LayerAnimationElement::OPACITY);
       break;
     case OVERVIEW_ANIMATION_EXIT_TO_HOME_LAUNCHER:
       animation_settings_->SetTweenType(gfx::Tween::FAST_OUT_SLOW_IN);
       animation_settings_->SetPreemptionStrategy(
           ui::LayerAnimator::REPLACE_QUEUED_ANIMATIONS);
       break;
-    case OVERVIEW_ANIMATION_DROP_TARGET_FADE_IN:
+    case OVERVIEW_ANIMATION_DROP_TARGET_FADE:
       animation_settings_->SetTweenType(gfx::Tween::EASE_IN);
       animation_settings_->SetPreemptionStrategy(
           ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
       break;
     case OVERVIEW_ANIMATION_NO_RECENTS_FADE:
-    case OVERVIEW_ANIMATION_SELECTION_WINDOW_SHADOW:
       animation_settings_->SetTweenType(gfx::Tween::EASE_IN_OUT);
       animation_settings_->SetPreemptionStrategy(
           ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
       break;
-    case OVERVIEW_ANIMATION_SELECTION_WINDOW:
-      animation_settings_->SetTweenType(gfx::Tween::EASE_OUT);
+    case OVERVIEW_ANIMATION_OPACITY_ON_WINDOW_DRAG:
+      animation_settings_->SetTweenType(gfx::Tween::FAST_OUT_SLOW_IN);
       animation_settings_->SetPreemptionStrategy(
           ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
-      break;
-    case OVERVIEW_ANIMATION_OVERVIEW_TITLE_FADE_IN:
-      animation_settings_->SetTweenType(gfx::Tween::LINEAR_OUT_SLOW_IN);
-      animation_settings_->SetPreemptionStrategy(
-          ui::LayerAnimator::REPLACE_QUEUED_ANIMATIONS);
-      animator->SchedulePauseForProperties(kOverviewTitleFadeInDelay,
-                                           ui::LayerAnimationElement::OPACITY);
-      break;
-    case OVERVIEW_ANIMATION_OVERVIEW_TITLE_FADE_OUT:
-      animation_settings_->SetTweenType(gfx::Tween::FAST_OUT_LINEAR_IN);
-      animation_settings_->SetPreemptionStrategy(
-          ui::LayerAnimator::REPLACE_QUEUED_ANIMATIONS);
       break;
   }
   animation_settings_->SetTransitionDuration(
       GetAnimationDuration(animation_type));
-  animation_settings_->SetAnimationMetricsReporter(
-      GetMetricsReporter(animation_type));
+  if (animation_type == OVERVIEW_ANIMATION_CLOSING_OVERVIEW_ITEM ||
+      animation_type == OVERVIEW_ANIMATION_CLOSE_OVERVIEW_ITEM) {
+    close_reporter_.emplace(animation_settings_->GetAnimator(),
+                            metrics_util::ForSmoothness(
+                                base::BindRepeating(&ReportCloseSmoothness)));
+  }
 }
 
 ScopedOverviewAnimationSettings::~ScopedOverviewAnimationSettings() = default;
@@ -288,6 +194,10 @@ void ScopedOverviewAnimationSettings::DeferPaint() {
 
 void ScopedOverviewAnimationSettings::TrilinearFiltering() {
   animation_settings_->TrilinearFiltering();
+}
+
+ui::LayerAnimator* ScopedOverviewAnimationSettings::GetAnimator() {
+  return animation_settings_->GetAnimator();
 }
 
 }  // namespace ash

@@ -11,6 +11,7 @@
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/observer_list.h"
 #include "chrome/browser/status_icons/status_icon_menu_model.h"
 #include "content/public/browser/media_stream_request.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
@@ -39,7 +40,7 @@ class MediaStreamUI {
   // applicable.
   virtual gfx::NativeViewId OnStarted(
       base::OnceClosure stop_callback,
-      base::RepeatingClosure source_callback) = 0;
+      content::MediaStreamUI::SourceCallback source_callback) = 0;
 };
 
 // Keeps track of which WebContents are capturing media streams. Used to display
@@ -51,6 +52,23 @@ class MediaStreamCaptureIndicator
     : public base::RefCountedThreadSafe<MediaStreamCaptureIndicator>,
       public StatusIconMenuModel::Delegate {
  public:
+  class Observer : public base::CheckedObserver {
+   public:
+    virtual void OnIsCapturingVideoChanged(content::WebContents* web_contents,
+                                           bool is_capturing_video) {}
+    virtual void OnIsCapturingAudioChanged(content::WebContents* web_contents,
+                                           bool is_capturing_audio) {}
+    virtual void OnIsBeingMirroredChanged(content::WebContents* web_contents,
+                                          bool is_being_mirrored) {}
+    virtual void OnIsCapturingWindowChanged(content::WebContents* web_contents,
+                                            bool is_capturing_window) {}
+    virtual void OnIsCapturingDisplayChanged(content::WebContents* web_contents,
+                                             bool is_capturing_display) {}
+
+   protected:
+    ~Observer() override;
+  };
+
   MediaStreamCaptureIndicator();
 
   // Registers a new media stream for |web_contents| and returns an object used
@@ -59,7 +77,8 @@ class MediaStreamCaptureIndicator
   std::unique_ptr<content::MediaStreamUI> RegisterMediaStream(
       content::WebContents* web_contents,
       const blink::MediaStreamDevices& devices,
-      std::unique_ptr<MediaStreamUI> ui = nullptr);
+      std::unique_ptr<MediaStreamUI> ui = nullptr,
+      const std::u16string application_title = std::u16string());
 
   // Overrides from StatusIconMenuModel::Delegate implementation.
   void ExecuteCommand(int command_id, int event_flags) override;
@@ -78,12 +97,19 @@ class MediaStreamCaptureIndicator
   // media for remote broadcast).
   bool IsBeingMirrored(content::WebContents* web_contents) const;
 
-  // Returns true if |web_contents| is capturing the desktop (screen, window,
-  // audio).
-  bool IsCapturingDesktop(content::WebContents* web_contents) const;
+  // Returns true if |web_contents| is capturing a desktop window or audio.
+  bool IsCapturingWindow(content::WebContents* web_contents) const;
+
+  // Returns true if |web_contents| is capturing a display.
+  bool IsCapturingDisplay(content::WebContents* web_contents) const;
 
   // Called when STOP button in media capture notification is clicked.
   void NotifyStopped(content::WebContents* web_contents) const;
+
+  // Adds/Removes observers. Observers needs to be removed during the lifetime
+  // of this object.
+  void AddObserver(Observer* obs) { observers_.AddObserver(obs); }
+  void RemoveObserver(Observer* obs) { observers_.RemoveObserver(obs); }
 
  private:
   class UIDelegate;
@@ -112,7 +138,14 @@ class MediaStreamCaptureIndicator
   void GetStatusTrayIconInfo(bool audio,
                              bool video,
                              gfx::ImageSkia* image,
-                             base::string16* tool_tip);
+                             std::u16string* tool_tip);
+
+  // Checks if |web_contents| or any portal WebContents in its tree is using
+  // a device for capture. The type of capture is specified using |pred|.
+  using WebContentsDeviceUsagePredicate =
+      base::RepeatingCallback<bool(const WebContentsDeviceUsage*)>;
+  bool CheckUsage(content::WebContents* web_contents,
+                  const WebContentsDeviceUsagePredicate& pred) const;
 
   // Reference to our status icon - owned by the StatusTray. If null,
   // the platform doesn't support status icons.
@@ -129,6 +162,8 @@ class MediaStreamCaptureIndicator
   // updated.
   typedef std::vector<content::WebContents*> CommandTargets;
   CommandTargets command_targets_;
+
+  base::ObserverList<Observer, /* check_empty =*/true> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaStreamCaptureIndicator);
 };

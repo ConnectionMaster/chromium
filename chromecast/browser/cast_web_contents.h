@@ -8,15 +8,27 @@
 #include <string>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/containers/flat_set.h"
 #include "base/observer_list.h"
-#include "base/optional.h"
+#include "base/process/process.h"
+#include "chromecast/bindings/public/mojom/api_bindings.mojom.h"
 #include "chromecast/common/mojom/feature_manager.mojom.h"
+#include "content/public/common/media_playback_renderer_type.mojom.h"
+#include "mojo/public/cpp/bindings/generic_pending_receiver.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/messaging/web_message_port.h"
+#include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
 
+namespace blink {
+class AssociatedInterfaceProvider;
+}  // namespace blink
+
 namespace content {
+class NavigationHandle;
 class WebContents;
 }  // namespace content
 
@@ -46,10 +58,10 @@ struct RendererFeature {
 // sub-frame errors.
 //
 // We consider the CastWebContents to be in a LOADED state when the content of
-// the main frame is fully loaded and running (all resources fetched, JS is
-// running). Iframes might still be loading in this case, but in general we
-// consider the page to be in a presentable state at this stage. It is
-// appropriate to display the WebContents to the user.
+// the main frame is fully loaded and running (all resources fetched,
+// redirection finished, JS is running). Iframes might still be loading in this
+// case, but in general we consider the page to be in a presentable state at
+// this stage, so it is appropriate to display the WebContents to the user.
 //
 // During or after the page is loaded, there are multiple error conditions that
 // can occur. The following events will cause the page to enter an ERROR state:
@@ -96,9 +108,26 @@ class CastWebContents {
  public:
   class Delegate {
    public:
+    // Notify that an inner WebContents was created. |inner_contents| is created
+    // in a default-initialized state with no delegate, and can be safely
+    // initialized by the delegate.
+    virtual void InnerContentsCreated(CastWebContents* inner_contents,
+                                      CastWebContents* outer_contents) {}
+
+   protected:
+    virtual ~Delegate() {}
+  };
+
+  // Observer class. The Observer should *not* destroy CastWebContents during
+  // any of these events, otherwise other observers might try to use a freed
+  // pointer to |cast_web_contents|.
+  class Observer {
+   public:
+    Observer();
+
     // Advertises page state for the CastWebContents.
     // Use CastWebContents::page_state() to get the new state.
-    virtual void OnPageStateChanged(CastWebContents* cast_web_contents) = 0;
+    virtual void OnPageStateChanged(CastWebContents* cast_web_contents) {}
 
     // Called when the page has stopped. e.g.: A 404 occurred when loading the
     // page or if the render process for the main frame crashes. |error_code|
@@ -113,27 +142,39 @@ class CastWebContents {
     // DESTROYED: Page was closed due to deletion of WebContents. The
     //     CastWebContents instance is no longer usable and should be deleted.
     virtual void OnPageStopped(CastWebContents* cast_web_contents,
-                               int error_code) = 0;
+                               int error_code) {}
 
-    // Notify that an inner WebContents was created. |inner_contents| is created
-    // in a default-initialized state with no delegate, and can be safely
-    // initialized by the delegate.
-    virtual void InnerContentsCreated(CastWebContents* inner_contents,
-                                      CastWebContents* outer_contents) {}
+    // A new RenderFrame was created for the WebContents. |frame_interfaces| are
+    // provided by the new frame.
+    virtual void RenderFrameCreated(
+        int render_process_id,
+        int render_frame_id,
+        service_manager::InterfaceProvider* frame_interfaces,
+        blink::AssociatedInterfaceProvider* frame_associated_interfaces) {}
 
-   protected:
-    virtual ~Delegate() {}
-  };
+    // Called when the navigation is ready to be committed in the WebContents'
+    // main frame.
+    virtual void MainFrameReadyToCommitNavigation(
+        content::NavigationHandle* navigation_handle) {}
 
-  class Observer {
-   public:
-    Observer();
+    // A navigation has finished in the WebContents' main frame.
+    virtual void MainFrameFinishedNavigation() {}
 
-    virtual void RenderFrameCreated(int render_process_id,
-                                    int render_frame_id) {}
+    // These methods are calls forwarded from WebContentsObserver.
+    virtual void MainFrameResized(const gfx::Rect& bounds) {}
+    virtual void UpdateTitle(const std::u16string& title) {}
+    virtual void UpdateFaviconURL(GURL icon_url) {}
+    virtual void DidFirstVisuallyNonEmptyPaint() {}
 
     // Notifies that a resource for the main frame failed to load.
     virtual void ResourceLoadFailed(CastWebContents* cast_web_contents) {}
+
+    // Propagates the process information via observer, in particular to
+    // the underlying OnRendererProcessStarted() method.
+    virtual void OnRenderProcessReady(const base::Process& process) {}
+
+    // Notify media playback state changes for the underlying WebContents.
+    virtual void MediaPlaybackChanged(bool media_playing) {}
 
     // Adds |this| to the ObserverList in the implementation of
     // |cast_web_contents|.
@@ -152,16 +193,55 @@ class CastWebContents {
     CastWebContents* cast_web_contents_;
   };
 
+  enum class BackgroundColor {
+    NONE,
+    WHITE,
+    BLACK,
+    TRANSPARENT,
+  };
+
   // Initialization parameters for CastWebContents.
   struct InitParams {
-    Delegate* delegate;
-    // Whether the underlying WebContents is exposed to the remote debugger.
-    bool enabled_for_dev;
+    // The delegate for the CastWebContents. Must be non-null. If the delegate
+    // is destroyed before CastWebContents, the WeakPtr will be invalidated on
+    // the main UI thread.
+    base::WeakPtr<Delegate> delegate = nullptr;
+    // Enable development mode for this CastWebContents. Whitelists
+    // certain functionality for the WebContents, like remote debugging and
+    // debugging interfaces.
+    bool enabled_for_dev = false;
     // Chooses a media renderer for the WebContents.
-    bool use_cma_renderer;
+    content::mojom::RendererType renderer_type =
+        content::mojom::RendererType::DEFAULT_RENDERER;
     // Whether the WebContents is a root native window, or if it is embedded in
     // another WebContents (see Delegate::InnerContentsCreated()).
     bool is_root_window = false;
+    // Whether inner WebContents events should be handled. If this is set to
+    // true, then inner WebContents will automatically have a CastWebContents
+    // created and notify the delegate.
+    bool handle_inner_contents = false;
+    // Construct internal media blocker and enable BlockMediaLoading().
+    bool use_media_blocker = false;
+    // Background color for the WebContents view. If not provided, the color
+    // will fall back to the platform default.
+    BackgroundColor background_color = BackgroundColor::NONE;
+    // Enable WebSQL database for this CastWebContents.
+    bool enable_websql = false;
+    // Enable mixer audio support for this CastWebContents.
+    bool enable_mixer_audio = false;
+    // Whether to provide a URL filter applied to network requests for the
+    // activity hosted by this CastWebContents.
+    // No filters implies no restrictions.
+    absl::optional<std::vector<std::string>> url_filters = absl::nullopt;
+    // Whether WebRTC peer connections are allowed to use legacy versions of the
+    // TLS/DTLS protocols.
+    bool webrtc_allow_legacy_tls_protocols = false;
+    // Enable NamedMessagePortConnectorCast JS APIs. This is only meant to be
+    // modified by testing targets.
+
+    InitParams();
+    InitParams(const InitParams& other);
+    ~InitParams();
   };
 
   // Page state for the main frame.
@@ -176,6 +256,10 @@ class CastWebContents {
 
   static std::vector<CastWebContents*>& GetAll();
 
+  // Returns the CastWebContents that wraps the content::WebContents, or nullptr
+  // if the CastWebContents does not exist.
+  static CastWebContents* FromWebContents(content::WebContents* web_contents);
+
   CastWebContents() = default;
   virtual ~CastWebContents() = default;
 
@@ -184,16 +268,20 @@ class CastWebContents {
   // same tab ID at any given time.
   virtual int tab_id() const = 0;
 
+  // An identifier for the WebContents, mainly used by platform views service.
+  // IDs may be re-used but are unique among all live CastWebContents.
+  virtual int id() const = 0;
+
   // TODO(seantopping): Hide this, clients shouldn't use WebContents directly.
   virtual content::WebContents* web_contents() const = 0;
   virtual PageState page_state() const = 0;
 
+  // Returns the PID of the main frame process if valid.
+  virtual absl::optional<pid_t> GetMainFrameRenderProcessPid() const = 0;
+
   // ===========================================================================
   // Initialization and Setup
   // ===========================================================================
-
-  // Set the delegate. SetDelegate(nullptr) can be used to stop notifications.
-  virtual void SetDelegate(Delegate* delegate) = 0;
 
   // Add a set of features for all renderers in the WebContents. Features are
   // configured when `CastWebContents::RenderFrameCreated` is invoked.
@@ -201,6 +289,12 @@ class CastWebContents {
 
   virtual void AllowWebAndMojoWebUiBindings() = 0;
   virtual void ClearRenderWidgetHostView() = 0;
+
+  // Associates transparent app properties to a given session ID. This data is
+  // used elsewhere in the browser to gate output stream selection. We expose
+  // this API on CastWebContents for the sake of convenience.
+  virtual void SetAppProperties(const std::string& session_id,
+                                bool is_audio_app) = 0;
 
   // ===========================================================================
   // Page Lifetime
@@ -220,24 +314,120 @@ class CastWebContents {
   // page.
   virtual void Stop(int error_code) = 0;
 
+  // ===========================================================================
+  // Visibility
+  // ===========================================================================
+
+  // Specify if the WebContents should be treated as visible. This triggers a
+  // document "visibilitychange" change event, and will paint the WebContents
+  // quad if |visible| is true (otherwise it will be blank). Note that this does
+  // *not* guarantee the page is visible on the screen, as that depends on if
+  // the WebContents quad is present in the screen layout and isn't obscured by
+  // another window.
+  virtual void SetWebVisibilityAndPaint(bool visible) = 0;
+
+  // ===========================================================================
+  // Media Management
+  // ===========================================================================
+
+  // Block/unblock media from loading in all RenderFrames for the WebContents.
+  virtual void BlockMediaLoading(bool blocked) = 0;
+  // Block/unblock media from starting in all RenderFrames for the WebContents.
+  // As opposed to |BlockMediaLoading|,  |BlockMediaStarting| allows media to
+  // load while in blocking state.
+  virtual void BlockMediaStarting(bool blocked) = 0;
+  virtual void EnableBackgroundVideoPlayback(bool enabled) = 0;
+
+  // ===========================================================================
+  // Page Communication
+  // ===========================================================================
+
+  // Executes a UTF-8 encoded |script| for every subsequent page load where
+  // the frame's URL has an origin reflected in |origins|. The script is
+  // executed early, prior to the execution of the document's scripts.
+  //
+  // Scripts are identified by a client-managed |id|. Any
+  // script previously injected using the same |id| will be replaced.
+  //
+  // The order in which multiple bindings are executed is the same as the
+  // order in which the bindings were added. If a script is added which
+  // clobbers an existing script of the same |id|, the previous script's
+  // precedence in the injection order will be preserved.
+  // |script| and |id| must be non-empty string.
+  virtual void AddBeforeLoadJavaScript(uint64_t id,
+                                       base::StringPiece script) = 0;
+
+  // Posts a message to the frame's onMessage handler.
+  //
+  // `target_origin` restricts message delivery to the specified origin.
+  // If `target_origin` is "*", then the message will be sent to the
+  // document regardless of its origin.
+  // See html.spec.whatwg.org/multipage/web-messaging.html sect. 9.4.3
+  // for more details on how the target origin policy is applied.
+  // Should be called on UI thread.
+  virtual void PostMessageToMainFrame(
+      const std::string& target_origin,
+      const std::string& data,
+      std::vector<blink::WebMessagePort> ports) = 0;
+
+  // Executes a string of JavaScript in the main frame's context.
+  // This is no-op if the main frame is not available.
+  // Pass in a callback to receive a result when it is available.
+  // If there is no need to receive the result, pass in a
+  // default-constructed callback. If provided, the callback
+  // will be invoked on the UI thread.
+  virtual void ExecuteJavaScript(
+      const std::u16string& javascript,
+      base::OnceCallback<void(base::Value)> callback) = 0;
+
+  // Connects and fetches JS API bindings from |api_bindings_remote|.
+  // This method will fetch bindings scripts from |api_bindings_remote|
+  // immediately after the invocation, all of the bindings should be
+  // initialized before this point.
+  virtual void ConnectToBindingsService(
+      mojo::PendingRemote<mojom::ApiBindings> api_bindings_remote) = 0;
+
+  // ===========================================================================
+  // Utility Methods
+  // ===========================================================================
+
   // Used to add or remove |observer| to the ObserverList in the implementation.
   // These functions should only be invoked by CastWebContents::Observer in a
   // valid sequence, enforced via SequenceChecker.
   virtual void AddObserver(Observer* observer) = 0;
   virtual void RemoveObserver(Observer* observer) = 0;
 
+  // Enable or disable devtools remote debugging for this WebContents and any
+  // inner WebContents that are spawned from it.
+  virtual void SetEnabledForRemoteDebugging(bool enabled) = 0;
+
   // Used to expose CastWebContents's |binder_registry_| to Delegate.
   // Delegate should register its mojo interface binders via this function
   // when it is ready.
   virtual service_manager::BinderRegistry* binder_registry() = 0;
 
-  // Used for owner to pass its |InterfaceProviderPtr|s to CastWebContents.
-  // It is owner's respoinsibility to make sure each |InterfaceProviderPtr| has
-  // distinct mojo interface set.
+  // Asks the CastWebContents to bind an interface receiver using either its
+  // registry or any registered InterfaceProvider.
+  virtual bool TryBindReceiver(mojo::GenericPendingReceiver& receiver) = 0;
+
+  // Used for owner to pass its |InterfaceProvider| pointers to CastWebContents.
+  // It is owner's responsibility to make sure each |InterfaceProvider| pointer
+  // has distinct mojo interface set.
   using InterfaceSet = base::flat_set<std::string>;
   virtual void RegisterInterfaceProvider(
       const InterfaceSet& interface_set,
       service_manager::InterfaceProvider* interface_provider) = 0;
+
+  // Returns true if WebSQL database is configured enabled for this
+  // CastWebContents.
+  virtual bool is_websql_enabled() = 0;
+
+  // Returns true if mixer audio is enabled.
+  virtual bool is_mixer_audio_enabled() = 0;
+
+  // Returns whether or not CastWebContents binder_registry() is valid for
+  // binding interfaces.
+  virtual bool can_bind_interfaces() = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CastWebContents);

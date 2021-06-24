@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/power_monitor/power_observer.h"
@@ -27,18 +26,26 @@ namespace gcm {
 
 // A heartbeat management class, capable of sending and handling heartbeat
 // receipt/failures and triggering reconnection as necessary.
-class GCM_EXPORT HeartbeatManager : public base::PowerObserver {
+class GCM_EXPORT HeartbeatManager : public base::PowerSuspendObserver {
  public:
-  typedef base::Callback<void(ConnectionFactory::ConnectionResetReason)>
-      ReconnectCallback;
+  using ReconnectCallback =
+      base::RepeatingCallback<void(ConnectionFactory::ConnectionResetReason)>;
 
-  HeartbeatManager();
+  // |io_task_runner|: for running IO tasks.
+  // |maybe_power_wrapped_io_task_runner|: for running IO tasks, where if the
+  //     feature is provided, it could be a wrapper on top of |io_task_runner|
+  //     to provide power management featueres so that a delayed task posted to
+  //     it can wake the system up from sleep to perform the task.
+  explicit HeartbeatManager(
+      scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+      scoped_refptr<base::SequencedTaskRunner>
+          maybe_power_wrapped_io_task_runner);
   ~HeartbeatManager() override;
 
   // Start the heartbeat logic.
   // |send_heartbeat_callback_| is the callback the HeartbeatManager uses to
   // send new heartbeats. Only one heartbeat can be outstanding at a time.
-  void Start(const base::Closure& send_heartbeat_callback,
+  void Start(const base::RepeatingClosure& send_heartbeat_callback,
              const ReconnectCallback& trigger_reconnect_callback);
 
   // Stop the timer. Start(..) must be called again to begin sending heartbeats
@@ -62,7 +69,7 @@ class GCM_EXPORT HeartbeatManager : public base::PowerObserver {
   // Updates the timer used for scheduling heartbeats.
   void UpdateHeartbeatTimer(std::unique_ptr<base::RetainingOneShotTimer> timer);
 
-  // base::PowerObserver override.
+  // base::PowerSuspendObserver override.
   void OnSuspend() override;
   void OnResume() override;
 
@@ -117,6 +124,8 @@ class GCM_EXPORT HeartbeatManager : public base::PowerObserver {
   // Custom interval requested by the client.
   int client_interval_ms_;
 
+  const scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
+
   // Timer for triggering heartbeats.
   std::unique_ptr<base::RetainingOneShotTimer> heartbeat_timer_;
 
@@ -124,10 +133,10 @@ class GCM_EXPORT HeartbeatManager : public base::PowerObserver {
   base::Time suspend_time_;
 
   // Callbacks for interacting with the the connection.
-  base::Closure send_heartbeat_callback_;
+  base::RepeatingClosure send_heartbeat_callback_;
   ReconnectCallback trigger_reconnect_callback_;
 
-  base::WeakPtrFactory<HeartbeatManager> weak_ptr_factory_;
+  base::WeakPtrFactory<HeartbeatManager> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HeartbeatManager);
 };

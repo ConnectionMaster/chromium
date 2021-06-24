@@ -24,6 +24,10 @@
 #include "net/disk_cache/disk_cache.h"
 #include "net/disk_cache/memory/mem_entry_impl.h"
 
+namespace base {
+class Clock;
+}
+
 namespace net {
 class NetLog;
 }  // namespace net
@@ -72,7 +76,7 @@ class NET_EXPORT_PRIVATE MemBackendImpl final : public Backend {
   void OnEntryDoomed(MemEntryImpl* entry);
 
   // Adjust the current size of this backend by |delta|. This is used to
-  // determine if eviction is neccessary and when eviction is finished.
+  // determine if eviction is necessary and when eviction is finished.
   void ModifyStorageSize(int32_t delta);
 
   // Returns true if the cache's size is greater than the maximum allowed
@@ -83,20 +87,20 @@ class NET_EXPORT_PRIVATE MemBackendImpl final : public Backend {
   // most once.
   void SetPostCleanupCallback(base::OnceClosure cb);
 
+  static base::Time Now(const base::WeakPtr<MemBackendImpl>& self);
+  void SetClockForTesting(base::Clock* clock);  // doesn't take ownership.
+
   // Backend interface.
   int32_t GetEntryCount() const override;
-  net::Error OpenOrCreateEntry(const std::string& key,
-                               net::RequestPriority request_priority,
-                               EntryWithOpened* entry_struct,
-                               CompletionOnceCallback callback) override;
-  net::Error OpenEntry(const std::string& key,
-                       net::RequestPriority request_priority,
-                       Entry** entry,
-                       CompletionOnceCallback callback) override;
-  net::Error CreateEntry(const std::string& key,
-                         net::RequestPriority request_priority,
-                         Entry** entry,
-                         CompletionOnceCallback callback) override;
+  EntryResult OpenOrCreateEntry(const std::string& key,
+                                net::RequestPriority request_priority,
+                                EntryResultCallback callback) override;
+  EntryResult OpenEntry(const std::string& key,
+                        net::RequestPriority request_priority,
+                        EntryResultCallback callback) override;
+  EntryResult CreateEntry(const std::string& key,
+                          net::RequestPriority request_priority,
+                          EntryResultCallback callback) override;
   net::Error DoomEntry(const std::string& key,
                        net::RequestPriority priority,
                        CompletionOnceCallback callback) override;
@@ -135,6 +139,8 @@ class NET_EXPORT_PRIVATE MemBackendImpl final : public Backend {
   void OnMemoryPressure(
       base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level);
 
+  base::Clock* custom_clock_for_testing_;  // usually nullptr.
+
   EntryMap entries_;
 
   // Stored in increasing order of last use time, from least recently used to
@@ -149,7 +155,7 @@ class NET_EXPORT_PRIVATE MemBackendImpl final : public Backend {
 
   base::MemoryPressureListener memory_pressure_listener_;
 
-  base::WeakPtrFactory<MemBackendImpl> weak_factory_;
+  base::WeakPtrFactory<MemBackendImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MemBackendImpl);
 };

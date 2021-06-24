@@ -67,11 +67,29 @@ manager key combo conflicts) by doing something like
 startx out/cros/chrome
 ```
 
-NOTE: if you decide to run Chrome OS under linux within a window manager, you
-are subject to its keybindings which will most certainly conflict with
-ChromeVox. The Search key (which gets mapped from LWIN/key code 91), usually
-gets assigned to numerous shortcut combinations. You can manually disable all
-such combinations, or run under X as described above.
+### Remapping keys so ChromeVox recognizes a Search key
+ChromeVox expects that the Search key is mapped from your
+left Windows key/LWIN/key code 91; however, your window manager/desktop
+environment (Linux) treats this as a Super or Meta which usually gets assigned
+to numerous shortcut combinations.
+
+#### Option 1: running under a new X session
+To avoid these conflicts, run using startx as described above.
+
+#### Option 2: remapping keys in your window manager
+If you decide not to run under X or wish to run Linux within a window manager
+such as through Chrome Remote Desktop or a virtual machine, you need to remap
+keys either in Linux or inside Chrome OS.
+
+To manually disable all conflicting key combinations in Linux, remove all
+keyboard bindings that reference "Super" or "Meta" in
+System Settings > Keyboard > Shortcuts.
+
+#### Option #3: remapping the Search key inside Chrome OS
+To remap the Search key inside Chrome OS, go to Settings > Device > Keyboard.
+The control key is a good choice for setting as Search as there should be no
+conflicts with Linux on its own. Caps Lock is not recommended to change as
+ChromeVox may handle it as a special case.
 
 ## Speech
 
@@ -79,49 +97,30 @@ If you want speech, you just need to copy the speech synthesis data files to
 /usr/share like it would be on a Chrome OS device:
 
 ```
-sudo git clone https://chromium.googlesource.com/chromiumos/platform/assets /usr/share/chromeos-assets
+gsutil ls gs://chromeos-localmirror/distfiles/espeak*
 ```
 
-Change the permissions:
+Pick the latest version and
 
 ```
-sudo find /usr/share/chromeos-assets -type f -exec chmod 644 {} \;
-sudo find /usr/share/chromeos-assets -type d -exec chmod 755 {} \;
-```
-
-Next, unzip the NaCl executables. You only need to do the one for your host
-architecture:
-
-```
-PATTS_DIR=/usr/share/chromeos-assets/speech_synthesis/patts
-sudo unzip $PATTS_DIR/tts_service_x86_64.nexe.zip -d $PATTS_DIR
-```
-
-You may need to update permissions for the unzipped files within within
-speech_synthesis/patts:
-
-```
-sudo find $PATTS_DIR -type f -exec chmod 755 {} \;
+VERSION=1.49.3.7
+TMPDIR=$(mktemp -d)
+gsutil cp gs://chromeos-localmirror/distfiles/espeak-ng-$VERSION.tar.gz $TMPDIR
+tar -C $TMPDIR -xvf $TMPDIR/espeak-ng-$VERSION.tar.gz
+sudo mkdir -p /usr/share/chromeos-assets/speech_synthesis/espeak-ng/
+sudo chown -R $(whoami) /usr/share/chromeos-assets/
+cp -r $TMPDIR/espeak-ng/chrome-extension/* /usr/share/chromeos-assets/speech_synthesis/espeak-ng
+rm -rf $TMPDIR
 ```
 
 **Be sure to check permissions of /usr/share/chromeos-assets, some users report
 they need to chmod or chown too, it really depends on your system.**
 
+**Note that the default Google tts engine is now only available on an actual
+Chrome OS device. **
+
 After you do that, just run "chrome" as above (e.g. out/cros/chrome) and press
 Ctrl+Alt+Z, and you should hear it speak! If not, check the logs.
-
-### eSpeak
-
-To get [eSpeak](espeak.md) on Chrome OS on Desktop Linux, copy the eSpeak
-extension (chrome branch) to the same place:
-
-```
-cd ~
-git clone https://chromium.googlesource.com/chromiumos/third_party/espeak-ng
-cd espeak-ng
-git checkout chrome
-sudo cp -r chrome-extension /usr/share/chromeos-assets/speech_synthesis/espeak-ng
-```
 
 ## Braille
 
@@ -137,7 +136,7 @@ In particular, the api-parameters Auth param may exclude the current user.
 You can turn this off by doing:
 api-parameters Auth=none
 
-Testing against the latest releases of Brltty (e.g. 5.4 at time of writing) is
+Testing against the latest releases of Brltty (e.g. 6.3 at time of writing) is
 encouraged.
 
 For more general information, see [ChromeVox](chromevox.md)

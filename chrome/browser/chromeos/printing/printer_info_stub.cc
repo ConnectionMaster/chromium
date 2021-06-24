@@ -5,8 +5,10 @@
 #include "chrome/browser/chromeos/printing/printer_info.h"
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/task/post_task.h"
+#include "base/threading/sequenced_task_runner_handle.h"
+#include "printing/printer_status.h"
 
 namespace chromeos {
 
@@ -14,11 +16,13 @@ void QueryIppPrinter(const std::string& host,
                      const int port,
                      const std::string& path,
                      bool encrypted,
-                     const PrinterInfoCallback& callback) {
+                     PrinterInfoCallback callback) {
   DCHECK(!host.empty());
 
-  base::PostTask(FROM_HERE,
-                 base::BindOnce(callback, false, "Foo", "Bar", "Foo Bar",
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback),
+                                printing::PrinterQueryResult::kUnknownFailure,
+                                printing::PrinterStatus(), "Foo Bar",
                                 std::vector<std::string>{}, false));
 }
 

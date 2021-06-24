@@ -4,10 +4,13 @@
 
 #include "ui/gfx/win/hwnd_util.h"
 
-#include "base/i18n/rtl.h"
+#include <windows.h>
+
+#include "base/debug/gdi_debug_util_win.h"
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/win/win_util.h"
-#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -51,22 +54,18 @@ void AdjustWindowToFit(HWND hwnd, const RECT& bounds, bool fit_to_monitor) {
 
 // Don't inline these functions so they show up in crash reports.
 
-NOINLINE void CrashOutOfMemory() {
-  PLOG(FATAL);
-}
-
-NOINLINE void CrashAccessDenied() {
-  PLOG(FATAL);
+NOINLINE void CrashAccessDenied(DWORD last_error) {
+  LOG(FATAL) << last_error;
 }
 
 // Crash isn't one of the ones we commonly see.
-NOINLINE void CrashOther() {
-  PLOG(FATAL);
+NOINLINE void CrashOther(DWORD last_error) {
+  LOG(FATAL) << last_error;
 }
 
 }  // namespace
 
-base::string16 GetClassName(HWND window) {
+std::wstring GetClassName(HWND window) {
   // GetClassNameW will return a truncated result (properly null terminated) if
   // the given buffer is not large enough.  So, it is not possible to determine
   // that we got the entire class name if the result is exactly equal to the
@@ -183,44 +182,21 @@ void CenterAndSizeWindow(HWND parent,
   AdjustWindowToFit(window, window_bounds, !parent);
 }
 
-void CheckWindowCreated(HWND hwnd) {
+void CheckWindowCreated(HWND hwnd, DWORD last_error) {
   if (!hwnd) {
-    switch (GetLastError()) {
+    switch (last_error) {
       case ERROR_NOT_ENOUGH_MEMORY:
-        CrashOutOfMemory();
+        base::debug::CollectGDIUsageAndDie();
         break;
       case ERROR_ACCESS_DENIED:
-        CrashAccessDenied();
+        CrashAccessDenied(last_error);
         break;
       default:
-        CrashOther();
+        CrashOther(last_error);
         break;
     }
-    PLOG(FATAL);
+    LOG(FATAL) << last_error;
   }
-}
-
-void ShowSystemMenu(HWND window) {
-  RECT rect;
-  GetWindowRect(window, &rect);
-  Point point = Point(base::i18n::IsRTL() ? rect.right : rect.left, rect.top);
-  static const int kSystemMenuOffset = 10;
-  point.Offset(base::i18n::IsRTL() ? -kSystemMenuOffset : kSystemMenuOffset,
-               kSystemMenuOffset);
-  ShowSystemMenuAtPoint(window, point);
-}
-
-void ShowSystemMenuAtPoint(HWND window, const Point& point) {
-  UINT flags = TPM_LEFTBUTTON | TPM_RIGHTBUTTON | TPM_RETURNCMD;
-  if (base::i18n::IsRTL())
-    flags |= TPM_RIGHTALIGN;
-  HMENU menu = GetSystemMenu(window, FALSE);
-
-  const int command =
-      TrackPopupMenu(menu, flags, point.x(), point.y(), 0, window, NULL);
-
-  if (command)
-    SendMessage(window, WM_SYSCOMMAND, command, 0);
 }
 
 extern "C" {

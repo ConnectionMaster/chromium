@@ -23,32 +23,44 @@ DOMAgentAura* DOMAgentAura::dom_agent_aura_ = nullptr;
 DOMAgentAura::DOMAgentAura() {
   DCHECK(!dom_agent_aura_);
   dom_agent_aura_ = this;
-  RegisterEnv(aura::Env::GetInstance());
+  aura::Env::GetInstance()->AddObserver(this);
+  for (auto* window_tree_host : aura::Env::GetInstance()->window_tree_hosts())
+    OnHostInitialized(window_tree_host);
 }
+
 DOMAgentAura::~DOMAgentAura() {
   for (aura::Window* window : roots_)
     window->RemoveObserver(this);
-  for (auto* env : envs_)
-    env->RemoveObserver(this);
+  aura::Env::GetInstance()->RemoveObserver(this);
   dom_agent_aura_ = nullptr;
 }
 
-void DOMAgentAura::RegisterEnv(aura::Env* env) {
-  envs_.push_back(env);
-  env->AddObserver(this);
-}
-
-void DOMAgentAura::RegisterRootWindow(aura::Window* root) {
-  roots_.push_back(root);
-  root->AddObserver(this);
-}
-
 void DOMAgentAura::OnHostInitialized(aura::WindowTreeHost* host) {
-  RegisterRootWindow(host->window());
+  roots_.push_back(host->window());
+  host->window()->AddObserver(this);
+
+  if (element_root() && !element_root()->is_updating()) {
+    // The tree is already built, needs to update.
+    UIElement* window_element =
+        new WindowElement(host->window(), this, element_root());
+    element_root()->AddChild(window_element);
+  }
 }
 
 void DOMAgentAura::OnWindowDestroying(aura::Window* window) {
   base::Erase(roots_, window);
+
+  if (element_root() && !element_root()->is_updating()) {
+    const auto& children = element_root()->children();
+    auto iter = std::find_if(
+        children.begin(), children.end(),
+        [window](UIElement* e) { return WindowElement::From(e) == window; });
+    if (iter != children.end()) {
+      UIElement* child_element = *iter;
+      element_root()->RemoveChild(child_element);
+      delete child_element;
+    }
+  }
 }
 
 std::vector<UIElement*> DOMAgentAura::CreateChildrenForRoot() {
@@ -66,24 +78,26 @@ std::unique_ptr<Node> DOMAgentAura::BuildTreeForWindow(
   aura::Window* window =
       UIElement::GetBackingElement<aura::Window, WindowElement>(
           window_element_root);
-  std::unique_ptr<Array<Node>> children = Array<Node>::create();
+  auto children = std::make_unique<protocol::Array<Node>>();
   views::Widget* widget = views::Widget::GetWidgetForNativeView(window);
   if (widget) {
     UIElement* widget_element =
         new WidgetElement(widget, this, window_element_root);
 
-    children->addItem(BuildTreeForRootWidget(widget_element));
+    children->emplace_back(BuildTreeForRootWidget(widget_element));
     window_element_root->AddChild(widget_element);
   }
   for (aura::Window* child : window->children()) {
     UIElement* window_element =
         new WindowElement(child, this, window_element_root);
 
-    children->addItem(BuildTreeForWindow(window_element));
+    children->emplace_back(BuildTreeForWindow(window_element));
     window_element_root->AddChild(window_element);
   }
   std::unique_ptr<Node> node =
-      BuildNode("Window", window_element_root->GetAttributes(),
+      BuildNode("Window",
+                std::make_unique<std::vector<std::string>>(
+                    window_element_root->GetAttributes()),
                 std::move(children), window_element_root->node_id());
   return node;
 }

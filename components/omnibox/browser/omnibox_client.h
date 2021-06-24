@@ -50,7 +50,7 @@ class OmniboxClient {
   // Returns an OmniboxNavigationObserver specific to the embedder context. May
   // return null if the embedder has no need to observe omnibox navigations.
   virtual std::unique_ptr<OmniboxNavigationObserver>
-  CreateOmniboxNavigationObserver(const base::string16& text,
+  CreateOmniboxNavigationObserver(const std::u16string& text,
                                   const AutocompleteMatch& match,
                                   const AutocompleteMatch& alternate_nav_match);
 
@@ -62,28 +62,16 @@ class OmniboxClient {
   virtual const GURL& GetURL() const;
 
   // Returns the title of the current page.
-  virtual const base::string16& GetTitle() const;
+  virtual const std::u16string& GetTitle() const;
 
   // Returns the favicon of the current page.
   virtual gfx::Image GetFavicon() const;
-
-  // Returns true if the current page is a New Tab Page rendered by Instant.
-  virtual bool IsInstantNTP() const;
-
-  // Returns true if the committed entry is a search results page.
-  virtual bool IsSearchResultsPage() const;
 
   // Returns whether the current page is loading.
   virtual bool IsLoading() const;
 
   // Returns whether paste-and-go functionality is enabled.
   virtual bool IsPasteAndGoEnabled() const;
-
-  // Returns whether |url| corresponds to the new tab page.
-  virtual bool IsNewTabPage(const GURL& url) const;
-
-  // Returns whether |url| corresponds to the user's home page.
-  virtual bool IsHomePage(const GURL& url) const;
 
   // Returns false if Default Search is disabled by a policy.
   virtual bool IsDefaultSearchProviderEnabled() const;
@@ -96,6 +84,14 @@ class OmniboxClient {
   virtual TemplateURLService* GetTemplateURLService();
   virtual const AutocompleteSchemeClassifier& GetSchemeClassifier() const = 0;
   virtual AutocompleteClassifier* GetAutocompleteClassifier();
+  virtual bool ShouldDefaultTypedNavigationsToHttps() const = 0;
+  // Returns the port used by the embedded https server in tests. This is used
+  // to determine the correct port while upgrading typed URLs to https if the
+  // original URL has a non-default port. Only meaningful if
+  // ShouldDefaultTypedNavigationsToHttps() returns true.
+  // TODO(crbug.com/1168371): Remove when URLLoaderInterceptor can simulate
+  // redirects.
+  virtual int GetHttpsPortForTesting() const = 0;
 
   // Returns the icon corresponding to |match| if match is an extension match
   // and an empty icon otherwise.
@@ -149,13 +145,10 @@ class OmniboxClient {
       const TemplateURL* template_url,
       FaviconFetchedCallback on_favicon_fetched);
 
-  // Called when the current autocomplete match has changed.
-  virtual void OnCurrentMatchChanged(const AutocompleteMatch& match) {}
-
   // Called when the text may have changed in the edit.
   virtual void OnTextChanged(const AutocompleteMatch& current_match,
                              bool user_input_in_progress,
-                             const base::string16& user_text,
+                             const std::u16string& user_text,
                              const AutocompleteResult& result,
                              bool has_focus) {}
 
@@ -176,6 +169,9 @@ class OmniboxClient {
 
   // Opens and shows a new incognito browser window.
   virtual void NewIncognitoWindow() {}
+
+  // Opens an Incognito clear browsing data dialog.
+  virtual void OpenIncognitoClearBrowsingDataDialog() {}
 
   // Presents translation prompt for current tab web contents.
   virtual void PromptPageTranslation() {}

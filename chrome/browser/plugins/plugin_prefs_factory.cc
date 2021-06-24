@@ -4,6 +4,7 @@
 
 #include "chrome/browser/plugins/plugin_prefs_factory.h"
 
+#include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "chrome/browser/plugins/plugin_prefs.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
@@ -58,11 +59,9 @@ void PluginPrefsFactory::RegisterProfilePrefs(
   registry->RegisterFilePathPref(prefs::kPluginsLastInternalDirectory,
                                  internal_dir);
   registry->RegisterListPref(prefs::kPluginsPluginsList);
-  registry->RegisterListPref(prefs::kPluginsDisabledPlugins);
-  registry->RegisterListPref(prefs::kPluginsDisabledPluginsExceptions);
-  registry->RegisterListPref(prefs::kPluginsEnabledPlugins);
-  registry->RegisterBooleanPref(prefs::kPluginsAlwaysOpenPdfExternally, false, 
-                                user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterBooleanPref(
+      prefs::kPluginsAlwaysOpenPdfExternally, false,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 }
 
 content::BrowserContext* PluginPrefsFactory::GetBrowserContextToUse(

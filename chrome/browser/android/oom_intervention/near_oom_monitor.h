@@ -29,13 +29,13 @@ class NearOomMonitor {
   base::TimeDelta GetMonitoringInterval() const { return monitoring_interval_; }
   base::TimeDelta GetCooldownInterval() const { return cooldown_interval_; }
 
-  using CallbackList = base::CallbackList<void()>;
-  using Subscription = CallbackList::Subscription;
+  using CallbackList = base::RepeatingClosureList;
 
   // Registers a callback which is invoked when this monitor detects near-OOM
   // situation. The callback will be called on the task runner on which this
-  // monitor is running. Destroy the returned Subscription to unregister.
-  std::unique_ptr<Subscription> RegisterCallback(base::Closure callback);
+  // monitor is running. Destroy the returned subscription to unregister.
+  base::CallbackListSubscription RegisterCallback(
+      base::RepeatingClosure callback);
 
   void OnLowMemory(JNIEnv* env,
                    const base::android::JavaParamRef<jobject>& jcaller);
@@ -61,7 +61,7 @@ class NearOomMonitor {
 
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
-  base::Callback<void()> check_callback_;
+  base::RepeatingCallback<void()> check_callback_;
 
   // The time between Check() calls. When Check() detects a near-OOM
   // situation, |cooldown_interval_| is used instead of this interval to

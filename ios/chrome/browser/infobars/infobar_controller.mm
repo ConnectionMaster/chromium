@@ -5,8 +5,9 @@
 #include "ios/chrome/browser/infobars/infobar_controller.h"
 
 #include <memory>
+#include <ostream>
 
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "ios/chrome/browser/infobars/infobar_controller_delegate.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -21,7 +22,9 @@
 @synthesize view = _view;
 @synthesize delegate = _delegate;
 @synthesize infoBarDelegate = _infoBarDelegate;
+@synthesize infobarType = _infobarType;
 @synthesize presented = _presented;
+@synthesize hasBadge = _hasBadge;
 
 #pragma mark - Public
 
@@ -31,7 +34,7 @@
   if (self) {
     _infoBarDelegate = infoBarDelegate;
     _presented = NO;
-    _view = [self infobarView];
+    _hasBadge = NO;
   }
   return self;
 }
@@ -47,6 +50,14 @@
 - (void)detachView {
   _delegate = nullptr;
   _infoBarDelegate = nullptr;
+}
+
+#pragma mark - Properties
+
+- (UIView*)view {
+  if (!_view)
+    _view = [self infobarView];
+  return _view;
 }
 
 #pragma mark - Protected

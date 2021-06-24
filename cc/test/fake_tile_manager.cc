@@ -8,8 +8,9 @@
 #include <stdint.h>
 
 #include <limits>
+#include <memory>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "cc/raster/raster_buffer.h"
 #include "cc/raster/synchronous_task_graph_runner.h"
@@ -43,18 +44,18 @@ FakeTileManager::FakeTileManager(TileManagerClient* client,
       image_decode_cache_(
           kN32_SkColorType,
           LayerTreeSettings().decoded_image_working_set_budget_bytes,
-          PaintImage::kDefaultGeneratorClientId,
-          nullptr) {
+          PaintImage::kDefaultGeneratorClientId) {
   SetResources(resource_pool, &image_decode_cache_, GetGlobalTaskGraphRunner(),
                GetGlobalRasterBufferProvider(),
-               false /* use_gpu_rasterization */);
+               false /* use_gpu_rasterization */,
+               false /* use_oop_rasterization */, nullptr);
   SetTileTaskManagerForTesting(std::make_unique<FakeTileTaskManagerImpl>());
 }
 
 FakeTileManager::~FakeTileManager() = default;
 
 bool FakeTileManager::HasBeenAssignedMemory(Tile* tile) {
-  return base::ContainsValue(tiles_for_raster, tile);
+  return base::Contains(tiles_for_raster, tile);
 }
 
 }  // namespace cc

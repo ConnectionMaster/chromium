@@ -11,12 +11,11 @@
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/optional.h"
 #include "base/path_service.h"
 #include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
-#include "base/strings/stringprintf.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "build/build_config.h"
@@ -25,6 +24,7 @@
 #include "remoting/host/file_transfer/file_chooser.h"
 #include "remoting/host/file_transfer/get_desktop_directory.h"
 #include "remoting/protocol/file_transfer_helpers.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace remoting {
 
@@ -50,11 +50,11 @@ scoped_refptr<base::SequencedTaskRunner> CreateFileTaskRunner() {
   // logged-in user, while the process as a whole runs as SYSTEM. Since user
   // impersonation is per-thread on Windows, we need a dedicated thread to
   // ensure that no other code is accidentally run with the wrong privileges.
-  return base::CreateSingleThreadTaskRunnerWithTraits(
+  return base::ThreadPool::CreateSingleThreadTaskRunner(
       {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::SingleThreadTaskRunnerThreadMode::DEDICATED);
 #else
-  return base::CreateSequencedTaskRunnerWithTraits(
+  return base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::BEST_EFFORT});
 #endif
 }
@@ -95,9 +95,9 @@ class LocalFileReader : public FileOperations::Reader {
   scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
   scoped_refptr<base::SequencedTaskRunner> file_task_runner_;
   std::unique_ptr<FileChooser> file_chooser_;
-  base::Optional<base::FileProxy> file_proxy_;
+  absl::optional<base::FileProxy> file_proxy_;
   SEQUENCE_CHECKER(sequence_checker_);
-  base::WeakPtrFactory<LocalFileReader> weak_ptr_factory_;
+  base::WeakPtrFactory<LocalFileReader> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LocalFileReader);
 };
@@ -109,7 +109,7 @@ class LocalFileWriter : public FileOperations::Writer {
 
   // FileOperations::Writer implementation.
   void Open(const base::FilePath& filename, Callback callback) override;
-  void WriteChunk(std::string data, Callback callback) override;
+  void WriteChunk(std::vector<std::uint8_t> data, Callback callback) override;
   void Close(Callback callback) override;
   FileOperations::State state() const override;
 
@@ -121,19 +121,18 @@ class LocalFileWriter : public FileOperations::Writer {
       base::FilePath filename,
       Callback callback,
       protocol::FileTransferResult<base::FilePath> target_directory_result);
-  void CreateTempFile(Callback callback,
-                      base::FilePath temp_filepath,
-                      int unique_path_number);
+  void CreateTempFile(Callback callback, base::FilePath temp_filepath);
   void OnCreateResult(Callback callback, base::File::Error error);
 
-  void OnWriteResult(std::string data,
+  void OnWriteResult(std::vector<std::uint8_t> data,
                      Callback callback,
                      base::File::Error error,
                      int bytes_written);
 
   // Callbacks for Close().
   void OnCloseResult(Callback callback, base::File::Error error);
-  void MoveToDestination(Callback callback, int unique_path_number);
+  void MoveToDestination(Callback callback,
+                         base::FilePath destination_filepath);
   void OnMoveResult(Callback callback, bool success);
 
   void SetState(FileOperations::State state);
@@ -145,16 +144,16 @@ class LocalFileWriter : public FileOperations::Writer {
   std::uint64_t bytes_written_ = 0;
 
   scoped_refptr<base::SequencedTaskRunner> file_task_runner_;
-  base::Optional<base::FileProxy> file_proxy_;
+  absl::optional<base::FileProxy> file_proxy_;
   SEQUENCE_CHECKER(sequence_checker_);
-  base::WeakPtrFactory<LocalFileWriter> weak_ptr_factory_;
+  base::WeakPtrFactory<LocalFileWriter> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LocalFileWriter);
 };
 
 LocalFileReader::LocalFileReader(
     scoped_refptr<base::SequencedTaskRunner> ui_task_runner)
-    : ui_task_runner_(std::move(ui_task_runner)), weak_ptr_factory_(this) {}
+    : ui_task_runner_(std::move(ui_task_runner)) {}
 
 LocalFileReader::~LocalFileReader() = default;
 
@@ -270,7 +269,7 @@ void LocalFileReader::OnReadResult(ReadCallback callback,
 
   // The read buffer is provided and owned by FileProxy, so there's no way to
   // avoid a copy, here.
-  std::move(callback).Run(std::string(data, bytes_read));
+  std::move(callback).Run(std::vector<std::uint8_t>(data, data + bytes_read));
 }
 
 void LocalFileReader::SetState(FileOperations::State state) {
@@ -296,7 +295,7 @@ void LocalFileReader::SetState(FileOperations::State state) {
   state_ = state;
 }
 
-LocalFileWriter::LocalFileWriter() : weak_ptr_factory_(this) {}
+LocalFileWriter::LocalFileWriter() {}
 
 LocalFileWriter::~LocalFileWriter() {
   Cancel();
@@ -318,7 +317,8 @@ void LocalFileWriter::Open(const base::FilePath& filename, Callback callback) {
                      std::move(callback)));
 }
 
-void LocalFileWriter::WriteChunk(std::string data, Callback callback) {
+void LocalFileWriter::WriteChunk(std::vector<std::uint8_t> data,
+                                 Callback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(FileOperations::kReady, state_);
   SetState(FileOperations::kBusy);
@@ -328,9 +328,10 @@ void LocalFileWriter::WriteChunk(std::string data, Callback callback) {
   //               on error?
 
   // Ensure buffer pointer is obtained before data is moved.
-  const char* buffer = data.data();
+  const std::uint8_t* buffer = data.data();
   const std::size_t size = data.size();
-  file_proxy_->Write(bytes_written_, buffer, size,
+  file_proxy_->Write(bytes_written_, reinterpret_cast<const char*>(buffer),
+                     size,
                      base::BindOnce(&LocalFileWriter::OnWriteResult,
                                     weak_ptr_factory_.GetWeakPtr(),
                                     std::move(data), std::move(callback)));
@@ -361,8 +362,8 @@ void LocalFileWriter::Cancel() {
   // And finally, queue deletion of the temp file.
   if (!temp_filepath_.empty()) {
     file_task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(base::IgnoreResult(&base::DeleteFile),
-                                  temp_filepath_, false /* recursive */));
+        FROM_HERE,
+        base::BindOnce(base::GetDeleteFileCallback(), temp_filepath_));
   }
   SetState(FileOperations::kFailed);
 }
@@ -392,18 +393,15 @@ void LocalFileWriter::OnGetTargetDirectoryResult(
 
   PostTaskAndReplyWithResult(
       file_task_runner_.get(), FROM_HERE,
-      base::BindOnce(&base::GetUniquePathNumber, temp_filepath,
-                     base::FilePath::StringType()),
+      base::BindOnce(&base::GetUniquePath, temp_filepath),
       base::BindOnce(&LocalFileWriter::CreateTempFile,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
-                     temp_filepath));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void LocalFileWriter::CreateTempFile(Callback callback,
-                                     base::FilePath temp_filepath,
-                                     int unique_path_number) {
+                                     base::FilePath temp_filepath) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (unique_path_number < 0) {
+  if (temp_filepath.empty()) {
     LOG(ERROR) << "Failed to get unique path number.";
     SetState(FileOperations::kFailed);
     std::move(callback).Run(protocol::MakeFileTransferError(
@@ -411,12 +409,7 @@ void LocalFileWriter::CreateTempFile(Callback callback,
     return;
   }
 
-  if (unique_path_number == 0) {
-    temp_filepath_ = std::move(temp_filepath);
-  } else {
-    temp_filepath_ = temp_filepath.InsertBeforeExtensionASCII(
-        base::StringPrintf(" (%d)", unique_path_number));
-  }
+  temp_filepath_ = std::move(temp_filepath);
 
   // FLAG_SHARE_DELETE allows the file to be marked as deleted on Windows while
   // the handle is still open. (Other OS's allow this by default.) This allows
@@ -437,6 +430,7 @@ void LocalFileWriter::OnCreateResult(Callback callback,
     SetState(FileOperations::kFailed);
     std::move(callback).Run(protocol::MakeFileTransferError(
         FROM_HERE, FileErrorToResponseErrorType(error), error));
+    return;
   }
 
   SetState(FileOperations::kReady);
@@ -449,7 +443,7 @@ void LocalFileWriter::OnCreateResult(Callback callback,
   std::move(callback).Run(kSuccessTag);
 }
 
-void LocalFileWriter::OnWriteResult(std::string data,
+void LocalFileWriter::OnWriteResult(std::vector<std::uint8_t> data,
                                     Callback callback,
                                     base::File::Error error,
                                     int bytes_written) {
@@ -471,7 +465,9 @@ void LocalFileWriter::OnWriteResult(std::string data,
     // probably means that an error occurred. Unfortunately, the only way to
     // find out what went wrong is to try again.
     // TODO(rkjnsn): Would it be better just to return a generic error, here?
-    WriteChunk(data.substr(bytes_written), std::move(callback));
+    WriteChunk(
+        std::vector<std::uint8_t>(data.begin() + bytes_written, data.end()),
+        std::move(callback));
     return;
   }
 
@@ -491,16 +487,15 @@ void LocalFileWriter::OnCloseResult(Callback callback,
 
   base::PostTaskAndReplyWithResult(
       file_task_runner_.get(), FROM_HERE,
-      base::BindOnce(&base::GetUniquePathNumber, destination_filepath_,
-                     base::FilePath::StringType()),
+      base::BindOnce(&base::GetUniquePath, destination_filepath_),
       base::BindOnce(&LocalFileWriter::MoveToDestination,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void LocalFileWriter::MoveToDestination(Callback callback,
-                                        int unique_path_number) {
+                                        base::FilePath destination_filepath) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (unique_path_number < 0) {
+  if (destination_filepath.empty()) {
     LOG(ERROR) << "Failed to get unique path number.";
     SetState(FileOperations::kFailed);
     std::move(callback).Run(protocol::MakeFileTransferError(
@@ -508,10 +503,7 @@ void LocalFileWriter::MoveToDestination(Callback callback,
     return;
   }
 
-  if (unique_path_number > 0) {
-    destination_filepath_ = destination_filepath_.InsertBeforeExtensionASCII(
-        base::StringPrintf(" (%d)", unique_path_number));
-  }
+  destination_filepath_ = std::move(destination_filepath);
 
   PostTaskAndReplyWithResult(
       file_task_runner_.get(), FROM_HERE,

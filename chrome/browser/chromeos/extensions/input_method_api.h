@@ -24,7 +24,7 @@ namespace extensions {
 
 // Implements the inputMethodPrivate.getInputMethodConfig  method.
 class InputMethodPrivateGetInputMethodConfigFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   InputMethodPrivateGetInputMethodConfigFunction() {}
 
@@ -41,7 +41,7 @@ class InputMethodPrivateGetInputMethodConfigFunction
 
 // Implements the inputMethodPrivate.getCurrentInputMethod method.
 class InputMethodPrivateGetCurrentInputMethodFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   InputMethodPrivateGetCurrentInputMethodFunction() {}
 
@@ -58,7 +58,7 @@ class InputMethodPrivateGetCurrentInputMethodFunction
 
 // Implements the inputMethodPrivate.setCurrentInputMethod method.
 class InputMethodPrivateSetCurrentInputMethodFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   InputMethodPrivateSetCurrentInputMethodFunction() {}
 
@@ -74,8 +74,7 @@ class InputMethodPrivateSetCurrentInputMethodFunction
 };
 
 // Implements the inputMethodPrivate.getInputMethods method.
-class InputMethodPrivateGetInputMethodsFunction
-    : public UIThreadExtensionFunction {
+class InputMethodPrivateGetInputMethodsFunction : public ExtensionFunction {
  public:
   InputMethodPrivateGetInputMethodsFunction() {}
 
@@ -92,7 +91,7 @@ class InputMethodPrivateGetInputMethodsFunction
 
 // Implements the inputMethodPrivate.fetchAllDictionaryWords method.
 class InputMethodPrivateFetchAllDictionaryWordsFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   InputMethodPrivateFetchAllDictionaryWordsFunction() {}
 
@@ -108,8 +107,7 @@ class InputMethodPrivateFetchAllDictionaryWordsFunction
 };
 
 // Implements the inputMethodPrivate.addWordToDictionary method.
-class InputMethodPrivateAddWordToDictionaryFunction
-    : public UIThreadExtensionFunction {
+class InputMethodPrivateAddWordToDictionaryFunction : public ExtensionFunction {
  public:
   InputMethodPrivateAddWordToDictionaryFunction() {}
 
@@ -126,7 +124,7 @@ class InputMethodPrivateAddWordToDictionaryFunction
 
 // Implements the inputMethodPrivate.getEncryptSyncEnabled method.
 class InputMethodPrivateGetEncryptSyncEnabledFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   InputMethodPrivateGetEncryptSyncEnabledFunction() {}
 
@@ -142,8 +140,7 @@ class InputMethodPrivateGetEncryptSyncEnabledFunction
 };
 
 // Implements the inputMethodPrivate.setXkbLayout method.
-class InputMethodPrivateSetXkbLayoutFunction
-    : public UIThreadExtensionFunction {
+class InputMethodPrivateSetXkbLayoutFunction : public ExtensionFunction {
  public:
   InputMethodPrivateSetXkbLayoutFunction() {}
 
@@ -159,8 +156,7 @@ class InputMethodPrivateSetXkbLayoutFunction
 };
 
 // Implements the inputMethodPrivate.showInputView method.
-class InputMethodPrivateShowInputViewFunction
-    : public UIThreadExtensionFunction {
+class InputMethodPrivateShowInputViewFunction : public ExtensionFunction {
  public:
   InputMethodPrivateShowInputViewFunction() {}
 
@@ -175,9 +171,27 @@ class InputMethodPrivateShowInputViewFunction
   DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateShowInputViewFunction);
 };
 
+// Implements the inputMethodPrivate.hideInputView method.
+class InputMethodPrivateHideInputViewFunction : public ExtensionFunction {
+ public:
+  InputMethodPrivateHideInputViewFunction() = default;
+  InputMethodPrivateHideInputViewFunction(
+      const InputMethodPrivateHideInputViewFunction&) = delete;
+  InputMethodPrivateHideInputViewFunction& operator=(
+      const InputMethodPrivateHideInputViewFunction&) = delete;
+
+ protected:
+  ~InputMethodPrivateHideInputViewFunction() override {}
+
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.hideInputView",
+                             INPUTMETHODPRIVATE_HIDEINPUTVIEW)
+};
+
 // Implements the inputMethodPrivate.openOptionsPage method.
-class InputMethodPrivateOpenOptionsPageFunction
-    : public UIThreadExtensionFunction {
+class InputMethodPrivateOpenOptionsPageFunction : public ExtensionFunction {
  public:
   InputMethodPrivateOpenOptionsPageFunction() {}
 
@@ -192,8 +206,7 @@ class InputMethodPrivateOpenOptionsPageFunction
   DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateOpenOptionsPageFunction);
 };
 
-class InputMethodPrivateGetSurroundingTextFunction
-    : public UIThreadExtensionFunction {
+class InputMethodPrivateGetSurroundingTextFunction : public ExtensionFunction {
  public:
   InputMethodPrivateGetSurroundingTextFunction() {}
 
@@ -208,36 +221,170 @@ class InputMethodPrivateGetSurroundingTextFunction
   DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateGetSurroundingTextFunction);
 };
 
-class InputMethodPrivateGetSettingFunction : public UIThreadExtensionFunction {
+class InputMethodPrivateGetSettingsFunction : public ExtensionFunction {
  public:
-  InputMethodPrivateGetSettingFunction() = default;
+  InputMethodPrivateGetSettingsFunction() = default;
 
  protected:
-  ~InputMethodPrivateGetSettingFunction() override = default;
+  ~InputMethodPrivateGetSettingsFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
 
  private:
-  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.getSetting",
-                             INPUTMETHODPRIVATE_GETSETTING)
-  DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateGetSettingFunction);
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.getSettings",
+                             INPUTMETHODPRIVATE_GETSETTINGS)
+  DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateGetSettingsFunction);
 };
 
-class InputMethodPrivateSetSettingFunction : public UIThreadExtensionFunction {
+class InputMethodPrivateSetSettingsFunction : public ExtensionFunction {
  public:
-  InputMethodPrivateSetSettingFunction() = default;
+  InputMethodPrivateSetSettingsFunction() = default;
 
  protected:
-  ~InputMethodPrivateSetSettingFunction() override = default;
+  ~InputMethodPrivateSetSettingsFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
 
  private:
-  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.setSetting",
-                             INPUTMETHODPRIVATE_SETSETTING)
-  DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateSetSettingFunction);
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.setSettings",
+                             INPUTMETHODPRIVATE_SETSETTINGS)
+  DISALLOW_COPY_AND_ASSIGN(InputMethodPrivateSetSettingsFunction);
+};
+
+class InputMethodPrivateSetCompositionRangeFunction : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.setCompositionRange",
+                             INPUTMETHODPRIVATE_SETCOMPOSITIONRANGE)
+
+ protected:
+  ~InputMethodPrivateSetCompositionRangeFunction() override {}
+
+  // ExtensionFunction:
+  ResponseAction Run() override;
+};
+
+class InputMethodPrivateSetComposingRangeFunction : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.setComposingRange",
+                             INPUTMETHODPRIVATE_SETCOMPOSINGRANGE)
+
+ protected:
+  ~InputMethodPrivateSetComposingRangeFunction() override {}
+
+  // ExtensionFunction:
+  ResponseAction Run() override;
+};
+
+class InputMethodPrivateSetSelectionRangeFunction : public ExtensionFunction {
+ public:
+  InputMethodPrivateSetSelectionRangeFunction(
+      const InputMethodPrivateSetSelectionRangeFunction&) = delete;
+  InputMethodPrivateSetSelectionRangeFunction& operator=(
+      const InputMethodPrivateSetSelectionRangeFunction&) = delete;
+  InputMethodPrivateSetSelectionRangeFunction() = default;
+
+ protected:
+  ~InputMethodPrivateSetSelectionRangeFunction() override = default;
+  // ExtensionFunction:
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.setSelectionRange",
+                             INPUTMETHODPRIVATE_SETSELECTIONRANGE)
+};
+
+class InputMethodPrivateGetAutocorrectRangeFunction : public ExtensionFunction {
+ public:
+  InputMethodPrivateGetAutocorrectRangeFunction(
+      const InputMethodPrivateGetAutocorrectRangeFunction&) = delete;
+  InputMethodPrivateGetAutocorrectRangeFunction& operator=(
+      const InputMethodPrivateGetAutocorrectRangeFunction&) = delete;
+  InputMethodPrivateGetAutocorrectRangeFunction() = default;
+
+ protected:
+  ~InputMethodPrivateGetAutocorrectRangeFunction() override = default;
+  // ExtensionFunction:
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.getAutocorrectRange",
+                             INPUTMETHODPRIVATE_GETAUTOCORRECTRANGE)
+};
+
+class InputMethodPrivateGetAutocorrectCharacterBoundsFunction
+    : public ExtensionFunction {
+ public:
+  InputMethodPrivateGetAutocorrectCharacterBoundsFunction(
+      const InputMethodPrivateGetAutocorrectCharacterBoundsFunction&) = delete;
+  InputMethodPrivateGetAutocorrectCharacterBoundsFunction& operator=(
+      const InputMethodPrivateGetAutocorrectCharacterBoundsFunction&) = delete;
+  InputMethodPrivateGetAutocorrectCharacterBoundsFunction() = default;
+
+ protected:
+  ~InputMethodPrivateGetAutocorrectCharacterBoundsFunction() override = default;
+  // ExtensionFunction:
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.getAutocorrectCharacterBounds",
+                             INPUTMETHODPRIVATE_GETAUTOCORRECTCHARACTERBOUNDS)
+};
+
+class InputMethodPrivateSetAutocorrectRangeFunction : public ExtensionFunction {
+ public:
+  InputMethodPrivateSetAutocorrectRangeFunction(
+      const InputMethodPrivateSetAutocorrectRangeFunction&) = delete;
+  InputMethodPrivateSetAutocorrectRangeFunction& operator=(
+      const InputMethodPrivateSetAutocorrectRangeFunction&) = delete;
+  InputMethodPrivateSetAutocorrectRangeFunction() = default;
+
+ protected:
+  ~InputMethodPrivateSetAutocorrectRangeFunction() override = default;
+  // ExtensionFunction:
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.setAutocorrectRange",
+                             INPUTMETHODPRIVATE_SETAUTOCORRECTRANGE)
+};
+
+class InputMethodPrivateResetFunction : public ExtensionFunction {
+ public:
+  InputMethodPrivateResetFunction() = default;
+  InputMethodPrivateResetFunction(const InputMethodPrivateResetFunction&) =
+      delete;
+  InputMethodPrivateResetFunction& operator=(
+      const InputMethodPrivateResetFunction&) = delete;
+
+ protected:
+  ~InputMethodPrivateResetFunction() override = default;
+
+  // ExtensionFunction:
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.reset",
+                             INPUTMETHODPRIVATE_RESET)
+};
+
+class InputMethodPrivateOnAutocorrectFunction : public ExtensionFunction {
+ public:
+  InputMethodPrivateOnAutocorrectFunction(
+      const InputMethodPrivateOnAutocorrectFunction&) = delete;
+  InputMethodPrivateOnAutocorrectFunction& operator=(
+      const InputMethodPrivateOnAutocorrectFunction&) = delete;
+  InputMethodPrivateOnAutocorrectFunction() = default;
+
+ protected:
+  ~InputMethodPrivateOnAutocorrectFunction() override = default;
+  // ExtensionFunction:
+  ResponseAction Run() override;
+
+ private:
+  DECLARE_EXTENSION_FUNCTION("inputMethodPrivate.onAutocorrect",
+                             INPUTMETHODPRIVATE_ONAUTOCORRECT)
 };
 
 class InputMethodAPI : public BrowserContextKeyedAPI,

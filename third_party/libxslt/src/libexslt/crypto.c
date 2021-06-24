@@ -1,12 +1,6 @@
 #define IN_LIBEXSLT
 #include "libexslt/libexslt.h"
 
-#if defined(_WIN32) && !defined (__CYGWIN__) && (!__MINGW32__)
-#include <win32config.h>
-#else
-#include "config.h"
-#endif
-
 #include <libxml/tree.h>
 #include <libxml/xpath.h>
 #include <libxml/xpathInternals.h>
@@ -14,7 +8,6 @@
 #include <libxml/encoding.h>
 #include <libxml/uri.h>
 
-#include <libxslt/xsltconfig.h>
 #include <libxslt/xsltutils.h>
 #include <libxslt/xsltInternals.h>
 #include <libxslt/extensions.h>
@@ -101,7 +94,7 @@ exsltCryptoHex2Bin (const unsigned char *hex, int hexlen,
 	else if (tmp >= 'a' && tmp <= 'f')
 	    lo = 10 + (tmp - 'a');
 
-	result = hi << 4;
+	result = (unsigned char) (hi << 4);
 	result += lo;
 	bin[j++] = result;
     }
@@ -755,7 +748,14 @@ exsltCryptoRc4DecryptFunction (xmlXPathParserContextPtr ctxt, int nargs) {
     PLATFORM_RC4_DECRYPT (ctxt, padkey, bin, ret_len, ret, ret_len);
     ret[ret_len] = 0;
 
-    xmlXPathReturnString (ctxt, ret);
+    if (xmlCheckUTF8(ret) == 0) {
+	xsltTransformError(tctxt, NULL, tctxt->inst,
+	    "exsltCryptoRc4DecryptFunction: Invalid UTF-8\n");
+        xmlFree(ret);
+	xmlXPathReturnEmptyString(ctxt);
+    } else {
+        xmlXPathReturnString(ctxt, ret);
+    }
 
 done:
     if (key != NULL)

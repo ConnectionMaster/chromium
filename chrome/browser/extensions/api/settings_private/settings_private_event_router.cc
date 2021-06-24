@@ -8,9 +8,10 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/api/settings_private/generated_prefs.h"
 #include "chrome/browser/extensions/api/settings_private/generated_prefs_factory.h"
@@ -23,22 +24,15 @@ namespace extensions {
 
 SettingsPrivateEventRouter::SettingsPrivateEventRouter(
     content::BrowserContext* context)
-    : context_(context), listening_(false), weak_ptr_factory_(this) {
-  // Register with the event router so we know when renderers are listening to
-  // our events. We first check and see if there *is* an event router, because
-  // some unit tests try to create all context services, but don't initialize
-  // the event router first.
-  EventRouter* event_router = EventRouter::Get(context_);
-  if (event_router) {
-    event_router->RegisterObserver(
-        this, api::settings_private::OnPrefsChanged::kEventName);
-    StartOrStopListeningForPrefsChanges();
-  }
-
+    : context_(context) {
   Profile* profile = Profile::FromBrowserContext(context_);
-  prefs_util_.reset(new PrefsUtil(profile));
+  prefs_util_ = std::make_unique<PrefsUtil>(profile);
   user_prefs_registrar_.Init(profile->GetPrefs());
   local_state_registrar_.Init(g_browser_process->local_state());
+
+  EventRouter::Get(context_)->RegisterObserver(
+      this, api::settings_private::OnPrefsChanged::kEventName);
+  StartOrStopListeningForPrefsChanges();
 }
 
 SettingsPrivateEventRouter::~SettingsPrivateEventRouter() {
@@ -51,16 +45,13 @@ void SettingsPrivateEventRouter::OnGeneratedPrefChanged(
 }
 
 void SettingsPrivateEventRouter::Shutdown() {
-  // Unregister with the event router. We first check and see if there *is* an
-  // event router, because some unit tests try to shutdown all context services,
-  // but didn't initialize the event router first.
-  EventRouter* event_router = EventRouter::Get(context_);
-  if (event_router)
-    event_router->UnregisterObserver(this);
+  EventRouter::Get(context_)->UnregisterObserver(this);
 
   if (listening_) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     cros_settings_subscription_map_.clear();
-    const PrefsUtil::TypedPrefMap& keys = prefs_util_->GetWhitelistedKeys();
+#endif
+    const PrefsUtil::TypedPrefMap& keys = prefs_util_->GetAllowlistedKeys();
     settings_private::GeneratedPrefs* generated_prefs =
         settings_private::GeneratedPrefsFactory::GetForBrowserContext(context_);
     for (const auto& it : keys) {
@@ -96,6 +87,7 @@ PrefChangeRegistrar* SettingsPrivateEventRouter::FindRegistrarForPref(
 }
 
 void SettingsPrivateEventRouter::StartOrStopListeningForPrefsChanges() {
+  DCHECK(prefs_util_);
   EventRouter* event_router = EventRouter::Get(context_);
   bool should_listen = event_router->HasEventListener(
       api::settings_private::OnPrefsChanged::kEventName);
@@ -103,37 +95,41 @@ void SettingsPrivateEventRouter::StartOrStopListeningForPrefsChanges() {
   settings_private::GeneratedPrefs* generated_prefs =
       settings_private::GeneratedPrefsFactory::GetForBrowserContext(context_);
   if (should_listen && !listening_) {
-    const PrefsUtil::TypedPrefMap& keys = prefs_util_->GetWhitelistedKeys();
+    const PrefsUtil::TypedPrefMap& keys = prefs_util_->GetAllowlistedKeys();
     for (const auto& it : keys) {
       std::string pref_name = it.first;
       if (prefs_util_->IsCrosSetting(pref_name)) {
-#if defined(OS_CHROMEOS)
-        std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
-            subscription = chromeos::CrosSettings::Get()->AddSettingsObserver(
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+        base::CallbackListSubscription subscription =
+            ash::CrosSettings::Get()->AddSettingsObserver(
                 pref_name.c_str(),
-                base::Bind(&SettingsPrivateEventRouter::OnPreferenceChanged,
-                           base::Unretained(this), pref_name));
+                base::BindRepeating(
+                    &SettingsPrivateEventRouter::OnPreferenceChanged,
+                    base::Unretained(this), pref_name));
         cros_settings_subscription_map_.insert(
             make_pair(pref_name, std::move(subscription)));
 #endif
       } else if (generated_prefs && generated_prefs->HasPref(pref_name)) {
         generated_prefs->AddObserver(pref_name, this);
       } else {
-        FindRegistrarForPref(it.first)
-            ->Add(pref_name,
-                  base::Bind(&SettingsPrivateEventRouter::OnPreferenceChanged,
-                             base::Unretained(this)));
+        FindRegistrarForPref(it.first)->Add(
+            pref_name, base::BindRepeating(
+                           &SettingsPrivateEventRouter::OnPreferenceChanged,
+                           base::Unretained(this)));
       }
     }
   } else if (!should_listen && listening_) {
-    const PrefsUtil::TypedPrefMap& keys = prefs_util_->GetWhitelistedKeys();
+    const PrefsUtil::TypedPrefMap& keys = prefs_util_->GetAllowlistedKeys();
     for (const auto& it : keys) {
-      if (prefs_util_->IsCrosSetting(it.first))
+      if (prefs_util_->IsCrosSetting(it.first)) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
         cros_settings_subscription_map_.erase(it.first);
-      else if (generated_prefs && generated_prefs->HasPref(it.first))
+#endif
+      } else if (generated_prefs && generated_prefs->HasPref(it.first)) {
         generated_prefs->RemoveObserver(it.first, this);
-      else
+      } else {
         FindRegistrarForPref(it.first)->Remove(it.first);
+      }
     }
   }
   listening_ = should_listen;
@@ -163,8 +159,7 @@ void SettingsPrivateEventRouter::SendPrefChange(const std::string& pref_name) {
   if (pref_object)
     prefs.push_back(std::move(*pref_object));
 
-  std::unique_ptr<base::ListValue> args(
-      api::settings_private::OnPrefsChanged::Create(prefs));
+  auto args(api::settings_private::OnPrefsChanged::Create(prefs));
 
   std::unique_ptr<Event> extension_event(new Event(
       events::SETTINGS_PRIVATE_ON_PREFS_CHANGED,

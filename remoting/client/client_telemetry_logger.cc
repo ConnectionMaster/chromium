@@ -4,10 +4,12 @@
 
 #include "remoting/client/client_telemetry_logger.h"
 
+#include <memory>
+
+#include "base/cxx17_backports.h"
 #include "base/format_macros.h"
 #include "base/logging.h"
 #include "base/rand_util.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "remoting/base/telemetry_log_writer.h"
 
@@ -55,7 +57,8 @@ void ClientTelemetryLogger::SetHostInfo(const std::string& host_version,
                                         ChromotingEvent::Os host_os,
                                         const std::string& host_os_version) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  host_info_.reset(new HostInfo{host_version, host_os, host_os_version});
+  host_info_ = std::make_unique<HostInfo>(
+      HostInfo{host_version, host_os, host_os_version});
 }
 
 void ClientTelemetryLogger::SetTransportRoute(

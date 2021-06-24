@@ -10,6 +10,7 @@
 
 #include "base/base_paths_win.h"
 #include "base/logging.h"
+#include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 
@@ -207,8 +208,8 @@ std::vector<base::FilePath> GetRewrittenPaths() {
   return paths;
 }
 
-std::map<int, base::string16> PathKeyToSanitizeString() {
-  std::map<int, base::string16> path_key_to_sanitize_string;
+std::map<int, std::wstring> PathKeyToSanitizeString() {
+  std::map<int, std::wstring> path_key_to_sanitize_string;
   for (const auto* rule = sanitization_internal::rewrite_rules;
        rule->path != nullptr; ++rule) {
     path_key_to_sanitize_string.insert(std::make_pair(rule->id, rule->path));
@@ -221,12 +222,12 @@ int CsidlToPathServiceKey(int CSIDL) {
 }
 
 base::FilePath NormalizePath(const base::FilePath& path) {
-  base::string16 long_path;
+  std::wstring long_path;
   ConvertToLongPath(path.value(), &long_path);
   return base::FilePath(base::ToLowerASCII(long_path));
 }
 
-void ConvertToLongPath(const base::string16& path, base::string16* long_path) {
+void ConvertToLongPath(const std::wstring& path, std::wstring* long_path) {
   DCHECK(long_path);
   DWORD long_path_len = ::GetLongPathName(path.c_str(), nullptr, 0);
   if (long_path_len > 0UL) {
@@ -238,11 +239,11 @@ void ConvertToLongPath(const base::string16& path, base::string16* long_path) {
   }
 }
 
-base::string16 SanitizePath(const base::FilePath& path) {
+std::wstring SanitizePath(const base::FilePath& path) {
   return SanitizePathImpl(path).value();
 }
 
-base::string16 SanitizeCommandLine(const base::CommandLine& command_line) {
+std::wstring SanitizeCommandLine(const base::CommandLine& command_line) {
   base::FilePath sanitized_program =
       SanitizePathImpl(command_line.GetProgram());
   base::CommandLine sanitized_command_line(sanitized_program);
@@ -273,6 +274,58 @@ base::FilePath ExpandSpecialFolderPath(int csidl,
   }
 
   return base::FilePath();
+}
+
+bool ValidateSandboxFilePath(const base::FilePath& file_path) {
+  const base::FilePath::StringType& path_string = file_path.value();
+  if (path_string.empty()) {
+    LOG(ERROR) << "File path cannot be empty";
+    return false;
+  }
+  // Disallow UNC paths (\\ServerName\...) and paths with the universal \\?\
+  // prefix described at
+  // https://docs.microsoft.com/en-us/windows/desktop/fileio/naming-a-file#namespaces
+  if (path_string.length() >= 2 &&
+      base::FilePath::IsSeparator(path_string[0]) &&
+      base::FilePath::IsSeparator(path_string[1])) {
+    // Don't print the path because SanitizePath is not safe to run on UNC
+    // paths.
+    LOG(ERROR) << "File path must not start with \\\\";
+    return false;
+  }
+  // Disallow paths with the native prefix (\??\) described at
+  // https://googleprojectzero.blogspot.com/2016/02/the-definitive-guide-on-win32-to-nt.html.
+  if (path_string.length() >= 4 &&
+      base::FilePath::IsSeparator(path_string[0]) && path_string[1] == '?' &&
+      path_string[2] == '?' && base::FilePath::IsSeparator(path_string[3])) {
+    // Don't print the path because SanitizePath is not safe to run on native
+    // paths.
+    LOG(ERROR) << "File path must not start with \\??\\";
+    return false;
+  }
+  if (!file_path.IsAbsolute()) {
+    LOG(ERROR) << "File path must be absolute, received "
+               << SanitizePath(file_path);
+    return false;
+  }
+  return true;
+}
+
+bool IsLocalFileAttributes(DWORD file_attributes) {
+  return !(file_attributes == INVALID_FILE_ATTRIBUTES ||
+           file_attributes & FILE_ATTRIBUTE_OFFLINE ||
+           file_attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS ||
+           file_attributes & FILE_ATTRIBUTE_RECALL_ON_OPEN);
+}
+
+bool IsFilePresentLocally(const base::FilePath& file_name) {
+  DWORD file_attributes = ::GetFileAttributes(file_name.value().c_str());
+  if (file_attributes == INVALID_FILE_ATTRIBUTES) {
+    PLOG(ERROR) << "IsFilePresentLocally failed to get attributes: "
+                << SanitizePath(file_name);
+    return false;
+  }
+  return IsLocalFileAttributes(file_attributes);
 }
 
 }  // namespace chrome_cleaner

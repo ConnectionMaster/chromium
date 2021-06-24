@@ -6,20 +6,18 @@
 
 #include <memory>
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
-#include "base/test/thread_test_helper.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "content/public/browser/browser_task_traits.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/common/content_features.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/api/declarative/rules_registry_service.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_constants.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_rules_registry.h"
@@ -27,8 +25,6 @@
 #include "extensions/common/extension.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
-
-using content::BrowserThread;
 
 namespace extensions {
 
@@ -104,7 +100,7 @@ const char kRedirectToDataNoRules[] =
 class DeclarativeApiTest : public ExtensionApiTest {
  public:
   std::string GetTitle() {
-    base::string16 title(
+    std::u16string title(
         browser()->tab_strip_model()->GetActiveWebContents()->GetTitle());
     return base::UTF16ToUTF8(title);
   }
@@ -120,17 +116,58 @@ class DeclarativeApiTest : public ExtensionApiTest {
             extensions::declarative_webrequest_constants::kOnRequest);
 
     std::vector<const api::events::Rule*> rules;
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
-        base::BindOnce(&RulesRegistry::GetAllRules, rules_registry,
-                       extension_id, &rules));
-    scoped_refptr<base::ThreadTestHelper> io_helper(new base::ThreadTestHelper(
-        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO})
-            .get()));
-    EXPECT_TRUE(io_helper->Run());
+    rules_registry->GetAllRules(extension_id, &rules);
     return rules.size();
   }
 };
+
+// Copied from origin_policy_browsertest.cc.
+const base::FilePath::CharType kDataRoot[] =
+    FILE_PATH_LITERAL("chrome/test/data/origin_policy_browsertest");
+
+class DeclarativeApiTestWithOriginPolicy : public DeclarativeApiTest {
+ protected:
+  std::u16string NavigateToAndReturnTitle(const char* url) {
+    EXPECT_TRUE(server());
+    ui_test_utils::NavigateToURL(browser(), GURL(server()->GetURL(url)));
+    std::u16string title;
+    ui_test_utils::GetCurrentTabTitle(browser(), &title);
+    return title;
+  }
+
+ private:
+  void SetUpInProcessBrowserTestFixture() override {
+    server_ = std::make_unique<net::test_server::EmbeddedTestServer>(
+        net::test_server::EmbeddedTestServer::TYPE_HTTPS);
+    server_->AddDefaultHandlers(base::FilePath(kDataRoot));
+    feature_list_.InitAndEnableFeature(features::kOriginPolicy);
+    EXPECT_TRUE(server()->Start());
+    DeclarativeApiTest::SetUpInProcessBrowserTestFixture();
+  }
+
+  void TearDownInProcessBrowserTestFixture() override { server_.reset(); }
+
+  net::test_server::EmbeddedTestServer* server() { return server_.get(); }
+
+  std::unique_ptr<net::test_server::EmbeddedTestServer> server_;
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Regression test for crbug.com/1047275.
+IN_PROC_BROWSER_TEST_F(DeclarativeApiTestWithOriginPolicy,
+                       OriginPolicyEnabled) {
+  // Navigate to a page with an origin policy. It should load correctly.
+  EXPECT_EQ(u"Page With Policy",
+            NavigateToAndReturnTitle("/page-with-policy.html"));
+
+  // Load an extension that has the |declarativeWebRequest| permission.
+  ASSERT_TRUE(RunExtensionTest("declarative/api")) << message_;
+
+  // Future navigations to the page with the origin policy should still work,
+  // and not throw an interstitial.
+  EXPECT_EQ(u"Page With Policy",
+            NavigateToAndReturnTitle("/page-with-policy.html"));
+}
 
 IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, DeclarativeApi) {
   ASSERT_TRUE(RunExtensionTest("declarative/api")) << message_;
@@ -156,24 +193,14 @@ IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, PRE_PersistRules) {
 
 IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, PersistRules) {
   // Wait for declarative rules to be set up from PRE test.
-  content::BrowserContext::GetDefaultStoragePartition(profile())
-      ->FlushNetworkInterfaceForTesting();
+  profile()->GetDefaultStoragePartition()->FlushNetworkInterfaceForTesting();
   ui_test_utils::NavigateToURL(browser(), GURL(kArbitraryUrl));
   EXPECT_EQ(kTestTitle, GetTitle());
 }
 
-// Disabled for flakiness: http://crbug.com/851854
-#if defined(OS_MACOSX) && defined(ADDRESS_SANITIZER)
-#define MAYBE_ExtensionLifetimeRulesHandling \
-  DISABLED_ExtensionLifetimeRulesHandling
-#else
-#define MAYBE_ExtensionLifetimeRulesHandling ExtensionLifetimeRulesHandling
-#endif
-
 // Test that the rules are correctly persisted and (de)activated during
 // changing the "installed" and "enabled" status of an extension.
-IN_PROC_BROWSER_TEST_F(DeclarativeApiTest,
-                       MAYBE_ExtensionLifetimeRulesHandling) {
+IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, ExtensionLifetimeRulesHandling) {
   TestExtensionDir ext_dir;
 
   // 1. Install the extension. Rules should become active.
@@ -188,8 +215,7 @@ IN_PROC_BROWSER_TEST_F(DeclarativeApiTest,
       ext_dir.Pack(), 1 /*+1 installed extension*/, browser());
   ASSERT_TRUE(extension);
   // Wait for declarative rules to be set up.
-  content::BrowserContext::GetDefaultStoragePartition(profile())
-      ->FlushNetworkInterfaceForTesting();
+  profile()->GetDefaultStoragePartition()->FlushNetworkInterfaceForTesting();
   std::string extension_id(extension->id());
   ASSERT_TRUE(ready.WaitUntilSatisfied());
   ui_test_utils::NavigateToURL(browser(), GURL(kArbitraryUrl));
@@ -239,17 +265,10 @@ IN_PROC_BROWSER_TEST_F(DeclarativeApiTest,
   EXPECT_EQ(0u, NumberOfRegisteredRules(extension_id));
 }
 
-// Disabled for flakiness: http://crbug.com/851854
-#if defined(OS_MACOSX) && defined(ADDRESS_SANITIZER)
-#define MAYBE_NoTracesAfterUninstalling DISABLED_NoTracesAfterUninstalling
-#else
-#define MAYBE_NoTracesAfterUninstalling NoTracesAfterUninstalling
-#endif
-
 // When an extension is uninstalled, the state store deletes all preferences
 // stored for that extension. We need to make sure we don't store anything after
 // that deletion occurs.
-IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, MAYBE_NoTracesAfterUninstalling) {
+IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, NoTracesAfterUninstalling) {
   TestExtensionDir ext_dir;
 
   // 1. Install the extension. Verify that rules become active and some prefs
@@ -265,8 +284,7 @@ IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, MAYBE_NoTracesAfterUninstalling) {
       ext_dir.Pack(), 1 /*+1 installed extension*/, browser());
   ASSERT_TRUE(extension);
   // Wait for declarative rules to be set up.
-  content::BrowserContext::GetDefaultStoragePartition(profile())
-      ->FlushNetworkInterfaceForTesting();
+  profile()->GetDefaultStoragePartition()->FlushNetworkInterfaceForTesting();
   std::string extension_id(extension->id());
   ASSERT_TRUE(ready.WaitUntilSatisfied());
   ui_test_utils::NavigateToURL(browser(), GURL(kArbitraryUrl));
@@ -278,8 +296,7 @@ IN_PROC_BROWSER_TEST_F(DeclarativeApiTest, MAYBE_NoTracesAfterUninstalling) {
   // 2. Uninstall the extension. Rules are gone and preferences should be empty.
   UninstallExtension(extension_id);
   // Wait for declarative rules to be removed.
-  content::BrowserContext::GetDefaultStoragePartition(profile())
-      ->FlushNetworkInterfaceForTesting();
+  profile()->GetDefaultStoragePartition()->FlushNetworkInterfaceForTesting();
   ui_test_utils::NavigateToURL(browser(), GURL(kArbitraryUrl));
   EXPECT_NE(kTestTitle, GetTitle());
   EXPECT_EQ(0u, NumberOfRegisteredRules(extension_id));

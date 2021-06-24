@@ -18,7 +18,6 @@ class WebUIDataSourceImplWithPublicData : public WebUIDataSourceImpl {
   }
 
   using WebUIDataSourceImpl::GetLocalizedStrings;
-  using WebUIDataSourceImpl::GetReplacements;
 
  protected:
   explicit WebUIDataSourceImplWithPublicData(const std::string& source_name)
@@ -36,12 +35,12 @@ class TestWebUIDataSourceImpl : public TestWebUIDataSource {
 
   ~TestWebUIDataSourceImpl() override {}
 
-  const base::DictionaryValue* GetLocalizedStrings() const override {
+  const base::DictionaryValue* GetLocalizedStrings() override {
     return source_->GetLocalizedStrings();
   }
 
-  const ui::TemplateReplacements* GetReplacements() const override {
-    return source_->GetReplacements();
+  const ui::TemplateReplacements* GetReplacements() override {
+    return source_->source()->GetReplacements();
   }
 
   WebUIDataSource* GetWebUIDataSource() override { return source_.get(); }

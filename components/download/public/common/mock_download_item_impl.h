@@ -13,8 +13,10 @@
 #include "components/download/public/common/download_create_info.h"
 #include "components/download/public/common/download_file.h"
 #include "components/download/public/common/download_item_impl.h"
-#include "components/download/public/common/download_request_handle_interface.h"
+#include "components/download/public/common/download_schedule.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "url/origin.h"
 
 namespace download {
 
@@ -26,11 +28,13 @@ class MockDownloadItemImpl : public DownloadItemImpl {
   explicit MockDownloadItemImpl(DownloadItemImplDelegate* delegate);
   ~MockDownloadItemImpl() override;
 
-  MOCK_METHOD5(OnDownloadTargetDetermined,
+  MOCK_METHOD7(OnDownloadTargetDetermined,
                void(const base::FilePath&,
                     TargetDisposition,
                     DownloadDangerType,
+                    MixedContentStatus,
                     const base::FilePath&,
+                    absl::optional<DownloadSchedule>,
                     DownloadInterruptReason));
   MOCK_METHOD1(AddObserver, void(DownloadItem::Observer*));
   MOCK_METHOD1(RemoveObserver, void(DownloadItem::Observer*));
@@ -38,10 +42,11 @@ class MockDownloadItemImpl : public DownloadItemImpl {
   MOCK_METHOD0(CanShowInFolder, bool());
   MOCK_METHOD0(CanOpenDownload, bool());
   MOCK_METHOD0(ShouldOpenFileBasedOnExtension, bool());
+  MOCK_METHOD0(ShouldOpenFileByPolicyBasedOnExtension, bool());
   MOCK_METHOD0(OpenDownload, void());
   MOCK_METHOD0(ShowDownloadInShell, void());
   MOCK_METHOD0(ValidateDangerousDownload, void());
-  MOCK_METHOD2(StealDangerousDownload, void(bool, const AcquireFileCallback&));
+  MOCK_METHOD2(StealDangerousDownload, void(bool, AcquireFileCallback));
   MOCK_METHOD3(UpdateProgress, void(int64_t, int64_t, const std::string&));
   MOCK_METHOD1(Cancel, void(bool));
   MOCK_METHOD0(MarkAsComplete, void());
@@ -49,24 +54,22 @@ class MockDownloadItemImpl : public DownloadItemImpl {
     NOTREACHED();
   }
   MOCK_METHOD0(OnDownloadedFileRemoved, void());
-  void Start(
-      std::unique_ptr<DownloadFile> download_file,
-      std::unique_ptr<DownloadRequestHandleInterface> req_handle,
-      const DownloadCreateInfo& create_info,
-      scoped_refptr<download::DownloadURLLoaderFactoryGetter>
-          url_loader_factory_getter,
-      net::URLRequestContextGetter* url_request_context_getter) override {
-    MockStart(download_file.get(), req_handle.get());
+  void Start(std::unique_ptr<DownloadFile> download_file,
+             DownloadJob::CancelRequestCallback cancel_request_callback,
+             const DownloadCreateInfo& create_info,
+             URLLoaderFactoryProvider::URLLoaderFactoryProviderPtr
+                 url_loader_factory_provider) override {
+    MockStart(download_file.get());
   }
 
-  MOCK_METHOD2(MockStart, void(DownloadFile*, DownloadRequestHandleInterface*));
+  MOCK_METHOD1(MockStart, void(DownloadFile*));
 
   MOCK_METHOD0(Remove, void());
   MOCK_CONST_METHOD1(TimeRemaining, bool(base::TimeDelta*));
   MOCK_CONST_METHOD0(CurrentSpeed, int64_t());
   MOCK_CONST_METHOD0(PercentComplete, int());
   MOCK_CONST_METHOD0(AllDataSaved, bool());
-  MOCK_CONST_METHOD1(MatchesQuery, bool(const base::string16& query));
+  MOCK_CONST_METHOD1(MatchesQuery, bool(const std::u16string& query));
   MOCK_CONST_METHOD0(IsDone, bool());
   MOCK_CONST_METHOD0(GetFullPath, const base::FilePath&());
   MOCK_CONST_METHOD0(GetTargetFilePath, const base::FilePath&());
@@ -81,6 +84,7 @@ class MockDownloadItemImpl : public DownloadItemImpl {
   MOCK_CONST_METHOD0(GetReferrerUrl, const GURL&());
   MOCK_CONST_METHOD0(GetTabUrl, const GURL&());
   MOCK_CONST_METHOD0(GetTabReferrerUrl, const GURL&());
+  MOCK_CONST_METHOD0(GetRequestInitiator, const absl::optional<url::Origin>&());
   MOCK_CONST_METHOD0(GetSuggestedFilename, std::string());
   MOCK_CONST_METHOD0(GetContentDisposition, std::string());
   MOCK_CONST_METHOD0(GetMimeType, std::string());
@@ -102,7 +106,9 @@ class MockDownloadItemImpl : public DownloadItemImpl {
   MOCK_METHOD1(SetOpenWhenComplete, void(bool));
   MOCK_CONST_METHOD0(GetFileExternallyRemoved, bool());
   MOCK_CONST_METHOD0(GetDangerType, DownloadDangerType());
+  MOCK_CONST_METHOD0(GetMixedContentStatus, MixedContentStatus());
   MOCK_CONST_METHOD0(IsDangerous, bool());
+  MOCK_CONST_METHOD0(IsMixedContent, bool());
   MOCK_METHOD0(GetAutoOpened, bool());
   MOCK_CONST_METHOD0(GetForcedFilePath, const base::FilePath&());
   MOCK_CONST_METHOD0(HasUserGesture, bool());

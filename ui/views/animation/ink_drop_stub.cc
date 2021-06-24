@@ -12,13 +12,15 @@ InkDropStub::~InkDropStub() = default;
 
 void InkDropStub::HostSizeChanged(const gfx::Size& new_size) {}
 
+void InkDropStub::HostTransformChanged(const gfx::Transform& new_transform) {}
+
 InkDropState InkDropStub::GetTargetInkDropState() const {
   return InkDropState::HIDDEN;
 }
 
 void InkDropStub::AnimateToState(InkDropState state) {}
 
-void InkDropStub::SetHoverHighlightFadeDurationMs(int duration_ms) {}
+void InkDropStub::SetHoverHighlightFadeDuration(base::TimeDelta duration) {}
 
 void InkDropStub::UseDefaultHoverHighlightFadeDuration() {}
 

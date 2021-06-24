@@ -5,19 +5,20 @@
 #include "ui/ozone/platform/drm/host/drm_window_host.h"
 
 #include "base/bind.h"
+#include "base/memory/scoped_refptr.h"
+#include "ui/base/cursor/ozone/bitmap_cursor_factory_ozone.h"
+#include "ui/base/cursor/platform_cursor.h"
 #include "ui/display/display.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/event.h"
 #include "ui/events/ozone/evdev/event_factory_evdev.h"
 #include "ui/events/ozone/events_ozone.h"
 #include "ui/events/platform/platform_event_source.h"
-#include "ui/ozone/platform/drm/common/drm_overlay_manager.h"
 #include "ui/ozone/platform/drm/host/drm_cursor.h"
 #include "ui/ozone/platform/drm/host/drm_display_host.h"
 #include "ui/ozone/platform/drm/host/drm_display_host_manager.h"
 #include "ui/ozone/platform/drm/host/drm_window_host_manager.h"
 #include "ui/ozone/platform/drm/host/gpu_thread_adapter.h"
-#include "ui/platform_window/platform_window_delegate.h"
 
 namespace ui {
 
@@ -27,15 +28,13 @@ DrmWindowHost::DrmWindowHost(PlatformWindowDelegate* delegate,
                              EventFactoryEvdev* event_factory,
                              DrmCursor* cursor,
                              DrmWindowHostManager* window_manager,
-                             DrmDisplayHostManager* display_manager,
-                             DrmOverlayManager* overlay_manager)
+                             DrmDisplayHostManager* display_manager)
     : delegate_(delegate),
       sender_(sender),
       event_factory_(event_factory),
       cursor_(cursor),
       window_manager_(window_manager),
       display_manager_(display_manager),
-      overlay_manager_(overlay_manager),
       bounds_(bounds),
       widget_(window_manager->NextAcceleratedWidget()) {
   window_manager_->AddWindow(widget_, this);
@@ -57,7 +56,7 @@ void DrmWindowHost::Initialize() {
   delegate_->OnAcceleratedWidgetAvailable(widget_);
 }
 
-gfx::AcceleratedWidget DrmWindowHost::GetAcceleratedWidget() {
+gfx::AcceleratedWidget DrmWindowHost::GetAcceleratedWidget() const {
   return widget_;
 }
 
@@ -66,13 +65,15 @@ gfx::Rect DrmWindowHost::GetCursorConfinedBounds() const {
                                            : cursor_confined_bounds_;
 }
 
-void DrmWindowHost::Show() {
-}
+void DrmWindowHost::Show(bool inactive) {}
 
-void DrmWindowHost::Hide() {
-}
+void DrmWindowHost::Hide() {}
 
-void DrmWindowHost::Close() {
+void DrmWindowHost::Close() {}
+
+bool DrmWindowHost::IsVisible() const {
+  NOTREACHED();
+  return true;
 }
 
 void DrmWindowHost::PrepareForShutdown() {}
@@ -83,12 +84,11 @@ void DrmWindowHost::SetBounds(const gfx::Rect& bounds) {
   SendBoundsChange();
 }
 
-gfx::Rect DrmWindowHost::GetBounds() {
+gfx::Rect DrmWindowHost::GetBounds() const {
   return bounds_;
 }
 
-void DrmWindowHost::SetTitle(const base::string16& title) {
-}
+void DrmWindowHost::SetTitle(const std::u16string& title) {}
 
 void DrmWindowHost::SetCapture() {
   window_manager_->GrabEvents(widget_);
@@ -102,24 +102,34 @@ bool DrmWindowHost::HasCapture() const {
   return widget_ == window_manager_->event_grabber();
 }
 
-void DrmWindowHost::ToggleFullscreen() {
-}
+void DrmWindowHost::ToggleFullscreen() {}
 
-void DrmWindowHost::Maximize() {
-}
+void DrmWindowHost::Maximize() {}
 
-void DrmWindowHost::Minimize() {
-}
+void DrmWindowHost::Minimize() {}
 
-void DrmWindowHost::Restore() {
-}
+void DrmWindowHost::Restore() {}
 
 PlatformWindowState DrmWindowHost::GetPlatformWindowState() const {
-  return PlatformWindowState::PLATFORM_WINDOW_STATE_UNKNOWN;
+  return PlatformWindowState::kUnknown;
 }
 
-void DrmWindowHost::SetCursor(PlatformCursor cursor) {
-  cursor_->SetCursor(widget_, cursor);
+void DrmWindowHost::Activate() {
+  NOTIMPLEMENTED_LOG_ONCE();
+}
+
+void DrmWindowHost::Deactivate() {
+  NOTIMPLEMENTED_LOG_ONCE();
+}
+
+void DrmWindowHost::SetUseNativeFrame(bool use_native_frame) {}
+
+bool DrmWindowHost::ShouldUseNativeFrame() const {
+  return false;
+}
+
+void DrmWindowHost::SetCursor(scoped_refptr<PlatformCursor> cursor) {
+  cursor_->SetCursor(widget_, BitmapCursorOzone::FromPlatformCursor(cursor));
 }
 
 void DrmWindowHost::MoveCursorTo(const gfx::Point& location) {
@@ -134,10 +144,6 @@ void DrmWindowHost::ConfineCursorToBounds(const gfx::Rect& bounds) {
   cursor_->CommitBoundsChange(widget_, bounds_, bounds);
 }
 
-PlatformImeController* DrmWindowHost::GetPlatformImeController() {
-  return nullptr;
-}
-
 void DrmWindowHost::SetRestoredBoundsInPixels(const gfx::Rect& bounds) {
   NOTREACHED();
 }
@@ -145,6 +151,19 @@ void DrmWindowHost::SetRestoredBoundsInPixels(const gfx::Rect& bounds) {
 gfx::Rect DrmWindowHost::GetRestoredBoundsInPixels() const {
   NOTREACHED();
   return gfx::Rect();
+}
+
+void DrmWindowHost::SetWindowIcons(const gfx::ImageSkia& window_icon,
+                                   const gfx::ImageSkia& app_icon) {
+  NOTREACHED();
+}
+
+void DrmWindowHost::SizeConstraintsChanged() {
+  NOTREACHED();
+}
+
+void DrmWindowHost::OnMouseEnter() {
+  delegate_->OnMouseEnter();
 }
 
 bool DrmWindowHost::CanDispatchEvent(const PlatformEvent& event) {
@@ -193,6 +212,14 @@ uint32_t DrmWindowHost::DispatchEvent(const PlatformEvent& event) {
   if (event->IsLocatedEvent()) {
     // Make the event location relative to this window's origin.
     LocatedEvent* located_event = event->AsLocatedEvent();
+
+    if (event->IsMouseEvent()) {
+      DrmWindowHost* window_on_mouse =
+          window_manager_->GetWindowAt(located_event->location());
+      if (window_on_mouse)
+        window_manager_->MouseOnWindow(window_on_mouse);
+    }
+
     gfx::PointF location = located_event->location_f();
     location -= gfx::Vector2dF(bounds_.OffsetFromOrigin());
     located_event->set_location_f(location);
@@ -207,8 +234,7 @@ uint32_t DrmWindowHost::DispatchEvent(const PlatformEvent& event) {
 void DrmWindowHost::OnGpuProcessLaunched() {}
 
 void DrmWindowHost::OnGpuThreadReady() {
-  sender_->GpuCreateWindow(widget_);
-  SendBoundsChange();
+  sender_->GpuCreateWindow(widget_, bounds_);
 }
 
 void DrmWindowHost::OnGpuThreadRetired() {}
@@ -218,9 +244,6 @@ void DrmWindowHost::SendBoundsChange() {
   // window bounds when the window size shrinks.
   cursor_->CommitBoundsChange(widget_, bounds_, GetCursorConfinedBounds());
   sender_->GpuWindowBoundsChanged(widget_, bounds_);
-
-  if (overlay_manager_)
-    overlay_manager_->ResetCache();
 }
 
 }  // namespace ui

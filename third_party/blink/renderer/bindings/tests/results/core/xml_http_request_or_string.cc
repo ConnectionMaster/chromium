@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/xml_http_request_or_string.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -58,7 +58,7 @@ XMLHttpRequestOrString::XMLHttpRequestOrString(const XMLHttpRequestOrString&) = 
 XMLHttpRequestOrString::~XMLHttpRequestOrString() = default;
 XMLHttpRequestOrString& XMLHttpRequestOrString::operator=(const XMLHttpRequestOrString&) = default;
 
-void XMLHttpRequestOrString::Trace(blink::Visitor* visitor) {
+void XMLHttpRequestOrString::Trace(Visitor* visitor) const {
   visitor->Trace(xml_http_request_);
 }
 
@@ -81,7 +81,7 @@ void V8XMLHttpRequestOrString::ToImpl(
   }
 
   {
-    V8StringResource<> cpp_value = v8_value;
+    V8StringResource<> cpp_value{ v8_value };
     if (!cpp_value.Prepare(exception_state))
       return;
     impl.SetString(cpp_value);
@@ -111,3 +111,4 @@ XMLHttpRequestOrString NativeValueTraits<XMLHttpRequestOrString>::NativeValue(
 }
 
 }  // namespace blink
+

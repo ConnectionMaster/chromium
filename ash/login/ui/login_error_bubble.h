@@ -7,6 +7,8 @@
 
 #include "ash/ash_export.h"
 #include "ash/login/ui/login_base_bubble_view.h"
+#include "ash/style/ash_color_provider.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/views/view.h"
 
 namespace ash {
@@ -14,25 +16,38 @@ namespace ash {
 class ASH_EXPORT LoginErrorBubble : public LoginBaseBubbleView {
  public:
   LoginErrorBubble();
-  LoginErrorBubble(views::View* content,
-                   views::View* anchor_view,
-                   bool is_persistent);
+  LoginErrorBubble(views::View* content, views::View* anchor_view);
   ~LoginErrorBubble() override;
 
+  // If the content is theme-change sensitive, it should be updated by the
+  // class managing this instance via a new call to SetContent.
   void SetContent(views::View* content);
-
-  // LoginBaseBubbleView:
-  bool IsPersistent() const override;
-  void SetPersistent(bool persistent) override;
+  // Covers most cases where content is a simple label containing a message.
+  // The eventual theme changes will be handled internally.
+  void SetTextContent(const std::u16string& message);
+  // We set an accessible name when content is not accessible. This happens if
+  // content is a container (e.g. a text and a "learn more" button). In such a
+  // case, it will have multiple subviews but only one which needs to be read
+  // on bubble show – when the alert event occurs.
+  void set_accessible_name(const std::u16string& name) {
+    accessible_name_ = name;
+  }
 
   // views::View:
-  gfx::Size CalculatePreferredSize() const override;
   const char* GetClassName() const override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
 
+  // LoginBaseBubbleView:
+  void OnThemeChanged() override;
+
  private:
   views::View* content_ = nullptr;
-  bool is_persistent_;
+  views::ImageView* alert_icon_ = nullptr;
+
+  // Accessibility data.
+  std::u16string accessible_name_;
+
+  std::u16string message_;
 
   DISALLOW_COPY_AND_ASSIGN(LoginErrorBubble);
 };

@@ -14,7 +14,6 @@
 #include "base/process/kill.h"
 #include "headless/public/headless_devtools_channel.h"
 #include "headless/public/headless_export.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 
@@ -58,6 +57,9 @@ class HEADLESS_EXPORT HeadlessWebContents {
     // contain the exit code for the process.
     virtual void RenderProcessExited(base::TerminationStatus status,
                                      int exit_code) {}
+
+    // Invoked when HeadlessWebContents is being destroyed.
+    virtual void HeadlessWebContentsDestroyed() {}
 
    protected:
     Observer() {}

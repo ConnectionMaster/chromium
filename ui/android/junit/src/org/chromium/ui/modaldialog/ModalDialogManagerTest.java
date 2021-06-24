@@ -79,16 +79,25 @@ public class ModalDialogManagerTest {
     @Feature({"ModalDialogManagerObserver"})
     public void testModalDialogObserver() {
         // Show two dialogs and make sure show is only called on one until it is hidden.
-        verify(mObserver, times(0)).onDialogShown(mDialogModels.get(0));
+        verify(mObserver, times(0)).onDialogAdded(mDialogModels.get(0));
         mModalDialogManager.showDialog(mDialogModels.get(0), ModalDialogType.APP);
         mModalDialogManager.showDialog(mDialogModels.get(1), ModalDialogType.APP);
-        verify(mObserver, times(1)).onDialogShown(mDialogModels.get(0));
-        verify(mObserver, times(0)).onDialogShown(mDialogModels.get(1));
+        verify(mObserver, times(1)).onDialogAdded(mDialogModels.get(0));
+        verify(mObserver, times(0)).onDialogAdded(mDialogModels.get(1));
 
-        verify(mObserver, times(0)).onDialogHidden(mDialogModels.get(0));
+        verify(mObserver, times(0)).onDialogDismissed(mDialogModels.get(0));
         mModalDialogManager.dismissDialog(mDialogModels.get(0), ModalDialogType.APP);
-        verify(mObserver, times(1)).onDialogHidden(mDialogModels.get(0));
-        verify(mObserver, times(1)).onDialogShown(mDialogModels.get(1));
+        verify(mObserver, times(1)).onDialogDismissed(mDialogModels.get(0));
+        verify(mObserver, times(1)).onDialogAdded(mDialogModels.get(1));
+
+        mModalDialogManager.dismissDialog(mDialogModels.get(1), ModalDialogType.APP);
+        // Calling the same function again, as well as dismissDialogsOfType() should not trigger
+        // notifying of empty (because onLastDialogDismissed() was already called once, and a new
+        // dialog wasn't added).
+        mModalDialogManager.dismissDialog(mDialogModels.get(1), ModalDialogType.APP);
+        mModalDialogManager.dismissDialogsOfType(
+                ModalDialogType.APP, DialogDismissalCause.ACTIVITY_DESTROYED);
+        verify(mObserver, times(1)).onLastDialogDismissed();
     }
 
     /** Tests showing a dialog when no dialog is currently showing. */
@@ -369,12 +378,12 @@ public class ModalDialogManagerTest {
         mModalDialogManager.showDialog(mDialogModels.get(2), ModalDialogType.TAB);
 
         // Suspend all tab modal dialogs.
-        mModalDialogManager.suspendType(ModalDialogType.TAB);
+        int token = mModalDialogManager.suspendType(ModalDialogType.TAB);
         assertFalse(mModalDialogManager.isShowing());
         assertEquals(3, mModalDialogManager.getPendingDialogsForTest(ModalDialogType.TAB).size());
 
         // Resume tab modal dialogs.
-        mModalDialogManager.resumeType(ModalDialogType.TAB);
+        mModalDialogManager.resumeType(ModalDialogType.TAB, token);
         assertEquals(mDialogModels.get(0), mModalDialogManager.getCurrentDialogForTest());
         assertEquals(2, mModalDialogManager.getPendingDialogsForTest(ModalDialogType.TAB).size());
     }

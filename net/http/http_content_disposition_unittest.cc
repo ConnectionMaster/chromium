@@ -4,7 +4,7 @@
 
 #include "net/http/http_content_disposition.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -497,6 +497,17 @@ TEST(HttpContentDispositionTest, ParseResult) {
                                     << " with header " << test_case.header);
     EXPECT_EQ(test_case.expected_flags, result);
   }
+}
+
+TEST(HttpContentDispositionTest, ContainsNul) {
+  const char kHeader[] = "filename=ab\0c";
+  const char kExpectedFilename[] = "ab\0c";
+  // Note: both header and expected_filename include the trailing NUL.
+  std::string header{kHeader, sizeof(kHeader)};
+  std::string expected_filename{kExpectedFilename, sizeof(kExpectedFilename)};
+
+  HttpContentDisposition content_disposition(header, "utf-8");
+  EXPECT_EQ(expected_filename, content_disposition.filename());
 }
 
 }  // namespace net

@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/test_enum_or_double.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -44,7 +44,7 @@ const String& TestEnumOrDouble::GetAsTestEnum() const {
 void TestEnumOrDouble::SetTestEnum(const String& value) {
   DCHECK(IsNull());
   NonThrowableExceptionState exception_state;
-  const char* kValidValues[] = {
+  const char* const kValidValues[] = {
       "",
       "EnumValue1",
       "EnumValue2",
@@ -68,7 +68,7 @@ TestEnumOrDouble::TestEnumOrDouble(const TestEnumOrDouble&) = default;
 TestEnumOrDouble::~TestEnumOrDouble() = default;
 TestEnumOrDouble& TestEnumOrDouble::operator=(const TestEnumOrDouble&) = default;
 
-void TestEnumOrDouble::Trace(blink::Visitor* visitor) {
+void TestEnumOrDouble::Trace(Visitor* visitor) const {
 }
 
 void V8TestEnumOrDouble::ToImpl(
@@ -84,7 +84,7 @@ void V8TestEnumOrDouble::ToImpl(
     return;
 
   if (v8_value->IsNumber()) {
-    double cpp_value = NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state);
+    double cpp_value{ NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetDouble(cpp_value);
@@ -92,10 +92,10 @@ void V8TestEnumOrDouble::ToImpl(
   }
 
   {
-    V8StringResource<> cpp_value = v8_value;
+    V8StringResource<> cpp_value{ v8_value };
     if (!cpp_value.Prepare(exception_state))
       return;
-    const char* kValidValues[] = {
+    const char* const kValidValues[] = {
         "",
         "EnumValue1",
         "EnumValue2",
@@ -130,3 +130,4 @@ TestEnumOrDouble NativeValueTraits<TestEnumOrDouble>::NativeValue(
 }
 
 }  // namespace blink
+

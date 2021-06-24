@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_TARGET_SERVICES_H__
-#define SANDBOX_SRC_TARGET_SERVICES_H__
+#ifndef SANDBOX_WIN_SRC_TARGET_SERVICES_H_
+#define SANDBOX_WIN_SRC_TARGET_SERVICES_H_
 
 #include "base/macros.h"
 #include "sandbox/win/src/sandbox.h"
@@ -14,8 +14,6 @@ namespace sandbox {
 class ProcessState {
  public:
   ProcessState();
-  // Returns true if kernel32.dll has been loaded.
-  bool IsKernel32Loaded() const;
   // Returns true if main has been called.
   bool InitCalled() const;
   // Returns true if LowerToken has been called.
@@ -23,13 +21,14 @@ class ProcessState {
   // Returns true if Csrss is connected.
   bool IsCsrssConnected() const;
   // Set the current state.
-  void SetKernel32Loaded();
   void SetInitCalled();
   void SetRevertedToSelf();
   void SetCsrssConnected(bool csrss_connected);
 
  private:
-  int process_state_;
+  enum class ProcessStateInternal { NONE = 0, INIT_CALLED, REVERTED_TO_SELF };
+
+  ProcessStateInternal process_state_;
   bool csrss_connected_;
   DISALLOW_COPY_AND_ASSIGN(ProcessState);
 };
@@ -64,4 +63,4 @@ class TargetServicesBase : public TargetServices {
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_TARGET_SERVICES_H__
+#endif  // SANDBOX_WIN_SRC_TARGET_SERVICES_H_

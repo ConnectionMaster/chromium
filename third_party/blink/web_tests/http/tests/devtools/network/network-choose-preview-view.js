@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 
 (async function() {
+  'use strict';
   TestRunner.addResult(`Tests to make sure the proper view is used for the data that is received in network panel.\n`);
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
+  await TestRunner.loadLegacyModule('source_frame');
   await TestRunner.showPanel('network');
 
   function createNetworkRequest(mimeType, content, statusCode, resourceType) {
@@ -48,19 +50,19 @@
   await testPreviewer('application/json', '[533,3223]', 200);
 
   TestRunner.addResult('MIME JSON');
-  await testPreviewer('application/vnd.document+json', '{foo0foo: 123}', 200);
+  await testPreviewer('application/vnd.document+json', '{"foo0foo": 123}', 200);
 
   TestRunner.addResult('Simple XML');
   await testPreviewer('text/xml', '<bar><foo/></bar>', 200);
 
   TestRunner.addResult('XML MIME But JSON');
-  await testPreviewer('text/xml', '{foo0: \'barr\', \'barr\': \'fooo\'}', 200);
+  await testPreviewer('text/xml', '{"foo0": "barr", "barr": "fooo"}', 200);
 
   TestRunner.addResult('HTML MIME But JSON');
-  await testPreviewer('text/html', '{hi: "hi"}', 200);
+  await testPreviewer('text/html', '{"hi": "hi"}', 200);
 
   TestRunner.addResult('TEXT MIME But JSON');
-  await testPreviewer('text/html', '{hi: "hi"}', 200);
+  await testPreviewer('text/html', '{"hi": "hi"}', 200);
 
   TestRunner.addResult('HTML MIME With 500 error');
   await testPreviewer('text/html', 'This\n<b>is a </b><br /><br />test.', 500);
@@ -78,7 +80,7 @@
   await testPreviewer('text/foobar', 'Foo Bar', 500);
 
   TestRunner.addResult('Binary Image File');
-  await testPreviewer('image/png', 'Bin\0ary\1 File\0\0', 200);
+  await testPreviewer('image/png', 'Bin\0ary\x01 File\0\0', 200);
 
   TestRunner.addResult('Binary Blank Image File');
   await testPreviewer('image/png', '', 200);

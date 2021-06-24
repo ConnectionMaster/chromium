@@ -17,7 +17,6 @@
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/task/post_task.h"
 #include "chrome/common/chrome_switches.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -204,7 +203,7 @@ WebRtcRemoteEventLogManager::WebRtcRemoteEventLogManager(
       uploading_supported_for_connection_type_(false),
       scheduled_upload_tasks_(0),
       uploader_factory_(
-          std::make_unique<WebRtcEventLogUploaderImpl::Factory>()),
+          std::make_unique<WebRtcEventLogUploaderImpl::Factory>(task_runner)),
       task_runner_(task_runner),
       weak_ptr_factory_(
           std::make_unique<base::WeakPtrFactory<WebRtcRemoteEventLogManager>>(
@@ -285,7 +284,10 @@ void WebRtcRemoteEventLogManager::EnableForBrowserContext(
   DCHECK(network_connection_tracker_)
       << "SetNetworkConnectionTracker not called.";
   DCHECK(log_file_writer_factory_) << "SetLogFileWriterFactory() not called.";
-  DCHECK(!BrowserContextEnabled(browser_context_id)) << "Already enabled.";
+
+  if (BrowserContextEnabled(browser_context_id)) {
+    return;
+  }
 
   const base::FilePath remote_bound_logs_dir =
       GetRemoteBoundWebRtcEventLogsDir(browser_context_dir);
@@ -353,7 +355,7 @@ void WebRtcRemoteEventLogManager::DisableForBrowserContext(
   ManageUploadSchedule();
 }
 
-bool WebRtcRemoteEventLogManager::PeerConnectionAdded(
+bool WebRtcRemoteEventLogManager::OnPeerConnectionAdded(
     const PeerConnectionKey& key) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
@@ -367,7 +369,7 @@ bool WebRtcRemoteEventLogManager::PeerConnectionAdded(
   return result.second;
 }
 
-bool WebRtcRemoteEventLogManager::PeerConnectionRemoved(
+bool WebRtcRemoteEventLogManager::OnPeerConnectionRemoved(
     const PeerConnectionKey& key) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
@@ -387,7 +389,7 @@ bool WebRtcRemoteEventLogManager::PeerConnectionRemoved(
   return true;
 }
 
-bool WebRtcRemoteEventLogManager::PeerConnectionSessionIdSet(
+bool WebRtcRemoteEventLogManager::OnPeerConnectionSessionIdSet(
     const PeerConnectionKey& key,
     const std::string& session_id) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
@@ -404,12 +406,13 @@ bool WebRtcRemoteEventLogManager::PeerConnectionSessionIdSet(
     return false;  // Unknown peer connection; already closed?
   }
 
-  if (!peer_connection->second.empty()) {
-    LOG(ERROR) << "Session ID already set.";
+  if (peer_connection->second.empty()) {
+    peer_connection->second = session_id;
+  } else if (session_id != peer_connection->second) {
+    LOG(ERROR) << "Session ID already set to " << peer_connection->second
+               << ". Cannot change to " << session_id << ".";
     return false;
   }
-
-  peer_connection->second = session_id;
 
   return true;
 }
@@ -450,7 +453,10 @@ bool WebRtcRemoteEventLogManager::StartRemoteLogging(
   }
 
   if (!BrowserContextEnabled(browser_context_id)) {
-    *error_message = kStartRemoteLoggingFailureGeneric;
+    // Remote-bound event logging has either not yet been enabled for this
+    // BrowserContext, or has been recently disabled. This error should not
+    // really be reached, barring a timing issue.
+    *error_message = kStartRemoteLoggingFailureLoggingDisabledBrowserContext;
     UmaRecordWebRtcEventLoggingApi(
         WebRtcEventLoggingApiUma::kDisabledBrowserContext);
     return false;
@@ -478,10 +484,7 @@ bool WebRtcRemoteEventLogManager::StartRemoteLogging(
   PrunePendingLogs();
 
   if (!AdditionalActiveLogAllowed(key.browser_context_id)) {
-    // Intentionally use a generic error, so as to not leak information such
-    // as there being too many other peer connections on other tabs that might
-    // also be logging.
-    *error_message = kStartRemoteLoggingFailureGeneric;
+    *error_message = kStartRemoteLoggingFailureNoAdditionalActiveLogsAllowed;
     UmaRecordWebRtcEventLoggingApi(
         WebRtcEventLoggingApiUma::kNoAdditionalLogsAllowed);
     return false;
@@ -541,9 +544,10 @@ void WebRtcRemoteEventLogManager::GetHistory(
   std::vector<UploadList::UploadInfo> history;
 
   if (!BrowserContextEnabled(browser_context_id)) {
-    LOG(ERROR) << "Unknown |browser_context_id|.";
-    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                             base::BindOnce(std::move(reply), history));
+    // Either the browser context is unknown, or more likely, it's not
+    // enabled for remote logging.
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(std::move(reply), history));
     return;
   }
 
@@ -591,8 +595,8 @@ void WebRtcRemoteEventLogManager::GetHistory(
   };
   std::sort(history.begin(), history.end(), cmp);
 
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                           base::BindOnce(std::move(reply), history));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(reply), history));
 }
 
 void WebRtcRemoteEventLogManager::RemovePendingLogsForNotEnabledBrowserContext(
@@ -602,7 +606,7 @@ void WebRtcRemoteEventLogManager::RemovePendingLogsForNotEnabledBrowserContext(
   DCHECK(!BrowserContextEnabled(browser_context_id));
   const base::FilePath remote_bound_logs_dir =
       GetRemoteBoundWebRtcEventLogsDir(browser_context_dir);
-  if (!base::DeleteFile(remote_bound_logs_dir, /*recursive=*/true)) {
+  if (!base::DeletePathRecursively(remote_bound_logs_dir)) {
     LOG(ERROR) << "Failed to delete  `" << remote_bound_logs_dir << ".";
   }
 }
@@ -664,17 +668,16 @@ void WebRtcRemoteEventLogManager::SetWebRtcEventLogUploaderFactoryForTesting(
 void WebRtcRemoteEventLogManager::UploadConditionsHoldForTesting(
     base::OnceCallback<void(bool)> callback) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
-      base::BindOnce(std::move(callback), UploadConditionsHold()));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), UploadConditionsHold()));
 }
 
 void WebRtcRemoteEventLogManager::ShutDownForTesting(base::OnceClosure reply) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   weak_ptr_factory_->InvalidateWeakPtrs();
   weak_ptr_factory_.reset();
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                           base::BindOnce(std::move(reply)));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(reply)));
 }
 
 bool WebRtcRemoteEventLogManager::AreLogParametersValid(
@@ -746,7 +749,7 @@ WebRtcRemoteEventLogManager::CloseLogFile(LogFilesMap::iterator it,
       DCHECK(emplace_result.second);  // No pre-existing entry.
     } else {
       const base::FilePath log_file_path = it->second->path();
-      if (!base::DeleteFile(log_file_path, /*recursive=*/false)) {
+      if (!base::DeleteFile(log_file_path)) {
         LOG(ERROR) << "Failed to delete " << log_file_path << ".";
       }
     }
@@ -832,14 +835,14 @@ void WebRtcRemoteEventLogManager::LoadLogsDirectory(
     }
 
     // Remove the log file itself.
-    if (!base::DeleteFile(log_file_path, /*recursive=*/false)) {
+    if (!base::DeleteFile(log_file_path)) {
       LOG(ERROR) << "Failed to delete " << file_to_delete.first << ".";
     }
   }
 
   // Remove expired history files.
   for (const base::FilePath& history_file_path : history_files_to_delete) {
-    if (!base::DeleteFile(history_file_path, /*recursive=*/false)) {
+    if (!base::DeleteFile(history_file_path)) {
       LOG(ERROR) << "Failed to delete " << history_file_path << ".";
     }
   }
@@ -972,7 +975,7 @@ WebRtcRemoteEventLogManager::PruneAndLoadHistoryFilesForBrowserContext(
   }
 
   for (const base::FilePath& path : files_to_delete) {
-    if (!base::DeleteFile(path, /*recursive=*/false)) {
+    if (!base::DeleteFile(path)) {
       LOG(ERROR) << "Failed to delete " << path << ".";
     }
   }
@@ -1006,7 +1009,7 @@ bool WebRtcRemoteEventLogManager::StartWritingLog(
 
   if (base::PathExists(log_path)) {
     LOG(ERROR) << "Previously used ID selected.";
-    *error_message_out = kStartRemoteLoggingFailureGeneric;
+    *error_message_out = kStartRemoteLoggingFailureFilePathUsedLog;
     UmaRecordWebRtcEventLoggingApi(
         WebRtcEventLoggingApiUma::kLogPathNotAvailable);
     return false;
@@ -1016,7 +1019,7 @@ bool WebRtcRemoteEventLogManager::StartWritingLog(
       GetWebRtcEventLogHistoryFilePath(log_path);
   if (base::PathExists(history_file_path)) {
     LOG(ERROR) << "Previously used ID selected.";
-    *error_message_out = kStartRemoteLoggingFailureGeneric;
+    *error_message_out = kStartRemoteLoggingFailureFilePathUsedHistory;
     UmaRecordWebRtcEventLoggingApi(
         WebRtcEventLoggingApiUma::kHistoryPathNotAvailable);
     return false;
@@ -1027,9 +1030,8 @@ bool WebRtcRemoteEventLogManager::StartWritingLog(
   auto log_file =
       log_file_writer_factory_->Create(log_path, max_file_size_bytes);
   if (!log_file) {
-    // TODO(crbug.com/775415): Add UMA for exact failure type.
     LOG(ERROR) << "Failed to initialize remote-bound WebRTC event log file.";
-    *error_message_out = kStartRemoteLoggingFailureGeneric;
+    *error_message_out = kStartRemoteLoggingFailureFileCreationError;
     UmaRecordWebRtcEventLoggingApi(
         WebRtcEventLoggingApiUma::kFileCreationError);
     return false;
@@ -1061,7 +1063,7 @@ void WebRtcRemoteEventLogManager::MaybeStopRemoteLogging(
 }
 
 void WebRtcRemoteEventLogManager::PrunePendingLogs(
-    base::Optional<BrowserContextId> browser_context_id) {
+    absl::optional<BrowserContextId> browser_context_id) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   MaybeRemovePendingLogs(
       base::Time::Min(),
@@ -1128,7 +1130,7 @@ void WebRtcRemoteEventLogManager::MaybeCancelActiveLogs(
 void WebRtcRemoteEventLogManager::MaybeRemovePendingLogs(
     const base::Time& delete_begin,
     const base::Time& delete_end,
-    base::Optional<BrowserContextId> browser_context_id,
+    absl::optional<BrowserContextId> browser_context_id,
     bool is_cache_clear) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
@@ -1140,7 +1142,7 @@ void WebRtcRemoteEventLogManager::MaybeRemovePendingLogs(
               ? WebRtcEventLoggingUploadUma::kPendingLogDeletedDueToCacheClear
               : WebRtcEventLoggingUploadUma::kExpiredLogFileDuringSession);
 
-      if (!base::DeleteFile(it->path, /*recursive=*/false)) {
+      if (!base::DeleteFile(it->path)) {
         LOG(ERROR) << "Failed to delete " << it->path << ".";
       }
 
@@ -1187,24 +1189,15 @@ void WebRtcRemoteEventLogManager::MaybeCancelUpload(
     return;
   }
 
-  // Cancel the upload.
-  // * If the upload has asynchronously completed by now, the uploader would
-  //   have posted a task back to our queue to delete it and move on to the
-  //   next file; cancellation is reported as unsuccessful in that case. In that
-  //   case, we avoid resetting |uploader_| until that callback task executes.
-  // * If the upload was still underway when we cancelled it, then we can
-  //   safely reset |uploader_| and move on to the next file the next time
-  //   ManageUploadSchedule() is called.
-  const bool cancelled = uploader_->Cancel();
-  if (cancelled) {
-    uploader_.reset();
-  }
+  // Cancel the upload. `uploader_` will be released when the callback,
+  // `OnWebRtcEventLogUploadComplete`, is posted back.
+  uploader_->Cancel();
 }
 
 bool WebRtcRemoteEventLogManager::MatchesFilter(
     BrowserContextId log_browser_context_id,
     const base::Time& log_last_modification,
-    base::Optional<BrowserContextId> filter_browser_context_id,
+    absl::optional<BrowserContextId> filter_browser_context_id,
     const base::Time& filter_range_begin,
     const base::Time& filter_range_end) const {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
@@ -1318,6 +1311,7 @@ void WebRtcRemoteEventLogManager::MaybeStartUploading() {
     // TODO(crbug.com/775415): Rename the file before uploading, so that we
     // would not retry the upload after restarting Chrome, if the upload is
     // interrupted.
+    currently_uploaded_file_ = pending_logs_.begin()->path;
     uploader_ =
         uploader_factory_->Create(*pending_logs_.begin(), std::move(callback));
     pending_logs_.erase(pending_logs_.begin());
@@ -1331,7 +1325,20 @@ void WebRtcRemoteEventLogManager::OnWebRtcEventLogUploadComplete(
     bool upload_successful) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   DCHECK(uploader_);
+
+  // Make sure this callback refers to the currently uploaded file. This might
+  // not be the case if the upload was cancelled right after succeeding, in
+  // which case we'll get two callbacks, one reporting success and one failure.
+  // It can also be that the uploader was cancelled more than once, e.g. if
+  // the user cleared cache while PrefService were changing.
+  if (!uploader_ ||
+      uploader_->GetWebRtcLogFileInfo().path != currently_uploaded_file_) {
+    return;
+  }
+
   uploader_.reset();
+  currently_uploaded_file_.clear();
+
   ManageUploadSchedule();
 }
 

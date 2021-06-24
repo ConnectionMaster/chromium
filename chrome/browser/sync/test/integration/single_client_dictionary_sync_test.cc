@@ -4,42 +4,36 @@
 
 #include "base/macros.h"
 #include "chrome/browser/sync/test/integration/dictionary_helper.h"
-#include "chrome/browser/sync/test/integration/feature_toggler.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
-#include "components/sync/driver/profile_sync_service.h"
-#include "components/sync/driver/sync_driver_switches.h"
+#include "components/sync/driver/sync_service_impl.h"
+#include "content/public/test/browser_test.h"
+#include "testing/gmock/include/gmock/gmock.h"
 
 namespace {
 
-class SingleClientDictionarySyncTest : public FeatureToggler, public SyncTest {
- public:
-  SingleClientDictionarySyncTest()
-      : FeatureToggler(switches::kSyncPseudoUSSDictionary),
-        SyncTest(SINGLE_CLIENT) {}
-  ~SingleClientDictionarySyncTest() override {}
+using testing::ElementsAre;
+using testing::IsEmpty;
 
- private:
-  DISALLOW_COPY_AND_ASSIGN(SingleClientDictionarySyncTest);
+class SingleClientDictionarySyncTest : public SyncTest {
+ public:
+  SingleClientDictionarySyncTest() : SyncTest(SINGLE_CLIENT) {}
+  ~SingleClientDictionarySyncTest() override = default;
 };
 
-IN_PROC_BROWSER_TEST_P(SingleClientDictionarySyncTest, Sanity) {
+IN_PROC_BROWSER_TEST_F(SingleClientDictionarySyncTest, Sanity) {
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
   dictionary_helper::LoadDictionaries();
-  ASSERT_TRUE(dictionary_helper::DictionariesMatch());
+  EXPECT_THAT(dictionary_helper::GetDictionaryWords(0), IsEmpty());
 
-  std::string word = "foo";
-  ASSERT_TRUE(dictionary_helper::AddWord(0, word));
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
-  ASSERT_TRUE(dictionary_helper::DictionariesMatch());
+  const std::string word = "foo";
+  EXPECT_TRUE(dictionary_helper::AddWord(0, word));
+  EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  EXPECT_THAT(dictionary_helper::GetDictionaryWords(0), ElementsAre(word));
 
-  ASSERT_TRUE(dictionary_helper::RemoveWord(0, word));
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
-  ASSERT_TRUE(dictionary_helper::DictionariesMatch());
+  EXPECT_TRUE(dictionary_helper::RemoveWord(0, word));
+  EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  EXPECT_THAT(dictionary_helper::GetDictionaryWords(0), IsEmpty());
 }
-
-INSTANTIATE_TEST_SUITE_P(USS,
-                         SingleClientDictionarySyncTest,
-                         ::testing::Values(false, true));
 
 }  // namespace

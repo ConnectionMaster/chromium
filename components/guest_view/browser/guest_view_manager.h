@@ -121,10 +121,13 @@ class GuestViewManager : public content::BrowserPluginGuestManager,
   content::SiteInstance* GetGuestSiteInstance(
       const GURL& guest_site);
 
+  content::WebContents* GetGuestByInstanceID(int owner_process_id,
+                                             int element_instance_id);
+
   // BrowserPluginGuestManager implementation.
-  content::WebContents* GetGuestByInstanceID(
-      int owner_process_id,
-      int element_instance_id) override;
+  void ForEachUnattachedGuest(
+      content::WebContents* owner_web_contents,
+      base::RepeatingCallback<void(content::WebContents*)> callback) override;
   bool ForEachGuest(content::WebContents* owner_web_contents,
                     const GuestCallback& callback) override;
   content::WebContents* GetFullPageGuest(
@@ -266,7 +269,7 @@ class GuestViewManager : public content::BrowserPluginGuestManager,
 
   // This is used to ensure that an EmbedderRenderProcessHostObserver will not
   // call into this GuestViewManager after it has been destroyed.
-  base::WeakPtrFactory<GuestViewManager> weak_ptr_factory_;
+  base::WeakPtrFactory<GuestViewManager> weak_ptr_factory_{this};
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GuestViewManager);

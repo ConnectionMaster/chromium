@@ -14,7 +14,6 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "ui/display/types/display_snapshot.h"
-#include "ui/ozone/common/gpu/ozone_gpu_message_params.h"
 #include "ui/ozone/platform/drm/common/display_types.h"
 #include "ui/ozone/platform/drm/common/scoped_drm_types.h"
 
@@ -22,7 +21,6 @@ typedef struct _drmModeModeInfo drmModeModeInfo;
 
 namespace display {
 class DisplayMode;
-class EdidParser;
 }  // namespace display
 
 namespace gfx {
@@ -30,18 +28,6 @@ class Point;
 }
 
 namespace ui {
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class EdidColorSpaceChecksOutcome {
-  kSuccess = 0,
-  kErrorBadCoordinates = 1,
-  kErrorPrimariesAreaTooSmall = 2,
-  kErrorBluePrimaryIsBroken = 3,
-  kErrorCannotExtractToXYZD50 = 4,
-  kErrorBadGamma = 5,
-  kMaxValue = kErrorBadGamma
-};
 
 // Representation of the information required to initialize and configure a
 // native display. |index| is the position of the connection and will be
@@ -93,13 +79,6 @@ std::unique_ptr<display::DisplaySnapshot> CreateDisplaySnapshot(
     size_t device_index,
     const gfx::Point& origin);
 
-std::unique_ptr<display::DisplaySnapshot> CreateDisplaySnapshot(
-    const DisplaySnapshot_Params& params);
-
-// Creates a serialized version of MovableDisplaySnapshots for IPC transmission.
-std::vector<DisplaySnapshot_Params> CreateDisplaySnapshotParams(
-    const MovableDisplaySnapshots& displays);
-
 int GetFourCCFormatForOpaqueFramebuffer(gfx::BufferFormat format);
 
 gfx::Size GetMaximumCursorSize(int fd);
@@ -110,11 +89,6 @@ ScopedDrmPropertyPtr FindDrmProperty(int fd,
 
 bool HasColorCorrectionMatrix(int fd, drmModeCrtc* crtc);
 
-DisplayMode_Params GetDisplayModeParams(const display::DisplayMode& mode);
-
-std::unique_ptr<display::DisplayMode> CreateDisplayModeFromParams(
-    const DisplayMode_Params& pmode);
-
 bool MatchMode(const display::DisplayMode& display_mode,
                const drmModeModeInfo& m);
 
@@ -124,21 +98,9 @@ float ModeRefreshRate(const drmModeModeInfo& mode);
 
 bool ModeIsInterlaced(const drmModeModeInfo& mode);
 
-OverlaySurfaceCandidateList CreateOverlaySurfaceCandidateListFrom(
-    const std::vector<OverlayCheck_Params>& params);
+uint64_t GetEnumValueForName(int fd, int property_id, const char* str);
 
-std::vector<OverlayCheck_Params> CreateParamsFromOverlaySurfaceCandidate(
-    const OverlaySurfaceCandidateList& candidates);
-
-OverlayStatusList CreateOverlayStatusListFrom(
-    const std::vector<OverlayCheckReturn_Params>& params);
-
-std::vector<OverlayCheckReturn_Params> CreateParamsFromOverlayStatusList(
-    const OverlayStatusList& returns);
-
-// Uses |edid_parser| to extract a gfx::ColorSpace which will be IsValid() if
-// both gamma and the color primaries were correctly found.
-gfx::ColorSpace GetColorSpaceFromEdid(const display::EdidParser& edid_parser);
+std::vector<uint64_t> ParsePathBlob(const drmModePropertyBlobRes& path_blob);
 
 }  // namespace ui
 

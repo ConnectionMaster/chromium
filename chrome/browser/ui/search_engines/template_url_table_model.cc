@@ -7,10 +7,11 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/i18n/rtl.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -18,7 +19,7 @@
 
 TemplateURLTableModel::TemplateURLTableModel(
     TemplateURLService* template_url_service)
-    : observer_(NULL), template_url_service_(template_url_service) {
+    : observer_(nullptr), template_url_service_(template_url_service) {
   DCHECK(template_url_service);
   template_url_service_->AddObserver(this);
   template_url_service_->Load();
@@ -33,24 +34,37 @@ void TemplateURLTableModel::Reload() {
   TemplateURL::TemplateURLVector urls =
       template_url_service_->GetTemplateURLs();
 
-  TemplateURL::TemplateURLVector default_entries, other_entries,
+  TemplateURL::TemplateURLVector default_entries, active_entries, other_entries,
       extension_entries;
   // Keywords that can be made the default first.
   for (auto* template_url : urls) {
-    if (template_url_service_->ShowInDefaultList(template_url))
+    if (template_url_service_->ShowInDefaultList(template_url)) {
       default_entries.push_back(template_url);
-    else if (template_url->type() == TemplateURL::OMNIBOX_API_EXTENSION)
+    } else if (template_url->type() == TemplateURL::OMNIBOX_API_EXTENSION) {
       extension_entries.push_back(template_url);
-    else
+    } else if (OmniboxFieldTrial::IsActiveSearchEnginesEnabled() &&
+               (!template_url->safe_for_autoreplace() ||
+                template_url->usage_count() > 0)) {
+      // An entry is "active" if it has ever been used or manually
+      // added/modified. |safe_for_autoreplace| is false if the entry has been
+      // modified.
+      active_entries.push_back(template_url);
+    } else {
       other_entries.push_back(template_url);
+    }
   }
 
   last_search_engine_index_ = static_cast<int>(default_entries.size());
-  last_other_engine_index_ = last_search_engine_index_ +
-      static_cast<int>(other_entries.size());
+  last_active_engine_index_ =
+      last_search_engine_index_ + static_cast<int>(active_entries.size());
+  last_other_engine_index_ =
+      last_active_engine_index_ + static_cast<int>(other_entries.size());
 
   entries_.clear();
   std::move(default_entries.begin(), default_entries.end(),
+            std::back_inserter(entries_));
+
+  std::move(active_entries.begin(), active_entries.end(),
             std::back_inserter(entries_));
 
   std::move(other_entries.begin(), other_entries.end(),
@@ -67,11 +81,11 @@ int TemplateURLTableModel::RowCount() {
   return static_cast<int>(entries_.size());
 }
 
-base::string16 TemplateURLTableModel::GetText(int row, int col_id) {
+std::u16string TemplateURLTableModel::GetText(int row, int col_id) {
   DCHECK(row >= 0 && row < RowCount());
   const TemplateURL* url = entries_[row];
   if (col_id == IDS_SEARCH_ENGINES_EDITOR_DESCRIPTION_COLUMN) {
-    base::string16 url_short_name = url->short_name();
+    std::u16string url_short_name = url->short_name();
     // TODO(xji): Consider adding a special case if the short name is a URL,
     // since those should always be displayed LTR. Please refer to
     // http://crbug.com/6726 for more information.
@@ -96,8 +110,8 @@ void TemplateURLTableModel::Remove(int index) {
 }
 
 void TemplateURLTableModel::Add(int index,
-                                const base::string16& short_name,
-                                const base::string16& keyword,
+                                const std::u16string& short_name,
+                                const std::u16string& keyword,
                                 const std::string& url) {
   DCHECK(index >= 0 && index <= RowCount());
   DCHECK(!url.empty());
@@ -109,8 +123,8 @@ void TemplateURLTableModel::Add(int index,
 }
 
 void TemplateURLTableModel::ModifyTemplateURL(int index,
-                                              const base::string16& title,
-                                              const base::string16& keyword,
+                                              const std::u16string& title,
+                                              const std::u16string& keyword,
                                               const std::string& url) {
   DCHECK(index >= 0 && index <= RowCount());
   DCHECK(!url.empty());
@@ -127,8 +141,8 @@ TemplateURL* TemplateURLTableModel::GetTemplateURL(int index) {
   // Sanity checks for https://crbug.com/781703.
   CHECK_GE(index, 0);
   CHECK_LT(static_cast<size_t>(index), entries_.size());
-  CHECK(base::ContainsValue(template_url_service_->GetTemplateURLs(),
-                            entries_[index]))
+  CHECK(
+      base::Contains(template_url_service_->GetTemplateURLs(), entries_[index]))
       << "TemplateURLTableModel is returning a pointer to a TemplateURL "
          "that has already been freed by TemplateURLService.";
 

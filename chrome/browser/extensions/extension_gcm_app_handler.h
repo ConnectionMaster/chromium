@@ -11,12 +11,13 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
-#include "components/gcm_driver/common/gcm_messages.h"
+#include "base/scoped_observation.h"
+#include "components/gcm_driver/common/gcm_message.h"
 #include "components/gcm_driver/gcm_app_handler.h"
 #include "components/gcm_driver/gcm_client.h"
 #include "components/gcm_driver/instance_id/instance_id.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 
 class Profile;
@@ -34,7 +35,6 @@ class InstanceIDDriver;
 
 namespace extensions {
 
-class ExtensionRegistry;
 class GcmJsEventRouter;
 
 // Defines the interface to provide handling logic for a given app.
@@ -98,12 +98,12 @@ class ExtensionGCMAppHandler : public gcm::GCMAppHandler,
   Profile* profile_;
 
   // Listen to extension load, unloaded notifications.
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   std::unique_ptr<extensions::GcmJsEventRouter> js_event_router_;
 
-  base::WeakPtrFactory<ExtensionGCMAppHandler> weak_factory_;
+  base::WeakPtrFactory<ExtensionGCMAppHandler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionGCMAppHandler);
 };

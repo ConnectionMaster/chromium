@@ -4,6 +4,8 @@
 
 #include "chromeos/services/multidevice_setup/feature_state_manager.h"
 
+#include "chromeos/components/multidevice/logging/logging.h"
+
 namespace chromeos {
 
 namespace multidevice_setup {
@@ -18,12 +20,17 @@ bool FeatureStateManager::SetFeatureEnabledState(mojom::Feature feature,
 
   // Changing the state is only allowed when changing from enabled to disabled
   // or disabled to enabled.
-  if ((state == mojom::FeatureState::kEnabledByUser && !enabled) ||
+  if ((((state == mojom::FeatureState::kEnabledByUser) ||
+        (state == mojom::FeatureState::kFurtherSetupRequired)) &&
+       !enabled) ||
       (state == mojom::FeatureState::kDisabledByUser && enabled)) {
     PerformSetFeatureEnabledState(feature, enabled);
     return true;
   }
 
+  PA_LOG(ERROR) << __func__ << ": Cannot set feature " << feature
+                << " state from " << state << " to "
+                << (enabled ? "enabled" : "disabled");
   return false;
 }
 

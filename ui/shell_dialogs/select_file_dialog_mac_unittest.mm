@@ -4,16 +4,17 @@
 
 #import "ui/shell_dialogs/select_file_dialog_mac.h"
 
-#include <vector>
-
 #include "base/files/file_util.h"
 #import "base/mac/foundation_util.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/ref_counted.h"
+#include "base/run_loop.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/task_environment.h"
+#include "components/remote_cocoa/app_shim/select_file_dialog_bridge.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 
@@ -24,8 +25,8 @@ namespace {
 const int kFileTypePopupTag = 1234;
 
 // Returns a vector containing extension descriptions for a given popup.
-std::vector<base::string16> GetExtensionDescriptionList(NSPopUpButton* popup) {
-  std::vector<base::string16> extension_descriptions;
+std::vector<std::u16string> GetExtensionDescriptionList(NSPopUpButton* popup) {
+  std::vector<std::u16string> extension_descriptions;
   for (NSString* description in [popup itemTitles])
     extension_descriptions.push_back(base::SysNSStringToUTF16(description));
   return extension_descriptions;
@@ -52,7 +53,7 @@ std::vector<T> GetVectorFromArray(const T (&data)[N]) {
 // SelectFileDialogImpl::SelectFileImpl.
 struct FileDialogArguments {
   ui::SelectFileDialog::Type type;
-  base::string16 title;
+  std::u16string title;
   base::FilePath default_path;
   ui::SelectFileDialog::FileTypeInfo* file_types;
   int file_type_index;
@@ -65,7 +66,7 @@ struct FileDialogArguments {
 // appropriate default values.
 FileDialogArguments GetDefaultArguments() {
   return {ui::SelectFileDialog::SELECT_SAVEAS_FILE,
-          base::ASCIIToUTF16(""),
+          u"",
           base::FilePath(),
           nullptr,
           0,
@@ -92,12 +93,15 @@ class SelectFileDialogMacTest : public testing::Test,
                     void* params) override {}
 
  protected:
+  base::test::TaskEnvironment task_environment_;
+
   // Helper method to launch a dialog with the given |args|.
   void SelectFileWithParams(FileDialogArguments args) {
     dialog_->SelectFile(args.type, args.title, args.default_path,
                         args.file_types, args.file_type_index,
                         args.default_extension, args.owning_window,
                         args.params);
+    base::RunLoop().RunUntilIdle();
   }
 
   // Returns the number of panels currently active.
@@ -105,16 +109,17 @@ class SelectFileDialogMacTest : public testing::Test,
     return dialog_->dialog_data_list_.size();
   }
 
-  // Returns one of the created NSSavePanel. If multiple SelectFile calls were
-  // made on the same |dialog_| object, any of the created NSSavePanel will be
-  // returned.
+  // Returns the most recently created NSSavePanel.
   NSSavePanel* GetPanel() const {
     DCHECK_GE(GetActivePanelCount(), 1lu);
-    return dialog_->dialog_data_list_.begin()
-        ->save_panel_bridge->GetNativePanelForTesting();
+    return remote_cocoa::SelectFileDialogBridge::
+        GetLastCreatedNativePanelForTesting();
   }
 
-  void ResetDialog() { dialog_ = new SelectFileDialogImpl(this, nullptr); }
+  void ResetDialog() {
+    dialog_ = new SelectFileDialogImpl(this, nullptr);
+    base::RunLoop().RunUntilIdle();
+  }
 
  private:
   scoped_refptr<SelectFileDialogImpl> dialog_;
@@ -126,8 +131,7 @@ class SelectFileDialogMacTest : public testing::Test,
 // popup item changes the allowed file types.
 TEST_F(SelectFileDialogMacTest, ExtensionPopup) {
   const std::string extensions_arr[][2] = {{"html", "htm"}, {"jpeg", "jpg"}};
-  const base::string16 extension_descriptions_arr[] = {
-      base::ASCIIToUTF16("Webpage"), base::ASCIIToUTF16("Image")};
+  const std::u16string extension_descriptions_arr[] = {u"Webpage", u"Image"};
 
   SelectFileDialog::FileTypeInfo file_type_info;
   file_type_info.extensions.push_back(
@@ -135,7 +139,7 @@ TEST_F(SelectFileDialogMacTest, ExtensionPopup) {
   file_type_info.extensions.push_back(
       GetVectorFromArray<std::string>(extensions_arr[1]));
   file_type_info.extension_description_overrides =
-      GetVectorFromArray<base::string16>(extension_descriptions_arr);
+      GetVectorFromArray<std::u16string>(extension_descriptions_arr);
   file_type_info.include_all_files = false;
 
   FileDialogArguments args(GetDefaultArguments());
@@ -148,7 +152,7 @@ TEST_F(SelectFileDialogMacTest, ExtensionPopup) {
   EXPECT_TRUE(popup);
 
   // Check that the dropdown list created has the correct description.
-  const std::vector<base::string16> extension_descriptions =
+  const std::vector<std::u16string> extension_descriptions =
       GetExtensionDescriptionList(popup);
   EXPECT_EQ(file_type_info.extension_description_overrides,
             extension_descriptions);
@@ -161,6 +165,9 @@ TEST_F(SelectFileDialogMacTest, ExtensionPopup) {
   EXPECT_EQ(0, [popup indexOfSelectedItem]);
   EXPECT_TRUE([[panel allowedFileTypes] containsObject:@"htm"]);
   EXPECT_TRUE([[panel allowedFileTypes] containsObject:@"html"]);
+  // Extensions should appear in order of input.
+  EXPECT_LT([[panel allowedFileTypes] indexOfObject:@"html"],
+            [[panel allowedFileTypes] indexOfObject:@"htm"]);
   EXPECT_FALSE([[panel allowedFileTypes] containsObject:@"jpg"]);
 
   // Select the second item.
@@ -168,14 +175,16 @@ TEST_F(SelectFileDialogMacTest, ExtensionPopup) {
   EXPECT_EQ(1, [popup indexOfSelectedItem]);
   EXPECT_TRUE([[panel allowedFileTypes] containsObject:@"jpg"]);
   EXPECT_TRUE([[panel allowedFileTypes] containsObject:@"jpeg"]);
+  // Extensions should appear in order of input.
+  EXPECT_LT([[panel allowedFileTypes] indexOfObject:@"jpeg"],
+            [[panel allowedFileTypes] indexOfObject:@"jpg"]);
   EXPECT_FALSE([[panel allowedFileTypes] containsObject:@"html"]);
 }
 
 // Verify file_type_info.include_all_files argument is respected.
 TEST_F(SelectFileDialogMacTest, IncludeAllFiles) {
   const std::string extensions_arr[][2] = {{"html", "htm"}, {"jpeg", "jpg"}};
-  const base::string16 extension_descriptions_arr[] = {
-      base::ASCIIToUTF16("Webpage"), base::ASCIIToUTF16("Image")};
+  const std::u16string extension_descriptions_arr[] = {u"Webpage", u"Image"};
 
   SelectFileDialog::FileTypeInfo file_type_info;
   file_type_info.extensions.push_back(
@@ -183,7 +192,7 @@ TEST_F(SelectFileDialogMacTest, IncludeAllFiles) {
   file_type_info.extensions.push_back(
       GetVectorFromArray<std::string>(extensions_arr[1]));
   file_type_info.extension_description_overrides =
-      GetVectorFromArray<base::string16>(extension_descriptions_arr);
+      GetVectorFromArray<std::u16string>(extension_descriptions_arr);
   file_type_info.include_all_files = true;
 
   FileDialogArguments args(GetDefaultArguments());
@@ -196,12 +205,12 @@ TEST_F(SelectFileDialogMacTest, IncludeAllFiles) {
   EXPECT_TRUE(popup);
 
   // Check that the dropdown list created has the correct description.
-  const std::vector<base::string16> extension_descriptions =
+  const std::vector<std::u16string> extension_descriptions =
       GetExtensionDescriptionList(popup);
   EXPECT_EQ(3lu, extension_descriptions.size());
-  EXPECT_EQ(base::ASCIIToUTF16("Webpage"), extension_descriptions[0]);
-  EXPECT_EQ(base::ASCIIToUTF16("Image"), extension_descriptions[1]);
-  EXPECT_EQ(base::ASCIIToUTF16("All Files"), extension_descriptions[2]);
+  EXPECT_EQ(u"Webpage", extension_descriptions[0]);
+  EXPECT_EQ(u"Image", extension_descriptions[1]);
+  EXPECT_EQ(u"All Files", extension_descriptions[2]);
 
   // Ensure other file types are allowed.
   EXPECT_TRUE([panel allowsOtherFileTypes]);
@@ -219,8 +228,7 @@ TEST_F(SelectFileDialogMacTest, IncludeAllFiles) {
 // appropriate extension group to be initially selected.
 TEST_F(SelectFileDialogMacTest, InitialSelection) {
   const std::string extensions_arr[][2] = {{"html", "htm"}, {"jpeg", "jpg"}};
-  const base::string16 extension_descriptions_arr[] = {
-      base::ASCIIToUTF16("Webpage"), base::ASCIIToUTF16("Image")};
+  const std::u16string extension_descriptions_arr[] = {u"Webpage", u"Image"};
 
   SelectFileDialog::FileTypeInfo file_type_info;
   file_type_info.extensions.push_back(
@@ -228,7 +236,7 @@ TEST_F(SelectFileDialogMacTest, InitialSelection) {
   file_type_info.extensions.push_back(
       GetVectorFromArray<std::string>(extensions_arr[1]));
   file_type_info.extension_description_overrides =
-      GetVectorFromArray<base::string16>(extension_descriptions_arr);
+      GetVectorFromArray<std::u16string>(extension_descriptions_arr);
 
   FileDialogArguments args = GetDefaultArguments();
   args.file_types = &file_type_info;
@@ -282,9 +290,7 @@ TEST_F(SelectFileDialogMacTest, InitialSelection) {
 // extension description is passed for a given extension group.
 TEST_F(SelectFileDialogMacTest, EmptyDescription) {
   const std::string extensions_arr[][1] = {{"pdf"}, {"jpg"}, {"qqq"}};
-  const base::string16 extension_descriptions_arr[] = {
-      base::ASCIIToUTF16(""), base::ASCIIToUTF16("Image"),
-      base::ASCIIToUTF16("")};
+  const std::u16string extension_descriptions_arr[] = {u"", u"Image", u""};
 
   SelectFileDialog::FileTypeInfo file_type_info;
   file_type_info.extensions.push_back(
@@ -294,7 +300,7 @@ TEST_F(SelectFileDialogMacTest, EmptyDescription) {
   file_type_info.extensions.push_back(
       GetVectorFromArray<std::string>(extensions_arr[2]));
   file_type_info.extension_description_overrides =
-      GetVectorFromArray<base::string16>(extension_descriptions_arr);
+      GetVectorFromArray<std::u16string>(extension_descriptions_arr);
 
   FileDialogArguments args(GetDefaultArguments());
   args.file_types = &file_type_info;
@@ -305,7 +311,7 @@ TEST_F(SelectFileDialogMacTest, EmptyDescription) {
   EXPECT_TRUE(popup);
 
   // Check that the dropdown list created has the correct description.
-  const std::vector<base::string16> extension_descriptions =
+  const std::vector<std::u16string> extension_descriptions =
       GetExtensionDescriptionList(popup);
   EXPECT_EQ(3lu, extension_descriptions.size());
   // Verify that the correct system description is produced for known file types
@@ -313,12 +319,11 @@ TEST_F(SelectFileDialogMacTest, EmptyDescription) {
   // string for "PDF" as the system may display:
   // - Portable Document Format (PDF)
   // - PDF document
-  EXPECT_NE(base::string16::npos,
-            extension_descriptions[0].find(base::ASCIIToUTF16("PDF")));
-  EXPECT_EQ(base::ASCIIToUTF16("Image"), extension_descriptions[1]);
+  EXPECT_NE(std::u16string::npos, extension_descriptions[0].find(u"PDF"));
+  EXPECT_EQ(u"Image", extension_descriptions[1]);
   // Verify the description for unknown file types if no extension description
   // is provided by the client.
-  EXPECT_EQ(base::ASCIIToUTF16("QQQ File (.qqq)"), extension_descriptions[2]);
+  EXPECT_EQ(u"QQQ File (.qqq)", extension_descriptions[2]);
 }
 
 // Verify that passing an empty extension list in file_type_info causes the All
@@ -334,10 +339,10 @@ TEST_F(SelectFileDialogMacTest, EmptyExtension) {
   NSPopUpButton* popup = GetPopup(panel);
   EXPECT_TRUE(popup);
 
-  const std::vector<base::string16> extension_descriptions =
+  const std::vector<std::u16string> extension_descriptions =
       GetExtensionDescriptionList(popup);
   EXPECT_EQ(1lu, extension_descriptions.size());
-  EXPECT_EQ(base::ASCIIToUTF16("All Files"), extension_descriptions[0]);
+  EXPECT_EQ(u"All Files", extension_descriptions[0]);
 
   // Ensure other file types are allowed.
   EXPECT_TRUE([panel allowsOtherFileTypes]);
@@ -423,22 +428,27 @@ TEST_F(SelectFileDialogMacTest, DialogMessage) {
 
 // Verify that multiple file dialogs are corrected handled.
 TEST_F(SelectFileDialogMacTest, MultipleDialogs) {
-  // TODO(https://crbug.com/852536): Test fails on 10.10.
-  if (base::mac::IsOS10_10())
-    return;
-
   FileDialogArguments args(GetDefaultArguments());
   SelectFileWithParams(args);
+  NSSavePanel* panel1 = GetPanel();
   SelectFileWithParams(args);
+  NSSavePanel* panel2 = GetPanel();
   EXPECT_EQ(2lu, GetActivePanelCount());
 
   // Verify closing the panel decreases the panel count.
-  NSSavePanel* panel = GetPanel();
-  [panel cancel:panel];
+  [panel1 cancel:nil];
+  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1lu, GetActivePanelCount());
 
-  panel = GetPanel();
-  [panel ok:panel];
+  // In 10.15, file picker dialogs are remote, and the restriction of apps not
+  // being allowed to OK their own file requests has been extended from just
+  // sandboxed apps to all apps. If we can test OK-ing our own dialogs, sure,
+  // but if not, at least try to close them all.
+  if (base::mac::IsAtMostOS10_14())
+    [panel2 ok:nil];
+  else
+    [panel2 cancel:nil];
+  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0lu, GetActivePanelCount());
 }
 
@@ -487,8 +497,29 @@ TEST_F(SelectFileDialogMacTest, MultipleExtension) {
   EXPECT_FALSE([panel isExtensionHidden]);
 }
 
-// Test to ensure lifetime is sound if a reference to the panel outlives the
-// delegate.
+// Verify that the file dialog does not hide extension when the
+// `keep_extension_visible` flag is set to true.
+TEST_F(SelectFileDialogMacTest, KeepExtensionVisible) {
+  const std::string extensions_arr[][2] = {{"html", "htm"}, {"jpeg", "jpg"}};
+
+  SelectFileDialog::FileTypeInfo file_type_info;
+  file_type_info.extensions.push_back(
+      GetVectorFromArray<std::string>(extensions_arr[0]));
+  file_type_info.extensions.push_back(
+      GetVectorFromArray<std::string>(extensions_arr[1]));
+  file_type_info.keep_extension_visible = true;
+
+  FileDialogArguments args(GetDefaultArguments());
+  args.file_types = &file_type_info;
+
+  SelectFileWithParams(args);
+  NSSavePanel* panel = GetPanel();
+  EXPECT_FALSE([panel canSelectHiddenExtension]);
+  EXPECT_FALSE([panel isExtensionHidden]);
+}
+
+// Test to ensure lifetime is sound if a reference to
+// the panel outlives the delegate.
 TEST_F(SelectFileDialogMacTest, Lifetime) {
   base::scoped_nsobject<NSSavePanel> panel;
   @autoreleasepool {

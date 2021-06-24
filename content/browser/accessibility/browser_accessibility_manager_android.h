@@ -5,7 +5,10 @@
 #ifndef CONTENT_BROWSER_ACCESSIBILITY_BROWSER_ACCESSIBILITY_MANAGER_ANDROID_H_
 #define CONTENT_BROWSER_ACCESSIBILITY_BROWSER_ACCESSIBILITY_MANAGER_ANDROID_H_
 
+#include <utility>
+
 #include "content/browser/accessibility/browser_accessibility_manager.h"
+#include "content/common/render_accessibility.mojom-forward.h"
 
 namespace ui {
 class MotionEventAndroid;
@@ -39,13 +42,18 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
  public:
   BrowserAccessibilityManagerAndroid(
       const ui::AXTreeUpdate& initial_tree,
-      WebContentsAccessibilityAndroid* web_contents_accessibility,
-      BrowserAccessibilityDelegate* delegate,
-      BrowserAccessibilityFactory* factory = new BrowserAccessibilityFactory());
+      base::WeakPtr<WebContentsAccessibilityAndroid> web_contents_accessibility,
+      BrowserAccessibilityDelegate* delegate);
 
   ~BrowserAccessibilityManagerAndroid() override;
 
   static ui::AXTreeUpdate GetEmptyDocument();
+
+  // Helper methods to set/check if this is running as part of a WebView.
+  void set_is_running_as_webview(bool is_webview) {
+    is_running_as_webview_ = is_webview;
+  }
+  bool IsRunningAsWebView() { return is_running_as_webview_; }
 
   // By default, the tree is pruned for a better screen reading experience,
   // including:
@@ -59,8 +67,9 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   }
   bool prune_tree_for_screen_reader() { return prune_tree_for_screen_reader_; }
 
-  void set_web_contents_accessibility(WebContentsAccessibilityAndroid* wcax) {
-    web_contents_accessibility_ = wcax;
+  void set_web_contents_accessibility(
+      base::WeakPtr<WebContentsAccessibilityAndroid> wcax) {
+    web_contents_accessibility_ = std::move(wcax);
   }
 
   bool ShouldRespectDisplayedPasswordText();
@@ -70,16 +79,18 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   bool OnHoverEvent(const ui::MotionEventAndroid& event);
 
   // BrowserAccessibilityManager overrides.
-  BrowserAccessibility* GetFocus() override;
+  BrowserAccessibility* GetFocus() const override;
   void SendLocationChangeEvents(
-      const std::vector<AccessibilityHostMsg_LocationChangeParams>& params)
-      override;
+      const std::vector<mojom::LocationChangesPtr>& changes) override;
+  BrowserAccessibility* RetargetForEvents(
+      BrowserAccessibility* node,
+      RetargetEventType type) const override;
   void FireFocusEvent(BrowserAccessibility* node) override;
   void FireBlinkEvent(ax::mojom::Event event_type,
                       BrowserAccessibility* node) override;
   void FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
                           BrowserAccessibility* node) override;
-  gfx::Rect GetViewBounds() override;
+  gfx::Rect GetViewBoundsInScreenCoordinates() const override;
 
   void FireLocationChanged(BrowserAccessibility* node);
 
@@ -100,14 +111,31 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
                              int32_t* start_index,
                              int32_t* end_index);
 
+  // Helper method to clear AccessibilityNodeInfo cache on given node
+  void ClearNodeInfoCacheForGivenId(int32_t unique_id);
+
+  // Only set on the root BrowserAccessibilityManager. Keeps track of if
+  // any node uses touch passthrough in any frame - if so, any incoming
+  // touch event needs to be processed for possible forwarding. This is
+  // just an optimization; once touch passthrough is enabled it stays
+  // on for this main frame until the page is reloaded. In the future if
+  // there's a need to optimize for touch passthrough being enabled only
+  // temporarily, this would need to be more sophisticated.
+  void EnableTouchPassthrough() { touch_passthrough_enabled_ = true; }
+  bool touch_passthrough_enabled() const { return touch_passthrough_enabled_; }
+
  private:
   // AXTreeObserver overrides.
   void OnAtomicUpdateFinished(
       ui::AXTree* tree,
       bool root_changed,
       const std::vector<ui::AXTreeObserver::Change>& changes) override;
-
-  bool UseRootScrollOffsetsWhenComputingBounds() override;
+  void OnNodeWillBeDeleted(ui::AXTree* tree, ui::AXNode* node) override;
+  void OnNodeCreated(ui::AXTree* tree, ui::AXNode* node) override;
+  void OnBoolAttributeChanged(ui::AXTree* tree,
+                              ui::AXNode* node,
+                              ax::mojom::BoolAttribute attr,
+                              bool new_value) override;
 
   WebContentsAccessibilityAndroid* GetWebContentsAXFromRootManager();
 
@@ -118,13 +146,21 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   // Handle a hover event from the renderer process.
   void HandleHoverEvent(BrowserAccessibility* node);
 
-  // Pointer to WebContentsAccessibility for reaching Java layer.
+  // A weak reference to WebContentsAccessibility for reaching Java layer.
   // Only the root manager has the reference. Should be accessed through
   // |GetWebContentsAXFromRootManager| rather than directly.
-  WebContentsAccessibilityAndroid* web_contents_accessibility_;
+  base::WeakPtr<WebContentsAccessibilityAndroid> web_contents_accessibility_;
 
   // See docs for set_prune_tree_for_screen_reader, above.
   bool prune_tree_for_screen_reader_;
+
+  // Whether this manager is running as part of a WebView.
+  bool is_running_as_webview_ = false;
+
+  // Only set on the root BrowserAccessibilityManager. Keeps track of if
+  // any node uses touch passthrough in any frame. See comment next to
+  // any_node_uses_touch_passthrough(), above, for details.
+  bool touch_passthrough_enabled_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserAccessibilityManagerAndroid);
 };

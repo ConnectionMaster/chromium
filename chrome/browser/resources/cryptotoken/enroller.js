@@ -50,17 +50,15 @@ function transportType(der) {
   var topLevel = new ByteString(der);
   const tbsCert = topLevel.getASN1(Tag.SEQUENCE).getASN1(Tag.SEQUENCE);
   tbsCert.getOptionalASN1(
-      Tag.CONSTRUCTED | Tag.CONTEXT_SPECIFIC | 0);  // version
-  tbsCert.getASN1(Tag.INTEGER);                     // serialNumber
-  tbsCert.getASN1(Tag.SEQUENCE);                    // signature algorithm
-  tbsCert.getASN1(Tag.SEQUENCE);                    // issuer
-  tbsCert.getASN1(Tag.SEQUENCE);                    // validity
-  tbsCert.getASN1(Tag.SEQUENCE);                    // subject
-  tbsCert.getASN1(Tag.SEQUENCE);                    // SPKI
-  tbsCert.getOptionalASN1(                          // issuerUniqueID
-      Tag.CONSTRUCTED | Tag.CONTEXT_SPECIFIC | 1);
-  tbsCert.getOptionalASN1(  // subjectUniqueID
-      Tag.CONSTRUCTED | Tag.CONTEXT_SPECIFIC | 2);
+      Tag.CONSTRUCTED | Tag.CONTEXT_SPECIFIC | 0);    // version
+  tbsCert.getASN1(Tag.INTEGER);                       // serialNumber
+  tbsCert.getASN1(Tag.SEQUENCE);                      // signature algorithm
+  tbsCert.getASN1(Tag.SEQUENCE);                      // issuer
+  tbsCert.getASN1(Tag.SEQUENCE);                      // validity
+  tbsCert.getASN1(Tag.SEQUENCE);                      // subject
+  tbsCert.getASN1(Tag.SEQUENCE);                      // SPKI
+  tbsCert.getOptionalASN1(Tag.CONTEXT_SPECIFIC | 1);  // issuerUniqueID
+  tbsCert.getOptionalASN1(Tag.CONTEXT_SPECIFIC | 2);  // subjectUniqueID
   const outerExtensions =
       tbsCert.getOptionalASN1(Tag.CONSTRUCTED | Tag.CONTEXT_SPECIFIC | 3);
   if (outerExtensions == null) {
@@ -110,14 +108,6 @@ async function makeCertAndKey(opt_original) {
   var transport = null;
   if (opt_original) {
     transport = transportType(opt_original);
-  }
-  if (transport !== null) {
-    if (transport.length != 2) {
-      throw Error('bad extension length');
-    }
-    if (transport[0] < 3) {
-      throw Error('too many bits set');  // Only 5 bits are defined.
-    }
   }
 
   const keyalg = {name: 'ECDSA', namedCurve: 'P-256'};
@@ -360,6 +350,18 @@ var ConveyancePreference = {
 };
 
 /**
+ * WebAuthnAttestationConveyancePreference is the
+ * AttestationConveyancePreference enum from WebAuthn.
+ * @enum{string}
+ */
+const WebAuthnAttestationConveyancePreference = {
+  NONE: 'none',
+  INDIRECT: 'indirect',
+  DIRECT: 'direct',
+  ENTERPRISE: 'enterprise',
+};
+
+/**
  * conveyancePreference returns the attestation certificate replacement mode.
  *
  * @param {EnrollChallenge} enrollChallenge
@@ -401,16 +403,23 @@ function handleU2fEnrollRequest(messageSender, request, sendResponse) {
   async function getRegistrationData(
       appId, enrollChallenge, registrationData, opt_clientData) {
     var isDirect = true;
+    var foregroundChecked = false;
 
     if (conveyancePreference(enrollChallenge) == ConveyancePreference.NONE) {
       isDirect = false;
     } else if (chrome.cryptotokenPrivate != null) {
-      isDirect = await(new Promise((resolve, reject) => {
+      // Requesting attestation permission may show a pop-up prompt, which will
+      // cause the window to appear to be unfocused on Windows. Therefore
+      // check if the tab is in the foreground now, before the pop-up.
+      foregroundChecked = await tabInForeground(messageSender.tab.id);
+      isDirect = await (new Promise((resolve, reject) => {
         chrome.cryptotokenPrivate.canAppIdGetAttestation(
-            {'appId': appId,
-             'tabId': messageSender.tab.id,
-             'origin': sender.origin,
-            }, resolve);
+            {
+              'appId': appId,
+              'tabId': messageSender.tab.id,
+              'origin': sender.origin,
+            },
+            resolve);
       }));
     }
 
@@ -426,14 +435,17 @@ function handleU2fEnrollRequest(messageSender, request, sendResponse) {
     }
 
     if (isDirect) {
-      return registrationData;
+      return {registrationData, foregroundChecked};
     }
 
     const reg = new Registration(
         registrationData, appId, enrollChallenge['challenge'], opt_clientData);
     const keypair = await makeCertAndKey(reg.certificate);
     const signature = await reg.sign(keypair.privateKey);
-    return reg.withReplacement(keypair.certDER, signature);
+    return {
+      registrationData: reg.withReplacement(keypair.certDER, signature),
+      foregroundChecked,
+    };
   }
 
   /**
@@ -458,11 +470,12 @@ function handleU2fEnrollRequest(messageSender, request, sendResponse) {
     getRegistrationData(
         appId, enrollChallenge, registrationData, opt_clientData)
         .then(
-            (registrationData) => {
+            ({registrationData, foregroundChecked}) => {
               var responseData = makeEnrollResponseData(
                   enrollChallenge, u2fVersion, registrationData,
                   opt_clientData);
               var response = makeU2fSuccessResponse(request, responseData);
+              response.foregroundChecked = foregroundChecked;
               sendResponseOnce(sentResponse, closeable, response, sendResponse);
             },
             (err) => {
@@ -485,6 +498,8 @@ function handleU2fEnrollRequest(messageSender, request, sendResponse) {
     sendErrorResponse({errorCode: ErrorCodes.BAD_REQUEST});
     return null;
   }
+
+  chrome.cryptotokenPrivate.recordRegisterRequest(sender.tabId, sender.frameId);
 
   var timeoutValueSeconds = getTimeoutValueFromRequest(request);
   // Attenuate watchdog timeout value less than the enroller's timeout, so the
@@ -820,42 +835,27 @@ Enroller.prototype.sendEnrollRequestToHelper_ = function() {
     if (self.done_) {
       return;
     }
-    if (result) {
-      // AppID is valid, so the request should be sent.
-      await new Promise(resolve => {
-        if (!chrome.cryptotokenPrivate || !window.PublicKeyCredential) {
-          resolve(false);
-        } else {
-          chrome.cryptotokenPrivate.canProxyToWebAuthn(resolve);
-        }
-      }).then(shouldUseWebAuthn => {
-        let v2Challenge;
-        for (let index = 0; index < self.enrollChallenges_.length; index++) {
-          if (self.enrollChallenges_[index]['version'] === 'U2F_V2') {
-            v2Challenge = self.enrollChallenges_[index]['challenge'];
-          }
-        }
 
-        if (v2Challenge && shouldUseWebAuthn) {
-          // If we can proxy to WebAuthn, send the request via WebAuthn.
-          console.log('Proxying registration request to WebAuthn');
-          this.doRegisterWebAuthn_(enrollAppIds[0], v2Challenge, request);
-        } else {
-          self.handler_ =
-              FACTORY_REGISTRY.getRequestHelper().getHandler(request);
-          if (self.handler_) {
-            var helperComplete =
-                /** @type {function(HelperReply)} */
-                (self.helperComplete_.bind(self));
-            self.handler_.run(helperComplete);
-          } else {
-            self.notifyError_({errorCode: ErrorCodes.OTHER_ERROR});
-          }
-        }
-      });
-    } else {
+    if (!result) {
       self.notifyError_({errorCode: ErrorCodes.BAD_REQUEST});
+      return;
     }
+
+    let v2Challenge;
+    for (let index = 0; index < self.enrollChallenges_.length; index++) {
+      if (self.enrollChallenges_[index]['version'] === 'U2F_V2') {
+        v2Challenge = self.enrollChallenges_[index];
+      }
+    }
+
+    if (v2Challenge['challenge'] === undefined) {
+      console.warn('Did not find U2F_V2 challenge');
+      this.notifyError_({errorCode: ErrorCodes.BAD_REQUEST});
+      return;
+    }
+
+    console.log('Proxying registration request to WebAuthn');
+    this.doRegisterWebAuthn_(enrollAppIds[0], v2Challenge, request);
   });
 };
 
@@ -867,23 +867,35 @@ const googleCorpAppId =
  * @private
  */
 Enroller.prototype.doRegisterWebAuthn_ = function(appId, challenge, request) {
+  const encodedChallenge = challenge['challenge'];
+
   if (appId == googleCorpAppId) {
-    this.doRegisterWebAuthnContinue_(appId, challenge, request, true);
+    this.doRegisterWebAuthnContinue_(
+        appId, encodedChallenge, request,
+        WebAuthnAttestationConveyancePreference.ENTERPRISE);
     return;
   }
 
   if (!chrome.cryptotokenPrivate) {
-    this.doRegisterWebAuthnContinue_(appId, challenge, request, false);
+    this.doRegisterWebAuthnContinue_(
+        appId, encodedChallenge, request,
+        WebAuthnAttestationConveyancePreference.DIRECT);
     return;
   }
 
   chrome.cryptotokenPrivate.isAppIdHashInEnterpriseContext(
       decodeWebSafeBase64ToArray(B64_encode(sha256HashOfString(appId))),
-      this.doRegisterWebAuthnContinue_.bind(this, appId, challenge, request));
+      (enterprise_context) => {
+        this.doRegisterWebAuthnContinue_(
+            appId, encodedChallenge, request,
+            enterprise_context ?
+                WebAuthnAttestationConveyancePreference.ENTERPRISE :
+                WebAuthnAttestationConveyancePreference.DIRECT);
+      });
 };
 
 Enroller.prototype.doRegisterWebAuthnContinue_ = function(
-    appId, challenge, request, useIndividualAttestation) {
+    appId, challenge, request, attestationMode) {
   // Set a random ID.
   const randomId = new Uint8Array(new ArrayBuffer(16));
   crypto.getRandomValues(randomId);
@@ -918,7 +930,6 @@ Enroller.prototype.doRegisterWebAuthnContinue_ = function(
   // Request enterprise attestation for the gstatic corp App ID and domains
   // whitelisted via enterprise policy. Otherwise request 'direct' attestation
   // (which might later get stripped).
-  const attestationMode = useIndividualAttestation ? 'enterprise' : 'direct';
   const options = {
     publicKey: {
       rp: {
@@ -1142,8 +1153,8 @@ Enroller.prototype.encodeEnrollChallenges_ = function(
       // which we're constructing here. The browser data object contains, among
       // other things, the server challenge.
       var serverChallenge = enrollChallenge['challenge'];
-      var browserData = makeEnrollBrowserData(
-          serverChallenge, this.sender_.origin, this.sender_.tlsChannelId);
+      var browserData =
+          makeEnrollBrowserData(serverChallenge, this.sender_.origin);
       // Replace the challenge with the hash of the browser data.
       modifiedChallenge['challenge'] =
           B64_encode(sha256HashOfString(browserData));

@@ -4,20 +4,27 @@
 
 #import "ios/chrome/browser/ui/omnibox/omnibox_view_controller.h"
 
+#include "base/bind.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "base/strings/sys_string_conversions.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/open_from_clipboard/clipboard_recent_content.h"
 #include "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/ui/commands/browser_commands.h"
 #import "ios/chrome/browser/ui/commands/load_query_commands.h"
+#import "ios/chrome/browser/ui/commands/omnibox_commands.h"
+#import "ios/chrome/browser/ui/default_promo/default_browser_utils.h"
 #import "ios/chrome/browser/ui/omnibox/omnibox_constants.h"
 #import "ios/chrome/browser/ui/omnibox/omnibox_container_view.h"
-#import "ios/chrome/browser/ui/toolbar/public/omnibox_focuser.h"
+#include "ios/chrome/browser/ui/omnibox/omnibox_text_change_delegate.h"
+#import "ios/chrome/browser/ui/omnibox/omnibox_text_field_delegate.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_constants.h"
-#include "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #include "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/browser/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/colors/dynamic_color_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/pointer_interaction_util.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -25,13 +32,23 @@
 #error "This file requires ARC support."
 #endif
 
+using base::UserMetricsAction;
+
 namespace {
 
 const CGFloat kClearButtonSize = 28.0f;
 
 }  // namespace
 
-@interface OmniboxViewController ()
+#if defined(__IPHONE_14_0)
+@interface OmniboxViewController (Scribble) <UIScribbleInteractionDelegate>
+@end
+#endif  // defined(__IPHONE14_0)
+
+@interface OmniboxViewController () <OmniboxTextFieldDelegate> {
+  // Weak, acts as a delegate
+  OmniboxTextChangeDelegate* _textChangeDelegate;
+}
 
 // Override of UIViewController's view with a different type.
 @property(nonatomic, strong) OmniboxContainerView* view;
@@ -41,6 +58,38 @@ const CGFloat kClearButtonSize = 28.0f;
 @property(nonatomic, assign) BOOL searchByImageEnabled;
 
 @property(nonatomic, assign) BOOL incognito;
+
+// YES if we are already forwarding an OnDidChange() message to the edit view.
+// Needed to prevent infinite recursion.
+// TODO(crbug.com/1015413): There must be a better way.
+@property(nonatomic, assign) BOOL forwardingOnDidChange;
+
+// YES if this text field is currently processing a user-initiated event,
+// such as typing in the omnibox or pressing the clear button.  Used to
+// distinguish between calls to textDidChange that are triggered by the user
+// typing vs by calls to setText.
+@property(nonatomic, assign) BOOL processingUserEvent;
+
+// A flag that is set whenever any input or copy/paste event happened in the
+// omnibox while it was focused. Used to count event "user focuses the omnibox
+// to view the complete URL and immediately defocuses it".
+@property(nonatomic, assign) BOOL omniboxInteractedWhileFocused;
+
+// Tracks editing status, because only the omnibox that is in edit mode can
+// get an edit menu.
+@property(nonatomic, assign) BOOL isTextfieldEditing;
+
+// Is YES while fixing display of edit menu (below omnibox).
+@property(nonatomic, assign) BOOL showingEditMenu;
+
+// Stores whether the clipboard currently stores copied content.
+@property(nonatomic, assign) BOOL hasCopiedContent;
+// Stores the current content type in the clipboard. This is only valid if
+// |hasCopiedContent| is YES.
+@property(nonatomic, assign) ClipboardContentType copiedContentType;
+// Stores whether the cached clipboard state is currently being updated. See
+// |-updateCachedClipboardState| for more information.
+@property(nonatomic, assign) BOOL isUpdatingCachedClipboardState;
 
 @end
 
@@ -58,49 +107,49 @@ const CGFloat kClearButtonSize = 28.0f;
 #pragma mark - UIViewController
 
 - (void)loadView {
-  UIColor* textColor = self.incognito ? [UIColor whiteColor]
-                                      : [UIColor colorWithWhite:0 alpha:0.7];
-  UIColor* textFieldTintColor = self.incognito
-                                    ? [UIColor whiteColor]
-                                    : UIColorFromRGB(kLocationBarTintBlue);
-  UIColor* iconTintColor = self.incognito
-                               ? [UIColor whiteColor]
-                               : [UIColor colorWithWhite:0 alpha:0.7];
+  UIColor* textColor = color::DarkModeDynamicColor(
+      [UIColor colorNamed:kTextPrimaryColor], self.incognito,
+      [UIColor colorNamed:kTextPrimaryDarkColor]);
+  UIColor* textFieldTintColor = color::DarkModeDynamicColor(
+      [UIColor colorNamed:kBlueColor], self.incognito,
+      [UIColor colorNamed:kBlueDarkColor]);
+  UIColor* iconTintColor;
+  iconTintColor = color::DarkModeDynamicColor(
+      [UIColor colorNamed:kToolbarButtonColor], self.incognito,
+      [UIColor colorNamed:kToolbarButtonDarkColor]);
 
-  self.view = [[OmniboxContainerView alloc]
-      initWithFrame:CGRectZero
-          textColor:textColor
-      textFieldTint:textFieldTintColor
-           iconTint:iconTintColor];
+  self.view = [[OmniboxContainerView alloc] initWithFrame:CGRectZero
+                                                textColor:textColor
+                                            textFieldTint:textFieldTintColor
+                                                 iconTint:iconTintColor];
   self.view.incognito = self.incognito;
+
+  self.textField.delegate = self;
 
   SetA11yLabelAndUiAutomationName(self.textField, IDS_ACCNAME_LOCATION,
                                   @"Address");
+
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+  if (@available(iOS 14, *)) {
+    [self.textField
+        addInteraction:[[UIScribbleInteraction alloc] initWithDelegate:self]];
+  }
+#endif  // defined(__IPHONE_14_0)
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
 
   // Add Paste and Go option to the editing menu
-  UIMenuController* menu = [UIMenuController sharedMenuController];
-  if (base::FeatureList::IsEnabled(kCopiedContentBehavior)) {
-    UIMenuItem* searchCopiedImage = [[UIMenuItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_SEARCH_COPIED_IMAGE)
-               action:@selector(searchCopiedImage:)];
-    UIMenuItem* visitCopiedLink = [[UIMenuItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_VISIT_COPIED_LINK)
-               action:@selector(visitCopiedLink:)];
-    UIMenuItem* searchCopiedText = [[UIMenuItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_SEARCH_COPIED_TEXT)
-               action:@selector(searchCopiedText:)];
-    [menu
-        setMenuItems:@[ searchCopiedImage, visitCopiedLink, searchCopiedText ]];
-  } else {
-    UIMenuItem* pasteAndGo = [[UIMenuItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_PASTE_AND_GO)
-               action:NSSelectorFromString(@"pasteAndGo:")];
-    [menu setMenuItems:@[ pasteAndGo ]];
-  }
+  RegisterEditMenuItem([[UIMenuItem alloc]
+      initWithTitle:l10n_util::GetNSString(IDS_IOS_SEARCH_COPIED_IMAGE)
+             action:@selector(searchCopiedImage:)]);
+  RegisterEditMenuItem([[UIMenuItem alloc]
+      initWithTitle:l10n_util::GetNSString(IDS_IOS_VISIT_COPIED_LINK)
+             action:@selector(visitCopiedLink:)]);
+  RegisterEditMenuItem([[UIMenuItem alloc]
+      initWithTitle:l10n_util::GetNSString(IDS_IOS_SEARCH_COPIED_TEXT)
+             action:@selector(searchCopiedText:)]);
 
   self.textField.placeholderTextColor = [self placeholderAndClearButtonColor];
   self.textField.placeholder = l10n_util::GetNSString(IDS_OMNIBOX_EMPTY_HINT);
@@ -111,13 +160,25 @@ const CGFloat kClearButtonSize = 28.0f;
          selector:@selector(textInputModeDidChange)
              name:UITextInputCurrentInputModeDidChangeNotification
            object:nil];
+}
 
-  // TODO(crbug.com/866446): Use UITextFieldDelegate instead.
-  [[NSNotificationCenter defaultCenter]
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+
+  [NSNotificationCenter.defaultCenter
       addObserver:self
-         selector:@selector(textFieldDidBeginEditing)
-             name:UITextFieldTextDidBeginEditingNotification
-           object:self.textField];
+         selector:@selector(pasteboardDidChange:)
+             name:UIPasteboardChangedNotification
+           object:nil];
+
+  // The pasteboard changed notification doesn't fire if the clipboard changes
+  // while the app is in the background, so update the state whenever the app
+  // becomes active.
+  [NSNotificationCenter.defaultCenter
+      addObserver:self
+         selector:@selector(applicationDidBecomeActive:)
+             name:UIApplicationDidBecomeActiveNotification
+           object:nil];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -131,17 +192,200 @@ const CGFloat kClearButtonSize = 28.0f;
   self.textField.selectedTextRange =
       [self.textField textRangeFromPosition:self.textField.beginningOfDocument
                                  toPosition:self.textField.beginningOfDocument];
+
+  [NSNotificationCenter.defaultCenter
+      removeObserver:self
+                name:UIPasteboardChangedNotification
+              object:nil];
+
+  // The pasteboard changed notification doesn't fire if the clipboard changes
+  // while the app is in the background, so update the state whenever the app
+  // becomes active.
+  [NSNotificationCenter.defaultCenter
+      removeObserver:self
+                name:UIApplicationDidBecomeActiveNotification
+              object:nil];
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  [self updateLeadingImageVisibility];
+#pragma mark - properties
+
+- (void)setTextChangeDelegate:(OmniboxTextChangeDelegate*)textChangeDelegate {
+  _textChangeDelegate = textChangeDelegate;
+}
+
+- (void)setIsTextfieldEditing:(BOOL)owns {
+  if (_isTextfieldEditing == owns) {
+    return;
+  }
+  if (owns) {
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(menuControllerWillShow:)
+               name:UIMenuControllerWillShowMenuNotification
+             object:nil];
+  } else {
+    [[NSNotificationCenter defaultCenter]
+        removeObserver:self
+                  name:UIMenuControllerWillShowMenuNotification
+                object:nil];
+  }
+  _isTextfieldEditing = owns;
 }
 
 #pragma mark - public methods
 
 - (OmniboxTextFieldIOS*)textField {
   return self.view.textField;
+}
+
+- (void)prepareOmniboxForScribble {
+  [self.textField exitPreEditState];
+  [self.textField setText:[[NSAttributedString alloc] initWithString:@""]
+           userTextLength:0];
+  self.textField.placeholder = nil;
+}
+
+- (void)cleanupOmniboxAfterScribble {
+  self.textField.placeholder = l10n_util::GetNSString(IDS_OMNIBOX_EMPTY_HINT);
+}
+
+#pragma mark - OmniboxTextFieldDelegate
+
+- (BOOL)textField:(UITextField*)textField
+    shouldChangeCharactersInRange:(NSRange)range
+                replacementString:(NSString*)newText {
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return YES;
+  }
+  self.processingUserEvent = _textChangeDelegate->OnWillChange(range, newText);
+  return self.processingUserEvent;
+}
+
+- (void)textFieldDidChange:(id)sender {
+  // If the text is empty, update the leading image.
+  if (self.textField.text.length == 0) {
+    [self.view setLeadingImage:self.emptyTextLeadingImage];
+  }
+
+  [self updateClearButtonVisibility];
+  self.semanticContentAttribute = [self.textField bestSemanticContentAttribute];
+
+  if (self.forwardingOnDidChange) {
+    return;
+  }
+
+  // Reset the changed flag.
+  self.omniboxInteractedWhileFocused = YES;
+
+  BOOL savedProcessingUserEvent = self.processingUserEvent;
+  self.processingUserEvent = NO;
+  self.forwardingOnDidChange = YES;
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return;
+  }
+  _textChangeDelegate->OnDidChange(savedProcessingUserEvent);
+  self.forwardingOnDidChange = NO;
+}
+
+// Delegate method for UITextField, called when user presses the "go" button.
+- (BOOL)textFieldShouldReturn:(UITextField*)textField {
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return YES;
+  }
+  _textChangeDelegate->OnAccept();
+  return NO;
+}
+
+// Always update the text field colors when we start editing.  It's possible
+// for this method to be called when we are already editing (popup focus
+// change).  In this case, OnDidBeginEditing will be called multiple times.
+// If that becomes an issue a boolean should be added to track editing state.
+- (void)textFieldDidBeginEditing:(UITextField*)textField {
+  [self updateCachedClipboardState];
+
+  // Update the clear button state.
+  [self updateClearButtonVisibility];
+  [self.view setLeadingImage:self.textField.text.length
+                                 ? self.defaultLeadingImage
+                                 : self.emptyTextLeadingImage];
+
+  self.semanticContentAttribute = [self.textField bestSemanticContentAttribute];
+  self.isTextfieldEditing = YES;
+
+  self.omniboxInteractedWhileFocused = NO;
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return;
+  }
+  _textChangeDelegate->OnDidBeginEditing();
+}
+
+- (BOOL)textFieldShouldEndEditing:(UITextField*)textField {
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return YES;
+  }
+  _textChangeDelegate->OnWillEndEditing();
+
+  return YES;
+}
+
+// Record the metrics as needed.
+- (void)textFieldDidEndEditing:(UITextField*)textField
+                        reason:(UITextFieldDidEndEditingReason)reason {
+  self.isTextfieldEditing = NO;
+
+  if (!self.omniboxInteractedWhileFocused) {
+    RecordAction(
+        UserMetricsAction("Mobile_FocusedDefocusedOmnibox_WithNoAction"));
+  }
+}
+
+- (BOOL)textFieldShouldClear:(UITextField*)textField {
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return YES;
+  }
+  _textChangeDelegate->ClearText();
+  self.processingUserEvent = YES;
+  return YES;
+}
+
+- (void)onCopy {
+  self.omniboxInteractedWhileFocused = YES;
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return;
+  }
+  _textChangeDelegate->OnCopy();
+}
+
+- (void)willPaste {
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return;
+  }
+  _textChangeDelegate->WillPaste();
+}
+
+- (void)onDeleteBackward {
+  if (!_textChangeDelegate) {
+    // This can happen when the view controller is still alive but the model is
+    // already deconstructed on shutdown.
+    return;
+  }
+  _textChangeDelegate->OnDeleteBackward();
 }
 
 #pragma mark - OmniboxConsumer
@@ -157,7 +401,19 @@ const CGFloat kClearButtonSize = 28.0f;
 #pragma mark - EditViewAnimatee
 
 - (void)setLeadingIconFaded:(BOOL)faded {
-  [self.view setLeadingImageAlpha:faded ? 0 : 1];
+  CATransition* transition = [CATransition animation];
+  transition.duration = 0.3;
+  transition.timingFunction = [CAMediaTimingFunction
+      functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+  transition.type = kCATransitionFade;
+  [self.view.layer addAnimation:transition forKey:nil];
+  if (faded) {
+    [self.view setLeadingImageAlpha:0];
+    [self.view setLeadingImageScale:0];
+  } else {
+    [self.view setLeadingImageAlpha:1];
+    [self.view setLeadingImageScale:1];
+  }
 }
 
 - (void)setClearButtonFaded:(BOOL)faded {
@@ -172,32 +428,14 @@ const CGFloat kClearButtonSize = 28.0f;
 
 #pragma mark - private
 
-- (void)updateLeadingImageVisibility {
-  BOOL newOmniboxPopupLayout =
-      base::FeatureList::IsEnabled(kNewOmniboxPopupLayout);
-  [self.view setLeadingImageHidden:!newOmniboxPopupLayout &&
-                                   !IsRegularXRegularSizeClass(self)];
-}
-
 // Tint color for the textfield placeholder and the clear button.
 - (UIColor*)placeholderAndClearButtonColor {
-  return self.incognito
-             ? [UIColor colorWithWhite:1 alpha:0.5]
-             : [UIColor colorWithWhite:0 alpha:kOmniboxPlaceholderAlpha];
+  return color::DarkModeDynamicColor(
+      [UIColor colorNamed:kTextfieldPlaceholderColor], self.incognito,
+      [UIColor colorNamed:kTextfieldPlaceholderDarkColor]);
 }
 
 #pragma mark notification callbacks
-
-// Called on UITextFieldTextDidBeginEditingNotification for self.textField.
-- (void)textFieldDidBeginEditing {
-  // Update the clear button state.
-  [self updateClearButtonVisibility];
-  [self.view setLeadingImage:self.textField.text.length
-                                 ? self.defaultLeadingImage
-                                 : self.emptyTextLeadingImage];
-
-  self.semanticContentAttribute = [self.textField bestSemanticContentAttribute];
-}
 
 // Called on UITextInputCurrentInputModeDidChangeNotification for self.textField
 - (void)textInputModeDidChange {
@@ -210,6 +448,80 @@ const CGFloat kClearButtonSize = 28.0f;
   self.semanticContentAttribute = [self.textField bestSemanticContentAttribute];
 
   [self.delegate omniboxViewControllerTextInputModeDidChange:self];
+}
+
+- (void)updateCachedClipboardState {
+  // Sometimes, checking the clipboard state itself causes the clipboard to
+  // emit a UIPasteboardChangedNotification, leading to an infinite loop. For
+  // now, just prevent re-checking the clipboard state, but hopefully this will
+  // be fixed in a future iOS version (see crbug.com/1049053 for crash details).
+  if (self.isUpdatingCachedClipboardState) {
+    return;
+  }
+  self.isUpdatingCachedClipboardState = YES;
+  self.hasCopiedContent = NO;
+  ClipboardRecentContent* clipboardRecentContent =
+      ClipboardRecentContent::GetInstance();
+  std::set<ClipboardContentType> desired_types;
+  desired_types.insert(ClipboardContentType::URL);
+  desired_types.insert(ClipboardContentType::Text);
+  desired_types.insert(ClipboardContentType::Image);
+  __weak __typeof(self) weakSelf = self;
+  clipboardRecentContent->HasRecentContentFromClipboard(
+      desired_types,
+      base::BindOnce(^(std::set<ClipboardContentType> matched_types) {
+        weakSelf.hasCopiedContent = !matched_types.empty();
+        if (weakSelf.searchByImageEnabled &&
+            matched_types.find(ClipboardContentType::Image) !=
+                matched_types.end()) {
+          weakSelf.copiedContentType = ClipboardContentType::Image;
+        } else if (matched_types.find(ClipboardContentType::URL) !=
+                   matched_types.end()) {
+          weakSelf.copiedContentType = ClipboardContentType::URL;
+        } else if (matched_types.find(ClipboardContentType::Text) !=
+                   matched_types.end()) {
+          weakSelf.copiedContentType = ClipboardContentType::Text;
+        }
+        self.isUpdatingCachedClipboardState = NO;
+      }));
+}
+
+- (void)menuControllerWillShow:(NSNotification*)notification {
+  if (self.showingEditMenu || !self.isTextfieldEditing ||
+      !self.textField.window.isKeyWindow) {
+    return;
+  }
+
+  self.showingEditMenu = YES;
+
+  // Cancel original menu opening.
+  UIMenuController* menuController = [UIMenuController sharedMenuController];
+#if !defined(__IPHONE_13_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_13_0
+  [menuController setMenuVisible:NO animated:NO];
+
+  // Reset where it should open below text field and reopen it.
+  menuController.arrowDirection = UIMenuControllerArrowUp;
+
+  [menuController setTargetRect:self.textField.frame inView:self.textField];
+  [menuController setMenuVisible:YES animated:YES];
+#else
+  [menuController hideMenu];
+
+  // Reset where it should open below text field and reopen it.
+  menuController.arrowDirection = UIMenuControllerArrowUp;
+
+  [menuController showMenuFromView:self.textField rect:self.textField.frame];
+#endif
+
+  self.showingEditMenu = NO;
+}
+
+- (void)pasteboardDidChange:(NSNotification*)notification {
+  [self updateCachedClipboardState];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification*)notification {
+  [self updateCachedClipboardState];
 }
 
 #pragma mark clear button
@@ -237,6 +549,12 @@ const CGFloat kClearButtonSize = 28.0f;
   SetA11yLabelAndUiAutomationName(clearButton, IDS_IOS_ACCNAME_CLEAR_TEXT,
                                   @"Clear Text");
 
+  if (@available(iOS 13.4, *)) {
+      clearButton.pointerInteractionEnabled = YES;
+      clearButton.pointerStyleProvider =
+          CreateLiftEffectCirclePointerStyleProvider();
+  }
+
   // Observe text changes to show the clear button when there is text and hide
   // it when the textfield is empty.
   [self.textField addTarget:self
@@ -263,17 +581,6 @@ const CGFloat kClearButtonSize = 28.0f;
   }
 }
 
-// Called on textField's UIControlEventEditingChanged.
-- (void)textFieldDidChange:(UITextField*)textField {
-  // If the text is empty, update the leading image.
-  if (self.textField.text.length == 0) {
-    [self.view setLeadingImage:self.emptyTextLeadingImage];
-  }
-
-  [self updateClearButtonVisibility];
-  self.semanticContentAttribute = [self.textField bestSemanticContentAttribute];
-}
-
 // Hides the clear button if the textfield is empty; shows it otherwise.
 - (void)updateClearButtonVisibility {
   BOOL hasText = self.textField.text.length > 0;
@@ -287,10 +594,6 @@ const CGFloat kClearButtonSize = 28.0f;
     (UISemanticContentAttribute)semanticContentAttribute {
   _semanticContentAttribute = semanticContentAttribute;
 
-  if (!base::FeatureList::IsEnabled(kNewOmniboxPopupLayout)) {
-    return;
-  }
-
   self.view.semanticContentAttribute = self.semanticContentAttribute;
   self.textField.semanticContentAttribute = self.semanticContentAttribute;
 }
@@ -298,25 +601,19 @@ const CGFloat kClearButtonSize = 28.0f;
 #pragma mark - UIMenuItem
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-  // Remove with flag kCopiedContentBehavior
-  if (action == @selector(pasteAndGo:)) {
-    DCHECK(!base::FeatureList::IsEnabled(kCopiedContentBehavior));
-    return UIPasteboard.generalPasteboard.string.length > 0;
-  }
-
   if (action == @selector(searchCopiedImage:) ||
       action == @selector(visitCopiedLink:) ||
       action == @selector(searchCopiedText:)) {
-    ClipboardRecentContent* clipboardRecentContent =
-        ClipboardRecentContent::GetInstance();
-    if (self.searchByImageEnabled &&
-        clipboardRecentContent->GetRecentImageFromClipboard().has_value()) {
+    if (!self.hasCopiedContent) {
+      return NO;
+    }
+    if (self.copiedContentType == ClipboardContentType::Image) {
       return action == @selector(searchCopiedImage:);
     }
-    if (clipboardRecentContent->GetRecentURLFromClipboard().has_value()) {
+    if (self.copiedContentType == ClipboardContentType::URL) {
       return action == @selector(visitCopiedLink:);
     }
-    if (clipboardRecentContent->GetRecentTextFromClipboard().has_value()) {
+    if (self.copiedContentType == ClipboardContentType::Text) {
       return action == @selector(searchCopiedText:);
     }
     return NO;
@@ -325,43 +622,83 @@ const CGFloat kClearButtonSize = 28.0f;
 }
 
 - (void)searchCopiedImage:(id)sender {
-  DCHECK(base::FeatureList::IsEnabled(kCopiedContentBehavior));
-  if (base::Optional<gfx::Image> optionalImage =
-          ClipboardRecentContent::GetInstance()
-              ->GetRecentImageFromClipboard()) {
-    UIImage* image = optionalImage.value().ToUIImage();
-    [self.dispatcher searchByImage:image];
-    [self.dispatcher cancelOmniboxEdit];
-  }
+  RecordAction(
+      UserMetricsAction("Mobile.OmniboxContextMenu.SearchCopiedImage"));
+  self.omniboxInteractedWhileFocused = YES;
+  ClipboardRecentContent::GetInstance()->GetRecentImageFromClipboard(
+      base::BindOnce(^(absl::optional<gfx::Image> optionalImage) {
+        if (!optionalImage) {
+          return;
+        }
+        UIImage* image = optionalImage.value().ToUIImage();
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self.dispatcher searchByImage:image];
+        });
+      }));
 }
 
 - (void)visitCopiedLink:(id)sender {
-  [self pasteAndGo:sender];
+  // A search using clipboard link is activity that should indicate a user
+  // that would be interested in setting Chrome as the default browser.
+  LogLikelyInterestedDefaultBrowserUserActivity(DefaultPromoTypeGeneral);
+  [self.delegate omniboxViewControllerUserDidVisitCopiedLink:self];
+  RecordAction(UserMetricsAction("Mobile.OmniboxContextMenu.VisitCopiedLink"));
+  self.omniboxInteractedWhileFocused = YES;
+  ClipboardRecentContent::GetInstance()->GetRecentURLFromClipboard(
+      base::BindOnce(^(absl::optional<GURL> optionalURL) {
+        if (!optionalURL) {
+          return;
+        }
+        NSString* url = base::SysUTF8ToNSString(optionalURL.value().spec());
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self.dispatcher loadQuery:url immediately:YES];
+          [self.dispatcher cancelOmniboxEdit];
+        });
+      }));
 }
 
 - (void)searchCopiedText:(id)sender {
-  [self pasteAndGo:sender];
+  // A search using clipboard text is activity that should indicate a user
+  // that would be interested in setting Chrome as the default browser.
+  LogLikelyInterestedDefaultBrowserUserActivity(DefaultPromoTypeGeneral);
+  RecordAction(UserMetricsAction("Mobile.OmniboxContextMenu.SearchCopiedText"));
+  self.omniboxInteractedWhileFocused = YES;
+  ClipboardRecentContent::GetInstance()->GetRecentTextFromClipboard(
+      base::BindOnce(^(absl::optional<std::u16string> optionalText) {
+        if (!optionalText) {
+          return;
+        }
+        NSString* query = base::SysUTF16ToNSString(optionalText.value());
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self.dispatcher loadQuery:query immediately:YES];
+          [self.dispatcher cancelOmniboxEdit];
+        });
+      }));
 }
 
-// Both actions are performed the same, but need to be enabled differently,
-// so we need two different selectors.
-- (void)pasteAndGo:(id)sender {
-  NSString* query;
-  if (base::FeatureList::IsEnabled(kCopiedContentBehavior)) {
-    ClipboardRecentContent* clipboardRecentContent =
-        ClipboardRecentContent::GetInstance();
-    if (base::Optional<GURL> optionalUrl =
-            clipboardRecentContent->GetRecentURLFromClipboard()) {
-      query = base::SysUTF8ToNSString(optionalUrl.value().spec());
-    } else if (base::Optional<base::string16> optionalText =
-                   clipboardRecentContent->GetRecentTextFromClipboard()) {
-      query = base::SysUTF16ToNSString(optionalText.value());
-    }
-  } else {
-    query = UIPasteboard.generalPasteboard.string;
+#pragma mark - UIScribbleInteractionDelegate
+
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+
+- (void)scribbleInteractionWillBeginWriting:(UIScribbleInteraction*)interaction
+    API_AVAILABLE(ios(14.0)) {
+  if (self.textField.isPreEditing) {
+    [self.textField exitPreEditState];
+    [self.textField setText:[[NSAttributedString alloc] initWithString:@""]
+             userTextLength:0];
   }
-  [self.dispatcher loadQuery:query immediately:YES];
-  [self.dispatcher cancelOmniboxEdit];
+
+  [self.textField clearAutocompleteText];
 }
+
+- (void)scribbleInteractionDidFinishWriting:(UIScribbleInteraction*)interaction
+    API_AVAILABLE(ios(14.0)) {
+  [self cleanupOmniboxAfterScribble];
+
+  // Dismiss any inline autocomplete. The user expectation is to not have it.
+  [self.textField clearAutocompleteText];
+}
+
+#endif  // defined(__IPHONE_14_0)
 
 @end

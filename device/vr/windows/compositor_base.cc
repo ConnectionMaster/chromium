@@ -5,7 +5,7 @@
 #include "device/vr/windows/compositor_base.h"
 
 #include "base/bind.h"
-#include "base/trace_event/common/trace_event_common.h"
+#include "base/trace_event/trace_event.h"
 #include "ui/gfx/geometry/angle_conversions.h"
 #include "ui/gfx/transform.h"
 
@@ -17,6 +17,17 @@ namespace {
 // Number of frames to use for sliding averages for pose timings,
 // as used for estimating prediction times.
 constexpr unsigned kSlidingAverageSize = 5;
+
+device::mojom::XRRenderInfoPtr GetRenderInfo(
+    const device::mojom::XRFrameData& frame_data) {
+  device::mojom::XRRenderInfoPtr result = device::mojom::XRRenderInfo::New();
+
+  result->frame_id = frame_data.frame_id;
+  result->pose = frame_data.pose.Clone();
+
+  return result;
+}
+
 }  // namespace
 
 namespace device {
@@ -24,15 +35,24 @@ namespace device {
 mojom::XRFrameDataPtr XRDeviceAbstraction::GetNextFrameData() {
   return nullptr;
 }
-mojom::XRGamepadDataPtr XRDeviceAbstraction::GetNextGamepadData() {
-  return nullptr;
-}
 void XRDeviceAbstraction::OnSessionStart() {}
 void XRDeviceAbstraction::HandleDeviceLost() {}
-bool XRDeviceAbstraction::PreComposite() {
-  return true;
+bool XRDeviceAbstraction::HasSessionEnded() {
+  return false;
 }
 void XRDeviceAbstraction::OnLayerBoundsChanged() {}
+device::mojom::XREnvironmentBlendMode
+XRDeviceAbstraction::GetEnvironmentBlendMode(
+    device::mojom::XRSessionMode session_mode) {
+  return device::mojom::XREnvironmentBlendMode::kOpaque;
+}
+device::mojom::XRInteractionMode XRDeviceAbstraction::GetInteractionMode(
+    device::mojom::XRSessionMode session_mode) {
+  return device::mojom::XRInteractionMode::kWorldSpace;
+}
+bool XRDeviceAbstraction::CanEnableAntiAliasing() const {
+  return true;
+}
 
 XRCompositorCommon::OutstandingFrame::OutstandingFrame() = default;
 XRCompositorCommon::OutstandingFrame::~OutstandingFrame() = default;
@@ -41,11 +61,7 @@ XRCompositorCommon::XRCompositorCommon()
     : base::Thread("WindowsXRCompositor"),
       main_thread_task_runner_(base::ThreadTaskRunnerHandle::Get()),
       webxr_js_time_(kSlidingAverageSize),
-      webxr_gpu_time_(kSlidingAverageSize),
-      presentation_binding_(this),
-      frame_data_binding_(this),
-      gamepad_provider_(this),
-      overlay_binding_(this) {
+      webxr_gpu_time_(kSlidingAverageSize) {
   DCHECK(main_thread_task_runner_);
 }
 
@@ -56,6 +72,10 @@ XRCompositorCommon::~XRCompositorCommon() {
 }
 
 void XRCompositorCommon::ClearPendingFrame() {
+  // Notify the derived class first so it can clear its pending frame before
+  // potentially starting a new frame with delayed_get_frame_data_callback_.
+  ClearPendingFrameInternal();
+
   pending_frame_.reset();
   // Send frame data to outstanding requests.
   if (delayed_get_frame_data_callback_ &&
@@ -64,6 +84,10 @@ void XRCompositorCommon::ClearPendingFrame() {
     // frame, we allow the renderer to receive poses.
     std::move(delayed_get_frame_data_callback_).Run();
   }
+}
+
+bool XRCompositorCommon::IsUsingSharedImages() const {
+  return false;
 }
 
 void XRCompositorCommon::SubmitFrameMissing(int16_t frame_index,
@@ -87,20 +111,20 @@ void XRCompositorCommon::SubmitFrameDrawnIntoTexture(
     int16_t frame_index,
     const gpu::SyncToken& sync_token,
     base::TimeDelta time_waited) {
-  // Not currently implemented for Windows.
   NOTREACHED();
 }
 
 void XRCompositorCommon::SubmitFrameWithTextureHandle(
     int16_t frame_index,
-    mojo::ScopedHandle texture_handle) {
+    mojo::PlatformHandle texture_handle) {
   TRACE_EVENT1("xr", "SubmitFrameWithTextureHandle", "frameIndex", frame_index);
   webxr_has_pose_ = false;
   // Tell the browser that WebXR has submitted a frame.
   if (on_webxr_submitted_)
     std::move(on_webxr_submitted_).Run();
 
-  if (!pending_frame_ || pending_frame_->frame_data_->frame_id != frame_index) {
+  if (!pending_frame_ ||
+      pending_frame_->render_info_->frame_id != frame_index) {
     // We weren't expecting a submitted frame.  This can happen if WebXR was
     // hidden by an overlay for some time.
     if (submit_client_) {
@@ -115,17 +139,12 @@ void XRCompositorCommon::SubmitFrameWithTextureHandle(
   pending_frame_->submit_frame_time_ = base::TimeTicks::Now();
 
 #if defined(OS_WIN)
-  MojoPlatformHandle platform_handle;
-  platform_handle.struct_size = sizeof(platform_handle);
-  MojoResult result = MojoUnwrapPlatformHandle(texture_handle.release().value(),
-                                               nullptr, &platform_handle);
-  if (result == MOJO_RESULT_OK) {
-    texture_helper_.SetSourceTexture(
-        base::win::ScopedHandle(
-            reinterpret_cast<HANDLE>(platform_handle.value)),
-        left_webxr_bounds_, right_webxr_bounds_);
-    pending_frame_->webxr_submitted_ = true;
-  }
+  base::win::ScopedHandle scoped_handle = texture_handle.is_valid()
+                                              ? texture_handle.TakeHandle()
+                                              : base::win::ScopedHandle();
+  texture_helper_.SetSourceTexture(std::move(scoped_handle), left_webxr_bounds_,
+                                   right_webxr_bounds_);
+  pending_frame_->webxr_submitted_ = true;
 
   // Regardless of success - try to composite what we have.
   MaybeCompositeAndSubmit();
@@ -133,29 +152,29 @@ void XRCompositorCommon::SubmitFrameWithTextureHandle(
 }
 
 void XRCompositorCommon::CleanUp() {
-  submit_client_ = nullptr;
+  submit_client_.reset();
   webxr_has_pose_ = false;
-  presentation_binding_.Close();
-  frame_data_binding_.Close();
-  gamepad_provider_.Close();
-  overlay_binding_.Close();
+  presentation_receiver_.reset();
+  frame_data_receiver_.reset();
+  overlay_receiver_.reset();
+  input_event_listener_.reset();
   StopRuntime();
 }
 
-void XRCompositorCommon::RequestGamepadProvider(
-    mojom::IsolatedXRGamepadProviderRequest request) {
-  gamepad_provider_.Close();
-  gamepad_provider_.Bind(std::move(request));
-}
-
 void XRCompositorCommon::RequestOverlay(
-    mojom::ImmersiveOverlayRequest request) {
-  overlay_binding_.Close();
-  overlay_binding_.Bind(std::move(request));
+    mojo::PendingReceiver<mojom::ImmersiveOverlay> receiver) {
+  overlay_receiver_.reset();
+  overlay_receiver_.Bind(std::move(receiver));
 
   // WebXR is visible and overlay hidden by default until the overlay overrides
   // this.
   SetOverlayAndWebXRVisibility(false, true);
+}
+
+bool XRCompositorCommon::UsesInputEventing() {
+  // By default we don't use input eventing.  Any subclass that does will need
+  // to override this.
+  return false;
 }
 
 void XRCompositorCommon::UpdateLayerBounds(int16_t frame_id,
@@ -182,14 +201,36 @@ void XRCompositorCommon::UpdateLayerBounds(int16_t frame_id,
 
 void XRCompositorCommon::RequestSession(
     base::OnceCallback<void()> on_presentation_ended,
+    base::RepeatingCallback<void(mojom::XRVisibilityState)>
+        on_visibility_state_changed,
     mojom::XRRuntimeSessionOptionsPtr options,
     RequestSessionCallback callback) {
-  DCHECK(options->immersive);
   webxr_has_pose_ = false;
-  presentation_binding_.Close();
-  frame_data_binding_.Close();
+  presentation_receiver_.reset();
+  frame_data_receiver_.reset();
 
-  if (!StartRuntime()) {
+  EnableSupportedFeatures(options->required_features,
+                          options->optional_features);
+
+  // Call the subclass's StartRuntime method. Upon completion, StartRuntime will
+  // call the callback passed to its first parameter, start_runtime_callback.
+  // XRCompositorCommon::StartRuntimeFinish. We setup BindOnce such that all of
+  // the parameters give to us here in XRCompositorCommon::RequestSession are
+  // passed through to StartRuntimeFinish so that it can finish the job.
+  StartRuntime(base::BindOnce(
+      &XRCompositorCommon::StartRuntimeFinish, base::Unretained(this),
+      std::move(on_presentation_ended), std::move(on_visibility_state_changed),
+      std::move(options), std::move(callback)));
+}
+
+void XRCompositorCommon::StartRuntimeFinish(
+    base::OnceCallback<void()> on_presentation_ended,
+    base::RepeatingCallback<void(mojom::XRVisibilityState)>
+        on_visibility_state_changed,
+    mojom::XRRuntimeSessionOptionsPtr options,
+    RequestSessionCallback callback,
+    bool success) {
+  if (!success) {
     TRACE_EVENT_INSTANT0("xr", "Failed to start runtime",
                          TRACE_EVENT_SCOPE_THREAD);
     main_thread_task_runner_->PostTask(
@@ -203,15 +244,27 @@ void XRCompositorCommon::RequestSession(
   // be called.
   on_presentation_ended_ = std::move(on_presentation_ended);
 
-  device::mojom::XRPresentationProviderPtr presentation_provider;
-  device::mojom::XRFrameDataProviderPtr frame_data_provider;
-  presentation_binding_.Bind(mojo::MakeRequest(&presentation_provider));
-  frame_data_binding_.Bind(mojo::MakeRequest(&frame_data_provider));
+  on_visibility_state_changed_ = std::move(on_visibility_state_changed);
+
+  // Queue up a notification to the requester of the current visibility state,
+  // so that it can be initialized to the right value.
+  if (on_visibility_state_changed_) {
+    main_thread_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(on_visibility_state_changed_, visibility_state_));
+  }
 
   device::mojom::XRPresentationTransportOptionsPtr transport_options =
       device::mojom::XRPresentationTransportOptions::New();
-  transport_options->transport_method =
-      device::mojom::XRPresentationTransportMethod::SUBMIT_AS_TEXTURE_HANDLE;
+
+  if (IsUsingSharedImages()) {
+    transport_options->transport_method =
+        device::mojom::XRPresentationTransportMethod::DRAW_INTO_TEXTURE_MAILBOX;
+  } else {
+    transport_options->transport_method =
+        device::mojom::XRPresentationTransportMethod::SUBMIT_AS_TEXTURE_HANDLE;
+  }
+
   // Only set boolean options that we need. Default is false, and we should be
   // able to safely ignore ones that our implementation doesn't care about.
   transport_options->wait_for_transfer_notification = true;
@@ -219,13 +272,25 @@ void XRCompositorCommon::RequestSession(
   OnSessionStart();
 
   auto submit_frame_sink = device::mojom::XRPresentationConnection::New();
-  submit_frame_sink->provider = presentation_provider.PassInterface();
-  submit_frame_sink->client_request = mojo::MakeRequest(&submit_client_);
+  submit_frame_sink->provider =
+      presentation_receiver_.BindNewPipeAndPassRemote();
+  submit_frame_sink->client_receiver =
+      submit_client_.BindNewPipeAndPassReceiver();
   submit_frame_sink->transport_options = std::move(transport_options);
 
   auto session = device::mojom::XRSession::New();
-  session->data_provider = frame_data_provider.PassInterface();
+  session->data_provider = frame_data_receiver_.BindNewPipeAndPassRemote();
   session->submit_frame_sink = std::move(submit_frame_sink);
+
+  session->enabled_features.insert(session->enabled_features.end(),
+                                   enabled_features_.begin(),
+                                   enabled_features_.end());
+
+  session->device_config = device::mojom::XRSessionDeviceConfig::New();
+  session->device_config->uses_input_eventing = UsesInputEventing();
+  session->device_config->enable_anti_aliasing = CanEnableAntiAliasing();
+  session->enviroment_blend_mode = GetEnvironmentBlendMode(options->mode);
+  session->interaction_mode = GetInteractionMode(options->mode);
 
   main_thread_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), true, std::move(session)));
@@ -238,9 +303,9 @@ void XRCompositorCommon::ExitPresent() {
   TRACE_EVENT_INSTANT0("xr", "ExitPresent", TRACE_EVENT_SCOPE_THREAD);
   is_presenting_ = false;
   webxr_has_pose_ = false;
-  presentation_binding_.Close();
-  frame_data_binding_.Close();
-  submit_client_ = nullptr;
+  presentation_receiver_.reset();
+  frame_data_receiver_.reset();
+  submit_client_.reset();
   StopRuntime();
 
   pending_frame_.reset();
@@ -249,12 +314,9 @@ void XRCompositorCommon::ExitPresent() {
   // Reset webxr_visible_ for subsequent presentations.
   webxr_visible_ = true;
 
-  // Push out one more controller update so we don't have stale controllers.
-  UpdateControllerState();
-
   // Kill outstanding overlays:
   overlay_visible_ = false;
-  overlay_binding_.Close();
+  overlay_receiver_.reset();
 
   texture_helper_.SetSourceAndOverlayVisible(false, false);
 
@@ -264,29 +326,35 @@ void XRCompositorCommon::ExitPresent() {
   }
 }
 
-void XRCompositorCommon::UpdateControllerState() {
-  if (!gamepad_callback_) {
-    // Nobody is listening to updates, so bail early.
-    return;
+void XRCompositorCommon::SetVisibilityState(
+    mojom::XRVisibilityState visibility_state) {
+  if (visibility_state_ != visibility_state) {
+    visibility_state_ = visibility_state;
+    if (on_visibility_state_changed_) {
+      main_thread_task_runner_->PostTask(
+          FROM_HERE,
+          base::BindOnce(on_visibility_state_changed_, visibility_state));
+    }
   }
-
-  if (!is_presenting_ || !webxr_visible_) {
-    std::move(gamepad_callback_).Run(nullptr);
-    return;
-  }
-
-  std::move(gamepad_callback_).Run(GetNextGamepadData());
 }
 
-void XRCompositorCommon::RequestUpdate(
-    mojom::IsolatedXRGamepadProvider::RequestUpdateCallback callback) {
-  // Save the callback to resolve next time we update (typically on vsync).
-  gamepad_callback_ = std::move(callback);
+const mojom::VRStageParametersPtr&
+XRCompositorCommon::GetCurrentStageParameters() const {
+  return current_stage_parameters_;
+}
 
-  // If we aren't presenting, reply now saying that we have no controllers.
-  if (!is_presenting_) {
-    UpdateControllerState();
+void XRCompositorCommon::SetStageParameters(
+    mojom::VRStageParametersPtr stage_parameters) {
+  // If the stage parameters are identical no need to update them.
+  if ((!current_stage_parameters_ && !stage_parameters) ||
+      (current_stage_parameters_ && stage_parameters &&
+       current_stage_parameters_.Equals(stage_parameters))) {
+    return;
   }
+
+  // If they have changed, increment the ID and save the new parameters.
+  stage_parameters_id_++;
+  current_stage_parameters_ = std::move(stage_parameters);
 }
 
 void XRCompositorCommon::Init() {}
@@ -297,12 +365,21 @@ void XRCompositorCommon::StartPendingFrame() {
     pending_frame_->waiting_for_webxr_ = webxr_visible_;
     pending_frame_->waiting_for_overlay_ = overlay_visible_;
     pending_frame_->frame_data_ = GetNextFrameData();
+    // GetNextFrameData() should never return null:
+    DCHECK(pending_frame_->frame_data_);
+    pending_frame_->render_info_ = GetRenderInfo(*pending_frame_->frame_data_);
   }
 }
 
 void XRCompositorCommon::GetFrameData(
+    mojom::XRFrameDataRequestOptionsPtr options,
     mojom::XRFrameDataProvider::GetFrameDataCallback callback) {
   TRACE_EVENT0("xr", "GetFrameData");
+  if (HasSessionEnded()) {
+    ExitPresent();
+    return;
+  }
+
   if (!is_presenting_) {
     return;
   }
@@ -318,9 +395,9 @@ void XRCompositorCommon::GetFrameData(
     if (delayed_get_frame_data_callback_) {
       mojo::ReportBadMessage("Multiple outstanding GetFrameData calls");
     }
-    delayed_get_frame_data_callback_ =
-        base::BindOnce(&XRCompositorCommon::GetFrameData,
-                       base::Unretained(this), std::move(callback));
+    delayed_get_frame_data_callback_ = base::BindOnce(
+        &XRCompositorCommon::GetFrameData, base::Unretained(this),
+        std::move(options), std::move(callback));
     return;
   }
 
@@ -329,14 +406,30 @@ void XRCompositorCommon::GetFrameData(
   pending_frame_->webxr_has_pose_ = true;
   pending_frame_->sent_frame_data_time_ = base::TimeTicks::Now();
 
+  // TODO(https://crbug.com/1218135): The lack of frame_data_ here indicates
+  // that we probably should have deferred this call, but it matches the
+  // behavior from before the stage parameters were updated in this function and
+  // avoids a crash. Likely the deferral above should check if we're awaiting
+  // either the webxr or overlay submit.
+  if (pending_frame_->frame_data_) {
+    // If the stage parameters have been updated since the last frame that was
+    // sent, send the updated values.
+    pending_frame_->frame_data_->stage_parameters_id = stage_parameters_id_;
+    if (options->stage_parameters_id != stage_parameters_id_) {
+      pending_frame_->frame_data_->stage_parameters =
+          current_stage_parameters_.Clone();
+    }
+  } else {
+    TRACE_EVENT0("xr", "GetFrameData Missing FrameData");
+  }
+
   // Yield here to let the event queue process pending mojo messages,
   // specifically the next gamepad callback request that's likely to
   // have been sent during WaitGetPoses.
   task_runner()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&XRCompositorCommon::GetControllerDataAndSendFrameData,
-                     base::Unretained(this), std::move(callback),
-                     pending_frame_->frame_data_.Clone()));
+      FROM_HERE, base::BindOnce(&XRCompositorCommon::SendFrameData,
+                                base::Unretained(this), std::move(callback),
+                                std::move(pending_frame_->frame_data_)));
 
   next_frame_id_ += 1;
   if (next_frame_id_ < 0) {
@@ -344,24 +437,46 @@ void XRCompositorCommon::GetFrameData(
   }
 }
 
-void XRCompositorCommon::GetControllerDataAndSendFrameData(
+void XRCompositorCommon::SetInputSourceButtonListener(
+    mojo::PendingAssociatedRemote<device::mojom::XRInputSourceButtonListener>
+        input_listener_remote) {
+  DCHECK(UsesInputEventing());
+  input_event_listener_.reset();
+  input_event_listener_.Bind(std::move(input_listener_remote));
+}
+
+void XRCompositorCommon::SendFrameData(
     XRFrameDataProvider::GetFrameDataCallback callback,
     mojom::XRFrameDataPtr frame_data) {
-  TRACE_EVENT0("xr", "GetControllerDataAndSendFrameData");
-  // Update gamepad controllers.
-  UpdateControllerState();
+  TRACE_EVENT0("xr", "SendFrameData");
+
+  // This method represents a call from the renderer process. If our visibility
+  // state is hidden, we should avoid handing "sensitive" information, like the
+  // pose back up to the renderer. Note that this check is done here as other
+  // methods (RequestNextOverlayPose) represent a call from the browser process,
+  // which should receive the pose.
+  bool is_visible =
+      (visibility_state_ != device::mojom::XRVisibilityState::HIDDEN);
 
   // We have posted a message to allow other calls to get through, and now state
   // may have changed.  WebXR may not be presenting any more, or may be hidden.
-  std::move(callback).Run(is_presenting_ &&
+  std::move(callback).Run(is_presenting_ && is_visible &&
                                   (webxr_visible_ || on_webxr_submitted_)
                               ? std::move(frame_data)
                               : mojom::XRFrameData::New());
 }
 
+void XRCompositorCommon::GetEnvironmentIntegrationProvider(
+    mojo::PendingAssociatedReceiver<
+        device::mojom::XREnvironmentIntegrationProvider> environment_provider) {
+  // Environment integration is not supported. This call should not
+  // be made on this device.
+  mojo::ReportBadMessage("Environment integration is not supported.");
+}
+
 void XRCompositorCommon::SubmitOverlayTexture(
     int16_t frame_id,
-    mojo::ScopedHandle texture_handle,
+    mojo::PlatformHandle texture_handle,
     const gfx::RectF& left_bounds,
     const gfx::RectF& right_bounds,
     SubmitOverlayTextureCallback overlay_submit_callback) {
@@ -380,19 +495,9 @@ void XRCompositorCommon::SubmitOverlayTexture(
   pending_frame_->waiting_for_overlay_ = false;
 
 #if defined(OS_WIN)
-  MojoPlatformHandle platform_handle;
-  platform_handle.struct_size = sizeof(platform_handle);
-  MojoResult result = MojoUnwrapPlatformHandle(texture_handle.release().value(),
-                                               nullptr, &platform_handle);
-  if (result == MOJO_RESULT_OK) {
-    texture_helper_.SetOverlayTexture(
-        base::win::ScopedHandle(
-            reinterpret_cast<HANDLE>(platform_handle.value)),
-        left_bounds, right_bounds);
-    pending_frame_->overlay_submitted_ = true;
-  } else {
-    std::move(overlay_submit_callback_).Run(false);
-  }
+  texture_helper_.SetOverlayTexture(texture_handle.TakeHandle(), left_bounds,
+                                    right_bounds);
+  pending_frame_->overlay_submitted_ = true;
 
   // Regardless of success - try to composite what we have.
   MaybeCompositeAndSubmit();
@@ -408,7 +513,7 @@ void XRCompositorCommon::RequestNextOverlayPose(
   // Ensure we have a pending frame.
   StartPendingFrame();
   pending_frame_->overlay_has_pose_ = true;
-  std::move(callback).Run(pending_frame_->frame_data_.Clone());
+  std::move(callback).Run(pending_frame_->render_info_->Clone());
 }
 
 void XRCompositorCommon::SetOverlayAndWebXRVisibility(bool overlay_visible,
@@ -471,11 +576,14 @@ void XRCompositorCommon::MaybeCompositeAndSubmit() {
     texture_helper_.CleanupNoSubmit();
   } else {
     copy_successful = texture_helper_.UpdateBackbufferSizes() &&
-                      PreComposite() && texture_helper_.CompositeToBackBuffer();
+                      texture_helper_.CompositeToBackBuffer();
     if (copy_successful) {
       pending_frame_->frame_ready_time_ = base::TimeTicks::Now();
       if (!SubmitCompositedFrame()) {
         ExitPresent();
+        // ExitPresent() clears pending_frame_, so return here to avoid
+        // accessing it below.
+        return;
       }
     }
   }

@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/notreached.h"
 #include "base/values.h"
 
 InMemoryPrefStore::InMemoryPrefStore() {}
@@ -36,7 +37,7 @@ void InMemoryPrefStore::RemoveObserver(PrefStore::Observer* observer) {
 }
 
 bool InMemoryPrefStore::HasObservers() const {
-  return observers_.might_have_observers();
+  return !observers_.empty();
 }
 
 bool InMemoryPrefStore::IsInitializationComplete() const {
@@ -63,6 +64,11 @@ void InMemoryPrefStore::RemoveValue(const std::string& key, uint32_t flags) {
     ReportValueChanged(key, flags);
 }
 
+void InMemoryPrefStore::RemoveValuesByPrefixSilently(
+    const std::string& prefix) {
+  prefs_.ClearWithPrefix(prefix);
+}
+
 bool InMemoryPrefStore::ReadOnly() const {
   return false;
 }
@@ -73,6 +79,12 @@ PersistentPrefStore::PrefReadError InMemoryPrefStore::GetReadError() const {
 
 PersistentPrefStore::PrefReadError InMemoryPrefStore::ReadPrefs() {
   return PersistentPrefStore::PREF_READ_ERROR_NONE;
+}
+
+void InMemoryPrefStore::CommitPendingWriteSynchronously() {
+  // This function was added for one very specific use case and is intentionally
+  // not implemented for other pref stores.
+  NOTREACHED();
 }
 
 void InMemoryPrefStore::ReportValueChanged(const std::string& key,

@@ -4,8 +4,8 @@
 
 #include "chrome/browser/media_galleries/chromeos/mtp_device_task_helper_map_service.h"
 
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "chrome/browser/media_galleries/chromeos/mtp_device_task_helper.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -28,7 +28,7 @@ MTPDeviceTaskHelper* MTPDeviceTaskHelperMapService::CreateDeviceTaskHelper(
   DCHECK(!storage_name.empty());
   const MTPDeviceTaskHelperKey key =
       GetMTPDeviceTaskHelperKey(storage_name, read_only);
-  DCHECK(!base::ContainsKey(task_helper_map_, key));
+  DCHECK(!base::Contains(task_helper_map_, key));
   MTPDeviceTaskHelper* task_helper = new MTPDeviceTaskHelper();
   task_helper_map_[key] = task_helper;
   return task_helper;

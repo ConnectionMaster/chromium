@@ -8,16 +8,22 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/frame/ash_frame_caption_controller.h"
-#include "ash/public/cpp/frame_header.h"
-#include "ash/public/cpp/immersive/immersive_fullscreen_controller_delegate.h"
-#include "ash/wm/tablet_mode/tablet_mode_observer.h"
+#include "ash/public/cpp/tablet_mode_observer.h"
+#include "base/callback.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
+#include "chromeos/ui/frame/frame_header.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller_delegate.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/views/view.h"
+
+namespace chromeos {
+class DefaultFrameHeader;
+class FrameCaptionButtonContainerView;
+}
 
 namespace gfx {
 class ImageSkia;
@@ -27,30 +33,35 @@ namespace views {
 class FrameCaptionButton;
 class ImageView;
 class Widget;
+class NonClientFrameView;
 }
 
 namespace ash {
 
-class DefaultFrameHeader;
-class FrameCaptionButtonContainerView;
 enum class FrameBackButtonState;
 
 // View which paints the frame header (title, caption buttons...). It slides off
 // and on screen in immersive fullscreen.
-class ASH_EXPORT HeaderView : public views::View,
-                              public ImmersiveFullscreenControllerDelegate,
-                              public TabletModeObserver,
-                              public aura::WindowObserver {
+class ASH_EXPORT HeaderView
+    : public views::View,
+      public chromeos::ImmersiveFullscreenControllerDelegate,
+      public TabletModeObserver,
+      public aura::WindowObserver {
  public:
   // |target_widget| is the widget that the caption buttons act on.
   // |target_widget| is not necessarily the same as the widget the header is
   // placed in. For example, in immersive fullscreen this view may be painted in
   // a widget that slides in and out on top of the main app or browser window.
   // However, clicking a caption button should act on the target widget.
-  explicit HeaderView(views::Widget* target_widget);
+  HeaderView(views::Widget* target_widget,
+             views::NonClientFrameView* frame_view);
   ~HeaderView() override;
 
-  void set_is_immersive_delegate(bool value) { is_immersive_delegate_ = value; }
+  METADATA_HEADER(HeaderView);
+
+  void set_immersive_mode_changed_callback(base::RepeatingClosure callback) {
+    immersive_mode_changed_callback_ = std::move(callback);
+  }
 
   bool should_paint() { return should_paint_; }
 
@@ -79,6 +90,7 @@ class ASH_EXPORT HeaderView : public views::View,
   // views::View:
   void Layout() override;
   void ChildPreferredSizeChanged(views::View* child) override;
+  bool IsDrawn() const override;
 
   // TabletModeObserver:
   void OnTabletModeStarted() override;
@@ -90,7 +102,7 @@ class ASH_EXPORT HeaderView : public views::View,
                                intptr_t old) override;
   void OnWindowDestroying(aura::Window* window) override;
 
-  FrameCaptionButtonContainerView* caption_button_container() {
+  chromeos::FrameCaptionButtonContainerView* caption_button_container() {
     return caption_button_container_;
   }
 
@@ -110,8 +122,9 @@ class ASH_EXPORT HeaderView : public views::View,
   void OnImmersiveFullscreenExited() override;
   void SetVisibleFraction(double visible_fraction) override;
   std::vector<gfx::Rect> GetVisibleBoundsInScreen() const override;
+  void Relayout() override;
 
-  DefaultFrameHeader* GetFrameHeader() { return frame_header_.get(); }
+  chromeos::DefaultFrameHeader* GetFrameHeader() { return frame_header_.get(); }
 
  private:
   class HeaderContentView;
@@ -121,34 +134,34 @@ class ASH_EXPORT HeaderView : public views::View,
   void PaintHeaderContent(gfx::Canvas* canvas);
 
   void UpdateBackButton();
+  void UpdateCenterButton();
   void UpdateCaptionButtonsVisibility();
 
   // The widget that the caption buttons act on.
   views::Widget* target_widget_;
 
-  AshFrameCaptionController caption_controller_;
+  // A callback to run when |in_immersive_mode_| changes.
+  base::RepeatingClosure immersive_mode_changed_callback_;
 
   // Helper for painting the header. The exact type of FrameHeader will depend
   // on the type of window: In Mash, Chrome Browser windows use
   // CustomFrameHeader which is aware of theming. In classic Ash, Chrome Browser
   // windows won't use HeaderView at all. In either configuration, non Browser
   // windows will use DefaultFrameHeader.
-  std::unique_ptr<DefaultFrameHeader> frame_header_;
+  std::unique_ptr<chromeos::DefaultFrameHeader> frame_header_;
 
-  views::ImageView* avatar_icon_;
+  views::ImageView* avatar_icon_ = nullptr;
 
   // View which draws the content of the frame.
   HeaderContentView* header_content_view_ = nullptr;
 
   // View which contains the window caption buttons.
-  FrameCaptionButtonContainerView* caption_button_container_;
+  chromeos::FrameCaptionButtonContainerView* caption_button_container_ =
+      nullptr;
 
   // The fraction of the header's height which is visible while in fullscreen.
   // This value is meaningless when not in fullscreen.
-  double fullscreen_visible_fraction_;
-
-  // Has this instance been set as the ImmersiveFullscreenControllerDelegate?
-  bool is_immersive_delegate_ = true;
+  double fullscreen_visible_fraction_ = 0;
 
   // True if a layer should be used for the immersive mode reveal. Some code
   // needs HeaderView to always paint to a layer instead of only during
@@ -158,12 +171,16 @@ class ASH_EXPORT HeaderView : public views::View,
   bool did_layout_ = false;
 
   // False to skip painting. Used for overview mode to hide the header.
-  bool should_paint_;
+  bool should_paint_ = true;
 
   bool in_immersive_mode_ = false;
 
+  // This is used to compute visible bounds.
+  mutable bool is_drawn_override_ = false;
+
   // Observes property changes to |target_widget_|'s window.
-  ScopedObserver<aura::Window, aura::WindowObserver> window_observer_{this};
+  base::ScopedObservation<aura::Window, aura::WindowObserver>
+      window_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HeaderView);
 };

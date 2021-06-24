@@ -2,36 +2,47 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+import {CookieDetails, LocalDataBrowserProxy, LocalDataItem} from 'chrome://settings/lazy_load.js';
+
+import {TestBrowserProxy} from '../test_browser_proxy.m.js';
+// clang-format on
+
 /**
  * A test version of LocalDataBrowserProxy. Provides helper methods
  * for allowing tests to know when a method was called, as well as
  * specifying mock responses.
  *
- * @implements {settings.LocalDataBrowserProxy}
+ * @implements {LocalDataBrowserProxy}
  */
-class TestLocalDataBrowserProxy extends TestBrowserProxy {
+export class TestLocalDataBrowserProxy extends TestBrowserProxy {
   constructor() {
     super([
       'getDisplayList',
       'removeAll',
       'removeShownItems',
       'removeItem',
+      'removeSite',
       'getCookieDetails',
       'getNumCookiesString',
       'reloadCookies',
       'removeCookie',
+      'removeAllThirdPartyCookies',
     ]);
 
-    /** @private {?CookieList} */
-    this.cookieDetails_ = null;
+    /** @private {!Array<!CookieDetails>} */
+    this.cookieDetails_ = [];
 
-    /** @private {Array<!CookieList>} */
+    /** @private {Array<!LocalDataItem>} */
     this.cookieList_ = [];
+
+    /** @private {!Array<!LocalDataItem>} */
+    this.filteredCookieList_ = [];
   }
 
   /**
    * Test-only helper.
-   * @param {!CookieList} cookieDetails
+   * @param {!Array<!CookieDetails>} cookieDetails
    */
   setCookieDetails(cookieDetails) {
     this.cookieDetails_ = cookieDetails;
@@ -39,7 +50,7 @@ class TestLocalDataBrowserProxy extends TestBrowserProxy {
 
   /**
    * Test-only helper.
-   * @param {!CookieList} cookieList
+   * @param {!Array<!LocalDataItem>} cookieList
    */
   setCookieList(cookieList) {
     this.cookieList_ = cookieList;
@@ -48,16 +59,18 @@ class TestLocalDataBrowserProxy extends TestBrowserProxy {
 
   /** @override */
   getDisplayList(filter) {
+    this.methodCalled('getDisplayList', filter);
     if (filter === undefined) {
       filter = '';
     }
-    let output = [];
+    /** @type {!Array<!LocalDataItem>} */
+    const output = [];
     for (let i = 0; i < this.cookieList_.length; ++i) {
       if (this.cookieList_[i].site.indexOf(filter) >= 0) {
         output.push(this.filteredCookieList_[i]);
       }
     }
-    return Promise.resolve({items: output});
+    return Promise.resolve(output);
   }
 
   /** @override */
@@ -72,21 +85,21 @@ class TestLocalDataBrowserProxy extends TestBrowserProxy {
   }
 
   /** @override */
-  removeItem(id) {
-    this.methodCalled('removeItem', id);
+  removeSite(path) {
+    this.methodCalled('removeSite', path);
   }
 
   /** @override */
   getCookieDetails(site) {
     this.methodCalled('getCookieDetails', site);
-    return Promise.resolve(this.cookieDetails_ || {id: '', children: []});
+    return Promise.resolve(this.cookieDetails_);
   }
 
   /** @override */
   getNumCookiesString(numCookies) {
     this.methodCalled('getNumCookiesString', numCookies);
     return Promise.resolve(
-        `${numCookies} ` + (numCookies == 1 ? 'cookie' : 'cookies'));
+        `${numCookies} ` + (numCookies === 1 ? 'cookie' : 'cookies'));
   }
 
   /** @override */
@@ -96,7 +109,13 @@ class TestLocalDataBrowserProxy extends TestBrowserProxy {
   }
 
   /** @override */
-  removeCookie(path) {
-    this.methodCalled('removeCookie', path);
+  removeItem(path) {
+    this.methodCalled('removeItem', path);
+  }
+
+  /** @override */
+  removeAllThirdPartyCookies() {
+    this.methodCalled('removeAllThirdPartyCookies');
+    return Promise.resolve();
   }
 }

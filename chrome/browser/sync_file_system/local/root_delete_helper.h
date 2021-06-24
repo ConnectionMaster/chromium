@@ -10,7 +10,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 class GURL;
 
@@ -30,12 +30,12 @@ class LocalFileSyncStatus;
 // Expected to be called on and will callback on IO thread.
 class RootDeleteHelper {
  public:
-  typedef base::Callback<void(base::File::Error)> FileStatusCallback;
+  typedef base::OnceCallback<void(base::File::Error)> FileStatusCallback;
 
   RootDeleteHelper(storage::FileSystemContext* file_system_context,
                    LocalFileSyncStatus* sync_status,
                    const storage::FileSystemURL& url,
-                   const FileStatusCallback& callback);
+                   FileStatusCallback callback);
   ~RootDeleteHelper();
 
   void Run();
@@ -54,7 +54,7 @@ class RootDeleteHelper {
   // Not owned; owner of this instance owns it.
   LocalFileSyncStatus* sync_status_;
 
-  base::WeakPtrFactory<RootDeleteHelper> weak_factory_;
+  base::WeakPtrFactory<RootDeleteHelper> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RootDeleteHelper);
 };

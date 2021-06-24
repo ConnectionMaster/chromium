@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/extensions/external_cache_impl.h"
@@ -84,23 +84,11 @@ void DeviceLocalAccountExternalPolicyLoader::OnStoreError(
 
 void DeviceLocalAccountExternalPolicyLoader::OnExtensionListsUpdated(
     const base::DictionaryValue* prefs) {
-  DCHECK(external_cache_ || prefs->empty());
+  DCHECK(external_cache_ || prefs->DictEmpty());
   prefs_ = prefs->CreateDeepCopy();
   // Only call LoadFinished() when there is an owner to consume |prefs_|.
   if (has_owner())
     LoadFinished(std::move(prefs_));
-}
-
-void DeviceLocalAccountExternalPolicyLoader::OnExtensionLoadedInCache(
-    const std::string& id) {}
-
-void DeviceLocalAccountExternalPolicyLoader::OnExtensionDownloadFailed(
-    const std::string& id) {}
-
-std::string
-DeviceLocalAccountExternalPolicyLoader::GetInstalledExtensionVersion(
-    const std::string& id) {
-  return std::string();
 }
 
 ExternalCache*
@@ -118,7 +106,7 @@ void DeviceLocalAccountExternalPolicyLoader::UpdateExtensionListFromStore() {
   const policy::PolicyMap& policy_map = store_->policy_map();
   // TODO(binjin): Use two policy handlers here after
   // ExtensionManagementPolicyHandler is introduced.
-  extensions::ExtensionInstallForcelistPolicyHandler policy_handler;
+  extensions::ExtensionInstallForceListPolicyHandler policy_handler;
   if (policy_handler.CheckPolicySettings(policy_map, NULL)) {
     PrefValueMap pref_value_map;
     policy_handler.ApplyPolicySettings(policy_map, &pref_value_map);

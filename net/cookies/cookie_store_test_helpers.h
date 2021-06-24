@@ -16,6 +16,7 @@
 #include "net/cookies/cookie_change_dispatcher.h"
 #include "net/log/net_log_with_source.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class GURL;
 
@@ -51,14 +52,8 @@ class DelayedCookieMonster : public CookieStore {
   // invoke the internal callback.
   // Post a delayed task to invoke the original callback with the results.
 
-  void SetCookieWithOptionsAsync(
-      const GURL& url,
-      const std::string& cookie_line,
-      const CookieOptions& options,
-      CookieMonster::SetCookiesCallback callback) override;
-
   void SetCanonicalCookieAsync(std::unique_ptr<CanonicalCookie> cookie,
-                               std::string source_scheme,
+                               const GURL& source_url,
                                const CookieOptions& options,
                                SetCookiesCallback callback) override;
 
@@ -66,11 +61,7 @@ class DelayedCookieMonster : public CookieStore {
                                      const CookieOptions& options,
                                      GetCookieListCallback callback) override;
 
-  void GetAllCookiesAsync(GetCookieListCallback callback) override;
-
-  virtual bool SetCookieWithOptions(const GURL& url,
-                                    const std::string& cookie_line,
-                                    const CookieOptions& options);
+  void GetAllCookiesAsync(GetAllCookiesCallback callback) override;
 
   void DeleteCanonicalCookieAsync(const CanonicalCookie& cookie,
                                   DeleteCallback callback) override;
@@ -84,6 +75,8 @@ class DelayedCookieMonster : public CookieStore {
 
   void DeleteSessionCookiesAsync(DeleteCallback) override;
 
+  void DeleteMatchingCookiesAsync(DeletePredicate, DeleteCallback) override;
+
   void FlushStore(base::OnceClosure callback) override;
 
   CookieChangeDispatcher& GetChangeDispatcher() override;
@@ -91,18 +84,15 @@ class DelayedCookieMonster : public CookieStore {
   void SetCookieableSchemes(const std::vector<std::string>& schemes,
                             SetCookieableSchemesCallback callback) override;
 
-  bool IsEphemeral() override;
-
  private:
   // Be called immediately from CookieMonster.
 
-  void SetCookiesInternalCallback(
-      CanonicalCookie::CookieInclusionStatus result);
+  void SetCookiesInternalCallback(CookieAccessResult result);
 
   void GetCookiesWithOptionsInternalCallback(const std::string& cookie);
   void GetCookieListWithOptionsInternalCallback(
-      const CookieList& cookie,
-      const CookieStatusList& excluded_cookies);
+      const CookieAccessResultList& cookie,
+      const CookieAccessResultList& excluded_cookies);
 
   // Invoke the original callbacks.
 
@@ -117,9 +107,10 @@ class DelayedCookieMonster : public CookieStore {
   DelayedCookieMonsterChangeDispatcher change_dispatcher_;
 
   bool did_run_;
-  CanonicalCookie::CookieInclusionStatus result_;
+  CookieAccessResult result_;
   std::string cookie_;
   std::string cookie_line_;
+  CookieAccessResultList cookie_access_result_list_;
   CookieList cookie_list_;
 
   DISALLOW_COPY_AND_ASSIGN(DelayedCookieMonster);

@@ -4,10 +4,11 @@
 
 #include "base/bind.h"
 #include "base/files/file_path.h"
-#include "chrome/browser/extensions/extension_action.h"
-#include "chrome/browser/extensions/extension_action_manager.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/state_store.h"
@@ -38,7 +39,7 @@ void WaitForStateStore(Profile* profile, const std::string& extension_id) {
       new content::MessageLoopRunner;
   ExtensionSystem::Get(profile)->state_store()->GetExtensionValue(
       extension_id, kBrowserActionStorageKey,
-      base::Bind(&QuitMessageLoop, base::RetainedRef(runner)));
+      base::BindOnce(&QuitMessageLoop, base::RetainedRef(runner)));
   runner->Run();
 }
 
@@ -64,7 +65,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest,
   ASSERT_TRUE(listener.WaitUntilSatisfied());
 
   ExtensionAction* extension_action =
-      ExtensionActionManager::Get(profile())->GetBrowserAction(*extension);
+      ExtensionActionManager::Get(profile())->GetExtensionAction(*extension);
   ASSERT_TRUE(extension_action);
   EXPECT_EQ(SK_ColorBLUE, extension_action->GetBadgeBackgroundColor(0));
 }
@@ -89,12 +90,12 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest, BrowserActionDefaultPersistence) {
   ASSERT_TRUE(extension) << "Could not find extension in registry.";
 
   ExtensionAction* extension_action =
-      ExtensionActionManager::Get(profile())->GetBrowserAction(*extension);
+      ExtensionActionManager::Get(profile())->GetExtensionAction(*extension);
   ASSERT_TRUE(extension_action);
 
   // If the extension hasn't already set the badge text, then we should wait for
   // it to do so.
-  if (extension_action->GetBadgeText(0) != "Hello") {
+  if (extension_action->GetExplicitlySetBadgeText(0) != "Hello") {
     ExtensionTestMessageListener listener("Badge Text Set",
                                           false /* won't send custom reply */);
     ASSERT_TRUE(listener.WaitUntilSatisfied());

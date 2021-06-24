@@ -12,12 +12,16 @@
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
+#include "media/media_buildflags.h"
 #include "media/mojo/buildflags.h"
-#include "media/mojo/interfaces/interface_factory.mojom.h"
+#include "media/mojo/mojom/interface_factory.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "url/gurl.h"
 
-namespace service_manager {
-class InterfaceProvider;
+namespace blink {
+class BrowserInterfaceBrokerProxy;
 }
 
 namespace content {
@@ -25,49 +29,66 @@ namespace content {
 // MediaInterfaceFactory is an implementation of media::mojom::InterfaceFactory
 // that provides thread safety and handles disconnection error automatically.
 // The Create* methods can be called on any thread.
-class CONTENT_EXPORT MediaInterfaceFactory
+class CONTENT_EXPORT MediaInterfaceFactory final
     : public media::mojom::InterfaceFactory {
  public:
   explicit MediaInterfaceFactory(
-      service_manager::InterfaceProvider* remote_interfaces);
+      blink::BrowserInterfaceBrokerProxy* interface_broker);
+  // This ctor is intended for use by the RenderThread, which doesn't have an
+  // interface broker.  This is only necessary for WebRTC, and should be avoided
+  // if we can restructure WebRTC to create factories per-frame rather than
+  // per-process.
+  MediaInterfaceFactory(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+      mojo::PendingRemote<media::mojom::InterfaceFactory> interface_factory);
   ~MediaInterfaceFactory() final;
 
   // media::mojom::InterfaceFactory implementation.
-  void CreateAudioDecoder(media::mojom::AudioDecoderRequest request) final;
-  void CreateVideoDecoder(media::mojom::VideoDecoderRequest request) final;
-  void CreateDefaultRenderer(const std::string& audio_device_id,
-                             media::mojom::RendererRequest request) final;
+  void CreateAudioDecoder(
+      mojo::PendingReceiver<media::mojom::AudioDecoder> receiver) final;
+  void CreateVideoDecoder(
+      mojo::PendingReceiver<media::mojom::VideoDecoder> receiver) final;
+  void CreateDefaultRenderer(
+      const std::string& audio_device_id,
+      mojo::PendingReceiver<media::mojom::Renderer> receiver) final;
 #if BUILDFLAG(ENABLE_CAST_RENDERER)
-  void CreateCastRenderer(const base::UnguessableToken& overlay_plane_id,
-                          media::mojom::RendererRequest request) final;
+  void CreateCastRenderer(
+      const base::UnguessableToken& overlay_plane_id,
+      mojo::PendingReceiver<media::mojom::Renderer> receiver) final;
 #endif
 #if defined(OS_ANDROID)
-  void CreateFlingingRenderer(const std::string& presentation_id,
-                              media::mojom::RendererRequest request) final;
+  void CreateFlingingRenderer(
+      const std::string& presentation_id,
+      mojo::PendingRemote<media::mojom::FlingingRendererClientExtension>
+          client_extension,
+      mojo::PendingReceiver<media::mojom::Renderer> receiver) final;
   void CreateMediaPlayerRenderer(
-      media::mojom::MediaPlayerRendererClientExtensionPtr client_extension_ptr,
-      media::mojom::RendererRequest request,
-      media::mojom::MediaPlayerRendererExtensionRequest
-          renderer_extension_request) final;
+      mojo::PendingRemote<media::mojom::MediaPlayerRendererClientExtension>
+          client_extension_remote,
+      mojo::PendingReceiver<media::mojom::Renderer> receiver,
+      mojo::PendingReceiver<media::mojom::MediaPlayerRendererExtension>
+          renderer_extension_receiver) final;
 #endif  // defined(OS_ANDROID)
+#if defined(OS_WIN)
+  void CreateMediaFoundationRenderer(
+      mojo::PendingReceiver<media::mojom::Renderer> receiver,
+      mojo::PendingReceiver<media::mojom::MediaFoundationRendererExtension>
+          renderer_extension_receiver) final;
+#endif  // defined(OS_WIN)
   void CreateCdm(const std::string& key_system,
-                 media::mojom::ContentDecryptionModuleRequest request) final;
-  void CreateDecryptor(int cdm_id,
-                       media::mojom::DecryptorRequest request) final;
-  // TODO(xhwang): We should not expose this here.
-  void CreateCdmProxy(const base::Token& cdm_guid,
-                      media::mojom::CdmProxyRequest request) final;
+                 const media::CdmConfig& cdm_config,
+                 CreateCdmCallback callback) final;
 
  private:
   media::mojom::InterfaceFactory* GetMediaInterfaceFactory();
   void OnConnectionError();
 
-  service_manager::InterfaceProvider* remote_interfaces_;
-  media::mojom::InterfaceFactoryPtr media_interface_factory_;
+  blink::BrowserInterfaceBrokerProxy* interface_broker_;
+  mojo::Remote<media::mojom::InterfaceFactory> media_interface_factory_;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   base::WeakPtr<MediaInterfaceFactory> weak_this_;
-  base::WeakPtrFactory<MediaInterfaceFactory> weak_factory_;
+  base::WeakPtrFactory<MediaInterfaceFactory> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaInterfaceFactory);
 };

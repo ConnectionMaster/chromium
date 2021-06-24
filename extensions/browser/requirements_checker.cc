@@ -7,7 +7,6 @@
 #include "base/bind.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -22,7 +21,7 @@ namespace extensions {
 
 RequirementsChecker::RequirementsChecker(
     scoped_refptr<const Extension> extension)
-    : PreloadCheck(extension), weak_ptr_factory_(this) {}
+    : PreloadCheck(extension) {}
 
 RequirementsChecker::~RequirementsChecker() {}
 
@@ -39,17 +38,18 @@ void RequirementsChecker::Start(ResultCallback callback) {
 
   callback_ = std::move(callback);
   if (requirements.webgl) {
-    webgl_checker_ = content::GpuFeatureChecker::Create(
-        gpu::GPU_FEATURE_TYPE_ACCELERATED_WEBGL,
-        base::Bind(&RequirementsChecker::VerifyWebGLAvailability,
-                   weak_ptr_factory_.GetWeakPtr()));
-    webgl_checker_->CheckGpuFeatureAvailability();
+    scoped_refptr<content::GpuFeatureChecker> webgl_checker =
+        content::GpuFeatureChecker::Create(
+            gpu::GPU_FEATURE_TYPE_ACCELERATED_WEBGL,
+            base::BindOnce(&RequirementsChecker::VerifyWebGLAvailability,
+                           weak_ptr_factory_.GetWeakPtr()));
+    webgl_checker->CheckGpuFeatureAvailability();
   } else {
     PostRunCallback();
   }
 }
 
-base::string16 RequirementsChecker::GetErrorMessage() const {
+std::u16string RequirementsChecker::GetErrorMessage() const {
   // Join the error messages into one string.
   std::vector<std::string> messages;
   if (errors_.count(WEBGL_NOT_SUPPORTED)) {
@@ -77,9 +77,9 @@ void RequirementsChecker::PostRunCallback() {
   // to maintain the assumption in
   // ExtensionService::LoadExtensionsFromCommandLineFlag(). Remove these helper
   // functions after crbug.com/708354 is addressed.
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                           base::BindOnce(&RequirementsChecker::RunCallback,
-                                          weak_ptr_factory_.GetWeakPtr()));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&RequirementsChecker::RunCallback,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
 void RequirementsChecker::RunCallback() {

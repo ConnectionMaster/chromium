@@ -30,6 +30,7 @@
 #include "third_party/blink/renderer/core/editing/commands/editing_commands_utilities.h"
 #include "third_party/blink/renderer/core/editing/commands/insert_list_command.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
+#include "third_party/blink/renderer/core/editing/relocatable_position.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
@@ -38,31 +39,30 @@
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
-
-using namespace html_names;
 
 // Returns true if |node| is UL, OL, or BLOCKQUOTE with "display:block".
 // "Outdent" command considers <BLOCKQUOTE style="display:inline"> makes
 // indentation.
 static bool IsHTMLListOrBlockquoteElement(const Node* node) {
-  if (!node || !node->IsHTMLElement())
+  const auto* element = DynamicTo<HTMLElement>(node);
+  if (!element)
     return false;
   if (!node->GetLayoutObject() || !node->GetLayoutObject()->IsLayoutBlock())
     return false;
-  const HTMLElement& element = ToHTMLElement(*node);
   // TODO(yosin): We should check OL/UL element has "list-style-type" CSS
   // property to make sure they layout contents as list.
-  return IsHTMLUListElement(element) || IsHTMLOListElement(element) ||
-         element.HasTagName(kBlockquoteTag);
+  return IsA<HTMLUListElement>(*element) || IsA<HTMLOListElement>(*element) ||
+         element->HasTagName(html_names::kBlockquoteTag);
 }
 
 IndentOutdentCommand::IndentOutdentCommand(Document& document,
                                            IndentType type_of_action)
     : ApplyBlockElementCommand(
           document,
-          kBlockquoteTag,
+          html_names::kBlockquoteTag,
           "margin: 0 0 0 40px; border: none; padding: 0px;"),
       type_of_action_(type_of_action) {}
 
@@ -80,7 +80,7 @@ bool IndentOutdentCommand::TryIndentingAsListItem(const Position& start,
   Element* selected_list_item = EnclosingBlock(last_node_in_selected_paragraph);
 
   // FIXME: we need to deal with the case where there is no li (malformed HTML)
-  if (!IsHTMLLIElement(selected_list_item))
+  if (!IsA<HTMLLIElement>(selected_list_item))
     return false;
 
   // FIXME: previousElementSibling does not ignore non-rendered content like
@@ -92,14 +92,14 @@ bool IndentOutdentCommand::TryIndentingAsListItem(const Position& start,
   // We should calculate visible range in list item because inserting new
   // list element will change visibility of list item, e.g. :first-child
   // CSS selector.
-  HTMLElement* new_list = ToHTMLElement(GetDocument().CreateElement(
+  auto* new_list = To<HTMLElement>(GetDocument().CreateElement(
       list_element->TagQName(), CreateElementFlags::ByCloneNode(),
       g_null_atom));
   InsertNodeBefore(new_list, selected_list_item, editing_state);
   if (editing_state->IsAborted())
     return false;
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   // We should clone all the children of the list item for indenting purposes.
   // However, in case the current selection does not encompass all its children,
@@ -135,7 +135,7 @@ bool IndentOutdentCommand::TryIndentingAsListItem(const Position& start,
       return false;
   }
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   DCHECK(new_list);
   if (previous_list && CanMergeLists(*previous_list, *new_list)) {
     MergeIdenticalElements(previous_list, new_list, editing_state);
@@ -143,7 +143,7 @@ bool IndentOutdentCommand::TryIndentingAsListItem(const Position& start,
       return false;
   }
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   if (next_list && CanMergeLists(*new_list, *next_list)) {
     MergeIdenticalElements(new_list, next_list, editing_state);
     if (editing_state->IsAborted())
@@ -157,7 +157,7 @@ void IndentOutdentCommand::IndentIntoBlockquote(const Position& start,
                                                 const Position& end,
                                                 HTMLElement*& target_blockquote,
                                                 EditingState* editing_state) {
-  Element* enclosing_cell = ToElement(EnclosingNodeOfType(start, &IsTableCell));
+  auto* enclosing_cell = To<Element>(EnclosingNodeOfType(start, &IsTableCell));
   Element* element_to_split_to;
   if (enclosing_cell)
     element_to_split_to = enclosing_cell;
@@ -174,7 +174,51 @@ void IndentOutdentCommand::IndentIntoBlockquote(const Position& start,
           ? start.ComputeContainerNode()
           : SplitTreeToNode(start.ComputeContainerNode(), element_to_split_to);
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  // Before moving the paragraph under the new blockquote, make sure that there
+  // aren't any nested paragraphs or line breaks under the outer_block. If there
+  // are then split it into its own block so it doesn't copy multiple
+  // paragraphs.
+  Node* highest_inline_node = HighestEnclosingNodeOfType(
+      end, IsInline, kCannotCrossEditingBoundary, outer_block);
+  if (highest_inline_node) {
+    Position next_position = MostForwardCaretPosition(
+        NextPositionOf(CreateVisiblePosition(end)).DeepEquivalent());
+    if (IsStartOfParagraph(CreateVisiblePosition(next_position)) &&
+        next_position.AnchorNode()->IsDescendantOf(highest_inline_node)) {
+      // <div>Line                                 <blockquote>
+      //                                             <div>
+      //   <span> 1<div>Line 2</div></span>    ->      Line<span> 1</span>
+      //                                             </div>
+      // </div>                                    </blockquote>
+      //                                           <div><span><div>Line
+      //                                           2</div></span></div>
+      //
+      // <div>Line                                 <blockquote>
+      //   <span> 1<br>Line 2</span>    ->           Line<span> 1</span>
+      // </div>                                    </blockquote>
+      //                                           <div><span>Line
+      //                                           2</span></div>
+      // The below steps are essentially trying to figure out where the split
+      // needs to happen:
+      // 1. If the next paragraph is enclosed with nested block level elements.
+      // 2. If the next paragraph is enclosed with nested inline elements.
+      // 3. If the next paragraph doesn't have any inline or block level
+      // elements, but has elements like textarea/input/img etc.
+      Node* split_point = HighestEnclosingNodeOfType(
+          next_position, IsEnclosingBlock, kCannotCrossEditingBoundary,
+          highest_inline_node);
+      split_point =
+          split_point ? split_point
+                      : HighestEnclosingNodeOfType(next_position, IsInline,
+                                                   kCannotCrossEditingBoundary,
+                                                   highest_inline_node);
+      split_point = split_point ? split_point : next_position.AnchorNode();
+      // Split the element to separate the paragraphs.
+      SplitElement(DynamicTo<Element>(highest_inline_node), split_point);
+    }
+  }
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   VisiblePosition start_of_contents = CreateVisiblePosition(start);
   if (!target_blockquote) {
     // Create a new blockquote and insert it as a child of the root editable
@@ -184,7 +228,7 @@ void IndentOutdentCommand::IndentIntoBlockquote(const Position& start,
     if (outer_block == start.ComputeContainerNode()) {
       // When we apply indent to an empty <blockquote>, we should call
       // insertNodeAfter(). See http://crbug.com/625802 for more details.
-      if (outer_block->HasTagName(kBlockquoteTag))
+      if (outer_block->HasTagName(html_names::kBlockquoteTag))
         InsertNodeAfter(target_blockquote, outer_block, editing_state);
       else
         InsertNodeAt(target_blockquote, start, editing_state);
@@ -192,7 +236,7 @@ void IndentOutdentCommand::IndentIntoBlockquote(const Position& start,
       InsertNodeBefore(target_blockquote, outer_block, editing_state);
     if (editing_state->IsAborted())
       return;
-    GetDocument().UpdateStyleAndLayout();
+    GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
     start_of_contents = VisiblePosition::InParentAfterNode(*target_blockquote);
   }
 
@@ -209,7 +253,7 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
   VisiblePosition visible_end_of_paragraph =
       EndOfParagraph(visible_start_of_paragraph);
 
-  HTMLElement* enclosing_element = ToHTMLElement(
+  auto* enclosing_element = To<HTMLElement>(
       EnclosingNodeOfType(visible_start_of_paragraph.DeepEquivalent(),
                           &IsHTMLListOrBlockquoteElement));
   // We can't outdent if there is no place to go!
@@ -217,13 +261,13 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
     return;
 
   // Use InsertListCommand to remove the selection from the list
-  if (IsHTMLOListElement(*enclosing_element)) {
+  if (IsA<HTMLOListElement>(*enclosing_element)) {
     ApplyCommandToComposite(MakeGarbageCollected<InsertListCommand>(
                                 GetDocument(), InsertListCommand::kOrderedList),
                             editing_state);
     return;
   }
-  if (IsHTMLUListElement(*enclosing_element)) {
+  if (IsA<HTMLUListElement>(*enclosing_element)) {
     ApplyCommandToComposite(
         MakeGarbageCollected<InsertListCommand>(
             GetDocument(), InsertListCommand::kUnorderedList),
@@ -245,12 +289,20 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
       VisiblePosition::LastPositionInNode(*enclosing_element);
   VisiblePosition end_of_enclosing_block =
       EndOfBlock(last_position_in_enclosing_block);
+  RelocatablePosition start_of_paragraph(
+      visible_start_of_paragraph.DeepEquivalent());
+  RelocatablePosition end_of_paragraph(
+      visible_end_of_paragraph.DeepEquivalent());
   if (visible_start_of_paragraph.DeepEquivalent() ==
           start_of_enclosing_block.DeepEquivalent() &&
       visible_end_of_paragraph.DeepEquivalent() ==
           end_of_enclosing_block.DeepEquivalent()) {
     // The blockquote doesn't contain anything outside the paragraph, so it can
     // be totally removed.
+    // This procedure will make {start,end}_of_paragraph out of sync if the
+    // blockquote has children, so store the first and last children.
+    Node* first_child = enclosing_element->firstChild();
+    Node* last_child = enclosing_element->lastChild();
     Node* split_point = enclosing_element->nextSibling();
     RemoveNodePreservingChildren(enclosing_element, editing_state);
     if (editing_state->IsAborted())
@@ -262,30 +314,40 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
     if (split_point) {
       if (Element* split_point_parent = split_point->parentElement()) {
         // We can't outdent if there is no place to go!
-        if (split_point_parent->HasTagName(kBlockquoteTag) &&
-            !split_point->HasTagName(kBlockquoteTag) &&
+        if (split_point_parent->HasTagName(html_names::kBlockquoteTag) &&
+            !split_point->HasTagName(html_names::kBlockquoteTag) &&
             HasEditableStyle(*split_point_parent->parentNode()))
           SplitElement(split_point_parent, split_point);
       }
     }
 
-    GetDocument().UpdateStyleAndLayout();
+    // Re-canonicalize visible_start_of_paragraph, make it valid again after DOM
+    // change. If enclosing_element had children, start_of_paragraph will be out
+    // of sync, so use first_child instead.
+    GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+    DCHECK(!first_child || first_child->isConnected());
     visible_start_of_paragraph =
-        CreateVisiblePosition(visible_start_of_paragraph.DeepEquivalent());
+        CreateVisiblePosition(first_child ? Position::BeforeNode(*first_child)
+                                          : start_of_paragraph.GetPosition());
     if (visible_start_of_paragraph.IsNotNull() &&
         !IsStartOfParagraph(visible_start_of_paragraph)) {
-      InsertNodeAt(HTMLBRElement::Create(GetDocument()),
+      InsertNodeAt(MakeGarbageCollected<HTMLBRElement>(GetDocument()),
                    visible_start_of_paragraph.DeepEquivalent(), editing_state);
       if (editing_state->IsAborted())
         return;
     }
 
-    GetDocument().UpdateStyleAndLayout();
+    // Re-canonicalize visible_end_of_paragraph, make it valid again after DOM
+    // change. If enclosing_element had children, end_of_paragraph will be out
+    // of sync, so use last_child instead.
+    GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+    DCHECK(!last_child || last_child->isConnected());
     visible_end_of_paragraph =
-        CreateVisiblePosition(visible_end_of_paragraph.DeepEquivalent());
+        CreateVisiblePosition(last_child ? Position::AfterNode(*last_child)
+                                         : end_of_paragraph.GetPosition());
     if (visible_end_of_paragraph.IsNotNull() &&
         !IsEndOfParagraph(visible_end_of_paragraph))
-      InsertNodeAt(HTMLBRElement::Create(GetDocument()),
+      InsertNodeAt(MakeGarbageCollected<HTMLBRElement>(GetDocument()),
                    visible_end_of_paragraph.DeepEquivalent(), editing_state);
     return;
   }
@@ -298,9 +360,9 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
       // may be at different indentations.
       const Position& previous_element =
           PreviousCandidate(visible_start_of_paragraph.DeepEquivalent());
-      HTMLElement* const previous_element_is_blockquote =
-          ToHTMLElement(EnclosingNodeOfType(previous_element,
-                                            &IsHTMLListOrBlockquoteElement));
+      auto* const previous_element_is_blockquote =
+          To<HTMLElement>(EnclosingNodeOfType(previous_element,
+                                              &IsHTMLListOrBlockquoteElement));
       const bool is_previous_blockquote_same =
           !previous_element_is_blockquote ||
           (enclosing_element == previous_element_is_blockquote);
@@ -325,39 +387,41 @@ void IndentOutdentCommand::OutdentParagraph(EditingState* editing_state) {
               : visible_start_of_paragraph.DeepEquivalent().AnchorNode());
     }
 
-    GetDocument().UpdateStyleAndLayout();
+    GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
-    // Re-canonicalize visible{Start,End}OfParagraph, make them valid again
+    // Re-canonicalize visible_{start,end}_of_paragraph, make them valid again
     // after DOM change.
-    // TODO(editing-dev): We should not store a VisiblePosition and later
-    // inspect its properties when it is already invalidated.
-    // See crbug.com/648949 for details.
-    visible_start_of_paragraph = CreateVisiblePosition(
-        visible_start_of_paragraph.ToPositionWithAffinity());
-    visible_end_of_paragraph = CreateVisiblePosition(
-        visible_end_of_paragraph.ToPositionWithAffinity());
+    visible_start_of_paragraph =
+        CreateVisiblePosition(start_of_paragraph.GetPosition());
+    visible_end_of_paragraph =
+        CreateVisiblePosition(end_of_paragraph.GetPosition());
   }
 
-  // TODO(editing-dev): We should not store a VisiblePosition and later
-  // inspect its properties when it is already invalidated.
-  // See crbug.com/648949 for details.
-  VisiblePosition start_of_paragraph_to_move =
+  VisiblePosition visible_start_of_paragraph_to_move =
       StartOfParagraph(visible_start_of_paragraph);
-  VisiblePosition end_of_paragraph_to_move =
+  VisiblePosition visible_end_of_paragraph_to_move =
       EndOfParagraph(visible_end_of_paragraph);
-  if (start_of_paragraph_to_move.IsNull() || end_of_paragraph_to_move.IsNull())
+  if (visible_start_of_paragraph_to_move.IsNull() ||
+      visible_end_of_paragraph_to_move.IsNull())
     return;
-  HTMLBRElement* placeholder = HTMLBRElement::Create(GetDocument());
+  RelocatablePosition start_of_paragraph_to_move(
+      visible_start_of_paragraph_to_move.DeepEquivalent());
+  RelocatablePosition end_of_paragraph_to_move(
+      visible_end_of_paragraph_to_move.DeepEquivalent());
+  auto* placeholder = MakeGarbageCollected<HTMLBRElement>(GetDocument());
   InsertNodeBefore(placeholder, split_blockquote_node, editing_state);
   if (editing_state->IsAborted())
     return;
 
-  GetDocument().UpdateStyleAndLayout();
-  start_of_paragraph_to_move = CreateVisiblePosition(
-      start_of_paragraph_to_move.ToPositionWithAffinity());
-  end_of_paragraph_to_move =
-      CreateVisiblePosition(end_of_paragraph_to_move.ToPositionWithAffinity());
-  MoveParagraph(start_of_paragraph_to_move, end_of_paragraph_to_move,
+  // Re-canonicalize visible_{start,end}_of_paragraph_to_move, make them valid
+  // again after DOM change.
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  visible_start_of_paragraph_to_move =
+      CreateVisiblePosition(start_of_paragraph_to_move.GetPosition());
+  visible_end_of_paragraph_to_move =
+      CreateVisiblePosition(end_of_paragraph_to_move.GetPosition());
+  MoveParagraph(visible_start_of_paragraph_to_move,
+                visible_end_of_paragraph_to_move,
                 VisiblePosition::BeforeNode(*placeholder), editing_state,
                 kPreserveSelection);
 }
@@ -408,7 +472,7 @@ void IndentOutdentCommand::OutdentRegion(
     if (end_after_selection.IsNotNull() && !end_after_selection.IsConnected())
       break;
 
-    GetDocument().UpdateStyleAndLayout();
+    GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
     if (end_of_next_paragraph.IsNotNull() &&
         !end_of_next_paragraph.IsConnected()) {
       end_of_current_paragraph =

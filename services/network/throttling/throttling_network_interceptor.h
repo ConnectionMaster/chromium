@@ -9,7 +9,6 @@
 
 #include <memory>
 #include <set>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -29,7 +28,7 @@ class NetworkConditions;
 // with specific client id.
 class COMPONENT_EXPORT(NETWORK_SERVICE) ThrottlingNetworkInterceptor {
  public:
-  using ThrottleCallback = base::Callback<void(int, int64_t)>;
+  using ThrottleCallback = base::RepeatingCallback<void(int, int64_t)>;
 
   ThrottlingNetworkInterceptor();
   virtual ~ThrottlingNetworkInterceptor();
@@ -100,7 +99,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) ThrottlingNetworkInterceptor {
   uint64_t download_last_tick_;
   uint64_t upload_last_tick_;
 
-  base::WeakPtrFactory<ThrottlingNetworkInterceptor> weak_ptr_factory_;
+  base::WeakPtrFactory<ThrottlingNetworkInterceptor> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ThrottlingNetworkInterceptor);
 };

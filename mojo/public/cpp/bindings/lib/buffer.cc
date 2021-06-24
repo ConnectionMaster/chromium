@@ -4,7 +4,10 @@
 
 #include "mojo/public/cpp/bindings/lib/buffer.h"
 
-#include "base/logging.h"
+#include <cstring>
+
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_math.h"
 #include "mojo/public/c/system/message_pipe.h"
 #include "mojo/public/cpp/bindings/lib/bindings_internal.h"
@@ -110,7 +113,7 @@ void Buffer::Seal() {
   size_t additional_bytes = cursor_ - message_payload_size_;
   DCHECK(base::IsValueInRangeForNumericType<uint32_t>(additional_bytes));
 
-  MojoAppendMessageDataOptions options = {0};
+  MojoAppendMessageDataOptions options;
   options.struct_size = sizeof(options);
   options.flags = MOJO_APPEND_MESSAGE_DATA_FLAG_COMMIT_SIZE;
   void* data;

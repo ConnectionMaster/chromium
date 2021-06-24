@@ -12,7 +12,7 @@
 #include "components/sync/base/hash_util.h"
 #include "components/sync/base/time.h"
 #include "components/sync/base/unique_position.h"
-#include "components/sync/engine_impl/loopback_server/persistent_bookmark_entity.h"
+#include "components/sync/engine/loopback_server/persistent_bookmark_entity.h"
 #include "components/sync/protocol/sync.pb.h"
 
 using std::string;
@@ -39,7 +39,11 @@ BookmarkEntityBuilder::BookmarkEntityBuilder(
 BookmarkEntityBuilder::BookmarkEntityBuilder(
     const BookmarkEntityBuilder& other) = default;
 
-BookmarkEntityBuilder::~BookmarkEntityBuilder() {}
+BookmarkEntityBuilder::~BookmarkEntityBuilder() = default;
+
+void BookmarkEntityBuilder::SetId(const std::string& id) {
+  id_ = id;
+}
 
 void BookmarkEntityBuilder::SetParentId(const std::string& parent_id) {
   parent_id_ = parent_id;
@@ -49,29 +53,66 @@ void BookmarkEntityBuilder::SetIndex(int index) {
   index_ = index;
 }
 
+BookmarkEntityBuilder& BookmarkEntityBuilder::SetFavicon(
+    const gfx::Image& favicon,
+    const GURL& icon_url) {
+  favicon_ = favicon;
+  icon_url_ = icon_url;
+  return *this;
+}
+
 std::unique_ptr<LoopbackServerEntity> BookmarkEntityBuilder::BuildBookmark(
-    const GURL& url) {
+    const GURL& url,
+    bool is_legacy) {
   if (!url.is_valid()) {
     return base::WrapUnique<LoopbackServerEntity>(nullptr);
   }
 
-  sync_pb::EntitySpecifics entity_specifics = CreateBaseEntitySpecifics();
+  sync_pb::EntitySpecifics entity_specifics =
+      CreateBaseEntitySpecifics(is_legacy);
   entity_specifics.mutable_bookmark()->set_url(url.spec());
-  const bool kIsNotFolder = false;
-  return Build(entity_specifics, kIsNotFolder);
+  FillWithFaviconIfNeeded(entity_specifics.mutable_bookmark());
+  return Build(entity_specifics, /*is_folder=*/false);
 }
 
-std::unique_ptr<LoopbackServerEntity> BookmarkEntityBuilder::BuildFolder() {
-  const bool kIsFolder = true;
-  return Build(CreateBaseEntitySpecifics(), kIsFolder);
+std::unique_ptr<syncer::LoopbackServerEntity>
+BookmarkEntityBuilder::BuildBookmarkWithoutFullTitle(const GURL& url) {
+  if (!url.is_valid()) {
+    return nullptr;
+  }
+
+  sync_pb::EntitySpecifics entity_specifics =
+      CreateBaseEntitySpecifics(/*is_legacy=*/false);
+  entity_specifics.mutable_bookmark()->set_url(url.spec());
+  entity_specifics.mutable_bookmark()->clear_full_title();
+  FillWithFaviconIfNeeded(entity_specifics.mutable_bookmark());
+  return Build(entity_specifics, /*is_folder=*/false);
 }
 
-sync_pb::EntitySpecifics BookmarkEntityBuilder::CreateBaseEntitySpecifics()
-    const {
+std::unique_ptr<LoopbackServerEntity> BookmarkEntityBuilder::BuildFolder(
+    bool is_legacy) {
+  return Build(CreateBaseEntitySpecifics(is_legacy), /*is_folder=*/true);
+}
+
+std::unique_ptr<LoopbackServerEntity>
+BookmarkEntityBuilder::BuildFolderWithoutFullTitle() {
+  sync_pb::EntitySpecifics entity_specifics =
+      CreateBaseEntitySpecifics(/*is_legacy=*/false);
+  entity_specifics.mutable_bookmark()->clear_full_title();
+  return Build(entity_specifics, /*is_folder=*/true);
+}
+
+sync_pb::EntitySpecifics BookmarkEntityBuilder::CreateBaseEntitySpecifics(
+    bool is_legacy) const {
   sync_pb::EntitySpecifics entity_specifics;
   sync_pb::BookmarkSpecifics* bookmark_specifics =
       entity_specifics.mutable_bookmark();
-  bookmark_specifics->set_title(title_);
+
+  if (!is_legacy) {
+    bookmark_specifics->set_legacy_canonicalized_title(title_);
+    bookmark_specifics->set_full_title(title_);
+    bookmark_specifics->set_guid(originator_client_item_id_);
+  }
 
   return entity_specifics;
 }
@@ -89,14 +130,31 @@ std::unique_ptr<LoopbackServerEntity> BookmarkEntityBuilder::Build(
         LoopbackServerEntity::CreateId(syncer::BOOKMARKS, "bookmark_bar");
   }
 
-  const string id =
-      LoopbackServerEntity::CreateId(syncer::BOOKMARKS, base::GenerateGUID());
+  if (id_.empty()) {
+    id_ =
+        LoopbackServerEntity::CreateId(syncer::BOOKMARKS, base::GenerateGUID());
+  }
 
   return base::WrapUnique<LoopbackServerEntity>(
       new syncer::PersistentBookmarkEntity(
-          id, kUnusedVersion, title_, originator_cache_guid_,
-          originator_client_item_id_, unique_position, entity_specifics,
-          is_folder, parent_id_, kDefaultTime, kDefaultTime));
+          id_, kUnusedVersion, title_, originator_cache_guid_,
+          originator_client_item_id_, /*client_tag_hash=*/"", unique_position,
+          entity_specifics, is_folder, parent_id_, kDefaultTime, kDefaultTime));
+}
+
+void BookmarkEntityBuilder::FillWithFaviconIfNeeded(
+    sync_pb::BookmarkSpecifics* bookmark_specifics) {
+  DCHECK(bookmark_specifics);
+  // Both |favicon_| and |icon_url_| must be provided or empty simultaneously.
+  DCHECK(favicon_.IsEmpty() == icon_url_.is_empty());
+  if (favicon_.IsEmpty()) {
+    return;
+  }
+
+  scoped_refptr<base::RefCountedMemory> favicon_bytes = favicon_.As1xPNGBytes();
+  bookmark_specifics->set_favicon(favicon_bytes->front(),
+                                  favicon_bytes->size());
+  bookmark_specifics->set_icon_url(icon_url_.spec());
 }
 
 }  // namespace fake_server

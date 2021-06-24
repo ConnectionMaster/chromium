@@ -11,8 +11,8 @@
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/network/network_state.h"
+#include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
 namespace chromeos {
 
@@ -50,8 +50,8 @@ class NetworkPortalNotificationControllerTest
  protected:
   void OnPortalDetectionCompleted(
       const NetworkState* network,
-      const NetworkPortalDetector::CaptivePortalState& state) {
-    controller_.OnPortalDetectionCompleted(network, state);
+      const NetworkPortalDetector::CaptivePortalStatus status) {
+    controller_.OnPortalDetectionCompleted(network, status);
   }
 
   bool HasNotification() {
@@ -67,33 +67,27 @@ class NetworkPortalNotificationControllerTest
 
 TEST_F(NetworkPortalNotificationControllerTest, NetworkStateChanged) {
   TestWiFiNetworkState wifi("wifi");
-  NetworkPortalDetector::CaptivePortalState wifi_state;
 
   // Notification is not displayed for online state.
-  wifi_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE;
-  wifi_state.response_code = 204;
-  OnPortalDetectionCompleted(&wifi, wifi_state);
+  OnPortalDetectionCompleted(
+      &wifi, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE);
   ASSERT_FALSE(HasNotification());
 
   // Notification is displayed for portal state
-  wifi_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL;
-  wifi_state.response_code = 200;
-  OnPortalDetectionCompleted(&wifi, wifi_state);
+  OnPortalDetectionCompleted(
+      &wifi, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_TRUE(HasNotification());
 
   // Notification is closed for online state.
-  wifi_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE;
-  wifi_state.response_code = 204;
-  OnPortalDetectionCompleted(&wifi, wifi_state);
+  OnPortalDetectionCompleted(
+      &wifi, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE);
   ASSERT_FALSE(HasNotification());
 }
 
 TEST_F(NetworkPortalNotificationControllerTest, NetworkChanged) {
   TestWiFiNetworkState wifi1("wifi1");
-  NetworkPortalDetector::CaptivePortalState wifi1_state;
-  wifi1_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL;
-  wifi1_state.response_code = 200;
-  OnPortalDetectionCompleted(&wifi1, wifi1_state);
+  OnPortalDetectionCompleted(
+      &wifi1, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_TRUE(HasNotification());
 
   display_service_->RemoveNotification(NotificationHandler::Type::TRANSIENT,
@@ -102,48 +96,45 @@ TEST_F(NetworkPortalNotificationControllerTest, NetworkChanged) {
 
   // User already closed notification about portal state for this network,
   // so notification shouldn't be displayed second time.
-  OnPortalDetectionCompleted(&wifi1, wifi1_state);
+  OnPortalDetectionCompleted(
+      &wifi1, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_FALSE(HasNotification());
 
   TestWiFiNetworkState wifi2("wifi2");
-  NetworkPortalDetector::CaptivePortalState wifi2_state;
-  wifi2_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE;
-  wifi2_state.response_code = 204;
-
   // Second network is in online state, so there shouldn't be any
   // notifications.
-  OnPortalDetectionCompleted(&wifi2, wifi2_state);
+  OnPortalDetectionCompleted(
+      &wifi2, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE);
   ASSERT_FALSE(HasNotification());
 
   // User switches back to the first network, so notification should
   // be displayed.
-  OnPortalDetectionCompleted(&wifi1, wifi1_state);
+  OnPortalDetectionCompleted(
+      &wifi1, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_TRUE(HasNotification());
 }
 
 TEST_F(NetworkPortalNotificationControllerTest, NotificationUpdated) {
-  NetworkPortalDetector::CaptivePortalState portal_state;
-  portal_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL;
-  portal_state.response_code = 200;
-
   // First network is behind a captive portal, so notification should
   // be displayed.
   TestWiFiNetworkState wifi1("wifi1");
   wifi1.PropertyChanged("Name", base::Value("wifi1"));
-  OnPortalDetectionCompleted(&wifi1, portal_state);
+  OnPortalDetectionCompleted(
+      &wifi1, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_TRUE(HasNotification());
   EXPECT_EQ(1u, display_service_
                     ->GetDisplayedNotificationsForType(
                         NotificationHandler::Type::TRANSIENT)
                     .size());
-  const base::string16 initial_message =
+  const std::u16string initial_message =
       display_service_->GetNotification(kNotificationId)->message();
 
   // Second network is also behind a captive portal, so notification
   // should be updated.
   TestWiFiNetworkState wifi2("wifi2");
   wifi2.PropertyChanged("Name", base::Value("wifi2"));
-  OnPortalDetectionCompleted(&wifi2, portal_state);
+  OnPortalDetectionCompleted(
+      &wifi2, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_TRUE(HasNotification());
   EXPECT_EQ(1u, display_service_
                     ->GetDisplayedNotificationsForType(
@@ -160,12 +151,14 @@ TEST_F(NetworkPortalNotificationControllerTest, NotificationUpdated) {
   // Portal detector notified that second network is still behind captive
   // portal, but user already closed the notification, so there should
   // not be any notifications.
-  OnPortalDetectionCompleted(&wifi2, portal_state);
+  OnPortalDetectionCompleted(
+      &wifi2, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_FALSE(HasNotification());
 
   // Network was switched (by shill or by user) to wifi1. Notification
   // should be displayed.
-  OnPortalDetectionCompleted(&wifi1, portal_state);
+  OnPortalDetectionCompleted(
+      &wifi1, NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL);
   ASSERT_TRUE(HasNotification());
 }
 

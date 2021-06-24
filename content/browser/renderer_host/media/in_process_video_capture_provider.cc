@@ -4,6 +4,8 @@
 
 #include "content/browser/renderer_host/media/in_process_video_capture_provider.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "content/browser/renderer_host/media/in_process_video_capture_device_launcher.h"
 
@@ -21,6 +23,11 @@ InProcessVideoCaptureProvider::InProcessVideoCaptureProvider(
 
 InProcessVideoCaptureProvider::~InProcessVideoCaptureProvider() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (video_capture_system_ && !device_task_runner_->BelongsToCurrentThread()) {
+    device_task_runner_->DeleteSoon(FROM_HERE,
+                                    std::move(video_capture_system_));
+  }
 }
 
 // static
@@ -51,7 +58,7 @@ void InProcessVideoCaptureProvider::GetDeviceInfosAsync(
         "InProcessVideoCaptureProvider::GetDeviceInfosAsync: No video capture "
         "system, returning empty results.");
     std::vector<media::VideoCaptureDeviceInfo> empty_result;
-    base::ResetAndReturn(&result_callback).Run(empty_result);
+    std::move(result_callback).Run(empty_result);
     return;
   }
   emit_log_message_cb_.Run(

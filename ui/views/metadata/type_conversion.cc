@@ -4,170 +4,88 @@
 
 #include "ui/views/metadata/type_conversion.h"
 
-#include "base/strings/string16.h"
-#include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
-#include "base/strings/sys_string_conversions.h"
-#include "base/strings/utf_string_conversions.h"
-#include "ui/gfx/geometry/rect.h"
+#include <string>
 
-namespace views {
-namespace metadata {
+#include "components/url_formatter/url_fixer.h"
+#include "ui/base/ime/text_input_type.h"
+#include "ui/native_theme/native_theme.h"
+#include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/controls/scroll_view.h"
 
-/***** String Conversions *****/
-
-template <>
-base::string16 ConvertToString<int8_t>(const int8_t& source_value) {
-  return base::NumberToString16(source_value);
+std::u16string ui::metadata::TypeConverter<GURL>::ToString(
+    const GURL& source_value) {
+  return base::ASCIIToUTF16(source_value.possibly_invalid_spec());
 }
 
-template <>
-base::string16 ConvertToString<int16_t>(const int16_t& source_value) {
-  return base::NumberToString16(source_value);
+absl::optional<GURL> ui::metadata::TypeConverter<GURL>::FromString(
+    const std::u16string& source_value) {
+  const GURL url =
+      url_formatter::FixupURL(base::UTF16ToUTF8(source_value), std::string());
+  return url.is_valid() ? absl::make_optional(url) : absl::nullopt;
 }
 
-template <>
-base::string16 ConvertToString<int32_t>(const int32_t& source_value) {
-  return base::NumberToString16(source_value);
+ui::metadata::ValidStrings
+ui::metadata::TypeConverter<GURL>::GetValidStrings() {
+  return {};
 }
 
-template <>
-base::string16 ConvertToString<int64_t>(const int64_t& source_value) {
-  return base::NumberToString16(source_value);
-}
+DEFINE_ENUM_CONVERTERS(
+    views::ScrollView::ScrollBarMode,
+    {views::ScrollView::ScrollBarMode::kDisabled, u"kDisabled"},
+    {views::ScrollView::ScrollBarMode::kHiddenButEnabled, u"kHiddenButEnabled"},
+    {views::ScrollView::ScrollBarMode::kEnabled, u"kEnabled"})
 
-template <>
-base::string16 ConvertToString<uint8_t>(const uint8_t& source_value) {
-  return base::NumberToString16(source_value);
-}
+DEFINE_ENUM_CONVERTERS(
+    views::BubbleFrameView::PreferredArrowAdjustment,
+    {views::BubbleFrameView::PreferredArrowAdjustment::kMirror, u"kMirror"},
+    {views::BubbleFrameView::PreferredArrowAdjustment::kOffset, u"kOffset"})
 
-template <>
-base::string16 ConvertToString<uint16_t>(const uint16_t& source_value) {
-  return base::NumberToString16(source_value);
-}
+DEFINE_ENUM_CONVERTERS(
+    views::BubbleBorder::Arrow,
+    {views::BubbleBorder::Arrow::TOP_LEFT, u"TOP_LEFT"},
+    {views::BubbleBorder::Arrow::TOP_RIGHT, u"TOP_RIGHT"},
+    {views::BubbleBorder::Arrow::BOTTOM_LEFT, u"BOTTOM_LEFT"},
+    {views::BubbleBorder::Arrow::BOTTOM_RIGHT, u"BOTTOM_RIGHT"},
+    {views::BubbleBorder::Arrow::LEFT_TOP, u"LEFT_TOP"},
+    {views::BubbleBorder::Arrow::RIGHT_TOP, u"RIGHT_TOP"},
+    {views::BubbleBorder::Arrow::LEFT_BOTTOM, u"LEFT_BOTTOM"},
+    {views::BubbleBorder::Arrow::RIGHT_BOTTOM, u"RIGHT_BOTTOM"},
+    {views::BubbleBorder::Arrow::TOP_CENTER, u"TOP_CENTER"},
+    {views::BubbleBorder::Arrow::BOTTOM_CENTER, u"BOTTOM_CENTER"},
+    {views::BubbleBorder::Arrow::LEFT_CENTER, u"LEFT_CENTER"},
+    {views::BubbleBorder::Arrow::RIGHT_CENTER, u"RIGHT_CENTER"},
+    {views::BubbleBorder::Arrow::NONE, u"NONE"},
+    {views::BubbleBorder::Arrow::FLOAT, u"FLOAT"})
 
-template <>
-base::string16 ConvertToString<uint32_t>(const uint32_t& source_value) {
-  return base::NumberToString16(source_value);
-}
+DEFINE_ENUM_CONVERTERS(
+    ui::TextInputType,
+    {ui::TextInputType::TEXT_INPUT_TYPE_NONE, u"TEXT_INPUT_TYPE_NONE"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_TEXT, u"TEXT_INPUT_TYPE_TEXT"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_PASSWORD, u"TEXT_INPUT_TYPE_PASSWORD"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_SEARCH, u"TEXT_INPUT_TYPE_SEARCH"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_EMAIL, u"EXT_INPUT_TYPE_EMAIL"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_NUMBER, u"TEXT_INPUT_TYPE_NUMBER"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_TELEPHONE,
+     u"TEXT_INPUT_TYPE_TELEPHONE"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_URL, u"TEXT_INPUT_TYPE_URL"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_DATE, u"TEXT_INPUT_TYPE_DATE"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_DATE_TIME,
+     u"TEXT_INPUT_TYPE_DATE_TIME"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_DATE_TIME_LOCAL,
+     u"TEXT_INPUT_TYPE_DATE_TIME_LOCAL"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_MONTH, u"TEXT_INPUT_TYPE_MONTH"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_TIME, u"TEXT_INPUT_TYPE_TIME"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_WEEK, u"TEXT_INPUT_TYPE_WEEK"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_TEXT_AREA,
+     u"TEXT_INPUT_TYPE_TEXT_AREA"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_CONTENT_EDITABLE,
+     u"TEXT_INPUT_TYPE_CONTENT_EDITABLE"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_DATE_TIME_FIELD,
+     u"TEXT_INPUT_TYPE_DATE_TIME_FIELD"},
+    {ui::TextInputType::TEXT_INPUT_TYPE_NULL, u"TEXT_INPUT_TYPE_NULL"})
 
-template <>
-base::string16 ConvertToString<uint64_t>(const uint64_t& source_value) {
-  return base::NumberToString16(source_value);
-}
-
-template <>
-base::string16 ConvertToString<float>(const float& source_value) {
-  return base::NumberToString16(source_value);
-}
-
-template <>
-base::string16 ConvertToString<double>(const double& source_value) {
-  return base::NumberToString16(source_value);
-}
-
-template <>
-base::string16 ConvertToString<bool>(const bool& source_value) {
-  return source_value ? base::ASCIIToUTF16("true")
-                      : base::ASCIIToUTF16("false");
-}
-
-template <>
-int8_t ConvertFromString<int8_t>(const base::string16& source_value) {
-  int32_t ret = 0;
-  if (base::StringToInt(source_value, &ret))
-    return static_cast<int8_t>(ret);
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-int16_t ConvertFromString<int16_t>(const base::string16& source_value) {
-  int32_t ret = 0;
-  if (base::StringToInt(source_value, &ret))
-    return static_cast<int16_t>(ret);
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-int32_t ConvertFromString<int32_t>(const base::string16& source_value) {
-  int32_t ret = 0;
-  if (base::StringToInt(source_value, &ret))
-    return ret;
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-int64_t ConvertFromString<int64_t>(const base::string16& source_value) {
-  int64_t ret = 0;
-  if (base::StringToInt64(source_value, &ret))
-    return ret;
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-uint8_t ConvertFromString<uint8_t>(const base::string16& source_value) {
-  uint32_t ret = 0;
-  if (base::StringToUint(source_value, &ret))
-    return static_cast<uint8_t>(ret);
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-uint16_t ConvertFromString<uint16_t>(const base::string16& source_value) {
-  uint32_t ret = 0;
-  if (base::StringToUint(source_value, &ret))
-    return static_cast<uint16_t>(ret);
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-uint32_t ConvertFromString<uint32_t>(const base::string16& source_value) {
-  uint32_t ret = 0;
-  if (base::StringToUint(source_value, &ret))
-    return ret;
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-uint64_t ConvertFromString<uint64_t>(const base::string16& source_value) {
-  uint64_t ret = 0;
-  if (base::StringToUint64(source_value, &ret))
-    return ret;
-  NOTREACHED();
-  return 0;
-}
-
-template <>
-double ConvertFromString<double>(const base::string16& source_value) {
-  double ret = 0;
-  if (base::StringToDouble(base::UTF16ToUTF8(source_value), &ret))
-    return ret;
-  NOTREACHED();
-  return 0.0;
-}
-
-template <>
-float ConvertFromString<float>(const base::string16& source_value) {
-  return static_cast<float>(ConvertFromString<double>(source_value));
-}
-
-template <>
-bool ConvertFromString<bool>(const base::string16& source_value) {
-  if (source_value == base::ASCIIToUTF16("true"))
-    return true;
-  if (source_value == base::ASCIIToUTF16("false"))
-    return false;
-
-  NOTREACHED();
-  return false;
-}
-
-}  // namespace metadata
-}  // namespace views
+#define OP(enum_name) \
+  { ui::NativeTheme::enum_name, u## #enum_name }
+DEFINE_ENUM_CONVERTERS(ui::NativeTheme::ColorId, NATIVE_THEME_COLOR_IDS)
+#undef OP

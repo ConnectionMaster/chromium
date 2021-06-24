@@ -9,11 +9,13 @@
 
 #include "base/containers/mru_cache.h"
 #include "base/memory/memory_pressure_listener.h"
+#include "base/trace_event/memory_dump_provider.h"
 #include "gpu/command_buffer/common/discardable_handle.h"
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/gpu_gles2_export.h"
 
 namespace gpu {
+struct GpuPreferences;
 namespace gles2 {
 class TextureManager;
 class TextureRef;
@@ -24,10 +26,15 @@ GPU_GLES2_EXPORT size_t DiscardableCacheSizeLimitForPressure(
     size_t base_cache_limit,
     base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level);
 
-class GPU_GLES2_EXPORT ServiceDiscardableManager {
+class GPU_GLES2_EXPORT ServiceDiscardableManager
+    : public base::trace_event::MemoryDumpProvider {
  public:
-  ServiceDiscardableManager();
-  ~ServiceDiscardableManager();
+  explicit ServiceDiscardableManager(const GpuPreferences& preferences);
+  ~ServiceDiscardableManager() override;
+
+  // base::trace_event::MemoryDumpProvider implementation.
+  bool OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
+                    base::trace_event::ProcessMemoryDump* pmd) override;
 
   void InsertLockedTexture(uint32_t texture_id,
                            size_t texture_size,
@@ -60,6 +67,9 @@ class GPU_GLES2_EXPORT ServiceDiscardableManager {
   void OnTextureSizeChanged(uint32_t texture_id,
                             gles2::TextureManager* texture_manager,
                             size_t new_size);
+
+  // Called when all contexts with cached textures in this manager are lost.
+  void OnContextLost();
 
   // Test only functions:
   size_t NumCacheEntriesForTesting() const { return entries_.size(); }

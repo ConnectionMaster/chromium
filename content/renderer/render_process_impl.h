@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/task/thread_pool/thread_pool.h"
 #include "content/renderer/render_process.h"
 
 namespace content {
@@ -28,10 +27,6 @@ class RenderProcessImpl : public RenderProcess {
   // required by constructor of the base class.
   static std::unique_ptr<RenderProcess> Create();
 
-  // RenderProcess implementation.
-  void AddBindings(int bindings) override;
-  int GetEnabledBindings() const override;
-
   // Do not use these functions.
   // The browser process is the only one responsible for knowing when to
   // shutdown its renderer processes. Reference counting to keep this process
@@ -41,12 +36,7 @@ class RenderProcessImpl : public RenderProcess {
   void ReleaseProcess() override;
 
  private:
-  RenderProcessImpl(
-      std::unique_ptr<base::ThreadPool::InitParams> thread_pool_init_params);
-
-  // Bitwise-ORed set of extra bindings that have been enabled anywhere in this
-  // process.  See BindingsPolicy for details.
-  int enabled_bindings_;
+  RenderProcessImpl();
 
   DISALLOW_COPY_AND_ASSIGN(RenderProcessImpl);
 };

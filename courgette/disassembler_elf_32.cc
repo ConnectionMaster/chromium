@@ -336,6 +336,11 @@ bool DisassemblerElf32::ExtractAbs32Locations() {
     if (section_header->sh_type == SHT_REL) {
       const Elf32_Rel* relocs_table =
           reinterpret_cast<const Elf32_Rel*>(SectionBody(section_id));
+      // Reject if malformed.
+      if (section_header->sh_entsize != sizeof(Elf32_Rel))
+        return false;
+      if (section_header->sh_size % section_header->sh_entsize != 0)
+        return false;
 
       int relocs_table_count =
           section_header->sh_size / section_header->sh_entsize;
@@ -626,6 +631,9 @@ CheckBool DisassemblerElf32::ParseSimpleRegion(
 }
 
 CheckBool DisassemblerElf32::CheckSection(RVA rva) {
+  // Handle 32-bit references only.
+  constexpr uint8_t kWidth = 4;
+
   FileOffset file_offset = RVAToFileOffset(rva);
   if (file_offset == kNoFileOffset)
     return false;
@@ -633,14 +641,19 @@ CheckBool DisassemblerElf32::CheckSection(RVA rva) {
   for (Elf32_Half section_id = 0; section_id < SectionHeaderCount();
        ++section_id) {
     const Elf32_Shdr* section_header = SectionHeader(section_id);
+    // Take account of pointer |kWidth|, and reject pointers that start within
+    // the section but whose span lies outside.
+    FileOffset start_offset = section_header->sh_offset;
+    if (file_offset < start_offset || section_header->sh_size < kWidth)
+      continue;
+    FileOffset end_offset = start_offset + section_header->sh_size - kWidth + 1;
+    if (file_offset >= end_offset)
+      continue;
 
-    if (file_offset >= section_header->sh_offset &&
-        file_offset < (section_header->sh_offset + section_header->sh_size)) {
-      switch (section_header->sh_type) {
-        case SHT_REL:  // Falls through.
-        case SHT_PROGBITS:
-          return true;
-      }
+    switch (section_header->sh_type) {
+      case SHT_REL:  // Falls through.
+      case SHT_PROGBITS:
+        return true;
     }
   }
 

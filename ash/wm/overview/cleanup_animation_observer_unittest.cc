@@ -4,12 +4,14 @@
 
 #include "ash/wm/overview/cleanup_animation_observer.h"
 
+#include <utility>
 #include <vector>
 
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/overview/overview_delegate.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "ui/aura/window.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
@@ -32,19 +34,15 @@ class TestOverviewDelegate : public OverviewDelegate {
   }
 
   // OverviewDelegate:
-  void OnSelectionEnded() override {}
-
   void AddExitAnimationObserver(
       std::unique_ptr<DelayedAnimationObserver> animation_observer) override {
     animation_observer->SetOwner(this);
     observers_.push_back(std::move(animation_observer));
   }
-
   void RemoveAndDestroyExitAnimationObserver(
       DelayedAnimationObserver* animation_observer) override {
     base::EraseIf(observers_, base::MatchesUniquePtr(animation_observer));
   }
-
   void AddEnterAnimationObserver(
       std::unique_ptr<DelayedAnimationObserver> animation_observer) override {}
   void RemoveAndDestroyEnterAnimationObserver(
@@ -76,8 +74,8 @@ class CleanupAnimationObserverTest : public AshTestBase,
     params.bounds = bounds;
     params.type = views::Widget::InitParams::TYPE_WINDOW;
     params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-    params.context = CurrentContext();
-    widget->Init(params);
+    params.context = GetContext();
+    widget->Init(std::move(params));
     widget->Show();
     widget->AddObserver(this);
     widget_ = widget.get();

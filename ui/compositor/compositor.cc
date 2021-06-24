@@ -7,25 +7,31 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_id_provider.h"
 #include "cc/animation/animation_timeline.h"
+#include "cc/base/features.h"
 #include "cc/base/switches.h"
 #include "cc/input/input_handler.h"
 #include "cc/layers/layer.h"
-#include "cc/trees/latency_info_swap_promise.h"
+#include "cc/metrics/begin_main_frame_metrics.h"
+#include "cc/metrics/frame_sequence_tracker.h"
+#include "cc/metrics/web_vital_metrics.h"
 #include "cc/trees/layer_tree_host.h"
 #include "cc/trees/layer_tree_settings.h"
 #include "components/viz/common/features.h"
@@ -34,67 +40,67 @@
 #include "components/viz/common/gpu/context_provider.h"
 #include "components/viz/common/resources/resource_format.h"
 #include "components/viz/common/resources/resource_settings.h"
-#include "components/viz/common/surfaces/child_local_surface_id_allocator.h"
 #include "components/viz/common/switches.h"
 #include "components/viz/host/host_frame_sink_manager.h"
 #include "components/viz/host/renderer_settings_creation.h"
-#include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
+#include "services/viz/privileged/mojom/compositing/external_begin_frame_controller.mojom.h"
+#include "services/viz/privileged/mojom/compositing/vsync_parameter_observer.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/compositor_switches.h"
-#include "ui/compositor/compositor_vsync_manager.h"
-#include "ui/compositor/dip_util.h"
-#include "ui/compositor/external_begin_frame_client.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator_collection.h"
 #include "ui/compositor/overscroll/scroll_input_handler.h"
 #include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/display_switches.h"
 #include "ui/gfx/icc_profile.h"
+#include "ui/gfx/presentation_feedback.h"
 #include "ui/gfx/switches.h"
 #include "ui/gl/gl_switches.h"
 
+#if defined(OS_WIN)
+#include "mojo/public/cpp/bindings/sync_call_restrictions.h"
+#endif
+
 namespace ui {
-namespace {
 
-const char* kDefaultTraceEnvironmentName = "browser";
+// Used to hold on to IssueExternalBeginFrame arguments if
+// |external_begin_frame_controller_| isn't ready yet.
+struct PendingBeginFrameArgs {
+  PendingBeginFrameArgs(
+      const viz::BeginFrameArgs& args,
+      bool force,
+      base::OnceCallback<void(const viz::BeginFrameAck&)> callback)
+      : args(args), force(force), callback(std::move(callback)) {}
 
-}  // namespace
+  viz::BeginFrameArgs args;
+  bool force;
+  base::OnceCallback<void(const viz::BeginFrameAck&)> callback;
+};
 
-Compositor::Compositor(
-    const viz::FrameSinkId& frame_sink_id,
-    ui::ContextFactory* context_factory,
-    ui::ContextFactoryPrivate* context_factory_private,
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    bool enable_pixel_canvas,
-    ui::ExternalBeginFrameClient* external_begin_frame_client,
-    bool force_software_compositor,
-    const char* trace_environment_name,
-    bool automatically_allocate_surface_ids)
+Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
+                       ui::ContextFactory* context_factory,
+                       scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+                       bool enable_pixel_canvas,
+                       bool use_external_begin_frame_control,
+                       bool force_software_compositor,
+                       bool enable_compositing_based_throttling)
     : context_factory_(context_factory),
-      context_factory_private_(context_factory_private),
       frame_sink_id_(frame_sink_id),
       task_runner_(task_runner),
-      vsync_manager_(new CompositorVSyncManager()),
-      external_begin_frame_client_(external_begin_frame_client),
+      use_external_begin_frame_control_(use_external_begin_frame_control),
       force_software_compositor_(force_software_compositor),
       layer_animator_collection_(this),
       is_pixel_canvas_(enable_pixel_canvas),
-      lock_manager_(task_runner),
-      trace_environment_name_(trace_environment_name
-                                  ? trace_environment_name
-                                  : kDefaultTraceEnvironmentName),
-      context_creation_weak_ptr_factory_(this) {
-  if (context_factory_private) {
-    auto* host_frame_sink_manager =
-        context_factory_private_->GetHostFrameSinkManager();
-    host_frame_sink_manager->RegisterFrameSinkId(
-        frame_sink_id_, this, viz::ReportFirstSurfaceActivation::kNo);
-    host_frame_sink_manager->SetFrameSinkDebugLabel(frame_sink_id_,
-                                                    "Compositor");
-  }
+      lock_manager_(task_runner) {
+  DCHECK(context_factory_);
+  auto* host_frame_sink_manager = context_factory_->GetHostFrameSinkManager();
+  host_frame_sink_manager->RegisterFrameSinkId(
+      frame_sink_id_, this, viz::ReportFirstSurfaceActivation::kNo);
+  host_frame_sink_manager->SetFrameSinkDebugLabel(frame_sink_id_, "Compositor");
   root_web_layer_ = cc::Layer::Create();
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -108,14 +114,13 @@ Compositor::Compositor(
   // Use occlusion to allow more overlapping windows to take less memory.
   settings.use_occlusion_for_tile_prioritization = true;
   settings.main_frame_before_activation_enabled = false;
-  settings.delegated_sync_points_required =
-      context_factory_->SyncTokensRequiredForDisplayCompositor();
 
   // Disable edge anti-aliasing in order to increase support for HW overlays.
   settings.enable_edge_anti_aliasing = false;
 
-  settings.automatically_allocate_surface_ids =
-      automatically_allocate_surface_ids;
+  // GPU rasterization in the UI compositor is controlled by a feature.
+  settings.gpu_rasterization_disabled =
+      !features::IsUiGpuRasterizationEnabled();
 
   if (command_line->HasSwitch(cc::switches::kUIShowCompositedLayerBorders)) {
     std::string layer_borders_string = command_line->GetSwitchValueASCII(
@@ -159,8 +164,6 @@ Compositor::Compositor(
 
   settings.initial_debug_state.SetRecordRenderingStats(
       command_line->HasSwitch(cc::switches::kEnableGpuBenchmarking));
-  settings.enable_surface_synchronization = true;
-  settings.build_hit_test_data = features::IsVizHitTestingSurfaceLayerEnabled();
 
   settings.use_zero_copy = IsUIZeroCopyEnabled();
 
@@ -174,12 +177,20 @@ Compositor::Compositor(
   settings.use_rgba_4444 =
       command_line->HasSwitch(switches::kUIEnableRGBA4444Textures);
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Using CoreAnimation to composite requires using GpuMemoryBuffers, which
   // require zero copy.
   settings.resource_settings.use_gpu_memory_buffer_resources =
       settings.use_zero_copy;
   settings.enable_elastic_overscroll = true;
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // Rasterized tiles must be overlay candidates to be forwarded.
+  // This is very similar to the line above for Apple.
+  if (features::IsDelegatedCompositingEnabled()) {
+    settings.resource_settings.use_gpu_memory_buffer_resources = true;
+  }
 #endif
 
   settings.memory_policy.bytes_limit_when_visible = 512 * 1024 * 1024;
@@ -203,15 +214,33 @@ Compositor::Compositor(
   settings.disallow_non_exact_resource_reuse =
       command_line->HasSwitch(switches::kDisallowNonExactResourceReuse);
 
+  settings.enable_impl_latency_recovery =
+      features::IsImplLatencyRecoveryEnabled();
+  settings.enable_main_latency_recovery =
+      features::IsMainLatencyRecoveryEnabled();
+
   if (command_line->HasSwitch(switches::kRunAllCompositorStagesBeforeDraw)) {
     settings.wait_for_all_pipeline_stages_before_draw = true;
-    settings.enable_latency_recovery = false;
+    settings.enable_impl_latency_recovery = false;
+    settings.enable_main_latency_recovery = false;
   }
 
   if (base::FeatureList::IsEnabled(
           features::kCompositorThreadedScrollbarScrolling)) {
     settings.compositor_threaded_scrollbar_scrolling = true;
   }
+
+  if (base::FeatureList::IsEnabled(features::kPercentBasedScrolling)) {
+    settings.percent_based_scrolling = true;
+  }
+
+  settings.enable_compositing_based_throttling =
+      enable_compositing_based_throttling;
+
+#if DCHECK_IS_ON()
+  if (command_line->HasSwitch(cc::switches::kLogOnUIDoubleBackgroundBlur))
+    settings.log_on_ui_double_background_blur = true;
+#endif
 
   animation_host_ = cc::AnimationHost::CreateMainInstance();
 
@@ -223,18 +252,23 @@ Compositor::Compositor(
   params.mutator_host = animation_host_.get();
   host_ = cc::LayerTreeHost::CreateSingleThreaded(this, std::move(params));
 
+  const base::WeakPtr<cc::CompositorDelegateForInput>& compositor_delegate =
+      host_->GetDelegateForInput();
   if (base::FeatureList::IsEnabled(features::kUiCompositorScrollWithLayers) &&
-      host_->GetInputHandler()) {
-    scroll_input_handler_.reset(
-        new ScrollInputHandler(host_->GetInputHandler()));
+      compositor_delegate) {
+    input_handler_weak_ = cc::InputHandler::Create(*compositor_delegate);
+    scroll_input_handler_ =
+        std::make_unique<ScrollInputHandler>(input_handler_weak_);
   }
 
   animation_timeline_ =
       cc::AnimationTimeline::Create(cc::AnimationIdProvider::NextTimelineId());
   animation_host_->AddAnimationTimeline(animation_timeline_.get());
 
-  host_->SetHasGpuRasterizationTrigger(features::IsUiGpuRasterizationEnabled());
   host_->SetRootLayer(root_web_layer_);
+
+  // This shouldn't be done in the constructor in order to match Widget.
+  // See: http://crbug.com/956264.
   host_->SetVisible(true);
 
   if (command_line->HasSwitch(switches::kUISlowAnimations)) {
@@ -244,7 +278,7 @@ Compositor::Compositor(
 }
 
 Compositor::~Compositor() {
-  TRACE_EVENT0("shutdown", "Compositor::destructor");
+  TRACE_EVENT0("shutdown,viz", "Compositor::destructor");
 
   for (auto& observer : observer_list_)
     observer.OnCompositingShuttingDown(this);
@@ -263,50 +297,62 @@ Compositor::~Compositor() {
   host_.reset();
 
   context_factory_->RemoveCompositor(this);
-  if (context_factory_private_) {
-    auto* host_frame_sink_manager =
-        context_factory_private_->GetHostFrameSinkManager();
-    for (auto& client : child_frame_sinks_) {
-      DCHECK(client.is_valid());
-      host_frame_sink_manager->UnregisterFrameSinkHierarchy(frame_sink_id_,
-                                                            client);
-    }
-    host_frame_sink_manager->InvalidateFrameSinkId(frame_sink_id_);
+  auto* host_frame_sink_manager = context_factory_->GetHostFrameSinkManager();
+  for (auto& client : child_frame_sinks_) {
+    DCHECK(client.is_valid());
+    host_frame_sink_manager->UnregisterFrameSinkHierarchy(frame_sink_id_,
+                                                          client);
   }
+  host_frame_sink_manager->InvalidateFrameSinkId(frame_sink_id_);
 }
 
 void Compositor::AddChildFrameSink(const viz::FrameSinkId& frame_sink_id) {
-  if (!context_factory_private_)
-    return;
-  context_factory_private_->GetHostFrameSinkManager()
-      ->RegisterFrameSinkHierarchy(frame_sink_id_, frame_sink_id);
+  context_factory_->GetHostFrameSinkManager()->RegisterFrameSinkHierarchy(
+      frame_sink_id_, frame_sink_id);
 
   child_frame_sinks_.insert(frame_sink_id);
 }
 
 void Compositor::RemoveChildFrameSink(const viz::FrameSinkId& frame_sink_id) {
-  if (!context_factory_private_)
-    return;
   auto it = child_frame_sinks_.find(frame_sink_id);
   DCHECK(it != child_frame_sinks_.end());
   DCHECK(it->is_valid());
-  context_factory_private_->GetHostFrameSinkManager()
-      ->UnregisterFrameSinkHierarchy(frame_sink_id_, *it);
+  context_factory_->GetHostFrameSinkManager()->UnregisterFrameSinkHierarchy(
+      frame_sink_id_, *it);
   child_frame_sinks_.erase(it);
 }
 
 void Compositor::SetLayerTreeFrameSink(
-    std::unique_ptr<cc::LayerTreeFrameSink> layer_tree_frame_sink) {
+    std::unique_ptr<cc::LayerTreeFrameSink> layer_tree_frame_sink,
+    viz::mojom::DisplayPrivate* display_private) {
   layer_tree_frame_sink_requested_ = false;
+  display_private_ = display_private;
   host_->SetLayerTreeFrameSink(std::move(layer_tree_frame_sink));
   // Display properties are reset when the output surface is lost, so update it
   // to match the Compositor's.
-  if (context_factory_private_) {
-    context_factory_private_->SetDisplayVisible(this, host_->IsVisible());
-    context_factory_private_->SetDisplayColorSpace(this, blending_color_space_,
-                                                   output_color_space_);
-    context_factory_private_->SetDisplayColorMatrix(this,
-                                                    display_color_matrix_);
+  if (display_private_) {
+    disabled_swap_until_resize_ = false;
+    display_private_->Resize(size());
+    display_private_->SetDisplayVisible(host_->IsVisible());
+    display_private_->SetDisplayColorSpaces(display_color_spaces_);
+    display_private_->SetDisplayColorMatrix(
+        gfx::Transform(display_color_matrix_));
+    display_private_->SetOutputIsSecure(output_is_secure_);
+    if (has_vsync_params_)
+      display_private_->SetDisplayVSyncParameters(vsync_timebase_,
+                                                  vsync_interval_);
+  }
+}
+
+void Compositor::SetExternalBeginFrameController(
+    viz::mojom::ExternalBeginFrameController* external_begin_frame_controller) {
+  DCHECK(use_external_begin_frame_control());
+  external_begin_frame_controller_ = external_begin_frame_controller;
+  if (pending_begin_frame_args_) {
+    external_begin_frame_controller_->IssueExternalBeginFrame(
+        pending_begin_frame_args_->args, pending_begin_frame_args_->force,
+        std::move(pending_begin_frame_args_->callback));
+    pending_begin_frame_args_.reset();
   }
 }
 
@@ -336,8 +382,8 @@ cc::AnimationTimeline* Compositor::GetAnimationTimeline() const {
 
 void Compositor::SetDisplayColorMatrix(const SkMatrix44& matrix) {
   display_color_matrix_ = matrix;
-  if (context_factory_private_)
-    context_factory_private_->SetDisplayColorMatrix(this, matrix);
+  if (display_private_)
+    display_private_->SetDisplayColorMatrix(gfx::Transform(matrix));
 }
 
 void Compositor::ScheduleFullRedraw() {
@@ -345,7 +391,7 @@ void Compositor::ScheduleFullRedraw() {
   // will also commit.  This should probably just redraw the screen
   // from damage and not commit.  ScheduleDraw/ScheduleRedraw need
   // better names.
-  host_->SetNeedsRedrawRect(gfx::Rect(host_->device_viewport_size()));
+  host_->SetNeedsRedrawRect(host_->device_viewport_rect());
   host_->SetNeedsCommit();
 }
 
@@ -355,45 +401,54 @@ void Compositor::ScheduleRedrawRect(const gfx::Rect& damage_rect) {
   host_->SetNeedsCommit();
 }
 
+#if defined(OS_WIN)
+void Compositor::SetShouldDisableSwapUntilResize(bool should) {
+  should_disable_swap_until_resize_ = should;
+}
+
 void Compositor::DisableSwapUntilResize() {
-  DCHECK(context_factory_private_);
-  context_factory_private_->DisableSwapUntilResize(this);
-  disabled_swap_until_resize_ = true;
+  if (should_disable_swap_until_resize_ && display_private_) {
+    // Browser needs to block for Viz to receive and process this message.
+    // Otherwise when we return from WM_WINDOWPOSCHANGING message handler and
+    // receive a WM_WINDOWPOSCHANGED the resize is finalized and any swaps of
+    // wrong size by Viz can cause the swapped content to get scaled.
+    // TODO(crbug.com/859168): Investigate nonblocking ways for solving.
+    TRACE_EVENT0("viz", "Blocked UI for DisableSwapUntilResize");
+    mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow_sync_call;
+    display_private_->DisableSwapUntilResize();
+    disabled_swap_until_resize_ = true;
+  }
 }
 
 void Compositor::ReenableSwap() {
-  DCHECK(context_factory_private_);
-  context_factory_private_->ResizeDisplay(this, size_);
+  if (should_disable_swap_until_resize_ && display_private_)
+    display_private_->Resize(size_);
 }
+#endif
 
-void Compositor::SetLatencyInfo(const ui::LatencyInfo& latency_info) {
-  std::unique_ptr<cc::SwapPromise> swap_promise(
-      new cc::LatencyInfoSwapPromise(latency_info));
-  host_->QueueSwapPromise(std::move(swap_promise));
-}
-
-void Compositor::SetScaleAndSize(
-    float scale,
-    const gfx::Size& size_in_pixel,
-    const viz::LocalSurfaceIdAllocation& local_surface_id_allocation) {
+void Compositor::SetScaleAndSize(float scale,
+                                 const gfx::Size& size_in_pixel,
+                                 const viz::LocalSurfaceId& local_surface_id) {
   DCHECK_GT(scale, 0);
   bool device_scale_factor_changed = device_scale_factor_ != scale;
   device_scale_factor_ = scale;
 
-  if (size_ != size_in_pixel && local_surface_id_allocation.IsValid())
-    DCHECK_NE(local_surface_id_allocation, last_local_surface_id_allocation_);
-  last_local_surface_id_allocation_ = local_surface_id_allocation;
+#if DCHECK_IS_ON()
+  if (size_ != size_in_pixel && local_surface_id.is_valid()) {
+    // A new LocalSurfaceId must be set when the compositor size changes.
+    DCHECK_NE(local_surface_id, host_->local_surface_id_from_parent());
+    DCHECK_NE(local_surface_id, host_->local_surface_id_from_parent());
+  }
+#endif  // DECHECK_IS_ON()
 
   if (!size_in_pixel.IsEmpty()) {
     bool size_changed = size_ != size_in_pixel;
     size_ = size_in_pixel;
-    host_->SetViewportSizeAndScale(size_in_pixel, scale,
-                                   local_surface_id_allocation);
+    host_->SetViewportRectAndScale(gfx::Rect(size_in_pixel), scale,
+                                   local_surface_id);
     root_web_layer_->SetBounds(size_in_pixel);
-    // TODO(fsamuel): Get rid of ContextFactoryPrivate.
-    if (context_factory_private_ &&
-        (size_changed || disabled_swap_until_resize_)) {
-      context_factory_private_->ResizeDisplay(this, size_in_pixel);
+    if (display_private_ && (size_changed || disabled_swap_until_resize_)) {
+      display_private_->Resize(size_in_pixel);
       disabled_swap_until_resize_ = false;
     }
   }
@@ -405,56 +460,14 @@ void Compositor::SetScaleAndSize(
   }
 }
 
-viz::LocalSurfaceIdAllocation Compositor::UpdateLocalSurfaceIdFromParent(
-    const viz::LocalSurfaceIdAllocation& local_surface_id_allocation) {
-  DCHECK(local_surface_id_allocation.IsValid());
-  if (!host_->local_surface_id_allocation_from_parent().IsValid()) {
-    host_->SetLocalSurfaceIdAllocationFromParent(local_surface_id_allocation);
-    return local_surface_id_allocation;
-  }
-  // It's entirely possible |local_surface_id_allocation| has an older child
-  // sequence number than LayerTreeHost. Create a new LocalSurfaceId to ensure
-  // the child sequence number matches that in LayerTreeHost. To do otherwise
-  // would lead to the cached value in LayerTreeHost not necessarily matching
-  // the most recent supplied value, which is problematic for any code expecting
-  // the value to be up to date.
-  const viz::LocalSurfaceId& current_id =
-      host_->local_surface_id_allocation_from_parent().local_surface_id();
-  auto allocator =
-      viz::ChildLocalSurfaceIdAllocator::CreateWithChildSequenceNumber(
-          current_id.child_sequence_number());
-  allocator->UpdateFromParent(local_surface_id_allocation);
-  const viz::LocalSurfaceIdAllocation resulting_id =
-      allocator->GetCurrentLocalSurfaceIdAllocation();
-  host_->SetLocalSurfaceIdAllocationFromParent(resulting_id);
-  return resulting_id;
-}
-
-viz::LocalSurfaceIdAllocation Compositor::GetLocalSurfaceIdAllocation() const {
-  return host_->local_surface_id_allocation_from_parent();
-}
-
-viz::LocalSurfaceIdAllocation Compositor::RequestNewChildLocalSurfaceId() {
-  const uint32_t child_sequence_number =
-      host_->GenerateChildSurfaceSequenceNumberSync();
-  const viz::LocalSurfaceId current_id =
-      host_->local_surface_id_allocation_from_parent().local_surface_id();
-  return viz::LocalSurfaceIdAllocation(
-      viz::LocalSurfaceId(current_id.parent_sequence_number(),
-                          child_sequence_number, current_id.embed_token()),
-      base::TimeTicks::Now());
-}
-
-void Compositor::SetDisplayColorSpace(const gfx::ColorSpace& color_space) {
-  if (output_color_space_ == color_space)
+void Compositor::SetDisplayColorSpaces(
+    const gfx::DisplayColorSpaces& display_color_spaces) {
+  if (display_color_spaces_ == display_color_spaces)
     return;
-  output_color_space_ = color_space;
-  blending_color_space_ = output_color_space_.GetBlendingColorSpace();
-  // Do all ui::Compositor rasterization to sRGB because UI resources will not
-  // have their color conversion results cached, and will suffer repeated
-  // image color conversions.
-  // https://crbug.com/769677
-  host_->SetRasterColorSpace(gfx::ColorSpace::CreateSRGB());
+  display_color_spaces_ = display_color_spaces;
+
+  host_->SetDisplayColorSpaces(display_color_spaces_);
+
   // Always force the ui::Compositor to re-draw all layers, because damage
   // tracking bugs result in black flashes.
   // https://crbug.com/804430
@@ -463,11 +476,12 @@ void Compositor::SetDisplayColorSpace(const gfx::ColorSpace& color_space) {
 
   // Color space is reset when the output surface is lost, so this must also be
   // updated then.
-  // TODO(fsamuel): Get rid of this.
-  if (context_factory_private_) {
-    context_factory_private_->SetDisplayColorSpace(this, blending_color_space_,
-                                                   output_color_space_);
-  }
+  if (display_private_)
+    display_private_->SetDisplayColorSpaces(display_color_spaces_);
+}
+
+void Compositor::SetDisplayTransformHint(gfx::OverlayTransform hint) {
+  host_->set_display_transform_hint(hint);
 }
 
 void Compositor::SetBackgroundColor(SkColor color) {
@@ -479,26 +493,27 @@ void Compositor::SetVisible(bool visible) {
   host_->SetVisible(visible);
   // Visibility is reset when the output surface is lost, so this must also be
   // updated then.
-  // TODO(fsamuel): Eliminate this call.
-  if (context_factory_private_)
-    context_factory_private_->SetDisplayVisible(this, visible);
+  if (display_private_)
+    display_private_->SetDisplayVisible(visible);
 }
 
 bool Compositor::IsVisible() {
   return host_->IsVisible();
 }
 
+// TODO(bokan): These calls should be delegated through the
+// scroll_input_handler_ so that we don't have to keep a pointer to the
+// cc::InputHandler in this class.
 bool Compositor::ScrollLayerTo(cc::ElementId element_id,
                                const gfx::ScrollOffset& offset) {
-  auto input_handler = host_->GetInputHandler();
-  return input_handler && input_handler->ScrollLayerTo(element_id, offset);
+  return input_handler_weak_ &&
+         input_handler_weak_->ScrollLayerTo(element_id, offset);
 }
 
 bool Compositor::GetScrollOffsetForLayer(cc::ElementId element_id,
                                          gfx::ScrollOffset* offset) const {
-  auto input_handler = host_->GetInputHandler();
-  return input_handler &&
-         input_handler->GetScrollOffsetForLayer(element_id, offset);
+  return input_handler_weak_ &&
+         input_handler_weak_->GetScrollOffsetForLayer(element_id, offset);
 }
 
 void Compositor::SetDisplayVSyncParameters(base::TimeTicks timebase,
@@ -520,13 +535,19 @@ void Compositor::SetDisplayVSyncParameters(base::TimeTicks timebase,
   if (vsync_timebase_ == timebase && vsync_interval_ == interval)
     return;
 
+  if (interval != vsync_interval_)
+    has_vsync_params_ = true;
+
   vsync_timebase_ = timebase;
   vsync_interval_ = interval;
-  if (context_factory_private_) {
-    context_factory_private_->SetDisplayVSyncParameters(this, timebase,
-                                                        interval);
-  }
-  vsync_manager_->UpdateVSyncParameters(timebase, interval);
+  if (display_private_)
+    display_private_->SetDisplayVSyncParameters(timebase, interval);
+}
+
+void Compositor::AddVSyncParameterObserver(
+    mojo::PendingRemote<viz::mojom::VSyncParameterObserver> observer) {
+  if (display_private_)
+    display_private_->AddVSyncParameterObserver(std::move(observer));
 }
 
 void Compositor::SetAcceleratedWidget(gfx::AcceleratedWidget widget) {
@@ -543,6 +564,8 @@ void Compositor::SetAcceleratedWidget(gfx::AcceleratedWidget widget) {
 gfx::AcceleratedWidget Compositor::ReleaseAcceleratedWidget() {
   DCHECK(!IsVisible());
   host_->ReleaseLayerTreeFrameSink();
+  display_private_ = nullptr;
+  external_begin_frame_controller_ = nullptr;
   context_factory_->RemoveCompositor(this);
   context_creation_weak_ptr_factory_.InvalidateWeakPtrs();
   widget_valid_ = false;
@@ -554,10 +577,6 @@ gfx::AcceleratedWidget Compositor::ReleaseAcceleratedWidget() {
 gfx::AcceleratedWidget Compositor::widget() const {
   DCHECK(widget_valid_);
   return widget_;
-}
-
-scoped_refptr<CompositorVSyncManager> Compositor::vsync_manager() const {
-  return vsync_manager_;
 }
 
 void Compositor::AddObserver(CompositorObserver* observer) {
@@ -573,18 +592,49 @@ bool Compositor::HasObserver(const CompositorObserver* observer) const {
 }
 
 void Compositor::AddAnimationObserver(CompositorAnimationObserver* observer) {
+  if (animation_observer_list_.empty()) {
+    for (auto& obs : observer_list_)
+      obs.OnFirstAnimationStarted(this);
+  }
   animation_observer_list_.AddObserver(observer);
   host_->SetNeedsAnimate();
 }
 
 void Compositor::RemoveAnimationObserver(
     CompositorAnimationObserver* observer) {
+  if (!animation_observer_list_.HasObserver(observer))
+    return;
   animation_observer_list_.RemoveObserver(observer);
+  if (animation_observer_list_.empty()) {
+    for (auto& obs : observer_list_)
+      obs.OnLastAnimationEnded(this);
+  }
 }
 
 bool Compositor::HasAnimationObserver(
     const CompositorAnimationObserver* observer) const {
   return animation_observer_list_.HasObserver(observer);
+}
+
+void Compositor::IssueExternalBeginFrame(
+    const viz::BeginFrameArgs& args,
+    bool force,
+    base::OnceCallback<void(const viz::BeginFrameAck&)> callback) {
+  if (!external_begin_frame_controller_) {
+    // IssueExternalBeginFrame() shouldn't be called again before the previous
+    // begin frame is acknowledged.
+    DCHECK(!pending_begin_frame_args_);
+    pending_begin_frame_args_ = std::make_unique<PendingBeginFrameArgs>(
+        args, force, std::move(callback));
+    return;
+  }
+  external_begin_frame_controller_->IssueExternalBeginFrame(
+      args, force, std::move(callback));
+}
+
+ThroughputTracker Compositor::RequestNewThroughputTracker() {
+  return ThroughputTracker(next_throughput_tracker_id_++,
+                           weak_ptr_factory_.GetWeakPtr());
 }
 
 void Compositor::DidUpdateLayers() {
@@ -601,7 +651,7 @@ void Compositor::BeginMainFrame(const viz::BeginFrameArgs& args) {
   DCHECK(!IsLocked());
   for (auto& observer : animation_observer_list_)
     observer.OnAnimationStep(args.frame_time);
-  if (animation_observer_list_.might_have_observers())
+  if (!animation_observer_list_.empty())
     host_->SetNeedsAnimate();
 }
 
@@ -638,10 +688,25 @@ void Compositor::DidFailToInitializeLayerTreeFrameSink() {
                      context_creation_weak_ptr_factory_.GetWeakPtr()));
 }
 
-void Compositor::DidCommit() {
+void Compositor::DidCommit(base::TimeTicks) {
   DCHECK(!IsLocked());
   for (auto& observer : observer_list_)
     observer.OnCompositingDidCommit(this);
+}
+
+std::unique_ptr<cc::BeginMainFrameMetrics>
+Compositor::GetBeginMainFrameMetrics() {
+  return nullptr;
+}
+
+std::unique_ptr<cc::WebVitalMetrics> Compositor::GetWebVitalMetrics() {
+  return nullptr;
+}
+
+void Compositor::NotifyThroughputTrackerResults(
+    cc::CustomTrackerResults results) {
+  for (auto& pair : results)
+    ReportMetricsForTracker(pair.first, std::move(pair.second));
 }
 
 void Compositor::DidReceiveCompositorFrameAck() {
@@ -655,13 +720,9 @@ void Compositor::DidPresentCompositorFrame(
     const gfx::PresentationFeedback& feedback) {
   TRACE_EVENT_MARK_WITH_TIMESTAMP1("cc,benchmark", "FramePresented",
                                    feedback.timestamp, "environment",
-                                   trace_environment_name_);
-}
-
-void Compositor::DidGenerateLocalSurfaceIdAllocation(
-    const viz::LocalSurfaceIdAllocation& allocation) {
+                                   "browser");
   for (auto& observer : observer_list_)
-    observer.DidGenerateLocalSurfaceIdAllocation(this, allocation);
+    observer.OnDidPresentCompositorFrame(frame_token, feedback);
 }
 
 void Compositor::DidSubmitCompositorFrame() {
@@ -671,8 +732,14 @@ void Compositor::DidSubmitCompositorFrame() {
 }
 
 void Compositor::FrameIntervalUpdated(base::TimeDelta interval) {
-  refresh_rate_ =
-      base::Time::kMicrosecondsPerSecond / interval.InMicrosecondsF();
+  refresh_rate_ = interval.ToHz();
+}
+
+void Compositor::FrameSinksToThrottleUpdated(
+    const base::flat_set<viz::FrameSinkId>& ids) {
+  for (auto& observer : observer_list_) {
+    observer.OnFrameSinksToThrottleUpdated(ids);
+  }
 }
 
 void Compositor::OnFirstSurfaceActivation(
@@ -680,14 +747,70 @@ void Compositor::OnFirstSurfaceActivation(
   NOTREACHED();
 }
 
-void Compositor::OnFrameTokenChanged(uint32_t frame_token) {
+void Compositor::OnFrameTokenChanged(uint32_t frame_token,
+                                     base::TimeTicks activation_time) {
   // TODO(yiyix, fsamuel): Implement frame token propagation for Compositor.
   NOTREACHED();
 }
 
+Compositor::TrackerState::TrackerState() = default;
+Compositor::TrackerState::TrackerState(TrackerState&&) = default;
+Compositor::TrackerState& Compositor::TrackerState::operator=(TrackerState&&) =
+    default;
+Compositor::TrackerState::~TrackerState() = default;
+
+void Compositor::StartThroughputTracker(
+    TrackerId tracker_id,
+    ThroughputTrackerHost::ReportCallback callback) {
+  DCHECK(!base::Contains(throughput_tracker_map_, tracker_id));
+
+  auto& tracker_state = throughput_tracker_map_[tracker_id];
+  tracker_state.report_callback = std::move(callback);
+
+  animation_host_->StartThroughputTracking(tracker_id);
+}
+
+bool Compositor::StopThroughtputTracker(TrackerId tracker_id) {
+  auto it = throughput_tracker_map_.find(tracker_id);
+  DCHECK(it != throughput_tracker_map_.end());
+
+  // Clean up if report has happened since StopThroughputTracking would
+  // not trigger report in this case.
+  if (it->second.report_attempted) {
+    throughput_tracker_map_.erase(it);
+    return false;
+  }
+
+  it->second.should_report = true;
+  animation_host_->StopThroughputTracking(tracker_id);
+  return true;
+}
+
+void Compositor::CancelThroughtputTracker(TrackerId tracker_id) {
+  auto it = throughput_tracker_map_.find(tracker_id);
+  DCHECK(it != throughput_tracker_map_.end());
+
+  const bool should_stop = !it->second.report_attempted;
+
+  throughput_tracker_map_.erase(it);
+
+  if (should_stop)
+    animation_host_->StopThroughputTracking(tracker_id);
+}
+
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+void Compositor::OnCompleteSwapWithNewSize(const gfx::Size& size) {
+  for (auto& observer : observer_list_)
+    observer.OnCompositingCompleteSwapWithNewSize(this, size);
+}
+#endif
+
 void Compositor::SetOutputIsSecure(bool output_is_secure) {
-  if (context_factory_private_)
-    context_factory_private_->SetOutputIsSecure(this, output_is_secure);
+  output_is_secure_ = output_is_secure;
+  if (display_private_)
+    display_private_->SetOutputIsSecure(output_is_secure);
 }
 
 const cc::LayerTreeDebugState& Compositor::GetLayerTreeDebugState() const {
@@ -702,6 +825,33 @@ void Compositor::SetLayerTreeDebugState(
 void Compositor::RequestPresentationTimeForNextFrame(
     PresentationTimeCallback callback) {
   host_->RequestPresentationTimeForNextFrame(std::move(callback));
+}
+
+void Compositor::ReportMetricsForTracker(
+    int tracker_id,
+    const cc::FrameSequenceMetrics::CustomReportData& data) {
+  auto it = throughput_tracker_map_.find(tracker_id);
+  if (it == throughput_tracker_map_.end())
+    return;
+
+  // Set `report_attempted` but not reporting if relevant ThroughputTrackers
+  // are not stopped and waiting for reports.
+  if (!it->second.should_report) {
+    it->second.report_attempted = true;
+    return;
+  }
+
+  // Callback may modify `throughput_tracker_map_` so update the map first.
+  // See https://crbug.com/1193382.
+  auto callback = std::move(it->second.report_callback);
+  throughput_tracker_map_.erase(it);
+  std::move(callback).Run(data);
+}
+
+void Compositor::SetDelegatedInkPointRenderer(
+    mojo::PendingReceiver<gfx::mojom::DelegatedInkPointRenderer> receiver) {
+  if (display_private_)
+    display_private_->SetDelegatedInkPointRenderer(std::move(receiver));
 }
 
 }  // namespace ui

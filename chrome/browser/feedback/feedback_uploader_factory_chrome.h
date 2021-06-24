@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_FEEDBACK_FEEDBACK_UPLOADER_FACTORY_CHROME_H_
 
 #include "base/macros.h"
-#include "components/feedback/feedback_uploader_factory.h"
+#include "components/feedback/content/feedback_uploader_factory.h"
 
 namespace feedback {
 
@@ -29,6 +29,10 @@ class FeedbackUploaderFactoryChrome : public FeedbackUploaderFactory {
   ~FeedbackUploaderFactoryChrome() override;
 
   // BrowserContextKeyedServiceFactory overrides:
+  content::BrowserContext* GetBrowserContextToUse(
+      content::BrowserContext* context) const override;
+  bool ServiceIsCreatedWithBrowserContext() const override;
+  bool ServiceIsNULLWhileTesting() const override;
   KeyedService* BuildServiceInstanceFor(
       content::BrowserContext* context) const override;
 

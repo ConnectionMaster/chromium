@@ -29,7 +29,8 @@ class MEDIA_EXPORT AudioPushFifo final {
   // Push().  If zero or positive, the output contains data from the current
   // call to Push().  Clients can use this to adjust timestamps.
   using OutputCallback =
-      base::Callback<void(const AudioBus& output_bus, int frame_delay)>;
+      base::RepeatingCallback<void(const AudioBus& output_bus,
+                                   int frame_delay)>;
 
   // Creates a new AudioPushFifo which delivers re-buffered audio by running
   // |callback|.
@@ -40,6 +41,9 @@ class MEDIA_EXPORT AudioPushFifo final {
   // Returns the number of frames in each AudioBus delivered to the
   // OutputCallback.
   int frames_per_buffer() const { return frames_per_buffer_; }
+
+  // The number of frames currently queued in this FIFO.
+  int queued_frames() const { return queued_frames_; }
 
   // Must be called at least once before the first call to Push().  May be
   // called later (e.g., to support an audio format change).

@@ -5,6 +5,7 @@
 #include "content/browser/renderer_host/direct_manipulation_event_handler_win.h"
 
 #include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "content/browser/renderer_host/direct_manipulation_helper_win.h"
 #include "ui/base/ui_base_features.h"
@@ -44,6 +45,11 @@ void DirectManipulationEventHandler::SetDeviceScaleFactor(
   device_scale_factor_ = device_scale_factor;
 }
 
+void DirectManipulationEventHandler::SetDirectManipulationHelper(
+    DirectManipulationHelper* helper) {
+  helper_ = helper;
+}
+
 DirectManipulationEventHandler::~DirectManipulationEventHandler() {}
 
 void DirectManipulationEventHandler::TransitionToState(
@@ -68,7 +74,8 @@ void DirectManipulationEventHandler::TransitionToState(
       // kScroll -> kNone, kPinch, ScrollEnd.
       // kScroll -> kFling, we don't want to end the current scroll sequence.
       if (new_gesture_state != GestureState::kFling)
-        event_target_->ApplyPanGestureScrollEnd();
+        event_target_->ApplyPanGestureScrollEnd(new_gesture_state ==
+                                                GestureState::kPinch);
       break;
     }
     case GestureState::kFling: {
@@ -175,8 +182,7 @@ HRESULT DirectManipulationEventHandler::OnViewportStatusChanged(
   // gesture end, the second one is from viewport reset. We don't have content
   // transform in the second RUNNING -> READY. We should not reset on an empty
   // RUNNING -> READY sequence.
-  if (!FloatEquals(1.0f, last_scale_) || last_x_offset_ != 0 ||
-      last_y_offset_ != 0) {
+  if (last_scale_ != 1.0f || last_x_offset_ != 0 || last_y_offset_ != 0) {
     HRESULT hr = viewport->ZoomToRect(
         static_cast<float>(0), static_cast<float>(0),
         static_cast<float>(viewport_size_in_pixels_.width()),
@@ -298,6 +304,23 @@ HRESULT DirectManipulationEventHandler::OnContentUpdated(
   last_y_offset_ = y_offset;
 
   return hr;
+}
+
+HRESULT DirectManipulationEventHandler::OnInteraction(
+    IDirectManipulationViewport2* viewport,
+    DIRECTMANIPULATION_INTERACTION_TYPE interaction) {
+  if (!helper_)
+    return S_OK;
+
+  if (interaction == DIRECTMANIPULATION_INTERACTION_BEGIN) {
+    DebugLogging("OnInteraction BEGIN.", S_OK);
+    helper_->AddAnimationObserver();
+  } else if (interaction == DIRECTMANIPULATION_INTERACTION_END) {
+    DebugLogging("OnInteraction END.", S_OK);
+    helper_->RemoveAnimationObserver();
+  }
+
+  return S_OK;
 }
 
 }  // namespace content

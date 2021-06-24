@@ -10,7 +10,10 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/bind.h"
+#include "base/memory/ptr_util.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "chrome/android/chrome_jni_headers/ExploreSitesBridgeExperimental_jni.h"
+#include "chrome/android/chrome_jni_headers/ExploreSitesCategoryTile_jni.h"
 #include "chrome/browser/android/explore_sites/catalog.h"
 #include "chrome/browser/android/explore_sites/catalog.pb.h"
 #include "chrome/browser/android/explore_sites/ntp_json_fetcher.h"
@@ -21,8 +24,6 @@
 #include "components/image_fetcher/core/image_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_impl.h"
 #include "content/public/browser/storage_partition.h"
-#include "jni/ExploreSitesBridgeExperimental_jni.h"
-#include "jni/ExploreSitesCategoryTile_jni.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
@@ -83,7 +84,7 @@ void OnGetIconDone(std::unique_ptr<image_fetcher::ImageFetcher> image_fetcher,
                    const image_fetcher::RequestMetadata& metadata) {
   ScopedJavaLocalRef<jobject> j_bitmap;
   if (!image.IsEmpty()) {
-    j_bitmap = gfx::ConvertToJavaBitmap(image.ToSkBitmap());
+    j_bitmap = gfx::ConvertToJavaBitmap(*image.ToSkBitmap());
   }
   base::android::RunObjectCallbackAndroid(j_callback_obj, j_bitmap);
 
@@ -125,7 +126,7 @@ static void JNI_ExploreSitesBridgeExperimental_GetIcon(
   Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
   GURL icon_url(ConvertJavaStringToUTF8(env, j_url));
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
-      content::BrowserContext::GetDefaultStoragePartition(profile)
+      profile->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess();
   image_fetcher::ImageFetcherParams params(kTrafficAnnotation,
                                            kImageFetcherUmaClientName);

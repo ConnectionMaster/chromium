@@ -9,16 +9,17 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/task/post_task.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/thread_pool.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/chromeos/login/users/avatar/user_image_loader.h"
+#include "chrome/browser/ash/login/users/avatar/user_image_loader.h"
 #include "chrome/common/url_constants.h"
 #include "components/user_manager/user_image/user_image.h"
 #include "net/base/mime_util.h"
@@ -26,22 +27,21 @@
 namespace chromeos {
 namespace {
 
-const char* const kWhitelistedDirectories[] = {"regulatory_labels"};
+const char* const kAllowlistedDirectories[] = {"regulatory_labels"};
 
 // Callback for user_manager::UserImageLoader.
-void ImageLoaded(
-    const content::URLDataSource::GotDataCallback& got_data_callback,
-    std::unique_ptr<user_manager::UserImage> user_image) {
+void ImageLoaded(content::URLDataSource::GotDataCallback got_data_callback,
+                 std::unique_ptr<user_manager::UserImage> user_image) {
   if (user_image->has_image_bytes())
-    got_data_callback.Run(user_image->image_bytes());
+    std::move(got_data_callback).Run(user_image->image_bytes());
   else
-    got_data_callback.Run(nullptr);
+    std::move(got_data_callback).Run(nullptr);
 }
 
 }  // namespace
 
-ImageSource::ImageSource() : weak_factory_(this) {
-  task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
+ImageSource::ImageSource() {
+  task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
 }
@@ -49,45 +49,45 @@ ImageSource::ImageSource() : weak_factory_(this) {
 ImageSource::~ImageSource() {
 }
 
-std::string ImageSource::GetSource() const {
+std::string ImageSource::GetSource() {
   return chrome::kChromeOSAssetHost;
 }
 
 void ImageSource::StartDataRequest(
-    const std::string& path,
-    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
-    const content::URLDataSource::GotDataCallback& got_data_callback) {
-  if (!IsWhitelisted(path)) {
-    got_data_callback.Run(nullptr);
+    const GURL& url,
+    const content::WebContents::Getter& wc_getter,
+    content::URLDataSource::GotDataCallback got_data_callback) {
+  const std::string path = content::URLDataSource::URLToRequestPath(url);
+  if (!IsAllowlisted(path)) {
+    std::move(got_data_callback).Run(nullptr);
     return;
   }
 
   const base::FilePath asset_dir(chrome::kChromeOSAssetPath);
   const base::FilePath image_path = asset_dir.AppendASCII(path);
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
-      base::Bind(&base::PathExists, image_path),
-      base::Bind(&ImageSource::StartDataRequestAfterPathExists,
-                 weak_factory_.GetWeakPtr(), image_path, got_data_callback));
+      base::BindOnce(&base::PathExists, image_path),
+      base::BindOnce(&ImageSource::StartDataRequestAfterPathExists,
+                     weak_factory_.GetWeakPtr(), image_path,
+                     std::move(got_data_callback)));
 }
 
 void ImageSource::StartDataRequestAfterPathExists(
     const base::FilePath& image_path,
-    const content::URLDataSource::GotDataCallback& got_data_callback,
+    content::URLDataSource::GotDataCallback got_data_callback,
     bool path_exists) {
   if (path_exists) {
     user_image_loader::StartWithFilePath(
-        task_runner_,
-        image_path,
-        ImageDecoder::DEFAULT_CODEC,
+        task_runner_, image_path, ImageDecoder::DEFAULT_CODEC,
         0,  // Do not crop.
-        base::Bind(&ImageLoaded, got_data_callback));
+        base::BindOnce(&ImageLoaded, std::move(got_data_callback)));
   } else {
-    got_data_callback.Run(nullptr);
+    std::move(got_data_callback).Run(nullptr);
   }
 }
 
-std::string ImageSource::GetMimeType(const std::string& path) const {
+std::string ImageSource::GetMimeType(const std::string& path) {
   std::string mime_type;
   std::string ext = base::FilePath(path).Extension();
   if (!ext.empty())
@@ -95,19 +95,19 @@ std::string ImageSource::GetMimeType(const std::string& path) const {
   return mime_type;
 }
 
-bool ImageSource::IsWhitelisted(const std::string& path) const {
+bool ImageSource::IsAllowlisted(const std::string& path) const {
   base::FilePath file_path(path);
   if (file_path.ReferencesParent())
     return false;
 
-  // Check if the path starts with a whitelisted directory.
+  // Check if the path starts with a allowlisted directory.
   std::vector<std::string> components;
   file_path.GetComponents(&components);
   if (components.empty())
     return false;
 
-  for (size_t i = 0; i < base::size(kWhitelistedDirectories); i++) {
-    if (components[0] == kWhitelistedDirectories[i])
+  for (size_t i = 0; i < base::size(kAllowlistedDirectories); i++) {
+    if (components[0] == kAllowlistedDirectories[i])
       return true;
   }
   return false;

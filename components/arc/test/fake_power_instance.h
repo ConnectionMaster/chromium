@@ -6,7 +6,9 @@
 #define COMPONENTS_ARC_TEST_FAKE_POWER_INSTANCE_H_
 
 #include "base/macros.h"
-#include "components/arc/common/power.mojom.h"
+#include "components/arc/mojom/power.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 namespace arc {
 
@@ -19,20 +21,25 @@ class FakePowerInstance : public mojom::PowerInstance {
   int num_suspend() const { return num_suspend_; }
   int num_resume() const { return num_resume_; }
   double screen_brightness() const { return screen_brightness_; }
+  int num_power_supply_info() const { return num_power_supply_info_; }
 
   // Returns |suspend_callback_| and resets the member.
   SuspendCallback GetSuspendCallback();
 
   // mojom::PowerInstance overrides:
-  void InitDeprecated(mojom::PowerHostPtr host_ptr) override;
-  void Init(mojom::PowerHostPtr host_ptr, InitCallback callback) override;
+  void InitDeprecated(
+      mojo::PendingRemote<mojom::PowerHost> host_remote) override;
+  void Init(mojo::PendingRemote<mojom::PowerHost> host_remote,
+            InitCallback callback) override;
   void SetInteractive(bool enabled) override;
   void Suspend(SuspendCallback callback) override;
   void Resume() override;
   void UpdateScreenBrightnessSettings(double percent) override;
+  void PowerSupplyInfoChanged() override;
+  void GetWakefulnessMode(GetWakefulnessModeCallback callback) override;
 
  private:
-  mojom::PowerHostPtr host_ptr_;
+  mojo::Remote<mojom::PowerHost> host_remote_;
 
   // Last state passed to SetInteractive().
   bool interactive_ = true;
@@ -46,6 +53,9 @@ class FakePowerInstance : public mojom::PowerInstance {
 
   // Last value passed to UpdateScreenBrightnessSettings().
   double screen_brightness_ = 0.0;
+
+  // Number of calls to PowerSupplyInfoChanged().
+  int num_power_supply_info_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(FakePowerInstance);
 };

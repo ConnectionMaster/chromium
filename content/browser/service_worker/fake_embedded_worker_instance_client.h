@@ -5,15 +5,17 @@
 #ifndef CONTENT_BROWSER_SERVICE_WORKER_FAKE_EMBEDDED_WORKER_INSTANCE_CLIENT_H_
 #define CONTENT_BROWSER_SERVICE_WORKER_FAKE_EMBEDDED_WORKER_INSTANCE_CLIENT_H_
 
-#include <string>
-
 #include "base/memory/weak_ptr.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/mojom/service_worker/embedded_worker.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_installed_scripts_manager.mojom.h"
 
 namespace content {
 
 class EmbeddedWorkerTestHelper;
+class FakeServiceWorkerInstalledScriptsManager;
 
 // The default fake for blink::mojom::EmbeddedWorkerInstanceClient. It responds
 // to Start/Stop/etc messages without starting an actual service worker thread.
@@ -30,12 +32,15 @@ class FakeEmbeddedWorkerInstanceClient
 
   base::WeakPtr<FakeEmbeddedWorkerInstanceClient> GetWeakPtr();
 
-  blink::mojom::EmbeddedWorkerInstanceHostAssociatedPtr& host() {
+  mojo::AssociatedRemote<blink::mojom::EmbeddedWorkerInstanceHost>& host() {
     return host_;
   }
 
-  void Bind(blink::mojom::EmbeddedWorkerInstanceClientRequest request);
+  void Bind(mojo::PendingReceiver<blink::mojom::EmbeddedWorkerInstanceClient>
+                receiver);
   void RunUntilBound();
+
+  blink::mojom::ServiceWorkerScriptInfoPtr WaitForTransferInstalledScript();
 
   // Closes the binding and deletes |this|.
   void Disconnect();
@@ -44,15 +49,6 @@ class FakeEmbeddedWorkerInstanceClient
   // blink::mojom::EmbeddedWorkerInstanceClient implementation.
   void StartWorker(blink::mojom::EmbeddedWorkerStartParamsPtr params) override;
   void StopWorker() override;
-  void ResumeAfterDownload() override;
-  void AddMessageToConsole(blink::mojom::ConsoleMessageLevel level,
-                           const std::string& message) override {}
-  void BindDevToolsAgent(
-      blink::mojom::DevToolsAgentHostAssociatedPtrInfo,
-      blink::mojom::DevToolsAgentAssociatedRequest) override {}
-  void UpdateSubresourceLoaderFactories(
-      std::unique_ptr<blink::URLLoaderFactoryBundleInfo>
-          subresource_loader_factories) override {}
 
   virtual void EvaluateScript();
 
@@ -62,19 +58,28 @@ class FakeEmbeddedWorkerInstanceClient
     return start_params_;
   }
 
-  void OnConnectionError();
+  virtual void OnConnectionError();
 
  private:
+  class LoaderClient;
+
+  void CallOnConnectionError();
+
   // |helper_| owns |this|.
   EmbeddedWorkerTestHelper* const helper_;
 
   blink::mojom::EmbeddedWorkerStartParamsPtr start_params_;
-  blink::mojom::EmbeddedWorkerInstanceHostAssociatedPtr host_;
+  mojo::AssociatedRemote<blink::mojom::EmbeddedWorkerInstanceHost> host_;
 
-  mojo::Binding<blink::mojom::EmbeddedWorkerInstanceClient> binding_;
+  mojo::Receiver<blink::mojom::EmbeddedWorkerInstanceClient> receiver_{this};
   base::OnceClosure quit_closure_for_bind_;
 
-  base::WeakPtrFactory<FakeEmbeddedWorkerInstanceClient> weak_factory_;
+  std::unique_ptr<FakeServiceWorkerInstalledScriptsManager>
+      installed_scripts_manager_;
+
+  std::unique_ptr<LoaderClient> main_script_loader_client_;
+
+  base::WeakPtrFactory<FakeEmbeddedWorkerInstanceClient> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeEmbeddedWorkerInstanceClient);
 };

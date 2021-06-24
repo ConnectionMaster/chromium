@@ -13,32 +13,27 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_feature_list.h"
-#include "chrome/browser/chromeos/drive/file_system_util.h"
-#include "chrome/browser/chromeos/file_manager/fake_disk_mount_manager.h"
+#include "base/test/scoped_running_on_chromeos.h"
+#include "chrome/browser/ash/drive/file_system_util.h"
+#include "chrome/browser/ash/file_manager/fake_disk_mount_manager.h"
+#include "chrome/browser/ash/file_system_provider/fake_extension_provider.h"
+#include "chrome/browser/ash/file_system_provider/service.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager_observer.h"
-#include "chrome/browser/chromeos/file_system_provider/fake_extension_provider.h"
-#include "chrome/browser/chromeos/file_system_provider/service.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/scoped_set_running_on_chromeos_for_testing.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power_manager/suspend.pb.h"
 #include "chromeos/disks/disk.h"
 #include "chromeos/disks/disk_mount_manager.h"
-#include "components/drive/chromeos/dummy_file_system.h"
-#include "components/drive/service/dummy_drive_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/storage_monitor/storage_info.h"
 #include "components/user_manager/user.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_service_manager_context.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/extension_registry.h"
 #include "services/device/public/mojom/mtp_storage_info.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -48,9 +43,6 @@ using chromeos::disks::DiskMountManager;
 
 namespace file_manager {
 namespace {
-const char kLsbRelease[] =
-    "CHROMEOS_RELEASE_NAME=Chrome OS\n"
-    "CHROMEOS_RELEASE_VERSION=1.2.3.4\n";
 
 class LoggingObserver : public VolumeManagerObserver {
  public:
@@ -64,13 +56,20 @@ class LoggingObserver : public VolumeManagerObserver {
       VOLUME_UNMOUNTED,
       FORMAT_STARTED,
       FORMAT_COMPLETED,
+      PARTITION_STARTED,
+      PARTITION_COMPLETED,
       RENAME_STARTED,
       RENAME_COMPLETED
     } type;
 
     // Available on DEVICE_ADDED, DEVICE_REMOVED, VOLUME_MOUNTED,
-    // VOLUME_UNMOUNTED, FORMAT_STARTED and FORMAT_COMPLETED.
+    // VOLUME_UNMOUNTED, FORMAT_STARTED, FORMAT_COMPLETED. PARTITION_STARTED,
+    // PARTITION_COMPLETED.
     std::string device_path;
+
+    // Available on FORMAT_STARTED, FORMAT_COMPLETED, RENAME_STARTED and
+    // RENAME_COMPLETED, PARTITION_STARTED, PARTITION_COMPLETED.
+    std::string device_label;
 
     // Available on DISK_ADDED.
     bool mounting;
@@ -78,7 +77,8 @@ class LoggingObserver : public VolumeManagerObserver {
     // Available on VOLUME_MOUNTED and VOLUME_UNMOUNTED.
     chromeos::MountError mount_error;
 
-    // Available on FORMAT_STARTED and FORMAT_COMPLETED.
+    // Available on FORMAT_STARTED and FORMAT_COMPLETED, PARTITION_STARTED,
+    // PARTITION_COMPLETED.
     bool success;
   };
 
@@ -135,36 +135,68 @@ class LoggingObserver : public VolumeManagerObserver {
     events_.push_back(event);
   }
 
-  void OnFormatStarted(const std::string& device_path, bool success) override {
+  void OnFormatStarted(const std::string& device_path,
+                       const std::string& device_label,
+                       bool success) override {
     Event event;
     event.type = Event::FORMAT_STARTED;
     event.device_path = device_path;
+    event.device_label = device_label;
     event.success = success;
     events_.push_back(event);
   }
 
   void OnFormatCompleted(const std::string& device_path,
+                         const std::string& device_label,
                          bool success) override {
     Event event;
     event.type = Event::FORMAT_COMPLETED;
     event.device_path = device_path;
+    event.device_label = device_label;
     event.success = success;
     events_.push_back(event);
   }
 
-  void OnRenameStarted(const std::string& device_path, bool success) override {
+  void OnPartitionStarted(const std::string& device_path,
+                          const std::string& device_label,
+                          bool success) override {
+    Event event;
+    event.type = Event::PARTITION_STARTED;
+    event.device_path = device_path;
+    event.device_label = device_label;
+    event.success = success;
+    events_.push_back(event);
+  }
+
+  void OnPartitionCompleted(const std::string& device_path,
+                            const std::string& device_label,
+                            bool success) override {
+    Event event;
+    event.type = Event::PARTITION_COMPLETED;
+    event.device_path = device_path;
+    event.device_label = device_label;
+    event.success = success;
+    events_.push_back(event);
+  }
+
+  void OnRenameStarted(const std::string& device_path,
+                       const std::string& device_label,
+                       bool success) override {
     Event event;
     event.type = Event::RENAME_STARTED;
     event.device_path = device_path;
+    event.device_label = device_label;
     event.success = success;
     events_.push_back(event);
   }
 
   void OnRenameCompleted(const std::string& device_path,
+                         const std::string& device_label,
                          bool success) override {
     Event event;
     event.type = Event::RENAME_COMPLETED;
     event.device_path = device_path;
+    event.device_label = device_label;
     event.success = success;
     events_.push_back(event);
   }
@@ -197,25 +229,22 @@ class VolumeManagerTest : public testing::Test {
           extension_registry_(
               std::make_unique<extensions::ExtensionRegistry>(profile_.get())),
           file_system_provider_service_(
-              std::make_unique<chromeos::file_system_provider::Service>(
+              std::make_unique<ash::file_system_provider::Service>(
                   profile_.get(),
                   extension_registry_.get())),
           drive_integration_service_(
               std::make_unique<drive::DriveIntegrationService>(
                   profile_.get(),
-                  nullptr,
-                  new drive::DummyDriveService(),
                   std::string(),
-                  base::FilePath(),
-                  new drive::DummyFileSystem())),
+                  base::FilePath())),
           volume_manager_(std::make_unique<VolumeManager>(
               profile_.get(),
               drive_integration_service_.get(),  // DriveIntegrationService
               power_manager_client,
               disk_manager,
               file_system_provider_service_.get(),
-              base::Bind(&ProfileEnvironment::GetFakeMtpStorageInfo,
-                         base::Unretained(this)))),
+              base::BindRepeating(&ProfileEnvironment::GetFakeMtpStorageInfo,
+                                  base::Unretained(this)))),
           account_id_(
               AccountId::FromUserEmailGaiaId(profile_->GetProfileUserName(),
                                              "id")),
@@ -223,6 +252,12 @@ class VolumeManagerTest : public testing::Test {
       chromeos::ProfileHelper::Get()->SetProfileToUserMappingForTesting(&user_);
       chromeos::ProfileHelper::Get()->SetUserToProfileMappingForTesting(
           &user_, profile_.get());
+    }
+
+    ~ProfileEnvironment() {
+      // In production, KeyedServices have Shutdown() called before destruction.
+      volume_manager_->Shutdown();
+      drive_integration_service_->Shutdown();
     }
 
     Profile* profile() const { return profile_.get(); }
@@ -237,7 +272,7 @@ class VolumeManagerTest : public testing::Test {
 
     std::unique_ptr<TestingProfile> profile_;
     std::unique_ptr<extensions::ExtensionRegistry> extension_registry_;
-    std::unique_ptr<chromeos::file_system_provider::Service>
+    std::unique_ptr<ash::file_system_provider::Service>
         file_system_provider_service_;
     std::unique_ptr<drive::DriveIntegrationService> drive_integration_service_;
     std::unique_ptr<VolumeManager> volume_manager_;
@@ -256,7 +291,7 @@ class VolumeManagerTest : public testing::Test {
     main_profile_.reset();
     disk_mount_manager_.reset();
     chromeos::PowerManagerClient::Shutdown();
-    thread_bundle_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
   }
 
   Profile* profile() const { return main_profile_->profile(); }
@@ -264,8 +299,7 @@ class VolumeManagerTest : public testing::Test {
     return main_profile_->volume_manager();
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
-  content::TestServiceManagerContext context_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<FakeDiskMountManager> disk_mount_manager_;
   std::unique_ptr<ProfileEnvironment> main_profile_;
 };
@@ -472,10 +506,7 @@ TEST_F(VolumeManagerTest, OnDiskAutoMountableEvent_Removed) {
   EXPECT_EQ("device1", event.device_path);
 
   ASSERT_EQ(1U, disk_mount_manager_->unmount_requests().size());
-  const FakeDiskMountManager::UnmountRequest& unmount_request =
-      disk_mount_manager_->unmount_requests()[0];
-  EXPECT_EQ("mount_path", unmount_request.mount_path);
-  EXPECT_EQ(chromeos::UNMOUNT_OPTIONS_LAZY, unmount_request.options);
+  EXPECT_EQ("mount_path", disk_mount_manager_->unmount_requests()[0]);
 
   volume_manager()->RemoveObserver(&observer);
 }
@@ -677,12 +708,14 @@ TEST_F(VolumeManagerTest, OnFormatEvent_Started) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnFormatEvent(DiskMountManager::FORMAT_STARTED,
-                                  chromeos::FORMAT_ERROR_NONE, "device1");
+                                  chromeos::FORMAT_ERROR_NONE, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::FORMAT_STARTED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_TRUE(event.success);
 
   volume_manager()->RemoveObserver(&observer);
@@ -693,12 +726,14 @@ TEST_F(VolumeManagerTest, OnFormatEvent_StartFailed) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnFormatEvent(DiskMountManager::FORMAT_STARTED,
-                                  chromeos::FORMAT_ERROR_UNKNOWN, "device1");
+                                  chromeos::FORMAT_ERROR_UNKNOWN, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::FORMAT_STARTED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_FALSE(event.success);
 
   volume_manager()->RemoveObserver(&observer);
@@ -709,15 +744,17 @@ TEST_F(VolumeManagerTest, OnFormatEvent_Completed) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnFormatEvent(DiskMountManager::FORMAT_COMPLETED,
-                                  chromeos::FORMAT_ERROR_NONE, "device1");
+                                  chromeos::FORMAT_ERROR_NONE, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::FORMAT_COMPLETED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_TRUE(event.success);
 
-  // When "format" is successfully done, VolumeManager requests to mount it.
+  // When "format" is done, VolumeManager requests to mount it.
   ASSERT_EQ(1U, disk_mount_manager_->mount_requests().size());
   const FakeDiskMountManager::MountRequest& mount_request =
       disk_mount_manager_->mount_requests()[0];
@@ -734,15 +771,105 @@ TEST_F(VolumeManagerTest, OnFormatEvent_CompletedFailed) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnFormatEvent(DiskMountManager::FORMAT_COMPLETED,
-                                  chromeos::FORMAT_ERROR_UNKNOWN, "device1");
+                                  chromeos::FORMAT_ERROR_UNKNOWN, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::FORMAT_COMPLETED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_FALSE(event.success);
 
-  EXPECT_EQ(0U, disk_mount_manager_->mount_requests().size());
+  // When "format" is done, VolumeManager requests to mount it.
+  ASSERT_EQ(1U, disk_mount_manager_->mount_requests().size());
+  const FakeDiskMountManager::MountRequest& mount_request =
+      disk_mount_manager_->mount_requests()[0];
+  EXPECT_EQ("device1", mount_request.source_path);
+  EXPECT_EQ("", mount_request.source_format);
+  EXPECT_EQ("", mount_request.mount_label);
+  EXPECT_EQ(chromeos::MOUNT_TYPE_DEVICE, mount_request.type);
+
+  volume_manager()->RemoveObserver(&observer);
+}
+
+TEST_F(VolumeManagerTest, OnPartitionEvent_Started) {
+  LoggingObserver observer;
+  volume_manager()->AddObserver(&observer);
+
+  volume_manager()->OnPartitionEvent(DiskMountManager::PARTITION_STARTED,
+                                     chromeos::PARTITION_ERROR_NONE, "device1",
+                                     "label1");
+
+  ASSERT_EQ(1U, observer.events().size());
+  const LoggingObserver::Event& event = observer.events()[0];
+  EXPECT_EQ(LoggingObserver::Event::PARTITION_STARTED, event.type);
+  EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
+  EXPECT_TRUE(event.success);
+
+  volume_manager()->RemoveObserver(&observer);
+}
+
+TEST_F(VolumeManagerTest, OnPartitionEvent_StartFailed) {
+  LoggingObserver observer;
+  volume_manager()->AddObserver(&observer);
+
+  volume_manager()->OnPartitionEvent(DiskMountManager::PARTITION_STARTED,
+                                     chromeos::PARTITION_ERROR_UNKNOWN,
+                                     "device1", "label1");
+
+  ASSERT_EQ(1U, observer.events().size());
+  const LoggingObserver::Event& event = observer.events()[0];
+  EXPECT_EQ(LoggingObserver::Event::PARTITION_STARTED, event.type);
+  EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
+  EXPECT_FALSE(event.success);
+
+  volume_manager()->RemoveObserver(&observer);
+}
+
+TEST_F(VolumeManagerTest, OnPartitionEvent_Completed) {
+  LoggingObserver observer;
+  volume_manager()->AddObserver(&observer);
+
+  volume_manager()->OnPartitionEvent(DiskMountManager::PARTITION_COMPLETED,
+                                     chromeos::PARTITION_ERROR_NONE, "device1",
+                                     "label1");
+
+  ASSERT_EQ(1U, observer.events().size());
+  const LoggingObserver::Event& event = observer.events()[0];
+  EXPECT_EQ(LoggingObserver::Event::PARTITION_COMPLETED, event.type);
+  EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
+  EXPECT_TRUE(event.success);
+
+  volume_manager()->RemoveObserver(&observer);
+}
+
+TEST_F(VolumeManagerTest, OnPartitionEvent_CompletedFailed) {
+  LoggingObserver observer;
+  volume_manager()->AddObserver(&observer);
+
+  volume_manager()->OnPartitionEvent(DiskMountManager::PARTITION_COMPLETED,
+                                     chromeos::PARTITION_ERROR_UNKNOWN,
+                                     "device1", "label1");
+
+  ASSERT_EQ(1U, observer.events().size());
+  const LoggingObserver::Event& event = observer.events()[0];
+  EXPECT_EQ(LoggingObserver::Event::PARTITION_COMPLETED, event.type);
+  EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
+  EXPECT_FALSE(event.success);
+
+  // When "partitioning" fails, VolumeManager requests to mount it for retry.
+  ASSERT_EQ(1U, disk_mount_manager_->mount_requests().size());
+  const FakeDiskMountManager::MountRequest& mount_request =
+      disk_mount_manager_->mount_requests()[0];
+  EXPECT_EQ("device1", mount_request.source_path);
+  EXPECT_EQ("", mount_request.source_format);
+  EXPECT_EQ("", mount_request.mount_label);
+  EXPECT_EQ(chromeos::MOUNT_TYPE_DEVICE, mount_request.type);
 
   volume_manager()->RemoveObserver(&observer);
 }
@@ -794,9 +921,8 @@ TEST_F(VolumeManagerTest, OnExternalStorageDisabledChanged) {
       "failed_unmount",
   };
   for (const auto& request : disk_mount_manager_->unmount_requests()) {
-    EXPECT_TRUE(
-        base::ContainsKey(expected_unmount_requests, request.mount_path));
-    expected_unmount_requests.erase(request.mount_path);
+    EXPECT_TRUE(base::Contains(expected_unmount_requests, request));
+    expected_unmount_requests.erase(request);
   }
   EXPECT_TRUE(expected_unmount_requests.empty());
 }
@@ -867,8 +993,6 @@ TEST_F(VolumeManagerTest, OnExternalStorageReadOnlyChanged) {
 }
 
 TEST_F(VolumeManagerTest, GetVolumeList) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(chromeos::features::kMyFilesVolume);
   volume_manager()->Initialize();  // Adds "Downloads"
   std::vector<base::WeakPtr<Volume>> volume_list =
       volume_manager()->GetVolumeList();
@@ -879,10 +1003,7 @@ TEST_F(VolumeManagerTest, GetVolumeList) {
 
 TEST_F(VolumeManagerTest, VolumeManagerInitializeMyFilesVolume) {
   // Emulate running inside ChromeOS.
-  chromeos::ScopedSetRunningOnChromeOSForTesting fake_release(kLsbRelease,
-                                                              base::Time());
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(chromeos::features::kMyFilesVolume);
+  base::test::ScopedRunningOnChromeOS running_on_chromeos;
   volume_manager()->Initialize();  // Adds "Downloads"
   std::vector<base::WeakPtr<Volume>> volume_list =
       volume_manager()->GetVolumeList();
@@ -893,8 +1014,6 @@ TEST_F(VolumeManagerTest, VolumeManagerInitializeMyFilesVolume) {
 }
 
 TEST_F(VolumeManagerTest, FindVolumeById) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(chromeos::features::kMyFilesVolume);
   volume_manager()->Initialize();  // Adds "Downloads"
   base::WeakPtr<Volume> bad_volume =
       volume_manager()->FindVolumeById("nonexistent");
@@ -960,20 +1079,14 @@ TEST_F(VolumeManagerTest, MTPPlugAndUnplug) {
   storage_monitor::StorageInfo info(
       storage_monitor::StorageInfo::MakeDeviceId(
           storage_monitor::StorageInfo::MTP_OR_PTP, "dummy-device-id"),
-      FILE_PATH_LITERAL("/dummy/device/location"),
-      base::UTF8ToUTF16("label"),
-      base::UTF8ToUTF16("vendor"),
-      base::UTF8ToUTF16("model"),
-      12345 /* size */);
+      FILE_PATH_LITERAL("/dummy/device/location"), u"label", u"vendor",
+      u"model", 12345 /* size */);
 
   storage_monitor::StorageInfo non_mtp_info(
       storage_monitor::StorageInfo::MakeDeviceId(
           storage_monitor::StorageInfo::FIXED_MASS_STORAGE, "dummy-device-id2"),
-      FILE_PATH_LITERAL("/dummy/device/location2"),
-      base::UTF8ToUTF16("label2"),
-      base::UTF8ToUTF16("vendor2"),
-      base::UTF8ToUTF16("model2"),
-      12345 /* size */);
+      FILE_PATH_LITERAL("/dummy/device/location2"), u"label2", u"vendor2",
+      u"model2", 12345 /* size */);
 
   // Attach
   volume_manager()->OnRemovableStorageAttached(info);
@@ -1001,12 +1114,14 @@ TEST_F(VolumeManagerTest, OnRenameEvent_Started) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnRenameEvent(DiskMountManager::RENAME_STARTED,
-                                  chromeos::RENAME_ERROR_NONE, "device1");
+                                  chromeos::RENAME_ERROR_NONE, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::RENAME_STARTED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_TRUE(event.success);
 
   volume_manager()->RemoveObserver(&observer);
@@ -1017,12 +1132,14 @@ TEST_F(VolumeManagerTest, OnRenameEvent_StartFailed) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnRenameEvent(DiskMountManager::RENAME_STARTED,
-                                  chromeos::RENAME_ERROR_UNKNOWN, "device1");
+                                  chromeos::RENAME_ERROR_UNKNOWN, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::RENAME_STARTED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_FALSE(event.success);
 
   volume_manager()->RemoveObserver(&observer);
@@ -1033,12 +1150,14 @@ TEST_F(VolumeManagerTest, OnRenameEvent_Completed) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnRenameEvent(DiskMountManager::RENAME_COMPLETED,
-                                  chromeos::RENAME_ERROR_NONE, "device1");
+                                  chromeos::RENAME_ERROR_NONE, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::RENAME_COMPLETED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_TRUE(event.success);
 
   // When "rename" is successfully done, VolumeManager requests to mount it.
@@ -1057,12 +1176,14 @@ TEST_F(VolumeManagerTest, OnRenameEvent_CompletedFailed) {
   volume_manager()->AddObserver(&observer);
 
   volume_manager()->OnRenameEvent(DiskMountManager::RENAME_COMPLETED,
-                                  chromeos::RENAME_ERROR_UNKNOWN, "device1");
+                                  chromeos::RENAME_ERROR_UNKNOWN, "device1",
+                                  "label1");
 
   ASSERT_EQ(1U, observer.events().size());
   const LoggingObserver::Event& event = observer.events()[0];
   EXPECT_EQ(LoggingObserver::Event::RENAME_COMPLETED, event.type);
   EXPECT_EQ("device1", event.device_path);
+  EXPECT_EQ("label1", event.device_label);
   EXPECT_FALSE(event.success);
 
   EXPECT_EQ(1U, disk_mount_manager_->mount_requests().size());

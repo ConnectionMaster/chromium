@@ -4,26 +4,30 @@
 
 #include "third_party/blink/renderer/modules/xr/xr_viewer_pose.h"
 
+#include "third_party/blink/renderer/modules/xr/xr_frame.h"
 #include "third_party/blink/renderer/modules/xr/xr_rigid_transform.h"
 #include "third_party/blink/renderer/modules/xr/xr_session.h"
 #include "third_party/blink/renderer/modules/xr/xr_view.h"
 
 namespace blink {
 
-XRViewerPose::XRViewerPose(
-    XRSession* session,
-    std::unique_ptr<TransformationMatrix> pose_model_matrix)
-    : XRPose(std::move(pose_model_matrix), session->EmulatedPosition()) {
-  // session will update views if required
-  // views array gets copied to views_
-  views_ = session->views();
+XRViewerPose::XRViewerPose(XRFrame* frame,
+                           const TransformationMatrix& pose_model_matrix,
+                           bool emulated_position)
+    : XRPose(pose_model_matrix, emulated_position) {
+  DVLOG(3) << __func__ << ": emulatedPosition()=" << emulatedPosition();
 
-  for (Member<XRView>& view : views_) {
+  const HeapVector<Member<XRViewData>>& view_data = frame->session()->views();
+
+  // Snapshot the session's current views.
+  for (XRViewData* view : view_data) {
     view->UpdatePoseMatrix(transform_->TransformMatrix());
+    XRView* xr_view = MakeGarbageCollected<XRView>(frame, view);
+    views_.push_back(xr_view);
   }
 }
 
-void XRViewerPose::Trace(blink::Visitor* visitor) {
+void XRViewerPose::Trace(Visitor* visitor) const {
   visitor->Trace(views_);
   XRPose::Trace(visitor);
 }

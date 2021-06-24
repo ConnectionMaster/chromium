@@ -6,10 +6,9 @@
 #define CHROME_BROWSER_WEB_APPLICATIONS_EXTENSIONS_WEB_APP_EXTENSION_SHORTCUT_H_
 
 #include <memory>
+#include <string>
 
 #include "base/callback_forward.h"
-#include "base/files/file_path.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
 #include "chrome/browser/web_applications/components/web_app_shortcut.h"
 
@@ -20,10 +19,6 @@ class Extension;
 }
 
 namespace web_app {
-
-// Callback made when CreateShortcuts has finished trying to create the
-// platform shortcuts indicating whether or not they were successfully created.
-using CreateShortcutsCallback = base::OnceCallback<void(bool shortcut_created)>;
 
 // Called by GetShortcutInfoForApp after fetching the ShortcutInfo.
 using ShortcutInfoCallback =
@@ -54,11 +49,6 @@ bool ShouldCreateShortcutFor(ShortcutCreationReason reason,
                              Profile* profile,
                              const extensions::Extension* extension);
 
-// Gets the user data directory to use for |extension| located inside
-// |profile_path|.
-base::FilePath GetWebAppDataDirectory(const base::FilePath& profile_path,
-                                      const extensions::Extension& extension);
-
 // Creates shortcuts for an app. This loads the app's icon from disk, and calls
 // CreateShortcutsWithInfo(). If you already have a ShortcutInfo with the app's
 // icon loaded, you should use CreateShortcutsWithInfo() directly.
@@ -67,6 +57,15 @@ void CreateShortcuts(ShortcutCreationReason reason,
                      Profile* profile,
                      const extensions::Extension* app,
                      CreateShortcutsCallback callback);
+
+// Creates shortcuts for a webapp. This loads the app's icon from disk, and
+// calls CreateShortcutsWithInfo(). If you already have a ShortcutInfo with the
+// app's icon loaded, you should use CreateShortcutsWithInfo() directly.
+void CreateShortcutsForWebApp(ShortcutCreationReason reason,
+                              const ShortcutLocations& locations,
+                              Profile* profile,
+                              const std::string& app_id,
+                              CreateShortcutsCallback callback);
 
 // Delete all shortcuts that have been created for the given profile and
 // extension.
@@ -77,7 +76,7 @@ void DeleteAllShortcuts(Profile* profile, const extensions::Extension* app);
 // hidden shortcuts to interact correctly with the system shelf.
 // |old_app_title| contains the title of the app prior to this update.
 // |callback| is invoked once the FILE thread tasks have completed.
-void UpdateAllShortcuts(const base::string16& old_app_title,
+void UpdateAllShortcuts(const std::u16string& old_app_title,
                         Profile* profile,
                         const extensions::Extension* app,
                         base::OnceClosure callback);

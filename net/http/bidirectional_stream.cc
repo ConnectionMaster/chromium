@@ -24,6 +24,7 @@
 #include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
+#include "net/log/net_log_values.h"
 #include "net/spdy/spdy_http_utils.h"
 #include "net/spdy/spdy_log_util.h"
 #include "net/ssl/ssl_cert_request_info.h"
@@ -36,26 +37,25 @@ namespace net {
 
 namespace {
 
-std::unique_ptr<base::Value> NetLogHeadersCallback(
-    const spdy::SpdyHeaderBlock* headers,
-    NetLogCaptureMode capture_mode) {
-  auto dict = std::make_unique<base::DictionaryValue>();
-  dict->Set("headers", ElideSpdyHeaderBlockForNetLog(*headers, capture_mode));
-  return std::move(dict);
+base::Value NetLogHeadersParams(const spdy::Http2HeaderBlock* headers,
+                                NetLogCaptureMode capture_mode) {
+  base::Value dict(base::Value::Type::DICTIONARY);
+  dict.SetKey("headers",
+              ElideHttp2HeaderBlockForNetLog(*headers, capture_mode));
+  return dict;
 }
 
-std::unique_ptr<base::Value> NetLogCallback(const GURL* url,
-                                            const std::string* method,
-                                            const HttpRequestHeaders* headers,
-                                            NetLogCaptureMode capture_mode) {
-  auto dict = std::make_unique<base::DictionaryValue>();
-  dict->SetString("url", url->possibly_invalid_spec());
-  dict->SetString("method", *method);
+base::Value NetLogParams(const GURL& url,
+                         const std::string& method,
+                         const HttpRequestHeaders* headers,
+                         NetLogCaptureMode capture_mode) {
+  base::Value dict(base::Value::Type::DICTIONARY);
+  dict.SetStringKey("url", url.possibly_invalid_spec());
+  dict.SetStringKey("method", method);
   std::string empty;
-  std::unique_ptr<base::Value> headers_param(
-      headers->NetLogCallback(&empty, capture_mode));
-  dict->Set("headers", std::move(headers_param));
-  return std::move(dict);
+  base::Value headers_param(headers->NetLogParams(empty, capture_mode));
+  dict.SetKey("headers", std::move(headers_param));
+  return dict;
 }
 
 }  // namespace
@@ -88,8 +88,7 @@ BidirectionalStream::BidirectionalStream(
       send_request_headers_automatically_(send_request_headers_automatically),
       request_headers_sent_(false),
       delegate_(delegate),
-      timer_(std::move(timer)),
-      weak_factory_(this) {
+      timer_(std::move(timer)) {
   DCHECK(delegate_);
   DCHECK(request_info_);
 
@@ -98,10 +97,12 @@ BidirectionalStream::BidirectionalStream(
   load_timing_info_.request_start = base::TimeTicks::Now();
 
   if (net_log_.IsCapturing()) {
-    net_log_.BeginEvent(
-        NetLogEventType::BIDIRECTIONAL_STREAM_ALIVE,
-        base::Bind(&NetLogCallback, &request_info_->url, &request_info_->method,
-                   base::Unretained(&request_info_->extra_headers)));
+    net_log_.BeginEvent(NetLogEventType::BIDIRECTIONAL_STREAM_ALIVE,
+                        [&](NetLogCaptureMode capture_mode) {
+                          return NetLogParams(
+                              request_info_->url, request_info_->method,
+                              &request_info_->extra_headers, capture_mode);
+                        });
   }
 
   if (!request_info_->url.SchemeIs(url::kHttpsScheme)) {
@@ -113,14 +114,13 @@ BidirectionalStream::BidirectionalStream(
   }
 
   SSLConfig ssl_config;
-  session->ssl_config_service()->GetSSLConfig(&ssl_config);
-  session->GetAlpnProtos(&ssl_config.alpn_protos);
+  ssl_config.alpn_protos = session->GetAlpnProtos();
+  ssl_config.application_settings = session->GetApplicationSettings();
 
   StartRequest(ssl_config);
 }
 
 BidirectionalStream::~BidirectionalStream() {
-  UpdateHistograms();
   if (net_log_.IsCapturing()) {
     net_log_.EndEvent(NetLogEventType::BIDIRECTIONAL_STREAM_ALIVE);
   }
@@ -147,8 +147,8 @@ int BidirectionalStream::ReadData(IOBuffer* buf, int buf_len) {
     // Bytes will be logged in OnDataRead().
   }
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(NetLogEventType::BIDIRECTIONAL_STREAM_READ_DATA,
-                      NetLog::IntCallback("rv", rv));
+    net_log_.AddEventWithIntParams(
+        NetLogEventType::BIDIRECTIONAL_STREAM_READ_DATA, "rv", rv);
   }
   return rv;
 }
@@ -163,8 +163,9 @@ void BidirectionalStream::SendvData(
   DCHECK(write_buffer_len_list_.empty());
 
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(NetLogEventType::BIDIRECTIONAL_STREAM_SENDV_DATA,
-                      NetLog::IntCallback("num_buffers", buffers.size()));
+    net_log_.AddEventWithIntParams(
+        NetLogEventType::BIDIRECTIONAL_STREAM_SENDV_DATA, "num_buffers",
+        buffers.size());
   }
   stream_impl_->SendvData(buffers, lengths, end_stream);
   for (size_t i = 0; i < buffers.size(); ++i) {
@@ -228,9 +229,9 @@ void BidirectionalStream::StartRequest(const SSLConfig& ssl_config) {
 void BidirectionalStream::OnStreamReady(bool request_headers_sent) {
   request_headers_sent_ = request_headers_sent;
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(
-        NetLogEventType::BIDIRECTIONAL_STREAM_READY,
-        NetLog::BoolCallback("request_headers_sent", request_headers_sent));
+    net_log_.AddEntryWithBoolParams(
+        NetLogEventType::BIDIRECTIONAL_STREAM_READY, NetLogEventPhase::NONE,
+        "request_headers_sent", request_headers_sent);
   }
   load_timing_info_.send_start = base::TimeTicks::Now();
   load_timing_info_.send_end = load_timing_info_.send_start;
@@ -238,7 +239,7 @@ void BidirectionalStream::OnStreamReady(bool request_headers_sent) {
 }
 
 void BidirectionalStream::OnHeadersReceived(
-    const spdy::SpdyHeaderBlock& response_headers) {
+    const spdy::Http2HeaderBlock& response_headers) {
   HttpResponseInfo response_info;
   if (!SpdyHeadersToHttpResponse(response_headers, &response_info)) {
     DLOG(WARNING) << "Invalid headers";
@@ -247,7 +248,10 @@ void BidirectionalStream::OnHeadersReceived(
   }
   if (net_log_.IsCapturing()) {
     net_log_.AddEvent(NetLogEventType::BIDIRECTIONAL_STREAM_RECV_HEADERS,
-                      base::Bind(&NetLogHeadersCallback, &response_headers));
+                      [&](NetLogCaptureMode capture_mode) {
+                        return NetLogHeadersParams(&response_headers,
+                                                   capture_mode);
+                      });
   }
   // Impl should only provide |connect_timing| and |socket_reused| info,
   // so use a copy to get these information only.
@@ -261,7 +265,7 @@ void BidirectionalStream::OnHeadersReceived(
   load_timing_info_.receive_headers_end = base::TimeTicks::Now();
   read_end_time_ = load_timing_info_.receive_headers_end;
   session_->http_stream_factory()->ProcessAlternativeServices(
-      session_, response_info.headers.get(),
+      session_, net::NetworkIsolationKey(), response_info.headers.get(),
       url::SchemeHostPort(request_info_->url));
   delegate_->OnHeadersReceived(response_headers);
 }
@@ -286,9 +290,10 @@ void BidirectionalStream::OnDataSent() {
   if (net_log_.IsCapturing()) {
     if (write_buffer_list_.size() > 1) {
       net_log_.BeginEvent(
-          NetLogEventType::BIDIRECTIONAL_STREAM_BYTES_SENT_COALESCED,
-          NetLog::IntCallback("num_buffers_coalesced",
-                              write_buffer_list_.size()));
+          NetLogEventType::BIDIRECTIONAL_STREAM_BYTES_SENT_COALESCED, [&] {
+            return NetLogParamsWithInt("num_buffers_coalesced",
+                                       write_buffer_list_.size());
+          });
     }
     for (size_t i = 0; i < write_buffer_list_.size(); ++i) {
       net_log_.AddByteTransferEvent(
@@ -307,10 +312,12 @@ void BidirectionalStream::OnDataSent() {
 }
 
 void BidirectionalStream::OnTrailersReceived(
-    const spdy::SpdyHeaderBlock& trailers) {
+    const spdy::Http2HeaderBlock& trailers) {
   if (net_log_.IsCapturing()) {
     net_log_.AddEvent(NetLogEventType::BIDIRECTIONAL_STREAM_RECV_TRAILERS,
-                      base::Bind(&NetLogHeadersCallback, &trailers));
+                      [&](NetLogCaptureMode capture_mode) {
+                        return NetLogHeadersParams(&trailers, capture_mode);
+                      });
   }
   read_end_time_ = base::TimeTicks::Now();
   delegate_->OnTrailersReceived(trailers);
@@ -318,8 +325,8 @@ void BidirectionalStream::OnTrailersReceived(
 
 void BidirectionalStream::OnFailed(int status) {
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(NetLogEventType::BIDIRECTIONAL_STREAM_FAILED,
-                      NetLog::IntCallback("net_error", status));
+    net_log_.AddEventWithIntParams(NetLogEventType::BIDIRECTIONAL_STREAM_FAILED,
+                                   "net_error", status);
   }
   NotifyFailed(status);
 }
@@ -377,7 +384,8 @@ void BidirectionalStream::OnStreamFailed(
     int result,
     const NetErrorDetails& net_error_details,
     const SSLConfig& used_ssl_config,
-    const ProxyInfo& used_proxy_info) {
+    const ProxyInfo& used_proxy_info,
+    ResolveErrorInfo resolve_error_info) {
   DCHECK_LT(result, 0);
   DCHECK_NE(result, ERR_IO_PENDING);
   DCHECK(stream_request_);
@@ -412,73 +420,16 @@ void BidirectionalStream::OnNeedsClientAuth(const SSLConfig& used_ssl_config,
   // BidirectionalStream doesn't support client auth. It ignores client auth
   // requests with null client cert and key.
   SSLConfig ssl_config = used_ssl_config;
-  ssl_config.send_client_cert = true;
-  ssl_config.client_cert = nullptr;
-  ssl_config.client_private_key = nullptr;
-  session_->ssl_client_auth_cache()->Add(cert_info->host_and_port, nullptr,
-                                         nullptr);
+  session_->ssl_client_context()->SetClientCertificate(cert_info->host_and_port,
+                                                       nullptr, nullptr);
   stream_request_ = nullptr;
   StartRequest(ssl_config);
-}
-
-void BidirectionalStream::OnHttpsProxyTunnelResponseRedirect(
-    const HttpResponseInfo& response_info,
-    const SSLConfig& used_ssl_config,
-    const ProxyInfo& used_proxy_info,
-    std::unique_ptr<HttpStream> stream) {
-  DCHECK(stream_request_);
-
-  NotifyFailed(ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT);
 }
 
 void BidirectionalStream::OnQuicBroken() {}
 
 void BidirectionalStream::NotifyFailed(int error) {
   delegate_->OnFailed(error);
-}
-
-void BidirectionalStream::UpdateHistograms() {
-  // If the request failed before response is started, treat the metrics as
-  // bogus and skip logging.
-  if (load_timing_info_.request_start.is_null() ||
-      load_timing_info_.receive_headers_end.is_null() ||
-      read_end_time_.is_null() || load_timing_info_.send_start.is_null() ||
-      load_timing_info_.send_end.is_null()) {
-    return;
-  }
-  if (GetProtocol() == kProtoHTTP2) {
-    UMA_HISTOGRAM_TIMES("Net.BidirectionalStream.TimeToReadStart.HTTP2",
-                        load_timing_info_.receive_headers_end -
-                            load_timing_info_.request_start);
-    UMA_HISTOGRAM_TIMES("Net.BidirectionalStream.TimeToReadEnd.HTTP2",
-                        read_end_time_ - load_timing_info_.request_start);
-    UMA_HISTOGRAM_TIMES(
-        "Net.BidirectionalStream.TimeToSendStart.HTTP2",
-        load_timing_info_.send_start - load_timing_info_.request_start);
-    UMA_HISTOGRAM_TIMES(
-        "Net.BidirectionalStream.TimeToSendEnd.HTTP2",
-        load_timing_info_.send_end - load_timing_info_.request_start);
-    UMA_HISTOGRAM_COUNTS_1M("Net.BidirectionalStream.ReceivedBytes.HTTP2",
-                            stream_impl_->GetTotalReceivedBytes());
-    UMA_HISTOGRAM_COUNTS_1M("Net.BidirectionalStream.SentBytes.HTTP2",
-                            stream_impl_->GetTotalSentBytes());
-  } else if (GetProtocol() == kProtoQUIC) {
-    UMA_HISTOGRAM_TIMES("Net.BidirectionalStream.TimeToReadStart.QUIC",
-                        load_timing_info_.receive_headers_end -
-                            load_timing_info_.request_start);
-    UMA_HISTOGRAM_TIMES("Net.BidirectionalStream.TimeToReadEnd.QUIC",
-                        read_end_time_ - load_timing_info_.request_start);
-    UMA_HISTOGRAM_TIMES(
-        "Net.BidirectionalStream.TimeToSendStart.QUIC",
-        load_timing_info_.send_start - load_timing_info_.request_start);
-    UMA_HISTOGRAM_TIMES(
-        "Net.BidirectionalStream.TimeToSendEnd.QUIC",
-        load_timing_info_.send_end - load_timing_info_.request_start);
-    UMA_HISTOGRAM_COUNTS_1M("Net.BidirectionalStream.ReceivedBytes.QUIC",
-                            stream_impl_->GetTotalReceivedBytes());
-    UMA_HISTOGRAM_COUNTS_1M("Net.BidirectionalStream.SentBytes.QUIC",
-                            stream_impl_->GetTotalSentBytes());
-  }
 }
 
 }  // namespace net

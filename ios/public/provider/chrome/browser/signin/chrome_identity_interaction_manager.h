@@ -25,6 +25,9 @@ typedef enum {
 typedef void (^SigninCompletionCallback)(ChromeIdentity* identity,
                                          NSError* error);
 
+// Callback to open URL. Related to |openAccountCreationURLCallback|.
+typedef void (^OpenURLCallback)(NSURL* URL);
+
 // ChromeIdentityInteractionManager abstracts the interaction to add identities
 // on iOS.
 @interface ChromeIdentityInteractionManager : NSObject
@@ -33,34 +36,41 @@ typedef void (^SigninCompletionCallback)(ChromeIdentity* identity,
 @property(nonatomic, weak) id<ChromeIdentityInteractionManagerDelegate>
     delegate;
 
-// Whether the manager is currently being canceled. Delegates may inquire if the
-// dismissal is due to sign-in being canceled.
-@property(nonatomic, readonly) BOOL isCanceling;
+// This callback is in charge to open the URL. This callback is used when
+// GCRSSOService is initialized with GCRSSOAccountCreationWithURL.
+// If this callback is missing with GCRSSOAccountCreationWithURL, the default
+// browser is used to open the URL.
+@property(nonatomic, copy) OpenURLCallback openAccountCreationURLCallback;
 
 // Starts the add account operation for a user. Presents user with the screen to
 // enter credentials.
 // Note: Calling this method will fail and the completion will be called with a
 // CHROME_IDENTITY_OPERATION_ONGOING error if there is already another add
 // account or reauthenticate operation ongoing.
+// * |viewController| will display the add account screens.
 // * |completion| will be called once the operation has finished.
-- (void)addAccountWithCompletion:(SigninCompletionCallback)completion;
+- (void)addAccountWithPresentingViewController:(UIViewController*)viewController
+                                    completion:
+                                        (SigninCompletionCallback)completion;
 
 // Starts the reauthentication operation for a user. Presents user with the
 // screen to enter credentials with the email pre-entered.
 // Note: Calling this method will fail and the completion will be called with a
 // CHROME_IDENTITY_OPERATION_ONGOING error if there is already another add
 // account or reauthenticate operation ongoing.
-// * |userID| is the unique identifier of the user.
+// * |viewController| will display the add account screens.
 // * |userEmail| will be pre-entered on the presented screen.
 // * |completion| will be called once the operation has finished.
-- (void)reauthenticateUserWithID:(NSString*)userID
-                           email:(NSString*)userEmail
-                      completion:(SigninCompletionCallback)completion;
+- (void)addAccountWithPresentingViewController:(UIViewController*)viewController
+                                     userEmail:(NSString*)userEmail
+                                    completion:
+                                        (SigninCompletionCallback)completion;
 
-// Cancels and dismisses any currently active operation. Completion will be
-// called with a cancel error.
+// Cancels and dismisses any currently active operation.
 // * |animated| represents whether the UI should be dismissed with an animation.
-- (void)cancelAndDismissAnimated:(BOOL)animated;
+// * |completion| will be called once the operation has finished.
+- (void)cancelAddAccountWithAnimation:(BOOL)animated
+                           completion:(void (^)(void))completion;
 
 @end
 

@@ -7,10 +7,11 @@
 
 #include <memory>
 
+#include "base/memory/ptr_util.h"
 #import "ios/chrome/browser/signin/authentication_service.h"
 #import "ios/public/provider/chrome/browser/signin/chrome_identity.h"
 
-namespace identity {
+namespace signin {
 class IdentityManager;
 }
 
@@ -26,30 +27,33 @@ class AuthenticationServiceFake : public AuthenticationService {
 
   ~AuthenticationServiceFake() override;
 
-  void SignIn(ChromeIdentity* identity,
-              const std::string& hosted_domain) override;
+  void SignIn(ChromeIdentity* identity) override;
+
+  void GrantSyncConsent(ChromeIdentity* identity) override;
 
   void SignOut(signin_metrics::ProfileSignout signout_source,
+               bool force_clear_browsing_data,
                ProceduralBlock completion) override;
 
-  void SetHaveAccountsChanged(bool changed);
+  bool IsAuthenticated() const override;
 
-  bool HaveAccountsChanged() override;
+  ChromeIdentity* GetAuthenticatedIdentity() const override;
 
-  bool IsAuthenticated() override;
-
-  ChromeIdentity* GetAuthenticatedIdentity() override;
-
-  NSString* GetAuthenticatedUserEmail() override;
+  bool IsAuthenticatedIdentityManaged() const override;
 
  private:
   AuthenticationServiceFake(PrefService* pref_service,
                             SyncSetupService* sync_setup_service,
-                            identity::IdentityManager* identity_manager,
+                            signin::IdentityManager* identity_manager,
                             syncer::SyncService* sync_service);
 
+  // Internal method effectively signing out the user.
+  void SignOutInternal(ProceduralBlock completion);
+
   __strong ChromeIdentity* authenticated_identity_;
-  bool have_accounts_changed_;
+
+  // WeakPtrFactory should be last.
+  base::WeakPtrFactory<AuthenticationServiceFake> weak_factory_{this};
 };
 
 #endif  // IOS_CHROME_BROWSER_SIGNIN_AUTHENTICATION_SERVICE_FAKE_H_

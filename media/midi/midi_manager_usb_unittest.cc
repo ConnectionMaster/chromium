@@ -10,10 +10,10 @@
 #include <string>
 #include <utility>
 
-#include "base/message_loop/message_loop.h"
+#include "base/cxx17_backports.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "media/midi/midi_service.h"
 #include "media/midi/usb_midi_device.h"
@@ -220,7 +220,7 @@ class MidiManagerFactoryForTesting : public midi::MidiService::ManagerFactory {
 
 class MidiManagerUsbTest : public ::testing::Test {
  public:
-  MidiManagerUsbTest() : message_loop_(new base::MessageLoop) {
+  MidiManagerUsbTest() {
     std::unique_ptr<MidiManagerFactoryForTesting> factory =
         std::make_unique<MidiManagerFactoryForTesting>();
     factory_ = factory.get();
@@ -239,7 +239,7 @@ class MidiManagerUsbTest : public ::testing::Test {
 
  protected:
   void Initialize() {
-    client_.reset(new FakeMidiManagerClient(&logger_));
+    client_ = std::make_unique<FakeMidiManagerClient>(&logger_);
     service_->StartSession(client_.get());
   }
 
@@ -275,7 +275,7 @@ class MidiManagerUsbTest : public ::testing::Test {
 
  private:
   std::unique_ptr<MidiService> service_;
-  std::unique_ptr<base::MessageLoop> message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(MidiManagerUsbTest);
 };

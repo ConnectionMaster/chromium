@@ -106,13 +106,13 @@ bool SeekToExtensions(der::Input in,
   if (!tbs_cert_parser.SkipTag(der::kSequence))
     return false;
   // issuerUniqueID
-  if (!tbs_cert_parser.SkipOptionalTag(
-          der::kTagConstructed | der::kTagContextSpecific | 1, &present)) {
+  if (!tbs_cert_parser.SkipOptionalTag(der::kTagContextSpecific | 1,
+                                       &present)) {
     return false;
   }
   // subjectUniqueID
-  if (!tbs_cert_parser.SkipOptionalTag(
-          der::kTagConstructed | der::kTagContextSpecific | 2, &present)) {
+  if (!tbs_cert_parser.SkipOptionalTag(der::kTagContextSpecific | 2,
+                                       &present)) {
     return false;
   }
 
@@ -333,7 +333,7 @@ bool ExtractExtensionFromDERCert(base::StringPiece cert,
                                  base::StringPiece* out_contents) {
   *out_extension_present = false;
   *out_extension_critical = false;
-  out_contents->clear();
+  *out_contents = base::StringPiece();
 
   ParsedExtension extension;
   if (!ExtractExtensionWithOID(cert, der::Input(extension_oid),

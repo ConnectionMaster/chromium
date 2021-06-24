@@ -18,16 +18,11 @@ namespace network {
 
 namespace {
 
-int64_t kPacketSize = 1500;
+constexpr int64_t kPacketSize = 1500;
 
 base::TimeDelta CalculateTickLength(double throughput) {
-  if (!throughput)
-    return base::TimeDelta::FromMicroseconds(1);
-  int64_t us_tick_length = (1000000L * kPacketSize) / throughput;
-  DCHECK(us_tick_length != 0);
-  if (us_tick_length == 0)
-    us_tick_length = 1;
-  return base::TimeDelta::FromMicroseconds(us_tick_length);
+  return throughput ? base::TimeDelta::FromSecondsD(kPacketSize / throughput)
+                    : base::TimeDelta::FromMicroseconds(1);
 }
 
 }  // namespace
@@ -42,8 +37,7 @@ ThrottlingNetworkInterceptor::ThrottleRecord::~ThrottleRecord() {}
 ThrottlingNetworkInterceptor::ThrottlingNetworkInterceptor()
     : conditions_(new NetworkConditions()),
       download_last_tick_(0),
-      upload_last_tick_(0),
-      weak_ptr_factory_(this) {}
+      upload_last_tick_(0) {}
 
 ThrottlingNetworkInterceptor::~ThrottlingNetworkInterceptor() {}
 
@@ -110,7 +104,7 @@ uint64_t ThrottlingNetworkInterceptor::UpdateThrottledRecords(
     return last_tick;
   }
 
-  int64_t new_tick = (now - offset_) / tick_length;
+  int64_t new_tick = (now - offset_).IntDiv(tick_length);
   int64_t ticks = new_tick - last_tick;
 
   int64_t length = records->size();
@@ -218,8 +212,8 @@ void ThrottlingNetworkInterceptor::ArmTimer(base::TimeTicks now) {
   }
 
   timer_.Start(FROM_HERE, desired_time - now,
-               base::Bind(&ThrottlingNetworkInterceptor::OnTimer,
-                          base::Unretained(this)));
+               base::BindOnce(&ThrottlingNetworkInterceptor::OnTimer,
+                              base::Unretained(this)));
 }
 
 int ThrottlingNetworkInterceptor::StartThrottle(
@@ -277,7 +271,7 @@ void ThrottlingNetworkInterceptor::RemoveRecord(
     const ThrottleCallback& callback) {
   records->erase(std::remove_if(records->begin(), records->end(),
                                 [&callback](const ThrottleRecord& record) {
-                                  return record.callback.Equals(callback);
+                                  return record.callback == callback;
                                 }),
                  records->end());
 }

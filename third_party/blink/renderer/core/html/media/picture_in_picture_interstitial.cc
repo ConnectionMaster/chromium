@@ -5,23 +5,25 @@
 #include "third_party/blink/renderer/core/html/media/picture_in_picture_interstitial.h"
 
 #include "cc/layers/layer.h"
-#include "third_party/blink/public/platform/web_localized_string.h"
+#include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect_read_only.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/core/html/media/media_controls.h"
+#include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer_entry.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 
 namespace {
 
-constexpr TimeDelta kPictureInPictureStyleChangeTransitionDuration =
-    TimeDelta::FromMilliseconds(200);
-constexpr TimeDelta kPictureInPictureHiddenAnimationSeconds =
-    TimeDelta::FromMilliseconds(300);
+constexpr base::TimeDelta kPictureInPictureStyleChangeTransitionDuration =
+    base::TimeDelta::FromMilliseconds(200);
+constexpr base::TimeDelta kPictureInPictureHiddenAnimationSeconds =
+    base::TimeDelta::FromMilliseconds(300);
 
 }  // namespace
 
@@ -45,7 +47,7 @@ class PictureInPictureInterstitial::VideoElementResizeObserverDelegate final
     interstitial_->NotifyElementSizeChanged(*entries[0]->contentRect());
   }
 
-  void Trace(Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(interstitial_);
     ResizeObserver::Delegate::Trace(visitor);
   }
@@ -58,7 +60,7 @@ PictureInPictureInterstitial::PictureInPictureInterstitial(
     HTMLVideoElement& videoElement)
     : HTMLDivElement(videoElement.GetDocument()),
       resize_observer_(ResizeObserver::Create(
-          videoElement.GetDocument(),
+          videoElement.GetDocument().domWindow(),
           MakeGarbageCollected<VideoElementResizeObserverDelegate>(this))),
       interstitial_timer_(
           videoElement.GetDocument().GetTaskRunner(TaskType::kInternalMedia),
@@ -70,15 +72,17 @@ PictureInPictureInterstitial::PictureInPictureInterstitial(
   background_image_ = MakeGarbageCollected<HTMLImageElement>(GetDocument());
   background_image_->SetShadowPseudoId(
       AtomicString("-internal-media-interstitial-background-image"));
-  background_image_->SetSrc(videoElement.getAttribute(html_names::kPosterAttr));
+  background_image_->setAttribute(
+      html_names::kSrcAttr,
+      videoElement.FastGetAttribute(html_names::kPosterAttr));
   ParserAppendChild(background_image_);
 
-  message_element_ = HTMLDivElement::Create(GetDocument());
+  message_element_ = MakeGarbageCollected<HTMLDivElement>(GetDocument());
   message_element_->SetShadowPseudoId(
       AtomicString("-internal-picture-in-picture-interstitial-message"));
   message_element_->setInnerText(
       GetVideoElement().GetLocale().QueryString(
-          WebLocalizedString::kPictureInPictureInterstitialText),
+          IDS_MEDIA_PICTURE_IN_PICTURE_INTERSTITIAL_TEXT),
       ASSERT_NO_EXCEPTION);
   ParserAppendChild(message_element_);
 
@@ -123,7 +127,7 @@ Node::InsertionNotificationRequest PictureInPictureInterstitial::InsertedInto(
     ContainerNode& root) {
   if (GetVideoElement().isConnected() && !resize_observer_) {
     resize_observer_ = ResizeObserver::Create(
-        GetVideoElement().GetDocument(),
+        GetVideoElement().GetDocument().domWindow(),
         MakeGarbageCollected<VideoElementResizeObserverDelegate>(this));
     resize_observer_->observe(&GetVideoElement());
   }
@@ -145,6 +149,11 @@ void PictureInPictureInterstitial::NotifyElementSizeChanged(
   message_element_->setAttribute(
       "class", MediaControls::GetSizingCSSClass(
                    MediaControls::GetSizingClass(new_size.width())));
+
+  // Force a layout since |LayoutMedia::UpdateLayout()| will sometimes miss a
+  // layout otherwise.
+  if (GetLayoutObject())
+    GetLayoutObject()->SetNeedsLayout(layout_invalidation_reason::kSizeChanged);
 }
 
 void PictureInPictureInterstitial::ToggleInterstitialTimerFired(TimerBase*) {
@@ -159,12 +168,14 @@ void PictureInPictureInterstitial::ToggleInterstitialTimerFired(TimerBase*) {
 }
 
 void PictureInPictureInterstitial::OnPosterImageChanged() {
-  background_image_->SetSrc(
-      GetVideoElement().getAttribute(html_names::kPosterAttr));
+  background_image_->setAttribute(
+      html_names::kSrcAttr,
+      GetVideoElement().FastGetAttribute(html_names::kPosterAttr));
 }
 
-void PictureInPictureInterstitial::Trace(Visitor* visitor) {
+void PictureInPictureInterstitial::Trace(Visitor* visitor) const {
   visitor->Trace(resize_observer_);
+  visitor->Trace(interstitial_timer_);
   visitor->Trace(video_element_);
   visitor->Trace(background_image_);
   visitor->Trace(message_element_);

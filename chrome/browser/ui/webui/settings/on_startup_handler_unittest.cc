@@ -10,14 +10,15 @@
 #include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
 #endif
+#include "build/chromeos_buildflags.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_ui.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -46,9 +47,8 @@ class OnStartupHandlerTest : public testing::Test {
   void SetUp() override {
     ASSERT_TRUE(profile_manager_.SetUp());
 
-#if defined(OS_CHROMEOS)
-    chromeos::FakeChromeUserManager* fake_user_manager =
-        new chromeos::FakeChromeUserManager;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    auto* fake_user_manager = new ash::FakeChromeUserManager;
     user_manager_enabler_ = std::make_unique<user_manager::ScopedUserManager>(
         base::WrapUnique(fake_user_manager));
     constexpr char kFakeEmail[] = "fake_id@gmail.com";
@@ -58,7 +58,7 @@ class OnStartupHandlerTest : public testing::Test {
     profile_ = profile_manager_.CreateTestingProfile("Profile 1");
 #endif
 
-    handler_.reset(new TestOnStartupHandler(profile_));
+    handler_ = std::make_unique<TestOnStartupHandler>(profile_);
     handler_->set_web_ui(&web_ui_);
   }
 
@@ -67,11 +67,11 @@ class OnStartupHandlerTest : public testing::Test {
   content::TestWebUI* web_ui() { return &web_ui_; }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   TestingProfileManager profile_manager_;
   std::unique_ptr<TestOnStartupHandler> handler_;
   Profile* profile_;
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
 #endif
   content::TestWebUI web_ui_;
@@ -91,9 +91,8 @@ TEST_F(OnStartupHandlerTest, HandleGetNtpExtension) {
   ASSERT_TRUE(data.arg1()->GetAsString(&callback_id));
   EXPECT_EQ(kCallbackId, callback_id);
 
-  bool success = false;
-  ASSERT_TRUE(data.arg2()->GetAsBoolean(&success));
-  EXPECT_TRUE(success);
+  ASSERT_TRUE(data.arg2()->is_bool());
+  EXPECT_TRUE(data.arg2()->GetBool());
 }
 
 TEST_F(OnStartupHandlerTest, HandleValidateStartupPage_Valid) {
@@ -111,13 +110,11 @@ TEST_F(OnStartupHandlerTest, HandleValidateStartupPage_Valid) {
   ASSERT_TRUE(data.arg1()->GetAsString(&callback_id));
   EXPECT_EQ(kCallbackId, callback_id);
 
-  bool success = false;
-  ASSERT_TRUE(data.arg2()->GetAsBoolean(&success));
-  EXPECT_TRUE(success);
+  ASSERT_TRUE(data.arg2()->is_bool());
+  EXPECT_TRUE(data.arg2()->GetBool());
 
-  bool is_valid = false;
-  ASSERT_TRUE(data.arg2()->GetAsBoolean(&is_valid));
-  EXPECT_TRUE(is_valid);
+  ASSERT_TRUE(data.arg3()->is_bool());
+  EXPECT_TRUE(data.arg3()->GetBool());
 }
 
 TEST_F(OnStartupHandlerTest, HandleValidateStartupPage_Invalid) {
@@ -135,13 +132,11 @@ TEST_F(OnStartupHandlerTest, HandleValidateStartupPage_Invalid) {
   ASSERT_TRUE(data.arg1()->GetAsString(&callback_id));
   EXPECT_EQ(kCallbackId, callback_id);
 
-  bool success = false;
-  ASSERT_TRUE(data.arg2()->GetAsBoolean(&success));
-  EXPECT_TRUE(success);
+  ASSERT_TRUE(data.arg2()->is_bool());
+  EXPECT_TRUE(data.arg2()->GetBool());
 
-  bool is_valid = false;
-  ASSERT_TRUE(data.arg3()->GetAsBoolean(&is_valid));
-  EXPECT_FALSE(is_valid);
+  ASSERT_TRUE(data.arg3()->is_bool());
+  EXPECT_FALSE(data.arg3()->GetBool());
 }
 
 }  // namespace settings

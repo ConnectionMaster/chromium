@@ -12,13 +12,13 @@
 #include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/sequenced_task_runner.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "chromeos/services/secure_channel/ble_advertiser.h"
 #include "chromeos/services/secure_channel/ble_constants.h"
 #include "chromeos/services/secure_channel/device_id_pair.h"
 #include "chromeos/services/secure_channel/public/cpp/shared/connection_priority.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class OneShotTimer;
@@ -28,7 +28,7 @@ namespace chromeos {
 
 namespace secure_channel {
 
-class BleServiceDataHelper;
+class BluetoothHelper;
 class BleSynchronizerBase;
 class ErrorTolerantBleAdvertisement;
 class SharedResourceScheduler;
@@ -54,16 +54,23 @@ class BleAdvertiserImpl : public BleAdvertiser {
  public:
   class Factory {
    public:
-    static Factory* Get();
-    static void SetFactoryForTesting(Factory* test_factory);
-    virtual ~Factory();
-    virtual std::unique_ptr<BleAdvertiser> BuildInstance(
+    static std::unique_ptr<BleAdvertiser> Create(
         Delegate* delegate,
-        BleServiceDataHelper* ble_service_data_helper,
+        BluetoothHelper* bluetooth_helper,
         BleSynchronizerBase* ble_synchronizer_base,
         TimerFactory* timer_factory,
         scoped_refptr<base::SequencedTaskRunner> sequenced_task_runner =
             base::SequencedTaskRunnerHandle::Get());
+    static void SetFactoryForTesting(Factory* test_factory);
+
+   protected:
+    virtual ~Factory();
+    virtual std::unique_ptr<BleAdvertiser> CreateInstance(
+        Delegate* delegate,
+        BluetoothHelper* bluetooth_helper,
+        BleSynchronizerBase* ble_synchronizer_base,
+        TimerFactory* timer_factory,
+        scoped_refptr<base::SequencedTaskRunner> sequenced_task_runner) = 0;
 
    private:
     static Factory* test_factory_;
@@ -91,7 +98,7 @@ class BleAdvertiserImpl : public BleAdvertiser {
 
   BleAdvertiserImpl(
       Delegate* delegate,
-      BleServiceDataHelper* ble_service_data_helper,
+      BluetoothHelper* bluetooth_helper,
       BleSynchronizerBase* ble_synchronizer_base,
       TimerFactory* timer_factory,
       scoped_refptr<base::SequencedTaskRunner> sequenced_task_runner);
@@ -106,12 +113,12 @@ class BleAdvertiserImpl : public BleAdvertiser {
 
   bool ReplaceLowPriorityAdvertisementIfPossible(
       ConnectionPriority connection_priority);
-  base::Optional<size_t> GetIndexWithLowerPriority(
+  absl::optional<size_t> GetIndexWithLowerPriority(
       ConnectionPriority connection_priority);
   void UpdateAdvertisementState();
   void AddActiveAdvertisementRequest(size_t index_to_add);
   void AttemptToAddActiveAdvertisement(size_t index_to_add);
-  base::Optional<size_t> GetIndexForActiveRequest(const DeviceIdPair& request);
+  absl::optional<size_t> GetIndexForActiveRequest(const DeviceIdPair& request);
   void StopAdvertisementRequestAndUpdateActiveRequests(
       size_t index,
       bool replaced_by_higher_priority_advertisement,
@@ -125,7 +132,7 @@ class BleAdvertiserImpl : public BleAdvertiser {
   void AttemptToNotifyFailureToGenerateAdvertisement(
       const DeviceIdPair& device_id_pair);
 
-  BleServiceDataHelper* ble_service_data_helper_;
+  BluetoothHelper* bluetooth_helper_;
   BleSynchronizerBase* ble_synchronizer_base_;
   TimerFactory* timer_factory_;
 
@@ -157,7 +164,7 @@ class BleAdvertiserImpl : public BleAdvertiser {
   base::flat_set<DeviceIdPair>
       requests_already_removed_due_to_failed_advertisement_;
 
-  base::WeakPtrFactory<BleAdvertiserImpl> weak_factory_;
+  base::WeakPtrFactory<BleAdvertiserImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BleAdvertiserImpl);
 };

@@ -9,17 +9,15 @@
 #include <string>
 
 #include "base/files/file.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
+#include "extensions/browser/extension_function.h"
 
-namespace chromeos {
+namespace ash {
 namespace file_system_provider {
-
 class RequestManager;
 class RequestValue;
-
 }  // namespace file_system_provider
-}  // namespace chromeos
+}  // namespace ash
 
 namespace extensions {
 
@@ -46,7 +44,7 @@ base::File::Error ProviderErrorToFileError(
 
 // Base class for internal API functions handling request results, either
 // a success or a failure.
-class FileSystemProviderInternalFunction : public UIThreadExtensionFunction {
+class FileSystemProviderInternalFunction : public ExtensionFunction {
  public:
   FileSystemProviderInternalFunction();
 
@@ -55,7 +53,7 @@ class FileSystemProviderInternalFunction : public UIThreadExtensionFunction {
 
   // Rejects the request and returns a response for this API function.
   ResponseAction RejectRequest(
-      std::unique_ptr<chromeos::file_system_provider::RequestValue> value,
+      std::unique_ptr<ash::file_system_provider::RequestValue> value,
       base::File::Error error);
 
   // Fulfills the request with parsed arguments of this API function
@@ -63,7 +61,7 @@ class FileSystemProviderInternalFunction : public UIThreadExtensionFunction {
   // If |has_more| is set to true, then the function will be called again for
   // this request.
   ResponseAction FulfillRequest(
-      std::unique_ptr<chromeos::file_system_provider::RequestValue> value,
+      std::unique_ptr<ash::file_system_provider::RequestValue> value,
       bool has_more);
 
  private:
@@ -71,7 +69,7 @@ class FileSystemProviderInternalFunction : public UIThreadExtensionFunction {
   bool PreRunValidation(std::string* error) override;
 
   int request_id_;
-  chromeos::file_system_provider::RequestManager* request_manager_;
+  ash::file_system_provider::RequestManager* request_manager_;
 };
 
 }  // namespace extensions

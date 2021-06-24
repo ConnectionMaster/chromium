@@ -4,8 +4,10 @@
 
 #include "gpu/command_buffer/service/gpu_fence_manager.h"
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/service/error_state_mock.h"
 #include "gpu/command_buffer/service/feature_info.h"
@@ -44,8 +46,8 @@ class GpuFenceManagerTest : public GpuServiceTest {
     GpuServiceTest::SetUp();
     SetupMockEGL("EGL_ANDROID_native_fence_sync EGL_KHR_wait_sync");
     SetupFeatureInfo("", "OpenGL ES 2.0", CONTEXT_TYPE_OPENGLES2);
-    error_state_.reset(new ::testing::StrictMock<MockErrorState>());
-    manager_.reset(new GpuFenceManager());
+    error_state_ = std::make_unique<::testing::StrictMock<MockErrorState>>();
+    manager_ = std::make_unique<GpuFenceManager>();
   }
 
   void TearDown() override {
@@ -57,7 +59,7 @@ class GpuFenceManagerTest : public GpuServiceTest {
 
   void SetupMockEGL(const char* extensions) {
     gl::SetGLGetProcAddressProc(gl::MockEGLInterface::GetGLProcAddress);
-    egl_.reset(new ::testing::NiceMock<::gl::MockEGLInterface>());
+    egl_ = std::make_unique<::testing::NiceMock<::gl::MockEGLInterface>>();
     ::gl::MockEGLInterface::SetEGLInterface(egl_.get());
 
     const EGLDisplay kDummyDisplay = reinterpret_cast<EGLDisplay>(0x1001);
@@ -172,10 +174,9 @@ TEST_F(GpuFenceManagerTest, GetGpuFence) {
       .RetiresOnSaturation();
   std::unique_ptr<gfx::GpuFence> gpu_fence = manager_->GetGpuFence(kClient1Id);
   EXPECT_TRUE(gpu_fence);
-  gfx::GpuFenceHandle handle = gpu_fence->GetGpuFenceHandle();
+  const gfx::GpuFenceHandle& handle = gpu_fence->GetGpuFenceHandle();
 
-  EXPECT_EQ(handle.type, gfx::GpuFenceHandleType::kAndroidNativeFenceSync);
-  EXPECT_EQ(handle.native_fd.fd, kFenceFD);
+  EXPECT_EQ(handle.owned_fd.get(), kFenceFD);
 
   // Removing the fence marks it invalid.
   EXPECT_CALL(*egl_, DestroySyncKHR(_, kDummySync))
@@ -194,8 +195,7 @@ TEST_F(GpuFenceManagerTest, Duplication) {
 
   // Create a handle.
   gfx::GpuFenceHandle handle;
-  handle.type = gfx::GpuFenceHandleType::kAndroidNativeFenceSync;
-  handle.native_fd = base::FileDescriptor(kFenceFD, true);
+  handle.owned_fd = base::ScopedFD(kFenceFD);
 
   // Create a duplicate fence object from it.
   EXPECT_CALL(*egl_, CreateSyncKHR(_, EGL_SYNC_NATIVE_FENCE_ANDROID, _))
@@ -203,7 +203,8 @@ TEST_F(GpuFenceManagerTest, Duplication) {
       .WillOnce(Return(kDummySync))
       .RetiresOnSaturation();
   EXPECT_CALL(*gl_, Flush()).Times(1).RetiresOnSaturation();
-  EXPECT_TRUE(manager_->CreateGpuFenceFromHandle(kClient1Id, handle));
+  EXPECT_TRUE(
+      manager_->CreateGpuFenceFromHandle(kClient1Id, std::move(handle)));
   EXPECT_TRUE(manager_->IsValidGpuFence(kClient1Id));
 
   // Try a server wait on it.

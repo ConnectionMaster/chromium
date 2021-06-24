@@ -6,9 +6,10 @@
 
 #include <vector>
 
-#include "base/message_loop/message_loop.h"
-#include "base/optional.h"
+#include "base/test/task_environment.h"
+#include "services/network/public/mojom/network_context.mojom-forward.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace network {
 
@@ -16,7 +17,7 @@ namespace {
 
 class WebSocketThrottlerTest : public ::testing::Test {
  private:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 
 TEST(WebSocketPerProcessThrottlerTest, InitialState) {
@@ -263,7 +264,7 @@ TEST(WebSocketPerProcessThrottlerTest, CalculateDelay_16Failure) {
 TEST(WebSocketPerProcessThrottlerTest, MoveTracker) {
   WebSocketPerProcessThrottler throttler;
 
-  base::Optional<WebSocketThrottler::PendingConnection> tracker_holder;
+  absl::optional<WebSocketThrottler::PendingConnection> tracker_holder;
   {
     WebSocketThrottler::PendingConnection tracker =
         throttler.IssuePendingConnectionTracker();
@@ -298,7 +299,7 @@ TEST(WebSocketPerProcessThrottlerTest, MoveTracker) {
   EXPECT_EQ(0, throttler.num_current_failed_connections());
   EXPECT_EQ(0, throttler.num_previous_failed_connections());
 
-  tracker_holder = base::nullopt;
+  tracker_holder = absl::nullopt;
 
   EXPECT_EQ(0, throttler.num_pending_connections());
   EXPECT_EQ(0, throttler.num_current_succeeded_connections());
@@ -322,21 +323,33 @@ TEST_F(WebSocketThrottlerTest, TooManyPendingConnections) {
   for (int i = 0; i < limit - 1; ++i) {
     ASSERT_FALSE(throttler.HasTooManyPendingConnections(process1));
     ASSERT_FALSE(throttler.HasTooManyPendingConnections(process2));
-    trackers.push_back(throttler.IssuePendingConnectionTracker(process1));
-    trackers.push_back(throttler.IssuePendingConnectionTracker(process2));
+    trackers.push_back(
+        std::move(throttler.IssuePendingConnectionTracker(process1).value()));
+    trackers.push_back(
+        std::move(throttler.IssuePendingConnectionTracker(process2).value()));
   }
 
   EXPECT_EQ(2u, throttler.GetSizeForTesting());
   ASSERT_FALSE(throttler.HasTooManyPendingConnections(process1));
   ASSERT_FALSE(throttler.HasTooManyPendingConnections(process2));
-  trackers.push_back(throttler.IssuePendingConnectionTracker(process1));
+  trackers.push_back(
+      std::move(throttler.IssuePendingConnectionTracker(process1).value()));
 
   ASSERT_TRUE(throttler.HasTooManyPendingConnections(process1));
   ASSERT_FALSE(throttler.HasTooManyPendingConnections(process2));
-  trackers.push_back(throttler.IssuePendingConnectionTracker(process2));
+  trackers.push_back(
+      std::move(throttler.IssuePendingConnectionTracker(process2).value()));
 
   ASSERT_TRUE(throttler.HasTooManyPendingConnections(process1));
   ASSERT_TRUE(throttler.HasTooManyPendingConnections(process2));
+}
+
+TEST_F(WebSocketThrottlerTest, BrowserProcessNotThrottled) {
+  WebSocketThrottler throttler;
+  ASSERT_FALSE(
+      throttler.HasTooManyPendingConnections(mojom::kBrowserProcessId));
+  ASSERT_FALSE(throttler.IssuePendingConnectionTracker(mojom::kBrowserProcessId)
+                   .has_value());
 }
 
 }  // namespace

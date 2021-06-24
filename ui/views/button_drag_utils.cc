@@ -6,8 +6,10 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/compositor/canvas_painter.h"
+#include "ui/compositor/compositor.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/vector2d.h"
@@ -28,7 +30,7 @@ namespace button_drag_utils {
 static constexpr int kLinkDragImageMaxWidth = 150;
 
 void SetURLAndDragImage(const GURL& url,
-                        const base::string16& title,
+                        const std::u16string& title,
                         const gfx::ImageSkia& icon,
                         const gfx::Point* press_pt,
                         const views::Widget& widget,
@@ -40,17 +42,19 @@ void SetURLAndDragImage(const GURL& url,
 }
 
 void SetDragImage(const GURL& url,
-                  const base::string16& title,
+                  const std::u16string& title,
                   const gfx::ImageSkia& icon,
                   const gfx::Point* press_pt,
                   const views::Widget& widget,
                   ui::OSExchangeData* data) {
   // Create a button to render the drag image for us.
   views::LabelButton button(
-      nullptr, title.empty() ? base::UTF8ToUTF16(url.spec()) : title);
+      views::Button::PressedCallback(),
+      title.empty() ? base::UTF8ToUTF16(url.spec()) : title);
   button.SetTextSubpixelRenderingEnabled(false);
   const ui::NativeTheme* theme = widget.GetNativeTheme();
-  button.SetTextColor(views::Button::STATE_NORMAL,
+  button.SetTextColor(
+      views::Button::STATE_NORMAL,
       theme->GetSystemColor(ui::NativeTheme::kColorId_TextfieldDefaultColor));
 
   SkColor bg_color = theme->GetSystemColor(
@@ -64,11 +68,11 @@ void SetDragImage(const GURL& url,
   }
   button.SetMaxSize(gfx::Size(kLinkDragImageMaxWidth, 0));
   if (icon.isNull()) {
-    button.SetImage(views::Button::STATE_NORMAL,
-                    *ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-                        IDR_DEFAULT_FAVICON).ToImageSkia());
+    button.SetImageModel(views::Button::STATE_NORMAL,
+                         ui::ImageModel::FromResourceId(IDR_DEFAULT_FAVICON));
   } else {
-    button.SetImage(views::Button::STATE_NORMAL, icon);
+    button.SetImageModel(views::Button::STATE_NORMAL,
+                         ui::ImageModel::FromImageSkia(icon));
   }
 
   gfx::Size size(button.GetPreferredSize());
@@ -88,7 +92,7 @@ void SetDragImage(const GURL& url,
                         widget.GetCompositor()->is_pixel_canvas())
           .context(),
       size));
-  gfx::ImageSkia image(gfx::ImageSkiaRep(bitmap, raster_scale));
+  gfx::ImageSkia image = gfx::ImageSkia::CreateFromBitmap(bitmap, raster_scale);
   data->provider().SetDragImage(image, press_point);
 }
 

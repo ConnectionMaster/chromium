@@ -5,7 +5,10 @@
 #ifndef CHROME_BROWSER_BOOKMARKS_CHROME_BOOKMARK_CLIENT_H_
 #define CHROME_BROWSER_BOOKMARKS_CHROME_BOOKMARK_CLIENT_H_
 
+#include <memory>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "base/deferred_sequenced_task_runner.h"
@@ -19,7 +22,6 @@ class Profile;
 namespace bookmarks {
 class BookmarkModel;
 class BookmarkNode;
-class BookmarkPermanentNode;
 class ManagedBookmarkService;
 }
 
@@ -43,18 +45,16 @@ class ChromeBookmarkClient : public bookmarks::BookmarkClient {
 
   // bookmarks::BookmarkClient:
   void Init(bookmarks::BookmarkModel* model) override;
-  bool PreferTouchIcon() override;
   base::CancelableTaskTracker::TaskId GetFaviconImageForPageURL(
       const GURL& page_url,
-      favicon_base::IconType type,
-      const favicon_base::FaviconImageCallback& callback,
+      favicon_base::FaviconImageCallback callback,
       base::CancelableTaskTracker* tracker) override;
   bool SupportsTypedCountForUrls() override;
   void GetTypedCountForUrls(UrlTypedCountMap* url_typed_count_map) override;
-  bool IsPermanentNodeVisible(
-      const bookmarks::BookmarkPermanentNode* node) override;
+  bool IsPermanentNodeVisibleWhenEmpty(
+      bookmarks::BookmarkNode::Type type) override;
   void RecordAction(const base::UserMetricsAction& action) override;
-  bookmarks::LoadExtraCallback GetLoadExtraNodesCallback() override;
+  bookmarks::LoadManagedNodeCallback GetLoadManagedNodeCallback() override;
   bool CanSetPermanentNodeTitle(
       const bookmarks::BookmarkNode* permanent_node) override;
   bool CanSyncNode(const bookmarks::BookmarkNode* node) override;

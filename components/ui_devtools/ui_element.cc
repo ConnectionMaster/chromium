@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "components/ui_devtools/Protocol.h"
 #include "components/ui_devtools/ui_element_delegate.h"
 
@@ -15,6 +17,24 @@ namespace {
 static int node_ids = 0;
 
 }  // namespace
+
+UIElement::ClassProperties::ClassProperties(
+    std::string class_name,
+    std::vector<UIElement::UIProperty> properties)
+    : class_name_(class_name), properties_(properties) {}
+
+UIElement::ClassProperties::ClassProperties(
+    const UIElement::ClassProperties& other) = default;
+
+UIElement::ClassProperties::~ClassProperties() = default;
+
+UIElement::Source::Source(std::string path, int line)
+    : path_(path), line_(line) {}
+
+// static
+void UIElement::ResetNodeId() {
+  node_ids = 0;
+}
 
 UIElement::~UIElement() {
   if (owns_children_) {
@@ -102,11 +122,39 @@ int UIElement::FindUIElementIdForBackendElement(T* element) const {
   return 0;
 }
 
+std::vector<UIElement::ClassProperties>
+UIElement::GetCustomPropertiesForMatchedStyle() const {
+  return {};
+}
+
 UIElement::UIElement(const UIElementType type,
                      UIElementDelegate* delegate,
                      UIElement* parent)
     : node_id_(++node_ids), type_(type), parent_(parent), delegate_(delegate) {
   delegate_->OnUIElementAdded(nullptr, this);
+}
+
+bool UIElement::SetPropertiesFromString(const std::string& text) {
+  return false;
+}
+
+void UIElement::AddSource(std::string path, int line) {
+  sources_.emplace_back(path, line);
+}
+
+std::vector<UIElement::Source> UIElement::GetSources() {
+  if (sources_.empty())
+    InitSources();
+
+  return sources_;
+}
+
+bool UIElement::DispatchMouseEvent(protocol::DOM::MouseEvent* event) {
+  return false;
+}
+
+bool UIElement::DispatchKeyEvent(protocol::DOM::KeyEvent* event) {
+  return false;
 }
 
 }  // namespace ui_devtools

@@ -9,41 +9,46 @@ import android.widget.Spinner;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ResourceId;
-import org.chromium.chrome.browser.infobar.InfoBarControlLayout.InfoBarArrayAdapter;
+import org.chromium.components.infobars.ConfirmInfoBar;
+import org.chromium.components.infobars.InfoBar;
+import org.chromium.components.infobars.InfoBarControlLayout;
+import org.chromium.components.infobars.InfoBarControlLayout.InfoBarArrayAdapter;
+import org.chromium.components.infobars.InfoBarLayout;
+import org.chromium.components.signin.base.AccountInfo;
 
 /**
  * The Update Password infobar offers the user the ability to update a password for the site.
  */
 public class UpdatePasswordInfoBar extends ConfirmInfoBar {
     private final String[] mUsernames;
-    private final int mTitleLinkRangeStart;
-    private final int mTitleLinkRangeEnd;
+    private final int mUsernameIndex;
     private final String mDetailsMessage;
+    private final AccountInfo mAccountInfo;
     private Spinner mUsernamesSpinner;
 
     @CalledByNative
-    private static InfoBar show(int enumeratedIconId, String[] usernames, String message,
-            int titleLinkStart, int titleLinkEnd, String detailsMessage, String primaryButtonText) {
-        return new UpdatePasswordInfoBar(ResourceId.mapToDrawableId(enumeratedIconId), usernames,
-                message, titleLinkStart, titleLinkEnd, detailsMessage, primaryButtonText);
+    private static InfoBar show(int iconId, String[] usernames, int selectedUsername,
+            String message, String detailsMessage, String primaryButtonText,
+            AccountInfo accountInfo) {
+        // If accountInfo is empty, no footer will be shown.
+        return new UpdatePasswordInfoBar(iconId, usernames, selectedUsername, message,
+                detailsMessage, primaryButtonText, accountInfo);
     }
 
-    private UpdatePasswordInfoBar(int iconDrawbleId, String[] usernames, String message,
-            int titleLinkStart, int titleLinkEnd, String detailsMessage, String primaryButtonText) {
-        super(iconDrawbleId, null, message, null, primaryButtonText, null);
-        mTitleLinkRangeStart = titleLinkStart;
-        mTitleLinkRangeEnd = titleLinkEnd;
+    private UpdatePasswordInfoBar(int iconDrawableId, String[] usernames, int selectedUsername,
+            String message, String detailsMessage, String primaryButtonText,
+            AccountInfo accountInfo) {
+        super(iconDrawableId, R.color.infobar_icon_drawable_color, null, message, null,
+                primaryButtonText, null);
         mDetailsMessage = detailsMessage;
         mUsernames = usernames;
+        mUsernameIndex = selectedUsername;
+        mAccountInfo = accountInfo;
     }
 
     @Override
     public void createContent(InfoBarLayout layout) {
         super.createContent(layout);
-        if (mTitleLinkRangeStart != 0 && mTitleLinkRangeEnd != 0) {
-            layout.setInlineMessageLink(mTitleLinkRangeStart, mTitleLinkRangeEnd);
-        }
 
         InfoBarControlLayout usernamesLayout = layout.addControlLayout();
         if (mUsernames.length > 1) {
@@ -51,6 +56,7 @@ public class UpdatePasswordInfoBar extends ConfirmInfoBar {
                     new InfoBarArrayAdapter<String>(getContext(), mUsernames);
             mUsernamesSpinner = usernamesLayout.addSpinner(
                     R.id.password_infobar_accounts_spinner, usernamesAdapter);
+            mUsernamesSpinner.setSelection(mUsernameIndex);
         } else {
             usernamesLayout.addDescription(mUsernames[0]);
         }
@@ -58,6 +64,12 @@ public class UpdatePasswordInfoBar extends ConfirmInfoBar {
         if (!TextUtils.isEmpty(mDetailsMessage)) {
             InfoBarControlLayout detailsMessageLayout = layout.addControlLayout();
             detailsMessageLayout.addDescription(mDetailsMessage);
+        }
+
+        if (mAccountInfo != null && !TextUtils.isEmpty(mAccountInfo.getEmail())
+                && mAccountInfo.getAccountImage() != null) {
+            layout.addFooterView(PasswordInfoBarUtils.createAccountIndicationFooter(
+                    layout.getContext(), mAccountInfo.getAccountImage(), mAccountInfo.getEmail()));
         }
     }
 

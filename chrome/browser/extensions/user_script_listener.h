@@ -12,9 +12,10 @@
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 
 class GURL;
@@ -30,9 +31,9 @@ namespace extensions {
 class Extension;
 
 // This class handles delaying of resource loads that depend on unloaded user
-// scripts. For each request that comes in, we check if it depends on a user
-// script, and if so, whether that user script is ready; if not, we delay the
-// request.
+// scripts. For each request that comes in, we check if its url pattern matches
+// one that user scripts will be injected into. If at least one matching user
+// script has not been loaded yet, then we delay the request.
 //
 // This class lives on the UI thread.
 class UserScriptListener : public content::NotificationObserver,
@@ -46,7 +47,12 @@ class UserScriptListener : public content::NotificationObserver,
   std::unique_ptr<content::NavigationThrottle> CreateNavigationThrottle(
       content::NavigationHandle* navigation_handle);
 
+  // Called when manifest scripts have finished loading for the given
+  // BrowserContext.
+  void OnScriptsLoaded(content::BrowserContext* context);
+
   void SetUserScriptsNotReadyForTesting(content::BrowserContext* context);
+  void TriggerUserScriptsReadyForTesting(content::BrowserContext* context);
 
  private:
   using URLPatterns = std::list<URLPattern>;
@@ -108,9 +114,9 @@ class UserScriptListener : public content::NotificationObserver,
                            UnloadedExtensionReason reason) override;
   void OnShutdown(ExtensionRegistry* registry) override;
 
-  ScopedObserver<extensions::ExtensionRegistry,
-                 extensions::ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedMultiSourceObservation<extensions::ExtensionRegistry,
+                                     extensions::ExtensionRegistryObserver>
+      extension_registry_observations_{this};
 
   content::NotificationRegistrar registrar_;
 

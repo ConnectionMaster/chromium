@@ -5,10 +5,12 @@
 #ifndef CHROME_COMMON_EXTENSIONS_EXTENSION_TEST_UTIL_H_
 #define CHROME_COMMON_EXTENSIONS_EXTENSION_TEST_UTIL_H_
 
+#include <memory>
 #include <string>
 
 #include "base/memory/ref_counted.h"
 #include "extensions/common/manifest.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 
 class GURL;
 
@@ -23,7 +25,7 @@ namespace extension_test_util {
 scoped_refptr<extensions::Extension> LoadManifestUnchecked(
     const std::string& dir,
     const std::string& test_file,
-    extensions::Manifest::Location location,
+    extensions::mojom::ManifestLocation location,
     int extra_flags,
     const std::string& id,
     std::string* error);
@@ -31,14 +33,14 @@ scoped_refptr<extensions::Extension> LoadManifestUnchecked(
 scoped_refptr<extensions::Extension> LoadManifestUnchecked(
     const std::string& dir,
     const std::string& test_file,
-    extensions::Manifest::Location location,
+    extensions::mojom::ManifestLocation location,
     int extra_flags,
     std::string* error);
 
 scoped_refptr<extensions::Extension> LoadManifest(
     const std::string& dir,
     const std::string& test_file,
-    extensions::Manifest::Location location,
+    extensions::mojom::ManifestLocation location,
     int extra_flags);
 
 scoped_refptr<extensions::Extension> LoadManifest(const std::string& dir,
@@ -52,7 +54,6 @@ scoped_refptr<extensions::Extension> LoadManifestStrict(
 scoped_refptr<extensions::Extension> LoadManifest(const std::string& dir,
                                                   const std::string& test_file);
 
-void SetGalleryURL(const GURL& new_url);
 void SetGalleryUpdateURL(const GURL& new_url);
 
 }  // namespace extension_test_util

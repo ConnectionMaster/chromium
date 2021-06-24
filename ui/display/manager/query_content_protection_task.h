@@ -11,7 +11,7 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "ui/display/manager/display_configurator.h"
+#include "ui/display/manager/content_protection_manager.h"
 #include "ui/display/manager/display_manager_export.h"
 #include "ui/display/types/display_constants.h"
 
@@ -21,7 +21,7 @@ class DisplayLayoutManager;
 class NativeDisplayDelegate;
 
 class DISPLAY_MANAGER_EXPORT QueryContentProtectionTask
-    : public DisplayConfigurator::ContentProtectionTask {
+    : public ContentProtectionManager::Task {
  public:
   // |connection_mask| includes mirroring displays, and a protection method is
   // only included in |protection_mask| if also enabled on mirroring displays.
@@ -37,7 +37,9 @@ class DISPLAY_MANAGER_EXPORT QueryContentProtectionTask
   void Run() override;
 
  private:
-  void OnGetHDCPState(bool success, HDCPState state);
+  void OnGetHDCPState(bool success,
+                      HDCPState state,
+                      ContentProtectionMethod protection_method);
 
   DisplayLayoutManager* const layout_manager_;            // Not owned.
   NativeDisplayDelegate* const native_display_delegate_;  // Not owned.

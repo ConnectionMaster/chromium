@@ -13,13 +13,13 @@
 
 #if defined(OS_POSIX)
 #include "base/files/file_descriptor_watcher_posix.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #endif
 
 namespace content {
 
 class BrowserMainLoop;
-class BrowserProcessSubThread;
+class BrowserProcessIOThread;
 class TestBrowserThread;
 
 // BrowserThreadImpl is a scoped object which maps a SingleThreadTaskRunner to a
@@ -29,7 +29,7 @@ class TestBrowserThread;
 // accepting tasks by then however).
 //
 // Very few users should use this directly. To mock BrowserThreads, tests should
-// use TestBrowserThreadBundle instead.
+// use BrowserTaskEnvironment instead.
 class CONTENT_EXPORT BrowserThreadImpl : public BrowserThread {
  public:
   ~BrowserThreadImpl();
@@ -46,14 +46,14 @@ class CONTENT_EXPORT BrowserThreadImpl : public BrowserThread {
   static void ResetGlobalsForTesting(BrowserThread::ID identifier);
 
   // Exposed for BrowserTaskExecutor. Other code should use
-  // base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI/IO}).
+  // GetUIThreadTaskRunner({/IO}).
   using BrowserThread::GetTaskRunnerForThread;
 
  private:
-  // Restrict instantiation to BrowserProcessSubThread as it performs important
+  // Restrict instantiation to BrowserProcessIOThread as it performs important
   // initialization that shouldn't be bypassed (except by BrowserMainLoop for
   // the main thread).
-  friend class BrowserProcessSubThread;
+  friend class BrowserProcessIOThread;
   friend class BrowserMainLoop;
   // TestBrowserThread is also allowed to construct this when instantiating fake
   // threads.
@@ -71,7 +71,7 @@ class CONTENT_EXPORT BrowserThreadImpl : public BrowserThread {
 
 #if defined(OS_POSIX)
   // Allows usage of the FileDescriptorWatcher API on the UI thread.
-  base::Optional<base::FileDescriptorWatcher> file_descriptor_watcher_;
+  absl::optional<base::FileDescriptorWatcher> file_descriptor_watcher_;
 #endif
 };
 

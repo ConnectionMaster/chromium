@@ -10,6 +10,7 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/win/win_util.h"
 #include "base/win/windows_version.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/win/window_event_target.h"
@@ -45,11 +46,8 @@ DirectManipulationHelper::CreateInstance(HWND window,
   if (!::IsWindow(window) || !compositor || !event_target)
     return nullptr;
 
-  if (!base::FeatureList::IsEnabled(features::kPrecisionTouchpad))
-    return nullptr;
-
   // DM_POINTERHITTEST supported since Win10.
-  if (base::win::GetVersion() < base::win::VERSION_WIN10)
+  if (base::win::GetVersion() < base::win::Version::WIN10)
     return nullptr;
 
   std::unique_ptr<DirectManipulationHelper> instance =
@@ -66,11 +64,8 @@ std::unique_ptr<DirectManipulationHelper>
 DirectManipulationHelper::CreateInstanceForTesting(
     ui::WindowEventTarget* event_target,
     Microsoft::WRL::ComPtr<IDirectManipulationViewport> viewport) {
-  if (!base::FeatureList::IsEnabled(features::kPrecisionTouchpad))
-    return nullptr;
-
   // DM_POINTERHITTEST supported since Win10.
-  if (base::win::GetVersion() < base::win::VERSION_WIN10)
+  if (base::win::GetVersion() < base::win::Version::WIN10)
     return nullptr;
 
   std::unique_ptr<DirectManipulationHelper> instance =
@@ -78,6 +73,8 @@ DirectManipulationHelper::CreateInstanceForTesting(
 
   instance->event_handler_ =
       Microsoft::WRL::Make<DirectManipulationEventHandler>(event_target);
+
+  instance->event_handler_->SetDirectManipulationHelper(instance.get());
 
   instance->viewport_ = viewport;
 
@@ -159,6 +156,8 @@ bool DirectManipulationHelper::Initialize(ui::WindowEventTarget* event_target) {
   event_handler_ =
       Microsoft::WRL::Make<DirectManipulationEventHandler>(event_target);
 
+  event_handler_->SetDirectManipulationHelper(this);
+
   // We got Direct Manipulation transform from
   // IDirectManipulationViewportEventHandler.
   hr = viewport_->AddEventHandler(window_, event_handler_.Get(),
@@ -196,9 +195,6 @@ bool DirectManipulationHelper::Initialize(ui::WindowEventTarget* event_target) {
     return false;
   }
 
-  DCHECK(compositor_);
-  compositor_->AddAnimationObserver(this);
-
   DebugLogging("DirectManipulation initialization complete", S_OK);
   return true;
 }
@@ -234,14 +230,26 @@ void DirectManipulationHelper::OnPointerHitTest(WPARAM w_param) {
   using GetPointerTypeFn = BOOL(WINAPI*)(UINT32, POINTER_INPUT_TYPE*);
   UINT32 pointer_id = GET_POINTERID_WPARAM(w_param);
   POINTER_INPUT_TYPE pointer_type;
-  static GetPointerTypeFn get_pointer_type = reinterpret_cast<GetPointerTypeFn>(
-      GetProcAddress(GetModuleHandleA("user32.dll"), "GetPointerType"));
+  static const auto get_pointer_type = reinterpret_cast<GetPointerTypeFn>(
+      base::win::GetUser32FunctionPointer("GetPointerType"));
   if (get_pointer_type && get_pointer_type(pointer_id, &pointer_type) &&
       pointer_type == PT_TOUCHPAD) {
     HRESULT hr = viewport_->SetContact(pointer_id);
     if (!SUCCEEDED(hr))
       DebugLogging("Viewport set contact failed.", hr);
   }
+}
+
+void DirectManipulationHelper::AddAnimationObserver() {
+  DCHECK(compositor_);
+  compositor_->AddAnimationObserver(this);
+  has_animation_observer_ = true;
+}
+
+void DirectManipulationHelper::RemoveAnimationObserver() {
+  DCHECK(compositor_);
+  compositor_->RemoveAnimationObserver(this);
+  has_animation_observer_ = false;
 }
 
 void DirectManipulationHelper::SetDeviceScaleFactorForTesting(float factor) {
@@ -251,9 +259,12 @@ void DirectManipulationHelper::SetDeviceScaleFactorForTesting(float factor) {
 void DirectManipulationHelper::Destroy() {
   if (!compositor_)
     return;
-
-  compositor_->RemoveAnimationObserver(this);
+  if (has_animation_observer_)
+    RemoveAnimationObserver();
   compositor_ = nullptr;
+
+  if (event_handler_)
+    event_handler_->SetDirectManipulationHelper(nullptr);
 
   HRESULT hr;
   if (viewport_) {

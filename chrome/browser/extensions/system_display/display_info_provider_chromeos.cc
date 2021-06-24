@@ -7,16 +7,13 @@
 #include <stdint.h>
 #include <cmath>
 
-#include "ash/public/interfaces/constants.mojom.h"
-#include "ash/public/interfaces/cros_display_config.mojom.h"
+#include "ash/public/ash_interfaces.h"
+#include "ash/public/mojom/cros_display_config.mojom.h"
 #include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/ui/ash/tablet_mode_client.h"
-#include "content/public/common/service_manager_connection.h"
+#include "chrome/browser/extensions/system_display/display_info_provider.h"
 #include "extensions/common/api/system_display.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/point.h"
@@ -79,10 +76,52 @@ gfx::Insets GetInsets(const system_display::Insets& insets) {
   return gfx::Insets(insets.top, insets.left, insets.bottom, insets.right);
 }
 
+bool IsValidRotation(int rotation) {
+  return rotation == -1 || rotation == 0 || rotation == 90 || rotation == 180 ||
+         rotation == 270;
+}
+
+ash::mojom::DisplayRotationOptions GetMojomDisplayRotationOptions(
+    int rotation_value) {
+  DCHECK(IsValidRotation(rotation_value));
+
+  switch (rotation_value) {
+    case -1:
+      return ash::mojom::DisplayRotationOptions::kAutoRotate;
+    case 0:
+      return ash::mojom::DisplayRotationOptions::kZeroDegrees;
+    case 90:
+      return ash::mojom::DisplayRotationOptions::k90Degrees;
+    case 180:
+      return ash::mojom::DisplayRotationOptions::k180Degrees;
+    case 270:
+      return ash::mojom::DisplayRotationOptions::k270Degrees;
+    default:
+      NOTREACHED();
+      return ash::mojom::DisplayRotationOptions::kZeroDegrees;
+  }
+}
+
+int GetRotationFromMojomDisplayRotationInfo(
+    ash::mojom::DisplayRotationOptions rotation_options) {
+  switch (rotation_options) {
+    case ash::mojom::DisplayRotationOptions::kAutoRotate:
+      return -1;
+    case ash::mojom::DisplayRotationOptions::kZeroDegrees:
+      return 0;
+    case ash::mojom::DisplayRotationOptions::k90Degrees:
+      return 90;
+    case ash::mojom::DisplayRotationOptions::k180Degrees:
+      return 180;
+    case ash::mojom::DisplayRotationOptions::k270Degrees:
+      return 270;
+  }
+}
+
 // Validates the DisplayProperties input. Does not perform any tests with
 // DisplayManager dependencies. Returns an error string on failure or nullopt
 // on success.
-base::Optional<std::string> ValidateDisplayPropertiesInput(
+absl::optional<std::string> ValidateDisplayPropertiesInput(
     const std::string& display_id_str,
     const system_display::DisplayProperties& info) {
   int64_t id = GetDisplayId(display_id_str);
@@ -105,7 +144,7 @@ base::Optional<std::string> ValidateDisplayPropertiesInput(
       LOG(WARNING)
           << "Unified mode set with other properties which will be ignored.";
     }
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   // If mirroring source parameter is specified, no other properties should be
@@ -118,10 +157,10 @@ base::Optional<std::string> ValidateDisplayPropertiesInput(
   }
 
   // Verify the rotation value is valid.
-  if (info.rotation && !display::Display::IsValidRotation(*info.rotation))
+  if (info.rotation && !IsValidRotation(*info.rotation))
     return "Invalid rotation.";
 
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 system_display::DisplayMode GetDisplayModeFromMojo(
@@ -134,7 +173,7 @@ system_display::DisplayMode GetDisplayModeFromMojo(
   result.device_scale_factor = mode.device_scale_factor;
   result.refresh_rate = mode.refresh_rate;
   result.is_native = mode.is_native;
-  result.is_interlaced = mode.is_interlaced;
+  result.is_interlaced = std::make_unique<bool>(mode.is_interlaced);
   return result;
 }
 
@@ -152,10 +191,12 @@ system_display::DisplayUnitInfo GetDisplayUnitInfoFromMojo(
   info.is_primary = mojo_info.is_primary;
   info.is_internal = mojo_info.is_internal;
   info.is_enabled = mojo_info.is_enabled;
-  info.is_tablet_mode = std::make_unique<bool>(mojo_info.is_tablet_mode);
+  info.is_auto_rotation_allowed =
+      std::make_unique<bool>(mojo_info.is_auto_rotation_allowed);
   info.dpi_x = mojo_info.dpi_x;
   info.dpi_y = mojo_info.dpi_y;
-  info.rotation = display::Display::RotationToDegrees(mojo_info.rotation);
+  info.rotation =
+      GetRotationFromMojomDisplayRotationInfo(mojo_info.rotation_options);
   const gfx::Rect& bounds = mojo_info.bounds;
   info.bounds.left = bounds.x();
   info.bounds.top = bounds.y();
@@ -213,18 +254,18 @@ void SetDisplayUnitInfoLayoutProperties(
 }
 
 void RunResultCallback(DisplayInfoProvider::ErrorCallback callback,
-                       base::Optional<std::string> error) {
+                       absl::optional<std::string> error) {
   if (error)
     LOG(ERROR) << "API call failed: " << *error;
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), std::move(error)));
 }
 
-base::Optional<std::string> GetStringResult(
+absl::optional<std::string> GetStringResult(
     ash::mojom::DisplayConfigResult result) {
   switch (result) {
     case ash::mojom::DisplayConfigResult::kSuccess:
-      return base::nullopt;
+      return absl::nullopt;
     case ash::mojom::DisplayConfigResult::kInvalidOperationError:
       return "Invalid operation";
     case ash::mojom::DisplayConfigResult::kInvalidDisplayIdError:
@@ -262,7 +303,7 @@ base::Optional<std::string> GetStringResult(
 }
 
 void LogErrorResult(ash::mojom::DisplayConfigResult result) {
-  base::Optional<std::string> str_result = GetStringResult(result);
+  absl::optional<std::string> str_result = GetStringResult(result);
   if (!str_result)
     return;
   LOG(ERROR) << *str_result;
@@ -271,11 +312,8 @@ void LogErrorResult(ash::mojom::DisplayConfigResult result) {
 }  // namespace
 
 DisplayInfoProviderChromeOS::DisplayInfoProviderChromeOS(
-    service_manager::Connector* connector)
-    : weak_ptr_factory_(this) {
-  CHECK(connector);
-  connector->BindInterface(ash::mojom::kServiceName, &cros_display_config_);
-}
+    mojo::PendingRemote<ash::mojom::CrosDisplayConfigController> display_config)
+    : cros_display_config_(std::move(display_config)) {}
 
 DisplayInfoProviderChromeOS::~DisplayInfoProviderChromeOS() = default;
 
@@ -283,7 +321,7 @@ void DisplayInfoProviderChromeOS::SetDisplayProperties(
     const std::string& display_id_str,
     const api::system_display::DisplayProperties& properties,
     ErrorCallback callback) {
-  base::Optional<std::string> error =
+  absl::optional<std::string> error =
       ValidateDisplayPropertiesInput(display_id_str, properties);
   if (error) {
     RunResultCallback(std::move(callback), std::move(*error));
@@ -336,7 +374,7 @@ void DisplayInfoProviderChromeOS::SetDisplayProperties(
     config_properties->overscan = GetInsets(*properties.overscan);
   if (properties.rotation) {
     config_properties->rotation = ash::mojom::DisplayRotation::New(
-        display::Display::DegreesToRotation(*properties.rotation));
+        GetMojomDisplayRotationOptions(*properties.rotation));
   }
   if (properties.bounds_origin_x || properties.bounds_origin_y) {
     gfx::Point bounds_origin;
@@ -369,7 +407,8 @@ void DisplayInfoProviderChromeOS::SetDisplayProperties(
         api_display_mode.device_scale_factor;
     mojo_display_mode->refresh_rate = api_display_mode.refresh_rate;
     mojo_display_mode->is_native = api_display_mode.is_native;
-    mojo_display_mode->is_interlaced = api_display_mode.is_interlaced;
+    mojo_display_mode->is_interlaced =
+        api_display_mode.is_interlaced && *(api_display_mode.is_interlaced);
     config_properties->display_mode = std::move(mojo_display_mode);
   }
 
@@ -438,22 +477,23 @@ void DisplayInfoProviderChromeOS::CallGetDisplayUnitInfoList(
     ash::mojom::DisplayLayoutInfoPtr layout) {
   cros_display_config_->GetDisplayUnitInfoList(
       single_unified,
-      base::BindOnce(
-          [](ash::mojom::DisplayLayoutInfoPtr layout,
-             base::OnceCallback<void(DisplayUnitInfoList)> callback,
-             std::vector<ash::mojom::DisplayUnitInfoPtr> info_list) {
-            DisplayUnitInfoList all_displays;
-            for (const ash::mojom::DisplayUnitInfoPtr& info : info_list) {
-              system_display::DisplayUnitInfo display =
-                  GetDisplayUnitInfoFromMojo(*info);
-              SetDisplayUnitInfoLayoutProperties(*layout, &display);
-              all_displays.emplace_back(std::move(display));
-            }
-            base::ThreadTaskRunnerHandle::Get()->PostTask(
-                FROM_HERE,
-                base::BindOnce(std::move(callback), std::move(all_displays)));
-          },
-          std::move(layout), std::move(callback)));
+      base::BindOnce(&DisplayInfoProviderChromeOS::OnGetDisplayUnitInfoList,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(layout),
+                     std::move(callback)));
+}
+
+void DisplayInfoProviderChromeOS::OnGetDisplayUnitInfoList(
+    ash::mojom::DisplayLayoutInfoPtr layout,
+    base::OnceCallback<void(DisplayUnitInfoList)> callback,
+    std::vector<ash::mojom::DisplayUnitInfoPtr> info_list) {
+  DisplayUnitInfoList all_displays;
+  for (const ash::mojom::DisplayUnitInfoPtr& info : info_list) {
+    system_display::DisplayUnitInfo display = GetDisplayUnitInfoFromMojo(*info);
+    SetDisplayUnitInfoLayoutProperties(*layout, &display);
+    all_displays.push_back(std::move(display));
+  }
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), std::move(all_displays)));
 }
 
 void DisplayInfoProviderChromeOS::GetDisplayLayout(
@@ -482,7 +522,7 @@ void DisplayInfoProviderChromeOS::GetDisplayLayout(
 bool DisplayInfoProviderChromeOS::OverscanCalibrationStart(
     const std::string& id) {
   cros_display_config_->OverscanCalibration(
-      id, ash::mojom::DisplayConfigOperation::kStart, base::nullopt,
+      id, ash::mojom::DisplayConfigOperation::kStart, absl::nullopt,
       base::BindOnce(&LogErrorResult));
   return true;
 }
@@ -499,7 +539,7 @@ bool DisplayInfoProviderChromeOS::OverscanCalibrationAdjust(
 bool DisplayInfoProviderChromeOS::OverscanCalibrationReset(
     const std::string& id) {
   cros_display_config_->OverscanCalibration(
-      id, ash::mojom::DisplayConfigOperation::kReset, base::nullopt,
+      id, ash::mojom::DisplayConfigOperation::kReset, absl::nullopt,
       base::BindOnce(&LogErrorResult));
   return true;
 }
@@ -507,7 +547,7 @@ bool DisplayInfoProviderChromeOS::OverscanCalibrationReset(
 bool DisplayInfoProviderChromeOS::OverscanCalibrationComplete(
     const std::string& id) {
   cros_display_config_->OverscanCalibration(
-      id, ash::mojom::DisplayConfigOperation::kComplete, base::nullopt,
+      id, ash::mojom::DisplayConfigOperation::kComplete, absl::nullopt,
       base::BindOnce(&LogErrorResult));
   return true;
 }
@@ -561,7 +601,7 @@ void DisplayInfoProviderChromeOS::CallTouchCalibration(
               return;
             std::move(callback).Run(
                 result == ash::mojom::DisplayConfigResult::kSuccess
-                    ? base::nullopt
+                    ? absl::nullopt
                     : GetStringResult(result));
           },
           std::move(callback)));
@@ -587,7 +627,7 @@ void DisplayInfoProviderChromeOS::SetMirrorMode(
       }
       display_layout_info->mirror_source_id = *info.mirroring_source_id;
       display_layout_info->mirror_destination_ids =
-          base::make_optional<std::vector<std::string>>(
+          absl::make_optional<std::vector<std::string>>(
               *info.mirroring_destination_ids);
     }
   }
@@ -603,30 +643,28 @@ void DisplayInfoProviderChromeOS::SetMirrorMode(
 void DisplayInfoProviderChromeOS::StartObserving() {
   DisplayInfoProvider::StartObserving();
 
-  TabletModeClient* client = TabletModeClient::Get();
-  if (client)
-    client->AddObserver(this);
+  mojo::PendingAssociatedRemote<ash::mojom::CrosDisplayConfigObserver> observer;
+  cros_display_config_observer_receiver_.Bind(
+      observer.InitWithNewEndpointAndPassReceiver());
+  cros_display_config_->AddObserver(std::move(observer));
 }
 
 void DisplayInfoProviderChromeOS::StopObserving() {
   DisplayInfoProvider::StopObserving();
 
-  TabletModeClient* client = TabletModeClient::Get();
-  if (client)
-    client->RemoveObserver(this);
+  cros_display_config_observer_receiver_.reset();
 }
 
-void DisplayInfoProviderChromeOS::OnTabletModeToggled(bool enabled) {
+void DisplayInfoProviderChromeOS::OnDisplayConfigChanged() {
   DispatchOnDisplayChangedEvent();
 }
 
-// static
-DisplayInfoProvider* DisplayInfoProvider::Create() {
-  std::unique_ptr<service_manager::Connector> connector =
-      content::ServiceManagerConnection::GetForProcess()
-          ->GetConnector()
-          ->Clone();
-  return new DisplayInfoProviderChromeOS(connector.get());
+std::unique_ptr<DisplayInfoProvider> CreateChromeDisplayInfoProvider() {
+  mojo::PendingRemote<ash::mojom::CrosDisplayConfigController> display_config;
+  ash::BindCrosDisplayConfigController(
+      display_config.InitWithNewPipeAndPassReceiver());
+  return std::make_unique<DisplayInfoProviderChromeOS>(
+      std::move(display_config));
 }
 
 }  // namespace extensions

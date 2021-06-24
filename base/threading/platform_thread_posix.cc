@@ -15,6 +15,7 @@
 
 #include <memory>
 
+#include "base/allocator/buildflags.h"
 #include "base/debug/activity_tracker.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
@@ -24,11 +25,11 @@
 #include "base/threading/thread_id_name_manager.h"
 #include "build/build_config.h"
 
-#if !defined(OS_MACOSX) && !defined(OS_FUCHSIA) && !defined(OS_NACL)
+#if !defined(OS_APPLE) && !defined(OS_FUCHSIA) && !defined(OS_NACL)
 #include "base/posix/can_lower_nice_to.h"
 #endif
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 #include <sys/syscall.h>
 #endif
 
@@ -36,6 +37,11 @@
 #include <zircon/process.h>
 #else
 #include <sys/resource.h>
+#endif
+
+#if BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+#include "base/allocator/partition_allocator/starscan/pcscan.h"
+#include "base/allocator/partition_allocator/starscan/stack/stack.h"
 #endif
 
 namespace base {
@@ -67,6 +73,15 @@ void* ThreadFunc(void* params) {
       base::ThreadRestrictions::SetSingletonAllowed(false);
 
 #if !defined(OS_NACL)
+#if BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+    internal::PCScan::NotifyThreadCreated(internal::GetStackPointer());
+#endif
+
+#if defined(OS_APPLE)
+    PlatformThread::SetCurrentThreadRealtimePeriodValue(
+        PlatformThread::GetRealtimePeriod(delegate));
+#endif
+
     // Threads on linux/android may inherit their priority from the thread
     // where they were created. This explicitly sets the priority of all new
     // threads.
@@ -83,6 +98,10 @@ void* ThreadFunc(void* params) {
   ThreadIdNameManager::GetInstance()->RemoveName(
       PlatformThread::CurrentHandle().platform_handle(),
       PlatformThread::CurrentId());
+
+#if !defined(OS_NACL) && BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  internal::PCScan::NotifyThreadDestroyed();
+#endif
 
   base::TerminateOnThread();
   return nullptr;
@@ -135,9 +154,9 @@ bool CreateThread(size_t stack_size,
   return success;
 }
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 
-// Store the thread ids in local storage since calling the SWI can
+// Store the thread ids in local storage since calling the SWI can be
 // expensive and PlatformThread::CurrentId is used liberally. Clear
 // the stored value after a fork() because forking changes the thread
 // id. Forking without going through fork() (e.g. clone()) is not
@@ -153,11 +172,11 @@ class InitAtFork {
   InitAtFork() { pthread_atfork(nullptr, nullptr, internal::ClearTidCache); }
 };
 
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 }  // namespace
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 namespace internal {
 
@@ -167,15 +186,15 @@ void ClearTidCache() {
 
 }  // namespace internal
 
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 // static
 PlatformThreadId PlatformThread::CurrentId() {
   // Pthreads doesn't have the concept of a thread ID, so we have to reach down
   // into the kernel.
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   return pthread_mach_thread_np(pthread_self());
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
   static NoDestructor<InitAtFork> init_at_fork;
   if (g_thread_id == -1) {
     g_thread_id = syscall(__NR_gettid);
@@ -273,7 +292,7 @@ void PlatformThread::Join(PlatformThreadHandle thread_handle) {
   // the thread referred to by |thread_handle| may still be running long-lived /
   // blocking tasks.
   base::internal::ScopedBlockingCallWithBaseSyncPrimitives scoped_blocking_call(
-      base::BlockingType::MAY_BLOCK);
+      FROM_HERE, base::BlockingType::MAY_BLOCK);
   CHECK_EQ(0, pthread_join(thread_handle.platform_handle(), nullptr));
 }
 
@@ -284,7 +303,7 @@ void PlatformThread::Detach(PlatformThreadHandle thread_handle) {
 
 // Mac and Fuchsia have their own Set/GetCurrentThreadPriority()
 // implementations.
-#if !defined(OS_MACOSX) && !defined(OS_FUCHSIA)
+#if !defined(OS_APPLE) && !defined(OS_FUCHSIA)
 
 // static
 bool PlatformThread::CanIncreaseThreadPriority(ThreadPriority priority) {
@@ -349,7 +368,7 @@ ThreadPriority PlatformThread::GetCurrentThreadPriority() {
 #endif  // !defined(OS_NACL)
 }
 
-#endif  // !defined(OS_MACOSX) && !defined(OS_FUCHSIA)
+#endif  // !defined(OS_APPLE) && !defined(OS_FUCHSIA)
 
 // static
 size_t PlatformThread::GetDefaultThreadStackSize() {

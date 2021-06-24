@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.image_fetcher;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 
 import android.support.test.filters.SmallTest;
 
@@ -17,6 +19,7 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.DiscardableReferencePool;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.profiles.Profile;
 
 /**
  * Test for ImageFetcherFactory.
@@ -28,9 +31,11 @@ public class ImageFetcherFactoryTest {
     ImageFetcherBridge mImageFetcherBridge;
     @Mock
     DiscardableReferencePool mReferencePool;
+    @Mock
+    Profile mProfile;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         MockitoAnnotations.initMocks(this);
     }
 
@@ -39,23 +44,45 @@ public class ImageFetcherFactoryTest {
     public void testGetImageFetcher() {
         assertEquals(ImageFetcherConfig.NETWORK_ONLY,
                 ImageFetcherFactory
-                        .createImageFetcher(ImageFetcherConfig.NETWORK_ONLY, mReferencePool,
-                                mImageFetcherBridge)
+                        .createImageFetcher(ImageFetcherConfig.NETWORK_ONLY, mImageFetcherBridge,
+                                mReferencePool, InMemoryCachedImageFetcher.DEFAULT_CACHE_SIZE)
                         .getConfig());
         assertEquals(ImageFetcherConfig.DISK_CACHE_ONLY,
                 ImageFetcherFactory
-                        .createImageFetcher(ImageFetcherConfig.DISK_CACHE_ONLY, mReferencePool,
-                                mImageFetcherBridge)
+                        .createImageFetcher(ImageFetcherConfig.DISK_CACHE_ONLY, mImageFetcherBridge,
+                                mReferencePool, InMemoryCachedImageFetcher.DEFAULT_CACHE_SIZE)
                         .getConfig());
         assertEquals(ImageFetcherConfig.IN_MEMORY_ONLY,
                 ImageFetcherFactory
-                        .createImageFetcher(ImageFetcherConfig.IN_MEMORY_ONLY, mReferencePool,
-                                mImageFetcherBridge)
+                        .createImageFetcher(ImageFetcherConfig.IN_MEMORY_ONLY, mImageFetcherBridge,
+                                mReferencePool, InMemoryCachedImageFetcher.DEFAULT_CACHE_SIZE)
                         .getConfig());
         assertEquals(ImageFetcherConfig.IN_MEMORY_WITH_DISK_CACHE,
                 ImageFetcherFactory
                         .createImageFetcher(ImageFetcherConfig.IN_MEMORY_WITH_DISK_CACHE,
-                                mReferencePool, mImageFetcherBridge)
+                                mImageFetcherBridge, mReferencePool,
+                                InMemoryCachedImageFetcher.DEFAULT_CACHE_SIZE)
                         .getConfig());
+    }
+
+    @Test
+    @SmallTest
+    public void testCreateImageFetcher() {
+        int config = ImageFetcherConfig.NETWORK_ONLY;
+
+        ImageFetcher imageFetcher = ImageFetcherFactory.createImageFetcher(config, mProfile);
+        assertNotNull(imageFetcher);
+        assertNotEquals(mImageFetcherBridge, imageFetcher.getImageFetcherBridge());
+
+        ImageFetcher imageFetcherWithRefPool =
+                ImageFetcherFactory.createImageFetcher(config, mProfile, mReferencePool);
+        assertNotNull(imageFetcherWithRefPool);
+        assertNotEquals(mImageFetcherBridge, imageFetcherWithRefPool.getImageFetcherBridge());
+
+        ImageFetcher imageFetcherWithRefPoolAndCacheSize = ImageFetcherFactory.createImageFetcher(
+                config, mProfile, mReferencePool, InMemoryCachedImageFetcher.DEFAULT_CACHE_SIZE);
+        assertNotNull(imageFetcherWithRefPoolAndCacheSize);
+        assertNotEquals(
+                mImageFetcherBridge, imageFetcherWithRefPoolAndCacheSize.getImageFetcherBridge());
     }
 }

@@ -10,7 +10,10 @@
 #include "base/macros.h"
 #include "ui/aura/aura_export.h"
 #include "ui/display/screen.h"
-#include "ui/ozone/public/platform_screen.h"
+
+namespace ui {
+class PlatformScreen;
+}
 
 namespace aura {
 
@@ -18,13 +21,16 @@ namespace aura {
 // Ozone.
 class AURA_EXPORT ScreenOzone : public display::Screen {
  public:
-  explicit ScreenOzone(std::unique_ptr<ui::PlatformScreen> platform_screen);
+  ScreenOzone();
   ~ScreenOzone() override;
 
   // display::Screen interface.
   gfx::Point GetCursorScreenPoint() override;
   bool IsWindowUnderCursor(gfx::NativeWindow window) override;
   gfx::NativeWindow GetWindowAtScreenPoint(const gfx::Point& point) override;
+  gfx::NativeWindow GetLocalProcessWindowAtPoint(
+      const gfx::Point& point,
+      const std::set<gfx::NativeWindow>& ignore) override;
   int GetNumDisplays() const override;
   const std::vector<display::Display>& GetAllDisplays() const override;
   display::Display GetDisplayNearestWindow(
@@ -35,13 +41,27 @@ class AURA_EXPORT ScreenOzone : public display::Screen {
   display::Display GetDisplayMatching(
       const gfx::Rect& match_rect) const override;
   display::Display GetPrimaryDisplay() const override;
+  void SetScreenSaverSuspended(bool suspend) override;
+  bool IsScreenSaverActive() const override;
+  base::TimeDelta CalculateIdleTime() const override;
   void AddObserver(display::DisplayObserver* observer) override;
   void RemoveObserver(display::DisplayObserver* observer) override;
+  std::string GetCurrentWorkspace() override;
+  base::Value GetGpuExtraInfoAsListValue(
+      const gfx::GpuExtraInfo& gpu_extra_info) override;
+
+  // Returns the NativeWindow associated with the AcceleratedWidget.
+  virtual gfx::NativeWindow GetNativeWindowFromAcceleratedWidget(
+      gfx::AcceleratedWidget widget) const;
+
+ protected:
+  ui::PlatformScreen* platform_screen() { return platform_screen_.get(); }
 
  private:
   gfx::AcceleratedWidget GetAcceleratedWidgetForWindow(
       aura::Window* window) const;
 
+  display::Screen* const old_screen_ = display::Screen::SetScreenInstance(this);
   std::unique_ptr<ui::PlatformScreen> platform_screen_;
 
   DISALLOW_COPY_AND_ASSIGN(ScreenOzone);

@@ -9,10 +9,11 @@
 
 #include "base/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "jingle/glue/thread_wrapper.h"
 #include "net/url_request/url_request_context_getter.h"
@@ -23,6 +24,7 @@
 #include "remoting/protocol/message_channel_factory.h"
 #include "remoting/protocol/message_pipe.h"
 #include "remoting/protocol/transport_context.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
@@ -54,7 +56,7 @@ class MockChannelCreatedCallback {
 
 class TestTransportEventHandler : public IceTransport::EventHandler {
  public:
-  typedef base::Callback<void(ErrorCode error)> ErrorCallback;
+  typedef base::RepeatingCallback<void(ErrorCode error)> ErrorCallback;
 
   TestTransportEventHandler() = default;
   ~TestTransportEventHandler() = default;
@@ -114,44 +116,42 @@ class IceTransportTest : public testing::Test {
   void InitializeConnection() {
     jingle_glue::JingleThreadWrapper::EnsureForCurrentMessageLoop();
 
-    host_transport_.reset(new IceTransport(
-        new TransportContext(nullptr,
-                             std::make_unique<ChromiumPortAllocatorFactory>(),
+    host_transport_ = std::make_unique<IceTransport>(
+        new TransportContext(std::make_unique<ChromiumPortAllocatorFactory>(),
                              nullptr, network_settings_, TransportRole::SERVER),
-        &host_event_handler_));
+        &host_event_handler_);
     if (!host_authenticator_) {
-      host_authenticator_.reset(
-          new FakeAuthenticator(FakeAuthenticator::ACCEPT));
+      host_authenticator_ =
+          std::make_unique<FakeAuthenticator>(FakeAuthenticator::ACCEPT);
     }
 
-    client_transport_.reset(new IceTransport(
-        new TransportContext(nullptr,
-                             std::make_unique<ChromiumPortAllocatorFactory>(),
+    client_transport_ = std::make_unique<IceTransport>(
+        new TransportContext(std::make_unique<ChromiumPortAllocatorFactory>(),
                              nullptr, network_settings_, TransportRole::CLIENT),
-        &client_event_handler_));
+        &client_event_handler_);
     if (!client_authenticator_) {
-      client_authenticator_.reset(
-          new FakeAuthenticator(FakeAuthenticator::ACCEPT));
+      client_authenticator_ =
+          std::make_unique<FakeAuthenticator>(FakeAuthenticator::ACCEPT);
     }
 
-    host_event_handler_.set_error_callback(base::Bind(
+    host_event_handler_.set_error_callback(base::BindRepeating(
         &IceTransportTest::OnTransportError, base::Unretained(this)));
-    client_event_handler_.set_error_callback(base::Bind(
+    client_event_handler_.set_error_callback(base::BindRepeating(
         &IceTransportTest::OnTransportError, base::Unretained(this)));
 
     // Start both transports.
     host_transport_->Start(
         host_authenticator_.get(),
-        base::Bind(&IceTransportTest::ProcessTransportInfo,
-                   base::Unretained(this), &client_transport_));
+        base::BindRepeating(&IceTransportTest::ProcessTransportInfo,
+                            base::Unretained(this), &client_transport_));
     client_transport_->Start(
         client_authenticator_.get(),
-        base::Bind(&IceTransportTest::ProcessTransportInfo,
-                   base::Unretained(this), &host_transport_));
+        base::BindRepeating(&IceTransportTest::ProcessTransportInfo,
+                            base::Unretained(this), &host_transport_));
   }
 
   void WaitUntilConnected() {
-    run_loop_.reset(new base::RunLoop());
+    run_loop_ = std::make_unique<base::RunLoop>();
 
     int counter = 2;
     EXPECT_CALL(client_channel_callback_, OnDone(_))
@@ -182,7 +182,8 @@ class IceTransportTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
   std::unique_ptr<base::RunLoop> run_loop_;
 
   NetworkSettings network_settings_;
@@ -210,11 +211,11 @@ TEST_F(IceTransportTest, DataStream) {
   InitializeConnection();
 
   client_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnClientChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnClientChannelCreated,
+                                   base::Unretained(this)));
   host_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnHostChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnHostChannelCreated,
+                                   base::Unretained(this)));
 
   WaitUntilConnected();
 
@@ -228,11 +229,11 @@ TEST_F(IceTransportTest, MuxDataStream) {
   InitializeConnection();
 
   client_transport_->GetMultiplexedChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnClientChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnClientChannelCreated,
+                                   base::Unretained(this)));
   host_transport_->GetMultiplexedChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnHostChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnHostChannelCreated,
+                                   base::Unretained(this)));
 
   WaitUntilConnected();
 
@@ -244,19 +245,19 @@ TEST_F(IceTransportTest, MuxDataStream) {
 
 TEST_F(IceTransportTest, FailedChannelAuth) {
   // Use host authenticator with one that rejects channel authentication.
-  host_authenticator_.reset(
-      new FakeAuthenticator(FakeAuthenticator::REJECT_CHANNEL));
+  host_authenticator_ =
+      std::make_unique<FakeAuthenticator>(FakeAuthenticator::REJECT_CHANNEL);
 
   InitializeConnection();
 
   client_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnClientChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnClientChannelCreated,
+                                   base::Unretained(this)));
   host_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnHostChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnHostChannelCreated,
+                                   base::Unretained(this)));
 
-  run_loop_.reset(new base::RunLoop());
+  run_loop_ = std::make_unique<base::RunLoop>();
 
   // The callback should never be called.
   EXPECT_CALL(host_channel_callback_, OnDone(_)).Times(0);
@@ -283,14 +284,14 @@ TEST_F(IceTransportTest, TestBrokenTransport) {
   InitializeConnection();
 
   client_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnClientChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnClientChannelCreated,
+                                   base::Unretained(this)));
   host_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnHostChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnHostChannelCreated,
+                                   base::Unretained(this)));
 
   // The RunLoop should quit in OnTransportError().
-  run_loop_.reset(new base::RunLoop());
+  run_loop_ = std::make_unique<base::RunLoop>();
   run_loop_->Run();
 
   // Verify that neither of the two ends of the channel is connected.
@@ -308,8 +309,8 @@ TEST_F(IceTransportTest, TestCancelChannelCreation) {
   InitializeConnection();
 
   client_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnClientChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnClientChannelCreated,
+                                   base::Unretained(this)));
   client_transport_->GetChannelFactory()->CancelChannelCreation(
       kChannelName);
 
@@ -324,11 +325,11 @@ TEST_F(IceTransportTest, TestDelayedSignaling) {
   InitializeConnection();
 
   client_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnClientChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnClientChannelCreated,
+                                   base::Unretained(this)));
   host_transport_->GetChannelFactory()->CreateChannel(
-      kChannelName, base::Bind(&IceTransportTest::OnHostChannelCreated,
-                               base::Unretained(this)));
+      kChannelName, base::BindOnce(&IceTransportTest::OnHostChannelCreated,
+                                   base::Unretained(this)));
 
   WaitUntilConnected();
 

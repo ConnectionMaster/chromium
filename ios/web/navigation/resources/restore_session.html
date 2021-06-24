@@ -47,15 +47,6 @@
     };
 
     /**
-     * The window.onpopstate event fires when the user navigates to one of the
-     * history entries created by restoreSession(). This handler forces a reload
-     * to reidrect to the target URL.
-     */
-    window.onpopstate = function(event) {
-      location.reload();
-    }
-
-    /**
      * Manipulates the current session history to mimic the provided serialized
      * history.
      * @param {string} sessionHistory An string serialization of a JSON object
@@ -99,11 +90,48 @@
               getRestoreURL(sessionHistoryObject.urls[i] || "about:blank"));
         }
 
+        // iOS12.2 added a throttling mechanism where the previous pushStates
+        // may not immediately be available.  Instead of directly calling
+        // finishRestore(currentItemOffset) here, call it via a round trip
+        // native call to flush out the pushState IPC backlog.
         var currentItemOffset = parseInt(sessionHistoryObject.offset);
-        history.go(currentItemOffset);
-      } catch (e) {
-        handleError(e.name + ": " + e.message + " raw session history: " + sessionHistory);
-      }
+        var offset = {'offset': currentItemOffset}
+        window.webkit.messageHandlers['session_restore'].postMessage(offset);
+       } catch (e) {
+         handleError(e.name + ": " + e.message + " raw session history: " + sessionHistory);
+       }
+     }
+
+    /**
+     * Finishes restoration by history.go-ing to |offset| and reloading the
+     * page.
+     * @param {int} offset Either zero, or the number of pages (negative) to
+     * go backwards.
+     */
+    function _crFinishSessionRestoration(offset) {
+      // Webkit indirectly forces a user gesture on the final restore
+      // navigations because this method is called from native code via
+      // ExecuteJavaScript. This has unintended consequences (such as triggering
+      // universal app links). Instead, discard the gesture by calling the same
+      // setInterval twice as WebKit won't propagate the gesture the second
+      // time.
+      var skipped_first_interval = false;
+      var finalizeInterval = setInterval(() => {
+        if (skipped_first_interval) {
+          try {
+            window.clearInterval(finalizeInterval);
+            history.go(offset);
+            // Queue a reload to redirect to the target URL after history.go
+            // is processed.
+            setTimeout(() => {
+              location.reload();
+            });
+          } catch (e) {
+            handleError(e.name + ": " + e.message + " offset: " + offset);
+          }
+        }
+        skipped_first_interval = true;
+      }, 0)
     }
 
     /**
@@ -115,15 +143,10 @@
     }
 
     /**
-     * Sends error message to native controller.
+     * print error and show blank page.
      */
     function handleError(message) {
       console.log("Error: " + message);
-      if (__gCrWeb.message) {
-        __gCrWeb.message.invokeOnHost(
-          {"command": "restoresession.error", "message": message});
-        __gCrWeb.message.invokeQueues();
-      }
       window.location.replace("about:blank");
     }
   </script>

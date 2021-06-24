@@ -4,15 +4,15 @@
 
 #include "ash/display/display_move_window_util.h"
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/accelerators/accelerator_table.h"
-#include "ash/accessibility/accessibility_controller.h"
 #include "ash/accessibility/test_accessibility_controller_client.h"
+#include "ash/public/cpp/shelf_config.h"
 #include "ash/root_window_controller.h"
 #include "ash/screen_util.h"
-#include "ash/shelf/shelf_constants.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/test/test_window_builder.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
@@ -55,14 +55,14 @@ views::Widget* CreateTestWidgetWithParent(views::Widget::InitParams::Type type,
   params.bounds = bounds;
   params.child = child;
   views::Widget* widget = new views::Widget;
-  widget->Init(params);
+  widget->Init(std::move(params));
   widget->Show();
   return widget;
 }
 
 void PerformMoveWindowAccel() {
   Shell::Get()->accelerator_controller()->PerformActionIfEnabled(
-      MOVE_ACTIVE_WINDOW_BETWEEN_DISPLAYS);
+      MOVE_ACTIVE_WINDOW_BETWEEN_DISPLAYS, {});
 }
 
 }  // namespace
@@ -99,7 +99,7 @@ TEST_F(DisplayMoveWindowUtilTest, WindowState) {
   display::Screen* screen = display::Screen::GetScreen();
   ASSERT_EQ(display_manager()->GetDisplayAt(0).id(),
             screen->GetDisplayNearestWindow(window).id());
-  wm::WindowState* window_state = wm::GetWindowState(window);
+  WindowState* window_state = WindowState::Get(window);
   // Set window to maximized state.
   window_state->Maximize();
   EXPECT_TRUE(window_state->IsMaximized());
@@ -115,7 +115,7 @@ TEST_F(DisplayMoveWindowUtilTest, WindowState) {
 
   // Set window to fullscreen state.
   PerformMoveWindowAccel();
-  const wm::WMEvent fullscreen(wm::WM_EVENT_TOGGLE_FULLSCREEN);
+  const WMEvent fullscreen(WM_EVENT_TOGGLE_FULLSCREEN);
   window_state->OnWMEvent(&fullscreen);
   EXPECT_EQ(display_manager()->GetDisplayAt(0).id(),
             screen->GetDisplayNearestWindow(window).id());
@@ -132,7 +132,7 @@ TEST_F(DisplayMoveWindowUtilTest, WindowState) {
 
   // Set window to left snapped state.
   PerformMoveWindowAccel();
-  const wm::WMEvent snap_left(wm::WM_EVENT_SNAP_LEFT);
+  const WMEvent snap_left(WM_EVENT_SNAP_PRIMARY);
   window_state->OnWMEvent(&snap_left);
   EXPECT_EQ(display_manager()->GetDisplayAt(0).id(),
             screen->GetDisplayNearestWindow(window).id());
@@ -159,8 +159,8 @@ TEST_F(DisplayMoveWindowUtilTest, FourDisplays) {
   // Layout:
   // [3][2]
   // [1][p]
-  display::DisplayIdList list = display::test::CreateDisplayIdListN(
-      4, primary_id, primary_id + 1, primary_id + 2, primary_id + 3);
+  display::DisplayIdList list =
+      display::test::CreateDisplayIdListN(primary_id, 4);
   display::DisplayLayoutBuilder builder(primary_id);
   builder.AddDisplayPlacement(list[1], primary_id,
                               display::DisplayPlacement::LEFT, 0);
@@ -200,17 +200,13 @@ TEST_F(DisplayMoveWindowUtilTest, FourDisplays) {
 TEST_F(DisplayMoveWindowUtilTest, A11yAlert) {
   // Layout: [p][1]
   UpdateDisplay("400x300,400x300");
-  AccessibilityController* controller =
-      Shell::Get()->accessibility_controller();
   TestAccessibilityControllerClient client;
-  controller->SetClient(client.CreateInterfacePtrAndBind());
 
   aura::Window* window =
       CreateTestWindowInShellWithBounds(gfx::Rect(10, 20, 200, 100));
   wm::ActivateWindow(window);
   PerformMoveWindowAccel();
-  controller->FlushMojoForTest();
-  EXPECT_EQ(mojom::AccessibilityAlert::WINDOW_MOVED_TO_ANOTHER_DISPLAY,
+  EXPECT_EQ(AccessibilityAlert::WINDOW_MOVED_TO_ANOTHER_DISPLAY,
             client.last_a11y_alert());
 }
 
@@ -221,16 +217,19 @@ TEST_F(DisplayMoveWindowUtilTest, NoMovementIfNotInCycleWindowList) {
   UpdateDisplay("400x300,400x300");
   // Create a window in app list container, which would be excluded in cycle
   // window list.
-  std::unique_ptr<aura::Window> window = CreateChildWindow(
-      Shell::GetPrimaryRootWindow(), gfx::Rect(10, 20, 200, 100),
-      kShellWindowId_AppListContainer);
+  std::unique_ptr<aura::Window> window =
+      ChildTestWindowBuilder(Shell::GetPrimaryRootWindow(),
+                             gfx::Rect(10, 20, 200, 100),
+                             kShellWindowId_AppListContainer)
+          .Build();
+
   wm::ActivateWindow(window.get());
   display::Screen* screen = display::Screen::GetScreen();
   EXPECT_EQ(display_manager()->GetDisplayAt(0).id(),
             screen->GetDisplayNearestWindow(window.get()).id());
 
   MruWindowTracker::WindowList cycle_window_list =
-      Shell::Get()->mru_window_tracker()->BuildWindowForCycleList();
+      Shell::Get()->mru_window_tracker()->BuildWindowForCycleList(kActiveDesk);
   EXPECT_TRUE(cycle_window_list.empty());
   PerformMoveWindowAccel();
   EXPECT_EQ(display_manager()->GetDisplayAt(0).id(),
@@ -249,7 +248,7 @@ TEST_F(DisplayMoveWindowUtilTest, KeepWindowBoundsIfNotChangedByUser) {
   //     |   |
   //     +---+
   UpdateDisplay("400x300,400x600");
-  const int shelf_inset = 300 - ShelfConstants::shelf_size();
+  const int shelf_inset = 300 - ShelfConfig::Get()->shelf_size();
   // Create and activate window on display [1].
   aura::Window* window =
       CreateTestWindowInShellWithBounds(gfx::Rect(410, 20, 200, 400));
@@ -270,7 +269,7 @@ TEST_F(DisplayMoveWindowUtilTest, KeepWindowBoundsIfNotChangedByUser) {
   EXPECT_EQ(gfx::Rect(410, 20, 200, 400), window->GetBoundsInScreen());
 
   // Move window to display [p] and set that its bounds is changed by user.
-  wm::WindowState* window_state = wm::GetWindowState(window);
+  WindowState* window_state = WindowState::Get(window);
   PerformMoveWindowAccel();
   window_state->set_bounds_changed_by_user(true);
   // Move window back to display [1], but its bounds has been changed by user.
@@ -289,7 +288,7 @@ TEST_F(DisplayMoveWindowUtilTest, AutoManaged) {
   // which will center the window on display [p].
   aura::Window* window1 =
       CreateTestWindowInShellWithBounds(gfx::Rect(10, 20, 200, 100));
-  wm::WindowState* window1_state = wm::GetWindowState(window1);
+  WindowState* window1_state = WindowState::Get(window1);
   window1_state->SetWindowPositionManaged(true);
   window1->Hide();
   window1->Show();
@@ -302,7 +301,7 @@ TEST_F(DisplayMoveWindowUtilTest, AutoManaged) {
   // which will do auto window management (pushing the other window to side).
   aura::Window* window2 =
       CreateTestWindowInShellWithBounds(gfx::Rect(10, 20, 200, 100));
-  wm::WindowState* window2_state = wm::GetWindowState(window2);
+  WindowState* window2_state = WindowState::Get(window2);
   window2_state->SetWindowPositionManaged(true);
   window2->Hide();
   window2->Show();
@@ -338,7 +337,7 @@ TEST_F(DisplayMoveWindowUtilTest, WindowWithTransientChild) {
 
   // Create a |child| window and make it a transient child of |window|.
   std::unique_ptr<aura::Window> child =
-      CreateChildWindow(window, gfx::Rect(20, 30, 40, 50));
+      ChildTestWindowBuilder(window, gfx::Rect(20, 30, 40, 50)).Build();
   ::wm::AddTransientChild(window, child.get());
   display::Screen* screen = display::Screen::GetScreen();
   EXPECT_EQ(display_manager()->GetDisplayAt(0).id(),
@@ -402,8 +401,10 @@ TEST_F(DisplayMoveWindowUtilTest, TransientParentNotInCycleWindowList) {
   aura::Window* setting_bubble_container =
       Shell::GetPrimaryRootWindowController()->GetContainer(
           kShellWindowId_SettingBubbleContainer);
-  std::unique_ptr<aura::Window> w2 = CreateChildWindow(
-      setting_bubble_container, gfx::Rect(10, 20, 200, 100), -1);
+  std::unique_ptr<aura::Window> w2 =
+      ChildTestWindowBuilder(setting_bubble_container,
+                             gfx::Rect(10, 20, 200, 100))
+          .Build();
   wm::ActivateWindow(w2.get());
 
   // Create a |child| transient widget of |w2|. When |child| is shown, it is
@@ -439,13 +440,13 @@ TEST_F(DisplayMoveWindowUtilTest, RestoreMaximizedWindowAfterMovement) {
       CreateTestWindowInShellWithBounds(gfx::Rect(10, 20, 200, 100));
   wm::ActivateWindow(w);
 
-  wm::WindowState* window_state = wm::GetWindowState(w);
+  WindowState* window_state = WindowState::Get(w);
   window_state->Maximize();
-  EXPECT_EQ(gfx::Rect(0, 0, 400, 300 - ShelfConstants::shelf_size()),
+  EXPECT_EQ(gfx::Rect(0, 0, 400, 300 - ShelfConfig::Get()->shelf_size()),
             w->GetBoundsInScreen());
 
   PerformMoveWindowAccel();
-  EXPECT_EQ(gfx::Rect(400, 0, 400, 300 - ShelfConstants::shelf_size()),
+  EXPECT_EQ(gfx::Rect(400, 0, 400, 300 - ShelfConfig::Get()->shelf_size()),
             w->GetBoundsInScreen());
   window_state->Restore();
   EXPECT_EQ(gfx::Rect(410, 20, 200, 100), w->GetBoundsInScreen());

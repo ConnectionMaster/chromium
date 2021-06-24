@@ -16,9 +16,9 @@
 
 #include <vector>
 
+#include "base/cxx17_backports.h"
+#include "base/memory/page_size.h"
 #include "base/posix/eintr_wrapper.h"
-#include "base/process/process_metrics.h"
-#include "base/stl_util.h"
 #include "build/build_config.h"
 #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
 #include "sandbox/linux/bpf_dsl/policy.h"
@@ -226,6 +226,8 @@ TEST(Syscall, ComplexSyscallSixArgs) {
                                                           kPageSize
 #endif
                                                           )));
+#if !defined(MEMORY_SANITIZER)
+  // MSan considers the memory backing addr2 uninitialized.
   EXPECT_EQ(0, memcmp(addr2 + kPageSize, addr3, kPageSize));
 
   // Just to be absolutely on the safe side, also verify that the file
@@ -237,6 +239,7 @@ TEST(Syscall, ComplexSyscallSixArgs) {
                                                              2 * kPageSize
                                                              )));
   EXPECT_EQ(0, memcmp(addr2, buf, 2 * kPageSize));
+#endif
 
   // Clean up
   EXPECT_EQ(0, Syscall::Call(__NR_munmap, addr2, 2 * kPageSize));

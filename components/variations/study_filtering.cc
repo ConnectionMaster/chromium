@@ -9,9 +9,10 @@
 
 #include <set>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
+#include "base/logging.h"
 #include "base/strings/string_util.h"
-#include "components/variations/client_filterable_state.h"
+#include "components/variations/variations_seed_processor.h"
 
 namespace variations {
 namespace {
@@ -21,7 +22,7 @@ base::Time ConvertStudyDateToBaseTime(int64_t date_time) {
   return base::Time::UnixEpoch() + base::TimeDelta::FromSeconds(date_time);
 }
 
-// Similar to base::ContainsValue(), but specifically for ASCII strings and
+// Similar to base::Contains(), but specifically for ASCII strings and
 // case-insensitive comparison.
 template <typename Collection>
 bool ContainsStringIgnoreCaseASCII(const Collection& collection,
@@ -59,10 +60,29 @@ bool CheckStudyFormFactor(const Study::Filter& filter,
   // ignored. We do not expect both to be present for Chrome due to server-side
   // checks.
   if (filter.form_factor_size() > 0)
-    return base::ContainsValue(filter.form_factor(), form_factor);
+    return base::Contains(filter.form_factor(), form_factor);
 
   // Omit if we match the blacklist.
-  return !base::ContainsValue(filter.exclude_form_factor(), form_factor);
+  return !base::Contains(filter.exclude_form_factor(), form_factor);
+}
+
+bool CheckStudyCpuArchitecture(const Study::Filter& filter,
+                               Study::CpuArchitecture cpu_architecture) {
+  // Empty allowlist and denylist signifies matching any CPU architecture.
+  if (filter.cpu_architecture_size() == 0 &&
+      filter.exclude_cpu_architecture_size() == 0) {
+    return true;
+  }
+
+  // Allow the cpu_architecture if it matches the allowlist.
+  // Note if both a allowlist and denylist are specified, the denylist is
+  // ignored. We do not expect both to be present for Chrome due to server-side
+  // checks.
+  if (filter.cpu_architecture_size() > 0)
+    return base::Contains(filter.cpu_architecture(), cpu_architecture);
+
+  // Omit if we match the denylist.
+  return !base::Contains(filter.exclude_cpu_architecture(), cpu_architecture);
 }
 
 bool CheckStudyHardwareClass(const Study::Filter& filter,
@@ -99,10 +119,10 @@ bool CheckStudyLocale(const Study::Filter& filter, const std::string& locale) {
   // that this means this overrides the exclude_locale in case that ever occurs
   // (which it shouldn't).
   if (filter.locale_size() > 0)
-    return base::ContainsValue(filter.locale(), locale);
+    return base::Contains(filter.locale(), locale);
 
   // Omit if matches any of the exclude entries.
-  return !base::ContainsValue(filter.exclude_locale(), locale);
+  return !base::Contains(filter.exclude_locale(), locale);
 }
 
 bool CheckStudyPlatform(const Study::Filter& filter, Study::Platform platform) {
@@ -117,6 +137,24 @@ bool CheckStudyLowEndDevice(const Study::Filter& filter,
                             bool is_low_end_device) {
   return !filter.has_is_low_end_device() ||
          filter.is_low_end_device() == is_low_end_device;
+}
+
+bool CheckStudyPolicyRestriction(const Study::Filter& filter,
+                                 RestrictionPolicy policy_restriction) {
+  switch (policy_restriction) {
+    // If the policy is set to no restrictions let any study that is not
+    // specifically designated for clients requesting critical studies only.
+    case RestrictionPolicy::NO_RESTRICTIONS:
+      return filter.policy_restriction() != Study::CRITICAL_ONLY;
+    // If the policy is set to only allow critical studies than make sure they
+    // have that restriction applied on their Filter.
+    case RestrictionPolicy::CRITICAL_ONLY:
+      return filter.policy_restriction() != Study::NONE;
+    // If the policy is set to not allow any variations then return false
+    // regardless of the actual Filter.
+    case RestrictionPolicy::ALL:
+      return false;
+  }
 }
 
 bool CheckStudyStartDate(const Study::Filter& filter,
@@ -155,6 +193,25 @@ bool CheckStudyVersion(const Study::Filter& filter,
   return true;
 }
 
+bool CheckStudyOSVersion(const Study::Filter& filter,
+                         const base::Version& version) {
+  if (filter.has_min_os_version()) {
+    if (!version.IsValid() ||
+        version.CompareToWildcardString(filter.min_os_version()) < 0) {
+      return false;
+    }
+  }
+
+  if (filter.has_max_os_version()) {
+    if (!version.IsValid() ||
+        version.CompareToWildcardString(filter.max_os_version()) > 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 bool CheckStudyCountry(const Study::Filter& filter,
                        const std::string& country) {
   // Empty country and exclude_country matches all.
@@ -165,10 +222,16 @@ bool CheckStudyCountry(const Study::Filter& filter,
   // that this means this overrides the exclude_country in case that ever occurs
   // (which it shouldn't).
   if (filter.country_size() > 0)
-    return base::ContainsValue(filter.country(), country);
+    return base::Contains(filter.country(), country);
 
   // Omit if matches any of the exclude entries.
-  return !base::ContainsValue(filter.exclude_country(), country);
+  return !base::Contains(filter.exclude_country(), country);
+}
+
+bool CheckStudyEnterprise(const Study::Filter& filter,
+                          const ClientFilterableState& client_state) {
+  return !filter.has_is_enterprise() ||
+         filter.is_enterprise() == client_state.IsEnterprise();
 }
 
 const std::string& GetClientCountryForStudy(
@@ -203,7 +266,25 @@ bool IsStudyExpired(const Study& study, const base::Time& date_time) {
 }
 
 bool ShouldAddStudy(const Study& study,
-                    const ClientFilterableState& client_state) {
+                    const ClientFilterableState& client_state,
+                    const VariationsLayers& layers) {
+  if (study.has_layer()) {
+    if (!layers.IsLayerMemberActive(study.layer().layer_id(),
+                                    study.layer().layer_member_id())) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to layer member not being active.";
+      return false;
+    }
+
+    if (VariationsSeedProcessor::ShouldStudyUseLowEntropy(study) &&
+        layers.IsLayerUsingDefaultEntropy(study.layer().layer_id())) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to requiring a low entropy source yet being a member "
+                  "of a layer using the default entropy source.";
+      return false;
+    }
+  }
+
   if (study.has_filter()) {
     if (!CheckStudyChannel(study.filter(), client_state.channel)) {
       DVLOG(1) << "Filtered out study " << study.name() << " due to channel.";
@@ -213,6 +294,13 @@ bool ShouldAddStudy(const Study& study,
     if (!CheckStudyFormFactor(study.filter(), client_state.form_factor)) {
       DVLOG(1) << "Filtered out study " << study.name() <<
                   " due to form factor.";
+      return false;
+    }
+
+    if (!CheckStudyCpuArchitecture(study.filter(),
+                                   client_state.cpu_architecture)) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to cpu architecture.";
       return false;
     }
 
@@ -255,9 +343,30 @@ bool ShouldAddStudy(const Study& study,
       return false;
     }
 
+    if (!CheckStudyPolicyRestriction(study.filter(),
+                                     client_state.policy_restriction)) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to policy restriction.";
+      return false;
+    }
+
+    if (!CheckStudyOSVersion(study.filter(), client_state.os_version)) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to os_version.";
+      return false;
+    }
+
     const std::string& country = GetClientCountryForStudy(study, client_state);
     if (!CheckStudyCountry(study.filter(), country)) {
       DVLOG(1) << "Filtered out study " << study.name() << " due to country.";
+      return false;
+    }
+
+    // Check for enterprise status last as checking whether the client is
+    // enterprise can be slow.
+    if (!CheckStudyEnterprise(study.filter(), client_state)) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to enterprise state.";
       return false;
     }
   }
@@ -270,6 +379,7 @@ bool ShouldAddStudy(const Study& study,
 
 void FilterAndValidateStudies(const VariationsSeed& seed,
                               const ClientFilterableState& client_state,
+                              const VariationsLayers& layers,
                               std::vector<ProcessedStudy>* filtered_studies) {
   DCHECK(client_state.version.IsValid());
 
@@ -282,19 +392,19 @@ void FilterAndValidateStudies(const VariationsSeed& seed,
 
   for (int i = 0; i < seed.study_size(); ++i) {
     const Study& study = seed.study(i);
-    if (!internal::ShouldAddStudy(study, client_state))
+    if (!internal::ShouldAddStudy(study, client_state, layers))
       continue;
 
     if (internal::IsStudyExpired(study, client_state.reference_date)) {
       expired_studies.push_back(&study);
-    } else if (!base::ContainsKey(created_studies, study.name())) {
+    } else if (!base::Contains(created_studies, study.name())) {
       ProcessedStudy::ValidateAndAppendStudy(&study, false, filtered_studies);
       created_studies.insert(study.name());
     }
   }
 
   for (size_t i = 0; i < expired_studies.size(); ++i) {
-    if (!base::ContainsKey(created_studies, expired_studies[i]->name())) {
+    if (!base::Contains(created_studies, expired_studies[i]->name())) {
       ProcessedStudy::ValidateAndAppendStudy(expired_studies[i], true,
                                              filtered_studies);
     }

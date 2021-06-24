@@ -16,12 +16,10 @@
 #include "base/process/process_handle.h"
 #include "base/process/process_metrics.h"
 #include "base/run_loop.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/simple_thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "base/win/scoped_com_initializer.h"
 #include "chrome/chrome_cleaner/components/component_manager.h"
 #include "chrome/chrome_cleaner/constants/chrome_cleaner_switches.h"
 #include "chrome/chrome_cleaner/engines/common/engine_digest_verifier.h"
@@ -121,8 +119,7 @@ MainController::MainController(RebooterAPI* rebooter,
       rebooter_(rebooter),
       component_manager_(this),
       result_code_(RESULT_CODE_INVALID),
-      registry_logger_(registry_logger),
-      weak_factory_(this) {
+      registry_logger_(registry_logger) {
   Settings* settings = Settings::GetInstance();
   ExecutionMode execution_mode = settings->execution_mode();
   DCHECK(execution_mode == ExecutionMode::kScanning ||
@@ -142,9 +139,10 @@ MainController::MainController(RebooterAPI* rebooter,
     // main controller object no longer exists.
     chrome_prompt_ipc->Initialize(new ChromePromptConnectionErrorHandler(
         weak_factory_.GetWeakPtr(), base::ThreadTaskRunnerHandle::Get()));
-    main_dialog_.reset(new ChromeProxyMainDialog(this, chrome_prompt_ipc));
+    main_dialog_ =
+        std::make_unique<ChromeProxyMainDialog>(this, chrome_prompt_ipc);
   } else if (execution_mode == ExecutionMode::kCleanup) {
-    main_dialog_.reset(new SilentMainDialog(this));
+    main_dialog_ = std::make_unique<SilentMainDialog>(this);
   } else {
     NOTREACHED();
   }
@@ -564,15 +562,14 @@ void MainController::OnClose() {
   LoggingServiceAPI* logging_service = LoggingServiceAPI::GetInstance();
   logging_service->SetExitCode(result_code_);
 
-  UploadLogs(base::string16(), true);
+  UploadLogs(std::wstring(), true);
 
   // This must be called after we uploaded logs to make sure none is added
   // after the user had a chance to opt-out.
   component_manager_.CloseAllComponents(result_code_);
 }
 
-void MainController::UploadLogs(const base::string16& tag,
-                                bool quit_when_done) {
+void MainController::UploadLogs(const std::wstring& tag, bool quit_when_done) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   LoggingServiceAPI* logging_service = LoggingServiceAPI::GetInstance();
 
@@ -631,18 +628,18 @@ int MainController::WatchdogTimeoutCallback(TimedOutStage timed_out_stage) {
   return exit_code;
 }
 
-void MainController::LogsUploadComplete(const base::string16& tag,
-                                        bool success) {
+void MainController::LogsUploadComplete(const std::wstring& tag, bool success) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   registry_logger_->AppendLogUploadResult(success);
 
-  std::map<base::string16, bool>::iterator it = logs_upload_complete_.find(tag);
+  std::map<std::wstring, bool>::iterator it = logs_upload_complete_.find(tag);
   DCHECK(it != logs_upload_complete_.end());
   it->second = true;
 
   if (quit_when_logs_upload_complete_) {
-    for (const std::pair<base::string16, bool>& entry : logs_upload_complete_) {
+    for (const std::pair<const std::wstring, bool>& entry :
+         logs_upload_complete_) {
       if (!entry.second) {
         LOG(INFO) << "Waiting for the upload of logs with tag \"" << entry.first
                   << "\" to complete before exiting";

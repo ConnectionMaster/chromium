@@ -16,23 +16,22 @@
 #include "content/public/common/sandboxed_process_launcher_delegate.h"
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
+#include "sandbox/policy/win/sandbox_win.h"
 #include "sandbox/win/src/sandbox_types.h"
-#include "services/service_manager/embedder/result_codes.h"
-#include "services/service_manager/sandbox/win/sandbox_win.h"
 
 namespace content {
 namespace internal {
 
 void ChildProcessLauncherHelper::BeforeLaunchOnClientThread() {
-  DCHECK_CURRENTLY_ON(client_thread_id_);
+  DCHECK(client_task_runner_->RunsTasksInCurrentSequence());
 }
 
-base::Optional<mojo::NamedPlatformChannel>
+absl::optional<mojo::NamedPlatformChannel>
 ChildProcessLauncherHelper::CreateNamedPlatformChannelOnClientThread() {
-  DCHECK_CURRENTLY_ON(client_thread_id_);
+  DCHECK(client_task_runner_->RunsTasksInCurrentSequence());
 
   if (!delegate_->ShouldLaunchElevated())
-    return base::nullopt;
+    return absl::nullopt;
 
   mojo::NamedPlatformChannel::Options options;
   mojo::NamedPlatformChannel named_channel(options);
@@ -42,11 +41,11 @@ ChildProcessLauncherHelper::CreateNamedPlatformChannelOnClientThread() {
 
 std::unique_ptr<FileMappedForLaunch>
 ChildProcessLauncherHelper::GetFilesToMap() {
-  return std::unique_ptr<FileMappedForLaunch>();
+  return nullptr;
 }
 
 bool ChildProcessLauncherHelper::BeforeLaunchOnLauncherThread(
-    const FileMappedForLaunch& files_to_register,
+    FileMappedForLaunch& files_to_register,
     base::LaunchOptions* options) {
   DCHECK(CurrentlyOnProcessLauncherTaskRunner());
   return true;
@@ -107,7 +106,7 @@ void ChildProcessLauncherHelper::ForceNormalProcessTerminationSync(
   DCHECK(CurrentlyOnProcessLauncherTaskRunner());
   // Client has gone away, so just kill the process.  Using exit code 0 means
   // that UMA won't treat this as a crash.
-  process.process.Terminate(service_manager::RESULT_CODE_NORMAL_EXIT, false);
+  process.process.Terminate(RESULT_CODE_NORMAL_EXIT, false);
 }
 
 void ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread(
@@ -117,17 +116,6 @@ void ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread(
   if (process.CanBackgroundProcesses())
     process.SetProcessBackgrounded(priority.is_background());
 }
-
-// static
-void ChildProcessLauncherHelper::SetRegisteredFilesForService(
-    const std::string& service_name,
-    std::map<std::string, base::FilePath> required_files) {
-  // No file passing from the manifest on Windows yet.
-  DCHECK(required_files.empty());
-}
-
-// static
-void ChildProcessLauncherHelper::ResetRegisteredFilesForTesting() {}
 
 }  // namespace internal
 }  // namespace content

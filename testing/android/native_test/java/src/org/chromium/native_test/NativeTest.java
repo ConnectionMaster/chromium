@@ -7,39 +7,27 @@ package org.chromium.native_test;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Process;
+import android.system.Os;
 
-import org.chromium.base.CommandLine;
 import org.chromium.base.Log;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.multidex.ChromiumMultiDexInstaller;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.build.gtest_apk.NativeTestIntent;
 import org.chromium.test.reporter.TestStatusReporter;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Iterator;
 
 /**
  *  Helper to run tests inside Activity or NativeActivity.
  */
 @JNINamespace("testing::android")
 public class NativeTest {
-    public static final String EXTRA_COMMAND_LINE_FILE =
-            "org.chromium.native_test.NativeTest.CommandLineFile";
-    public static final String EXTRA_COMMAND_LINE_FLAGS =
-            "org.chromium.native_test.NativeTest.CommandLineFlags";
-    public static final String EXTRA_RUN_IN_SUB_THREAD =
-            "org.chromium.native_test.NativeTest.RunInSubThread";
-    public static final String EXTRA_SHARD =
-            "org.chromium.native_test.NativeTest.Shard";
-    public static final String EXTRA_STDOUT_FILE =
-            "org.chromium.native_test.NativeTest.StdoutFile";
-
-    private static final String TAG = "cr_NativeTest";
+    private static final String TAG = "NativeTest";
 
     private String mCommandLineFilePath;
     private StringBuilder mCommandLineFlags = new StringBuilder();
@@ -67,12 +55,18 @@ public class NativeTest {
     }
 
     public void preCreate(Activity activity) {
-        ChromiumMultiDexInstaller.install(activity);
+        String coverageDeviceFile =
+                activity.getIntent().getStringExtra(NativeTestIntent.EXTRA_COVERAGE_DEVICE_FILE);
+        if (coverageDeviceFile != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                Os.setenv("LLVM_PROFILE_FILE", coverageDeviceFile, true);
+            } catch (Exception e) {
+                Log.w(TAG, "failed to set LLVM_PROFILE_FILE", e);
+            }
+        }
     }
 
     public void postCreate(Activity activity) {
-        CommandLine.init(new String[]{});
-
         parseArgumentsFromIntent(activity, activity.getIntent());
         mReporter = new TestStatusReporter(activity);
         mReporter.testRunStarted(Process.myPid());
@@ -90,7 +84,7 @@ public class NativeTest {
             }
         }
 
-        mCommandLineFilePath = intent.getStringExtra(EXTRA_COMMAND_LINE_FILE);
+        mCommandLineFilePath = intent.getStringExtra(NativeTestIntent.EXTRA_COMMAND_LINE_FILE);
         if (mCommandLineFilePath == null) {
             mCommandLineFilePath = "";
         } else {
@@ -102,25 +96,17 @@ public class NativeTest {
             Log.i(TAG, "command line file path: %s", mCommandLineFilePath);
         }
 
-        String commandLineFlags = intent.getStringExtra(EXTRA_COMMAND_LINE_FLAGS);
+        String commandLineFlags = intent.getStringExtra(NativeTestIntent.EXTRA_COMMAND_LINE_FLAGS);
         if (commandLineFlags != null) mCommandLineFlags.append(commandLineFlags);
 
-        mRunInSubThread = intent.hasExtra(EXTRA_RUN_IN_SUB_THREAD);
+        mRunInSubThread = intent.hasExtra(NativeTestIntent.EXTRA_RUN_IN_SUB_THREAD);
 
-        ArrayList<String> shard = intent.getStringArrayListExtra(EXTRA_SHARD);
-        if (shard != null) {
-            StringBuilder filterFlag = new StringBuilder();
-            filterFlag.append("--gtest_filter=");
-            for (Iterator<String> test_iter = shard.iterator(); test_iter.hasNext();) {
-                filterFlag.append(test_iter.next());
-                if (test_iter.hasNext()) {
-                    filterFlag.append(":");
-                }
-            }
-            appendCommandLineFlags(filterFlag.toString());
+        String gtestFilter = intent.getStringExtra(NativeTestIntent.EXTRA_GTEST_FILTER);
+        if (gtestFilter != null) {
+            appendCommandLineFlags("--gtest_filter=" + gtestFilter);
         }
 
-        mStdoutFilePath = intent.getStringExtra(EXTRA_STDOUT_FILE);
+        mStdoutFilePath = intent.getStringExtra(NativeTestIntent.EXTRA_STDOUT_FILE);
     }
 
     public void appendCommandLineFlags(String flags) {

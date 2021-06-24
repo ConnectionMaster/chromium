@@ -8,6 +8,10 @@ namespace web_app {
 
 namespace internals {
 
+// On Chrome OS, we do not have platform shortcuts, so these operation are
+// no-ops. We instead integrate with the Launcher and the Shelf through the App
+// Service.
+
 bool CreatePlatformShortcuts(const base::FilePath& web_app_path,
                              const ShortcutLocations& creation_locations,
                              ShortcutCreationReason creation_reason,
@@ -15,12 +19,19 @@ bool CreatePlatformShortcuts(const base::FilePath& web_app_path,
   return true;
 }
 
-void DeletePlatformShortcuts(const base::FilePath& web_app_path,
-                             const ShortcutInfo& shortcut_info) {}
+bool DeletePlatformShortcuts(const base::FilePath& web_app_path,
+                             const ShortcutInfo& shortcut_info) {
+  return true;
+}
 
 void UpdatePlatformShortcuts(const base::FilePath& web_app_path,
-                             const base::string16& old_app_title,
+                             const std::u16string& old_app_title,
                              const ShortcutInfo& shortcut_info) {}
+
+ShortcutLocations GetAppExistingShortCutLocationImpl(
+    const ShortcutInfo& shortcut_info) {
+  return ShortcutLocations();
+}
 
 void DeleteAllShortcutsForProfile(const base::FilePath& profile_path) {}
 

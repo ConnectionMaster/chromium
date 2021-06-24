@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "media/learning/impl/distribution_reporter.h"
 #include "media/learning/impl/extra_trees_trainer.h"
 #include "media/learning/impl/lookup_table_trainer.h"
@@ -49,7 +51,9 @@ LearningTaskControllerImpl::~LearningTaskControllerImpl() = default;
 
 void LearningTaskControllerImpl::BeginObservation(
     base::UnguessableToken id,
-    const FeatureVector& features) {
+    const FeatureVector& features,
+    const absl::optional<TargetValue>& default_target,
+    const absl::optional<ukm::SourceId>& source_id) {
   // TODO(liberato): Should we enforce that the right number of features are
   // present here?  Right now, we allow it to be shorter, so that features from
   // a FeatureProvider may be omitted.  Of course, they have to be at the end in
@@ -58,7 +62,13 @@ void LearningTaskControllerImpl::BeginObservation(
   if (!trainer_)
     return;
 
-  helper_->BeginObservation(id, features);
+  // We don't support default targets, since we're the base learner and can't
+  // easily do that.  However, defaults are handled by (weak) controllers
+  // handed out by LearningSessionImpl.  So, we don't bother since they never
+  // get here anyway.
+  DCHECK(!default_target);
+
+  helper_->BeginObservation(id, features, source_id);
 }
 
 void LearningTaskControllerImpl::CompleteObservation(
@@ -75,7 +85,27 @@ void LearningTaskControllerImpl::CancelObservation(base::UnguessableToken id) {
   helper_->CancelObservation(id);
 }
 
-void LearningTaskControllerImpl::AddFinishedExample(LabelledExample example) {
+void LearningTaskControllerImpl::UpdateDefaultTarget(
+    base::UnguessableToken id,
+    const absl::optional<TargetValue>& default_target) {
+  NOTREACHED();
+}
+
+const LearningTask& LearningTaskControllerImpl::GetLearningTask() {
+  return task_;
+}
+
+void LearningTaskControllerImpl::PredictDistribution(
+    const FeatureVector& features,
+    PredictionCB callback) {
+  if (model_)
+    std::move(callback).Run(model_->PredictDistribution(features));
+  else
+    std::move(callback).Run(absl::nullopt);
+}
+
+void LearningTaskControllerImpl::AddFinishedExample(LabelledExample example,
+                                                    ukm::SourceId source_id) {
   // Verify that we have a trainer and that we got the right number of features.
   // We don't compare to |task_.feature_descriptions.size()| since that has been
   // adjusted to the subset size already.  We expect the original count.
@@ -110,6 +140,7 @@ void LearningTaskControllerImpl::AddFinishedExample(LabelledExample example) {
 
     DistributionReporter::PredictionInfo info;
     info.observed = example.target_value;
+    info.source_id = source_id;
     info.total_training_weight = last_training_weight_;
     info.total_training_examples = last_training_size_;
     reporter_->GetPredictionCallback(info).Run(predicted);
@@ -126,6 +157,10 @@ void LearningTaskControllerImpl::AddFinishedExample(LabelledExample example) {
     return;
 
   num_untrained_examples_ = 0;
+
+  // Record these for metrics.
+  last_training_weight_ = training_data_->total_weight();
+  last_training_size_ = training_data_->size();
 
   TrainedModelCB model_cb =
       base::BindOnce(&LearningTaskControllerImpl::OnModelTrained, AsWeakPtr(),

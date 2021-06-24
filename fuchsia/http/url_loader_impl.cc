@@ -5,8 +5,9 @@
 #include "fuchsia/http/url_loader_impl.h"
 
 #include "base/fuchsia/fuchsia_logging.h"
-#include "base/message_loop/message_loop_current.h"
+#include "base/task/current_thread.h"
 #include "base/task/post_task.h"
+#include "fuchsia/base/mem_buffer_util.h"
 #include "net/base/chunked_upload_data_stream.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
@@ -30,21 +31,9 @@ oldhttp::URLBodyPtr CreateURLBodyFromBuffer(net::GrowableIOBuffer* buffer) {
   // The response buffer size is exactly the offset.
   size_t total_size = buffer->offset();
 
-  ::fuchsia::mem::Buffer mem_buffer;
-  mem_buffer.size = total_size;
-  zx_status_t result =
-      zx::vmo::create(total_size, ZX_VMO_NON_RESIZABLE, &mem_buffer.vmo);
-  if (result != ZX_OK) {
-    ZX_DLOG(WARNING, result) << "zx_vmo_create";
-    return nullptr;
-  }
-
-  result = mem_buffer.vmo.write(buffer->StartOfBuffer(), 0, total_size);
-  if (result != ZX_OK) {
-    ZX_DLOG(WARNING, result) << "zx_vmo_write";
-    return nullptr;
-  }
-  body->set_buffer(std::move(mem_buffer));
+  body->set_buffer(cr_fuchsia::MemBufferFromString(
+      base::StringPiece(buffer->StartOfBuffer(), total_size),
+      "cr-http-url-body"));
 
   return body;
 }
@@ -187,31 +176,28 @@ void URLLoaderImpl::Start(oldhttp::URLRequest request, Callback callback) {
 
   // Start the request.
   net_request_->Start();
+  is_loading_ = true;
 }
 
 void URLLoaderImpl::FollowRedirect(Callback callback) {
   if (!net_request_ || auto_follow_redirects_ ||
       !net_request_->is_redirecting()) {
     callback(BuildResponse(net::ERR_INVALID_HANDLE));
+    return;
   }
 
   done_callback_ = std::move(callback);
-  net_request_->FollowDeferredRedirect(base::nullopt /* removed_headers */,
-                                       base::nullopt /* modified_headers */);
+  net_request_->FollowDeferredRedirect(absl::nullopt /* removed_headers */,
+                                       absl::nullopt /* modified_headers */);
 }
 
 void URLLoaderImpl::QueryStatus(QueryStatusCallback callback) {
   oldhttp::URLLoaderStatus status;
 
-  if (!net_request_) {
-    status.is_loading = false;
-  } else if (net_request_->is_pending() || net_request_->is_redirecting()) {
-    status.is_loading = true;
-  } else {
-    status.is_loading = false;
+  status.is_loading = is_loading_;
+  if (net_request_ && !is_loading_) {
     status.error = BuildError(net_error_);
   }
-
   callback(std::move(status));
 }
 
@@ -247,6 +233,7 @@ void URLLoaderImpl::OnCertificateRequested(
 }
 
 void URLLoaderImpl::OnSSLCertificateError(net::URLRequest* request,
+                                          int net_error,
                                           const net::SSLInfo& ssl_info,
                                           bool fatal) {
   NOTIMPLEMENTED();
@@ -260,6 +247,7 @@ void URLLoaderImpl::OnResponseStarted(net::URLRequest* request, int net_error) {
 
   // Return early if the request failed.
   if (net_error_ != net::OK) {
+    is_loading_ = false;
     std::move(done_callback_)(BuildResponse(net_error_));
     return;
   }
@@ -270,11 +258,13 @@ void URLLoaderImpl::OnResponseStarted(net::URLRequest* request, int net_error) {
     zx::socket read_socket;
     zx_status_t result = zx::socket::create(0, &read_socket, &write_socket_);
     if (result != ZX_OK) {
+      is_loading_ = false;
+      net_error_ = net::ERR_INSUFFICIENT_RESOURCES;
       ZX_DLOG(WARNING, result) << "zx_socket_create";
-      std::move(done_callback_)(BuildResponse(net::ERR_INSUFFICIENT_RESOURCES));
+      std::move(done_callback_)(BuildResponse(net_error_));
       return;
     }
-    oldhttp::URLResponse response = BuildResponse(net::OK);
+    oldhttp::URLResponse response = BuildResponse(net_error_);
     response.body = oldhttp::URLBody::New();
     response.body->set_stream(std::move(read_socket));
     std::move(done_callback_)(std::move(response));
@@ -321,6 +311,9 @@ void URLLoaderImpl::ReadNextBuffer() {
 
 bool URLLoaderImpl::WriteResponseBytes(int result) {
   if (result < 0) {
+    is_loading_ = false;
+    net_error_ = result;
+
     // Signal read error back to the client.
     if (write_socket_) {
       DCHECK(response_body_mode_ == oldhttp::ResponseBodyMode::STREAM ||
@@ -338,6 +331,8 @@ bool URLLoaderImpl::WriteResponseBytes(int result) {
 
   if (result == 0) {
     // Read complete.
+    is_loading_ = false;
+
     if (write_socket_) {
       DCHECK(response_body_mode_ == oldhttp::ResponseBodyMode::STREAM ||
              response_body_mode_ ==
@@ -354,8 +349,8 @@ bool URLLoaderImpl::WriteResponseBytes(int result) {
         response.body = std::move(body);
         std::move(done_callback_)(std::move(response));
       } else {
-        std::move(done_callback_)(
-            BuildResponse(net::ERR_INSUFFICIENT_RESOURCES));
+        net_error_ = net::ERR_INSUFFICIENT_RESOURCES;
+        std::move(done_callback_)(BuildResponse(net_error_));
       }
     }
     return false;
@@ -371,7 +366,7 @@ bool URLLoaderImpl::WriteResponseBytes(int result) {
     if (status == ZX_ERR_SHOULD_WAIT) {
       // Wait until the socket is writable again.
       buffered_bytes_ = result;
-      base::MessageLoopCurrentForIO::Get()->WatchZxHandle(
+      base::CurrentIOThread::Get()->WatchZxHandle(
           write_socket_.get(), false /* persistent */,
           ZX_SOCKET_WRITABLE | ZX_SOCKET_PEER_CLOSED, &write_watch_, this);
       return false;
@@ -380,6 +375,8 @@ bool URLLoaderImpl::WriteResponseBytes(int result) {
       // Something went wrong, attempt to shut down the socket and close it.
       ZX_DLOG(WARNING, status) << "zx_socket_write";
       write_socket_ = zx::socket();
+      is_loading_ = false;
+      net_error_ = net::ERR_FAILED;
       return false;
     }
   } else {
@@ -420,12 +417,13 @@ oldhttp::URLResponse URLLoaderImpl::BuildResponse(int net_error) {
     size_t iter = 0;
     std::string header_name;
     std::string header_value;
+    response.headers.emplace();
     while (response_headers->EnumerateHeaderLines(&iter, &header_name,
                                                   &header_value)) {
       oldhttp::HttpHeader header;
       header.name = header_name;
       header.value = header_value;
-      response.headers.push_back(header);
+      response.headers->push_back(header);
     }
   }
 

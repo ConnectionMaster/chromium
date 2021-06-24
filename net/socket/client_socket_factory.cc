@@ -9,7 +9,7 @@
 #include "base/lazy_instance.h"
 #include "build/build_config.h"
 #include "net/http/http_proxy_client_socket.h"
-#include "net/socket/ssl_client_socket_impl.h"
+#include "net/socket/ssl_client_socket.h"
 #include "net/socket/tcp_client_socket.h"
 #include "net/socket/udp_client_socket.h"
 
@@ -37,19 +37,21 @@ class DefaultClientSocketFactory : public ClientSocketFactory {
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+      NetworkQualityEstimator* network_quality_estimator,
       NetLog* net_log,
       const NetLogSource& source) override {
     return std::make_unique<TCPClientSocket>(
-        addresses, std::move(socket_performance_watcher), net_log, source);
+        addresses, std::move(socket_performance_watcher),
+        network_quality_estimator, net_log, source);
   }
 
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
+      SSLClientContext* context,
       std::unique_ptr<StreamSocket> stream_socket,
       const HostPortPair& host_and_port,
-      const SSLConfig& ssl_config,
-      const SSLClientSocketContext& context) override {
-    return std::make_unique<SSLClientSocketImpl>(
-        std::move(stream_socket), host_and_port, ssl_config, context);
+      const SSLConfig& ssl_config) override {
+    return context->CreateSSLClientSocket(std::move(stream_socket),
+                                          host_and_port, ssl_config);
   }
 
   std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
@@ -62,12 +64,11 @@ class DefaultClientSocketFactory : public ClientSocketFactory {
       bool using_spdy,
       NextProto negotiated_protocol,
       ProxyDelegate* proxy_delegate,
-      bool is_https_proxy,
       const NetworkTrafficAnnotationTag& traffic_annotation) override {
     return std::make_unique<HttpProxyClientSocket>(
         std::move(stream_socket), user_agent, endpoint, proxy_server,
         http_auth_controller, tunnel, using_spdy, negotiated_protocol,
-        proxy_delegate, is_https_proxy, traffic_annotation);
+        proxy_delegate, traffic_annotation);
   }
 };
 

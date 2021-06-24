@@ -11,10 +11,12 @@
 #include <vector>
 
 #include "base/memory/ref_counted.h"
+#include "build/chromeos_buildflags.h"
 #include "extensions/browser/api/clipboard/clipboard_api.h"
 #include "extensions/browser/api/declarative_content/content_rules_registry.h"
-#include "extensions/browser/api/storage/settings_namespace.h"
+#include "extensions/browser/value_store/settings_namespace.h"
 #include "extensions/common/api/clipboard.h"
+#include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 
 class GURL;
@@ -35,9 +37,11 @@ class GuestViewManagerDelegate;
 
 namespace extensions {
 
+class AutomationInternalApiDelegate;
 class AppViewGuestDelegate;
 class ContentRulesRegistry;
 class DevicePermissionsPrompt;
+class DisplayInfoProvider;
 class ExtensionOptionsGuest;
 class ExtensionOptionsGuestDelegate;
 class FeedbackPrivateDelegate;
@@ -48,10 +52,10 @@ class MessagingDelegate;
 class MetricsPrivateDelegate;
 class MimeHandlerViewGuest;
 class MimeHandlerViewGuestDelegate;
-class NetworkingCastPrivateDelegate;
 class NonNativeFileSystemDelegate;
 class RulesCacheDelegate;
 class SettingsObserver;
+class SupervisedUserExtensionsDelegate;
 class ValueStoreCache;
 class ValueStoreFactory;
 class VirtualKeyboardDelegate;
@@ -96,8 +100,9 @@ class ExtensionsAPIClient {
                                         const std::string& header_name) const;
 
   // Returns true if the given |request| should be hidden from extensions. This
-  // should be invoked on the IO thread.
+  // should be invoked on the UI thread.
   virtual bool ShouldHideBrowserNetworkRequest(
+      content::BrowserContext* context,
       const WebRequestInfo& request) const;
 
   // Notifies that an extension failed to act on a network request because the
@@ -105,6 +110,19 @@ class ExtensionsAPIClient {
   virtual void NotifyWebRequestWithheld(int render_process_id,
                                         int render_frame_id,
                                         const ExtensionId& extension_id);
+
+  // Updates an extension's matched action count stored in an ExtensionAction
+  // and optionally clears the extension's explicitly set badge text for the
+  // tab specified by |tab_id|.
+  virtual void UpdateActionCount(content::BrowserContext* context,
+                                 const ExtensionId& extension_id,
+                                 int tab_id,
+                                 int action_count,
+                                 bool clear_badge_text);
+
+  // Clears an extension's matched action count stored in an ExtensionAction.
+  virtual void ClearActionCount(content::BrowserContext* context,
+                                const Extension& extension);
 
   // Creates the AppViewGuestDelegate.
   virtual AppViewGuestDelegate* CreateAppViewGuestDelegate() const;
@@ -143,6 +161,11 @@ class ExtensionsAPIClient {
   virtual std::unique_ptr<DevicePermissionsPrompt>
   CreateDevicePermissionsPrompt(content::WebContents* web_contents) const;
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Returns true if device policy allows detaching a given USB device.
+  virtual bool ShouldAllowDetachingUsb(int vid, int pid) const;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
   // Returns a delegate for some of VirtualKeyboardAPI's behavior.
   virtual std::unique_ptr<VirtualKeyboardDelegate>
   CreateVirtualKeyboardDelegate(content::BrowserContext* browser_context) const;
@@ -150,12 +173,19 @@ class ExtensionsAPIClient {
   // Creates a delegate for handling the management extension api.
   virtual ManagementAPIDelegate* CreateManagementAPIDelegate() const;
 
+  // Creates a delegate for calling into the SupervisedUserService from the
+  // Management API.
+  virtual std::unique_ptr<SupervisedUserExtensionsDelegate>
+  CreateSupervisedUserExtensionsDelegate() const;
+
+  // Creates and returns the DisplayInfoProvider used by the
+  // chrome.system.display extension API.
+  virtual std::unique_ptr<DisplayInfoProvider> CreateDisplayInfoProvider()
+      const;
+
   // If supported by the embedder, returns a delegate for embedder-dependent
   // MetricsPrivateAPI behavior.
   virtual MetricsPrivateDelegate* GetMetricsPrivateDelegate();
-
-  // Creates a delegate for networking.castPrivate's API behavior.
-  virtual NetworkingCastPrivateDelegate* GetNetworkingCastPrivateDelegate();
 
   // Returns a delegate for embedder-specific chrome.fileSystem behavior.
   virtual FileSystemDelegate* GetFileSystemDelegate();
@@ -166,7 +196,7 @@ class ExtensionsAPIClient {
   // Returns a delegate for the chrome.feedbackPrivate API.
   virtual FeedbackPrivateDelegate* GetFeedbackPrivateDelegate();
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // If supported by the embedder, returns a delegate for querying non-native
   // file systems.
   virtual NonNativeFileSystemDelegate* GetNonNativeFileSystemDelegate();
@@ -174,15 +204,23 @@ class ExtensionsAPIClient {
   // Returns a delegate for embedder-specific chrome.mediaPerceptionPrivate API
   // behavior.
   virtual MediaPerceptionAPIDelegate* GetMediaPerceptionAPIDelegate();
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
   // Saves image data on clipboard.
   virtual void SaveImageDataToClipboard(
       const std::vector<char>& image_data,
       api::clipboard::ImageType type,
       AdditionalDataItemList additional_items,
-      const base::Closure& success_callback,
-      const base::Callback<void(const std::string&)>& error_callback);
-#endif
+      base::OnceClosure success_callback,
+      base::OnceCallback<void(const std::string&)> error_callback);
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+
+  virtual AutomationInternalApiDelegate* GetAutomationInternalApiDelegate();
+
+  // Gets keyed service factories that are used in the other methods on this
+  // class.
+  virtual std::vector<KeyedServiceBaseFactory*> GetFactoryDependencies();
 
   // NOTE: If this interface gains too many methods (perhaps more than 20) it
   // should be split into one interface per API.

@@ -8,14 +8,16 @@
 #include <stdint.h>
 
 #include "base/files/file_path.h"
-#include "base/memory/shared_memory_handle.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/time/time.h"
 #include "ipc/ipc_channel_handle.h"
+#include "ipc/ipc_message_start.h"
 #include "ipc/ipc_platform_file.h"
 #include "remoting/host/chromoting_param_traits.h"
 #include "remoting/host/desktop_environment_options.h"
 #include "remoting/host/screen_resolution.h"
 #include "remoting/proto/action.pb.h"
+#include "remoting/proto/control.pb.h"
 #include "remoting/proto/process_stats.pb.h"
 #include "remoting/protocol/errors.h"
 #include "remoting/protocol/file_transfer_helpers.h"
@@ -143,7 +145,7 @@ IPC_MESSAGE_CONTROL(ChromotingDesktopDaemonMsg_InjectSas)
 // Notifies the network process that a shared buffer has been created.
 IPC_MESSAGE_CONTROL(ChromotingDesktopNetworkMsg_CreateSharedBuffer,
                     int /* id */,
-                    base::SharedMemoryHandle /* handle */,
+                    base::ReadOnlySharedMemoryRegion /* region */,
                     uint32_t /* size */)
 
 // Request the network process to stop using a shared buffer.
@@ -198,6 +200,10 @@ IPC_MESSAGE_CONTROL(ChromotingDesktopNetworkMsg_MouseCursor,
 IPC_MESSAGE_CONTROL(ChromotingDesktopNetworkMsg_InjectClipboardEvent,
                     std::string /* serialized_event */)
 
+// Notifies the network process that the active keyboard layout has changed.
+IPC_MESSAGE_CONTROL(ChromotingDesktopNetworkMsg_KeyboardChanged,
+                    remoting::protocol::KeyboardLayout /* layout */)
+
 IPC_ENUM_TRAITS_MAX_VALUE(remoting::protocol::ErrorCode,
                           remoting::protocol::ERROR_CODE_MAX)
 
@@ -229,10 +235,10 @@ IPC_MESSAGE_CONTROL(ChromotingDesktopNetworkMsg_FileInfoResult,
 // Carries the result of a file read-chunk operation on the file identified by
 // |file_id|. |result| holds the read data. If |result| is an error, the file ID
 // is no longer valid.
-IPC_MESSAGE_CONTROL(
-    ChromotingDesktopNetworkMsg_FileDataResult,
-    uint64_t /* file_id */,
-    remoting::protocol::FileTransferResult<std::string> /* result */)
+IPC_MESSAGE_CONTROL(ChromotingDesktopNetworkMsg_FileDataResult,
+                    uint64_t /* file_id */,
+                    remoting::protocol::FileTransferResult<
+                        std::vector<std::uint8_t>> /* result */)
 
 //-----------------------------------------------------------------------------
 // Chromoting messages sent from the network to the desktop process.
@@ -294,7 +300,7 @@ IPC_MESSAGE_CONTROL(ChromotingNetworkDesktopMsg_WriteFile,
 // respond with a FileResult message.
 IPC_MESSAGE_CONTROL(ChromotingNetworkDesktopMsg_WriteFileChunk,
                     uint64_t /* file_id */,
-                    std::string /* data */)
+                    std::vector<std::uint8_t> /* data */)
 
 // Prompt the user to select a file for reading, which will be identified by
 // |file_id|. The desktop process will respond with a FileInfoResult message.

@@ -13,11 +13,13 @@
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/timer/mock_timer.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/shill/shill_service_client.h"
 #include "chromeos/network/auto_connect_handler.h"
 #include "chromeos/network/network_cert_loader.h"
 #include "chromeos/network/network_handler.h"
+#include "chromeos/network/network_handler_test_helper.h"
+#include "chromeos/network/system_token_cert_db_storage.h"
+#include "chromeos/services/network_config/public/cpp/cros_network_config_test_helper.h"
 #include "dbus/object_path.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 #include "ui/message_center/message_center.h"
@@ -39,11 +41,15 @@ class AutoConnectNotifierTest : public AshTestBase {
   ~AutoConnectNotifierTest() override = default;
 
   void SetUp() override {
+    chromeos::SystemTokenCertDbStorage::Initialize();
     chromeos::NetworkCertLoader::Initialize();
-    chromeos::NetworkCertLoader::ForceHardwareBackedForTesting();
-    chromeos::DBusThreadManager::Initialize();
-    chromeos::NetworkHandler::Initialize();
+    chromeos::NetworkCertLoader::ForceAvailableForNetworkAuthForTesting();
+    network_handler_test_helper_ =
+        std::make_unique<chromeos::NetworkHandlerTestHelper>();
     CHECK(chromeos::NetworkHandler::Get()->auto_connect_handler());
+    network_config_helper_ = std::make_unique<
+        chromeos::network_config::CrosNetworkConfigTestHelper>();
+
     AshTestBase::SetUp();
 
     mock_notification_timer_ = new base::MockOneShotTimer();
@@ -52,20 +58,19 @@ class AutoConnectNotifierTest : public AshTestBase {
         ->auto_connect_->set_timer_for_testing(
             base::WrapUnique(mock_notification_timer_));
 
-    chromeos::DBusThreadManager::Get()
-        ->GetShillServiceClient()
-        ->GetTestInterface()
-        ->AddService(kTestServicePath, kTestServiceGuid, kTestServiceName,
-                     shill::kTypeWifi, shill::kStateOnline, true /* visible*/);
+    chromeos::ShillServiceClient::Get()->GetTestInterface()->AddService(
+        kTestServicePath, kTestServiceGuid, kTestServiceName, shill::kTypeWifi,
+        shill::kStateIdle, true /* visible*/);
     // Ensure fake DBus service initialization completes.
     base::RunLoop().RunUntilIdle();
   }
 
   void TearDown() override {
     AshTestBase::TearDown();
-    chromeos::NetworkHandler::Shutdown();
-    chromeos::DBusThreadManager::Shutdown();
+    network_config_helper_.reset();
+    network_handler_test_helper_.reset();
     chromeos::NetworkCertLoader::Shutdown();
+    chromeos::SystemTokenCertDbStorage::Shutdown();
   }
 
   void NotifyConnectToNetworkRequested() {
@@ -76,8 +81,8 @@ class AutoConnectNotifierTest : public AshTestBase {
   }
 
   void SuccessfullyJoinWifiNetwork() {
-    chromeos::DBusThreadManager::Get()->GetShillServiceClient()->Connect(
-        dbus::ObjectPath(kTestServicePath), base::BindRepeating([]() {}),
+    chromeos::ShillServiceClient::Get()->Connect(
+        dbus::ObjectPath(kTestServicePath), base::BindOnce([]() {}),
         chromeos::ShillServiceClient::ErrorCallback());
     base::RunLoop().RunUntilIdle();
   }
@@ -90,6 +95,11 @@ class AutoConnectNotifierTest : public AshTestBase {
   base::MockOneShotTimer* mock_notification_timer_;
 
  private:
+  std::unique_ptr<chromeos::NetworkHandlerTestHelper>
+      network_handler_test_helper_;
+  std::unique_ptr<chromeos::network_config::CrosNetworkConfigTestHelper>
+      network_config_helper_;
+
   DISALLOW_COPY_AND_ASSIGN(AutoConnectNotifierTest);
 };
 
@@ -139,6 +149,22 @@ TEST_F(AutoConnectNotifierTest, NoConnectionBeforeTimerExpires) {
       message_center::MessageCenter::Get()->FindVisibleNotificationById(
           GetNotificationId());
   EXPECT_FALSE(notification);
+}
+
+TEST_F(AutoConnectNotifierTest, ConnectToConnectedNetwork) {
+  SuccessfullyJoinWifiNetwork();
+
+  NotifyConnectToNetworkRequested();
+  chromeos::NetworkHandler::Get()
+      ->auto_connect_handler()
+      ->NotifyAutoConnectInitiatedForTest(
+          chromeos::AutoConnectHandler::AUTO_CONNECT_REASON_POLICY_APPLIED);
+  SuccessfullyJoinWifiNetwork();
+
+  message_center::Notification* notification =
+      message_center::MessageCenter::Get()->FindVisibleNotificationById(
+          GetNotificationId());
+  ASSERT_FALSE(notification);
 }
 
 TEST_F(AutoConnectNotifierTest, NotificationDisplayed) {

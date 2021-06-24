@@ -10,6 +10,7 @@ import itertools
 import json
 import logging
 import os
+import uuid
 
 import archive
 import diff
@@ -72,8 +73,8 @@ class IndexedSet(object):
 
 
 def _PartitionSymbols(symbols):
-  # Dex methods are whitelisted for the method_count mode in the UI.
-  # Vtable entries are interesting to query for, so whitelist them as well.
+  # Dex methods are allowlisted for the method_count mode in the UI.
+  # Vtable entries are interesting to query for, so allowlist them as well.
   interesting_symbols = symbols.Filter(
       lambda s: s.IsDex() or '[vtable]' in s.name)
   ordered_symbols = interesting_symbols.Inverted().Sorted()
@@ -167,9 +168,9 @@ def _MakeTreeViewList(symbols, include_all_symbols):
   inserted_smalls_abs_pss = 0
   skipped_smalls_count = 0
   skipped_smalls_abs_pss = 0
-  for tup, type_to_pss in small_symbol_pss.iteritems():
+  for tup, type_to_pss in small_symbol_pss.items():
     path, component = tup
-    for section_name, pss in type_to_pss.iteritems():
+    for section_name, pss in type_to_pss.items():
       if abs(pss) < _MIN_OTHER_PSS:
         skipped_smalls_count += 1
         skipped_smalls_abs_pss += abs(pss)
@@ -192,7 +193,7 @@ def _MakeTreeViewList(symbols, include_all_symbols):
     'components': components.value_list,
     'total': symbols.pss,
   }
-  return meta, file_nodes.values()
+  return meta, list(file_nodes.values())
 
 
 def BuildReportFromSizeInfo(out_path, size_info, all_symbols=False):
@@ -211,18 +212,20 @@ def BuildReportFromSizeInfo(out_path, size_info, all_symbols=False):
     symbols = symbols.WhereDiffStatusIs(models.DIFF_STATUS_UNCHANGED).Inverted()
 
   meta, tree_nodes = _MakeTreeViewList(symbols, all_symbols)
+  assert len(size_info.containers) == 1
+  c = size_info.containers[0]
   logging.info('Created %d tree nodes', len(tree_nodes))
   meta.update({
-    'diff_mode': is_diff,
-    'section_sizes': size_info.section_sizes,
+      'diff_mode': is_diff,
+      'section_sizes': c.section_sizes,
   })
   if is_diff:
     meta.update({
-      'before_metadata': size_info.before.metadata,
-      'after_metadata': size_info.after.metadata,
+        'before_metadata': size_info.before.metadata_legacy,
+        'after_metadata': size_info.after.metadata_legacy,
     })
   else:
-    meta['metadata'] = size_info.metadata
+    meta['metadata'] = size_info.metadata_legacy
 
   # Write newline-delimited JSON file
   logging.info('Serializing JSON')
@@ -265,13 +268,13 @@ def AddArguments(parser):
                       help='Diffs the input_file against an older .size file')
 
 
-def Run(args, parser):
+def Run(args, on_config_error):
   if not args.input_size_file.endswith('.size'):
-    parser.error('Input must end with ".size"')
+    on_config_error('Input must end with ".size"')
   if args.diff_with and not args.diff_with.endswith('.size'):
-    parser.error('Diff input must end with ".size"')
+    on_config_error('Diff input must end with ".size"')
   if not args.output_report_file.endswith('.ndjson'):
-    parser.error('Output must end with ".ndjson"')
+    on_config_error('Output must end with ".ndjson"')
 
   size_info = archive.LoadAndPostProcessSizeInfo(args.input_size_file)
   if args.diff_with:
@@ -281,13 +284,22 @@ def Run(args, parser):
   BuildReportFromSizeInfo(
       args.output_report_file, size_info, all_symbols=args.all_symbols)
 
+  logging.warning('Done!')
   msg = [
-      'Done!',
       'View using a local server via: ',
-      '    %s start_server %s',
-      'or upload to the hosted version here:',
-      '    https://storage.googleapis.com/chrome-supersize/viewer.html'
-      ]
-  supersize_path = os.path.relpath(os.path.join(
-      path_util.SRC_ROOT, 'tools', 'binary_size', 'supersize'))
-  logging.warning('\n'.join(msg),  supersize_path, args.output_report_file)
+      '    {0}/upload_html_viewer.py --local',
+      'or run:',
+      '    gsutil.py cp -a public-read {1} gs://chrome-supersize/oneoffs/'
+      '{2}.ndjson',
+      '  to view at:',
+      '    https://chrome-supersize.firebaseapp.com/viewer.html?load_url='
+      'https://storage.googleapis.com/chrome-supersize/oneoffs/{2}.ndjson',
+  ]
+  libsupersize_path = os.path.relpath(
+      os.path.join(path_util.TOOLS_SRC_ROOT, 'tools', 'binary_size',
+                   'libsupersize'))
+  # Use a random UUID as the filename so user can copy-and-paste command
+  # directly without a name collision.
+  upload_id = uuid.uuid4()
+  print('\n'.join(msg).format(libsupersize_path, args.output_report_file,
+                              upload_id))

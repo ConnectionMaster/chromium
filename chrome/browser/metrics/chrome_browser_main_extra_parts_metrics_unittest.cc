@@ -8,23 +8,26 @@
 
 #include "base/macros.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_service_manager_context.h"
+#include "build/build_config.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/test_screen.h"
 #include "ui/gfx/geometry/size.h"
 
 #if defined(USE_OZONE) || defined(USE_X11)
-#include "services/ws/public/cpp/input_devices/input_device_client_test_api.h"
-#include "ui/aura/test/aura_test_utils.h"
-#include "ui/events/devices/input_device_manager.h"
+#include "ui/events/devices/device_data_manager_test_api.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chromeos/dbus/u2f/u2f_client.h"
 #endif
 
 namespace {
 
 const char kTouchEventFeatureDetectionEnabledHistogramName[] =
     "Touchscreen.TouchEventsEnabled";
+const char kSupportsHDRHistogramName[] = "Hardware.Display.SupportsHDR";
 
 }  // namespace
 
@@ -34,15 +37,28 @@ class ChromeBrowserMainExtraPartsMetricsTest : public testing::Test {
   ~ChromeBrowserMainExtraPartsMetricsTest() override;
 
  protected:
+  void SetUp() override {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    // ChromeBrowserMainExtraPartsMetrics::RecordMetrics() requires a U2FClient,
+    // which would ordinarily have been set up by browser DBus initialization.
+    chromeos::U2FClient::InitializeFake();
+#endif
+  }
+
+  void TearDown() override {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    task_environment_.RunUntilIdle();
+    chromeos::U2FClient::Shutdown();
+#endif
+  }
+
 #if defined(USE_OZONE) || defined(USE_X11)
-  std::unique_ptr<ui::InputDeviceManager> input_manager_;
-  ws::InputDeviceClientTestApi input_device_client_test_api_;
+  ui::DeviceDataManagerTestApi device_data_manager_test_api_;
 #endif
 
  private:
   // Provides a message loop and allows the use of the task scheduler
-  content::TestBrowserThreadBundle thread_bundle_;
-  content::TestServiceManagerContext service_manager_context_;
+  content::BrowserTaskEnvironment task_environment_;
 
   // Dummy screen required by a ChromeBrowserMainExtraPartsMetrics test target.
   display::test::TestScreen test_screen_;
@@ -53,9 +69,6 @@ class ChromeBrowserMainExtraPartsMetricsTest : public testing::Test {
 ChromeBrowserMainExtraPartsMetricsTest::
     ChromeBrowserMainExtraPartsMetricsTest() {
   display::Screen::SetScreenInstance(&test_screen_);
-#if defined(USE_OZONE) || defined(USE_X11)
-  input_manager_ = aura::test::CreateTestInputDeviceManager();
-#endif
 }
 
 ChromeBrowserMainExtraPartsMetricsTest::
@@ -94,7 +107,7 @@ TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
        VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart) {
   base::HistogramTester histogram_tester;
 
-  input_device_client_test_api_.OnDeviceListsComplete();
+  device_data_manager_test_api_.OnDeviceListsComplete();
 
   ChromeBrowserMainExtraPartsMetrics test_target;
 
@@ -111,7 +124,7 @@ TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
   ChromeBrowserMainExtraPartsMetrics test_target;
 
   test_target.PostBrowserStart();
-  input_device_client_test_api_.NotifyObserversDeviceListsComplete();
+  device_data_manager_test_api_.NotifyObserversDeviceListsComplete();
   histogram_tester.ExpectTotalCount(
       kTouchEventFeatureDetectionEnabledHistogramName, 1);
 }
@@ -124,8 +137,8 @@ TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
   ChromeBrowserMainExtraPartsMetrics test_target;
 
   test_target.PostBrowserStart();
-  input_device_client_test_api_.NotifyObserversDeviceListsComplete();
-  input_device_client_test_api_.NotifyObserversDeviceListsComplete();
+  device_data_manager_test_api_.NotifyObserversDeviceListsComplete();
+  device_data_manager_test_api_.NotifyObserversDeviceListsComplete();
   histogram_tester.ExpectTotalCount(
       kTouchEventFeatureDetectionEnabledHistogramName, 1);
 }
@@ -133,8 +146,16 @@ TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
 #else
 
 // Verify a TouchEventsEnabled value is recorded during PostBrowserStart.
+// Flaky on Win only.  http://crbug.com/1026946
+#if defined(OS_WIN)
+#define MAYBE_VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart \
+  DISABLED_VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart
+#else
+#define MAYBE_VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart \
+  VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart
+#endif
 TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
-       VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart) {
+       MAYBE_VerifyTouchEventsEnabledIsRecordedAfterPostBrowserStart) {
   base::HistogramTester histogram_tester;
   ChromeBrowserMainExtraPartsMetrics test_target;
 
@@ -144,3 +165,14 @@ TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
 }
 
 #endif  // defined(USE_OZONE) || defined(USE_X11)
+
+// Verify a Hardware.Display.SupportsHDR value is recorded during
+// PostBrowserStart.
+TEST_F(ChromeBrowserMainExtraPartsMetricsTest,
+       VerifySupportsHDRIsRecordedAfterPostBrowserStart) {
+  base::HistogramTester histogram_tester;
+  ChromeBrowserMainExtraPartsMetrics test_target;
+
+  test_target.PostBrowserStart();
+  histogram_tester.ExpectTotalCount(kSupportsHDRHistogramName, 1);
+}

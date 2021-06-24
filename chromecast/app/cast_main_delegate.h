@@ -28,6 +28,7 @@ class CastFeatureListCreator;
 namespace shell {
 
 class CastContentBrowserClient;
+class CastContentGpuClient;
 class CastContentRendererClient;
 class CastContentUtilityClient;
 
@@ -42,12 +43,14 @@ class CastMainDelegate : public content::ContentMainDelegate {
   int RunProcess(
       const std::string& process_type,
       const content::MainFunctionParams& main_function_params) override;
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   void ZygoteForked() override;
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
   bool ShouldCreateFeatureList() override;
   void PostEarlyInitialization(bool is_running_tests) override;
+  content::ContentClient* CreateContentClient() override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
+  content::ContentGpuClient* CreateContentGpuClient() override;
   content::ContentRendererClient* CreateContentRendererClient() override;
   content::ContentUtilityClient* CreateContentUtilityClient() override;
 
@@ -55,6 +58,7 @@ class CastMainDelegate : public content::ContentMainDelegate {
   void InitializeResourceBundle();
 
   std::unique_ptr<CastContentBrowserClient> browser_client_;
+  std::unique_ptr<CastContentGpuClient> gpu_client_;
   std::unique_ptr<CastContentRendererClient> renderer_client_;
   std::unique_ptr<CastContentUtilityClient> utility_client_;
   std::unique_ptr<CastResourceDelegate> resource_delegate_;

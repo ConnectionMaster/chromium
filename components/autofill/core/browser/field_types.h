@@ -5,10 +5,8 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FIELD_TYPES_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FIELD_TYPES_H_
 
-#include <map>
-#include <set>
-
-#include "base/strings/string16.h"
+#include "base/strings/string_piece_forward.h"
+#include "components/autofill/core/common/dense_set.h"
 
 namespace autofill {
 
@@ -104,6 +102,8 @@ enum ServerFieldType {
   // these are likely to be filled out differently on a case by case basis,
   // they are here primarily for use by Autocheckout.
   MERCHANT_EMAIL_SIGNUP = 73,
+  // A promo/gift/coupon code, usually entered during checkout on a commerce web
+  // site to reduce the cost of a purchase.
   MERCHANT_PROMO_CODE = 74,
 
   // Field types for the password fields. PASSWORD is the default type for all
@@ -175,9 +175,69 @@ enum ServerFieldType {
   // Password-type fields which are not actual passwords.
   NOT_PASSWORD = 99,
 
+  // Username field when there is no corresponding password field. It might be
+  // because of:
+  // 1. Username first flow: a user has to type username first on one page and
+  // then password on another page
+  // 2. Username and password fields are in different <form>s.
+  SINGLE_USERNAME = 100,
+
+  // Text-type fields which are not usernames.
+  NOT_USERNAME = 101,
+
+  // UPI/VPA is a payment method, which is stored and filled. See
+  // https://en.wikipedia.org/wiki/Unified_Payments_Interface
+  UPI_VPA = 102,
+
+  // Just the street name of an address, no house number.
+  ADDRESS_HOME_STREET_NAME = 103,
+
+  // House number of an address, may be alphanumeric.
+  ADDRESS_HOME_HOUSE_NUMBER = 104,
+
+  // Contains the floor, the staircase the apartment number within a building.
+  ADDRESS_HOME_SUBPREMISE = 105,
+
+  // A catch-all for other type of subunits (only used until something more
+  // precise is defined).
+  // Currently not used by Chrome.
+  ADDRESS_HOME_OTHER_SUBUNIT = 106,
+
+  // Types to represent the structure of a Hispanic/Latinx last name.
+  NAME_LAST_FIRST = 107,
+  NAME_LAST_CONJUNCTION = 108,
+  NAME_LAST_SECOND = 109,
+
+  // Type to catch name additions like "Mr.", "Ms." or "Dr.".
+  NAME_HONORIFIC_PREFIX = 110,
+
+  // Type that corresponds to the name of a place or a building below the
+  // granularity of a street.
+  ADDRESS_HOME_PREMISE_NAME = 111,
+
+  // Type that describes a crossing street as it is used in some countries to
+  // describe a location.
+  ADDRESS_HOME_DEPENDENT_STREET_NAME = 112,
+
+  // Compound type to join the street and dependent street names.
+  ADDRESS_HOME_STREET_AND_DEPENDENT_STREET_NAME = 113,
+
+  // The complete formatted address as it would be written on an envelope or in
+  // a clear-text field without the name.
+  ADDRESS_HOME_ADDRESS = 114,
+
+  // The complete formatted address including the name.
+  ADDRESS_HOME_ADDRESS_WITH_NAME = 115,
+
+  // The floor number within a building.
+  ADDRESS_HOME_FLOOR = 116,
+
+  // The full name including the honorific prefix.
+  NAME_FULL_WITH_HONORIFIC_PREFIX = 117,
+
   // No new types can be added without a corresponding change to the Autofill
   // server.
-  MAX_VALID_FIELD_TYPE = 100,
+  MAX_VALID_FIELD_TYPE = 118,
 };
 
 // The list of all HTML autocomplete field type hints supported by Chrome.
@@ -188,6 +248,7 @@ enum HtmlFieldType {
 
   // Name types.
   HTML_TYPE_NAME,
+  HTML_TYPE_HONORIFIC_PREFIX,
   HTML_TYPE_GIVEN_NAME,
   HTML_TYPE_ADDITIONAL_NAME,
   HTML_TYPE_FAMILY_NAME,
@@ -249,6 +310,9 @@ enum HtmlFieldType {
   // Universal Payment Interface - Virtual Payment Address.
   HTML_TYPE_UPI_VPA,
 
+  // Phone number verification one-time-codes.
+  HTML_TYPE_ONE_TIME_CODE,
+
   // Non-standard autocomplete types.
   HTML_TYPE_UNRECOGNIZED,
 };
@@ -261,25 +325,36 @@ enum HtmlFieldMode {
   HTML_MODE_SHIPPING,
 };
 
-enum FieldTypeGroup {
-  NO_GROUP,
-  NAME,
-  NAME_BILLING,
-  EMAIL,
-  COMPANY,
-  ADDRESS_HOME,
-  ADDRESS_BILLING,
-  PHONE_HOME,
-  PHONE_BILLING,
-  CREDIT_CARD,
-  PASSWORD_FIELD,
-  TRANSACTION,
-  USERNAME_FIELD,
-  UNFILLABLE,
+enum class FieldTypeGroup {
+  kNoGroup,
+  kName,
+  kNameBilling,
+  kEmail,
+  kCompany,
+  kAddressHome,
+  kAddressBilling,
+  kPhoneHome,
+  kPhoneBilling,
+  kCreditCard,
+  kPasswordField,
+  kTransaction,
+  kUsernameField,
+  kUnfillable,
+  kMaxValue = kUnfillable,
 };
 
-typedef std::set<ServerFieldType> ServerFieldTypeSet;
+using ServerFieldTypeSet = DenseSet<ServerFieldType, MAX_VALID_FIELD_TYPE>;
 
+// Returns whether the field can be filled with data.
+bool IsFillableFieldType(ServerFieldType field_type);
+
+// Returns a StringPiece describing |type|. As the StringPiece points to a
+// static string, you don't need to worry about memory deallocation.
+base::StringPiece FieldTypeToStringPiece(HtmlFieldType type);
+
+// Returns a StringPiece describing |type|. As the StringPiece points to a
+// static string, you don't need to worry about memory deallocation.
+base::StringPiece FieldTypeToStringPiece(ServerFieldType type);
 }  // namespace autofill
 
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_FIELD_TYPES_H_

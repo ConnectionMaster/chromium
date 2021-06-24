@@ -42,6 +42,7 @@ FROM (
     AND run.time != 0
     AND run.is_unexpected IS FALSE
     AND DATEDIFF(CURRENT_DATE(), DATE(start_time)) < {num_last_days}
+    AND _PARTITIONTIME > DATE_ADD(CURRENT_DATE(), -{num_last_days}, "DAY")
   GROUP BY
     name,
     start_time
@@ -69,6 +70,7 @@ FROM (
     AND run.time != 0
     AND run.is_unexpected IS FALSE
     AND DATEDIFF(CURRENT_DATE(), DATE(start_time)) < {num_last_days}
+    AND _PARTITIONTIME > DATE_ADD(CURRENT_DATE(), -{num_last_days}, "DAY")
   GROUP BY
     name,
     start_time
@@ -122,7 +124,7 @@ def FetchStoryTimingDataForSingleBuild(configurations, build_number):
       configurations_str, build_number))
 
 
-def FetchAverageStortyTimingData(configurations, num_last_days):
+def FetchAverageStoryTimingData(configurations, num_last_days):
   configurations_str = ','.join(repr(c) for c in configurations)
   return _run_query(QUERY_STORY_AVG_RUNTIME.format(
       configuration_names=configurations_str, num_last_days=num_last_days))
@@ -182,7 +184,7 @@ def main(args):
       data = FetchStoryTimingDataForSingleBuild(opts.configurations,
           opts.build_number)
     else:
-      data = FetchAverageStortyTimingData(opts.configurations, num_last_days=5)
+      data = FetchAverageStoryTimingData(opts.configurations, num_last_days=5)
 
   with open(opts.output_file, 'w') as output_file:
     json.dump(data, output_file, indent = 4, separators=(',', ': '))

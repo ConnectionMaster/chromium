@@ -24,8 +24,6 @@ class MockTranslateDriver : public TranslateDriver {
 
   void Reset();
 
-  virtual ~MockTranslateDriver() {}
-
   // TranslateDriver:
   void OnIsPageTranslatedChanged() override;
   void OnTranslateEnabledChanged() override;
@@ -40,6 +38,7 @@ class MockTranslateDriver : public TranslateDriver {
   const GURL& GetLastCommittedURL() override;
   const GURL& GetVisibleURL() override;
   ukm::SourceId GetUkmSourceId() override;
+  LanguageState& GetLanguageState();
   bool HasCurrentPage() override;
   void OpenUrlInNewTab(const GURL& url) override {}
 
@@ -57,6 +56,8 @@ class MockTranslateDriver : public TranslateDriver {
 
   void SetLastCommittedURL(const GURL& url);
 
+  void SetPageMimeType(const std::string& mime_type);
+
  private:
   bool is_incognito_;
   bool on_is_page_translated_changed_called_;
@@ -64,8 +65,7 @@ class MockTranslateDriver : public TranslateDriver {
   bool translate_page_is_called_;
   LanguageState language_state_;
   GURL last_committed_url_;
-
-  DISALLOW_COPY_AND_ASSIGN(MockTranslateDriver);
+  std::string page_mime_type_ = "text/html";
 };
 
 }  // namespace testing

@@ -23,14 +23,13 @@ RequestSender::RequestSender(
       url_loader_factory_(url_loader_factory),
       blocking_task_runner_(blocking_task_runner),
       custom_user_agent_(custom_user_agent),
-      traffic_annotation_(traffic_annotation),
-      weak_ptr_factory_(this) {}
+      traffic_annotation_(traffic_annotation) {}
 
 RequestSender::~RequestSender() {
   DCHECK(thread_checker_.CalledOnValidThread());
 }
 
-base::Closure RequestSender::StartRequestWithAuthRetry(
+base::RepeatingClosure RequestSender::StartRequestWithAuthRetry(
     std::unique_ptr<AuthenticatedRequestInterface> request) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
@@ -40,23 +39,23 @@ base::Closure RequestSender::StartRequestWithAuthRetry(
   return StartRequestWithAuthRetryInternal(request_ptr);
 }
 
-base::Closure RequestSender::StartRequestWithAuthRetryInternal(
+base::RepeatingClosure RequestSender::StartRequestWithAuthRetryInternal(
     AuthenticatedRequestInterface* request) {
   // TODO(kinaba): Stop relying on weak pointers. Move lifetime management
   // of the requests to request sender.
-  base::Closure cancel_closure =
-      base::Bind(&RequestSender::CancelRequest, weak_ptr_factory_.GetWeakPtr(),
-                 request->GetWeakPtr());
+  base::RepeatingClosure cancel_closure = base::BindRepeating(
+      &RequestSender::CancelRequest, weak_ptr_factory_.GetWeakPtr(),
+      request->GetWeakPtr());
 
   if (!auth_service_->HasAccessToken()) {
     // Fetch OAuth2 access token from the refresh token first.
     auth_service_->StartAuthentication(
-        base::Bind(&RequestSender::OnAccessTokenFetched,
-                   weak_ptr_factory_.GetWeakPtr(), request->GetWeakPtr()));
+        base::BindOnce(&RequestSender::OnAccessTokenFetched,
+                       weak_ptr_factory_.GetWeakPtr(), request->GetWeakPtr()));
   } else {
     request->Start(auth_service_->access_token(), custom_user_agent_,
-                   base::Bind(&RequestSender::RetryRequest,
-                              weak_ptr_factory_.GetWeakPtr()));
+                   base::BindRepeating(&RequestSender::RetryRequest,
+                                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   return cancel_closure;

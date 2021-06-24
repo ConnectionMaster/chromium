@@ -12,6 +12,7 @@
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "chromeos/services/device_sync/cryptauth_device_manager.h"
+#include "chromeos/services/device_sync/cryptauth_feature_type.h"
 #include "chromeos/services/device_sync/cryptauth_gcm_manager.h"
 #include "chromeos/services/device_sync/network_request_error.h"
 #include "chromeos/services/device_sync/proto/cryptauth_api.pb.h"
@@ -32,21 +33,21 @@ class CryptAuthDeviceManagerImpl : public CryptAuthDeviceManager,
  public:
   class Factory {
    public:
-    static std::unique_ptr<CryptAuthDeviceManager> NewInstance(
+    static std::unique_ptr<CryptAuthDeviceManager> Create(
         base::Clock* clock,
         CryptAuthClientFactory* cryptauth_client_factory,
         CryptAuthGCMManager* gcm_manager,
         PrefService* pref_service);
 
-    static void SetInstanceForTesting(Factory* factory);
+    static void SetFactoryForTesting(Factory* factory);
 
    protected:
     virtual ~Factory();
-    virtual std::unique_ptr<CryptAuthDeviceManager> BuildInstance(
+    virtual std::unique_ptr<CryptAuthDeviceManager> CreateInstance(
         base::Clock* clock,
         CryptAuthClientFactory* cryptauth_client_factory,
         CryptAuthGCMManager* gcm_manager,
-        PrefService* pref_service);
+        PrefService* pref_service) = 0;
 
    private:
     static Factory* factory_instance_;
@@ -88,7 +89,9 @@ class CryptAuthDeviceManagerImpl : public CryptAuthDeviceManager,
 
  private:
   // CryptAuthGCMManager::Observer:
-  void OnResyncMessage() override;
+  void OnResyncMessage(
+      const absl::optional<std::string>& session_id,
+      const absl::optional<CryptAuthFeatureType>& feature_type) override;
 
   // Updates |unlock_keys_| by fetching the list stored in |pref_service_|.
   void UpdateUnlockKeysFromPrefs();
@@ -130,7 +133,7 @@ class CryptAuthDeviceManagerImpl : public CryptAuthDeviceManager,
   // instance will be created for each individual attempt.
   std::unique_ptr<CryptAuthClient> cryptauth_client_;
 
-  base::WeakPtrFactory<CryptAuthDeviceManagerImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<CryptAuthDeviceManagerImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CryptAuthDeviceManagerImpl);
 };

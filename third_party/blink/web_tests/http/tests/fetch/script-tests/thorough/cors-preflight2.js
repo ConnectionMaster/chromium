@@ -7,6 +7,7 @@ if (self.importScripts) {
 // Spec: https://fetch.spec.whatwg.org/#cors-preflight-fetch
 
 var TEST_TARGETS = [];
+var {BASE_ORIGIN, OTHER_BASE_URL} = get_thorough_test_options();
 
 ['PUT', 'XXX'].forEach(function(method) {
     var checkMethod = checkJsonpMethod.bind(this, method);
@@ -28,7 +29,7 @@ var TEST_TARGETS = [];
        [fetchRejected]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&ACAMethods=' + method,
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&headers=CUSTOM&ACAMethods=' + method,
@@ -36,7 +37,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&headers=CUSTOM&ACAMethods=' + method +
        '&ACAHeaders=x-serviceworker-test',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&headers=CUSTOM&ACAMethods=' + method +
@@ -50,7 +51,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&headers=CUSTOM&ACAMethods=PUT, XXX' +
        '&ACAHeaders=x-serviceworker-test',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&headers=CUSTOM&ACAMethods=PUT, XXX' +
@@ -62,7 +63,7 @@ var TEST_TARGETS = [];
        [fetchRejected]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=' + BASE_ORIGIN + '&ACAMethods=' + method,
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=' + BASE_ORIGIN + '&headers=CUSTOM&ACAMethods=' + method,
@@ -70,7 +71,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=' + BASE_ORIGIN + '&headers=CUSTOM&ACAMethods=' + method +
        '&ACAHeaders=x-serviceworker-test',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=' + BASE_ORIGIN + '&headers=CUSTOM&ACAMethods=' + method +
@@ -84,7 +85,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=' + BASE_ORIGIN +
        '&headers=CUSTOM&ACAMethods=PUT, XXX&ACAHeaders=x-serviceworker-test',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=' + BASE_ORIGIN +
@@ -97,7 +98,7 @@ var TEST_TARGETS = [];
       // CORS preflight fetch.
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method + '&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&PACAOrigin=*&ACAMethods=' + method + '&PreflightTest=200',
@@ -108,7 +109,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&headers=CUSTOM&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
        '&PACAHeaders=x-serviceworker-test&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&headers=CUSTOM&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
@@ -128,13 +129,13 @@ var TEST_TARGETS = [];
        '&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
        '&PACEHeaders=Content-Length, X-ServiceWorker-ServerHeader' +
        '&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod]],
 
       // Test that CORS preflight with Status 2XX succeeds.
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method + '&PreflightTest=201',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod]],
 
       // Test that CORS preflight with Status other than 2XX fails.
@@ -153,7 +154,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&headers=CUSTOM2&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
        '&PACAHeaders=x-servicEworker-u,x-servicEworker-ua,x-servicewOrker-test,x-sErviceworker-s,x-sErviceworker-v&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader2]],
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&headers=CUSTOM2&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
@@ -165,7 +166,7 @@ var TEST_TARGETS = [];
        '&headers=CUSTOM&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
        '&PACAHeaders=x-serviceworker-test&PACRMethod=' + method +
        '&PACRHeaders=x-serviceworker-test&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader]],
 
       // Verify that Access-Control-Request-Headers: is not present in preflight
@@ -173,7 +174,7 @@ var TEST_TARGETS = [];
       [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=' + method +
        '&headers=SAFE&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
        '&PACRHeaders=missing&PACRMethod=' + method + '&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod]],
 
       // Test Access-Control-Request-Headers is sorted https://crbug.com/452391
@@ -181,7 +182,7 @@ var TEST_TARGETS = [];
        '&headers=CUSTOM2&ACAOrigin=*&PACAOrigin=*&PACAMethods=' + method +
        '&PACAHeaders=x-servicEworker-u,x-servicEworker-ua,x-servicewOrker-test,x-sErviceworker-s,x-sErviceworker-v&PACRMethod=' + method +
        '&PACRHeaders=x-serviceworker-s,x-serviceworker-test,x-serviceworker-u,x-serviceworker-ua,x-serviceworker-v&PreflightTest=200',
-       [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+       [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
        [checkMethod, hasCustomHeader2]]);
   });
 

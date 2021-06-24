@@ -7,19 +7,22 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "ui/views/controls/link_listener.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/window/dialog_delegate.h"
 
 class Profile;
 
 namespace views {
 class Checkbox;
-class Link;
 }
 
-class FirstRunDialog : public views::DialogDelegateView,
-                       public views::LinkListener {
+class FirstRunDialog : public views::DialogDelegateView {
  public:
+  METADATA_HEADER(FirstRunDialog);
+
+  FirstRunDialog(const FirstRunDialog&) = delete;
+  FirstRunDialog& operator=(const FirstRunDialog&) = delete;
+
   // Displays the first run UI for reporting opt-in, import data etc.
   static void Show(Profile* profile);
 
@@ -31,22 +34,14 @@ class FirstRunDialog : public views::DialogDelegateView,
   void Done();
 
   // views::DialogDelegate:
-  views::View* CreateExtraView() override;
   bool Accept() override;
-  int GetDialogButtons() const override;
 
   // views::WidgetDelegate:
   void WindowClosing() override;
 
-  // views::LinkListener:
-  void LinkClicked(views::Link* source, int event_flags) override;
-
-  Profile* profile_;
-  views::Checkbox* make_default_;
-  views::Checkbox* report_crashes_;
-  base::Closure quit_runloop_;
-
-  DISALLOW_COPY_AND_ASSIGN(FirstRunDialog);
+  views::Checkbox* make_default_ = nullptr;
+  views::Checkbox* report_crashes_ = nullptr;
+  base::RepeatingClosure quit_runloop_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FIRST_RUN_DIALOG_H_

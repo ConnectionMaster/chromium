@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/guid.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
@@ -16,6 +15,7 @@
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
+#include "components/send_tab_to_self/metrics_util.h"
 #include "components/send_tab_to_self/send_tab_to_self_entry.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
@@ -30,29 +30,7 @@ namespace send_tab_to_self {
 
 namespace {
 
-// Metrics for measuring notification interaction.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class SendTabToSelfNotification {
-  // The user opened a tab from a notification.
-  kOpened = 0,
-  // The user closed a notification.
-  kDismissed = 1,
-  // A notification was shown from a remotely added entry.
-  kShown = 2,
-  // A notification was dismissed remotely.
-  kDismissedRemotely = 3,
-  // Update kMaxValue when new enums are added.
-  kMaxValue = kDismissedRemotely,
-};
-
-const char kNotificationStatusHistogram[] = "SendTabToSelf.Notification";
-
 const char kDesktopNotificationSharedPrefix[] = "shared";
-
-void RecordNotificationHistogram(SendTabToSelfNotification status) {
-  UMA_HISTOGRAM_ENUMERATION(kNotificationStatusHistogram, status);
-}
 
 }  // namespace
 
@@ -64,7 +42,7 @@ DesktopNotificationHandler::~DesktopNotificationHandler() = default;
 void DesktopNotificationHandler::DisplayNewEntries(
     const std::vector<const SendTabToSelfEntry*>& new_entries) {
   for (const SendTabToSelfEntry* entry : new_entries) {
-    const base::string16 device_info = l10n_util::GetStringFUTF16(
+    const std::u16string device_info = l10n_util::GetStringFUTF16(
         IDS_MESSAGE_NOTIFICATION_SEND_TAB_TO_SELF_DEVICE_INFO,
         base::UTF8ToUTF16(entry->GetDeviceName()));
     const GURL& url = entry->GetURL();
@@ -80,7 +58,6 @@ void DesktopNotificationHandler::DisplayNewEntries(
     NotificationDisplayServiceFactory::GetForProfile(profile_)->Display(
         NotificationHandler::Type::SEND_TAB_TO_SELF, notification,
         /*metadata=*/nullptr);
-    RecordNotificationHistogram(SendTabToSelfNotification::kShown);
   }
 }
 
@@ -89,7 +66,6 @@ void DesktopNotificationHandler::DismissEntries(
   for (const std::string& guid : guids) {
     NotificationDisplayServiceFactory::GetForProfile(profile_)->Close(
         NotificationHandler::Type::SEND_TAB_TO_SELF, guid);
-    RecordNotificationHistogram(SendTabToSelfNotification::kDismissedRemotely);
   }
 }
 
@@ -102,7 +78,7 @@ void DesktopNotificationHandler::OnClose(Profile* profile,
     SendTabToSelfSyncServiceFactory::GetForProfile(profile)
         ->GetSendTabToSelfModel()
         ->DismissEntry(notification_id);
-    RecordNotificationHistogram(SendTabToSelfNotification::kDismissed);
+    send_tab_to_self::RecordNotificationDismissed();
   }
   std::move(completed_closure).Run();
 }
@@ -111,8 +87,8 @@ void DesktopNotificationHandler::OnClick(
     Profile* profile,
     const GURL& origin,
     const std::string& notification_id,
-    const base::Optional<int>& action_index,
-    const base::Optional<base::string16>& reply,
+    const absl::optional<int>& action_index,
+    const absl::optional<std::u16string>& reply,
     base::OnceClosure completed_closure) {
   if (notification_id.find(kDesktopNotificationSharedPrefix)) {
     // Launch a new tab for the notification's |origin|,
@@ -123,23 +99,26 @@ void DesktopNotificationHandler::OnClick(
     Navigate(&params);
     NotificationDisplayServiceFactory::GetForProfile(profile)->Close(
         NotificationHandler::Type::SEND_TAB_TO_SELF, notification_id);
-    // Delete the entry in SendTabToSelfModel
+
+    // Marks the the entry as opened in SendTabToSelfModel
     SendTabToSelfSyncServiceFactory::GetForProfile(profile)
         ->GetSendTabToSelfModel()
-        ->DeleteEntry(notification_id);
-    RecordNotificationHistogram(SendTabToSelfNotification::kOpened);
+        ->MarkEntryOpened(notification_id);
+    send_tab_to_self::RecordNotificationOpened();
   }
   std::move(completed_closure).Run();
 }
 
 void DesktopNotificationHandler::DisplaySendingConfirmation(
-    const SendTabToSelfEntry& entry) {
+    const SendTabToSelfEntry& entry,
+    const std::string& target_device_name) {
+  const std::u16string confirm_str = l10n_util::GetStringFUTF16(
+      IDS_MESSAGE_NOTIFICATION_SEND_TAB_TO_SELF_CONFIRMATION_SUCCESS,
+      base::UTF8ToUTF16(target_device_name));
   const GURL& url = entry.GetURL();
   message_center::Notification notification(
       message_center::NOTIFICATION_TYPE_SIMPLE,
-      kDesktopNotificationSharedPrefix + entry.GetGUID(),
-      l10n_util::GetStringUTF16(
-          IDS_MESSAGE_NOTIFICATION_SEND_TAB_TO_SELF_CONFIRMATION_SUCCESS),
+      kDesktopNotificationSharedPrefix + entry.GetGUID(), confirm_str,
       base::UTF8ToUTF16(entry.GetTitle()), gfx::Image(),
       base::UTF8ToUTF16(url.host()), url, message_center::NotifierId(url),
       message_center::RichNotificationData(), /*delegate=*/nullptr);
@@ -162,6 +141,10 @@ void DesktopNotificationHandler::DisplayFailureMessage(const GURL& url) {
   NotificationDisplayServiceFactory::GetForProfile(profile_)->Display(
       NotificationHandler::Type::SEND_TAB_TO_SELF, notification,
       /*metadata=*/nullptr);
+}
+
+const Profile* DesktopNotificationHandler::GetProfile() const {
+  return profile_;
 }
 
 }  // namespace send_tab_to_self

@@ -31,6 +31,7 @@
 #include "third_party/blink/renderer/core/html/track/vtt/vtt_region.h"
 
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
@@ -39,6 +40,7 @@
 #include "third_party/blink/renderer/core/html/track/vtt/vtt_scanner.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
@@ -68,7 +70,7 @@ constexpr bool kDefaultScroll = false;
 constexpr float kLineHeight = 5.33;
 
 // Default scrolling animation time period (s).
-constexpr TimeDelta kScrollTime = TimeDelta::FromMilliseconds(433);
+constexpr base::TimeDelta kScrollTime = base::TimeDelta::FromMilliseconds(433);
 
 bool IsNonPercentage(double value,
                      const char* method,
@@ -272,7 +274,7 @@ const AtomicString& VTTRegion::TextTrackCueContainerScrollingClass() {
 
 HTMLDivElement* VTTRegion::GetDisplayTree(Document& document) {
   if (!region_display_tree_) {
-    region_display_tree_ = HTMLDivElement::Create(document);
+    region_display_tree_ = MakeGarbageCollected<HTMLDivElement>(document);
     PrepareRegionDisplayTree();
   }
 
@@ -380,7 +382,8 @@ void VTTRegion::PrepareRegionDisplayTree() {
 
   // The cue container is used to wrap the cues and it is the object which is
   // gradually scrolled out as multiple cues are appended to the region.
-  cue_container_ = HTMLDivElement::Create(region_display_tree_->GetDocument());
+  cue_container_ =
+      MakeGarbageCollected<HTMLDivElement>(region_display_tree_->GetDocument());
   cue_container_->SetInlineStyleProperty(CSSPropertyID::kTop, 0.0,
                                          CSSPrimitiveValue::UnitType::kPixels);
 
@@ -399,7 +402,8 @@ void VTTRegion::StartTimer() {
   if (scroll_timer_.IsActive())
     return;
 
-  TimeDelta duration = IsScrollingRegion() ? kScrollTime : TimeDelta();
+  base::TimeDelta duration =
+      IsScrollingRegion() ? kScrollTime : base::TimeDelta();
   scroll_timer_.StartOneShot(duration, FROM_HERE);
 }
 
@@ -415,9 +419,10 @@ void VTTRegion::ScrollTimerFired(TimerBase*) {
   DisplayLastVTTCueBox();
 }
 
-void VTTRegion::Trace(Visitor* visitor) {
+void VTTRegion::Trace(Visitor* visitor) const {
   visitor->Trace(cue_container_);
   visitor->Trace(region_display_tree_);
+  visitor->Trace(scroll_timer_);
   ScriptWrappable::Trace(visitor);
 }
 

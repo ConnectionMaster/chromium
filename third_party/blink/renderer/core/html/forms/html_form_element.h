@@ -34,23 +34,19 @@
 namespace blink {
 
 class Event;
-class ListedElement;
 class HTMLFormControlElement;
 class HTMLFormControlsCollection;
 class HTMLImageElement;
-class RadioNodeListOrElement;
+class ListedElement;
+class V8UnionElementOrRadioNodeList;
 
 class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  static HTMLFormElement* Create(Document&);
-
   explicit HTMLFormElement(Document&);
   ~HTMLFormElement() override;
-  void Trace(Visitor*) override;
-
-  const AttrNameToTrustedType& GetCheckedAttributeTypes() const override;
+  void Trace(Visitor*) const override;
 
   HTMLFormControlsCollection* elements();
   void GetNamedElements(const AtomicString&, HeapVector<Member<Element>>&);
@@ -59,8 +55,7 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   HTMLElement* item(unsigned index);
 
   String action() const;
-  void action(USVStringOrTrustedURL&) const;
-  void setAction(const USVStringOrTrustedURL&, ExceptionState&);
+  void setAction(const AtomicString&);
 
   String enctype() const { return attributes_.EncodingType(); }
   void setEnctype(const AtomicString&);
@@ -76,11 +71,14 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   void Disassociate(HTMLImageElement&);
   void DidAssociateByParser();
 
-  void PrepareForSubmission(Event&, HTMLFormControlElement* submit_button);
+  void PrepareForSubmission(const Event*,
+                            HTMLFormControlElement* submit_button);
   void submitFromJavaScript();
+  void requestSubmit(ExceptionState& exception_state);
+  void requestSubmit(HTMLElement* submitter, ExceptionState& exception_state);
   void reset();
 
-  void SubmitImplicitly(Event&, bool from_implicit_submission_trigger);
+  void SubmitImplicitly(const Event&, bool from_implicit_submission_trigger);
 
   String GetName() const;
 
@@ -104,10 +102,11 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
     return radio_button_group_scope_;
   }
 
-  const ListedElement::List& ListedElements() const;
+  const ListedElement::List& ListedElements(
+      bool include_shadow_trees = false) const;
   const HeapVector<Member<HTMLImageElement>>& ImageElements();
 
-  void AnonymousNamedGetter(const AtomicString& name, RadioNodeListOrElement&);
+  V8UnionElementOrRadioNodeList* AnonymousNamedGetter(const AtomicString& name);
   void InvalidateDefaultButtonStyle() const;
 
   // 'construct the entry list'
@@ -117,6 +116,8 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
                                const WTF::TextEncoding& encoding);
 
   unsigned UniqueRendererFormId() const { return unique_renderer_form_id_; }
+
+  void InvalidateListedElementsIncludingShadowTrees();
 
  private:
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;
@@ -134,11 +135,14 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   }
 
   void SubmitDialog(FormSubmission*);
-  void Submit(Event*, HTMLFormControlElement* submit_button);
+  void ScheduleFormSubmission(const Event*,
+                              HTMLFormControlElement* submit_button);
 
-  void ScheduleFormSubmission(FormSubmission*);
-
-  void CollectListedElements(Node& root, ListedElement::List&) const;
+  void CollectListedElements(
+      const Node& root,
+      ListedElement::List& elements,
+      ListedElement::List* elements_including_shadow_trees = nullptr,
+      bool in_shadow_tree = false) const;
   void CollectImageElements(Node& root, HeapVector<Member<HTMLImageElement>>&);
 
   // Returns true if the submission should proceed.
@@ -162,13 +166,11 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
 
   // Do not access listed_elements_ directly. Use ListedElements() instead.
   ListedElement::List listed_elements_;
+  // Do not access listed_elements_including_shadow_trees_ directly. Use
+  // ListedElements(true) instead.
+  ListedElement::List listed_elements_including_shadow_trees_;
   // Do not access image_elements_ directly. Use ImageElements() instead.
   HeapVector<Member<HTMLImageElement>> image_elements_;
-
-  // https://html.spec.whatwg.org/C/#planned-navigation
-  // Unlike the specification, we use this only for web-exposed submit()
-  // function in 'submit' event handler.
-  Member<FormSubmission> planned_navigation_;
 
   unsigned unique_renderer_form_id_;
 
@@ -177,6 +179,7 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   bool is_constructing_entry_list_ = false;
 
   bool listed_elements_are_dirty_ : 1;
+  bool listed_elements_including_shadow_trees_are_dirty_ : 1;
   bool image_elements_are_dirty_ : 1;
   bool has_elements_associated_by_parser_ : 1;
   bool has_elements_associated_by_form_attribute_ : 1;

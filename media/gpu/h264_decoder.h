@@ -88,7 +88,24 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
         const H264Picture::Vector& ref_pic_listp0,
         const H264Picture::Vector& ref_pic_listb0,
         const H264Picture::Vector& ref_pic_listb1,
-        const scoped_refptr<H264Picture>& pic) = 0;
+        scoped_refptr<H264Picture> pic) = 0;
+
+    // Used for handling CENCv1 streams where the entire slice header, except
+    // for the NALU type byte, is encrypted. |data| represents the encrypted
+    // ranges which will include any SEI NALUs along with the encrypted slice
+    // NALU. |subsamples| specifies what is encrypted and should have just a
+    // single clear byte for each and the rest is encrypted. |sps_nalu_data|
+    // and |pps_nalu_data| are the SPS and PPS NALUs respectively.
+    // |slice_header_out| should have its fields filled in upon successful
+    // return. Returns kOk if successful, kFail if there are errors, or
+    // kTryAgain if the accelerator needs additional data before being able to
+    // proceed.
+    virtual Status ParseEncryptedSliceHeader(
+        const std::vector<base::span<const uint8_t>>& data,
+        const std::vector<SubsampleEntry>& subsamples,
+        const std::vector<uint8_t>& sps_nalu_data,
+        const std::vector<uint8_t>& pps_nalu_data,
+        H264SliceHeader* slice_header_out);
 
     // Submit one slice for the current frame, passing the current |pps| and
     // |pic| (same as in SubmitFrameMetadata()), the parsed header for the
@@ -106,7 +123,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
         const H264SliceHeader* slice_hdr,
         const H264Picture::Vector& ref_pic_list0,
         const H264Picture::Vector& ref_pic_list1,
-        const scoped_refptr<H264Picture>& pic,
+        scoped_refptr<H264Picture> pic,
         const uint8_t* data,
         size_t size,
         const std::vector<SubsampleEntry>& subsamples) = 0;
@@ -116,7 +133,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
     // the previous call to SubmitDecode().
     // Returns kOk if successful, kFail if there are errors, or kTryAgain if
     // the accelerator needs additional data before being able to proceed.
-    virtual Status SubmitDecode(const scoped_refptr<H264Picture>& pic) = 0;
+    virtual Status SubmitDecode(scoped_refptr<H264Picture> pic) = 0;
 
     // Schedule output (display) of |pic|. Note that returning from this
     // method does not mean that |pic| has already been outputted (displayed),
@@ -124,7 +141,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
     // as this method was called for them. Decoder may drop its reference
     // to |pic| after calling this method.
     // Return true if successful.
-    virtual bool OutputPicture(const scoped_refptr<H264Picture>& pic) = 0;
+    virtual bool OutputPicture(scoped_refptr<H264Picture> pic) = 0;
 
     // Reset any current state that may be cached in the accelerator, dropping
     // any cached parameters/slices that have not been committed yet.
@@ -147,18 +164,19 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   };
 
   H264Decoder(std::unique_ptr<H264Accelerator> accelerator,
+              VideoCodecProfile profile,
               const VideoColorSpace& container_color_space = VideoColorSpace());
   ~H264Decoder() override;
 
   // AcceleratedVideoDecoder implementation.
-  void SetStream(int32_t id,
-                 const uint8_t* ptr,
-                 size_t size,
-                 const DecryptConfig* decrypt_config = nullptr) override;
+  void SetStream(int32_t id, const DecoderBuffer& decoder) override;
   bool Flush() override WARN_UNUSED_RESULT;
   void Reset() override;
   DecodeResult Decode() override WARN_UNUSED_RESULT;
   gfx::Size GetPicSize() const override;
+  gfx::Rect GetVisibleRect() const override;
+  VideoCodecProfile GetProfile() const override;
+  uint8_t GetBitDepth() const override;
   size_t GetRequiredNumOfPictures() const override;
   size_t GetNumReferenceFrames() const override;
 
@@ -188,6 +206,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
     // retryable error) is returned. The next time Decode() is called the call
     // that previously failed will be retried and execution continues from
     // there (if possible).
+    kParseSliceHeader,
     kTryPreprocessCurrentSlice,
     kEnsurePicture,
     kTryNewFrame,
@@ -198,6 +217,12 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
 
   // Process H264 stream structures.
   bool ProcessSPS(int sps_id, bool* need_new_buffers);
+
+  // Processes a CENCv1 encrypted slice header and fills in |curr_slice_hdr_|
+  // with the relevant parsed fields.
+  H264Accelerator::Status ProcessEncryptedSliceHeader(
+      const std::vector<SubsampleEntry>& subsamples);
+
   // Process current slice header to discover if we need to start a new picture,
   // finishing up the current one.
   H264Accelerator::Status PreprocessCurrentSlice();
@@ -222,7 +247,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   bool UpdateMaxNumReorderFrames(const H264SPS* sps);
 
   // Prepare reference picture lists for the current frame.
-  void PrepareRefPicLists(const H264SliceHeader* slice_hdr);
+  void PrepareRefPicLists();
   // Prepare reference picture lists for the given slice.
   bool ModifyReferencePicLists(const H264SliceHeader* slice_hdr,
                                H264Picture::Vector* ref_pic_list0,
@@ -230,12 +255,12 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
 
   // Construct initial reference picture lists for use in decoding of
   // P and B pictures (see 8.2.4 in spec).
-  void ConstructReferencePicListsP(const H264SliceHeader* slice_hdr);
-  void ConstructReferencePicListsB(const H264SliceHeader* slice_hdr);
+  void ConstructReferencePicListsP();
+  void ConstructReferencePicListsB();
 
   // Helper functions for reference list construction, per spec.
-  int PicNumF(const scoped_refptr<H264Picture>& pic);
-  int LongTermPicNumF(const scoped_refptr<H264Picture>& pic);
+  int PicNumF(const H264Picture& pic);
+  int LongTermPicNumF(const H264Picture& pic);
 
   // Perform the reference picture lists' modification (reordering), as
   // specified in spec (8.2.4).
@@ -278,7 +303,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   H264Accelerator::Status DecodePicture();
 
   // Notifies client that a picture is ready for output.
-  void OutputPic(scoped_refptr<H264Picture> pic);
+  bool OutputPic(scoped_refptr<H264Picture> pic);
 
   // Output all pictures in DPB that have not been outputted yet.
   bool OutputAllRemainingPics();
@@ -339,14 +364,42 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   int curr_sps_id_;
   int curr_pps_id_;
 
+  // Last PPS that was parsed. Used for full sample encryption, which has the
+  // assumption this is streaming content which does not switch between
+  // different PPSes in the stream (they are present once in the container for
+  // the stream).
+  int last_parsed_pps_id_;
+
+  // Copies of the last SPS and PPS NALUs, used for full sample encryption.
+  std::vector<uint8_t> last_sps_nalu_;
+  std::vector<uint8_t> last_pps_nalu_;
+
   // Current NALU and slice header being processed.
   std::unique_ptr<H264NALU> curr_nalu_;
   std::unique_ptr<H264SliceHeader> curr_slice_hdr_;
+
+  // Encrypted SEI NALUs preceding a fully encrypted slice NALU. We need to
+  // save these that are part of a single sample so they can all be decrypted
+  // together.
+  std::vector<base::span<const uint8_t>> encrypted_sei_nalus_;
+  std::vector<SubsampleEntry> sei_subsamples_;
+
+  // These are absl::nullopt unless get recovery point SEI message after Reset.
+  // A frame_num of the frame at output order that is correct in content.
+  absl::optional<int> recovery_frame_num_;
+  // A value in the recovery point SEI message to compute |recovery_frame_num_|
+  // later.
+  absl::optional<int> recovery_frame_cnt_;
 
   // Output picture size.
   gfx::Size pic_size_;
   // Output visible cropping rect.
   gfx::Rect visible_rect_;
+
+  // Profile of input bitstream.
+  VideoCodecProfile profile_;
+  // Bit depth of input bitstream.
+  uint8_t bit_depth_ = 0;
 
   // PicOrderCount of the previously outputted frame.
   int last_output_poc_;

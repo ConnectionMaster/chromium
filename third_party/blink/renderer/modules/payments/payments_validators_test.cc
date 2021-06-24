@@ -6,8 +6,14 @@
 
 #include <ostream>  // NOLINT
 
+#include "base/test/scoped_command_line.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/renderer/modules/payments/payment_validation_errors.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_address_errors.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_payer_errors.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_payment_validation_errors.h"
+#include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -339,6 +345,8 @@ TEST(PaymentMethodValidatorTest, IsValidPaymentMethod) {
                     {"https://pay.bobpay.com/pay", true},
                     {"https://pay.bobpay.com/pay?version=1", true},
                     {"https://pay.bobpay.com/pay#", true},
+                    {"http://localhost", true},
+                    {"http://localhost:8080", true},
                     {"http://bobpay.com", false},
                     {"https://username:password@bobpay.com", false},
                     {"https://username@bobpay.com", false},
@@ -347,10 +355,27 @@ TEST(PaymentMethodValidatorTest, IsValidPaymentMethod) {
                     {"Basic-card", false}};
 
   for (const auto& test_case : kTestCases) {
-    EXPECT_EQ(test_case.expected_valid, PaymentsValidators::IsValidMethodFormat(
-                                            test_case.payment_method));
+    EXPECT_EQ(test_case.expected_valid,
+              PaymentsValidators::IsValidMethodFormat(test_case.payment_method))
+        << test_case.payment_method << " should be "
+        << (test_case.expected_valid ? "valid" : "invalid");
   }
 }
-}  // namespace
 
+TEST(PaymentMethodValidatorTest, IsValidPaymentMethodSafelisted) {
+  EXPECT_FALSE(PaymentsValidators::IsValidMethodFormat("http://alicepay.com"))
+      << "http://alicepay.com is not a valid method format by default";
+
+  base::test::ScopedCommandLine scoped_command_line;
+  base::CommandLine* command_line = scoped_command_line.GetProcessCommandLine();
+  command_line->AppendSwitchASCII(
+      network::switches::kUnsafelyTreatInsecureOriginAsSecure,
+      "http://alicepay.com");
+  network::SecureOriginAllowlist::GetInstance().ResetForTesting();
+
+  EXPECT_TRUE(PaymentsValidators::IsValidMethodFormat("http://alicepay.com"))
+      << "http://alicepay.com should be valid if safelisted";
+}
+
+}  // namespace
 }  // namespace blink

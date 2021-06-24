@@ -18,8 +18,8 @@ class MockRemoteDevice : public RemoteDevice {
  public:
   explicit MockRemoteDevice(const bluetooth_v2_shlib::Addr& addr);
 
-  MOCK_METHOD0(Connect, bool());
-  void Connect(StatusCallback cb) override { std::move(cb).Run(Connect()); }
+  MOCK_METHOD0(Connect, ConnectStatus());
+  void Connect(ConnectCallback cb) override { std::move(cb).Run(Connect()); }
 
   MOCK_METHOD0(Disconnect, bool());
   void Disconnect(StatusCallback cb) override {
@@ -88,6 +88,8 @@ class MockRemoteDevice : public RemoteDevice {
   const bluetooth_v2_shlib::Addr addr_;
 
  private:
+  friend testing::StrictMock<MockRemoteDevice>;
+
   ~MockRemoteDevice();
 };
 

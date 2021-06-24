@@ -30,10 +30,10 @@ class WebMStreamParserTest : public testing::Test {
   void ParseWebMFile(const std::string& filename,
                      const StreamParser::InitParameters& expected_params) {
     scoped_refptr<DecoderBuffer> buffer = ReadTestDataFile(filename);
-    parser_.reset(new WebMStreamParser());
+    parser_ = std::make_unique<WebMStreamParser>();
     Demuxer::EncryptedMediaInitDataCB encrypted_media_init_data_cb =
-        base::Bind(&WebMStreamParserTest::OnEncryptedMediaInitData,
-                   base::Unretained(this));
+        base::BindRepeating(&WebMStreamParserTest::OnEncryptedMediaInitData,
+                            base::Unretained(this));
 
     EXPECT_CALL(*this, InitCB(_));
     EXPECT_CALL(*this, NewMediaSegmentCB()).Times(testing::AnyNumber());
@@ -107,16 +107,16 @@ TEST_F(WebMStreamParserTest, VerifyMediaTrackMetadata) {
   const MediaTrack& video_track = *(media_tracks_->tracks()[0]);
   EXPECT_EQ(video_track.type(), MediaTrack::Video);
   EXPECT_EQ(video_track.bytestream_track_id(), 1);
-  EXPECT_EQ(video_track.kind(), "main");
-  EXPECT_EQ(video_track.label(), "");
-  EXPECT_EQ(video_track.language(), "und");
+  EXPECT_EQ(video_track.kind().value(), "main");
+  EXPECT_EQ(video_track.label().value(), "");
+  EXPECT_EQ(video_track.language().value(), "und");
 
   const MediaTrack& audio_track = *(media_tracks_->tracks()[1]);
   EXPECT_EQ(audio_track.type(), MediaTrack::Audio);
   EXPECT_EQ(audio_track.bytestream_track_id(), 2);
-  EXPECT_EQ(audio_track.kind(), "main");
-  EXPECT_EQ(audio_track.label(), "");
-  EXPECT_EQ(audio_track.language(), "und");
+  EXPECT_EQ(audio_track.kind().value(), "main");
+  EXPECT_EQ(audio_track.label().value(), "");
+  EXPECT_EQ(audio_track.language().value(), "und");
 }
 
 TEST_F(WebMStreamParserTest, VerifyDetectedTrack_AudioOnly) {
@@ -176,12 +176,12 @@ TEST_F(WebMStreamParserTest, ColourElement) {
                                        gfx::ColorSpace::RangeID::FULL);
   EXPECT_EQ(video_config.color_space_info(), expected_color_space);
 
-  base::Optional<HDRMetadata> hdr_metadata = video_config.hdr_metadata();
+  absl::optional<gfx::HDRMetadata> hdr_metadata = video_config.hdr_metadata();
   EXPECT_TRUE(hdr_metadata.has_value());
   EXPECT_EQ(hdr_metadata->max_content_light_level, 11u);
   EXPECT_EQ(hdr_metadata->max_frame_average_light_level, 12u);
 
-  const MasteringMetadata& mmdata = hdr_metadata->mastering_metadata;
+  const gfx::MasteringMetadata& mmdata = hdr_metadata->mastering_metadata;
   EXPECT_FLOAT_EQ(mmdata.primary_r.x(), 0.1f);
   EXPECT_FLOAT_EQ(mmdata.primary_r.y(), 0.2f);
   EXPECT_FLOAT_EQ(mmdata.primary_g.x(), 0.1f);
@@ -217,4 +217,17 @@ TEST_F(WebMStreamParserTest, ColourElementWithUnspecifiedRange) {
   EXPECT_EQ(video_config.color_space_info(), expected_color_space);
 }
 
+TEST_F(WebMStreamParserTest, ParseVideoWithSphericalMetadata) {
+  EXPECT_MEDIA_LOG(WebMSimpleBlockDurationEstimatedAny())
+      .Times(testing::AnyNumber());
+  StreamParser::InitParameters params(kInfiniteDuration);
+  params.detected_audio_track_count = 0;
+  params.detected_video_track_count = 1;
+  params.detected_text_track_count = 0;
+  ParseWebMFile("bear-spherical-metadata.webm", params);
+  EXPECT_EQ(media_tracks_->tracks().size(), 1u);
+
+  const auto& video_track = media_tracks_->tracks()[0];
+  EXPECT_EQ(video_track->type(), MediaTrack::Video);
+}
 }  // namespace media

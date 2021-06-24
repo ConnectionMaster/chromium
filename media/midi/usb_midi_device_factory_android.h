@@ -6,7 +6,6 @@
 #define MEDIA_MIDI_USB_MIDI_DEVICE_FACTORY_ANDROID_H_
 
 #include <jni.h>
-#include <vector>
 
 #include "base/android/scoped_java_ref.h"
 #include "base/callback.h"
@@ -30,15 +29,12 @@ class USB_MIDI_EXPORT UsbMidiDeviceFactoryAndroid
 
   void OnUsbMidiDeviceRequestDone(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& caller,
       const base::android::JavaParamRef<jobjectArray>& devices);
   void OnUsbMidiDeviceAttached(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& caller,
       const base::android::JavaParamRef<jobject>& device);
   void OnUsbMidiDeviceDetached(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& caller,
       jint index);
 
  private:

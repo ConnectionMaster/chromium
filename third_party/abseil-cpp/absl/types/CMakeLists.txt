@@ -24,6 +24,7 @@ absl_cc_library(
     absl::bad_any_cast
     absl::config
     absl::core_headers
+    absl::fast_type_id
     absl::type_traits
     absl::utility
   PUBLIC
@@ -50,12 +51,9 @@ absl_cc_library(
    "bad_any_cast.cc"
   COPTS
     ${ABSL_DEFAULT_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
-    absl::base
     absl::config
+    absl::raw_logging_internal
 )
 
 absl_cc_test(
@@ -65,16 +63,13 @@ absl_cc_test(
     "any_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
     absl::any
-    absl::base
     absl::config
     absl::exception_testing
+    absl::raw_logging_internal
     absl::test_instance_tracker
-    gmock_main
+    GTest::gmock_main
 )
 
 absl_cc_test(
@@ -86,11 +81,11 @@ absl_cc_test(
     ${ABSL_TEST_COPTS}
   DEPS
     absl::any
-    absl::base
     absl::config
     absl::exception_testing
+    absl::raw_logging_internal
     absl::test_instance_tracker
-    gmock_main
+    GTest::gmock_main
 )
 
 absl_cc_test(
@@ -100,13 +95,11 @@ absl_cc_test(
     "any_exception_safety_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
     absl::any
+    absl::config
     absl::exception_safety_testing
-    gmock_main
+    GTest::gmock_main
 )
 
 absl_cc_library(
@@ -114,6 +107,8 @@ absl_cc_library(
     span
   HDRS
     "span.h"
+  SRCS
+    "internal/span.h"
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
@@ -131,9 +126,6 @@ absl_cc_test(
     "span_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
     absl::span
     absl::base
@@ -144,7 +136,7 @@ absl_cc_test(
     absl::inlined_vector
     absl::hash_testing
     absl::strings
-    gmock_main
+    GTest::gmock_main
 )
 
 absl_cc_test(
@@ -164,7 +156,7 @@ absl_cc_test(
     absl::inlined_vector
     absl::hash_testing
     absl::strings
-    gmock_main
+    GTest::gmock_main
 )
 
 absl_cc_library(
@@ -173,11 +165,12 @@ absl_cc_library(
   HDRS
     "optional.h"
   SRCS
-    "optional.cc"
+    "internal/optional.h"
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
     absl::bad_optional_access
+    absl::base_internal
     absl::config
     absl::core_headers
     absl::memory
@@ -195,12 +188,9 @@ absl_cc_library(
     "bad_optional_access.cc"
   COPTS
     ${ABSL_DEFAULT_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
-    absl::base
     absl::config
+    absl::raw_logging_internal
   PUBLIC
 )
 
@@ -213,12 +203,9 @@ absl_cc_library(
     "bad_variant_access.cc"
   COPTS
     ${ABSL_DEFAULT_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
-    absl::base
     absl::config
+    absl::raw_logging_internal
   PUBLIC
 )
 
@@ -229,16 +216,13 @@ absl_cc_test(
     "optional_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
     absl::optional
-    absl::base
     absl::config
-    absl::type_traits
+    absl::raw_logging_internal
     absl::strings
-    gmock_main
+    absl::type_traits
+    GTest::gmock_main
 )
 
 absl_cc_test(
@@ -248,13 +232,63 @@ absl_cc_test(
     "optional_exception_safety_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
+  DEPS
+    absl::optional
+    absl::config
+    absl::exception_safety_testing
+    GTest::gmock_main
+)
+
+absl_cc_library(
+  NAME
+    conformance_testing
+  HDRS
+    "internal/conformance_aliases.h"
+    "internal/conformance_archetype.h"
+    "internal/conformance_profile.h"
+    "internal/conformance_testing.h"
+    "internal/conformance_testing_helpers.h"
+    "internal/parentheses.h"
+    "internal/transform_args.h"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
+    absl::algorithm
+    absl::debugging
+    absl::type_traits
+    absl::strings
+    absl::utility
+    GTest::gmock_main
+  TESTONLY
+)
+
+absl_cc_test(
+  NAME
+    conformance_testing_test
+  SRCS
+    "internal/conformance_testing_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
     ${ABSL_EXCEPTIONS_FLAG}
   LINKOPTS
     ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
-    absl::optional
-    absl::exception_safety_testing
-    gmock_main
+    absl::conformance_testing
+    absl::type_traits
+    GTest::gmock_main
+)
+
+absl_cc_test(
+  NAME
+    conformance_testing_test_no_exceptions
+  SRCS
+    "internal/conformance_testing_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  DEPS
+    absl::conformance_testing
+    absl::type_traits
+    GTest::gmock_main
 )
 
 absl_cc_library(
@@ -283,9 +317,6 @@ absl_cc_test(
     "variant_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
     absl::variant
     absl::config
@@ -293,11 +324,35 @@ absl_cc_test(
     absl::memory
     absl::type_traits
     absl::strings
-    gmock_main
+    GTest::gmock_main
 )
 
-# TODO(cohenjon,zhangxy) Figure out why this test is failing on gcc 4.8
-if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 4.9)
+absl_cc_library(
+  NAME
+    compare
+  HDRS
+    "compare.h"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
+    absl::core_headers
+    absl::type_traits
+  PUBLIC
+)
+
+absl_cc_test(
+  NAME
+    compare_test
+  SRCS
+    "compare_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  DEPS
+    absl::base
+    absl::compare
+    GTest::gmock_main
+)
+
 absl_cc_test(
   NAME
     variant_exception_safety_test
@@ -305,14 +360,10 @@ absl_cc_test(
     "variant_exception_safety_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
-    ${ABSL_EXCEPTIONS_FLAG}
-  LINKOPTS
-    ${ABSL_EXCEPTIONS_FLAG_LINKOPTS}
   DEPS
     absl::variant
     absl::config
     absl::exception_safety_testing
     absl::memory
-    gmock_main
+    GTest::gmock_main
 )
-endif()

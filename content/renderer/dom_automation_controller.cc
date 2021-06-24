@@ -6,7 +6,6 @@
 
 #include "base/json/json_string_value_serializer.h"
 #include "base/strings/string_util.h"
-#include "content/common/frame_messages.h"
 #include "content/renderer/render_view_impl.h"
 #include "content/renderer/v8_value_converter_impl.h"
 #include "gin/handle.h"
@@ -58,7 +57,7 @@ void DomAutomationController::OnDestruct() {}
 
 void DomAutomationController::DidCreateScriptContext(
     v8::Local<v8::Context> context,
-    int world_id) {
+    int32_t world_id) {
   // Add the domAutomationController to isolated worlds as well.
   v8::Isolate* isolate = blink::MainThreadIsolate();
   v8::HandleScope handle_scope(isolate);
@@ -106,7 +105,17 @@ bool DomAutomationController::SendMsg(const gin::Arguments& args) {
   if (!value || !serializer.Serialize(*value))
     return false;
 
-  return Send(new FrameHostMsg_DomOperationResponse(routing_id(), json));
+  GetDomAutomationControllerHost()->DomOperationResponse(json);
+  return true;
+}
+
+const mojo::AssociatedRemote<mojom::DomAutomationControllerHost>&
+DomAutomationController::GetDomAutomationControllerHost() {
+  if (!dom_automation_controller_host_) {
+    render_frame()->GetRemoteAssociatedInterfaces()->GetInterface(
+        &dom_automation_controller_host_);
+  }
+  return dom_automation_controller_host_;
 }
 
 }  // namespace content

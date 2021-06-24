@@ -28,6 +28,13 @@ SkImageInfo RecordPaintCanvas::imageInfo() const {
   return GetCanvas()->imageInfo();
 }
 
+void* RecordPaintCanvas::accessTopLayerPixels(SkImageInfo* info,
+                                              size_t* rowBytes,
+                                              SkIPoint* origin) {
+  // Modifications to the underlying pixels cannot be saved.
+  return nullptr;
+}
+
 void RecordPaintCanvas::flush() {
   // This is a noop when recording.
 }
@@ -101,11 +108,23 @@ void RecordPaintCanvas::rotate(SkScalar degrees) {
 }
 
 void RecordPaintCanvas::concat(const SkMatrix& matrix) {
+  SkM44 m = SkM44(matrix);
+  list_->push<ConcatOp>(m);
+  GetCanvas()->concat(m);
+}
+
+void RecordPaintCanvas::concat(const SkM44& matrix) {
   list_->push<ConcatOp>(matrix);
   GetCanvas()->concat(matrix);
 }
 
 void RecordPaintCanvas::setMatrix(const SkMatrix& matrix) {
+  SkM44 m = SkM44(matrix);
+  list_->push<SetMatrixOp>(m);
+  GetCanvas()->setMatrix(m);
+}
+
+void RecordPaintCanvas::setMatrix(const SkM44& matrix) {
   list_->push<SetMatrixOp>(matrix);
   GetCanvas()->setMatrix(matrix);
 }
@@ -131,7 +150,8 @@ void RecordPaintCanvas::clipRRect(const SkRRect& rrect,
 
 void RecordPaintCanvas::clipPath(const SkPath& path,
                                  SkClipOp op,
-                                 bool antialias) {
+                                 bool antialias,
+                                 UsePaintCache use_paint_cache) {
   if (!path.isInverseFillType() &&
       GetCanvas()->getTotalMatrix().rectStaysRect()) {
     // TODO(enne): do these cases happen? should the caller know that this isn't
@@ -153,7 +173,7 @@ void RecordPaintCanvas::clipPath(const SkPath& path,
     }
   }
 
-  list_->push<ClipPathOp>(path, op, antialias);
+  list_->push<ClipPathOp>(path, op, antialias, use_paint_cache);
   GetCanvas()->clipPath(path, op, antialias);
   return;
 }
@@ -238,23 +258,28 @@ void RecordPaintCanvas::drawRoundRect(const SkRect& rect,
   }
 }
 
-void RecordPaintCanvas::drawPath(const SkPath& path, const PaintFlags& flags) {
-  list_->push<DrawPathOp>(path, flags);
+void RecordPaintCanvas::drawPath(const SkPath& path,
+                                 const PaintFlags& flags,
+                                 UsePaintCache use_paint_cache) {
+  list_->push<DrawPathOp>(path, flags, use_paint_cache);
 }
 
 void RecordPaintCanvas::drawImage(const PaintImage& image,
                                   SkScalar left,
                                   SkScalar top,
+                                  const SkSamplingOptions& sampling,
                                   const PaintFlags* flags) {
-  list_->push<DrawImageOp>(image, left, top, flags);
+  DCHECK(!image.IsPaintWorklet());
+  list_->push<DrawImageOp>(image, left, top, sampling, flags);
 }
 
 void RecordPaintCanvas::drawImageRect(const PaintImage& image,
                                       const SkRect& src,
                                       const SkRect& dst,
+                                      const SkSamplingOptions& sampling,
                                       const PaintFlags* flags,
-                                      SrcRectConstraint constraint) {
-  list_->push<DrawImageRectOp>(image, src, dst, flags, constraint);
+                                      SkCanvas::SrcRectConstraint constraint) {
+  list_->push<DrawImageRectOp>(image, src, dst, sampling, flags, constraint);
 }
 
 void RecordPaintCanvas::drawSkottie(scoped_refptr<SkottieWrapper> skottie,
@@ -273,9 +298,9 @@ void RecordPaintCanvas::drawTextBlob(sk_sp<SkTextBlob> blob,
 void RecordPaintCanvas::drawTextBlob(sk_sp<SkTextBlob> blob,
                                      SkScalar x,
                                      SkScalar y,
-                                     const PaintFlags& flags,
-                                     const NodeHolder& holder) {
-  list_->push<DrawTextBlobOp>(std::move(blob), x, y, flags, holder);
+                                     NodeId node_id,
+                                     const PaintFlags& flags) {
+  list_->push<DrawTextBlobOp>(std::move(blob), x, y, node_id, flags);
 }
 
 void RecordPaintCanvas::drawPicture(sk_sp<const PaintRecord> record) {
@@ -288,13 +313,12 @@ bool RecordPaintCanvas::isClipEmpty() const {
   return GetCanvas()->isClipEmpty();
 }
 
-bool RecordPaintCanvas::isClipRect() const {
-  DCHECK(InitializedWithRecordingBounds());
-  return GetCanvas()->isClipRect();
+SkMatrix RecordPaintCanvas::getTotalMatrix() const {
+  return GetCanvas()->getTotalMatrix();
 }
 
-const SkMatrix& RecordPaintCanvas::getTotalMatrix() const {
-  return GetCanvas()->getTotalMatrix();
+SkM44 RecordPaintCanvas::getLocalToDevice() const {
+  return GetCanvas()->getLocalToDevice();
 }
 
 void RecordPaintCanvas::Annotate(AnnotationType type,
@@ -305,6 +329,10 @@ void RecordPaintCanvas::Annotate(AnnotationType type,
 
 void RecordPaintCanvas::recordCustomData(uint32_t id) {
   list_->push<CustomDataOp>(id);
+}
+
+void RecordPaintCanvas::setNodeId(int node_id) {
+  list_->push<SetNodeIdOp>(node_id);
 }
 
 const SkNoDrawCanvas* RecordPaintCanvas::GetCanvas() const {

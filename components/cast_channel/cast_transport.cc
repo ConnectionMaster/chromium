@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -15,18 +16,31 @@
 #include "base/location.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/single_thread_task_runner.h"
-#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/cast_channel/cast_framer.h"
 #include "components/cast_channel/cast_message_util.h"
 #include "components/cast_channel/logger.h"
-#include "components/cast_channel/proto/cast_channel.pb.h"
 #include "net/base/net_errors.h"
+#include "third_party/openscreen/src/cast/common/channel/proto/cast_channel.pb.h"
 
 #define VLOG_WITH_CONNECTION(level) \
   VLOG(level) << "[" << ip_endpoint_.ToString() << ", auth=SSL_VERIFIED] "
 
 namespace cast_channel {
+
+namespace {
+
+#if DCHECK_IS_ON()
+// Used to filter out PING and PONG message from logs, since there are a lot of
+// them and they're not interesting.
+bool IsPingPong(const CastMessage& message) {
+  return message.has_payload_utf8() &&
+         (message.payload_utf8() == R"({"type":"PING"})" ||
+          message.payload_utf8() == R"({"type":"PONG"})");
+}
+#endif  // DCHECK_IS_ON()
+
+}  // namespace
 
 CastTransportImpl::CastTransportImpl(Channel* channel,
                                      int channel_id,
@@ -46,7 +60,7 @@ CastTransportImpl::CastTransportImpl(Channel* channel,
   // [re]allocations.
   read_buffer_ = base::MakeRefCounted<net::GrowableIOBuffer>();
   read_buffer_->SetCapacity(MessageFramer::MessageHeader::max_message_size());
-  framer_.reset(new MessageFramer(read_buffer_));
+  framer_ = std::make_unique<MessageFramer>(read_buffer_);
 }
 
 CastTransportImpl::~CastTransportImpl() {
@@ -62,7 +76,6 @@ bool CastTransportImpl::IsTerminalWriteState(WriteState write_state) {
 bool CastTransportImpl::IsTerminalReadState(ReadState read_state) {
   return read_state == ReadState::READ_ERROR;
 }
-
 
 void CastTransportImpl::SetReadDelegate(std::unique_ptr<Delegate> delegate) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -85,6 +98,7 @@ void CastTransportImpl::SendMessage(const CastMessage& message,
                                     net::CompletionOnceCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(IsCastMessageValid(message));
+  DVLOG_IF(1, !IsPingPong(message)) << "Sending: " << message;
   std::string serialized_message;
   if (!MessageFramer::Serialize(message, &serialized_message)) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
@@ -358,6 +372,8 @@ int CastTransportImpl::DoReadCallback() {
     return net::ERR_INVALID_RESPONSE;
   }
   SetReadState(ReadState::READ);
+  DVLOG_IF(1, !IsPingPong(*current_message_))
+      << "Received: " << *current_message_;
   delegate_->OnMessage(*current_message_);
   current_message_.reset();
   return net::OK;

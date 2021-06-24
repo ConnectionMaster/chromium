@@ -5,8 +5,8 @@
 (async function() {
   TestRunner.addResult(`Verifies that editing a pretty printed resource works properly.\n`);
 
-  Runtime.experiments.enableForTest('sourcesPrettyPrint');
-  await TestRunner.loadModule('sources_test_runner');
+  Root.Runtime.experiments.enableForTest('sourcesPrettyPrint');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
 
   await TestRunner.addScriptTag('resources/ugly-function.js');

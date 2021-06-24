@@ -2,13 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/android/tab_model/android_live_tab_context.h"
+
+#include <memory>
+
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/android/tab_model/android_live_tab_context.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "components/sessions/content/content_live_tab.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
+#include "components/tab_groups/tab_group_id.h"
+#include "components/tab_groups/tab_group_visual_data.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/restore_type.h"
@@ -37,6 +42,10 @@ std::string AndroidLiveTabContext::GetAppName() const {
   return std::string();
 }
 
+std::string AndroidLiveTabContext::GetUserTitle() const {
+  return std::string();
+}
+
 sessions::LiveTab* AndroidLiveTabContext::GetLiveTabAt(int index) const {
   TabAndroid* tab_android = tab_model_->GetTabAt(index);
   if (!tab_android || !tab_android->web_contents())
@@ -59,6 +68,32 @@ bool AndroidLiveTabContext::IsTabPinned(int index) const {
   return false;
 }
 
+absl::optional<tab_groups::TabGroupId> AndroidLiveTabContext::GetTabGroupForTab(
+    int index) const {
+  // Not applicable to android.
+  return absl::optional<tab_groups::TabGroupId>();
+}
+
+const tab_groups::TabGroupVisualData*
+AndroidLiveTabContext::GetVisualDataForGroup(
+    const tab_groups::TabGroupId& group) const {
+  // Since we never return a group from GetTabGroupForTab(), this should never
+  // be called.
+  NOTREACHED();
+  return nullptr;
+}
+
+void AndroidLiveTabContext::SetVisualDataForGroup(
+    const tab_groups::TabGroupId& group,
+    const tab_groups::TabGroupVisualData& group_visual_data) {
+  // Not supported on Android.
+
+  // TODO(crbug.com/1003128): ensure this never gets called (or remove
+  // NOTREACHED) if we implement restoring groups for foreign session
+  // windows.
+  NOTREACHED();
+}
+
 const gfx::Rect AndroidLiveTabContext::GetRestoredBounds() const {
   // Not applicable to android.
   return gfx::Rect();
@@ -79,11 +114,13 @@ sessions::LiveTab* AndroidLiveTabContext::AddRestoredTab(
     int tab_index,
     int selected_navigation,
     const std::string& extension_app_id,
+    absl::optional<tab_groups::TabGroupId> group,
+    const tab_groups::TabGroupVisualData& group_visual_data,
     bool select,
     bool pin,
-    bool from_last_session,
     const sessions::PlatformSpecificTabData* tab_platform_data,
-    const std::string& user_agent_override) {
+    const sessions::SerializedUserAgentOverride& user_agent_override,
+    const SessionID* tab_id) {
   Profile* profile = tab_model_->GetProfile();
 
   // Prepare navigation history.
@@ -96,7 +133,7 @@ sessions::LiveTab* AndroidLiveTabContext::AddRestoredTab(
       content::WebContents::Create(content::WebContents::CreateParams(profile));
   content::WebContents* raw_web_contents = web_contents.get();
   web_contents->GetController().Restore(
-      selected_navigation, content::RestoreType::CURRENT_SESSION, &nav_entries);
+      selected_navigation, content::RestoreType::kRestored, &nav_entries);
 
   // Create new tab. Ownership is passed into java, which in turn creates a new
   // TabAndroid instance to own the WebContents.
@@ -108,11 +145,11 @@ sessions::LiveTab* AndroidLiveTabContext::AddRestoredTab(
 // Currently does nothing.
 sessions::LiveTab* AndroidLiveTabContext::ReplaceRestoredTab(
     const std::vector<sessions::SerializedNavigationEntry>& navigations,
+    absl::optional<tab_groups::TabGroupId> group,
     int selected_navigation,
-    bool from_last_session,
     const std::string& extension_app_id,
     const sessions::PlatformSpecificTabData* tab_platform_data,
-    const std::string& user_agent_override) {
+    const sessions::SerializedUserAgentOverride& user_agent_override) {
   NOTIMPLEMENTED();
   return nullptr;
 }
@@ -142,8 +179,7 @@ sessions::LiveTabContext* AndroidLiveTabContext::FindContextWithID(
 
   // If we can't find the correct model, fall back to first non-incognito model.
   if (!tab_model || tab_model->IsOffTheRecord()) {
-    for (auto it = TabModelList::begin(); it != TabModelList::end(); ++it) {
-      TabModel* model = *it;
+    for (const TabModel* model : TabModelList::models()) {
       if (!model->IsOffTheRecord()) {
         return model->GetLiveTabContext();
       }

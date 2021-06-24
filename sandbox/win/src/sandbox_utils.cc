@@ -6,12 +6,12 @@
 
 #include <windows.h>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "sandbox/win/src/internal_types.h"
 
 namespace sandbox {
 
-void InitObjectAttribs(const base::string16& name,
+void InitObjectAttribs(const std::wstring& name,
                        ULONG attributes,
                        HANDLE root,
                        OBJECT_ATTRIBUTES* obj_attr,

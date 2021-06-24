@@ -8,12 +8,16 @@
 #include <stdint.h>
 
 #include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
+#include "third_party/blink/public/platform/web_blob_info.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key_range.h"
 #include "third_party/blink/renderer/modules/indexeddb/mock_web_idb_callbacks.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
@@ -25,9 +29,10 @@ namespace {
 
 class MockCursorImpl : public mojom::blink::IDBCursor {
  public:
-  explicit MockCursorImpl(mojom::blink::IDBCursorAssociatedRequest request)
-      : binding_(this, std::move(request)) {
-    binding_.set_connection_error_handler(base::BindOnce(
+  explicit MockCursorImpl(
+      mojo::PendingAssociatedReceiver<mojom::blink::IDBCursor> receiver)
+      : receiver_(this, std::move(receiver)) {
+    receiver_.set_disconnect_handler(base::BindOnce(
         &MockCursorImpl::CursorDestroyed, base::Unretained(this)));
   }
 
@@ -35,8 +40,7 @@ class MockCursorImpl : public mojom::blink::IDBCursor {
                 mojom::blink::IDBCursor::PrefetchCallback callback) override {
     ++prefetch_calls_;
     last_prefetch_count_ = count;
-    std::move(callback).Run(mojom::blink::IDBErrorPtr(),
-                            mojom::blink::IDBCursorValuePtr());
+    std::move(callback).Run(mojom::blink::IDBCursorResult::NewEmpty(true));
   }
 
   void PrefetchReset(int32_t used_prefetches,
@@ -48,8 +52,7 @@ class MockCursorImpl : public mojom::blink::IDBCursor {
   void Advance(uint32_t count,
                mojom::blink::IDBCursor::AdvanceCallback callback) override {
     ++advance_calls_;
-    std::move(callback).Run(mojom::blink::IDBErrorPtr(),
-                            mojom::blink::IDBCursorValuePtr());
+    std::move(callback).Run(mojom::blink::IDBCursorResult::NewEmpty(true));
   }
 
   void CursorContinue(
@@ -57,8 +60,7 @@ class MockCursorImpl : public mojom::blink::IDBCursor {
       std::unique_ptr<IDBKey> primary_key,
       mojom::blink::IDBCursor::CursorContinueCallback callback) override {
     ++continue_calls_;
-    std::move(callback).Run(mojom::blink::IDBErrorPtr(),
-                            mojom::blink::IDBCursorValuePtr());
+    std::move(callback).Run(mojom::blink::IDBCursorResult::NewEmpty(true));
   }
 
   void CursorDestroyed() { destroyed_ = true; }
@@ -80,7 +82,7 @@ class MockCursorImpl : public mojom::blink::IDBCursor {
   int continue_calls_ = 0;
   bool destroyed_ = false;
 
-  mojo::AssociatedBinding<IDBCursor> binding_;
+  mojo::AssociatedReceiver<IDBCursor> receiver_;
 };
 
 class MockContinueCallbacks : public testing::StrictMock<MockWebIDBCallbacks> {
@@ -96,7 +98,7 @@ class MockContinueCallbacks : public testing::StrictMock<MockWebIDBCallbacks> {
   void SuccessCursorContinue(
       std::unique_ptr<IDBKey> key,
       std::unique_ptr<IDBKey> primaryKey,
-      base::Optional<std::unique_ptr<IDBValue>> value) override {
+      absl::optional<std::unique_ptr<IDBValue>> value) override {
     if (key_)
       *key_ = IDBKey::Clone(key);
     if (blobs_ && value.has_value())
@@ -112,23 +114,24 @@ class MockContinueCallbacks : public testing::StrictMock<MockWebIDBCallbacks> {
 
 class WebIDBCursorImplTest : public testing::Test {
  public:
-  WebIDBCursorImplTest() : null_key_(IDBKey::CreateNull()) {
-    mojom::blink::IDBCursorAssociatedPtr ptr;
+  WebIDBCursorImplTest() : null_key_(IDBKey::CreateNone()) {
+    mojo::AssociatedRemote<mojom::blink::IDBCursor> remote;
     mock_cursor_ = std::make_unique<MockCursorImpl>(
-        mojo::MakeRequestAssociatedWithDedicatedPipe(&ptr));
+        remote.BindNewEndpointAndPassDedicatedReceiver());
     cursor_ = std::make_unique<WebIDBCursorImpl>(
-        ptr.PassInterface(), 1,
+        remote.Unbind(), 1,
         blink::scheduler::GetSingleThreadTaskRunnerForTesting());
   }
+
+  // Disallow copy and assign.
+  WebIDBCursorImplTest(const WebIDBCursorImplTest&) = delete;
+  WebIDBCursorImplTest& operator=(const WebIDBCursorImplTest&) = delete;
 
  protected:
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
   std::unique_ptr<IDBKey> null_key_;
   std::unique_ptr<WebIDBCursorImpl> cursor_;
   std::unique_ptr<MockCursorImpl> mock_cursor_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(WebIDBCursorImplTest);
 };
 
 TEST_F(WebIDBCursorImplTest, PrefetchTest) {

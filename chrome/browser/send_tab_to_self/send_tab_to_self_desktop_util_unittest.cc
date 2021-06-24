@@ -11,12 +11,10 @@
 
 #include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
 #include "components/send_tab_to_self/test_send_tab_to_self_model.h"
-#include "components/sync/driver/sync_driver_switches.h"
 #include "content/public/browser/navigation_entry.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -72,16 +70,13 @@ class SendTabToSelfDesktopUtilTest : public BrowserWithTestWindowTest {
 
   // Set up all test conditions to let ShouldOfferFeature() return true
   void SetUpAllTrueEnv() {
-    scoped_feature_list_.InitAndEnableFeature(switches::kSyncSendTabToSelf);
-
     AddTab(browser(), url_);
     NavigateAndCommitActiveTabWithTitle(browser(), url_, title_);
   }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
   GURL url_;
-  base::string16 title_;
+  std::u16string title_;
 };
 
 TEST_F(SendTabToSelfDesktopUtilTest, CreateNewEntry) {
@@ -96,23 +91,25 @@ TEST_F(SendTabToSelfDesktopUtilTest, CreateNewEntry) {
   GURL url = entry->GetURL();
   std::string title = base::UTF16ToUTF8(entry->GetTitle());
   base::Time navigation_time = entry->GetTimestamp();
+  std::string target_device_sync_cache_name;
   std::string target_device_sync_cache_guid;
 
   SendTabToSelfModelMock* model_mock = static_cast<SendTabToSelfModelMock*>(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile())
           ->GetSendTabToSelfModel());
 
-  // TODO(crbug/946804) Add target Device to createNewEntry call.
   EXPECT_CALL(*model_mock, AddEntry(url, title, navigation_time,
                                     target_device_sync_cache_guid))
       .WillOnce(testing::Return(nullptr));
-  CreateNewEntry(tab);
+  CreateNewEntry(tab, target_device_sync_cache_name,
+                 target_device_sync_cache_guid);
 
   GURL link_url = GURL("https://www.1112233.com");
   EXPECT_CALL(*model_mock, AddEntry(link_url, "", base::Time(),
                                     target_device_sync_cache_guid))
       .WillOnce(testing::Return(nullptr));
-  CreateNewEntry(tab, link_url);
+  CreateNewEntry(tab, target_device_sync_cache_name,
+                 target_device_sync_cache_guid, link_url);
 }
 
 }  // namespace

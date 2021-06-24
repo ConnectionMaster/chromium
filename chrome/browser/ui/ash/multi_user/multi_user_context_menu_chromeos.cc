@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/ash/multi_user/multi_user_context_menu.h"
 
+#include "ash/public/cpp/multi_user_window_manager.h"
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/macros.h"
@@ -12,8 +13,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager_client.h"
-#include "chrome/browser/ui/ash/session_controller_client.h"
+#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager_helper.h"
+#include "chrome/browser/ui/ash/session_controller_client_impl.h"
 #include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
@@ -63,8 +64,8 @@ void OnAcceptTeleportWarning(const AccountId& account_id,
   PrefService* pref = ProfileManager::GetActiveUserProfile()->GetPrefs();
   pref->SetBoolean(prefs::kMultiProfileWarningShowDismissed, no_show_again);
 
-  MultiUserWindowManagerClient::GetInstance()->ShowWindowForUser(window_,
-                                                                 account_id);
+  MultiUserWindowManagerHelper::GetWindowManager()->ShowWindowForUser(
+      window_, account_id);
 }
 
 }  // namespace
@@ -77,22 +78,25 @@ std::unique_ptr<ui::MenuModel> CreateMultiUserContextMenu(
 
   if (logged_in_users.size() > 1u) {
     // If this window is not owned, we don't show the menu addition.
-    MultiUserWindowManagerClient* client =
-        MultiUserWindowManagerClient::GetInstance();
-    const AccountId& account_id = client->GetWindowOwner(window);
+    auto* window_manager = MultiUserWindowManagerHelper::GetWindowManager();
+    const AccountId& account_id = window_manager->GetWindowOwner(window);
     if (!account_id.is_valid() || !window)
       return model;
     auto* menu = new MultiUserContextMenuChromeos(window);
     model.reset(menu);
+    int command_id = IDC_VISIT_DESKTOP_OF_LRU_USER_NEXT;
     for (size_t user_index = 1; user_index < logged_in_users.size();
          ++user_index) {
+      if (command_id > IDC_VISIT_DESKTOP_OF_LRU_USER_LAST) {
+        break;
+      }
       const user_manager::UserInfo* user_info = logged_in_users[user_index];
       menu->AddItem(
-          user_index == 1 ? IDC_VISIT_DESKTOP_OF_LRU_USER_2
-                          : IDC_VISIT_DESKTOP_OF_LRU_USER_3,
+          command_id,
           l10n_util::GetStringFUTF16(
               IDS_VISIT_DESKTOP_OF_LRU_USER, user_info->GetDisplayName(),
               base::ASCIIToUTF16(user_info->GetDisplayEmail())));
+      ++command_id;
     }
   }
   return model;
@@ -101,16 +105,18 @@ std::unique_ptr<ui::MenuModel> CreateMultiUserContextMenu(
 void ExecuteVisitDesktopCommand(int command_id, aura::Window* window) {
   switch (command_id) {
     case IDC_VISIT_DESKTOP_OF_LRU_USER_2:
-    case IDC_VISIT_DESKTOP_OF_LRU_USER_3: {
+    case IDC_VISIT_DESKTOP_OF_LRU_USER_3:
+    case IDC_VISIT_DESKTOP_OF_LRU_USER_4:
+    case IDC_VISIT_DESKTOP_OF_LRU_USER_5: {
       const user_manager::UserList logged_in_users =
           user_manager::UserManager::Get()->GetLRULoggedInUsers();
       // When running the multi user mode on Chrome OS, windows can "visit"
       // another user's desktop.
       const AccountId account_id =
-          logged_in_users[IDC_VISIT_DESKTOP_OF_LRU_USER_2 == command_id ? 1 : 2]
+          logged_in_users[command_id - IDC_VISIT_DESKTOP_OF_LRU_USER_NEXT + 1]
               ->GetAccountId();
       base::OnceCallback<void(bool, bool)> on_accept =
-          base::Bind(&OnAcceptTeleportWarning, account_id, window);
+          base::BindOnce(&OnAcceptTeleportWarning, account_id, window);
 
       // Don't show warning dialog if any logged in user in multi-profiles
       // session dismissed it.
@@ -127,7 +133,7 @@ void ExecuteVisitDesktopCommand(int command_id, aura::Window* window) {
         }
       }
 
-      SessionControllerClient::Get()->ShowTeleportWarningDialog(
+      SessionControllerClientImpl::Get()->ShowTeleportWarningDialog(
           std::move(on_accept));
       return;
     }

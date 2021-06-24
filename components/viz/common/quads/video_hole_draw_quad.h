@@ -7,14 +7,12 @@
 
 #include <stddef.h>
 
-#include <memory>
-
 #include "base/unguessable_token.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
 #include "components/viz/common/viz_common_export.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/rect_f.h"
-#include "ui/gl/dc_renderer_layer_params.h"
+#include "ui/gfx/video_types.h"
 
 namespace viz {
 

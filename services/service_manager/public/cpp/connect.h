@@ -5,19 +5,15 @@
 #ifndef SERVICES_SERVICE_MANAGER_PUBLIC_CPP_CONNECT_H_
 #define SERVICES_SERVICE_MANAGER_PUBLIC_CPP_CONNECT_H_
 
-#include <utility>
-
 #include "services/service_manager/public/mojom/interface_provider.mojom.h"
 
 namespace service_manager {
 
-// Binds |ptr| to a remote implementation of Interface from |interfaces|.
+// Binds |receiver| to a remote implementation of Interface from |interfaces|.
 template <typename Interface>
 inline void GetInterface(mojom::InterfaceProvider* interfaces,
-                         mojo::InterfacePtr<Interface>* ptr) {
-  mojo::MessagePipe pipe;
-  ptr->Bind(mojo::InterfacePtrInfo<Interface>(std::move(pipe.handle0), 0u));
-  interfaces->GetInterface(Interface::Name_, std::move(pipe.handle1));
+                         mojo::PendingReceiver<Interface> receiver) {
+  interfaces->GetInterface(Interface::Name_, receiver.PassPipe());
 }
 
 }  // namespace service_manager

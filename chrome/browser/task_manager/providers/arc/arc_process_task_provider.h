@@ -10,14 +10,13 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/process/process.h"
-#include "chrome/browser/chromeos/arc/process/arc_process.h"
-#include "chrome/browser/chromeos/arc/process/arc_process_service.h"
+#include "chrome/browser/ash/arc/process/arc_process.h"
+#include "chrome/browser/ash/arc/process/arc_process_service.h"
 #include "chrome/browser/task_manager/providers/arc/arc_process_task.h"
 #include "chrome/browser/task_manager/providers/task_provider.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace task_manager {
 
@@ -33,6 +32,8 @@ namespace task_manager {
 class ArcProcessTaskProvider : public TaskProvider {
  public:
   ArcProcessTaskProvider();
+  ArcProcessTaskProvider(const ArcProcessTaskProvider&) = delete;
+  ArcProcessTaskProvider& operator=(const ArcProcessTaskProvider&) = delete;
   ~ArcProcessTaskProvider() override;
 
   // task_manager::TaskProvider:
@@ -42,7 +43,7 @@ class ArcProcessTaskProvider : public TaskProvider {
   using ArcTaskMap =
       std::unordered_map<base::ProcessId, std::unique_ptr<ArcProcessTask>>;
   using OptionalArcProcessList = arc::ArcProcessService::OptionalArcProcessList;
-  void ScheduleNextRequest(const base::Closure& task, const int delaySeconds);
+  void ScheduleNextRequest(base::OnceClosure task);
 
   // Auto-retry if ARC bridge service is not ready.
   void RequestAppProcessList();
@@ -68,9 +69,7 @@ class ArcProcessTaskProvider : public TaskProvider {
 
   // Always keep this the last member of this class to make sure it's the
   // first thing to be destructed.
-  base::WeakPtrFactory<ArcProcessTaskProvider> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(ArcProcessTaskProvider);
+  base::WeakPtrFactory<ArcProcessTaskProvider> weak_ptr_factory_{this};
 };
 
 }  // namespace task_manager

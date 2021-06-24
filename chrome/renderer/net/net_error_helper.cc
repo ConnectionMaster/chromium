@@ -20,18 +20,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/common/chrome_resource_request_blocked_reason.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/render_messages.h"
 #include "chrome/renderer/chrome_render_thread_observer.h"
-#include "chrome/renderer/security_interstitials/security_interstitial_page_controller.h"
-#include "chrome/renderer/supervised_user/supervised_user_error_page_controller.h"
 #include "components/error_page/common/error.h"
-#include "components/error_page/common/error_page_params.h"
 #include "components/error_page/common/localized_error.h"
 #include "components/error_page/common/net_error_info.h"
 #include "components/grit/components_resources.h"
-#include "components/security_interstitials/core/common/interfaces/interstitial_commands.mojom.h"
+#include "components/offline_pages/buildflags/buildflags.h"
+#include "components/offline_pages/core/offline_page_feature.h"
+#include "components/security_interstitials/content/renderer/security_interstitial_page_controller.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
@@ -40,12 +38,12 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
 #include "content/public/renderer/render_view.h"
-#include "content/public/renderer/resource_fetcher.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_macros.h"
 #include "net/base/net_errors.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-shared.h"
@@ -75,20 +73,9 @@ using content::RenderThread;
 using content::kUnreachableWebDataURL;
 using error_page::DnsProbeStatus;
 using error_page::DnsProbeStatusToString;
-using error_page::ErrorPageParams;
 using error_page::LocalizedError;
 
 namespace {
-
-// Number of seconds to wait for the navigation correction service to return
-// suggestions.  If it takes too long, just use the local error page.
-const int kNavigationCorrectionFetchTimeoutSec = 3;
-
-NetErrorHelperCore::PageType GetLoadingPageType(const GURL& url) {
-  if (!url.is_valid() || url.spec() != kUnreachableWebDataURL)
-    return NetErrorHelperCore::NON_ERROR_PAGE;
-  return NetErrorHelperCore::ERROR_PAGE;
-}
 
 NetErrorHelperCore::FrameType GetFrameType(RenderFrame* render_frame) {
   if (render_frame->IsMainFrame())
@@ -96,9 +83,14 @@ NetErrorHelperCore::FrameType GetFrameType(RenderFrame* render_frame) {
   return NetErrorHelperCore::SUB_FRAME;
 }
 
+bool IsExtensionExtendedErrorCode(int extended_error_code) {
+  return extended_error_code ==
+         static_cast<int>(ChromeResourceRequestBlockedReason::kExtension);
+}
+
 #if defined(OS_ANDROID)
 bool IsOfflineContentOnNetErrorFeatureEnabled() {
-  return base::FeatureList::IsEnabled(features::kNewNetErrorPageUI);
+  return true;
 }
 #else   // OS_ANDROID
 bool IsOfflineContentOnNetErrorFeatureEnabled() {
@@ -108,10 +100,7 @@ bool IsOfflineContentOnNetErrorFeatureEnabled() {
 
 #if defined(OS_ANDROID)
 bool IsAutoFetchFeatureEnabled() {
-  // This feature is incompatible with OfflineContentOnNetError, so don't allow
-  // both.
-  return !IsOfflineContentOnNetErrorFeatureEnabled() &&
-         base::FeatureList::IsEnabled(features::kAutoFetchOnNetErrorPage);
+  return true;
 }
 #else   // OS_ANDROID
 bool IsAutoFetchFeatureEnabled() {
@@ -119,74 +108,29 @@ bool IsAutoFetchFeatureEnabled() {
 }
 #endif  // OS_ANDROID
 
-const net::NetworkTrafficAnnotationTag& GetNetworkTrafficAnnotationTag() {
-  static const net::NetworkTrafficAnnotationTag network_traffic_annotation_tag =
-      net::DefineNetworkTrafficAnnotation("net_error_helper", R"(
-    semantics {
-      sender: "NetErrorHelper"
-      description:
-        "Chrome asks Link Doctor service when a navigating page returns an "
-        "error to investigate details about what is wrong."
-      trigger:
-        "When Chrome navigates to a page, and the page returns an error."
-      data:
-        "Failed page information including the URL will be sent to the service."
-      destination: GOOGLE_OWNED_SERVICE
-    }
-    policy {
-      cookies_allowed: NO
-      setting:
-        "You can enable or disable this feature via 'Use a web service to help "
-        "resolve navigation errors' in Chrome's settings under Advanced. The "
-        "feature is enabled by default."
-      chrome_policy {
-        AlternateErrorPagesEnabled {
-          policy_options {mode: MANDATORY}
-          AlternateErrorPagesEnabled: false
-        }
-      }
-    })");
-  return network_traffic_annotation_tag;
+bool IsRunningInForcedAppMode() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kForceAppMode);
 }
 
 }  // namespace
 
 NetErrorHelper::NetErrorHelper(RenderFrame* render_frame)
     : RenderFrameObserver(render_frame),
-      content::RenderFrameObserverTracker<NetErrorHelper>(render_frame),
-      weak_controller_delegate_factory_(this),
-      weak_security_interstitial_controller_delegate_factory_(this),
-      weak_supervised_user_error_controller_delegate_factory_(this) {
-  RenderThread::Get()->AddObserver(this);
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  bool auto_reload_enabled =
-      command_line->HasSwitch(switches::kEnableOfflineAutoReload);
-  bool auto_reload_visible_only =
-      command_line->HasSwitch(switches::kEnableOfflineAutoReloadVisibleOnly);
+      content::RenderFrameObserverTracker<NetErrorHelper>(render_frame) {
   // TODO(mmenke): Consider only creating a NetErrorHelperCore for main frames.
   // subframes don't need any of the NetErrorHelperCore's extra logic.
-  core_.reset(new NetErrorHelperCore(this,
-                                     auto_reload_enabled,
-                                     auto_reload_visible_only,
-                                     !render_frame->IsHidden()));
+  core_ = std::make_unique<NetErrorHelperCore>(this);
 
   render_frame->GetAssociatedInterfaceRegistry()->AddInterface(
-      base::Bind(&NetErrorHelper::OnNetworkDiagnosticsClientRequest,
-                 base::Unretained(this)));
-  render_frame->GetAssociatedInterfaceRegistry()->AddInterface(base::Bind(
-      &NetErrorHelper::OnNavigationCorrectorRequest, base::Unretained(this)));
+      base::BindRepeating(&NetErrorHelper::OnNetworkDiagnosticsClientRequest,
+                          base::Unretained(this)));
 }
 
-NetErrorHelper::~NetErrorHelper() {
-  RenderThread::Get()->RemoveObserver(this);
-}
+NetErrorHelper::~NetErrorHelper() = default;
 
 void NetErrorHelper::ButtonPressed(NetErrorHelperCore::Button button) {
   core_->ExecuteButtonPress(button);
-}
-
-void NetErrorHelper::TrackClick(int tracking_id) {
-  core_->TrackClick(tracking_id);
 }
 
 void NetErrorHelper::LaunchOfflineItem(const std::string& id,
@@ -214,106 +158,11 @@ content::RenderFrame* NetErrorHelper::GetRenderFrame() {
   return render_frame();
 }
 
-void NetErrorHelper::SendCommand(
-    security_interstitials::SecurityInterstitialCommand command) {
-  security_interstitials::mojom::InterstitialCommandsAssociatedPtr interface;
-  render_frame()->GetRemoteAssociatedInterfaces()->GetInterface(&interface);
-  switch (command) {
-    case security_interstitials::CMD_DONT_PROCEED: {
-      interface->DontProceed();
-      break;
-    }
-    case security_interstitials::CMD_PROCEED: {
-      interface->Proceed();
-      break;
-    }
-    case security_interstitials::CMD_SHOW_MORE_SECTION: {
-      interface->ShowMoreSection();
-      break;
-    }
-    case security_interstitials::CMD_OPEN_HELP_CENTER: {
-      interface->OpenHelpCenter();
-      break;
-    }
-    case security_interstitials::CMD_OPEN_DIAGNOSTIC: {
-      interface->OpenDiagnostic();
-      break;
-    }
-    case security_interstitials::CMD_RELOAD: {
-      interface->Reload();
-      break;
-    }
-    case security_interstitials::CMD_OPEN_DATE_SETTINGS: {
-      interface->OpenDateSettings();
-      break;
-    }
-    case security_interstitials::CMD_OPEN_LOGIN: {
-      interface->OpenLogin();
-      break;
-    }
-    case security_interstitials::CMD_DO_REPORT: {
-      interface->DoReport();
-      break;
-    }
-    case security_interstitials::CMD_DONT_REPORT: {
-      interface->DontReport();
-      break;
-    }
-    case security_interstitials::CMD_OPEN_REPORTING_PRIVACY: {
-      interface->OpenReportingPrivacy();
-      break;
-    }
-    case security_interstitials::CMD_OPEN_WHITEPAPER: {
-      interface->OpenWhitepaper();
-      break;
-    }
-    case security_interstitials::CMD_REPORT_PHISHING_ERROR: {
-      interface->ReportPhishingError();
-      break;
-    }
-    default: {
-      // Other values in the enum are only used by tests so this
-      // method should not be called with them.
-      NOTREACHED();
-    }
-  }
-}
-
-void NetErrorHelper::GoBack() {
-  if (supervised_user_interface_)
-    supervised_user_interface_->GoBack();
-}
-
-void NetErrorHelper::RequestPermission(
-    base::OnceCallback<void(bool)> callback) {
-  if (supervised_user_interface_)
-    supervised_user_interface_->RequestPermission(std::move(callback));
-}
-
-void NetErrorHelper::Feedback() {
-  if (supervised_user_interface_)
-    supervised_user_interface_->Feedback();
-}
-
-void NetErrorHelper::DidStartNavigation(
-    const GURL& url,
-    base::Optional<blink::WebNavigationType> navigation_type) {
-  core_->OnStartLoad(GetFrameType(render_frame()), GetLoadingPageType(url));
-}
-
-void NetErrorHelper::DidCommitProvisionalLoad(bool is_same_document_navigation,
-                                              ui::PageTransition transition) {
-  // If this is a "same-document" navigation, it's not a real navigation.  There
-  // wasn't a start event for it, either, so just ignore it.
-  if (is_same_document_navigation)
-    return;
-
-  // Invalidate weak pointers from old error page controllers. If loading a new
-  // error page, the controller has not yet been attached, so this won't affect
-  // it.
+void NetErrorHelper::DidCommitProvisionalLoad(ui::PageTransition transition) {
+  // Invalidate weak pointers from the old error page controller. If loading a
+  // new error page, the controller has not yet been attached, so this won't
+  // affect it.
   weak_controller_delegate_factory_.InvalidateWeakPtrs();
-  weak_security_interstitial_controller_delegate_factory_.InvalidateWeakPtrs();
-  weak_supervised_user_error_controller_delegate_factory_.InvalidateWeakPtrs();
 
   core_->OnCommitLoad(GetFrameType(render_frame()),
                       render_frame()->GetWebFrame()->GetDocument().Url());
@@ -323,36 +172,43 @@ void NetErrorHelper::DidFinishLoad() {
   core_->OnFinishLoad(GetFrameType(render_frame()));
 }
 
-void NetErrorHelper::OnStop() {
-  core_->OnStop();
-}
-
-void NetErrorHelper::WasShown() {
-  core_->OnWasShown();
-}
-
-void NetErrorHelper::WasHidden() {
-  core_->OnWasHidden();
-}
-
 void NetErrorHelper::OnDestruct() {
   delete this;
 }
 
-void NetErrorHelper::NetworkStateChanged(bool enabled) {
-  core_->NetworkStateChanged(enabled);
-}
-
 void NetErrorHelper::PrepareErrorPage(const error_page::Error& error,
                                       bool is_failed_post,
-                                      bool is_ignoring_cache,
                                       std::string* error_html) {
   core_->PrepareErrorPage(GetFrameType(render_frame()), error, is_failed_post,
-                          is_ignoring_cache, error_html);
+                          error_html);
 }
 
-bool NetErrorHelper::ShouldSuppressErrorPage(const GURL& url) {
-  return core_->ShouldSuppressErrorPage(GetFrameType(render_frame()), url);
+std::unique_ptr<network::ResourceRequest> NetErrorHelper::CreatePostRequest(
+    const GURL& url) const {
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = url;
+  resource_request->method = "POST";
+  resource_request->destination = network::mojom::RequestDestination::kEmpty;
+  resource_request->resource_type =
+      static_cast<int>(blink::mojom::ResourceType::kSubResource);
+
+  blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
+  resource_request->site_for_cookies = frame->GetDocument().SiteForCookies();
+  // The security origin of the error page should exist and be opaque.
+  DCHECK(!frame->GetDocument().GetSecurityOrigin().IsNull());
+  DCHECK(frame->GetDocument().GetSecurityOrigin().IsOpaque());
+  // All requests coming from a renderer process have to use |request_initiator|
+  // that matches the |request_initiator_origin_lock| set by the browser when
+  // creating URLLoaderFactory exposed to the renderer.
+  blink::WebSecurityOrigin origin = frame->GetDocument().GetSecurityOrigin();
+  resource_request->request_initiator = static_cast<url::Origin>(origin);
+  // Since the page is trying to fetch cross-origin resources (which would
+  // be protected by CORB in no-cors mode), we need to ask for CORS.  See also
+  // https://crbug.com/932542.
+  resource_request->mode = network::mojom::RequestMode::kCors;
+  resource_request->headers.SetHeader(net::HttpRequestHeaders::kOrigin,
+                                      origin.ToString().Ascii());
+  return resource_request;
 }
 
 chrome::mojom::NetworkDiagnostics*
@@ -372,24 +228,37 @@ chrome::mojom::NetworkEasterEgg* NetErrorHelper::GetRemoteNetworkEasterEgg() {
   return remote_network_easter_egg_.get();
 }
 
+chrome::mojom::NetErrorPageSupport*
+NetErrorHelper::GetRemoteNetErrorPageSupport() {
+  if (!remote_net_error_page_support_) {
+    render_frame()->GetRemoteAssociatedInterfaces()->GetInterface(
+        &remote_net_error_page_support_);
+  }
+  return remote_net_error_page_support_.get();
+}
+
 LocalizedError::PageState NetErrorHelper::GenerateLocalizedErrorPage(
     const error_page::Error& error,
     bool is_failed_post,
     bool can_show_network_diagnostics_dialog,
-    std::unique_ptr<ErrorPageParams> params,
     std::string* error_html) const {
   error_html->clear();
 
   int resource_id = IDR_NET_ERROR_HTML;
-  const base::StringPiece template_html(
-      ui::ResourceBundle::GetSharedInstance().GetRawDataResource(resource_id));
+  std::string extracted_string =
+      ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
+          resource_id);
+  base::StringPiece template_html(extracted_string.data(),
+                                  extracted_string.size());
 
   LocalizedError::PageState page_state = LocalizedError::GetPageState(
       error.reason(), error.domain(), error.url(), is_failed_post,
+      error.resolve_error_info().is_secure_network_error,
       error.stale_copy_in_cache(), can_show_network_diagnostics_dialog,
       ChromeRenderThreadObserver::is_incognito_process(),
       IsOfflineContentOnNetErrorFeatureEnabled(), IsAutoFetchFeatureEnabled(),
-      RenderThread::Get()->GetLocale(), std::move(params));
+      IsRunningInForcedAppMode(), RenderThread::Get()->GetLocale(),
+      IsExtensionExtendedErrorCode(error.extended_reason()));
   DCHECK(!template_html.empty()) << "unable to load template.";
   // "t" is the id of the template's root node.
   *error_html =
@@ -397,24 +266,11 @@ LocalizedError::PageState NetErrorHelper::GenerateLocalizedErrorPage(
   return page_state;
 }
 
-void NetErrorHelper::LoadErrorPage(const std::string& html,
-                                   const GURL& failed_url) {
-  render_frame()->LoadHTMLString(html, GURL(kUnreachableWebDataURL), "UTF-8",
-                                 failed_url, true /* replace_current_item */);
-}
-
 void NetErrorHelper::EnablePageHelperFunctions() {
-  SecurityInterstitialPageController::Install(
-      render_frame(),
-      weak_security_interstitial_controller_delegate_factory_.GetWeakPtr());
+  security_interstitials::SecurityInterstitialPageController::Install(
+      render_frame());
   NetErrorPageController::Install(
       render_frame(), weak_controller_delegate_factory_.GetWeakPtr());
-
-  render_frame()->GetRemoteAssociatedInterfaces()->GetInterface(
-      &supervised_user_interface_);
-  SupervisedUserErrorPageController::Install(
-      render_frame(),
-      weak_supervised_user_error_controller_delegate_factory_.GetWeakPtr());
 }
 
 LocalizedError::PageState NetErrorHelper::UpdateErrorPage(
@@ -423,17 +279,19 @@ LocalizedError::PageState NetErrorHelper::UpdateErrorPage(
     bool can_show_network_diagnostics_dialog) {
   LocalizedError::PageState page_state = LocalizedError::GetPageState(
       error.reason(), error.domain(), error.url(), is_failed_post,
+      error.resolve_error_info().is_secure_network_error,
       error.stale_copy_in_cache(), can_show_network_diagnostics_dialog,
       ChromeRenderThreadObserver::is_incognito_process(),
       IsOfflineContentOnNetErrorFeatureEnabled(), IsAutoFetchFeatureEnabled(),
-      RenderThread::Get()->GetLocale(), std::unique_ptr<ErrorPageParams>());
+      IsRunningInForcedAppMode(), RenderThread::Get()->GetLocale(),
+      IsExtensionExtendedErrorCode(error.extended_reason()));
 
   std::string json;
   JSONWriter::Write(page_state.strings, &json);
 
   std::string js = "if (window.updateForDnsProbe) "
                    "updateForDnsProbe(" + json + ");";
-  base::string16 js16;
+  std::u16string js16;
   if (base::UTF8ToUTF16(js.c_str(), js.length(), &js16)) {
     render_frame()->ExecuteJavaScript(js16);
   } else {
@@ -447,7 +305,7 @@ void NetErrorHelper::InitializeErrorPageEasterEggHighScore(int high_score) {
       "if (window.initializeEasterEggHighScore) "
       "initializeEasterEggHighScore(%i);",
       high_score);
-  base::string16 js16;
+  std::u16string js16;
   if (!base::UTF8ToUTF16(js.c_str(), js.length(), &js16)) {
     NOTREACHED();
     return;
@@ -472,60 +330,8 @@ void NetErrorHelper::ResetEasterEggHighScore() {
   GetRemoteNetworkEasterEgg()->ResetHighScore();
 }
 
-void NetErrorHelper::FetchNavigationCorrections(
-    const GURL& navigation_correction_url,
-    const std::string& navigation_correction_request_body) {
-  DCHECK(!correction_fetcher_.get());
-
-  correction_fetcher_ =
-      content::ResourceFetcher::Create(navigation_correction_url);
-  correction_fetcher_->SetMethod("POST");
-  correction_fetcher_->SetBody(navigation_correction_request_body);
-  correction_fetcher_->SetHeader("Content-Type", "application/json");
-
-  // Since the page is trying to fetch cross-origin resources (which would
-  // be protected by CORB in no-cors mode), we need to ask for CORS.  See also
-  // https://crbug.com/932542.
-  correction_fetcher_->SetFetchRequestMode(
-      network::mojom::FetchRequestMode::kCors);
-
-  // Prevent CORB from triggering on this request by setting an Origin header.
-  correction_fetcher_->SetHeader("Origin", "null");
-
-  correction_fetcher_->Start(
-      render_frame()->GetWebFrame(), blink::mojom::RequestContextType::INTERNAL,
-      render_frame()->GetURLLoaderFactory(), GetNetworkTrafficAnnotationTag(),
-      base::BindOnce(&NetErrorHelper::OnNavigationCorrectionsFetched,
-                     base::Unretained(this)));
-
-  correction_fetcher_->SetTimeout(
-      base::TimeDelta::FromSeconds(kNavigationCorrectionFetchTimeoutSec));
-}
-
-void NetErrorHelper::CancelFetchNavigationCorrections() {
-  correction_fetcher_.reset();
-}
-
-void NetErrorHelper::SendTrackingRequest(
-    const GURL& tracking_url,
-    const std::string& tracking_request_body) {
-  // If there's already a pending tracking request, this will cancel it.
-  tracking_fetcher_ = content::ResourceFetcher::Create(tracking_url);
-  tracking_fetcher_->SetMethod("POST");
-  tracking_fetcher_->SetBody(tracking_request_body);
-  tracking_fetcher_->SetHeader("Content-Type", "application/json");
-
-  tracking_fetcher_->Start(
-      render_frame()->GetWebFrame(), blink::mojom::RequestContextType::INTERNAL,
-      render_frame()->GetURLLoaderFactory(), GetNetworkTrafficAnnotationTag(),
-      base::BindOnce(&NetErrorHelper::OnTrackingRequestComplete,
-                     base::Unretained(this)));
-}
-
-void NetErrorHelper::ReloadPage(bool bypass_cache) {
-  render_frame()->GetWebFrame()->StartReload(
-      bypass_cache ? blink::WebFrameLoadType::kReloadBypassingCache
-                   : blink::WebFrameLoadType::kReload);
+void NetErrorHelper::ReloadFrame() {
+  render_frame()->GetWebFrame()->StartReload(blink::WebFrameLoadType::kReload);
 }
 
 void NetErrorHelper::DiagnoseError(const GURL& page_url) {
@@ -533,18 +339,15 @@ void NetErrorHelper::DiagnoseError(const GURL& page_url) {
 }
 
 void NetErrorHelper::DownloadPageLater() {
-#if defined(OS_ANDROID)
-  render_frame()->Send(new ChromeViewHostMsg_DownloadPageLater(
-      render_frame()->GetRoutingID()));
-#endif  // defined(OS_ANDROID)
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  GetRemoteNetErrorPageSupport()->DownloadPageLater();
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
 }
 
 void NetErrorHelper::SetIsShowingDownloadButton(bool show) {
-#if defined(OS_ANDROID)
-  render_frame()->Send(
-      new ChromeViewHostMsg_SetIsShowingDownloadButtonInErrorPage(
-          render_frame()->GetRoutingID(), show));
-#endif  // defined(OS_ANDROID)
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  GetRemoteNetErrorPageSupport()->SetIsShowingDownloadButtonInErrorPage(show);
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
 }
 
 void NetErrorHelper::OfflineContentAvailable(
@@ -590,42 +393,10 @@ void NetErrorHelper::DNSProbeStatus(int32_t status_num) {
   core_->OnNetErrorInfo(static_cast<DnsProbeStatus>(status_num));
 }
 
-void NetErrorHelper::SetNavigationCorrectionInfo(
-    const GURL& navigation_correction_url,
-    const std::string& language,
-    const std::string& country_code,
-    const std::string& api_key,
-    const GURL& search_url) {
-  core_->OnSetNavigationCorrectionInfo(navigation_correction_url, language,
-                                       country_code, api_key, search_url);
-}
-
-void NetErrorHelper::OnNavigationCorrectionsFetched(
-    const blink::WebURLResponse& response,
-    const std::string& data) {
-  // The fetcher may only be deleted after |data| is passed to |core_|.  Move
-  // it to a temporary to prevent any potential re-entrancy issues.
-  std::unique_ptr<content::ResourceFetcher> fetcher(
-      correction_fetcher_.release());
-  bool success = (!response.IsNull() && response.HttpStatusCode() == 200);
-  core_->OnNavigationCorrectionsFetched(success ? data : "",
-                                        base::i18n::IsRTL());
-}
-
-void NetErrorHelper::OnTrackingRequestComplete(
-    const blink::WebURLResponse& response,
-    const std::string& data) {
-  tracking_fetcher_.reset();
-}
-
 void NetErrorHelper::OnNetworkDiagnosticsClientRequest(
-    chrome::mojom::NetworkDiagnosticsClientAssociatedRequest request) {
-  network_diagnostics_client_bindings_.AddBinding(this, std::move(request));
-}
-
-void NetErrorHelper::OnNavigationCorrectorRequest(
-    chrome::mojom::NavigationCorrectorAssociatedRequest request) {
-  navigation_corrector_bindings_.AddBinding(this, std::move(request));
+    mojo::PendingAssociatedReceiver<chrome::mojom::NetworkDiagnosticsClient>
+        receiver) {
+  network_diagnostics_client_receivers_.Add(this, std::move(receiver));
 }
 
 void NetErrorHelper::SetCanShowNetworkDiagnosticsDialog(bool can_show) {

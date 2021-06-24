@@ -6,8 +6,10 @@
 
 #include <inttypes.h>
 
+#include "base/pickle.h"
 #include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 
@@ -23,6 +25,23 @@ Token Token::CreateRandom() {
 
 std::string Token::ToString() const {
   return base::StringPrintf("%016" PRIX64 "%016" PRIX64, high_, low_);
+}
+
+void WriteTokenToPickle(Pickle* pickle, const Token& token) {
+  pickle->WriteUInt64(token.high());
+  pickle->WriteUInt64(token.low());
+}
+
+absl::optional<Token> ReadTokenFromPickle(PickleIterator* pickle_iterator) {
+  uint64_t high;
+  if (!pickle_iterator->ReadUInt64(&high))
+    return absl::nullopt;
+
+  uint64_t low;
+  if (!pickle_iterator->ReadUInt64(&low))
+    return absl::nullopt;
+
+  return Token(high, low);
 }
 
 }  // namespace base

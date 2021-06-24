@@ -5,17 +5,21 @@
 package org.chromium.chrome.browser.usage_stats;
 
 import android.app.Activity;
+import android.os.Build;
 
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.base.CollectionUtil;
 import org.chromium.base.Log;
 import org.chromium.base.Promise;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.VisibleForTesting;
+import org.chromium.base.supplier.Supplier;
 import org.chromium.chrome.browser.AppHooks;
-import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.compositor.layouts.content.TabContentManager;
 import org.chromium.chrome.browser.preferences.Pref;
-import org.chromium.chrome.browser.preferences.PrefServiceBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.components.user_prefs.UserPrefs;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -30,7 +34,9 @@ public class UsageStatsService {
 
     private static UsageStatsService sInstance;
 
+    private Profile mProfile;
     private EventTracker mEventTracker;
+    private NotificationSuspender mNotificationSuspender;
     private SuspensionTracker mSuspensionTracker;
     private TokenTracker mTokenTracker;
     private UsageStatsBridge mBridge;
@@ -42,8 +48,14 @@ public class UsageStatsService {
     private DigitalWellbeingClient mClient;
     private boolean mOptInState;
 
+    /** Returns if the UsageStatsService is enabled on this device */
+    public static boolean isEnabled() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
+    }
+
     /** Get the global instance of UsageStatsService */
     public static UsageStatsService getInstance() {
+        assert isEnabled();
         if (sInstance == null) {
             sInstance = new UsageStatsService();
         }
@@ -53,58 +65,63 @@ public class UsageStatsService {
 
     @VisibleForTesting
     UsageStatsService() {
-        Profile profile = Profile.getLastUsedProfile().getOriginalProfile();
-        mBridge = new UsageStatsBridge(profile, this);
+        mProfile = Profile.getLastUsedRegularProfile();
+        mBridge = new UsageStatsBridge(mProfile, this);
         mEventTracker = new EventTracker(mBridge);
-        mSuspensionTracker = new SuspensionTracker(mBridge);
+        mNotificationSuspender = new NotificationSuspender(mProfile);
+        mSuspensionTracker = new SuspensionTracker(mBridge, mNotificationSuspender);
         mTokenTracker = new TokenTracker(mBridge);
         mPageViewObservers = new ArrayList<>();
+        mClient = AppHooks.get().createDigitalWellbeingClient();
+
+        mSuspensionTracker.getAllSuspendedWebsites().then(
+                (suspendedSites) -> { notifyObserversOfSuspensions(suspendedSites, true); });
 
         mOptInState = getOptInState();
-        mClient = AppHooks.get().createDigitalWellbeingClient();
+    }
+
+    /* package */ NotificationSuspender getNotificationSuspender() {
+        return mNotificationSuspender;
     }
 
     /**
      * Create a {@link PageViewObserver} for the given tab model selector and activity.
      * @param tabModelSelector The tab model selector that should be used to get the current tab
      *         model.
-     * @param activity The activity in which page view events are occuring.
+     * @param activity The activity in which page view events are occurring.
+     * @param tabContentManagerSupplier Supplier of the current {@link TabContentManager},
      */
-    public PageViewObserver createPageViewObserver(
-            TabModelSelector tabModelSelector, Activity activity) {
+    public PageViewObserver createPageViewObserver(TabModelSelector tabModelSelector,
+            Activity activity, Supplier<TabContentManager> tabContentManagerSupplier) {
         ThreadUtils.assertOnUiThread();
-        PageViewObserver observer = new PageViewObserver(
-                activity, tabModelSelector, mEventTracker, mTokenTracker, mSuspensionTracker);
+        PageViewObserver observer = new PageViewObserver(activity, tabModelSelector, mEventTracker,
+                mTokenTracker, mSuspensionTracker, tabContentManagerSupplier);
         mPageViewObservers.add(new WeakReference<>(observer));
         return observer;
     }
 
     /** @return Whether the user has authorized DW to access usage stats data. */
-    public boolean getOptInState() {
+    boolean getOptInState() {
         ThreadUtils.assertOnUiThread();
-        PrefServiceBridge prefServiceBridge = PrefServiceBridge.getInstance();
-        boolean enabledByPref = prefServiceBridge.getBoolean(Pref.USAGE_STATS_ENABLED);
-        boolean enabledByFeature = ChromeFeatureList.isEnabled(ChromeFeatureList.USAGE_STATS);
-        // If the user has previously opted in, but the feature has been turned off, we need to
-        // treat it as if they opted out; otherwise they'll have no UI affordance for clearing
-        // whatever data Digital Wellbeing has stored.
-        if (enabledByPref && !enabledByFeature) {
-            onAllHistoryDeleted();
-            setOptInState(false);
-        }
-
-        return enabledByPref && enabledByFeature;
+        return UserPrefs.get(mProfile).getBoolean(Pref.USAGE_STATS_ENABLED);
     }
 
     /** Sets the user's opt in state. */
-    public void setOptInState(boolean state) {
+    void setOptInState(boolean state) {
         ThreadUtils.assertOnUiThread();
-        PrefServiceBridge prefServiceBridge = PrefServiceBridge.getInstance();
-        prefServiceBridge.setBoolean(Pref.USAGE_STATS_ENABLED, state);
+        UserPrefs.get(mProfile).setBoolean(Pref.USAGE_STATS_ENABLED, state);
 
         if (mOptInState == state) return;
         mOptInState = state;
         mClient.notifyOptInStateChange(mOptInState);
+
+        if (!state) {
+            getAllSuspendedWebsitesAsync().then(
+                    (suspendedSites) -> { setWebsitesSuspendedAsync(suspendedSites, false); });
+            getAllTrackedTokensAsync().then((tokens) -> {
+                for (String token : tokens) stopTrackingTokenAsync(token);
+            });
+        }
 
         @UsageStatsMetricsEvent
         int event = state ? UsageStatsMetricsEvent.OPT_IN : UsageStatsMetricsEvent.OPT_OUT;
@@ -146,14 +163,7 @@ public class UsageStatsService {
      */
     public Promise<Void> setWebsitesSuspendedAsync(List<String> fqdns, boolean suspended) {
         ThreadUtils.assertOnUiThread();
-        for (WeakReference<PageViewObserver> observerRef : mPageViewObservers) {
-            PageViewObserver observer = observerRef.get();
-            if (observer != null) {
-                for (String fqdn : fqdns) {
-                    observer.notifySiteSuspensionChanged(fqdn, suspended);
-                }
-            }
-        }
+        notifyObserversOfSuspensions(fqdns, suspended);
 
         return mSuspensionTracker.setWebsitesSuspended(fqdns, suspended);
     }
@@ -192,6 +202,18 @@ public class UsageStatsService {
         });
     }
 
+    public void onHistoryDeletedForDomains(List<String> fqdns) {
+        ThreadUtils.assertOnUiThread();
+        UsageStatsMetricsReporter.reportMetricsEvent(UsageStatsMetricsEvent.CLEAR_HISTORY_DOMAIN);
+        mClient.notifyHistoryDeletion(fqdns);
+        mEventTracker.clearDomains(fqdns).except((exception) -> {
+            // Retry once; if the subsequent attempt fails, log the failure and move on.
+            mEventTracker.clearDomains(fqdns).except((exceptionInner) -> {
+                Log.e(TAG, "Failed to clear domain events for history deletion");
+            });
+        });
+    }
+
     // The below methods are dummies that are only being retained to avoid breaking the downstream
     // build. TODO(pnoland): remove these once the downstream change that converts to using promises
     // lands.
@@ -217,5 +239,13 @@ public class UsageStatsService {
 
     public List<String> getAllSuspendedWebsites() {
         return new ArrayList<>();
+    }
+
+    private void notifyObserversOfSuspensions(List<String> fqdns, boolean suspended) {
+        for (PageViewObserver observer : CollectionUtil.strengthen(mPageViewObservers)) {
+            for (String fqdn : fqdns) {
+                observer.notifySiteSuspensionChanged(fqdn, suspended);
+            }
+        }
     }
 }

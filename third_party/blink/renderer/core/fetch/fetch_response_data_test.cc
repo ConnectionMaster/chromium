@@ -4,8 +4,10 @@
 
 #include "third_party/blink/renderer/core/fetch/fetch_response_data.h"
 
+#include "base/test/scoped_feature_list.h"
+#include "services/network/public/cpp/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/platform/modules/service_worker/web_service_worker_response.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom-blink.h"
 #include "third_party/blink/renderer/core/fetch/fetch_header_list.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
@@ -27,11 +29,10 @@ class FetchResponseDataTest : public testing::Test {
     return internal_response;
   }
 
-  void CheckHeaders(const WebServiceWorkerResponse& web_response) {
-    EXPECT_STREQ("foo", web_response.GetHeader("set-cookie").Utf8().c_str());
-    EXPECT_STREQ("bar", web_response.GetHeader("bar").Utf8().c_str());
-    EXPECT_STREQ("no-cache",
-                 web_response.GetHeader("cache-control").Utf8().c_str());
+  void CheckHeaders(const mojom::blink::FetchAPIResponse& response) {
+    EXPECT_EQ("foo", response.headers.at("set-cookie"));
+    EXPECT_EQ("bar", response.headers.at("bar"));
+    EXPECT_EQ("no-cache", response.headers.at("cache-control"));
   }
 };
 
@@ -52,14 +53,14 @@ TEST_F(FetchResponseDataTest, HeaderList) {
   EXPECT_EQ("no-cache", cache_control_value);
 }
 
-TEST_F(FetchResponseDataTest, ToWebServiceWorkerDefaultType) {
-  WebServiceWorkerResponse web_response;
+TEST_F(FetchResponseDataTest, ToFetchAPIResponseDefaultType) {
   FetchResponseData* internal_response = CreateInternalResponse();
 
-  internal_response->PopulateWebServiceWorkerResponse(web_response);
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      internal_response->PopulateFetchAPIResponse(KURL());
   EXPECT_EQ(network::mojom::FetchResponseType::kDefault,
-            web_response.ResponseType());
-  CheckHeaders(web_response);
+            fetch_api_response->response_type);
+  CheckHeaders(*fetch_api_response);
 }
 
 TEST_F(FetchResponseDataTest, BasicFilter) {
@@ -81,22 +82,22 @@ TEST_F(FetchResponseDataTest, BasicFilter) {
   EXPECT_EQ("no-cache", cache_control_value);
 }
 
-TEST_F(FetchResponseDataTest, ToWebServiceWorkerBasicType) {
-  WebServiceWorkerResponse web_response;
+TEST_F(FetchResponseDataTest, ToFetchAPIResponseBasicType) {
   FetchResponseData* internal_response = CreateInternalResponse();
   FetchResponseData* basic_response_data =
       internal_response->CreateBasicFilteredResponse();
 
-  basic_response_data->PopulateWebServiceWorkerResponse(web_response);
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      basic_response_data->PopulateFetchAPIResponse(KURL());
   EXPECT_EQ(network::mojom::FetchResponseType::kBasic,
-            web_response.ResponseType());
-  CheckHeaders(web_response);
+            fetch_api_response->response_type);
+  CheckHeaders(*fetch_api_response);
 }
 
 TEST_F(FetchResponseDataTest, CorsFilter) {
   FetchResponseData* internal_response = CreateInternalResponse();
   FetchResponseData* cors_response_data =
-      internal_response->CreateCorsFilteredResponse(WebHTTPHeaderSet());
+      internal_response->CreateCorsFilteredResponse(HTTPHeaderSet());
 
   EXPECT_EQ(internal_response, cors_response_data->InternalResponse());
 
@@ -131,7 +132,7 @@ TEST_F(FetchResponseDataTest,
 TEST_F(FetchResponseDataTest, CorsFilterWithEmptyHeaderSet) {
   FetchResponseData* internal_response = CreateInternalResponse();
   FetchResponseData* cors_response_data =
-      internal_response->CreateCorsFilteredResponse(WebHTTPHeaderSet());
+      internal_response->CreateCorsFilteredResponse(HTTPHeaderSet());
 
   EXPECT_EQ(internal_response, cors_response_data->InternalResponse());
 
@@ -152,7 +153,7 @@ TEST_F(FetchResponseDataTest,
                                           "set-cookie, bar");
 
   FetchResponseData* cors_response_data =
-      internal_response->CreateCorsFilteredResponse(WebHTTPHeaderSet());
+      internal_response->CreateCorsFilteredResponse(HTTPHeaderSet());
 
   EXPECT_EQ(internal_response, cors_response_data->InternalResponse());
 
@@ -168,7 +169,7 @@ TEST_F(FetchResponseDataTest,
 
 TEST_F(FetchResponseDataTest, CorsFilterWithExplicitHeaderSet) {
   FetchResponseData* internal_response = CreateInternalResponse();
-  WebHTTPHeaderSet exposed_headers;
+  HTTPHeaderSet exposed_headers;
   exposed_headers.insert("set-cookie");
   exposed_headers.insert("bar");
 
@@ -184,16 +185,16 @@ TEST_F(FetchResponseDataTest, CorsFilterWithExplicitHeaderSet) {
   EXPECT_EQ("bar", bar_value);
 }
 
-TEST_F(FetchResponseDataTest, ToWebServiceWorkerCorsType) {
-  WebServiceWorkerResponse web_response;
+TEST_F(FetchResponseDataTest, ToFetchAPIResponseCorsType) {
   FetchResponseData* internal_response = CreateInternalResponse();
   FetchResponseData* cors_response_data =
-      internal_response->CreateCorsFilteredResponse(WebHTTPHeaderSet());
+      internal_response->CreateCorsFilteredResponse(HTTPHeaderSet());
 
-  cors_response_data->PopulateWebServiceWorkerResponse(web_response);
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      cors_response_data->PopulateFetchAPIResponse(KURL());
   EXPECT_EQ(network::mojom::FetchResponseType::kCors,
-            web_response.ResponseType());
-  CheckHeaders(web_response);
+            fetch_api_response->response_type);
+  CheckHeaders(*fetch_api_response);
 }
 
 TEST_F(FetchResponseDataTest, OpaqueFilter) {
@@ -235,33 +236,67 @@ TEST_F(FetchResponseDataTest,
   EXPECT_FALSE(opaque_response_data->HeaderList()->Has("cache-control"));
 }
 
-TEST_F(FetchResponseDataTest, ToWebServiceWorkerOpaqueType) {
-  WebServiceWorkerResponse web_response;
+TEST_F(FetchResponseDataTest, ToFetchAPIResponseOpaqueType) {
   FetchResponseData* internal_response = CreateInternalResponse();
   FetchResponseData* opaque_response_data =
       internal_response->CreateOpaqueFilteredResponse();
 
-  opaque_response_data->PopulateWebServiceWorkerResponse(web_response);
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      opaque_response_data->PopulateFetchAPIResponse(KURL());
   EXPECT_EQ(network::mojom::FetchResponseType::kOpaque,
-            web_response.ResponseType());
-  CheckHeaders(web_response);
+            fetch_api_response->response_type);
+  CheckHeaders(*fetch_api_response);
 }
 
-TEST_F(FetchResponseDataTest, ToWebServiceWorkerOpaqueRedirectType) {
-  WebServiceWorkerResponse web_response;
+TEST_F(FetchResponseDataTest, ToFetchAPIResponseOpaqueRedirectType) {
   FetchResponseData* internal_response = CreateInternalResponse();
   FetchResponseData* opaque_redirect_response_data =
       internal_response->CreateOpaqueRedirectFilteredResponse();
 
-  opaque_redirect_response_data->PopulateWebServiceWorkerResponse(web_response);
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      opaque_redirect_response_data->PopulateFetchAPIResponse(KURL());
   EXPECT_EQ(network::mojom::FetchResponseType::kOpaqueRedirect,
-            web_response.ResponseType());
-  CheckHeaders(web_response);
+            fetch_api_response->response_type);
+  CheckHeaders(*fetch_api_response);
 }
 
 TEST_F(FetchResponseDataTest, DefaultResponseTime) {
   FetchResponseData* internal_response = CreateInternalResponse();
   EXPECT_FALSE(internal_response->ResponseTime().is_null());
+}
+
+TEST_F(FetchResponseDataTest, ContentSecurityPolicy) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  FetchResponseData* internal_response = CreateInternalResponse();
+  internal_response->HeaderList()->Append("content-security-policy",
+                                          "frame-ancestors 'none'");
+  internal_response->HeaderList()->Append("content-security-policy-report-only",
+                                          "frame-ancestors 'none'");
+
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      internal_response->PopulateFetchAPIResponse(
+          KURL("https://www.example.org"));
+  auto& csp = fetch_api_response->parsed_headers->content_security_policy;
+
+  EXPECT_EQ(csp.size(), 2U);
+  EXPECT_EQ(csp[0]->header->type,
+            network::mojom::ContentSecurityPolicyType::kEnforce);
+  EXPECT_EQ(csp[1]->header->type,
+            network::mojom::ContentSecurityPolicyType::kReport);
+}
+
+TEST_F(FetchResponseDataTest, AuthChallengeInfo) {
+  FetchResponseData* internal_response = CreateInternalResponse();
+  net::AuthChallengeInfo auth_challenge_info;
+  auth_challenge_info.is_proxy = true;
+  auth_challenge_info.challenge = "foobar";
+  internal_response->SetAuthChallengeInfo(auth_challenge_info);
+
+  mojom::blink::FetchAPIResponsePtr fetch_api_response =
+      internal_response->PopulateFetchAPIResponse(KURL());
+  ASSERT_TRUE(fetch_api_response->auth_challenge_info.has_value());
+  EXPECT_TRUE(fetch_api_response->auth_challenge_info->is_proxy);
+  EXPECT_EQ("foobar", fetch_api_response->auth_challenge_info->challenge);
 }
 
 }  // namespace blink

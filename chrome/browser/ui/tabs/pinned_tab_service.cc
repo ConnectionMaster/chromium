@@ -4,66 +4,36 @@
 
 #include "chrome/browser/ui/tabs/pinned_tab_service.h"
 
-#include "chrome/browser/chrome_notification_types.h"
+#include "base/bind.h"
+#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/tabs/pinned_tab_codec.h"
-#include "content/public/browser/notification_service.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 
-namespace {
+PinnedTabService::PinnedTabService(Profile* profile) : profile_(profile) {
+  closing_all_browsers_subscription_ = chrome::AddClosingAllBrowsersCallback(
+      base::BindRepeating(&PinnedTabService::OnClosingAllBrowsersChanged,
+                          base::Unretained(this)));
 
-// Returns true if |browser| is the only normal (tabbed) browser for |browser|'s
-// profile (across all desktops).
-bool IsOnlyNormalBrowser(Browser* browser) {
-  for (auto* b : *BrowserList::GetInstance()) {
-    if (b != browser && b->is_type_tabbed() &&
-        b->profile() == browser->profile()) {
-      return false;
-    }
-  }
-  return true;
+  for (Browser* browser : *BrowserList::GetInstance())
+    OnBrowserAdded(browser);
+
+  BrowserList::AddObserver(this);
 }
 
-// Returns true if there's at lease one tabbed browser associated with
-// |profile|.
-bool BrowserListHasNormalBrowser(Profile* profile) {
-  for (auto* b : *BrowserList::GetInstance()) {
-    if (b->is_type_tabbed() && b->profile() == profile)
-      return true;
-  }
-  return false;
+PinnedTabService::~PinnedTabService() {
+  BrowserList::RemoveObserver(this);
 }
 
-}  // namespace
-
-PinnedTabService::PinnedTabService(Profile* profile)
-    : profile_(profile),
-      save_pinned_tabs_(true),
-      has_normal_browser_(false),
-      browser_list_observer_(this) {
-  registrar_.Add(this, chrome::NOTIFICATION_BROWSER_OPENED,
-                 content::NotificationService::AllBrowserContextsAndSources());
-  registrar_.Add(this, chrome::NOTIFICATION_CLOSE_ALL_BROWSERS_REQUEST,
-                 content::NotificationService::AllSources());
-  registrar_.Add(this, chrome::NOTIFICATION_TAB_ADDED,
-                 content::NotificationService::AllSources());
-  browser_list_observer_.Add(BrowserList::GetInstance());
-}
-
-PinnedTabService::~PinnedTabService() {}
-
-void PinnedTabService::Observe(int type,
-                               const content::NotificationSource& source,
-                               const content::NotificationDetails& details) {
-  // Saving of tabs happens when saving is enabled, and when either the user
-  // exits the application or closes the last browser window.
-  // Saving is disabled when the user exits the application to prevent the
-  // pin state of all the open browsers being overwritten by the state of the
-  // last browser window to close.
-  // Saving is re-enabled when a browser window or tab is opened again.
-  // Note, cancelling a shutdown (via onbeforeunload) will not re-enable pinned
-  // tab saving immediately, to prevent the following situation:
+void PinnedTabService::OnClosingAllBrowsersChanged(bool closing) {
+  // Saving of tabs happens when the user exits the application or closes the
+  // last browser window. After saving, |need_to_write_pinned_tabs_| is set to
+  // false to make sure subsequent window closures don't overwrite the pinned
+  // tab state. Saving is re-enabled when a browser window or tab is opened
+  // again. Note, cancelling a shutdown (via onbeforeunload) will not re-enable
+  // pinned tab saving immediately, to prevent the following situation:
   //   * two windows are open, one with pinned tabs
   //   * user exits
   //   * pinned tabs are saved
@@ -73,55 +43,51 @@ void PinnedTabService::Observe(int type,
   //   * pinned tabs are saved, without the window with the pinned tabs,
   //     over-writing the correct state.
   // Saving is re-enabled if a new tab or window is opened.
-  switch (type) {
-    case chrome::NOTIFICATION_BROWSER_OPENED: {
-      Browser* browser = content::Source<Browser>(source).ptr();
-      if (!has_normal_browser_ && browser->is_type_tabbed() &&
-          browser->profile() == profile_) {
-        has_normal_browser_ = true;
-      }
-      save_pinned_tabs_ = true;
-      break;
-    }
+  if (closing && TabStripModelObserver::IsObservingAny(this))
+    WritePinnedTabsIfNecessary();
+}
 
-    case chrome::NOTIFICATION_TAB_ADDED: {
-      save_pinned_tabs_ = true;
-      break;
-    }
+void PinnedTabService::OnBrowserAdded(Browser* browser) {
+  if (browser->profile() != profile_ || !browser->is_type_normal())
+    return;
 
-    case chrome::NOTIFICATION_CLOSE_ALL_BROWSERS_REQUEST: {
-      if (has_normal_browser_ && save_pinned_tabs_) {
-        PinnedTabCodec::WritePinnedTabs(profile_);
-        save_pinned_tabs_ = false;
-      }
-      break;
-    }
-
-    default:
-      NOTREACHED();
-  }
+  need_to_write_pinned_tabs_ = true;
+  browser->tab_strip_model()->AddObserver(this);
 }
 
 void PinnedTabService::OnBrowserClosing(Browser* browser) {
-  if (has_normal_browser_ && save_pinned_tabs_ &&
-      browser->profile() == profile_ && IsOnlyNormalBrowser(browser)) {
-    has_normal_browser_ = false;
-    PinnedTabCodec::WritePinnedTabs(profile_);
-  }
+  if (browser->profile() != profile_ || !browser->is_type_normal())
+    return;
+
+  if (TabStripModelObserver::CountObservedModels(this) == 1)
+    WritePinnedTabsIfNecessary();
 }
 
 void PinnedTabService::OnBrowserRemoved(Browser* browser) {
-  if (!browser->is_type_tabbed() || browser->profile() != profile_)
+  if (browser->profile() != profile_ || !browser->is_type_normal())
     return;
 
-  if (save_pinned_tabs_ && has_normal_browser_ &&
-      !BrowserListHasNormalBrowser(browser->profile())) {
-    // This happens when user closes each tabs manually via the close button on
-    // them. In this case OnBrowserClosing() above is not called. This causes
-    // pinned tabs to repopen on the next startup. So we should call
-    // WritePinnedTab() to clear the data.
-    // http://crbug.com/71939
-    has_normal_browser_ = false;
+  browser->tab_strip_model()->RemoveObserver(this);
+
+  // This happens when user closes each tabs manually via the close button on
+  // them. In this case OnBrowserClosing() above is not called. This causes
+  // pinned tabs to repopen on the next startup. So we should call
+  // WritePinnedTab() to clear the data.
+  // http://crbug.com/71939
+  if (!TabStripModelObserver::IsObservingAny(this))
+    WritePinnedTabsIfNecessary();
+}
+
+void PinnedTabService::OnTabStripModelChanged(
+    TabStripModel* tab_strip_model,
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  if (change.type() == TabStripModelChange::kInserted)
+    need_to_write_pinned_tabs_ = true;
+}
+
+void PinnedTabService::WritePinnedTabsIfNecessary() {
+  if (need_to_write_pinned_tabs_)
     PinnedTabCodec::WritePinnedTabs(profile_);
-  }
+  need_to_write_pinned_tabs_ = false;
 }

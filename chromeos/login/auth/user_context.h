@@ -8,12 +8,14 @@
 #include <string>
 
 #include "base/component_export.h"
-#include "base/optional.h"
 #include "chromeos/login/auth/challenge_response_key.h"
 #include "chromeos/login/auth/key.h"
+#include "chromeos/login/auth/saml_password_attributes.h"
+#include "chromeos/login/auth/sync_trusted_vault_keys.h"
 #include "components/account_id/account_id.h"
 #include "components/password_manager/core/browser/password_hash_data.h"
 #include "components/user_manager/user_type.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class AccountId;
 
@@ -59,8 +61,7 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) UserContext {
   // its hashed/transformed representation.
   const Key* GetKey() const;
   Key* GetKey();
-  // The plain-text user password. Initialized only on enterprise enrolled
-  // devices. See https://crbug.com/386606.
+  // The plain-text user password. See https://crbug.com/386606.
   const Key* GetPasswordKey() const;
   Key* GetMutablePasswordKey();
   // The challenge-response keys for user authentication. Currently, such keys
@@ -78,13 +79,20 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) UserContext {
   bool IsUsingPin() const;
   bool IsForcingDircrypto() const;
   AuthFlow GetAuthFlow() const;
+  bool IsUsingSamlPrincipalsApi() const;
   user_manager::UserType GetUserType() const;
   const std::string& GetPublicSessionLocale() const;
   const std::string& GetPublicSessionInputMethod() const;
   const std::string& GetDeviceId() const;
   const std::string& GetGAPSCookie() const;
-  const base::Optional<password_manager::PasswordHashData>&
+  const absl::optional<password_manager::PasswordHashData>&
   GetSyncPasswordData() const;
+  const absl::optional<SamlPasswordAttributes>& GetSamlPasswordAttributes()
+      const;
+  const absl::optional<SyncTrustedVaultKeys>& GetSyncTrustedVaultKeys() const;
+  // True if |managed_guest_session_launch_extension_id_| is non-empty.
+  bool IsLockableManagedGuestSession() const;
+  std::string GetManagedGuestSessionLaunchExtensionId() const;
 
   bool HasCredentials() const;
 
@@ -93,6 +101,20 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) UserContext {
 
   void SetAccountId(const AccountId& account_id);
   void SetKey(const Key& key);
+  // Saves the user's plaintext password for possible authentication by system
+  // services:
+  // - To networks. If the user's OpenNetworkConfiguration policy contains a
+  //   ${PASSWORD} variable, then the user's password will be used to
+  //   authenticate to the specified network.
+  // - To Kerberos. If the user's KerberosAccounts policy contains a ${PASSWORD}
+  //   variable, then the user's password will be used to authenticate to the
+  //   specified Kerberos account.
+  // The user's password needs to be saved in memory until the policies can be
+  // examined. When policies come in and none of them contain the ${PASSWORD}
+  // variable, the user's password will be discarded. If at least one contains
+  // the password, it will be sent to the session manager, which will then save
+  // it in a keyring so it can be retrieved by the corresponding services.
+  // More details can be found in https://crbug.com/386606.
   void SetPasswordKey(const Key& key);
   void SetAuthCode(const std::string& auth_code);
   void SetRefreshToken(const std::string& refresh_token);
@@ -102,13 +124,28 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) UserContext {
   void SetIsUsingPin(bool is_using_pin);
   void SetIsForcingDircrypto(bool is_forcing_dircrypto);
   void SetAuthFlow(AuthFlow auth_flow);
+  void SetIsUsingSamlPrincipalsApi(bool is_using_saml_principals_api);
   void SetPublicSessionLocale(const std::string& locale);
   void SetPublicSessionInputMethod(const std::string& input_method);
   void SetDeviceId(const std::string& device_id);
   void SetGAPSCookie(const std::string& gaps_cookie);
   void SetSyncPasswordData(
       const password_manager::PasswordHashData& sync_password_data);
+  void SetSamlPasswordAttributes(
+      const SamlPasswordAttributes& saml_password_attributes);
+  void SetSyncTrustedVaultKeys(
+      const SyncTrustedVaultKeys& sync_trusted_vault_keys);
   void SetIsUnderAdvancedProtection(bool is_under_advanced_protection);
+  // Sets |managed_guest_session_launch_extension_id_| which is used to set the
+  // |kLoginExtensionApiLaunchExtensionId| pref when the user's profile is
+  // created. Setting this pref indicates that this Managed Guest Session is
+  // lockable.
+  void SetManagedGuestSessionLaunchExtensionId(const std::string& extension_id);
+  // We need to pull input method used to log in into the user session to make
+  // it consistent. This method will remember given input method to be used
+  // when session starts.
+  void SetLoginInputMethodUsed(const std::string& input_method_id);
+  const std::string& GetLoginInputMethodUsed() const;
 
   void ClearSecrets();
 
@@ -125,17 +162,34 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) UserContext {
   bool is_using_pin_ = false;
   bool is_forcing_dircrypto_ = false;
   AuthFlow auth_flow_ = AUTH_FLOW_OFFLINE;
+  bool is_using_saml_principals_api_ = false;
   user_manager::UserType user_type_ = user_manager::USER_TYPE_REGULAR;
   std::string public_session_locale_;
   std::string public_session_input_method_;
   std::string device_id_;
   std::string gaps_cookie_;
   bool is_under_advanced_protection_ = false;
+  std::string managed_guest_session_launch_extension_id_;
+  // |login_input_method_used_| is non-empty if login password/code was used,
+  // i.e. user used some input method to log in.
+  std::string login_input_method_used_;
 
   // For password reuse detection use.
-  base::Optional<password_manager::PasswordHashData> sync_password_data_;
+  absl::optional<password_manager::PasswordHashData> sync_password_data_;
+
+  // Info about the user's SAML password, such as when it will expire.
+  absl::optional<SamlPasswordAttributes> saml_password_attributes_;
+
+  // Info about the user's sync encryption keys.
+  absl::optional<SyncTrustedVaultKeys> sync_trusted_vault_keys_;
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when the //chrome/browser/chromeos
+// source code migration is finished.
+namespace ash {
+using ::chromeos::UserContext;
+}
 
 #endif  // CHROMEOS_LOGIN_AUTH_USER_CONTEXT_H_

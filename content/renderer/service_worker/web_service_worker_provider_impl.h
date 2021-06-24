@@ -11,11 +11,11 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "content/common/service_worker/service_worker_types.h"
+#include "content/common/content_export.h"
 #include "third_party/blink/public/common/messaging/transferable_message.h"
-#include "third_party/blink/public/mojom/service_worker/service_worker_error_type.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_error_type.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
-#include "third_party/blink/public/mojom/web_feature/web_feature.mojom.h"
+#include "third_party/blink/public/mojom/web_feature/web_feature.mojom-forward.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider.h"
 
 namespace blink {
@@ -43,6 +43,7 @@ class CONTENT_EXPORT WebServiceWorkerProviderImpl
       const blink::WebURL& web_script_url,
       blink::mojom::ScriptType script_type,
       blink::mojom::ServiceWorkerUpdateViaCache update_via_cache,
+      const blink::WebFetchClientSettingsObject& fetch_client_settings_object,
       std::unique_ptr<WebServiceWorkerRegistrationCallbacks>) override;
   void GetRegistration(
       const blink::WebURL& web_document_url,
@@ -69,20 +70,20 @@ class CONTENT_EXPORT WebServiceWorkerProviderImpl
   void OnRegistered(
       std::unique_ptr<WebServiceWorkerRegistrationCallbacks> callbacks,
       blink::mojom::ServiceWorkerErrorType error,
-      const base::Optional<std::string>& error_msg,
+      const absl::optional<std::string>& error_msg,
       blink::mojom::ServiceWorkerRegistrationObjectInfoPtr registration);
 
   void OnDidGetRegistration(
       std::unique_ptr<WebServiceWorkerGetRegistrationCallbacks> callbacks,
       blink::mojom::ServiceWorkerErrorType error,
-      const base::Optional<std::string>& error_msg,
+      const absl::optional<std::string>& error_msg,
       blink::mojom::ServiceWorkerRegistrationObjectInfoPtr registration);
 
   void OnDidGetRegistrations(
       std::unique_ptr<WebServiceWorkerGetRegistrationsCallbacks> callbacks,
       blink::mojom::ServiceWorkerErrorType error,
-      const base::Optional<std::string>& error_msg,
-      base::Optional<
+      const absl::optional<std::string>& error_msg,
+      absl::optional<
           std::vector<blink::mojom::ServiceWorkerRegistrationObjectInfoPtr>>
           infos);
 
@@ -97,7 +98,7 @@ class CONTENT_EXPORT WebServiceWorkerProviderImpl
   // the same context, but could live longer until the context is GC'ed)
   blink::WebServiceWorkerProviderClient* provider_client_;
 
-  base::WeakPtrFactory<WebServiceWorkerProviderImpl> weak_factory_;
+  base::WeakPtrFactory<WebServiceWorkerProviderImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WebServiceWorkerProviderImpl);
 };

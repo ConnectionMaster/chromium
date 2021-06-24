@@ -12,10 +12,9 @@
 #include "base/logging.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/optional.h"
-#include "base/task/post_task.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/browser/browser_main_loop.h"
 #include "content/browser/media/media_internals.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -23,25 +22,27 @@
 #include "media/audio/audio_logging.h"
 #include "media/base/media_switches.h"
 #include "media/base/user_input_monitor.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "content/browser/media/keyboard_mic_registration.h"
 #endif
 
 namespace content {
 
+using DisconnectReason =
+    media::mojom::AudioInputStreamObserver::DisconnectReason;
+using InputStreamErrorCode = media::mojom::InputStreamErrorCode;
+
 namespace {
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 enum KeyboardMicAction { kRegister, kDeregister };
 
 void UpdateKeyboardMicRegistration(KeyboardMicAction action) {
   if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
-        base::BindOnce(&UpdateKeyboardMicRegistration, action));
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&UpdateKeyboardMicRegistration, action));
     return;
   }
   BrowserMainLoop* browser_main_loop = BrowserMainLoop::GetInstance();
@@ -69,9 +70,9 @@ AudioInputStreamBroker::AudioInputStreamBroker(
     uint32_t shared_memory_count,
     media::UserInputMonitorBase* user_input_monitor,
     bool enable_agc,
-    audio::mojom::AudioProcessingConfigPtr processing_config,
     AudioStreamBroker::DeleterCallback deleter,
-    mojom::RendererAudioInputStreamFactoryClientPtr renderer_factory_client)
+    mojo::PendingRemote<blink::mojom::RendererAudioInputStreamFactoryClient>
+        renderer_factory_client)
     : AudioStreamBroker(render_process_id, render_frame_id),
       device_id_(device_id),
       params_(params),
@@ -79,17 +80,14 @@ AudioInputStreamBroker::AudioInputStreamBroker(
       user_input_monitor_(user_input_monitor),
       enable_agc_(enable_agc),
       deleter_(std::move(deleter)),
-      processing_config_(std::move(processing_config)),
-      renderer_factory_client_(std::move(renderer_factory_client)),
-      observer_binding_(this),
-      weak_ptr_factory_(this) {
+      renderer_factory_client_(std::move(renderer_factory_client)) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(renderer_factory_client_);
   DCHECK(deleter_);
   TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("audio", "AudioInputStreamBroker", this);
 
   // Unretained is safe because |this| owns |renderer_factory_client_|.
-  renderer_factory_client_.set_connection_error_handler(base::BindOnce(
+  renderer_factory_client_.set_disconnect_handler(base::BindOnce(
       &AudioInputStreamBroker::ClientBindingLost, base::Unretained(this)));
 
   NotifyProcessHostOfStartedStream(render_process_id);
@@ -99,7 +97,7 @@ AudioInputStreamBroker::AudioInputStreamBroker(
     params_.set_format(media::AudioParameters::AUDIO_FAKE);
   }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (params_.channel_layout() ==
       media::CHANNEL_LAYOUT_STEREO_AND_KEYBOARD_MIC) {
     UpdateKeyboardMicRegistration(kRegister);
@@ -110,7 +108,7 @@ AudioInputStreamBroker::AudioInputStreamBroker(
 AudioInputStreamBroker::~AudioInputStreamBroker() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (params_.channel_layout() ==
       media::CHANNEL_LAYOUT_STEREO_AND_KEYBOARD_MIC) {
     UpdateKeyboardMicRegistration(kDeregister);
@@ -133,16 +131,13 @@ AudioInputStreamBroker::~AudioInputStreamBroker() {
   TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "AudioInputStreamBroker", this,
                                   "disconnect reason",
                                   static_cast<uint32_t>(disconnect_reason_));
-
-  UMA_HISTOGRAM_ENUMERATION("Media.Audio.Capture.StreamBrokerDisconnectReason",
-                            disconnect_reason_);
 }
 
 void AudioInputStreamBroker::CreateStream(
-    audio::mojom::StreamFactory* factory) {
+    media::mojom::AudioStreamFactory* factory) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!observer_binding_.is_bound());
-  DCHECK(!client_request_);
+  DCHECK(!observer_receiver_.is_bound());
+  DCHECK(!pending_client_receiver_);
   TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("audio", "CreateStream", this, "device id",
                                     device_id_);
   awaiting_created_ = true;
@@ -153,18 +148,17 @@ void AudioInputStreamBroker::CreateStream(
         user_input_monitor_->EnableKeyPressMonitoringWithMapping();
   }
 
-  media::mojom::AudioInputStreamClientPtr client;
-  client_request_ = mojo::MakeRequest(&client);
+  mojo::PendingRemote<media::mojom::AudioInputStreamClient> client;
+  pending_client_receiver_ = client.InitWithNewPipeAndPassReceiver();
 
-  media::mojom::AudioInputStreamPtr stream;
-  media::mojom::AudioInputStreamRequest stream_request =
-      mojo::MakeRequest(&stream);
+  mojo::PendingRemote<media::mojom::AudioInputStream> stream;
+  auto stream_receiver = stream.InitWithNewPipeAndPassReceiver();
 
-  media::mojom::AudioInputStreamObserverPtr observer_ptr;
-  observer_binding_.Bind(mojo::MakeRequest(&observer_ptr));
+  mojo::PendingRemote<media::mojom::AudioInputStreamObserver> observer;
+  observer_receiver_.Bind(observer.InitWithNewPipeAndPassReceiver());
 
   // Unretained is safe because |this| owns |observer_binding_|.
-  observer_binding_.set_connection_error_with_reason_handler(base::BindOnce(
+  observer_receiver_.set_disconnect_with_reason_handler(base::BindOnce(
       &AudioInputStreamBroker::ObserverBindingLost, base::Unretained(this)));
 
   // Note that the component id for AudioLog is used to differentiate between
@@ -172,13 +166,12 @@ void AudioInputStreamBroker::CreateStream(
   // stream, the component id used doesn't matter.
   constexpr int log_component_id = 0;
   factory->CreateInputStream(
-      std::move(stream_request), std::move(client), std::move(observer_ptr),
+      std::move(stream_receiver), std::move(client), std::move(observer),
       MediaInternals::GetInstance()->CreateMojoAudioLog(
           media::AudioLogFactory::AudioComponent::AUDIO_INPUT_CONTROLLER,
           log_component_id, render_process_id(), render_frame_id()),
       device_id_, params_, shared_memory_count_, enable_agc_,
-      mojo::WrapReadOnlySharedMemoryRegion(std::move(key_press_count_buffer)),
-      std::move(processing_config_),
+      std::move(key_press_count_buffer),
       base::BindOnce(&AudioInputStreamBroker::StreamCreated,
                      weak_ptr_factory_.GetWeakPtr(), std::move(stream)));
 }
@@ -189,18 +182,17 @@ void AudioInputStreamBroker::DidStartRecording() {
 }
 
 void AudioInputStreamBroker::StreamCreated(
-    media::mojom::AudioInputStreamPtr stream,
+    mojo::PendingRemote<media::mojom::AudioInputStream> stream,
     media::mojom::ReadOnlyAudioDataPipePtr data_pipe,
     bool initially_muted,
-    const base::Optional<base::UnguessableToken>& stream_id) {
+    const absl::optional<base::UnguessableToken>& stream_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   awaiting_created_ = false;
   TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "CreateStream", this, "success",
                                   !!data_pipe);
 
   if (!data_pipe) {
-    disconnect_reason_ = media::mojom::AudioInputStreamObserver::
-        DisconnectReason::kStreamCreationFailed;
+    disconnect_reason_ = DisconnectReason::kStreamCreationFailed;
     Cleanup();
     return;
   }
@@ -208,32 +200,49 @@ void AudioInputStreamBroker::StreamCreated(
   DCHECK(stream_id.has_value());
   DCHECK(renderer_factory_client_);
   renderer_factory_client_->StreamCreated(
-      std::move(stream), std::move(client_request_), std::move(data_pipe),
-      initially_muted, stream_id);
+      std::move(stream), std::move(pending_client_receiver_),
+      std::move(data_pipe), initially_muted, stream_id);
 }
+
+InputStreamErrorCode MapDisconnectReasonToErrorCode(DisconnectReason reason) {
+  switch (static_cast<DisconnectReason>(reason)) {
+    case DisconnectReason::kSystemPermissions:
+      return InputStreamErrorCode::kSystemPermissions;
+    case DisconnectReason::kDeviceInUse:
+      return InputStreamErrorCode::kDeviceInUse;
+    case DisconnectReason::kDefault:
+    case DisconnectReason::kPlatformError:
+    case DisconnectReason::kTerminatedByClient:
+    case DisconnectReason::kStreamCreationFailed:
+    case DisconnectReason::kDocumentDestroyed:
+      break;
+  }
+  return InputStreamErrorCode::kUnknown;
+}
+
 void AudioInputStreamBroker::ObserverBindingLost(
     uint32_t reason,
     const std::string& description) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  const uint32_t maxValidReason = static_cast<uint32_t>(
-      media::mojom::AudioInputStreamObserver::DisconnectReason::kMaxValue);
-  if (reason > maxValidReason) {
+  DisconnectReason disconnection_reason = static_cast<DisconnectReason>(reason);
+  if (!media::mojom::IsKnownEnumValue(disconnection_reason)) {
     DLOG(ERROR) << "Invalid reason: " << reason;
-  } else if (disconnect_reason_ == media::mojom::AudioInputStreamObserver::
-                                       DisconnectReason::kDocumentDestroyed) {
-    disconnect_reason_ =
-        static_cast<media::mojom::AudioInputStreamObserver::DisconnectReason>(
-            reason);
+  } else if (disconnect_reason_ == DisconnectReason::kDocumentDestroyed) {
+    disconnect_reason_ = disconnection_reason;
   }
+
+  renderer_factory_client_.ResetWithReason(
+      static_cast<uint32_t>(
+          MapDisconnectReasonToErrorCode(disconnection_reason)),
+      description);
 
   Cleanup();
 }
 
 void AudioInputStreamBroker::ClientBindingLost() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  disconnect_reason_ = media::mojom::AudioInputStreamObserver::
-      DisconnectReason::kTerminatedByClient;
+  disconnect_reason_ = DisconnectReason::kTerminatedByClient;
   Cleanup();
 }
 

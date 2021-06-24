@@ -5,11 +5,12 @@
 #include <memory>
 
 #include "base/files/scoped_temp_dir.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/build_config.h"
 #include "components/ukm/content/source_url_recorder.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/navigation_handle_observer.h"
@@ -18,12 +19,14 @@
 #include "content/shell/browser/shell_download_manager_delegate.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
+#include "third_party/blink/public/common/features.h"
 
 class SourceUrlRecorderWebContentsObserverBrowserTest
     : public content::ContentBrowserTest {
  protected:
   SourceUrlRecorderWebContentsObserverBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(ukm::kUkmFeature);
+    scoped_feature_list_.InitWithFeatures(
+        {ukm::kUkmFeature, blink::features::kPortals}, {});
   }
 
   ~SourceUrlRecorderWebContentsObserverBrowserTest() override {}
@@ -37,11 +40,14 @@ class SourceUrlRecorderWebContentsObserverBrowserTest
     ukm::InitializeSourceUrlRecorderForWebContents(shell()->web_contents());
   }
 
+  const ukm::UkmSource* GetSourceForSourceId(const ukm::SourceId source_id) {
+    return test_ukm_recorder_->GetSourceForSourceId(source_id);
+  }
+
   const ukm::UkmSource* GetSourceForNavigationId(int64_t navigation_id) {
     CHECK_GT(navigation_id, 0);
-    const ukm::SourceId source_id =
-        ukm::ConvertToSourceId(navigation_id, ukm::SourceIdType::NAVIGATION_ID);
-    return test_ukm_recorder_->GetSourceForSourceId(source_id);
+    return GetSourceForSourceId(ukm::ConvertToSourceId(
+        navigation_id, ukm::SourceIdType::NAVIGATION_ID));
   }
 
   GURL GetAssociatedURLForWebContentsDocument() {
@@ -83,18 +89,12 @@ class SourceUrlRecorderWebContentsObserverDownloadBrowserTest
   base::ScopedTempDir downloads_directory_;
 };
 
-#if defined(OS_WIN)
-#define MAYBE_Basic DISABLED_Basic
-#else
-#define MAYBE_Basic Basic
-#endif
-IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverBrowserTest,
-                       MAYBE_Basic) {
+IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverBrowserTest, Basic) {
   using Entry = ukm::builders::DocumentCreated;
 
   GURL url = embedded_test_server()->GetURL("/title1.html");
   content::NavigationHandleObserver observer(shell()->web_contents(), url);
-  content::NavigateToURL(shell(), url);
+  EXPECT_TRUE(content::NavigateToURL(shell(), url));
   EXPECT_TRUE(observer.has_committed());
   const ukm::UkmSource* source =
       GetSourceForNavigationId(observer.navigation_id());
@@ -114,13 +114,10 @@ IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverBrowserTest,
   EXPECT_NE(source->id(), ukm_entries[0]->source_id);
 }
 
-#if defined(OS_WIN)
-#define MAYBE_IgnoreUrlInSubframe DISABLED_IgnoreUrlInSubframe
-#else
-#define MAYBE_IgnoreUrlInSubframe IgnoreUrlInSubframe
-#endif
+// Test correctness of sources and DocumentCreated entries when a navigation
+// leads to creation of main frame and embedded subframe documents.
 IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverBrowserTest,
-                       MAYBE_IgnoreUrlInSubframe) {
+                       IgnoreUrlInSubframe) {
   using Entry = ukm::builders::DocumentCreated;
 
   GURL main_url = embedded_test_server()->GetURL("/page_with_iframe.html");
@@ -130,45 +127,143 @@ IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverBrowserTest,
                                                   main_url);
   content::NavigationHandleObserver subframe_observer(shell()->web_contents(),
                                                       subframe_url);
-  content::NavigateToURL(shell(), main_url);
+  EXPECT_TRUE(content::NavigateToURL(shell(), main_url));
   EXPECT_TRUE(main_observer.has_committed());
   EXPECT_TRUE(main_observer.is_main_frame());
   EXPECT_TRUE(subframe_observer.has_committed());
   EXPECT_FALSE(subframe_observer.is_main_frame());
 
-  const ukm::UkmSource* source =
+  const ukm::UkmSource* navigation_source =
       GetSourceForNavigationId(main_observer.navigation_id());
-  EXPECT_NE(nullptr, source);
-  EXPECT_EQ(main_url, source->url());
+  EXPECT_NE(nullptr, navigation_source);
+  EXPECT_EQ(main_url, navigation_source->url());
   EXPECT_EQ(nullptr,
             GetSourceForNavigationId(subframe_observer.navigation_id()));
 
   EXPECT_EQ(main_url, GetAssociatedURLForWebContentsDocument());
 
-  // Check we have created a DocumentCreated event for both frames.
+  // Check we have created one DocumentCreated event for each of the frames.
   auto ukm_entries = test_ukm_recorder().GetEntriesByName(Entry::kEntryName);
   EXPECT_EQ(2u, ukm_entries.size());
-  EXPECT_EQ(source->id(), *test_ukm_recorder().GetEntryMetric(
-                              ukm_entries[0], Entry::kNavigationSourceIdName));
-  EXPECT_EQ(0, *test_ukm_recorder().GetEntryMetric(ukm_entries[0],
-                                                   Entry::kIsMainFrameName));
-  EXPECT_EQ(source->id(), *test_ukm_recorder().GetEntryMetric(
-                              ukm_entries[1], Entry::kNavigationSourceIdName));
-  EXPECT_EQ(1, *test_ukm_recorder().GetEntryMetric(ukm_entries[1],
-                                                   Entry::kIsMainFrameName));
+  // Both events have the same navigation source id, and have different values
+  // for the kIsMainFrameName metric.
+  EXPECT_EQ(navigation_source->id(),
+            *test_ukm_recorder().GetEntryMetric(
+                ukm_entries[0], Entry::kNavigationSourceIdName));
+  EXPECT_EQ(navigation_source->id(),
+            *test_ukm_recorder().GetEntryMetric(
+                ukm_entries[1], Entry::kNavigationSourceIdName));
+  EXPECT_NE(*test_ukm_recorder().GetEntryMetric(ukm_entries[0],
+                                                Entry::kIsMainFrameName),
+            *test_ukm_recorder().GetEntryMetric(ukm_entries[1],
+                                                Entry::kIsMainFrameName));
+
+  // The two DocumentCreated entries have source ids corresponding to the
+  // document source ids, which are different from the id of the navigation
+  // source.
   EXPECT_NE(ukm_entries[0]->source_id, ukm_entries[1]->source_id);
-  EXPECT_NE(source->id(), ukm_entries[0]->source_id);
-  EXPECT_NE(source->id(), ukm_entries[1]->source_id);
+  EXPECT_NE(navigation_source->id(), ukm_entries[0]->source_id);
+  EXPECT_NE(navigation_source->id(), ukm_entries[1]->source_id);
 }
 
-// Flaky on all OSes: https://crbug.com/951020
 IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverDownloadBrowserTest,
-                       DISABLED_IgnoreDownload) {
+                       IgnoreDownload) {
   GURL url(embedded_test_server()->GetURL("/download-test1.lib"));
   content::NavigationHandleObserver observer(shell()->web_contents(), url);
-  content::NavigateToURL(shell(), url);
+  EXPECT_TRUE(content::NavigateToURLAndExpectNoCommit(shell(), url));
   EXPECT_FALSE(observer.has_committed());
   EXPECT_TRUE(observer.is_download());
   EXPECT_EQ(nullptr, GetSourceForNavigationId(observer.navigation_id()));
   EXPECT_EQ(GURL(), GetAssociatedURLForWebContentsDocument());
+}
+
+IN_PROC_BROWSER_TEST_F(SourceUrlRecorderWebContentsObserverBrowserTest,
+                       Portal) {
+  GURL url = embedded_test_server()->GetURL("/title1.html");
+  {
+    content::NavigationHandleObserver observer(shell()->web_contents(), url);
+    EXPECT_TRUE(content::NavigateToURL(shell(), url));
+    const ukm::UkmSource* source =
+        GetSourceForNavigationId(observer.navigation_id());
+    EXPECT_NE(nullptr, source);
+    EXPECT_EQ(url, source->url());
+  }
+
+  // Create the portal and get its associated WebContents.
+  content::WebContentsAddedObserver contents_observer;
+  EXPECT_TRUE(
+      ExecJs(shell()->web_contents(),
+             "document.body.appendChild(document.createElement('portal'));"));
+  content::WebContents* portal_contents = contents_observer.GetWebContents();
+  EXPECT_TRUE(portal_contents->IsPortal());
+  EXPECT_NE(portal_contents, shell()->web_contents());
+
+  // Register the UKM SourceUrlRecorder for the portal WebContents. Normally
+  // this would be done automatically via TabHelper registration, but TabHelper
+  // registration doesn't run in //content.
+  ukm::InitializeSourceUrlRecorderForWebContents(portal_contents);
+
+  // Navigate the portal and wait for the navigation to finish.
+  GURL portal_url = embedded_test_server()->GetURL("/title2.html");
+  content::TestNavigationManager portal_nav_manager(portal_contents,
+                                                    portal_url);
+  content::NavigationHandleObserver portal_nav_observer(portal_contents,
+                                                        portal_url);
+  EXPECT_TRUE(
+      ExecJs(shell()->web_contents(),
+             base::StringPrintf("document.querySelector('portal').src = '%s';",
+                                portal_url.spec().c_str())));
+  portal_nav_manager.WaitForNavigationFinished();
+  EXPECT_TRUE(portal_nav_observer.has_committed());
+  EXPECT_FALSE(portal_nav_observer.is_error());
+
+  // Ensure no UKM source was created for the portal navigation.
+  // TODO(crbug/1078355): Ensure the source was created but no URL was recorded.
+  EXPECT_EQ(nullptr,
+            GetSourceForNavigationId(portal_nav_observer.navigation_id()));
+
+  // Activate the portal, which should cause a URL to be recorded for the
+  // associated UKM source. Activation is similar to a main frame navigation
+  // from the user standpoint, as it causes the portal to shift from being in a
+  // more iframe-like state to becoming the main frame in the associated browser
+  // tab.
+  std::string activated_listener = R"(
+    activated = false;
+    window.addEventListener('portalactivate', e => {
+      activated = true;
+    });
+  )";
+  EXPECT_TRUE(ExecJs(portal_contents, activated_listener));
+  EXPECT_TRUE(ExecJs(shell()->web_contents(),
+                     "document.querySelector('portal').activate()"));
+
+  std::string activated_poll = R"(
+    setInterval(() => {
+      if (activated)
+        window.domAutomationController.send(true);
+    }, 10);
+  )";
+  EXPECT_EQ(true, EvalJs(portal_contents, activated_poll,
+                         content::EXECUTE_SCRIPT_USE_MANUAL_REPLY));
+
+  // The activated portal contents should be the currently active contents.
+  EXPECT_EQ(portal_contents, shell()->web_contents());
+
+  // TODO(crbug/1078143): enable when UKM sources are created for activated
+  // portals.
+#if 0
+  // Ensure a UKM source was created for the activated portal, and a URL was
+  // recorded.
+  const ukm::UkmSource* portal_source =
+      GetSourceForNavigationId(portal_nav_observer.navigation_id());
+  EXPECT_NE(nullptr, portal_source);
+  EXPECT_EQ(portal_url, portal_source->url());
+#endif
+
+  {
+    // Ensure a UKM source is recorded for navigations in an activated portal.
+    content::NavigationHandleObserver observer(portal_contents, url);
+    EXPECT_TRUE(content::NavigateToURL(shell(), url));
+    EXPECT_NE(nullptr, GetSourceForNavigationId(observer.navigation_id()));
+  }
 }

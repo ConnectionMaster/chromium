@@ -5,6 +5,8 @@
 #include "cc/layers/scrollbar_layer_impl_base.h"
 
 #include <algorithm>
+
+#include "base/numerics/ranges.h"
 #include "cc/trees/effect_node.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/scroll_node.h"
@@ -26,9 +28,7 @@ ScrollbarLayerImplBase::ScrollbarLayerImplBase(
       scroll_layer_length_(0.f),
       orientation_(orientation),
       is_left_side_vertical_scrollbar_(is_left_side_vertical_scrollbar),
-      vertical_adjust_(0.f) {
-  set_is_scrollbar(true);
-}
+      vertical_adjust_(0.f) {}
 
 ScrollbarLayerImplBase::~ScrollbarLayerImplBase() {
   layer_tree_impl()->UnregisterScrollbar(this);
@@ -36,13 +36,14 @@ ScrollbarLayerImplBase::~ScrollbarLayerImplBase() {
 
 void ScrollbarLayerImplBase::PushPropertiesTo(LayerImpl* layer) {
   LayerImpl::PushPropertiesTo(layer);
-  DCHECK(layer->ToScrollbarLayer());
-  layer->ToScrollbarLayer()->set_is_overlay_scrollbar(is_overlay_scrollbar_);
-  layer->ToScrollbarLayer()->SetScrollElementId(scroll_element_id());
+  DCHECK(layer->IsScrollbarLayer());
+  ScrollbarLayerImplBase* scrollbar_layer = ToScrollbarLayer(layer);
+  scrollbar_layer->set_is_overlay_scrollbar(is_overlay_scrollbar_);
+  scrollbar_layer->SetScrollElementId(scroll_element_id());
 }
 
-ScrollbarLayerImplBase* ScrollbarLayerImplBase::ToScrollbarLayer() {
-  return this;
+bool ScrollbarLayerImplBase::IsScrollbarLayer() const {
+  return true;
 }
 
 void ScrollbarLayerImplBase::SetScrollElementId(ElementId scroll_element_id) {
@@ -213,7 +214,7 @@ gfx::Rect ScrollbarLayerImplBase::ComputeThumbQuadRectWithThumbThicknessScale(
   float maximum = scroll_layer_length() - clip_layer_length();
 
   // With the length known, we can compute the thumb's position.
-  float clamped_current_pos = std::min(std::max(current_pos(), 0.f), maximum);
+  float clamped_current_pos = base::ClampToRange(current_pos(), 0.0f, maximum);
 
   int thumb_offset = TrackStart();
   if (maximum > 0) {
@@ -226,7 +227,7 @@ gfx::Rect ScrollbarLayerImplBase::ComputeThumbQuadRectWithThumbThicknessScale(
       thumb_thickness * (1.f - thumb_thickness_scale_factor);
 
   gfx::RectF thumb_rect;
-  if (orientation_ == HORIZONTAL) {
+  if (orientation_ == ScrollbarOrientation::HORIZONTAL) {
     thumb_rect = gfx::RectF(thumb_offset,
                             vertical_adjust_ + thumb_thickness_adjustment,
                             thumb_length,
@@ -280,6 +281,61 @@ ScrollbarLayerImplBase::GetScrollbarAnimator() const {
 
 bool ScrollbarLayerImplBase::HasFindInPageTickmarks() const {
   return false;
+}
+
+float ScrollbarLayerImplBase::OverlayScrollbarOpacity() const {
+  return Opacity();
+}
+
+bool ScrollbarLayerImplBase::SupportsDragSnapBack() const {
+  return false;
+}
+
+bool ScrollbarLayerImplBase::JumpOnTrackClick() const {
+  return false;
+}
+
+gfx::Rect ScrollbarLayerImplBase::BackButtonRect() const {
+  return gfx::Rect(0, 0);
+}
+
+gfx::Rect ScrollbarLayerImplBase::ForwardButtonRect() const {
+  return gfx::Rect(0, 0);
+}
+
+gfx::Rect ScrollbarLayerImplBase::BackTrackRect() const {
+  return gfx::Rect(0, 0);
+}
+
+gfx::Rect ScrollbarLayerImplBase::ForwardTrackRect() const {
+  return gfx::Rect(0, 0);
+}
+
+// This manages identifying which part of a composited scrollbar got hit based
+// on the position_in_widget.
+ScrollbarPart ScrollbarLayerImplBase::IdentifyScrollbarPart(
+    const gfx::PointF position_in_widget) const {
+  const gfx::Point pointer_location(position_in_widget.x(),
+                                    position_in_widget.y());
+  if (BackButtonRect().Contains(pointer_location))
+    return ScrollbarPart::BACK_BUTTON;
+
+  if (ForwardButtonRect().Contains(pointer_location))
+    return ScrollbarPart::FORWARD_BUTTON;
+
+  if (ComputeThumbQuadRect().Contains(pointer_location))
+    return ScrollbarPart::THUMB;
+
+  if (BackTrackRect().Contains(pointer_location))
+    return ScrollbarPart::BACK_TRACK;
+
+  if (ForwardTrackRect().Contains(pointer_location))
+    return ScrollbarPart::FORWARD_TRACK;
+
+  // TODO(arakeri): Once crbug.com/952314 is fixed, add a DCHECK to verify that
+  // the point that is passed in is within the TrackRect. Also, please note that
+  // hit testing other scrollbar parts is not yet implemented.
+  return ScrollbarPart::NO_PART;
 }
 
 }  // namespace cc

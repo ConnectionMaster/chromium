@@ -39,7 +39,7 @@ class MEDIA_EXPORT SincResampler {
   // Callback type for providing more data into the resampler.  Expects |frames|
   // of data to be rendered into |destination|; zero padded if not enough frames
   // are available to satisfy the request.
-  typedef base::Callback<void(int frames, float* destination)> ReadCB;
+  typedef base::RepeatingCallback<void(int frames, float* destination)> ReadCB;
 
   // Constructs a SincResampler with the specified |read_cb|, which is used to
   // acquire audio data for resampling.  |io_sample_rate_ratio| is the ratio
@@ -49,7 +49,7 @@ class MEDIA_EXPORT SincResampler {
   // request size constraints.
   SincResampler(double io_sample_rate_ratio,
                 int request_frames,
-                const ReadCB& read_cb);
+                const ReadCB read_cb);
   ~SincResampler();
 
   // Resample |frames| of data from |read_cb_| into |destination|.
@@ -60,6 +60,10 @@ class MEDIA_EXPORT SincResampler {
   // not called, chunk size will grow after the first two Resample() calls by
   // kKernelSize / (2 * io_sample_rate_ratio).  See the .cc file for details.
   int ChunkSize() const { return chunk_size_; }
+
+  // Returns the max number of frames that could be requested (via multiple
+  // calls to |read_cb_|) during one Resample(|output_frames_requested|) call.
+  int GetMaxInputFramesRequested(int output_frames_requested) const;
 
   // Guarantees that ChunkSize() will not change between calls by initializing
   // the input buffer with silence.  Note, this will cause the first few samples
@@ -102,11 +106,19 @@ class MEDIA_EXPORT SincResampler {
   static float Convolve_SSE(const float* input_ptr, const float* k1,
                             const float* k2,
                             double kernel_interpolation_factor);
+  static float Convolve_AVX2(const float* input_ptr,
+                             const float* k1,
+                             const float* k2,
+                             double kernel_interpolation_factor);
 #elif defined(ARCH_CPU_ARM_FAMILY) && defined(USE_NEON)
   static float Convolve_NEON(const float* input_ptr, const float* k1,
                              const float* k2,
                              double kernel_interpolation_factor);
 #endif
+
+  // Selects runtime specific CPU features like SSE.  Must be called before
+  // using SincResampler.
+  void InitializeCPUSpecificFeatures();
 
   // The ratio of input / output sample rates.
   double io_sample_rate_ratio_;
@@ -143,6 +155,13 @@ class MEDIA_EXPORT SincResampler {
 
   // Data from the source is copied into this buffer for each processing pass.
   std::unique_ptr<float[], base::AlignedFreeDeleter> input_buffer_;
+
+  // Stores the runtime selection of which Convolve function to use.
+  using ConvolveProc = float (*)(const float*,
+                                 const float*,
+                                 const float*,
+                                 double);
+  ConvolveProc convolve_proc_;
 
   // Pointers to the various regions inside |input_buffer_|.  See the diagram at
   // the top of the .cc file for more information.

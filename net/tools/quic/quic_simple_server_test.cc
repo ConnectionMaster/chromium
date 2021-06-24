@@ -4,11 +4,13 @@
 
 #include "net/tools/quic/quic_simple_server.h"
 
-#include "base/stl_util.h"
+#include <memory>
+
+#include "base/cxx17_backports.h"
+#include "net/quic/address_utils.h"
 #include "net/third_party/quiche/src/quic/core/crypto/quic_random.h"
 #include "net/third_party/quiche/src/quic/core/quic_crypto_stream.h"
 #include "net/third_party/quiche/src/quic/core/quic_utils.h"
-#include "net/third_party/quiche/src/quic/core/tls_server_handshaker.h"
 #include "net/third_party/quiche/src/quic/platform/api/quic_test.h"
 #include "net/third_party/quiche/src/quic/test_tools/crypto_test_utils.h"
 #include "net/third_party/quiche/src/quic/test_tools/mock_quic_dispatcher.h"
@@ -29,29 +31,24 @@ class QuicChromeServerDispatchPacketTest : public QuicTest {
       : crypto_config_("blah",
                        quic::QuicRandom::GetInstance(),
                        quic::test::crypto_test_utils::ProofSourceForTesting(),
-                       quic::KeyExchangeSource::Default(),
-                       quic::TlsServerHandshaker::CreateSslCtx()),
+                       quic::KeyExchangeSource::Default()),
         version_manager_(quic::AllSupportedVersions()),
         dispatcher_(&config_,
                     &crypto_config_,
                     &version_manager_,
-                    std::unique_ptr<quic::test::MockQuicConnectionHelper>(
-                        new quic::test::MockQuicConnectionHelper),
-                    std::unique_ptr<quic::QuicCryptoServerStream::Helper>(
+                    std::make_unique<quic::test::MockQuicConnectionHelper>(),
+                    std::unique_ptr<quic::QuicCryptoServerStreamBase::Helper>(
                         new QuicSimpleServerSessionHelper(
                             quic::QuicRandom::GetInstance())),
-                    std::unique_ptr<quic::test::MockAlarmFactory>(
-                        new quic::test::MockAlarmFactory),
+                    std::make_unique<quic::test::MockAlarmFactory>(),
                     &memory_cache_backend_) {
     dispatcher_.InitializeWithWriter(nullptr);
   }
 
   void DispatchPacket(const quic::QuicReceivedPacket& packet) {
     IPEndPoint client_addr, server_addr;
-    dispatcher_.ProcessPacket(
-        quic::QuicSocketAddress(quic::QuicSocketAddressImpl(server_addr)),
-        quic::QuicSocketAddress(quic::QuicSocketAddressImpl(client_addr)),
-        packet);
+    dispatcher_.ProcessPacket(ToQuicSocketAddress(server_addr),
+                              ToQuicSocketAddress(client_addr), packet);
   }
 
  protected:

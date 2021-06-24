@@ -44,7 +44,7 @@ class HostScanDevicePrioritizerImpl;
 class HotspotUsageDurationTracker;
 class KeepAliveScheduler;
 class HostConnectionMetricsLogger;
-class MasterHostScanCache;
+class TopLevelHostScanCache;
 class NetworkHostScanCache;
 class NetworkListSorter;
 class NotificationPresenter;
@@ -63,7 +63,7 @@ class SynchronousShutdownObjectContainerImpl
  public:
   class Factory {
    public:
-    static std::unique_ptr<SynchronousShutdownObjectContainer> NewInstance(
+    static std::unique_ptr<SynchronousShutdownObjectContainer> Create(
         AsynchronousShutdownObjectContainer* asychronous_container,
         NotificationPresenter* notification_presenter,
         GmsCoreNotificationsStateTrackerImpl*
@@ -75,10 +75,10 @@ class SynchronousShutdownObjectContainerImpl
         session_manager::SessionManager* session_manager,
         device_sync::DeviceSyncClient* device_sync_client,
         secure_channel::SecureChannelClient* secure_channel_client);
-    static void SetInstanceForTesting(Factory* factory);
+    static void SetFactoryForTesting(Factory* factory);
 
    protected:
-    virtual std::unique_ptr<SynchronousShutdownObjectContainer> BuildInstance(
+    virtual std::unique_ptr<SynchronousShutdownObjectContainer> CreateInstance(
         AsynchronousShutdownObjectContainer* asychronous_container,
         NotificationPresenter* notification_presenter,
         GmsCoreNotificationsStateTrackerImpl*
@@ -89,7 +89,7 @@ class SynchronousShutdownObjectContainerImpl
         NetworkConnectionHandler* network_connection_handler,
         session_manager::SessionManager* session_manager,
         device_sync::DeviceSyncClient* device_sync_client,
-        secure_channel::SecureChannelClient* secure_channel_client);
+        secure_channel::SecureChannelClient* secure_channel_client) = 0;
     virtual ~Factory();
 
    private:
@@ -134,7 +134,7 @@ class SynchronousShutdownObjectContainerImpl
       active_host_network_state_updater_;
   std::unique_ptr<PersistentHostScanCache> persistent_host_scan_cache_;
   std::unique_ptr<NetworkHostScanCache> network_host_scan_cache_;
-  std::unique_ptr<MasterHostScanCache> master_host_scan_cache_;
+  std::unique_ptr<TopLevelHostScanCache> top_level_host_scan_cache_;
   std::unique_ptr<NotificationRemover> notification_remover_;
   std::unique_ptr<KeepAliveScheduler> keep_alive_scheduler_;
   std::unique_ptr<HotspotUsageDurationTracker> hotspot_usage_duration_tracker_;

@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_CONTENT_SETTINGS_CORE_BROWSER_CONTENT_SETTINGS_DETAILS_H_
 #define COMPONENTS_CONTENT_SETTINGS_CORE_BROWSER_CONTENT_SETTINGS_DETAILS_H_
 
-#include <string>
-
 #include "base/macros.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
@@ -22,8 +20,7 @@ class ContentSettingsDetails {
   // Update the setting that matches this pattern/content type/resource.
   ContentSettingsDetails(const ContentSettingsPattern& primary_pattern,
                          const ContentSettingsPattern& secondary_pattern,
-                         ContentSettingsType type,
-                         const std::string& resource_identifier);
+                         ContentSettingsType type);
 
   // The item pattern whose settings have changed.
   const ContentSettingsPattern& primary_pattern() const {
@@ -44,22 +41,16 @@ class ContentSettingsDetails {
   // The type of the pattern whose settings have changed.
   ContentSettingsType type() const { return type_; }
 
-  // The resource identifier for the settings type that has changed.
-  const std::string& resource_identifier() const {
-    return resource_identifier_;
-  }
-
   // True if all types should be updated. If update_all() is false, this will
   // be false as well (although the reverse does not hold true).
   bool update_all_types() const {
-    return CONTENT_SETTINGS_TYPE_DEFAULT == type_;
+    return ContentSettingsType::DEFAULT == type_;
   }
 
  private:
   ContentSettingsPattern primary_pattern_;
   ContentSettingsPattern secondary_pattern_;
   ContentSettingsType type_;
-  std::string resource_identifier_;
 
   DISALLOW_COPY_AND_ASSIGN(ContentSettingsDetails);
 };

@@ -33,14 +33,9 @@ class GetRequestBlobTask : public DatabaseTask {
   void Start() override;
 
  private:
-  void DidOpenCache(int64_t trace_id,
-                    CacheStorageCacheHandle handle,
-                    blink::mojom::CacheStorageError error);
-
-  void DidMatchRequest(CacheStorageCacheHandle handle,
-                       int64_t trace_id,
-                       blink::mojom::CacheStorageError error,
-                       std::vector<CacheStorageCache::CacheEntry> entries);
+  void DidOpenCache(int64_t trace_id, blink::mojom::CacheStorageError error);
+  void DidMatchRequest(int64_t trace_id,
+                       blink::mojom::CacheKeysResultPtr result);
 
   void FinishWithError(blink::mojom::BackgroundFetchError error) override;
 
@@ -52,7 +47,8 @@ class GetRequestBlobTask : public DatabaseTask {
 
   blink::mojom::SerializedBlobPtr blob_;
 
-  base::WeakPtrFactory<GetRequestBlobTask> weak_factory_;  // Keep as last.
+  base::WeakPtrFactory<GetRequestBlobTask> weak_factory_{
+      this};  // Keep as last.
 
   DISALLOW_COPY_AND_ASSIGN(GetRequestBlobTask);
 };

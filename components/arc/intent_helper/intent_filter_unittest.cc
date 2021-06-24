@@ -9,8 +9,8 @@
 
 #include "base/bind.h"
 #include "base/memory/ref_counted.h"
-#include "components/arc/common/intent_helper.mojom.h"
 #include "components/arc/intent_helper/intent_filter.h"
+#include "components/arc/mojom/intent_helper.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -23,6 +23,8 @@ constexpr char kPackageName[] = "default.package.name";
 class IntentFilterBuilder {
  public:
   IntentFilterBuilder() = default;
+  IntentFilterBuilder(const IntentFilterBuilder&) = delete;
+  IntentFilterBuilder& operator=(const IntentFilterBuilder&) = delete;
 
   IntentFilterBuilder& authority(const std::string& host) {
     return authority(host, -1);
@@ -40,15 +42,16 @@ class IntentFilterBuilder {
   }
 
   operator IntentFilter() {
-    return IntentFilter(kPackageName, std::move(authorities_),
-                        std::move(paths_));
+    return IntentFilter(kPackageName,
+                        /*actions=*/std::vector<std::string>(),
+                        std::move(authorities_), std::move(paths_),
+                        /*schemes=*/std::vector<std::string>(),
+                        /*mime_types=*/std::vector<std::string>());
   }
 
  private:
   std::vector<IntentFilter::AuthorityEntry> authorities_;
   std::vector<IntentFilter::PatternMatcher> paths_;
-
-  DISALLOW_COPY_AND_ASSIGN(IntentFilterBuilder);
 };
 
 }  // namespace

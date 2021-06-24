@@ -4,11 +4,13 @@
 
 #include "components/sync/driver/sync_service_utils.h"
 
+#include "base/feature_list.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "components/sync/base/sync_prefs.h"
+#include "components/sync/base/passphrase_enums.h"
+#include "components/sync/driver/sync_driver_switches.h"
 #include "components/sync/driver/sync_service.h"
 #include "components/sync/driver/sync_user_settings.h"
-#include "components/sync/engine/cycle/sync_cycle_snapshot.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 
 namespace syncer {
@@ -31,7 +33,7 @@ UploadState GetUploadToGoogleState(const SyncService* sync_service,
   // some data types are never encrypted (e.g. DEVICE_INFO), even if the
   // "encrypt everything" setting is enabled.
   if (sync_service->GetUserSettings()->GetEncryptedDataTypes().Has(type) &&
-      sync_service->GetUserSettings()->IsUsingSecondaryPassphrase()) {
+      sync_service->GetUserSettings()->IsUsingExplicitPassphrase()) {
     return UploadState::NOT_ACTIVE;
   }
 
@@ -43,6 +45,7 @@ UploadState GetUploadToGoogleState(const SyncService* sync_service,
 
   switch (sync_service->GetTransportState()) {
     case SyncService::TransportState::DISABLED:
+    case SyncService::TransportState::PAUSED:
       return UploadState::NOT_ACTIVE;
 
     case SyncService::TransportState::START_DEFERRED:
@@ -60,14 +63,9 @@ UploadState GetUploadToGoogleState(const SyncService* sync_service,
       if (sync_service->GetAuthError().IsTransientError()) {
         return UploadState::INITIALIZING;
       }
-      // TODO(crbug.com/831579): We currently need to wait for
-      // GetLastCycleSnapshot to return an initialized snapshot because we don't
-      // actually know if the token is valid until sync has tried it. This is
-      // bad because sync can take arbitrarily long to try the token (especially
-      // if the user doesn't have history sync enabled). Instead, if the
-      // identity code would persist persistent auth errors, we could read those
-      // from startup.
-      if (!sync_service->GetLastCycleSnapshot().is_initialized()) {
+      // TODO(crbug.com/831579): We only know if the refresh token is actually
+      // valid (no auth error) after we've tried talking to the Sync server.
+      if (!sync_service->HasCompletedSyncCycle()) {
         return UploadState::INITIALIZING;
       }
       return UploadState::ACTIVE;
@@ -76,8 +74,40 @@ UploadState GetUploadToGoogleState(const SyncService* sync_service,
   return UploadState::NOT_ACTIVE;
 }
 
-void RecordSyncEvent(SyncEventCodes code) {
-  UMA_HISTOGRAM_ENUMERATION("Sync.EventCodes", code, MAX_SYNC_EVENT_CODE);
+void RecordKeyRetrievalTrigger(KeyRetrievalTriggerForUMA trigger) {
+  base::UmaHistogramEnumeration("Sync.TrustedVaultKeyRetrievalTrigger",
+                                trigger);
+}
+
+bool ShouldOfferTrustedVaultOptIn(const SyncService* service) {
+  if (!service) {
+    return false;
+  }
+
+  if (service->GetTransportState() != SyncService::TransportState::ACTIVE) {
+    // Transport state must be active so SyncUserSettings::GetPassphraseType()
+    // changes once the opt-in completes, and the UI is notified.
+    return false;
+  }
+
+  switch (service->GetUserSettings()->GetPassphraseType()) {
+    case PassphraseType::kImplicitPassphrase:
+    case PassphraseType::kFrozenImplicitPassphrase:
+    case PassphraseType::kCustomPassphrase:
+    case PassphraseType::kTrustedVaultPassphrase:
+      // Either trusted vault is already set or a transition from this
+      // passphrase type to trusted vault is disallowed.
+      return false;
+    case PassphraseType::kKeystorePassphrase:
+      if (service->GetUserSettings()->IsPassphraseRequired()) {
+        // This should be extremely rare.
+        return false;
+      }
+      return base::FeatureList::IsEnabled(
+                 switches::kSyncTrustedVaultPassphraseRecovery) &&
+             base::FeatureList::IsEnabled(
+                 switches::kSyncTrustedVaultPassphrasePromo);
+  }
 }
 
 }  // namespace syncer

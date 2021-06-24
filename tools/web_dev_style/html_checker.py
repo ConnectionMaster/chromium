@@ -6,7 +6,7 @@
 Presubmit for Chromium HTML resources. See chrome/browser/PRESUBMIT.py.
 """
 
-import regex_check
+from . import regex_check
 
 
 class HtmlChecker(object):
@@ -37,7 +37,7 @@ class HtmlChecker(object):
         "Do not close single tags.")
 
   def DoNotUseBrElementCheck(self, line_number, line):
-    regex = r"(<br)"
+    regex = r"(<br\b)"
     return regex_check.RegexCheck(self.input_api.re, line_number, line, regex,
         "Do not use <br>; place blocking elements (<div>) as appropriate.")
 
@@ -97,7 +97,7 @@ class HtmlChecker(object):
 
   def RunChecks(self):
     """Check for violations of the Chromium web development style guide. See
-       https://chromium.googlesource.com/chromium/src/+/master/styleguide/web/web.md
+       https://chromium.googlesource.com/chromium/src/+/main/styleguide/web/web.md
     """
     results = []
 
@@ -111,16 +111,18 @@ class HtmlChecker(object):
       errors = []
 
       for line_number, line in f.ChangedContents():
-        errors.extend(filter(None, [
-            self.ClassesUseDashFormCheck(line_number, line),
-            self.DoNotCloseSingleTagsCheck(line_number, line),
-            self.DoNotUseBrElementCheck(line_number, line),
-            self.DoNotUseInputTypeButtonCheck(line_number, line),
-            self.I18nContentJavaScriptCaseCheck(line_number, line),
-            self.ImportCorrectPolymerHtml(line_number, line),
-            self.LabelCheck(line_number, line),
-            self.QuotePolymerBindings(line_number, line),
-        ]))
+        errors.extend([
+            _f for _f in [
+                self.ClassesUseDashFormCheck(line_number, line),
+                self.DoNotCloseSingleTagsCheck(line_number, line),
+                self.DoNotUseBrElementCheck(line_number, line),
+                self.DoNotUseInputTypeButtonCheck(line_number, line),
+                self.I18nContentJavaScriptCaseCheck(line_number, line),
+                self.ImportCorrectPolymerHtml(line_number, line),
+                self.LabelCheck(line_number, line),
+                self.QuotePolymerBindings(line_number, line),
+            ] if _f
+        ])
 
       if errors:
         abs_local_path = f.AbsoluteLocalPath()

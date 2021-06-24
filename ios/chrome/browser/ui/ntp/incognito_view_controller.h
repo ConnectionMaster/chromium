@@ -7,17 +7,16 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/web/public/web_state/ui/crw_native_content.h"
-
-class UrlLoadingService;
 
 @protocol NewTabPageControllerDelegate;
+@protocol PrivacyCookiesCommands;
+class UrlLoadingBrowserAgent;
 
-@interface IncognitoViewController : UIViewController<CRWNativeContent>
+@interface IncognitoViewController : UIViewController
 
 // Init with the given loader object. |loader| may be nil, but isn't
 // retained so it must outlive this controller.
-- (id)initWithUrlLoadingService:(UrlLoadingService*)urlLoadingService;
+- (instancetype)initWithUrlLoader:(UrlLoadingBrowserAgent*)URLLoader;
 
 @end
 

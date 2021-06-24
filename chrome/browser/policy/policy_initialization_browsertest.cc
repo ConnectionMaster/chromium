@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -15,6 +15,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/test/browser_test.h"
 
 #if defined(OS_WIN)
 #include <windows.h>
@@ -64,7 +65,7 @@ class PolicyInitializationBrowserTest : public InProcessBrowserTest {
   }
   void CreatedBrowserMainParts(content::BrowserMainParts* parts) override {
     static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
-        new ChromeBrowserMainExtraPartsPolicyValueChecker());
+        std::make_unique<ChromeBrowserMainExtraPartsPolicyValueChecker>());
   }
 
  private:
@@ -79,7 +80,7 @@ class PolicyInitializationBrowserTest : public InProcessBrowserTest {
     ASSERT_EQ(ERROR_SUCCESS, key.Create(root, policy::kRegistryChromePolicyKey,
                                         KEY_SET_VALUE | KEY_WOW64_32KEY));
     ASSERT_EQ(ERROR_SUCCESS,
-              key.WriteValue(base::ASCIIToUTF16(kMockPolicyName).c_str(), 1));
+              key.WriteValue(base::ASCIIToWide(kMockPolicyName).c_str(), 1));
   }
 
   registry_util::RegistryOverrideManager registry_override_manager_;

@@ -19,7 +19,7 @@
 #include "third_party/webrtc/p2p/base/ice_transport_internal.h"
 // TODO(johan): Replace #include by forward declaration once proper inheritance
 // is defined for rtc::PacketTransportInterface and cricket::TransportChannel.
-#include "third_party/webrtc/p2p/base/packet_transport_interface.h"
+#include "third_party/webrtc/p2p/base/packet_transport_internal.h"
 #include "third_party/webrtc/rtc_base/third_party/sigslot/sigslot.h"
 
 namespace cricket {
@@ -65,7 +65,7 @@ class IceTransportChannel : public sigslot::has_slots<> {
     virtual void OnChannelDeleted(IceTransportChannel* transport) = 0;
   };
 
-  typedef base::Callback<void(std::unique_ptr<P2PDatagramSocket>)>
+  typedef base::OnceCallback<void(std::unique_ptr<P2PDatagramSocket>)>
       ConnectedCallback;
 
   explicit IceTransportChannel(
@@ -75,7 +75,7 @@ class IceTransportChannel : public sigslot::has_slots<> {
   // Connects the channel and calls the |callback| after that.
   void Connect(const std::string& name,
                Delegate* delegate,
-               const ConnectedCallback& callback);
+               ConnectedCallback callback);
 
   // Sets remote ICE credentials.
   void SetRemoteCredentials(const std::string& ufrag,
@@ -102,7 +102,7 @@ class IceTransportChannel : public sigslot::has_slots<> {
                            const cricket::Candidate& candidate);
   void OnRouteChange(cricket::IceTransportInternal* ice_transport,
                      const cricket::Candidate& candidate);
-  void OnWritableState(rtc::PacketTransportInterface* transport);
+  void OnWritableState(rtc::PacketTransportInternal* transport);
 
   // Callback for TransportChannelSocketAdapter to notify when the socket is
   // destroyed.
@@ -131,7 +131,7 @@ class IceTransportChannel : public sigslot::has_slots<> {
 
   base::ThreadChecker thread_checker_;
 
-  base::WeakPtrFactory<IceTransportChannel> weak_factory_;
+  base::WeakPtrFactory<IceTransportChannel> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(IceTransportChannel);
 };

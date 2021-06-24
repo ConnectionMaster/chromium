@@ -7,9 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
-@protocol StartupInformation;
-
-@protocol BrowserInterfaceProvider;
+@protocol ConnectionInformation;
+@class SceneState;
 @protocol StartupInformation;
 
 namespace metrics_mediator {
@@ -34,12 +33,12 @@ extern NSString* const kAppEnteredBackgroundDateKey;
 - (void)updateMetricsStateBasedOnPrefsUserTriggered:(BOOL)isUserTriggered;
 // Logs the duration of the cold start startup. Does nothing if there isn't a
 // cold start.
-+ (void)logStartupDuration:(id<StartupInformation>)startupInformation;
++ (void)logStartupDuration:(id<StartupInformation>)startupInformation
+     connectionInformation:(id<ConnectionInformation>)connectionInformation;
 // Logs the number of tabs open and the start type.
 + (void)logLaunchMetricsWithStartupInformation:
             (id<StartupInformation>)startupInformation
-                             interfaceProvider:(id<BrowserInterfaceProvider>)
-                                                   interfaceProvider;
+                               connectedScenes:(NSArray<SceneState*>*)scenes;
 // Logs in UserDefaults the current date with kAppEnteredBackgroundDateKey as
 // key.
 + (void)logDateInUserDefaults;

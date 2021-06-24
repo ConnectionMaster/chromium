@@ -4,8 +4,9 @@
 
 #include "net/socket/fuzzed_socket_factory.h"
 
-#include "base/logging.h"
-#include "base/test/fuzzed_data_provider.h"
+#include <fuzzer/FuzzedDataProvider.h>
+
+#include "base/notreached.h"
 #include "net/base/address_list.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
@@ -105,8 +106,7 @@ class FailingSSLClientSocket : public SSLClientSocket {
 
 }  // namespace
 
-FuzzedSocketFactory::FuzzedSocketFactory(
-    base::FuzzedDataProvider* data_provider)
+FuzzedSocketFactory::FuzzedSocketFactory(FuzzedDataProvider* data_provider)
     : data_provider_(data_provider), fuzz_connect_result_(true) {}
 
 FuzzedSocketFactory::~FuzzedSocketFactory() = default;
@@ -123,6 +123,7 @@ std::unique_ptr<TransportClientSocket>
 FuzzedSocketFactory::CreateTransportClientSocket(
     const AddressList& addresses,
     std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+    NetworkQualityEstimator* network_quality_estimator,
     NetLog* net_log,
     const NetLogSource& source) {
   std::unique_ptr<FuzzedSocket> socket(
@@ -134,10 +135,10 @@ FuzzedSocketFactory::CreateTransportClientSocket(
 }
 
 std::unique_ptr<SSLClientSocket> FuzzedSocketFactory::CreateSSLClientSocket(
+    SSLClientContext* context,
     std::unique_ptr<StreamSocket> stream_socket,
     const HostPortPair& host_and_port,
-    const SSLConfig& ssl_config,
-    const SSLClientSocketContext& context) {
+    const SSLConfig& ssl_config) {
   return std::make_unique<FailingSSLClientSocket>();
 }
 
@@ -151,7 +152,6 @@ std::unique_ptr<ProxyClientSocket> FuzzedSocketFactory::CreateProxyClientSocket(
     bool using_spdy,
     NextProto negotiated_protocol,
     ProxyDelegate* proxy_delegate,
-    bool is_https_proxy,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
   NOTIMPLEMENTED();
   return nullptr;

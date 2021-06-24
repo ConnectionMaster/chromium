@@ -11,9 +11,11 @@
 
 #include "base/macros.h"
 #include "base/strings/string_piece.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/trace_event_analyzer.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class CommandLine;
@@ -42,7 +44,7 @@ class TabCapturePerformanceTestBase : public InProcessBrowserTest {
   ~TabCapturePerformanceTestBase() override;
 
   // SetUp overrides to enable pixel output, configure the embedded test server,
-  // whitelist the extension loaded by the tests.
+  // allowlist the extension loaded by the tests.
   void SetUp() override;
   void SetUpOnMainThread() override;
   void SetUpCommandLine(base::CommandLine* command_line) override;
@@ -123,6 +125,16 @@ class TabCapturePerformanceTestBase : public InProcessBrowserTest {
   static const char kExtensionId[];
 
  private:
+  // In the spirit of NoBestEffortTasksTests, use a fence to make sure that
+  // BEST_EFFORT tasks in the browser process are not required for the success
+  // of these tests. In a performance test run, this also removes sources of
+  // variance. Do not use the --disable-best-effort-tasks command line switch as
+  // that would also preempt BEST_EFFORT tasks in utility processes, and
+  // TabCapturePerformanceTest.Performance relies on BEST_EFFORT tasks in
+  // utility process for tracing.
+  absl::optional<base::ThreadPoolInstance::ScopedBestEffortExecutionFence>
+      best_effort_fence_;
+
   bool is_full_performance_run_ = false;
 
   // Set to the test page that should be served by the next call to

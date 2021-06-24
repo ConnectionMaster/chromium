@@ -20,6 +20,7 @@
 #include "extensions/browser/guest_view/web_view/web_view_permission_helper_delegate.h"
 #include "extensions/browser/guest_view/web_view/web_view_permission_types.h"
 #include "ppapi/buildflags/buildflags.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 
 using base::UserMetricsAction;
 using content::BrowserPluginGuestDelegate;
@@ -151,11 +152,9 @@ WebViewPermissionHelper::WebViewPermissionHelper(WebViewGuest* web_view_guest)
     : content::WebContentsObserver(web_view_guest->web_contents()),
       next_permission_request_id_(guest_view::kInstanceIDNone),
       web_view_guest_(web_view_guest),
-      default_media_access_permission_(false),
-      weak_factory_(this) {
-      web_view_permission_helper_delegate_.reset(
-          ExtensionsAPIClient::Get()->CreateWebViewPermissionHelperDelegate(
-              this));
+      default_media_access_permission_(false) {
+  web_view_permission_helper_delegate_.reset(
+      ExtensionsAPIClient::Get()->CreateWebViewPermissionHelperDelegate(this));
 }
 
 WebViewPermissionHelper::~WebViewPermissionHelper() {
@@ -165,21 +164,18 @@ WebViewPermissionHelper::~WebViewPermissionHelper() {
 WebViewPermissionHelper* WebViewPermissionHelper::FromFrameID(
     int render_process_id,
     int render_frame_id) {
-  WebViewGuest* web_view_guest = WebViewGuest::FromFrameID(
-      render_process_id, render_frame_id);
-  if (!web_view_guest) {
-    return NULL;
-  }
-  return web_view_guest->web_view_permission_helper_.get();
+  WebViewGuest* web_view_guest =
+      WebViewGuest::FromFrameID(render_process_id, render_frame_id);
+  return web_view_guest ? web_view_guest->web_view_permission_helper()
+                        : nullptr;
 }
 
 // static
 WebViewPermissionHelper* WebViewPermissionHelper::FromWebContents(
-      content::WebContents* web_contents) {
+    content::WebContents* web_contents) {
   WebViewGuest* web_view_guest = WebViewGuest::FromWebContents(web_contents);
-  if (!web_view_guest)
-      return NULL;
-  return web_view_guest->web_view_permission_helper_.get();
+  return web_view_guest ? web_view_guest->web_view_permission_helper()
+                        : nullptr;
 }
 
 #if BUILDFLAG(ENABLE_PLUGINS)
@@ -207,7 +203,7 @@ void WebViewPermissionHelper::RequestMediaAccessPermission(
 bool WebViewPermissionHelper::CheckMediaAccessPermission(
     content::RenderFrameHost* render_frame_host,
     const GURL& security_origin,
-    blink::MediaStreamType type) {
+    blink::mojom::MediaStreamType type) {
   if (!web_view_guest()->attached() ||
       !web_view_guest()->embedder_web_contents()->GetDelegate()) {
     return false;
@@ -215,7 +211,9 @@ bool WebViewPermissionHelper::CheckMediaAccessPermission(
   return web_view_guest()
       ->embedder_web_contents()
       ->GetDelegate()
-      ->CheckMediaAccessPermission(render_frame_host, security_origin, type);
+      ->CheckMediaAccessPermission(
+          web_view_guest()->web_contents()->GetOuterWebContentsFrame(),
+          security_origin, type);
 }
 
 void WebViewPermissionHelper::OnMediaPermissionResponse(
@@ -224,16 +222,18 @@ void WebViewPermissionHelper::OnMediaPermissionResponse(
     bool allow,
     const std::string& user_input) {
   if (!allow) {
-    std::move(callback).Run(blink::MediaStreamDevices(),
-                            blink::MEDIA_DEVICE_PERMISSION_DENIED,
-                            std::unique_ptr<content::MediaStreamUI>());
+    std::move(callback).Run(
+        blink::MediaStreamDevices(),
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED,
+        std::unique_ptr<content::MediaStreamUI>());
     return;
   }
   if (!web_view_guest()->attached() ||
       !web_view_guest()->embedder_web_contents()->GetDelegate()) {
-    std::move(callback).Run(blink::MediaStreamDevices(),
-                            blink::MEDIA_DEVICE_INVALID_STATE,
-                            std::unique_ptr<content::MediaStreamUI>());
+    std::move(callback).Run(
+        blink::MediaStreamDevices(),
+        blink::mojom::MediaStreamRequestResult::INVALID_STATE,
+        std::unique_ptr<content::MediaStreamUI>());
     return;
   }
 
@@ -255,41 +255,25 @@ void WebViewPermissionHelper::CanDownload(
 void WebViewPermissionHelper::RequestPointerLockPermission(
     bool user_gesture,
     bool last_unlocked_by_target,
-    const base::Callback<void(bool)>& callback) {
+    base::OnceCallback<void(bool)> callback) {
   web_view_permission_helper_delegate_->RequestPointerLockPermission(
-      user_gesture, last_unlocked_by_target, callback);
+      user_gesture, last_unlocked_by_target, std::move(callback));
 }
 
 void WebViewPermissionHelper::RequestGeolocationPermission(
-    int bridge_id,
     const GURL& requesting_frame,
     bool user_gesture,
-    const base::Callback<void(bool)>& callback) {
+    base::OnceCallback<void(bool)> callback) {
   web_view_permission_helper_delegate_->RequestGeolocationPermission(
-      bridge_id, requesting_frame, user_gesture, callback);
-}
-
-void WebViewPermissionHelper::CancelGeolocationPermissionRequest(
-    int bridge_id) {
-  web_view_permission_helper_delegate_->CancelGeolocationPermissionRequest(
-      bridge_id);
+      requesting_frame, user_gesture, std::move(callback));
 }
 
 void WebViewPermissionHelper::RequestFileSystemPermission(
     const GURL& url,
     bool allowed_by_default,
-    const base::Callback<void(bool)>& callback) {
+    base::OnceCallback<void(bool)> callback) {
   web_view_permission_helper_delegate_->RequestFileSystemPermission(
-      url, allowed_by_default, callback);
-}
-
-void WebViewPermissionHelper::FileSystemAccessedAsync(int render_process_id,
-                                                      int render_frame_id,
-                                                      int request_id,
-                                                      const GURL& url,
-                                                      bool blocked_by_policy) {
-  web_view_permission_helper_delegate_->FileSystemAccessedAsync(
-      render_process_id, render_frame_id, request_id, url, blocked_by_policy);
+      url, allowed_by_default, std::move(callback));
 }
 
 int WebViewPermissionHelper::RequestPermission(

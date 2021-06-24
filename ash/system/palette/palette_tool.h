@@ -5,10 +5,6 @@
 #ifndef ASH_SYSTEM_PALETTE_PALETTE_TOOL_H_
 #define ASH_SYSTEM_PALETTE_PALETTE_TOOL_H_
 
-#include <map>
-#include <memory>
-#include <vector>
-
 #include "ash/ash_export.h"
 #include "ash/system/palette/palette_ids.h"
 #include "base/callback.h"
@@ -100,11 +96,15 @@ class ASH_EXPORT PaletteTool {
   // (per-group) should ever have an active icon at any given time.
   virtual const gfx::VectorIcon& GetActiveTrayIcon() const;
 
+  void SetExternalDisplayForTest() { external_display_for_test_ = true; }
+
  protected:
   // Enables/disables the tool.
   bool enabled() const { return enabled_; }
 
   Delegate* delegate() { return delegate_; }
+
+  bool external_display_for_test_ = false;
 
  private:
   bool enabled_ = false;

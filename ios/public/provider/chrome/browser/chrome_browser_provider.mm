@@ -6,9 +6,11 @@
 
 #include <cstddef>
 
-#include "base/logging.h"
 #include "components/metrics/metrics_provider.h"
 #import "ios/public/provider/chrome/browser/mailto/mailto_handler_provider.h"
+#import "ios/public/provider/chrome/browser/modals/modals_provider.h"
+#import "ios/public/provider/chrome/browser/signin/chrome_identity_service.h"
+#import "ios/public/provider/chrome/browser/text_zoom_provider.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -31,7 +33,9 @@ ChromeBrowserProvider* GetChromeBrowserProvider() {
 // A dummy implementation of ChromeBrowserProvider.
 
 ChromeBrowserProvider::ChromeBrowserProvider()
-    : mailto_handler_provider_(std::make_unique<MailtoHandlerProvider>()) {}
+    : mailto_handler_provider_(std::make_unique<MailtoHandlerProvider>()),
+      modals_provider_(std::make_unique<ModalsProvider>()),
+      text_zoom_provider_(std::make_unique<TextZoomProvider>()) {}
 
 ChromeBrowserProvider::~ChromeBrowserProvider() {
   for (auto& observer : observer_list_)
@@ -59,8 +63,8 @@ ChromeIdentityService* ChromeBrowserProvider::GetChromeIdentityService() {
   return nullptr;
 }
 
-GeolocationUpdaterProvider*
-ChromeBrowserProvider::GetGeolocationUpdaterProvider() {
+ChromeTrustedVaultService*
+ChromeBrowserProvider::GetChromeTrustedVaultService() {
   return nullptr;
 }
 
@@ -68,16 +72,11 @@ std::string ChromeBrowserProvider::GetRiskData() {
   return std::string();
 }
 
-UITextField<TextFieldStyling>* ChromeBrowserProvider::CreateStyledTextField(
-    CGRect frame) const {
+UITextField* ChromeBrowserProvider::CreateStyledTextField() const {
   return nil;
 }
 
-void ChromeBrowserProvider::InitializeCastService(
-    TabModel* main_tab_model) const {}
-
-void ChromeBrowserProvider::AttachTabHelpers(web::WebState* web_state,
-                                             Tab* tab) const {}
+void ChromeBrowserProvider::AttachBrowserAgents(Browser* browser) const {}
 
 VoiceSearchProvider* ChromeBrowserProvider::GetVoiceSearchProvider() const {
   return nullptr;
@@ -89,7 +88,8 @@ AppDistributionProvider* ChromeBrowserProvider::GetAppDistributionProvider()
 }
 
 id<LogoVendor> ChromeBrowserProvider::CreateLogoVendor(
-    ios::ChromeBrowserState* browser_state) const {
+    Browser* browser,
+    web::WebState* web_state) const {
   return nil;
 }
 
@@ -98,10 +98,6 @@ OmahaServiceProvider* ChromeBrowserProvider::GetOmahaServiceProvider() const {
 }
 
 UserFeedbackProvider* ChromeBrowserProvider::GetUserFeedbackProvider() const {
-  return nullptr;
-}
-
-SpecialUserProvider* ChromeBrowserProvider::GetSpecialUserProvider() const {
   return nullptr;
 }
 
@@ -118,12 +114,28 @@ ChromeBrowserProvider::GetBrowserURLRewriterProvider() const {
   return nullptr;
 }
 
+OverridesProvider* ChromeBrowserProvider::GetOverridesProvider() const {
+  return nullptr;
+}
+
+DiscoverFeedProvider* ChromeBrowserProvider::GetDiscoverFeedProvider() const {
+  return nullptr;
+}
+
 MailtoHandlerProvider* ChromeBrowserProvider::GetMailtoHandlerProvider() const {
   return mailto_handler_provider_.get();
 }
 
 BrandedImageProvider* ChromeBrowserProvider::GetBrandedImageProvider() const {
   return nullptr;
+}
+
+TextZoomProvider* ChromeBrowserProvider::GetTextZoomProvider() const {
+  return text_zoom_provider_.get();
+}
+
+ModalsProvider* ChromeBrowserProvider::GetModalsProvider() const {
+  return modals_provider_.get();
 }
 
 void ChromeBrowserProvider::HideModalViewStack() const {}

@@ -45,6 +45,7 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/containers/queue.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
@@ -66,10 +67,8 @@
 #include "media/base/video_frame.h"
 #include "media/cast/cast_config.h"
 #include "media/cast/cast_environment.h"
-#include "media/cast/cast_receiver.h"
 #include "media/cast/cast_sender.h"
 #include "media/cast/logging/encoding_event_subscriber.h"
-#include "media/cast/logging/log_serializer.h"
 #include "media/cast/logging/logging_defines.h"
 #include "media/cast/logging/proto/raw_events.pb.h"
 #include "media/cast/logging/raw_event_subscriber_bundle.h"
@@ -81,6 +80,7 @@
 #include "media/cast/test/fake_media_source.h"
 #include "media/cast/test/loopback_transport.h"
 #include "media/cast/test/proto/network_simulation_model.pb.h"
+#include "media/cast/test/receiver/cast_receiver.h"
 #include "media/cast/test/skewed_tick_clock.h"
 #include "media/cast/test/utility/audio_utility.h"
 #include "media/cast/test/utility/default_config.h"
@@ -128,7 +128,7 @@ void LogVideoOperationalStatus(OperationalStatus status) {
 }
 
 struct PacketProxy {
-  PacketProxy() : receiver(NULL) {}
+  PacketProxy() : receiver(nullptr) {}
   void ReceivePacket(std::unique_ptr<Packet> packet) {
     if (receiver)
       receiver->ReceivePacket(std::move(packet));
@@ -228,19 +228,19 @@ void AppendYuvToFile(const base::FilePath& path,
       &header, "FRAME W%d H%d\n",
       frame->coded_size().width(),
       frame->coded_size().height());
-  AppendToFile(path, header.data(), header.size());
+  AppendToFile(path, header);
   AppendToFile(path,
-      reinterpret_cast<char*>(frame->data(media::VideoFrame::kYPlane)),
-      frame->stride(media::VideoFrame::kYPlane) *
-          frame->rows(media::VideoFrame::kYPlane));
+               base::make_span(frame->data(media::VideoFrame::kYPlane),
+                               frame->stride(media::VideoFrame::kYPlane) *
+                                   frame->rows(media::VideoFrame::kYPlane)));
   AppendToFile(path,
-      reinterpret_cast<char*>(frame->data(media::VideoFrame::kUPlane)),
-      frame->stride(media::VideoFrame::kUPlane) *
-          frame->rows(media::VideoFrame::kUPlane));
+               base::make_span(frame->data(media::VideoFrame::kUPlane),
+                               frame->stride(media::VideoFrame::kUPlane) *
+                                   frame->rows(media::VideoFrame::kUPlane)));
   AppendToFile(path,
-      reinterpret_cast<char*>(frame->data(media::VideoFrame::kVPlane)),
-      frame->stride(media::VideoFrame::kVPlane) *
-          frame->rows(media::VideoFrame::kVPlane));
+               base::make_span(frame->data(media::VideoFrame::kVPlane),
+                               frame->stride(media::VideoFrame::kVPlane) *
+                                   frame->rows(media::VideoFrame::kVPlane)));
 }
 
 // A container to save output of GotVideoFrame() for computation based
@@ -252,73 +252,40 @@ struct GotVideoFrameOutput {
   std::vector<double> ssim;
 };
 
-void GotVideoFrame(
-    GotVideoFrameOutput* metrics_output,
-    const base::FilePath& yuv_output,
-    EncodedVideoFrameTracker* video_frame_tracker,
-    CastReceiver* cast_receiver,
-    const scoped_refptr<media::VideoFrame>& video_frame,
-    const base::TimeTicks& render_time,
-    bool continuous) {
+void GotVideoFrame(GotVideoFrameOutput* metrics_output,
+                   const base::FilePath& yuv_output,
+                   EncodedVideoFrameTracker* video_frame_tracker,
+                   CastReceiver* cast_receiver,
+                   scoped_refptr<media::VideoFrame> video_frame,
+                   base::TimeTicks render_time,
+                   bool continuous) {
   ++metrics_output->counter;
   cast_receiver->RequestDecodedVideoFrame(
-      base::Bind(&GotVideoFrame, metrics_output, yuv_output,
-                 video_frame_tracker, cast_receiver));
+      base::BindRepeating(&GotVideoFrame, metrics_output, yuv_output,
+                          video_frame_tracker, cast_receiver));
 
   // If |video_frame_tracker| is available that means we're computing
   // quality metrices.
   if (video_frame_tracker) {
     scoped_refptr<media::VideoFrame> src_frame =
         video_frame_tracker->PopOldestEncodedFrame();
-    metrics_output->psnr.push_back(I420PSNR(src_frame, video_frame));
-    metrics_output->ssim.push_back(I420SSIM(src_frame, video_frame));
+    metrics_output->psnr.push_back(I420PSNR(*src_frame, *video_frame));
+    metrics_output->ssim.push_back(I420SSIM(*src_frame, *video_frame));
   }
 
   if (!yuv_output.empty()) {
-    AppendYuvToFile(yuv_output, video_frame);
+    AppendYuvToFile(yuv_output, std::move(video_frame));
   }
 }
 
 void GotAudioFrame(int* counter,
                    CastReceiver* cast_receiver,
                    std::unique_ptr<AudioBus> audio_bus,
-                   const base::TimeTicks& playout_time,
+                   base::TimeTicks playout_time,
                    bool is_continuous) {
   ++*counter;
   cast_receiver->RequestDecodedAudioFrame(
-      base::Bind(&GotAudioFrame, counter, cast_receiver));
-}
-
-// Serialize |frame_events| and |packet_events| and append to the file
-// located at |output_path|.
-void AppendLogToFile(media::cast::proto::LogMetadata* metadata,
-                     const media::cast::FrameEventList& frame_events,
-                     const media::cast::PacketEventList& packet_events,
-                     const base::FilePath& output_path) {
-  media::cast::proto::GeneralDescription* gen_desc =
-      metadata->mutable_general_description();
-  gen_desc->set_product("Cast Simulator");
-  gen_desc->set_product_version("0.1");
-
-  std::unique_ptr<char[]> serialized_log(
-      new char[media::cast::kMaxSerializedBytes]);
-  int output_bytes;
-  bool success = media::cast::SerializeEvents(*metadata,
-                                              frame_events,
-                                              packet_events,
-                                              true,
-                                              media::cast::kMaxSerializedBytes,
-                                              serialized_log.get(),
-                                              &output_bytes);
-
-  if (!success) {
-    LOG(ERROR) << "Failed to serialize log.";
-    return;
-  }
-
-  if (!AppendToFile(output_path, serialized_log.get(), output_bytes)) {
-    LOG(ERROR) << "Failed to append to log.";
-  }
+      base::BindRepeating(&GotAudioFrame, counter, cast_receiver));
 }
 
 // Run simulation once.
@@ -420,9 +387,9 @@ void RunSimulation(const base::FilePath& source_path,
     std::copy(ipp_model.average_rate().begin(),
               ipp_model.average_rate().end(),
               average_rates.begin());
-    ipp.reset(new test::InterruptedPoissonProcess(
-        average_rates,
-        ipp_model.coef_burstiness(), ipp_model.coef_variance(), 0));
+    ipp = std::make_unique<test::InterruptedPoissonProcess>(
+        average_rates, ipp_model.coef_burstiness(), ipp_model.coef_variance(),
+        0);
     receiver_to_sender->Initialize(ipp->NewBuffer(128 * 1024),
                                    transport_sender->PacketReceiverForTesting(),
                                    task_runner, &testing_clock);
@@ -450,7 +417,8 @@ void RunSimulation(const base::FilePath& source_path,
                                quality_test);
   std::unique_ptr<EncodedVideoFrameTracker> video_frame_tracker;
   if (quality_test) {
-    video_frame_tracker.reset(new EncodedVideoFrameTracker(&media_source));
+    video_frame_tracker =
+        std::make_unique<EncodedVideoFrameTracker>(&media_source);
     sender_env->logger()->Subscribe(video_frame_tracker.get());
   }
 
@@ -460,18 +428,17 @@ void RunSimulation(const base::FilePath& source_path,
   // Start receiver.
   int audio_frame_count = 0;
   cast_receiver->RequestDecodedVideoFrame(
-      base::Bind(&GotVideoFrame, &metrics_output, yuv_output_path,
-                 video_frame_tracker.get(), cast_receiver.get()));
-  cast_receiver->RequestDecodedAudioFrame(
-      base::Bind(&GotAudioFrame, &audio_frame_count, cast_receiver.get()));
+      base::BindRepeating(&GotVideoFrame, &metrics_output, yuv_output_path,
+                          video_frame_tracker.get(), cast_receiver.get()));
+  cast_receiver->RequestDecodedAudioFrame(base::BindRepeating(
+      &GotAudioFrame, &audio_frame_count, cast_receiver.get()));
 
   // Initializing audio and video senders.
   cast_sender->InitializeAudio(audio_sender_config,
-                               base::Bind(&LogAudioOperationalStatus));
+                               base::BindOnce(&LogAudioOperationalStatus));
   cast_sender->InitializeVideo(media_source.get_video_config(),
-                               base::Bind(&LogVideoOperationalStatus),
-                               CreateDefaultVideoEncodeAcceleratorCallback(),
-                               CreateDefaultVideoEncodeMemoryCallback());
+                               base::BindRepeating(&LogVideoOperationalStatus),
+                               base::DoNothing());
   task_runner->RunTasks();
 
   // Truncate YUV files to prepare for writing.
@@ -485,7 +452,7 @@ void RunSimulation(const base::FilePath& source_path,
 
     // Write YUV4MPEG2 header.
     const std::string header("YUV4MPEG2 W1280 H720 F30000:1001 Ip A1:1 C420\n");
-    AppendToFile(yuv_output_path, header.data(), header.size());
+    AppendToFile(yuv_output_path, header);
   }
 
   // Start sending.
@@ -563,14 +530,17 @@ void RunSimulation(const base::FilePath& source_path,
   // Subtract fraction of dropped frames from |elapsed_time| before estimating
   // the average encoded bitrate.
   const base::TimeDelta elapsed_time_undropped =
-      total_video_frames <= 0 ? base::TimeDelta() :
-      (elapsed_time * (total_video_frames - dropped_video_frames) /
-           total_video_frames);
+      total_video_frames <= 0
+          ? base::TimeDelta()
+          : (elapsed_time * (total_video_frames - dropped_video_frames) /
+             total_video_frames);
+  constexpr double kKilobitsPerByte = 8.0 / 1000;
   const double avg_encoded_bitrate =
-      elapsed_time_undropped <= base::TimeDelta() ? 0 :
-      8.0 * encoded_size / elapsed_time_undropped.InSecondsF() / 1000;
+      elapsed_time_undropped <= base::TimeDelta()
+          ? 0
+          : encoded_size * kKilobitsPerByte * elapsed_time_undropped.ToHz();
   double avg_target_bitrate =
-      !encoded_video_frames ? 0 : target_bitrate / encoded_video_frames / 1000;
+      encoded_video_frames ? target_bitrate / encoded_video_frames / 1000 : 0;
 
   LOG(INFO) << "Configured target playout delay (ms): "
             << video_receiver_config.rtp_max_delay_ms;
@@ -597,10 +567,6 @@ void RunSimulation(const base::FilePath& source_path,
       return;
     }
   }
-  AppendLogToFile(&video_metadata, video_frame_events, video_packet_events,
-                  log_output_path);
-  AppendLogToFile(&audio_metadata, audio_frame_events, audio_packet_events,
-                  log_output_path);
 
   // Write quality metrics.
   if (quality_test) {

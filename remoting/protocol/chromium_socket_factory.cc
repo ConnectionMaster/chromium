@@ -13,6 +13,7 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/rand_util.h"
 #include "base/time/time.h"
 #include "jingle/glue/utils.h"
 #include "net/base/io_buffer.h"
@@ -20,9 +21,14 @@
 #include "net/base/net_errors.h"
 #include "net/log/net_log_source.h"
 #include "net/socket/udp_server_socket.h"
+#include "remoting/base/logging.h"
+#include "remoting/base/session_options.h"
+#include "remoting/protocol/session_options_provider.h"
 #include "remoting/protocol/socket_util.h"
+#include "remoting/protocol/stream_packet_socket.h"
 #include "third_party/webrtc/media/base/rtp_utils.h"
 #include "third_party/webrtc/rtc_base/async_packet_socket.h"
+#include "third_party/webrtc/rtc_base/async_resolver.h"
 #include "third_party/webrtc/rtc_base/net_helpers.h"
 #include "third_party/webrtc/rtc_base/socket.h"
 
@@ -39,6 +45,20 @@ const int kReceiveBufferSize = 65536;
 // Pepper's UDP API can handle it. This maximum should never be
 // reached under normal conditions.
 const int kMaxSendBufferSize = 256 * 1024;
+
+// Creates a UDP socket and make it listen at |local_address| and |port|.
+// Returns nullptr if the socket fails to listen.
+std::unique_ptr<net::UDPServerSocket> CreateUdpSocketAndListen(
+    const net::IPAddress& local_address,
+    uint16_t port) {
+  auto socket =
+      std::make_unique<net::UDPServerSocket>(nullptr, net::NetLogSource());
+  int result = socket->Listen(net::IPEndPoint(local_address, port));
+  if (result != net::OK) {
+    socket.reset();
+  }
+  return socket;
+}
 
 class UdpPacketSocket : public rtc::AsyncPacketSocket {
  public:
@@ -131,20 +151,31 @@ UdpPacketSocket::~UdpPacketSocket() {
 bool UdpPacketSocket::Init(const rtc::SocketAddress& local_address,
                            uint16_t min_port,
                            uint16_t max_port) {
+  DCHECK_LE(min_port, max_port);
   net::IPEndPoint local_endpoint;
   if (!jingle_glue::SocketAddressToIPEndPoint(
           local_address, &local_endpoint)) {
     return false;
   }
 
-  for (uint32_t port = min_port; port <= max_port; ++port) {
-    socket_.reset(new net::UDPServerSocket(nullptr, net::NetLogSource()));
-    int result = socket_->Listen(
-        net::IPEndPoint(local_endpoint.address(), static_cast<uint16_t>(port)));
-    if (result == net::OK) {
-      break;
-    } else {
-      socket_.reset();
+  if (min_port == 0 && max_port == 0) {
+    // Just listen to any port that is available.
+    socket_ = CreateUdpSocketAndListen(local_endpoint.address(), 0u);
+  } else {
+    // Randomly pick a port to start trying with so that we will less likely
+    // pick the same port for relay. TURN server doesn't allow allocating relay
+    // session from the same port until the old session is timed out.
+    uint32_t port_count = max_port - min_port + 1;
+    uint32_t starting_offset = base::RandGenerator(port_count);
+    for (uint32_t i = 0; i < port_count; i++) {
+      uint16_t port = static_cast<uint16_t>(
+          min_port + ((starting_offset + i) % port_count));
+      DCHECK_LE(min_port, port);
+      DCHECK_LE(port, max_port);
+      socket_ = CreateUdpSocketAndListen(local_endpoint.address(), port);
+      if (socket_) {
+        break;
+      }
     }
   }
 
@@ -288,11 +319,10 @@ void UdpPacketSocket::DoSend() {
       reinterpret_cast<uint8_t*>(packet.data->data()), packet.data->size(),
       packet.options.packet_time_params,
       (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds());
-  int result = socket_->SendTo(
-      packet.data.get(),
-      packet.data->size(),
-      packet.address,
-      base::Bind(&UdpPacketSocket::OnSendCompleted, base::Unretained(this)));
+  int result =
+      socket_->SendTo(packet.data.get(), packet.data->size(), packet.address,
+                      base::BindOnce(&UdpPacketSocket::OnSendCompleted,
+                                     base::Unretained(this)));
   if (result == net::ERR_IO_PENDING) {
     send_pending_ = true;
   } else {
@@ -338,11 +368,10 @@ void UdpPacketSocket::DoRead() {
   int result = 0;
   while (result >= 0) {
     receive_buffer_ = base::MakeRefCounted<net::IOBuffer>(kReceiveBufferSize);
-    result = socket_->RecvFrom(
-        receive_buffer_.get(),
-        kReceiveBufferSize,
-        &receive_address_,
-        base::Bind(&UdpPacketSocket::OnReadCompleted, base::Unretained(this)));
+    result = socket_->RecvFrom(receive_buffer_.get(), kReceiveBufferSize,
+                               &receive_address_,
+                               base::BindOnce(&UdpPacketSocket::OnReadCompleted,
+                                              base::Unretained(this)));
     HandleReadResult(result);
   }
 }
@@ -375,7 +404,9 @@ void UdpPacketSocket::HandleReadResult(int result) {
 
 }  // namespace
 
-ChromiumPacketSocketFactory::ChromiumPacketSocketFactory() = default;
+ChromiumPacketSocketFactory::ChromiumPacketSocketFactory(
+    base::WeakPtr<SessionOptionsProvider> session_options_provider)
+    : session_options_provider_(session_options_provider) {}
 
 ChromiumPacketSocketFactory::~ChromiumPacketSocketFactory() = default;
 
@@ -383,6 +414,13 @@ rtc::AsyncPacketSocket* ChromiumPacketSocketFactory::CreateUdpSocket(
     const rtc::SocketAddress& local_address,
     uint16_t min_port,
     uint16_t max_port) {
+  if (session_options_provider_ &&
+      session_options_provider_->session_options().GetBoolValue(
+          "Disable-UDP")) {
+    HOST_LOG
+        << "Disable-UDP experiment is enabled. UDP socket won't be created.";
+    return nullptr;
+  }
   std::unique_ptr<UdpPacketSocket> result(new UdpPacketSocket());
   if (!result->Init(local_address, min_port, max_port))
     return nullptr;
@@ -395,22 +433,30 @@ rtc::AsyncPacketSocket* ChromiumPacketSocketFactory::CreateServerTcpSocket(
     uint16_t max_port,
     int opts) {
   // TCP sockets are not supported.
-  // TODO(sergeyu): Implement TCP support crbug.com/600032 .
+  // TODO(yuweih): Implement server side TCP support crbug.com/600032 .
   NOTIMPLEMENTED();
   return nullptr;
 }
 
-rtc::AsyncPacketSocket*
-ChromiumPacketSocketFactory::CreateClientTcpSocket(
-      const rtc::SocketAddress& local_address,
-      const rtc::SocketAddress& remote_address,
-      const rtc::ProxyInfo& proxy_info,
-      const std::string& user_agent,
-      int opts) {
-  // TCP sockets are not supported.
-  // TODO(sergeyu): Implement TCP support crbug.com/600032 .
-  NOTIMPLEMENTED();
-  return nullptr;
+rtc::AsyncPacketSocket* ChromiumPacketSocketFactory::CreateClientTcpSocket(
+    const rtc::SocketAddress& local_address,
+    const rtc::SocketAddress& remote_address,
+    const rtc::ProxyInfo& proxy_info,
+    const std::string& user_agent,
+    const rtc::PacketSocketTcpOptions& opts) {
+  if (session_options_provider_ &&
+      session_options_provider_->session_options().GetBoolValue(
+          "Disable-TCP")) {
+    HOST_LOG << "Disable-TCP experiment is enabled. Client TCP socket won't be "
+             << "created.";
+    return nullptr;
+  }
+  auto socket = std::make_unique<StreamPacketSocket>();
+  if (!socket->InitClientTcp(local_address, remote_address, proxy_info,
+                             user_agent, opts)) {
+    return nullptr;
+  }
+  return socket.release();
 }
 
 rtc::AsyncResolverInterface*

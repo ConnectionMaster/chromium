@@ -34,7 +34,7 @@ class FileUtilsWrapper {
   virtual ~FileUtilsWrapper() = default;
 
   // Create a copy to use in IO task.
-  virtual std::unique_ptr<FileUtilsWrapper> Clone();
+  virtual std::unique_ptr<FileUtilsWrapper> Clone() const;
 
   bool PathExists(const base::FilePath& path);
 
@@ -54,11 +54,14 @@ class FileUtilsWrapper {
 
   bool IsDirectoryEmpty(const base::FilePath& dir_path);
 
-  bool ReadFileToString(const base::FilePath& path, std::string* contents);
+  virtual bool ReadFileToString(const base::FilePath& path,
+                                std::string* contents);
 
   bool DeleteFile(const base::FilePath& path, bool recursive);
 
-  DISALLOW_COPY_AND_ASSIGN(FileUtilsWrapper);
+  virtual bool DeleteFileRecursively(const base::FilePath& path);
+
+  DISALLOW_ASSIGN(FileUtilsWrapper);
 };
 
 }  // namespace web_app

@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Test timeline aggregated details.\n`);
-  await TestRunner.loadModule('performance_test_runner');
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
   await TestRunner.showPanel('timeline');
 
   const sessionId = '6.23';
@@ -72,7 +72,7 @@
     TestRunner.addResult('');
     TestRunner.addResult(type);
     const tree = getTreeView(type);
-    const rootNode = tree._dataGrid.rootNode();
+    const rootNode = tree.dataGrid.rootNode();
     for (const node of rootNode.children)
       printEventTree(1, node._profileNode, node._treeView);
   }

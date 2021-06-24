@@ -16,9 +16,11 @@
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
+#include "base/threading/thread.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/browser_thread.h"
-#include "device/usb/public/mojom/device_manager.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/device/public/mojom/usb_manager.mojom.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace net {
@@ -27,19 +29,17 @@ class StreamSocket;
 
 class AndroidDeviceManager {
  public:
-  using CommandCallback =
-      base::Callback<void(int, const std::string&)>;
+  using CommandCallback = base::OnceCallback<void(int, const std::string&)>;
   using SocketCallback =
-      base::Callback<void(int result, std::unique_ptr<net::StreamSocket>)>;
+      base::OnceCallback<void(int result, std::unique_ptr<net::StreamSocket>)>;
   // |body_head| should contain the body (WebSocket frame data) part that has
   // been read during processing the header (WebSocket handshake).
   using HttpUpgradeCallback =
-      base::Callback<void(int result,
-                          const std::string& extensions,
-                          const std::string& body_head,
-                          std::unique_ptr<net::StreamSocket>)>;
-  using SerialsCallback =
-      base::Callback<void(const std::vector<std::string>&)>;
+      base::OnceCallback<void(int result,
+                              const std::string& extensions,
+                              const std::string& body_head,
+                              std::unique_ptr<net::StreamSocket>)>;
+  using SerialsCallback = base::OnceCallback<void(std::vector<std::string>)>;
 
   struct BrowserInfo {
     BrowserInfo();
@@ -68,7 +68,7 @@ class AndroidDeviceManager {
     std::vector<BrowserInfo> browser_info;
   };
 
-  typedef base::Callback<void(const DeviceInfo&)> DeviceInfoCallback;
+  using DeviceInfoCallback = base::OnceCallback<void(const DeviceInfo&)>;
   class Device;
 
   class AndroidWebSocket {
@@ -106,7 +106,7 @@ class AndroidDeviceManager {
     scoped_refptr<Device> device_;
     std::unique_ptr<WebSocketImpl, base::OnTaskRunnerDeleter> socket_impl_;
     Delegate* delegate_;
-    base::WeakPtrFactory<AndroidWebSocket> weak_factory_;
+    base::WeakPtrFactory<AndroidWebSocket> weak_factory_{this};
     DISALLOW_COPY_AND_ASSIGN(AndroidWebSocket);
   };
 
@@ -114,19 +114,18 @@ class AndroidDeviceManager {
 
   class Device final : public base::RefCountedDeleteOnSequence<Device> {
    public:
-    void QueryDeviceInfo(const DeviceInfoCallback& callback);
+    void QueryDeviceInfo(DeviceInfoCallback callback);
 
-    void OpenSocket(const std::string& socket_name,
-                    const SocketCallback& callback);
+    void OpenSocket(const std::string& socket_name, SocketCallback callback);
 
     void SendJsonRequest(const std::string& socket_name,
                          const std::string& request,
-                         const CommandCallback& callback);
+                         CommandCallback callback);
 
     void HttpUpgrade(const std::string& socket_name,
                      const std::string& path,
                      const std::string& extensions,
-                     const HttpUpgradeCallback& callback);
+                     HttpUpgradeCallback callback);
     AndroidWebSocket* CreateWebSocket(
         const std::string& socket_name,
         const std::string& path,
@@ -149,40 +148,40 @@ class AndroidDeviceManager {
     scoped_refptr<DeviceProvider> provider_;
     const std::string serial_;
 
-    base::WeakPtrFactory<Device> weak_factory_;
+    base::WeakPtrFactory<Device> weak_factory_{this};
 
     DISALLOW_COPY_AND_ASSIGN(Device);
   };
 
-  typedef std::vector<scoped_refptr<Device> > Devices;
-  typedef base::Callback<void(const Devices&)> DevicesCallback;
+  using Devices = std::vector<scoped_refptr<Device>>;
+  using DevicesCallback = base::OnceCallback<void(const Devices&)>;
 
   class DeviceProvider : public base::RefCountedThreadSafe<DeviceProvider> {
    public:
-    typedef AndroidDeviceManager::SerialsCallback SerialsCallback;
-    typedef AndroidDeviceManager::DeviceInfoCallback DeviceInfoCallback;
-    typedef AndroidDeviceManager::SocketCallback SocketCallback;
-    typedef AndroidDeviceManager::CommandCallback CommandCallback;
+    using SerialsCallback = AndroidDeviceManager::SerialsCallback;
+    using DeviceInfoCallback = AndroidDeviceManager::DeviceInfoCallback;
+    using SocketCallback = AndroidDeviceManager::SocketCallback;
+    using CommandCallback = AndroidDeviceManager::CommandCallback;
 
-    virtual void QueryDevices(const SerialsCallback& callback) = 0;
+    virtual void QueryDevices(SerialsCallback callback) = 0;
 
     virtual void QueryDeviceInfo(const std::string& serial,
-                                 const DeviceInfoCallback& callback) = 0;
+                                 DeviceInfoCallback callback) = 0;
 
     virtual void OpenSocket(const std::string& serial,
                             const std::string& socket_name,
-                            const SocketCallback& callback) = 0;
+                            SocketCallback callback) = 0;
 
-    virtual void SendJsonRequest(const std::string& serial,
-                                 const std::string& socket_name,
-                                 const std::string& request,
-                                 const CommandCallback& callback);
+    void SendJsonRequest(const std::string& serial,
+                         const std::string& socket_name,
+                         const std::string& request,
+                         CommandCallback callback);
 
     virtual void HttpUpgrade(const std::string& serial,
                              const std::string& socket_name,
                              const std::string& path,
                              const std::string& extensions,
-                             const HttpUpgradeCallback& callback);
+                             HttpUpgradeCallback callback);
 
     virtual void ReleaseDevice(const std::string& serial);
 
@@ -200,19 +199,19 @@ class AndroidDeviceManager {
 
   void SetDeviceProviders(const DeviceProviders& providers);
 
-  void QueryDevices(const DevicesCallback& callback);
-  void CountDevices(const base::Callback<void(int)>& callback);
+  void QueryDevices(DevicesCallback callback);
+  void CountDevices(base::OnceCallback<void(int)> callback);
 
   void set_usb_device_manager_for_test(
-      device::mojom::UsbDeviceManagerPtrInfo fake_usb_manager);
+      mojo::PendingRemote<device::mojom::UsbDeviceManager> fake_usb_manager);
 
   static std::string GetBrowserName(const std::string& socket,
                                     const std::string& package);
   using RunCommandCallback =
-      base::Callback<void(const std::string&, const CommandCallback&)>;
+      base::OnceCallback<void(const std::string&, CommandCallback)>;
 
-  static void QueryDeviceInfo(const RunCommandCallback& command_callback,
-                              const DeviceInfoCallback& callback);
+  static void QueryDeviceInfo(RunCommandCallback command_callback,
+                              DeviceInfoCallback callback);
 
   struct DeviceDescriptor {
     DeviceDescriptor();
@@ -243,7 +242,7 @@ class AndroidDeviceManager {
 
   AndroidDeviceManager();
 
-  void UpdateDevices(const DevicesCallback& callback,
+  void UpdateDevices(DevicesCallback callback,
                      std::unique_ptr<DeviceDescriptors> descriptors);
 
   typedef std::map<std::string, base::WeakPtr<Device> > DeviceWeakMap;
@@ -254,7 +253,7 @@ class AndroidDeviceManager {
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<AndroidDeviceManager> weak_factory_;
+  base::WeakPtrFactory<AndroidDeviceManager> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_DEVTOOLS_DEVICE_ANDROID_DEVICE_MANAGER_H_

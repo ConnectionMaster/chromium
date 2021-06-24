@@ -4,16 +4,18 @@
 
 #include "chrome/browser/extensions/external_policy_loader.h"
 
-#include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
+#include "chrome/browser/extensions/forced_extensions/install_stage_tracker.h"
+#include "chrome/browser/profiles/profile.h"
 
 namespace extensions {
 
-ExternalPolicyLoader::ExternalPolicyLoader(ExtensionManagement* settings,
+ExternalPolicyLoader::ExternalPolicyLoader(Profile* profile,
+                                           ExtensionManagement* settings,
                                            InstallationType type)
-    : settings_(settings), type_(type) {
+    : profile_(profile), settings_(settings), type_(type) {
   settings_->AddObserver(this);
 }
 
@@ -37,9 +39,17 @@ void ExternalPolicyLoader::AddExtension(base::DictionaryValue* dict,
 void ExternalPolicyLoader::StartLoading() {
   std::unique_ptr<base::DictionaryValue> prefs;
   switch (type_) {
-    case FORCED:
+    case FORCED: {
+      InstallStageTracker* install_stage_tracker =
+          InstallStageTracker::Get(profile_);
       prefs = settings_->GetForceInstallList();
+      for (const auto& it : prefs->DictItems()) {
+        install_stage_tracker->ReportInstallCreationStage(
+            it.first,
+            InstallStageTracker::InstallCreationStage::SEEN_BY_POLICY_LOADER);
+      }
       break;
+    }
     case RECOMMENDED:
       prefs = settings_->GetRecommendedInstallList();
       break;

@@ -5,13 +5,13 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PAGE_INFO_PERMISSION_SELECTOR_ROW_OBSERVER_H_
 #define CHROME_BROWSER_UI_VIEWS_PAGE_INFO_PERMISSION_SELECTOR_ROW_OBSERVER_H_
 
-#include "chrome/browser/ui/page_info/page_info_ui.h"
+#include "components/page_info/page_info_ui.h"
 
 class PermissionSelectorRowObserver {
  public:
   // This method is called whenever the permission setting is changed.
   virtual void OnPermissionChanged(
-      const PageInfoUI::PermissionInfo& permission) = 0;
+      const PageInfo::PermissionInfo& permission) = 0;
 
  protected:
   virtual ~PermissionSelectorRowObserver() {}

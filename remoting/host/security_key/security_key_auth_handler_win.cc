@@ -13,7 +13,6 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_checker.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -104,7 +103,7 @@ class SecurityKeyAuthHandlerWin : public SecurityKeyAuthHandler {
   // Ensures SecurityKeyAuthHandlerWin methods are called on the same thread.
   base::ThreadChecker thread_checker_;
 
-  base::WeakPtrFactory<SecurityKeyAuthHandlerWin> weak_factory_;
+  base::WeakPtrFactory<SecurityKeyAuthHandlerWin> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SecurityKeyAuthHandlerWin);
 };
@@ -122,8 +121,7 @@ std::unique_ptr<SecurityKeyAuthHandler> SecurityKeyAuthHandler::Create(
 SecurityKeyAuthHandlerWin::SecurityKeyAuthHandlerWin(
     ClientSessionDetails* client_session_details)
     : client_session_details_(client_session_details),
-      disconnect_timeout_(kInitialRequestTimeout),
-      weak_factory_(this) {
+      disconnect_timeout_(kInitialRequestTimeout) {
   DCHECK(client_session_details_);
 }
 
@@ -193,10 +191,11 @@ void SecurityKeyAuthHandlerWin::StartIpcServerChannel() {
   std::unique_ptr<SecurityKeyIpcServer> ipc_server(SecurityKeyIpcServer::Create(
       new_connection_id, client_session_details_, disconnect_timeout_,
       send_message_callback_,
-      base::Bind(&SecurityKeyAuthHandlerWin::OnChannelConnected,
-                 base::Unretained(this)),
-      base::Bind(&SecurityKeyAuthHandlerWin::CloseSecurityKeyRequestIpcChannel,
-                 base::Unretained(this), new_connection_id)));
+      base::BindOnce(&SecurityKeyAuthHandlerWin::OnChannelConnected,
+                     base::Unretained(this)),
+      base::BindOnce(
+          &SecurityKeyAuthHandlerWin::CloseSecurityKeyRequestIpcChannel,
+          base::Unretained(this), new_connection_id)));
   ipc_server->CreateChannel(remoting::GetSecurityKeyIpcChannel(),
                             kSecurityKeyRequestTimeout);
   active_channels_[new_connection_id] = std::move(ipc_server);

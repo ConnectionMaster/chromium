@@ -6,20 +6,23 @@
 
 #include <utility>
 
+#include "ash/constants/ash_paths.h"
 #include "ash/shell.h"
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/path_service.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
+#include "base/system/sys_info.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "components/quirks/quirks_manager.h"
 #include "third_party/qcms/src/qcms.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/display/display.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/display/types/display_snapshot.h"
@@ -197,12 +200,11 @@ DisplayColorManager::DisplayColorManager(
     display::Screen* screen_to_observe)
     : configurator_(configurator),
       matrix_buffer_(9, 0.0f),  // 3x3 matrix.
-      sequenced_task_runner_(base::CreateSequencedTaskRunnerWithTraits(
+      sequenced_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
       displays_ctm_support_(DisplayCtmSupport::kNone),
-      screen_to_observe_(screen_to_observe),
-      weak_ptr_factory_(this) {
+      screen_to_observe_(screen_to_observe) {
   configurator_->AddObserver(this);
   if (screen_to_observe_)
     screen_to_observe_->AddObserver(this);
@@ -232,8 +234,7 @@ bool DisplayColorManager::SetDisplayColorMatrix(
     const display::DisplaySnapshot* display_snapshot,
     const SkMatrix44& color_matrix) {
   DCHECK(display_snapshot);
-  DCHECK(
-      base::ContainsValue(configurator_->cached_displays(), display_snapshot));
+  DCHECK(base::Contains(configurator_->cached_displays(), display_snapshot));
 
   if (!display_snapshot->has_color_correction_matrix()) {
     // This display doesn't support setting a CRTC matrix.
@@ -325,27 +326,72 @@ bool DisplayColorManager::LoadCalibrationForDisplay(
     return false;
   }
 
-  // TODO: enable QuirksManager for mash. http://crbug.com/728748. Some tests
-  // don't create the Shell when running this code, hence the
-  // Shell::HasInstance() conditional.
-  if (Shell::HasInstance() && features::IsMultiProcessMash())
-    return false;
-
   const bool valid_product_code =
       display->product_code() != display::DisplaySnapshot::kInvalidProductCode;
   // TODO(mcasas): correct UMA s/Id/Code/, https://crbug.com/821393.
   UMA_HISTOGRAM_BOOLEAN("Ash.DisplayColorManager.ValidProductId",
                         valid_product_code);
-  if (!valid_product_code)
+  if (!valid_product_code || !quirks::QuirksManager::HasInstance())
     return false;
 
-  quirks::QuirksManager::Get()->RequestIccProfilePath(
-      display->product_code(), display->display_name(),
-      base::Bind(&DisplayColorManager::FinishLoadCalibrationForDisplay,
-                 weak_ptr_factory_.GetWeakPtr(), display->display_id(),
-                 display->product_code(),
-                 display->has_color_correction_matrix(), display->type()));
+  // Look for calibrations for this display. Each calibration may overwrite the
+  // previous one.
+  // TODO(jchinlee): Consider collapsing queries.
+  QueryVpdForCalibration(display->display_id(), display->product_code(),
+                         display->has_color_correction_matrix(),
+                         display->type());
+  QueryQuirksForCalibration(
+      display->display_id(), display->display_name(), display->product_code(),
+      display->has_color_correction_matrix(), display->type());
   return true;
+}
+
+void DisplayColorManager::QueryVpdForCalibration(
+    int64_t display_id,
+    int64_t product_code,
+    bool has_color_correction_matrix,
+    display::DisplayConnectionType type) {
+  if (type != display::DISPLAY_CONNECTION_TYPE_INTERNAL)
+    return;
+
+  base::FilePath directory;
+  base::PathService::Get(chromeos::DIR_DEVICE_DISPLAY_PROFILES_VPD, &directory);
+  const std::string icc_name = quirks::IdToFileName(product_code);
+  const base::FilePath icc_path = directory.Append(icc_name);
+
+  sequenced_task_runner_.get()->PostTaskAndReplyWithResult(
+      FROM_HERE, base::BindOnce(&base::PathExists, icc_path),
+      base::BindOnce(&DisplayColorManager::FinishQueryVpdForCalibration,
+                     weak_ptr_factory_.GetWeakPtr(), display_id, product_code,
+                     has_color_correction_matrix, type, icc_path));
+}
+
+void DisplayColorManager::FinishQueryVpdForCalibration(
+    int64_t display_id,
+    int64_t product_code,
+    bool has_color_correction_matrix,
+    display::DisplayConnectionType type,
+    const base::FilePath& expected_icc_path,
+    bool found_icc) {
+  if (!found_icc)
+    return;
+
+  DisplayColorManager::FinishLoadCalibrationForDisplay(
+      display_id, product_code, has_color_correction_matrix, type,
+      expected_icc_path, false);
+}
+
+void DisplayColorManager::QueryQuirksForCalibration(
+    int64_t display_id,
+    const std::string& display_name,
+    int64_t product_code,
+    bool has_color_correction_matrix,
+    display::DisplayConnectionType type) {
+  quirks::QuirksManager::Get()->RequestIccProfilePath(
+      product_code, display_name,
+      base::BindOnce(&DisplayColorManager::FinishLoadCalibrationForDisplay,
+                     weak_ptr_factory_.GetWeakPtr(), display_id, product_code,
+                     has_color_correction_matrix, type));
 }
 
 void DisplayColorManager::FinishLoadCalibrationForDisplay(
@@ -381,9 +427,9 @@ void DisplayColorManager::FinishLoadCalibrationForDisplay(
 
   base::PostTaskAndReplyWithResult(
       sequenced_task_runner_.get(), FROM_HERE,
-      base::Bind(&ParseDisplayProfile, path, has_color_correction_matrix),
-      base::Bind(&DisplayColorManager::UpdateCalibrationData,
-                 weak_ptr_factory_.GetWeakPtr(), display_id, product_code));
+      base::BindOnce(&ParseDisplayProfile, path, has_color_correction_matrix),
+      base::BindOnce(&DisplayColorManager::UpdateCalibrationData,
+                     weak_ptr_factory_.GetWeakPtr(), display_id, product_code));
 }
 
 void DisplayColorManager::UpdateCalibrationData(

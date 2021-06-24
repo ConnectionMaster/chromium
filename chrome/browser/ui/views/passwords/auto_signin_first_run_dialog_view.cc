@@ -6,21 +6,47 @@
 
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/browser/ui/passwords/password_dialog_controller.h"
+#include "chrome/browser/ui/passwords/credential_manager_dialog_controller.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/widget/widget.h"
 
 AutoSigninFirstRunDialogView::AutoSigninFirstRunDialogView(
-    PasswordDialogController* controller,
+    CredentialManagerDialogController* controller,
     content::WebContents* web_contents)
     : controller_(controller), web_contents_(web_contents) {
+  SetButtonLabel(ui::DIALOG_BUTTON_OK,
+                 l10n_util::GetStringUTF16(IDS_AUTO_SIGNIN_FIRST_RUN_OK));
+  SetButtonLabel(ui::DIALOG_BUTTON_CANCEL,
+                 l10n_util::GetStringUTF16(IDS_TURN_OFF));
+
+  SetModalType(ui::MODAL_TYPE_CHILD);
+  SetShowCloseButton(false);
+  set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
+      views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
+
+  using ControllerCallbackFn = void (CredentialManagerDialogController::*)();
+  auto call_controller = [](AutoSigninFirstRunDialogView* dialog,
+                            ControllerCallbackFn func) {
+    if (dialog->controller_) {
+      (dialog->controller_->*func)();
+    }
+  };
+  SetAcceptCallback(
+      base::BindOnce(call_controller, base::Unretained(this),
+                     &CredentialManagerDialogController::OnAutoSigninOK));
+  SetCancelCallback(
+      base::BindOnce(call_controller, base::Unretained(this),
+                     &CredentialManagerDialogController::OnAutoSigninTurnOff));
+
   chrome::RecordDialogCreation(chrome::DialogIdentifier::AUTO_SIGNIN_FIRST_RUN);
 }
 
@@ -39,23 +65,8 @@ void AutoSigninFirstRunDialogView::ControllerGone() {
   controller_ = nullptr;
 }
 
-ui::ModalType AutoSigninFirstRunDialogView::GetModalType() const {
-  return ui::MODAL_TYPE_CHILD;
-}
-
-base::string16 AutoSigninFirstRunDialogView::GetWindowTitle() const {
+std::u16string AutoSigninFirstRunDialogView::GetWindowTitle() const {
   return controller_->GetAutoSigninPromoTitle();
-}
-
-bool AutoSigninFirstRunDialogView::ShouldShowCloseButton() const {
-  return false;
-}
-
-gfx::Size AutoSigninFirstRunDialogView::CalculatePreferredSize() const {
-  const int width = ChromeLayoutProvider::Get()->GetDistanceMetric(
-                        DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH) -
-                    margins().width();
-  return gfx::Size(width, GetHeightForWidth(width));
 }
 
 void AutoSigninFirstRunDialogView::WindowClosing() {
@@ -63,48 +74,24 @@ void AutoSigninFirstRunDialogView::WindowClosing() {
     controller_->OnCloseDialog();
 }
 
-bool AutoSigninFirstRunDialogView::Cancel() {
-  // On Mac the button click event may be dispatched after the dialog was
-  // hidden. Thus, the controller can be NULL.
-  if (controller_)
-    controller_->OnAutoSigninTurnOff();
-  return true;
-}
-
-bool AutoSigninFirstRunDialogView::Accept() {
-  // On Mac the button click event may be dispatched after the dialog was
-  // hidden. Thus, the controller can be NULL.
-  if (controller_)
-    controller_->OnAutoSigninOK();
-  return true;
-}
-
-bool AutoSigninFirstRunDialogView::Close() {
-  // Do nothing rather than running Cancel(), which would turn off auto-signin.
-  return true;
-}
-
-base::string16 AutoSigninFirstRunDialogView::GetDialogButtonLabel(
-    ui::DialogButton button) const {
-  return l10n_util::GetStringUTF16(button == ui::DIALOG_BUTTON_OK
-                                       ? IDS_AUTO_SIGNIN_FIRST_RUN_OK
-                                       : IDS_AUTO_SIGNIN_FIRST_RUN_TURN_OFF);
-}
-
 void AutoSigninFirstRunDialogView::InitWindow() {
   set_margins(ChromeLayoutProvider::Get()->GetDialogInsetsForContentType(
-      views::TEXT, views::TEXT));
+      views::DialogContentType::kText, views::DialogContentType::kText));
   SetLayoutManager(std::make_unique<views::FillLayout>());
 
-  auto label =
-      std::make_unique<views::Label>(controller_->GetAutoSigninText(),
-                                     CONTEXT_BODY_TEXT_LARGE, STYLE_SECONDARY);
+  auto label = std::make_unique<views::Label>(
+      controller_->GetAutoSigninText(), views::style::CONTEXT_DIALOG_BODY_TEXT,
+      views::style::STYLE_SECONDARY);
   label->SetMultiLine(true);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   AddChildView(label.release());
 }
 
+BEGIN_METADATA(AutoSigninFirstRunDialogView, views::DialogDelegateView)
+END_METADATA
+
 AutoSigninFirstRunPrompt* CreateAutoSigninPromptView(
-    PasswordDialogController* controller, content::WebContents* web_contents) {
+    CredentialManagerDialogController* controller,
+    content::WebContents* web_contents) {
   return new AutoSigninFirstRunDialogView(controller, web_contents);
 }

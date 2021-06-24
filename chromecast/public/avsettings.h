@@ -65,6 +65,11 @@ class AvSettings {
     FIXED_VOLUME,
   };
 
+  enum class HdmiContentType {
+    NO_DATA_TYPE,
+    GAME_TYPE,
+  };
+
   // Defines the status of platform wake-on-cast feature.
   enum WakeOnCastStatus {
     WAKE_ON_CAST_UNKNOWN,  // Should only been used very rarely when platform
@@ -87,8 +92,9 @@ class AvSettings {
 
     // This event shall be fired whenever the audio codecs supported by the
     // device (or HDMI sinks connected to the device) are changed.
-    // On this event, GetAudioCodecsSupported() and GetMaxAudioChannels() will
-    // be called on the thread where Initialize() was called.
+    // On this event, GetAudioCodecsSupported(), GetMaxAudioChannels(), and
+    // GetSpatialRenderingAudioCodecs() be called on the thread where
+    // Initialize() was called.
     AUDIO_CODECS_SUPPORTED_CHANGED = 2,
 
     // This event shall be fired whenever the screen information of the device
@@ -206,7 +212,8 @@ class AvSettings {
   // non-0 |brightness| values don't turn off the display.
   // Returns false if set fails. Returns true otherwise.
   // Not all displays support this function.
-  static bool SetDisplayBrightness(float brightness, bool smooth)
+  static CHROMECAST_EXPORT bool SetDisplayBrightness(float brightness,
+                                                     bool smooth)
       __attribute__((weak));
 
   // Gets the current screen (backlight) brightness.
@@ -214,21 +221,42 @@ class AvSettings {
   // Returns false and does not modify |brightness| if get fails.
   // Returns true and sets |brightness| to the current brightness otherwise.
   // Not all displays support this function.
-  static bool GetDisplayBrightness(float* brightness) __attribute__((weak));
+  static CHROMECAST_EXPORT bool GetDisplayBrightness(float* brightness)
+      __attribute__((weak));
 
   // Gets the nits output by the display at 100% brightness.
   // |nits|: The maximum brightness in nits.
   // Returns false and does not modify |nits| if get fails.
   // Returns true and sets |nits| on success.
   // Not all displays support this function.
-  static bool GetDisplayMaxBrightnessNits(float* nits) __attribute__((weak));
+  static CHROMECAST_EXPORT bool GetDisplayMaxBrightnessNits(float* nits)
+      __attribute__((weak));
+
+  // Set Hdmi content type. Return false if such operation fails. The operation
+  // fails if unexpected errors occur, or if the desired |content_type| is not
+  // supported by Hdmi sink, in which case implementation shall return false
+  // without actually setting the content type.
+  // This function should only be implemented on HDMI platforms.
+  static CHROMECAST_EXPORT bool SetHdmiContentType(HdmiContentType content_type)
+      __attribute__((weak));
 
   // Gets the HDMI latency in microseconds.
   // Returns valid values when HDMI is connected.
   // Returns 0 when HDMI is not connected or when the latency cannot be
   // measured.
   // This function should only be implemented on HDMI platforms.
-  static int GetHdmiLatencyUs() __attribute__((weak));
+  static CHROMECAST_EXPORT int GetHdmiLatencyUs() __attribute__((weak));
+
+  // Gets the EDID ID string.
+  // Returns the valid EDID ID when HDMI is connected.
+  // Returns an empty string when HDMI is not connected or when the EDID info
+  // cannot be correctly parsed.
+  // This function should only be implemented on HDMI platforms.
+  static CHROMECAST_EXPORT std::string GetEdidId() __attribute__((weak));
+
+  // Returns true if this is an HDMI platform.
+  // This function should only be implemented on HDMI platforms.
+  static CHROMECAST_EXPORT bool IsHdmiPlatform() __attribute__((weak));
 
   // Returns the type of volume control, i.e. MASTER_VOLUME, FIXED_VOLUME or
   // ATTENUATION_VOLUME. For example, normal TVs, devices of CEC audio
@@ -252,6 +280,11 @@ class AvSettings {
   // Gets audio codecs supported by the device (or HDMI sinks).
   // The result is an integer of OR'ed AudioCodec values.
   virtual int GetAudioCodecsSupported() = 0;
+
+  // Returns a bitmap of audio codecs that the device (or HDMI sinks) can
+  // render spatially.
+  static CHROMECAST_EXPORT int GetSpatialRenderingAudioCodecs()
+      __attribute__((weak));
 
   // Gets maximum number of channels for given audio codec, |codec|.
   virtual int GetMaxAudioChannels(AudioCodec codec) = 0;

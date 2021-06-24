@@ -4,17 +4,18 @@
 
 #include "services/shape_detection/barcode_detection_provider_mac.h"
 
-#include <dlfcn.h>
+#import <Vision/Vision.h>
+
 #include <memory>
 #include <string>
 
 #include "base/bind.h"
-#include "base/callback_forward.h"
-#include "base/mac/sdk_forward_declarations.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/test/bind_test_util.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
+#include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "services/shape_detection/barcode_detection_impl_mac_vision.h"
 #include "services/shape_detection/barcode_detection_provider_mac.h"
@@ -22,6 +23,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+using base::test::RunClosure;
 using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::TestWithParam;
@@ -30,10 +32,6 @@ using ::testing::ValuesIn;
 namespace shape_detection {
 
 namespace {
-
-ACTION_P(RunClosure, closure) {
-  closure.Run();
-}
 
 static const std::vector<mojom::BarcodeFormat>& CISupportedFormats = {
     mojom::BarcodeFormat::QR_CODE};
@@ -48,14 +46,18 @@ static const std::vector<mojom::BarcodeFormat>& MockVisionSupportedFormats = {
     mojom::BarcodeFormat::AZTEC, mojom::BarcodeFormat::DATA_MATRIX,
     mojom::BarcodeFormat::QR_CODE};
 
-static NSArray* MockVisionSupportedSymbologyStrings = @[
+// Use strings here because, while these will only be used on 10.13 or later
+// when the real symbols will be available, this array is constructed statically
+// on all OS versions.
+static NSArray<VNBarcodeSymbology>* MockVisionSupportedSymbologyStrings = @[
   @"VNBarcodeSymbologyAztec", @"VNBarcodeSymbologyDataMatrix",
   @"VNBarcodeSymbologyQR"
 ];
 
 class MockVisionAPI : public VisionAPIInterface {
  public:
-  MOCK_CONST_METHOD0(GetSupportedSymbologies, NSArray*(void));
+  MOCK_CONST_METHOD0(GetSupportedSymbologies,
+                     NSArray<VNBarcodeSymbology>*(void));
 };
 
 std::unique_ptr<mojom::BarcodeDetectionProvider> CreateBarcodeProviderMac(
@@ -72,7 +74,7 @@ std::unique_ptr<VisionAPIInterface> CreateVisionAPI() {
 }
 
 std::unique_ptr<VisionAPIInterface> CreateMockVisionAPI(
-    NSArray* returned_symbologies) {
+    NSArray<VNBarcodeSymbology>* returned_symbologies) {
   std::unique_ptr<NiceMock<MockVisionAPI>> mock_vision_api =
       std::make_unique<NiceMock<MockVisionAPI>>();
   ON_CALL(*mock_vision_api, GetSupportedSymbologies())
@@ -108,11 +110,6 @@ class BarcodeDetectionProviderMacTest
               MockVisionSupportedFormats.size());
   }
 
-  void TearDown() override {
-    if (vision_framework_)
-      dlclose(vision_framework_);
-  }
-
   void EnumerateSupportedFormatsCallback(
       const std::vector<mojom::BarcodeFormat>& expected,
       const std::vector<mojom::BarcodeFormat>& results) {
@@ -124,8 +121,7 @@ class BarcodeDetectionProviderMacTest
   MOCK_METHOD0(OnEnumerateSupportedFormats, void(void));
 
   std::unique_ptr<mojom::BarcodeDetectionProvider> provider_;
-  const base::MessageLoop message_loop_;
-  void* vision_framework_ = nullptr;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   bool is_vision_available_ = false;
 };
 
@@ -134,12 +130,6 @@ TEST_P(BarcodeDetectionProviderMacTest, EnumerateSupportedBarcodes) {
     LOG(WARNING) << "Barcode Detection for this (library, OS version) pair is "
                     "not supported, skipping test.";
     return;
-  }
-
-  // Only load Vision if we're testing it.
-  if (GetParam().test_vision_api) {
-    vision_framework_ =
-        dlopen("/System/Library/Frameworks/Vision.framework/Vision", RTLD_LAZY);
   }
 
   provider_ = CreateBarcodeProviderMac(GetParam().vision_api.Run());
@@ -209,7 +199,7 @@ TEST_F(BarcodeDetectionProviderMacTest, EnumerateSupportedBarcodesErrored) {
   }
 
   std::unique_ptr<VisionAPIInterface> mock_vision_api =
-      CreateMockVisionAPI([NSArray array]);
+      CreateMockVisionAPI(@[]);
 
   provider_ = CreateBarcodeProviderMac(std::move(mock_vision_api));
   provider_->EnumerateSupportedFormats(base::BindOnce(
@@ -230,22 +220,17 @@ TEST_F(BarcodeDetectionProviderMacTest, HintFormats) {
     return;
   }
 
-  vision_framework_ =
-      dlopen("/System/Library/Frameworks/Vision.framework/Vision", RTLD_LAZY);
+  mojo::Remote<mojom::BarcodeDetectionProvider> provider_remote;
+  mojo::MakeSelfOwnedReceiver(CreateBarcodeProviderMac(CreateVisionAPI()),
+                              provider_remote.BindNewPipeAndPassReceiver());
 
-  mojom::BarcodeDetectionProviderPtr provider_ptr;
-  auto provider_request = mojo::MakeRequest(&provider_ptr);
-  mojo::MakeStrongBinding(CreateBarcodeProviderMac(CreateVisionAPI()),
-                          std::move(provider_request));
-
-  mojom::BarcodeDetectionPtr impl;
-  auto impl_request = mojo::MakeRequest(&impl);
   auto options = mojom::BarcodeDetectorOptions::New();
   options->formats = {mojom::BarcodeFormat::UNKNOWN};
 
   mojo::test::BadMessageObserver observer;
-  provider_ptr->CreateBarcodeDetection(std::move(impl_request),
-                                       std::move(options));
+  mojo::Remote<mojom::BarcodeDetection> impl;
+  provider_remote->CreateBarcodeDetection(impl.BindNewPipeAndPassReceiver(),
+                                          std::move(options));
 
   EXPECT_EQ("Formats hint contains UNKNOWN BarcodeFormat.",
             observer.WaitForBadMessage());

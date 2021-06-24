@@ -13,6 +13,7 @@
 #import "ios/chrome/browser/ui/content_suggestions/cells/suggested_content.h"
 #import "ios/chrome/browser/ui/content_suggestions/content_suggestions_category_wrapper.h"
 #import "ios/chrome/browser/ui/content_suggestions/identifier/content_suggestion_identifier.h"
+#import "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
@@ -71,7 +72,7 @@ ContentSuggestionsItem* ConvertSuggestion(
         contentSuggestion.reading_list_suggestion_extra()->favicon_page_url;
   }
   if (category.IsKnownCategory(ntp_snippets::KnownCategories::ARTICLES)) {
-    suggestion.hasImage = YES;
+    suggestion.hasImage = contentSuggestion.salient_image_url().is_valid();
     suggestion.readLaterAction = YES;
   }
 
@@ -79,7 +80,7 @@ ContentSuggestionsItem* ConvertSuggestion(
 }
 
 ContentSuggestionsSectionInformation* SectionInformationFromCategoryInfo(
-    const base::Optional<ntp_snippets::CategoryInfo>& categoryInfo,
+    const absl::optional<ntp_snippets::CategoryInfo>& categoryInfo,
     const ntp_snippets::Category& category,
     const BOOL expanded) {
   ContentSuggestionsSectionInformation* sectionInfo =
@@ -119,6 +120,10 @@ ContentSuggestionsSectionInformation* LogoSectionInformation() {
   return sectionInfo;
 }
 
+ContentSuggestionsSectionInformation* ReturnToRecentTabSectionInformation() {
+  return EmptySectionInfo(ContentSuggestionsSectionReturnToRecentTab);
+}
+
 ContentSuggestionsSectionInformation* PromoSectionInformation() {
   return EmptySectionInfo(ContentSuggestionsSectionPromo);
 }
@@ -129,6 +134,22 @@ ContentSuggestionsSectionInformation* MostVisitedSectionInformation() {
 
 ContentSuggestionsSectionInformation* LearnMoreSectionInformation() {
   return EmptySectionInfo(ContentSuggestionsSectionLearnMore);
+}
+
+ContentSuggestionsSectionInformation* DiscoverSectionInformation(
+    BOOL isGoogleDefaultSearchProvider) {
+  ContentSuggestionsSectionInformation* sectionInfo =
+      [[ContentSuggestionsSectionInformation alloc]
+          initWithSectionID:ContentSuggestionsSectionDiscover];
+  sectionInfo.footerTitle = nil;
+  sectionInfo.showIfEmpty = YES;
+  sectionInfo.layout = ContentSuggestionsSectionLayoutCustom;
+  sectionInfo.title =
+      isGoogleDefaultSearchProvider
+          ? l10n_util::GetNSString(IDS_IOS_DISCOVER_FEED_TITLE)
+          : l10n_util::GetNSString(IDS_IOS_DISCOVER_FEED_TITLE_NON_DSE);
+
+  return sectionInfo;
 }
 
 ContentSuggestionsMostVisitedItem* ConvertNTPTile(

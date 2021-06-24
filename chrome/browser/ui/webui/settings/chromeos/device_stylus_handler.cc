@@ -11,10 +11,11 @@
 
 #include "ash/public/cpp/stylus_utils.h"
 #include "base/bind.h"
-#include "chrome/browser/chromeos/arc/arc_util.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
-#include "ui/events/devices/input_device_manager.h"
 
 namespace chromeos {
 namespace settings {
@@ -29,8 +30,7 @@ constexpr char kAppLockScreenSupportKey[] = "lockScreenSupport";
 
 }  // namespace
 
-StylusHandler::StylusHandler() : note_observer_(this), input_observer_(this) {}
-
+StylusHandler::StylusHandler() = default;
 StylusHandler::~StylusHandler() = default;
 
 void StylusHandler::RegisterMessages() {
@@ -62,13 +62,13 @@ void StylusHandler::RegisterMessages() {
 }
 
 void StylusHandler::OnJavascriptAllowed() {
-  note_observer_.Add(NoteTakingHelper::Get());
-  input_observer_.Add(ui::InputDeviceManager::GetInstance());
+  note_observation_.Observe(NoteTakingHelper::Get());
+  input_observation_.Observe(ui::DeviceDataManager::GetInstance());
 }
 
 void StylusHandler::OnJavascriptDisallowed() {
-  note_observer_.RemoveAll();
-  input_observer_.RemoveAll();
+  note_observation_.Reset();
+  input_observation_.Reset();
 }
 
 void StylusHandler::OnAvailableNoteTakingAppsUpdated() {
@@ -146,12 +146,12 @@ void StylusHandler::HandleSetPreferredNoteTakingAppEnabledOnLockScreen(
 
 void StylusHandler::HandleInitialize(const base::ListValue* args) {
   AllowJavascript();
-  if (ui::InputDeviceManager::GetInstance()->AreDeviceListsComplete())
+  if (ui::DeviceDataManager::GetInstance()->AreDeviceListsComplete())
     SendHasStylus();
 }
 
 void StylusHandler::SendHasStylus() {
-  DCHECK(ui::InputDeviceManager::GetInstance()->AreDeviceListsComplete());
+  DCHECK(ui::DeviceDataManager::GetInstance()->AreDeviceListsComplete());
   FireWebUIListener("has-stylus-changed",
                     base::Value(ash::stylus_utils::HasStylusInput()));
 }
@@ -165,7 +165,11 @@ void StylusHandler::HandleShowPlayStoreApps(const base::ListValue* args) {
     return;
   }
 
-  arc::LaunchPlayStoreWithUrl(apps_url);
+  DCHECK(
+      apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile));
+  apps::AppServiceProxyFactory::GetForProfile(profile)->LaunchAppWithUrl(
+      arc::kPlayStoreAppId, ui::EF_NONE, GURL(apps_url),
+      apps::mojom::LaunchSource::kFromChromeInternal);
 }
 
 }  // namespace settings

@@ -13,10 +13,10 @@
 #include "base/format_macros.h"
 #include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/optional.h"
 #include "base/strings/stringprintf.h"
 #include "components/zucchini/buffer_view.h"
 #include "components/zucchini/typed_value.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace zucchini {
 
@@ -94,7 +94,7 @@ class ReferenceReader {
 
   // Returns the next available Reference, or nullopt_t if exhausted.
   // Extracted References must be ordered by their location in the image.
-  virtual base::Optional<Reference> GetNext() = 0;
+  virtual absl::optional<Reference> GetNext() = 0;
 };
 
 // Interface for writing References through member function
@@ -176,8 +176,8 @@ constexpr ExecutableType CastToExecutableType(uint32_t possible_exe_type) {
 
 inline std::string CastExecutableTypeToString(ExecutableType exe_type) {
   uint32_t v = static_cast<uint32_t>(exe_type);
-  char result[] = {v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF,
-                   (v >> 24) & 0xFF, 0};
+  char result[] = {static_cast<char>(v), static_cast<char>(v >> 8),
+                   static_cast<char>(v >> 16), static_cast<char>(v >> 24), 0};
   return result;
 }
 

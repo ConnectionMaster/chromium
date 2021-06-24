@@ -8,35 +8,34 @@
 #include <cstdint>
 #include <cstring>
 
+#include "base/check_op.h"
+#include "base/compiler_specific.h"
+#include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/protected_memory.h"
-#include "base/memory/protected_memory_cfi.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
+#include "base/strings/string_piece.h"
 #include "build/build_config.h"
 #include "mojo/public/c/system/core.h"
+#include "mojo/public/c/system/macros.h"
 
 #if defined(OS_CHROMEOS) || defined(OS_LINUX) || defined(OS_WIN)
 #include "base/environment.h"
 #include "base/files/file_path.h"
-#include "base/optional.h"
 #include "base/scoped_native_library.h"
 #include "base/threading/thread_restrictions.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #endif
 
 namespace {
 
 typedef void (*MojoGetSystemThunksFunction)(MojoSystemThunks* thunks);
 
-#if defined(OS_CHROMEOS) || defined(OS_LINUX) || defined(OS_WIN)
-PROTECTED_MEMORY_SECTION
-base::ProtectedMemory<MojoGetSystemThunksFunction> g_get_thunks;
-#endif
-
-PROTECTED_MEMORY_SECTION base::ProtectedMemory<MojoSystemThunks> g_thunks;
+MojoSystemThunks g_thunks;
 
 MojoResult NotImplemented(const char* name) {
-  if (g_thunks->size > 0) {
+  if (g_thunks.size > 0) {
     DLOG(ERROR) << "Function 'Mojo" << name
                 << "()' not supported in this version of Mojo Core.";
     return MOJO_RESULT_UNIMPLEMENTED;
@@ -51,10 +50,9 @@ MojoResult NotImplemented(const char* name) {
 
 }  // namespace
 
-#define INVOKE_THUNK(name, ...)                                        \
-  offsetof(MojoSystemThunks, name) < g_thunks->size                    \
-      ? base::UnsanitizedCfiCall(g_thunks,                             \
-                                 &MojoSystemThunks::name)(__VA_ARGS__) \
+#define INVOKE_THUNK(name, ...)                    \
+  offsetof(MojoSystemThunks, name) < g_thunks.size \
+      ? g_thunks.name(__VA_ARGS__)                 \
       : NotImplemented(#name)
 
 namespace mojo {
@@ -64,17 +62,17 @@ namespace mojo {
 // enabled.
 class CoreLibraryInitializer {
  public:
-  CoreLibraryInitializer(const MojoInitializeOptions* options) {
+  CoreLibraryInitializer() = default;
+  CoreLibraryInitializer(const CoreLibraryInitializer&) = delete;
+  CoreLibraryInitializer& operator=(const CoreLibraryInitializer&) = delete;
+  ~CoreLibraryInitializer() = default;
+
+  MojoResult LoadLibrary(base::FilePath library_path) {
 #if defined(OS_CHROMEOS) || defined(OS_LINUX) || defined(OS_WIN)
-    bool application_provided_path = false;
-    base::Optional<base::FilePath> library_path;
-    if (options && options->struct_size >= sizeof(*options) &&
-        options->mojo_core_path) {
-      base::StringPiece utf8_path(options->mojo_core_path,
-                                  options->mojo_core_path_length);
-      library_path.emplace(base::FilePath::FromUTF8Unsafe(utf8_path));
-      application_provided_path = true;
-    } else {
+    if (library_ && library_->is_valid())
+      return MOJO_RESULT_OK;
+
+    if (library_path.empty()) {
       auto environment = base::Environment::Create();
       std::string library_path_value;
       const char kLibraryPathEnvironmentVar[] = "MOJO_CORE_LIBRARY_PATH";
@@ -82,7 +80,7 @@ class CoreLibraryInitializer {
         library_path = base::FilePath::FromUTF8Unsafe(library_path_value);
     }
 
-    if (!library_path) {
+    if (library_path.empty()) {
       // Default to looking for the library in the current working directory.
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
       const base::FilePath::CharType kDefaultLibraryPathValue[] =
@@ -91,7 +89,7 @@ class CoreLibraryInitializer {
       const base::FilePath::CharType kDefaultLibraryPathValue[] =
           FILE_PATH_LITERAL("mojo_core.dll");
 #endif
-      library_path.emplace(kDefaultLibraryPathValue);
+      library_path = base::FilePath(kDefaultLibraryPathValue);
     }
 
     // NOTE: |prefer_own_symbols| on POSIX implies that the library is loaded
@@ -107,51 +105,36 @@ class CoreLibraryInitializer {
     // allocator shims, so it's unnecessary there.
     library_options.prefer_own_symbols = true;
 #endif
-    library_.emplace(base::LoadNativeLibraryWithOptions(
-        *library_path, library_options, nullptr));
-    if (!application_provided_path) {
-      CHECK(library_->is_valid())
-          << "Unable to load the mojo_core library. Make sure the library is "
-          << "in the working directory or is correctly pointed to by the "
-          << "MOJO_CORE_LIBRARY_PATH environment variable.";
-    } else {
-      CHECK(library_->is_valid())
-          << "Unable to locate mojo_core library. This application expects to "
-          << "find it at " << library_path->value();
-    }
+    base::ScopedNativeLibrary library(base::LoadNativeLibraryWithOptions(
+        library_path, library_options, nullptr));
+    if (!library.is_valid())
+      return MOJO_RESULT_NOT_FOUND;
 
     const char kGetThunksFunctionName[] = "MojoGetSystemThunks";
-    {
-      auto writer = base::AutoWritableMemory::Create(g_get_thunks);
-      *g_get_thunks = reinterpret_cast<MojoGetSystemThunksFunction>(
-          library_->GetFunctionPointer(kGetThunksFunctionName));
-    }
-    CHECK(*g_get_thunks) << "Invalid mojo_core library: "
-                         << library_path->value();
 
-    DCHECK_EQ(g_thunks->size, 0u);
-    {
-      auto writer = base::AutoWritableMemory::Create(g_thunks);
-      g_thunks->size = sizeof(*g_thunks);
-      base::UnsanitizedCfiCall(g_get_thunks)(&*g_thunks);
-    }
+    MojoGetSystemThunksFunction g_get_thunks =
+        reinterpret_cast<MojoGetSystemThunksFunction>(
+            library.GetFunctionPointer(kGetThunksFunctionName));
+    if (!g_get_thunks)
+      return MOJO_RESULT_NOT_FOUND;
 
-    CHECK_GT(g_thunks->size, 0u)
-        << "Invalid mojo_core library: " << library_path->value();
-#else   // defined(OS_CHROMEOS) || defined(OS_LINUX)
-    NOTREACHED()
-        << "Dynamic mojo_core loading is not supported on this platform.";
-#endif  // defined(OS_CHROMEOS) || defined(OS_LINUX)
+    DCHECK_EQ(g_thunks.size, 0u);
+    g_thunks.size = sizeof(g_thunks);
+    g_get_thunks(&g_thunks);
+    if (g_thunks.size == 0)
+      return MOJO_RESULT_NOT_FOUND;
+
+    library_ = std::move(library);
+    return MOJO_RESULT_OK;
+#else   // defined(OS_CHROMEOS) || defined(OS_LINUX) || defined(OS_WIN)
+    return MOJO_RESULT_UNIMPLEMENTED;
+#endif  // defined(OS_CHROMEOS) || defined(OS_LINUX) || defined(OS_WIN)
   }
-
-  ~CoreLibraryInitializer() = default;
 
  private:
 #if defined(OS_CHROMEOS) || defined(OS_LINUX) || defined(OS_WIN)
-  base::Optional<base::ScopedNativeLibrary> library_;
+  absl::optional<base::ScopedNativeLibrary> library_;
 #endif
-
-  DISALLOW_COPY_AND_ASSIGN(CoreLibraryInitializer);
 };
 
 }  // namespace mojo
@@ -159,10 +142,22 @@ class CoreLibraryInitializer {
 extern "C" {
 
 MojoResult MojoInitialize(const struct MojoInitializeOptions* options) {
-  static base::NoDestructor<mojo::CoreLibraryInitializer> initializer(options);
-  ALLOW_UNUSED_LOCAL(initializer);
-  DCHECK(g_thunks->Initialize);
+  static base::NoDestructor<mojo::CoreLibraryInitializer> initializer;
 
+  base::StringPiece library_path_utf8;
+  if (options) {
+    if (!MOJO_IS_STRUCT_FIELD_PRESENT(options, mojo_core_path_length))
+      return MOJO_RESULT_INVALID_ARGUMENT;
+    library_path_utf8 = base::StringPiece(options->mojo_core_path,
+                                          options->mojo_core_path_length);
+  }
+
+  MojoResult load_result = initializer->LoadLibrary(
+      base::FilePath::FromUTF8Unsafe(library_path_utf8));
+  if (load_result != MOJO_RESULT_OK)
+    return load_result;
+
+  DCHECK(g_thunks.Initialize);
   return INVOKE_THUNK(Initialize, options);
 }
 
@@ -487,19 +482,24 @@ MojoResult MojoShutdown(const MojoShutdownOptions* options) {
   return INVOKE_THUNK(Shutdown, options);
 }
 
+MojoResult MojoSetDefaultProcessErrorHandler(
+    MojoDefaultProcessErrorHandler handler,
+    const struct MojoSetDefaultProcessErrorHandlerOptions* options) {
+  return INVOKE_THUNK(SetDefaultProcessErrorHandler, handler, options);
+}
+
 }  // extern "C"
 
 void MojoEmbedderSetSystemThunks(const MojoSystemThunks* thunks) {
   // Assume embedders will always use matching versions of the Mojo Core and
   // public APIs.
-  DCHECK_EQ(thunks->size, sizeof(*g_thunks));
+  DCHECK_EQ(thunks->size, sizeof(g_thunks));
 
   // This should only have to check that the |g_thunks->size| is zero, but we
   // have multiple Mojo Core initializations in some test suites still. For now
   // we allow double calls as long as they're the same thunks as before.
-  DCHECK(g_thunks->size == 0 || !memcmp(&*g_thunks, thunks, sizeof(*g_thunks)))
+  DCHECK(g_thunks.size == 0 || !memcmp(&g_thunks, thunks, sizeof(g_thunks)))
       << "Cannot set embedder thunks after Mojo API calls have been made.";
 
-  auto writer = base::AutoWritableMemory::Create(g_thunks);
-  *g_thunks = *thunks;
+  g_thunks = *thunks;
 }

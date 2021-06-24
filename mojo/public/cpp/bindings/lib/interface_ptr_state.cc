@@ -18,12 +18,12 @@ InterfacePtrStateBase::~InterfacePtrStateBase() {
 }
 
 void InterfacePtrStateBase::QueryVersion(
-    const base::Callback<void(uint32_t)>& callback) {
+    base::OnceCallback<void(uint32_t)> callback) {
   // It is safe to capture |this| because the callback won't be run after this
   // object goes away.
   endpoint_client_->QueryVersion(
-      base::Bind(&InterfacePtrStateBase::OnQueryVersion, base::Unretained(this),
-                 callback));
+      base::BindOnce(&InterfacePtrStateBase::OnQueryVersion,
+                     base::Unretained(this), std::move(callback)));
 }
 
 void InterfacePtrStateBase::RequireVersion(uint32_t version) {
@@ -32,6 +32,15 @@ void InterfacePtrStateBase::RequireVersion(uint32_t version) {
 
   version_ = version;
   endpoint_client_->RequireVersion(version);
+}
+
+void InterfacePtrStateBase::PauseReceiverUntilFlushCompletes(
+    PendingFlush flush) {
+  router_->PausePeerUntilFlushCompletes(std::move(flush));
+}
+
+void InterfacePtrStateBase::FlushAsync(AsyncFlusher flusher) {
+  router_->FlushAsync(std::move(flusher));
 }
 
 void InterfacePtrStateBase::Swap(InterfacePtrStateBase* other) {
@@ -44,50 +53,59 @@ void InterfacePtrStateBase::Swap(InterfacePtrStateBase* other) {
 }
 
 void InterfacePtrStateBase::Bind(
-    ScopedMessagePipeHandle handle,
-    uint32_t version,
+    PendingRemoteState* remote_state,
     scoped_refptr<base::SequencedTaskRunner> task_runner) {
   DCHECK(!router_);
   DCHECK(!endpoint_client_);
   DCHECK(!handle_.is_valid());
   DCHECK_EQ(0u, version_);
-  DCHECK(handle.is_valid());
+  DCHECK(remote_state->pipe.is_valid());
 
-  handle_ = std::move(handle);
-  version_ = version;
+  handle_ = std::move(remote_state->pipe);
+  version_ = remote_state->version;
   runner_ =
       GetTaskRunnerToUseFromUserProvidedTaskRunner(std::move(task_runner));
 }
 
 void InterfacePtrStateBase::OnQueryVersion(
-    const base::Callback<void(uint32_t)>& callback,
+    base::OnceCallback<void(uint32_t)> callback,
     uint32_t version) {
   version_ = version;
-  callback.Run(version);
+  std::move(callback).Run(version);
 }
 
 bool InterfacePtrStateBase::InitializeEndpointClient(
     bool passes_associated_kinds,
     bool has_sync_methods,
-    std::unique_ptr<MessageReceiver> payload_validator) {
+    bool has_uninterruptable_methods,
+    std::unique_ptr<MessageReceiver> payload_validator,
+    const char* interface_name) {
   // The object hasn't been bound.
   if (!handle_.is_valid())
     return false;
 
   MultiplexRouter::Config config =
-      passes_associated_kinds
+      (passes_associated_kinds || has_uninterruptable_methods)
           ? MultiplexRouter::MULTI_INTERFACE
           : (has_sync_methods
                  ? MultiplexRouter::SINGLE_INTERFACE_WITH_SYNC_METHODS
                  : MultiplexRouter::SINGLE_INTERFACE);
-  DCHECK(runner_->RunsTasksInCurrentSequence());
-  router_ = new MultiplexRouter(std::move(handle_), config, true, runner_);
-  endpoint_client_.reset(new InterfaceEndpointClient(
-      router_->CreateLocalEndpointHandle(kMasterInterfaceId), nullptr,
+  router_ = MultiplexRouter::Create(std::move(handle_), config, true, runner_,
+                                    interface_name);
+  endpoint_client_ = std::make_unique<InterfaceEndpointClient>(
+      router_->CreateLocalEndpointHandle(kPrimaryInterfaceId), nullptr,
       std::move(payload_validator), false, std::move(runner_),
       // The version is only queried from the client so the value passed here
       // will not be used.
-      0u));
+      0u, interface_name);
+
+  // Note that we defer this until after attaching the endpoint. This is in case
+  // `runner_` does not run tasks in the current sequence but MultiplexRouter is
+  // in SINGLE_INTERFACE mode. In that case, MultiplexRouter elides some
+  // internal synchronization, so we need to ensure that messages aren't
+  // processed by the router before the endpoint above is fully attached.
+  router_->StartReceiving();
+
   return true;
 }
 

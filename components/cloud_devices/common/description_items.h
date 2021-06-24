@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_CLOUD_DEVICES_COMMON_CAPABILITY_INTERFACES_H_
-#define COMPONENTS_CLOUD_DEVICES_COMMON_CAPABILITY_INTERFACES_H_
+#ifndef COMPONENTS_CLOUD_DEVICES_COMMON_DESCRIPTION_ITEMS_H_
+#define COMPONENTS_CLOUD_DEVICES_COMMON_DESCRIPTION_ITEMS_H_
 
 // Defines common templates that could be used to create device specific
 // capabilities and print tickets.
@@ -11,12 +11,13 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/stl_util.h"
 #include "components/cloud_devices/common/cloud_device_description.h"
 
 namespace cloud_devices {
@@ -44,6 +45,7 @@ template <class Option, class Traits>
 class ListCapability {
  public:
   ListCapability();
+  ListCapability(ListCapability&& other);
   ~ListCapability();
 
   bool LoadFrom(const CloudDeviceDescription& description);
@@ -60,13 +62,13 @@ class ListCapability {
   const Option& operator[](size_t i) const { return options_[i]; }
 
   bool Contains(const Option& option) const {
-    return base::ContainsValue(options_, option);
+    return base::Contains(options_, option);
   }
 
   void AddOption(Option&& option) { options_.emplace_back(std::move(option)); }
 
  private:
-  typedef std::vector<Option> OptionVector;
+  using OptionVector = std::vector<Option>;
   OptionVector options_;
 
   DISALLOW_COPY_AND_ASSIGN(ListCapability);
@@ -108,12 +110,12 @@ class SelectionCapability {
   const Option& operator[](size_t i) const { return options_[i]; }
 
   bool Contains(const Option& option) const {
-    return base::ContainsValue(options_, option);
+    return base::Contains(options_, option);
   }
 
   const Option& GetDefault() const {
-    CHECK_GE(default_idx_, 0);
-    return options_[default_idx_];
+    CHECK(!options_.empty());
+    return options_[std::max(default_idx_, 0)];
   }
 
   void AddOption(const Option& option) { AddDefaultOption(option, false); }
@@ -232,4 +234,4 @@ class TicketItem {
 
 }  // namespace cloud_devices
 
-#endif  // COMPONENTS_CLOUD_DEVICES_COMMON_CAPABILITY_INTERFACES_H_
+#endif  // COMPONENTS_CLOUD_DEVICES_COMMON_DESCRIPTION_ITEMS_H_

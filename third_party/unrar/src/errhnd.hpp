@@ -1,8 +1,6 @@
 #ifndef _RAR_ERRHANDLER_
 #define _RAR_ERRHANDLER_
 
-namespace third_party_unrar {
-
 enum RAR_EXIT // RAR exit code.
 { 
   RARX_SUCCESS   =   0,
@@ -17,8 +15,10 @@ enum RAR_EXIT // RAR exit code.
   RARX_CREATE    =   9,
   RARX_NOFILES   =  10,
   RARX_BADPWD    =  11,
+  RARX_READ      =  12,
   RARX_USERBREAK = 255
 };
+
 
 class ErrorHandler
 {
@@ -28,13 +28,14 @@ class ErrorHandler
     bool EnableBreak = true;
     bool Silent = false;
     bool DisableShutdown = false; // Shutdown is not suitable after last error.
+    bool ReadErrIgnoreAll = false;
   public:
     void Clean();
     void MemoryError();
     void OpenError(const wchar *FileName);
     void CloseError(const wchar *FileName);
     void ReadError(const wchar *FileName);
-    bool AskRepeatRead(const wchar *FileName);
+    void AskRepeatRead(const wchar *FileName,bool &Ignore,bool &Retry,bool &Quit);
     void WriteError(const wchar *ArcName,const wchar *FileName);
     void WriteErrorFAT(const wchar *FileName);
     bool AskRepeatWrite(const wchar *FileName,bool DiskFull);
@@ -69,6 +70,5 @@ class ErrorHandler
     bool MainExit = false; // main() is completed.
 };
 
-}  // namespace third_party_unrar
 
 #endif

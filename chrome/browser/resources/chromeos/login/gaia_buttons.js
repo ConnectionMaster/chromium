@@ -2,72 +2,40 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @enum {string} */
-const GaiaButtonType = {
-  NONE: '',
-  LINK: 'link',
-  DIALOG: 'dialog',
-};
-
 Polymer({
   is: 'gaia-button',
 
   properties: {
-    disabled: {type: Boolean, value: false, reflectToAttribute: true},
-
-    /** @type GaiaButtonType */
-    type: {
-      type: String,
-      value: GaiaButtonType.NONE,
+    disabled: {
+      type: Boolean,
+      value: false,
       reflectToAttribute: true,
-      observer: 'typeChanged_'
-    }
+    },
+
+    link: {
+      type: Boolean,
+      value: false,
+      reflectToAttribute: true,
+      observer: 'onLinkChanged_',
+    },
   },
 
-  focus: function() {
+  focus() {
     this.$.button.focus();
   },
 
   /** @private */
-  focusedChanged_: function() {
-    if (this.type == GaiaButtonType.LINK || this.type == GaiaButtonType.DIALOG)
-      return;
-    this.$.button.raised = this.$.button.focused;
+  onLinkChanged_() {
+    this.$.button.classList.toggle('action-button', !this.link);
   },
 
-  /** @private */
-  typeChanged_: function() {
-    if (this.type == GaiaButtonType.LINK)
-      this.$.button.setAttribute('noink', '');
-    else
-      this.$.button.removeAttribute('noink');
-  },
-
-  /** @private */
-  onClick_: function(e) {
-    if (this.disabled)
+  /**
+   * @param {!Event} e
+   * @private
+   */
+  onClick_(e) {
+    if (this.disabled) {
       e.stopPropagation();
-  }
-});
-
-Polymer({
-  is: 'gaia-icon-button',
-
-  properties: {
-    disabled: {type: Boolean, value: false, reflectToAttribute: true},
-
-    icon: String,
-
-    ariaLabel: String
+    }
   },
-
-  focus: function() {
-    this.$.iconButton.focus();
-  },
-
-  /** @private */
-  onClick_: function(e) {
-    if (this.disabled)
-      e.stopPropagation();
-  }
 });

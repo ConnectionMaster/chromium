@@ -7,6 +7,9 @@
 
 #include <string>
 
+#include "chromeos/services/device_sync/cryptauth_feature_type.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
 class PrefRegistrySimple;
 
 namespace chromeos {
@@ -29,11 +32,25 @@ class CryptAuthGCMManager {
 
     // Called when a GCM message is received to re-enroll the device with
     // CryptAuth.
-    virtual void OnReenrollMessage();
+    // |session_id|: Only included in messages sent by CryptAuth v2 DeviceSync
+    //               and null otherwise. Value should be included in the
+    //               session_id field of ClientMetadata.
+    // |feature_type|: Only included in messages resulting from
+    //                 BatchNotifyGroupDevices requests and null otherwise.
+    virtual void OnReenrollMessage(
+        const absl::optional<std::string>& session_id,
+        const absl::optional<CryptAuthFeatureType>& feature_type);
 
     // Called when a GCM message is received to sync down new devices from
     // CryptAuth.
-    virtual void OnResyncMessage();
+    // |session_id|: Only included in messages sent by CryptAuth v2 DeviceSync
+    //               and null otherwise. Value should be included in the
+    //               session_id field of ClientMetadata.
+    // |feature_type|: Only included in messages resulting from
+    //                 BatchNotifyGroupDevices requests and null otherwise.
+    virtual void OnResyncMessage(
+        const absl::optional<std::string>& session_id,
+        const absl::optional<CryptAuthFeatureType>& feature_type);
   };
 
   virtual ~CryptAuthGCMManager() {}
@@ -44,6 +61,9 @@ class CryptAuthGCMManager {
   // Starts listening to incoming GCM messages. If GCM registration is completed
   // after this function is called, then messages will also be handled properly.
   virtual void StartListening() = 0;
+
+  // Returns true after StartListening() is called.
+  virtual bool IsListening() = 0;
 
   // Begins registration with GCM. The Observer::OnGCMRegistrationResult()
   // observer function will be called when registration completes.

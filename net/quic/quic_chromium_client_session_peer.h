@@ -32,6 +32,10 @@ class QuicChromiumClientSessionPeer {
   static QuicChromiumClientStream* CreateOutgoingStream(
       QuicChromiumClientSession* session);
 
+  static bool GetSessionGoingAway(QuicChromiumClientSession* session);
+
+  static bool DoesSessionAllowPortMigration(QuicChromiumClientSession* session);
+
  private:
   DISALLOW_COPY_AND_ASSIGN(QuicChromiumClientSessionPeer);
 };

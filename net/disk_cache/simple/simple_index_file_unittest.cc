@@ -6,16 +6,16 @@
 
 #include <memory>
 
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/hash/hash.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/pickle.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -30,7 +30,7 @@
 #include "net/disk_cache/simple/simple_util.h"
 #include "net/disk_cache/simple/simple_version_upgrade.h"
 #include "net/test/gtest_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -176,7 +176,7 @@ class WrappedSimpleIndexFile : public SimpleIndexFile {
   }
 };
 
-class SimpleIndexFileTest : public net::TestWithScopedTaskEnvironment {
+class SimpleIndexFileTest : public net::TestWithTaskEnvironment {
  public:
   bool CompareTwoEntryMetadata(const EntryMetadata& a, const EntryMetadata& b) {
     return a.last_used_time_seconds_since_epoch_ ==
@@ -462,9 +462,9 @@ TEST_F(SimpleIndexFileTest, WriteThenLoadIndex) {
   net::TestClosure closure;
   {
     WrappedSimpleIndexFile simple_index_file(cache_dir.GetPath());
-    simple_index_file.WriteToDisk(
-        net::DISK_CACHE, SimpleIndex::INDEX_WRITE_REASON_SHUTDOWN, entries,
-        kCacheSize, base::TimeTicks(), false, closure.closure());
+    simple_index_file.WriteToDisk(net::DISK_CACHE,
+                                  SimpleIndex::INDEX_WRITE_REASON_SHUTDOWN,
+                                  entries, kCacheSize, closure.closure());
     closure.WaitForResult();
     EXPECT_TRUE(base::PathExists(simple_index_file.GetIndexFilePath()));
   }
@@ -591,8 +591,9 @@ TEST_F(SimpleIndexFileTest, SimpleCacheUpgrade) {
   net::TestCompletionCallback cb;
   int rv = simple_cache->Init(cb.callback());
   EXPECT_THAT(cb.GetResult(rv), IsOk());
-  rv = simple_cache->index()->ExecuteWhenReady(cb.callback());
-  EXPECT_THAT(cb.GetResult(rv), IsOk());
+  simple_cache->index()->ExecuteWhenReady(cb.callback());
+  rv = cb.WaitForResult();
+  EXPECT_THAT(rv, IsOk());
   delete simple_cache;
   cleanup_tracker = nullptr;
 
@@ -636,9 +637,9 @@ TEST_F(SimpleIndexFileTest, OverwritesStaleTempFile) {
   SimpleIndex::EntrySet entries;
   SimpleIndex::InsertInEntrySet(11, EntryMetadata(Time(), 11u), &entries);
   net::TestClosure closure;
-  simple_index_file.WriteToDisk(
-      net::DISK_CACHE, SimpleIndex::INDEX_WRITE_REASON_SHUTDOWN, entries, 120U,
-      base::TimeTicks(), false, closure.closure());
+  simple_index_file.WriteToDisk(net::DISK_CACHE,
+                                SimpleIndex::INDEX_WRITE_REASON_SHUTDOWN,
+                                entries, 120U, closure.closure());
   closure.WaitForResult();
 
   // Check that the temporary file was deleted and the index file was created.

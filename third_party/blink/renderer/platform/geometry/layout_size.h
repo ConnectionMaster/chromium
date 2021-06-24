@@ -37,34 +37,41 @@
 #include "third_party/blink/renderer/platform/geometry/float_size.h"
 #include "third_party/blink/renderer/platform/geometry/int_size.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace blink {
-
-enum AspectRatioFit { kAspectRatioFitShrink, kAspectRatioFitGrow };
 
 class PLATFORM_EXPORT LayoutSize {
   DISALLOW_NEW();
 
  public:
   constexpr LayoutSize() = default;
-  explicit LayoutSize(const IntSize& size)
+  constexpr explicit LayoutSize(const IntSize& size)
       : width_(size.Width()), height_(size.Height()) {}
   constexpr LayoutSize(LayoutUnit width, LayoutUnit height)
       : width_(width), height_(height) {}
-  LayoutSize(int width, int height)
+  constexpr LayoutSize(int width, int height)
       : width_(LayoutUnit(width)), height_(LayoutUnit(height)) {}
-  LayoutSize(float width, float height)
+  constexpr LayoutSize(float width, float height)
       : width_(LayoutUnit(width)), height_(LayoutUnit(height)) {}
 
-  explicit LayoutSize(const FloatSize& size)
+  constexpr explicit LayoutSize(const FloatSize& size)
       : width_(size.Width()), height_(size.Height()) {}
-  explicit LayoutSize(const DoubleSize& size)
+  constexpr explicit LayoutSize(const DoubleSize& size)
       : width_(size.Width()), height_(size.Height()) {}
-  explicit LayoutSize(const gfx::Size& size)
+  constexpr explicit LayoutSize(const gfx::Size& size)
       : width_(size.width()), height_(size.height()) {}
+  constexpr explicit LayoutSize(const gfx::SizeF& size)
+      : width_(size.width()), height_(size.height()) {}
+
+  constexpr explicit operator FloatSize() const {
+    return FloatSize(width_.ToFloat(), height_.ToFloat());
+  }
+  constexpr explicit operator FloatPoint() const {
+    return FloatPoint(width_.ToFloat(), height_.ToFloat());
+  }
 
   constexpr LayoutUnit Width() const { return width_; }
   constexpr LayoutUnit Height() const { return height_; }
@@ -76,8 +83,6 @@ class PLATFORM_EXPORT LayoutSize {
     return width_.RawValue() <= 0 || height_.RawValue() <= 0;
   }
   constexpr bool IsZero() const { return !width_ && !height_; }
-
-  float AspectRatio() const { return width_.ToFloat() / height_.ToFloat(); }
 
   void Expand(LayoutUnit width, LayoutUnit height) {
     width_ += width;
@@ -133,21 +138,6 @@ class PLATFORM_EXPORT LayoutSize {
   }
 
   LayoutSize TransposedSize() const { return LayoutSize(height_, width_); }
-
-  LayoutSize FitToAspectRatio(const LayoutSize& aspect_ratio,
-                              AspectRatioFit fit) const {
-    const float height_float = Height().ToFloat();
-    const float width_float = Width().ToFloat();
-    float height_scale = height_float / aspect_ratio.Height().ToFloat();
-    float width_scale = width_float / aspect_ratio.Width().ToFloat();
-    if ((width_scale > height_scale) != (fit == kAspectRatioFitGrow)) {
-      return LayoutSize(
-          height_float * aspect_ratio.Width() / aspect_ratio.Height(),
-          Height());
-    }
-    return LayoutSize(
-        Width(), width_float * aspect_ratio.Height() / aspect_ratio.Width());
-  }
 
   LayoutSize Fraction() const {
     return LayoutSize(width_.Fraction(), height_.Fraction());

@@ -7,18 +7,20 @@
 #include <set>
 
 #include "base/bind.h"
-#include "base/feature_list.h"
+#include "base/containers/contains.h"
 #include "base/json/json_reader.h"
+#include "base/logging.h"
+#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/values.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/printing/printer_translator.h"
 
 namespace chromeos {
@@ -45,24 +47,29 @@ std::unique_ptr<PrinterCache> ParsePrinters(std::unique_ptr<std::string> data) {
     LOG(WARNING) << "Received null data";
     return nullptr;
   }
-  int error_code = 0;
-  int error_line = 0;
 
   // This could be really slow.
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
-  std::unique_ptr<base::Value> json_blob =
-      base::JSONReader::ReadAndReturnErrorDeprecated(
-          *data, base::JSONParserOptions::JSON_PARSE_RFC, &error_code,
-          nullptr /* error_msg_out */, &error_line);
-  // It's not valid JSON.  Give up.
-  if (!json_blob || !json_blob->is_list()) {
-    LOG(WARNING) << "Failed to parse printers policy (" << error_code
-                 << ") on line " << error_line;
+  base::JSONReader::ValueWithError value_with_error =
+      base::JSONReader::ReadAndReturnValueWithError(
+          *data, base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
+
+  if (!value_with_error.value) {
+    LOG(WARNING) << "Failed to parse printers policy ("
+                 << value_with_error.error_message << ") on line "
+                 << value_with_error.error_line << " at position "
+                 << value_with_error.error_column;
     return nullptr;
   }
 
-  const base::Value::ListStorage& printer_list = json_blob->GetList();
+  base::Value& json_blob = value_with_error.value.value();
+  if (!json_blob.is_list()) {
+    LOG(WARNING) << "Failed to parse printers policy (an array was expected)";
+    return nullptr;
+  }
+
+  base::Value::ConstListView printer_list = json_blob.GetList();
   if (printer_list.size() > kMaxRecords) {
     LOG(WARNING) << "Too many records in printers policy: "
                  << printer_list.size();
@@ -91,15 +98,14 @@ std::unique_ptr<PrinterCache> ParsePrinters(std::unique_ptr<std::string> data) {
 }
 
 // Computes the effective printer list using the access mode and
-// blacklist/whitelist.  Methods are required to be sequenced.  This object is
+// blocklist/allowlist.  Methods are required to be sequenced.  This object is
 // the owner of all the policy data. Methods updating the list of available
 // printers take TaskData (see above) as |task_data| parameter and returned it.
-class Restrictions {
+class Restrictions : public base::RefCountedThreadSafe<Restrictions> {
  public:
   Restrictions() : printers_cache_(nullptr) {
     DETACH_FROM_SEQUENCE(sequence_checker_);
   }
-  ~Restrictions() { DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_); }
 
   // Sets the printer cache using the policy blob |data|.
   TaskData SetData(TaskData task_data, std::unique_ptr<std::string> data) {
@@ -124,25 +130,28 @@ class Restrictions {
     return ComputePrinters(std::move(task_data));
   }
 
-  // Sets the blacklist to |blacklist|.
-  TaskData UpdateBlacklist(TaskData task_data,
-                           const std::vector<std::string>& blacklist) {
+  // Sets the blocklist to |blocklist|.
+  TaskData UpdateBlocklist(TaskData task_data,
+                           const std::vector<std::string>& blocklist) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    has_blacklist_ = true;
-    blacklist_ = std::set<std::string>(blacklist.begin(), blacklist.end());
+    has_blocklist_ = true;
+    blocklist_ = std::set<std::string>(blocklist.begin(), blocklist.end());
     return ComputePrinters(std::move(task_data));
   }
 
-  // Sets the whitelist to |whitelist|.
-  TaskData UpdateWhitelist(TaskData task_data,
-                           const std::vector<std::string>& whitelist) {
+  // Sets the allowlist to |allowlist|.
+  TaskData UpdateAllowlist(TaskData task_data,
+                           const std::vector<std::string>& allowlist) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    has_whitelist_ = true;
-    whitelist_ = std::set<std::string>(whitelist.begin(), whitelist.end());
+    has_allowlist_ = true;
+    allowlist_ = std::set<std::string>(allowlist.begin(), allowlist.end());
     return ComputePrinters(std::move(task_data));
   }
 
  private:
+  friend class base::RefCountedThreadSafe<Restrictions>;
+  ~Restrictions() {}
+
   // Returns true if we have enough data to compute the effective printer list.
   bool IsReady() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -152,10 +161,10 @@ class Restrictions {
     switch (mode_) {
       case BulkPrintersCalculator::AccessMode::ALL_ACCESS:
         return true;
-      case BulkPrintersCalculator::AccessMode::BLACKLIST_ONLY:
-        return has_blacklist_;
-      case BulkPrintersCalculator::AccessMode::WHITELIST_ONLY:
-        return has_whitelist_;
+      case BulkPrintersCalculator::AccessMode::BLOCKLIST_ONLY:
+        return has_blocklist_;
+      case BulkPrintersCalculator::AccessMode::ALLOWLIST_ONLY:
+        return has_allowlist_;
       case BulkPrintersCalculator::AccessMode::UNSET:
         return false;
     }
@@ -175,16 +184,16 @@ class Restrictions {
       case BulkPrintersCalculator::UNSET:
         NOTREACHED();
         break;
-      case BulkPrintersCalculator::WHITELIST_ONLY:
+      case BulkPrintersCalculator::ALLOWLIST_ONLY:
         for (const auto& printer : *printers_cache_) {
-          if (base::ContainsKey(whitelist_, printer->id())) {
+          if (base::Contains(allowlist_, printer->id())) {
             task_data->printers.insert({printer->id(), *printer});
           }
         }
         break;
-      case BulkPrintersCalculator::BLACKLIST_ONLY:
+      case BulkPrintersCalculator::BLOCKLIST_ONLY:
         for (const auto& printer : *printers_cache_) {
-          if (!base::ContainsKey(blacklist_, printer->id())) {
+          if (!base::Contains(blocklist_, printer->id())) {
             task_data->printers.insert({printer->id(), *printer});
           }
         }
@@ -203,12 +212,12 @@ class Restrictions {
   std::unique_ptr<PrinterCache> printers_cache_;
   // The type of restriction which is enforced.
   BulkPrintersCalculator::AccessMode mode_ = BulkPrintersCalculator::UNSET;
-  // Blacklist: the list of ids which should not appear in the final list.
-  bool has_blacklist_ = false;
-  std::set<std::string> blacklist_;
-  // Whitelist: the list of the only ids which should appear in the final list.
-  bool has_whitelist_ = false;
-  std::set<std::string> whitelist_;
+  // Blocklist: the list of ids which should not appear in the final list.
+  bool has_blocklist_ = false;
+  std::set<std::string> blocklist_;
+  // Allowlist: the list of the only ids which should appear in the final list.
+  bool has_allowlist_ = false;
+  std::set<std::string> allowlist_;
 
   SEQUENCE_CHECKER(sequence_checker_);
   DISALLOW_COPY_AND_ASSIGN(Restrictions);
@@ -217,18 +226,14 @@ class Restrictions {
 class BulkPrintersCalculatorImpl : public BulkPrintersCalculator {
  public:
   BulkPrintersCalculatorImpl()
-      : restrictions_(std::make_unique<Restrictions>()),
-        restrictions_runner_(base::CreateSequencedTaskRunnerWithTraits(
+      : restrictions_(base::MakeRefCounted<Restrictions>()),
+        restrictions_runner_(base::ThreadPool::CreateSequencedTaskRunner(
             {base::TaskPriority::BEST_EFFORT, base::MayBlock(),
-             base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
-        weak_ptr_factory_(this) {}
-  ~BulkPrintersCalculatorImpl() override {
-    bool success =
-        restrictions_runner_->DeleteSoon(FROM_HERE, std::move(restrictions_));
-    if (!success) {
-      LOG(WARNING) << "Unable to schedule deletion of policy object.";
-    }
-  }
+             base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})) {}
+
+  BulkPrintersCalculatorImpl(const BulkPrintersCalculatorImpl&) = delete;
+  BulkPrintersCalculatorImpl& operator=(const BulkPrintersCalculatorImpl&) =
+      delete;
 
   void AddObserver(Observer* observer) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -242,16 +247,12 @@ class BulkPrintersCalculatorImpl : public BulkPrintersCalculator {
 
   void ClearData() override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    if (!base::FeatureList::IsEnabled(features::kBulkPrinters)) {
-      return;
-    }
     data_is_set_ = false;
     last_processed_task_ = ++last_received_task_;
     printers_.clear();
     // Forward data to Restrictions to clear "Data".
     restrictions_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&Restrictions::ClearData,
-                                  base::Unretained(restrictions_.get())));
+        FROM_HERE, base::BindOnce(&Restrictions::ClearData, restrictions_));
     // Notify observers.
     for (auto& observer : observers_) {
       observer.OnPrintersChanged(this);
@@ -260,16 +261,12 @@ class BulkPrintersCalculatorImpl : public BulkPrintersCalculator {
 
   void SetData(std::unique_ptr<std::string> data) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    if (!base::FeatureList::IsEnabled(features::kBulkPrinters)) {
-      return;
-    }
     data_is_set_ = true;
     TaskData task_data =
         std::make_unique<TaskDataInternal>(++last_received_task_);
     base::PostTaskAndReplyWithResult(
         restrictions_runner_.get(), FROM_HERE,
-        base::BindOnce(&Restrictions::SetData,
-                       base::Unretained(restrictions_.get()),
+        base::BindOnce(&Restrictions::SetData, restrictions_,
                        std::move(task_data), std::move(data)),
         base::BindOnce(&BulkPrintersCalculatorImpl::OnComputationComplete,
                        weak_ptr_factory_.GetWeakPtr()));
@@ -281,35 +278,32 @@ class BulkPrintersCalculatorImpl : public BulkPrintersCalculator {
         std::make_unique<TaskDataInternal>(++last_received_task_);
     base::PostTaskAndReplyWithResult(
         restrictions_runner_.get(), FROM_HERE,
-        base::BindOnce(&Restrictions::UpdateAccessMode,
-                       base::Unretained(restrictions_.get()),
+        base::BindOnce(&Restrictions::UpdateAccessMode, restrictions_,
                        std::move(task_data), mode),
         base::BindOnce(&BulkPrintersCalculatorImpl::OnComputationComplete,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
-  void SetBlacklist(const std::vector<std::string>& blacklist) override {
+  void SetBlocklist(const std::vector<std::string>& blocklist) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     TaskData task_data =
         std::make_unique<TaskDataInternal>(++last_received_task_);
     base::PostTaskAndReplyWithResult(
         restrictions_runner_.get(), FROM_HERE,
-        base::BindOnce(&Restrictions::UpdateBlacklist,
-                       base::Unretained(restrictions_.get()),
-                       std::move(task_data), blacklist),
+        base::BindOnce(&Restrictions::UpdateBlocklist, restrictions_,
+                       std::move(task_data), blocklist),
         base::BindOnce(&BulkPrintersCalculatorImpl::OnComputationComplete,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
-  void SetWhitelist(const std::vector<std::string>& whitelist) override {
+  void SetAllowlist(const std::vector<std::string>& allowlist) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     TaskData task_data =
         std::make_unique<TaskDataInternal>(++last_received_task_);
     base::PostTaskAndReplyWithResult(
         restrictions_runner_.get(), FROM_HERE,
-        base::BindOnce(&Restrictions::UpdateWhitelist,
-                       base::Unretained(restrictions_.get()),
-                       std::move(task_data), whitelist),
+        base::BindOnce(&Restrictions::UpdateAllowlist, restrictions_,
+                       std::move(task_data), allowlist),
         base::BindOnce(&BulkPrintersCalculatorImpl::OnComputationComplete,
                        weak_ptr_factory_.GetWeakPtr()));
   }
@@ -352,8 +346,8 @@ class BulkPrintersCalculatorImpl : public BulkPrintersCalculator {
     }
   }
 
-  // Holds the blacklist and whitelist.  Computes the effective printer list.
-  std::unique_ptr<Restrictions> restrictions_;
+  // Holds the blocklist and allowlist.  Computes the effective printer list.
+  scoped_refptr<Restrictions> restrictions_;
   // Off UI sequence for computing the printer view.
   scoped_refptr<base::SequencedTaskRunner> restrictions_runner_;
 
@@ -367,9 +361,9 @@ class BulkPrintersCalculatorImpl : public BulkPrintersCalculator {
   std::unordered_map<std::string, Printer> printers_;
 
   base::ObserverList<BulkPrintersCalculator::Observer>::Unchecked observers_;
+
   SEQUENCE_CHECKER(sequence_checker_);
-  DISALLOW_COPY_AND_ASSIGN(BulkPrintersCalculatorImpl);
-  base::WeakPtrFactory<BulkPrintersCalculatorImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<BulkPrintersCalculatorImpl> weak_ptr_factory_{this};
 };
 
 }  // namespace

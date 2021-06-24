@@ -7,7 +7,9 @@
 
 #include "ash/public/cpp/ash_public_export.h"
 
-namespace app_list {
+namespace ash {
+enum class AppListLaunchedFrom;
+
 // The type of the ChromeSearchResult. This is used for logging so do not
 // change the order of this enum. If you add to this enum update
 // AppListSearchResult in enums.xml.
@@ -47,7 +49,8 @@ enum SearchResultType {
   // A result which is a web query.
   OMNIBOX_WEB_QUERY,
   // A result which was a web query that was previously searched.
-  OMNIBOX_HISTORY,
+  // This should be deprecated after M76.
+  OMNIBOX_HISTORY_DEPRECATED,
   // An app result which is an installed playstore app.
   PLAY_STORE_APP,
   // An app result which is an app that was installed on another device.
@@ -66,13 +69,71 @@ enum SearchResultType {
   APP_DATA_RESULT_NOTE_DOCUMENT,
   // An omnibox result which is opened via the assistant.
   ASSISTANT_OMNIBOX_RESULT,
+  // A result from omnibox for the query that was previously searched.
+  OMNIBOX_SEARCH_HISTORY,
+  // A result from omnibox for query suggestion.
+  OMNIBOX_SEARCH_SUGGEST,
+  // A result from omnibox for the personalized suggestion.
+  // Currently, it is used for the user's recent query.
+  OMNIBOX_SUGGEST_PERSONALIZED,
+  // A zero-state result representing a local file.
+  ZERO_STATE_FILE,
+  // A result from the Drive QuickAccess provider.
+  ZERO_STATE_DRIVE,
+  // A result from the Assistant provider.
+  ASSISTANT,
+  // An OsSettingsResult.
+  OS_SETTINGS,
+  // A Plugin VM App Result.
+  PLUGIN_VM_APP,
+  // LaCrOS binary.
+  LACROS,
+  // A Remote App Result.
+  REMOTE_APP,
+  // A Borealis App Result.
+  BOREALIS_APP,
+  // A Help App (aka Explore) Result. For default or help results. There are
+  // different search result types for Updates and Discover.
+  HELP_APP_DEFAULT,
+  // A result from omnibox for query suggestion.
+  OMNIBOX_SEARCH_SUGGEST_ENTITY,
+  // A result from omnibox for suggested navigation.
+  OMNIBOX_NAVSUGGEST,
+  // An answer rich entity result from omnibox.
+  OMNIBOX_RICH_ENTITY_ANSWER,
+  // A rich entity result from omnibox with image icon.
+  OMNIBOX_RICH_ENTITY_IMAGE_ENTITY,
+  // A local file search result.
+  FILE_SEARCH,
+  // A Drive file search result.
+  DRIVE_SEARCH,
+  // A Help App result about the "What's new" (Updates) page.
+  HELP_APP_UPDATES,
+  // A Help App result about the "Discover" page.
+  HELP_APP_DISCOVER,
   // Boundary is always last.
   SEARCH_RESULT_TYPE_BOUNDARY
 };
 
 ASH_PUBLIC_EXPORT void RecordSearchResultOpenTypeHistogram(
+    AppListLaunchedFrom launch_location,
+    SearchResultType type,
+    bool is_tablet_mode);
+
+ASH_PUBLIC_EXPORT void RecordDefaultSearchResultOpenTypeHistogram(
     SearchResultType type);
 
-}  // namespace app_list
+ASH_PUBLIC_EXPORT void RecordZeroStateSuggestionOpenTypeHistogram(
+    SearchResultType type);
+
+ASH_PUBLIC_EXPORT void RecordLauncherIssuedSearchQueryLength(int query_length);
+
+ASH_PUBLIC_EXPORT void RecordLauncherClickedSearchQueryLength(int query_length);
+
+ASH_PUBLIC_EXPORT void RecordSuccessfulAppLaunchUsingSearch(
+    AppListLaunchedFrom launched_from,
+    int query_length);
+
+}  // namespace ash
 
 #endif  // ASH_PUBLIC_CPP_APP_LIST_APP_LIST_METRICS_H_

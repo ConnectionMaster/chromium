@@ -3,29 +3,10 @@
 // found in the LICENSE file.
 
 /**
- * Event of the ProgressCenter class.
- * @enum {string}
- * @const
- */
-const ProgressCenterEvent = {
-  /**
-   * Background page notifies item update to application windows.
-   */
-  ITEM_UPDATED: 'itemUpdated',
-
-  /**
-   * Background page notifies all the items are cleared.
-   */
-  RESET: 'reset'
-};
-Object.freeze(ProgressCenterEvent);
-
-/**
  * State of progress items.
- * @enum {string}
- * @const
+ * @const @enum {string}
  */
-const ProgressItemState = {
+/* #export */ const ProgressItemState = {
   PROGRESSING: 'progressing',
   COMPLETED: 'completed',
   ERROR: 'error',
@@ -35,10 +16,9 @@ Object.freeze(ProgressItemState);
 
 /**
  * Type of progress items.
- * @enum {string}
- * @const
+ * @const @enum {string}
  */
-const ProgressItemType = {
+/* #export */ const ProgressItemType = {
   // The item is file copy operation.
   COPY: 'copy',
   // The item is file move operation.
@@ -51,74 +31,115 @@ const ProgressItemType = {
   SYNC: 'sync',
   // The item is general file transfer operation.
   // This is used for the mixed operation of summarized item.
-  TRANSFER: 'transfer'
+  TRANSFER: 'transfer',
+  // The item is external drive format operation.
+  FORMAT: 'format',
+  // The item is archive operation.
+  MOUNT_ARCHIVE: 'mount_archive',
+  // The item is external drive partitioning operation.
+  PARTITION: 'partition'
 };
 Object.freeze(ProgressItemType);
 
 /**
  * Item of the progress center.
- * @constructor
- * @struct
  */
-const ProgressCenterItem = function() {
-  /**
-   * Item ID.
-   * @type {?string}
-   * @private
-   */
-  this.id_ = null;
+/* #export */ class ProgressCenterItem {
+  constructor() {
+    /**
+     * Item ID.
+     * @private {string}
+     */
+    this.id_ = '';
 
-  /**
-   * State of the progress item.
-   * @type {ProgressItemState}
-   */
-  this.state = ProgressItemState.PROGRESSING;
+    /**
+     * State of the progress item.
+     * @type {ProgressItemState}
+     */
+    this.state = ProgressItemState.PROGRESSING;
 
-  /**
-   * Message of the progress item.
-   * @type {string}
-   */
-  this.message = '';
+    /**
+     * Message of the progress item.
+     * @type {string}
+     */
+    this.message = '';
 
-  /**
-   * Max value of the progress.
-   * @type {number}
-   */
-  this.progressMax = 0;
+    /**
+     * Source message for the progress item.
+     * @type {string}
+     */
+    this.sourceMessage = '';
 
-  /**
-   * Current value of the progress.
-   * @type {number}
-   */
-  this.progressValue = 0;
+    /**
+     * Destination message for the progress item.
+     * @type {string}
+     */
+    this.destinationMessage = '';
 
-  /**
-   * Type of progress item.
-   * @type {?ProgressItemType}
-   */
-  this.type = null;
+    /**
+     * Number of items being processed.
+     * @type {number}
+     */
+    this.itemCount = 0;
 
-  /**
-   * Whether the item represents a single item or not.
-   * @type {boolean}
-   */
-  this.single = true;
+    /**
+     * Max value of the progress.
+     * @type {number}
+     */
+    this.progressMax = 0;
 
-  /**
-   * If the property is true, only the message of item shown in the progress
-   * center and the notification of the item is created as priority = -1.
-   * @type {boolean}
-   */
-  this.quiet = false;
+    /**
+     * Current value of the progress.
+     * @type {number}
+     */
+    this.progressValue = 0;
 
-  /**
-   * Callback function to cancel the item.
-   * @type {?function()}
-   */
-  this.cancelCallback = null;
-};
+    /**
+     * Type of progress item.
+     * @type {?ProgressItemType}
+     */
+    this.type = null;
 
-ProgressCenterItem.prototype = /** @struct */ {
+    /**
+     * Whether the item represents a single item or not.
+     * @type {boolean}
+     */
+    this.single = true;
+
+    /**
+     * If the property is true, only the message of item shown in the progress
+     * center and the notification of the item is created as priority = -1.
+     * @type {boolean}
+     */
+    this.quiet = false;
+
+    /**
+     * Callback function to cancel the item.
+     * @type {?function()}
+     */
+    this.cancelCallback = null;
+
+    /**
+     * The current speed of the progress item in bytes per second.
+     * It's calculated using moving average formula.
+     * @type {number}
+     */
+    this.currentSpeed;
+
+    /**
+     * The average speed of the progress item in bytes per second.
+     * It is calculated using cumulative moving average.
+     * @type {number}
+     */
+    this.averageSpeed;
+
+    /**
+     * The predicted remaining time to complete the progress item in seconds.
+     * @type {number}
+     */
+    this.remainingTime;
+  }
+
   /**
    * Setter of Item ID.
    * @param {string} value New value of ID.
@@ -129,15 +150,15 @@ ProgressCenterItem.prototype = /** @struct */ {
     } else {
       console.error('The ID is already set. (current ID: ' + this.id_ + ')');
     }
-  },
+  }
 
   /**
    * Getter of Item ID.
-   * @return {?string} Item ID.
+   * @return {string} Item ID.
    */
   get id() {
     return this.id_;
-  },
+  }
 
   /**
    * Gets progress rate in percent.
@@ -156,7 +177,7 @@ ProgressCenterItem.prototype = /** @struct */ {
       default:
         return ~~(100 * this.progressValue / this.progressMax);
     }
-  },
+  }
 
   /**
    * Whether the item can be canceled or not.
@@ -167,22 +188,13 @@ ProgressCenterItem.prototype = /** @struct */ {
         this.state == ProgressItemState.PROGRESSING && this.cancelCallback &&
         this.single);
   }
-};
 
-/**
- * Clones the item.
- * @return {ProgressCenterItem} New item having the same properties with this.
- */
-ProgressCenterItem.prototype.clone = function() {
-  const newItem = new ProgressCenterItem();
-  newItem.id = this.id;
-  newItem.state = this.state;
-  newItem.message = this.message;
-  newItem.progressMax = this.progressMax;
-  newItem.progressValue = this.progressValue;
-  newItem.type = this.type;
-  newItem.single = this.single;
-  newItem.quiet = this.quiet;
-  newItem.cancelCallback = this.cancelCallback;
-  return newItem;
-};
+  /**
+   * Clones the item.
+   * @return {!ProgressCenterItem} New item having the same properties as this.
+   */
+  clone() {
+    const clonedItem = Object.assign(new ProgressCenterItem(), this);
+    return /** @type {!ProgressCenterItem} */ (clonedItem);
+  }
+}

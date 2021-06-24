@@ -15,17 +15,15 @@
 #include "chrome/browser/profiles/avatar_menu_observer.h"
 #include "chrome/browser/profiles/profile_list.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/profiles/profile_metrics.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/profile_picker.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
-#include "chrome/browser/ui/user_manager.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/signin/core/browser/account_consistency_method.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -43,10 +41,7 @@ AvatarMenu::AvatarMenu(ProfileAttributesStorage* profile_storage,
                        Browser* browser)
     : profile_list_(ProfileList::Create(profile_storage)),
       menu_actions_(AvatarMenuActions::Create()),
-#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
-      supervised_user_observer_(this),
-#endif
-      profile_storage_(profile_storage),
+      profile_storage_(profile_storage->AsWeakPtr()),
       observer_(observer),
       browser_(browser) {
   DCHECK(profile_storage_);
@@ -61,14 +56,17 @@ AvatarMenu::AvatarMenu(ProfileAttributesStorage* profile_storage,
   // Register this as an observer of the SupervisedUserService to be notified
   // of changes to the custodian info.
   if (browser_) {
-    supervised_user_observer_.Add(
+    supervised_user_observation_.Observe(
         SupervisedUserServiceFactory::GetForProfile(browser_->profile()));
   }
 #endif
 }
 
 AvatarMenu::~AvatarMenu() {
-  profile_storage_->RemoveObserver(this);
+  // Note that |profile_storage_| may be destroyed before |this|.
+  // https://crbug.com/1008947
+  if (profile_storage_)
+    profile_storage_->RemoveObserver(this);
 }
 
 AvatarMenu::Item::Item(size_t menu_index, const base::FilePath& profile_path,
@@ -86,22 +84,19 @@ AvatarMenu::Item::Item(const Item& other) = default;
 AvatarMenu::Item::~Item() {
 }
 
-void AvatarMenu::SwitchToProfile(size_t index,
-                                 bool always_create,
-                                 ProfileMetrics::ProfileOpen metric) {
+void AvatarMenu::SwitchToProfile(size_t index, bool always_create) {
   DCHECK(profiles::IsMultipleProfilesEnabled() ||
          index == GetActiveProfileIndex());
   const Item& item = GetItemAt(index);
 
   // Don't open a browser window for signed-out profiles.
   if (item.signin_required) {
-    UserManager::Show(item.profile_path,
-                      profiles::USER_MANAGER_SELECT_PROFILE_NO_ACTION);
+    ProfilePicker::Show(ProfilePicker::EntryPoint::kProfileLocked);
     return;
   }
 
   profiles::SwitchToProfile(item.profile_path, always_create,
-                            ProfileManager::CreateCallback(), metric);
+                            ProfileManager::CreateCallback());
 }
 
 void AvatarMenu::AddNewProfile(ProfileMetrics::ProfileAdd type) {
@@ -146,18 +141,18 @@ size_t AvatarMenu::GetActiveProfileIndex() {
   return index;
 }
 
-base::string16 AvatarMenu::GetSupervisedUserInformation() const {
+std::u16string AvatarMenu::GetSupervisedUserInformation() const {
   // |browser_| can be NULL in unit_tests.
   if (browser_ && browser_->profile()->IsSupervised()) {
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
     SupervisedUserService* service =
         SupervisedUserServiceFactory::GetForProfile(browser_->profile());
-    base::string16 custodian =
+    std::u16string custodian =
         base::UTF8ToUTF16(service->GetCustodianEmailAddress());
     if (browser_->profile()->IsLegacySupervised())
       return l10n_util::GetStringFUTF16(IDS_LEGACY_SUPERVISED_USER_INFO,
                                         custodian);
-    base::string16 second_custodian =
+    std::u16string second_custodian =
         base::UTF8ToUTF16(service->GetSecondCustodianEmailAddress());
     if (second_custodian.empty()) {
       return l10n_util::GetStringFUTF16(IDS_CHILD_INFO_ONE_CUSTODIAN,
@@ -168,7 +163,7 @@ base::string16 AvatarMenu::GetSupervisedUserInformation() const {
     }
 #endif
   }
-  return base::string16();
+  return std::u16string();
 }
 
 void AvatarMenu::ActiveBrowserChanged(Browser* browser) {
@@ -196,12 +191,12 @@ void AvatarMenu::OnProfileAdded(const base::FilePath& profile_path) {
 }
 
 void AvatarMenu::OnProfileWasRemoved(const base::FilePath& profile_path,
-                                     const base::string16& profile_name) {
+                                     const std::u16string& profile_name) {
   Update();
 }
 
 void AvatarMenu::OnProfileNameChanged(const base::FilePath& profile_path,
-                                      const base::string16& old_profile_name) {
+                                      const std::u16string& old_profile_name) {
   Update();
 }
 

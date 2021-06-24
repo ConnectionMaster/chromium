@@ -7,7 +7,7 @@
 
 #include "content/browser/permissions/permission_controller_impl.h"
 #include "base/bind.h"
-#include "content/common/content_export.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/permission_controller_delegate.h"
 #include "content/public/browser/render_frame_host.h"
@@ -21,12 +21,96 @@ namespace content {
 
 namespace {
 
-blink::mojom::PermissionStatus GetPermissionOverrideStatus(
-    const PermissionControllerImpl::PermissionOverrides& permission_overrides,
-    const PermissionType& permission) {
-  if (permission_overrides.find(permission) == permission_overrides.end())
-    return blink::mojom::PermissionStatus::DENIED;
-  return blink::mojom::PermissionStatus::GRANTED;
+absl::optional<blink::scheduler::WebSchedulerTrackedFeature>
+PermissionToSchedulingFeature(PermissionType permission_name) {
+  switch (permission_name) {
+    case PermissionType::GEOLOCATION:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedGeolocationPermission;
+    case PermissionType::NOTIFICATIONS:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedNotificationsPermission;
+    case PermissionType::MIDI:
+    case PermissionType::MIDI_SYSEX:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedMIDIPermission;
+    case PermissionType::AUDIO_CAPTURE:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedAudioCapturePermission;
+    case PermissionType::VIDEO_CAPTURE:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedVideoCapturePermission;
+    case PermissionType::BACKGROUND_SYNC:
+    case PermissionType::BACKGROUND_FETCH:
+    case PermissionType::PERIODIC_BACKGROUND_SYNC:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedBackgroundWorkPermission;
+    case PermissionType::STORAGE_ACCESS_GRANT:
+      return blink::scheduler::WebSchedulerTrackedFeature::
+          kRequestedStorageAccessGrant;
+    case PermissionType::PROTECTED_MEDIA_IDENTIFIER:
+    case PermissionType::DURABLE_STORAGE:
+    case PermissionType::ACCESSIBILITY_EVENTS:
+    case PermissionType::CLIPBOARD_READ_WRITE:
+    case PermissionType::CLIPBOARD_SANITIZED_WRITE:
+    case PermissionType::PAYMENT_HANDLER:
+    case PermissionType::IDLE_DETECTION:
+    case PermissionType::WAKE_LOCK_SCREEN:
+    case PermissionType::WAKE_LOCK_SYSTEM:
+    case PermissionType::NFC:
+    case PermissionType::NUM:
+    case PermissionType::SENSORS:
+    case PermissionType::AR:
+    case PermissionType::VR:
+    case PermissionType::CAMERA_PAN_TILT_ZOOM:
+    case PermissionType::WINDOW_PLACEMENT:
+    case PermissionType::FONT_ACCESS:
+    case PermissionType::DISPLAY_CAPTURE:
+    case PermissionType::FILE_HANDLING:
+      return absl::nullopt;
+  }
+}
+
+void NotifySchedulerAboutPermissionRequest(RenderFrameHost* render_frame_host,
+                                           PermissionType permission_name) {
+  DCHECK(render_frame_host);
+
+  absl::optional<blink::scheduler::WebSchedulerTrackedFeature> feature =
+      PermissionToSchedulingFeature(permission_name);
+
+  if (!feature)
+    return;
+
+  static_cast<RenderFrameHostImpl*>(render_frame_host)
+      ->OnSchedulerTrackedFeatureUsed(feature.value());
+}
+
+// Calls |original_cb|, a callback expecting the PermissionStatus of a set of
+// permissions, after joining the results of overridden permissions and
+// non-overridden permissions.
+// |overridden_results| is an array of permissions that have already been
+// overridden by DevTools.
+// |delegated_results| contains results that did not have overrides - they
+// were delegated - their results need to be inserted in order.
+void MergeOverriddenAndDelegatedResults(
+    base::OnceCallback<void(const std::vector<blink::mojom::PermissionStatus>&)>
+        original_cb,
+    std::vector<absl::optional<blink::mojom::PermissionStatus>>
+        overridden_results,
+    const std::vector<blink::mojom::PermissionStatus>& delegated_results) {
+  std::vector<blink::mojom::PermissionStatus> full_results;
+  full_results.reserve(overridden_results.size());
+  auto delegated_it = delegated_results.begin();
+  for (auto& status : overridden_results) {
+    if (!status.has_value()) {
+      CHECK(delegated_it != delegated_results.end());
+      status.emplace(*delegated_it++);
+    }
+    full_results.emplace_back(*status);
+  }
+  CHECK(delegated_it == delegated_results.end());
+
+  std::move(original_cb).Run(full_results);
 }
 
 }  // namespace
@@ -39,7 +123,7 @@ PermissionControllerImpl::PermissionControllerImpl(
 PermissionControllerImpl* PermissionControllerImpl::FromBrowserContext(
     BrowserContext* browser_context) {
   return static_cast<PermissionControllerImpl*>(
-      BrowserContext::GetPermissionController(browser_context));
+      browser_context->GetPermissionController());
 }
 
 struct PermissionControllerImpl::Subscription {
@@ -48,8 +132,9 @@ struct PermissionControllerImpl::Subscription {
   GURL embedding_origin;
   int render_frame_id = -1;
   int render_process_id = -1;
-  base::Callback<void(blink::mojom::PermissionStatus)> callback;
-  int delegate_subscription_id;
+  base::RepeatingCallback<void(blink::mojom::PermissionStatus)> callback;
+  // This is default-initialized to an invalid ID.
+  PermissionControllerDelegate::SubscriptionId delegate_subscription_id;
 };
 
 PermissionControllerImpl::~PermissionControllerImpl() {
@@ -73,106 +158,188 @@ PermissionControllerImpl::GetSubscriptionCurrentValue(
                              subscription.embedding_origin);
 }
 
-void PermissionControllerImpl::SetPermissionOverridesForDevTools(
-    const GURL& origin,
-    const PermissionOverrides& overrides) {
-  std::vector<base::Closure> callbacks;
+PermissionControllerImpl::SubscriptionsStatusMap
+PermissionControllerImpl::GetSubscriptionsStatuses(
+    const absl::optional<GURL>& origin) {
+  SubscriptionsStatusMap statuses;
   for (SubscriptionsMap::iterator iter(&subscriptions_); !iter.IsAtEnd();
        iter.Advance()) {
     Subscription* subscription = iter.GetCurrentValue();
-    if (subscription->requesting_origin != origin)
+    if (origin.has_value() && subscription->requesting_origin != *origin)
       continue;
-    blink::mojom::PermissionStatus current_value =
-        GetSubscriptionCurrentValue(*subscription);
-    blink::mojom::PermissionStatus new_value =
-        GetPermissionOverrideStatus(overrides, subscription->permission);
-    if (current_value != new_value)
-      callbacks.push_back(base::Bind(subscription->callback, new_value));
+    statuses[iter.GetCurrentKey()] = GetSubscriptionCurrentValue(*subscription);
   }
-  devtools_permission_overrides_[origin] = overrides;
-  for (const auto& callback : callbacks)
-    callback.Run();
+  return statuses;
 }
 
-void PermissionControllerImpl::ResetPermissionOverridesForDevTools() {
-  std::map<GURL, PermissionOverrides> old_overrides;
-  old_overrides.swap(devtools_permission_overrides_);
-  std::vector<base::Closure> callbacks;
-  for (SubscriptionsMap::iterator iter(&subscriptions_); !iter.IsAtEnd();
-       iter.Advance()) {
-    Subscription* subscription = iter.GetCurrentValue();
-    auto overrides_it = old_overrides.find(subscription->requesting_origin);
-    if (overrides_it == old_overrides.end())
+void PermissionControllerImpl::NotifyChangedSubscriptions(
+    const SubscriptionsStatusMap& old_statuses) {
+  std::vector<base::OnceClosure> callbacks;
+  for (const auto& it : old_statuses) {
+    auto key = it.first;
+    Subscription* subscription = subscriptions_.Lookup(key);
+    if (!subscription)
       continue;
-    blink::mojom::PermissionStatus current_value = GetPermissionOverrideStatus(
-        overrides_it->second, subscription->permission);
-    blink::mojom::PermissionStatus new_value =
+    blink::mojom::PermissionStatus old_status = it.second;
+    blink::mojom::PermissionStatus new_status =
         GetSubscriptionCurrentValue(*subscription);
-    if (current_value != new_value)
-      callbacks.push_back(base::Bind(subscription->callback, new_value));
+    if (new_status != old_status)
+      callbacks.push_back(base::BindOnce(subscription->callback, new_status));
   }
-  for (const auto& callback : callbacks)
-    callback.Run();
+  for (auto& callback : callbacks)
+    std::move(callback).Run();
 }
 
-int PermissionControllerImpl::RequestPermission(
+PermissionControllerImpl::OverrideStatus
+PermissionControllerImpl::SetOverrideForDevTools(
+    const absl::optional<url::Origin>& origin,
+    PermissionType permission,
+    const blink::mojom::PermissionStatus& status) {
+  PermissionControllerDelegate* delegate =
+      browser_context_->GetPermissionControllerDelegate();
+  if (delegate &&
+      !delegate->IsPermissionOverridableByDevTools(permission, origin)) {
+    return OverrideStatus::kOverrideNotSet;
+  }
+  const auto old_statuses = GetSubscriptionsStatuses(
+      origin ? absl::make_optional(origin->GetURL()) : absl::nullopt);
+  devtools_permission_overrides_.Set(origin, permission, status);
+  NotifyChangedSubscriptions(old_statuses);
+
+  UpdateDelegateOverridesForDevTools(origin);
+  return OverrideStatus::kOverrideSet;
+}
+
+PermissionControllerImpl::OverrideStatus
+PermissionControllerImpl::GrantOverridesForDevTools(
+    const absl::optional<url::Origin>& origin,
+    const std::vector<PermissionType>& permissions) {
+  PermissionControllerDelegate* delegate =
+      browser_context_->GetPermissionControllerDelegate();
+  if (delegate) {
+    for (const auto permission : permissions) {
+      if (!delegate->IsPermissionOverridableByDevTools(permission, origin))
+        return OverrideStatus::kOverrideNotSet;
+    }
+  }
+
+  const auto old_statuses = GetSubscriptionsStatuses(
+      origin ? absl::make_optional(origin->GetURL()) : absl::nullopt);
+  devtools_permission_overrides_.GrantPermissions(origin, permissions);
+  // If any statuses changed because they lose overrides or the new overrides
+  // modify their previous state (overridden or not), subscribers must be
+  // notified manually.
+  NotifyChangedSubscriptions(old_statuses);
+
+  UpdateDelegateOverridesForDevTools(origin);
+  return OverrideStatus::kOverrideSet;
+}
+
+void PermissionControllerImpl::ResetOverridesForDevTools() {
+  const auto old_statuses = GetSubscriptionsStatuses();
+  devtools_permission_overrides_ = DevToolsPermissionOverrides();
+
+  // If any statuses changed because they lost their overrides, the subscribers
+  // must be notified manually.
+  NotifyChangedSubscriptions(old_statuses);
+
+  PermissionControllerDelegate* delegate =
+      browser_context_->GetPermissionControllerDelegate();
+  if (delegate)
+    delegate->ResetPermissionOverridesForDevTools();
+}
+
+void PermissionControllerImpl::UpdateDelegateOverridesForDevTools(
+    const absl::optional<url::Origin>& origin) {
+  PermissionControllerDelegate* delegate =
+      browser_context_->GetPermissionControllerDelegate();
+  if (!delegate)
+    return;
+
+  // If no overrides exist, still want to update with "blank" overrides.
+  PermissionOverrides current_overrides =
+      devtools_permission_overrides_.GetAll(origin);
+  delegate->SetPermissionOverridesForDevTools(origin, current_overrides);
+}
+
+void PermissionControllerImpl::RequestPermission(
     PermissionType permission,
     RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
     bool user_gesture,
-    const base::Callback<void(blink::mojom::PermissionStatus)>& callback) {
-  auto it = devtools_permission_overrides_.find(requesting_origin.GetOrigin());
-  if (it != devtools_permission_overrides_.end()) {
-    callback.Run(GetPermissionOverrideStatus(it->second, permission));
-    return kNoPendingOperation;
+    base::OnceCallback<void(blink::mojom::PermissionStatus)> callback) {
+  NotifySchedulerAboutPermissionRequest(render_frame_host, permission);
+
+  absl::optional<blink::mojom::PermissionStatus> status_override =
+      devtools_permission_overrides_.Get(url::Origin::Create(requesting_origin),
+                                         permission);
+  if (status_override.has_value()) {
+    std::move(callback).Run(*status_override);
+    return;
   }
 
   PermissionControllerDelegate* delegate =
       browser_context_->GetPermissionControllerDelegate();
   if (!delegate) {
-    callback.Run(blink::mojom::PermissionStatus::DENIED);
-    return kNoPendingOperation;
+    std::move(callback).Run(blink::mojom::PermissionStatus::DENIED);
+    return;
   }
-  return delegate->RequestPermission(permission, render_frame_host,
-                                     requesting_origin, user_gesture, callback);
+  delegate->RequestPermission(permission, render_frame_host, requesting_origin,
+                              user_gesture, std::move(callback));
 }
 
-int PermissionControllerImpl::RequestPermissions(
+void PermissionControllerImpl::RequestPermissions(
     const std::vector<PermissionType>& permissions,
     RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
     bool user_gesture,
-    const base::Callback<
-        void(const std::vector<blink::mojom::PermissionStatus>&)>& callback) {
-  auto it = devtools_permission_overrides_.find(requesting_origin.GetOrigin());
-  if (it != devtools_permission_overrides_.end()) {
-    std::vector<blink::mojom::PermissionStatus> result;
-    for (auto& permission : permissions)
-      result.push_back(GetPermissionOverrideStatus(it->second, permission));
-    callback.Run(result);
-    return kNoPendingOperation;
+    base::OnceCallback<void(const std::vector<blink::mojom::PermissionStatus>&)>
+        callback) {
+  for (PermissionType permission : permissions)
+    NotifySchedulerAboutPermissionRequest(render_frame_host, permission);
+
+  std::vector<PermissionType> permissions_without_overrides;
+  std::vector<absl::optional<blink::mojom::PermissionStatus>> results;
+  url::Origin origin = url::Origin::Create(requesting_origin);
+  for (const auto& permission : permissions) {
+    absl::optional<blink::mojom::PermissionStatus> override_status =
+        devtools_permission_overrides_.Get(origin, permission);
+    if (!override_status)
+      permissions_without_overrides.push_back(permission);
+    results.push_back(override_status);
   }
 
+  auto wrapper = base::BindOnce(&MergeOverriddenAndDelegatedResults,
+                                std::move(callback), results);
+  if (permissions_without_overrides.empty()) {
+    std::move(wrapper).Run({});
+    return;
+  }
+
+  // Use delegate to find statuses of other permissions that have been requested
+  // but do not have overrides.
   PermissionControllerDelegate* delegate =
       browser_context_->GetPermissionControllerDelegate();
   if (!delegate) {
-    std::vector<blink::mojom::PermissionStatus> result(
-        permissions.size(), blink::mojom::PermissionStatus::DENIED);
-    callback.Run(result);
-    return kNoPendingOperation;
+    std::move(wrapper).Run(std::vector<blink::mojom::PermissionStatus>(
+        permissions_without_overrides.size(),
+        blink::mojom::PermissionStatus::DENIED));
+    return;
   }
-  return delegate->RequestPermissions(permissions, render_frame_host,
-                                      requesting_origin, user_gesture,
-                                      callback);
+  delegate->RequestPermissions(permissions_without_overrides, render_frame_host,
+                               requesting_origin, user_gesture,
+                               std::move(wrapper));
 }
 
 blink::mojom::PermissionStatus PermissionControllerImpl::GetPermissionStatus(
     PermissionType permission,
     const GURL& requesting_origin,
     const GURL& embedding_origin) {
-  auto it = devtools_permission_overrides_.find(requesting_origin.GetOrigin());
-  if (it != devtools_permission_overrides_.end())
-    return GetPermissionOverrideStatus(it->second, permission);
+  absl::optional<blink::mojom::PermissionStatus> status =
+      devtools_permission_overrides_.Get(url::Origin::Create(requesting_origin),
+                                         permission);
+  if (status.has_value())
+    return *status;
 
   PermissionControllerDelegate* delegate =
       browser_context_->GetPermissionControllerDelegate();
@@ -187,9 +354,11 @@ PermissionControllerImpl::GetPermissionStatusForFrame(
     PermissionType permission,
     RenderFrameHost* render_frame_host,
     const GURL& requesting_origin) {
-  auto it = devtools_permission_overrides_.find(requesting_origin.GetOrigin());
-  if (it != devtools_permission_overrides_.end())
-    return GetPermissionOverrideStatus(it->second, permission);
+  absl::optional<blink::mojom::PermissionStatus> status =
+      devtools_permission_overrides_.Get(url::Origin::Create(requesting_origin),
+                                         permission);
+  if (status.has_value())
+    return *status;
 
   PermissionControllerDelegate* delegate =
       browser_context_->GetPermissionControllerDelegate();
@@ -212,17 +381,21 @@ void PermissionControllerImpl::ResetPermission(PermissionType permission,
 void PermissionControllerImpl::OnDelegatePermissionStatusChange(
     Subscription* subscription,
     blink::mojom::PermissionStatus status) {
-  auto overrides_it =
-      devtools_permission_overrides_.find(subscription->requesting_origin);
-  if (overrides_it == devtools_permission_overrides_.end())
+  absl::optional<blink::mojom::PermissionStatus> status_override =
+      devtools_permission_overrides_.Get(
+          url::Origin::Create(subscription->requesting_origin),
+          subscription->permission);
+  if (!status_override.has_value())
     subscription->callback.Run(status);
 }
 
-int PermissionControllerImpl::SubscribePermissionStatusChange(
+PermissionControllerImpl::SubscriptionId
+PermissionControllerImpl::SubscribePermissionStatusChange(
     PermissionType permission,
     RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
-    const base::Callback<void(blink::mojom::PermissionStatus)>& callback) {
+    const base::RepeatingCallback<void(blink::mojom::PermissionStatus)>&
+        callback) {
   auto subscription = std::make_unique<Subscription>();
   subscription->permission = permission;
   subscription->callback = callback;
@@ -248,24 +421,24 @@ int PermissionControllerImpl::SubscribePermissionStatusChange(
     subscription->delegate_subscription_id =
         delegate->SubscribePermissionStatusChange(
             permission, render_frame_host, requesting_origin,
-            base::Bind(
+            base::BindRepeating(
                 &PermissionControllerImpl::OnDelegatePermissionStatusChange,
                 base::Unretained(this), subscription.get()));
-  } else {
-    subscription->delegate_subscription_id = kNoPendingOperation;
   }
-  return subscriptions_.Add(std::move(subscription));
+
+  auto id = subscription_id_generator_.GenerateNextId();
+  subscriptions_.AddWithID(std::move(subscription), id);
+  return id;
 }
 
 void PermissionControllerImpl::UnsubscribePermissionStatusChange(
-    int subscription_id) {
+    SubscriptionId subscription_id) {
   Subscription* subscription = subscriptions_.Lookup(subscription_id);
   if (!subscription)
     return;
   PermissionControllerDelegate* delegate =
       browser_context_->GetPermissionControllerDelegate();
-  if (delegate &&
-      subscription->delegate_subscription_id != kNoPendingOperation) {
+  if (delegate) {
     delegate->UnsubscribePermissionStatusChange(
         subscription->delegate_subscription_id);
   }

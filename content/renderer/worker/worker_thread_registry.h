@@ -15,7 +15,7 @@
 #include "content/public/renderer/worker_thread.h"
 
 namespace base {
-class TaskRunner;
+class SequencedTaskRunner;
 }
 
 namespace content {
@@ -24,7 +24,7 @@ class CONTENT_EXPORT WorkerThreadRegistry {
  public:
   WorkerThreadRegistry();
 
-  int PostTaskToAllThreads(base::Closure task);
+  int PostTaskToAllThreads(const base::RepeatingClosure& task);
   static WorkerThreadRegistry* Instance();
 
   void DidStartCurrentWorkerThread();
@@ -33,15 +33,13 @@ class CONTENT_EXPORT WorkerThreadRegistry {
   // Always returns a non-null task runner regardless of whether the
   // corresponding worker thread is gone or not. If the thread is already gone
   // the tasks posted onto the task runner will be silently discarded.
-  base::TaskRunner* GetTaskRunnerFor(int worker_id);
+  base::SequencedTaskRunner* GetTaskRunnerFor(int worker_id);
 
  private:
   friend class WorkerThread;
   friend class WorkerThreadRegistryTest;
 
   bool PostTask(int id, base::OnceClosure task);
-
-  using IDToTaskRunnerMap = std::map<base::PlatformThreadId, base::TaskRunner*>;
 
   ~WorkerThreadRegistry();
 
@@ -51,9 +49,10 @@ class CONTENT_EXPORT WorkerThreadRegistry {
   // end up being handled as per usual in the main-thread, causing incorrect
   // results. |task_runner_for_dead_worker_| is used to handle such messages,
   // which silently discards all the tasks it receives.
-  scoped_refptr<base::TaskRunner> task_runner_for_dead_worker_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_for_dead_worker_;
 
-  IDToTaskRunnerMap task_runner_map_;
+  std::map<int /* worker_thread_id */, base::SequencedTaskRunner*>
+      task_runner_map_;
   base::Lock task_runner_map_lock_;
 };
 

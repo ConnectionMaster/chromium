@@ -5,37 +5,106 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_TEST_TEST_APP_REGISTRAR_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_TEST_TEST_APP_REGISTRAR_H_
 
+#include <map>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "chrome/browser/web_applications/components/app_registrar.h"
-#include "chrome/browser/web_applications/components/web_app_helpers.h"
+#include "chrome/browser/web_applications/components/web_app_constants.h"
+#include "chrome/browser/web_applications/components/web_app_id.h"
+#include "chrome/browser/web_applications/components/web_application_info.h"
+#include "components/services/app_service/public/cpp/url_handler_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "url/gurl.h"
+
+namespace base {
+class Time;
+}
 
 namespace web_app {
 
+// Deprecated. Please use TestWebAppRegistryController instead.
 class TestAppRegistrar : public AppRegistrar {
  public:
+  struct AppInfo {
+    GURL install_url;
+    ExternalInstallSource source = ExternalInstallSource::kExternalDefault;
+    GURL launch_url;
+  };
+
   TestAppRegistrar();
   ~TestAppRegistrar() override;
 
-  // Adds |app_id| to the map of installed apps.
-  void AddAsInstalled(const AppId& app_id);
+  // Adds |url| to the map of installed apps and returns the generated AppId.
+  void AddExternalApp(const AppId& app_id, const AppInfo& info);
 
-  // Removes |app_id| from the map of installed apps.
-  void RemoveAsInstalled(const AppId& app_id);
-
-  // Adds |app_id| to the map of external extensions uninstalled by the user.
-  void AddAsExternalAppUninstalledByUser(const AppId& app_id);
+  // Removes an app from the map of installed apps.
+  void RemoveExternalApp(const AppId& app_id);
+  void RemoveExternalAppByInstallUrl(const GURL& install_url);
 
   // AppRegistrar
-  void Init(base::OnceClosure callback) override;
   bool IsInstalled(const AppId& app_id) const override;
-  bool WasExternalAppUninstalledByUser(const AppId& app_id) const override;
-  bool HasScopeUrl(const AppId& app_id) const override;
-  GURL GetScopeUrlForApp(const AppId& app_id) const override;
+  bool IsUninstalling(const AppId& app_id) const override;
+  bool IsLocallyInstalled(const AppId& app_id) const override;
+  bool WasInstalledByUser(const AppId& app_id) const override;
+  bool WasInstalledByOem(const AppId& app_id) const override;
+  std::map<AppId, GURL> GetExternallyInstalledApps(
+      ExternalInstallSource install_source) const override;
+  absl::optional<AppId> LookupExternalAppId(
+      const GURL& install_url) const override;
+  bool HasExternalAppWithInstallSource(
+      const AppId& app_id,
+      ExternalInstallSource install_source) const override;
+  bool IsApprovedLaunchProtocol(const AppId& app_id,
+                                std::string protocol_scheme) const override;
+  int CountUserInstalledApps() const override;
+  std::string GetAppShortName(const AppId& app_id) const override;
+  std::string GetAppDescription(const AppId& app_id) const override;
+  absl::optional<SkColor> GetAppThemeColor(const AppId& app_id) const override;
+  absl::optional<SkColor> GetAppBackgroundColor(
+      const AppId& app_id) const override;
+  const GURL& GetAppStartUrl(const AppId& app_id) const override;
+  absl::optional<std::string> GetAppManifestId(
+      const AppId& app_id) const override;
+  const std::string* GetAppLaunchQueryParams(
+      const AppId& app_id) const override;
+  const apps::ShareTarget* GetAppShareTarget(
+      const AppId& app_id) const override;
+  blink::mojom::CaptureLinks GetAppCaptureLinks(
+      const AppId& app_id) const override;
+  const apps::FileHandlers* GetAppFileHandlers(
+      const AppId& app_id) const override;
+  const apps::ProtocolHandlers* GetAppProtocolHandlers(
+      const AppId& app_id) const override;
+  bool IsAppFileHandlerPermissionBlocked(
+      const web_app::AppId& app_id) const override;
+  absl::optional<GURL> GetAppScopeInternal(const AppId& app_id) const override;
+  DisplayMode GetAppDisplayMode(const AppId& app_id) const override;
+  DisplayMode GetAppUserDisplayMode(const AppId& app_id) const override;
+  std::vector<DisplayMode> GetAppDisplayModeOverride(
+      const AppId& app_id) const override;
+  apps::UrlHandlers GetAppUrlHandlers(const AppId& app_id) const override;
+  GURL GetAppManifestUrl(const AppId& app_id) const override;
+  base::Time GetAppLastBadgingTime(const AppId& app_id) const override;
+  base::Time GetAppLastLaunchTime(const AppId& app_id) const override;
+  base::Time GetAppInstallTime(const AppId& app_id) const override;
+  std::vector<WebApplicationIconInfo> GetAppIconInfos(
+      const AppId& app_id) const override;
+  SortedSizesPx GetAppDownloadedIconSizesAny(
+      const AppId& app_id) const override;
+  std::vector<WebApplicationShortcutsMenuItemInfo> GetAppShortcutsMenuItemInfos(
+      const AppId& app_id) const override;
+  std::vector<IconSizes> GetAppDownloadedShortcutsMenuIconsSizes(
+      const AppId& app_id) const override;
+  RunOnOsLoginMode GetAppRunOnOsLoginMode(const AppId& app_id) const override;
+  bool GetWindowControlsOverlayEnabled(const AppId& app_id) const override;
+  std::vector<AppId> GetAppIds() const override;
+  WebAppRegistrar* AsWebAppRegistrar() override;
+  const WebAppRegistrar* AsWebAppRegistrar() const override;
 
  private:
-  std::set<AppId> installed_apps_;
-  std::set<AppId> uninstalled_external_apps_;
+  std::map<AppId, AppInfo> installed_apps_;
 };
 
 }  // namespace web_app

@@ -7,13 +7,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+
 #include "base/base64.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/format_macros.h"
 #include "base/rand_util.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/third_party/icu/icu_utf.h"
@@ -24,9 +25,12 @@
 #include "chrome/test/chromedriver/chrome/ui_events.h"
 #include "chrome/test/chromedriver/chrome/web_view.h"
 #include "chrome/test/chromedriver/command_listener.h"
+#include "chrome/test/chromedriver/constants/version.h"
 #include "chrome/test/chromedriver/key_converter.h"
 #include "chrome/test/chromedriver/session.h"
 #include "third_party/zlib/google/zip.h"
+
+const char kWindowHandlePrefix[] = "CDwindow-";
 
 std::string GenerateId() {
   uint64_t msb = base::RandUint64();
@@ -35,17 +39,20 @@ std::string GenerateId() {
 }
 
 namespace {
+const double kCentimetersPerInch = 2.54;
 
-Status FlattenStringArray(const base::ListValue* src, base::string16* dest) {
-  base::string16 keys;
+Status FlattenStringArray(const base::ListValue* src, std::u16string* dest) {
+  std::u16string keys;
   for (size_t i = 0; i < src->GetSize(); ++i) {
-    base::string16 keys_list_part;
+    std::u16string keys_list_part;
     if (!src->GetString(i, &keys_list_part))
       return Status(kUnknownError, "keys should be a string");
     for (size_t j = 0; j < keys_list_part.size(); ++j) {
       if (CBU16_IS_SURROGATE(keys_list_part[j])) {
-        return Status(kUnknownError,
-                      "ChromeDriver only supports characters in the BMP");
+        return Status(
+            kUnknownError,
+            base::StringPrintf("%s only supports characters in the BMP",
+                               kChromeDriverProductShortName));
       }
     }
     keys.append(keys_list_part);
@@ -61,17 +68,17 @@ Status SendKeysOnWindow(
     const base::ListValue* key_list,
     bool release_modifiers,
     int* sticky_modifiers) {
-  base::string16 keys;
+  std::u16string keys;
   Status status = FlattenStringArray(key_list, &keys);
   if (status.IsError())
     return status;
-  std::list<KeyEvent> events;
+  std::vector<KeyEvent> events;
   int sticky_modifiers_tmp = *sticky_modifiers;
   status = ConvertKeysToKeyEvents(
       keys, release_modifiers, &sticky_modifiers_tmp, &events);
   if (status.IsError())
     return status;
-  status = web_view->DispatchKeyEvents(events);
+  status = web_view->DispatchKeyEvents(events, false);
   if (status.IsOk())
     *sticky_modifiers = sticky_modifiers_tmp;
   return status;
@@ -431,6 +438,10 @@ Status NotifyCommandListenersBeforeCommand(Session* session,
   return Status(kOk);
 }
 
+double ConvertCentimeterToInch(double centimeter) {
+  return centimeter / kCentimetersPerInch;
+}
+
 namespace {
 
 template <typename T>
@@ -501,6 +512,22 @@ bool GetOptionalString(const base::DictionaryValue* dict,
                           &base::Value::GetAsString);
 }
 
+bool GetOptionalDictionary(const base::DictionaryValue* dict,
+                           base::StringPiece path,
+                           const base::DictionaryValue** out_value,
+                           bool* has_value) {
+  return GetOptionalValue(dict, path, out_value, has_value,
+                          &base::Value::GetAsDictionary);
+}
+
+bool GetOptionalList(const base::DictionaryValue* dict,
+                     base::StringPiece path,
+                     const base::ListValue** out_value,
+                     bool* has_value) {
+  return GetOptionalValue(dict, path, out_value, has_value,
+                          &base::Value::GetAsList);
+}
+
 bool GetOptionalSafeInt(const base::DictionaryValue* dict,
                         base::StringPiece path,
                         int64_t* out_value,
@@ -546,4 +573,18 @@ bool SetSafeInt(base::DictionaryValue* dict,
     return dict->SetInteger(path, in_value_64);
   else
     return dict->SetDouble(path, in_value_64);
+}
+
+std::string WebViewIdToWindowHandle(const std::string& web_view_id) {
+  return kWindowHandlePrefix + web_view_id;
+}
+
+bool WindowHandleToWebViewId(const std::string& window_handle,
+                             std::string* web_view_id) {
+  if (!base::StartsWith(window_handle, kWindowHandlePrefix,
+                        base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  *web_view_id = window_handle.substr(sizeof(kWindowHandlePrefix) - 1);
+  return true;
 }

@@ -7,8 +7,9 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/gfx_export.h"
 #include "ui/gfx/native_widget_types.h"
@@ -39,7 +40,9 @@ class MessageMapInterface {
 ///////////////////////////////////////////////////////////////////////////////
 class GFX_EXPORT WindowImpl : public MessageMapInterface {
  public:
-  WindowImpl();
+  // |debugging_id| is reported with crashes to help attribute the code that
+  // created the WindowImpl.
+  explicit WindowImpl(const std::string& debugging_id = std::string());
   virtual ~WindowImpl();
 
   // Causes all generated windows classes to be unregistered at exit.
@@ -74,6 +77,8 @@ class GFX_EXPORT WindowImpl : public MessageMapInterface {
   }
   UINT initial_class_style() const { return class_style_; }
 
+  const std::string& debugging_id() const { return debugging_id_; }
+
  protected:
   // Handles the WndProc callback for this object.
   virtual LRESULT OnWndProc(UINT message, WPARAM w_param, LPARAM l_param);
@@ -100,23 +105,26 @@ class GFX_EXPORT WindowImpl : public MessageMapInterface {
   // All classes registered by WindowImpl start with this name.
   static const wchar_t* const kBaseClassName;
 
+  const std::string debugging_id_;
+
   // Window Styles used when creating the window.
-  DWORD window_style_;
+  DWORD window_style_ = 0;
 
   // Window Extended Styles used when creating the window.
-  DWORD window_ex_style_;
+  DWORD window_ex_style_ = 0;
 
   // Style of the class to use.
   UINT class_style_;
 
   // Our hwnd.
-  HWND hwnd_;
+  HWND hwnd_ = nullptr;
 
   // For debugging.
   // TODO(sky): nuke this when get crash data.
-  bool got_create_;
-  bool got_valid_hwnd_;
-  bool* destroyed_;
+  bool got_create_ = false;
+  bool got_valid_hwnd_ = false;
+  // For tracking whether this object has been destroyed. Must be last.
+  base::WeakPtrFactory<WindowImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WindowImpl);
 };

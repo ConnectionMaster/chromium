@@ -4,8 +4,8 @@
 
 #include "chrome/browser/media/webrtc/webrtc_event_log_manager_local.h"
 
+#include "base/cxx17_backports.h"
 #include "base/files/file_util.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
@@ -40,7 +40,7 @@ WebRtcLocalEventLogManager::~WebRtcLocalEventLogManager() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 }
 
-bool WebRtcLocalEventLogManager::PeerConnectionAdded(
+bool WebRtcLocalEventLogManager::OnPeerConnectionAdded(
     const PeerConnectionKey& key) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(io_task_sequence_checker_);
 
@@ -59,7 +59,7 @@ bool WebRtcLocalEventLogManager::PeerConnectionAdded(
   return true;
 }
 
-bool WebRtcLocalEventLogManager::PeerConnectionRemoved(
+bool WebRtcLocalEventLogManager::OnPeerConnectionRemoved(
     const PeerConnectionKey& key) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(io_task_sequence_checker_);
 
@@ -96,8 +96,8 @@ bool WebRtcLocalEventLogManager::EnableLogging(const base::FilePath& base_path,
 
   max_log_file_size_bytes_ =
       (max_file_size_bytes == kWebRtcEventLogManagerUnlimitedFileSize)
-          ? base::Optional<size_t>()
-          : base::Optional<size_t>(max_file_size_bytes);
+          ? absl::optional<size_t>()
+          : absl::optional<size_t>(max_file_size_bytes);
 
   for (const PeerConnectionKey& peer_connection : active_peer_connections_) {
     if (log_files_.size() >= kMaxNumberLocalWebRtcEventLogFiles) {
@@ -184,16 +184,9 @@ void WebRtcLocalEventLogManager::StartLogFile(const PeerConnectionKey& key) {
 
   // In the unlikely case that this filename is already taken, find a unique
   // number to append to the filename, if possible.
-  int unique_number =
-      base::GetUniquePathNumber(file_path, base::FilePath::StringType());
-  if (unique_number < 0) {
+  file_path = base::GetUniquePath(file_path);
+  if (file_path.empty()) {
     return;  // No available file path was found.
-  } else if (unique_number != 0) {
-    // The filename is taken, but a unique number was found.
-    // TODO(crbug.com/785333): Fix the way the unique number is used.
-    file_path = file_path.InsertBeforeExtension(
-        FILE_PATH_LITERAL(" (") + NumberToStringType(unique_number) +
-        FILE_PATH_LITERAL(")"));
   }
 
   auto log_file =

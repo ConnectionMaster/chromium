@@ -5,12 +5,15 @@
 #include "ui/views/controls/button/toggle_button.h"
 
 #include <memory>
+#include <utility>
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/widget_utils.h"
 
@@ -18,31 +21,29 @@ namespace views {
 
 class TestToggleButton : public ToggleButton {
  public:
-  explicit TestToggleButton(int* counter)
-      : ToggleButton(nullptr), counter_(counter) {}
+  explicit TestToggleButton(int* counter) : counter_(counter) {}
+
   ~TestToggleButton() override {
-    // Calling SetInkDropMode() in this subclass allows this class's
-    // implementation of RemoveInkDropLayer() to be called. The same
-    // call is made in ~ToggleButton() so this is testing the general technique.
-    SetInkDropMode(InkDropMode::OFF);
+    // TODO(pbos): Revisit explicit removal of InkDrop for classes that override
+    // Add/RemoveLayerBeneathView(). This is done so that the InkDrop doesn't
+    // access the non-override versions in ~View.
+    views::InkDrop::Remove(this);
+  }
+
+  void AddLayerBeneathView(ui::Layer* layer) override {
+    ++(*counter_);
+    ToggleButton::AddLayerBeneathView(layer);
+  }
+
+  void RemoveLayerBeneathView(ui::Layer* layer) override {
+    --(*counter_);
+    ToggleButton::RemoveLayerBeneathView(layer);
   }
 
   using View::Focus;
 
- protected:
-  // ToggleButton:
-  void AddInkDropLayer(ui::Layer* ink_drop_layer) override {
-    ++(*counter_);
-    ToggleButton::AddInkDropLayer(ink_drop_layer);
-  }
-
-  void RemoveInkDropLayer(ui::Layer* ink_drop_layer) override {
-    ToggleButton::RemoveInkDropLayer(ink_drop_layer);
-    --(*counter_);
-  }
-
  private:
-  int* counter_;
+  int* const counter_;
 
   DISALLOW_COPY_AND_ASSIGN(TestToggleButton);
 };
@@ -62,11 +63,11 @@ class ToggleButtonTest : public ViewsTestBase {
         CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
     params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
     params.bounds = gfx::Rect(0, 0, 650, 650);
-    widget_->Init(params);
+    widget_->Init(std::move(params));
     widget_->Show();
 
-    button_ = new TestToggleButton(&counter_);
-    widget_->SetContentsView(button_);
+    button_ =
+        widget_->SetContentsView(std::make_unique<TestToggleButton>(&counter_));
   }
 
   void TearDown() override {
@@ -110,41 +111,42 @@ TEST_F(ToggleButtonTest, ShutdownWithFocus) {
 
 // Verify that ToggleButton::accepts_events_ works as expected.
 TEST_F(ToggleButtonTest, AcceptEvents) {
-  EXPECT_FALSE(button()->is_on());
+  EXPECT_FALSE(button()->GetIsOn());
   ui::test::EventGenerator generator(GetRootWindow(widget()));
+  generator.MoveMouseTo(widget()->GetClientAreaBoundsInScreen().CenterPoint());
 
   // Clicking toggles.
   generator.ClickLeftButton();
-  EXPECT_TRUE(button()->is_on());
+  EXPECT_TRUE(button()->GetIsOn());
   generator.ClickLeftButton();
-  EXPECT_FALSE(button()->is_on());
+  EXPECT_FALSE(button()->GetIsOn());
 
   // Spacebar toggles.
   button()->RequestFocus();
   generator.PressKey(ui::VKEY_SPACE, ui::EF_NONE);
   generator.ReleaseKey(ui::VKEY_SPACE, ui::EF_NONE);
-  EXPECT_TRUE(button()->is_on());
+  EXPECT_TRUE(button()->GetIsOn());
   generator.PressKey(ui::VKEY_SPACE, ui::EF_NONE);
   generator.ReleaseKey(ui::VKEY_SPACE, ui::EF_NONE);
-  EXPECT_FALSE(button()->is_on());
+  EXPECT_FALSE(button()->GetIsOn());
 
   // Spacebar and clicking do nothing when not accepting events, but focus is
   // not affected.
-  button()->set_accepts_events(false);
+  button()->SetAcceptsEvents(false);
   EXPECT_TRUE(button()->HasFocus());
   generator.PressKey(ui::VKEY_SPACE, ui::EF_NONE);
   generator.ReleaseKey(ui::VKEY_SPACE, ui::EF_NONE);
-  EXPECT_FALSE(button()->is_on());
+  EXPECT_FALSE(button()->GetIsOn());
   generator.ClickLeftButton();
-  EXPECT_FALSE(button()->is_on());
+  EXPECT_FALSE(button()->GetIsOn());
 
   // Re-enable events and clicking and spacebar resume working.
-  button()->set_accepts_events(true);
+  button()->SetAcceptsEvents(true);
   generator.PressKey(ui::VKEY_SPACE, ui::EF_NONE);
   generator.ReleaseKey(ui::VKEY_SPACE, ui::EF_NONE);
-  EXPECT_TRUE(button()->is_on());
+  EXPECT_TRUE(button()->GetIsOn());
   generator.ClickLeftButton();
-  EXPECT_FALSE(button()->is_on());
+  EXPECT_FALSE(button()->GetIsOn());
 }
 
 }  // namespace views

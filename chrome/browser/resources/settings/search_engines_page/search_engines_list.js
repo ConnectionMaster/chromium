@@ -6,32 +6,56 @@
  * @fileoverview 'settings-search-engines-list' is a component for showing a
  * list of search engines.
  */
-Polymer({
-  is: 'settings-search-engines-list',
+import 'chrome://resources/cr_elements/shared_vars_css.m.js';
+import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
+import '../settings_shared_css.js';
+import '../settings_vars_css.js';
+import './search_engine_entry.js';
 
-  properties: {
-    /** @type {!Array<!SearchEngine>} */
-    engines: Array,
+import {html, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-    /**
-     * The scroll target that this list should use.
-     * @type {?HTMLElement}
-     */
-    scrollTarget: Object,
+import {SearchEngine} from './search_engines_browser_proxy.js';
 
-    /** Used to fix scrolling glitch when list is not top most element. */
-    scrollOffset: Number,
 
-    /** @private {Object}*/
-    lastFocused_: Object,
+/** @polymer */
+class SettingsSearchEnginesListElement extends PolymerElement {
+  static get is() {
+    return 'settings-search-engines-list';
+  }
 
-    /** @private */
-    listBlurred_: Boolean,
+  static get template() {
+    return html`{__html_template__}`;
+  }
 
-    fixedHeight: {
-      type: Boolean,
-      value: false,
-      reflectToAttribute: true,
-    },
-  },
-});
+  static get properties() {
+    return {
+      /** @type {!Array<!SearchEngine>} */
+      engines: Array,
+
+      /**
+       * The scroll target that this list should use.
+       * @type {?HTMLElement}
+       */
+      scrollTarget: Object,
+
+      /** Used to fix scrolling glitch when list is not top most element. */
+      scrollOffset: Number,
+
+      /** @private {Object}*/
+      lastFocused_: Object,
+
+      /** @private */
+      listBlurred_: Boolean,
+
+      fixedHeight: {
+        type: Boolean,
+        value: false,
+        reflectToAttribute: true,
+      },
+
+    };
+  }
+}
+
+customElements.define(
+    SettingsSearchEnginesListElement.is, SettingsSearchEnginesListElement);

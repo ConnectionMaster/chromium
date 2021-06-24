@@ -5,6 +5,7 @@
 #include "services/audio/public/cpp/sounds/audio_stream_handler.h"
 
 #include <stdint.h>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -18,7 +19,8 @@
 #include "base/time/time.h"
 #include "media/audio/wav_audio_handler.h"
 #include "media/base/channel_layout.h"
-#include "media/mojo/interfaces/audio_output_stream.mojom.h"
+#include "media/mojo/mojom/audio_output_stream.mojom.h"
+#include "media/mojo/mojom/audio_stream_factory.mojom.h"
 #include "services/audio/public/cpp/output_device.h"
 
 namespace audio {
@@ -42,10 +44,10 @@ class AudioStreamHandler::AudioStreamContainer
     : public media::AudioRendererSink::RenderCallback {
  public:
   explicit AudioStreamContainer(
-      std::unique_ptr<service_manager::Connector> connector,
+      SoundsManager::StreamFactoryBinder stream_factory_binder,
       std::unique_ptr<media::WavAudioHandler> wav_audio)
       : started_(false),
-        connector_(std::move(connector)),
+        stream_factory_binder_(std::move(stream_factory_binder)),
         cursor_(0),
         delayed_stop_posted_(false),
         wav_audio_(std::move(wav_audio)) {
@@ -69,8 +71,11 @@ class AudioStreamHandler::AudioStreamContainer
       if (g_observer_for_testing) {
         g_observer_for_testing->Initialize(this, params);
       } else {
+        mojo::PendingRemote<media::mojom::AudioStreamFactory> stream_factory;
+        stream_factory_binder_.Run(
+            stream_factory.InitWithNewPipeAndPassReceiver());
         device_ = std::make_unique<audio::OutputDevice>(
-            connector_->Clone(), params, this, std::string());
+            std::move(stream_factory), params, this, std::string());
       }
     }
 
@@ -151,7 +156,7 @@ class AudioStreamHandler::AudioStreamContainer
   }
 
   bool started_;
-  std::unique_ptr<service_manager::Connector> connector_;
+  const SoundsManager::StreamFactoryBinder stream_factory_binder_;
   std::unique_ptr<audio::OutputDevice> device_;
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
@@ -160,13 +165,13 @@ class AudioStreamHandler::AudioStreamContainer
   size_t cursor_;
   bool delayed_stop_posted_;
   std::unique_ptr<media::WavAudioHandler> wav_audio_;
-  base::CancelableClosure stop_closure_;
+  base::CancelableRepeatingClosure stop_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(AudioStreamContainer);
 };
 
 AudioStreamHandler::AudioStreamHandler(
-    std::unique_ptr<service_manager::Connector> connector,
+    SoundsManager::StreamFactoryBinder stream_factory_binder,
     const base::StringPiece& wav_data) {
   task_runner_ = base::SequencedTaskRunnerHandle::Get();
   std::unique_ptr<media::WavAudioHandler> wav_audio =
@@ -187,8 +192,8 @@ AudioStreamHandler::AudioStreamHandler(
 
   // Store the duration of the WAV data then pass the handler to |stream_|.
   duration_ = wav_audio->GetDuration();
-  stream_.reset(
-      new AudioStreamContainer(std::move(connector), std::move(wav_audio)));
+  stream_ = std::make_unique<AudioStreamContainer>(
+      std::move(stream_factory_binder), std::move(wav_audio));
 }
 
 AudioStreamHandler::~AudioStreamHandler() {

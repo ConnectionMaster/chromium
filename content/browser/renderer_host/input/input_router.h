@@ -10,10 +10,13 @@
 #include "content/browser/renderer_host/event_with_latency_info.h"
 #include "content/browser/renderer_host/input/gesture_event_queue.h"
 #include "content/browser/renderer_host/input/passthrough_touch_event_queue.h"
-#include "content/common/widget.mojom.h"
 #include "content/public/browser/native_web_keyboard_event.h"
-#include "content/public/common/input_event_ack_state.h"
-#include "third_party/blink/public/platform/web_input_event.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
+#include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
+#include "third_party/blink/public/mojom/input/input_handler.mojom.h"
+#include "third_party/blink/public/mojom/input/touch_event.mojom.h"
 
 namespace content {
 
@@ -36,8 +39,8 @@ class InputRouter {
   // the renderer, then callbacks are *not* run.
   using MouseEventCallback =
       base::OnceCallback<void(const MouseEventWithLatencyInfo& event,
-                              InputEventAckSource ack_source,
-                              InputEventAckState ack_result)>;
+                              blink::mojom::InputEventResultSource ack_source,
+                              blink::mojom::InputEventResultState ack_result)>;
   virtual void SendMouseEvent(const MouseEventWithLatencyInfo& mouse_event,
                               MouseEventCallback event_result_callback) = 0;
 
@@ -46,8 +49,8 @@ class InputRouter {
 
   using KeyboardEventCallback = base::OnceCallback<void(
       const NativeWebKeyboardEventWithLatencyInfo& event,
-      InputEventAckSource ack_source,
-      InputEventAckState ack_result)>;
+      blink::mojom::InputEventResultSource ack_source,
+      blink::mojom::InputEventResultState ack_result)>;
   virtual void SendKeyboardEvent(
       const NativeWebKeyboardEventWithLatencyInfo& key_event,
       KeyboardEventCallback event_result_callback) = 0;
@@ -77,23 +80,19 @@ class InputRouter {
   virtual void SetFrameTreeNodeId(int frameTreeNodeId) = 0;
 
   // Return the currently allowed touch-action.
-  virtual base::Optional<cc::TouchAction> AllowedTouchAction() = 0;
+  virtual absl::optional<cc::TouchAction> AllowedTouchAction() = 0;
+
+  // Return the currently active touch-action.
+  virtual absl::optional<cc::TouchAction> ActiveTouchAction() = 0;
 
   virtual void SetForceEnableZoom(bool enabled) = 0;
 
-  // Associate this InputRouter with a remote host channel.
-  virtual void BindHost(mojom::WidgetInputHandlerHostRequest request,
-                        bool frame_handler) = 0;
+  // Create and bind a new host channel.
+  virtual mojo::PendingRemote<blink::mojom::WidgetInputHandlerHost>
+  BindNewHost() = 0;
 
   // Used to stop an active fling if such exists.
   virtual void StopFling() = 0;
-
-  // Used to check if a fling cancellation is deferred due to boosting or not.
-  virtual bool FlingCancellationIsDeferred() = 0;
-
-  // Called when a set-touch-action message is received from the renderer
-  // for a touch start event that is currently in flight.
-  virtual void OnSetTouchAction(cc::TouchAction touch_action) = 0;
 
   // In the case when a gesture event is bubbled from a child frame to the main
   // frame, we set the touch action in the main frame Auto even if there is no
@@ -102,7 +101,8 @@ class InputRouter {
 
   // Called when the renderer notifies a change in whether or not it has touch
   // event handlers registered.
-  virtual void OnHasTouchEventHandlers(bool has_handlers) = 0;
+  virtual void OnHasTouchEventConsumers(
+      blink::mojom::TouchEventConsumersPtr consumers) = 0;
 
   // Will resolve the given callback once all prior input has been fully
   // propagated through the system such that subsequent input will be subject
@@ -110,6 +110,10 @@ class InputRouter {
   // OOPIF hit-testing will need to wait until updated CompositorFrames have
   // been submitted to the browser.
   virtual void WaitForInputProcessed(base::OnceClosure callback) = 0;
+
+  // Acks any pending touch events that are waiting for acks from the renderer.
+  // Any future acks for those events from the renderer will be ignored.
+  virtual void FlushTouchEventQueue() = 0;
 };
 
 }  // namespace content

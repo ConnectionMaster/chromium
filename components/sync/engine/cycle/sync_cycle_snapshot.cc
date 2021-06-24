@@ -4,11 +4,12 @@
 
 #include "components/sync/engine/cycle/sync_cycle_snapshot.h"
 
+#include <string>
 #include <utility>
 
+#include "base/base64.h"
 #include "base/i18n/time_formatting.h"
 #include "base/json/json_writer.h"
-#include "base/strings/string16.h"
 #include "base/values.h"
 #include "components/sync/protocol/proto_enum_conversions.h"
 
@@ -16,8 +17,8 @@ namespace syncer {
 
 namespace {
 
-base::string16 FormatTimeDelta(base::TimeDelta delta) {
-  base::string16 value;
+std::u16string FormatTimeDelta(base::TimeDelta delta) {
+  std::u16string value;
   bool ok =
       base::TimeDurationFormat(delta, base::DURATION_WIDTH_NARROW, &value);
   DCHECK(ok);
@@ -33,12 +34,14 @@ SyncCycleSnapshot::SyncCycleSnapshot()
       num_server_conflicts_(0),
       notifications_enabled_(false),
       num_entries_(0),
-      num_entries_by_type_(ModelType::NUM_ENTRIES, 0),
-      num_to_delete_entries_by_type_(ModelType::NUM_ENTRIES, 0),
+      num_entries_by_type_(GetNumModelTypes(), 0),
+      num_to_delete_entries_by_type_(GetNumModelTypes(), 0),
       has_remaining_local_changes_(false),
       is_initialized_(false) {}
 
 SyncCycleSnapshot::SyncCycleSnapshot(
+    const std::string& birthday,
+    const std::string& bag_of_chips,
     const ModelNeutralState& model_neutral_state,
     const ProgressMarkerMap& download_progress_markers,
     bool is_silenced,
@@ -54,7 +57,9 @@ SyncCycleSnapshot::SyncCycleSnapshot(
     sync_pb::SyncEnums::GetUpdatesOrigin get_updates_origin,
     base::TimeDelta poll_interval,
     bool has_remaining_local_changes)
-    : model_neutral_state_(model_neutral_state),
+    : birthday_(birthday),
+      bag_of_chips_(bag_of_chips),
+      model_neutral_state_(model_neutral_state),
       download_progress_markers_(download_progress_markers),
       is_silenced_(is_silenced),
       num_encryption_conflicts_(num_encryption_conflicts),
@@ -77,6 +82,10 @@ SyncCycleSnapshot::~SyncCycleSnapshot() {}
 
 std::unique_ptr<base::DictionaryValue> SyncCycleSnapshot::ToValue() const {
   std::unique_ptr<base::DictionaryValue> value(new base::DictionaryValue());
+  value->SetString("birthday", birthday_);
+  std::string encoded_bag_of_chips;
+  base::Base64Encode(bag_of_chips_, &encoded_bag_of_chips);
+  value->SetString("bagOfChips", encoded_bag_of_chips);
   value->SetInteger("numSuccessfulCommits",
                     model_neutral_state_.num_successful_commits);
   value->SetInteger("numSuccessfulBookmarkCommits",
@@ -93,8 +102,9 @@ std::unique_ptr<base::DictionaryValue> SyncCycleSnapshot::ToValue() const {
                     model_neutral_state_.num_local_overwrites);
   value->SetInteger("numServerOverwrites",
                     model_neutral_state_.num_server_overwrites);
-  value->Set("downloadProgressMarkers",
-             ProgressMarkerMapToValue(download_progress_markers_));
+  value->SetKey("downloadProgressMarkers",
+                base::Value::FromUniquePtrValue(
+                    ProgressMarkerMapToValue(download_progress_markers_)));
   value->SetBoolean("isSilenced", is_silenced_);
   // We don't care too much if we lose precision here, also.
   value->SetInteger("numEncryptionConflicts", num_encryption_conflicts_);
@@ -104,19 +114,16 @@ std::unique_ptr<base::DictionaryValue> SyncCycleSnapshot::ToValue() const {
   value->SetString("getUpdatesOrigin", ProtoEnumToString(get_updates_origin_));
   value->SetBoolean("notificationsEnabled", notifications_enabled_);
 
-  std::unique_ptr<base::DictionaryValue> counter_entries(
-      new base::DictionaryValue());
-  for (int i = FIRST_REAL_MODEL_TYPE; i < ModelType::NUM_ENTRIES; i++) {
-    std::unique_ptr<base::DictionaryValue> type_entries(
-        new base::DictionaryValue());
-    type_entries->SetInteger("numEntries", num_entries_by_type_[i]);
-    type_entries->SetInteger("numToDeleteEntries",
-                             num_to_delete_entries_by_type_[i]);
+  base::DictionaryValue counter_entries;
+  for (ModelType type : ModelTypeSet::All()) {
+    base::DictionaryValue type_entries;
+    type_entries.SetInteger("numEntries", num_entries_by_type_[type]);
+    type_entries.SetInteger("numToDeleteEntries",
+                            num_to_delete_entries_by_type_[type]);
 
-    const std::string model_type = ModelTypeToString(static_cast<ModelType>(i));
-    counter_entries->Set(model_type, std::move(type_entries));
+    counter_entries.SetKey(ModelTypeToString(type), std::move(type_entries));
   }
-  value->Set("counter_entries", std::move(counter_entries));
+  value->SetKey("counter_entries", std::move(counter_entries));
   value->SetBoolean("hasRemainingLocalChanges", has_remaining_local_changes_);
   value->SetString("poll_interval", FormatTimeDelta(poll_interval_));
   value->SetString(

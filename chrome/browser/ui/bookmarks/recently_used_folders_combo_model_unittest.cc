@@ -11,7 +11,7 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/bookmarks/test/test_bookmark_client.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/models/combobox_model_observer.h"
 
@@ -48,7 +48,7 @@ class RecentlyUsedFoldersComboModelTest : public testing::Test {
   RecentlyUsedFoldersComboModelTest() = default;
 
  private:
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(RecentlyUsedFoldersComboModelTest);
 };
@@ -58,10 +58,9 @@ TEST_F(RecentlyUsedFoldersComboModelTest, NoDups) {
   std::unique_ptr<BookmarkModel> bookmark_model(
       TestBookmarkClient::CreateModel());
   const BookmarkNode* new_node = bookmark_model->AddURL(
-      bookmark_model->bookmark_bar_node(), 0, base::ASCIIToUTF16("a"),
-      GURL("http://a"));
+      bookmark_model->bookmark_bar_node(), 0, u"a", GURL("http://a"));
   RecentlyUsedFoldersComboModel model(bookmark_model.get(), new_node);
-  std::set<base::string16> items;
+  std::set<std::u16string> items;
   for (int i = 0; i < model.GetItemCount(); ++i) {
     if (!model.IsItemSeparatorAt(i))
       EXPECT_EQ(0u, items.count(model.GetItemAt(i)));
@@ -72,12 +71,11 @@ TEST_F(RecentlyUsedFoldersComboModelTest, NoDups) {
 TEST_F(RecentlyUsedFoldersComboModelTest, NotifyObserver) {
   std::unique_ptr<BookmarkModel> bookmark_model(
       TestBookmarkClient::CreateModel());
-  const BookmarkNode* folder = bookmark_model->AddFolder(
-      bookmark_model->bookmark_bar_node(), 0, base::ASCIIToUTF16("a"));
-  const BookmarkNode* sub_folder = bookmark_model->AddFolder(
-      folder, 0, base::ASCIIToUTF16("b"));
-  const BookmarkNode* new_node = bookmark_model->AddURL(
-      sub_folder, 0, base::ASCIIToUTF16("a"), GURL("http://a"));
+  const BookmarkNode* folder =
+      bookmark_model->AddFolder(bookmark_model->bookmark_bar_node(), 0, u"a");
+  const BookmarkNode* sub_folder = bookmark_model->AddFolder(folder, 0, u"b");
+  const BookmarkNode* new_node =
+      bookmark_model->AddURL(sub_folder, 0, u"a", GURL("http://a"));
   RecentlyUsedFoldersComboModel model(bookmark_model.get(), new_node);
   TestComboboxModelObserver observer;
   model.AddObserver(&observer);

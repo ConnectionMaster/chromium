@@ -20,7 +20,7 @@
 #include "device/bluetooth/bluetooth_export.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic.h"
 #include "device/bluetooth/bluetooth_remote_gatt_descriptor.h"
-#include "device/bluetooth/bluetooth_uuid.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 
 namespace device {
 
@@ -42,24 +42,15 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothRemoteGattDescriptorWinrt
   // BluetoothRemoteGattDescriptor:
   const std::vector<uint8_t>& GetValue() const override;
   BluetoothRemoteGattCharacteristic* GetCharacteristic() const override;
-  void ReadRemoteDescriptor(const ValueCallback& callback,
-                            const ErrorCallback& error_callback) override;
+  void ReadRemoteDescriptor(ValueCallback callback) override;
   void WriteRemoteDescriptor(const std::vector<uint8_t>& value,
-                             const base::Closure& callback,
-                             const ErrorCallback& error_callback) override;
+                             base::OnceClosure callback,
+                             ErrorCallback error_callback) override;
 
   ABI::Windows::Devices::Bluetooth::GenericAttributeProfile::IGattDescriptor*
   GetDescriptorForTesting();
 
  private:
-  struct PendingReadCallbacks {
-    PendingReadCallbacks(ValueCallback callback, ErrorCallback error_callback);
-    ~PendingReadCallbacks();
-
-    ValueCallback callback;
-    ErrorCallback error_callback;
-  };
-
   struct PendingWriteCallbacks {
     PendingWriteCallbacks(base::OnceClosure callback,
                           ErrorCallback error_callback);
@@ -94,10 +85,11 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothRemoteGattDescriptorWinrt
   BluetoothUUID uuid_;
   std::string identifier_;
   std::vector<uint8_t> value_;
-  std::unique_ptr<PendingReadCallbacks> pending_read_callbacks_;
+  ValueCallback pending_read_callback_;
   std::unique_ptr<PendingWriteCallbacks> pending_write_callbacks_;
 
-  base::WeakPtrFactory<BluetoothRemoteGattDescriptorWinrt> weak_ptr_factory_;
+  base::WeakPtrFactory<BluetoothRemoteGattDescriptorWinrt> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothRemoteGattDescriptorWinrt);
 };

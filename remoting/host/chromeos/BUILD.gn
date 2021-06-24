@@ -22,16 +22,47 @@ source_set("chromeos") {
 
   public_deps = [
     "//ash",
+    "//build:chromeos_buildflags",
     "//cc",
     "//gpu/command_buffer/common",
     "//ppapi/host",
     "//remoting/protocol",
     "//skia",
-    "//third_party/webrtc/modules/desktop_capture",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//ui/aura",
+    "//ui/base/cursor:cursor_base",
     "//ui/compositor",
     "//ui/events",
     "//ui/views",
+  ]
+
+  deps = [
+    "//remoting/base:base",
+    "//remoting/host:clipboard",
+    "//ui/base/cursor",
+    "//ui/base/cursor/mojom:cursor_type",
+  ]
+}
+
+source_set("remoting_service") {
+  sources = [
+    "remote_support_host_ash.cc",
+    "remote_support_host_ash.h",
+    "remoting_service.cc",
+    "remoting_service.h",
+  ]
+
+  public_deps = [ "//remoting/host/it2me:chrome_os_host" ]
+
+  configs += [ "//remoting/build/config:version" ]
+
+  deps = [
+    "//chrome/browser:browser_process",
+    "//content/public/browser:browser",
+    "//mojo/public/cpp/bindings",
+    "//remoting/base:base",
+    "//remoting/host",
+    "//remoting/host/mojom:mojom",
   ]
 }
 
@@ -47,6 +78,8 @@ source_set("unit_tests") {
   configs += [ "//remoting/build/config:version" ]
 
   deps = [
+    ":chromeos",
+    "//base/test:test_support",
     "//remoting/host:common",
     "//remoting/host:test_support",
     "//remoting/proto",

@@ -17,10 +17,11 @@
 #include "base/syslog_logging.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/policy/upload_job_impl.h"
+#include "chrome/browser/chromeos/policy/uploading/upload_job_impl.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/http/http_request_headers.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace policy {
 
@@ -52,11 +53,12 @@ const char* const kUploadUrlFieldName = "fileUploadUrl";
 
 // A helper function which invokes |store_screenshot_callback| on |task_runner|.
 void RunStoreScreenshotOnTaskRunner(
-    const ui::GrabWindowSnapshotAsyncPNGCallback& store_screenshot_callback,
+    ui::GrabWindowSnapshotAsyncPNGCallback store_screenshot_callback,
     scoped_refptr<base::TaskRunner> task_runner,
     scoped_refptr<base::RefCountedMemory> png_data) {
-  task_runner->PostTask(FROM_HERE,
-                        base::BindOnce(store_screenshot_callback, png_data));
+  task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(store_screenshot_callback), png_data));
 }
 
 }  // namespace
@@ -90,8 +92,7 @@ std::unique_ptr<std::string> DeviceCommandScreenshotJob::Payload::Serialize() {
 DeviceCommandScreenshotJob::DeviceCommandScreenshotJob(
     std::unique_ptr<Delegate> screenshot_delegate)
     : num_pending_screenshots_(0),
-      screenshot_delegate_(std::move(screenshot_delegate)),
-      weak_ptr_factory_(this) {
+      screenshot_delegate_(std::move(screenshot_delegate)) {
   DCHECK(screenshot_delegate_);
 }
 
@@ -129,9 +130,8 @@ void DeviceCommandScreenshotJob::OnFailure(UploadJob::ErrorCode error_code) {
 
 bool DeviceCommandScreenshotJob::ParseCommandPayload(
     const std::string& command_payload) {
-  std::unique_ptr<base::Value> root(
-      base::JSONReader().ReadToValueDeprecated(command_payload));
-  if (!root.get())
+  absl::optional<base::Value> root(base::JSONReader::Read(command_payload));
+  if (!root)
     return false;
   base::DictionaryValue* payload = nullptr;
   if (!root->GetAsDictionary(&payload))
@@ -223,10 +223,11 @@ void DeviceCommandScreenshotJob::RunImpl(CallbackWithResult succeeded_callback,
     gfx::Rect rect = root_window->bounds();
     screenshot_delegate_->TakeSnapshot(
         root_window, rect,
-        base::Bind(&RunStoreScreenshotOnTaskRunner,
-                   base::Bind(&DeviceCommandScreenshotJob::StoreScreenshot,
-                              weak_ptr_factory_.GetWeakPtr(), screen),
-                   base::ThreadTaskRunnerHandle::Get()));
+        base::BindOnce(
+            &RunStoreScreenshotOnTaskRunner,
+            base::BindOnce(&DeviceCommandScreenshotJob::StoreScreenshot,
+                           weak_ptr_factory_.GetWeakPtr(), screen),
+            base::ThreadTaskRunnerHandle::Get()));
   }
 }
 

@@ -15,6 +15,8 @@ namespace extensions {
 
 // A structure to hold the parsed linked app icon data.
 struct LinkedAppIcons : public Extension::ManifestData {
+  static constexpr int kAnySize = 0;
+
   struct IconInfo {
     IconInfo();
     ~IconInfo();
@@ -38,7 +40,7 @@ class LinkedAppIconsHandler : public ManifestHandler {
   LinkedAppIconsHandler();
   ~LinkedAppIconsHandler() override;
 
-  bool Parse(Extension* extension, base::string16* error) override;
+  bool Parse(Extension* extension, std::u16string* error) override;
 
  private:
   base::span<const char* const> Keys() const override;

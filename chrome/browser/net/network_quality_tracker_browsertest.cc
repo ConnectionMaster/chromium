@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/deferred_sequenced_task_runner.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_impl.h"
 #include "chrome/browser/chrome_content_browser_client.h"
@@ -17,21 +17,20 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/network_service_util.h"
-#include "content/public/common/service_manager_connection.h"
-#include "content/public/common/service_names.mojom.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
 #include "content/public/test/browser_test_utils.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/nqe/effective_connection_type.h"
 #include "net/nqe/network_quality_estimator.h"
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_quality_tracker.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace network {
 
@@ -39,22 +38,12 @@ namespace {
 
 // Simulates a network quality change. This is only called when network service
 // is running in the browser process, in which case, the network quality
-// estimator lives on the network thread (which will be the IO thread if network
-// service is disabled).
+// estimator lives on the network thread.
 void SimulateNetworkQualityChangeOnNetworkThread(
     net::EffectiveConnectionType type) {
-  if (content::IsInProcessNetworkService()) {
-    network::NetworkService::GetNetworkServiceForTesting()
-        ->network_quality_estimator()
-        ->SimulateNetworkQualityChangeForTesting(type);
-  } else {
-    DCHECK(!base::FeatureList::IsEnabled(network::features::kNetworkService));
-    DCHECK(content::GetNetworkServiceImpl());
-    DCHECK(content::GetNetworkServiceImpl()->network_quality_estimator());
-    content::GetNetworkServiceImpl()
-        ->network_quality_estimator()
-        ->SimulateNetworkQualityChangeForTesting(type);
-  }
+  network::NetworkService::GetNetworkServiceForTesting()
+      ->network_quality_estimator()
+      ->SimulateNetworkQualityChangeForTesting(type);
   base::RunLoop().RunUntilIdle();
 }
 
@@ -100,7 +89,7 @@ class TestNetworkQualityObserver
     run_loop_wait_effective_connection_type_ =
         run_loop_wait_effective_connection_type;
     run_loop_->Run();
-    run_loop_.reset(new base::RunLoop());
+    run_loop_ = std::make_unique<base::RunLoop>();
   }
 
   size_t num_notifications() const { return num_notifications_; }
@@ -134,8 +123,7 @@ class NetworkQualityTrackerBrowserTest : public InProcessBrowserTest {
   void SimulateNetworkQualityChange(net::EffectiveConnectionType type) {
     if (!content::IsOutOfProcessNetworkService()) {
       scoped_refptr<base::SequencedTaskRunner> task_runner =
-          base::CreateSequencedTaskRunnerWithTraits(
-              {content::BrowserThread::IO});
+          content::GetIOThreadTaskRunner({});
       if (content::IsInProcessNetworkService())
         task_runner = content::GetNetworkTaskRunner();
       task_runner->PostTask(
@@ -146,16 +134,13 @@ class NetworkQualityTrackerBrowserTest : public InProcessBrowserTest {
 
     mojo::ScopedAllowSyncCallForTesting allow_sync_call;
     content::StoragePartition* partition =
-        content::BrowserContext::GetDefaultStoragePartition(
-            browser()->profile());
+        browser()->profile()->GetDefaultStoragePartition();
     DCHECK(partition->GetNetworkContext());
     DCHECK(content::GetNetworkService());
 
-    network::mojom::NetworkServiceTestPtr network_service_test;
-    content::ServiceManagerConnection::GetForProcess()
-        ->GetConnector()
-        ->BindInterface(content::mojom::kNetworkServiceName,
-                        &network_service_test);
+    mojo::Remote<network::mojom::NetworkServiceTest> network_service_test;
+    content::GetNetworkService()->BindTestInterface(
+        network_service_test.BindNewPipeAndPassReceiver());
     base::RunLoop run_loop;
     network_service_test->SimulateNetworkQualityChange(
         type, base::BindOnce([](base::RunLoop* run_loop) { run_loop->Quit(); },
@@ -273,7 +258,9 @@ IN_PROC_BROWSER_TEST_F(NetworkQualityTrackerBrowserTest,
 
   SimulateNetworkServiceCrash();
   // Flush the network interface to make sure it notices the crash.
-  content::BrowserContext::GetDefaultStoragePartition(browser()->profile())
+  browser()
+      ->profile()
+      ->GetDefaultStoragePartition()
       ->FlushNetworkInterfaceForTesting();
 
   base::RunLoop().RunUntilIdle();

@@ -8,14 +8,16 @@
 #include "base/macros.h"
 #include "components/favicon/core/favicon_driver_impl.h"
 #import "components/image_fetcher/ios/ios_image_data_fetcher_wrapper.h"
-#include "ios/web/public/web_state/web_state_observer.h"
-#include "ios/web/public/web_state/web_state_user_data.h"
+#include "ios/web/public/web_state_observer.h"
+#import "ios/web/public/web_state_user_data.h"
 
 namespace web {
 class WebState;
 }
 
 namespace favicon {
+
+class CoreFaviconService;
 
 // WebFaviconDriver is an implementation of FaviconDriver that listen to
 // WebState events to start download of favicons and to get informed when the
@@ -27,7 +29,7 @@ class WebFaviconDriver : public web::WebStateObserver,
   ~WebFaviconDriver() override;
 
   static void CreateForWebState(web::WebState* web_state,
-                                FaviconService* favicon_service);
+                                CoreFaviconService* favicon_service);
 
   // FaviconDriver implementation.
   gfx::Image GetFavicon() const override;
@@ -54,7 +56,8 @@ class WebFaviconDriver : public web::WebStateObserver,
  private:
   friend class web::WebStateUserData<WebFaviconDriver>;
 
-  WebFaviconDriver(web::WebState* web_state, FaviconService* favicon_service);
+  WebFaviconDriver(web::WebState* web_state,
+                   CoreFaviconService* favicon_service);
 
   // web::WebStateObserver implementation.
   void DidFinishNavigation(web::WebState* web_state,

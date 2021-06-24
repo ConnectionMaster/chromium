@@ -5,7 +5,8 @@
 package org.chromium.chrome.test.util.browser.tabmodel;
 
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tabmodel.EmptyTabModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorBase;
@@ -23,17 +24,17 @@ public class MockTabModelSelector extends TabModelSelectorBase {
 
     public MockTabModelSelector(
             int tabCount, int incognitoTabCount, MockTabModel.MockTabModelDelegate delegate) {
-        super();
-        initialize(false, new MockTabModel(false, delegate), new MockTabModel(true, delegate));
+        super(null, EmptyTabModelFilter::new, false);
+        initialize(new MockTabModel(false, delegate), new MockTabModel(true, delegate));
         for (int i = 0; i < tabCount; i++) {
             addMockTab();
         }
-        if (tabCount > 0) TabModelUtils.setIndex(getModelAt(0), 0);
+        if (tabCount > 0) TabModelUtils.setIndex(getModel(false), 0);
 
         for (int i = 0; i < incognitoTabCount; i++) {
             addMockIncognitoTab();
         }
-        if (incognitoTabCount > 0) TabModelUtils.setIndex(getModelAt(1), 0);
+        if (incognitoTabCount > 0) TabModelUtils.setIndex(getModel(true), 0);
     }
 
     private static int nextIdOffset() {
@@ -41,11 +42,11 @@ public class MockTabModelSelector extends TabModelSelectorBase {
     }
 
     public Tab addMockTab() {
-        return ((MockTabModel) getModelAt(0)).addTab(ID_OFFSET + nextIdOffset());
+        return ((MockTabModel) getModel(false)).addTab(ID_OFFSET + nextIdOffset());
     }
 
     public Tab addMockIncognitoTab() {
-        return ((MockTabModel) getModelAt(1)).addTab(INCOGNITO_ID_OFFSET + nextIdOffset());
+        return ((MockTabModel) getModel(true)).addTab(INCOGNITO_ID_OFFSET + nextIdOffset());
     }
 
     @Override
@@ -62,5 +63,26 @@ public class MockTabModelSelector extends TabModelSelectorBase {
     @Override
     public int getTotalTabCount() {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void requestToShowTab(Tab tab, int type) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean closeAllTabsRequest(boolean incognito) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isSessionRestoreInProgress() {
+        return false;
+    }
+
+    @Override
+    public void selectModel(boolean incognito) {
+        super.selectModel(incognito);
+        ((MockTabModel) getModel(incognito)).setAsActiveModelForTesting();
     }
 }

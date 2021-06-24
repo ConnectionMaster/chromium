@@ -17,6 +17,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/trace_event/memory_dump_provider.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
 #include "net/http/http_network_session.h"
@@ -26,25 +28,16 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/url_request.h"
 
-class ChromeBrowserStateImplIOData;
-class ProfileImplIOData;
-
 namespace base {
 namespace trace_event {
 class ProcessMemoryDump;
 }
 }
 
-namespace safe_browsing {
-class SafeBrowsingURLRequestContextGetter;
-}  // namespace safe_browsing
-
 namespace net {
 class CertVerifier;
-class ChannelIDService;
 class CookieStore;
 class CTPolicyEnforcer;
-class CTVerifier;
 class HostResolver;
 class HttpAuthHandlerFactory;
 class HttpTransactionFactory;
@@ -54,10 +47,16 @@ class NetworkDelegate;
 class NetworkQualityEstimator;
 class ProxyDelegate;
 class ProxyResolutionService;
+class QuicContext;
+class SCTAuditingDelegate;
 class SSLConfigService;
 class URLRequest;
 class URLRequestJobFactory;
 class URLRequestThrottlerManager;
+
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
+class FtpAuthCache;
+#endif  // !BUILDFLAG(DISABLE_FTP_SUPPORT)
 
 #if BUILDFLAG(ENABLE_REPORTING)
 class NetworkErrorLoggingService;
@@ -73,9 +72,7 @@ class ReportingService;
 class NET_EXPORT URLRequestContext
     : public base::trace_event::MemoryDumpProvider {
  public:
-  // Contexts that are known to not currently be copied should set |allow_copy|
-  // to false to prevent added copying.
-  explicit URLRequestContext(bool allow_copy = true);
+  URLRequestContext();
   ~URLRequestContext() override;
 
   // May return nullptr if this context doesn't have an associated network
@@ -86,12 +83,20 @@ class NET_EXPORT URLRequestContext
   // session.
   const HttpNetworkSession::Context* GetNetworkSessionContext() const;
 
+// TODO(crbug.com/1052397): Revisit once build flag switch of lacros-chrome is
+// complete.
+#if !defined(OS_WIN) && !(defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS))
   // This function should not be used in Chromium, please use the version with
   // NetworkTrafficAnnotationTag in the future.
+  //
+  // The unannotated method is not available on desktop Linux + Windows. It's
+  // available on other platforms, since we only audit network annotations on
+  // Linux & Windows.
   std::unique_ptr<URLRequest> CreateRequest(
       const GURL& url,
       RequestPriority priority,
       URLRequest::Delegate* delegate) const;
+#endif
 
   // |traffic_annotation| is metadata about the network traffic send via this
   // URLRequest, see net::DefineNetworkTrafficAnnotation. Note that:
@@ -118,6 +123,7 @@ class NET_EXPORT URLRequestContext
   }
 
   void set_host_resolver(HostResolver* host_resolver) {
+    DCHECK(host_resolver);
     host_resolver_ = host_resolver;
   }
 
@@ -127,15 +133,6 @@ class NET_EXPORT URLRequestContext
 
   void set_cert_verifier(CertVerifier* cert_verifier) {
     cert_verifier_ = cert_verifier;
-  }
-
-  ChannelIDService* channel_id_service() const {
-    return channel_id_service_;
-  }
-
-  void set_channel_id_service(
-      ChannelIDService* channel_id_service) {
-    channel_id_service_ = channel_id_service;
   }
 
   // Get the proxy service for this context.
@@ -201,16 +198,16 @@ class NET_EXPORT URLRequestContext
     transport_security_state_ = state;
   }
 
-  CTVerifier* cert_transparency_verifier() const {
-    return cert_transparency_verifier_;
-  }
-  void set_cert_transparency_verifier(CTVerifier* verifier) {
-    cert_transparency_verifier_ = verifier;
-  }
-
   CTPolicyEnforcer* ct_policy_enforcer() const { return ct_policy_enforcer_; }
   void set_ct_policy_enforcer(CTPolicyEnforcer* enforcer) {
     ct_policy_enforcer_ = enforcer;
+  }
+
+  SCTAuditingDelegate* sct_auditing_delegate() const {
+    return sct_auditing_delegate_;
+  }
+  void set_sct_auditing_delegate(SCTAuditingDelegate* delegate) {
+    sct_auditing_delegate_ = delegate;
   }
 
   const URLRequestJobFactory* job_factory() const { return job_factory_; }
@@ -224,6 +221,11 @@ class NET_EXPORT URLRequestContext
   }
   void set_throttler_manager(URLRequestThrottlerManager* throttler_manager) {
     throttler_manager_ = throttler_manager;
+  }
+
+  QuicContext* quic_context() const { return quic_context_; }
+  void set_quic_context(QuicContext* quic_context) {
+    quic_context_ = quic_context;
   }
 
   // Gets the URLRequest objects that hold a reference to this
@@ -285,6 +287,20 @@ class NET_EXPORT URLRequestContext
   // Returns current value of the |check_cleartext_permitted| flag.
   bool check_cleartext_permitted() const { return check_cleartext_permitted_; }
 
+  void set_require_network_isolation_key(bool require_network_isolation_key) {
+    require_network_isolation_key_ = require_network_isolation_key;
+  }
+  bool require_network_isolation_key() const {
+    return require_network_isolation_key_;
+  }
+
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
+  void set_ftp_auth_cache(FtpAuthCache* auth_cache) {
+    ftp_auth_cache_ = auth_cache;
+  }
+  FtpAuthCache* ftp_auth_cache() { return ftp_auth_cache_; }
+#endif  // !BUILDFLAG(DISABLE_FTP_SUPPORT)
+
   // Sets a name for this URLRequestContext. Currently the name is used in
   // MemoryDumpProvier to annotate memory usage. The name does not need to be
   // unique.
@@ -302,31 +318,11 @@ class NET_EXPORT URLRequestContext
   }
 
  private:
-  // Whitelist legacy usage of now-deprecated CopyFrom().
-  friend class ::ChromeBrowserStateImplIOData;
-  friend class ::ProfileImplIOData;
-  friend class safe_browsing::SafeBrowsingURLRequestContextGetter;
-
-  // Copies the state from |other| into this context.
-  //
-  // Due to complex interdependencies between various fields as well as fields
-  // that should be unique to each context, copy is fundamentally broken, and
-  // should not be done. If a modified context is needed (and that is not
-  // typical), a new context should always be fully created (via
-  // URLRequestContextBuilder) rather than copying from a previous one.
-  void CopyFrom(const URLRequestContext* other);
-
-  // ---------------------------------------------------------------------------
-  // Important: When adding any new members below, consider whether they need to
-  // be added to CopyFrom.
-  // ---------------------------------------------------------------------------
-
   // Ownership for these members are not defined here. Clients should either
   // provide storage elsewhere or have a subclass take ownership.
   NetLog* net_log_;
   HostResolver* host_resolver_;
   CertVerifier* cert_verifier_;
-  ChannelIDService* channel_id_service_;
   HttpAuthHandlerFactory* http_auth_handler_factory_;
   ProxyResolutionService* proxy_resolution_service_;
   ProxyDelegate* proxy_delegate_;
@@ -336,21 +332,20 @@ class NET_EXPORT URLRequestContext
   const HttpUserAgentSettings* http_user_agent_settings_;
   CookieStore* cookie_store_;
   TransportSecurityState* transport_security_state_;
-  CTVerifier* cert_transparency_verifier_;
   CTPolicyEnforcer* ct_policy_enforcer_;
+  SCTAuditingDelegate* sct_auditing_delegate_;
   HttpTransactionFactory* http_transaction_factory_;
   const URLRequestJobFactory* job_factory_;
   URLRequestThrottlerManager* throttler_manager_;
+  QuicContext* quic_context_;
   NetworkQualityEstimator* network_quality_estimator_;
 #if BUILDFLAG(ENABLE_REPORTING)
   ReportingService* reporting_service_;
   NetworkErrorLoggingService* network_error_logging_service_;
 #endif  // BUILDFLAG(ENABLE_REPORTING)
-
-  // ---------------------------------------------------------------------------
-  // Important: When adding any new members below, consider whether they need to
-  // be added to CopyFrom.
-  // ---------------------------------------------------------------------------
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
+  FtpAuthCache* ftp_auth_cache_;
+#endif  // !BUILDFLAG(DISABLE_FTP_SUPPORT)
 
   std::unique_ptr<std::set<const URLRequest*>> url_requests_;
 
@@ -360,12 +355,14 @@ class NET_EXPORT URLRequestContext
   // request. Only used on Android.
   bool check_cleartext_permitted_;
 
+  // Triggers a DCHECK if a NetworkIsolationKey/IsolationInfo is not provided to
+  // a request when true.
+  bool require_network_isolation_key_;
+
   // An optional name which can be set to describe this URLRequestContext.
   // Used in MemoryDumpProvier to annotate memory usage. The name does not need
   // to be unique.
   std::string name_;
-
-  const bool allow_copy_;
 
   THREAD_CHECKER(thread_checker_);
 

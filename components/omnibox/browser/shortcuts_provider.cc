@@ -12,9 +12,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/i18n/case_conversion.h"
-#include "base/logging.h"
 #include "base/metrics/histogram.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/stl_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -33,6 +34,7 @@
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/url_prefix.h"
 #include "components/prefs/pref_service.h"
+#include "components/search_engines/omnibox_focus_type.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/url_formatter/url_fixer.h"
 #include "third_party/metrics_proto/omnibox_input_type.pb.h"
@@ -65,13 +67,17 @@ struct ShortcutMatch {
         stripped_destination_url(stripped_destination_url),
         shortcut(shortcut),
         contents(shortcut->match_core.contents),
-        type(static_cast<AutocompleteMatch::Type>(shortcut->match_core.type)) {}
+        type(shortcut->match_core.type) {}
 
   int relevance;
+  // To satisfy |CompareWithDemoteByType<>::operator()|.
+  size_t subrelevance = 0;
   GURL stripped_destination_url;
   const ShortcutsDatabase::Shortcut* shortcut;
-  base::string16 contents;
+  std::u16string contents;
   AutocompleteMatch::Type type;
+
+  AutocompleteMatch::Type GetDemotionType() const { return type; }
 };
 
 // Sorts |matches| by destination, taking into account demotions based on
@@ -117,20 +123,10 @@ void ShortcutsProvider::Start(const AutocompleteInput& input,
   TRACE_EVENT0("omnibox", "ShortcutsProvider::Start");
   matches_.clear();
 
-  if (input.from_omnibox_focus() ||
-      (input.type() == metrics::OmniboxInputType::INVALID) ||
-      input.text().empty() || !initialized_)
-    return;
-
-  base::TimeTicks start_time = base::TimeTicks::Now();
-  GetMatches(input);
-  if (input.text().length() < 6) {
-    base::TimeTicks end_time = base::TimeTicks::Now();
-    std::string name = "ShortcutsProvider.QueryIndexTime." +
-                       base::NumberToString(input.text().size());
-    base::HistogramBase* counter = base::Histogram::FactoryGet(
-        name, 1, 1000, 50, base::Histogram::kUmaTargetedHistogramFlag);
-    counter->Add(static_cast<int>((end_time - start_time).InMilliseconds()));
+  if (input.focus_type() == OmniboxFocusType::DEFAULT &&
+      input.type() != metrics::OmniboxInputType::EMPTY &&
+      !input.text().empty() && initialized_) {
+    GetMatches(input);
   }
 }
 
@@ -153,7 +149,7 @@ void ShortcutsProvider::DeleteMatch(const AutocompleteMatch& match) {
   // second call to DeleteShortcutsWithURL(), which is harmless.
   history::HistoryService* const history_service = client_->GetHistoryService();
   DCHECK(history_service);
-  history_service->DeleteURL(url);
+  history_service->DeleteURLs({url});
 }
 
 ShortcutsProvider::~ShortcutsProvider() {
@@ -174,7 +170,7 @@ void ShortcutsProvider::GetMatches(const AutocompleteInput& input) {
     return;
   // Get the URLs from the shortcuts database with keys that partially or
   // completely match the search term.
-  base::string16 term_string(base::i18n::ToLower(input.text()));
+  std::u16string term_string(base::i18n::ToLower(input.text()));
   DCHECK(!term_string.empty());
 
   int max_relevance;
@@ -182,7 +178,7 @@ void ShortcutsProvider::GetMatches(const AutocompleteInput& input) {
           input.current_page_classification(), &max_relevance))
     max_relevance = kShortcutsProviderDefaultMaxRelevance;
   TemplateURLService* template_url_service = client_->GetTemplateURLService();
-  const base::string16 fixed_up_input(FixupUserInput(input).second);
+  const std::u16string fixed_up_input(FixupUserInput(input).second);
 
   std::vector<ShortcutMatch> shortcut_matches;
   for (auto it = FindFirstMatch(term_string, backend.get());
@@ -203,7 +199,7 @@ void ShortcutsProvider::GetMatches(const AutocompleteInput& input) {
   // Remove duplicates.  This is important because it's common to have multiple
   // shortcuts pointing to the same URL, e.g., ma, mai, and mail all pointing
   // to mail.google.com, so typing "m" will return them all.  If we then simply
-  // clamp to kMaxMatches and let the SortAndDedupMatches take care of
+  // clamp to provider_max_matches_ and let the SortAndDedupMatches take care of
   // collapsing the duplicates, we'll effectively only be returning one match,
   // instead of several possibilities.
   //
@@ -217,7 +213,7 @@ void ShortcutsProvider::GetMatches(const AutocompleteInput& input) {
   std::partial_sort(
       shortcut_matches.begin(),
       shortcut_matches.begin() +
-          std::min(AutocompleteProvider::kMaxMatches, shortcut_matches.size()),
+          std::min(provider_max_matches_, shortcut_matches.size()),
       shortcut_matches.end(),
       [](const ShortcutMatch& elem1, const ShortcutMatch& elem2) {
         // Ensure a stable sort by sorting equal-relevance matches
@@ -226,10 +222,9 @@ void ShortcutsProvider::GetMatches(const AutocompleteInput& input) {
                    ? elem1.contents < elem2.contents
                    : elem1.relevance > elem2.relevance;
       });
-  if (shortcut_matches.size() > AutocompleteProvider::kMaxMatches) {
-    shortcut_matches.erase(
-        shortcut_matches.begin() + AutocompleteProvider::kMaxMatches,
-        shortcut_matches.end());
+  if (shortcut_matches.size() > provider_max_matches_) {
+    shortcut_matches.erase(shortcut_matches.begin() + provider_max_matches_,
+                           shortcut_matches.end());
   }
   // Create and initialize autocomplete matches from shortcut matches.
   // Also guarantee that all relevance scores are decreasing (but do not assign
@@ -248,8 +243,8 @@ AutocompleteMatch ShortcutsProvider::ShortcutToACMatch(
     const ShortcutsDatabase::Shortcut& shortcut,
     int relevance,
     const AutocompleteInput& input,
-    const base::string16& fixed_up_input_text,
-    const base::string16 term_string) {
+    const std::u16string& fixed_up_input_text,
+    const std::u16string term_string) {
   DCHECK(!input.text().empty());
   AutocompleteMatch match;
   match.provider = this;
@@ -258,19 +253,19 @@ AutocompleteMatch ShortcutsProvider::ShortcutToACMatch(
   match.fill_into_edit = shortcut.match_core.fill_into_edit;
   match.destination_url = shortcut.match_core.destination_url;
   DCHECK(match.destination_url.is_valid());
+  match.document_type = shortcut.match_core.document_type;
   match.contents = shortcut.match_core.contents;
   match.contents_class = AutocompleteMatch::ClassificationsFromString(
       shortcut.match_core.contents_class);
   match.description = shortcut.match_core.description;
   match.description_class = AutocompleteMatch::ClassificationsFromString(
       shortcut.match_core.description_class);
-  match.transition = ui::PageTransitionFromInt(shortcut.match_core.transition);
-  match.type = static_cast<AutocompleteMatch::Type>(shortcut.match_core.type);
+  match.transition = shortcut.match_core.transition;
+  match.type = shortcut.match_core.type;
   match.keyword = shortcut.match_core.keyword;
   match.RecordAdditionalInfo("number of hits", shortcut.number_of_hits);
   match.RecordAdditionalInfo("last access time", shortcut.last_access_time);
-  match.RecordAdditionalInfo("original input text",
-                             base::UTF16ToUTF8(shortcut.text));
+  match.RecordAdditionalInfo("original input text", shortcut.text);
 
   // Set |inline_autocompletion| and |allowed_to_be_default_match| if possible.
   // If the input is in keyword mode, navigation matches cannot be the default
@@ -293,13 +288,15 @@ AutocompleteMatch ShortcutsProvider::ShortcutToACMatch(
                        base::StrCat({base::UTF16ToUTF8(match.keyword), " "}),
                        base::CompareCase::INSENSITIVE_ASCII);
   if (is_search_type) {
+    const TemplateURL* template_url =
+        client_->GetTemplateURLService()->GetDefaultSearchProvider();
     match.from_keyword =
-        // Either the match is not from the default search provider:
-        match.keyword != client_->GetTemplateURLService()
-                             ->GetDefaultSearchProvider()
-                             ->keyword() ||
-        // Or it is, but keyword mode was invoked explicitly and the keyword
-        // in the input is also of the default search provider.
+        // Either the default search provider is disabled,
+        !template_url ||
+        // or the match is not from the default search provider,
+        match.keyword != template_url->keyword() ||
+        // or keyword mode was invoked explicitly and the keyword in the input
+        // is also of the default search provider.
         (input.prefer_keyword() && keyword_matches);
   }
   // True if input is in keyword mode and the match is a URL suggestion or the
@@ -320,16 +317,15 @@ AutocompleteMatch ShortcutsProvider::ShortcutToACMatch(
             !input.prevent_inline_autocomplete() ||
             match.inline_autocompletion.empty();
       }
-    } else {
+    } else if (!match.TryRichAutocompletion(match.contents, match.description,
+                                            input, true)) {
       const size_t inline_autocomplete_offset =
           URLPrefix::GetInlineAutocompleteOffset(
               input.text(), fixed_up_input_text, true, match.fill_into_edit);
-      if (inline_autocomplete_offset != base::string16::npos) {
+      if (inline_autocomplete_offset != std::u16string::npos) {
         match.inline_autocompletion =
             match.fill_into_edit.substr(inline_autocomplete_offset);
-        match.allowed_to_be_default_match =
-            !HistoryProvider::PreventInlineAutocomplete(input) ||
-            match.inline_autocompletion.empty();
+        match.SetAllowedToBeDefault(input);
       }
     }
   }
@@ -347,7 +343,7 @@ AutocompleteMatch ShortcutsProvider::ShortcutToACMatch(
 }
 
 ShortcutsBackend::ShortcutMap::const_iterator ShortcutsProvider::FindFirstMatch(
-    const base::string16& keyword,
+    const std::u16string& keyword,
     ShortcutsBackend* backend) {
   DCHECK(backend);
   auto it = backend->shortcuts_map().lower_bound(keyword);
@@ -360,7 +356,7 @@ ShortcutsBackend::ShortcutMap::const_iterator ShortcutsProvider::FindFirstMatch(
 }
 
 int ShortcutsProvider::CalculateScore(
-    const base::string16& terms,
+    const std::u16string& terms,
     const ShortcutsDatabase::Shortcut& shortcut,
     int max_relevance) {
   DCHECK(!terms.empty());
@@ -380,8 +376,7 @@ int ShortcutsProvider::CalculateScore(
   base::TimeDelta time_passed = base::Time::Now() - shortcut.last_access_time;
   // Clamp to 0 in case time jumps backwards (e.g. due to DST).
   double decay_exponent =
-      std::max(0.0, kLn2 * static_cast<double>(time_passed.InMicroseconds()) /
-                        base::Time::kMicrosecondsPerWeek);
+      std::max(0.0, kLn2 * time_passed / base::TimeDelta::FromDays(7));
 
   // We modulate the decay factor based on how many times the shortcut has been
   // used. Newly created shortcuts decay at full speed; otherwise, decaying by
@@ -389,11 +384,10 @@ int ShortcutsProvider::CalculateScore(
   // (1.0 / each 5 additional hits), up to a maximum of 5x as long.
   const double kMaxDecaySpeedDivisor = 5.0;
   const double kNumUsesPerDecaySpeedDivisorIncrement = 5.0;
-  double decay_divisor = std::min(
+  const double decay_divisor = std::min(
       kMaxDecaySpeedDivisor,
       (shortcut.number_of_hits + kNumUsesPerDecaySpeedDivisorIncrement - 1) /
           kNumUsesPerDecaySpeedDivisorIncrement);
 
-  return static_cast<int>((base_score / exp(decay_exponent / decay_divisor)) +
-                          0.5);
+  return base::ClampRound(base_score / exp(decay_exponent / decay_divisor));
 }

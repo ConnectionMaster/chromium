@@ -6,14 +6,15 @@
 
 #include <sys/mman.h>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/posix/eintr_wrapper.h"
 
 namespace gwp_asan {
 namespace internal {
 
 void* GuardedPageAllocator::MapRegion() {
-  return mmap(nullptr, RegionSize(), PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1,
-              0);
+  return mmap(MapRegionHint(), RegionSize(), PROT_NONE,
+              MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 }
 
 void GuardedPageAllocator::UnmapRegion() {
@@ -25,7 +26,8 @@ void GuardedPageAllocator::UnmapRegion() {
 }
 
 void GuardedPageAllocator::MarkPageReadWrite(void* ptr) {
-  int err = mprotect(ptr, state_.page_size, PROT_READ | PROT_WRITE);
+  int err =
+      HANDLE_EINTR(mprotect(ptr, state_.page_size, PROT_READ | PROT_WRITE));
   PCHECK(err == 0) << "mprotect";
 }
 

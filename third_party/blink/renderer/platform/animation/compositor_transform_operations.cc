@@ -4,17 +4,19 @@
 
 #include "third_party/blink/renderer/platform/animation/compositor_transform_operations.h"
 
+#include "third_party/skia/include/core/SkMatrix44.h"
 #include "ui/gfx/transform.h"
+#include "ui/gfx/transform_operations.h"
 
 namespace blink {
 
-const cc::TransformOperations&
-CompositorTransformOperations::AsCcTransformOperations() const {
+const gfx::TransformOperations&
+CompositorTransformOperations::AsGfxTransformOperations() const {
   return transform_operations_;
 }
 
-cc::TransformOperations
-CompositorTransformOperations::ReleaseCcTransformOperations() {
+gfx::TransformOperations
+CompositorTransformOperations::ReleaseGfxTransformOperations() {
   return std::move(transform_operations_);
 }
 
@@ -26,36 +28,44 @@ bool CompositorTransformOperations::CanBlendWith(
 void CompositorTransformOperations::AppendTranslate(double x,
                                                     double y,
                                                     double z) {
-  transform_operations_.AppendTranslate(x, y, z);
+  transform_operations_.AppendTranslate(
+      SkDoubleToScalar(x), SkDoubleToScalar(y), SkDoubleToScalar(z));
 }
 
 void CompositorTransformOperations::AppendRotate(double x,
                                                  double y,
                                                  double z,
                                                  double degrees) {
-  transform_operations_.AppendRotate(x, y, z, degrees);
+  transform_operations_.AppendRotate(SkDoubleToScalar(x), SkDoubleToScalar(y),
+                                     SkDoubleToScalar(z),
+                                     SkDoubleToScalar(degrees));
 }
 
 void CompositorTransformOperations::AppendScale(double x, double y, double z) {
-  transform_operations_.AppendScale(x, y, z);
+  transform_operations_.AppendScale(SkDoubleToScalar(x), SkDoubleToScalar(y),
+                                    SkDoubleToScalar(z));
+}
+
+void CompositorTransformOperations::AppendSkewX(double x) {
+  transform_operations_.AppendSkewX(SkDoubleToScalar(x));
+}
+
+void CompositorTransformOperations::AppendSkewY(double y) {
+  transform_operations_.AppendSkewY(SkDoubleToScalar(y));
 }
 
 void CompositorTransformOperations::AppendSkew(double x, double y) {
-  transform_operations_.AppendSkew(x, y);
+  transform_operations_.AppendSkew(SkDoubleToScalar(x), SkDoubleToScalar(y));
 }
 
 void CompositorTransformOperations::AppendPerspective(double depth) {
-  transform_operations_.AppendPerspective(depth);
+  transform_operations_.AppendPerspective(SkDoubleToScalar(depth));
 }
 
 void CompositorTransformOperations::AppendMatrix(const SkMatrix44& matrix) {
   gfx::Transform transform(gfx::Transform::kSkipInitialization);
   transform.matrix() = matrix;
   transform_operations_.AppendMatrix(transform);
-}
-
-void CompositorTransformOperations::AppendIdentity() {
-  transform_operations_.AppendIdentity();
 }
 
 bool CompositorTransformOperations::IsIdentity() const {

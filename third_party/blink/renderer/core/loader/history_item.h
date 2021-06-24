@@ -27,7 +27,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_HISTORY_ITEM_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_HISTORY_ITEM_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/mojom/page_state/page_state.mojom-blink.h"
 #include "third_party/blink/public/platform/web_scroll_anchor_data.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/loader/frame_loader_types.h"
@@ -48,11 +49,8 @@ namespace mojom {
 enum class FetchCacheMode : int32_t;
 }  // namespace mojom
 
-class CORE_EXPORT HistoryItem final
-    : public GarbageCollectedFinalized<HistoryItem> {
+class CORE_EXPORT HistoryItem final : public GarbageCollected<HistoryItem> {
  public:
-  static HistoryItem* Create() { return MakeGarbageCollected<HistoryItem>(); }
-
   HistoryItem();
   ~HistoryItem();
 
@@ -77,7 +75,7 @@ class CORE_EXPORT HistoryItem final
     ScrollAnchorData scroll_anchor_data_;
   };
 
-  const base::Optional<ViewState>& GetViewState() const { return view_state_; }
+  const absl::optional<ViewState>& GetViewState() const { return view_state_; }
   void ClearViewState() { view_state_.reset(); }
   void CopyViewStateFrom(HistoryItem* other) {
     view_state_ = other->GetViewState();
@@ -108,10 +106,10 @@ class CORE_EXPORT HistoryItem final
   }
   int64_t DocumentSequenceNumber() const { return document_sequence_number_; }
 
-  void SetScrollRestorationType(HistoryScrollRestorationType type) {
+  void SetScrollRestorationType(mojom::blink::ScrollRestorationType type) {
     scroll_restoration_type_ = type;
   }
-  HistoryScrollRestorationType ScrollRestorationType() {
+  mojom::blink::ScrollRestorationType ScrollRestorationType() {
     return scroll_restoration_type_;
   }
 
@@ -122,7 +120,18 @@ class CORE_EXPORT HistoryItem final
 
   ResourceRequest GenerateResourceRequest(mojom::FetchCacheMode);
 
-  void Trace(blink::Visitor*);
+  const String& GetAppHistoryKey() const { return app_history_key_; }
+  void SetAppHistoryKey(const String& key) { app_history_key_ = key; }
+
+  const String& GetAppHistoryId() const { return app_history_id_; }
+  void SetAppHistoryId(const String& id) { app_history_id_ = id; }
+
+  void SetAppHistoryState(scoped_refptr<SerializedScriptValue>);
+  SerializedScriptValue* GetAppHistoryState() {
+    return app_history_state_.get();
+  }
+
+  void Trace(Visitor*) const;
 
  private:
   String url_string_;
@@ -131,7 +140,7 @@ class CORE_EXPORT HistoryItem final
   Vector<String> document_state_vector_;
   Member<DocumentState> document_state_;
 
-  base::Optional<ViewState> view_state_;
+  absl::optional<ViewState> view_state_;
 
   // If two HistoryItems have the same item sequence number, then they are
   // clones of one another. Traversing history from one such HistoryItem to
@@ -146,7 +155,8 @@ class CORE_EXPORT HistoryItem final
 
   // Type of the scroll restoration for the history item determines if scroll
   // position should be restored when it is loaded during history traversal.
-  HistoryScrollRestorationType scroll_restoration_type_;
+  mojom::blink::ScrollRestorationType scroll_restoration_type_ =
+      mojom::blink::ScrollRestorationType::kAuto;
 
   // Support for HTML5 History
   scoped_refptr<SerializedScriptValue> state_object_;
@@ -154,8 +164,12 @@ class CORE_EXPORT HistoryItem final
   // info used to repost form data
   scoped_refptr<EncodedFormData> form_data_;
   AtomicString form_content_type_;
+
+  String app_history_key_;
+  String app_history_id_;
+  scoped_refptr<SerializedScriptValue> app_history_state_;
 };  // class HistoryItem
 
 }  // namespace blink
 
-#endif  // HISTORYITEM_H
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_HISTORY_ITEM_H_

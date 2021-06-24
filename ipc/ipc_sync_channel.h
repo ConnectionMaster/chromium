@@ -96,6 +96,12 @@ class COMPONENT_EXPORT(IPC) SyncChannel : public ChannelProxy {
       const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
       base::WaitableEvent* shutdown_event);
 
+  void AddListenerTaskRunner(
+      int32_t routing_id,
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+
+  void RemoveListenerTaskRunner(int32_t routing_id);
+
   ~SyncChannel() override;
 
   bool Send(Message* message) override;
@@ -221,15 +227,9 @@ class COMPONENT_EXPORT(IPC) SyncChannel : public ChannelProxy {
     return reinterpret_cast<SyncContext*>(context());
   }
 
-  // Both these functions wait for a reply, timeout or process shutdown.  The
-  // latter one also runs a nested run loop in the meantime.
+  // Waits for a reply, timeout or process shutdown.
   static void WaitForReply(mojo::SyncHandleRegistry* registry,
-                           SyncContext* context,
-                           bool pump_messages);
-
-  // Runs a nested run loop until a reply arrives, times out, or the process
-  // shuts down.
-  static void WaitForReplyWithNestedMessageLoop(SyncContext* context);
+                           SyncContext* context);
 
   // Starts the dispatch watcher.
   void StartWatching();

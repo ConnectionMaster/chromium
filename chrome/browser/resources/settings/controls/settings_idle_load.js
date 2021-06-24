@@ -8,10 +8,15 @@
  * loading and rendering of elements that are accessed imperatively. A URL is
  * given that holds the elements to be loaded lazily.
  */
+import {assert} from '//resources/js/assert.m.js';
+import {html, Polymer, TemplateInstanceBase, templatize} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {ensureLazyLoaded} from '../ensure_lazy_loaded.js';
+
 Polymer({
   is: 'settings-idle-load',
 
-  behaviors: [Polymer.Templatizer],
+  _template: html`<slot></slot>`,
 
   properties: {
     /**
@@ -24,39 +29,40 @@ Polymer({
   /** @private {?Element} */
   child_: null,
 
-  /** @private {?Element} */
+  /** @private {?Element|?TemplateInstanceBase} */
   instance_: null,
 
   /** @private {number} */
   idleCallback_: 0,
 
   /** @override */
-  attached: function() {
-    this.idleCallback_ = requestIdleCallback(this.get.bind(this));
+  attached() {
+    this.idleCallback_ = requestIdleCallback(() => {
+      this.get();
+    });
   },
 
   /** @override */
-  detached: function() {
+  detached() {
     // No-op if callback already fired.
     cancelIdleCallback(this.idleCallback_);
   },
 
   /**
-   * @return {!Promise<Element>} Child element which has been stamped into the
-   *     DOM tree.
+   * @return {!Promise<!Element>} Resolves with the stamped child element after
+   *     the lazy module has been loaded.
    */
-  get: function() {
-    if (this.loading_) {
-      return this.loading_;
-    }
+  requestLazyModule_() {
+    return new Promise((resolve, reject) => {
+      ensureLazyLoaded().then(() => {
+        const template =
+            /** @type {!HTMLTemplateElement} */ (this.getContentChildren()[0]);
+        const TemplateClass = templatize(template, this, {
+          mutableData: false,
+          forwardHostProp: this._forwardHostPropV2,
+        });
 
-    this.loading_ = new Promise((resolve, reject) => {
-      this.importHref(this.url, () => {
-        assert(!this.ctor);
-        this.templatize(this.getContentChildren()[0]);
-        assert(this.ctor);
-
-        this.instance_ = this.stamp({});
+        this.instance_ = new TemplateClass();
 
         assert(!this.child_);
         this.child_ = this.instance_.root.firstElementChild;
@@ -65,39 +71,28 @@ Polymer({
         resolve(this.child_);
 
         this.fire('lazy-loaded');
-      }, reject, true);
+      }, reject);
     });
+  },
 
+  /**
+   * @return {!Promise<Element>} Child element which has been stamped into the
+   *     DOM tree.
+   */
+  get() {
+    if (this.loading_) {
+      return this.loading_;
+    }
+
+    this.loading_ = this.requestLazyModule_();
     return this.loading_;
   },
 
   /**
-   * TODO(dpapad): Delete this method once migration to Polymer 2 has finished.
    * @param {string} prop
    * @param {Object} value
    */
-  _forwardParentProp: function(prop, value) {
-    if (this.child_) {
-      this.child_._templateInstance[prop] = value;
-    }
-  },
-
-  /**
-   * TODO(dpapad): Delete this method once migration to Polymer 2 has finished.
-   * @param {string} path
-   * @param {Object} value
-   */
-  _forwardParentPath: function(path, value) {
-    if (this.child_) {
-      this.child_._templateInstance.notifyPath(path, value, true);
-    }
-  },
-
-  /**
-   * @param {string} prop
-   * @param {Object} value
-   */
-  _forwardHostPropV2: function(prop, value) {
+  _forwardHostPropV2(prop, value) {
     if (this.instance_) {
       this.instance_.forwardHostProp(prop, value);
     }

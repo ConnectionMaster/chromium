@@ -20,7 +20,7 @@ class [[clang::lto_visibility_public]] ScopedLsaPolicy {
 
   virtual ~ScopedLsaPolicy();
 
-  // Methods to store, retrieve, and remove private keyed data.  This data
+  // Methods to store, retrieve, remove and check private keyed data.  This data
   // is stored in protected memory in the OS that required SYSTEM account
   // to decrypt.
   virtual HRESULT StorePrivateData(const wchar_t* key, const wchar_t* value);
@@ -28,9 +28,15 @@ class [[clang::lto_visibility_public]] ScopedLsaPolicy {
   virtual HRESULT RetrievePrivateData(const wchar_t* key,
                                       wchar_t* value,
                                       size_t length);
+  virtual bool PrivateDataExists(const wchar_t* key);
 
-  // Adds the given right to the given user.
-  virtual HRESULT AddAccountRights(PSID sid, const wchar_t* right);
+  // Adds the set of given rights to the given user.
+  virtual HRESULT AddAccountRights(PSID sid,
+                                   const std::vector<std::wstring>& rights);
+
+  // Removes the set of given rights to the given user.
+  virtual HRESULT RemoveAccountRights(PSID sid,
+                                      const std::vector<std::wstring>& rights);
 
   // Removes the user account from the system.
   virtual HRESULT RemoveAccount(PSID sid);

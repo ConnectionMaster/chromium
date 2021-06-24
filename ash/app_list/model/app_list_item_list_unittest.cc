@@ -12,19 +12,20 @@
 #include "ash/app_list/model/app_list_folder_item.h"
 #include "ash/app_list/model/app_list_item.h"
 #include "ash/app_list/model/app_list_item_list_observer.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace app_list {
+namespace ash {
 
 namespace {
 
 class TestObserver : public AppListItemListObserver {
  public:
-  TestObserver() : items_added_(0), items_removed_(0), items_moved_(0) {}
+  TestObserver() = default;
 
-  ~TestObserver() override {}
+  ~TestObserver() override = default;
 
   // AppListItemListObserver overriden:
   void OnListItemAdded(size_t index, AppListItem* item) override {
@@ -52,9 +53,9 @@ class TestObserver : public AppListItemListObserver {
   }
 
  private:
-  size_t items_added_;
-  size_t items_removed_;
-  size_t items_moved_;
+  size_t items_added_ = 0;
+  size_t items_removed_ = 0;
+  size_t items_moved_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(TestObserver);
 };
@@ -67,8 +68,8 @@ std::string GetItemId(int id) {
 
 class AppListItemListTest : public testing::Test {
  public:
-  AppListItemListTest() {}
-  ~AppListItemListTest() override {}
+  AppListItemListTest() = default;
+  ~AppListItemListTest() override = default;
 
   // testing::Test overrides:
   void SetUp() override { item_list_.AddObserver(&observer_); }
@@ -401,4 +402,18 @@ TEST_F(AppListItemListTest, AddPageBreakItemWithSamePosition) {
   EXPECT_TRUE(page_break_item->position().LessThan(item_1->position()));
 }
 
-}  // namespace app_list
+TEST_F(AppListItemListTest, MoveItemPastEnd) {
+  CreateAndAddItem(GetItemId(0));
+  CreateAndAddItem(GetItemId(1));
+  CreateAndAddItem(GetItemId(2));
+  CreateAndAddItem(GetItemId(3));
+  EXPECT_TRUE(VerifyItemOrder4(0, 1, 2, 3));
+
+  // Move the first item one step beyond the end of the list.
+  item_list_.MoveItem(0, 4);
+
+  // No crash, item moves to the end.
+  EXPECT_TRUE(VerifyItemOrder4(1, 2, 3, 0));
+}
+
+}  // namespace ash

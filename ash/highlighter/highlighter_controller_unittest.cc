@@ -6,13 +6,14 @@
 
 #include <memory>
 
-#include "ash/components/fast_ink/fast_ink_points.h"
+#include "ash/assistant/test/assistant_ash_test_base.h"
+#include "ash/fast_ink/fast_ink_points.h"
 #include "ash/highlighter/highlighter_controller_test_api.h"
+#include "ash/public/cpp/stylus_utils.h"
 #include "ash/shell.h"
 #include "ash/system/palette/mock_palette_tool_delegate.h"
 #include "ash/system/palette/palette_tool.h"
 #include "ash/system/palette/tools/metalayer_mode.h"
-#include "ash/test/ash_test_base.h"
 #include "base/strings/stringprintf.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
@@ -58,13 +59,13 @@ class TestHighlighterObserver : public HighlighterController::Observer {
   DISALLOW_COPY_AND_ASSIGN(TestHighlighterObserver);
 };
 
-class HighlighterControllerTest : public AshTestBase {
+class HighlighterControllerTest : public AssistantAshTestBase {
  public:
   HighlighterControllerTest() = default;
   ~HighlighterControllerTest() override = default;
 
   void SetUp() override {
-    AshTestBase::SetUp();
+    AssistantAshTestBase::SetUp();
     controller_ = Shell::Get()->highlighter_controller();
     controller_test_api_ =
         std::make_unique<HighlighterControllerTestApi>(controller_);
@@ -78,7 +79,7 @@ class HighlighterControllerTest : public AshTestBase {
     // This needs to be called first to reset the controller state before the
     // shell instance gets torn down.
     controller_test_api_.reset();
-    AshTestBase::TearDown();
+    AssistantAshTestBase::TearDown();
   }
 
   void UpdateDisplayAndWaitForCompositingEnded(
@@ -120,6 +121,8 @@ class HighlighterControllerTest : public AshTestBase {
 // Test to ensure the class responsible for drawing the highlighter pointer
 // receives points from stylus movements as expected.
 TEST_F(HighlighterControllerTest, HighlighterRenderer) {
+  ash::stylus_utils::SetHasStylusInputForTesting();
+
   // The highlighter pointer mode only works with stylus.
   ui::test::EventGenerator* event_generator = GetEventGenerator();
   event_generator->EnterPenPointerMode();
@@ -294,17 +297,12 @@ TEST_F(HighlighterControllerTest, HighlighterGestures) {
   controller_->RemoveObserver(&observer);
 }
 
-// Disabled due to https://crbug.com/917113.
-TEST_F(HighlighterControllerTest, DISABLED_HighlighterGesturesScaled) {
+TEST_F(HighlighterControllerTest, HighlighterGesturesScaled) {
   controller_test_api_->SetEnabled(true);
   ui::test::EventGenerator* event_generator = GetEventGenerator();
   event_generator->EnterPenPointerMode();
 
-  const gfx::Rect original_rect(200, 100, 400, 300);
-
-  // Allow for rounding errors.
-  gfx::Rect inflated(original_rect);
-  inflated.Inset(-1, -1);
+  const gfx::Rect original_px(200, 100, 400, 300);
 
   constexpr float display_scales[] = {1.f, 1.5f, 2.0f};
   constexpr float ui_scales[] = {0.5f,  0.67f, 1.0f,  1.25f,
@@ -321,12 +319,21 @@ TEST_F(HighlighterControllerTest, DISABLED_HighlighterGesturesScaled) {
       UpdateDisplayAndWaitForCompositingEnded(display_spec);
 
       controller_test_api_->ResetSelection();
-      TraceRect(original_rect);
+      TraceRect(original_px);
       EXPECT_TRUE(controller_test_api_->HandleSelectionCalled());
 
-      const gfx::Rect selection = controller_test_api_->selection();
-      EXPECT_TRUE(inflated.Contains(selection));
-      EXPECT_TRUE(selection.Contains(original_rect));
+      const float combined_scale = display_scale * ui_scale;
+
+      const gfx::Rect selection_dp = controller_test_api_->selection();
+      const gfx::Rect selection_px = gfx::ToEnclosingRect(
+          gfx::ScaleRect(gfx::RectF(selection_dp), combined_scale));
+      EXPECT_TRUE(selection_px.Contains(original_px));
+
+      gfx::Rect inflated_px(original_px);
+      // Allow for rounding errors within 1dp.
+      const int error_margin = static_cast<int>(std::ceil(combined_scale));
+      inflated_px.Inset(-error_margin, -error_margin);
+      EXPECT_TRUE(inflated_px.Contains(selection_px));
     }
   }
 }
@@ -414,9 +421,7 @@ TEST_F(HighlighterControllerTest, InterruptedStroke) {
 }
 
 // Test that the selection is never crossing the screen bounds.
-//
-// Disabled due to https://crbug.com/917113.
-TEST_F(HighlighterControllerTest, DISABLED_SelectionInsideScreen) {
+TEST_F(HighlighterControllerTest, SelectionInsideScreen) {
   controller_test_api_->SetEnabled(true);
   ui::test::EventGenerator* event_generator = GetEventGenerator();
   event_generator->EnterPenPointerMode();

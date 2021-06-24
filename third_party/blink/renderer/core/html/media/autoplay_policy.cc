@@ -6,13 +6,12 @@
 
 #include "build/build_config.h"
 #include "third_party/blink/public/mojom/autoplay/autoplay.mojom-blink.h"
-#include "third_party/blink/public/mojom/feature_policy/feature_policy.mojom-blink.h"
-#include "third_party/blink/public/platform/web_content_settings_client.h"
+#include "third_party/blink/public/mojom/permissions_policy/permissions_policy.mojom-blink.h"
+#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_settings.h"
-#include "third_party/blink/public/web/web_user_media_client.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -22,6 +21,7 @@
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_entry.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
@@ -89,13 +89,14 @@ bool AutoplayPolicy::IsDocumentAllowedToPlay(const Document& document) {
   if (!document.GetFrame())
     return false;
 
-  bool feature_policy_enabled =
-      document.IsFeatureEnabled(mojom::FeaturePolicyFeature::kAutoplay);
+  bool permissions_policy_enabled =
+      document.GetExecutionContext()->IsFeatureEnabled(
+          mojom::blink::PermissionsPolicyFeature::kAutoplay);
 
   for (Frame* frame = document.GetFrame(); frame;
        frame = frame->Tree().Parent()) {
-    if (frame->HasBeenActivated() ||
-        frame->HasReceivedUserGestureBeforeNavigation()) {
+    if (frame->HasStickyUserActivation() ||
+        frame->HadStickyUserActivationBeforeNavigation()) {
       return true;
     }
 
@@ -105,7 +106,7 @@ bool AutoplayPolicy::IsDocumentAllowedToPlay(const Document& document) {
       return true;
     }
 
-    if (!feature_policy_enabled)
+    if (!permissions_policy_enabled)
       return false;
   }
 
@@ -145,19 +146,8 @@ bool AutoplayPolicy::DocumentShouldAutoplayMutedVideos(
 
 // static
 bool AutoplayPolicy::DocumentIsCapturingUserMedia(const Document& document) {
-  if (!document.GetFrame())
-    return false;
-
-  WebFrame* web_frame = WebFrame::FromFrame(document.GetFrame());
-  if (!web_frame)
-    return false;
-
-  WebLocalFrame* frame = web_frame->ToWebLocalFrame();
-  if (!frame || !frame->Client())
-    return false;
-
-  if (WebUserMediaClient* media_client = frame->Client()->UserMediaClient())
-    return media_client->IsCapturing();
+  if (auto* local_frame = document.GetFrame())
+    return local_frame->IsCapturingMedia();
 
   return false;
 }
@@ -188,7 +178,7 @@ void AutoplayPolicy::DidMoveToNewDocument(Document& old_document) {
 }
 
 bool AutoplayPolicy::IsEligibleForAutoplayMuted() const {
-  if (!element_->IsHTMLVideoElement())
+  if (!IsA<HTMLVideoElement>(element_.Get()))
     return false;
 
   if (RuntimeEnabledFeatures::VideoAutoFullscreenEnabled() &&
@@ -196,7 +186,7 @@ bool AutoplayPolicy::IsEligibleForAutoplayMuted() const {
     return false;
   }
 
-  return element_->muted() &&
+  return !element_->EffectiveMediaVolume() &&
          DocumentShouldAutoplayMutedVideos(element_->GetDocument());
 }
 
@@ -210,7 +200,8 @@ void AutoplayPolicy::StartAutoplayMutedWhenVisible() {
   autoplay_intersection_observer_ = IntersectionObserver::Create(
       {}, {IntersectionObserver::kMinimumThreshold}, &element_->GetDocument(),
       WTF::BindRepeating(&AutoplayPolicy::OnIntersectionChangedForAutoplay,
-                         WrapWeakPersistent(this)));
+                         WrapWeakPersistent(this)),
+      LocalFrameUkmAggregator::kMediaIntersectionObserver);
   autoplay_intersection_observer_->observe(element_);
 }
 
@@ -223,7 +214,7 @@ void AutoplayPolicy::StopAutoplayMutedWhenVisible() {
 }
 
 bool AutoplayPolicy::RequestAutoplayUnmute() {
-  DCHECK(!element_->muted());
+  DCHECK_NE(0, element_->EffectiveMediaVolume());
   bool was_autoplaying_muted = IsAutoplayingMutedInternal(true);
 
   TryUnlockingUserGesture();
@@ -231,9 +222,10 @@ bool AutoplayPolicy::RequestAutoplayUnmute() {
   if (was_autoplaying_muted) {
     if (IsGestureNeededForPlayback()) {
       if (IsUsingDocumentUserActivationRequiredPolicy()) {
-        element_->GetDocument().AddConsoleMessage(ConsoleMessage::Create(
-            mojom::ConsoleMessageSource::kJavaScript,
-            mojom::ConsoleMessageLevel::kWarning, kWarningUnmuteFailed));
+        element_->GetDocument().AddConsoleMessage(
+            MakeGarbageCollected<ConsoleMessage>(
+                mojom::ConsoleMessageSource::kJavaScript,
+                mojom::ConsoleMessageLevel::kWarning, kWarningUnmuteFailed));
       }
 
       autoplay_uma_helper_->RecordAutoplayUnmuteStatus(
@@ -269,7 +261,7 @@ bool AutoplayPolicy::RequestAutoplayByAttribute() {
   return false;
 }
 
-base::Optional<DOMExceptionCode> AutoplayPolicy::RequestPlay() {
+absl::optional<DOMExceptionCode> AutoplayPolicy::RequestPlay() {
   if (!LocalFrame::HasTransientUserActivation(
           element_->GetDocument().GetFrame())) {
     autoplay_uma_helper_->OnAutoplayInitiated(AutoplaySource::kMethod);
@@ -281,7 +273,7 @@ base::Optional<DOMExceptionCode> AutoplayPolicy::RequestPlay() {
 
   MaybeSetAutoplayInitiated();
 
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 bool AutoplayPolicy::IsAutoplayingMutedInternal(bool muted) const {
@@ -289,11 +281,11 @@ bool AutoplayPolicy::IsAutoplayingMutedInternal(bool muted) const {
 }
 
 bool AutoplayPolicy::IsOrWillBeAutoplayingMuted() const {
-  return IsOrWillBeAutoplayingMutedInternal(element_->muted());
+  return IsOrWillBeAutoplayingMutedInternal(!element_->EffectiveMediaVolume());
 }
 
 bool AutoplayPolicy::IsOrWillBeAutoplayingMutedInternal(bool muted) const {
-  if (!element_->IsHTMLVideoElement() ||
+  if (!IsA<HTMLVideoElement>(element_.Get()) ||
       !DocumentShouldAutoplayMutedVideos(element_->GetDocument())) {
     return false;
   }
@@ -319,10 +311,9 @@ bool AutoplayPolicy::IsGestureNeededForPlayback() const {
   if (!IsLockedPendingUserGesture())
     return false;
 
-  // We want to allow muted video to autoplay if:
-  // - The element is allowed to autoplay muted;
-  // - Autoplay is enabled in settings.
-  return !(IsEligibleForAutoplayMuted() && IsAutoplayAllowedPerSettings());
+  // We want to allow muted video to autoplay if the element is allowed to
+  // autoplay muted.
+  return !IsEligibleForAutoplayMuted();
 }
 
 String AutoplayPolicy::GetPlayErrorMessage() const {
@@ -332,7 +323,9 @@ String AutoplayPolicy::GetPlayErrorMessage() const {
 }
 
 bool AutoplayPolicy::WasAutoplayInitiated() const {
-  DCHECK(autoplay_initiated_.has_value());
+  if (!autoplay_initiated_.has_value())
+    return false;
+
   return *autoplay_initiated_;
 }
 
@@ -355,6 +348,7 @@ void AutoplayPolicy::OnIntersectionChangedForAutoplay(
 
   if (ShouldAutoplay()) {
     element_->paused_ = false;
+    element_->SetShowPosterFlag(false);
     element_->ScheduleEvent(event_type_names::kPlay);
     element_->ScheduleNotifyPlaying();
 
@@ -373,48 +367,44 @@ void AutoplayPolicy::MaybeSetAutoplayInitiated() {
 
   autoplay_initiated_ = true;
 
-  const Document& document = element_->GetDocument();
-  bool feature_policy_enabled =
-      document.IsFeatureEnabled(mojom::FeaturePolicyFeature::kAutoplay);
+  bool permissions_policy_enabled =
+      element_->GetExecutionContext() &&
+      element_->GetExecutionContext()->IsFeatureEnabled(
+          mojom::blink::PermissionsPolicyFeature::kAutoplay);
 
-  for (Frame* frame = document.GetFrame(); frame;
+  for (Frame* frame = element_->GetDocument().GetFrame(); frame;
        frame = frame->Tree().Parent()) {
-    if (frame->HasBeenActivated() ||
-        frame->HasReceivedUserGestureBeforeNavigation()) {
+    if (frame->HasStickyUserActivation() ||
+        frame->HadStickyUserActivationBeforeNavigation()) {
       autoplay_initiated_ = false;
       break;
     }
-    if (!feature_policy_enabled)
+    if (!permissions_policy_enabled)
       break;
   }
 }
 
-bool AutoplayPolicy::IsAutoplayAllowedPerSettings() const {
-  LocalFrame* frame = element_->GetDocument().GetFrame();
-  if (!frame)
-    return false;
-  if (auto* settings_client = frame->GetContentSettingsClient())
-    return settings_client->AllowAutoplay(true /* default_value */);
-  return true;
-}
-
 bool AutoplayPolicy::ShouldAutoplay() {
-  if (element_->GetDocument().IsSandboxed(WebSandboxFlags::kAutomaticFeatures))
+  if (!element_->GetExecutionContext() ||
+      element_->GetExecutionContext()->IsSandboxed(
+          network::mojom::blink::WebSandboxFlags::kAutomaticFeatures)) {
     return false;
+  }
   return element_->can_autoplay_ && element_->paused_ && element_->Autoplay();
 }
 
-void AutoplayPolicy::Trace(Visitor* visitor) {
+void AutoplayPolicy::Trace(Visitor* visitor) const {
   visitor->Trace(element_);
   visitor->Trace(autoplay_intersection_observer_);
   visitor->Trace(autoplay_uma_helper_);
 }
 
-STATIC_ASSERT_ENUM(WebSettings::AutoplayPolicy::kNoUserGestureRequired,
+STATIC_ASSERT_ENUM(mojom::blink::AutoplayPolicy::kNoUserGestureRequired,
                    AutoplayPolicy::Type::kNoUserGestureRequired);
-STATIC_ASSERT_ENUM(WebSettings::AutoplayPolicy::kUserGestureRequired,
+STATIC_ASSERT_ENUM(mojom::blink::AutoplayPolicy::kUserGestureRequired,
                    AutoplayPolicy::Type::kUserGestureRequired);
-STATIC_ASSERT_ENUM(WebSettings::AutoplayPolicy::kDocumentUserActivationRequired,
-                   AutoplayPolicy::Type::kDocumentUserActivationRequired);
+STATIC_ASSERT_ENUM(
+    mojom::blink::AutoplayPolicy::kDocumentUserActivationRequired,
+    AutoplayPolicy::Type::kDocumentUserActivationRequired);
 
 }  // namespace blink

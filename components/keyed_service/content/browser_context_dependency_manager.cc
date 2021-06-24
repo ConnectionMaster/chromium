@@ -41,8 +41,8 @@ void BrowserContextDependencyManager::DoCreateBrowserContextServices(
     bool is_testing_context) {
   TRACE_EVENT0(
       "browser",
-      "BrowserContextDependencyManager::DoCreateBrowserContextServices")
-  will_create_browser_context_services_callbacks_.Notify(context);
+      "BrowserContextDependencyManager::DoCreateBrowserContextServices");
+  create_services_callbacks_.Notify(context);
   DependencyManager::CreateContextServices(context, is_testing_context);
 }
 
@@ -51,12 +51,10 @@ void BrowserContextDependencyManager::DestroyBrowserContextServices(
   DependencyManager::DestroyContextServices(context);
 }
 
-std::unique_ptr<
-    base::CallbackList<void(content::BrowserContext*)>::Subscription>
-BrowserContextDependencyManager::
-    RegisterWillCreateBrowserContextServicesCallbackForTesting(
-        const base::Callback<void(content::BrowserContext*)>& callback) {
-  return will_create_browser_context_services_callbacks_.Add(callback);
+base::CallbackListSubscription
+BrowserContextDependencyManager::RegisterCreateServicesCallbackForTesting(
+    const CreateServicesCallback& callback) {
+  return create_services_callbacks_.Add(callback);
 }
 
 void BrowserContextDependencyManager::AssertBrowserContextWasntDestroyed(
@@ -90,9 +88,8 @@ void BrowserContextDependencyManager::DumpContextDependencies(
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kDumpBrowserContextDependencyGraphFlag)) {
     base::FilePath dot_file =
-        static_cast<const content::BrowserContext*>(context)
-            ->GetPath()
-            .AppendASCII("browser-context-dependencies.dot");
+        static_cast<content::BrowserContext*>(context)->GetPath().AppendASCII(
+            "browser-context-dependencies.dot");
     DumpDependenciesAsGraphviz("BrowserContext", dot_file);
   }
 }

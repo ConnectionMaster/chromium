@@ -5,11 +5,12 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_TEST_TEST_INSTALL_FINALIZER_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_TEST_TEST_INSTALL_FINALIZER_H_
 
+#include <map>
 #include <memory>
+#include <set>
 
-#include "base/macros.h"
-#include "base/optional.h"
 #include "chrome/browser/web_applications/components/install_finalizer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 struct WebApplicationInfo;
 
@@ -17,53 +18,82 @@ namespace web_app {
 
 class TestInstallFinalizer final : public InstallFinalizer {
  public:
+  // Returns what would be the AppId if an app is installed with |url|.
+  static AppId GetAppIdForUrl(const GURL& url);
+
   TestInstallFinalizer();
+  TestInstallFinalizer(const TestInstallFinalizer&) = delete;
+  TestInstallFinalizer& operator=(const TestInstallFinalizer&) = delete;
   ~TestInstallFinalizer() override;
 
   // InstallFinalizer:
   void FinalizeInstall(const WebApplicationInfo& web_app_info,
+                       const FinalizeOptions& options,
                        InstallFinalizedCallback callback) override;
-  void FinalizePolicyInstall(const WebApplicationInfo& web_app_info,
-                             InstallFinalizedCallback callback) override;
-  bool CanCreateOsShortcuts() const override;
-  void CreateOsShortcuts(const AppId& app_id,
-                         CreateOsShortcutsCallback callback) override;
-  bool CanPinAppToShelf() const override;
-  void PinAppToShelf(const AppId& app_id) override;
+  void FinalizeUninstallAfterSync(const AppId& app_id,
+                                  UninstallWebAppCallback callback) override;
+  void FinalizeUpdate(const WebApplicationInfo& web_app_info,
+                      content::WebContents* web_contents,
+                      InstallFinalizedCallback callback) override;
+  void UninstallExternalWebApp(
+      const AppId& app_id,
+      webapps::WebappUninstallSource external_install_source,
+      UninstallWebAppCallback callback) override;
+  void UninstallExternalWebAppByUrl(
+      const GURL& app_url,
+      webapps::WebappUninstallSource external_install_source,
+      UninstallWebAppCallback callback) override;
+  bool CanUserUninstallWebApp(const AppId& app_id) const override;
+  void UninstallWebApp(const AppId& app_id,
+                       webapps::WebappUninstallSource uninstall_source,
+                       UninstallWebAppCallback callback) override;
+  bool WasPreinstalledWebAppUninstalled(const AppId& app_id) const override;
   bool CanReparentTab(const AppId& app_id,
                       bool shortcut_created) const override;
   void ReparentTab(const AppId& app_id,
+                   bool shortcut_created,
                    content::WebContents* web_contents) override;
-  bool CanRevealAppShim() const override;
-  void RevealAppShim(const AppId& app_id) override;
 
   void SetNextFinalizeInstallResult(const AppId& app_id,
                                     InstallResultCode code);
+  void SetNextUninstallExternalWebAppResult(const GURL& app_url,
+                                            bool uninstalled);
+
+  // Uninstall the app and add |app_id| to the map of external extensions
+  // uninstalled by the user. May be called on an app that isn't installed to
+  // simulate that the app was uninstalled previously.
+  void SimulateExternalAppUninstalledByUser(const AppId& app_id);
 
   std::unique_ptr<WebApplicationInfo> web_app_info() {
     return std::move(web_app_info_copy_);
   }
 
-  bool finalized_policy_install() { return finalized_policy_install_.value(); }
+  const std::vector<FinalizeOptions>& finalize_options_list() const {
+    return finalize_options_list_;
+  }
 
-  int num_create_os_shortcuts_calls() { return num_create_os_shortcuts_calls_; }
+  const std::vector<GURL>& uninstall_external_web_app_urls() const {
+    return uninstall_external_web_app_urls_;
+  }
+
   int num_reparent_tab_calls() { return num_reparent_tab_calls_; }
-  int num_reveal_appshim_calls() { return num_reveal_appshim_calls_; }
-  int num_pin_app_to_shelf_calls() { return num_pin_app_to_shelf_calls_; }
 
  private:
+  void Finalize(const WebApplicationInfo& web_app_info,
+                InstallResultCode code,
+                InstallFinalizedCallback callback);
+
   std::unique_ptr<WebApplicationInfo> web_app_info_copy_;
-  base::Optional<bool> finalized_policy_install_;
+  std::vector<FinalizeOptions> finalize_options_list_;
+  std::vector<GURL> uninstall_external_web_app_urls_;
 
-  base::Optional<AppId> next_app_id_;
-  base::Optional<InstallResultCode> next_result_code_;
+  absl::optional<AppId> next_app_id_;
+  absl::optional<InstallResultCode> next_result_code_;
+  std::map<GURL, bool> next_uninstall_external_web_app_results_;
+  std::set<AppId> user_uninstalled_external_apps_;
 
-  int num_create_os_shortcuts_calls_ = 0;
   int num_reparent_tab_calls_ = 0;
-  int num_reveal_appshim_calls_ = 0;
-  int num_pin_app_to_shelf_calls_ = 0;
 
-  DISALLOW_COPY_AND_ASSIGN(TestInstallFinalizer);
 };
 
 }  // namespace web_app

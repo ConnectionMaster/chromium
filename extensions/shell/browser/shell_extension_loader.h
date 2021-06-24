@@ -5,9 +5,6 @@
 #ifndef EXTENSIONS_SHELL_BROWSER_SHELL_EXTENSION_LOADER_H_
 #define EXTENSIONS_SHELL_BROWSER_SHELL_EXTENSION_LOADER_H_
 
-#include <memory>
-#include <string>
-
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
@@ -77,7 +74,7 @@ class ShellExtensionLoader : public ExtensionRegistrar::Delegate {
   // LoadExtensionForReload().
   bool did_schedule_reload_ = false;
 
-  base::WeakPtrFactory<ShellExtensionLoader> weak_factory_;
+  base::WeakPtrFactory<ShellExtensionLoader> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ShellExtensionLoader);
 };

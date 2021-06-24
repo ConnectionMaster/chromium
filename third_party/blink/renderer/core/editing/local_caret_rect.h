@@ -7,11 +7,12 @@
 
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
-#include "third_party/blink/renderer/platform/geometry/layout_rect.h"
+#include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 
 namespace blink {
 
 class LayoutObject;
+class NGPhysicalBoxFragment;
 
 // A transient struct representing a caret rect local to |layout_object|.
 struct LocalCaretRect {
@@ -19,11 +20,16 @@ struct LocalCaretRect {
 
  public:
   const LayoutObject* layout_object = nullptr;
-  LayoutRect rect;
+  PhysicalRect rect;
+  const NGPhysicalBoxFragment* root_box_fragment = nullptr;
 
   LocalCaretRect() = default;
-  LocalCaretRect(const LayoutObject* layout_object, const LayoutRect& rect)
-      : layout_object(layout_object), rect(rect) {}
+  LocalCaretRect(const LayoutObject* layout_object,
+                 const PhysicalRect& rect,
+                 const NGPhysicalBoxFragment* root_box_fragment = nullptr)
+      : layout_object(layout_object),
+        rect(rect),
+        root_box_fragment(root_box_fragment) {}
 
   bool IsEmpty() const { return !layout_object || rect.IsEmpty(); }
 };
@@ -39,13 +45,11 @@ LocalCaretRectOfPosition(const PositionInFlatTreeWithAffinity&);
 LocalCaretRect LocalSelectionRectOfPosition(const PositionWithAffinity&);
 
 // Bounds of (possibly transformed) caret in absolute coords
-CORE_EXPORT IntRect AbsoluteCaretBoundsOf(const PositionWithAffinity&);
+CORE_EXPORT IntRect
+AbsoluteCaretBoundsOf(const PositionWithAffinity&,
+                      LayoutUnit* extra_width_to_end_of_line = nullptr);
 CORE_EXPORT IntRect
 AbsoluteCaretBoundsOf(const PositionInFlatTreeWithAffinity&);
-
-IntRect AbsoluteCaretRectOfPosition(
-    const PositionWithAffinity&,
-    LayoutUnit* extra_width_to_end_of_line = nullptr);
 
 CORE_EXPORT IntRect AbsoluteSelectionBoundsOf(const VisiblePosition&);
 CORE_EXPORT IntRect AbsoluteSelectionBoundsOf(const VisiblePositionInFlatTree&);

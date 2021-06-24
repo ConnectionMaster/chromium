@@ -6,7 +6,6 @@
 
 #include "base/base_paths.h"
 #include "base/bind.h"
-#include "base/macros.h"
 #include "base/path_service.h"
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/test_io_thread.h"
@@ -17,14 +16,9 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_paths.h"
 #include "extensions/test/test_extensions_client.h"
-#include "ui/base/buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gl/test/gl_surface_test_support.h"
 #include "url/url_util.h"
-
-#if BUILDFLAG(ENABLE_MUS)
-#include "ui/aura/test/aura_test_suite_setup.h"  // nogncheck
-#endif
 
 namespace {
 
@@ -34,23 +28,24 @@ namespace {
 // be a persistent object available to tests?
 class ExtensionsContentClient : public content::ContentClient {
  public:
-  ExtensionsContentClient() {}
-  ~ExtensionsContentClient() override {}
+  ExtensionsContentClient() = default;
+  ExtensionsContentClient(const ExtensionsContentClient&) = delete;
+  ExtensionsContentClient& operator=(const ExtensionsContentClient&) = delete;
+  ~ExtensionsContentClient() override = default;
 
   // content::ContentClient overrides:
   void AddAdditionalSchemes(Schemes* schemes) override {
     schemes->standard_schemes.push_back(extensions::kExtensionScheme);
     schemes->savable_schemes.push_back(extensions::kExtensionScheme);
   }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ExtensionsContentClient);
 };
 
 // The test suite for extensions_unittests.
 class ExtensionsTestSuite : public content::ContentTestSuiteBase {
  public:
   ExtensionsTestSuite(int argc, char** argv);
+  ExtensionsTestSuite(const ExtensionsTestSuite&) = delete;
+  ExtensionsTestSuite& operator=(const ExtensionsTestSuite&) = delete;
   ~ExtensionsTestSuite() override;
 
  private:
@@ -59,8 +54,6 @@ class ExtensionsTestSuite : public content::ContentTestSuiteBase {
   void Shutdown() override;
 
   std::unique_ptr<extensions::TestExtensionsClient> client_;
-
-  DISALLOW_COPY_AND_ASSIGN(ExtensionsTestSuite);
 };
 
 ExtensionsTestSuite::ExtensionsTestSuite(int argc, char** argv)
@@ -89,7 +82,7 @@ void ExtensionsTestSuite::Initialize() {
       extensions_shell_and_test_pak_path.AppendASCII(
           "extensions_shell_and_test.pak"));
 
-  client_.reset(new extensions::TestExtensionsClient());
+  client_ = std::make_unique<extensions::TestExtensionsClient>();
   extensions::ExtensionsClient::Set(client_.get());
 }
 
@@ -105,14 +98,7 @@ void ExtensionsTestSuite::Shutdown() {
 
 int main(int argc, char** argv) {
   content::UnitTestTestSuite test_suite(new ExtensionsTestSuite(argc, argv));
-
-#if BUILDFLAG(ENABLE_MUS)
-  // Extensions unit tests do not use mus window service client code.
-  aura::AuraTestSuiteSetup::DisableMusFeatures();
-#endif
-
-  return base::LaunchUnitTests(argc,
-                               argv,
-                               base::Bind(&content::UnitTestTestSuite::Run,
-                                          base::Unretained(&test_suite)));
+  return base::LaunchUnitTests(argc, argv,
+                               base::BindOnce(&content::UnitTestTestSuite::Run,
+                                              base::Unretained(&test_suite)));
 }

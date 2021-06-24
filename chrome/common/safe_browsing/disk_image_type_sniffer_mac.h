@@ -27,8 +27,8 @@ class DiskImageTypeSnifferMac
   // Returns true when the trailer is a valid trailer for a DMG type.
   static bool IsAppleDiskImageTrailer(const base::span<const uint8_t>& trailer);
 
-  // Returns the size of a DMG trailer.
-  static size_t AppleDiskImageTrailerSize();
+  // The size of a DMG trailer.
+  static constexpr size_t kAppleDiskImageTrailerSize = 512;
 
  private:
   friend class base::RefCountedThreadSafe<DiskImageTypeSnifferMac>;
@@ -40,4 +40,4 @@ class DiskImageTypeSnifferMac
 
 }  // namespace safe_browsing
 
-#endif  // CHROME_COMMON_SAFE_BROWSING_DISK_IMAGE_TYPE_SNIFFE_MAC_H_
+#endif  // CHROME_COMMON_SAFE_BROWSING_DISK_IMAGE_TYPE_SNIFFER_MAC_H_

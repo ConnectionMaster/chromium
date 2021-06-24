@@ -10,7 +10,7 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
 #include "components/offline_pages/core/offline_clock.h"
@@ -112,6 +112,10 @@ Result AddUniqueUrlsSync(
   for (auto candidate_iter = candidate_prefetch_urls.rbegin();
        candidate_iter != candidate_prefetch_urls.rend(); ++candidate_iter) {
     const PrefetchURL& prefetch_url = *candidate_iter;
+
+    if (!prefetch_url.url.is_valid() || !prefetch_url.url.SchemeIsHTTPOrHTTPS())
+      continue;
+
     const std::string url_spec = prefetch_url.url.spec();
     // Don't add the same URL more than once.
     if (!added_urls.insert(url_spec).second)
@@ -154,8 +158,7 @@ AddUniqueUrlsTask::AddUniqueUrlsTask(
     : prefetch_dispatcher_(prefetch_dispatcher),
       prefetch_store_(prefetch_store),
       name_space_(name_space),
-      prefetch_urls_(prefetch_urls),
-      weak_ptr_factory_(this) {
+      prefetch_urls_(prefetch_urls) {
   DCHECK(prefetch_dispatcher_);
   DCHECK(prefetch_store_);
 }

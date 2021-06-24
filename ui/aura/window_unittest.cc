@@ -6,6 +6,7 @@
 
 #include <limits.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,16 +16,17 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
 #include "cc/trees/layer_tree_frame_sink.h"
-#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/client/capture_client.h"
 #include "ui/aura/client/focus_change_observer.h"
 #include "ui/aura/client/visibility_client.h"
 #include "ui/aura/client/window_parenting_client.h"
 #include "ui/aura/layout_manager.h"
+#include "ui/aura/scoped_window_capture_request.h"
+#include "ui/aura/scoped_window_event_targeting_blocker.h"
 #include "ui/aura/test/aura_test_base.h"
 #include "ui/aura/test/aura_test_utils.h"
 #include "ui/aura/test/test_window_delegate.h"
@@ -37,7 +39,7 @@
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/class_property.h"
 #include "ui/base/hit_test.h"
-#include "ui/base/ui_base_switches_util.h"
+#include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_animator.h"
@@ -53,6 +55,7 @@
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/overlay_transform_utils.h"
 #include "ui/gfx/skia_util.h"
 
 DEFINE_UI_CLASS_PROPERTY_TYPE(const char*)
@@ -94,6 +97,72 @@ class DeletionTracker {
   DISALLOW_COPY_AND_ASSIGN(DeletionTracker);
 };
 
+// The helper class to wait for the animation completion and run callbacks.
+class LayerTranslationAnimationNotifier : public ui::CompositorObserver {
+ public:
+  using AnimationCallback =
+      base::RepeatingCallback<void(const gfx::Transform&)>;
+
+  LayerTranslationAnimationNotifier(
+      ui::Layer* animation_layer,
+      const gfx::Transform& initial_transform_,
+      const gfx::Transform& target_transform,
+      AnimationCallback animation_start_callback,
+      AnimationCallback animation_end_callback,
+      AnimationCallback animation_progress_callback)
+      : animation_layer_(animation_layer),
+        initial_transform_(initial_transform_),
+        target_transform_(target_transform),
+        animation_start_callback_(animation_start_callback),
+        animation_end_callback_(animation_end_callback),
+        animation_progress_callback_(animation_progress_callback) {
+    animation_layer_->GetCompositor()->AddObserver(this);
+  }
+  LayerTranslationAnimationNotifier(const LayerTranslationAnimationNotifier&) =
+      delete;
+  LayerTranslationAnimationNotifier& operator=(
+      const LayerTranslationAnimationNotifier&) = delete;
+  ~LayerTranslationAnimationNotifier() override {
+    animation_layer_->GetCompositor()->RemoveObserver(this);
+  }
+
+  void WaitForAnimationCompletion() { run_loop_.Run(); }
+
+  // ui::CompositorObserver:
+  void OnCompositingDidCommit(ui::Compositor* compositor) override {
+    const gfx::Transform current_transform = animation_layer_->transform();
+    if (current_transform == initial_transform_) {
+      animation_start_callback_.Run(current_transform);
+    } else if (current_transform == target_transform_) {
+      animation_end_callback_.Run(current_transform);
+      run_loop_.Quit();
+    } else {
+      animation_progress_callback_.Run(current_transform);
+    }
+  }
+
+ private:
+  // The layer to be animated.
+  ui::Layer* const animation_layer_;
+
+  // The initial transform.
+  gfx::Transform initial_transform_;
+
+  // The target transform.
+  gfx::Transform target_transform_;
+
+  // The callback to run at the start of the animation.
+  AnimationCallback animation_start_callback_;
+
+  // The callback to run at the end of the animation.
+  AnimationCallback animation_end_callback_;
+
+  // The callback to run during the progress of the animation.
+  AnimationCallback animation_progress_callback_;
+
+  base::RunLoop run_loop_;
+};
+
 class DeletionTestProperty {
  public:
   explicit DeletionTestProperty(DeletionTracker* tracker) : tracker_(tracker) {}
@@ -117,13 +186,13 @@ namespace aura {
 namespace test {
 namespace {
 
-class WindowTest : public AuraTestBaseWithType {
+class WindowTest : public AuraTestBase {
  public:
   WindowTest() : max_separation_(0) {
   }
 
   void SetUp() override {
-    AuraTestBaseWithType::SetUp();
+    AuraTestBase::SetUp();
     // TODO: there needs to be an easier way to do this.
     max_separation_ = ui::GestureConfiguration::GetInstance()
                           ->max_separation_for_gesture_touches_in_pixels();
@@ -203,8 +272,7 @@ class ChildWindowDelegateImpl : public DestroyTrackingDelegateImpl {
 // OnWindowDestroyed is called.
 class DestroyOrphanDelegate : public TestWindowDelegate {
  public:
-  DestroyOrphanDelegate() : window_(NULL) {
-  }
+  DestroyOrphanDelegate() : window_(nullptr) {}
 
   void set_window(Window* window) { window_ = window; }
 
@@ -317,25 +385,25 @@ void OffsetBounds(Window* window, int horizontal, int vertical) {
   window->SetBounds(bounds);
 }
 
-TEST_P(WindowTest, GetChildById) {
+TEST_F(WindowTest, GetChildById) {
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   std::unique_ptr<Window> w11(CreateTestWindowWithId(11, w1.get()));
   std::unique_ptr<Window> w111(CreateTestWindowWithId(111, w11.get()));
   std::unique_ptr<Window> w12(CreateTestWindowWithId(12, w1.get()));
 
-  EXPECT_EQ(NULL, w1->GetChildById(57));
+  EXPECT_FALSE(w1->GetChildById(57));
   EXPECT_EQ(w12.get(), w1->GetChildById(12));
   EXPECT_EQ(w111.get(), w1->GetChildById(111));
 }
 
 // Make sure that Window::Contains correctly handles children, grandchildren,
 // and not containing NULL or parents.
-TEST_P(WindowTest, Contains) {
-  Window parent(NULL);
+TEST_F(WindowTest, Contains) {
+  Window parent(nullptr);
   parent.Init(ui::LAYER_NOT_DRAWN);
-  Window child1(NULL);
+  Window child1(nullptr);
   child1.Init(ui::LAYER_NOT_DRAWN);
-  Window child2(NULL);
+  Window child2(nullptr);
   child2.Init(ui::LAYER_NOT_DRAWN);
 
   parent.AddChild(&child1);
@@ -345,12 +413,12 @@ TEST_P(WindowTest, Contains) {
   EXPECT_TRUE(parent.Contains(&child1));
   EXPECT_TRUE(parent.Contains(&child2));
 
-  EXPECT_FALSE(parent.Contains(NULL));
+  EXPECT_FALSE(parent.Contains(nullptr));
   EXPECT_FALSE(child1.Contains(&parent));
   EXPECT_FALSE(child2.Contains(&child1));
 }
 
-TEST_P(WindowTest, ContainsPointInRoot) {
+TEST_F(WindowTest, ContainsPointInRoot) {
   std::unique_ptr<Window> w(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 5, 5), root_window()));
   EXPECT_FALSE(w->ContainsPointInRoot(gfx::Point(9, 9)));
@@ -360,7 +428,7 @@ TEST_P(WindowTest, ContainsPointInRoot) {
   EXPECT_FALSE(w->ContainsPointInRoot(gfx::Point(20, 20)));
 }
 
-TEST_P(WindowTest, ContainsPoint) {
+TEST_F(WindowTest, ContainsPoint) {
   std::unique_ptr<Window> w(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 5, 5), root_window()));
   EXPECT_TRUE(w->ContainsPoint(gfx::Point(0, 0)));
@@ -369,18 +437,119 @@ TEST_P(WindowTest, ContainsPoint) {
   EXPECT_FALSE(w->ContainsPoint(gfx::Point(10, 10)));
 }
 
-TEST_P(WindowTest, ConvertPointToWindow) {
+TEST_F(WindowTest, MakeWindowCapturable) {
+  std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
+  // Initially the window is not capturable.
+  EXPECT_FALSE(w1->subtree_capture_id().is_valid());
+
+  // Creating requests makes the window capturable as long as those requests
+  // remain alive.
+  ScopedWindowCaptureRequest request1 = w1->MakeWindowCapturable();
+  EXPECT_TRUE(w1->subtree_capture_id().is_valid());
+  EXPECT_EQ(request1.GetCaptureId(), w1->subtree_capture_id());
+  EXPECT_EQ(request1.GetCaptureId(), w1->layer()->GetSubtreeCaptureId());
+
+  // A new request does not affect the subtree capture ID.
+  const viz::SubtreeCaptureId current_id = w1->subtree_capture_id();
+  ScopedWindowCaptureRequest request2 = w1->MakeWindowCapturable();
+  EXPECT_EQ(current_id, w1->subtree_capture_id());
+  EXPECT_EQ(request1.GetCaptureId(), request2.GetCaptureId());
+
+  // Create a new request, then move an existing request into it. This should
+  // invalidate the moved-from request.
+  ScopedWindowCaptureRequest request3 = w1->MakeWindowCapturable();
+  EXPECT_EQ(current_id, request3.GetCaptureId());
+  request3 = std::move(request2);
+  EXPECT_FALSE(request2.window());
+  EXPECT_FALSE(request2.GetCaptureId().is_valid());
+  EXPECT_TRUE(w1->subtree_capture_id().is_valid());
+
+  // Destroying |request2| does nothing.
+  auto consume_request = [](ScopedWindowCaptureRequest request) {};
+  consume_request(std::move(request2));
+  EXPECT_TRUE(w1->subtree_capture_id().is_valid());
+  EXPECT_EQ(current_id, w1->subtree_capture_id());
+
+  // Destroying |request1| won't affect the window, it will remain capturable,
+  // since |request3| is still alive.
+  consume_request(std::move(request1));
+  EXPECT_FALSE(request1.window());
+  EXPECT_FALSE(request1.GetCaptureId().is_valid());
+  EXPECT_TRUE(w1->subtree_capture_id().is_valid());
+  EXPECT_EQ(current_id, w1->subtree_capture_id());
+
+  // Once all requests are destroyed, the window no longer has a valid capture
+  // ID.
+  consume_request(std::move(request3));
+  EXPECT_FALSE(w1->subtree_capture_id().is_valid());
+  EXPECT_FALSE(w1->layer()->GetSubtreeCaptureId().is_valid());
+}
+
+TEST_F(WindowTest, DeletingCapturableWindows) {
+  std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
+  // Initially the window is not capturable.
+  EXPECT_FALSE(w1->subtree_capture_id().is_valid());
+
+  // Deleting a window with capture requests on them will not result in a use-
+  // after-free crash.
+  ScopedWindowCaptureRequest request1 = w1->MakeWindowCapturable();
+  ScopedWindowCaptureRequest request2 = w1->MakeWindowCapturable();
+  EXPECT_TRUE(w1->subtree_capture_id().is_valid());
+  w1.reset();
+  EXPECT_FALSE(request1.GetCaptureId().is_valid());
+  EXPECT_FALSE(request2.GetCaptureId().is_valid());
+}
+
+TEST_F(WindowTest, LayerReleasingAndSettingOfCapturableWindow) {
+  std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
+  EXPECT_FALSE(w1->subtree_capture_id().is_valid());
+  ScopedWindowCaptureRequest request = w1->MakeWindowCapturable();
+  EXPECT_TRUE(w1->layer()->GetSubtreeCaptureId().is_valid());
+
+  // Releasing the capturable window's layer (i.e. it's no longer associated
+  // with the window) will clear its capture ID. However, the window remains
+  // marked as capturable with a valid SubtreeCaptureId even though it has no
+  // layer.
+  std::unique_ptr<ui::Layer> taken_layer = w1->ReleaseLayer();
+  EXPECT_FALSE(w1->layer());
+  EXPECT_FALSE(taken_layer->GetSubtreeCaptureId().is_valid());
+  EXPECT_TRUE(w1->subtree_capture_id().is_valid());
+
+  // Setting a new layer on the window will set the layer's capture ID.
+  auto new_layer = std::make_unique<ui::Layer>();
+  taken_layer->parent()->Add(new_layer.get());
+  w1->Reset(std::move(new_layer));
+  EXPECT_TRUE(w1->layer()->GetSubtreeCaptureId().is_valid());
+  EXPECT_EQ(request.GetCaptureId(), w1->layer()->GetSubtreeCaptureId());
+}
+
+TEST_F(WindowTest, RecreateLayerOfCapturableWindow) {
+  std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
+  EXPECT_FALSE(w1->subtree_capture_id().is_valid());
+  ScopedWindowCaptureRequest request = w1->MakeWindowCapturable();
+  EXPECT_TRUE(w1->layer()->GetSubtreeCaptureId().is_valid());
+
+  // Recreating the layer of a capturable window will preserve the capture ID
+  // on the newly recreated window, and clears it from the old layer.
+  const viz::SubtreeCaptureId current_id = w1->subtree_capture_id();
+  std::unique_ptr<ui::Layer> old_layer = w1->RecreateLayer();
+  EXPECT_FALSE(old_layer->GetSubtreeCaptureId().is_valid());
+  EXPECT_EQ(current_id, w1->subtree_capture_id());
+  EXPECT_EQ(current_id, w1->layer()->GetSubtreeCaptureId());
+}
+
+TEST_F(WindowTest, ConvertPointToWindow) {
   // Window::ConvertPointToWindow is mostly identical to
   // Layer::ConvertPointToLayer, except NULL values for |source| are permitted,
   // in which case the function just returns.
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   gfx::Point reference_point(100, 100);
   gfx::Point test_point = reference_point;
-  Window::ConvertPointToTarget(NULL, w1.get(), &test_point);
+  Window::ConvertPointToTarget(nullptr, w1.get(), &test_point);
   EXPECT_EQ(reference_point, test_point);
 }
 
-TEST_P(WindowTest, MoveCursorTo) {
+TEST_F(WindowTest, MoveCursorTo) {
   std::unique_ptr<Window> w1(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 500, 500), root_window()));
   std::unique_ptr<Window> w11(
@@ -408,7 +577,7 @@ TEST_P(WindowTest, MoveCursorTo) {
             display::Screen::GetScreen()->GetCursorScreenPoint().ToString());
 }
 
-TEST_P(WindowTest, ContainsMouse) {
+TEST_F(WindowTest, ContainsMouse) {
   std::unique_ptr<Window> w(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 500, 500), root_window()));
   w->Show();
@@ -421,33 +590,24 @@ TEST_P(WindowTest, ContainsMouse) {
 }
 
 // Tests that the root window gets a valid LocalSurfaceId.
-TEST_P(WindowTest, RootWindowHasValidLocalSurfaceId) {
-  // When mus is hosting viz, the LocalSurfaceId is sent from mus.
-  if (GetParam() != Env::Mode::LOCAL)
-    return;
-  EXPECT_TRUE(root_window()
-                  ->GetLocalSurfaceIdAllocation()
-                  .local_surface_id()
-                  .is_valid());
+TEST_F(WindowTest, RootWindowHasValidLocalSurfaceId) {
+  EXPECT_TRUE(root_window()->GetLocalSurfaceId().is_valid());
 }
 
-TEST_P(WindowTest, WindowEmbeddingClientHasValidLocalSurfaceId) {
-  // When mus is hosting viz, the LocalSurfaceId is sent from mus.
-  if (GetParam() != Env::Mode::LOCAL)
-    return;
+TEST_F(WindowTest, WindowEmbeddingClientHasValidLocalSurfaceId) {
   std::unique_ptr<Window> window(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 300, 200), root_window()));
   test::WindowTestApi(window.get()).DisableFrameSinkRegistration();
   window->SetEmbedFrameSinkId(viz::FrameSinkId(0, 1));
-  EXPECT_TRUE(
-      window->GetLocalSurfaceIdAllocation().local_surface_id().is_valid());
+  EXPECT_TRUE(window->GetLocalSurfaceId().is_valid());
 }
 
 // Test Window::ConvertPointToWindow() with transform to root_window.
-TEST_P(WindowTest, MoveCursorToWithTransformRootWindow) {
+TEST_F(WindowTest, MoveCursorToWithTransformRootWindow) {
   gfx::Transform transform;
   transform.Translate(100.0, 100.0);
-  transform.Rotate(90.0);
+  transform = transform * OverlayTransformToTransform(
+                              gfx::OVERLAY_TRANSFORM_ROTATE_90, gfx::SizeF());
   transform.Scale(2.0, 5.0);
   host()->SetRootTransform(transform);
   host()->MoveCursorToLocationInDIP(gfx::Point(10, 10));
@@ -460,7 +620,7 @@ TEST_P(WindowTest, MoveCursorToWithTransformRootWindow) {
 }
 
 // Tests Window::ConvertPointToWindow() with transform to non-root windows.
-TEST_P(WindowTest, MoveCursorToWithTransformWindow) {
+TEST_F(WindowTest, MoveCursorToWithTransformWindow) {
   std::unique_ptr<Window> w1(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 500, 500), root_window()));
 
@@ -479,7 +639,8 @@ TEST_P(WindowTest, MoveCursorToWithTransformWindow) {
             display::Screen::GetScreen()->GetCursorScreenPoint().ToString());
 
   gfx::Transform transform3;
-  transform3.Rotate(90.0);
+  transform3 = transform3 * OverlayTransformToTransform(
+                                gfx::OVERLAY_TRANSFORM_ROTATE_90, gfx::SizeF());
   w1->SetTransform(transform3);
   w1->MoveCursorTo(gfx::Point(5, 5));
   EXPECT_EQ("5,15",
@@ -487,7 +648,8 @@ TEST_P(WindowTest, MoveCursorToWithTransformWindow) {
 
   gfx::Transform transform4;
   transform4.Translate(100.0, 100.0);
-  transform4.Rotate(90.0);
+  transform4 = transform4 * OverlayTransformToTransform(
+                                gfx::OVERLAY_TRANSFORM_ROTATE_90, gfx::SizeF());
   transform4.Scale(2.0, 5.0);
   w1->SetTransform(transform4);
   w1->MoveCursorTo(gfx::Point(10, 10));
@@ -498,7 +660,7 @@ TEST_P(WindowTest, MoveCursorToWithTransformWindow) {
 // Test Window::ConvertPointToWindow() with complex transforms to both root and
 // non-root windows.
 // Test Window::ConvertPointToWindow() with transform to root_window.
-TEST_P(WindowTest, MoveCursorToWithComplexTransform) {
+TEST_F(WindowTest, MoveCursorToWithComplexTransform) {
   std::unique_ptr<Window> w1(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 500, 500), root_window()));
   std::unique_ptr<Window> w11(
@@ -511,7 +673,9 @@ TEST_P(WindowTest, MoveCursorToWithComplexTransform) {
   // The root window expects transforms that produce integer rects.
   gfx::Transform root_transform;
   root_transform.Translate(60.0, 70.0);
-  root_transform.Rotate(-90.0);
+  root_transform =
+      root_transform * OverlayTransformToTransform(
+                           gfx::OVERLAY_TRANSFORM_ROTATE_270, gfx::SizeF());
   root_transform.Translate(-50.0, -50.0);
   root_transform.Scale(2.0, 3.0);
 
@@ -537,13 +701,13 @@ TEST_P(WindowTest, MoveCursorToWithComplexTransform) {
 
 // Tests that we do not crash when a Window is destroyed by going out of
 // scope (as opposed to being explicitly deleted by its WindowDelegate).
-TEST_P(WindowTest, NoCrashOnWindowDelete) {
+TEST_F(WindowTest, NoCrashOnWindowDelete) {
   CaptureWindowDelegateImpl delegate;
   std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
       &delegate, 0, gfx::Rect(0, 0, 20, 20), root_window()));
 }
 
-TEST_P(WindowTest, GetEventHandlerForPoint) {
+TEST_F(WindowTest, GetEventHandlerForPoint) {
   std::unique_ptr<Window> w1(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(10, 10, 500, 500), root_window()));
   std::unique_ptr<Window> w11(
@@ -561,7 +725,7 @@ TEST_P(WindowTest, GetEventHandlerForPoint) {
 
   Window* root = root_window();
   w1->parent()->SetBounds(gfx::Rect(500, 500));
-  EXPECT_EQ(NULL, root->GetEventHandlerForPoint(gfx::Point(5, 5)));
+  EXPECT_EQ(nullptr, root->GetEventHandlerForPoint(gfx::Point(5, 5)));
   EXPECT_EQ(w1.get(), root->GetEventHandlerForPoint(gfx::Point(11, 11)));
   EXPECT_EQ(w11.get(), root->GetEventHandlerForPoint(gfx::Point(16, 16)));
   EXPECT_EQ(w111.get(), root->GetEventHandlerForPoint(gfx::Point(21, 21)));
@@ -571,7 +735,7 @@ TEST_P(WindowTest, GetEventHandlerForPoint) {
   EXPECT_EQ(w13.get(), root->GetEventHandlerForPoint(gfx::Point(26, 481)));
 }
 
-TEST_P(WindowTest, GetEventHandlerForPointInCornerOfChildBounds) {
+TEST_F(WindowTest, GetEventHandlerForPointInCornerOfChildBounds) {
   // If our child is flush to our top-left corner it gets events just inside the
   // window edges.
   std::unique_ptr<Window> parent(CreateTestWindow(
@@ -582,7 +746,7 @@ TEST_P(WindowTest, GetEventHandlerForPointInCornerOfChildBounds) {
   EXPECT_EQ(child.get(), parent->GetEventHandlerForPoint(gfx::Point(1, 1)));
 }
 
-TEST_P(WindowTest, GetEventHandlerForPointWithOverrideDescendingOrder) {
+TEST_F(WindowTest, GetEventHandlerForPointWithOverrideDescendingOrder) {
   std::unique_ptr<SelfEventHandlingWindowDelegate> parent_delegate(
       new SelfEventHandlingWindowDelegate);
   std::unique_ptr<Window> parent(CreateTestWindowWithDelegate(
@@ -596,7 +760,7 @@ TEST_P(WindowTest, GetEventHandlerForPointWithOverrideDescendingOrder) {
   EXPECT_EQ(parent.get(), parent->GetEventHandlerForPoint(gfx::Point(50, 50)));
 }
 
-TEST_P(WindowTest, GetToplevelWindow) {
+TEST_F(WindowTest, GetToplevelWindow) {
   const gfx::Rect kBounds(0, 0, 10, 10);
   TestWindowDelegate delegate;
 
@@ -607,8 +771,8 @@ TEST_P(WindowTest, GetToplevelWindow) {
   std::unique_ptr<Window> w1111(
       CreateTestWindowWithDelegate(&delegate, 1111, kBounds, w111.get()));
 
-  EXPECT_TRUE(root_window()->GetToplevelWindow() == NULL);
-  EXPECT_TRUE(w1->GetToplevelWindow() == NULL);
+  EXPECT_TRUE(root_window()->GetToplevelWindow() == nullptr);
+  EXPECT_TRUE(w1->GetToplevelWindow() == nullptr);
   EXPECT_EQ(w11.get(), w11->GetToplevelWindow());
   EXPECT_EQ(w11.get(), w111->GetToplevelWindow());
   EXPECT_EQ(w11.get(), w1111->GetToplevelWindow());
@@ -628,12 +792,12 @@ class AddedToRootWindowObserver : public WindowObserver {
   DISALLOW_COPY_AND_ASSIGN(AddedToRootWindowObserver);
 };
 
-TEST_P(WindowTest, WindowAddedToRootWindowShouldNotifyChildAndNotParent) {
+TEST_F(WindowTest, WindowAddedToRootWindowShouldNotifyChildAndNotParent) {
   AddedToRootWindowObserver parent_observer;
   AddedToRootWindowObserver child_observer;
   std::unique_ptr<Window> parent_window(
       CreateTestWindowWithId(1, root_window()));
-  std::unique_ptr<Window> child_window(new Window(NULL));
+  std::unique_ptr<Window> child_window(new Window(nullptr));
   child_window->Init(ui::LAYER_TEXTURED);
   child_window->Show();
 
@@ -650,7 +814,7 @@ TEST_P(WindowTest, WindowAddedToRootWindowShouldNotifyChildAndNotParent) {
 }
 
 // Various destruction assertions.
-TEST_P(WindowTest, DestroyTest) {
+TEST_F(WindowTest, DestroyTest) {
   DestroyTrackingDelegateImpl parent_delegate;
   ChildWindowDelegateImpl child_delegate(&parent_delegate);
   {
@@ -666,7 +830,7 @@ TEST_P(WindowTest, DestroyTest) {
 }
 
 // Tests that a window is orphaned before OnWindowDestroyed is called.
-TEST_P(WindowTest, OrphanedBeforeOnDestroyed) {
+TEST_F(WindowTest, OrphanedBeforeOnDestroyed) {
   TestWindowDelegate parent_delegate;
   DestroyOrphanDelegate child_delegate;
   {
@@ -679,12 +843,12 @@ TEST_P(WindowTest, OrphanedBeforeOnDestroyed) {
 }
 
 // Make sure StackChildAtTop moves both the window and layer to the front.
-TEST_P(WindowTest, StackChildAtTop) {
-  Window parent(NULL);
+TEST_F(WindowTest, StackChildAtTop) {
+  Window parent(nullptr);
   parent.Init(ui::LAYER_NOT_DRAWN);
-  Window child1(NULL);
+  Window child1(nullptr);
   child1.Init(ui::LAYER_NOT_DRAWN);
-  Window child2(NULL);
+  Window child2(nullptr);
   child2.Init(ui::LAYER_NOT_DRAWN);
 
   parent.AddChild(&child1);
@@ -706,18 +870,18 @@ TEST_P(WindowTest, StackChildAtTop) {
 }
 
 // Make sure StackChildBelow works.
-TEST_P(WindowTest, StackChildBelow) {
-  Window parent(NULL);
+TEST_F(WindowTest, StackChildBelow) {
+  Window parent(nullptr);
   parent.Init(ui::LAYER_NOT_DRAWN);
-  Window child1(NULL);
+  Window child1(nullptr);
   child1.Init(ui::LAYER_NOT_DRAWN);
-  child1.set_id(1);
-  Window child2(NULL);
+  child1.SetId(1);
+  Window child2(nullptr);
   child2.Init(ui::LAYER_NOT_DRAWN);
-  child2.set_id(2);
-  Window child3(NULL);
+  child2.SetId(2);
+  Window child3(nullptr);
   child3.Init(ui::LAYER_NOT_DRAWN);
-  child3.set_id(3);
+  child3.SetId(3);
 
   parent.AddChild(&child1);
   parent.AddChild(&child2);
@@ -738,14 +902,14 @@ TEST_P(WindowTest, StackChildBelow) {
 }
 
 // Various assertions for StackChildAbove.
-TEST_P(WindowTest, StackChildAbove) {
-  Window parent(NULL);
+TEST_F(WindowTest, StackChildAbove) {
+  Window parent(nullptr);
   parent.Init(ui::LAYER_NOT_DRAWN);
-  Window child1(NULL);
+  Window child1(nullptr);
   child1.Init(ui::LAYER_NOT_DRAWN);
-  Window child2(NULL);
+  Window child2(nullptr);
   child2.Init(ui::LAYER_NOT_DRAWN);
-  Window child3(NULL);
+  Window child3(nullptr);
   child3.Init(ui::LAYER_NOT_DRAWN);
 
   parent.AddChild(&child1);
@@ -797,7 +961,7 @@ TEST_P(WindowTest, StackChildAbove) {
 }
 
 // Various capture assertions.
-TEST_P(WindowTest, CaptureTests) {
+TEST_F(WindowTest, CaptureTests) {
   CaptureWindowDelegateImpl delegate;
   std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
       &delegate, 0, gfx::Rect(0, 0, 20, 20), root_window()));
@@ -818,9 +982,8 @@ TEST_P(WindowTest, CaptureTests) {
   EXPECT_EQ(2, delegate.mouse_event_count());
   delegate.ResetCounts();
 
-  ui::TouchEvent touchev(
-      ui::ET_TOUCH_PRESSED, gfx::Point(50, 50), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent touchev(ui::ET_TOUCH_PRESSED, gfx::Point(50, 50), getTime(),
+                         ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&touchev);
   EXPECT_EQ(1, delegate.touch_event_count());
   delegate.ResetCounts();
@@ -835,9 +998,8 @@ TEST_P(WindowTest, CaptureTests) {
   generator.PressLeftButton();
   EXPECT_EQ(1, delegate.mouse_event_count());
 
-  ui::TouchEvent touchev2(
-      ui::ET_TOUCH_PRESSED, gfx::Point(250, 250), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 1));
+  ui::TouchEvent touchev2(ui::ET_TOUCH_PRESSED, gfx::Point(250, 250), getTime(),
+                          ui::PointerDetails(ui::EventPointerType::kTouch, 1));
   DispatchEventUsingWindowDispatcher(&touchev2);
   EXPECT_EQ(0, delegate.touch_event_count());
 
@@ -847,10 +1009,10 @@ TEST_P(WindowTest, CaptureTests) {
   EXPECT_EQ(window.get(), aura::client::GetCaptureWindow(root_window()));
   window->parent()->RemoveChild(window.get());
   EXPECT_FALSE(window->HasCapture());
-  EXPECT_EQ(NULL, aura::client::GetCaptureWindow(root_window()));
+  EXPECT_EQ(nullptr, aura::client::GetCaptureWindow(root_window()));
 }
 
-TEST_P(WindowTest, TouchCaptureCancelsOtherTouches) {
+TEST_F(WindowTest, TouchCaptureCancelsOtherTouches) {
   CaptureWindowDelegateImpl delegate1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &delegate1, 0, gfx::Rect(0, 0, 50, 50), root_window()));
@@ -859,9 +1021,8 @@ TEST_P(WindowTest, TouchCaptureCancelsOtherTouches) {
       &delegate2, 0, gfx::Rect(50, 50, 50, 50), root_window()));
 
   // Press on w1.
-  ui::TouchEvent press1(
-      ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent press1(ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), getTime(),
+                        ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&press1);
   // We will get both GESTURE_BEGIN and GESTURE_TAP_DOWN.
   EXPECT_EQ(2, delegate1.gesture_event_count());
@@ -874,27 +1035,24 @@ TEST_P(WindowTest, TouchCaptureCancelsOtherTouches) {
   delegate1.ResetCounts();
   delegate2.ResetCounts();
 
-  // Events are now untargetted.
-  ui::TouchEvent move(
-      ui::ET_TOUCH_MOVED, gfx::Point(10, 20), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  // Events are now untargeted.
+  ui::TouchEvent move(ui::ET_TOUCH_MOVED, gfx::Point(10, 20), getTime(),
+                      ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&move);
   EXPECT_EQ(0, delegate1.gesture_event_count());
   EXPECT_EQ(0, delegate1.touch_event_count());
   EXPECT_EQ(0, delegate2.gesture_event_count());
   EXPECT_EQ(0, delegate2.touch_event_count());
 
-  ui::TouchEvent release(
-      ui::ET_TOUCH_RELEASED, gfx::Point(10, 20), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent release(ui::ET_TOUCH_RELEASED, gfx::Point(10, 20), getTime(),
+                         ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&release);
   EXPECT_EQ(0, delegate1.gesture_event_count());
   EXPECT_EQ(0, delegate2.gesture_event_count());
 
   // A new press is captured by w2.
-  ui::TouchEvent press2(
-      ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent press2(ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), getTime(),
+                        ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&press2);
   EXPECT_EQ(0, delegate1.gesture_event_count());
   // We will get both GESTURE_BEGIN and GESTURE_TAP_DOWN.
@@ -910,16 +1068,15 @@ TEST_P(WindowTest, TouchCaptureCancelsOtherTouches) {
   EXPECT_EQ(0, delegate2.touch_event_count());
 }
 
-TEST_P(WindowTest, TouchCaptureDoesntCancelCapturedTouches) {
+TEST_F(WindowTest, TouchCaptureDoesntCancelCapturedTouches) {
   CaptureWindowDelegateImpl delegate;
   std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
       &delegate, 0, gfx::Rect(0, 0, 50, 50), root_window()));
   base::TimeTicks time = getTime();
   const int kTimeDelta = 100;
 
-  ui::TouchEvent press(
-      ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), time,
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent press(ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), time,
+                       ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&press);
 
   // We will get both GESTURE_BEGIN and GESTURE_TAP_DOWN.
@@ -935,9 +1092,8 @@ TEST_P(WindowTest, TouchCaptureDoesntCancelCapturedTouches) {
   // On move We will get TOUCH_MOVED, GESTURE_TAP_CANCEL,
   // GESTURE_SCROLL_START and GESTURE_SCROLL_UPDATE.
   time += base::TimeDelta::FromMilliseconds(kTimeDelta);
-  ui::TouchEvent move(
-      ui::ET_TOUCH_MOVED, gfx::Point(10, 20), time,
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent move(ui::ET_TOUCH_MOVED, gfx::Point(10, 20), time,
+                      ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&move);
   EXPECT_EQ(1, delegate.touch_event_count());
   EXPECT_EQ(3, delegate.gesture_event_count());
@@ -951,9 +1107,8 @@ TEST_P(WindowTest, TouchCaptureDoesntCancelCapturedTouches) {
 
   // On move we still get TOUCH_MOVED and GESTURE_SCROLL_UPDATE.
   time += base::TimeDelta::FromMilliseconds(kTimeDelta);
-  ui::TouchEvent move2(
-      ui::ET_TOUCH_MOVED, gfx::Point(10, 30), time,
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent move2(ui::ET_TOUCH_MOVED, gfx::Point(10, 30), time,
+                       ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&move2);
   EXPECT_EQ(1, delegate.touch_event_count());
   EXPECT_EQ(1, delegate.gesture_event_count());
@@ -961,24 +1116,21 @@ TEST_P(WindowTest, TouchCaptureDoesntCancelCapturedTouches) {
 
   // And on release we get TOUCH_RELEASED, GESTURE_SCROLL_END, GESTURE_END
   time += base::TimeDelta::FromMilliseconds(kTimeDelta);
-  ui::TouchEvent release(
-      ui::ET_TOUCH_RELEASED, gfx::Point(10, 20), time,
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent release(ui::ET_TOUCH_RELEASED, gfx::Point(10, 20), time,
+                         ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&release);
   EXPECT_EQ(1, delegate.touch_event_count());
   EXPECT_EQ(2, delegate.gesture_event_count());
 }
 
-
 // Assertions around SetCapture() and touch/gestures.
-TEST_P(WindowTest, TransferCaptureTouchEvents) {
+TEST_F(WindowTest, TransferCaptureTouchEvents) {
   // Touch on |w1|.
   CaptureWindowDelegateImpl d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 0, gfx::Rect(0, 0, 20, 20), root_window()));
-  ui::TouchEvent p1(
-      ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent p1(ui::ET_TOUCH_PRESSED, gfx::Point(10, 10), getTime(),
+                    ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&p1);
   // We will get both GESTURE_BEGIN and GESTURE_TAP_DOWN.
   EXPECT_EQ(1, d1.touch_event_count());
@@ -989,9 +1141,8 @@ TEST_P(WindowTest, TransferCaptureTouchEvents) {
   CaptureWindowDelegateImpl d2;
   std::unique_ptr<Window> w2(CreateTestWindowWithDelegate(
       &d2, 0, gfx::Rect(40, 0, 40, 20), root_window()));
-  ui::TouchEvent p2(
-      ui::ET_TOUCH_PRESSED, gfx::Point(41, 10), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 1));
+  ui::TouchEvent p2(ui::ET_TOUCH_PRESSED, gfx::Point(41, 10), getTime(),
+                    ui::PointerDetails(ui::EventPointerType::kTouch, 1));
   DispatchEventUsingWindowDispatcher(&p2);
   EXPECT_EQ(0, d1.touch_event_count());
   EXPECT_EQ(0, d1.gesture_event_count());
@@ -1026,9 +1177,8 @@ TEST_P(WindowTest, TransferCaptureTouchEvents) {
 
   // Move touch id originally associated with |w2|. The touch has been
   // cancelled, so no events should be dispatched.
-  ui::TouchEvent m3(
-      ui::ET_TOUCH_MOVED, gfx::Point(110, 105), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 1));
+  ui::TouchEvent m3(ui::ET_TOUCH_MOVED, gfx::Point(110, 105), getTime(),
+                    ui::PointerDetails(ui::EventPointerType::kTouch, 1));
   DispatchEventUsingWindowDispatcher(&m3);
   EXPECT_EQ(0, d1.touch_event_count());
   EXPECT_EQ(0, d1.gesture_event_count());
@@ -1047,9 +1197,8 @@ TEST_P(WindowTest, TransferCaptureTouchEvents) {
   EXPECT_EQ(0, d3.gesture_event_count());
 
   // The touch has been cancelled, so no events are dispatched.
-  ui::TouchEvent m4(
-      ui::ET_TOUCH_MOVED, gfx::Point(120, 105), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 1));
+  ui::TouchEvent m4(ui::ET_TOUCH_MOVED, gfx::Point(120, 105), getTime(),
+                    ui::PointerDetails(ui::EventPointerType::kTouch, 1));
   DispatchEventUsingWindowDispatcher(&m4);
   EXPECT_EQ(0, d1.touch_event_count());
   EXPECT_EQ(0, d1.gesture_event_count());
@@ -1060,7 +1209,7 @@ TEST_P(WindowTest, TransferCaptureTouchEvents) {
 }
 
 // Changes capture while capture is already ongoing.
-TEST_P(WindowTest, ChangeCaptureWhileMouseDown) {
+TEST_F(WindowTest, ChangeCaptureWhileMouseDown) {
   CaptureWindowDelegateImpl delegate;
   std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
       &delegate, 0, gfx::Rect(0, 0, 20, 20), root_window()));
@@ -1099,7 +1248,7 @@ TEST_P(WindowTest, ChangeCaptureWhileMouseDown) {
 }
 
 // Verifies capture is reset when a window is destroyed.
-TEST_P(WindowTest, ReleaseCaptureOnDestroy) {
+TEST_F(WindowTest, ReleaseCaptureOnDestroy) {
   CaptureWindowDelegateImpl delegate;
   std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
       &delegate, 0, gfx::Rect(0, 0, 20, 20), root_window()));
@@ -1113,11 +1262,11 @@ TEST_P(WindowTest, ReleaseCaptureOnDestroy) {
   window.reset();
 
   // Make sure the root window doesn't reference the window anymore.
-  EXPECT_EQ(NULL, host()->dispatcher()->mouse_pressed_handler());
-  EXPECT_EQ(NULL, aura::client::GetCaptureWindow(root_window()));
+  EXPECT_EQ(nullptr, host()->dispatcher()->mouse_pressed_handler());
+  EXPECT_EQ(nullptr, aura::client::GetCaptureWindow(root_window()));
 }
 
-TEST_P(WindowTest, GetBoundsInRootWindow) {
+TEST_F(WindowTest, GetBoundsInRootWindow) {
   std::unique_ptr<Window> viewport(
       CreateTestWindowWithBounds(gfx::Rect(0, 0, 300, 300), root_window()));
   std::unique_ptr<Window> child(
@@ -1135,7 +1284,7 @@ TEST_P(WindowTest, GetBoundsInRootWindow) {
   EXPECT_EQ("0,0 100x100", child->GetBoundsInRootWindow().ToString());
 }
 
-TEST_P(WindowTest, GetBoundsInRootWindowWithLayers) {
+TEST_F(WindowTest, GetBoundsInRootWindowWithLayers) {
   std::unique_ptr<Window> viewport(
       CreateTestWindowWithBounds(gfx::Rect(0, 0, 300, 300), root_window()));
 
@@ -1161,7 +1310,7 @@ TEST_P(WindowTest, GetBoundsInRootWindowWithLayers) {
   EXPECT_EQ("0,0 100x100", child->GetBoundsInRootWindow().ToString());
 }
 
-TEST_P(WindowTest, GetBoundsInRootWindowWithLayersAndTranslations) {
+TEST_F(WindowTest, GetBoundsInRootWindowWithLayersAndTranslations) {
   std::unique_ptr<Window> viewport(
       CreateTestWindowWithBounds(gfx::Rect(0, 0, 300, 300), root_window()));
 
@@ -1242,7 +1391,7 @@ class MouseEnterExitWindowDelegate : public TestWindowDelegate {
 
 // Verifies that the WindowDelegate receives MouseExit and MouseEnter events for
 // mouse transitions from window to window.
-TEST_P(WindowTest, MouseEnterExit) {
+TEST_F(WindowTest, MouseEnterExit) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1265,7 +1414,7 @@ TEST_P(WindowTest, MouseEnterExit) {
 }
 
 // Verifies that the WindowDelegate receives MouseExit from ET_MOUSE_EXITED.
-TEST_P(WindowTest, WindowTreeHostExit) {
+TEST_F(WindowTest, WindowTreeHostExit) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1286,7 +1435,7 @@ TEST_P(WindowTest, WindowTreeHostExit) {
 // Verifies that the WindowDelegate receives MouseExit and MouseEnter events for
 // mouse transitions from window to window, even if the entered window sets
 // and releases capture.
-TEST_P(WindowTest, MouseEnterExitWithClick) {
+TEST_F(WindowTest, MouseEnterExitWithClick) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1314,7 +1463,7 @@ TEST_P(WindowTest, MouseEnterExitWithClick) {
   EXPECT_FALSE(d2.exited());
 }
 
-TEST_P(WindowTest, MouseEnterExitWhenDeleteWithCapture) {
+TEST_F(WindowTest, MouseEnterExitWhenDeleteWithCapture) {
   MouseEnterExitWindowDelegate delegate;
   std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
       &delegate, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1341,7 +1490,7 @@ TEST_P(WindowTest, MouseEnterExitWhenDeleteWithCapture) {
 
 // Verifies that the correct enter / exits are sent if windows appear and are
 // deleted under the current mouse position.
-TEST_P(WindowTest, MouseEnterExitWithWindowAppearAndDelete) {
+TEST_F(WindowTest, MouseEnterExitWithWindowAppearAndDelete) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1384,7 +1533,7 @@ TEST_P(WindowTest, MouseEnterExitWithWindowAppearAndDelete) {
 
 // Verifies that enter / exits are sent if windows appear and are hidden
 // under the current mouse position..
-TEST_P(WindowTest, MouseEnterExitWithHide) {
+TEST_F(WindowTest, MouseEnterExitWithHide) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1412,7 +1561,7 @@ TEST_P(WindowTest, MouseEnterExitWithHide) {
   EXPECT_TRUE(d1.entered());
 }
 
-TEST_P(WindowTest, MouseEnterExitWithParentHide) {
+TEST_F(WindowTest, MouseEnterExitWithParentHide) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1435,7 +1584,7 @@ TEST_P(WindowTest, MouseEnterExitWithParentHide) {
   w1.reset();
 }
 
-TEST_P(WindowTest, MouseEnterExitWithParentDelete) {
+TEST_F(WindowTest, MouseEnterExitWithParentDelete) {
   MouseEnterExitWindowDelegate d1;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
       &d1, 1, gfx::Rect(10, 10, 50, 50), root_window()));
@@ -1468,16 +1617,16 @@ TEST_P(WindowTest, MouseEnterExitWithParentDelete) {
 // GetEventHandlerForPoint() skips w12 even though its bounds contain the event,
 // because it has no children that can handle the event and it has no delegate
 // allowing it to handle the event itself.
-TEST_P(WindowTest, GetEventHandlerForPoint_NoDelegate) {
+TEST_F(WindowTest, GetEventHandlerForPoint_NoDelegate) {
   TestWindowDelegate d111;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
-      NULL, 1, gfx::Rect(0, 0, 500, 500), root_window()));
+      nullptr, 1, gfx::Rect(0, 0, 500, 500), root_window()));
   std::unique_ptr<Window> w11(CreateTestWindowWithDelegate(
-      NULL, 11, gfx::Rect(0, 0, 500, 500), w1.get()));
+      nullptr, 11, gfx::Rect(0, 0, 500, 500), w1.get()));
   std::unique_ptr<Window> w111(CreateTestWindowWithDelegate(
       &d111, 111, gfx::Rect(50, 50, 450, 450), w11.get()));
   std::unique_ptr<Window> w12(CreateTestWindowWithDelegate(
-      NULL, 12, gfx::Rect(0, 0, 500, 500), w1.get()));
+      nullptr, 12, gfx::Rect(0, 0, 500, 500), w1.get()));
 
   gfx::Point target_point = w111->bounds().CenterPoint();
   EXPECT_EQ(w111.get(), w1->GetEventHandlerForPoint(target_point));
@@ -1512,7 +1661,7 @@ class VisibilityWindowDelegate : public TestWindowDelegate {
 };
 
 // Verifies show/hide propagate correctly to children and the layer.
-TEST_P(WindowTest, Visibility) {
+TEST_F(WindowTest, Visibility) {
   VisibilityWindowDelegate d;
   VisibilityWindowDelegate d2;
   std::unique_ptr<Window> w1(
@@ -1571,13 +1720,13 @@ TEST_P(WindowTest, Visibility) {
   EXPECT_EQ(1, d2.shown());
 }
 
-TEST_P(WindowTest, EventTargetingPolicy) {
+TEST_F(WindowTest, EventTargetingPolicy) {
   TestWindowDelegate d11;
   TestWindowDelegate d12;
   TestWindowDelegate d111;
   TestWindowDelegate d121;
   std::unique_ptr<Window> w1(CreateTestWindowWithDelegate(
-      NULL, 1, gfx::Rect(0, 0, 500, 500), root_window()));
+      nullptr, 1, gfx::Rect(0, 0, 500, 500), root_window()));
   std::unique_ptr<Window> w11(CreateTestWindowWithDelegate(
       &d11, 11, gfx::Rect(0, 0, 500, 500), w1.get()));
   std::unique_ptr<Window> w111(CreateTestWindowWithDelegate(
@@ -1588,54 +1737,81 @@ TEST_P(WindowTest, EventTargetingPolicy) {
       &d121, 121, gfx::Rect(150, 150, 50, 50), w12.get()));
 
   EXPECT_EQ(w121.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
-  w12->SetEventTargetingPolicy(ws::mojom::EventTargetingPolicy::TARGET_ONLY);
+  w12->SetEventTargetingPolicy(EventTargetingPolicy::kTargetOnly);
   EXPECT_EQ(w12.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
   EXPECT_TRUE(w12.get()->layer()->accept_events());
-  w12->SetEventTargetingPolicy(
-      ws::mojom::EventTargetingPolicy::TARGET_AND_DESCENDANTS);
+  w12->SetEventTargetingPolicy(EventTargetingPolicy::kTargetAndDescendants);
   EXPECT_EQ(w12.get(), w1->GetEventHandlerForPoint(gfx::Point(10, 10)));
   EXPECT_TRUE(w12.get()->layer()->accept_events());
-  w12->SetEventTargetingPolicy(ws::mojom::EventTargetingPolicy::NONE);
+  w12->SetEventTargetingPolicy(EventTargetingPolicy::kNone);
   EXPECT_EQ(w11.get(), w1->GetEventHandlerForPoint(gfx::Point(10, 10)));
   EXPECT_FALSE(w12.get()->layer()->accept_events());
 
-  w12->SetEventTargetingPolicy(
-      ws::mojom::EventTargetingPolicy::TARGET_AND_DESCENDANTS);
+  w12->SetEventTargetingPolicy(EventTargetingPolicy::kTargetAndDescendants);
 
   EXPECT_EQ(w121.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
-  w121->SetEventTargetingPolicy(ws::mojom::EventTargetingPolicy::NONE);
+  w121->SetEventTargetingPolicy(EventTargetingPolicy::kNone);
   EXPECT_EQ(w12.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
   EXPECT_FALSE(w121.get()->layer()->accept_events());
-  w12->SetEventTargetingPolicy(ws::mojom::EventTargetingPolicy::NONE);
+  w12->SetEventTargetingPolicy(EventTargetingPolicy::kNone);
   EXPECT_EQ(w111.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
   EXPECT_FALSE(w12.get()->layer()->accept_events());
-  w111->SetEventTargetingPolicy(ws::mojom::EventTargetingPolicy::NONE);
+  w111->SetEventTargetingPolicy(EventTargetingPolicy::kNone);
   EXPECT_EQ(w11.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
   EXPECT_FALSE(w111.get()->layer()->accept_events());
 
-  w11->SetEventTargetingPolicy(
-      ws::mojom::EventTargetingPolicy::DESCENDANTS_ONLY);
+  w11->SetEventTargetingPolicy(EventTargetingPolicy::kDescendantsOnly);
   EXPECT_EQ(nullptr, w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
   EXPECT_TRUE(w11.get()->layer()->accept_events());
 
-  w111->SetEventTargetingPolicy(
-      ws::mojom::EventTargetingPolicy::TARGET_AND_DESCENDANTS);
+  w111->SetEventTargetingPolicy(EventTargetingPolicy::kTargetAndDescendants);
   EXPECT_EQ(w111.get(), w1->GetEventHandlerForPoint(gfx::Point(160, 160)));
   EXPECT_TRUE(w111.get()->layer()->accept_events());
 }
 
+TEST_F(WindowTest, ScopedEventTargetingBlockerTest) {
+  // Test only when all event targeting blockers are removed from the window,
+  // its event targeting policy will restore back to its original value.
+  std::unique_ptr<Window> window(CreateTestWindowWithDelegate(
+      nullptr, 1, gfx::Rect(0, 0, 500, 500), root_window()));
+  EXPECT_EQ(window->event_targeting_policy(),
+            EventTargetingPolicy::kTargetAndDescendants);
+  auto event_targeting_blocker1 =
+      std::make_unique<ScopedWindowEventTargetingBlocker>(window.get());
+  EXPECT_EQ(window->event_targeting_policy(), EventTargetingPolicy::kNone);
+  auto event_targeting_blocker2 =
+      std::make_unique<ScopedWindowEventTargetingBlocker>(window.get());
+  EXPECT_EQ(window->event_targeting_policy(), EventTargetingPolicy::kNone);
+  event_targeting_blocker2.reset();
+  EXPECT_EQ(window->event_targeting_policy(), EventTargetingPolicy::kNone);
+  event_targeting_blocker1.reset();
+  EXPECT_EQ(window->event_targeting_policy(),
+            EventTargetingPolicy::kTargetAndDescendants);
+
+  // It's possible that the event target policy changes when there is an event
+  // targeting blocker in place. In this case when the event targeting blocker
+  // is removed from the window, the window should restore to the changed event
+  // targeting policy.
+  auto event_targeting_blocker3 =
+      std::make_unique<ScopedWindowEventTargetingBlocker>(window.get());
+  EXPECT_EQ(window->event_targeting_policy(), EventTargetingPolicy::kNone);
+  window->SetEventTargetingPolicy(EventTargetingPolicy::kTargetOnly);
+  EXPECT_EQ(window->event_targeting_policy(), EventTargetingPolicy::kNone);
+  event_targeting_blocker3.reset();
+  EXPECT_EQ(window->event_targeting_policy(),
+            EventTargetingPolicy::kTargetOnly);
+}
+
 // Tests transformation on the root window.
-TEST_P(WindowTest, Transform) {
+TEST_F(WindowTest, Transform) {
   gfx::Size size = host()->GetBoundsInPixels().size();
   EXPECT_EQ(gfx::Rect(size), display::Screen::GetScreen()
                                  ->GetDisplayNearestPoint(gfx::Point())
                                  .bounds());
 
   // Rotate it clock-wise 90 degrees.
-  gfx::Transform transform;
-  transform.Translate(size.height(), 0);
-  transform.Rotate(90.0);
-  host()->SetRootTransform(transform);
+  host()->SetRootTransform(OverlayTransformToTransform(
+      gfx::OVERLAY_TRANSFORM_ROTATE_90, gfx::SizeF(size)));
 
   // The size should be the transformed size.
   gfx::Size transformed_size(size.height(), size.width());
@@ -1651,14 +1827,7 @@ TEST_P(WindowTest, Transform) {
   EXPECT_EQ(size.ToString(), host()->GetBoundsInPixels().size().ToString());
 }
 
-TEST_P(WindowTest, TransformGesture) {
-  // This test is only applicable to LOCAL mode as it's setting a transform on
-  // host() and expecting events to be transformed while routing the event
-  // directly through host(). In MUS mode the window-service does the
-  // transformation.
-  if (GetParam() == Env::Mode::MUS)
-    return;
-
+TEST_F(WindowTest, TransformGesture) {
   gfx::Size size = host()->GetBoundsInPixels().size();
 
   std::unique_ptr<GestureTrackPositionDelegate> delegate(
@@ -1667,19 +1836,17 @@ TEST_P(WindowTest, TransformGesture) {
       delegate.get(), -1234, gfx::Rect(0, 0, 20, 20), root_window()));
 
   // Rotate the root-window clock-wise 90 degrees.
-  gfx::Transform transform;
-  transform.Translate(size.height(), 0.0);
-  transform.Rotate(90.0);
-  host()->SetRootTransform(transform);
+  host()->SetRootTransform(OverlayTransformToTransform(
+      gfx::OVERLAY_TRANSFORM_ROTATE_90, gfx::SizeF(size)));
 
-  ui::TouchEvent press(
-      ui::ET_TOUCH_PRESSED, gfx::Point(size.height() - 10, 10), getTime(),
-      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 0));
+  ui::TouchEvent press(ui::ET_TOUCH_PRESSED, gfx::Point(size.height() - 10, 10),
+                       getTime(),
+                       ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   DispatchEventUsingWindowDispatcher(&press);
   EXPECT_EQ(gfx::Point(10, 10).ToString(), delegate->position().ToString());
 }
 
-TEST_P(WindowTest, Property) {
+TEST_F(WindowTest, Property) {
   std::unique_ptr<Window> w(CreateTestWindowWithId(0, root_window()));
 
   static const char native_prop_key[] = "fnord";
@@ -1714,7 +1881,7 @@ class DeletionTestLayoutManager : public LayoutManager {
   DISALLOW_COPY_AND_ASSIGN(DeletionTestLayoutManager);
 };
 
-TEST_P(WindowTest, DeleteLayoutManagerBeforeOwnedProps) {
+TEST_F(WindowTest, DeleteLayoutManagerBeforeOwnedProps) {
   DeletionTracker tracker;
   {
     Window w(nullptr);
@@ -1727,7 +1894,7 @@ TEST_P(WindowTest, DeleteLayoutManagerBeforeOwnedProps) {
   EXPECT_EQ(DeletionOrder::LAYOUT_MANAGER_FIRST, tracker.order());
 }
 
-TEST_P(WindowTest, SetBoundsInternalShouldCheckTargetBounds) {
+TEST_F(WindowTest, SetBoundsInternalShouldCheckTargetBounds) {
   // We cannot short-circuit animations in this test.
   ui::ScopedAnimationDurationScaleMode test_duration_mode(
       ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
@@ -1771,7 +1938,6 @@ TEST_P(WindowTest, SetBoundsInternalShouldCheckTargetBounds) {
 
   EXPECT_EQ("0,0 100x100", w1->bounds().ToString());
 }
-
 
 typedef std::pair<const void*, intptr_t> PropertyChangeInfo;
 
@@ -1854,10 +2020,10 @@ class WindowObserverTest : public WindowTest,
 
   // Returns a description of the WindowObserver methods that have been invoked.
   std::string WindowObserverCountStateAndClear() {
-    std::string result(
-        base::StringPrintf("added=%d removed=%d",
-        added_count_, removed_count_));
-    added_count_ = removed_count_ = 0;
+    std::string result(base::StringPrintf("added=%d removing=%d removed=%d",
+                                          added_count_, removing_count_,
+                                          removed_count_));
+    added_count_ = removing_count_ = removed_count_ = 0;
     return result;
   }
 
@@ -1870,7 +2036,7 @@ class WindowObserverTest : public WindowTest,
   // Return a tuple of the arguments passed in OnPropertyChanged callback.
   PropertyChangeInfo PropertyChangeInfoAndClear() {
     PropertyChangeInfo result(property_key_, old_property_value_);
-    property_key_ = NULL;
+    property_key_ = nullptr;
     old_property_value_ = -3;
     return result;
   }
@@ -1878,11 +2044,13 @@ class WindowObserverTest : public WindowTest,
  private:
   void OnWindowAdded(Window* new_window) override { added_count_++; }
 
-  void OnWillRemoveWindow(Window* window) override { removed_count_++; }
+  void OnWillRemoveWindow(Window* window) override { removing_count_++; }
+
+  void OnWindowRemoved(Window* removed_window) override { removed_count_++; }
 
   void OnWindowVisibilityChanged(Window* window, bool visible) override {
     if (!visibility_info_) {
-      visibility_info_.reset(new VisibilityInfo);
+      visibility_info_ = std::make_unique<VisibilityInfo>();
       visibility_info_->changed_count = 0;
     }
     visibility_info_->window_visible = window->IsVisible();
@@ -1946,6 +2114,7 @@ class WindowObserverTest : public WindowTest,
   }
 
   int added_count_ = 0;
+  int removing_count_ = 0;
   int removed_count_ = 0;
   int destroyed_count_ = 0;
   std::unique_ptr<VisibilityInfo> visibility_info_;
@@ -1963,32 +2132,32 @@ class WindowObserverTest : public WindowTest,
 };
 
 // Various assertions for WindowObserver.
-TEST_P(WindowObserverTest, WindowObserver) {
+TEST_F(WindowObserverTest, WindowObserver) {
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   w1->AddObserver(this);
 
   // Create a new window as a child of w1, our observer should be notified.
   std::unique_ptr<Window> w2(CreateTestWindowWithId(2, w1.get()));
-  EXPECT_EQ("added=1 removed=0", WindowObserverCountStateAndClear());
+  EXPECT_EQ("added=1 removing=0 removed=0", WindowObserverCountStateAndClear());
 
-  // Delete w2, which should result in the remove notification.
+  // Delete w2, which should result in the remove notifications.
   w2.reset();
-  EXPECT_EQ("added=0 removed=1", WindowObserverCountStateAndClear());
+  EXPECT_EQ("added=0 removing=1 removed=1", WindowObserverCountStateAndClear());
 
   // Create a window that isn't parented to w1, we shouldn't get any
   // notification.
   std::unique_ptr<Window> w3(CreateTestWindowWithId(3, root_window()));
-  EXPECT_EQ("added=0 removed=0", WindowObserverCountStateAndClear());
+  EXPECT_EQ("added=0 removing=0 removed=0", WindowObserverCountStateAndClear());
 
   // Similarly destroying w3 shouldn't notify us either.
   w3.reset();
-  EXPECT_EQ("added=0 removed=0", WindowObserverCountStateAndClear());
+  EXPECT_EQ("added=0 removing=0 removed=0", WindowObserverCountStateAndClear());
   w1->RemoveObserver(this);
 }
 
 // Test if OnWindowVisibilityChanged is invoked with expected
 // parameters.
-TEST_P(WindowObserverTest, WindowVisibility) {
+TEST_F(WindowObserverTest, WindowVisibility) {
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   std::unique_ptr<Window> w2(CreateTestWindowWithId(1, w1.get()));
   w2->AddObserver(this);
@@ -2040,7 +2209,7 @@ TEST_P(WindowObserverTest, WindowVisibility) {
 }
 
 // Test if OnWindowDestroyed is invoked as expected.
-TEST_P(WindowObserverTest, WindowDestroyed) {
+TEST_F(WindowObserverTest, WindowDestroyed) {
   // Delete a window should fire a destroyed notification.
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   w1->AddObserver(this);
@@ -2055,7 +2224,7 @@ TEST_P(WindowObserverTest, WindowDestroyed) {
   EXPECT_EQ(1, DestroyedCountAndClear());
 }
 
-TEST_P(WindowObserverTest, PropertyChanged) {
+TEST_F(WindowObserverTest, PropertyChanged) {
   // Setting property should fire a property change notification.
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   w1->AddObserver(this);
@@ -2075,19 +2244,18 @@ TEST_P(WindowObserverTest, PropertyChanged) {
   w1->SetNativeWindowProperty(native_prop_key, &*w1);
   EXPECT_EQ(PropertyChangeInfo(native_prop_key, 0),
             PropertyChangeInfoAndClear());
-  w1->SetNativeWindowProperty(native_prop_key, NULL);
+  w1->SetNativeWindowProperty(native_prop_key, nullptr);
   EXPECT_EQ(PropertyChangeInfo(native_prop_key,
                                reinterpret_cast<intptr_t>(&*w1)),
             PropertyChangeInfoAndClear());
 
   // Sanity check to see if |PropertyChangeInfoAndClear| really clears.
-  EXPECT_EQ(PropertyChangeInfo(
-      reinterpret_cast<const void*>(NULL), -3), PropertyChangeInfoAndClear());
+  EXPECT_EQ(PropertyChangeInfo(nullptr, -3), PropertyChangeInfoAndClear());
 }
 
 // Verify that WindowObserver::OnWindowBoundsChanged() is notified when the
 // bounds of a Window's Layer change without an animation.
-TEST_P(WindowObserverTest, WindowBoundsChanged) {
+TEST_F(WindowObserverTest, WindowBoundsChanged) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
   const gfx::Rect initial_bounds = window->bounds();
@@ -2103,7 +2271,7 @@ TEST_P(WindowObserverTest, WindowBoundsChanged) {
 
 // Verify that WindowObserver::OnWindowBoundsChanged() is notified at every step
 // of a bounds animation.
-TEST_P(WindowObserverTest, WindowBoundsChangedAnimation) {
+TEST_F(WindowObserverTest, WindowBoundsChangedAnimation) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
   const gfx::Rect initial_bounds = window->bounds();
@@ -2139,7 +2307,7 @@ TEST_P(WindowObserverTest, WindowBoundsChangedAnimation) {
 
 // Verify that WindowObserver::OnWindowOpacitySet() is notified when the
 // opacity of a Window's Layer changes without an animation.
-TEST_P(WindowObserverTest, WindowOpacityChanged) {
+TEST_F(WindowObserverTest, WindowOpacityChanged) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
   window->layer()->SetOpacity(0.5f);
@@ -2151,7 +2319,7 @@ TEST_P(WindowObserverTest, WindowOpacityChanged) {
 
 // Verify that WindowObserver::OnWindowOpacitySet() is notified at the
 // beginning and at the end of a threaded opacity animation.
-TEST_P(WindowObserverTest, WindowOpacityChangedAnimation) {
+TEST_F(WindowObserverTest, WindowOpacityChangedAnimation) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
 
@@ -2174,7 +2342,7 @@ TEST_P(WindowObserverTest, WindowOpacityChangedAnimation) {
 
 // Verify that WindowObserver::OnWindowAlphaShapeSet() is notified when an alpha
 // shape is set for a window.
-TEST_P(WindowObserverTest, WindowAlphaShapeChanged) {
+TEST_F(WindowObserverTest, WindowAlphaShapeChanged) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
 
@@ -2190,7 +2358,7 @@ TEST_P(WindowObserverTest, WindowAlphaShapeChanged) {
 
 // Verify that WindowObserver::OnWindow(TargetTransformChanging|Transformed)()
 // are notified when SetTransform() is called and there is no animation.
-TEST_P(WindowObserverTest, SetTransform) {
+TEST_F(WindowObserverTest, SetTransform) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
   gfx::Transform target_transform;
@@ -2212,7 +2380,7 @@ TEST_P(WindowObserverTest, SetTransform) {
 // beginning and at the end of a threaded transform animation. Verify that
 // WindowObserver::OnWindowTargetTransformChanging() is notified when the
 // threaded animation is started by SetTransform().
-TEST_P(WindowObserverTest, SetTransformAnimation) {
+TEST_F(WindowObserverTest, SetTransformAnimation) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
 
@@ -2228,23 +2396,20 @@ TEST_P(WindowObserverTest, SetTransformAnimation) {
   EXPECT_EQ(target_transform,
             window_target_transform_changing_info().new_transform);
 
-  ASSERT_EQ(1, window_transformed_info().changed_count);
-  EXPECT_EQ(window.get(), window_transformed_info().window);
-  EXPECT_EQ(ui::PropertyChangeReason::FROM_ANIMATION,
-            window_transformed_info().reason);
+  ASSERT_EQ(0, window_transformed_info().changed_count);
 
   window->layer()->GetAnimator()->StopAnimatingProperty(
       ui::LayerAnimationElement::TRANSFORM);
 
   EXPECT_EQ(1, window_target_transform_changing_info().changed_count);
 
-  ASSERT_EQ(2, window_transformed_info().changed_count);
+  ASSERT_EQ(1, window_transformed_info().changed_count);
   EXPECT_EQ(window.get(), window_transformed_info().window);
   EXPECT_EQ(ui::PropertyChangeReason::FROM_ANIMATION,
             window_transformed_info().reason);
 }
 
-TEST_P(WindowObserverTest, OnWindowLayerRecreated) {
+TEST_F(WindowObserverTest, OnWindowLayerRecreated) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
   window->AddObserver(this);
 
@@ -2254,7 +2419,7 @@ TEST_P(WindowObserverTest, OnWindowLayerRecreated) {
   EXPECT_EQ(window.get(), layer_recreated_info().window);
 }
 
-TEST_P(WindowObserverTest, OnWindowLayerRecreatedWithOpacityAnimation) {
+TEST_F(WindowObserverTest, OnWindowLayerRecreatedWithOpacityAnimation) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
 
   ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
@@ -2277,7 +2442,7 @@ TEST_P(WindowObserverTest, OnWindowLayerRecreatedWithOpacityAnimation) {
             window_opacity_info().reason);
 }
 
-TEST_P(WindowObserverTest, OnWindowLayerRecreatedWithTransformAnimation) {
+TEST_F(WindowObserverTest, OnWindowLayerRecreatedWithTransformAnimation) {
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
 
   ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
@@ -2302,7 +2467,7 @@ TEST_P(WindowObserverTest, OnWindowLayerRecreatedWithTransformAnimation) {
             window_transformed_info().reason);
 }
 
-TEST_P(WindowTest, AcquireLayer) {
+TEST_F(WindowTest, AcquireLayer) {
   std::unique_ptr<Window> window1(CreateTestWindowWithId(1, root_window()));
   std::unique_ptr<Window> window2(CreateTestWindowWithId(2, root_window()));
   ui::Layer* parent = window1->parent()->layer();
@@ -2332,17 +2497,17 @@ TEST_P(WindowTest, AcquireLayer) {
   window2.reset();
 
   // This should be set by the window's destructor.
-  EXPECT_TRUE(window1_layer->delegate() == NULL);
+  EXPECT_FALSE(window1_layer->delegate());
   EXPECT_EQ(1U, parent->children().size());
 }
 
 // Make sure that properties which should persist from the old layer to the new
 // layer actually do.
-TEST_P(WindowTest, RecreateLayer) {
+TEST_F(WindowTest, RecreateLayer) {
   // Set properties to non default values.
   gfx::Rect window_bounds(100, 100);
   Window w(new ColorTestWindowDelegate(SK_ColorWHITE));
-  w.set_id(1);
+  w.SetId(1);
   w.Init(ui::LAYER_SOLID_COLOR);
   w.SetBounds(window_bounds);
 
@@ -2365,7 +2530,7 @@ TEST_P(WindowTest, RecreateLayer) {
 
 // Verify that RecreateLayer() stacks the old layer above the newly creatd
 // layer.
-TEST_P(WindowTest, RecreateLayerZOrder) {
+TEST_F(WindowTest, RecreateLayerZOrder) {
   std::unique_ptr<Window> w(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(0, 0, 100, 100), root_window()));
   std::unique_ptr<ui::Layer> old_layer(w->RecreateLayer());
@@ -2379,12 +2544,12 @@ TEST_P(WindowTest, RecreateLayerZOrder) {
 
 // Ensure that acquiring a layer then recreating a layer does not crash
 // and that RecreateLayer returns null.
-TEST_P(WindowTest, AcquireThenRecreateLayer) {
+TEST_F(WindowTest, AcquireThenRecreateLayer) {
   std::unique_ptr<Window> w(CreateTestWindow(
       SK_ColorWHITE, 1, gfx::Rect(0, 0, 100, 100), root_window()));
   std::unique_ptr<ui::Layer> acquired_layer(w->AcquireLayer());
   std::unique_ptr<ui::Layer> doubly_acquired_layer(w->RecreateLayer());
-  EXPECT_EQ(NULL, doubly_acquired_layer.get());
+  EXPECT_FALSE(doubly_acquired_layer);
 
   // Destroy window before layer gets destroyed.
   w.reset();
@@ -2413,7 +2578,7 @@ class TestVisibilityClient : public client::VisibilityClient {
   DISALLOW_COPY_AND_ASSIGN(TestVisibilityClient);
 };
 
-TEST_P(WindowTest, VisibilityClientIsVisible) {
+TEST_F(WindowTest, VisibilityClientIsVisible) {
   TestVisibilityClient client(root_window());
 
   std::unique_ptr<Window> window(CreateTestWindowWithId(1, root_window()));
@@ -2433,7 +2598,7 @@ TEST_P(WindowTest, VisibilityClientIsVisible) {
 
 // Tests the mouse events seen by WindowDelegates in a Window hierarchy when
 // changing the properties of a leaf Window.
-TEST_P(WindowTest, MouseEventsOnLeafWindowChange) {
+TEST_F(WindowTest, MouseEventsOnLeafWindowChange) {
   ui::test::EventGenerator generator(root_window());
   generator.MoveMouseTo(50, 50);
 
@@ -2532,7 +2697,7 @@ TEST_P(WindowTest, MouseEventsOnLeafWindowChange) {
 
 // Tests the mouse events seen by WindowDelegates in a Window hierarchy when
 // deleting a non-leaf Window.
-TEST_P(WindowTest, MouseEventsOnNonLeafWindowDelete) {
+TEST_F(WindowTest, MouseEventsOnNonLeafWindowDelete) {
   ui::test::EventGenerator generator(root_window());
   generator.MoveMouseTo(50, 50);
 
@@ -2597,11 +2762,11 @@ class RootWindowAttachmentObserver : public WindowObserver {
   DISALLOW_COPY_AND_ASSIGN(RootWindowAttachmentObserver);
 };
 
-TEST_P(WindowTest, RootWindowAttachment) {
+TEST_F(WindowTest, RootWindowAttachment) {
   RootWindowAttachmentObserver observer;
 
   // Test a direct add/remove from the RootWindow.
-  std::unique_ptr<Window> w1(new Window(NULL));
+  std::unique_ptr<Window> w1(new Window(nullptr));
   w1->Init(ui::LAYER_NOT_DRAWN);
   w1->AddObserver(&observer);
 
@@ -2616,9 +2781,9 @@ TEST_P(WindowTest, RootWindowAttachment) {
   observer.Clear();
 
   // Test an indirect add/remove from the RootWindow.
-  w1.reset(new Window(NULL));
+  w1 = std::make_unique<Window>(nullptr);
   w1->Init(ui::LAYER_NOT_DRAWN);
-  Window* w11 = new Window(NULL);
+  Window* w11 = new Window(nullptr);
   w11->Init(ui::LAYER_NOT_DRAWN);
   w11->AddObserver(&observer);
   w1->AddChild(w11);
@@ -2630,20 +2795,20 @@ TEST_P(WindowTest, RootWindowAttachment) {
   EXPECT_EQ(0, observer.removed_count());
 
   w1.reset();  // Deletes w11.
-  w11 = NULL;
+  w11 = nullptr;
   EXPECT_EQ(1, observer.added_count());
   EXPECT_EQ(1, observer.removed_count());
 
   observer.Clear();
 
   // Test an indirect add/remove with nested observers.
-  w1.reset(new Window(NULL));
+  w1 = std::make_unique<Window>(nullptr);
   w1->Init(ui::LAYER_NOT_DRAWN);
-  w11 = new Window(NULL);
+  w11 = new Window(nullptr);
   w11->Init(ui::LAYER_NOT_DRAWN);
   w11->AddObserver(&observer);
   w1->AddChild(w11);
-  Window* w111 = new Window(NULL);
+  Window* w111 = new Window(nullptr);
   w111->Init(ui::LAYER_NOT_DRAWN);
   w111->AddObserver(&observer);
   w11->AddChild(w111);
@@ -2656,8 +2821,8 @@ TEST_P(WindowTest, RootWindowAttachment) {
   EXPECT_EQ(0, observer.removed_count());
 
   w1.reset();  // Deletes w11 and w111.
-  w11 = NULL;
-  w111 = NULL;
+  w11 = nullptr;
+  w111 = nullptr;
   EXPECT_EQ(2, observer.added_count());
   EXPECT_EQ(2, observer.removed_count());
 }
@@ -2670,7 +2835,7 @@ class BoundsChangedWindowObserver : public WindowObserver {
                              const gfx::Rect& old_bounds,
                              const gfx::Rect& new_bounds,
                              ui::PropertyChangeReason reason) override {
-    root_set_ = window->GetRootWindow() != NULL;
+    root_set_ = !!window->GetRootWindow();
   }
 
   bool root_set() const { return root_set_; }
@@ -2681,10 +2846,10 @@ class BoundsChangedWindowObserver : public WindowObserver {
   DISALLOW_COPY_AND_ASSIGN(BoundsChangedWindowObserver);
 };
 
-TEST_P(WindowTest, RootWindowSetWhenReparenting) {
-  Window parent1(NULL);
+TEST_F(WindowTest, RootWindowSetWhenReparenting) {
+  Window parent1(nullptr);
   parent1.Init(ui::LAYER_NOT_DRAWN);
-  Window parent2(NULL);
+  Window parent2(nullptr);
   parent2.Init(ui::LAYER_NOT_DRAWN);
   ParentWindow(&parent1);
   ParentWindow(&parent2);
@@ -2692,7 +2857,7 @@ TEST_P(WindowTest, RootWindowSetWhenReparenting) {
   parent2.SetBounds(gfx::Rect(20, 20, 300, 300));
 
   BoundsChangedWindowObserver observer;
-  Window child(NULL);
+  Window child(nullptr);
   child.Init(ui::LAYER_NOT_DRAWN);
   child.SetBounds(gfx::Rect(5, 5, 100, 100));
   parent1.AddChild(&child);
@@ -2719,13 +2884,13 @@ TEST_P(WindowTest, RootWindowSetWhenReparenting) {
   EXPECT_EQ("55,55 50x50", child.GetBoundsInRootWindow().ToString());
 }
 
-TEST_P(WindowTest, OwnedByParentFalse) {
+TEST_F(WindowTest, OwnedByParentFalse) {
   // By default, a window is owned by its parent. If this is set to false, the
   // window will not be destroyed when its parent is.
 
-  std::unique_ptr<Window> w1(new Window(NULL));
+  std::unique_ptr<Window> w1(new Window(nullptr));
   w1->Init(ui::LAYER_NOT_DRAWN);
-  std::unique_ptr<Window> w2(new Window(NULL));
+  std::unique_ptr<Window> w2(new Window(nullptr));
   w2->set_owned_by_parent(false);
   w2->Init(ui::LAYER_NOT_DRAWN);
   w1->AddChild(w2.get());
@@ -2733,7 +2898,7 @@ TEST_P(WindowTest, OwnedByParentFalse) {
   w1.reset();
 
   // We should be able to deref w2 still, but its parent should now be NULL.
-  EXPECT_EQ(NULL, w2->parent());
+  EXPECT_FALSE(w2->parent());
 }
 
 // Used By DeleteWindowFromOnWindowDestroyed. Destroys a Window from
@@ -2746,7 +2911,7 @@ class OwningWindowDelegate : public TestWindowDelegate {
     owned_window_.reset(window);
   }
 
-  void OnWindowDestroyed(Window* window) override { owned_window_.reset(NULL); }
+  void OnWindowDestroyed(Window* window) override { owned_window_.reset(); }
 
  private:
   std::unique_ptr<Window> owned_window_;
@@ -2759,14 +2924,14 @@ class OwningWindowDelegate : public TestWindowDelegate {
 // This synthesizes BrowserView and the status bubble. Both are children of the
 // same parent and destroying BrowserView triggers it destroying the status
 // bubble.
-TEST_P(WindowTest, DeleteWindowFromOnWindowDestroyed) {
-  std::unique_ptr<Window> parent(new Window(NULL));
+TEST_F(WindowTest, DeleteWindowFromOnWindowDestroyed) {
+  std::unique_ptr<Window> parent(new Window(nullptr));
   parent->Init(ui::LAYER_NOT_DRAWN);
   OwningWindowDelegate delegate;
   Window* c1 = new Window(&delegate);
   c1->Init(ui::LAYER_NOT_DRAWN);
   parent->AddChild(c1);
-  Window* c2 = new Window(NULL);
+  Window* c2 = new Window(nullptr);
   c2->Init(ui::LAYER_NOT_DRAWN);
   parent->AddChild(c2);
   delegate.SetOwnedWindow(c2);
@@ -2803,7 +2968,7 @@ class DeleteOnVisibilityChangedObserver : public WindowObserver {
   DISALLOW_COPY_AND_ASSIGN(DeleteOnVisibilityChangedObserver);
 };
 
-TEST_P(WindowTest, DeleteParentWindowFromOnWindowVisibiltyChanged) {
+TEST_F(WindowTest, DeleteParentWindowFromOnWindowVisibiltyChanged) {
   WindowTracker tracker;
   Window* root = CreateTestWindowWithId(0, nullptr);
   tracker.Add(root);
@@ -2846,7 +3011,7 @@ class BoundsChangeDelegate : public TestWindowDelegate {
 
 // Verifies the delegate is notified when the actual bounds of the layer
 // change.
-TEST_P(WindowTest, DelegateNotifiedAsBoundsChange) {
+TEST_F(WindowTest, DelegateNotifiedAsBoundsChange) {
   BoundsChangeDelegate delegate;
 
   // We cannot short-circuit animations in this test.
@@ -2880,7 +3045,7 @@ TEST_P(WindowTest, DelegateNotifiedAsBoundsChange) {
 
 // Verifies the delegate is notified when the actual bounds of the layer
 // change even when the window is not the layer's delegate
-TEST_P(WindowTest, DelegateNotifiedAsBoundsChangeInHiddenLayer) {
+TEST_F(WindowTest, DelegateNotifiedAsBoundsChangeInHiddenLayer) {
   BoundsChangeDelegate delegate;
 
   // We cannot short-circuit animations in this test.
@@ -2893,10 +3058,10 @@ TEST_P(WindowTest, DelegateNotifiedAsBoundsChangeInHiddenLayer) {
 
   delegate.clear_bounds_changed();
 
-  // Suppress paint on the window since it is hidden (should reset the layer's
+  // Suppress paint on the layer since it is hidden (should reset the layer's
   // delegate to NULL)
-  window->SuppressPaint();
-  EXPECT_EQ(NULL, window->layer()->delegate());
+  window->layer()->SuppressPaint();
+  EXPECT_FALSE(window->layer()->delegate());
 
   // Animate to a different position.
   {
@@ -2949,7 +3114,7 @@ class AddChildNotificationsObserver : public WindowObserver {
 };
 
 // Assertions around when root window notifications are sent.
-TEST_P(WindowTest, AddChildNotifications) {
+TEST_F(WindowTest, AddChildNotifications) {
   AddChildNotificationsObserver observer;
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, root_window()));
   std::unique_ptr<Window> w2(CreateTestWindowWithId(1, root_window()));
@@ -2967,7 +3132,7 @@ TEST_P(WindowTest, AddChildNotifications) {
 
 // Tests that a delegate that destroys itself when the window is destroyed does
 // not break.
-TEST_P(WindowTest, DelegateDestroysSelfOnWindowDestroy) {
+TEST_F(WindowTest, DelegateDestroysSelfOnWindowDestroy) {
   std::unique_ptr<Window> w1(
       CreateTestWindowWithDelegate(new DestroyWindowDelegate(), 0,
                                    gfx::Rect(10, 20, 30, 40), root_window()));
@@ -3015,12 +3180,12 @@ class HierarchyObserver : public WindowObserver {
 };
 
 // Tests hierarchy change notifications.
-TEST_P(WindowTest, OnWindowHierarchyChange) {
+TEST_F(WindowTest, OnWindowHierarchyChange) {
   {
     // Simple add & remove.
     HierarchyObserver oroot(root_window());
 
-    std::unique_ptr<Window> w1(CreateTestWindowWithId(1, NULL));
+    std::unique_ptr<Window> w1(CreateTestWindowWithId(1, nullptr));
     HierarchyObserver o1(w1.get());
 
     // Add.
@@ -3029,7 +3194,7 @@ TEST_P(WindowTest, OnWindowHierarchyChange) {
     WindowObserver::HierarchyChangeParams params;
     params.phase = WindowObserver::HierarchyChangeParams::HIERARCHY_CHANGING;
     params.target = w1.get();
-    params.old_parent = NULL;
+    params.old_parent = nullptr;
     params.new_parent = root_window();
     params.receiver = w1.get();
     o1.ValidateState(0, params);
@@ -3049,7 +3214,7 @@ TEST_P(WindowTest, OnWindowHierarchyChange) {
 
     params.phase = WindowObserver::HierarchyChangeParams::HIERARCHY_CHANGING;
     params.old_parent = root_window();
-    params.new_parent = NULL;
+    params.new_parent = nullptr;
     params.receiver = w1.get();
 
     o1.ValidateState(0, params);
@@ -3066,7 +3231,7 @@ TEST_P(WindowTest, OnWindowHierarchyChange) {
     // Add & remove of hierarchy. Tests notification order per documentation in
     // WindowObserver.
     HierarchyObserver o(root_window());
-    std::unique_ptr<Window> w1(CreateTestWindowWithId(1, NULL));
+    std::unique_ptr<Window> w1(CreateTestWindowWithId(1, nullptr));
     Window* w11 = CreateTestWindowWithId(11, w1.get());
     w1->AddObserver(&o);
     w11->AddObserver(&o);
@@ -3079,7 +3244,7 @@ TEST_P(WindowTest, OnWindowHierarchyChange) {
     WindowObserver::HierarchyChangeParams params;
     params.phase = WindowObserver::HierarchyChangeParams::HIERARCHY_CHANGING;
     params.target = w1.get();
-    params.old_parent = NULL;
+    params.old_parent = nullptr;
     params.new_parent = root_window();
     params.receiver = w1.get();
     o.ValidateState(index++, params);
@@ -3102,7 +3267,7 @@ TEST_P(WindowTest, OnWindowHierarchyChange) {
     root_window()->RemoveChild(w1.get());
     params.phase = WindowObserver::HierarchyChangeParams::HIERARCHY_CHANGING;
     params.old_parent = root_window();
-    params.new_parent = NULL;
+    params.new_parent = nullptr;
     params.receiver = w1.get();
     o.ValidateState(index++, params);
     params.receiver = w11;
@@ -3203,7 +3368,7 @@ class TestLayerAnimationObserver : public ui::LayerAnimationObserver {
   DISALLOW_COPY_AND_ASSIGN(TestLayerAnimationObserver);
 };
 
-TEST_P(WindowTest, WindowDestroyCompletesAnimations) {
+TEST_F(WindowTest, WindowDestroyCompletesAnimations) {
   ui::ScopedAnimationDurationScaleMode test_duration_mode(
       ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   scoped_refptr<ui::LayerAnimator> animator =
@@ -3252,24 +3417,13 @@ TEST_P(WindowTest, WindowDestroyCompletesAnimations) {
   animator->RemoveObserver(&observer);
 }
 
-TEST_P(WindowTest, RootWindowUsesCompositorFrameSinkId) {
-  // MUS doesn't create context_factory_private, which results in this test
-  // failing.
-  // TODO(sky): figure out the right thing here.
-  if (GetParam() == Env::Mode::MUS)
-    return;
-
+TEST_F(WindowTest, RootWindowUsesCompositorFrameSinkId) {
   EXPECT_EQ(host()->compositor()->frame_sink_id(),
             root_window()->GetFrameSinkId());
   EXPECT_TRUE(root_window()->GetFrameSinkId().is_valid());
 }
 
-TEST_P(WindowTest, LocalSurfaceIdChanges) {
-  // This uses Window::CreateLayerTreeFrameSink(), which is not wired up in
-  // Mus. At this time it is only used for LOCAL, so it's not wired up for MUS.
-  if (GetParam() == Env::Mode::MUS)
-    return;
-
+TEST_F(WindowTest, LocalSurfaceIdChanges) {
   Window window(nullptr);
   window.Init(ui::LAYER_NOT_DRAWN);
   window.SetBounds(gfx::Rect(300, 300));
@@ -3278,37 +3432,32 @@ TEST_P(WindowTest, LocalSurfaceIdChanges) {
 
   std::unique_ptr<cc::LayerTreeFrameSink> frame_sink(
       window.CreateLayerTreeFrameSink());
-  viz::LocalSurfaceId local_surface_id1 =
-      window.GetLocalSurfaceIdAllocation().local_surface_id();
+  viz::LocalSurfaceId local_surface_id1 = window.GetLocalSurfaceId();
   EXPECT_NE(nullptr, frame_sink.get());
   EXPECT_TRUE(local_surface_id1.is_valid());
 
-  // Resize 0x0 to make sure WindowPort* stores the correct window size before
+  // Resize to 0x0 to make sure the correct window size is stored before
   // creating the frame sink.
   window.SetBounds(gfx::Rect(0, 0));
-  viz::LocalSurfaceId local_surface_id2 =
-      window.GetLocalSurfaceIdAllocation().local_surface_id();
+  viz::LocalSurfaceId local_surface_id2 = window.GetLocalSurfaceId();
   EXPECT_TRUE(local_surface_id2.is_valid());
   EXPECT_NE(local_surface_id1, local_surface_id2);
 
   window.SetBounds(gfx::Rect(300, 300));
-  viz::LocalSurfaceId local_surface_id3 =
-      window.GetLocalSurfaceIdAllocation().local_surface_id();
+  viz::LocalSurfaceId local_surface_id3 = window.GetLocalSurfaceId();
   EXPECT_TRUE(local_surface_id3.is_valid());
   EXPECT_NE(local_surface_id1, local_surface_id3);
   EXPECT_NE(local_surface_id2, local_surface_id3);
 
   window.OnDeviceScaleFactorChanged(1.0f, 3.0f);
-  viz::LocalSurfaceId local_surface_id4 =
-      window.GetLocalSurfaceIdAllocation().local_surface_id();
+  viz::LocalSurfaceId local_surface_id4 = window.GetLocalSurfaceId();
   EXPECT_TRUE(local_surface_id4.is_valid());
   EXPECT_NE(local_surface_id1, local_surface_id4);
   EXPECT_NE(local_surface_id2, local_surface_id4);
   EXPECT_NE(local_surface_id3, local_surface_id4);
 
   window.RecreateLayer();
-  viz::LocalSurfaceId local_surface_id5 =
-      window.GetLocalSurfaceIdAllocation().local_surface_id();
+  viz::LocalSurfaceId local_surface_id5 = window.GetLocalSurfaceId();
   EXPECT_TRUE(local_surface_id5.is_valid());
   EXPECT_NE(local_surface_id1, local_surface_id5);
   EXPECT_NE(local_surface_id2, local_surface_id5);
@@ -3316,14 +3465,44 @@ TEST_P(WindowTest, LocalSurfaceIdChanges) {
   EXPECT_NE(local_surface_id4, local_surface_id5);
 
   window.AllocateLocalSurfaceId();
-  viz::LocalSurfaceId local_surface_id6 =
-      window.GetLocalSurfaceIdAllocation().local_surface_id();
+  viz::LocalSurfaceId local_surface_id6 = window.GetLocalSurfaceId();
   EXPECT_TRUE(local_surface_id6.is_valid());
   EXPECT_NE(local_surface_id1, local_surface_id6);
   EXPECT_NE(local_surface_id2, local_surface_id6);
   EXPECT_NE(local_surface_id3, local_surface_id6);
   EXPECT_NE(local_surface_id4, local_surface_id6);
   EXPECT_NE(local_surface_id5, local_surface_id6);
+}
+
+TEST_F(WindowTest, CreateLayerTreeFrameSink) {
+  Window window(nullptr);
+  window.Init(ui::LAYER_NOT_DRAWN);
+  window.SetBounds(gfx::Rect(300, 300));
+
+  root_window()->AddChild(&window);
+
+  // The window shouldn't have FrameSinkId before CreateLayerTreeFrameSink() is
+  // called.
+  EXPECT_FALSE(window.GetFrameSinkId().is_valid());
+
+  std::unique_ptr<cc::LayerTreeFrameSink> layer_tree_frame_sink =
+      window.CreateLayerTreeFrameSink();
+
+  // Calling CreateLayerTreeFrameSink() should return a LayerTreeFrameSink and
+  // the window should now have a FrameSinkId.
+  EXPECT_NE(layer_tree_frame_sink.get(), nullptr);
+  EXPECT_TRUE(window.GetFrameSinkId().is_valid());
+
+  viz::FrameSinkId frame_sink_id = window.GetFrameSinkId();
+
+  // Reset and recreate the LayerTreeFrameSink. This would typically happen
+  // after a GPU crash.
+  layer_tree_frame_sink.reset();
+  layer_tree_frame_sink = window.CreateLayerTreeFrameSink();
+
+  // A new LayerTreeFrameSink should be created for the same FrameSinkId.
+  EXPECT_NE(layer_tree_frame_sink.get(), nullptr);
+  EXPECT_EQ(frame_sink_id, window.GetFrameSinkId());
 }
 
 // This delegate moves its parent window to the specified one when the gesture
@@ -3355,7 +3534,7 @@ class HandleGestureEndDelegate : public TestWindowDelegate {
   DISALLOW_COPY_AND_ASSIGN(HandleGestureEndDelegate);
 };
 
-TEST_P(WindowTest, CleanupGestureStateChangesWindowHierarchy) {
+TEST_F(WindowTest, CleanupGestureStateChangesWindowHierarchy) {
   Window window(nullptr);
   window.Init(ui::LAYER_NOT_DRAWN);
   root_window()->AddChild(&window);
@@ -3384,7 +3563,7 @@ TEST_P(WindowTest, CleanupGestureStateChangesWindowHierarchy) {
   child.reset();
 }
 
-TEST_P(WindowTest, CleanupGestureStateDeleteOtherWindows) {
+TEST_F(WindowTest, CleanupGestureStateDeleteOtherWindows) {
   Window window(nullptr);
   window.Init(ui::LAYER_NOT_DRAWN);
   root_window()->AddChild(&window);
@@ -3414,13 +3593,112 @@ TEST_P(WindowTest, CleanupGestureStateDeleteOtherWindows) {
   child2.reset();
 }
 
-INSTANTIATE_TEST_SUITE_P(/* no prefix */,
-                         WindowTest,
-                         ::testing::Values(Env::Mode::LOCAL, Env::Mode::MUS));
+class WindowActualScreenBoundsTest
+    : public WindowTest,
+      public testing::WithParamInterface<
+          /*is_target_transform_identical*/ bool> {
+ public:
+  WindowActualScreenBoundsTest() = default;
+  WindowActualScreenBoundsTest(const WindowActualScreenBoundsTest&) = delete;
+  WindowActualScreenBoundsTest& operator=(const WindowActualScreenBoundsTest&) =
+      delete;
+  ~WindowActualScreenBoundsTest() override = default;
 
-INSTANTIATE_TEST_SUITE_P(/* no prefix */,
-                         WindowObserverTest,
-                         ::testing::Values(Env::Mode::LOCAL, Env::Mode::MUS));
+  // WindowTest:
+  void SetUp() override {
+    WindowTest::SetUp();
+    viewport_ = std::unique_ptr<Window>(CreateTestWindowWithBounds(
+        gfx::Rect(/*x=*/100, /*y=*/50, /*width=*/200, /*height=*/200),
+        root_window()));
+    child_ = std::unique_ptr<Window>(CreateTestWindowWithBounds(
+        gfx::Rect(/*x=*/0, /*y=*/0, /*width=*/100, /*height*/ 100),
+        viewport_.get()));
+  }
+
+  void TearDown() override {
+    child_.reset();
+    viewport_.reset();
+    WindowTest::TearDown();
+  }
+
+  void OnTranslationAnimationStarted(const gfx::Transform& transform) const {
+    EXPECT_EQ("100,50 100x100", child_->GetActualBoundsInScreen().ToString());
+    EXPECT_EQ("50,0 100x100", child_->GetBoundsInScreen().ToString());
+  }
+
+  void OnTranslationAnimationEnded(const gfx::Transform& transform) const {
+    EXPECT_EQ("50,0 100x100", child_->GetActualBoundsInScreen().ToString());
+    EXPECT_EQ("50,0 100x100", child_->GetBoundsInScreen().ToString());
+  }
+
+  void OnTranslationAnimationProgressed(const gfx::Rect& child_initial_bounds,
+                                        const gfx::Transform& transform) const {
+    gfx::RectF current_screen_bounds(child_initial_bounds);
+    transform.TransformRect(&current_screen_bounds);
+    EXPECT_EQ(gfx::ToEnclosedRect(current_screen_bounds),
+              child_->GetActualBoundsInScreen());
+  }
+
+  std::unique_ptr<Window> viewport_;
+  std::unique_ptr<Window> child_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All, WindowActualScreenBoundsTest, testing::Bool());
+
+// Verifies that the function to get the window's screen bounds works as
+// expected during layer animation.
+TEST_P(WindowActualScreenBoundsTest, VerifyWindowActualBoundsDuringAnimation) {
+  ui::ScopedAnimationDurationScaleMode test_duration_mode(
+      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
+  auto* viewport_layer = viewport_->layer();
+  gfx::Transform initial_transform;
+  gfx::Transform target_transform;
+  gfx::Rect child_initial_bounds;
+  if (GetParam()) {
+    // Test in the scenario where the target transform is identical.
+
+    // Set the target bounds.
+    viewport_->SetBounds(
+        gfx::Rect(/*x=*/50, /*y=*/0, /*width=*/200, /*height=*/200));
+
+    // Set the transform to reverse the effect brought by bounds setting.
+    initial_transform.Translate(50, 50);
+    viewport_->layer()->SetTransform(initial_transform);
+
+    // Trigger the translation animation.
+    ui::ScopedLayerAnimationSettings settings(viewport_layer->GetAnimator());
+    viewport_layer->SetTransform(target_transform);
+
+    // Calculate the child's initial screen bounds manually.
+    child_initial_bounds =
+        gfx::Rect(/*x=*/50, /*y=*/0, /*width=*/100, /*height=*/100);
+  } else {
+    // Test in the scenario where the target transform is non-identical.
+
+    // Trigger the translation animation.
+    ui::ScopedLayerAnimationSettings settings(viewport_layer->GetAnimator());
+    target_transform.Translate(-50, -50);
+    viewport_layer->SetTransform(target_transform);
+
+    // Calculate the child's initial screen bounds manually.
+    child_initial_bounds =
+        gfx::Rect(/*x=*/100, /*y=*/50, /*width=*/100, /*height=*/100);
+  }
+
+  LayerTranslationAnimationNotifier bounds_checker(
+      viewport_layer, initial_transform, target_transform,
+      base::BindRepeating(
+          &WindowActualScreenBoundsTest::OnTranslationAnimationStarted,
+          base::Unretained(this)),
+      base::BindRepeating(
+          &WindowActualScreenBoundsTest::OnTranslationAnimationEnded,
+          base::Unretained(this)),
+      base::BindRepeating(
+          &WindowActualScreenBoundsTest::OnTranslationAnimationProgressed,
+          base::Unretained(this), child_initial_bounds));
+  bounds_checker.WaitForAnimationCompletion();
+}
 
 }  // namespace
 }  // namespace test

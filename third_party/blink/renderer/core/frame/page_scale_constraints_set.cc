@@ -34,7 +34,6 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
@@ -47,7 +46,7 @@ PageScaleConstraintsSet::PageScaleConstraintsSet(Page* page)
       needs_reset_(false),
       constraints_dirty_(false) {}
 
-void PageScaleConstraintsSet::Trace(blink::Visitor* visitor) {
+void PageScaleConstraintsSet::Trace(Visitor* visitor) const {
   visitor->Trace(page_);
 }
 

@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/modules/indexeddb/idb_metadata.h"
 
+#include <utility>
+
 namespace blink {
 
 constexpr int64_t IDBIndexMetadata::kInvalidId;
@@ -68,17 +70,20 @@ IDBDatabaseMetadata::IDBDatabaseMetadata()
 IDBDatabaseMetadata::IDBDatabaseMetadata(const String& name,
                                          int64_t id,
                                          int64_t version,
-                                         int64_t max_object_store_id)
+                                         int64_t max_object_store_id,
+                                         bool was_cold_open)
     : name(name),
       id(id),
       version(version),
-      max_object_store_id(max_object_store_id) {}
+      max_object_store_id(max_object_store_id),
+      was_cold_open(was_cold_open) {}
 
 void IDBDatabaseMetadata::CopyFrom(const IDBDatabaseMetadata& metadata) {
   name = metadata.name;
   id = metadata.id;
   version = metadata.version;
   max_object_store_id = metadata.max_object_store_id;
+  was_cold_open = metadata.was_cold_open;
 }
 
 }  // namespace blink

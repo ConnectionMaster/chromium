@@ -9,10 +9,6 @@ namespace supervised_users {
 
 // Keys for supervised user settings. These are configured remotely and mapped
 // to preferences by the SupervisedUserPrefStore.
-#if defined(OS_CHROMEOS)
-extern const char kAccountConsistencyMirrorRequired[];
-#endif
-extern const char kApprovedExtensions[];
 extern const char kAuthorizationHeaderFormat[];
 extern const char kCameraMicDisabled[];
 extern const char kContentPackDefaultFilteringBehavior[];
@@ -25,10 +21,6 @@ extern const char kRecordHistory[];
 extern const char kSafeSitesEnabled[];
 extern const char kSigninAllowed[];
 extern const char kUserName[];
-
-// A pseudo-email address for systems that expect well-formed email addresses
-// (like Sync), even though we're not signed in.
-extern const char kSupervisedUserPseudoEmail[];
 
 // A special supervised user ID used for child accounts.
 extern const char kChildAccountSUID[];

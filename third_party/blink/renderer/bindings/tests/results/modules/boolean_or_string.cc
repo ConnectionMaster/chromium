@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/modules/boolean_or_string.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -57,7 +57,7 @@ BooleanOrString::BooleanOrString(const BooleanOrString&) = default;
 BooleanOrString::~BooleanOrString() = default;
 BooleanOrString& BooleanOrString::operator=(const BooleanOrString&) = default;
 
-void BooleanOrString::Trace(blink::Visitor* visitor) {
+void BooleanOrString::Trace(Visitor* visitor) const {
 }
 
 void V8BooleanOrString::ToImpl(
@@ -78,7 +78,7 @@ void V8BooleanOrString::ToImpl(
   }
 
   {
-    V8StringResource<> cpp_value = v8_value;
+    V8StringResource<> cpp_value{ v8_value };
     if (!cpp_value.Prepare(exception_state))
       return;
     impl.SetString(cpp_value);
@@ -108,3 +108,4 @@ BooleanOrString NativeValueTraits<BooleanOrString>::NativeValue(
 }
 
 }  // namespace blink
+

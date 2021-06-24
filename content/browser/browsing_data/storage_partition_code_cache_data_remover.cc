@@ -55,16 +55,7 @@ void StoragePartitionCodeCacheDataRemover::Remove(
       << __func__ << " called with a null callback";
   done_callback_ = std::move(done_callback);
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
-      base::BindOnce(&StoragePartitionCodeCacheDataRemover::ClearJSCodeCache,
-                     base::Unretained(this)));
-}
-
-void StoragePartitionCodeCacheDataRemover::ClearedCodeCache() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  std::move(done_callback_).Run();
-  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, this);
+  ClearJSCodeCache();
 }
 
 void StoragePartitionCodeCacheDataRemover::ClearCache(
@@ -75,32 +66,29 @@ void StoragePartitionCodeCacheDataRemover::ClearCache(
     return;
   }
 
-  // Create a callback that is copyable, even though it can only be called once,
-  // so that we can use it synchronously in case result != net::ERR_IO_PENDING.
-  net::CompletionRepeatingCallback copyable_callback =
-      base::AdaptCallbackForRepeating(std::move(callback));
+  // Create a split version of callback so that we can use it synchronously in
+  // case result != net::ERR_IO_PENDING.
+  auto split_callback = base::SplitOnceCallback(std::move(callback));
   int result = net::ERR_FAILED;
   if (!url_predicate_.is_null()) {
     result =
         (new ConditionalCacheDeletionHelper(
-             backend,
-             ConditionalCacheDeletionHelper::CreateCustomKeyURLAndTimeCondition(
-                 std::move(url_predicate_),
-                 base::BindRepeating(
-                     &GeneratedCodeCache::GetResourceURLFromKey),
-                 begin_time_, end_time_)))
-            ->DeleteAndDestroySelfWhenFinished(copyable_callback);
+             backend, ConditionalCacheDeletionHelper::CreateURLAndTimeCondition(
+                          std::move(url_predicate_),
+                          base::BindRepeating(
+                              &GeneratedCodeCache::GetResourceURLFromKey),
+                          begin_time_, end_time_)))
+            ->DeleteAndDestroySelfWhenFinished(std::move(split_callback.first));
   } else if (begin_time_.is_null() && end_time_.is_max()) {
-    result = backend->DoomAllEntries(copyable_callback);
+    result = backend->DoomAllEntries(std::move(split_callback.first));
   } else {
-    result =
-        backend->DoomEntriesBetween(begin_time_, end_time_, copyable_callback);
+    result = backend->DoomEntriesBetween(begin_time_, end_time_,
+                                         std::move(split_callback.first));
   }
   // When result is ERR_IO_PENDING the callback would be called after the
   // operation has finished.
   if (result != net::ERR_IO_PENDING) {
-    DCHECK(copyable_callback);
-    copyable_callback.Run(result);
+    std::move(split_callback.second).Run(result);
   }
 }
 
@@ -140,11 +128,9 @@ void StoragePartitionCodeCacheDataRemover::ClearWASMCodeCache(int rv) {
 // |rv| is the returned when clearing the code cache. We don't handle
 // any errors here, so the result value is ignored.
 void StoragePartitionCodeCacheDataRemover::DoneClearCodeCache(int rv) {
-  // Notify the UI thread that we are done.
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
-      base::BindOnce(&StoragePartitionCodeCacheDataRemover::ClearedCodeCache,
-                     base::Unretained(this)));
+  // Notify that we are done.
+  std::move(done_callback_).Run();
+  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, this);
 }
 
 }  // namespace content

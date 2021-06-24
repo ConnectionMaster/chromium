@@ -14,6 +14,7 @@
 #include "base/task/post_task.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "net/base/io_buffer.h"
 
 namespace base {
@@ -68,14 +69,14 @@ namespace content {
 //      std::unique_ptr<ByteStreamWriter> writer;
 //      std::unique_ptr<ByteStreamReader> reader;
 //      CreateByteStream(
-//          base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}),
-//          base::CreateSequencedTaskRunnerWithTraits({base::MayBlock, ...}),
+//          GetIOThreadTaskRunner({}),
+//          base::CreateSequencedTaskRunner({base::MayBlock, ...}),
 //          kStreamBufferSize /* e.g. 10240.  */,
 //          &writer,
 //          &reader);         // Presumed passed to FILE thread for reading.
 //
 //      // Setup callback for writing.
-//      writer->RegisterCallback(base::Bind(&SpaceAvailable, this));
+//      writer->RegisterCallback(base::BindRepeating(&SpaceAvailable, this));
 //
 //      // Do initial round of writing.
 //      SpaceAvailable();
@@ -102,7 +103,7 @@ namespace content {
 //
 //    void ReceivingClass::Initialize() {
 //      // Initialization
-//      reader->RegisterCallback(base::Bind(&DataAvailable, obj));
+//      reader->RegisterCallback(base::BindRepeating(&DataAvailable, obj));
 //    }
 //
 //    // Called whenever there's something to read.
@@ -157,8 +158,7 @@ class CONTENT_EXPORT ByteStreamWriter {
   // available (i.e. in the case of that race either of the before
   // or after callbacks may be called).
   // The callback will not be called after ByteStreamWriter destruction.
-  virtual void RegisterCallback(
-      const base::RepeatingClosure& source_callback) = 0;
+  virtual void RegisterCallback(base::RepeatingClosure source_callback) = 0;
 
   // Returns the number of bytes sent to the reader but not yet reported by
   // the reader as read.
@@ -194,8 +194,7 @@ class CONTENT_EXPORT ByteStreamReader {
   // with data becoming available (i.e. in the case of that race
   // either of the before or after callbacks may be called).
   // The callback will not be called after ByteStreamReader destruction.
-  virtual void RegisterCallback(
-      const base::RepeatingClosure& sink_callback) = 0;
+  virtual void RegisterCallback(base::RepeatingClosure sink_callback) = 0;
 };
 
 CONTENT_EXPORT void CreateByteStream(

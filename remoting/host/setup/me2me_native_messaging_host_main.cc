@@ -13,12 +13,14 @@
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/i18n/icu_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/single_thread_task_executor.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "mojo/core/embedder/embedder.h"
 #include "net/url_request/url_fetcher.h"
 #include "remoting/base/auto_thread_task_runner.h"
@@ -37,9 +39,9 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/transitional_url_loader_factory_owner.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include "base/mac/scoped_nsautorelease_pool.h"
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_APPLE)
 
 #if defined(OS_WIN)
 #include "base/process/process_info.h"
@@ -47,34 +49,38 @@
 #include "remoting/host/pairing_registry_delegate_win.h"
 #endif  // defined(OS_WIN)
 
-#if defined(USE_GLIB) && !defined(OS_CHROMEOS)
+#if defined(USE_GLIB) && !BUILDFLAG(IS_CHROMEOS_ASH)
 #include <glib-object.h>
-#endif  // defined(USE_GLIB) && !defined(OS_CHROMEOS)
+#endif  // defined(USE_GLIB) && !BUILDFLAG(IS_CHROMEOS_ASH)
 
 using remoting::protocol::PairingRegistry;
 
 namespace remoting {
 
 int Me2MeNativeMessagingHostMain(int argc, char** argv) {
-  // This object instance is required by Chrome code (such as MessageLoop).
+  // This object instance is required by Chrome code (such as
+  // SingleThreadTaskExecutor).
   base::AtExitManager exit_manager;
 
   base::CommandLine::Init(argc, argv);
+  const base::CommandLine* command_line =
+      base::CommandLine::ForCurrentProcess();
+
   remoting::InitHostLogging();
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Needed so we don't leak objects when threads are created.
   base::mac::ScopedNSAutoreleasePool pool;
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_APPLE)
 
-#if defined(USE_GLIB) && !defined(OS_CHROMEOS)
+#if defined(USE_GLIB) && !BUILDFLAG(IS_CHROMEOS_ASH)
 // g_type_init will be deprecated in 2.36. 2.35 is the development
 // version for 2.36, hence do not call g_type_init starting 2.35.
 // http://developer.gnome.org/gobject/unstable/gobject-Type-Information.html#g-type-init
 #if !GLIB_CHECK_VERSION(2, 35, 0)
   g_type_init();
 #endif
-#endif  // defined(USE_GLIB) && !defined(OS_CHROMEOS)
+#endif  // defined(USE_GLIB) && !BUILDFLAG(IS_CHROMEOS_ASH)
 
   // Required to find the ICU data file, used by some file_util routines.
   base::i18n::InitializeICU();
@@ -88,25 +94,42 @@ int Me2MeNativeMessagingHostMain(int argc, char** argv) {
   }
 #endif  // defined(REMOTING_ENABLE_BREAKPAD)
 
-  base::ThreadPool::CreateAndStartWithDefaultParams("Me2Me");
+  base::ThreadPoolInstance::CreateAndStartWithDefaultParams("Me2Me");
 
   mojo::core::Init();
 
   // An IO thread is needed for the pairing registry and URL context getter.
   base::Thread io_thread("io_thread");
   io_thread.StartWithOptions(
-      base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
+      base::Thread::Options(base::MessagePumpType::IO, 0));
 
-  base::MessageLoopForUI message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   base::RunLoop run_loop;
 
   scoped_refptr<DaemonController> daemon_controller =
       DaemonController::Create();
 
+#if defined(OS_APPLE)
+  if (command_line->HasSwitch(kCheckPermissionSwitchName)) {
+    int exit_code;
+    daemon_controller->CheckPermission(
+        /* it2me */ false,
+        // base::BindOnce cannot bind a capturing lambda, so the "captured"
+        // parameters are bound manually. This is safe because the run-loop is
+        // run to completion within this scope.
+        base::BindOnce(
+            [](int* exit_code, base::RunLoop* run_loop, bool perm) {
+              *exit_code = (perm ? kSuccessExitCode : kNoPermissionExitCode);
+              run_loop->Quit();
+            },
+            &exit_code, &run_loop));
+    run_loop.Run();
+    return exit_code;
+  }
+#endif  // defined(OS_APPLE)
+
   // Pass handle of the native view to the controller so that the UAC prompts
   // are focused properly.
-  const base::CommandLine* command_line =
-      base::CommandLine::ForCurrentProcess();
   int64_t native_view_handle = 0;
   if (command_line->HasSwitch(kParentWindowSwitchName)) {
     std::string native_view =
@@ -249,9 +272,13 @@ int Me2MeNativeMessagingHostMain(int argc, char** argv) {
   std::unique_ptr<extensions::NativeMessagingChannel> channel(
       new PipeMessagingChannel(std::move(read_file), std::move(write_file)));
 
+#if defined(OS_POSIX)
+  PipeMessagingChannel::ReopenStdinStdout();
+#endif  // defined(OS_POSIX)
+
   std::unique_ptr<ChromotingHostContext> context =
       ChromotingHostContext::Create(new remoting::AutoThreadTaskRunner(
-          message_loop.task_runner(), run_loop.QuitClosure()));
+          main_task_executor.task_runner(), run_loop.QuitClosure()));
 
   // Create the native messaging host.
   std::unique_ptr<extensions::NativeMessageHost> host(
@@ -268,7 +295,7 @@ int Me2MeNativeMessagingHostMain(int argc, char** argv) {
   run_loop.Run();
 
   // Block until tasks blocking shutdown have completed their execution.
-  base::ThreadPool::GetInstance()->Shutdown();
+  base::ThreadPoolInstance::Get()->Shutdown();
 
   return kSuccessExitCode;
 }

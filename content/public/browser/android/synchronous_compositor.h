@@ -12,9 +12,12 @@
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/time/time.h"
-#include "components/viz/common/presentation_feedback_map.h"
+#include "components/viz/common/frame_timing_details_map.h"
+#include "components/viz/common/hit_test/hit_test_region_list.h"
 #include "components/viz/common/resources/returned_resource.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/common/content_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -28,6 +31,7 @@ class Transform;
 
 namespace viz {
 class CompositorFrame;
+class BeginFrameSource;
 }
 
 namespace content {
@@ -54,6 +58,9 @@ class CONTENT_EXPORT SynchronousCompositor {
 
     uint32_t layer_tree_frame_sink_id;
     std::unique_ptr<viz::CompositorFrame> frame;
+    // Invalid if |frame| is nullptr.
+    viz::LocalSurfaceId local_surface_id;
+    absl::optional<viz::HitTestRegionList> hit_test_region_list;
 
    private:
     DISALLOW_COPY_AND_ASSIGN(Frame);
@@ -89,14 +96,17 @@ class CONTENT_EXPORT SynchronousCompositor {
   // Note that all resources must be returned before ReleaseHwDraw.
   virtual void ReturnResources(
       uint32_t layer_tree_frame_sink_id,
-      const std::vector<viz::ReturnedResource>& resources) = 0;
+      std::vector<viz::ReturnedResource> resources) = 0;
 
   virtual void DidPresentCompositorFrames(
-      viz::PresentationFeedbackMap feedbacks) = 0;
+      viz::FrameTimingDetailsMap timing_details,
+      uint32_t frame_token) = 0;
 
   // "On demand" SW draw, into the supplied canvas (observing the transform
   // and clip set there-in).
-  virtual bool DemandDrawSw(SkCanvas* canvas) = 0;
+  // `software canvas` being true means drawing happens immediately instead
+  // of being cached, which allows more efficient drawing.
+  virtual bool DemandDrawSw(SkCanvas* canvas, bool software_canvas) = 0;
 
   // Set the memory limit policy of this compositor.
   virtual void SetMemoryPolicy(size_t bytes_limit) = 0;
@@ -119,6 +129,18 @@ class CONTENT_EXPORT SynchronousCompositor {
   // Called by the embedder to notify that the OnComputeScroll step is happening
   // and if any input animation is active, it should tick now.
   virtual void OnComputeScroll(base::TimeTicks animation_time) = 0;
+
+  // Sets BeginFrameSource to use
+  virtual void SetBeginFrameSource(
+      viz::BeginFrameSource* begin_frame_source) = 0;
+
+  // Called when client invalidated because it was necessary for drawing sub
+  // clients. Used with viz for webview only.
+  virtual void DidInvalidate() = 0;
+
+  // Called when embedder has evicted the previous compositor frame. So renderer
+  // needs to submit next frame with new LocalSurfaceId.
+  virtual void WasEvicted() = 0;
 
  protected:
   virtual ~SynchronousCompositor() {}

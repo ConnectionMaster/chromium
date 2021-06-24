@@ -5,9 +5,6 @@
 #ifndef EXTENSIONS_BROWSER_EXTENSION_ICON_IMAGE_H_
 #define EXTENSIONS_BROWSER_EXTENSION_ICON_IMAGE_H_
 
-#include <map>
-#include <string>
-
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -91,6 +88,8 @@ class IconImage : public content::NotificationObserver {
   // Returns true if the icon is attached to an existing extension.
   bool is_valid() const { return extension_ ? true : false; }
 
+  bool did_complete_initial_load() const { return did_complete_initial_load_; }
+
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
@@ -116,6 +115,10 @@ class IconImage : public content::NotificationObserver {
   // Whether the loaded icon should be kept at the original size.
   const bool keep_original_size_;
 
+  // Set to true when the icon finishes the very first load (which can be
+  // asynchronous from creation).
+  bool did_complete_initial_load_;
+
   base::ObserverList<Observer>::Unchecked observers_;
 
   Source* source_;  // Owned by ImageSkia storage.
@@ -130,7 +133,7 @@ class IconImage : public content::NotificationObserver {
 
   content::NotificationRegistrar registrar_;
 
-  base::WeakPtrFactory<IconImage> weak_ptr_factory_;
+  base::WeakPtrFactory<IconImage> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(IconImage);
 };

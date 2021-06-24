@@ -14,6 +14,7 @@
 #include "jingle/glue/fake_ssl_client_socket.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_isolation_key.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/ssl_client_socket.h"
@@ -59,8 +60,8 @@ P2PSocketTcp::SendBuffer::~SendBuffer() = default;
 
 P2PSocketTcpBase::P2PSocketTcpBase(
     Delegate* delegate,
-    mojom::P2PSocketClientPtr client,
-    mojom::P2PSocketRequest socket,
+    mojo::PendingRemote<mojom::P2PSocketClient> client,
+    mojo::PendingReceiver<mojom::P2PSocket> socket,
     P2PSocketType type,
     ProxyResolvingClientSocketFactory* proxy_resolving_socket_factory)
     : P2PSocket(delegate, std::move(client), std::move(socket), P2PSocket::TCP),
@@ -78,10 +79,12 @@ void P2PSocketTcpBase::InitAccepted(const net::IPEndPoint& remote_address,
   DoRead();
 }
 
-void P2PSocketTcpBase::Init(const net::IPEndPoint& local_address,
-                            uint16_t min_port,
-                            uint16_t max_port,
-                            const P2PHostAndIPEndPoint& remote_address) {
+void P2PSocketTcpBase::Init(
+    const net::IPEndPoint& local_address,
+    uint16_t min_port,
+    uint16_t max_port,
+    const P2PHostAndIPEndPoint& remote_address,
+    const net::NetworkIsolationKey& network_isolation_key) {
   DCHECK(!socket_);
 
   remote_address_ = remote_address;
@@ -105,7 +108,7 @@ void P2PSocketTcpBase::Init(const net::IPEndPoint& local_address,
   // a problem on multi-homed host.
 
   socket_ = proxy_resolving_socket_factory_->CreateSocket(
-      GURL("https://" + dest_host_port_pair.ToString()),
+      GURL("https://" + dest_host_port_pair.ToString()), network_isolation_key,
       IsTlsClientSocket(type_));
 
   if (IsPseudoTlsClientSocket(type_)) {
@@ -234,6 +237,13 @@ bool P2PSocketTcpBase::OnPacket(std::vector<int8_t> data) {
       OnError();
       return false;
     }
+  }
+
+  if (data.size() == 0) {
+    // https://tools.ietf.org/html/rfc4571#section-2 allows null packets which
+    // are ignored.
+    LOG(WARNING) << "Ignoring empty RTP-over-TCP frame.";
+    return true;
   }
 
   client_->DataReceived(
@@ -395,8 +405,8 @@ void P2PSocketTcpBase::SetOption(P2PSocketOption option, int32_t value) {
 
 P2PSocketTcp::P2PSocketTcp(
     Delegate* delegate,
-    mojom::P2PSocketClientPtr client,
-    mojom::P2PSocketRequest socket,
+    mojo::PendingRemote<mojom::P2PSocketClient> client,
+    mojo::PendingReceiver<mojom::P2PSocket> socket,
     P2PSocketType type,
     ProxyResolvingClientSocketFactory* proxy_resolving_socket_factory)
     : P2PSocketTcpBase(delegate,
@@ -453,8 +463,8 @@ void P2PSocketTcp::DoSend(
 // P2PSocketStunTcp
 P2PSocketStunTcp::P2PSocketStunTcp(
     Delegate* delegate,
-    mojom::P2PSocketClientPtr client,
-    mojom::P2PSocketRequest socket,
+    mojo::PendingRemote<mojom::P2PSocketClient> client,
+    mojo::PendingReceiver<mojom::P2PSocket> socket,
     P2PSocketType type,
     ProxyResolvingClientSocketFactory* proxy_resolving_socket_factory)
     : P2PSocketTcpBase(delegate,

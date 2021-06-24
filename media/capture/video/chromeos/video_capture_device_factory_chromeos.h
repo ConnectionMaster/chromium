@@ -9,14 +9,15 @@
 
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
+#include "components/chromeos_camera/common/mjpeg_decode_accelerator.mojom.h"
 #include "media/capture/video/chromeos/camera_hal_delegate.h"
-#include "media/capture/video/chromeos/mojo/cros_image_capture.mojom.h"
 #include "media/capture/video/video_capture_device_factory.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace media {
 
-class CrosImageCaptureImpl;
-class ReprocessManager;
+using MojoMjpegDecodeAcceleratorFactoryCB = base::RepeatingCallback<void(
+    mojo::PendingReceiver<chromeos_camera::mojom::MjpegDecodeAccelerator>)>;
 
 class CAPTURE_EXPORT VideoCaptureDeviceFactoryChromeOS final
     : public VideoCaptureDeviceFactory {
@@ -30,17 +31,10 @@ class CAPTURE_EXPORT VideoCaptureDeviceFactoryChromeOS final
   // VideoCaptureDeviceFactory interface implementations.
   std::unique_ptr<VideoCaptureDevice> CreateDevice(
       const VideoCaptureDeviceDescriptor& device_descriptor) final;
-  void GetSupportedFormats(
-      const VideoCaptureDeviceDescriptor& device_descriptor,
-      VideoCaptureFormats* supported_formats) final;
-  void GetDeviceDescriptors(
-      VideoCaptureDeviceDescriptors* device_descriptors) final;
+  void GetDevicesInfo(GetDevicesInfoCallback callback) override;
 
   static gpu::GpuMemoryBufferManager* GetBufferManager();
   static void SetGpuBufferManager(gpu::GpuMemoryBufferManager* buffer_manager);
-
-  void BindCrosImageCaptureRequest(
-      cros::mojom::CrosImageCaptureRequest request);
 
  private:
   // Initializes the factory. The factory is functional only after this call
@@ -60,11 +54,10 @@ class CAPTURE_EXPORT VideoCaptureDeviceFactoryChromeOS final
   // |camera_hal_ipc_thread_|.
   scoped_refptr<CameraHalDelegate> camera_hal_delegate_;
 
-  std::unique_ptr<ReprocessManager> reprocess_manager_;
-
-  std::unique_ptr<CrosImageCaptureImpl> cros_image_capture_;
-
   bool initialized_;
+
+  base::WeakPtrFactory<VideoCaptureDeviceFactoryChromeOS> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(VideoCaptureDeviceFactoryChromeOS);
 };

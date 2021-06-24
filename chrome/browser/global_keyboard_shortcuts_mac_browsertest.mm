@@ -4,12 +4,12 @@
 
 #import "chrome/browser/global_keyboard_shortcuts_mac.h"
 
+#include <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
 
 #include "base/run_loop.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -19,9 +19,11 @@
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/omnibox/browser/omnibox_view.h"
-#include "content/public/browser/notification_service.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
+#include "ui/events/event_constants.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #import "ui/events/test/cocoa_test_event_utils.h"
 
 using cocoa_test_event_utils::SynthesizeKeyEvent;
@@ -47,13 +49,6 @@ void SendEvent(NSEvent* ns_event) {
 
 }  // namespace
 
-// Test that global keyboard shortcuts are handled by the native window.
-// https://crbug.com/852232
-#if defined(OS_MACOSX)
-#define MAYBE_SwitchTabsMac DISABLED_SwitchTabsMac
-#else
-#define MAYBE_SwitchTabsMac
-#endif
 IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, SwitchTabsMac) {
   NSWindow* ns_window =
       browser()->window()->GetNativeWindow().GetNativeNSWindow();
@@ -139,7 +134,7 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, CopyPasteOmnibox) {
   // The second typed letter just appends.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_B,
                                /*flags=*/0));
-  ASSERT_EQ(omnibox_view->GetText(), base::ASCIIToUTF16("ab"));
+  ASSERT_EQ(omnibox_view->GetText(), u"ab");
 
   // Cmd+A selects the contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_A,
@@ -154,7 +149,7 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, CopyPasteOmnibox) {
                                /*flags=*/0));
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_D,
                                /*flags=*/0));
-  ASSERT_EQ(omnibox_view->GetText(), base::ASCIIToUTF16("cd"));
+  ASSERT_EQ(omnibox_view->GetText(), u"cd");
 
   // Cmd + left arrow moves to the beginning. It should not perform history
   // navigation because the firstResponder is not a WebContents..
@@ -164,13 +159,11 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, CopyPasteOmnibox) {
   // Cmd+V pastes the contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_V,
                                NSCommandKeyMask));
-  EXPECT_EQ(omnibox_view->GetText(), base::ASCIIToUTF16("abcd"));
+  EXPECT_EQ(omnibox_view->GetText(), u"abcd");
 }
 
 // Tests that the shortcut to reopen a previous tab works.
 IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, ReopenPreviousTab) {
-  NSWindow* ns_window =
-      browser()->window()->GetNativeWindow().GetNativeNSWindow();
   TabStripModel* tab_strip = browser()->tab_strip_model();
 
   // Set up window with 2 tabs.
@@ -186,22 +179,16 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, ReopenPreviousTab) {
   ASSERT_EQ(tab_strip->GetActiveWebContents()->GetLastCommittedURL(), test_url);
 
   // Close a tab.
-  content::WindowedNotificationObserver wait_for_closed_tab(
-      chrome::NOTIFICATION_TAB_CLOSING,
-      content::NotificationService::AllSources());
-  SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_W,
-                               NSCommandKeyMask));
-  wait_for_closed_tab.Wait();
+  ASSERT_TRUE(ui_test_utils::SendKeyPressToWindowSync(
+      browser()->window()->GetNativeWindow(), ui::VKEY_W, false, false, false,
+      true));
   EXPECT_EQ(1, tab_strip->count());
   ASSERT_NE(tab_strip->GetActiveWebContents()->GetLastCommittedURL(), test_url);
 
   // Reopen a tab.
-  content::WindowedNotificationObserver wait_for_added_tab(
-      chrome::NOTIFICATION_TAB_PARENTED,
-      content::NotificationService::AllSources());
-  SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_T,
-                               NSCommandKeyMask | NSShiftKeyMask));
-  wait_for_added_tab.Wait();
+  ASSERT_TRUE(ui_test_utils::SendKeyPressToWindowSync(
+      browser()->window()->GetNativeWindow(), ui::VKEY_T, false, true, false,
+      true));
   EXPECT_EQ(2, tab_strip->count());
   ASSERT_EQ(tab_strip->GetActiveWebContents()->GetLastCommittedURL(), test_url);
 }
@@ -230,10 +217,10 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, MenuCommandPriority) {
   // this code can't modify it.
   NSMenu* main_menu = [NSApp mainMenu];
   ASSERT_NE(nil, main_menu);
-  NSMenuItem* window_menu = [main_menu itemWithTitle:@"Window"];
-  ASSERT_NE(nil, window_menu);
-  ASSERT_TRUE(window_menu.hasSubmenu);
-  NSMenuItem* next_item = [window_menu.submenu itemWithTag:IDC_SELECT_NEXT_TAB];
+  NSMenuItem* tab_menu = [main_menu itemWithTitle:@"Tab"];
+  ASSERT_NE(nil, tab_menu);
+  ASSERT_TRUE(tab_menu.hasSubmenu);
+  NSMenuItem* next_item = [tab_menu.submenu itemWithTag:IDC_SELECT_NEXT_TAB];
   ASSERT_NE(nil, next_item);
   [next_item setKeyEquivalent:@"2"];
   [next_item setKeyEquivalentModifierMask:NSCommandKeyMask];

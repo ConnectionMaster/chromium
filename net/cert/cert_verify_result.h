@@ -5,30 +5,49 @@
 #ifndef NET_CERT_CERT_VERIFY_RESULT_H_
 #define NET_CERT_CERT_VERIFY_RESULT_H_
 
-#include <vector>
-
 #include "base/memory/ref_counted.h"
+#include "base/supports_user_data.h"
 #include "net/base/net_export.h"
 #include "net/cert/cert_status_flags.h"
+#include "net/cert/ct_policy_status.h"
 #include "net/cert/ocsp_verify_result.h"
+#include "net/cert/signed_certificate_timestamp_and_status.h"
 #include "net/cert/x509_cert_types.h"
+
+namespace base {
+class Value;
+}
+
+namespace ct {
+enum class CTPolicyCompliance;
+}  // namespace ct
 
 namespace net {
 
 class X509Certificate;
 
 // The result of certificate verification.
-class NET_EXPORT CertVerifyResult {
+//
+// Additional debugging or purely informational data may be added through
+// SupportsUserData, but such data must not be used for anything that changes
+// how the results are interpreted or acted upon: any data that changes the
+// meaning of the result must be added as a member in this class, not through
+// SupportsUserData.
+// Any Data added through SupportsUserData must implement Clone().
+class NET_EXPORT CertVerifyResult : public base::SupportsUserData {
  public:
   CertVerifyResult();
   CertVerifyResult(const CertVerifyResult& other);
-  ~CertVerifyResult();
+  ~CertVerifyResult() override;
+
+  CertVerifyResult& operator=(const CertVerifyResult& other);
 
   void Reset();
 
-  // Returns true if all the members of |this| are equal to |other|'s (including
-  // the |verified_cert| intermediates).
-  bool operator==(const CertVerifyResult& other) const;
+  // Creates NetLog parameter to describe the CertVerifyResult. |net_error| is
+  // a net error code to include in the params, if non-zero. It must not be
+  // ERR_IO_PENDING, as that is not a true error.
+  base::Value NetLogParams(int net_error) const;
 
   // The certificate chain that was constructed during verification.
   //
@@ -82,6 +101,16 @@ class NET_EXPORT CertVerifyResult {
 
   // Verification of stapled OCSP response, if present.
   OCSPVerifyResult ocsp_result;
+
+  // `scts` contains the result of verifying any provided or embedded SCTs for
+  // this certificate against the set of known logs. Consumers should not simply
+  // check this for the presence of a successfully verified SCT to determine CT
+  // compliance. Instead look at `policy_compliance`.
+  SignedCertificateTimestampAndStatusList scts;
+
+  // The result of evaluating whether the certificate complies with the
+  // Certificate Transparency policy.
+  ct::CTPolicyCompliance policy_compliance;
 };
 
 }  // namespace net

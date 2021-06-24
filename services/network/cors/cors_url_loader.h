@@ -6,15 +6,17 @@
 #define SERVICES_NETWORK_CORS_CORS_URL_LOADER_H_
 
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/cors/preflight_controller.h"
 #include "services/network/public/cpp/cors/cors_error_status.h"
-#include "services/network/public/cpp/cors/preflight_timing_info.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -36,18 +38,23 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   using DeleteCallback = base::OnceCallback<void(mojom::URLLoader* loader)>;
 
   CorsURLLoader(
-      mojom::URLLoaderRequest loader_request,
-      int32_t routing_id,
+      mojo::PendingReceiver<mojom::URLLoader> loader_receiver,
+      int32_t process_id,
       int32_t request_id,
       uint32_t options,
       DeleteCallback delete_callback,
       const ResourceRequest& resource_request,
-      mojom::URLLoaderClientPtr client,
+      bool ignore_isolated_world_origin,
+      bool skip_cors_enabled_scheme_check,
+      mojo::PendingRemote<mojom::URLLoaderClient> client,
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
       mojom::URLLoaderFactory* network_loader_factory,
       const OriginAccessList* origin_access_list,
-      const OriginAccessList* factory_bound_origin_access_list,
-      PreflightController* preflight_controller);
+      PreflightController* preflight_controller,
+      const base::flat_set<std::string>* allowed_exempt_headers,
+      bool allow_any_cors_exempt_header,
+      const net::IsolationInfo& isolation_info,
+      mojo::PendingRemote<mojom::DevToolsObserver> devtools_observer);
 
   ~CorsURLLoader() override;
 
@@ -56,23 +63,25 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   void Start();
 
   // mojom::URLLoader overrides:
-  void FollowRedirect(const std::vector<std::string>& removed_headers,
-                      const net::HttpRequestHeaders& modified_headers,
-                      const base::Optional<GURL>& new_url) override;
-  void ProceedWithResponse() override;
+  void FollowRedirect(
+      const std::vector<std::string>& removed_headers,
+      const net::HttpRequestHeaders& modified_headers,
+      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      const absl::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override;
   void PauseReadingBodyFromNet() override;
   void ResumeReadingBodyFromNet() override;
 
   // mojom::URLLoaderClient overrides:
-  void OnReceiveResponse(const ResourceResponseHead& head) override;
+  void OnReceiveEarlyHints(mojom::EarlyHintsPtr early_hints) override;
+  void OnReceiveResponse(mojom::URLResponseHeadPtr head) override;
   void OnReceiveRedirect(const net::RedirectInfo& redirect_info,
-                         const ResourceResponseHead& head) override;
+                         mojom::URLResponseHeadPtr head) override;
   void OnUploadProgress(int64_t current_position,
                         int64_t total_size,
                         base::OnceCallback<void()> callback) override;
-  void OnReceiveCachedMetadata(const std::vector<uint8_t>& data) override;
+  void OnReceiveCachedMetadata(mojo_base::BigBuffer data) override;
   void OnTransferSizeUpdated(int32_t transfer_size_diff) override;
   void OnStartLoadingResponseBody(
       mojo::ScopedDataPipeConsumerHandle body) override;
@@ -86,18 +95,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   // https://fetch.spec.whatwg.org/#main-fetch.
   static network::mojom::FetchResponseType CalculateResponseTainting(
       const GURL& url,
-      mojom::FetchRequestMode request_mode,
-      const base::Optional<url::Origin>& origin,
+      mojom::RequestMode request_mode,
+      const absl::optional<url::Origin>& origin,
+      const absl::optional<url::Origin>& isolated_world_origin,
       bool cors_flag,
       bool tainted_origin,
       const OriginAccessList* origin_access_list);
 
  private:
   void StartRequest();
-  void StartNetworkRequest(
-      int net_error,
-      base::Optional<CorsErrorStatus> status,
-      base::Optional<PreflightTimingInfo> preflight_timing_info);
+  void StartNetworkRequest(int net_error,
+                           absl::optional<CorsErrorStatus> status,
+                           bool has_authorization_covered_by_wildcard);
 
   // Called when there is a connection error on the upstream pipe used for the
   // actual request.
@@ -106,18 +115,25 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   // Handles OnComplete() callback.
   void HandleComplete(const URLLoaderCompletionStatus& status);
 
-  void OnConnectionError();
+  void OnMojoDisconnect();
 
   void SetCorsFlagIfNeeded();
 
-  static base::Optional<std::string> GetHeaderString(
-      const ResourceResponseHead& response,
+  // Returns true if request's origin has special access to the destination URL
+  // (via |origin_access_list_|).
+  bool HasSpecialAccessToDestination() const;
+
+  bool PassesTimingAllowOriginCheck(
+      const mojom::URLResponseHead& response) const;
+
+  static absl::optional<std::string> GetHeaderString(
+      const mojom::URLResponseHead& response,
       const std::string& header_name);
 
-  mojo::Binding<mojom::URLLoader> binding_;
+  mojo::Receiver<mojom::URLLoader> receiver_;
 
-  // We need to save these for redirect.
-  const int32_t routing_id_;
+  // We need to save these for redirect, and DevTools.
+  const int32_t process_id_;
   const int32_t request_id_;
   const uint32_t options_;
 
@@ -128,12 +144,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   mojom::URLLoaderFactory* network_loader_factory_;
 
   // For the actual request.
-  mojom::URLLoaderPtr network_loader_;
-  mojo::Binding<mojom::URLLoaderClient> network_client_binding_;
+  mojo::Remote<mojom::URLLoader> network_loader_;
+  mojo::Receiver<mojom::URLLoaderClient> network_client_receiver_{this};
   ResourceRequest request_;
 
   // To be a URLLoader for the client.
-  mojom::URLLoaderClientPtr forwarding_client_;
+  mojo::Remote<mojom::URLLoaderClient> forwarding_client_;
 
   // The last response URL, that is usually the requested URL, but can be
   // different if redirects happen.
@@ -160,19 +176,31 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   // https://fetch.spec.whatwg.org/#concept-request-redirect-count
   int redirect_count_ = 0;
 
+  // https://fetch.spec.whatwg.org/#timing-allow-failed
+  bool timing_allow_failed_flag_ = false;
+
   // We need to save this for redirect.
   net::MutableNetworkTrafficAnnotationTag traffic_annotation_;
 
-  // Holds timing info if a preflight was made.
-  std::vector<PreflightTimingInfo> preflight_timing_info_;
-
   // Outlives |this|.
   const OriginAccessList* const origin_access_list_;
-  const OriginAccessList* const factory_bound_origin_access_list_;
   PreflightController* preflight_controller_;
+  const base::flat_set<std::string>* allowed_exempt_headers_;
+
+  // Flag to specify if the CORS-enabled scheme check should be applied.
+  const bool skip_cors_enabled_scheme_check_;
+
+  const bool allow_any_cors_exempt_header_;
+
+  net::IsolationInfo isolation_info_;
+
+  bool has_cors_been_affected_by_isolated_world_origin_ = false;
+  bool has_authorization_covered_by_wildcard_ = false;
+
+  mojo::Remote<mojom::DevToolsObserver> devtools_observer_;
 
   // Used to run asynchronous class instance bound callbacks safely.
-  base::WeakPtrFactory<CorsURLLoader> weak_factory_;
+  base::WeakPtrFactory<CorsURLLoader> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CorsURLLoader);
 };

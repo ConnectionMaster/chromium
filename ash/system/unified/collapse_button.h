@@ -9,48 +9,22 @@
 
 namespace ash {
 
-// Abstract base class of buttons that have custom shape with Material Design
-// ink drop.
-class CustomShapeButton : public views::ImageButton {
+// The button with `kUnifiedMenuExpandIcon`. This button can be set as expanded
+// or collapsed through SetExpandedAmount and the icon will be rotated on the
+// `expanded_amount_`. Expanded is the default state.
+class CollapseButton : public views::ImageButton {
  public:
-  explicit CustomShapeButton(views::ButtonListener* listener);
-  ~CustomShapeButton() override;
-
-  // Return the custom shape for the button in SkPath.
-  virtual SkPath CreateCustomShapePath(const gfx::Rect& bounds) const = 0;
-
-  // views::ImageButton:
-  void PaintButtonContents(gfx::Canvas* canvas) override;
-  std::unique_ptr<views::InkDrop> CreateInkDrop() override;
-  std::unique_ptr<views::InkDropRipple> CreateInkDropRipple() const override;
-  std::unique_ptr<views::InkDropHighlight> CreateInkDropHighlight()
-      const override;
-  std::unique_ptr<views::InkDropMask> CreateInkDropMask() const override;
-
- protected:
-  void PaintCustomShapePath(gfx::Canvas* canvas);
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(CustomShapeButton);
-};
-
-// Collapse button shown in TopShortcutsView with TopShortcutButtons.
-// UnifiedSystemTrayBubble will support collapsed state where the height of the
-// bubble is smaller, and some rows and labels will be omitted.
-// By pressing the button, the state of the bubble will be toggled.
-class CollapseButton : public CustomShapeButton {
- public:
-  explicit CollapseButton(views::ButtonListener* listener);
+  explicit CollapseButton(PressedCallback callback);
   ~CollapseButton() override;
 
   // Change the expanded state. The icon will change.
   void SetExpandedAmount(double expanded_amount);
 
-  // CustomShapeButton:
-  void OnEnabledChanged() override;
+  // views::ImageButton:
   gfx::Size CalculatePreferredSize() const override;
-  SkPath CreateCustomShapePath(const gfx::Rect& bounds) const override;
   void PaintButtonContents(gfx::Canvas* canvas) override;
+  const char* GetClassName() const override;
+  void OnThemeChanged() override;
 
  private:
   double expanded_amount_ = 1.0;

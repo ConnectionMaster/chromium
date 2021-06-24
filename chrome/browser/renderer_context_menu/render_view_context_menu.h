@@ -11,18 +11,19 @@
 #include <vector>
 
 #include "base/files/file_path.h"
-#include "base/observer_list.h"
-#include "base/strings/string16.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_sub_menu_model.h"
 #include "components/renderer_context_menu/context_menu_content_type.h"
 #include "components/renderer_context_menu/render_view_context_menu_base.h"
 #include "components/renderer_context_menu/render_view_context_menu_observer.h"
 #include "components/renderer_context_menu/render_view_context_menu_proxy.h"
-#include "content/public/common/context_menu_params.h"
+#include "content/public/browser/context_menu_params.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ppapi/buildflags/buildflags.h"
 #include "printing/buildflags/buildflags.h"
+#include "third_party/blink/public/mojom/frame/frame.mojom-forward.h"
 #include "ui/base/models/simple_menu_model.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/vector2d.h"
@@ -33,8 +34,12 @@
 #endif
 
 class AccessibilityLabelsMenuObserver;
+class ClickToCallContextMenuObserver;
+class LinkToTextMenuObserver;
 class PrintPreviewContextMenuObserver;
 class Profile;
+class QuickAnswersMenuObserver;
+class SharedClipboardContextMenuObserver;
 class SpellingMenuObserver;
 class SpellingOptionsSubMenuObserver;
 
@@ -53,8 +58,13 @@ class Point;
 }
 
 namespace blink {
-struct WebMediaPlayerAction;
-struct WebPluginAction;
+namespace mojom {
+class MediaPlayerAction;
+}
+}
+
+namespace ui {
+class DataTransferEndpoint;
 }
 
 class RenderViewContextMenu : public RenderViewContextMenuBase {
@@ -89,10 +99,10 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
 
   // Returns a (possibly truncated) version of the current selection text
   // suitable for putting in the title of a menu item.
-  base::string16 PrintableSelectionText();
+  std::u16string PrintableSelectionText();
 
   // Helper function to escape "&" as "&&".
-  void EscapeAmpersands(base::string16* text);
+  void EscapeAmpersands(std::u16string* text);
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::ContextMenuMatcher extension_items_;
@@ -113,7 +123,6 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   friend class FormatUrlForClipboardTest;
 
   static bool IsDevToolsURL(const GURL& url);
-  static bool IsInternalResourcesURL(const GURL& url);
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   static bool ExtensionContextAndPatternMatch(
       const content::ContextMenuParams& params,
@@ -127,10 +136,10 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   // string. Used by WriteURLToClipboard(), but kept in a separate function so
   // the formatting behavior can be tested without having to initialize the
   // clipboard. |url| must be valid and non-empty.
-  static base::string16 FormatURLForClipboard(const GURL& url);
+  static std::u16string FormatURLForClipboard(const GURL& url);
 
   // Writes the specified text/url to the system clipboard.
-  static void WriteURLToClipboard(const GURL& url);
+  void WriteURLToClipboard(const GURL& url);
 
   // RenderViewContextMenuBase:
   void InitMenu() override;
@@ -152,7 +161,8 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void AppendLinkItems();
   void AppendOpenWithLinkItems();
   void AppendSmartSelectionActionItems();
-  void AppendOpenInBookmarkAppLinkItems();
+  void AppendOpenInWebAppLinkItems();
+  void AppendQuickAnswersItems();
   void AppendImageItems();
   void AppendAudioItems();
   void AppendCanvasItems();
@@ -162,23 +172,34 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void AppendPageItems();
   void AppendExitFullscreenItem();
   void AppendCopyItem();
+  void AppendLinkToTextItems();
   void AppendPrintItem();
   void AppendMediaRouterItem();
   void AppendRotationItems();
   void AppendEditableItems();
   void AppendLanguageSettings();
   void AppendSpellingSuggestionItems();
-  void AppendAccessibilityLabelsItems();
+  // Returns true if the items were appended. This might not happen in all
+  // cases, e.g. these are only appended if a screen reader is enabled.
+  bool AppendAccessibilityLabelsItems();
   void AppendSearchProvider();
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   void AppendAllExtensionItems();
   void AppendCurrentExtensionItems();
 #endif
   void AppendPrintPreviewItems();
+  void AppendSearchLensForImageItems();
   void AppendSearchWebForImageItems();
   void AppendProtocolHandlerSubMenu();
   void AppendPasswordItems();
   void AppendPictureInPictureItem();
+  void AppendSharingItems();
+  void AppendClickToCallItem();
+  void AppendSharedClipboardItem();
+  void AppendQRCodeGeneratorItem(bool for_image, bool draw_icon);
+
+  std::unique_ptr<ui::DataTransferEndpoint> CreateDataEndpoint(
+      bool notify_if_restricted) const;
 
   // Command enabled query functions.
   bool IsReloadEnabled() const;
@@ -192,11 +213,12 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   bool IsPasteEnabled() const;
   bool IsPasteAndMatchStyleEnabled() const;
   bool IsPrintPreviewEnabled() const;
+  bool IsQRCodeGeneratorEnabled() const;
   bool IsRouteMediaEnabled() const;
   bool IsOpenLinkOTREnabled() const;
 
   // Command execution functions.
-  void ExecOpenBookmarkApp();
+  void ExecOpenWebApp();
   void ExecProtocolHandler(int event_flags, int handler_index);
   void ExecOpenLinkInProfile(int profile_index);
   void ExecInspectElement();
@@ -206,6 +228,7 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void ExecExitFullscreen();
   void ExecCopyLinkText();
   void ExecCopyImageAt();
+  void ExecSearchLensForImage();
   void ExecSearchWebForImage();
   void ExecLoadImage();
   void ExecPlayPause();
@@ -224,9 +247,9 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void ExecPictureInPicture();
 
   void MediaPlayerActionAt(const gfx::Point& location,
-                           const blink::WebMediaPlayerAction& action);
+                           const blink::mojom::MediaPlayerAction& action);
   void PluginActionAt(const gfx::Point& location,
-                      const blink::WebPluginAction& action);
+                      blink::mojom::PluginActionType plugin_action);
 
   // Returns a list of registered ProtocolHandlers that can handle the clicked
   // on URL.
@@ -251,19 +274,20 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
       accessibility_labels_menu_observer_;
   ui::SimpleMenuModel accessibility_labels_submenu_model_;
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
   // An observer that handles the submenu for showing spelling options. This
   // submenu lets users select the spelling language, for example.
   std::unique_ptr<SpellingOptionsSubMenuObserver>
       spelling_options_submenu_observer_;
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // An observer that handles "Open with <app>" items.
   std::unique_ptr<RenderViewContextMenuObserver> open_with_menu_observer_;
   // An observer that handles smart text selection action items.
   std::unique_ptr<RenderViewContextMenuObserver>
       start_smart_selection_action_menu_observer_;
+  std::unique_ptr<QuickAnswersMenuObserver> quick_answers_menu_observer_;
 #endif
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
@@ -271,10 +295,24 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   std::unique_ptr<PrintPreviewContextMenuObserver> print_preview_menu_observer_;
 #endif
 
+  std::unique_ptr<LinkToTextMenuObserver> link_to_text_menu_observer_;
+
   // In the case of a MimeHandlerView this will point to the WebContents that
   // embeds the MimeHandlerViewGuest. Otherwise this will be the same as
   // |source_web_contents_|.
   content::WebContents* const embedder_web_contents_;
+
+  // Send tab to self submenu.
+  std::unique_ptr<send_tab_to_self::SendTabToSelfSubMenuModel>
+      send_tab_to_self_sub_menu_model_;
+
+  // Click to call menu observer.
+  std::unique_ptr<ClickToCallContextMenuObserver>
+      click_to_call_context_menu_observer_;
+
+  // Shared clipboard menu observer.
+  std::unique_ptr<SharedClipboardContextMenuObserver>
+      shared_clipboard_context_menu_observer_;
 
   DISALLOW_COPY_AND_ASSIGN(RenderViewContextMenu);
 };

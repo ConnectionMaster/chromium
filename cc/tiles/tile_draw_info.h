@@ -5,8 +5,6 @@
 #ifndef CC_TILES_TILE_DRAW_INFO_H_
 #define CC_TILES_TILE_DRAW_INFO_H_
 
-#include <memory>
-
 #include "base/trace_event/traced_value.h"
 #include "cc/resources/resource_pool.h"
 #include "components/viz/common/resources/platform_color.h"
@@ -72,7 +70,6 @@ class CC_EXPORT TileDrawInfo {
     return solid_color_;
   }
 
-  bool contents_swizzled() const { return contents_swizzled_; }
   bool is_premultiplied() const { return is_premultiplied_; }
 
   bool requires_resource() const {
@@ -98,7 +95,6 @@ class CC_EXPORT TileDrawInfo {
 
   void SetResource(ResourcePool::InUsePoolResource resource,
                    bool resource_is_checker_imaged,
-                   bool contents_swizzled,
                    bool is_premultiplied);
   ResourcePool::InUsePoolResource TakeResource();
 
@@ -117,7 +113,6 @@ class CC_EXPORT TileDrawInfo {
   Mode mode_ = RESOURCE_MODE;
   SkColor solid_color_ = SK_ColorWHITE;
   ResourcePool::InUsePoolResource resource_;
-  bool contents_swizzled_ = false;
   bool is_premultiplied_ = false;
   bool is_resource_ready_to_draw_ = false;
 

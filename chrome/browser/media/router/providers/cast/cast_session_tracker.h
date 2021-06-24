@@ -5,15 +5,16 @@
 #ifndef CHROME_BROWSER_MEDIA_ROUTER_PROVIDERS_CAST_CAST_SESSION_TRACKER_H_
 #define CHROME_BROWSER_MEDIA_ROUTER_PROVIDERS_CAST_CAST_SESSION_TRACKER_H_
 
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "base/values.h"
 #include "chrome/browser/media/router/providers/cast/cast_internal_message_util.h"
-#include "chrome/common/media_router/discovery/media_sink_internal.h"
-#include "chrome/common/media_router/discovery/media_sink_service_base.h"
 #include "components/cast_channel/cast_message_handler.h"
 #include "components/cast_channel/cast_message_util.h"
+#include "components/media_router/common/discovery/media_sink_internal.h"
+#include "components/media_router/common/discovery/media_sink_service_base.h"
 
 namespace media_router {
 
@@ -35,8 +36,10 @@ class CastSessionTracker : public MediaSinkServiceBase::Observer,
     virtual void OnSessionRemoved(const MediaSinkInternal& sink) = 0;
     virtual void OnMediaStatusUpdated(const MediaSinkInternal& sink,
                                       const base::Value& media_status,
-                                      base::Optional<int> request_id) = 0;
+                                      absl::optional<int> request_id) = 0;
   };
+
+  ~CastSessionTracker() override;
 
   // Must be called on UI thread.
   // TODO(https://crbug.com/904016): The UI/IO thread split makes this class
@@ -57,6 +60,7 @@ class CastSessionTracker : public MediaSinkServiceBase::Observer,
   friend class CastSessionTrackerTest;
   friend class CastActivityManagerTest;
   friend class CastMediaRouteProviderTest;
+  friend class CastActivityTestBase;
 
   // Use |GetInstance()| instead.
   CastSessionTracker(
@@ -64,15 +68,13 @@ class CastSessionTracker : public MediaSinkServiceBase::Observer,
       cast_channel::CastMessageHandler* message_handler,
       const scoped_refptr<base::SequencedTaskRunner>& task_runner);
 
-  ~CastSessionTracker() override;
-
   void InitOnIoThread();
   void HandleReceiverStatusMessage(const MediaSinkInternal& sink,
                                    const base::Value& message);
   void HandleMediaStatusMessage(const MediaSinkInternal& sink,
                                 const base::Value& message);
   void CopySavedMediaFieldsToMediaList(CastSession* session,
-                                       std::vector<base::Value>* media_list);
+                                       base::Value::ListView media_list);
   const MediaSinkInternal* GetSinkByChannelId(int channel_id) const;
 
   // MediaSinkServiceBase::Observer implementation
@@ -100,6 +102,8 @@ class CastSessionTracker : public MediaSinkServiceBase::Observer,
 
   SEQUENCE_CHECKER(sequence_checker_);
   DISALLOW_COPY_AND_ASSIGN(CastSessionTracker);
+  FRIEND_TEST_ALL_PREFIXES(AppActivityTest, SendAppMessageToReceiver);
+  FRIEND_TEST_ALL_PREFIXES(CastMediaRouteProviderTest, GetState);
   FRIEND_TEST_ALL_PREFIXES(CastSessionTrackerTest, RemoveSession);
   FRIEND_TEST_ALL_PREFIXES(CastSessionTrackerTest,
                            HandleMediaStatusMessageBasic);
@@ -107,6 +111,8 @@ class CastSessionTracker : public MediaSinkServiceBase::Observer,
                            HandleMediaStatusMessageFancy);
   FRIEND_TEST_ALL_PREFIXES(CastSessionTrackerTest,
                            CopySavedMediaFieldsToMediaList);
+  FRIEND_TEST_ALL_PREFIXES(CastSessionTrackerTest,
+                           DoNotCopySavedMediaFieldsWhenFieldPresent);
 };
 
 }  // namespace media_router

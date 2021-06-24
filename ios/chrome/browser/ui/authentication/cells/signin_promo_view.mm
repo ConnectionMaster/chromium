@@ -4,13 +4,19 @@
 
 #import "ios/chrome/browser/ui/authentication/cells/signin_promo_view.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/mac/foundation_util.h"
+#include "base/notreached.h"
+#include "build/branding_buildflags.h"
+#include "components/signin/public/base/signin_metrics.h"
+#import "ios/chrome/browser/ui/authentication/cells/signin_promo_view_constants.h"
 #import "ios/chrome/browser/ui/authentication/cells/signin_promo_view_delegate.h"
 #import "ios/chrome/browser/ui/colors/MDCPalette+CrAdditions.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
-#include "ios/chrome/grit/ios_chromium_strings.h"
+#import "ios/chrome/common/ui/colors/UIColor+cr_semantic_colors.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/util/pointer_interaction_util.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -25,10 +31,6 @@ const CGFloat kHorizontalPadding = 40;
 const CGFloat kProfileImageFixedSize = 48;
 
 // UI Refresh Constants:
-// Text label gray color.
-const CGFloat kGrayHexColor = 0x6d6d72;
-// Action button blue background color.
-const CGFloat kBlueHexColor = 0x1A73E8;
 // Vertical spacing between stackView and cell contentView.
 const CGFloat kStackViewVerticalPadding = 11.0;
 // Horizontal spacing between stackView and cell contentView.
@@ -49,12 +51,6 @@ const CGFloat kCloseButtonWidthHeight = 24;
 const CGFloat kImageViewWidthHeight = 32;
 }
 
-NSString* const kSigninPromoViewId = @"kSigninPromoViewId";
-NSString* const kSigninPromoPrimaryButtonId = @"kSigninPromoPrimaryButtonId";
-NSString* const kSigninPromoSecondaryButtonId =
-    @"kSigninPromoSecondaryButtonId";
-NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
-
 @interface SigninPromoView ()
 // Re-declare as readwrite.
 @property(nonatomic, readwrite) UIImageView* imageView;
@@ -67,14 +63,6 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
 @implementation SigninPromoView {
   signin_metrics::AccessPoint _accessPoint;
 }
-
-@synthesize delegate = _delegate;
-@synthesize mode = _mode;
-@synthesize imageView = _imageView;
-@synthesize textLabel = _textLabel;
-@synthesize primaryButton = _primaryButton;
-@synthesize secondaryButton = _secondaryButton;
-@synthesize closeButton = _closeButton;
 
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithFrame:frame];
@@ -99,13 +87,13 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
     _textLabel.lineBreakMode = NSLineBreakByWordWrapping;
     _textLabel.font =
         [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    _textLabel.textColor = UIColorFromRGB(kGrayHexColor);
+    _textLabel.textColor = UIColor.cr_labelColor;
 
     // Create and setup primary button.
     UIButton* primaryButton;
     UIEdgeInsets primaryButtonInsets;
     primaryButton = [[UIButton alloc] init];
-    primaryButton.backgroundColor = UIColorFromRGB(kBlueHexColor);
+    primaryButton.backgroundColor = [UIColor colorNamed:kBlueColor];
     [primaryButton.titleLabel
         setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
     primaryButton.layer.cornerRadius = kButtonCornerRadius;
@@ -116,7 +104,7 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
     _primaryButton = primaryButton;
     DCHECK(_primaryButton);
     _primaryButton.accessibilityIdentifier = kSigninPromoPrimaryButtonId;
-    [_primaryButton setTitleColor:[UIColor whiteColor]
+    [_primaryButton setTitleColor:[UIColor colorNamed:kSolidButtonTextColor]
                          forState:UIControlStateNormal];
     _primaryButton.translatesAutoresizingMaskIntoConstraints = NO;
     _primaryButton.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -124,13 +112,18 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
                        action:@selector(onPrimaryButtonAction:)
              forControlEvents:UIControlEventTouchUpInside];
     _primaryButton.contentEdgeInsets = primaryButtonInsets;
+    if (@available(iOS 13.4, *)) {
+        _primaryButton.pointerInteractionEnabled = YES;
+        _primaryButton.pointerStyleProvider =
+            CreateOpaqueButtonPointerStyleProvider();
+    }
 
     // Create and setup seconday button.
     UIButton* secondaryButton;
     secondaryButton = [[UIButton alloc] init];
     [secondaryButton.titleLabel
         setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
-    [secondaryButton setTitleColor:UIColorFromRGB(kBlueHexColor)
+    [secondaryButton setTitleColor:[UIColor colorNamed:kBlueColor]
                           forState:UIControlStateNormal];
     _secondaryButton = secondaryButton;
     DCHECK(_secondaryButton);
@@ -139,6 +132,9 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
     [_secondaryButton addTarget:self
                          action:@selector(onSecondaryButtonAction:)
                forControlEvents:UIControlEventTouchUpInside];
+    if (@available(iOS 13.4, *)) {
+        _secondaryButton.pointerInteractionEnabled = YES;
+    }
 
     // Vertical stackView containing all previous view.
     UIStackView* verticalStackView =
@@ -161,6 +157,9 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
     [_closeButton setImage:[UIImage imageNamed:@"signin_promo_close_gray"]
                   forState:UIControlStateNormal];
     _closeButton.hidden = YES;
+    if (@available(iOS 13.4, *)) {
+        _closeButton.pointerInteractionEnabled = YES;
+    }
     [self addSubview:_closeButton];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -189,8 +188,8 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
           constraintEqualToConstant:kCloseButtonWidthHeight],
     ]];
     // Default mode.
-    _mode = SigninPromoViewModeColdState;
-    [self activateColdMode];
+    _mode = SigninPromoViewModeNoAccounts;
+    [self activateNoAccountsMode];
   }
   return self;
 }
@@ -205,39 +204,44 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
   }
   _mode = mode;
   switch (_mode) {
-    case SigninPromoViewModeColdState:
-      [self activateColdMode];
+    case SigninPromoViewModeNoAccounts:
+      [self activateNoAccountsMode];
       return;
-    case SigninPromoViewModeWarmState:
-      [self activateWarmMode];
+    case SigninPromoViewModeSigninWithAccount:
+      [self activateSigninWithAccountMode];
+      return;
+    case SigninPromoViewModeSyncWithPrimaryAccount:
+      [self activateSyncWithPrimaryAccountMode];
       return;
   }
   NOTREACHED();
 }
 
-- (void)activateColdMode {
-  DCHECK_EQ(_mode, SigninPromoViewModeColdState);
+- (void)activateNoAccountsMode {
+  DCHECK_EQ(_mode, SigninPromoViewModeNoAccounts);
   UIImage* logo = nil;
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   logo = [UIImage imageNamed:@"signin_promo_logo_chrome_color"];
 #else
   logo = [UIImage imageNamed:@"signin_promo_logo_chromium_color"];
-#endif  // defined(GOOGLE_CHROME_BUILD)
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
   DCHECK(logo);
   _imageView.image = logo;
-  [_primaryButton
-      setTitle:l10n_util::GetNSString(IDS_IOS_OPTIONS_IMPORT_DATA_TITLE_SIGNIN)
-      forState:UIControlStateNormal];
   _secondaryButton.hidden = YES;
 }
 
-- (void)activateWarmMode {
-  DCHECK_EQ(_mode, SigninPromoViewModeWarmState);
+- (void)activateSigninWithAccountMode {
+  DCHECK_EQ(_mode, SigninPromoViewModeSigninWithAccount);
   _secondaryButton.hidden = NO;
 }
 
+- (void)activateSyncWithPrimaryAccountMode {
+  DCHECK_EQ(_mode, SigninPromoViewModeSyncWithPrimaryAccount);
+  _secondaryButton.hidden = YES;
+}
+
 - (void)setProfileImage:(UIImage*)image {
-  DCHECK_EQ(SigninPromoViewModeWarmState, _mode);
+  DCHECK_NE(_mode, SigninPromoViewModeNoAccounts);
   self.imageView.image = CircularImageFromImage(image, kProfileImageFixedSize);
 }
 
@@ -260,10 +264,11 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
 
 - (void)onPrimaryButtonAction:(id)unused {
   switch (_mode) {
-    case SigninPromoViewModeColdState:
+    case SigninPromoViewModeNoAccounts:
       [_delegate signinPromoViewDidTapSigninWithNewAccount:self];
       break;
-    case SigninPromoViewModeWarmState:
+    case SigninPromoViewModeSigninWithAccount:
+    case SigninPromoViewModeSyncWithPrimaryAccount:
       [_delegate signinPromoViewDidTapSigninWithDefaultAccount:self];
       break;
   }
@@ -279,19 +284,15 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
 
 #pragma mark - NSObject(Accessibility)
 
+- (BOOL)accessibilityActivate {
+  [self accessibilityPrimaryAction:nil];
+  return YES;
+}
+
 - (NSArray<UIAccessibilityCustomAction*>*)accessibilityCustomActions {
   NSMutableArray* actions = [NSMutableArray array];
 
-  NSString* primaryActionName =
-      [self.primaryButton titleForState:UIControlStateNormal];
-  UIAccessibilityCustomAction* primaryCustomAction =
-      [[UIAccessibilityCustomAction alloc]
-          initWithName:primaryActionName
-                target:self
-              selector:@selector(accessibilityPrimaryAction:)];
-  [actions addObject:primaryCustomAction];
-
-  if (_mode == SigninPromoViewModeWarmState) {
+  if (_mode == SigninPromoViewModeSigninWithAccount) {
     NSString* secondaryActionName =
         [self.secondaryButton titleForState:UIControlStateNormal];
     UIAccessibilityCustomAction* secondaryCustomAction =
@@ -314,10 +315,6 @@ NSString* const kSigninPromoCloseButtonId = @"kSigninPromoCloseButtonId";
   }
 
   return actions;
-}
-
-- (NSString*)accessibilityLabel {
-  return self.textLabel.text;
 }
 
 @end

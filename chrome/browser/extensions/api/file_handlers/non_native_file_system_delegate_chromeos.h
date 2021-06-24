@@ -9,8 +9,8 @@
 
 #include "base/callback.h"
 #include "base/files/file_path.h"
-#include "base/optional.h"
 #include "extensions/browser/api/file_handlers/non_native_file_system_delegate.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace content {
 class BrowserContext;
@@ -32,16 +32,16 @@ class NonNativeFileSystemDelegateChromeOS
   void GetNonNativeLocalPathMimeType(
       content::BrowserContext* context,
       const base::FilePath& path,
-      base::OnceCallback<void(const base::Optional<std::string>&)> callback)
+      base::OnceCallback<void(const absl::optional<std::string>&)> callback)
       override;
   void IsNonNativeLocalPathDirectory(
       content::BrowserContext* context,
       const base::FilePath& path,
-      const base::Callback<void(bool)>& callback) override;
+      base::OnceCallback<void(bool)> callback) override;
   void PrepareNonNativeLocalFileForWritableApp(
       content::BrowserContext* context,
       const base::FilePath& path,
-      const base::Callback<void(bool)>& callback) override;
+      base::OnceCallback<void(bool)> callback) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(NonNativeFileSystemDelegateChromeOS);

@@ -82,4 +82,11 @@ class ScopedStubInstallAttributes {
 
 }  // namespace chromeos
 
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::ScopedStubInstallAttributes;
+using ::chromeos::StubInstallAttributes;
+}  // namespace ash
+
 #endif  // CHROMEOS_TPM_STUB_INSTALL_ATTRIBUTES_H_

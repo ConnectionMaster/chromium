@@ -1,10 +1,9 @@
 #ifndef _RAR_DATAIO_
 #define _RAR_DATAIO_
 
-namespace third_party_unrar {
-
 class CmdAdd;
 class Unpack;
+class ArcFileSearch;
 
 #if 0
 // We use external i/o calls for Benchmark command.
@@ -97,7 +96,5 @@ class ComprDataIO
     bool Encryption;
     bool Decryption;
 };
-
-}  // namespace third_party_unrar
 
 #endif

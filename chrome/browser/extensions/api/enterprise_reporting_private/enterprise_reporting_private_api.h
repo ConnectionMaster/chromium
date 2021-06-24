@@ -5,68 +5,28 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_ENTERPRISE_REPORTING_PRIVATE_ENTERPRISE_REPORTING_PRIVATE_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_ENTERPRISE_REPORTING_PRIVATE_ENTERPRISE_REPORTING_PRIVATE_API_H_
 
-#include "base/memory/ref_counted.h"
+#include <memory>
+#include <string>
+
+#include "build/build_config.h"
+#include "chrome/browser/enterprise/signals/client_certificate_fetcher.h"
+#include "chrome/browser/enterprise/signals/context_info_fetcher.h"
+#include "chrome/browser/enterprise/signals/device_info_fetcher.h"
+#include "chrome/browser/extensions/api/enterprise_reporting_private/chrome_desktop_report_request_helper.h"
+#include "chrome/common/extensions/api/enterprise_reporting_private.h"
 #include "extensions/browser/extension_function.h"
 
-namespace policy {
-class CloudPolicyClient;
-}
-
-namespace network {
-class SharedURLLoaderFactory;
-}
-
 namespace extensions {
+
+#if !defined(OS_CHROMEOS)
 namespace enterprise_reporting {
 
-extern const char kInvalidInputErrorMessage[];
-extern const char kUploadFailed[];
-extern const char kDeviceNotEnrolled[];
 extern const char kDeviceIdNotFound[];
 
 }  // namespace enterprise_reporting
 
-class EnterpriseReportingPrivateUploadChromeDesktopReportFunction
-    : public UIThreadExtensionFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION(
-      "enterprise.reportingPrivate.uploadChromeDesktopReport",
-      ENTERPRISEREPORTINGPRIVATE_UPLOADCHROMEDESKTOPREPORT)
-  EnterpriseReportingPrivateUploadChromeDesktopReportFunction();
 
-  // ExtensionFunction
-  ExtensionFunction::ResponseAction Run() override;
-
-  void SetCloudPolicyClientForTesting(
-      std::unique_ptr<policy::CloudPolicyClient> client);
-  void SetRegistrationInfoForTesting(const std::string& dm_token,
-                                     const std::string& client_id);
-
-  // Used by tests that want to overrode the URLLoaderFactory used to simulate
-  // network requests.
-  static EnterpriseReportingPrivateUploadChromeDesktopReportFunction*
-  CreateForTesting(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
-
- private:
-  explicit EnterpriseReportingPrivateUploadChromeDesktopReportFunction(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
-
-  ~EnterpriseReportingPrivateUploadChromeDesktopReportFunction() override;
-
-  // Callback once Chrome get the response from the DM Server.
-  void OnReportUploaded(bool status);
-
-  std::unique_ptr<policy::CloudPolicyClient> cloud_policy_client_;
-  std::string dm_token_;
-  std::string client_id_;
-
-  DISALLOW_COPY_AND_ASSIGN(
-      EnterpriseReportingPrivateUploadChromeDesktopReportFunction);
-};
-
-class EnterpriseReportingPrivateGetDeviceIdFunction
-    : public UIThreadExtensionFunction {
+class EnterpriseReportingPrivateGetDeviceIdFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.getDeviceId",
                              ENTERPRISEREPORTINGPRIVATE_GETDEVICEID)
@@ -79,6 +39,165 @@ class EnterpriseReportingPrivateGetDeviceIdFunction
   ~EnterpriseReportingPrivateGetDeviceIdFunction() override;
 
   DISALLOW_COPY_AND_ASSIGN(EnterpriseReportingPrivateGetDeviceIdFunction);
+};
+
+#if !defined(OS_LINUX)
+
+class EnterpriseReportingPrivateGetPersistentSecretFunction
+    : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.getPersistentSecret",
+                             ENTERPRISEREPORTINGPRIVATE_GETPERSISTENTSECRET)
+
+  EnterpriseReportingPrivateGetPersistentSecretFunction();
+  EnterpriseReportingPrivateGetPersistentSecretFunction(
+      const EnterpriseReportingPrivateGetPersistentSecretFunction&) = delete;
+  EnterpriseReportingPrivateGetPersistentSecretFunction& operator=(
+      const EnterpriseReportingPrivateGetPersistentSecretFunction&) = delete;
+
+ private:
+  ~EnterpriseReportingPrivateGetPersistentSecretFunction() override;
+
+  // ExtensionFunction
+  ExtensionFunction::ResponseAction Run() override;
+
+  // Callback once the data was retrieved from the file.
+  void OnDataRetrieved(scoped_refptr<base::SequencedTaskRunner> task_runner,
+                       const std::string& data,
+                       long int status);
+
+  void SendResponse(const std::string& data, long int status);
+};
+
+#endif  // !defined(OS_LINUX)
+
+class EnterpriseReportingPrivateGetDeviceDataFunction
+    : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.getDeviceData",
+                             ENTERPRISEREPORTINGPRIVATE_GETDEVICEDATA)
+
+  EnterpriseReportingPrivateGetDeviceDataFunction();
+  EnterpriseReportingPrivateGetDeviceDataFunction(
+      const EnterpriseReportingPrivateGetDeviceDataFunction&) = delete;
+  EnterpriseReportingPrivateGetDeviceDataFunction& operator=(
+      const EnterpriseReportingPrivateGetDeviceDataFunction&) = delete;
+
+ private:
+  ~EnterpriseReportingPrivateGetDeviceDataFunction() override;
+
+  // ExtensionFunction
+  ExtensionFunction::ResponseAction Run() override;
+
+  // Callback once the data was retrieved from the file.
+  void OnDataRetrieved(scoped_refptr<base::SequencedTaskRunner> task_runner,
+                       const std::string& data,
+                       RetrieveDeviceDataStatus status);
+
+  void SendResponse(const std::string& data, RetrieveDeviceDataStatus status);
+};
+
+class EnterpriseReportingPrivateSetDeviceDataFunction
+    : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.setDeviceData",
+                             ENTERPRISEREPORTINGPRIVATE_SETDEVICEDATA)
+
+  EnterpriseReportingPrivateSetDeviceDataFunction();
+  EnterpriseReportingPrivateSetDeviceDataFunction(
+      const EnterpriseReportingPrivateSetDeviceDataFunction&) = delete;
+  EnterpriseReportingPrivateSetDeviceDataFunction& operator=(
+      const EnterpriseReportingPrivateSetDeviceDataFunction&) = delete;
+
+ private:
+  ~EnterpriseReportingPrivateSetDeviceDataFunction() override;
+
+  // ExtensionFunction
+  ExtensionFunction::ResponseAction Run() override;
+
+  // Callback once the data was stored to the file.
+  void OnDataStored(scoped_refptr<base::SequencedTaskRunner> task_runner,
+                    bool status);
+
+  void SendResponse(bool status);
+};
+
+class EnterpriseReportingPrivateGetDeviceInfoFunction
+    : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.getDeviceInfo",
+                             ENTERPRISEREPORTINGPRIVATE_GETDEVICEINFO)
+
+  EnterpriseReportingPrivateGetDeviceInfoFunction();
+  EnterpriseReportingPrivateGetDeviceInfoFunction(
+      const EnterpriseReportingPrivateGetDeviceInfoFunction&) = delete;
+  EnterpriseReportingPrivateGetDeviceInfoFunction& operator=(
+      const EnterpriseReportingPrivateGetDeviceInfoFunction&) = delete;
+
+  // Conversion function for this class to use a DeviceInfoFetcher result.
+  static api::enterprise_reporting_private::DeviceInfo ToDeviceInfo(
+      enterprise_signals::DeviceInfo device_signals);
+
+ private:
+  ~EnterpriseReportingPrivateGetDeviceInfoFunction() override;
+
+  // ExtensionFunction
+  ExtensionFunction::ResponseAction Run() override;
+
+  // Callback once the data was retrieved.
+  void OnDeviceInfoRetrieved(::enterprise_signals::DeviceInfo device_info);
+};
+
+#endif  // !defined(OS_CHROMEOS)
+
+class EnterpriseReportingPrivateGetContextInfoFunction
+    : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.getContextInfo",
+                             ENTERPRISEREPORTINGPRIVATE_GETCONTEXTINFO)
+
+  EnterpriseReportingPrivateGetContextInfoFunction();
+  EnterpriseReportingPrivateGetContextInfoFunction(
+      const EnterpriseReportingPrivateGetContextInfoFunction&) = delete;
+  EnterpriseReportingPrivateGetContextInfoFunction& operator=(
+      const EnterpriseReportingPrivateGetContextInfoFunction&) = delete;
+
+ private:
+  ~EnterpriseReportingPrivateGetContextInfoFunction() override;
+
+  // ExtensionFunction
+  ExtensionFunction::ResponseAction Run() override;
+
+  // Callback once the context data is retrieved.
+  void OnContextInfoRetrieved(enterprise_signals::ContextInfo context_info);
+
+  std::unique_ptr<enterprise_signals::ContextInfoFetcher> context_info_fetcher_;
+};
+
+class EnterpriseReportingPrivateGetCertificateFunction
+    : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("enterprise.reportingPrivate.getCertificate",
+                             ENTERPRISEREPORTINGPRIVATE_GETCERTIFICATE)
+
+  EnterpriseReportingPrivateGetCertificateFunction();
+  EnterpriseReportingPrivateGetCertificateFunction(
+      const EnterpriseReportingPrivateGetCertificateFunction&) = delete;
+  EnterpriseReportingPrivateGetCertificateFunction& operator=(
+      const EnterpriseReportingPrivateGetCertificateFunction&) = delete;
+
+ private:
+  ~EnterpriseReportingPrivateGetCertificateFunction() override;
+
+  // ExtensionFunction:
+  ExtensionFunction::ResponseAction Run() override;
+
+  // Callback invoked when |client_cert_fetcher_| is done fetching and selecting
+  // the client certificate.
+  void OnClientCertFetched(std::unique_ptr<net::ClientCertIdentity> cert);
+
+  std::unique_ptr<enterprise_signals::ClientCertificateFetcher>
+      client_cert_fetcher_;
 };
 
 }  // namespace extensions

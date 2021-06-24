@@ -6,32 +6,27 @@
  * @fileoverview wrong HWID screen implementation.
  */
 
-login.createScreen('WrongHWIDScreen', 'wrong-hwid', function() {
-  return {
-    /** @override */
-    decorate: function() {
-      $('skip-hwid-warning-link').addEventListener('click', function(event) {
-        chrome.send('wrongHWIDOnSkip');
-      });
-      this.updateLocalizedContent();
-    },
+Polymer({
+  is: 'wrong-hwid-element',
 
-    /**
-     * Updates state of login shelf so that necessary buttons are displayed.
-     */
-    onBeforeShow: function(data) {
-      Oobe.getInstance().setSigninUIState(SIGNIN_UI_STATE.WRONG_HWID_WARNING);
-    },
+  behaviors: [OobeI18nBehavior, OobeDialogHostBehavior, LoginScreenBehavior],
 
-    /**
-     * Updates localized content of the screen that is not updated via template.
-     */
-    updateLocalizedContent: function() {
-      $('wrong-hwid-message-content').innerHTML = '<p>' +
-          loadTimeData.getStringF(
-              'wrongHWIDMessageFirstPart', '<strong>', '</strong>') +
-          '</p><p>' + loadTimeData.getString('wrongHWIDMessageSecondPart') +
-          '</p>';
-    }
-  };
+  ready() {
+    this.initializeLoginScreen('WrongHWIDMessageScreen', {
+      resetAllowed: true,
+    });
+  },
+
+  /** Initial UI State for screen */
+  getOobeUIInitialState() {
+    return OOBE_UI_STATE.WRONG_HWID_WARNING;
+  },
+
+  onSkip_() {
+    this.userActed('skip-screen');
+  },
+
+  formattedFirstPart_(locale) {
+    return this.i18nAdvanced('wrongHWIDMessageFirstPart');
+  },
 });

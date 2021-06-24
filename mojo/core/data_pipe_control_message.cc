@@ -4,6 +4,7 @@
 
 #include "mojo/core/data_pipe_control_message.h"
 
+#include "base/logging.h"
 #include "mojo/core/node_controller.h"
 #include "mojo/core/ports/event.h"
 #include "mojo/core/user_message_impl.h"
@@ -26,8 +27,7 @@ void SendDataPipeControlMessage(NodeController* node_controller,
   data->command = command;
   data->num_bytes = num_bytes;
 
-  int rv = node_controller->SendUserMessage(
-      ports::SlotRef(port, ports::kDefaultSlotId), std::move(event));
+  int rv = node_controller->SendUserMessage(port, std::move(event));
   if (rv != ports::OK && rv != ports::ERROR_PORT_PEER_CLOSED) {
     DLOG(ERROR) << "Unexpected failure sending data pipe control message: "
                 << rv;

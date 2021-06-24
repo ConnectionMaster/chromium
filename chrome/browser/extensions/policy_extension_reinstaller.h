@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_POLICY_EXTENSION_REINSTALLER_H_
 #define CHROME_BROWSER_EXTENSIONS_POLICY_EXTENSION_REINSTALLER_H_
 
-#include <memory>
-
 #include "base/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -48,7 +46,7 @@ class PolicyExtensionReinstaller {
   // Whether or not there is a pending PostTask to Fire().
   bool scheduled_fire_pending_ = false;
 
-  base::WeakPtrFactory<PolicyExtensionReinstaller> weak_factory_;
+  base::WeakPtrFactory<PolicyExtensionReinstaller> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PolicyExtensionReinstaller);
 };

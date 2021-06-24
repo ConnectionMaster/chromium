@@ -7,27 +7,46 @@
 
 #include <stddef.h>
 
-#include "base/strings/string16.h"
-#include "printing/printing_export.h"
+#include <string>
+
+#include "base/component_export.h"
+#include "base/strings/string_piece.h"
+
+namespace gfx {
+class Size;
+}
 
 namespace printing {
 
 // Simplify title to resolve issue with some drivers.
-PRINTING_EXPORT base::string16 SimplifyDocumentTitle(
-    const base::string16& title);
+COMPONENT_EXPORT(PRINTING_BASE)
+std::u16string SimplifyDocumentTitle(const std::u16string& title);
 
-PRINTING_EXPORT base::string16 SimplifyDocumentTitleWithLength(
-    const base::string16& title,
+COMPONENT_EXPORT(PRINTING_BASE)
+std::u16string SimplifyDocumentTitleWithLength(const std::u16string& title,
+                                               size_t length);
+
+COMPONENT_EXPORT(PRINTING_BASE)
+std::u16string FormatDocumentTitleWithOwner(const std::u16string& owner,
+                                            const std::u16string& title);
+
+COMPONENT_EXPORT(PRINTING_BASE)
+std::u16string FormatDocumentTitleWithOwnerAndLength(
+    const std::u16string& owner,
+    const std::u16string& title,
     size_t length);
 
-PRINTING_EXPORT base::string16 FormatDocumentTitleWithOwner(
-    const base::string16& owner,
-    const base::string16& title);
+// Returns the paper size (microns) most common in the locale to the nearest
+// millimeter. Defaults to ISO A4 for an empty or invalid locale.
+COMPONENT_EXPORT(PRINTING_BASE)
+gfx::Size GetDefaultPaperSizeFromLocaleMicrons(base::StringPiece locale);
 
-PRINTING_EXPORT base::string16 FormatDocumentTitleWithOwnerAndLength(
-    const base::string16& owner,
-    const base::string16& title,
-    size_t length);
+// Returns true if both dimensions of the sizes have a delta less than or equal
+// to the epsilon value.
+COMPONENT_EXPORT(PRINTING_BASE)
+bool SizesEqualWithinEpsilon(const gfx::Size& lhs,
+                             const gfx::Size& rhs,
+                             int epsilon);
 
 }  // namespace printing
 

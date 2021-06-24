@@ -33,7 +33,7 @@ const char kTestThumbnailURL[] = "http://thumbnail.com/";
 PrefetchURL PrefetchURL1() {
   return {kClientId1,
           GURL("https://www.url1.com/"),
-          base::UTF8ToUTF16("Title 1"),
+          u"Title 1",
           GURL("https://www.url1.com/thumbnail.png"),
           GURL("https://www.url1.com/favicon.png"),
           "snippet 1",
@@ -42,7 +42,7 @@ PrefetchURL PrefetchURL1() {
 PrefetchURL PrefetchURL2() {
   return {kClientId2,
           GURL("https://www.url2.com/"),
-          base::UTF8ToUTF16("Title 2"),
+          u"Title 2",
           GURL("https://www.url2.com/thumbnail.png"),
           GURL("https://www.url2.com/favicon.png"),
           "snippet 2",
@@ -51,7 +51,7 @@ PrefetchURL PrefetchURL2() {
 PrefetchURL PrefetchURL3() {
   return {kClientId3,
           GURL("https://www.url3.com/"),
-          base::UTF8ToUTF16("Title 3"),
+          u"Title 3",
           GURL("https://www.url3.com/thumbnail.png"),
           GURL("https://www.url3.com/favicon.png"),
           "snippet 3",
@@ -90,11 +90,13 @@ TEST_F(AddUniqueUrlsTaskTest, StoreFailure) {
 }
 
 TEST_F(AddUniqueUrlsTaskTest, AddTaskInEmptyStore) {
-  std::vector<PrefetchURL> urls;
   PrefetchURL url1 = PrefetchURL1();
   url1.thumbnail_url = GURL(kTestThumbnailURL);
-  urls.push_back(url1);
-  urls.push_back(PrefetchURL2());
+  // The third URL is empty, so it won't be added.
+  PrefetchURL url3 = PrefetchURL3();
+  url3.url = GURL();
+  std::vector<PrefetchURL> urls = {url1, PrefetchURL2(), url3};
+
   RunTask(std::make_unique<AddUniqueUrlsTask>(dispatcher(), store(),
                                               kTestNamespace, urls));
 

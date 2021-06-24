@@ -56,13 +56,10 @@ void ApplyUrlFading(SkCanvas* canvas,
 
 }  // namespace
 
-UrlText::UrlText(
-    float font_height_dmm,
-    const base::RepeatingCallback<void()>& unhandled_codepoint_callback)
+UrlText::UrlText(float font_height_dmm)
     : Text(font_height_dmm), font_height_dmm_(font_height_dmm) {
   SetLayoutMode(kSingleLineFixedWidth);
 
-  SetOnUnhandledCodePointCallback(unhandled_codepoint_callback);
   SetOnRenderTextCreated(base::BindRepeating(&UrlText::OnRenderTextCreated,
                                              base::Unretained(this)));
   SetOnRenderTextRendered(base::BindRepeating(&UrlText::OnRenderTextRendered,
@@ -91,7 +88,7 @@ void UrlText::SetDeemphasizedColor(const SkColor color) {
 }
 
 void UrlText::UpdateText() {
-  const base::string16 text = FormatUrlForVr(gurl_, &url_parsed_);
+  const std::u16string text = FormatUrlForVr(gurl_, &url_parsed_);
   SetText(text);
   SetFormatting(CreateUrlFormatting(text, url_parsed_, emphasized_color_,
                                     deemphasized_color_));

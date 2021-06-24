@@ -8,8 +8,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "remoting/base/compound_buffer.h"
 #include "remoting/proto/test_data_channel_manager.pb.h"
 #include "remoting/protocol/fake_message_pipe.h"
@@ -99,22 +99,26 @@ std::map<std::string, FakeNamedMessagePipeHandler*>
 FakeNamedMessagePipeHandler::handlers_;
 
 void TestDataChannelManagerFullMatch(bool asynchronous) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   DataChannelManager manager;
-  manager.RegisterCreateHandlerCallback("FullMatch", base::Bind(
-      [](const std::string& expected_data,
-         const std::string& name,
-         std::unique_ptr<MessagePipe> pipe) -> void {
-        new FakeNamedMessagePipeHandler(name, std::move(pipe), expected_data);
-      },
-      "FullMatchContent"));
-  manager.RegisterCreateHandlerCallback("AnotherFullMatch", base::Bind(
-      [](const std::string& expected_data,
-         const std::string& name,
-         std::unique_ptr<MessagePipe> pipe) -> void {
-        new FakeNamedMessagePipeHandler(name, std::move(pipe), expected_data);
-      },
-      "AnotherFullMatchContent"));
+  manager.RegisterCreateHandlerCallback(
+      "FullMatch",
+      base::BindRepeating(
+          [](const std::string& expected_data, const std::string& name,
+             std::unique_ptr<MessagePipe> pipe) -> void {
+            new FakeNamedMessagePipeHandler(name, std::move(pipe),
+                                            expected_data);
+          },
+          "FullMatchContent"));
+  manager.RegisterCreateHandlerCallback(
+      "AnotherFullMatch",
+      base::BindRepeating(
+          [](const std::string& expected_data, const std::string& name,
+             std::unique_ptr<MessagePipe> pipe) -> void {
+            new FakeNamedMessagePipeHandler(name, std::move(pipe),
+                                            expected_data);
+          },
+          "AnotherFullMatchContent"));
 
   FakeMessagePipe pipe1(asynchronous);
   FakeMessagePipe pipe2(asynchronous);
@@ -191,22 +195,26 @@ void TestDataChannelManagerFullMatch(bool asynchronous) {
 }
 
 void TestDataChannelManagerMultipleRegistrations(bool asynchronous) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   DataChannelManager manager;
-  manager.RegisterCreateHandlerCallback("FullMatch", base::Bind(
-      [](const std::string& expected_data,
-         const std::string& name,
-         std::unique_ptr<MessagePipe> pipe) -> void {
-        new FakeNamedMessagePipeHandler(name, std::move(pipe), expected_data);
-      },
-      "FullMatchContent"));
-  manager.RegisterCreateHandlerCallback("Prefix-", base::Bind(
-      [](const std::string& expected_data,
-         const std::string& name,
-         std::unique_ptr<MessagePipe> pipe) -> void {
-        new FakeNamedMessagePipeHandler(name, std::move(pipe), expected_data);
-      },
-      "PrefixMatchContent"));
+  manager.RegisterCreateHandlerCallback(
+      "FullMatch",
+      base::BindRepeating(
+          [](const std::string& expected_data, const std::string& name,
+             std::unique_ptr<MessagePipe> pipe) -> void {
+            new FakeNamedMessagePipeHandler(name, std::move(pipe),
+                                            expected_data);
+          },
+          "FullMatchContent"));
+  manager.RegisterCreateHandlerCallback(
+      "Prefix-",
+      base::BindRepeating(
+          [](const std::string& expected_data, const std::string& name,
+             std::unique_ptr<MessagePipe> pipe) -> void {
+            new FakeNamedMessagePipeHandler(name, std::move(pipe),
+                                            expected_data);
+          },
+          "PrefixMatchContent"));
 
   FakeMessagePipe pipe1(asynchronous);
   FakeMessagePipe pipe2(asynchronous);

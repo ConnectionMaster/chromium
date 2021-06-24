@@ -7,14 +7,15 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/memory/shared_memory.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "build/build_config.h"
 #include "content/common/pepper_file_util.h"
 #include "content/public/common/content_client.h"
 #include "content/public/renderer/content_renderer_client.h"
+#include "content/public/renderer/ppapi_gfx_conversion.h"
 #include "content/public/renderer/render_thread.h"
 #include "content/public/renderer/renderer_ppapi_host.h"
-#include "content/renderer/pepper/gfx_conversion.h"
 #include "content/renderer/pepper/ppb_graphics_3d_impl.h"
 #include "content/renderer/pepper/video_decoder_shim.h"
 #include "gpu/ipc/client/command_buffer_proxy_impl.h"
@@ -87,6 +88,17 @@ PepperVideoDecoderHost::PendingDecode::PendingDecode(
 
 PepperVideoDecoderHost::PendingDecode::~PendingDecode() {}
 
+PepperVideoDecoderHost::MappedBuffer::MappedBuffer(
+    base::UnsafeSharedMemoryRegion region,
+    base::WritableSharedMemoryMapping mapping)
+    : region(std::move(region)), mapping(std::move(mapping)) {}
+
+PepperVideoDecoderHost::MappedBuffer::~MappedBuffer() {}
+
+PepperVideoDecoderHost::MappedBuffer::MappedBuffer(MappedBuffer&&) = default;
+PepperVideoDecoderHost::MappedBuffer& PepperVideoDecoderHost::MappedBuffer::
+operator=(MappedBuffer&&) = default;
+
 PepperVideoDecoderHost::PepperVideoDecoderHost(RendererPpapiHost* host,
                                                PP_Instance instance,
                                                PP_Resource resource)
@@ -149,7 +161,8 @@ int32_t PepperVideoDecoderHost::OnHostMsgInitialize(
     // This is not synchronous, but subsequent IPC messages will be buffered, so
     // it is okay to immediately send IPC messages.
     if (command_buffer->channel()) {
-      decoder_.reset(new media::GpuVideoDecodeAcceleratorHost(command_buffer));
+      decoder_ = base::WrapUnique<media::VideoDecodeAccelerator>(
+          new media::GpuVideoDecodeAcceleratorHost(command_buffer));
       media::VideoDecodeAccelerator::Config vda_config(profile_);
       vda_config.supported_output_formats.assign(
           {media::PIXEL_FORMAT_XRGB, media::PIXEL_FORMAT_ARGB});
@@ -194,26 +207,24 @@ int32_t PepperVideoDecoderHost::OnHostMsgGetShm(
   if (shm_id > shm_buffers_.size())
     return PP_ERROR_FAILED;
   // Reject an attempt to reallocate a busy shm buffer.
-  if (shm_id < shm_buffers_.size() && shm_buffer_busy_[shm_id])
+  if (shm_id < shm_buffers_.size() && shm_buffers_[shm_id].busy)
     return PP_ERROR_FAILED;
 
-  content::RenderThread* render_thread = content::RenderThread::Get();
-  std::unique_ptr<base::SharedMemory> shm(
-      render_thread->HostAllocateSharedMemoryBuffer(shm_size));
-  if (!shm || !shm->Map(shm_size))
+  auto shm = base::UnsafeSharedMemoryRegion::Create(shm_size);
+  auto mapping = shm.Map();
+  if (!shm.IsValid() || !mapping.IsValid())
     return PP_ERROR_FAILED;
-
-  base::SharedMemoryHandle shm_handle = shm->handle();
-  if (shm_id == shm_buffers_.size()) {
-    shm_buffers_.push_back(std::move(shm));
-    shm_buffer_busy_.push_back(false);
-  } else {
-    shm_buffers_[shm_id] = std::move(shm);
-  }
 
   SerializedHandle handle(
-      renderer_ppapi_host_->ShareSharedMemoryHandleWithRemote(shm_handle),
-      shm_size);
+      base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+          renderer_ppapi_host_->ShareUnsafeSharedMemoryRegionWithRemote(shm)));
+  if (shm_id == shm_buffers_.size()) {
+    shm_buffers_.emplace_back(std::move(shm), std::move(mapping));
+  } else {
+    // Note by the check above this buffer cannot be busy.
+    shm_buffers_[shm_id] = MappedBuffer(std::move(shm), std::move(mapping));
+  }
+
   ppapi::host::ReplyMessageContext reply_context =
       context->MakeReplyMessageContext();
   reply_context.params.AppendHandle(std::move(handle));
@@ -235,7 +246,7 @@ int32_t PepperVideoDecoderHost::OnHostMsgDecode(
   if (static_cast<size_t>(shm_id) >= shm_buffers_.size())
     return PP_ERROR_FAILED;
   // Reject an attempt to pass a busy buffer to the decoder again.
-  if (shm_buffer_busy_[shm_id])
+  if (shm_buffers_[shm_id].busy)
     return PP_ERROR_FAILED;
   // Reject non-unique decode_id values.
   if (GetPendingDecodeById(decode_id) != pending_decodes_.end())
@@ -247,9 +258,12 @@ int32_t PepperVideoDecoderHost::OnHostMsgDecode(
   pending_decodes_.push_back(PendingDecode(decode_id, shm_id, size,
                                            context->MakeReplyMessageContext()));
 
-  shm_buffer_busy_[shm_id] = true;
-  decoder_->Decode(
-      media::BitstreamBuffer(decode_id, shm_buffers_[shm_id]->handle(), size));
+  shm_buffers_[shm_id].busy = true;
+  decoder_->Decode(media::BitstreamBuffer(
+      decode_id,
+      base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+          shm_buffers_[shm_id].region.Duplicate()),
+      size));
 
   return PP_OK_COMPLETIONPENDING;
 }
@@ -440,7 +454,7 @@ void PepperVideoDecoderHost::NotifyEndOfBitstreamBuffer(
   }
   host()->SendReply(it->reply_context,
                     PpapiPluginMsg_VideoDecoder_DecodeReply(it->shm_id));
-  shm_buffer_busy_[it->shm_id] = false;
+  shm_buffers_[it->shm_id].busy = false;
   pending_decodes_.erase(it);
 }
 
@@ -489,7 +503,7 @@ const uint8_t* PepperVideoDecoderHost::DecodeIdToAddress(uint32_t decode_id) {
   PendingDecodeList::const_iterator it = GetPendingDecodeById(decode_id);
   DCHECK(it != pending_decodes_.end());
   uint32_t shm_id = it->shm_id;
-  return static_cast<uint8_t*>(shm_buffers_[shm_id]->memory());
+  return static_cast<uint8_t*>(shm_buffers_[shm_id].mapping.memory());
 }
 
 bool PepperVideoDecoderHost::TryFallbackToSoftwareDecoder() {
@@ -535,8 +549,8 @@ bool PepperVideoDecoderHost::TryFallbackToSoftwareDecoder() {
       const PendingDecode& decode = pending_decodes_.front();
       host()->SendReply(decode.reply_context,
                         PpapiPluginMsg_VideoDecoder_DecodeReply(decode.shm_id));
-      DCHECK(shm_buffer_busy_[decode.shm_id]);
-      shm_buffer_busy_[decode.shm_id] = false;
+      DCHECK(shm_buffers_[decode.shm_id].busy);
+      shm_buffers_[decode.shm_id].busy = false;
       pending_decodes_.pop_front();
     }
     NotifyResetDone();
@@ -544,9 +558,12 @@ bool PepperVideoDecoderHost::TryFallbackToSoftwareDecoder() {
 
   // Resubmit all pending decodes.
   for (const PendingDecode& decode : pending_decodes_) {
-    DCHECK(shm_buffer_busy_[decode.shm_id]);
+    DCHECK(shm_buffers_[decode.shm_id].busy);
     decoder_->Decode(media::BitstreamBuffer(
-        decode.decode_id, shm_buffers_[decode.shm_id]->handle(), decode.size));
+        decode.decode_id,
+        base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+            shm_buffers_[decode.shm_id].region.Duplicate()),
+        decode.size));
   }
 
   // Flush the new decoder if Flush() was pending.

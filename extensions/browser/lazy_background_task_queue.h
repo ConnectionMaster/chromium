@@ -11,13 +11,13 @@
 #include <map>
 #include <string>
 
-#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/browser/lazy_context_id.h"
 #include "extensions/browser/lazy_context_task_queue.h"
@@ -30,7 +30,6 @@ class BrowserContext;
 namespace extensions {
 class Extension;
 class ExtensionHost;
-class ExtensionRegistry;
 
 // This class maintains a queue of tasks that should execute when an
 // extension's lazy background page is loaded. It is also in charge of loading
@@ -113,8 +112,8 @@ class LazyBackgroundTaskQueue : public KeyedService,
   content::NotificationRegistrar registrar_;
   PendingTasksMap pending_tasks_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LazyBackgroundTaskQueue);
 };

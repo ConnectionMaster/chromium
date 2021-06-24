@@ -19,14 +19,13 @@ class WorkletModuleResponsesMap;
 class CORE_EXPORT ThreadedWorkletMessagingProxy
     : public ThreadedMessagingProxyBase,
       public WorkletGlobalScopeProxy {
-  USING_GARBAGE_COLLECTED_MIXIN(ThreadedWorkletMessagingProxy);
-
  public:
   // WorkletGlobalScopeProxy implementation.
   void FetchAndInvokeScript(
       const KURL& module_url_record,
-      network::mojom::FetchCredentialsMode,
+      network::mojom::CredentialsMode,
       const FetchClientSettingsObjectSnapshot& outside_settings_object,
+      WorkerResourceTimingNotifier& outside_resource_timing_notifier,
       scoped_refptr<base::SingleThreadTaskRunner> outside_settings_task_runner,
       WorkletPendingTasks*) final;
   void WorkletObjectDestroyed() final;
@@ -35,9 +34,9 @@ class CORE_EXPORT ThreadedWorkletMessagingProxy
   void Initialize(
       WorkerClients*,
       WorkletModuleResponsesMap*,
-      const base::Optional<WorkerBackingThreadStartupData>& = base::nullopt);
+      const absl::optional<WorkerBackingThreadStartupData>& = absl::nullopt);
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  protected:
   explicit ThreadedWorkletMessagingProxy(ExecutionContext*);

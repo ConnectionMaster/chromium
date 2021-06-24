@@ -7,13 +7,14 @@
 #include "third_party/blink/renderer/core/css/document_style_environment_variables.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
-#include "third_party/blink/renderer/platform/shared_buffer.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 
 namespace blink {
 
@@ -38,13 +39,6 @@ static const char kSafeAreaInsetExpectedDefault[] = "0px";
 
 class StyleEnvironmentVariablesTest : public PageTestBase {
  public:
-  void SetUp() override {
-    PageTestBase::SetUp();
-
-    // Needed for RecordUseCounter_IgnoreMediaControls.
-    RuntimeEnabledFeatures::SetModernMediaControlsEnabled(true);
-  }
-
   void TearDown() override {
     StyleEnvironmentVariables::GetRootInstance().ClearForTesting();
   }
@@ -55,9 +49,8 @@ class StyleEnvironmentVariablesTest : public PageTestBase {
 
   void InitializeWithHTML(LocalFrame& frame, const String& html_content) {
     // Sets the inner html and runs the document lifecycle.
-    frame.GetDocument()->body()->SetInnerHTMLFromString(html_content);
-    frame.GetDocument()->View()->UpdateAllLifecyclePhases(
-        DocumentLifecycle::LifecycleUpdateReason::kTest);
+    frame.GetDocument()->body()->setInnerHTML(html_content);
+    frame.GetDocument()->View()->UpdateAllLifecyclePhasesForTest();
   }
 
   void InitializeTestPageWithVariableNamed(LocalFrame& frame,
@@ -76,13 +69,15 @@ class StyleEnvironmentVariablesTest : public PageTestBase {
   void InitializeTestPageWithVariableNamed(LocalFrame& frame,
                                            const UADefinedVariable name) {
     InitializeTestPageWithVariableNamed(
-        frame, StyleEnvironmentVariables::GetVariableName(name));
+        frame, StyleEnvironmentVariables::GetVariableName(
+                   name, /*feature_context=*/nullptr));
   }
 
   void SimulateNavigation() {
     const KURL& url = KURL(NullURL(), "https://www.example.com");
     GetDocument().GetFrame()->Loader().CommitNavigation(
-        WebNavigationParams::CreateWithHTMLBuffer(SharedBuffer::Create(), url),
+        WebNavigationParams::CreateWithHTMLBufferForTesting(
+            SharedBuffer::Create(), url),
         nullptr /* extra_data */);
     blink::test::RunPendingTasks();
     ASSERT_EQ(url.GetString(), GetDocument().Url().GetString());
@@ -91,7 +86,8 @@ class StyleEnvironmentVariablesTest : public PageTestBase {
   const String& GetRootVariableValue(UADefinedVariable name) {
     CSSVariableData* data =
         StyleEnvironmentVariables::GetRootInstance().ResolveVariable(
-            StyleEnvironmentVariables::GetVariableName(name));
+            StyleEnvironmentVariables::GetVariableName(
+                name, /*feature_context=*/nullptr));
     EXPECT_NE(nullptr, data);
     return data->BackingStrings()[0];
   }
@@ -237,8 +233,7 @@ TEST_F(StyleEnvironmentVariablesTest, MultiDocumentInvalidation_FromRoot) {
 
   // Create an empty page that does not use the variable.
   auto empty_page = std::make_unique<DummyPageHolder>(IntSize(800, 600));
-  empty_page->GetDocument().View()->UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kTest);
+  empty_page->GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   StyleEnvironmentVariables::GetRootInstance().SetVariable(kVariableName,
                                                            kVariableTestColor);
@@ -366,8 +361,8 @@ TEST_F(StyleEnvironmentVariablesTest,
       UADefinedVariable::kSafeAreaInsetRight,
       UADefinedVariable::kSafeAreaInsetBottom};
   for (const auto& variable : variables) {
-    const AtomicString name =
-        StyleEnvironmentVariables::GetVariableName(variable);
+    const AtomicString name = StyleEnvironmentVariables::GetVariableName(
+        variable, /*feature_context=*/nullptr);
     printf("0x%x\n",
            DocumentStyleEnvironmentVariables::GenerateHashFromName(name));
   }
@@ -376,68 +371,61 @@ TEST_F(StyleEnvironmentVariablesTest,
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_IgnoreMediaControls) {
   InitializeWithHTML(GetFrame(), "<video controls />");
 
-  EXPECT_FALSE(UseCounter::IsCounted(GetDocument(),
-                                     WebFeature::kCSSEnvironmentVariable));
-  EXPECT_FALSE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetTop));
-  EXPECT_FALSE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetLeft));
-  EXPECT_FALSE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetBottom));
-  EXPECT_FALSE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetRight));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetTop));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetLeft));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetBottom));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetRight));
 }
 
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_InvalidProperty) {
   InitializeTestPageWithVariableNamed(GetFrame(), kVariableName);
-  EXPECT_TRUE(UseCounter::IsCounted(GetDocument(),
-                                    WebFeature::kCSSEnvironmentVariable));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
 }
 
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_NoVariable) {
   InitializeWithHTML(GetFrame(), "");
-  EXPECT_FALSE(UseCounter::IsCounted(GetDocument(),
-                                     WebFeature::kCSSEnvironmentVariable));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
 }
 
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_SafeAreaInsetBottom) {
   InitializeTestPageWithVariableNamed(GetFrame(),
                                       UADefinedVariable::kSafeAreaInsetBottom);
 
-  EXPECT_TRUE(UseCounter::IsCounted(GetDocument(),
-                                    WebFeature::kCSSEnvironmentVariable));
-  EXPECT_TRUE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetBottom));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetBottom));
 }
 
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_SafeAreaInsetLeft) {
   InitializeTestPageWithVariableNamed(GetFrame(),
                                       UADefinedVariable::kSafeAreaInsetLeft);
 
-  EXPECT_TRUE(UseCounter::IsCounted(GetDocument(),
-                                    WebFeature::kCSSEnvironmentVariable));
-  EXPECT_TRUE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetLeft));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetLeft));
 }
 
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_SafeAreaInsetRight) {
   InitializeTestPageWithVariableNamed(GetFrame(),
                                       UADefinedVariable::kSafeAreaInsetRight);
 
-  EXPECT_TRUE(UseCounter::IsCounted(GetDocument(),
-                                    WebFeature::kCSSEnvironmentVariable));
-  EXPECT_TRUE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetRight));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetRight));
 }
 
 TEST_F(StyleEnvironmentVariablesTest, RecordUseCounter_SafeAreaInsetTop) {
   InitializeTestPageWithVariableNamed(GetFrame(),
                                       UADefinedVariable::kSafeAreaInsetTop);
 
-  EXPECT_TRUE(UseCounter::IsCounted(GetDocument(),
-                                    WebFeature::kCSSEnvironmentVariable));
-  EXPECT_TRUE(UseCounter::IsCounted(
-      GetDocument(), WebFeature::kCSSEnvironmentVariable_SafeAreaInsetTop));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSEnvironmentVariable));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kCSSEnvironmentVariable_SafeAreaInsetTop));
 }
 
 }  // namespace blink

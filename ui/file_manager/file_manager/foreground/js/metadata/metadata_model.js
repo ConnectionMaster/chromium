@@ -2,10 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {util} from '../../../common/js/util.m.js';
+import {VolumeManager} from '../../../externs/volume_manager.js';
+
+import {ContentMetadataProvider} from './content_metadata_provider.js';
+import {ExternalMetadataProvider} from './external_metadata_provider.js';
+import {FileSystemMetadataProvider} from './file_system_metadata_provider.js';
+import {MetadataCacheSet, MetadataCacheSetStorageForObject} from './metadata_cache_set.js';
+import {MetadataItem} from './metadata_item.js';
+import {MetadataProvider} from './metadata_provider.js';
+import {MultiMetadataProvider} from './multi_metadata_provider.js';
+
 /**
  * Stats collected about Metadata handling for tests.
+ * @final
  */
-class MetadataStats {
+export class MetadataStats {
   constructor() {
     /** @public {number} Total of entries fulfilled from cache. */
     this.fromCache = 0;
@@ -24,34 +36,25 @@ class MetadataStats {
   }
 }
 
-class MetadataModel {
+export class MetadataModel {
   /**
    * @param {!MetadataProvider} rawProvider
    */
   constructor(rawProvider) {
-    /**
-     * @private {!MetadataProvider}
-     * @const
-     */
+    /** @private @const {!MetadataProvider} */
     this.rawProvider_ = rawProvider;
 
-    /**
-     * @private {!MetadataProviderCache}
-     * @const
-     */
+    /** @private @const {!MetadataProviderCache} */
     this.cache_ = new MetadataProviderCache();
 
-    /**
-     * @private {!Array<!MetadataProviderCallbackRequest<T>>}
-     * @const
-     */
+    /** @private @const {!Array<!MetadataProviderCallbackRequest>} */
     this.callbackRequests_ = [];
 
-    /** @private {?MetadataStats} record stats about Metadata when in tests. */
-    this.stats_ = null;
-    if (window.IN_TEST) {
-      this.stats_ = new MetadataStats();
-    }
+    /**
+     * @private @const {?MetadataStats} record stats about Metadata when in
+     *     tests.
+     */
+    this.stats_ = window.IN_TEST ? new MetadataStats() : null;
   }
 
   /**
@@ -222,6 +225,7 @@ class MetadataModel {
   }
 }
 
+/** @final */
 class MetadataProviderCallbackRequest {
   /**
    * @param {!Array<!Entry>} entries
@@ -275,6 +279,7 @@ class MetadataProviderCallbackRequest {
 
 /**
  * Helper wrapper for LRUCache.
+ * @final
  */
 class MetadataProviderCache extends MetadataCacheSet {
   constructor() {

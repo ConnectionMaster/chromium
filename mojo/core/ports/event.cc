@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "base/logging.h"
 #include "base/numerics/safe_math.h"
 #include "mojo/core/ports/user_message.h"
 
@@ -29,14 +30,8 @@ struct SerializedHeader {
 struct UserMessageEventData {
   uint64_t sequence_num;
   uint32_t num_ports;
-  SlotId slot_id;
+  uint32_t padding;
 };
-
-// Sanity check to ensure that we aren't breaking the binary structure of
-// UserMessageEventData for older Mojo core versions. The structure has always
-// been 16 bytes wide.
-static_assert(sizeof(UserMessageEventData) == 16,
-              "Bad UserMessageEventData size");
 
 struct ObserveProxyEventData {
   NodeName proxy_node_name;
@@ -58,10 +53,12 @@ struct MergePortEventData {
   Event::PortDescriptor new_port_descriptor;
 };
 
-struct SlotClosedEventData {
-  uint64_t last_sequence_num;
-  SlotId slot_id;
-  char padding[4];
+struct UserMessageReadAckRequestEventData {
+  uint64_t sequence_num_to_acknowledge;
+};
+
+struct UserMessageReadAckEventData {
+  uint64_t sequence_num_acknowledged;
 };
 
 #pragma pack(pop)
@@ -87,16 +84,19 @@ static_assert(sizeof(ObserveClosureEventData) % kPortsMessageAlignment == 0,
 static_assert(sizeof(MergePortEventData) % kPortsMessageAlignment == 0,
               "Invalid MergePortEventData size.");
 
-static_assert(sizeof(SlotClosedEventData) % kPortsMessageAlignment == 0,
-              "Invalid SlotClosedEventData size.");
+static_assert(sizeof(UserMessageReadAckRequestEventData) %
+                      kPortsMessageAlignment ==
+                  0,
+              "Invalid UserMessageReadAckRequestEventData size.");
+
+static_assert(sizeof(UserMessageReadAckEventData) % kPortsMessageAlignment == 0,
+              "Invalid UserMessageReadAckEventData size.");
 
 }  // namespace
 
 Event::PortDescriptor::PortDescriptor() {
   memset(padding, 0, sizeof(padding));
 }
-
-Event::PortDescriptor::PortDescriptor(const PortDescriptor&) = default;
 
 Event::~Event() = default;
 
@@ -122,8 +122,12 @@ ScopedEvent Event::Deserialize(const void* buffer, size_t num_bytes) {
       return ObserveClosureEvent::Deserialize(port_name, header + 1, data_size);
     case Type::kMergePort:
       return MergePortEvent::Deserialize(port_name, header + 1, data_size);
-    case Type::kSlotClosed:
-      return SlotClosedEvent::Deserialize(port_name, header + 1, data_size);
+    case Type::kUserMessageReadAckRequest:
+      return UserMessageReadAckRequestEvent::Deserialize(port_name, header + 1,
+                                                         data_size);
+    case Type::kUserMessageReadAck:
+      return UserMessageReadAckEvent::Deserialize(port_name, header + 1,
+                                                  data_size);
     default:
       DVLOG(2) << "Ingoring unknown port event type: "
                << static_cast<uint32_t>(header->type);
@@ -149,13 +153,6 @@ void Event::Serialize(void* buffer) const {
 ScopedEvent Event::Clone() const {
   return nullptr;
 }
-
-UserMessageEvent::PortAttachment::PortAttachment() = default;
-
-UserMessageEvent::PortAttachment::PortAttachment(const PortAttachment&) =
-    default;
-
-UserMessageEvent::PortAttachment::~PortAttachment() = default;
 
 UserMessageEvent::~UserMessageEvent() = default;
 
@@ -200,7 +197,6 @@ ScopedEvent UserMessageEvent::Deserialize(const PortName& port_name,
   auto event =
       base::WrapUnique(new UserMessageEvent(port_name, data->sequence_num));
   event->ReservePorts(data->num_ports);
-  event->set_slot_id(data->slot_id);
   const auto* in_descriptors =
       reinterpret_cast<const PortDescriptor*>(data + 1);
   std::copy(in_descriptors, in_descriptors + data->num_ports,
@@ -208,10 +204,7 @@ ScopedEvent UserMessageEvent::Deserialize(const PortName& port_name,
 
   const auto* in_names =
       reinterpret_cast<const PortName*>(in_descriptors + data->num_ports);
-  for (size_t i = 0; i < data->num_ports; ++i) {
-    event->ports()[i].name = in_names[i];
-    event->ports()[i].slot_id = event->port_descriptors()[i].new_slot_id;
-  }
+  std::copy(in_names, in_names + data->num_ports, event->ports());
   return std::move(event);
 }
 
@@ -240,17 +233,14 @@ void UserMessageEvent::SerializeData(void* buffer) const {
   data->sequence_num = sequence_num_;
   DCHECK(base::IsValueInRangeForNumericType<uint32_t>(ports_.size()));
   data->num_ports = static_cast<uint32_t>(ports_.size());
-  data->slot_id = slot_id_;
+  data->padding = 0;
 
   auto* ports_data = reinterpret_cast<PortDescriptor*>(data + 1);
   std::copy(port_descriptors_.begin(), port_descriptors_.end(), ports_data);
 
   auto* port_names_data =
       reinterpret_cast<PortName*>(ports_data + ports_.size());
-  for (size_t i = 0; i < ports_.size(); ++i) {
-    port_names_data[i] = ports_[i].name;
-    ports_data[i].new_slot_id = ports_[i].slot_id.value_or(kDefaultSlotId);
-  }
+  std::copy(ports_.begin(), ports_.end(), port_names_data);
 }
 
 PortAcceptedEvent::PortAcceptedEvent(const PortName& port_name)
@@ -411,36 +401,66 @@ void MergePortEvent::SerializeData(void* buffer) const {
   data->new_port_descriptor = new_port_descriptor_;
 }
 
-SlotClosedEvent::SlotClosedEvent(const PortName& port_name,
-                                 SlotId slot_id,
-                                 uint64_t last_sequence_num)
-    : Event(Type::kSlotClosed, port_name),
-      slot_id_(slot_id),
-      last_sequence_num_(last_sequence_num) {}
+UserMessageReadAckRequestEvent::UserMessageReadAckRequestEvent(
+    const PortName& port_name,
+    uint64_t sequence_num_to_acknowledge)
+    : Event(Type::kUserMessageReadAckRequest, port_name),
+      sequence_num_to_acknowledge_(sequence_num_to_acknowledge) {
+}
 
-SlotClosedEvent::~SlotClosedEvent() = default;
+UserMessageReadAckRequestEvent::~UserMessageReadAckRequestEvent() = default;
 
 // static
-ScopedEvent SlotClosedEvent::Deserialize(const PortName& port_name,
-                                         const void* buffer,
-                                         size_t num_bytes) {
-  if (num_bytes < sizeof(SlotClosedEventData))
+ScopedEvent UserMessageReadAckRequestEvent::Deserialize(
+    const PortName& port_name,
+    const void* buffer,
+    size_t num_bytes) {
+  if (num_bytes < sizeof(UserMessageReadAckRequestEventData))
     return nullptr;
 
-  const auto* data = static_cast<const SlotClosedEventData*>(buffer);
-  return std::make_unique<SlotClosedEvent>(port_name, data->slot_id,
-                                           data->last_sequence_num);
+  const auto* data =
+      static_cast<const UserMessageReadAckRequestEventData*>(buffer);
+  return std::make_unique<UserMessageReadAckRequestEvent>(
+      port_name, data->sequence_num_to_acknowledge);
 }
 
-size_t SlotClosedEvent::GetSerializedDataSize() const {
-  return sizeof(SlotClosedEventData);
+size_t UserMessageReadAckRequestEvent::GetSerializedDataSize() const {
+  return sizeof(UserMessageReadAckRequestEventData);
 }
 
-void SlotClosedEvent::SerializeData(void* buffer) const {
-  auto* data = static_cast<SlotClosedEventData*>(buffer);
-  data->slot_id = slot_id_;
-  data->last_sequence_num = last_sequence_num_;
-  memset(data->padding, 0, sizeof(data->padding));
+void UserMessageReadAckRequestEvent::SerializeData(void* buffer) const {
+  auto* data = static_cast<UserMessageReadAckRequestEventData*>(buffer);
+  data->sequence_num_to_acknowledge = sequence_num_to_acknowledge_;
+}
+
+UserMessageReadAckEvent::UserMessageReadAckEvent(
+    const PortName& port_name,
+    uint64_t sequence_num_acknowledged)
+    : Event(Type::kUserMessageReadAck, port_name),
+      sequence_num_acknowledged_(sequence_num_acknowledged) {
+}
+
+UserMessageReadAckEvent::~UserMessageReadAckEvent() = default;
+
+// static
+ScopedEvent UserMessageReadAckEvent::Deserialize(const PortName& port_name,
+                                                 const void* buffer,
+                                                 size_t num_bytes) {
+  if (num_bytes < sizeof(UserMessageReadAckEventData))
+    return nullptr;
+
+  const auto* data = static_cast<const UserMessageReadAckEventData*>(buffer);
+  return std::make_unique<UserMessageReadAckEvent>(
+      port_name, data->sequence_num_acknowledged);
+}
+
+size_t UserMessageReadAckEvent::GetSerializedDataSize() const {
+  return sizeof(UserMessageReadAckEventData);
+}
+
+void UserMessageReadAckEvent::SerializeData(void* buffer) const {
+  auto* data = static_cast<UserMessageReadAckEventData*>(buffer);
+  data->sequence_num_acknowledged = sequence_num_acknowledged_;
 }
 
 }  // namespace ports

@@ -6,29 +6,28 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
-#include "base/strings/stringprintf.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/time/time.h"
 #include "chrome/browser/search/search_suggest/search_suggest_data.h"
-#include "components/google/core/browser/google_url_tracker.h"
-#include "components/signin/core/browser/signin_header_helper.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_service_manager_context.h"
+#include "components/variations/scoped_variations_ids_provider.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/testing_json_parser.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 using testing::_;
+using testing::DoAll;
 using testing::Eq;
 using testing::IsEmpty;
 using testing::SaveArg;
@@ -38,27 +37,14 @@ namespace {
 
 const char kApplicationLocale[] = "us";
 
-const char kMinimalValidResponse[] = R"json({"update": { "query_suggestions": {
-  "query_suggestions_with_html": "", "script": "",
-  "impression_cap_expire_time_ms": 0, "request_freeze_time_ms": 0,
-  "max_impressions": 0
-}}})json";
+const char kMinimalValidResponseNoSuggestions[] =
+    R"json({"update": { "query_suggestions": { "impression_cap_expire_time_ms":
+     1, "request_freeze_time_ms": 2, "max_impressions": 3}}})json";
 
-// Required to instantiate a GoogleUrlTracker in UNIT_TEST_MODE.
-class GoogleURLTrackerClientStub : public GoogleURLTrackerClient {
- public:
-  GoogleURLTrackerClientStub() {}
-  ~GoogleURLTrackerClientStub() override {}
-
-  bool IsBackgroundNetworkingEnabled() override { return true; }
-  PrefService* GetPrefs() override { return nullptr; }
-  network::SharedURLLoaderFactory* GetURLLoaderFactory() override {
-    return nullptr;
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(GoogleURLTrackerClientStub);
-};
+const char kMinimalValidResponseWithSuggestions[] =
+    R"json({"update": { "query_suggestions": {"query_suggestions_with_html":
+    "<div></div>", "script": "<script></script>","impression_cap_expire_time_ms"
+    : 1, "request_freeze_time_ms": 2,"max_impressions": 3}}})json";
 
 }  // namespace
 
@@ -73,24 +59,16 @@ class SearchSuggestLoaderImplTest : public testing::Test {
             /*account_consistency_mirror_required=*/false) {}
 
   explicit SearchSuggestLoaderImplTest(bool account_consistency_mirror_required)
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
-        google_url_tracker_(
-            std::make_unique<GoogleURLTrackerClientStub>(),
-            GoogleURLTracker::ALWAYS_DOT_COM_MODE,
-            network::TestNetworkConnectionTracker::GetInstance()),
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP),
         test_shared_loader_factory_(
             base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
                 &test_url_loader_factory_)) {}
-
-  ~SearchSuggestLoaderImplTest() override {
-    static_cast<KeyedService&>(google_url_tracker_).Shutdown();
-  }
 
   void SetUp() override {
     testing::Test::SetUp();
 
     search_suggest_loader_ = std::make_unique<SearchSuggestLoaderImpl>(
-        test_shared_loader_factory_, &google_url_tracker_, kApplicationLocale);
+        test_shared_loader_factory_, kApplicationLocale);
   }
 
   void SetUpResponseWithData(const std::string& response) {
@@ -106,7 +84,7 @@ class SearchSuggestLoaderImplTest : public testing::Test {
   void SetUpResponseWithNetworkError() {
     test_url_loader_factory_.AddResponse(
         search_suggest_loader_->GetLoadURLForTesting(),
-        network::ResourceResponseHead(), std::string(),
+        network::mojom::URLResponseHead::New(), std::string(),
         network::URLLoaderCompletionStatus(net::HTTP_NOT_FOUND));
   }
 
@@ -120,14 +98,15 @@ class SearchSuggestLoaderImplTest : public testing::Test {
   }
 
  private:
-  // variations::AppendVariationHeaders and SafeJsonParser require a
-  // thread and a ServiceManagerConnection to be set.
-  content::TestBrowserThreadBundle thread_bundle_;
-  content::TestServiceManagerContext service_manager_context_;
+  // variations::AppendVariationHeaders requires browser threads.
+  content::BrowserTaskEnvironment task_environment_;
 
-  data_decoder::TestingJsonParser::ScopedFactoryOverride factory_override_;
+  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+      variations::VariationsIdsProvider::Mode::kUseSignedInState};
 
-  GoogleURLTracker google_url_tracker_;
+  // Supports JSON parsing in the loader impl.
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
+
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
 
@@ -138,15 +117,16 @@ class SearchSuggestLoaderImplTest : public testing::Test {
 };
 
 TEST_F(SearchSuggestLoaderImplTest, RequestReturns) {
-  SetUpResponseWithData(kMinimalValidResponse);
+  SetUpResponseWithData(kMinimalValidResponseWithSuggestions);
 
   base::MockCallback<SearchSuggestLoader::SearchSuggestionsCallback> callback;
   std::string blocklist;
   search_suggest_loader()->Load(blocklist, callback.Get());
 
-  base::Optional<SearchSuggestData> data;
+  absl::optional<SearchSuggestData> data;
   base::RunLoop loop;
-  EXPECT_CALL(callback, Run(SearchSuggestLoader::Status::OK, _))
+  EXPECT_CALL(callback,
+              Run(SearchSuggestLoader::Status::OK_WITH_SUGGESTIONS, _))
       .WillOnce(DoAll(SaveArg<1>(&data), Quit(&loop)));
   loop.Run();
 
@@ -156,15 +136,17 @@ TEST_F(SearchSuggestLoaderImplTest, RequestReturns) {
 TEST_F(SearchSuggestLoaderImplTest, HandlesResponsePreamble) {
   // The response may contain a ")]}'" prefix. The loader should ignore that
   // during parsing.
-  SetUpResponseWithData(std::string(")]}'") + kMinimalValidResponse);
+  SetUpResponseWithData(std::string(")]}'") +
+                        kMinimalValidResponseWithSuggestions);
 
   base::MockCallback<SearchSuggestLoader::SearchSuggestionsCallback> callback;
   std::string blocklist;
   search_suggest_loader()->Load(blocklist, callback.Get());
 
-  base::Optional<SearchSuggestData> data;
+  absl::optional<SearchSuggestData> data;
   base::RunLoop loop;
-  EXPECT_CALL(callback, Run(SearchSuggestLoader::Status::OK, _))
+  EXPECT_CALL(callback,
+              Run(SearchSuggestLoader::Status::OK_WITH_SUGGESTIONS, _))
       .WillOnce(DoAll(SaveArg<1>(&data), Quit(&loop)));
   loop.Run();
 
@@ -172,19 +154,16 @@ TEST_F(SearchSuggestLoaderImplTest, HandlesResponsePreamble) {
 }
 
 TEST_F(SearchSuggestLoaderImplTest, ParsesFullResponse) {
-  SetUpResponseWithData(R"json({"update": { "query_suggestions": {
-            "query_suggestions_with_html": "<div></div>",
-            "script": "<script></script>", "impression_cap_expire_time_ms": 1,
-            "request_freeze_time_ms": 2, "max_impressions": 3
-            }}})json");
+  SetUpResponseWithData(kMinimalValidResponseWithSuggestions);
 
   base::MockCallback<SearchSuggestLoader::SearchSuggestionsCallback> callback;
   std::string blocklist;
   search_suggest_loader()->Load(blocklist, callback.Get());
 
-  base::Optional<SearchSuggestData> data;
+  absl::optional<SearchSuggestData> data;
   base::RunLoop loop;
-  EXPECT_CALL(callback, Run(SearchSuggestLoader::Status::OK, _))
+  EXPECT_CALL(callback,
+              Run(SearchSuggestLoader::Status::OK_WITH_SUGGESTIONS, _))
       .WillOnce(DoAll(SaveArg<1>(&data), Quit(&loop)));
   loop.Run();
 
@@ -196,8 +175,30 @@ TEST_F(SearchSuggestLoaderImplTest, ParsesFullResponse) {
   EXPECT_EQ(3, data->max_impressions);
 }
 
+TEST_F(SearchSuggestLoaderImplTest, ParsesValidResponseWithNoSuggestions) {
+  SetUpResponseWithData(kMinimalValidResponseNoSuggestions);
+
+  base::MockCallback<SearchSuggestLoader::SearchSuggestionsCallback> callback;
+  std::string blocklist;
+  search_suggest_loader()->Load(blocklist, callback.Get());
+
+  absl::optional<SearchSuggestData> data;
+  base::RunLoop loop;
+  EXPECT_CALL(callback,
+              Run(SearchSuggestLoader::Status::OK_WITHOUT_SUGGESTIONS, _))
+      .WillOnce(DoAll(SaveArg<1>(&data), Quit(&loop)));
+  loop.Run();
+
+  ASSERT_TRUE(data.has_value());
+  EXPECT_EQ(std::string(), data->suggestions_html);
+  EXPECT_EQ(std::string(), data->end_of_body_script);
+  EXPECT_EQ(1, data->impression_cap_expire_time_ms);
+  EXPECT_EQ(2, data->request_freeze_time_ms);
+  EXPECT_EQ(3, data->max_impressions);
+}
+
 TEST_F(SearchSuggestLoaderImplTest, CoalescesMultipleRequests) {
-  SetUpResponseWithData(kMinimalValidResponse);
+  SetUpResponseWithData(kMinimalValidResponseWithSuggestions);
 
   // Trigger two requests.
   base::MockCallback<SearchSuggestLoader::SearchSuggestionsCallback>
@@ -209,13 +210,15 @@ TEST_F(SearchSuggestLoaderImplTest, CoalescesMultipleRequests) {
   search_suggest_loader()->Load(blocklist, second_callback.Get());
 
   // Make sure that a single response causes both callbacks to be called.
-  base::Optional<SearchSuggestData> first_data;
-  base::Optional<SearchSuggestData> second_data;
+  absl::optional<SearchSuggestData> first_data;
+  absl::optional<SearchSuggestData> second_data;
 
   base::RunLoop loop;
-  EXPECT_CALL(first_callback, Run(SearchSuggestLoader::Status::OK, _))
+  EXPECT_CALL(first_callback,
+              Run(SearchSuggestLoader::Status::OK_WITH_SUGGESTIONS, _))
       .WillOnce(SaveArg<1>(&first_data));
-  EXPECT_CALL(second_callback, Run(SearchSuggestLoader::Status::OK, _))
+  EXPECT_CALL(second_callback,
+              Run(SearchSuggestLoader::Status::OK_WITH_SUGGESTIONS, _))
       .WillOnce(DoAll(SaveArg<1>(&second_data), Quit(&loop)));
   loop.Run();
 
@@ -233,14 +236,15 @@ TEST_F(SearchSuggestLoaderImplTest, NetworkErrorIsTransient) {
 
   base::RunLoop loop;
   EXPECT_CALL(callback, Run(SearchSuggestLoader::Status::TRANSIENT_ERROR,
-                            Eq(base::nullopt)))
+                            Eq(absl::nullopt)))
       .WillOnce(Quit(&loop));
   loop.Run();
 }
 
 // Flaky, see https://crbug.com/923953.
 TEST_F(SearchSuggestLoaderImplTest, DISABLED_InvalidJsonErrorIsFatal) {
-  SetUpResponseWithData(kMinimalValidResponse + std::string(")"));
+  SetUpResponseWithData(kMinimalValidResponseWithSuggestions +
+                        std::string(")"));
 
   base::MockCallback<SearchSuggestLoader::SearchSuggestionsCallback> callback;
   std::string blocklist;
@@ -248,7 +252,7 @@ TEST_F(SearchSuggestLoaderImplTest, DISABLED_InvalidJsonErrorIsFatal) {
 
   base::RunLoop loop;
   EXPECT_CALL(callback,
-              Run(SearchSuggestLoader::Status::FATAL_ERROR, Eq(base::nullopt)))
+              Run(SearchSuggestLoader::Status::FATAL_ERROR, Eq(absl::nullopt)))
       .WillOnce(Quit(&loop));
   loop.Run();
 }
@@ -262,7 +266,7 @@ TEST_F(SearchSuggestLoaderImplTest, IncompleteJsonErrorIsFatal) {
 
   base::RunLoop loop;
   EXPECT_CALL(callback,
-              Run(SearchSuggestLoader::Status::FATAL_ERROR, Eq(base::nullopt)))
+              Run(SearchSuggestLoader::Status::FATAL_ERROR, Eq(absl::nullopt)))
       .WillOnce(Quit(&loop));
   loop.Run();
 }

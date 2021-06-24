@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/metrics/user_metrics.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/dbus/power_manager/backlight.pb.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -37,7 +36,7 @@ void BrightnessControllerChromeos::SetBrightnessPercent(double percent,
   request.set_percent(percent);
   request.set_transition(
       gradual
-          ? power_manager::SetBacklightBrightnessRequest_Transition_GRADUAL
+          ? power_manager::SetBacklightBrightnessRequest_Transition_FAST
           : power_manager::SetBacklightBrightnessRequest_Transition_INSTANT);
   request.set_cause(
       power_manager::SetBacklightBrightnessRequest_Cause_USER_REQUEST);
@@ -45,7 +44,7 @@ void BrightnessControllerChromeos::SetBrightnessPercent(double percent,
 }
 
 void BrightnessControllerChromeos::GetBrightnessPercent(
-    base::OnceCallback<void(base::Optional<double>)> callback) {
+    base::OnceCallback<void(absl::optional<double>)> callback) {
   chromeos::PowerManagerClient::Get()->GetScreenBrightnessPercent(
       std::move(callback));
 }

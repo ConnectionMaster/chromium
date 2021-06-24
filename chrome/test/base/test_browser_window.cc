@@ -4,19 +4,29 @@
 
 #include "chrome/test/base/test_browser_window.h"
 
+#include "chrome/browser/sharing/sharing_dialog_data.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_list_observer.h"
+#include "chrome/browser/ui/find_bar/find_bar.h"
+#include "chrome/browser/ui/user_education/feature_promo_controller.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "ui/gfx/geometry/rect.h"
 
 // Helpers --------------------------------------------------------------------
 
 std::unique_ptr<Browser> CreateBrowserWithTestWindowForParams(
-    Browser::CreateParams* params) {
+    Browser::CreateParams params) {
+  DCHECK(!params.window);
   TestBrowserWindow* window = new TestBrowserWindow;
   new TestBrowserWindowOwner(window);
-  params->window = window;
-  return std::make_unique<Browser>(*params);
+  params.window = window;
+  window->set_is_minimized(params.initial_show_state ==
+                           ui::SHOW_STATE_MINIMIZED);
+  // Tests generally expect TestBrowserWindows not to be active.
+  window->set_is_active(params.initial_show_state != ui::SHOW_STATE_INACTIVE &&
+                        params.initial_show_state != ui::SHOW_STATE_DEFAULT);
+
+  return std::unique_ptr<Browser>(Browser::Create(params));
 }
 
 // TestBrowserWindow::TestLocationBar -----------------------------------------
@@ -53,6 +63,9 @@ LocationBarTesting*
   return NULL;
 }
 
+bool TestBrowserWindow::TestLocationBar::IsInputTypedUrlWithoutScheme() const {
+  return false;
+}
 
 // TestBrowserWindow ----------------------------------------------------------
 
@@ -60,16 +73,25 @@ TestBrowserWindow::TestBrowserWindow() {}
 
 TestBrowserWindow::~TestBrowserWindow() {}
 
-bool TestBrowserWindow::IsActive() const {
-  return false;
+void TestBrowserWindow::Close() {
+  if (close_callback_)
+    std::move(close_callback_).Run();
 }
 
-bool TestBrowserWindow::IsAlwaysOnTop() const {
-  return false;
+bool TestBrowserWindow::IsActive() const {
+  return is_active_;
+}
+
+ui::ZOrderLevel TestBrowserWindow::GetZOrderLevel() const {
+  return ui::ZOrderLevel::kNormal;
 }
 
 gfx::NativeWindow TestBrowserWindow::GetNativeWindow() const {
-  return NULL;
+  return native_window_;
+}
+
+bool TestBrowserWindow::IsOnCurrentWorkspace() const {
+  return true;
 }
 
 void TestBrowserWindow::SetTopControlsShownRatio(
@@ -79,6 +101,10 @@ void TestBrowserWindow::SetTopControlsShownRatio(
 bool TestBrowserWindow::DoBrowserControlsShrinkRendererSize(
     const content::WebContents* contents) const {
   return false;
+}
+
+ui::NativeTheme* TestBrowserWindow::GetNativeTheme() {
+  return nullptr;
 }
 
 int TestBrowserWindow::GetTopControlsHeight() const {
@@ -108,12 +134,14 @@ gfx::Size TestBrowserWindow::GetContentsSize() const {
   return gfx::Size();
 }
 
+void TestBrowserWindow::SetContentsSize(const gfx::Size& size) {}
+
 bool TestBrowserWindow::IsMaximized() const {
   return false;
 }
 
 bool TestBrowserWindow::IsMinimized() const {
-  return false;
+  return is_minimized_;
 }
 
 bool TestBrowserWindow::ShouldHideUIForFullscreen() const {
@@ -136,17 +164,11 @@ LocationBar* TestBrowserWindow::GetLocationBar() const {
   return const_cast<TestLocationBar*>(&location_bar_);
 }
 
-PageActionIconContainer*
-TestBrowserWindow::GetOmniboxPageActionIconContainer() {
-  return &omnibox_page_action_icon_container_;
+autofill::AutofillBubbleHandler* TestBrowserWindow::GetAutofillBubbleHandler() {
+  return &autofill_bubble_handler_;
 }
 
-PageActionIconContainer*
-TestBrowserWindow::GetToolbarPageActionIconContainer() {
-  return nullptr;
-}
-
-ToolbarActionsBar* TestBrowserWindow::GetToolbarActionsBar() {
+ExtensionsContainer* TestBrowserWindow::GetExtensionsContainer() {
   return nullptr;
 }
 
@@ -170,7 +192,11 @@ bool TestBrowserWindow::IsBookmarkBarAnimating() const {
 }
 
 bool TestBrowserWindow::IsTabStripEditable() const {
-  return false;
+  return is_tab_strip_editable_;
+}
+
+void TestBrowserWindow::SetIsTabStripEditable(bool is_editable) {
+  is_tab_strip_editable_ = is_editable;
 }
 
 bool TestBrowserWindow::IsToolbarVisible() const {
@@ -191,18 +217,32 @@ ShowTranslateBubbleResult TestBrowserWindow::ShowTranslateBubble(
   return ShowTranslateBubbleResult::SUCCESS;
 }
 
-autofill::SaveCardBubbleView* TestBrowserWindow::ShowSaveCreditCardBubble(
+qrcode_generator::QRCodeGeneratorBubbleView*
+TestBrowserWindow::ShowQRCodeGeneratorBubble(
     content::WebContents* contents,
-    autofill::SaveCardBubbleController* controller,
-    bool user_gesture) {
+    qrcode_generator::QRCodeGeneratorBubbleController* controller,
+    const GURL& url) {
   return nullptr;
 }
 
-autofill::LocalCardMigrationBubble*
-TestBrowserWindow::ShowLocalCardMigrationBubble(
+SharingDialog* TestBrowserWindow::ShowSharingDialog(
+    content::WebContents* web_contents,
+    SharingDialogData data) {
+  return nullptr;
+}
+
+send_tab_to_self::SendTabToSelfBubbleView*
+TestBrowserWindow::ShowSendTabToSelfBubble(
     content::WebContents* contents,
-    autofill::LocalCardMigrationBubbleController* controller,
-    bool user_gesture) {
+    send_tab_to_self::SendTabToSelfBubbleController* controller,
+    bool is_user_gesture) {
+  return nullptr;
+}
+
+sharing_hub::SharingHubBubbleView* TestBrowserWindow::ShowSharingHubBubble(
+    content::WebContents* contents,
+    sharing_hub::SharingHubBubbleController* controller,
+    bool is_user_gesture) {
   return nullptr;
 }
 
@@ -214,7 +254,7 @@ DownloadShelf* TestBrowserWindow::GetDownloadShelf() {
   return &download_shelf_;
 }
 
-FindBar* TestBrowserWindow::CreateFindBar() {
+std::unique_ptr<FindBar> TestBrowserWindow::CreateFindBar() {
   return NULL;
 }
 
@@ -223,20 +263,40 @@ web_modal::WebContentsModalDialogHost*
   return NULL;
 }
 
-void TestBrowserWindow::ExecuteExtensionCommand(
-    const extensions::Extension* extension,
-    const extensions::Command& command) {}
-
 ExclusiveAccessContext* TestBrowserWindow::GetExclusiveAccessContext() {
   return nullptr;
 }
 
 std::string TestBrowserWindow::GetWorkspace() const {
-  return std::string();
+  return workspace_;
 }
 
 bool TestBrowserWindow::IsVisibleOnAllWorkspaces() const {
-  return false;
+  return visible_on_all_workspaces_;
+}
+
+std::unique_ptr<content::EyeDropper> TestBrowserWindow::OpenEyeDropper(
+    content::RenderFrameHost* frame,
+    content::EyeDropperListener* listener) {
+  return nullptr;
+}
+
+void TestBrowserWindow::SetNativeWindow(gfx::NativeWindow window) {
+  native_window_ = window;
+}
+
+void TestBrowserWindow::SetCloseCallback(base::OnceClosure close_callback) {
+  close_callback_ = std::move(close_callback);
+}
+
+FeaturePromoController* TestBrowserWindow::GetFeaturePromoController() {
+  return feature_promo_controller_.get();
+}
+
+FeaturePromoController* TestBrowserWindow::SetFeaturePromoController(
+    std::unique_ptr<FeaturePromoController> feature_promo_controller) {
+  feature_promo_controller_ = std::move(feature_promo_controller);
+  return feature_promo_controller_.get();
 }
 
 // TestBrowserWindowOwner -----------------------------------------------------

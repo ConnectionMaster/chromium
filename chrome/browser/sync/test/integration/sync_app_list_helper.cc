@@ -42,7 +42,7 @@ void SyncAppListHelper::SetupIfNecessary(SyncTest* test) {
   for (auto* profile : test_->GetAllProfiles()) {
     extensions::ExtensionSystem::Get(profile)->InitForRegularProfile(
         true /* extensions_enabled */);
-    if (test_->use_verifier() && profile == test_->verifier()) {
+    if (test_->UseVerifier() && profile == test_->verifier()) {
       // The default page break items are only installed for first-time users.
       // The verifier() profile doesn't get initialized with remote sync data,
       // and hence the default page breaks are not installed for it. We have to
@@ -95,7 +95,7 @@ bool SyncAppListHelper::AppListMatch(Profile* profile1, Profile* profile2) {
   return res;
 }
 
-bool SyncAppListHelper::AllProfilesHaveSameAppList() {
+bool SyncAppListHelper::AllProfilesHaveSameAppList(size_t* size_out) {
   const auto& profiles = test_->GetAllProfiles();
   for (auto* profile : profiles) {
     if (profile != profiles.front() &&
@@ -108,6 +108,11 @@ bool SyncAppListHelper::AllProfilesHaveSameAppList() {
       PrintAppList(profiles.front());
       return false;
     }
+  }
+  if (size_out) {
+    *size_out = AppListSyncableServiceFactory::GetForProfile(profiles.front())
+                    ->GetModelUpdater()
+                    ->ItemCount();
   }
   return true;
 }

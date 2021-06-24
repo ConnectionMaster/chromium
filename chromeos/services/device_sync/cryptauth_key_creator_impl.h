@@ -13,10 +13,10 @@
 #include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "chromeos/services/device_sync/cryptauth_key.h"
 #include "chromeos/services/device_sync/cryptauth_key_bundle.h"
 #include "chromeos/services/device_sync/cryptauth_key_creator.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -31,10 +31,12 @@ class CryptAuthKeyCreatorImpl : public CryptAuthKeyCreator {
  public:
   class Factory {
    public:
-    static Factory* Get();
+    static std::unique_ptr<CryptAuthKeyCreator> Create();
     static void SetFactoryForTesting(Factory* test_factory);
+
+   protected:
     virtual ~Factory();
-    virtual std::unique_ptr<CryptAuthKeyCreator> BuildInstance();
+    virtual std::unique_ptr<CryptAuthKeyCreator> CreateInstance() = 0;
 
    private:
     static Factory* test_factory_;
@@ -45,16 +47,23 @@ class CryptAuthKeyCreatorImpl : public CryptAuthKeyCreator {
   // CryptAuthKeyCreator:
   void CreateKeys(const base::flat_map<CryptAuthKeyBundle::Name, CreateKeyData>&
                       keys_to_create,
-                  const base::Optional<CryptAuthKey>& server_ephemeral_dh,
+                  const absl::optional<CryptAuthKey>& server_ephemeral_dh,
                   CreateKeysCallback create_keys_callback) override;
 
  private:
   CryptAuthKeyCreatorImpl();
 
-  void OnClientDiffieHellmanGenerated(const std::string& public_key,
+  void OnClientDiffieHellmanGenerated(const CryptAuthKey& server_ephemeral_dh,
+                                      const std::string& public_key,
                                       const std::string& private_key);
   void OnDiffieHellmanHandshakeSecretDerived(const std::string& symmetric_key);
-  void StartKeyCreation();
+
+  // The Diffie-Hellman handshake secret, derived from the ephemeral server and
+  // client keys, is null if no symmetric keys need to be created or if there
+  // was an error deriving the handshake secret.
+  void StartKeyCreation(
+      const absl::optional<CryptAuthKey>& dh_handshake_secret);
+
   void OnAsymmetricKeyPairGenerated(CryptAuthKeyBundle::Name bundle_name,
                                     const std::string& public_key,
                                     const std::string& private_key);
@@ -63,10 +72,9 @@ class CryptAuthKeyCreatorImpl : public CryptAuthKeyCreator {
 
   size_t num_keys_to_create_ = 0;
   base::flat_map<CryptAuthKeyBundle::Name, CreateKeyData> keys_to_create_;
-  base::flat_map<CryptAuthKeyBundle::Name, CryptAuthKey> new_keys_;
-  base::Optional<CryptAuthKey> server_ephemeral_dh_;
-  base::Optional<CryptAuthKey> client_ephemeral_dh_;
-  base::Optional<CryptAuthKey> dh_handshake_secret_;
+  base::flat_map<CryptAuthKeyBundle::Name, absl::optional<CryptAuthKey>>
+      new_keys_;
+  absl::optional<CryptAuthKey> client_ephemeral_dh_;
   CreateKeysCallback create_keys_callback_;
 
   std::unique_ptr<multidevice::SecureMessageDelegate> secure_message_delegate_;

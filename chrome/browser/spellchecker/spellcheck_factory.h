@@ -8,13 +8,10 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/singleton.h"
+#include "build/build_config.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 
 class SpellcheckService;
-
-namespace service_manager {
-class Identity;
-}
 
 // Entry into the SpellCheck system.
 //
@@ -24,9 +21,6 @@ class SpellcheckServiceFactory : public BrowserContextKeyedServiceFactory {
   // Returns the spell check host. This will create the SpellcheckService
   // if it does not already exist. This can return NULL.
   static SpellcheckService* GetForContext(content::BrowserContext* context);
-
-  static SpellcheckService* GetForRenderer(
-      const service_manager::Identity& renderer_identity);
 
   static SpellcheckServiceFactory* GetInstance();
 
@@ -46,6 +40,12 @@ class SpellcheckServiceFactory : public BrowserContextKeyedServiceFactory {
   bool ServiceIsNULLWhileTesting() const override;
 
   FRIEND_TEST_ALL_PREFIXES(SpellcheckServiceBrowserTest, DeleteCorruptedBDICT);
+#if defined(OS_WIN)
+  FRIEND_TEST_ALL_PREFIXES(SpellcheckServiceWindowsHybridBrowserTest,
+                           WindowsHybridSpellcheck);
+  FRIEND_TEST_ALL_PREFIXES(SpellcheckServiceWindowsHybridBrowserTestDelayInit,
+                           WindowsHybridSpellcheckDelayInit);
+#endif  // defined(OS_WIN)
 
   DISALLOW_COPY_AND_ASSIGN(SpellcheckServiceFactory);
 };

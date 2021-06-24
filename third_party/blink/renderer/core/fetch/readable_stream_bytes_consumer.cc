@@ -15,7 +15,6 @@
 #include "third_party/blink/renderer/platform/bindings/scoped_persistent.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "v8/include/v8.h"
 
@@ -41,8 +40,7 @@ class ReadableStreamBytesConsumer::OnFulfilled final : public ScriptFunction {
       return ScriptValue();
     }
     v8::Local<v8::Value> value;
-    if (!V8UnpackIteratorResult(v.GetScriptState(), item.As<v8::Object>(),
-                                &done)
+    if (!V8UnpackIteratorResult(GetScriptState(), item.As<v8::Object>(), &done)
              .ToLocal(&value)) {
       consumer_->OnRejected();
       return ScriptValue();
@@ -59,7 +57,7 @@ class ReadableStreamBytesConsumer::OnFulfilled final : public ScriptFunction {
     return v;
   }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(consumer_);
     ScriptFunction::Trace(visitor);
   }
@@ -85,7 +83,7 @@ class ReadableStreamBytesConsumer::OnRejected final : public ScriptFunction {
     return v;
   }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(consumer_);
     ScriptFunction::Trace(visitor);
   }
@@ -96,9 +94,8 @@ class ReadableStreamBytesConsumer::OnRejected final : public ScriptFunction {
 
 ReadableStreamBytesConsumer::ReadableStreamBytesConsumer(
     ScriptState* script_state,
-    ReadableStream* stream,
-    ExceptionState& exception_state)
-    : read_handle_(stream->GetReadHandle(script_state, exception_state)),
+    ReadableStream* stream)
+    : reader_(stream->GetReaderNotForAuthorCode(script_state)),
       script_state_(script_state) {}
 
 ReadableStreamBytesConsumer::~ReadableStreamBytesConsumer() {}
@@ -114,6 +111,14 @@ BytesConsumer::Result ReadableStreamBytesConsumer::BeginRead(
     return Result::kDone;
 
   if (pending_buffer_) {
+    // The UInt8Array has become detached due to, for example, the site
+    // transferring it away via postMessage().  Since we were in the middle
+    // of reading the array we must error out.
+    if (pending_buffer_->IsDetached()) {
+      SetErrored();
+      return Result::kError;
+    }
+
     DCHECK_LE(pending_offset_, pending_buffer_->length());
     *buffer = reinterpret_cast<const char*>(pending_buffer_->Data()) +
               pending_offset_;
@@ -123,8 +128,17 @@ BytesConsumer::Result ReadableStreamBytesConsumer::BeginRead(
   if (!is_reading_) {
     is_reading_ = true;
     ScriptState::Scope scope(script_state_);
-    DCHECK(read_handle_);
-    read_handle_->Read(script_state_)
+    DCHECK(reader_);
+
+    ExceptionState exception_state(script_state_->GetIsolate(),
+                                   ExceptionState::kUnknownContext, "", "");
+
+    ScriptPromise script_promise =
+        reader_->read(script_state_, exception_state);
+    if (exception_state.HadException())
+      script_promise = ScriptPromise::Reject(script_state_, exception_state);
+
+    script_promise
         .Then(OnFulfilled::CreateFunction(script_state_, this),
               OnRejected::CreateFunction(script_state_, this))
         .MarkAsHandled();
@@ -134,6 +148,15 @@ BytesConsumer::Result ReadableStreamBytesConsumer::BeginRead(
 
 BytesConsumer::Result ReadableStreamBytesConsumer::EndRead(size_t read_size) {
   DCHECK(pending_buffer_);
+
+  // While the buffer size is immutable once constructed, the buffer can be
+  // detached if the site does something like transfer it away using
+  // postMessage().  Since we were in the middle of a read we must error out.
+  if (pending_buffer_->IsDetached()) {
+    SetErrored();
+    return Result::kError;
+  }
+
   DCHECK_LE(pending_offset_ + read_size, pending_buffer_->length());
   pending_offset_ += read_size;
   if (pending_offset_ >= pending_buffer_->length()) {
@@ -158,7 +181,7 @@ void ReadableStreamBytesConsumer::Cancel() {
     return;
   state_ = PublicState::kClosed;
   ClearClient();
-  read_handle_ = nullptr;
+  reader_ = nullptr;
 }
 
 BytesConsumer::PublicState ReadableStreamBytesConsumer::GetPublicState() const {
@@ -169,16 +192,12 @@ BytesConsumer::Error ReadableStreamBytesConsumer::GetError() const {
   return Error("Failed to read from a ReadableStream.");
 }
 
-void ReadableStreamBytesConsumer::Trace(blink::Visitor* visitor) {
-  visitor->Trace(read_handle_);
+void ReadableStreamBytesConsumer::Trace(Visitor* visitor) const {
+  visitor->Trace(reader_);
   visitor->Trace(client_);
   visitor->Trace(pending_buffer_);
   visitor->Trace(script_state_);
   BytesConsumer::Trace(visitor);
-}
-
-void ReadableStreamBytesConsumer::Dispose() {
-  read_handle_ = nullptr;
 }
 
 void ReadableStreamBytesConsumer::OnRead(DOMUint8Array* buffer) {
@@ -203,7 +222,7 @@ void ReadableStreamBytesConsumer::OnReadDone() {
     return;
   DCHECK_EQ(state_, PublicState::kReadableOrWaiting);
   state_ = PublicState::kClosed;
-  read_handle_ = nullptr;
+  reader_ = nullptr;
   Client* client = client_;
   ClearClient();
   if (client)
@@ -217,12 +236,18 @@ void ReadableStreamBytesConsumer::OnRejected() {
   if (state_ == PublicState::kClosed)
     return;
   DCHECK_EQ(state_, PublicState::kReadableOrWaiting);
-  state_ = PublicState::kErrored;
-  read_handle_ = nullptr;
   Client* client = client_;
-  ClearClient();
+  SetErrored();
   if (client)
     client->OnStateChange();
+}
+
+void ReadableStreamBytesConsumer::SetErrored() {
+  DCHECK_NE(state_, PublicState::kClosed);
+  DCHECK_NE(state_, PublicState::kErrored);
+  state_ = PublicState::kErrored;
+  ClearClient();
+  reader_ = nullptr;
 }
 
 }  // namespace blink

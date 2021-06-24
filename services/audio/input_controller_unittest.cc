@@ -8,10 +8,9 @@
 #include <utility>
 
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "media/audio/audio_manager.h"
 #include "media/audio/fake_audio_input_stream.h"
 #include "media/audio/fake_audio_log_factory.h"
@@ -19,17 +18,19 @@
 #include "media/audio/test_audio_thread.h"
 #include "media/base/audio_processing.h"
 #include "media/base/user_input_monitor.h"
-#include "media/webrtc/audio_processor.h"
 #include "media/webrtc/webrtc_switches.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/audio/concurrent_stream_metric_reporter.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+using base::WaitableEvent;
 using ::testing::_;
 using ::testing::AtLeast;
 using ::testing::Exactly;
 using ::testing::InvokeWithoutArgs;
 using ::testing::NotNull;
-using base::WaitableEvent;
+using ::testing::StrictMock;
 
 namespace audio {
 
@@ -84,6 +85,14 @@ class MockUserInputMonitor : public media::UserInputMonitor {
   MOCK_METHOD0(DisableKeyPressMonitoring, void());
 };
 
+class MockInputStreamActivityMonitor : public InputStreamActivityMonitor {
+ public:
+  MockInputStreamActivityMonitor() = default;
+
+  MOCK_METHOD0(OnInputStreamActive, void());
+  MOCK_METHOD0(OnInputStreamInactive, void());
+};
+
 class MockAudioInputStream : public media::AudioInputStream {
  public:
   MockAudioInputStream() {}
@@ -99,75 +108,60 @@ class MockAudioInputStream : public media::AudioInputStream {
   bool IsMuted() override { return false; }
   void SetOutputDeviceForAec(const std::string&) override {}
 
-  MOCK_METHOD0(Open, bool());
+  MOCK_METHOD0(Open, media::AudioInputStream::OpenOutcome());
   MOCK_METHOD1(SetVolume, void(double));
 };
 
 // Parameter: use audio processing.
-class InputControllerTest : public ::testing::TestWithParam<bool> {
+template <base::test::TaskEnvironment::TimeSource TimeSource =
+              base::test::TaskEnvironment::TimeSource::MOCK_TIME>
+class TimeSourceInputControllerTest : public ::testing::Test {
  public:
-  InputControllerTest()
-      : task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME),
+  TimeSourceInputControllerTest()
+      : task_environment_(TimeSource),
         audio_manager_(std::make_unique<media::FakeAudioManager>(
             std::make_unique<media::TestAudioThread>(false),
             &log_factory_)),
         params_(media::AudioParameters::AUDIO_FAKE,
                 kChannelLayout,
                 kSampleRate,
-                kSamplesPerPacket) {
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-    if (GetParam()) {
-      audio_processing_feature_.InitWithFeatures(
-          {features::kWebRtcApmInAudioService}, {});
-    }
-#endif
-  }
+                kSamplesPerPacket) {}
 
-  ~InputControllerTest() override {
+  ~TimeSourceInputControllerTest() override {
     audio_manager_->Shutdown();
     task_environment_.RunUntilIdle();
   }
 
  protected:
   void CreateAudioController() {
-    mojom::AudioProcessingConfigPtr config_ptr;
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-    if (GetParam()) {
-      media::AudioProcessingSettings settings;
-      settings.echo_cancellation = media::EchoCancellationType::kAec3;
-      config_ptr = mojom::AudioProcessingConfigPtr(
-          base::in_place, mojo::MakeRequest(&controls_ptr_),
-          base::UnguessableToken::Create(), settings);
-    }
-#endif
-
     controller_ = InputController::Create(
         audio_manager_.get(), &event_handler_, &sync_writer_,
-        &user_input_monitor_, params_,
-        media::AudioDeviceDescription::kDefaultDeviceId, false,
-        &stream_monitor_coordinator_, std::move(config_ptr));
+        &user_input_monitor_, &mock_stream_activity_monitor_, params_,
+        media::AudioDeviceDescription::kDefaultDeviceId, false);
   }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
-  StreamMonitorCoordinator stream_monitor_coordinator_;
   std::unique_ptr<InputController> controller_;
   media::FakeAudioLogFactory log_factory_;
   std::unique_ptr<media::AudioManager> audio_manager_;
   MockInputControllerEventHandler event_handler_;
   MockSyncWriter sync_writer_;
   MockUserInputMonitor user_input_monitor_;
+  StrictMock<MockInputStreamActivityMonitor> mock_stream_activity_monitor_;
   media::AudioParameters params_;
   MockAudioInputStream stream_;
   base::test::ScopedFeatureList audio_processing_feature_;
-  mojom::AudioProcessorControlsPtr controls_ptr_;
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(InputControllerTest);
+  DISALLOW_COPY_AND_ASSIGN(TimeSourceInputControllerTest);
 };
 
-TEST_P(InputControllerTest, CreateAndCloseWithoutRecording) {
+using SystemTimeInputControllerTest = TimeSourceInputControllerTest<
+    base::test::TaskEnvironment::TimeSource::SYSTEM_TIME>;
+using InputControllerTest = TimeSourceInputControllerTest<>;
+
+TEST_F(InputControllerTest, CreateAndCloseWithoutRecording) {
   EXPECT_CALL(event_handler_, OnCreated(_));
   CreateAudioController();
   task_environment_.RunUntilIdle();
@@ -178,8 +172,13 @@ TEST_P(InputControllerTest, CreateAndCloseWithoutRecording) {
 }
 
 // Test a normal call sequence of create, record and close.
-TEST_P(InputControllerTest, CreateRecordAndClose) {
+// Note: Must use system time as MOCK_TIME does not support the threads created
+// by the FakeAudioInputStream. The callbacks to sync_writer_.Write() are on
+// that thread, and thus we must use SYSTEM_TIME.
+TEST_F(SystemTimeInputControllerTest, CreateRecordAndClose) {
   EXPECT_CALL(event_handler_, OnCreated(_));
+  EXPECT_CALL(mock_stream_activity_monitor_, OnInputStreamActive()).Times(1);
+  EXPECT_CALL(mock_stream_activity_monitor_, OnInputStreamInactive()).Times(1);
   CreateAudioController();
   ASSERT_TRUE(controller_.get());
 
@@ -207,8 +206,26 @@ TEST_P(InputControllerTest, CreateRecordAndClose) {
   task_environment_.RunUntilIdle();
 }
 
-TEST_P(InputControllerTest, CloseTwice) {
+TEST_F(InputControllerTest, RecordTwice) {
   EXPECT_CALL(event_handler_, OnCreated(_));
+  EXPECT_CALL(mock_stream_activity_monitor_, OnInputStreamActive()).Times(1);
+  EXPECT_CALL(mock_stream_activity_monitor_, OnInputStreamInactive()).Times(1);
+  CreateAudioController();
+  ASSERT_TRUE(controller_.get());
+
+  EXPECT_CALL(user_input_monitor_, EnableKeyPressMonitoring());
+  controller_->Record();
+  controller_->Record();
+
+  EXPECT_CALL(user_input_monitor_, DisableKeyPressMonitoring());
+  EXPECT_CALL(sync_writer_, Close());
+  controller_->Close();
+}
+
+TEST_F(InputControllerTest, CloseTwice) {
+  EXPECT_CALL(event_handler_, OnCreated(_));
+  EXPECT_CALL(mock_stream_activity_monitor_, OnInputStreamActive()).Times(1);
+  EXPECT_CALL(mock_stream_activity_monitor_, OnInputStreamInactive()).Times(1);
   CreateAudioController();
   ASSERT_TRUE(controller_.get());
 
@@ -223,7 +240,7 @@ TEST_P(InputControllerTest, CloseTwice) {
 }
 
 // Test that InputController sends OnMute callbacks properly.
-TEST_P(InputControllerTest, TestOnmutedCallbackInitiallyUnmuted) {
+TEST_F(InputControllerTest, TestOnmutedCallbackInitiallyUnmuted) {
   WaitableEvent callback_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                WaitableEvent::InitialState::NOT_SIGNALED);
 
@@ -248,7 +265,7 @@ TEST_P(InputControllerTest, TestOnmutedCallbackInitiallyUnmuted) {
   controller_->Close();
 }
 
-TEST_P(InputControllerTest, TestOnmutedCallbackInitiallyMuted) {
+TEST_F(InputControllerTest, TestOnmutedCallbackInitiallyMuted) {
   WaitableEvent callback_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                WaitableEvent::InitialState::NOT_SIGNALED);
 
@@ -268,11 +285,5 @@ TEST_P(InputControllerTest, TestOnmutedCallbackInitiallyMuted) {
 
   controller_->Close();
 }
-
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-INSTANTIATE_TEST_SUITE_P(, InputControllerTest, ::testing::Bool());
-#else
-INSTANTIATE_TEST_SUITE_P(, InputControllerTest, testing::Values(false));
-#endif
 
 }  // namespace audio

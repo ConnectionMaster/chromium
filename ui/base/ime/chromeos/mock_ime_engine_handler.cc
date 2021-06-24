@@ -21,8 +21,7 @@ MockIMEEngineHandler::MockIMEEngineHandler()
       last_set_surrounding_cursor_pos_(0),
       last_set_surrounding_anchor_pos_(0) {}
 
-MockIMEEngineHandler::~MockIMEEngineHandler() {
-}
+MockIMEEngineHandler::~MockIMEEngineHandler() = default;
 
 void MockIMEEngineHandler::FocusIn(const InputContext& input_context) {
   last_text_input_context_ = input_context;
@@ -46,19 +45,20 @@ void MockIMEEngineHandler::Reset() {
   ++reset_call_count_;
 }
 
-bool MockIMEEngineHandler::IsInterestedInKeyEvent() const {
-  return true;
-}
-
 void MockIMEEngineHandler::ProcessKeyEvent(const ui::KeyEvent& key_event,
                                            KeyEventDoneCallback callback) {
   ++process_key_event_call_count_;
-  last_processed_key_event_.reset(new ui::KeyEvent(key_event));
+  last_processed_key_event_ = std::make_unique<ui::KeyEvent>(key_event);
   last_passed_callback_ = std::move(callback);
 }
 
 void MockIMEEngineHandler::SetCompositionBounds(
     const std::vector<gfx::Rect>& bounds) {}
+
+ui::VirtualKeyboardController*
+MockIMEEngineHandler::GetVirtualKeyboardController() const {
+  return nullptr;
+}
 
 void MockIMEEngineHandler::PropertyActivate(const std::string& property_name) {
   last_activated_property_ = property_name;
@@ -66,7 +66,7 @@ void MockIMEEngineHandler::PropertyActivate(const std::string& property_name) {
 
 void MockIMEEngineHandler::CandidateClicked(uint32_t index) {}
 
-void MockIMEEngineHandler::SetSurroundingText(const std::string& text,
+void MockIMEEngineHandler::SetSurroundingText(const std::u16string& text,
                                               uint32_t cursor_pos,
                                               uint32_t anchor_pos,
                                               uint32_t offset_pos) {

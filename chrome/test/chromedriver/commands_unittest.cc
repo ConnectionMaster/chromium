@@ -19,7 +19,7 @@
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/lock.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/chrome/status.h"
@@ -57,7 +57,7 @@ void OnGetStatus(const Status& status,
 
 TEST(CommandsTest, GetStatus) {
   base::DictionaryValue params;
-  ExecuteGetStatus(params, std::string(), base::Bind(&OnGetStatus));
+  ExecuteGetStatus(params, std::string(), base::BindRepeating(&OnGetStatus));
 }
 
 namespace {
@@ -97,8 +97,8 @@ void OnGetSessions(const Status& status,
   ASSERT_TRUE(sessions->GetDictionary(0, &session1));
   ASSERT_TRUE(sessions->GetDictionary(1, &session2));
 
-  ASSERT_EQ(static_cast<size_t>(2), session1->size());
-  ASSERT_EQ(static_cast<size_t>(2), session2->size());
+  ASSERT_EQ(static_cast<size_t>(2), session1->DictSize());
+  ASSERT_EQ(static_cast<size_t>(2), session2->DictSize());
 
   std::string session1_id;
   std::string session2_id;
@@ -110,8 +110,8 @@ void OnGetSessions(const Status& status,
   ASSERT_TRUE(session1->GetDictionary("capabilities", &session1_capabilities));
   ASSERT_TRUE(session2->GetDictionary("capabilities", &session2_capabilities));
 
-  ASSERT_EQ((size_t) 2, session1_capabilities->size());
-  ASSERT_EQ((size_t) 2, session2_capabilities->size());
+  ASSERT_EQ((size_t)2, session1_capabilities->DictSize());
+  ASSERT_EQ((size_t)2, session2_capabilities->DictSize());
   ASSERT_EQ("id", session1_id);
   ASSERT_EQ("id2", session2_id);
 
@@ -141,18 +141,18 @@ TEST(CommandsTest, GetSessions) {
   SessionThreadMap map;
   Session session("id");
   Session session2("id2");
-  map[session.id] = std::make_unique<base::Thread>("1");
-  map[session2.id] = std::make_unique<base::Thread>("2");
+  map[session.id] = std::make_unique<SessionThreadInfo>("1", true);
+  map[session2.id] = std::make_unique<SessionThreadInfo>("2", true);
 
   int count = 0;
 
-  Command cmd = base::Bind(&ExecuteStubGetSession, &count);
+  Command cmd = base::BindRepeating(&ExecuteStubGetSession, &count);
 
   base::DictionaryValue params;
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::SingleThreadTaskEnvironment task_environment;
 
   ExecuteGetSessions(cmd, &map, params, std::string(),
-                     base::Bind(&OnGetSessions));
+                     base::BindRepeating(&OnGetSessions));
   ASSERT_EQ(2, count);
 }
 
@@ -186,14 +186,15 @@ TEST(CommandsTest, QuitAll) {
   SessionThreadMap map;
   Session session("id");
   Session session2("id2");
-  map[session.id] = std::make_unique<base::Thread>("1");
-  map[session2.id] = std::make_unique<base::Thread>("2");
+  map[session.id] = std::make_unique<SessionThreadInfo>("1", true);
+  map[session2.id] = std::make_unique<SessionThreadInfo>("2", true);
 
   int count = 0;
-  Command cmd = base::Bind(&ExecuteStubQuit, &count);
+  Command cmd = base::BindRepeating(&ExecuteStubQuit, &count);
   base::DictionaryValue params;
-  base::test::ScopedTaskEnvironment scoped_task_environment;
-  ExecuteQuitAll(cmd, &map, params, std::string(), base::Bind(&OnQuitAll));
+  base::test::SingleThreadTaskEnvironment task_environment;
+  ExecuteQuitAll(cmd, &map, params, std::string(),
+                 base::BindRepeating(&OnQuitAll));
   ASSERT_EQ(2, count);
 }
 
@@ -229,25 +230,26 @@ void OnSimpleCommand(base::RunLoop* run_loop,
 
 TEST(CommandsTest, ExecuteSessionCommand) {
   SessionThreadMap map;
-  auto thread = std::make_unique<base::Thread>("1");
+  auto threadInfo = std::make_unique<SessionThreadInfo>("1", true);
+  base::Thread* thread = threadInfo->thread();
   ASSERT_TRUE(thread->Start());
   std::string id("id");
   thread->task_runner()->PostTask(
       FROM_HERE,
       base::BindOnce(&internal::CreateSessionOnSessionThreadForTesting, id));
-  map[id] = std::move(thread);
+  map[id] = std::move(threadInfo);
 
   base::DictionaryValue params;
   params.SetInteger("param", 5);
   base::Value expected_value(6);
-  SessionCommand cmd = base::Bind(
-      &ExecuteSimpleCommand, id, &params, &expected_value);
+  SessionCommand cmd =
+      base::BindRepeating(&ExecuteSimpleCommand, id, &params, &expected_value);
 
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
   ExecuteSessionCommand(
       &map, "cmd", cmd, true /*w3c_standard_command*/, false, params, id,
-      base::Bind(&OnSimpleCommand, &run_loop, id, &expected_value));
+      base::BindRepeating(&OnSimpleCommand, &run_loop, id, &expected_value));
   run_loop.Run();
 }
 
@@ -281,17 +283,17 @@ void OnNoSuchSessionIsOk(const Status& status,
 TEST(CommandsTest, ExecuteSessionCommandOnNoSuchSession) {
   SessionThreadMap map;
   base::DictionaryValue params;
-  ExecuteSessionCommand(&map, "cmd", base::Bind(&ShouldNotBeCalled),
+  ExecuteSessionCommand(&map, "cmd", base::BindRepeating(&ShouldNotBeCalled),
                         true /*w3c_standard_command*/, false, params, "session",
-                        base::Bind(&OnNoSuchSession));
+                        base::BindRepeating(&OnNoSuchSession));
 }
 
 TEST(CommandsTest, ExecuteSessionCommandOnNoSuchSessionWhenItExpectsOk) {
   SessionThreadMap map;
   base::DictionaryValue params;
-  ExecuteSessionCommand(&map, "cmd", base::Bind(&ShouldNotBeCalled),
+  ExecuteSessionCommand(&map, "cmd", base::BindRepeating(&ShouldNotBeCalled),
                         true /*w3c_standard_command*/, true, params, "session",
-                        base::Bind(&OnNoSuchSessionIsOk));
+                        base::BindRepeating(&OnNoSuchSessionIsOk));
 }
 
 namespace {
@@ -310,17 +312,17 @@ void OnNoSuchSessionAndQuit(base::RunLoop* run_loop,
 
 TEST(CommandsTest, ExecuteSessionCommandOnJustDeletedSession) {
   SessionThreadMap map;
-  auto thread = std::make_unique<base::Thread>("1");
-  ASSERT_TRUE(thread->Start());
+  auto threadInfo = std::make_unique<SessionThreadInfo>("1", true);
+  ASSERT_TRUE(threadInfo->thread()->Start());
   std::string id("id");
-  map[id] = std::move(thread);
+  map[id] = std::move(threadInfo);
 
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
-  ExecuteSessionCommand(&map, "cmd", base::Bind(&ShouldNotBeCalled),
-                        true /*w3c_standard_command*/, false,
-                        base::DictionaryValue(), "session",
-                        base::Bind(&OnNoSuchSessionAndQuit, &run_loop));
+  ExecuteSessionCommand(
+      &map, "cmd", base::BindRepeating(&ShouldNotBeCalled),
+      true /*w3c_standard_command*/, false, base::DictionaryValue(), "session",
+      base::BindRepeating(&OnNoSuchSessionAndQuit, &run_loop));
   run_loop.Run();
 }
 
@@ -354,7 +356,7 @@ class FindElementWebView : public StubWebView {
           base::ListValue list;
           list.Append(element1.CreateDeepCopy());
           list.Append(element2.CreateDeepCopy());
-          result_ = list.CreateDeepCopy();
+          result_ = base::Value::ToUniquePtrValue(list.Clone());
         }
         break;
       }
@@ -362,7 +364,7 @@ class FindElementWebView : public StubWebView {
         if (only_one_)
           result_ = std::make_unique<base::Value>();
         else
-          result_.reset(new base::ListValue());
+          result_ = std::make_unique<base::ListValue>();
         break;
       }
     }
@@ -371,7 +373,7 @@ class FindElementWebView : public StubWebView {
 
   void Verify(const std::string& expected_frame,
               const base::ListValue* expected_args,
-              const base::Value* actrual_result) {
+              const base::Value* actual_result) {
     EXPECT_EQ(expected_frame, frame_);
     std::string function;
     if (only_one_)
@@ -381,8 +383,8 @@ class FindElementWebView : public StubWebView {
     EXPECT_EQ(function, function_);
     ASSERT_TRUE(args_.get());
     EXPECT_TRUE(expected_args->Equals(args_.get()));
-    ASSERT_TRUE(actrual_result);
-    EXPECT_TRUE(result_->Equals(actrual_result));
+    ASSERT_TRUE(actual_result);
+    EXPECT_TRUE(result_->Equals(actual_result));
   }
 
   // Overridden from WebView:
@@ -397,7 +399,7 @@ class FindElementWebView : public StubWebView {
         if (only_one_)
           *result = std::make_unique<base::Value>();
         else
-          result->reset(new base::ListValue());
+          *result = std::make_unique<base::ListValue>();
     } else {
       switch (scenario_) {
         case kElementExistsQueryOnce:
@@ -417,7 +419,7 @@ class FindElementWebView : public StubWebView {
       *result = result_->CreateDeepCopy();
       frame_ = frame;
       function_ = function;
-      args_ = args.CreateDeepCopy();
+      args_ = base::Value::ToUniquePtrValue(args.Clone());
     }
     return Status(kOk);
   }
@@ -428,7 +430,7 @@ class FindElementWebView : public StubWebView {
   int current_count_;
   std::string frame_;
   std::string function_;
-  std::unique_ptr<base::ListValue> args_;
+  std::unique_ptr<base::Value> args_;
   std::unique_ptr<base::Value> result_;
 };
 
@@ -701,14 +703,15 @@ void OnSessionCommand(base::RunLoop* run_loop,
 
 TEST(CommandsTest, SuccessNotifyingCommandListeners) {
   SessionThreadMap map;
-  auto thread = std::make_unique<base::Thread>("1");
+  auto threadInfo = std::make_unique<SessionThreadInfo>("1", true);
+  base::Thread* thread = threadInfo->thread();
   ASSERT_TRUE(thread->Start());
   std::string id("id");
   thread->task_runner()->PostTask(
       FROM_HERE,
       base::BindOnce(&internal::CreateSessionOnSessionThreadForTesting, id));
 
-  map[id] = std::move(thread);
+  map[id] = std::move(threadInfo);
 
   base::DictionaryValue params;
   auto listener = std::make_unique<MockCommandListener>();
@@ -716,29 +719,29 @@ TEST(CommandsTest, SuccessNotifyingCommandListeners) {
   // We add |proxy| to the session instead of adding |listener| directly so that
   // after the session is destroyed by ExecuteQuitSessionCommand, we can still
   // verify the listener was called. The session owns and will destroy |proxy|.
-  SessionCommand cmd =
-      base::Bind(&ExecuteAddListenerToSessionCommand, base::Passed(&proxy));
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  SessionCommand cmd = base::BindRepeating(&ExecuteAddListenerToSessionCommand,
+                                           base::Passed(&proxy));
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop_addlistener;
 
   // |CommandListener|s are notified immediately before commands are run.
   // Here, the command adds |listener| to the session, so |listener|
   // should not be notified since it will not have been added yet.
-  ExecuteSessionCommand(&map, "cmd", cmd, true /*w3c_standard_command*/, false,
-                        params, id,
-                        base::Bind(&OnSessionCommand, &run_loop_addlistener));
+  ExecuteSessionCommand(
+      &map, "cmd", cmd, true /*w3c_standard_command*/, false, params, id,
+      base::BindRepeating(&OnSessionCommand, &run_loop_addlistener));
   run_loop_addlistener.Run();
 
   listener->VerifyNotCalled();
 
   base::RunLoop run_loop_testlistener;
-  cmd = base::Bind(&ExecuteQuitSessionCommand);
+  cmd = base::BindRepeating(&ExecuteQuitSessionCommand);
 
   // |listener| was added to |session| by ExecuteAddListenerToSessionCommand
   // and should be notified before the next command, ExecuteQuitSessionCommand.
-  ExecuteSessionCommand(&map, "cmd", cmd, true /*w3c_standard_command*/, false,
-                        params, id,
-                        base::Bind(&OnSessionCommand, &run_loop_testlistener));
+  ExecuteSessionCommand(
+      &map, "cmd", cmd, true /*w3c_standard_command*/, false, params, id,
+      base::BindRepeating(&OnSessionCommand, &run_loop_testlistener));
   run_loop_testlistener.Run();
 
   listener->VerifyCalled();
@@ -782,34 +785,34 @@ void VerifySessionWasDeleted() {
 
 TEST(CommandsTest, ErrorNotifyingCommandListeners) {
   SessionThreadMap map;
-  auto thread = std::make_unique<base::Thread>("1");
-  base::Thread* thread_ptr = thread.get();
+  auto threadInfo = std::make_unique<SessionThreadInfo>("1", true);
+  base::Thread* thread = threadInfo->thread();
   ASSERT_TRUE(thread->Start());
   std::string id("id");
   thread->task_runner()->PostTask(
       FROM_HERE,
       base::BindOnce(&internal::CreateSessionOnSessionThreadForTesting, id));
-  map[id] = std::move(thread);
+  map[id] = std::move(threadInfo);
 
   // In SuccessNotifyingCommandListenersBeforeCommand, we verified BeforeCommand
   // was called before (as opposed to after) command execution. We don't need to
   // verify this again, so we can just add |listener| with PostTask.
   auto listener = std::make_unique<FailingCommandListener>();
-  thread_ptr->task_runner()->PostTask(
+  thread->task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&AddListenerToSessionIfSessionExists,
                                 std::move(listener)));
 
   base::DictionaryValue params;
   // The command should never be executed if BeforeCommand fails for a listener.
-  SessionCommand cmd = base::Bind(&ShouldNotBeCalled);
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  SessionCommand cmd = base::BindRepeating(&ShouldNotBeCalled);
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   ExecuteSessionCommand(
       &map, "cmd", cmd, true /*w3c_standard_command*/, false, params, id,
-      base::Bind(&OnFailBecauseErrorNotifyingListeners, &run_loop));
+      base::BindRepeating(&OnFailBecauseErrorNotifyingListeners, &run_loop));
   run_loop.Run();
 
-  thread_ptr->task_runner()->PostTask(FROM_HERE,
-                                      base::BindOnce(&VerifySessionWasDeleted));
+  thread->task_runner()->PostTask(FROM_HERE,
+                                  base::BindOnce(&VerifySessionWasDeleted));
 }

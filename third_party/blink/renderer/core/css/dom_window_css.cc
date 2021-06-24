@@ -34,6 +34,7 @@
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
 #include "third_party/blink/renderer/core/css/properties/css_property.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
@@ -42,37 +43,37 @@ namespace blink {
 bool DOMWindowCSS::supports(const ExecutionContext* execution_context,
                             const String& property,
                             const String& value) {
-  CSSPropertyID unresolved_property = unresolvedCSSPropertyID(property);
+  CSSPropertyID unresolved_property =
+      UnresolvedCSSPropertyID(execution_context, property);
   if (unresolved_property == CSSPropertyID::kInvalid)
     return false;
   if (unresolved_property == CSSPropertyID::kVariable) {
-    MutableCSSPropertyValueSet* dummy_style =
-        MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
+    auto* dummy_style =
+        MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
     bool is_animation_tainted = false;
     return CSSParser::ParseValueForCustomProperty(
-               dummy_style, "--valid", nullptr, value, false,
+               dummy_style, "--valid", value, false,
                execution_context->GetSecureContextMode(), nullptr,
                is_animation_tainted)
         .did_parse;
   }
 
 #if DCHECK_IS_ON()
-  DCHECK(
-      CSSProperty::Get(resolveCSSPropertyID(unresolved_property)).IsEnabled());
+  DCHECK(CSSProperty::Get(ResolveCSSPropertyID(unresolved_property))
+             .IsWebExposed(execution_context));
 #endif
 
   // This will return false when !important is present
-  MutableCSSPropertyValueSet* dummy_style =
-      MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
+  auto* dummy_style =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
   return CSSParser::ParseValue(dummy_style, unresolved_property, value, false,
-                               execution_context->GetSecureContextMode())
+                               execution_context)
       .did_parse;
 }
 
 bool DOMWindowCSS::supports(const ExecutionContext* execution_context,
                             const String& condition_text) {
-  return CSSParser::ParseSupportsCondition(
-      condition_text, execution_context->GetSecureContextMode());
+  return CSSParser::ParseSupportsCondition(condition_text, execution_context);
 }
 
 String DOMWindowCSS::escape(const String& ident) {

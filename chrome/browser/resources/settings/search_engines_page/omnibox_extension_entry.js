@@ -6,47 +6,83 @@
  * @fileoverview 'settings-omnibox-extension-entry' is a component for showing
  * an omnibox extension with its name and keyword.
  */
-Polymer({
-  is: 'settings-omnibox-extension-entry',
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.m.js';
+import 'chrome://resources/cr_elements/icons.m.js';
+import './search_engine_entry_css.js';
+import '../settings_shared_css.js';
+import '../site_favicon.js';
 
-  properties: {
-    /** @type {!SearchEngine} */
-    engine: Object,
-  },
+import {AnchorAlignment} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.m.js';
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {FocusRowBehavior, FocusRowBehaviorInterface} from 'chrome://resources/js/cr/ui/focus_row_behavior.m.js';
+import {html, mixinBehaviors, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-  behaviors: [cr.ui.FocusRowBehavior],
+import {ExtensionControlBrowserProxy, ExtensionControlBrowserProxyImpl} from '../extension_control_browser_proxy.js';
 
-  /** @private {?settings.ExtensionControlBrowserProxy} */
-  browserProxy_: null,
+import {SearchEngine} from './search_engines_browser_proxy.js';
+
+
+/**
+ * @constructor
+ * @extends {PolymerElement}
+ * @implements {FocusRowBehaviorInterface}
+ */
+const SettingsOmniboxExtensionEntryElementBase =
+    mixinBehaviors([FocusRowBehavior], PolymerElement);
+
+/** @polymer */
+class SettingsOmniboxExtensionEntryElement extends
+    SettingsOmniboxExtensionEntryElementBase {
+  static get is() {
+    return 'settings-omnibox-extension-entry';
+  }
+
+  static get template() {
+    return html`{__html_template__}`;
+  }
+
+  static get properties() {
+    return {
+      /** @type {!SearchEngine} */
+      engine: Object,
+    };
+  }
 
   /** @override */
-  created: function() {
-    this.browserProxy_ =
-        settings.ExtensionControlBrowserProxyImpl.getInstance();
-  },
+  constructor() {
+    super();
+
+    /** @private {!ExtensionControlBrowserProxy} */
+    this.browserProxy_ = ExtensionControlBrowserProxyImpl.getInstance();
+  }
 
   /** @private */
-  onManageTap_: function() {
+  onManageTap_() {
     this.closePopupMenu_();
     this.browserProxy_.manageExtension(this.engine.extension.id);
-  },
+  }
 
   /** @private */
-  onDisableTap_: function() {
+  onDisableTap_() {
     this.closePopupMenu_();
     this.browserProxy_.disableExtension(this.engine.extension.id);
-  },
+  }
 
   /** @private */
-  closePopupMenu_: function() {
-    this.$$('cr-action-menu').close();
-  },
+  closePopupMenu_() {
+    this.shadowRoot.querySelector('cr-action-menu').close();
+  }
 
   /** @private */
-  onDotsTap_: function() {
-    /** @type {!CrActionMenuElement} */ (this.$$('cr-action-menu'))
-        .showAt(assert(this.$$('cr-icon-button')), {
+  onDotsTap_() {
+    /** @type {!CrActionMenuElement} */ (
+        this.shadowRoot.querySelector('cr-action-menu'))
+        .showAt(assert(this.shadowRoot.querySelector('cr-icon-button')), {
           anchorAlignmentY: AnchorAlignment.AFTER_END,
         });
-  },
-});
+  }
+}
+
+customElements.define(
+    SettingsOmniboxExtensionEntryElement.is,
+    SettingsOmniboxExtensionEntryElement);

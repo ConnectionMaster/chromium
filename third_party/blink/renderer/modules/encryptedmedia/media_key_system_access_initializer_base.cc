@@ -4,12 +4,17 @@
 
 #include "third_party/blink/renderer/modules/encryptedmedia/media_key_system_access_initializer_base.h"
 
+#include "base/metrics/histogram_functions.h"
+#include "media/base/eme_constants.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_media_key_system_media_capability.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/modules/encryptedmedia/encrypted_media_utils.h"
-#include "third_party/blink/renderer/platform/histogram.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/network/parsed_content_type.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -17,9 +22,9 @@ namespace blink {
 
 namespace {
 
-static WebVector<WebEncryptedMediaInitDataType> ConvertInitDataTypes(
+static WebVector<media::EmeInitDataType> ConvertInitDataTypes(
     const Vector<String>& init_data_types) {
-  WebVector<WebEncryptedMediaInitDataType> result(init_data_types.size());
+  WebVector<media::EmeInitDataType> result(init_data_types.size());
   for (wtf_size_t i = 0; i < init_data_types.size(); ++i)
     result[i] = EncryptedMediaUtils::ConvertToInitDataType(init_data_types[i]);
   return result;
@@ -31,9 +36,11 @@ ConvertEncryptionScheme(const String& encryption_scheme) {
     return WebMediaKeySystemMediaCapability::EncryptionScheme::kCenc;
   if (encryption_scheme == "cbcs")
     return WebMediaKeySystemMediaCapability::EncryptionScheme::kCbcs;
+  if (encryption_scheme == "cbcs-1-9")
+    return WebMediaKeySystemMediaCapability::EncryptionScheme::kCbcs_1_9;
 
-  NOTREACHED();
-  return WebMediaKeySystemMediaCapability::EncryptionScheme::kNotSpecified;
+  // Any other strings are not recognized (and therefore not supported).
+  return WebMediaKeySystemMediaCapability::EncryptionScheme::kUnrecognized;
 }
 
 static WebVector<WebMediaKeySystemMediaCapability> ConvertCapabilities(
@@ -55,16 +62,11 @@ static WebVector<WebMediaKeySystemMediaCapability> ConvertCapabilities(
       if (type.GetParameters().ParameterCount() == 1u)
         result[i].codecs = type.ParameterValueForName("codecs");
     }
-    result[i].robustness = capabilities[i]->robustness();
 
-    // From
-    // https://github.com/WICG/encrypted-media-encryption-scheme/blob/master/explainer.md
-    // "Asking for "any" encryption scheme is unrealistic. Defining null as
-    // "any scheme" is convenient for backward compatibility, though.
-    // Applications which ignore this feature by leaving encryptionScheme null
-    // get the same user agent behavior they did before this feature existed."
+    result[i].robustness = capabilities[i]->robustness();
     result[i].encryption_scheme =
-        capabilities[i]->hasEncryptionScheme()
+        (capabilities[i]->hasEncryptionScheme() &&
+         !capabilities[i]->encryptionScheme().IsNull())
             ? ConvertEncryptionScheme(capabilities[i]->encryptionScheme())
             : WebMediaKeySystemMediaCapability::EncryptionScheme::kNotSpecified;
   }
@@ -82,11 +84,12 @@ static WebVector<WebEncryptedMediaSessionType> ConvertSessionTypes(
 }  // namespace
 
 MediaKeySystemAccessInitializerBase::MediaKeySystemAccessInitializerBase(
-    ExecutionContext* execution_context,
+    ScriptState* script_state,
     const String& key_system,
     const HeapVector<Member<MediaKeySystemConfiguration>>&
         supported_configurations)
-    : ContextLifecycleObserver(execution_context),
+    : ExecutionContextClient(ExecutionContext::From((script_state))),
+      resolver_(MakeGarbageCollected<ScriptPromiseResolver>(script_state)),
       key_system_(key_system),
       supported_configurations_(supported_configurations.size()) {
   for (wtf_size_t i = 0; i < supported_configurations.size(); ++i) {
@@ -133,7 +136,7 @@ MediaKeySystemAccessInitializerBase::MediaKeySystemAccessInitializerBase(
     supported_configurations_[i] = web_config;
   }
 
-  CheckVideoCapabilityRobustness();
+  GenerateWarningAndReportMetrics();
 }
 
 const SecurityOrigin* MediaKeySystemAccessInitializerBase::GetSecurityOrigin()
@@ -142,9 +145,14 @@ const SecurityOrigin* MediaKeySystemAccessInitializerBase::GetSecurityOrigin()
                                    : nullptr;
 }
 
-void MediaKeySystemAccessInitializerBase::Trace(blink::Visitor* visitor) {
+ScriptPromise MediaKeySystemAccessInitializerBase::Promise() {
+  return resolver_->Promise();
+}
+
+void MediaKeySystemAccessInitializerBase::Trace(Visitor* visitor) const {
+  visitor->Trace(resolver_);
   EncryptedMediaRequest::Trace(visitor);
-  ContextLifecycleObserver::Trace(visitor);
+  ExecutionContextClient::Trace(visitor);
 }
 
 bool MediaKeySystemAccessInitializerBase::IsExecutionContextValid() const {
@@ -155,17 +163,10 @@ bool MediaKeySystemAccessInitializerBase::IsExecutionContextValid() const {
   return context && !context->IsContextDestroyed();
 }
 
-void MediaKeySystemAccessInitializerBase::CheckVideoCapabilityRobustness()
+void MediaKeySystemAccessInitializerBase::GenerateWarningAndReportMetrics()
     const {
   const char kWidevineKeySystem[] = "com.widevine.alpha";
   const char kWidevineHwSecureAllRobustness[] = "HW_SECURE_ALL";
-
-  // Reported to UKM. Existing values must not change and new values must be
-  // added at the end of the list.
-  enum KeySystemForUkm {
-    kClearKey = 0,
-    kWidevine = 1,
-  };
 
   // Only check for widevine key system for now.
   if (KeySystem() != kWidevineKeySystem)
@@ -193,40 +194,40 @@ void MediaKeySystemAccessInitializerBase::CheckVideoCapabilityRobustness()
   }
 
   if (has_video_capabilities) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(
-        EnumerationHistogram, empty_robustness_histogram,
-        ("Media.EME.Widevine.VideoCapability.HasEmptyRobustness", 2));
-    empty_robustness_histogram.Count(has_empty_robustness);
+    base::UmaHistogramBoolean(
+        "Media.EME.Widevine.VideoCapability.HasEmptyRobustness",
+        has_empty_robustness);
   }
 
   if (has_empty_robustness) {
     // TODO(xhwang): Write a best practice doc explaining details about risks of
     // using an empty robustness here, and provide the link to the doc in this
     // message. See http://crbug.com/720013
-    GetExecutionContext()->AddConsoleMessage(ConsoleMessage::Create(
-        mojom::ConsoleMessageSource::kJavaScript,
-        mojom::ConsoleMessageLevel::kWarning,
-        "It is recommended that a robustness level be specified. Not "
-        "specifying the robustness level could result in unexpected "
-        "behavior."));
+    GetExecutionContext()->AddConsoleMessage(
+        MakeGarbageCollected<ConsoleMessage>(
+            mojom::ConsoleMessageSource::kJavaScript,
+            mojom::ConsoleMessageLevel::kWarning,
+            "It is recommended that a robustness level be specified. Not "
+            "specifying the robustness level could result in unexpected "
+            "behavior."));
   }
 
-  if (!IsExecutionContextValid())
+  if (!DomWindow())
     return;
 
-  Document* document = To<Document>(GetExecutionContext());
-  if (!document)
-    return;
-
+  LocalFrame* frame = DomWindow()->GetFrame();
   ukm::builders::Media_EME_RequestMediaKeySystemAccess builder(
-      document->UkmSourceID());
+      DomWindow()->UkmSourceID());
   builder.SetKeySystem(KeySystemForUkm::kWidevine);
+  builder.SetIsAdFrame(static_cast<int>(frame->IsAdSubframe()));
+  builder.SetIsCrossOrigin(static_cast<int>(frame->IsCrossOriginToMainFrame()));
+  builder.SetIsTopFrame(static_cast<int>(frame->IsMainFrame()));
   builder.SetVideoCapabilities(static_cast<int>(has_video_capabilities));
   builder.SetVideoCapabilities_HasEmptyRobustness(
       static_cast<int>(has_empty_robustness));
   builder.SetVideoCapabilities_HasHwSecureAllRobustness(
       static_cast<int>(has_hw_secure_all));
-  builder.Record(document->UkmRecorder());
+  builder.Record(DomWindow()->UkmRecorder());
 }
 
 }  // namespace blink

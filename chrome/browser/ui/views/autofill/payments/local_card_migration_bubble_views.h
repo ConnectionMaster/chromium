@@ -6,9 +6,10 @@
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_PAYMENTS_LOCAL_CARD_MIGRATION_BUBBLE_VIEWS_H_
 
 #include "base/macros.h"
-#include "chrome/browser/ui/autofill/payments/local_card_migration_bubble.h"
+#include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "components/autofill/core/browser/ui/payments/local_card_migration_bubble_controller.h"
+#include "components/autofill/core/browser/ui/payments/payments_bubble_closed_reasons.h"
 
 namespace content {
 class WebContents;
@@ -18,41 +19,40 @@ namespace autofill {
 
 // Class responsible for showing the local card migration bubble which is
 // the entry point of the entire migration flow.
-class LocalCardMigrationBubbleViews : public LocalCardMigrationBubble,
+class LocalCardMigrationBubbleViews : public AutofillBubbleBase,
                                       public LocationBarBubbleDelegateView {
  public:
   // The |controller| is lazily initialized in ChromeAutofillClient and there
   // should be only one controller per tab after the initialization. It should
   // live even when bubble is gone.
   LocalCardMigrationBubbleViews(views::View* anchor_view,
-                                const gfx::Point& anchor_point,
                                 content::WebContents* web_contents,
                                 LocalCardMigrationBubbleController* controller);
 
   void Show(DisplayReason reason);
 
-  // LocalCardMigrationBubble:
+  // AutofillBubbleBase:
   void Hide() override;
 
   // LocationBarBubbleDelegateView:
-  bool Accept() override;
-  bool Cancel() override;
-  bool Close() override;
-  int GetDialogButtons() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  gfx::Size CalculatePreferredSize() const override;
   void AddedToWidget() override;
-  bool ShouldShowCloseButton() const override;
-  base::string16 GetWindowTitle() const override;
+  std::u16string GetWindowTitle() const override;
   void WindowClosing() override;
+  void OnWidgetClosing(views::Widget* widget) override;
 
  private:
   friend class LocalCardMigrationBrowserTest;
 
   ~LocalCardMigrationBubbleViews() override;
 
+  void OnDialogAccepted();
+  void OnDialogCancelled();
+
   // views::BubbleDialogDelegateView:
   void Init() override;
+
+  PaymentsBubbleClosedReason closed_reason_ =
+      PaymentsBubbleClosedReason::kUnknown;
 
   LocalCardMigrationBubbleController* controller_;
 

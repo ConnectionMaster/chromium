@@ -19,15 +19,14 @@
 
 #include "third_party/blink/renderer/core/svg/svg_fe_distant_light_element.h"
 
+#include "third_party/blink/renderer/core/svg/svg_animated_number.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/graphics/filters/distant_light_source.h"
 
 namespace blink {
 
-inline SVGFEDistantLightElement::SVGFEDistantLightElement(Document& document)
+SVGFEDistantLightElement::SVGFEDistantLightElement(Document& document)
     : SVGFELightElement(svg_names::kFEDistantLightTag, document) {}
-
-DEFINE_NODE_FACTORY(SVGFEDistantLightElement)
 
 scoped_refptr<LightSource> SVGFEDistantLightElement::GetLightSource(
     Filter* filter) const {

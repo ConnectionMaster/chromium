@@ -10,15 +10,16 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/window_controller_list.h"
 #include "chrome/browser/extensions/window_controller_list_observer.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 
-#if defined(TOOLKIT_VIEWS) && !defined(OS_MACOSX)
+#if defined(TOOLKIT_VIEWS) && !defined(OS_MAC)
 #include "ui/views/focus/widget_focus_manager.h"  // nogncheck
 #endif
 
@@ -32,7 +33,6 @@ namespace extensions {
 
 class AppWindow;
 class AppWindowController;
-class WindowControllerList;
 
 // The WindowsEventRouter sends chrome.windows.* events to listeners
 // inside extension process renderers. The router listens to *all* events,
@@ -40,7 +40,7 @@ class WindowControllerList;
 // same profile.
 class WindowsEventRouter : public AppWindowRegistry::Observer,
                            public WindowControllerListObserver,
-#if defined(TOOLKIT_VIEWS) && !defined(OS_MACOSX)
+#if defined(TOOLKIT_VIEWS) && !defined(OS_MAC)
                            public views::WidgetFocusChangeListener,
 #endif
                            public content::NotificationObserver {
@@ -60,8 +60,9 @@ class WindowsEventRouter : public AppWindowRegistry::Observer,
   // WindowControllerListObserver methods:
   void OnWindowControllerAdded(WindowController* window_controller) override;
   void OnWindowControllerRemoved(WindowController* window) override;
+  void OnWindowBoundsChanged(WindowController* window_controller) override;
 
-#if defined(TOOLKIT_VIEWS) && !defined(OS_MACOSX)
+#if defined(TOOLKIT_VIEWS) && !defined(OS_MAC)
   void OnNativeFocusChanged(gfx::NativeView focused_now) override;
 #endif
 
@@ -96,12 +97,12 @@ class WindowsEventRouter : public AppWindowRegistry::Observer,
   AppWindowMap app_windows_;
 
   // Observed AppWindowRegistry.
-  ScopedObserver<AppWindowRegistry, AppWindowRegistry::Observer>
-      observed_app_registry_;
+  base::ScopedObservation<AppWindowRegistry, AppWindowRegistry::Observer>
+      observed_app_registry_{this};
 
   // Observed WindowControllerList.
-  ScopedObserver<WindowControllerList, WindowControllerListObserver>
-      observed_controller_list_;
+  base::ScopedObservation<WindowControllerList, WindowControllerListObserver>
+      observed_controller_list_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WindowsEventRouter);
 };

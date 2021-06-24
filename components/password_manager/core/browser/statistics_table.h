@@ -25,7 +25,7 @@ struct InteractionsStats {
   GURL origin_domain;
 
   // The value of the username.
-  base::string16 username_value;
+  std::u16string username_value;
 
   // Number of times the user dismissed the bubble.
   int dismissal_count = 0;
@@ -35,11 +35,6 @@ struct InteractionsStats {
 };
 
 bool operator==(const InteractionsStats& lhs, const InteractionsStats& rhs);
-
-// Returns an element from |stats| with |username| or nullptr if not found.
-const InteractionsStats* FindStatsByUsername(
-    const std::vector<InteractionsStats>& stats,
-    const base::string16& username);
 
 // Represents the 'stats' table in the Login Database.
 class StatisticsTable {
@@ -76,12 +71,15 @@ class StatisticsTable {
   // only statistics for matching origins are removed. Returns true if the SQL
   // completed successfully.
   bool RemoveStatsByOriginAndTime(
-      const base::Callback<bool(const GURL&)>& origin_filter,
+      const base::RepeatingCallback<bool(const GURL&)>& origin_filter,
       base::Time delete_begin,
       base::Time delete_end);
 
+  // Returns the number of rows (origin/username pairs) in the table.
+  int GetNumAccounts();
+
  private:
-  sql::Database* db_;
+  sql::Database* db_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(StatisticsTable);
 };

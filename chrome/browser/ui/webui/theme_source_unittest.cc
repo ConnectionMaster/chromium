@@ -7,12 +7,15 @@
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
+#include "base/test/bind.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/theme_resources.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
+#include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 class WebUISourcesTest : public testing::Test {
@@ -25,23 +28,29 @@ class WebUISourcesTest : public testing::Test {
 
   void StartDataRequest(const std::string& source) {
     theme_source()->StartDataRequest(
-        source,
-        content::ResourceRequestInfo::WebContentsGetter(),
-        callback_);
+        GURL(base::StrCat({content::kChromeUIScheme, "://",
+                           chrome::kChromeUIThemeHost, "/", source})),
+        test_web_contents_getter_,
+        base::BindOnce(&WebUISourcesTest::SendResponse,
+                       base::Unretained(this)));
   }
 
   size_t result_data_size_;
 
  private:
   void SetUp() override {
-    profile_.reset(new TestingProfile());
-    theme_source_.reset(new ThemeSource(profile_.get()));
-    callback_ = base::Bind(&WebUISourcesTest::SendResponse,
-                           base::Unretained(this));
+    profile_ = std::make_unique<TestingProfile>();
+    theme_source_ = std::make_unique<ThemeSource>(profile_.get());
+    test_web_contents_ = content::WebContentsTester::CreateTestWebContents(
+        profile_.get(), nullptr);
+    test_web_contents_getter_ =
+        base::BindLambdaForTesting([&] { return test_web_contents_.get(); });
   }
 
   void TearDown() override {
     theme_source_.reset();
+    test_web_contents_.reset();
+    test_web_contents_getter_ = content::WebContents::Getter();
     profile_.reset();
   }
 
@@ -49,12 +58,12 @@ class WebUISourcesTest : public testing::Test {
     result_data_size_ = data ? data->size() : 0;
   }
 
-  content::URLDataSource::GotDataCallback callback_;
-
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<ThemeSource> theme_source_;
+  std::unique_ptr<content::WebContents> test_web_contents_;
+  content::WebContents::Getter test_web_contents_getter_;
 };
 
 TEST_F(WebUISourcesTest, ThemeSourceMimeTypes) {
@@ -95,4 +104,16 @@ TEST_F(WebUISourcesTest, ThemeSourceCSS) {
   StartDataRequest("css/WRONGURL");
   EXPECT_EQ(result_data_size_, empty_size);
 #endif
+}
+
+TEST_F(WebUISourcesTest, ThemeAllowedOrigin) {
+  EXPECT_EQ(
+      theme_source()->GetAccessControlAllowOriginForOrigin("chrome://settings"),
+      "chrome://settings");
+  EXPECT_EQ(theme_source()->GetAccessControlAllowOriginForOrigin(
+                "chrome-extensions://some-id"),
+            "");
+  EXPECT_EQ(
+      theme_source()->GetAccessControlAllowOriginForOrigin("http://google.com"),
+      "");
 }

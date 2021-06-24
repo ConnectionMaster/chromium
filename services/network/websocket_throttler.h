@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace network {
 
@@ -96,15 +97,13 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocketPerProcessThrottler final {
 
   static constexpr int kMaxPendingWebSocketConnections = 255;
 
-  base::WeakPtrFactory<WebSocketPerProcessThrottler> weak_factory_;
+  base::WeakPtrFactory<WebSocketPerProcessThrottler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WebSocketPerProcessThrottler);
 };
 
 // This class is for throttling WebSocket connections. WebSocketThrottler is
 // a set of per-renderer throttlers.
-// This class is only used in the network service. content::WebSocketManager
-// uses WebSocketPerProcessThrottler directly.
 class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocketThrottler final {
  public:
   using PendingConnection = WebSocketPerProcessThrottler::PendingConnection;
@@ -119,8 +118,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocketThrottler final {
   base::TimeDelta CalculateDelay(int process_id) const;
 
   // Returns a pending connection for |process_id|. This function can be called
-  // only when |HasTooManyPendingConnections(process_id)| is false.
-  PendingConnection IssuePendingConnectionTracker(int process_id);
+  // only when |HasTooManyPendingConnections(process_id)| is false. May return
+  // |absl::nullopt| if |process_id| is not throttled.
+  absl::optional<PendingConnection> IssuePendingConnectionTracker(
+      int process_id);
 
   size_t GetSizeForTesting() const { return per_process_throttlers_.size(); }
 

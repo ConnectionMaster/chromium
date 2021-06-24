@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_API_LINE_LAYOUT_BOX_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_API_LINE_LAYOUT_BOX_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_box_model.h"
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
@@ -29,6 +30,9 @@ class LineLayoutBox : public LineLayoutBoxModel {
   LineLayoutBox() = default;
 
   LayoutPoint Location() const { return ToBox()->Location(); }
+  PhysicalOffset PhysicalLocation() const {
+    return ToBox()->PhysicalLocation();
+  }
 
   LayoutSize Size() const { return ToBox()->Size(); }
 
@@ -44,26 +48,12 @@ class LineLayoutBox : public LineLayoutBoxModel {
     return ToBox()->FlipForWritingMode(unit);
   }
 
-  void FlipForWritingMode(FloatRect& rect) const {
-    ToBox()->FlipForWritingMode(rect);
-  }
-
-  FloatPoint FlipForWritingMode(const FloatPoint& point) const {
-    return ToBox()->FlipForWritingMode(point);
-  }
-
   void FlipForWritingMode(LayoutRect& rect) const {
-    ToBox()->FlipForWritingMode(rect);
+    ToBox()->DeprecatedFlipForWritingMode(rect);
   }
 
   LayoutPoint FlipForWritingMode(const LayoutPoint& point) const {
-    return ToBox()->FlipForWritingMode(point);
-  }
-
-  LayoutPoint FlipForWritingModeForChild(const LineLayoutBox& child,
-                                         LayoutPoint child_point) const {
-    return ToBox()->FlipForWritingModeForChild(
-        ToLayoutBox(child.GetLayoutObject()), child_point);
+    return ToBox()->DeprecatedFlipForWritingMode(point);
   }
 
   void MoveWithEdgeOfInlineContainerIfNecessary(bool is_horizontal) {
@@ -89,7 +79,7 @@ class LineLayoutBox : public LineLayoutBoxModel {
 
   void SetSize(const LayoutSize& size) { return ToBox()->SetSize(size); }
 
-  IntSize ScrolledContentOffset() const {
+  PhysicalOffset ScrolledContentOffset() const {
     return ToBox()->ScrolledContentOffset();
   }
 
@@ -101,7 +91,7 @@ class LineLayoutBox : public LineLayoutBoxModel {
     return ToBox()->SetInlineBoxWrapper(box);
   }
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
   void ShowLineTreeAndMark(const InlineBox* marked_box1,
                            const char* marked_label1) const {
@@ -112,9 +102,9 @@ class LineLayoutBox : public LineLayoutBoxModel {
 #endif
 
  private:
-  LayoutBox* ToBox() { return ToLayoutBox(GetLayoutObject()); }
+  LayoutBox* ToBox() { return To<LayoutBox>(GetLayoutObject()); }
 
-  const LayoutBox* ToBox() const { return ToLayoutBox(GetLayoutObject()); }
+  const LayoutBox* ToBox() const { return To<LayoutBox>(GetLayoutObject()); }
 };
 
 inline LineLayoutBox LineLayoutItem::ContainingBlock() const {

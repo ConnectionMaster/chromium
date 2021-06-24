@@ -4,12 +4,14 @@
 
 #include "extensions/browser/api/extensions_api_client.h"
 
-#include "base/logging.h"
+#include "build/chromeos_buildflags.h"
 #include "extensions/browser/api/device_permissions_prompt.h"
+#include "extensions/browser/api/system_display/display_info_provider.h"
 #include "extensions/browser/api/virtual_keyboard_private/virtual_keyboard_delegate.h"
 #include "extensions/browser/guest_view/extensions_guest_view_manager_delegate.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest_delegate.h"
 #include "extensions/browser/guest_view/web_view/web_view_permission_helper_delegate.h"
+#include "extensions/browser/supervised_user_extensions_delegate.h"
 
 namespace extensions {
 class AppViewGuestDelegate;
@@ -43,6 +45,7 @@ bool ExtensionsAPIClient::ShouldHideResponseHeader(
 }
 
 bool ExtensionsAPIClient::ShouldHideBrowserNetworkRequest(
+    content::BrowserContext* context,
     const WebRequestInfo& request) const {
   return false;
 }
@@ -51,6 +54,15 @@ void ExtensionsAPIClient::NotifyWebRequestWithheld(
     int render_process_id,
     int render_frame_id,
     const ExtensionId& extension_id) {}
+
+void ExtensionsAPIClient::UpdateActionCount(content::BrowserContext* context,
+                                            const ExtensionId& extension_id,
+                                            int tab_id,
+                                            int action_count,
+                                            bool clear_badge_text) {}
+
+void ExtensionsAPIClient::ClearActionCount(content::BrowserContext* context,
+                                           const Extension& extension) {}
 
 AppViewGuestDelegate* ExtensionsAPIClient::CreateAppViewGuestDelegate() const {
   return NULL;
@@ -71,7 +83,7 @@ ExtensionsAPIClient::CreateGuestViewManagerDelegate(
 std::unique_ptr<MimeHandlerViewGuestDelegate>
 ExtensionsAPIClient::CreateMimeHandlerViewGuestDelegate(
     MimeHandlerViewGuest* guest) const {
-  return std::unique_ptr<MimeHandlerViewGuestDelegate>();
+  return nullptr;
 }
 
 WebViewGuestDelegate* ExtensionsAPIClient::CreateWebViewGuestDelegate(
@@ -98,6 +110,12 @@ ExtensionsAPIClient::CreateDevicePermissionsPrompt(
   return nullptr;
 }
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+bool ExtensionsAPIClient::ShouldAllowDetachingUsb(int vid, int pid) const {
+  return false;
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
 std::unique_ptr<VirtualKeyboardDelegate>
 ExtensionsAPIClient::CreateVirtualKeyboardDelegate(
     content::BrowserContext* context) const {
@@ -109,12 +127,17 @@ ManagementAPIDelegate* ExtensionsAPIClient::CreateManagementAPIDelegate()
   return nullptr;
 }
 
-MetricsPrivateDelegate* ExtensionsAPIClient::GetMetricsPrivateDelegate() {
+std::unique_ptr<SupervisedUserExtensionsDelegate>
+ExtensionsAPIClient::CreateSupervisedUserExtensionsDelegate() const {
   return nullptr;
 }
 
-NetworkingCastPrivateDelegate*
-ExtensionsAPIClient::GetNetworkingCastPrivateDelegate() {
+std::unique_ptr<DisplayInfoProvider>
+ExtensionsAPIClient::CreateDisplayInfoProvider() const {
+  return nullptr;
+}
+
+MetricsPrivateDelegate* ExtensionsAPIClient::GetMetricsPrivateDelegate() {
   return nullptr;
 }
 
@@ -130,7 +153,7 @@ FeedbackPrivateDelegate* ExtensionsAPIClient::GetFeedbackPrivateDelegate() {
   return nullptr;
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 NonNativeFileSystemDelegate*
 ExtensionsAPIClient::GetNonNativeFileSystemDelegate() {
   return nullptr;
@@ -140,13 +163,25 @@ MediaPerceptionAPIDelegate*
 ExtensionsAPIClient::GetMediaPerceptionAPIDelegate() {
   return nullptr;
 }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
 void ExtensionsAPIClient::SaveImageDataToClipboard(
     const std::vector<char>& image_data,
     api::clipboard::ImageType type,
     AdditionalDataItemList additional_items,
-    const base::Closure& success_callback,
-    const base::Callback<void(const std::string&)>& error_callback) {}
-#endif
+    base::OnceClosure success_callback,
+    base::OnceCallback<void(const std::string&)> error_callback) {}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+
+AutomationInternalApiDelegate*
+ExtensionsAPIClient::GetAutomationInternalApiDelegate() {
+  return nullptr;
+}
+
+std::vector<KeyedServiceBaseFactory*>
+ExtensionsAPIClient::GetFactoryDependencies() {
+  return {};
+}
 
 }  // namespace extensions

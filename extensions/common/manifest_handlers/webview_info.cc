@@ -112,7 +112,7 @@ WebviewHandler::WebviewHandler() {
 WebviewHandler::~WebviewHandler() {
 }
 
-bool WebviewHandler::Parse(Extension* extension, base::string16* error) {
+bool WebviewHandler::Parse(Extension* extension, std::u16string* error) {
   std::unique_ptr<WebviewInfo> info(new WebviewInfo(extension->id()));
 
   const base::Value* dict_value = nullptr;
@@ -130,21 +130,20 @@ bool WebviewHandler::Parse(Extension* extension, base::string16* error) {
   }
 
   // The partition list must have at least one entry.
-  const base::Value::ListStorage& partition_list_storage =
-      partition_list->GetList();
-  if (partition_list_storage.empty()) {
+  base::Value::ConstListView partition_list_view = partition_list->GetList();
+  if (partition_list_view.empty()) {
     *error = base::ASCIIToUTF16(errors::kInvalidWebviewPartitionsList);
     return false;
   }
 
-  for (size_t i = 0; i < partition_list_storage.size(); ++i) {
-    if (!partition_list_storage[i].is_dict()) {
+  for (size_t i = 0; i < partition_list_view.size(); ++i) {
+    if (!partition_list_view[i].is_dict()) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
           errors::kInvalidWebviewPartition, base::NumberToString(i));
       return false;
     }
 
-    const base::Value* webview_name = partition_list_storage[i].FindKeyOfType(
+    const base::Value* webview_name = partition_list_view[i].FindKeyOfType(
         keys::kWebviewName, base::Value::Type::STRING);
     if (webview_name == nullptr) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
@@ -153,7 +152,7 @@ bool WebviewHandler::Parse(Extension* extension, base::string16* error) {
     }
     const std::string& partition_pattern = webview_name->GetString();
 
-    const base::Value* url_list = partition_list_storage[i].FindKeyOfType(
+    const base::Value* url_list = partition_list_view[i].FindKeyOfType(
         keys::kWebviewAccessibleResources, base::Value::Type::LIST);
     if (url_list == nullptr) {
       *error = base::ASCIIToUTF16(
@@ -162,8 +161,8 @@ bool WebviewHandler::Parse(Extension* extension, base::string16* error) {
     }
 
     // The URL list should have at least one entry.
-    const base::Value::ListStorage& url_list_storage = url_list->GetList();
-    if (url_list_storage.empty()) {
+    base::Value::ConstListView url_list_view = url_list->GetList();
+    if (url_list_view.empty()) {
       *error = base::ASCIIToUTF16(
           errors::kInvalidWebviewAccessibleResourcesList);
       return false;
@@ -171,17 +170,43 @@ bool WebviewHandler::Parse(Extension* extension, base::string16* error) {
 
     auto partition_item = std::make_unique<PartitionItem>(partition_pattern);
 
-    for (size_t i = 0; i < url_list_storage.size(); ++i) {
-      if (!url_list_storage[i].is_string()) {
+    for (size_t i = 0; i < url_list_view.size(); ++i) {
+      if (!url_list_view[i].is_string()) {
         *error = ErrorUtils::FormatErrorMessageUTF16(
             errors::kInvalidWebviewAccessibleResource, base::NumberToString(i));
         return false;
       }
-      partition_item->AddPattern(
-          URLPattern(URLPattern::SCHEME_EXTENSION,
-                     Extension::GetResourceURL(extension->url(),
-                                               url_list_storage[i].GetString())
-                         .spec()));
+
+      GURL pattern_url = Extension::GetResourceURL(
+          extension->url(), url_list_view[i].GetString());
+      // If passed a non-relative URL (like http://example.com),
+      // Extension::GetResourceURL() will return that URL directly. (See
+      // https://crbug.com/1135236). Check if this happened by comparing the
+      // host.
+      if (pattern_url.host_piece() != extension->id()) {
+        // NOTE: Warning instead of error because there are existing apps that
+        // have this bug, and we don't want to hard-error on them.
+        // https://crbug.com/856948.
+        std::string warning = ErrorUtils::FormatErrorMessage(
+            errors::kInvalidWebviewAccessibleResource, base::NumberToString(i));
+        extension->AddInstallWarning(
+            InstallWarning(std::move(warning), keys::kWebview));
+        continue;
+      }
+      URLPattern pattern(URLPattern::SCHEME_EXTENSION);
+      if (pattern.Parse(pattern_url.spec()) !=
+          URLPattern::ParseResult::kSuccess) {
+        // NOTE: Warning instead of error because there are existing apps that
+        // have this bug, and we don't want to hard-error on them.
+        // https://crbug.com/856948.
+        std::string warning = ErrorUtils::FormatErrorMessage(
+            errors::kInvalidWebviewAccessibleResource, base::NumberToString(i));
+        extension->AddInstallWarning(
+            InstallWarning(std::move(warning), keys::kWebview));
+        continue;
+      }
+
+      partition_item->AddPattern(std::move(pattern));
     }
     info->AddPartitionItem(std::move(partition_item));
   }

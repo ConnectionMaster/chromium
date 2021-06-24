@@ -4,18 +4,23 @@
 
 #include "base/bind.h"
 #include "base/run_loop.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/feedback/feedback_dialog_utils.h"
+#include "chrome/browser/feedback/feedback_uploader_chrome.h"
+#include "chrome/browser/feedback/feedback_uploader_factory_chrome.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/api/feedback_private/feedback_private_api.h"
@@ -41,7 +46,7 @@ class FeedbackTest : public ExtensionBrowserTest {
  public:
   void SetUp() override {
     extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
-    InProcessBrowserTest::SetUp();
+    ExtensionBrowserTest::SetUp();
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -58,12 +63,14 @@ class FeedbackTest : public ExtensionBrowserTest {
 
   void StartFeedbackUI(FeedbackFlow flow,
                        const std::string& extra_diagnostics,
-                       bool from_assistant = false) {
-    base::Closure callback = base::Bind(&StopMessageLoopCallback);
+                       bool from_assistant = false,
+                       bool include_bluetooth_logs = false) {
+    base::OnceClosure callback = base::BindOnce(&StopMessageLoopCallback);
     extensions::FeedbackPrivateGetStringsFunction::set_test_callback(&callback);
-    InvokeFeedbackUI(flow, extra_diagnostics, from_assistant);
+    InvokeFeedbackUI(flow, extra_diagnostics, from_assistant,
+                     include_bluetooth_logs);
     content::RunMessageLoop();
-    extensions::FeedbackPrivateGetStringsFunction::set_test_callback(NULL);
+    extensions::FeedbackPrivateGetStringsFunction::set_test_callback(nullptr);
   }
 
   void VerifyFeedbackAppLaunch() {
@@ -79,24 +86,31 @@ class FeedbackTest : public ExtensionBrowserTest {
  private:
   void InvokeFeedbackUI(FeedbackFlow flow,
                         const std::string& extra_diagnostics,
-                        bool from_assistant) {
+                        bool from_assistant,
+                        bool include_bluetooth_logs) {
     extensions::FeedbackPrivateAPI* api =
         extensions::FeedbackPrivateAPI::GetFactoryInstance()->Get(
             browser()->profile());
-    api->RequestFeedbackForFlow(
-        "Test description", "Test placeholder", "Test tag", extra_diagnostics,
-        GURL("http://www.test.com"), flow, from_assistant);
+    api->RequestFeedbackForFlow("Test description", "Test placeholder",
+                                "Test tag", extra_diagnostics,
+                                GURL("http://www.test.com"), flow,
+                                from_assistant, include_bluetooth_logs);
   }
 };
 
-// Disabled for ASan due to flakiness on Mac ASan 64 Tests (1).
-// See crbug.com/757243.
-#if defined(ADDRESS_SANITIZER)
-#define MAYBE_ShowFeedback DISABLED_ShowFeedback
-#else
-#define MAYBE_ShowFeedback ShowFeedback
-#endif
-IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ShowFeedback) {
+class TestFeedbackUploaderDelegate
+    : public feedback::FeedbackUploaderChrome::Delegate {
+ public:
+  explicit TestFeedbackUploaderDelegate(base::RunLoop* quit_on_dispatch)
+      : quit_on_dispatch_(quit_on_dispatch) {}
+
+  void OnStartDispatchingReport() override { quit_on_dispatch_->Quit(); }
+
+ private:
+  base::RunLoop* quit_on_dispatch_;
+};
+
+IN_PROC_BROWSER_TEST_F(FeedbackTest, ShowFeedback) {
   WaitForExtensionViewsToLoad();
 
   ASSERT_TRUE(IsFeedbackAppAvailable());
@@ -104,14 +118,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ShowFeedback) {
   VerifyFeedbackAppLaunch();
 }
 
-// Disabled for ASan due to flakiness on Mac ASan 64 Tests (1).
-// See crbug.com/757243.
-#if defined(ADDRESS_SANITIZER)
-#define MAYBE_ShowLoginFeedback DISABLED_ShowLoginFeedback
-#else
-#define MAYBE_ShowLoginFeedback ShowLoginFeedback
-#endif
-IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ShowLoginFeedback) {
+IN_PROC_BROWSER_TEST_F(FeedbackTest, ShowLoginFeedback) {
   WaitForExtensionViewsToLoad();
 
   ASSERT_TRUE(IsFeedbackAppAvailable());
@@ -133,16 +140,8 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ShowLoginFeedback) {
   EXPECT_TRUE(bool_result);
 }
 
-// Disabled for ASan due to flakiness on Mac ASan 64 Tests (1).
-// See crbug.com/757243.
-#if defined(ADDRESS_SANITIZER)
-#define MAYBE_AnonymousUser DISABLED_AnonymousUser
-#else
-#define MAYBE_AnonymousUser AnonymousUser
-#endif
-// Tests that there's an option in the email drop down box with a value
-// 'anonymous_user'.
-IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_AnonymousUser) {
+// Tests that there's an option in the email drop down box with a value ''.
+IN_PROC_BROWSER_TEST_F(FeedbackTest, AnonymousUser) {
   WaitForExtensionViewsToLoad();
 
   ASSERT_TRUE(IsFeedbackAppAvailable());
@@ -161,7 +160,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_AnonymousUser) {
       "  ((function() {"
       "      var options = $('user-email-drop-down').options;"
       "      for (var option in options) {"
-      "        if (options[option].value == 'anonymous_user')"
+      "        if (options[option].value == '')"
       "          return true;"
       "      }"
       "      return false;"
@@ -171,16 +170,9 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_AnonymousUser) {
   EXPECT_TRUE(bool_result);
 }
 
-// Disabled for ASan due to flakiness on Mac ASan 64 Tests (1).
-// See crbug.com/757243.
-#if defined(ADDRESS_SANITIZER)
-#define MAYBE_ExtraDiagnostics DISABLED_ExtraDiagnostics
-#else
-#define MAYBE_ExtraDiagnostics ExtraDiagnostics
-#endif
 // Ensures that when extra diagnostics are provided with feedback, they are
 // injected properly in the system information.
-IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ExtraDiagnostics) {
+IN_PROC_BROWSER_TEST_F(FeedbackTest, ExtraDiagnostics) {
   WaitForExtensionViewsToLoad();
 
   ASSERT_TRUE(IsFeedbackAppAvailable());
@@ -211,16 +203,9 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ExtraDiagnostics) {
   EXPECT_TRUE(bool_result);
 }
 
-// Disabled for ASan due to flakiness on Mac ASan 64 Tests (1).
-// See crbug.com/757243.
-#if defined(ADDRESS_SANITIZER)
-#define MAYBE_ShowFeedbackFromAssistant DISABLED_ShowFeedbackFromAssistant
-#else
-#define MAYBE_ShowFeedbackFromAssistant ShowFeedbackFromAssistant
-#endif
 // Ensures that when triggered from Assistant with Google account, Assistant
 // checkbox are not hidden.
-IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ShowFeedbackFromAssistant) {
+IN_PROC_BROWSER_TEST_F(FeedbackTest, ShowFeedbackFromAssistant) {
   WaitForExtensionViewsToLoad();
 
   ASSERT_TRUE(IsFeedbackAppAvailable());
@@ -248,11 +233,63 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, MAYBE_ShowFeedbackFromAssistant) {
   EXPECT_TRUE(bool_result);
 }
 
-IN_PROC_BROWSER_TEST_F(FeedbackTest, GetTargetTabUrl) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+// Ensures that when triggered from a Google account and a Bluetooth related
+// string is entered into the description, that we provide the option for
+// uploading Bluetooth logs as well.
+IN_PROC_BROWSER_TEST_F(FeedbackTest, ProvideBluetoothLogs) {
+  WaitForExtensionViewsToLoad();
+
+  ASSERT_TRUE(IsFeedbackAppAvailable());
+  StartFeedbackUI(FeedbackFlow::FEEDBACK_FLOW_GOOGLEINTERNAL, std::string(),
+                  /*from_assistant*/ false, /*include_bluetooth_logs*/ true);
+  VerifyFeedbackAppLaunch();
+
+  AppWindow* const window =
+      PlatformAppBrowserTest::GetFirstAppWindowForBrowser(browser());
+  ASSERT_TRUE(window);
+  content::WebContents* const content = window->web_contents();
+
+  // It shouldn't be visible until we put the Bluetooth text into the
+  // description.
+  bool bool_result = false;
+  ASSERT_TRUE(content::ExecuteScriptAndExtractBool(
+      content,
+      "domAutomationController.send("
+      "  ((function() {"
+      "      if ($('bluetooth-checkbox-container') != null &&"
+      "          $('bluetooth-checkbox-container').hidden == true) {"
+      "        return true;"
+      "      }"
+      "      return false;"
+      "    })()));",
+      &bool_result));
+  EXPECT_TRUE(bool_result);
+  bool_result = false;
+  ASSERT_TRUE(content::ExecuteScriptAndExtractBool(
+      content,
+      "domAutomationController.send("
+      "  ((function() {"
+      "      var elem = document.getElementById('description-text');"
+      "      elem.value = 'bluetooth';"
+      "      elem.dispatchEvent(new Event('input', {}));"
+      "      if ($('bluetooth-checkbox-container') != null &&"
+      "          $('bluetooth-checkbox-container').hidden == false) {"
+      "        return true;"
+      "      }"
+      "      return false;"
+      "    })()));",
+      &bool_result));
+  EXPECT_TRUE(bool_result);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+// Disabled due to flake: https://crbug.com/1069870
+IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_GetTargetTabUrl) {
   const std::pair<std::string, std::string> test_cases[] = {
       {"https://www.google.com/", "https://www.google.com/"},
-      {"about://version/", "chrome://version/"},
-      {"chrome://bookmarks/", "chrome://bookmarks/"},
+      {"chrome://version/", chrome::kChromeUIVersionURL},
+      {chrome::kChromeUIBookmarksURL, chrome::kChromeUIBookmarksURL},
   };
 
   for (const auto& test_case : test_cases) {
@@ -263,8 +300,10 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, GetTargetTabUrl) {
     // Sanity check that we always have one tab in the browser.
     ASSERT_EQ(browser()->tab_strip_model()->count(), 1);
 
-    ASSERT_EQ(expected_url,
-              browser()->tab_strip_model()->GetWebContentsAt(0)->GetURL());
+    ASSERT_EQ(expected_url, browser()
+                                ->tab_strip_model()
+                                ->GetWebContentsAt(0)
+                                ->GetLastCommittedURL());
 
     ASSERT_EQ(expected_url,
               chrome::GetTargetTabUrl(browser()->session_id(), 0));
@@ -284,4 +323,50 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, GetTargetTabUrl) {
     DevToolsWindowTesting::CloseDevToolsWindowSync(devtools_window);
   }
 }
+
+// Disabled due to flake: https://crbug.com/1180373
+IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_SubmissionTest) {
+  WaitForExtensionViewsToLoad();
+
+  ASSERT_TRUE(IsFeedbackAppAvailable());
+  StartFeedbackUI(FeedbackFlow::FEEDBACK_FLOW_GOOGLEINTERNAL, std::string());
+  VerifyFeedbackAppLaunch();
+
+  AppWindow* const window =
+      PlatformAppBrowserTest::GetFirstAppWindowForBrowser(browser());
+  ASSERT_TRUE(window);
+  content::WebContents* const content = window->web_contents();
+
+  // Set a delegate for the uploader which will be invoked when the report
+  // normally would have been uploaded. We have it setup to then quit the
+  // RunLoop which will then allow us to terminate.
+  base::RunLoop run_loop;
+  TestFeedbackUploaderDelegate delegate(&run_loop);
+  feedback::FeedbackUploaderFactoryChrome::GetInstance()
+      ->GetForBrowserContext(browser()->profile())
+      ->set_feedback_uploader_delegate(&delegate);
+
+  // Click the send button.
+  bool bool_result = false;
+  ASSERT_TRUE(content::ExecuteScriptAndExtractBool(
+      content,
+      "domAutomationController.send("
+      "  ((function() {"
+      "      if ($('send-report-button') != null) {"
+      "        document.getElementById('send-report-button').click();"
+      "        return true;"
+      "      }"
+      "      return false;"
+      "    })()));",
+      &bool_result));
+  EXPECT_TRUE(bool_result);
+
+  // This will DCHECK if the JS private API call doesn't return a value, which
+  // is the main case we are concerned about.
+  run_loop.Run();
+  feedback::FeedbackUploaderFactoryChrome::GetInstance()
+      ->GetForBrowserContext(browser()->profile())
+      ->set_feedback_uploader_delegate(nullptr);
+}
+
 }  // namespace extensions

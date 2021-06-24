@@ -25,13 +25,12 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/device_service.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/origin_util.h"
-#include "content/public/common/service_manager_connection.h"
 #include "device/base/features.h"
-#include "device/usb/public/mojom/device.mojom.h"
-#include "services/device/public/mojom/constants.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "services/device/public/mojom/usb_device.mojom.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
@@ -104,8 +103,8 @@ class WebUsbNotificationDelegate : public TabStripModelObserver,
         landing_page_(landing_page),
         notification_id_(notification_id),
         disposition_(WEBUSB_NOTIFICATION_CLOSED),
-        browser_tab_strip_tracker_(this, nullptr, nullptr) {
-    browser_tab_strip_tracker_.Init();
+        browser_tab_strip_tracker_(absl::in_place, this, nullptr) {
+    browser_tab_strip_tracker_->Init();
   }
 
   void OnTabStripModelChanged(
@@ -125,8 +124,8 @@ class WebUsbNotificationDelegate : public TabStripModelObserver,
     }
   }
 
-  void Click(const base::Optional<int>& button_index,
-             const base::Optional<base::string16>& reply) override {
+  void Click(const absl::optional<int>& button_index,
+             const absl::optional<std::u16string>& reply) override {
     disposition_ = WEBUSB_NOTIFICATION_CLOSED_CLICKED;
 
     // If the URL is already open, activate that tab.
@@ -159,7 +158,7 @@ class WebUsbNotificationDelegate : public TabStripModelObserver,
       disposition_ = WEBUSB_NOTIFICATION_CLOSED_BY_USER;
     RecordNotificationClosure(disposition_);
 
-    browser_tab_strip_tracker_.StopObservingAndSendOnBrowserRemoved();
+    browser_tab_strip_tracker_.reset();
     if (detector_)
       detector_->RemoveNotification(notification_id_);
   }
@@ -171,16 +170,16 @@ class WebUsbNotificationDelegate : public TabStripModelObserver,
   GURL landing_page_;
   std::string notification_id_;
   WebUsbNotificationClosed disposition_;
-  BrowserTabStripTracker browser_tab_strip_tracker_;
+  absl::optional<BrowserTabStripTracker> browser_tab_strip_tracker_;
 
   DISALLOW_COPY_AND_ASSIGN(WebUsbNotificationDelegate);
 };
 
 }  // namespace
 
-WebUsbDetector::WebUsbDetector() : client_binding_(this), weak_factory_(this) {}
+WebUsbDetector::WebUsbDetector() = default;
 
-WebUsbDetector::~WebUsbDetector() {}
+WebUsbDetector::~WebUsbDetector() = default;
 
 void WebUsbDetector::Initialize() {
 #if defined(OS_WIN)
@@ -191,24 +190,19 @@ void WebUsbDetector::Initialize() {
     return;
 #endif  // defined(OS_WIN)
 
-  SCOPED_UMA_HISTOGRAM_TIMER("WebUsb.DetectorInitialization");
   // Tests may set a fake manager.
   if (!device_manager_) {
-    // Request UsbDeviceManagerPtr from DeviceService.
-    content::ServiceManagerConnection::GetForProcess()
-        ->GetConnector()
-        ->BindInterface(device::mojom::kServiceName,
-                        mojo::MakeRequest(&device_manager_));
+    // Receive mojo::Remote<UsbDeviceManager> from DeviceService.
+    content::GetDeviceService().BindUsbDeviceManager(
+        device_manager_.BindNewPipeAndPassReceiver());
   }
   DCHECK(device_manager_);
-  device_manager_.set_connection_error_handler(base::BindOnce(
+  device_manager_.set_disconnect_handler(base::BindOnce(
       &WebUsbDetector::OnDeviceManagerConnectionError, base::Unretained(this)));
 
   // Listen for added/removed device events.
-  DCHECK(!client_binding_);
-  device::mojom::UsbDeviceManagerClientAssociatedPtrInfo client;
-  client_binding_.Bind(mojo::MakeRequest(&client));
-  device_manager_->SetClient(std::move(client));
+  DCHECK(!client_receiver_.is_bound());
+  device_manager_->SetClient(client_receiver_.BindNewEndpointAndPassRemote());
 }
 
 void WebUsbDetector::OnDeviceAdded(
@@ -216,12 +210,13 @@ void WebUsbDetector::OnDeviceAdded(
   if (!device_info->product_name || !device_info->webusb_landing_page)
     return;
 
-  const base::string16& product_name = *device_info->product_name;
+  const std::u16string& product_name = *device_info->product_name;
   if (product_name.empty())
     return;
 
   const GURL& landing_page = *device_info->webusb_landing_page;
-  if (!landing_page.is_valid() || !content::IsOriginSecure(landing_page))
+  if (!landing_page.is_valid() ||
+      !network::IsUrlPotentiallyTrustworthy(landing_page))
     return;
 
   if (base::StartsWith(GetActiveTabURL().spec(), landing_page.spec(),
@@ -245,7 +240,7 @@ void WebUsbDetector::OnDeviceAdded(
               landing_page, url_formatter::SchemeDisplay::OMIT_CRYPTOGRAPHIC)),
       gfx::Image(gfx::CreateVectorIcon(vector_icons::kUsbIcon, 64,
                                        gfx::kChromeIconGrey)),
-      base::string16(), GURL(),
+      std::u16string(), GURL(),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kNotifierWebUsb),
       rich_notification_data,
@@ -277,16 +272,16 @@ void WebUsbDetector::OnDeviceRemoved(
 
 void WebUsbDetector::OnDeviceManagerConnectionError() {
   device_manager_.reset();
-  client_binding_.Close();
+  client_receiver_.reset();
 
   // Try to reconnect the device manager.
   Initialize();
 }
 
 void WebUsbDetector::SetDeviceManagerForTesting(
-    device::mojom::UsbDeviceManagerPtr fake_device_manager) {
+    mojo::PendingRemote<device::mojom::UsbDeviceManager> fake_device_manager) {
   DCHECK(!device_manager_);
-  DCHECK(!client_binding_);
+  DCHECK(!client_receiver_.is_bound());
   DCHECK(fake_device_manager);
-  device_manager_ = std::move(fake_device_manager);
+  device_manager_.Bind(std::move(fake_device_manager));
 }

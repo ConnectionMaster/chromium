@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that breakpoints are not activated on page reload.Bug 41461\n`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
       function testFunction()
@@ -22,9 +22,9 @@
     SourcesTestRunner.showScriptSource(testName, step2);
   }
 
-  function step2(sourceFrame) {
+  async function step2(sourceFrame) {
     TestRunner.addResult('Main resource was shown.');
-    SourcesTestRunner.setBreakpoint(sourceFrame, 8, '', true);
+    await SourcesTestRunner.setBreakpoint(sourceFrame, 8, '', true);
     UI.panels.sources._toggleBreakpointsActive();
     TestRunner.reloadPage(step3);
   }

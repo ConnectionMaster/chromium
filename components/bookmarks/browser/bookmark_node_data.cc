@@ -4,18 +4,23 @@
 
 #include "components/bookmarks/browser/bookmark_node_data.h"
 
+#include <algorithm>
 #include <string>
 
+#include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/pickle.h"
-#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "build/build_config.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 
 namespace bookmarks {
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
+namespace {
+constexpr size_t kMaxVectorPreallocateSize = 10000;
+}  // namespace
+
 const char BookmarkNodeData::kClipboardFormatString[] =
     "chromium/x-bookmark-entries";
 #endif
@@ -32,8 +37,8 @@ BookmarkNodeData::Element::Element(const BookmarkNode* node)
       id_(node->id()) {
   if (node->GetMetaInfoMap())
     meta_info_map = *node->GetMetaInfoMap();
-  for (int i = 0; i < node->child_count(); ++i)
-    children.push_back(Element(node->GetChild(i)));
+  for (const auto& child : node->children())
+    children.push_back(Element(child.get()));
 }
 
 BookmarkNodeData::Element::Element(const Element& other) = default;
@@ -41,7 +46,7 @@ BookmarkNodeData::Element::Element(const Element& other) = default;
 BookmarkNodeData::Element::~Element() {
 }
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
 void BookmarkNodeData::Element::WriteToPickle(base::Pickle* pickle) const {
   pickle->WriteBool(is_url);
   pickle->WriteString(url.spec());
@@ -86,12 +91,23 @@ bool BookmarkNodeData::Element::ReadFromPickle(base::PickleIterator* iterator) {
   }
   children.clear();
   if (!is_url) {
-    uint32_t children_count;
-    if (!iterator->ReadUInt32(&children_count))
+    uint32_t children_count_tmp;
+    if (!iterator->ReadUInt32(&children_count_tmp))
       return false;
-    children.reserve(children_count);
+    if (!base::IsValueInRangeForNumericType<size_t>(children_count_tmp)) {
+      LOG(WARNING) << "children_count failed bounds check";
+      return false;
+    }
+    // Note: do not preallocate the children vector. A pickle could be
+    // constructed to contain N nested Elements. By continually recursing on
+    // this ReadFromPickle function, the fast-fail logic is subverted. Each
+    // child would claim it contains M more children. The first (and only) child
+    // provided would claim M more children. We would allocate N * M Elements
+    // along the way, while only receiving N Elements.
+    const size_t children_count =
+        base::checked_cast<size_t>(children_count_tmp);
     for (size_t i = 0; i < children_count; ++i) {
-      children.push_back(Element());
+      children.emplace_back();
       if (!children.back().ReadFromPickle(iterator))
         return false;
     }
@@ -119,12 +135,14 @@ BookmarkNodeData::BookmarkNodeData(
 BookmarkNodeData::~BookmarkNodeData() {
 }
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
 // static
 bool BookmarkNodeData::ClipboardContainsBookmarks() {
+  ui::DataTransferEndpoint data_dst = ui::DataTransferEndpoint(
+      ui::EndpointType::kDefault, /*notify_if_restricted=*/false);
   return ui::Clipboard::GetForCurrentThread()->IsFormatAvailable(
       ui::ClipboardFormatType::GetType(kClipboardFormatString),
-      ui::CLIPBOARD_TYPE_COPY_PASTE);
+      ui::ClipboardBuffer::kCopyPaste, &data_dst);
 }
 #endif
 
@@ -142,7 +160,7 @@ bool BookmarkNodeData::ReadFromVector(
 }
 
 bool BookmarkNodeData::ReadFromTuple(const GURL& url,
-                                     const base::string16& title) {
+                                     const std::u16string& title) {
   Clear();
 
   if (!url.is_valid())
@@ -158,20 +176,20 @@ bool BookmarkNodeData::ReadFromTuple(const GURL& url,
   return true;
 }
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
 void BookmarkNodeData::WriteToClipboard() {
-  ui::ScopedClipboardWriter scw(ui::CLIPBOARD_TYPE_COPY_PASTE);
+  ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
 
 #if defined(OS_WIN)
-  const base::string16 kEOL(L"\r\n");
+  const std::u16string kEOL(u"\r\n");
 #else
-  const base::string16 kEOL = base::ASCIIToUTF16("\n");
+  const std::u16string kEOL = u"\n";
 #endif
 
   // If there is only one element and it is a URL, write the URL to the
   // clipboard.
   if (has_single_url()) {
-    const base::string16& title = elements[0].title;
+    const std::u16string& title = elements[0].title;
     const std::string url = elements[0].url.spec();
 
     scw.WriteBookmark(title, url);
@@ -180,15 +198,15 @@ void BookmarkNodeData::WriteToClipboard() {
   } else {
     // We have either more than one URL, a folder, or a combination of URLs
     // and folders.
-    base::string16 text;
+    std::u16string text;
     for (size_t i = 0; i < size(); i++) {
-      text += i == 0 ? base::ASCIIToUTF16("") : kEOL;
+      text += i == 0 ? u"" : kEOL;
       if (!elements[i].is_url) {
         // Then it's a folder. Only copy the name of the folder.
-        const base::string16 title = elements[i].title;
+        const std::u16string title = elements[i].title;
         text += title;
       } else {
-        const base::string16 url = base::UTF8ToUTF16(elements[i].url.spec());
+        const std::u16string url = base::UTF8ToUTF16(elements[i].url.spec());
         text += url;
       }
     }
@@ -201,12 +219,12 @@ void BookmarkNodeData::WriteToClipboard() {
       pickle, ui::ClipboardFormatType::GetType(kClipboardFormatString));
 }
 
-bool BookmarkNodeData::ReadFromClipboard(ui::ClipboardType type) {
-  DCHECK_EQ(type, ui::CLIPBOARD_TYPE_COPY_PASTE);
+bool BookmarkNodeData::ReadFromClipboard(ui::ClipboardBuffer buffer) {
+  DCHECK_EQ(buffer, ui::ClipboardBuffer::kCopyPaste);
   std::string data;
   ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
   clipboard->ReadData(ui::ClipboardFormatType::GetType(kClipboardFormatString),
-                      &data);
+                      /* data_dst = */ nullptr, &data);
 
   if (!data.empty()) {
     base::Pickle pickle(data.data(), static_cast<int>(data.size()));
@@ -214,9 +232,9 @@ bool BookmarkNodeData::ReadFromClipboard(ui::ClipboardType type) {
       return true;
   }
 
-  base::string16 title;
+  std::u16string title;
   std::string url;
-  clipboard->ReadBookmark(&title, &url);
+  clipboard->ReadBookmark(/* data_dst = */ nullptr, &title, &url);
   if (!url.empty()) {
     Element element;
     element.is_url = true;
@@ -242,13 +260,23 @@ void BookmarkNodeData::WriteToPickle(const base::FilePath& profile_path,
 
 bool BookmarkNodeData::ReadFromPickle(base::Pickle* pickle) {
   base::PickleIterator data_iterator(*pickle);
-  uint32_t element_count;
+  uint32_t element_count_tmp;
   if (profile_path_.ReadFromPickle(&data_iterator) &&
-      data_iterator.ReadUInt32(&element_count)) {
+      data_iterator.ReadUInt32(&element_count_tmp)) {
+    if (!base::IsValueInRangeForNumericType<size_t>(element_count_tmp)) {
+      LOG(WARNING) << "element_count failed bounds check";
+      return false;
+    }
+    const size_t element_count = base::checked_cast<size_t>(element_count_tmp);
+    // Restrict vector preallocation to prevent OOM crashes on invalid or
+    // malicious pickles.
+    if (element_count > kMaxVectorPreallocateSize)
+      LOG(WARNING) << "element_count exceeds kMaxVectorPreallocateSize";
     std::vector<Element> tmp_elements;
-    tmp_elements.resize(element_count);
+    tmp_elements.reserve(std::min(element_count, kMaxVectorPreallocateSize));
     for (size_t i = 0; i < element_count; ++i) {
-      if (!tmp_elements[i].ReadFromPickle(&data_iterator)) {
+      tmp_elements.emplace_back();
+      if (!tmp_elements.back().ReadFromPickle(&data_iterator)) {
         return false;
       }
     }
@@ -258,7 +286,7 @@ bool BookmarkNodeData::ReadFromPickle(base::Pickle* pickle) {
   return true;
 }
 
-#endif  // OS_MACOSX
+#endif  // OS_APPLE
 
 std::vector<const BookmarkNode*> BookmarkNodeData::GetNodes(
     BookmarkModel* model,

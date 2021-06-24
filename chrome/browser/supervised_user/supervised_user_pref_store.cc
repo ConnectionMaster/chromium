@@ -4,11 +4,13 @@
 
 #include "chrome/browser/supervised_user/supervised_user_pref_store.h"
 
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
@@ -19,14 +21,10 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/net/safe_search_util.h"
 #include "chrome/common/pref_names.h"
-#include "components/ntp_snippets/pref_names.h"
+#include "components/feed/core/shared_prefs/pref_names.h"
 #include "components/prefs/pref_value_map.h"
-#include "components/signin/core/browser/signin_pref_names.h"
-#include "content/public/browser/notification_source.h"
-
-#if defined(OS_ANDROID)
-#include "chrome/browser/android/contextual_suggestions/contextual_suggestions_prefs.h"
-#endif
+#include "components/signin/public/base/signin_pref_names.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace {
 
@@ -36,16 +34,6 @@ struct SupervisedUserSettingsPrefMappingEntry {
 };
 
 SupervisedUserSettingsPrefMappingEntry kSupervisedUserSettingsPrefMapping[] = {
-#if defined(OS_CHROMEOS)
-    {
-        supervised_users::kAccountConsistencyMirrorRequired,
-        prefs::kAccountConsistencyMirrorRequired,
-    },
-#endif
-    {
-        supervised_users::kApprovedExtensions,
-        prefs::kSupervisedUserApprovedExtensions,
-    },
     {
         supervised_users::kContentPackDefaultFilteringBehavior,
         prefs::kDefaultSupervisedUserFilteringBehavior,
@@ -59,16 +47,20 @@ SupervisedUserSettingsPrefMappingEntry kSupervisedUserSettingsPrefMapping[] = {
         prefs::kSupervisedUserManualURLs,
     },
     {
-        supervised_users::kForceSafeSearch, prefs::kForceGoogleSafeSearch,
+        supervised_users::kForceSafeSearch,
+        prefs::kForceGoogleSafeSearch,
     },
     {
-        supervised_users::kSafeSitesEnabled, prefs::kSupervisedUserSafeSites,
+        supervised_users::kSafeSitesEnabled,
+        prefs::kSupervisedUserSafeSites,
     },
     {
-        supervised_users::kSigninAllowed, prefs::kSigninAllowed,
+        supervised_users::kSigninAllowed,
+        prefs::kSigninAllowed,
     },
     {
-        supervised_users::kUserName, prefs::kProfileName,
+        supervised_users::kUserName,
+        prefs::kProfileName,
     },
 };
 
@@ -76,19 +68,19 @@ SupervisedUserSettingsPrefMappingEntry kSupervisedUserSettingsPrefMapping[] = {
 
 SupervisedUserPrefStore::SupervisedUserPrefStore(
     SupervisedUserSettingsService* supervised_user_settings_service) {
-  user_settings_subscription_ = supervised_user_settings_service->Subscribe(
-      base::Bind(&SupervisedUserPrefStore::OnNewSettingsAvailable,
-                 base::Unretained(this)));
+  user_settings_subscription_ =
+      supervised_user_settings_service->SubscribeForSettingsChange(
+          base::BindRepeating(&SupervisedUserPrefStore::OnNewSettingsAvailable,
+                              base::Unretained(this)));
 
-  // Should only be nullptr in unit tests
-  // TODO(peconn): Remove this once SupervisedUserPrefStore is (partially at
-  // least) a KeyedService. The user_settings_subscription_ must be reset or
-  // destroyed before the SupervisedUserSettingsService is.
-  if (supervised_user_settings_service->GetProfile()) {
-    unsubscriber_registrar_.Add(this, chrome::NOTIFICATION_PROFILE_DESTROYED,
-        content::Source<Profile>(
-          supervised_user_settings_service->GetProfile()));
-  }
+  // The SupervisedUserSettingsService must be created before the PrefStore, and
+  // it will notify the PrefStore to destroy both subscriptions when it is shut
+  // down.
+  shutdown_subscription_ =
+      supervised_user_settings_service->SubscribeForShutdown(
+          base::BindRepeating(
+              &SupervisedUserPrefStore::OnSettingsServiceShutdown,
+              base::Unretained(this)));
 }
 
 bool SupervisedUserPrefStore::GetValue(const std::string& key,
@@ -110,7 +102,7 @@ void SupervisedUserPrefStore::RemoveObserver(PrefStore::Observer* observer) {
 }
 
 bool SupervisedUserPrefStore::HasObservers() const {
-  return observers_.might_have_observers();
+  return !observers_.empty();
 }
 
 bool SupervisedUserPrefStore::IsInitializationComplete() const {
@@ -123,30 +115,22 @@ SupervisedUserPrefStore::~SupervisedUserPrefStore() {
 void SupervisedUserPrefStore::OnNewSettingsAvailable(
     const base::DictionaryValue* settings) {
   std::unique_ptr<PrefValueMap> old_prefs = std::move(prefs_);
-  prefs_.reset(new PrefValueMap);
+  prefs_ = std::make_unique<PrefValueMap>();
   if (settings) {
     // Set hardcoded prefs and defaults.
-#if defined(OS_CHROMEOS)
-    prefs_->SetBoolean(prefs::kAccountConsistencyMirrorRequired, false);
-#endif
     prefs_->SetInteger(prefs::kDefaultSupervisedUserFilteringBehavior,
                        SupervisedUserURLFilter::ALLOW);
     prefs_->SetBoolean(prefs::kForceGoogleSafeSearch, true);
     prefs_->SetInteger(prefs::kForceYouTubeRestrict,
                        safe_search_util::YOUTUBE_RESTRICT_MODERATE);
-    prefs_->SetBoolean(prefs::kHideWebStoreIcon, true);
+    prefs_->SetBoolean(prefs::kHideWebStoreIcon, false);
     prefs_->SetBoolean(prefs::kSigninAllowed, false);
-    prefs_->SetBoolean(ntp_snippets::prefs::kEnableSnippets, false);
-
-#if defined(OS_ANDROID)
-    prefs_->SetBoolean(
-        contextual_suggestions::prefs::kContextualSuggestionsEnabled, false);
-#endif
+    prefs_->SetBoolean(feed::prefs::kEnableSnippets, false);
 
     // Copy supervised user settings to prefs.
     for (const auto& entry : kSupervisedUserSettingsPrefMapping) {
-      const base::Value* value = NULL;
-      if (settings->GetWithoutPathExpansion(entry.settings_name, &value))
+      const base::Value* value = settings->FindKey(entry.settings_name);
+      if (value)
         prefs_->SetValue(entry.pref_name, value->Clone());
     }
 
@@ -172,6 +156,23 @@ void SupervisedUserPrefStore::OnNewSettingsAvailable(
           force_safe_search ? safe_search_util::YOUTUBE_RESTRICT_MODERATE
                             : safe_search_util::YOUTUBE_RESTRICT_OFF);
     }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    {
+      // TODO(crbug/1024646): Update Kids Management server to set a new bit for
+      // extension permissions. Until then, rely on other side effects of the
+      // "Permissions for sites, apps and extensions" setting, like geolocation
+      // being disallowed.
+      bool permissions_disallowed = true;
+      settings->GetBoolean(supervised_users::kGeolocationDisabled,
+                           &permissions_disallowed);
+      prefs_->SetBoolean(prefs::kSupervisedUserExtensionsMayRequestPermissions,
+                         !permissions_disallowed);
+      base::UmaHistogramBoolean(
+          "SupervisedUsers.ExtensionsMayRequestPermissions",
+          !permissions_disallowed);
+    }
+#endif
   }
 
   if (!old_prefs) {
@@ -190,11 +191,7 @@ void SupervisedUserPrefStore::OnNewSettingsAvailable(
   }
 }
 
-// Callback to unsubscribe from the supervised user settings service.
-void SupervisedUserPrefStore::Observe(
-    int type,
-    const content::NotificationSource& src,
-    const content::NotificationDetails& details) {
-  DCHECK_EQ(chrome::NOTIFICATION_PROFILE_DESTROYED, type);
-  user_settings_subscription_.reset();
+void SupervisedUserPrefStore::OnSettingsServiceShutdown() {
+  user_settings_subscription_ = {};
+  shutdown_subscription_ = {};
 }

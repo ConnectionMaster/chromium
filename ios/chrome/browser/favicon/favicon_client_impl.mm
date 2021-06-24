@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/favicon/core/favicon_service.h"
@@ -15,6 +15,7 @@
 #include "components/favicon_base/select_favicon_frames.h"
 #include "components/grit/components_scaled_resources.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
+#include "ios/components/webui/web_ui_url_constants.h"
 #include "ui/base/layout.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/favicon_size.h"
@@ -83,22 +84,29 @@ bool FaviconClientImpl::IsNativeApplicationURL(const GURL& url) {
   return url.SchemeIs(kChromeUIScheme);
 }
 
+bool FaviconClientImpl::IsReaderModeURL(const GURL& url) {
+  // iOS does not yet support Reader Mode.
+  return false;
+}
+
+const GURL FaviconClientImpl::GetOriginalUrlFromReaderModeUrl(const GURL& url) {
+  return url;
+}
+
 base::CancelableTaskTracker::TaskId
 FaviconClientImpl::GetFaviconForNativeApplicationURL(
     const GURL& url,
     const std::vector<int>& desired_sizes_in_pixel,
-    const favicon_base::FaviconResultsCallback& callback,
+    favicon_base::FaviconResultsCallback callback,
     base::CancelableTaskTracker* tracker) {
   DCHECK(tracker);
   DCHECK(IsNativeApplicationURL(url));
 
-  auto favicon_bitmap_results =
-      std::make_unique<std::vector<favicon_base::FaviconRawBitmapResult>>();
+  std::vector<favicon_base::FaviconRawBitmapResult> favicon_bitmap_results;
   GetFaviconBitmapForNativeURL(url, desired_sizes_in_pixel,
-                               favicon_bitmap_results.get());
+                               &favicon_bitmap_results);
 
   return tracker->PostTask(
       base::ThreadTaskRunnerHandle::Get().get(), FROM_HERE,
-      base::Bind(&favicon::FaviconService::FaviconResultsCallbackRunner,
-                 callback, base::Owned(favicon_bitmap_results.release())));
+      base::BindOnce(std::move(callback), std::move(favicon_bitmap_results)));
 }

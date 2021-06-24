@@ -7,6 +7,8 @@
 #include <memory>
 
 #include "pdf/out_of_process_instance.h"
+#include "pdf/pdf.h"
+#include "pdf/pdf_init.h"
 #include "ppapi/c/ppp.h"
 #include "ppapi/cpp/private/internal_module.h"
 #include "ppapi/cpp/private/pdf.h"
@@ -15,8 +17,6 @@
 namespace chrome_pdf {
 
 namespace {
-
-bool g_sdk_initialized_via_pepper = false;
 
 class PDFModule : public pp::Module {
  public:
@@ -31,9 +31,9 @@ class PDFModule : public pp::Module {
 PDFModule::PDFModule() = default;
 
 PDFModule::~PDFModule() {
-  if (g_sdk_initialized_via_pepper) {
+  if (IsSDKInitializedViaPlugin()) {
     ShutdownSDK();
-    g_sdk_initialized_via_pepper = false;
+    SetIsSDKInitializedViaPlugin(false);
   }
 }
 
@@ -42,19 +42,16 @@ bool PDFModule::Init() {
 }
 
 pp::Instance* PDFModule::CreateInstance(PP_Instance instance) {
-  if (!g_sdk_initialized_via_pepper) {
-    v8::StartupData natives;
+  if (!IsSDKInitializedViaPlugin()) {
     v8::StartupData snapshot;
     pp::PDF::GetV8ExternalSnapshotData(pp::InstanceHandle(instance),
-                                       &natives.data, &natives.raw_size,
                                        &snapshot.data, &snapshot.raw_size);
-    if (natives.data) {
-      v8::V8::SetNativesDataBlob(&natives);
+    if (snapshot.data) {
       v8::V8::SetSnapshotDataBlob(&snapshot);
     }
-    if (!InitializeSDK())
-      return nullptr;
-    g_sdk_initialized_via_pepper = true;
+
+    InitializeSDK(/*enable_v8=*/true, FontMappingMode::kPepper);
+    SetIsSDKInitializedViaPlugin(true);
   }
 
   return new OutOfProcessInstance(instance);
@@ -80,10 +77,6 @@ void PPP_ShutdownModule() {
 const void* PPP_GetInterface(const char* interface_name) {
   auto* module = pp::Module::Get();
   return module ? module->GetPluginInterface(interface_name) : nullptr;
-}
-
-bool IsSDKInitializedViaPepper() {
-  return g_sdk_initialized_via_pepper;
 }
 
 }  // namespace chrome_pdf

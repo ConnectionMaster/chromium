@@ -7,12 +7,15 @@
 
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/trace_event/memory_dump_request_args.h"
 #include "services/resource_coordinator/memory_instrumentation/coordinator_impl.h"
-#include "services/resource_coordinator/memory_instrumentation/graph.h"
 #include "services/resource_coordinator/memory_instrumentation/queued_request.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/perfetto/include/perfetto/ext/trace_processor/importers/memory_tracker/graph.h"
 
 namespace memory_instrumentation {
 
@@ -24,12 +27,12 @@ class QueuedRequestDispatcher {
   using RequestGlobalMemoryDumpInternalCallback = base::OnceCallback<
       void(bool, uint64_t, memory_instrumentation::mojom::GlobalMemoryDumpPtr)>;
   using ChromeCallback = base::RepeatingCallback<void(
-      mojom::ClientProcess*,
+      base::ProcessId,
       bool,
       uint64_t,
       std::unique_ptr<base::trace_event::ProcessMemoryDump>)>;
   using OsCallback =
-      base::RepeatingCallback<void(mojom::ClientProcess*, bool, OSMemDumpMap)>;
+      base::RepeatingCallback<void(base::ProcessId, bool, OSMemDumpMap)>;
   using VmRegions =
       base::flat_map<base::ProcessId,
                      std::vector<memory_instrumentation::mojom::VmRegionPtr>>;
@@ -37,12 +40,15 @@ class QueuedRequestDispatcher {
   struct ClientInfo {
     ClientInfo(mojom::ClientProcess* client,
                base::ProcessId pid,
-               mojom::ProcessType process_type);
+               mojom::ProcessType process_type,
+               absl::optional<std::string> service_name);
+    ClientInfo(ClientInfo&& other);
     ~ClientInfo();
 
-    mojom::ClientProcess* client;
+    mojom::ClientProcess* const client;
     const base::ProcessId pid;
     const mojom::ProcessType process_type;
+    const absl::optional<std::string> service_name;
   };
 
   // Sets up the parameters of the queued |request| using |clients| and then
@@ -56,7 +62,8 @@ class QueuedRequestDispatcher {
   // dispatching to the appropriate callback. Also adds to tracing using
   // |tracing_observer| if the |request| requires it.
   static void Finalize(QueuedRequest* request,
-                       TracingObserver* tracing_observer);
+                       TracingObserver* tracing_observer,
+                       bool use_proto_writer);
 
   static void SetUpAndDispatchVmRegionRequest(
       QueuedVmRegionRequest* request,
@@ -70,9 +77,11 @@ class QueuedRequestDispatcher {
       const base::trace_event::MemoryDumpRequestArgs& args,
       base::ProcessId pid,
       const base::trace_event::ProcessMemoryDump& raw_chrome_dump,
-      const GlobalDumpGraph& global_graph,
+      const perfetto::trace_processor::GlobalNodeGraph& global_graph,
       const std::map<base::ProcessId, mojom::ProcessType>& pid_to_process_type,
-      TracingObserver* tracing_observer);
+      TracingObserver* tracing_observer,
+      bool use_proto_writer,
+      const base::TimeTicks& timestamp);
 };
 
 }  // namespace memory_instrumentation

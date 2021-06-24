@@ -11,6 +11,7 @@
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/window_user_data.h"
+#include "ash/wm/always_on_top_controller.h"
 #include "ash/wm/container_finder.h"
 #include "ash/wm/window_dimmer.h"
 #include "ash/wm/window_state.h"
@@ -18,6 +19,7 @@
 #include "base/logging.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
+#include "ui/compositor/layer.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
@@ -30,8 +32,8 @@ aura::Window::Windows GetSystemModalWindowsExceptPinned(
   aura::Window* pinned_root = pinned_window->GetRootWindow();
 
   aura::Window::Windows result;
-  for (aura::Window* system_modal : wm::GetContainersFromAllRootWindows(
-           kShellWindowId_SystemModalContainer)) {
+  for (aura::Window* system_modal :
+       GetContainersForAllRootWindows(kShellWindowId_SystemModalContainer)) {
     if (system_modal->GetRootWindow() == pinned_root)
       continue;
     result.push_back(system_modal);
@@ -59,6 +61,7 @@ bool IsWindowDimmerWindowVisible(WindowDimmer* window_dimmer) {
 }  // namespace
 
 // Adapter to fire OnPinnedContainerWindowStackingChanged().
+// TODO(oshima): Consider using aura::clinet::WindowStakingClient instead.
 class ScreenPinningController::PinnedContainerChildWindowObserver
     : public aura::WindowObserver {
  public:
@@ -156,6 +159,9 @@ ScreenPinningController::ScreenPinningController()
 
 ScreenPinningController::~ScreenPinningController() {
   Shell::Get()->window_tree_host_manager()->RemoveObserver(this);
+  if (pinned_window_)
+    pinned_window_->RemoveObserver(this);
+  pinned_window_ = nullptr;
 }
 
 bool ScreenPinningController::IsPinned() const {
@@ -163,7 +169,7 @@ bool ScreenPinningController::IsPinned() const {
 }
 
 void ScreenPinningController::SetPinnedWindow(aura::Window* pinned_window) {
-  if (wm::GetWindowState(pinned_window)->IsPinned()) {
+  if (WindowState::Get(pinned_window)->IsPinned()) {
     if (pinned_window_) {
       LOG(DFATAL) << "Pinned mode is enabled, while it is already in "
                   << "the pinned mode";
@@ -176,6 +182,9 @@ void ScreenPinningController::SetPinnedWindow(aura::Window* pinned_window) {
 
     // Set up the container which has the pinned window.
     pinned_window_ = pinned_window;
+    // To monitor destruction.
+    pinned_window_->AddObserver(this);
+    AlwaysOnTopController::SetDisallowReparent(pinned_window);
     container->StackChildAtTop(pinned_window);
     container->StackChildBelow(CreateWindowDimmer(container), pinned_window);
 
@@ -217,6 +226,7 @@ void ScreenPinningController::SetPinnedWindow(aura::Window* pinned_window) {
     container->RemoveObserver(pinned_container_window_observer_.get());
 
     window_dimmers_->clear();
+    pinned_window_->RemoveObserver(this);
     pinned_window_ = nullptr;
   }
 
@@ -232,8 +242,6 @@ void ScreenPinningController::OnWindowAddedToPinnedContainer(
 void ScreenPinningController::OnWillRemoveWindowFromPinnedContainer(
     aura::Window* window) {
   window->RemoveObserver(pinned_container_child_window_observer_.get());
-  if (window == pinned_window_)
-    wm::GetWindowState(pinned_window_)->Restore();
 }
 
 void ScreenPinningController::OnPinnedContainerWindowStackingChanged(
@@ -262,6 +270,7 @@ aura::Window* ScreenPinningController::CreateWindowDimmer(
   std::unique_ptr<WindowDimmer> window_dimmer =
       std::make_unique<WindowDimmer>(container);
   window_dimmer->SetDimOpacity(1);  // Fully opaque.
+  AlwaysOnTopController::SetDisallowReparent(window_dimmer->window());
   ::wm::SetWindowFullscreen(window_dimmer->window(), true);
   window_dimmer->window()->Show();
   aura::Window* window = window_dimmer->window();
@@ -306,6 +315,18 @@ void ScreenPinningController::OnDisplayConfigurationChanged() {
     AddObserverToChildren(system_modal,
                           system_modal_container_child_window_observer_.get());
   }
+}
+
+void ScreenPinningController::OnWindowDestroying(aura::Window* window) {
+  DCHECK_EQ(pinned_window_, window);
+  WindowState::Get(window)->Restore();
+
+  aura::Window* container = window->parent();
+  RemoveObserverFromChildren(container,
+                             pinned_container_child_window_observer_.get());
+  container->RemoveObserver(pinned_container_window_observer_.get());
+  window->RemoveObserver(this);
+  pinned_window_ = nullptr;
 }
 
 void ScreenPinningController::KeepPinnedWindowOnTop() {

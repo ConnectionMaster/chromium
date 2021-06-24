@@ -5,13 +5,15 @@
 #include "third_party/blink/renderer/core/css/style_environment_variables.h"
 
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
-
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 namespace blink {
 
 namespace {
 
 // This is the default value for all safe-area-inset-* variables.
 static const char kSafeAreaInsetDefault[] = "0px";
+// This is the default value for all keyboard-inset-* variables.
+static const char kKeyboardInsetDefault[] = "0px";
 
 // Use this to set default values for environment variables when the root
 // instance is created.
@@ -24,6 +26,20 @@ void SetDefaultEnvironmentVariables(StyleEnvironmentVariables* instance) {
                         kSafeAreaInsetDefault);
   instance->SetVariable(UADefinedVariable::kSafeAreaInsetRight,
                         kSafeAreaInsetDefault);
+  if (RuntimeEnabledFeatures::VirtualKeyboardEnabled()) {
+    instance->SetVariable(UADefinedVariable::kKeyboardInsetTop,
+                          kKeyboardInsetDefault);
+    instance->SetVariable(UADefinedVariable::kKeyboardInsetLeft,
+                          kKeyboardInsetDefault);
+    instance->SetVariable(UADefinedVariable::kKeyboardInsetBottom,
+                          kKeyboardInsetDefault);
+    instance->SetVariable(UADefinedVariable::kKeyboardInsetRight,
+                          kKeyboardInsetDefault);
+    instance->SetVariable(UADefinedVariable::kKeyboardInsetWidth,
+                          kKeyboardInsetDefault);
+    instance->SetVariable(UADefinedVariable::kKeyboardInsetHeight,
+                          kKeyboardInsetDefault);
+  }
 }
 
 }  // namespace.
@@ -52,7 +68,8 @@ StyleEnvironmentVariables& StyleEnvironmentVariables::GetRootInstance() {
 
 // static
 const AtomicString StyleEnvironmentVariables::GetVariableName(
-    UADefinedVariable variable) {
+    UADefinedVariable variable,
+    const FeatureContext* feature_context) {
   switch (variable) {
     case UADefinedVariable::kSafeAreaInsetTop:
       return "safe-area-inset-top";
@@ -62,6 +79,58 @@ const AtomicString StyleEnvironmentVariables::GetVariableName(
       return "safe-area-inset-bottom";
     case UADefinedVariable::kSafeAreaInsetRight:
       return "safe-area-inset-right";
+    case UADefinedVariable::kKeyboardInsetTop:
+      DCHECK(RuntimeEnabledFeatures::VirtualKeyboardEnabled());
+      return "keyboard-inset-top";
+    case UADefinedVariable::kKeyboardInsetLeft:
+      DCHECK(RuntimeEnabledFeatures::VirtualKeyboardEnabled());
+      return "keyboard-inset-left";
+    case UADefinedVariable::kKeyboardInsetBottom:
+      DCHECK(RuntimeEnabledFeatures::VirtualKeyboardEnabled());
+      return "keyboard-inset-bottom";
+    case UADefinedVariable::kKeyboardInsetRight:
+      DCHECK(RuntimeEnabledFeatures::VirtualKeyboardEnabled());
+      return "keyboard-inset-right";
+    case UADefinedVariable::kKeyboardInsetWidth:
+      DCHECK(RuntimeEnabledFeatures::VirtualKeyboardEnabled());
+      return "keyboard-inset-width";
+    case UADefinedVariable::kKeyboardInsetHeight:
+      DCHECK(RuntimeEnabledFeatures::VirtualKeyboardEnabled());
+      return "keyboard-inset-height";
+    case UADefinedVariable::kFoldTop:
+      DCHECK(RuntimeEnabledFeatures::CSSFoldablesEnabled());
+      return "fold-top";
+    case UADefinedVariable::kFoldRight:
+      DCHECK(RuntimeEnabledFeatures::CSSFoldablesEnabled());
+      return "fold-right";
+    case UADefinedVariable::kFoldBottom:
+      DCHECK(RuntimeEnabledFeatures::CSSFoldablesEnabled());
+      return "fold-bottom";
+    case UADefinedVariable::kFoldLeft:
+      DCHECK(RuntimeEnabledFeatures::CSSFoldablesEnabled());
+      return "fold-left";
+    case UADefinedVariable::kFoldWidth:
+      DCHECK(RuntimeEnabledFeatures::CSSFoldablesEnabled());
+      return "fold-width";
+    case UADefinedVariable::kFoldHeight:
+      DCHECK(RuntimeEnabledFeatures::CSSFoldablesEnabled());
+      return "fold-height";
+    case UADefinedVariable::kTitlebarAreaX:
+      DCHECK(RuntimeEnabledFeatures::WebAppWindowControlsOverlayEnabled(
+          feature_context));
+      return "titlebar-area-x";
+    case UADefinedVariable::kTitlebarAreaY:
+      DCHECK(RuntimeEnabledFeatures::WebAppWindowControlsOverlayEnabled(
+          feature_context));
+      return "titlebar-area-y";
+    case UADefinedVariable::kTitlebarAreaWidth:
+      DCHECK(RuntimeEnabledFeatures::WebAppWindowControlsOverlayEnabled(
+          feature_context));
+      return "titlebar-area-width";
+    case UADefinedVariable::kTitlebarAreaHeight:
+      DCHECK(RuntimeEnabledFeatures::WebAppWindowControlsOverlayEnabled(
+          feature_context));
+      return "titlebar-area-height";
     default:
       break;
   }
@@ -106,16 +175,17 @@ void StyleEnvironmentVariables::SetVariable(const AtomicString& name,
   Vector<String> backing_strings;
   backing_strings.push_back(value);
 
-  SetVariable(name,
-              CSSVariableData::CreateResolved(
-                  tokens, backing_strings, false /* is_animation_tainted */,
-                  false /* has_font_units */, false /* has_root_font_units*/,
-                  true /* absolutized */, g_null_atom, WTF::TextEncoding()));
+  SetVariable(
+      name,
+      CSSVariableData::CreateResolved(
+          std::move(tokens), std::move(backing_strings),
+          false /* is_animation_tainted */, false /* has_font_units */,
+          false /* has_root_font_units*/, g_null_atom, WTF::TextEncoding()));
 }
 
 void StyleEnvironmentVariables::SetVariable(const UADefinedVariable name,
                                             const String& value) {
-  SetVariable(GetVariableName(name), value);
+  SetVariable(GetVariableName(name, GetFeatureContext()), value);
 }
 
 void StyleEnvironmentVariables::RemoveVariable(const AtomicString& name) {
@@ -142,6 +212,14 @@ void StyleEnvironmentVariables::DetachFromParent() {
     parent_->children_.EraseAt(it);
 
   parent_ = nullptr;
+}
+
+String StyleEnvironmentVariables::FormatPx(int value) {
+  return String::Format("%dpx", value);
+}
+
+const FeatureContext* StyleEnvironmentVariables::GetFeatureContext() const {
+  return nullptr;
 }
 
 void StyleEnvironmentVariables::ClearForTesting() {

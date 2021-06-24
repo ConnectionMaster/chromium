@@ -9,9 +9,15 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "remoting/base/auto_thread.h"
+#include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/host/setup/daemon_controller.h"
 
 namespace remoting {
+
+namespace mac {
+class PermissionWizard;
+}
 
 class DaemonControllerDelegateMac : public DaemonController::Delegate {
  public:
@@ -21,16 +27,23 @@ class DaemonControllerDelegateMac : public DaemonController::Delegate {
   // DaemonController::Delegate interface.
   DaemonController::State GetState() override;
   std::unique_ptr<base::DictionaryValue> GetConfig() override;
-  void SetConfigAndStart(
-      std::unique_ptr<base::DictionaryValue> config,
-      bool consent,
-      const DaemonController::CompletionCallback& done) override;
+  void CheckPermission(bool it2me, DaemonController::BoolCallback) override;
+  void SetConfigAndStart(std::unique_ptr<base::DictionaryValue> config,
+                         bool consent,
+                         DaemonController::CompletionCallback done) override;
   void UpdateConfig(std::unique_ptr<base::DictionaryValue> config,
-                    const DaemonController::CompletionCallback& done) override;
-  void Stop(const DaemonController::CompletionCallback& done) override;
+                    DaemonController::CompletionCallback done) override;
+  void Stop(DaemonController::CompletionCallback done) override;
   DaemonController::UsageStatsConsent GetUsageStatsConsent() override;
 
  private:
+  std::unique_ptr<mac::PermissionWizard> permission_wizard_;
+
+  // Task runner used to run blocking calls that would otherwise block the UI
+  // thread.
+  scoped_refptr<AutoThreadTaskRunner> io_task_runner_;
+  AutoThread io_thread_;
+
   DISALLOW_COPY_AND_ASSIGN(DaemonControllerDelegateMac);
 };
 

@@ -5,11 +5,14 @@
 #ifndef CHROME_BROWSER_SAFE_BROWSING_SAFE_BROWSING_NAVIGATION_OBSERVER_H_
 #define CHROME_BROWSER_SAFE_BROWSING_SAFE_BROWSING_NAVIGATION_OBSERVER_H_
 
-#include "base/scoped_observer.h"
+#include <unordered_map>
+
+#include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
 #include "components/content_settings/core/browser/content_settings_observer.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
-#include "components/safe_browsing/proto/csd.pb.h"
+#include "components/safe_browsing/core/proto/csd.pb.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "url/gurl.h"
@@ -17,8 +20,6 @@
 namespace content {
 class NavigationHandle;
 }
-
-class HostContentSettingsMap;
 
 namespace safe_browsing {
 class SafeBrowsingNavigationObserverManager;
@@ -29,6 +30,7 @@ class SafeBrowsingNavigationObserverManager;
 struct NavigationEvent {
   NavigationEvent();
   NavigationEvent(NavigationEvent&& nav_event);
+  NavigationEvent(const NavigationEvent& nav_event);
   NavigationEvent& operator=(NavigationEvent&& nav_event);
   ~NavigationEvent();
 
@@ -47,8 +49,8 @@ struct NavigationEvent {
   std::vector<GURL> server_redirect_urls;
 
   // Which tab contains the frame with source_url. Tab ID is returned by
-  // SessionTabHelper::IdForTab. This ID is immutable for a given tab and unique
-  // across Chrome within the current session.
+  // sessions::SessionTabHelper::IdForTab. This ID is immutable for a given tab
+  // and unique across Chrome within the current session.
   SessionID source_tab_id;
 
   // Which tab this request url is targeting to.
@@ -106,11 +108,12 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
   static SafeBrowsingNavigationObserver* FromWebContents(
       content::WebContents* web_contents);
 
-  SafeBrowsingNavigationObserver(
-      content::WebContents* contents,
-      const scoped_refptr<SafeBrowsingNavigationObserverManager>& manager);
+  explicit SafeBrowsingNavigationObserver(content::WebContents* contents);
 
   ~SafeBrowsingNavigationObserver() override;
+
+  void SetObserverManagerForTesting(
+      SafeBrowsingNavigationObserverManager* observer_manager);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(SBNavigationObserverTest, TestContentSettingChange);
@@ -120,6 +123,8 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
 
   void OnUserInteraction();
 
+  SafeBrowsingNavigationObserverManager* GetObserverManager();
+
   // content::WebContentsObserver:
   void DidStartNavigation(
       content::NavigationHandle* navigation_handle) override;
@@ -127,7 +132,7 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
       content::NavigationHandle* navigation_handle) override;
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
-  void DidGetUserInteraction(const blink::WebInputEvent::Type type) override;
+  void DidGetUserInteraction(const blink::WebInputEvent& event) override;
   void WebContentsDestroyed() override;
   void DidOpenRequestedURL(content::WebContents* new_contents,
                            content::RenderFrameHost* source_render_frame_host,
@@ -141,8 +146,7 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
   // content_settings::Observer overrides.
   void OnContentSettingChanged(const ContentSettingsPattern& primary_pattern,
                                const ContentSettingsPattern& secondary_pattern,
-                               ContentSettingsType content_type,
-                               const std::string& resource_identifier) override;
+                               ContentSettingsType content_type) override;
 
   // Map keyed on NavigationHandle* to keep track of all the ongoing navigation
   // events. NavigationHandle pointers are owned by RenderFrameHost. Since a
@@ -152,14 +156,11 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
   // SafeBrowsingNavigationObserverManager::navigation_map_.
   NavigationHandleMap navigation_handle_map_;
 
-  scoped_refptr<SafeBrowsingNavigationObserverManager> manager_;
+  base::ScopedObservation<HostContentSettingsMap, content_settings::Observer>
+      content_settings_observation_{this};
 
-  // If the observed WebContents just got an user gesture.
-  bool has_user_gesture_;
-
-  base::Time last_user_gesture_timestamp_;
-  ScopedObserver<HostContentSettingsMap, content_settings::Observer>
-      content_settings_observer_;
+  SafeBrowsingNavigationObserverManager* observer_manager_for_testing_ =
+      nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(SafeBrowsingNavigationObserver);
 };

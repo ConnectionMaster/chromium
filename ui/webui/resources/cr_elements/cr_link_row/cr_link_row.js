@@ -9,62 +9,98 @@
  * of this element to take the user to another page in the app or to an external
  * page (somewhat like an HTML link).
  */
-Polymer({
-  is: 'cr-link-row',
+import '../cr_actionable_row_style.m.js';
+import '../cr_icon_button/cr_icon_button.m.js';
+import '../hidden_style_css.m.js';
+import '../icons.m.js';
+import '../shared_style_css.m.js';
+import '../shared_vars_css.m.js';
+import '//resources/polymer/v3_0/iron-icon/iron-icon.js';
 
-  properties: {
-    startIcon: {
-      type: String,
-      value: '',
-    },
+import {html, PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-    label: {
-      type: String,
-      value: '',
-    },
+/** @polymer */
+export class CrLinkRowElement extends PolymerElement {
+  static get is() {
+    return 'cr-link-row';
+  }
 
-    subLabel: {
-      type: String,
-      /* Value used for noSubLabel attribute. */
-      value: '',
-      observer: 'onSubLabelChange_',
-    },
+  static get template() {
+    return html`{__html_template__}`;
+  }
 
-    disabled: {
-      type: Boolean,
-      reflectToAttribute: true,
-    },
+  static get properties() {
+    return {
+      startIcon: {
+        type: String,
+        value: '',
+      },
 
-    external: {
-      type: Boolean,
-      value: false,
-    },
+      label: {
+        type: String,
+        value: '',
+      },
 
-    /** @private {string|undefined} */
-    ariaDescribedBy_: String,
-  },
+      subLabel: {
+        type: String,
+        /* Value used for noSubLabel attribute. */
+        value: '',
+      },
+
+      disabled: {
+        type: Boolean,
+        reflectToAttribute: true,
+      },
+
+      external: {
+        type: Boolean,
+        value: false,
+      },
+
+      usingSlottedLabel: {
+        type: Boolean,
+        value: false,
+      },
+
+      roleDescription: String,
+
+      /** @private */
+      hideLabelWrapper_: {
+        type: Boolean,
+        computed: 'computeHideLabelWrapper_(label, usingSlottedLabel)',
+      },
+    };
+  }
 
   /** @type {boolean} */
   get noink() {
     return this.$.icon.noink;
-  },
+  }
 
   /** @type {boolean} */
   set noink(value) {
     this.$.icon.noink = value;
-  },
+  }
 
-  focus: function() {
+  focus() {
     this.$.icon.focus();
-  },
+  }
 
-  /** @private */
-  getIconClass_: function() {
-    return this.external ? 'icon-external' : 'subpage-arrow';
-  },
+  /**
+   * @return {boolean}
+   * @private
+   */
+  computeHideLabelWrapper_() {
+    return !(this.label || this.usingSlottedLabel);
+  }
 
-  /** @private */
-  onSubLabelChange_: function() {
-    this.ariaDescribedBy_ = this.subLabel ? 'subLabel' : undefined;
-  },
-});
+  /**
+   * @return {string}
+   * @private
+   */
+  getIcon_() {
+    return this.external ? 'cr:open-in-new' : 'cr:arrow-right';
+  }
+}
+
+customElements.define(CrLinkRowElement.is, CrLinkRowElement);

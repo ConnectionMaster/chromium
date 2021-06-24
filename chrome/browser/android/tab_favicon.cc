@@ -4,9 +4,9 @@
 
 #include "chrome/browser/android/tab_favicon.h"
 
+#include "chrome/android/chrome_jni_headers/TabFavicon_jni.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "content/public/browser/web_contents.h"
-#include "jni/TabFavicon_jni.h"
 #include "skia/ext/image_operations.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -64,7 +64,7 @@ ScopedJavaLocalRef<jobject> TabFavicon::GetFavicon(
           target_size_dip);
     }
 
-    bitmap = gfx::ConvertToJavaBitmap(&favicon);
+    bitmap = gfx::ConvertToJavaBitmap(favicon);
   }
   return bitmap;
 }
@@ -85,7 +85,7 @@ void TabFavicon::OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
 
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_TabFavicon_onFaviconAvailable(env, jobj_,
-                                     gfx::ConvertToJavaBitmap(&favicon));
+                                     gfx::ConvertToJavaBitmap(favicon));
 }
 
 static jlong JNI_TabFavicon_Init(JNIEnv* env,

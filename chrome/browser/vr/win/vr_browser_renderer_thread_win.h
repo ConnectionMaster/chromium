@@ -7,15 +7,16 @@
 
 #include <memory>
 
+#include "base/cancelable_callback.h"
 #include "base/threading/thread.h"
 #include "chrome/browser/vr/browser_renderer.h"
 #include "chrome/browser/vr/model/capturing_state_model.h"
 #include "chrome/browser/vr/model/web_vr_model.h"
-#include "chrome/browser/vr/service/browser_xr_runtime.h"
 #include "chrome/browser/vr/vr_export.h"
 #include "content/public/browser/web_contents.h"
 #include "device/vr/public/mojom/isolated_xr_service.mojom.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 namespace vr {
 
@@ -34,6 +35,7 @@ class VR_EXPORT VRBrowserRendererThreadWin {
   void SetVRDisplayInfo(device::mojom::VRDisplayInfoPtr display_info);
   void SetLocationInfo(GURL gurl);
   void SetWebXrPresenting(bool presenting);
+  void SetFramesThrottled(bool throttled);
 
   // The below function(s) affect(s) whether UI is drawn or not.
   void SetVisibleExternalPromptNotification(
@@ -67,9 +69,10 @@ class VR_EXPORT VRBrowserRendererThreadWin {
     bool indicators_visible_ = false;
   };
 
-  void OnPose(int request_id, device::mojom::XRFrameDataPtr data);
+  void OnPose(int request_id, device::mojom::XRRenderInfoPtr data);
+  bool PreRender();
   void SubmitResult(bool success);
-  void SubmitFrame(device::mojom::XRFrameDataPtr data);
+  void SubmitFrame(int16_t frame_id);
   void StartOverlay();
   void StopOverlay();
   void OnWebXRSubmitted();
@@ -79,6 +82,8 @@ class VR_EXPORT VRBrowserRendererThreadWin {
   void StartWebXrTimeout();
   void StopWebXrTimeout();
   int GetNextRequestId();
+
+  void UpdateOverlayState();
 
   // We need to do some initialization of GraphicsDelegateWin before
   // browser_renderer_, so we first store it in a unique_ptr, then transition
@@ -102,10 +107,12 @@ class VR_EXPORT VRBrowserRendererThreadWin {
   DrawState draw_state_;
   bool started_ = false;
   bool webxr_presenting_ = false;
-  bool waiting_for_first_frame_ = true;
+  bool frame_timeout_running_ = true;
+  bool waiting_for_webxr_frame_ = false;
+  bool frames_throttled_ = false;
   int current_request_id_ = 0;
 
-  device::mojom::ImmersiveOverlayPtr overlay_;
+  mojo::Remote<device::mojom::ImmersiveOverlay> overlay_;
   device::mojom::VRDisplayInfoPtr display_info_;
 
   base::CancelableOnceClosure webxr_frame_timeout_closure_;

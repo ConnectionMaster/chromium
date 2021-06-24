@@ -25,9 +25,6 @@ base::LazyInstance<AXPlatformNode::NativeWindowHandlerCallback>::Leaky
 AXMode AXPlatformNode::ax_mode_;
 
 // static
-bool AXPlatformNode::has_input_suggestions_ = false;
-
-// static
 gfx::NativeViewAccessible AXPlatformNode::popup_focus_override_ = nullptr;
 
 // static
@@ -65,6 +62,26 @@ int32_t AXPlatformNode::GetUniqueId() const {
   return GetDelegate() ? GetDelegate()->GetUniqueId().Get() : -1;
 }
 
+void AXPlatformNode::SetIsPrimaryWebContentsForWindow(bool is_primary) {
+  is_primary_web_contents_for_window_ = is_primary;
+}
+
+bool AXPlatformNode::IsPrimaryWebContentsForWindow() const {
+  return is_primary_web_contents_for_window_;
+}
+
+std::string AXPlatformNode::ToString() {
+  return GetDelegate() ? GetDelegate()->ToString() : "No delegate";
+}
+
+std::string AXPlatformNode::SubtreeToString() {
+  return GetDelegate() ? GetDelegate()->SubtreeToString() : "No delegate";
+}
+
+std::ostream& operator<<(std::ostream& stream, AXPlatformNode& node) {
+  return stream << node.ToString();
+}
+
 // static
 void AXPlatformNode::AddAXModeObserver(AXModeObserver* observer) {
   ax_mode_observers_.Get().AddObserver(observer);
@@ -77,6 +94,7 @@ void AXPlatformNode::RemoveAXModeObserver(AXModeObserver* observer) {
 
 // static
 void AXPlatformNode::NotifyAddAXModeFlags(AXMode mode_flags) {
+  // Note: this is only called on Windows, and in tests.
   AXMode new_ax_mode(ax_mode_);
   new_ax_mode |= mode_flags;
 
@@ -86,30 +104,17 @@ void AXPlatformNode::NotifyAddAXModeFlags(AXMode mode_flags) {
   ax_mode_ = new_ax_mode;
   for (auto& observer : ax_mode_observers_.Get())
     observer.OnAXModeAdded(mode_flags);
-
-  // Add a crash key with the ax_mode, to enable searching for top crashes that
-  // occur when accessibility is turned on. This adds it for the browser
-  // process, and elsewhere the same key is added to renderer processes.
-  static auto* ax_mode_crash_key = base::debug::AllocateCrashKeyString(
-      "ax_mode", base::debug::CrashKeySize::Size64);
-  if (ax_mode_crash_key)
-    base::debug::SetCrashKeyString(ax_mode_crash_key, new_ax_mode.ToString());
 }
 
 // static
-void AXPlatformNode::OnInputSuggestionsAvailable() {
-  has_input_suggestions_ = true;
+void AXPlatformNode::SetAXMode(AXMode new_mode) {
+  // Note: this is only called on Windows.
+  ax_mode_ = new_mode;
 }
 
 // static
-void AXPlatformNode::OnInputSuggestionsUnavailable() {
-  has_input_suggestions_ = false;
-}
-
-// static
-// TODO(crbug.com/865101) Remove this once the autofill state works.
-bool AXPlatformNode::HasInputSuggestions() {
-  return has_input_suggestions_;
+void AXPlatformNode::ResetAxModeForTesting() {
+  ax_mode_ = 0;
 }
 
 // static

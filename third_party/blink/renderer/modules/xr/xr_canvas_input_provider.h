@@ -19,12 +19,11 @@ class PointerEvent;
 class XRInputSource;
 class XRSession;
 
-class XRCanvasInputProvider
-    : public GarbageCollectedFinalized<XRCanvasInputProvider>,
-      public NameClient {
+class XRCanvasInputProvider : public GarbageCollected<XRCanvasInputProvider>,
+                              public NameClient {
  public:
   XRCanvasInputProvider(XRSession*, HTMLCanvasElement*);
-  virtual ~XRCanvasInputProvider();
+  ~XRCanvasInputProvider() override;
 
   XRSession* session() const { return session_; }
   HTMLCanvasElement* canvas() const { return canvas_; }
@@ -39,7 +38,7 @@ class XRCanvasInputProvider
 
   XRInputSource* GetInputSource();
 
-  virtual void Trace(blink::Visitor*);
+  virtual void Trace(Visitor*) const;
   const char* NameInHeapSnapshot() const override {
     return "XRCanvasInputProvider";
   }

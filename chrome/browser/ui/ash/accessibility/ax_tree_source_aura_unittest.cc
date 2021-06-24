@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <vector>
 
 #include "base/macros.h"
@@ -32,8 +33,7 @@ using views::Textfield;
 using views::View;
 using views::Widget;
 
-using AuraAXTreeSerializer = ui::
-    AXTreeSerializer<views::AXAuraObjWrapper*, ui::AXNodeData, ui::AXTreeData>;
+using AuraAXTreeSerializer = ui::AXTreeSerializer<views::AXAuraObjWrapper*>;
 
 // Helper to count the number of nodes in a tree.
 size_t GetSize(AXAuraObjWrapper* tree) {
@@ -62,13 +62,12 @@ class AXTreeSourceAuraTest : public ChromeViewsTestBase {
     widget_ = new Widget();
     Widget::InitParams init_params(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
     init_params.context = GetContext();
-    widget_->Init(init_params);
+    widget_->Init(std::move(init_params));
 
-    content_ = new View();
-    widget_->SetContentsView(content_);
+    content_ = widget_->SetContentsView(std::make_unique<View>());
 
     textfield_ = new Textfield();
-    textfield_->SetText(base::ASCIIToUTF16("Value"));
+    textfield_->SetText(u"Value");
     content_->AddChildView(textfield_);
     widget_->Show();
   }
@@ -114,9 +113,7 @@ TEST_F(AXTreeSourceAuraTest, Accessors) {
   ASSERT_EQ(cached_textfield, textfield);
   std::vector<AXAuraObjWrapper*> textfield_children;
   ax_tree.GetChildren(textfield, &textfield_children);
-  // The textfield has an extra child in Harmony, the focus ring.
-  const size_t expected_children = 2;
-  ASSERT_EQ(expected_children, textfield_children.size());
+  ASSERT_EQ(0u, textfield_children.size());
 
   ASSERT_EQ(content, textfield->GetParent());
 
@@ -189,7 +186,7 @@ TEST_F(AXTreeSourceAuraTest, Serialize) {
   size_t node_count = out_update2.nodes.size();
 
   // We should have far more updates this time around.
-  ASSERT_GE(node_count, 8U);
+  EXPECT_GE(node_count, 7U);
 
   int text_field_update_index = -1;
   for (size_t i = 0; i < node_count; ++i) {

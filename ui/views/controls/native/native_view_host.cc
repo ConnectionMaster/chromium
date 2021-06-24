@@ -4,8 +4,13 @@
 
 #include "ui/views/controls/native/native_view_host.h"
 
-#include "base/logging.h"
+#include <memory>
+#include <utility>
+
+#include "base/check.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
 #include "ui/views/controls/native/native_view_host_wrapper.h"
 #include "ui/views/painter.h"
@@ -14,7 +19,6 @@
 namespace views {
 
 // static
-const char NativeViewHost::kViewClassName[] = "NativeViewHost";
 const char kWidgetNativeViewHostKey[] = "WidgetNativeViewHost";
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -33,13 +37,13 @@ void NativeViewHost::Attach(gfx::NativeView native_view) {
   DCHECK(!native_view_);
   native_view_ = native_view;
   native_wrapper_->AttachNativeView();
-  // This does not use InvalidateLayout() to ensure the visibility state of
-  // the NativeView is correctly set (if this View isn't visible, Layout()
-  // won't, be called, resulting in the NativeView potentially having the wrong
-  // visibility state).
-  // TODO(https://crbug.com/947051): inestigate removing updating visibility
-  // immediately and calling InvalidateLayout() to update bounds.
-  Layout();
+  InvalidateLayout();
+  // The call to InvalidateLayout() triggers an async call to Layout(), which
+  // updates the visibility of the NativeView. The call to Layout() only happens
+  // if |this| is drawn. Call hide if not drawn as otherwise the NativeView
+  // could be visible when |this| is not.
+  if (!IsDrawn())
+    native_wrapper_->HideWidget();
 
   Widget* widget = Widget::GetWidgetForNativeView(native_view);
   if (widget)
@@ -51,13 +55,19 @@ void NativeViewHost::Detach() {
 }
 
 void NativeViewHost::SetParentAccessible(gfx::NativeViewAccessible accessible) {
+  if (!native_wrapper_)
+    return;
   native_wrapper_->SetParentAccessible(accessible);
 }
 
-bool NativeViewHost::SetCornerRadius(int corner_radius) {
-  return SetCustomMask(views::Painter::CreatePaintedLayer(
-      views::Painter::CreateSolidRoundRectPainter(SK_ColorBLACK,
-                                                  corner_radius)));
+gfx::NativeViewAccessible NativeViewHost::GetParentAccessible() {
+  if (!native_wrapper_)
+    return nullptr;
+  return native_wrapper_->GetParentAccessible();
+}
+
+bool NativeViewHost::SetCornerRadii(const gfx::RoundedCornersF& corner_radii) {
+  return native_wrapper_->SetCornerRadii(corner_radii);
 }
 
 bool NativeViewHost::SetCustomMask(std::unique_ptr<ui::LayerOwner> mask) {
@@ -130,7 +140,6 @@ void NativeViewHost::Layout() {
   } else {
     native_wrapper_->HideWidget();
   }
-  fast_resize_at_last_layout_ = visible && fast_resize_;
 }
 
 void NativeViewHost::OnPaint(gfx::Canvas* canvas) {
@@ -196,10 +205,6 @@ void NativeViewHost::ViewHierarchyChanged(
   }
 }
 
-const char* NativeViewHost::GetClassName() const {
-  return kViewClassName;
-}
-
 void NativeViewHost::OnFocus() {
   if (native_view_)
     native_wrapper_->SetFocus();
@@ -222,7 +227,8 @@ gfx::NativeCursor NativeViewHost::GetCursor(const ui::MouseEvent& event) {
 }
 
 void NativeViewHost::SetVisible(bool visible) {
-  native_wrapper_->SetVisible(visible);
+  if (native_view_)
+    native_wrapper_->SetVisible(visible);
   View::SetVisible(visible);
 }
 
@@ -249,11 +255,14 @@ void NativeViewHost::ClearFocus() {
 
   Widget::Widgets widgets;
   Widget::GetAllChildWidgets(native_view(), &widgets);
-  for (auto i = widgets.begin(); i != widgets.end(); ++i) {
-    focus_manager->ViewRemoved((*i)->GetRootView());
+  for (auto* widget : widgets) {
+    focus_manager->ViewRemoved(widget->GetRootView());
     if (!focus_manager->GetFocusedView())
       return;
   }
 }
+
+BEGIN_METADATA(NativeViewHost, View)
+END_METADATA
 
 }  // namespace views

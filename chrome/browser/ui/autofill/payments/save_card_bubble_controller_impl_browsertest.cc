@@ -6,10 +6,9 @@
 
 #include <memory>
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/browser.h"
@@ -19,8 +18,8 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/autofill/core/browser/autofill_test_utils.h"
-#include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/autofill/core/browser/payments/legal_message_line.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
@@ -31,14 +30,9 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     DialogBrowserTest::SetUpCommandLine(command_line);
-    scoped_feature_list_.InitWithFeatures(
-        // Enabled.
-        {features::kAutofillSaveCardSignInAfterLocalSave},
-        // Disabled.
-        {});
   }
 
-  std::unique_ptr<base::DictionaryValue> GetTestLegalMessage() {
+  LegalMessageLines GetTestLegalMessage() {
     std::unique_ptr<base::Value> value(base::JSONReader::ReadDeprecated(
         "{"
         "  \"line\" : [ {"
@@ -54,7 +48,10 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
         "}"));
     base::DictionaryValue* dictionary;
     value->GetAsDictionary(&dictionary);
-    return dictionary->CreateDeepCopy();
+    LegalMessageLines legal_message_lines;
+    LegalMessageLine::Parse(*dictionary, &legal_message_lines,
+                            /*escape_apostrophes=*/true);
+    return legal_message_lines;
   }
 
   // DialogBrowserTest:
@@ -82,10 +79,10 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
       bubble_type = BubbleType::LOCAL_SAVE;
     if (name.find("Server") != std::string::npos)
       bubble_type = BubbleType::UPLOAD_SAVE;
-    if (name.find("Promo") != std::string::npos)
-      bubble_type = BubbleType::SIGN_IN_PROMO;
     if (name.find("Manage") != std::string::npos)
       bubble_type = BubbleType::MANAGE_CARDS;
+    if (name.find("Failure") != std::string::npos)
+      bubble_type = BubbleType::FAILURE;
 
     switch (bubble_type) {
       case BubbleType::LOCAL_SAVE:
@@ -99,12 +96,13 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
                                      GetTestLegalMessage(), options,
                                      base::DoNothing());
         break;
-      case BubbleType::SIGN_IN_PROMO:
-        controller_->ShowBubbleForSignInPromo();
-        break;
       case BubbleType::MANAGE_CARDS:
         controller_->ShowBubbleForManageCardsForTesting(test::GetCreditCard());
         break;
+      case BubbleType::FAILURE:
+        controller_->ShowBubbleForSaveCardFailureForTesting();
+        break;
+      case BubbleType::UPLOAD_IN_PROGRESS:
       case BubbleType::INACTIVE:
         break;
     }
@@ -114,7 +112,6 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
 
  private:
   SaveCardBubbleControllerImpl* controller_ = nullptr;
-  base::test::ScopedFeatureList scoped_feature_list_;
 
   DISALLOW_COPY_AND_ASSIGN(SaveCardBubbleControllerImplTest);
 };
@@ -159,17 +156,22 @@ IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest, InvokeUi_Manage) {
   ShowAndVerifyUi();
 }
 
+// Invokes a bubble displaying the card saving just failed.
+IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest, InvokeUi_Failure) {
+  ShowAndVerifyUi();
+}
+
 // Tests that opening a new tab will hide the save card bubble.
 IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest, NewTabHidesDialog) {
   ShowUi("Local");
-  EXPECT_NE(nullptr, controller()->save_card_bubble_view());
+  EXPECT_NE(nullptr, controller()->GetSaveCardBubbleView());
   // Open a new tab page in the foreground.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(chrome::kChromeUINewTabURL),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
-          ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
-  EXPECT_EQ(nullptr, controller()->save_card_bubble_view());
+          ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  EXPECT_EQ(nullptr, controller()->GetSaveCardBubbleView());
 }
 
 }  // namespace autofill

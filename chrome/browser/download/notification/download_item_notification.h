@@ -12,7 +12,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/download/download_commands.h"
 #include "chrome/browser/download/download_ui_model.h"
-#include "chrome/browser/image_decoder.h"
+#include "chrome/browser/image_decoder/image_decoder.h"
+#include "chrome/browser/ui/browser.h"
 #include "components/download/public/common/download_item.h"
 #include "components/offline_items_collection/core/offline_item.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -61,8 +62,8 @@ class DownloadItemNotification : public ImageDecoder::ImageRequest,
 
   // NotificationObserver:
   void Close(bool by_user) override;
-  void Click(const base::Optional<int>& button_index,
-             const base::Optional<base::string16>& reply) override;
+  void Click(const absl::optional<int>& button_index,
+             const absl::optional<std::u16string>& reply) override;
 
   void ShutDown();
 
@@ -93,27 +94,28 @@ class DownloadItemNotification : public ImageDecoder::ImageRequest,
   void OnDecodeImageFailed() override;
 
   // Returns a short one-line status string for the download.
-  base::string16 GetTitle() const;
+  std::u16string GetTitle() const;
 
   // Returns a short one-line status string for a download command.
-  base::string16 GetCommandLabel(DownloadCommands::Command command) const;
+  std::u16string GetCommandLabel(DownloadCommands::Command command) const;
 
   // Get the warning text to notify a dangerous download. Should only be called
   // if IsDangerous() is true.
-  base::string16 GetWarningStatusString() const;
+  std::u16string GetWarningStatusString() const;
 
   // Get the sub status text of the current in-progress download status. Should
   // be called only for downloads in progress.
-  base::string16 GetInProgressSubStatusString() const;
+  std::u16string GetInProgressSubStatusString() const;
 
   // Get the sub status text. Can be called for downloads in all states.
   // If the state does not have sub status string, it returns empty string.
-  base::string16 GetSubStatusString() const;
+  std::u16string GetSubStatusString() const;
 
   // Get the status text.
-  base::string16 GetStatusString() const;
+  std::u16string GetStatusString() const;
 
-  bool IsNotificationVisible() const;
+  bool IsScanning() const;
+  bool AllowedToOpenWhileScanning() const;
 
   Browser* GetBrowser() const;
   Profile* profile() const;
@@ -139,6 +141,7 @@ class DownloadItemNotification : public ImageDecoder::ImageRequest,
   download::DownloadItem::DownloadState previous_download_state_ =
       download::DownloadItem::MAX_DOWNLOAD_STATE;  // As uninitialized state
   bool previous_dangerous_state_ = false;
+  bool previous_mixed_content_state_ = false;
   std::unique_ptr<message_center::Notification> notification_;
 
   DownloadUIModel::DownloadUIModelPtr item_;
@@ -147,7 +150,7 @@ class DownloadItemNotification : public ImageDecoder::ImageRequest,
   // Status of the preview image decode.
   ImageDecodeStatus image_decode_status_ = NOT_STARTED;
 
-  base::WeakPtrFactory<DownloadItemNotification> weak_factory_;
+  base::WeakPtrFactory<DownloadItemNotification> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DownloadItemNotification);
 };

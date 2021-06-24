@@ -13,11 +13,10 @@
 #include <utility>
 
 #include "base/json/json_writer.h"
+#include "base/ranges/algorithm.h"
 #include "base/values.h"
 #include "extensions/common/extension_messages.h"
 #include "extensions/common/permissions/api_permission.h"
-#include "ipc/ipc_message.h"
-#include "ipc/ipc_message_utils.h"
 
 namespace extensions {
 
@@ -52,8 +51,7 @@ class SetDisjunctionPermission : public APIPermission {
     CHECK(rhs->info() == info());
     const SetDisjunctionPermission* perm =
         static_cast<const SetDisjunctionPermission*>(rhs);
-    return base::STLIncludes<std::set<PermissionDataType> >(
-        data_set_, perm->data_set_);
+    return base::ranges::includes(data_set_, perm->data_set_);
   }
 
   bool Equal(const APIPermission* rhs) const override {
@@ -153,16 +151,6 @@ class SetDisjunctionPermission : public APIPermission {
       list->Append(std::move(item_value));
     }
     return std::unique_ptr<base::Value>(list);
-  }
-
-  void Write(base::Pickle* m) const override { IPC::WriteParam(m, data_set_); }
-
-  bool Read(const base::Pickle* m, base::PickleIterator* iter) override {
-    return IPC::ReadParam(m, iter, &data_set_);
-  }
-
-  void Log(std::string* log) const override {
-    IPC::LogParam(data_set_, log);
   }
 
  protected:

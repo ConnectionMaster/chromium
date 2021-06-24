@@ -5,54 +5,40 @@
 #include "headless/lib/browser/headless_request_context_manager.h"
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
-#include "components/cookie_config/cookie_store_util.h"
-#include "components/os_crypt/key_storage_config_linux.h"
-#include "components/os_crypt/os_crypt.h"
+#include "build/chromeos_buildflags.h"
 #include "content/public/browser/browser_task_traits.h"
-#include "content/public/browser/cookie_store_factory.h"
-#include "content/public/browser/devtools_network_transaction_factory.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/resource_context.h"
 #include "headless/app/headless_shell_switches.h"
 #include "headless/lib/browser/headless_browser_context_options.h"
-#include "net/base/network_delegate_impl.h"
-#include "net/cookies/cookie_store.h"
-#include "net/http/http_auth_handler_factory.h"
-#include "net/http/http_auth_scheme.h"
-#include "net/http/http_transaction_factory.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_context_builder.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "net/http/http_auth_preferences.h"
+#include "net/proxy_resolution/configured_proxy_resolution_service.h"
+#include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom.h"
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/url_request_context_builder_mojo.h"
+
+#if defined(HEADLESS_USE_PREFS)
+#include "components/os_crypt/os_crypt.h"
+#include "content/public/common/network_service_util.h"
+#endif
 
 namespace headless {
 
 namespace {
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-static char kProductName[] = "HeadlessChrome";
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+constexpr char kProductName[] = "HeadlessChrome";
 #endif
-
-class DelegateImpl : public net::NetworkDelegateImpl {
- public:
-  DelegateImpl() = default;
-  ~DelegateImpl() override = default;
-
- private:
-  // net::NetworkDelegateImpl implementation.
-  bool OnCanAccessFile(const net::URLRequest& request,
-                       const base::FilePath& original_path,
-                       const base::FilePath& absolute_path) const override {
-    return true;
-  }
-
-  DISALLOW_COPY_AND_ASSIGN(DelegateImpl);
-};
 
 net::NetworkTrafficAnnotationTag GetProxyConfigTrafficAnnotationTag() {
   static net::NetworkTrafficAnnotationTag traffic_annotation =
@@ -80,13 +66,15 @@ net::NetworkTrafficAnnotationTag GetProxyConfigTrafficAnnotationTag() {
   return traffic_annotation;
 }
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-::network::mojom::CryptConfigPtr BuildCryptConfigOnce(
-    const base::FilePath& user_data_path) {
+void SetCryptConfigOnce(const base::FilePath& user_data_path) {
   static bool done_once = false;
   if (done_once)
-    return nullptr;
+    return;
   done_once = true;
+
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   ::network::mojom::CryptConfigPtr config =
       ::network::mojom::CryptConfig::New();
   config->store = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
@@ -94,68 +82,19 @@ net::NetworkTrafficAnnotationTag GetProxyConfigTrafficAnnotationTag() {
   config->product_name = kProductName;
   config->should_use_preference = false;
   config->user_data_path = user_data_path;
-  return config;
-}
+  content::GetNetworkService()->SetCryptConfig(std::move(config));
+#elif defined(OS_WIN) && defined(HEADLESS_USE_PREFS)
+  // The OSCrypt keys are process bound, so if network service is out of
+  // process, send it the required key if it is available.
+  if (content::IsOutOfProcessNetworkService() &&
+      OSCrypt::IsEncryptionAvailable()) {
+    content::GetNetworkService()->SetEncryptionKey(
+        OSCrypt::GetRawEncryptionKey());
+  }
 #endif
+}
 
 }  // namespace
-
-// Contains net::URLRequestContextGetter required for resource loading.
-// Must be destructed on the IO thread as per content::ResourceContext
-// requirements.
-class HeadlessResourceContext : public content::ResourceContext {
- public:
-  HeadlessResourceContext() = default;
-  ~HeadlessResourceContext() override {
-    DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::IO));
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(HeadlessResourceContext);
-};
-
-class HeadlessURLRequestContextGetter : public net::URLRequestContextGetter {
- public:
-  explicit HeadlessURLRequestContextGetter(
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner)
-      : context_(nullptr), task_runner_(task_runner) {}
-
-  net::URLRequestContext* GetURLRequestContext() override { return context_; }
-
-  scoped_refptr<base::SingleThreadTaskRunner> GetNetworkTaskRunner()
-      const override {
-    return task_runner_;
-  }
-
-  void SetURLRequestContext(net::URLRequestContext* context) {
-    DCHECK(!context_ && !context_owner_);
-    DCHECK(!base::FeatureList::IsEnabled(::network::features::kNetworkService));
-
-    context_ = context;
-  }
-
-  void SetURLRequestContext(std::unique_ptr<net::URLRequestContext> context) {
-    DCHECK(!context_ && !context_owner_);
-    DCHECK(base::FeatureList::IsEnabled(::network::features::kNetworkService));
-
-    context_owner_ = std::move(context);
-    context_ = context_owner_.get();
-  }
-
-  void Shutdown() {
-    context_ = nullptr;
-    NotifyContextShuttingDown();
-    if (context_owner_)
-      task_runner_->DeleteSoon(FROM_HERE, context_owner_.release());
-  }
-
- private:
-  ~HeadlessURLRequestContextGetter() override { DCHECK(!context_); }
-
-  net::URLRequestContext* context_;
-  std::unique_ptr<net::URLRequestContext> context_owner_;
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-};
 
 // Tracks the ProxyConfig to use, and passes any updates to a NetworkContext's
 // ProxyConfigClient.
@@ -169,12 +108,12 @@ class HeadlessProxyConfigMonitor
 
   explicit HeadlessProxyConfigMonitor(
       scoped_refptr<base::SingleThreadTaskRunner> task_runner)
-      : task_runner_(task_runner), poller_binding_(this) {
+      : task_runner_(task_runner) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     // We must create the proxy config service on the UI loop on Linux because
     // it must synchronously run on the glib message loop.
     proxy_config_service_ =
-        net::ProxyResolutionService::CreateSystemProxyConfigService(
+        net::ConfiguredProxyResolutionService::CreateSystemProxyConfigService(
             task_runner_);
     task_runner_->PostTask(
         FROM_HERE, base::BindOnce(&net::ProxyConfigService::AddObserver,
@@ -195,10 +134,10 @@ class HeadlessProxyConfigMonitor
       ::network::mojom::NetworkContextParams* network_context_params) {
     DCHECK(task_runner_->RunsTasksInCurrentSequence());
     DCHECK(!proxy_config_client_);
-    network_context_params->proxy_config_client_request =
-        mojo::MakeRequest(&proxy_config_client_);
-    poller_binding_.Bind(
-        mojo::MakeRequest(&network_context_params->proxy_config_poller_client));
+    network_context_params->proxy_config_client_receiver =
+        proxy_config_client_.BindNewPipeAndPassReceiver();
+    poller_receiver_.Bind(network_context_params->proxy_config_poller_client
+                              .InitWithNewPipeAndPassReceiver());
     net::ProxyConfigWithAnnotation proxy_config;
     net::ProxyConfigService::ConfigAvailability availability =
         proxy_config_service_->GetLatestProxyConfig(&proxy_config);
@@ -232,8 +171,9 @@ class HeadlessProxyConfigMonitor
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   std::unique_ptr<net::ProxyConfigService> proxy_config_service_;
-  mojo::Binding<::network::mojom::ProxyConfigPollerClient> poller_binding_;
-  ::network::mojom::ProxyConfigClientPtr proxy_config_client_;
+  mojo::Receiver<::network::mojom::ProxyConfigPollerClient> poller_receiver_{
+      this};
+  mojo::Remote<::network::mojom::ProxyConfigClient> proxy_config_client_;
 
   DISALLOW_COPY_AND_ASSIGN(HeadlessProxyConfigMonitor);
 };
@@ -244,21 +184,40 @@ HeadlessRequestContextManager::CreateSystemContext(
     const HeadlessBrowserContextOptions* options) {
   auto manager = std::make_unique<HeadlessRequestContextManager>(
       options, base::FilePath());
-  manager->is_system_context_ = true;
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   auto auth_params = ::network::mojom::HttpAuthDynamicParams::New();
-  auth_params->server_whitelist =
-      command_line->GetSwitchValueASCII(switches::kAuthServerWhitelist);
+
+  // Support both current and deprecated switches for now, with the current
+  // switch value overriding the deprecated one. Expect the deprecated switch
+  // support to be removed soon, see crbug/1142696.
+  if (command_line->HasSwitch(switches::kAuthServerAllowlist)) {
+    auth_params->server_allowlist =
+        command_line->GetSwitchValueASCII(switches::kAuthServerAllowlist);
+  } else if (command_line->HasSwitch(
+                 switches::kAuthServerAllowlistDeprecated)) {
+    LOG(ERROR) << "'" << switches::kAuthServerAllowlistDeprecated
+               << "' is deprecated and will be removed soon. Please use '"
+               << switches::kAuthServerAllowlist << "' instead.";
+    auth_params->server_allowlist = command_line->GetSwitchValueASCII(
+        switches::kAuthServerAllowlistDeprecated);
+  }
+
   auto* network_service = content::GetNetworkService();
   network_service->ConfigureHttpAuthPrefs(std::move(auth_params));
 
-  if (!manager->network_service_enabled_) {
-    manager->Initialize();
-    return manager;
-  }
-  network_service->CreateNetworkContext(MakeRequest(&manager->network_context_),
-                                        manager->CreateNetworkContextParams());
+  ::network::mojom::NetworkContextParamsPtr network_context_params =
+      ::network::mojom::NetworkContextParams::New();
+  ::cert_verifier::mojom::CertVerifierCreationParamsPtr
+      cert_verifier_creation_params =
+          ::cert_verifier::mojom::CertVerifierCreationParams::New();
+  manager->ConfigureNetworkContextParamsInternal(
+      network_context_params.get(), cert_verifier_creation_params.get());
+  network_context_params->cert_verifier_params =
+      content::GetCertVerifierParams(std::move(cert_verifier_creation_params));
+  network_service->CreateNetworkContext(
+      manager->system_context_.InitWithNewPipeAndPassReceiver(),
+      std::move(network_context_params));
 
   return manager;
 }
@@ -266,13 +225,15 @@ HeadlessRequestContextManager::CreateSystemContext(
 HeadlessRequestContextManager::HeadlessRequestContextManager(
     const HeadlessBrowserContextOptions* options,
     base::FilePath user_data_path)
-    : network_service_enabled_(
-          base::FeatureList::IsEnabled(::network::features::kNetworkService)),
+    :
+// On Windows, Cookie encryption requires access to local_state prefs.
+#if defined(OS_WIN) && !defined(HEADLESS_USE_PREFS)
+      cookie_encryption_enabled_(false),
+#else
       cookie_encryption_enabled_(
           !base::CommandLine::ForCurrentProcess()->HasSwitch(
               switches::kDisableCookieEncryption)),
-      io_task_runner_(base::CreateSingleThreadTaskRunnerWithTraits(
-          {content::BrowserThread::IO})),
+#endif
       user_data_path_(std::move(user_data_path)),
       accept_language_(options->accept_language()),
       user_agent_(options->user_agent()),
@@ -280,121 +241,48 @@ HeadlessRequestContextManager::HeadlessRequestContextManager(
           options->proxy_config()
               ? std::make_unique<net::ProxyConfig>(*options->proxy_config())
               : nullptr),
-      is_system_context_(false),
-      resource_context_(std::make_unique<HeadlessResourceContext>()) {
+      resource_context_(std::make_unique<content::ResourceContext>()) {
   if (!proxy_config_) {
-    auto proxy_monitor_task_runner = network_service_enabled_
-                                         ? base::ThreadTaskRunnerHandle::Get()
-                                         : io_task_runner_;
-    proxy_config_monitor_ =
-        std::make_unique<HeadlessProxyConfigMonitor>(proxy_monitor_task_runner);
+    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+    if (command_line->HasSwitch(switches::kNoSystemProxyConfigService)) {
+      proxy_config_ = std::make_unique<net::ProxyConfig>();
+    } else {
+      proxy_config_monitor_ = std::make_unique<HeadlessProxyConfigMonitor>(
+          base::ThreadTaskRunnerHandle::Get());
+    }
   }
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-  crypt_config_ = BuildCryptConfigOnce(user_data_path_);
-  if (network_service_enabled_ && crypt_config_)
-    content::GetNetworkService()->SetCryptConfig(std::move(crypt_config_));
-#endif
+
+  SetCryptConfigOnce(user_data_path_);
 }
 
 HeadlessRequestContextManager::~HeadlessRequestContextManager() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  if (url_request_context_getter_)
-    url_request_context_getter_->Shutdown();
   if (proxy_config_monitor_)
     HeadlessProxyConfigMonitor::DeleteSoon(std::move(proxy_config_monitor_));
 }
 
-net::URLRequestContextGetter*
-HeadlessRequestContextManager::CreateRequestContext(
-    content::ProtocolHandlerMap* protocol_handlers,
-    content::URLRequestInterceptorScopedVector request_interceptors) {
-  request_interceptors_ = std::move(request_interceptors);
-  protocol_handlers_.swap(*protocol_handlers);
-  Initialize();
-  return url_request_context_getter_.get();
-}
-
-::network::mojom::NetworkContextPtr
-HeadlessRequestContextManager::CreateNetworkContext(
+void HeadlessRequestContextManager::ConfigureNetworkContextParams(
     bool in_memory,
-    const base::FilePath& relative_partition_path) {
-  if (!network_service_enabled_) {
-    if (!network_context_) {
-      DCHECK(!network_context_request_);
-      network_context_request_ = mojo::MakeRequest(&network_context_);
-    }
-    return std::move(network_context_);
-  }
-  content::GetNetworkService()->CreateNetworkContext(
-      MakeRequest(&network_context_), CreateNetworkContextParams());
-  return std::move(network_context_);
+    const base::FilePath& relative_partition_path,
+    ::network::mojom::NetworkContextParams* network_context_params,
+    ::cert_verifier::mojom::CertVerifierCreationParams*
+        cert_verifier_creation_params) {
+  ConfigureNetworkContextParamsInternal(network_context_params,
+                                        cert_verifier_creation_params);
 }
 
-content::ResourceContext* HeadlessRequestContextManager::GetResourceContext() {
-  return resource_context_.get();
-}
-
-net::URLRequestContextGetter*
-HeadlessRequestContextManager::url_request_context_getter() {
-  return url_request_context_getter_.get();
-}
-
-void HeadlessRequestContextManager::Initialize() {
-  url_request_context_getter_ =
-      base::MakeRefCounted<HeadlessURLRequestContextGetter>(io_task_runner_);
-  if (!network_context_) {
-    DCHECK(!network_context_request_);
-    network_context_request_ = mojo::MakeRequest(&network_context_);
-  }
-  io_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&HeadlessRequestContextManager::InitializeOnIO,
-                                base::Unretained(this)));
-}
-
-void HeadlessRequestContextManager::InitializeOnIO() {
-  if (!network_service_enabled_) {
-    DCHECK(network_context_request_);
-
-    auto builder = std::make_unique<::network::URLRequestContextBuilderMojo>();
-    builder->set_network_delegate(std::make_unique<DelegateImpl>());
-    builder->SetCreateHttpTransactionFactoryCallback(
-        base::BindOnce(&content::CreateDevToolsNetworkTransactionFactory));
-    builder->SetInterceptors(std::move(request_interceptors_));
-    for (auto& protocol_handler : protocol_handlers_) {
-      builder->SetProtocolHandler(protocol_handler.first,
-                                  std::move(protocol_handler.second));
-    }
-    protocol_handlers_.clear();
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-    if (crypt_config_) {
-      content::GetNetworkServiceImpl()->SetCryptConfig(
-          std::move(crypt_config_));
-    }
-#endif
-    builder->set_file_enabled(true);
-    net::URLRequestContext* url_request_context = nullptr;
-    network_context_owner_ =
-        content::GetNetworkServiceImpl()->CreateNetworkContextWithBuilder(
-            std::move(network_context_request_), CreateNetworkContextParams(),
-            std::move(builder), &url_request_context);
-
-    url_request_context_getter_->SetURLRequestContext(url_request_context);
-    return;
-  }
-
-  net::URLRequestContextBuilder builder;
-  builder.set_proxy_resolution_service(
-      net::ProxyResolutionService::CreateDirect());
-  url_request_context_getter_->SetURLRequestContext(builder.Build());
-}
-
-::network::mojom::NetworkContextParamsPtr
-HeadlessRequestContextManager::CreateNetworkContextParams() {
-  auto context_params = ::network::mojom::NetworkContextParams::New();
-
+void HeadlessRequestContextManager::ConfigureNetworkContextParamsInternal(
+    ::network::mojom::NetworkContextParams* context_params,
+    ::cert_verifier::mojom::CertVerifierCreationParams*
+        cert_verifier_creation_params) {
   context_params->user_agent = user_agent_;
   context_params->accept_language = accept_language_;
-  context_params->primary_network_context = is_system_context_;
+
+  // TODO(https://crbug.com/458508): Allow
+  // context_params->http_auth_static_network_context_params->allow_default_credentials
+  // to be controllable by a flag.
+  context_params->http_auth_static_network_context_params =
+      ::network::mojom::HttpAuthStaticNetworkContextParams::New();
 
   if (!user_data_path_.empty()) {
     context_params->enable_encrypted_cookies = cookie_encryption_enabled_;
@@ -413,9 +301,8 @@ HeadlessRequestContextManager::CreateNetworkContextParams() {
     context_params->initial_proxy_config = net::ProxyConfigWithAnnotation(
         *proxy_config_, GetProxyConfigTrafficAnnotationTag());
   } else {
-    proxy_config_monitor_->AddToNetworkContextParams(context_params.get());
+    proxy_config_monitor_->AddToNetworkContextParams(context_params);
   }
-  return context_params;
 }
 
 }  // namespace headless

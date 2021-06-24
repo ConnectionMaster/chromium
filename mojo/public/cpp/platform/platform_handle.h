@@ -5,8 +5,9 @@
 #ifndef MOJO_PUBLIC_CPP_PLATFORM_PLATFORM_HANDLE_H_
 #define MOJO_PUBLIC_CPP_PLATFORM_PLATFORM_HANDLE_H_
 
+#include "base/check_op.h"
 #include "base/component_export.h"
-#include "base/logging.h"
+#include "base/files/platform_file.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "mojo/public/c/system/platform_handle.h"
@@ -15,7 +16,7 @@
 #include "base/win/scoped_handle.h"
 #elif defined(OS_FUCHSIA)
 #include <lib/zx/handle.h>
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
 #include "base/mac/scoped_mach_port.h"
 #endif
 
@@ -26,9 +27,9 @@
 namespace mojo {
 
 // A PlatformHandle is a generic wrapper around a platform-specific system
-// handle type, e.g. a POSIX file descriptor or Windows HANDLE. This can wrap
-// any of various such types depending on the host platform for which it's
-// compiled.
+// handle type, e.g. a POSIX file descriptor, Windows HANDLE, or macOS Mach
+// port. This can wrap any of various such types depending on the host platform
+// for which it's compiled.
 //
 // This is useful primarily for two reasons:
 //
@@ -45,9 +46,8 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     kNone,
 #if defined(OS_WIN) || defined(OS_FUCHSIA)
     kHandle,
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-    kMachPort,
-    kMachSend = kMachPort,
+#elif defined(OS_MAC)
+    kMachSend,
     kMachReceive,
 #endif
 #if defined(OS_POSIX) || defined(OS_FUCHSIA)
@@ -62,7 +62,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   explicit PlatformHandle(base::win::ScopedHandle handle);
 #elif defined(OS_FUCHSIA)
   explicit PlatformHandle(zx::handle handle);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
   explicit PlatformHandle(base::mac::ScopedMachSendRight mach_port);
   explicit PlatformHandle(base::mac::ScopedMachReceiveRight mach_port);
 #endif
@@ -130,7 +130,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
       type_ = Type::kNone;
     return handle_.release();
   }
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
   bool is_valid() const { return is_valid_fd() || is_valid_mach_port(); }
   bool is_valid_mach_port() const {
     return is_valid_mach_send() || is_valid_mach_receive();
@@ -163,17 +163,6 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   mach_port_t ReleaseMachReceiveRight() WARN_UNUSED_RESULT {
     return TakeMachReceiveRight().release();
   }
-
-  // The following Mach port methods are deprecated. Use the ones above
-  // instead.
-  bool is_mach_port() const { return type_ == Type::kMachPort; }
-  const base::mac::ScopedMachSendRight& GetMachPort() const {
-    return GetMachSendRight();
-  }
-  base::mac::ScopedMachSendRight TakeMachPort() { return TakeMachSendRight(); }
-  mach_port_t ReleaseMachPort() WARN_UNUSED_RESULT {
-    return ReleaseMachSendRight();
-  }
 #elif defined(OS_POSIX)
   bool is_valid() const { return is_valid_fd(); }
 #else
@@ -196,6 +185,34 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   }
 #endif
 
+  bool is_valid_platform_file() const {
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
+    return is_valid_fd();
+#elif defined(OS_WIN)
+    return is_valid_handle();
+#else
+#error "Unsupported platform"
+#endif
+  }
+  base::ScopedPlatformFile TakePlatformFile() {
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
+    return TakeFD();
+#elif defined(OS_WIN)
+    return TakeHandle();
+#else
+#error "Unsupported platform"
+#endif
+  }
+  base::PlatformFile ReleasePlatformFile() WARN_UNUSED_RESULT {
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
+    return ReleaseFD();
+#elif defined(OS_WIN)
+    return ReleaseHandle();
+#else
+#error "Unsupported platform"
+#endif
+  }
+
  private:
   Type type_ = Type::kNone;
 
@@ -203,7 +220,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   base::win::ScopedHandle handle_;
 #elif defined(OS_FUCHSIA)
   zx::handle handle_;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
   base::mac::ScopedMachSendRight mach_send_;
   base::mac::ScopedMachReceiveRight mach_receive_;
 #endif

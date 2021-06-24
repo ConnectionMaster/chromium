@@ -11,13 +11,13 @@
 
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "content/browser/web_contents/web_contents_android.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
 
 namespace content {
 
 class MediaSessionImpl;
-class WebContentsAndroid;
 
 // This class is interlayer between native MediaSession and Java
 // MediaSession. This class is owned by the native MediaSession and will
@@ -37,7 +37,7 @@ class MediaSessionAndroid final
   void MediaSessionInfoChanged(
       media_session::mojom::MediaSessionInfoPtr session_info) override;
   void MediaSessionMetadataChanged(
-      const base::Optional<media_session::MediaMetadata>& metadata) override;
+      const absl::optional<media_session::MediaMetadata>& metadata) override;
   void MediaSessionActionsChanged(
       const std::vector<media_session::mojom::MediaSessionAction>& action)
       override;
@@ -45,6 +45,8 @@ class MediaSessionAndroid final
       const base::flat_map<media_session::mojom::MediaSessionImageType,
                            std::vector<media_session::MediaImage>>& images)
       override;
+  void MediaSessionPositionChanged(
+      const absl::optional<media_session::MediaPosition>& position) override;
 
   // MediaSession method wrappers.
   void Resume(JNIEnv* env, const base::android::JavaParamRef<jobject>& j_obj);
@@ -53,6 +55,9 @@ class MediaSessionAndroid final
   void Seek(JNIEnv* env,
             const base::android::JavaParamRef<jobject>& j_obj,
             const jlong millis);
+  void SeekTo(JNIEnv* env,
+              const base::android::JavaParamRef<jobject>& j_obj,
+              const jlong millis);
   void DidReceiveAction(JNIEnv* env,
                         const base::android::JavaParamRef<jobject>& j_obj,
                         jint action);
@@ -61,17 +66,21 @@ class MediaSessionAndroid final
       const base::android::JavaParamRef<jobject>& j_obj);
 
  private:
-  WebContentsAndroid* GetWebContentsAndroid();
-
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
   // The linked Java object. The strong reference is hold by Java WebContensImpl
   // to avoid introducing a new GC root.
   JavaObjectWeakGlobalRef j_media_session_;
+  // WebContentsAndroid corresponding to the Java WebContentsImpl that holds a
+  // strong reference to |j_media_session_|.
+  WebContentsAndroid* web_contents_android_;
 
   MediaSessionImpl* const media_session_;
 
-  mojo::Binding<media_session::mojom::MediaSessionObserver> observer_binding_{
+  bool is_paused_ = false;
+  bool is_controllable_ = false;
+
+  mojo::Receiver<media_session::mojom::MediaSessionObserver> observer_receiver_{
       this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaSessionAndroid);

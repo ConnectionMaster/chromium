@@ -4,21 +4,22 @@
 
 #include "chrome/test/media_router/media_router_e2e_browsertest.h"
 
+#include <memory>
 #include <vector>
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/stl_util.h"
-#include "chrome/browser/media/router/media_router.h"
-#include "chrome/browser/media/router/media_router_factory.h"
+#include "base/containers/contains.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/media_router/media_source.h"
-#include "chrome/common/media_router/media_source_helper.h"
-#include "chrome/common/media_router/route_request_result.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/media_router/browser/media_router.h"
+#include "components/media_router/browser/media_router_factory.h"
+#include "components/media_router/common/media_source.h"
+#include "components/media_router/common/route_request_result.h"
+#include "components/sessions/content/session_tab_helper.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "media/base/test_data_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -43,18 +44,15 @@ const char kPlayer[] = "player.html";
 const char kOrigin[] = "http://origin/";
 }  // namespace
 
-
 namespace media_router {
 
 MediaRouterE2EBrowserTest::MediaRouterE2EBrowserTest()
-    : media_router_(nullptr) {
-}
+    : media_router_(nullptr) {}
 
-MediaRouterE2EBrowserTest::~MediaRouterE2EBrowserTest() {
-}
+MediaRouterE2EBrowserTest::~MediaRouterE2EBrowserTest() {}
 
 void MediaRouterE2EBrowserTest::SetUpOnMainThread() {
-  MediaRouterBaseBrowserTest::SetUpOnMainThread();
+  MediaRouterIntegrationBrowserTest::SetUpOnMainThread();
   media_router_ =
       MediaRouterFactory::GetApiForBrowserContext(browser()->profile());
   DCHECK(media_router_);
@@ -64,7 +62,7 @@ void MediaRouterE2EBrowserTest::TearDownOnMainThread() {
   observer_.reset();
   route_id_.clear();
   media_router_ = nullptr;
-  MediaRouterBaseBrowserTest::TearDownOnMainThread();
+  InProcessBrowserTest::TearDownOnMainThread();
 }
 
 void MediaRouterE2EBrowserTest::OnRouteResponseReceived(
@@ -79,15 +77,16 @@ void MediaRouterE2EBrowserTest::CreateMediaRoute(
     const url::Origin& origin,
     content::WebContents* web_contents) {
   DCHECK(media_router_);
-  observer_.reset(new TestMediaSinksObserver(media_router_, source, origin));
+  observer_ =
+      std::make_unique<TestMediaSinksObserver>(media_router_, source, origin);
   observer_->Init();
 
   DVLOG(1) << "Receiver name: " << receiver_;
   // Wait for MediaSinks compatible with |source| to be discovered.
   ASSERT_TRUE(ConditionalWait(
       base::TimeDelta::FromSeconds(30), base::TimeDelta::FromSeconds(1),
-      base::Bind(&MediaRouterE2EBrowserTest::IsSinkDiscovered,
-                 base::Unretained(this))));
+      base::BindRepeating(&MediaRouterE2EBrowserTest::IsSinkDiscovered,
+                          base::Unretained(this))));
 
   const auto& sink_map = observer_->sink_map;
   const auto it = sink_map.find(receiver_);
@@ -103,8 +102,8 @@ void MediaRouterE2EBrowserTest::CreateMediaRoute(
   // Wait for the route request to be fulfilled (and route to be started).
   ASSERT_TRUE(ConditionalWait(
       base::TimeDelta::FromSeconds(30), base::TimeDelta::FromSeconds(1),
-      base::Bind(&MediaRouterE2EBrowserTest::IsRouteCreated,
-                 base::Unretained(this))));
+      base::BindRepeating(&MediaRouterE2EBrowserTest::IsRouteCreated,
+                          base::Unretained(this))));
 }
 
 void MediaRouterE2EBrowserTest::StopMediaRoute() {
@@ -113,7 +112,7 @@ void MediaRouterE2EBrowserTest::StopMediaRoute() {
 }
 
 bool MediaRouterE2EBrowserTest::IsSinkDiscovered() const {
-  return base::ContainsKey(observer_->sink_map, receiver_);
+  return base::Contains(observer_->sink_map, receiver_);
 }
 
 bool MediaRouterE2EBrowserTest::IsRouteCreated() const {
@@ -124,10 +123,9 @@ void MediaRouterE2EBrowserTest::OpenMediaPage() {
   base::StringPairs query_params;
   query_params.push_back(std::make_pair(kVideo, kBearVP9Video));
   std::string query = media::GetURLQueryString(query_params);
-  GURL gurl = content::GetFileUrlWithQuery(media::GetTestDataFilePath(kPlayer),
-                                           query);
-  ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
-        browser(), gurl, 1);
+  GURL gurl =
+      content::GetFileUrlWithQuery(media::GetTestDataFilePath(kPlayer), query);
+  ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(browser(), gurl, 1);
 }
 
 // Test cases
@@ -140,10 +138,10 @@ IN_PROC_BROWSER_TEST_F(MediaRouterE2EBrowserTest, MANUAL_TabMirroring) {
       browser(), GURL("about:blank"), 1);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  SessionID tab_id = SessionTabHelper::IdForTab(web_contents);
+  SessionID tab_id = sessions::SessionTabHelper::IdForTab(web_contents);
 
   // Wait for 30 seconds to make sure the route is stable.
-  CreateMediaRoute(MediaSourceForTab(tab_id.id()),
+  CreateMediaRoute(MediaSource::ForTab(tab_id.id()),
                    url::Origin::Create(GURL(kOrigin)), web_contents);
   Wait(base::TimeDelta::FromSeconds(30));
 
@@ -154,8 +152,9 @@ IN_PROC_BROWSER_TEST_F(MediaRouterE2EBrowserTest, MANUAL_TabMirroring) {
 
 IN_PROC_BROWSER_TEST_F(MediaRouterE2EBrowserTest, MANUAL_CastApp) {
   // Wait for 30 seconds to make sure the route is stable.
-  CreateMediaRoute(MediaSourceForPresentationUrl(GURL(kCastAppPresentationUrl)),
-                   url::Origin::Create(GURL(kOrigin)), nullptr);
+  CreateMediaRoute(
+      MediaSource::ForPresentationUrl(GURL(kCastAppPresentationUrl)),
+      url::Origin::Create(GURL(kOrigin)), nullptr);
   Wait(base::TimeDelta::FromSeconds(30));
 
   // Wait for 10 seconds to make sure route has been stopped.

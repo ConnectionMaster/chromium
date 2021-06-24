@@ -7,6 +7,7 @@
 
 #include <string>
 #include <vector>
+
 #include "base/memory/ref_counted.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
@@ -22,6 +23,12 @@ class AudioProcessorControls;
 class AudioCapturerSource
     : public base::RefCountedThreadSafe<media::AudioCapturerSource> {
  public:
+  enum class ErrorCode {
+    kUnknown = 0,
+    kSystemPermissions = 1,
+    kDeviceInUse = 2,
+  };
+
   class CaptureCallback {
    public:
     // Signals that audio recording has been started.  Called asynchronously
@@ -33,15 +40,13 @@ class AudioCapturerSource
     virtual void OnCaptureStarted() {}
 
     // Callback to deliver the captured data from the OS.
-    // TODO(chcunningham): Update delay argument to use base::TimeDelta instead
-    // of milliseconds to prevent precision loss. See http://crbug.com/587291.
     virtual void Capture(const AudioBus* audio_source,
-                         int audio_delay_milliseconds,
+                         base::TimeTicks audio_capture_time,
                          double volume,
                          bool key_pressed) = 0;
 
     // Signals an error has occurred.
-    virtual void OnCaptureError(const std::string& message) = 0;
+    virtual void OnCaptureError(ErrorCode code, const std::string& message) = 0;
 
     // Signals the muted state has changed. May be called before
     // OnCaptureStarted.

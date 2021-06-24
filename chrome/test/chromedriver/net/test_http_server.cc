@@ -4,12 +4,12 @@
 
 #include "chrome/test/chromedriver/net/test_http_server.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
@@ -26,16 +26,14 @@ const int kBufferSize = 100 * 1024 * 1024;  // 100 MB
 TestHttpServer::TestHttpServer()
     : thread_("ServerThread"),
       all_closed_event_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
-                        base::WaitableEvent::InitialState::SIGNALED),
-      request_action_(kAccept),
-      message_action_(kEchoMessage) {}
+                        base::WaitableEvent::InitialState::SIGNALED) {}
 
 TestHttpServer::~TestHttpServer() {
 }
 
 bool TestHttpServer::Start() {
-  base::Thread::Options options(base::MessageLoop::TYPE_IO, 0);
-  bool thread_started = thread_.StartWithOptions(options);
+  bool thread_started = thread_.StartWithOptions(
+      base::Thread::Options(base::MessagePumpType::IO, 0));
   EXPECT_TRUE(thread_started);
   if (!thread_started)
     return false;
@@ -75,9 +73,9 @@ void TestHttpServer::SetMessageAction(WebSocketMessageAction action) {
   message_action_ = action;
 }
 
-void TestHttpServer::SetMessageCallback(const base::Closure& callback) {
+void TestHttpServer::SetMessageCallback(base::OnceClosure callback) {
   base::AutoLock lock(action_lock_);
-  message_callback_ = callback;
+  message_callback_ = std::move(callback);
 }
 
 GURL TestHttpServer::web_socket_url() const {
@@ -117,14 +115,12 @@ void TestHttpServer::OnWebSocketRequest(
 
 void TestHttpServer::OnWebSocketMessage(int connection_id, std::string data) {
   WebSocketMessageAction action;
-  base::Closure callback;
   {
     base::AutoLock lock(action_lock_);
     action = message_action_;
-    callback = base::ResetAndReturn(&message_callback_);
   }
-  if (!callback.is_null())
-    callback.Run();
+  if (!message_callback_.is_null())
+    std::move(message_callback_).Run();
   switch (action) {
     case kEchoMessage:
       server_->SendOverWebSocket(connection_id, data,
@@ -147,7 +143,7 @@ void TestHttpServer::StartOnServerThread(bool* success,
   std::unique_ptr<net::ServerSocket> server_socket(
       new net::TCPServerSocket(NULL, net::NetLogSource()));
   server_socket->ListenWithAddressAndPort("127.0.0.1", 0, 1);
-  server_.reset(new net::HttpServer(std::move(server_socket), this));
+  server_ = std::make_unique<net::HttpServer>(std::move(server_socket), this);
 
   net::IPEndPoint address;
   int error = server_->GetLocalAddress(&address);

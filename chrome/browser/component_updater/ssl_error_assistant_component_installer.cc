@@ -8,13 +8,13 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/stl_util.h"
-#include "base/task/post_task.h"
-#include "chrome/browser/ssl/ssl_error_assistant.h"
-#include "chrome/browser/ssl/ssl_error_handler.h"
+#include "base/task/thread_pool.h"
+#include "components/security_interstitials/content/ssl_error_assistant.h"
+#include "components/security_interstitials/content/ssl_error_handler.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -58,9 +58,8 @@ void LoadProtoFromDisk(const base::FilePath& pb_path) {
     proto = std::move(default_proto);
   }
 
-  base::CreateSingleThreadTaskRunnerWithTraits({content::BrowserThread::UI})
-      ->PostTask(FROM_HERE,
-                 base::BindOnce(&SSLErrorHandler::SetErrorAssistantProto,
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&SSLErrorHandler::SetErrorAssistantProto,
                                 std::move(proto)));
 }
 
@@ -99,7 +98,7 @@ void SSLErrorAssistantComponentInstallerPolicy::ComponentReady(
   DVLOG(1) << "Component ready, version " << version.GetString() << " in "
            << install_dir.value();
 
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&LoadProtoFromDisk, GetInstalledPath(install_dir)));
 }
@@ -135,13 +134,7 @@ SSLErrorAssistantComponentInstallerPolicy::GetInstallerAttributes() const {
   return update_client::InstallerAttributes();
 }
 
-std::vector<std::string>
-SSLErrorAssistantComponentInstallerPolicy::GetMimeTypes() const {
-  return std::vector<std::string>();
-}
-
-void RegisterSSLErrorAssistantComponent(ComponentUpdateService* cus,
-                                        const base::FilePath& user_data_dir) {
+void RegisterSSLErrorAssistantComponent(ComponentUpdateService* cus) {
   DVLOG(1) << "Registering SSL Error Assistant component.";
 
   auto installer = base::MakeRefCounted<ComponentInstaller>(

@@ -7,6 +7,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -21,11 +22,9 @@
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/signin/core/browser/account_consistency_method.h"
-#include "components/signin/core/browser/signin_header_helper.h"
-#include "components/signin/core/browser/signin_metrics.h"
+#include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "net/base/url_util.h"
-#include "services/identity/public/cpp/identity_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if !defined(OS_ANDROID)
@@ -49,16 +48,9 @@ bool SigninGlobalError::HasError() {
   return HasMenuItem();
 }
 
-void SigninGlobalError::AttemptToFixError(Browser* browser) {
-  if (!HasError())
-    return;
-
-  ExecuteMenuItem(browser);
-}
-
 void SigninGlobalError::Shutdown() {
   error_controller_->RemoveObserver(this);
-  error_controller_ = NULL;
+  error_controller_ = nullptr;
 }
 
 bool SigninGlobalError::HasMenuItem() {
@@ -69,15 +61,15 @@ int SigninGlobalError::MenuItemCommandID() {
   return IDC_SHOW_SIGNIN_ERROR;
 }
 
-base::string16 SigninGlobalError::MenuItemLabel() {
+std::u16string SigninGlobalError::MenuItemLabel() {
   // Notify the user if there's an auth error the user should know about.
   if (error_controller_->HasError())
     return l10n_util::GetStringUTF16(IDS_SYNC_SIGN_IN_ERROR_WRENCH_MENU_ITEM);
-  return base::string16();
+  return std::u16string();
 }
 
 void SigninGlobalError::ExecuteMenuItem(Browser* browser) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (error_controller_->auth_error().state() !=
       GoogleServiceAuthError::NONE) {
     DVLOG(1) << "Signing out the user to fix a sync error.";
@@ -99,7 +91,7 @@ void SigninGlobalError::ExecuteMenuItem(Browser* browser) {
                             signin_metrics::HISTOGRAM_REAUTH_SHOWN,
                             signin_metrics::HISTOGRAM_REAUTH_MAX);
   browser->window()->ShowAvatarBubbleFromAvatarButton(
-      BrowserWindow::AVATAR_BUBBLE_MODE_REAUTH, signin::ManageAccountsParams(),
+      BrowserWindow::AVATAR_BUBBLE_MODE_REAUTH,
       signin_metrics::AccessPoint::ACCESS_POINT_MENU, false);
 #endif
 }
@@ -108,18 +100,20 @@ bool SigninGlobalError::HasBubbleView() {
   return !GetBubbleViewMessages().empty();
 }
 
-base::string16 SigninGlobalError::GetBubbleViewTitle() {
+std::u16string SigninGlobalError::GetBubbleViewTitle() {
   return l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_BUBBLE_VIEW_TITLE);
 }
 
-std::vector<base::string16> SigninGlobalError::GetBubbleViewMessages() {
-  std::vector<base::string16> messages;
+std::vector<std::u16string> SigninGlobalError::GetBubbleViewMessages() {
+  std::vector<std::u16string> messages;
 
   // If the user isn't signed in, no need to display an error bubble.
   auto* identity_manager =
       IdentityManagerFactory::GetForProfileIfExists(profile_);
-  if (identity_manager && !identity_manager->HasPrimaryAccount())
+  if (identity_manager &&
+      !identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
     return messages;
+  }
 
   if (!error_controller_->HasError())
     return messages;
@@ -130,8 +124,6 @@ std::vector<base::string16> SigninGlobalError::GetBubbleViewMessages() {
     // User credentials are invalid (bad acct, etc).
     case GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS:
     case GoogleServiceAuthError::SERVICE_ERROR:
-    case GoogleServiceAuthError::ACCOUNT_DELETED:
-    case GoogleServiceAuthError::ACCOUNT_DISABLED:
       messages.push_back(l10n_util::GetStringUTF16(
           IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE));
       break;
@@ -150,7 +142,7 @@ std::vector<base::string16> SigninGlobalError::GetBubbleViewMessages() {
   return messages;
 }
 
-base::string16 SigninGlobalError::GetBubbleViewAcceptButtonLabel() {
+std::u16string SigninGlobalError::GetBubbleViewAcceptButtonLabel() {
   // If the auth service is unavailable, don't give the user the option to try
   // signing in again.
   if (error_controller_->auth_error().state() ==
@@ -162,8 +154,8 @@ base::string16 SigninGlobalError::GetBubbleViewAcceptButtonLabel() {
   }
 }
 
-base::string16 SigninGlobalError::GetBubbleViewCancelButtonLabel() {
-  return base::string16();
+std::u16string SigninGlobalError::GetBubbleViewCancelButtonLabel() {
+  return std::u16string();
 }
 
 void SigninGlobalError::OnBubbleViewDidClose(Browser* browser) {
@@ -178,5 +170,5 @@ void SigninGlobalError::BubbleViewCancelButtonPressed(Browser* browser) {
 }
 
 void SigninGlobalError::OnErrorChanged() {
-  GlobalErrorServiceFactory::GetForProfile(profile_)->NotifyErrorsChanged(this);
+  GlobalErrorServiceFactory::GetForProfile(profile_)->NotifyErrorsChanged();
 }

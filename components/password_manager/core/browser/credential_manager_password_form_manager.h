@@ -9,13 +9,10 @@
 #include "base/memory/weak_ptr.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 
-namespace autofill {
-struct PasswordForm;
-}
-
 namespace password_manager {
 
 class PasswordManagerClient;
+struct PasswordForm;
 
 // A delegate that is notified when CredentialManagerPasswordFormManager
 // finishes working with password forms.
@@ -31,7 +28,7 @@ class CredentialManagerPasswordFormManager : public PasswordFormManager {
  public:
   // Given a |client| and an |observed_form|, kick off the process of fetching
   // matching logins from the password store; if |observed_form| doesn't map to
-  // a blacklisted origin, provisionally save |saved_form|. Once saved, let the
+  // a blocklisted origin, provisionally save |saved_form|. Once saved, let the
   // delegate know that it's safe to poke at the UI. |form_fetcher| is passed
   // to PasswordFormManager. |form_saver| can be null, in which case it is
   // created automatically.
@@ -39,8 +36,7 @@ class CredentialManagerPasswordFormManager : public PasswordFormManager {
   // This class does not take ownership of |delegate|.
   CredentialManagerPasswordFormManager(
       PasswordManagerClient* client,
-      const autofill::PasswordForm& observed_form,
-      std::unique_ptr<autofill::PasswordForm> saved_form,
+      std::unique_ptr<PasswordForm> saved_form,
       CredentialManagerPasswordFormManagerDelegate* delegate,
       std::unique_ptr<FormSaver> form_saver,
       std::unique_ptr<FormFetcher> form_fetcher);
@@ -50,16 +46,16 @@ class CredentialManagerPasswordFormManager : public PasswordFormManager {
   void OnFetchCompleted() override;
 
   // PasswordFormManagerForUI:
-  metrics_util::CredentialSourceType GetCredentialSource() override;
+  metrics_util::CredentialSourceType GetCredentialSource() const override;
 
  private:
   // Calls OnProvisionalSaveComplete on |delegate_|.
   void NotifyDelegate();
 
   CredentialManagerPasswordFormManagerDelegate* delegate_;
-  std::unique_ptr<autofill::PasswordForm> saved_form_;
 
-  base::WeakPtrFactory<CredentialManagerPasswordFormManager> weak_factory_;
+  base::WeakPtrFactory<CredentialManagerPasswordFormManager> weak_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(CredentialManagerPasswordFormManager);
 };

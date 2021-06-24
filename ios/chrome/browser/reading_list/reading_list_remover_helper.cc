@@ -6,7 +6,6 @@
 
 #include "base/bind.h"
 #include "base/threading/sequenced_task_runner_handle.h"
-#include "components/reading_list/core/reading_list_model.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/reading_list/reading_list_download_service.h"
 #include "ios/chrome/browser/reading_list/reading_list_download_service_factory.h"
@@ -15,8 +14,7 @@
 namespace reading_list {
 
 ReadingListRemoverHelper::ReadingListRemoverHelper(
-    ios::ChromeBrowserState* browser_state)
-    : scoped_observer_(this) {
+    ChromeBrowserState* browser_state) {
   reading_list_model_ =
       ReadingListModelFactory::GetForBrowserState(browser_state);
   reading_list_download_service_ =
@@ -33,7 +31,8 @@ void ReadingListRemoverHelper::ReadingListModelLoaded(
     const ReadingListModel* reading_list_model) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(reading_list_model_, reading_list_model);
-  scoped_observer_.Remove(reading_list_model_);
+  DCHECK(scoped_observation_.IsObservingSource(reading_list_model_));
+  scoped_observation_.Reset();
 
   bool model_cleared = reading_list_model_->DeleteAllEntries();
   reading_list_download_service_->Clear();
@@ -45,7 +44,8 @@ void ReadingListRemoverHelper::ReadingListModelBeingDeleted(
     const ReadingListModel* reading_list_model) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(reading_list_model_, reading_list_model);
-  scoped_observer_.Remove(reading_list_model_);
+  DCHECK(scoped_observation_.IsObservingSource(reading_list_model_));
+  scoped_observation_.Reset();
   ReadlingListItemsRemoved(false);
 }
 
@@ -61,7 +61,7 @@ void ReadingListRemoverHelper::RemoveAllUserReadingListItemsIOS(
 
   // ReadingListModel::AddObserver calls ReadingListModelLoaded if model is
   // already loaded, so there is no need to check.
-  scoped_observer_.Add(reading_list_model_);
+  scoped_observation_.Observe(reading_list_model_);
 }
 
 void ReadingListRemoverHelper::ReadlingListItemsRemoved(bool success) {

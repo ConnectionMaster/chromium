@@ -9,7 +9,7 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/threading/scoped_blocking_call.h"
@@ -95,16 +95,17 @@ class InputServiceLinuxImpl : public InputServiceLinux,
   InputServiceLinuxImpl();
   ~InputServiceLinuxImpl() override;
 
-  ScopedObserver<DeviceMonitorLinux, DeviceMonitorLinux::Observer> observer_;
+  base::ScopedObservation<DeviceMonitorLinux, DeviceMonitorLinux::Observer>
+      observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(InputServiceLinuxImpl);
 };
 
-InputServiceLinuxImpl::InputServiceLinuxImpl() : observer_(this) {
+InputServiceLinuxImpl::InputServiceLinuxImpl() {
   DeviceMonitorLinux* monitor = DeviceMonitorLinux::GetInstance();
-  observer_.Add(monitor);
-  monitor->Enumerate(base::Bind(&InputServiceLinuxImpl::OnDeviceAdded,
-                                base::Unretained(this)));
+  observation_.Observe(monitor);
+  monitor->Enumerate(base::BindRepeating(&InputServiceLinuxImpl::OnDeviceAdded,
+                                         base::Unretained(this)));
 }
 
 InputServiceLinuxImpl::~InputServiceLinuxImpl() {
@@ -174,8 +175,9 @@ InputServiceLinux::~InputServiceLinux() {
 }
 
 // static
-void InputServiceLinux::BindRequest(mojom::InputDeviceManagerRequest request) {
-  GetInstance()->AddBinding(std::move(request));
+void InputServiceLinux::BindReceiver(
+    mojo::PendingReceiver<mojom::InputDeviceManager> receiver) {
+  GetInstance()->AddReceiver(std::move(receiver));
 }
 
 // static
@@ -199,21 +201,20 @@ void InputServiceLinux::SetForTesting(
   g_input_service_linux = service.release();
 }
 
-void InputServiceLinux::AddBinding(mojom::InputDeviceManagerRequest request) {
-  bindings_.AddBinding(this, std::move(request));
+void InputServiceLinux::AddReceiver(
+    mojo::PendingReceiver<mojom::InputDeviceManager> receiver) {
+  receivers_.Add(this, std::move(receiver));
 }
 
 void InputServiceLinux::GetDevicesAndSetClient(
-    mojom::InputDeviceManagerClientAssociatedPtrInfo client,
+    mojo::PendingAssociatedRemote<mojom::InputDeviceManagerClient> client,
     GetDevicesCallback callback) {
   GetDevices(std::move(callback));
 
   if (!client.is_valid())
     return;
 
-  mojom::InputDeviceManagerClientAssociatedPtr client_ptr;
-  client_ptr.Bind(std::move(client));
-  clients_.AddPtr(std::move(client_ptr));
+  clients_.Add(std::move(client));
 }
 
 void InputServiceLinux::GetDevices(GetDevicesCallback callback) {
@@ -227,9 +228,8 @@ void InputServiceLinux::GetDevices(GetDevicesCallback callback) {
 
 void InputServiceLinux::AddDevice(mojom::InputDeviceInfoPtr info) {
   auto* device_info = info.get();
-  clients_.ForAllPtrs([device_info](mojom::InputDeviceManagerClient* client) {
+  for (auto& client : clients_)
     client->InputDeviceAdded(device_info->Clone());
-  });
 
   devices_[info->id] = std::move(info);
 }
@@ -237,9 +237,8 @@ void InputServiceLinux::AddDevice(mojom::InputDeviceInfoPtr info) {
 void InputServiceLinux::RemoveDevice(const std::string& id) {
   devices_.erase(id);
 
-  clients_.ForAllPtrs([id](mojom::InputDeviceManagerClient* client) {
+  for (auto& client : clients_)
     client->InputDeviceRemoved(id);
-  });
 }
 
 bool InputServiceLinux::CalledOnValidThread() const {

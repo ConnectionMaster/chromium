@@ -11,48 +11,79 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 
-class InfoBarService;
-class PermissionPromptAndroid;
+namespace infobars {
+class ContentInfoBarManager;
+}
 
-// An InfoBar that displays a group of permission requests, each of which can be
-// allowed or blocked independently.
-// TODO(timloh): This is incorrectly named as we've removed grouped permissions,
-// rename it to PermissionInfoBarDelegate once crbug.com/606138 is done.
+namespace content {
+class WebContents;
+}
+
+namespace permissions {
+class PermissionPromptAndroid;
+}
+
+// An InfoBar that displays a permission request.
+//
+// TODO(crbug.com/986737): This class is only used for displaying notification
+// permission requests and has nothing to do with grouped permissions anymore.
 class GroupedPermissionInfoBarDelegate : public ConfirmInfoBarDelegate {
  public:
   // Public so we can have std::unique_ptr<GroupedPermissionInfoBarDelegate>.
   ~GroupedPermissionInfoBarDelegate() override;
 
   static infobars::InfoBar* Create(
-      const base::WeakPtr<PermissionPromptAndroid>& permission_prompt,
-      InfoBarService* infobar_service);
+      const base::WeakPtr<permissions::PermissionPromptAndroid>&
+          permission_prompt,
+      infobars::ContentInfoBarManager* infobar_manager);
 
   size_t PermissionCount() const;
 
   ContentSettingsType GetContentSettingType(size_t position) const;
 
-  // InfoBarDelegate:
-  int GetIconId() const override;
+  // Returns the string to show in the infobar in its compact state.
+  std::u16string GetCompactMessageText() const;
+
+  // Returns the title of the link to show in the infobar in its compact state.
+  std::u16string GetCompactLinkText() const;
+
+  // Returns the secondary string to show in the infobar in the expanded state.
+  std::u16string GetDescriptionText() const;
+
+  // Whether the secondary button should open site settings.
+  bool ShouldSecondaryButtonOpenSettings() const;
 
   // ConfirmInfoBarDelegate:
-  base::string16 GetMessageText() const override;
+  int GetIconId() const override;
+  std::u16string GetLinkText() const override;
+  GURL GetLinkURL() const override;
+  bool LinkClicked(WindowOpenDisposition disposition) override;
+  void InfoBarDismissed() override;
+  std::u16string GetMessageText() const override;
   bool Accept() override;
   bool Cancel() override;
-  void InfoBarDismissed() override;
+
+  // Returns true if we should show the permission request as a mini-infobar.
+  static bool ShouldShowMiniInfobar(content::WebContents* web_contents,
+                                    ContentSettingsType type);
 
  private:
   GroupedPermissionInfoBarDelegate(
-      const base::WeakPtr<PermissionPromptAndroid>& permission_prompt);
+      const base::WeakPtr<permissions::PermissionPromptAndroid>&
+          permission_prompt,
+      infobars::ContentInfoBarManager* infobar_manager);
 
   // ConfirmInfoBarDelegate:
   InfoBarIdentifier GetIdentifier() const override;
   int GetButtons() const override;
-  base::string16 GetButtonLabel(InfoBarButton button) const override;
+  std::u16string GetButtonLabel(InfoBarButton button) const override;
 
   // InfoBarDelegate:
   bool EqualsDelegate(infobars::InfoBarDelegate* delegate) const override;
 
-  base::WeakPtr<PermissionPromptAndroid> permission_prompt_;
+  base::WeakPtr<permissions::PermissionPromptAndroid> permission_prompt_;
+  infobars::ContentInfoBarManager* infobar_manager_;
+  bool details_expanded_;
 
   DISALLOW_COPY_AND_ASSIGN(GroupedPermissionInfoBarDelegate);
 };

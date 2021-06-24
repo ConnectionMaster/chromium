@@ -7,42 +7,43 @@
 #include <stddef.h>
 
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "base/base64.h"
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/feature_list.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/version.h"
 #include "components/metrics/clean_exit_beacon.h"
 #include "components/metrics/client_info.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_state_manager.h"
-#include "components/metrics/test_enabled_state_provider.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/variations/pref_names.h"
 #include "components/variations/proto/study.pb.h"
 #include "components/variations/proto/variations_seed.pb.h"
+#include "components/variations/scoped_variations_ids_provider.h"
 #include "components/web_resource/resource_request_allowed_notifier_test_util.h"
 #include "net/base/mock_network_change_notifier.h"
 #include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
-#include "net/url_request/test_url_fetcher_factory.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
@@ -68,13 +69,10 @@ void StubStoreClientInfo(const metrics::ClientInfo& /* client_info */) {}
 
 // A stub for the metrics state manager.
 std::unique_ptr<metrics::ClientInfo> StubLoadClientInfo() {
-  return std::unique_ptr<metrics::ClientInfo>();
+  return nullptr;
 }
 
-base::Version StubGetVersionForSimulation() {
-  return base::Version();
-}
-
+// TODO(crbug.com/1167566): Remove when fake VariationsServiceClient created.
 class TestVariationsServiceClient : public VariationsServiceClient {
  public:
   TestVariationsServiceClient() {
@@ -85,9 +83,8 @@ class TestVariationsServiceClient : public VariationsServiceClient {
   ~TestVariationsServiceClient() override {}
 
   // VariationsServiceClient:
-  base::Callback<base::Version(void)> GetVersionForSimulationCallback()
-      override {
-    return base::Bind(&StubGetVersionForSimulation);
+  VersionCallback GetVersionForSimulationCallback() override {
+    return base::BindOnce([] { return base::Version(); });
   }
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory()
       override {
@@ -96,13 +93,13 @@ class TestVariationsServiceClient : public VariationsServiceClient {
   network_time::NetworkTimeTracker* GetNetworkTimeTracker() override {
     return nullptr;
   }
-  version_info::Channel GetChannel() override { return channel_; }
   bool OverridesRestrictParameter(std::string* parameter) override {
     if (restrict_parameter_.empty())
       return false;
     *parameter = restrict_parameter_;
     return true;
   }
+  bool IsEnterprise() override { return false; }
 
   void set_restrict_parameter(const std::string& value) {
     restrict_parameter_ = value;
@@ -115,6 +112,9 @@ class TestVariationsServiceClient : public VariationsServiceClient {
   }
 
  private:
+  // VariationsServiceClient:
+  version_info::Channel GetChannel() override { return channel_; }
+
   std::string restrict_parameter_;
   version_info::Channel channel_ = version_info::Channel::UNKNOWN;
   network::TestURLLoaderFactory test_url_loader_factory_;
@@ -131,7 +131,7 @@ class TestVariationsService : public VariationsService {
       PrefService* local_state,
       metrics::MetricsStateManager* state_manager,
       bool use_secure_url)
-      : VariationsService(base::WrapUnique(new TestVariationsServiceClient()),
+      : VariationsService(std::make_unique<TestVariationsServiceClient>(),
                           std::move(test_notifier),
                           local_state,
                           state_manager,
@@ -140,8 +140,7 @@ class TestVariationsService : public VariationsService {
         fetch_attempted_(false),
         seed_stored_(false),
         delta_compressed_seed_(false),
-        gzip_compressed_seed_(false),
-        insecurely_fetched_seed_(false) {
+        gzip_compressed_seed_(false) {
     interception_url_ =
         GetVariationsServerURL(use_secure_url ? USE_HTTPS : USE_HTTP);
     set_variations_server_url(interception_url_);
@@ -164,7 +163,6 @@ class TestVariationsService : public VariationsService {
   const std::string& stored_country() const { return stored_country_; }
   bool delta_compressed_seed() const { return delta_compressed_seed_; }
   bool gzip_compressed_seed() const { return gzip_compressed_seed_; }
-  bool insecurely_fetched_seed() const { return insecurely_fetched_seed_; }
 
   bool CallMaybeRetryOverHTTP() { return CallMaybeRetryOverHTTPForTesting(); }
 
@@ -192,14 +190,12 @@ class TestVariationsService : public VariationsService {
                  const std::string& country_code,
                  base::Time date_fetched,
                  bool is_delta_compressed,
-                 bool is_gzip_compressed,
-                 bool fetched_insecurely) override {
+                 bool is_gzip_compressed) override {
     seed_stored_ = true;
     stored_seed_data_ = seed_data;
     stored_country_ = country_code;
     delta_compressed_seed_ = is_delta_compressed;
     gzip_compressed_seed_ = is_gzip_compressed;
-    insecurely_fetched_seed_ = fetched_insecurely;
     RecordSuccessfulFetch();
     return true;
   }
@@ -227,7 +223,6 @@ class TestVariationsService : public VariationsService {
   std::string stored_country_;
   bool delta_compressed_seed_;
   bool gzip_compressed_seed_;
-  bool insecurely_fetched_seed_;
 
   DISALLOW_COPY_AND_ASSIGN(TestVariationsService);
 };
@@ -313,8 +308,8 @@ class VariationsServiceTest : public ::testing::Test {
       : network_tracker_(network::TestNetworkConnectionTracker::GetInstance()),
         enabled_state_provider_(
             new metrics::TestEnabledStateProvider(false, false)) {
-    VariationsService::RegisterPrefs(prefs_.registry());
     metrics::CleanExitBeacon::RegisterPrefs(prefs_.registry());
+    VariationsService::RegisterPrefs(prefs_.registry());
     metrics::MetricsStateManager::RegisterPrefs(prefs_.registry());
   }
 
@@ -323,8 +318,9 @@ class VariationsServiceTest : public ::testing::Test {
     // stability state from prefs after tests have a chance to initialize it.
     if (!metrics_state_manager_) {
       metrics_state_manager_ = metrics::MetricsStateManager::Create(
-          &prefs_, enabled_state_provider_.get(), base::string16(),
-          base::Bind(&StubStoreClientInfo), base::Bind(&StubLoadClientInfo));
+          &prefs_, enabled_state_provider_.get(), std::wstring(),
+          base::BindRepeating(&StubStoreClientInfo),
+          base::BindRepeating(&StubLoadClientInfo));
     }
     return metrics_state_manager_.get();
   }
@@ -334,7 +330,9 @@ class VariationsServiceTest : public ::testing::Test {
   network::TestNetworkConnectionTracker* network_tracker_;
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
+  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+      variations::VariationsIdsProvider::Mode::kUseSignedInState};
   std::unique_ptr<metrics::TestEnabledStateProvider> enabled_state_provider_;
   std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
 
@@ -428,7 +426,8 @@ TEST_F(VariationsServiceTest, VariationsURLHasParams) {
 }
 
 TEST_F(VariationsServiceTest, RequestsInitiallyNotAllowed) {
-  net::test::MockNetworkChangeNotifier network_change_notifier;
+  std::unique_ptr<net::test::MockNetworkChangeNotifier>
+      network_change_notifier = net::test::MockNetworkChangeNotifier::Create();
   // Pass ownership to TestVariationsService, but keep a weak pointer to
   // manipulate it for this test.
   std::unique_ptr<web_resource::TestRequestAllowedNotifier> test_notifier =
@@ -537,13 +536,13 @@ TEST_F(VariationsServiceTest, InstanceManipulations) {
     bool gzip_compressed;
     bool seed_stored;
   } cases[] = {
-    {"", false, false, true},
-    {"IM:gzip", false, true, true},
-    {"IM:x-bm", true, false, true},
-    {"IM:x-bm,gzip", true, true, true},
-    {"IM: x-bm, gzip", true, true, true},
-    {"IM:gzip,x-bm", false, false, false},
-    {"IM:deflate,x-bm,gzip", false, false, false},
+      {"", false, false, true},
+      {"gzip", false, true, true},
+      {"x-bm", true, false, true},
+      {"x-bm,gzip", true, true, true},
+      {" x-bm, gzip", true, true, true},
+      {"gzip,x-bm", false, false, false},
+      {"deflate,x-bm,gzip", false, false, false},
   };
 
   std::string serialized_seed = SerializeSeed(CreateTestSeed());
@@ -556,15 +555,15 @@ TEST_F(VariationsServiceTest, InstanceManipulations) {
     service.set_intercepts_fetch(false);
 
     std::string headers("HTTP/1.1 200 OK\n\n");
-    network::ResourceResponseHead head;
-    head.headers = new net::HttpResponseHeaders(
-        net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(headers));
     if (!cases[i].im.empty())
-      head.headers->AddHeader(cases[i].im);
+      head->headers->SetHeader("IM", cases[i].im);
     network::URLLoaderCompletionStatus status;
     status.decoded_body_length = serialized_seed.size();
     service.test_url_loader_factory()->AddResponse(
-        service.interception_url(), head, serialized_seed, status);
+        service.interception_url(), std::move(head), serialized_seed, status);
 
     service.DoActualFetch();
 
@@ -586,14 +585,14 @@ TEST_F(VariationsServiceTest, CountryHeader) {
   service.set_intercepts_fetch(false);
 
   std::string headers("HTTP/1.1 200 OK\n\n");
-  network::ResourceResponseHead head;
-  head.headers = new net::HttpResponseHeaders(
-      net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
-  head.headers->AddHeader("X-Country: test");
+  auto head = network::mojom::URLResponseHead::New();
+  head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+      net::HttpUtil::AssembleRawHeaders(headers));
+  head->headers->SetHeader("X-Country", "test");
   network::URLLoaderCompletionStatus status;
   status.decoded_body_length = serialized_seed.size();
-  service.test_url_loader_factory()->AddResponse(service.interception_url(),
-                                                 head, serialized_seed, status);
+  service.test_url_loader_factory()->AddResponse(
+      service.interception_url(), std::move(head), serialized_seed, status);
 
   service.DoActualFetch();
 
@@ -649,55 +648,62 @@ TEST_F(VariationsServiceTest, Observer) {
 
 TEST_F(VariationsServiceTest, LoadPermanentConsistencyCountry) {
   struct {
+    const char* permanent_overridden_country_before;
     // Comma separated list, NULL if the pref isn't set initially.
-    const char* pref_value_before;
+    const char* permanent_consistency_country_before;
     const char* version;
     // NULL indicates that no latest country code is present.
     const char* latest_country_code;
     // Comma separated list.
-    const char* expected_pref_value_after;
+    const char* permanent_consistency_country_after;
     std::string expected_country;
-    VariationsService::LoadPermanentConsistencyCountryResult expected_result;
+    LoadPermanentConsistencyCountryResult expected_result;
   } test_cases[] = {
+      // Existing permanent overridden country.
+      {"ca", "20.0.0.0,us", "20.0.0.0", "us", "20.0.0.0,us", "ca",
+       LOAD_COUNTRY_HAS_PERMANENT_OVERRIDDEN_COUNTRY},
+      {"us", "20.0.0.0,us", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_HAS_PERMANENT_OVERRIDDEN_COUNTRY},
+      {"ca", "", "20.0.0.0", "", "", "ca",
+       LOAD_COUNTRY_HAS_PERMANENT_OVERRIDDEN_COUNTRY},
+
       // Existing pref value present for this version.
-      {"20.0.0.0,us", "20.0.0.0", "ca", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_HAS_BOTH_VERSION_EQ_COUNTRY_NEQ},
-      {"20.0.0.0,us", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_HAS_BOTH_VERSION_EQ_COUNTRY_EQ},
-      {"20.0.0.0,us", "20.0.0.0", nullptr, "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_HAS_PREF_NO_SEED_VERSION_EQ},
+      {"", "20.0.0.0,us", "20.0.0.0", "ca", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_HAS_BOTH_VERSION_EQ_COUNTRY_NEQ},
+      {"", "20.0.0.0,us", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_HAS_BOTH_VERSION_EQ_COUNTRY_EQ},
+      {"", "20.0.0.0,us", "20.0.0.0", "", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_HAS_PREF_NO_SEED_VERSION_EQ},
 
       // Existing pref value present for a different version.
-      {"19.0.0.0,ca", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_HAS_BOTH_VERSION_NEQ_COUNTRY_NEQ},
-      {"19.0.0.0,us", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_HAS_BOTH_VERSION_NEQ_COUNTRY_EQ},
-      {"19.0.0.0,ca", "20.0.0.0", nullptr, "19.0.0.0,ca", "",
-       VariationsService::LOAD_COUNTRY_HAS_PREF_NO_SEED_VERSION_NEQ},
+      {"", "19.0.0.0,ca", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_HAS_BOTH_VERSION_NEQ_COUNTRY_NEQ},
+      {"", "19.0.0.0,us", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_HAS_BOTH_VERSION_NEQ_COUNTRY_EQ},
+      {"", "19.0.0.0,ca", "20.0.0.0", "", "19.0.0.0,ca", "",
+       LOAD_COUNTRY_HAS_PREF_NO_SEED_VERSION_NEQ},
 
       // No existing pref value present.
-      {nullptr, "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_NO_PREF_HAS_SEED},
-      {nullptr, "20.0.0.0", nullptr, "", "",
-       VariationsService::LOAD_COUNTRY_NO_PREF_NO_SEED},
-      {"", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_NO_PREF_HAS_SEED},
-      {"", "20.0.0.0", nullptr, "", "",
-       VariationsService::LOAD_COUNTRY_NO_PREF_NO_SEED},
+      {"", "", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_NO_PREF_HAS_SEED},
+      {"", "", "20.0.0.0", "", "", "", LOAD_COUNTRY_NO_PREF_NO_SEED},
+      {"", "", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_NO_PREF_HAS_SEED},
+      {"", "", "20.0.0.0", "", "", "", LOAD_COUNTRY_NO_PREF_NO_SEED},
 
       // Invalid existing pref value.
-      {"20.0.0.0", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_INVALID_PREF_HAS_SEED},
-      {"20.0.0.0", "20.0.0.0", nullptr, "", "",
-       VariationsService::LOAD_COUNTRY_INVALID_PREF_NO_SEED},
-      {"20.0.0.0,us,element3", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_INVALID_PREF_HAS_SEED},
-      {"20.0.0.0,us,element3", "20.0.0.0", nullptr, "", "",
-       VariationsService::LOAD_COUNTRY_INVALID_PREF_NO_SEED},
-      {"badversion,ca", "20.0.0.0", "us", "20.0.0.0,us", "us",
-       VariationsService::LOAD_COUNTRY_INVALID_PREF_HAS_SEED},
-      {"badversion,ca", "20.0.0.0", nullptr, "", "",
-       VariationsService::LOAD_COUNTRY_INVALID_PREF_NO_SEED},
+      {"", "20.0.0.0", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_INVALID_PREF_HAS_SEED},
+      {"", "20.0.0.0", "20.0.0.0", "", "", "",
+       LOAD_COUNTRY_INVALID_PREF_NO_SEED},
+      {"", "20.0.0.0,us,element3", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_INVALID_PREF_HAS_SEED},
+      {"", "20.0.0.0,us,element3", "20.0.0.0", "", "", "",
+       LOAD_COUNTRY_INVALID_PREF_NO_SEED},
+      {"", "badversion,ca", "20.0.0.0", "us", "20.0.0.0,us", "us",
+       LOAD_COUNTRY_INVALID_PREF_HAS_SEED},
+      {"", "badversion,ca", "20.0.0.0", "", "", "",
+       LOAD_COUNTRY_INVALID_PREF_NO_SEED},
   };
 
   for (const auto& test : test_cases) {
@@ -707,13 +713,20 @@ TEST_F(VariationsServiceTest, LoadPermanentConsistencyCountry) {
             &prefs_, network_tracker_),
         &prefs_, GetMetricsStateManager(), UIStringOverrider());
 
-    if (!test.pref_value_before) {
+    if (!test.permanent_overridden_country_before) {
+      prefs_.ClearPref(prefs::kVariationsPermanentOverriddenCountry);
+    } else {
+      prefs_.SetString(prefs::kVariationsPermanentOverriddenCountry,
+                       test.permanent_overridden_country_before);
+    }
+
+    if (!test.permanent_consistency_country_before) {
       prefs_.ClearPref(prefs::kVariationsPermanentConsistencyCountry);
     } else {
       base::ListValue list_value;
       for (const std::string& component :
-           base::SplitString(test.pref_value_before, ",", base::TRIM_WHITESPACE,
-                             base::SPLIT_WANT_ALL)) {
+           base::SplitString(test.permanent_consistency_country_before, ",",
+                             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
         list_value.AppendString(component);
       }
       prefs_.Set(prefs::kVariationsPermanentConsistencyCountry, list_value);
@@ -728,12 +741,12 @@ TEST_F(VariationsServiceTest, LoadPermanentConsistencyCountry) {
     EXPECT_EQ(test.expected_country,
               service.LoadPermanentConsistencyCountry(
                   base::Version(test.version), latest_country))
-        << test.pref_value_before << ", " << test.version << ", "
-        << test.latest_country_code;
+        << test.permanent_consistency_country_before << ", " << test.version
+        << ", " << test.latest_country_code;
 
     base::ListValue expected_list_value;
     for (const std::string& component :
-         base::SplitString(test.expected_pref_value_after, ",",
+         base::SplitString(test.permanent_consistency_country_after, ",",
                            base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
       expected_list_value.AppendString(component);
     }
@@ -741,8 +754,8 @@ TEST_F(VariationsServiceTest, LoadPermanentConsistencyCountry) {
         prefs_.GetList(prefs::kVariationsPermanentConsistencyCountry);
     EXPECT_EQ(ListValueToString(expected_list_value),
               ListValueToString(*pref_value))
-        << test.pref_value_before << ", " << test.version << ", "
-        << test.latest_country_code;
+        << test.permanent_consistency_country_before << ", " << test.version
+        << ", " << test.latest_country_code;
 
     histogram_tester.ExpectUniqueSample(
         "Variations.LoadPermanentConsistencyCountryResult",
@@ -750,27 +763,70 @@ TEST_F(VariationsServiceTest, LoadPermanentConsistencyCountry) {
   }
 }
 
+TEST_F(VariationsServiceTest, GetStoredPermanentCountry) {
+  struct {
+    // The old overridden country, empty string if the pref isn't set initially.
+    const std::string permanent_overridden_country_before;
+    // Comma separated list, NULL if the pref isn't set initially.
+    const std::string permanent_consistency_country_before;
+    const std::string expected_country;
+  } test_cases[] = {
+      {"", "20.0.0.0,us", "us"},
+      {"us", "20.0.0.0,us", "us"},
+      {"ca", "20.0.0.0,us", "ca"},
+      {"ca", "", "ca"},
+  };
+
+  for (const auto& test : test_cases) {
+    TestVariationsService service(
+        std::make_unique<web_resource::TestRequestAllowedNotifier>(
+            &prefs_, network_tracker_),
+        &prefs_, GetMetricsStateManager(), true);
+
+    if (test.permanent_overridden_country_before.empty()) {
+      prefs_.ClearPref(prefs::kVariationsPermanentOverriddenCountry);
+    } else {
+      prefs_.SetString(prefs::kVariationsPermanentOverriddenCountry,
+                       test.permanent_overridden_country_before);
+    }
+
+    if (test.permanent_consistency_country_before.empty()) {
+      prefs_.ClearPref(prefs::kVariationsPermanentConsistencyCountry);
+    } else {
+      base::ListValue list_value;
+      for (const std::string& component :
+           base::SplitString(test.permanent_consistency_country_before, ",",
+                             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
+        list_value.AppendString(component);
+      }
+      prefs_.Set(prefs::kVariationsPermanentConsistencyCountry, list_value);
+    }
+
+    VariationsSeed seed(CreateTestSeed());
+
+    EXPECT_EQ(test.expected_country, service.GetStoredPermanentCountry())
+        << test.permanent_overridden_country_before << ", "
+        << test.permanent_consistency_country_before;
+  }
+}
+
 TEST_F(VariationsServiceTest, OverrideStoredPermanentCountry) {
-  const std::string kTestVersion = version_info::GetVersionNumber();
-  const std::string kPrefCa = version_info::GetVersionNumber() + ",ca";
-  const std::string kPrefUs = version_info::GetVersionNumber() + ",us";
+  const std::string kPrefCa = "ca";
+  const std::string kPrefUs = "us";
 
   struct {
-    // Comma separated list, empty string if the pref isn't set initially.
+    // The old overridden country, empty string if the pref isn't set initially.
     const std::string pref_value_before;
     const std::string country_code_override;
-    // Comma separated list.
+    // The expected override country.
     const std::string expected_pref_value_after;
     // Is the pref expected to be updated or not.
     const bool has_updated;
   } test_cases[] = {
       {kPrefUs, "ca", kPrefCa, true},
       {kPrefUs, "us", kPrefUs, false},
-      {kPrefUs, "", kPrefUs, false},
+      {kPrefUs, "", "", true},
       {"", "ca", kPrefCa, true},
-      {"", "", "", false},
-      {"19.0.0.0,us", "ca", kPrefCa, true},
-      {"19.0.0.0,us", "us", "19.0.0.0,us", false},
   };
 
   for (const auto& test : test_cases) {
@@ -780,15 +836,10 @@ TEST_F(VariationsServiceTest, OverrideStoredPermanentCountry) {
         &prefs_, GetMetricsStateManager(), true);
 
     if (test.pref_value_before.empty()) {
-      prefs_.ClearPref(prefs::kVariationsPermanentConsistencyCountry);
+      prefs_.ClearPref(prefs::kVariationsPermanentOverriddenCountry);
     } else {
-      base::ListValue list_value;
-      for (const std::string& component :
-           base::SplitString(test.pref_value_before, ",", base::TRIM_WHITESPACE,
-                             base::SPLIT_WANT_ALL)) {
-        list_value.AppendString(component);
-      }
-      prefs_.Set(prefs::kVariationsPermanentConsistencyCountry, list_value);
+      prefs_.SetString(prefs::kVariationsPermanentOverriddenCountry,
+                       test.pref_value_before);
     }
 
     VariationsSeed seed(CreateTestSeed());
@@ -797,16 +848,9 @@ TEST_F(VariationsServiceTest, OverrideStoredPermanentCountry) {
                                     test.country_code_override))
         << test.pref_value_before << ", " << test.country_code_override;
 
-    base::ListValue expected_list_value;
-    for (const std::string& component :
-         base::SplitString(test.expected_pref_value_after, ",",
-                           base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
-      expected_list_value.AppendString(component);
-    }
-    const base::ListValue* pref_value =
-        prefs_.GetList(prefs::kVariationsPermanentConsistencyCountry);
-    EXPECT_EQ(ListValueToString(expected_list_value),
-              ListValueToString(*pref_value))
+    const std::string pref_value =
+        prefs_.GetString(prefs::kVariationsPermanentOverriddenCountry);
+    EXPECT_EQ(test.expected_pref_value_after, pref_value)
         << test.pref_value_before << ", " << test.country_code_override;
   }
 }
@@ -833,7 +877,8 @@ TEST_F(VariationsServiceTest, SafeMode_SuccessfulFetchClearsFailureStreaks) {
 
   VariationsService::EnableFetchForTesting();
 
-  net::test::MockNetworkChangeNotifier network_change_notifier;
+  std::unique_ptr<net::test::MockNetworkChangeNotifier>
+      network_change_notifier = net::test::MockNetworkChangeNotifier::Create();
 
   // Create a variations service and perform a successful fetch.
   TestVariationsService service(
@@ -844,18 +889,16 @@ TEST_F(VariationsServiceTest, SafeMode_SuccessfulFetchClearsFailureStreaks) {
 
   std::string response;
   ASSERT_TRUE(base::Base64Decode(kBase64SeedData, &response));
-  const std::string seed_signature_header =
-      std::string("X-Seed-Signature:") + kBase64SeedSignature;
 
   std::string headers("HTTP/1.1 200 OK\n\n");
-  network::ResourceResponseHead head;
-  head.headers = new net::HttpResponseHeaders(
-      net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
-  head.headers->AddHeader(seed_signature_header);
+  auto head = network::mojom::URLResponseHead::New();
+  head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+      net::HttpUtil::AssembleRawHeaders(headers));
+  head->headers->SetHeader("X-Seed-Signature", kBase64SeedSignature);
   network::URLLoaderCompletionStatus status;
   status.decoded_body_length = response.size();
-  service.test_url_loader_factory()->AddResponse(service.interception_url(),
-                                                 head, response, status);
+  service.test_url_loader_factory()->AddResponse(
+      service.interception_url(), std::move(head), response, status);
 
   service.DoActualFetch();
 
@@ -878,12 +921,12 @@ TEST_F(VariationsServiceTest, SafeMode_NotModifiedFetchClearsFailureStreaks) {
   service.set_intercepts_fetch(false);
 
   std::string headers("HTTP/1.1 304 Not Modified\n\n");
-  network::ResourceResponseHead head;
-  head.headers = new net::HttpResponseHeaders(
-      net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
+  auto head = network::mojom::URLResponseHead::New();
+  head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+      net::HttpUtil::AssembleRawHeaders(headers));
   network::URLLoaderCompletionStatus status;
   service.test_url_loader_factory()->AddResponse(service.interception_url(),
-                                                 head, "", status);
+                                                 std::move(head), "", status);
 
   service.DoActualFetch();
 
@@ -900,43 +943,6 @@ TEST_F(VariationsServiceTest, FieldTrialCreatorInitializedCorrectly) {
   // Call will crash in service's VariationsFieldTrialCreator if not initialized
   // correctly.
   service.GetClientFilterableStateForVersionCalledForTesting();
-}
-
-TEST_F(VariationsServiceTest, InsecurelyFetchedSetWhenHTTP) {
-  std::string serialized_seed = SerializeSeed(CreateTestSeed());
-  VariationsService::EnableFetchForTesting();
-  TestVariationsService service(
-      std::make_unique<web_resource::TestRequestAllowedNotifier>(
-          &prefs_, network_tracker_),
-      &prefs_, GetMetricsStateManager(), false);
-  service.set_intercepts_fetch(false);
-  service.test_url_loader_factory()->AddResponse(
-      service.interception_url().spec(), serialized_seed);
-  base::HistogramTester histogram_tester;
-  // Note: We call DoFetchFromURL() here instead of DoActualFetch() since the
-  // latter doesn't pass true to |http_retry|.
-  service.DoFetchFromURL(service.interception_url(), true);
-  base::RunLoop().RunUntilIdle();
-  EXPECT_TRUE(service.insecurely_fetched_seed());
-  histogram_tester.ExpectUniqueSample(
-      "Variations.SeedFetchResponseOrErrorCode.HTTP", net::HTTP_OK, 1);
-}
-
-TEST_F(VariationsServiceTest, InsecurelyFetchedNotSetWhenHTTPS) {
-  std::string serialized_seed = SerializeSeed(CreateTestSeed());
-  TestVariationsService service(
-      std::make_unique<web_resource::TestRequestAllowedNotifier>(
-          &prefs_, network_tracker_),
-      &prefs_, GetMetricsStateManager(), true);
-  VariationsService::EnableFetchForTesting();
-  service.set_intercepts_fetch(false);
-  service.test_url_loader_factory()->AddResponse(
-      service.interception_url().spec(), serialized_seed);
-  base::HistogramTester histogram_tester;
-  service.DoActualFetch();
-  EXPECT_FALSE(service.insecurely_fetched_seed());
-  histogram_tester.ExpectUniqueSample("Variations.SeedFetchResponseOrErrorCode",
-                                      net::HTTP_OK, 1);
 }
 
 TEST_F(VariationsServiceTest, RetryOverHTTPIfURLisSet) {
@@ -988,15 +994,15 @@ TEST_F(VariationsServiceTest, SeedNotStoredWhenRedirected) {
   net::RedirectInfo redirect_info;
   redirect_info.status_code = 301;
   redirect_info.new_url = service.interception_url();
-  network::TestURLLoaderFactory::Redirects redirects{
-      {redirect_info, network::ResourceResponseHead()}};
+  network::TestURLLoaderFactory::Redirects redirects;
+  redirects.push_back({redirect_info, network::mojom::URLResponseHead::New()});
 
-  network::ResourceResponseHead head =
-      network::CreateResourceResponseHead(net::HTTP_OK);
+  auto head = network::CreateURLResponseHead(net::HTTP_OK);
 
   service.test_url_loader_factory()->AddResponse(
-      service.interception_url(), head, SerializeSeed(CreateTestSeed()),
-      network::URLLoaderCompletionStatus(), redirects);
+      service.interception_url(), std::move(head),
+      SerializeSeed(CreateTestSeed()), network::URLLoaderCompletionStatus(),
+      std::move(redirects));
 
   service.set_intercepts_fetch(false);
   service.DoActualFetch();
@@ -1014,24 +1020,23 @@ TEST_F(VariationsServiceTest, NullResponseReceivedWithHTTPOk) {
 
   std::string response;
   ASSERT_TRUE(base::Base64Decode(kBase64SeedData, &response));
-  const std::string seed_signature_header =
-      std::string("X-Seed-Signature:") + kBase64SeedSignature;
 
   std::string headers("HTTP/1.1 200 OK\n\n");
-  network::ResourceResponseHead head;
-  head.headers = new net::HttpResponseHeaders(
-      net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
-  EXPECT_EQ(net::HTTP_OK, head.headers->response_code());
-  head.headers->AddHeader(seed_signature_header);
+  auto head = network::mojom::URLResponseHead::New();
+  auto http_response_headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+      net::HttpUtil::AssembleRawHeaders(headers));
+  head->headers = http_response_headers;
+  EXPECT_EQ(net::HTTP_OK, http_response_headers->response_code());
+  http_response_headers->SetHeader("X-Seed-Signature", kBase64SeedSignature);
   // Set ERR_FAILED status code despite the 200 response code.
   network::URLLoaderCompletionStatus status(net::ERR_FAILED);
   status.decoded_body_length = response.size();
   service.test_url_loader_factory()->AddResponse(
-      service.interception_url(), head, response, status,
+      service.interception_url(), std::move(head), response, status,
       network::TestURLLoaderFactory::Redirects(),
       // We pass the flag below to preserve the 200 code with an error response.
       network::TestURLLoaderFactory::kSendHeadersOnNetworkError);
-  EXPECT_EQ(net::HTTP_OK, head.headers->response_code());
+  EXPECT_EQ(net::HTTP_OK, http_response_headers->response_code());
 
   base::HistogramTester histogram_tester;
   service.DoActualFetch();

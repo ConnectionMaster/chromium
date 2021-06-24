@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_STORE_H_
-#define COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_STORE_H_
+#ifndef COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_EVENT_STORE_H_
+#define COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_EVENT_STORE_H_
 
 #include <string>
 
@@ -17,14 +17,15 @@ namespace feature_engagement {
 class EventStore {
  public:
   using OnLoadedCallback =
-      base::Callback<void(bool success, std::unique_ptr<std::vector<Event>>)>;
+      base::OnceCallback<void(bool success,
+                              std::unique_ptr<std::vector<Event>>)>;
 
   virtual ~EventStore() = default;
 
   // Loads the database from storage and asynchronously posts the result back
   // on the caller's thread.
   // Ownership of the loaded data is given to the caller.
-  virtual void Load(const OnLoadedCallback& callback) = 0;
+  virtual void Load(OnLoadedCallback callback) = 0;
 
   // Returns whether the database is ready, i.e. whether it has been fully
   // loaded.
@@ -45,4 +46,4 @@ class EventStore {
 
 }  // namespace feature_engagement
 
-#endif  // COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_STORE_H_
+#endif  // COMPONENTS_FEATURE_ENGAGEMENT_INTERNAL_EVENT_STORE_H_

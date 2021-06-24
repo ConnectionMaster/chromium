@@ -1,4 +1,3 @@
-region
-++document
-++++group
-++++++combobox ExpandCollapse.ExpandCollapseState='LeafNode'
+Document
+++Group IsControlElement=false
+++++ComboBox ExpandCollapse.ExpandCollapseState='LeafNode'

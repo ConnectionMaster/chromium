@@ -8,7 +8,29 @@ blink_modules_sources("hid") {
   sources = [
     "hid.cc",
     "hid.h",
-    "navigator_hid.cc",
-    "navigator_hid.h",
+    "hid_connection_event.cc",
+    "hid_connection_event.h",
+    "hid_device.cc",
+    "hid_device.h",
+    "hid_input_report_event.cc",
+    "hid_input_report_event.h",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "hid_device_test.cc" ]
+
+  configs += [
+    "//third_party/blink/renderer:config",
+    "//third_party/blink/renderer:inside_blink",
+    "//third_party/blink/renderer/core:blink_core_pch",
+  ]
+
+  deps = [
+    "//testing/gtest",
+    "//third_party/blink/renderer/modules",
+    "//third_party/blink/renderer/platform",
+    "//third_party/blink/renderer/platform/wtf",
   ]
 }

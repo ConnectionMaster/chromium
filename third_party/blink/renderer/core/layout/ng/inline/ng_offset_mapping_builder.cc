@@ -5,9 +5,9 @@
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_offset_mapping_builder.h"
 
 #include <utility>
+#include "base/containers/adapters.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_caret_navigator.h"
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_offset_mapping.h"
 
 namespace blink {
@@ -19,7 +19,7 @@ namespace {
 // text. When ::first-letter is applied to generated content, e.g. ::before,
 // remaining part contains text for remaining part only instead of all text.
 unsigned GetAssociatedStartOffset(const LayoutObject* layout_object) {
-  const auto* text_fragment = ToLayoutTextFragmentOrNull(layout_object);
+  const auto* text_fragment = DynamicTo<LayoutTextFragment>(layout_object);
   if (!text_fragment || !text_fragment->AssociatedTextNode())
     return 0;
   return text_fragment->Start();
@@ -175,12 +175,48 @@ void NGOffsetMappingBuilder::CollapseTrailingSpace(unsigned space_offset) {
   }
 }
 
+void NGOffsetMappingBuilder::RestoreTrailingCollapsibleSpace(
+    const LayoutText& layout_text,
+    unsigned offset) {
+  ++destination_length_;
+  for (auto& unit : base::Reversed(mapping_units_)) {
+    if (unit.text_content_end_ < offset) {
+      // There are no collapsed unit.
+      NOTREACHED();
+      return;
+    }
+    if (unit.text_content_start_ != offset ||
+        unit.text_content_end_ != offset ||
+        unit.layout_object_ != layout_text) {
+      ++unit.text_content_start_;
+      ++unit.text_content_end_;
+      continue;
+    }
+    DCHECK_EQ(unit.type_, NGOffsetMappingUnitType::kCollapsed);
+    const unsigned original_dom_end = unit.dom_end_;
+    unit.type_ = NGOffsetMappingUnitType::kIdentity;
+    unit.dom_end_ = unit.dom_start_ + 1;
+    unit.text_content_end_ = unit.text_content_start_ + 1;
+    if (original_dom_end - unit.dom_start_ == 1)
+      return;
+    // When we collapsed multiple spaces, e.g. <b>   </b>.
+    mapping_units_.insert(
+        std::distance(mapping_units_.begin(), &unit) + 1,
+        NGOffsetMappingUnit(NGOffsetMappingUnitType::kCollapsed, layout_text,
+                            unit.dom_end_, original_dom_end,
+                            unit.text_content_end_, unit.text_content_end_));
+    return;
+  }
+  NOTREACHED();
+  return;
+}
+
 void NGOffsetMappingBuilder::SetDestinationString(String string) {
   DCHECK_EQ(destination_length_, string.length());
   destination_string_ = string;
 }
 
-NGOffsetMapping NGOffsetMappingBuilder::Build() {
+std::unique_ptr<NGOffsetMapping> NGOffsetMappingBuilder::Build() {
   // All mapping units are already built. Scan them to build mapping ranges.
   for (unsigned range_start = 0; range_start < mapping_units_.size();) {
     const LayoutObject& layout_object =
@@ -203,8 +239,8 @@ NGOffsetMapping NGOffsetMappingBuilder::Build() {
     range_start = range_end;
   }
 
-  return NGOffsetMapping(std::move(mapping_units_), std::move(unit_ranges_),
-                         destination_string_);
+  return std::make_unique<NGOffsetMapping>(
+      std::move(mapping_units_), std::move(unit_ranges_), destination_string_);
 }
 
 }  // namespace blink

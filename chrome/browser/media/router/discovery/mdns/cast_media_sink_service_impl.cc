@@ -5,19 +5,20 @@
 #include "chrome/browser/media/router/discovery/mdns/cast_media_sink_service_impl.h"
 
 #include "base/bind.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/rand_util.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/time/default_clock.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/media/router/discovery/mdns/media_sink_util.h"
 #include "chrome/browser/media/router/media_router_feature.h"
-#include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/common/media_router/discovery/media_sink_internal.h"
-#include "chrome/common/media_router/media_sink.h"
+#include "chrome/browser/net/system_network_context_manager.h"  // nogncheck
 #include "components/cast_channel/cast_channel_enum.h"
 #include "components/cast_channel/cast_socket_service.h"
 #include "components/cast_channel/logger.h"
+#include "components/media_router/common/discovery/media_sink_internal.h"
+#include "components/media_router/common/media_sink.h"
 #include "components/net_log/chrome_net_log.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/backoff_entry.h"
@@ -26,6 +27,8 @@
 namespace media_router {
 
 namespace {
+
+constexpr char kLoggerComponent[] = "CastMediaSinkServiceImpl";
 
 MediaSinkInternal CreateCastSinkFromDialSink(
     const MediaSinkInternal& dial_sink) {
@@ -50,8 +53,32 @@ MediaSinkInternal CreateCastSinkFromDialSink(
   return MediaSinkInternal(sink, extra_data);
 }
 
-void RecordError(cast_channel::ChannelError channel_error,
-                 cast_channel::LastError last_error) {
+std::string EnumToString(MediaRouterChannelError error) {
+  switch (error) {
+    case MediaRouterChannelError::UNKNOWN:
+      return "UNKNOWN";
+    case MediaRouterChannelError::AUTHENTICATION:
+      return "AUTHENTICATION";
+    case MediaRouterChannelError::CONNECT:
+      return "CONNECT";
+    case MediaRouterChannelError::GENERAL_CERTIFICATE:
+      return "GENERAL_CERTIFICATE";
+    case MediaRouterChannelError::CERTIFICATE_TIMING:
+      return "CERTIFICATE_TIMING";
+    case MediaRouterChannelError::NETWORK:
+      return "NETWORK";
+    case MediaRouterChannelError::CONNECT_TIMEOUT:
+      return "CONNECT_TIMEOUT";
+    case MediaRouterChannelError::PING_TIMEOUT:
+      return "PING_TIMEOUT";
+    case MediaRouterChannelError::TOTAL_COUNT:
+      NOTREACHED();
+      return "";
+  }
+}
+
+MediaRouterChannelError RecordError(cast_channel::ChannelError channel_error,
+                                    cast_channel::LastError last_error) {
   MediaRouterChannelError error_code = MediaRouterChannelError::UNKNOWN;
 
   switch (channel_error) {
@@ -90,9 +117,7 @@ void RecordError(cast_channel::ChannelError channel_error,
            cast_channel::ChallengeReplyError::CERT_PARSING_FAILED ||
        last_error.challenge_reply_error ==
            cast_channel::ChallengeReplyError::CANNOT_EXTRACT_PUBLIC_KEY) ||
-      (last_error.net_return_value <=
-           net::ERR_CERT_COMMON_NAME_INVALID &&  // CERT_XXX errors
-       last_error.net_return_value > net::ERR_CERT_END) ||
+      net::IsCertificateError(last_error.net_return_value) ||
       last_error.channel_event ==
           cast_channel::ChannelEvent::SSL_SOCKET_CONNECT_FAILED ||
       last_error.channel_event ==
@@ -123,31 +148,8 @@ void RecordError(cast_channel::ChannelError channel_error,
   }
 
   CastAnalytics::RecordDeviceChannelError(error_code);
+  return error_code;
 }
-
-// Parameter names.
-constexpr char kParamNameInitialDelayInMilliSeconds[] = "initial_delay_in_ms";
-constexpr char kParamNameMaxRetryAttempts[] = "max_retry_attempts";
-constexpr char kParamNameExponential[] = "exponential";
-constexpr char kParamNameConnectTimeoutInSeconds[] =
-    "connect_timeout_in_seconds";
-constexpr char kParamNamePingIntervalInSeconds[] = "ping_interval_in_seconds";
-constexpr char kParamNameLivenessTimeoutInSeconds[] =
-    "liveness_timeout_in_seconds";
-constexpr char kParamNameDynamicTimeoutDeltaInSeconds[] =
-    "dynamic_timeout_delta_in_seconds";
-
-// Default values if field trial parameter is not specified.
-constexpr int kDefaultInitialDelayInMilliSeconds = 15 * 1000;  // 15 seconds
-// TODO(zhaobin): Remove this when we switch to use max delay instead of max
-// number of retry attempts to decide when to stop retry.
-constexpr int kDefaultMaxRetryAttempts = 3;
-constexpr double kDefaultExponential = 1.0;
-constexpr int kDefaultConnectTimeoutInSeconds = 10;
-constexpr int kDefaultPingIntervalInSeconds = 5;
-constexpr int kDefaultLivenessTimeoutInSeconds =
-    kDefaultPingIntervalInSeconds * 2;
-constexpr int kDefaultDynamicTimeoutDeltaInSeconds = 0;
 
 // Max allowed values
 constexpr int kMaxConnectTimeoutInSeconds = 30;
@@ -182,9 +184,7 @@ constexpr int CastMediaSinkServiceImpl::kMaxDialSinkFailureCount;
 // static
 MediaSink::Id CastMediaSinkServiceImpl::GetCastSinkIdFromDial(
     const MediaSink::Id& dial_sink_id) {
-  DCHECK_EQ("dial:", dial_sink_id.substr(0, 5))
-      << "unexpected DIAL sink id " << dial_sink_id;
-
+  DCHECK_EQ("dial:", dial_sink_id.substr(0, 5));
   // Replace the "dial:" prefix with "cast:".
   return "cast:" + dial_sink_id.substr(5);
 }
@@ -192,9 +192,7 @@ MediaSink::Id CastMediaSinkServiceImpl::GetCastSinkIdFromDial(
 // static
 MediaSink::Id CastMediaSinkServiceImpl::GetDialSinkIdFromCast(
     const MediaSink::Id& cast_sink_id) {
-  DCHECK_EQ("cast:", cast_sink_id.substr(0, 5))
-      << "unexpected Cast sink id " << cast_sink_id;
-
+  DCHECK_EQ("cast:", cast_sink_id.substr(0, 5));
   // Replace the "cast:" prefix with "dial:".
   return "dial:" + cast_sink_id.substr(5);
 }
@@ -211,14 +209,10 @@ CastMediaSinkServiceImpl::CastMediaSinkServiceImpl(
       allow_all_ips_(allow_all_ips),
       dial_media_sink_service_(dial_media_sink_service),
       task_runner_(cast_socket_service_->task_runner()),
-      clock_(base::DefaultClock::GetInstance()),
-      weak_ptr_factory_(this) {
+      clock_(base::DefaultClock::GetInstance()) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
   DCHECK(cast_socket_service_);
   DCHECK(network_monitor_);
-
-  retry_params_ = RetryParams::GetFromFieldTrialParam();
-  open_params_ = OpenParams::GetFromFieldTrialParam();
 
   backoff_policy_ = {
       // Number of initial errors (in sequence) to ignore before going into
@@ -309,7 +303,6 @@ void CastMediaSinkServiceImpl::OpenChannelsWithRandomizedDelay(
   // time.
   base::TimeDelta delay =
       base::TimeDelta::FromMilliseconds(base::RandInt(0, 50) * 100);
-  DVLOG(2) << "Open channels in [" << delay.InSeconds() << "] seconds";
   task_runner()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&CastMediaSinkServiceImpl::OpenChannels, GetWeakPtr(),
@@ -335,14 +328,9 @@ void CastMediaSinkServiceImpl::OpenChannels(
 void CastMediaSinkServiceImpl::OnError(const cast_channel::CastSocket& socket,
                                        cast_channel::ChannelError error_state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DVLOG(1) << "OnError [ip_endpoint]: " << socket.ip_endpoint().ToString()
-           << " [error_state]: "
-           << cast_channel::ChannelErrorToString(error_state)
-           << " [channel_id]: " << socket.id();
-
   cast_channel::LastError last_error =
       cast_socket_service_->GetLogger()->GetLastError(socket.id());
-  RecordError(error_state, last_error);
+  MediaRouterChannelError error_code = RecordError(error_state, last_error);
 
   net::IPEndPoint ip_endpoint = socket.ip_endpoint();
   // Need a PostTask() here because RemoveSocket() will release the memory of
@@ -362,35 +350,33 @@ void CastMediaSinkServiceImpl::OnError(const cast_channel::CastSocket& socket,
       std::find_if(sinks.begin(), sinks.end(), [&socket_id](const auto& entry) {
         return entry.second.cast_data().cast_channel_id == socket_id;
       });
+  if (logger_.is_bound()) {
+    auto sink_id = sink_it == sinks.end() ? "" : sink_it->first;
+    logger_->LogError(
+        mojom::LogCategory::kDiscovery, kLoggerComponent,
+        base::StrCat({"Media Router Channel Error: ", EnumToString(error_code),
+                      ". channel_id: ", base::NumberToString(socket_id),
+                      ". IP endpoint: ", ip_endpoint.ToString()}),
+        sink_id, "", "");
+  }
   if (sink_it == sinks.end()) {
-    DVLOG(2) << "Cannot find existing cast sink. Skip reopen cast channel: "
-             << ip_endpoint.ToString();
     return;
   }
 
-  // We erase the sink here so that OpenChannel would not find an existing
-  // sink.
-  // Note: a better longer term solution is to introduce a state field to the
-  // sink. We would set it to ERROR here. In OpenChannel(), we would check
-  // create a socket only if the state is not already CONNECTED.
   MediaSinkInternal sink = sink_it->second;
-  RemoveSink(sink);
-
   // If socket is not opened yet, then |OnChannelOpened()| will handle the
   // retry.
   if (socket.ready_state() != cast_channel::ReadyState::CONNECTING) {
-    DVLOG(2) << "OnError starts reopening cast channel: "
-             << ip_endpoint.ToString();
     task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&CastMediaSinkServiceImpl::OpenChannel, GetWeakPtr(),
-                       sink, nullptr, SinkSource::kConnectionRetry));
+                       sink, nullptr, SinkSource::kConnectionRetryOnError));
   }
 }
 
 void CastMediaSinkServiceImpl::OnMessage(
     const cast_channel::CastSocket& socket,
-    const cast_channel::CastMessage& message) {}
+    const cast::channel::CastMessage& message) {}
 
 void CastMediaSinkServiceImpl::OnNetworksChanged(
     const std::string& network_id) {
@@ -412,10 +398,19 @@ void CastMediaSinkServiceImpl::OnNetworksChanged(
     sink_cache_[last_network_id] = std::move(current_sinks);
   }
 
+  if (logger_.is_bound()) {
+    logger_->LogError(mojom::LogCategory::kDiscovery, kLoggerComponent,
+                      base::StringPrintf(
+                          "Network ID chagned from \"%s\" to \"%s\".",
+                          last_network_id.c_str(), current_network_id_.c_str()),
+                      "", "", "");
+  }
+
   // TODO(imcheng): Maybe this should clear |sinks_| and call |StartTimer()|
   // so it is more responsive?
-  if (IsNetworkIdUnknownOrDisconnected(network_id))
+  if (IsNetworkIdUnknownOrDisconnected(network_id)) {
     return;
+  }
 
   auto cache_entry = sink_cache_.find(network_id);
   // Check if we have any cached sinks for this network ID.
@@ -423,9 +418,6 @@ void CastMediaSinkServiceImpl::OnNetworksChanged(
     return;
 
   metrics_.RecordCachedSinksAvailableCount(cache_entry->second.size());
-
-  DVLOG(2) << "Cache restored " << cache_entry->second.size()
-           << " sink(s) for network " << network_id;
   OpenChannelsWithRandomizedDelay(cache_entry->second,
                                   SinkSource::kNetworkCache);
 }
@@ -466,7 +458,6 @@ void CastMediaSinkServiceImpl::OpenChannel(
 
   const net::IPEndPoint& ip_endpoint = cast_sink.cast_data().ip_endpoint;
   if (!allow_all_ips_ && ip_endpoint.address().IsPubliclyRoutable()) {
-    DVLOG(2) << "Invalid Cast IP address: " << ip_endpoint.address().ToString();
     return;
   }
 
@@ -476,14 +467,11 @@ void CastMediaSinkServiceImpl::OpenChannel(
   if (sink_source != SinkSource::kDial)
     dial_sink_failure_count_.erase(sink_id);
 
-  // If the sink already exists, then we need to check if there are updates.
-  // If the IP endpoint changed, then we will need to reopen a socket.
-  // If the IP endpoint remained the same but other properties changed, then we
-  // can update the existing sink without opening a new socket.
+  // If there already is a connected sink whose IP endpoint stayed the same,
+  // then there's no need to reopen a socket. We just update the sink info.
   const MediaSinkInternal* existing_sink = GetSinkById(sink_id);
-  if (existing_sink && existing_sink->cast_data().ip_endpoint == ip_endpoint) {
-    DVLOG(2) << "A channel already exists for " << sink_id << ", "
-             << ip_endpoint.ToString();
+  if (sink_source != SinkSource::kConnectionRetryOnError && existing_sink &&
+      existing_sink->cast_data().ip_endpoint == ip_endpoint) {
     // This update is only performed if |sink_source| is kMdns. In particular,
     // DIAL-discovered
     // sinks contain incomplete information which should not be used for
@@ -498,8 +486,6 @@ void CastMediaSinkServiceImpl::OpenChannel(
     }
 
     // Merge new fields into copy of existing sink to retain cast_channel_id.
-    DVLOG(2) << "Updating existing sink without opening new channel: "
-             << sink_id << ", name: " << cast_sink.sink().name();
     MediaSinkInternal existing_sink_copy = *existing_sink;
     UpdateCastSink(cast_sink, &existing_sink_copy);
     AddOrUpdateSink(existing_sink_copy);
@@ -507,13 +493,8 @@ void CastMediaSinkServiceImpl::OpenChannel(
   }
 
   if (!pending_for_open_ip_endpoints_.insert(ip_endpoint).second) {
-    DVLOG(2) << "Pending opening request for " << ip_endpoint.ToString()
-             << " name: " << cast_sink.sink().name();
     return;
   }
-
-  DVLOG(2) << "Start OpenChannel " << ip_endpoint.ToString()
-           << " name: " << cast_sink.sink().name();
 
   cast_channel::CastSocketOpenParams open_params =
       CreateCastSocketOpenParams(cast_sink);
@@ -542,10 +523,8 @@ void CastMediaSinkServiceImpl::OnChannelOpened(
   bool succeeded = socket->error_state() == cast_channel::ChannelError::NONE;
   if (backoff_entry)
     backoff_entry->InformOfRequest(succeeded);
-
   CastAnalytics::RecordDeviceChannelOpenDuration(succeeded,
                                                  clock_->Now() - start_time);
-
   if (succeeded) {
     OnChannelOpenSucceeded(cast_sink, socket, sink_source);
   } else {
@@ -573,10 +552,6 @@ void CastMediaSinkServiceImpl::OnChannelErrorMayRetry(
     backoff_entry = std::make_unique<net::BackoffEntry>(&backoff_policy_);
 
   if (backoff_entry->failure_count() >= retry_params_.max_retry_attempts) {
-    DVLOG(1) << "Fail to open channel after all retry attempts: "
-             << ip_endpoint.ToString() << " [error_state]: "
-             << cast_channel::ChannelErrorToString(error_state);
-
     OnChannelOpenFailed(ip_endpoint, cast_sink);
     CastAnalytics::RecordCastChannelConnectResult(
         MediaRouterChannelConnectResults::FAILURE);
@@ -584,10 +559,6 @@ void CastMediaSinkServiceImpl::OnChannelErrorMayRetry(
   }
 
   const base::TimeDelta delay = backoff_entry->GetTimeUntilRelease();
-  DVLOG(2) << "Try to reopen: " << ip_endpoint.ToString() << " in ["
-           << delay.InSeconds() << "] seconds"
-           << " [Attempt]: " << backoff_entry->failure_count();
-
   task_runner_->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&CastMediaSinkServiceImpl::OpenChannel, GetWeakPtr(),
@@ -616,11 +587,9 @@ void CastMediaSinkServiceImpl::OnChannelOpenSucceeded(
     cast_sink.sink().set_icon_type(
         GetCastSinkIconType(extra_data.capabilities));
   }
-
   extra_data.cast_channel_id = socket->id();
 
   // Add or update existing cast sink.
-  DVLOG(2) << "Adding or updating sink [name]: " << cast_sink.sink().name();
   const MediaSink::Id& sink_id = cast_sink.sink().id();
   const MediaSinkInternal* existing_sink = GetSinkById(sink_id);
   if (!existing_sink) {
@@ -661,12 +630,21 @@ void CastMediaSinkServiceImpl::OnChannelOpenFailed(
     const net::IPEndPoint& ip_endpoint,
     const MediaSinkInternal& sink) {
   // Check that the IPEndPoints match before removing, as it is possible that
-  // the sink was reconnected under a different IP before this method is called.
+  // the sink was reconnected under a different IP before this method is
+  // called.
   const MediaSinkInternal* existing_sink = GetSinkById(sink.sink().id());
   if (!existing_sink ||
       !(ip_endpoint == existing_sink->cast_data().ip_endpoint))
     return;
 
+  if (logger_.is_bound()) {
+    logger_->LogError(mojom::LogCategory::kDiscovery, kLoggerComponent,
+                      base::StrCat({"Failed to open the channel. IP endpoint: ",
+                                    ip_endpoint.ToString(), ". channel_id: ",
+                                    base::NumberToString(
+                                        existing_sink->cast_channel_id())}),
+                      sink.sink().id(), "", "");
+  }
   RemoveSink(sink);
 }
 
@@ -687,15 +665,11 @@ void CastMediaSinkServiceImpl::TryConnectDialDiscoveredSink(
   // TODO(crbug.com/753175): Dual discovery should not try to open cast channel
   // for non-Cast device.
   if (IsProbablyNonCastDevice(dial_sink)) {
-    DVLOG(2) << "Skip open channel for DIAL-discovered device because it "
-             << "is probably not a Cast device: " << dial_sink.sink().name();
     return;
   }
 
   MediaSinkInternal sink = CreateCastSinkFromDialSink(dial_sink);
   if (GetSinkById(sink.sink().id())) {
-    DVLOG(2) << "Sink discovered by mDNS, skip adding [name]: "
-             << sink.sink().name();
     metrics_.RecordCastSinkDiscoverySource(SinkSource::kMdnsDial);
     // Sink is a Cast device; remove from |dial_media_sink_service_| to prevent
     // duplicates.
@@ -725,107 +699,10 @@ void CastMediaSinkServiceImpl::SetCastAllowAllIPs(bool allow_all_ips) {
   allow_all_ips_ = allow_all_ips;
 }
 
-CastMediaSinkServiceImpl::RetryParams::RetryParams()
-    : initial_delay_in_milliseconds(kDefaultInitialDelayInMilliSeconds),
-      max_retry_attempts(kDefaultMaxRetryAttempts),
-      multiply_factor(kDefaultExponential) {}
-CastMediaSinkServiceImpl::RetryParams::~RetryParams() = default;
-
-bool CastMediaSinkServiceImpl::RetryParams::Validate() {
-  if (max_retry_attempts < 0 || max_retry_attempts > 100) {
-    return false;
-  }
-  if (initial_delay_in_milliseconds <= 0 ||
-      initial_delay_in_milliseconds > 60 * 1000 /* 1 min */) {
-    return false;
-  }
-  if (multiply_factor < 1.0 || multiply_factor > 5.0)
-    return false;
-
-  return true;
-}
-
-// static
-CastMediaSinkServiceImpl::RetryParams
-CastMediaSinkServiceImpl::RetryParams::GetFromFieldTrialParam() {
-  RetryParams params;
-  params.max_retry_attempts = base::GetFieldTrialParamByFeatureAsInt(
-      kEnableCastDiscovery, kParamNameMaxRetryAttempts,
-      kDefaultMaxRetryAttempts);
-  params.initial_delay_in_milliseconds = base::GetFieldTrialParamByFeatureAsInt(
-      kEnableCastDiscovery, kParamNameInitialDelayInMilliSeconds,
-      kDefaultInitialDelayInMilliSeconds);
-  params.multiply_factor = base::GetFieldTrialParamByFeatureAsDouble(
-      kEnableCastDiscovery, kParamNameExponential, kDefaultExponential);
-
-  DVLOG(2) << "Parameters: "
-           << " [initial_delay_ms]: " << params.initial_delay_in_milliseconds
-           << " [max_retry_attempts]: " << params.max_retry_attempts
-           << " [exponential]: " << params.multiply_factor;
-
-  if (!params.Validate())
-    return RetryParams();
-
-  return params;
-}
-
-CastMediaSinkServiceImpl::OpenParams::OpenParams()
-    : connect_timeout_in_seconds(kDefaultConnectTimeoutInSeconds),
-      ping_interval_in_seconds(kDefaultPingIntervalInSeconds),
-      liveness_timeout_in_seconds(kDefaultLivenessTimeoutInSeconds),
-      dynamic_timeout_delta_in_seconds(kDefaultDynamicTimeoutDeltaInSeconds) {}
-CastMediaSinkServiceImpl::OpenParams::~OpenParams() = default;
-
-bool CastMediaSinkServiceImpl::OpenParams::Validate() {
-  if (connect_timeout_in_seconds <= 0 ||
-      connect_timeout_in_seconds > kMaxConnectTimeoutInSeconds) {
-    return false;
-  }
-  if (liveness_timeout_in_seconds <= 0 ||
-      liveness_timeout_in_seconds > kMaxLivenessTimeoutInSeconds) {
-    return false;
-  }
-  if (ping_interval_in_seconds <= 0 ||
-      ping_interval_in_seconds > liveness_timeout_in_seconds) {
-    return false;
-  }
-  if (dynamic_timeout_delta_in_seconds < 0 ||
-      dynamic_timeout_delta_in_seconds > kMaxConnectTimeoutInSeconds) {
-    return false;
-  }
-
-  return true;
-}
-
-// static
-CastMediaSinkServiceImpl::OpenParams
-CastMediaSinkServiceImpl::OpenParams::GetFromFieldTrialParam() {
-  OpenParams params;
-  params.connect_timeout_in_seconds = base::GetFieldTrialParamByFeatureAsInt(
-      kEnableCastDiscovery, kParamNameConnectTimeoutInSeconds,
-      kDefaultConnectTimeoutInSeconds);
-  params.ping_interval_in_seconds = base::GetFieldTrialParamByFeatureAsInt(
-      kEnableCastDiscovery, kParamNamePingIntervalInSeconds,
-      kDefaultPingIntervalInSeconds);
-  params.liveness_timeout_in_seconds = base::GetFieldTrialParamByFeatureAsInt(
-      kEnableCastDiscovery, kParamNameLivenessTimeoutInSeconds,
-      kDefaultLivenessTimeoutInSeconds);
-  params.dynamic_timeout_delta_in_seconds =
-      base::GetFieldTrialParamByFeatureAsInt(
-          kEnableCastDiscovery, kParamNameDynamicTimeoutDeltaInSeconds,
-          kDefaultDynamicTimeoutDeltaInSeconds);
-
-  DVLOG(2) << "Parameters: "
-           << " [connect_timeout]: " << params.connect_timeout_in_seconds
-           << " [ping_interval]: " << params.ping_interval_in_seconds
-           << " [liveness_timeout]: " << params.liveness_timeout_in_seconds
-           << " [dynamic_timeout_delta]: "
-           << params.dynamic_timeout_delta_in_seconds;
-
-  if (!params.Validate())
-    return OpenParams();
-
-  return params;
+void CastMediaSinkServiceImpl::BindLogger(
+    mojo::PendingRemote<mojom::Logger> pending_remote) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  logger_.Bind(std::move(pending_remote));
 }
 
 }  // namespace media_router

@@ -5,23 +5,25 @@
 #ifndef UI_VIEWS_BUBBLE_BUBBLE_BORDER_H_
 #define UI_VIEWS_BUBBLE_BUBBLE_BORDER_H_
 
-#include <memory>
-
-#include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "build/build_config.h"
-#include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
-#include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/shadow_value.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
+#include "ui/views/views_export.h"
 
 class SkRRect;
 
 namespace gfx {
-class Rect;
+class Canvas;
+}
+
+namespace ui {
+class NativeTheme;
 }
 
 namespace views {
@@ -36,45 +38,45 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   // 2 bit specifies horizontal or vertical.
   // 3 bit specifies whether the arrow at the center of its residing edge.
   enum ArrowMask {
-    RIGHT    = 0x01,
-    BOTTOM   = 0x02,
+    RIGHT = 0x01,
+    BOTTOM = 0x02,
     VERTICAL = 0x04,
-    CENTER   = 0x08,
+    CENTER = 0x08,
   };
 
   enum Arrow {
-    TOP_LEFT      = 0,
-    TOP_RIGHT     = RIGHT,
-    BOTTOM_LEFT   = BOTTOM,
-    BOTTOM_RIGHT  = BOTTOM | RIGHT,
-    LEFT_TOP      = VERTICAL,
-    RIGHT_TOP     = VERTICAL | RIGHT,
-    LEFT_BOTTOM   = VERTICAL | BOTTOM,
-    RIGHT_BOTTOM  = VERTICAL | BOTTOM | RIGHT,
-    TOP_CENTER    = CENTER,
+    TOP_LEFT = 0,
+    TOP_RIGHT = RIGHT,
+    BOTTOM_LEFT = BOTTOM,
+    BOTTOM_RIGHT = BOTTOM | RIGHT,
+    LEFT_TOP = VERTICAL,
+    RIGHT_TOP = VERTICAL | RIGHT,
+    LEFT_BOTTOM = VERTICAL | BOTTOM,
+    RIGHT_BOTTOM = VERTICAL | BOTTOM | RIGHT,
+    TOP_CENTER = CENTER,
     BOTTOM_CENTER = CENTER | BOTTOM,
-    LEFT_CENTER   = CENTER | VERTICAL,
-    RIGHT_CENTER  = CENTER | VERTICAL | RIGHT,
-    NONE  = 16,  // No arrow. Positioned under the supplied rect.
+    LEFT_CENTER = CENTER | VERTICAL,
+    RIGHT_CENTER = CENTER | VERTICAL | RIGHT,
+    NONE = 16,   // No arrow. Positioned under the supplied rect.
     FLOAT = 17,  // No arrow. Centered over the supplied rect.
   };
 
   enum Shadow {
-    NO_SHADOW = 0,
-    NO_SHADOW_OPAQUE_BORDER,
-    BIG_SHADOW,
-    SMALL_SHADOW,
-    // NO_ASSETS borders don't draw a stroke or a shadow. This is used for
-    // platforms that provide their own shadows.
-    NO_ASSETS,
+    // NO_SHADOW_LEGACY is obsolete. Used only for Win7 where custom shadows are
+    // not supported.
+    NO_SHADOW_LEGACY = 0,
+    STANDARD_SHADOW,
+    // NO_SHADOW don't draw a stroke or a shadow. This is used for platforms
+    // that provide their own shadows or UIs that doesn't need shadows.
+    NO_SHADOW,
     SHADOW_COUNT,
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     // On Mac, the native window server should provide its own shadow for
     // windows that could overlap the browser window.
-    DIALOG_SHADOW = NO_ASSETS,
+    DIALOG_SHADOW = NO_SHADOW,
 #else
-    DIALOG_SHADOW = SMALL_SHADOW,
+    DIALOG_SHADOW = STANDARD_SHADOW,
 #endif
   };
 
@@ -86,6 +88,21 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   // vertical offset, both in DIP.
   static constexpr int kShadowBlur = 6;
   static constexpr int kShadowVerticalOffset = 2;
+
+  // Space between the anchor view and a visible arrow if one is present.
+  static constexpr int kVisibleArrowGap = 2;
+
+  // Length of the visible arrow (distance from the bubble to the tip of the
+  // arrow) if one is present.
+  static constexpr int kVisibleArrowLength = 8;
+
+  // Radius (half-width) of the visible arrow, when one is present.
+  static constexpr int kVisibleArrowRadius = 8;
+
+  // Distances between the edge of the bubble widget and the edge of the visible
+  // arrow if one is present.
+  static constexpr int kVisibleArrowHorizontalBuffer = 16;
+  static constexpr int kVisibleArrowVerticalBuffer = 12;
 
   BubbleBorder(Arrow arrow, Shadow shadow, SkColor color);
   ~BubbleBorder() override;
@@ -109,43 +126,28 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   }
 
   static Arrow horizontal_mirror(Arrow a) {
-    return (a == TOP_CENTER || a == BOTTOM_CENTER || a >= NONE) ?
-        a : static_cast<Arrow>(a ^ RIGHT);
+    return (a == TOP_CENTER || a == BOTTOM_CENTER || a >= NONE)
+               ? a
+               : static_cast<Arrow>(a ^ RIGHT);
   }
 
   static Arrow vertical_mirror(Arrow a) {
-    return (a == LEFT_CENTER || a == RIGHT_CENTER || a >= NONE) ?
-        a : static_cast<Arrow>(a ^ BOTTOM);
+    return (a == LEFT_CENTER || a == RIGHT_CENTER || a >= NONE)
+               ? a
+               : static_cast<Arrow>(a ^ BOTTOM);
   }
 
   // Returns the insets required by a border and shadow based on
   // |shadow_elevation|. This is only used for MD bubbles. A null
   // |shadow_elevation| will yield the default BubbleBorder MD insets.
   static gfx::Insets GetBorderAndShadowInsets(
-      base::Optional<int> shadow_elevation = base::nullopt);
+      absl::optional<int> shadow_elevation = absl::nullopt);
 
-  // Draws a border and shadow based on |shadow_elevation| outside the |rect| on
-  // |canvas|, using |draw| as the draw function. Templated so as to accept
-  // either SkRect or SkRRect.
-  template <typename T>
-  static void DrawBorderAndShadow(
-      T rect,
-      void (cc::PaintCanvas::*draw)(const T&, const cc::PaintFlags&),
-      gfx::Canvas* canvas,
-      base::Optional<int> shadow_elevation = base::nullopt,
-      SkColor shadow_base_color = SK_ColorBLACK) {
-    // Borders with custom shadow elevations do not draw the 1px border.
-    if (!shadow_elevation.has_value()) {
-      // Provide a 1 px border outside the bounds.
-      constexpr int kBorderStrokeThicknessPx = 1;
-      const SkScalar one_pixel =
-          SkFloatToScalar(kBorderStrokeThicknessPx / canvas->image_scale());
-      rect.outset(one_pixel, one_pixel);
-    }
-
-    (canvas->sk_canvas()->*draw)(
-        rect, GetBorderAndShadowFlags(shadow_elevation, shadow_base_color));
-  }
+  // Draws a border and shadow outside the |rect| on |canvas|. |theme| is passed
+  // into GetBorderAndShadowFlags to obtain the shadow color.
+  static void DrawBorderAndShadow(SkRect rect,
+                                  gfx::Canvas* canvas,
+                                  const ui::NativeTheme* theme);
 
   // Set the corner radius, enables Material Design.
   void SetCornerRadius(int radius);
@@ -153,6 +155,9 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   // Get or set the arrow type.
   void set_arrow(Arrow arrow) { arrow_ = arrow; }
   Arrow arrow() const { return arrow_; }
+
+  void set_visible_arrow(bool visible_arrow) { visible_arrow_ = visible_arrow; }
+  bool visible_arrow() const { return visible_arrow_; }
 
   // Get the shadow type.
   Shadow shadow() const { return shadow_; }
@@ -169,8 +174,8 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   bool use_theme_background_color() { return use_theme_background_color_; }
 
   // Sets a desired pixel distance between the arrow tip and the outside edge of
-  // the neighboring border image. For example:    |----offset----|
-  // '(' represents shadow around the '{' edge:    ((({           ^   })))
+  // the neighboring border image. For example:        |----offset----|
+  // '(' represents shadow around the '{' edge:        ((({           ^   })))
   // The arrow will still anchor to the same location but the bubble will shift
   // location to place the arrow |offset| pixels from the perpendicular edge.
   void set_arrow_offset(int offset) { arrow_offset_ = offset; }
@@ -180,11 +185,6 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   // yield the default BubbleBorder MD shadow.
   void set_md_shadow_elevation(int shadow_elevation) {
     md_shadow_elevation_ = shadow_elevation;
-  }
-
-  // Sets the shadow color for MD shadows. Defaults to SK_ColorBLACK.
-  void set_md_shadow_color(SkColor shadow_color) {
-    md_shadow_color_ = shadow_color;
   }
 
   // Set a flag to avoid the bubble's shadow overlapping the anchor.
@@ -199,7 +199,7 @@ class VIEWS_EXPORT BubbleBorder : public Border {
                               const gfx::Size& contents_size) const;
 
   // Returns the corner radius of the current image set.
-  int GetBorderCornerRadius() const;
+  int corner_radius() const { return corner_radius_; }
 
   // Overridden from Border:
   void Paint(const View& view, gfx::Canvas* canvas) override;
@@ -210,21 +210,7 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   FRIEND_TEST_ALL_PREFIXES(BubbleBorderTest, GetSizeForContentsSizeTest);
   FRIEND_TEST_ALL_PREFIXES(BubbleBorderTest, GetBoundsOriginTest);
   FRIEND_TEST_ALL_PREFIXES(BubbleBorderTest, ShadowTypes);
-
-  // Returns the shadows based on |shadow_elevation| to use for painting the
-  // border and shadow, and for getting insets. This is only used for MD
-  // bubbles. A null |shadow_elevation| will yield the default BubbleBorder MD
-  // ShadowValues.
-  static const gfx::ShadowValues& GetShadowValues(
-      base::Optional<int> shadow_elevation = base::nullopt,
-      SkColor shadow_base_color = SK_ColorBLACK);
-
-  // Returns the paint flags to use for painting the border and shadow based on
-  // |shadow_elevation|. This is only used for MD bubbles. A null
-  // |shadow_elevation| will yield the default BubbleBorder MD PaintFlags.
-  static const cc::PaintFlags& GetBorderAndShadowFlags(
-      base::Optional<int> shadow_elevation = base::nullopt,
-      SkColor shadow_base_color = SK_ColorBLACK);
+  FRIEND_TEST_ALL_PREFIXES(BubbleBorderTest, VisibleArrowSizesAreConsistent);
 
   // The border and arrow stroke size used in image assets, in pixels.
   static constexpr int kStroke = 1;
@@ -236,28 +222,35 @@ class VIEWS_EXPORT BubbleBorder : public Border {
   // draw over the contents of the bubble.
   SkRRect GetClientRect(const View& view) const;
 
-  // Paint for the NO_ASSETS shadow type. This just paints transparent pixels
+  // Paint for the NO_SHADOW shadow type. This just paints transparent pixels
   // to make the window shape based on insets and GetBorderCornerRadius().
-  void PaintNoAssets(const View& view, gfx::Canvas* canvas);
-
-  // Paint for the NO_SHADOW shadow type. This paints a simple line border.
   void PaintNoShadow(const View& view, gfx::Canvas* canvas);
+
+  // Paint for the NO_SHADOW_LEGACY shadow type. This paints a simple line
+  // border.
+  void PaintNoShadowLegacy(const View& view, gfx::Canvas* canvas);
+
+  // Paint a visible arrow pointing to the anchor region.
+  void PaintVisibleArrow(const View& view, gfx::Canvas* canvas);
 
   Arrow arrow_;
   int arrow_offset_;
   // Corner radius for the bubble border. If supplied the border will use
   // material design.
-  base::Optional<int> corner_radius_;
+  int corner_radius_ = 0;
+
+  // Whether a visible arrow should be present.
+  bool visible_arrow_ = false;
+  // Cached arrow bounding box, calculated when bounds are calculated.
+  mutable gfx::Rect visible_arrow_rect_;
 
   Shadow shadow_;
   // Elevation for the MD shadow.
-  base::Optional<int> md_shadow_elevation_;
-  // Color for the MD shadow.
-  SkColor md_shadow_color_ = SK_ColorBLACK;
+  absl::optional<int> md_shadow_elevation_;
   SkColor background_color_;
   bool use_theme_background_color_;
   bool avoid_shadow_overlap_ = false;
-  base::Optional<gfx::Insets> insets_;
+  absl::optional<gfx::Insets> insets_;
 
   DISALLOW_COPY_AND_ASSIGN(BubbleBorder);
 };

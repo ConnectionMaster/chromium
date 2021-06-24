@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that color swatch positions are updated properly.\n`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.addStylesheetTag('resources/color.css');
 
@@ -17,7 +17,7 @@
 
     TestRunner.runTestSuite([
       function testEditSpectrum(next) {
-        var swatch = sourceFrame.textEditor._codeMirrorElement.querySelector('span[is=color-swatch]');
+        var swatch = sourceFrame.textEditor._codeMirrorElement.querySelector('devtools-color-swatch');
         swatch.shadowRoot.querySelector('.color-swatch-inner').click();
         cssPlugin._spectrum._innerSetColor(
             Common.Color.parse('#008000').hsva(), '', undefined /* colorName */, Common.Color.Format.HEX,

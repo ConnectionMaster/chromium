@@ -8,7 +8,9 @@
 #include <cstdint>
 
 #include "base/containers/span.h"
+#include "ui/gfx/gpu_fence_handle.h"
 #include "ui/gfx/presentation_feedback.h"
+#include "ui/gl/gpu_preference.h"
 
 namespace gpu {
 struct SwapBuffersCompleteParams;
@@ -27,7 +29,9 @@ class GpuControlClient {
   virtual void OnGpuControlLostContextMaybeReentrant() = 0;
   virtual void OnGpuControlErrorMessage(const char* message, int32_t id) = 0;
   virtual void OnGpuControlSwapBuffersCompleted(
-      const SwapBuffersCompleteParams& params) = 0;
+      const SwapBuffersCompleteParams& params,
+      gfx::GpuFenceHandle release_fence) = 0;
+  virtual void OnGpuSwitched(gl::GpuPreference active_gpu_heuristic) {}
   virtual void OnSwapBufferPresented(
       uint64_t swap_id,
       const gfx::PresentationFeedback& feedback) = 0;

@@ -6,13 +6,8 @@
 #define NET_TEST_EMBEDDED_TEST_SERVER_SIMPLE_CONNECTION_LISTENER_H_
 
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "net/test/embedded_test_server/embedded_test_server_connection_listener.h"
-
-namespace base {
-class SequencedTaskRunner;
-}
 
 namespace net {
 
@@ -42,8 +37,11 @@ class SimpleConnectionListener : public EmbeddedTestServerConnectionListener {
   // shut down.
   ~SimpleConnectionListener() override;
 
-  void AcceptedSocket(const StreamSocket& socket) override;
+  std::unique_ptr<StreamSocket> AcceptedSocket(
+      std::unique_ptr<StreamSocket> socket) override;
   void ReadFromSocket(const StreamSocket& socket, int rv) override;
+  void OnResponseCompletedSuccessfully(
+      std::unique_ptr<StreamSocket> socket) override;
 
   // Wait until the expected number of connections have been seen.
   void WaitForConnections();
@@ -53,8 +51,6 @@ class SimpleConnectionListener : public EmbeddedTestServerConnectionListener {
 
   const int expected_connections_;
   const AllowAdditionalConnections allow_additional_connections_;
-
-  const scoped_refptr<base::SequencedTaskRunner> run_loop_task_runner_;
 
   base::RunLoop run_loop_;
 

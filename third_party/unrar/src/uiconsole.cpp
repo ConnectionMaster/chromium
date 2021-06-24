@@ -1,3 +1,5 @@
+static bool AnyMessageDisplayed=0; // For console -idn switch.
+
 // Purely user interface function. Gets and returns user input.
 UIASKREP_RESULT uiAskReplace(wchar *Name,size_t MaxNameSize,int64 FileSize,RarTime *FileTime,uint Flags)
 {
@@ -18,7 +20,10 @@ UIASKREP_RESULT uiAskReplace(wchar *Name,size_t MaxNameSize,int64 FileSize,RarTi
   {
     itoa(FileSize,SizeText2,ASIZE(SizeText2));
     FileTime->GetText(DateStr2,ASIZE(DateStr2),false);
-    eprintf(St(MAskReplace),Name,SizeText1,DateStr1,SizeText2,DateStr2);
+    if ((Flags & UIASKREP_F_EXCHSRCDEST)==0)
+      eprintf(St(MAskReplace),Name,SizeText1,DateStr1,SizeText2,DateStr2);
+    else
+      eprintf(St(MAskReplace),Name,SizeText2,DateStr2,SizeText1,DateStr1);
   }
 
   bool AllowRename=(Flags & UIASKREP_F_NORENAME)==0;
@@ -80,6 +85,8 @@ void uiProcessProgress(const char *Command,int64 CurSize,int64 TotalSize)
 
 void uiMsgStore::Msg()
 {
+  AnyMessageDisplayed=true;
+
   switch(Code)
   {
     case UIERROR_SYSERRMSG:
@@ -96,6 +103,8 @@ void uiMsgStore::Msg()
       Log(Str[0],St(MDataBadCRC),Str[1],Str[0]);
       break;
     case UIERROR_BADPSW:
+      Log(Str[0],St(MWrongFilePassword),Str[1]);
+      break;
     case UIWAIT_BADPSW:
       Log(Str[0],St(MWrongPassword));
       break;
@@ -116,6 +125,7 @@ void uiMsgStore::Msg()
       Log(NULL,St(MErrSeek),Str[0]);
       break;
     case UIERROR_FILEREAD:
+      mprintf(L"\n");
       Log(Str[0],St(MErrRead),Str[1]);
       break;
     case UIERROR_FILEWRITE:
@@ -186,7 +196,11 @@ void uiMsgStore::Msg()
       Log(Str[0],St(MUnknownMeth),Str[1]);
       break;
     case UIERROR_UNKNOWNENCMETHOD:
-      Log(Str[0],St(MUnkEncMethod),Str[1]);
+      {
+        wchar Msg[256];
+        swprintf(Msg,ASIZE(Msg),St(MUnkEncMethod),Str[1]);
+        Log(Str[0],L"%s: %s",Msg,Str[2]);
+      }
       break;
 #ifndef SFX_MODULE
    case UIERROR_RENAMING:
@@ -295,7 +309,15 @@ void uiMsgStore::Msg()
     case UIERROR_ULINKEXIST:
       Log(NULL,St(MSymLinkExists),Str[0]);
       break;
-
+    case UIERROR_READERRTRUNCATED:
+      Log(NULL,St(MErrReadTrunc),Str[0]);
+      break;
+    case UIERROR_READERRCOUNT:
+      Log(NULL,St(MErrReadCount),Num[0]);
+      break;
+    case UIERROR_DIRNAMEEXISTS:
+      Log(NULL,St(MDirNameExists));
+      break;
 
 #ifndef SFX_MODULE
     case UIMSG_STRING:
@@ -342,8 +364,6 @@ void uiMsgStore::Msg()
     case UIEVENT_RRTESTINGSTART:
       mprintf(L"%s      ",St(MTestingRR));
       break;
-    default:
-      break;
   }
 }
 
@@ -365,7 +385,7 @@ bool uiIsGlobalPasswordSet()
 
 void uiAlarm(UIALARM_TYPE Type)
 {
-  if (uiSoundEnabled)
+  if (uiSoundNotify==SOUND_NOTIFY_ON)
   {
     static clock_t LastTime=-10; // Negative to always beep first time.
     if ((MonoClock()-LastTime)/CLOCKS_PER_SEC>5)
@@ -390,11 +410,15 @@ bool uiAskNextVolume(wchar *VolName,size_t MaxSize)
 }
 
 
-bool uiAskRepeatRead(const wchar *FileName)
+void uiAskRepeatRead(const wchar *FileName,bool &Ignore,bool &All,bool &Retry,bool &Quit)
 {
-  mprintf(L"\n");
-  Log(NULL,St(MErrRead),FileName);
-  return Ask(St(MRetryAbort))==1;
+  eprintf(St(MErrReadInfo));
+  int Code=Ask(St(MIgnoreAllRetryQuit));
+
+  Ignore=(Code==1);
+  All=(Code==2);
+  Quit=(Code==4);
+  Retry=!Ignore && !All && !Quit; // Default also for invalid input, not just for 'Retry'.
 }
 
 
@@ -416,3 +440,15 @@ const wchar *uiGetMonthName(int Month)
   return St(MonthID[Month]);
 }
 #endif
+
+
+void uiEolAfterMsg()
+{
+  if (AnyMessageDisplayed)
+  {
+    // Avoid deleting several last characters of any previous error message
+    // with percentage indicator in -idn mode.
+    AnyMessageDisplayed=false;
+    mprintf(L"\n");
+  }
+}

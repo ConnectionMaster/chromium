@@ -15,6 +15,11 @@ namespace cc {
 
 class AnimationHost;
 
+// Note: If you're creating this as a pair with a FakeLayerTreeHost, consider
+// creating it via FakeLayerTreeHost::InitializeSingleThreaded if your test
+// will use a Proxy or FakeLayerTreeHost::CreateFakeLayerTreeHostImpl if it
+// doesn't use a Proxy. These will ensure we're not accidentally creating
+// multiple HostImpls.
 class FakeLayerTreeHostImpl : public LayerTreeHostImpl {
  public:
   FakeLayerTreeHostImpl(TaskRunnerProvider* task_runner_provider,
@@ -38,10 +43,8 @@ class FakeLayerTreeHostImpl : public LayerTreeHostImpl {
   void CreatePendingTree() override;
 
   void NotifyTileStateChanged(const Tile* tile) override;
-  viz::BeginFrameArgs CurrentBeginFrameArgs() const override;
+  const viz::BeginFrameArgs& CurrentBeginFrameArgs() const override;
   void AdvanceToNextFrame(base::TimeDelta advance_by);
-  void UpdateNumChildrenAndDrawPropertiesForActiveTree();
-  static void UpdateNumChildrenAndDrawProperties(LayerTreeImpl* layerTree);
 
   using LayerTreeHostImpl::ActivateSyncTree;
   using LayerTreeHostImpl::prepare_tiles_needed;

@@ -6,7 +6,6 @@
 #define SERVICES_DEVICE_SERIAL_SERIAL_IO_HANDLER_POSIX_H_
 
 #include <memory>
-#include <string>
 
 #include "base/files/file_descriptor_watcher_posix.h"
 #include "base/macros.h"
@@ -30,15 +29,14 @@ class SerialIoHandlerPosix : public SerialIoHandler {
   void CancelWriteImpl() override;
   bool ConfigurePortImpl() override;
   bool PostOpen() override;
-  bool Flush() const override;
+  void PreClose() override;
+  void Flush(mojom::SerialPortFlushMode mode) const override;
+  void Drain() override;
   mojom::SerialPortControlSignalsPtr GetControlSignals() const override;
   bool SetControlSignals(
       const mojom::SerialHostControlSignals& control_signals) override;
   mojom::SerialConnectionInfoPtr GetPortInfo() const override;
-  bool SetBreak() override;
-  bool ClearBreak() override;
-  int CheckReceiveError(char* buffer,
-                        int buffer_len,
+  int CheckReceiveError(base::span<uint8_t> buffer,
                         int bytes_read,
                         bool& break_detected,
                         bool& parity_error_detected);
@@ -63,12 +61,15 @@ class SerialIoHandlerPosix : public SerialIoHandler {
   void EnsureWatchingReads();
   void EnsureWatchingWrites();
 
+  void StopWatchingFileRead();
+  void StopWatchingFileWrite();
+
   std::unique_ptr<base::FileDescriptorWatcher::Controller> file_read_watcher_;
   std::unique_ptr<base::FileDescriptorWatcher::Controller> file_write_watcher_;
 
   ErrorDetectState error_detect_state_;
   bool parity_check_enabled_;
-  char chars_stashed_[2];
+  uint8_t chars_stashed_[2];
   int num_chars_stashed_;
 
   DISALLOW_COPY_AND_ASSIGN(SerialIoHandlerPosix);

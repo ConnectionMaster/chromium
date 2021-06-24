@@ -10,13 +10,11 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/android/vr/cardboard_input_delegate.h"
 #include "chrome/browser/android/vr/gvr_input_delegate.h"
-#include "chrome/browser/android/vr/gvr_keyboard_delegate.h"
 #include "chrome/browser/android/vr/gvr_scheduler_delegate.h"
 #include "chrome/browser/android/vr/ui_factory.h"
 #include "chrome/browser/android/vr/vr_gl_thread.h"
 #include "chrome/browser/vr/browser_renderer.h"
 #include "chrome/browser/vr/sounds_manager_audio_delegate.h"
-#include "chrome/browser/vr/text_input_delegate.h"
 #include "chrome/browser/vr/ui_interface.h"
 
 namespace {
@@ -52,26 +50,17 @@ std::unique_ptr<BrowserRenderer> BrowserRendererFactory::Create(
     UiFactory* ui_factory,
     std::unique_ptr<Params> params) {
   DCHECK(params);
-  auto keyboard_delegate = GvrKeyboardDelegate::Create();
-  auto text_input_delegate = std::make_unique<TextInputDelegate>();
-  if (!keyboard_delegate) {
-    params->ui_initial_state.needs_keyboard_update = true;
-  } else {
-    text_input_delegate->SetUpdateInputCallback(
-        base::BindRepeating(&KeyboardDelegate::UpdateInput,
-                            base::Unretained(keyboard_delegate.get())));
-  }
+  params->ui_initial_state.gvr_input_support = !params->cardboard_gamepad;
+
   auto audio_delegate = std::make_unique<SoundsManagerAudioDelegate>();
-  auto ui = ui_factory->Create(
-      vr_gl_thread, vr_gl_thread, std::move(keyboard_delegate),
-      std::move(text_input_delegate), std::move(audio_delegate),
-      params->ui_initial_state);
+  auto ui =
+      ui_factory->Create(vr_gl_thread, vr_gl_thread, nullptr, nullptr,
+                         std::move(audio_delegate), params->ui_initial_state);
   std::unique_ptr<InputDelegate> input_delegate;
   if (params->cardboard_gamepad) {
     input_delegate = std::make_unique<CardboardInputDelegate>(params->gvr_api);
   } else {
-    input_delegate =
-        std::make_unique<GvrInputDelegate>(params->gvr_api, vr_gl_thread);
+    input_delegate = std::make_unique<GvrInputDelegate>(params->gvr_api);
   }
   auto graphics_delegate = std::make_unique<GvrGraphicsDelegate>(
       vr_gl_thread,
@@ -88,7 +77,7 @@ std::unique_ptr<BrowserRenderer> BrowserRendererFactory::Create(
       base::BindOnce(&GvrGraphicsDelegate::Init,
                      graphics_delegate->GetWeakPtr(),
                      base::Unretained(params->gl_surface_created_event),
-                     base::Passed(std::move(params->surface_callback)),
+                     std::move(params->surface_callback),
                      params->ui_initial_state.in_web_vr));
   auto browser_renderer = std::make_unique<BrowserRenderer>(
       std::move(ui), std::move(scheduler_delegate),

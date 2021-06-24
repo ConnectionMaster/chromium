@@ -16,17 +16,17 @@ class Profile;
 // Represents a window class.
 @interface WindowAppleScript : ElementAppleScript {
  @private
-  Browser* browser_;  // weak.
+  Browser* _browser;  // weak.
 }
 
 // Creates a new window, returns nil if there is an error.
-- (id)init;
+- (instancetype)init;
 
 // Creates a new window with a particular profile.
-- (id)initWithProfile:(Profile*)aProfile;
+- (instancetype)initWithProfile:(Profile*)aProfile;
 
 // Does not create a new window but uses an existing one.
-- (id)initWithBrowser:(Browser*)aBrowser;
+- (instancetype)initWithBrowser:(Browser*)aBrowser;
 
 // Sets and gets the index of the currently selected tab.
 - (NSNumber*)activeTabIndex;

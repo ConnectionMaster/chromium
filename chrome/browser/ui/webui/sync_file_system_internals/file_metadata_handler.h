@@ -31,14 +31,15 @@ class FileMetadataHandler : public content::WebUIMessageHandler {
   void RegisterMessages() override;
 
  private:
-  void GetExtensions(const base::ListValue* args);
-  void DidGetExtensions(const base::ListValue& list);
+  void HandleGetExtensions(const base::ListValue* args);
+  void DidGetExtensions(std::string callback_id, const base::ListValue& list);
 
-  void GetFileMetadata(const base::ListValue* args);
-  void DidGetFileMetadata(const base::ListValue& files);
+  void HandleGetFileMetadata(const base::ListValue* args);
+  void DidGetFileMetadata(std::string callback_id,
+                          const base::ListValue& files);
 
   Profile* profile_;
-  base::WeakPtrFactory<FileMetadataHandler> weak_factory_;
+  base::WeakPtrFactory<FileMetadataHandler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FileMetadataHandler);
 };

@@ -45,6 +45,14 @@ void WindowControllerList::RemoveExtensionWindow(WindowController* window) {
   }
 }
 
+void WindowControllerList::NotifyWindowBoundsChanged(WindowController* window) {
+  auto iter = std::find(windows_.begin(), windows_.end(), window);
+  if (iter != windows_.end()) {
+    for (auto& observer : observers_)
+      observer.OnWindowBoundsChanged(window);
+  }
+}
+
 void WindowControllerList::AddObserver(WindowControllerListObserver* observer) {
   observers_.AddObserver(observer);
 }
@@ -55,7 +63,7 @@ void WindowControllerList::RemoveObserver(
 }
 
 WindowController* WindowControllerList::FindWindowForFunctionByIdWithFilter(
-    const UIThreadExtensionFunction* function,
+    const ExtensionFunction* function,
     int id,
     WindowController::TypeFilter filter) const {
   for (auto iter = windows().begin(); iter != windows().end(); ++iter) {
@@ -69,13 +77,13 @@ WindowController* WindowControllerList::FindWindowForFunctionByIdWithFilter(
 }
 
 WindowController* WindowControllerList::CurrentWindowForFunction(
-    const UIThreadExtensionFunction* function) const {
+    const ExtensionFunction* function) const {
   return CurrentWindowForFunctionWithFilter(function,
                                             WindowController::kNoWindowFilter);
 }
 
 WindowController* WindowControllerList::CurrentWindowForFunctionWithFilter(
-    const UIThreadExtensionFunction* function,
+    const ExtensionFunction* function,
     WindowController::TypeFilter filter) const {
   WindowController* result = nullptr;
   // Returns either the focused window (if any), or the last window in the list.

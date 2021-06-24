@@ -2,40 +2,53 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {AppWindowWrapper} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/background/js/app_window_wrapper.js';
+import {BackgroundBaseImpl} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/background/js/background_base.js';
+import {util} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/common/js/util.m.js';
+import {BackgroundBase} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/externs/background/background_base.js';
+import {assert} from 'chrome://resources/js/assert.m.js';
+
 /**
  * Use maximum size and let ash downsample the icon.
  *
  * @type {!string}
  * @const
  */
-var ICON_IMAGE = 'images/icon/video-player-192.png';
+const ICON_IMAGE = 'images/icon/video-player-192.png';
+
+/**
+ * HTML source of the video player as JS module.
+ * @type {!string}
+ * @const
+ */
+const VIDEO_PLAYER_MODULE_APP_URL = 'video_player_module.html';
 
 /**
  * Configuration of the video player panel.
  * @type {!Object}
  * @const
  */
-var windowCreateOptions = {
+const windowCreateOptions = {
   frame: {
-    color: '#fafafa'
+    color: '#fafafa',
   },
   minWidth: 480,
-  minHeight: 270
+  minHeight: 270,
 };
 
 /**
  * Backgound object.
  * @type {!BackgroundBase}
  */
-var background = new BackgroundBase();
+window.background = new BackgroundBaseImpl();
 
 /**
  * Creates a unique windowId string. Each call increments the sequence number
  * used to create the string. The first call returns "VIDEO_PLAYER_APP_0".
- * @return {String} windowId The windowId string.
+ * @return {string} windowId The windowId string.
  */
-var generateWindowId = (function() {
-  var seq = 0;
+const generateWindowId = (function() {
+  let seq = 0;
   return function() {
     return 'VIDEO_PLAYER_APP_' + seq++;
   }.wrap();
@@ -47,10 +60,10 @@ var generateWindowId = (function() {
  *     playing.
  * @return {!Promise} Promise to be fulfilled on success, or rejected on error.
  */
-function openVideoPlayerWindow(urls) {
-  var position = 0;
-  var startUrl = (position < urls.length) ? urls[position] : '';
-  var windowId = null;
+export function openVideoPlayerWindow(urls) {
+  let position = 0;
+  const startUrl = (position < urls.length) ? urls[position] : '';
+  let windowId = null;
 
   return new Promise(function(fulfill, reject) {
            util.URLsToEntries(urls)
@@ -65,7 +78,7 @@ function openVideoPlayerWindow(urls) {
         }
 
         // Adjusts the position to start playing.
-        var maybePosition = util.entriesToURLs(entries).indexOf(startUrl);
+        const maybePosition = util.entriesToURLs(entries).indexOf(startUrl);
         if (maybePosition !== -1) {
           position = maybePosition;
         }
@@ -73,18 +86,16 @@ function openVideoPlayerWindow(urls) {
         windowId = generateWindowId();
 
         // Opens the video player window.
-        return new Promise(function(fulfill, reject) {
-          var urls = util.entriesToURLs(entries);
-          var videoPlayer = new AppWindowWrapper(
-              'video_player.html', windowId, windowCreateOptions);
+        const urls = util.entriesToURLs(entries);
+        const videoPlayerUrl = VIDEO_PLAYER_MODULE_APP_URL;
+        const videoPlayer = new AppWindowWrapper(
+            videoPlayerUrl, assert(windowId), windowCreateOptions);
 
-          videoPlayer.launch(
-              {items: urls, position: position}, false,
-              fulfill.bind(null, videoPlayer));
-        }.wrap());
+        return videoPlayer.launch({items: urls, position: position}, false)
+            .then(() => videoPlayer);
       }.wrap())
       .then(function(videoPlayer) {
-        var appWindow = videoPlayer.rawAppWindow;
+        const appWindow = videoPlayer.rawAppWindow;
 
         appWindow.onClosed.addListener(function() {
           chrome.power.releaseKeepAwake();
@@ -105,4 +116,4 @@ function openVideoPlayerWindow(urls) {
       }.wrap());
 }
 
-background.setLaunchHandler(openVideoPlayerWindow);
+window.background.setLaunchHandler(openVideoPlayerWindow);

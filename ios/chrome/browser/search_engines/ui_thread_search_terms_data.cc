@@ -4,18 +4,17 @@
 
 #include "ios/chrome/browser/search_engines/ui_thread_search_terms_data.h"
 
-#include "base/logging.h"
-#include "base/strings/string16.h"
-#include "components/google/core/browser/google_url_tracker.h"
+#include <string>
+
+#include "base/check.h"
 #include "components/google/core/common/google_util.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/version_info/version_info.h"
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/google/google_brand.h"
-#include "ios/chrome/browser/google/google_url_tracker_factory.h"
 #include "ios/chrome/browser/system_flags.h"
 #include "ios/chrome/common/channel_info.h"
-#include "ios/web/public/web_thread.h"
+#include "ios/web/public/thread/web_thread.h"
 #include "net/base/escape.h"
 #include "rlz/buildflags/buildflags.h"
 #include "url/gurl.h"
@@ -26,9 +25,7 @@
 
 namespace ios {
 
-UIThreadSearchTermsData::UIThreadSearchTermsData(
-    ios::ChromeBrowserState* browser_state)
-    : browser_state_(browser_state) {
+UIThreadSearchTermsData::UIThreadSearchTermsData() {
   DCHECK(!web::WebThread::IsThreadInitialized(web::WebThread::UI) ||
          web::WebThread::CurrentlyOn(web::WebThread::UI));
 }
@@ -41,13 +38,7 @@ std::string UIThreadSearchTermsData::GoogleBaseURLValue() const {
   if (google_base_url.is_valid())
     return google_base_url.spec();
 
-  if (!browser_state_)
-    return SearchTermsData::GoogleBaseURLValue();
-
-  GoogleURLTracker* google_url_tracker =
-      ios::GoogleURLTrackerFactory::GetForBrowserState(browser_state_);
-  return google_url_tracker ? google_url_tracker->google_url().spec()
-                            : GoogleURLTracker::kDefaultGoogleHomepage;
+  return SearchTermsData::GoogleBaseURLValue();
 }
 
 std::string UIThreadSearchTermsData::GetApplicationLocale() const {
@@ -55,11 +46,11 @@ std::string UIThreadSearchTermsData::GetApplicationLocale() const {
   return GetApplicationContext()->GetApplicationLocale();
 }
 
-base::string16 UIThreadSearchTermsData::GetRlzParameterValue(
+std::u16string UIThreadSearchTermsData::GetRlzParameterValue(
     bool from_app_list) const {
   DCHECK(!from_app_list);
   DCHECK(thread_checker_.CalledOnValidThread());
-  base::string16 rlz_string;
+  std::u16string rlz_string;
 #if BUILDFLAG(ENABLE_RLZ)
   // For organic brandcode do not use rlz at all.
   std::string brand;

@@ -34,11 +34,13 @@
 #include "third_party/blink/renderer/core/css/css_value.h"
 #include "third_party/blink/renderer/core/css/media_feature_names.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
+class CSSParserContext;
 class CSSParserTokenRange;
+class ExecutionContext;
 
 struct MediaQueryExpValue {
   DISALLOW_NEW();
@@ -82,7 +84,9 @@ class CORE_EXPORT MediaQueryExp {
  public:
   // Returns an invalid MediaQueryExp if the arguments are invalid.
   static MediaQueryExp Create(const String& media_feature,
-                              CSSParserTokenRange&);
+                              CSSParserTokenRange&,
+                              const CSSParserContext&,
+                              const ExecutionContext*);
   static MediaQueryExp Invalid() {
     return MediaQueryExp(String(), MediaQueryExpValue());
   }
@@ -102,6 +106,10 @@ class CORE_EXPORT MediaQueryExp {
 
   bool IsDeviceDependent() const;
 
+  bool IsWidthDependent() const;
+
+  bool IsHeightDependent() const;
+
   String Serialize() const;
 
  private:
@@ -113,4 +121,4 @@ class CORE_EXPORT MediaQueryExp {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CSS_MEDIA_QUERY_EXP_H_

@@ -5,16 +5,18 @@
 #include "chrome/browser/translate/translate_service.h"
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/common/url_constants.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/translate/core/browser/translate_download_manager.h"
 #include "content/public/common/url_constants.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/browser/chromeos/file_manager/app_id.h"
 #include "extensions/common/constants.h"
 #endif
@@ -24,6 +26,9 @@ TEST(TranslateServiceTest, CheckTranslatableURL) {
   GURL empty_url = GURL(std::string());
   EXPECT_FALSE(TranslateService::IsTranslatableURL(empty_url));
 
+  GURL about_blank_url = GURL("about:blank");
+  EXPECT_FALSE(TranslateService::IsTranslatableURL(about_blank_url));
+
   std::string chrome = std::string(content::kChromeUIScheme) + "://flags";
   GURL chrome_url = GURL(chrome);
   EXPECT_FALSE(TranslateService::IsTranslatableURL(chrome_url));
@@ -32,7 +37,22 @@ TEST(TranslateServiceTest, CheckTranslatableURL) {
   GURL devtools_url = GURL(devtools);
   EXPECT_FALSE(TranslateService::IsTranslatableURL(devtools_url));
 
-#if defined(OS_CHROMEOS)
+  std::string chrome_native = std::string(chrome::kChromeNativeScheme) + "://";
+  GURL chrome_native_url = GURL(chrome_native);
+  EXPECT_FALSE(TranslateService::IsTranslatableURL(chrome_native_url));
+
+  std::string file = std::string(url::kFileScheme) + "://";
+  GURL file_url = GURL(file);
+  EXPECT_TRUE(TranslateService::IsTranslatableURL(file_url));
+
+  // kContentScheme is only used on Android.
+#if defined(OS_ANDROID)
+  std::string content = std::string(url::kContentScheme) + "://";
+  GURL content_url = GURL(content);
+  EXPECT_TRUE(TranslateService::IsTranslatableURL(content_url));
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::string filemanager = std::string(extensions::kExtensionScheme) +
                             std::string("://") +
                             std::string(file_manager::kFileManagerAppId);
@@ -50,7 +70,7 @@ TEST(TranslateServiceTest, CheckTranslatableURL) {
 
 // Tests that download and history URLs are not translatable.
 TEST(TranslateServiceTest, DownloadsAndHistoryNotTranslated) {
-  content::TestBrowserThreadBundle thread_bundle;
+  content::BrowserTaskEnvironment task_environment;
   TranslateService::InitializeForTesting(
       network::mojom::ConnectionType::CONNECTION_WIFI);
   EXPECT_FALSE(

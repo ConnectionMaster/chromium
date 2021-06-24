@@ -6,7 +6,6 @@
 
 #include <string>
 
-#include "base/logging.h"
 #include "base/values.h"
 #include "chromeos/network/onc/onc_signature.h"
 #include "chromeos/network/onc/onc_test_utils.h"
@@ -115,7 +114,7 @@ TEST_F(ONCMergerTest, MergeWithEmptyPolicyProhibitsEverything) {
   base::DictionaryValue emptyDict;
   std::unique_ptr<base::DictionaryValue> merged(
       MergeSettingsAndPoliciesToEffective(&emptyDict, NULL, user_.get(), NULL));
-  EXPECT_TRUE(merged->empty());
+  EXPECT_TRUE(merged->DictEmpty());
 }
 
 TEST_F(ONCMergerTest, MergeWithoutPolicyAllowsAnything) {

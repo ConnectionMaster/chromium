@@ -8,10 +8,10 @@
 
 #include <memory>
 
-#include "base/message_loop/message_loop.h"
+#include "base/cxx17_backports.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/test/mock_callback.h"
+#include "base/test/task_environment.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/decrypt_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -32,12 +32,14 @@ class MojoDecoderBufferConverter {
  public:
   MojoDecoderBufferConverter(
       uint32_t data_pipe_capacity_bytes = kDefaultDataPipeCapacityBytes) {
-    mojo::DataPipe data_pipe(data_pipe_capacity_bytes);
-
-    writer = std::make_unique<MojoDecoderBufferWriter>(
-        std::move(data_pipe.producer_handle));
-    reader = std::make_unique<MojoDecoderBufferReader>(
-        std::move(data_pipe.consumer_handle));
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    EXPECT_TRUE(CreateDataPipe(data_pipe_capacity_bytes, &producer_handle,
+                               &consumer_handle));
+    writer =
+        std::make_unique<MojoDecoderBufferWriter>(std::move(producer_handle));
+    reader =
+        std::make_unique<MojoDecoderBufferReader>(std::move(consumer_handle));
   }
 
   void ConvertAndVerify(scoped_refptr<DecoderBuffer> media_buffer) {
@@ -59,7 +61,7 @@ class MojoDecoderBufferConverter {
 }  // namespace
 
 TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_Normal) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   const uint8_t kData[] = "hello, world";
   const uint8_t kSideData[] = "sideshow bob";
   const size_t kDataSize = base::size(kData);
@@ -79,7 +81,7 @@ TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_Normal) {
 }
 
 TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_EOS) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   scoped_refptr<DecoderBuffer> buffer(DecoderBuffer::CreateEOSBuffer());
 
   MojoDecoderBufferConverter converter;
@@ -89,7 +91,7 @@ TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_EOS) {
 // TODO(xhwang): Investigate whether we can get rid of zero-byte-buffer.
 // See http://crbug.com/663438
 TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_ZeroByteBuffer) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   scoped_refptr<DecoderBuffer> buffer(new DecoderBuffer(0));
 
   MojoDecoderBufferConverter converter;
@@ -97,7 +99,7 @@ TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_ZeroByteBuffer) {
 }
 
 TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_KeyFrame) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   const uint8_t kData[] = "hello, world";
   const size_t kDataSize = base::size(kData);
 
@@ -111,7 +113,7 @@ TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_KeyFrame) {
 }
 
 TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_EncryptedBuffer) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   const uint8_t kData[] = "hello, world";
   const size_t kDataSize = base::size(kData);
   const char kKeyId[] = "00112233445566778899aabbccddeeff";
@@ -150,7 +152,7 @@ TEST(MojoDecoderBufferConverterTest, ConvertDecoderBuffer_EncryptedBuffer) {
 // This test verifies that a DecoderBuffer larger than data-pipe capacity
 // can be transmitted properly.
 TEST(MojoDecoderBufferConverterTest, Chunked) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   const uint8_t kData[] = "Lorem ipsum dolor sit amet, consectetur cras amet";
   const size_t kDataSize = base::size(kData);
   scoped_refptr<DecoderBuffer> buffer =
@@ -163,7 +165,7 @@ TEST(MojoDecoderBufferConverterTest, Chunked) {
 // This test verifies that MojoDecoderBufferReader::ReadCB is called with a
 // NULL DecoderBuffer if data pipe is closed during transmission.
 TEST(MojoDecoderBufferConverterTest, WriterSidePipeError) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   const uint8_t kData[] = "Lorem ipsum dolor sit amet, consectetur cras amet";
   const size_t kDataSize = base::size(kData);
   scoped_refptr<DecoderBuffer> media_buffer =
@@ -191,7 +193,7 @@ TEST(MojoDecoderBufferConverterTest, WriterSidePipeError) {
 // This test verifies that MojoDecoderBuffer supports concurrent writes and
 // reads.
 TEST(MojoDecoderBufferConverterTest, ConcurrentDecoderBuffers) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   // Prevent all of the buffers from fitting at once to exercise the chunking
@@ -237,7 +239,7 @@ TEST(MojoDecoderBufferConverterTest, ConcurrentDecoderBuffers) {
 }
 
 TEST(MojoDecoderBufferConverterTest, FlushWithoutRead) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   base::MockCallback<base::OnceClosure> mock_flush_cb;
@@ -250,7 +252,7 @@ TEST(MojoDecoderBufferConverterTest, FlushWithoutRead) {
 }
 
 TEST(MojoDecoderBufferConverterTest, FlushAfterRead) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   const uint8_t kData[] = "Lorem ipsum dolor sit amet, consectetur cras amet";
@@ -271,7 +273,7 @@ TEST(MojoDecoderBufferConverterTest, FlushAfterRead) {
 }
 
 TEST(MojoDecoderBufferConverterTest, FlushBeforeRead) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   const uint8_t kData[] = "Lorem ipsum dolor sit amet, consectetur cras amet";
@@ -299,7 +301,7 @@ TEST(MojoDecoderBufferConverterTest, FlushBeforeRead) {
 }
 
 TEST(MojoDecoderBufferConverterTest, FlushBeforeChunkedRead) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   const uint8_t kData[] = "Lorem ipsum dolor sit amet, consectetur cras amet";
@@ -328,7 +330,7 @@ TEST(MojoDecoderBufferConverterTest, FlushBeforeChunkedRead) {
 }
 
 TEST(MojoDecoderBufferConverterTest, FlushDuringChunkedRead) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   const uint8_t kData[] = "Lorem ipsum dolor sit amet, consectetur cras amet";
@@ -357,7 +359,7 @@ TEST(MojoDecoderBufferConverterTest, FlushDuringChunkedRead) {
 }
 
 TEST(MojoDecoderBufferConverterTest, FlushDuringConcurrentReads) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   base::RunLoop run_loop;
 
   // Prevent all of the buffers from fitting at once to exercise the chunking
@@ -397,6 +399,38 @@ TEST(MojoDecoderBufferConverterTest, FlushDuringConcurrentReads) {
   reader->ReadDecoderBuffer(std::move(mojo_buffer3), mock_read_cb3.Get());
   reader->Flush(mock_flush_cb.Get());
   // No ReadDecoderBuffer() can be called during pending reset.
+
+  run_loop.Run();
+}
+
+TEST(MojoDecoderBufferConverterTest, WriterWithInvalidHandle) {
+  base::test::SingleThreadTaskEnvironment task_environment;
+  const uint8_t kData[] = "Hello, world";
+  auto media_buffer = DecoderBuffer::CopyFrom(kData, base::size(kData));
+
+  auto writer = std::make_unique<MojoDecoderBufferWriter>(
+      mojo::ScopedDataPipeProducerHandle());
+  EXPECT_FALSE(writer->WriteDecoderBuffer(media_buffer));
+}
+
+TEST(MojoDecoderBufferConverterTest, ReaderWithInvalidHandle) {
+  base::test::SingleThreadTaskEnvironment task_environment;
+  base::RunLoop run_loop;
+
+  // Write a real buffer for testing.
+  const uint8_t kData[] = "Hello, world";
+  auto media_buffer = DecoderBuffer::CopyFrom(kData, base::size(kData));
+  MojoDecoderBufferConverter converter;
+  auto mojo_buffer = converter.writer->WriteDecoderBuffer(media_buffer);
+  DCHECK(mojo_buffer);
+
+  // Read with an invalid handle.
+  base::MockCallback<MojoDecoderBufferReader::ReadCB> mock_cb;
+  EXPECT_CALL(mock_cb, Run(testing::IsNull()))
+      .WillOnce(testing::InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
+  auto reader = std::make_unique<MojoDecoderBufferReader>(
+      mojo::ScopedDataPipeConsumerHandle());
+  reader->ReadDecoderBuffer(std::move(mojo_buffer), mock_cb.Get());
 
   run_loop.Run();
 }

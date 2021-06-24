@@ -6,9 +6,7 @@
 #define CONTENT_PUBLIC_BROWSER_SPEECH_RECOGNITION_MANAGER_H_
 
 #include "base/callback.h"
-#include "base/strings/string16.h"
 #include "content/common/content_export.h"
-#include "third_party/blink/public/mojom/speech/speech_recognition_result.mojom.h"
 
 namespace content {
 
@@ -58,12 +56,11 @@ class SpeechRecognitionManager {
 
   // Retrieves the configuration of a session, as provided by the caller
   // upon CreateSession.
-  virtual const SpeechRecognitionSessionConfig& GetSessionConfig(int session_id)
-      const = 0;
+  virtual const SpeechRecognitionSessionConfig& GetSessionConfig(
+      int session_id) = 0;
 
   // Retrieves the context associated to a session.
-  virtual SpeechRecognitionSessionContext GetSessionContext(
-      int session_id) const = 0;
+  virtual SpeechRecognitionSessionContext GetSessionContext(int session_id) = 0;
 
  protected:
   virtual ~SpeechRecognitionManager() {}

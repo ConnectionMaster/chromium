@@ -10,7 +10,6 @@
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
-#include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
@@ -32,7 +31,10 @@ enum class ScreenshotResult {
   CHECK_DIR_FAILED,
   CREATE_FILE_FAILED,
   WRITE_FILE_FAILED,
-  DISABLED
+  // Disabled by an enterprise policy or special modes.
+  DISABLED,
+  // Disabled by Data Leak Prevention feature.
+  DISABLED_BY_DLP
 };
 
 class SNAPSHOT_EXPORT ScreenshotGrabber {
@@ -72,7 +74,7 @@ class SNAPSHOT_EXPORT ScreenshotGrabber {
   std::unique_ptr<ScopedCursorHider> cursor_hider_;
 #endif
 
-  base::WeakPtrFactory<ScreenshotGrabber> factory_;
+  base::WeakPtrFactory<ScreenshotGrabber> factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ScreenshotGrabber);
 };

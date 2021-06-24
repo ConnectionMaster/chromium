@@ -4,155 +4,104 @@
 
 #include "third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.h"
 
-#include "base/macros.h"
+#include "base/command_line.h"
+#include "services/network/public/cpp/client_hints.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "third_party/blink/public/common/client_hints/client_hints.h"
+#include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/http_parsers.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
-#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "url/origin.h"
 
 namespace blink {
 
-namespace {
-
-void ParseAcceptChHeader(const String& header_value,
-                         WebEnabledClientHints& enabled_hints) {
-  CommaDelimitedHeaderSet accept_client_hints_header;
-  ParseCommaDelimitedHeader(header_value, accept_client_hints_header);
-
-  for (size_t i = 0;
-       i < static_cast<int>(mojom::WebClientHintsType::kMaxValue) + 1; ++i) {
-    enabled_hints.SetIsEnabled(
-        static_cast<mojom::WebClientHintsType>(i),
-        accept_client_hints_header.Contains(kClientHintsNameMapping[i]));
-  }
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kDeviceMemory,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kDeviceMemory));
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kRtt,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kRtt));
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kDownlink,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kDownlink));
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kEct,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kEct));
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kLang,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kLang) &&
-          RuntimeEnabledFeatures::LangClientHintHeaderEnabled());
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kUA,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kUA) &&
-          RuntimeEnabledFeatures::UserAgentClientHintEnabled());
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kUAArch,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kUAArch) &&
-          RuntimeEnabledFeatures::UserAgentClientHintEnabled());
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kUAPlatform,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kUAPlatform) &&
-          RuntimeEnabledFeatures::UserAgentClientHintEnabled());
-
-  enabled_hints.SetIsEnabled(
-      mojom::WebClientHintsType::kUAModel,
-      enabled_hints.IsEnabled(mojom::WebClientHintsType::kUAModel) &&
-          RuntimeEnabledFeatures::UserAgentClientHintEnabled());
-}
-
-}  // namespace
-
 ClientHintsPreferences::ClientHintsPreferences() {
-  DCHECK_EQ(static_cast<size_t>(mojom::WebClientHintsType::kMaxValue) + 1,
-            kClientHintsMappingsCount);
+  DCHECK_EQ(
+      static_cast<size_t>(network::mojom::WebClientHintsType::kMaxValue) + 1,
+      kClientHintsMappingsCount);
 }
 
 void ClientHintsPreferences::UpdateFrom(
     const ClientHintsPreferences& preferences) {
   for (size_t i = 0;
-       i < static_cast<int>(mojom::WebClientHintsType::kMaxValue) + 1; ++i) {
-    mojom::WebClientHintsType type = static_cast<mojom::WebClientHintsType>(i);
+       i < static_cast<int>(network::mojom::WebClientHintsType::kMaxValue) + 1;
+       ++i) {
+    network::mojom::WebClientHintsType type =
+        static_cast<network::mojom::WebClientHintsType>(i);
     enabled_hints_.SetIsEnabled(type, preferences.ShouldSend(type));
   }
 }
 
-void ClientHintsPreferences::UpdateFromAcceptClientHintsHeader(
+void ClientHintsPreferences::CombineWith(
+    const ClientHintsPreferences& preferences) {
+  for (size_t i = 0;
+       i < static_cast<int>(network::mojom::WebClientHintsType::kMaxValue) + 1;
+       ++i) {
+    network::mojom::WebClientHintsType type =
+        static_cast<network::mojom::WebClientHintsType>(i);
+    if (preferences.ShouldSend(type))
+      SetShouldSend(type);
+  }
+}
+
+bool ClientHintsPreferences::UserAgentClientHintEnabled() {
+  return RuntimeEnabledFeatures::UserAgentClientHintEnabled() &&
+         !base::CommandLine::ForCurrentProcess()->HasSwitch(
+             switches::kUserAgentClientHintDisable);
+}
+
+void ClientHintsPreferences::UpdateFromHttpEquivAcceptCH(
     const String& header_value,
     const KURL& url,
     Context* context) {
-  if (header_value.IsEmpty())
-    return;
-
   // Client hints should be allowed only on secure URLs.
   if (!IsClientHintsAllowed(url))
     return;
 
-  WebEnabledClientHints new_enabled_types;
+  // 8-bit conversions from String can turn non-ASCII characters into ?,
+  // turning syntax errors into "correct" syntax, so reject those first.
+  // (.Utf8() doesn't have this problem, but it does a lot of expensive
+  //  work that would be wasted feeding to an ASCII-only syntax).
+  if (!header_value.ContainsOnlyASCIIOrEmpty())
+    return;
 
-  ParseAcceptChHeader(header_value, new_enabled_types);
+  // Note: .Ascii() would convert tab to ?, which is undesirable.
+  absl::optional<std::vector<network::mojom::WebClientHintsType>> parsed_ch =
+      FilterAcceptCH(
+          network::ParseClientHintsHeader(header_value.Latin1()),
+          RuntimeEnabledFeatures::LangClientHintHeaderEnabled(),
+          UserAgentClientHintEnabled(),
+          RuntimeEnabledFeatures::PrefersColorSchemeClientHintHeaderEnabled());
+  if (!parsed_ch.has_value())
+    return;
 
-  for (size_t i = 0;
-       i < static_cast<int>(mojom::WebClientHintsType::kMaxValue) + 1; ++i) {
-    mojom::WebClientHintsType type = static_cast<mojom::WebClientHintsType>(i);
-    enabled_hints_.SetIsEnabled(type, enabled_hints_.IsEnabled(type) ||
-                                          new_enabled_types.IsEnabled(type));
-  }
+  // The renderer only handles http-equiv, so this merges.
+  for (network::mojom::WebClientHintsType newly_enabled : parsed_ch.value())
+    enabled_hints_.SetIsEnabled(newly_enabled, true);
 
   if (context) {
     for (size_t i = 0;
-         i < static_cast<int>(mojom::WebClientHintsType::kMaxValue) + 1; ++i) {
-      mojom::WebClientHintsType type =
-          static_cast<mojom::WebClientHintsType>(i);
+         i <
+         static_cast<int>(network::mojom::WebClientHintsType::kMaxValue) + 1;
+         ++i) {
+      network::mojom::WebClientHintsType type =
+          static_cast<network::mojom::WebClientHintsType>(i);
       if (enabled_hints_.IsEnabled(type))
         context->CountClientHints(type);
     }
   }
 }
 
-void ClientHintsPreferences::UpdateFromAcceptClientHintsLifetimeHeader(
-    const String& header_value,
-    const KURL& url,
-    Context* context) {
-  if (header_value.IsEmpty())
-    return;
-
-  // Client hints should be allowed only on secure URLs.
-  if (!IsClientHintsAllowed(url))
-    return;
-
-  bool conversion_ok = false;
-  int64_t persist_duration_seconds = header_value.ToInt64Strict(&conversion_ok);
-  if (!conversion_ok || persist_duration_seconds <= 0)
-    return;
-
-  persist_duration_ = TimeDelta::FromSeconds(persist_duration_seconds);
-  if (context)
-    context->CountPersistentClientHintHeaders();
-}
-
 // static
 bool ClientHintsPreferences::IsClientHintsAllowed(const KURL& url) {
   return (url.ProtocolIs("http") || url.ProtocolIs("https")) &&
-         (SecurityOrigin::IsSecure(url) ||
-          SecurityOrigin::Create(url)->IsLocalhost());
+         network::IsOriginPotentiallyTrustworthy(url::Origin::Create(url));
 }
 
 WebEnabledClientHints ClientHintsPreferences::GetWebEnabledClientHints() const {
   return enabled_hints_;
-}
-
-base::TimeDelta ClientHintsPreferences::GetPersistDuration() const {
-  return persist_duration_;
 }
 
 }  // namespace blink

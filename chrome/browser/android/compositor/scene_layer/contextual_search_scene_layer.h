@@ -12,8 +12,8 @@
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
-#include "chrome/browser/android/compositor/scene_layer/scene_layer.h"
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher.h"
+#include "chrome/browser/ui/android/layouts/scene_layer.h"
 
 namespace cc {
 class Layer;
@@ -24,6 +24,10 @@ namespace android {
 
 class ContextualSearchLayer;
 
+// A native-side, cc::Layer-based representation of how a Contextual Search
+// scene should be drawn.
+// This class delegates to the ContextualSearchLayer
+// that does the actual rendering of the Contextual Search Bar and content.
 class ContextualSearchSceneLayer : public SceneLayer,
                                    public BitmapFetcherDelegate {
  public:
@@ -47,7 +51,8 @@ class ContextualSearchSceneLayer : public SceneLayer,
       jint search_bar_shadow_resource_id,
       jint search_provider_icon_resource_id,
       jint quick_action_icon_resource_id,
-      jint arrow_up_resource_id,
+      jint drag_handlebar_resource_id,
+      jint open_tab_icon_resource_id,
       jint close_icon_resource_id,
       jint progress_bar_background_resource_id,
       jint progress_bar_resource_id,
@@ -63,7 +68,19 @@ class ContextualSearchSceneLayer : public SceneLayer,
       jboolean search_promo_visible,
       jfloat search_promo_height,
       jfloat search_promo_opacity,
-      jint search_prmomo_background_color,
+      jint search_promo_background_color,
+      // Panel Help
+      jint panel_help_resource_id,
+      jboolean panel_help_visible,
+      jfloat panel_help_height,
+      jfloat panel_help_opacity,
+      jint panel_help_container_background_color,
+      // Related Searches
+      jint related_searches_resource_id,
+      jboolean related_searches_visible,
+      jfloat related_searches_height,
+      jfloat in_bar_related_searches_height,
+      // Banner etc
       jboolean search_bar_banner_visible,
       jfloat search_bar_banner_height,
       jfloat search_bar_banner_padding,
@@ -75,6 +92,7 @@ class ContextualSearchSceneLayer : public SceneLayer,
       jfloat search_panel_width,
       jfloat search_panel_height,
       jfloat search_bar_margin_side,
+      jfloat search_bar_margin_top,
       jfloat search_bar_height,
       jfloat search_context_opacity,
       jfloat search_text_layer_min_height,
@@ -84,30 +102,24 @@ class ContextualSearchSceneLayer : public SceneLayer,
       jboolean search_caption_visible,
       jboolean search_bar_border_visible,
       jfloat search_bar_border_height,
-      jboolean search_bar_shadow_visible,
-      jfloat search_bar_shadow_opacity,
       jboolean quick_action_icon_visible,
       jboolean thumbnail_visible,
       jstring j_thumbnail_url,
       jfloat custom_image_visibility_percentage,
       jint bar_image_size,
       jint icon_color,
-      jfloat arrow_icon_opacity,
-      jfloat arrow_icon_rotation,
+      jint drag_handlebar_color,
       jfloat close_icon_opacity,
       jboolean progress_bar_visible,
       jfloat progress_bar_height,
       jfloat progress_bar_opacity,
-      jint progress_bar_completion,
-      jfloat divider_line_visibility_percentage,
-      jfloat divider_line_width,
-      jfloat divider_line_height,
-      jint divider_line_color,
-      jfloat divider_line_x_offset,
+      jfloat progress_bar_completion,
       jboolean touch_highlight_visible,
       jfloat touch_highlight_x_offset,
       jfloat touch_highlight_width,
-      const base::android::JavaRef<jobject>& j_profile);
+      const base::android::JavaRef<jobject>& j_profile,
+      jint bar_background_resource_id,
+      jint separator_line_color);
 
   // Inherited from BitmapFetcherDelegate
   void OnFetchComplete(

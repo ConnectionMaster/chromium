@@ -24,7 +24,7 @@ class MockVirtualKeyboardDelegate : public VirtualKeyboardDelegate {
       OnKeyboardSettingsCallback on_settings_callback) override {}
   void OnKeyboardConfigChanged() override {}
   bool HideKeyboard() override { return false; }
-  bool InsertText(const base::string16& text) override { return false; }
+  bool InsertText(const std::u16string& text) override { return false; }
   bool OnKeyboardLoaded() override { return false; }
   void SetHotrodKeyboard(bool enable) override {}
   bool LockKeyboard(bool state) override { return false; }
@@ -36,9 +36,10 @@ class MockVirtualKeyboardDelegate : public VirtualKeyboardDelegate {
     return false;
   }
   bool ShowLanguageSettings() override { return false; }
-  bool IsLanguageSettingsEnabled() override { return false; }
+  bool ShowSuggestionSettings() override { return false; }
+  bool IsSettingsEnabled() override { return false; }
   bool SetVirtualKeyboardMode(int mode_enum,
-                              base::Optional<gfx::Rect> target_bounds,
+                              gfx::Rect target_bounds,
                               OnSetModeCallback on_set_mode_callback) override {
     return false;
   }
@@ -60,6 +61,30 @@ class MockVirtualKeyboardDelegate : public VirtualKeyboardDelegate {
   }
   const std::vector<gfx::Rect>& GetHitTestBounds() { return hit_test_bounds_; }
 
+  bool SetAreaToRemainOnScreen(const gfx::Rect& bounds) override {
+    area_to_remain_on_screen_ = bounds;
+    return true;
+  }
+  const gfx::Rect& GetAreaToRemainOnScreen() {
+    return area_to_remain_on_screen_;
+  }
+
+  bool SetWindowBoundsInScreen(const gfx::Rect& bounds_in_screen) override {
+    window_bounds_ = bounds_in_screen;
+    return true;
+  }
+  const gfx::Rect& GetWindowBounds() { return window_bounds_; }
+
+  void GetClipboardHistory(
+      const std::set<std::string>& item_ids_filter,
+      OnGetClipboardHistoryCallback get_history_callback) override {}
+  bool PasteClipboardItem(const std::string& clipboard_item_id) override {
+    return false;
+  }
+  bool DeleteClipboardItem(const std::string& clipboard_item_id) override {
+    return false;
+  }
+
   api::virtual_keyboard::FeatureRestrictions RestrictFeatures(
       const api::virtual_keyboard::RestrictFeatures::Params& params) override {
     return api::virtual_keyboard::FeatureRestrictions();
@@ -68,6 +93,8 @@ class MockVirtualKeyboardDelegate : public VirtualKeyboardDelegate {
  private:
   std::vector<gfx::Rect> occluded_bounds_;
   std::vector<gfx::Rect> hit_test_bounds_;
+  gfx::Rect area_to_remain_on_screen_;
+  gfx::Rect window_bounds_;
 
   DISALLOW_COPY_AND_ASSIGN(MockVirtualKeyboardDelegate);
 };
@@ -167,6 +194,26 @@ TEST_F(VirtualKeyboardPrivateApiUnittest, SetHitTestBoundsWithMultipleBounds) {
   ASSERT_EQ(2U, bounds.size());
   EXPECT_EQ(gfx::Rect(0, 10, 20, 30), bounds[0]);
   EXPECT_EQ(gfx::Rect(10, 20, 30, 40), bounds[1]);
+}
+
+TEST_F(VirtualKeyboardPrivateApiUnittest, SetAreaToRemainOnScreenWithBounds) {
+  RunFunction(new VirtualKeyboardPrivateSetAreaToRemainOnScreenFunction(),
+              R"([{ "left": 0, "top": 0, "width": 10, "height": 20 }])");
+
+  const gfx::Rect bounds = client()
+                               .GetDelegateForBrowserContext(browser_context())
+                               ->GetAreaToRemainOnScreen();
+  EXPECT_EQ(gfx::Rect(0, 0, 10, 20), bounds);
+}
+
+TEST_F(VirtualKeyboardPrivateApiUnittest, SetWindowBoundsInScreenWithBounds) {
+  RunFunction(new VirtualKeyboardPrivateSetWindowBoundsInScreenFunction(),
+              R"([{ "left": 120, "top": 300, "width": 400, "height": 250 }])");
+
+  const gfx::Rect bounds = client()
+                               .GetDelegateForBrowserContext(browser_context())
+                               ->GetWindowBounds();
+  EXPECT_EQ(gfx::Rect(120, 300, 400, 250), bounds);
 }
 
 }  // namespace extensions

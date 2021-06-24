@@ -3,184 +3,69 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/notifications/notification_platform_bridge_mac.h"
+#include "chrome/browser/notifications/notification_platform_bridge_mac_unnotification.h"
+
+#import <UserNotifications/UserNotifications.h>
 
 #include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
-#include "base/i18n/number_formatting.h"
-#include "base/mac/bundle_locations.h"
-#include "base/mac/foundation_util.h"
+#include "base/feature_list.h"
 #include "base/mac/mac_util.h"
 #include "base/mac/scoped_mach_port.h"
 #include "base/mac/scoped_nsobject.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/optional.h"
-#include "base/strings/nullable_string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
-#include "chrome/browser/browser_process.h"
+#import "chrome/browser/notifications/alert_dispatcher_mojo.h"
+#import "chrome/browser/notifications/alert_dispatcher_xpc.h"
+#include "chrome/browser/notifications/mac_notification_provider_factory.h"
 #include "chrome/browser/notifications/notification_common.h"
 #include "chrome/browser/notifications/notification_display_service_impl.h"
+#include "chrome/browser/notifications/notification_platform_bridge_mac_metrics.h"
+#include "chrome/browser/notifications/notification_platform_bridge_mac_utils.h"
 #include "chrome/browser/notifications/platform_notification_service_impl.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/cocoa/notifications/notification_builder_mac.h"
-#include "chrome/browser/ui/cocoa/notifications/notification_constants_mac.h"
-#import "chrome/browser/ui/cocoa/notifications/notification_delivery.h"
 #import "chrome/browser/ui/cocoa/notifications/notification_response_builder_mac.h"
-#include "chrome/common/buildflags.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/crash/content/app/crashpad.h"
-#include "components/url_formatter/elide_url.h"
-#include "content/public/browser/browser_task_traits.h"
-#include "content/public/browser/browser_thread.h"
-#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "third_party/blink/public/platform/modules/notifications/web_notification_constants.h"
-#include "third_party/crashpad/crashpad/client/crashpad_client.h"
+#include "chrome/services/mac_notifications/public/cpp/notification_constants_mac.h"
+#include "chrome/services/mac_notifications/public/cpp/notification_utils_mac.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/notifications/notification_constants.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_types.h"
 #include "url/gurl.h"
-#include "url/origin.h"
-
-@class NSUserNotification;
-@class NSUserNotificationCenter;
-
-// The mapping from web notifications to NsUserNotification works as follows
-
-// notification#title in NSUserNotification.title
-// notification#message in NSUserNotification.informativeText
-// notification#context_message in NSUserNotification.subtitle
-// notification#id in NSUserNotification.identifier (10.9)
-// notification#icon in NSUserNotification.contentImage (10.9)
-// Site settings button is implemented as NSUserNotification's action button
-// Not easy to implement:
-// -notification.requireInteraction
 
 // TODO(miguelg) implement the following features
 // - Sound names can be implemented by setting soundName in NSUserNotification
 //   NSUserNotificationDefaultSoundName gives you the platform default.
 
-namespace {
-
-// Loads the profile and process the Notification response
-void DoProcessNotificationResponse(NotificationCommon::Operation operation,
-                                   NotificationHandler::Type type,
-                                   const std::string& profile_id,
-                                   bool incognito,
-                                   const GURL& origin,
-                                   const std::string& notification_id,
-                                   const base::Optional<int>& action_index,
-                                   const base::Optional<base::string16>& reply,
-                                   const base::Optional<bool>& by_user) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  // Profile ID can be empty for system notifications, which are not bound to a
-  // profile, but system notifications are transient and thus not handled by
-  // this NotificationPlatformBridge.
-  // When transient notifications are supported, this should route the
-  // notification response to the system NotificationDisplayService.
-  DCHECK(!profile_id.empty());
-
-  ProfileManager* profileManager = g_browser_process->profile_manager();
-  DCHECK(profileManager);
-
-  profileManager->LoadProfile(
-      profile_id, incognito,
-      base::Bind(&NotificationDisplayServiceImpl::ProfileLoadedCallback,
-                 operation, type, origin, notification_id, action_index, reply,
-                 by_user));
-}
-
-// This enum backs an UMA histogram, so it should be treated as append-only.
-enum XPCConnectionEvent {
-  INTERRUPTED = 0,
-  INVALIDATED,
-  XPC_CONNECTION_EVENT_COUNT
-};
-
-void RecordXPCEvent(XPCConnectionEvent event) {
-  UMA_HISTOGRAM_ENUMERATION("Notifications.XPCConnectionEvent", event,
-                            XPC_CONNECTION_EVENT_COUNT);
-}
-
-base::string16 CreateNotificationTitle(
-    const message_center::Notification& notification) {
-  base::string16 title;
-  if (notification.type() == message_center::NOTIFICATION_TYPE_PROGRESS) {
-    title += base::FormatPercent(notification.progress());
-    title += base::UTF8ToUTF16(" - ");
-  }
-  title += notification.title();
-  return title;
-}
-
-bool IsPersistentNotification(
-    const message_center::Notification& notification) {
-  return notification.never_timeout() ||
-         notification.type() == message_center::NOTIFICATION_TYPE_PROGRESS;
-}
-
-base::string16 CreateNotificationContext(
-    const message_center::Notification& notification,
-    bool requires_attribution) {
-  if (!requires_attribution)
-    return notification.context_message();
-
-  // Mac OS notifications don't provide a good way to elide the domain (or tell
-  // you the maximum width of the subtitle field). We have experimentally
-  // determined the maximum number of characters that fit using the widest
-  // possible character (m). If the domain fits in those character we show it
-  // completely. Otherwise we use eTLD + 1.
-
-  // These numbers have been obtained through experimentation on various
-  // Mac OS platforms.
-
-  constexpr size_t kMaxDomainLengthAlert = 19;
-  constexpr size_t kMaxDomainLengthBanner = 28;
-
-  size_t max_characters = IsPersistentNotification(notification)
-                              ? kMaxDomainLengthAlert
-                              : kMaxDomainLengthBanner;
-
-  base::string16 origin = url_formatter::FormatOriginForSecurityDisplay(
-      url::Origin::Create(notification.origin_url()),
-      url_formatter::SchemeDisplay::OMIT_HTTP_AND_HTTPS);
-
-  if (origin.size() <= max_characters)
-    return origin;
-
-  // Too long, use etld+1
-  base::string16 etldplusone =
-      base::UTF8ToUTF16(net::registry_controlled_domains::GetDomainAndRegistry(
-          notification.origin_url(),
-          net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES));
-
-  // localhost, raw IPs etc. are not handled by GetDomainAndRegistry.
-  if (etldplusone.empty())
-    return origin;
-
-  return etldplusone;
-}
-}  // namespace
-
-// A Cocoa class that represents the delegate of NSUserNotificationCenter and
-// can forward commands to C++.
 @interface NotificationCenterDelegate
     : NSObject<NSUserNotificationCenterDelegate> {
 }
 @end
 
-// Interface to communicate with the Alert XPC service.
-@interface AlertDispatcherImpl : NSObject<AlertDispatcher>
+namespace {
 
-@end
+base::scoped_nsobject<NSObject<AlertDispatcher>> CreateAlertDispatcher() {
+  base::scoped_nsobject<NSObject<AlertDispatcher>> alert_dispatcher;
+  if (base::FeatureList::IsEnabled(features::kNotificationsViaHelperApp)) {
+    auto provider_factory = std::make_unique<MacNotificationProviderFactory>();
+    alert_dispatcher.reset([[AlertDispatcherMojo alloc]
+        initWithProviderFactory:std::move(provider_factory)]);
+  } else {
+    alert_dispatcher.reset([[AlertDispatcherXPC alloc] init]);
+  }
+  return alert_dispatcher;
+}
+
+}  // namespace
 
 // /////////////////////////////////////////////////////////////////////////////
 NotificationPlatformBridgeMac::NotificationPlatformBridgeMac(
@@ -203,8 +88,17 @@ NotificationPlatformBridgeMac::~NotificationPlatformBridgeMac() {
 // static
 std::unique_ptr<NotificationPlatformBridge>
 NotificationPlatformBridge::Create() {
-  base::scoped_nsobject<AlertDispatcherImpl> alert_dispatcher(
-      [[AlertDispatcherImpl alloc] init]);
+  base::scoped_nsobject<NSObject<AlertDispatcher>> alert_dispatcher =
+      CreateAlertDispatcher();
+
+  if (@available(macOS 10.14, *)) {
+    if (base::FeatureList::IsEnabled(features::kNewMacNotificationAPI)) {
+      return std::make_unique<NotificationPlatformBridgeMacUNNotification>(
+          [UNUserNotificationCenter currentNotificationCenter],
+          alert_dispatcher.get());
+    }
+  }
+
   return std::make_unique<NotificationPlatformBridgeMac>(
       [NSUserNotificationCenter defaultUserNotificationCenter],
       alert_dispatcher.get());
@@ -228,13 +122,13 @@ void NotificationPlatformBridgeMac::Display(
            settingsLabel:l10n_util::GetNSString(
                              IDS_NOTIFICATION_BUTTON_SETTINGS)]);
 
-  [builder
-      setTitle:base::SysUTF16ToNSString(CreateNotificationTitle(notification))];
+  [builder setTitle:base::SysUTF16ToNSString(
+                        CreateMacNotificationTitle(notification))];
 
-  base::string16 context_message =
+  std::u16string context_message =
       notification.items().empty()
           ? notification.message()
-          : (notification.items().at(0).title + base::UTF8ToUTF16(" - ") +
+          : (notification.items().at(0).title + u" - " +
              notification.items().at(0).message);
 
   [builder setContextMessage:base::SysUTF16ToNSString(context_message)];
@@ -242,21 +136,25 @@ void NotificationPlatformBridgeMac::Display(
   bool requires_attribution =
       notification.context_message().empty() &&
       notification_type != NotificationHandler::Type::EXTENSION;
-  [builder setSubTitle:base::SysUTF16ToNSString(CreateNotificationContext(
-                           notification, requires_attribution))];
+
+  bool is_alert = IsAlertNotificationMac(notification);
+  LogMacNotificationDelivered(is_alert, /*sucess=*/true);
+
+  [builder setSubTitle:base::SysUTF16ToNSString(CreateMacNotificationContext(
+                           is_alert, notification, requires_attribution))];
 
   if (!notification.icon().IsEmpty()) {
+    // TODO(crbug/1138176): Resize images by adding a transparent border so that
+    // its dimensions are uniform and do not get resized once sent to the
+    // notification center
     [builder setIcon:notification.icon().ToNSImage()];
   }
 
-  [builder
-      setShowSettingsButton:(notification_type !=
-                                 NotificationHandler::Type::EXTENSION &&
-                             notification_type !=
-                                 NotificationHandler::Type::SEND_TAB_TO_SELF)];
+  [builder setRenotify:notification.renotify()];
+  [builder setShowSettingsButton:(notification.should_show_settings_button())];
   std::vector<message_center::ButtonInfo> buttons = notification.buttons();
   if (!buttons.empty()) {
-    DCHECK_LE(buttons.size(), blink::kWebNotificationMaxActions);
+    DCHECK_LE(buttons.size(), blink::kNotificationMaxActions);
     NSString* buttonOne = base::SysUTF16ToNSString(buttons[0].title);
     NSString* buttonTwo = nullptr;
     if (buttons.size() > 1)
@@ -264,37 +162,25 @@ void NotificationPlatformBridgeMac::Display(
     [builder setButtons:buttonOne secondaryButton:buttonTwo];
   }
 
-  [builder setTag:base::SysUTF8ToNSString(notification.id())];
+  std::string identifier = DeriveMacNotificationId(
+      profile->IsOffTheRecord(), GetProfileId(profile), notification.id());
+  [builder setIdentifier:base::SysUTF8ToNSString(identifier)];
+
   // If renotify is needed, delete the notification with the same id
   // from the notification center before displaying this one.
-  // TODO(miguelg): This will need to work for alerts as well via XPC
-  // once supported.
-  if (notification.renotify()) {
-    NSUserNotificationCenter* notification_center =
-        [NSUserNotificationCenter defaultUserNotificationCenter];
-    for (NSUserNotification* existing_notification in
-         [notification_center deliveredNotifications]) {
-      NSString* identifier = [existing_notification valueForKey:@"identifier"];
-      if ([identifier
-              isEqualToString:base::SysUTF8ToNSString(notification.id())]) {
-        [notification_center removeDeliveredNotification:existing_notification];
-        break;
-      }
-    }
-  }
+  if (notification.renotify())
+    Close(profile, notification.id());
 
   [builder setOrigin:base::SysUTF8ToNSString(notification.origin_url().spec())];
   [builder setNotificationId:base::SysUTF8ToNSString(notification.id())];
   [builder setProfileId:base::SysUTF8ToNSString(GetProfileId(profile))];
   [builder setIncognito:profile->IsOffTheRecord()];
-  [builder
-      setNotificationType:[NSNumber numberWithInteger:static_cast<NSInteger>(
-                                                          notification_type)]];
+  [builder setCreatorPid:@(static_cast<NSInteger>(getpid()))];
+  [builder setNotificationType:@(static_cast<NSInteger>(notification_type))];
 
-  // Send persistent notifications to the XPC service so they
-  // can be displayed as alerts. Chrome itself can only display
-  // banners.
-  if (IsPersistentNotification(notification)) {
+  // Send alert notifications to the alert dispatcher. Chrome itself can only
+  // display banners.
+  if (is_alert) {
     NSDictionary* dict = [builder buildDictionary];
     [alert_dispatcher_ dispatchNotification:dict];
   } else {
@@ -305,42 +191,70 @@ void NotificationPlatformBridgeMac::Display(
 
 void NotificationPlatformBridgeMac::Close(Profile* profile,
                                           const std::string& notification_id) {
-  NSString* candidate_id = base::SysUTF8ToNSString(notification_id);
-  NSString* current_profile_id = base::SysUTF8ToNSString(GetProfileId(profile));
+  NSString* notificationId = base::SysUTF8ToNSString(notification_id);
+  NSString* profileId = base::SysUTF8ToNSString(GetProfileId(profile));
+  bool incognito = profile->IsOffTheRecord();
 
-  bool notification_removed = false;
   for (NSUserNotification* toast in
        [notification_center_ deliveredNotifications]) {
-    NSString* toast_id =
-        [toast.userInfo objectForKey:notification_constants::kNotificationId];
+    NSString* toastId =
+        (toast.userInfo)[notification_constants::kNotificationId];
+    NSString* toastProfileId =
+        (toast.userInfo)[notification_constants::kNotificationProfileId];
+    BOOL toastIncognito =
+        [(toast.userInfo)[notification_constants::kNotificationIncognito]
+            boolValue];
 
-    NSString* persistent_profile_id = [toast.userInfo
-        objectForKey:notification_constants::kNotificationProfileId];
-
-    if ([toast_id isEqualToString:candidate_id] &&
-        [persistent_profile_id isEqualToString:current_profile_id]) {
+    if ([notificationId isEqualToString:toastId] &&
+        [profileId isEqualToString:toastProfileId] &&
+        incognito == toastIncognito) {
       [notification_center_ removeDeliveredNotification:toast];
-      notification_removed = true;
-      break;
+      return;
     }
   }
 
   // If no banner existed with that ID try to see if there is an alert
-  // in the xpc server.
-  if (!notification_removed) {
-    [alert_dispatcher_ closeNotificationWithId:candidate_id
-                                 withProfileId:current_profile_id];
-  }
+  // in the alert dispatcher.
+  [alert_dispatcher_ closeNotificationWithId:notificationId
+                                   profileId:profileId
+                                   incognito:incognito];
 }
 
 void NotificationPlatformBridgeMac::GetDisplayed(
     Profile* profile,
     GetDisplayedNotificationsCallback callback) const {
-  [alert_dispatcher_ getDisplayedAlertsForProfileId:base::SysUTF8ToNSString(
-                                                        GetProfileId(profile))
-                                          incognito:profile->IsOffTheRecord()
-                                 notificationCenter:notification_center_
-                                           callback:std::move(callback)];
+  NSString* profileId = base::SysUTF8ToNSString(GetProfileId(profile));
+  bool incognito = profile->IsOffTheRecord();
+  std::set<std::string> banners;
+
+  for (NSUserNotification* toast in
+       [notification_center_ deliveredNotifications]) {
+    NSString* toastProfileId =
+        (toast.userInfo)[notification_constants::kNotificationProfileId];
+    BOOL toastIncognito =
+        [(toast.userInfo)[notification_constants::kNotificationIncognito]
+            boolValue];
+
+    if ([profileId isEqualToString:toastProfileId] &&
+        incognito == toastIncognito) {
+      banners.insert(base::SysNSStringToUTF8(
+          (toast.userInfo)[notification_constants::kNotificationId]));
+    }
+  }
+
+  GetDisplayedNotificationsCallback alerts_callback = base::BindOnce(
+      [](GetDisplayedNotificationsCallback callback,
+         std::set<std::string> banners, std::set<std::string> alerts,
+         bool supports_synchronization) {
+        // Merge banner and alert notification ids.
+        banners.insert(alerts.begin(), alerts.end());
+        std::move(callback).Run(std::move(banners), supports_synchronization);
+      },
+      std::move(callback), std::move(banners));
+
+  [alert_dispatcher_ getDisplayedAlertsForProfileId:profileId
+                                          incognito:incognito
+                                           callback:std::move(alerts_callback)];
 }
 
 void NotificationPlatformBridgeMac::SetReadyCallback(
@@ -348,116 +262,39 @@ void NotificationPlatformBridgeMac::SetReadyCallback(
   std::move(callback).Run(true);
 }
 
-void NotificationPlatformBridgeMac::DisplayServiceShutDown(Profile* profile) {}
-
-// static
-void NotificationPlatformBridgeMac::ProcessNotificationResponse(
-    NSDictionary* response) {
-  if (!NotificationPlatformBridgeMac::VerifyNotificationData(response))
-    return;
-
-  NSNumber* button_index =
-      [response objectForKey:notification_constants::kNotificationButtonIndex];
-  NSNumber* operation =
-      [response objectForKey:notification_constants::kNotificationOperation];
-
-  std::string notification_origin = base::SysNSStringToUTF8(
-      [response objectForKey:notification_constants::kNotificationOrigin]);
-  std::string notification_id = base::SysNSStringToUTF8(
-      [response objectForKey:notification_constants::kNotificationId]);
-  std::string profile_id = base::SysNSStringToUTF8(
-      [response objectForKey:notification_constants::kNotificationProfileId]);
-  NSNumber* is_incognito =
-      [response objectForKey:notification_constants::kNotificationIncognito];
-  NSNumber* notification_type =
-      [response objectForKey:notification_constants::kNotificationType];
-
-  base::Optional<int> action_index;
-  if (button_index.intValue !=
-      notification_constants::kNotificationInvalidButtonIndex) {
-    action_index = button_index.intValue;
-  }
-
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
-      base::BindOnce(DoProcessNotificationResponse,
-                     static_cast<NotificationCommon::Operation>(
-                         operation.unsignedIntValue),
-                     static_cast<NotificationHandler::Type>(
-                         notification_type.unsignedIntValue),
-                     profile_id, [is_incognito boolValue],
-                     GURL(notification_origin), notification_id, action_index,
-                     base::nullopt /* reply */, true /* by_user */));
+void NotificationPlatformBridgeMac::DisplayServiceShutDown(Profile* profile) {
+  // Close all alerts and banners for |profile| on shutdown. We have to clean up
+  // here instead of the destructor as mojo messages won't be delivered from
+  // there as it's too late in the shutdown process. If the profile is null it
+  // was the SystemNotificationHelper instance but we never show notifications
+  // without a profile (Type::TRANSIENT) on macOS, so nothing to do here.
+  if (profile)
+    CloseAllNotificationsForProfile(profile);
 }
 
-// static
-bool NotificationPlatformBridgeMac::VerifyNotificationData(
-    NSDictionary* response) {
-  if (![response
-          objectForKey:notification_constants::kNotificationButtonIndex] ||
-      ![response objectForKey:notification_constants::kNotificationOperation] ||
-      ![response objectForKey:notification_constants::kNotificationId] ||
-      ![response objectForKey:notification_constants::kNotificationProfileId] ||
-      ![response objectForKey:notification_constants::kNotificationIncognito] ||
-      ![response objectForKey:notification_constants::kNotificationType]) {
-    LOG(ERROR) << "Missing required key";
-    return false;
+void NotificationPlatformBridgeMac::CloseAllNotificationsForProfile(
+    Profile* profile) {
+  DCHECK(profile);
+  NSString* profile_id = base::SysUTF8ToNSString(GetProfileId(profile));
+  bool incognito = profile->IsOffTheRecord();
+
+  [alert_dispatcher_ closeNotificationsWithProfileId:profile_id
+                                           incognito:incognito];
+
+  // Close banner notifications for the profile.
+  for (NSUserNotification* toast in
+       [notification_center_ deliveredNotifications]) {
+    NSString* toast_profile_id =
+        (toast.userInfo)[notification_constants::kNotificationProfileId];
+    BOOL toast_incognito =
+        [(toast.userInfo)[notification_constants::kNotificationIncognito]
+            boolValue];
+
+    if ([profile_id isEqualToString:toast_profile_id] &&
+        incognito == toast_incognito) {
+      [notification_center_ removeDeliveredNotification:toast];
+    }
   }
-
-  NSNumber* button_index =
-      [response objectForKey:notification_constants::kNotificationButtonIndex];
-  NSNumber* operation =
-      [response objectForKey:notification_constants::kNotificationOperation];
-  NSString* notification_id =
-      [response objectForKey:notification_constants::kNotificationId];
-  NSString* profile_id =
-      [response objectForKey:notification_constants::kNotificationProfileId];
-  NSNumber* notification_type =
-      [response objectForKey:notification_constants::kNotificationType];
-
-  if (button_index.intValue <
-          notification_constants::kNotificationInvalidButtonIndex ||
-      button_index.intValue >=
-          static_cast<int>(blink::kWebNotificationMaxActions)) {
-    LOG(ERROR) << "Invalid number of buttons supplied "
-               << button_index.intValue;
-    return false;
-  }
-
-  if (operation.unsignedIntValue > NotificationCommon::OPERATION_MAX) {
-    LOG(ERROR) << operation.unsignedIntValue
-               << " does not correspond to a valid operation.";
-    return false;
-  }
-
-  if (notification_id.length <= 0) {
-    LOG(ERROR) << "Notification Id is empty";
-    return false;
-  }
-
-  if (profile_id.length <= 0) {
-    LOG(ERROR) << "ProfileId not provided";
-    return false;
-  }
-
-  if (notification_type.unsignedIntValue >
-      static_cast<unsigned int>(NotificationHandler::Type::MAX)) {
-    LOG(ERROR) << notification_type.unsignedIntValue
-               << " Does not correspond to a valid operation.";
-    return false;
-  }
-
-  // Origin is not actually required but if it's there it should be a valid one.
-  NSString* origin =
-      [response objectForKey:notification_constants::kNotificationOrigin];
-  if (origin) {
-    std::string notificationOrigin = base::SysNSStringToUTF8(origin);
-    GURL url(notificationOrigin);
-    if (!url.is_valid())
-      return false;
-  }
-
-  return true;
 }
 
 // /////////////////////////////////////////////////////////////////////////////
@@ -465,9 +302,9 @@ bool NotificationPlatformBridgeMac::VerifyNotificationData(
 - (void)userNotificationCenter:(NSUserNotificationCenter*)center
        didActivateNotification:(NSUserNotification*)notification {
   NSDictionary* notificationResponse =
-      [NotificationResponseBuilder buildActivatedDictionary:notification];
-  NotificationPlatformBridgeMac::ProcessNotificationResponse(
-      notificationResponse);
+      [NotificationResponseBuilder buildActivatedDictionary:notification
+                                                  fromAlert:NO];
+  ProcessMacNotificationResponse(notificationResponse);
 }
 
 // Overriden from _NSUserNotificationCenterDelegatePrivate.
@@ -479,9 +316,9 @@ bool NotificationPlatformBridgeMac::VerifyNotificationData(
 - (void)userNotificationCenter:(NSUserNotificationCenter*)center
                didDismissAlert:(NSUserNotification*)notification {
   NSDictionary* notificationResponse =
-      [NotificationResponseBuilder buildDismissedDictionary:notification];
-  NotificationPlatformBridgeMac::ProcessNotificationResponse(
-      notificationResponse);
+      [NotificationResponseBuilder buildDismissedDictionary:notification
+                                                  fromAlert:NO];
+  ProcessMacNotificationResponse(notificationResponse);
 }
 
 // Overriden from _NSUserNotificationCenterDelegatePrivate.
@@ -492,9 +329,9 @@ bool NotificationPlatformBridgeMac::VerifyNotificationData(
     didRemoveDeliveredNotifications:(NSArray*)notifications {
   for (NSUserNotification* notification in notifications) {
     NSDictionary* notificationResponse =
-        [NotificationResponseBuilder buildDismissedDictionary:notification];
-    NotificationPlatformBridgeMac::ProcessNotificationResponse(
-        notificationResponse);
+        [NotificationResponseBuilder buildDismissedDictionary:notification
+                                                    fromAlert:NO];
+    ProcessMacNotificationResponse(notificationResponse);
   }
 }
 
@@ -502,133 +339,6 @@ bool NotificationPlatformBridgeMac::VerifyNotificationData(
      shouldPresentNotification:(NSUserNotification*)nsNotification {
   // Always display notifications, regardless of whether the app is foreground.
   return YES;
-}
-
-@end
-
-@implementation AlertDispatcherImpl {
-  // The connection to the XPC server in charge of delivering alerts.
-  base::scoped_nsobject<NSXPCConnection> xpcConnection_;
-
-  // YES if the remote object has had |-setMachExceptionPort:| called
-  // since the service was last started, interrupted, or invalidated.
-  // If NO, then -serviceProxy will set the exception port.
-  BOOL setExceptionPort_;
-}
-
-- (instancetype)init {
-  if ((self = [super init])) {
-    xpcConnection_.reset([[NSXPCConnection alloc]
-        initWithServiceName:
-            [NSString
-                stringWithFormat:notification_constants::kAlertXPCServiceName,
-                                 [base::mac::OuterBundle() bundleIdentifier]]]);
-    xpcConnection_.get().remoteObjectInterface =
-        [NSXPCInterface interfaceWithProtocol:@protocol(NotificationDelivery)];
-
-    xpcConnection_.get().interruptionHandler = ^{
-      // We will be getting this handler both when the XPC server crashes or
-      // when it decides to close the connection.
-      LOG(WARNING) << "AlertNotificationService: XPC connection interrupted.";
-      RecordXPCEvent(INTERRUPTED);
-      setExceptionPort_ = NO;
-    };
-
-    xpcConnection_.get().invalidationHandler = ^{
-      // This means that the connection should be recreated if it needs
-      // to be used again.
-      LOG(WARNING) << "AlertNotificationService: XPC connection invalidated.";
-      RecordXPCEvent(INVALIDATED);
-      setExceptionPort_ = NO;
-    };
-
-    xpcConnection_.get().exportedInterface =
-        [NSXPCInterface interfaceWithProtocol:@protocol(NotificationReply)];
-    xpcConnection_.get().exportedObject = self;
-    [xpcConnection_ resume];
-  }
-
-  return self;
-}
-
-// AlertDispatcher:
-- (void)dispatchNotification:(NSDictionary*)data {
-  [[self serviceProxy] deliverNotification:data];
-}
-
-- (void)closeNotificationWithId:(NSString*)notificationId
-                  withProfileId:(NSString*)profileId {
-  [[self serviceProxy] closeNotificationWithId:notificationId
-                                 withProfileId:profileId];
-}
-
-- (void)closeAllNotifications {
-  [[self serviceProxy] closeAllNotifications];
-}
-
-- (void)
-getDisplayedAlertsForProfileId:(NSString*)profileId
-                     incognito:(BOOL)incognito
-            notificationCenter:(NSUserNotificationCenter*)notificationCenter
-                      callback:(GetDisplayedNotificationsCallback)callback {
-  // Create a copyable version of the OnceCallback because ObjectiveC blocks
-  // copy all referenced variables via copy constructor.
-  auto copyable_callback = base::AdaptCallbackForRepeating(std::move(callback));
-  auto reply = ^(NSArray* alerts) {
-    std::set<std::string> displayedNotifications;
-
-    for (NSUserNotification* toast in
-         [notificationCenter deliveredNotifications]) {
-      NSString* toastProfileId = [toast.userInfo
-          objectForKey:notification_constants::kNotificationProfileId];
-      BOOL incognitoNotification = [[toast.userInfo
-          objectForKey:notification_constants::kNotificationIncognito]
-          boolValue];
-      if ([toastProfileId isEqualToString:profileId] &&
-          incognito == incognitoNotification) {
-        displayedNotifications.insert(base::SysNSStringToUTF8([toast.userInfo
-            objectForKey:notification_constants::kNotificationId]));
-      }
-    }
-
-    for (NSString* alert in alerts)
-      displayedNotifications.insert(base::SysNSStringToUTF8(alert));
-
-    base::PostTaskWithTraits(
-        FROM_HERE, {content::BrowserThread::UI},
-        base::BindOnce(copyable_callback, std::move(displayedNotifications),
-                       true /* supports_synchronization */));
-  };
-
-  [[self serviceProxy] getDisplayedAlertsForProfileId:profileId
-                                         andIncognito:incognito
-                                            withReply:reply];
-}
-
-// NotificationReply:
-- (void)notificationClick:(NSDictionary*)notificationResponseData {
-  NotificationPlatformBridgeMac::ProcessNotificationResponse(
-      notificationResponseData);
-}
-
-// Private methods:
-
-// Retrieves the connection's remoteObjectProxy. Always use this as opposed
-// to going directly through the connection, since this will ensure that the
-// service has its exception port configured for crash reporting.
-- (id<NotificationDelivery>)serviceProxy {
-  id<NotificationDelivery> proxy = [xpcConnection_ remoteObjectProxy];
-
-  if (!setExceptionPort_) {
-    base::mac::ScopedMachSendRight exceptionPort(
-        crash_reporter::GetCrashpadClient().GetHandlerMachPort());
-    base::scoped_nsobject<CrXPCMachPort> xpcPort(
-        [[CrXPCMachPort alloc] initWithMachSendRight:std::move(exceptionPort)]);
-    [proxy setMachExceptionPort:xpcPort];
-    setExceptionPort_ = YES;
-  }
-
-  return proxy;
 }
 
 @end

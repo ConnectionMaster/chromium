@@ -5,11 +5,12 @@
 #ifndef CHROME_BROWSER_UI_BOOKMARKS_BOOKMARK_EDITOR_H_
 #define CHROME_BROWSER_UI_BOOKMARKS_BOOKMARK_EDITOR_H_
 
+#include <string>
 #include <utility>
 #include <vector>
 
-#include "base/strings/string16.h"
 #include "components/bookmarks/browser/bookmark_node.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/native_widget_types.h"
 
 class GURL;
@@ -48,14 +49,14 @@ class BookmarkEditor {
     // a given parent node with a specified index.
     static EditDetails AddNodeInFolder(
         const bookmarks::BookmarkNode* parent_node,
-        int index,
+        size_t index,
         const GURL& url,
-        const base::string16& title);
+        const std::u16string& title);
 
     // Returns an EditDetails instance for the user adding a folder within a
     // given parent node with a specified index.
     static EditDetails AddFolder(const bookmarks::BookmarkNode* parent_node,
-                                 int index);
+                                 size_t index);
 
     enum Type {
       // The user is editing an existing node in the model. The node the user
@@ -79,23 +80,23 @@ class BookmarkEditor {
     const Type type;
 
     // If type == EXISTING_NODE this gives the existing node.
-    const bookmarks::BookmarkNode* existing_node;
+    const bookmarks::BookmarkNode* existing_node = nullptr;
 
     // If type == NEW_URL or type == NEW_FOLDER this gives the initial parent
     // node to place the new node in.
-    const bookmarks::BookmarkNode* parent_node;
+    const bookmarks::BookmarkNode* parent_node = nullptr;
 
     // If type == NEW_URL or type == NEW_FOLDER this gives the index to insert
     // the new node at.
-    int index;
+    absl::optional<size_t> index;
 
     // If type == NEW_URL this gives the URL/title.
     GURL url;
-    base::string16 title;
+    std::u16string title;
 
     // If type == NEW_FOLDER, this is the urls/title pairs to add to the
     // folder.
-    std::vector<std::pair<GURL, base::string16> > urls;
+    std::vector<std::pair<GURL, std::u16string>> urls;
 
    private:
     explicit EditDetails(Type node_type);
@@ -117,7 +118,7 @@ class BookmarkEditor {
       bookmarks::BookmarkModel* model,
       const bookmarks::BookmarkNode* parent,
       const EditDetails& details,
-      const base::string16& new_title,
+      const std::u16string& new_title,
       const GURL& new_url);
 
   // Modifies a bookmark node assuming that the parent of the node may have
@@ -128,7 +129,7 @@ class BookmarkEditor {
       bookmarks::BookmarkModel* model,
       const bookmarks::BookmarkNode* new_parent,
       const EditDetails& details,
-      const base::string16& new_title,
+      const std::u16string& new_title,
       const GURL& new_url);
 };
 

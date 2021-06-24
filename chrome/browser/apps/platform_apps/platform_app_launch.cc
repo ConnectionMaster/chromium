@@ -4,9 +4,10 @@
 
 #include "chrome/browser/apps/platform_apps/platform_app_launch.h"
 
+#include "chrome/browser/apps/app_service/app_launch_params.h"
+#include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/extension_metrics.h"
@@ -72,17 +73,21 @@ bool OpenExtensionApplicationWindow(Profile* profile,
   if (!GetAppLaunchContainer(profile, app_id, &app, &launch_container))
     return false;
 
-  if (launch_container == extensions::LAUNCH_CONTAINER_TAB)
+  if (launch_container == extensions::LaunchContainer::kLaunchContainerTab)
     return false;
 
   RecordCmdLineAppHistogram(app->GetType());
 
-  ::AppLaunchParams params(profile, app, launch_container,
-                           WindowOpenDisposition::NEW_WINDOW,
-                           extensions::SOURCE_COMMAND_LINE);
+  apps::AppLaunchParams params(app_id, launch_container,
+                               WindowOpenDisposition::NEW_WINDOW,
+                               extensions::AppLaunchSource::kSourceCommandLine);
   params.command_line = command_line;
   params.current_directory = current_directory;
-  content::WebContents* tab_in_app_window = ::OpenApplication(params);
+  if (app->from_bookmark()) {
+    params.launch_files = GetLaunchFilesFromCommandLine(command_line);
+  }
+  content::WebContents* tab_in_app_window =
+      ::OpenApplication(profile, std::move(params));
 
   // Platform apps fire off a launch event which may or may not open a window.
   return tab_in_app_window != nullptr || ::CanLaunchViaEvent(app);
@@ -95,15 +100,16 @@ bool OpenExtensionApplicationTab(Profile* profile, const std::string& app_id) {
     return false;
 
   // If the user doesn't want to open a tab, fail.
-  if (launch_container != extensions::LAUNCH_CONTAINER_TAB)
+  if (launch_container != extensions::LaunchContainer::kLaunchContainerTab)
     return false;
 
   RecordCmdLineAppHistogram(app->GetType());
 
   content::WebContents* app_tab = ::OpenApplication(
-      ::AppLaunchParams(profile, app, extensions::LAUNCH_CONTAINER_TAB,
-                        WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                        extensions::SOURCE_COMMAND_LINE));
+      profile, apps::AppLaunchParams(
+                   app_id, extensions::LaunchContainer::kLaunchContainerTab,
+                   WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                   extensions::AppLaunchSource::kSourceCommandLine));
   return app_tab != nullptr;
 }
 
@@ -112,21 +118,22 @@ bool OpenExtensionApplicationWithReenablePrompt(
     const std::string& app_id,
     const base::CommandLine& command_line,
     const base::FilePath& current_directory) {
-  const extensions::Extension* app = GetPlatformApp(profile, app_id);
-  if (!app)
+  if (!GetPlatformApp(profile, app_id))
     return false;
 
   RecordCmdLineAppHistogram(extensions::Manifest::TYPE_PLATFORM_APP);
-  ::AppLaunchParams params(profile, app, extensions::LAUNCH_CONTAINER_NONE,
-                           WindowOpenDisposition::NEW_WINDOW,
-                           extensions::SOURCE_COMMAND_LINE);
+  apps::AppLaunchParams params(
+      app_id, extensions::LaunchContainer::kLaunchContainerNone,
+      WindowOpenDisposition::NEW_WINDOW,
+      extensions::AppLaunchSource::kSourceCommandLine);
   params.command_line = command_line;
   params.current_directory = current_directory;
-  ::OpenApplicationWithReenablePrompt(params);
+  ::OpenApplicationWithReenablePrompt(profile, std::move(params));
   return true;
 }
 
-bool OpenExtensionAppShortcutWindow(Profile* profile, const GURL& url) {
+content::WebContents* OpenExtensionAppShortcutWindow(Profile* profile,
+                                                     const GURL& url) {
   const extensions::Extension* app = extensions::ExtensionRegistry::Get(profile)
                                          ->enabled_extensions()
                                          .GetAppByURL(url);
@@ -138,8 +145,7 @@ bool OpenExtensionAppShortcutWindow(Profile* profile, const GURL& url) {
         extensions::Manifest::TYPE_HOSTED_APP);
   }
 
-  content::WebContents* app_tab = ::OpenAppShortcutWindow(profile, url);
-  return app_tab != nullptr;
+  return ::OpenAppShortcutWindow(profile, url);
 }
 
 void RecordExtensionAppLaunchOnTabRestored(Profile* profile, const GURL& url) {

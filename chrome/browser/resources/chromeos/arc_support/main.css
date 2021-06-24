@@ -76,9 +76,6 @@ p.title {
 }
 
 .button-active-directory-auth {
-  border: 1px solid #e6e6e6;
-  border-radius: 2px;
-  color: #5a5a5a;
   margin: 26px 18px 0 26px;
 }
 
@@ -183,7 +180,7 @@ p.title {
 .page {
   font-family: 'Roboto';
   font-size: 13px;
-  text-align: left;
+  text-align: start;
 }
 
 .scrollable {
@@ -202,7 +199,7 @@ p.title {
 .section-active-directory-auth {
   align-content: left;
   padding: 64px 0 0 64px;
-  text-align: left;
+  text-align: start;
 }
 
 .section-active-directory-auth-view {
@@ -281,4 +278,3 @@ a.invisible-link {
   height: 0;
   width: 0;
 }
-

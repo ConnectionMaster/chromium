@@ -4,9 +4,9 @@
 
 #include "components/client_update_protocol/ecdsa.h"
 
+#include "base/cxx17_backports.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
@@ -48,10 +48,11 @@ bool ParseETagHeader(const base::StringPiece& etag_header_value_in,
 
   // Remove the weak prefix, then remove the begin and the end quotes.
   const char kWeakETagPrefix[] = "W/";
-  if (etag_header_value.starts_with(kWeakETagPrefix))
+  if (base::StartsWith(etag_header_value, kWeakETagPrefix))
     etag_header_value.remove_prefix(base::size(kWeakETagPrefix) - 1);
-  if (etag_header_value.size() >= 2 && etag_header_value.starts_with("\"") &&
-      etag_header_value.ends_with("\"")) {
+  if (etag_header_value.size() >= 2 &&
+      base::StartsWith(etag_header_value, "\"") &&
+      base::EndsWith(etag_header_value, "\"")) {
     etag_header_value.remove_prefix(1);
     etag_header_value.remove_suffix(1);
   }
@@ -88,7 +89,7 @@ Ecdsa::Ecdsa(int key_version, const base::StringPiece& public_key)
     : pub_key_version_(key_version),
       public_key_(public_key.begin(), public_key.end()) {}
 
-Ecdsa::~Ecdsa() {}
+Ecdsa::~Ecdsa() = default;
 
 std::unique_ptr<Ecdsa> Ecdsa::Create(int key_version,
                                      const base::StringPiece& public_key) {

@@ -20,6 +20,11 @@ enum ScreenIdleState {
   kUnlocked
 };
 
+enum IdleManagerError {
+  kSuccess,
+  kPermissionDisabled,
+};
+
 struct IdleState {
   UserIdleState user;
   ScreenIdleState screen;
@@ -34,6 +39,7 @@ interface IdleManager {
   // initial state. It will be notified by calls to Update() per the threshold
   // registered for this instance. It can be unregistered by simply closing
   // the pipe.
-  AddMonitor(mojo_base.mojom.TimeDelta threshold, IdleMonitor monitor)
-      => (IdleState state);
+  AddMonitor(mojo_base.mojom.TimeDelta threshold,
+             pending_remote<IdleMonitor> monitor)
+      => (IdleManagerError error, IdleState? state);
 };

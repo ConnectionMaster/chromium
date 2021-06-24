@@ -6,8 +6,8 @@
 #define CHROME_TEST_CHROMEDRIVER_CHROME_NAVIGATION_TRACKER_H_
 
 #include <memory>
-#include <set>
 #include <string>
+#include <unordered_map>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
@@ -30,23 +30,27 @@ class NavigationTracker : public DevToolsEventListener,
                           public PageLoadStrategy {
  public:
   NavigationTracker(DevToolsClient* client,
+                    WebView* web_view,
                     const BrowserInfo* browser_info,
-                    const JavaScriptDialogManager* dialog_manager);
+                    const JavaScriptDialogManager* dialog_manager,
+                    const bool is_eager = false);
 
   NavigationTracker(DevToolsClient* client,
                     LoadingState known_state,
+                    WebView* web_view,
                     const BrowserInfo* browser_info,
-                    const JavaScriptDialogManager* dialog_manager);
+                    const JavaScriptDialogManager* dialog_manager,
+                    const bool is_eager = false);
 
   ~NavigationTracker() override;
 
-  // Overriden from PageLoadStrategy:
-  // Gets whether a navigation is pending for the specified frame. |frame_id|
-  // may be empty to signify the main frame.
-  Status IsPendingNavigation(const std::string& frame_id,
-                             const Timeout* timeout,
-                             bool* is_pending) override;
+  // Overridden from PageLoadStrategy:
+  // Gets whether a navigation is pending for the current frame.
+  Status IsPendingNavigation(const Timeout* timeout, bool* is_pending) override;
   void set_timed_out(bool timed_out) override;
+  // Calling SetFrame with empty string means setting it to
+  // top frame
+  void SetFrame(const std::string& new_frame_id) override;
   bool IsNonBlocking() const override;
 
   Status CheckFunctionExists(const Timeout* timeout, bool* exists);
@@ -58,22 +62,31 @@ class NavigationTracker : public DevToolsEventListener,
                  const base::DictionaryValue& params) override;
   Status OnCommandSuccess(DevToolsClient* client,
                           const std::string& method,
-                          const base::DictionaryValue& result,
+                          const base::DictionaryValue* result,
                           const Timeout& command_timeout) override;
 
  private:
+  Status UpdateCurrentLoadingState();
+  // Use for read access to loading_state_
+  LoadingState loadingState();
+  // Only set access loading_state_ if this is true
+  bool hasCurrentFrame();
+  void setCurrentFrameInvalid();
+  void initCurrentFrame(LoadingState state);
+  void clearFrameStates();
   DevToolsClient* client_;
-  LoadingState loading_state_;
+  WebView* web_view_;
+  const std::string top_frame_id_;
+  // May be empty to signify current frame is
+  // no longer valid
+  std::string current_frame_id_;
   const JavaScriptDialogManager* dialog_manager_;
-  std::set<std::string> pending_frame_set_;
-  std::set<std::string> scheduled_frame_set_;
-  std::set<int> execution_context_set_;
-  std::string dummy_frame_id_;
-  int dummy_execution_context_id_;
-  bool load_event_fired_;
+  const bool is_eager_;
   bool timed_out_;
-
-  void ResetLoadingState(LoadingState loading_state);
+  std::unordered_map<std::string, LoadingState> frame_to_state_map_;
+  LoadingState* loading_state_;
+  // Used when current frame is invalid
+  LoadingState dummy_state_;
 
   DISALLOW_COPY_AND_ASSIGN(NavigationTracker);
 };

@@ -2,111 +2,239 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.define('settings_personalization_options', function() {
-  suite('PersonalizationOptionsTests_AllBuilds', function() {
-    /** @type {settings.TestPrivacyPageBrowserProxy} */
-    let testBrowserProxy;
+// clang-format off
+import 'chrome://settings/lazy_load.js';
 
-    /** @type {SettingsPersonalizationOptionsElement} */
-    let testElement;
+import {isChromeOS} from 'chrome://resources/js/cr.m.js';
+import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {PrivacyPageBrowserProxyImpl, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
+import {TestPrivacyPageBrowserProxy} from 'chrome://test/settings/test_privacy_page_browser_proxy.js';
+import {TestSyncBrowserProxy} from 'chrome://test/settings/test_sync_browser_proxy.js';
+import {eventToPromise, isChildVisible, isVisible} from 'chrome://test/test_util.m.js';
 
-    suiteSetup(function() {
-      loadTimeData.overrideValues({
-        driveSuggestAvailable: true,
-      });
-    });
+// clang-format on
 
-    setup(function() {
-      testBrowserProxy = new TestPrivacyPageBrowserProxy();
-      settings.PrivacyPageBrowserProxyImpl.instance_ = testBrowserProxy;
-      PolymerTest.clearBody();
-      testElement = document.createElement('settings-personalization-options');
-      document.body.appendChild(testElement);
-      Polymer.dom.flush();
-    });
+suite('PersonalizationOptionsTests_AllBuilds', function() {
+  /** @type {settings.TestPrivacyPageBrowserProxy} */
+  let testBrowserProxy;
 
-    teardown(function() {
-      testElement.remove();
-    });
+  /** @type {SyncBrowserProxy} */
+  let syncBrowserProxy;
 
-    test('DriveSearchSuggestControl', function() {
-      assertFalse(!!testElement.$$('#driveSuggestControl'));
+  /** @type {SettingsPersonalizationOptionsElement} */
+  let testElement;
 
-      testElement.unifiedConsentEnabled = true;
-      testElement.syncStatus = {
-        signedIn: true,
-        statusAction: settings.StatusAction.NO_ACTION
-      };
-      Polymer.dom.flush();
-      assertTrue(!!testElement.$$('#driveSuggestControl'));
-
-      testElement.syncStatus = {
-        signedIn: true,
-        statusAction: settings.StatusAction.REAUTHENTICATE
-      };
-      Polymer.dom.flush();
-      assertFalse(!!testElement.$$('#driveSuggestControl'));
+  suiteSetup(function() {
+    loadTimeData.overrideValues({
+      driveSuggestAvailable: true,
+      signinAvailable: true,
     });
   });
 
-  suite('PersonalizationOptionsTests_OfficialBuild', function() {
-    /** @type {settings.TestPrivacyPageBrowserProxy} */
-    let testBrowserProxy;
+  function buildTestElement() {
+    PolymerTest.clearBody();
+    testElement = document.createElement('settings-personalization-options');
+    testElement.prefs = {
+      signin: {
+        allowed_on_next_startup:
+            {type: chrome.settingsPrivate.PrefType.BOOLEAN, value: true},
+      },
+      profile: {password_manager_leak_detection: {value: true}},
+      safebrowsing:
+          {enabled: {value: true}, scout_reporting_enabled: {value: true}},
+    };
+    document.body.appendChild(testElement);
+    flush();
+  }
 
-    /** @type {SettingsPersonalizationOptionsElement} */
-    let testElement;
+  setup(function() {
+    testBrowserProxy = new TestPrivacyPageBrowserProxy();
+    PrivacyPageBrowserProxyImpl.instance_ = testBrowserProxy;
+    syncBrowserProxy = new TestSyncBrowserProxy();
+    SyncBrowserProxyImpl.instance_ = syncBrowserProxy;
+    buildTestElement();
+  });
 
-    setup(function() {
-      testBrowserProxy = new TestPrivacyPageBrowserProxy();
-      settings.PrivacyPageBrowserProxyImpl.instance_ = testBrowserProxy;
-      PolymerTest.clearBody();
-      testElement = document.createElement('settings-personalization-options');
-      document.body.appendChild(testElement);
+  teardown(function() {
+    testElement.remove();
+  });
+
+  test('DriveSearchSuggestControl', function() {
+    assertFalse(!!testElement.shadowRoot.querySelector('#driveSuggestControl'));
+
+    testElement.syncStatus = {
+      signedIn: true,
+      statusAction: StatusAction.NO_ACTION
+    };
+    flush();
+    assertTrue(!!testElement.shadowRoot.querySelector('#driveSuggestControl'));
+
+    testElement.syncStatus = {
+      signedIn: true,
+      statusAction: StatusAction.REAUTHENTICATE
+    };
+    flush();
+    assertFalse(!!testElement.shadowRoot.querySelector('#driveSuggestControl'));
+  });
+
+  if (!isChromeOS) {
+    test('signinAllowedToggle', function() {
+      const toggle = testElement.$.signinAllowedToggle;
+      assertTrue(isVisible(toggle));
+
+      testElement.syncStatus = {signedIn: false};
+      // Check initial setup.
+      assertTrue(toggle.checked);
+      assertTrue(testElement.prefs.signin.allowed_on_next_startup.value);
+      assertFalse(!!testElement.$.toast.open);
+
+      // When the user is signed out, clicking the toggle should work
+      // normally and the restart toast should be opened.
+      toggle.click();
+      assertFalse(toggle.checked);
+      assertFalse(testElement.prefs.signin.allowed_on_next_startup.value);
+      assertTrue(testElement.$.toast.open);
+
+      // Clicking it again, turns the toggle back on. The toast remains
+      // open.
+      toggle.click();
+      assertTrue(toggle.checked);
+      assertTrue(testElement.prefs.signin.allowed_on_next_startup.value);
+      assertTrue(testElement.$.toast.open);
+
+      // Reset toast.
+      testElement.$.toast.hide();
+
+      // When the user is part way through sync setup, the toggle should be
+      // disabled in an on state.
+      testElement.syncStatus = {firstSetupInProgress: true};
+      assertTrue(toggle.disabled);
+      assertTrue(toggle.checked);
+
+      testElement.syncStatus = {signedIn: true};
+      // When the user is signed in, clicking the toggle should open the
+      // sign-out dialog.
+      assertFalse(
+          !!testElement.shadowRoot.querySelector('settings-signout-dialog'));
+      toggle.click();
+      return eventToPromise('cr-dialog-open', testElement)
+          .then(function() {
+            flush();
+            // The toggle remains on.
+            assertTrue(toggle.checked);
+            assertTrue(testElement.prefs.signin.allowed_on_next_startup.value);
+            assertFalse(testElement.$.toast.open);
+
+            const signoutDialog =
+                testElement.shadowRoot.querySelector('settings-signout-dialog');
+            assertTrue(!!signoutDialog);
+            assertTrue(signoutDialog.shadowRoot.querySelector('#dialog').open);
+
+            // The user clicks cancel.
+            const cancel =
+                signoutDialog.shadowRoot.querySelector('#disconnectCancel');
+            cancel.click();
+
+            return eventToPromise('close', signoutDialog);
+          })
+          .then(function() {
+            flush();
+            assertFalse(!!testElement.shadowRoot.querySelector(
+                'settings-signout-dialog'));
+
+            // After the dialog is closed, the toggle remains turned on.
+            assertTrue(toggle.checked);
+            assertTrue(testElement.prefs.signin.allowed_on_next_startup.value);
+            assertFalse(testElement.$.toast.open);
+
+            // The user clicks the toggle again.
+            toggle.click();
+            return eventToPromise('cr-dialog-open', testElement);
+          })
+          .then(function() {
+            flush();
+            const signoutDialog =
+                testElement.shadowRoot.querySelector('settings-signout-dialog');
+            assertTrue(!!signoutDialog);
+            assertTrue(signoutDialog.shadowRoot.querySelector('#dialog').open);
+
+            // The user clicks confirm, which signs them out.
+            const disconnectConfirm =
+                signoutDialog.shadowRoot.querySelector('#disconnectConfirm');
+            disconnectConfirm.click();
+
+            return eventToPromise('close', signoutDialog);
+          })
+          .then(function() {
+            flush();
+            // After the dialog is closed, the toggle is turned off and the
+            // toast is shown.
+            assertFalse(toggle.checked);
+            assertFalse(testElement.prefs.signin.allowed_on_next_startup.value);
+            assertTrue(testElement.$.toast.open);
+          });
     });
 
-    teardown(function() {
-      testElement.remove();
+    // Tests that the "Allow sign-in" toggle is hidden when signin is not
+    // available.
+    test('signinUnavailable', function() {
+      loadTimeData.overrideValues({'signinAvailable': false});
+      buildTestElement();  // Rebuild the element after modifying loadTimeData.
+      assertFalse(isVisible(testElement.$.signinAllowedToggle));
     });
+  }
+});
 
-    test('UnifiedConsent spellcheck toggle', function() {
-      testElement.unifiedConsentEnabled = true;
-      testElement.prefs = {spellcheck: {dictionaries: {value: ['en-US']}}};
-      Polymer.dom.flush();
-      assertFalse(testElement.$.spellCheckControl.hidden);
+suite('PersonalizationOptionsTests_OfficialBuild', function() {
+  /** @type {settings.TestPrivacyPageBrowserProxy} */
+  let testBrowserProxy;
 
-      testElement.prefs = {spellcheck: {dictionaries: {value: []}}};
-      Polymer.dom.flush();
-      assertTrue(testElement.$.spellCheckControl.hidden);
+  /** @type {SettingsPersonalizationOptionsElement} */
+  let testElement;
 
-      testElement.prefs = {
-        browser: {enable_spellchecking: {value: false}},
-        spellcheck: {
-          dictionaries: {value: ['en-US']},
-          use_spelling_service: {value: false}
-        }
-      };
-      Polymer.dom.flush();
-      testElement.$.spellCheckControl.click();
-      assertTrue(testElement.prefs.spellcheck.use_spelling_service.value);
-    });
+  setup(function() {
+    testBrowserProxy = new TestPrivacyPageBrowserProxy();
+    PrivacyPageBrowserProxyImpl.instance_ = testBrowserProxy;
+    PolymerTest.clearBody();
+    testElement = document.createElement('settings-personalization-options');
+    document.body.appendChild(testElement);
+  });
 
-    test('NoUnifiedConsent spellcheck toggle', function() {
-      testElement.unifiedConsentEnabled = false;
-      testElement.prefs = {spellcheck: {dictionaries: {value: ['en-US']}}};
-      Polymer.dom.flush();
-      assertFalse(testElement.$.spellCheckControl.hidden);
+  teardown(function() {
+    testElement.remove();
+  });
 
-      testElement.prefs = {spellcheck: {dictionaries: {value: []}}};
-      Polymer.dom.flush();
-      assertFalse(testElement.$.spellCheckControl.hidden);
+  test('Spellcheck toggle', function() {
+    testElement.prefs = {
+      profile: {password_manager_leak_detection: {value: true}},
+      safebrowsing:
+          {enabled: {value: true}, scout_reporting_enabled: {value: true}},
+      spellcheck: {dictionaries: {value: ['en-US']}}
+    };
+    flush();
+    assertFalse(testElement.$.spellCheckControl.hidden);
 
-      testElement.prefs = {
-        browser: {enable_spellchecking: {value: false}},
-        spellcheck: {use_spelling_service: {value: false}}
-      };
-      Polymer.dom.flush();
-      testElement.$.spellCheckControl.click();
-      assertTrue(testElement.prefs.spellcheck.use_spelling_service.value);
-    });
+    testElement.prefs = {
+      profile: {password_manager_leak_detection: {value: true}},
+      safebrowsing:
+          {enabled: {value: true}, scout_reporting_enabled: {value: true}},
+      spellcheck: {dictionaries: {value: []}}
+    };
+    flush();
+    assertTrue(testElement.$.spellCheckControl.hidden);
+
+    testElement.prefs = {
+      profile: {password_manager_leak_detection: {value: true}},
+      safebrowsing:
+          {enabled: {value: true}, scout_reporting_enabled: {value: true}},
+      browser: {enable_spellchecking: {value: false}},
+      spellcheck: {
+        dictionaries: {value: ['en-US']},
+        use_spelling_service: {value: false}
+      }
+    };
+    flush();
+    testElement.$.spellCheckControl.click();
+    assertTrue(testElement.prefs.spellcheck.use_spelling_service.value);
   });
 });

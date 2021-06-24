@@ -11,18 +11,6 @@
 
 namespace cc {
 
-std::string WhichTreeToString(WhichTree tree) {
-  switch (tree) {
-  case ACTIVE_TREE:
-    return "ACTIVE_TREE";
-  case PENDING_TREE:
-    return "PENDING_TREE";
-  default:
-      DCHECK(false) << "Unrecognized WhichTree value " << tree;
-      return "<unknown WhichTree value>";
-  }
-}
-
 std::string TileResolutionToString(TileResolution resolution) {
   switch (resolution) {
   case LOW_RESOLUTION:
@@ -84,6 +72,21 @@ std::string TreePriorityToString(TreePriority prio) {
     DCHECK(false) << "Unrecognized priority value " << prio;
     return "<unknown>";
   }
+}
+
+perfetto::protos::pbzero::ChromeCompositorStateMachine::MinorState::TreePriority
+TreePriorityToProtozeroEnum(TreePriority priority) {
+  using pbzeroMinorState =
+      perfetto::protos::pbzero::ChromeCompositorStateMachine::MinorState;
+  switch (priority) {
+    case TreePriority::SAME_PRIORITY_FOR_BOTH_TREES:
+      return pbzeroMinorState::TREE_PRIORITY_SAME_PRIORITY_FOR_BOTH_TREES;
+    case TreePriority::SMOOTHNESS_TAKES_PRIORITY:
+      return pbzeroMinorState::TREE_PRIORITY_SMOOTHNESS_TAKES_PRIORITY;
+    case TreePriority::NEW_CONTENT_TAKES_PRIORITY:
+      return pbzeroMinorState::TREE_PRIORITY_NEW_CONTENT_TAKES_PRIORITY;
+  }
+  return pbzeroMinorState::TREE_PRIORITY_UNSPECIFIED;
 }
 
 void GlobalStateThatImpactsTilePriority::AsValueInto(

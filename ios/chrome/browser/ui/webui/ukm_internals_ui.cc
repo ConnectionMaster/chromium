@@ -4,8 +4,6 @@
 
 #include "ios/chrome/browser/ui/webui/ukm_internals_ui.h"
 
-#include <string>
-
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
@@ -15,9 +13,9 @@
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
 #include "ios/chrome/grit/ios_resources.h"
-#include "ios/web/public/url_data_source_ios.h"
-#include "ios/web/public/web_ui_ios_data_source.h"
+#include "ios/web/public/webui/url_data_source_ios.h"
 #include "ios/web/public/webui/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios_data_source.h"
 #include "ios/web/public/webui/web_ui_ios_message_handler.h"
 
 namespace {
@@ -28,7 +26,6 @@ web::WebUIIOSDataSource* CreateUkmInternalsUIHTMLSource() {
 
   source->AddResourcePath("ukm_internals.js", IDR_IOS_UKM_INTERNALS_JS);
   source->SetDefaultResource(IDR_IOS_UKM_INTERNALS_HTML);
-  source->UseGzip();
   return source;
 }
 
@@ -75,14 +72,14 @@ void UkmMessageHandler::HandleRequestUkmData(const base::ListValue* args) {
 
 // Changes to this class should be in sync with its non-iOS equivalent
 // chrome/browser/ui/webui/ukm/ukm_internals_ui.cc
-UkmInternalsUI::UkmInternalsUI(web::WebUIIOS* web_ui)
-    : web::WebUIIOSController(web_ui) {
+UkmInternalsUI::UkmInternalsUI(web::WebUIIOS* web_ui, const std::string& host)
+    : web::WebUIIOSController(web_ui, host) {
   ukm::UkmService* ukm_service =
       GetApplicationContext()->GetMetricsServicesManager()->GetUkmService();
   web_ui->AddMessageHandler(std::make_unique<UkmMessageHandler>(ukm_service));
 
   // Set up the chrome://ukm/ source.
-  web::WebUIIOSDataSource::Add(ios::ChromeBrowserState::FromWebUIIOS(web_ui),
+  web::WebUIIOSDataSource::Add(ChromeBrowserState::FromWebUIIOS(web_ui),
                                CreateUkmInternalsUIHTMLSource());
 }
 

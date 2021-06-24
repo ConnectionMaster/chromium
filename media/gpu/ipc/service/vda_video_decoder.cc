@@ -6,19 +6,24 @@
 
 #include <string.h>
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_info.h"
 #include "gpu/config/gpu_preferences.h"
+#include "media/base/async_destroy_video_decoder.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/media_log.h"
+#include "media/base/video_aspect_ratio.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_types.h"
 #include "media/base/video_util.h"
@@ -68,13 +73,18 @@ std::unique_ptr<VideoDecodeAccelerator> CreateAndInitializeVda(
     VideoDecodeAccelerator::Client* client,
     MediaLog* media_log,
     const VideoDecodeAccelerator::Config& config) {
+  GpuVideoDecodeGLClient gl_client;
+  gl_client.get_context = base::BindRepeating(
+      &CommandBufferHelper::GetGLContext, command_buffer_helper);
+  gl_client.make_context_current = base::BindRepeating(
+      &CommandBufferHelper::MakeContextCurrent, command_buffer_helper);
+  gl_client.bind_image = base::BindRepeating(&BindImage, command_buffer_helper);
+  gl_client.is_passthrough = command_buffer_helper->IsPassthrough();
+  gl_client.supports_arb_texture_rectangle =
+      command_buffer_helper->SupportsTextureRectangle();
+
   std::unique_ptr<GpuVideoDecodeAcceleratorFactory> factory =
-      GpuVideoDecodeAcceleratorFactory::Create(
-          base::BindRepeating(&CommandBufferHelper::GetGLContext,
-                              command_buffer_helper),
-          base::BindRepeating(&CommandBufferHelper::MakeContextCurrent,
-                              command_buffer_helper),
-          base::BindRepeating(&BindImage, command_buffer_helper));
+      GpuVideoDecodeAcceleratorFactory::Create(gl_client);
   // Note: GpuVideoDecodeAcceleratorFactory may create and initialize more than
   // one VDA. It is therefore important that VDAs do not call client methods
   // from Initialize().
@@ -102,8 +112,7 @@ bool IsProfileSupported(
 }  // namespace
 
 // static
-std::unique_ptr<VdaVideoDecoder, std::default_delete<VideoDecoder>>
-VdaVideoDecoder::Create(
+std::unique_ptr<VideoDecoder> VdaVideoDecoder::Create(
     scoped_refptr<base::SingleThreadTaskRunner> parent_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
     std::unique_ptr<MediaLog> media_log,
@@ -111,21 +120,19 @@ VdaVideoDecoder::Create(
     const gpu::GpuPreferences& gpu_preferences,
     const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
     GetStubCB get_stub_cb) {
-  // Constructed in a variable to avoid _CheckUniquePtr() PRESUBMIT.py regular
-  // expressions, which do not understand custom deleters.
-  // TODO(sandersd): Extend base::WrapUnique() to handle this.
-  std::unique_ptr<VdaVideoDecoder, std::default_delete<VideoDecoder>> ptr(
-      new VdaVideoDecoder(
-          std::move(parent_task_runner), std::move(gpu_task_runner),
-          std::move(media_log), target_color_space,
-          base::BindOnce(&PictureBufferManager::Create),
-          base::BindOnce(&CreateCommandBufferHelper, std::move(get_stub_cb)),
-          base::BindRepeating(&CreateAndInitializeVda, gpu_preferences,
-                              gpu_workarounds),
-          GpuVideoAcceleratorUtil::ConvertGpuToMediaDecodeCapabilities(
-              GpuVideoDecodeAcceleratorFactory::GetDecoderCapabilities(
-                  gpu_preferences, gpu_workarounds))));
-  return ptr;
+  auto* decoder = new VdaVideoDecoder(
+      std::move(parent_task_runner), std::move(gpu_task_runner),
+      std::move(media_log), target_color_space,
+      base::BindOnce(&PictureBufferManager::Create),
+      base::BindOnce(&CreateCommandBufferHelper, std::move(get_stub_cb)),
+      base::BindRepeating(&CreateAndInitializeVda, gpu_preferences,
+                          gpu_workarounds),
+      GpuVideoAcceleratorUtil::ConvertGpuToMediaDecodeCapabilities(
+          GpuVideoDecodeAcceleratorFactory::GetDecoderCapabilities(
+              gpu_preferences, gpu_workarounds)));
+
+  return std::make_unique<AsyncDestroyVideoDecoder<VdaVideoDecoder>>(
+      base::WrapUnique(decoder));
 }
 
 VdaVideoDecoder::VdaVideoDecoder(
@@ -145,9 +152,7 @@ VdaVideoDecoder::VdaVideoDecoder(
           std::move(create_command_buffer_helper_cb)),
       create_and_initialize_vda_cb_(std::move(create_and_initialize_vda_cb)),
       vda_capabilities_(vda_capabilities),
-      timestamps_(128),
-      gpu_weak_this_factory_(this),
-      parent_weak_this_factory_(this) {
+      timestamps_(128) {
   DVLOG(1) << __func__;
   DCHECK(parent_task_runner_->BelongsToCurrentThread());
   DCHECK_EQ(vda_capabilities_.flags, 0U);
@@ -162,38 +167,40 @@ VdaVideoDecoder::VdaVideoDecoder(
                                    gpu_weak_this_));
 }
 
-void VdaVideoDecoder::Destroy() {
+void VdaVideoDecoder::DestroyAsync(std::unique_ptr<VdaVideoDecoder> decoder) {
   DVLOG(1) << __func__;
-  DCHECK(parent_task_runner_->BelongsToCurrentThread());
+  DCHECK(decoder);
+  DCHECK(decoder->parent_task_runner_->BelongsToCurrentThread());
 
-  // TODO(sandersd): The documentation says that Destroy() fires any pending
-  // callbacks.
+  // TODO(sandersd): The documentation says that DestroyAsync() fires any
+  // pending callbacks.
 
   // Prevent any more callbacks to this thread.
-  parent_weak_this_factory_.InvalidateWeakPtrs();
+  decoder->parent_weak_this_factory_.InvalidateWeakPtrs();
 
   // Pass ownership of the destruction process over to the GPU thread.
-  gpu_task_runner_->PostTask(
+  auto* gpu_task_runner = decoder->gpu_task_runner_.get();
+  gpu_task_runner->PostTask(
       FROM_HERE,
-      base::BindOnce(&VdaVideoDecoder::DestroyOnGpuThread, gpu_weak_this_));
+      base::BindOnce(&VdaVideoDecoder::CleanupOnGpuThread, std::move(decoder)));
 }
 
-void VdaVideoDecoder::DestroyOnGpuThread() {
+void VdaVideoDecoder::CleanupOnGpuThread(
+    std::unique_ptr<VdaVideoDecoder> decoder) {
   DVLOG(2) << __func__;
-  DCHECK(gpu_task_runner_->BelongsToCurrentThread());
+  DCHECK(decoder);
+  DCHECK(decoder->gpu_task_runner_->BelongsToCurrentThread());
 
   // VDA destruction is likely to result in reentrant calls to
   // NotifyEndOfBitstreamBuffer(). Invalidating |gpu_weak_vda_| ensures that we
   // don't call back into |vda_| during its destruction.
-  gpu_weak_vda_factory_ = nullptr;
-  vda_ = nullptr;
-  media_log_ = nullptr;
+  decoder->gpu_weak_vda_factory_ = nullptr;
+  decoder->vda_ = nullptr;
+  decoder->media_log_ = nullptr;
 
   // Because |parent_weak_this_| was invalidated in Destroy(), picture buffer
   // dismissals since then have been dropped on the floor.
-  picture_buffer_manager_->DismissAllPictureBuffers();
-
-  delete this;
+  decoder->picture_buffer_manager_->DismissAllPictureBuffers();
 }
 
 VdaVideoDecoder::~VdaVideoDecoder() {
@@ -202,17 +209,18 @@ VdaVideoDecoder::~VdaVideoDecoder() {
   DCHECK(!gpu_weak_vda_);
 }
 
-std::string VdaVideoDecoder::GetDisplayName() const {
+VideoDecoderType VdaVideoDecoder::GetDecoderType() const {
   DVLOG(3) << __func__;
   DCHECK(parent_task_runner_->BelongsToCurrentThread());
-
-  return "VdaVideoDecoder";
+  // TODO(tmathmeyer) query the accelerator for it's implementation type and
+  // return that instead.
+  return VideoDecoderType::kVda;
 }
 
 void VdaVideoDecoder::Initialize(const VideoDecoderConfig& config,
                                  bool low_delay,
                                  CdmContext* cdm_context,
-                                 const InitCB& init_cb,
+                                 InitCB init_cb,
                                  const OutputCB& output_cb,
                                  const WaitingCB& waiting_cb) {
   DVLOG(1) << __func__ << "(" << config.AsHumanReadableString() << ")";
@@ -224,7 +232,10 @@ void VdaVideoDecoder::Initialize(const VideoDecoderConfig& config,
   DCHECK(decode_cbs_.empty());
 
   if (has_error_) {
-    parent_task_runner_->PostTask(FROM_HERE, base::BindOnce(init_cb, false));
+    // TODO(tmathmeyer) generic error, please remove.
+    parent_task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(std::move(init_cb),
+                                  StatusCode::kGenericErrorPleaseRemove));
     return;
   }
 
@@ -232,7 +243,7 @@ void VdaVideoDecoder::Initialize(const VideoDecoderConfig& config,
 
   // Store |init_cb| ASAP so that EnterErrorState() can use it. Leave |config_|
   // alone for now so that the checks can inspect it.
-  init_cb_ = init_cb;
+  init_cb_ = std::move(init_cb);
   output_cb_ = output_cb;
 
   // Verify that the configuration is supported.
@@ -252,7 +263,7 @@ void VdaVideoDecoder::Initialize(const VideoDecoderConfig& config,
   // TODO(sandersd): Change this to a capability if any VDA starts supporting
   // alpha channels. This is believed to be impossible right now because VPx
   // alpha channel data is passed in side data, which isn't sent to VDAs.
-  if (!IsOpaque(config.format())) {
+  if (config.alpha_mode() != VideoDecoderConfig::AlphaMode::kIsOpaque) {
     MEDIA_LOG(INFO, media_log_) << "Alpha formats are not supported";
     EnterErrorState();
     return;
@@ -271,7 +282,7 @@ void VdaVideoDecoder::Initialize(const VideoDecoderConfig& config,
   // (https://crbug.com/929565). We should support reinitialization for profile
   // changes. We limit this support as small as possible for safety.
   const bool is_profile_change =
-#if defined(OS_CHROMEOS) && BUILDFLAG(USE_VAAPI)
+#if BUILDFLAG(IS_CHROMEOS_ASH) && BUILDFLAG(USE_VAAPI)
       config_.profile() != config.profile();
 #else
       false;
@@ -296,7 +307,7 @@ void VdaVideoDecoder::Initialize(const VideoDecoderConfig& config,
     } else {
       parent_task_runner_->PostTask(
           FROM_HERE, base::BindOnce(&VdaVideoDecoder::InitializeDone,
-                                    parent_weak_this_, true));
+                                    parent_weak_this_, OkStatus()));
     }
     return;
   }
@@ -331,8 +342,9 @@ void VdaVideoDecoder::InitializeOnGpuThread() {
     command_buffer_helper_ = std::move(create_command_buffer_helper_cb_).Run();
     if (!command_buffer_helper_) {
       parent_task_runner_->PostTask(
-          FROM_HERE, base::BindOnce(&VdaVideoDecoder::InitializeDone,
-                                    parent_weak_this_, false));
+          FROM_HERE,
+          base::BindOnce(&VdaVideoDecoder::InitializeDone, parent_weak_this_,
+                         StatusCode::kDecoderInitializeNeverCompleted));
       return;
     }
 
@@ -361,13 +373,15 @@ void VdaVideoDecoder::InitializeOnGpuThread() {
                                            media_log_.get(), vda_config);
   if (!vda_) {
     parent_task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&VdaVideoDecoder::InitializeDone,
-                                  parent_weak_this_, false));
+        FROM_HERE,
+        base::BindOnce(&VdaVideoDecoder::InitializeDone, parent_weak_this_,
+                       StatusCode::kDecoderInitializeNeverCompleted));
     return;
   }
 
-  gpu_weak_vda_factory_.reset(
-      new base::WeakPtrFactory<VideoDecodeAccelerator>(vda_.get()));
+  gpu_weak_vda_factory_ =
+      std::make_unique<base::WeakPtrFactory<VideoDecodeAccelerator>>(
+          vda_.get());
   gpu_weak_vda_ = gpu_weak_vda_factory_->GetWeakPtr();
 
   vda_initialized_ = true;
@@ -376,28 +390,28 @@ void VdaVideoDecoder::InitializeOnGpuThread() {
 
   parent_task_runner_->PostTask(FROM_HERE,
                                 base::BindOnce(&VdaVideoDecoder::InitializeDone,
-                                               parent_weak_this_, true));
+                                               parent_weak_this_, OkStatus()));
 }
 
-void VdaVideoDecoder::InitializeDone(bool status) {
-  DVLOG(1) << __func__ << "(" << status << ")";
+void VdaVideoDecoder::InitializeDone(Status status) {
+  DVLOG(1) << __func__ << " success = (" << status.code() << ")";
   DCHECK(parent_task_runner_->BelongsToCurrentThread());
 
   if (has_error_)
     return;
 
-  if (!status) {
+  if (!status.is_ok()) {
     // TODO(sandersd): This adds an unnecessary PostTask().
     EnterErrorState();
     return;
   }
 
   reinitializing_ = false;
-  std::move(init_cb_).Run(true);
+  std::move(init_cb_).Run(std::move(status));
 }
 
 void VdaVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
-                             const DecodeCB& decode_cb) {
+                             DecodeCB decode_cb) {
   DVLOG(3) << __func__ << "(" << (buffer->end_of_stream() ? "EOS" : "") << ")";
   DCHECK(parent_task_runner_->BelongsToCurrentThread());
   DCHECK(!init_cb_);
@@ -407,13 +421,14 @@ void VdaVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
 
   if (has_error_) {
     parent_task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(decode_cb, DecodeStatus::DECODE_ERROR));
+        FROM_HERE,
+        base::BindOnce(std::move(decode_cb), DecodeStatus::DECODE_ERROR));
     return;
   }
 
   // Convert EOS frame to Flush().
   if (buffer->end_of_stream()) {
-    flush_cb_ = decode_cb;
+    flush_cb_ = std::move(decode_cb);
     gpu_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&VideoDecodeAccelerator::Flush, gpu_weak_vda_));
@@ -423,7 +438,7 @@ void VdaVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
   // Assign a bitstream buffer ID and record the decode request.
   int32_t bitstream_buffer_id = NextID(&bitstream_buffer_id_);
   timestamps_.Put(bitstream_buffer_id, buffer->timestamp());
-  decode_cbs_[bitstream_buffer_id] = decode_cb;
+  decode_cbs_[bitstream_buffer_id] = std::move(decode_cb);
 
   if (decode_on_parent_thread_) {
     vda_->Decode(std::move(buffer), bitstream_buffer_id);
@@ -447,7 +462,7 @@ void VdaVideoDecoder::DecodeOnGpuThread(scoped_refptr<DecoderBuffer> buffer,
   vda_->Decode(std::move(buffer), bitstream_id);
 }
 
-void VdaVideoDecoder::Reset(const base::RepeatingClosure& reset_cb) {
+void VdaVideoDecoder::Reset(base::OnceClosure reset_cb) {
   DVLOG(2) << __func__;
   DCHECK(parent_task_runner_->BelongsToCurrentThread());
   DCHECK(!init_cb_);
@@ -456,11 +471,11 @@ void VdaVideoDecoder::Reset(const base::RepeatingClosure& reset_cb) {
   DCHECK(!reset_cb_);
 
   if (has_error_) {
-    parent_task_runner_->PostTask(FROM_HERE, reset_cb);
+    parent_task_runner_->PostTask(FROM_HERE, std::move(reset_cb));
     return;
   }
 
-  reset_cb_ = reset_cb;
+  reset_cb_ = std::move(reset_cb);
   gpu_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&VideoDecodeAccelerator::Reset, gpu_weak_vda_));
 }
@@ -488,8 +503,8 @@ int VdaVideoDecoder::GetMaxDecodeRequests() const {
   return 4;
 }
 
-void VdaVideoDecoder::NotifyInitializationComplete(bool success) {
-  DVLOG(2) << __func__ << "(" << success << ")";
+void VdaVideoDecoder::NotifyInitializationComplete(Status status) {
+  DVLOG(2) << __func__ << "(" << status.code() << ")";
   DCHECK(gpu_task_runner_->BelongsToCurrentThread());
   DCHECK(vda_initialized_);
 
@@ -532,7 +547,8 @@ void VdaVideoDecoder::ProvidePictureBuffersAsync(uint32_t count,
 
   std::vector<PictureBuffer> picture_buffers =
       picture_buffer_manager_->CreatePictureBuffers(
-          count, pixel_format, planes, texture_size, texture_target);
+          count, pixel_format, planes, texture_size, texture_target,
+          vda_->GetSharedImageTextureAllocationMode());
   if (picture_buffers.empty()) {
     parent_task_runner_->PostTask(
         FROM_HERE,
@@ -603,22 +619,29 @@ void VdaVideoDecoder::PictureReadyOnParentThread(Picture picture) {
     visible_rect = config_.visible_rect();
 
   // Look up the decode timestamp.
+  base::TimeDelta timestamp;
   int32_t bitstream_buffer_id = picture.bitstream_buffer_id();
   const auto timestamp_it = timestamps_.Peek(bitstream_buffer_id);
   if (timestamp_it == timestamps_.end()) {
     DLOG(ERROR) << "Unknown bitstream buffer " << bitstream_buffer_id;
-    EnterErrorState();
-    return;
+    // TODO(sandersd): This should be fatal but DXVA VDA is triggering it, and
+    // playback works if we ignore the error (use a zero timestamp).
+    //
+    // EnterErrorState();
+    // return;
+  } else {
+    timestamp = timestamp_it->second;
   }
 
   // Create a VideoFrame for the picture.
   scoped_refptr<VideoFrame> frame = picture_buffer_manager_->CreateVideoFrame(
-      picture, timestamp_it->second, visible_rect,
-      GetNaturalSize(visible_rect, config_.GetPixelAspectRatio()));
+      picture, timestamp, visible_rect,
+      config_.aspect_ratio().GetNaturalSize(visible_rect));
   if (!frame) {
     EnterErrorState();
     return;
   }
+  frame->set_hdr_metadata(config_.hdr_metadata());
 
   output_cb_.Run(std::move(frame));
 }
@@ -660,9 +683,9 @@ void VdaVideoDecoder::NotifyEndOfBitstreamBufferOnParentThread(
   }
 
   // Run a local copy in case the decode callback modifies |decode_cbs_|.
-  DecodeCB decode_cb = decode_cb_it->second;
+  DecodeCB decode_cb = std::move(decode_cb_it->second);
   decode_cbs_.erase(decode_cb_it);
-  decode_cb.Run(DecodeStatus::OK);
+  std::move(decode_cb).Run(DecodeStatus::OK);
 }
 
 void VdaVideoDecoder::NotifyFlushDone() {
@@ -717,10 +740,10 @@ void VdaVideoDecoder::NotifyResetDoneOnParentThread() {
   // them.
   base::WeakPtr<VdaVideoDecoder> weak_this = parent_weak_this_;
 
-  std::map<int32_t, DecodeCB> local_decode_cbs = decode_cbs_;
+  std::map<int32_t, DecodeCB> local_decode_cbs = std::move(decode_cbs_);
   decode_cbs_.clear();
-  for (const auto& it : local_decode_cbs) {
-    it.second.Run(DecodeStatus::ABORTED);
+  for (auto& it : local_decode_cbs) {
+    std::move(it.second).Run(DecodeStatus::ABORTED);
     if (!weak_this)
       return;
   }
@@ -743,6 +766,14 @@ void VdaVideoDecoder::NotifyError(VideoDecodeAccelerator::Error error) {
   parent_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&VdaVideoDecoder::NotifyErrorOnParentThread,
                                 parent_weak_this_, error));
+}
+
+gpu::SharedImageStub* VdaVideoDecoder::GetSharedImageStub() const {
+  return command_buffer_helper_->GetSharedImageStub();
+}
+
+CommandBufferHelper* VdaVideoDecoder::GetCommandBufferHelper() const {
+  return command_buffer_helper_.get();
 }
 
 void VdaVideoDecoder::NotifyErrorOnParentThread(
@@ -793,10 +824,10 @@ void VdaVideoDecoder::DestroyCallbacks() {
   // when |has_error_| is set.
   base::WeakPtr<VdaVideoDecoder> weak_this = parent_weak_this_;
 
-  std::map<int32_t, DecodeCB> local_decode_cbs = decode_cbs_;
+  std::map<int32_t, DecodeCB> local_decode_cbs = std::move(decode_cbs_);
   decode_cbs_.clear();
-  for (const auto& it : local_decode_cbs) {
-    it.second.Run(DecodeStatus::DECODE_ERROR);
+  for (auto& it : local_decode_cbs) {
+    std::move(it.second).Run(DecodeStatus::DECODE_ERROR);
     if (!weak_this)
       return;
   }
@@ -810,7 +841,7 @@ void VdaVideoDecoder::DestroyCallbacks() {
     std::move(reset_cb_).Run();
 
   if (weak_this && init_cb_)
-    std::move(init_cb_).Run(false);
+    std::move(init_cb_).Run(StatusCode::kDecoderInitializeNeverCompleted);
 }
 
 }  // namespace media

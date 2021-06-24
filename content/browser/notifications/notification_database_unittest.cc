@@ -9,14 +9,15 @@
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/guid.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
 #include "content/public/browser/notification_database_data.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/notifications/notification_resources.h"
 #include "third_party/blink/public/common/notifications/platform_notification_data.h"
+#include "third_party/blink/public/mojom/notifications/notification.mojom.h"
 #include "third_party/leveldatabase/src/include/leveldb/db.h"
 #include "third_party/leveldatabase/src/include/leveldb/write_batch.h"
 #include "url/gurl.h"
@@ -43,7 +44,7 @@ const struct {
 class NotificationDatabaseTest : public ::testing::Test {
  public:
   NotificationDatabaseTest()
-      : thread_bundle_(TestBrowserThreadBundle::IO_MAINLOOP) {}
+      : task_environment_(BrowserTaskEnvironment::IO_MAINLOOP) {}
 
  protected:
   // Creates a new NotificationDatabase instance in memory.
@@ -83,12 +84,10 @@ class NotificationDatabaseTest : public ::testing::Test {
   // their origin and Service Worker registration id.
   void PopulateDatabaseWithExampleData(NotificationDatabase* database) {
     std::string notification_id;
-    for (size_t i = 0; i < base::size(kExampleNotificationData); ++i) {
+    for (const auto& notification_data : kExampleNotificationData) {
       ASSERT_NO_FATAL_FAILURE(CreateAndWriteNotification(
-          database, GURL(kExampleNotificationData[i].origin),
-          kExampleNotificationData[i].tag,
-          kExampleNotificationData[i].service_worker_registration_id,
-          &notification_id));
+          database, GURL(notification_data.origin), notification_data.tag,
+          notification_data.service_worker_registration_id, &notification_id));
     }
   }
 
@@ -117,7 +116,7 @@ class NotificationDatabaseTest : public ::testing::Test {
 
   NotificationDatabase::UkmCallback callback() { return callback_; }
 
-  TestBrowserThreadBundle thread_bundle_;  // Must be first member.
+  BrowserTaskEnvironment task_environment_;  // Must be first member.
 
   NotificationDatabase::UkmCallback callback_;
 };
@@ -255,7 +254,7 @@ TEST_F(NotificationDatabaseTest, ReadNotificationDataDifferentOrigin) {
 
   NotificationDatabaseData database_data, read_database_data;
   database_data.notification_id = GenerateNotificationId();
-  database_data.notification_data.title = base::UTF8ToUTF16("My Notification");
+  database_data.notification_data.title = u"My Notification";
 
   ASSERT_EQ(NotificationDatabase::STATUS_OK,
             database->WriteNotificationData(origin, database_data));
@@ -285,11 +284,11 @@ TEST_F(NotificationDatabaseTest, ReadNotificationDataReflection) {
   GURL origin("https://example.com");
 
   blink::PlatformNotificationData notification_data;
-  notification_data.title = base::UTF8ToUTF16("My Notification");
+  notification_data.title = u"My Notification";
   notification_data.direction =
       blink::mojom::NotificationDirection::RIGHT_TO_LEFT;
   notification_data.lang = "nl-NL";
-  notification_data.body = base::UTF8ToUTF16("Hello, world!");
+  notification_data.body = u"Hello, world!";
   notification_data.tag = "replace id";
   notification_data.icon = GURL("https://example.com/icon.png");
   notification_data.silent = true;
@@ -355,7 +354,7 @@ TEST_F(NotificationDatabaseTest, ReadNotificationResourcesDifferentOrigin) {
   NotificationDatabaseData database_data;
   blink::NotificationResources database_resources;
   database_data.notification_id = GenerateNotificationId();
-  database_data.notification_data.title = base::UTF8ToUTF16("My Notification");
+  database_data.notification_data.title = u"My Notification";
   database_data.notification_resources = blink::NotificationResources();
 
   ASSERT_EQ(NotificationDatabase::STATUS_OK,
@@ -465,7 +464,7 @@ TEST_F(NotificationDatabaseTest, ReadNotificationUpdateInteraction) {
 
   NotificationDatabaseData database_data, read_database_data;
   database_data.notification_id = GenerateNotificationId();
-  database_data.notification_data.title = base::UTF8ToUTF16("My Notification");
+  database_data.notification_data.title = u"My Notification";
 
   ASSERT_EQ(NotificationDatabase::STATUS_OK,
             database->WriteNotificationData(origin, database_data));
@@ -612,30 +611,68 @@ TEST_F(NotificationDatabaseTest, DeleteNotificationDataDifferentOrigin) {
       database->ReadNotificationData(notification_id, origin, &database_data));
 }
 
-TEST_F(NotificationDatabaseTest, ReadAllNotificationData) {
+TEST_F(NotificationDatabaseTest, DeleteInvalidNotificationResources) {
+  std::unique_ptr<NotificationDatabase> database(CreateDatabaseInMemory());
+  ASSERT_EQ(NotificationDatabase::STATUS_OK,
+            database->Open(true /* create_if_missing */));
+
+  // Deleting non-existing resources is not considered to be a failure.
+  ASSERT_EQ(NotificationDatabase::STATUS_OK,
+            database->DeleteNotificationResources("bad-id",
+                                                  GURL("https://chrome.com")));
+}
+
+TEST_F(NotificationDatabaseTest, DeleteNotificationResources) {
+  std::unique_ptr<NotificationDatabase> database(CreateDatabaseInMemory());
+  ASSERT_EQ(NotificationDatabase::STATUS_OK,
+            database->Open(true /* create_if_missing */));
+
+  const std::string notification_id = GenerateNotificationId();
+
+  blink::NotificationResources notification_resources;
+  NotificationDatabaseData database_data;
+  database_data.notification_id = notification_id;
+  database_data.notification_resources = notification_resources;
+
+  GURL origin("https://example.com");
+
+  ASSERT_EQ(NotificationDatabase::STATUS_OK,
+            database->WriteNotificationData(origin, database_data));
+
+  // Reading notification resources after writing should succeed.
+  EXPECT_EQ(NotificationDatabase::STATUS_OK,
+            database->ReadNotificationResources(notification_id, origin,
+                                                &notification_resources));
+
+  // Delete the notification resources for the notification which was just
+  // written to the database, and verify that reading them again will fail.
+  EXPECT_EQ(NotificationDatabase::STATUS_OK,
+            database->DeleteNotificationResources(notification_id, origin));
+  EXPECT_EQ(NotificationDatabase::STATUS_ERROR_NOT_FOUND,
+            database->ReadNotificationResources(notification_id, origin,
+                                                &notification_resources));
+}
+
+TEST_F(NotificationDatabaseTest,
+       ForEachNotificationDataForServiceWorkerRegistration) {
   std::unique_ptr<NotificationDatabase> database(CreateDatabaseInMemory());
   ASSERT_EQ(NotificationDatabase::STATUS_OK,
             database->Open(true /* create_if_missing */));
 
   ASSERT_NO_FATAL_FAILURE(PopulateDatabaseWithExampleData(database.get()));
 
-  std::vector<NotificationDatabaseData> notifications;
-  ASSERT_EQ(NotificationDatabase::STATUS_OK,
-            database->ReadAllNotificationData(&notifications));
-
-  EXPECT_EQ(base::size(kExampleNotificationData), notifications.size());
-}
-
-TEST_F(NotificationDatabaseTest, ReadAllNotificationDataEmpty) {
-  std::unique_ptr<NotificationDatabase> database(CreateDatabaseInMemory());
-  ASSERT_EQ(NotificationDatabase::STATUS_OK,
-            database->Open(true /* create_if_missing */));
+  GURL origin("https://example.com:443");
 
   std::vector<NotificationDatabaseData> notifications;
   ASSERT_EQ(NotificationDatabase::STATUS_OK,
-            database->ReadAllNotificationData(&notifications));
+            database->ForEachNotificationDataForServiceWorkerRegistration(
+                origin, kExampleServiceWorkerRegistrationId,
+                base::BindLambdaForTesting(
+                    [&notifications](const NotificationDatabaseData& data) {
+                      notifications.push_back(data);
+                    })));
 
-  EXPECT_EQ(0u, notifications.size());
+  EXPECT_EQ(2u, notifications.size());
 }
 
 TEST_F(NotificationDatabaseTest, ReadAllNotificationDataForOrigin) {

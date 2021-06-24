@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "google_apis/drive/test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -29,10 +29,11 @@ class DriveApiUrlGeneratorTest : public testing::Test {
     url::AddStandardScheme("chrome-extension", url::SCHEME_WITH_HOST);
   }
 
-  ~DriveApiUrlGeneratorTest() override { url::Shutdown(); }
-
  protected:
   DriveApiUrlGenerator url_generator_;
+
+ private:
+  url::ScopedSchemeRegistryForTests scoped_registry_;
 };
 
 // Make sure the hard-coded urls are returned.

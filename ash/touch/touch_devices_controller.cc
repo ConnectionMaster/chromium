@@ -6,45 +6,25 @@
 
 #include <utility>
 
+#include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/ash_pref_names.h"
 #include "ash/root_window_controller.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/shell_delegate.h"
 #include "base/bind.h"
+#include "base/command_line.h"
 #include "base/metrics/histogram_macros.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "services/ws/public/cpp/input_devices/input_device_controller_client.h"
-#include "ui/wm/core/cursor_manager.h"
+#include "ui/ozone/public/input_controller.h"
+#include "ui/ozone/public/ozone_platform.h"
 
 namespace ash {
 
 namespace {
-
-void OnSetTouchpadEnabledDone(bool enabled, bool succeeded) {
-  // Don't log here, |succeeded| is only true if there is a touchpad *and* the
-  // value changed. In other words |succeeded| is false when not on device or
-  // the value was already at the value specified. Neither of these are
-  // interesting failures.
-  if (!succeeded)
-    return;
-
-  ::wm::CursorManager* cursor_manager = Shell::Get()->cursor_manager();
-  if (!cursor_manager)
-    return;
-
-  if (enabled)
-    cursor_manager->ShowCursor();
-  else
-    cursor_manager->HideCursor();
-}
-
-ws::InputDeviceControllerClient* GetInputDeviceControllerClient() {
-  return Shell::Get()->shell_delegate()->GetInputDeviceControllerClient();
-}
 
 PrefService* GetActivePrefService() {
   return Shell::Get()->session_controller()->GetActivePrefService();
@@ -53,15 +33,20 @@ PrefService* GetActivePrefService() {
 }  // namespace
 
 // static
-void TouchDevicesController::RegisterProfilePrefs(
-    PrefRegistrySimple* registry) {
+void TouchDevicesController::RegisterProfilePrefs(PrefRegistrySimple* registry,
+                                                  bool for_test) {
   registry->RegisterBooleanPref(
       prefs::kTapDraggingEnabled, false,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PRIORITY_PREF |
-          PrefRegistry::PUBLIC);
-  registry->RegisterBooleanPref(prefs::kTouchpadEnabled, PrefRegistry::PUBLIC);
-  registry->RegisterBooleanPref(prefs::kTouchscreenEnabled,
-                                PrefRegistry::PUBLIC);
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PRIORITY_PREF);
+  registry->RegisterBooleanPref(prefs::kTouchpadEnabled, true);
+  registry->RegisterBooleanPref(prefs::kTouchscreenEnabled, true);
+  if (for_test) {
+    registry->RegisterBooleanPref(
+        prefs::kNaturalScroll,
+        base::CommandLine::ForCurrentProcess()->HasSwitch(
+            chromeos::switches::kNaturalScrollDefault),
+        user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PRIORITY_PREF);
+  }
 }
 
 TouchDevicesController::TouchDevicesController() {
@@ -182,30 +167,24 @@ void TouchDevicesController::UpdateTapDraggingEnabled() {
 
   UMA_HISTOGRAM_BOOLEAN("Touchpad.TapDragging.Changed", enabled);
 
-  if (!GetInputDeviceControllerClient())
-    return;  // Happens in tests.
-
-  GetInputDeviceControllerClient()->SetTapDragging(enabled);
+  ui::OzonePlatform::GetInstance()->GetInputController()->SetTapDragging(
+      enabled);
 }
 
 void TouchDevicesController::UpdateTouchpadEnabled() {
-  if (!GetInputDeviceControllerClient())
-    return;  // Happens in tests.
-
-  bool enabled = GetTouchpadEnabled(TouchDeviceEnabledSource::GLOBAL) &&
-                 GetTouchpadEnabled(TouchDeviceEnabledSource::USER_PREF);
-
-  GetInputDeviceControllerClient()->SetInternalTouchpadEnabled(
-      enabled, base::BindRepeating(&OnSetTouchpadEnabledDone, enabled));
+  ui::OzonePlatform::GetInstance()
+      ->GetInputController()
+      ->SetInternalTouchpadEnabled(
+          GetTouchpadEnabled(TouchDeviceEnabledSource::GLOBAL) &&
+          GetTouchpadEnabled(TouchDeviceEnabledSource::USER_PREF));
 }
 
 void TouchDevicesController::UpdateTouchscreenEnabled() {
-  if (!GetInputDeviceControllerClient())
-    return;  // Happens in tests.
-
-  GetInputDeviceControllerClient()->SetTouchscreensEnabled(
-      GetTouchscreenEnabled(TouchDeviceEnabledSource::GLOBAL) &&
-      GetTouchscreenEnabled(TouchDeviceEnabledSource::USER_PREF));
+  ui::OzonePlatform::GetInstance()
+      ->GetInputController()
+      ->SetTouchscreensEnabled(
+          GetTouchscreenEnabled(TouchDeviceEnabledSource::GLOBAL) &&
+          GetTouchscreenEnabled(TouchDeviceEnabledSource::USER_PREF));
 }
 
 }  // namespace ash

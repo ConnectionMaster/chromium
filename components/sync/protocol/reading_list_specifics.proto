@@ -9,6 +9,9 @@
 
 syntax = "proto2";
 
+option java_multiple_files = true;
+option java_package = "org.chromium.components.sync.protocol";
+
 option optimize_for = LITE_RUNTIME;
 
 package sync_pb;
@@ -24,6 +27,7 @@ message ReadingListSpecifics {
   optional int64 update_time_us = 5;
   optional int64 first_read_time_us = 7;
   optional int64 update_title_time_us = 8;
+  optional int32 estimated_read_time_seconds = 9;
 
   enum ReadingListEntryStatus {
     UNREAD = 0;

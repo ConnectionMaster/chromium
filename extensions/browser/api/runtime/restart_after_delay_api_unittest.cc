@@ -166,7 +166,7 @@ class RestartAfterDelayApiTest : public ApiUnitTest {
   }
 
  private:
-  std::string RunFunctionGetError(UIThreadExtensionFunction* function,
+  std::string RunFunctionGetError(ExtensionFunction* function,
                                   const Extension* extension,
                                   const std::string& args) {
     scoped_refptr<ExtensionFunction> function_owner(function);
@@ -202,7 +202,7 @@ TEST_F(RestartAfterDelayApiTest, RestartAfterDelayTest) {
   // failure.
   scoped_refptr<const Extension> test_extension =
       ExtensionBuilder("Another App", ExtensionBuilder::Type::PLATFORM_APP)
-          .SetLocation(Manifest::INTERNAL)
+          .SetLocation(mojom::ManifestLocation::kInternal)
           .Build();
   RunRestartAfterDelayFunctionForExtention(
       "[5]", test_extension.get(), "Not the first extension to call this API.");

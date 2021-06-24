@@ -1,8 +1,6 @@
 #ifndef _RAR_RECVOL_
 #define _RAR_RECVOL_
 
-namespace third_party_unrar {
-
 #define REV5_SIGN      "Rar!\x1aRev"
 #define REV5_SIGN_SIZE             8
 
@@ -16,7 +14,7 @@ class RecVolumes3
     ThreadPool *RSThreadPool;
 #endif
   public:
-    RecVolumes3(bool TestOnly);
+    RecVolumes3(RAROptions *Cmd,bool TestOnly);
     ~RecVolumes3();
     void Make(RAROptions *Cmd,wchar *ArcName);
     bool Restore(RAROptions *Cmd,const wchar *Name,bool Silent);
@@ -73,11 +71,12 @@ class RecVolumes5
 #ifdef RAR_SMP
     ThreadPool *RecThreadPool;
 #endif
-    RecRSThreadData ThreadData[MaxPoolThreads]; // Store thread parameters.
+    uint MaxUserThreads; // Maximum number of threads defined by user.
+    RecRSThreadData *ThreadData; // Array to store thread parameters.
   public: // 'public' only because called from thread functions.
     void ProcessAreaRS(RecRSThreadData *td);
   public:
-    RecVolumes5(bool TestOnly);
+    RecVolumes5(RAROptions *Cmd,bool TestOnly);
     ~RecVolumes5();
     bool Restore(RAROptions *Cmd,const wchar *Name,bool Silent);
     void Test(RAROptions *Cmd,const wchar *Name);
@@ -85,7 +84,5 @@ class RecVolumes5
 
 bool RecVolumesRestore(RAROptions *Cmd,const wchar *Name,bool Silent);
 void RecVolumesTest(RAROptions *Cmd,Archive *Arc,const wchar *Name);
-
-}  // namespace third_party_unrar
 
 #endif

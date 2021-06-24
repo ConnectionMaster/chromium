@@ -42,7 +42,9 @@ class MockVideoCaptureClient : public VideoCaptureDevice::Client {
   void OnIncomingCapturedData(const uint8_t* data,
                               int length,
                               const VideoCaptureFormat& format,
+                              const gfx::ColorSpace& color_space,
                               int rotation,
+                              bool flip_y,
                               base::TimeTicks reference_time,
                               base::TimeDelta timestamp,
                               int frame_feedback_id) override;
@@ -52,6 +54,11 @@ class MockVideoCaptureClient : public VideoCaptureDevice::Client {
                                    base::TimeTicks reference_time,
                                    base::TimeDelta timestamp,
                                    int frame_feedback_id = 0) override;
+  void OnIncomingCapturedExternalBuffer(
+      CapturedExternalVideoBuffer buffer,
+      std::vector<CapturedExternalVideoBuffer> scaled_buffers,
+      base::TimeTicks reference_time,
+      base::TimeDelta timestamp) override;
   // Trampoline methods to workaround GMOCK problems with std::unique_ptr<>.
   ReserveResult ReserveOutputBuffer(const gfx::Size& dimensions,
                                     VideoPixelFormat format,
@@ -74,6 +81,8 @@ class MockVideoCaptureClient : public VideoCaptureDevice::Client {
   base::OnceClosure frame_cb_;
   base::OnceClosure quit_cb_;
 };
+
+using NiceMockVideoCaptureClient = ::testing::NiceMock<MockVideoCaptureClient>;
 
 }  // namespace unittest_internal
 }  // namespace media

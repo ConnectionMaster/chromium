@@ -32,22 +32,31 @@ namespace init {
 // be the first item.
 GL_INIT_EXPORT std::vector<GLImplementation> GetAllowedGLImplementations();
 
-// Initializes GL bindings.
+// Initializes GL bindings and extension settings.
 GL_INIT_EXPORT bool InitializeGLOneOff();
 
 // Initializes GL bindings without initializing extension settings.
-GL_INIT_EXPORT bool InitializeGLNoExtensionsOneOff();
+GL_INIT_EXPORT bool InitializeGLNoExtensionsOneOff(bool init_bindings);
+
+// Initializes GL bindings - load dlls and get proc address according to gl
+// command line switch.
+GL_INIT_EXPORT bool InitializeStaticGLBindingsOneOff();
 
 // Initialize plaiform dependent extension settings, including bindings,
 // capabilities, etc.
 GL_INIT_EXPORT bool InitializeExtensionSettingsOneOffPlatform();
 
 // Initializes GL bindings using the provided parameters. This might be required
-// for use in tests, otherwise use InitializeGLOneOff() instead.
-GL_INIT_EXPORT bool InitializeGLOneOffImplementation(
-    GLImplementation impl,
+// for use in tests.
+GL_INIT_EXPORT bool InitializeStaticGLBindingsImplementation(
+    GLImplementationParts impl,
+    bool fallback_to_software_gl);
+
+// Initializes GL platform using the provided parameters. This might be required
+// for use in tests. This should be called only after GL bindings are initilzed
+// successfully.
+GL_INIT_EXPORT bool InitializeGLOneOffPlatformImplementation(
     bool fallback_to_software_gl,
-    bool gpu_service_logging,
     bool disable_gl_drawing,
     bool init_extensions);
 
@@ -92,6 +101,9 @@ GL_INIT_EXPORT scoped_refptr<GLSurface> CreateOffscreenGLSurfaceWithFormat(
 // bindings.
 GL_INIT_EXPORT void SetDisabledExtensionsPlatform(
     const std::string& disabled_extensions);
+
+// Disable ANGLE and force to use native or other GL implementation.
+GL_INIT_EXPORT void DisableANGLE();
 
 }  // namespace init
 }  // namespace gl

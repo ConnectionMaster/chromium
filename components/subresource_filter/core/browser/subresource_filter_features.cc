@@ -11,6 +11,7 @@
 #include <tuple>
 #include <utility>
 
+#include "base/containers/contains.h"
 #include "base/lazy_instance.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/rand_util.h"
@@ -233,11 +234,15 @@ base::LazyInstance<scoped_refptr<ConfigurationList>>::Leaky
 const base::Feature kSafeBrowsingSubresourceFilter{
     "SubresourceFilter", base::FEATURE_ENABLED_BY_DEFAULT};
 
-const base::Feature kSafeBrowsingSubresourceFilterConsiderRedirects{
-    "SubresourceFilterConsiderRedirects", base::FEATURE_DISABLED_BY_DEFAULT};
-
 const base::Feature kFilterAdsOnAbusiveSites{"FilterAdsOnAbusiveSites",
                                              base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kAdsInterventionsEnforced{
+    "AdsInterventionsEnforced", base::FEATURE_DISABLED_BY_DEFAULT};
+
+const base::FeatureParam<base::TimeDelta> kAdsInterventionDuration = {
+    &kAdsInterventionsEnforced, "kAdsInterventionDuration",
+    base::TimeDelta::FromDays(3)};
 
 // Legacy name `activation_state` is used in variation parameters.
 const char kActivationLevelParameterName[] = "activation_state";
@@ -333,24 +338,35 @@ bool Configuration::operator!=(const Configuration& rhs) const {
 std::unique_ptr<base::trace_event::TracedValue>
 Configuration::ActivationConditions::ToTracedValue() const {
   auto value = std::make_unique<base::trace_event::TracedValue>();
+  AddToValue(value.get());
+  return value;
+}
+
+void Configuration::ActivationConditions::AddToValue(
+    base::trace_event::TracedValue* value) const {
   value->SetString("activation_scope", StreamToString(activation_scope));
   value->SetString("activation_list", StreamToString(activation_list));
   value->SetInteger("priority", priority);
-  return value;
 }
 
 std::unique_ptr<base::trace_event::TracedValue> Configuration::ToTracedValue()
     const {
   auto value = std::make_unique<base::trace_event::TracedValue>();
-  auto traced_conditions = activation_conditions.ToTracedValue();
-  value->SetValue("activation_conditions", traced_conditions.get());
+  AddToValue(value.get());
+  return value;
+}
+
+void Configuration::AddToValue(base::trace_event::TracedValue* value) const {
+  value->BeginDictionary("activation_conditions");
+  activation_conditions.AddToValue(value);
+  value->EndDictionary();
+
   value->SetString("activation_level",
                    StreamToString(activation_options.activation_level));
   value->SetDouble("performance_measurement_rate",
                    activation_options.performance_measurement_rate);
   value->SetString("ruleset_flavor",
                    StreamToString(general_settings.ruleset_flavor));
-  return value;
 }
 
 mojom::ActivationState Configuration::GetActivationState(
@@ -372,7 +388,9 @@ mojom::ActivationState Configuration::GetActivationState(
 }
 
 std::ostream& operator<<(std::ostream& os, const Configuration& config) {
-  os << config.ToTracedValue()->ToString();
+  base::trace_event::TracedValueJSON value;
+  config.AddToValue(&value);
+  os << value.ToJSON();
   return os;
 }
 
@@ -396,7 +414,7 @@ scoped_refptr<ConfigurationList> GetEnabledConfigurations() {
 }
 
 bool HasEnabledConfiguration(const Configuration& config) {
-  return base::ContainsValue(
+  return base::Contains(
       GetEnabledConfigurations()->configs_by_decreasing_priority(), config);
 }
 

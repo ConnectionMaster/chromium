@@ -5,8 +5,9 @@
 #include "extensions/renderer/bindings/api_bindings_system.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/stl_util.h"
+#include "base/callback_helpers.h"
+#include "base/containers/contains.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "extensions/common/event_filtering_info.h"
@@ -17,6 +18,7 @@
 #include "extensions/renderer/bindings/api_binding_types.h"
 #include "extensions/renderer/bindings/api_bindings_system_unittest.h"
 #include "extensions/renderer/bindings/api_invocation_errors.h"
+#include "extensions/renderer/bindings/test_interaction_provider.h"
 #include "gin/arguments.h"
 #include "gin/converter.h"
 #include "gin/try_catch.h"
@@ -93,6 +95,10 @@ bool AllowAllAPIs(v8::Local<v8::Context> context, const std::string& name) {
   return true;
 }
 
+bool DisallowPromises(v8::Local<v8::Context> context) {
+  return false;
+}
+
 }  // namespace
 
 APIBindingsSystemTest::APIBindingsSystemTest() {}
@@ -118,9 +124,10 @@ void APIBindingsSystemTest::SetUp() {
       base::BindRepeating(&APIBindingsSystemTest::GetAPISchema,
                           base::Unretained(this)),
       base::BindRepeating(&AllowAllAPIs),
+      base::BindRepeating(&DisallowPromises),
       base::BindRepeating(&APIBindingsSystemTest::OnAPIRequest,
                           base::Unretained(this)),
-      base::BindRepeating(&GetTestUserActivationState),
+      std::make_unique<TestInteractionProvider>(),
       base::BindRepeating(&APIBindingsSystemTest::OnEventListenersChanged,
                           base::Unretained(this)),
       base::BindRepeating(get_context_owner), base::DoNothing(),
@@ -159,7 +166,7 @@ v8::Local<v8::Object> APIBindingsSystemTest::GetLastErrorParent(
 
 const base::DictionaryValue& APIBindingsSystemTest::GetAPISchema(
     const std::string& api_name) {
-  EXPECT_TRUE(base::ContainsKey(api_schemas_, api_name));
+  EXPECT_TRUE(base::Contains(api_schemas_, api_name));
   return *api_schemas_[api_name];
 }
 
@@ -183,10 +190,10 @@ void APIBindingsSystemTest::ValidateLastRequest(
   ASSERT_TRUE(last_request());
   // Note that even if no arguments are provided by the API call, we should
   // have an empty list.
-  ASSERT_TRUE(last_request()->arguments);
+  ASSERT_TRUE(last_request()->arguments_list);
   EXPECT_EQ(expected_name, last_request()->method_name);
   EXPECT_EQ(ReplaceSingleQuotes(expected_arguments),
-            ValueToString(*last_request()->arguments));
+            ValueToString(*last_request()->arguments_list));
 }
 
 v8::Local<v8::Value> APIBindingsSystemTest::CallFunctionOnObject(

@@ -19,11 +19,14 @@
 class AppDistributionProvider;
 class BrandedImageProvider;
 class BrowserURLRewriterProvider;
+class ModalsProvider;
+class DiscoverFeedProvider;
 class FullscreenProvider;
 class MailtoHandlerProvider;
 class OmahaServiceProvider;
-class SpecialUserProvider;
+class OverridesProvider;
 class SpotlightProvider;
+class TextZoomProvider;
 class UserFeedbackProvider;
 class VoiceSearchProvider;
 
@@ -36,18 +39,15 @@ class WebState;
 }
 
 @protocol LogoVendor;
-@protocol TextFieldStyling;
-@class Tab;
-@class TabModel;
 @class UITextField;
 @class UIView;
+class Browser;
 
 namespace ios {
 
 class ChromeBrowserProvider;
-class ChromeBrowserState;
 class ChromeIdentityService;
-class GeolocationUpdaterProvider;
+class ChromeTrustedVaultService;
 class SigninErrorProvider;
 class SigninResourcesProvider;
 
@@ -104,22 +104,15 @@ class ChromeBrowserProvider {
       std::unique_ptr<ChromeIdentityService> service);
   // Returns an instance of a Chrome identity service.
   virtual ChromeIdentityService* GetChromeIdentityService();
-  // Returns an instance of a GeolocationUpdaterProvider.
-  virtual GeolocationUpdaterProvider* GetGeolocationUpdaterProvider();
+  // Returns an instance of a Chrome trusted vault service.
+  virtual ChromeTrustedVaultService* GetChromeTrustedVaultService();
   // Returns risk data used in Wallet requests.
   virtual std::string GetRiskData();
-  // Creates and returns a new styled text field with the given |frame|.
-  virtual UITextField<TextFieldStyling>* CreateStyledTextField(
-      CGRect frame) const NS_RETURNS_RETAINED;
+  // Creates and returns a new styled text field.
+  virtual UITextField* CreateStyledTextField() const NS_RETURNS_RETAINED;
 
-  // Initializes the cast service.  Should be called soon after the given
-  // |main_tab_model| is created.
-  virtual void InitializeCastService(TabModel* main_tab_model) const;
-
-  // Attaches any embedder-specific tab helpers to the given |web_state|.  The
-  // owning |tab| is included for helpers that need access to information that
-  // is not yet available through web::WebState.
-  virtual void AttachTabHelpers(web::WebState* web_state, Tab* tab) const;
+  // Attaches any embedder-specific browser agents to the given |browser|.
+  virtual void AttachBrowserAgents(Browser* browser) const;
 
   // Returns an instance of the voice search provider, if one exists.
   virtual VoiceSearchProvider* GetVoiceSearchProvider() const;
@@ -127,19 +120,15 @@ class ChromeBrowserProvider {
   // Returns an instance of the app distribution provider.
   virtual AppDistributionProvider* GetAppDistributionProvider() const;
 
-  // Creates and returns an object that can fetch and vend search engine logos.
-  // The caller assumes ownership of the returned object.
-  virtual id<LogoVendor> CreateLogoVendor(
-      ios::ChromeBrowserState* browser_state) const NS_RETURNS_RETAINED;
+  virtual id<LogoVendor> CreateLogoVendor(Browser* browser,
+                                          web::WebState* web_state) const
+      NS_RETURNS_RETAINED;
 
   // Returns an instance of the omaha service provider.
   virtual OmahaServiceProvider* GetOmahaServiceProvider() const;
 
   // Returns an instance of the user feedback provider.
   virtual UserFeedbackProvider* GetUserFeedbackProvider() const;
-
-  // Returns an instance of the special user provider.
-  virtual SpecialUserProvider* GetSpecialUserProvider() const;
 
   // Returns an instance of the branded image provider.
   virtual BrandedImageProvider* GetBrandedImageProvider() const;
@@ -163,6 +152,16 @@ class ChromeBrowserProvider {
   // Returns an instance of the BrowserURLRewriter provider.
   virtual BrowserURLRewriterProvider* GetBrowserURLRewriterProvider() const;
 
+  // Returns an instance of the Overrides provider;
+  virtual OverridesProvider* GetOverridesProvider() const;
+
+  // Returns an instance of the DiscoverFeed provider;
+  virtual DiscoverFeedProvider* GetDiscoverFeedProvider() const;
+
+  virtual TextZoomProvider* GetTextZoomProvider() const;
+
+  virtual ModalsProvider* GetModalsProvider() const;
+
   // Adds and removes observers.
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
@@ -174,6 +173,8 @@ class ChromeBrowserProvider {
  private:
   base::ObserverList<Observer, true>::Unchecked observer_list_;
   std::unique_ptr<MailtoHandlerProvider> mailto_handler_provider_;
+  std::unique_ptr<ModalsProvider> modals_provider_;
+  std::unique_ptr<TextZoomProvider> text_zoom_provider_;
 };
 
 }  // namespace ios

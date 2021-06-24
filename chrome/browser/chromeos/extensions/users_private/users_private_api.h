@@ -5,95 +5,96 @@
 #ifndef CHROME_BROWSER_CHROMEOS_EXTENSIONS_USERS_PRIVATE_USERS_PRIVATE_API_H_
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_USERS_PRIVATE_USERS_PRIVATE_API_H_
 
-#include <string>
-
 #include "base/macros.h"
 #include "chrome/browser/extensions/api/settings_private/prefs_util.h"
-#include "chrome/browser/extensions/chrome_extension_function_details.h"
 #include "extensions/browser/extension_function.h"
 
 namespace extensions {
 
-// Implements the chrome.usersPrivate.getWhitelistedUsers method.
-class UsersPrivateGetWhitelistedUsersFunction
-    : public UIThreadExtensionFunction {
+// Implements the chrome.usersPrivate.getUsers method.
+class UsersPrivateGetUsersFunction : public ExtensionFunction {
  public:
-  UsersPrivateGetWhitelistedUsersFunction();
-  DECLARE_EXTENSION_FUNCTION("usersPrivate.getWhitelistedUsers",
-                             USERSPRIVATE_GETWHITELISTEDUSERS)
+  UsersPrivateGetUsersFunction();
+  DECLARE_EXTENSION_FUNCTION("usersPrivate.getUsers", USERSPRIVATE_GETUSERS)
 
  protected:
-  ~UsersPrivateGetWhitelistedUsersFunction() override;
+  ~UsersPrivateGetUsersFunction() override;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
 
  private:
-  ChromeExtensionFunctionDetails chrome_details_;
-
-  DISALLOW_COPY_AND_ASSIGN(UsersPrivateGetWhitelistedUsersFunction);
+  DISALLOW_COPY_AND_ASSIGN(UsersPrivateGetUsersFunction);
 };
 
-// Implements the chrome.usersPrivate.addWhitelistedUser method.
-class UsersPrivateAddWhitelistedUserFunction
-    : public UIThreadExtensionFunction {
+// Implements the chrome.usersPrivate.isUserInList method.
+class UsersPrivateIsUserInListFunction : public ExtensionFunction {
  public:
-  UsersPrivateAddWhitelistedUserFunction();
-  DECLARE_EXTENSION_FUNCTION("usersPrivate.addWhitelistedUser",
-                             USERSPRIVATE_ADDWHITELISTEDUSER)
+  UsersPrivateIsUserInListFunction();
+  DECLARE_EXTENSION_FUNCTION("usersPrivate.isUserInList",
+                             USERSPRIVATE_ISUSERINLIST)
 
  protected:
-  ~UsersPrivateAddWhitelistedUserFunction() override;
-
-  // UIThreadExtensionFunction overrides.
-  ResponseAction Run() override;
-
- private:
-  ChromeExtensionFunctionDetails chrome_details_;
-
-  DISALLOW_COPY_AND_ASSIGN(UsersPrivateAddWhitelistedUserFunction);
-};
-
-// Implements the chrome.usersPrivate.removeWhitelistedUser method.
-class UsersPrivateRemoveWhitelistedUserFunction
-    : public UIThreadExtensionFunction {
- public:
-  UsersPrivateRemoveWhitelistedUserFunction();
-  DECLARE_EXTENSION_FUNCTION("usersPrivate.removeWhitelistedUser",
-                             USERSPRIVATE_REMOVEWHITELISTEDUSER)
-
- protected:
-  ~UsersPrivateRemoveWhitelistedUserFunction() override;
+  ~UsersPrivateIsUserInListFunction() override;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
 
  private:
-  ChromeExtensionFunctionDetails chrome_details_;
-
-  DISALLOW_COPY_AND_ASSIGN(UsersPrivateRemoveWhitelistedUserFunction);
+  DISALLOW_COPY_AND_ASSIGN(UsersPrivateIsUserInListFunction);
 };
 
-// Implements the chrome.usersPrivate.isWhitelistManaged method.
-class UsersPrivateIsWhitelistManagedFunction
-    : public UIThreadExtensionFunction {
+// Implements the chrome.usersPrivate.addUser method.
+class UsersPrivateAddUserFunction : public ExtensionFunction {
  public:
-  UsersPrivateIsWhitelistManagedFunction();
-  DECLARE_EXTENSION_FUNCTION("usersPrivate.isWhitelistManaged",
-                             USERSPRIVATE_ISWHITELISTMANAGED)
+  UsersPrivateAddUserFunction();
+  DECLARE_EXTENSION_FUNCTION("usersPrivate.addUser", USERSPRIVATE_ADDUSER)
 
  protected:
-  ~UsersPrivateIsWhitelistManagedFunction() override;
+  ~UsersPrivateAddUserFunction() override;
 
   // ExtensionFunction overrides.
   ResponseAction Run() override;
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(UsersPrivateIsWhitelistManagedFunction);
+  DISALLOW_COPY_AND_ASSIGN(UsersPrivateAddUserFunction);
+};
+
+// Implements the chrome.usersPrivate.removeUser method.
+class UsersPrivateRemoveUserFunction : public ExtensionFunction {
+ public:
+  UsersPrivateRemoveUserFunction();
+  DECLARE_EXTENSION_FUNCTION("usersPrivate.removeUser", USERSPRIVATE_REMOVEUSER)
+
+ protected:
+  ~UsersPrivateRemoveUserFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(UsersPrivateRemoveUserFunction);
+};
+
+// Implements the chrome.usersPrivate.isUserListManaged method.
+class UsersPrivateIsUserListManagedFunction : public ExtensionFunction {
+ public:
+  UsersPrivateIsUserListManagedFunction();
+  DECLARE_EXTENSION_FUNCTION("usersPrivate.isUserListManaged",
+                             USERSPRIVATE_ISUSERLISTMANAGED)
+
+ protected:
+  ~UsersPrivateIsUserListManagedFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(UsersPrivateIsUserListManagedFunction);
 };
 
 // Implements the chrome.usersPrivate.getCurrentUser method.
-class UsersPrivateGetCurrentUserFunction : public UIThreadExtensionFunction {
+class UsersPrivateGetCurrentUserFunction : public ExtensionFunction {
  public:
   UsersPrivateGetCurrentUserFunction();
   DECLARE_EXTENSION_FUNCTION("usersPrivate.getCurrentUser",
@@ -106,11 +107,10 @@ class UsersPrivateGetCurrentUserFunction : public UIThreadExtensionFunction {
   ResponseAction Run() override;
 
  private:
-  ChromeExtensionFunctionDetails chrome_details_;
   DISALLOW_COPY_AND_ASSIGN(UsersPrivateGetCurrentUserFunction);
 };
 
-class UsersPrivateGetLoginStatusFunction : public UIThreadExtensionFunction {
+class UsersPrivateGetLoginStatusFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("usersPrivate.getLoginStatus",
                              USERSPRIVATE_GETLOGINSTATUS)

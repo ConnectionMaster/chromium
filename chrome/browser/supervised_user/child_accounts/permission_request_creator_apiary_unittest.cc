@@ -9,14 +9,15 @@
 
 #include "base/bind.h"
 #include "base/json/json_writer.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
+#include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_util.h"
-#include "services/identity/public/cpp/identity_test_environment.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -29,7 +30,8 @@ std::string BuildResponse() {
   base::DictionaryValue dict;
   auto permission_dict = std::make_unique<base::DictionaryValue>();
   permission_dict->SetKey("id", base::Value("requestid"));
-  dict.SetWithoutPathExpansion("permissionRequest", std::move(permission_dict));
+  dict.SetKey("permissionRequest",
+              base::Value::FromUniquePtrValue(std::move(permission_dict)));
   std::string result;
   base::JSONWriter::Write(dict, &result);
   return result;
@@ -43,8 +45,8 @@ class PermissionRequestCreatorApiaryTest : public testing::Test {
       : test_shared_loader_factory_(
             base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
                 &test_url_loader_factory_)) {
-    AccountInfo account_info =
-        identity_test_env_.MakePrimaryAccountAvailable(kEmail);
+    AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
+        kEmail, signin::ConsentLevel::kSignin);
     account_id_ = account_info.account_id;
     permission_creator_ = std::make_unique<PermissionRequestCreatorApiary>(
         identity_test_env_.identity_manager(), test_shared_loader_factory_);
@@ -64,14 +66,14 @@ class PermissionRequestCreatorApiaryTest : public testing::Test {
   }
 
   void SetupResponse(net::Error error, const std::string& response) {
-    network::ResourceResponseHead head;
+    auto head = network::mojom::URLResponseHead::New();
     std::string headers("HTTP/1.1 200 OK\n\n");
-    head.headers = base::MakeRefCounted<net::HttpResponseHeaders>(
-        net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
+    head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(headers));
     network::URLLoaderCompletionStatus status(error);
     status.decoded_body_length = response.size();
-    test_url_loader_factory_.AddResponse(permission_creator_->GetApiUrl(), head,
-                                         response, status);
+    test_url_loader_factory_.AddResponse(permission_creator_->GetApiUrl(),
+                                         std::move(head), response, status);
   }
 
   void CreateRequest(const GURL& url) {
@@ -85,9 +87,9 @@ class PermissionRequestCreatorApiaryTest : public testing::Test {
 
   MOCK_METHOD1(OnRequestCreated, void(bool success));
 
-  base::MessageLoop message_loop_;
-  std::string account_id_;
-  identity::IdentityTestEnvironment identity_test_env_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
+  CoreAccountId account_id_;
+  signin::IdentityTestEnvironment identity_test_env_;
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
   std::unique_ptr<PermissionRequestCreatorApiary> permission_creator_;

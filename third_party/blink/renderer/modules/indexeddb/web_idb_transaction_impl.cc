@@ -4,17 +4,19 @@
 
 #include "third_party/blink/renderer/modules/indexeddb/web_idb_transaction_impl.h"
 
+#include <cstddef>
 #include <memory>
 #include <utility>
 
 #include "base/format_macros.h"
-#include "mojo/public/cpp/bindings/strong_associated_binding.h"
-#include "third_party/blink/public/platform/modules/indexeddb/web_idb_database_exception.h"
+#include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_database_error.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key_range.h"
 #include "third_party/blink/renderer/modules/indexeddb/indexed_db_blink_mojom_traits.h"
 #include "third_party/blink/renderer/modules/indexeddb/indexed_db_dispatcher.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -26,9 +28,9 @@ WebIDBTransactionImpl::WebIDBTransactionImpl(
 
 WebIDBTransactionImpl::~WebIDBTransactionImpl() = default;
 
-mojom::blink::IDBTransactionAssociatedRequest
-WebIDBTransactionImpl::CreateRequest() {
-  return mojo::MakeRequest(&transaction_, task_runner_);
+mojo::PendingAssociatedReceiver<mojom::blink::IDBTransaction>
+WebIDBTransactionImpl::CreateReceiver() {
+  return transaction_.BindNewEndpointAndPassReceiver(task_runner_);
 }
 
 void WebIDBTransactionImpl::CreateObjectStore(int64_t object_store_id,
@@ -47,14 +49,16 @@ void WebIDBTransactionImpl::Put(int64_t object_store_id,
                                 std::unique_ptr<IDBValue> value,
                                 std::unique_ptr<IDBKey> primary_key,
                                 mojom::IDBPutMode put_mode,
-                                WebIDBCallbacks* callbacks,
+                                std::unique_ptr<WebIDBCallbacks> callbacks,
                                 Vector<IDBIndexKeys> index_keys) {
   IndexedDBDispatcher::ResetCursorPrefetchCaches(transaction_id_, nullptr);
 
   size_t index_keys_size = 0;
   for (const auto& index_key : index_keys) {
     index_keys_size++;  // Account for index_key.first (int64_t).
-    for (const auto& key : index_key.second) {
+    for (const auto& key : index_key.keys) {
+      // Because all size estimates are based on RAM usage, it is impossible to
+      // overflow index_keys_size.
       index_keys_size += key->SizeEstimate();
     }
   }
@@ -63,7 +67,7 @@ void WebIDBTransactionImpl::Put(int64_t object_store_id,
       value->DataSize() + primary_key->SizeEstimate() + index_keys_size;
   if (arg_size >= max_put_value_size_) {
     callbacks->Error(
-        blink::kWebIDBDatabaseExceptionUnknownError,
+        mojom::blink::IDBException::kUnknownError,
         String::Format("The serialized keys and/or value are too large"
                        " (size=%" PRIuS " bytes, max=%" PRIuS " bytes).",
                        arg_size, max_put_value_size_));
@@ -73,21 +77,82 @@ void WebIDBTransactionImpl::Put(int64_t object_store_id,
   callbacks->SetState(nullptr, transaction_id_);
   transaction_->Put(object_store_id, std::move(value), std::move(primary_key),
                     put_mode, std::move(index_keys),
-                    GetCallbacksProxy(base::WrapUnique(callbacks)));
+                    WTF::Bind(&WebIDBTransactionImpl::PutCallback,
+                              WTF::Unretained(this), std::move(callbacks)));
+}
+
+void WebIDBTransactionImpl::PutCallback(
+    std::unique_ptr<WebIDBCallbacks> callbacks,
+    mojom::blink::IDBTransactionPutResultPtr result) {
+  if (result->is_error_result()) {
+    callbacks->Error(result->get_error_result()->error_code,
+                     std::move(result->get_error_result()->error_message));
+    callbacks.reset();
+    return;
+  }
+
+  if (result->is_key()) {
+    callbacks->SuccessKey(std::move(result->get_key()));
+    callbacks.reset();
+    return;
+  }
+}
+
+void WebIDBTransactionImpl::PutAll(int64_t object_store_id,
+                                   Vector<mojom::blink::IDBPutParamsPtr> puts,
+                                   std::unique_ptr<WebIDBCallbacks> callbacks) {
+  IndexedDBDispatcher::ResetCursorPrefetchCaches(transaction_id_, nullptr);
+  base::CheckedNumeric<size_t> index_keys_size = 0;
+  for (auto& put : puts) {
+    index_keys_size++;
+    for (const auto& index_key : put->index_keys) {
+      for (const auto& key : index_key.keys) {
+        index_keys_size += key->SizeEstimate();
+      }
+    }
+  }
+
+  base::CheckedNumeric<size_t> arg_size;
+  for (auto& put : puts) {
+    arg_size += put->value->DataSize();
+    arg_size += put->key->SizeEstimate();
+  }
+  arg_size += index_keys_size.ValueOrDie();
+  if (arg_size.ValueOrDie() >= max_put_value_size_) {
+    callbacks->Error(
+        mojom::blink::IDBException::kUnknownError,
+        String::Format("The serialized keys and/or values are too large"
+                       " (size=%" PRIuS " bytes, max=%" PRIuS " bytes).",
+                       base::checked_cast<size_t>(arg_size.ValueOrDie()),
+                       max_put_value_size_));
+    return;
+  }
+
+  callbacks->SetState(nullptr, transaction_id_);
+  transaction_->PutAll(object_store_id, std::move(puts),
+                       WTF::Bind(&WebIDBTransactionImpl::PutAllCallback,
+                                 WTF::Unretained(this), std::move(callbacks)));
+}
+
+void WebIDBTransactionImpl::PutAllCallback(
+    std::unique_ptr<WebIDBCallbacks> callbacks,
+    mojom::blink::IDBTransactionPutAllResultPtr result) {
+  if (result->is_error_result()) {
+    callbacks->Error(result->get_error_result()->error_code,
+                     std::move(result->get_error_result()->error_message));
+    callbacks.reset();
+    return;
+  }
+
+  if (result->is_keys()) {
+    callbacks->SuccessKey(IDBKey::CreateArray(std::move(result->get_keys())));
+    callbacks.reset();
+    return;
+  }
 }
 
 void WebIDBTransactionImpl::Commit(int64_t num_errors_handled) {
   transaction_->Commit(num_errors_handled);
-}
-
-mojom::blink::IDBCallbacksAssociatedPtrInfo
-WebIDBTransactionImpl::GetCallbacksProxy(
-    std::unique_ptr<WebIDBCallbacks> callbacks) {
-  mojom::blink::IDBCallbacksAssociatedPtrInfo ptr_info;
-  auto request = mojo::MakeRequest(&ptr_info);
-  mojo::MakeStrongAssociatedBinding(std::move(callbacks), std::move(request),
-                                    task_runner_);
-  return ptr_info;
 }
 
 }  // namespace blink

@@ -5,10 +5,11 @@
 #include "chrome/browser/ui/views/overlay/resize_handle_button.h"
 
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/views/overlay/constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -17,25 +18,20 @@
 
 namespace {
 
-const int kResizeHandleButtonSize = 36;
-const int kResizeHandleImageSize = 18;
-
-constexpr SkColor kResizeHandleIconColor = SK_ColorWHITE;
+constexpr int kResizeHandleButtonMargin = 4;
+constexpr int kResizeHandleButtonSize = 16;
 
 }  // namespace
 
 namespace views {
 
-ResizeHandleButton::ResizeHandleButton(ButtonListener* listener)
-    : ImageButton(listener) {
-  SetImageAlignment(views::ImageButton::ALIGN_LEFT,
-                    views::ImageButton::ALIGN_TOP);
+ResizeHandleButton::ResizeHandleButton(PressedCallback callback)
+    : ImageButton(std::move(callback)) {
   SetSize(gfx::Size(kResizeHandleButtonSize, kResizeHandleButtonSize));
   SetImageForQuadrant(OverlayWindowViews::WindowQuadrant::kBottomRight);
 
   // Accessibility.
-  SetFocusForPlatform();
-  const base::string16 resize_button_label(
+  const std::u16string resize_button_label(
       l10n_util::GetStringUTF16(IDS_PICTURE_IN_PICTURE_RESIZE_HANDLE_TEXT));
   SetAccessibleName(resize_button_label);
   SetTooltipText(resize_button_label);
@@ -67,20 +63,23 @@ void ResizeHandleButton::SetPosition(
   // This is determined as the opposite quadrant on the window.
   switch (quadrant) {
     case OverlayWindowViews::WindowQuadrant::kBottomLeft:
-      ImageButton::SetPosition(
-          gfx::Point(size.width() - kResizeHandleButtonSize, 0));
+      ImageButton::SetPosition(gfx::Point(
+          size.width() - kResizeHandleButtonSize - kResizeHandleButtonMargin,
+          kResizeHandleButtonMargin));
       break;
     case OverlayWindowViews::WindowQuadrant::kBottomRight:
-      ImageButton::SetPosition(gfx::Point(0, 0));
+      ImageButton::SetPosition(
+          gfx::Point(kResizeHandleButtonMargin, kResizeHandleButtonMargin));
       break;
     case OverlayWindowViews::WindowQuadrant::kTopLeft:
-      ImageButton::SetPosition(
-          gfx::Point(size.width() - kResizeHandleButtonSize,
-                     size.height() - kResizeHandleButtonSize));
+      ImageButton::SetPosition(gfx::Point(
+          size.width() - kResizeHandleButtonSize - kResizeHandleButtonMargin,
+          size.height() - kResizeHandleButtonSize - kResizeHandleButtonMargin));
       break;
     case OverlayWindowViews::WindowQuadrant::kTopRight:
-      ImageButton::SetPosition(
-          gfx::Point(0, size.height() - kResizeHandleButtonSize));
+      ImageButton::SetPosition(gfx::Point(
+          kResizeHandleButtonMargin,
+          size.height() - kResizeHandleButtonSize - kResizeHandleButtonMargin));
       break;
   }
 
@@ -95,27 +94,27 @@ void ResizeHandleButton::SetImageForQuadrant(
   current_quadrant_ = quadrant;
 
   gfx::ImageSkia icon = gfx::CreateVectorIcon(
-      kResizeHandleIcon, kResizeHandleImageSize, kResizeHandleIconColor);
+      kResizeHandleIcon, kResizeHandleButtonSize, kPipWindowIconColor);
   switch (quadrant) {
     case OverlayWindowViews::WindowQuadrant::kBottomLeft:
-      SetImageAlignment(views::ImageButton::ALIGN_RIGHT,
-                        views::ImageButton::ALIGN_TOP);
+      SetImageHorizontalAlignment(views::ImageButton::ALIGN_RIGHT);
+      SetImageVerticalAlignment(views::ImageButton::ALIGN_TOP);
       break;
     case OverlayWindowViews::WindowQuadrant::kBottomRight:
-      SetImageAlignment(views::ImageButton::ALIGN_LEFT,
-                        views::ImageButton::ALIGN_TOP);
+      SetImageHorizontalAlignment(views::ImageButton::ALIGN_LEFT);
+      SetImageVerticalAlignment(views::ImageButton::ALIGN_TOP);
       icon = gfx::ImageSkiaOperations::CreateRotatedImage(
           icon, SkBitmapOperations::ROTATION_270_CW);
       break;
     case OverlayWindowViews::WindowQuadrant::kTopLeft:
-      SetImageAlignment(views::ImageButton::ALIGN_RIGHT,
-                        views::ImageButton::ALIGN_BOTTOM);
+      SetImageHorizontalAlignment(views::ImageButton::ALIGN_RIGHT);
+      SetImageVerticalAlignment(views::ImageButton::ALIGN_BOTTOM);
       icon = gfx::ImageSkiaOperations::CreateRotatedImage(
           icon, SkBitmapOperations::ROTATION_90_CW);
       break;
     case OverlayWindowViews::WindowQuadrant::kTopRight:
-      SetImageAlignment(views::ImageButton::ALIGN_LEFT,
-                        views::ImageButton::ALIGN_BOTTOM);
+      SetImageHorizontalAlignment(views::ImageButton::ALIGN_LEFT);
+      SetImageVerticalAlignment(views::ImageButton::ALIGN_BOTTOM);
       icon = gfx::ImageSkiaOperations::CreateRotatedImage(
           icon, SkBitmapOperations::ROTATION_180_CW);
       break;
@@ -123,5 +122,8 @@ void ResizeHandleButton::SetImageForQuadrant(
 
   SetImage(views::Button::STATE_NORMAL, icon);
 }
+
+BEGIN_METADATA(ResizeHandleButton, views::ImageButton)
+END_METADATA
 
 }  // namespace views

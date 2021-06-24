@@ -6,10 +6,10 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/callback_helpers.h"
 #include "base/i18n/message_formatter.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -36,7 +36,7 @@ class It2MeConfirmationDialogLinux : public It2MeConfirmationDialog {
 
   // It2MeConfirmationDialog implementation.
   void Show(const std::string& remote_user_email,
-            const ResultCallback& callback) override;
+            ResultCallback callback) override;
 
  private:
   // Creates a dialog window and makes it visible.
@@ -65,19 +65,19 @@ It2MeConfirmationDialogLinux::~It2MeConfirmationDialogLinux() {
 }
 
 void It2MeConfirmationDialogLinux::Show(const std::string& remote_user_email,
-                                        const ResultCallback& callback) {
+                                        ResultCallback callback) {
   DCHECK(!remote_user_email.empty());
   DCHECK(callback);
   DCHECK(!result_callback_);
 
-  result_callback_ = callback;
+  result_callback_ = std::move(callback);
 
   CreateWindow(remote_user_email);
 
   dialog_timer_.Start(FROM_HERE, kDialogTimeout,
-                      base::Bind(&It2MeConfirmationDialogLinux::OnResponse,
-                                 base::Unretained(this),
-                                 /*dialog=*/nullptr, GTK_RESPONSE_NONE));
+                      base::BindOnce(&It2MeConfirmationDialogLinux::OnResponse,
+                                     base::Unretained(this),
+                                     /*dialog=*/nullptr, GTK_RESPONSE_NONE));
 }
 
 void It2MeConfirmationDialogLinux::Hide() {
@@ -116,7 +116,7 @@ void It2MeConfirmationDialogLinux::CreateWindow(
   GtkWidget* content_area =
       gtk_dialog_get_content_area(GTK_DIALOG(confirmation_window_));
 
-  base::string16 dialog_text =
+  std::u16string dialog_text =
       base::i18n::MessageFormatter::FormatWithNumberedArgs(
           l10n_util::GetStringUTF16(
               IDS_SHARE_CONFIRM_DIALOG_MESSAGE_WITH_USERNAME),
@@ -148,8 +148,8 @@ void It2MeConfirmationDialogLinux::OnResponse(GtkDialog* dialog,
   DCHECK(result_callback_);
 
   Hide();
-  base::ResetAndReturn(&result_callback_).Run(
-      (response_id == GTK_RESPONSE_OK) ? Result::OK : Result::CANCEL);
+  std::move(result_callback_)
+      .Run((response_id == GTK_RESPONSE_OK) ? Result::OK : Result::CANCEL);
 }
 
 }  // namespace

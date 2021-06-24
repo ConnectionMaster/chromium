@@ -61,8 +61,8 @@ bool ViewsDelegate::GetSavedWindowPlacement(
   return false;
 }
 
-void ViewsDelegate::NotifyMenuItemFocused(const base::string16& menu_name,
-                                          const base::string16& menu_item_name,
+void ViewsDelegate::NotifyMenuItemFocused(const std::u16string& menu_name,
+                                          const std::u16string& menu_item_name,
                                           int item_index,
                                           int item_count,
                                           bool has_submenu) {}
@@ -71,6 +71,10 @@ ViewsDelegate::ProcessMenuAcceleratorResult
 ViewsDelegate::ProcessAcceleratorWhileMenuShowing(
     const ui::Accelerator& accelerator) {
   return ProcessMenuAcceleratorResult::LEAVE_MENU_OPEN;
+}
+
+bool ViewsDelegate::ShouldCloseMenuIfMouseCaptureLost() const {
+  return true;
 }
 
 #if defined(OS_WIN)
@@ -85,15 +89,20 @@ HICON ViewsDelegate::GetSmallWindowIcon() const {
 bool ViewsDelegate::IsWindowInMetro(gfx::NativeWindow window) const {
   return false;
 }
-#elif defined(OS_LINUX) && !defined(OS_CHROMEOS)
+#elif BUILDFLAG(ENABLE_DESKTOP_AURA) && \
+    (defined(OS_LINUX) || defined(OS_CHROMEOS))
 gfx::ImageSkia* ViewsDelegate::GetDefaultWindowIcon() const {
   return nullptr;
 }
 #endif
 
-NonClientFrameView* ViewsDelegate::CreateDefaultNonClientFrameView(
-    Widget* widget) {
+std::unique_ptr<NonClientFrameView>
+ViewsDelegate::CreateDefaultNonClientFrameView(Widget* widget) {
   return nullptr;
+}
+
+bool ViewsDelegate::IsShuttingDown() const {
+  return false;
 }
 
 void ViewsDelegate::AddRef() {}
@@ -108,13 +117,11 @@ bool ViewsDelegate::WindowManagerProvidesTitleBar(bool maximized) {
   return false;
 }
 
+#if defined(OS_MAC)
 ui::ContextFactory* ViewsDelegate::GetContextFactory() {
   return nullptr;
 }
-
-ui::ContextFactoryPrivate* ViewsDelegate::GetContextFactoryPrivate() {
-  return nullptr;
-}
+#endif
 
 std::string ViewsDelegate::GetApplicationName() {
   base::FilePath program = base::CommandLine::ForCurrentProcess()->GetProgram();

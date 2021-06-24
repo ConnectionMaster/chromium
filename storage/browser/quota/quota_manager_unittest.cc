@@ -13,35 +13,44 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
+#include "base/containers/contains.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/system/sys_info.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "components/services/storage/public/mojom/quota_client.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "storage/browser/quota/quota_client_type.h"
 #include "storage/browser/quota/quota_database.h"
-#include "storage/browser/quota/quota_manager.h"
+#include "storage/browser/quota/quota_features.h"
+#include "storage/browser/quota/quota_manager_impl.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
+#include "storage/browser/quota/quota_override_handle.h"
+#include "storage/browser/test/mock_quota_client.h"
 #include "storage/browser/test/mock_special_storage_policy.h"
-#include "storage/browser/test/mock_storage_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/quota/quota_types.mojom-shared.h"
 #include "url/gurl.h"
-#include "url/origin.h"
 
-using blink::mojom::QuotaStatusCode;
-using blink::mojom::StorageType;
-using storage::QuotaClient;
-using storage::QuotaManager;
-using storage::UsageInfo;
-using storage::UsageInfoEntries;
+using ::blink::StorageKey;
+using ::blink::mojom::QuotaStatusCode;
+using ::blink::mojom::StorageType;
 
-namespace content {
+namespace storage {
 
 namespace {
 
@@ -50,15 +59,12 @@ const StorageType kTemp = StorageType::kTemporary;
 const StorageType kPerm = StorageType::kPersistent;
 const StorageType kSync = StorageType::kSyncable;
 
-const int kAllClients = QuotaClient::kAllClientsMask;
-
 // Values in bytes.
 const int64_t kAvailableSpaceForApp = 13377331U;
 const int64_t kMustRemainAvailableForSystem = kAvailableSpaceForApp / 2;
 const int64_t kDefaultPoolSize = 1000;
 const int64_t kDefaultPerHostQuota = 200;
-
-const GURL kTestEvictionOrigin = GURL("http://test.eviction.policy/result");
+const int64_t kGigabytes = QuotaManagerImpl::kGBytes;
 
 // Returns a deterministic value for the amount of available disk space.
 int64_t GetAvailableDiskSpaceForTest() {
@@ -72,276 +78,299 @@ std::tuple<int64_t, int64_t> GetVolumeInfoForTests(
   return std::make_tuple(total, available);
 }
 
-// TODO(crbug.com/889590): Replace with common converter.
-url::Origin ToOrigin(const std::string& url) {
-  return url::Origin::Create(GURL(url));
+StorageKey ToStorageKey(const std::string& url) {
+  return StorageKey::CreateFromStringForTesting(url);
 }
+
 }  // namespace
 
-class QuotaManagerTest : public testing::Test {
+class QuotaManagerImplTest : public testing::Test {
  protected:
-  using QuotaTableEntry = QuotaManager::QuotaTableEntry;
-  using QuotaTableEntries = QuotaManager::QuotaTableEntries;
-  using OriginInfoTableEntries = QuotaManager::OriginInfoTableEntries;
+  using QuotaTableEntry = QuotaManagerImpl::QuotaTableEntry;
+  using QuotaTableEntries = QuotaManagerImpl::QuotaTableEntries;
+  using BucketTableEntries = QuotaManagerImpl::BucketTableEntries;
 
  public:
-  QuotaManagerTest()
-      : mock_time_counter_(0),
-        weak_factory_(this) {
-  }
+  QuotaManagerImplTest() : mock_time_counter_(0) {}
 
   void SetUp() override {
     ASSERT_TRUE(data_dir_.CreateUniqueTempDir());
-    mock_special_storage_policy_ = new MockSpecialStoragePolicy;
-    ResetQuotaManager(false /* is_incognito */);
+    mock_special_storage_policy_ =
+        base::MakeRefCounted<MockSpecialStoragePolicy>();
+    ResetQuotaManagerImpl(false /* is_incognito */);
   }
 
   void TearDown() override {
     // Make sure the quota manager cleans up correctly.
-    quota_manager_ = nullptr;
-    scoped_task_environment_.RunUntilIdle();
+    quota_manager_impl_ = nullptr;
+    task_environment_.RunUntilIdle();
   }
 
  protected:
-  void ResetQuotaManager(bool is_incognito) {
-    quota_manager_ = new QuotaManager(is_incognito, data_dir_.GetPath(),
-                                      base::ThreadTaskRunnerHandle::Get().get(),
-                                      mock_special_storage_policy_.get(),
-                                      storage::GetQuotaSettingsFunc());
+  void ResetQuotaManagerImpl(bool is_incognito) {
+    quota_manager_impl_ = base::MakeRefCounted<QuotaManagerImpl>(
+        is_incognito, data_dir_.GetPath(),
+        base::ThreadTaskRunnerHandle::Get().get(),
+        /*quota_change_callback=*/base::DoNothing(),
+        mock_special_storage_policy_.get(), GetQuotaSettingsFunc());
     SetQuotaSettings(kDefaultPoolSize, kDefaultPerHostQuota,
                      is_incognito ? INT64_C(0) : kMustRemainAvailableForSystem);
 
     // Don't (automatically) start the eviction for testing.
-    quota_manager_->eviction_disabled_ = true;
+    quota_manager_impl_->eviction_disabled_ = true;
     // Don't query the hard disk for remaining capacity.
-    quota_manager_->get_volume_info_fn_= &GetVolumeInfoForTests;
+    quota_manager_impl_->get_volume_info_fn_ = &GetVolumeInfoForTests;
     additional_callback_count_ = 0;
   }
 
-  MockStorageClient* CreateClient(
-      const MockOriginData* mock_data,
-      size_t mock_data_size,
-      QuotaClient::ID id) {
-    return new MockStorageClient(quota_manager_->proxy(),
-                                 mock_data, id, mock_data_size);
+  MockQuotaClient* CreateAndRegisterClient(
+      base::span<const MockOriginData> mock_data,
+      QuotaClientType client_type,
+      const std::vector<blink::mojom::StorageType> storage_types) {
+    auto mock_quota_client = std::make_unique<storage::MockQuotaClient>(
+        quota_manager_impl_->proxy(), mock_data, client_type);
+    MockQuotaClient* mock_quota_client_ptr = mock_quota_client.get();
+
+    mojo::PendingRemote<storage::mojom::QuotaClient> quota_client;
+    mojo::MakeSelfOwnedReceiver(std::move(mock_quota_client),
+                                quota_client.InitWithNewPipeAndPassReceiver());
+    quota_manager_impl_->proxy()->RegisterClient(std::move(quota_client),
+                                                 client_type, storage_types);
+    return mock_quota_client_ptr;
   }
 
-  void RegisterClient(MockStorageClient* client) {
-    quota_manager_->proxy()->RegisterClient(client);
+  void CreateBucket(const StorageKey& storage_key,
+                    const std::string& bucket_name) {
+    quota_manager_impl_->CreateBucket(
+        storage_key, bucket_name,
+        base::BindOnce(&QuotaManagerImplTest::DidGetBucket,
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  void GetBucket(const StorageKey& storage_key,
+                 const std::string& bucket_name) {
+    quota_manager_impl_->GetBucket(
+        storage_key, bucket_name,
+        base::BindOnce(&QuotaManagerImplTest::DidGetBucket,
+                       weak_factory_.GetWeakPtr()));
   }
 
   void GetUsageInfo() {
     usage_info_.clear();
-    quota_manager_->GetUsageInfo(base::BindOnce(
-        &QuotaManagerTest::DidGetUsageInfo, weak_factory_.GetWeakPtr()));
+    quota_manager_impl_->GetUsageInfo(base::BindOnce(
+        &QuotaManagerImplTest::DidGetUsageInfo, weak_factory_.GetWeakPtr()));
   }
 
-  void GetUsageAndQuotaForWebApps(const url::Origin& origin, StorageType type) {
+  void GetUsageAndQuotaForWebApps(const StorageKey& storage_key,
+                                  StorageType type) {
     quota_status_ = QuotaStatusCode::kUnknown;
     usage_ = -1;
     quota_ = -1;
-    quota_manager_->GetUsageAndQuotaForWebApps(
-        origin, type,
-        base::BindOnce(&QuotaManagerTest::DidGetUsageAndQuota,
+    quota_manager_impl_->GetUsageAndQuotaForWebApps(
+        storage_key, type,
+        base::BindOnce(&QuotaManagerImplTest::DidGetUsageAndQuota,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void GetUsageAndQuotaWithBreakdown(const url::Origin& origin,
+  void GetUsageAndQuotaWithBreakdown(const StorageKey& storage_key,
                                      StorageType type) {
     quota_status_ = QuotaStatusCode::kUnknown;
     usage_ = -1;
     quota_ = -1;
     usage_breakdown_ = nullptr;
-    quota_manager_->GetUsageAndQuotaWithBreakdown(
-        origin, type,
-        base::BindOnce(&QuotaManagerTest::DidGetUsageAndQuotaWithBreakdown,
+    quota_manager_impl_->GetUsageAndQuotaWithBreakdown(
+        storage_key, type,
+        base::BindOnce(&QuotaManagerImplTest::DidGetUsageAndQuotaWithBreakdown,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void GetUsageAndQuotaForStorageClient(const url::Origin& origin,
+  void GetUsageAndQuotaForStorageClient(const StorageKey& storage_key,
                                         StorageType type) {
     quota_status_ = QuotaStatusCode::kUnknown;
     usage_ = -1;
     quota_ = -1;
-    quota_manager_->GetUsageAndQuota(
-        origin, type,
-        base::BindOnce(&QuotaManagerTest::DidGetUsageAndQuota,
+    quota_manager_impl_->GetUsageAndQuota(
+        storage_key, type,
+        base::BindOnce(&QuotaManagerImplTest::DidGetUsageAndQuota,
                        weak_factory_.GetWeakPtr()));
   }
 
   void SetQuotaSettings(int64_t pool_size,
                         int64_t per_host_quota,
                         int64_t must_remain_available) {
-    storage::QuotaSettings settings;
+    QuotaSettings settings;
     settings.pool_size = pool_size;
     settings.per_host_quota = per_host_quota;
     settings.session_only_per_host_quota =
         (per_host_quota > 0) ? (per_host_quota - 1) : 0;
     settings.must_remain_available = must_remain_available;
     settings.refresh_interval = base::TimeDelta::Max();
-    quota_manager_->SetQuotaSettings(settings);
+    quota_manager_impl_->SetQuotaSettings(settings);
+  }
+
+  using GetVolumeInfoFn =
+      std::tuple<int64_t, int64_t> (*)(const base::FilePath&);
+
+  void SetGetVolumeInfoFn(GetVolumeInfoFn fn) {
+    quota_manager_impl_->SetGetVolumeInfoFnForTesting(fn);
   }
 
   void GetPersistentHostQuota(const std::string& host) {
     quota_status_ = QuotaStatusCode::kUnknown;
     quota_ = -1;
-    quota_manager_->GetPersistentHostQuota(
-        host, base::BindOnce(&QuotaManagerTest::DidGetHostQuota,
+    quota_manager_impl_->GetPersistentHostQuota(
+        host, base::BindOnce(&QuotaManagerImplTest::DidGetHostQuota,
                              weak_factory_.GetWeakPtr()));
   }
 
   void SetPersistentHostQuota(const std::string& host, int64_t new_quota) {
     quota_status_ = QuotaStatusCode::kUnknown;
     quota_ = -1;
-    quota_manager_->SetPersistentHostQuota(
+    quota_manager_impl_->SetPersistentHostQuota(
         host, new_quota,
-        base::BindOnce(&QuotaManagerTest::DidGetHostQuota,
+        base::BindOnce(&QuotaManagerImplTest::DidGetHostQuota,
                        weak_factory_.GetWeakPtr()));
   }
 
   void GetGlobalUsage(StorageType type) {
     usage_ = -1;
     unlimited_usage_ = -1;
-    quota_manager_->GetGlobalUsage(
-        type, base::BindOnce(&QuotaManagerTest::DidGetGlobalUsage,
+    quota_manager_impl_->GetGlobalUsage(
+        type, base::BindOnce(&QuotaManagerImplTest::DidGetGlobalUsage,
                              weak_factory_.GetWeakPtr()));
   }
 
-  void GetHostUsage(const std::string& host, StorageType type) {
+  void GetHostUsageWithBreakdown(const std::string& host, StorageType type) {
     usage_ = -1;
-    quota_manager_->GetHostUsage(
+    quota_manager_impl_->GetHostUsageWithBreakdown(
         host, type,
-        base::BindOnce(&QuotaManagerTest::DidGetHostUsage,
+        base::BindOnce(&QuotaManagerImplTest::DidGetHostUsageBreakdown,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void GetHostUsageBreakdown(const std::string& host, StorageType type) {
-    usage_ = -1;
-    quota_manager_->GetHostUsageWithBreakdown(
-        host, type,
-        base::BindOnce(&QuotaManagerTest::DidGetHostUsageBreakdown,
-                       weak_factory_.GetWeakPtr()));
-  }
-
-  void RunAdditionalUsageAndQuotaTask(const url::Origin& origin,
+  void RunAdditionalUsageAndQuotaTask(const StorageKey& storage_key,
                                       StorageType type) {
-    quota_manager_->GetUsageAndQuota(
-        origin, type,
-        base::BindOnce(&QuotaManagerTest::DidGetUsageAndQuotaAdditional,
+    quota_manager_impl_->GetUsageAndQuota(
+        storage_key, type,
+        base::BindOnce(&QuotaManagerImplTest::DidGetUsageAndQuotaAdditional,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void DeleteClientOriginData(QuotaClient* client,
-                              const url::Origin& origin,
-                              StorageType type) {
+  void DeleteClientStorageKeyData(mojom::QuotaClient* client,
+                                  const StorageKey& storage_key,
+                                  StorageType type) {
     DCHECK(client);
     quota_status_ = QuotaStatusCode::kUnknown;
-    client->DeleteOriginData(origin, type,
-                             base::BindOnce(&QuotaManagerTest::StatusCallback,
-                                            weak_factory_.GetWeakPtr()));
-  }
-
-  void EvictOriginData(const url::Origin& origin, StorageType type) {
-    quota_status_ = QuotaStatusCode::kUnknown;
-    quota_manager_->EvictOriginData(
-        origin, type,
-        base::BindOnce(&QuotaManagerTest::StatusCallback,
+    client->DeleteOriginData(
+        storage_key.origin(), type,
+        base::BindOnce(&QuotaManagerImplTest::StatusCallback,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void DeleteOriginData(const url::Origin& origin,
-                        StorageType type,
-                        int quota_client_mask) {
+  void EvictStorageKeyData(const StorageKey& storage_key, StorageType type) {
     quota_status_ = QuotaStatusCode::kUnknown;
-    quota_manager_->DeleteOriginData(
-        origin, type, quota_client_mask,
-        base::BindOnce(&QuotaManagerTest::StatusCallback,
+    quota_manager_impl_->EvictStorageKeyData(
+        storage_key, type,
+        base::BindOnce(&QuotaManagerImplTest::StatusCallback,
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  void DeleteStorageKeyData(const StorageKey& storage_key,
+                            StorageType type,
+                            QuotaClientTypes quota_client_types) {
+    quota_status_ = QuotaStatusCode::kUnknown;
+    quota_manager_impl_->DeleteStorageKeyData(
+        storage_key, type, std::move(quota_client_types),
+        base::BindOnce(&QuotaManagerImplTest::StatusCallback,
                        weak_factory_.GetWeakPtr()));
   }
 
   void DeleteHostData(const std::string& host,
                       StorageType type,
-                      int quota_client_mask) {
+                      QuotaClientTypes quota_client_types) {
     quota_status_ = QuotaStatusCode::kUnknown;
-    quota_manager_->DeleteHostData(
-        host, type, quota_client_mask,
-        base::BindOnce(&QuotaManagerTest::StatusCallback,
+    quota_manager_impl_->DeleteHostData(
+        host, type, std::move(quota_client_types),
+        base::BindOnce(&QuotaManagerImplTest::StatusCallback,
                        weak_factory_.GetWeakPtr()));
   }
 
   void GetStorageCapacity() {
     available_space_ = -1;
     total_space_ = -1;
-    quota_manager_->GetStorageCapacity(base::BindOnce(
-        &QuotaManagerTest::DidGetStorageCapacity, weak_factory_.GetWeakPtr()));
+    quota_manager_impl_->GetStorageCapacity(
+        base::BindOnce(&QuotaManagerImplTest::DidGetStorageCapacity,
+                       weak_factory_.GetWeakPtr()));
   }
 
   void GetEvictionRoundInfo() {
     quota_status_ = QuotaStatusCode::kUnknown;
-    settings_ = storage::QuotaSettings();
+    settings_ = QuotaSettings();
     available_space_ = -1;
     total_space_ = -1;
     usage_ = -1;
-    quota_manager_->GetEvictionRoundInfo(
-        base::BindOnce(&QuotaManagerTest::DidGetEvictionRoundInfo,
+    quota_manager_impl_->GetEvictionRoundInfo(
+        base::BindOnce(&QuotaManagerImplTest::DidGetEvictionRoundInfo,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void GetCachedOrigins(StorageType type, std::set<url::Origin>* origins) {
-    ASSERT_TRUE(origins != nullptr);
-    origins->clear();
-    quota_manager_->GetCachedOrigins(type, origins);
+  std::set<StorageKey> GetCachedStorageKeys(StorageType type) {
+    return quota_manager_impl_->GetCachedStorageKeys(type);
   }
 
-  void NotifyStorageAccessed(QuotaClient* client,
-                             const url::Origin& origin,
-                             StorageType type) {
-    DCHECK(client);
-    quota_manager_->NotifyStorageAccessedInternal(
-        client->id(), origin, type, IncrementMockTime());
+  void NotifyStorageAccessed(const StorageKey& storage_key, StorageType type) {
+    quota_manager_impl_->NotifyStorageAccessed(storage_key, type,
+                                               IncrementMockTime());
   }
 
-  void DeleteOriginFromDatabase(const url::Origin& origin, StorageType type) {
-    quota_manager_->DeleteOriginFromDatabase(origin, type, false);
+  void DeleteStorageKeyFromDatabase(const StorageKey& storage_key,
+                                    StorageType type) {
+    quota_manager_impl_->DeleteStorageKeyFromDatabase(storage_key, type, false);
   }
 
-  void GetEvictionOrigin(StorageType type) {
-    eviction_origin_.reset();
+  void GetEvictionStorageKey(StorageType type) {
+    eviction_storage_key_.reset();
     // The quota manager's default eviction policy is to use an LRU eviction
     // policy.
-    quota_manager_->GetEvictionOrigin(
-        type, std::set<url::Origin>(), 0,
-        base::BindOnce(&QuotaManagerTest::DidGetEvictionOrigin,
+    quota_manager_impl_->GetEvictionStorageKey(
+        type, 0,
+        base::BindOnce(&QuotaManagerImplTest::DidGetEvictionStorageKey,
                        weak_factory_.GetWeakPtr()));
   }
 
-  void NotifyOriginInUse(const url::Origin& origin) {
-    quota_manager_->NotifyOriginInUse(origin);
+  void NotifyStorageKeyInUse(const StorageKey& storage_key) {
+    quota_manager_impl_->NotifyStorageKeyInUse(storage_key);
   }
 
-  void NotifyOriginNoLongerInUse(const url::Origin& origin) {
-    quota_manager_->NotifyOriginNoLongerInUse(origin);
+  void NotifyStorageKeyNoLongerInUse(const StorageKey& storage_key) {
+    quota_manager_impl_->NotifyStorageKeyNoLongerInUse(storage_key);
   }
 
-  void GetOriginsModifiedSince(StorageType type, base::Time modified_since) {
-    modified_origins_.clear();
-    modified_origins_type_ = StorageType::kUnknown;
-    quota_manager_->GetOriginsModifiedSince(
-        type, modified_since,
-        base::BindOnce(&QuotaManagerTest::DidGetModifiedOrigins,
+  void GetStorageKeysModifiedBetween(StorageType type,
+                                     base::Time begin,
+                                     base::Time end) {
+    modified_storage_keys_.clear();
+    modified_storage_keys_type_ = StorageType::kUnknown;
+    quota_manager_impl_->GetStorageKeysModifiedBetween(
+        type, begin, end,
+        base::BindOnce(&QuotaManagerImplTest::DidGetModifiedStorageKeys,
                        weak_factory_.GetWeakPtr()));
   }
 
   void DumpQuotaTable() {
     quota_entries_.clear();
-    quota_manager_->DumpQuotaTable(base::BindOnce(
-        &QuotaManagerTest::DidDumpQuotaTable, weak_factory_.GetWeakPtr()));
+    quota_manager_impl_->DumpQuotaTable(base::BindOnce(
+        &QuotaManagerImplTest::DidDumpQuotaTable, weak_factory_.GetWeakPtr()));
   }
 
-  void DumpOriginInfoTable() {
-    origin_info_entries_.clear();
-    quota_manager_->DumpOriginInfoTable(base::BindOnce(
-        &QuotaManagerTest::DidDumpOriginInfoTable, weak_factory_.GetWeakPtr()));
+  void DumpBucketTable() {
+    bucket_entries_.clear();
+    quota_manager_impl_->DumpBucketTable(base::BindOnce(
+        &QuotaManagerImplTest::DidDumpBucketTable, weak_factory_.GetWeakPtr()));
+  }
+
+  void DidGetBucket(QuotaErrorOr<BucketInfo> result) {
+    bucket_ = std::move(result);
   }
 
   void DidGetUsageInfo(UsageInfoEntries entries) {
@@ -402,7 +431,7 @@ class QuotaManagerTest : public testing::Test {
   }
 
   void DidGetEvictionRoundInfo(QuotaStatusCode status,
-                               const storage::QuotaSettings& settings,
+                               const QuotaSettings& settings,
                                int64_t available_space,
                                int64_t total_space,
                                int64_t global_usage,
@@ -414,26 +443,39 @@ class QuotaManagerTest : public testing::Test {
     usage_ = global_usage;
   }
 
-  void DidGetEvictionOrigin(const base::Optional<url::Origin>& origin) {
-    eviction_origin_ = origin;
-    DCHECK(!origin.has_value() || !origin->GetURL().is_empty());
+  void DidGetEvictionStorageKey(const absl::optional<StorageKey>& storage_key) {
+    eviction_storage_key_ = storage_key;
+    DCHECK(!storage_key.has_value() ||
+           !storage_key->origin().GetURL().is_empty());
   }
 
-  void DidGetModifiedOrigins(const std::set<url::Origin>& origins,
-                             StorageType type) {
-    modified_origins_ = origins;
-    modified_origins_type_ = type;
+  void DidGetModifiedStorageKeys(const std::set<StorageKey>& storage_keys,
+                                 StorageType type) {
+    modified_storage_keys_ = storage_keys;
+    modified_storage_keys_type_ = type;
   }
 
   void DidDumpQuotaTable(const QuotaTableEntries& entries) {
     quota_entries_ = entries;
   }
 
-  void DidDumpOriginInfoTable(const OriginInfoTableEntries& entries) {
-    origin_info_entries_ = entries;
+  void DidDumpBucketTable(const BucketTableEntries& entries) {
+    bucket_entries_ = entries;
   }
 
   void GetUsage_WithModifyTestBody(const StorageType type);
+
+  void SetStoragePressureCallback(
+      base::RepeatingCallback<void(StorageKey)> callback) {
+    quota_manager_impl_->SetStoragePressureCallback(std::move(callback));
+  }
+
+  void MaybeRunStoragePressureCallback(const StorageKey& storage_key,
+                                       int64_t total,
+                                       int64_t available) {
+    quota_manager_impl_->MaybeRunStoragePressureCallback(storage_key, total,
+                                                         available);
+  }
 
   void set_additional_callback_count(int c) { additional_callback_count_ = c; }
   int additional_callback_count() const { return additional_callback_count_; }
@@ -443,13 +485,23 @@ class QuotaManagerTest : public testing::Test {
     ++additional_callback_count_;
   }
 
-  QuotaManager* quota_manager() const { return quota_manager_.get(); }
-  void set_quota_manager(QuotaManager* quota_manager) {
-    quota_manager_ = quota_manager;
+  QuotaManagerImpl* quota_manager_impl() const {
+    return quota_manager_impl_.get();
+  }
+  void set_quota_manager_impl(QuotaManagerImpl* quota_manager_impl) {
+    quota_manager_impl_ = quota_manager_impl;
   }
 
   MockSpecialStoragePolicy* mock_special_storage_policy() const {
     return mock_special_storage_policy_.get();
+  }
+
+  std::unique_ptr<QuotaOverrideHandle> GetQuotaOverrideHandle() {
+    return quota_manager_impl_->proxy()->GetQuotaOverrideHandle();
+  }
+
+  void SetQuotaChangeCallback(base::RepeatingClosure cb) {
+    quota_manager_impl_->SetQuotaChangeCallbackForTesting(std::move(cb));
   }
 
   QuotaStatusCode status() const { return quota_status_; }
@@ -458,29 +510,34 @@ class QuotaManagerTest : public testing::Test {
   const blink::mojom::UsageBreakdown& usage_breakdown() const {
     return *usage_breakdown_;
   }
-  int64_t limited_usage() const { return limited_usage_; }
   int64_t unlimited_usage() const { return unlimited_usage_; }
   int64_t quota() const { return quota_; }
   int64_t total_space() const { return total_space_; }
   int64_t available_space() const { return available_space_; }
-  const base::Optional<url::Origin>& eviction_origin() const {
-    return eviction_origin_;
+  const absl::optional<StorageKey>& eviction_storage_key() const {
+    return eviction_storage_key_;
   }
-  const std::set<url::Origin>& modified_origins() const {
-    return modified_origins_;
+  const std::set<StorageKey>& modified_storage_keys() const {
+    return modified_storage_keys_;
   }
-  StorageType modified_origins_type() const { return modified_origins_type_; }
+  StorageType modified_storage_keys_type() const {
+    return modified_storage_keys_type_;
+  }
   const QuotaTableEntries& quota_entries() const { return quota_entries_; }
-  const OriginInfoTableEntries& origin_info_entries() const {
-    return origin_info_entries_;
-  }
-  const storage::QuotaSettings& settings() const { return settings_; }
-  base::FilePath profile_path() const { return data_dir_.GetPath(); }
+  const BucketTableEntries& bucket_entries() const { return bucket_entries_; }
+  const QuotaSettings& settings() const { return settings_; }
   int status_callback_count() const { return status_callback_count_; }
   void reset_status_callback_count() { status_callback_count_ = 0; }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::TaskEnvironment task_environment_;
+  QuotaErrorOr<BucketInfo> bucket_;
+
+  static std::vector<QuotaClientType> AllClients() {
+    // TODO(pwnall): Implement using something other than an empty vector?
+    return {};
+  }
 
  private:
   base::Time IncrementMockTime() {
@@ -490,59 +547,59 @@ class QuotaManagerTest : public testing::Test {
 
   base::ScopedTempDir data_dir_;
 
-  scoped_refptr<QuotaManager> quota_manager_;
+  scoped_refptr<QuotaManagerImpl> quota_manager_impl_;
   scoped_refptr<MockSpecialStoragePolicy> mock_special_storage_policy_;
 
   QuotaStatusCode quota_status_;
   UsageInfoEntries usage_info_;
   int64_t usage_;
   blink::mojom::UsageBreakdownPtr usage_breakdown_;
-  int64_t limited_usage_;
   int64_t unlimited_usage_;
   int64_t quota_;
   int64_t total_space_;
   int64_t available_space_;
-  base::Optional<url::Origin> eviction_origin_;
-  std::set<url::Origin> modified_origins_;
-  StorageType modified_origins_type_;
+  absl::optional<StorageKey> eviction_storage_key_;
+  std::set<StorageKey> modified_storage_keys_;
+  StorageType modified_storage_keys_type_;
   QuotaTableEntries quota_entries_;
-  OriginInfoTableEntries origin_info_entries_;
-  storage::QuotaSettings settings_;
+  BucketTableEntries bucket_entries_;
+  QuotaSettings settings_;
   int status_callback_count_;
 
   int additional_callback_count_;
 
   int mock_time_counter_;
 
-  base::WeakPtrFactory<QuotaManagerTest> weak_factory_;
+  base::WeakPtrFactory<QuotaManagerImplTest> weak_factory_{this};
 
-  DISALLOW_COPY_AND_ASSIGN(QuotaManagerTest);
+  DISALLOW_COPY_AND_ASSIGN(QuotaManagerImplTest);
 };
 
-TEST_F(QuotaManagerTest, GetUsageInfo) {
+TEST_F(QuotaManagerImplTest, GetUsageInfo) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",       kTemp,  10 },
-    { "http://foo.com:8080/",  kTemp,  15 },
-    { "http://bar.com/",       kTemp,  20 },
-    { "http://bar.com/",       kPerm,  50 },
+      {"http://foo.com/", kTemp, 10},
+      {"http://foo.com:8080/", kTemp, 15},
+      {"http://bar.com/", kTemp, 20},
+      {"http://bar.com/", kPerm, 50},
   };
   static const MockOriginData kData2[] = {
-    { "https://foo.com/",      kTemp,  30 },
-    { "https://foo.com:8081/", kTemp,  35 },
-    { "http://bar.com/",       kPerm,  40 },
-    { "http://example.com/",   kPerm,  40 },
+      {"https://foo.com/", kTemp, 30},
+      {"https://foo.com:8081/", kTemp, 35},
+      {"http://bar.com/", kPerm, 40},
+      {"http://example.com/", kPerm, 40},
   };
-  RegisterClient(
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem));
-  RegisterClient(
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase));
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   GetUsageInfo();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   EXPECT_EQ(4U, usage_info().size());
-  for (size_t i = 0; i < usage_info().size(); ++i) {
-    const UsageInfo& info = usage_info()[i];
+  for (const UsageInfo& info : usage_info()) {
     if (info.host == "foo.com" && info.type == kTemp) {
       EXPECT_EQ(10 + 15 + 30 + 35, info.usage);
     } else if (info.host == "bar.com" && info.type == kTemp) {
@@ -558,114 +615,152 @@ TEST_F(QuotaManagerTest, GetUsageInfo) {
   }
 }
 
-TEST_F(QuotaManagerTest, GetUsageAndQuota_Simple) {
-  static const MockOriginData kData[] = {
-    { "http://foo.com/", kTemp, 10 },
-    { "http://foo.com/", kPerm, 80 },
-  };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+TEST_F(QuotaManagerImplTest, CreateBucket) {
+  StorageKey storage_key = ToStorageKey("http://a.com/");
+  std::string bucket_name = "bucket_a";
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  CreateBucket(storage_key, bucket_name);
+  task_environment_.RunUntilIdle();
+  ASSERT_TRUE(bucket_.ok());
+
+  // Try creating a bucket with the same name.
+  CreateBucket(storage_key, bucket_name);
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(bucket_.ok());
+}
+
+TEST_F(QuotaManagerImplTest, GetBucket) {
+  StorageKey storage_key = ToStorageKey("http://a.com/");
+  std::string bucket_name = "bucket_a";
+
+  CreateBucket(storage_key, bucket_name);
+  task_environment_.RunUntilIdle();
+  ASSERT_TRUE(bucket_.ok());
+  BucketInfo created_bucket = bucket_.value();
+
+  GetBucket(storage_key, bucket_name);
+  task_environment_.RunUntilIdle();
+  ASSERT_TRUE(bucket_.ok());
+  BucketInfo retrieved_bucket = bucket_.value();
+  EXPECT_EQ(created_bucket.id, retrieved_bucket.id);
+
+  GetBucket(storage_key, "bucket_b");
+  task_environment_.RunUntilIdle();
+  ASSERT_FALSE(bucket_.ok());
+  EXPECT_EQ(bucket_.error(), QuotaError::kNotFound);
+}
+
+TEST_F(QuotaManagerImplTest, GetUsageAndQuota_Simple) {
+  static const MockOriginData kData[] = {
+      {"http://foo.com/", kTemp, 10},
+      {"http://foo.com/", kPerm, 80},
+  };
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(80, usage());
   EXPECT_EQ(0, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_LE(0, quota());
   int64_t quota_returned_for_foo = quota();
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://bar.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://bar.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
   EXPECT_EQ(quota_returned_for_foo, quota());
 }
 
-TEST_F(QuotaManagerTest, GetUsage_NoClient) {
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+TEST_F(QuotaManagerImplTest, GetUsage_NoClient) {
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
   EXPECT_EQ(0, unlimited_usage());
 
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
   EXPECT_EQ(0, unlimited_usage());
 }
 
-TEST_F(QuotaManagerTest, GetUsage_EmptyClient) {
-  RegisterClient(CreateClient(nullptr, 0, QuotaClient::kFileSystem));
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+TEST_F(QuotaManagerImplTest, GetUsage_EmptyClient) {
+  CreateAndRegisterClient(base::span<MockOriginData>(),
+                          QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
   EXPECT_EQ(0, unlimited_usage());
 
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
   EXPECT_EQ(0, unlimited_usage());
 }
 
-TEST_F(QuotaManagerTest, GetTemporaryUsageAndQuota_MultiOrigins) {
+TEST_F(QuotaManagerImplTest, GetTemporaryUsageAndQuota_MultiStorageKeys) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",        kTemp,  10 },
-    { "http://foo.com:8080/",   kTemp,  20 },
-    { "http://bar.com/",        kTemp,   5 },
-    { "https://bar.com/",       kTemp,   7 },
-    { "http://baz.com/",        kTemp,  30 },
-    { "http://foo.com/",        kPerm,  40 },
+      {"http://foo.com/", kTemp, 10}, {"http://foo.com:8080/", kTemp, 20},
+      {"http://bar.com/", kTemp, 5},  {"https://bar.com/", kTemp, 7},
+      {"http://baz.com/", kTemp, 30}, {"http://foo.com/", kPerm, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   // This time explicitly sets a temporary global quota.
   const int kPoolSize = 100;
   const int kPerHostQuota = 20;
   SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailableForSystem);
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
 
@@ -673,77 +768,81 @@ TEST_F(QuotaManagerTest, GetTemporaryUsageAndQuota_MultiOrigins) {
   // since there's plenty of diskspace.
   EXPECT_EQ(kPerHostQuota, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://bar.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://bar.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(5 + 7, usage());
   EXPECT_EQ(kPerHostQuota, quota());
 }
 
-TEST_F(QuotaManagerTest, GetUsage_MultipleClients) {
+TEST_F(QuotaManagerImplTest, GetUsage_MultipleClients) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",              kTemp, 1 },
-    { "http://bar.com/",              kTemp, 2 },
-    { "http://bar.com/",              kPerm, 4 },
-    { "http://unlimited/",            kPerm, 8 },
+      {"http://foo.com/", kTemp, 1},
+      {"http://bar.com/", kTemp, 2},
+      {"http://bar.com/", kPerm, 4},
+      {"http://unlimited/", kPerm, 8},
   };
   static const MockOriginData kData2[] = {
-    { "https://foo.com/",             kTemp, 128 },
-    { "http://example.com/",          kPerm, 256 },
-    { "http://unlimited/",            kTemp, 512 },
+      {"https://foo.com/", kTemp, 128},
+      {"http://example.com/", kPerm, 256},
+      {"http://unlimited/", kTemp, 512},
   };
   mock_special_storage_policy()->AddUnlimited(GURL("http://unlimited/"));
-  RegisterClient(
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem));
-  RegisterClient(
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase));
+  GetStorageCapacity();
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   const int64_t kPoolSize = GetAvailableDiskSpaceForTest();
   const int64_t kPerHostQuota = kPoolSize / 5;
   SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailableForSystem);
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(1 + 128, usage());
   EXPECT_EQ(kPerHostQuota, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://bar.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://bar.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4, usage());
   EXPECT_EQ(0, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(512, usage());
-  EXPECT_EQ(kAvailableSpaceForApp + usage(), quota());
+  EXPECT_EQ(available_space() + usage(), quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(8, usage());
-  EXPECT_EQ(kAvailableSpaceForApp + usage(), quota());
+  EXPECT_EQ(available_space() + usage(), quota());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(1 + 2 + 128 + 512, usage());
   EXPECT_EQ(512, unlimited_usage());
 
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4 + 8 + 256, usage());
   EXPECT_EQ(8, unlimited_usage());
 }
 
-TEST_F(QuotaManagerTest, GetUsageWithBreakdown_Simple) {
+TEST_F(QuotaManagerImplTest, GetUsageWithBreakdown_Simple) {
   blink::mojom::UsageBreakdown usage_breakdown_expected =
       blink::mojom::UsageBreakdown();
   static const MockOriginData kData1[] = {
-      {"http://foo.com/", kTemp, 1}, {"http://foo.com/", kPerm, 80},
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com/", kPerm, 80},
   };
   static const MockOriginData kData2[] = {
       {"http://foo.com/", kTemp, 4},
@@ -751,18 +850,16 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_Simple) {
   static const MockOriginData kData3[] = {
       {"http://foo.com/", kTemp, 8},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase);
-  MockStorageClient* client3 =
-      CreateClient(kData3, base::size(kData3), QuotaClient::kAppcache);
-  RegisterClient(client1);
-  RegisterClient(client2);
-  RegisterClient(client3);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData3, QuotaClientType::kAppcache,
+                          {blink::mojom::StorageType::kTemporary});
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(80, usage());
   usage_breakdown_expected.fileSystem = 80;
@@ -770,8 +867,8 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_Simple) {
   usage_breakdown_expected.appcache = 0;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(1 + 4 + 8, usage());
   usage_breakdown_expected.fileSystem = 1;
@@ -779,8 +876,8 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_Simple) {
   usage_breakdown_expected.appcache = 8;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://bar.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://bar.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
   usage_breakdown_expected.fileSystem = 0;
@@ -789,34 +886,34 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_Simple) {
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 }
 
-TEST_F(QuotaManagerTest, GetUsageWithBreakdown_NoClient) {
+TEST_F(QuotaManagerImplTest, GetUsageWithBreakdown_NoClient) {
   blink::mojom::UsageBreakdown usage_breakdown_expected =
       blink::mojom::UsageBreakdown();
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetHostUsageBreakdown("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetHostUsageBreakdown("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 }
 
-TEST_F(QuotaManagerTest, GetUsageWithBreakdown_MultiOrigins) {
+TEST_F(QuotaManagerImplTest, GetUsageWithBreakdown_MultiStorageKeys) {
   blink::mojom::UsageBreakdown usage_breakdown_expected =
       blink::mojom::UsageBreakdown();
   static const MockOriginData kData[] = {
@@ -824,25 +921,26 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_MultiOrigins) {
       {"http://bar.com/", kTemp, 5},  {"https://bar.com/", kTemp, 7},
       {"http://baz.com/", kTemp, 30}, {"http://foo.com/", kPerm, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
   usage_breakdown_expected.fileSystem = 10 + 20;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://bar.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://bar.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(5 + 7, usage());
   usage_breakdown_expected.fileSystem = 5 + 7;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 }
 
-TEST_F(QuotaManagerTest, GetUsageWithBreakdown_MultipleClients) {
+TEST_F(QuotaManagerImplTest, GetUsageWithBreakdown_MultipleClients) {
   blink::mojom::UsageBreakdown usage_breakdown_expected =
       blink::mojom::UsageBreakdown();
   static const MockOriginData kData1[] = {
@@ -857,37 +955,39 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_MultipleClients) {
       {"http://unlimited/", kTemp, 512},
   };
   mock_special_storage_policy()->AddUnlimited(GURL("http://unlimited/"));
-  RegisterClient(
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem));
-  RegisterClient(
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase));
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(1 + 128, usage());
   usage_breakdown_expected.fileSystem = 1;
   usage_breakdown_expected.webSql = 128;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://bar.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://bar.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4, usage());
   usage_breakdown_expected.fileSystem = 4;
   usage_breakdown_expected.webSql = 0;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(512, usage());
   usage_breakdown_expected.fileSystem = 0;
   usage_breakdown_expected.webSql = 512;
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 
-  GetUsageAndQuotaWithBreakdown(ToOrigin("http://unlimited/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaWithBreakdown(ToStorageKey("http://unlimited/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(8, usage());
   usage_breakdown_expected.fileSystem = 8;
@@ -895,1233 +995,1470 @@ TEST_F(QuotaManagerTest, GetUsageWithBreakdown_MultipleClients) {
   EXPECT_TRUE(usage_breakdown_expected.Equals(usage_breakdown()));
 }
 
-void QuotaManagerTest::GetUsage_WithModifyTestBody(const StorageType type) {
+void QuotaManagerImplTest::GetUsage_WithModifyTestBody(const StorageType type) {
   const MockOriginData data[] = {
-    { "http://foo.com/",   type,  10 },
-    { "http://foo.com:1/", type,  20 },
+      {"http://foo.com/", type, 10},
+      {"http://foo.com:1/", type, 20},
   };
-  MockStorageClient* client =
-      CreateClient(data, base::size(data), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  MockQuotaClient* client =
+      CreateAndRegisterClient(data, QuotaClientType::kFileSystem, {type});
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), type);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), type);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
 
-  client->ModifyOriginAndNotify(ToOrigin("http://foo.com/"), type, 30);
-  client->ModifyOriginAndNotify(ToOrigin("http://foo.com:1/"), type, -5);
-  client->AddOriginAndNotify(ToOrigin("https://foo.com/"), type, 1);
+  client->ModifyOriginAndNotify(ToStorageKey("http://foo.com/").origin(), type,
+                                30);
+  client->ModifyOriginAndNotify(ToStorageKey("http://foo.com:1/").origin(),
+                                type, -5);
+  client->AddOriginAndNotify(ToStorageKey("https://foo.com/").origin(), type,
+                             1);
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), type);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), type);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20 + 30 - 5 + 1, usage());
   int foo_usage = usage();
 
-  client->AddOriginAndNotify(ToOrigin("http://bar.com/"), type, 40);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://bar.com/"), type);
-  scoped_task_environment_.RunUntilIdle();
+  client->AddOriginAndNotify(ToStorageKey("http://bar.com/").origin(), type,
+                             40);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://bar.com/"), type);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(40, usage());
 
   GetGlobalUsage(type);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(foo_usage + 40, usage());
   EXPECT_EQ(0, unlimited_usage());
 }
 
-TEST_F(QuotaManagerTest, GetTemporaryUsage_WithModify) {
+TEST_F(QuotaManagerImplTest, GetTemporaryUsage_WithModify) {
   GetUsage_WithModifyTestBody(kTemp);
 }
 
-TEST_F(QuotaManagerTest, GetTemporaryUsageAndQuota_WithAdditionalTasks) {
+TEST_F(QuotaManagerImplTest, GetTemporaryUsageAndQuota_WithAdditionalTasks) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",        kTemp, 10 },
-    { "http://foo.com:8080/",   kTemp, 20 },
-    { "http://bar.com/",        kTemp, 13 },
-    { "http://foo.com/",        kPerm, 40 },
+      {"http://foo.com/", kTemp, 10},
+      {"http://foo.com:8080/", kTemp, 20},
+      {"http://bar.com/", kTemp, 13},
+      {"http://foo.com/", kPerm, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   const int kPoolSize = 100;
   const int kPerHostQuota = 20;
   SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailableForSystem);
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
   EXPECT_EQ(kPerHostQuota, quota());
 
   set_additional_callback_count(0);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://foo.com/"), kTemp);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://bar.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://foo.com/"), kTemp);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://bar.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
   EXPECT_EQ(kPerHostQuota, quota());
   EXPECT_EQ(2, additional_callback_count());
 }
 
-TEST_F(QuotaManagerTest, GetTemporaryUsageAndQuota_NukeManager) {
+TEST_F(QuotaManagerImplTest, GetTemporaryUsageAndQuota_NukeManager) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",        kTemp, 10 },
-    { "http://foo.com:8080/",   kTemp, 20 },
-    { "http://bar.com/",        kTemp, 13 },
-    { "http://foo.com/",        kPerm, 40 },
+      {"http://foo.com/", kTemp, 10},
+      {"http://foo.com:8080/", kTemp, 20},
+      {"http://bar.com/", kTemp, 13},
+      {"http://foo.com/", kPerm, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
   const int kPoolSize = 100;
   const int kPerHostQuota = 20;
   SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailableForSystem);
 
   set_additional_callback_count(0);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://foo.com/"), kTemp);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://bar.com/"), kTemp);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://foo.com/"), kTemp);
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://bar.com/"), kTemp);
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp, kAllClients);
-  DeleteOriginData(ToOrigin("http://bar.com/"), kTemp, kAllClients);
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       AllQuotaClientTypes());
+  DeleteStorageKeyData(ToStorageKey("http://bar.com/"), kTemp,
+                       AllQuotaClientTypes());
 
   // Nuke before waiting for callbacks.
-  set_quota_manager(nullptr);
-  scoped_task_environment_.RunUntilIdle();
+  set_quota_manager_impl(nullptr);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kErrorAbort, status());
 }
 
-TEST_F(QuotaManagerTest, GetTemporaryUsageAndQuota_Overbudget) {
+TEST_F(QuotaManagerImplTest, GetTemporaryUsageAndQuota_Overbudget) {
   static const MockOriginData kData[] = {
-    { "http://usage1/",    kTemp,   1 },
-    { "http://usage10/",   kTemp,  10 },
-    { "http://usage200/",  kTemp, 200 },
+      {"http://usage1/", kTemp, 1},
+      {"http://usage10/", kTemp, 10},
+      {"http://usage200/", kTemp, 200},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
   const int kPoolSize = 100;
   const int kPerHostQuota = 20;
   SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailableForSystem);
 
   // Provided diskspace is not tight, global usage does not affect the
-  // quota calculations for an individual origin, so despite global usage
+  // quota calculations for an individual storage key, so despite global usage
   // in excess of our poolsize, we still get the nominal quota value.
   GetStorageCapacity();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_LE(kMustRemainAvailableForSystem, available_space());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage1/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage1/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(1, usage());
   EXPECT_EQ(kPerHostQuota, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage10/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage10/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_EQ(kPerHostQuota, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage200/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage200/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(200, usage());
   EXPECT_EQ(kPerHostQuota, quota());  // should be clamped to the nominal quota
 }
 
-TEST_F(QuotaManagerTest, GetTemporaryUsageAndQuota_Unlimited) {
+TEST_F(QuotaManagerImplTest, GetTemporaryUsageAndQuota_Unlimited) {
   static const MockOriginData kData[] = {
-    { "http://usage10/",   kTemp,    10 },
-    { "http://usage50/",   kTemp,    50 },
-    { "http://unlimited/", kTemp,  4000 },
+      {"http://usage10/", kTemp, 10},
+      {"http://usage50/", kTemp, 50},
+      {"http://unlimited/", kTemp, 4000},
   };
   mock_special_storage_policy()->AddUnlimited(GURL("http://unlimited/"));
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  GetStorageCapacity();
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
 
   // Test when not overbugdet.
   const int kPerHostQuotaFor1000 = 200;
   SetQuotaSettings(1000, kPerHostQuotaFor1000, kMustRemainAvailableForSystem);
-
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(10 + 50 + 4000, usage());
   EXPECT_EQ(4000, unlimited_usage());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage10/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage10/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_EQ(kPerHostQuotaFor1000, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage50/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage50/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(50, usage());
   EXPECT_EQ(kPerHostQuotaFor1000, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4000, usage());
-  EXPECT_EQ(kAvailableSpaceForApp + usage(), quota());
+  EXPECT_EQ(available_space() + usage(), quota());
 
-  GetUsageAndQuotaForStorageClient(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForStorageClient(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
-  EXPECT_EQ(QuotaManager::kNoLimit, quota());
+  EXPECT_EQ(QuotaManagerImpl::kNoLimit, quota());
 
   // Test when overbugdet.
   const int kPerHostQuotaFor100 = 20;
   SetQuotaSettings(100, kPerHostQuotaFor100, kMustRemainAvailableForSystem);
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage10/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage10/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_EQ(kPerHostQuotaFor100, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage50/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage50/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(50, usage());
   EXPECT_EQ(kPerHostQuotaFor100, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4000, usage());
-  EXPECT_EQ(kAvailableSpaceForApp + usage(), quota());
+  EXPECT_EQ(available_space() + usage(), quota());
 
-  GetUsageAndQuotaForStorageClient(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForStorageClient(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
-  EXPECT_EQ(QuotaManager::kNoLimit, quota());
+  EXPECT_EQ(QuotaManagerImpl::kNoLimit, quota());
 
   // Revoke the unlimited rights and make sure the change is noticed.
   mock_special_storage_policy()->Reset();
   mock_special_storage_policy()->NotifyCleared();
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(10 + 50 + 4000, usage());
   EXPECT_EQ(0, unlimited_usage());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage10/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage10/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_EQ(kPerHostQuotaFor100, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://usage50/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://usage50/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(50, usage());
   EXPECT_EQ(kPerHostQuotaFor100, quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4000, usage());
   EXPECT_EQ(kPerHostQuotaFor100, quota());
 
-  GetUsageAndQuotaForStorageClient(ToOrigin("http://unlimited/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForStorageClient(ToStorageKey("http://unlimited/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(4000, usage());
   EXPECT_EQ(kPerHostQuotaFor100, quota());
 }
 
-TEST_F(QuotaManagerTest, OriginInUse) {
-  const url::Origin kFooOrigin = ToOrigin("http://foo.com/");
-  const url::Origin kBarOrigin = ToOrigin("http://bar.com/");
+TEST_F(QuotaManagerImplTest, StorageKeyInUse) {
+  const StorageKey kFooStorageKey = ToStorageKey("http://foo.com/");
+  const StorageKey kBarStorageKey = ToStorageKey("http://bar.com/");
 
-  EXPECT_FALSE(quota_manager()->IsOriginInUse(kFooOrigin));
-  quota_manager()->NotifyOriginInUse(kFooOrigin);  // count of 1
-  EXPECT_TRUE(quota_manager()->IsOriginInUse(kFooOrigin));
-  quota_manager()->NotifyOriginInUse(kFooOrigin);  // count of 2
-  EXPECT_TRUE(quota_manager()->IsOriginInUse(kFooOrigin));
-  quota_manager()->NotifyOriginNoLongerInUse(kFooOrigin);  // count of 1
-  EXPECT_TRUE(quota_manager()->IsOriginInUse(kFooOrigin));
+  EXPECT_FALSE(quota_manager_impl()->IsStorageKeyInUse(kFooStorageKey));
+  quota_manager_impl()->NotifyStorageKeyInUse(kFooStorageKey);  // count of 1
+  EXPECT_TRUE(quota_manager_impl()->IsStorageKeyInUse(kFooStorageKey));
+  quota_manager_impl()->NotifyStorageKeyInUse(kFooStorageKey);  // count of 2
+  EXPECT_TRUE(quota_manager_impl()->IsStorageKeyInUse(kFooStorageKey));
+  quota_manager_impl()->NotifyStorageKeyNoLongerInUse(
+      kFooStorageKey);  // count of 1
+  EXPECT_TRUE(quota_manager_impl()->IsStorageKeyInUse(kFooStorageKey));
 
-  EXPECT_FALSE(quota_manager()->IsOriginInUse(kBarOrigin));
-  quota_manager()->NotifyOriginInUse(kBarOrigin);
-  EXPECT_TRUE(quota_manager()->IsOriginInUse(kBarOrigin));
-  quota_manager()->NotifyOriginNoLongerInUse(kBarOrigin);
-  EXPECT_FALSE(quota_manager()->IsOriginInUse(kBarOrigin));
+  EXPECT_FALSE(quota_manager_impl()->IsStorageKeyInUse(kBarStorageKey));
+  quota_manager_impl()->NotifyStorageKeyInUse(kBarStorageKey);
+  EXPECT_TRUE(quota_manager_impl()->IsStorageKeyInUse(kBarStorageKey));
+  quota_manager_impl()->NotifyStorageKeyNoLongerInUse(kBarStorageKey);
+  EXPECT_FALSE(quota_manager_impl()->IsStorageKeyInUse(kBarStorageKey));
 
-  quota_manager()->NotifyOriginNoLongerInUse(kFooOrigin);
-  EXPECT_FALSE(quota_manager()->IsOriginInUse(kFooOrigin));
+  quota_manager_impl()->NotifyStorageKeyNoLongerInUse(kFooStorageKey);
+  EXPECT_FALSE(quota_manager_impl()->IsStorageKeyInUse(kFooStorageKey));
 }
 
-TEST_F(QuotaManagerTest, GetAndSetPerststentHostQuota) {
-  RegisterClient(CreateClient(nullptr, 0, QuotaClient::kFileSystem));
+TEST_F(QuotaManagerImplTest, GetAndSetPerststentHostQuota) {
+  CreateAndRegisterClient(base::span<MockOriginData>(),
+                          QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   GetPersistentHostQuota("foo.com");
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, quota());
 
   SetPersistentHostQuota("foo.com", 100);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(100, quota());
 
   GetPersistentHostQuota("foo.com");
   SetPersistentHostQuota("foo.com", 200);
   GetPersistentHostQuota("foo.com");
-  SetPersistentHostQuota("foo.com", QuotaManager::kPerHostPersistentQuotaLimit);
+  SetPersistentHostQuota("foo.com",
+                         QuotaManagerImpl::kPerHostPersistentQuotaLimit);
   GetPersistentHostQuota("foo.com");
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(QuotaManager::kPerHostPersistentQuotaLimit, quota());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaManagerImpl::kPerHostPersistentQuotaLimit, quota());
 
   // Persistent quota should be capped at the per-host quota limit.
   SetPersistentHostQuota("foo.com",
-                         QuotaManager::kPerHostPersistentQuotaLimit + 100);
+                         QuotaManagerImpl::kPerHostPersistentQuotaLimit + 100);
   GetPersistentHostQuota("foo.com");
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(QuotaManager::kPerHostPersistentQuotaLimit, quota());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaManagerImpl::kPerHostPersistentQuotaLimit, quota());
 }
 
-TEST_F(QuotaManagerTest, GetAndSetPersistentUsageAndQuota) {
-  RegisterClient(CreateClient(nullptr, 0, QuotaClient::kFileSystem));
+TEST_F(QuotaManagerImplTest, GetAndSetPersistentUsageAndQuota) {
+  GetStorageCapacity();
+  CreateAndRegisterClient(base::span<MockOriginData>(),
+                          QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
   EXPECT_EQ(0, quota());
 
   SetPersistentHostQuota("foo.com", 100);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
   EXPECT_EQ(100, quota());
 
-  // The actual space avaialble is given to 'unlimited' origins as their quota.
+  // The actual space available is given to 'unlimited' storage keys as their
+  // quota.
   mock_special_storage_policy()->AddUnlimited(GURL("http://unlimited/"));
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(kAvailableSpaceForApp, quota());
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(available_space() + usage(), quota());
 
   // GetUsageAndQuotaForStorageClient should just return 0 usage and
   // kNoLimit quota.
-  GetUsageAndQuotaForStorageClient(ToOrigin("http://unlimited/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForStorageClient(ToStorageKey("http://unlimited/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, usage());
-  EXPECT_EQ(QuotaManager::kNoLimit, quota());
+  EXPECT_EQ(QuotaManagerImpl::kNoLimit, quota());
 }
 
-TEST_F(QuotaManagerTest, GetSyncableQuota) {
-  RegisterClient(CreateClient(nullptr, 0, QuotaClient::kFileSystem));
+TEST_F(QuotaManagerImplTest, GetQuotaLowAvailableDiskSpace) {
+  static const MockOriginData kData[] = {
+      {"http://foo.com/", kTemp, 100000},
+      {"http://unlimited/", kTemp, 4000000},
+  };
+
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
+
+  const int kPoolSize = 10000000;
+  const int kPerHostQuota = kPoolSize / 5;
+
+  // In here, we expect the low available space logic branch
+  // to be ignored. Doing so should have QuotaManagerImpl return the same
+  // per-host quota as what is set in QuotaSettings, despite being in a state of
+  // low available space.
+  const int kMustRemainAvailable =
+      static_cast<int>(GetAvailableDiskSpaceForTest() - 65536);
+  SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailable);
+
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(100000, usage());
+  EXPECT_EQ(kPerHostQuota, quota());
+}
+
+TEST_F(QuotaManagerImplTest, GetSyncableQuota) {
+  CreateAndRegisterClient(base::span<MockOriginData>(),
+                          QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kSyncable});
 
   // Pre-condition check: available disk space (for testing) is less than
   // the default quota for syncable storage.
   EXPECT_LE(kAvailableSpaceForApp,
-            QuotaManager::kSyncableStorageDefaultHostQuota);
+            QuotaManagerImpl::kSyncableStorageDefaultHostQuota);
 
-  // For unlimited origins the quota manager should return
-  // kAvailableSpaceForApp as syncable quota (because of the pre-condition).
+  // The quota manager should return
+  // QuotaManagerImpl::kSyncableStorageDefaultHostQuota as syncable quota,
+  // despite available space being less than the desired quota. Only
+  // storage keys with unlimited storage, which is never the case for syncable
+  // storage, shall have their quota calculation take into account the amount of
+  // available disk space.
   mock_special_storage_policy()->AddUnlimited(GURL("http://unlimited/"));
-  GetUsageAndQuotaForWebApps(ToOrigin("http://unlimited/"), kSync);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://unlimited/"), kSync);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, usage());
-  EXPECT_EQ(kAvailableSpaceForApp, quota());
+  EXPECT_EQ(QuotaManagerImpl::kSyncableStorageDefaultHostQuota, quota());
 }
 
-TEST_F(QuotaManagerTest, GetPersistentUsageAndQuota_MultiOrigins) {
+TEST_F(QuotaManagerImplTest, GetPersistentUsageAndQuota_MultiStorageKeys) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",        kPerm, 10 },
-    { "http://foo.com:8080/",   kPerm, 20 },
-    { "https://foo.com/",       kPerm, 13 },
-    { "https://foo.com:8081/",  kPerm, 19 },
-    { "http://bar.com/",        kPerm,  5 },
-    { "https://bar.com/",       kPerm,  7 },
-    { "http://baz.com/",        kPerm, 30 },
-    { "http://foo.com/",        kTemp, 40 },
+      {"http://foo.com/", kPerm, 10},  {"http://foo.com:8080/", kPerm, 20},
+      {"https://foo.com/", kPerm, 13}, {"https://foo.com:8081/", kPerm, 19},
+      {"http://bar.com/", kPerm, 5},   {"https://bar.com/", kPerm, 7},
+      {"http://baz.com/", kPerm, 30},  {"http://foo.com/", kTemp, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   SetPersistentHostQuota("foo.com", 100);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20 + 13 + 19, usage());
   EXPECT_EQ(100, quota());
 }
 
-TEST_F(QuotaManagerTest, GetPersistentUsage_WithModify) {
+TEST_F(QuotaManagerImplTest, GetPersistentUsage_WithModify) {
   GetUsage_WithModifyTestBody(kPerm);
 }
 
-TEST_F(QuotaManagerTest, GetPersistentUsageAndQuota_WithAdditionalTasks) {
+TEST_F(QuotaManagerImplTest, GetPersistentUsageAndQuota_WithAdditionalTasks) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",        kPerm,  10 },
-    { "http://foo.com:8080/",   kPerm,  20 },
-    { "http://bar.com/",        kPerm,  13 },
-    { "http://foo.com/",        kTemp,  40 },
+      {"http://foo.com/", kPerm, 10},
+      {"http://foo.com:8080/", kPerm, 20},
+      {"http://bar.com/", kPerm, 13},
+      {"http://foo.com/", kTemp, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
   SetPersistentHostQuota("foo.com", 100);
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
   EXPECT_EQ(100, quota());
 
   set_additional_callback_count(0);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://foo.com/"), kPerm);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://bar.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://foo.com/"), kPerm);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://bar.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10 + 20, usage());
   EXPECT_EQ(2, additional_callback_count());
 }
 
-TEST_F(QuotaManagerTest, GetPersistentUsageAndQuota_NukeManager) {
+TEST_F(QuotaManagerImplTest, GetPersistentUsageAndQuota_NukeManager) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",        kPerm,  10 },
-    { "http://foo.com:8080/",   kPerm,  20 },
-    { "http://bar.com/",        kPerm,  13 },
-    { "http://foo.com/",        kTemp,  40 },
+      {"http://foo.com/", kPerm, 10},
+      {"http://foo.com:8080/", kPerm, 20},
+      {"http://bar.com/", kPerm, 13},
+      {"http://foo.com/", kTemp, 40},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
   SetPersistentHostQuota("foo.com", 100);
 
   set_additional_callback_count(0);
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://foo.com/"), kPerm);
-  RunAdditionalUsageAndQuotaTask(ToOrigin("http://bar.com/"), kPerm);
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://foo.com/"), kPerm);
+  RunAdditionalUsageAndQuotaTask(ToStorageKey("http://bar.com/"), kPerm);
 
   // Nuke before waiting for callbacks.
-  set_quota_manager(nullptr);
-  scoped_task_environment_.RunUntilIdle();
+  set_quota_manager_impl(nullptr);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kErrorAbort, status());
 }
 
-TEST_F(QuotaManagerTest, GetUsage_Simple) {
+TEST_F(QuotaManagerImplTest, GetUsage_Simple) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",   kPerm,       1 },
-    { "http://foo.com:1/", kPerm,      20 },
-    { "http://bar.com/",   kTemp,     300 },
-    { "https://buz.com/",  kTemp,    4000 },
-    { "http://buz.com/",   kTemp,   50000 },
-    { "http://bar.com:1/", kPerm,  600000 },
-    { "http://foo.com/",   kTemp, 7000000 },
+      {"http://foo.com/", kPerm, 1},       {"http://foo.com:1/", kPerm, 20},
+      {"http://bar.com/", kTemp, 300},     {"https://buz.com/", kTemp, 4000},
+      {"http://buz.com/", kTemp, 50000},   {"http://bar.com:1/", kPerm, 600000},
+      {"http://foo.com/", kTemp, 7000000},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 1 + 20 + 600000);
   EXPECT_EQ(0, unlimited_usage());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 300 + 4000 + 50000 + 7000000);
   EXPECT_EQ(0, unlimited_usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 1 + 20);
 
-  GetHostUsage("buz.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("buz.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 4000 + 50000);
 }
 
-TEST_F(QuotaManagerTest, GetUsage_WithModification) {
+TEST_F(QuotaManagerImplTest, GetUsage_WithModification) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",   kPerm,       1 },
-    { "http://foo.com:1/", kPerm,      20 },
-    { "http://bar.com/",   kTemp,     300 },
-    { "https://buz.com/",  kTemp,    4000 },
-    { "http://buz.com/",   kTemp,   50000 },
-    { "http://bar.com:1/", kPerm,  600000 },
-    { "http://foo.com/",   kTemp, 7000000 },
+      {"http://foo.com/", kPerm, 1},       {"http://foo.com:1/", kPerm, 20},
+      {"http://bar.com/", kTemp, 300},     {"https://buz.com/", kTemp, 4000},
+      {"http://buz.com/", kTemp, 50000},   {"http://bar.com:1/", kPerm, 600000},
+      {"http://foo.com/", kTemp, 7000000},
   };
 
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  MockQuotaClient* client =
+      CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                              {blink::mojom::StorageType::kTemporary,
+                               blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 1 + 20 + 600000);
   EXPECT_EQ(0, unlimited_usage());
 
-  client->ModifyOriginAndNotify(ToOrigin("http://foo.com/"), kPerm, 80000000);
+  client->ModifyOriginAndNotify(ToStorageKey("http://foo.com/").origin(), kPerm,
+                                80000000);
 
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 1 + 20 + 600000 + 80000000);
   EXPECT_EQ(0, unlimited_usage());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 300 + 4000 + 50000 + 7000000);
   EXPECT_EQ(0, unlimited_usage());
 
-  client->ModifyOriginAndNotify(ToOrigin("http://foo.com/"), kTemp, 1);
+  client->ModifyOriginAndNotify(ToStorageKey("http://foo.com/").origin(), kTemp,
+                                1);
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 300 + 4000 + 50000 + 7000000 + 1);
   EXPECT_EQ(0, unlimited_usage());
 
-  GetHostUsage("buz.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("buz.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 4000 + 50000);
 
-  client->ModifyOriginAndNotify(ToOrigin("http://buz.com/"), kTemp, 900000000);
+  client->ModifyOriginAndNotify(ToStorageKey("http://buz.com/").origin(), kTemp,
+                                900000000);
 
-  GetHostUsage("buz.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("buz.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(usage(), 4000 + 50000 + 900000000);
 }
 
-TEST_F(QuotaManagerTest, GetUsage_WithDeleteOrigin) {
+TEST_F(QuotaManagerImplTest, GetUsage_WithDeleteStorageKey) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",   kTemp,     1 },
-    { "http://foo.com:1/", kTemp,    20 },
-    { "http://foo.com/",   kPerm,   300 },
-    { "http://bar.com/",   kTemp,  4000 },
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com:1/", kTemp, 20},
+      {"http://foo.com/", kPerm, 300},
+      {"http://bar.com/", kTemp, 4000},
   };
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  MockQuotaClient* client =
+      CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                              {blink::mojom::StorageType::kTemporary,
+                               blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   int64_t predelete_global_tmp = usage();
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_tmp = usage();
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_pers = usage();
 
-  DeleteClientOriginData(client, ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteClientStorageKeyData(client, ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp - 1, usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_tmp - 1, usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_pers, usage());
 }
 
-TEST_F(QuotaManagerTest, GetStorageCapacity) {
+TEST_F(QuotaManagerImplTest, GetStorageCapacity) {
   GetStorageCapacity();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_LE(0, total_space());
   EXPECT_LE(0, available_space());
 }
 
-TEST_F(QuotaManagerTest, EvictOriginData) {
+TEST_F(QuotaManagerImplTest, EvictStorageKeyData) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",   kTemp,     1 },
-    { "http://foo.com:1/", kTemp,    20 },
-    { "http://foo.com/",   kPerm,   300 },
-    { "http://bar.com/",   kTemp,  4000 },
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com:1/", kTemp, 20},
+      {"http://foo.com/", kPerm, 300},
+      {"http://bar.com/", kTemp, 4000},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com/",   kTemp, 50000 },
-    { "http://foo.com:1/", kTemp,  6000 },
-    { "http://foo.com/",   kPerm,   700 },
-    { "https://foo.com/",  kTemp,    80 },
-    { "http://bar.com/",   kTemp,     9 },
+      {"http://foo.com/", kTemp, 50000}, {"http://foo.com:1/", kTemp, 6000},
+      {"http://foo.com/", kPerm, 700},   {"https://foo.com/", kTemp, 80},
+      {"http://bar.com/", kTemp, 9},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   int64_t predelete_global_tmp = usage();
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_tmp = usage();
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_pers = usage();
 
-  for (size_t i = 0; i < base::size(kData1); ++i)
-    quota_manager()->NotifyStorageAccessed(
-        QuotaClient::kUnknown, url::Origin::Create(GURL(kData1[i].origin)),
-        kData1[i].type);
-  for (size_t i = 0; i < base::size(kData2); ++i)
-    quota_manager()->NotifyStorageAccessed(
-        QuotaClient::kUnknown, url::Origin::Create(GURL(kData2[i].origin)),
-        kData2[i].type);
-  scoped_task_environment_.RunUntilIdle();
+  for (const MockOriginData& data : kData1) {
+    quota_manager_impl()->NotifyStorageAccessed(ToStorageKey(data.origin),
+                                                data.type, base::Time::Now());
+  }
+  for (const MockOriginData& data : kData2) {
+    quota_manager_impl()->NotifyStorageAccessed(ToStorageKey(data.origin),
+                                                data.type, base::Time::Now());
+  }
+  task_environment_.RunUntilIdle();
 
-  EvictOriginData(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  EvictStorageKeyData(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
 
-  DumpOriginInfoTable();
-  scoped_task_environment_.RunUntilIdle();
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
 
-  for (const auto& entry : origin_info_entries()) {
+  for (const auto& entry : bucket_entries()) {
     if (entry.type == kTemp)
-      EXPECT_NE(std::string("http://foo.com/"), entry.origin.GetURL().spec());
+      EXPECT_NE(std::string("http://foo.com/"),
+                entry.storage_key.origin().GetURL().spec());
   }
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp - (1 + 50000), usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_tmp - (1 + 50000), usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_pers, usage());
 }
 
-TEST_F(QuotaManagerTest, EvictOriginDataHistogram) {
-  const url::Origin kOrigin = ToOrigin("http://foo.com/");
+TEST_F(QuotaManagerImplTest, EvictStorageKeyDataHistogram) {
+  const StorageKey kStorageKey = ToStorageKey("http://foo.com/");
   static const MockOriginData kData[] = {
       {"http://foo.com/", kTemp, 1},
   };
 
   base::HistogramTester histograms;
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  MockQuotaClient* client =
+      CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                              {blink::mojom::StorageType::kTemporary});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
-  EvictOriginData(kOrigin, kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  EvictStorageKeyData(kStorageKey, kTemp);
+  task_environment_.RunUntilIdle();
 
-  // Ensure used count and time since access are recorded.
+  // Ensure use count and time since access are recorded.
   histograms.ExpectTotalCount(
-      QuotaManager::kEvictedOriginAccessedCountHistogram, 1);
+      QuotaManagerImpl::kEvictedOriginAccessedCountHistogram, 1);
   histograms.ExpectBucketCount(
-      QuotaManager::kEvictedOriginAccessedCountHistogram, 0, 1);
+      QuotaManagerImpl::kEvictedOriginAccessedCountHistogram, 0, 1);
   histograms.ExpectTotalCount(
-      QuotaManager::kEvictedOriginDaysSinceAccessHistogram, 1);
+      QuotaManagerImpl::kEvictedOriginDaysSinceAccessHistogram, 1);
 
-  // First eviction has no 'last' time to compare to.
-  histograms.ExpectTotalCount(
-      QuotaManager::kDaysBetweenRepeatedOriginEvictionsHistogram, 0);
+  client->AddOriginAndNotify(kStorageKey.origin(), kTemp, 100);
 
-  client->AddOriginAndNotify(kOrigin, kTemp, 100);
-
-  // Change the used count of the origin.
-  quota_manager()->NotifyStorageAccessed(QuotaClient::kUnknown, kOrigin, kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  // Change the use count of the storage key.
+  quota_manager_impl()->NotifyStorageAccessed(kStorageKey, kTemp,
+                                              base::Time::Now());
+  task_environment_.RunUntilIdle();
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
-  EvictOriginData(kOrigin, kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  EvictStorageKeyData(kStorageKey, kTemp);
+  task_environment_.RunUntilIdle();
 
-  // The new used count should be logged.
+  // The new use count should be logged.
   histograms.ExpectTotalCount(
-      QuotaManager::kEvictedOriginAccessedCountHistogram, 2);
+      QuotaManagerImpl::kEvictedOriginAccessedCountHistogram, 2);
   histograms.ExpectBucketCount(
-      QuotaManager::kEvictedOriginAccessedCountHistogram, 1, 1);
+      QuotaManagerImpl::kEvictedOriginAccessedCountHistogram, 1, 1);
   histograms.ExpectTotalCount(
-      QuotaManager::kEvictedOriginDaysSinceAccessHistogram, 2);
-
-  // Second eviction should log a 'time between repeated eviction' sample.
-  histograms.ExpectTotalCount(
-      QuotaManager::kDaysBetweenRepeatedOriginEvictionsHistogram, 1);
-
-  client->AddOriginAndNotify(kOrigin, kTemp, 100);
-
-  GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-
-  DeleteOriginFromDatabase(kOrigin, kTemp);
-
-  // Deletion from non-eviction source should not log a histogram sample.
-  histograms.ExpectTotalCount(
-      QuotaManager::kDaysBetweenRepeatedOriginEvictionsHistogram, 1);
+      QuotaManagerImpl::kEvictedOriginDaysSinceAccessHistogram, 2);
 }
 
-TEST_F(QuotaManagerTest, EvictOriginDataWithDeletionError) {
+TEST_F(QuotaManagerImplTest, EvictStorageKeyDataWithDeletionError) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",   kTemp,       1 },
-    { "http://foo.com:1/", kTemp,      20 },
-    { "http://foo.com/",   kPerm,     300 },
-    { "http://bar.com/",   kTemp,    4000 },
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com:1/", kTemp, 20},
+      {"http://foo.com/", kPerm, 300},
+      {"http://bar.com/", kTemp, 4000},
   };
-  static const int kNumberOfTemporaryOrigins = 3;
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  static const int kNumberOfTemporaryStorageKeys = 3;
+  MockQuotaClient* client =
+      CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                              {blink::mojom::StorageType::kTemporary,
+                               blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   int64_t predelete_global_tmp = usage();
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_tmp = usage();
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_pers = usage();
 
-  for (size_t i = 0; i < base::size(kData); ++i)
-    NotifyStorageAccessed(client, url::Origin::Create(GURL(kData[i].origin)),
-                          kData[i].type);
-  scoped_task_environment_.RunUntilIdle();
+  for (const MockOriginData& data : kData)
+    NotifyStorageAccessed(ToStorageKey(data.origin), data.type);
+  task_environment_.RunUntilIdle();
 
-  client->AddOriginToErrorSet(ToOrigin("http://foo.com/"), kTemp);
+  client->AddOriginToErrorSet(ToStorageKey("http://foo.com/").origin(), kTemp);
 
-  for (int i = 0;
-       i < QuotaManager::kThresholdOfErrorsToBeBlacklisted + 1;
+  for (int i = 0; i < QuotaManagerImpl::kThresholdOfErrorsToBeDenylisted + 1;
        ++i) {
-    EvictOriginData(ToOrigin("http://foo.com/"), kTemp);
-    scoped_task_environment_.RunUntilIdle();
+    EvictStorageKeyData(ToStorageKey("http://foo.com/"), kTemp);
+    task_environment_.RunUntilIdle();
     EXPECT_EQ(QuotaStatusCode::kErrorInvalidModification, status());
   }
 
-  DumpOriginInfoTable();
-  scoped_task_environment_.RunUntilIdle();
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
 
-  bool found_origin_in_database = false;
-  for (const auto& entry : origin_info_entries()) {
-    if (entry.type == kTemp && entry.origin == ToOrigin("http://foo.com/")) {
-      found_origin_in_database = true;
+  bool found_storage_key_in_database = false;
+  for (const auto& entry : bucket_entries()) {
+    if (entry.type == kTemp &&
+        entry.storage_key == ToStorageKey("http://foo.com/")) {
+      found_storage_key_in_database = true;
       break;
     }
   }
-  // The origin "http://foo.com/" should be in the database.
-  EXPECT_TRUE(found_origin_in_database);
+  // The storage key for "http://foo.com/" should be in the database.
+  EXPECT_TRUE(found_storage_key_in_database);
 
-  for (size_t i = 0; i < kNumberOfTemporaryOrigins - 1; ++i) {
-    GetEvictionOrigin(kTemp);
-    scoped_task_environment_.RunUntilIdle();
-    EXPECT_TRUE(eviction_origin().has_value());
-    // The origin "http://foo.com/" should not be in the LRU list.
+  for (size_t i = 0; i < kNumberOfTemporaryStorageKeys - 1; ++i) {
+    GetEvictionStorageKey(kTemp);
+    task_environment_.RunUntilIdle();
+    EXPECT_TRUE(eviction_storage_key().has_value());
+    // "http://foo.com/" should not be in the LRU list.
     EXPECT_NE(std::string("http://foo.com/"),
-              eviction_origin()->GetURL().spec());
-    DeleteOriginFromDatabase(*eviction_origin(), kTemp);
-    scoped_task_environment_.RunUntilIdle();
+              eviction_storage_key()->origin().GetURL().spec());
+    DeleteStorageKeyFromDatabase(*eviction_storage_key(), kTemp);
+    task_environment_.RunUntilIdle();
   }
 
   // Now the LRU list must be empty.
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_FALSE(eviction_origin().has_value());
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(eviction_storage_key().has_value());
 
-  // Deleting origins from the database should not affect the results of the
-  // following checks.
+  // Deleting storage keys from the database should not affect the results of
+  // the following checks.
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp, usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_tmp, usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_pers, usage());
 }
 
-TEST_F(QuotaManagerTest, GetEvictionRoundInfo) {
+TEST_F(QuotaManagerImplTest, GetEvictionRoundInfo) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",   kTemp,       1 },
-    { "http://foo.com:1/", kTemp,      20 },
-    { "http://foo.com/",   kPerm,     300 },
-    { "http://unlimited/", kTemp,    4000 },
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com:1/", kTemp, 20},
+      {"http://foo.com/", kPerm, 300},
+      {"http://unlimited/", kTemp, 4000},
   };
 
   mock_special_storage_policy()->AddUnlimited(GURL("http://unlimited/"));
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   const int kPoolSize = 10000000;
   const int kPerHostQuota = kPoolSize / 5;
   SetQuotaSettings(kPoolSize, kPerHostQuota, kMustRemainAvailableForSystem);
 
   GetEvictionRoundInfo();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(21, usage());
   EXPECT_EQ(kPoolSize, settings().pool_size);
   EXPECT_LE(0, available_space());
 }
 
-TEST_F(QuotaManagerTest, DeleteHostDataSimple) {
+TEST_F(QuotaManagerImplTest, DeleteHostDataNoClients) {
+  DeleteHostData(std::string(), kTemp, AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+}
+
+TEST_F(QuotaManagerImplTest, DeleteHostDataSimple) {
   static const MockOriginData kData[] = {
-    { "http://foo.com/",   kTemp,     1 },
+      {"http://foo.com/", kTemp, 1},
   };
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   const int64_t predelete_global_tmp = usage();
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_tmp = usage();
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   int64_t predelete_host_pers = usage();
 
-  DeleteHostData(std::string(), kTemp, kAllClients);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData(std::string(), kTemp, AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp, usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_tmp, usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_pers, usage());
 
-  DeleteHostData("foo.com", kTemp, kAllClients);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kTemp, AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp - 1, usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_tmp - 1, usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_host_pers, usage());
 }
 
-TEST_F(QuotaManagerTest, DeleteHostDataMultiple) {
+TEST_F(QuotaManagerImplTest, DeleteHostDataMultiple) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",   kTemp,     1 },
-    { "http://foo.com:1/", kTemp,    20 },
-    { "http://foo.com/",   kPerm,   300 },
-    { "http://bar.com/",   kTemp,  4000 },
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com:1/", kTemp, 20},
+      {"http://foo.com/", kPerm, 300},
+      {"http://bar.com/", kTemp, 4000},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com/",   kTemp, 50000 },
-    { "http://foo.com:1/", kTemp,  6000 },
-    { "http://foo.com/",   kPerm,   700 },
-    { "https://foo.com/",  kTemp,    80 },
-    { "http://bar.com/",   kTemp,     9 },
+      {"http://foo.com/", kTemp, 50000}, {"http://foo.com:1/", kTemp, 6000},
+      {"http://foo.com/", kPerm, 700},   {"https://foo.com/", kTemp, 80},
+      {"http://bar.com/", kTemp, 9},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   const int64_t predelete_global_tmp = usage();
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_tmp = usage();
 
-  GetHostUsage("bar.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_bar_tmp = usage();
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_pers = usage();
 
-  GetHostUsage("bar.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_bar_pers = usage();
 
   reset_status_callback_count();
-  DeleteHostData("foo.com", kTemp, kAllClients);
-  DeleteHostData("bar.com", kTemp, kAllClients);
-  DeleteHostData("foo.com", kTemp, kAllClients);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kTemp, AllQuotaClientTypes());
+  DeleteHostData("bar.com", kTemp, AllQuotaClientTypes());
+  DeleteHostData("foo.com", kTemp, AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
 
   EXPECT_EQ(3, status_callback_count());
 
-  DumpOriginInfoTable();
-  scoped_task_environment_.RunUntilIdle();
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
 
-  for (const auto& entry : origin_info_entries()) {
+  for (const auto& entry : bucket_entries()) {
     if (entry.type != kTemp)
       continue;
 
-    EXPECT_NE(std::string("http://foo.com/"), entry.origin.GetURL().spec());
-    EXPECT_NE(std::string("http://foo.com:1/"), entry.origin.GetURL().spec());
-    EXPECT_NE(std::string("https://foo.com/"), entry.origin.GetURL().spec());
-    EXPECT_NE(std::string("http://bar.com/"), entry.origin.GetURL().spec());
+    EXPECT_NE(std::string("http://foo.com/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("http://foo.com:1/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("https://foo.com/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("http://bar.com/"),
+              entry.storage_key.origin().GetURL().spec());
   }
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp - (1 + 20 + 4000 + 50000 + 6000 + 80 + 9),
             usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - (1 + 20 + 50000 + 6000 + 80), usage());
 
-  GetHostUsage("bar.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_bar_tmp - (4000 + 9), usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_pers, usage());
 
-  GetHostUsage("bar.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_bar_pers, usage());
 }
 
-// Single-run DeleteOriginData cases must be well covered by
-// EvictOriginData tests.
-TEST_F(QuotaManagerTest, DeleteOriginDataMultiple) {
+TEST_F(QuotaManagerImplTest, DeleteHostDataMultipleClientsDifferentTypes) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",   kTemp,     1 },
-    { "http://foo.com:1/", kTemp,    20 },
-    { "http://foo.com/",   kPerm,   300 },
-    { "http://bar.com/",   kTemp,  4000 },
+      {"http://foo.com/", kPerm, 1},
+      {"http://foo.com:1/", kPerm, 10},
+      {"http://foo.com/", kTemp, 100},
+      {"http://bar.com/", kPerm, 1000},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com/",   kTemp, 50000 },
-    { "http://foo.com:1/", kTemp,  6000 },
-    { "http://foo.com/",   kPerm,   700 },
-    { "https://foo.com/",  kTemp,    80 },
-    { "http://bar.com/",   kTemp,     9 },
+      {"http://foo.com/", kTemp, 10000},
+      {"http://foo.com:1/", kTemp, 100000},
+      {"https://foo.com/", kTemp, 1000000},
+      {"http://bar.com/", kTemp, 10000000},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   const int64_t predelete_global_tmp = usage();
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_tmp = usage();
 
-  GetHostUsage("bar.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_bar_tmp = usage();
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetGlobalUsage(kPerm);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_global_pers = usage();
+
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_pers = usage();
 
-  GetHostUsage("bar.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_bar_pers = usage();
 
-  for (size_t i = 0; i < base::size(kData1); ++i) {
-    quota_manager()->NotifyStorageAccessed(
-        QuotaClient::kUnknown, url::Origin::Create(GURL(kData1[i].origin)),
-        kData1[i].type);
-  }
-  for (size_t i = 0; i < base::size(kData2); ++i) {
-    quota_manager()->NotifyStorageAccessed(
-        QuotaClient::kUnknown, url::Origin::Create(GURL(kData2[i].origin)),
-        kData2[i].type);
-  }
-  scoped_task_environment_.RunUntilIdle();
-
   reset_status_callback_count();
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp, kAllClients);
-  DeleteOriginData(ToOrigin("http://bar.com/"), kTemp, kAllClients);
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp, kAllClients);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kPerm, AllQuotaClientTypes());
+  DeleteHostData("bar.com", kPerm, AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
 
-  EXPECT_EQ(3, status_callback_count());
+  EXPECT_EQ(2, status_callback_count());
 
-  DumpOriginInfoTable();
-  scoped_task_environment_.RunUntilIdle();
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
 
-  for (const auto& entry : origin_info_entries()) {
+  for (const auto& entry : bucket_entries()) {
     if (entry.type != kTemp)
       continue;
 
-    EXPECT_NE(std::string("http://foo.com/"), entry.origin.GetURL().spec());
-    EXPECT_NE(std::string("http://bar.com/"), entry.origin.GetURL().spec());
+    EXPECT_NE(std::string("http://foo.com/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("http://foo.com:1/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("https://foo.com/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("http://bar.com/"),
+              entry.storage_key.origin().GetURL().spec());
   }
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_global_tmp, usage());
+
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_foo_tmp, usage());
+
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_bar_tmp, usage());
+
+  GetGlobalUsage(kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_global_pers - (1 + 10 + 1000), usage());
+
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_foo_pers - (1 + 10), usage());
+
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_bar_pers - 1000, usage());
+}
+
+TEST_F(QuotaManagerImplTest, DeleteStorageKeyDataNoClients) {
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+}
+
+// Single-run DeleteStorageKeyData cases must be well covered by
+// EvictStorageKeyData tests.
+TEST_F(QuotaManagerImplTest, DeleteStorageKeyDataMultiple) {
+  static const MockOriginData kData1[] = {
+      {"http://foo.com/", kTemp, 1},
+      {"http://foo.com:1/", kTemp, 20},
+      {"http://foo.com/", kPerm, 300},
+      {"http://bar.com/", kTemp, 4000},
+  };
+  static const MockOriginData kData2[] = {
+      {"http://foo.com/", kTemp, 50000}, {"http://foo.com:1/", kTemp, 6000},
+      {"http://foo.com/", kPerm, 700},   {"https://foo.com/", kTemp, 80},
+      {"http://bar.com/", kTemp, 9},
+  };
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+
+  GetGlobalUsage(kTemp);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_global_tmp = usage();
+
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_foo_tmp = usage();
+
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_bar_tmp = usage();
+
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_foo_pers = usage();
+
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_bar_pers = usage();
+
+  for (const MockOriginData& data : kData1) {
+    quota_manager_impl()->NotifyStorageAccessed(ToStorageKey(data.origin),
+                                                data.type, base::Time::Now());
+  }
+  for (const MockOriginData& data : kData2) {
+    quota_manager_impl()->NotifyStorageAccessed(ToStorageKey(data.origin),
+                                                data.type, base::Time::Now());
+  }
+  task_environment_.RunUntilIdle();
+
+  reset_status_callback_count();
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       AllQuotaClientTypes());
+  DeleteStorageKeyData(ToStorageKey("http://bar.com/"), kTemp,
+                       AllQuotaClientTypes());
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
+
+  EXPECT_EQ(3, status_callback_count());
+
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
+
+  for (const auto& entry : bucket_entries()) {
+    if (entry.type != kTemp)
+      continue;
+
+    EXPECT_NE(std::string("http://foo.com/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("http://bar.com/"),
+              entry.storage_key.origin().GetURL().spec());
+  }
+
+  GetGlobalUsage(kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_global_tmp - (1 + 4000 + 50000 + 9), usage());
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - (1 + 50000), usage());
 
-  GetHostUsage("bar.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_bar_tmp - (4000 + 9), usage());
 
-  GetHostUsage("foo.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_pers, usage());
 
-  GetHostUsage("bar.com", kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_bar_pers, usage());
 }
 
-TEST_F(QuotaManagerTest, GetCachedOrigins) {
-  static const MockOriginData kData[] = {
-    { "http://a.com/",   kTemp,       1 },
-    { "http://a.com:1/", kTemp,      20 },
-    { "http://b.com/",   kPerm,     300 },
-    { "http://c.com/",   kTemp,    4000 },
+TEST_F(QuotaManagerImplTest,
+       DeleteStorageKeyDataMultipleClientsDifferentTypes) {
+  static const MockOriginData kData1[] = {
+      {"http://foo.com/", kPerm, 1},
+      {"http://foo.com:1/", kPerm, 10},
+      {"http://foo.com/", kTemp, 100},
+      {"http://bar.com/", kPerm, 1000},
   };
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  static const MockOriginData kData2[] = {
+      {"http://foo.com/", kTemp, 10000},
+      {"http://foo.com:1/", kTemp, 100000},
+      {"https://foo.com/", kTemp, 1000000},
+      {"http://bar.com/", kTemp, 10000000},
+  };
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
+  CreateAndRegisterClient(kData2, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
+
+  GetGlobalUsage(kTemp);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_global_tmp = usage();
+
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_foo_tmp = usage();
+
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_bar_tmp = usage();
+
+  GetGlobalUsage(kPerm);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_global_pers = usage();
+
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_foo_pers = usage();
+
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
+  const int64_t predelete_bar_pers = usage();
+
+  for (const MockOriginData& data : kData1) {
+    quota_manager_impl()->NotifyStorageAccessed(ToStorageKey(data.origin),
+                                                data.type, base::Time::Now());
+  }
+  for (const MockOriginData& data : kData2) {
+    quota_manager_impl()->NotifyStorageAccessed(ToStorageKey(data.origin),
+                                                data.type, base::Time::Now());
+  }
+  task_environment_.RunUntilIdle();
+
+  reset_status_callback_count();
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kPerm,
+                       AllQuotaClientTypes());
+  DeleteStorageKeyData(ToStorageKey("http://bar.com/"), kPerm,
+                       AllQuotaClientTypes());
+  task_environment_.RunUntilIdle();
+
+  EXPECT_EQ(2, status_callback_count());
+
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
+
+  for (const auto& entry : bucket_entries()) {
+    if (entry.type != kPerm)
+      continue;
+
+    EXPECT_NE(std::string("http://foo.com/"),
+              entry.storage_key.origin().GetURL().spec());
+    EXPECT_NE(std::string("http://bar.com/"),
+              entry.storage_key.origin().GetURL().spec());
+  }
+
+  GetGlobalUsage(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_global_tmp, usage());
+
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_foo_tmp, usage());
+
+  GetHostUsageWithBreakdown("bar.com", kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_bar_tmp, usage());
+
+  GetGlobalUsage(kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_global_pers - (1 + 1000), usage());
+
+  GetHostUsageWithBreakdown("foo.com", kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_foo_pers - 1, usage());
+
+  GetHostUsageWithBreakdown("bar.com", kPerm);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(predelete_bar_pers - 1000, usage());
+}
+
+TEST_F(QuotaManagerImplTest, GetCachedStorageKeys) {
+  static const MockOriginData kData[] = {
+      {"http://a.com/", kTemp, 1},
+      {"http://a.com:1/", kTemp, 20},
+      {"http://b.com/", kPerm, 300},
+      {"http://c.com/", kTemp, 4000},
+  };
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   // TODO(kinuko): Be careful when we add cache pruner.
 
-  std::set<url::Origin> origins;
-  GetCachedOrigins(kTemp, &origins);
-  EXPECT_TRUE(origins.empty());
+  std::set<StorageKey> storage_keys = GetCachedStorageKeys(kTemp);
+  EXPECT_TRUE(storage_keys.empty());
 
-  GetHostUsage("a.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  GetCachedOrigins(kTemp, &origins);
-  EXPECT_EQ(2U, origins.size());
+  GetHostUsageWithBreakdown("a.com", kTemp);
+  task_environment_.RunUntilIdle();
+  storage_keys = GetCachedStorageKeys(kTemp);
+  EXPECT_EQ(2U, storage_keys.size());
 
-  GetHostUsage("b.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  GetCachedOrigins(kTemp, &origins);
-  EXPECT_EQ(2U, origins.size());
+  GetHostUsageWithBreakdown("b.com", kTemp);
+  task_environment_.RunUntilIdle();
+  storage_keys = GetCachedStorageKeys(kTemp);
+  EXPECT_EQ(2U, storage_keys.size());
 
-  GetHostUsage("c.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  GetCachedOrigins(kTemp, &origins);
-  EXPECT_EQ(3U, origins.size());
+  GetHostUsageWithBreakdown("c.com", kTemp);
+  task_environment_.RunUntilIdle();
+  storage_keys = GetCachedStorageKeys(kTemp);
+  EXPECT_EQ(3U, storage_keys.size());
 
-  GetCachedOrigins(kPerm, &origins);
-  EXPECT_TRUE(origins.empty());
+  storage_keys = GetCachedStorageKeys(kPerm);
+  EXPECT_TRUE(storage_keys.empty());
 
   GetGlobalUsage(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  GetCachedOrigins(kTemp, &origins);
-  EXPECT_EQ(3U, origins.size());
+  task_environment_.RunUntilIdle();
+  storage_keys = GetCachedStorageKeys(kTemp);
+  EXPECT_EQ(3U, storage_keys.size());
 
-  for (size_t i = 0; i < base::size(kData); ++i) {
-    if (kData[i].type == kTemp)
-      EXPECT_TRUE(base::ContainsKey(origins, ToOrigin(kData[i].origin)));
+  for (const MockOriginData& data : kData) {
+    if (data.type == kTemp)
+      EXPECT_TRUE(base::Contains(storage_keys, ToStorageKey(data.origin)));
   }
 }
 
-TEST_F(QuotaManagerTest, NotifyAndLRUOrigin) {
+TEST_F(QuotaManagerImplTest, NotifyAndLRUStorageKey) {
   static const MockOriginData kData[] = {
-    { "http://a.com/",   kTemp,  0 },
-    { "http://a.com:1/", kTemp,  0 },
-    { "https://a.com/",  kTemp,  0 },
-    { "http://b.com/",   kPerm,  0 },  // persistent
-    { "http://c.com/",   kTemp,  0 },
+      {"http://a.com/", kTemp, 0},  {"http://a.com:1/", kTemp, 0},
+      {"https://a.com/", kTemp, 0}, {"http://b.com/", kPerm, 0},  // persistent
+      {"http://c.com/", kTemp, 0},
   };
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
-  GURL origin;
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_FALSE(eviction_origin().has_value());
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(eviction_storage_key().has_value());
 
-  NotifyStorageAccessed(client, ToOrigin("http://a.com/"), kTemp);
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ("http://a.com/", eviction_origin()->GetURL().spec());
+  NotifyStorageAccessed(ToStorageKey("http://a.com/"), kTemp);
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ("http://a.com/", eviction_storage_key()->origin().GetURL().spec());
 
-  NotifyStorageAccessed(client, ToOrigin("http://b.com/"), kPerm);
-  NotifyStorageAccessed(client, ToOrigin("https://a.com/"), kTemp);
-  NotifyStorageAccessed(client, ToOrigin("http://c.com/"), kTemp);
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ("http://a.com/", eviction_origin()->GetURL().spec());
+  NotifyStorageAccessed(ToStorageKey("http://b.com/"), kPerm);
+  NotifyStorageAccessed(ToStorageKey("https://a.com/"), kTemp);
+  NotifyStorageAccessed(ToStorageKey("http://c.com/"), kTemp);
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ("http://a.com/", eviction_storage_key()->origin().GetURL().spec());
 
-  DeleteOriginFromDatabase(*eviction_origin(), kTemp);
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ("https://a.com/", eviction_origin()->GetURL().spec());
+  DeleteStorageKeyFromDatabase(*eviction_storage_key(), kTemp);
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ("https://a.com/", eviction_storage_key()->origin().GetURL().spec());
 
-  DeleteOriginFromDatabase(*eviction_origin(), kTemp);
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ("http://c.com/", eviction_origin()->GetURL().spec());
+  DeleteStorageKeyFromDatabase(*eviction_storage_key(), kTemp);
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ("http://c.com/", eviction_storage_key()->origin().GetURL().spec());
 }
 
-TEST_F(QuotaManagerTest, GetLRUOriginWithOriginInUse) {
+TEST_F(QuotaManagerImplTest, GetLRUStorageKeyWithStorageKeyInUse) {
   static const MockOriginData kData[] = {
-    { "http://a.com/",   kTemp,  0 },
-    { "http://a.com:1/", kTemp,  0 },
-    { "https://a.com/",  kTemp,  0 },
-    { "http://b.com/",   kPerm,  0 },  // persistent
-    { "http://c.com/",   kTemp,  0 },
+      {"http://a.com/", kTemp, 0},  {"http://a.com:1/", kTemp, 0},
+      {"https://a.com/", kTemp, 0}, {"http://b.com/", kPerm, 0},  // persistent
+      {"http://c.com/", kTemp, 0},
   };
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
-  GURL origin;
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_FALSE(eviction_origin().has_value());
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(eviction_storage_key().has_value());
 
-  NotifyStorageAccessed(client, ToOrigin("http://a.com/"), kTemp);
-  NotifyStorageAccessed(client, ToOrigin("http://b.com/"), kPerm);
-  NotifyStorageAccessed(client, ToOrigin("https://a.com/"), kTemp);
-  NotifyStorageAccessed(client, ToOrigin("http://c.com/"), kTemp);
+  NotifyStorageAccessed(ToStorageKey("http://a.com/"), kTemp);
+  NotifyStorageAccessed(ToStorageKey("http://b.com/"), kPerm);
+  NotifyStorageAccessed(ToStorageKey("https://a.com/"), kTemp);
+  NotifyStorageAccessed(ToStorageKey("http://c.com/"), kTemp);
 
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(ToOrigin("http://a.com/"), *eviction_origin());
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(ToStorageKey("http://a.com/"), *eviction_storage_key());
 
-  // Notify origin http://a.com is in use.
-  NotifyOriginInUse(ToOrigin("http://a.com/"));
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(ToOrigin("https://a.com/"), *eviction_origin());
+  // Notify that the storage key for http://a.com is in use.
+  NotifyStorageKeyInUse(ToStorageKey("http://a.com/"));
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(ToStorageKey("https://a.com/"), *eviction_storage_key());
 
-  // Notify origin https://a.com is in use while GetEvictionOrigin is running.
-  GetEvictionOrigin(kTemp);
-  NotifyOriginInUse(ToOrigin("https://a.com/"));
-  scoped_task_environment_.RunUntilIdle();
-  // Post-filtering must have excluded the returned origin, so we will
+  // Notify that the storage key for https://a.com is in use while
+  // GetEvictionStorageKey is running.
+  GetEvictionStorageKey(kTemp);
+  NotifyStorageKeyInUse(ToStorageKey("https://a.com/"));
+  task_environment_.RunUntilIdle();
+  // Post-filtering must have excluded the returned storage key, so we will
   // see empty result here.
-  EXPECT_FALSE(eviction_origin().has_value());
+  EXPECT_FALSE(eviction_storage_key().has_value());
 
-  // Notify access for http://c.com while GetEvictionOrigin is running.
-  GetEvictionOrigin(kTemp);
-  NotifyStorageAccessed(client, ToOrigin("http://c.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  // Post-filtering must have excluded the returned origin, so we will
+  // Notify access for http://c.com while GetEvictionStorageKey is running.
+  GetEvictionStorageKey(kTemp);
+  NotifyStorageAccessed(ToStorageKey("http://c.com/"), kTemp);
+  task_environment_.RunUntilIdle();
+  // Post-filtering must have excluded the returned storage key, so we will
   // see empty result here.
-  EXPECT_FALSE(eviction_origin().has_value());
+  EXPECT_FALSE(eviction_storage_key().has_value());
 
-  NotifyOriginNoLongerInUse(ToOrigin("http://a.com/"));
-  NotifyOriginNoLongerInUse(ToOrigin("https://a.com/"));
-  GetEvictionOrigin(kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(ToOrigin("http://a.com/"), *eviction_origin());
+  NotifyStorageKeyNoLongerInUse(ToStorageKey("http://a.com/"));
+  NotifyStorageKeyNoLongerInUse(ToStorageKey("https://a.com/"));
+  GetEvictionStorageKey(kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(ToStorageKey("http://a.com/"), *eviction_storage_key());
 }
 
-TEST_F(QuotaManagerTest, GetOriginsModifiedSince) {
+TEST_F(QuotaManagerImplTest, GetStorageKeysModifiedBetween) {
   static const MockOriginData kData[] = {
-    { "http://a.com/",   kTemp,  0 },
-    { "http://a.com:1/", kTemp,  0 },
-    { "https://a.com/",  kTemp,  0 },
-    { "http://b.com/",   kPerm,  0 },  // persistent
-    { "http://c.com/",   kTemp,  0 },
+      {"http://a.com/", kTemp, 0},  {"http://a.com:1/", kTemp, 0},
+      {"https://a.com/", kTemp, 0}, {"http://b.com/", kPerm, 0},  // persistent
+      {"http://c.com/", kTemp, 0},
   };
-  MockStorageClient* client =
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem);
-  RegisterClient(client);
+  MockQuotaClient* client =
+      CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                              {blink::mojom::StorageType::kTemporary,
+                               blink::mojom::StorageType::kPersistent});
 
-  GetOriginsModifiedSince(kTemp, base::Time());
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_TRUE(modified_origins().empty());
-  EXPECT_EQ(modified_origins_type(), kTemp);
+  GetStorageKeysModifiedBetween(kTemp, base::Time(), base::Time::Max());
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(modified_storage_keys().empty());
+  EXPECT_EQ(modified_storage_keys_type(), kTemp);
 
   base::Time time1 = client->IncrementMockTime();
-  client->ModifyOriginAndNotify(ToOrigin("http://a.com/"), kTemp, 10);
-  client->ModifyOriginAndNotify(ToOrigin("http://a.com:1/"), kTemp, 10);
-  client->ModifyOriginAndNotify(ToOrigin("http://b.com/"), kPerm, 10);
+  client->ModifyOriginAndNotify(ToStorageKey("http://a.com/").origin(), kTemp,
+                                10);
+  client->ModifyOriginAndNotify(ToStorageKey("http://a.com:1/").origin(), kTemp,
+                                10);
+  client->ModifyOriginAndNotify(ToStorageKey("http://b.com/").origin(), kPerm,
+                                10);
   base::Time time2 = client->IncrementMockTime();
-  client->ModifyOriginAndNotify(ToOrigin("https://a.com/"), kTemp, 10);
-  client->ModifyOriginAndNotify(ToOrigin("http://c.com/"), kTemp, 10);
+  client->ModifyOriginAndNotify(ToStorageKey("https://a.com/").origin(), kTemp,
+                                10);
+  client->ModifyOriginAndNotify(ToStorageKey("http://c.com/").origin(), kTemp,
+                                10);
   base::Time time3 = client->IncrementMockTime();
 
-  GetOriginsModifiedSince(kTemp, time1);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(4U, modified_origins().size());
-  EXPECT_EQ(modified_origins_type(), kTemp);
-  for (size_t i = 0; i < base::size(kData); ++i) {
-    if (kData[i].type == kTemp)
-      EXPECT_EQ(1U, modified_origins().count(ToOrigin(kData[i].origin)));
+  GetStorageKeysModifiedBetween(kTemp, time1, base::Time::Max());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(4U, modified_storage_keys().size());
+  EXPECT_EQ(modified_storage_keys_type(), kTemp);
+  for (const MockOriginData& data : kData) {
+    if (data.type == kTemp)
+      EXPECT_EQ(1U, modified_storage_keys().count(ToStorageKey(data.origin)));
   }
 
-  GetOriginsModifiedSince(kTemp, time2);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(2U, modified_origins().size());
+  GetStorageKeysModifiedBetween(kTemp, time2, base::Time::Max());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(2U, modified_storage_keys().size());
 
-  GetOriginsModifiedSince(kTemp, time3);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_TRUE(modified_origins().empty());
-  EXPECT_EQ(modified_origins_type(), kTemp);
+  GetStorageKeysModifiedBetween(kTemp, time3, base::Time::Max());
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(modified_storage_keys().empty());
+  EXPECT_EQ(modified_storage_keys_type(), kTemp);
 
-  client->ModifyOriginAndNotify(ToOrigin("http://a.com/"), kTemp, 10);
+  client->ModifyOriginAndNotify(ToStorageKey("http://a.com/").origin(), kTemp,
+                                10);
 
-  GetOriginsModifiedSince(kTemp, time3);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(1U, modified_origins().size());
-  EXPECT_EQ(1U, modified_origins().count(ToOrigin("http://a.com/")));
-  EXPECT_EQ(modified_origins_type(), kTemp);
+  GetStorageKeysModifiedBetween(kTemp, time3, base::Time::Max());
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(1U, modified_storage_keys().size());
+  EXPECT_EQ(1U, modified_storage_keys().count(ToStorageKey("http://a.com/")));
+  EXPECT_EQ(modified_storage_keys_type(), kTemp);
 }
 
-TEST_F(QuotaManagerTest, DumpQuotaTable) {
+TEST_F(QuotaManagerImplTest, DumpQuotaTable) {
   SetPersistentHostQuota("example1.com", 1);
   SetPersistentHostQuota("example2.com", 20);
   SetPersistentHostQuota("example3.com", 300);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   DumpQuotaTable();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   const QuotaTableEntry kEntries[] = {
-    QuotaTableEntry("example1.com", kPerm, 1),
-    QuotaTableEntry("example2.com", kPerm, 20),
-    QuotaTableEntry("example3.com", kPerm, 300),
-  };
+      {.host = "example1.com", .type = kPerm, .quota = 1},
+      {.host = "example2.com", .type = kPerm, .quota = 20},
+      {.host = "example3.com", .type = kPerm, .quota = 300}};
   std::set<QuotaTableEntry> entries(kEntries, kEntries + base::size(kEntries));
 
   for (const auto& quota_entry : quota_entries()) {
@@ -2132,270 +2469,261 @@ TEST_F(QuotaManagerTest, DumpQuotaTable) {
   EXPECT_TRUE(entries.empty());
 }
 
-TEST_F(QuotaManagerTest, DumpOriginInfoTable) {
+TEST_F(QuotaManagerImplTest, DumpBucketTable) {
   using std::make_pair;
 
-  quota_manager()->NotifyStorageAccessed(
-      QuotaClient::kUnknown, ToOrigin("http://example.com/"), kTemp);
-  quota_manager()->NotifyStorageAccessed(
-      QuotaClient::kUnknown, ToOrigin("http://example.com/"), kPerm);
-  quota_manager()->NotifyStorageAccessed(
-      QuotaClient::kUnknown, ToOrigin("http://example.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  quota_manager_impl()->NotifyStorageAccessed(
+      ToStorageKey("http://example.com/"), kTemp, base::Time::Now());
+  quota_manager_impl()->NotifyStorageAccessed(
+      ToStorageKey("http://example.com/"), kPerm, base::Time::Now());
+  quota_manager_impl()->NotifyStorageAccessed(
+      ToStorageKey("http://example.com/"), kPerm, base::Time::Now());
+  task_environment_.RunUntilIdle();
 
-  DumpOriginInfoTable();
-  scoped_task_environment_.RunUntilIdle();
+  DumpBucketTable();
+  task_environment_.RunUntilIdle();
 
-  using TypedOrigin = std::pair<GURL, StorageType>;
-  using Entry = std::pair<TypedOrigin, int>;
+  using TypedStorageKey = std::pair<GURL, StorageType>;
+  using Entry = std::pair<TypedStorageKey, int>;
   const Entry kEntries[] = {
     make_pair(make_pair(GURL("http://example.com/"), kTemp), 1),
     make_pair(make_pair(GURL("http://example.com/"), kPerm), 2),
   };
   std::set<Entry> entries(kEntries, kEntries + base::size(kEntries));
 
-  for (const auto& origin_info : origin_info_entries()) {
+  for (const auto& entry : bucket_entries()) {
     SCOPED_TRACE(testing::Message()
-                 << "host = " << origin_info.origin << ", "
-                 << "type = " << static_cast<int>(origin_info.type) << ", "
-                 << "used_count = " << origin_info.used_count);
-    EXPECT_EQ(1u, entries.erase(make_pair(
-                      make_pair(origin_info.origin.GetURL(), origin_info.type),
-                      origin_info.used_count)));
+                 << "host = " << entry.storage_key.origin() << ", "
+                 << "type = " << static_cast<int>(entry.type) << ", "
+                 << "use_count = " << entry.use_count);
+    EXPECT_EQ(1u,
+              entries.erase(make_pair(
+                  make_pair(entry.storage_key.origin().GetURL(), entry.type),
+                  entry.use_count)));
   }
   EXPECT_TRUE(entries.empty());
 }
 
-TEST_F(QuotaManagerTest, QuotaForEmptyHost) {
+TEST_F(QuotaManagerImplTest, QuotaForEmptyHost) {
   GetPersistentHostQuota(std::string());
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(0, quota());
 
   SetPersistentHostQuota(std::string(), 10);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kErrorNotSupported, status());
 }
 
-TEST_F(QuotaManagerTest, DeleteSpecificClientTypeSingleOrigin) {
+TEST_F(QuotaManagerImplTest, DeleteSpecificClientTypeSingleStorageKey) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",   kTemp, 1 },
+      {"http://foo.com/", kTemp, 1},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com/",   kTemp, 2 },
+      {"http://foo.com/", kTemp, 2},
   };
   static const MockOriginData kData3[] = {
-    { "http://foo.com/",   kTemp, 4 },
+      {"http://foo.com/", kTemp, 4},
   };
   static const MockOriginData kData4[] = {
-    { "http://foo.com/",   kTemp, 8 },
+      {"http://foo.com/", kTemp, 8},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kAppcache);
-  MockStorageClient* client3 =
-      CreateClient(kData3, base::size(kData3), QuotaClient::kDatabase);
-  MockStorageClient* client4 =
-      CreateClient(kData4, base::size(kData4), QuotaClient::kIndexedDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
-  RegisterClient(client3);
-  RegisterClient(client4);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData2, QuotaClientType::kAppcache,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData3, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData4, QuotaClientType::kIndexedDatabase,
+                          {blink::mojom::StorageType::kTemporary});
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_tmp = usage();
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp,
-                   QuotaClient::kFileSystem);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       {QuotaClientType::kFileSystem});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 1, usage());
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp, QuotaClient::kAppcache);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       {QuotaClientType::kAppcache});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 2 - 1, usage());
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp, QuotaClient::kDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       {QuotaClientType::kDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 4 - 2 - 1, usage());
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp,
-                   QuotaClient::kIndexedDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteStorageKeyData(ToStorageKey("http://foo.com/"), kTemp,
+                       {QuotaClientType::kIndexedDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 8 - 4 - 2 - 1, usage());
 }
 
-TEST_F(QuotaManagerTest, DeleteSpecificClientTypeSingleHost) {
+TEST_F(QuotaManagerImplTest, DeleteSpecificClientTypeSingleHost) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com:1111/",   kTemp, 1 },
+      {"http://foo.com:1111/", kTemp, 1},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com:2222/",   kTemp, 2 },
+      {"http://foo.com:2222/", kTemp, 2},
   };
   static const MockOriginData kData3[] = {
-    { "http://foo.com:3333/",   kTemp, 4 },
+      {"http://foo.com:3333/", kTemp, 4},
   };
   static const MockOriginData kData4[] = {
-    { "http://foo.com:4444/",   kTemp, 8 },
+      {"http://foo.com:4444/", kTemp, 8},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kAppcache);
-  MockStorageClient* client3 =
-      CreateClient(kData3, base::size(kData3), QuotaClient::kDatabase);
-  MockStorageClient* client4 =
-      CreateClient(kData4, base::size(kData4), QuotaClient::kIndexedDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
-  RegisterClient(client3);
-  RegisterClient(client4);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData2, QuotaClientType::kAppcache,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData3, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData4, QuotaClientType::kIndexedDatabase,
+                          {blink::mojom::StorageType::kTemporary});
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_tmp = usage();
 
-  DeleteHostData("foo.com", kTemp, QuotaClient::kFileSystem);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kTemp, {QuotaClientType::kFileSystem});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 1, usage());
 
-  DeleteHostData("foo.com", kTemp, QuotaClient::kAppcache);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kTemp, {QuotaClientType::kAppcache});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 2 - 1, usage());
 
-  DeleteHostData("foo.com", kTemp, QuotaClient::kDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kTemp, {QuotaClientType::kDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 4 - 2 - 1, usage());
 
-  DeleteHostData("foo.com", kTemp, QuotaClient::kIndexedDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData("foo.com", kTemp, {QuotaClientType::kIndexedDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 8 - 4 - 2 - 1, usage());
 }
 
-TEST_F(QuotaManagerTest, DeleteMultipleClientTypesSingleOrigin) {
+TEST_F(QuotaManagerImplTest, DeleteMultipleClientTypesSingleStorageKey) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com/",   kTemp, 1 },
+      {"http://foo.com/", kTemp, 1},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com/",   kTemp, 2 },
+      {"http://foo.com/", kTemp, 2},
   };
   static const MockOriginData kData3[] = {
-    { "http://foo.com/",   kTemp, 4 },
+      {"http://foo.com/", kTemp, 4},
   };
   static const MockOriginData kData4[] = {
-    { "http://foo.com/",   kTemp, 8 },
+      {"http://foo.com/", kTemp, 8},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kAppcache);
-  MockStorageClient* client3 =
-      CreateClient(kData3, base::size(kData3), QuotaClient::kDatabase);
-  MockStorageClient* client4 =
-      CreateClient(kData4, base::size(kData4), QuotaClient::kIndexedDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
-  RegisterClient(client3);
-  RegisterClient(client4);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData2, QuotaClientType::kAppcache,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData3, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData4, QuotaClientType::kIndexedDatabase,
+                          {blink::mojom::StorageType::kTemporary});
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_tmp = usage();
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp,
-                   QuotaClient::kFileSystem | QuotaClient::kDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteStorageKeyData(
+      ToStorageKey("http://foo.com/"), kTemp,
+      {QuotaClientType::kFileSystem, QuotaClientType::kDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 4 - 1, usage());
 
-  DeleteOriginData(ToOrigin("http://foo.com/"), kTemp,
-                   QuotaClient::kAppcache | QuotaClient::kIndexedDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteStorageKeyData(
+      ToStorageKey("http://foo.com/"), kTemp,
+      {QuotaClientType::kAppcache, QuotaClientType::kIndexedDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 8 - 4 - 2 - 1, usage());
 }
 
-TEST_F(QuotaManagerTest, DeleteMultipleClientTypesSingleHost) {
+TEST_F(QuotaManagerImplTest, DeleteMultipleClientTypesSingleHost) {
   static const MockOriginData kData1[] = {
-    { "http://foo.com:1111/",   kTemp, 1 },
+      {"http://foo.com:1111/", kTemp, 1},
   };
   static const MockOriginData kData2[] = {
-    { "http://foo.com:2222/",   kTemp, 2 },
+      {"http://foo.com:2222/", kTemp, 2},
   };
   static const MockOriginData kData3[] = {
-    { "http://foo.com:3333/",   kTemp, 4 },
+      {"http://foo.com:3333/", kTemp, 4},
   };
   static const MockOriginData kData4[] = {
-    { "http://foo.com:4444/",   kTemp, 8 },
+      {"http://foo.com:4444/", kTemp, 8},
   };
-  MockStorageClient* client1 =
-      CreateClient(kData1, base::size(kData1), QuotaClient::kFileSystem);
-  MockStorageClient* client2 =
-      CreateClient(kData2, base::size(kData2), QuotaClient::kAppcache);
-  MockStorageClient* client3 =
-      CreateClient(kData3, base::size(kData3), QuotaClient::kDatabase);
-  MockStorageClient* client4 =
-      CreateClient(kData4, base::size(kData4), QuotaClient::kIndexedDatabase);
-  RegisterClient(client1);
-  RegisterClient(client2);
-  RegisterClient(client3);
-  RegisterClient(client4);
+  CreateAndRegisterClient(kData1, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData2, QuotaClientType::kAppcache,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData3, QuotaClientType::kDatabase,
+                          {blink::mojom::StorageType::kTemporary});
+  CreateAndRegisterClient(kData4, QuotaClientType::kIndexedDatabase,
+                          {blink::mojom::StorageType::kTemporary});
 
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   const int64_t predelete_foo_tmp = usage();
 
   DeleteHostData("foo.com", kTemp,
-      QuotaClient::kFileSystem | QuotaClient::kAppcache);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+                 {QuotaClientType::kFileSystem, QuotaClientType::kAppcache});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 2 - 1, usage());
 
-  DeleteHostData("foo.com", kTemp,
-      QuotaClient::kDatabase | QuotaClient::kIndexedDatabase);
-  scoped_task_environment_.RunUntilIdle();
-  GetHostUsage("foo.com", kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  DeleteHostData(
+      "foo.com", kTemp,
+      {QuotaClientType::kDatabase, QuotaClientType::kIndexedDatabase});
+  task_environment_.RunUntilIdle();
+  GetHostUsageWithBreakdown("foo.com", kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(predelete_foo_tmp - 8 - 4 - 2 - 1, usage());
 }
 
-TEST_F(QuotaManagerTest, GetUsageAndQuota_Incognito) {
-  ResetQuotaManager(true);
+TEST_F(QuotaManagerImplTest, GetUsageAndQuota_Incognito) {
+  ResetQuotaManagerImpl(true);
 
   static const MockOriginData kData[] = {
-    { "http://foo.com/", kTemp, 10 },
-    { "http://foo.com/", kPerm, 80 },
+      {"http://foo.com/", kTemp, 10},
+      {"http://foo.com/", kPerm, 80},
   };
-  RegisterClient(
-      CreateClient(kData, base::size(kData), QuotaClient::kFileSystem));
+  CreateAndRegisterClient(kData, QuotaClientType::kFileSystem,
+                          {blink::mojom::StorageType::kTemporary,
+                           blink::mojom::StorageType::kPersistent});
 
   // Query global usage to warmup the usage tracker caching.
   GetGlobalUsage(kTemp);
   GetGlobalUsage(kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(80, usage());
   EXPECT_EQ(0, quota());
@@ -2405,41 +2733,213 @@ TEST_F(QuotaManagerTest, GetUsageAndQuota_Incognito) {
   SetQuotaSettings(kPoolSize, kPerHostQuota, INT64_C(0));
 
   GetStorageCapacity();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(kPoolSize, total_space());
   EXPECT_EQ(kPoolSize - 80 - 10, available_space());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_LE(kPerHostQuota, quota());
 
   mock_special_storage_policy()->AddUnlimited(GURL("http://foo.com/"));
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(80, usage());
   EXPECT_EQ(available_space() + usage(), quota());
 
-  GetUsageAndQuotaForWebApps(ToOrigin("http://foo.com/"), kTemp);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(ToStorageKey("http://foo.com/"), kTemp);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(QuotaStatusCode::kOk, status());
   EXPECT_EQ(10, usage());
   EXPECT_EQ(available_space() + usage(), quota());
 }
 
-TEST_F(QuotaManagerTest, GetUsageAndQuota_SessionOnly) {
-  const url::Origin kEpheremalOrigin = ToOrigin("http://ephemeral/");
-  mock_special_storage_policy()->AddSessionOnly(kEpheremalOrigin.GetURL());
+TEST_F(QuotaManagerImplTest, GetUsageAndQuota_SessionOnly) {
+  const StorageKey kEpheremalStorageKey = ToStorageKey("http://ephemeral/");
+  mock_special_storage_policy()->AddSessionOnly(
+      kEpheremalStorageKey.origin().GetURL());
 
-  GetUsageAndQuotaForWebApps(kEpheremalOrigin, kTemp);
-  scoped_task_environment_.RunUntilIdle();
-  EXPECT_EQ(quota_manager()->settings().session_only_per_host_quota, quota());
+  GetUsageAndQuotaForWebApps(kEpheremalStorageKey, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(quota_manager_impl()->settings().session_only_per_host_quota,
+            quota());
 
-  GetUsageAndQuotaForWebApps(kEpheremalOrigin, kPerm);
-  scoped_task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(kEpheremalStorageKey, kPerm);
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0, quota());
 }
 
-}  // namespace content
+TEST_F(QuotaManagerImplTest, MaybeRunStoragePressureCallback) {
+  bool callback_ran = false;
+  auto cb = base::BindRepeating(
+      [](bool* callback_ran, StorageKey storage_key) { *callback_ran = true; },
+      &callback_ran);
+
+  SetStoragePressureCallback(std::move(cb));
+
+  int64_t kGBytes = QuotaManagerImpl::kMBytes * 1024;
+  MaybeRunStoragePressureCallback(StorageKey(), 100 * kGBytes, 2 * kGBytes);
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(callback_ran);
+
+  MaybeRunStoragePressureCallback(StorageKey(), 100 * kGBytes, kGBytes);
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(callback_ran);
+}
+
+TEST_F(QuotaManagerImplTest, OverrideQuotaForStorageKey) {
+  StorageKey storage_key = ToStorageKey("https://foo.com");
+  std::unique_ptr<QuotaOverrideHandle> handle = GetQuotaOverrideHandle();
+
+  base::RunLoop run_loop;
+  handle->OverrideQuotaForStorageKey(
+      storage_key, 5000,
+      base::BindLambdaForTesting([&]() { run_loop.Quit(); }));
+  run_loop.Run();
+
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(0, usage());
+  EXPECT_EQ(5000, quota());
+}
+
+TEST_F(QuotaManagerImplTest, OverrideQuotaForStorageKey_Disable) {
+  StorageKey storage_key = ToStorageKey("https://foo.com");
+  std::unique_ptr<QuotaOverrideHandle> handle1 = GetQuotaOverrideHandle();
+  std::unique_ptr<QuotaOverrideHandle> handle2 = GetQuotaOverrideHandle();
+
+  base::RunLoop run_loop1;
+  handle1->OverrideQuotaForStorageKey(
+      storage_key, 5000,
+      base::BindLambdaForTesting([&]() { run_loop1.Quit(); }));
+  run_loop1.Run();
+
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(5000, quota());
+
+  base::RunLoop run_loop2;
+  handle2->OverrideQuotaForStorageKey(
+      storage_key, 9000,
+      base::BindLambdaForTesting([&]() { run_loop2.Quit(); }));
+  run_loop2.Run();
+
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(9000, quota());
+
+  base::RunLoop run_loop3;
+  handle2->OverrideQuotaForStorageKey(
+      storage_key, absl::nullopt,
+      base::BindLambdaForTesting([&]() { run_loop3.Quit(); }));
+  run_loop3.Run();
+
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(kDefaultPerHostQuota, quota());
+}
+
+TEST_F(QuotaManagerImplTest, WithdrawQuotaOverride) {
+  StorageKey storage_key = ToStorageKey("https://foo.com");
+  std::unique_ptr<QuotaOverrideHandle> handle1 = GetQuotaOverrideHandle();
+  std::unique_ptr<QuotaOverrideHandle> handle2 = GetQuotaOverrideHandle();
+
+  base::RunLoop run_loop1;
+  handle1->OverrideQuotaForStorageKey(
+      storage_key, 5000,
+      base::BindLambdaForTesting([&]() { run_loop1.Quit(); }));
+  run_loop1.Run();
+
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(5000, quota());
+
+  base::RunLoop run_loop2;
+  handle1->OverrideQuotaForStorageKey(
+      storage_key, 8000,
+      base::BindLambdaForTesting([&]() { run_loop2.Quit(); }));
+  run_loop2.Run();
+
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(8000, quota());
+
+  // Quota should remain overridden if only one of the two handles withdraws
+  // it's overrides
+  handle2.reset();
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(8000, quota());
+
+  handle1.reset();
+  task_environment_.RunUntilIdle();
+  GetUsageAndQuotaForWebApps(storage_key, kTemp);
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(QuotaStatusCode::kOk, status());
+  EXPECT_EQ(kDefaultPerHostQuota, quota());
+}
+
+TEST_F(QuotaManagerImplTest, QuotaChangeEvent_LargePartitionPressure) {
+  scoped_feature_list_.InitAndEnableFeature(features::kStoragePressureEvent);
+  bool quota_change_dispatched = false;
+
+  SetQuotaChangeCallback(
+      base::BindLambdaForTesting([&] { quota_change_dispatched = true; }));
+  SetGetVolumeInfoFn([](const base::FilePath&) -> std::tuple<int64_t, int64_t> {
+    int64_t total = kGigabytes * 100;
+    int64_t available = kGigabytes * 2;
+    return std::make_tuple(total, available);
+  });
+  GetStorageCapacity();
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(quota_change_dispatched);
+
+  SetGetVolumeInfoFn([](const base::FilePath&) -> std::tuple<int64_t, int64_t> {
+    int64_t total = kGigabytes * 100;
+    int64_t available = QuotaManagerImpl::kMBytes * 512;
+    return std::make_tuple(total, available);
+  });
+  GetStorageCapacity();
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(quota_change_dispatched);
+}
+
+TEST_F(QuotaManagerImplTest, QuotaChangeEvent_SmallPartitionPressure) {
+  scoped_feature_list_.InitAndEnableFeature(features::kStoragePressureEvent);
+  bool quota_change_dispatched = false;
+
+  SetQuotaChangeCallback(
+      base::BindLambdaForTesting([&] { quota_change_dispatched = true; }));
+  SetGetVolumeInfoFn([](const base::FilePath&) -> std::tuple<int64_t, int64_t> {
+    int64_t total = kGigabytes * 10;
+    int64_t available = total * 2;
+    return std::make_tuple(total, available);
+  });
+  GetStorageCapacity();
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(quota_change_dispatched);
+
+  SetGetVolumeInfoFn([](const base::FilePath&) -> std::tuple<int64_t, int64_t> {
+    // DetermineStoragePressure flow will trigger the storage pressure flow
+    // when available disk space is below 5% (+/- 0.25%) of total disk space.
+    // Available is 2% here to guarantee that it falls below the threshold.
+    int64_t total = kGigabytes * 10;
+    int64_t available = total * 0.02;
+    return std::make_tuple(total, available);
+  });
+  GetStorageCapacity();
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(quota_change_dispatched);
+}
+
+}  // namespace storage

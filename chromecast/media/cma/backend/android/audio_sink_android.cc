@@ -4,27 +4,12 @@
 
 #include "chromecast/media/cma/backend/android/audio_sink_android.h"
 
+#include "base/logging.h"
 #include "chromecast/media/cma/backend/android/audio_sink_android_audiotrack_impl.h"
 #include "chromecast/media/cma/backend/android/audio_sink_manager.h"
 
 namespace chromecast {
 namespace media {
-
-// static
-const char* GetAudioContentTypeName(const AudioContentType type) {
-  switch (type) {
-    case AudioContentType::kMedia:
-      return "kMedia";
-    case AudioContentType::kAlarm:
-      return "kAlarm";
-    case AudioContentType::kCommunication:
-      return "kCommunication";
-    case AudioContentType::kOther:
-      return "kOther";
-    default:
-      return "Unknown";
-  }
-}
 
 // static
 bool AudioSinkAndroid::GetSessionIds(SinkType sink_type,
@@ -53,7 +38,7 @@ int64_t AudioSinkAndroid::GetMinimumBufferedTime(SinkType sink_type,
       break;
     case AudioSinkAndroid::kSinkTypeJavaBased:
       return AudioSinkAndroidAudioTrackImpl::GetMinimumBufferedTime(
-          config.samples_per_second);
+          config.channel_number, config.samples_per_second);
   }
   return kDefaultMinBufferTimeUs;
 }
@@ -70,6 +55,7 @@ void ManagedAudioSink::Reset() {
 }
 
 void ManagedAudioSink::Reset(Delegate* delegate,
+                             int num_channels,
                              int samples_per_second,
                              bool primary,
                              const std::string& device_id,
@@ -83,8 +69,9 @@ void ManagedAudioSink::Reset(Delegate* delegate,
       NOTREACHED() << "Native-based audio sink is not implemented yet!";
       break;
     case AudioSinkAndroid::kSinkTypeJavaBased:
-      sink_ = new AudioSinkAndroidAudioTrackImpl(
-          delegate, samples_per_second, primary, device_id, content_type);
+      sink_ = new AudioSinkAndroidAudioTrackImpl(delegate, num_channels,
+                                                 samples_per_second, primary,
+                                                 device_id, content_type);
   }
   AudioSinkManager::Get()->Add(sink_);
 }

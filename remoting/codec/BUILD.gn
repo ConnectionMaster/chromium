@@ -17,6 +17,7 @@ source_set("encoder") {
     "video_encoder_verbatim.h",
     "video_encoder_vpx.cc",
     "video_encoder_vpx.h",
+    "webrtc_video_encoder.cc",
     "webrtc_video_encoder_proxy.cc",
     "webrtc_video_encoder_proxy.h",
     "webrtc_video_encoder_selector.cc",
@@ -30,21 +31,22 @@ source_set("encoder") {
   deps = [
     ":vpx_codec",
     "//base/third_party/dynamic_annotations",
+    "//build:chromeos_buildflags",
+    "//remoting/base:base",
     "//remoting/proto",
+    "//remoting/protocol:session_config",
     "//third_party/libvpx",
     "//third_party/libyuv",
     "//third_party/opus",
-    "//third_party/webrtc/modules/desktop_capture:primitives",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//ui/gfx:color_space",
     "//ui/gfx/geometry",
   ]
 
   # Currently, building WebrtcVideoEncoderGpu is only supported on Windows and
   # Linux, and encoding with WebrtcVideoEncoderGpu is only supported on Windows.
-  if (is_win || is_linux) {
-    public_configs = [
-      "//skia:skia_config",
-    ]
+  if (is_win || is_linux || is_chromeos) {
+    public_configs = [ "//skia:skia_config" ]
     sources += [
       "webrtc_video_encoder_gpu.cc",
       "webrtc_video_encoder_gpu.h",
@@ -90,12 +92,15 @@ source_set("decoder") {
 
   deps = [
     ":vpx_codec",
+    "//base:base",
     "//base/third_party/dynamic_annotations",
+    "//remoting/base:base",
     "//remoting/proto",
+    "//remoting/protocol:session_config",
     "//third_party/libvpx",
     "//third_party/libyuv",
     "//third_party/opus",
-    "//third_party/webrtc/modules/desktop_capture:primitives",
+    "//third_party/webrtc_overrides:webrtc_component",
   ]
 }
 
@@ -107,15 +112,14 @@ source_set("vpx_codec") {
 
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
-  public_deps = [
-    "//third_party/libvpx",
-  ]
+  public_deps = [ "//third_party/libvpx" ]
 
   deps = [
+    "//base:base",
     "//base/third_party/dynamic_annotations",
     "//remoting/proto",
     "//third_party/libyuv",
-    "//third_party/webrtc/modules/desktop_capture:primitives",
+    "//third_party/webrtc_overrides:webrtc_component",
   ]
 }
 
@@ -139,9 +143,10 @@ source_set("unit_tests") {
     ":decoder",
     ":encoder",
     "//base",
+    "//remoting/base:base",
     "//remoting/proto",
     "//testing/gtest",
-    "//third_party/webrtc/modules/desktop_capture",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//ui/gfx:color_space",
   ]
 

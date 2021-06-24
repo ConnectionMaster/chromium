@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/feature_list.h"
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "chrome/browser/media/android/cdm/media_drm_origin_id_manager.h"
 #include "chrome/browser/profiles/profile.h"
@@ -50,10 +49,8 @@ content::BrowserContext* MediaDrmOriginIdManagerFactory::GetBrowserContextToUse(
 
 bool MediaDrmOriginIdManagerFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  // Create this service when the context is created if it should perform
-  // pre-provisioning at startup. Creation will end up calling
-  // GetBrowserContextToUse() above which returns NULL for incognito contexts,
-  // and thus no instance will be created for them.
-  return base::FeatureList::IsEnabled(media::kMediaDrmPreprovisioning) &&
-         base::FeatureList::IsEnabled(media::kMediaDrmPreprovisioningAtStartup);
+  // Create this service when the context is created if the feature is enabled.
+  // Creation will end up calling GetBrowserContextToUse() above which returns
+  // NULL for incognito contexts, and thus no instance will be created for them.
+  return base::FeatureList::IsEnabled(media::kMediaDrmPreprovisioning);
 }

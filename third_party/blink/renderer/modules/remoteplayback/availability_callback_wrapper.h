@@ -5,8 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_REMOTEPLAYBACK_AVAILABILITY_CALLBACK_WRAPPER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_REMOTEPLAYBACK_AVAILABILITY_CALLBACK_WRAPPER_H_
 
-#include <memory>
-
 #include "base/callback.h"
 #include "base/macros.h"
 #include "third_party/blink/renderer/platform/bindings/name_client.h"
@@ -20,16 +18,16 @@ class V8RemotePlaybackAvailabilityCallback;
 // Wraps either a base::OnceClosure or RemotePlaybackAvailabilityCallback object
 // to be kept in the RemotePlayback's |availability_callbacks_| map.
 class AvailabilityCallbackWrapper final
-    : public GarbageCollectedFinalized<AvailabilityCallbackWrapper>,
+    : public GarbageCollected<AvailabilityCallbackWrapper>,
       public NameClient {
  public:
   explicit AvailabilityCallbackWrapper(V8RemotePlaybackAvailabilityCallback*);
   explicit AvailabilityCallbackWrapper(base::RepeatingClosure);
-  ~AvailabilityCallbackWrapper() = default;
+  ~AvailabilityCallbackWrapper() override = default;
 
   void Run(RemotePlayback*, bool new_availability);
 
-  virtual void Trace(blink::Visitor*);
+  virtual void Trace(Visitor*) const;
   const char* NameInHeapSnapshot() const override {
     return "AvailabilityCallbackWrapper";
   }

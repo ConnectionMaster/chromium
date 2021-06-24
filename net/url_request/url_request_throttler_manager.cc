@@ -4,7 +4,7 @@
 
 #include "net/url_request/url_request_throttler_manager.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/strings/string_util.h"
 #include "net/base/url_util.h"
 #include "net/log/net_log.h"
@@ -78,10 +78,9 @@ scoped_refptr<URLRequestThrottlerEntryInterface>
     // the entry for localhost URLs.
     if (IsLocalhost(url)) {
       if (!logged_for_localhost_disabled_ && IsLocalhost(url)) {
-        std::string host = url.host();
         logged_for_localhost_disabled_ = true;
-        net_log_.AddEvent(NetLogEventType::THROTTLING_DISABLED_FOR_HOST,
-                          NetLog::StringCallback("host", &host));
+        net_log_.AddEventWithStringParams(
+            NetLogEventType::THROTTLING_DISABLED_FOR_HOST, "host", url.host());
       }
 
       // TODO(joi): Once sliding window is separate from back-off throttling,

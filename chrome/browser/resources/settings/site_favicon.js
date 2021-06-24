@@ -7,22 +7,31 @@
  * site URL.
  */
 
+import {getFavicon, getFaviconForPageURL} from 'chrome://resources/js/icon.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
 Polymer({
   is: 'site-favicon',
 
+  _template: html`{__html_template__}`,
+
   properties: {
-    url: {
-      type: String,
-      value: '',
-      observer: 'urlChanged_',
-    }
+    faviconUrl: String,
+    url: String,
   },
 
   /** @private */
-  urlChanged_: function() {
-    let url = this.removePatternWildcard_(this.url);
-    url = this.ensureUrlHasScheme_(url);
-    this.style.backgroundImage = cr.icon.getFavicon(url || '');
+  getBackgroundImage_() {
+    let backgroundImage = getFavicon('');
+    if (this.faviconUrl) {
+      const url = this.ensureUrlHasScheme_(this.faviconUrl);
+      backgroundImage = getFavicon(url);
+    } else if (this.url) {
+      let url = this.removePatternWildcard_(this.url);
+      url = this.ensureUrlHasScheme_(url);
+      backgroundImage = getFaviconForPageURL(url || '', false);
+    }
+    return backgroundImage;
   },
 
   /**
@@ -31,7 +40,7 @@ Polymer({
    * @return {string} The resulting pattern.
    * @private
    */
-  removePatternWildcard_: function(pattern) {
+  removePatternWildcard_(pattern) {
     if (!pattern || pattern.length === 0) {
       return pattern;
     }
@@ -52,7 +61,7 @@ Polymer({
    * @return {string} The URL with a scheme, or an empty string.
    * @private
    */
-  ensureUrlHasScheme_: function(url) {
+  ensureUrlHasScheme_(url) {
     if (!url || url.length === 0) {
       return url;
     }

@@ -19,7 +19,7 @@ class FrameLoadWaiter : public RenderFrameObserver {
   explicit FrameLoadWaiter(RenderFrame* frame);
 
   // Note: single-process browser tests need to enable nestable tasks by
-  // instantiating a base::MessageLoopCurrent::ScopedNestableTaskAllower or this
+  // instantiating a base::CurrentThread::ScopedNestableTaskAllower or this
   // method will never return.
   void Wait();
 
@@ -28,7 +28,7 @@ class FrameLoadWaiter : public RenderFrameObserver {
   void DidFinishLoad() override;
   void OnDestruct() override;
 
-  base::RunLoop run_loop_;
+  base::RunLoop run_loop_{base::RunLoop::Type::kNestableTasksAllowed};
   bool did_load_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(FrameLoadWaiter);

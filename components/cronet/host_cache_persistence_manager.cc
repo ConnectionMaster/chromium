@@ -7,7 +7,6 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/values.h"
 #include "components/prefs/pref_service.h"
 #include "net/log/net_log.h"
@@ -27,8 +26,7 @@ HostCachePersistenceManager::HostCachePersistenceManager(
       delay_(delay),
       net_log_(net::NetLogWithSource::Make(
           net_log,
-          net::NetLogSourceType::HOST_CACHE_PERSISTENCE_MANAGER)),
-      weak_factory_(this) {
+          net::NetLogSourceType::HOST_CACHE_PERSISTENCE_MANAGER)) {
   DCHECK(cache_);
   DCHECK(pref_service_);
 
@@ -38,8 +36,8 @@ HostCachePersistenceManager::HostCachePersistenceManager(
 
   registrar_.Init(pref_service_);
   registrar_.Add(pref_name_,
-                 base::Bind(&HostCachePersistenceManager::ReadFromDisk,
-                            weak_factory_.GetWeakPtr()));
+                 base::BindRepeating(&HostCachePersistenceManager::ReadFromDisk,
+                                     weak_factory_.GetWeakPtr()));
   cache_->set_persistence_delegate(this);
 }
 
@@ -60,11 +58,9 @@ void HostCachePersistenceManager::ReadFromDisk() {
   net_log_.BeginEvent(net::NetLogEventType::HOST_CACHE_PREF_READ);
   const base::ListValue* pref_value = pref_service_->GetList(pref_name_);
   bool success = cache_->RestoreFromListValue(*pref_value);
-  net_log_.EndEvent(net::NetLogEventType::HOST_CACHE_PREF_READ,
-                    net::NetLog::BoolCallback("success", success));
-
-  UMA_HISTOGRAM_BOOLEAN("DNS.HostCache.RestoreSuccess", success);
-  UMA_HISTOGRAM_COUNTS_1000("DNS.HostCache.RestoreSize", pref_value->GetSize());
+  net_log_.AddEntryWithBoolParams(net::NetLogEventType::HOST_CACHE_PREF_READ,
+                                  net::NetLogEventPhase::END, "success",
+                                  success);
 }
 
 void HostCachePersistenceManager::ScheduleWrite() {
@@ -84,7 +80,8 @@ void HostCachePersistenceManager::WriteToDisk() {
 
   net_log_.AddEvent(net::NetLogEventType::HOST_CACHE_PREF_WRITE);
   base::ListValue value;
-  cache_->GetAsListValue(&value, false);
+  cache_->GetAsListValue(&value, false,
+                         net::HostCache::SerializationType::kRestorable);
   writing_pref_ = true;
   pref_service_->Set(pref_name_, value);
   writing_pref_ = false;

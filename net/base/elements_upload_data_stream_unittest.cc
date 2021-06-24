@@ -11,13 +11,13 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/location.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -30,7 +30,7 @@
 #include "net/base/upload_file_element_reader.h"
 #include "net/log/net_log_with_source.h"
 #include "net/test/gtest_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -144,7 +144,7 @@ class MockUploadElementReader : public UploadElementReader {
 }  // namespace
 
 class ElementsUploadDataStreamTest : public PlatformTest,
-                                     public WithScopedTaskEnvironment {
+                                     public WithTaskEnvironment {
  public:
   void SetUp() override {
     PlatformTest::SetUp();

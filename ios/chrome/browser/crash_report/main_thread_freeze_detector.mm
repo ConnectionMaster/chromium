@@ -4,9 +4,14 @@
 
 #include "ios/chrome/browser/crash_report/main_thread_freeze_detector.h"
 
+#include "base/debug/debugger.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
-#include "ios/chrome/browser/crash_report/crash_report_flags.h"
+#include "components/crash/core/app/crashpad.h"
+#include "components/crash/core/common/crash_key.h"
+#include "components/crash/core/common/reporter_running_ios.h"
+#include "ios/chrome/app/tests_hook.h"
+#include "ios/chrome/browser/crash_report/crash_helper.h"
 #import "third_party/breakpad/breakpad/src/client/ios/Breakpad.h"
 #import "third_party/breakpad/breakpad/src/client/ios/BreakpadController.h"
 
@@ -18,15 +23,33 @@ namespace {
 // See description at |_lastSessionFreezeInfo|.
 const char kNsUserDefaultKeyLastSessionInfo[] =
     "MainThreadDetectionLastThreadWasFrozenInfo";
-// The delay after which a UTE report is generated. It is a cache of the
-// Variations value to use when variations is not available yet
-const char kNsUserDefaultKeyDelay[] = "MainThreadDetectionDelay";
+
+// Clean exit beacon.
+NSString* const kLastSessionExitedCleanly = @"LastSessionExitedCleanly";
+
+const NSTimeInterval kFreezeDetectionDelay = 9;
 
 void LogRecoveryTime(base::TimeDelta time) {
   UMA_HISTOGRAM_TIMES("IOS.MainThreadFreezeDetection.RecoveredAfter", time);
 }
 
-}
+// Key indicating that UI thread is frozen.
+NSString* const kHangReportKey = @"hang-report";
+
+// Key of the UMA Startup.MobileSessionStartAction histogram.
+const char kUMAMainThreadFreezeDetectionNotRunningAfterReport[] =
+    "IOS.MainThreadFreezeDetection.NotRunningAfterReport";
+
+// Enum actions for the IOS.MainThreadFreezeDetection.NotRunningAfterReport UMA
+// metric. These values are persisted to logs. Entries should not be renumbered
+// and numeric values should never be reused.
+enum class IOSMainThreadFreezeDetectionNotRunningAfterReportBlock {
+  kAfterBreakpadRef = 0,
+  kAfterFileManagerUTEMove = 1,
+  kMaxValue = kAfterFileManagerUTEMove,
+};
+
+}  // namespace
 
 @interface MainThreadFreezeDetector ()
 // The callback that is called regularly on main thread.
@@ -76,10 +99,22 @@ void LogRecoveryTime(base::TimeDelta time) {
   if (self) {
     _lastSessionFreezeInfo = [[NSUserDefaults standardUserDefaults]
         dictionaryForKey:@(kNsUserDefaultKeyLastSessionInfo)];
+
+    if (_lastSessionFreezeInfo != nil) {
+      NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+      bool clean = [defaults objectForKey:kLastSessionExitedCleanly] != nil &&
+                   [defaults boolForKey:kLastSessionExitedCleanly];
+      // Last session exited cleanly, ignore _lastSessionFreezeInfo.
+      UMA_HISTOGRAM_BOOLEAN("IOS.MainThreadFreezeDetection.HangWithCleanExit",
+                            clean);
+      if (clean)
+        _lastSessionFreezeInfo = nil;
+    }
+
+    _lastSessionEndedFrozen = _lastSessionFreezeInfo != nil;
     [[NSUserDefaults standardUserDefaults]
         removeObjectForKey:@(kNsUserDefaultKeyLastSessionInfo)];
-    _delay = [[NSUserDefaults standardUserDefaults]
-        integerForKey:@(kNsUserDefaultKeyDelay)];
+    _delay = kFreezeDetectionDelay;
     _freezeDetectionQueue = dispatch_queue_create(
         "org.chromium.freeze_detection", DISPATCH_QUEUE_SERIAL);
     NSString* cacheDirectory = NSSearchPathForDirectoriesInDomains(
@@ -96,13 +131,6 @@ void LogRecoveryTime(base::TimeDelta time) {
 - (void)setEnabled:(BOOL)enabled {
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
-    // The first time |setEnabled| is called is the first occasion to update
-    // the config based on new finch experiment and settings.
-    int newDelay = crash_report::TimeoutForMainThreadFreezeDetection();
-    self.delay = newDelay;
-    [[NSUserDefaults standardUserDefaults]
-        setInteger:newDelay
-            forKey:@(kNsUserDefaultKeyDelay)];
     if (_lastSessionEndedFrozen) {
       LogRecoveryTime(base::TimeDelta::FromSeconds(0));
     }
@@ -118,7 +146,9 @@ void LogRecoveryTime(base::TimeDelta time) {
 }
 
 - (void)start {
-  if (self.delay == 0 || self.running || !_enabled) {
+  if (self.delay == 0 || self.running || !_enabled ||
+      tests_hook::DisableMainThreadFreezeDetection() ||
+      base::debug::BeingDebugged()) {
     return;
   }
   self.running = YES;
@@ -133,24 +163,23 @@ void LogRecoveryTime(base::TimeDelta time) {
 }
 
 - (void)runInMainLoop {
+  NSDate* oldLastSeenMainThread = self.lastSeenMainThread;
+  self.lastSeenMainThread = [NSDate date];
   if (self.reportGenerated) {
     self.reportGenerated = NO;
     // Remove information about the last session info.
     [[NSUserDefaults standardUserDefaults]
         removeObjectForKey:@(kNsUserDefaultKeyLastSessionInfo)];
     LogRecoveryTime(base::TimeDelta::FromSecondsD(
-        [[NSDate date] timeIntervalSinceDate:self.lastSeenMainThread]));
+        [[NSDate date] timeIntervalSinceDate:oldLastSeenMainThread]));
     // Restart the freeze detection.
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
-        _freezeDetectionQueue, ^{
-          [self cleanAndRunInFreezeDetectionQueue];
-        });
+    dispatch_async(_freezeDetectionQueue, ^{
+      [self cleanAndRunInFreezeDetectionQueue];
+    });
   }
   if (!self.running) {
     return;
   }
-  self.lastSeenMainThread = [NSDate date];
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
@@ -174,53 +203,79 @@ void LogRecoveryTime(base::TimeDelta time) {
   }
   if ([[NSDate date] timeIntervalSinceDate:self.lastSeenMainThread] >
       self.delay) {
+    if (crash_reporter::IsCrashpadRunning()) {
+      static crash_reporter::CrashKeyString<4> key("hang-report");
+      crash_reporter::ScopedCrashKeyString auto_clear(&key, "yes");
+      crash_reporter::DumpWithoutCrashAndDeferProcessing();
+      return;
+    }
+
     [[BreakpadController sharedInstance]
         withBreakpadRef:^(BreakpadRef breakpadRef) {
-          if (!breakpadRef) {
-            return;
-          }
-          NSDictionary* breakpadReportInfo =
-              BreakpadGenerateReport(breakpadRef, nil);
-          if (!breakpadReportInfo) {
-            return;
-          }
-          // The report is always generated in the BreakpadDirectory.
-          // As only one report can be uploaded per session, this report is
-          // moved out of the Breakpad directory and put in a |UTE| directory.
-          NSString* configFile =
-              [breakpadReportInfo objectForKey:@BREAKPAD_OUTPUT_CONFIG_FILE];
-          NSString* UTEConfigFile = [_UTEDirectory
-              stringByAppendingPathComponent:[configFile lastPathComponent]];
-          NSString* dumpFile =
-              [breakpadReportInfo objectForKey:@BREAKPAD_OUTPUT_DUMP_FILE];
-          NSString* UTEDumpFile = [_UTEDirectory
-              stringByAppendingPathComponent:[dumpFile lastPathComponent]];
-          NSFileManager* fileManager = [[NSFileManager alloc] init];
-
-          // Clear previous reports if they exist.
-          [fileManager createDirectoryAtPath:_UTEDirectory
-                 withIntermediateDirectories:NO
-                                  attributes:nil
-                                       error:nil];
-          [fileManager moveItemAtPath:configFile
-                               toPath:UTEConfigFile
-                                error:nil];
-          [fileManager moveItemAtPath:dumpFile toPath:UTEDumpFile error:nil];
-          [[NSUserDefaults standardUserDefaults]
-              setObject:@{
-                @"dump" : [dumpFile lastPathComponent],
-                @"config" : [configFile lastPathComponent],
-                @"date" : [NSDate date]
-              }
-                 forKey:@(kNsUserDefaultKeyLastSessionInfo)];
-          self.reportGenerated = YES;
+          [self recordHangWithBreakpadRef:breakpadRef];
         }];
     return;
   }
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
-                 _freezeDetectionQueue, ^{
-                   [self runInFreezeDetectionQueue];
-                 });
+
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+      _freezeDetectionQueue, ^{
+        [self runInFreezeDetectionQueue];
+      });
+}
+
+- (void)recordHangWithBreakpadRef:(BreakpadRef)breakpadRef {
+  if (!self.running) {
+    UMA_HISTOGRAM_ENUMERATION(
+        kUMAMainThreadFreezeDetectionNotRunningAfterReport,
+        IOSMainThreadFreezeDetectionNotRunningAfterReportBlock::
+            kAfterBreakpadRef);
+    return;
+  }
+  if (!breakpadRef) {
+    return;
+  }
+  BreakpadAddUploadParameter(breakpadRef, kHangReportKey, @"yes");
+  NSDictionary* breakpadReportInfo = BreakpadGenerateReport(breakpadRef, nil);
+  BreakpadRemoveUploadParameter(breakpadRef, kHangReportKey);
+  if (!breakpadReportInfo) {
+    return;
+  }
+  // The report is always generated in the BreakpadDirectory.
+  // As only one report can be uploaded per session, this report is
+  // moved out of the Breakpad directory and put in a |UTE| directory.
+  NSString* configFile =
+      [breakpadReportInfo objectForKey:@BREAKPAD_OUTPUT_CONFIG_FILE];
+  NSString* UTEConfigFile = [_UTEDirectory
+      stringByAppendingPathComponent:[configFile lastPathComponent]];
+  NSString* dumpFile =
+      [breakpadReportInfo objectForKey:@BREAKPAD_OUTPUT_DUMP_FILE];
+  NSString* UTEDumpFile = [_UTEDirectory
+      stringByAppendingPathComponent:[dumpFile lastPathComponent]];
+  NSFileManager* fileManager = [[NSFileManager alloc] init];
+
+  // Clear previous reports if they exist.
+  [fileManager createDirectoryAtPath:_UTEDirectory
+         withIntermediateDirectories:NO
+                          attributes:nil
+                               error:nil];
+  [fileManager moveItemAtPath:configFile toPath:UTEConfigFile error:nil];
+  [fileManager moveItemAtPath:dumpFile toPath:UTEDumpFile error:nil];
+  if (!self.running) {
+    UMA_HISTOGRAM_ENUMERATION(
+        kUMAMainThreadFreezeDetectionNotRunningAfterReport,
+        IOSMainThreadFreezeDetectionNotRunningAfterReportBlock::
+            kAfterFileManagerUTEMove);
+    return;
+  }
+  [[NSUserDefaults standardUserDefaults]
+      setObject:@{
+        @"dump" : [dumpFile lastPathComponent],
+        @"config" : [configFile lastPathComponent],
+        @"date" : [NSDate date]
+      }
+         forKey:@(kNsUserDefaultKeyLastSessionInfo)];
+  self.reportGenerated = YES;
 }
 
 - (void)prepareCrashReportsForUpload:(ProceduralBlock)completion {
@@ -302,10 +357,14 @@ void LogRecoveryTime(base::TimeDelta time) {
   // |prepareToUpload| which mean that main thread was responding recently.
   [fileManager removeItemAtPath:_UTEDirectory error:nil];
   dispatch_async(dispatch_get_main_queue(), ^{
-    _canUploadBreakpadCrashReports = YES;
-    DCHECK(_restorationCompletion);
-    _restorationCompletion();
+    [self handleSessionRestorationCompletion];
   });
+}
+
+- (void)handleSessionRestorationCompletion {
+  _canUploadBreakpadCrashReports = YES;
+  DCHECK(_restorationCompletion);
+  _restorationCompletion();
 }
 
 @end

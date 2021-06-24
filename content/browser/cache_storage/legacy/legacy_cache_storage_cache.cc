@@ -14,19 +14,18 @@
 
 #include "base/barrier_closure.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/guid.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/checked_math.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/threading/thread_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
 #include "content/browser/cache_storage/cache_storage.pb.h"
@@ -39,28 +38,24 @@
 #include "content/browser/cache_storage/cache_storage_quota_client.h"
 #include "content/browser/cache_storage/cache_storage_scheduler.h"
 #include "content/browser/cache_storage/cache_storage_trace_utils.h"
+#include "content/browser/cache_storage/legacy/legacy_cache_storage.h"
 #include "content/common/background_fetch/background_fetch_types.h"
-#include "content/common/service_worker/service_worker_utils.h"
-#include "content/public/browser/browser_thread.h"
-#include "content/public/common/content_features.h"
-#include "content/public/common/referrer.h"
-#include "content/public/common/referrer_type_converters.h"
 #include "crypto/hmac.h"
 #include "crypto/symmetric_key.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/disk_cache.h"
+#include "net/http/http_request_headers.h"
+#include "net/http/http_response_headers.h"
+#include "net/http/http_status_code.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
-#include "storage/browser/blob/blob_data_handle.h"
-#include "storage/browser/blob/blob_storage_context.h"
-#include "storage/browser/blob/blob_url_request_job_factory.h"
-#include "storage/browser/quota/padding_key.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
-#include "storage/common/blob_storage/blob_handle.h"
-#include "storage/common/storage_histograms.h"
+#include "storage/common/quota/padding_key.h"
 #include "third_party/blink/public/common/cache_storage/cache_storage_utils.h"
 #include "third_party/blink/public/common/fetch/fetch_api_request_headers_map.h"
+#include "third_party/blink/public/mojom/loader/referrer.mojom.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 
 using blink::mojom::CacheStorageError;
@@ -75,8 +70,6 @@ using ResponseHeaderMap = base::flat_map<std::string, std::string>;
 const size_t kMaxQueryCacheResultBytes =
     1024 * 1024 * 10;  // 10MB query cache limit
 
-const char kRecordBytesLabel[] = "DiskCache.CacheStorage";
-
 // If the way that a cache's padding is calculated changes increment this
 // version.
 //
@@ -84,7 +77,8 @@ const char kRecordBytesLabel[] = "DiskCache.CacheStorage";
 //
 //   1: Uniform random 400K.
 //   2: Uniform random 14,431K.
-const int32_t kCachePaddingAlgorithmVersion = 2;
+//   3: FetchAPIResponse.padding and separate side data padding.
+const int32_t kCachePaddingAlgorithmVersion = 3;
 
 // Maximum number of recursive QueryCacheOpenNextEntry() calls we permit
 // before forcing an asynchronous task.
@@ -132,6 +126,83 @@ proto::CacheResponse::ResponseType FetchResponseTypeToProtoResponseType(
   NOTREACHED();
   return proto::CacheResponse::OPAQUE_TYPE;
 }
+
+// Assert that ConnectionInfo does not change since we cast it to
+// an integer in order to serialize it to disk.
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_UNKNOWN == 0,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_HTTP1_1 == 1,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_SPDY2 == 2,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_SPDY3 == 3,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_HTTP2 == 4,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_UNKNOWN_VERSION == 5,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_HTTP2_14 == 6,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_HTTP2_15 == 7,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_HTTP0_9 == 8,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_HTTP1_0 == 9,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_32 == 10,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_33 == 11,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_34 == 12,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_35 == 13,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_36 == 14,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_37 == 15,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_38 == 16,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_39 == 17,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_40 == 18,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_41 == 19,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_42 == 20,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_43 == 21,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_Q099 == 22,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_44 == 23,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_45 == 24,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_46 == 25,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_47 == 26,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_999 == 27,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_Q048 == 28,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_Q049 == 29,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_Q050 == 30,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_T048 == 31,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_T049 == 32,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_T050 == 33,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_T099 == 34,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_DRAFT_25 == 35,
+              "ConnectionInfo enum is stable");
+static_assert(net::HttpResponseInfo::CONNECTION_INFO_QUIC_DRAFT_27 == 36,
+              "ConnectionInfo enum is stable");
 
 // Copy headers out of a cache entry and into a protobuf. The callback is
 // guaranteed to be run.
@@ -268,19 +339,15 @@ void ReadMetadata(disk_cache::Entry* entry, MetadataCallback callback) {
       base::MakeRefCounted<net::IOBufferWithSize>(
           entry->GetDataSize(LegacyCacheStorageCache::INDEX_HEADERS));
 
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |callback| is not
-  // copyable.
-  net::CompletionRepeatingCallback read_header_callback =
-      base::AdaptCallbackForRepeating(base::BindOnce(
-          ReadMetadataDidReadMetadata, entry, std::move(callback), buffer));
+  auto split_callback = base::SplitOnceCallback(base::BindOnce(
+      ReadMetadataDidReadMetadata, entry, std::move(callback), buffer));
 
   int read_rv =
       entry->ReadData(LegacyCacheStorageCache::INDEX_HEADERS, 0, buffer.get(),
-                      buffer->size(), read_header_callback);
+                      buffer->size(), std::move(split_callback.first));
 
   if (read_rv != net::ERR_IO_PENDING)
-    std::move(read_header_callback).Run(read_rv);
+    std::move(split_callback.second).Run(read_rv);
 }
 
 void ReadMetadataDidReadMetadata(disk_cache::Entry* entry,
@@ -292,9 +359,6 @@ void ReadMetadataDidReadMetadata(disk_cache::Entry* entry,
     return;
   }
 
-  if (rv > 0)
-    storage::RecordBytesRead(kRecordBytesLabel, rv);
-
   std::unique_ptr<proto::CacheMetadata> metadata(new proto::CacheMetadata());
 
   if (!metadata->ParseFromArray(buffer->data(), buffer->size())) {
@@ -303,6 +367,15 @@ void ReadMetadataDidReadMetadata(disk_cache::Entry* entry,
   }
 
   std::move(callback).Run(std::move(metadata));
+}
+
+bool ShouldPadResourceSize(const content::proto::CacheResponse* response) {
+  return storage::ShouldPadResponseType(
+      ProtoResponseTypeToFetchResponseType(response->response_type()));
+}
+
+bool ShouldPadResourceSize(const blink::mojom::FetchAPIResponse& response) {
+  return storage::ShouldPadResponseType(response.response_type);
 }
 
 blink::mojom::FetchAPIRequestPtr CreateRequest(
@@ -327,17 +400,15 @@ blink::mojom::FetchAPIRequestPtr CreateRequest(
 blink::mojom::FetchAPIResponsePtr CreateResponse(
     const proto::CacheMetadata& metadata,
     const std::string& cache_name) {
+  // We no longer support Responses with only a single URL entry.  This field
+  // was deprecated in M57.
+  if (metadata.response().has_url())
+    return nullptr;
+
   std::vector<GURL> url_list;
-  // From Chrome 57, proto::CacheMetadata's url field was deprecated.
-  UMA_HISTOGRAM_BOOLEAN("ServiceWorkerCache.Response.HasDeprecatedURL",
-                        metadata.response().has_url());
-  if (metadata.response().has_url()) {
-    url_list.push_back(GURL(metadata.response().url()));
-  } else {
-    url_list.reserve(metadata.response().url_list_size());
-    for (int i = 0; i < metadata.response().url_list_size(); ++i)
-      url_list.push_back(GURL(metadata.response().url_list(i)));
-  }
+  url_list.reserve(metadata.response().url_list_size());
+  for (int i = 0; i < metadata.response().url_list_size(); ++i)
+    url_list.push_back(GURL(metadata.response().url_list(i)));
 
   ResponseHeaderMap headers;
   for (int i = 0; i < metadata.response().headers_size(); ++i) {
@@ -347,68 +418,105 @@ blink::mojom::FetchAPIResponsePtr CreateResponse(
     headers.insert(std::make_pair(header.name(), header.value()));
   }
 
+  std::string alpn_negotiated_protocol =
+      metadata.response().has_alpn_negotiated_protocol()
+          ? metadata.response().alpn_negotiated_protocol()
+          : "unknown";
+
+  absl::optional<std::string> mime_type;
+  if (metadata.response().has_mime_type())
+    mime_type = metadata.response().mime_type();
+
+  absl::optional<std::string> request_method;
+  if (metadata.response().has_request_method())
+    request_method = metadata.response().request_method();
+
+  auto response_time =
+      base::Time::FromInternalValue(metadata.response().response_time());
+
+  int64_t padding = 0;
+  if (metadata.response().has_padding()) {
+    padding = metadata.response().padding();
+  } else if (ShouldPadResourceSize(&metadata.response())) {
+    padding = storage::ComputeRandomResponsePadding();
+  }
+
+  bool request_include_credentials =
+      metadata.response().has_request_include_credentials()
+          ? metadata.response().request_include_credentials()
+          : true;
+
+  // Note that |has_range_requested| can be safely set to false since it only
+  // affects HTTP 206 (Partial) responses, which are blocked from cache storage.
+  // See https://fetch.spec.whatwg.org/#main-fetch for usage of
+  // |has_range_requested|.
   return blink::mojom::FetchAPIResponse::New(
       url_list, metadata.response().status_code(),
       metadata.response().status_text(),
       ProtoResponseTypeToFetchResponseType(metadata.response().response_type()),
-      network::mojom::FetchResponseSource::kCacheStorage, headers,
-      nullptr /* blob */, blink::mojom::ServiceWorkerResponseError::kUnknown,
-      base::Time::FromInternalValue(metadata.response().response_time()),
+      padding, network::mojom::FetchResponseSource::kCacheStorage, headers,
+      mime_type, request_method, /*blob=*/nullptr,
+      blink::mojom::ServiceWorkerResponseError::kUnknown, response_time,
       cache_name,
       std::vector<std::string>(
           metadata.response().cors_exposed_header_names().begin(),
           metadata.response().cors_exposed_header_names().end()),
-      nullptr /* side_data_blob */);
+      /*side_data_blob=*/nullptr, /*side_data_blob_for_cache_put=*/nullptr,
+      network::mojom::ParsedHeaders::New(),
+      // Default proto value of 0 maps to CONNECTION_INFO_UNKNOWN.
+      static_cast<net::HttpResponseInfo::ConnectionInfo>(
+          metadata.response().connection_info()),
+      alpn_negotiated_protocol, metadata.response().was_fetched_via_spdy(),
+      /*has_range_requested=*/false, /*auth_challenge_info=*/absl::nullopt,
+      request_include_credentials);
 }
 
-// The size of opaque (non-cors) resource responses are padded in order
-// to obfuscate their actual size.
-bool ShouldPadResponseType(network::mojom::FetchResponseType response_type,
-                           bool has_urls) {
-  switch (response_type) {
-    case network::mojom::FetchResponseType::kBasic:
-    case network::mojom::FetchResponseType::kCors:
-    case network::mojom::FetchResponseType::kDefault:
-    case network::mojom::FetchResponseType::kError:
-      return false;
-    case network::mojom::FetchResponseType::kOpaque:
-    case network::mojom::FetchResponseType::kOpaqueRedirect:
-      return has_urls;
-  }
-  NOTREACHED();
-  return false;
-}
-
-bool ShouldPadResourceSize(const content::proto::CacheResponse* response) {
-  return ShouldPadResponseType(
-      ProtoResponseTypeToFetchResponseType(response->response_type()),
-      response->url_list_size());
-}
-
-bool ShouldPadResourceSize(const blink::mojom::FetchAPIResponse& response) {
-  return ShouldPadResponseType(response.response_type,
-                               !response.url_list.empty());
-}
-
-int64_t CalculateResponsePaddingInternal(
+int64_t CalculateSideDataPadding(
+    const blink::StorageKey& storage_key,
     const ::content::proto::CacheResponse* response,
-    const crypto::SymmetricKey* padding_key,
     int side_data_size) {
   DCHECK(ShouldPadResourceSize(response));
   DCHECK_GE(side_data_size, 0);
+
+  if (!side_data_size)
+    return 0;
+
+  // Fallback to random padding if this is for an older entry without
+  // a url list or request method.
+  if (response->url_list_size() == 0 || !response->has_request_method())
+    return storage::ComputeRandomResponsePadding();
+
   const std::string& url = response->url_list(response->url_list_size() - 1);
-  return storage::ComputeResponsePadding(url, padding_key, side_data_size > 0);
+  const base::Time response_time =
+      base::Time::FromInternalValue(response->response_time());
+
+  return storage::ComputeStableResponsePadding(
+      storage_key.origin(), url, response_time, response->request_method(),
+      side_data_size);
+}
+
+net::RequestPriority GetDiskCachePriority(
+    CacheStorageSchedulerPriority priority) {
+  return priority == CacheStorageSchedulerPriority::kHigh ? net::HIGHEST
+                                                          : net::MEDIUM;
 }
 
 }  // namespace
 
 struct LegacyCacheStorageCache::QueryCacheResult {
-  explicit QueryCacheResult(base::Time entry_time) : entry_time(entry_time) {}
+  QueryCacheResult(base::Time entry_time,
+                   int64_t padding,
+                   int64_t side_data_padding)
+      : entry_time(entry_time),
+        padding(padding),
+        side_data_padding(side_data_padding) {}
 
   blink::mojom::FetchAPIRequestPtr request;
   blink::mojom::FetchAPIResponsePtr response;
   disk_cache::ScopedEntryPtr entry;
   base::Time entry_time;
+  int64_t padding = 0;
+  int64_t side_data_padding = 0;
 };
 
 struct LegacyCacheStorageCache::QueryCacheContext {
@@ -422,15 +530,7 @@ struct LegacyCacheStorageCache::QueryCacheContext {
         query_types(query_types),
         matches(std::make_unique<QueryCacheResults>()) {}
 
-  ~QueryCacheContext() {
-    // If the CacheStorageCache is deleted before a backend operation to open
-    // an entry completes, the callback won't be run and the resulting entry
-    // will be leaked unless we close it here.
-    if (enumerated_entry) {
-      enumerated_entry->Close();
-      enumerated_entry = nullptr;
-    }
-  }
+  ~QueryCacheContext() = default;
 
   // Input to QueryCache
   blink::mojom::FetchAPIRequestPtr request;
@@ -441,7 +541,6 @@ struct LegacyCacheStorageCache::QueryCacheContext {
 
   // Iteration state
   std::unique_ptr<disk_cache::Backend::Iterator> backend_iterator;
-  disk_cache::Entry* enumerated_entry = nullptr;
 
   // Output of QueryCache
   std::unique_ptr<std::vector<QueryCacheResult>> matches;
@@ -450,20 +549,28 @@ struct LegacyCacheStorageCache::QueryCacheContext {
   DISALLOW_COPY_AND_ASSIGN(QueryCacheContext);
 };
 
+struct LegacyCacheStorageCache::BatchInfo {
+  size_t remaining_operations = 0;
+  VerboseErrorCallback callback;
+  absl::optional<std::string> message;
+  const int64_t trace_id = 0;
+};
+
 // static
 std::unique_ptr<LegacyCacheStorageCache>
 LegacyCacheStorageCache::CreateMemoryCache(
-    const url::Origin& origin,
-    CacheStorageOwner owner,
+    const blink::StorageKey& storage_key,
+    storage::mojom::CacheStorageOwner owner,
     const std::string& cache_name,
     LegacyCacheStorage* cache_storage,
+    scoped_refptr<base::SequencedTaskRunner> scheduler_task_runner,
     scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy,
-    base::WeakPtr<storage::BlobStorageContext> blob_context,
-    std::unique_ptr<crypto::SymmetricKey> cache_padding_key) {
+    scoped_refptr<BlobStorageContextWrapper> blob_storage_context) {
   LegacyCacheStorageCache* cache = new LegacyCacheStorageCache(
-      origin, owner, cache_name, base::FilePath(), cache_storage,
-      std::move(quota_manager_proxy), blob_context, 0 /* cache_size */,
-      0 /* cache_padding */, std::move(cache_padding_key));
+      storage_key, owner, cache_name, base::FilePath(), cache_storage,
+      std::move(scheduler_task_runner), std::move(quota_manager_proxy),
+      std::move(blob_storage_context), /*cache_size=*/0,
+      /*cache_padding=*/0);
   cache->SetObserver(cache_storage);
   cache->InitBackend();
   return base::WrapUnique(cache);
@@ -472,20 +579,20 @@ LegacyCacheStorageCache::CreateMemoryCache(
 // static
 std::unique_ptr<LegacyCacheStorageCache>
 LegacyCacheStorageCache::CreatePersistentCache(
-    const url::Origin& origin,
-    CacheStorageOwner owner,
+    const blink::StorageKey& storage_key,
+    storage::mojom::CacheStorageOwner owner,
     const std::string& cache_name,
     LegacyCacheStorage* cache_storage,
     const base::FilePath& path,
+    scoped_refptr<base::SequencedTaskRunner> scheduler_task_runner,
     scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy,
-    base::WeakPtr<storage::BlobStorageContext> blob_context,
+    scoped_refptr<BlobStorageContextWrapper> blob_storage_context,
     int64_t cache_size,
-    int64_t cache_padding,
-    std::unique_ptr<crypto::SymmetricKey> cache_padding_key) {
+    int64_t cache_padding) {
   LegacyCacheStorageCache* cache = new LegacyCacheStorageCache(
-      origin, owner, cache_name, path, cache_storage,
-      std::move(quota_manager_proxy), blob_context, cache_size, cache_padding,
-      std::move(cache_padding_key));
+      storage_key, owner, cache_name, path, cache_storage,
+      std::move(scheduler_task_runner), std::move(quota_manager_proxy),
+      std::move(blob_storage_context), cache_size, cache_padding);
   cache->SetObserver(cache_storage);
   cache->InitBackend();
   return base::WrapUnique(cache);
@@ -511,7 +618,7 @@ void LegacyCacheStorageCache::AddHandleRef() {
 
 void LegacyCacheStorageCache::DropHandleRef() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(handle_ref_count_ > 0);
+  DCHECK_GT(handle_ref_count_, 0U);
   handle_ref_count_ -= 1;
   // Dropping the last reference may result in the parent CacheStorage
   // deleting itself or this Cache object.  Be careful not to touch the
@@ -530,6 +637,7 @@ bool LegacyCacheStorageCache::IsUnreferenced() const {
 void LegacyCacheStorageCache::Match(
     blink::mojom::FetchAPIRequestPtr request,
     blink::mojom::CacheQueryOptionsPtr match_options,
+    CacheStorageSchedulerPriority priority,
     int64_t trace_id,
     ResponseCallback callback) {
   if (backend_state_ == BACKEND_CLOSED) {
@@ -538,12 +646,14 @@ void LegacyCacheStorageCache::Match(
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kMatch,
-      base::BindOnce(&LegacyCacheStorageCache::MatchImpl,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(request),
-                     std::move(match_options), trace_id,
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      id, CacheStorageSchedulerMode::kShared, CacheStorageSchedulerOp::kMatch,
+      priority,
+      base::BindOnce(
+          &LegacyCacheStorageCache::MatchImpl, weak_ptr_factory_.GetWeakPtr(),
+          std::move(request), std::move(match_options), trace_id, priority,
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::MatchAll(
@@ -558,12 +668,17 @@ void LegacyCacheStorageCache::MatchAll(
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
+      id, CacheStorageSchedulerMode::kShared,
       CacheStorageSchedulerOp::kMatchAll,
-      base::BindOnce(&LegacyCacheStorageCache::MatchAllImpl,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(request),
-                     std::move(match_options), trace_id,
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &LegacyCacheStorageCache::MatchAllImpl,
+          weak_ptr_factory_.GetWeakPtr(), std::move(request),
+          std::move(match_options), trace_id,
+          CacheStorageSchedulerPriority::kNormal,
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::WriteSideData(ErrorCallback callback,
@@ -573,7 +688,7 @@ void LegacyCacheStorageCache::WriteSideData(ErrorCallback callback,
                                             scoped_refptr<net::IOBuffer> buffer,
                                             int buf_len) {
   if (backend_state_ == BACKEND_CLOSED) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(
             std::move(callback),
@@ -584,8 +699,8 @@ void LegacyCacheStorageCache::WriteSideData(ErrorCallback callback,
   // GetUsageAndQuota is called before entering a scheduled operation since it
   // can call Size, another scheduled operation.
   quota_manager_proxy_->GetUsageAndQuota(
-      base::ThreadTaskRunnerHandle::Get().get(), origin_,
-      blink::mojom::StorageType::kTemporary,
+      storage_key_, blink::mojom::StorageType::kTemporary,
+      scheduler_task_runner_,
       base::BindOnce(&LegacyCacheStorageCache::WriteSideDataDidGetQuota,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback), url,
                      expected_response_time, trace_id, buffer, buf_len));
@@ -599,10 +714,10 @@ void LegacyCacheStorageCache::BatchOperation(
   // This method may produce a warning message that should be returned in the
   // final VerboseErrorCallback.  A message may be present in both the failure
   // and success paths.
-  base::Optional<std::string> message;
+  absl::optional<std::string> message;
 
   if (backend_state_ == BACKEND_CLOSED) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(
             std::move(callback),
@@ -629,7 +744,7 @@ void LegacyCacheStorageCache::BatchOperation(
     message.emplace(
         base::StringPrintf("duplicate requests (%s)", url_list_string.c_str()));
 
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(std::move(callback),
                        CacheStorageVerboseError::New(
@@ -645,15 +760,16 @@ void LegacyCacheStorageCache::BatchOperation(
   for (const auto& operation : operations) {
     if (operation->operation_type == blink::mojom::OperationType::kPut) {
       safe_space_required += CalculateRequiredSafeSpaceForPut(operation);
-      safe_side_data_size += (operation->response->side_data_blob
-                                  ? operation->response->side_data_blob->size
-                                  : 0);
+      safe_side_data_size +=
+          (operation->response->side_data_blob_for_cache_put
+               ? operation->response->side_data_blob_for_cache_put->size
+               : 0);
     }
   }
   if (!safe_space_required.IsValid() || !safe_side_data_size.IsValid()) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, std::move(bad_message_callback));
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(FROM_HERE,
+                                     std::move(bad_message_callback));
+    scheduler_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(
             std::move(callback),
@@ -668,11 +784,11 @@ void LegacyCacheStorageCache::BatchOperation(
     // GetUsageAndQuota is called before entering a scheduled operation since it
     // can call Size, another scheduled operation. This is racy. The decision
     // to commit is made before the scheduled Put operation runs. By the time
-    // Put runs, the cache might already be full and the origin will be larger
+    // Put runs, the cache might already be full and the usage will be larger
     // than it's supposed to be.
     quota_manager_proxy_->GetUsageAndQuota(
-        base::ThreadTaskRunnerHandle::Get().get(), origin_,
-        blink::mojom::StorageType::kTemporary,
+        storage_key_, blink::mojom::StorageType::kTemporary,
+        scheduler_task_runner_,
         base::BindOnce(&LegacyCacheStorageCache::BatchDidGetUsageAndQuota,
                        weak_ptr_factory_.GetWeakPtr(), std::move(operations),
                        trace_id, std::move(callback),
@@ -693,7 +809,7 @@ void LegacyCacheStorageCache::BatchDidGetUsageAndQuota(
     int64_t trace_id,
     VerboseErrorCallback callback,
     BadMessageCallback bad_message_callback,
-    base::Optional<std::string> message,
+    absl::optional<std::string> message,
     uint64_t space_required,
     uint64_t side_data_size,
     blink::mojom::QuotaStatusCode status_code,
@@ -710,9 +826,9 @@ void LegacyCacheStorageCache::BatchDidGetUsageAndQuota(
   safe_space_required_with_side_data = safe_space_required + side_data_size;
   if (!safe_space_required.IsValid() ||
       !safe_space_required_with_side_data.IsValid()) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, std::move(bad_message_callback));
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(FROM_HERE,
+                                     std::move(bad_message_callback));
+    scheduler_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(
             std::move(callback),
@@ -724,7 +840,7 @@ void LegacyCacheStorageCache::BatchDidGetUsageAndQuota(
   }
   if (status_code != blink::mojom::QuotaStatusCode::kOk ||
       safe_space_required.ValueOrDie() > quota) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback),
                                   CacheStorageVerboseError::New(
                                       CacheStorageError::kErrorQuotaExceeded,
@@ -733,20 +849,11 @@ void LegacyCacheStorageCache::BatchDidGetUsageAndQuota(
   }
   bool skip_side_data = safe_space_required_with_side_data.ValueOrDie() > quota;
 
-  // The following relies on the guarantee that the RepeatingCallback returned
-  // from AdaptCallbackForRepeating invokes the original callback on the first
-  // invocation, and (critically) that subsequent invocations are ignored.
-  // TODO(jsbell): Replace AdaptCallbackForRepeating with ...? crbug.com/730593
-  auto callback_copy = base::AdaptCallbackForRepeating(std::move(callback));
-  auto barrier_closure = base::BarrierClosure(
-      operations.size(),
-      base::BindOnce(&LegacyCacheStorageCache::BatchDidAllOperations,
-                     weak_ptr_factory_.GetWeakPtr(), callback_copy, message,
-                     trace_id));
   auto completion_callback = base::BindRepeating(
       &LegacyCacheStorageCache::BatchDidOneOperation,
-      weak_ptr_factory_.GetWeakPtr(), std::move(barrier_closure),
-      std::move(callback_copy), std::move(message), trace_id);
+      weak_ptr_factory_.GetWeakPtr(),
+      base::OwnedRef(BatchInfo{operations.size(), std::move(callback),
+                               std::move(message), trace_id}));
 
   // Operations may synchronously invoke |callback| which could release the
   // last reference to this instance. Hold a handle for the duration of this
@@ -758,7 +865,7 @@ void LegacyCacheStorageCache::BatchDidGetUsageAndQuota(
     switch (operation->operation_type) {
       case blink::mojom::OperationType::kPut:
         if (skip_side_data) {
-          operation->response->side_data_blob = nullptr;
+          operation->response->side_data_blob_for_cache_put = nullptr;
           Put(std::move(operation), trace_id, completion_callback);
         } else {
           Put(std::move(operation), trace_id, completion_callback);
@@ -779,38 +886,32 @@ void LegacyCacheStorageCache::BatchDidGetUsageAndQuota(
   }
 }
 
-void LegacyCacheStorageCache::BatchDidOneOperation(
-    base::OnceClosure completion_closure,
-    VerboseErrorCallback error_callback,
-    base::Optional<std::string> message,
-    int64_t trace_id,
-    CacheStorageError error) {
+void LegacyCacheStorageCache::BatchDidOneOperation(BatchInfo& batch_status,
+                                                   CacheStorageError error) {
   TRACE_EVENT_WITH_FLOW0("CacheStorage",
                          "LegacyCacheStorageCache::BatchDidOneOperation",
-                         TRACE_ID_GLOBAL(trace_id),
+                         TRACE_ID_GLOBAL(batch_status.trace_id),
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
+  // Nothing further to report after the callback is called.
+  if (!batch_status.callback)
+    return;
+
+  DCHECK_GT(batch_status.remaining_operations, 0u);
+  batch_status.remaining_operations--;
+
   if (error != CacheStorageError::kSuccess) {
-    // This relies on |callback| being created by AdaptCallbackForRepeating
-    // and ignoring anything but the first invocation.
-    std::move(error_callback)
-        .Run(CacheStorageVerboseError::New(error, std::move(message)));
+    std::move(batch_status.callback)
+        .Run(CacheStorageVerboseError::New(error,
+                                           std::move(batch_status.message)));
+  } else if (batch_status.remaining_operations == 0) {
+    TRACE_EVENT_WITH_FLOW0(
+        "CacheStorage", "LegacyCacheStorageCache::BatchDidAllOperations",
+        TRACE_ID_GLOBAL(batch_status.trace_id),
+        TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
+    std::move(batch_status.callback)
+        .Run(CacheStorageVerboseError::New(CacheStorageError::kSuccess,
+                                           batch_status.message));
   }
-
-  std::move(completion_closure).Run();
-}
-
-void LegacyCacheStorageCache::BatchDidAllOperations(
-    VerboseErrorCallback callback,
-    base::Optional<std::string> message,
-    int64_t trace_id) {
-  TRACE_EVENT_WITH_FLOW0("CacheStorage",
-                         "LegacyCacheStorageCache::BatchDidAllOperations",
-                         TRACE_ID_GLOBAL(trace_id),
-                         TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
-  // This relies on |callback| being created by AdaptCallbackForRepeating
-  // and ignoring anything but the first invocation.
-  std::move(callback).Run(CacheStorageVerboseError::New(
-      CacheStorageError::kSuccess, std::move(message)));
 }
 
 void LegacyCacheStorageCache::Keys(blink::mojom::FetchAPIRequestPtr request,
@@ -823,55 +924,64 @@ void LegacyCacheStorageCache::Keys(blink::mojom::FetchAPIRequestPtr request,
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kKeys,
-      base::BindOnce(&LegacyCacheStorageCache::KeysImpl,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(request),
-                     std::move(options), trace_id,
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      id, CacheStorageSchedulerMode::kShared, CacheStorageSchedulerOp::kKeys,
+      CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &LegacyCacheStorageCache::KeysImpl, weak_ptr_factory_.GetWeakPtr(),
+          std::move(request), std::move(options), trace_id,
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::Close(base::OnceClosure callback) {
   DCHECK_NE(BACKEND_CLOSED, backend_state_)
       << "Was LegacyCacheStorageCache::Close() called twice?";
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kClose,
-      base::BindOnce(&LegacyCacheStorageCache::CloseImpl,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      id, CacheStorageSchedulerMode::kExclusive,
+      CacheStorageSchedulerOp::kClose, CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &LegacyCacheStorageCache::CloseImpl, weak_ptr_factory_.GetWeakPtr(),
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::Size(SizeCallback callback) {
   if (backend_state_ == BACKEND_CLOSED) {
     // TODO(jkarlin): Delete caches that can't be initialized.
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), 0));
+    scheduler_task_runner_->PostTask(FROM_HERE,
+                                     base::BindOnce(std::move(callback), 0));
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kSize,
-      base::BindOnce(&LegacyCacheStorageCache::SizeImpl,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      id, CacheStorageSchedulerMode::kShared, CacheStorageSchedulerOp::kSize,
+      CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &LegacyCacheStorageCache::SizeImpl, weak_ptr_factory_.GetWeakPtr(),
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::GetSizeThenClose(SizeCallback callback) {
   if (backend_state_ == BACKEND_CLOSED) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), 0));
+    scheduler_task_runner_->PostTask(FROM_HERE,
+                                     base::BindOnce(std::move(callback), 0));
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
+      id, CacheStorageSchedulerMode::kExclusive,
       CacheStorageSchedulerOp::kSizeThenClose,
+      CacheStorageSchedulerPriority::kNormal,
       base::BindOnce(
           &LegacyCacheStorageCache::SizeImpl, weak_ptr_factory_.GetWeakPtr(),
           base::BindOnce(
               &LegacyCacheStorageCache::GetSizeThenCloseDidGetSize,
               weak_ptr_factory_.GetWeakPtr(),
-              scheduler_->WrapCallbackToRunNext(std::move(callback)))));
+              scheduler_->WrapCallbackToRunNext(id, std::move(callback)))));
 }
 
 void LegacyCacheStorageCache::SetObserver(CacheStorageCacheObserver* observer) {
@@ -894,42 +1004,46 @@ size_t LegacyCacheStorageCache::EstimatedStructSize(
 }
 
 LegacyCacheStorageCache::~LegacyCacheStorageCache() {
-  quota_manager_proxy_->NotifyOriginNoLongerInUse(origin_);
+  quota_manager_proxy_->NotifyStorageKeyNoLongerInUse(storage_key_);
+}
+
+void LegacyCacheStorageCache::SetSchedulerForTesting(
+    std::unique_ptr<CacheStorageScheduler> scheduler) {
+  DCHECK(!scheduler_->ScheduledOperations());
+  scheduler_ = std::move(scheduler);
 }
 
 LegacyCacheStorageCache::LegacyCacheStorageCache(
-    const url::Origin& origin,
-    CacheStorageOwner owner,
+    const blink::StorageKey& storage_key,
+    storage::mojom::CacheStorageOwner owner,
     const std::string& cache_name,
     const base::FilePath& path,
     LegacyCacheStorage* cache_storage,
+    scoped_refptr<base::SequencedTaskRunner> scheduler_task_runner,
     scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy,
-    base::WeakPtr<storage::BlobStorageContext> blob_context,
+    scoped_refptr<BlobStorageContextWrapper> blob_storage_context,
     int64_t cache_size,
-    int64_t cache_padding,
-    std::unique_ptr<crypto::SymmetricKey> cache_padding_key)
-    : origin_(origin),
+    int64_t cache_padding)
+    : storage_key_(storage_key),
       owner_(owner),
       cache_name_(cache_name),
       path_(path),
       cache_storage_(cache_storage),
+      scheduler_task_runner_(std::move(scheduler_task_runner)),
       quota_manager_proxy_(std::move(quota_manager_proxy)),
-      blob_storage_context_(blob_context),
-      scheduler_(
-          new CacheStorageScheduler(CacheStorageSchedulerClient::kCache)),
+      scheduler_(new CacheStorageScheduler(CacheStorageSchedulerClient::kCache,
+                                           scheduler_task_runner_)),
       cache_size_(cache_size),
       cache_padding_(cache_padding),
-      cache_padding_key_(std::move(cache_padding_key)),
       max_query_size_bytes_(kMaxQueryCacheResultBytes),
       cache_observer_(nullptr),
       cache_entry_handler_(
-          CacheStorageCacheEntryHandler::CreateCacheEntryHandler(owner,
-                                                                 blob_context)),
-      memory_only_(path.empty()),
-      weak_ptr_factory_(this) {
-  DCHECK(!origin_.opaque());
+          CacheStorageCacheEntryHandler::CreateCacheEntryHandler(
+              owner,
+              std::move(blob_storage_context))),
+      memory_only_(path.empty()) {
+  DCHECK(!storage_key_.origin().opaque());
   DCHECK(quota_manager_proxy_.get());
-  DCHECK(cache_padding_key_.get());
 
   if (cache_size_ != CacheStorage::kSizeUnknown &&
       cache_padding_ != CacheStorage::kSizeUnknown) {
@@ -937,13 +1051,14 @@ LegacyCacheStorageCache::LegacyCacheStorageCache(
     last_reported_size_ = cache_size_ + cache_padding_;
   }
 
-  quota_manager_proxy_->NotifyOriginInUse(origin_);
+  quota_manager_proxy_->NotifyStorageKeyInUse(storage_key_);
 }
 
 void LegacyCacheStorageCache::QueryCache(
     blink::mojom::FetchAPIRequestPtr request,
     blink::mojom::CacheQueryOptionsPtr options,
     QueryTypes query_types,
+    CacheStorageSchedulerPriority priority,
     QueryCacheCallback callback) {
   DCHECK_NE(
       QUERY_CACHE_ENTRIES | QUERY_CACHE_RESPONSES_WITH_BODIES,
@@ -954,9 +1069,10 @@ void LegacyCacheStorageCache::QueryCache(
     return;
   }
 
-  if (owner_ != CacheStorageOwner::kBackgroundFetch &&
+  if (owner_ != storage::mojom::CacheStorageOwner::kBackgroundFetch &&
       (!options || !options->ignore_method) && request &&
-      !request->method.empty() && request->method != "GET") {
+      !request->method.empty() &&
+      request->method != net::HttpRequestHeaders::kGetMethod) {
     std::move(callback).Run(CacheStorageError::kSuccess,
                             std::make_unique<QueryCacheResults>());
     return;
@@ -975,19 +1091,16 @@ void LegacyCacheStorageCache::QueryCache(
        !query_cache_context->options->ignore_search)) {
     // There is no need to scan the entire backend, just open the exact
     // URL.
-    disk_cache::Entry** entry_ptr = &query_cache_context->enumerated_entry;
 
-    // Create a callback that is copyable, even though it can only be called
-    // once. BindRepeating() cannot be used directly because
-    // |query_cache_context| is not copyable.
-    net::CompletionRepeatingCallback open_entry_callback =
-        base::AdaptCallbackForRepeating(base::BindOnce(
-            &LegacyCacheStorageCache::QueryCacheDidOpenFastPath,
-            weak_ptr_factory_.GetWeakPtr(), std::move(query_cache_context)));
-    int rv = backend_->OpenEntry(request_url, net::HIGHEST, entry_ptr,
-                                 open_entry_callback);
-    if (rv != net::ERR_IO_PENDING)
-      std::move(open_entry_callback).Run(rv);
+    auto split_callback = base::SplitOnceCallback(base::BindOnce(
+        &LegacyCacheStorageCache::QueryCacheDidOpenFastPath,
+        weak_ptr_factory_.GetWeakPtr(), std::move(query_cache_context)));
+
+    disk_cache::EntryResult result =
+        backend_->OpenEntry(request_url, GetDiskCachePriority(priority),
+                            std::move(split_callback.first));
+    if (result.net_error() != net::ERR_IO_PENDING)
+      std::move(split_callback.second).Run(std::move(result));
     return;
   }
 
@@ -997,28 +1110,29 @@ void LegacyCacheStorageCache::QueryCache(
 
 void LegacyCacheStorageCache::QueryCacheDidOpenFastPath(
     std::unique_ptr<QueryCacheContext> query_cache_context,
-    int rv) {
-  if (rv != net::OK) {
+    disk_cache::EntryResult result) {
+  if (result.net_error() != net::OK) {
     QueryCacheContext* results = query_cache_context.get();
     std::move(results->callback)
         .Run(CacheStorageError::kSuccess,
              std::move(query_cache_context->matches));
     return;
   }
-  QueryCacheFilterEntry(std::move(query_cache_context), rv);
+  QueryCacheFilterEntry(std::move(query_cache_context), std::move(result));
 }
 
 void LegacyCacheStorageCache::QueryCacheOpenNextEntry(
     std::unique_ptr<QueryCacheContext> query_cache_context) {
-  DCHECK_EQ(nullptr, query_cache_context->enumerated_entry);
-
   query_cache_recursive_depth_ += 1;
   auto cleanup = base::ScopedClosureRunner(base::BindOnce(
-      [](LegacyCacheStorageCache* self) {
-        DCHECK(self->query_cache_recursive_depth_ > 0);
+      [](CacheStorageCacheHandle handle) {
+        LegacyCacheStorageCache* self = From(handle);
+        if (!self)
+          return;
+        DCHECK_GT(self->query_cache_recursive_depth_, 0);
         self->query_cache_recursive_depth_ -= 1;
       },
-      base::Unretained(this)));
+      CreateHandle()));
 
   if (!query_cache_context->backend_iterator) {
     // Iteration is complete.
@@ -1033,19 +1147,15 @@ void LegacyCacheStorageCache::QueryCacheOpenNextEntry(
 
   disk_cache::Backend::Iterator& iterator =
       *query_cache_context->backend_iterator;
-  disk_cache::Entry** enumerated_entry = &query_cache_context->enumerated_entry;
 
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |query_cache_context| is
-  // not copyable.
-  net::CompletionRepeatingCallback open_entry_callback =
-      base::AdaptCallbackForRepeating(base::BindOnce(
-          &LegacyCacheStorageCache::QueryCacheFilterEntry,
-          weak_ptr_factory_.GetWeakPtr(), std::move(query_cache_context)));
+  auto split_callback = base::SplitOnceCallback(base::BindOnce(
+      &LegacyCacheStorageCache::QueryCacheFilterEntry,
+      weak_ptr_factory_.GetWeakPtr(), std::move(query_cache_context)));
 
-  int rv = iterator.OpenNextEntry(enumerated_entry, open_entry_callback);
+  disk_cache::EntryResult result =
+      iterator.OpenNextEntry(std::move(split_callback.first));
 
-  if (rv == net::ERR_IO_PENDING)
+  if (result.net_error() == net::ERR_IO_PENDING)
     return;
 
   // In most cases we can immediately invoke the callback when there is no
@@ -1053,33 +1163,33 @@ void LegacyCacheStorageCache::QueryCacheOpenNextEntry(
   // when iterating a large cache.  Only invoke the callback synchronously
   // if we have not recursed past a threshold depth.
   if (query_cache_recursive_depth_ <= kMaxQueryCacheRecursiveDepth) {
-    std::move(open_entry_callback).Run(rv);
+    std::move(split_callback.second).Run(std::move(result));
     return;
   }
 
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(open_entry_callback), rv));
+  scheduler_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(split_callback.second), std::move(result)));
 }
 
 void LegacyCacheStorageCache::QueryCacheFilterEntry(
     std::unique_ptr<QueryCacheContext> query_cache_context,
-    int rv) {
-  if (rv == net::ERR_FAILED) {
+    disk_cache::EntryResult result) {
+  if (result.net_error() == net::ERR_FAILED) {
     // This is the indicator that iteration is complete.
     query_cache_context->backend_iterator.reset();
     QueryCacheOpenNextEntry(std::move(query_cache_context));
     return;
   }
 
-  if (rv < 0) {
+  if (result.net_error() < 0) {
     std::move(query_cache_context->callback)
         .Run(MakeErrorStorage(ErrorStorageType::kQueryCacheFilterEntryFailed),
              std::move(query_cache_context->matches));
     return;
   }
 
-  disk_cache::ScopedEntryPtr entry(query_cache_context->enumerated_entry);
-  query_cache_context->enumerated_entry = nullptr;
+  disk_cache::ScopedEntryPtr entry(result.ReleaseEntry());
 
   if (backend_state_ == BACKEND_CLOSED) {
     std::move(query_cache_context->callback)
@@ -1123,17 +1233,47 @@ void LegacyCacheStorageCache::QueryCacheDidReadMetadata(
     return;
   }
 
+  // Check for older cache entries that need to be padded, but don't
+  // have any padding stored in the entry.  Upgrade these entries
+  // as we encounter them.  This method will be re-entered once the
+  // new paddings are written back to disk.
+  if (ShouldPadResourceSize(&metadata->response()) &&
+      !metadata->response().has_padding()) {
+    QueryCacheUpgradePadding(std::move(query_cache_context), std::move(entry),
+                             std::move(metadata));
+    return;
+  }
+
   // If the entry was created before we started adding entry times, then
   // default to using the Response object's time for sorting purposes.
   int64_t entry_time = metadata->has_entry_time()
                            ? metadata->entry_time()
                            : metadata->response().response_time();
 
-  query_cache_context->matches->push_back(
-      QueryCacheResult(base::Time::FromInternalValue(entry_time)));
+  // Note, older entries that don't require padding may still not have
+  // a padding value since we don't pay the cost to upgrade these entries.
+  // Treat these as a zero padding.
+  int64_t padding =
+      metadata->response().has_padding() ? metadata->response().padding() : 0;
+  int64_t side_data_padding = metadata->response().has_side_data_padding()
+                                  ? metadata->response().side_data_padding()
+                                  : 0;
+
+  DCHECK(!ShouldPadResourceSize(&metadata->response()) ||
+         (padding + side_data_padding));
+
+  query_cache_context->matches->push_back(QueryCacheResult(
+      base::Time::FromInternalValue(entry_time), padding, side_data_padding));
   QueryCacheResult* match = &query_cache_context->matches->back();
   match->request = CreateRequest(*metadata, GURL(entry->GetKey()));
   match->response = CreateResponse(*metadata, cache_name_);
+
+  if (!match->response) {
+    entry->Doom();
+    query_cache_context->matches->pop_back();
+    QueryCacheOpenNextEntry(std::move(query_cache_context));
+    return;
+  }
 
   if (query_cache_context->request &&
       (!query_cache_context->options ||
@@ -1145,11 +1285,11 @@ void LegacyCacheStorageCache::QueryCacheDidReadMetadata(
     return;
   }
 
-  auto data_handle = cache_entry_handler_->CreateBlobDataHandle(
+  auto blob_entry = cache_entry_handler_->CreateDiskCacheBlobEntry(
       CreateHandle(), std::move(entry));
 
   if (query_cache_context->query_types & QUERY_CACHE_ENTRIES)
-    match->entry = std::move(data_handle->entry());
+    match->entry = std::move(blob_entry->disk_cache_entry());
 
   if (query_cache_context->query_types & QUERY_CACHE_REQUESTS) {
     query_cache_context->estimated_out_bytes +=
@@ -1160,8 +1300,7 @@ void LegacyCacheStorageCache::QueryCacheDidReadMetadata(
       return;
     }
 
-    cache_entry_handler_->PopulateRequestBody(data_handle,
-                                              match->request.get());
+    cache_entry_handler_->PopulateRequestBody(blob_entry, match->request.get());
   } else {
     match->request.reset();
   }
@@ -1174,20 +1313,12 @@ void LegacyCacheStorageCache::QueryCacheDidReadMetadata(
           .Run(CacheStorageError::kErrorQueryTooLarge, nullptr);
       return;
     }
-    if (data_handle->entry()->GetDataSize(INDEX_RESPONSE_BODY) == 0) {
+    if (blob_entry->disk_cache_entry()->GetDataSize(INDEX_RESPONSE_BODY) == 0) {
       QueryCacheOpenNextEntry(std::move(query_cache_context));
       return;
     }
 
-    if (!blob_storage_context_) {
-      std::move(query_cache_context->callback)
-          .Run(MakeErrorStorage(
-                   ErrorStorageType::kQueryCacheDidReadMetadataNullBlobContext),
-               nullptr);
-      return;
-    }
-
-    cache_entry_handler_->PopulateResponseBody(data_handle,
+    cache_entry_handler_->PopulateResponseBody(blob_entry,
                                                match->response.get());
   } else if (!(query_cache_context->query_types &
                QUERY_CACHE_RESPONSES_NO_BODIES)) {
@@ -1195,6 +1326,53 @@ void LegacyCacheStorageCache::QueryCacheDidReadMetadata(
   }
 
   QueryCacheOpenNextEntry(std::move(query_cache_context));
+}
+
+void LegacyCacheStorageCache::QueryCacheUpgradePadding(
+    std::unique_ptr<QueryCacheContext> query_cache_context,
+    disk_cache::ScopedEntryPtr entry,
+    std::unique_ptr<proto::CacheMetadata> metadata) {
+  DCHECK(ShouldPadResourceSize(&metadata->response()));
+
+  // This should only be called while initializing because the padding
+  // version change should trigger an immediate query of all resources
+  // to recompute padding.
+  DCHECK(initializing_);
+
+  auto* response = metadata->mutable_response();
+  response->set_padding(storage::ComputeRandomResponsePadding());
+  response->set_side_data_padding(CalculateSideDataPadding(
+      storage_key_, response, entry->GetDataSize(INDEX_SIDE_DATA)));
+
+  // Get a temporary copy of the entry and metadata pointers before moving them
+  // into base::BindOnce.
+  disk_cache::Entry* temp_entry_ptr = entry.get();
+  auto* temp_metadata_ptr = metadata.get();
+
+  WriteMetadata(
+      temp_entry_ptr, *temp_metadata_ptr,
+      base::BindOnce(
+          [](base::WeakPtr<LegacyCacheStorageCache> self,
+             std::unique_ptr<QueryCacheContext> query_cache_context,
+             disk_cache::ScopedEntryPtr entry,
+             std::unique_ptr<proto::CacheMetadata> metadata, int expected_bytes,
+             int rv) {
+            if (!self)
+              return;
+            if (expected_bytes != rv) {
+              entry->Doom();
+              self->QueryCacheOpenNextEntry(std::move(query_cache_context));
+              return;
+            }
+            // We must have a padding here in order to avoid infinite
+            // recursion.
+            DCHECK(metadata->response().has_padding());
+            self->QueryCacheDidReadMetadata(std::move(query_cache_context),
+                                            std::move(entry),
+                                            std::move(metadata));
+          },
+          weak_ptr_factory_.GetWeakPtr(), std::move(query_cache_context),
+          std::move(entry), std::move(metadata)));
 }
 
 // static
@@ -1223,18 +1401,6 @@ size_t LegacyCacheStorageCache::EstimatedResponseSizeWithoutBlob(
 }
 
 // static
-int64_t LegacyCacheStorageCache::CalculateResponsePadding(
-    const blink::mojom::FetchAPIResponse& response,
-    const crypto::SymmetricKey* padding_key,
-    int side_data_size) {
-  DCHECK_GE(side_data_size, 0);
-  if (!ShouldPadResourceSize(response))
-    return 0;
-  return storage::ComputeResponsePadding(response.url_list.back().spec(),
-                                         padding_key, side_data_size > 0);
-}
-
-// static
 int32_t LegacyCacheStorageCache::GetResponsePaddingVersion() {
   return kCachePaddingAlgorithmVersion;
 }
@@ -1243,9 +1409,10 @@ void LegacyCacheStorageCache::MatchImpl(
     blink::mojom::FetchAPIRequestPtr request,
     blink::mojom::CacheQueryOptionsPtr match_options,
     int64_t trace_id,
+    CacheStorageSchedulerPriority priority,
     ResponseCallback callback) {
   MatchAllImpl(
-      std::move(request), std::move(match_options), trace_id,
+      std::move(request), std::move(match_options), trace_id, priority,
       base::BindOnce(&LegacyCacheStorageCache::MatchDidMatchAll,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
@@ -1272,6 +1439,7 @@ void LegacyCacheStorageCache::MatchAllImpl(
     blink::mojom::FetchAPIRequestPtr request,
     blink::mojom::CacheQueryOptionsPtr options,
     int64_t trace_id,
+    CacheStorageSchedulerPriority priority,
     ResponsesCallback callback) {
   DCHECK_NE(BACKEND_UNINITIALIZED, backend_state_);
   TRACE_EVENT_WITH_FLOW2("CacheStorage",
@@ -1287,8 +1455,12 @@ void LegacyCacheStorageCache::MatchAllImpl(
     return;
   }
 
+  // Hold the cache alive while performing any operation touching the
+  // disk_cache backend.
+  callback = WrapCallbackWithHandle(std::move(callback));
+
   QueryCache(std::move(request), std::move(options),
-             QUERY_CACHE_REQUESTS | QUERY_CACHE_RESPONSES_WITH_BODIES,
+             QUERY_CACHE_REQUESTS | QUERY_CACHE_RESPONSES_WITH_BODIES, priority,
              base::BindOnce(&LegacyCacheStorageCache::MatchAllDidQueryCache,
                             weak_ptr_factory_.GetWeakPtr(), std::move(callback),
                             trace_id));
@@ -1321,6 +1493,37 @@ void LegacyCacheStorageCache::MatchAllDidQueryCache(
                           std::move(out_responses));
 }
 
+void LegacyCacheStorageCache::WriteMetadata(
+    disk_cache::Entry* entry,
+    const proto::CacheMetadata& metadata,
+    WriteMetadataCallback callback) {
+  std::unique_ptr<std::string> serialized = std::make_unique<std::string>();
+  if (!metadata.SerializeToString(serialized.get())) {
+    std::move(callback).Run(0, -1);
+    return;
+  }
+
+  scoped_refptr<net::StringIOBuffer> buffer =
+      base::MakeRefCounted<net::StringIOBuffer>(std::move(serialized));
+
+  auto callback_with_expected_bytes = base::BindOnce(
+      [](WriteMetadataCallback callback, int expected_bytes, int rv) {
+        std::move(callback).Run(expected_bytes, rv);
+      },
+      std::move(callback), buffer->size());
+
+  auto split_callback =
+      base::SplitOnceCallback(std::move(callback_with_expected_bytes));
+
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+  int rv = entry->WriteData(INDEX_HEADERS, /*offset=*/0, buffer.get(),
+                            buffer->size(), std::move(split_callback.first),
+                            /*truncate=*/true);
+
+  if (rv != net::ERR_IO_PENDING)
+    std::move(split_callback.second).Run(rv);
+}
+
 void LegacyCacheStorageCache::WriteSideDataDidGetQuota(
     ErrorCallback callback,
     const GURL& url,
@@ -1338,17 +1541,20 @@ void LegacyCacheStorageCache::WriteSideDataDidGetQuota(
 
   if (status_code != blink::mojom::QuotaStatusCode::kOk ||
       (buf_len > quota - usage)) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    scheduler_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback),
                                   CacheStorageError::kErrorQuotaExceeded));
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
+      id, CacheStorageSchedulerMode::kExclusive,
       CacheStorageSchedulerOp::kWriteSideData,
+      CacheStorageSchedulerPriority::kNormal,
       base::BindOnce(&LegacyCacheStorageCache::WriteSideDataImpl,
                      weak_ptr_factory_.GetWeakPtr(),
-                     scheduler_->WrapCallbackToRunNext(std::move(callback)),
+                     scheduler_->WrapCallbackToRunNext(id, std::move(callback)),
                      url, expected_response_time, trace_id, buffer, buf_len));
 }
 
@@ -1370,26 +1576,22 @@ void LegacyCacheStorageCache::WriteSideDataImpl(
     return;
   }
 
-  std::unique_ptr<disk_cache::Entry*> scoped_entry_ptr(
-      new disk_cache::Entry*());
-  disk_cache::Entry** entry_ptr = scoped_entry_ptr.get();
+  // Hold the cache alive while performing any operation touching the
+  // disk_cache backend.
+  callback = WrapCallbackWithHandle(std::move(callback));
 
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |callback| and
-  // |scoped_entry_ptr| are not copyable.
-  net::CompletionRepeatingCallback open_entry_callback =
-      base::AdaptCallbackForRepeating(
-          base::BindOnce(&LegacyCacheStorageCache::WriteSideDataDidOpenEntry,
-                         weak_ptr_factory_.GetWeakPtr(), std::move(callback),
-                         expected_response_time, trace_id, buffer, buf_len,
-                         std::move(scoped_entry_ptr)));
+  auto split_callback = base::SplitOnceCallback(
+      base::BindOnce(&LegacyCacheStorageCache::WriteSideDataDidOpenEntry,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                     expected_response_time, trace_id, buffer, buf_len));
 
-  // Use LOWEST priority here as writing side data is less important than
-  // loading resources on the page.
-  int rv = backend_->OpenEntry(url.spec(), net::LOWEST, entry_ptr,
-                               open_entry_callback);
-  if (rv != net::ERR_IO_PENDING)
-    std::move(open_entry_callback).Run(rv);
+  // Note, the simple disk_cache priority is not important here because we
+  // only allow one write operation at a time.  Therefore there will be no
+  // competing operations in the disk_cache queue.
+  disk_cache::EntryResult result = backend_->OpenEntry(
+      url.spec(), net::MEDIUM, std::move(split_callback.first));
+  if (result.net_error() != net::ERR_IO_PENDING)
+    std::move(split_callback.second).Run(std::move(result));
 }
 
 void LegacyCacheStorageCache::WriteSideDataDidOpenEntry(
@@ -1398,20 +1600,25 @@ void LegacyCacheStorageCache::WriteSideDataDidOpenEntry(
     int64_t trace_id,
     scoped_refptr<net::IOBuffer> buffer,
     int buf_len,
-    std::unique_ptr<disk_cache::Entry*> entry_ptr,
-    int rv) {
+    disk_cache::EntryResult result) {
   TRACE_EVENT_WITH_FLOW0("CacheStorage",
                          "LegacyCacheStorageCache::WriteSideDataDidOpenEntry",
                          TRACE_ID_GLOBAL(trace_id),
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
-  if (rv != net::OK) {
+
+  if (result.net_error() != net::OK) {
     std::move(callback).Run(CacheStorageError::kErrorNotFound);
     return;
   }
-  disk_cache::ScopedEntryPtr entry(*entry_ptr);
+
+  // Give the ownership of entry to a ScopedWritableEntry which will doom the
+  // entry before closing unless we tell it that writing has successfully
+  // completed via WritingCompleted.
+  ScopedWritableEntry entry(result.ReleaseEntry());
+  disk_cache::Entry* entry_ptr = entry.get();
 
   ReadMetadata(
-      *entry_ptr,
+      entry_ptr,
       base::BindOnce(&LegacyCacheStorageCache::WriteSideDataDidReadMetaData,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback),
                      expected_response_time, trace_id, buffer, buf_len,
@@ -1424,7 +1631,7 @@ void LegacyCacheStorageCache::WriteSideDataDidReadMetaData(
     int64_t trace_id,
     scoped_refptr<net::IOBuffer> buffer,
     int buf_len,
-    disk_cache::ScopedEntryPtr entry,
+    ScopedWritableEntry entry,
     std::unique_ptr<proto::CacheMetadata> headers) {
   TRACE_EVENT_WITH_FLOW0(
       "CacheStorage", "LegacyCacheStorageCache::WriteSideDataDidReadMetaData",
@@ -1432,67 +1639,116 @@ void LegacyCacheStorageCache::WriteSideDataDidReadMetaData(
       TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
   if (!headers || headers->response().response_time() !=
                       expected_response_time.ToInternalValue()) {
-    std::move(callback).Run(CacheStorageError::kErrorNotFound);
+    WriteSideDataComplete(std::move(callback), std::move(entry),
+                          /*padding=*/0, /*side_data_padding=*/0,
+                          CacheStorageError::kErrorNotFound);
     return;
   }
   // Get a temporary copy of the entry pointer before passing it in base::Bind.
   disk_cache::Entry* temp_entry_ptr = entry.get();
 
-  std::unique_ptr<content::proto::CacheResponse> response(
-      headers->release_response());
-
-  int side_data_size_before_write = 0;
-  if (ShouldPadResourceSize(response.get()))
-    side_data_size_before_write = entry->GetDataSize(INDEX_SIDE_DATA);
-
   // Create a callback that is copyable, even though it can only be called once.
   // BindRepeating() cannot be used directly because |callback|, |entry| and
   // |response| are not copyable.
-  net::CompletionRepeatingCallback write_side_data_callback =
-      base::AdaptCallbackForRepeating(base::BindOnce(
-          &LegacyCacheStorageCache::WriteSideDataDidWrite,
-          weak_ptr_factory_.GetWeakPtr(), std::move(callback), std::move(entry),
-          buf_len, std::move(response), side_data_size_before_write, trace_id));
+  auto split_callback = base::SplitOnceCallback(
+      base::BindOnce(&LegacyCacheStorageCache::WriteSideDataDidWrite,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                     std::move(entry), buf_len, std::move(headers), trace_id));
 
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
   int rv = temp_entry_ptr->WriteData(
       INDEX_SIDE_DATA, 0 /* offset */, buffer.get(), buf_len,
-      write_side_data_callback, true /* truncate */);
+      std::move(split_callback.first), true /* truncate */);
 
   if (rv != net::ERR_IO_PENDING)
-    std::move(write_side_data_callback).Run(rv);
+    std::move(split_callback.second).Run(rv);
 }
 
 void LegacyCacheStorageCache::WriteSideDataDidWrite(
     ErrorCallback callback,
-    disk_cache::ScopedEntryPtr entry,
+    ScopedWritableEntry entry,
     int expected_bytes,
-    std::unique_ptr<::content::proto::CacheResponse> response,
-    int side_data_size_before_write,
+    std::unique_ptr<::content::proto::CacheMetadata> metadata,
     int64_t trace_id,
     int rv) {
   TRACE_EVENT_WITH_FLOW0("CacheStorage",
                          "LegacyCacheStorageCache::WriteSideDataDidWrite",
                          TRACE_ID_GLOBAL(trace_id), TRACE_EVENT_FLAG_FLOW_IN);
   if (rv != expected_bytes) {
-    entry->Doom();
-    UpdateCacheSize(
-        base::BindOnce(std::move(callback), CacheStorageError::kErrorNotFound));
+    WriteSideDataComplete(std::move(callback), std::move(entry),
+                          /*padding=*/0, /*side_data_padding=*/0,
+                          CacheStorageError::kErrorStorage);
     return;
   }
 
-  if (rv > 0)
-    storage::RecordBytesWritten(kRecordBytesLabel, rv);
+  auto* response = metadata->mutable_response();
 
-  if (ShouldPadResourceSize(response.get())) {
-    cache_padding_ -= CalculateResponsePaddingInternal(
-        response.get(), cache_padding_key_.get(), side_data_size_before_write);
+  if (ShouldPadResourceSize(response)) {
+    cache_padding_ -= response->side_data_padding();
 
-    cache_padding_ += CalculateResponsePaddingInternal(
-        response.get(), cache_padding_key_.get(), rv);
+    response->set_side_data_padding(
+        CalculateSideDataPadding(storage_key_, response, rv));
+    cache_padding_ += response->side_data_padding();
+
+    // Get a temporary copy of the entry pointer before passing it in
+    // base::Bind.
+    disk_cache::Entry* temp_entry_ptr = entry.get();
+
+    WriteMetadata(
+        temp_entry_ptr, *metadata,
+        base::BindOnce(&LegacyCacheStorageCache::WriteSideDataDidWriteMetadata,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                       std::move(entry), response->padding(),
+                       response->side_data_padding()));
+    return;
   }
 
-  UpdateCacheSize(
-      base::BindOnce(std::move(callback), CacheStorageError::kSuccess));
+  WriteSideDataComplete(std::move(callback), std::move(entry),
+                        response->padding(), response->side_data_padding(),
+                        CacheStorageError::kSuccess);
+}
+
+void LegacyCacheStorageCache::WriteSideDataDidWriteMetadata(
+    ErrorCallback callback,
+    ScopedWritableEntry entry,
+    int64_t padding,
+    int64_t side_data_padding,
+    int expected_bytes,
+    int rv) {
+  auto result = blink::mojom::CacheStorageError::kSuccess;
+  if (rv != expected_bytes) {
+    result = MakeErrorStorage(
+        ErrorStorageType::kWriteSideDataDidWriteMetadataWrongBytes);
+  }
+  WriteSideDataComplete(std::move(callback), std::move(entry), padding,
+                        side_data_padding, result);
+}
+
+void LegacyCacheStorageCache::WriteSideDataComplete(
+    ErrorCallback callback,
+    ScopedWritableEntry entry,
+    int64_t padding,
+    int64_t side_data_padding,
+    blink::mojom::CacheStorageError error) {
+  if (error != CacheStorageError::kSuccess) {
+    // If we found the entry, then we possibly wrote something and now we're
+    // dooming the entry, causing a change in size, so update the size before
+    // returning.
+    if (error != CacheStorageError::kErrorNotFound) {
+      entry.reset();
+      cache_padding_ -= (padding + side_data_padding);
+      UpdateCacheSize(base::BindOnce(std::move(callback), error));
+      return;
+    }
+
+    entry.get_deleter()
+        .WritingCompleted();  // Since we didn't change the entry.
+    std::move(callback).Run(error);
+    return;
+  }
+
+  entry.get_deleter().WritingCompleted();  // Since we didn't change the entry.
+  UpdateCacheSize(base::BindOnce(std::move(callback), error));
 }
 
 void LegacyCacheStorageCache::Put(blink::mojom::BatchOperationPtr operation,
@@ -1515,11 +1771,13 @@ void LegacyCacheStorageCache::Put(blink::mojom::FetchAPIRequestPtr request,
 
   auto put_context = cache_entry_handler_->CreatePutContext(
       std::move(request), std::move(response), trace_id);
+  auto id = scheduler_->CreateId();
   put_context->callback =
-      scheduler_->WrapCallbackToRunNext(std::move(callback));
+      scheduler_->WrapCallbackToRunNext(id, std::move(callback));
 
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kPut,
+      id, CacheStorageSchedulerMode::kExclusive, CacheStorageSchedulerOp::kPut,
+      CacheStorageSchedulerPriority::kNormal,
       base::BindOnce(&LegacyCacheStorageCache::PutImpl,
                      weak_ptr_factory_.GetWeakPtr(), std::move(put_context)));
 }
@@ -1533,10 +1791,15 @@ void LegacyCacheStorageCache::PutImpl(std::unique_ptr<PutContext> put_context) {
       CacheStorageTracedValue(put_context->request), "response",
       CacheStorageTracedValue(put_context->response));
   if (backend_state_ != BACKEND_OPEN) {
-    std::move(put_context->callback)
-        .Run(MakeErrorStorage(ErrorStorageType::kPutImplBackendClosed));
+    PutComplete(std::move(put_context),
+                MakeErrorStorage(ErrorStorageType::kPutImplBackendClosed));
     return;
   }
+
+  // Hold the cache alive while performing any operation touching the
+  // disk_cache backend.
+  put_context->callback =
+      WrapCallbackWithHandle(std::move(put_context->callback));
 
   // Explicitly delete the incumbent resource (which may not exist). This is
   // only done so that it's padding will be decremented from the calculated
@@ -1568,53 +1831,51 @@ void LegacyCacheStorageCache::PutDidDeleteEntry(
                          TRACE_ID_GLOBAL(put_context->trace_id),
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
   if (backend_state_ != BACKEND_OPEN) {
-    std::move(put_context->callback)
-        .Run(MakeErrorStorage(
-            ErrorStorageType::kPutDidDeleteEntryBackendClosed));
+    PutComplete(
+        std::move(put_context),
+        MakeErrorStorage(ErrorStorageType::kPutDidDeleteEntryBackendClosed));
     return;
   }
 
   if (error != CacheStorageError::kSuccess &&
       error != CacheStorageError::kErrorNotFound) {
-    std::move(put_context->callback).Run(error);
+    PutComplete(std::move(put_context), error);
     return;
   }
 
-  std::unique_ptr<disk_cache::Entry*> scoped_entry_ptr(
-      new disk_cache::Entry*());
-  disk_cache::Entry** entry_ptr = scoped_entry_ptr.get();
   const blink::mojom::FetchAPIRequest& request_ = *(put_context->request);
   disk_cache::Backend* backend_ptr = backend_.get();
 
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |scoped_entry_ptr| and
-  // |put_context| are not copyable.
-  net::CompletionRepeatingCallback create_entry_callback =
-      base::AdaptCallbackForRepeating(
-          base::BindOnce(&LegacyCacheStorageCache::PutDidCreateEntry,
-                         weak_ptr_factory_.GetWeakPtr(),
-                         std::move(scoped_entry_ptr), std::move(put_context)));
+  auto split_callback = base::SplitOnceCallback(
+      base::BindOnce(&LegacyCacheStorageCache::PutDidCreateEntry,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(put_context)));
 
-  int rv = backend_ptr->CreateEntry(request_.url.spec(), net::HIGHEST,
-                                    entry_ptr, create_entry_callback);
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+  disk_cache::EntryResult result = backend_ptr->OpenOrCreateEntry(
+      request_.url.spec(), net::MEDIUM, std::move(split_callback.first));
 
-  if (rv != net::ERR_IO_PENDING)
-    std::move(create_entry_callback).Run(rv);
+  if (result.net_error() != net::ERR_IO_PENDING)
+    std::move(split_callback.second).Run(std::move(result));
 }
 
 void LegacyCacheStorageCache::PutDidCreateEntry(
-    std::unique_ptr<disk_cache::Entry*> entry_ptr,
     std::unique_ptr<PutContext> put_context,
-    int rv) {
+    disk_cache::EntryResult result) {
   TRACE_EVENT_WITH_FLOW0("CacheStorage",
                          "LegacyCacheStorageCache::PutDidCreateEntry",
                          TRACE_ID_GLOBAL(put_context->trace_id),
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
 
-  put_context->cache_entry.reset(*entry_ptr);
+  int rv = result.net_error();
+
+  // Moving the entry into a ScopedWritableEntry which will doom the entry
+  // before closing unless we tell it that writing has successfully completed
+  // via WritingCompleted.
+  put_context->cache_entry.reset(result.ReleaseEntry());
 
   if (rv != net::OK) {
-    std::move(put_context->callback).Run(CacheStorageError::kErrorExists);
+    quota_manager_proxy_->NotifyWriteFailed(storage_key_);
+    PutComplete(std::move(put_context), CacheStorageError::kErrorExists);
     return;
   }
 
@@ -1631,12 +1892,25 @@ void LegacyCacheStorageCache::PutDidCreateEntry(
   }
 
   proto::CacheResponse* response_metadata = metadata.mutable_response();
+  DCHECK_NE(put_context->response->status_code, net::HTTP_PARTIAL_CONTENT);
   response_metadata->set_status_code(put_context->response->status_code);
   response_metadata->set_status_text(put_context->response->status_text);
   response_metadata->set_response_type(FetchResponseTypeToProtoResponseType(
       put_context->response->response_type));
   for (const auto& url : put_context->response->url_list)
     response_metadata->add_url_list(url.spec());
+  response_metadata->set_connection_info(
+      put_context->response->connection_info);
+  response_metadata->set_alpn_negotiated_protocol(
+      put_context->response->alpn_negotiated_protocol);
+  response_metadata->set_was_fetched_via_spdy(
+      put_context->response->was_fetched_via_spdy);
+  if (put_context->response->mime_type.has_value())
+    response_metadata->set_mime_type(put_context->response->mime_type.value());
+  if (put_context->response->request_method.has_value()) {
+    response_metadata->set_request_method(
+        put_context->response->request_method.value());
+  }
   response_metadata->set_response_time(
       put_context->response->response_time.ToInternalValue());
   for (ResponseHeaderMap::const_iterator it =
@@ -1651,38 +1925,35 @@ void LegacyCacheStorageCache::PutDidCreateEntry(
   for (const auto& header : put_context->response->cors_exposed_header_names)
     response_metadata->add_cors_exposed_header_names(header);
 
-  std::unique_ptr<std::string> serialized(new std::string());
-  if (!metadata.SerializeToString(serialized.get())) {
-    std::move(put_context->callback)
-        .Run(MakeErrorStorage(ErrorStorageType::kMetadataSerializationFailed));
-    return;
-  }
+  DCHECK(!ShouldPadResourceSize(*put_context->response) ||
+         put_context->response->padding);
+  response_metadata->set_padding(put_context->response->padding);
 
-  scoped_refptr<net::StringIOBuffer> buffer =
-      base::MakeRefCounted<net::StringIOBuffer>(std::move(serialized));
+  int64_t side_data_padding = 0;
+  if (ShouldPadResourceSize(*put_context->response) &&
+      put_context->side_data_blob) {
+    side_data_padding = CalculateSideDataPadding(
+        storage_key_, response_metadata, put_context->side_data_blob_size);
+  }
+  response_metadata->set_side_data_padding(side_data_padding);
+  response_metadata->set_request_include_credentials(
+      put_context->response->request_include_credentials);
 
   // Get a temporary copy of the entry pointer before passing it in base::Bind.
   disk_cache::Entry* temp_entry_ptr = put_context->cache_entry.get();
 
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |put_context| is not
-  // copyable.
-  net::CompletionRepeatingCallback write_headers_callback =
-      base::AdaptCallbackForRepeating(
-          base::BindOnce(&LegacyCacheStorageCache::PutDidWriteHeaders,
-                         weak_ptr_factory_.GetWeakPtr(), std::move(put_context),
-                         buffer->size()));
-
-  rv = temp_entry_ptr->WriteData(INDEX_HEADERS, 0 /* offset */, buffer.get(),
-                                 buffer->size(), write_headers_callback,
-                                 true /* truncate */);
-
-  if (rv != net::ERR_IO_PENDING)
-    std::move(write_headers_callback).Run(rv);
+  WriteMetadata(
+      temp_entry_ptr, metadata,
+      base::BindOnce(&LegacyCacheStorageCache::PutDidWriteHeaders,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(put_context),
+                     response_metadata->padding(),
+                     response_metadata->side_data_padding()));
 }
 
 void LegacyCacheStorageCache::PutDidWriteHeaders(
     std::unique_ptr<PutContext> put_context,
+    int64_t padding,
+    int64_t side_data_padding,
     int expected_bytes,
     int rv) {
   TRACE_EVENT_WITH_FLOW0("CacheStorage",
@@ -1691,36 +1962,18 @@ void LegacyCacheStorageCache::PutDidWriteHeaders(
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
 
   if (rv != expected_bytes) {
-    put_context->cache_entry->Doom();
-    std::move(put_context->callback)
-        .Run(MakeErrorStorage(ErrorStorageType::kPutDidWriteHeadersWrongBytes));
+    quota_manager_proxy_->NotifyWriteFailed(storage_key_);
+    PutComplete(
+        std::move(put_context),
+        MakeErrorStorage(ErrorStorageType::kPutDidWriteHeadersWrongBytes));
     return;
   }
 
-  if (rv > 0)
-    storage::RecordBytesWritten(kRecordBytesLabel, rv);
-  if (ShouldPadResourceSize(*put_context->response)) {
-    cache_padding_ += CalculateResponsePadding(*put_context->response,
-                                               cache_padding_key_.get(),
-                                               0 /* side_data_size */);
-  }
+  DCHECK(!ShouldPadResourceSize(*put_context->response) ||
+         (padding + side_data_padding));
+  cache_padding_ += padding + side_data_padding;
 
-  // The metadata is written, now for the response content. The data is streamed
-  // from the blob into the cache entry.
-  if (put_context->response->blob &&
-      !put_context->response->blob->uuid.empty()) {
-    PutWriteBlobToCache(std::move(put_context), INDEX_RESPONSE_BODY);
-    return;
-  }
-
-  if (put_context->side_data_blob) {
-    DCHECK_EQ(owner_, CacheStorageOwner::kBackgroundFetch);
-    PutWriteBlobToCache(std::move(put_context), INDEX_SIDE_DATA);
-    return;
-  }
-
-  UpdateCacheSize(base::BindOnce(std::move(put_context->callback),
-                                 CacheStorageError::kSuccess));
+  PutWriteBlobToCache(std::move(put_context), INDEX_RESPONSE_BODY);
 }
 
 void LegacyCacheStorageCache::PutWriteBlobToCache(
@@ -1734,19 +1987,64 @@ void LegacyCacheStorageCache::PutWriteBlobToCache(
                          TRACE_ID_GLOBAL(put_context->trace_id),
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
 
-  blink::mojom::BlobPtr blob = disk_cache_body_index == INDEX_RESPONSE_BODY
-                                   ? std::move(put_context->blob)
-                                   : std::move(put_context->side_data_blob);
-  DCHECK(blob);
+  mojo::PendingRemote<blink::mojom::Blob> blob;
+  int64_t blob_size = 0;
 
-  int64_t blob_size = disk_cache_body_index == INDEX_RESPONSE_BODY
-                          ? put_context->blob_size
-                          : put_context->side_data_blob_size;
+  switch (disk_cache_body_index) {
+    case INDEX_RESPONSE_BODY: {
+      blob = std::move(put_context->blob);
+      put_context->blob.reset();
+      blob_size = put_context->blob_size;
+      break;
+    }
+    case INDEX_SIDE_DATA: {
+      blob = std::move(put_context->side_data_blob);
+      put_context->side_data_blob.reset();
+      blob_size = put_context->side_data_blob_size;
+      break;
+    }
+    case INDEX_HEADERS:
+      NOTREACHED();
+  }
 
-  disk_cache::ScopedEntryPtr entry(std::move(put_context->cache_entry));
-  put_context->cache_entry = nullptr;
+  ScopedWritableEntry entry(put_context->cache_entry.release());
 
-  auto blob_to_cache = std::make_unique<CacheStorageBlobToDiskCache>();
+  // If there isn't blob data for this index, then we may need to clear any
+  // pre-existing data.  This can happen under rare circumstances if a stale
+  // file is present and accepted by OpenOrCreateEntry().
+  if (!blob) {
+    disk_cache::Entry* temp_entry_ptr = entry.get();
+
+    auto clear_callback =
+        base::BindOnce(&LegacyCacheStorageCache::PutWriteBlobToCacheComplete,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(put_context),
+                       disk_cache_body_index, std::move(entry));
+
+    // If there is no pre-existing data, then proceed to the next
+    // step immediately.
+    if (temp_entry_ptr->GetDataSize(disk_cache_body_index) != 0) {
+      std::move(clear_callback).Run(net::OK);
+      return;
+    }
+
+    auto split_callback = base::SplitOnceCallback(std::move(clear_callback));
+
+    // There is pre-existing data and we need to truncate it.
+    int rv = temp_entry_ptr->WriteData(
+        disk_cache_body_index, /* offset = */ 0, /* buf = */ nullptr,
+        /* buf_len = */ 0, std::move(split_callback.first),
+        /* truncate = */ true);
+
+    if (rv != net::ERR_IO_PENDING)
+      std::move(split_callback.second).Run(rv);
+
+    return;
+  }
+
+  // We have real data, so stream it into the entry.  This will overwrite
+  // any existing data.
+  auto blob_to_cache = std::make_unique<CacheStorageBlobToDiskCache>(
+      quota_manager_proxy_, storage_key_);
   CacheStorageBlobToDiskCache* blob_to_cache_raw = blob_to_cache.get();
   BlobToDiskCacheIDMap::KeyType blob_to_cache_key =
       active_blob_to_disk_cache_writers_.Add(std::move(blob_to_cache));
@@ -1755,13 +2053,14 @@ void LegacyCacheStorageCache::PutWriteBlobToCache(
       std::move(entry), disk_cache_body_index, std::move(blob), blob_size,
       base::BindOnce(&LegacyCacheStorageCache::PutDidWriteBlobToCache,
                      weak_ptr_factory_.GetWeakPtr(), std::move(put_context),
-                     blob_to_cache_key));
+                     blob_to_cache_key, disk_cache_body_index));
 }
 
 void LegacyCacheStorageCache::PutDidWriteBlobToCache(
     std::unique_ptr<PutContext> put_context,
     BlobToDiskCacheIDMap::KeyType blob_to_cache_key,
-    disk_cache::ScopedEntryPtr entry,
+    int disk_cache_body_index,
+    ScopedWritableEntry entry,
     bool success) {
   DCHECK(entry);
   TRACE_EVENT_WITH_FLOW0("CacheStorage",
@@ -1769,39 +2068,64 @@ void LegacyCacheStorageCache::PutDidWriteBlobToCache(
                          TRACE_ID_GLOBAL(put_context->trace_id),
                          TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
 
-  put_context->cache_entry = std::move(entry);
-
   active_blob_to_disk_cache_writers_.Remove(blob_to_cache_key);
 
-  if (!success) {
-    put_context->cache_entry->Doom();
-    std::move(put_context->callback)
-        .Run(MakeErrorStorage(ErrorStorageType::kPutDidWriteBlobToCacheFailed));
+  PutWriteBlobToCacheComplete(std::move(put_context), disk_cache_body_index,
+                              std::move(entry),
+                              (success ? net::OK : net::ERR_FAILED));
+}
+
+void LegacyCacheStorageCache::PutWriteBlobToCacheComplete(
+    std::unique_ptr<PutContext> put_context,
+    int disk_cache_body_index,
+    ScopedWritableEntry entry,
+    int rv) {
+  DCHECK(entry);
+
+  put_context->cache_entry = std::move(entry);
+
+  if (rv != net::OK) {
+    PutComplete(
+        std::move(put_context),
+        MakeErrorStorage(ErrorStorageType::kPutDidWriteBlobToCacheFailed));
     return;
   }
 
-  if (put_context->side_data_blob) {
+  if (disk_cache_body_index == INDEX_RESPONSE_BODY) {
     PutWriteBlobToCache(std::move(put_context), INDEX_SIDE_DATA);
     return;
   }
 
-  UpdateCacheSize(base::BindOnce(std::move(put_context->callback),
-                                 CacheStorageError::kSuccess));
+  PutComplete(std::move(put_context), CacheStorageError::kSuccess);
+}
+
+void LegacyCacheStorageCache::PutComplete(
+    std::unique_ptr<PutContext> put_context,
+    blink::mojom::CacheStorageError error) {
+  if (error == CacheStorageError::kSuccess) {
+    // Make sure we've written everything.
+    DCHECK(put_context->cache_entry);
+    DCHECK(!put_context->blob);
+    DCHECK(!put_context->side_data_blob);
+
+    // Tell the WritableScopedEntry not to doom the entry since it was a
+    // successful operation.
+    put_context->cache_entry.get_deleter().WritingCompleted();
+  }
+
+  UpdateCacheSize(base::BindOnce(std::move(put_context->callback), error));
 }
 
 void LegacyCacheStorageCache::CalculateCacheSizePadding(
     SizePaddingCallback got_sizes_callback) {
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |got_sizes_callback| is not
-  // copyable.
-  net::Int64CompletionRepeatingCallback got_size_callback =
-      base::AdaptCallbackForRepeating(base::BindOnce(
-          &LegacyCacheStorageCache::CalculateCacheSizePaddingGotSize,
-          weak_ptr_factory_.GetWeakPtr(), std::move(got_sizes_callback)));
+  auto split_callback = base::SplitOnceCallback(base::BindOnce(
+      &LegacyCacheStorageCache::CalculateCacheSizePaddingGotSize,
+      weak_ptr_factory_.GetWeakPtr(), std::move(got_sizes_callback)));
 
-  int64_t rv = backend_->CalculateSizeOfAllEntries(got_size_callback);
+  int64_t rv =
+      backend_->CalculateSizeOfAllEntries(std::move(split_callback.first));
   if (rv != net::ERR_IO_PENDING)
-    std::move(got_size_callback).Run(rv);
+    std::move(split_callback.second).Run(rv);
 }
 
 void LegacyCacheStorageCache::CalculateCacheSizePaddingGotSize(
@@ -1816,6 +2140,7 @@ void LegacyCacheStorageCache::CalculateCacheSizePaddingGotSize(
   options->ignore_search = true;
   QueryCache(std::move(request), std::move(options),
              QUERY_CACHE_RESPONSES_NO_BODIES,
+             CacheStorageSchedulerPriority::kNormal,
              base::BindOnce(&LegacyCacheStorageCache::PaddingDidQueryCache,
                             weak_ptr_factory_.GetWeakPtr(), std::move(callback),
                             cache_size));
@@ -1829,12 +2154,9 @@ void LegacyCacheStorageCache::PaddingDidQueryCache(
   int64_t cache_padding = 0;
   if (error == CacheStorageError::kSuccess) {
     for (const auto& result : *query_cache_results) {
-      if (ShouldPadResourceSize(*result.response)) {
-        int32_t side_data_size =
-            result.entry ? result.entry->GetDataSize(INDEX_SIDE_DATA) : 0;
-        cache_padding += CalculateResponsePadding(
-            *result.response, cache_padding_key_.get(), side_data_size);
-      }
+      DCHECK(!ShouldPadResourceSize(*result.response) ||
+             (result.padding + result.side_data_padding));
+      cache_padding += result.padding + result.side_data_padding;
     }
   }
 
@@ -1843,38 +2165,49 @@ void LegacyCacheStorageCache::PaddingDidQueryCache(
 
 void LegacyCacheStorageCache::CalculateCacheSize(
     net::Int64CompletionOnceCallback callback) {
-  net::Int64CompletionRepeatingCallback got_size_callback =
-      AdaptCallbackForRepeating(std::move(callback));
-  int64_t rv = backend_->CalculateSizeOfAllEntries(got_size_callback);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto split_callback = base::SplitOnceCallback(std::move(callback));
+  int64_t rv =
+      backend_->CalculateSizeOfAllEntries(std::move(split_callback.first));
   if (rv != net::ERR_IO_PENDING)
-    got_size_callback.Run(rv);
+    std::move(split_callback.second).Run(rv);
 }
 
 void LegacyCacheStorageCache::UpdateCacheSize(base::OnceClosure callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (backend_state_ != BACKEND_OPEN)
     return;
 
   // Note that the callback holds a cache handle to keep the cache alive during
   // the operation since this UpdateCacheSize is often run after an operation
   // completes and runs its callback.
-  CalculateCacheSize(base::AdaptCallbackForRepeating(base::BindOnce(
+  CalculateCacheSize(base::BindOnce(
       &LegacyCacheStorageCache::UpdateCacheSizeGotSize,
-      weak_ptr_factory_.GetWeakPtr(), CreateHandle(), std::move(callback))));
+      weak_ptr_factory_.GetWeakPtr(), CreateHandle(), std::move(callback)));
 }
 
 void LegacyCacheStorageCache::UpdateCacheSizeGotSize(
     CacheStorageCacheHandle cache_handle,
     base::OnceClosure callback,
     int64_t current_cache_size) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_NE(current_cache_size, CacheStorage::kSizeUnknown);
   cache_size_ = current_cache_size;
   int64_t size_delta = PaddedCacheSize() - last_reported_size_;
   last_reported_size_ = PaddedCacheSize();
 
   quota_manager_proxy_->NotifyStorageModified(
-      CacheStorageQuotaClient::GetIDFromOwner(owner_), origin_,
-      blink::mojom::StorageType::kTemporary, size_delta);
+      CacheStorageQuotaClient::GetClientTypeFromOwner(owner_), storage_key_,
+      blink::mojom::StorageType::kTemporary, size_delta, base::Time::Now(),
+      scheduler_task_runner_,
+      base::BindOnce(
+          &LegacyCacheStorageCache::UpdateCacheSizeNotifiedStorageModified,
+          weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
 
+void LegacyCacheStorageCache::UpdateCacheSizeNotifiedStorageModified(
+    base::OnceClosure callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (cache_storage_)
     cache_storage_->NotifyCacheContentChanged(cache_name_);
 
@@ -1895,12 +2228,16 @@ void LegacyCacheStorageCache::GetAllMatchedEntries(
     return;
   }
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
+      id, CacheStorageSchedulerMode::kShared,
       CacheStorageSchedulerOp::kGetAllMatched,
-      base::BindOnce(&LegacyCacheStorageCache::GetAllMatchedEntriesImpl,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(request),
-                     std::move(options), trace_id,
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &LegacyCacheStorageCache::GetAllMatchedEntriesImpl,
+          weak_ptr_factory_.GetWeakPtr(), std::move(request),
+          std::move(options), trace_id,
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::GetAllMatchedEntriesImpl(
@@ -1923,9 +2260,14 @@ void LegacyCacheStorageCache::GetAllMatchedEntriesImpl(
     return;
   }
 
+  // Hold the cache alive while performing any operation touching the
+  // disk_cache backend.
+  callback = WrapCallbackWithHandle(std::move(callback));
+
   QueryCache(
       std::move(request), std::move(options),
       QUERY_CACHE_REQUESTS | QUERY_CACHE_RESPONSES_WITH_BODIES,
+      CacheStorageSchedulerPriority::kNormal,
       base::BindOnce(
           &LegacyCacheStorageCache::GetAllMatchedEntriesDidQueryCache,
           weak_ptr_factory_.GetWeakPtr(), trace_id, std::move(callback)));
@@ -1947,14 +2289,22 @@ void LegacyCacheStorageCache::GetAllMatchedEntriesDidQueryCache(
     return;
   }
 
-  std::vector<CacheEntry> entries;
+  std::vector<blink::mojom::CacheEntryPtr> entries;
   entries.reserve(query_cache_results->size());
 
   for (auto& result : *query_cache_results) {
-    entries.emplace_back(std::move(result.request), std::move(result.response));
+    auto entry = blink::mojom::CacheEntry::New();
+    entry->request = std::move(result.request);
+    entry->response = std::move(result.response);
+    entries.push_back(std::move(entry));
   }
 
   std::move(callback).Run(CacheStorageError::kSuccess, std::move(entries));
+}
+
+CacheStorageCache::InitState LegacyCacheStorageCache::GetInitState() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return initializing_ ? InitState::Initializing : InitState::Initialized;
 }
 
 void LegacyCacheStorageCache::Delete(blink::mojom::BatchOperationPtr operation,
@@ -1969,12 +2319,14 @@ void LegacyCacheStorageCache::Delete(blink::mojom::BatchOperationPtr operation,
   request->referrer = operation->request->referrer.Clone();
   request->headers = operation->request->headers;
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kDelete,
-      base::BindOnce(&LegacyCacheStorageCache::DeleteImpl,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(request),
-                     std::move(operation->match_options),
-                     scheduler_->WrapCallbackToRunNext(std::move(callback))));
+      id, CacheStorageSchedulerMode::kExclusive,
+      CacheStorageSchedulerOp::kDelete, CacheStorageSchedulerPriority::kNormal,
+      base::BindOnce(
+          &LegacyCacheStorageCache::DeleteImpl, weak_ptr_factory_.GetWeakPtr(),
+          std::move(request), std::move(operation->match_options),
+          scheduler_->WrapCallbackToRunNext(id, std::move(callback))));
 }
 
 void LegacyCacheStorageCache::DeleteImpl(
@@ -1988,9 +2340,14 @@ void LegacyCacheStorageCache::DeleteImpl(
     return;
   }
 
+  // Hold the cache alive while performing any operation touching the
+  // disk_cache backend.
+  callback = WrapCallbackWithHandle(std::move(callback));
+
   QueryCache(
       std::move(request), std::move(match_options),
       QUERY_CACHE_ENTRIES | QUERY_CACHE_RESPONSES_NO_BODIES,
+      CacheStorageSchedulerPriority::kNormal,
       base::BindOnce(&LegacyCacheStorageCache::DeleteDidQueryCache,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
@@ -2009,12 +2366,14 @@ void LegacyCacheStorageCache::DeleteDidQueryCache(
     return;
   }
 
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
+
   for (auto& result : *query_cache_results) {
     disk_cache::ScopedEntryPtr entry = std::move(result.entry);
     if (ShouldPadResourceSize(*result.response)) {
-      cache_padding_ -=
-          CalculateResponsePadding(*result.response, cache_padding_key_.get(),
-                                   entry->GetDataSize(INDEX_SIDE_DATA));
+      DCHECK(!ShouldPadResourceSize(*result.response) ||
+             (result.padding + result.side_data_padding));
+      cache_padding_ -= (result.padding + result.side_data_padding);
     }
     entry->Doom();
   }
@@ -2041,7 +2400,12 @@ void LegacyCacheStorageCache::KeysImpl(
     return;
   }
 
+  // Hold the cache alive while performing any operation touching the
+  // disk_cache backend.
+  callback = WrapCallbackWithHandle(std::move(callback));
+
   QueryCache(std::move(request), std::move(options), QUERY_CACHE_REQUESTS,
+             CacheStorageSchedulerPriority::kNormal,
              base::BindOnce(&LegacyCacheStorageCache::KeysDidQueryCache,
                             weak_ptr_factory_.GetWeakPtr(), std::move(callback),
                             trace_id));
@@ -2072,6 +2436,7 @@ void LegacyCacheStorageCache::KeysDidQueryCache(
 void LegacyCacheStorageCache::CloseImpl(base::OnceClosure callback) {
   DCHECK_EQ(BACKEND_OPEN, backend_state_);
 
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
   backend_.reset();
   post_backend_closed_callback_ = std::move(callback);
 }
@@ -2089,19 +2454,19 @@ void LegacyCacheStorageCache::SizeImpl(SizeCallback callback) {
 
   // TODO(cmumford): Can CacheStorage::kSizeUnknown be returned instead of zero?
   if (backend_state_ != BACKEND_OPEN) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), 0));
+    scheduler_task_runner_->PostTask(FROM_HERE,
+                                     base::BindOnce(std::move(callback), 0));
     return;
   }
 
   int64_t size = backend_state_ == BACKEND_OPEN ? PaddedCacheSize() : 0;
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback), size));
+  scheduler_task_runner_->PostTask(FROM_HERE,
+                                   base::BindOnce(std::move(callback), size));
 }
 
 void LegacyCacheStorageCache::GetSizeThenCloseDidGetSize(SizeCallback callback,
                                                          int64_t cache_size) {
-  cache_entry_handler_->InvalidateBlobDataHandles();
+  cache_entry_handler_->InvalidateDiskCacheBlobEntrys();
   CloseImpl(base::BindOnce(std::move(callback), cache_size));
 }
 
@@ -2112,33 +2477,29 @@ void LegacyCacheStorageCache::CreateBackend(ErrorCallback callback) {
   net::CacheType cache_type = memory_only_ ? net::MEMORY_CACHE : net::APP_CACHE;
 
   // The maximum size of each cache. Ultimately, cache size
-  // is controlled per-origin by the QuotaManager.
-  uint64_t max_bytes = memory_only_ ? std::numeric_limits<int>::max()
-                                    : std::numeric_limits<int64_t>::max();
+  // is controlled per storage key by the QuotaManager.
+  int64_t max_bytes = memory_only_ ? std::numeric_limits<int>::max()
+                                   : std::numeric_limits<int64_t>::max();
 
   std::unique_ptr<ScopedBackendPtr> backend_ptr(new ScopedBackendPtr());
 
   // Temporary pointer so that backend_ptr can be Pass()'d in Bind below.
   ScopedBackendPtr* backend = backend_ptr.get();
 
-  // Create a callback that is copyable, even though it can only be called once.
-  // BindRepeating() cannot be used directly because |callback| and
-  // |backend_ptr| are not copyable.
-  net::CompletionRepeatingCallback create_cache_callback =
-      base::AdaptCallbackForRepeating(
-          base::BindOnce(&LegacyCacheStorageCache::CreateBackendDidCreate,
-                         weak_ptr_factory_.GetWeakPtr(), std::move(callback),
-                         std::move(backend_ptr)));
+  auto split_callback = base::SplitOnceCallback(
+      base::BindOnce(&LegacyCacheStorageCache::CreateBackendDidCreate,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                     std::move(backend_ptr)));
 
+  DCHECK(scheduler_->IsRunningExclusiveOperation());
   int rv = disk_cache::CreateCacheBackend(
       cache_type, net::CACHE_BACKEND_SIMPLE, path_, max_bytes,
-      false, /* force */
-      nullptr, backend,
+      disk_cache::ResetHandling::kNeverReset, nullptr, backend,
       base::BindOnce(&LegacyCacheStorageCache::DeleteBackendCompletedIO,
                      weak_ptr_factory_.GetWeakPtr()),
-      create_cache_callback);
+      std::move(split_callback.first));
   if (rv != net::ERR_IO_PENDING)
-    std::move(create_cache_callback).Run(rv);
+    std::move(split_callback.second).Run(rv);
 }
 
 void LegacyCacheStorageCache::CreateBackendDidCreate(
@@ -2156,20 +2517,23 @@ void LegacyCacheStorageCache::CreateBackendDidCreate(
 }
 
 void LegacyCacheStorageCache::InitBackend() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(BACKEND_UNINITIALIZED, backend_state_);
   DCHECK(!initializing_);
   DCHECK(!scheduler_->ScheduledOperations());
   initializing_ = true;
 
+  auto id = scheduler_->CreateId();
   scheduler_->ScheduleOperation(
-      CacheStorageSchedulerOp::kInit,
+      id, CacheStorageSchedulerMode::kExclusive, CacheStorageSchedulerOp::kInit,
+      CacheStorageSchedulerPriority::kNormal,
       base::BindOnce(
           &LegacyCacheStorageCache::CreateBackend,
           weak_ptr_factory_.GetWeakPtr(),
           base::BindOnce(
               &LegacyCacheStorageCache::InitDidCreateBackend,
               weak_ptr_factory_.GetWeakPtr(),
-              scheduler_->WrapCallbackToRunNext(base::DoNothing::Once()))));
+              scheduler_->WrapCallbackToRunNext(id, base::DoNothing::Once()))));
 }
 
 void LegacyCacheStorageCache::InitDidCreateBackend(
@@ -2180,16 +2544,14 @@ void LegacyCacheStorageCache::InitDidCreateBackend(
     return;
   }
 
-  auto calculate_size_callback =
-      base::AdaptCallbackForRepeating(std::move(callback));
+  auto split_callback = base::SplitOnceCallback(std::move(callback));
   int64_t rv = backend_->CalculateSizeOfAllEntries(
       base::BindOnce(&LegacyCacheStorageCache::InitGotCacheSize,
-                     weak_ptr_factory_.GetWeakPtr(), calculate_size_callback,
-                     cache_create_error));
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(split_callback.first), cache_create_error));
 
   if (rv != net::ERR_IO_PENDING)
-    InitGotCacheSize(std::move(calculate_size_callback), cache_create_error,
-                     rv);
+    InitGotCacheSize(std::move(split_callback.second), cache_create_error, rv);
 }
 
 void LegacyCacheStorageCache::InitGotCacheSize(
@@ -2209,8 +2571,6 @@ void LegacyCacheStorageCache::InitGotCacheSize(
     DLOG_IF(ERROR, cache_size_ != cache_size)
         << "Cache size: " << cache_size
         << " does not match size from index: " << cache_size_;
-    UMA_HISTOGRAM_COUNTS_10M("ServiceWorkerCache.IndexSizeDifference",
-                             std::abs(cache_size_ - cache_size));
     if (cache_size_ != cache_size) {
       // We assume that if the sizes match then then cached padding is still
       // correct. If not then we recalculate the padding.
@@ -2243,6 +2603,7 @@ void LegacyCacheStorageCache::InitGotCacheSizeAndPadding(
     CacheStorageError cache_create_error,
     int64_t cache_size,
     int64_t cache_padding) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   cache_size_ = cache_size;
   cache_padding_ = cache_padding;
 

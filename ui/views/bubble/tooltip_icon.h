@@ -6,14 +6,15 @@
 #define UI_VIEWS_BUBBLE_TOOLTIP_ICON_H_
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
-#include "base/strings/string16.h"
+#include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/mouse_watcher.h"
+#include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 
 namespace views {
@@ -25,17 +26,28 @@ class VIEWS_EXPORT TooltipIcon : public ImageView,
                                  public MouseWatcherListener,
                                  public WidgetObserver {
  public:
-  explicit TooltipIcon(const base::string16& tooltip,
+  class Observer : public base::CheckedObserver {
+   public:
+    // Called when tooltip bubble of the TooltipIcon is shown.
+    virtual void OnTooltipBubbleShown(TooltipIcon* icon) = 0;
+
+    // Called when the TooltipIcon is being destroyed.
+    virtual void OnTooltipIconDestroying(TooltipIcon* icon) = 0;
+  };
+
+  METADATA_HEADER(TooltipIcon);
+
+  explicit TooltipIcon(const std::u16string& tooltip,
                        int tooltip_icon_size = 16);
   ~TooltipIcon() override;
 
   // ImageView:
-  const char* GetClassName() const override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
   void OnMouseExited(const ui::MouseEvent& event) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
+  void OnThemeChanged() override;
 
   // MouseWatcherListener:
   void MouseMovedOutOfHost() override;
@@ -51,6 +63,9 @@ class VIEWS_EXPORT TooltipIcon : public ImageView,
     anchor_point_arrow_ = arrow;
   }
 
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
+
  private:
   // Changes the color to reflect the hover node_data.
   void SetDrawAsHovered(bool hovered);
@@ -63,7 +78,7 @@ class VIEWS_EXPORT TooltipIcon : public ImageView,
   void HideBubble();
 
   // The text to show in a bubble when hovered.
-  base::string16 tooltip_;
+  std::u16string tooltip_;
 
   // The size of the tooltip icon, in dip.
   // Must be set in the constructor, otherwise the pre-hovered icon will show
@@ -88,7 +103,9 @@ class VIEWS_EXPORT TooltipIcon : public ImageView,
   // A watcher that keeps |bubble_| open if the user's mouse enters it.
   std::unique_ptr<MouseWatcher> mouse_watcher_;
 
-  ScopedObserver<Widget, TooltipIcon> observer_;
+  base::ScopedObservation<Widget, WidgetObserver> observation_{this};
+
+  base::ObserverList<Observer, /*check_empty=*/true> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(TooltipIcon);
 };

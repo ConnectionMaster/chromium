@@ -8,7 +8,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/time/time.h"
@@ -16,9 +17,9 @@
 #include "media/base/video_frame.h"
 #include "media/cast/cast_config.h"
 #include "media/cast/cast_environment.h"
-#include "media/cast/cast_receiver.h"
 #include "media/cast/net/cast_transport_config.h"
 #include "media/cast/net/udp_transport_impl.h"
+#include "media/cast/test/receiver/cast_receiver.h"
 
 using media::cast::CastTransportStatus;
 using media::cast::UdpTransportImpl;
@@ -49,33 +50,36 @@ InProcessReceiver::InProcessReceiver(
       local_end_point_(local_end_point),
       remote_end_point_(remote_end_point),
       audio_config_(audio_config),
-      video_config_(video_config),
-      weak_factory_(this) {}
+      video_config_(video_config) {}
 
 InProcessReceiver::~InProcessReceiver() {
   Stop();
 }
 
 void InProcessReceiver::Start() {
-  cast_environment_->PostTask(CastEnvironment::MAIN,
-                              FROM_HERE,
-                              base::Bind(&InProcessReceiver::StartOnMainThread,
-                                         base::Unretained(this)));
+  cast_environment_->PostTask(
+      CastEnvironment::MAIN, FROM_HERE,
+      base::BindOnce(&InProcessReceiver::StartOnMainThread,
+                     base::Unretained(this)));
+  stopped_ = false;
 }
 
 void InProcessReceiver::Stop() {
+  if (stopped_) {
+    return;
+  }
   base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                             base::WaitableEvent::InitialState::NOT_SIGNALED);
   if (cast_environment_->CurrentlyOn(CastEnvironment::MAIN)) {
     StopOnMainThread(&event);
   } else {
-    cast_environment_->PostTask(CastEnvironment::MAIN,
-                                FROM_HERE,
-                                base::Bind(&InProcessReceiver::StopOnMainThread,
-                                           base::Unretained(this),
-                                           &event));
+    cast_environment_->PostTask(
+        CastEnvironment::MAIN, FROM_HERE,
+        base::BindOnce(&InProcessReceiver::StopOnMainThread,
+                       base::Unretained(this), &event));
     event.Wait();
   }
+  stopped_ = true;
 }
 
 void InProcessReceiver::StopOnMainThread(base::WaitableEvent* event) {
@@ -101,10 +105,10 @@ void InProcessReceiver::StartOnMainThread() {
       cast_environment_->Clock(), base::TimeDelta(),
       base::WrapUnique(new InProcessReceiver::TransportClient(this)),
       std::make_unique<UdpTransportImpl>(
-          nullptr, cast_environment_->GetTaskRunner(CastEnvironment::MAIN),
+          cast_environment_->GetTaskRunner(CastEnvironment::MAIN),
           local_end_point_, remote_end_point_,
-          base::Bind(&InProcessReceiver::UpdateCastTransportStatus,
-                     base::Unretained(this))),
+          base::BindRepeating(&InProcessReceiver::UpdateCastTransportStatus,
+                              base::Unretained(this))),
       cast_environment_->GetTaskRunner(CastEnvironment::MAIN));
 
   cast_receiver_ = CastReceiver::Create(
@@ -115,7 +119,7 @@ void InProcessReceiver::StartOnMainThread() {
 }
 
 void InProcessReceiver::GotAudioFrame(std::unique_ptr<AudioBus> audio_frame,
-                                      const base::TimeTicks& playout_time,
+                                      base::TimeTicks playout_time,
                                       bool is_continuous) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
   if (audio_frame.get())
@@ -123,26 +127,24 @@ void InProcessReceiver::GotAudioFrame(std::unique_ptr<AudioBus> audio_frame,
   PullNextAudioFrame();
 }
 
-void InProcessReceiver::GotVideoFrame(
-    const scoped_refptr<VideoFrame>& video_frame,
-    const base::TimeTicks& playout_time,
-    bool is_continuous) {
+void InProcessReceiver::GotVideoFrame(scoped_refptr<VideoFrame> video_frame,
+                                      base::TimeTicks playout_time,
+                                      bool is_continuous) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
-  if (video_frame.get())
-    OnVideoFrame(video_frame, playout_time, is_continuous);
+  if (video_frame)
+    OnVideoFrame(std::move(video_frame), playout_time, is_continuous);
   PullNextVideoFrame();
 }
 
 void InProcessReceiver::PullNextAudioFrame() {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
-  cast_receiver_->RequestDecodedAudioFrame(
-      base::Bind(&InProcessReceiver::GotAudioFrame,
-                 weak_factory_.GetWeakPtr()));
+  cast_receiver_->RequestDecodedAudioFrame(base::BindRepeating(
+      &InProcessReceiver::GotAudioFrame, weak_factory_.GetWeakPtr()));
 }
 
 void InProcessReceiver::PullNextVideoFrame() {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
-  cast_receiver_->RequestDecodedVideoFrame(base::Bind(
+  cast_receiver_->RequestDecodedVideoFrame(base::BindRepeating(
       &InProcessReceiver::GotVideoFrame, weak_factory_.GetWeakPtr()));
 }
 

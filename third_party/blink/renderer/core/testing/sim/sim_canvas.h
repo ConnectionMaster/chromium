@@ -6,7 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TESTING_SIM_SIM_CANVAS_H_
 
 #include "third_party/blink/renderer/platform/graphics/color.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -57,12 +57,17 @@ class SimCanvas : public SkCanvas {
   void onDrawPath(const SkPath&, const SkPaint&) override;
 
   // Image
-  void onDrawImage(const SkImage*, SkScalar, SkScalar, const SkPaint*) override;
-  void onDrawImageRect(const SkImage*,
-                       const SkRect* src,
-                       const SkRect& dst,
-                       const SkPaint*,
-                       SrcRectConstraint) override;
+  void onDrawImage2(const SkImage*,
+                    SkScalar,
+                    SkScalar,
+                    const SkSamplingOptions&,
+                    const SkPaint*) override;
+  void onDrawImageRect2(const SkImage*,
+                        const SkRect& src,
+                        const SkRect& dst,
+                        const SkSamplingOptions&,
+                        const SkPaint*,
+                        SrcRectConstraint) override;
 
   // Text
   void onDrawTextBlob(const SkTextBlob*,
@@ -77,4 +82,4 @@ class SimCanvas : public SkCanvas {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_TESTING_SIM_SIM_CANVAS_H_

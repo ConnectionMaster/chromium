@@ -4,9 +4,12 @@
 
 package org.chromium.content_public.browser;
 
-import android.support.annotation.IntDef;
+import androidx.annotation.IntDef;
+import androidx.annotation.Nullable;
 
 import org.chromium.blink.mojom.ViewportFit;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -26,6 +29,20 @@ public abstract class WebContentsObserver {
         mWebContents = new WeakReference<WebContents>(webContents);
         webContents.addObserver(this);
     }
+
+    /**
+     * Called when a RenderFrame for renderFrameHost is created in the
+     * renderer process.
+     * To avoid creating a RenderFrameHost object without necessity, only its id is passed. Call
+     * WebContents#getRenderFrameHostFromId() to get the RenderFrameHost object if needed.
+     */
+    public void renderFrameCreated(GlobalRenderFrameHostId id) {}
+
+    /**
+     * Called when a RenderFrame for renderFrameHost is deleted in the
+     * renderer process.
+     */
+    public void renderFrameDeleted(GlobalRenderFrameHostId id) {}
 
     /**
      * Called when the RenderView of the current RenderViewHost is ready, e.g. because we recreated
@@ -67,23 +84,38 @@ public abstract class WebContentsObserver {
      * Called when the a page starts loading.
      * @param url The validated url for the loading page.
      */
-    public void didStartLoading(String url) {}
+    public void didStartLoading(GURL url) {}
 
     /**
      * Called when the a page finishes loading.
-     * @param url The validated url for the page.
+     * @param url The url for the page.
+     * @param isKnownValid Whether the url is known to be valid.
+     * TODO(yfriedman): There's currently a layering violation and this is needed for aw/
+     *     For chrome, the url will always be valid.
+     *
      */
-    public void didStopLoading(String url) {}
+    public void didStopLoading(GURL url, boolean isKnownValid) {}
 
     /**
-     * Called when an error occurs while loading a page and/or the page fails to load.
-     * @param isMainFrame Whether the navigation occurred in main frame.
-     * @param errorCode Error code for the occurring error.
-     * @param description The description for the error.
-     * @param failingUrl The url that was loading when the error occurred.
+     * Called when a page's load progress has changed.
+     * @param progress The load progress in the range of [0,1].
      */
-    public void didFailLoad(
-            boolean isMainFrame, int errorCode, String description, String failingUrl) {}
+    public void loadProgressChanged(float progress) {}
+
+    /**
+     * Called when a page's visible security state has changed.
+     */
+    public void didChangeVisibleSecurityState() {}
+
+    /**
+     * Called when an error occurs while loading a document that fails to load.
+     * @param isMainFrame Whether the navigation occurred in the main frame.
+     * @param errorCode Error code for the occurring error.
+     * @param failingUrl The url that was loading when the error occurred.
+     * @param frameLifecycleState The lifecycle state of the associated RenderFrameHost.
+     */
+    public void didFailLoad(boolean isMainFrame, int errorCode, GURL failingUrl,
+            @LifecycleState int rfhLifecycleState) {}
 
     /**
      * Called when the page had painted something non-empty.
@@ -113,22 +145,29 @@ public abstract class WebContentsObserver {
 
     /**
      * Notifies that a load has finished for a given frame.
-     * @param frameId A positive, non-zero integer identifying the navigating frame.
-     * @param validatedUrl The validated URL that is being navigated to.
+     * @param rfhId Identifier of the navigating frame.
+     * @param url The validated URL that is being navigated to.
+     * @param isKnownValid Whether the URL is known to be valid.
      * @param isMainFrame Whether the load is happening for the main frame.
+     * @param rfhLifecycleState The lifecycle state of the associated frame.
      */
-    public void didFinishLoad(long frameId, String validatedUrl, boolean isMainFrame) {}
+    public void didFinishLoad(GlobalRenderFrameHostId rfhId, GURL url, boolean isKnownValid,
+            boolean isMainFrame, @LifecycleState int rfhLifecycleState) {}
 
     /**
      * Notifies that the document has finished loading for the given frame.
-     * @param frameId A positive, non-zero integer identifying the navigating frame.
+     * @param rfhId Identifier of the navigating frame.
+     * @param isMainFrame Whether the load is happening for the main frame.
+     * @param rfhLifecycleState The lifecycle state of the associated frame.
      */
-    public void documentLoadedInFrame(long frameId, boolean isMainFrame) {}
+    public void documentLoadedInFrame(GlobalRenderFrameHostId rfhId, boolean isMainFrame,
+            @LifecycleState int rfhLifecycleState) {}
 
     /**
      * Notifies that a navigation entry has been committed.
+     * @param details Details of committed navigation entry.
      */
-    public void navigationEntryCommitted() {}
+    public void navigationEntryCommitted(LoadCommittedDetails details) {}
 
     /**
      * Called when navigation entries were removed.
@@ -141,26 +180,22 @@ public abstract class WebContentsObserver {
     public void navigationEntriesChanged() {}
 
     /**
-     * Called when an interstitial page gets attached to the tab content.
-     */
-    public void didAttachInterstitialPage() {}
-
-    /**
-     * Called when an interstitial page gets detached from the tab content.
-     */
-    public void didDetachInterstitialPage() {}
-
-    /**
      * Called when the theme color was changed.
-     * @param color the new color in ARGB format
      */
-    public void didChangeThemeColor(int color) {}
+    public void didChangeThemeColor() {}
 
     /**
-     * Called when the Web Contents leaves or enters fullscreen mode.
+     * Called when Media in the Web Contents leaves or enters fullscreen mode.
      * @param isFullscreen whether fullscreen is being entered or left.
      */
     public void hasEffectivelyFullscreenVideoChange(boolean isFullscreen) {}
+
+    /**
+     * Called when the Web Contents is toggled into or out of fullscreen mode by the renderer.
+     * @param enteredFullscreen whether fullscreen is being entered or left.
+     * @param willCauseResize whether the change to fullscreen will cause the contents to resize.
+     */
+    public void didToggleFullscreenModeForTab(boolean enteredFullscreen, boolean willCauseResize) {}
 
     /**
      * The Viewport Fit Type passed to viewportFitChanged. This is mirrored
@@ -177,9 +212,19 @@ public abstract class WebContentsObserver {
     public void viewportFitChanged(@ViewportFitType int value) {}
 
     /**
-     * This method is invoked when the WebContents reloads the LoFi images on the page.
+     * This method is invoked when a RenderWidgetHost for a WebContents gains focus.
      */
-    public void didReloadLoFiImages() {}
+    public void onWebContentsFocused() {}
+
+    /**
+     * This method is invoked when a RenderWidgetHost for a WebContents loses focus. This may
+     * be immediately followed by onWebContentsFocused if focus was moving between two
+     * RenderWidgetHosts within the same WebContents.
+     */
+    public void onWebContentsLostFocus() {}
+
+    /** Called when the top level WindowAndroid changes. */
+    public void onTopLevelNativeWindowChanged(@Nullable WindowAndroid windowAndroid) {}
 
     /**
      * Stop observing the web contents and clean up associated references.

@@ -5,8 +5,6 @@
 #ifndef MEDIA_CAST_TEST_SKEWED_SINGLE_THREAD_TASK_RUNNER_H_
 #define MEDIA_CAST_TEST_SKEWED_SINGLE_THREAD_TASK_RUNNER_H_
 
-#include <map>
-
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
@@ -21,7 +19,7 @@ namespace test {
 // the delay for any posted task by a factor. The factor is changed by
 // calling SetSkew(). A skew of 2.0 means that all delayed task will
 // have to wait twice as long.
-class SkewedSingleThreadTaskRunner : public base::SingleThreadTaskRunner {
+class SkewedSingleThreadTaskRunner final : public base::SingleThreadTaskRunner {
  public:
   explicit SkewedSingleThreadTaskRunner(
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner);

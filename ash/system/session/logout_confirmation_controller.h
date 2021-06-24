@@ -8,11 +8,13 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+
+class PrefRegistrySimple;
 
 namespace base {
 class TickClock;
@@ -38,6 +40,8 @@ class ASH_EXPORT LogoutConfirmationController : public SessionObserver {
 
   LogoutConfirmationController();
   ~LogoutConfirmationController() override;
+
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   const base::TickClock* clock() const { return clock_; }
 

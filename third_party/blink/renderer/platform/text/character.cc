@@ -30,113 +30,73 @@
 
 #include "third_party/blink/renderer/platform/text/character.h"
 
+#include <unicode/uchar.h>
+#include <unicode/ucptrie.h>
 #include <unicode/uobject.h>
 #include <unicode/uscript.h>
 #include <algorithm>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/platform/text/character_property_data.h"
 #include "third_party/blink/renderer/platform/text/icu_error.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
-#if defined(USING_SYSTEM_ICU)
-#include <unicode/uniset.h>
-#else
-#define MUTEX_H  // Prevent compile failure of utrie2.h on Windows
-#include <utrie2.h>
-#endif
 
 namespace blink {
 
-#if defined(USING_SYSTEM_ICU)
-static icu::UnicodeSet* createUnicodeSet(const UChar32* characters,
-                                         size_t charactersCount,
-                                         const UChar32* ranges,
-                                         size_t rangesCount) {
-  icu::UnicodeSet* unicodeSet = new icu::UnicodeSet();
-  for (size_t i = 0; i < charactersCount; i++)
-    unicodeSet->add(characters[i]);
-  for (size_t i = 0; i < rangesCount; i += 2)
-    unicodeSet->add(ranges[i], ranges[i + 1]);
-  unicodeSet->freeze();
-  return unicodeSet;
-}
-
-#define CREATE_UNICODE_SET(name)                                       \
-  createUnicodeSet(name##Array, base::size(name##Array), name##Ranges, \
-                   base::size(name##Ranges))
-
-#define RETURN_HAS_PROPERTY(c, name)            \
-  static icu::UnicodeSet* unicodeSet = nullptr; \
-  if (!unicodeSet)                              \
-    unicodeSet = CREATE_UNICODE_SET(name);      \
-  return unicodeSet->contains(c);
-#else
-static UTrie2* CreateTrie() {
+static UCPTrie* CreateTrie() {
   // Create a Trie from the value array.
   ICUError error;
-  UTrie2* trie = utrie2_openFromSerialized(
-      UTrie2ValueBits::UTRIE2_16_VALUE_BITS, kSerializedCharacterData,
-      kSerializedCharacterDataSize, nullptr, &error);
+  UCPTrie* trie = ucptrie_openFromBinary(
+      UCPTrieType::UCPTRIE_TYPE_FAST, UCPTrieValueWidth::UCPTRIE_VALUE_BITS_16,
+      kSerializedCharacterData, kSerializedCharacterDataSize, nullptr, &error);
   DCHECK_EQ(error, U_ZERO_ERROR);
   return trie;
 }
 
 static bool HasProperty(UChar32 c, CharacterProperty property) {
-  static UTrie2* trie = nullptr;
-  if (!trie)
-    trie = CreateTrie();
-  return UTRIE2_GET16(trie, c) & static_cast<CharacterPropertyType>(property);
-}
-
-#define RETURN_HAS_PROPERTY(c, name) \
-  return HasProperty(c, CharacterProperty::name);
-#endif
-
-// Takes a flattened list of closed intervals
-template <class T, size_t size>
-bool ValueInIntervalList(const T (&interval_list)[size], const T& value) {
-  const T* bound =
-      std::upper_bound(&interval_list[0], &interval_list[size], value);
-  if ((bound - interval_list) % 2 == 1)
-    return true;
-  return bound > interval_list && *(bound - 1) == value;
+  static const UCPTrie* trie = CreateTrie();
+  return UCPTRIE_FAST_GET(trie, UCPTRIE_16, c) &
+         static_cast<CharacterPropertyType>(property);
 }
 
 bool Character::IsUprightInMixedVertical(UChar32 character) {
-  RETURN_HAS_PROPERTY(character, kIsUprightInMixedVertical)
+  return u_getIntPropertyValue(character,
+                               UProperty::UCHAR_VERTICAL_ORIENTATION) !=
+         UVerticalOrientation::U_VO_ROTATED;
 }
 
 bool Character::IsCJKIdeographOrSymbolSlow(UChar32 c) {
-  RETURN_HAS_PROPERTY(c, kIsCJKIdeographOrSymbol)
+  return HasProperty(c, CharacterProperty::kIsCJKIdeographOrSymbol);
 }
 
 bool Character::IsPotentialCustomElementNameChar(UChar32 character) {
-  RETURN_HAS_PROPERTY(character, kIsPotentialCustomElementNameChar);
+  return HasProperty(character,
+                     CharacterProperty::kIsPotentialCustomElementNameChar);
 }
 
 bool Character::IsBidiControl(UChar32 character) {
-  RETURN_HAS_PROPERTY(character, kIsBidiControl);
+  return HasProperty(character, CharacterProperty::kIsBidiControl);
 }
 
 bool Character::IsHangulSlow(UChar32 character) {
-  RETURN_HAS_PROPERTY(character, kIsHangul);
+  return HasProperty(character, CharacterProperty::kIsHangul);
 }
 
-unsigned Character::ExpansionOpportunityCount(const LChar* characters,
-                                              unsigned length,
-                                              TextDirection direction,
-                                              bool& is_after_expansion,
-                                              const TextJustify text_justify) {
-  unsigned count = 0;
+unsigned Character::ExpansionOpportunityCount(
+    base::span<const LChar> characters,
+    TextDirection direction,
+    bool& is_after_expansion,
+    const TextJustify text_justify) {
   if (text_justify == TextJustify::kDistribute) {
     is_after_expansion = true;
-    return length;
+    return characters.size();
   }
 
+  unsigned count = 0;
   if (direction == TextDirection::kLtr) {
-    for (unsigned i = 0; i < length; ++i) {
+    for (unsigned i = 0; i < characters.size(); ++i) {
       if (TreatAsSpace(characters[i])) {
         count++;
         is_after_expansion = true;
@@ -145,7 +105,7 @@ unsigned Character::ExpansionOpportunityCount(const LChar* characters,
       }
     }
   } else {
-    for (unsigned i = length; i > 0; --i) {
+    for (unsigned i = characters.size(); i > 0; --i) {
       if (TreatAsSpace(characters[i - 1])) {
         count++;
         is_after_expansion = true;
@@ -158,21 +118,21 @@ unsigned Character::ExpansionOpportunityCount(const LChar* characters,
   return count;
 }
 
-unsigned Character::ExpansionOpportunityCount(const UChar* characters,
-                                              unsigned length,
-                                              TextDirection direction,
-                                              bool& is_after_expansion,
-                                              const TextJustify text_justify) {
+unsigned Character::ExpansionOpportunityCount(
+    base::span<const UChar> characters,
+    TextDirection direction,
+    bool& is_after_expansion,
+    const TextJustify text_justify) {
   unsigned count = 0;
   if (direction == TextDirection::kLtr) {
-    for (unsigned i = 0; i < length; ++i) {
+    for (unsigned i = 0; i < characters.size(); ++i) {
       UChar32 character = characters[i];
       if (TreatAsSpace(character)) {
         count++;
         is_after_expansion = true;
         continue;
       }
-      if (U16_IS_LEAD(character) && i + 1 < length &&
+      if (U16_IS_LEAD(character) && i + 1 < characters.size() &&
           U16_IS_TRAIL(characters[i + 1])) {
         character = U16_GET_SUPPLEMENTARY(character, characters[i + 1]);
         i++;
@@ -188,7 +148,7 @@ unsigned Character::ExpansionOpportunityCount(const UChar* characters,
       is_after_expansion = false;
     }
   } else {
-    for (unsigned i = length; i > 0; --i) {
+    for (unsigned i = characters.size(); i > 0; --i) {
       UChar32 character = characters[i - 1];
       if (TreatAsSpace(character)) {
         count++;
@@ -264,6 +224,14 @@ bool Character::IsEmojiTagSequence(UChar32 c) {
          (c >= kTagLatinSmallLetterA && c <= kTagLatinSmallLetterZ);
 }
 
+bool Character::IsExtendedPictographic(UChar32 c) {
+  return u_hasBinaryProperty(c, UCHAR_EXTENDED_PICTOGRAPHIC);
+}
+
+bool Character::IsEmojiComponent(UChar32 c) {
+  return u_hasBinaryProperty(c, UCHAR_EMOJI_COMPONENT);
+}
+
 template <typename CharacterType>
 static inline String NormalizeSpacesInternal(const CharacterType* characters,
                                              unsigned length) {
@@ -306,6 +274,30 @@ bool Character::HasDefiniteScript(UChar32 character) {
     return false;
   return hint_char_script != USCRIPT_INHERITED &&
          hint_char_script != USCRIPT_COMMON;
+}
+
+// https://mathml-refresh.github.io/mathml-core/#stretchy-operator-axis
+static const UChar stretchy_operator_with_inline_axis[]{
+    0x003D, 0x005E, 0x005F, 0x007E, 0x00AF, 0x02C6, 0x02C7, 0x02C9, 0x02CD,
+    0x02DC, 0x02F7, 0x0302, 0x0332, 0x203E, 0x20D0, 0x20D1, 0x20D6, 0x20D7,
+    0x20E1, 0x2190, 0x2192, 0x2194, 0x2198, 0x2199, 0x219C, 0x219D, 0x219E,
+    0x21A0, 0x21A2, 0x21A3, 0x21A4, 0x21A6, 0x21A9, 0x21AA, 0x21AB, 0x21AC,
+    0x21AD, 0x21B4, 0x21B9, 0x21BC, 0x21BD, 0x21C0, 0x21C1, 0x21C4, 0x21C6,
+    0x21C7, 0x21C9, 0x21CB, 0x21CC, 0x21D0, 0x21D2, 0x21D4, 0x21DA, 0x21DB,
+    0x21DC, 0x21DD, 0x21E0, 0x21E2, 0x21E4, 0x21E5, 0x21E6, 0x21E8, 0x21F0,
+    0x21F6, 0x21FD, 0x21FE, 0x21FF, 0x23B4, 0x23B5, 0x23DC, 0x23DD, 0x23DE,
+    0x23DF, 0x23E0, 0x23E1, 0x2500, 0x27F5, 0x27F6, 0x27F7, 0x27F8, 0x27F9,
+    0x27FA, 0x27FB, 0x27FC, 0x27FD, 0x27FE, 0x27FF, 0x290C, 0x290D, 0x290E,
+    0x290F, 0x2910, 0x294E, 0x2950, 0x2952, 0x2953, 0x2956, 0x2957, 0x295A,
+    0x295B, 0x295E, 0x295F, 0x2B45, 0x2B46, 0xFE35, 0xFE36, 0xFE37, 0xFE38};
+
+bool Character::IsVerticalMathCharacter(UChar32 text_content) {
+  return text_content != kArabicMathematicalOperatorMeemWithHahWithTatweel &&
+         text_content != kArabicMathematicalOperatorHahWithDal &&
+         !std::binary_search(stretchy_operator_with_inline_axis,
+                             stretchy_operator_with_inline_axis +
+                                 base::size(stretchy_operator_with_inline_axis),
+                             text_content);
 }
 
 }  // namespace blink

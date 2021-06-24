@@ -9,13 +9,34 @@
 
 namespace device {
 
+// static
+void HidConnectionImpl::Create(
+    scoped_refptr<device::HidConnection> connection,
+    mojo::PendingReceiver<mojom::HidConnection> receiver,
+    mojo::PendingRemote<mojom::HidConnectionClient> connection_client,
+    mojo::PendingRemote<mojom::HidConnectionWatcher> watcher) {
+  // This HidConnectionImpl is owned by |receiver| and |watcher|.
+  new HidConnectionImpl(connection, std::move(receiver),
+                        std::move(connection_client), std::move(watcher));
+}
+
 HidConnectionImpl::HidConnectionImpl(
     scoped_refptr<device::HidConnection> connection,
-    mojom::HidConnectionClientPtr connection_client)
-    : hid_connection_(std::move(connection)), weak_factory_(this) {
+    mojo::PendingReceiver<mojom::HidConnection> receiver,
+    mojo::PendingRemote<mojom::HidConnectionClient> connection_client,
+    mojo::PendingRemote<mojom::HidConnectionWatcher> watcher)
+    : receiver_(this, std::move(receiver)),
+      hid_connection_(std::move(connection)),
+      watcher_(std::move(watcher)) {
+  receiver_.set_disconnect_handler(base::BindOnce(
+      [](HidConnectionImpl* self) { delete self; }, base::Unretained(this)));
+  if (watcher_) {
+    watcher_.set_disconnect_handler(base::BindOnce(
+        [](HidConnectionImpl* self) { delete self; }, base::Unretained(this)));
+  }
   if (connection_client) {
     hid_connection_->SetClient(this);
-    client_ = std::move(connection_client);
+    client_.Bind(std::move(connection_client));
   }
 }
 
@@ -23,8 +44,9 @@ HidConnectionImpl::~HidConnectionImpl() {
   DCHECK(hid_connection_);
   hid_connection_->SetClient(nullptr);
 
-  // Close |hid_connection_| on destruction because this class is owned by a
-  // mojo::StrongBinding and will be destroyed when the pipe is closed.
+  // Close |hid_connection_| on destruction. HidConnectionImpl is owned by
+  // its mojom::HidConnection receiver and mojom::HidConnectionWatcher remote
+  // and will self-destruct when either pipe is closed.
   hid_connection_->Close();
 }
 
@@ -34,7 +56,7 @@ void HidConnectionImpl::OnInputReport(
   DCHECK(client_);
   uint8_t report_id = buffer->data()[0];
   uint8_t* begin = &buffer->data()[1];
-  uint8_t* end = &buffer->data()[size];
+  uint8_t* end = buffer->data().data() + size;
   std::vector<uint8_t> data(begin, end);
   client_->OnInputReport(report_id, data);
 }
@@ -51,7 +73,7 @@ void HidConnectionImpl::OnRead(ReadCallback callback,
                                scoped_refptr<base::RefCountedBytes> buffer,
                                size_t size) {
   if (!success) {
-    std::move(callback).Run(false, 0, base::nullopt);
+    std::move(callback).Run(false, 0, absl::nullopt);
     return;
   }
   DCHECK(buffer);
@@ -95,7 +117,7 @@ void HidConnectionImpl::OnGetFeatureReport(
     scoped_refptr<base::RefCountedBytes> buffer,
     size_t size) {
   if (!success) {
-    std::move(callback).Run(false, base::nullopt);
+    std::move(callback).Run(false, absl::nullopt);
     return;
   }
   DCHECK(buffer);

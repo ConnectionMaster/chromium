@@ -47,11 +47,6 @@ class BackgroundProfilingTriggers {
   // Returns true if trace uploads are allowed.
   bool IsAllowedToUpload() const;
 
-  // Returns true if a control report should be sent for the given
-  // |content_process_type|.
-  // Virtual for testing.
-  virtual bool ShouldTriggerControlReport(int content_process_type) const;
-
   // Returns true if |private_footprint_kb| is large enough to trigger
   // a report for the given |content_process_type|.
   bool IsOverTriggerThreshold(int content_process_type,
@@ -76,7 +71,7 @@ class BackgroundProfilingTriggers {
   // Timer to periodically check memory consumption and upload a slow-report.
   base::RepeatingTimer timer_;
 
-  base::WeakPtrFactory<BackgroundProfilingTriggers> weak_ptr_factory_;
+  base::WeakPtrFactory<BackgroundProfilingTriggers> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundProfilingTriggers);
 };

@@ -13,6 +13,7 @@
 #include "base/time/time.h"
 #include "components/suggestions/proto/suggestions.pb.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/variations/scoped_variations_ids_provider.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using sync_preferences::TestingPrefServiceSyncable;
@@ -84,13 +85,16 @@ class SuggestionsStoreTest : public testing::Test {
 
   void SetUp() override {
     SuggestionsStore::RegisterProfilePrefs(pref_service_->registry());
-    suggestions_store_.reset(new SuggestionsStore(pref_service_.get()));
+    suggestions_store_ =
+        std::make_unique<SuggestionsStore>(pref_service_.get());
 
     test_clock_.SetNow(base::Time::FromInternalValue(13063394337546738));
     suggestions_store_->SetClockForTesting(&test_clock_);
   }
 
  protected:
+  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+      variations::VariationsIdsProvider::Mode::kUseSignedInState};
   std::unique_ptr<sync_preferences::TestingPrefServiceSyncable> pref_service_;
   std::unique_ptr<SuggestionsStore> suggestions_store_;
   base::SimpleTestClock test_clock_;

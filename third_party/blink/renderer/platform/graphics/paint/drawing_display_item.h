@@ -10,63 +10,76 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 
 namespace blink {
 
 // DrawingDisplayItem contains recorded painting operations which can be
 // replayed to produce a rastered output.
-//
-// This class has two notions of the bounds around the content that was recorded
-// and will be produced by the item. The first is the |record_bounds| which
-// describes the bounds of all content in the |record| in the space of the
-// record. The second is the |visual_rect| which should describe the same thing,
-// but takes into account transforms and clips that would apply to the
-// PaintRecord, and is in the space of the DisplayItemList. This allows the
-// visual_rect to be compared between DrawingDisplayItems, and to give bounds
-// around what the user can actually see from the PaintRecord.
-class PLATFORM_EXPORT DrawingDisplayItem final : public DisplayItem {
+class PLATFORM_EXPORT DrawingDisplayItem : public DisplayItem {
  public:
   DISABLE_CFI_PERF
   DrawingDisplayItem(const DisplayItemClient& client,
                      Type type,
-                     sk_sp<const PaintRecord> record,
-                     bool known_to_be_opaque = false);
+                     const IntRect& visual_rect,
+                     sk_sp<const PaintRecord> record);
 
-  const sk_sp<const PaintRecord>& GetPaintRecord() const { return record_; }
-
-  bool KnownToBeOpaque() const {
-    DCHECK(RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
-    return known_to_be_opaque_;
+  const sk_sp<const PaintRecord>& GetPaintRecord() const {
+    DCHECK(!IsTombstone());
+    return record_;
   }
 
-  bool Equals(const DisplayItem& other) const final;
+  bool KnownToBeOpaque() const {
+    DCHECK(!IsTombstone());
+    if (!RuntimeEnabledFeatures::CompositeAfterPaintEnabled())
+      return false;
+    if (!known_to_be_opaque_is_set_) {
+      known_to_be_opaque_is_set_ = true;
+      known_to_be_opaque_ = CalculateKnownToBeOpaque(record_.get());
+    }
+    return known_to_be_opaque_;
+  }
+  void SetKnownToBeOpaqueForTesting() {
+    DCHECK(!IsTombstone());
+    known_to_be_opaque_is_set_ = true;
+    known_to_be_opaque_ = true;
+  }
+
+  SkColor BackgroundColor(float& area) const;
 
  private:
+  friend class DisplayItem;
+  bool EqualsForUnderInvalidationImpl(const DrawingDisplayItem&) const;
 #if DCHECK_IS_ON()
-  void PropertiesAsJSON(JSONObject&) const final;
+  void PropertiesAsJSONImpl(JSONObject&) const {}
 #endif
 
-  sk_sp<const PaintRecord> record_;
+  bool CalculateKnownToBeOpaque(const PaintRecord*) const;
 
-  // True if there are no transparent areas. Only used for CompositeAfterPaint.
-  const bool known_to_be_opaque_;
+  sk_sp<const PaintRecord> record_;
 };
 
 // TODO(dcheng): Move this ctor back inline once the clang plugin is fixed.
 DISABLE_CFI_PERF
 inline DrawingDisplayItem::DrawingDisplayItem(const DisplayItemClient& client,
                                               Type type,
-                                              sk_sp<const PaintRecord> record,
-                                              bool known_to_be_opaque)
+                                              const IntRect& visual_rect,
+                                              sk_sp<const PaintRecord> record)
     : DisplayItem(client,
                   type,
-                  sizeof(*this),
+                  visual_rect,
                   /* draws_content*/ record && record->size()),
-      record_(DrawsContent() ? std::move(record) : nullptr),
-      known_to_be_opaque_(known_to_be_opaque) {
-  DCHECK(IsDrawingType(type));
+      record_(DrawsContent() ? std::move(record) : nullptr) {
+  DCHECK(IsDrawing());
 }
+
+template <>
+struct DowncastTraits<DrawingDisplayItem> {
+  static bool AllowFrom(const DisplayItem& i) {
+    return !i.IsTombstone() && i.IsDrawing();
+  }
+};
 
 }  // namespace blink
 

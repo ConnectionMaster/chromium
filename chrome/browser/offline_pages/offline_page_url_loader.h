@@ -10,9 +10,12 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/offline_pages/offline_page_request_handler.h"
 #include "content/public/browser/url_loader_request_interceptor.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
-#include "services/network/public/mojom/url_loader.mojom.h"
+#include "services/network/public/mojom/url_loader.mojom-forward.h"
 
 namespace content {
 class NavigationUIData;
@@ -56,10 +59,11 @@ class OfflinePageURLLoader : public network::mojom::URLLoader,
       content::URLLoaderRequestInterceptor::LoaderCallback callback);
 
   // network::mojom::URLLoader:
-  void FollowRedirect(const std::vector<std::string>& removed_headers,
-                      const net::HttpRequestHeaders& modified_headers,
-                      const base::Optional<GURL>& new_url) override;
-  void ProceedWithResponse() override;
+  void FollowRedirect(
+      const std::vector<std::string>& removed_headers,
+      const net::HttpRequestHeaders& modified_headers,
+      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      const absl::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int32_t intra_priority_value) override;
   void PauseReadingBodyFromNet() override;
@@ -71,7 +75,6 @@ class OfflinePageURLLoader : public network::mojom::URLLoader,
   void NotifyHeadersComplete(int64_t file_size) override;
   void NotifyReadRawDataComplete(int bytes_read) override;
   void SetOfflinePageNavigationUIData(bool is_offline_page) override;
-  bool ShouldAllowPreview() const override;
   int GetPageTransition() const override;
   OfflinePageRequestHandler::Delegate::WebContentsGetter GetWebContentsGetter()
       const override;
@@ -79,18 +82,20 @@ class OfflinePageURLLoader : public network::mojom::URLLoader,
       const override;
 
   void ReadRawData();
-  void OnReceiveResponse(int64_t file_size,
-                         const network::ResourceRequest& resource_request,
-                         network::mojom::URLLoaderRequest request,
-                         network::mojom::URLLoaderClientPtr client);
-  void OnReceiveError(int error,
-                      const network::ResourceRequest& resource_request,
-                      network::mojom::URLLoaderRequest request,
-                      network::mojom::URLLoaderClientPtr client);
+  void OnReceiveResponse(
+      int64_t file_size,
+      const network::ResourceRequest& resource_request,
+      mojo::PendingReceiver<network::mojom::URLLoader> receiver,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client);
+  void OnReceiveError(
+      int error,
+      const network::ResourceRequest& resource_request,
+      mojo::PendingReceiver<network::mojom::URLLoader> receiver,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client);
   void OnHandleReady(MojoResult result, const mojo::HandleSignalsState& state);
   void Finish(int error);
   void TransferRawData();
-  void OnConnectionError();
+  void OnMojoDisconnect();
   void MaybeDeleteSelf();
 
   // Not owned. The owner of this should outlive this class instance.
@@ -103,17 +108,16 @@ class OfflinePageURLLoader : public network::mojom::URLLoader,
   std::unique_ptr<OfflinePageRequestHandler> request_handler_;
   scoped_refptr<net::IOBuffer> buffer_;
 
-  mojo::Binding<network::mojom::URLLoader> binding_;
-  network::mojom::URLLoaderClientPtr client_;
+  mojo::Receiver<network::mojom::URLLoader> receiver_{this};
+  mojo::Remote<network::mojom::URLLoaderClient> client_;
   mojo::ScopedDataPipeProducerHandle producer_handle_;
   int bytes_of_raw_data_to_transfer_ = 0;
   int write_position_ = 0;
   std::unique_ptr<mojo::SimpleWatcher> handle_watcher_;
 
   OfflinePageRequestHandler::Delegate::TabIdGetter tab_id_getter_;
-  bool is_offline_preview_allowed_;
 
-  base::WeakPtrFactory<OfflinePageURLLoader> weak_ptr_factory_;
+  base::WeakPtrFactory<OfflinePageURLLoader> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(OfflinePageURLLoader);
 };

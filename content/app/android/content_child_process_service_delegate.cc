@@ -9,18 +9,19 @@
 #include "base/android/library_loader/library_loader_hooks.h"
 #include "base/android/memory_pressure_listener_android.h"
 #include "base/android/unguessable_token_android.h"
+#include "base/check.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/unguessable_token.h"
 #include "content/child/child_thread_impl.h"
+#include "content/common/android/surface_wrapper.h"
+#include "content/common/shared_file_util.h"
+#include "content/public/android/content_jni_headers/ContentChildProcessServiceDelegate_jni.h"
 #include "content/public/common/content_descriptors.h"
 #include "content/public/common/content_switches.h"
+#include "gpu/command_buffer/service/texture_owner.h"
 #include "gpu/ipc/common/android/scoped_surface_request_conduit.h"
 #include "gpu/ipc/common/gpu_surface_lookup.h"
-#include "jni/ContentChildProcessServiceDelegate_jni.h"
-#include "services/service_manager/embedder/shared_file_util.h"
-#include "services/service_manager/embedder/switches.h"
 #include "ui/gl/android/scoped_java_surface.h"
 #include "ui/gl/android/surface_texture.h"
 
@@ -48,25 +49,30 @@ class ChildProcessSurfaceManager : public gpu::ScopedSurfaceRequestConduit,
   // Overriden from ScopedSurfaceRequestConduit:
   void ForwardSurfaceOwnerForSurfaceRequest(
       const base::UnguessableToken& request_token,
-      const gpu::SurfaceOwner* surface_owner) override {
+      const gpu::TextureOwner* texture_owner) override {
     JNIEnv* env = base::android::AttachCurrentThread();
 
     content::
         Java_ContentChildProcessServiceDelegate_forwardSurfaceForSurfaceRequest(
             env, service_impl_,
             base::android::UnguessableTokenAndroid::Create(env, request_token),
-            surface_owner->CreateJavaSurface().j_surface());
+            texture_owner->CreateJavaSurface().j_surface());
   }
 
   // Overridden from GpuSurfaceLookup:
-  gfx::AcceleratedWidget AcquireNativeWidget(int surface_id) override {
+  gfx::AcceleratedWidget AcquireNativeWidget(
+      int surface_id,
+      bool* can_be_used_with_surface_control) override {
     JNIEnv* env = base::android::AttachCurrentThread();
-    gl::ScopedJavaSurface surface(
+    base::android::ScopedJavaLocalRef<jobject> surface_wrapper =
         content::Java_ContentChildProcessServiceDelegate_getViewSurface(
-            env, service_impl_, surface_id));
+            env, service_impl_, surface_id);
+    if (!surface_wrapper)
+      return gfx::kNullAcceleratedWidget;
 
-    if (surface.j_surface().is_null())
-      return NULL;
+    gl::ScopedJavaSurface surface(
+        content::JNI_SurfaceWrapper_getSurface(env, surface_wrapper));
+    DCHECK(!surface.j_surface().is_null());
 
     // Note: This ensures that any local references used by
     // ANativeWindow_fromSurface are released immediately. This is needed as a
@@ -75,15 +81,31 @@ class ChildProcessSurfaceManager : public gpu::ScopedSurfaceRequestConduit,
     ANativeWindow* native_window =
         ANativeWindow_fromSurface(env, surface.j_surface().obj());
 
+    *can_be_used_with_surface_control =
+        content::JNI_SurfaceWrapper_canBeUsedWithSurfaceControl(
+            env, surface_wrapper);
     return native_window;
   }
 
   // Overridden from GpuSurfaceLookup:
-  gl::ScopedJavaSurface AcquireJavaSurface(int surface_id) override {
+  gl::ScopedJavaSurface AcquireJavaSurface(
+      int surface_id,
+      bool* can_be_used_with_surface_control) override {
     JNIEnv* env = base::android::AttachCurrentThread();
-    return gl::ScopedJavaSurface(
+    base::android::ScopedJavaLocalRef<jobject> surface_wrapper =
         content::Java_ContentChildProcessServiceDelegate_getViewSurface(
-            env, service_impl_, surface_id));
+            env, service_impl_, surface_id);
+    if (!surface_wrapper)
+      return gl::ScopedJavaSurface();
+
+    gl::ScopedJavaSurface surface(
+        content::JNI_SurfaceWrapper_getSurface(env, surface_wrapper));
+    DCHECK(!surface.j_surface().is_null());
+
+    *can_be_used_with_surface_control =
+        content::JNI_SurfaceWrapper_canBeUsedWithSurfaceControl(
+            env, surface_wrapper);
+    return surface;
   }
 
  private:
@@ -134,13 +156,13 @@ void JNI_ContentChildProcessServiceDelegate_RetrieveFileDescriptorsIdsToKeys(
   std::map<int, std::string> ids_to_keys;
   std::string file_switch_value =
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          service_manager::switches::kSharedFiles);
+          switches::kSharedFiles);
 
   std::vector<int> ids;
   std::vector<std::string> keys;
   if (!file_switch_value.empty()) {
-    base::Optional<std::map<int, std::string>> ids_to_keys_from_command_line =
-        service_manager::ParseSharedFileSwitchValue(file_switch_value);
+    absl::optional<std::map<int, std::string>> ids_to_keys_from_command_line =
+        ParseSharedFileSwitchValue(file_switch_value);
     if (ids_to_keys_from_command_line) {
       for (auto iter : *ids_to_keys_from_command_line) {
         ids.push_back(iter.first);

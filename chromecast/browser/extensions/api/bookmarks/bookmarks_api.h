@@ -5,8 +5,6 @@
 #ifndef CHROMECAST_BROWSER_EXTENSIONS_API_BOOKMARKS_BOOKMARKS_API_H_
 #define CHROMECAST_BROWSER_EXTENSIONS_API_BOOKMARKS_BOOKMARKS_API_H_
 
-#include <vector>
-
 #include "chromecast/common/extensions_api/bookmarks.h"
 #include "extensions/browser/extension_function.h"
 
@@ -14,15 +12,7 @@ namespace extensions {
 namespace cast {
 namespace api {
 
-class BookmarksFunction : public ExtensionFunction {
- public:
-  void Destruct() const override;
-
- protected:
-  ~BookmarksFunction() override;
-};
-
-class BookmarksStubFunction : public BookmarksFunction {
+class BookmarksStubFunction : public ExtensionFunction {
  public:
   ResponseAction Run() override;
 
@@ -30,7 +20,7 @@ class BookmarksStubFunction : public BookmarksFunction {
   ~BookmarksStubFunction() override;
 };
 
-class BookmarksGetFunction : public BookmarksFunction {
+class BookmarksGetFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("bookmarks.get", BOOKMARKS_GET)
 
@@ -40,7 +30,7 @@ class BookmarksGetFunction : public BookmarksFunction {
   ResponseAction Run() override;
 };
 
-class BookmarksGetChildrenFunction : public BookmarksFunction {
+class BookmarksGetChildrenFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("bookmarks.getChildren", BOOKMARKS_GETCHILDREN)
 
@@ -50,7 +40,7 @@ class BookmarksGetChildrenFunction : public BookmarksFunction {
   ResponseAction Run() override;
 };
 
-class BookmarksGetRecentFunction : public BookmarksFunction {
+class BookmarksGetRecentFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("bookmarks.getRecent", BOOKMARKS_GETRECENT)
 
@@ -60,7 +50,7 @@ class BookmarksGetRecentFunction : public BookmarksFunction {
   ResponseAction Run() override;
 };
 
-class BookmarksGetTreeFunction : public BookmarksFunction {
+class BookmarksGetTreeFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("bookmarks.getTree", BOOKMARKS_GETTREE)
 
@@ -70,7 +60,7 @@ class BookmarksGetTreeFunction : public BookmarksFunction {
   ResponseAction Run() override;
 };
 
-class BookmarksGetSubTreeFunction : public BookmarksFunction {
+class BookmarksGetSubTreeFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("bookmarks.getSubTree", BOOKMARKS_GETSUBTREE)
 
@@ -80,7 +70,7 @@ class BookmarksGetSubTreeFunction : public BookmarksFunction {
   ResponseAction Run() override;
 };
 
-class BookmarksSearchFunction : public BookmarksFunction {
+class BookmarksSearchFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("bookmarks.search", BOOKMARKS_SEARCH)
 

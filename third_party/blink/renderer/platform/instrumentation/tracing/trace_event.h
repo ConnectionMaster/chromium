@@ -8,17 +8,7 @@
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
-
-// Conversion from CString to TraceValue so that trace arguments can be strings.
-template <>
-struct base::trace_event::TraceValue::Helper<WTF::CString> {
-  static constexpr unsigned char kType = TRACE_VALUE_TYPE_COPY_STRING;
-  static inline void SetValue(TraceValue* v, const WTF::CString& value) {
-    v->as_string = value.data();
-  }
-};
 
 namespace blink {
 namespace trace_event {
@@ -49,4 +39,4 @@ PLATFORM_EXPORT void RemoveEnabledStateObserver(EnabledStateObserver*);
 }  // namespace trace_event
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_INSTRUMENTATION_TRACING_TRACE_EVENT_H_

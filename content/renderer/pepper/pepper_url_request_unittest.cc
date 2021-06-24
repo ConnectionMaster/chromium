@@ -68,6 +68,30 @@ class URLRequestInfoTest : public RenderViewTest {
     return web_request.HttpMethod();
   }
 
+  blink::mojom::RequestContextType GetContext() {
+    WebURLRequest web_request;
+    URLRequestInfoData data = info_->GetData();
+    if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
+      return blink::mojom::RequestContextType::UNSPECIFIED;
+    return web_request.GetRequestContext();
+  }
+
+  network::mojom::RequestDestination GetDestination() {
+    WebURLRequest web_request;
+    URLRequestInfoData data = info_->GetData();
+    if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
+      return network::mojom::RequestDestination::kEmpty;
+    return web_request.GetRequestDestination();
+  }
+
+  network::mojom::RequestMode GetMode() {
+    WebURLRequest web_request;
+    URLRequestInfoData data = info_->GetData();
+    if (!CreateWebURLRequest(pp_instance_, &data, GetMainFrame(), &web_request))
+      return network::mojom::RequestMode::kNavigate;
+    return web_request.GetMode();
+  }
+
   WebString GetHeaderValue(const char* field) {
     WebURLRequest web_request;
     URLRequestInfoData data = info_->GetData();
@@ -204,6 +228,13 @@ TEST_F(URLRequestInfoTest, SetHeaders) {
       SetStringProperty(PP_URLREQUESTPROPERTY_HEADERS, "foo: bar\nbar: baz"));
   EXPECT_STREQ("bar", GetHeaderValue("foo").Utf8().data());
   EXPECT_STREQ("baz", GetHeaderValue("bar").Utf8().data());
+}
+
+TEST_F(URLRequestInfoTest, RequestContextAndDestination) {
+  // Test context and destination for PLUGIN.
+  EXPECT_EQ(blink::mojom::RequestContextType::PLUGIN, GetContext());
+  EXPECT_EQ(network::mojom::RequestDestination::kEmbed, GetDestination());
+  EXPECT_EQ(network::mojom::RequestMode::kNoCors, GetMode());
 }
 
 // TODO(bbudge) Unit tests for AppendDataToBody, AppendFileToBody.

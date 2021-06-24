@@ -12,6 +12,7 @@
 
 #include <memory>
 
+#include "media/gpu/windows/d3d11_com_defs.h"
 #include "media/video/picture.h"
 #include "third_party/angle/include/EGL/egl.h"
 #include "third_party/angle/include/EGL/eglext.h"
@@ -67,6 +68,31 @@ class DXVAPictureBuffer {
     color_space_ = color_space;
   }
 
+  const std::vector<scoped_refptr<Picture::ScopedSharedImage>>& shared_images()
+      const {
+    return shared_images_;
+  }
+
+  void set_shared_image(
+      size_t plane,
+      scoped_refptr<Picture::ScopedSharedImage> shared_image) {
+    DCHECK(plane < shared_images_.size());
+    shared_images_[plane] = std::move(shared_image);
+  }
+
+  // Picture buffer data used to create a shared image backing.
+  const PictureBuffer::TextureIds& service_texture_ids() const {
+    return picture_buffer_.service_texture_ids();
+  }
+
+  gfx::Size texture_size(size_t plane) {
+    return picture_buffer_.texture_size(plane);
+  }
+
+  VideoPixelFormat pixel_format() const {
+    return picture_buffer_.pixel_format();
+  }
+
   // Returns true if these could in theory be used as an overlay. May
   // still be drawn using GL depending on the scene and precise hardware
   // support.
@@ -94,6 +120,8 @@ class DXVAPictureBuffer {
   gfx::Rect visible_rect_;
   gfx::ColorSpace color_space_;
   scoped_refptr<gl::GLImage> gl_image_;
+
+  std::vector<scoped_refptr<Picture::ScopedSharedImage>> shared_images_;
 
   DISALLOW_COPY_AND_ASSIGN(DXVAPictureBuffer);
 };
@@ -129,7 +157,7 @@ class PbufferPictureBuffer : public DXVAPictureBuffer {
 
   HANDLE texture_share_handle_;
   Microsoft::WRL::ComPtr<IDirect3DTexture9> decoding_texture_;
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> dx11_decoding_texture_;
+  ComD3D11Texture2D dx11_decoding_texture_;
 
   Microsoft::WRL::ComPtr<IDXGIKeyedMutex> egl_keyed_mutex_;
   Microsoft::WRL::ComPtr<IDXGIKeyedMutex> dx11_keyed_mutex_;
@@ -147,7 +175,7 @@ class PbufferPictureBuffer : public DXVAPictureBuffer {
   // This ID3D11Texture2D interface pointer is used to hold a reference to the
   // decoder texture during the course of a copy operation. This reference is
   // released when the copy completes.
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> decoder_dx11_texture_;
+  ComD3D11Texture2D decoder_dx11_texture_;
 
   // Set to true if RGB is supported by the texture.
   // Defaults to true.
@@ -171,7 +199,7 @@ class EGLStreamPictureBuffer : public DXVAPictureBuffer {
   EGLStreamKHR stream_;
 
   Microsoft::WRL::ComPtr<IMFSample> current_d3d_sample_;
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> dx11_decoding_texture_;
+  ComD3D11Texture2D dx11_decoding_texture_;
 };
 
 // Shares the decoded texture with ANGLE without copying by using an EGL stream.
@@ -191,7 +219,7 @@ class EGLStreamDelayedCopyPictureBuffer : public DXVAPictureBuffer {
   EGLStreamKHR stream_;
 
   Microsoft::WRL::ComPtr<IMFSample> current_d3d_sample_;
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> dx11_decoding_texture_;
+  ComD3D11Texture2D dx11_decoding_texture_;
 };
 
 // Creates an NV12 texture and copies to it, then shares that with ANGLE.
@@ -218,7 +246,7 @@ class EGLStreamCopyPictureBuffer : public DXVAPictureBuffer {
   // This ID3D11Texture2D interface pointer is used to hold a reference to the
   // MFT decoder texture during the course of a copy operation. This reference
   // is released when the copy completes.
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> dx11_decoding_texture_;
+  ComD3D11Texture2D dx11_decoding_texture_;
 
   Microsoft::WRL::ComPtr<IDXGIKeyedMutex> egl_keyed_mutex_;
   Microsoft::WRL::ComPtr<IDXGIKeyedMutex> dx11_keyed_mutex_;
@@ -226,10 +254,10 @@ class EGLStreamCopyPictureBuffer : public DXVAPictureBuffer {
   HANDLE texture_share_handle_;
   // This is the texture (created on ANGLE's device) that will be put in the
   // EGLStream.
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> angle_copy_texture_;
+  ComD3D11Texture2D angle_copy_texture_;
   // This is another copy of that shared resource that will be copied to from
   // the decoder.
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> decoder_copy_texture_;
+  ComD3D11Texture2D decoder_copy_texture_;
 
   // This is the last value that was used to release the keyed mutex.
   uint64_t keyed_mutex_value_ = 0;

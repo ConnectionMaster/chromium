@@ -14,8 +14,9 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "jni/VideoCapture_jni.h"
+#include "base/trace_event/trace_event.h"
 #include "media/capture/mojom/image_capture_types.h"
+#include "media/capture/video/android/capture_jni_headers/VideoCapture_jni.h"
 #include "media/capture/video/android/photo_capabilities.h"
 #include "media/capture/video/android/video_capture_device_factory_android.h"
 #include "third_party/libyuv/include/libyuv.h"
@@ -103,8 +104,7 @@ PhotoCapabilities::AndroidFillLightMode ToAndroidFillLightMode(
 VideoCaptureDeviceAndroid::VideoCaptureDeviceAndroid(
     const VideoCaptureDeviceDescriptor& device_descriptor)
     : main_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      device_descriptor_(device_descriptor),
-      weak_ptr_factory_(this) {}
+      device_descriptor_(device_descriptor) {}
 
 VideoCaptureDeviceAndroid::~VideoCaptureDeviceAndroid() {
   DCHECK(main_task_runner_->BelongsToCurrentThread());
@@ -144,6 +144,11 @@ void VideoCaptureDeviceAndroid::AllocateAndStart(
                   "failed to allocate");
     return;
   }
+
+  // TODO(julien.isorce): Use Camera.SENSOR_COLOR_TRANSFORM2 to build a
+  // gfx::ColorSpace, and rename VideoCaptureDeviceAndroid::GetColorspace()
+  // to GetPixelFormat, see http://crbug.com/959901.
+  capture_color_space_ = gfx::ColorSpace();
 
   capture_format_.frame_size.SetSize(
       Java_VideoCapture_queryWidth(env, j_capture_),
@@ -221,8 +226,8 @@ void VideoCaptureDeviceAndroid::TakePhoto(TakePhotoCallback callback) {
                            "wait for first frame",
                            TRACE_EVENT_SCOPE_PROCESS);
       photo_requests_queue_.push_back(
-          base::Bind(&VideoCaptureDeviceAndroid::DoTakePhoto,
-                     weak_ptr_factory_.GetWeakPtr(), base::Passed(&callback)));
+          base::BindOnce(&VideoCaptureDeviceAndroid::DoTakePhoto,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
       return;
     }
   }
@@ -237,8 +242,8 @@ void VideoCaptureDeviceAndroid::GetPhotoState(GetPhotoStateCallback callback) {
       return;
     if (!got_first_frame_) {  // We have to wait until we get the first frame.
       photo_requests_queue_.push_back(
-          base::Bind(&VideoCaptureDeviceAndroid::DoGetPhotoState,
-                     weak_ptr_factory_.GetWeakPtr(), base::Passed(&callback)));
+          base::BindOnce(&VideoCaptureDeviceAndroid::DoGetPhotoState,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
       return;
     }
   }
@@ -255,9 +260,9 @@ void VideoCaptureDeviceAndroid::SetPhotoOptions(
       return;
     if (!got_first_frame_) {  // We have to wait until we get the first frame.
       photo_requests_queue_.push_back(
-          base::Bind(&VideoCaptureDeviceAndroid::DoSetPhotoOptions,
-                     weak_ptr_factory_.GetWeakPtr(), base::Passed(&settings),
-                     base::Passed(&callback)));
+          base::BindOnce(&VideoCaptureDeviceAndroid::DoSetPhotoOptions,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(settings),
+                         std::move(callback)));
       return;
     }
   }
@@ -598,8 +603,8 @@ void VideoCaptureDeviceAndroid::ProcessFirstFrameAvailable(
 
   // Set aside one frame allowance for fluctuation.
   expected_next_frame_time_ = current_time - frame_interval_;
-  for (const auto& request : photo_requests_queue_)
-    main_task_runner_->PostTask(FROM_HERE, request);
+  for (auto& request : photo_requests_queue_)
+    main_task_runner_->PostTask(FROM_HERE, std::move(request));
   photo_requests_queue_.clear();
 }
 
@@ -624,8 +629,9 @@ void VideoCaptureDeviceAndroid::SendIncomingDataToClient(
   base::AutoLock lock(lock_);
   if (!client_)
     return;
-  client_->OnIncomingCapturedData(data, length, capture_format_, rotation,
-                                  reference_time, timestamp);
+  client_->OnIncomingCapturedData(
+      data, length, capture_format_, capture_color_space_, rotation,
+      false /* flip_y */, reference_time, timestamp);
 }
 
 VideoPixelFormat VideoCaptureDeviceAndroid::GetColorspace() {
@@ -736,13 +742,13 @@ void VideoCaptureDeviceAndroid::DoSetPhotoOptions(
   const double width = settings->has_width ? settings->width : 0.0;
   const double height = settings->has_height ? settings->height : 0.0;
 
-  std::vector<float> points_of_interest_marshalled;
+  std::vector<double> points_of_interest_marshalled;
   for (const auto& point : settings->points_of_interest) {
     points_of_interest_marshalled.push_back(point->x);
     points_of_interest_marshalled.push_back(point->y);
   }
-  ScopedJavaLocalRef<jfloatArray> points_of_interest =
-      base::android::ToJavaFloatArray(env, points_of_interest_marshalled);
+  ScopedJavaLocalRef<jdoubleArray> points_of_interest =
+      base::android::ToJavaDoubleArray(env, points_of_interest_marshalled);
 
   const double exposure_compensation = settings->has_exposure_compensation
                                            ? settings->exposure_compensation

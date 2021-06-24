@@ -4,6 +4,7 @@
 
 #include "chrome/services/media_gallery_util/media_metadata_parser.h"
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
@@ -74,8 +75,7 @@ chrome::mojom::MediaMetadataPtr ParseAudioVideoMetadata(
          it != extractor.attached_images_bytes().end(); ++it) {
       attached_images->push_back(metadata::AttachedImage());
       attached_images->back().data = *it;
-      net::SniffMimeTypeFromLocalData(it->c_str(), it->length(),
-                                      &attached_images->back().type);
+      net::SniffMimeTypeFromLocalData(*it, &attached_images->back().type);
     }
   }
 #endif
@@ -90,7 +90,7 @@ void FinishParseAudioVideoMetadata(
   DCHECK(metadata);
   DCHECK(attached_images);
 
-  callback.Run(std::move(metadata), *attached_images);
+  std::move(callback).Run(std::move(metadata), *attached_images);
 }
 
 bool IsSupportedMetadataMimetype(const std::string& mime_type) {
@@ -113,22 +113,22 @@ MediaMetadataParser::MediaMetadataParser(
 
 MediaMetadataParser::~MediaMetadataParser() = default;
 
-void MediaMetadataParser::Start(const MetadataCallback& callback) {
+void MediaMetadataParser::Start(MetadataCallback callback) {
   if (!IsSupportedMetadataMimetype(mime_type_)) {
-    callback.Run(chrome::mojom::MediaMetadata::New(),
-                 std::vector<metadata::AttachedImage>());
+    std::move(callback).Run(chrome::mojom::MediaMetadata::New(),
+                            std::vector<metadata::AttachedImage>());
     return;
   }
 
   auto* images = new std::vector<metadata::AttachedImage>();
 
-  media_thread_.reset(new base::Thread("media_thread"));
+  media_thread_ = std::make_unique<base::Thread>("media_thread");
   CHECK(media_thread_->Start());
 
   base::PostTaskAndReplyWithResult(
       media_thread_->task_runner().get(), FROM_HERE,
       base::BindOnce(&ParseAudioVideoMetadata, source_.get(),
                      get_attached_images_, mime_type_, images),
-      base::BindOnce(&FinishParseAudioVideoMetadata, callback,
+      base::BindOnce(&FinishParseAudioVideoMetadata, std::move(callback),
                      base::Owned(images)));
 }

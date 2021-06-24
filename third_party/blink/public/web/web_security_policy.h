@@ -52,7 +52,8 @@ class WebSecurityPolicy {
   BLINK_EXPORT static void RegisterURLSchemeAsAllowingServiceWorkers(
       const WebString&);
 
-  // Registers an URL scheme as allowing 'wasm-eval' CSP source directive.
+  // Registers an URL scheme as allowing the not-yet-standardized 'wasm-eval'
+  // CSP source directive.
   BLINK_EXPORT static void RegisterURLSchemeAsAllowingWasmEvalCSP(
       const WebString&);
 
@@ -63,6 +64,17 @@ class WebSecurityPolicy {
   // Registers a URL scheme which will always be considered the first-party when
   // loaded in a top-level context.
   BLINK_EXPORT static void RegisterURLSchemeAsFirstPartyWhenTopLevel(
+      const WebString&);
+
+  // Registers a URL scheme which will be considered first-party when loaded in
+  // a top-level context for child contexts which were loaded over secure
+  // schemes.
+  BLINK_EXPORT static void
+  RegisterURLSchemeAsFirstPartyWhenTopLevelEmbeddingSecure(const WebString&);
+
+  // Registers a URL scheme as always allowing access to SharedArrayBuffers.
+  // TODO(crbug.com/1184892): Remove once fixed.
+  BLINK_EXPORT static void RegisterURLSchemeAsAllowingSharedArrayBuffers(
       const WebString&);
 
   // Support for managing allow/block access lists to origins beyond the
@@ -78,22 +90,21 @@ class WebSecurityPolicy {
       const WebURL& source_origin,
       const WebString& destination_protocol,
       const WebString& destination_host,
-      bool allow_destination_subdomains,
+      const uint16_t destination_port,
+      network::mojom::CorsDomainMatchMode domain_match_mode,
+      network::mojom::CorsPortMatchMode port_match_mode,
       const network::mojom::CorsOriginAccessMatchPriority priority);
   BLINK_EXPORT static void AddOriginAccessBlockListEntry(
       const WebURL& source_origin,
       const WebString& destination_protocol,
       const WebString& destination_host,
-      bool disallow_destination_subdomains,
+      const uint16_t destination_port,
+      network::mojom::CorsDomainMatchMode domain_match_mode,
+      network::mojom::CorsPortMatchMode port_match_mode,
       const network::mojom::CorsOriginAccessMatchPriority priority);
   BLINK_EXPORT static void ClearOriginAccessListForOrigin(
       const WebURL& source_origin);
   BLINK_EXPORT static void ClearOriginAccessList();
-
-  // Adds an origin or hostname pattern that is always considered trustworthy.
-  // This method does not perform canonicalization; the caller is responsible
-  // for canonicalizing the input.
-  BLINK_EXPORT static void AddOriginToTrustworthySafelist(const WebString&);
 
   // Add a scheme that is always considered a secure context. The caller is
   // responsible for canonicalizing the input.
@@ -116,10 +127,19 @@ class WebSecurityPolicy {
   BLINK_EXPORT static void RegisterURLSchemeAsAllowedForReferrer(
       const WebString&);
 
+  // Registers an URL scheme as an error page.
+  BLINK_EXPORT static void RegisterURLSchemeAsError(const WebString&);
+
+  // Registers an URL scheme as a browser extension.
+  BLINK_EXPORT static void RegisterURLSchemeAsExtension(const WebString&);
+
+  // Registers an URL scheme as trusted browser UI.
+  BLINK_EXPORT static void RegisterURLSchemeAsWebUI(const WebString&);
+
  private:
   WebSecurityPolicy() = delete;
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_SECURITY_POLICY_H_

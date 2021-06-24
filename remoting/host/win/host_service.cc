@@ -16,10 +16,11 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_executor.h"
 #include "base/threading/thread.h"
 #include "base/win/message_window.h"
 #include "base/win/scoped_com_initializer.h"
@@ -139,8 +140,7 @@ HostService::HostService()
     : run_routine_(&HostService::RunAsService),
       service_status_handle_(0),
       stopped_event_(base::WaitableEvent::ResetPolicy::MANUAL,
-                     base::WaitableEvent::InitialState::NOT_SIGNALED),
-      weak_factory_(this) {}
+                     base::WaitableEvent::InitialState::NOT_SIGNALED) {}
 
 HostService::~HostService() {
 }
@@ -204,17 +204,16 @@ void HostService::CreateLauncher(
     scoped_refptr<AutoThreadTaskRunner> task_runner) {
   // Launch the I/O thread.
   scoped_refptr<AutoThreadTaskRunner> io_task_runner =
-      AutoThread::CreateWithType(
-          kIoThreadName, task_runner, base::MessageLoop::TYPE_IO);
+      AutoThread::CreateWithType(kIoThreadName, task_runner,
+                                 base::MessagePumpType::IO);
   if (!io_task_runner.get()) {
     LOG(FATAL) << "Failed to start the I/O thread";
     return;
   }
 
   daemon_process_ = DaemonProcess::Create(
-      task_runner,
-      io_task_runner,
-      base::Bind(&HostService::StopDaemonProcess, weak_ptr_));
+      task_runner, io_task_runner,
+      base::BindOnce(&HostService::StopDaemonProcess, weak_ptr_));
 }
 
 int HostService::RunAsService() {
@@ -237,9 +236,9 @@ int HostService::RunAsService() {
 }
 
 void HostService::RunAsServiceImpl() {
-  base::MessageLoopForUI message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   base::RunLoop run_loop;
-  main_task_runner_ = message_loop.task_runner();
+  main_task_runner_ = main_task_executor.task_runner();
   weak_ptr_ = weak_factory_.GetWeakPtr();
 
   // Register the service control handler.
@@ -295,9 +294,9 @@ void HostService::RunAsServiceImpl() {
 }
 
 int HostService::RunInConsole() {
-  base::MessageLoopForUI message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   base::RunLoop run_loop;
-  main_task_runner_ = message_loop.task_runner();
+  main_task_runner_ = main_task_executor.task_runner();
   weak_ptr_ = weak_factory_.GetWeakPtr();
 
   int result = kInitializationFailed;
@@ -321,8 +320,8 @@ int HostService::RunInConsole() {
 
   // Create a window for receiving session change notifications.
   base::win::MessageWindow window;
-  if (!window.Create(base::Bind(&HostService::HandleMessage,
-                                base::Unretained(this)))) {
+  if (!window.Create(base::BindRepeating(&HostService::HandleMessage,
+                                         base::Unretained(this)))) {
     PLOG(ERROR) << "Failed to create the session notification window";
     goto cleanup;
   }

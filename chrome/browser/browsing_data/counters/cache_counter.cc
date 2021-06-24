@@ -24,9 +24,7 @@ CacheCounter::CacheResult::CacheResult(const CacheCounter* source,
 
 CacheCounter::CacheResult::~CacheResult() {}
 
-CacheCounter::CacheCounter(Profile* profile)
-    : profile_(profile),
-      weak_ptr_factory_(this) {}
+CacheCounter::CacheCounter(Profile* profile) : profile_(profile) {}
 
 CacheCounter::~CacheCounter() {
 }
@@ -44,8 +42,8 @@ void CacheCounter::Count() {
   is_upper_limit_ = false;
   pending_sources_ = 1;
   browsing_data::ConditionalCacheCountingHelper::Count(
-      content::BrowserContext::GetDefaultStoragePartition(profile_),
-      GetPeriodStart(), base::Time::Max(),
+      profile_->GetDefaultStoragePartition(), GetPeriodStart(),
+      base::Time::Max(),
       base::BindOnce(&CacheCounter::OnCacheSizeCalculated,
                      weak_ptr_factory_.GetWeakPtr()));
 #if BUILDFLAG(ENABLE_OFFLINE_PAGES)

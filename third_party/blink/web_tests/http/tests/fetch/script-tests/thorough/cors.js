@@ -5,6 +5,8 @@ if (self.importScripts) {
 
 // Tests for CORS check and CORS filtered response.
 
+var {BASE_ORIGIN, OTHER_BASE_URL} = get_thorough_test_options();
+
 var TEST_TARGETS = [
   // CORS test
 
@@ -21,11 +23,11 @@ var TEST_TARGETS = [
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET',
    [fetchRejected]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET&ACAOrigin=*',
-   [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
    [methodIsGET, authCheckNone]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET' +
    '&ACAOrigin=' + BASE_ORIGIN,
-   [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
    [methodIsGET]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET&' +
    'ACAOrigin=' + BASE_ORIGIN + ',http://www.example.com',
@@ -39,12 +41,12 @@ var TEST_TARGETS = [
   // Tests for Access-Control-Expose-Headers header.
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET&ACAOrigin=*' +
    '&ACEHeaders=X-ServiceWorker-ServerHeader',
-   [fetchResolved, noContentLength, hasServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, hasServerHeader, hasBody, typeCors],
    [methodIsGET]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET' +
    '&ACAOrigin=' + BASE_ORIGIN +
    '&ACEHeaders=X-ServiceWorker-ServerHeader',
-   [fetchResolved, noContentLength, hasServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, hasServerHeader, hasBody, typeCors],
    [methodIsGET]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=GET' +
    '&ACAOrigin=*&ACEHeaders=Content-Length, X-ServiceWorker-ServerHeader',
@@ -64,11 +66,11 @@ var TEST_TARGETS = [
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST',
    [fetchRejected]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST&ACAOrigin=*',
-   [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
    [methodIsPOST]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST' +
    '&ACAOrigin=' + BASE_ORIGIN,
-   [fetchResolved, noContentLength, noServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, noServerHeader, hasBody, typeCors],
    [methodIsPOST]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST' +
    '&ACAOrigin=' + BASE_ORIGIN +
@@ -83,11 +85,11 @@ var TEST_TARGETS = [
   // Tests for Access-Control-Expose-Headers header.
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST' +
    '&ACAOrigin=*&ACEHeaders=X-ServiceWorker-ServerHeader',
-   [fetchResolved, noContentLength, hasServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, hasServerHeader, hasBody, typeCors],
    [methodIsPOST]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST' +
    '&ACAOrigin=' + BASE_ORIGIN + '&ACEHeaders=X-ServiceWorker-ServerHeader',
-   [fetchResolved, noContentLength, hasServerHeader, hasBody, typeCors],
+   [fetchResolved, hasContentLength, hasServerHeader, hasBody, typeCors],
    [methodIsPOST]],
   [OTHER_BASE_URL + 'mode=cors&credentials=same-origin&method=POST' +
    '&ACAOrigin=*&ACEHeaders=Content-Length, X-ServiceWorker-ServerHeader',

@@ -9,11 +9,12 @@
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/location.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "base/value_conversions.h"
+#include "base/threading/sequenced_task_runner_handle.h"
+#include "base/util/values/values_util.h"
+#include "base/values.h"
 #include "components/prefs/pref_service.h"
 
-using base::SingleThreadTaskRunner;
+using base::SequencedTaskRunner;
 
 namespace subtle {
 
@@ -49,96 +50,94 @@ void PrefMemberBase::Destroy() {
   }
 }
 
-void PrefMemberBase::MoveToThread(
-    scoped_refptr<SingleThreadTaskRunner> task_runner) {
+void PrefMemberBase::MoveToSequence(
+    scoped_refptr<SequencedTaskRunner> task_runner) {
   VerifyValuePrefName();
   // Load the value from preferences if it hasn't been loaded so far.
   if (!internal())
-    UpdateValueFromPref(base::Closure());
-  internal()->MoveToThread(std::move(task_runner));
+    UpdateValueFromPref(base::OnceClosure());
+  internal()->MoveToSequence(std::move(task_runner));
 }
 
 void PrefMemberBase::OnPreferenceChanged(PrefService* service,
                                          const std::string& pref_name) {
   VerifyValuePrefName();
-  UpdateValueFromPref((!setting_value_ && !observer_.is_null()) ?
-      base::Bind(observer_, pref_name) : base::Closure());
+  UpdateValueFromPref((!setting_value_ && !observer_.is_null())
+                          ? base::BindOnce(observer_, pref_name)
+                          : base::OnceClosure());
 }
 
-void PrefMemberBase::UpdateValueFromPref(const base::Closure& callback) const {
+void PrefMemberBase::UpdateValueFromPref(base::OnceClosure callback) const {
   VerifyValuePrefName();
   const PrefService::Preference* pref = prefs_->FindPreference(pref_name_);
   DCHECK(pref);
   if (!internal())
     CreateInternal();
-  internal()->UpdateValue(pref->GetValue()->DeepCopy(),
-                          pref->IsManaged(),
-                          pref->IsUserModifiable(),
-                          callback);
+  internal()->UpdateValue(
+      base::Value::ToUniquePtrValue(pref->GetValue()->Clone()).release(),
+      pref->IsManaged(), pref->IsUserModifiable(), pref->IsDefaultValue(),
+      std::move(callback));
 }
 
 void PrefMemberBase::VerifyPref() const {
   VerifyValuePrefName();
   if (!internal())
-    UpdateValueFromPref(base::Closure());
+    UpdateValueFromPref(base::OnceClosure());
 }
 
-void PrefMemberBase::InvokeUnnamedCallback(const base::Closure& callback,
-                                           const std::string& pref_name) {
+void PrefMemberBase::InvokeUnnamedCallback(
+    const base::RepeatingClosure& callback,
+    const std::string& pref_name) {
   callback.Run();
 }
 
 PrefMemberBase::Internal::Internal()
-    : thread_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      is_managed_(false),
-      is_user_modifiable_(false) {
-}
-PrefMemberBase::Internal::~Internal() { }
+    : owning_task_runner_(base::SequencedTaskRunnerHandle::Get()) {}
+PrefMemberBase::Internal::~Internal() = default;
 
-bool PrefMemberBase::Internal::IsOnCorrectThread() const {
-  return thread_task_runner_->BelongsToCurrentThread();
+bool PrefMemberBase::Internal::IsOnCorrectSequence() const {
+  return owning_task_runner_->RunsTasksInCurrentSequence();
 }
 
 void PrefMemberBase::Internal::UpdateValue(base::Value* v,
                                            bool is_managed,
                                            bool is_user_modifiable,
+                                           bool is_default_value,
                                            base::OnceClosure callback) const {
   std::unique_ptr<base::Value> value(v);
   base::ScopedClosureRunner closure_runner(std::move(callback));
-  if (IsOnCorrectThread()) {
+  if (IsOnCorrectSequence()) {
     bool rv = UpdateValueInternal(*value);
     DCHECK(rv);
     is_managed_ = is_managed;
     is_user_modifiable_ = is_user_modifiable;
+    is_default_value_ = is_default_value;
   } else {
-    bool may_run = thread_task_runner_->PostTask(
+    bool may_run = owning_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&PrefMemberBase::Internal::UpdateValue, this,
                        value.release(), is_managed, is_user_modifiable,
-                       closure_runner.Release()));
+                       is_default_value, closure_runner.Release()));
     DCHECK(may_run);
   }
 }
 
-void PrefMemberBase::Internal::MoveToThread(
-    scoped_refptr<SingleThreadTaskRunner> task_runner) {
-  CheckOnCorrectThread();
-  thread_task_runner_ = std::move(task_runner);
+void PrefMemberBase::Internal::MoveToSequence(
+    scoped_refptr<SequencedTaskRunner> task_runner) {
+  CheckOnCorrectSequence();
+  owning_task_runner_ = std::move(task_runner);
 }
 
 bool PrefMemberVectorStringUpdate(const base::Value& value,
                                   std::vector<std::string>* string_vector) {
   if (!value.is_list())
     return false;
-  const base::ListValue* list = static_cast<const base::ListValue*>(&value);
 
   std::vector<std::string> local_vector;
-  for (auto it = list->begin(); it != list->end(); ++it) {
-    std::string string_value;
-    if (!it->GetAsString(&string_value))
+  for (const auto& item : value.GetList()) {
+    if (!item.is_string())
       return false;
-
-    local_vector.push_back(string_value);
+    local_vector.push_back(item.GetString());
   }
 
   string_vector->swap(local_vector);
@@ -155,7 +154,9 @@ void PrefMember<bool>::UpdatePref(const bool& value) {
 template <>
 bool PrefMember<bool>::Internal::UpdateValueInternal(
     const base::Value& value) const {
-  return value.GetAsBoolean(&value_);
+  if (value.is_bool())
+    value_ = value.GetBool();
+  return value.is_bool();
 }
 
 template <>
@@ -166,7 +167,9 @@ void PrefMember<int>::UpdatePref(const int& value) {
 template <>
 bool PrefMember<int>::Internal::UpdateValueInternal(
     const base::Value& value) const {
-  return value.GetAsInteger(&value_);
+  if (value.is_int())
+    value_ = value.GetInt();
+  return value.is_int();
 }
 
 template <>
@@ -177,7 +180,9 @@ void PrefMember<double>::UpdatePref(const double& value) {
 template <>
 bool PrefMember<double>::Internal::UpdateValueInternal(const base::Value& value)
     const {
-  return value.GetAsDouble(&value_);
+  if (value.is_double() || value.is_int())
+    value_ = value.GetDouble();
+  return value.is_double() || value.is_int();
 }
 
 template <>
@@ -189,7 +194,9 @@ template <>
 bool PrefMember<std::string>::Internal::UpdateValueInternal(
     const base::Value& value)
     const {
-  return value.GetAsString(&value_);
+  if (value.is_string())
+    value_ = value.GetString();
+  return value.is_string();
 }
 
 template <>
@@ -201,14 +208,20 @@ template <>
 bool PrefMember<base::FilePath>::Internal::UpdateValueInternal(
     const base::Value& value)
     const {
-  return base::GetValueAsFilePath(value, &value_);
+  absl::optional<base::FilePath> path = util::ValueToFilePath(value);
+  if (!path)
+    return false;
+  value_ = *path;
+  return true;
 }
 
 template <>
 void PrefMember<std::vector<std::string> >::UpdatePref(
     const std::vector<std::string>& value) {
   base::ListValue list_value;
-  list_value.AppendStrings(value);
+  for (const std::string& val : value)
+    list_value.Append(val);
+
   prefs()->Set(pref_name(), list_value);
 }
 

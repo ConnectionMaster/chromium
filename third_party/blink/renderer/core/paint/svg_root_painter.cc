@@ -4,25 +4,25 @@
 
 #include "third_party/blink/renderer/core/paint/svg_root_painter.h"
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_root.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/paint/box_painter.h"
 #include "third_party/blink/renderer/core/paint/object_paint_properties.h"
 #include "third_party/blink/renderer/core/paint/paint_info.h"
-#include "third_party/blink/renderer/core/paint/paint_timing.h"
 #include "third_party/blink/renderer/core/paint/scoped_svg_paint_state.h"
 #include "third_party/blink/renderer/core/svg/svg_svg_element.h"
 
 namespace blink {
 
 IntRect SVGRootPainter::PixelSnappedSize(
-    const LayoutPoint& paint_offset) const {
-  return PixelSnappedIntRect(paint_offset, layout_svg_root_.Size());
+    const PhysicalOffset& paint_offset) const {
+  return PixelSnappedIntRect(
+      PhysicalRect(paint_offset, layout_svg_root_.Size()));
 }
 
 AffineTransform SVGRootPainter::TransformToPixelSnappedBorderBox(
-    const LayoutPoint& paint_offset) const {
+    const PhysicalOffset& paint_offset) const {
   const IntRect snapped_size = PixelSnappedSize(paint_offset);
   AffineTransform paint_offset_to_border_box =
       AffineTransform::Translation(snapped_size.X(), snapped_size.Y());
@@ -38,28 +38,20 @@ AffineTransform SVGRootPainter::TransformToPixelSnappedBorderBox(
 }
 
 void SVGRootPainter::PaintReplaced(const PaintInfo& paint_info,
-                                   const LayoutPoint& paint_offset) {
+                                   const PhysicalOffset& paint_offset) {
   // An empty viewport disables rendering.
   if (PixelSnappedSize(paint_offset).IsEmpty())
     return;
 
   // An empty viewBox also disables rendering.
   // (http://www.w3.org/TR/SVG/coords.html#ViewBoxAttribute)
-  SVGSVGElement* svg = ToSVGSVGElement(layout_svg_root_.GetNode());
+  auto* svg = To<SVGSVGElement>(layout_svg_root_.GetNode());
   DCHECK(svg);
   if (svg->HasEmptyViewBox())
     return;
 
   ScopedSVGPaintState paint_state(layout_svg_root_, paint_info);
-  if (paint_state.GetPaintInfo().phase == PaintPhase::kForeground &&
-      !paint_state.ApplyClipMaskAndFilterIfNecessary())
-    return;
-
-  BoxPainter(layout_svg_root_).PaintChildren(paint_state.GetPaintInfo());
-
-  PaintTiming& timing = PaintTiming::From(
-      layout_svg_root_.GetNode()->GetDocument().TopDocument());
-  timing.MarkFirstContentfulPaint();
+  BoxPainter(layout_svg_root_).PaintChildren(paint_info);
 }
 
 }  // namespace blink

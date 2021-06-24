@@ -7,10 +7,10 @@
 #include <utility>
 
 #include "base/strings/utf_string_conversions.h"
-#include "device/usb/public/cpp/usb_utils.h"
-#include "device/usb/public/mojom/device_enumeration_options.mojom.h"
 #include "extensions/common/api/extensions_manifest_types.h"
 #include "extensions/common/manifest_constants.h"
+#include "services/device/public/cpp/usb/usb_utils.h"
+#include "services/device/public/mojom/usb_enumeration_options.mojom.h"
 
 namespace extensions {
 
@@ -30,7 +30,7 @@ const UsbPrinterManifestData* UsbPrinterManifestData::Get(
 // static
 std::unique_ptr<UsbPrinterManifestData> UsbPrinterManifestData::FromValue(
     const base::Value& value,
-    base::string16* error) {
+    std::u16string* error) {
   std::unique_ptr<api::extensions_manifest_types::UsbPrinters> usb_printers =
       api::extensions_manifest_types::UsbPrinters::FromValue(value, error);
   if (!usb_printers) {
@@ -40,8 +40,7 @@ std::unique_ptr<UsbPrinterManifestData> UsbPrinterManifestData::FromValue(
   auto result = std::make_unique<UsbPrinterManifestData>();
   for (const auto& input : usb_printers->filters) {
     if (input.product_id && input.interface_class) {
-      *error = base::ASCIIToUTF16(
-          "Only one of productId or interfaceClass may be specified.");
+      *error = u"Only one of productId or interfaceClass may be specified.";
       return nullptr;
     }
 

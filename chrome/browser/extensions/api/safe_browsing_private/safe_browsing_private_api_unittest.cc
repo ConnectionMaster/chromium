@@ -9,24 +9,24 @@
 #include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/task/post_task.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_function_test_utils.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
+#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
+#include "chrome/browser/sessions/session_tab_helper_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/navigation_entry.h"
-#include "content/public/test/browser_side_navigation_test_utils.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/web_contents_tester.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "net/url_request/url_request_test_util.h"
 
 namespace extensions {
 
@@ -78,7 +78,6 @@ class SafeBrowsingPrivateApiUnitTest : public ExtensionServiceTestBase {
 
   std::unique_ptr<TestBrowserWindow> browser_window_;
   std::unique_ptr<Browser> browser_;
-  scoped_refptr<net::URLRequestContextGetter> system_request_context_getter_;
 
   DISALLOW_COPY_AND_ASSIGN(SafeBrowsingPrivateApiUnitTest);
 };
@@ -86,34 +85,36 @@ class SafeBrowsingPrivateApiUnitTest : public ExtensionServiceTestBase {
 void SafeBrowsingPrivateApiUnitTest::SetUp() {
   ExtensionServiceTestBase::SetUp();
   InitializeEmptyExtensionService();
-  content::BrowserSideNavigationSetUp();
 
   browser_window_ = std::make_unique<TestBrowserWindow>();
   Browser::CreateParams params(profile(), true);
-  params.type = Browser::TYPE_TABBED;
+  params.type = Browser::TYPE_NORMAL;
   params.window = browser_window_.get();
-  browser_ = std::make_unique<Browser>(params);
+  browser_ = std::unique_ptr<Browser>(Browser::Create(params));
 
   // Initialize Safe Browsing service.
   safe_browsing::TestSafeBrowsingServiceFactory sb_service_factory;
   auto* safe_browsing_service = sb_service_factory.CreateSafeBrowsingService();
-  system_request_context_getter_ =
-      base::MakeRefCounted<net::TestURLRequestContextGetter>(
-          base::CreateSingleThreadTaskRunnerWithTraits(
-              {content::BrowserThread::IO}));
-  TestingBrowserProcess::GetGlobal()->SetSystemRequestContext(
-      system_request_context_getter_.get());
   TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(
       safe_browsing_service);
   g_browser_process->safe_browsing_service()->Initialize();
-  safe_browsing_service->AddPrefService(profile()->GetPrefs());
+  safe_browsing_service->OnProfileAdded(profile());
 }
 
 void SafeBrowsingPrivateApiUnitTest::TearDown() {
   while (!browser()->tab_strip_model()->empty())
-    browser()->tab_strip_model()->DetachWebContentsAt(0);
+    browser()->tab_strip_model()->DetachAndDeleteWebContentsAt(0);
   browser_window_.reset();
-  content::BrowserSideNavigationTearDown();
+
+  // Make sure the NetworkContext owned by SafeBrowsingService is destructed
+  // before the NetworkService object..
+  TestingBrowserProcess::GetGlobal()->safe_browsing_service()->ShutDown();
+  TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(nullptr);
+
+  // Depends on LocalState from ChromeRenderViewHostTestHarness.
+  if (SystemNetworkContextManager::GetInstance())
+    SystemNetworkContextManager::DeleteInstance();
+
   ExtensionServiceTestBase::TearDown();
 }
 
@@ -129,8 +130,8 @@ TEST_F(SafeBrowsingPrivateApiUnitTest, GetReferrerChain) {
   content::WebContents* raw_web_contents = web_contents.get();
   ASSERT_TRUE(raw_web_contents);
 
-  SessionTabHelper::CreateForWebContents(raw_web_contents);
-  int tab_id = SessionTabHelper::IdForTab(raw_web_contents).id();
+  CreateSessionServiceTabHelper(raw_web_contents);
+  int tab_id = sessions::SessionTabHelper::IdForTab(raw_web_contents).id();
   browser()->tab_strip_model()->AppendWebContents(std::move(web_contents),
                                                   true);
 
@@ -151,8 +152,8 @@ TEST_F(SafeBrowsingPrivateApiUnitTest, GetReferrerChainForNonSafeBrowsingUser) {
   content::WebContents* raw_web_contents = web_contents.get();
   ASSERT_TRUE(raw_web_contents);
 
-  SessionTabHelper::CreateForWebContents(raw_web_contents);
-  int tab_id = SessionTabHelper::IdForTab(raw_web_contents).id();
+  CreateSessionServiceTabHelper(raw_web_contents);
+  int tab_id = sessions::SessionTabHelper::IdForTab(raw_web_contents).id();
   browser()->tab_strip_model()->AppendWebContents(std::move(web_contents),
                                                   true);
 

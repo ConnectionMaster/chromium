@@ -11,13 +11,14 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "media/base/encryption_scheme.h"
 #include "media/base/media_export.h"
 #include "media/base/media_log.h"
 #include "media/formats/webm/webm_colour_parser.h"
 #include "media/formats/webm/webm_parser.h"
+#include "media/formats/webm/webm_projection_parser.h"
 
 namespace media {
-class EncryptionScheme;
 class VideoDecoderConfig;
 
 // Helper class used to parse a Video element inside a TrackEntry element.
@@ -38,11 +39,12 @@ class MEDIA_EXPORT WebMVideoClient : public WebMParserClient {
   // case and should not be relied upon.
   bool InitializeConfig(const std::string& codec_id,
                         const std::vector<uint8_t>& codec_private,
-                        const EncryptionScheme& encryption_scheme,
+                        EncryptionScheme encryption_scheme,
                         VideoDecoderConfig* config);
 
  private:
   friend class WebMVideoClientTest;
+  friend class WebMProjectionParserTest;
 
   // WebMParserClient implementation.
   WebMParserClient* OnListStart(int id) override;
@@ -62,9 +64,13 @@ class MEDIA_EXPORT WebMVideoClient : public WebMParserClient {
   int64_t display_height_;
   int64_t display_unit_;
   int64_t alpha_mode_;
+  int64_t stereo_mode_;
 
   WebMColourParser colour_parser_;
   bool colour_parsed_ = false;
+
+  WebMProjectionParser projection_parser_;
+  bool projection_parsed_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(WebMVideoClient);
 };

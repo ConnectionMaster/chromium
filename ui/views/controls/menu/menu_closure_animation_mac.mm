@@ -7,7 +7,8 @@
 #import <Cocoa/Cocoa.h>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -39,7 +40,7 @@ void MenuClosureAnimationMac::Start() {
     step_ = AnimationStep::kFading;
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE, base::BindOnce(&MenuClosureAnimationMac::AdvanceAnimation,
-                                  base::Unretained(this)));
+                                  AsWeakPtr()));
     return;
   }
   AdvanceAnimation();
@@ -87,8 +88,17 @@ void MenuClosureAnimationMac::DisableAnimationsForTesting() {
 
 void MenuClosureAnimationMac::AnimationProgressed(
     const gfx::Animation* animation) {
-  NSWindow* window = menu_->GetWidget()->GetNativeWindow().GetNativeNSWindow();
-  [window setAlphaValue:animation->CurrentValueBetween(1.0, 0.0)];
+  // Walk up the menu from |menu_|, fading the NSWindows for all its ancestor
+  // menus in lockstep.
+  SubmenuView* submenu = menu_;
+  while (submenu) {
+    NSWindow* window =
+        submenu->GetWidget()->GetNativeWindow().GetNativeNSWindow();
+    [window setAlphaValue:animation->CurrentValueBetween(1.0, 0.0)];
+
+    MenuItemView* parent = submenu->GetMenuItem()->GetParentMenuItem();
+    submenu = parent ? parent->GetSubmenu() : nullptr;
+  }
 }
 
 void MenuClosureAnimationMac::AnimationEnded(const gfx::Animation* animation) {

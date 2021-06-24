@@ -10,29 +10,29 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/feature_list.h"
 #include "base/memory/singleton.h"
-#include "base/stl_util.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
-#include "chrome/browser/engagement/site_engagement_service.h"
 #include "chrome/browser/engagement/site_engagement_service_factory.h"
-#include "chrome/browser/engagement/top_sites/site_engagement_top_sites_provider.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/history_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/locale_settings.h"
 #include "chrome/grit/theme_resources.h"
-#include "components/history/core/browser/default_top_sites_provider.h"
+#include "components/grit/components_scaled_resources.h"
 #include "components/history/core/browser/history_constants.h"
 #include "components/history/core/browser/top_sites_impl.h"
-#include "components/history/core/browser/top_sites_provider.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
+#include "components/search/ntp_features.h"
+#include "components/site_engagement/content/site_engagement_service.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
@@ -66,32 +66,24 @@ const RawPrepopulatedPage kRawPrepopulatedPages[] = {
 #endif
 
 void InitializePrepopulatedPageList(
-    PrefService* prefs,
+    Profile* profile,
     history::PrepopulatedPageList* prepopulated_pages) {
 #if !defined(OS_ANDROID)
   DCHECK(prepopulated_pages);
-  bool hide_web_store_icon = prefs->GetBoolean(prefs::kHideWebStoreIcon);
+  PrefService* pref_service = profile->GetPrefs();
+  bool hide_web_store_icon = pref_service->GetBoolean(prefs::kHideWebStoreIcon);
+
   prepopulated_pages->reserve(base::size(kRawPrepopulatedPages));
   for (size_t i = 0; i < base::size(kRawPrepopulatedPages); ++i) {
     const RawPrepopulatedPage& page = kRawPrepopulatedPages[i];
     if (hide_web_store_icon && page.url_id == IDS_WEBSTORE_URL)
       continue;
+
     prepopulated_pages->push_back(history::PrepopulatedPage(
         GURL(l10n_util::GetStringUTF8(page.url_id)),
         l10n_util::GetStringUTF16(page.title_id), page.favicon_id, page.color));
   }
 #endif
-}
-
-std::unique_ptr<history::TopSitesProvider> CreateTopSitesProvider(
-    Profile* profile,
-    history::HistoryService* history_service) {
-  if (base::FeatureList::IsEnabled(features::kTopSitesFromSiteEngagement)) {
-    return std::make_unique<SiteEngagementTopSitesProvider>(
-        SiteEngagementService::Get(profile), history_service);
-  }
-
-  return std::make_unique<history::DefaultTopSitesProvider>(history_service);
 }
 
 }  // namespace
@@ -119,9 +111,8 @@ scoped_refptr<history::TopSites> TopSitesFactory::BuildTopSites(
       HistoryServiceFactory::GetForProfile(profile,
                                            ServiceAccessType::EXPLICIT_ACCESS);
   scoped_refptr<history::TopSitesImpl> top_sites(new history::TopSitesImpl(
-      profile->GetPrefs(), history_service,
-      CreateTopSitesProvider(profile, history_service), prepopulated_page_list,
-      base::Bind(CanAddURLToHistory)));
+      profile->GetPrefs(), history_service, prepopulated_page_list,
+      base::BindRepeating(CanAddURLToHistory)));
   top_sites->Init(context->GetPath().Append(history::kTopSitesFilename));
   return top_sites;
 }
@@ -134,7 +125,7 @@ TopSitesFactory::TopSitesFactory()
 
   // This dependency is only used when the experimental
   // kTopSitesFromSiteEngagement feature is active.
-  DependsOn(SiteEngagementServiceFactory::GetInstance());
+  DependsOn(site_engagement::SiteEngagementServiceFactory::GetInstance());
 }
 
 TopSitesFactory::~TopSitesFactory() {
@@ -143,8 +134,8 @@ TopSitesFactory::~TopSitesFactory() {
 scoped_refptr<RefcountedKeyedService> TopSitesFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
   history::PrepopulatedPageList prepopulated_pages;
-  InitializePrepopulatedPageList(
-      Profile::FromBrowserContext(context)->GetPrefs(), &prepopulated_pages);
+  InitializePrepopulatedPageList(Profile::FromBrowserContext(context),
+                                 &prepopulated_pages);
   return BuildTopSites(context, prepopulated_pages);
 }
 

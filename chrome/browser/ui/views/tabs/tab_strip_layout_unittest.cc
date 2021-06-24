@@ -5,9 +5,12 @@
 #include "chrome/browser/ui/views/tabs/tab_strip_layout.h"
 
 #include <stddef.h>
+#include <string>
 
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "chrome/browser/ui/tabs/tab_types.h"
+#include "chrome/browser/ui/views/tabs/tab_animation_state.h"
+#include "chrome/browser/ui/views/tabs/tab_width_constraints.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -44,37 +47,40 @@ struct TestCase {
   int tabstrip_width = 0;
 };
 
-struct CalculateTabBoundsResult {
-  std::vector<gfx::Rect> bounds;
-  int active_width;
-  int inactive_width;
-};
-
 constexpr int kStandardWidth = 100;
-constexpr int kStandardHeight = 10;
+constexpr int kTabHeight = 10;
 constexpr int kMinActiveWidth = 20;
 constexpr int kMinInactiveWidth = 14;
+constexpr int kPinnedWidth = 10;
+constexpr int kTabOverlap = 4;
 
-CalculateTabBoundsResult CalculateTabBounds(TestCase test_case) {
+std::vector<gfx::Rect> CalculateTabBounds(TestCase test_case) {
+  TabLayoutConstants layout_constants;
+  layout_constants.tab_height = kTabHeight;
+  layout_constants.tab_overlap = kTabOverlap;
+
   TabSizeInfo size_info;
-  size_info.pinned_tab_width = 10;
+  size_info.pinned_tab_width = kPinnedWidth;
   size_info.min_active_width = kMinActiveWidth;
   size_info.min_inactive_width = kMinInactiveWidth;
-  size_info.standard_size = gfx::Size(kStandardWidth, kStandardHeight);
-  size_info.tab_overlap = 4;
+  size_info.standard_width = kStandardWidth;
 
-  int active_width;
-  int inactive_width;
-  std::vector<gfx::Rect> tab_bounds = CalculateTabBounds(
-      size_info, test_case.num_pinned_tabs, test_case.num_tabs,
-      test_case.active_index, test_case.tabstrip_width, &active_width,
-      &inactive_width);
+  std::vector<TabWidthConstraints> tab_states;
+  for (int tab_index = 0; tab_index < test_case.num_tabs; tab_index++) {
+    TabAnimationState ideal_animation_state =
+        TabAnimationState::ForIdealTabState(
+            TabOpen::kOpen,
+            tab_index < test_case.num_pinned_tabs ? TabPinned::kPinned
+                                                  : TabPinned::kUnpinned,
+            tab_index == test_case.active_index ? TabActive::kActive
+                                                : TabActive::kInactive,
+            0);
+    tab_states.push_back(TabWidthConstraints(ideal_animation_state,
+                                             layout_constants, size_info));
+  }
 
-  CalculateTabBoundsResult result;
-  result.bounds = tab_bounds;
-  result.active_width = active_width;
-  result.inactive_width = inactive_width;
-  return result;
+  return CalculateTabBounds(layout_constants, tab_states,
+                            test_case.tabstrip_width, absl::nullopt);
 }
 
 }  // namespace
@@ -94,14 +100,12 @@ TEST(TabStripLayoutTest, Basics) {
   test_case.tabstrip_width = 1000;
   test_case.num_tabs = 3;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("100 100 100", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 96 192", TabXPositionsAsString(result.bounds));
-  EXPECT_EQ(kStandardWidth, result.active_width);
-  EXPECT_EQ(kStandardWidth, result.inactive_width);
-  for (const auto& bounds : result.bounds) {
-    EXPECT_EQ(0, bounds.y());
-    EXPECT_EQ(kStandardHeight, bounds.height());
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("100 100 100", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 96 192", TabXPositionsAsString(bounds));
+  for (const auto& b : bounds) {
+    EXPECT_EQ(0, b.y());
+    EXPECT_EQ(kTabHeight, b.height());
   }
 }
 
@@ -110,9 +114,9 @@ TEST(TabStripLayoutTest, AllPinnedTabs) {
   test_case.tabstrip_width = 1000;
   test_case.num_pinned_tabs = test_case.num_tabs = 3;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 10 10", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 6 12", TabXPositionsAsString(result.bounds));
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("10 10 10", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 6 12", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, MixedPinnedAndNormalTabs) {
@@ -121,9 +125,9 @@ TEST(TabStripLayoutTest, MixedPinnedAndNormalTabs) {
   test_case.num_tabs = 3;
   test_case.num_pinned_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 100 100", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 6 102", TabXPositionsAsString(result.bounds));
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("10 100 100", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 6 102", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, MiddleWidth) {
@@ -131,11 +135,9 @@ TEST(TabStripLayoutTest, MiddleWidth) {
   test_case.tabstrip_width = 100;
   test_case.num_tabs = 4;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("28 28 28 28", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 24 48 72", TabXPositionsAsString(result.bounds));
-  EXPECT_EQ(28, result.active_width);
-  EXPECT_EQ(28, result.inactive_width);
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("28 28 28 28", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 24 48 72", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, MiddleWidthAndPinnedTab) {
@@ -144,9 +146,9 @@ TEST(TabStripLayoutTest, MiddleWidthAndPinnedTab) {
   test_case.num_tabs = 3;
   test_case.num_pinned_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 49 49", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 6 51", TabXPositionsAsString(result.bounds));
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("10 49 49", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 6 51", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, MiddleWidthRounded) {
@@ -154,11 +156,9 @@ TEST(TabStripLayoutTest, MiddleWidthRounded) {
   test_case.tabstrip_width = 102;
   test_case.num_tabs = 4;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("29 29 28 28", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 25 50 74", TabXPositionsAsString(result.bounds));
-  EXPECT_EQ(28, result.active_width);
-  EXPECT_EQ(28, result.inactive_width);
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("29 29 28 28", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 25 50 74", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, MiddleWidthRoundedAndPinnedTab) {
@@ -167,11 +167,9 @@ TEST(TabStripLayoutTest, MiddleWidthRoundedAndPinnedTab) {
   test_case.num_tabs = 3;
   test_case.num_pinned_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 50 49", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 6 52", TabXPositionsAsString(result.bounds));
-  EXPECT_EQ(49, result.active_width);
-  EXPECT_EQ(49, result.inactive_width);
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("10 50 49", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 6 52", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, BelowMinActiveWidthOneTab) {
@@ -179,10 +177,9 @@ TEST(TabStripLayoutTest, BelowMinActiveWidthOneTab) {
   test_case.tabstrip_width = 15;
   test_case.num_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("20", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0", TabXPositionsAsString(result.bounds));
-  EXPECT_EQ(kMinActiveWidth, result.active_width);
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("20", TabWidthsAsString(bounds));
+  EXPECT_EQ("0", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, BelowMinActiveWidth) {
@@ -191,10 +188,9 @@ TEST(TabStripLayoutTest, BelowMinActiveWidth) {
   test_case.num_tabs = 6;
   test_case.active_index = 3;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("18 18 18 20 18 18", TabWidthsAsString(result.bounds));
-  EXPECT_EQ("0 14 28 42 58 72", TabXPositionsAsString(result.bounds));
-  EXPECT_EQ(18, result.inactive_width);
+  auto bounds = CalculateTabBounds(test_case);
+  EXPECT_EQ("18 18 18 20 18 18", TabWidthsAsString(bounds));
+  EXPECT_EQ("0 14 28 42 58 72", TabXPositionsAsString(bounds));
 }
 
 TEST(TabStripLayoutTest, BelowMinActiveWidthRounded) {
@@ -203,9 +199,8 @@ TEST(TabStripLayoutTest, BelowMinActiveWidthRounded) {
   test_case.num_tabs = 6;
   test_case.active_index = 3;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("19 19 19 20 18 18", TabWidthsAsString(result.bounds));
-  EXPECT_EQ(18, result.inactive_width);
+  EXPECT_EQ("19 19 19 20 18 18",
+            TabWidthsAsString(CalculateTabBounds(test_case)));
 }
 
 TEST(TabStripLayoutTest, BelowMinActiveWidthActivePinnedTab) {
@@ -214,8 +209,8 @@ TEST(TabStripLayoutTest, BelowMinActiveWidthActivePinnedTab) {
   test_case.num_tabs = 6;
   test_case.num_pinned_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 19 19 19 19 19", TabWidthsAsString(result.bounds));
+  EXPECT_EQ("10 19 19 19 19 19",
+            TabWidthsAsString(CalculateTabBounds(test_case)));
 }
 
 TEST(TabStripLayoutTest, BelowMinActiveWidthInactivePinnedTab) {
@@ -225,8 +220,8 @@ TEST(TabStripLayoutTest, BelowMinActiveWidthInactivePinnedTab) {
   test_case.num_pinned_tabs = 1;
   test_case.active_index = 2;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 18 20 18 18 18", TabWidthsAsString(result.bounds));
+  EXPECT_EQ("10 18 20 18 18 18",
+            TabWidthsAsString(CalculateTabBounds(test_case)));
 }
 
 TEST(TabStripLayoutTest, BelowMinActiveWidthActivePinnedTabRounded) {
@@ -235,8 +230,8 @@ TEST(TabStripLayoutTest, BelowMinActiveWidthActivePinnedTabRounded) {
   test_case.num_tabs = 6;
   test_case.num_pinned_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 20 19 19 19 19", TabWidthsAsString(result.bounds));
+  EXPECT_EQ("10 20 19 19 19 19",
+            TabWidthsAsString(CalculateTabBounds(test_case)));
 }
 
 TEST(TabStripLayoutTest, NotEnoughSpace) {
@@ -244,10 +239,7 @@ TEST(TabStripLayoutTest, NotEnoughSpace) {
   test_case.tabstrip_width = 10;
   test_case.num_tabs = 3;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("20 14 14", TabWidthsAsString(result.bounds));
-  EXPECT_EQ(kMinActiveWidth, result.active_width);
-  EXPECT_EQ(kMinInactiveWidth, result.inactive_width);
+  EXPECT_EQ("20 14 14", TabWidthsAsString(CalculateTabBounds(test_case)));
 }
 
 TEST(TabStripLayoutTest, NotEnoughSpaceAllPinnedTabs) {
@@ -256,8 +248,7 @@ TEST(TabStripLayoutTest, NotEnoughSpaceAllPinnedTabs) {
   test_case.num_tabs = 3;
   test_case.num_pinned_tabs = 3;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 10 10", TabWidthsAsString(result.bounds));
+  EXPECT_EQ("10 10 10", TabWidthsAsString(CalculateTabBounds(test_case)));
 }
 
 TEST(TabStripLayoutTest, NotEnoughSpaceMixedPinnedAndNormalTabs) {
@@ -266,6 +257,22 @@ TEST(TabStripLayoutTest, NotEnoughSpaceMixedPinnedAndNormalTabs) {
   test_case.num_tabs = 3;
   test_case.num_pinned_tabs = 1;
 
-  auto result = CalculateTabBounds(test_case);
-  EXPECT_EQ("10 14 14", TabWidthsAsString(result.bounds));
+  EXPECT_EQ("10 14 14", TabWidthsAsString(CalculateTabBounds(test_case)));
+}
+
+TEST(TabStripLayoutTest, ExactlyEnoughSpaceAllPinnedTabs) {
+  TestCase test_case;
+  test_case.num_tabs = 2;
+  test_case.num_pinned_tabs = 2;
+  test_case.tabstrip_width = 2 * kPinnedWidth - kTabOverlap;
+
+  // We want to check the case where the necessary strip width equals the
+  // available width.
+  auto bounds = CalculateTabBounds(test_case);
+
+  EXPECT_EQ("10 10", TabWidthsAsString(bounds));
+
+  // Validate that the tabstrip width is indeeed exactly enough to hold two
+  // pinned tabs.
+  EXPECT_EQ(test_case.tabstrip_width, bounds[1].right());
 }

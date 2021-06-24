@@ -37,6 +37,10 @@ constexpr SquashingDisallowedReasonStringMap
          "squashingTransformAncestorMismatch",
          "Cannot be squashed because this layer has a different transform "
          "ancestor than the squashing layer"},
+        {SquashingDisallowedReason::kPreserve3DSortingContextMismatch,
+         "squashingPreserve3DSortingContextMismatch",
+         "Cannot be squashed because this layer is part of a different 3-D"
+         "Rendering Context than the squashing layer"},
         {SquashingDisallowedReason::kFilterMismatch,
          "squashingFilterAncestorMismatch",
          "Cannot be squashed because this layer has a different filter "
@@ -46,10 +50,6 @@ constexpr SquashingDisallowedReasonStringMap
          "Cannot be squashed without breaking paint order"},
         {SquashingDisallowedReason::kSquashingVideoIsDisallowed,
          "squashingVideoIsDisallowed", "Squashing video is not supported"},
-        {SquashingDisallowedReason::kSquashedLayerClipsCompositingDescendants,
-         "squashedLayerClipsSquashingDisallowedDescendants",
-         "Squashing a layer that clips composited descendants is not "
-         "supported."},
         {SquashingDisallowedReason::kSquashingLayoutEmbeddedContentIsDisallowed,
          "squashingLayoutEmbeddedContentIsDisallowed",
          "Squashing a frame, iframe or plugin is not supported."},
@@ -60,10 +60,6 @@ constexpr SquashingDisallowedReasonStringMap
          "squashingNearestFixedPositionMismatch",
          "Cannot be squashed because this layer has a different nearest fixed "
          "position layer than the squashing layer"},
-        {SquashingDisallowedReason::kScrollChildWithCompositedDescendants,
-         "scrollChildWithCompositedDescendants",
-         "Squashing a scroll child with composited descendants is not "
-         "supported."},
         {SquashingDisallowedReason::kSquashingLayerIsAnimating,
          "squashingLayerIsAnimating",
          "Cannot squash into a layer that is animating."},
@@ -79,6 +75,12 @@ constexpr SquashingDisallowedReasonStringMap
         {SquashingDisallowedReason::kMaskMismatch,
          "SquashingDisallowedReasonMaskMismatch",
          "Cannot squash layers across mask boundaries."},
+        {SquashingDisallowedReason::kCrossesLayoutContainmentBoundary,
+         "SquashingDisallowedReasonCrossesLayoutContainmentBoundary",
+         "Cannot squash layer across layout containment boundary."},
+        {SquashingDisallowedReason::kDisabled,
+         "SquashingDisallowedReasonDisabled",
+         "Squashing is disabled by runtime flag."},
 };
 
 }  // anonymous namespace

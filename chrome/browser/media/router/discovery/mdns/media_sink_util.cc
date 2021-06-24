@@ -51,9 +51,6 @@ CreateCastMediaSinkResult CreateCastMediaSink(const DnsSdService& service,
     service_data[key] = val;
   }
 
-  // When use this "sink" within browser, please note it will have a different
-  // ID when it is sent to the extension, because it derives a different sink ID
-  // using the given sink ID.
   std::string unique_id = service_data["id"];
   if (unique_id.empty())
     return CreateCastMediaSinkResult::kMissingID;
@@ -122,8 +119,6 @@ std::vector<MediaSinkInternal> GetFixedIPSinksFromCommandLine() {
     CreateCastMediaSinkResult result = CreateCastMediaSink(service, &sink);
     if (result == CreateCastMediaSinkResult::kOk) {
       sinks.push_back(sink);
-    } else {
-      DVLOG(2) << "Failed to create sink from " << ip;
     }
   }
   return sinks;

@@ -65,6 +65,31 @@ double WebPerformance::NavigationStart() const {
   return MillisecondsToSeconds(private_->timing()->navigationStart());
 }
 
+base::TimeTicks WebPerformance::NavigationStartAsMonotonicTime() const {
+  return private_->timing()->NavigationStartAsMonotonicTime();
+}
+
+WebPerformance::BackForwardCacheRestoreTimings
+WebPerformance::BackForwardCacheRestore() const {
+  PerformanceTiming::BackForwardCacheRestoreTimings restore_timings =
+      private_->timing()->BackForwardCacheRestore();
+
+  WebVector<BackForwardCacheRestoreTiming> timings(restore_timings.size());
+  for (size_t i = 0; i < restore_timings.size(); i++) {
+    timings[i].navigation_start =
+        MillisecondsToSeconds(restore_timings[i].navigation_start);
+    timings[i].first_paint =
+        MillisecondsToSeconds(restore_timings[i].first_paint);
+    for (size_t j = 0; j < restore_timings[i].request_animation_frames.size();
+         j++) {
+      timings[i].request_animation_frames[j] =
+          MillisecondsToSeconds(restore_timings[i].request_animation_frames[j]);
+    }
+    timings[i].first_input_delay = restore_timings[i].first_input_delay;
+  }
+  return timings;
+}
+
 double WebPerformance::InputForNavigationStart() const {
   return MillisecondsToSeconds(private_->timing()->inputStart());
 }
@@ -146,10 +171,6 @@ double WebPerformance::LoadEventEnd() const {
   return MillisecondsToSeconds(private_->timing()->loadEventEnd());
 }
 
-double WebPerformance::FirstLayout() const {
-  return MillisecondsToSeconds(private_->timing()->FirstLayout());
-}
-
 double WebPerformance::FirstPaint() const {
   return MillisecondsToSeconds(private_->timing()->FirstPaint());
 }
@@ -160,6 +181,10 @@ double WebPerformance::FirstImagePaint() const {
 
 double WebPerformance::FirstContentfulPaint() const {
   return MillisecondsToSeconds(private_->timing()->FirstContentfulPaint());
+}
+
+base::TimeTicks WebPerformance::FirstContentfulPaintAsMonotonicTime() const {
+  return private_->timing()->FirstContentfulPaintAsMonotonicTime();
 }
 
 double WebPerformance::FirstMeaningfulPaint() const {
@@ -187,33 +212,64 @@ uint64_t WebPerformance::LargestTextPaintSize() const {
   return private_->timing()->LargestTextPaintSize();
 }
 
-double WebPerformance::PageInteractive() const {
-  return MillisecondsToSeconds(private_->timing()->PageInteractive());
+base::TimeTicks WebPerformance::LargestContentfulPaintAsMonotonicTime() const {
+  return private_->timing()->LargestContentfulPaintAsMonotonicTime();
 }
 
-double WebPerformance::PageInteractiveDetection() const {
-  return MillisecondsToSeconds(private_->timing()->PageInteractiveDetection());
-}
-
-double WebPerformance::FirstInputInvalidatingInteractive() const {
+double WebPerformance::ExperimentalLargestImagePaint() const {
   return MillisecondsToSeconds(
-      private_->timing()->FirstInputInvalidatingInteractive());
+      private_->timing()->ExperimentalLargestImagePaint());
 }
 
-double WebPerformance::FirstInputDelay() const {
-  return MillisecondsToSeconds(private_->timing()->FirstInputDelay());
+uint64_t WebPerformance::ExperimentalLargestImagePaintSize() const {
+  return private_->timing()->ExperimentalLargestImagePaintSize();
 }
 
-double WebPerformance::FirstInputTimestamp() const {
-  return MillisecondsToSeconds(private_->timing()->FirstInputTimestamp());
+double WebPerformance::ExperimentalLargestTextPaint() const {
+  return MillisecondsToSeconds(
+      private_->timing()->ExperimentalLargestTextPaint());
 }
 
-double WebPerformance::LongestInputDelay() const {
-  return MillisecondsToSeconds(private_->timing()->LongestInputDelay());
+uint64_t WebPerformance::ExperimentalLargestTextPaintSize() const {
+  return private_->timing()->ExperimentalLargestTextPaintSize();
 }
 
-double WebPerformance::LongestInputTimestamp() const {
-  return MillisecondsToSeconds(private_->timing()->LongestInputTimestamp());
+double WebPerformance::FirstEligibleToPaint() const {
+  return MillisecondsToSeconds(private_->timing()->FirstEligibleToPaint());
+}
+
+double WebPerformance::FirstInputOrScrollNotifiedTimestamp() const {
+  return MillisecondsToSeconds(
+      private_->timing()->FirstInputOrScrollNotifiedTimestamp());
+}
+
+absl::optional<base::TimeDelta> WebPerformance::FirstInputDelay() const {
+  return private_->timing()->FirstInputDelay();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::FirstInputTimestamp() const {
+  return private_->timing()->FirstInputTimestamp();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::LongestInputDelay() const {
+  return private_->timing()->LongestInputDelay();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::LongestInputTimestamp() const {
+  return private_->timing()->LongestInputTimestamp();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::FirstInputProcessingTime()
+    const {
+  return private_->timing()->FirstInputProcessingTime();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::FirstScrollDelay() const {
+  return private_->timing()->FirstScrollDelay();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::FirstScrollTimestamp() const {
+  return private_->timing()->FirstScrollTimestamp();
 }
 
 double WebPerformance::ParseStart() const {
@@ -245,6 +301,38 @@ double WebPerformance::ParseBlockedOnScriptExecutionFromDocumentWriteDuration()
   return MillisecondsToSeconds(
       private_->timing()
           ->ParseBlockedOnScriptExecutionFromDocumentWriteDuration());
+}
+
+absl::optional<base::TimeTicks> WebPerformance::LastPortalActivatedPaint()
+    const {
+  return private_->timing()->LastPortalActivatedPaint();
+}
+
+absl::optional<base::TimeTicks> WebPerformance::UnloadStart() const {
+  return private_->timing()->UnloadStart();
+}
+
+absl::optional<base::TimeTicks> WebPerformance::UnloadEnd() const {
+  return private_->timing()->UnloadEnd();
+}
+
+absl::optional<base::TimeTicks> WebPerformance::CommitNavigationEnd() const {
+  return private_->timing()->CommitNavigationEnd();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::UserTimingMarkFullyLoaded()
+    const {
+  return private_->timing()->UserTimingMarkFullyLoaded();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::UserTimingMarkFullyVisible()
+    const {
+  return private_->timing()->UserTimingMarkFullyVisible();
+}
+
+absl::optional<base::TimeDelta> WebPerformance::UserTimingMarkInteractive()
+    const {
+  return private_->timing()->UserTimingMarkInteractive();
 }
 
 WebPerformance::WebPerformance(WindowPerformance* performance)

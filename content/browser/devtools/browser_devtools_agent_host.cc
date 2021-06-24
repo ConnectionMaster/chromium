@@ -10,6 +10,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
 #include "base/single_thread_task_runner.h"
+#include "components/viz/common/buildflags.h"
 #include "content/browser/devtools/devtools_session.h"
 #include "content/browser/devtools/protocol/browser_handler.h"
 #include "content/browser/devtools/protocol/fetch_handler.h"
@@ -17,11 +18,16 @@
 #include "content/browser/devtools/protocol/memory_handler.h"
 #include "content/browser/devtools/protocol/protocol.h"
 #include "content/browser/devtools/protocol/security_handler.h"
+#include "content/browser/devtools/protocol/storage_handler.h"
 #include "content/browser/devtools/protocol/system_info_handler.h"
 #include "content/browser/devtools/protocol/target_handler.h"
 #include "content/browser/devtools/protocol/tethering_handler.h"
 #include "content/browser/devtools/protocol/tracing_handler.h"
-#include "content/browser/frame_host/frame_tree_node.h"
+#include "content/browser/renderer_host/frame_tree_node.h"
+
+#if BUILDFLAG(USE_VIZ_DEBUGGER)
+#include "content/browser/devtools/protocol/visual_debugger_handler.h"
+#endif
 
 namespace content {
 
@@ -66,31 +72,38 @@ BrowserDevToolsAgentHost::~BrowserDevToolsAgentHost() {
   BrowserDevToolsAgentHostInstances().erase(this);
 }
 
-bool BrowserDevToolsAgentHost::AttachSession(DevToolsSession* session) {
-  if (!session->client()->MayAttachToBrowser())
+bool BrowserDevToolsAgentHost::AttachSession(DevToolsSession* session,
+                                             bool acquire_wake_lock) {
+  if (!session->GetClient()->MayAttachToBrowser())
     return false;
 
   session->SetBrowserOnly(true);
   session->AddHandler(std::make_unique<protocol::TargetHandler>(
       protocol::TargetHandler::AccessMode::kBrowser, GetId(),
-      GetRendererChannel(), session->GetRootSession()));
+      protocol::TargetAutoAttacher::CreateForBrowser(),
+      session->GetRootSession()));
   if (only_discovery_)
     return true;
 
-  session->AddHandler(std::make_unique<protocol::BrowserHandler>());
+  session->AddHandler(std::make_unique<protocol::BrowserHandler>(
+      session->GetClient()->MayWriteLocalFiles()));
+#if BUILDFLAG(USE_VIZ_DEBUGGER)
+  session->AddHandler(std::make_unique<protocol::VisualDebuggerHandler>());
+#endif
   session->AddHandler(std::make_unique<protocol::IOHandler>(GetIOContext()));
   session->AddHandler(std::make_unique<protocol::FetchHandler>(
       GetIOContext(),
       base::BindRepeating([](base::OnceClosure cb) { std::move(cb).Run(); })));
   session->AddHandler(std::make_unique<protocol::MemoryHandler>());
   session->AddHandler(std::make_unique<protocol::SecurityHandler>());
+  session->AddHandler(std::make_unique<protocol::StorageHandler>());
   session->AddHandler(std::make_unique<protocol::SystemInfoHandler>());
   if (tethering_task_runner_) {
     session->AddHandler(std::make_unique<protocol::TetheringHandler>(
         socket_callback_, tethering_task_runner_));
   }
-  session->AddHandler(std::make_unique<protocol::TracingHandler>(
-      nullptr, GetIOContext(), session->UsesBinaryProtocol()));
+  session->AddHandler(
+      std::make_unique<protocol::TracingHandler>(GetIOContext()));
   return true;
 }
 

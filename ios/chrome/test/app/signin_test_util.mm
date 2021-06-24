@@ -4,11 +4,10 @@
 
 #include "ios/chrome/test/app/signin_test_util.h"
 
-#include "base/logging.h"
-#include "base/strings/stringprintf.h"
+#include "base/check.h"
 #import "base/test/ios/wait_util.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/signin/public/base/signin_pref_names.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/pref_names.h"
@@ -20,52 +19,35 @@
 #import "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #import "ios/public/provider/chrome/browser/signin/fake_chrome_identity.h"
 #import "ios/public/provider/chrome/browser/signin/fake_chrome_identity_service.h"
-#include "net/http/http_status_code.h"
-#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
-#include "net/url_request/test_url_fetcher_factory.h"
-#include "net/url_request/url_fetcher_delegate.h"
-#include "net/url_request/url_request_status.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
+namespace chrome_test_util {
+
 namespace {
 
-net::FakeURLFetcherFactory* gFakeURLFetcherFactory = nullptr;
-
-// Specialization of the FakeURLFetcherFactory that will recognize GET requests
-// for MergeSession and answer those requests correctly.
-class MergeSessionFakeURLFetcherFactory : public net::FakeURLFetcherFactory {
- public:
-  explicit MergeSessionFakeURLFetcherFactory(URLFetcherFactory* default_factory)
-      : net::FakeURLFetcherFactory(default_factory) {}
-  std::unique_ptr<net::URLFetcher> CreateURLFetcher(
-      int id,
-      const GURL& url,
-      net::URLFetcher::RequestType request_type,
-      net::URLFetcherDelegate* d,
-      net::NetworkTrafficAnnotationTag traffic_annotation) override {
-    const GURL kMergeSessionURL =
-        GURL("https://accounts.google.com/MergeSession");
-    url::Replacements<char> replacements;
-    replacements.ClearRef();
-    replacements.ClearQuery();
-    if (url.ReplaceComponents(replacements) != kMergeSessionURL) {
-      // URL is not a MergeSession GET. Use the default method.
-      return net::FakeURLFetcherFactory::CreateURLFetcher(
-          id, url, request_type, d, traffic_annotation);
-    }
-    // Actual MergeSession request. Answer is ignored by the AccountReconcilor,
-    // so it can also be empty.
-    return std::unique_ptr<net::FakeURLFetcher>(new net::FakeURLFetcher(
-        url, d, "", net::HTTP_OK, net::URLRequestStatus::SUCCESS));
+// Starts forgetting all identities from the ChromeIdentity services.
+//
+// Note: Forgetting an identity is a asynchronous operation. This function does
+// not wait for the forget identity operation to finish.
+void StartForgetAllIdentities(PrefService* pref_service) {
+  ios::ChromeIdentityService* identity_service =
+      ios::GetChromeBrowserProvider()->GetChromeIdentityService();
+  NSArray* identities_to_remove =
+      [NSArray arrayWithArray:identity_service->GetAllIdentities(pref_service)];
+  for (ChromeIdentity* identity in identities_to_remove) {
+    identity_service->ForgetIdentity(identity, ^(NSError* error) {
+      if (error) {
+        NSLog(@"ForgetIdentity failed: [identity = %@, error = %@]",
+              identity.userEmail, [error localizedDescription]);
+      }
+    });
   }
-};
+}
 
 }  // namespace
-
-namespace chrome_test_util {
 
 void SetUpMockAuthentication() {
   ios::ChromeBrowserProvider* provider = ios::GetChromeBrowserProvider();
@@ -84,86 +66,42 @@ void TearDownMockAuthentication() {
       ->ResetChromeIdentityServiceObserverForTesting();
 }
 
-void SetUpMockAccountReconcilor() {
-  gFakeURLFetcherFactory =
-      new MergeSessionFakeURLFetcherFactory(new net::URLFetcherImplFactory());
-  GaiaAuthFetcherIOS::SetShouldUseGaiaAuthFetcherIOSForTesting(false);
+void SignOutAndClearIdentities() {
+  // EarlGrey monitors network requests by swizzling internal iOS network
+  // objects and expects them to be dealloced before the tear down. It is
+  // important to autorelease all objects that make network requests to avoid
+  // EarlGrey being confused about on-going network traffic..
+  @autoreleasepool {
+    ChromeBrowserState* browser_state = GetOriginalBrowserState();
+    DCHECK(browser_state);
 
-  // Answer is URLs in JSON that will be fetched and used in MergeSession that
-  // we also intercept, so it can be empty.
-  const GURL kCheckConnectionInfoURL = GURL(base::StringPrintf(
-      "https://accounts.google.com/GetCheckConnectionInfo?source=%s",
-      GaiaConstants::kChromeSource));
-  gFakeURLFetcherFactory->SetFakeResponse(kCheckConnectionInfoURL, "[]",
-                                          net::HTTP_OK,
-                                          net::URLRequestStatus::SUCCESS);
+    // Sign out current user and clear all browsing data on the device.
+    AuthenticationService* authentication_service =
+        AuthenticationServiceFactory::GetForBrowserState(browser_state);
+    if (authentication_service->IsAuthenticated()) {
+      authentication_service->SignOut(signin_metrics::SIGNOUT_TEST,
+                                      /*force_clear_browsing_data=*/true, nil);
+    }
 
-  // No accounts in the cookie jar, will trigger a MergeSession for all of
-  // them.
-  const GURL kListAccountsURL = GURL(base::StringPrintf(
-      "https://accounts.google.com/ListAccounts?source=%s&json=standard",
-      GaiaConstants::kChromeSource));
-  gFakeURLFetcherFactory->SetFakeResponse(kListAccountsURL, "[\"\",[]]",
-                                          net::HTTP_OK,
-                                          net::URLRequestStatus::SUCCESS);
+    // Clear last signed in user preference.
+    browser_state->GetPrefs()->ClearPref(prefs::kGoogleServicesLastAccountId);
+    browser_state->GetPrefs()->ClearPref(prefs::kGoogleServicesLastUsername);
 
-  // Ubertoken, which is sent for the MergeSession that we also intercept, so
-  // it can be any bogus token.
-  const GURL kUbertokenURL = GURL(base::StringPrintf(
-      "https://accounts.google.com/OAuthLogin?source=%s&issueuberauth=1",
-      GaiaConstants::kChromeSource));
-  gFakeURLFetcherFactory->SetFakeResponse(
-      kUbertokenURL, "1234-asdf-fake-ubertoken", net::HTTP_OK,
-      net::URLRequestStatus::SUCCESS);
+    // |SignOutAndClearIdentities()| is called during shutdown. Commit all pref
+    // changes to ensure that clearing the last signed in account is saved on
+    // disk in case Chrome crashes during shutdown.
+    browser_state->GetPrefs()->CommitPendingWrite();
 
-  // MergeSession request is handled by MergeSessionFakeURLFetcherFactory.
-
-  // If a profile was previously signed in without chrome identity, a logout
-  // action is done and will block all other requests until it has been dealt
-  // with.
-  const GURL kLogoutURL =
-      GURL(base::StringPrintf("https://accounts.google.com/Logout?source=%s",
-                              GaiaConstants::kChromeSource));
-  gFakeURLFetcherFactory->SetFakeResponse(kLogoutURL, "", net::HTTP_OK,
-                                          net::URLRequestStatus::SUCCESS);
-}
-
-void TearDownMockAccountReconcilor() {
-  GaiaAuthFetcherIOS::SetShouldUseGaiaAuthFetcherIOSForTesting(true);
-  delete gFakeURLFetcherFactory;
-  gFakeURLFetcherFactory = nullptr;
-}
-
-bool SignOutAndClearAccounts() {
-  ios::ChromeBrowserState* browser_state = GetOriginalBrowserState();
-  DCHECK(browser_state);
-
-  // Sign out current user.
-  AuthenticationService* authentication_service =
-      AuthenticationServiceFactory::GetForBrowserState(browser_state);
-  if (authentication_service->IsAuthenticated()) {
-    authentication_service->SignOut(signin_metrics::SIGNOUT_TEST, nil);
+    // Once the browser was signed out, start clearing all identities from the
+    // ChromeIdentityService.
+    StartForgetAllIdentities(browser_state->GetPrefs());
   }
+}
 
-  // Clear last signed in user preference.
-  browser_state->GetPrefs()->ClearPref(prefs::kGoogleServicesLastAccountId);
-  browser_state->GetPrefs()->ClearPref(prefs::kGoogleServicesLastUsername);
-
-  // Clear known identities.
+bool HasIdentities() {
   ios::ChromeIdentityService* identity_service =
       ios::GetChromeBrowserProvider()->GetChromeIdentityService();
-  NSArray* identities([identity_service->GetAllIdentities() copy]);
-  for (ChromeIdentity* identity in identities) {
-    identity_service->ForgetIdentity(identity, nil);
-  }
-
-  NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:10.0];
-  while (identity_service->HasIdentities() &&
-         [[NSDate date] compare:deadline] != NSOrderedDescending) {
-    base::test::ios::SpinRunLoopWithMaxDelay(
-        base::TimeDelta::FromSecondsD(0.01));
-  }
-  return !identity_service->HasIdentities();
+  return identity_service->HasIdentities();
 }
 
 void ResetMockAuthentication() {
@@ -172,12 +110,25 @@ void ResetMockAuthentication() {
 }
 
 void ResetSigninPromoPreferences() {
-  ios::ChromeBrowserState* browser_state = GetOriginalBrowserState();
+  ChromeBrowserState* browser_state = GetOriginalBrowserState();
   PrefService* prefs = browser_state->GetPrefs();
   prefs->SetInteger(prefs::kIosBookmarkSigninPromoDisplayedCount, 0);
   prefs->SetBoolean(prefs::kIosBookmarkPromoAlreadySeen, false);
   prefs->SetInteger(prefs::kIosSettingsSigninPromoDisplayedCount, 0);
   prefs->SetBoolean(prefs::kIosSettingsPromoAlreadySeen, false);
+  prefs->SetBoolean(prefs::kSigninShouldPromptForSigninAgain, false);
+}
+
+void ResetUserApprovedAccountListManager() {
+  ChromeBrowserState* browser_state = GetOriginalBrowserState();
+  PrefService* prefs = browser_state->GetPrefs();
+  prefs->ClearPref(prefs::kSigninLastAccounts);
+}
+
+void RevokeSyncConsent() {
+  ChromeBrowserState* browser_state = GetOriginalBrowserState();
+  PrefService* prefs = browser_state->GetPrefs();
+  prefs->SetBoolean(prefs::kGoogleServicesConsentedToSync, false);
 }
 
 }  // namespace chrome_test_util

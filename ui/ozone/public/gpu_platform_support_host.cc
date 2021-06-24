@@ -4,7 +4,6 @@
 
 #include "ui/ozone/public/gpu_platform_support_host.h"
 
-#include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 
 namespace ui {
@@ -15,17 +14,11 @@ namespace {
 class StubGpuPlatformSupportHost : public GpuPlatformSupportHost {
  public:
   // GpuPlatformSupportHost:
-  void OnGpuProcessLaunched(
+  void OnChannelDestroyed(int host_id) override {}
+  void OnGpuServiceLaunched(
       int host_id,
       scoped_refptr<base::SingleThreadTaskRunner> ui_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> send_runner,
-      const base::Callback<void(IPC::Message*)>& send_callback) override {}
-
-  void OnChannelDestroyed(int host_id) override {}
-  void OnMessageReceived(const IPC::Message&) override {}
-  void OnGpuServiceLaunched(
-      scoped_refptr<base::SingleThreadTaskRunner> ui_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> io_runner,
+      scoped_refptr<base::SingleThreadTaskRunner> process_host_runner,
       GpuHostBindInterfaceCallback binder,
       GpuHostTerminateCallback terminate_callback) override {}
 };

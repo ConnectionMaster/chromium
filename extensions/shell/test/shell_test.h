@@ -5,9 +5,6 @@
 #ifndef EXTENSIONS_SHELL_TEST_SHELL_TEST_H_
 #define EXTENSIONS_SHELL_TEST_SHELL_TEST_H_
 
-#include <memory>
-
-#include "base/test/scoped_feature_list.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
 
@@ -33,9 +30,8 @@ class AppShellTest : public content::BrowserTestBase {
   content::BrowserContext* browser_context() { return browser_context_; }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
-  content::BrowserContext* browser_context_;
-  ShellExtensionSystem* extension_system_;
+  content::BrowserContext* browser_context_ = nullptr;
+  ShellExtensionSystem* extension_system_ = nullptr;
 };
 
 }  // namespace extensions

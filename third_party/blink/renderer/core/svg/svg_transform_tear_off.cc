@@ -48,7 +48,7 @@ SVGTransformTearOff::SVGTransformTearOff(
 
 SVGTransformTearOff::~SVGTransformTearOff() = default;
 
-void SVGTransformTearOff::Trace(blink::Visitor* visitor) {
+void SVGTransformTearOff::Trace(Visitor* visitor) const {
   visitor->Trace(matrix_tearoff_);
   SVGPropertyTearOff<SVGTransform>::Trace(visitor);
 }
@@ -57,11 +57,6 @@ SVGTransformTearOff* SVGTransformTearOff::CreateDetached() {
   return MakeGarbageCollected<SVGTransformTearOff>(
       MakeGarbageCollected<SVGTransform>(blink::SVGTransformType::kMatrix),
       nullptr, kPropertyIsNotAnimVal);
-}
-
-SVGTransformTearOff* SVGTransformTearOff::Create(SVGMatrixTearOff* matrix) {
-  return Create(SVGTransform::Create(matrix->Value()), nullptr,
-                kPropertyIsNotAnimVal);
 }
 
 SVGMatrixTearOff* SVGTransformTearOff::matrix() {

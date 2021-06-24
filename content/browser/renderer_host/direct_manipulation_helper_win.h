@@ -28,7 +28,7 @@ class WindowEventTarget;
 
 namespace content {
 
-class DirectManipulationBrowserTest;
+class DirectManipulationBrowserTestBase;
 class DirectManipulationUnitTest;
 
 // TODO(crbug.com/914914) This is added for help us getting debug log on
@@ -76,8 +76,14 @@ class CONTENT_EXPORT DirectManipulationHelper
   // Pass the pointer hit test to Direct Manipulation.
   void OnPointerHitTest(WPARAM w_param);
 
+  // Register this as an AnimationObserver of ui::Compositor.
+  void AddAnimationObserver();
+
+  // Unregister this as an AnimationObserver of ui::Compositor.
+  void RemoveAnimationObserver();
+
  private:
-  friend class content::DirectManipulationBrowserTest;
+  friend class DirectManipulationBrowserTestBase;
   friend class DirectManipulationUnitTest;
 
   DirectManipulationHelper(HWND window, ui::Compositor* compositor);
@@ -97,6 +103,7 @@ class CONTENT_EXPORT DirectManipulationHelper
   HWND window_;
   ui::Compositor* compositor_ = nullptr;
   DWORD view_port_handler_cookie_;
+  bool has_animation_observer_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(DirectManipulationHelper);
 };

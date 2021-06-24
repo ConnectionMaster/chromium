@@ -12,27 +12,29 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "base/unguessable_token.h"
+#include "build/build_config.h"
 #include "media/base/media_export.h"
 #include "media/cdm/cdm_allocator.h"
+#include "media/cdm/cdm_document_service.h"
 #include "media/cdm/output_protection.h"
-#include "media/cdm/platform_verification.h"
+#include "media/media_buildflags.h"
+#include "url/origin.h"
 
 namespace cdm {
 class FileIO;
 class FileIOClient;
-class CdmProxy;
-class CdmProxyClient;
 }  // namespace cdm
 
 namespace media {
 
 // Provides a wrapper on the auxiliary functions (CdmAllocator, CdmFileIO,
-// OutputProtection, PlatformVerification) needed by the library CDM. The
+// OutputProtection, CdmDocumentService) needed by the library CDM. The
 // default implementation does nothing -- it simply returns nullptr, false, 0,
 // etc. as required to meet the interface.
 class MEDIA_EXPORT CdmAuxiliaryHelper : public CdmAllocator,
                                         public OutputProtection,
-                                        public PlatformVerification {
+                                        public CdmDocumentService {
  public:
   CdmAuxiliaryHelper();
   ~CdmAuxiliaryHelper() override;
@@ -47,15 +49,9 @@ class MEDIA_EXPORT CdmAuxiliaryHelper : public CdmAllocator,
   // needed anymore.
   virtual cdm::FileIO* CreateCdmFileIO(cdm::FileIOClient* client);
 
-  // Creates a cdm::CdmProxy object and returns it.
-  // The caller does not own the returned object and should not delete it
-  // directly. Instead, it should call cdm::CdmProxy::Destroy() after it's not
-  // needed anymore.
-  virtual cdm::CdmProxy* CreateCdmProxy(cdm::CdmProxyClient* client);
-
-  // Returns a CDM ID associated with the last returned CdmProxy. Should only
-  // be called after the CdmProxy has been initialized.
-  virtual int GetCdmProxyCdmId();
+  // Gets the origin of the frame associated with the CDM, which could be empty
+  // if the origin is unavailable or if error happened.
+  virtual url::Origin GetCdmOrigin();
 
   // CdmAllocator implementation.
   cdm::Buffer* CreateCdmBuffer(size_t capacity) override;
@@ -66,11 +62,15 @@ class MEDIA_EXPORT CdmAuxiliaryHelper : public CdmAllocator,
   void EnableProtection(uint32_t desired_protection_mask,
                         EnableProtectionCB callback) override;
 
-  // PlatformVerification implementation.
+  // CdmDocumentService implementation.
   void ChallengePlatform(const std::string& service_id,
                          const std::string& challenge,
                          ChallengePlatformCB callback) override;
   void GetStorageId(uint32_t version, StorageIdCB callback) override;
+
+#if defined(OS_WIN)
+  void GetCdmOriginId(GetCdmOriginIdCB callback) override;
+#endif  // defined(OS_WIN)
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CdmAuxiliaryHelper);

@@ -12,23 +12,7 @@ WebContents* BrowserPluginGuestDelegate::CreateNewGuestWindow(
   return nullptr;
 }
 
-WebContents* BrowserPluginGuestDelegate::GetOwnerWebContents() const {
-  return nullptr;
-}
-
-bool BrowserPluginGuestDelegate::CanUseCrossProcessFrames() {
-  return true;
-}
-
-bool BrowserPluginGuestDelegate::CanBeEmbeddedInsideCrossProcessFrames() {
-  return false;
-}
-
-RenderWidgetHost* BrowserPluginGuestDelegate::GetOwnerRenderWidgetHost() {
-  return nullptr;
-}
-
-SiteInstance* BrowserPluginGuestDelegate::GetOwnerSiteInstance() {
+WebContents* BrowserPluginGuestDelegate::GetOwnerWebContents() {
   return nullptr;
 }
 

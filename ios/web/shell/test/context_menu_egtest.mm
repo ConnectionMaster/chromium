@@ -7,6 +7,7 @@
 #import <XCTest/XCTest.h>
 
 #import "base/ios/block_types.h"
+#include "base/strings/sys_string_conversions.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
 #include "ios/web/public/test/element_selector.h"
@@ -40,21 +41,20 @@ const char kHtmlFile[] =
 - (void)setUp {
   [super setUp];
 
-  _server.ServeFilesFromSourceDirectory(base::FilePath(FILE_PATH_LITERAL(".")));
+  NSString* bundlePath = [NSBundle bundleForClass:[self class]].resourcePath;
+  _server.ServeFilesFromDirectory(
+      base::FilePath(base::SysNSStringToUTF8(bundlePath)));
   GREYAssert(_server.Start(), @"EmbeddedTestServer failed to start.");
 }
 
 // Tests context menu appears on a regular link.
-- (void)testContextMenu {
+- (void)DISABLED_testContextMenu {
   const char linkID[] = "normal-link";
-  const char linkText[] = "normal-link-text";
+  NSString* const linkText = @"normal-link-text";
   const GURL pageURL = _server.GetURL(kHtmlFile);
 
-  bool success = shell_test_util::LoadUrl(pageURL);
-  GREYAssert(success, @"Page did not complete loading.");
-
-  success = shell_test_util::WaitForWebViewContainingText(linkText);
-  GREYAssert(success, @"Failed waiting for web view containing '%s'", linkText);
+  [ShellEarlGrey loadURL:pageURL];
+  [ShellEarlGrey waitForWebStateContainingText:linkText];
 
   [[EarlGrey selectElementWithMatcher:web::WebView()]
       performAction:web::LongPressElementForContextMenu(
@@ -76,15 +76,15 @@ const char kHtmlFile[] =
 
 // Tests context menu on element that has WebkitTouchCallout set to none from an
 // ancestor and overridden.
-- (void)testContextMenuWebkitTouchCalloutOverride {
+//
+// Disabled due to https://crbug.com/1087189.
+- (void)DISABLED_testContextMenuWebkitTouchCalloutOverride {
   const char linkID[] = "no-webkit-link";
-  const char linkText[] = "no-webkit-link-text";
+  NSString* const linkText = @"no-webkit-link-text";
   const GURL pageURL = _server.GetURL(kHtmlFile);
 
-  bool success = shell_test_util::LoadUrl(pageURL);
-  GREYAssert(success, @"Page did not complete loading.");
-  success = shell_test_util::WaitForWebViewContainingText(linkText);
-  GREYAssert(success, @"Failed waiting for web view containing '%s'", linkText);
+  [ShellEarlGrey loadURL:pageURL];
+  [ShellEarlGrey waitForWebStateContainingText:linkText];
 
   [[EarlGrey selectElementWithMatcher:web::WebView()]
       performAction:web::LongPressElementForContextMenu(

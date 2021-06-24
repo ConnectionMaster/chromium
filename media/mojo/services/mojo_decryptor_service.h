@@ -15,26 +15,21 @@
 #include "base/memory/weak_ptr.h"
 #include "media/base/cdm_context.h"
 #include "media/base/decryptor.h"
-#include "media/mojo/interfaces/decryptor.mojom.h"
+#include "media/mojo/mojom/decryptor.mojom.h"
 #include "media/mojo/services/media_mojo_export.h"
 
 namespace media {
 
 class DecoderBuffer;
-class MojoCdmServiceContext;
 class MojoDecoderBufferReader;
 class MojoDecoderBufferWriter;
 
 // A mojom::Decryptor implementation that proxies decryptor calls to a
 // media::Decryptor.
-class MEDIA_MOJO_EXPORT MojoDecryptorService : public mojom::Decryptor {
+class MEDIA_MOJO_EXPORT MojoDecryptorService final : public mojom::Decryptor {
  public:
   using StreamType = media::Decryptor::StreamType;
   using Status = media::Decryptor::Status;
-
-  static std::unique_ptr<MojoDecryptorService> Create(
-      int cdm_id,
-      MojoCdmServiceContext* mojo_cdm_service_context);
 
   // If |cdm_context_ref| is null, caller must ensure that |decryptor| outlives
   // |this|. Otherwise, |decryptor| is guaranteed to be valid as long as
@@ -92,10 +87,12 @@ class MEDIA_MOJO_EXPORT MojoDecryptorService : public mojom::Decryptor {
                       const media::Decryptor::AudioFrames& frames);
   void OnVideoDecoded(DecryptAndDecodeVideoCallback callback,
                       Status status,
-                      const scoped_refptr<VideoFrame>& frame);
+                      scoped_refptr<VideoFrame> frame);
 
   // Returns audio/video buffer reader according to the |stream_type|.
   MojoDecoderBufferReader* GetBufferReader(StreamType stream_type) const;
+
+  bool has_initialize_been_called_ = false;
 
   // Helper classes to receive encrypted DecoderBuffer from the client.
   std::unique_ptr<MojoDecoderBufferReader> audio_buffer_reader_;
@@ -112,7 +109,7 @@ class MEDIA_MOJO_EXPORT MojoDecryptorService : public mojom::Decryptor {
   std::unique_ptr<CdmContextRef> cdm_context_ref_;
 
   base::WeakPtr<MojoDecryptorService> weak_this_;
-  base::WeakPtrFactory<MojoDecryptorService> weak_factory_;
+  base::WeakPtrFactory<MojoDecryptorService> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MojoDecryptorService);
 };

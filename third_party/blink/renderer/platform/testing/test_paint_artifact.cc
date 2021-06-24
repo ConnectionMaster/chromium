@@ -13,38 +13,18 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_flags.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_recorder.h"
-#include "third_party/blink/renderer/platform/graphics/paint/scroll_hit_test_display_item.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
-class TestPaintArtifact::DummyRectClient : public FakeDisplayItemClient {
- public:
-  IntRect VisualRect() const final { return rect_; }
-  void SetVisualRect(const IntRect& rect) { rect_ = rect; }
-
-  sk_sp<PaintRecord> MakeRecord(const FloatRect& rect, Color color) {
-    rect_ = EnclosingIntRect(rect);
-    PaintRecorder recorder;
-    cc::PaintCanvas* canvas = recorder.beginRecording(rect);
-    PaintFlags flags;
-    flags.setColor(color.Rgb());
-    canvas->drawRect(rect, flags);
-    return recorder.finishRecordingAsPicture();
-  }
-
- private:
-  IntRect rect_;
-};
-
-TestPaintArtifact::TestPaintArtifact() : display_item_list_(0) {}
-
-TestPaintArtifact::~TestPaintArtifact() = default;
+static DisplayItemClient& StaticDummyClient() {
+  DEFINE_STATIC_LOCAL(FakeDisplayItemClient, client, ());
+  client.Validate();
+  return client;
+}
 
 TestPaintArtifact& TestPaintArtifact::Chunk(int id) {
-  DEFINE_STATIC_LOCAL(DummyRectClient, client, ());
-  Chunk(client,
+  Chunk(StaticDummyClient(),
         static_cast<DisplayItem::Type>(DisplayItem::kDrawingFirst + id));
   // The default bounds with magic numbers make the chunks have different bounds
   // from each other, for e.g. RasterInvalidatorTest to check the tracked raster
@@ -55,87 +35,126 @@ TestPaintArtifact& TestPaintArtifact::Chunk(int id) {
   return *this;
 }
 
-TestPaintArtifact& TestPaintArtifact::Chunk(FakeDisplayItemClient& client,
+TestPaintArtifact& TestPaintArtifact::Chunk(DisplayItemClient& client,
                                             DisplayItem::Type type) {
-  if (!paint_chunks_.IsEmpty())
-    paint_chunks_.back().end_index = display_item_list_.size();
-  paint_chunks_.push_back(PaintChunk(display_item_list_.size(), 0,
-                                     PaintChunk::Id(client, type),
-                                     PropertyTreeState::Root()));
+  auto& display_item_list = paint_artifact_->GetDisplayItemList();
+  paint_artifact_->PaintChunks().emplace_back(
+      display_item_list.size(), display_item_list.size(),
+      PaintChunk::Id(client, type), PropertyTreeState::Root());
   // Assume PaintController has processed this chunk.
-  paint_chunks_.back().client_is_just_created = false;
+  paint_artifact_->PaintChunks().back().client_is_just_created = false;
   return *this;
 }
 
 TestPaintArtifact& TestPaintArtifact::Properties(
-    const PropertyTreeState& properties) {
-  paint_chunks_.back().properties = properties;
+    const PropertyTreeStateOrAlias& properties) {
+  paint_artifact_->PaintChunks().back().properties = properties;
   return *this;
 }
 
-TestPaintArtifact& TestPaintArtifact::RectDrawing(const FloatRect& bounds,
+TestPaintArtifact& TestPaintArtifact::RectDrawing(const IntRect& bounds,
                                                   Color color) {
   return RectDrawing(NewClient(), bounds, color);
 }
 
 TestPaintArtifact& TestPaintArtifact::ScrollHitTest(
-    const TransformPaintPropertyNode& scroll_offset) {
-  return ScrollHitTest(NewClient(), scroll_offset);
-}
-
-TestPaintArtifact& TestPaintArtifact::RectDrawing(FakeDisplayItemClient& client,
-                                                  const FloatRect& bounds,
-                                                  Color color) {
-  display_item_list_.AllocateAndConstruct<DrawingDisplayItem>(
-      client, DisplayItem::kDrawingFirst,
-      static_cast<DummyRectClient&>(client).MakeRecord(bounds, color));
-  return *this;
+    const IntRect& rect,
+    const TransformPaintPropertyNode* scroll_translation) {
+  return ScrollHitTest(NewClient(), rect, scroll_translation);
 }
 
 TestPaintArtifact& TestPaintArtifact::ForeignLayer(
-    scoped_refptr<cc::Layer> layer) {
-  display_item_list_.AllocateAndConstruct<ForeignLayerDisplayItem>(
-      DisplayItem::kForeignLayerFirst, std::move(layer));
+    scoped_refptr<cc::Layer> layer,
+    const IntPoint& offset) {
+  DEFINE_STATIC_LOCAL(LiteralDebugNameClient, client, ("ForeignLayer"));
+  paint_artifact_->GetDisplayItemList()
+      .AllocateAndConstruct<ForeignLayerDisplayItem>(
+          client, DisplayItem::kForeignLayerFirst, std::move(layer), offset);
+  DidAddDisplayItem();
+  return *this;
+}
+
+TestPaintArtifact& TestPaintArtifact::RectDrawing(DisplayItemClient& client,
+                                                  const IntRect& bounds,
+                                                  Color color) {
+  PaintRecorder recorder;
+  cc::PaintCanvas* canvas = recorder.beginRecording(bounds);
+  if (!bounds.IsEmpty()) {
+    PaintFlags flags;
+    flags.setColor(color.Rgb());
+    canvas->drawRect(bounds, flags);
+  }
+  paint_artifact_->GetDisplayItemList()
+      .AllocateAndConstruct<DrawingDisplayItem>(
+          client, DisplayItem::kDrawingFirst, bounds,
+          recorder.finishRecordingAsPicture());
+  DidAddDisplayItem();
   return *this;
 }
 
 TestPaintArtifact& TestPaintArtifact::ScrollHitTest(
-    FakeDisplayItemClient& client,
-    const TransformPaintPropertyNode& scroll_offset) {
-  display_item_list_.AllocateAndConstruct<ScrollHitTestDisplayItem>(
-      client, scroll_offset);
+    DisplayItemClient& client,
+    const IntRect& rect,
+    const TransformPaintPropertyNode* scroll_translation) {
+  auto& hit_test_data =
+      paint_artifact_->PaintChunks().back().EnsureHitTestData();
+  hit_test_data.scroll_hit_test_rect = rect;
+  hit_test_data.scroll_translation = scroll_translation;
   return *this;
 }
 
-TestPaintArtifact& TestPaintArtifact::KnownToBeOpaque() {
-  paint_chunks_.back().known_to_be_opaque = true;
+TestPaintArtifact& TestPaintArtifact::SetRasterEffectOutset(
+    RasterEffectOutset outset) {
+  paint_artifact_->PaintChunks().back().raster_effect_outset = outset;
+  return *this;
+}
+
+TestPaintArtifact& TestPaintArtifact::RectKnownToBeOpaque(const IntRect& r) {
+  paint_artifact_->PaintChunks().back().rect_known_to_be_opaque = r;
   return *this;
 }
 
 TestPaintArtifact& TestPaintArtifact::Bounds(const IntRect& bounds) {
-  paint_chunks_.back().bounds = bounds;
+  auto& chunk = paint_artifact_->PaintChunks().back();
+  chunk.bounds = bounds;
+  chunk.drawable_bounds = bounds;
+  return *this;
+}
+
+TestPaintArtifact& TestPaintArtifact::DrawableBounds(
+    const IntRect& drawable_bounds) {
+  auto& chunk = paint_artifact_->PaintChunks().back();
+  chunk.drawable_bounds = drawable_bounds;
+  DCHECK(chunk.bounds.Contains(drawable_bounds));
   return *this;
 }
 
 TestPaintArtifact& TestPaintArtifact::Uncacheable() {
-  paint_chunks_.back().is_cacheable = false;
+  paint_artifact_->PaintChunks().back().is_cacheable = false;
   return *this;
 }
 
 scoped_refptr<PaintArtifact> TestPaintArtifact::Build() {
-  if (!paint_chunks_.IsEmpty())
-    paint_chunks_.back().end_index = display_item_list_.size();
-  return PaintArtifact::Create(std::move(display_item_list_),
-                               std::move(paint_chunks_));
+  return std::move(paint_artifact_);
 }
 
 FakeDisplayItemClient& TestPaintArtifact::NewClient() {
-  dummy_clients_.push_back(std::make_unique<DummyRectClient>());
-  return *dummy_clients_.back();
+  clients_.push_back(std::make_unique<FakeDisplayItemClient>());
+  return *clients_.back();
 }
 
 FakeDisplayItemClient& TestPaintArtifact::Client(wtf_size_t i) const {
-  return *dummy_clients_[i];
+  return *clients_[i];
+}
+
+void TestPaintArtifact::DidAddDisplayItem() {
+  auto& chunk = paint_artifact_->PaintChunks().back();
+  DCHECK_EQ(chunk.end_index, paint_artifact_->GetDisplayItemList().size() - 1);
+  const auto& item = paint_artifact_->GetDisplayItemList().back();
+  chunk.bounds.Unite(item.VisualRect());
+  if (item.DrawsContent())
+    chunk.drawable_bounds.Unite(item.VisualRect());
+  chunk.end_index++;
 }
 
 }  // namespace blink

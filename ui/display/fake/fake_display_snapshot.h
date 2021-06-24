@@ -55,6 +55,8 @@ class FAKE_DISPLAY_EXPORT FakeDisplaySnapshot : public DisplaySnapshot {
     Builder& AddMode(std::unique_ptr<DisplayMode> mode);
     Builder& SetOrigin(const gfx::Point& origin);
     Builder& SetType(DisplayConnectionType type);
+    Builder& SetBaseConnectorId(uint64_t base_connector_id);
+    Builder& SetPathTopology(const std::vector<uint64_t>& path_topology);
     Builder& SetIsAspectPerservingScaling(bool is_aspect_preserving_scaling);
     Builder& SetHasOverscan(bool has_overscan);
     Builder& SetHasColorCorrectionMatrix(bool val);
@@ -69,6 +71,11 @@ class FAKE_DISPLAY_EXPORT FakeDisplaySnapshot : public DisplaySnapshot {
     Builder& SetLowDPI();
     // Sets physical_size for high DPI display.
     Builder& SetHighDPI();
+    Builder& SetPrivacyScreen(PrivacyScreenState state);
+    Builder& SetColorSpace(const gfx::ColorSpace& color_space);
+    Builder& SetBitsPerChannel(uint32_t bits_per_channel);
+    Builder& SetHDRStaticMetadata(
+        const gfx::HDRStaticMetadata& hdr_static_metadata);
 
    private:
     // Returns a display mode with |size|. If there is no existing mode, insert
@@ -82,8 +89,11 @@ class FAKE_DISPLAY_EXPORT FakeDisplaySnapshot : public DisplaySnapshot {
     gfx::Point origin_;
     float dpi_ = 96.0;
     DisplayConnectionType type_ = DISPLAY_CONNECTION_TYPE_UNKNOWN;
+    uint64_t base_connector_id_ = 1u;
+    std::vector<uint64_t> path_topology_ = {};
     bool is_aspect_preserving_scaling_ = false;
     bool has_overscan_ = false;
+    PrivacyScreenState privacy_screen_state_ = kNotSupported;
     bool has_color_correction_matrix_ = false;
     bool color_correction_in_linear_space_ = false;
     std::string name_;
@@ -92,6 +102,9 @@ class FAKE_DISPLAY_EXPORT FakeDisplaySnapshot : public DisplaySnapshot {
     DisplayModeList modes_;
     const DisplayMode* current_mode_ = nullptr;
     const DisplayMode* native_mode_ = nullptr;
+    gfx::ColorSpace color_space_;
+    uint32_t bits_per_channel_ = 8u;
+    gfx::HDRStaticMetadata hdr_static_metadata_;
 
     DISALLOW_COPY_AND_ASSIGN(Builder);
   };
@@ -100,8 +113,11 @@ class FAKE_DISPLAY_EXPORT FakeDisplaySnapshot : public DisplaySnapshot {
                       const gfx::Point& origin,
                       const gfx::Size& physical_size,
                       DisplayConnectionType type,
+                      uint64_t base_connector_id,
+                      const std::vector<uint64_t>& path_topology,
                       bool is_aspect_preserving_scaling,
                       bool has_overscan,
+                      PrivacyScreenState privacy_screen_state,
                       bool has_color_correction_matrix,
                       bool color_correction_in_linear_space,
                       std::string display_name,
@@ -109,7 +125,10 @@ class FAKE_DISPLAY_EXPORT FakeDisplaySnapshot : public DisplaySnapshot {
                       const DisplayMode* current_mode,
                       const DisplayMode* native_mode,
                       int64_t product_code,
-                      const gfx::Size& maximum_cursor_size);
+                      const gfx::Size& maximum_cursor_size,
+                      const gfx::ColorSpace& color_space,
+                      uint32_t bits_per_channel,
+                      const gfx::HDRStaticMetadata& hdr_static_metadata);
   ~FakeDisplaySnapshot() override;
 
   // Creates a display snapshot from the provided |spec| string. Returns null if

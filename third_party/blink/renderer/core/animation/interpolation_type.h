@@ -7,15 +7,15 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/animation/interpolation_value.h"
 #include "third_party/blink/renderer/core/animation/keyframe.h"
 #include "third_party/blink/renderer/core/animation/pairwise_interpolation_value.h"
 #include "third_party/blink/renderer/core/animation/primitive_interpolation.h"
 #include "third_party/blink/renderer/core/animation/property_handle.h"
 #include "third_party/blink/renderer/core/animation/underlying_value_owner.h"
+#include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -28,10 +28,12 @@ class InterpolationEnvironment;
 // - Convert the target Element's property value to an InterpolationValue:
 // maybeConvertUnderlyingValue()
 // - Apply an InterpolationValue to a target Element's property: apply().
-class InterpolationType {
+class CORE_EXPORT InterpolationType {
   USING_FAST_MALLOC(InterpolationType);
 
  public:
+  InterpolationType(const InterpolationType&) = delete;
+  InterpolationType& operator=(const InterpolationType&) = delete;
   virtual ~InterpolationType() = default;
 
   PropertyHandle GetProperty() const { return property_; }
@@ -44,6 +46,8 @@ class InterpolationType {
     USING_FAST_MALLOC(ConversionChecker);
 
    public:
+    ConversionChecker(const ConversionChecker&) = delete;
+    ConversionChecker& operator=(const ConversionChecker&) = delete;
     virtual ~ConversionChecker() = default;
     void SetType(const InterpolationType& type) { type_ = &type; }
     const InterpolationType& GetType() const { return *type_; }
@@ -53,7 +57,6 @@ class InterpolationType {
    protected:
     ConversionChecker() : type_(nullptr) {}
     const InterpolationType* type_;
-    DISALLOW_COPY_AND_ASSIGN(ConversionChecker);
   };
   using ConversionCheckers = Vector<std::unique_ptr<ConversionChecker>>;
 
@@ -120,7 +123,6 @@ class InterpolationType {
   explicit InterpolationType(PropertyHandle property) : property_(property) {}
 
   const PropertyHandle property_;
-  DISALLOW_COPY_AND_ASSIGN(InterpolationType);
 };
 
 }  // namespace blink

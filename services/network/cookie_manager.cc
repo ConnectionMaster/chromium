@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/process/process.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
@@ -18,7 +18,8 @@
 #include "net/cookies/cookie_options.h"
 #include "net/cookies/cookie_store.h"
 #include "net/cookies/cookie_util.h"
-#include "services/network/cookie_managers_shared.h"
+#include "net/url_request/url_request_context.h"
+#include "services/network/cookie_access_delegate_impl.h"
 #include "services/network/session_cleanup_cookie_store.h"
 #include "url/gurl.h"
 
@@ -33,36 +34,34 @@ bool g_crash_on_get_cookie_list = false;
 
 }  // namespace
 
-CookieManager::ListenerRegistration::ListenerRegistration() {}
+CookieManager::ListenerRegistration::ListenerRegistration() = default;
 
-CookieManager::ListenerRegistration::~ListenerRegistration() {}
+CookieManager::ListenerRegistration::~ListenerRegistration() = default;
 
 void CookieManager::ListenerRegistration::DispatchCookieStoreChange(
-    const net::CanonicalCookie& cookie,
-    net::CookieChangeCause cause) {
-  listener->OnCookieChange(cookie, ToCookieChangeCause(cause));
+    const net::CookieChangeInfo& change) {
+  listener->OnCookieChange(change);
 }
 
 CookieManager::CookieManager(
-    net::CookieStore* cookie_store,
+    net::URLRequestContext* url_request_context,
+    const FirstPartySets* first_party_sets,
     scoped_refptr<SessionCleanupCookieStore> session_cleanup_cookie_store,
     mojom::CookieManagerParamsPtr params)
-    : cookie_store_(cookie_store),
+    : cookie_store_(url_request_context->cookie_store()),
       session_cleanup_cookie_store_(std::move(session_cleanup_cookie_store)) {
+  mojom::CookieAccessDelegateType cookie_access_delegate_type =
+      mojom::CookieAccessDelegateType::USE_CONTENT_SETTINGS;
   if (params) {
-    cookie_settings_.set_block_third_party_cookies(
-        params->block_third_party_cookies);
-    cookie_settings_.set_content_settings(params->settings);
-    cookie_settings_.set_secure_origin_cookies_allowed_schemes(
-        params->secure_origin_cookies_allowed_schemes);
-    cookie_settings_.set_matching_scheme_cookies_allowed_schemes(
-        params->matching_scheme_cookies_allowed_schemes);
-    cookie_settings_.set_third_party_cookies_allowed_schemes(
-        params->third_party_cookies_allowed_schemes);
+    ConfigureCookieSettings(*params, &cookie_settings_);
+    cookie_access_delegate_type = params->cookie_access_delegate_type;
     // Don't wait for callback, the work happens synchronously.
     AllowFileSchemeCookies(params->allow_file_scheme_cookies,
                            base::DoNothing());
   }
+  cookie_store_->SetCookieAccessDelegate(
+      std::make_unique<CookieAccessDelegateImpl>(
+          cookie_access_delegate_type, first_party_sets, &cookie_settings_));
 }
 
 CookieManager::~CookieManager() {
@@ -70,15 +69,24 @@ CookieManager::~CookieManager() {
     session_cleanup_cookie_store_->DeleteSessionCookies(
         cookie_settings_.CreateDeleteCookieOnExitPredicate());
   }
+  // Make sure we destroy the CookieStore's CookieAccessDelegate, because it
+  // holds a pointer to this CookieManager's CookieSettings, which is about to
+  // be destroyed.
+  cookie_store_->SetCookieAccessDelegate(nullptr);
 }
 
-void CookieManager::AddRequest(mojom::CookieManagerRequest request) {
-  bindings_.AddBinding(this, std::move(request));
+void CookieManager::AddReceiver(
+    mojo::PendingReceiver<mojom::CookieManager> receiver) {
+  receivers_.Add(this, std::move(receiver));
 }
 
 void CookieManager::GetAllCookies(GetAllCookiesCallback callback) {
-  cookie_store_->GetAllCookiesAsync(
-      net::cookie_util::IgnoreCookieStatusList(std::move(callback)));
+  cookie_store_->GetAllCookiesAsync(std::move(callback));
+}
+
+void CookieManager::GetAllCookiesWithAccessSemantics(
+    GetAllCookiesWithAccessSemanticsCallback callback) {
+  cookie_store_->GetAllCookiesWithAccessSemanticsAsync(std::move(callback));
 }
 
 void CookieManager::GetCookieList(const GURL& url,
@@ -94,11 +102,11 @@ void CookieManager::GetCookieList(const GURL& url,
 }
 
 void CookieManager::SetCanonicalCookie(const net::CanonicalCookie& cookie,
-                                       const std::string& source_scheme,
+                                       const GURL& source_url,
                                        const net::CookieOptions& cookie_options,
                                        SetCanonicalCookieCallback callback) {
   cookie_store_->SetCanonicalCookieAsync(
-      std::make_unique<net::CanonicalCookie>(cookie), source_scheme,
+      std::make_unique<net::CanonicalCookie>(cookie), source_url,
       cookie_options, std::move(callback));
 }
 
@@ -125,24 +133,50 @@ void CookieManager::DeleteCookies(mojom::CookieDeletionFilterPtr filter,
       DeletionFilterToInfo(std::move(filter)), std::move(callback));
 }
 
+void CookieManager::DeleteSessionOnlyCookies(
+    DeleteSessionOnlyCookiesCallback callback) {
+  auto delete_cookie_predicate =
+      cookie_settings_.CreateDeleteCookieOnExitPredicate();
+  if (!delete_cookie_predicate) {
+    std::move(callback).Run(0);
+    return;
+  }
+
+  cookie_store_->DeleteMatchingCookiesAsync(
+      base::BindRepeating(
+          [](const DeleteCookiePredicate& predicate,
+             const net::CanonicalCookie& cookie) {
+            return predicate.Run(cookie.Domain(), cookie.IsSecure());
+          },
+          std::move(delete_cookie_predicate)),
+      std::move(callback));
+}
+
 void CookieManager::AddCookieChangeListener(
     const GURL& url,
-    const std::string& name,
-    mojom::CookieChangeListenerPtr listener) {
+    const absl::optional<std::string>& name,
+    mojo::PendingRemote<mojom::CookieChangeListener> listener) {
   auto listener_registration = std::make_unique<ListenerRegistration>();
-  listener_registration->listener = std::move(listener);
+  listener_registration->listener.Bind(std::move(listener));
 
-  listener_registration->subscription =
-      cookie_store_->GetChangeDispatcher().AddCallbackForCookie(
-          url, name,
-          base::BindRepeating(
-              &CookieManager::ListenerRegistration::DispatchCookieStoreChange,
-              // base::Unretained is safe as destruction of the
-              // ListenerRegistration will also destroy the
-              // CookieChangedSubscription, unregistering the callback.
-              base::Unretained(listener_registration.get())));
+  auto cookie_change_callback = base::BindRepeating(
+      &CookieManager::ListenerRegistration::DispatchCookieStoreChange,
+      // base::Unretained is safe as destruction of the
+      // ListenerRegistration will also destroy the
+      // CookieChangedSubscription, unregistering the callback.
+      base::Unretained(listener_registration.get()));
 
-  listener_registration->listener.set_connection_error_handler(
+  if (name) {
+    listener_registration->subscription =
+        cookie_store_->GetChangeDispatcher().AddCallbackForCookie(
+            url, *name, std::move(cookie_change_callback));
+  } else {
+    listener_registration->subscription =
+        cookie_store_->GetChangeDispatcher().AddCallbackForUrl(
+            url, std::move(cookie_change_callback));
+  }
+
+  listener_registration->listener.set_disconnect_handler(
       base::BindOnce(&CookieManager::RemoveChangeListener,
                      // base::Unretained is safe as destruction of the
                      // CookieManager will also destroy the
@@ -159,9 +193,9 @@ void CookieManager::AddCookieChangeListener(
 }
 
 void CookieManager::AddGlobalChangeListener(
-    mojom::CookieChangeListenerPtr listener) {
+    mojo::PendingRemote<mojom::CookieChangeListener> listener) {
   auto listener_registration = std::make_unique<ListenerRegistration>();
-  listener_registration->listener = std::move(listener);
+  listener_registration->listener.Bind(std::move(listener));
 
   listener_registration->subscription =
       cookie_store_->GetChangeDispatcher().AddCallbackForAllChanges(
@@ -172,7 +206,7 @@ void CookieManager::AddGlobalChangeListener(
               // CookieChangedSubscription, unregistering the callback.
               base::Unretained(listener_registration.get())));
 
-  listener_registration->listener.set_connection_error_handler(
+  listener_registration->listener.set_disconnect_handler(
       base::BindOnce(&CookieManager::RemoveChangeListener,
                      // base::Unretained is safe as destruction of the
                      // CookieManager will also destroy the
@@ -202,8 +236,9 @@ void CookieManager::RemoveChangeListener(ListenerRegistration* registration) {
   NOTREACHED();
 }
 
-void CookieManager::CloneInterface(mojom::CookieManagerRequest new_interface) {
-  AddRequest(std::move(new_interface));
+void CookieManager::CloneInterface(
+    mojo::PendingReceiver<mojom::CookieManager> new_interface) {
+  AddReceiver(std::move(new_interface));
 }
 
 void CookieManager::FlushCookieStore(FlushCookieStoreCallback callback) {
@@ -230,6 +265,37 @@ void CookieManager::SetForceKeepSessionState() {
 
 void CookieManager::BlockThirdPartyCookies(bool block) {
   cookie_settings_.set_block_third_party_cookies(block);
+}
+
+void CookieManager::SetContentSettingsForLegacyCookieAccess(
+    const ContentSettingsForOneType& settings) {
+  cookie_settings_.set_content_settings_for_legacy_cookie_access(settings);
+}
+
+void CookieManager::SetStorageAccessGrantSettings(
+    const ContentSettingsForOneType& settings,
+    SetStorageAccessGrantSettingsCallback callback) {
+  cookie_settings_.set_storage_access_grants(settings);
+
+  // Signal our storage update is complete.
+  std::move(callback).Run();
+}
+
+// static
+void CookieManager::ConfigureCookieSettings(
+    const network::mojom::CookieManagerParams& params,
+    CookieSettings* out) {
+  out->set_block_third_party_cookies(params.block_third_party_cookies);
+  out->set_content_settings(params.settings);
+  out->set_secure_origin_cookies_allowed_schemes(
+      params.secure_origin_cookies_allowed_schemes);
+  out->set_matching_scheme_cookies_allowed_schemes(
+      params.matching_scheme_cookies_allowed_schemes);
+  out->set_third_party_cookies_allowed_schemes(
+      params.third_party_cookies_allowed_schemes);
+  out->set_content_settings_for_legacy_cookie_access(
+      params.settings_for_legacy_cookie_access);
+  out->set_storage_access_grants(params.settings_for_storage_access);
 }
 
 void CookieManager::CrashOnGetCookieList() {

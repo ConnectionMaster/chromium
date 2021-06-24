@@ -8,9 +8,10 @@
 
 #include "ash/app_list/model/app_list_item.h"
 #include "base/guid.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 
-namespace app_list {
+namespace ash {
 
 AppListItemList::AppListItemList() = default;
 
@@ -47,14 +48,24 @@ bool AppListItemList::FindItemIndex(const std::string& id, size_t* index) {
 
 void AppListItemList::MoveItem(size_t from_index, size_t to_index) {
   DCHECK_LT(from_index, item_count());
-  DCHECK_LT(to_index, item_count());
+  // Speculative fix for crash, possibly due to single-item folders.
+  // https://crbug.com/937431
+  if (item_count() <= 1)
+    return;
+  // Speculative fix for crash, possibly due |to_index| == item_count().
+  // Make |to_index| point to the last item. https://crbug.com/1166011
+  if (to_index >= item_count()) {
+    DCHECK_GT(item_count(), 1u);
+    to_index = item_count() - 1;
+  }
   if (from_index == to_index)
     return;
 
   auto target_item = std::move(app_list_items_[from_index]);
   DVLOG(2) << "MoveItem: " << from_index << " -> " << to_index << " ["
            << target_item->position().ToDebugString() << "]";
-  // Remove the target item
+  // Remove the target item. If |from_index| <= |to_index| this changes the
+  // item |to_index| points to, but that's OK.
   app_list_items_.erase(app_list_items_.begin() + from_index);
 
   // Update the position
@@ -154,28 +165,12 @@ AppListItem* AppListItemList::AddPageBreakItemAfter(
 
   AppListItem* item = page_break_item.get();
   size_t index = GetItemSortOrderIndex(item->position(), item->id());
+  DVLOG(2) << "AddPageBreakItemAfter: " << previous_item->id() << " prev index "
+           << previous_index << " next index " << next_index << " count "
+           << item_count() << " add index " << index;
   app_list_items_.insert(app_list_items_.begin() + index,
                          std::move(page_break_item));
   return item;
-}
-
-void AppListItemList::HighlightItemInstalledFromUI(const std::string& id) {
-  // Items within folders are not highlighted (apps are never installed to a
-  // folder initially). So just search the top-level list.
-  size_t index;
-  if (FindItemIndex(highlighted_id_, &index)) {
-    for (auto& observer : observers_)
-      observer.OnAppListItemHighlight(index, false);
-  }
-  highlighted_id_ = id;
-  if (!FindItemIndex(highlighted_id_, &index)) {
-    // If the item isin't in the app list yet, it will be highlighted later, in
-    // AddItem().
-    return;
-  }
-
-  for (auto& observer : observers_)
-    observer.OnAppListItemHighlight(index, true);
 }
 
 // AppListItemList private
@@ -215,11 +210,6 @@ AppListItem* AppListItemList::AddItem(std::unique_ptr<AppListItem> item_ptr) {
   for (auto& observer : observers_)
     observer.OnListItemAdded(index, item);
 
-  if (item->id() == highlighted_id_) {
-    // Item not present when highlight requested, so highlight it now.
-    for (auto& observer : observers_)
-      observer.OnAppListItemHighlight(index, true);
-  }
   return item;
 }
 
@@ -304,4 +294,4 @@ void AppListItemList::FixItemPosition(size_t index) {
     observer.OnListItemMoved(index, index, item);
 }
 
-}  // namespace app_list
+}  // namespace ash

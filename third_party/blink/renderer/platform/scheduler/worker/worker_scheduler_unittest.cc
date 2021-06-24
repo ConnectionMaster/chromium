@@ -6,15 +6,25 @@
 
 #include <memory>
 #include "base/bind.h"
-#include "base/macros.h"
 #include "base/task/sequence_manager/test/sequence_manager_for_test.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/scheduler/common/throttling/task_queue_throttler.h"
+#include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_priority.h"
+#include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_task_queue.h"
 #include "third_party/blink/renderer/platform/scheduler/worker/worker_thread_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+
+// TODO(crbug.com/960984): Fix memory leaks in tests and re-enable on LSAN.
+#ifdef LEAK_SANITIZER
+#define MAYBE_PausableTasks DISABLED_PausableTasks
+#define MAYBE_NestedPauseHandlesTasks DISABLED_NestedPauseHandlesTasks
+#else
+#define MAYBE_PausableTasks PausableTasks
+#define MAYBE_NestedPauseHandlesTasks NestedPauseHandlesTasks
+#endif
 
 using testing::ElementsAre;
 using testing::ElementsAreArray;
@@ -24,8 +34,7 @@ namespace scheduler {
 // To avoid symbol collisions in jumbo builds.
 namespace worker_scheduler_unittest {
 
-void AppendToVectorTestTask(std::vector<std::string>* vector,
-                            std::string value) {
+void AppendToVectorTestTask(Vector<String>* vector, String value) {
   vector->push_back(value);
 }
 
@@ -33,7 +42,7 @@ void RunChainedTask(scoped_refptr<base::sequence_manager::TaskQueue> task_queue,
                     int count,
                     base::TimeDelta duration,
                     scoped_refptr<base::TestMockTimeTaskRunner> environment,
-                    std::vector<base::TimeTicks>* tasks) {
+                    Vector<base::TimeTicks>* tasks) {
   tasks->push_back(environment->GetMockTickClock()->NowTicks());
 
   environment->AdvanceMockTickClock(duration);
@@ -52,14 +61,14 @@ void RunChainedTask(scoped_refptr<base::sequence_manager::TaskQueue> task_queue,
 
 class WorkerThreadSchedulerForTest : public WorkerThreadScheduler {
  public:
-  // |manager|and |proxy| must remain valid for the entire lifetime of this
+  // |manager| and |proxy| must remain valid for the entire lifetime of this
   // object.
-  WorkerThreadSchedulerForTest(WebThreadType thread_type,
+  WorkerThreadSchedulerForTest(ThreadType thread_type,
                                base::sequence_manager::SequenceManager* manager,
                                WorkerSchedulerProxy* proxy)
       : WorkerThreadScheduler(thread_type, manager, proxy) {}
 
-  const std::unordered_set<WorkerScheduler*>& worker_schedulers() {
+  const HashSet<WorkerScheduler*>& worker_schedulers() {
     return GetWorkerSchedulersForTesting();
   }
 
@@ -86,17 +95,21 @@ class WorkerSchedulerTest : public testing::Test {
                 nullptr,
                 mock_task_runner_,
                 mock_task_runner_->GetMockTickClock())),
-        scheduler_(new WorkerThreadSchedulerForTest(WebThreadType::kTestThread,
+        scheduler_(new WorkerThreadSchedulerForTest(ThreadType::kTestThread,
                                                     sequence_manager_.get(),
                                                     nullptr /* proxy */)) {
     mock_task_runner_->AdvanceMockTickClock(
         base::TimeDelta::FromMicroseconds(5000));
+    start_time_ = mock_task_runner_->NowTicks();
   }
 
+  WorkerSchedulerTest(const WorkerSchedulerTest&) = delete;
+  WorkerSchedulerTest& operator=(const WorkerSchedulerTest&) = delete;
   ~WorkerSchedulerTest() override = default;
 
   void SetUp() override {
     scheduler_->Init();
+    scheduler_->AttachToCurrentThread();
     worker_scheduler_ =
         std::make_unique<WorkerSchedulerForTest>(scheduler_.get());
   }
@@ -115,8 +128,8 @@ class WorkerSchedulerTest : public testing::Test {
   void RunUntilIdle() { mock_task_runner_->FastForwardUntilNoTasksRemain(); }
 
   // Helper for posting a task.
-  void PostTestTask(std::vector<std::string>* run_order,
-                    const std::string& task_descriptor,
+  void PostTestTask(Vector<String>* run_order,
+                    const String& task_descriptor,
                     TaskType task_type) {
     worker_scheduler_->GetTaskRunner(task_type)->PostTask(
         FROM_HERE, WTF::Bind(&AppendToVectorTestTask,
@@ -129,12 +142,11 @@ class WorkerSchedulerTest : public testing::Test {
       sequence_manager_;
   std::unique_ptr<WorkerThreadSchedulerForTest> scheduler_;
   std::unique_ptr<WorkerSchedulerForTest> worker_scheduler_;
-
-  DISALLOW_COPY_AND_ASSIGN(WorkerSchedulerTest);
+  base::TimeTicks start_time_;
 };
 
 TEST_F(WorkerSchedulerTest, TestPostTasks) {
-  std::vector<std::string> run_order;
+  Vector<String> run_order;
   PostTestTask(&run_order, "T1", TaskType::kInternalTest);
   PostTestTask(&run_order, "T2", TaskType::kInternalTest);
   RunUntilIdle();
@@ -148,7 +160,7 @@ TEST_F(WorkerSchedulerTest, TestPostTasks) {
   PostTestTask(&run_order, "T4", TaskType::kInternalTest);
   PostTestTask(&run_order, "T5", TaskType::kInternalTest);
   RunUntilIdle();
-  EXPECT_TRUE(run_order.empty());
+  EXPECT_TRUE(run_order.IsEmpty());
 
   worker_scheduler_.reset();
 }
@@ -222,7 +234,7 @@ TEST_F(WorkerSchedulerTest, ThrottleWorkerScheduler_RunThrottledTasks) {
 
   scheduler_->OnLifecycleStateChanged(SchedulingLifecycleState::kThrottled);
 
-  std::vector<base::TimeTicks> tasks;
+  Vector<base::TimeTicks> tasks;
 
   worker_scheduler_->ThrottleableTaskQueue()->task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&RunChainedTask,
@@ -254,7 +266,7 @@ TEST_F(WorkerSchedulerTest,
 
   scheduler_->OnLifecycleStateChanged(SchedulingLifecycleState::kThrottled);
 
-  std::vector<base::TimeTicks> tasks;
+  Vector<base::TimeTicks> tasks;
 
   worker_scheduler_->ThrottleableTaskQueue()->task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&RunChainedTask,
@@ -264,21 +276,21 @@ TEST_F(WorkerSchedulerTest,
 
   RunUntilIdle();
 
-  EXPECT_THAT(
-      tasks, ElementsAre(base::TimeTicks() + base::TimeDelta::FromSeconds(1),
-                         base::TimeTicks() + base::TimeDelta::FromSeconds(11),
-                         base::TimeTicks() + base::TimeDelta::FromSeconds(21),
-                         base::TimeTicks() + base::TimeDelta::FromSeconds(31),
-                         base::TimeTicks() + base::TimeDelta::FromSeconds(41)));
+  EXPECT_THAT(tasks,
+              ElementsAre(base::TimeTicks() + base::TimeDelta::FromSeconds(1),
+                          start_time_ + base::TimeDelta::FromSeconds(10),
+                          start_time_ + base::TimeDelta::FromSeconds(20),
+                          start_time_ + base::TimeDelta::FromSeconds(30),
+                          start_time_ + base::TimeDelta::FromSeconds(40)));
 }
 
-TEST_F(WorkerSchedulerTest, PausableTasks) {
-  std::vector<std::string> run_order;
+TEST_F(WorkerSchedulerTest, MAYBE_PausableTasks) {
+  Vector<String> run_order;
   auto pause_handle = worker_scheduler_->Pause();
   // Tests interlacing pausable, throttable and unpausable tasks and
   // ensures that the pausable & throttable tasks don't run when paused.
   // Throttable
-  PostTestTask(&run_order, "T1", TaskType::kJavascriptTimer);
+  PostTestTask(&run_order, "T1", TaskType::kJavascriptTimerDelayedLowNesting);
   // Pausable
   PostTestTask(&run_order, "T2", TaskType::kNetworking);
   // Unpausable
@@ -291,12 +303,12 @@ TEST_F(WorkerSchedulerTest, PausableTasks) {
   EXPECT_THAT(run_order, testing::ElementsAre("T3", "T1", "T2"));
 }
 
-TEST_F(WorkerSchedulerTest, NestedPauseHandlesTasks) {
-  std::vector<std::string> run_order;
+TEST_F(WorkerSchedulerTest, MAYBE_NestedPauseHandlesTasks) {
+  Vector<String> run_order;
   auto pause_handle = worker_scheduler_->Pause();
   {
     auto pause_handle2 = worker_scheduler_->Pause();
-    PostTestTask(&run_order, "T1", TaskType::kJavascriptTimer);
+    PostTestTask(&run_order, "T1", TaskType::kJavascriptTimerDelayedLowNesting);
     PostTestTask(&run_order, "T2", TaskType::kNetworking);
   }
   RunUntilIdle();
@@ -304,6 +316,83 @@ TEST_F(WorkerSchedulerTest, NestedPauseHandlesTasks) {
   pause_handle.reset();
   RunUntilIdle();
   EXPECT_THAT(run_order, testing::ElementsAre("T1", "T2"));
+}
+
+class NonMainThreadWebSchedulingTaskQueueTest : public WorkerSchedulerTest {
+ public:
+  void SetUp() override {
+    WorkerSchedulerTest::SetUp();
+
+    for (int i = 0; i <= static_cast<int>(WebSchedulingPriority::kLastPriority);
+         i++) {
+      WebSchedulingPriority priority = static_cast<WebSchedulingPriority>(i);
+      std::unique_ptr<WebSchedulingTaskQueue> task_queue =
+          worker_scheduler_->CreateWebSchedulingTaskQueue(priority);
+      task_queues_.push_back(std::move(task_queue));
+    }
+  }
+
+  void TearDown() override {
+    WorkerSchedulerTest::TearDown();
+    task_queues_.clear();
+  }
+
+ protected:
+  // Helper for posting tasks to a WebSchedulingTaskQueue. |task_descriptor| is
+  // a string with space delimited task identifiers. The first letter of each
+  // task identifier specifies the task queue priority:
+  // - 'U': UserBlocking
+  // - 'V': UserVisible
+  // - 'B': Background
+  void PostWebSchedulingTestTasks(Vector<String>* run_order,
+                                  const String& task_descriptor) {
+    std::istringstream stream(task_descriptor.Utf8());
+    while (!stream.eof()) {
+      std::string task;
+      stream >> task;
+      WebSchedulingPriority priority;
+      switch (task[0]) {
+        case 'U':
+          priority = WebSchedulingPriority::kUserBlockingPriority;
+          break;
+        case 'V':
+          priority = WebSchedulingPriority::kUserVisiblePriority;
+          break;
+        case 'B':
+          priority = WebSchedulingPriority::kBackgroundPriority;
+          break;
+        default:
+          EXPECT_FALSE(true);
+          return;
+      }
+      task_queues_[static_cast<int>(priority)]->GetTaskRunner()->PostTask(
+          FROM_HERE, base::BindOnce(&AppendToVectorTestTask, run_order,
+                                    String::FromUTF8(task)));
+    }
+  }
+  Vector<std::unique_ptr<WebSchedulingTaskQueue>> task_queues_;
+};
+
+TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TasksRunInPriorityOrder) {
+  Vector<String> run_order;
+
+  PostWebSchedulingTestTasks(&run_order, "B1 B2 V1 V2 U1 U2");
+
+  RunUntilIdle();
+  EXPECT_THAT(run_order,
+              testing::ElementsAre("U1", "U2", "V1", "V2", "B1", "B2"));
+}
+
+TEST_F(NonMainThreadWebSchedulingTaskQueueTest, DynamicTaskPriorityOrder) {
+  Vector<String> run_order;
+
+  PostWebSchedulingTestTasks(&run_order, "B1 B2 V1 V2 U1 U2");
+  task_queues_[static_cast<int>(WebSchedulingPriority::kUserBlockingPriority)]
+      ->SetPriority(WebSchedulingPriority::kBackgroundPriority);
+
+  RunUntilIdle();
+  EXPECT_THAT(run_order,
+              testing::ElementsAre("V1", "V2", "B1", "B2", "U1", "U2"));
 }
 
 }  // namespace worker_scheduler_unittest

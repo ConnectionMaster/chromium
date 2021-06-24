@@ -15,6 +15,9 @@
 // Returns the toolbar view.
 @property(nonatomic, readonly) UIView* toolBarView;
 
+// The Identity Disc showing the current user's avatar on NTP.
+@property(nonatomic, strong) UIView* identityDiscView;
+
 // Voice search button.
 @property(nonatomic, strong, readonly) UIButton* voiceSearchButton;
 
@@ -29,6 +32,10 @@
     NSLayoutConstraint* fakeLocationBarTrailingConstraint;
 @property(nonatomic, strong) UIView* fakeLocationBar;
 @property(nonatomic, strong) UILabel* searchHintLabel;
+
+// Adds the separator to the searchField. Must be called after the searchField
+// is added as a subview.
+- (void)addSeparatorToSearchField:(UIView*)searchField;
 
 // Adds the |toolbarView| to the view implementing this protocol.
 // Can only be added once.
@@ -56,6 +63,11 @@
 
 // Highlights the fake omnibox.
 - (void)setFakeboxHighlighted:(BOOL)highlighted;
+
+// Updates the different constraints using |topSafeAreaInset|. This is needed
+// because sometimes the safe area isn't correctly updated. See
+// crbug.com/1041831.
+- (void)updateForTopSafeAreaInset:(CGFloat)topSafeAreaInset;
 
 @end
 

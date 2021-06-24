@@ -4,8 +4,6 @@
 
 source_set("cpp") {
   sources = [
-    "audio_system_factory.cc",
-    "audio_system_factory.h",
     "audio_system_to_service_adapter.cc",
     "audio_system_to_service_adapter.h",
     "debug_recording_session.cc",
@@ -31,20 +29,8 @@ source_set("cpp") {
   public_deps = [
     "//base",
     "//media",
+    "//media/mojo/common",
     "//services/audio/public/mojom",
-    "//services/service_manager/public/cpp",
-  ]
-}
-
-source_set("manifest") {
-  sources = [
-    "manifest.cc",
-    "manifest.h",
-  ]
-  deps = [
-    "//base",
-    "//services/audio/public/mojom",
-    "//services/service_manager/public/cpp",
   ]
 }
 
@@ -58,14 +44,12 @@ source_set("test_support") {
     "fake_system_info.h",
   ]
 
-  deps = [
-    "//testing/gmock",
-  ]
+  deps = [ "//testing/gmock" ]
 
   public_deps = [
     "//base",
     "//media",
+    "//services/audio",
     "//services/audio/public/mojom",
-    "//services/service_manager/public/cpp",
   ]
 }

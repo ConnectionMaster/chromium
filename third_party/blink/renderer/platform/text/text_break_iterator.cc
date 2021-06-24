@@ -23,8 +23,7 @@
 
 #include "third_party/blink/renderer/platform/text/text_break_iterator.h"
 
-#include "base/stl_util.h"
-#include "third_party/blink/renderer/platform/text/character.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
@@ -301,9 +300,9 @@ inline int LazyLineBreakIterator::NextBreakablePosition(
     int pos,
     const CharacterType* str,
     int len) const {
-  DCHECK_GE(pos, 0);
+  CHECK_GE(pos, 0);
   DCHECK_GE(static_cast<unsigned>(pos), start_offset_);
-  DCHECK_LE(pos, len);
+  CHECK_LE(pos, len);
   int next_break = -1;
   UChar last_last_ch = pos > 1 ? str[pos - 2] : SecondToLastCharacter();
   UChar last_ch = pos > 0 ? str[pos - 1] : LastCharacter();
@@ -321,7 +320,7 @@ inline int LazyLineBreakIterator::NextBreakablePosition(
     is_space = IsBreakableSpace(ch);
     switch (break_space) {
       case BreakSpaceType::kBeforeEverySpace:
-        if (is_space)
+        if (is_space || IsOtherSpaceSeparator<CharacterType>(ch))
           return i;
         break;
       case BreakSpaceType::kBeforeSpaceRun:
@@ -334,15 +333,18 @@ inline int LazyLineBreakIterator::NextBreakablePosition(
           continue;
         }
         break;
-      case BreakSpaceType::kAfterEverySpace:
+      case BreakSpaceType::kAfterSpaceRun:
+        if (is_space)
+          continue;
         if (is_last_space)
           return i;
-        if (is_space) {
-          // Might be allowed to break before the first space after a word.
-          if (lineBreakType == LineBreakType::kBreakAll)
-            return i;
-          continue;
-        }
+        break;
+      case BreakSpaceType::kAfterEverySpace:
+        if (is_last_space || IsOtherSpaceSeparator<CharacterType>(last_ch))
+          return i;
+        if ((is_space || IsOtherSpaceSeparator<CharacterType>(ch)) &&
+            i + 1 < len)
+          return i + 1;
         break;
     }
 
@@ -402,6 +404,10 @@ inline int LazyLineBreakIterator::NextBreakablePosition(
       return NextBreakablePosition<CharacterType, lineBreakType,
                                    BreakSpaceType::kBeforeSpaceRun>(pos, str,
                                                                     len);
+    case BreakSpaceType::kAfterSpaceRun:
+      return NextBreakablePosition<CharacterType, lineBreakType,
+                                   BreakSpaceType::kAfterSpaceRun>(pos, str,
+                                                                   len);
     case BreakSpaceType::kAfterEverySpace:
       return NextBreakablePosition<CharacterType, lineBreakType,
                                    BreakSpaceType::kAfterEverySpace>(pos, str,
@@ -520,6 +526,8 @@ std::ostream& operator<<(std::ostream& ostream, BreakSpaceType break_space) {
       return ostream << "kAfterEverySpace";
     case BreakSpaceType::kBeforeSpaceRun:
       return ostream << "kBeforeSpaceRun";
+    case BreakSpaceType::kAfterSpaceRun:
+      return ostream << "kAfterSpaceRun";
   }
   NOTREACHED();
   return ostream << "BreakSpaceType::" << static_cast<int>(break_space);

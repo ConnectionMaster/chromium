@@ -8,19 +8,16 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "build/build_config.h"
 
 namespace local_discovery {
 
 namespace {
-#if defined(OS_MACOSX)
-const int kMacServiceResolvingIntervalSecs = 60;
-#endif
 
 class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
  public:
@@ -30,8 +27,7 @@ class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
       const std::string& service_type)
       : delegate_(delegate),
         service_discovery_client_(service_discovery_client),
-        service_type_(service_type),
-        weak_factory_(this) {}
+        service_type_(service_type) {}
 
   ~ServiceDiscoveryDeviceListerImpl() override = default;
 
@@ -71,7 +67,7 @@ class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
     }
 
     // If there is already a resolver working on this service, don't add one.
-    if (base::ContainsKey(resolvers_, service_name)) {
+    if (base::Contains(resolvers_, service_name)) {
       VLOG(1) << "Resolver already exists, service_name: " << service_name;
       return;
     }
@@ -81,8 +77,8 @@ class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
     std::unique_ptr<ServiceResolver> resolver =
         service_discovery_client_->CreateServiceResolver(
             service_name,
-            base::Bind(&ServiceDiscoveryDeviceListerImpl::OnResolveComplete,
-                       weak_factory_.GetWeakPtr(), added, service_name));
+            base::BindOnce(&ServiceDiscoveryDeviceListerImpl::OnResolveComplete,
+                           weak_factory_.GetWeakPtr(), added, service_name));
     resolver->StartResolving();
     resolvers_[service_name] = std::move(resolver);
   }
@@ -96,19 +92,6 @@ class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
             << ", service_name: " << service_name << ", status: " << status;
     if (status == ServiceResolver::STATUS_SUCCESS) {
       delegate_->OnDeviceChanged(service_type_, added, service_description);
-
-#if defined(OS_MACOSX)
-      // On Mac, the Bonjour service does not seem to ever evict a service if a
-      // device is unplugged, so we need to continuously try to resolve the
-      // service to detect non-graceful shutdowns.
-      base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-          FROM_HERE,
-          base::BindOnce(&ServiceDiscoveryDeviceListerImpl::OnServiceUpdated,
-                         weak_factory_.GetWeakPtr(),
-                         ServiceWatcher::UPDATE_CHANGED,
-                         service_description.service_name),
-          base::TimeDelta::FromSeconds(kMacServiceResolvingIntervalSecs));
-#endif
     } else {
       // TODO(noamsml): Add retry logic.
     }
@@ -119,8 +102,8 @@ class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
   void CreateServiceWatcher() {
     service_watcher_ = service_discovery_client_->CreateServiceWatcher(
         service_type_,
-        base::Bind(&ServiceDiscoveryDeviceListerImpl::OnServiceUpdated,
-                   weak_factory_.GetWeakPtr()));
+        base::BindRepeating(&ServiceDiscoveryDeviceListerImpl::OnServiceUpdated,
+                            weak_factory_.GetWeakPtr()));
     service_watcher_->Start();
   }
 
@@ -131,7 +114,7 @@ class ServiceDiscoveryDeviceListerImpl : public ServiceDiscoveryDeviceLister {
   std::unique_ptr<ServiceWatcher> service_watcher_;
   ServiceResolverMap resolvers_;
 
-  base::WeakPtrFactory<ServiceDiscoveryDeviceListerImpl> weak_factory_;
+  base::WeakPtrFactory<ServiceDiscoveryDeviceListerImpl> weak_factory_{this};
 };
 }  // namespace
 

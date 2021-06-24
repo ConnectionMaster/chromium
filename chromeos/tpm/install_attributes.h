@@ -15,9 +15,10 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
-#include "chromeos/dbus/cryptohome/cryptohome_client.h"
+#include "chromeos/dbus/tpm_manager/tpm_manager.pb.h"
+#include "chromeos/dbus/userdataauth/install_attributes_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -44,11 +45,7 @@ class COMPONENT_EXPORT(CHROMEOS_TPM) InstallAttributes {
   };
 
   // A callback to handle responses of methods returning a LockResult value.
-  typedef base::Callback<void(LockResult lock_result)> LockResultCallback;
-
-  // Return serialized InstallAttributes of an enterprise-owned configuration.
-  static std::string GetEnterpriseOwnedInstallAttributesBlobForTesting(
-      const std::string& user_name);
+  using LockResultCallback = base::OnceCallback<void(LockResult lock_result)>;
 
   // Manage singleton instance.
   static void Initialize();
@@ -62,7 +59,8 @@ class COMPONENT_EXPORT(CHROMEOS_TPM) InstallAttributes {
   static void SetForTesting(InstallAttributes* test_instance);
   static void ShutdownForTesting();
 
-  explicit InstallAttributes(CryptohomeClient* cryptohome_client);
+  explicit InstallAttributes(
+      InstallAttributesClient* install_attributes_client);
   ~InstallAttributes();
 
   // Tries to read install attributes from |cache_file| to work around slow
@@ -76,13 +74,15 @@ class COMPONENT_EXPORT(CHROMEOS_TPM) InstallAttributes {
   // up to date with what cryptohome has. This method checks the readiness of
   // attributes and read them if ready. Actual read will be performed in
   // ReadAttributesIfReady().
-  void ReadImmutableAttributes(const base::Closure& callback);
+  void ReadImmutableAttributes(base::OnceClosure callback);
 
   // Updates the firmware management parameters from TPM, storing the devmode
   // flag according to |block_devmode|. Invokes |callback| when done. Must be
   // called before LockDevice is done. Used to update TPM on enrollment.
-  void SetBlockDevmodeInTpm(bool block_devmode,
-                            DBusMethodCallback<cryptohome::BaseReply> callback);
+  void SetBlockDevmodeInTpm(
+      bool block_devmode,
+      DBusMethodCallback<user_data_auth::SetFirmwareManagementParametersReply>
+          callback);
 
   // Locks the device into |device_mode|.  Depending on |device_mode|, a
   // specific subset of |domain|, |realm| and |device_id| must be set.  Can also
@@ -94,7 +94,7 @@ class COMPONENT_EXPORT(CHROMEOS_TPM) InstallAttributes {
                   const std::string& domain,
                   const std::string& realm,
                   const std::string& device_id,
-                  const LockResultCallback& callback);
+                  LockResultCallback callback);
 
   // Checks whether this devices is under any kind of enterprise management.
   bool IsEnterpriseManaged() const;
@@ -137,7 +137,7 @@ class COMPONENT_EXPORT(CHROMEOS_TPM) InstallAttributes {
   bool consistency_check_running_ = false;
 
   // To be run after the consistency check has finished.
-  base::Closure post_check_action_;
+  base::OnceClosure post_check_action_;
 
   // Wether the LockDevice() initiated TPM calls are running.
   bool device_lock_running_ = false;
@@ -191,42 +191,56 @@ class COMPONENT_EXPORT(CHROMEOS_TPM) InstallAttributes {
       const std::map<std::string, std::string>& attr_map);
 
   // Helper for ReadImmutableAttributes.
-  void ReadAttributesIfReady(const base::Closure& callback,
-                             base::Optional<bool> response);
+  void ReadAttributesIfReady(
+      base::OnceClosure callback,
+      absl::optional<user_data_auth::InstallAttributesGetStatusReply> reply);
 
   // Helper for LockDevice(). Handles the result of InstallAttributesIsReady()
   // and continue processing LockDevice if the result is true.
-  void LockDeviceIfAttributesIsReady(policy::DeviceMode device_mode,
-                                     const std::string& domain,
-                                     const std::string& realm,
-                                     const std::string& device_id,
-                                     const LockResultCallback& callback,
-                                     base::Optional<bool> response);
+  void LockDeviceIfAttributesIsReady(
+      policy::DeviceMode device_mode,
+      const std::string& domain,
+      const std::string& realm,
+      const std::string& device_id,
+      LockResultCallback callback,
+      absl::optional<user_data_auth::InstallAttributesGetStatusReply> reply);
 
   // Confirms the registered user and invoke the callback.
   void OnReadImmutableAttributes(policy::DeviceMode mode,
                                  const std::string& domain,
                                  const std::string& realm,
                                  const std::string& device_id,
-                                 const LockResultCallback& callback);
+                                 LockResultCallback callback);
 
   // Check state of install attributes against TPM lock state and generate UMA
   // for the result.  Asynchronously retry |dbus_retries| times in case of DBUS
   // errors (cryptohomed startup is slow).
   void TriggerConsistencyCheck(int dbus_retries);
 
-  // Callback for TpmGetPassword() DBUS call.  Generates UMA or schedules retry
-  // in case of DBUS error.
-  void OnTpmGetPasswordCompleted(int dbus_retries_remaining,
-                                 base::Optional<std::string> result);
+  // Callback for `GetTpmNonsensitiveStatus()` D-Bus call. Generates UMA or
+  // schedules retry in case of DBUS error.
+  void OnTpmStatusComplete(
+      int dbus_retries_remaining,
+      const ::tpm_manager::GetTpmNonsensitiveStatusReply& reply);
 
-  CryptohomeClient* cryptohome_client_;
+  // Callback for `ClearStoredOwnerPassword()` D-Bus call. Logs status code if
+  // the call fails.
+  void OnClearStoredOwnerPassword(
+      const ::tpm_manager::ClearStoredOwnerPasswordReply& reply);
 
-  base::WeakPtrFactory<InstallAttributes> weak_ptr_factory_;
+  InstallAttributesClient* install_attributes_client_;
+
+  base::WeakPtrFactory<InstallAttributes> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(InstallAttributes);
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::InstallAttributes;
+}
 
 #endif  // CHROMEOS_TPM_INSTALL_ATTRIBUTES_H_

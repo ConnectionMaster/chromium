@@ -58,14 +58,12 @@ class SafariImporter : public Importer {
   // Multiple URLs can share the same favicon; this is a map
   // of URLs -> IconIDs that we load as a temporary step before
   // actually loading the icons.
-  typedef std::map<int64_t, std::set<GURL>> FaviconMap;
+  using FaviconMap = std::map<int64_t, std::set<GURL>>;
 
   void ImportBookmarks();
-  void ImportPasswords();
-  void ImportHistory();
 
   // Parse Safari's stored bookmarks.
-  void ParseBookmarks(const base::string16& toolbar_name,
+  void ParseBookmarks(const std::u16string& toolbar_name,
                       std::vector<ImportedBookmarkEntry>* bookmarks);
 
   // Function to recursively read Bookmarks out of Safari plist.
@@ -75,17 +73,10 @@ class SafariImporter : public Importer {
   // |out_bookmarks| BookMark element array to write into.
   void RecursiveReadBookmarksFolder(
       NSDictionary* bookmark_folder,
-      const std::vector<base::string16>& parent_path_elements,
+      const std::vector<std::u16string>& parent_path_elements,
       bool is_in_toolbar,
-      const base::string16& toolbar_name,
+      const std::u16string& toolbar_name,
       std::vector<ImportedBookmarkEntry>* out_bookmarks);
-
-  // Converts history time stored by Safari as a double serialized as a string,
-  // to seconds-since-UNIX-Ephoch-format used by Chrome.
-  double HistoryTimeToEpochTime(NSString* history_time);
-
-  // Parses Safari's history and loads it into the input array.
-  void ParseHistoryItems(std::vector<ImporterURLRow>* history_items);
 
   // Opens the favicon database file.
   bool OpenDatabase(sql::Database* db);

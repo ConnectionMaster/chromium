@@ -142,10 +142,16 @@ ASH_EXPORT extern const AcceleratorAction
 ASH_EXPORT extern const size_t kActionsAllowedInAppModeOrPinnedModeLength;
 
 // Actions that can be performed in pinned mode.
-// In pinned mode, the action listed this or "in app mode or pinned mode" table
-// can be performed.
+// In pinned mode, the action listed in this or "in app mode or pinned mode"
+// table can be performed.
 ASH_EXPORT extern const AcceleratorAction kActionsAllowedInPinnedMode[];
 ASH_EXPORT extern const size_t kActionsAllowedInPinnedModeLength;
+
+// Actions that can be performed in app mode.
+// In app mode, the action listed in this or "in app mode or pinned mode" table
+// can be performed.
+ASH_EXPORT extern const AcceleratorAction kActionsAllowedInAppMode[];
+ASH_EXPORT extern const size_t kActionsAllowedInAppModeLength;
 
 // Actions that require at least 1 window.
 ASH_EXPORT extern const AcceleratorAction kActionsNeedingWindow[];
@@ -154,10 +160,6 @@ ASH_EXPORT extern const size_t kActionsNeedingWindowLength;
 // Actions that can be performed while keeping the menu open.
 ASH_EXPORT extern const AcceleratorAction kActionsKeepingMenuOpen[];
 ASH_EXPORT extern const size_t kActionsKeepingMenuOpenLength;
-
-// Actions that can be performed when the Kiosk Next Shell is enabled.
-ASH_EXPORT extern const AcceleratorAction kActionsAllowedForKioskNextShell[];
-ASH_EXPORT extern const size_t kActionsAllowedForKioskNextShellLength;
 
 }  // namespace ash
 

@@ -4,7 +4,7 @@
 
 package org.chromium.android_webview.test;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -26,7 +26,7 @@ public class AwContentsContainerViewTest {
     private AwTestContainerView mContainerView;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         mContentsClient = new TestAwContentsClient();
         mContainerView = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
     }
@@ -34,7 +34,7 @@ public class AwContentsContainerViewTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
-    public void testContainerViewClickable() throws Throwable {
+    public void testContainerViewClickable() {
         Assert.assertTrue(mContainerView.isClickable());
     }
 }

@@ -17,8 +17,11 @@ struct wl_resource;
 namespace exo {
 namespace wayland {
 
-constexpr uint32_t kZAuraShellVersion = 8;
+constexpr uint32_t kZAuraShellVersion = 19;
 
+// Adds bindings to the Aura Shell. Normally this implies Ash on ChromeOS
+// builds. On non-ChromeOS builds the protocol provides access to Aura windowing
+// system.
 void bind_aura_shell(wl_client* client,
                      void* data,
                      uint32_t version,
@@ -31,16 +34,28 @@ class AuraSurface : public SurfaceObserver,
   ~AuraSurface() override;
 
   void SetFrame(SurfaceFrameType type);
+  void SetServerStartResize();
   void SetFrameColors(SkColor active_frame_color, SkColor inactive_frame_color);
   void SetParent(AuraSurface* parent, const gfx::Point& position);
   void SetStartupId(const char* startup_id);
   void SetApplicationId(const char* application_id);
-  void SetClientSurfaceId(int client_surface_id);
+  void SetClientSurfaceId(const char* client_surface_id);
   void SetOcclusionTracking(bool tracking);
+  void Activate();
+  void DrawAttention();
+  void SetFullscreenMode(uint32_t mode);
+  void IntentToSnap(uint32_t snap_direction);
+  void SetSnapLeft();
+  void SetSnapRight();
+  void UnsetSnap();
+  void SetWindowSessionId(int32_t window_session_id);
+  void SetCanGoBack();
+  void UnsetCanGoBack();
 
   // Overridden from SurfaceObserver:
   void OnSurfaceDestroying(Surface* surface) override;
   void OnWindowOcclusionChanged(Surface* surface) override;
+  void OnFrameLockingChanged(Surface* surface, bool lock) override;
 
   // Overridden from ActivationChangeObserver:
   void OnWindowActivating(ActivationReason reason,

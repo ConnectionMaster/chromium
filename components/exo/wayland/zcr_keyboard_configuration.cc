@@ -8,7 +8,7 @@
 #include <wayland-server-core.h>
 #include <wayland-server-protocol-core.h>
 
-#include "ash/ime/ime_controller.h"
+#include "ash/ime/ime_controller_impl.h"
 #include "ash/shell.h"
 #include "base/feature_list.h"
 #include "components/exo/keyboard.h"
@@ -27,17 +27,22 @@ namespace {
 class WaylandKeyboardDeviceConfigurationDelegate
     : public KeyboardDeviceConfigurationDelegate,
       public KeyboardObserver,
-      public ash::ImeController::Observer {
+      public ash::ImeControllerImpl::Observer {
  public:
   WaylandKeyboardDeviceConfigurationDelegate(wl_resource* resource,
                                              Keyboard* keyboard)
       : resource_(resource), keyboard_(keyboard) {
     keyboard_->SetDeviceConfigurationDelegate(this);
     keyboard_->AddObserver(this);
-    ash::ImeController* ime_controller = ash::Shell::Get()->ime_controller();
+    ash::ImeControllerImpl* ime_controller =
+        ash::Shell::Get()->ime_controller();
     ime_controller->AddObserver(this);
     OnKeyboardLayoutNameChanged(ime_controller->keyboard_layout_name());
   }
+  WaylandKeyboardDeviceConfigurationDelegate(
+      const WaylandKeyboardDeviceConfigurationDelegate&) = delete;
+  WaylandKeyboardDeviceConfigurationDelegate& operator=(
+      const WaylandKeyboardDeviceConfigurationDelegate&) = delete;
 
   ~WaylandKeyboardDeviceConfigurationDelegate() override {
     ash::Shell::Get()->ime_controller()->RemoveObserver(this);
@@ -61,7 +66,7 @@ class WaylandKeyboardDeviceConfigurationDelegate
             : ZCR_KEYBOARD_DEVICE_CONFIGURATION_V1_KEYBOARD_TYPE_VIRTUAL);
   }
 
-  // Overridden from ImeController::Observer:
+  // Overridden from ImeControllerImpl::Observer:
   void OnCapsLockChanged(bool enabled) override {}
 
   void OnKeyboardLayoutNameChanged(const std::string& layout_name) override {
@@ -72,8 +77,6 @@ class WaylandKeyboardDeviceConfigurationDelegate
  private:
   wl_resource* resource_;
   Keyboard* keyboard_;
-
-  DISALLOW_COPY_AND_ASSIGN(WaylandKeyboardDeviceConfigurationDelegate);
 };
 
 void keyboard_device_configuration_destroy(wl_client* client,
@@ -126,7 +129,9 @@ void bind_keyboard_configuration(wl_client* client,
                                  uint32_t id) {
   wl_resource* resource = wl_resource_create(
       client, &zcr_keyboard_configuration_v1_interface,
-      std::min(version, kZcrKeyboardConfigurationVersion), id);
+      std::min<uint32_t>(version,
+                         zcr_keyboard_configuration_v1_interface.version),
+      id);
   wl_resource_set_implementation(
       resource, &keyboard_configuration_implementation, data, nullptr);
 }

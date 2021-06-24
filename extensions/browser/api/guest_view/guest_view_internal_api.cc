@@ -4,6 +4,7 @@
 
 #include "extensions/browser/api/guest_view/guest_view_internal_api.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -11,8 +12,6 @@
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "components/guest_view/browser/guest_view_manager_delegate.h"
 #include "components/guest_view/common/guest_view_constants.h"
-#include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/render_process_host.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/common/api/guest_view_internal.h"
 #include "extensions/common/permissions/permissions_data.h"
@@ -43,7 +42,8 @@ ExtensionFunction::ResponseAction GuestViewInternalCreateGuestFunction::Run() {
   if (!guest_view_manager) {
     guest_view_manager = GuestViewManager::CreateWithDelegate(
         browser_context(),
-        ExtensionsAPIClient::Get()->CreateGuestViewManagerDelegate(context_));
+        ExtensionsAPIClient::Get()->CreateGuestViewManagerDelegate(
+            browser_context()));
   }
 
   content::WebContents* sender_web_contents = GetSenderWebContents();
@@ -65,17 +65,15 @@ ExtensionFunction::ResponseAction GuestViewInternalCreateGuestFunction::Run() {
 void GuestViewInternalCreateGuestFunction::CreateGuestCallback(
     content::WebContents* guest_web_contents) {
   int guest_instance_id = 0;
-  int content_window_id = MSG_ROUTING_NONE;
   if (guest_web_contents) {
     GuestViewBase* guest = GuestViewBase::FromWebContents(guest_web_contents);
     guest_instance_id = guest->guest_instance_id();
-    content_window_id = guest->proxy_routing_id();
   }
   auto return_params = std::make_unique<base::DictionaryValue>();
   return_params->SetInteger(guest_view::kID, guest_instance_id);
-  return_params->SetInteger(guest_view::kContentWindowID, content_window_id);
 
-  Respond(OneArgument(std::move(return_params)));
+  Respond(
+      OneArgument(base::Value::FromUniquePtrValue(std::move(return_params))));
 }
 
 GuestViewInternalDestroyGuestFunction::
@@ -90,8 +88,8 @@ ExtensionFunction::ResponseAction GuestViewInternalDestroyGuestFunction::Run() {
   std::unique_ptr<guest_view_internal::DestroyGuest::Params> params(
       guest_view_internal::DestroyGuest::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params.get());
-  GuestViewBase* guest = GuestViewBase::From(
-      render_frame_host()->GetProcess()->GetID(), params->instance_id);
+  GuestViewBase* guest =
+      GuestViewBase::From(source_process_id(), params->instance_id);
   if (!guest)
     return RespondNow(Error(kUnknownErrorDoNotUse));
   guest->Destroy(true);
@@ -108,8 +106,8 @@ ExtensionFunction::ResponseAction GuestViewInternalSetSizeFunction::Run() {
   std::unique_ptr<guest_view_internal::SetSize::Params> params(
       guest_view_internal::SetSize::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params.get());
-  GuestViewBase* guest = GuestViewBase::From(
-      render_frame_host()->GetProcess()->GetID(), params->instance_id);
+  GuestViewBase* guest =
+      GuestViewBase::From(source_process_id(), params->instance_id);
   if (!guest)
     return RespondNow(Error(kUnknownErrorDoNotUse));
 
@@ -119,16 +117,16 @@ ExtensionFunction::ResponseAction GuestViewInternalSetSizeFunction::Run() {
         params->params.enable_auto_size.release());
   }
   if (params->params.min) {
-    set_size_params.min_size.reset(
-        new gfx::Size(params->params.min->width, params->params.min->height));
+    set_size_params.min_size = std::make_unique<gfx::Size>(
+        params->params.min->width, params->params.min->height);
   }
   if (params->params.max) {
-    set_size_params.max_size.reset(
-        new gfx::Size(params->params.max->width, params->params.max->height));
+    set_size_params.max_size = std::make_unique<gfx::Size>(
+        params->params.max->width, params->params.max->height);
   }
   if (params->params.normal) {
-    set_size_params.normal_size.reset(new gfx::Size(
-        params->params.normal->width, params->params.normal->height));
+    set_size_params.normal_size = std::make_unique<gfx::Size>(
+        params->params.normal->width, params->params.normal->height);
   }
 
   guest->SetSize(set_size_params);

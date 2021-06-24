@@ -11,7 +11,7 @@
 
 #include "third_party/blink/renderer/bindings/tests/results/core/v8_for_each_iterator_callback.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/generated_code_helper.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
@@ -20,6 +20,7 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 
 namespace blink {
 
@@ -61,11 +62,16 @@ v8::Maybe<void> V8ForEachIteratorCallback::Invoke(bindings::V8ValueOrScriptWrapp
   v8::Context::BackupIncumbentScope backup_incumbent_scope(
       IncumbentScriptState()->GetContext());
 
+  if (UNLIKELY(ScriptForbiddenScope::IsScriptForbidden())) {
+    ScriptForbiddenScope::ThrowScriptForbiddenException(GetIsolate());
+    return v8::Nothing<void>();
+  }
+
   v8::Local<v8::Function> function;
   // callback function's invoke:
   // step 4. If ! IsCallable(F) is false:
   //
-  // No [TreatNonObjectAsNull] presents.  Must be always callable.
+  // No [LegacyTreatNonObjectAsNull] presents.  Must be always callable.
   DCHECK(CallbackObject()->IsFunction());
   function = CallbackFunction();
 
@@ -118,16 +124,6 @@ void V8ForEachIteratorCallback::InvokeAndReportException(bindings::V8ValueOrScri
       Invoke(callback_this_value, value, key, obj);
   // An exception if any is killed with the v8::TryCatch above.
   ALLOW_UNUSED_LOCAL(maybe_result);
-}
-
-v8::Maybe<void> V8PersistentCallbackFunction<V8ForEachIteratorCallback>::Invoke(bindings::V8ValueOrScriptWrappableAdapter callback_this_value, ScriptValue value, ScriptValue key, ScriptValue obj) {
-  return Proxy()->Invoke(
-      callback_this_value, value, key, obj);
-}
-
-void V8PersistentCallbackFunction<V8ForEachIteratorCallback>::InvokeAndReportException(bindings::V8ValueOrScriptWrappableAdapter callback_this_value, ScriptValue value, ScriptValue key, ScriptValue obj) {
-  Proxy()->InvokeAndReportException(
-      callback_this_value, value, key, obj);
 }
 
 }  // namespace blink

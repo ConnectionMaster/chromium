@@ -8,18 +8,18 @@
 <div style="width: 100.25px;">abc</div>
 <script>
 test(function() {
-    var divElement = document.querySelector("div");
+  var divElement = document.querySelector("div");
 
-    var rect = divElement.getBoundingClientRect();
-    // Test that elementFromPoint hits div element.
-    assert_equals(document.elementFromPoint(100.25, 12), divElement);
+  // Test that elementFromPoint hits div element.
+  assert_equals(document.elementFromPoint(100.249, 12), divElement);
 
-    // Page zoom factor of 3.0 should still hit div element.
-    eventSender.setPageZoomFactor(3.0);
-    assert_equals(document.elementFromPoint(100.25, 12), divElement);
+  if (window.testRunner) {
+    // Page zoom factor should not affect result.
+    testRunner.setPageZoomFactor(3.0);
+    assert_equals(document.elementFromPoint(100.249, 12), divElement);
 
-    // Page zoom factor of 4.0 should hit body element as the fraction will not be snapped.
-    eventSender.setPageZoomFactor(4.0);
-    assert_equals(document.elementFromPoint(100.25, 12), document.body);
+    testRunner.setPageZoomFactor(4.0);
+    assert_equals(document.elementFromPoint(100.249, 12), divElement);
+  }
 });
 </script>

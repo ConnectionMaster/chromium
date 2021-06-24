@@ -7,7 +7,7 @@
 
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "v8/include/v8.h"
 
 namespace blink {
@@ -39,6 +39,24 @@ CORE_EXPORT StreamAlgorithm* CreateAlgorithmFromUnderlyingMethod(
     v8::MaybeLocal<v8::Value> extra_arg,
     ExceptionState&);
 
+// Looks up |method_name| on |object|. Will throw an exception if the lookup
+// fails or if the resolved method is neither a function nor undefined.
+// |name_for_error| is used for the name of the method in exception messages.
+CORE_EXPORT v8::MaybeLocal<v8::Value> ResolveMethod(
+    ScriptState*,
+    v8::Local<v8::Object> object,
+    const char* method_name,
+    const char* name_for_error,
+    ExceptionState&);
+
+// This works like CreateAlgorithmFromUnderlyingMethod() but |method| must
+// already have been resolved and verified to be a v8::Function.
+CORE_EXPORT StreamAlgorithm* CreateAlgorithmFromResolvedMethod(
+    ScriptState*,
+    v8::Local<v8::Object> underlying_object,
+    v8::Local<v8::Value> method,
+    v8::MaybeLocal<v8::Value> extra_arg);
+
 // Create a StreamStartAlgorithm from the "start" method on |underlying_object|.
 // Unlike other algorithms, the lookup of the method on the object is done at
 // execution time rather than algorithm creation time. |method_name_for_error|
@@ -50,9 +68,28 @@ CORE_EXPORT StreamStartAlgorithm* CreateStartAlgorithm(
     const char* method_name_for_error,
     v8::Local<v8::Value> controller);
 
+// Create a StreamStartAlgorithm from the "start" method on |underlying_object|
+// for readable byte streams.
+CORE_EXPORT StreamStartAlgorithm* CreateByteStreamStartAlgorithm(
+    ScriptState*,
+    v8::Local<v8::Object> underlying_object,
+    v8::Local<v8::Value> method,
+    v8::Local<v8::Value> controller);
+
 // Returns a startAlgorithm that always returns a promise resolved with
 // undefined.
 CORE_EXPORT StreamStartAlgorithm* CreateTrivialStartAlgorithm();
+
+// Returns a streamAlgorithm that always returns a promise resolved with
+// undefined.
+CORE_EXPORT StreamAlgorithm* CreateTrivialStreamAlgorithm();
+
+// Returns a strategy object that has no size() function and the supplied
+// highWaterMark. It has a null prototype so that it won't be affected by
+// changes to the global Object prototype. It behaves the same as a
+// CountQueuingStrategy but is faster and safer to use from C++.
+CORE_EXPORT ScriptValue CreateTrivialQueuingStrategy(v8::Isolate*,
+                                                     size_t high_water_mark);
 
 // Used in place of InvokeOrNoop in spec. Always takes 1 argument.
 // https://streams.spec.whatwg.org/#invoke-or-noop
@@ -62,6 +99,15 @@ CORE_EXPORT v8::MaybeLocal<v8::Value> CallOrNoop1(ScriptState*,
                                                   const char* name_for_error,
                                                   v8::Local<v8::Value> arg0,
                                                   ExceptionState&);
+
+// Used in JavaScriptByteStreamStartAlgoirthm to call the method.
+// This is a variation of the CallOrNoop1 method where it is given the method
+// function already.
+CORE_EXPORT v8::MaybeLocal<v8::Value> Call1(ScriptState*,
+                                            v8::Local<v8::Function> method,
+                                            v8::Local<v8::Object> object,
+                                            v8::Local<v8::Value> arg0,
+                                            ExceptionState&);
 
 // https://streams.spec.whatwg.org/#promise-call
 // "PromiseCall(F, V, args)"
@@ -101,48 +147,6 @@ CORE_EXPORT v8::Local<v8::Promise> PromiseResolve(ScriptState*,
 // Implements "a promise resolved with *undefined*".
 CORE_EXPORT v8::Local<v8::Promise> PromiseResolveWithUndefined(ScriptState*);
 
-// Validates the "options" argument to ReadableStream::getReader(). This
-// implementation is shared between ReadableStreamWrapper and
-// ReadableStreamNative. If an exception is thrown validation failed.
-// TODO(ricea): Move it into the native implementation once
-// ReadableStreamWrapper is deleted.
-CORE_EXPORT void GetReaderValidateOptions(ScriptState*,
-                                          ScriptValue options,
-                                          ExceptionState&);
-
-// Extracts the "readable" and "writable" streams from the |transform_stream|
-// dictionary, validates them, and returns them via the |readable_stream| and
-// |writable_stream| out parameters. The types of |readable_stream| and
-// |writable_stream| are asymmetric because |readable_stream| is returned
-// directly to JavaScript and so there is no point in converting it to an
-// internal type.
-// TODO(ricea): Move it into the native implementation once
-// ReadableStreamWrapper is deleted.
-CORE_EXPORT void PipeThroughExtractReadableWritable(
-    ScriptState*,
-    const ReadableStream* stream,
-    ScriptValue transform_stream,
-    ScriptValue* readable_stream,
-    WritableStream** writable_stream,
-    ExceptionState&);
-
-// Verifies that |destination_value| is a WritableStream and that both it and
-// |source| are unlocked. Returns the WritableStream that was wrapped by
-// |destination_value|.
-CORE_EXPORT WritableStream* PipeToCheckSourceAndDestination(
-    ScriptState*,
-    ReadableStream* source,
-    ScriptValue destination_value,
-    ExceptionState&);
-
-// Calls Tee() on |readable|, converts the two branches to a JavaScript array
-// and returns them.
-// TODO(ricea): Move it into the native implementation once
-// ReadableStreamWrapper is deleted.
-ScriptValue CallTeeAndReturnBranchArray(ScriptState* script_state,
-                                        ReadableStream* readable,
-                                        ExceptionState& exception_state);
-
 // Converts |value| to an object. |value| must not be empty. If |value| is
 // undefined, an empty object will be returned. If |value| is JavaScript null,
 // then an exception will be thrown. In the standard, this is performed as part
@@ -164,6 +168,8 @@ class StrategyUnpacker final {
   // arbitrary user code. The object cannot be used if
   // exception_state.HadException() is true.
   StrategyUnpacker(ScriptState*, ScriptValue strategy, ExceptionState&);
+  StrategyUnpacker(const StrategyUnpacker&) = delete;
+  StrategyUnpacker& operator=(const StrategyUnpacker&) = delete;
   ~StrategyUnpacker() = default;
 
   // Performs MakeSizeAlgorithmFromSizeFunction on |size_|. Because this method
@@ -177,11 +183,11 @@ class StrategyUnpacker final {
                           int default_value,
                           ExceptionState&) const;
 
+  bool IsSizeUndefined() const;
+
  private:
   v8::Local<v8::Value> size_;
   v8::Local<v8::Value> high_water_mark_;
-
-  DISALLOW_COPY_AND_ASSIGN(StrategyUnpacker);
 };
 
 }  // namespace blink

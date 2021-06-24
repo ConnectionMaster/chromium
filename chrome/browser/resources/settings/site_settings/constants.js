@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.exportPath('settings');
-
 /**
  * All possible contentSettingsTypes that we currently support configuring in
  * the UI. Both top-level categories and content settings that represent
@@ -12,30 +10,39 @@ cr.exportPath('settings');
  * in chrome/browser/ui/webui/site_settings_helper.cc
  * @enum {string}
  */
-settings.ContentSettingsTypes = {
-  COOKIES: 'cookies',
-  IMAGES: 'images',
-  JAVASCRIPT: 'javascript',
-  SOUND: 'sound',
-  PLUGINS: 'plugins',  // AKA Flash.
-  POPUPS: 'popups',
-  GEOLOCATION: 'location',
-  NOTIFICATIONS: 'notifications',
-  MIC: 'media-stream-mic',  // AKA Microphone.
-  CAMERA: 'media-stream-camera',
-  PROTOCOL_HANDLERS: 'register-protocol-handler',
-  UNSANDBOXED_PLUGINS: 'ppapi-broker',
+export const ContentSettingsTypes = {
+  ADS: 'ads',
+  AR: 'ar',
   AUTOMATIC_DOWNLOADS: 'multiple-automatic-downloads',
   BACKGROUND_SYNC: 'background-sync',
-  MIDI_DEVICES: 'midi-sysex',
-  USB_DEVICES: 'usb-devices',
-  SERIAL_PORTS: 'serial-ports',
-  ZOOM_LEVELS: 'zoom-levels',
-  PROTECTED_CONTENT: 'protected-content',
-  ADS: 'ads',
+  BLUETOOTH_DEVICES: 'bluetooth-devices',
+  BLUETOOTH_SCANNING: 'bluetooth-scanning',
+  CAMERA: 'media-stream-camera',
   CLIPBOARD: 'clipboard',
-  SENSORS: 'sensors',
+  COOKIES: 'cookies',
+  FILE_HANDLING: 'file-handling',
+  FILE_SYSTEM_WRITE: 'file-system-write',
+  FONT_ACCESS: 'font-access',
+  GEOLOCATION: 'location',
+  HID_DEVICES: 'hid-devices',
+  IDLE_DETECTION: 'idle-detection',
+  IMAGES: 'images',
+  JAVASCRIPT: 'javascript',
+  MIC: 'media-stream-mic',  // AKA Microphone.
+  MIDI_DEVICES: 'midi-sysex',
+  MIXEDSCRIPT: 'mixed-script',
+  NOTIFICATIONS: 'notifications',
   PAYMENT_HANDLER: 'payment-handler',
+  POPUPS: 'popups',
+  PROTECTED_CONTENT: 'protected-content',
+  PROTOCOL_HANDLERS: 'register-protocol-handler',
+  SENSORS: 'sensors',
+  SERIAL_PORTS: 'serial-ports',
+  SOUND: 'sound',
+  USB_DEVICES: 'usb-devices',
+  VR: 'vr',
+  WINDOW_PLACEMENT: 'window-placement',
+  ZOOM_LEVELS: 'zoom-levels',
 };
 
 /**
@@ -44,7 +51,7 @@ settings.ContentSettingsTypes = {
  * components/content_settings/core/common/content_settings.h
  * @enum {string}
  */
-settings.ContentSetting = {
+export const ContentSetting = {
   DEFAULT: 'default',
   ALLOW: 'allow',
   BLOCK: 'block',
@@ -59,10 +66,24 @@ settings.ContentSetting = {
  * chrome/browser/ui/webui/site_settings_helper.cc
  * @enum {string}
  */
-settings.ChooserType = {
+export const ChooserType = {
   NONE: '',
   USB_DEVICES: 'usb-devices-data',
   SERIAL_PORTS: 'serial-ports-data',
+  HID_DEVICES: 'hid-devices-data',
+  BLUETOOTH_DEVICES: 'bluetooth-devices-data',
+};
+
+/**
+ * Possible preference settings for the profile.cookie_controls_mode pref.
+ * This should be kept in sync with the |CookieControlsMode| enum in
+ * components/content_settings/core/browser/cookie_settings.h
+ * @enum {number}
+ */
+export const CookieControlsMode = {
+  OFF: 0,
+  BLOCK_THIRD_PARTY: 1,
+  INCOGNITO_ONLY: 2,
 };
 
 /**
@@ -71,12 +92,10 @@ settings.ChooserType = {
  * chrome/browser/ui/webui/site_settings_helper.h
  * @enum {string}
  */
-settings.SiteSettingSource = {
+export const SiteSettingSource = {
+  ALLOWLIST: 'allowlist',
   ADS_FILTER_BLACKLIST: 'ads-filter-blacklist',
   DEFAULT: 'default',
-  // This source is for the Protected Media Identifier / Protected Content
-  // content setting only, which is only available on ChromeOS.
-  DRM_DISABLED: 'drm-disabled',
   EMBARGO: 'embargo',
   EXTENSION: 'extension',
   INSECURE_ORIGIN: 'insecure-origin',
@@ -86,36 +105,68 @@ settings.SiteSettingSource = {
 };
 
 /**
+ * Enumeration of states for the notification default setting generated pref.
+ * Must be kept in sync with the enum of the same name located in:
+ * chrome/browser/content_settings/generated_notification_pref.h
+ * @enum {number}
+ */
+export const NotificationSetting = {
+  ASK: 0,
+  QUIETER_MESSAGING: 1,
+  BLOCK: 2,
+};
+
+/**
  * A category value to use for the All Sites list.
  * @type {string}
  */
-settings.ALL_SITES = 'all-sites';
+const ALL_SITES = 'all-sites';
 
 /**
  * An invalid subtype value.
  * @type {string}
  */
-settings.INVALID_CATEGORY_SUBTYPE = '';
+export const INVALID_CATEGORY_SUBTYPE = '';
 
 /**
  * Contains the possible record action types.
- * This should be kept in sync with the |AllSitesAction| enum in
+ * This should be kept in sync with the |AllSitesAction2| enum in
  * chrome/browser/ui/webui/settings/site_settings_handler.cc
  * @enum {number}
  */
-settings.AllSitesAction = {
+export const AllSitesAction2 = {
   LOAD_PAGE: 0,
-  RESET_PERMISSIONS: 1,
-  CLEAR_DATA: 2,
-  ENTER_SITE_DETAILS: 3,
+  RESET_SITE_GROUP_PERMISSIONS: 1,
+  RESET_ORIGIN_PERMISSIONS: 2,
+  CLEAR_ALL_DATA: 3,
+  CLEAR_SITE_GROUP_DATA: 4,
+  CLEAR_ORIGIN_DATA: 5,
+  ENTER_SITE_DETAILS: 6,
 };
 
 /**
  * Contains the possible sort methods.
  * @enum {string}
  */
-settings.SortMethod = {
+export const SortMethod = {
   NAME: 'name',
   MOST_VISITED: 'most-visited',
   STORAGE: 'data-stored',
 };
+
+/**
+ * Contains types of dialogs on the AllSites page,
+ * used for logging userActions.
+ * @enum {string}
+ */
+export const ALL_SITES_DIALOG = {
+  CLEAR_DATA: 'ClearData',
+  RESET_PERMISSIONS: 'ResetPermissions',
+};
+
+/**
+ * String representation of the wildcard used for universal
+ * match for SiteExceptions.
+ * @type {string}
+ */
+export const SITE_EXCEPTION_WILDCARD = '*';

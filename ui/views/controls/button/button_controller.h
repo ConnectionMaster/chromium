@@ -5,6 +5,8 @@
 #ifndef UI_VIEWS_CONTROLS_BUTTON_BUTTON_CONTROLLER_H_
 #define UI_VIEWS_CONTROLS_BUTTON_BUTTON_CONTROLLER_H_
 
+#include <memory>
+
 #include "base/macros.h"
 #include "ui/events/event.h"
 #include "ui/views/controls/button/button.h"
@@ -19,6 +21,21 @@ class VIEWS_EXPORT ButtonController {
                    std::unique_ptr<ButtonControllerDelegate> delegate);
   virtual ~ButtonController();
 
+  // An enum describing the events on which a button should notify its listener.
+  enum class NotifyAction {
+    kOnPress,
+    kOnRelease,
+  };
+
+  Button* button() { return button_; }
+
+  // Sets the event on which the button's listener should be notified.
+  void set_notify_action(NotifyAction notify_action) {
+    notify_action_ = notify_action;
+  }
+
+  NotifyAction notify_action() const { return notify_action_; }
+
   // Methods that parallel View::On<Event> handlers:
   virtual bool OnMousePressed(const ui::MouseEvent& event);
   virtual void OnMouseReleased(const ui::MouseEvent& event);
@@ -27,16 +44,15 @@ class VIEWS_EXPORT ButtonController {
   virtual void OnMouseExited(const ui::MouseEvent& event);
   virtual bool OnKeyPressed(const ui::KeyEvent& event);
   virtual bool OnKeyReleased(const ui::KeyEvent& event);
+  virtual void OnGestureEvent(ui::GestureEvent* event);
 
   // Updates |node_data| for a button based on the functionality.
   virtual void UpdateAccessibleNodeData(ui::AXNodeData* node_data);
 
   // Methods that parallel respective methods in Button:
-  virtual void OnStateChanged(Button::ButtonState old_state);
   virtual bool IsTriggerableEvent(const ui::Event& event);
 
  protected:
-  Button* button() { return button_; }
   ButtonControllerDelegate* delegate() {
     return button_controller_delegate_.get();
   }
@@ -46,6 +62,9 @@ class VIEWS_EXPORT ButtonController {
 
   // TODO(cyan): Remove |button_| and access everything via the delegate.
   std::unique_ptr<ButtonControllerDelegate> button_controller_delegate_;
+
+  // The event on which the button's listener should be notified.
+  NotifyAction notify_action_ = NotifyAction::kOnRelease;
 
   DISALLOW_COPY_AND_ASSIGN(ButtonController);
 };

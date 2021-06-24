@@ -14,6 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "content/browser/service_worker/service_worker_register_job_base.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -32,8 +33,12 @@ class ServiceWorkerUnregisterJob : public ServiceWorkerRegisterJobBase {
                                   blink::ServiceWorkerStatusCode status)>
       UnregistrationCallback;
 
-  ServiceWorkerUnregisterJob(base::WeakPtr<ServiceWorkerContextCore> context,
-                             const GURL& scope);
+  // If |is_immediate| is true, unregister clears the active worker from the
+  // registration without waiting for the controlled clients to unload.
+  ServiceWorkerUnregisterJob(ServiceWorkerContextCore* context,
+                             const GURL& scope,
+                             const blink::StorageKey& key,
+                             bool is_immediate);
   ~ServiceWorkerUnregisterJob() override;
 
   // Registers a callback to be called when the job completes (whether
@@ -56,11 +61,14 @@ class ServiceWorkerUnregisterJob : public ServiceWorkerRegisterJobBase {
   void ResolvePromise(int64_t registration_id,
                       blink::ServiceWorkerStatusCode status);
 
-  base::WeakPtr<ServiceWorkerContextCore> context_;
+  // The ServiceWorkerContextCore object must outlive this.
+  ServiceWorkerContextCore* const context_;
   const GURL scope_;
+  const blink::StorageKey key_;
+  const bool is_immediate_;
   std::vector<UnregistrationCallback> callbacks_;
-  bool is_promise_resolved_;
-  base::WeakPtrFactory<ServiceWorkerUnregisterJob> weak_factory_;
+  bool is_promise_resolved_ = false;
+  base::WeakPtrFactory<ServiceWorkerUnregisterJob> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ServiceWorkerUnregisterJob);
 };

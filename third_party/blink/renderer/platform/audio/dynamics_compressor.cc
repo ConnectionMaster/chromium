@@ -26,14 +26,15 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "third_party/blink/renderer/platform/audio/dynamics_compressor.h"
+
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "third_party/blink/renderer/platform/audio/audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
-#include "third_party/blink/renderer/platform/audio/dynamics_compressor.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
-
-using namespace audio_utilities;
 
 DynamicsCompressor::DynamicsCompressor(float sample_rate,
                                        unsigned number_of_channels)
@@ -51,8 +52,7 @@ DynamicsCompressor::DynamicsCompressor(float sample_rate,
 
 void DynamicsCompressor::SetParameterValue(unsigned parameter_id, float value) {
   DCHECK_LT(parameter_id, static_cast<unsigned>(kParamLast));
-  if (parameter_id < kParamLast)
-    parameters_[parameter_id] = value;
+  parameters_[parameter_id] = value;
 }
 
 void DynamicsCompressor::InitializeParameters() {
@@ -102,11 +102,6 @@ void DynamicsCompressor::Process(const AudioBus* source_bus,
   DCHECK_EQ(number_of_channels, number_of_channels_);
   DCHECK(number_of_source_channels);
 
-  if (number_of_channels != number_of_channels_ || !number_of_source_channels) {
-    destination_bus->Zero();
-    return;
-  }
-
   switch (number_of_channels) {
     case 2:  // stereo
       source_channels_[0] = source_bus->Channel(0)->Data();
@@ -148,7 +143,7 @@ void DynamicsCompressor::Process(const AudioBus* source_bus,
   float release_time = ParameterValue(kParamRelease);
   float pre_delay_time = ParameterValue(kParamPreDelay);
 
-  // This is effectively a master volume on the compressed signal
+  // This is effectively a make-up gain on the compressed signal
   // (pre-blending).
   float db_post_gain = ParameterValue(kParamPostGain);
 

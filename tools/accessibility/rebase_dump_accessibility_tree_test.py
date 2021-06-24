@@ -18,6 +18,8 @@ of the changes look reasonable, then upload the change for code review.
 Optional argument: patchset number, otherwise will default to latest patchset
 """
 
+from __future__ import print_function
+
 import json
 import os
 import re
@@ -41,17 +43,15 @@ completed_files = set()
 
 def Fix(line):
   if line[:3] == '@@@':
-    try:
-      line = re.search('[^@]@([^@]*)@@@', line).group(1)
-    except:
-      pass
+    result = re.search('[^@]@([^@]*)@@@', line)
+    if result:
+      line = result.group(1)
   # For Android tests:
   if line[:2] == 'I ':
-    try:
-      line = re.search('I  \d+\.\d+s run_tests_on_device\([0-9a-f]+\)  (.*)',
-                       line).group(1)
-    except:
-      pass
+    result = re.search('I  \d+\.\d+s run_tests_on_device\([0-9a-f]+\)  (.*)',
+                       line)
+    if result:
+      line = group(1)
   return line
 
 def ParseLog(logdata):
@@ -64,13 +64,15 @@ def ParseLog(logdata):
   for i in range(len(lines)):
     line = Fix(lines[i])
     if line.find('Testing:') >= 0:
-      test_file = re.search(
-          'content.test.*accessibility.([^@]*)', line).group(1)
+      result = re.search('content.test.*accessibility.([^@]*)', line)
+      if result:
+        test_file = result.group(1)
       expected_file = None
       start = None
     if line.find('Expected output:') >= 0:
-      expected_file = re.search(
-          'content.test.*accessibility.([^@]*)', line).group(1)
+      result = re.search('content.test.*accessibility.([^@]*)', line)
+      if result:
+        expected_file = result.group(1)
     if line == 'Actual':
       start = i + 2
     if start and test_file and expected_file and line.find('End-of-file') >= 0:
@@ -82,7 +84,7 @@ def ParseLog(logdata):
       fp = open(dst_fullpath, 'w')
       fp.write('\n'.join(actual))
       fp.close()
-      print "* %s" % os.path.relpath(dst_fullpath)
+      print("* %s" % os.path.relpath(dst_fullpath))
       completed_files.add(dst_fullpath)
       start = None
       test_file = None
@@ -96,13 +98,13 @@ def Run():
     patchSetArg = '';
 
   (_, tmppath) = tempfile.mkstemp()
-  print 'Temp file: %s' % tmppath
+  print('Temp file: %s' % tmppath)
   os.system('git cl try-results --json %s %s' % (tmppath, patchSetArg))
 
   try_result = open(tmppath).read()
   if len(try_result) < 1000:
-    print 'Did not seem to get try bot data.'
-    print try_result
+    print('Did not seem to get try bot data.')
+    print(try_result)
     return
 
   data = json.loads(try_result)
@@ -111,19 +113,19 @@ def Run():
   #print(json.dumps(data, indent=4))
 
   for builder in data:
-    print builder['builder_name'], builder['result']
-    if builder['result'] == 'FAILURE':
+    print(builder['builder']['builder'], builder['status'])
+    if builder['status'] == 'FAILURE':
       logdog_tokens = [
           'chromium',
           'buildbucket',
           'cr-buildbucket.appspot.com',
-          builder['buildbucket_id'],
+          builder['id'],
           '+',
           'steps',
           '**']
       logdog_path = '/'.join(logdog_tokens)
       logdog_query = 'cit logdog query -results 999 -path "%s"' % logdog_path
-      print (BRIGHT_COLOR + '=> %s' + NORMAL_COLOR) % logdog_query
+      print((BRIGHT_COLOR + '=> %s' + NORMAL_COLOR) % logdog_query)
       steps = os.popen(logdog_query).readlines()
       a11y_step = None
       for step in steps:
@@ -135,13 +137,13 @@ def Run():
             step.find('Upload') == -1):
 
           a11y_step = step.rstrip()
-          logdog_cat = 'cit logdog cat -raw "chromium%s"' % a11y_step
+          logdog_cat = 'cit logdog cat -raw "%s"' % a11y_step
           # A bit noisy but useful for debugging.
-          # print (BRIGHT_COLOR + '=> %s' + NORMAL_COLOR) % logdog_cat
+          # print((BRIGHT_COLOR + '=> %s' + NORMAL_COLOR) % logdog_cat)
           output = os.popen(logdog_cat).read()
           ParseLog(output)
       if not a11y_step:
-        print 'No content_browsertests (with patch) step found'
+        print('No content_browsertests (with patch) step found')
         continue
 
 if __name__ == '__main__':

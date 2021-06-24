@@ -8,12 +8,11 @@
 #include <vector>
 
 #include "ash/public/cpp/shell_window_ids.h"
-#include "ash/shell.h"           // mash-ok
-#include "ash/wm/window_util.h"  // mash-ok
+#include "ash/shell.h"
+#include "ash/wm/window_util.h"
 #include "base/logging.h"
-#include "ui/base/ime/ime_bridge.h"
-#include "ui/base/ui_base_features.h"
-#include "ui/chromeos/ime/infolist_window.h"
+#include "chrome/browser/chromeos/input_method/ui/infolist_window.h"
+#include "ui/base/ime/chromeos/ime_bridge.h"
 #include "ui/views/widget/widget.h"
 
 namespace chromeos {
@@ -33,6 +32,7 @@ CandidateWindowControllerImpl::~CandidateWindowControllerImpl() {
     candidate_window_view_->RemoveObserver(this);
     candidate_window_view_->GetWidget()->RemoveObserver(this);
   }
+  CHECK(!IsInObserverList());
 }
 
 void CandidateWindowControllerImpl::InitCandidateWindowView() {
@@ -41,18 +41,14 @@ void CandidateWindowControllerImpl::InitCandidateWindowView() {
 
   gfx::NativeView parent = nullptr;
 
-  // NOTE: CandidateWindowView takes care of the mash (window-service) case.
+  aura::Window* active_window = ash::window_util::GetActiveWindow();
   // Use VirtualKeyboardContainer so that it works even with a system modal
   // dialog.
-  if (!features::IsUsingWindowService()) {
-    aura::Window* active_window = ash::wm::GetActiveWindow();
-    parent = ash::Shell::GetContainer(
-        active_window ? active_window->GetRootWindow()
-                      : ash::Shell::GetRootWindowForNewWindows(),
-        ash::kShellWindowId_VirtualKeyboardContainer);
-  }
-  candidate_window_view_ = new ui::ime::CandidateWindowView(
-      parent, ash::kShellWindowId_VirtualKeyboardContainer);
+  parent = ash::Shell::GetContainer(
+      active_window ? active_window->GetRootWindow()
+                    : ash::Shell::GetRootWindowForNewWindows(),
+      ash::kShellWindowId_VirtualKeyboardContainer);
+  candidate_window_view_ = new ui::ime::CandidateWindowView(parent);
   candidate_window_view_->AddObserver(this);
   candidate_window_view_->SetCursorBounds(cursor_bounds_, composition_head_);
   views::Widget* widget = candidate_window_view_->InitWidget();
@@ -158,7 +154,9 @@ void CandidateWindowControllerImpl::UpdateLookupTable(
 }
 
 void CandidateWindowControllerImpl::UpdatePreeditText(
-    const base::string16& text, unsigned int cursor, bool visible) {
+    const std::u16string& text,
+    unsigned int cursor,
+    bool visible) {
   // If it's not visible, hide the preedit text and return.
   if (!visible || text.empty()) {
     if (candidate_window_view_)

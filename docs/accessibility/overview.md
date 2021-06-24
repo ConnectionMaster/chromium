@@ -18,7 +18,7 @@ Assistive technology includes:
 * Screen readers for blind users that describe the screen using
   synthesized speech or braille
 * Voice control applications that let you speak to the computer,
-* Switch access that lets you control the computer with a small number
+* Switch Access that lets you control the computer with a small number
   of physical switches,
 * Magnifiers that magnify a portion of the screen, and often highlight the
   cursor and caret for easier viewing, and
@@ -215,6 +215,14 @@ Automation Inspector Chrome extension).
   - macOS: Accessibility Inspector
   - Windows: Inspect, AViewer, accProbe (and many others)
 
+### Supported Platforms and APIs
+
+* Windows: IAccessible (also known as Microsoft Active Accessibility or MSAA),
+  IAccessible2, [UI Automation](uiautomation.md). Chromium also supports
+  [mapping between IAccessible2 and UI Automation nodes](ia2_to_uia.md).
+* Mac: NSAccessibility
+* Linux: ATK
+* Android: [AccessibilityNodeInfo and AccessibilityNodeProvider](android.md)
 
 ## Chromium's multi-process architecture
 
@@ -459,9 +467,9 @@ layer translates WebAXObjects into [AXContentNodeData], which is a subclass of
 cross-platform accessibility tree. The translation is implemented in
 [BlinkAXTreeSource]. This translation happens on the renderer side, so the
 ui::AXNodeData tree now needs to be sent to the browser, which is done by
-sending [AccessibilityHostMsg_EventParams] with the payload being serialized
-delta-updates to the tree, so that changes that happen on the renderer side can
-be reflected on the browser side.
+calling the remote method [ax.mojom.RenderAccessibilityHost::HandleAXEvents()]
+with the payload being serialized delta-updates to the tree, so that changes
+that happen on the renderer side can be reflected on the browser side.
 
 On the browser side, these IPCs are received by [RenderFrameHostImpl], and then
 usually forwarded to [BrowserAccessibilityManager] which is responsible for:
@@ -477,8 +485,11 @@ usually forwarded to [BrowserAccessibilityManager] which is responsible for:
 3. Dispatching incoming accessibility actions to the appropriate recipient, via
    [BrowserAccessibilityDelegate]. For messages destined for a renderer,
    [RenderFrameHostImpl], which is a BrowserAccessibilityDelegate, is
-   responsible for sending appropriate `AccessibilityMsg_Foo` IPCs to the
-   renderer, where they will be received by [RenderAccessibilityImpl].
+   responsible for calling the remote method
+   [ax.mojom.RenderAccessibility.PerformAction()], implemented by the renderer,
+   with the appropriate payload (of type [ax.mojom.AXActionData]). This IPC call
+   will be received by [RenderAccessibilityManager], which will then relay on
+   the [RenderAccessibilityImpl] where the actual logic is implemented.
 
 On Chrome OS, RenderFrameHostImpl does not route events to
 BrowserAccessibilityManager at all, since there is no platform screenreader
@@ -486,7 +497,7 @@ outside Chromium to integrate with.
 
 ## Views
 
-Views generates a [NativeViewAccessibility] for each View, which is used as the
+Views generates a [ViewAccessibility] for each View, which is used as the
 delegate for an [AXPlatformNode] representing that View. This part is relatively
 straightforward, but then the generated tree must be combined with the web
 accessibility tree, which is handled by BrowserAccessibilityManager.
@@ -505,13 +516,16 @@ gives extension JavaScript access to the accessibility tree, events, and
 actions. This API is implemented in C++ by [AutomationInternalCustomBindings],
 which is renderer-side code, and in JavaScript by the [automation API]. The API
 is defined by [automation.idl], which must be kept synchronized with
-[ax_enums.idl].
+[ax_enums.mojom].
 
-[AccessibilityHostMsg_EventParams]: https://cs.chromium.org/chromium/src/content/common/accessibility_messages.h?sq=package:chromium&l=75
-[AutomationInternalCustomBindings]: https://cs.chromium.org/chromium/src/chrome/renderer/extensions/automation_internal_custom_bindings.h
+[ax.mojom.AXActionData]: https://source.chromium.org/chromium/chromium/src/+/main:ui/accessibility/mojom/ax_action_data.mojom;l=13
+[ax.mojom.RenderAccessibilityHost::HandleAXEvents()]: https://source.chromium.org/chromium/chromium/src/+/main:content/common/render_accessibility.mojom;l=47
+[ax.mojom.RenderAccessibility.PerformAction()]: https://source.chromium.org/chromium/chromium/src/+/main:content/common/render_accessibility.mojom;l=86
+[AutomationInternalCustomBindings]: https://cs.chromium.org/chromium/src/extensions/renderer/api/automation/automation_internal_custom_bindings.h
 [AXContentNodeData]: https://cs.chromium.org/chromium/src/content/common/ax_content_node_data.h
 [AXLayoutObject]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/modules/accessibility/ax_layout_object.h
 [AXNodeObject]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/modules/accessibility/ax_node_object.h
+[AXObject]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/modules/accessibility/ax_object.h
 [AXObjectImpl]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/modules/accessibility/ax_object_impl.h
 [AXObjectCacheImpl]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h
 [AXPlatformNode]: https://cs.chromium.org/chromium/src/ui/accessibility/platform/ax_platform_node.h
@@ -521,14 +535,15 @@ is defined by [automation.idl], which must be kept synchronized with
 [BrowserAccessibilityDelegate]: https://cs.chromium.org/chromium/src/content/browser/accessibility/browser_accessibility_manager.h?sq=package:chromium&l=64
 [BrowserAccessibilityManager]: https://cs.chromium.org/chromium/src/content/browser/accessibility/browser_accessibility_manager.h
 [LayoutObject]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/layout/layout_object.h
-[NativeViewAccessibility]: https://cs.chromium.org/chromium/src/ui/views/accessibility/native_view_accessibility.h
-[Node]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/dom/Node.h
+[ViewAccessibility]: https://cs.chromium.org/chromium/src/ui/views/accessibility/view_accessibility.h
+[Node]: https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/dom/node.h
 [RenderAccessibilityImpl]: https://cs.chromium.org/chromium/src/content/renderer/accessibility/render_accessibility_impl.h
-[RenderFrameHostImpl]: https://cs.chromium.org/chromium/src/content/browser/frame_host/render_frame_host_impl.h
+[RenderAccessibilityManager]: https://source.chromium.org/chromium/chromium/src/+/main:content/renderer/accessibility/render_accessibility_manager.h
+[RenderFrameHostImpl]: https://cs.chromium.org/chromium/src/content/browser/renderer_host/render_frame_host_impl.h
 [ui::AXNodeData]: https://cs.chromium.org/chromium/src/ui/accessibility/ax_node_data.h
 [WebAXObject]: https://cs.chromium.org/chromium/src/third_party/blink/public/web/web_ax_object.h
 [automation API]: https://cs.chromium.org/chromium/src/chrome/renderer/resources/extensions/automation
-[automation.idl]: https://cs.chromium.org/chromium/src/chrome/common/extensions/api/automation.idl
-[ax_enums.idl]: https://cs.chromium.org/chromium/src/ui/accessibility/ax_enums.idl
+[automation.idl]: https://cs.chromium.org/chromium/src/extensions/common/api/automation.idl
+[ax_enums.mojom]: https://cs.chromium.org/chromium/src/ui/accessibility/ax_enums.mojom
 [chrome.automation API]: https://developer.chrome.com/extensions/automation
 [webui-js]: https://cs.chromium.org/chromium/src/ui/webui/resources/js/cr/ui/

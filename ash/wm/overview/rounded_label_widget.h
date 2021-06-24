@@ -5,7 +5,8 @@
 #ifndef ASH_WM_OVERVIEW_ROUNDED_LABEL_WIDGET_H_
 #define ASH_WM_OVERVIEW_ROUNDED_LABEL_WIDGET_H_
 
-#include "base/macros.h"
+#include <string>
+
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/widget/widget.h"
@@ -18,6 +19,10 @@ class RoundedLabelWidget : public views::Widget {
  public:
   // Params to modify the look of the label.
   struct InitParams {
+    InitParams();
+    InitParams(InitParams&& other);
+
+    std::string name;
     int horizontal_padding;
     int vertical_padding;
     SkColor background_color;
@@ -26,18 +31,23 @@ class RoundedLabelWidget : public views::Widget {
     int preferred_height;
     int message_id;
     aura::Window* parent;
+    bool hide_in_mini_view;
   };
 
   RoundedLabelWidget();
+  RoundedLabelWidget(const RoundedLabelWidget&) = delete;
+  RoundedLabelWidget& operator=(const RoundedLabelWidget&) = delete;
   ~RoundedLabelWidget() override;
 
-  void Init(const InitParams& params);
-  // Places the widget in the middle of |bounds|. The size will be the preferred
-  // size of the label.
-  void SetBoundsCenteredIn(const gfx::Rect& bounds);
+  void Init(InitParams params);
 
- private:
-  DISALLOW_COPY_AND_ASSIGN(RoundedLabelWidget);
+  // Gets the preferred size of the widget centered in |bounds|.
+  gfx::Rect GetBoundsCenteredIn(const gfx::Rect& bounds);
+
+  // Places the widget in the middle of |bounds|. The size will be the preferred
+  // size of the label. If |animate| is true, the widget will be animated to the
+  // new bounds.
+  void SetBoundsCenteredIn(const gfx::Rect& bounds, bool animate);
 };
 
 }  // namespace ash

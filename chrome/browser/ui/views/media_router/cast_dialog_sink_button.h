@@ -5,8 +5,12 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_MEDIA_ROUTER_CAST_DIALOG_SINK_BUTTON_H_
 #define CHROME_BROWSER_UI_VIEWS_MEDIA_ROUTER_CAST_DIALOG_SINK_BUTTON_H_
 
+#include <memory>
+
+#include "base/bind.h"
 #include "chrome/browser/ui/media_router/ui_media_sink.h"
 #include "chrome/browser/ui/views/hover_button.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 
 namespace ui {
 class MouseEvent;
@@ -18,23 +22,27 @@ namespace media_router {
 // hovered.
 class CastDialogSinkButton : public HoverButton {
  public:
-  CastDialogSinkButton(views::ButtonListener* button_listener,
-                       const UIMediaSink& sink,
-                       int button_tag);
+  METADATA_HEADER(CastDialogSinkButton);
+  CastDialogSinkButton(PressedCallback callback, const UIMediaSink& sink);
+  CastDialogSinkButton(const CastDialogSinkButton&) = delete;
+  CastDialogSinkButton& operator=(const CastDialogSinkButton&) = delete;
   ~CastDialogSinkButton() override;
 
-  void OverrideStatusText(const base::string16& status_text);
+  void OverrideStatusText(const std::u16string& status_text);
   void RestoreStatusText();
 
   // views::View:
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseReleased(const ui::MouseEvent& event) override;
-  void OnEnabledChanged() override;
   void RequestFocus() override;
   void OnFocus() override;
   void OnBlur() override;
+  void OnThemeChanged() override;
 
   const UIMediaSink& sink() const { return sink_; }
+
+  static const gfx::VectorIcon* GetVectorIcon(SinkIconType icon_type);
+  static const gfx::VectorIcon* GetVectorIcon(UIMediaSink sink);
 
  private:
   friend class MediaRouterUiForTest;
@@ -45,11 +53,18 @@ class CastDialogSinkButton : public HoverButton {
                            SetStatusLabelForAvailableSink);
   FRIEND_TEST_ALL_PREFIXES(CastDialogSinkButtonTest,
                            SetStatusLabelForSinkWithIssue);
+  FRIEND_TEST_ALL_PREFIXES(CastDialogSinkButtonTest,
+                           SetStatusLabelForDialSinks);
+
+  void OnEnabledChanged();
+  void UpdateTitleTextStyle();
 
   const UIMediaSink sink_;
-  base::Optional<base::string16> saved_status_text_;
-
-  DISALLOW_COPY_AND_ASSIGN(CastDialogSinkButton);
+  absl::optional<std::u16string> saved_status_text_;
+  base::CallbackListSubscription enabled_changed_subscription_ =
+      AddEnabledChangedCallback(
+          base::BindRepeating(&CastDialogSinkButton::OnEnabledChanged,
+                              base::Unretained(this)));
 };
 
 }  // namespace media_router

@@ -9,8 +9,8 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
+#include "content/public/test/browser_task_environment.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -19,8 +19,9 @@ namespace {
 
 class TestSerialConnection : public SerialConnection {
  public:
-  explicit TestSerialConnection(device::mojom::SerialPortPtrInfo port_ptr_info)
-      : SerialConnection("dummy_id", std::move(port_ptr_info)) {}
+  explicit TestSerialConnection() : SerialConnection("dummy_id") {
+    InitSerialPortForTesting();
+  }
   ~TestSerialConnection() override {}
 
   void SetReceiveBuffer(const std::vector<uint8_t>& receive_buffer) {
@@ -34,13 +35,15 @@ class TestSerialConnection : public SerialConnection {
 
  private:
   // SerialConnection:
-  void Open(const api::serial::ConnectionOptions& options,
+  void Open(api::SerialPortManager* port_manager,
+            const std::string& path,
+            const api::serial::ConnectionOptions& options,
             OpenCompleteCallback callback) override {
     NOTREACHED();
   }
 
   void StartPolling(const ReceiveEventCallback& callback) override {
-    set_paused(false);
+    SetPaused(false);
     callback.Run(std::move(receive_buffer_), api::serial::RECEIVE_ERROR_NONE);
     receive_buffer_.clear();
   }
@@ -103,11 +106,8 @@ std::vector<uint8_t> ToByteVector(const char (&array)[N]) {
 class ViscaWebcamTest : public testing::Test {
  protected:
   ViscaWebcamTest() {
-    device::mojom::SerialPortPtrInfo port_ptr_info;
-    mojo::MakeRequest(&port_ptr_info);
     webcam_ = new ViscaWebcam;
-    webcam_->OpenForTesting(
-        std::make_unique<TestSerialConnection>(std::move(port_ptr_info)));
+    webcam_->OpenForTesting(std::make_unique<TestSerialConnection>());
   }
   ~ViscaWebcamTest() override {}
 
@@ -119,7 +119,7 @@ class ViscaWebcamTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   scoped_refptr<ViscaWebcam> webcam_;
 };
 
@@ -129,8 +129,8 @@ TEST_F(ViscaWebcamTest, Zoom) {
   const char kGetZoomResponse[] = {0x00, 0x50, 0x01, 0x02, 0x03, 0x04, 0xFF};
   serial_connection()->SetReceiveBuffer(ToByteVector(kGetZoomResponse));
   Webcam::GetPTZCompleteCallback receive_callback =
-      base::Bind(&GetPTZExpectations::OnCallback,
-                 base::Owned(new GetPTZExpectations(true, 0x1234)));
+      base::BindRepeating(&GetPTZExpectations::OnCallback,
+                          base::Owned(new GetPTZExpectations(true, 0x1234)));
   webcam()->GetZoom(receive_callback);
   base::RunLoop().RunUntilIdle();
   serial_connection()->CheckSendBufferAndClear(ToByteVector(kGetZoomCommand));
@@ -142,8 +142,8 @@ TEST_F(ViscaWebcamTest, Zoom) {
   const char kSetZoomResponse[] = {0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0xFF};
   serial_connection()->SetReceiveBuffer(ToByteVector(kSetZoomResponse));
   Webcam::SetPTZCompleteCallback send_callback =
-      base::Bind(&SetPTZExpectations::OnCallback,
-                 base::Owned(new SetPTZExpectations(true)));
+      base::BindRepeating(&SetPTZExpectations::OnCallback,
+                          base::Owned(new SetPTZExpectations(true)));
   serial_connection()->SetReceiveBuffer(ToByteVector(kSetZoomResponse));
   webcam()->SetZoom(0x6253, send_callback);
   base::RunLoop().RunUntilIdle();

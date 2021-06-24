@@ -5,10 +5,12 @@
 #include "net/socket/transport_connect_job.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "net/base/address_family.h"
 #include "net/base/address_list.h"
 #include "net/base/ip_address.h"
@@ -16,13 +18,14 @@
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/log/test_net_log.h"
 #include "net/socket/connect_job_test_util.h"
 #include "net/socket/connection_attempts.h"
 #include "net/socket/stream_socket.h"
 #include "net/socket/transport_client_socket_pool_test_util.h"
 #include "net/test/gtest_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -30,14 +33,11 @@ namespace {
 
 const char kHostName[] = "unresolvable.host.name";
 
-class TransportConnectJobTest : public WithScopedTaskEnvironment,
+class TransportConnectJobTest : public WithTaskEnvironment,
                                 public testing::Test {
  public:
   TransportConnectJobTest()
-      : WithScopedTaskEnvironment(
-            base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME,
-            base::test::ScopedTaskEnvironment::NowSource::
-                MAIN_THREAD_MOCK_TIME),
+      : WithTaskEnvironment(base::test::TaskEnvironment::TimeSource::MOCK_TIME),
         client_socket_factory_(&net_log_),
         common_connect_job_params_(
             &client_socket_factory_,
@@ -49,26 +49,22 @@ class TransportConnectJobTest : public WithScopedTaskEnvironment,
             nullptr /* quic_stream_factory */,
             nullptr /* proxy_delegate */,
             nullptr /* http_user_agent_settings */,
-            SSLClientSocketContext(),
-            SSLClientSocketContext(),
+            nullptr /* ssl_client_context */,
             nullptr /* socket_performance_watcher_factory */,
             nullptr /* network_quality_estimator */,
             &net_log_,
-            nullptr /* websocket_endpoint_lock_manager */) {
-    // Set an initial delay to ensure that calls to TimeTicks::Now() do not
-    // return a null value.
-    FastForwardBy(base::TimeDelta::FromSeconds(1));
-  }
+            nullptr /* websocket_endpoint_lock_manager */) {}
 
   ~TransportConnectJobTest() override {}
 
   static scoped_refptr<TransportSocketParams> DefaultParams() {
     return base::MakeRefCounted<TransportSocketParams>(
-        HostPortPair(kHostName, 80), OnHostResolutionCallback());
+        HostPortPair(kHostName, 80), NetworkIsolationKey(),
+        SecureDnsPolicy::kAllow, OnHostResolutionCallback());
   }
 
  protected:
-  TestNetLog net_log_;
+  RecordingTestNetLog net_log_;
   MockHostResolver host_resolver_;
   MockTransportClientSocketFactory client_socket_factory_;
   const CommonConnectJobParams common_connect_job_params_;
@@ -144,7 +140,7 @@ TEST_F(TransportConnectJobTest, MakeAddrListStartWithIPv4) {
 }
 
 TEST_F(TransportConnectJobTest, HostResolutionFailure) {
-  host_resolver_.rules()->AddSimulatedFailure(kHostName);
+  host_resolver_.rules()->AddSimulatedTimeoutFailure(kHostName);
 
   //  Check sync and async failures.
   for (bool host_resolution_synchronous : {false, true}) {
@@ -156,6 +152,8 @@ TEST_F(TransportConnectJobTest, HostResolutionFailure) {
     test_delegate.StartJobExpectingResult(&transport_connect_job,
                                           ERR_NAME_NOT_RESOLVED,
                                           host_resolution_synchronous);
+    EXPECT_THAT(transport_connect_job.GetResolveErrorInfo().error,
+                test::IsError(ERR_DNS_TIMED_OUT));
   }
 }
 
@@ -261,6 +259,22 @@ TEST_F(TransportConnectJobTest, ConnectionSuccess) {
           &transport_connect_job, OK,
           host_resolution_synchronous && connection_synchronous);
     }
+  }
+}
+
+TEST_F(TransportConnectJobTest, SecureDnsPolicy) {
+  for (auto secure_dns_policy :
+       {SecureDnsPolicy::kAllow, SecureDnsPolicy::kDisable}) {
+    TestConnectJobDelegate test_delegate;
+    TransportConnectJob transport_connect_job(
+        DEFAULT_PRIORITY, SocketTag(), &common_connect_job_params_,
+        base::MakeRefCounted<TransportSocketParams>(
+            HostPortPair(kHostName, 80), NetworkIsolationKey(),
+            secure_dns_policy, OnHostResolutionCallback()),
+        &test_delegate, nullptr /* net_log */);
+    test_delegate.StartJobExpectingResult(&transport_connect_job, OK,
+                                          false /* expect_sync_result */);
+    EXPECT_EQ(secure_dns_policy, host_resolver_.last_secure_dns_policy());
   }
 }
 
@@ -387,6 +401,54 @@ TEST_F(TransportConnectJobTest, IPv4HasNoFallback) {
   test_delegate.socket()->GetConnectionAttempts(&attempts);
   EXPECT_EQ(0u, attempts.size());
   EXPECT_EQ(1, client_socket_factory_.allocation_count());
+}
+
+TEST_F(TransportConnectJobTest, DnsAliases) {
+  host_resolver_.set_synchronous_mode(true);
+  client_socket_factory_.set_default_client_socket_type(
+      MockTransportClientSocketFactory::MOCK_CLIENT_SOCKET);
+
+  // Resolve an AddressList with DNS aliases.
+  std::vector<std::string> aliases({"alias1", "alias2", kHostName});
+  host_resolver_.rules()->AddIPLiteralRuleWithDnsAliases(kHostName, "2.2.2.2",
+                                                         std::move(aliases));
+
+  TestConnectJobDelegate test_delegate;
+  TransportConnectJob transport_connect_job(
+      DEFAULT_PRIORITY, SocketTag(), &common_connect_job_params_,
+      DefaultParams(), &test_delegate, nullptr /* net_log */);
+
+  test_delegate.StartJobExpectingResult(&transport_connect_job, OK,
+                                        true /* expect_sync_result */);
+
+  // Verify that the elements of the alias list are those from the
+  // parameter vector.
+  EXPECT_THAT(test_delegate.socket()->GetDnsAliases(),
+              testing::ElementsAre("alias1", "alias2", kHostName));
+}
+
+TEST_F(TransportConnectJobTest, NoAdditionalDnsAliases) {
+  host_resolver_.set_synchronous_mode(true);
+  client_socket_factory_.set_default_client_socket_type(
+      MockTransportClientSocketFactory::MOCK_CLIENT_SOCKET);
+
+  // Resolve an AddressList without additional DNS aliases. (The parameter
+  // is an empty vector.)
+  std::vector<std::string> aliases;
+  host_resolver_.rules()->AddIPLiteralRuleWithDnsAliases(kHostName, "2.2.2.2",
+                                                         std::move(aliases));
+
+  TestConnectJobDelegate test_delegate;
+  TransportConnectJob transport_connect_job(
+      DEFAULT_PRIORITY, SocketTag(), &common_connect_job_params_,
+      DefaultParams(), &test_delegate, nullptr /* net_log */);
+
+  test_delegate.StartJobExpectingResult(&transport_connect_job, OK,
+                                        true /* expect_sync_result */);
+
+  // Verify that the alias list only contains kHostName.
+  EXPECT_THAT(test_delegate.socket()->GetDnsAliases(),
+              testing::ElementsAre(kHostName));
 }
 
 }  // namespace

@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -23,6 +22,8 @@ class TestOmniboxClient : public OmniboxClient {
  public:
   TestOmniboxClient();
   ~TestOmniboxClient() override;
+  TestOmniboxClient(const TestOmniboxClient&) = delete;
+  TestOmniboxClient& operator=(const TestOmniboxClient&) = delete;
 
   const AutocompleteMatch& alternate_nav_match() const {
     return alternate_nav_match_;
@@ -32,7 +33,7 @@ class TestOmniboxClient : public OmniboxClient {
   std::unique_ptr<AutocompleteProviderClient> CreateAutocompleteProviderClient()
       override;
   std::unique_ptr<OmniboxNavigationObserver> CreateOmniboxNavigationObserver(
-      const base::string16& text,
+      const std::u16string& text,
       const AutocompleteMatch& match,
       const AutocompleteMatch& alternate_nav_match) override;
   bool IsPasteAndGoEnabled() const override;
@@ -42,6 +43,8 @@ class TestOmniboxClient : public OmniboxClient {
   TemplateURLService* GetTemplateURLService() override;
   const AutocompleteSchemeClassifier& GetSchemeClassifier() const override;
   AutocompleteClassifier* GetAutocompleteClassifier() override;
+  bool ShouldDefaultTypedNavigationsToHttps() const override;
+  int GetHttpsPortForTesting() const override;
   gfx::Image GetSizedIcon(const gfx::VectorIcon& vector_icon_type,
                           SkColor vector_icon_color) const override;
   gfx::Image GetFaviconForPageUrl(
@@ -58,8 +61,6 @@ class TestOmniboxClient : public OmniboxClient {
   TestSchemeClassifier scheme_classifier_;
   AutocompleteClassifier autocomplete_classifier_;
   GURL page_url_for_last_favicon_request_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestOmniboxClient);
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_TEST_OMNIBOX_CLIENT_H_

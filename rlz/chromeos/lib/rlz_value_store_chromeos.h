@@ -12,14 +12,9 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/values.h"
 #include "rlz/lib/rlz_value_store.h"
-
-namespace base {
-class DictionaryValue;
-class Value;
-}
 
 namespace rlz_lib {
 
@@ -72,32 +67,28 @@ class RlzValueStoreChromeOS : public RlzValueStore {
   void WriteStore();
 
   // Adds |value| to list at |list_name| path in JSON store.
-  bool AddValueToList(const std::string& list_name,
-                      std::unique_ptr<base::Value> value);
+  bool AddValueToList(const std::string& list_name, base::Value value);
+
   // Removes |value| from list at |list_name| path in JSON store.
   bool RemoveValueFromList(const std::string& list_name,
                            const base::Value& value);
 
-  // Set |should_send_rlz_ping| to 0 in RW_VPD. This is a wrapper of
-  // |DebugDaemonClient::SetRlzPingSent|.
-  void SetRlzPingSent();
+  // Returns true if |value| is contained in list at |list_name| path in
+  // JSON store.
+  bool ListContainsValue(const std::string& list_name,
+                         const base::Value& value) const;
 
-  // Callback of |SetRlzPingSent|.
-  void OnSetRlzPingSent(bool success);
+  // Returns true if the store contains |access_point|.
+  bool HasAccessPointRlz(AccessPoint access_point) const;
 
   // In-memory store with RLZ data.
-  std::unique_ptr<base::DictionaryValue> rlz_store_;
+  base::Value rlz_store_;
 
   base::FilePath store_path_;
 
   bool read_only_;
 
-  // The number of attempts of |SetRlzPingSent| so far.
-  int set_rlz_ping_sent_attempts_;
-
   SEQUENCE_CHECKER(sequence_checker_);
-
-  base::WeakPtrFactory<RlzValueStoreChromeOS> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(RlzValueStoreChromeOS);
 };

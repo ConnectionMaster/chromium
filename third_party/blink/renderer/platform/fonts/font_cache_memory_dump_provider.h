@@ -5,11 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FONT_CACHE_MEMORY_DUMP_PROVIDER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FONT_CACHE_MEMORY_DUMP_PROVIDER_H_
 
-#include "base/macros.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "base/trace_event/process_memory_dump.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -19,6 +18,9 @@ class PLATFORM_EXPORT FontCacheMemoryDumpProvider final
 
  public:
   static FontCacheMemoryDumpProvider* Instance();
+  FontCacheMemoryDumpProvider(const FontCacheMemoryDumpProvider&) = delete;
+  FontCacheMemoryDumpProvider& operator=(const FontCacheMemoryDumpProvider&) =
+      delete;
   ~FontCacheMemoryDumpProvider() override = default;
 
   // base::trace_event::MemoryDumpProvider implementation.
@@ -27,8 +29,6 @@ class PLATFORM_EXPORT FontCacheMemoryDumpProvider final
 
  private:
   FontCacheMemoryDumpProvider() = default;
-
-  DISALLOW_COPY_AND_ASSIGN(FontCacheMemoryDumpProvider);
 };
 
 }  // namespace blink

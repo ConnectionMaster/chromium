@@ -7,15 +7,15 @@
 
 #import <Foundation/Foundation.h>
 
-@protocol ToolbarConsumer;
-
 namespace bookmarks {
 class BookmarkModel;
 }
 namespace web {
 class WebState;
 }
-class TemplateURLService;
+class OverlayPresenter;
+class PrefService;
+@protocol ToolbarConsumer;
 class WebStateList;
 
 // A mediator object that provides the relevant properties of a web state
@@ -25,9 +25,6 @@ class WebStateList;
 // Whether the search icon should be in dark mode or not.
 @property(nonatomic, assign, getter=isIncognito) BOOL incognito;
 
-// TemplateURLService used to check the default search engine.
-@property(nonatomic, assign) TemplateURLService* templateURLService;
-
 // The WebStateList that this mediator listens for any changes on the total
 // number of Webstates.
 @property(nonatomic, assign) WebStateList* webStateList;
@@ -35,9 +32,17 @@ class WebStateList;
 // The bookmarks model to know if the page is bookmarked.
 @property(nonatomic, assign) bookmarks::BookmarkModel* bookmarkModel;
 
+// Pref service to retrieve preference values.
+@property(nonatomic, assign) PrefService* prefService;
+
 // The consumer for this object. This can change during the lifetime of this
 // object and may be nil.
 @property(nonatomic, strong) id<ToolbarConsumer> consumer;
+
+// The overlay presenter for OverlayModality::kWebContentArea.  This mediator
+// listens for overlay presentation events to determine whether the share button
+// should be enabled.
+@property(nonatomic, assign) OverlayPresenter* webContentAreaOverlayPresenter;
 
 // Updates the consumer to conforms to |webState|.
 - (void)updateConsumerForWebState:(web::WebState*)webState;

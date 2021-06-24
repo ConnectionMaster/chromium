@@ -2,87 +2,224 @@
      Use of this source code is governed by a BSD-style license that can be
      found in the LICENSE file. -->
 
+<link rel="import" href="chrome://resources/html/polymer.html">
+
 <link rel="import" href="chrome://resources/polymer/v1_0/iron-icon/iron-icon.html">
 <link rel="import" href="chrome://resources/polymer/v1_0/iron-iconset-svg/iron-iconset-svg.html">
+<link rel="import" href="chrome://resources/cr_elements/cr_lottie/cr_lottie.html">
 
-<!-- TODO(https://crbug.com/852557): replace placeholder with real icon. -->
-<iron-iconset-svg name="marketing-opt-in-32" size="32">
-  <svg>
-    <defs>
-      <!-- The Google "G" icon. -->
-      <g id="googleg" fill="none" fill-rule="evenodd">
-        <path d="M30.42 16.83c0-1.03-.092-2.017-.264-2.966H16.5v5.61h7.804c-.336 1.81-1.358 3.347-2.894 4.375v3.637h4.686c2.742-2.524 4.324-6.242 4.324-10.657z" fill="#4285F4"></path>
-        <path d="M16.5 31c3.915 0 7.197-1.298 9.596-3.513L21.41 23.85c-1.298.87-2.96 1.383-4.91 1.383-3.777 0-6.973-2.55-8.113-5.978H3.542v3.757C5.928 27.752 10.832 31 16.5 31z" fill="#34A853"></path>
-        <path d="M8.387 19.255c-.29-.87-.455-1.8-.455-2.755 0-.956.165-1.885.455-2.755V9.988H3.542C2.56 11.946 2 14.16 2 16.5s.56 4.554 1.542 6.512l4.845-3.757z" fill="#FBBC05"></path>
-        <path d="M16.5 7.767c2.13 0 4.04.732 5.543 2.168l4.16-4.158C23.69 3.437 20.407 2 16.5 2 10.832 2 5.928 5.25 3.542 9.988l4.845 3.757c1.14-3.427 4.336-5.978 8.113-5.978z" fill="#EA4335"></path>
-        <path d="M2 2h29v29H2"></path>
-      </g>
-    </defs>
-  </svg>
-</iron-iconset-svg>
+<link rel="import" href="/components/common_styles.html">
+<link rel="import" href="/components/oobe_adaptive_dialog.html">
+<link rel="import" href="/components/behaviors/oobe_i18n_behavior.html">
+<link rel="import" href="/components/behaviors/oobe_dialog_host_behavior.html">
+<link rel="import" href="/components/behaviors/login_screen_behavior.html">
+<link rel="import" href="/components/oobe_icons.html">
 
-<iron-iconset-svg name="marketing-opt-in-64" size="64">
-  <svg>
-    <defs>
-      <!-- The Google "G" icon. -->
-      <g id="googleg" fill="none" fill-rule="evenodd">
-        <path d="M59.84 32.66c0-2.057-.185-4.035-.527-5.933H32v11.218h15.607c-.672 3.625-2.715 6.696-5.787 8.753v7.276h9.373c5.483-5.05 8.647-12.483 8.647-21.315z" fill="#4285F4"></path>
-        <path d="M32 61c7.83 0 14.395-2.597 19.193-7.026l-9.373-7.276c-2.596 1.74-5.918 2.768-9.82 2.768-7.553 0-13.946-5.1-16.227-11.956H6.085v7.514C10.855 54.5 20.665 61 32 61z" fill="#34A853"></path>
-        <path d="M15.773 37.51c-.58-1.74-.91-3.6-.91-5.51 0-1.91.33-3.77.91-5.51v-7.514H6.085C4.12 22.89 3 27.32 3 32s1.12 9.11 3.085 13.024l9.688-7.514z" fill="#FBBC05"></path>
-        <path d="M32 14.534c4.258 0 8.08 1.463 11.086 4.337l8.318-8.317C46.38 5.873 39.817 3 32 3 20.664 3 10.856 9.5 6.085 18.976l9.688 7.514c2.28-6.855 8.674-11.956 16.227-11.956z" fill="#EA4335"></path>
-        <path d="M3 3h58v58H3"></path>
-      </g>
-    </defs>
-  </svg>
-</iron-iconset-svg>
+<link rel="import" href="/components/buttons/oobe_back_button.html">
+<link rel="import" href="/components/buttons/oobe_icon_button.html">
+<link rel="import" href="/components/buttons/oobe_text_button.html">
 
-<dom-module id="marketing-opt-in">
+
+<dom-module id="marketing-opt-in-element">
   <template>
-    <link rel="stylesheet" href="marketing_opt_in.css">
-    <link rel="stylesheet" href="oobe_flex_layout.css">
-    <oobe-dialog id="marketingOptInOverviewDialog" role="dialog" has-buttons
-        aria-label="[[i18nDynamic(locale, 'marketingOptInScreenTitle')]]">
-      <hd-iron-icon slot="oobe-icon" icon1x="marketing-opt-in-32:googleg"
-          icon2x="marketing-opt-in-64:googleg">
-      </hd-iron-icon>
+    <style include="oobe-dialog-host">
+      #legalFooter {
+        margin-top: 20px;
+      }
+      :host-context([orientation=vertical ]) #contentArea {
+        justify-content: center;
+      }
+
+      :host {
+        --marketing-opt-in-dialog-list-item-border: 1px solid var(--google-grey-200);
+        --oobe-a11y-dialog-list-item-border: 1px solid var(--google-grey-200);
+        --marketing-opt-in-row-height: 50px;
+        --marketing-opt-in-line-height: 20px;
+      }
+
+      .marketing-animation-container {
+        display: flex;
+        height: 100%;
+        justify-content: center;
+        overflow: hidden;
+        position: relative;
+        width: 100%;
+      }
+
+      .marketing-animation {
+        height: 90.4%;
+        margin-top: 4%;
+        position: absolute;
+        width: 100%;
+      }
+
+      .new-marketing-animation-content {
+        height: 95%;
+        /* Lower the animation a bit to make it look more centered. */
+        margin-top: 20px;
+        width: 100%;
+      }
+
+      .legal-info {
+        color: var(--google-grey-700);
+      }
+
+      #toggleRow {
+        border-bottom: var(--marketing-opt-in-dialog-list-item-border);
+        border-top: var(--marketing-opt-in-dialog-list-item-border);
+        color: var(--google-grey-900);
+        margin-top: 20px;
+      }
+
+      /* Keep the text in the toggle row aligned to the left/right in
+         LTR/RTL languages. */
+      #chromebookUpdatesOptionLabel {
+        text-align: initial;
+      }
+
+      #toggleRowIcon,
+      #chromebookUpdatesOptionLabel,
+      #chromebookUpdatesOption {
+        align-self: flex-start;
+        margin-bottom: 10px;
+        margin-top: 10px;
+      }
+
+      #toggleRowIcon {
+        --iron-icon-height: 20px;
+        --iron-icon-width: 20px;
+        --iron-icon-fill-color: var(--google-blue-600);
+        padding-inline-end: 16px;
+      }
+
+      #googleUrl {
+        color: var(--google-blue-600);
+      }
+
+      #finalAccessibilityPage oobe-a11y-option {
+        border-top: var(--oobe-a11y-dialog-list-item-border);
+        min-height: 64px;
+      }
+
+      #finalAccessibilityPage oobe-a11y-option:last-of-type {
+        border-bottom: var(--oobe-a11y-dialog-list-item-border);
+      }
+    </style>
+    <oobe-adaptive-dialog id="marketingOptInOverviewDialog" role="dialog"
+        hidden="[[isAccessibilitySettingsShown_]]"
+        aria-label$="[[i18nDynamic(locale, 'marketingOptInScreenTitle')]]"
+        aria-describedby="marketing-opt-in-subtitle">
+      <iron-icon slot="icon" icon="oobe-32:checkmark"
+                 hidden="[[newLayoutEnabled_]]">
+      </iron-icon>
+      <iron-icon slot="icon" icon="oobe-32:checkmarkv2"
+                 hidden="[[!newLayoutEnabled_]]">
+      </iron-icon>
       <h1 slot="title">
         [[i18nDynamic(locale, 'marketingOptInScreenTitle')]]
       </h1>
       <div slot="subtitle">
-        [[i18nRecursive(locale, 'marketingOptInScreenSubtitle', 'productName')]]
-      </div>
-      <div slot="footer" class="layout vertical">
-        <div class="marketing-option layout horizontal center">
-          <hd-iron-icon icon1x="marketing-opt-in-32:googleg"
-              icon2x="marketing-opt-in-64:googleg">
-          </hd-iron-icon>
-          <div id="playUpdatesOptionLabel" class="flex">
-            [[i18nDynamic(locale, 'marketingOptInGetPlayUpdates')]]
-          </div>
-          <cr-toggle id="playUpdatesOption" checked
-              aria-labelledby="usageStatsLabel">
-          </cr-toggle>
+        <!-- No marketing opt in -->
+        <div hidden="[[marketingOptInVisible_]]">
+          [[i18nDynamic(locale, 'marketingOptInScreenSubtitleWithDeviceName')]]
         </div>
-        <div class="marketing-option layout horizontal center">
-          <hd-iron-icon icon1x="marketing-opt-in-32:googleg"
-              icon2x="marketing-opt-in-64:googleg">
-          </hd-iron-icon>
-          <div id="chromebookUpdatesOptionLabel" class="flex">
-            [[i18nRecursive(locale, 'marketingOptInGetChromebookUpdates',
-                            'productName')]]
+        <!-- Marketing opt in -->
+        <div hidden="[[!marketingOptInVisible_]]">
+          [[i18nDynamic(locale, 'marketingOptInScreenSubtitle')]]
+        </div>
+
+        <!-- Toggle row -->
+        <div class="layout horizontal center"
+            hidden="[[!marketingOptInVisible_]]"
+            id="toggleRow">
+          <iron-icon id="toggleRowIcon" icon="oobe-32:chromebook"></iron-icon>
+          <div id="chromebookUpdatesOptionLabel" class="flex layout vertical"
+              aria-hidden="true">
+            <div>
+              [[i18nDynamic(locale, 'marketingOptInGetChromebookUpdates')]]
+            </div>
+            <div class="legal-info">
+              [[i18nDynamic(locale, 'marketingOptInScreenUnsubscribeLong')]]
+            </div>
           </div>
           <cr-toggle id="chromebookUpdatesOption" checked
-              aria-labelledby="chromebookUpdatesOption">
+              aria-labelledby="chromebookUpdatesOptionLabel">
           </cr-toggle>
         </div>
+
+        <!-- Legal footer. Shown for both layouts. -->
+        <div id="legalFooter" hidden="[[!hasLegalFooter_]]" class="legal-info">
+          <div>
+            Google LLC, 1600 Amphitheatre Parkway, Mountain View, CA 94043, USA
+          </div>
+          <div id="googleUrl">www.google.com</div>
+        </div>
       </div>
-      <div slot="bottom-buttons" class="layout horizontal end-justified">
-        <oobe-text-button on-tap="onAllSet_" class="focus-on-show" inverse
-            label-for-aria="[[i18nDynamic(locale,
-                                  'marketingOptInScreenAllSet')]]">
-          [[i18nDynamic(locale, 'marketingOptInScreenAllSet')]]
+
+      <div id="contentArea" slot="content" class="layout flex vertical">
+        <!-- Animation -->
+        <div class="new-marketing-animation-content"
+            hidden="[[!newLayoutEnabled_]]">
+          <cr-lottie id="newAnimation"
+              animation-url="all_set_new_noloop.json" singleLoop="true">
+          </cr-lottie>
+        </div>
+
+        <!-- Old animation for old layout without the legal footer -->
+        <div id="animation" class="marketing-animation-container"
+            hidden="[[hasNewLayoutOrLegalFooter]]">
+          <cr-lottie id="oldAnimation"
+              class="marketing-animation" animation-url="all_set.json">
+          </cr-lottie>
+        </div>
+      </div>
+      <oobe-icon-button slot="bottom-buttons"
+          hidden="[[!isA11ySettingsButtonVisible_]]"
+          id="marketing-opt-in-accessibility-button"
+          on-click="onToggleAccessibilityPage_"
+          icon1x="oobe-32:accessibility"
+          icon2x="oobe-32:accessibility"
+          text-key="marketingOptInA11yButtonLabel">
+      </oobe-icon-button>
+      <oobe-text-button slot="bottom-buttons"
+          on-click="onGetStarted_" class="focus-on-show"
+          inverse text-key="marketingOptInScreenAllSet"
+          id="marketing-opt-in-next-button">
+      </oobe-text-button>
+    </oobe-adaptive-dialog>
+
+    <oobe-adaptive-dialog id="finalAccessibilityPage" role="dialog"
+        hidden="[[!isAccessibilitySettingsShown_]]"
+        aria-label$="[[i18nDynamic(locale, 'finalA11yPageTitle')]]">
+      <iron-icon slot="icon" icon="oobe-32:accessibility">
+      </iron-icon>
+      <h1 slot="title">
+        [[i18nDynamic(locale, 'finalA11yPageTitle')]]
+      </h1>
+      <div slot="content" class="layout vertical">
+        <oobe-a11y-option id="a11yNavButtonToggle"
+            on-change="onA11yNavButtonsSettingChanged_">
+          <span slot="title">
+            [[i18nDynamic(locale, 'finalA11yPageNavButtonSettingTitle')]]
+          </span>
+          <span slot="checked-value">
+            [[i18nDynamic(locale, 'finalA11yPageNavButtonSettingDescription')]]
+          </span>
+          <span slot="unchecked-value">
+            [[i18nDynamic(locale, 'finalA11yPageNavButtonSettingDescription')]]
+          </span>
+        </oobe-a11y-option>
+      </div>
+      <div slot="back-navigation">
+        <oobe-back-button on-click="onToggleAccessibilityPage_"
+            id="final-accessibility-back-button"></oobe-back-button>
+      </div>
+      <div slot="bottom-buttons">
+        <oobe-text-button on-click="onGetStarted_" class="focus-on-show"
+            id="final-accessibility-next-button" inverse
+            text-key="finalA11yPageDoneButtonTitle">
         </oobe-text-button>
       </div>
-    </oobe-dialog>
+    </oobe-adaptive-dialog>
   </template>
 </dom-module>

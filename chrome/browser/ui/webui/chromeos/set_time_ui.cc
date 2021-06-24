@@ -8,26 +8,35 @@
 
 #include <memory>
 
+#include "ash/public/cpp/child_accounts/parent_access_controller.h"
+#include "ash/public/cpp/login_screen.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/build_time.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/values.h"
+#include "chrome/browser/ash/child_accounts/parent_access_code/parent_access_service.h"
+#include "chrome/browser/ash/settings/cros_settings.h"
+#include "chrome/browser/ash/system/timezone_util.h"
 #include "chrome/browser/chromeos/set_time_dialog.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/system/timezone_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/webui/webui_util.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/dbus/system_clock/system_clock_client.h"
 #include "chromeos/settings/timezone_settings.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
+#include "ui/base/webui/web_ui_util.h"
+#include "ui/resources/grit/webui_generated_resources.h"
+#include "ui/resources/grit/webui_resources.h"
 
 namespace chromeos {
 
@@ -37,7 +46,7 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
                               public chromeos::SystemClockClient::Observer,
                               public system::TimezoneSettings::Observer {
  public:
-  SetTimeMessageHandler() = default;
+  SetTimeMessageHandler() : weak_factory_(this) {}
   ~SetTimeMessageHandler() override = default;
 
   // WebUIMessageHandler:
@@ -54,16 +63,19 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
         "setTimezone",
         base::BindRepeating(&SetTimeMessageHandler::OnSetTimezone,
                             base::Unretained(this)));
+    web_ui()->RegisterMessageCallback(
+        "doneClicked", base::BindRepeating(&SetTimeMessageHandler::DoneClicked,
+                                           base::Unretained(this)));
   }
 
   void OnJavascriptAllowed() override {
-    clock_observer_.Add(SystemClockClient::Get());
-    timezone_observer_.Add(system::TimezoneSettings::GetInstance());
+    clock_observation_.Observe(SystemClockClient::Get());
+    timezone_observation_.Observe(system::TimezoneSettings::GetInstance());
   }
 
   void OnJavascriptDisallowed() override {
-    clock_observer_.RemoveAll();
-    timezone_observer_.RemoveAll();
+    clock_observation_.Reset();
+    timezone_observation_.Reset();
   }
 
  private:
@@ -112,10 +124,45 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
     system::SetTimezoneFromUI(profile, timezone_id);
   }
 
-  ScopedObserver<SystemClockClient, SystemClockClient::Observer>
-      clock_observer_{this};
-  ScopedObserver<system::TimezoneSettings, system::TimezoneSettings::Observer>
-      timezone_observer_{this};
+  void DoneClicked(const base::ListValue* args) {
+    if (!parent_access::ParentAccessService::IsApprovalRequired(
+            ash::SupervisedAction::kUpdateClock)) {
+      OnParentAccessValidation(true);
+      return;
+    }
+
+    double seconds;
+    if (!args->GetDouble(0, &seconds)) {
+      NOTREACHED();
+      return;
+    }
+
+    AccountId account_id;
+    bool is_user_logged_in = user_manager::UserManager::Get()->IsUserLoggedIn();
+    if (is_user_logged_in) {
+      account_id =
+          user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+    }
+    ash::ParentAccessController::Get()->ShowWidget(
+        account_id,
+        base::BindOnce(&SetTimeMessageHandler::OnParentAccessValidation,
+                       weak_factory_.GetWeakPtr()),
+        ash::SupervisedAction::kUpdateClock,
+        !is_user_logged_in /* extra_dimmer */,
+        base::Time::FromDoubleT(seconds));
+  }
+
+  void OnParentAccessValidation(bool success) {
+    if (success)
+      FireWebUIListener("validation-complete");
+  }
+
+  base::ScopedObservation<SystemClockClient, SystemClockClient::Observer>
+      clock_observation_{this};
+  base::ScopedObservation<system::TimezoneSettings,
+                          system::TimezoneSettings::Observer>
+      timezone_observation_{this};
+  base::WeakPtrFactory<SetTimeMessageHandler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SetTimeMessageHandler);
 };
@@ -128,35 +175,34 @@ SetTimeUI::SetTimeUI(content::WebUI* web_ui) : WebDialogUI(web_ui) {
   // Set up the chrome://set-time source.
   content::WebUIDataSource* source =
       content::WebUIDataSource::Create(chrome::kChromeUISetTimeHost);
-
-  source->AddLocalizedString("setTimeTitle", IDS_SET_TIME_TITLE);
-  source->AddLocalizedString("prompt", IDS_SET_TIME_PROMPT);
-  source->AddLocalizedString("timezoneLabel", IDS_SET_TIME_TIMEZONE_LABEL);
-  source->AddLocalizedString("dateLabel", IDS_SET_TIME_DATE_LABEL);
-  source->AddLocalizedString("timeLabel", IDS_SET_TIME_TIME_LABEL);
-  source->AddLocalizedString("doneButton", IDS_DONE);
+  webui::SetJSModuleDefaults(source);
+  static constexpr webui::LocalizedString kStrings[] = {
+      {"setTimeTitle", IDS_SET_TIME_TITLE},
+      {"prompt", IDS_SET_TIME_PROMPT},
+      {"timezoneLabel", IDS_SET_TIME_TIMEZONE_LABEL},
+      {"dateLabel", IDS_SET_TIME_DATE_LABEL},
+      {"timeLabel", IDS_SET_TIME_TIME_LABEL},
+      {"doneButton", IDS_DONE},
+  };
+  source->AddLocalizedStrings(kStrings);
 
   base::DictionaryValue values;
   // List of list of strings: [[ID, name], [ID, name], ...]
-  values.Set("timezoneList", chromeos::system::GetTimezoneList());
+  values.SetPath("timezoneList", base::Value::FromUniquePtrValue(
+                                     chromeos::system::GetTimezoneList()));
 
   // If we are not logged in, we need to show the time zone dropdown.
-  // Otherwise, we can leave |currentTimezoneId| blank.
+  values.SetBoolean("showTimezone", SetTimeDialog::ShouldShowTimezone());
   std::string current_timezone_id;
-  if (SetTimeDialog::ShouldShowTimezone())
-    CrosSettings::Get()->GetString(kSystemTimezone, &current_timezone_id);
+  CrosSettings::Get()->GetString(kSystemTimezone, &current_timezone_id);
   values.SetString("currentTimezoneId", current_timezone_id);
   values.SetDouble("buildTime", base::GetBuildTime().ToJsTime());
 
   source->AddLocalizedStrings(values);
-  source->SetJsonPath("strings.js");
 
-  source->UseGzip();
-  source->AddResourcePath("set_time_browser_proxy.html",
-                          IDR_SET_TIME_BROWSER_PROXY_HTML);
   source->AddResourcePath("set_time_browser_proxy.js",
                           IDR_SET_TIME_BROWSER_PROXY_JS);
-  source->AddResourcePath("set_time.js", IDR_SET_TIME_JS);
+  source->AddResourcePath("set_time_dialog.js", IDR_SET_TIME_DIALOG_JS);
   source->SetDefaultResource(IDR_SET_TIME_HTML);
 
   content::WebUIDataSource::Add(Profile::FromWebUI(web_ui), source);

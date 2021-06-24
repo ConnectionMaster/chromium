@@ -7,7 +7,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "chromeos/network/network_handler_callbacks.h"
+#include "chromeos/network/network_connection_handler.h"
 
 namespace chromeos {
 
@@ -16,6 +16,9 @@ namespace tether {
 // Disconnects from Wi-Fi hotspots provided by Tether hosts.
 class WifiHotspotDisconnector {
  public:
+  using StringErrorCallback =
+      NetworkConnectionHandler::TetherDelegate::StringErrorCallback;
+
   WifiHotspotDisconnector() {}
   virtual ~WifiHotspotDisconnector() {}
 
@@ -24,8 +27,8 @@ class WifiHotspotDisconnector {
   // network" from network settings).
   virtual void DisconnectFromWifiHotspot(
       const std::string& wifi_network_guid,
-      const base::Closure& success_callback,
-      const network_handler::StringResultCallback& error_callback) = 0;
+      base::OnceClosure success_callback,
+      StringErrorCallback error_callback) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(WifiHotspotDisconnector);

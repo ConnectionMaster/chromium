@@ -13,9 +13,12 @@
 #include "base/memory/singleton.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
+#include "content/public/browser/render_process_host_creation_observer.h"
+#include "content/public/browser/render_process_host_observer.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/mojom/renderer.mojom.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_associated_remote.h"
 
 namespace content {
 class BrowserContext;
@@ -35,16 +38,22 @@ class Extension;
 // TODO(devlin): "StartupHelper" is no longer sufficient to describe the entire
 // behavior of this class.
 class RendererStartupHelper : public KeyedService,
-                              public content::NotificationObserver {
+                              public content::RenderProcessHostCreationObserver,
+                              public content::RenderProcessHostObserver {
  public:
   // This class sends messages to all renderers started for |browser_context|.
   explicit RendererStartupHelper(content::BrowserContext* browser_context);
   ~RendererStartupHelper() override;
 
-  // content::NotificationObserver overrides:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
+  // content::RenderProcessHostCreationObserver:
+  void OnRenderProcessHostCreated(
+      content::RenderProcessHost* process_host) override;
+
+  // content::RenderProcessHostObserver:
+  void RenderProcessExited(
+      content::RenderProcessHost* host,
+      const content::ChildProcessTerminationInfo& info) override;
+  void RenderProcessHostDestroyed(content::RenderProcessHost* host) override;
 
   // Sends a message to the specified |process| activating the given extension
   // once the process is initialized. OnExtensionLoaded should have already been
@@ -59,8 +68,20 @@ class RendererStartupHelper : public KeyedService,
   void OnExtensionUnloaded(const Extension& extension);
   void OnExtensionLoaded(const Extension& extension);
 
+  // Returns mojom::Renderer* corresponding to |process|. This would return
+  // nullptr when it's called before |process| is inserted to
+  // |process_mojo_map_| or after it's deleted. Note that the callers should
+  // pass a valid content::RenderProcessHost*.
+  mojom::Renderer* GetRenderer(content::RenderProcessHost* process);
+
+ protected:
+  // Provide ability for tests to override.
+  virtual mojo::PendingAssociatedRemote<mojom::Renderer> BindNewRendererRemote(
+      content::RenderProcessHost* process);
+
  private:
   friend class RendererStartupHelperTest;
+  friend class RendererStartupHelperInterceptor;
 
   // Initializes the specified process, informing it of system state and loaded
   // extensions.
@@ -75,19 +96,19 @@ class RendererStartupHelper : public KeyedService,
   std::map<ExtensionId, std::set<content::RenderProcessHost*>>
       extension_process_map_;
 
-  // The set of render processes that have had the initial batch of IPC messages
-  // sent, including the set of loaded extensions. Further messages that
-  // activate, load, or unload extensions should not be sent until after this
-  // happens.
-  std::set<content::RenderProcessHost*> initialized_processes_;
-
   // The set of ids for extensions that are active in a process that has not
   // been initialized. The activation message will be sent the process is
   // initialized.
   std::map<content::RenderProcessHost*, std::set<ExtensionId>>
       pending_active_extensions_;
 
-  content::NotificationRegistrar registrar_;
+  // A map of render processes to mojo remotes. Being in this
+  // map means that have had the initial batch of IPC messages
+  // sent, including the set of loaded extensions. Further messages that
+  // activate, load, or unload extensions should not be sent until after this
+  // happens.
+  std::map<content::RenderProcessHost*, mojo::AssociatedRemote<mojom::Renderer>>
+      process_mojo_map_;
 
   DISALLOW_COPY_AND_ASSIGN(RendererStartupHelper);
 };

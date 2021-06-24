@@ -6,12 +6,12 @@
 
 #import <Foundation/Foundation.h>
 
+#include "base/check_op.h"
 #import "base/ios/ns_error_util.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/values.h"
 #include "components/error_page/common/error.h"
-#include "components/error_page/common/error_page_params.h"
 #include "components/error_page/common/localized_error.h"
 #include "components/grit/components_resources.h"
 #include "ios/chrome/browser/application_context.h"
@@ -45,22 +45,29 @@ NSString* GetErrorPage(const GURL& url,
     NOTREACHED();
   }
 
+  // Secure DNS is not supported on iOS, so we can assume there is no secure
+  // DNS network error when fetching the page state.
   error_page::LocalizedError::PageState page_state =
       error_page::LocalizedError::GetPageState(
           net_error, error_page::Error::kNetErrorDomain, url, is_post,
+          /*is_secure_dns_network_error=*/false,
           /*stale_copy_in_cache=*/false,
           /*can_show_network_diagnostics_dialog=*/false, is_off_the_record,
           /*offline_content_feature_enabled=*/false,
           /*auto_fetch_feature_enabled=*/false,
+          /*is_kiosk_mode=*/false,
           GetApplicationContext()->GetApplicationLocale(),
-          /*params=*/nullptr);
+          /*is_blocked_by_extension=*/false);
 
   ui::ScaleFactor scale_factor =
       ui::ResourceBundle::GetSharedInstance().GetMaxScaleFactor();
 
-  const base::StringPiece template_html(
-      ui::ResourceBundle::GetSharedInstance().GetRawDataResourceForScale(
-          IDR_NET_ERROR_HTML, scale_factor));
+  std::string extracted_string =
+      ui::ResourceBundle::GetSharedInstance().LoadDataResourceStringForScale(
+          IDR_NET_ERROR_HTML, scale_factor);
+  base::StringPiece template_html(extracted_string.data(),
+                                  extracted_string.size());
+
   if (template_html.empty())
     NOTREACHED() << "unable to load template. ID: " << IDR_NET_ERROR_HTML;
   return base::SysUTF8ToNSString(webui::GetTemplatesHtml(

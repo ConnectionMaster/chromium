@@ -8,8 +8,8 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
 #include "device/bluetooth/bluetooth_adapter_win.h"
 #include "device/bluetooth/bluetooth_device_win.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic_win.h"
@@ -31,8 +31,7 @@ BluetoothRemoteGattServiceWin::BluetoothRemoteGattServiceWin(
       service_attribute_handle_(service_attribute_handle),
       is_primary_(is_primary),
       parent_service_(parent_service),
-      ui_task_runner_(std::move(ui_task_runner)),
-      weak_ptr_factory_(this) {
+      ui_task_runner_(std::move(ui_task_runner)) {
   DCHECK(ui_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(!service_path_.empty());
   DCHECK(service_uuid_.IsValid());
@@ -84,7 +83,7 @@ BluetoothRemoteGattServiceWin::GetIncludedServices() const {
 void BluetoothRemoteGattServiceWin::GattCharacteristicDiscoveryComplete(
     BluetoothRemoteGattCharacteristicWin* characteristic) {
   DCHECK(ui_task_runner_->RunsTasksInCurrentSequence());
-  DCHECK(base::ContainsKey(characteristics_, characteristic->GetIdentifier()));
+  DCHECK(base::Contains(characteristics_, characteristic->GetIdentifier()));
 
   discovery_completed_included_characteristics_.insert(
       characteristic->GetIdentifier());
@@ -100,8 +99,9 @@ void BluetoothRemoteGattServiceWin::Update() {
   ++discovery_pending_count_;
   task_manager_->PostGetGattIncludedCharacteristics(
       service_path_, service_uuid_, service_attribute_handle_,
-      base::Bind(&BluetoothRemoteGattServiceWin::OnGetIncludedCharacteristics,
-                 weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(
+          &BluetoothRemoteGattServiceWin::OnGetIncludedCharacteristics,
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void BluetoothRemoteGattServiceWin::OnGetIncludedCharacteristics(
@@ -227,7 +227,7 @@ void BluetoothRemoteGattServiceWin::RemoveIncludedCharacteristic(
   // characteristic's destructor. This will ensure that any call to
   // GetCharacteristics() won't contain an entry corresponding to |identifier|.
   // Note: `characteristics_.erase(identifier);` would not guarantee this.
-  DCHECK(base::ContainsKey(characteristics_, identifier));
+  DCHECK(base::Contains(characteristics_, identifier));
   auto iter = characteristics_.find(identifier);
   auto pair = std::move(*iter);
   characteristics_.erase(iter);

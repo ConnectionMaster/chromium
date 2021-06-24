@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <mstcpip.h>
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -28,6 +29,7 @@
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source.h"
 #include "net/log/net_log_source_type.h"
+#include "net/log/net_log_values.h"
 #include "net/socket/socket_descriptor.h"
 #include "net/socket/socket_net_log_params.h"
 #include "net/socket/socket_options.h"
@@ -267,8 +269,7 @@ TCPSocketWin::TCPSocketWin(
       connect_os_error_(0),
       logging_multiple_connect_attempts_(false),
       net_log_(NetLogWithSource::Make(net_log, NetLogSourceType::SOCKET)) {
-  net_log_.BeginEvent(NetLogEventType::SOCKET_ALIVE,
-                      source.ToEventParametersCallback());
+  net_log_.BeginEventReferencingSource(NetLogEventType::SOCKET_ALIVE, source);
   EnsureWinsockInit();
 }
 
@@ -315,7 +316,7 @@ int TCPSocketWin::AdoptConnectedSocket(SocketDescriptor socket,
   }
 
   core_ = new Core(this);
-  peer_address_.reset(new IPEndPoint(peer_address));
+  peer_address_ = std::make_unique<IPEndPoint>(peer_address);
 
   return OK;
 }
@@ -425,7 +426,7 @@ int TCPSocketWin::Connect(const IPEndPoint& address,
   if (!logging_multiple_connect_attempts_)
     LogConnectBegin(AddressList(address));
 
-  peer_address_.reset(new IPEndPoint(address));
+  peer_address_ = std::make_unique<IPEndPoint>(address);
 
   int rv = DoConnect();
   if (rv == ERR_IO_PENDING) {
@@ -490,9 +491,9 @@ int TCPSocketWin::Read(IOBuffer* buf,
   DCHECK(!core_->read_iobuffer_.get());
   // base::Unretained() is safe because RetryRead() won't be called when |this|
   // is gone.
-  int rv =
-      ReadIfReady(buf, buf_len,
-                  base::Bind(&TCPSocketWin::RetryRead, base::Unretained(this)));
+  int rv = ReadIfReady(
+      buf, buf_len,
+      base::BindOnce(&TCPSocketWin::RetryRead, base::Unretained(this)));
   if (rv != ERR_IO_PENDING)
     return rv;
   read_callback_ = std::move(callback);
@@ -518,14 +519,14 @@ int TCPSocketWin::ReadIfReady(IOBuffer* buf,
   if (rv == SOCKET_ERROR) {
     if (os_error != WSAEWOULDBLOCK) {
       int net_error = MapSystemError(os_error);
-      net_log_.AddEvent(NetLogEventType::SOCKET_READ_ERROR,
-                        CreateNetLogSocketErrorCallback(net_error, os_error));
+      NetLogSocketError(net_log_, NetLogEventType::SOCKET_READ_ERROR, net_error,
+                        os_error);
       return net_error;
     }
   } else {
     net_log_.AddByteTransferEvent(NetLogEventType::SOCKET_BYTES_RECEIVED, rv,
                                   buf->data());
-    NetworkActivityMonitor::GetInstance()->IncrementBytesReceived(rv);
+    activity_monitor::IncrementBytesReceived(rv);
     return rv;
   }
 
@@ -580,14 +581,13 @@ int TCPSocketWin::Write(
       }
       net_log_.AddByteTransferEvent(NetLogEventType::SOCKET_BYTES_SENT, rv,
                                     buf->data());
-      NetworkActivityMonitor::GetInstance()->IncrementBytesSent(rv);
       return rv;
     }
   } else {
     if (os_error != WSA_IO_PENDING) {
       int net_error = MapSystemError(os_error);
-      net_log_.AddEvent(NetLogEventType::SOCKET_WRITE_ERROR,
-                        CreateNetLogSocketErrorCallback(net_error, os_error));
+      NetLogSocketError(net_log_, NetLogEventType::SOCKET_WRITE_ERROR,
+                        net_error, os_error);
       return net_error;
     }
   }
@@ -669,10 +669,16 @@ int TCPSocketWin::SetSendBufferSize(int32_t size) {
 }
 
 bool TCPSocketWin::SetKeepAlive(bool enable, int delay) {
+  if (socket_ == INVALID_SOCKET)
+    return false;
+
   return SetTCPKeepAlive(socket_, enable, delay);
 }
 
 bool TCPSocketWin::SetNoDelay(bool no_delay) {
+  if (socket_ == INVALID_SOCKET)
+    return false;
+
   return SetTCPNoDelay(socket_, no_delay) == OK;
 }
 
@@ -795,8 +801,9 @@ int TCPSocketWin::AcceptInternal(std::unique_ptr<TCPSocketWin>* socket,
   }
   *socket = std::move(tcp_socket);
   *address = ip_end_point;
-  net_log_.EndEvent(NetLogEventType::TCP_ACCEPT,
-                    CreateNetLogIPEndPointCallback(&ip_end_point));
+  net_log_.EndEvent(NetLogEventType::TCP_ACCEPT, [&] {
+    return CreateNetLogIPEndPointParams(&ip_end_point);
+  });
   return OK;
 }
 
@@ -829,8 +836,9 @@ int TCPSocketWin::DoConnect() {
   DCHECK_EQ(connect_os_error_, 0);
   DCHECK(!core_.get());
 
-  net_log_.BeginEvent(NetLogEventType::TCP_CONNECT_ATTEMPT,
-                      CreateNetLogIPEndPointCallback(peer_address_.get()));
+  net_log_.BeginEvent(NetLogEventType::TCP_CONNECT_ATTEMPT, [&] {
+    return CreateNetLogIPEndPointParams(peer_address_.get());
+  });
 
   core_ = new Core(this);
 
@@ -841,6 +849,15 @@ int TCPSocketWin::DoConnect() {
   SockaddrStorage storage;
   if (!peer_address_->ToSockAddr(storage.addr, &storage.addr_len))
     return ERR_ADDRESS_INVALID;
+
+  // Set option to choose a random port, if the socket is not already bound.
+  // Ignore failures, which may happen if the socket was already bound.
+  // Microsoft's documentation claims this is a uint16, but experimentally, this
+  // fails if passed a 16-bit value.
+  std::uint32_t randomize_port_value = 1;
+  setsockopt(socket_, SOL_SOCKET, SO_RANDOMIZE_PORT,
+             reinterpret_cast<const char*>(&randomize_port_value),
+             sizeof(randomize_port_value));
 
   if (!connect(socket_, storage.addr, storage.addr_len)) {
     // Connected without waiting!
@@ -877,8 +894,8 @@ void TCPSocketWin::DoConnectComplete(int result) {
   int os_error = connect_os_error_;
   connect_os_error_ = 0;
   if (result != OK) {
-    net_log_.EndEvent(NetLogEventType::TCP_CONNECT_ATTEMPT,
-                      NetLog::IntCallback("os_error", os_error));
+    net_log_.EndEventWithIntParams(NetLogEventType::TCP_CONNECT_ATTEMPT,
+                                   "os_error", os_error);
   } else {
     net_log_.EndEvent(NetLogEventType::TCP_CONNECT_ATTEMPT);
   }
@@ -889,7 +906,7 @@ void TCPSocketWin::DoConnectComplete(int result) {
 
 void TCPSocketWin::LogConnectBegin(const AddressList& addresses) {
   net_log_.BeginEvent(NetLogEventType::TCP_CONNECT,
-                      addresses.CreateNetLogCallback());
+                      [&] { return addresses.NetLogParams(); });
 }
 
 void TCPSocketWin::LogConnectEnd(int net_error) {
@@ -898,23 +915,16 @@ void TCPSocketWin::LogConnectEnd(int net_error) {
     return;
   }
 
-  struct sockaddr_storage source_address;
-  socklen_t addrlen = sizeof(source_address);
-  int rv = getsockname(
-      socket_, reinterpret_cast<struct sockaddr*>(&source_address), &addrlen);
-  int os_error = WSAGetLastError();
-  if (rv != 0) {
-    LOG(ERROR) << "getsockname() [rv: " << rv << "] error: " << os_error;
-    NOTREACHED();
-    net_log_.EndEventWithNetErrorCode(NetLogEventType::TCP_CONNECT, rv);
-    return;
-  }
-
-  net_log_.EndEvent(
-      NetLogEventType::TCP_CONNECT,
-      CreateNetLogSourceAddressCallback(
-          reinterpret_cast<const struct sockaddr*>(&source_address),
-          sizeof(source_address)));
+  net_log_.EndEvent(NetLogEventType::TCP_CONNECT, [&] {
+    net::IPEndPoint local_address;
+    int net_error = GetLocalAddress(&local_address);
+    net::IPEndPoint remote_address;
+    if (net_error == net::OK)
+      net_error = GetPeerAddress(&remote_address);
+    if (net_error != net::OK)
+      return NetLogParamsWithInt("get_address_net_error", net_error);
+    return CreateNetLogAddressPairParams(local_address, remote_address);
+  });
 }
 
 void TCPSocketWin::RetryRead(int rv) {
@@ -925,7 +935,7 @@ void TCPSocketWin::RetryRead(int rv) {
     // |this| is gone.
     rv = ReadIfReady(
         core_->read_iobuffer_.get(), core_->read_buffer_length_,
-        base::Bind(&TCPSocketWin::RetryRead, base::Unretained(this)));
+        base::BindOnce(&TCPSocketWin::RetryRead, base::Unretained(this)));
     if (rv == ERR_IO_PENDING)
       return;
   }
@@ -974,8 +984,8 @@ void TCPSocketWin::DidCompleteWrite() {
   int rv;
   if (!ok) {
     rv = MapSystemError(os_error);
-    net_log_.AddEvent(NetLogEventType::SOCKET_WRITE_ERROR,
-                      CreateNetLogSocketErrorCallback(rv, os_error));
+    NetLogSocketError(net_log_, NetLogEventType::SOCKET_WRITE_ERROR, rv,
+                      os_error);
   } else {
     rv = static_cast<int>(num_bytes);
     if (rv > core_->write_buffer_length_ || rv < 0) {
@@ -988,7 +998,6 @@ void TCPSocketWin::DidCompleteWrite() {
     } else {
       net_log_.AddByteTransferEvent(NetLogEventType::SOCKET_BYTES_SENT,
                                     num_bytes, core_->write_iobuffer_->data());
-      NetworkActivityMonitor::GetInstance()->IncrementBytesSent(num_bytes);
     }
   }
 

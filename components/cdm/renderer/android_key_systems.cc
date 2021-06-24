@@ -15,7 +15,7 @@
 #include "media/media_buildflags.h"
 #if BUILDFLAG(ENABLE_WIDEVINE)
 #include "components/cdm/renderer/widevine_key_system_properties.h"
-#include "third_party/widevine/cdm/widevine_cdm_common.h"
+#include "third_party/widevine/cdm/widevine_cdm_common.h"  // nogncheck
 #endif  // BUILDFLAG(ENABLE_WIDEVINE)
 
 using media::EmeConfigRule;
@@ -61,8 +61,8 @@ class AndroidPlatformKeySystemProperties : public KeySystemProperties {
   }
 
   EmeConfigRule GetEncryptionSchemeConfigRule(
-      media::EncryptionMode encryption_scheme) const override {
-    return encryption_scheme == media::EncryptionMode::kCenc
+      media::EncryptionScheme encryption_scheme) const override {
+    return encryption_scheme == media::EncryptionScheme::kCenc
                ? EmeConfigRule::SUPPORTED
                : EmeConfigRule::NOT_SUPPORTED;
   }
@@ -73,16 +73,18 @@ class AndroidPlatformKeySystemProperties : public KeySystemProperties {
 
   EmeConfigRule GetRobustnessConfigRule(
       media::EmeMediaType media_type,
-      const std::string& requested_robustness) const override {
+      const std::string& requested_robustness,
+      const bool* /*hw_secure_requirement*/) const override {
+    // `hw_secure_requirement` is ignored here because it's a temporary solution
+    // until a larger refactoring of the key system logic is done. It also does
+    // not need to account for it here because if it does introduce an
+    // incompatibility at this point, it will still be caught by the rule logic
+    // in KeySystemConfigSelector: crbug.com/1204284
     return requested_robustness.empty() ? EmeConfigRule::SUPPORTED
                                         : EmeConfigRule::NOT_SUPPORTED;
   }
 
   EmeSessionTypeSupport GetPersistentLicenseSessionSupport() const override {
-    return EmeSessionTypeSupport::NOT_SUPPORTED;
-  }
-  EmeSessionTypeSupport GetPersistentUsageRecordSessionSupport()
-      const override {
     return EmeSessionTypeSupport::NOT_SUPPORTED;
   }
   EmeFeatureSupport GetPersistentStateSupport() const override {
@@ -119,6 +121,8 @@ SupportedKeySystemResponse QueryKeySystemSupport(
 #if BUILDFLAG(ENABLE_WIDEVINE)
 void AddAndroidWidevine(
     std::vector<std::unique_ptr<KeySystemProperties>>* concrete_key_systems) {
+  // TODO(crbug.com/853336): Use media.mojom.KeySystemSupport instead of
+  // separate IPC.
   auto response = QueryKeySystemSupport(kWidevineKeySystem);
 
   auto codecs = response.non_secure_codecs;
@@ -138,10 +142,11 @@ void AddAndroidWidevine(
   if (codecs != media::EME_CODEC_NONE) {
     DVLOG(3) << __func__ << " Widevine supported.";
 
-    // TODO(crbug.com/813845): Determine 'cbcs' support, which may vary by
-    // Android version.
-    base::flat_set<media::EncryptionMode> encryption_schemes = {
-        media::EncryptionMode::kCenc};
+    base::flat_set<media::EncryptionScheme> encryption_schemes = {
+        media::EncryptionScheme::kCenc};
+    if (response.is_cbcs_encryption_supported) {
+      encryption_schemes.insert(media::EncryptionScheme::kCbcs);
+    }
 
     concrete_key_systems->emplace_back(new WidevineKeySystemProperties(
         codecs,                        // Regular codecs.
@@ -151,7 +156,6 @@ void AddAndroidWidevine(
         Robustness::HW_SECURE_CRYPTO,  // Max audio robustness.
         Robustness::HW_SECURE_ALL,     // Max video robustness.
         persistent_license_support,    // persistent-license.
-        EmeSessionTypeSupport::NOT_SUPPORTED,  // persistent-release-message.
         EmeFeatureSupport::ALWAYS_ENABLED,     // Persistent state.
         EmeFeatureSupport::ALWAYS_ENABLED));   // Distinctive identifier.
   } else {
@@ -164,6 +168,9 @@ void AddAndroidWidevine(
 
 void AddAndroidPlatformKeySystems(
     std::vector<std::unique_ptr<KeySystemProperties>>* concrete_key_systems) {
+  // TODO(crbug.com/853336): Update media.mojom.KeySystemSupport to handle this
+  // case and use it instead.
+
   std::vector<std::string> key_system_names;
   content::RenderThread::Get()->Send(
       new ChromeViewHostMsg_GetPlatformKeySystemNames(&key_system_names));

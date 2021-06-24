@@ -13,22 +13,20 @@
 #include "build/build_config.h"
 #include "chrome/browser/apps/platform_apps/app_window_registry_util.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/common/pref_names.h"
 #include "components/autofill/content/browser/risk/fingerprint.h"
 #include "components/autofill/content/browser/risk/proto/fingerprint.pb.h"
+#include "components/embedder_support/user_agent_utils.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/metrics/metrics_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/service_manager_connection.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 #if !defined(OS_ANDROID)
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "extensions/browser/app_window/app_window.h"
@@ -37,6 +35,8 @@
 #endif
 
 namespace autofill {
+
+namespace risk_util {
 
 namespace {
 
@@ -89,15 +89,14 @@ void LoadRiskData(uint64_t obfuscated_gaia_id,
       g_browser_process->metrics_service()->GetInstallDate());
 
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(content::ServiceManagerConnection::GetForProcess());
-  service_manager::Connector* connector =
-      content::ServiceManagerConnection::GetForProcess()->GetConnector();
-
-  risk::GetFingerprint(
-      obfuscated_gaia_id, window_bounds, web_contents,
-      version_info::GetVersionNumber(), charset, accept_languages, install_time,
-      g_browser_process->GetApplicationLocale(), GetUserAgent(),
-      base::BindOnce(PassRiskData, std::move(callback)), connector);
+  risk::GetFingerprint(obfuscated_gaia_id, window_bounds, web_contents,
+                       version_info::GetVersionNumber(), charset,
+                       accept_languages, install_time,
+                       g_browser_process->GetApplicationLocale(),
+                       embedder_support::GetUserAgent(),
+                       base::BindOnce(PassRiskData, std::move(callback)));
 }
+
+}  // namespace risk_util
 
 }  // namespace autofill

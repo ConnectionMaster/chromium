@@ -8,6 +8,7 @@
 #include "base/containers/flat_map.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
+#include "base/threading/thread.h"
 #include "gpu/command_buffer/common/discardable_handle.h"
 #include "gpu/gpu_gles2_export.h"
 #include "third_party/skia/src/core/SkRemoteGlyphCache.h"
@@ -22,9 +23,10 @@ class GPU_GLES2_EXPORT ServiceFontManager
    public:
     virtual ~Client() {}
     virtual scoped_refptr<Buffer> GetShmBuffer(uint32_t shm_id) = 0;
+    virtual void ReportProgress() = 0;
   };
 
-  ServiceFontManager(Client* client);
+  ServiceFontManager(Client* client, bool disable_oopr_debug_crash_dump);
   void Destroy();
 
   bool Deserialize(const volatile char* memory,
@@ -32,6 +34,9 @@ class GPU_GLES2_EXPORT ServiceFontManager
                    std::vector<SkDiscardableHandleId>* locked_handles);
   bool Unlock(const std::vector<SkDiscardableHandleId>& handles);
   SkStrikeClient* strike_client() { return strike_client_.get(); }
+  bool disable_oopr_debug_crash_dump() const {
+    return disable_oopr_debug_crash_dump_;
+  }
 
  private:
   friend class base::RefCountedThreadSafe<ServiceFontManager>;
@@ -46,10 +51,12 @@ class GPU_GLES2_EXPORT ServiceFontManager
   base::Lock lock_;
 
   Client* client_;
+  const base::PlatformThreadId client_thread_id_;
   std::unique_ptr<SkStrikeClient> strike_client_;
   base::flat_map<SkDiscardableHandleId, ServiceDiscardableHandle>
       discardable_handle_map_;
   bool destroyed_ = false;
+  const bool disable_oopr_debug_crash_dump_;
 };
 
 }  // namespace gpu

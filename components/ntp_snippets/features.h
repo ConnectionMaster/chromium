@@ -32,9 +32,6 @@ extern const base::Feature* const kAllFeatures[];
 
 extern const base::Feature kArticleSuggestionsFeature;
 
-// Feature to listen for GCM push updates from the server.
-extern const base::Feature kBreakingNewsPushFeature;
-
 // Feature for simple experimental comparison and validation of changes since
 // M58: enabling this brings back the M58 Stable fetching schedule (which is
 // suitable for Holdback groups).
@@ -82,13 +79,14 @@ constexpr int kNotificationsIgnoredDefaultLimit = 3;
 // have been fetched.
 extern const base::Feature kKeepPrefetchedContentSuggestions;
 
-// Enables debug logging accessible through snippets-internals.
-extern const base::Feature kContentSuggestionsDebugLog;
+// Whether this version of the client supports responses without an image.
+extern const base::Feature kOptionalImagesEnabledFeature;
 
 // Return all the features as a vector.
 std::vector<const base::Feature*> GetAllFeatures();
 
 // Return a referrer URL for content suggestions.
+// This is deprecated, and only used on iOS.
 std::string GetContentSuggestionsReferrerURL();
 }  // namespace ntp_snippets
 

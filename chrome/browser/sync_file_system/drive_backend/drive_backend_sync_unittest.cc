@@ -4,18 +4,20 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/containers/stack.h"
 #include "base/files/file_util.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
-#include "base/task/post_task.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/thread_pool.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/sync_file_system/drive_backend/callback_helper.h"
 #include "chrome/browser/sync_file_system/drive_backend/drive_backend_constants.h"
@@ -35,14 +37,15 @@
 #include "components/drive/drive_uploader.h"
 #include "components/drive/service/fake_drive_service.h"
 #include "components/drive/service/test_util.h"
-#include "components/services/filesystem/public/interfaces/types.mojom.h"
+#include "components/services/filesystem/public/mojom/types.mojom.h"
 #include "content/public/browser/browser_task_traits.h"
-#include "content/public/test/test_browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/common/extension.h"
 #include "google_apis/drive/drive_api_parser.h"
-#include "storage/browser/fileapi/file_system_context.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "storage/browser/file_system/file_system_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/leveldatabase/leveldb_chrome.h"
 
@@ -56,21 +59,19 @@ typedef storage::FileSystemOperation::FileEntryList FileEntryList;
 namespace {
 
 template <typename T>
-void SetValueAndCallClosure(const base::Closure& closure,
-                            T* arg_out,
-                            T arg) {
+void SetValueAndCallClosure(base::OnceClosure closure, T* arg_out, T arg) {
   *arg_out = std::forward<T>(arg);
-  closure.Run();
+  std::move(closure).Run();
 }
 
-void SetSyncStatusAndUrl(const base::Closure& closure,
+void SetSyncStatusAndUrl(base::OnceClosure closure,
                          SyncStatusCode* status_out,
                          storage::FileSystemURL* url_out,
                          SyncStatusCode status,
                          const storage::FileSystemURL& url) {
   *status_out = status;
   *url_out = url;
-  closure.Run();
+  std::move(closure).Run();
 }
 
 }  // namespace
@@ -80,7 +81,7 @@ class DriveBackendSyncTest : public testing::Test,
                              public RemoteFileSyncService::Observer {
  public:
   DriveBackendSyncTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP),
         pending_remote_changes_(0),
         pending_local_changes_(0) {}
   ~DriveBackendSyncTest() override {}
@@ -89,13 +90,12 @@ class DriveBackendSyncTest : public testing::Test,
     ASSERT_TRUE(base_dir_.CreateUniqueTempDir());
     in_memory_env_ = leveldb_chrome::NewMemEnv("DriveBackendSyncTest");
 
-    io_task_runner_ = base::CreateSingleThreadTaskRunnerWithTraits(
-        {content::BrowserThread::IO});
-    worker_task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
+    io_task_runner_ = content::GetIOThreadTaskRunner({});
+    worker_task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
         {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
     file_task_runner_ = io_task_runner_;
     scoped_refptr<base::SequencedTaskRunner> drive_task_runner =
-        base::CreateSequencedTaskRunnerWithTraits(
+        base::ThreadPool::CreateSequencedTaskRunner(
             {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
 
     RegisterSyncableFileSystem();
@@ -105,16 +105,15 @@ class DriveBackendSyncTest : public testing::Test,
 
     std::unique_ptr<drive::FakeDriveService> drive_service(
         new drive::FakeDriveService);
-    drive_service->Initialize("test@example.com");
+    drive_service->Initialize(CoreAccountId("account_id"));
     ASSERT_TRUE(drive::test_util::SetUpTestEntries(drive_service.get()));
 
     std::unique_ptr<drive::DriveUploaderInterface> uploader(
         new drive::DriveUploader(drive_service.get(), file_task_runner_.get(),
-                                 nullptr));
+                                 mojo::NullRemote()));
 
-    fake_drive_service_helper_.reset(new FakeDriveServiceHelper(
-        drive_service.get(), uploader.get(),
-        kSyncRootFolderTitle));
+    fake_drive_service_helper_ = std::make_unique<FakeDriveServiceHelper>(
+        drive_service.get(), uploader.get(), kSyncRootFolderTitle);
 
     remote_sync_service_.reset(new SyncEngine(
         base::ThreadTaskRunnerHandle::Get(),  // ui_task_runner
@@ -122,6 +121,7 @@ class DriveBackendSyncTest : public testing::Test,
         nullptr,  // task_logger
         nullptr,  // notification_manager
         nullptr,  // extension_service
+        nullptr,  // extension_registry
         nullptr,  // identity_manager
         nullptr,  // url_loader_factory
         nullptr,  // drive_service
@@ -149,7 +149,7 @@ class DriveBackendSyncTest : public testing::Test,
     local_sync_service_.reset();
     remote_sync_service_.reset();
 
-    base::ThreadPool::GetInstance()->FlushForTesting();
+    base::ThreadPoolInstance::Get()->FlushForTesting();
     RevokeSyncableFileSystem();
   }
 
@@ -179,14 +179,11 @@ class DriveBackendSyncTest : public testing::Test,
     bool success = false;
     FileTracker tracker;
     PostTaskAndReplyWithResult(
-        worker_task_runner_.get(),
-        FROM_HERE,
-        base::Bind(&MetadataDatabase::FindAppRootTracker,
-                   base::Unretained(metadata_database()),
-                   app_id,
-                   &tracker),
-        base::Bind(
-            &SetValueAndCallClosure<bool>, run_loop.QuitClosure(), &success));
+        worker_task_runner_.get(), FROM_HERE,
+        base::BindOnce(&MetadataDatabase::FindAppRootTracker,
+                       base::Unretained(metadata_database()), app_id, &tracker),
+        base::BindOnce(&SetValueAndCallClosure<bool>, run_loop.QuitClosure(),
+                       &success));
     run_loop.Run();
     if (!success)
       return false;
@@ -207,16 +204,12 @@ class DriveBackendSyncTest : public testing::Test,
     base::FilePath result_path;
     base::FilePath normalized_path = path.NormalizePathSeparators();
     PostTaskAndReplyWithResult(
-        worker_task_runner_.get(),
-        FROM_HERE,
-        base::Bind(&MetadataDatabase::FindNearestActiveAncestor,
-                   base::Unretained(metadata_database()),
-                   app_id,
-                   normalized_path,
-                   &tracker,
-                   &result_path),
-        base::Bind(
-            &SetValueAndCallClosure<bool>, run_loop.QuitClosure(), &success));
+        worker_task_runner_.get(), FROM_HERE,
+        base::BindOnce(&MetadataDatabase::FindNearestActiveAncestor,
+                       base::Unretained(metadata_database()), app_id,
+                       normalized_path, &tracker, &result_path),
+        base::BindOnce(&SetValueAndCallClosure<bool>, run_loop.QuitClosure(),
+                       &success));
     run_loop.Run();
     EXPECT_TRUE(success);
     EXPECT_EQ(normalized_path, result_path);
@@ -225,7 +218,7 @@ class DriveBackendSyncTest : public testing::Test,
 
   SyncStatusCode RegisterApp(const std::string& app_id) {
     GURL origin = extensions::Extension::GetBaseURLFromExtensionId(app_id);
-    if (!base::ContainsKey(file_systems_, app_id)) {
+    if (!base::Contains(file_systems_, app_id)) {
       CannedSyncableFileSystem* file_system = new CannedSyncableFileSystem(
           origin, in_memory_env_.get(),
           io_task_runner_.get(), file_task_runner_.get());
@@ -235,8 +228,8 @@ class DriveBackendSyncTest : public testing::Test,
       base::RunLoop run_loop;
       local_sync_service_->MaybeInitializeFileSystemContext(
           origin, file_system->file_system_context(),
-          base::Bind(&SetValueAndCallClosure<SyncStatusCode>,
-                     run_loop.QuitClosure(), &status));
+          base::BindOnce(&SetValueAndCallClosure<SyncStatusCode>,
+                         run_loop.QuitClosure(), &status));
       run_loop.Run();
       EXPECT_EQ(SYNC_STATUS_OK, status);
 
@@ -250,16 +243,15 @@ class DriveBackendSyncTest : public testing::Test,
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
     base::RunLoop run_loop;
     remote_sync_service_->RegisterOrigin(
-        origin,
-        base::Bind(&SetValueAndCallClosure<SyncStatusCode>,
-                   run_loop.QuitClosure(), &status));
+        origin, base::BindOnce(&SetValueAndCallClosure<SyncStatusCode>,
+                               run_loop.QuitClosure(), &status));
     run_loop.Run();
     return status;
   }
 
   void AddLocalFolder(const std::string& app_id,
                       const base::FilePath::StringType& path) {
-    ASSERT_TRUE(base::ContainsKey(file_systems_, app_id));
+    ASSERT_TRUE(base::Contains(file_systems_, app_id));
     EXPECT_EQ(base::File::FILE_OK,
               file_systems_[app_id]->CreateDirectory(
                   CreateURL(app_id, path)));
@@ -269,7 +261,7 @@ class DriveBackendSyncTest : public testing::Test,
                             const base::FilePath::StringType& path,
                             const std::string& content) {
     storage::FileSystemURL url(CreateURL(app_id, path));
-    ASSERT_TRUE(base::ContainsKey(file_systems_, app_id));
+    ASSERT_TRUE(base::Contains(file_systems_, app_id));
     EXPECT_EQ(base::File::FILE_OK, file_systems_[app_id]->CreateFile(url));
     int64_t bytes_written = file_systems_[app_id]->WriteString(url, content);
     EXPECT_EQ(static_cast<int64_t>(content.size()), bytes_written);
@@ -279,7 +271,7 @@ class DriveBackendSyncTest : public testing::Test,
   void UpdateLocalFile(const std::string& app_id,
                        const base::FilePath::StringType& path,
                        const std::string& content) {
-    ASSERT_TRUE(base::ContainsKey(file_systems_, app_id));
+    ASSERT_TRUE(base::Contains(file_systems_, app_id));
     int64_t bytes_written =
         file_systems_[app_id]->WriteString(CreateURL(app_id, path), content);
     EXPECT_EQ(static_cast<int64_t>(content.size()), bytes_written);
@@ -288,7 +280,7 @@ class DriveBackendSyncTest : public testing::Test,
 
   void RemoveLocal(const std::string& app_id,
                    const base::FilePath::StringType& path) {
-    ASSERT_TRUE(base::ContainsKey(file_systems_, app_id));
+    ASSERT_TRUE(base::Contains(file_systems_, app_id));
     EXPECT_EQ(base::File::FILE_OK,
               file_systems_[app_id]->Remove(
                   CreateURL(app_id, path),
@@ -300,7 +292,7 @@ class DriveBackendSyncTest : public testing::Test,
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
     storage::FileSystemURL url;
     base::RunLoop run_loop;
-    local_sync_service_->ProcessLocalChange(base::Bind(
+    local_sync_service_->ProcessLocalChange(base::BindOnce(
         &SetSyncStatusAndUrl, run_loop.QuitClosure(), &status, &url));
     run_loop.Run();
     return status;
@@ -310,7 +302,7 @@ class DriveBackendSyncTest : public testing::Test,
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
     storage::FileSystemURL url;
     base::RunLoop run_loop;
-    remote_sync_service_->ProcessRemoteChange(base::Bind(
+    remote_sync_service_->ProcessRemoteChange(base::BindOnce(
         &SetSyncStatusAndUrl, run_loop.QuitClosure(), &status, &url));
     run_loop.Run();
     return status;
@@ -374,10 +366,10 @@ class DriveBackendSyncTest : public testing::Test,
         int64_t largest_fetched_change_id = -1;
         PostTaskAndReplyWithResult(
             worker_task_runner_.get(), FROM_HERE,
-            base::Bind(&MetadataDatabase::GetLargestFetchedChangeID,
-                       base::Unretained(metadata_database())),
-            base::Bind(&SetValueAndCallClosure<int64_t>, run_loop.QuitClosure(),
-                       &largest_fetched_change_id));
+            base::BindOnce(&MetadataDatabase::GetLargestFetchedChangeID,
+                           base::Unretained(metadata_database())),
+            base::BindOnce(&SetValueAndCallClosure<int64_t>,
+                           run_loop.QuitClosure(), &largest_fetched_change_id));
         run_loop.Run();
         if (largest_fetched_change_id != GetLargestChangeID()) {
           FetchRemoteChanges();
@@ -413,7 +405,7 @@ class DriveBackendSyncTest : public testing::Test,
                   sync_root_folder_id, &remote_entries));
     std::map<std::string, const google_apis::FileResource*> app_root_by_title;
     for (const auto& remote_entry : remote_entries) {
-      EXPECT_FALSE(base::ContainsKey(app_root_by_title, remote_entry->title()));
+      EXPECT_FALSE(base::Contains(app_root_by_title, remote_entry->title()));
       app_root_by_title[remote_entry->title()] = remote_entry.get();
     }
 
@@ -423,7 +415,7 @@ class DriveBackendSyncTest : public testing::Test,
       const std::string& app_id = itr->first;
       SCOPED_TRACE(testing::Message() << "Verifying app: " << app_id);
       CannedSyncableFileSystem* file_system = itr->second;
-      ASSERT_TRUE(base::ContainsKey(app_root_by_title, app_id));
+      ASSERT_TRUE(base::Contains(app_root_by_title, app_id));
       VerifyConsistencyForFolder(
           app_id, base::FilePath(),
           app_root_by_title[app_id]->file_id(),
@@ -445,8 +437,7 @@ class DriveBackendSyncTest : public testing::Test,
         remote_entry_by_title;
     for (size_t i = 0; i < remote_entries.size(); ++i) {
       google_apis::FileResource* remote_entry = remote_entries[i].get();
-      EXPECT_FALSE(
-          base::ContainsKey(remote_entry_by_title, remote_entry->title()))
+      EXPECT_FALSE(base::Contains(remote_entry_by_title, remote_entry->title()))
           << "title: " << remote_entry->title();
       remote_entry_by_title[remote_entry->title()] = remote_entry;
     }
@@ -462,7 +453,7 @@ class DriveBackendSyncTest : public testing::Test,
           storage::VirtualPath::BaseName(entry_url.path()).AsUTF8Unsafe();
       SCOPED_TRACE(testing::Message() << "Verifying entry: " << title);
 
-      ASSERT_TRUE(base::ContainsKey(remote_entry_by_title, title));
+      ASSERT_TRUE(base::Contains(remote_entry_by_title, title));
       const google_apis::FileResource& remote_entry =
           *remote_entry_by_title[title];
       if (local_entry.type == filesystem::mojom::FsFileType::DIRECTORY) {
@@ -499,7 +490,7 @@ class DriveBackendSyncTest : public testing::Test,
   }
 
   size_t CountLocalFile(const std::string& app_id) {
-    if (!base::ContainsKey(file_systems_, app_id))
+    if (!base::Contains(file_systems_, app_id))
       return 0;
 
     CannedSyncableFileSystem* file_system = file_systems_[app_id];
@@ -530,7 +521,7 @@ class DriveBackendSyncTest : public testing::Test,
     SCOPED_TRACE(testing::Message() << "Verifying local file: "
                                     << "app_id = " << app_id
                                     << ", path = " << path);
-    ASSERT_TRUE(base::ContainsKey(file_systems_, app_id));
+    ASSERT_TRUE(base::Contains(file_systems_, app_id));
     EXPECT_EQ(base::File::FILE_OK,
               file_systems_[app_id]->VerifyFile(
                   CreateURL(app_id, path), content));
@@ -541,7 +532,7 @@ class DriveBackendSyncTest : public testing::Test,
     SCOPED_TRACE(testing::Message() << "Verifying local file: "
                                     << "app_id = " << app_id
                                     << ", path = " << path);
-    ASSERT_TRUE(base::ContainsKey(file_systems_, app_id));
+    ASSERT_TRUE(base::Contains(file_systems_, app_id));
     EXPECT_EQ(base::File::FILE_OK,
               file_systems_[app_id]->DirectoryExists(CreateURL(app_id, path)));
   }
@@ -550,12 +541,11 @@ class DriveBackendSyncTest : public testing::Test,
     size_t count = 0;
     base::RunLoop run_loop;
     PostTaskAndReplyWithResult(
-        worker_task_runner_.get(),
-        FROM_HERE,
-        base::Bind(&MetadataDatabase::CountFileMetadata,
-                   base::Unretained(metadata_database())),
-        base::Bind(
-            &SetValueAndCallClosure<size_t>, run_loop.QuitClosure(), &count));
+        worker_task_runner_.get(), FROM_HERE,
+        base::BindOnce(&MetadataDatabase::CountFileMetadata,
+                       base::Unretained(metadata_database())),
+        base::BindOnce(&SetValueAndCallClosure<size_t>, run_loop.QuitClosure(),
+                       &count));
     run_loop.Run();
     return count;
   }
@@ -564,12 +554,11 @@ class DriveBackendSyncTest : public testing::Test,
     size_t count = 0;
     base::RunLoop run_loop;
     PostTaskAndReplyWithResult(
-        worker_task_runner_.get(),
-        FROM_HERE,
-        base::Bind(&MetadataDatabase::CountFileTracker,
-                   base::Unretained(metadata_database())),
-        base::Bind(
-            &SetValueAndCallClosure<size_t>, run_loop.QuitClosure(), &count));
+        worker_task_runner_.get(), FROM_HERE,
+        base::BindOnce(&MetadataDatabase::CountFileTracker,
+                       base::Unretained(metadata_database())),
+        base::BindOnce(&SetValueAndCallClosure<size_t>, run_loop.QuitClosure(),
+                       &count));
     run_loop.Run();
     return count;
   }
@@ -604,7 +593,7 @@ class DriveBackendSyncTest : public testing::Test,
     return sync_worker()->context_->metadata_database_.get();
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   base::ScopedTempDir base_dir_;
   std::unique_ptr<leveldb::Env> in_memory_env_;

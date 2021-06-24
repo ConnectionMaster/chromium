@@ -6,11 +6,11 @@
 
 #include "ash/detachable_base/detachable_base_observer.h"
 #include "ash/public/cpp/ash_pref_names.h"
+#include "ash/public/cpp/session/user_info.h"
 #include "ash/shell.h"
 #include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -47,29 +47,25 @@ void DetachableBaseHandler::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterDictionaryPref(prefs::kDetachableBaseDevices);
 }
 
-DetachableBaseHandler::DetachableBaseHandler(Shell* shell)
-    : shell_(shell),
-      hammerd_observer_(this),
-      power_manager_observer_(this),
-      weak_ptr_factory_(this) {
-  if (shell_)
-    shell_->AddShellObserver(this);
-
+DetachableBaseHandler::DetachableBaseHandler(PrefService* local_state)
+    : local_state_(local_state),
+      hammerd_observation_(this),
+      power_manager_observation_(this) {
   if (chromeos::HammerdClient::Get())  // May be null in tests
-    hammerd_observer_.Add(chromeos::HammerdClient::Get());
+    hammerd_observation_.Observe(chromeos::HammerdClient::Get());
   chromeos::PowerManagerClient* power_manager_client =
       chromeos::PowerManagerClient::Get();
-  power_manager_observer_.Add(power_manager_client);
+  power_manager_observation_.Observe(power_manager_client);
 
   power_manager_client->GetSwitchStates(
       base::BindOnce(&DetachableBaseHandler::OnGotPowerManagerSwitchStates,
                      weak_ptr_factory_.GetWeakPtr()));
+
+  if (GetPairingStatus() != DetachableBasePairingStatus::kNone)
+    NotifyPairingStatusChanged();
 }
 
-DetachableBaseHandler::~DetachableBaseHandler() {
-  if (shell_)
-    shell_->RemoveShellObserver(this);
-}
+DetachableBaseHandler::~DetachableBaseHandler() = default;
 
 void DetachableBaseHandler::AddObserver(DetachableBaseObserver* observer) {
   observers_.AddObserver(observer);
@@ -79,7 +75,7 @@ void DetachableBaseHandler::RemoveObserver(DetachableBaseObserver* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void DetachableBaseHandler::RemoveUserData(const mojom::UserInfo& user) {
+void DetachableBaseHandler::RemoveUserData(const UserInfo& user) {
   last_used_devices_.erase(user.account_id);
 
   if (local_state_) {
@@ -98,7 +94,7 @@ DetachableBasePairingStatus DetachableBaseHandler::GetPairingStatus() const {
 }
 
 bool DetachableBaseHandler::PairedBaseMatchesLastUsedByUser(
-    const mojom::UserInfo& user) const {
+    const UserInfo& user) const {
   if (GetPairingStatus() != DetachableBasePairingStatus::kAuthenticated)
     return false;
 
@@ -116,7 +112,7 @@ bool DetachableBaseHandler::PairedBaseMatchesLastUsedByUser(
 }
 
 bool DetachableBaseHandler::SetPairedBaseAsLastUsedByUser(
-    const mojom::UserInfo& user) {
+    const UserInfo& user) {
   if (GetPairingStatus() != DetachableBasePairingStatus::kAuthenticated)
     return false;
 
@@ -137,14 +133,6 @@ bool DetachableBaseHandler::SetPairedBaseAsLastUsedByUser(
   }
 
   return true;
-}
-
-void DetachableBaseHandler::OnLocalStatePrefServiceInitialized(
-    PrefService* pref_service) {
-  local_state_ = pref_service;
-
-  if (GetPairingStatus() != DetachableBasePairingStatus::kNone)
-    NotifyPairingStatusChanged();
 }
 
 void DetachableBaseHandler::BaseFirmwareUpdateNeeded() {
@@ -186,12 +174,12 @@ void DetachableBaseHandler::InvalidBaseConnected() {
 
 void DetachableBaseHandler::TabletModeEventReceived(
     chromeos::PowerManagerClient::TabletMode mode,
-    const base::TimeTicks& timestamp) {
+    base::TimeTicks timestamp) {
   UpdateTabletMode(mode);
 }
 
 void DetachableBaseHandler::OnGotPowerManagerSwitchStates(
-    base::Optional<chromeos::PowerManagerClient::SwitchStates> switch_states) {
+    absl::optional<chromeos::PowerManagerClient::SwitchStates> switch_states) {
   if (!switch_states.has_value() || tablet_mode_.has_value())
     return;
 
@@ -214,8 +202,7 @@ void DetachableBaseHandler::UpdateTabletMode(
 }
 
 DetachableBaseHandler::DetachableBaseId
-DetachableBaseHandler::GetLastUsedDeviceForUser(
-    const mojom::UserInfo& user) const {
+DetachableBaseHandler::GetLastUsedDeviceForUser(const UserInfo& user) const {
   const auto it = last_used_devices_.find(user.account_id);
   // If the last used device was set within this session, bypass local state.
   if (it != last_used_devices_.end())

@@ -49,8 +49,7 @@ bool FindBestContextMenuCandidate(Node*& target_node,
 // touch_area is in root frame coordinates, which is in physical pixel when
 // zoom-for-dsf is enabled, otherwise in dip (when page scale is 1).
 CORE_EXPORT LayoutSize
-GetHitTestRectForAdjustment(const LocalFrame& frame,
-                            const LayoutSize& touch_area);
+GetHitTestRectForAdjustment(LocalFrame& frame, const LayoutSize& touch_area);
 
 struct TouchAdjustmentResult {
   uint32_t unique_event_id;
@@ -59,4 +58,4 @@ struct TouchAdjustmentResult {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_PAGE_TOUCH_ADJUSTMENT_H_

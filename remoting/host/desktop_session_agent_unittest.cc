@@ -7,14 +7,14 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ipc/ipc_channel_proxy.h"
 #include "ipc/ipc_listener.h"
@@ -45,16 +45,15 @@ class FakeDelegate : public DesktopSessionAgent::Delegate {
  private:
   FakeDesktopEnvironmentFactory factory_;
 
-  base::WeakPtrFactory<FakeDelegate> weak_ptr_;
+  base::WeakPtrFactory<FakeDelegate> weak_ptr_{this};
 };
 
 FakeDelegate::FakeDelegate(scoped_refptr<base::SingleThreadTaskRunner> runner)
-    : factory_(runner),
-      weak_ptr_(this) {}
+    : factory_(runner) {}
 
 class ProcessStatsListener : public IPC::Listener {
  public:
-  ProcessStatsListener(base::Closure action_after_received)
+  ProcessStatsListener(base::RepeatingClosure action_after_received)
       : action_after_received_(action_after_received) {}
 
   ~ProcessStatsListener() override = default;
@@ -66,7 +65,7 @@ class ProcessStatsListener : public IPC::Listener {
   void OnProcessResourceUsage(
       const remoting::protocol::AggregatedProcessResourceUsage& usage);
 
-  const base::Closure action_after_received_;
+  const base::RepeatingClosure action_after_received_;
 };
 
 bool ProcessStatsListener::OnMessageReceived(const IPC::Message& message) {
@@ -94,17 +93,20 @@ class DesktopSessionAgentTest : public ::testing::Test {
   void Shutdown();
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   base::RunLoop run_loop_;
   scoped_refptr<AutoThreadTaskRunner> task_runner_;
   scoped_refptr<DesktopSessionAgent> agent_;
 };
 
 DesktopSessionAgentTest::DesktopSessionAgentTest()
-    : task_runner_(new AutoThreadTaskRunner(
-          message_loop_.task_runner(), run_loop_.QuitClosure())),
-      agent_(new DesktopSessionAgent(
-          task_runner_, task_runner_, task_runner_, task_runner_)) {}
+    : task_runner_(
+          new AutoThreadTaskRunner(task_environment_.GetMainThreadTaskRunner(),
+                                   run_loop_.QuitClosure())),
+      agent_(new DesktopSessionAgent(task_runner_,
+                                     task_runner_,
+                                     task_runner_,
+                                     task_runner_)) {}
 
 void DesktopSessionAgentTest::Shutdown() {
   task_runner_ = nullptr;
@@ -115,16 +117,14 @@ void DesktopSessionAgentTest::Shutdown() {
 TEST_F(DesktopSessionAgentTest, StartProcessStatsReport) {
   std::unique_ptr<FakeDelegate> delegate(new FakeDelegate(task_runner_));
   std::unique_ptr<IPC::ChannelProxy> proxy;
-  ProcessStatsListener listener(base::Bind([](
-          DesktopSessionAgentTest* test,
-          std::unique_ptr<FakeDelegate>* delegate,
-          std::unique_ptr<IPC::ChannelProxy>* proxy) {
+  ProcessStatsListener listener(base::BindRepeating(
+      [](DesktopSessionAgentTest* test, std::unique_ptr<FakeDelegate>* delegate,
+         std::unique_ptr<IPC::ChannelProxy>* proxy) {
         test->Shutdown();
         delegate->reset();
         proxy->reset();
       },
-      base::Unretained(this),
-      base::Unretained(&delegate),
+      base::Unretained(this), base::Unretained(&delegate),
       base::Unretained(&proxy)));
   proxy = IPC::ChannelProxy::Create(
       agent_->Start(delegate->GetWeakPtr()).release(),
@@ -200,18 +200,16 @@ TEST_F(DesktopSessionAgentTest, StartThenStopProcessStatsReport) {
 TEST_F(DesktopSessionAgentTest, SendAggregatedProcessResourceUsage) {
   std::unique_ptr<IPC::Channel> receiver;
   std::unique_ptr<IPC::Channel> sender;
-  ProcessStatsListener listener(base::Bind([](
-          DesktopSessionAgentTest* test,
-          std::unique_ptr<IPC::Channel>* receiver,
-          std::unique_ptr<IPC::Channel>* sender) {
+  ProcessStatsListener listener(base::BindRepeating(
+      [](DesktopSessionAgentTest* test, std::unique_ptr<IPC::Channel>* receiver,
+         std::unique_ptr<IPC::Channel>* sender) {
         test->Shutdown();
         base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
             FROM_HERE, receiver->release());
         base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
             FROM_HERE, sender->release());
       },
-      base::Unretained(this),
-      base::Unretained(&receiver),
+      base::Unretained(this), base::Unretained(&receiver),
       base::Unretained(&sender)));
   mojo::MessagePipe pipe;
   receiver = IPC::Channel::CreateServer(
@@ -236,18 +234,16 @@ TEST_F(DesktopSessionAgentTest, SendAggregatedProcessResourceUsage) {
 TEST_F(DesktopSessionAgentTest, SendEmptyAggregatedProcessResourceUsage) {
   std::unique_ptr<IPC::Channel> receiver;
   std::unique_ptr<IPC::Channel> sender;
-  ProcessStatsListener listener(base::Bind([](
-          DesktopSessionAgentTest* test,
-          std::unique_ptr<IPC::Channel>* receiver,
-          std::unique_ptr<IPC::Channel>* sender) {
+  ProcessStatsListener listener(base::BindRepeating(
+      [](DesktopSessionAgentTest* test, std::unique_ptr<IPC::Channel>* receiver,
+         std::unique_ptr<IPC::Channel>* sender) {
         test->Shutdown();
         base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
             FROM_HERE, receiver->release());
         base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
             FROM_HERE, sender->release());
       },
-      base::Unretained(this),
-      base::Unretained(&receiver),
+      base::Unretained(this), base::Unretained(&receiver),
       base::Unretained(&sender)));
   mojo::MessagePipe pipe;
   receiver = IPC::Channel::CreateServer(

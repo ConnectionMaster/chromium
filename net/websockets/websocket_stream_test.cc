@@ -11,16 +11,20 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/cxx17_backports.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/timer/mock_timer.h"
 #include "base/timer/timer.h"
+#include "net/base/features.h"
+#include "net/base/isolation_info.h"
 #include "net/base/net_errors.h"
 #include "net/base/url_util.h"
 #include "net/http/http_request_headers.h"
@@ -85,8 +89,14 @@ static url::Origin Origin() {
   return url::Origin::Create(GURL(kOrigin));
 }
 
-static GURL SiteForCookies() {
-  return GURL("http://www.example.org/foobar");
+static net::SiteForCookies SiteForCookies() {
+  return net::SiteForCookies::FromOrigin(Origin());
+}
+
+static IsolationInfo CreateIsolationInfo() {
+  url::Origin origin = Origin();
+  return IsolationInfo::Create(IsolationInfo::RequestType::kOther, origin,
+                               origin, SiteForCookies::FromOrigin(origin));
 }
 
 class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
@@ -96,7 +106,14 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
       : stream_type_(GetParam()),
         http2_response_status_("200"),
         reset_websocket_http2_stream_(false),
-        sequence_number_(0) {}
+        sequence_number_(0) {
+    // Make sure these tests all pass with connection partitioning enabled. The
+    // disabled case is less interesting, and is tested more directly at lower
+    // layers.
+    feature_list_.InitAndEnableFeature(
+        features::kPartitionConnectionsByNetworkIsolationKey);
+  }
+
   ~WebSocketStreamCreateTest() override {
     // Permit any endpoint locks to be released.
     stream_request_.reset();
@@ -158,7 +175,7 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
               WebSocketExtraHeadersToString(extra_response_headers)) +
               additional_data_);
       CreateAndConnectStream(socket_url, sub_protocols, Origin(),
-                             SiteForCookies(),
+                             SiteForCookies(), CreateIsolationInfo(),
                              WebSocketExtraHeadersToHttpRequestHeaders(
                                  send_additional_request_headers),
                              std::move(timer_));
@@ -190,6 +207,8 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
     write_settings[spdy::SETTINGS_MAX_CONCURRENT_STREAMS] =
         kSpdyMaxConcurrentPushedStreams;
     write_settings[spdy::SETTINGS_INITIAL_WINDOW_SIZE] = 6 * 1024 * 1024;
+    write_settings[spdy::SETTINGS_MAX_HEADER_LIST_SIZE] =
+        kSpdyMaxHeaderListSize;
     frames_.push_back(spdy_util_.ConstructSpdySettings(write_settings));
     AddWrite(&frames_.back());
 
@@ -228,7 +247,7 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
     spdy_util_.UpdateWithStreamDestruction(1);
 
     // WebSocket request.
-    spdy::SpdyHeaderBlock request_headers = WebSocketHttp2Request(
+    spdy::Http2HeaderBlock request_headers = WebSocketHttp2Request(
         socket_path, socket_host, kOrigin, extra_request_headers);
     frames_.push_back(spdy_util_.ConstructSpdyHeaders(
         3, std::move(request_headers), DEFAULT_PRIORITY, false));
@@ -285,13 +304,15 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
     std::unique_ptr<URLRequest> request = context->CreateRequest(
         GURL("https://www.example.org/"), DEFAULT_PRIORITY, &delegate,
         TRAFFIC_ANNOTATION_FOR_TESTS);
+    // The IsolationInfo has to match for a socket to be reused.
+    request->set_isolation_info(CreateIsolationInfo());
     request->Start();
     EXPECT_TRUE(request->is_pending());
     delegate.RunUntilComplete();
     EXPECT_FALSE(request->is_pending());
 
     CreateAndConnectStream(socket_url, sub_protocols, Origin(),
-                           SiteForCookies(),
+                           SiteForCookies(), CreateIsolationInfo(),
                            WebSocketExtraHeadersToHttpRequestHeaders(
                                send_additional_request_headers),
                            std::move(timer_));
@@ -318,7 +339,7 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
             WebSocketExtraHeadersToString(extra_request_headers)),
         response_body);
     CreateAndConnectStream(socket_url, sub_protocols, Origin(),
-                           SiteForCookies(),
+                           SiteForCookies(), CreateIsolationInfo(),
                            WebSocketExtraHeadersToHttpRequestHeaders(
                                send_additional_request_headers),
                            nullptr);
@@ -341,7 +362,8 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
         WebSocketStandardRequest(socket_path, socket_host, Origin(), "", ""),
         WebSocketStandardResponse(extra_response_headers));
     CreateAndConnectStream(socket_url, sub_protocols, Origin(),
-                           SiteForCookies(), HttpRequestHeaders(), nullptr);
+                           SiteForCookies(), CreateIsolationInfo(),
+                           HttpRequestHeaders(), nullptr);
   }
 
   // Like CreateAndConnectStandard(), but take raw mock data.
@@ -354,7 +376,8 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
 
     AddRawExpectations(std::move(socket_data));
     CreateAndConnectStream(GURL(url), sub_protocols, Origin(), SiteForCookies(),
-                           additional_headers, std::move(timer_));
+                           CreateIsolationInfo(), additional_headers,
+                           std::move(timer_));
   }
 
  private:
@@ -372,6 +395,8 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
   const HandshakeStreamType stream_type_;
 
  private:
+  base::test::ScopedFeatureList feature_list_;
+
   std::unique_ptr<base::OneShotTimer> timer_;
   std::string additional_data_;
   const char* http2_response_status_;
@@ -389,13 +414,13 @@ class WebSocketStreamCreateTest : public TestWithParam<HandshakeStreamType>,
   std::vector<MockWrite> writes_;
 };
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          WebSocketStreamCreateTest,
                          Values(BASIC_HANDSHAKE_STREAM));
 
 using WebSocketMultiProtocolStreamCreateTest = WebSocketStreamCreateTest;
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          WebSocketMultiProtocolStreamCreateTest,
                          Values(BASIC_HANDSHAKE_STREAM,
                                 HTTP2_HANDSHAKE_STREAM));
@@ -418,7 +443,7 @@ class WebSocketStreamCreateExtensionTest
   }
 };
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          WebSocketStreamCreateExtensionTest,
                          Values(BASIC_HANDSHAKE_STREAM,
                                 HTTP2_HANDSHAKE_STREAM));
@@ -471,7 +496,7 @@ class WebSocketStreamCreateBasicAuthTest : public WebSocketStreamCreateTest {
         url, NoSubProtocols(), HttpRequestHeaders(),
         helper_.BuildAuthSocketData(kUnauthorizedResponse,
                                     RequestExpectation(base64_user_pass),
-                                    response2.as_string()));
+                                    std::string(response2)));
   }
 
   static std::string RequestExpectation(base::StringPiece base64_user_pass) {
@@ -500,7 +525,7 @@ class WebSocketStreamCreateBasicAuthTest : public WebSocketStreamCreateTest {
   CommonAuthTestHelper helper_;
 };
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          WebSocketStreamCreateBasicAuthTest,
                          Values(BASIC_HANDSHAKE_STREAM));
 
@@ -512,7 +537,7 @@ class WebSocketStreamCreateDigestAuthTest : public WebSocketStreamCreateTest {
   CommonAuthTestHelper helper_;
 };
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          WebSocketStreamCreateDigestAuthTest,
                          Values(BASIC_HANDSHAKE_STREAM));
 
@@ -837,7 +862,8 @@ TEST_P(WebSocketStreamCreateExtensionTest, PerMessageDeflateInflates) {
   ASSERT_THAT(rv, IsOk());
   ASSERT_EQ(1U, frames.size());
   ASSERT_EQ(5U, frames[0]->header.payload_length);
-  EXPECT_EQ("Hello", std::string(frames[0]->data->data(), 5));
+  EXPECT_EQ(std::string("Hello"),
+            std::string(frames[0]->payload, frames[0]->header.payload_length));
 }
 
 // Unknown extension in the response is rejected
@@ -960,6 +986,7 @@ TEST_P(WebSocketMultiProtocolStreamCreateTest, InvalidStatusCode) {
   if (stream_type_ == BASIC_HANDSHAKE_STREAM) {
     EXPECT_EQ("Error during WebSocket handshake: Unexpected response code: 200",
               failure_message());
+    EXPECT_EQ(failure_response_code(), 200);
     EXPECT_EQ(
         1, samples->GetCount(static_cast<int>(
                WebSocketHandshakeStreamBase::HandshakeResult::INVALID_STATUS)));
@@ -967,6 +994,7 @@ TEST_P(WebSocketMultiProtocolStreamCreateTest, InvalidStatusCode) {
     DCHECK_EQ(stream_type_, HTTP2_HANDSHAKE_STREAM);
     EXPECT_EQ("Error during WebSocket handshake: Unexpected response code: 101",
               failure_message());
+    EXPECT_EQ(failure_response_code(), 101);
     EXPECT_EQ(1, samples->GetCount(static_cast<int>(
                      WebSocketHandshakeStreamBase::HandshakeResult::
                          HTTP2_INVALID_STATUS)));
@@ -1452,7 +1480,7 @@ TEST_P(WebSocketStreamCreateBasicAuthTest, FailureNoCredentials) {
   EXPECT_TRUE(has_failed());
   EXPECT_EQ("HTTP Authentication failed; no valid credentials available",
             failure_message());
-  EXPECT_TRUE(response_info_);
+  EXPECT_FALSE(response_info_);
 }
 
 TEST_P(WebSocketStreamCreateBasicAuthTest, SuccessPasswordInUrl) {
@@ -1470,7 +1498,7 @@ TEST_P(WebSocketStreamCreateBasicAuthTest, FailureIncorrectPasswordInUrl) {
                                 "Zm9vOmJheg==", kUnauthorizedResponse);
   WaitUntilConnectDone();
   EXPECT_TRUE(has_failed());
-  EXPECT_TRUE(response_info_);
+  EXPECT_FALSE(response_info_);
 }
 
 TEST_P(WebSocketStreamCreateBasicAuthTest, SuccessfulConnectionReuse) {
@@ -1533,8 +1561,7 @@ TEST_P(WebSocketStreamCreateBasicAuthTest, OnAuthRequiredSetAuth) {
   EXPECT_FALSE(stream_);
   EXPECT_FALSE(has_failed());
 
-  AuthCredentials credentials(base::ASCIIToUTF16("foo"),
-                              base::ASCIIToUTF16("baz"));
+  AuthCredentials credentials(u"foo", u"baz");
   std::move(on_auth_required_callback_).Run(&credentials);
 
   WaitUntilConnectDone();
@@ -1613,7 +1640,7 @@ TEST_P(WebSocketMultiProtocolStreamCreateTest, Http2StreamReset) {
     stream_request_.reset();
 
     EXPECT_TRUE(has_failed());
-    EXPECT_EQ("Stream closed with error: net::ERR_SPDY_PROTOCOL_ERROR",
+    EXPECT_EQ("Stream closed with error: net::ERR_HTTP2_PROTOCOL_ERROR",
               failure_message());
 
     auto samples = histogram_tester.GetHistogramSamplesSinceCreation(
@@ -1686,6 +1713,93 @@ TEST_P(WebSocketStreamCreateTest, HandleErrTunnelConnectionFailed) {
   EXPECT_TRUE(has_failed());
   EXPECT_EQ("Establishing a tunnel via proxy server failed.",
             failure_message());
+}
+
+TEST_P(WebSocketStreamCreateTest, CancelSSLRequestAfterDelete) {
+  auto ssl_socket_data = std::make_unique<SSLSocketDataProvider>(
+      ASYNC, ERR_CERT_AUTHORITY_INVALID);
+  ssl_socket_data->ssl_info.cert =
+      ImportCertFromFile(GetTestCertsDirectory(), "unittest.selfsigned.der");
+  ASSERT_TRUE(ssl_socket_data->ssl_info.cert.get());
+  url_request_context_host_.AddSSLSocketDataProvider(
+      std::move(ssl_socket_data));
+
+  MockRead reads[] = {MockRead(SYNCHRONOUS, ERR_CONNECTION_RESET, 0)};
+  MockWrite writes[] = {MockWrite(SYNCHRONOUS, ERR_CONNECTION_RESET, 1)};
+  std::unique_ptr<SequencedSocketData> raw_socket_data(
+      BuildSocketData(reads, writes));
+  CreateAndConnectRawExpectations("wss://www.example.org/", NoSubProtocols(),
+                                  HttpRequestHeaders(),
+                                  std::move(raw_socket_data));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(has_failed());
+  ASSERT_TRUE(ssl_error_callbacks_);
+  stream_request_.reset();
+  ssl_error_callbacks_->CancelSSLRequest(ERR_CERT_AUTHORITY_INVALID,
+                                         &ssl_info_);
+}
+
+TEST_P(WebSocketStreamCreateTest, ContinueSSLRequestAfterDelete) {
+  auto ssl_socket_data = std::make_unique<SSLSocketDataProvider>(
+      ASYNC, ERR_CERT_AUTHORITY_INVALID);
+  ssl_socket_data->ssl_info.cert =
+      ImportCertFromFile(GetTestCertsDirectory(), "unittest.selfsigned.der");
+  ASSERT_TRUE(ssl_socket_data->ssl_info.cert.get());
+  url_request_context_host_.AddSSLSocketDataProvider(
+      std::move(ssl_socket_data));
+
+  MockRead reads[] = {MockRead(SYNCHRONOUS, ERR_CONNECTION_RESET, 0)};
+  MockWrite writes[] = {MockWrite(SYNCHRONOUS, ERR_CONNECTION_RESET, 1)};
+  std::unique_ptr<SequencedSocketData> raw_socket_data(
+      BuildSocketData(reads, writes));
+  CreateAndConnectRawExpectations("wss://www.example.org/", NoSubProtocols(),
+                                  HttpRequestHeaders(),
+                                  std::move(raw_socket_data));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(has_failed());
+  ASSERT_TRUE(ssl_error_callbacks_);
+  stream_request_.reset();
+  ssl_error_callbacks_->ContinueSSLRequest();
+}
+
+TEST_P(WebSocketStreamCreateTest, HandleConnectionCloseInFirstSegment) {
+  std::string request =
+      WebSocketStandardRequest("/", "www.example.org", Origin(), "", "");
+
+  // The response headers are immediately followed by a close frame, length 11,
+  // code 1013, reason "Try Again".
+  std::string close_body = "\x03\xf5Try Again";
+  std::string response = WebSocketStandardResponse(std::string()) + "\x88" +
+                         static_cast<char>(close_body.size()) + close_body;
+  MockRead reads[] = {
+      MockRead(SYNCHRONOUS, response.data(), response.size(), 1),
+      MockRead(SYNCHRONOUS, ERR_CONNECTION_CLOSED, 2),
+  };
+  MockWrite writes[] = {MockWrite(SYNCHRONOUS, 0, request.c_str())};
+  std::unique_ptr<SequencedSocketData> socket_data(
+      BuildSocketData(reads, writes));
+  socket_data->set_connect_data(MockConnect(SYNCHRONOUS, OK));
+  CreateAndConnectRawExpectations("ws://www.example.org/", NoSubProtocols(),
+                                  HttpRequestHeaders(), std::move(socket_data));
+  WaitUntilConnectDone();
+  ASSERT_TRUE(stream_);
+
+  std::vector<std::unique_ptr<WebSocketFrame>> frames;
+  TestCompletionCallback callback1;
+  int rv1 = stream_->ReadFrames(&frames, callback1.callback());
+  rv1 = callback1.GetResult(rv1);
+  ASSERT_THAT(rv1, IsOk());
+  ASSERT_EQ(1U, frames.size());
+  EXPECT_EQ(frames[0]->header.opcode, WebSocketFrameHeader::kOpCodeClose);
+  EXPECT_TRUE(frames[0]->header.final);
+  EXPECT_EQ(close_body,
+            std::string(frames[0]->payload, frames[0]->header.payload_length));
+
+  std::vector<std::unique_ptr<WebSocketFrame>> empty_frames;
+  TestCompletionCallback callback2;
+  int rv2 = stream_->ReadFrames(&empty_frames, callback2.callback());
+  rv2 = callback2.GetResult(rv2);
+  ASSERT_THAT(rv2, IsError(ERR_CONNECTION_CLOSED));
 }
 
 }  // namespace

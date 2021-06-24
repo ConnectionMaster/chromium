@@ -9,9 +9,9 @@
 #include <set>
 
 #include "base/base64url.h"
+#include "base/cxx17_backports.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/stringprintf.h"
 #include "components/webcrypto/algorithms/util.h"
@@ -37,11 +37,19 @@ namespace webcrypto {
 
 namespace {
 
-// Web Crypto equivalent usage mask for JWK 'use' = 'enc'.
+// |kJwkEncUsage| and |kJwkSigUsage| are a superset of the possible meanings of
+// JWK's {"use":"enc"}, and {"use":"sig"} respectively.
+//
+// TODO(https://crbug.com/1136147): Remove these masks,
+// as they are not consistent with the Web Crypto
+// processing model for JWK. In particular,
+// intersecting the usages after processing the JWK
+// means Chrome can fail with a Syntax error in cases
+// where the spec describes a Data error.
 const blink::WebCryptoKeyUsageMask kJwkEncUsage =
     blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt |
-    blink::kWebCryptoKeyUsageWrapKey | blink::kWebCryptoKeyUsageUnwrapKey;
-// Web Crypto equivalent usage mask for JWK 'use' = 'sig'.
+    blink::kWebCryptoKeyUsageWrapKey | blink::kWebCryptoKeyUsageUnwrapKey |
+    blink::kWebCryptoKeyUsageDeriveKey | blink::kWebCryptoKeyUsageDeriveBits;
 const blink::WebCryptoKeyUsageMask kJwkSigUsage =
     blink::kWebCryptoKeyUsageSign | blink::kWebCryptoKeyUsageVerify;
 
@@ -199,7 +207,7 @@ Status JwkReader::Init(const CryptoData& bytes,
   {
     // Limit the visibility for |value| as it is moved to |dict_| (via
     // |dict_value|) once it has been loaded successfully.
-    base::Optional<base::Value> value = base::JSONReader::Read(json_string);
+    absl::optional<base::Value> value = base::JSONReader::Read(json_string);
     base::DictionaryValue* dict_value = nullptr;
 
     if (!value.has_value() || !value.value().GetAsDictionary(&dict_value))
@@ -323,9 +331,10 @@ Status JwkReader::GetOptionalBool(const std::string& member_name,
   if (!dict_.Get(member_name, &value))
     return Status::Success();
 
-  if (!value->GetAsBoolean(result))
+  if (!value->is_bool())
     return Status::ErrorJwkMemberWrongType(member_name, "boolean");
 
+  *result = value->GetBool();
   *member_exists = true;
   return Status::Success();
 }

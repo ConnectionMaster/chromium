@@ -7,14 +7,12 @@ package org.chromium.chrome.browser.autofill_assistant.infobox;
 import android.content.Context;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.support.v7.content.res.AppCompatResources;
 import android.view.View;
 import android.widget.TextView;
 
 import org.chromium.chrome.autofill_assistant.R;
+import org.chromium.chrome.browser.autofill_assistant.AssistantTextUtils;
 import org.chromium.chrome.browser.image_fetcher.ImageFetcher;
-import org.chromium.chrome.browser.image_fetcher.ImageFetcherConfig;
-import org.chromium.chrome.browser.image_fetcher.ImageFetcherFactory;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
@@ -40,9 +38,10 @@ class AssistantInfoBoxViewBinder
     private final Context mContext;
     private ImageFetcher mImageFetcher;
 
-    AssistantInfoBoxViewBinder(Context context) {
+    /** Allows to inject an image fetcher for testing. */
+    AssistantInfoBoxViewBinder(Context context, ImageFetcher imageFetcher) {
         mContext = context;
-        mImageFetcher = ImageFetcherFactory.createImageFetcher(ImageFetcherConfig.DISK_CACHE_ONLY);
+        mImageFetcher = imageFetcher;
     }
 
     /**
@@ -69,19 +68,22 @@ class AssistantInfoBoxViewBinder
     }
 
     private void setInfoBox(AssistantInfoBox infoBox, ViewHolder viewHolder) {
-        viewHolder.mExplanationView.setText(infoBox.getExplanation());
+        String explanation = infoBox.getExplanation();
+        AssistantTextUtils.applyVisualAppearanceTags(
+                viewHolder.mExplanationView, explanation, null);
+        viewHolder.mExplanationView.announceForAccessibility(viewHolder.mExplanationView.getText());
         if (infoBox.getImagePath().isEmpty()) {
-            viewHolder.mExplanationView.setCompoundDrawablesWithIntrinsicBounds(
-                    null, AppCompatResources.getDrawable(mContext, R.drawable.ic_tick), null, null);
+            viewHolder.mExplanationView.setCompoundDrawablesWithIntrinsicBounds(0, 0, 0, 0);
         } else {
-            mImageFetcher.fetchImage(infoBox.getImagePath(),
-                    ImageFetcher.ASSISTANT_INFO_BOX_UMA_CLIENT_NAME, image -> {
-                        if (image != null) {
-                            Drawable d = new BitmapDrawable(mContext.getResources(), image);
-                            viewHolder.mExplanationView.setCompoundDrawablesWithIntrinsicBounds(
-                                    null, d, null, null);
-                        }
-                    });
+            ImageFetcher.Params params = ImageFetcher.Params.create(
+                    infoBox.getImagePath(), ImageFetcher.ASSISTANT_INFO_BOX_UMA_CLIENT_NAME);
+            mImageFetcher.fetchImage(params, image -> {
+                if (image != null) {
+                    Drawable d = new BitmapDrawable(mContext.getResources(), image);
+                    viewHolder.mExplanationView.setCompoundDrawablesWithIntrinsicBounds(
+                            null, d, null, null);
+                }
+            });
         }
     }
 }

@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
+#include "third_party/blink/renderer/core/layout/api/line_layout_api_shim.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_item.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
@@ -32,6 +33,7 @@
 #include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/paint/root_inline_box_painter.h"
 #include "third_party/blink/renderer/platform/text/bidi_resolver.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
 
 namespace blink {
@@ -42,8 +44,7 @@ struct SameSizeAsRootInlineBox : public InlineFlowBox {
   LayoutUnit layout_variables[6];
 };
 
-static_assert(sizeof(RootInlineBox) == sizeof(SameSizeAsRootInlineBox),
-              "RootInlineBox should stay small");
+ASSERT_SIZE(RootInlineBox, SameSizeAsRootInlineBox);
 
 typedef WTF::HashMap<const RootInlineBox*, EllipsisBox*> EllipsisBoxMap;
 static EllipsisBoxMap* g_ellipsis_box_map = nullptr;
@@ -172,7 +173,7 @@ LayoutUnit RootInlineBox::PlaceEllipsisBox(bool ltr,
 }
 
 void RootInlineBox::Paint(const PaintInfo& paint_info,
-                          const LayoutPoint& paint_offset,
+                          const PhysicalOffset& paint_offset,
                           LayoutUnit line_top,
                           LayoutUnit line_bottom) const {
   RootInlineBoxPainter(*this).Paint(paint_info, paint_offset, line_top,
@@ -180,21 +181,20 @@ void RootInlineBox::Paint(const PaintInfo& paint_info,
 }
 
 bool RootInlineBox::NodeAtPoint(HitTestResult& result,
-                                const HitTestLocation& location_in_container,
-                                const LayoutPoint& accumulated_offset,
+                                const HitTestLocation& hit_test_location,
+                                const PhysicalOffset& accumulated_offset,
                                 LayoutUnit line_top,
                                 LayoutUnit line_bottom) {
   if (HasEllipsisBox() && VisibleToHitTestRequest(result.GetHitTestRequest())) {
-    if (GetEllipsisBox()->NodeAtPoint(result, location_in_container,
+    if (GetEllipsisBox()->NodeAtPoint(result, hit_test_location,
                                       accumulated_offset, line_top,
                                       line_bottom)) {
       GetLineLayoutItem().UpdateHitTestResult(
-          result,
-          location_in_container.Point() - ToLayoutSize(accumulated_offset));
+          result, hit_test_location.Point() - accumulated_offset);
       return true;
     }
   }
-  return InlineFlowBox::NodeAtPoint(result, location_in_container,
+  return InlineFlowBox::NodeAtPoint(result, hit_test_location,
                                     accumulated_offset, line_top, line_bottom);
 }
 
@@ -416,13 +416,14 @@ static bool IsEditableLeaf(InlineBox* leaf) {
          HasEditableStyle(*leaf->GetLineLayoutItem().GetNode());
 }
 
-InlineBox* RootInlineBox::ClosestLeafChildForPoint(
+const LayoutObject* RootInlineBox::ClosestLeafChildForPoint(
     const LayoutPoint& point_in_contents,
     bool only_editable_leaves) const {
-  return ClosestLeafChildForLogicalLeftPosition(
+  InlineBox* closest_box = ClosestLeafChildForLogicalLeftPosition(
       Block().IsHorizontalWritingMode() ? point_in_contents.X()
                                         : point_in_contents.Y(),
       only_editable_leaves);
+  return LineLayoutAPIShim::LayoutObjectFrom(closest_box->GetLineLayoutItem());
 }
 
 InlineBox* RootInlineBox::ClosestLeafChildForLogicalLeftPosition(
@@ -585,7 +586,7 @@ void RootInlineBox::AscentAndDescentForBox(
   Vector<const SimpleFontData*>* used_fonts = nullptr;
   if (box->IsText()) {
     GlyphOverflowAndFallbackFontsMap::iterator it =
-        text_box_data_map.find(ToInlineTextBox(box));
+        text_box_data_map.find(To<InlineTextBox>(box));
     used_fonts = it == text_box_data_map.end() ? nullptr : &it->value.first;
   }
 

@@ -26,13 +26,12 @@ class MEDIA_EXPORT CdmAdapterFactory final : public CdmFactory {
 
   // CdmFactory implementation.
   void Create(const std::string& key_system,
-              const url::Origin& security_origin,
               const CdmConfig& cdm_config,
               const SessionMessageCB& session_message_cb,
               const SessionClosedCB& session_closed_cb,
               const SessionKeysChangeCB& session_keys_change_cb,
               const SessionExpirationUpdateCB& session_expiration_update_cb,
-              const CdmCreatedCB& cdm_created_cb) override;
+              CdmCreatedCB cdm_created_cb) override;
 
  private:
   // Callback to create CdmAuxiliaryHelper for the created CDM.

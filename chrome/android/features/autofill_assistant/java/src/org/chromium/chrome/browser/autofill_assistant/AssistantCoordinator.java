@@ -4,66 +4,76 @@
 
 package org.chromium.chrome.browser.autofill_assistant;
 
-import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.autofill_assistant.metrics.DropOutReason;
+import android.app.Activity;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import org.chromium.base.supplier.Supplier;
 import org.chromium.chrome.browser.autofill_assistant.overlay.AssistantOverlayCoordinator;
-import org.chromium.chrome.browser.widget.bottomsheet.BottomSheetController;
+import org.chromium.chrome.browser.compositor.CompositorViewHolder;
+import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherImpl;
+import org.chromium.chrome.browser.feedback.ScreenshotMode;
+import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.TabObscuringHandler;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
+import org.chromium.ui.base.ActivityKeyboardVisibilityDelegate;
+import org.chromium.ui.base.ApplicationViewportInsetSupplier;
 
 /**
  * The main coordinator for the Autofill Assistant, responsible for instantiating all other
  * sub-components and shutting down the Autofill Assistant.
  */
-class AssistantCoordinator {
-    interface Delegate {
-        /** Completely stop the Autofill Assistant. */
-        void stop(@DropOutReason int reason);
+public class AssistantCoordinator {
+    public static final String FEEDBACK_CATEGORY_TAG =
+            "com.android.chrome.USER_INITIATED_FEEDBACK_REPORT_AUTOFILL_ASSISTANT";
 
-        // TODO(crbug.com/806868): Move onboarding and snackbar out of this class and remove the
-        // delegate.
-    }
-
-    private final ChromeActivity mActivity;
-    private final Delegate mDelegate;
+    private final Activity mActivity;
 
     private final AssistantModel mModel;
     private AssistantBottomBarCoordinator mBottomBarCoordinator;
     private final AssistantKeyboardCoordinator mKeyboardCoordinator;
     private final AssistantOverlayCoordinator mOverlayCoordinator;
+    private final Supplier<Tab> mCurrentTabSupplier;
 
-    AssistantCoordinator(
-            ChromeActivity activity, Delegate delegate, BottomSheetController controller) {
+    AssistantCoordinator(Activity activity, BottomSheetController controller,
+            TabObscuringHandler tabObscuringHandler,
+            @Nullable AssistantOverlayCoordinator overlayCoordinator,
+            AssistantKeyboardCoordinator.Delegate keyboardCoordinatorDelegate,
+            @NonNull ActivityKeyboardVisibilityDelegate keyboardDelegate,
+            @NonNull CompositorViewHolder compositorViewHolder,
+            @NonNull Supplier<Tab> currentTabSupplier,
+            @NonNull BrowserControlsManager browserControlsManager,
+            @NonNull ApplicationViewportInsetSupplier applicationBottomInsetProvider) {
         mActivity = activity;
-        mDelegate = delegate;
-        mModel = new AssistantModel();
+        mCurrentTabSupplier = currentTabSupplier;
 
-        // Instantiate child components.
-        mBottomBarCoordinator = new AssistantBottomBarCoordinator(activity, mModel, controller);
-        mKeyboardCoordinator = new AssistantKeyboardCoordinator(activity, mModel);
-        mOverlayCoordinator = new AssistantOverlayCoordinator(activity, mModel.getOverlayModel());
+        if (overlayCoordinator != null) {
+            mModel = new AssistantModel(overlayCoordinator.getModel());
+            mOverlayCoordinator = overlayCoordinator;
+        } else {
+            mModel = new AssistantModel();
+            mOverlayCoordinator = new AssistantOverlayCoordinator(activity, browserControlsManager,
+                    compositorViewHolder, controller.getScrimCoordinator(),
+                    mModel.getOverlayModel());
+        }
 
-        mModel.setVisible(true);
+        mBottomBarCoordinator = new AssistantBottomBarCoordinator(activity, mModel,
+                mOverlayCoordinator, controller, applicationBottomInsetProvider,
+                tabObscuringHandler, browserControlsManager);
+        mKeyboardCoordinator = new AssistantKeyboardCoordinator(activity, keyboardDelegate,
+                compositorViewHolder, mModel, keyboardCoordinatorDelegate, controller);
     }
 
     /** Detaches and destroys the view. */
     public void destroy() {
         mModel.setVisible(false);
-        mOverlayCoordinator.destroy();
         mBottomBarCoordinator.destroy();
         mBottomBarCoordinator = null;
-    }
-
-    /**
-     * Show the onboarding screen and call {@code onAccept} if the user agreed to proceed, shutdown
-     * otherwise.
-     */
-    public void showOnboarding(Runnable onAccept) {
-        mBottomBarCoordinator.showOnboarding(accepted -> {
-            if (accepted) {
-                onAccept.run();
-            } else {
-                mDelegate.stop(DropOutReason.DECLINED);
-            }
-        });
+        mOverlayCoordinator.destroy();
     }
 
     /**
@@ -78,5 +88,27 @@ class AssistantCoordinator {
 
     public AssistantBottomBarCoordinator getBottomBarCoordinator() {
         return mBottomBarCoordinator;
+    }
+
+    AssistantKeyboardCoordinator getKeyboardCoordinator() {
+        return mKeyboardCoordinator;
+    }
+
+    /**
+     * Show the Chrome feedback form.
+     */
+    public void showFeedback(String debugContext, @ScreenshotMode int screenshotMode) {
+        Tab currentTab = mCurrentTabSupplier.get();
+        if (currentTab == null) return;
+        Profile profile = Profile.fromWebContents(currentTab.getWebContents());
+
+        HelpAndFeedbackLauncherImpl.getInstance().showFeedback(mActivity, profile,
+                currentTab.getUrl().getSpec(), FEEDBACK_CATEGORY_TAG, screenshotMode, debugContext);
+    }
+
+    public void show() {
+        // Simulates native's initialization.
+        mModel.setVisible(true);
+        mBottomBarCoordinator.restoreState(SheetState.HALF);
     }
 }

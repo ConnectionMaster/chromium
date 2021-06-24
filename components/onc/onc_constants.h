@@ -68,6 +68,7 @@ ONC_EXPORT extern const char kIPConfigTypeStatic[];
 ONC_EXPORT extern const char kSavedIPConfig[];
 ONC_EXPORT extern const char kStaticIPConfig[];
 ONC_EXPORT extern const char kMacAddress[];
+ONC_EXPORT extern const char kMetered[];
 ONC_EXPORT extern const char kNameServersConfigType[];
 ONC_EXPORT extern const char kName[];
 ONC_EXPORT extern const char kPriority[];
@@ -83,10 +84,11 @@ ONC_EXPORT extern const char kRestrictedConnectivity[];
 ONC_EXPORT extern const char kConnectable[];
 ONC_EXPORT extern const char kErrorState[];
 ONC_EXPORT extern const char kTether[];
+ONC_EXPORT extern const char kTrafficCounterResetTime[];
 ONC_EXPORT extern const char kType[];
 ONC_EXPORT extern const char kVPN[];
 ONC_EXPORT extern const char kWiFi[];
-ONC_EXPORT extern const char kWimax[];
+ONC_EXPORT extern const char kWimaxDeprecated[];
 
 ONC_EXPORT extern std::string CellularProperty(const std::string& property);
 ONC_EXPORT extern std::string TetherProperty(const std::string& property);
@@ -101,7 +103,7 @@ ONC_EXPORT extern const char kEthernet[];
 ONC_EXPORT extern const char kTether[];
 ONC_EXPORT extern const char kVPN[];
 ONC_EXPORT extern const char kWiFi[];
-ONC_EXPORT extern const char kWimax[];
+ONC_EXPORT extern const char kWimaxDeprecated[];
 // Patterns matching multiple types, not part of the ONC spec.
 ONC_EXPORT extern const char kAllTypes[];
 ONC_EXPORT extern const char kWireless[];
@@ -125,6 +127,7 @@ ONC_EXPORT extern const char kFirmwareRevision[];
 ONC_EXPORT extern const char kFoundNetworks[];
 ONC_EXPORT extern const char kHardwareRevision[];
 ONC_EXPORT extern const char kHomeProvider[];
+ONC_EXPORT extern const char kEID[];
 ONC_EXPORT extern const char kICCID[];
 ONC_EXPORT extern const char kIMEI[];
 ONC_EXPORT extern const char kIMSI[];
@@ -136,7 +139,6 @@ ONC_EXPORT extern const char kMIN[];
 ONC_EXPORT extern const char kModelID[];
 ONC_EXPORT extern const char kNetworkTechnology[];
 ONC_EXPORT extern const char kPaymentPortal[];
-ONC_EXPORT extern const char kPRLVersion[];
 ONC_EXPORT extern const char kRoamingHome[];
 ONC_EXPORT extern const char kRoamingRequired[];
 ONC_EXPORT extern const char kRoamingRoaming[];
@@ -146,7 +148,6 @@ ONC_EXPORT extern const char kServingOperator[];
 ONC_EXPORT extern const char kSignalStrength[];
 ONC_EXPORT extern const char kSIMLockStatus[];
 ONC_EXPORT extern const char kSIMPresent[];
-ONC_EXPORT extern const char kSupportedCarriers[];
 ONC_EXPORT extern const char kSupportNetworkScan[];
 ONC_EXPORT extern const char kTechnologyCdma1Xrtt[];
 ONC_EXPORT extern const char kTechnologyEdge[];
@@ -174,6 +175,7 @@ ONC_EXPORT extern const char kPassword[];
 ONC_EXPORT extern const char kAuthentication[];
 ONC_EXPORT extern const char kLocalizedName[];
 ONC_EXPORT extern const char kLanguage[];
+ONC_EXPORT extern const char kAttach[];
 }  // namespace cellular_apn
 
 namespace cellular_found_network {
@@ -237,16 +239,13 @@ ONC_EXPORT extern const char kBSSID[];
 ONC_EXPORT extern const char kEAP[];
 ONC_EXPORT extern const char kFrequency[];
 ONC_EXPORT extern const char kFrequencyList[];
-ONC_EXPORT extern const char kFTEnabled[];
 ONC_EXPORT extern const char kHexSSID[];
 ONC_EXPORT extern const char kHiddenSSID[];
 ONC_EXPORT extern const char kPassphrase[];
-ONC_EXPORT extern const char kRoamThreshold[];
 ONC_EXPORT extern const char kSSID[];
 ONC_EXPORT extern const char kSecurity[];
 ONC_EXPORT extern const char kSecurityNone[];
 ONC_EXPORT extern const char kSignalStrength[];
-ONC_EXPORT extern const char kTetheringState[];
 ONC_EXPORT extern const char kWEP_PSK[];
 ONC_EXPORT extern const char kWEP_8021X[];
 ONC_EXPORT extern const char kWPA_PSK[];
@@ -254,13 +253,13 @@ ONC_EXPORT extern const char kWPA2_PSK[];
 ONC_EXPORT extern const char kWPA_EAP[];
 }  // namespace wifi
 
-namespace wimax {
+namespace wimax_deprecated {
 ONC_EXPORT extern const char kAutoConnect[];
 ONC_EXPORT extern const char kEAP[];
-ONC_EXPORT extern const char kSignalStrength[];
-}  // namespace wimax
+}  // namespace wimax_deprecated
 
 namespace client_cert {
+ONC_EXPORT extern const char kClientCertProvisioningProfileId[];
 ONC_EXPORT extern const char kClientCertPattern[];
 ONC_EXPORT extern const char kClientCertPKCS11Id[];
 ONC_EXPORT extern const char kClientCertRef[];
@@ -276,6 +275,7 @@ ONC_EXPORT extern const char kLocality[];
 ONC_EXPORT extern const char kOrganization[];
 ONC_EXPORT extern const char kOrganizationalUnit[];
 ONC_EXPORT extern const char kPattern[];
+ONC_EXPORT extern const char kProvisioningProfileId[];
 ONC_EXPORT extern const char kPKCS11Id[];
 ONC_EXPORT extern const char kRef[];
 ONC_EXPORT extern const char kSubject[];
@@ -286,12 +286,20 @@ ONC_EXPORT extern const char kAuthority[];
 ONC_EXPORT extern const char kClient[];
 ONC_EXPORT extern const char kGUID[];
 ONC_EXPORT extern const char kPKCS12[];
+ONC_EXPORT extern const char kScope[];
 ONC_EXPORT extern const char kServer[];
 ONC_EXPORT extern const char kTrustBits[];
 ONC_EXPORT extern const char kType[];
 ONC_EXPORT extern const char kWeb[];
 ONC_EXPORT extern const char kX509[];
 }  // namespace certificate
+
+namespace scope {
+ONC_EXPORT extern const char kDefault[];
+ONC_EXPORT extern const char kExtension[];
+ONC_EXPORT extern const char kId[];
+ONC_EXPORT extern const char kType[];
+}  // namespace scope
 
 namespace encrypted {
 ONC_EXPORT extern const char kAES256[];
@@ -331,12 +339,22 @@ ONC_EXPORT extern const char kServerCAPEMs[];
 ONC_EXPORT extern const char kServerCARef[];
 ONC_EXPORT extern const char kServerCARefs[];
 ONC_EXPORT extern const char kSubjectMatch[];
+ONC_EXPORT extern const char kSubjectAlternativeNameMatch[];
 ONC_EXPORT extern const char kTLSVersionMax[];
 ONC_EXPORT extern const char kUseSystemCAs[];
 ONC_EXPORT extern const char kUseProactiveKeyCaching[];
 }  // namespace eap
 
+namespace eap_subject_alternative_name_match {
+ONC_EXPORT extern const char kType[];
+ONC_EXPORT extern const char kValue[];
+ONC_EXPORT extern const char kEMAIL[];
+ONC_EXPORT extern const char kDNS[];
+ONC_EXPORT extern const char kURI[];
+}  // namespace eap_subject_alternative_name_match
+
 namespace vpn {
+ONC_EXPORT extern const char kArcVpn[];
 ONC_EXPORT extern const char kAutoConnect[];
 ONC_EXPORT extern const char kHost[];
 ONC_EXPORT extern const char kIPsec[];
@@ -345,10 +363,10 @@ ONC_EXPORT extern const char kOpenVPN[];
 ONC_EXPORT extern const char kPassword[];
 ONC_EXPORT extern const char kSaveCredentials[];
 ONC_EXPORT extern const char kThirdPartyVpn[];
-ONC_EXPORT extern const char kArcVpn[];
 ONC_EXPORT extern const char kTypeL2TP_IPsec[];
 ONC_EXPORT extern const char kType[];
 ONC_EXPORT extern const char kUsername[];
+ONC_EXPORT extern const char kWireGuard[];
 }  // namespace vpn
 
 namespace ipsec {
@@ -378,6 +396,7 @@ ONC_EXPORT extern const char kAuth[];
 ONC_EXPORT extern const char kCipher[];
 ONC_EXPORT extern const char kCompLZO[];
 ONC_EXPORT extern const char kCompNoAdapt[];
+ONC_EXPORT extern const char kCompressionAlgorithm[];
 ONC_EXPORT extern const char kExtraHosts[];
 ONC_EXPORT extern const char kIgnoreDefaultRoute[];
 ONC_EXPORT extern const char kInteract[];
@@ -411,6 +430,25 @@ ONC_EXPORT extern const char kVerb[];
 ONC_EXPORT extern const char kVerifyHash[];
 ONC_EXPORT extern const char kVerifyX509[];
 }  // namespace openvpn
+
+namespace wireguard {
+ONC_EXPORT extern const char kAddress[];
+ONC_EXPORT extern const char kAllowedIPs[];
+ONC_EXPORT extern const char kEndpoint[];
+ONC_EXPORT extern const char kPeers[];
+ONC_EXPORT extern const char kPersistentKeepalive[];
+ONC_EXPORT extern const char kPresharedKey[];
+ONC_EXPORT extern const char kPrivateKey[];
+ONC_EXPORT extern const char kPublicKey[];
+}  // namespace wireguard
+
+namespace openvpn_compression_algorithm {
+ONC_EXPORT extern const char kFramingOnly[];
+ONC_EXPORT extern const char kLz4[];
+ONC_EXPORT extern const char kLz4V2[];
+ONC_EXPORT extern const char kLzo[];
+ONC_EXPORT extern const char kNone[];
+}  // namespace openvpn_compression_algorithm
 
 namespace openvpn_user_auth_type {
 ONC_EXPORT extern const char kNone[];
@@ -469,7 +507,8 @@ namespace global_network_config {
 ONC_EXPORT extern const char kAllowOnlyPolicyNetworksToAutoconnect[];
 ONC_EXPORT extern const char kAllowOnlyPolicyNetworksToConnect[];
 ONC_EXPORT extern const char kAllowOnlyPolicyNetworksToConnectIfAvailable[];
-ONC_EXPORT extern const char kBlacklistedHexSSIDs[];
+ONC_EXPORT extern const char kBlacklistedHexSSIDs[];  // Deprecated
+ONC_EXPORT extern const char kBlockedHexSSIDs[];
 ONC_EXPORT extern const char kDisableNetworkTypes[];
 }  // global_network_config
 
@@ -479,12 +518,6 @@ ONC_EXPORT extern const char kDisabled[];
 ONC_EXPORT extern const char kEnabling[];
 ONC_EXPORT extern const char kEnabled[];
 }  // device_state
-
-namespace tethering_state {
-ONC_EXPORT extern const char kTetheringConfirmedState[];
-ONC_EXPORT extern const char kTetheringNotDetectedState[];
-ONC_EXPORT extern const char kTetheringSuspectedState[];
-}  // namespace tethering_state
 
 }  // namespace onc
 

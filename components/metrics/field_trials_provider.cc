@@ -4,6 +4,9 @@
 
 #include "components/metrics/field_trials_provider.h"
 
+#include <string>
+#include <vector>
+
 #include "base/strings/string_piece.h"
 #include "components/variations/active_field_trials.h"
 #include "components/variations/synthetic_trial_registry.h"
@@ -36,30 +39,55 @@ void FieldTrialsProvider::GetFieldTrialIds(
   variations::GetFieldTrialActiveGroupIds(suffix_, field_trial_ids);
 }
 
-void FieldTrialsProvider::OnDidCreateMetricsLog() {
-  if (registry_) {
-    creation_times_.push_back(base::TimeTicks::Now());
-  }
-}
-
 void FieldTrialsProvider::ProvideSystemProfileMetrics(
     metrics::SystemProfileProto* system_profile_proto) {
-  std::vector<ActiveGroupId> field_trial_ids;
+  // ProvideSystemProfileMetricsWithLogCreationTime() should be called instead.
+  NOTREACHED();
+}
+
+void FieldTrialsProvider::ProvideSystemProfileMetricsWithLogCreationTime(
+    base::TimeTicks log_creation_time,
+    metrics::SystemProfileProto* system_profile_proto) {
+  // TODO(crbug/1090497): Maybe call ProvideCurrentSessionData() instead from
+  // places in which ProvideSystemProfileMetricsWithLogCreationTime() is called,
+  // e.g. startup_data.cc and background_tracing_metrics_provider.cc.
+
+  log_creation_time_ = log_creation_time;
+
   const std::string& version = variations::GetSeedVersion();
   if (!version.empty())
     system_profile_proto->set_variations_seed_version(version);
-  GetFieldTrialIds(&field_trial_ids);
-  WriteFieldTrials(field_trial_ids, system_profile_proto);
+
+  // TODO(crbug/1090098): Determine whether this can be deleted.
+  GetAndWriteFieldTrials(system_profile_proto);
+}
+
+void FieldTrialsProvider::ProvideCurrentSessionData(
+    metrics::ChromeUserMetricsExtension* uma_proto) {
+  // This function is called from both
+  // ProvideSystemProfileMetricsWithLogCreationTime() and
+  // ProvideCurrentSessionData() so that field trials activated in other metrics
+  // providers are captured. We need both calls because in some scenarios in
+  // which this class is used, only the former function gets called.
+  DCHECK(!log_creation_time_.is_null());
+  GetAndWriteFieldTrials(uma_proto->mutable_system_profile());
+}
+
+void FieldTrialsProvider::SetLogCreationTimeForTesting(base::TimeTicks time) {
+  log_creation_time_ = time;
+}
+
+void FieldTrialsProvider::GetAndWriteFieldTrials(
+    metrics::SystemProfileProto* system_profile_proto) const {
+  system_profile_proto->clear_field_trial();
+
+  std::vector<ActiveGroupId> field_trials;
+  GetFieldTrialIds(&field_trials);
+  WriteFieldTrials(field_trials, system_profile_proto);
 
   if (registry_) {
-    base::TimeTicks creation_time;
-    // Should always be true, but don't crash even if there is a bug.
-    if (!creation_times_.empty()) {
-      creation_time = creation_times_.back();
-      creation_times_.pop_back();
-    }
     std::vector<ActiveGroupId> synthetic_trials;
-    registry_->GetSyntheticFieldTrialsOlderThan(creation_time,
+    registry_->GetSyntheticFieldTrialsOlderThan(log_creation_time_,
                                                 &synthetic_trials);
     WriteFieldTrials(synthetic_trials, system_profile_proto);
   }

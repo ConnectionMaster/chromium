@@ -6,16 +6,21 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/process/kill.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/messaging/native_messaging_host_manifest.h"
+#include "chrome/browser/extensions/api/messaging/native_messaging_launch_from_native.h"
 #include "chrome/browser/extensions/api/messaging/native_process_launcher.h"
+#include "chrome/browser/profiles/profile.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/common/constants.h"
@@ -38,6 +43,15 @@ const size_t kMessageHeaderSize = 4;
 // Size of the buffer to be allocated for each read.
 const size_t kReadBufferSize = 4096;
 
+base::FilePath GetProfilePathIfEnabled(Profile* profile,
+                                       const std::string& extension_id,
+                                       const std::string& host_id) {
+  return extensions::ExtensionSupportsConnectionFromNativeApp(
+             extension_id, host_id, profile, /* log_errors = */ false)
+             ? profile->GetPath()
+             : base::FilePath();
+}
+
 }  // namespace
 
 namespace extensions {
@@ -46,7 +60,7 @@ NativeMessageProcessHost::NativeMessageProcessHost(
     const std::string& source_extension_id,
     const std::string& native_host_name,
     std::unique_ptr<NativeProcessLauncher> launcher)
-    : client_(NULL),
+    : client_(nullptr),
       source_extension_id_(source_extension_id),
       native_host_name_(native_host_name),
       launcher_(std::move(launcher)),
@@ -55,12 +69,10 @@ NativeMessageProcessHost::NativeMessageProcessHost(
       read_file_(-1),
 #endif
       read_pending_(false),
-      write_pending_(false),
-      weak_factory_(this) {
+      write_pending_(false) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  task_runner_ = base::CreateSingleThreadTaskRunnerWithTraits(
-      {content::BrowserThread::IO});
+  task_runner_ = content::GetIOThreadTaskRunner({});
 }
 
 NativeMessageProcessHost::~NativeMessageProcessHost() {
@@ -70,10 +82,10 @@ NativeMessageProcessHost::~NativeMessageProcessHost() {
 // Kill the host process if necessary to make sure we don't leave zombies.
 // TODO(https://crbug.com/806451): On OSX EnsureProcessTerminated() may
 // block, so we have to post a task on the blocking pool.
-#if defined(OS_MACOSX)
-    base::PostTaskWithTraits(
+#if defined(OS_MAC)
+    base::ThreadPool::PostTask(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-        base::BindOnce(&base::EnsureProcessTerminated, Passed(&process_)));
+        base::BindOnce(&base::EnsureProcessTerminated, std::move(process_)));
 #else
     base::EnsureProcessTerminated(std::move(process_));
 #endif
@@ -82,15 +94,20 @@ NativeMessageProcessHost::~NativeMessageProcessHost() {
 
 // static
 std::unique_ptr<NativeMessageHost> NativeMessageHost::Create(
+    content::BrowserContext* browser_context,
     gfx::NativeView native_view,
     const std::string& source_extension_id,
     const std::string& native_host_name,
     bool allow_user_level,
     std::string* error_message) {
   return NativeMessageProcessHost::CreateWithLauncher(
-      source_extension_id,
-      native_host_name,
-      NativeProcessLauncher::CreateDefault(allow_user_level, native_view));
+      source_extension_id, native_host_name,
+      NativeProcessLauncher::CreateDefault(
+          allow_user_level, native_view,
+          GetProfilePathIfEnabled(Profile::FromBrowserContext(browser_context),
+                                  source_extension_id, native_host_name),
+          /* require_native_initiated_connections = */ false,
+          /* connect_id = */ "", /* error_arg = */ ""));
 }
 
 // static
@@ -110,9 +127,10 @@ void NativeMessageProcessHost::LaunchHostProcess() {
   DCHECK(task_runner_->BelongsToCurrentThread());
 
   GURL origin(std::string(kExtensionScheme) + "://" + source_extension_id_);
-  launcher_->Launch(origin, native_host_name_,
-                    base::Bind(&NativeMessageProcessHost::OnHostProcessLaunched,
-                               weak_factory_.GetWeakPtr()));
+  launcher_->Launch(
+      origin, native_host_name_,
+      base::BindOnce(&NativeMessageProcessHost::OnHostProcessLaunched,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void NativeMessageProcessHost::OnHostProcessLaunched(
@@ -146,12 +164,15 @@ void NativeMessageProcessHost::OnHostProcessLaunched(
   read_file_ = read_file.GetPlatformFile();
 #endif
 
-  scoped_refptr<base::TaskRunner> task_runner(base::CreateTaskRunnerWithTraits(
-      {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
-       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
+  scoped_refptr<base::TaskRunner> task_runner(
+      base::ThreadPool::CreateTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
-  read_stream_.reset(new net::FileStream(std::move(read_file), task_runner));
-  write_stream_.reset(new net::FileStream(std::move(write_file), task_runner));
+  read_stream_ =
+      std::make_unique<net::FileStream>(std::move(read_file), task_runner);
+  write_stream_ =
+      std::make_unique<net::FileStream>(std::move(write_file), task_runner);
 
   WaitRead();
   DoWrite();
@@ -213,8 +234,8 @@ void NativeMessageProcessHost::WaitRead() {
 #if defined(OS_POSIX)
   if (!read_controller_) {
     read_controller_ = base::FileDescriptorWatcher::WatchReadable(
-        read_file_,
-        base::Bind(&NativeMessageProcessHost::DoRead, base::Unretained(this)));
+        read_file_, base::BindRepeating(&NativeMessageProcessHost::DoRead,
+                                        base::Unretained(this)));
   }
 #else  // defined(OS_POSIX)
   DoRead();

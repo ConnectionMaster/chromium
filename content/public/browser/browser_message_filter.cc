@@ -5,13 +5,13 @@
 #include "content/public/browser/browser_message_filter.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/debug/dump_without_crashing.h"
-#include "base/logging.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/process/process_handle.h"
-#include "base/task/post_task.h"
 #include "base/task_runner.h"
 #include "build/build_config.h"
 #include "content/browser/browser_child_process_host_impl.h"
@@ -59,24 +59,28 @@ class BrowserMessageFilter::Internal : public IPC::MessageFilter {
   }
 
   bool OnMessageReceived(const IPC::Message& message) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::IO);
+
     BrowserThread::ID thread = BrowserThread::IO;
     filter_->OverrideThreadForMessage(message, &thread);
 
-    if (thread == BrowserThread::IO) {
-      scoped_refptr<base::TaskRunner> runner =
-          filter_->OverrideTaskRunnerForMessage(message);
-      if (runner.get()) {
-        runner->PostTask(
-            FROM_HERE,
-            base::BindOnce(base::IgnoreResult(&Internal::DispatchMessage), this,
-                           message));
-        return true;
-      }
-      return DispatchMessage(message);
+    scoped_refptr<base::SequencedTaskRunner> destination;
+    if (thread == BrowserThread::UI) {
+      destination = GetUIThreadTaskRunner({});
+    } else {
+      DCHECK_EQ(thread, BrowserThread::IO);
+
+      destination = filter_->OverrideTaskRunnerForMessage(message);
+
+      // Neither override kicked in, dispatch the message immediately from the
+      // IO thread.
+      if (!destination)
+        return DispatchMessage(message);
     }
 
-    base::PostTaskWithTraits(
-        FROM_HERE, {thread},
+    DCHECK(destination);
+    destination->PostTask(
+        FROM_HERE,
         base::BindOnce(base::IgnoreResult(&Internal::DispatchMessage), this,
                        message));
     return true;
@@ -103,17 +107,15 @@ class BrowserMessageFilter::Internal : public IPC::MessageFilter {
   DISALLOW_COPY_AND_ASSIGN(Internal);
 };
 
+BrowserMessageFilter::BrowserMessageFilter() = default;
+
 BrowserMessageFilter::BrowserMessageFilter(uint32_t message_class_to_filter)
-    : internal_(nullptr),
-      sender_(nullptr),
-      message_classes_to_filter_(1, message_class_to_filter) {}
+    : message_classes_to_filter_(1, message_class_to_filter) {}
 
 BrowserMessageFilter::BrowserMessageFilter(
     const uint32_t* message_classes_to_filter,
     size_t num_message_classes_to_filter)
-    : internal_(nullptr),
-      sender_(nullptr),
-      message_classes_to_filter_(
+    : message_classes_to_filter_(
           message_classes_to_filter,
           message_classes_to_filter + num_message_classes_to_filter) {
   DCHECK(num_message_classes_to_filter);
@@ -136,31 +138,31 @@ void BrowserMessageFilter::OnDestruct() const {
 }
 
 bool BrowserMessageFilter::Send(IPC::Message* message) {
-  if (message->is_sync()) {
-    // We don't support sending synchronous messages from the browser.  If we
-    // really needed it, we can make this class derive from SyncMessageFilter
-    // but it seems better to not allow sending synchronous messages from the
-    // browser, since it might allow a corrupt/malicious renderer to hang us.
-    NOTREACHED() << "Can't send sync message through BrowserMessageFilter!";
-    return false;
-  }
+  std::unique_ptr<IPC::Message> msg(message);
+
+  // We don't support sending synchronous messages from the browser.  If we
+  // really needed it, we can make this class derive from SyncMessageFilter
+  // but it seems better to not allow sending synchronous messages from the
+  // browser, since it might allow a corrupt/malicious renderer to hang us.
+  DCHECK(!msg->is_sync())
+    << "Can't send sync message through BrowserMessageFilter!";
 
   if (!BrowserThread::CurrentlyOn(BrowserThread::IO)) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+    GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(base::IgnoreResult(&BrowserMessageFilter::Send), this,
-                       message));
+                       msg.release()));
     return true;
   }
 
   if (sender_)
-    return sender_->Send(message);
+    return sender_->Send(msg.release());
 
-  delete message;
   return false;
 }
 
-base::TaskRunner* BrowserMessageFilter::OverrideTaskRunnerForMessage(
+scoped_refptr<base::SequencedTaskRunner>
+BrowserMessageFilter::OverrideTaskRunnerForMessage(
     const IPC::Message& message) {
   return nullptr;
 }

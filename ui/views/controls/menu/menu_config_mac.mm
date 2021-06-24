@@ -7,6 +7,7 @@
 #import <AppKit/AppKit.h>
 
 #include "base/mac/mac_util.h"
+#include "ui/gfx/platform_font_mac.h"
 
 namespace {
 
@@ -33,6 +34,8 @@ void InitMaterialMenuConfig(views::MenuConfig* config) {
   config->icons_in_label = true;
   config->corner_radius = 8;
   config->auxiliary_corner_radius = 4;
+  config->item_top_margin = 4;
+  config->item_bottom_margin = 4;
 }
 
 }  // namespace
@@ -40,7 +43,8 @@ void InitMaterialMenuConfig(views::MenuConfig* config) {
 namespace views {
 
 void MenuConfig::Init() {
-  font_list = gfx::FontList(gfx::Font([NSFont menuFontOfSize:0.0]));
+  font_list = gfx::FontList(gfx::Font(
+      new gfx::PlatformFontMac(gfx::PlatformFontMac::SystemFontType::kMenu)));
   check_selected_combobox_item = true;
   arrow_key_selection_wraps = false;
   use_mnemonics = false;

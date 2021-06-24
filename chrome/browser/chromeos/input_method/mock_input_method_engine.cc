@@ -9,9 +9,9 @@
 
 namespace chromeos {
 
-MockInputMethodEngine::MockInputMethodEngine() {}
+MockInputMethodEngine::MockInputMethodEngine() = default;
 
-MockInputMethodEngine::~MockInputMethodEngine() {}
+MockInputMethodEngine::~MockInputMethodEngine() = default;
 
 void MockInputMethodEngine::FocusIn(
     const IMEEngineHandlerInterface::InputContext& input_context) {}
@@ -28,20 +28,21 @@ void MockInputMethodEngine::Disable() {
 
 void MockInputMethodEngine::Reset() {}
 
-bool MockInputMethodEngine::IsInterestedInKeyEvent() const {
-  return true;
-}
-
 void MockInputMethodEngine::ProcessKeyEvent(const ui::KeyEvent& key_event,
                                             KeyEventDoneCallback callback) {}
 
-void MockInputMethodEngine::SetSurroundingText(const std::string& text,
+void MockInputMethodEngine::SetSurroundingText(const std::u16string& text,
                                                uint32_t cursor_pos,
                                                uint32_t anchor_pos,
                                                uint32_t offset_pos) {}
 
 void MockInputMethodEngine::SetCompositionBounds(
     const std::vector<gfx::Rect>& bounds) {}
+
+ui::VirtualKeyboardController*
+MockInputMethodEngine::GetVirtualKeyboardController() const {
+  return nullptr;
+}
 
 void MockInputMethodEngine::PropertyActivate(const std::string& property_name) {
   last_activated_property_ = property_name;

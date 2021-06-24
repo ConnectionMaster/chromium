@@ -9,7 +9,8 @@ import static junit.framework.Assert.assertNull;
 import static org.junit.Assert.assertEquals;
 
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -20,12 +21,12 @@ import org.junit.runner.RunWith;
 import org.chromium.base.Callback;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.chrome.browser.ChromeSwitches;
-import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.test.util.TestThreadUtils;
 import org.chromium.net.test.EmbeddedTestServer;
@@ -46,7 +47,7 @@ public class NavigationRecorderTest {
     private Tab mInitialTab;
 
     @Before
-    public void setUp() throws InterruptedException {
+    public void setUp() {
         mTestSetupRule.startMainActivityWithURL(UrlConstants.NTP_URL);
 
         mTestServer = EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
@@ -57,19 +58,21 @@ public class NavigationRecorderTest {
 
     @After
     public void tearDown() {
-        mTestServer.stopAndDestroyServer();
+        // If setUp() fails, tearDown() still needs to be able to execute without exceptions.
+        if (mTestServer != null) {
+            mTestServer.stopAndDestroyServer();
+        }
     }
 
     @Test
     @SmallTest
-    public void testRecordVisitInCurrentTabEndsWithBack()
-            throws InterruptedException, TimeoutException {
+    public void testRecordVisitInCurrentTabEndsWithBack() throws TimeoutException {
         final CallbackHelper callback = new CallbackHelper();
         loadUrlAndRecordVisit(mNavUrl, new Callback<NavigationRecorder.VisitData>() {
             @Override
             public void onResult(NavigationRecorder.VisitData visit) {
                 // When the tab is hidden we receive a notification with no end URL.
-                assertEquals(UrlConstants.NTP_URL, visit.endUrl);
+                assertEquals(UrlConstants.NTP_URL, visit.endUrl.getSpec());
                 callback.notifyCalled();
             }
         });
@@ -82,8 +85,7 @@ public class NavigationRecorderTest {
 
     @Test
     @SmallTest
-    public void testRecordVisitInCurrentTabEndsWhenHidden()
-            throws InterruptedException, TimeoutException {
+    public void testRecordVisitInCurrentTabEndsWhenHidden() throws TimeoutException {
         final CallbackHelper callback = new CallbackHelper();
         loadUrlAndRecordVisit(mNavUrl, new Callback<NavigationRecorder.VisitData>() {
             @Override
@@ -100,8 +102,7 @@ public class NavigationRecorderTest {
 
     @Test
     @SmallTest
-    public void testRecordVisitInCurrentTabEndsWhenURLTyped()
-            throws InterruptedException, TimeoutException {
+    public void testRecordVisitInCurrentTabEndsWhenURLTyped() throws TimeoutException {
         final CallbackHelper callback = new CallbackHelper();
         loadUrlAndRecordVisit(mNavUrl, new Callback<NavigationRecorder.VisitData>() {
             @Override
@@ -112,7 +113,7 @@ public class NavigationRecorderTest {
             }
         });
 
-        mTestSetupRule.loadUrl(null);
+        mTestSetupRule.loadUrl((String) null);
         callback.waitForCallback(0);
     }
 

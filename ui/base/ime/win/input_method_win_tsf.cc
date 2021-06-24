@@ -5,6 +5,7 @@
 #include "ui/base/ime/win/input_method_win_tsf.h"
 
 #include "ui/base/ime/text_input_client.h"
+#include "ui/base/ime/virtual_keyboard_controller.h"
 #include "ui/base/ime/win/tsf_bridge.h"
 #include "ui/base/ime/win/tsf_event_router.h"
 
@@ -99,7 +100,6 @@ void InputMethodWinTSF::OnTextInputTypeChanged(const TextInputClient* client) {
   }
   ui::TSFBridge::GetInstance()->CancelComposition();
   ui::TSFBridge::GetInstance()->OnTextInputTypeChanged(client);
-  InputMethodWinBase::UpdateEngineFocusAndInputContext();
 }
 
 void InputMethodWinTSF::OnCaretBoundsChanged(const TextInputClient* client) {
@@ -109,14 +109,12 @@ void InputMethodWinTSF::OnCaretBoundsChanged(const TextInputClient* client) {
   }
   NotifyTextInputCaretBoundsChanged(client);
   ui::TSFBridge::GetInstance()->OnTextLayoutChanged();
-  InputMethodWinBase::UpdateCompositionBoundsForEngine(client);
 }
 
 void InputMethodWinTSF::CancelComposition(const TextInputClient* client) {
   if (ui::TSFBridge::GetInstance() && IsTextInputClientFocused(client) &&
       IsWindowFocused(client)) {
     ui::TSFBridge::GetInstance()->CancelComposition();
-    InputMethodWinBase::CancelCompositionForEngine();
   }
 }
 
@@ -129,6 +127,14 @@ void InputMethodWinTSF::DetachTextInputClient(TextInputClient* client) {
   ui::TSFBridge::GetInstance()->RemoveFocusedClient(client);
 }
 
+bool InputMethodWinTSF::IsInputLocaleCJK() const {
+  if (!ui::TSFBridge::GetInstance()) {
+    return false;
+  }
+
+  return ui::TSFBridge::GetInstance()->IsInputLanguageCJK();
+}
+
 bool InputMethodWinTSF::IsCandidatePopupOpen() const {
   return tsf_event_observer_->IsCandidatePopupOpen();
 }
@@ -136,7 +142,7 @@ bool InputMethodWinTSF::IsCandidatePopupOpen() const {
 void InputMethodWinTSF::OnWillChangeFocusedClient(
     TextInputClient* focused_before,
     TextInputClient* focused) {
-  if (IsWindowFocused(focused_before)) {
+  if (ui::TSFBridge::GetInstance() && IsWindowFocused(focused_before)) {
     ConfirmCompositionText();
     ui::TSFBridge::GetInstance()->RemoveFocusedClient(focused_before);
   }
@@ -149,7 +155,6 @@ void InputMethodWinTSF::OnDidChangeFocusedClient(
       IsTextInputClientFocused(focused)) {
     ui::TSFBridge::GetInstance()->SetFocusedClient(toplevel_window_handle_,
                                                    focused);
-
     // Force to update the input type since client's TextInputStateChanged()
     // function might not be called if text input types before the client loses
     // focus and after it acquires focus again are the same.
@@ -163,12 +168,16 @@ void InputMethodWinTSF::OnDidChangeFocusedClient(
 }
 
 void InputMethodWinTSF::ConfirmCompositionText() {
-  if (!IsTextInputTypeNone()) {
-    if (GetTextInputClient()->HasCompositionText())
-      InputMethodWinBase::ResetEngine();
-    if (ui::TSFBridge::GetInstance())
-      ui::TSFBridge::GetInstance()->ConfirmComposition();
-  }
+  if (IsTextInputTypeNone())
+    return;
+
+  if (ui::TSFBridge::GetInstance())
+    ui::TSFBridge::GetInstance()->ConfirmComposition();
+}
+
+void InputMethodWinTSF::ShowVirtualKeyboardIfEnabled() {
+  if (auto* controller = GetVirtualKeyboardController())
+    controller->DisplayVirtualKeyboard();
 }
 
 }  // namespace ui

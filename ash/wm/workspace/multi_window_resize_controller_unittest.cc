@@ -5,11 +5,11 @@
 #include "ash/wm/workspace/multi_window_resize_controller.h"
 
 #include "ash/frame/non_client_frame_view_ash.h"
-#include "ash/public/cpp/ash_constants.h"
-#include "ash/shelf/shelf_constants.h"
+#include "ash/public/cpp/shelf_config.h"
+#include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/shell.h"
-#include "ash/shell_test_api.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_state_delegate.h"
@@ -18,7 +18,9 @@
 #include "ash/wm/workspace/workspace_event_handler_test_helper.h"
 #include "ash/wm/workspace_controller.h"
 #include "ash/wm/workspace_controller_test_api.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
+#include "base/memory/ptr_util.h"
+#include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/window.h"
@@ -28,6 +30,10 @@
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 
+using chromeos::kResizeInsideBoundsSize;
+using chromeos::kResizeOutsideBoundsSize;
+using chromeos::WindowStateType;
+
 namespace ash {
 
 namespace {
@@ -36,15 +42,12 @@ namespace {
 // which is actually used in Ash.
 class TestWidgetDelegate : public views::WidgetDelegateView {
  public:
-  TestWidgetDelegate() = default;
+  TestWidgetDelegate() {}
   ~TestWidgetDelegate() override = default;
 
-  // views::WidgetDelegateView:
-  bool CanResize() const override { return true; }
-
-  views::NonClientFrameView* CreateNonClientFrameView(
+  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
       views::Widget* widget) override {
-    return new NonClientFrameViewAsh(widget);
+    return std::make_unique<NonClientFrameViewAsh>(widget);
   }
 
  private:
@@ -60,7 +63,7 @@ class MultiWindowResizeControllerTest : public AshTestBase {
 
   void SetUp() override {
     AshTestBase::SetUp();
-    WorkspaceController* wc = ShellTestApi(Shell::Get()).workspace_controller();
+    WorkspaceController* wc = ShellTestApi().workspace_controller();
     WorkspaceEventHandler* event_handler =
         WorkspaceControllerTestApi(wc).GetEventHandler();
     resize_controller_ =
@@ -74,8 +77,6 @@ class MultiWindowResizeControllerTest : public AshTestBase {
 
   bool HasPendingShow() { return resize_controller_->show_timer_.IsRunning(); }
 
-  void Hide() { resize_controller_->Hide(); }
-
   bool HasTarget(aura::Window* window) {
     if (!resize_controller_->windows_.is_valid())
       return false;
@@ -83,8 +84,7 @@ class MultiWindowResizeControllerTest : public AshTestBase {
         resize_controller_->windows_.window2 == window) {
       return true;
     }
-    return base::ContainsValue(resize_controller_->windows_.other_windows,
-                               window);
+    return base::Contains(resize_controller_->windows_.other_windows, window);
   }
 
   bool IsOverWindows(const gfx::Point& loc) {
@@ -140,28 +140,31 @@ TEST_F(MultiWindowResizeControllerTest, IsOverWindows) {
   std::unique_ptr<views::Widget> w1(new views::Widget);
   views::Widget::InitParams params1;
   params1.delegate = new TestWidgetDelegate;
+  params1.delegate->SetCanResize(true);
   params1.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params1.bounds = gfx::Rect(100, 200);
-  params1.context = CurrentContext();
-  w1->Init(params1);
+  params1.context = GetContext();
+  w1->Init(std::move(params1));
   w1->Show();
 
   std::unique_ptr<views::Widget> w2(new views::Widget);
   views::Widget::InitParams params2;
   params2.delegate = new TestWidgetDelegate;
+  params2.delegate->SetCanResize(true);
   params2.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params2.bounds = gfx::Rect(100, 0, 100, 100);
-  params2.context = CurrentContext();
-  w2->Init(params2);
+  params2.context = GetContext();
+  w2->Init(std::move(params2));
   w2->Show();
 
   std::unique_ptr<views::Widget> w3(new views::Widget);
   views::Widget::InitParams params3;
   params3.delegate = new TestWidgetDelegate;
+  params3.delegate->SetCanResize(true);
   params3.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params3.bounds = gfx::Rect(100, 100, 100, 100);
-  params3.context = CurrentContext();
-  w3->Init(params3);
+  params3.context = GetContext();
+  w3->Init(std::move(params3));
   w3->Show();
 
   ui::test::EventGenerator* generator = GetEventGenerator();
@@ -278,6 +281,17 @@ TEST_F(MultiWindowResizeControllerTest, Drag) {
   EXPECT_TRUE(IsShowing());
   EXPECT_EQ(gfx::Rect(0, 0, 110, 100), w1->bounds());
   EXPECT_EQ(gfx::Rect(110, 0, 100, 100), w2->bounds());
+
+  // It should be possible to move 1px.
+  bounds = resize_widget()->GetWindowBoundsInScreen();
+
+  generator->MoveMouseTo(bounds.x() + 1, bounds.y() + 1);
+  generator->PressLeftButton();
+  generator->MoveMouseBy(1, 0);
+  generator->ReleaseLeftButton();
+
+  EXPECT_EQ(gfx::Rect(0, 0, 111, 100), w1->bounds());
+  EXPECT_EQ(gfx::Rect(111, 0, 100, 100), w2->bounds());
 }
 
 // Makes sure three windows are picked up.
@@ -309,7 +323,25 @@ TEST_F(MultiWindowResizeControllerTest, Three) {
   gfx::Rect bounds(resize_widget()->GetWindowBoundsInScreen());
   generator->MoveMouseTo(bounds.x() + 1, bounds.y() + 1);
   generator->PressLeftButton();
+
+  // Test that when drag starts, drag details are created for each window.
+  EXPECT_TRUE(WindowState::Get(w1.get())->is_dragged());
+  EXPECT_TRUE(WindowState::Get(w2.get())->is_dragged());
+  EXPECT_TRUE(WindowState::Get(w3.get())->is_dragged());
+  // Test the window components for each window.
+  EXPECT_EQ(WindowState::Get(w1.get())->drag_details()->window_component,
+            HTRIGHT);
+  EXPECT_EQ(WindowState::Get(w2.get())->drag_details()->window_component,
+            HTLEFT);
+  EXPECT_EQ(WindowState::Get(w3.get())->drag_details()->window_component,
+            HTLEFT);
+
   generator->MoveMouseTo(bounds.x() + 11, bounds.y() + 10);
+
+  // Drag details should exist during dragging.
+  EXPECT_TRUE(WindowState::Get(w1.get())->is_dragged());
+  EXPECT_TRUE(WindowState::Get(w2.get())->is_dragged());
+  EXPECT_TRUE(WindowState::Get(w3.get())->is_dragged());
 
   EXPECT_TRUE(HasTarget(w3.get()));
 
@@ -317,6 +349,12 @@ TEST_F(MultiWindowResizeControllerTest, Three) {
   // press should not trigger a DCHECK.
   generator->ReleaseLeftButton();
   EXPECT_TRUE(IsShowing());
+
+  // Test that drag details are correctly deleted after dragging.
+  EXPECT_FALSE(WindowState::Get(w1.get())->is_dragged());
+  EXPECT_FALSE(WindowState::Get(w2.get())->is_dragged());
+  EXPECT_FALSE(WindowState::Get(w3.get())->is_dragged());
+
   generator->PressLeftButton();
 }
 
@@ -402,7 +440,7 @@ TEST_F(MultiWindowResizeControllerTest, WindowStateChange) {
 
   // When entering tablet mode, the windows will be maximized, thus the resizer
   // widget should be dismissed.
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   EXPECT_FALSE(IsShowing());
 }
 
@@ -519,14 +557,14 @@ TEST_F(MultiWindowResizeControllerTest, MakeWindowNonResizeable) {
 
 namespace {
 
-class TestWindowStateDelegate : public wm::WindowStateDelegate {
+class TestWindowStateDelegate : public WindowStateDelegate {
  public:
   TestWindowStateDelegate() = default;
   ~TestWindowStateDelegate() override = default;
 
-  // wm::WindowStateDelegate:
+  // WindowStateDelegate:
   void OnDragStarted(int component) override { component_ = component; }
-  void OnDragFinished(bool cancel, const gfx::Point& location) override {
+  void OnDragFinished(bool cancel, const gfx::PointF& location) override {
     location_ = location;
   }
 
@@ -536,14 +574,14 @@ class TestWindowStateDelegate : public wm::WindowStateDelegate {
     return result;
   }
 
-  gfx::Point GetLocationAndReset() {
-    gfx::Point p = location_;
+  gfx::PointF GetLocationAndReset() {
+    gfx::PointF p = location_;
     location_.SetPoint(0, 0);
     return p;
   }
 
  private:
-  gfx::Point location_;
+  gfx::PointF location_;
   int component_ = -1;
   DISALLOW_COPY_AND_ASSIGN(TestWindowStateDelegate);
 };
@@ -553,24 +591,24 @@ class TestWindowStateDelegate : public wm::WindowStateDelegate {
 // Tests dragging to resize two snapped windows.
 TEST_F(MultiWindowResizeControllerTest, TwoSnappedWindows) {
   UpdateDisplay("400x300");
-  const int bottom_inset = 300 - ShelfConstants::shelf_size();
+  const int bottom_inset = 300 - ShelfConfig::Get()->shelf_size();
   // Create two snapped windows, one left snapped, one right snapped.
   aura::test::TestWindowDelegate delegate1;
   std::unique_ptr<aura::Window> w1(CreateTestWindowInShellWithDelegate(
       &delegate1, -1, gfx::Rect(100, 100, 100, 100)));
   delegate1.set_window_component(HTRIGHT);
-  wm::WindowState* w1_state = wm::GetWindowState(w1.get());
-  const wm::WMEvent snap_left(wm::WM_EVENT_SNAP_LEFT);
+  WindowState* w1_state = WindowState::Get(w1.get());
+  const WMEvent snap_left(WM_EVENT_SNAP_PRIMARY);
   w1_state->OnWMEvent(&snap_left);
-  EXPECT_EQ(mojom::WindowStateType::LEFT_SNAPPED, w1_state->GetStateType());
+  EXPECT_EQ(WindowStateType::kPrimarySnapped, w1_state->GetStateType());
   aura::test::TestWindowDelegate delegate2;
   std::unique_ptr<aura::Window> w2(CreateTestWindowInShellWithDelegate(
       &delegate2, -2, gfx::Rect(100, 100, 100, 100)));
   delegate2.set_window_component(HTRIGHT);
-  wm::WindowState* w2_state = wm::GetWindowState(w2.get());
-  const wm::WMEvent snap_right(wm::WM_EVENT_SNAP_RIGHT);
+  WindowState* w2_state = WindowState::Get(w2.get());
+  const WMEvent snap_right(WM_EVENT_SNAP_SECONDARY);
   w2_state->OnWMEvent(&snap_right);
-  EXPECT_EQ(mojom::WindowStateType::RIGHT_SNAPPED, w2_state->GetStateType());
+  EXPECT_EQ(WindowStateType::kSecondarySnapped, w2_state->GetStateType());
   EXPECT_EQ(0.5f, *w1_state->snapped_width_ratio());
   EXPECT_EQ(0.5f, *w2_state->snapped_width_ratio());
 
@@ -602,17 +640,36 @@ TEST_F(MultiWindowResizeControllerTest, TwoSnappedWindows) {
   generator->ReleaseLeftButton();
 
   // Check snapped states and bounds.
-  EXPECT_EQ(mojom::WindowStateType::LEFT_SNAPPED, w1_state->GetStateType());
+  EXPECT_EQ(WindowStateType::kPrimarySnapped, w1_state->GetStateType());
   EXPECT_EQ(gfx::Rect(0, 0, 300, bottom_inset), w1->bounds());
-  EXPECT_EQ(mojom::WindowStateType::RIGHT_SNAPPED, w2_state->GetStateType());
+  EXPECT_EQ(WindowStateType::kSecondarySnapped, w2_state->GetStateType());
   EXPECT_EQ(gfx::Rect(300, 0, 100, bottom_inset), w2->bounds());
   EXPECT_EQ(0.75f, *w1_state->snapped_width_ratio());
   EXPECT_EQ(0.25f, *w2_state->snapped_width_ratio());
 
   // Dragging should call the WindowStateDelegate.
   EXPECT_EQ(HTRIGHT, window_state_delegate1->GetComponentAndReset());
-  EXPECT_EQ(gfx::Point(300, bottom_inset - 75),
+  EXPECT_EQ(gfx::PointF(300, resize_widget_center.y()),
             window_state_delegate1->GetLocationAndReset());
+}
+
+TEST_F(MultiWindowResizeControllerTest, HiddenInOverview) {
+  // Create two windows side by side, but not overlapping horizontally. Note
+  // that when creating a window, the window is slightly larger than the given
+  // bounds so position |window2| accordingly.
+  auto window1 = CreateAppWindow(gfx::Rect(0, 0, 100, 100));
+  auto window2 = CreateAppWindow(gfx::Rect(104, 0, 100, 100));
+
+  // Move the mouse to the middle of the two windows. The multi window resizer
+  // should appear.
+  GetEventGenerator()->MoveMouseTo(gfx::Point(104, 50));
+  EXPECT_TRUE(HasPendingShow());
+  EXPECT_TRUE(IsShowing());
+
+  // Tests that after starting overview, the widget is hidden.
+  Shell::Get()->overview_controller()->StartOverview();
+  EXPECT_FALSE(HasPendingShow());
+  EXPECT_FALSE(IsShowing());
 }
 
 }  // namespace ash

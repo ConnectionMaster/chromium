@@ -5,8 +5,9 @@
 package org.chromium.components.crash.browser;
 
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.base.annotations.UsedByReflection;
-import org.chromium.base.library_loader.NativeLibraries;
+import org.chromium.build.NativeLibraries;
 
 @JNINamespace("crashpad")
 final class CrashpadMain {
@@ -19,8 +20,11 @@ final class CrashpadMain {
         } catch (UnsatisfiedLinkError e) {
             throw new RuntimeException(e);
         }
-        nativeCrashpadMain(argv);
+        CrashpadMainJni.get().crashpadMain(argv);
     }
 
-    private static native void nativeCrashpadMain(String[] argv);
+    @NativeMethods
+    interface Natives {
+        void crashpadMain(String[] argv);
+    }
 }

@@ -15,7 +15,6 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/strings/string16.h"
 #include "chrome/test/chromedriver/chrome/device_metrics.h"
 #include "chrome/test/chromedriver/chrome/devtools_http_client.h"
 #include "chrome/test/chromedriver/chrome/log.h"
@@ -39,7 +38,6 @@ class Switches {
 
   void SetSwitch(const std::string& name);
   void SetSwitch(const std::string& name, const std::string& value);
-  void SetSwitch(const std::string& name, const base::string16& value);
   void SetSwitch(const std::string& name, const base::FilePath& value);
 
   // In case of same key, |switches| will override.
@@ -97,15 +95,10 @@ struct Capabilities {
   // Return true if android package is specified.
   bool IsAndroid() const;
 
-  // Accepts all W3C defined capabilities (including those not yet supported by
-  // ChromeDriver) and all ChromeDriver-specific extensions.
+  // Accepts all W3C defined capabilities
+  // and all ChromeDriver-specific extensions.
   Status Parse(const base::DictionaryValue& desired_caps,
                bool w3c_compliant = true);
-
-  // Check if all specified capabilities are supported by ChromeDriver.
-  // The long term goal is to support all standard capabilities, thus making
-  // this method unnecessary.
-  Status CheckSupport() const;
 
   //
   // W3C defined capabilities
@@ -147,6 +140,8 @@ struct Capabilities {
 
   bool android_use_running_app;
 
+  int android_devtools_port = 0;
+
   base::FilePath binary;
 
   // If provided, the remote debugging address to connect to.
@@ -169,10 +164,6 @@ struct Capabilities {
   // Time to wait for extension background page to appear. If 0, no waiting.
   base::TimeDelta extension_load_timeout;
 
-  // True if should always use DevTools for taking screenshots.
-  // This is experimental and may be removed at a later point.
-  bool force_devtools_screenshot;
-
   std::unique_ptr<base::DictionaryValue> local_state;
 
   std::string log_path;
@@ -194,7 +185,10 @@ struct Capabilities {
 
   std::set<WebViewInfo::Type> window_types;
 
-  bool use_automation_extension;
+  bool webSocketUrl = false;
 };
+
+bool GetChromeOptionsDictionary(const base::DictionaryValue& params,
+                                const base::DictionaryValue** out);
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CAPABILITIES_H_

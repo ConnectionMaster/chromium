@@ -5,19 +5,17 @@
 #include "media/mojo/services/mojo_cdm_helper.h"
 
 #include "base/bind.h"
-#include "base/files/file.h"
-#include "base/files/file_util.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "media/cdm/api/content_decryption_module.h"
-#include "media/mojo/interfaces/cdm_storage.mojom.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
-#include "services/service_manager/public/mojom/interface_provider.mojom.h"
+#include "media/mojo/mojom/cdm_storage.mojom.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/origin.h"
 
 using Status = cdm::FileIOClient::Status;
 
@@ -35,57 +33,60 @@ class MockFileIOClient : public cdm::FileIOClient {
   MOCK_METHOD1(OnWriteComplete, void(Status));
 };
 
-class MockCdmStorage : public mojom::CdmStorage {
+class TestCdmFile : public mojom::CdmFile {
  public:
-  MockCdmStorage() { CHECK(temp_directory_.CreateUniqueTempDir()); }
-  ~MockCdmStorage() override = default;
+  TestCdmFile() = default;
+  ~TestCdmFile() override = default;
 
-  // MojoCdmFileIO calls CdmStorage::Open() to actually open the file.
-  // Simulate this by creating a file in the temp directory and returning it.
-  void Open(const std::string& file_name, OpenCallback callback) override {
-    base::FilePath temp_file = temp_directory_.GetPath().AppendASCII(file_name);
-    DVLOG(1) << __func__ << " " << temp_file;
-    base::File file(temp_file, base::File::FLAG_CREATE_ALWAYS |
-                                   base::File::FLAG_READ |
-                                   base::File::FLAG_WRITE);
-    std::move(callback).Run(mojom::CdmStorage::Status::kSuccess,
-                            std::move(file), nullptr);
+  // Reading always succeeds with a 3-byte buffer.
+  void Read(ReadCallback callback) override {
+    std::move(callback).Run(Status::kSuccess, {1, 2, 3});
   }
 
- private:
-  base::ScopedTempDir temp_directory_;
+  // Writing always succeeds.
+  void Write(const std::vector<uint8_t>& data,
+             WriteCallback callback) override {
+    std::move(callback).Run(Status::kSuccess);
+  }
 };
 
-void CreateCdmStorage(mojom::CdmStorageRequest request) {
-  mojo::MakeStrongBinding(std::make_unique<MockCdmStorage>(),
-                          std::move(request));
-}
-
-class TestInterfaceProvider : public service_manager::mojom::InterfaceProvider {
+class MockCdmStorage : public mojom::CdmStorage {
  public:
-  TestInterfaceProvider() {
-    registry_.AddInterface(base::Bind(&CreateCdmStorage));
-  }
-  ~TestInterfaceProvider() override = default;
+  MockCdmStorage() = default;
+  ~MockCdmStorage() override = default;
 
-  void GetInterface(const std::string& interface_name,
-                    mojo::ScopedMessagePipeHandle handle) override {
-    registry_.BindInterface(interface_name, std::move(handle));
+  void Open(const std::string& file_name, OpenCallback callback) override {
+    std::move(callback).Run(mojom::CdmStorage::Status::kSuccess,
+                            client_receiver_.BindNewEndpointAndPassRemote());
   }
 
  private:
-  service_manager::BinderRegistry registry_;
+  TestCdmFile cdm_file_;
+  mojo::AssociatedReceiver<mojom::CdmFile> client_receiver_{&cdm_file_};
+};
+
+class TestFrameInterfaceFactory : public mojom::FrameInterfaceFactory {
+ public:
+  void CreateProvisionFetcher(
+      mojo::PendingReceiver<mojom::ProvisionFetcher>) override {}
+  void CreateCdmStorage(
+      mojo::PendingReceiver<mojom::CdmStorage> receiver) override {
+    mojo::MakeSelfOwnedReceiver(std::make_unique<MockCdmStorage>(),
+                                std::move(receiver));
+  }
+  void GetCdmOrigin(GetCdmOriginCallback callback) override {}
+  void BindEmbedderReceiver(mojo::GenericPendingReceiver) override {}
 };
 
 }  // namespace
 
 class MojoCdmHelperTest : public testing::Test {
  protected:
-  MojoCdmHelperTest() : helper_(&test_interface_provider_) {}
+  MojoCdmHelperTest() : helper_(&frame_interfaces_) {}
   ~MojoCdmHelperTest() override = default;
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
-  TestInterfaceProvider test_interface_provider_;
+  base::test::TaskEnvironment task_environment_;
+  TestFrameInterfaceFactory frame_interfaces_;
   MockFileIOClient file_io_client_;
   MojoCdmHelper helper_;
 };

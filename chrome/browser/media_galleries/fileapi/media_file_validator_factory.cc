@@ -8,25 +8,24 @@
 #include "base/macros.h"
 #include "chrome/browser/media_galleries/fileapi/supported_audio_video_checker.h"
 #include "chrome/browser/media_galleries/fileapi/supported_image_type_validator.h"
-#include "storage/browser/fileapi/copy_or_move_file_validator.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "components/download/public/common/quarantine_connection.h"
+#include "storage/browser/file_system/copy_or_move_file_validator.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 namespace {
 
 class InvalidFileValidator : public storage::CopyOrMoveFileValidator {
  public:
   ~InvalidFileValidator() override {}
-  void StartPreWriteValidation(
-      const storage::CopyOrMoveFileValidator::ResultCallback& result_callback)
-      override {
-    result_callback.Run(base::File::FILE_ERROR_SECURITY);
+  void StartPreWriteValidation(storage::CopyOrMoveFileValidator::ResultCallback
+                                   result_callback) override {
+    std::move(result_callback).Run(base::File::FILE_ERROR_SECURITY);
   }
 
-  void StartPostWriteValidation(
-      const base::FilePath& dest_platform_path,
-      const storage::CopyOrMoveFileValidator::ResultCallback& result_callback)
-      override {
-    result_callback.Run(base::File::FILE_ERROR_SECURITY);
+  void StartPostWriteValidation(const base::FilePath& dest_platform_path,
+                                storage::CopyOrMoveFileValidator::ResultCallback
+                                    result_callback) override {
+    std::move(result_callback).Run(base::File::FILE_ERROR_SECURITY);
   }
 
  private:
@@ -39,8 +38,10 @@ class InvalidFileValidator : public storage::CopyOrMoveFileValidator {
 
 }  // namespace
 
-MediaFileValidatorFactory::MediaFileValidatorFactory() {}
-MediaFileValidatorFactory::~MediaFileValidatorFactory() {}
+MediaFileValidatorFactory::MediaFileValidatorFactory(
+    download::QuarantineConnectionCallback quarantine_connection_callback)
+    : quarantine_connection_callback_(quarantine_connection_callback) {}
+MediaFileValidatorFactory::~MediaFileValidatorFactory() = default;
 
 storage::CopyOrMoveFileValidator*
 MediaFileValidatorFactory::CreateCopyOrMoveFileValidator(
@@ -48,9 +49,11 @@ MediaFileValidatorFactory::CreateCopyOrMoveFileValidator(
     const base::FilePath& platform_path) {
   base::FilePath src_path = src.virtual_path();
   if (SupportedImageTypeValidator::SupportsFileType(src_path))
-    return new SupportedImageTypeValidator(platform_path);
+    return new SupportedImageTypeValidator(platform_path,
+                                           quarantine_connection_callback_);
   if (SupportedAudioVideoChecker::SupportsFileType(src_path))
-    return new SupportedAudioVideoChecker(platform_path);
+    return new SupportedAudioVideoChecker(platform_path,
+                                          quarantine_connection_callback_);
 
   return new InvalidFileValidator();
 }

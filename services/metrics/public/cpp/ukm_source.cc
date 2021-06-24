@@ -7,8 +7,9 @@
 #include <utility>
 
 #include "base/atomicops.h"
+#include "base/check_op.h"
 #include "base/hash/hash.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "third_party/metrics_proto/ukm/source.pb.h"
 
 namespace ukm {
@@ -35,6 +36,30 @@ std::string GetShortenedURL(const GURL& url) {
   return url.spec();
 }
 
+// Translates ukm::SourceIdType to the equivalent Source proto enum value.
+SourceType ToProtobufSourceType(SourceIdType source_id_type) {
+  switch (source_id_type) {
+    case SourceIdType::DEFAULT:
+      return SourceType::DEFAULT;
+    case SourceIdType::NAVIGATION_ID:
+      return SourceType::NAVIGATION_ID;
+    case SourceIdType::APP_ID:
+      return SourceType::APP_ID;
+    case SourceIdType::HISTORY_ID:
+      return SourceType::HISTORY_ID;
+    case SourceIdType::WEBAPK_ID:
+      return SourceType::WEBAPK_ID;
+    case SourceIdType::PAYMENT_APP_ID:
+      return SourceType::PAYMENT_APP_ID;
+    case SourceIdType::DESKTOP_WEB_APP_ID:
+      return SourceType::DESKTOP_WEB_APP_ID;
+    case SourceIdType::WORKER_ID:
+      return SourceType::WORKER_ID;
+    default:
+      NOTREACHED();
+      return SourceType::DEFAULT;
+  }
+}
 }  // namespace
 
 // static
@@ -64,11 +89,16 @@ UkmSource::NavigationData UkmSource::NavigationData::CopyWithSanitizedUrls(
   sanitized_navigation_data.tab_id = tab_id;
   sanitized_navigation_data.is_same_document_navigation =
       is_same_document_navigation;
+  sanitized_navigation_data.same_origin_status = same_origin_status;
+  sanitized_navigation_data.is_renderer_initiated = is_renderer_initiated;
+  sanitized_navigation_data.is_error_page = is_error_page;
+  sanitized_navigation_data.navigation_time = navigation_time;
   return sanitized_navigation_data;
 }
 
 UkmSource::UkmSource(ukm::SourceId id, const GURL& url)
     : id_(id),
+      type_(GetSourceIdType(id_)),
       custom_tab_state_(g_custom_tab_state),
       creation_time_(base::TimeTicks::Now()) {
   navigation_data_.urls = {url};
@@ -77,10 +107,11 @@ UkmSource::UkmSource(ukm::SourceId id, const GURL& url)
 
 UkmSource::UkmSource(ukm::SourceId id, const NavigationData& navigation_data)
     : id_(id),
+      type_(GetSourceIdType(id_)),
       navigation_data_(navigation_data),
       custom_tab_state_(g_custom_tab_state),
       creation_time_(base::TimeTicks::Now()) {
-  DCHECK(GetSourceIdType(id_) == SourceIdType::NAVIGATION_ID);
+  DCHECK(type_ == SourceIdType::NAVIGATION_ID);
   DCHECK(!navigation_data.urls.empty());
   DCHECK(!navigation_data.urls.back().is_empty());
 }
@@ -97,15 +128,14 @@ void UkmSource::UpdateUrl(const GURL& new_url) {
 
 void UkmSource::PopulateProto(Source* proto_source) const {
   DCHECK(!proto_source->has_id());
+  DCHECK(!proto_source->has_type());
   DCHECK(!proto_source->has_url());
   DCHECK(!proto_source->has_initial_url());
 
   proto_source->set_id(id_);
-  proto_source->set_url(GetShortenedURL(url()));
-  if (urls().size() > 1u) {
-    DCHECK_EQ(SourceIdType::NAVIGATION_ID, GetSourceIdType(id_));
-    const GURL& initial_url = urls().front();
-    proto_source->set_initial_url(GetShortenedURL(initial_url));
+  proto_source->set_type(ToProtobufSourceType(type_));
+  for (const auto& url : urls()) {
+    proto_source->add_urls()->set_url(GetShortenedURL(url));
   }
 
   if (custom_tab_state_ != kCustomTabUnset)
@@ -129,6 +159,26 @@ void UkmSource::PopulateProto(Source* proto_source) const {
 
   if (navigation_data_.is_same_document_navigation)
     proto_source->set_is_same_document_navigation(true);
+
+  ukm::Source_SameOriginStatus status = ukm::Source::UNSET;
+  if (navigation_data_.same_origin_status ==
+      UkmSource::NavigationData::SameOriginStatus::SAME_ORIGIN) {
+    status = ukm::Source::SAME_ORIGIN;
+  } else if (navigation_data_.same_origin_status ==
+             UkmSource::NavigationData::SameOriginStatus::CROSS_ORIGIN) {
+    status = ukm::Source::CROSS_ORIGIN;
+  }
+
+  proto_source->mutable_navigation_metadata()->set_same_origin_status(status);
+  proto_source->mutable_navigation_metadata()->set_is_renderer_initiated(
+      navigation_data_.is_renderer_initiated);
+  proto_source->mutable_navigation_metadata()->set_is_error_page(
+      navigation_data_.is_error_page);
+
+  if (navigation_data_.navigation_time) {
+    proto_source->set_navigation_time_msec(
+        navigation_data_.navigation_time->since_origin().InMilliseconds());
+  }
 }
 
 }  // namespace ukm

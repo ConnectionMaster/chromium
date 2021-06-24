@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROMECAST_INTERNAL_SERVICE_THREAD_HEALTH_CHECKER_H_
-#define CHROMECAST_INTERNAL_SERVICE_THREAD_HEALTH_CHECKER_H_
+#ifndef CHROMECAST_BASE_THREAD_HEALTH_CHECKER_H_
+#define CHROMECAST_BASE_THREAD_HEALTH_CHECKER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/callback.h"
 #include "base/macros.h"
@@ -16,7 +15,7 @@
 
 namespace base {
 class OneShotTimer;
-class SingleThreadTaskRunner;
+class SequencedTaskRunner;
 class TaskRunner;
 }  // namespace base
 
@@ -36,7 +35,7 @@ class ThreadHealthChecker {
  public:
   ThreadHealthChecker(
       scoped_refptr<base::TaskRunner> patient_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> doctor_task_runner,
+      scoped_refptr<base::SequencedTaskRunner> doctor_task_runner,
       base::TimeDelta interval,
       base::TimeDelta timeout,
       base::RepeatingClosure on_failure);
@@ -46,7 +45,7 @@ class ThreadHealthChecker {
   class Internal : public base::RefCountedThreadSafe<Internal> {
    public:
     Internal(scoped_refptr<base::TaskRunner> patient_task_runner,
-             scoped_refptr<base::SingleThreadTaskRunner> doctor_task_runner,
+             scoped_refptr<base::SequencedTaskRunner> doctor_task_runner,
              base::TimeDelta interval,
              base::TimeDelta timeout,
              base::RepeatingClosure on_failure);
@@ -62,7 +61,7 @@ class ThreadHealthChecker {
     void ThreadTimeout();
 
     scoped_refptr<base::TaskRunner> patient_task_runner_;
-    scoped_refptr<base::SingleThreadTaskRunner> doctor_task_runner_;
+    scoped_refptr<base::SequencedTaskRunner> doctor_task_runner_;
     base::TimeDelta interval_;
     base::TimeDelta timeout_;
     std::unique_ptr<base::OneShotTimer> ok_timer_;
@@ -71,7 +70,7 @@ class ThreadHealthChecker {
     THREAD_CHECKER(thread_checker_);
   };
 
-  scoped_refptr<base::SingleThreadTaskRunner> doctor_task_runner_;
+  scoped_refptr<base::SequencedTaskRunner> doctor_task_runner_;
   scoped_refptr<Internal> internal_;
 
   DISALLOW_COPY_AND_ASSIGN(ThreadHealthChecker);
@@ -79,4 +78,4 @@ class ThreadHealthChecker {
 
 }  // namespace chromecast
 
-#endif  // CHROMECAST_INTERNAL_SERVICE_THREAD_HEALTH_CHECKER_H_
+#endif  // CHROMECAST_BASE_THREAD_HEALTH_CHECKER_H_

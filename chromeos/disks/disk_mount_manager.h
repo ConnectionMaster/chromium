@@ -12,7 +12,7 @@
 
 #include "base/callback_forward.h"
 #include "base/component_export.h"
-#include "base/files/file_path.h"
+#include "base/observer_list_types.h"
 #include "chromeos/dbus/cros_disks_client.h"
 
 namespace chromeos {
@@ -25,6 +25,17 @@ enum MountCondition {
   MOUNT_CONDITION_NONE,
   MOUNT_CONDITION_UNKNOWN_FILESYSTEM,
   MOUNT_CONDITION_UNSUPPORTED_FILESYSTEM,
+};
+
+// Possible filesystem types that can be passed to FormatMountedDevice.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class FormatFileSystemType {
+  kUnknown = 0,
+  kVfat = 1,
+  kExfat = 2,
+  kNtfs = 3,
+  kMaxValue = kNtfs,
 };
 
 // This class handles the interaction with cros-disks.
@@ -51,7 +62,12 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) DiskMountManager {
 
   enum FormatEvent {
     FORMAT_STARTED,
-    FORMAT_COMPLETED
+    FORMAT_COMPLETED,
+  };
+
+  enum PartitionEvent {
+    PARTITION_STARTED,
+    PARTITION_COMPLETED,
   };
 
   enum RenameEvent { RENAME_STARTED, RENAME_COMPLETED };
@@ -96,10 +112,8 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) DiskMountManager {
       EnsureMountInfoRefreshedCallback;
 
   // Implement this interface to be notified about disk/mount related events.
-  class Observer {
+  class Observer : public base::CheckedObserver {
    public:
-    virtual ~Observer() {}
-
     // Called when auto-mountable disk mount status is changed.
     virtual void OnAutoMountableDiskEvent(DiskEvent event, const Disk& disk) {}
     // Called when fixed storage disk status is changed.
@@ -114,11 +128,20 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) DiskMountManager {
     // Called on format process events.
     virtual void OnFormatEvent(FormatEvent event,
                                FormatError error_code,
-                               const std::string& device_path) {}
+                               const std::string& device_path,
+                               const std::string& device_label) {}
+    virtual void OnPartitionEvent(PartitionEvent event,
+                                  PartitionError error_code,
+                                  const std::string& device_path,
+                                  const std::string& device_label) {}
     // Called on rename process events.
     virtual void OnRenameEvent(RenameEvent event,
                                RenameError error_code,
-                               const std::string& device_path) {}
+                               const std::string& device_path,
+                               const std::string& device_label) {}
+
+   protected:
+    ~Observer() override;
   };
 
   virtual ~DiskMountManager() {}
@@ -162,22 +185,37 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) DiskMountManager {
                          MountAccessMode access_mode) = 0;
 
   // Unmounts a mounted disk.
-  // |UnmountOptions| enum defined in chromeos/dbus/cros_disks_client.h.
   // When the method is complete, |callback| will be called and observers'
   // |OnMountEvent| will be raised.
   //
   // |callback| may be empty, in which case it gets ignored.
   virtual void UnmountPath(const std::string& mount_path,
-                           UnmountOptions options,
                            UnmountPathCallback callback) = 0;
 
   // Remounts mounted removable devices to change the read-only mount option.
   // Devices that can be mounted only in its read-only mode will be ignored.
   virtual void RemountAllRemovableDrives(chromeos::MountAccessMode mode) = 0;
 
-  // Formats Device given its mount path. Unmounts the device.
+  // Formats device mounted at |mount_path| with the given filesystem and label.
+  // Also unmounts the device before formatting.
   // Example: mount_path: /media/VOLUME_LABEL
-  virtual void FormatMountedDevice(const std::string& mount_path) = 0;
+  //          filesystem: FormatFileSystemType::kNtfs
+  //          label: MYUSB
+  virtual void FormatMountedDevice(const std::string& mount_path,
+                                   FormatFileSystemType filesystem,
+                                   const std::string& label) = 0;
+
+  // Deletes partitions of the device, create a partition taking whole device
+  // and format it as single volume. It converts devices with multiple child
+  // volumes to a single volume disk. It unmounts the mounted child volumes
+  // before erasing.
+  // Example: device_path: /sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/
+  //                       1-3:1.0/host0/target0:0:0/0:0:0:0
+  //          filesystem: FormatFileSystemType::kNtfs
+  //          label: MYUSB
+  virtual void SinglePartitionFormatDevice(const std::string& device_path,
+                                           FormatFileSystemType filesystem,
+                                           const std::string& label) = 0;
 
   // Renames Device given its mount path.
   // Example: mount_path: /media/VOLUME_LABEL
@@ -220,5 +258,12 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) DiskMountManager {
 
 }  // namespace disks
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when chromeos/disks is moved to ash.
+namespace ash {
+namespace disks {
+using ::chromeos::disks::DiskMountManager;
+}  // namespace disks
+}  // namespace ash
 
 #endif  // CHROMEOS_DISKS_DISK_MOUNT_MANAGER_H_

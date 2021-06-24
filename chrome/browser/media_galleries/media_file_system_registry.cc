@@ -6,16 +6,19 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
-#include "base/task/post_task.h"
+#include "base/notreached.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/media_galleries/fileapi/media_file_system_backend.h"
 #include "chrome/browser/media_galleries/gallery_watch_manager.h"
 #include "chrome/browser/media_galleries/media_file_system_context.h"
@@ -41,11 +44,11 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_set.h"
-#include "storage/browser/fileapi/external_mount_points.h"
-#include "storage/common/fileapi/file_system_mount_option.h"
-#include "storage/common/fileapi/file_system_types.h"
+#include "storage/browser/file_system/external_mount_points.h"
+#include "storage/common/file_system/file_system_mount_option.h"
+#include "storage/common/file_system/file_system_types.h"
 
-#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_CHROMEOS)
+#if defined(OS_WIN) || defined(OS_MAC) || BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/browser/media_galleries/fileapi/mtp_device_map_service.h"
 #endif
 
@@ -95,7 +98,7 @@ class RPHReferenceManager {
   // |no_references_callback| is called when the last WebContents reference
   // goes away. WebContents references are added through
   // ReferenceFromWebContents().
-  explicit RPHReferenceManager(const base::Closure& no_references_callback);
+  explicit RPHReferenceManager(base::OnceClosure no_references_callback);
   virtual ~RPHReferenceManager();
 
   // Remove all references, but don't call |no_references_callback|.
@@ -146,7 +149,7 @@ class RPHReferenceManager {
   void OnWebContentsDestroyedOrNavigated(WebContents* contents);
 
   // A callback to call when the last RVH reference goes away.
-  base::Closure no_references_callback_;
+  base::OnceClosure no_references_callback_;
 
   // The set of render processes and web contents that may have references to
   // the file system ids this instance manages.
@@ -155,9 +158,8 @@ class RPHReferenceManager {
 };
 
 RPHReferenceManager::RPHReferenceManager(
-    const base::Closure& no_references_callback)
-    : no_references_callback_(no_references_callback) {
-}
+    base::OnceClosure no_references_callback)
+    : no_references_callback_(std::move(no_references_callback)) {}
 
 RPHReferenceManager::~RPHReferenceManager() {
   Reset();
@@ -166,7 +168,7 @@ RPHReferenceManager::~RPHReferenceManager() {
 void RPHReferenceManager::ReferenceFromWebContents(
     content::WebContents* contents) {
   RenderProcessHost* rph = contents->GetMainFrame()->GetProcess();
-  if (!base::ContainsKey(observer_map_, rph)) {
+  if (!base::Contains(observer_map_, rph)) {
     observer_map_[rph] = std::make_unique<RPHObserver>(this, rph);
   }
   observer_map_[rph]->AddWebContentsObserver(contents);
@@ -206,7 +208,7 @@ RPHReferenceManager::RPHObserver::~RPHObserver() {
 
 void RPHReferenceManager::RPHObserver::AddWebContentsObserver(
     WebContents* web_contents) {
-  if (base::ContainsKey(observed_web_contentses_, web_contents))
+  if (base::Contains(observed_web_contentses_, web_contents))
     return;
 
   observed_web_contentses_[web_contents] =
@@ -222,7 +224,7 @@ void RPHReferenceManager::RPHObserver::RemoveWebContentsObserver(
 
 void RPHReferenceManager::RPHObserver::RenderProcessHostDestroyed(
     RenderProcessHost* host) {
-  host_ = NULL;
+  host_ = nullptr;
   manager_->OnRenderProcessHostDestroyed(host);
 }
 
@@ -238,7 +240,7 @@ void RPHReferenceManager::OnRenderProcessHostDestroyed(
   }
   observer_map_.erase(rph_info);
   if (observer_map_.empty())
-    no_references_callback_.Run();
+    std::move(no_references_callback_).Run();
 }
 
 void RPHReferenceManager::OnWebContentsDestroyedOrNavigated(
@@ -254,7 +256,7 @@ void RPHReferenceManager::OnWebContentsDestroyedOrNavigated(
 
 }  // namespace
 
-MediaFileSystemInfo::MediaFileSystemInfo(const base::string16& fs_name,
+MediaFileSystemInfo::MediaFileSystemInfo(const std::u16string& fs_name,
                                          const base::FilePath& fs_path,
                                          const std::string& filesystem_id,
                                          MediaGalleryPrefId pref_id,
@@ -267,8 +269,7 @@ MediaFileSystemInfo::MediaFileSystemInfo(const base::string16& fs_name,
       pref_id(pref_id),
       transient_device_id(transient_device_id),
       removable(removable),
-      media_device(media_device) {
-}
+      media_device(media_device) {}
 
 MediaFileSystemInfo::MediaFileSystemInfo() {}
 MediaFileSystemInfo::MediaFileSystemInfo(const MediaFileSystemInfo& other) =
@@ -287,14 +288,13 @@ class ExtensionGalleriesHost
   ExtensionGalleriesHost(MediaFileSystemContext* file_system_context,
                          const base::FilePath& profile_path,
                          const std::string& extension_id,
-                         const base::Closure& no_references_callback)
+                         base::OnceClosure no_references_callback)
       : file_system_context_(file_system_context),
         profile_path_(profile_path),
         extension_id_(extension_id),
-        no_references_callback_(no_references_callback),
-        rph_refs_(base::Bind(&ExtensionGalleriesHost::CleanUp,
-                             base::Unretained(this))) {
-  }
+        no_references_callback_(std::move(no_references_callback)),
+        rph_refs_(base::BindRepeating(&ExtensionGalleriesHost::CleanUp,
+                                      base::Unretained(this))) {}
 
   // For each gallery in the list of permitted |galleries|, checks if the
   // device is attached and if so looks up or creates a file system name and
@@ -302,7 +302,7 @@ class ExtensionGalleriesHost
   // system objects to the |callback|.
   void GetMediaFileSystems(const MediaGalleryPrefIdSet& galleries,
                            const MediaGalleriesPrefInfoMap& galleries_info,
-                           const MediaFileSystemsCallback& callback) {
+                           MediaFileSystemsCallback callback) {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
     // Extract all the device ids so we can make sure they are attached.
@@ -311,9 +311,12 @@ class ExtensionGalleriesHost
     for (auto id = galleries.begin(); id != galleries.end(); ++id) {
       device_ids->insert(galleries_info.find(*id)->second.device_id);
     }
-    MediaStorageUtil::FilterAttachedDevices(device_ids, base::Bind(
-        &ExtensionGalleriesHost::GetMediaFileSystemsForAttachedDevices, this,
-        base::Owned(device_ids), galleries, galleries_info, callback));
+    MediaStorageUtil::FilterAttachedDevices(
+        device_ids,
+        base::BindOnce(
+            &ExtensionGalleriesHost::GetMediaFileSystemsForAttachedDevices,
+            this, base::Owned(device_ids), galleries, galleries_info,
+            std::move(callback)));
   }
 
   // Checks if |gallery| is attached and if so, registers the file system and
@@ -327,9 +330,9 @@ class ExtensionGalleriesHost
     device_ids->insert(gallery.device_id);
     MediaStorageUtil::FilterAttachedDevices(
         device_ids,
-        base::Bind(&ExtensionGalleriesHost::RegisterAttachedMediaFileSystem,
-                   this, base::Owned(device_ids), gallery,
-                   base::Passed(&callback)));
+        base::BindOnce(&ExtensionGalleriesHost::RegisterAttachedMediaFileSystem,
+                       this, base::Owned(device_ids), gallery,
+                       std::move(callback)));
   }
 
   // Revoke the file system for |id| if this extension has created one for |id|.
@@ -369,14 +372,14 @@ class ExtensionGalleriesHost
       const MediaStorageUtil::DeviceIdSet* attached_devices,
       const MediaGalleryPrefIdSet& galleries,
       const MediaGalleriesPrefInfoMap& galleries_info,
-      const MediaFileSystemsCallback& callback) {
+      MediaFileSystemsCallback callback) {
     std::vector<MediaFileSystemInfo> result;
 
     if (rph_refs_.empty()) {
       // We're actually in the middle of shutdown, and Filter...() lagging
       // which can invoke this method interleaved in the destruction callback
       // sequence and re-populate pref_id_map_.
-      callback.Run(result);
+      std::move(callback).Run(result);
       return;
     }
 
@@ -386,7 +389,7 @@ class ExtensionGalleriesHost
       const MediaGalleryPrefInfo& gallery_info =
           galleries_info.find(pref_id)->second;
       const std::string& device_id = gallery_info.device_id;
-      if (!base::ContainsKey(*attached_devices, device_id))
+      if (!base::Contains(*attached_devices, device_id))
         continue;
 
       PrefIdFsInfoMap::const_iterator existing_info =
@@ -423,7 +426,7 @@ class ExtensionGalleriesHost
     }
 
     DCHECK_EQ(pref_id_map_.size(), result.size());
-    callback.Run(result);
+    std::move(callback).Run(result);
   }
 
   void RegisterAttachedMediaFileSystem(
@@ -441,7 +444,7 @@ class ExtensionGalleriesHost
       base::FilePath path = gallery.AbsolutePath();
       const std::string& device_id = gallery.device_id;
 
-      if (base::ContainsKey(pref_id_map_, gallery.pref_id)) {
+      if (base::Contains(pref_id_map_, gallery.pref_id)) {
         result = base::File::FILE_OK;
       } else if (MediaStorageUtil::CanCreateFileSystem(device_id, path) &&
                  file_system_context_->RegisterFileSystem(device_id, fs_name,
@@ -462,8 +465,8 @@ class ExtensionGalleriesHost
       rph_refs_.Reset();
       CleanUp();
     }
-    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
-                             base::BindOnce(std::move(callback), result));
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), result));
   }
 
   std::string GetTransientIdForRemovableDeviceId(const std::string& device_id) {
@@ -482,7 +485,7 @@ class ExtensionGalleriesHost
     }
     pref_id_map_.clear();
 
-    no_references_callback_.Run();
+    std::move(no_references_callback_).Run();
   }
 
   // MediaFileSystemRegistry owns |this| and |file_system_context_|, so it's
@@ -496,7 +499,7 @@ class ExtensionGalleriesHost
   const std::string extension_id_;
 
   // A callback to call when the last WebContents reference goes away.
-  base::Closure no_references_callback_;
+  base::OnceClosure no_references_callback_;
 
   // A map from the gallery preferences id to the file system information.
   PrefIdFsInfoMap pref_id_map_;
@@ -515,7 +518,7 @@ class ExtensionGalleriesHost
 void MediaFileSystemRegistry::GetMediaFileSystemsForExtension(
     content::WebContents* contents,
     const extensions::Extension* extension,
-    const MediaFileSystemsCallback& callback) {
+    MediaFileSystemsCallback callback) {
   // TODO(tommycli): Change to DCHECK after fixing http://crbug.com/374330.
   CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
 
@@ -525,7 +528,7 @@ void MediaFileSystemRegistry::GetMediaFileSystemsForExtension(
       preferences->GalleriesForExtension(*extension);
 
   if (galleries.empty()) {
-    callback.Run(std::vector<MediaFileSystemInfo>());
+    std::move(callback).Run(std::vector<MediaFileSystemInfo>());
     return;
   }
 
@@ -537,7 +540,7 @@ void MediaFileSystemRegistry::GetMediaFileSystemsForExtension(
   extension_host->ReferenceFromWebContents(contents);
 
   extension_host->GetMediaFileSystems(galleries, preferences->known_galleries(),
-                                      callback);
+                                      std::move(callback));
 }
 
 void MediaFileSystemRegistry::RegisterMediaFileSystemForExtension(
@@ -555,9 +558,9 @@ void MediaFileSystemRegistry::RegisterMediaFileSystemForExtension(
       preferences->GalleriesForExtension(*extension);
 
   if (gallery == preferences->known_galleries().end() ||
-      !base::ContainsKey(permitted_galleries, pref_id)) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+      !base::Contains(permitted_galleries, pref_id)) {
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(std::move(callback), base::File::FILE_ERROR_NOT_FOUND));
     return;
   }
@@ -575,14 +578,15 @@ void MediaFileSystemRegistry::RegisterMediaFileSystemForExtension(
 MediaGalleriesPreferences* MediaFileSystemRegistry::GetPreferences(
     Profile* profile) {
   // Create an empty ExtensionHostMap for this profile on first initialization.
-  if (!base::ContainsKey(extension_hosts_map_, profile)) {
+  if (!base::Contains(extension_hosts_map_, profile)) {
     extension_hosts_map_[profile] = ExtensionHostMap();
-    DCHECK(!base::ContainsKey(profile_subscription_map_, profile));
+    DCHECK(!base::Contains(profile_subscription_map_, profile));
     profile_subscription_map_[profile] =
         MediaFileSystemRegistryShutdownNotifierFactory::GetInstance()
             ->Get(profile)
-            ->Subscribe(base::Bind(&MediaFileSystemRegistry::OnProfileShutdown,
-                                   base::Unretained(this), profile));
+            ->Subscribe(
+                base::BindRepeating(&MediaFileSystemRegistry::OnProfileShutdown,
+                                    base::Unretained(this), profile));
     media_galleries::UsageCount(media_galleries::PROFILES_WITH_USAGE);
   }
 
@@ -591,7 +595,7 @@ MediaGalleriesPreferences* MediaFileSystemRegistry::GetPreferences(
 
 GalleryWatchManager* MediaFileSystemRegistry::gallery_watch_manager() {
   if (!gallery_watch_manager_)
-    gallery_watch_manager_.reset(new GalleryWatchManager);
+    gallery_watch_manager_ = std::make_unique<GalleryWatchManager>();
   return gallery_watch_manager_.get();
 }
 
@@ -663,9 +667,9 @@ class MediaFileSystemRegistry::MediaFileSystemContextImpl
   void RevokeFileSystem(const std::string& fs_name) override {
     ExternalMountPoints::GetSystemInstance()->RevokeFileSystem(fs_name);
 
-#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_CHROMEOS)
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+#if defined(OS_WIN) || defined(OS_MAC) || BUILDFLAG(IS_CHROMEOS_ASH)
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&MTPDeviceMapService::RevokeMTPFileSystem,
                        base::Unretained(MTPDeviceMapService::GetInstance()),
                        fs_name));
@@ -695,14 +699,14 @@ class MediaFileSystemRegistry::MediaFileSystemContextImpl
     CHECK(!path.ReferencesParent());
 
     return ExternalMountPoints::GetSystemInstance()->RegisterFileSystem(
-        fs_name, storage::kFileSystemTypeNativeMedia,
+        fs_name, storage::kFileSystemTypeLocalMedia,
         storage::FileSystemMountOption(), path);
   }
 
   bool RegisterFileSystemForMTPDevice(const std::string& device_id,
                                       const std::string fs_name,
                                       const base::FilePath& path) {
-#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_CHROMEOS)
+#if defined(OS_WIN) || defined(OS_MAC) || BUILDFLAG(IS_CHROMEOS_ASH)
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
     DCHECK(!StorageInfo::IsMassStorageDevice(device_id));
 
@@ -714,8 +718,8 @@ class MediaFileSystemRegistry::MediaFileSystemContextImpl
         storage::FileSystemMountOption(),
         path);
     CHECK(result);
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&MTPDeviceMapService::RegisterMTPFileSystem,
                        base::Unretained(MTPDeviceMapService::GetInstance()),
                        path.value(), fs_name, true /* read only */));
@@ -779,7 +783,7 @@ void MediaFileSystemRegistry::OnGalleryRemoved(
         extension_registry->enabled_extensions().GetByID(it->first));
   }
   for (size_t i = 0; i < extensions.size(); ++i) {
-    if (!base::ContainsKey(extension_hosts_map_, profile))
+    if (!base::Contains(extension_hosts_map_, profile))
       break;
     auto gallery_host_it = extension_host_map.find(extensions[i]->id());
     if (gallery_host_it == extension_host_map.end())
@@ -802,13 +806,9 @@ ExtensionGalleriesHost* MediaFileSystemRegistry::GetExtensionGalleryHost(
   ExtensionGalleriesHost* result = extension_hosts->second[extension_id].get();
   if (!result) {
     result = new ExtensionGalleriesHost(
-        file_system_context_.get(),
-        profile->GetPath(),
-        extension_id,
-        base::Bind(&MediaFileSystemRegistry::OnExtensionGalleriesHostEmpty,
-                   base::Unretained(this),
-                   profile,
-                   extension_id));
+        file_system_context_.get(), profile->GetPath(), extension_id,
+        base::BindOnce(&MediaFileSystemRegistry::OnExtensionGalleriesHostEmpty,
+                       base::Unretained(this), profile, extension_id));
     extension_hosts_map_[profile][extension_id] = result;
   }
   return result;

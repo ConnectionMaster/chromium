@@ -1,10 +1,13 @@
 include_rules = [
   "+components/bookmarks/browser",
   "+components/bookmarks/test",
+  "+components/breadcrumbs/core",
   "+components/browsing_data/core",
   "+components/component_updater",
+  "+components/component_updater/installer_policies",
   "+components/content_settings",
   "+components/crash/core/common",
+  "+components/previous_session_info/previous_session_info.h",
   "+components/favicon/core",
   "+components/favicon_base",
   "+components/feature_engagement",
@@ -19,17 +22,18 @@ include_rules = [
   "+components/search_engines",
   "+components/suggestions",
   "+components/sync/driver",
-  "+components/thread_pool_util",
+  "+components/version_info",
   "+components/ukm/ios",
   "+components/unified_consent",
   "+components/url_formatter",
   "+components/web_resource",
   "+ios/chrome/browser",
   "+ios/chrome/browser/feature_engagement",
+  "+ios/components/webui",
   "+ios/net",
   "+ios/public/provider/chrome",
   "+mojo/core/embedder/embedder.h",
-  "+services/identity/public/cpp/identity_manager.h",
+  "+components/signin/public/identity_manager/identity_manager.h",
   "+third_party/breakpad/breakpad/src/client/ios",
 
   # Strings and resources.
@@ -37,3 +41,10 @@ include_rules = [
   "+components/strings",
   "+ios/chrome/grit",
 ]
+
+specific_include_rules = {
+  ".*test\.mm": [
+    "+components/previous_session_info/previous_session_info_private.h",
+    "+components/sync_preferences",
+  ],
+}

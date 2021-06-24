@@ -2,18 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "ios/web/public/web_state/web_state_delegate_bridge.h"
+#import "ios/web/public/web_state_delegate_bridge.h"
 
 #import <Foundation/Foundation.h>
 
 #include <memory>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
-#import "ios/web/public/test/crw_mock_web_state_delegate.h"
-#import "ios/web/public/test/fakes/test_web_state.h"
-#import "ios/web/public/web_state/context_menu_params.h"
+#import "ios/web/public/test/crw_fake_web_state_delegate.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/ui/context_menu_params.h"
 #include "testing/platform_test.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 #include "ui/base/page_transition_types.h"
 
@@ -25,6 +27,7 @@
 // any optional methods.
 @interface TestEmptyWebStateDelegate : NSObject<CRWWebStateDelegate>
 @end
+
 @implementation TestEmptyWebStateDelegate
 @end
 
@@ -36,10 +39,7 @@ class WebStateDelegateBridgeTest : public PlatformTest {
   void SetUp() override {
     PlatformTest::SetUp();
 
-    id originalMockDelegate =
-        [OCMockObject niceMockForProtocol:@protocol(CRWWebStateDelegate)];
-    delegate_ = [[CRWMockWebStateDelegate alloc]
-        initWithRepresentedObject:originalMockDelegate];
+    delegate_ = [[CRWFakeWebStateDelegate alloc] init];
     empty_delegate_ = [[TestEmptyWebStateDelegate alloc] init];
 
     bridge_.reset(new WebStateDelegateBridge(delegate_));
@@ -47,15 +47,14 @@ class WebStateDelegateBridgeTest : public PlatformTest {
   }
 
   void TearDown() override {
-    EXPECT_OCMOCK_VERIFY((OCMockObject*)delegate_);
     PlatformTest::TearDown();
   }
 
-  CRWMockWebStateDelegate* delegate_;
+  CRWFakeWebStateDelegate* delegate_;
   id empty_delegate_;
   std::unique_ptr<WebStateDelegateBridge> bridge_;
   std::unique_ptr<WebStateDelegateBridge> empty_delegate_bridge_;
-  web::TestWebState test_web_state_;
+  web::FakeWebState fake_web_state_;
 };
 
 // Tests |webState:createNewWebStateForURL:openerURL:initiatedByUser:|
@@ -65,9 +64,9 @@ TEST_F(WebStateDelegateBridgeTest, CreateNewWebState) {
   ASSERT_FALSE([delegate_ webStateCreationRequested]);
 
   EXPECT_FALSE(
-      bridge_->CreateNewWebState(&test_web_state_, GURL(), GURL(), true));
+      bridge_->CreateNewWebState(&fake_web_state_, GURL(), GURL(), true));
 
-  EXPECT_EQ(&test_web_state_, [delegate_ webState]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
   ASSERT_TRUE([delegate_ webStateCreationRequested]);
 }
 
@@ -76,9 +75,9 @@ TEST_F(WebStateDelegateBridgeTest, CloseWebState) {
   ASSERT_FALSE([delegate_ webState]);
   ASSERT_FALSE([delegate_ webStateClosingRequested]);
 
-  bridge_->CloseWebState(&test_web_state_);
+  bridge_->CloseWebState(&fake_web_state_);
 
-  EXPECT_EQ(&test_web_state_, [delegate_ webState]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
   ASSERT_TRUE([delegate_ webStateClosingRequested]);
 }
 
@@ -91,10 +90,10 @@ TEST_F(WebStateDelegateBridgeTest, OpenURLFromWebState) {
       GURL("https://chromium.test/"), GURL("https://virtual.chromium.test/"),
       web::Referrer(GURL("https://chromium2.test/"), ReferrerPolicyNever),
       WindowOpenDisposition::NEW_WINDOW, ui::PAGE_TRANSITION_FORM_SUBMIT, true);
-  EXPECT_EQ(&test_web_state_,
-            bridge_->OpenURLFromWebState(&test_web_state_, params));
+  EXPECT_EQ(&fake_web_state_,
+            bridge_->OpenURLFromWebState(&fake_web_state_, params));
 
-  EXPECT_EQ(&test_web_state_, [delegate_ webState]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
   const web::WebState::OpenURLParams* result_params = [delegate_ openURLParams];
   ASSERT_TRUE(result_params);
   EXPECT_EQ(params.url, result_params->url);
@@ -111,6 +110,7 @@ TEST_F(WebStateDelegateBridgeTest, OpenURLFromWebState) {
 TEST_F(WebStateDelegateBridgeTest, HandleContextMenu) {
   EXPECT_EQ(nil, [delegate_ contextMenuParams]);
   web::ContextMenuParams context_menu_params;
+  context_menu_params.is_main_frame = false;
   context_menu_params.menu_title = [@"Menu title" copy];
   context_menu_params.link_url = GURL("http://www.url.com");
   context_menu_params.src_url = GURL("http://www.url.com/image.jpeg");
@@ -121,6 +121,7 @@ TEST_F(WebStateDelegateBridgeTest, HandleContextMenu) {
   web::ContextMenuParams* result_params = [delegate_ contextMenuParams];
   EXPECT_NE(nullptr, result_params);
   EXPECT_EQ(context_menu_params.menu_title, result_params->menu_title);
+  EXPECT_EQ(context_menu_params.is_main_frame, result_params->is_main_frame);
   EXPECT_EQ(context_menu_params.link_url, result_params->link_url);
   EXPECT_EQ(context_menu_params.src_url, result_params->src_url);
   EXPECT_EQ(context_menu_params.referrer_policy,
@@ -134,10 +135,10 @@ TEST_F(WebStateDelegateBridgeTest, HandleContextMenu) {
 TEST_F(WebStateDelegateBridgeTest, ShowRepostFormWarningDialog) {
   EXPECT_FALSE([delegate_ repostFormWarningRequested]);
   EXPECT_FALSE([delegate_ webState]);
-  base::Callback<void(bool)> callback;
-  bridge_->ShowRepostFormWarningDialog(&test_web_state_, callback);
+  base::OnceCallback<void(bool)> callback;
+  bridge_->ShowRepostFormWarningDialog(&fake_web_state_, std::move(callback));
   EXPECT_TRUE([delegate_ repostFormWarningRequested]);
-  EXPECT_EQ(&test_web_state_, [delegate_ webState]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
 }
 
 // Tests |ShowRepostFormWarningDialog| forwarding to delegate which does not
@@ -165,11 +166,11 @@ TEST_F(WebStateDelegateBridgeTest, OnAuthRequired) {
   EXPECT_FALSE([delegate_ webState]);
   NSURLProtectionSpace* protection_space = [[NSURLProtectionSpace alloc] init];
   NSURLCredential* credential = [[NSURLCredential alloc] init];
-  WebStateDelegate::AuthCallback callback;
-  bridge_->OnAuthRequired(&test_web_state_, protection_space, credential,
-                          callback);
+  WebStateDelegate::AuthCallback callback = base::DoNothing();
+  bridge_->OnAuthRequired(&fake_web_state_, protection_space, credential,
+                          std::move(callback));
   EXPECT_TRUE([delegate_ authenticationRequested]);
-  EXPECT_EQ(&test_web_state_, [delegate_ webState]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
 }
 
 // Tests |ShouldPreviewLink| forwarding.
@@ -178,13 +179,13 @@ TEST_F(WebStateDelegateBridgeTest, ShouldPreviewLinkWithURL) {
   EXPECT_FALSE(delegate_.webState);
 
   delegate_.shouldPreviewLinkWithURLReturnValue = YES;
-  EXPECT_TRUE(bridge_->ShouldPreviewLink(&test_web_state_, link_url));
-  EXPECT_EQ(&test_web_state_, delegate_.webState);
+  EXPECT_TRUE(bridge_->ShouldPreviewLink(&fake_web_state_, link_url));
+  EXPECT_EQ(&fake_web_state_, delegate_.webState);
   EXPECT_EQ(link_url, delegate_.linkURL);
 
   delegate_.shouldPreviewLinkWithURLReturnValue = NO;
-  EXPECT_FALSE(bridge_->ShouldPreviewLink(&test_web_state_, link_url));
-  EXPECT_EQ(&test_web_state_, delegate_.webState);
+  EXPECT_FALSE(bridge_->ShouldPreviewLink(&fake_web_state_, link_url));
+  EXPECT_EQ(&fake_web_state_, delegate_.webState);
   EXPECT_EQ(link_url, delegate_.linkURL);
 }
 
@@ -198,8 +199,8 @@ TEST_F(WebStateDelegateBridgeTest, GetPreviewingViewController) {
   delegate_.previewingViewControllerForLinkWithURLReturnValue =
       previewing_view_controller;
   EXPECT_EQ(previewing_view_controller,
-            bridge_->GetPreviewingViewController(&test_web_state_, link_url));
-  EXPECT_EQ(&test_web_state_, delegate_.webState);
+            bridge_->GetPreviewingViewController(&fake_web_state_, link_url));
+  EXPECT_EQ(&fake_web_state_, delegate_.webState);
   EXPECT_EQ(link_url, delegate_.linkURL);
 }
 
@@ -210,10 +211,10 @@ TEST_F(WebStateDelegateBridgeTest, CommitPreviewingViewController) {
 
   EXPECT_FALSE(delegate_.webState);
   EXPECT_FALSE(delegate_.previewingViewController);
-  bridge_->CommitPreviewingViewController(&test_web_state_,
+  bridge_->CommitPreviewingViewController(&fake_web_state_,
                                           previewing_view_controller);
   EXPECT_TRUE(delegate_.commitPreviewingViewControllerRequested);
-  EXPECT_EQ(&test_web_state_, delegate_.webState);
+  EXPECT_EQ(&fake_web_state_, delegate_.webState);
   EXPECT_EQ(previewing_view_controller, delegate_.previewingViewController);
 }
 

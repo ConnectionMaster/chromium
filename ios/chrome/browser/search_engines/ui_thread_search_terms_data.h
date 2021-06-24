@@ -11,18 +11,16 @@
 
 namespace ios {
 
-class ChromeBrowserState;
-
 // Implementation of SearchTermsData that is only usable on UI thread.
 class UIThreadSearchTermsData : public SearchTermsData {
  public:
-  explicit UIThreadSearchTermsData(ios::ChromeBrowserState* browser_state);
+  UIThreadSearchTermsData();
   ~UIThreadSearchTermsData() override;
 
   // SearchTermsData implementation.
   std::string GoogleBaseURLValue() const override;
   std::string GetApplicationLocale() const override;
-  base::string16 GetRlzParameterValue(bool from_app_list) const override;
+  std::u16string GetRlzParameterValue(bool from_app_list) const override;
   std::string GetSearchClient() const override;
   std::string GetSuggestClient() const override;
   std::string GetSuggestRequestIdentifier() const override;
@@ -30,7 +28,6 @@ class UIThreadSearchTermsData : public SearchTermsData {
 
  private:
   base::ThreadChecker thread_checker_;
-  ios::ChromeBrowserState* browser_state_;
 
   DISALLOW_COPY_AND_ASSIGN(UIThreadSearchTermsData);
 };

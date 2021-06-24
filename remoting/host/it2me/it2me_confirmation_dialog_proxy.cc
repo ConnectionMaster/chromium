@@ -4,10 +4,10 @@
 
 #include "remoting/host/it2me/it2me_confirmation_dialog_proxy.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -63,9 +63,10 @@ void It2MeConfirmationDialogProxy::Core::Show(
     const std::string& remote_user_email) {
   DCHECK(ui_task_runner_->BelongsToCurrentThread());
 
-  dialog_->Show(remote_user_email,
-                base::Bind(&It2MeConfirmationDialogProxy::Core::ReportResult,
-                           base::Unretained(this)));
+  dialog_->Show(
+      remote_user_email,
+      base::BindOnce(&It2MeConfirmationDialogProxy::Core::ReportResult,
+                     base::Unretained(this)));
 }
 
 void It2MeConfirmationDialogProxy::Core::ReportResult(
@@ -78,10 +79,10 @@ void It2MeConfirmationDialogProxy::Core::ReportResult(
 
 It2MeConfirmationDialogProxy::It2MeConfirmationDialogProxy(
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    std::unique_ptr<It2MeConfirmationDialog> dialog)
-    : weak_factory_(this) {
-  core_.reset(new Core(ui_task_runner, base::ThreadTaskRunnerHandle::Get(),
-                       weak_factory_.GetWeakPtr(), std::move(dialog)));
+    std::unique_ptr<It2MeConfirmationDialog> dialog) {
+  core_ = std::make_unique<Core>(ui_task_runner,
+                                 base::ThreadTaskRunnerHandle::Get(),
+                                 weak_factory_.GetWeakPtr(), std::move(dialog));
 }
 
 It2MeConfirmationDialogProxy::~It2MeConfirmationDialogProxy() {
@@ -93,10 +94,10 @@ It2MeConfirmationDialogProxy::~It2MeConfirmationDialogProxy() {
 
 void It2MeConfirmationDialogProxy::Show(
     const std::string& remote_user_email,
-    const It2MeConfirmationDialog::ResultCallback& callback) {
+    It2MeConfirmationDialog::ResultCallback callback) {
   DCHECK(core_->caller_task_runner()->BelongsToCurrentThread());
 
-  callback_ = callback;
+  callback_ = std::move(callback);
   core_->ui_task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&Core::Show, base::Unretained(core_.get()),
                                 remote_user_email));
@@ -105,7 +106,7 @@ void It2MeConfirmationDialogProxy::Show(
 void It2MeConfirmationDialogProxy::ReportResult(
     It2MeConfirmationDialog::Result result) {
   DCHECK(core_->caller_task_runner()->BelongsToCurrentThread());
-  base::ResetAndReturn(&callback_).Run(result);
+  std::move(callback_).Run(result);
 }
 
 }  // namespace remoting

@@ -8,10 +8,9 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/interstitial_page.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -45,26 +44,14 @@ const char kReceivingEndDoesntExistError[] =
 class ExtensionMessagePort::FrameTracker : public content::WebContentsObserver,
                                            public ProcessManagerObserver {
  public:
-  explicit FrameTracker(ExtensionMessagePort* port)
-      : pm_observer_(this), port_(port), interstitial_frame_(nullptr) {}
+  explicit FrameTracker(ExtensionMessagePort* port) : port_(port) {}
   ~FrameTracker() override {}
 
   void TrackExtensionProcessFrames() {
-    pm_observer_.Add(ProcessManager::Get(port_->browser_context_));
+    pm_observation_.Observe(ProcessManager::Get(port_->browser_context_));
   }
 
   void TrackTabFrames(content::WebContents* tab) {
-    Observe(tab);
-  }
-
-  void TrackInterstitialFrame(content::WebContents* tab,
-                              content::RenderFrameHost* interstitial_frame) {
-    // |tab| should never be nullptr, because an interstitial's lifetime is
-    // tied to a tab. This is a CHECK, not a DCHECK because we really need an
-    // observer subject to detect frame removal (via DidDetachInterstitialPage).
-    CHECK(tab);
-    DCHECK(interstitial_frame);
-    interstitial_frame_ = interstitial_frame;
     Observe(tab);
   }
 
@@ -83,11 +70,6 @@ class ExtensionMessagePort::FrameTracker : public content::WebContentsObserver,
     }
   }
 
-  void DidDetachInterstitialPage() override {
-    if (interstitial_frame_)
-      port_->UnregisterFrame(interstitial_frame_);
-  }
-
   // extensions::ProcessManagerObserver overrides:
   void OnExtensionFrameUnregistered(
       const std::string& extension_id,
@@ -96,13 +78,13 @@ class ExtensionMessagePort::FrameTracker : public content::WebContentsObserver,
       port_->UnregisterFrame(render_frame_host);
   }
 
-  ScopedObserver<ProcessManager, ProcessManagerObserver> pm_observer_;
-  ExtensionMessagePort* port_;  // Owns this FrameTracker.
+  void OnServiceWorkerUnregistered(const WorkerId& worker_id) override {
+    port_->UnregisterWorker(worker_id);
+  }
 
-  // Set to the main frame of an interstitial if we are tracking an interstitial
-  // page, because RenderFrameDeleted is never triggered for frames in an
-  // interstitial (and we only support tracking the interstitial's main frame).
-  content::RenderFrameHost* interstitial_frame_;
+  base::ScopedObservation<ProcessManager, ProcessManagerObserver>
+      pm_observation_{this};
+  ExtensionMessagePort* port_;  // Owns this FrameTracker.
 
   DISALLOW_COPY_AND_ASSIGN(FrameTracker);
 };
@@ -156,28 +138,7 @@ ExtensionMessagePort::ExtensionMessagePort(
       background_host_ptr_(nullptr),
       frame_tracker_(new FrameTracker(this)) {
   content::WebContents* tab = content::WebContents::FromRenderFrameHost(rfh);
-  if (!tab) {
-    content::InterstitialPage* interstitial =
-        content::InterstitialPage::FromRenderFrameHost(rfh);
-    // A RenderFrameHost must be hosted in a WebContents or InterstitialPage.
-    CHECK(interstitial);
-
-    // Only the main frame of an interstitial is supported, because frames in
-    // the interstitial do not trigger RenderFrameCreated / RenderFrameDeleted
-    // on WebContentObservers. Consequently, (1) we cannot detect removal of
-    // RenderFrameHosts, and (2) even if the RenderFrameDeleted is propagated,
-    // then WebContentsObserverSanityChecker triggers a CHECK when it detects
-    // frame notifications without a corresponding RenderFrameCreated.
-    if (!rfh->GetParent()) {
-      // It is safe to pass the interstitial's WebContents here because we only
-      // use it to observe DidDetachInterstitialPage.
-      frame_tracker_->TrackInterstitialFrame(interstitial->GetWebContents(),
-                                             rfh);
-      RegisterFrame(rfh);
-    }
-    return;
-  }
-
+  CHECK(tab);
   frame_tracker_->TrackTabFrames(tab);
   if (include_child_frames) {
     tab->ForEachFrame(base::BindRepeating(&ExtensionMessagePort::RegisterFrame,
@@ -190,9 +151,11 @@ ExtensionMessagePort::ExtensionMessagePort(
 ExtensionMessagePort::ExtensionMessagePort(
     base::WeakPtr<ChannelDelegate> channel_delegate,
     const PortId& port_id,
+    const ExtensionId& extension_id,
     content::BrowserContext* browser_context)
     : weak_channel_delegate_(channel_delegate),
       port_id_(port_id),
+      extension_id_(extension_id),
       browser_context_(browser_context) {}
 
 // static
@@ -211,7 +174,9 @@ std::unique_ptr<ExtensionMessagePort> ExtensionMessagePort::CreateForEndpoint(
   // NOTE: We don't want all the workers within the extension, so we cannot
   // reuse other constructor from above.
   std::unique_ptr<ExtensionMessagePort> port(new ExtensionMessagePort(
-      channel_delegate, port_id, endpoint.browser_context()));
+      channel_delegate, port_id, extension_id, endpoint.browser_context()));
+  port->frame_tracker_ = std::make_unique<FrameTracker>(port.get());
+  port->frame_tracker_->TrackExtensionProcessFrames();
   port->RegisterWorker(endpoint.GetWorkerId());
   return port;
 }
@@ -279,13 +244,14 @@ void ExtensionMessagePort::DispatchOnConnect(
     int guest_render_frame_routing_id,
     const MessagingEndpoint& source_endpoint,
     const std::string& target_extension_id,
-    const GURL& source_url) {
+    const GURL& source_url,
+    absl::optional<url::Origin> source_origin) {
   SendToPort(base::BindRepeating(
       &ExtensionMessagePort::BuildDispatchOnConnectIPC,
       // Called synchronously.
       base::Unretained(this), channel_name, source_tab.get(), source_frame_id,
       guest_process_id, guest_render_frame_routing_id, source_endpoint,
-      target_extension_id, source_url));
+      target_extension_id, source_url, source_origin));
 }
 
 void ExtensionMessagePort::DispatchOnDisconnect(
@@ -406,7 +372,8 @@ void ExtensionMessagePort::RegisterWorker(const WorkerId& worker_id) {
 }
 
 void ExtensionMessagePort::UnregisterWorker(const WorkerId& worker_id) {
-  DCHECK_EQ(extension_id_, worker_id.extension_id);
+  if (extension_id_ != worker_id.extension_id)
+    return;
   if (service_workers_.erase(worker_id) == 0)
     return;
 
@@ -492,6 +459,7 @@ std::unique_ptr<IPC::Message> ExtensionMessagePort::BuildDispatchOnConnectIPC(
     const MessagingEndpoint& source_endpoint,
     const std::string& target_extension_id,
     const GURL& source_url,
+    absl::optional<url::Origin> source_origin,
     const IPCTarget& target) {
   ExtensionMsg_TabConnectionInfo source;
   if (source_tab) {
@@ -508,6 +476,7 @@ std::unique_ptr<IPC::Message> ExtensionMessagePort::BuildDispatchOnConnectIPC(
   info.target_id = target_extension_id;
   info.source_endpoint = source_endpoint;
   info.source_url = source_url;
+  info.source_origin = std::move(source_origin);
   info.guest_process_id = guest_process_id;
   info.guest_render_frame_routing_id = guest_render_frame_routing_id;
 

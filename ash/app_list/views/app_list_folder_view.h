@@ -13,33 +13,36 @@
 #include "ash/app_list/views/apps_grid_view_folder_delegate.h"
 #include "ash/app_list/views/folder_header_view.h"
 #include "ash/app_list/views/folder_header_view_delegate.h"
-#include "base/macros.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/compositor/throughput_tracker.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/view.h"
 #include "ui/views/view_model.h"
 
-namespace gfx {
-class SlideAnimation;
-}  // namespace gfx
-
-namespace app_list {
+namespace ash {
 
 class AppsContainerView;
-class AppsGridView;
 class AppListFolderItem;
 class AppListItemView;
 class AppListModel;
+class AppListViewDelegate;
 class FolderHeaderView;
+class PagedAppsGridView;
 class PageSwitcher;
 
-class APP_LIST_EXPORT AppListFolderView : public views::View,
-                                          public FolderHeaderViewDelegate,
-                                          public AppListModelObserver,
-                                          public AppsGridViewFolderDelegate {
+class ASH_EXPORT AppListFolderView : public views::View,
+                                     public FolderHeaderViewDelegate,
+                                     public AppListModelObserver,
+                                     public AppsGridViewFolderDelegate {
  public:
+  METADATA_HEADER(AppListFolderView);
+
   AppListFolderView(AppsContainerView* container_view,
                     AppListModel* model,
-                    ContentsView* contents_view);
+                    ContentsView* contents_view,
+                    AppListViewDelegate* view_delegate);
+  AppListFolderView(const AppListFolderView&) = delete;
+  AppListFolderView& operator=(const AppListFolderView&) = delete;
   ~AppListFolderView() override;
 
   // An interface for the folder opening and closing animations.
@@ -59,6 +62,10 @@ class APP_LIST_EXPORT AppListFolderView : public views::View,
 
   // Hides the view immediately without animation.
   void HideViewImmediately();
+
+  // Prepares folder item grid for closing the folder - it ends any in-progress
+  // drag, and clears any selected view.
+  void ResetItemsGridForClose();
 
   // Closes the folder page and goes back the top level page.
   void CloseFolderPage();
@@ -83,7 +90,7 @@ class APP_LIST_EXPORT AppListFolderView : public views::View,
   // closing the folder.
   bool IsAnimationRunning() const;
 
-  AppsGridView* items_grid_view() { return items_grid_view_; }
+  PagedAppsGridView* items_grid_view() { return items_grid_view_; }
 
   FolderHeaderView* folder_header_view() { return folder_header_view_; }
 
@@ -106,33 +113,14 @@ class APP_LIST_EXPORT AppListFolderView : public views::View,
   // ContentsContainerAnimation.
   void RecordAnimationSmoothness();
 
-  // Sets the layer mask's corner radius and insets in background.
-  void UpdateBackgroundMask(int corner_radius, const gfx::Insets& insets);
-
   // Called when tablet mode starts and ends.
-  void OnTabletModeChanged(bool started) {
-    folder_header_view()->set_tablet_mode(started);
-  }
-
-  // When transform in |contents_view_| is updated, notify accessibility to show
-  // ChromeVox focus in correct locations.
-  void NotifyAccessibilityLocationChanges();
-
- private:
-  void CalculateIdealBounds();
-
-  // Starts setting up drag in root level apps grid view for re-parenting a
-  // folder item.
-  // |drag_point_in_root_grid| is in the coordinates of root level AppsGridView.
-  void StartSetupDragInRootLevelAppsGridView(
-      AppListItemView* original_drag_view,
-      const gfx::Point& drag_point_in_root_grid,
-      bool has_native_drag);
+  void OnTabletModeChanged(bool started);
 
   // Overridden from views::View:
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
 
   // Overridden from FolderHeaderViewDelegate:
+  const AppListConfig& GetAppListConfig() const override;
   void NavigateBack(AppListFolderItem* item,
                     const ui::Event& event_flags) override;
   void GiveBackFocusToSearchBox() override;
@@ -147,11 +135,22 @@ class APP_LIST_EXPORT AppListFolderView : public views::View,
       const gfx::Point& drag_point_in_folder_grid) override;
   void DispatchEndDragEventForReparent(bool events_forwarded_to_drag_drop_host,
                                        bool cancel_drag) override;
-  bool IsPointOutsideOfFolderBoundary(const gfx::Point& point) override;
+  bool IsViewOutsideOfFolder(AppListItemView* view) override;
   bool IsOEMFolder() const override;
   void SetRootLevelDragViewVisible(bool visible) override;
   void HandleKeyboardReparent(AppListItemView* reparented_view,
                               ui::KeyboardCode key_code) override;
+
+ private:
+  void CalculateIdealBounds();
+
+  // Starts setting up drag in root level apps grid view for re-parenting a
+  // folder item. `drag_point_in_root_grid` is in the coordinates of root
+  // level AppsGridView.
+  void StartSetupDragInRootLevelAppsGridView(
+      AppListItemView* original_drag_view,
+      const gfx::Point& drag_point_in_root_grid,
+      bool has_native_drag);
 
   // Returns the compositor associated to the widget containing this view.
   // Returns nullptr if there isn't one associated with this widget.
@@ -172,7 +171,7 @@ class APP_LIST_EXPORT AppListFolderView : public views::View,
   views::View* contents_container_;  // Owned by views hierarchy.
 
   FolderHeaderView* folder_header_view_;  // Owned by views hierarchy.
-  AppsGridView* items_grid_view_;         // Owned by views hierarchy.
+  PagedAppsGridView* items_grid_view_;    // Owned by views hierarchy.
   PageSwitcher* page_switcher_;           // Owned by views hierarchy.
 
   std::unique_ptr<views::ViewModel> view_model_;
@@ -188,20 +187,15 @@ class APP_LIST_EXPORT AppListFolderView : public views::View,
 
   bool hide_for_reparent_ = false;
 
-  std::unique_ptr<gfx::SlideAnimation> background_animation_;
-  std::unique_ptr<gfx::SlideAnimation> folder_item_title_animation_;
+  std::unique_ptr<Animation> background_animation_;
+  std::unique_ptr<Animation> folder_item_title_animation_;
   std::unique_ptr<Animation> top_icon_animation_;
   std::unique_ptr<Animation> contents_container_animation_;
 
-  // The layer mask to create rounded corner.
-  std::unique_ptr<ui::LayerOwner> background_mask_ = nullptr;
-
-  // The compositor frame number when animation starts.
-  int animation_start_frame_number_ = 0;
-
-  DISALLOW_COPY_AND_ASSIGN(AppListFolderView);
+  // Records smoothness of the folder show/hide animation.
+  absl::optional<ui::ThroughputTracker> show_hide_metrics_tracker_;
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_VIEWS_APP_LIST_FOLDER_VIEW_H_

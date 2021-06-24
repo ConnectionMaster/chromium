@@ -8,14 +8,14 @@
 
 #include <memory>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/stl_util.h"
 #include "base/trace_event/trace_event.h"
+#include "cc/animation/animation.h"
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_id_provider.h"
 #include "cc/animation/animation_timeline.h"
 #include "cc/animation/element_animations.h"
-#include "cc/animation/single_keyframe_effect_animation.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
@@ -31,10 +31,9 @@
     ((running_anim.is_sequence_alive()) \
         ? function(running_anim.sequence()) \
         : false)
-#define SAFE_INVOKE_PTR(function, running_anim) \
-    ((running_anim.is_sequence_alive()) \
-        ? function(running_anim.sequence()) \
-        : NULL)
+#define SAFE_INVOKE_PTR(function, running_anim)                           \
+  ((running_anim.is_sequence_alive()) ? function(running_anim.sequence()) \
+                                      : nullptr)
 
 namespace ui {
 
@@ -47,17 +46,16 @@ const int kLayerAnimatorDefaultTransitionDurationMs = 120;
 // LayerAnimator public --------------------------------------------------------
 
 LayerAnimator::LayerAnimator(base::TimeDelta transition_duration)
-    : delegate_(NULL),
+    : delegate_(nullptr),
       preemption_strategy_(IMMEDIATELY_SET_NEW_TARGET),
       is_transition_duration_locked_(false),
       transition_duration_(transition_duration),
       tween_type_(gfx::Tween::LINEAR),
       is_started_(false),
       disable_timer_for_test_(false),
-      adding_animations_(false),
-      animation_metrics_reporter_(nullptr) {
-  animation_ = cc::SingleKeyframeEffectAnimation::Create(
-      cc::AnimationIdProvider::NextAnimationId());
+      adding_animations_(false) {
+  animation_ =
+      cc::Animation::Create(cc::AnimationIdProvider::NextAnimationId());
 }
 
 LayerAnimator::~LayerAnimator() {
@@ -66,7 +64,7 @@ LayerAnimator::~LayerAnimator() {
       running_animations_[i].sequence()->OnAnimatorDestroyed();
   }
   ClearAnimationsInternal();
-  delegate_ = NULL;
+  delegate_ = nullptr;
   DCHECK(!animation_->animation_timeline());
 }
 
@@ -93,6 +91,8 @@ LayerAnimator* LayerAnimator::CreateImplicitAnimator() {
     if (duration.is_zero() && delegate() &&                            \
         (preemption_strategy_ != ENQUEUE_NEW_ANIMATION)) {             \
       StopAnimatingProperty(LayerAnimationElement::property);          \
+      if (!delegate())                                                 \
+        return;                                                        \
       delegate()->Set##name##FromAnimation(                            \
           value, PropertyChangeReason::NOT_FROM_ANIMATION);            \
       return;                                                          \
@@ -120,6 +120,12 @@ ANIMATED_PROPERTY(bool, VISIBILITY, Visibility, bool, visibility)
 ANIMATED_PROPERTY(float, BRIGHTNESS, Brightness, float, brightness)
 ANIMATED_PROPERTY(float, GRAYSCALE, Grayscale, float, grayscale)
 ANIMATED_PROPERTY(SkColor, COLOR, Color, SkColor, color)
+ANIMATED_PROPERTY(const gfx::Rect&, CLIP, ClipRect, gfx::Rect, clip_rect)
+ANIMATED_PROPERTY(const gfx::RoundedCornersF&,
+                  ROUNDED_CORNERS,
+                  RoundedCorners,
+                  gfx::RoundedCornersF,
+                  rounded_corners)
 
 #undef ANIMATED_PROPERTY
 
@@ -158,6 +164,9 @@ void LayerAnimator::AttachLayerAndTimeline(Compositor* compositor) {
 
   DCHECK(delegate_->GetCcLayer());
   AttachLayerToAnimation(delegate_->GetCcLayer()->id());
+
+  for (auto& layer_animation_sequence : animation_queue_)
+    layer_animation_sequence->OnAnimatorAttached(delegate());
 }
 
 void LayerAnimator::DetachLayerAndTimeline(Compositor* compositor) {
@@ -168,6 +177,9 @@ void LayerAnimator::DetachLayerAndTimeline(Compositor* compositor) {
 
   DetachLayerFromAnimation();
   timeline->DetachAnimation(animation_);
+
+  for (auto& layer_animation_sequence : animation_queue_)
+    layer_animation_sequence->OnAnimatorDetached();
 }
 
 void LayerAnimator::AttachLayerToAnimation(int layer_id) {
@@ -197,15 +209,12 @@ void LayerAnimator::RemoveThreadedAnimation(int keyframe_model_id) {
   animation_->RemoveKeyframeModel(keyframe_model_id);
 }
 
-cc::SingleKeyframeEffectAnimation* LayerAnimator::GetAnimationForTesting()
-    const {
+cc::Animation* LayerAnimator::GetAnimationForTesting() const {
   return animation_.get();
 }
 
 void LayerAnimator::StartAnimation(LayerAnimationSequence* animation) {
   scoped_refptr<LayerAnimator> retain(this);
-  if (animation_metrics_reporter_)
-    animation->SetAnimationMetricsReporter(animation_metrics_reporter_);
   OnScheduled(animation);
   if (!StartSequenceImmediately(animation)) {
     // Attempt to preempt a running animation.
@@ -649,7 +658,7 @@ LayerAnimator::RunningAnimation* LayerAnimator::GetRunningAnimation(
     if ((*iter).sequence()->properties() & property)
       return &(*iter);
   }
-  return NULL;
+  return nullptr;
 }
 
 void LayerAnimator::AddToQueueIfNotPresent(LayerAnimationSequence* animation) {
@@ -724,7 +733,7 @@ void LayerAnimator::ImmediatelySetNewTarget(LayerAnimationSequence* sequence) {
     return;
 
   LayerAnimationSequence* removed = RemoveAnimation(sequence);
-  DCHECK(removed == NULL || removed == sequence);
+  DCHECK(removed == nullptr || removed == sequence);
   if (!weak_sequence_ptr.get())
     return;
 
@@ -939,7 +948,7 @@ void LayerAnimator::PurgeDeletedAnimations() {
 }
 
 LayerAnimatorCollection* LayerAnimator::GetLayerAnimatorCollection() {
-  return delegate_ ? delegate_->GetLayerAnimatorCollection() : NULL;
+  return delegate_ ? delegate_->GetLayerAnimatorCollection() : nullptr;
 }
 
 void LayerAnimator::NotifyAnimationStarted(base::TimeTicks monotonic_time,

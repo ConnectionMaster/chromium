@@ -41,6 +41,9 @@ bool ShouldDiscardRequest(const URLRequest& request) {
 namespace nqe {
 
 namespace internal {
+// The default content size of a HTML response body. It is set to the median
+// HTML response content size, i.e. 1.8kB.
+constexpr int64_t kDefaultContentSizeBytes = 1800;
 
 ThroughputAnalyzer::ThroughputAnalyzer(
     const NetworkQualityEstimator* network_quality_estimator,
@@ -57,6 +60,7 @@ ThroughputAnalyzer::ThroughputAnalyzer(
       last_connection_change_(tick_clock_->NowTicks()),
       window_start_time_(base::TimeTicks()),
       bits_received_at_window_start_(0),
+      total_response_content_size_(0),
       disable_throughput_measurements_(false),
       use_localhost_requests_for_tests_(false),
       net_log_(net_log) {
@@ -126,8 +130,24 @@ void ThroughputAnalyzer::SetTickClockForTesting(
   DCHECK(tick_clock_);
 }
 
+void ThroughputAnalyzer::UpdateResponseContentSize(const URLRequest* request,
+                                                   int64_t response_size) {
+  DCHECK_LE(0, response_size);
+  // Updates the map and the counter. Subtracts the previous stored response
+  // content size if an old record exists in the map.
+  if (response_content_sizes_.find(request) != response_content_sizes_.end()) {
+    total_response_content_size_ +=
+        response_size - response_content_sizes_[request];
+  } else {
+    total_response_content_size_ += response_size;
+  }
+  response_content_sizes_[request] = response_size;
+}
+
 void ThroughputAnalyzer::NotifyStartTransaction(const URLRequest& request) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  UpdateResponseContentSize(&request, kDefaultContentSizeBytes);
 
   if (disable_throughput_measurements_)
     return;
@@ -172,6 +192,12 @@ void ThroughputAnalyzer::NotifyBytesRead(const URLRequest& request) {
 
 void ThroughputAnalyzer::NotifyRequestCompleted(const URLRequest& request) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // Remove the request from the inflight requests if it presents in the map.
+  if (response_content_sizes_.find(&request) != response_content_sizes_.end()) {
+    total_response_content_size_ -= response_content_sizes_[&request];
+    response_content_sizes_.erase(&request);
+  }
 
   if (disable_throughput_measurements_)
     return;
@@ -224,6 +250,16 @@ void ThroughputAnalyzer::NotifyRequestCompleted(const URLRequest& request) {
   MaybeStartThroughputObservationWindow();
 }
 
+void ThroughputAnalyzer::NotifyExpectedResponseContentSize(
+    const URLRequest& request,
+    int64_t expected_content_size) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Updates when the value is valid.
+  if (expected_content_size >= 0) {
+    UpdateResponseContentSize(&request, expected_content_size);
+  }
+}
+
 bool ThroughputAnalyzer::IsHangingWindow(int64_t bits_received,
                                          base::TimeDelta duration,
                                          double downstream_kbps_double) const {
@@ -242,10 +278,9 @@ bool ThroughputAnalyzer::IsHangingWindow(int64_t bits_received,
   // Scale the |duration| to one HTTP RTT, and compute the number of bits that
   // would be received over a duration of one HTTP RTT.
   size_t bits_received_over_one_http_rtt =
-      bits_received * (network_quality_estimator_->GetHttpRTT()
-                           .value_or(base::TimeDelta::FromSeconds(10))
-                           .InMillisecondsF() /
-                       duration.InMillisecondsF());
+      bits_received * (network_quality_estimator_->GetHttpRTT().value_or(
+                           base::TimeDelta::FromSeconds(10)) /
+                       duration);
 
   // If |is_hanging| is true, it implies that less than
   // kCwndSizeKilobytes were received over a period of 1 HTTP RTT. For a network
@@ -258,11 +293,11 @@ bool ThroughputAnalyzer::IsHangingWindow(int64_t bits_received,
 
   // Record kbps as function of |is_hanging|.
   if (is_hanging) {
-    UMA_HISTOGRAM_COUNTS_1M("NQE.ThroughputObservation.Hanging",
-                            downstream_kbps_double);
+    LOCAL_HISTOGRAM_COUNTS_1000000("NQE.ThroughputObservation.Hanging",
+                                   downstream_kbps_double);
   } else {
-    UMA_HISTOGRAM_COUNTS_1M("NQE.ThroughputObservation.NotHanging",
-                            downstream_kbps_double);
+    LOCAL_HISTOGRAM_COUNTS_1000000("NQE.ThroughputObservation.NotHanging",
+                                   downstream_kbps_double);
   }
   return is_hanging;
 }
@@ -298,8 +333,7 @@ bool ThroughputAnalyzer::MaybeGetThroughputObservation(
     return false;
   }
 
-  double downstream_kbps_double =
-      (bits_received * 1.0f) / duration.InMillisecondsF();
+  double downstream_kbps_double = bits_received * duration.ToHz() / 1000;
 
   if (IsHangingWindow(bits_received, duration, downstream_kbps_double)) {
     requests_.clear();
@@ -346,19 +380,30 @@ void ThroughputAnalyzer::SetUseLocalHostRequestsForTesting(
 
 int64_t ThroughputAnalyzer::GetBitsReceived() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return NetworkActivityMonitor::GetInstance()->GetBytesReceived() * 8;
+  return activity_monitor::GetBytesReceived() * 8;
 }
 
-size_t ThroughputAnalyzer::CountInFlightRequests() const {
+size_t ThroughputAnalyzer::CountActiveInFlightRequests() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return requests_.size();
+}
+
+size_t ThroughputAnalyzer::CountTotalInFlightRequests() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return response_content_sizes_.size();
+}
+
+int64_t ThroughputAnalyzer::CountTotalContentSizeBytes() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  return total_response_content_size_;
 }
 
 bool ThroughputAnalyzer::DegradesAccuracy(const URLRequest& request) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  bool private_network_request = nqe::internal::IsPrivateHost(
-      request.context()->host_resolver(), HostPortPair::FromURL(request.url()));
+  bool private_network_request =
+      nqe::internal::IsRequestForPrivateHost(request);
 
   return !(use_localhost_requests_for_tests_ || !private_network_request) ||
          request.creation_time() < last_connection_change_;

@@ -11,7 +11,9 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/rrect_f.h"
 #include "ui/gfx/transform.h"
+#include "ui/gfx/video_types.h"
 #include "ui/gl/gl_export.h"
 
 namespace gl {
@@ -23,6 +25,7 @@ namespace ui {
 struct GL_EXPORT CARendererLayerParams {
   CARendererLayerParams(bool is_clipped,
                         const gfx::Rect clip_rect,
+                        const gfx::RRectF rounded_corner_bounds,
                         unsigned sorting_context_id,
                         const gfx::Transform& transform,
                         gl::GLImage* image,
@@ -31,12 +34,14 @@ struct GL_EXPORT CARendererLayerParams {
                         unsigned background_color,
                         unsigned edge_aa_mask,
                         float opacity,
-                        unsigned filter);
+                        unsigned filter,
+                        gfx::ProtectedVideoType protected_video_type);
   CARendererLayerParams(const CARendererLayerParams& other);
   ~CARendererLayerParams();
 
   bool is_clipped;
   const gfx::Rect clip_rect;
+  const gfx::RRectF rounded_corner_bounds;
   unsigned sorting_context_id;
   const gfx::Transform transform;
   gl::GLImage* image;
@@ -46,6 +51,7 @@ struct GL_EXPORT CARendererLayerParams {
   unsigned edge_aa_mask;
   float opacity;
   unsigned filter;
+  gfx::ProtectedVideoType protected_video_type;
 
   // This is a subset of cc::FilterOperation::FilterType.
   enum class FilterEffectType : uint32_t {

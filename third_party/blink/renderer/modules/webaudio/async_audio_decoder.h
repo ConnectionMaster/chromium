@@ -26,8 +26,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_ASYNC_AUDIO_DECODER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_ASYNC_AUDIO_DECODER_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_decode_error_callback.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_decode_success_callback.h"
@@ -62,8 +60,8 @@ class AsyncAudioDecoder {
   // appropriately when finished.
   void DecodeAsync(DOMArrayBuffer* audio_data,
                    float sample_rate,
-                   V8PersistentCallbackFunction<V8DecodeSuccessCallback>*,
-                   V8PersistentCallbackFunction<V8DecodeErrorCallback>*,
+                   V8DecodeSuccessCallback*,
+                   V8DecodeErrorCallback*,
                    ScriptPromiseResolver*,
                    BaseAudioContext*);
 
@@ -72,18 +70,17 @@ class AsyncAudioDecoder {
   static void DecodeOnBackgroundThread(
       DOMArrayBuffer* audio_data,
       float sample_rate,
-      V8PersistentCallbackFunction<V8DecodeSuccessCallback>*,
-      V8PersistentCallbackFunction<V8DecodeErrorCallback>*,
+      V8DecodeSuccessCallback*,
+      V8DecodeErrorCallback*,
       ScriptPromiseResolver*,
       BaseAudioContext*,
       scoped_refptr<base::SingleThreadTaskRunner>);
-  static void NotifyComplete(
-      DOMArrayBuffer* audio_data,
-      V8PersistentCallbackFunction<V8DecodeSuccessCallback>*,
-      V8PersistentCallbackFunction<V8DecodeErrorCallback>*,
-      AudioBus*,
-      ScriptPromiseResolver*,
-      BaseAudioContext*);
+  static void NotifyComplete(DOMArrayBuffer* audio_data,
+                             V8DecodeSuccessCallback*,
+                             V8DecodeErrorCallback*,
+                             AudioBus*,
+                             ScriptPromiseResolver*,
+                             BaseAudioContext*);
 
   DISALLOW_COPY_AND_ASSIGN(AsyncAudioDecoder);
 };

@@ -6,18 +6,19 @@
 
 #include "base/base_paths.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "chrome/browser/safe_browsing/chrome_cleaner/srt_field_trial_win.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
 #include "net/http/http_status_code.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -29,14 +30,13 @@ namespace {
 class ChromeCleanerFetcherTest : public ::testing::Test {
  public:
   ChromeCleanerFetcherTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::IO) {}
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::IO) {}
 
   void TearDown() override {
     if (!downloaded_path_.empty()) {
-      base::DeleteFile(downloaded_path_, /*recursive=*/false);
+      base::DeleteFile(downloaded_path_);
       if (base::IsDirectoryEmpty(downloaded_path_.DirName()))
-        base::DeleteFile(downloaded_path_.DirName(), /*recursive=*/false);
+        base::DeleteFile(downloaded_path_.DirName());
     }
   }
 
@@ -56,7 +56,7 @@ class ChromeCleanerFetcherTest : public ::testing::Test {
   }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
 
   base::RunLoop run_loop_;
@@ -101,7 +101,7 @@ TEST_F(ChromeCleanerFetcherTest, NetworkError) {
   // For this test, just use any http response code other than net::HTTP_OK
   // and net::HTTP_NOT_FOUND.
   test_url_loader_factory_.AddResponse(
-      GetSRTDownloadURL(), network::ResourceResponseHead(), "contents",
+      GetSRTDownloadURL(), network::mojom::URLResponseHead::New(), "contents",
       network::URLLoaderCompletionStatus(net::ERR_ADDRESS_INVALID));
 
   StartFetch();

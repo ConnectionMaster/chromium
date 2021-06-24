@@ -8,116 +8,117 @@
 #include <stddef.h>
 
 #include <limits>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #include "base/i18n/rtl.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
+#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+#include "components/autofill/core/common/signatures.h"
+#include "components/autofill/core/common/unique_ids.h"
+#include "ui/gfx/geometry/rect_f.h"
+#include "url/origin.h"
 
 namespace base {
 class Pickle;
 class PickleIterator;
-}
+}  // namespace base
 
 namespace autofill {
 
+class LogBuffer;
+
 // The flags describing form field properties.
-enum FieldPropertiesFlags {
-  NO_FLAGS = 0u,
-  USER_TYPED = 1u << 0,
-  // AUTOFILLED means that at least one character of the field value comes from
+enum FieldPropertiesFlags : uint32_t {
+  kNoFlags = 0u,
+  kUserTyped = 1u << 0,
+  // kAutofilled means that at least one character of the field value comes from
   // being autofilled. This is different from
   // WebFormControlElement::IsAutofilled(). It is meant to be used for password
   // fields, to determine whether viewing the value needs user reauthentication.
-  AUTOFILLED_ON_USER_TRIGGER = 1u << 1,
+  kAutofilledOnUserTrigger = 1u << 1,
   // The field received focus at any moment.
-  HAD_FOCUS = 1u << 2,
+  kHadFocus = 1u << 2,
   // Use this flag, if some error occurred in flags processing.
-  ERROR_OCCURRED = 1u << 3,
+  kErrorOccurred = 1u << 3,
   // On submission, the value of the field was recognised as a value which is
   // already stored.
-  KNOWN_VALUE = 1u << 4,
+  kKnownValue = 1u << 4,
   // A value was autofilled on pageload. This means that at least one character
   // of the field value comes from being autofilled.
-  AUTOFILLED_ON_PAGELOAD = 1u << 5,
+  kAutofilledOnPageLoad = 1u << 5,
   // A value was autofilled on any of the triggers.
-  AUTOFILLED = AUTOFILLED_ON_USER_TRIGGER | AUTOFILLED_ON_PAGELOAD,
+  kAutofilled = kAutofilledOnUserTrigger | kAutofilledOnPageLoad,
 };
 
 // FieldPropertiesMask is used to contain combinations of FieldPropertiesFlags
 // values.
-typedef uint32_t FieldPropertiesMask;
+using FieldPropertiesMask = std::underlying_type_t<FieldPropertiesFlags>;
+
+// For the HTML snippet |<option value="US">United States</option>|, the
+// value is "US" and the contents is "United States".
+struct SelectOption {
+  std::u16string value;
+  std::u16string content;
+};
 
 // Stores information about a field in a form.
 struct FormFieldData {
-  // Copied to components/autofill/ios/browser/resources/autofill_controller.js.
-  enum RoleAttribute {
-    // "presentation"
-    ROLE_ATTRIBUTE_PRESENTATION,
-    // Anything else.
-    ROLE_ATTRIBUTE_OTHER,
-  };
+  using CheckStatus = mojom::FormFieldData_CheckStatus;
+  using RoleAttribute = mojom::FormFieldData_RoleAttribute;
+  using LabelSource = mojom::FormFieldData_LabelSource;
 
-  enum CheckStatus {
-    NOT_CHECKABLE,
-    CHECKABLE_BUT_UNCHECKED,
-    CHECKED,
+  // Less-than relation for STL containers. Compares only members needed to
+  // uniquely identify a field.
+  struct IdentityComparator {
+    bool operator()(const FormFieldData& a, const FormFieldData& b) const;
   };
-
-  // From which source the label is inferred.
-  enum LabelSource {
-    UNKNOWN,  // The source is unknown.
-    LABEL_TAG,
-    P_TAG,
-    DIV_TABLE,
-    TD_TAG,
-    DD_TAG,
-    LI_TAG,
-    PLACE_HOLDER,
-    ARIA_LABEL,
-    COMBINED,  // Combined with various elements.
-    VALUE,     // label is the value of element.
-  };
-
-  static constexpr uint32_t kNotSetFormControlRendererId =
-      std::numeric_limits<uint32_t>::max();
 
   FormFieldData();
-  FormFieldData(const FormFieldData& other);
+  FormFieldData(const FormFieldData&);
+  FormFieldData& operator=(const FormFieldData&);
+  FormFieldData(FormFieldData&&);
+  FormFieldData& operator=(FormFieldData&&);
   ~FormFieldData();
 
-  // Returns true if two form fields are the same, not counting the value.
+  // An identifier that is unique across all fields in all frames.
+  // Must not be leaked to renderer process. See FieldGlobalId for details.
+  FieldGlobalId global_id() const { return {host_frame, unique_renderer_id}; }
+
+  // Returns true if both fields are identical, ignoring value- and
+  // parsing related members.
+  // See also SimilarFieldAs(), DynamicallySameFieldAs().
   bool SameFieldAs(const FormFieldData& field) const;
 
-  // SameFieldAs() is a little restricted when field's style changed
-  // dynamically, like css.
-  // This method only compares critical attributes of field to check whether
-  // they are similar enough to be considered as same field if form's
-  // other information isn't changed.
+  // Returns true if both fields are identical, ignoring members that
+  // are typically changed dynamically.
+  // Strictly weaker than SameFieldAs().
   bool SimilarFieldAs(const FormFieldData& field) const;
 
-  // If |field| is the same as this from the POV of dynamic refills.
+  // Returns true if both forms are equivalent from the POV of dynamic refills.
+  // Strictly weaker than SameFieldAs(): replaces equality of |is_focusable| and
+  // |role| with equality of IsVisible().
   bool DynamicallySameFieldAs(const FormFieldData& field) const;
 
-  // Returns true for all of textfield-looking types such as text, password,
+  // Returns true for all of textfield-looking types: text, password,
   // search, email, url, and number. It must work the same way as Blink function
   // WebInputElement::IsTextField(), and it returns false if |*this| represents
   // a textarea.
   bool IsTextInputElement() const;
 
+  bool IsPasswordInputElement() const;
+
   // Returns true if the field is visible to the user.
   bool IsVisible() const {
-    return is_focusable && role != ROLE_ATTRIBUTE_PRESENTATION;
+    return is_focusable && role != RoleAttribute::kPresentation;
   }
 
-  // Note: operator==() performs a full-field-comparison(byte by byte), this is
-  // different from SameFieldAs(), which ignores comparison for those "values"
-  // not regarded as part of identity of the field, such as is_autofilled and
-  // the option_values/contents etc.
-  bool operator==(const FormFieldData& field) const;
-  bool operator!=(const FormFieldData& field) const;
-  // Comparison operator exposed for STL map. Uses label, then name to sort.
-  bool operator<(const FormFieldData& field) const;
+  // These functions do not work for Autofill code.
+  // TODO(https://crbug.com/1006745): Fix this.
+  bool DidUserType() const;
+  bool HadFocus() const;
+  bool WasAutofilled() const;
 
 #if defined(OS_IOS)
   // The identifier which uniquely addresses this field in the DOM. This is an
@@ -126,37 +127,56 @@ struct FormFieldData {
   //
   // TODO(crbug.com/896689): Expand the logic/application of this to other
   // platforms and/or merge this concept with |unique_renderer_id|.
-  base::string16 unique_id;
-#define EXPECT_EQ_UNIQUE_ID() EXPECT_EQ(expected.unique_id, actual.unique_id)
+  std::u16string unique_id;
+#define EXPECT_EQ_UNIQUE_ID(expected, actual) \
+  EXPECT_EQ((expected).unique_id, (actual).unique_id)
 #else
-#define EXPECT_EQ_UNIQUE_ID()
+#define EXPECT_EQ_UNIQUE_ID(expected, actual)
 #endif
+
+  // NOTE: update IdentityComparator                 when adding new a member.
+  // NOTE: update SameFieldAs()            if needed when adding new a member.
+  // NOTE: update SimilarFieldAs()         if needed when adding new a member.
+  // NOTE: update DynamicallySameFieldAs() if needed when adding new a member.
 
   // The name by which autofill knows this field. This is generally either the
   // name attribute or the id_attribute value, which-ever is non-empty with
   // priority given to the name_attribute. This value is used when computing
   // form signatures.
   // TODO(crbug/896689): remove this and use attributes/unique_id instead.
-  base::string16 name;
+  std::u16string name;
 
-  // If you add more, be sure to update the comparison operators, SameFieldAs,
-  // serializing functions (in the .cc file) and the constructor.
-  base::string16 id_attribute;
-  base::string16 name_attribute;
-  base::string16 label;
-  base::string16 value;
+  std::u16string id_attribute;
+  std::u16string name_attribute;
+  std::u16string label;
+  std::u16string value;
   std::string form_control_type;
   std::string autocomplete_attribute;
-  base::string16 placeholder;
-  base::string16 css_classes;
-  base::string16 aria_label;
-  base::string16 aria_description;
+  std::u16string placeholder;
+  std::u16string css_classes;
+  std::u16string aria_label;
+  std::u16string aria_description;
 
-  // Unique renderer id which is returned by function
-  // WebFormControlElement::UniqueRendererFormControlId(). It is not persistant
-  // between page loads, so it is not saved and not used in comparison in
-  // SameFieldAs().
-  uint32_t unique_renderer_id = kNotSetFormControlRendererId;
+  // A unique identifier of the containing frame. This value is not serialized
+  // because LocalFrameTokens must not be leaked to other renderer processes.
+  // It is not persistent between page loads and therefore not used in
+  // comparison in SameFieldAs().
+  LocalFrameToken host_frame;
+
+  // An identifier of the field that is unique among the field from the same
+  // frame. In the browser process, it should only be used in conjunction with
+  // |host_frame| to identify a field; see global_id(). It is not persistent
+  // between page loads and therefore not used in comparison in SameFieldAs().
+  FieldRendererId unique_renderer_id;
+
+  // Unique renderer ID of the enclosing form in the same frame.
+  FormRendererId host_form_id;
+
+  // The origin of the frame that hosts the field.
+  url::Origin origin;
+
+  // The ax node id of the form control in the accessibility tree.
+  int32_t form_control_ax_id = 0;
 
   // The unique identifier of the section (e.g. billing vs. shipping address)
   // of this field.
@@ -166,29 +186,42 @@ struct FormFieldData {
   // IPC which could span 32 & 64 bit processes. We chose uint64_t instead of
   // uint32_t to maintain compatibility with old code which used size_t
   // (base::Pickle used to serialize that as 64 bit).
-  uint64_t max_length;
-  bool is_autofilled;
-  CheckStatus check_status;
-  bool is_focusable;
-  bool should_autocomplete;
-  RoleAttribute role;
-  base::i18n::TextDirection text_direction;
-  FieldPropertiesMask properties_mask;
+  uint64_t max_length = 0;
+  bool is_autofilled = false;
+  CheckStatus check_status = CheckStatus::kNotCheckable;
+  bool is_focusable = true;
+  bool should_autocomplete = true;
+  RoleAttribute role = RoleAttribute::kOther;
+  base::i18n::TextDirection text_direction = base::i18n::UNKNOWN_DIRECTION;
+  FieldPropertiesMask properties_mask = 0;
 
   // Data members from the next block are used for parsing only, they are not
   // serialised for storage.
-  bool is_enabled;
-  bool is_readonly;
-  base::string16 typed_value;
+  bool is_enabled = false;
+  bool is_readonly = false;
+  // Contains value that was either manually typed or autofilled on user
+  // trigger.
+  std::u16string user_input;
 
-  // For the HTML snippet |<option value="US">United States</option>|, the
-  // value is "US" and the contents are "United States".
-  std::vector<base::string16> option_values;
-  std::vector<base::string16> option_contents;
+  // The options of a select box.
+  std::vector<SelectOption> options;
 
   // Password Manager doesn't use labels nor client side nor server side, so
   // label_source isn't in serialize methods.
-  LabelSource label_source;
+  LabelSource label_source = LabelSource::kUnknown;
+
+  // The bounds of this field in current frame coordinates at the parse time. It
+  // is valid if not empty, will not be synced to the server side or be used for
+  // field comparison and isn't in serialize methods.
+  gfx::RectF bounds;
+
+  // The datalist is associated with this field, if any. The following two
+  // vectors valid if not empty, will not be synced to the server side or be
+  // used for field comparison and aren't in serialize methods.
+  // The datalist option is intentionally separated from |options| because they
+  // are handled very differently in Autofill.
+  std::vector<std::u16string> datalist_values;
+  std::vector<std::u16string> datalist_labels;
 };
 
 // Serialize and deserialize FormFieldData. These are used when FormData objects
@@ -205,7 +238,7 @@ std::ostream& operator<<(std::ostream& os, const FormFieldData& field);
 // |FormFieldData|s in test code.
 #define EXPECT_FORM_FIELD_DATA_EQUALS(expected, actual)                        \
   do {                                                                         \
-    EXPECT_EQ_UNIQUE_ID();                                                     \
+    EXPECT_EQ_UNIQUE_ID(expected, actual);                                     \
     EXPECT_EQ(expected.label, actual.label);                                   \
     EXPECT_EQ(expected.name, actual.name);                                     \
     EXPECT_EQ(expected.value, actual.value);                                   \
@@ -221,6 +254,9 @@ std::ostream& operator<<(std::ostream& os, const FormFieldData& field);
     EXPECT_EQ(expected.id_attribute, actual.id_attribute);                     \
     EXPECT_EQ(expected.name_attribute, actual.name_attribute);                 \
   } while (0)
+
+// Produces a <table> element with information about the form.
+LogBuffer& operator<<(LogBuffer& buffer, const FormFieldData& form);
 
 }  // namespace autofill
 

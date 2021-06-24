@@ -5,9 +5,9 @@
 #ifndef CC_INPUT_SCROLL_ELASTICITY_HELPER_H_
 #define CC_INPUT_SCROLL_ELASTICITY_HELPER_H_
 
-#include "base/time/time.h"
 #include "cc/cc_export.h"
 #include "ui/gfx/geometry/scroll_offset.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace cc {
@@ -53,6 +53,9 @@ class CC_EXPORT ScrollElasticityHelper {
   virtual ~ScrollElasticityHelper() {}
 
   virtual bool IsUserScrollable() const = 0;
+
+  // The bounds of the root scroller.
+  virtual gfx::Size ScrollBounds() const = 0;
 
   // The amount that the view is stretched past the normal allowable bounds.
   virtual gfx::Vector2dF StretchAmount() const = 0;

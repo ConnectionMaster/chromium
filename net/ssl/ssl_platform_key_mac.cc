@@ -18,7 +18,6 @@
 #include "base/containers/span.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/mac/availability.h"
 #include "base/mac/foundation_util.h"
 #include "base/mac/mac_logging.h"
 #include "base/mac/mac_util.h"
@@ -26,7 +25,6 @@
 #include "base/macros.h"
 #include "base/memory/scoped_policy.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/optional.h"
 #include "base/synchronization/lock.h"
 #include "crypto/mac_security_services_lock.h"
 #include "crypto/openssl_util.h"
@@ -36,6 +34,7 @@
 #include "net/ssl/ssl_platform_key_util.h"
 #include "net/ssl/ssl_private_key.h"
 #include "net/ssl/threaded_ssl_private_key.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/boringssl/src/include/openssl/ecdsa.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/include/openssl/mem.h"
@@ -135,7 +134,7 @@ class SSLPlatformKeyCSSM : public ThreadedSSLPrivateKey::Delegate {
     hash_data.Length = digest_len;
     hash_data.Data = digest;
 
-    base::Optional<std::vector<uint8_t>> pss_storage;
+    absl::optional<std::vector<uint8_t>> pss_storage;
     bssl::UniquePtr<uint8_t> free_digest_info;
     if (cssm_key_->KeyHeader.AlgorithmId == CSSM_ALGID_RSA) {
       if (SSL_is_signature_algorithm_rsa_pss(algorithm)) {
@@ -287,7 +286,7 @@ class API_AVAILABLE(macosx(10.12)) SSLPlatformKeySecKey
     }
     base::span<const uint8_t> digest = base::make_span(digest_buf, digest_len);
 
-    base::Optional<std::vector<uint8_t>> pss_storage;
+    absl::optional<std::vector<uint8_t>> pss_storage;
     if (pss_fallback) {
       // Implement RSA-PSS by adding the padding manually and then using
       // kSecKeyAlgorithmRSASignatureRaw.
@@ -300,9 +299,9 @@ class API_AVAILABLE(macosx(10.12)) SSLPlatformKeySecKey
       digest = *pss_storage;
     }
 
-    base::ScopedCFTypeRef<CFDataRef> digest_ref(CFDataCreateWithBytesNoCopy(
-        kCFAllocatorDefault, digest.data(),
-        base::checked_cast<CFIndex>(digest.size()), kCFAllocatorNull));
+    base::ScopedCFTypeRef<CFDataRef> digest_ref(
+        CFDataCreate(kCFAllocatorDefault, digest.data(),
+                     base::checked_cast<CFIndex>(digest.size())));
 
     base::ScopedCFTypeRef<CFErrorRef> error;
     base::ScopedCFTypeRef<CFDataRef> signature_ref(SecKeyCreateSignature(

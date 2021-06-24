@@ -4,8 +4,8 @@
 
 #include "remoting/protocol/webrtc_audio_stream.h"
 
+#include "base/check.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "remoting/base/constants.h"
 #include "remoting/protocol/audio_source.h"
@@ -22,12 +22,7 @@ const char kAudioStreamLabel[] = "audio_stream";
 const char kAudioTrackLabel[] = "system_audio";
 
 WebrtcAudioStream::WebrtcAudioStream() = default;
-
-WebrtcAudioStream::~WebrtcAudioStream() {
-  if (audio_sender_) {
-    peer_connection_->RemoveTrack(audio_sender_.get());
-  }
-}
+WebrtcAudioStream::~WebrtcAudioStream() = default;
 
 void WebrtcAudioStream::Start(
     scoped_refptr<base::SingleThreadTaskRunner> audio_task_runner,
@@ -47,13 +42,15 @@ void WebrtcAudioStream::Start(
       peer_connection_factory->CreateAudioTrack(kAudioTrackLabel,
                                                 source_adapter_.get());
 
-  // value() DCHECKs if AddTrack() fails, which only happens if a track was
-  // already added with the stream label.
-  audio_sender_ =
-      peer_connection_->AddTrack(audio_track.get(), {kAudioStreamLabel})
-          .value();
+  webrtc::RtpTransceiverInit init;
+  init.stream_ids = {kAudioStreamLabel};
 
-  webrtc_transport->OnAudioSenderCreated(audio_sender_);
+  // value() DCHECKs if AddTransceiver() fails, which only happens if a track
+  // was already added with the stream label.
+  auto transceiver =
+      peer_connection_->AddTransceiver(audio_track, init).value();
+
+  webrtc_transport->OnAudioTransceiverCreated(transceiver);
 }
 
 void WebrtcAudioStream::Pause(bool pause) {

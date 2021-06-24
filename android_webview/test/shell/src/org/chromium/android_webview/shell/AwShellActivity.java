@@ -36,7 +36,6 @@ import org.chromium.android_webview.JsResultReceiver;
 import org.chromium.android_webview.test.AwTestContainerView;
 import org.chromium.android_webview.test.NullContentsClient;
 import org.chromium.base.CommandLine;
-import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.TraceEvent;
 import org.chromium.content_public.browser.NavigationController;
@@ -52,7 +51,7 @@ import java.net.URL;
  * This is a lightweight activity for tests that only require WebView functionality.
  */
 public class AwShellActivity extends Activity {
-    private static final String TAG = "cr.AwShellActivity";
+    private static final String TAG = "AwShellActivity";
     private static final String PREFERENCES_NAME = "AwShellPrefs";
     private static final String INITIAL_URL = ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL;
     private AwBrowserContext mBrowserContext;
@@ -70,15 +69,14 @@ public class AwShellActivity extends Activity {
 
         AwShellResourceProvider.registerResources(this);
 
-        ((AwShellApplication) getApplication()).initCommandLine();
-
-        ContextUtils.initApplicationContext(getApplicationContext());
         AwBrowserProcess.loadLibrary(null);
 
+        // This flag is deprecated. Print a hint instead.
         if (CommandLine.getInstance().hasSwitch(AwShellSwitches.ENABLE_ATRACE)) {
-            Log.e(TAG, "Enabling Android trace.");
-            TraceEvent.setATraceEnabled(true);
+            Log.e(TAG, "To trace the test shell, run \"atrace webview\"");
         }
+        TraceEvent.maybeEnableEarlyTracing(
+                TraceEvent.ATRACE_TAG_WEBVIEW, /*readCommandLine=*/false);
 
         setContentView(R.layout.testshell_activity);
 
@@ -115,6 +113,7 @@ public class AwShellActivity extends Activity {
     }
 
     private AwTestContainerView createAwTestContainerView() {
+        AwTestContainerView.installDrawFnFunctionTable(/*useVulkan=*/false);
         AwBrowserProcess.start();
         AwTestContainerView testContainerView = new AwTestContainerView(this, true);
         AwContentsClient awContentsClient = new NullContentsClient() {
@@ -201,7 +200,8 @@ public class AwShellActivity extends Activity {
         SharedPreferences sharedPreferences =
                 getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
         if (mBrowserContext == null) {
-            mBrowserContext = new AwBrowserContext(sharedPreferences, getApplicationContext());
+            mBrowserContext = new AwBrowserContext(
+                    sharedPreferences, AwBrowserContext.getDefault().getNativePointer(), true);
         }
         final AwSettings awSettings =
                 new AwSettings(this /* context */, false /* isAccessFromFileURLsGrantedByDefault */,
@@ -273,7 +273,7 @@ public class AwShellActivity extends Activity {
             mNextButton.setVisibility(hasFocus ? View.GONE : View.VISIBLE);
             mPrevButton.setVisibility(hasFocus ? View.GONE : View.VISIBLE);
             if (!hasFocus) {
-                mUrlTextView.setText(mWebContents.getVisibleUrl());
+                mUrlTextView.setText(mWebContents.getVisibleUrl().getSpec());
             }
         });
     }

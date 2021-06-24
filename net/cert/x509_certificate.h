@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -31,10 +32,12 @@ class X509Certificate;
 
 typedef std::vector<scoped_refptr<X509Certificate> > CertificateList;
 
-// X509Certificate represents a X.509 certificate, which is comprised a
-// particular identity or end-entity certificate, such as an SSL server
-// identity or an SSL client certificate, and zero or more intermediate
-// certificates that may be used to build a path to a root certificate.
+// A X.509 certificate represents a particular identity or end-entity
+// certificate, such as an SSL server identity or an SSL client certificate. An
+// X509Certificate contains this leaf certificate accessible via cert_buffer().
+// An X509Certificate may also contain 0 or more intermediary X.509 certificates
+// that are used to build a path to a root certificate. These are accessed via
+// intermediate_buffers().
 class NET_EXPORT X509Certificate
     : public base::RefCountedThreadSafe<X509Certificate> {
  public:
@@ -107,14 +110,13 @@ class NET_EXPORT X509Certificate
 
   // Create an X509Certificate from the DER-encoded representation.
   // Returns NULL on failure.
-  static scoped_refptr<X509Certificate> CreateFromBytes(const char* data,
-                                                        size_t length);
+  static scoped_refptr<X509Certificate> CreateFromBytes(
+      base::span<const uint8_t> data);
 
   // Create an X509Certificate with non-standard parsing options.
   // Do not use without consulting //net owners.
   static scoped_refptr<X509Certificate> CreateFromBytesUnsafeOptions(
-      const char* data,
-      size_t length,
+      base::span<const uint8_t> data,
       UnsafeCreateOptions options);
 
   // Create an X509Certificate from the representation stored in the given
@@ -135,9 +137,9 @@ class NET_EXPORT X509Certificate
   // bit-wise OR of Format, indicating the possible formats the
   // certificates may have been serialized as. If an error occurs, an empty
   // collection will be returned.
-  static CertificateList CreateCertificateListFromBytes(const char* data,
-                                                        size_t length,
-                                                        int format);
+  static CertificateList CreateCertificateListFromBytes(
+      base::span<const uint8_t> data,
+      int format);
 
   // Appends a representation of this object to the given pickle.
   // The Pickle contains the certificate and any certificates that were
@@ -145,7 +147,7 @@ class NET_EXPORT X509Certificate
   // The format is [int count], [data - this certificate],
   // [data - intermediate1], ... [data - intermediateN].
   // All certificates are stored in DER form.
-  void Persist(base::Pickle* pickle);
+  void Persist(base::Pickle* pickle) const;
 
   // The serial number, DER encoded, possibly including a leading 00 byte.
   const std::string& serial_number() const { return serial_number_; }
@@ -189,7 +191,7 @@ class NET_EXPORT X509Certificate
 
   // Do any of the given issuer names appear in this cert's chain of trust?
   // |valid_issuers| is a list of DER-encoded X.509 DistinguishedNames.
-  bool IsIssuedByEncoded(const std::vector<std::string>& valid_issuers);
+  bool IsIssuedByEncoded(const std::vector<std::string>& valid_issuers) const;
 
   // Verifies that |hostname| matches this certificate.
   // Does not verify that the certificate is valid, only that the certificate
@@ -241,13 +243,13 @@ class NET_EXPORT X509Certificate
   // checking to reject obviously invalid inputs.
   // Returns NULL on failure.
   static bssl::UniquePtr<CRYPTO_BUFFER> CreateCertBufferFromBytes(
-      const char* data,
-      size_t length);
+      base::span<const uint8_t> data);
 
   // Creates all possible CRYPTO_BUFFERs from |data| encoded in a specific
   // |format|. Returns an empty collection on failure.
-  static std::vector<bssl::UniquePtr<CRYPTO_BUFFER>>
-  CreateCertBuffersFromBytes(const char* data, size_t length, Format format);
+  static std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> CreateCertBuffersFromBytes(
+      base::span<const uint8_t> data,
+      Format format);
 
   // Calculates the SHA-256 fingerprint of the certificate.  Returns an empty
   // (all zero) fingerprint on failure.

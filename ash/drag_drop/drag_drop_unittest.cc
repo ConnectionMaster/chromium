@@ -4,6 +4,8 @@
 
 #include "ash/drag_drop/drag_drop_controller.h"
 
+#include <memory>
+
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/ui_controls_factory_ash.h"
@@ -12,6 +14,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/test/ui_controls_aura.h"
 #include "ui/views/view.h"
@@ -31,7 +34,7 @@ class DraggableView : public views::View {
   }
   void WriteDragData(const gfx::Point& press_pt,
                      OSExchangeData* data) override {
-    data->SetString(base::UTF8ToUTF16("test"));
+    data->SetString(u"test");
   }
 
  private:
@@ -55,9 +58,10 @@ class TargetView : public views::View {
   int OnDragUpdated(const ui::DropTargetEvent& event) override {
     return ui::DragDropTypes::DRAG_MOVE;
   }
-  int OnPerformDrop(const ui::DropTargetEvent& event) override {
+  ui::mojom::DragOperation OnPerformDrop(
+      const ui::DropTargetEvent& event) override {
     dropped_ = true;
-    return ui::DragDropTypes::DRAG_MOVE;
+    return ui::mojom::DragOperation::kMove;
   }
 
   bool dropped() const { return dropped_; }
@@ -68,7 +72,7 @@ class TargetView : public views::View {
   DISALLOW_COPY_AND_ASSIGN(TargetView);
 };
 
-views::Widget* CreateWidget(views::View* contents_view,
+views::Widget* CreateWidget(std::unique_ptr<views::View> contents_view,
                             const gfx::Rect& bounds,
                             aura::Window* context) {
   views::Widget* widget = new views::Widget;
@@ -77,9 +81,9 @@ views::Widget* CreateWidget(views::View* contents_view,
   params.accept_events = true;
   params.bounds = bounds;
   params.context = context;
-  widget->Init(params);
+  widget->Init(std::move(params));
 
-  widget->SetContentsView(contents_view);
+  widget->SetContentsView(std::move(contents_view));
   widget->Show();
   return widget;
 }
@@ -122,16 +126,17 @@ TEST_F(DragDropTest, DragDropAcrossMultiDisplay) {
 
   UpdateDisplay("400x400,400x400");
   aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
-  views::View* draggable_view = new DraggableView();
+  auto draggable_view = std::make_unique<DraggableView>();
   draggable_view->set_drag_controller(NULL);
   draggable_view->SetBounds(0, 0, 100, 100);
-  views::Widget* source =
-      CreateWidget(draggable_view, gfx::Rect(0, 0, 100, 100), CurrentContext());
+  views::Widget* source = CreateWidget(std::move(draggable_view),
+                                       gfx::Rect(0, 0, 100, 100), GetContext());
 
-  TargetView* target_view = new TargetView();
+  auto target_view = std::make_unique<TargetView>();
   target_view->SetBounds(0, 0, 100, 100);
-  views::Widget* target =
-      CreateWidget(target_view, gfx::Rect(400, 0, 100, 100), CurrentContext());
+  TargetView* target_view_ptr = target_view.get();
+  views::Widget* target = CreateWidget(
+      std::move(target_view), gfx::Rect(400, 0, 100, 100), GetContext());
 
   // Make sure they're on the different root windows.
   EXPECT_EQ(root_windows[0], source->GetNativeView()->GetRootWindow());
@@ -142,7 +147,7 @@ TEST_F(DragDropTest, DragDropAcrossMultiDisplay) {
 
   base::RunLoop().Run();
 
-  EXPECT_TRUE(target_view->dropped());
+  EXPECT_TRUE(target_view_ptr->dropped());
 
   source->Close();
   target->Close();

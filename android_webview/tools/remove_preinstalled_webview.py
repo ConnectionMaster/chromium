@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env vpython
 #
 # Copyright 2018 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
@@ -36,19 +36,14 @@ import sys
 
 sys.path.append(os.path.join(
     os.path.dirname(__file__), os.pardir, os.pardir, 'build', 'android'))
-import devil_chromium  # pylint: disable=import-error
-from devil.android import device_errors  # pylint: disable=import-error
-from devil.android import device_utils  # pylint: disable=import-error
-from devil.android.sdk import keyevent  # pylint: disable=import-error
-from devil.android.tools import script_common  # pylint: disable=import-error
-from devil.android.tools import system_app  # pylint: disable=import-error
-from devil.utils import logging_common  # pylint: disable=import-error
+import devil_chromium
+from devil.android import device_errors
+from devil.android import device_utils
+from devil.android.sdk import keyevent
+from devil.android.tools import script_common
+from devil.android.tools import system_app
+from devil.utils import logging_common
 
-WEBVIEW_SYSTEM_IMAGE_PATHS = [
-    '/system/app/webview/webview.apk',
-    '/system/app/WebViewGoogle/WebViewGoogle.apk',
-    '/system/app/WebViewStub/WebViewStub.apk'
-]
 WEBVIEW_PACKAGES = ['com.android.webview', 'com.google.android.webview']
 
 
@@ -67,24 +62,22 @@ def UninstallWebViewUpdates(device):
   """Uninstalls updates for WebView packages, if updates exist."""
   print('Uninstalling updates from %s...' % device.serial)
   for webview_package in WEBVIEW_PACKAGES:
-    paths = device.GetApplicationPaths(webview_package)
-    if not paths:
-      continue  # Package isn't installed, nothing to do
-    if set(paths) <= set(WEBVIEW_SYSTEM_IMAGE_PATHS):
-      # If we only have preinstalled paths, don't try to uninstall updates
-      # (necessary, otherwise we will raise an exception on some devices).
-      continue
-    device.Uninstall(webview_package)
+    try:
+      device.Uninstall(webview_package)
+    except device_errors.AdbCommandFailedError:
+      # This can happen if the app is on the system image but there are no
+      # updates installed on top of that.
+      logging.info('No update to uninstall for %s on %s', webview_package,
+                   device.serial)
 
 
 def CheckWebViewIsUninstalled(device):
   """Throws if WebView is still installed."""
   for webview_package in WEBVIEW_PACKAGES:
-    paths = device.GetApplicationPaths(webview_package)
-    if paths:
+    if device.IsApplicationInstalled(webview_package):
       raise device_errors.CommandFailedError(
-          '{} is still installed on the device at {}'.format(
-              webview_package, paths), device)
+          '{} is still installed on the device'.format(webview_package),
+          device)
 
 
 def RemovePreinstalledWebViews(device):
@@ -93,16 +86,16 @@ def RemovePreinstalledWebViews(device):
   try:
     UninstallWebViewSystemImages(device)
     CheckWebViewIsUninstalled(device)
-  except device_errors.CommandFailedError as e:
+  except device_errors.CommandFailedError:
     if device.adb.is_emulator:
       # Point the user to documentation, since there's a good chance they can
       # workaround this. Use lots of newlines to make sure this message doesn't
       # get lost.
       logging.error('Did you start the emulator with "-writable-system?"\n'
                     'See https://chromium.googlesource.com/chromium/src/+/'
-                    'master/docs/android_emulator.md#writable-system-partition'
+                    'main/docs/android_emulator.md#writable-system-partition'
                     '\n')
-    raise e
+    raise
   device.SetWebViewFallbackLogic(False)  # Allow standalone WebView on N+
 
 
@@ -118,8 +111,7 @@ development.
 
   args = parser.parse_args()
   logging_common.InitializeLogging(args)
-  devil_chromium.Initialize()
-  script_common.InitializeEnvironment(args)
+  devil_chromium.Initialize(adb_path=args.adb_path)
 
   devices = device_utils.DeviceUtils.HealthyDevices(device_arg=args.devices)
   device_utils.DeviceUtils.parallel(devices).pMap(RemovePreinstalledWebViews)

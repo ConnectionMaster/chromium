@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
 #include "components/autofill/core/browser/payments/full_card_request.h"
 
 // Obj-C delegate to receive the success or failure result, when asking credit
@@ -42,8 +42,9 @@ class FullCardRequestResultDelegateBridge
   void OnFullCardRequestSucceeded(
       const autofill::payments::FullCardRequest& full_card_request,
       const autofill::CreditCard& card,
-      const base::string16& cvc) override;
-  void OnFullCardRequestFailed() override;
+      const std::u16string& cvc) override;
+  void OnFullCardRequestFailed(
+      autofill::payments::FullCardRequest::FailureType failure_type) override;
 
   __weak id<FullCardRequestResultDelegateObserving> delegate_ = nil;
   base::WeakPtrFactory<FullCardRequestResultDelegateBridge> weak_ptr_factory_;

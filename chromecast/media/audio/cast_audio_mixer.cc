@@ -5,8 +5,8 @@
 #include "chromecast/media/audio/cast_audio_mixer.h"
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "chromecast/media/audio/cast_audio_manager.h"
 #include "chromecast/media/audio/cast_audio_output_stream.h"
 #include "media/base/audio_timestamp_helper.h"
@@ -40,10 +40,10 @@ class CastAudioMixer::MixerProxyStream
     DCHECK_CALLED_ON_VALID_THREAD(audio_thread_checker_);
   }
 
-  void OnError() {
+  void OnError(ErrorType type) {
     DCHECK_CALLED_ON_VALID_THREAD(audio_thread_checker_);
     if (source_callback_)
-      source_callback_->OnError();
+      source_callback_->OnError(type);
   }
 
  private:
@@ -137,6 +137,9 @@ class CastAudioMixer::MixerProxyStream
     source_callback_ = nullptr;
   }
 
+  // There is nothing to flush since the proxy stream is removed during Stop().
+  void Flush() override {}
+
   void SetVolume(double volume) override {
     DCHECK_CALLED_ON_VALID_THREAD(audio_thread_checker_);
 
@@ -199,7 +202,7 @@ CastAudioMixer::~CastAudioMixer() {}
 
 bool CastAudioMixer::Register(MixerProxyStream* proxy_stream) {
   DCHECK_CALLED_ON_VALID_THREAD(audio_thread_checker_);
-  DCHECK(!base::ContainsKey(proxy_streams_, proxy_stream));
+  DCHECK(!base::Contains(proxy_streams_, proxy_stream));
 
   // Do not allow opening new streams while in error state.
   if (error_)
@@ -224,7 +227,7 @@ bool CastAudioMixer::Register(MixerProxyStream* proxy_stream) {
 
 void CastAudioMixer::Unregister(MixerProxyStream* proxy_stream) {
   DCHECK_CALLED_ON_VALID_THREAD(audio_thread_checker_);
-  DCHECK(base::ContainsKey(proxy_streams_, proxy_stream));
+  DCHECK(base::Contains(proxy_streams_, proxy_stream));
 
   proxy_streams_.erase(proxy_stream);
 
@@ -277,19 +280,19 @@ int CastAudioMixer::OnMoreData(base::TimeDelta delay,
   return dest->frames();
 }
 
-void CastAudioMixer::OnError() {
+void CastAudioMixer::OnError(ErrorType type) {
   // Called on backend thread.
   audio_manager_->GetTaskRunner()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&CastAudioMixer::HandleError, base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&CastAudioMixer::HandleError,
+                                base::Unretained(this), type));
 }
 
-void CastAudioMixer::HandleError() {
+void CastAudioMixer::HandleError(ErrorType type) {
   DCHECK_CALLED_ON_VALID_THREAD(audio_thread_checker_);
 
   error_ = true;
   for (auto it = proxy_streams_.begin(); it != proxy_streams_.end(); ++it)
-    (*it)->OnError();
+    (*it)->OnError(type);
 }
 
 }  // namespace media

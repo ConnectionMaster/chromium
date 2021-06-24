@@ -13,15 +13,15 @@
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "chrome/common/service_process.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "services/service_manager/public/mojom/interface_provider.mojom.h"
 
 namespace base {
 
-class HistogramDeltaSerialization;
 class WaitableEvent;
 
 }  // namespace base
@@ -73,7 +73,6 @@ class ServiceIPCServer : public service_manager::mojom::InterfaceProvider,
 
   // chrome::mojom::ServiceProcess:
   void Hello(HelloCallback callback) override;
-  void GetHistograms(GetHistogramsCallback callback) override;
   void UpdateAvailable() override;
   void ShutDown() override;
 
@@ -82,7 +81,7 @@ class ServiceIPCServer : public service_manager::mojom::InterfaceProvider,
                     mojo::ScopedMessagePipeHandle pipe) override;
 
   void HandleServiceProcessConnection(
-      chrome::mojom::ServiceProcessRequest request);
+      mojo::PendingReceiver<chrome::mojom::ServiceProcess> receiver);
 
   Client* client_;
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
@@ -91,12 +90,8 @@ class ServiceIPCServer : public service_manager::mojom::InterfaceProvider,
   // Indicates whether an IPC client is currently connected to the channel.
   bool ipc_client_connected_ = false;
 
-  // Calculates histograms deltas.
-  std::unique_ptr<base::HistogramDeltaSerialization>
-      histogram_delta_serializer_;
-
-  mojo::Binding<service_manager::mojom::InterfaceProvider> binding_;
-  mojo::BindingSet<chrome::mojom::ServiceProcess> service_process_bindings_;
+  mojo::Receiver<service_manager::mojom::InterfaceProvider> receiver_{this};
+  mojo::ReceiverSet<chrome::mojom::ServiceProcess> service_process_receivers_;
 
   service_manager::BinderRegistry binder_registry_;
 

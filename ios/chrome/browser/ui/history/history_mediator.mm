@@ -28,7 +28,7 @@ const CGFloat kFaviconMinWidthHeight = 16;
 @synthesize browserState = _browserState;
 @synthesize faviconLoader = _faviconLoader;
 
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState {
+- (instancetype)initWithBrowserState:(ChromeBrowserState*)browserState {
   self = [super init];
   if (self) {
     _browserState = browserState;
@@ -40,16 +40,13 @@ const CGFloat kFaviconMinWidthHeight = 16;
 
 #pragma mark - TableViewFaviconDataSource
 
-- (FaviconAttributes*)faviconForURL:(const GURL&)URL
-                         completion:(void (^)(FaviconAttributes*))completion {
-  FaviconAttributes* cachedAttributes = self.faviconLoader->FaviconForPageUrl(
+- (void)faviconForURL:(const GURL&)URL
+           completion:(void (^)(FaviconAttributes*))completion {
+  self.faviconLoader->FaviconForPageUrl(
       URL, kFaviconWidthHeight, kFaviconMinWidthHeight,
       /*fallback_to_google_server=*/false, ^(FaviconAttributes* attributes) {
         completion(attributes);
       });
-  DCHECK(cachedAttributes);
-
-  return cachedAttributes;
 }
 
 @end

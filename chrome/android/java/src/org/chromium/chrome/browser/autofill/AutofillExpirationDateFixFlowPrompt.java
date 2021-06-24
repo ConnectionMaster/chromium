@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.autofill;
 
+import android.app.Activity;
 import android.content.Context;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -12,8 +13,9 @@ import android.view.View;
 import android.widget.EditText;
 import android.widget.TextView;
 
+import androidx.annotation.Nullable;
+
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils.ErrorType;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -32,7 +34,7 @@ public class AutofillExpirationDateFixFlowPrompt
      */
     public interface AutofillExpirationDateFixFlowPromptDelegate {
         /**
-         * Called when dialog is dismissed.
+         * Called whenever the dialog is dismissed.
          */
         void onPromptDismissed();
 
@@ -43,6 +45,12 @@ public class AutofillExpirationDateFixFlowPrompt
          * @param year expiration date year.
          */
         void onUserAccept(String month, String year);
+
+        /**
+         * Called when the dialog is dismissed neither because the user accepted/confirmed the
+         * prompt or it was dismissed by native code.
+         */
+        void onUserDismiss();
     }
 
     private final AutofillExpirationDateFixFlowPromptDelegate mDelegate;
@@ -85,29 +93,33 @@ public class AutofillExpirationDateFixFlowPrompt
             mDidFocusOnYear |= hasFocus;
         });
 
-        mDialogModel = new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
-                               .with(ModalDialogProperties.CONTROLLER, this)
-                               .with(ModalDialogProperties.TITLE, title)
-                               .with(ModalDialogProperties.TITLE_ICON, context, drawableId)
-                               .with(ModalDialogProperties.CUSTOM_VIEW, mDialogView)
-                               .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, confirmButtonLabel)
-                               .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT,
-                                       context.getResources(), R.string.cancel)
-                               .with(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE, false)
-                               .with(ModalDialogProperties.POSITIVE_BUTTON_DISABLED, true)
-                               .build();
+        PropertyModel.Builder builder =
+                new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
+                        .with(ModalDialogProperties.CONTROLLER, this)
+                        .with(ModalDialogProperties.TITLE, title)
+                        .with(ModalDialogProperties.CUSTOM_VIEW, mDialogView)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, confirmButtonLabel)
+                        .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT, context.getResources(),
+                                R.string.cancel)
+                        .with(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE, false)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_DISABLED, true);
+        if (drawableId != 0) {
+            builder.with(ModalDialogProperties.TITLE_ICON, context, drawableId);
+        }
+        mDialogModel = builder.build();
     }
 
     /**
-     * Show the dialog. If activity is null this method will not do anything.
+     * Show the dialog.
+     *
+     * @param activity The current activity, used for context. When null, the method does nothing.
+     * @param modalDialogManager Used to display modal dialogs. When null, the method does nothing.
      */
-    public void show(ChromeActivity activity) {
-        if (activity == null) {
-            return;
-        }
+    public void show(@Nullable Activity activity, @Nullable ModalDialogManager modalDialogManager) {
+        if (activity == null || modalDialogManager == null) return;
 
         mContext = activity;
-        mModalDialogManager = activity.getModalDialogManager();
+        mModalDialogManager = modalDialogManager;
         mModalDialogManager.showDialog(mDialogModel, ModalDialogManager.ModalDialogType.APP);
     }
 
@@ -140,12 +152,14 @@ public class AutofillExpirationDateFixFlowPrompt
 
     @Override
     public void onDismiss(PropertyModel model, int dismissalCause) {
-        // Do not call dismissed on the delegate if dialog was dismissed either because the user
+        // Do not call onUserDismiss if dialog was dismissed either because the user
         // accepted to save the card or was dismissed by native code.
         if (dismissalCause != DialogDismissalCause.POSITIVE_BUTTON_CLICKED
                 && dismissalCause != DialogDismissalCause.DISMISSED_BY_NATIVE) {
-            mDelegate.onPromptDismissed();
+            mDelegate.onUserDismiss();
         }
+        // Call whenever the dialog is dismissed.
+        mDelegate.onPromptDismissed();
     }
 
     /**

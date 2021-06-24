@@ -45,27 +45,15 @@
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_object_factory.h"
-#include "third_party/blink/renderer/core/layout/layout_slider_container.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
+#include "ui/base/ui_base_features.h"
 
 namespace blink {
 
-using namespace html_names;
-
-inline static bool HasVerticalAppearance(HTMLInputElement* input) {
-  return input->ComputedStyleRef().Appearance() == kSliderVerticalPart;
-}
-
-inline SliderThumbElement::SliderThumbElement(Document& document)
+SliderThumbElement::SliderThumbElement(Document& document)
     : HTMLDivElement(document), in_drag_mode_(false) {
   SetHasCustomStyleCallbacks();
-}
-
-SliderThumbElement* SliderThumbElement::Create(Document& document) {
-  SliderThumbElement* element =
-      MakeGarbageCollected<SliderThumbElement>(document);
-  element->setAttribute(kIdAttr, shadow_element_names::SliderThumb());
-  return element;
+  setAttribute(html_names::kIdAttr, shadow_element_names::kIdSliderThumb);
 }
 
 void SliderThumbElement::SetPositionFromValue() {
@@ -75,6 +63,11 @@ void SliderThumbElement::SetPositionFromValue() {
   if (GetLayoutObject()) {
     GetLayoutObject()->SetNeedsLayoutAndFullPaintInvalidation(
         layout_invalidation_reason::kSliderValueChanged);
+    HTMLInputElement* input(HostInput());
+    if (input && input->GetLayoutObject()) {
+      // the slider track selected value needs to be updated.
+      input->GetLayoutObject()->SetShouldDoFullPaintInvalidation();
+    }
   }
 }
 
@@ -95,10 +88,6 @@ bool SliderThumbElement::MatchesReadWritePseudoClass() const {
   return HostInput() && HostInput()->MatchesReadWritePseudoClass();
 }
 
-const Node* SliderThumbElement::FocusDelegate() const {
-  return HostInput();
-}
-
 void SliderThumbElement::DragFrom(const LayoutPoint& point) {
   StartDragging();
   SetPositionFromPoint(point);
@@ -107,50 +96,37 @@ void SliderThumbElement::DragFrom(const LayoutPoint& point) {
 void SliderThumbElement::SetPositionFromPoint(const LayoutPoint& point) {
   HTMLInputElement* input(HostInput());
   Element* track_element = input->UserAgentShadowRoot()->getElementById(
-      shadow_element_names::SliderTrack());
+      shadow_element_names::kIdSliderTrack);
 
-  if (!input->GetLayoutObject() || !GetLayoutBox() ||
-      !track_element->GetLayoutBox())
+  const LayoutObject* input_object = input->GetLayoutObject();
+  const LayoutBox* thumb_box = GetLayoutBox();
+  const LayoutBox* track_box = track_element->GetLayoutBox();
+  if (!input_object || !thumb_box || !track_box)
     return;
 
-  LayoutPoint offset = LayoutPoint(input->GetLayoutObject()->AbsoluteToLocal(
-      FloatPoint(point), kUseTransforms));
-  bool is_vertical = HasVerticalAppearance(input);
+  PhysicalOffset point_in_track =
+      track_box->AbsoluteToLocalPoint(PhysicalOffsetToBeNoop(point));
+  const bool is_vertical = !thumb_box->StyleRef().IsHorizontalWritingMode();
   bool is_left_to_right_direction =
-      GetLayoutBox()->Style()->IsLeftToRightDirection();
+      thumb_box->StyleRef().IsLeftToRightDirection();
   LayoutUnit track_size;
   LayoutUnit position;
   LayoutUnit current_position;
-  // We need to calculate currentPosition from absolute points becaue the
-  // layoutObject for this node is usually on a layer and layoutBox()->x() and
-  // y() are unusable.
-  // FIXME: This should probably respect transforms.
-  LayoutPoint absolute_thumb_origin =
-      GetLayoutBox()->AbsoluteBoundingBoxRectIgnoringTransforms().Location();
-  LayoutPoint absolute_slider_content_origin =
-      LayoutPoint(input->GetLayoutObject()->LocalToAbsolute());
-  IntRect track_bounding_box =
-      track_element->GetLayoutObject()
-          ->AbsoluteBoundingBoxRectIgnoringTransforms();
-  IntRect input_bounding_box =
-      input->GetLayoutObject()->AbsoluteBoundingBoxRectIgnoringTransforms();
+  const auto* input_box = To<LayoutBox>(input_object);
+  PhysicalOffset thumb_offset =
+      thumb_box->LocalToAncestorPoint(PhysicalOffset(), input_box) -
+      track_box->LocalToAncestorPoint(PhysicalOffset(), input_box);
   if (is_vertical) {
-    track_size = track_element->GetLayoutBox()->ContentHeight() -
-                 GetLayoutBox()->Size().Height();
-    position = offset.Y() - GetLayoutBox()->Size().Height() / 2 -
-               track_bounding_box.Y() + input_bounding_box.Y() -
-               GetLayoutBox()->MarginBottom();
-    current_position =
-        absolute_thumb_origin.Y() - absolute_slider_content_origin.Y();
+    track_size = track_box->ContentHeight() - thumb_box->Size().Height();
+    position = point_in_track.top - thumb_box->Size().Height() / 2 -
+               thumb_box->MarginBottom();
+    current_position = thumb_offset.top;
   } else {
-    track_size = track_element->GetLayoutBox()->ContentWidth() -
-                 GetLayoutBox()->Size().Width();
-    position = offset.X() - GetLayoutBox()->Size().Width() / 2 -
-               track_bounding_box.X() + input_bounding_box.X();
-    position -= is_left_to_right_direction ? GetLayoutBox()->MarginLeft()
-                                           : GetLayoutBox()->MarginRight();
-    current_position =
-        absolute_thumb_origin.X() - absolute_slider_content_origin.X();
+    track_size = track_box->ContentWidth() - thumb_box->Size().Width();
+    position = point_in_track.left - thumb_box->Size().Width() / 2;
+    position -= is_left_to_right_direction ? thumb_box->MarginLeft()
+                                           : thumb_box->MarginRight();
+    current_position = thumb_offset.left;
   }
   position = std::min(position, track_size).ClampNegativeToZero();
   const Decimal ratio =
@@ -181,10 +157,7 @@ void SliderThumbElement::SetPositionFromPoint(const LayoutPoint& point) {
   // FIXME: This is no longer being set from renderer. Consider updating the
   // method name.
   input->SetValueFromRenderer(value_string);
-  if (GetLayoutObject()) {
-    GetLayoutObject()->SetNeedsLayoutAndFullPaintInvalidation(
-        layout_invalidation_reason::kSliderValueChanged);
-  }
+  SetPositionFromValue();
 }
 
 void SliderThumbElement::StartDragging() {
@@ -216,13 +189,13 @@ void SliderThumbElement::StopDragging() {
 }
 
 void SliderThumbElement::DefaultEventHandler(Event& event) {
-  if (event.IsPointerEvent() &&
+  if (IsA<PointerEvent>(event) &&
       event.type() == event_type_names::kLostpointercapture) {
     StopDragging();
     return;
   }
 
-  if (!event.IsMouseEvent()) {
+  if (!IsA<MouseEvent>(event)) {
     HTMLDivElement::DefaultEventHandler(event);
     return;
   }
@@ -237,7 +210,7 @@ void SliderThumbElement::DefaultEventHandler(Event& event) {
     return;
   }
 
-  auto& mouse_event = ToMouseEvent(event);
+  auto& mouse_event = To<MouseEvent>(event);
   bool is_left_button =
       mouse_event.button() ==
       static_cast<int16_t>(WebPointerProperties::Button::kLeft);
@@ -279,66 +252,56 @@ bool SliderThumbElement::WillRespondToMouseClickEvents() {
   return HTMLDivElement::WillRespondToMouseClickEvents();
 }
 
-void SliderThumbElement::DetachLayoutTree(const AttachContext& context) {
+void SliderThumbElement::DetachLayoutTree(bool performing_reattach) {
   if (in_drag_mode_) {
     if (LocalFrame* frame = GetDocument().GetFrame()) {
       frame->GetEventHandler().ReleasePointerCapture(
           PointerEventFactory::kMouseId, this);
     }
   }
-  HTMLDivElement::DetachLayoutTree(context);
+  HTMLDivElement::DetachLayoutTree(performing_reattach);
 }
 
 HTMLInputElement* SliderThumbElement::HostInput() const {
   // Only HTMLInputElement creates SliderThumbElement instances as its shadow
   // nodes.  So, ownerShadowHost() must be an HTMLInputElement.
-  return ToHTMLInputElement(OwnerShadowHost());
-}
-
-static const AtomicString& SliderThumbShadowPartId() {
-  DEFINE_STATIC_LOCAL(const AtomicString, slider_thumb,
-                      ("-webkit-slider-thumb"));
-  return slider_thumb;
-}
-
-static const AtomicString& MediaSliderThumbShadowPartId() {
-  DEFINE_STATIC_LOCAL(const AtomicString, media_slider_thumb,
-                      ("-webkit-media-slider-thumb"));
-  return media_slider_thumb;
+  return To<HTMLInputElement>(OwnerShadowHost());
 }
 
 const AtomicString& SliderThumbElement::ShadowPseudoId() const {
   HTMLInputElement* input = HostInput();
   if (!input || !input->GetLayoutObject())
-    return SliderThumbShadowPartId();
+    return shadow_element_names::kPseudoSliderThumb;
 
   const ComputedStyle& slider_style = input->GetLayoutObject()->StyleRef();
-  switch (slider_style.Appearance()) {
+  switch (slider_style.EffectiveAppearance()) {
     case kMediaSliderPart:
     case kMediaSliderThumbPart:
     case kMediaVolumeSliderPart:
     case kMediaVolumeSliderThumbPart:
-      return MediaSliderThumbShadowPartId();
+      return shadow_element_names::kPseudoMediaSliderThumb;
     default:
-      return SliderThumbShadowPartId();
+      return shadow_element_names::kPseudoSliderThumb;
   }
 }
 
-scoped_refptr<ComputedStyle> SliderThumbElement::CustomStyleForLayoutObject() {
+scoped_refptr<ComputedStyle> SliderThumbElement::CustomStyleForLayoutObject(
+    const StyleRecalcContext& style_recalc_context) {
   Element* host = OwnerShadowHost();
   DCHECK(host);
   const ComputedStyle& host_style = host->ComputedStyleRef();
-  scoped_refptr<ComputedStyle> style = OriginalStyleForLayoutObject();
+  scoped_refptr<ComputedStyle> style =
+      OriginalStyleForLayoutObject(style_recalc_context);
 
-  if (host_style.Appearance() == kSliderVerticalPart)
-    style->SetAppearance(kSliderThumbVerticalPart);
-  else if (host_style.Appearance() == kSliderHorizontalPart)
-    style->SetAppearance(kSliderThumbHorizontalPart);
-  else if (host_style.Appearance() == kMediaSliderPart)
-    style->SetAppearance(kMediaSliderThumbPart);
-  else if (host_style.Appearance() == kMediaVolumeSliderPart)
-    style->SetAppearance(kMediaVolumeSliderThumbPart);
-  if (style->HasAppearance())
+  if (host_style.EffectiveAppearance() == kSliderVerticalPart)
+    style->SetEffectiveAppearance(kSliderThumbVerticalPart);
+  else if (host_style.EffectiveAppearance() == kSliderHorizontalPart)
+    style->SetEffectiveAppearance(kSliderThumbHorizontalPart);
+  else if (host_style.EffectiveAppearance() == kMediaSliderPart)
+    style->SetEffectiveAppearance(kMediaSliderThumbPart);
+  else if (host_style.EffectiveAppearance() == kMediaVolumeSliderPart)
+    style->SetEffectiveAppearance(kMediaVolumeSliderThumbPart);
+  if (style->HasEffectiveAppearance())
     LayoutTheme::GetTheme().AdjustSliderThumbSize(*style);
 
   return style;
@@ -346,7 +309,7 @@ scoped_refptr<ComputedStyle> SliderThumbElement::CustomStyleForLayoutObject() {
 
 // --------------------------------
 
-inline SliderContainerElement::SliderContainerElement(Document& document)
+SliderContainerElement::SliderContainerElement(Document& document)
     : HTMLDivElement(document),
       has_touch_event_handler_(false),
       touch_started_(false),
@@ -355,20 +318,19 @@ inline SliderContainerElement::SliderContainerElement(Document& document)
   SetHasCustomStyleCallbacks();
 }
 
-DEFINE_NODE_FACTORY(SliderContainerElement)
-
 HTMLInputElement* SliderContainerElement::HostInput() const {
-  return ToHTMLInputElement(OwnerShadowHost());
+  return To<HTMLInputElement>(OwnerShadowHost());
 }
 
-LayoutObject* SliderContainerElement::CreateLayoutObject(const ComputedStyle&,
-                                                         LegacyLayout) {
-  return new LayoutSliderContainer(this);
+LayoutObject* SliderContainerElement::CreateLayoutObject(
+    const ComputedStyle& style,
+    LegacyLayout legacy) {
+  return LayoutObjectFactory::CreateFlexibleBox(*this, style, legacy);
 }
 
 void SliderContainerElement::DefaultEventHandler(Event& event) {
-  if (event.IsTouchEvent()) {
-    HandleTouchEvent(ToTouchEvent(&event));
+  if (auto* touch_event = DynamicTo<TouchEvent>(event)) {
+    HandleTouchEvent(touch_event);
     return;
   }
 }
@@ -394,8 +356,8 @@ void SliderContainerElement::HandleTouchEvent(TouchEvent* event) {
   }
 
   TouchList* touches = event->targetTouches();
-  SliderThumbElement* thumb = ToSliderThumbElement(
-      GetTreeScope().getElementById(shadow_element_names::SliderThumb()));
+  auto* thumb = To<SliderThumbElement>(
+      GetTreeScope().getElementById(shadow_element_names::kIdSliderThumb));
   if (!thumb || !touches)
     return;
 
@@ -449,34 +411,28 @@ bool SliderContainerElement::CanSlide() {
       }
     }
   }
-  if ((sliding_direction_ == kVertical &&
-       slider_style->Appearance() == kSliderHorizontalPart) ||
-      (sliding_direction_ == kHorizontal &&
-       slider_style->Appearance() == kSliderVerticalPart)) {
+  bool is_horizontal = GetComputedStyle()->IsHorizontalWritingMode();
+  if ((sliding_direction_ == kVertical && is_horizontal) ||
+      (sliding_direction_ == kHorizontal && !is_horizontal)) {
     return false;
   }
   return true;
 }
 
 const AtomicString& SliderContainerElement::ShadowPseudoId() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, media_slider_container,
-                      ("-webkit-media-slider-container"));
-  DEFINE_STATIC_LOCAL(const AtomicString, slider_container,
-                      ("-webkit-slider-container"));
-
   if (!OwnerShadowHost() || !OwnerShadowHost()->GetLayoutObject())
-    return slider_container;
+    return shadow_element_names::kPseudoSliderContainer;
 
   const ComputedStyle& slider_style =
       OwnerShadowHost()->GetLayoutObject()->StyleRef();
-  switch (slider_style.Appearance()) {
+  switch (slider_style.EffectiveAppearance()) {
     case kMediaSliderPart:
     case kMediaSliderThumbPart:
     case kMediaVolumeSliderPart:
     case kMediaVolumeSliderThumbPart:
-      return media_slider_container;
+      return shadow_element_names::kPseudoMediaSliderContainer;
     default:
-      return slider_container;
+      return shadow_element_names::kPseudoSliderContainer;
   }
 }
 
@@ -503,16 +459,6 @@ void SliderContainerElement::DidMoveToNewDocument(Document& old_document) {
 void SliderContainerElement::RemoveAllEventListeners() {
   Node::RemoveAllEventListeners();
   has_touch_event_handler_ = false;
-}
-
-scoped_refptr<ComputedStyle>
-SliderContainerElement::CustomStyleForLayoutObject() {
-  HTMLInputElement* input = HostInput();
-  DCHECK(input);
-  scoped_refptr<ComputedStyle> style = OriginalStyleForLayoutObject();
-  style->SetFlexDirection(HasVerticalAppearance(input) ? EFlexDirection::kColumn
-                                                       : EFlexDirection::kRow);
-  return style;
 }
 
 }  // namespace blink

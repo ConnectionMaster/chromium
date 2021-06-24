@@ -32,11 +32,13 @@ class HTMLLegendElement final : public HTMLElement {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  DECLARE_NODE_FACTORY(HTMLLegendElement);
-
   explicit HTMLLegendElement(Document&);
 
   HTMLFormElement* form() const;
+
+ private:
+  void DetachLayoutTree(bool performing_reattach) override;
+  LayoutObject* CreateLayoutObject(const ComputedStyle&, LegacyLayout) override;
 };
 
 }  // namespace blink

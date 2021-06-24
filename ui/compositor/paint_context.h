@@ -5,9 +5,8 @@
 #ifndef UI_COMPOSITOR_PAINT_CONTEXT_H_
 #define UI_COMPOSITOR_PAINT_CONTEXT_H_
 
-#include <memory>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "cc/paint/paint_recorder.h"
 #include "ui/compositor/compositor_export.h"

@@ -2,10 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// https://github.com/gpuweb/gpuweb/blob/master/design/sketch.webidl
+// https://gpuweb.github.io/gpuweb/
 
-dictionary GPUSwapChainDescriptor {
-    required GPUCanvasContext context;
+dictionary GPUSwapChainDescriptor : GPUObjectDescriptorBase {
+    required GPUDevice device;
     required GPUTextureFormat format;
-    GPUTextureUsageFlags usage = 16;  // GPUTextureUsage.OUTPUT_ATTACHMENT
+    GPUTextureUsageFlags usage = 16;  // GPUTextureUsage.RENDER_ATTACHMENT
+    GPUExtent3D size;
 };

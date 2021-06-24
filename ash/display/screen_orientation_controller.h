@@ -12,12 +12,15 @@
 #include "ash/ash_export.h"
 #include "ash/display/display_configuration_controller.h"
 #include "ash/display/window_tree_host_manager.h"
-#include "ash/public/interfaces/ash_window_manager.mojom.h"
-#include "ash/wm/tablet_mode/tablet_mode_observer.h"
+#include "ash/public/cpp/tablet_mode_observer.h"
+#include "ash/wm/splitview/split_view_controller.h"
+#include "ash/wm/splitview/split_view_observer.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/aura/window_observer.h"
 #include "ui/display/display.h"
+#include "ui/display/display_observer.h"
 #include "ui/wm/public/activation_change_observer.h"
 
 namespace aura {
@@ -26,7 +29,17 @@ class Window;
 
 namespace ash {
 
-using OrientationLockType = mojom::OrientationLockType;
+enum class OrientationLockType {
+  kAny,
+  kNatural,
+  kCurrent,
+  kPortrait,
+  kLandscape,
+  kPortraitPrimary,
+  kPortraitSecondary,
+  kLandscapePrimary,
+  kLandscapeSecondary,
+};
 
 // Test if the orientation lock type is primary/landscape/portrait.
 bool IsPrimaryOrientation(OrientationLockType type);
@@ -46,7 +59,9 @@ class ASH_EXPORT ScreenOrientationController
       public aura::WindowObserver,
       public AccelerometerReader::Observer,
       public WindowTreeHostManager::Observer,
-      public TabletModeObserver {
+      public TabletModeObserver,
+      public SplitViewObserver,
+      public display::DisplayObserver {
  public:
   // Observer that reports changes to the state of ScreenOrientationProvider's
   // rotation lock.
@@ -56,16 +71,15 @@ class ASH_EXPORT ScreenOrientationController
     virtual void OnUserRotationLockChanged() {}
 
    protected:
-    virtual ~Observer() {}
+    virtual ~Observer() = default;
   };
 
-  // Controls the behavior after lock is applied to the window (when
-  // the window becomes active window). |DisableSensor| disables
-  // the sensor based rotation and locks to the specific orientation.
-  // For example, PORTRAIT may rotate to PORTRAIT_PRIMARY or
-  // PORTRAIT_SECONDARY, and will allow rotate between these two.
-  // |DisableSensor| will lock the orientation to the one of them
-  // after locked to disalow the sensor basd rotation.
+  // Controls the behavior after lock is applied to the window (when the window
+  // becomes the active window). |DisableSensor| disables the sensor-based
+  // rotation and locks to the specific orientation. For example, PORTRAIT may
+  // rotate to PORTRAIT_PRIMARY or PORTRAIT_SECONDARY, and will allow rotation
+  // between these two. |DisableSensor| disallows the sensor-based rotation by
+  // locking the rotation to whichever specific orientation is applied.
   enum class LockCompletionBehavior {
     None,
     DisableSensor,
@@ -91,12 +105,16 @@ class ASH_EXPORT ScreenOrientationController
   // Unlock all and set the rotation back to the user specified rotation.
   void UnlockAll();
 
-  bool ScreenOrientationProviderSupported() const;
-
   // Returns true if the user has locked the orientation to portrait, false if
   // the user has locked the orientation to landscape or not locked the
   // orientation.
   bool IsUserLockedOrientationPortrait();
+
+  // Returns the OrientationLockType that is applied on based on whether a
+  // rotation lock was requested for an app window, and whether the current
+  // system state allows it to lock the rotation (e.g. being in tablet mode, on
+  // the internal display, and splitview is inactive).
+  OrientationLockType GetCurrentAppRequestedOrientationLock() const;
 
   bool ignore_display_configuration_updates() const {
     return ignore_display_configuration_updates_;
@@ -122,6 +140,10 @@ class ASH_EXPORT ScreenOrientationController
   // Gets current screen orientation type.
   OrientationLockType GetCurrentOrientation() const;
 
+  // Returns true if auto-rotation is allowed. It happens when the device is in
+  // a physical tablet state or kSupportsClamshellAutoRotation is set.
+  bool IsAutoRotationAllowed() const;
+
   // wm::ActivationChangeObserver:
   void OnWindowActivated(
       ::wm::ActivationChangeObserver::ActivationReason reason,
@@ -129,28 +151,40 @@ class ASH_EXPORT ScreenOrientationController
       aura::Window* lost_active) override;
 
   // aura::WindowObserver:
+  void OnWindowHierarchyChanged(const HierarchyChangeParams& params) override;
   void OnWindowDestroying(aura::Window* window) override;
   void OnWindowVisibilityChanged(aura::Window* window, bool visible) override;
 
   // AccelerometerReader::Observer:
-  void OnAccelerometerUpdated(
-      scoped_refptr<const AccelerometerUpdate> update) override;
+  void OnECLidAngleDriverStatusChanged(bool is_supported) override {}
+  void OnAccelerometerUpdated(const AccelerometerUpdate& update) override;
 
   // WindowTreeHostManager::Observer:
   void OnDisplayConfigurationChanged() override;
 
   // TabletModeObserver:
   void OnTabletModeStarted() override;
-  void OnTabletModeEnding() override;
   void OnTabletModeEnded() override;
+  void OnTabletPhysicalStateChanged() override;
+
+  // SplitViewObserver:
+  void OnSplitViewStateChanged(SplitViewController::State previous_state,
+                               SplitViewController::State state) override;
+
+  // display::DisplayObserver:
+  void OnWillProcessDisplayChanges() override;
+  void OnDidProcessDisplayChanges() override;
 
  private:
   friend class ScreenOrientationControllerTestApi;
 
   struct LockInfo {
-    LockInfo() {}
-    LockInfo(OrientationLockType lock) : orientation_lock(lock) {}
+    LockInfo(OrientationLockType lock, aura::Window* root)
+        : orientation_lock(lock), root_window(root) {}
     OrientationLockType orientation_lock = OrientationLockType::kAny;
+    // Tracks the requesting window's root window and is updated whenever it
+    // changes.
+    aura::Window* root_window = nullptr;
     LockCompletionBehavior lock_completion_behavior =
         LockCompletionBehavior::None;
   };
@@ -193,9 +227,16 @@ class ASH_EXPORT ScreenOrientationController
   // preferences. These are then applied.
   void LoadDisplayRotationProperties();
 
-  // Determines the rotation lock, and orientation, for the currently active
-  // window, and applies it. If there is none, rotation lock will be removed.
-  void ApplyLockForActiveWindow();
+  // Determines the rotation lock, and orientation, for the top-most window on
+  // the internal display, and applies it. If there is none, rotation lock will
+  // be removed.
+  // TODO(oshima|afakhry): This behavior needs to be revised when Android
+  // implements multi-display support.
+  void ApplyLockForTopMostWindowOnInternalDisplay();
+
+  // If there is a rotation lock that can be applied to window, applies it and
+  // returns true. Otherwise returns false.
+  bool ApplyLockForWindowIfPossible(const aura::Window* window);
 
   // Both |OrientationLockType::kLandscape| and
   // |OrientationLock::kPortrait| allow for rotation between the
@@ -221,6 +262,16 @@ class ASH_EXPORT ScreenOrientationController
   // When true then accelerometer updates should not rotate the display.
   bool rotation_locked_;
 
+  // True while the displays are being updated by the display manager, so that
+  // we don't set the display rotation while this operation is in progress.
+  bool suspend_orientation_lock_refreshes_ = false;
+
+  // True if there was a request to refresh the orientation lock while the
+  // display manager is in the process of updating the displays. When the
+  // display manager is done, we check this value to see if we need to refresh
+  // the orientation lock.
+  bool is_orientation_lock_refresh_pending_ = false;
+
   // The orientation to which the current |rotation_locked_| was applied.
   OrientationLockType rotation_locked_orientation_;
 
@@ -230,6 +281,10 @@ class ASH_EXPORT ScreenOrientationController
 
   // The orientation of the device locked by the user.
   OrientationLockType user_locked_orientation_ = OrientationLockType::kAny;
+
+  // The currently applied orientation lock that was requested by an app if any.
+  absl::optional<OrientationLockType> current_app_requested_orientation_lock_ =
+      absl::nullopt;
 
   // The current rotation set by ScreenOrientationController for the internal
   // display.

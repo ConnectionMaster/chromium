@@ -100,7 +100,9 @@ class CAPTURE_EXPORT V4L2CaptureDelegate final {
   // enqueues it (VIDIOC_QBUF) back into V4L2.
   bool MapAndQueueBuffer(int index);
 
+  bool StartStream();
   void DoCapture();
+  bool StopStream();
 
   void SetErrorState(VideoCaptureError error,
                      const base::Location& from_here,
@@ -130,7 +132,7 @@ class CAPTURE_EXPORT V4L2CaptureDelegate final {
   // Clockwise rotation in degrees. This value should be 0, 90, 180, or 270.
   int rotation_;
 
-  base::WeakPtrFactory<V4L2CaptureDelegate> weak_factory_;
+  base::WeakPtrFactory<V4L2CaptureDelegate> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(V4L2CaptureDelegate);
 };

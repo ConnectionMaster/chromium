@@ -7,8 +7,7 @@
 
 #include "base/macros.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
-
-class GrContext;
+#include "third_party/skia/include/gpu/GrContextOptions.h"
 
 namespace gpu {
 struct Capabilities;
@@ -23,7 +22,7 @@ namespace skia_bindings {
 // This class binds an offscreen GrContext to an offscreen context3d. The
 // context3d is used by the GrContext so must be valid as long as this class
 // is alive.
-class GrContextForGLES2Interface {
+class GrContextForGLES2Interface : public GrContextOptions::ShaderErrorHandler {
  public:
   explicit GrContextForGLES2Interface(gpu::gles2::GLES2Interface* gl,
                                       gpu::ContextSupport* context_support,
@@ -31,15 +30,18 @@ class GrContextForGLES2Interface {
                                       size_t max_resource_cache_bytes,
                                       size_t max_glyph_cache_texture_bytes);
 
-  virtual ~GrContextForGLES2Interface();
+  ~GrContextForGLES2Interface() override;
 
-  GrContext* get();
+  // Handles Skia-reported shader compilation errors.
+  void compileError(const char* shader, const char* errors) override;
+
+  GrDirectContext* get();
 
   void OnLostContext();
   void FreeGpuResources();
 
  private:
-  sk_sp<class GrContext> gr_context_;
+  sk_sp<class GrDirectContext> gr_context_;
   gpu::ContextSupport* context_support_;
 
   DISALLOW_COPY_AND_ASSIGN(GrContextForGLES2Interface);

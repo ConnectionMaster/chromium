@@ -2,22 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "mojo/public/cpp/system/invitation.h"
+
 #include <utility>
 
-#include "mojo/public/cpp/system/invitation.h"
 #include "base/base_paths.h"
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_piece.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/multiprocess_test.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
@@ -26,6 +26,7 @@
 #include "mojo/public/cpp/system/wait.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if !defined(OS_FUCHSIA)
 #include "mojo/public/cpp/platform/named_platform_channel.h"
@@ -71,7 +72,7 @@ class InvitationCppTest : public testing::Test,
         base::GetMultiProcessTestChildBaseCommandLine());
 
     base::LaunchOptions launch_options;
-    base::Optional<PlatformChannel> channel;
+    absl::optional<PlatformChannel> channel;
     PlatformChannelEndpoint channel_endpoint;
     PlatformChannelServerEndpoint server_endpoint;
     switch (transport_type) {
@@ -172,7 +173,7 @@ class InvitationCppTest : public testing::Test,
   }
 
  private:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::Process child_process_;
 
   DISALLOW_COPY_AND_ASSIGN(InvitationCppTest);
@@ -264,7 +265,7 @@ DEFINE_TEST_CLIENT(CppSendWithMultiplePipesClient) {
 }
 
 TEST(InvitationCppTest_NoParam, SendIsolatedInvitationWithDuplicateName) {
-  base::test::ScopedTaskEnvironment task_environment;
+  base::test::TaskEnvironment task_environment;
   PlatformChannel channel1;
   PlatformChannel channel2;
   const char kConnectionName[] = "foo";
@@ -278,7 +279,15 @@ TEST(InvitationCppTest_NoParam, SendIsolatedInvitationWithDuplicateName) {
 const char kErrorMessage[] = "ur bad :{{";
 const char kDisconnectMessage[] = "go away plz";
 
-TEST_P(InvitationCppTest, ProcessErrors) {
+// Flakily times out on Android under ASAN.
+// crbug.com/1011494
+#if defined(OS_ANDROID) && defined(ADDRESS_SANITIZER)
+#define MAYBE_ProcessErrors DISABLED_ProcessErrors
+#else
+#define MAYBE_ProcessErrors ProcessErrors
+#endif
+
+TEST_P(InvitationCppTest, MAYBE_ProcessErrors) {
   ProcessErrorCallback actual_error_callback;
 
   ScopedMessagePipeHandle pipe;
@@ -322,7 +331,7 @@ DEFINE_TEST_CLIENT(CppProcessErrorsClient) {
   EXPECT_EQ(kDisconnectMessage, ReadMessage(pipe));
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          InvitationCppTest,
                          testing::Values(TransportType::kChannel
 #if !defined(OS_FUCHSIA)

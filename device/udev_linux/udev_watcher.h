@@ -6,14 +6,15 @@
 #define DEVICE_UDEV_LINUX_UDEV_WATCHER_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/files/file_descriptor_watcher_posix.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/sequence_checker.h"
 #include "base/strings/string_piece.h"
 #include "device/udev_linux/scoped_udev.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device {
 
@@ -25,6 +26,7 @@ class UdevWatcher {
    public:
     virtual void OnDeviceAdded(ScopedUdevDevicePtr device) = 0;
     virtual void OnDeviceRemoved(ScopedUdevDevicePtr device) = 0;
+    virtual void OnDeviceChanged(ScopedUdevDevicePtr device) = 0;
 
    protected:
     virtual ~Observer();
@@ -42,8 +44,8 @@ class UdevWatcher {
     const char* subsystem() const;
 
    private:
-    base::Optional<std::string> subsystem_;
-    base::Optional<std::string> devtype_;
+    absl::optional<std::string> subsystem_;
+    absl::optional<std::string> devtype_;
   };
 
   static std::unique_ptr<UdevWatcher> StartWatching(

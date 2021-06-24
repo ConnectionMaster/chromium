@@ -17,6 +17,7 @@
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "components/spellcheck/browser/spellcheck_dictionary.h"
+#include "components/spellcheck/spellcheck_buildflags.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 
 class GURL;
@@ -52,6 +53,7 @@ class SpellcheckHunspellDictionary
   };
 
   SpellcheckHunspellDictionary(const std::string& language,
+                               const std::string& platform_spellcheck_language,
                                content::BrowserContext* browser_context,
                                SpellcheckService* spellcheck_service);
   ~SpellcheckHunspellDictionary() override;
@@ -67,6 +69,8 @@ class SpellcheckHunspellDictionary
 
   const base::File& GetDictionaryFile() const;
   const std::string& GetLanguage() const;
+  const std::string& GetPlatformSpellcheckLanguage() const;
+  bool HasPlatformSupport() const;
   bool IsUsingPlatformChecker() const;
 
   // Add an observer for Hunspell dictionary events.
@@ -96,7 +100,7 @@ class SpellcheckHunspellDictionary
   // blocking sequence.
   struct DictionaryFile {
    public:
-    DictionaryFile();
+    explicit DictionaryFile(base::TaskRunner* task_runner);
     ~DictionaryFile();
 
     DictionaryFile(DictionaryFile&& other);
@@ -109,6 +113,9 @@ class SpellcheckHunspellDictionary
     base::File file;
 
    private:
+    // Task runner where the file is created.
+    scoped_refptr<base::TaskRunner> task_runner_;
+
     DISALLOW_COPY_AND_ASSIGN(DictionaryFile);
   };
 
@@ -123,15 +130,20 @@ class SpellcheckHunspellDictionary
 #if !defined(OS_ANDROID)
   // Figures out the location for the dictionary, verifies its contents, and
   // opens it.
-  static DictionaryFile OpenDictionaryFile(const base::FilePath& path);
+  static DictionaryFile OpenDictionaryFile(base::TaskRunner* task_runner,
+                                           const base::FilePath& path);
 
   // Gets the default location for the dictionary file.
   static DictionaryFile InitializeDictionaryLocation(
-      const std::string& language);
+      base::TaskRunner* task_runner, const std::string& language);
 
   // The reply point for PostTaskAndReplyWithResult, called after the dictionary
   // file has been initialized.
   void InitializeDictionaryLocationComplete(DictionaryFile file);
+#endif
+
+#if BUILDFLAG(USE_BROWSER_SPELLCHECKER)
+  void SpellCheckPlatformSetLanguageComplete(bool result);
 #endif
 
   // The reply point for PostTaskAndReplyWithResult, called after the dictionary
@@ -144,11 +156,20 @@ class SpellcheckHunspellDictionary
   // Notify listeners that the dictionary download failed.
   void InformListenersOfDownloadFailure();
 
+  // Callback for asynchronously checking if the platform supports a language
+  // for spellchecking.
+  void PlatformSupportsLanguageComplete(bool platform_supports_language);
+
   // Task runner where the file operations takes place.
   scoped_refptr<base::SequencedTaskRunner> const task_runner_;
 
-  // The language of the dictionary file.
+  // The language of the dictionary file (passed when loading Hunspell
+  // dictionaries).
   const std::string language_;
+
+  // The spellcheck language passed to platform APIs may differ from the accept
+  // language (can be empty, indicating to use accept language and Hunspell).
+  const std::string platform_spellcheck_language_;
 
   // Whether to use the platform spellchecker instead of Hunspell.
   bool use_browser_spellchecker_;
@@ -160,9 +181,7 @@ class SpellcheckHunspellDictionary
   // Used for downloading the dictionary file.
   std::unique_ptr<network::SimpleURLLoader> simple_loader_;
 
-#if !defined(OS_ANDROID)
   SpellcheckService* const spellcheck_service_;
-#endif
 
   // Observers of Hunspell dictionary events.
   base::ObserverList<Observer>::Unchecked observers_;
@@ -173,7 +192,7 @@ class SpellcheckHunspellDictionary
   // Dictionary file path and descriptor.
   DictionaryFile dictionary_file_;
 
-  base::WeakPtrFactory<SpellcheckHunspellDictionary> weak_ptr_factory_;
+  base::WeakPtrFactory<SpellcheckHunspellDictionary> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SpellcheckHunspellDictionary);
 };

@@ -8,46 +8,49 @@
 #include <string>
 #include <vector>
 
-#include "ash/public/interfaces/session_controller.mojom.h"
+#include "ash/public/cpp/session/session_controller.h"
 #include "base/macros.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "base/observer_list.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
-// Test implementation of ash's mojo SessionController interface.
-//
-// Registers itself to ServiceManager on construction and deregisters
-// on destruction.
-//
-// Note: A ServiceManagerConnection must be initialized before constructing this
-// object. Consider using content::TestServiceManagerContext on your tests.
-class TestSessionController : public ash::mojom::SessionController {
+// Test implementation of ash's SessionController interface.
+class TestSessionController : public ash::SessionController {
  public:
   TestSessionController();
   ~TestSessionController() override;
 
-  ash::mojom::SessionInfo* last_session_info() {
-    return last_session_info_.get();
+  const absl::optional<ash::SessionInfo>& last_session_info() const {
+    return last_session_info_;
   }
 
-  base::TimeDelta last_session_length_limit() {
+  base::TimeDelta last_session_length_limit() const {
     return last_session_length_limit_;
   }
 
-  base::TimeTicks last_session_start_time() { return last_session_start_time_; }
-
-  ash::mojom::UserSession* last_user_session() {
-    return last_user_session_.get();
+  base::Time last_session_start_time() const {
+    return last_session_start_time_;
   }
 
-  int update_user_session_count() { return update_user_session_count_; }
+  const absl::optional<ash::UserSession>& last_user_session() const {
+    return last_user_session_;
+  }
 
-  int lock_animation_complete_call_count() {
+  int update_user_session_count() const { return update_user_session_count_; }
+
+  int lock_animation_complete_call_count() const {
     return lock_animation_complete_call_count_;
   }
 
-  // ash::mojom::SessionController:
-  void SetClient(ash::mojom::SessionControllerClientPtr client) override;
-  void SetSessionInfo(ash::mojom::SessionInfoPtr info) override;
-  void UpdateUserSession(ash::mojom::UserSessionPtr user_session) override;
+  int set_user_session_order_count() const {
+    return set_user_session_order_count_;
+  }
+
+  void SetScreenLocked(bool locked);
+
+  // ash::SessionController:
+  void SetClient(ash::SessionControllerClient* client) override;
+  void SetSessionInfo(const ash::SessionInfo& info) override;
+  void UpdateUserSession(const ash::UserSession& user_session) override;
   void SetUserSessionOrder(
       const std::vector<uint32_t>& user_session_order) override;
   void PrepareForLock(PrepareForLockCallback callback) override;
@@ -56,7 +59,7 @@ class TestSessionController : public ash::mojom::SessionController {
   void RunUnlockAnimation(RunUnlockAnimationCallback callback) override;
   void NotifyChromeTerminating() override;
   void SetSessionLengthLimit(base::TimeDelta length_limit,
-                             base::TimeTicks start_time) override;
+                             base::Time start_time) override;
   void CanSwitchActiveUser(CanSwitchActiveUserCallback callback) override;
   void ShowMultiprofilesIntroDialog(
       ShowMultiprofilesIntroDialogCallback callback) override;
@@ -66,18 +69,24 @@ class TestSessionController : public ash::mojom::SessionController {
       const std::string& user_email) override;
   void AddSessionActivationObserverForAccountId(
       const AccountId& account_id,
-      ash::mojom::SessionActivationObserverPtr observer) override;
+      ash::SessionActivationObserver* observer) override;
+  void RemoveSessionActivationObserverForAccountId(
+      const AccountId& account_id,
+      ash::SessionActivationObserver* observer) override;
+  void AddObserver(ash::SessionObserver* observer) override;
+  void RemoveObserver(ash::SessionObserver* observer) override;
+  bool IsScreenLocked() const override;
 
  private:
-  void Bind(mojo::ScopedMessagePipeHandle handle);
-
-  ash::mojom::SessionInfoPtr last_session_info_;
-  ash::mojom::UserSessionPtr last_user_session_;
+  absl::optional<ash::SessionInfo> last_session_info_;
+  absl::optional<ash::UserSession> last_user_session_;
   base::TimeDelta last_session_length_limit_;
-  base::TimeTicks last_session_start_time_;
+  base::Time last_session_start_time_;
   int update_user_session_count_ = 0;
   int lock_animation_complete_call_count_ = 0;
-  mojo::Binding<ash::mojom::SessionController> binding_{this};
+  int set_user_session_order_count_ = 0;
+  bool is_screen_locked_ = false;
+  base::ObserverList<ash::SessionObserver> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(TestSessionController);
 };

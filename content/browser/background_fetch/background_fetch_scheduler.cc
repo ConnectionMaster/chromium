@@ -5,7 +5,7 @@
 #include "content/browser/background_fetch/background_fetch_scheduler.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/guid.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/stl_util.h"
@@ -15,10 +15,11 @@
 #include "content/browser/background_fetch/background_fetch_job_controller.h"
 #include "content/browser/background_fetch/background_fetch_registration_notifier.h"
 #include "content/browser/background_fetch/background_fetch_registration_service_impl.h"
-#include "content/browser/devtools/devtools_background_services_context.h"
+#include "content/browser/devtools/devtools_background_services_context_impl.h"
 #include "content/browser/service_worker/service_worker_context_core_observer.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/public/common/content_features.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom.h"
 
@@ -63,7 +64,7 @@ BackgroundFetchScheduler::BackgroundFetchScheduler(
     BackgroundFetchDataManager* data_manager,
     BackgroundFetchRegistrationNotifier* registration_notifier,
     BackgroundFetchDelegateProxy* delegate_proxy,
-    DevToolsBackgroundServicesContext* devtools_context,
+    DevToolsBackgroundServicesContextImpl* devtools_context,
     scoped_refptr<ServiceWorkerContextWrapper> service_worker_context)
     : data_manager_(data_manager),
       registration_notifier_(registration_notifier),
@@ -71,8 +72,7 @@ BackgroundFetchScheduler::BackgroundFetchScheduler(
       devtools_context_(devtools_context),
       event_dispatcher_(background_fetch_context,
                         std::move(service_worker_context),
-                        devtools_context),
-      weak_ptr_factory_(this) {
+                        devtools_context) {
   DCHECK(delegate_proxy_);
   DCHECK(devtools_context_);
   delegate_proxy_->SetClickEventDispatcher(
@@ -89,25 +89,32 @@ BackgroundFetchScheduler::BackgroundFetchScheduler(
 
 BackgroundFetchScheduler::~BackgroundFetchScheduler() = default;
 
+BackgroundFetchScheduler::RegistrationData::RegistrationData(
+    const BackgroundFetchRegistrationId& registration_id,
+    blink::mojom::BackgroundFetchRegistrationDataPtr registration)
+    : registration_id(registration_id), registration(std::move(registration)) {}
+
+BackgroundFetchScheduler::RegistrationData::~RegistrationData() = default;
+
 bool BackgroundFetchScheduler::ScheduleDownload() {
   DCHECK_LT(num_running_downloads_, max_running_downloads_);
 
-  // 1. Try to activate a registration from a different origin.
+  // 1. Try to activate a registration from a different storage key.
   if (num_active_registrations_ < max_active_registrations_ &&
       !controller_ids_.empty()) {
-    // Try to find a pending registration with a different origin.
+    // Try to find a pending registration with a different storage key.
     for (const auto& controller_id : controller_ids_) {
-      // Make sure the origin is not already active.
-      bool is_new_origin = true;
+      // Make sure the storage key is not already active.
+      bool is_new_storage_key = true;
       for (auto* controller : active_controllers_) {
-        if (controller->registration_id().origin().IsSameOriginWith(
-                controller_id.origin())) {
-          is_new_origin = false;
+        if (controller->registration_id().storage_key() ==
+            controller_id.storage_key()) {
+          is_new_storage_key = false;
           break;
         }
       }
 
-      if (is_new_origin) {
+      if (is_new_storage_key) {
         // Start new registration, and move to the front of the queue.
         auto* controller = job_controllers_[controller_id.unique_id()].get();
         active_controllers_.push_front(controller);
@@ -208,8 +215,8 @@ void BackgroundFetchScheduler::FinishJob(
 
   auto it = job_controllers_.find(registration_id.unique_id());
   if (it != job_controllers_.end()) {
-    completed_fetches_[it->first] = {registration_id,
-                                     it->second->NewRegistrationData()};
+    completed_fetches_[it->first] = std::make_unique<RegistrationData>(
+        registration_id, it->second->NewRegistrationData());
 
     // Reset scheduler params.
     num_running_downloads_ -= it->second->pending_downloads();
@@ -243,7 +250,7 @@ void BackgroundFetchScheduler::DidMarkForDeletion(
   DCHECK(it != completed_fetches_.end());
 
   blink::mojom::BackgroundFetchRegistrationDataPtr& registration_data =
-      it->second.second;
+      it->second->registration;
   // Include any other failure reasons the marking for deletion may have found.
   if (registration_data->failure_reason == BackgroundFetchFailureReason::NONE)
     registration_data->failure_reason = failure_reason;
@@ -269,12 +276,15 @@ void BackgroundFetchScheduler::DidMarkForDeletion(
     // No need to keep the controller around since there won't be dispatch
     // events.
     completed_fetches_.erase(it);
+  } else {
+    // The registration is now safe to delete.
+    it->second->processing_completed = true;
   }
 }
 
 void BackgroundFetchScheduler::CleanupRegistration(
     const BackgroundFetchRegistrationId& registration_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
   // Indicate to the renderer that the records for this fetch are no longer
   // available.
   registration_notifier_->NotifyRecordsUnavailable(registration_id.unique_id());
@@ -306,8 +316,11 @@ void BackgroundFetchScheduler::DispatchClickEvent(
     return;
 
   event_dispatcher_.DispatchBackgroundFetchClickEvent(
-      it->second.first, std::move(it->second.second), base::DoNothing());
-  completed_fetches_.erase(unique_id);
+      it->second->registration_id, it->second->registration.Clone(),
+      base::DoNothing());
+
+  if (it->second->processing_completed)
+    completed_fetches_.erase(unique_id);
 }
 
 std::unique_ptr<BackgroundFetchJobController>
@@ -346,13 +359,13 @@ void BackgroundFetchScheduler::OnRegistrationCreated(
     const SkBitmap& icon,
     int num_requests,
     bool start_paused) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   LogBackgroundFetchEventForDevTools(
       Event::kFetchRegistered, registration_id,
       /* request_info= */ nullptr,
-      {{"total requests", base::NumberToString(num_requests)},
-       {"start paused", start_paused ? "yes" : "no"}});
+      {{"Total Requests", base::NumberToString(num_requests)},
+       {"Start Paused", start_paused ? "Yes" : "No"}});
 
   registration_notifier_->NoteTotalRequests(registration_id.unique_id(),
                                             num_requests);
@@ -382,13 +395,13 @@ void BackgroundFetchScheduler::OnRegistrationLoadedAtStartup(
     int num_requests,
     std::vector<scoped_refptr<BackgroundFetchRequestInfo>>
         active_fetch_requests) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   LogBackgroundFetchEventForDevTools(
       Event::kFetchResumedOnStartup, registration_id,
       /* request_info= */ nullptr,
-      {{"completed requests", base::NumberToString(num_completed_requests)},
-       {"active requests",
+      {{"Completed Requests", base::NumberToString(num_completed_requests)},
+       {"Active Requests",
         base::NumberToString(active_fetch_requests.size())}});
 
   auto controller = CreateInitializedController(
@@ -479,12 +492,12 @@ void BackgroundFetchScheduler::OnServiceWorkerDatabaseCorrupted(
 
 void BackgroundFetchScheduler::OnRegistrationDeleted(int64_t registration_id,
                                                      const GURL& pattern) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
   AbortFetches(registration_id);
 }
 
 void BackgroundFetchScheduler::OnStorageWiped() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
   AbortFetches(blink::mojom::kInvalidServiceWorkerRegistrationId);
 }
 
@@ -503,7 +516,8 @@ BackgroundFetchJobController* BackgroundFetchScheduler::GetActiveController(
   // this creates a |unique_id| wrapper with default values for other
   // parameters.
   BackgroundFetchRegistrationId registration_id(
-      /* service_worker_registration_id= */ 0, /* origin= */ url::Origin(),
+      /* service_worker_registration_id= */ 0,
+      /* storage_key= */ blink::StorageKey(),
       /* developer_id= */ "", unique_id);
   return GetActiveController(registration_id);
 }
@@ -513,8 +527,10 @@ void BackgroundFetchScheduler::LogBackgroundFetchEventForDevTools(
     const BackgroundFetchRegistrationId& registration_id,
     const BackgroundFetchRequestInfo* request_info,
     std::map<std::string, std::string> metadata) {
-  if (!devtools_context_->IsRecording(devtools::proto::BACKGROUND_FETCH))
+  if (!devtools_context_->IsRecording(
+          DevToolsBackgroundService::kBackgroundFetch)) {
     return;
+  }
 
   std::string event_name;
 
@@ -522,24 +538,24 @@ void BackgroundFetchScheduler::LogBackgroundFetchEventForDevTools(
   // any additional data to |metadata|.
   switch (event) {
     case Event::kFetchRegistered:
-      event_name = "background fetch registered";
+      event_name = "Background Fetch registered";
       break;
     case Event::kFetchResumedOnStartup:
-      event_name = "background fetch resuming after browser restart";
+      event_name = "Background Fetch resuming after browser restart";
       break;
     case Event::kFetchScheduled:
-      event_name = "background fetch started";
+      event_name = "Background Fetch started";
       break;
     case Event::kRequestStarted:
-      event_name = "request processing started";
+      event_name = "Request processing started";
       DCHECK(request_info);
       break;
     case Event::kRequestCompleted:
-      event_name = "request processing completed";
+      event_name = "Request processing completed";
       DCHECK(request_info);
-      metadata["response status"] =
+      metadata["Response Status"] =
           base::NumberToString(request_info->GetResponseCode());
-      metadata["response size (bytes)"] =
+      metadata["Response Size (bytes)"] =
           base::NumberToString(request_info->GetResponseSize());
       break;
   }
@@ -548,18 +564,20 @@ void BackgroundFetchScheduler::LogBackgroundFetchEventForDevTools(
 
   // Include common request metadata.
   if (request_info) {
-    metadata["url"] = request_info->fetch_request()->url.spec();
-    metadata["request index"] =
+    metadata["URL"] = request_info->fetch_request()->url.spec();
+    metadata["Request Index"] =
         base::NumberToString(request_info->request_index());
     if (request_info->request_body_size())
-      metadata["upload size (bytes)"] =
+      metadata["Upload Size (bytes)"] =
           base::NumberToString(request_info->request_body_size());
   }
 
-  devtools_context_->LogBackgroundServiceEvent(
+  // TODO(https://crbug.com/1199077): Pass `registration_id.storage_key()`
+  // directly once DevToolsBackgroundServicesContextImpl implements StorageKey.
+  devtools_context_->LogBackgroundServiceEventOnCoreThread(
       registration_id.service_worker_registration_id(),
-      registration_id.origin(), devtools::proto::BACKGROUND_FETCH,
-      std::move(event_name),
+      registration_id.storage_key().origin(),
+      DevToolsBackgroundService::kBackgroundFetch, std::move(event_name),
       /* instance_id= */ registration_id.developer_id(), metadata);
 }
 

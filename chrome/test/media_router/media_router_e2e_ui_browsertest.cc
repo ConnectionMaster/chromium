@@ -7,6 +7,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "media/base/test_data_util.h"
 #include "net/base/filename_util.h"
@@ -88,8 +89,11 @@ IN_PROC_BROWSER_TEST_F(MediaRouterE2EBrowserTest, MANUAL_MirrorHTML5Video) {
       "webkitRequestFullScreen();";
   ExecuteScript(web_contents, script);
   Wait(base::TimeDelta::FromSeconds(5));
-  if (!test_ui_->IsDialogShown())
+  if (!test_ui_->IsDialogShown()) {
     test_ui_->ShowDialog();
+    // Wait 5s for the dialog to be fully loaded and usable.
+    Wait(base::TimeDelta::FromSeconds(5));
+  }
 
   // Check the mirroring session is still live.
   ASSERT_FALSE(test_ui_->GetRouteIdForSink(receiver_).empty());

@@ -11,7 +11,6 @@
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/signin/core/browser/account_consistency_method.h"
 #include "ui/base/l10n/l10n_util.h"
 
 ProfileListDesktop::ProfileListDesktop(
@@ -50,13 +49,11 @@ void ProfileListDesktop::RebuildMenu() {
         new AvatarMenu::Item(items_.size(), entry->GetPath(), icon));
     item->name = entry->GetName();
     item->username = entry->GetUserName();
-    item->legacy_supervised = entry->IsLegacySupervised();
     item->child_account = entry->IsChild();
     item->signed_in = entry->IsAuthenticated();
-    if (!item->signed_in) {
-      item->username = l10n_util::GetStringUTF16(
-          item->legacy_supervised ? IDS_LEGACY_SUPERVISED_USER_AVATAR_LABEL :
-                                    IDS_PROFILES_LOCAL_PROFILE_STATE);
+    if (entry->GetSigninState() == SigninState::kNotSignedIn) {
+      item->username =
+          l10n_util::GetStringUTF16(IDS_PROFILES_LOCAL_PROFILE_STATE);
     }
     item->active = item->profile_path == active_profile_path_;
     item->signin_required = entry->IsSigninRequired();

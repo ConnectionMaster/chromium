@@ -23,6 +23,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 
@@ -47,7 +48,7 @@ class DurableStorageBrowserTest : public InProcessBrowserTest {
     bookmarks::BookmarkModel* bookmark_model =
         BookmarkModelFactory::GetForBrowserContext(browser->profile());
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
-    bookmarks::AddIfNotBookmarked(bookmark_model, url_, base::ASCIIToUTF16(""));
+    bookmarks::AddIfNotBookmarked(bookmark_model, url_, u"");
   }
 
   void Bookmark() {
@@ -180,7 +181,7 @@ IN_PROC_BROWSER_TEST_F(DurableStorageBrowserTest, Incognito) {
 
 IN_PROC_BROWSER_TEST_F(DurableStorageBrowserTest, SessionOnly) {
   HostContentSettingsMapFactory::GetForProfile(browser()->profile())
-      ->SetDefaultContentSetting(CONTENT_SETTINGS_TYPE_COOKIES,
+      ->SetDefaultContentSetting(ContentSettingsType::COOKIES,
                                  CONTENT_SETTING_SESSION_ONLY);
   Bookmark();
   ui_test_utils::NavigateToURL(browser(), url_);

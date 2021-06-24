@@ -7,18 +7,18 @@
 
 #include <vector>
 
-#include "ash/app_list/app_list_export.h"
-#include "base/logging.h"
+#include "ash/ash_export.h"
+#include "base/check_op.h"
 #include "base/macros.h"
 
-namespace app_list {
+namespace ash {
 
 class AppsGridView;
 class AppListItemView;
 struct GridIndex;
 
 // The structure of app list item views in root apps grid view.
-class APP_LIST_EXPORT PagedViewStructure {
+class ASH_EXPORT PagedViewStructure {
  public:
   using Page = std::vector<AppListItemView*>;
   using Pages = std::vector<Page>;
@@ -96,6 +96,10 @@ class APP_LIST_EXPORT PagedViewStructure {
   const Pages& pages() const { return pages_; }
 
  private:
+  // Skips the item view being dragged if it exists in the specified
+  // |page|.
+  int CalculateTargetSlot(const Page& page) const;
+
   // Clear overflowing item views by moving them to the next page. Returns true
   // if view structure is changed.
   bool ClearOverflow();
@@ -109,6 +113,6 @@ class APP_LIST_EXPORT PagedViewStructure {
   AppsGridView* const apps_grid_view_;  // Not owned.
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_PAGED_VIEW_STRUCTURE_H_

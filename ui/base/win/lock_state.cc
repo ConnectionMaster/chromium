@@ -8,7 +8,6 @@
 #include <wtsapi32.h>
 
 #include "base/bind.h"
-#include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/win/windows_version.h"
 #include "ui/base/win/session_change_observer.h"
@@ -29,7 +28,7 @@ bool IsSessionLocked() {
     auto session_flags = info->Data.WTSInfoExLevel1.SessionFlags;
     // For Windows 7 SessionFlags has inverted logic:
     // https://msdn.microsoft.com/en-us/library/windows/desktop/ee621019.
-    if (base::win::GetVersion() == base::win::VERSION_WIN7)
+    if (base::win::GetVersion() == base::win::Version::WIN7)
       is_locked = session_flags == WTS_SESSIONSTATE_UNLOCK;
     else
       is_locked = session_flags == WTS_SESSIONSTATE_LOCK;
@@ -54,13 +53,14 @@ class SessionLockedObserver {
   bool IsLocked() const { return screen_locked_; }
 
  private:
-  void OnSessionChange(WPARAM status_code) {
-    if (status_code == WTS_SESSION_LOCK)
-      screen_locked_ = true;
-    else if (status_code == WTS_SESSION_UNLOCK)
+  void OnSessionChange(WPARAM status_code, const bool* is_current_session) {
+    if (is_current_session && !*is_current_session)
+      return;
+    if (status_code == WTS_SESSION_UNLOCK)
       screen_locked_ = false;
+    else if (status_code == WTS_SESSION_LOCK && is_current_session)
+      screen_locked_ = true;
   }
-
   SessionChangeObserver session_change_observer_;
   bool screen_locked_;
 

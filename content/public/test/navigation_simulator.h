@@ -11,7 +11,11 @@
 #include "base/memory/scoped_refptr.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/reload_type.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/common/permissions_policy/permissions_policy.h"
+#include "third_party/blink/public/mojom/loader/referrer.mojom-forward.h"
 #include "ui/base/page_transition_types.h"
 
 class GURL;
@@ -19,6 +23,7 @@ class GURL;
 namespace net {
 class IPEndPoint;
 class HttpResponseHeaders;
+class SSLInfo;
 }  // namespace net
 
 namespace content {
@@ -27,7 +32,6 @@ class NavigationHandle;
 class RenderFrameHost;
 class WebContents;
 struct GlobalRequestID;
-struct Referrer;
 
 // An interface for simulating a navigation in unit tests. Supports both
 // renderer and browser-initiated navigations.
@@ -195,11 +199,10 @@ class NavigationSimulator {
   // Simulates the commit of a navigation or an error page aborting.
   virtual void AbortCommit() = 0;
 
-  // Simulates the navigation failing with the error code |error_code| and
-  // response headers |response_headers|.
-  virtual void FailWithResponseHeaders(
-      int error_code,
-      scoped_refptr<net::HttpResponseHeaders> response_headers) = 0;
+  // Simulates aborting the navigation from the renderer, e.g. window.stop(),
+  // before it was committed in the renderer.
+  // Note: this is only valid for renderer-initiated navigations.
+  virtual void AbortFromRenderer() = 0;
 
   // Simulates the navigation failing with the error code |error_code|.
   // IMPORTANT NOTE: This is simulating a network connection error and implies
@@ -232,6 +235,15 @@ class NavigationSimulator {
 
   // The following parameters are constant during the navigation and may only be
   // specified before calling |Start|.
+  //
+  // Sets the frame that initiated the navigation. Should only be specified for
+  // renderer-initiated navigations. For now this frame must belong to the same
+  // process as the frame that is navigating.
+  //
+  // TODO(https://crbug.com/1072790): Support cross-process initiators here by
+  // using NavigationRequest::CreateBrowserInitiated() (like
+  // RenderFrameProxyHost does) for the navigation.
+  virtual void SetInitiatorFrame(RenderFrameHost* initiator_frame_host) = 0;
   virtual void SetTransition(ui::PageTransition transition) = 0;
   virtual void SetHasUserGesture(bool has_user_gesture) = 0;
   // Note: ReloadType should only be specified for browser-initiated
@@ -248,29 +260,33 @@ class NavigationSimulator {
   // specified before calling |Start| if they need to apply to the navigation to
   // the original url. Otherwise, they should be specified before calling
   // |Redirect|.
-  virtual void SetReferrer(const Referrer& referrer) = 0;
+  virtual void SetReferrer(blink::mojom::ReferrerPtr referrer) = 0;
 
   // The following parameters can change at any point until the page fails or
   // commits. They should be specified before calling |Fail| or |Commit|.
   virtual void SetSocketAddress(const net::IPEndPoint& remote_endpoint) = 0;
 
+  // Pretend the navigation response is served from cache.
+  virtual void SetWasFetchedViaCache(bool was_fetched_via_cache) = 0;
+
   // Pretend the navigation is against an inner response of a signed exchange.
   virtual void SetIsSignedExchangeInnerResponse(
       bool is_signed_exchange_inner_response) = 0;
 
-  // Sets the InterfaceProvider interface request to pass in as an argument to
-  // DidCommitProvisionalLoad for cross-document navigations. If not called,
-  // a stub will be passed in (which will never receive any interface requests).
-  //
-  // This interface connection would normally be created by the RenderFrame,
-  // with the client end bound to |remote_interfaces_| to allow the new document
-  // to access services exposed by the RenderFrameHost.
-  virtual void SetInterfaceProviderRequest(
-      service_manager::mojom::InterfaceProviderRequest request) = 0;
+  // Simulate receiving Permissions-Policy headers.
+  virtual void SetPermissionsPolicyHeader(
+      blink::ParsedPermissionsPolicy permissions_policy_header) = 0;
 
   // Provides the contents mime type to be set at commit. It should be
-  // specified before calling |Commit|.
+  // specified before calling |ReadyToCommit| or |Commit|.
   virtual void SetContentsMimeType(const std::string& contents_mime_type) = 0;
+
+  // Provides the response headers received during |ReadyToCommit| specified
+  // before calling |ReadyToCommit| or |Commit|.
+  // Note that the mime type should be specified separately with
+  // |SectContentsMimeType|.
+  virtual void SetResponseHeaders(
+      scoped_refptr<net::HttpResponseHeaders> response_headers) = 0;
 
   // Whether or not the NavigationSimulator automatically advances the
   // navigation past the stage requested (e.g. through asynchronous
@@ -280,6 +296,24 @@ class NavigationSimulator {
   // If the test sets this to false, it should follow up any calls that result
   // in throttles deferring the navigation with a call to Wait().
   virtual void SetAutoAdvance(bool auto_advance) = 0;
+
+  // Sets the ResolveErrorInfo to be set on the URLLoaderCompletionStatus.
+  virtual void SetResolveErrorInfo(
+      const net::ResolveErrorInfo& resolve_error_info) = 0;
+
+  // Sets the SSLInfo to be set on the response. This should be called before
+  // Commit().
+  virtual void SetSSLInfo(const net::SSLInfo& ssl_info) = 0;
+
+  // Sets the DNS aliases to be received in the URLResponseHead. The aliases
+  // are what would be read from DNS CNAME records, and the alias chain should
+  // be preserved in reverse order, from canonical name (i.e. address record
+  // name) through to query name. This method should be called before Commit().
+  virtual void SetResponseDnsAliases(std::vector<std::string> aliases) = 0;
+
+  // Sets whether preload Link headers were received via Early Hints responses
+  // during the navigation.
+  virtual void SetEarlyHintsPreloadLinkHeaderReceived(bool received) = 0;
 
   // --------------------------------------------------------------------------
 
@@ -291,13 +325,23 @@ class NavigationSimulator {
   // Returns the NavigationHandle associated with the navigation being
   // simulated. It is an error to call this before Start() or after the
   // navigation has finished (successfully or not).
-  virtual NavigationHandle* GetNavigationHandle() const = 0;
+  virtual NavigationHandle* GetNavigationHandle() = 0;
 
   // Returns the GlobalRequestID for the simulated navigation request. Can be
   // invoked after the navigation has completed. It is an error to call this
   // before the simulated navigation has completed its WillProcessResponse
   // callback.
-  virtual GlobalRequestID GetGlobalRequestID() const = 0;
+  virtual GlobalRequestID GetGlobalRequestID() = 0;
+
+  // By default, committing a navigation will also simulate the load stopping.
+  // In the cases where the NavigationSimulator needs to navigate but still be
+  // in a loading state, use the functions below.
+
+  // If |keep_loading| is true, maintain the loading state after committing.
+  virtual void SetKeepLoading(bool keep_loading) = 0;
+
+  // Simulate the ongoing load stopping successfully.
+  virtual void StopLoading() = 0;
 
  private:
   // This interface should only be implemented inside content.

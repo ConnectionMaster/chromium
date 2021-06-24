@@ -46,7 +46,7 @@ class NET_EXPORT_PRIVATE SpdyBuffer {
   // source followed by at most one call with DISCARD as the
   // source. The sum of the number of bytes consumed equals the total
   // size of the buffer.
-  typedef base::Callback<void(size_t, ConsumeSource)> ConsumeCallback;
+  typedef base::RepeatingCallback<void(size_t, ConsumeSource)> ConsumeCallback;
 
   // Construct with the data in the given frame. Assumes that data is
   // owned by |frame| or outlives it.
@@ -85,9 +85,6 @@ class NET_EXPORT_PRIVATE SpdyBuffer {
   // may be written to even after the socket itself is destroyed. (See
   // http://crbug.com/249725 .)
   scoped_refptr<IOBuffer> GetIOBufferForRemainingData();
-
-  // Returns the estimate of dynamically allocated memory in bytes.
-  size_t EstimateMemoryUsage() const;
 
  private:
   void ConsumeHelper(size_t consume_size, ConsumeSource consume_source);

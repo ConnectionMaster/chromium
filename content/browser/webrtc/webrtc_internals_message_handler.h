@@ -40,17 +40,19 @@ class CONTENT_EXPORT WebRTCInternalsMessageHandler
  private:
   // Returns a pointer to the RFH iff it is currently hosting the
   // webrtc-internals page.
-  RenderFrameHost* GetWebRTCInternalsHost() const;
+  RenderFrameHost* GetWebRTCInternalsHost();
 
   // Javascript message handler.
-  void OnGetAllStats(const base::ListValue* list);
+  void OnGetStandardStats(const base::ListValue* list);
+  void OnGetLegacyStats(const base::ListValue* list);
   void OnSetAudioDebugRecordingsEnabled(bool enable,
                                         const base::ListValue* list);
   void OnSetEventLogRecordingsEnabled(bool enable, const base::ListValue* list);
   void OnDOMLoadDone(const base::ListValue* list);
 
   // WebRTCInternalsUIObserver override.
-  void OnUpdate(const char* command, const base::Value* args) override;
+  void OnUpdate(const std::string& event_name,
+                const base::Value* event_data) override;
 
   // Executes Javascript command.
   void ExecuteJavascriptCommand(const char* command, const base::Value* args);

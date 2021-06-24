@@ -16,8 +16,8 @@
 #include "base/system/sys_info.h"
 #include "chromecast/base/cast_sys_info_util.h"
 #include "chromecast/base/version.h"
+#include "chromecast/browser/jni_headers/CastSysInfoAndroid_jni.h"
 #include "chromecast/chromecast_buildflags.h"
-#include "jni/CastSysInfoAndroid_jni.h"
 
 namespace chromecast {
 
@@ -29,7 +29,7 @@ std::string GetAndroidProperty(const std::string& key,
   char value[PROP_VALUE_MAX];
   int ret = __system_property_get(key.c_str(), value);
   if (ret <= 0) {
-    VLOG(1) << "No value set for property: " << key;
+    DVLOG(1) << "No value set for property: " << key;
     return default_value;
   }
 
@@ -106,6 +106,20 @@ std::string CastSysInfoAndroid::GetFactoryCountry() {
 }
 
 std::vector<std::string> CastSysInfoAndroid::GetFactoryLocaleList() {
+  const std::string factory_locale_list =
+      GetAndroidProperty("ro.product.factory_locale_list", "");
+  if (!factory_locale_list.empty()) {
+    std::vector<std::string> results;
+    std::stringstream stream(factory_locale_list);
+    while (stream.good()) {
+      std::string locale;
+      getline(stream, locale, ',');
+      results.push_back(locale);
+    }
+    if (!results.empty()) {
+      return results;
+    }
+  }
   // This duplicates the read-only property portion of
   // frameworks/base/core/jni/AndroidRuntime.cpp in the Android tree, which is
   // effectively the "factory locale", i.e. the locale chosen by Android
@@ -128,6 +142,10 @@ std::string CastSysInfoAndroid::GetWifiInterface() {
 
 std::string CastSysInfoAndroid::GetApInterface() {
   return "";
+}
+
+std::string CastSysInfoAndroid::GetProductSsidSuffix() {
+  return GetAndroidProperty("ro.odm.cast.ssid_suffix", "");
 }
 
 }  // namespace chromecast

@@ -8,6 +8,7 @@
 
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/notreached.h"
 
 namespace syncer {
 
@@ -100,7 +101,9 @@ SyncError::Severity SyncError::GetSeverity() const {
     case UNREADY_ERROR:
     case DATATYPE_POLICY_ERROR:
       return SYNC_ERROR_SEVERITY_INFO;
-    default:
+    case UNSET:
+    case DATATYPE_ERROR:
+    case CRYPTO_ERROR:
       return SYNC_ERROR_SEVERITY_ERROR;
   }
 }
@@ -108,14 +111,8 @@ SyncError::Severity SyncError::GetSeverity() const {
 std::string SyncError::GetMessagePrefix() const {
   std::string type_message;
   switch (error_type_) {
-    case UNRECOVERABLE_ERROR:
-      type_message = "unrecoverable error was encountered: ";
-      break;
     case DATATYPE_ERROR:
       type_message = "datatype error was encountered: ";
-      break;
-    case PERSISTENCE_ERROR:
-      type_message = "persistence error was encountered: ";
       break;
     case CRYPTO_ERROR:
       type_message = "cryptographer error was encountered: ";
@@ -152,10 +149,6 @@ void SyncError::PrintLogError() const {
               logSeverity >= ::logging::GetMinLogLevel())
       << ModelTypeToString(model_type_) << " " << GetMessagePrefix()
       << message_;
-}
-
-void PrintTo(const SyncError& sync_error, std::ostream* os) {
-  *os << sync_error.ToString();
 }
 
 }  // namespace syncer

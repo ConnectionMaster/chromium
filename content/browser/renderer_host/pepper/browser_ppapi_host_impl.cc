@@ -4,9 +4,6 @@
 
 #include "content/browser/renderer_host/pepper/browser_ppapi_host_impl.h"
 
-#include "base/metrics/histogram_functions.h"
-#include "content/browser/renderer_host/pepper/pepper_message_filter.h"
-#include "content/browser/tracing/trace_message_filter.h"
 #include "content/common/pepper_renderer_instance_data.h"
 #include "content/public/common/process_type.h"
 #include "ipc/ipc_message_macros.h"
@@ -18,10 +15,8 @@ namespace content {
 BrowserPpapiHost* BrowserPpapiHost::CreateExternalPluginProcess(
     IPC::Sender* sender,
     ppapi::PpapiPermissions permissions,
-    base::ProcessHandle plugin_child_process,
+    base::Process plugin_child_process,
     IPC::ChannelProxy* channel,
-    int render_process_id,
-    int render_view_id,
     const base::FilePath& profile_directory) {
   // The plugin name and path shouldn't be needed for external plugins.
   BrowserPpapiHostImpl* browser_ppapi_host =
@@ -32,14 +27,8 @@ BrowserPpapiHost* BrowserPpapiHost::CreateExternalPluginProcess(
                                profile_directory,
                                false /* in_process */,
                                true /* external_plugin */);
-  browser_ppapi_host->set_plugin_process(
-      base::Process::DeprecatedGetProcessFromHandle(plugin_child_process));
-
-  scoped_refptr<PepperMessageFilter> pepper_message_filter(
-      new PepperMessageFilter());
-  channel->AddFilter(pepper_message_filter->GetFilter());
+  browser_ppapi_host->set_plugin_process(std::move(plugin_child_process));
   channel->AddFilter(browser_ppapi_host->message_filter().get());
-  channel->AddFilter((new TraceMessageFilter(render_process_id))->GetFilter());
 
   return browser_ppapi_host;
 }
@@ -83,20 +72,19 @@ ppapi::host::PpapiHost* BrowserPpapiHostImpl::GetPpapiHost() {
   return ppapi_host_.get();
 }
 
-const base::Process& BrowserPpapiHostImpl::GetPluginProcess() const {
+const base::Process& BrowserPpapiHostImpl::GetPluginProcess() {
   // Handle should previously have been set before use.
   DCHECK(in_process_ || plugin_process_.IsValid());
   return plugin_process_;
 }
 
-bool BrowserPpapiHostImpl::IsValidInstance(PP_Instance instance) const {
+bool BrowserPpapiHostImpl::IsValidInstance(PP_Instance instance) {
   return instance_map_.find(instance) != instance_map_.end();
 }
 
-bool BrowserPpapiHostImpl::GetRenderFrameIDsForInstance(
-    PP_Instance instance,
-    int* render_process_id,
-    int* render_frame_id) const {
+bool BrowserPpapiHostImpl::GetRenderFrameIDsForInstance(PP_Instance instance,
+                                                        int* render_process_id,
+                                                        int* render_frame_id) {
   auto it = instance_map_.find(instance);
   if (it == instance_map_.end()) {
     *render_process_id = 0;
@@ -191,24 +179,6 @@ void BrowserPpapiHostImpl::RemoveInstanceObserver(PP_Instance instance,
     it->second->observer_list.RemoveObserver(observer);
 }
 
-void BrowserPpapiHostImpl::OnThrottleStateChanged(PP_Instance instance,
-                                                  bool is_throttled) {
-  auto it = instance_map_.find(instance);
-  if (it != instance_map_.end()) {
-    it->second->is_throttled = is_throttled;
-    for (auto& observer : it->second->observer_list)
-      observer.OnThrottleStateChanged(is_throttled);
-  }
-}
-
-bool BrowserPpapiHostImpl::IsThrottled(PP_Instance instance) const {
-  auto it = instance_map_.find(instance);
-  if (it != instance_map_.end())
-    return it->second->is_throttled;
-
-  return false;
-}
-
 BrowserPpapiHostImpl::HostMessageFilter::HostMessageFilter(
     ppapi::host::PpapiHost* ppapi_host,
     BrowserPpapiHostImpl* browser_ppapi_host_impl)
@@ -221,14 +191,7 @@ bool BrowserPpapiHostImpl::HostMessageFilter::OnMessageReceived(
   if (!ppapi_host_)
     return false;
 
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(BrowserPpapiHostImpl::HostMessageFilter, msg)
-  // Add necessary message handlers here.
-  IPC_MESSAGE_HANDLER(PpapiHostMsg_LogInterfaceUsage,
-                      OnHostMsgLogInterfaceUsage)
-  IPC_MESSAGE_UNHANDLED(handled = ppapi_host_->OnMessageReceived(msg))
-  IPC_END_MESSAGE_MAP()
-  return handled;
+  return ppapi_host_->OnMessageReceived(msg);
 }
 
 void BrowserPpapiHostImpl::HostMessageFilter::OnHostDestroyed() {
@@ -239,15 +202,9 @@ void BrowserPpapiHostImpl::HostMessageFilter::OnHostDestroyed() {
 
 BrowserPpapiHostImpl::HostMessageFilter::~HostMessageFilter() {}
 
-void BrowserPpapiHostImpl::HostMessageFilter::OnHostMsgLogInterfaceUsage(
-    int hash) const {
-  base::UmaHistogramSparse("Pepper.InterfaceUsed", hash);
-}
-
 BrowserPpapiHostImpl::InstanceData::InstanceData(
     const PepperRendererInstanceData& renderer_data)
-    : renderer_data(renderer_data), is_throttled(false) {
-}
+    : renderer_data(renderer_data) {}
 
 BrowserPpapiHostImpl::InstanceData::~InstanceData() {
 }

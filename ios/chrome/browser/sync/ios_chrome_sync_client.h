@@ -13,12 +13,10 @@
 #include "base/single_thread_task_runner.h"
 #include "components/browser_sync/browser_sync_client.h"
 
+class ChromeBrowserState;
+
 namespace autofill {
 class AutofillWebDataService;
-}
-
-namespace ios {
-class ChromeBrowserState;
 }
 
 namespace password_manager {
@@ -31,11 +29,12 @@ class ProfileSyncComponentsFactoryImpl;
 
 class IOSChromeSyncClient : public browser_sync::BrowserSyncClient {
  public:
-  explicit IOSChromeSyncClient(ios::ChromeBrowserState* browser_state);
+  explicit IOSChromeSyncClient(ChromeBrowserState* browser_state);
   ~IOSChromeSyncClient() override;
 
   // BrowserSyncClient implementation.
   PrefService* GetPrefService() override;
+  signin::IdentityManager* GetIdentityManager() override;
   base::FilePath GetLocalSyncBackendFolder() override;
   syncer::ModelTypeStoreService* GetModelTypeStoreService() override;
   syncer::DeviceInfoSyncService* GetDeviceInfoSyncService() override;
@@ -44,31 +43,30 @@ class IOSChromeSyncClient : public browser_sync::BrowserSyncClient {
   bookmarks::BookmarkModel* GetBookmarkModel() override;
   favicon::FaviconService* GetFaviconService() override;
   history::HistoryService* GetHistoryService() override;
+  sync_preferences::PrefServiceSyncable* GetPrefServiceSyncable() override;
   sync_sessions::SessionSyncService* GetSessionSyncService() override;
-  base::Closure GetPasswordStateChangedCallback() override;
+  base::RepeatingClosure GetPasswordStateChangedCallback() override;
   syncer::DataTypeController::TypeVector CreateDataTypeControllers(
       syncer::SyncService* sync_service) override;
-  autofill::PersonalDataManager* GetPersonalDataManager() override;
   invalidation::InvalidationService* GetInvalidationService() override;
+  syncer::SyncInvalidationsService* GetSyncInvalidationsService() override;
+  syncer::TrustedVaultClient* GetTrustedVaultClient() override;
   BookmarkUndoService* GetBookmarkUndoService() override;
   scoped_refptr<syncer::ExtensionsActivity> GetExtensionsActivity() override;
-  base::WeakPtr<syncer::SyncableService> GetSyncableServiceForType(
-      syncer::ModelType type) override;
   base::WeakPtr<syncer::ModelTypeControllerDelegate>
   GetControllerDelegateForModelType(syncer::ModelType type) override;
-  scoped_refptr<syncer::ModelSafeWorker> CreateModelWorkerForGroup(
-      syncer::ModelSafeGroup group) override;
   syncer::SyncApiComponentFactory* GetSyncApiComponentFactory() override;
   syncer::SyncTypePreferenceProvider* GetPreferenceProvider() override;
+  void OnLocalSyncTransportDataCleared() override;
 
  private:
-  ios::ChromeBrowserState* const browser_state_;
+  ChromeBrowserState* const browser_state_;
 
   // The sync api component factory in use by this client.
-  // TODO(crbug.com/915154): Revert to SyncApiComponentFactory once common
-  // controller creation is moved elsewhere.
   std::unique_ptr<browser_sync::ProfileSyncComponentsFactoryImpl>
       component_factory_;
+
+  std::unique_ptr<syncer::TrustedVaultClient> trusted_vault_client_;
 
   // Members that must be fetched on the UI thread but accessed on their
   // respective backend threads.

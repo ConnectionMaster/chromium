@@ -18,15 +18,14 @@ class CC_EXPORT SolidColorScrollbarLayerImpl : public ScrollbarLayerImplBase {
       ScrollbarOrientation orientation,
       int thumb_thickness,
       int track_start,
-      bool is_left_side_vertical_scrollbar,
-      bool is_overlay);
+      bool is_left_side_vertical_scrollbar);
   ~SolidColorScrollbarLayerImpl() override;
 
   // LayerImpl overrides.
   std::unique_ptr<LayerImpl> CreateLayerImpl(LayerTreeImpl* tree_impl) override;
   void PushPropertiesTo(LayerImpl* layer) override;
 
-  void AppendQuads(viz::RenderPass* render_pass,
+  void AppendQuads(viz::CompositorRenderPass* render_pass,
                    AppendQuadsData* append_quads_data) override;
 
   int ThumbThickness() const override;
@@ -37,8 +36,7 @@ class CC_EXPORT SolidColorScrollbarLayerImpl : public ScrollbarLayerImplBase {
                                ScrollbarOrientation orientation,
                                int thumb_thickness,
                                int track_start,
-                               bool is_left_side_vertical_scrollbar,
-                               bool is_overlay);
+                               bool is_left_side_vertical_scrollbar);
 
   // ScrollbarLayerImplBase implementation.
   int ThumbLength() const override;

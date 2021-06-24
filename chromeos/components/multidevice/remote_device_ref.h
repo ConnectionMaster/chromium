@@ -13,10 +13,11 @@
 #include "chromeos/components/multidevice/remote_device.h"
 #include "chromeos/components/multidevice/software_feature_state.h"
 
-namespace chromeos {
-
+namespace ash {
 class EasyUnlockServiceRegular;
+}
 
+namespace chromeos {
 namespace multidevice_setup {
 class MultiDeviceSetupImpl;
 }  // namespace multidevice_setup
@@ -43,20 +44,14 @@ class ProximityAuthWebUIHandler;
 // the underlying data. Should be passed by value.
 class RemoteDeviceRef {
  public:
-  // Generates the device ID for a device given its public key.
-  static std::string GenerateDeviceId(const std::string& public_key);
-
-  // Derives the public key that was used to generate the given device ID;
-  // returns empty string if |device_id| is not a valid device ID.
-  static std::string DerivePublicKey(const std::string& device_id);
-
   // Static method for truncated device ID for logs.
   static std::string TruncateDeviceIdForLogs(const std::string& full_id);
 
   RemoteDeviceRef(const RemoteDeviceRef& other);
   ~RemoteDeviceRef();
 
-  const std::string& user_id() const { return remote_device_->user_id; }
+  const std::string& user_email() const { return remote_device_->user_email; }
+  const std::string& instance_id() const { return remote_device_->instance_id; }
   const std::string& name() const { return remote_device_->name; }
   const std::string& pii_free_name() const {
     return remote_device_->pii_free_name;
@@ -71,6 +66,9 @@ class RemoteDeviceRef {
   const std::vector<BeaconSeed>& beacon_seeds() const {
     return remote_device_->beacon_seeds;
   }
+  const std::string& bluetooth_public_address() const {
+    return remote_device_->bluetooth_public_address;
+  }
 
   std::string GetDeviceId() const;
   SoftwareFeatureState GetSoftwareFeatureState(
@@ -80,6 +78,12 @@ class RemoteDeviceRef {
   // IDs are often so long that logs are difficult to read). Note that this
   // ID is not guaranteed to be unique, so it should only be used for log.
   std::string GetTruncatedDeviceIdForLogs() const;
+
+  // Returns the pair of IDs used with RemoteDevices: Instance ID and device ID.
+  // If either ID is missing, this string will make note of that. If a device ID
+  // exists, the truncated version will be presented. This function should only
+  // be used for logging.
+  std::string GetInstanceIdDeviceIdForLogs() const;
 
   bool operator==(const RemoteDeviceRef& other) const;
   bool operator!=(const RemoteDeviceRef& other) const;
@@ -100,7 +104,7 @@ class RemoteDeviceRef {
 
   // TODO(crbug.com/752273): Remove these once clients have migrated to Device
   // Sync service.
-  friend class EasyUnlockServiceRegular;
+  friend class ash::EasyUnlockServiceRegular;
   friend class tether::TetherHostFetcherImpl;
   friend class tether::TetherHostFetcherImplTest;
   friend class ProximityAuthWebUIHandler;
@@ -120,5 +124,14 @@ typedef std::vector<RemoteDeviceRef> RemoteDeviceRefList;
 }  // namespace multidevice
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+namespace multidevice {
+using ::chromeos::multidevice::RemoteDeviceRef;
+typedef std::vector<RemoteDeviceRef> RemoteDeviceRefList;
+}  // namespace multidevice
+}  // namespace ash
 
 #endif  // CHROMEOS_COMPONENTS_MULTIDEVICE_REMOTE_DEVICE_REF_H_

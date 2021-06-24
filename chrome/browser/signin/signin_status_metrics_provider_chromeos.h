@@ -8,6 +8,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "components/signin/core/browser/signin_status_metrics_provider_base.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 // Record and report the browser sign-in status on ChromeOS during each UMA
 // session. On ChromeOS, the browser can only be at unsigned-in status when
@@ -28,6 +29,10 @@ class SigninStatusMetricsProviderChromeOS
  private:
   FRIEND_TEST_ALL_PREFIXES(SigninStatusMetricsProviderChromeOS,
                            ComputeSigninStatusToUpload);
+  FRIEND_TEST_ALL_PREFIXES(SigninStatusMetricsProviderChromeOS,
+                           ProvideCurrentSessionData_Guest);
+  FRIEND_TEST_ALL_PREFIXES(SigninStatusMetricsProviderChromeOS,
+                           ProvideCurrentSessionData_NonGuest);
 
   // Sets the |signin_status_| purely based on if the user is currently logged
   // in to a non-guest profile.
@@ -37,6 +42,13 @@ class SigninStatusMetricsProviderChromeOS
   // status and if user is logged in now.
   SigninStatus ComputeSigninStatusToUpload(SigninStatus recorded_status,
                                            bool logged_in_now);
+
+  // Returns true if user is signed in to a non-guest profile.
+  bool IsSignedInNonGuest();
+
+  // Used only for testing.
+  static void SetGuestForTesting(bool is_guest);
+  static absl::optional<bool> guest_for_testing_;
 
   DISALLOW_COPY_AND_ASSIGN(SigninStatusMetricsProviderChromeOS);
 };

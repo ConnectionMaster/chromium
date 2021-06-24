@@ -12,7 +12,6 @@
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/frame_navigate_params.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/test_renderer_host.h"
 #include "extensions/common/extension.h"
@@ -81,6 +80,12 @@ class TestPredicateEvaluator : public ContentPredicateEvaluator {
     RequestEvaluationIfSpecified();
   }
 
+  void OnWatchedPageChanged(
+      content::WebContents* contents,
+      const std::vector<std::string>& css_selectors) override {
+    RequestEvaluationIfSpecified();
+  }
+
   bool EvaluatePredicate(const ContentPredicate* predicate,
                          content::WebContents* tab) const override {
     bool result = next_evaluation_result_;
@@ -145,9 +150,9 @@ class DeclarativeChromeContentRulesRegistryTest : public testing::Test {
 TEST_F(DeclarativeChromeContentRulesRegistryTest, ActiveRulesDoesntGrow) {
   TestPredicateEvaluator* evaluator = nullptr;
   scoped_refptr<ChromeContentRulesRegistry> registry(
-      new ChromeContentRulesRegistry(env()->profile(), nullptr,
-                                     base::Bind(&CreateTestEvaluator,
-                                                &evaluator)));
+      new ChromeContentRulesRegistry(
+          env()->profile(), nullptr,
+          base::BindOnce(&CreateTestEvaluator, &evaluator)));
 
   EXPECT_EQ(0u, registry->GetActiveRulesCountForTesting());
 
@@ -161,25 +166,23 @@ TEST_F(DeclarativeChromeContentRulesRegistryTest, ActiveRulesDoesntGrow) {
 
   // Add a rule.
   api::events::Rule rule;
-  api::events::Rule::Populate(
-      *base::test::ParseJsonDeprecated(
-          "{\n"
-          "  \"id\": \"rule1\",\n"
-          "  \"priority\": 100,\n"
-          "  \"conditions\": [\n"
-          "    {\n"
-          "      \"instanceType\": \"declarativeContent.PageStateMatcher\",\n"
-          "      \"test_predicate\": []\n"
-          "    }],\n"
-          "  \"actions\": [\n"
-          "    { \"instanceType\": \"declarativeContent.ShowAction\" }\n"
-          "  ]\n"
-          "}"),
-      &rule);
+  api::events::Rule::Populate(base::test::ParseJson(R"({
+          "id": "rule1",
+          "priority": 100,
+          "conditions": [
+           {
+             "instanceType": "declarativeContent.PageStateMatcher",
+             "test_predicate": []
+           }],
+          "actions": [
+            {"instanceType": "declarativeContent.ShowAction"}
+          ]
+      })"),
+                              &rule);
   std::vector<const api::events::Rule*> rules({&rule});
 
-  const Extension* extension = env()->MakeExtension(
-      *base::test::ParseJsonDeprecated("{\"page_action\": {}}"));
+  const Extension* extension =
+      env()->MakeExtension(base::test::ParseJson("{\"page_action\": {}}"));
   registry->AddRulesImpl(extension->id(), rules);
 
   registry->DidFinishNavigation(tab.get(), &navigation_handle);
@@ -188,7 +191,10 @@ TEST_F(DeclarativeChromeContentRulesRegistryTest, ActiveRulesDoesntGrow) {
   evaluator->RequestImmediateEvaluation(tab.get(), true);
   EXPECT_EQ(1u, registry->GetActiveRulesCountForTesting());
 
-  // Closing the tab should erase its entry from active_rules_.
+  // Closing the tab should erase its entry from active_rules_. Invoke
+  // WebContentsDestroyed on the registry to mock it being notified that the tab
+  // has closed.
+  registry->WebContentsDestroyed(tab.get());
   tab.reset();
   EXPECT_EQ(0u, registry->GetActiveRulesCountForTesting());
 

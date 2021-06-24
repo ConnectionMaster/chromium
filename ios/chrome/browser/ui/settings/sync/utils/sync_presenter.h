@@ -7,20 +7,30 @@
 
 #import <Foundation/Foundation.h>
 
+namespace syncer {
+enum class KeyRetrievalTriggerForUMA;
+}  // namespace syncer
+
 // Protocol used to display sync-related UI.
 @protocol SyncPresenter
 
 // Asks the presenter to display the reauthenticate signin UI.
 - (void)showReauthenticateSignin;
 
-// Asks the presenter to display the sync settings UI.
-- (void)showSyncSettings;
-
 // Asks the presenter to display the sync encryption passphrase UI.
 - (void)showSyncPassphraseSettings;
 
 // Presents the Google services settings.
 - (void)showGoogleServicesSettings;
+
+// Presents the Account settings.
+- (void)showAccountSettings;
+
+// Presents the Trusted Vault reauthentication dialog.
+// |retrievalTrigger| UI elements where the trusted vault reauth has been
+// triggered.
+- (void)showTrustedVaultReauthenticationWithRetrievalTrigger:
+    (syncer::KeyRetrievalTriggerForUMA)retrievalTrigger;
 
 @end
 

@@ -5,10 +5,11 @@
 (async function() {
   TestRunner.addResult(
       `Tests that it's possible to set breakpoint in source frame, and that source frame displays breakpoints and console errors.\n`);
-  await TestRunner.loadModule('console_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('network_test_runner');
-  await TestRunner.loadModule('application_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('application_test_runner');
+  await TestRunner.loadLegacyModule('source_frame');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
       function addErrorToConsole()
@@ -24,7 +25,7 @@
   await TestRunner.addScriptTag('source-frame.js');
   await TestRunner.addScriptTag('../resources/script.js');
 
-  UI.viewManager.showView('resources');
+  await UI.viewManager.showView('resources');
   SourcesTestRunner.runDebuggerTestSuite([
     function testConsoleMessage(next) {
       SourcesTestRunner.showScriptSource('source-frame.js', didShowScriptSource);
@@ -38,11 +39,13 @@
         TestRunner.evaluateInPage('addErrorToConsole()');
       }
 
-      function didAddMessage(message) {
+      async function didAddMessage(message) {
         if (this !== shownSourceFrame)
           return;
+        // Messages can contain live locations.
+        await TestRunner.waitForPendingLiveLocationUpdates();
         TestRunner.addResult('Message added to source frame: ' + message.text());
-        setImmediate(function() {
+        queueMicrotask(() => {
           Console.ConsoleView.clearConsole();
         });
       }
@@ -55,8 +58,8 @@
       }
     },
 
-    function testShowResource(next) {
-      UI.viewManager.showView('network');
+    async function testShowResource(next) {
+      await UI.viewManager.showView('network');
       TestRunner.addSniffer(SourceFrame.SourceFrame.prototype, 'show', didShowSourceFrame);
 
       TestRunner.resourceTreeModel.forAllResources(visit);

@@ -2,24 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import {ImageOrientation, ImageTransformParam} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/foreground/js/metadata/image_orientation.js';
+import {assert} from 'chrome://resources/js/assert.m.js';
 
-/**
- * Color space.
- *
- * @enum {string}
- */
-const ColorSpace = {
-  SRGB: 'sRgb',
-  ADOBE_RGB: 'adobeRgb'
-};
 
 /**
  * Response status.
  *
  * @enum {string}
  */
-const LoadImageResponseStatus = {
+export const LoadImageResponseStatus = {
   SUCCESS: 'success',
   ERROR: 'error'
 };
@@ -30,11 +22,12 @@ const LoadImageResponseStatus = {
  *
  * @struct
  */
-class LoadImageResponse {
+export class LoadImageResponse {
   /**
    * @param {!LoadImageResponseStatus} status
    * @param {?number} taskId or null if fulfilled by the client-side cache.
-   * @param {{width:number, height:number, data:string}=} opt_result
+   * @param {{width:number, height:number, ifd:?string, data:string}=}
+   *    opt_result
    */
   constructor(status, taskId, opt_result) {
     /** @type {!LoadImageResponseStatus} */
@@ -46,14 +39,16 @@ class LoadImageResponse {
       return;
     }
 
+    // Response result defined only when status == SUCCESS.
     assert(opt_result);
-
-    // Properties only defined when status == SUCCESS.
 
     /** @type {number|undefined} */
     this.width = opt_result.width;
     /** @type {number|undefined} */
     this.height = opt_result.height;
+    /** @type {?string} */
+    this.ifd = opt_result.ifd;
+
     /**
      * The (compressed) image data as a data URL.
      * @type {string|undefined}
@@ -69,24 +64,30 @@ class LoadImageResponse {
    *        then null is used. Currently this disables any caching in the
    *        ImageLoader, but disables only *expiration* in the client unless a
    *        timestamp is presented on a later request.
-   * @return {?{timestamp: ?number,
-   *            width: number,
-   *            height: number,
-   *            data:!string}}
+   * @return {?{
+   *   timestamp: ?number,
+   *   width: number,
+   *   height: number,
+   *   ifd: ?string,
+   *   data: string
+   * }}
    */
   static cacheValue(response, timestamp) {
     if (response.status === LoadImageResponseStatus.ERROR) {
       return null;
     }
 
+    // Response result defined only when status == SUCCESS.
     assert(response.width);
     assert(response.height);
     assert(response.data);
+
     return {
-      timestamp: timestamp ? timestamp : null,
+      timestamp: timestamp || null,
       width: response.width,
       height: response.height,
-      data: response.data
+      ifd: response.ifd,
+      data: response.data,
     };
   }
 }
@@ -97,7 +98,7 @@ class LoadImageResponse {
  *
  * @struct
  */
-class LoadImageRequest {
+export class LoadImageRequest {
   constructor() {
     // Parts that uniquely identify the request.
 
@@ -134,13 +135,6 @@ class LoadImageRequest {
     this.cache;
     /** @type {number|undefined} */
     this.priority;
-
-    /**
-     * ColorSpace, only used for piex images.
-     *
-     * @type{ColorSpace|undefined}
-     */
-    this.colorSpace;
   }
 
   /**

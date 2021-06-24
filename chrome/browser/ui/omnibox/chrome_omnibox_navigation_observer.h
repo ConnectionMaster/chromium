@@ -17,7 +17,7 @@
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "net/url_request/url_fetcher_delegate.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 
 class Profile;
 class ShortcutsBackend;
@@ -55,7 +55,7 @@ class ChromeOmniboxNavigationObserver : public OmniboxNavigationObserver,
   };
 
   ChromeOmniboxNavigationObserver(Profile* profile,
-                                  const base::string16& text,
+                                  const std::u16string& text,
                                   const AutocompleteMatch& match,
                                   const AutocompleteMatch& alternate_nav_match);
   ~ChromeOmniboxNavigationObserver() override;
@@ -114,7 +114,7 @@ class ChromeOmniboxNavigationObserver : public OmniboxNavigationObserver,
 
   // See SimpleURLLoader::OnRedirectCallback for info on the signature.
   void OnURLRedirect(const net::RedirectInfo& redirect_info,
-                     const network::ResourceResponseHead& response_head,
+                     const network::mojom::URLResponseHead& response_head,
                      std::vector<std::string>* to_be_removed_headers);
 
   // Called from either OnURLLoadComplete or OnURLRedirect.
@@ -128,7 +128,7 @@ class ChromeOmniboxNavigationObserver : public OmniboxNavigationObserver,
   // Does not start the loader.
   void CreateLoader(const GURL& destination_url);
 
-  const base::string16 text_;
+  const std::u16string text_;
   const AutocompleteMatch match_;
   const AutocompleteMatch alternate_nav_match_;
   TemplateURLService* template_url_service_;

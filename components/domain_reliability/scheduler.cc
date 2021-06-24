@@ -73,7 +73,7 @@ DomainReliabilityScheduler::Params::GetFromFieldTrialsOrDefaults() {
 }
 
 DomainReliabilityScheduler::DomainReliabilityScheduler(
-    MockableTime* time,
+    const MockableTime* time,
     size_t num_collectors,
     const Params& params,
     const ScheduleUploadCallback& callback)
@@ -95,8 +95,8 @@ DomainReliabilityScheduler::DomainReliabilityScheduler(
   backoff_policy_.always_use_initial_delay = false;
 
   for (size_t i = 0; i < num_collectors; ++i) {
-    collectors_.push_back(
-        std::make_unique<net::BackoffEntry>(&backoff_policy_, time_));
+    collectors_.push_back(std::make_unique<net::BackoffEntry>(
+        &backoff_policy_, time->AsTickClock()));
   }
 }
 

@@ -35,11 +35,13 @@
 
 #include "base/format_macros.h"
 #include "third_party/blink/public/web/web_settings.h"
-#include "third_party/blink/renderer/bindings/core/v8/add_event_listener_options_or_boolean.h"
-#include "third_party/blink/renderer/bindings/core/v8/event_listener_options_or_boolean.h"
 #include "third_party/blink/renderer/bindings/core/v8/js_based_event_listener.h"
 #include "third_party/blink/renderer/bindings/core/v8/js_event_listener.h"
 #include "third_party/blink/renderer/bindings/core/v8/source_location.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_addeventlisteneroptions_boolean.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_boolean_eventlisteneroptions.h"
+#include "third_party/blink/renderer/core/dom/abort_signal.h"
+#include "third_party/blink/renderer/core/dom/events/add_event_listener_options_resolved.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
 #include "third_party/blink/renderer/core/dom/events/event_target_impl.h"
@@ -50,12 +52,14 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/performance_monitor.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
+#include "third_party/blink/renderer/core/pointer_type_names.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_dom_activity_logger.h"
-#include "third_party/blink/renderer/platform/histogram.h"
+#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -83,15 +87,6 @@ Event::PassiveMode EventPassiveMode(
   if (event_listener.PassiveSpecified())
     return Event::PassiveMode::kPassive;
   return Event::PassiveMode::kPassiveDefault;
-}
-
-Settings* WindowSettings(LocalDOMWindow* executing_window) {
-  if (executing_window) {
-    if (LocalFrame* frame = executing_window->GetFrame()) {
-      return frame->GetSettings();
-    }
-  }
-  return nullptr;
 }
 
 bool IsTouchScrollBlockingEvent(const AtomicString& event_type) {
@@ -138,7 +133,7 @@ void ReportBlockedEvent(EventTarget& target,
       " ms due to main thread being busy. "
       "Consider marking event handler as 'passive' to make the page more "
       "responsive.",
-      event.type().GetString().Utf8().data(), delayed.InMilliseconds());
+      event.type().GetString().Utf8().c_str(), delayed.InMilliseconds());
   PerformanceMonitor::ReportGenericViolation(
       target.GetExecutionContext(), PerformanceMonitor::kBlockedEvent,
       message_text, delayed, listener->GetSourceLocation(target));
@@ -150,11 +145,74 @@ void ReportBlockedEvent(EventTarget& target,
 bool CheckTypeThenUseCount(const Event& event,
                            const AtomicString& event_type_to_count,
                            const WebFeature feature,
-                           const Document* document) {
+                           Document& document) {
   if (event.type() != event_type_to_count)
     return false;
-  UseCounter::Count(*document, feature);
+  UseCounter::Count(document, feature);
   return true;
+}
+
+void CountFiringEventListeners(const Event& event,
+                               const LocalDOMWindow* executing_window) {
+  if (!executing_window)
+    return;
+  if (!executing_window->document())
+    return;
+  Document& document = *executing_window->document();
+
+  if (event.type() == event_type_names::kToggle &&
+      document.ToggleDuringParsing()) {
+    UseCounter::Count(document, WebFeature::kToggleEventHandlerDuringParsing);
+    return;
+  }
+  if (CheckTypeThenUseCount(event, event_type_names::kBeforeunload,
+                            WebFeature::kDocumentBeforeUnloadFired, document)) {
+    if (executing_window != executing_window->top())
+      UseCounter::Count(document, WebFeature::kSubFrameBeforeUnloadFired);
+    return;
+  }
+  if (CheckTypeThenUseCount(event, event_type_names::kPointerdown,
+                            WebFeature::kPointerDownFired, document)) {
+    if (IsA<PointerEvent>(event) &&
+        static_cast<const PointerEvent&>(event).pointerType() ==
+            pointer_type_names::kTouch) {
+      UseCounter::Count(document, WebFeature::kPointerDownFiredForTouch);
+    }
+    return;
+  }
+
+  struct CountedEvent {
+    const AtomicString& event_type;
+    const WebFeature feature;
+  };
+  static const CountedEvent counted_events[] = {
+      {event_type_names::kUnload, WebFeature::kDocumentUnloadFired},
+      {event_type_names::kPagehide, WebFeature::kDocumentPageHideFired},
+      {event_type_names::kPageshow, WebFeature::kDocumentPageShowFired},
+      {event_type_names::kDOMFocusIn, WebFeature::kDOMFocusInOutEvent},
+      {event_type_names::kDOMFocusOut, WebFeature::kDOMFocusInOutEvent},
+      {event_type_names::kFocusin, WebFeature::kFocusInOutEvent},
+      {event_type_names::kFocusout, WebFeature::kFocusInOutEvent},
+      {event_type_names::kTextInput, WebFeature::kTextInputFired},
+      {event_type_names::kTouchstart, WebFeature::kTouchStartFired},
+      {event_type_names::kMousedown, WebFeature::kMouseDownFired},
+      {event_type_names::kPointerenter, WebFeature::kPointerEnterLeaveFired},
+      {event_type_names::kPointerleave, WebFeature::kPointerEnterLeaveFired},
+      {event_type_names::kPointerover, WebFeature::kPointerOverOutFired},
+      {event_type_names::kPointerout, WebFeature::kPointerOverOutFired},
+      {event_type_names::kSearch, WebFeature::kSearchEventFired},
+  };
+  for (const auto& counted_event : counted_events) {
+    if (CheckTypeThenUseCount(event, counted_event.event_type,
+                              counted_event.feature, document))
+      return;
+  }
+}
+
+void RegisterWithScheduler(ExecutionContext* execution_context,
+                           const AtomicString& event_type) {
+  if (!execution_context || !execution_context->GetScheduler())
+    return;
 }
 
 }  // namespace
@@ -163,7 +221,7 @@ EventTargetData::EventTargetData() = default;
 
 EventTargetData::~EventTargetData() = default;
 
-void EventTargetData::Trace(Visitor* visitor) {
+void EventTargetData::Trace(Visitor* visitor) const {
   visitor->Trace(event_listener_map);
 }
 
@@ -213,9 +271,7 @@ EventTarget* EventTarget::Create(ScriptState* script_state) {
 }
 
 inline LocalDOMWindow* EventTarget::ExecutingWindow() {
-  if (ExecutionContext* context = GetExecutionContext())
-    return context->ExecutingWindow();
-  return nullptr;
+  return DynamicTo<LocalDOMWindow>(GetExecutionContext());
 }
 
 bool EventTarget::IsTopLevelNode() {
@@ -256,8 +312,7 @@ void EventTarget::SetDefaultAddEventListenerOptions(
     }
   }
 
-  if (RuntimeEnabledFeatures::PassiveDocumentEventListenersEnabled() &&
-      IsTouchScrollBlockingEvent(event_type)) {
+  if (IsTouchScrollBlockingEvent(event_type)) {
     if (!options->hasPassive() && IsTopLevelNode()) {
       options->setPassive(true);
       options->SetPassiveForcedForDocumentTarget(true);
@@ -280,19 +335,16 @@ void EventTarget::SetDefaultAddEventListenerOptions(
             executing_window->document(),
             WebFeature::kAddDocumentLevelPassiveDefaultWheelEventListener);
       }
-      if (RuntimeEnabledFeatures::PassiveDocumentWheelEventListenersEnabled()) {
-        options->setPassive(true);
-        options->SetPassiveForcedForDocumentTarget(true);
-        return;
-      }
+      options->setPassive(true);
+      options->SetPassiveForcedForDocumentTarget(true);
+      return;
     }
   }
 
   // For mousewheel event listeners that have the target as the window and
   // a bound function name of "ssc_wheel" treat and no passive value default
   // passive to true. See crbug.com/501568.
-  if (RuntimeEnabledFeatures::SmoothScrollJSInterventionEnabled() &&
-      event_type == event_type_names::kMousewheel && ToLocalDOMWindow() &&
+  if (event_type == event_type_names::kMousewheel && ToLocalDOMWindow() &&
       event_listener && !options->hasPassive()) {
     JSBasedEventListener* v8_listener =
         DynamicTo<JSBasedEventListener>(event_listener);
@@ -313,7 +365,7 @@ void EventTarget::SetDefaultAddEventListenerOptions(
                           WebFeature::kSmoothScrollJSInterventionActivated);
 
         executing_window->GetFrame()->Console().AddMessage(
-            ConsoleMessage::Create(
+            MakeGarbageCollected<ConsoleMessage>(
                 mojom::ConsoleMessageSource::kIntervention,
                 mojom::ConsoleMessageLevel::kWarning,
                 "Registering mousewheel event as passive due to "
@@ -325,24 +377,8 @@ void EventTarget::SetDefaultAddEventListenerOptions(
     }
   }
 
-  if (Settings* settings = WindowSettings(ExecutingWindow())) {
-    switch (settings->GetPassiveListenerDefault()) {
-      case PassiveListenerDefault::kFalse:
-        if (!options->hasPassive())
-          options->setPassive(false);
-        break;
-      case PassiveListenerDefault::kTrue:
-        if (!options->hasPassive())
-          options->setPassive(true);
-        break;
-      case PassiveListenerDefault::kForceAllTrue:
-        options->setPassive(true);
-        break;
-    }
-  } else {
-    if (!options->hasPassive())
-      options->setPassive(false);
-  }
+  if (!options->hasPassive())
+    options->setPassive(false);
 
   if (!options->passive() && !options->PassiveSpecified()) {
     String message_text = String::Format(
@@ -350,7 +386,7 @@ void EventTarget::SetDefaultAddEventListenerOptions(
         "Consider marking event handler as 'passive' to make the page more "
         "responsive. See "
         "https://www.chromestatus.com/feature/5745543795965952",
-        event_type.GetString().Utf8().data());
+        event_type.GetString().Utf8().c_str());
 
     PerformanceMonitor::ReportGenericViolation(
         GetExecutionContext(), PerformanceMonitor::kDiscouragedAPIUse,
@@ -367,29 +403,35 @@ bool EventTarget::addEventListener(const AtomicString& event_type,
 bool EventTarget::addEventListener(
     const AtomicString& event_type,
     V8EventListener* listener,
-    const AddEventListenerOptionsOrBoolean& options_union) {
+    const V8UnionAddEventListenerOptionsOrBoolean* bool_or_options) {
+  DCHECK(bool_or_options);
+
   EventListener* event_listener = JSEventListener::CreateOrNull(listener);
 
-  if (options_union.IsBoolean()) {
-    return addEventListener(event_type, event_listener,
-                            options_union.GetAsBoolean());
+  switch (bool_or_options->GetContentType()) {
+    case V8UnionAddEventListenerOptionsOrBoolean::ContentType::kBoolean:
+      return addEventListener(event_type, event_listener,
+                              bool_or_options->GetAsBoolean());
+    case V8UnionAddEventListenerOptionsOrBoolean::ContentType::
+        kAddEventListenerOptions: {
+      auto* options_resolved =
+          MakeGarbageCollected<AddEventListenerOptionsResolved>();
+      AddEventListenerOptions* options =
+          bool_or_options->GetAsAddEventListenerOptions();
+      if (options->hasPassive())
+        options_resolved->setPassive(options->passive());
+      if (options->hasOnce())
+        options_resolved->setOnce(options->once());
+      if (options->hasCapture())
+        options_resolved->setCapture(options->capture());
+      if (options->hasSignal())
+        options_resolved->setSignal(options->signal());
+      return addEventListener(event_type, event_listener, options_resolved);
+    }
   }
 
-  if (options_union.IsAddEventListenerOptions()) {
-    auto* resolved_options =
-        MakeGarbageCollected<AddEventListenerOptionsResolved>();
-    AddEventListenerOptions* options =
-        options_union.GetAsAddEventListenerOptions();
-    if (options->hasPassive())
-      resolved_options->setPassive(options->passive());
-    if (options->hasOnce())
-      resolved_options->setOnce(options->once());
-    if (options->hasCapture())
-      resolved_options->setCapture(options->capture());
-    return addEventListener(event_type, event_listener, resolved_options);
-  }
-
-  return addEventListener(event_type, event_listener);
+  NOTREACHED();
+  return false;
 }
 
 bool EventTarget::addEventListener(const AtomicString& event_type,
@@ -415,6 +457,22 @@ bool EventTarget::AddEventListenerInternal(
   if (!listener)
     return false;
 
+  if (options->hasSignal() && options->signal()->aborted())
+    return false;
+
+  if (event_type == event_type_names::kTouchcancel ||
+      event_type == event_type_names::kTouchend ||
+      event_type == event_type_names::kTouchmove ||
+      event_type == event_type_names::kTouchstart) {
+    if (const LocalDOMWindow* executing_window = ExecutingWindow()) {
+      if (const Document* document = executing_window->document()) {
+        document->CountUse(options->passive()
+                               ? WebFeature::kPassiveTouchEventListener
+                               : WebFeature::kNonPassiveTouchEventListener);
+      }
+    }
+  }
+
   V8DOMActivityLogger* activity_logger =
       V8DOMActivityLogger::CurrentActivityLoggerIfIsolatedWorld();
   if (activity_logger) {
@@ -429,10 +487,31 @@ bool EventTarget::AddEventListenerInternal(
   bool added = EnsureEventTargetData().event_listener_map.Add(
       event_type, listener, options, &registered_listener);
   if (added) {
+    if (options->hasSignal()) {
+      // Instead of passing the entire |options| here, which could create a
+      // circular reference due to |options| holding a Member<AbortSignal>, just
+      // pass the |options->capture()| boolean, which is the only thing
+      // removeEventListener actually uses to find and remove the event
+      // listener.
+      options->signal()->AddAlgorithm(WTF::Bind(
+          [](EventTarget* event_target, const AtomicString& event_type,
+             const EventListener* listener, bool capture) {
+            event_target->removeEventListener(event_type, listener, capture);
+          },
+          WrapWeakPersistent(this), event_type, WrapWeakPersistent(listener),
+          options->capture()));
+      if (const LocalDOMWindow* executing_window = ExecutingWindow()) {
+        if (const Document* document = executing_window->document()) {
+          document->CountUse(WebFeature::kAddEventListenerWithAbortSignal);
+        }
+      }
+    }
+
     AddedEventListener(event_type, registered_listener);
     if (IsA<JSBasedEventListener>(listener) &&
         IsInstrumentedForAsyncStack(event_type)) {
-      probe::AsyncTaskScheduled(GetExecutionContext(), event_type, listener);
+      probe::AsyncTaskScheduled(GetExecutionContext(), event_type,
+                                listener->async_task_id());
     }
   }
   return added;
@@ -442,47 +521,29 @@ void EventTarget::AddedEventListener(
     const AtomicString& event_type,
     RegisteredEventListener& registered_listener) {
   if (const LocalDOMWindow* executing_window = ExecutingWindow()) {
-    if (const Document* document = executing_window->document()) {
-      if (event_type == event_type_names::kAuxclick)
+    if (Document* document = executing_window->document()) {
+      if (event_type == event_type_names::kAuxclick) {
         UseCounter::Count(*document, WebFeature::kAuxclickAddListenerCount);
-      else if (event_type == event_type_names::kAppinstalled)
+      } else if (event_type == event_type_names::kAppinstalled) {
         UseCounter::Count(*document, WebFeature::kAppInstalledEventAddListener);
-      else if (event_util::IsPointerEventType(event_type))
+      } else if (event_util::IsPointerEventType(event_type)) {
         UseCounter::Count(*document, WebFeature::kPointerEventAddListenerCount);
-      else if (event_type == event_type_names::kSlotchange)
+      } else if (event_type == event_type_names::kSlotchange) {
         UseCounter::Count(*document, WebFeature::kSlotChangeEventAddListener);
+      } else if (event_type == event_type_names::kBeforematch) {
+        UseCounter::Count(*document, WebFeature::kBeforematchHandlerRegistered);
+      }
     }
   }
 
-  // TODO(altimin): Ideally we would also support tracking unregistration of
-  // event listeners, but we don't do this for performance reasons.
-  base::Optional<SchedulingPolicy::Feature> feature_for_scheduler;
-  if (event_type == event_type_names::kPageshow) {
-    feature_for_scheduler = SchedulingPolicy::Feature::kPageShowEventListener;
-  } else if (event_type == event_type_names::kPagehide) {
-    feature_for_scheduler = SchedulingPolicy::Feature::kPageHideEventListener;
-  } else if (event_type == event_type_names::kBeforeunload) {
-    feature_for_scheduler =
-        SchedulingPolicy::Feature::kBeforeUnloadEventListener;
-  } else if (event_type == event_type_names::kUnload) {
-    feature_for_scheduler = SchedulingPolicy::Feature::kUnloadEventListener;
-  } else if (event_type == event_type_names::kFreeze) {
-    feature_for_scheduler = SchedulingPolicy::Feature::kFreezeEventListener;
-  } else if (event_type == event_type_names::kResume) {
-    feature_for_scheduler = SchedulingPolicy::Feature::kResumeEventListener;
-  }
-  if (feature_for_scheduler) {
-    GetExecutionContext()->GetScheduler()->RegisterStickyFeature(
-        feature_for_scheduler.value(),
-        {SchedulingPolicy::DisableBackForwardCache()});
-  }
+  RegisterWithScheduler(GetExecutionContext(), event_type);
 
   if (event_util::IsDOMMutationEventType(event_type)) {
     if (ExecutionContext* context = GetExecutionContext()) {
       String message_text = String::Format(
           "Added synchronous DOM mutation listener to a '%s' event. "
           "Consider using MutationObserver to make the page more responsive.",
-          event_type.GetString().Utf8().data());
+          event_type.GetString().Utf8().c_str());
       PerformanceMonitor::ReportGenericViolation(
           context, PerformanceMonitor::kDiscouragedAPIUse, message_text,
           base::TimeDelta(), nullptr);
@@ -499,20 +560,25 @@ bool EventTarget::removeEventListener(const AtomicString& event_type,
 bool EventTarget::removeEventListener(
     const AtomicString& event_type,
     V8EventListener* listener,
-    const EventListenerOptionsOrBoolean& options_union) {
+    const V8UnionBooleanOrEventListenerOptions* bool_or_options) {
+  DCHECK(bool_or_options);
+
   EventListener* event_listener = JSEventListener::CreateOrNull(listener);
 
-  if (options_union.IsBoolean()) {
-    return removeEventListener(event_type, event_listener,
-                               options_union.GetAsBoolean());
+  switch (bool_or_options->GetContentType()) {
+    case V8UnionBooleanOrEventListenerOptions::ContentType::kBoolean:
+      return removeEventListener(event_type, event_listener,
+                                 bool_or_options->GetAsBoolean());
+    case V8UnionBooleanOrEventListenerOptions::ContentType::
+        kEventListenerOptions: {
+      EventListenerOptions* options =
+          bool_or_options->GetAsEventListenerOptions();
+      return removeEventListener(event_type, event_listener, options);
+    }
   }
 
-  if (options_union.IsEventListenerOptions()) {
-    EventListenerOptions* options = options_union.GetAsEventListenerOptions();
-    return removeEventListener(event_type, event_listener, options);
-  }
-
-  return removeEventListener(event_type, event_listener);
+  NOTREACHED();
+  return false;
 }
 
 bool EventTarget::removeEventListener(const AtomicString& event_type,
@@ -583,7 +649,7 @@ RegisteredEventListener* EventTarget::GetAttributeRegisteredEventListener(
 
   for (auto& event_listener : *listener_vector) {
     EventListener* listener = event_listener.Callback();
-    if (listener->IsEventHandler() &&
+    if (GetExecutionContext() && listener->IsEventHandler() &&
         listener->BelongsToTheCurrentWorld(GetExecutionContext()))
       return &event_listener;
   }
@@ -602,7 +668,8 @@ bool EventTarget::SetAttributeEventListener(const AtomicString& event_type,
   if (registered_listener) {
     if (IsA<JSBasedEventListener>(listener) &&
         IsInstrumentedForAsyncStack(event_type)) {
-      probe::AsyncTaskScheduled(GetExecutionContext(), event_type, listener);
+      probe::AsyncTaskScheduled(GetExecutionContext(), event_type,
+                                listener->async_task_id());
     }
     registered_listener->SetCallback(listener);
     return true;
@@ -645,6 +712,8 @@ bool EventTarget::dispatchEventForBindings(Event* event,
 }
 
 DispatchEventResult EventTarget::DispatchEvent(Event& event) {
+  if (!GetExecutionContext())
+    return DispatchEventResult::kCanceledBeforeDispatch;
   event.SetTrusted(true);
   return DispatchEventInternal(event);
 }
@@ -713,7 +782,7 @@ void EventTarget::CountLegacyEvents(
   }
 
   if (const LocalDOMWindow* executing_window = ExecutingWindow()) {
-    if (const Document* document = executing_window->document()) {
+    if (Document* document = executing_window->document()) {
       if (legacy_listeners_vector) {
         if (listeners_vector)
           UseCounter::Count(*document, prefixed_and_unprefixed_feature);
@@ -776,73 +845,11 @@ bool EventTarget::FireEventListeners(Event& event,
   // index |size|, so iterating up to (but not including) |size| naturally
   // excludes new event listeners.
 
-  struct CountedEvent {
-    const AtomicString& event_type;
-    const WebFeature feature;
-  };
-  static const CountedEvent counted_events[] = {
-      {event_type_names::kUnload, WebFeature::kDocumentUnloadFired},
-      {event_type_names::kPagehide, WebFeature::kDocumentPageHideFired},
-      {event_type_names::kPageshow, WebFeature::kDocumentPageShowFired},
-      {event_type_names::kDOMFocusIn, WebFeature::kDOMFocusInOutEvent},
-      {event_type_names::kDOMFocusOut, WebFeature::kDOMFocusInOutEvent},
-      {event_type_names::kFocusin, WebFeature::kFocusInOutEvent},
-      {event_type_names::kFocusout, WebFeature::kFocusInOutEvent},
-      {event_type_names::kTextInput, WebFeature::kTextInputFired},
-      {event_type_names::kTouchstart, WebFeature::kTouchStartFired},
-      {event_type_names::kMousedown, WebFeature::kMouseDownFired},
-      {event_type_names::kPointerenter, WebFeature::kPointerEnterLeaveFired},
-      {event_type_names::kPointerleave, WebFeature::kPointerEnterLeaveFired},
-      {event_type_names::kPointerover, WebFeature::kPointerOverOutFired},
-      {event_type_names::kPointerout, WebFeature::kPointerOverOutFired},
-      {event_type_names::kSearch, WebFeature::kSearchEventFired},
-  };
-
-  if (const LocalDOMWindow* executing_window = ExecutingWindow()) {
-    if (const Document* document = executing_window->document()) {
-      if (CheckTypeThenUseCount(event, event_type_names::kBeforeunload,
-                                WebFeature::kDocumentBeforeUnloadFired,
-                                document)) {
-        if (executing_window != executing_window->top())
-          UseCounter::Count(*document, WebFeature::kSubFrameBeforeUnloadFired);
-      } else if (CheckTypeThenUseCount(event, event_type_names::kPointerdown,
-                                       WebFeature::kPointerDownFired,
-                                       document)) {
-        if (event.IsPointerEvent() &&
-            static_cast<PointerEvent&>(event).pointerType() == "touch") {
-          UseCounter::Count(*document, WebFeature::kPointerDownFiredForTouch);
-        }
-      } else {
-        bool did_count = false;
-        for (const auto& counted_event : counted_events) {
-          if (CheckTypeThenUseCount(event, counted_event.event_type,
-                                    counted_event.feature, document)) {
-            did_count = true;
-            break;
-          }
-        }
-
-        if (!did_count && (event.eventPhase() == Event::kCapturingPhase ||
-                           event.eventPhase() == Event::kBubblingPhase)) {
-          if (CheckTypeThenUseCount(
-                  event, event_type_names::kDOMNodeRemoved,
-                  WebFeature::kDOMNodeRemovedEventListenedAtNonTarget,
-                  document)) {
-          } else if (
-              CheckTypeThenUseCount(
-                  event, event_type_names::kDOMNodeRemovedFromDocument,
-                  WebFeature::
-                      kDOMNodeRemovedFromDocumentEventListenedAtNonTarget,
-                  document)) {
-          }
-        }
-      }
-    }
-  }
-
   ExecutionContext* context = GetExecutionContext();
   if (!context)
     return false;
+
+  CountFiringEventListeners(event, ExecutingWindow());
 
   wtf_size_t i = 0;
   wtf_size_t size = entry.size();
@@ -856,13 +863,18 @@ bool EventTarget::FireEventListeners(Event& event,
   base::TimeTicks now;
   bool should_report_blocked_event = false;
   if (!blocked_event_threshold.is_zero()) {
-    now = CurrentTimeTicks();
+    now = base::TimeTicks::Now();
     should_report_blocked_event =
         now - event.PlatformTimeStamp() > blocked_event_threshold;
   }
   bool fired_listener = false;
 
   while (i < size) {
+    // If stopImmediatePropagation has been called, we just break out
+    // immediately, without handling any more events on this target.
+    if (event.ImmediatePropagationStopped())
+      break;
+
     RegisteredEventListener registered_listener = entry[i];
 
     // Move the iterator past this event listener. This must match
@@ -881,16 +893,10 @@ bool EventTarget::FireEventListeners(Event& event,
       removeEventListener(event.type(), listener,
                           registered_listener.Capture());
 
-    // If stopImmediatePropagation has been called, we just break out
-    // immediately, without handling any more events on this target.
-    if (event.ImmediatePropagationStopped())
-      break;
-
     event.SetHandlingPassive(EventPassiveMode(registered_listener));
-    bool passive_forced = registered_listener.PassiveForcedForDocumentTarget();
 
     probe::UserCallback probe(context, nullptr, event.type(), false, this);
-    probe::AsyncTask async_task(context, listener, "event",
+    probe::AsyncTask async_task(context, listener->async_task_id(), "event",
                                 IsInstrumentedForAsyncStack(event.type()));
 
     // To match Mozilla, the AT_TARGET phase fires both capturing and bubbling
@@ -906,17 +912,6 @@ bool EventTarget::FireEventListeners(Event& event,
         !event.defaultPrevented()) {
       ReportBlockedEvent(*this, event, &entry[i - 1],
                          now - event.PlatformTimeStamp());
-    }
-
-    if (passive_forced) {
-      DEFINE_STATIC_LOCAL(EnumerationHistogram, passive_forced_histogram,
-                          ("Event.PassiveForcedEventDispatchCancelled",
-                           kPassiveForcedListenerResultTypeMax));
-      PassiveForcedListenerResultType breakage_type = kPreventDefaultNotCalled;
-      if (event.PreventDefaultCalledDuringPassive())
-        breakage_type = kDocumentLevelTouchPreventDefaultCalled;
-
-      passive_forced_histogram.Count(breakage_type);
     }
 
     event.SetHandlingPassive(Event::PassiveMode::kNotPassive);
@@ -941,6 +936,12 @@ EventListenerVector* EventTarget::GetEventListeners(
   if (!data)
     return nullptr;
   return data->event_listener_map.Find(event_type);
+}
+
+int EventTarget::NumberOfEventListeners(const AtomicString& event_type) const {
+  EventListenerVector* listeners =
+      const_cast<EventTarget*>(this)->GetEventListeners(event_type);
+  return listeners ? listeners->size() : 0;
 }
 
 Vector<AtomicString> EventTarget::EventTypes() {
@@ -968,7 +969,7 @@ void EventTarget::EnqueueEvent(Event& event, TaskType task_type) {
   ExecutionContext* context = GetExecutionContext();
   if (!context)
     return;
-  probe::AsyncTaskScheduled(context, event.type(), &event);
+  probe::AsyncTaskScheduled(context, event.type(), event.async_task_id());
   context->GetTaskRunner(task_type)->PostTask(
       FROM_HERE,
       WTF::Bind(&EventTarget::DispatchEnqueuedEvent, WrapPersistent(this),
@@ -978,10 +979,10 @@ void EventTarget::EnqueueEvent(Event& event, TaskType task_type) {
 void EventTarget::DispatchEnqueuedEvent(Event* event,
                                         ExecutionContext* context) {
   if (!GetExecutionContext()) {
-    probe::AsyncTaskCanceled(context, event);
+    probe::AsyncTaskCanceled(context, event->async_task_id());
     return;
   }
-  probe::AsyncTask async_task(context, event);
+  probe::AsyncTask async_task(context, event->async_task_id());
   DispatchEvent(*event);
 }
 

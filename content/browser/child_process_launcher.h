@@ -10,10 +10,10 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/shared_memory.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/kill.h"
 #include "base/process/process.h"
+#include "base/process/process_metrics.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -23,6 +23,7 @@
 #include "content/public/browser/child_process_termination_info.h"
 #include "content/public/common/result_codes.h"
 #include "mojo/public/cpp/system/invitation.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_proto.h"
 
 #if defined(OS_ANDROID)
 #include "content/public/browser/android/child_process_importance.h"
@@ -31,6 +32,14 @@
 namespace base {
 class CommandLine;
 }
+
+namespace perfetto {
+namespace protos {
+namespace pbzero {
+class ChildProcessLauncherPriority;
+}
+}  // namespace protos
+}  // namespace perfetto
 
 namespace content {
 
@@ -87,6 +96,10 @@ struct ChildProcessLauncherPriority {
   bool operator!=(const ChildProcessLauncherPriority& other) const {
     return !(*this == other);
   }
+
+  void WriteIntoTrace(
+      perfetto::TracedProto<
+          perfetto::protos::pbzero::ChildProcessLauncherPriority> proto);
 
   // Prefer |is_background()| to inspecting these fields individually (to ensure
   // all logic uses the same notion of "backgrounded").
@@ -159,6 +172,12 @@ class CONTENT_EXPORT ChildProcessLauncher {
   // If |process_error_callback| is provided, it will be called if a Mojo error
   // is encountered when processing messages from the child process. This
   // callback must be safe to call from any thread.
+  //
+  // |files_to_preload| is a map of key names to file paths. These files will be
+  // opened by the browser process and corresponding file descriptors inherited
+  // by the new child process, accessible using the corresponding key via some
+  // platform-specific mechanism (such as base::FileDescriptorStore on POSIX).
+  // Currently only supported on POSIX platforms.
   ChildProcessLauncher(
       std::unique_ptr<SandboxedProcessLauncherDelegate> delegate,
       std::unique_ptr<base::CommandLine> cmd_line,
@@ -166,6 +185,7 @@ class CONTENT_EXPORT ChildProcessLauncher {
       Client* client,
       mojo::OutgoingInvitation mojo_invitation,
       const mojo::ProcessErrorCallback& process_error_callback,
+      std::map<std::string, base::FilePath> files_to_preload,
       bool terminate_on_shutdown = true);
   ~ChildProcessLauncher();
 
@@ -184,6 +204,10 @@ class CONTENT_EXPORT ChildProcessLauncher {
   // process will be killed if it was still running. See ZygoteHostImpl for
   // more discussion of Linux implementation details.
   ChildProcessTerminationInfo GetChildTerminationInfo(bool known_dead);
+
+  // Gather the lifetime process metrics and save them to histograms. Call
+  // right before the process is about to go away.
+  void RecordProcessLifetimeMetrics();
 
   // Changes whether the process runs in the background or not.  Only call
   // this after the process has started.
@@ -204,16 +228,6 @@ class CONTENT_EXPORT ChildProcessLauncher {
   // previous  client.
   Client* ReplaceClientForTest(Client* client);
 
-  // Sets the files that should be mapped when a new child process is created
-  // for the service |service_name|.
-  static void SetRegisteredFilesForService(
-      const std::string& service_name,
-      std::map<std::string, base::FilePath> required_files);
-
-  // Resets all files registered by |SetRegisteredFilesForService|. Used to
-  // support multiple shell context creation in unit_tests.
-  static void ResetRegisteredFilesForTesting();
-
 #if defined(OS_ANDROID)
   // Dumps the stack of the child process without crashing it.
   void DumpProcessStack();
@@ -226,15 +240,14 @@ class CONTENT_EXPORT ChildProcessLauncher {
               int error_code);
 
   Client* client_;
-  BrowserThread::ID client_thread_id_;
 
   // The process associated with this ChildProcessLauncher. Set in Notify by
   // ChildProcessLauncherHelper once the process was started.
   internal::ChildProcessLauncherHelper::Process process_;
+  base::TimeTicks process_start_time_;
 
   ChildProcessTerminationInfo termination_info_;
   bool starting_;
-  base::TimeTicks start_time_;
 
   // Controls whether the child process should be terminated on browser
   // shutdown. Default behavior is to terminate the child.
@@ -244,7 +257,7 @@ class CONTENT_EXPORT ChildProcessLauncher {
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<ChildProcessLauncher> weak_factory_;
+  base::WeakPtrFactory<ChildProcessLauncher> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ChildProcessLauncher);
 };

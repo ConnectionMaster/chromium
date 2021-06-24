@@ -8,10 +8,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/macros.h"
 #include "base/sequenced_task_runner.h"
 #include "base/time/tick_clock.h"
 #include "net/base/host_port_pair.h"
+#include "net/base/network_isolation_key.h"
 #include "net/base/privacy_mode.h"
 #include "net/third_party/quiche/src/quic/core/quic_packets.h"
 #include "net/third_party/quiche/src/quic/core/quic_server_id.h"
@@ -19,15 +22,14 @@
 
 namespace quic {
 class QuicAlarmFactory;
-class QuicClientPushPromiseIndex;
 class QuicConfig;
-class QuicCryptoClientConfig;
 }  // namespace quic
 
 namespace net {
 
 class NetLogWithSource;
 class QuicChromiumClientSession;
+class QuicCryptoClientConfigHandle;
 class QuicStreamFactory;
 
 namespace test {
@@ -36,17 +38,17 @@ class QuicStreamFactoryPeer {
  public:
   static const quic::QuicConfig* GetConfig(QuicStreamFactory* factory);
 
-  static quic::QuicCryptoClientConfig* GetCryptoConfig(
-      QuicStreamFactory* factory);
+  static std::unique_ptr<QuicCryptoClientConfigHandle> GetCryptoConfig(
+      QuicStreamFactory* factory,
+      const NetworkIsolationKey& network_isolation_key);
 
-  static bool HasActiveSession(QuicStreamFactory* factory,
-                               const quic::QuicServerId& server_id);
+  static bool HasActiveSession(
+      QuicStreamFactory* factory,
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key = NetworkIsolationKey());
 
   static bool HasActiveJob(QuicStreamFactory* factory,
                            const quic::QuicServerId& server_id);
-
-  static bool HasActiveCertVerifierJob(QuicStreamFactory* factory,
-                                       const quic::QuicServerId& server_id);
 
   static QuicChromiumClientSession* GetPendingSession(
       QuicStreamFactory* factory,
@@ -55,7 +57,8 @@ class QuicStreamFactoryPeer {
 
   static QuicChromiumClientSession* GetActiveSession(
       QuicStreamFactory* factory,
-      const quic::QuicServerId& server_id);
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key = NetworkIsolationKey());
 
   static bool HasLiveSession(QuicStreamFactory* factory,
                              const HostPortPair& destination,
@@ -72,17 +75,6 @@ class QuicStreamFactoryPeer {
 
   static quic::QuicTime::Delta GetPingTimeout(QuicStreamFactory* factory);
 
-  static bool GetRaceCertVerification(QuicStreamFactory* factory);
-
-  static void SetRaceCertVerification(QuicStreamFactory* factory,
-                                      bool race_cert_verification);
-
-  static quic::QuicAsyncStatus StartCertVerifyJob(
-      QuicStreamFactory* factory,
-      const quic::QuicServerId& server_id,
-      int cert_verify_flags,
-      const NetLogWithSource& net_log);
-
   static void SetYieldAfterPackets(QuicStreamFactory* factory,
                                    int yield_after_packets);
 
@@ -94,16 +86,20 @@ class QuicStreamFactoryPeer {
 
   static bool CryptoConfigCacheIsEmpty(
       QuicStreamFactory* factory,
-      const quic::QuicServerId& quic_server_id);
+      const quic::QuicServerId& quic_server_id,
+      const NetworkIsolationKey& network_isolation_key);
 
-  // Creates a dummy QUIC server config and caches it.
-  static void CacheDummyServerConfig(QuicStreamFactory* factory,
-                                     const quic::QuicServerId& quic_server_id);
-
-  static quic::QuicClientPushPromiseIndex* GetPushPromiseIndex(
-      QuicStreamFactory* factory);
+  // Creates a dummy QUIC server config and caches it. Caller must be holding
+  // onto a QuicCryptoClientConfigHandle for the corresponding
+  // |network_isolation_key|.
+  static void CacheDummyServerConfig(
+      QuicStreamFactory* factory,
+      const quic::QuicServerId& quic_server_id,
+      const NetworkIsolationKey& network_isolation_key);
 
   static int GetNumPushStreamsCreated(QuicStreamFactory* factory);
+
+  static size_t GetNumDegradingSessions(QuicStreamFactory* factory);
 
   static void SetAlarmFactory(
       QuicStreamFactory* factory,

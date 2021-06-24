@@ -2,10 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {assertNotReached} from 'chrome://resources/js/assert.m.js';
+// clang-format on
+
 /**
  * @implements {chromeos.multideviceSetup.mojom.MultiDeviceSetupInterface}
  */
-class FakeMojoService {
+/* #export */ class FakeMojoService {
   constructor() {
     /**
      * The number of devices to return in a getEligibleHostDevices() call.
@@ -52,10 +56,26 @@ class FakeMojoService {
   }
 
   /** @override */
-  setHostDevice(deviceId) {
+  getEligibleActiveHostDevices() {
+    const deviceNames = ['Pixel', 'Pixel XL', 'Nexus 5', 'Nexus 6P'];
+    const devices = [];
+    for (let i = 0; i < this.deviceCount; i++) {
+      const deviceName = deviceNames[i % 4];
+      devices.push({
+        remoteDevice: {deviceName: deviceName, deviceId: deviceName + '--' + i}
+      });
+    }
+    return new Promise(function(resolve, reject) {
+      resolve({eligibleHostDevices: devices});
+    });
+  }
+
+  /** @override */
+  setHostDevice(hostInstanceIdOrLegacyDeviceId) {
     if (this.shouldSetHostSucceed) {
       console.log(
-          'setHostDevice(' + deviceId + ') called; simulating ' +
+          'setHostDevice(' + hostInstanceIdOrLegacyDeviceId +
+          ') called; simulating ' +
           'success.');
     } else {
       console.warn('setHostDevice() called; simulating failure.');

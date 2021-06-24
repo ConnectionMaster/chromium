@@ -21,7 +21,7 @@ constexpr char kArcRemoveDataUpstartJob[] = "arc_2dremove_2ddata";
 
 ArcDataRemover::ArcDataRemover(PrefService* prefs,
                                const cryptohome::Identification& cryptohome_id)
-    : cryptohome_id_(cryptohome_id), weak_factory_(this) {
+    : cryptohome_id_(cryptohome_id) {
   pref_.Init(prefs::kArcDataRemoveRequested, prefs);
 }
 
@@ -40,8 +40,8 @@ bool ArcDataRemover::IsScheduledForTesting() const {
 void ArcDataRemover::Run(RunCallback callback) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   if (!pref_.GetValue()) {
-    // Data removal is not scheduled.
-    std::move(callback).Run(base::nullopt);
+    VLOG(1) << "Data removal is not scheduled, skip.";
+    std::move(callback).Run(absl::nullopt);
     return;
   }
 
@@ -49,7 +49,7 @@ void ArcDataRemover::Run(RunCallback callback) {
   auto* upstart_client = chromeos::UpstartClient::Get();
   if (!upstart_client) {
     // May be null in tests
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
   const std::string account_id =
@@ -57,9 +57,8 @@ void ArcDataRemover::Run(RunCallback callback) {
           .account_id();
   upstart_client->StartJob(
       kArcRemoveDataUpstartJob, {"CHROMEOS_USER=" + account_id},
-      base::AdaptCallbackForRepeating(
-          base::BindOnce(&ArcDataRemover::OnDataRemoved,
-                         weak_factory_.GetWeakPtr(), std::move(callback))));
+      base::BindOnce(&ArcDataRemover::OnDataRemoved, weak_factory_.GetWeakPtr(),
+                     std::move(callback)));
 }
 
 void ArcDataRemover::OnDataRemoved(RunCallback callback, bool success) {

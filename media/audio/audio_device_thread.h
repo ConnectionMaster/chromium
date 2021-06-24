@@ -8,7 +8,6 @@
 #include <stdint.h>
 
 #include "base/macros.h"
-#include "base/memory/shared_memory.h"
 #include "base/sync_socket.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_checker.h"
@@ -43,6 +42,10 @@ class MEDIA_EXPORT AudioDeviceThread : public base::PlatformThread::Delegate {
     // Called whenever we receive notifications about pending input data.
     virtual void Process(uint32_t pending_data) = 0;
 
+    base::TimeDelta buffer_duration() const {
+      return audio_parameters_.GetBufferDuration();
+    }
+
    protected:
     virtual ~Callback();
 
@@ -66,7 +69,7 @@ class MEDIA_EXPORT AudioDeviceThread : public base::PlatformThread::Delegate {
 
   // Creates and automatically starts the audio thread.
   AudioDeviceThread(Callback* callback,
-                    base::SyncSocket::Handle socket,
+                    base::SyncSocket::ScopedHandle socket,
                     const char* thread_name,
                     base::ThreadPriority thread_priority);
 
@@ -76,6 +79,7 @@ class MEDIA_EXPORT AudioDeviceThread : public base::PlatformThread::Delegate {
   ~AudioDeviceThread() override;
 
  private:
+  base::TimeDelta GetRealtimePeriod() final;
   void ThreadMain() final;
 
   Callback* const callback_;

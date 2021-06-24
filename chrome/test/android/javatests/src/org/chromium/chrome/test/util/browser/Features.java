@@ -4,12 +4,15 @@
 
 package org.chromium.chrome.test.util.browser;
 
-import android.support.annotation.Nullable;
 import android.text.TextUtils;
+
+import androidx.annotation.Nullable;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.test.util.AnnotationRule;
-import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.CachedFeatureFlags;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
 import java.lang.annotation.Annotation;
 import java.lang.annotation.Retention;
@@ -32,7 +35,7 @@ import java.util.Set;
  * <pre>
  * public class Test {
  *    &#64;Rule
- *    public Features.Processor processor = new Features.JUnitProcessor();
+ *    public TestRule mProcessor = new Features.JUnitProcessor();
  *
  *    &#64;Features.EnableFeatures(ChromeFeatureList.CHROME_MODERN_DESIGN)
  *    public void testFoo() { ... }
@@ -87,11 +90,15 @@ public class Features {
 
     private void applyForJUnit() {
         ChromeFeatureList.setTestFeatures(mRegisteredState);
+        CachedFeatureFlags.setFeaturesForTesting(mRegisteredState);
     }
 
     private void applyForInstrumentation() {
+        ChromeFeatureList.setTestCanUseDefaultsForTesting();
         mergeFeatureLists("enable-features", true);
         mergeFeatureLists("disable-features", false);
+        CachedFeatureFlags.setFeaturesForTesting(mRegisteredState);
+        FieldTrials.getInstance().applyFieldTrials();
     }
 
     /**
@@ -120,11 +127,15 @@ public class Features {
     private static void reset() {
         sInstance = null;
         ChromeFeatureList.setTestFeatures(null);
+        ChromeFeatureList.resetTestCanUseDefaultsForTesting();
+        CachedFeatureFlags.resetFlagsForTesting();
+        FieldTrials.getInstance().reset();
     }
 
     /**
-     * Feature processor intended to be used in JUnit tests, that applies the collected feature
-     * state to {@link ChromeFeatureList}'s internal test-only feature map.
+     * Feature processor intended to be used in Robolectric and {@link DummyUiActivityTestCase}
+     * tests. The collected feature states would be applied to {@link ChromeFeatureList}'s
+     * internal test-only feature map.
      */
     public static class JUnitProcessor extends Processor {
         @Override
@@ -134,8 +145,9 @@ public class Features {
     }
 
     /**
-     * Feature processor intended to be used in instrumentation tests, that applies the collected
-     * feature state to {@link CommandLine}.
+     * Feature processor intended to be used in instrumentation tests with native library, like
+     * those run with {@link ChromeJUnit4ClassRunner}. The collected feature states would be applied
+     * to {@link CommandLine}.
      */
     public static class InstrumentationProcessor extends Processor {
         @Override
@@ -149,13 +161,13 @@ public class Features {
      * to enable, or get rid of exceptions when the production code tries to check for enabled
      * features.
      */
-    private static abstract class Processor extends AnnotationRule {
+    private abstract static class Processor extends AnnotationRule {
         public Processor() {
             super(EnableFeatures.class, DisableFeatures.class);
         }
 
         @Override
-        protected void before() throws Throwable {
+        protected void before() {
             collectFeatures();
             applyFeatures();
         }
@@ -165,9 +177,9 @@ public class Features {
             reset();
         }
 
-        abstract protected void applyFeatures();
+        protected abstract void applyFeatures();
 
-        private void collectFeatures() {
+        protected void collectFeatures() {
             for (Annotation annotation : getAnnotations()) {
                 if (annotation instanceof EnableFeatures) {
                     getInstance().enable(((EnableFeatures) annotation).value());

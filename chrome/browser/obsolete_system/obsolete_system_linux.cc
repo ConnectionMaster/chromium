@@ -4,19 +4,26 @@
 
 #include "chrome/browser/obsolete_system/obsolete_system.h"
 
+#include "base/cpu.h"
+#include "build/build_config.h"
+#include "chrome/common/chrome_version.h"
+#include "chrome/common/url_constants.h"
+#include "chrome/grit/chromium_strings.h"
+#include "ui/base/l10n/l10n_util.h"
+
 // static
 bool ObsoleteSystem::IsObsoleteNowOrSoon() {
   return false;
 }
 
 // static
-base::string16 ObsoleteSystem::LocalizedObsoleteString() {
-  return base::string16();
+std::u16string ObsoleteSystem::LocalizedObsoleteString() {
+  return std::u16string();
 }
 
 // static
 bool ObsoleteSystem::IsEndOfTheLine() {
-  return false;
+  return true;
 }
 
 // static

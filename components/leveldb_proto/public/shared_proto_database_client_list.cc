@@ -9,26 +9,25 @@
 #include <string>
 
 #include "base/metrics/field_trial_params.h"
-#include "base/stl_util.h"
 
+#include "base/notreached.h"
 #include "components/leveldb_proto/internal/leveldb_proto_feature_list.h"
 
 namespace leveldb_proto {
 
-namespace {
-
-constexpr ProtoDbType kWhitelistedListForSharedImpl[]{
-    ProtoDbType::LAST,  // Marks the end of list.
-};
-
-const char* const kDBNameParamPrefix = "migrate_";
-
-}  // namespace
 
 // static
 std::string SharedProtoDatabaseClientList::ProtoDbTypeToString(
     ProtoDbType db_type) {
+  // Please update the suffix LevelDBClients in histograms.xml to match the
+  // strings returned here.
   switch (db_type) {
+    case ProtoDbType::TEST_DATABASE0:
+      return "TestDatabase0";
+    case ProtoDbType::TEST_DATABASE1:
+      return "TestDatabase1";
+    case ProtoDbType::TEST_DATABASE2:
+      return "TestDatabase2";
     case ProtoDbType::FEATURE_ENGAGEMENT_EVENT:
       return "FeatureEngagementTrackerEventStore";
     case ProtoDbType::FEATURE_ENGAGEMENT_AVAILABILITY:
@@ -41,6 +40,8 @@ std::string SharedProtoDatabaseClientList::ProtoDbTypeToString(
       return "UsageStatsTokenMapping";
     case ProtoDbType::DOM_DISTILLER_STORE:
       return "DomDistillerStore";
+    case ProtoDbType::DOWNLOAD_STORE:
+      return "DownloadService";
     case ProtoDbType::CACHED_IMAGE_METADATA_STORE:
       return "CachedImageFetcherDatabase";
     case ProtoDbType::FEED_CONTENT_DATABASE:
@@ -51,36 +52,73 @@ std::string SharedProtoDatabaseClientList::ProtoDbTypeToString(
       return "NTPSnippets";
     case ProtoDbType::REMOTE_SUGGESTIONS_IMAGE_DATABASE:
       return "NTPSnippetImages";
+    case ProtoDbType::NOTIFICATION_SCHEDULER_ICON_STORE:
+      return "NotificationSchedulerIcons";
+    case ProtoDbType::NOTIFICATION_SCHEDULER_IMPRESSION_STORE:
+      return "NotificationSchedulerImpressions";
+    case ProtoDbType::NOTIFICATION_SCHEDULER_NOTIFICATION_STORE:
+      return "NotificationSchedulerNotifications";
+    case ProtoDbType::BUDGET_DATABASE:
+      return "BudgetManager";
+    case ProtoDbType::STRIKE_DATABASE:
+      return "StrikeService";
+    case ProtoDbType::HINT_CACHE_STORE:
+      return "PreviewsHintCacheStore";
+    case ProtoDbType::DOWNLOAD_DB:
+      return "DownloadDB";
+    case ProtoDbType::VIDEO_DECODE_STATS_DB:
+      return "VideoDecodeStatsDB";
+    case ProtoDbType::GCM_KEY_STORE:
+      return "GCMKeyStore";
+    case ProtoDbType::SHARED_DB_METADATA:
+      return "Metadata";
+    case ProtoDbType::PRINT_JOB_DATABASE:
+      return "PrintJobDatabase";
+    case ProtoDbType::FEED_STREAM_DATABASE:
+      return "FeedStreamDatabase";
+    case ProtoDbType::PERSISTED_STATE_DATABASE:
+      return "PersistedStateDatabase";
+    case ProtoDbType::UPBOARDING_QUERY_TILE_STORE:
+      return "UpboardingQueryTileStore";
+    case ProtoDbType::NEARBY_SHARE_PUBLIC_CERTIFICATE_DATABASE:
+      return "NearbySharePublicCertificateDatabase";
+    case ProtoDbType::VIDEO_TUTORIALS_DATABASE:
+      return "VideoTutorialsDatabase";
+    case ProtoDbType::FEED_KEY_VALUE_DATABASE:
+      return "FeedKeyValueDatabase";
+    case ProtoDbType::CART_DATABASE:
+      return "CartDatabase";
+    case ProtoDbType::COMMERCE_SUBSCRIPTION_DATABASE:
+      return "CommerceSubscriptionDatabase";
+    case ProtoDbType::MERCHANT_TRUST_SIGNAL_DATABASE:
+      return "MerchantTrustSignalEventDatabase";
+    case ProtoDbType::SHARE_HISTORY_DATABASE:
+      return "ShareHistoryDatabase";
+    case ProtoDbType::SHARE_RANKING_DATABASE:
+      return "ShareRankingDatabase";
+    case ProtoDbType::SEGMENT_INFO_DATABASE:
+      return "SegmentInfoDatabase";
+    case ProtoDbType::SIGNAL_DATABASE:
+      return "SignalDatabase";
+    case ProtoDbType::SIGNAL_STORAGE_CONFIG_DATABASE:
+      return "SignalStorageConfigDatabase";
     case ProtoDbType::LAST:
       NOTREACHED();
-      break;
-    case ProtoDbType::TEST_DATABASE0:
-      return "TestDatabase0";
-    case ProtoDbType::TEST_DATABASE1:
-      return "TestDatabase1";
-    case ProtoDbType::TEST_DATABASE2:
-      return "TestDatabase2";
-    case ProtoDbType::DOWNLOAD_STORE:
-      return "DownloadService";
+      return std::string();
   }
-  return std::string();
 }
 
 // static
 bool SharedProtoDatabaseClientList::ShouldUseSharedDB(ProtoDbType db_type) {
-  for (size_t i = 0; kWhitelistedListForSharedImpl[i] != ProtoDbType::LAST;
-       ++i) {
-    if (kWhitelistedListForSharedImpl[i] == db_type)
-      return true;
+  for (size_t i = 0; kBlocklistedDbForSharedImpl[i] != ProtoDbType::LAST; ++i) {
+    if (kBlocklistedDbForSharedImpl[i] == db_type)
+      return false;
   }
 
   if (!base::FeatureList::IsEnabled(kProtoDBSharedMigration))
     return false;
 
-  std::string name =
-      SharedProtoDatabaseClientList::ProtoDbTypeToString(db_type);
-  return base::GetFieldTrialParamByFeatureAsBool(
-      kProtoDBSharedMigration, kDBNameParamPrefix + name, false);
+  return true;
 }
 
 }  // namespace leveldb_proto

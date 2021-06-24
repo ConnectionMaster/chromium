@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "base/callback.h"
+#include "base/logging.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 
 namespace syncer {
@@ -23,8 +24,8 @@ bool WeakHandleCoreBase::IsOnOwnerThread() const {
 WeakHandleCoreBase::~WeakHandleCoreBase() {}
 
 void WeakHandleCoreBase::PostToOwnerThread(const base::Location& from_here,
-                                           const base::Closure& fn) const {
-  if (!owner_loop_task_runner_->PostTask(from_here, fn)) {
+                                           base::OnceClosure fn) const {
+  if (!owner_loop_task_runner_->PostTask(from_here, std::move(fn))) {
     DVLOG(1) << "Could not post task from " << from_here.ToString();
   }
 }

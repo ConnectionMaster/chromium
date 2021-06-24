@@ -9,8 +9,8 @@
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_task_environment.h"
 #include "base/test/simple_test_clock.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/timer/mock_timer.h"
 #include "chromeos/components/tether/fake_host_scanner.h"
@@ -36,12 +36,13 @@ const char kWifiServiceGuid[] = "wifiServiceGuid";
 const char kTetherGuid[] = "tetherGuid";
 
 std::string CreateConfigurationJsonString(const std::string& guid,
-                                          const std::string& type) {
+                                          const std::string& type,
+                                          const std::string& state) {
   std::stringstream ss;
   ss << "{"
      << "  \"GUID\": \"" << guid << "\","
      << "  \"Type\": \"" << type << "\","
-     << "  \"State\": \"" << shill::kStateReady << "\""
+     << "  \"State\": \"" << state << "\""
      << "}";
   return ss.str();
 }
@@ -86,12 +87,16 @@ class HostScanSchedulerImplTest : public testing::Test {
     host_scan_scheduler_->ScanRequested(type);
   }
 
-  void InitializeEthernet() {
+  void InitializeEthernet(bool is_initially_connected) {
+    std::string state =
+        is_initially_connected ? shill::kStateReady : shill::kStateIdle;
     ethernet_service_path_ =
         helper_->ConfigureService(CreateConfigurationJsonString(
-            kEthernetServiceGuid, shill::kTypeEthernet));
+            kEthernetServiceGuid, shill::kTypeEthernet, state));
     helper_->manager_test()->SetManagerProperty(
         shill::kDefaultServiceProperty, base::Value(ethernet_service_path_));
+    base::RunLoop().RunUntilIdle();
+    test_task_runner_->RunUntilIdle();
   }
 
   // Disconnects the Ethernet network and manually sets the default network to
@@ -102,30 +107,29 @@ class HostScanSchedulerImplTest : public testing::Test {
     helper_->SetServiceProperty(ethernet_service_path_,
                                 std::string(shill::kStateProperty),
                                 base::Value(shill::kStateIdle));
-    test_task_runner_->RunUntilIdle();
-    if (new_default_service_path.empty())
-      return;
-
     helper_->manager_test()->SetManagerProperty(
         shill::kDefaultServiceProperty, base::Value(new_default_service_path));
+    base::RunLoop().RunUntilIdle();
+    test_task_runner_->RunUntilIdle();
   }
 
   void SetEthernetNetworkConnecting() {
     helper_->SetServiceProperty(ethernet_service_path_,
                                 std::string(shill::kStateProperty),
                                 base::Value(shill::kStateAssociation));
+    // Ethernet does not become the default network until it connects.
+    base::RunLoop().RunUntilIdle();
     test_task_runner_->RunUntilIdle();
-    helper_->manager_test()->SetManagerProperty(
-        shill::kDefaultServiceProperty, base::Value(ethernet_service_path_));
   }
 
   void SetEthernetNetworkConnected() {
     helper_->SetServiceProperty(ethernet_service_path_,
                                 std::string(shill::kStateProperty),
                                 base::Value(shill::kStateReady));
-    test_task_runner_->RunUntilIdle();
     helper_->manager_test()->SetManagerProperty(
         shill::kDefaultServiceProperty, base::Value(ethernet_service_path_));
+    base::RunLoop().RunUntilIdle();
+    test_task_runner_->RunUntilIdle();
   }
 
   // Adds a Tether network state, adds a Wifi network to be used as the Wifi
@@ -135,8 +139,9 @@ class HostScanSchedulerImplTest : public testing::Test {
     helper_->network_state_handler()->AddTetherNetworkState(
         kTetherGuid, "name", "carrier", 100 /* battery_percentage */,
         100 /* signal strength */, false /* has_connected_to_host */);
-    std::string wifi_service_path = helper_->ConfigureService(
-        CreateConfigurationJsonString(kWifiServiceGuid, shill::kTypeWifi));
+    std::string wifi_service_path =
+        helper_->ConfigureService(CreateConfigurationJsonString(
+            kWifiServiceGuid, shill::kTypeWifi, shill::kStateReady));
     helper_->network_state_handler()
         ->AssociateTetherNetworkStateWithWifiNetwork(kTetherGuid,
                                                      kWifiServiceGuid);
@@ -159,7 +164,7 @@ class HostScanSchedulerImplTest : public testing::Test {
     return helper_->network_state_handler();
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::string ethernet_service_path_;
 
   std::unique_ptr<NetworkStateTestHelper> helper_;
@@ -210,7 +215,7 @@ TEST_F(HostScanSchedulerImplTest, TestDeviceLockAndUnlock_Offline) {
 
 TEST_F(HostScanSchedulerImplTest, TestDeviceLockAndUnlock_Online) {
   // Simulate the device being online.
-  InitializeEthernet();
+  InitializeEthernet(true /* is_initially_connected */);
 
   // Lock the screen. This should never trigger a scan.
   SetScreenLockedState(true /* is_locked */);
@@ -337,7 +342,7 @@ TEST_F(HostScanSchedulerImplTest, HostScanBatchMetric) {
 }
 
 TEST_F(HostScanSchedulerImplTest, DefaultNetworkChanged) {
-  InitializeEthernet();
+  InitializeEthernet(false /* is_initially_connected */);
 
   // When no Tether network is present, a scan should start when the default
   // network is disconnected.

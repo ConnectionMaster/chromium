@@ -10,14 +10,32 @@
 #include "base/callback.h"
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/threading/thread_checker.h"
-#include "base/values.h"
+#include "base/timer/timer.h"
+#include "net/base/backoff_entry.h"
 #include "remoting/base/chromoting_event.h"
 #include "remoting/base/chromoting_event_log_writer.h"
 #include "remoting/base/oauth_token_getter.h"
 #include "remoting/base/url_request.h"
 
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
 namespace remoting {
+
+namespace apis {
+namespace v1 {
+
+class CreateEventRequest;
+class CreateEventResponse;
+
+}  // namespace v1
+}  // namespace apis
+
+class ProtobufHttpClient;
+class ProtobufHttpStatus;
 
 // TelemetryLogWriter sends log entries (ChromotingEvent) to the telemetry
 // server.
@@ -28,30 +46,30 @@ namespace remoting {
 // unless otherwise noted.
 class TelemetryLogWriter : public ChromotingEventLogWriter {
  public:
-  TelemetryLogWriter(const std::string& telemetry_base_url,
-                     std::unique_ptr<OAuthTokenGetter> token_getter);
+  explicit TelemetryLogWriter(std::unique_ptr<OAuthTokenGetter> token_getter);
 
   ~TelemetryLogWriter() override;
 
-  void Init(std::unique_ptr<UrlRequestFactory> request_factory);
+  void Init(scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 
   // Push the log entry to the pending list and send out all the pending logs.
   void Log(const ChromotingEvent& entry) override;
 
  private:
   void SendPendingEntries();
-  void PostJsonToServer(const std::string& json,
-                        OAuthTokenGetter::Status status,
-                        const std::string& user_email,
-                        const std::string& access_token);
-  void OnSendLogResult(const remoting::UrlRequest::Result& result);
+  void DoSend(const apis::v1::CreateEventRequest& request);
+  void OnSendLogResult(const ProtobufHttpStatus& status,
+                       std::unique_ptr<apis::v1::CreateEventResponse> response);
+
+  // Returns true if there are no events sending or pending.
+  bool IsIdleForTesting();
 
   THREAD_CHECKER(thread_checker_);
 
-  std::string telemetry_base_url_;
-  std::unique_ptr<UrlRequestFactory> request_factory_;
   std::unique_ptr<OAuthTokenGetter> token_getter_;
-  std::unique_ptr<UrlRequest> request_;
+  std::unique_ptr<ProtobufHttpClient> http_client_;
+  net::BackoffEntry backoff_;
+  base::OneShotTimer backoff_timer_;
 
   // Entries to be sent.
   base::circular_deque<ChromotingEvent> pending_entries_;
@@ -60,6 +78,7 @@ class TelemetryLogWriter : public ChromotingEventLogWriter {
   // These will be pushed back to pending_entries if error occurs.
   base::circular_deque<ChromotingEvent> sending_entries_;
 
+  friend class TelemetryLogWriterTest;
   DISALLOW_COPY_AND_ASSIGN(TelemetryLogWriter);
 };
 

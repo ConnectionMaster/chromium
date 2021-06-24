@@ -6,25 +6,29 @@
 
 #include "build/build_config.h"
 #include "content/browser/appcache/appcache_internals_ui.h"
+#include "content/browser/conversions/conversion_internals_ui.h"
 #include "content/browser/gpu/gpu_internals_ui.h"
-#include "content/browser/histograms_internals_ui.h"
 #include "content/browser/indexed_db/indexed_db_internals_ui.h"
 #include "content/browser/media/media_internals_ui.h"
+#include "content/browser/metrics/histograms_internals_ui.h"
 #include "content/browser/net/network_errors_listing_ui.h"
 #include "content/browser/process_internals/process_internals_ui.h"
 #include "content/browser/service_worker/service_worker_internals_ui.h"
 #include "content/browser/tracing/tracing_ui.h"
+#include "content/browser/ukm_internals_ui.h"
 #include "content/browser/webrtc/webrtc_internals_ui.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/common/url_constants.h"
+#include "media/base/media_switches.h"
 #include "media/media_buildflags.h"
 
 namespace content {
 
 WebUI::TypeID ContentWebUIControllerFactory::GetWebUIType(
-      BrowserContext* browser_context, const GURL& url) const {
+    BrowserContext* browser_context,
+    const GURL& url) {
   if (!url.SchemeIs(kChromeUIScheme))
     return WebUI::kNoWebUI;
 
@@ -39,26 +43,23 @@ WebUI::TypeID ContentWebUIControllerFactory::GetWebUIType(
       url.host_piece() == kChromeUIServiceWorkerInternalsHost ||
       url.host_piece() == kChromeUIAppCacheInternalsHost ||
       url.host_piece() == kChromeUINetworkErrorsListingHost ||
-      url.host_piece() == kChromeUIProcessInternalsHost) {
+      url.host_piece() == kChromeUIProcessInternalsHost ||
+      url.host_piece() == kChromeUIConversionInternalsHost ||
+      url.host_piece() == kChromeUIUkmHost) {
     return const_cast<ContentWebUIControllerFactory*>(this);
   }
   return WebUI::kNoWebUI;
 }
 
 bool ContentWebUIControllerFactory::UseWebUIForURL(
-    BrowserContext* browser_context, const GURL& url) const {
+    BrowserContext* browser_context,
+    const GURL& url) {
   return GetWebUIType(browser_context, url) != WebUI::kNoWebUI;
 }
 
-bool ContentWebUIControllerFactory::UseWebUIBindingsForURL(
-    BrowserContext* browser_context, const GURL& url) const {
-  return UseWebUIForURL(browser_context, url);
-}
-
 std::unique_ptr<WebUIController>
-ContentWebUIControllerFactory::CreateWebUIControllerForURL(
-    WebUI* web_ui,
-    const GURL& url) const {
+ContentWebUIControllerFactory::CreateWebUIControllerForURL(WebUI* web_ui,
+                                                           const GURL& url) {
   if (!url.SchemeIs(kChromeUIScheme))
     return nullptr;
 
@@ -70,8 +71,6 @@ ContentWebUIControllerFactory::CreateWebUIControllerForURL(
     return std::make_unique<HistogramsInternalsUI>(web_ui);
   if (url.host_piece() == kChromeUIIndexedDBInternalsHost)
     return std::make_unique<IndexedDBInternalsUI>(web_ui);
-  if (url.host_piece() == kChromeUIMediaInternalsHost)
-    return std::make_unique<MediaInternalsUI>(web_ui);
   if (url.host_piece() == kChromeUIServiceWorkerInternalsHost)
     return std::make_unique<ServiceWorkerInternalsUI>(web_ui);
   if (url.host_piece() == kChromeUINetworkErrorsListingHost)
@@ -84,7 +83,15 @@ ContentWebUIControllerFactory::CreateWebUIControllerForURL(
     return std::make_unique<WebRTCInternalsUI>(web_ui);
   if (url.host_piece() == kChromeUIProcessInternalsHost)
     return std::make_unique<ProcessInternalsUI>(web_ui);
-
+  if (url.host_piece() == kChromeUIConversionInternalsHost)
+    return std::make_unique<ConversionInternalsUI>(web_ui);
+  if (url.host_piece() == kChromeUIUkmHost)
+    return std::make_unique<UkmInternalsUI>(web_ui);
+  if (url.host_piece() == kChromeUIMediaInternalsHost) {
+    if (base::FeatureList::IsEnabled(media::kEnableMediaInternals))
+      return std::make_unique<MediaInternalsUI>(web_ui);
+    return nullptr;
+  }
   return nullptr;
 }
 

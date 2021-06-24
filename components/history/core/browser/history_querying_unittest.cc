@@ -4,16 +4,19 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/task_environment.h"
 #include "components/history/core/browser/history_database_params.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/test/test_history_database.h"
@@ -80,14 +83,15 @@ class HistoryQueryTest : public testing::Test {
   void QueryHistory(const std::string& text_query,
                     const QueryOptions& options,
                     QueryResults* results) {
-    history_->QueryHistory(base::UTF8ToUTF16(text_query),
-                           options,
-                           base::Bind(&HistoryQueryTest::QueryHistoryComplete,
-                                      base::Unretained(this)),
+    base::RunLoop loop;
+    history_->QueryHistory(base::UTF8ToUTF16(text_query), options,
+                           base::BindLambdaForTesting([&](QueryResults r) {
+                             *results = std::move(r);
+                             loop.Quit();
+                           }),
                            &tracker_);
     // Will go until ...Complete calls Quit.
-    base::RunLoop().Run();
-    results->Swap(&last_query_results_);
+    loop.Run();
   }
 
   // Test paging through results, with a fixed number of results per page.
@@ -124,7 +128,7 @@ class HistoryQueryTest : public testing::Test {
       options.end_time = results.back().visit_time();
     }
 
-    // Add a couple of entries with duplicate timestamps. Use |query_text| as
+    // Add a couple of entries with duplicate timestamps. Use `query_text` as
     // the title of both entries so that they match a text query.
     TestEntry duplicates[] = {
       { "http://www.google.com/x",  query_text.c_str(), 1, },
@@ -155,7 +159,7 @@ class HistoryQueryTest : public testing::Test {
 
     history_->AddPage(url, entry.time, context_id, nav_entry_id_++, GURL(),
                       history::RedirectList(), ui::PAGE_TRANSITION_LINK,
-                      history::SOURCE_BROWSED, false);
+                      history::SOURCE_BROWSED, false, false);
     history_->SetPageTitle(url, base::UTF8ToUTF16(entry.title));
   }
 
@@ -165,7 +169,7 @@ class HistoryQueryTest : public testing::Test {
     history_dir_ = temp_dir_.GetPath().AppendASCII("HistoryTest");
     ASSERT_TRUE(base::CreateDirectory(history_dir_));
 
-    history_.reset(new HistoryService);
+    history_ = std::make_unique<HistoryService>();
     if (!history_->Init(TestHistoryDatabaseParamsForPath(history_dir_))) {
       history_.reset();  // Tests should notice this NULL ptr & fail.
       return;
@@ -190,23 +194,13 @@ class HistoryQueryTest : public testing::Test {
     }
   }
 
-  void QueryHistoryComplete(QueryResults* results) {
-    results->Swap(&last_query_results_);
-    // Will return out to QueryHistory.
-    base::RunLoop::QuitCurrentWhenIdleDeprecated();
-  }
-
   base::ScopedTempDir temp_dir_;
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   base::FilePath history_dir_;
 
   base::CancelableTaskTracker tracker_;
-
-  // The QueryHistoryComplete callback will put the results here so QueryHistory
-  // can return them.
-  QueryResults last_query_results_;
 
   DISALLOW_COPY_AND_ASSIGN(HistoryQueryTest);
 };
@@ -272,7 +266,7 @@ TEST_F(HistoryQueryTest, ReachedBeginning) {
   QueryHistory("some", options, &results);
   EXPECT_FALSE(results.reached_beginning());
 
-  // Try |begin_time| just later than the oldest visit.
+  // Try `begin_time` just later than the oldest visit.
   options.begin_time =
       test_entries[0].time + base::TimeDelta::FromMicroseconds(1);
   QueryHistory(std::string(), options, &results);
@@ -280,14 +274,14 @@ TEST_F(HistoryQueryTest, ReachedBeginning) {
   QueryHistory("some", options, &results);
   EXPECT_FALSE(results.reached_beginning());
 
-  // Try |begin_time| equal to the oldest visit.
+  // Try `begin_time` equal to the oldest visit.
   options.begin_time = test_entries[0].time;
   QueryHistory(std::string(), options, &results);
   EXPECT_TRUE(results.reached_beginning());
   QueryHistory("some", options, &results);
   EXPECT_TRUE(results.reached_beginning());
 
-  // Try |begin_time| just earlier than the oldest visit.
+  // Try `begin_time` just earlier than the oldest visit.
   options.begin_time =
       test_entries[0].time - base::TimeDelta::FromMicroseconds(1);
   QueryHistory(std::string(), options, &results);
@@ -295,14 +289,14 @@ TEST_F(HistoryQueryTest, ReachedBeginning) {
   QueryHistory("some", options, &results);
   EXPECT_TRUE(results.reached_beginning());
 
-  // Test with |max_count| specified.
+  // Test with `max_count` specified.
   options.max_count = 1;
   QueryHistory(std::string(), options, &results);
   EXPECT_FALSE(results.reached_beginning());
   QueryHistory("some", options, &results);
   EXPECT_FALSE(results.reached_beginning());
 
-  // Test with |max_count| greater than the number of results,
+  // Test with `max_count` greater than the number of results,
   // and exactly equal to the number of results.
   options.max_count = 100;
   QueryHistory(std::string(), options, &results);

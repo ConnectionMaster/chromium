@@ -8,8 +8,8 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "content/public/browser/navigation_throttle.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace content {
 
@@ -33,17 +33,6 @@ class TestNavigationThrottle : public NavigationThrottle {
   enum ResultSynchrony {
     SYNCHRONOUS,
     ASYNCHRONOUS,
-  };
-
-  struct Status {
-    Status(ThrottleMethod method,
-           ResultSynchrony synchrony,
-           NavigationThrottle::ThrottleCheckResult result)
-        : method(method), synchrony(synchrony), result(result) {}
-
-    ThrottleMethod method;
-    ResultSynchrony synchrony;
-    NavigationThrottle::ThrottleCheckResult result;
   };
 
   TestNavigationThrottle(NavigationHandle* handle);
@@ -91,7 +80,7 @@ class TestNavigationThrottle : public NavigationThrottle {
   // get rid of the following classes:
   // - ResourceLoadingCancellingThrottle in
   //   ads_page_load_metrics_observer_unittest.cc
-  // - DeletingNavigationThrottle in navigation_handle_impl_unittest.cc
+  // - DeletingNavigationThrottle in navigation_request_unittest.cc
   void OnWillRespond();
 
  private:
@@ -111,7 +100,7 @@ class TestNavigationThrottle : public NavigationThrottle {
   };
   MethodProperties method_properties_[NUM_THROTTLE_METHODS];
 
-  base::WeakPtrFactory<TestNavigationThrottle> weak_ptr_factory_;
+  base::WeakPtrFactory<TestNavigationThrottle> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TestNavigationThrottle);
 };

@@ -17,23 +17,24 @@
 #include "base/memory/weak_ptr.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "components/viz/host/hit_test/hit_test_query.h"
-#include "components/viz/service/surfaces/surface_hittest_delegate.h"
+#include "components/viz/host/hit_test/hit_test_region_observer.h"
 #include "content/browser/renderer_host/event_with_latency_info.h"
 #include "content/browser/renderer_host/input/touch_emulator_client.h"
 #include "content/browser/renderer_host/render_widget_host_view_base_observer.h"
 #include "content/browser/renderer_host/render_widget_targeter.h"
 #include "content/common/content_export.h"
-#include "content/public/common/input_event_ack_state.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
 #include "ui/gfx/geometry/vector2d_conversions.h"
+#include "ui/gfx/mojom/delegated_ink_point_renderer.mojom.h"
 #include "ui/gfx/transform.h"
-
-struct FrameHostMsg_HittestData_Params;
 
 namespace blink {
 class WebGestureEvent;
 class WebInputEvent;
 class WebMouseEvent;
 class WebMouseWheelEvent;
+class WebPointerProperties;
 class WebTouchEvent;
 }
 
@@ -71,10 +72,11 @@ viz::HitTestQuery* GetHitTestQuery(
 // own. When an input event requires routing based on window coordinates,
 // this class requests a Surface hit test from the provided |root_view| and
 // forwards the event to the owning RWHV of the returned Surface ID.
-class CONTENT_EXPORT RenderWidgetHostInputEventRouter
+class CONTENT_EXPORT RenderWidgetHostInputEventRouter final
     : public RenderWidgetHostViewBaseObserver,
       public RenderWidgetTargeter::Delegate,
-      public TouchEmulatorClient {
+      public TouchEmulatorClient,
+      public viz::HitTestRegionObserver {
  public:
   RenderWidgetHostInputEventRouter();
   ~RenderWidgetHostInputEventRouter() final;
@@ -93,7 +95,7 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
                          const ui::LatencyInfo& latency);
   void OnHandledTouchStartOrFirstTouchMove(uint32_t unique_touch_event_id);
   void ProcessAckedTouchEvent(const TouchEventWithLatencyInfo& event,
-                              InputEventAckState ack_result,
+                              blink::mojom::InputEventResultState ack_result,
                               RenderWidgetHostViewBase* view);
   void RouteTouchEvent(RenderWidgetHostViewBase* root_view,
                        blink::WebTouchEvent *event,
@@ -118,8 +120,6 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
     return owner_map_.find(id) != owner_map_.end();
   }
 
-  void OnHittestData(const FrameHostMsg_HittestData_Params& params);
-
   TouchEmulator* GetTouchEmulator();
   // Since GetTouchEmulator will lazily create a touch emulator, the following
   // accessor allows testing for its existence without causing it to be created.
@@ -135,6 +135,17 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
       const gfx::PointF& point,
       gfx::PointF* transformed_point);
 
+  // Finds the RenderWidgetHostImpl inside the |root_view| at |point| where
+  // |point| is with respect to |root_view|'s coordinates. If a RWHI is found,
+  // it is passed along with the coordinate of the point with
+  // respect to the RWHI's coordinates to the callback function. If
+  // |root_view| is nullptr or RWHI is not found, the callback is called with
+  // nullptr and no location.
+  void GetRenderWidgetHostAtPointAsynchronously(
+      RenderWidgetHostViewBase* root_view,
+      const gfx::PointF& point,
+      RenderWidgetTargeter::RenderWidgetHostAtPointCallback callback);
+
   // RenderWidgetTargeter::Delegate:
   RenderWidgetHostViewBase* FindViewFromFrameSinkId(
       const viz::FrameSinkId& frame_sink_id) const override;
@@ -144,7 +155,6 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
   // Allows a target to claim or release capture of mouse events.
   void SetMouseCaptureTarget(RenderWidgetHostViewBase* target,
                              bool captures_dragging);
-  RenderWidgetHostImpl* GetMouseCaptureWidgetForTests() const;
 
   std::vector<RenderWidgetHostView*> GetRenderWidgetHostViewsForTests() const;
   RenderWidgetTargeter* GetRenderWidgetTargeterForTests();
@@ -164,7 +174,13 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
                                  RenderWidgetHostViewBase* target) override;
   void SetCursor(const WebCursor& cursor) override;
   void ShowContextMenuAtPoint(const gfx::Point& point,
-                              const ui::MenuSourceType source_type) override;
+                              const ui::MenuSourceType source_type,
+                              RenderWidgetHostViewBase* target) override;
+
+  // HitTestRegionObserver
+  void OnAggregatedHitTestRegionListUpdated(
+      const viz::FrameSinkId& frame_sink_id,
+      const std::vector<viz::AggregatedHitTestRegion>& hit_test_data) override;
 
   bool HasEventsPendingDispatch() const;
 
@@ -175,37 +191,22 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
     route_to_root_for_devtools_ = route;
   }
 
+  void SetAutoScrollInProgress(bool is_autoscroll_in_progress);
+
  private:
   FRIEND_TEST_ALL_PREFIXES(BrowserSideFlingBrowserTest,
                            InertialGSUBubblingStopsWhenParentCannotScroll);
-  struct HittestData {
-    bool ignored_for_hittest;
-  };
 
-  class HittestDelegate : public viz::SurfaceHittestDelegate {
-   public:
-    HittestDelegate(const std::unordered_map<viz::SurfaceId,
-                                             HittestData,
-                                             viz::SurfaceIdHash>& hittest_data);
-    bool RejectHitTarget(const viz::SurfaceDrawQuad* surface_quad,
-                         const gfx::Point& point_in_quad_space) override;
-    bool AcceptHitTarget(const viz::SurfaceDrawQuad* surface_quad,
-                         const gfx::Point& point_in_quad_space) override;
-
-    const std::unordered_map<viz::SurfaceId, HittestData, viz::SurfaceIdHash>&
-        hittest_data_;
-  };
-
-  using FrameSinkIdOwnerMap = std::unordered_map<viz::FrameSinkId,
-                                                 RenderWidgetHostViewBase*,
-                                                 viz::FrameSinkIdHash>;
-  using TargetMap = std::map<uint32_t, RenderWidgetHostViewBase*>;
+  using FrameSinkIdOwnerMap =
+      std::unordered_map<viz::FrameSinkId,
+                         base::WeakPtr<RenderWidgetHostViewBase>,
+                         viz::FrameSinkIdHash>;
+  using TargetMap = std::map<uint32_t, base::WeakPtr<RenderWidgetHostViewBase>>;
 
   void ClearAllObserverRegistrations();
   RenderWidgetTargetResult FindViewAtLocation(
       RenderWidgetHostViewBase* root_view,
       const gfx::PointF& point,
-      const gfx::PointF& point_in_screen,
       viz::EventSource source,
       gfx::PointF* transformed_point) const;
 
@@ -224,16 +225,23 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
       RenderWidgetHostViewBase* target,
       const blink::WebGestureEvent& touchpad_gesture_event,
       const ui::LatencyInfo& latency,
-      const base::Optional<gfx::PointF>& target_location);
+      const absl::optional<gfx::PointF>& target_location);
 
   // MouseMove/Enter/Leave events might need to be processed by multiple frames
   // in different processes for MouseEnter and MouseLeave event handlers to
   // properly fire. This method determines which RenderWidgetHostViews other
   // than the actual target require notification, and sends the appropriate
   // events to them. |event| should be in |root_view|'s coordinate space.
-  void SendMouseEnterOrLeaveEvents(const blink::WebMouseEvent& event,
-                                   RenderWidgetHostViewBase* target,
-                                   RenderWidgetHostViewBase* root_view);
+  // |include_target_view| indicates whether a MouseEnter should also be sent
+  // to |target|, which is typically not needed if this is invoked while a
+  // MouseMove already being sent there.
+  void SendMouseEnterOrLeaveEvents(
+      const blink::WebMouseEvent& event,
+      RenderWidgetHostViewBase* target,
+      RenderWidgetHostViewBase* root_view,
+      blink::WebInputEvent::Modifiers extra_modifiers =
+          blink::WebInputEvent::Modifiers::kNoModifiers,
+      bool include_target_view = false);
 
   void CancelScrollBubbling();
 
@@ -275,20 +283,20 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
                           RenderWidgetHostViewBase* target,
                           const blink::WebMouseEvent& mouse_event,
                           const ui::LatencyInfo& latency,
-                          const base::Optional<gfx::PointF>& target_location);
+                          const absl::optional<gfx::PointF>& target_location);
   // |mouse_wheel_event| is in the coord-space of |root_view|.
   void DispatchMouseWheelEvent(
       RenderWidgetHostViewBase* root_view,
       RenderWidgetHostViewBase* target,
       const blink::WebMouseWheelEvent& mouse_wheel_event,
       const ui::LatencyInfo& latency,
-      const base::Optional<gfx::PointF>& target_location);
+      const absl::optional<gfx::PointF>& target_location);
   // Assumes |touch_event| has coordinates in the root view's coordinate space.
   void DispatchTouchEvent(RenderWidgetHostViewBase* root_view,
                           RenderWidgetHostViewBase* target,
                           const blink::WebTouchEvent& touch_event,
                           const ui::LatencyInfo& latency,
-                          const base::Optional<gfx::PointF>& target_location,
+                          const absl::optional<gfx::PointF>& target_location,
                           bool is_emulated);
   // Assumes |gesture_event| has coordinates in root view's coordinate space.
   void DispatchTouchscreenGestureEvent(
@@ -296,31 +304,26 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
       RenderWidgetHostViewBase* target,
       const blink::WebGestureEvent& gesture_event,
       const ui::LatencyInfo& latency,
-      const base::Optional<gfx::PointF>& target_location);
-
-  // Transforms |point| from |root_view| coord space to |target| coord space.
-  // Result is stored in |transformed_point|. Returns true if the transform
-  // is successful, false otherwise.
-  bool TransformPointToTargetCoordSpace(RenderWidgetHostViewBase* root_view,
-                                        RenderWidgetHostViewBase* target,
-                                        const gfx::PointF& point,
-                                        gfx::PointF* transformed_point,
-                                        viz::EventSource source) const;
+      const absl::optional<gfx::PointF>& target_location);
 
   // TODO(828422): Remove once this issue no longer occurs.
   void ReportBubblingScrollToSameView(const blink::WebGestureEvent& event,
                                       const RenderWidgetHostViewBase* view);
 
   // RenderWidgetTargeter::Delegate:
+  RenderWidgetTargetResult FindTargetSynchronouslyAtPoint(
+      RenderWidgetHostViewBase* root_view,
+      const gfx::PointF& location) override;
+
   RenderWidgetTargetResult FindTargetSynchronously(
       RenderWidgetHostViewBase* root_view,
       const blink::WebInputEvent& event) override;
   void DispatchEventToTarget(
       RenderWidgetHostViewBase* root_view,
       RenderWidgetHostViewBase* target,
-      const blink::WebInputEvent& event,
+      blink::WebInputEvent* event,
       const ui::LatencyInfo& latency,
-      const base::Optional<gfx::PointF>& target_location) override;
+      const absl::optional<gfx::PointF>& target_location) override;
   // Notify whether the events in the queue are being flushed due to touch ack
   // timeout, or the flushing has completed.
   void SetEventsBeingFlushed(bool events_being_flushed) override;
@@ -329,13 +332,26 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
     return forced_last_fling_start_target_to_stop_flinging_for_test_;
   }
 
+  void SetTouchscreenGestureTarget(RenderWidgetHostViewBase* target,
+                                   bool moved_recently = false);
+
+  void ForwardDelegatedInkPoint(
+      RenderWidgetHostViewBase* target_view,
+      RenderWidgetHostViewBase* root_view,
+      const blink::WebInputEvent& input_event,
+      const blink::WebPointerProperties& pointer_properties,
+      bool hovering);
+
+  void FlushForTest() { delegated_ink_point_renderer_.FlushForTesting(); }
+  bool IsDelegatedInkRendererBoundForTest() {
+    return delegated_ink_point_renderer_.is_bound();
+  }
+
   FrameSinkIdOwnerMap owner_map_;
   TargetMap touchscreen_gesture_target_map_;
   RenderWidgetHostViewBase* touch_target_ = nullptr;
-  RenderWidgetHostViewBase* touchscreen_gesture_target_ = nullptr;
-  // The following variable is temporary, for diagnosis of
-  // https://crbug.com/824774.
-  bool touchscreen_gesture_target_in_map_;
+  base::WeakPtr<RenderWidgetHostViewBase> touchscreen_gesture_target_;
+  bool touchscreen_gesture_target_moved_recently_ = false;
   RenderWidgetHostViewBase* touchpad_gesture_target_ = nullptr;
   RenderWidgetHostViewBase* bubbling_gesture_scroll_target_ = nullptr;
   RenderWidgetHostViewChildFrame* bubbling_gesture_scroll_origin_ = nullptr;
@@ -410,20 +426,43 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
   };
   TouchscreenPinchState touchscreen_pinch_state_;
 
-  std::unordered_map<viz::SurfaceId, HittestData, viz::SurfaceIdHash>
-      hittest_data_;
-
   std::unique_ptr<RenderWidgetTargeter> event_targeter_;
-  bool use_viz_hit_test_ = false;
   bool events_being_flushed_ = false;
 
   std::unique_ptr<TouchEmulator> touch_emulator_;
   std::unique_ptr<TouchEventAckQueue> touch_event_ack_queue_;
 
-  base::WeakPtrFactory<RenderWidgetHostInputEventRouter> weak_ptr_factory_;
+  // The coordinates that are determined by the renderer process on MouseDown
+  // are cached then used by the browser process on the following MouseUp. This
+  // is a temporary fix of https://crbug.com/934434 to eliminate the mismatch
+  // between the two coordinate transforms.
+  mutable gfx::PointF mouse_down_pre_transformed_coordinate_;
+  mutable gfx::PointF mouse_down_post_transformed_coordinate_;
+  RenderWidgetHostViewBase* last_mouse_down_target_ = nullptr;
+
+  // Set to true when we first DwoC on an invalid RWHVB* in DispatchTouchEvent.
+  // Used to prevent multiple dumps.
+  bool has_dumped_ = false;
+
+  // Remote end of the connection for sending delegated ink points to viz to
+  // support the delegated ink trails feature.
+  mojo::Remote<gfx::mojom::DelegatedInkPointRenderer>
+      delegated_ink_point_renderer_;
+  // Used to know if we have already told viz to reset prediction because the
+  // final point of the delegated ink trail has been sent. True when prediction
+  // has already been reset for the most recent trail, false otherwise. This
+  // flag helps make sure that we don't send more IPCs than necessary to viz to
+  // reset prediction. Sending extra IPCs wouldn't impact correctness, but can
+  // impact performance due to the IPC overhead.
+  bool ended_delegated_ink_trail_ = false;
+
+  base::WeakPtrFactory<RenderWidgetHostInputEventRouter> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(RenderWidgetHostInputEventRouter);
   friend class RenderWidgetHostInputEventRouterTest;
+  FRIEND_TEST_ALL_PREFIXES(SitePerProcessHitTestBrowserTest,
+                           CacheCoordinateTransformUponMouseDown);
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessHitTestBrowserTest,
                            HitTestStaleDataDeletedView);
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessHitTestBrowserTest,
@@ -438,6 +477,8 @@ class CONTENT_EXPORT RenderWidgetHostInputEventRouter
                            InputEventRouterWheelTargetTest);
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessMacBrowserTest,
                            InputEventRouterTouchpadGestureTargetTest);
+  FRIEND_TEST_ALL_PREFIXES(SitePerProcessDelegatedInkBrowserTest,
+                           MetadataAndPointGoThroughOOPIF);
 };
 
 }  // namespace content

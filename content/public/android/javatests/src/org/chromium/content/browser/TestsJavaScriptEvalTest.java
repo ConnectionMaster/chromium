@@ -4,7 +4,7 @@
 
 package org.chromium.content.browser;
 
-import android.support.test.filters.LargeTest;
+import androidx.test.filters.LargeTest;
 
 import org.junit.Assert;
 import org.junit.Rule;
@@ -42,8 +42,7 @@ public class TestsJavaScriptEvalTest {
     @Test
     @LargeTest
     @Feature({"Browser"})
-    public void testJavaScriptEvalIsCorrectlyOrdered()
-            throws InterruptedException, Exception, Throwable {
+    public void testJavaScriptEvalIsCorrectlyOrdered() throws Exception, Throwable {
         mActivityTestRule.launchContentShellWithUrl(JSTEST_URL);
         mActivityTestRule.waitForActiveShellToBeDoneLoading();
 

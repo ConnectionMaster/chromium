@@ -8,13 +8,18 @@
 #include "base/component_export.h"
 #include "base/macros.h"
 #include "base/observer_list_types.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/rect.h"
+
+namespace chromeos {
+namespace assistant {
+enum class AssistantEntryPoint;
+enum class AssistantExitPoint;
+}  // namespace assistant
+}  // namespace chromeos
 
 namespace ash {
 
-enum class AssistantEntryPoint;
-enum class AssistantExitPoint;
 enum class AssistantUiMode;
 enum class AssistantVisibility;
 
@@ -23,8 +28,13 @@ enum class AssistantVisibility;
 class COMPONENT_EXPORT(ASSISTANT_MODEL) AssistantUiModelObserver
     : public base::CheckedObserver {
  public:
-  // Invoked when the UI mode is changed.
-  virtual void OnUiModeChanged(AssistantUiMode ui_mode) {}
+  using AssistantEntryPoint = chromeos::assistant::AssistantEntryPoint;
+  using AssistantExitPoint = chromeos::assistant::AssistantExitPoint;
+
+  // Invoked when the UI mode is changed. If |due_to_interaction| is true, the
+  // UI mode was changed as a result of an Assistant interaction.
+  virtual void OnUiModeChanged(AssistantUiMode ui_mode,
+                               bool due_to_interaction) {}
 
   // Invoked when the UI visibility is changed from |old_visibility| to
   // |new_visibility|. The |source| of the visibility change event is provided
@@ -32,8 +42,8 @@ class COMPONENT_EXPORT(ASSISTANT_MODEL) AssistantUiModelObserver
   virtual void OnUiVisibilityChanged(
       AssistantVisibility new_visibility,
       AssistantVisibility old_visibility,
-      base::Optional<AssistantEntryPoint> entry_point,
-      base::Optional<AssistantExitPoint> exit_point) {}
+      absl::optional<AssistantEntryPoint> entry_point,
+      absl::optional<AssistantExitPoint> exit_point) {}
 
   // Invoked when the usable display work area is changed. Observers should
   // respond to this event by ensuring they are sized/positioned within the

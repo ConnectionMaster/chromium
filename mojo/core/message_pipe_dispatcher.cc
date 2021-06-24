@@ -10,6 +10,7 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/trace_event/trace_event.h"
 #include "mojo/core/core.h"
 #include "mojo/core/node_controller.h"
 #include "mojo/core/ports/event.h"
@@ -37,23 +38,23 @@ static_assert(sizeof(SerializedState) % 8 == 0,
 
 }  // namespace
 
-// A SlotObserver which forwards to a MessagePipeDispatcher. This owns a
+// A PortObserver which forwards to a MessagePipeDispatcher. This owns a
 // reference to the MPD to ensure it lives as long as the observed port.
-class MessagePipeDispatcher::SlotObserverThunk
-    : public NodeController::SlotObserver {
+class MessagePipeDispatcher::PortObserverThunk
+    : public NodeController::PortObserver {
  public:
-  explicit SlotObserverThunk(scoped_refptr<MessagePipeDispatcher> dispatcher)
+  explicit PortObserverThunk(scoped_refptr<MessagePipeDispatcher> dispatcher)
       : dispatcher_(dispatcher) {}
 
  private:
-  ~SlotObserverThunk() override {}
+  ~PortObserverThunk() override = default;
 
-  // NodeController::SlotObserver:
-  void OnSlotStatusChanged() override { dispatcher_->OnSlotStatusChanged(); }
+  // NodeController::PortObserver:
+  void OnPortStatusChanged() override { dispatcher_->OnPortStatusChanged(); }
 
   scoped_refptr<MessagePipeDispatcher> dispatcher_;
 
-  DISALLOW_COPY_AND_ASSIGN(SlotObserverThunk);
+  DISALLOW_COPY_AND_ASSIGN(PortObserverThunk);
 };
 
 #if DCHECK_IS_ON()
@@ -62,8 +63,8 @@ class MessagePipeDispatcher::SlotObserverThunk
 // the next available message on a port, for debug logging only.
 class PeekSizeMessageFilter : public ports::MessageFilter {
  public:
-  PeekSizeMessageFilter() {}
-  ~PeekSizeMessageFilter() override {}
+  PeekSizeMessageFilter() = default;
+  ~PeekSizeMessageFilter() override = default;
 
   // ports::MessageFilter:
   bool Match(const ports::UserMessageEvent& message_event) override {
@@ -87,54 +88,40 @@ MessagePipeDispatcher::MessagePipeDispatcher(NodeController* node_controller,
                                              const ports::PortRef& port,
                                              uint64_t pipe_id,
                                              int endpoint)
-    : MessagePipeDispatcher(node_controller,
-                            ports::SlotRef(port, ports::kDefaultSlotId),
-                            pipe_id,
-                            endpoint) {}
-
-MessagePipeDispatcher::MessagePipeDispatcher(NodeController* node_controller,
-                                             const ports::SlotRef& slot,
-                                             uint64_t pipe_id,
-                                             int endpoint)
     : node_controller_(node_controller),
+      port_(port),
       pipe_id_(pipe_id),
       endpoint_(endpoint),
-      slot_(slot),
       watchers_(this) {
-  DVLOG(2) << "Creating new MessagePipeDispatcher for slot "
-           << slot.port().name() << "/" << slot.slot_id()
+  DVLOG(2) << "Creating new MessagePipeDispatcher for port " << port.name()
            << " [pipe_id=" << pipe_id << "; endpoint=" << endpoint << "]";
 
-  node_controller_->SetSlotObserver(
-      slot_, base::MakeRefCounted<SlotObserverThunk>(this));
+  node_controller_->SetPortObserver(
+      port_, base::MakeRefCounted<PortObserverThunk>(this));
 }
 
 bool MessagePipeDispatcher::Fuse(MessagePipeDispatcher* other) {
-  ports::SlotRef slot0;
+  node_controller_->SetPortObserver(port_, nullptr);
+  node_controller_->SetPortObserver(other->port_, nullptr);
+
+  ports::PortRef port0;
   {
     base::AutoLock lock(signal_lock_);
-    node_controller_->SetSlotObserver(slot_, nullptr);
-    slot0 = slot_;
+    port0 = port_;
     port_closed_.Set(true);
     watchers_.NotifyClosed();
   }
 
-  ports::SlotRef slot1;
+  ports::PortRef port1;
   {
     base::AutoLock lock(other->signal_lock_);
-    node_controller_->SetSlotObserver(other->slot_, nullptr);
-    slot1 = other->slot_;
+    port1 = other->port_;
     other->port_closed_.Set(true);
     other->watchers_.NotifyClosed();
   }
 
-  if (slot0.slot_id() != ports::kDefaultSlotId ||
-      slot1.slot_id() != ports::kDefaultSlotId) {
-    return false;
-  }
-
   // Both ports are always closed by this call.
-  int rv = node_controller_->MergeLocalPorts(slot0.port(), slot1.port());
+  int rv = node_controller_->MergeLocalPorts(port0, port1);
   return rv == ports::OK;
 }
 
@@ -145,7 +132,7 @@ Dispatcher::Type MessagePipeDispatcher::GetType() const {
 MojoResult MessagePipeDispatcher::Close() {
   base::AutoLock lock(signal_lock_);
   DVLOG(2) << "Closing message pipe " << pipe_id_ << " endpoint " << endpoint_
-           << " [port=" << slot_.port().name() << "]";
+           << " [port=" << port_.name() << "]";
   return CloseNoLock();
 }
 
@@ -154,18 +141,10 @@ MojoResult MessagePipeDispatcher::WriteMessage(
   if (port_closed_ || in_transit_)
     return MOJO_RESULT_INVALID_ARGUMENT;
 
-  ports::SlotRef slot;
-  {
-    base::AutoLock lock(signal_lock_);
-    slot = slot_;
-  }
+  int rv = node_controller_->SendUserMessage(port_, std::move(message));
 
-  auto* user_message_impl = message->GetMessage<UserMessageImpl>();
-  user_message_impl->PrepareSplicedHandles(slot.port());
-  int rv = node_controller_->SendUserMessage(slot, std::move(message));
   DVLOG(4) << "Sent message on pipe " << pipe_id_ << " endpoint " << endpoint_
-           << " [port=" << slot.port().name() << "/" << slot.slot_id()
-           << "; rv=" << rv << "]";
+           << " [port=" << port_.name() << "; rv=" << rv << "]";
 
   if (rv != ports::OK) {
     if (rv == ports::ERROR_PORT_UNKNOWN ||
@@ -180,6 +159,10 @@ MojoResult MessagePipeDispatcher::WriteMessage(
     return MOJO_RESULT_UNKNOWN;
   }
 
+  // We may need to update anyone watching our signals in case we just exceeded
+  // the unread message count quota.
+  base::AutoLock lock(signal_lock_);
+  watchers_.NotifyState(GetHandleSignalsStateNoLock());
   return MOJO_RESULT_OK;
 }
 
@@ -189,13 +172,7 @@ MojoResult MessagePipeDispatcher::ReadMessage(
   if (port_closed_ || in_transit_)
     return MOJO_RESULT_INVALID_ARGUMENT;
 
-  ports::SlotRef slot;
-  {
-    base::AutoLock lock(signal_lock_);
-    slot = slot_;
-  }
-
-  int rv = node_controller_->node()->GetMessage(slot, message, nullptr);
+  int rv = node_controller_->node()->GetMessage(port_, message, nullptr);
   if (rv != ports::OK && rv != ports::ERROR_PORT_PEER_CLOSED) {
     if (rv == ports::ERROR_PORT_UNKNOWN ||
         rv == ports::ERROR_PORT_STATE_UNEXPECTED)
@@ -222,23 +199,51 @@ MojoResult MessagePipeDispatcher::ReadMessage(
 }
 
 MojoResult MessagePipeDispatcher::SetQuota(MojoQuotaType type, uint64_t limit) {
-  switch (type) {
-    case MOJO_QUOTA_TYPE_RECEIVE_QUEUE_LENGTH:
-      if (limit == MOJO_QUOTA_LIMIT_NONE)
-        receive_queue_length_limit_.reset();
-      else
-        receive_queue_length_limit_ = limit;
-      break;
+  absl::optional<uint64_t> new_ack_request_interval;
+  {
+    base::AutoLock lock(signal_lock_);
+    switch (type) {
+      case MOJO_QUOTA_TYPE_RECEIVE_QUEUE_LENGTH:
+        if (limit == MOJO_QUOTA_LIMIT_NONE)
+          receive_queue_length_limit_.reset();
+        else
+          receive_queue_length_limit_ = limit;
+        break;
 
-    case MOJO_QUOTA_TYPE_RECEIVE_QUEUE_MEMORY_SIZE:
-      if (limit == MOJO_QUOTA_LIMIT_NONE)
-        receive_queue_memory_size_limit_.reset();
-      else
-        receive_queue_memory_size_limit_ = limit;
-      break;
+      case MOJO_QUOTA_TYPE_RECEIVE_QUEUE_MEMORY_SIZE:
+        if (limit == MOJO_QUOTA_LIMIT_NONE)
+          receive_queue_memory_size_limit_.reset();
+        else
+          receive_queue_memory_size_limit_ = limit;
+        break;
 
-    default:
-      return MOJO_RESULT_INVALID_ARGUMENT;
+      case MOJO_QUOTA_TYPE_UNREAD_MESSAGE_COUNT:
+        if (limit == MOJO_QUOTA_LIMIT_NONE) {
+          unread_message_count_limit_.reset();
+          new_ack_request_interval = 0;
+        } else {
+          unread_message_count_limit_ = limit;
+          // Setting the acknowledge request interval for the port to half the
+          // unread quota limit, means the ack roundtrip has half the window to
+          // catch up with sent messages. In other words, if the producer is
+          // producing messages at a steady rate of limit/2 packets per message
+          // round trip or lower, the quota limit won't be exceeded. This is
+          // assuming the consumer is consuming messages at the same rate.
+          new_ack_request_interval = (limit + 1) / 2;
+        }
+        break;
+
+      default:
+        return MOJO_RESULT_INVALID_ARGUMENT;
+    }
+  }
+
+  if (new_ack_request_interval.has_value()) {
+    // NOTE: It is not safe to call into SetAcknowledgeRequestInterval while
+    // holding a `signal_lock_`, as it may re-enter this object when the peer is
+    // in the same process.
+    node_controller_->node()->SetAcknowledgeRequestInterval(
+        port_, *new_ack_request_interval);
   }
 
   return MOJO_RESULT_OK;
@@ -248,8 +253,9 @@ MojoResult MessagePipeDispatcher::QueryQuota(MojoQuotaType type,
                                              uint64_t* limit,
                                              uint64_t* usage) {
   base::AutoLock lock(signal_lock_);
+
   ports::PortStatus port_status;
-  if (node_controller_->node()->GetStatus(slot_, &port_status) != ports::OK) {
+  if (node_controller_->node()->GetStatus(port_, &port_status) != ports::OK) {
     CHECK(in_transit_ || port_transferred_ || port_closed_);
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
@@ -263,6 +269,11 @@ MojoResult MessagePipeDispatcher::QueryQuota(MojoQuotaType type,
     case MOJO_QUOTA_TYPE_RECEIVE_QUEUE_MEMORY_SIZE:
       *limit = receive_queue_memory_size_limit_.value_or(MOJO_QUOTA_LIMIT_NONE);
       *usage = port_status.queued_num_bytes;
+      break;
+
+    case MOJO_QUOTA_TYPE_UNREAD_MESSAGE_COUNT:
+      *limit = unread_message_count_limit_.value_or(MOJO_QUOTA_LIMIT_NONE);
+      *usage = port_status.unacknowledged_message_count;
       break;
 
     default:
@@ -302,20 +313,14 @@ void MessagePipeDispatcher::StartSerialize(uint32_t* num_bytes,
   *num_handles = 0;
 }
 
-bool MessagePipeDispatcher::EndSerialize(
-    void* destination,
-    ports::UserMessageEvent::PortAttachment* ports,
-    PlatformHandle* handles) {
-  base::AutoLock lock(signal_lock_);
-  if (slot_.slot_id() != ports::kDefaultSlotId)
-    return false;
-
+bool MessagePipeDispatcher::EndSerialize(void* destination,
+                                         ports::PortName* ports,
+                                         PlatformHandle* handles) {
   SerializedState* state = static_cast<SerializedState*>(destination);
   state->pipe_id = pipe_id_;
   state->endpoint = static_cast<int8_t>(endpoint_);
   memset(state->padding, 0, sizeof(state->padding));
-  ports[0].name = slot_.port().name();
-  ports[0].slot_id = ports::kDefaultSlotId;
+  ports[0] = port_.name();
   return true;
 }
 
@@ -328,8 +333,9 @@ bool MessagePipeDispatcher::BeginTransit() {
 }
 
 void MessagePipeDispatcher::CompleteTransitAndClose() {
+  node_controller_->SetPortObserver(port_, nullptr);
+
   base::AutoLock lock(signal_lock_);
-  node_controller_->SetSlotObserver(slot_, nullptr);
   port_transferred_ = true;
   in_transit_.Set(false);
   CloseNoLock();
@@ -347,7 +353,7 @@ void MessagePipeDispatcher::CancelTransit() {
 scoped_refptr<Dispatcher> MessagePipeDispatcher::Deserialize(
     const void* data,
     size_t num_bytes,
-    const ports::UserMessageEvent::PortAttachment* ports,
+    const ports::PortName* ports,
     size_t num_ports,
     PlatformHandle* handles,
     size_t num_handles) {
@@ -358,36 +364,15 @@ scoped_refptr<Dispatcher> MessagePipeDispatcher::Deserialize(
 
   ports::Node* node = Core::Get()->GetNodeController()->node();
   ports::PortRef port;
-  if (node->GetPort(ports[0].name, &port))
+  if (node->GetPort(ports[0], &port) != ports::OK)
     return nullptr;
 
-  ports::SlotRef slot(port, ports[0].slot_id.value_or(ports::kDefaultSlotId));
-  ports::SlotStatus status;
-  if (node->GetStatus(slot, &status) != ports::OK)
+  ports::PortStatus status;
+  if (node->GetStatus(port, &status) != ports::OK)
     return nullptr;
 
-  return new MessagePipeDispatcher(Core::Get()->GetNodeController(), slot,
+  return new MessagePipeDispatcher(Core::Get()->GetNodeController(), port,
                                    state->pipe_id, state->endpoint);
-}
-
-scoped_refptr<MessagePipeDispatcher> MessagePipeDispatcher::GetLocalPeer() {
-  base::AutoLock lock(signal_lock_);
-  return local_peer_;
-}
-
-void MessagePipeDispatcher::SetLocalPeer(
-    scoped_refptr<MessagePipeDispatcher> peer) {
-  base::AutoLock lock(signal_lock_);
-  local_peer_ = std::move(peer);
-}
-
-void MessagePipeDispatcher::BindToSlot(const ports::SlotRef& slot_ref) {
-  base::AutoLock lock(signal_lock_);
-  node_controller_->SetSlotObserver(slot_, nullptr);
-  slot_ = slot_ref;
-  watchers_.NotifyState(GetHandleSignalsStateNoLock());
-  node_controller_->SetSlotObserver(
-      slot_, base::MakeRefCounted<SlotObserverThunk>(this));
 }
 
 MessagePipeDispatcher::~MessagePipeDispatcher() = default;
@@ -401,9 +386,11 @@ MojoResult MessagePipeDispatcher::CloseNoLock() {
   watchers_.NotifyClosed();
 
   if (!port_transferred_) {
-    ports::SlotRef slot = slot_;
     base::AutoUnlock unlock(signal_lock_);
-    node_controller_->ClosePortSlot(slot);
+    node_controller_->ClosePort(port_);
+
+    TRACE_EVENT_WITH_FLOW0("toplevel.flow", "MessagePipe closing",
+                           pipe_id_ + endpoint_, TRACE_EVENT_FLAG_FLOW_OUT);
   }
 
   return MOJO_RESULT_OK;
@@ -413,7 +400,7 @@ HandleSignalsState MessagePipeDispatcher::GetHandleSignalsStateNoLock() const {
   HandleSignalsState rv;
 
   ports::PortStatus port_status;
-  if (node_controller_->node()->GetStatus(slot_, &port_status) != ports::OK) {
+  if (node_controller_->node()->GetStatus(port_, &port_status) != ports::OK) {
     CHECK(in_transit_ || port_transferred_ || port_closed_);
     return HandleSignalsState();
   }
@@ -440,13 +427,29 @@ HandleSignalsState MessagePipeDispatcher::GetHandleSignalsStateNoLock() const {
   } else if (receive_queue_memory_size_limit_ &&
              port_status.queued_num_bytes > *receive_queue_memory_size_limit_) {
     rv.satisfied_signals |= MOJO_HANDLE_SIGNAL_QUOTA_EXCEEDED;
+  } else if (unread_message_count_limit_ &&
+             port_status.unacknowledged_message_count >
+                 *unread_message_count_limit_) {
+    rv.satisfied_signals |= MOJO_HANDLE_SIGNAL_QUOTA_EXCEEDED;
   }
   rv.satisfiable_signals |=
       MOJO_HANDLE_SIGNAL_PEER_CLOSED | MOJO_HANDLE_SIGNAL_QUOTA_EXCEEDED;
+
+  const bool was_peer_closed =
+      last_known_satisfied_signals_ & MOJO_HANDLE_SIGNAL_PEER_CLOSED;
+  const bool is_peer_closed =
+      rv.satisfied_signals & MOJO_HANDLE_SIGNAL_PEER_CLOSED;
+  last_known_satisfied_signals_ = rv.satisfied_signals;
+  if (is_peer_closed && !was_peer_closed) {
+    TRACE_EVENT_WITH_FLOW0("toplevel.flow", "MessagePipe peer closed",
+                           pipe_id_ + (1 - endpoint_),
+                           TRACE_EVENT_FLAG_FLOW_IN);
+  }
+
   return rv;
 }
 
-void MessagePipeDispatcher::OnSlotStatusChanged() {
+void MessagePipeDispatcher::OnPortStatusChanged() {
   DCHECK(RequestContext::current());
 
   base::AutoLock lock(signal_lock_);
@@ -459,20 +462,18 @@ void MessagePipeDispatcher::OnSlotStatusChanged() {
 
 #if DCHECK_IS_ON()
   ports::PortStatus port_status;
-  if (node_controller_->node()->GetStatus(slot_, &port_status) == ports::OK) {
+  if (node_controller_->node()->GetStatus(port_, &port_status) == ports::OK) {
     if (port_status.has_messages) {
       std::unique_ptr<ports::UserMessageEvent> unused;
       PeekSizeMessageFilter filter;
-      node_controller_->node()->GetMessage(slot_, &unused, &filter);
+      node_controller_->node()->GetMessage(port_, &unused, &filter);
       DVLOG(4) << "New message detected on message pipe " << pipe_id_
-               << " endpoint " << endpoint_ << " [slot=" << slot_.port().name()
-               << "/" << slot_.slot_id() << "; size=" << filter.message_size()
-               << "]";
+               << " endpoint " << endpoint_ << " [port=" << port_.name()
+               << "; size=" << filter.message_size() << "]";
     }
     if (port_status.peer_closed) {
       DVLOG(2) << "Peer closure detected on message pipe " << pipe_id_
-               << " endpoint " << endpoint_ << " [slot=" << slot_.port().name()
-               << "/" << slot_.slot_id() << "]";
+               << " endpoint " << endpoint_ << " [port=" << port_.name() << "]";
     }
   }
 #endif

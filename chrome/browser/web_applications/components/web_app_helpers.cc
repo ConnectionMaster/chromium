@@ -7,9 +7,14 @@
 #include "base/base64.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/web_applications/components/app_registrar.h"
+#include "chrome/browser/web_applications/components/web_app_provider_base.h"
 #include "components/crx_file/id_util.h"
 #include "crypto/sha2.h"
+#include "extensions/common/constants.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace web_app {
 
@@ -23,9 +28,6 @@ namespace {
 // are no naming conflicts.
 const char kCrxAppPrefix[] = "_crx_";
 
-const char kFocusModePrefix[] = "_focus_";
-int64_t focus_mode_counter = 0;
-
 }  // namespace
 
 std::string GenerateApplicationNameFromURL(const GURL& url) {
@@ -36,12 +38,6 @@ std::string GenerateApplicationNameFromAppId(const AppId& app_id) {
   std::string t(kCrxAppPrefix);
   t.append(app_id);
   return t;
-}
-
-// TODO(crbug.com/943194): Move this method to Focus Mode specific file.
-// TODO(crbug.com/943653): Use site's manifest scope as window grouping key.
-std::string GenerateApplicationNameForFocusMode() {
-  return kFocusModePrefix + base::NumberToString(focus_mode_counter++);
 }
 
 AppId GetAppIdFromApplicationName(const std::string& app_name) {
@@ -57,6 +53,34 @@ static std::string GenerateAppHashFromURL(const GURL& url) {
 
 AppId GenerateAppIdFromURL(const GURL& url) {
   return crx_file::id_util::GenerateId(GenerateAppHashFromURL(url));
+}
+
+std::string GenerateAppIdUnhashed(
+    const absl::optional<std::string>& manifest_id,
+    const GURL& start_url) {
+  // When manifest_id is specified, the app id is generated from
+  // <start_url_origin>/<manifest_id>.
+  // Note: start_url.GetOrigin().spec() returns the origin ending with slash.
+  if (manifest_id.has_value()) {
+    GURL app_id(start_url.GetOrigin().spec() + manifest_id.value());
+    DCHECK(app_id.is_valid());
+    return app_id.spec();
+  }
+  return start_url.spec();
+}
+
+AppId GenerateAppId(const absl::optional<std::string>& manifest_id,
+                    const GURL& start_url) {
+  return crx_file::id_util::GenerateId(
+      crypto::SHA256HashString(GenerateAppIdUnhashed(manifest_id, start_url)));
+}
+
+AppId GenerateAppIdFromManifest(const blink::Manifest& manifest) {
+  return GenerateAppId(
+      manifest.id.has_value()
+          ? absl::optional<std::string>(base::UTF16ToUTF8(manifest.id.value()))
+          : absl::nullopt,
+      manifest.start_url);
 }
 
 // Generate the public key for the fake extension that we synthesize to contain
@@ -79,8 +103,25 @@ std::string GenerateAppKeyFromURL(const GURL& url) {
 bool IsValidWebAppUrl(const GURL& app_url) {
   if (app_url.is_empty() || app_url.inner_url())
     return false;
+  // kExtensionScheme is defined in extensions/common:common_constants. It's ok
+  // to depend on it.
+  return app_url.SchemeIs(url::kHttpScheme) ||
+         app_url.SchemeIs(url::kHttpsScheme) ||
+         app_url.SchemeIs(extensions::kExtensionScheme);
+}
 
-  return app_url.SchemeIsHTTPOrHTTPS();
+bool IsValidExtensionUrl(const GURL& app_url) {
+  return !app_url.is_empty() && !app_url.inner_url() &&
+         app_url.SchemeIs(extensions::kExtensionScheme);
+}
+
+absl::optional<AppId> FindInstalledAppWithUrlInScope(Profile* profile,
+                                                     const GURL& url,
+                                                     bool window_only) {
+  auto* provider = WebAppProviderBase::GetProviderBase(profile);
+  return provider ? provider->registrar().FindInstalledAppWithUrlInScope(
+                        url, window_only)
+                  : absl::nullopt;
 }
 
 }  // namespace web_app

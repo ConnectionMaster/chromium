@@ -10,7 +10,6 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/callback_forward.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/test/simple_test_clock.h"
@@ -34,8 +33,7 @@ extern const int kPrefetchStoreCommandFailed;
 // store, for test writing convenience.
 class PrefetchStoreTestUtil {
  public:
-  explicit PrefetchStoreTestUtil(
-      scoped_refptr<base::TestMockTimeTaskRunner> task_runner);
+  PrefetchStoreTestUtil();
   ~PrefetchStoreTestUtil();
 
   // Builds a new store in a temporary directory.
@@ -88,9 +86,6 @@ class PrefetchStoreTestUtil {
   base::SimpleTestClock* clock() { return &clock_; }
 
  private:
-  void RunUntilIdle();
-
-  scoped_refptr<base::TestMockTimeTaskRunner> task_runner_;
   base::ScopedTempDir temp_directory_;
   // TODO(jianli): Refactor this class to avoid owning the store.
   std::unique_ptr<PrefetchStore> owned_store_;

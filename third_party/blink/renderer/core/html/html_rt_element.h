@@ -13,8 +13,6 @@ namespace blink {
 // so HTMLElement's createLayoutObject doesn't need to know about it.
 class HTMLRTElement final : public HTMLElement {
  public:
-  DECLARE_NODE_FACTORY(HTMLRTElement);
-
   explicit HTMLRTElement(Document&);
 
  private:
@@ -23,4 +21,4 @@ class HTMLRTElement final : public HTMLElement {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_RT_ELEMENT_H_

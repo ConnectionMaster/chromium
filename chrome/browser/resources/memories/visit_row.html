@@ -1,0 +1,101 @@
+<style include="shared-style">
+  :host {
+    display: block;
+    padding: 4px 0;
+    position: relative;
+  }
+
+  #header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  #start-justified {
+    align-items: center;
+    color: inherit;
+    display: flex;
+    min-width: 0;
+    text-decoration: none;
+  }
+
+  #end-justified {
+    align-items: center;
+    display: flex;
+    flex-shrink: 0;
+    margin-inline-start: 8px;
+  }
+
+  :host(:not([is-top-visit])) #end-justified {
+    opacity: 0; /* Hides the element while keeping it in tab order. */
+  }
+
+  :host(:not([is-top-visit]):-webkit-any(:focus-within, :hover)) #end-justified {
+    opacity: 1;
+  }
+
+  page-favicon {
+    --favicon-size: 36px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    height: var(--favicon-size);
+    margin-inline-end: 16px;
+    width: var(--favicon-size);
+  }
+
+  :host([is-top-visit]) page-favicon {
+    box-shadow: 0 4px 46px rgba(28, 28, 31, 0.12);
+  }
+
+  #page-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  #title,
+  #hostname {
+    line-height: 20px;
+  }
+
+  :host([is-top-visit]) #title {
+    font-size: 1rem;  /* 16px */
+  }
+
+  #hostname {
+    color: var(--google-blue-600);
+  }
+
+  #timestamp {
+    color: var(--cr-secondary-text-color);
+    flex-shrink: 0;
+  }
+</style>
+<div id="header">
+  <a id="start-justified" href="[[visit.normalizedUrl.url]]">
+    <page-favicon url="[[visit.normalizedUrl]]"></page-favicon>
+    <div id="page-info">
+      <span id="title" class="truncate">[[visit.pageTitle]]</span>
+      <span id="hostname" class="truncate" hidden="[[isSearchResultsPage_]]">
+        [[getHostnameFromUrl_(visit.normalizedUrl)]]
+      </span>
+    </div>
+    <div id="page-annotations"></div>
+  </a>
+  <div id="end-justified">
+    <div id="timestamp" hidden="[[!isTopVisit]]">[[visit.relativeDate]]</div>
+    <cr-icon-button id="actionMenuButton" class="icon-more-vert"
+        on-click="onActionMenuButtonClick_">
+    </cr-icon-button>
+  </div>
+</div>
+
+<cr-lazy-render id="actionMenu">
+  <template>
+    <cr-action-menu role-description="$i18n{actionMenuDescription}">
+      <button id="removeButton" on-click="onRemoveButtonClick_">
+        [[removeButtonTitle_]]
+      </button>
+    </cr-action-menu>
+  </template>
+</cr-lazy-render>

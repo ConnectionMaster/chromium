@@ -4,16 +4,16 @@
 
 (async function() {
   TestRunner.addResult(`Tests ServiceWorkersView on resources panel.\n`);
-  await TestRunner.loadModule('application_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('application_test_runner');
     // Note: every test that uses a storage API must manually clean-up state from previous tests.
   await ApplicationTestRunner.resetState();
 
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('resources');
 
   var scriptURL = 'http://127.0.0.1:8000/devtools/service-workers/resources/service-worker-empty.js';
-  var scope1 = 'http://127.0.0.1:8000/devtools/service-workers/resources/scope1/';
-  var scope2 = 'http://127.0.0.1:8000/devtools/service-workers/resources/scope2/';
+  var scope1 = 'http://127.0.0.1:8000/devtools/service-workers/resources/scope1/'; // with trailing '/'
+  var scope2 = 'http://127.0.0.1:8000/devtools/service-workers/resources/scope2';  // without trailing '/'
   var step = 0;
   Resources.ServiceWorkersView._noThrottle = true;
 

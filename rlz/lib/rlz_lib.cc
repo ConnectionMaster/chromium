@@ -9,12 +9,13 @@
 
 #include <algorithm>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/syslog_logging.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "net/base/backoff_entry.h"
 #include "rlz/lib/assert.h"
 #include "rlz/lib/financial_ping.h"
@@ -23,6 +24,10 @@
 #include "rlz/lib/rlz_value_store.h"
 #include "rlz/lib/string_utils.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+
+#if defined(OS_WIN)
+#include "rlz/lib/machine_deal_win.h"
+#endif
 
 namespace {
 
@@ -437,13 +442,15 @@ bool SendFinancialPing(Product product,
   FinancialPing::UpdateLastPingTime(product);
   std::string response;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   const net::BackoffEntry::Policy policy = {
       0,  // Number of initial errors to ignore.
-      base::TimeDelta::FromSeconds(5).InMilliseconds(),  // Initial delay.
+      static_cast<int>(
+          base::TimeDelta::FromSeconds(5).InMilliseconds()),  // Initial delay.
       2,    // Factor to increase delay.
       0.1,  // Delay fuzzing.
-      base::TimeDelta::FromMinutes(5).InMilliseconds(),  // Maximum delay.
+      static_cast<int>(
+          base::TimeDelta::FromMinutes(5).InMilliseconds()),  // Maximum delay.
       -1,  // Time to keep entries.  -1 == never discard.
   };
   net::BackoffEntry backoff(&policy);

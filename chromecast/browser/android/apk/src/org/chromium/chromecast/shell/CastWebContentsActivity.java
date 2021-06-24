@@ -5,6 +5,7 @@
 package org.chromium.chromecast.shell;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Color;
@@ -12,23 +13,23 @@ import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
-import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.Toast;
+
+import androidx.annotation.Nullable;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import org.chromium.base.Log;
-import org.chromium.base.annotations.RemovableInRelease;
 import org.chromium.chromecast.base.Both;
 import org.chromium.chromecast.base.CastSwitches;
 import org.chromium.chromecast.base.Controller;
 import org.chromium.chromecast.base.Observable;
 import org.chromium.chromecast.base.Observers;
 import org.chromium.chromecast.base.Unit;
+import org.chromium.content_public.browser.WebContents;
 
 /**
  * Activity for displaying a WebContents in CastShell.
@@ -40,8 +41,36 @@ import org.chromium.chromecast.base.Unit;
  * activity is destroyed, CastContentWindowAndroid should be notified by intent.
  */
 public class CastWebContentsActivity extends Activity {
-    private static final String TAG = "cr_CastWebActivity";
+    private static final String TAG = "CastWebActivity";
     private static final boolean DEBUG = true;
+
+    // JavaScript to execute on WebContents when the back key is pressed.
+    // This will return a value that indicates whether or not the default
+    // Android behavior for the back key should be disabled or not.
+    private static final String BACK_PRESSED_JAVASCRIPT = "{"
+            + "  let getActiveElement = function() {"
+            + "    let activeElement = document.activeElement;"
+            + "    while (activeElement && activeElement.shadowRoot && activeElement.shadowRoot.activeElement) {"
+            + "      activeElement = activeElement.shadowRoot.activeElement;"
+            + "    }"
+            + "    return activeElement;"
+            + "  };"
+            + "  let backPressEvent = new KeyboardEvent("
+            + "     \"keydown\", {"
+            + "      bubbles: true,"
+            + "      key: \"BrowserBack\","
+            + "      cancelable: true,"
+            + "      composed: true"
+            + "     }"
+            + "  );"
+            + "  let activeElement = getActiveElement();"
+            + "  if (activeElement) {"
+            + "    activeElement.dispatchEvent(backPressEvent);"
+            + "  } else {"
+            + "    document.dispatchEvent(backPressEvent);"
+            + "  }"
+            + "  backPressEvent.defaultPrevented;"
+            + "};";
 
     // Tracks whether this Activity is between onCreate() and onDestroy().
     private final Controller<Unit> mCreatedState = new Controller<>();
@@ -49,8 +78,6 @@ public class CastWebContentsActivity extends Activity {
     private final Controller<Unit> mResumedState = new Controller<>();
     // Tracks whether this Activity is between onStart() and onStop().
     private final Controller<Unit> mStartedState = new Controller<>();
-    // Tracks whether the user has left according to onUserLeaveHint().
-    private final Controller<Unit> mUserLeftState = new Controller<>();
     // Tracks the most recent Intent for the Activity.
     private final Controller<Intent> mGotIntentState = new Controller<>();
     // Set this to cause the Activity to finish.
@@ -80,12 +107,7 @@ public class CastWebContentsActivity extends Activity {
         });
         createdAndNotTestingState.subscribe(Observers.onEnter(x -> {
             // Do this in onCreate() only if not testing.
-            if (!CastBrowserHelper.initializeBrowser(getApplicationContext())) {
-                Toast.makeText(this, R.string.browser_process_initialization_failed,
-                             Toast.LENGTH_SHORT)
-                        .show();
-                mIsFinishingState.set("Failed to initialize browser");
-            }
+            CastBrowserHelper.initializeBrowser(getApplicationContext());
 
             setContentView(R.layout.cast_web_contents_activity);
 
@@ -147,6 +169,20 @@ public class CastWebContentsActivity extends Activity {
             finish();
         }));
 
+        mStartedState.subscribe(x -> {
+            Context ctx = getApplicationContext();
+            Intent intent = getIntent();
+            String instanceId = CastWebContentsIntentUtils.getSessionId(intent.getExtras());
+            Intent visible = CastWebContentsIntentUtils.onVisibilityChange(
+                    instanceId, CastWebContentsIntentUtils.VISIBITY_TYPE_FULL_SCREEN);
+            LocalBroadcastManager.getInstance(ctx).sendBroadcastSync(visible);
+            return () -> {
+                Intent hidden = CastWebContentsIntentUtils.onVisibilityChange(
+                        instanceId, CastWebContentsIntentUtils.VISIBITY_TYPE_HIDDEN);
+                LocalBroadcastManager.getInstance(ctx).sendBroadcastSync(hidden);
+            };
+        });
+
         // If a new Intent arrives after finishing, start a new Activity instead of recycling this.
         gotIntentAfterFinishingState.subscribe(Observers.onEnter((Intent intent) -> {
             Log.d(TAG, "Got intent while finishing current activity, so start new activity.");
@@ -155,11 +191,6 @@ public class CastWebContentsActivity extends Activity {
             intent.setFlags(flags);
             startActivity(intent);
         }));
-
-        Observable<?> stoppingBecauseUserLeftState =
-                Observable.not(mStartedState).and(mUserLeftState);
-        stoppingBecauseUserLeftState.subscribe(
-                Observers.onEnter(x -> mIsFinishingState.set("User left and activity stopped.")));
     }
 
     @Override
@@ -212,14 +243,23 @@ public class CastWebContentsActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (DEBUG) Log.d(TAG, "onDestroy");
+
         mCreatedState.reset();
         super.onDestroy();
     }
 
     @Override
-    protected void onUserLeaveHint() {
-        mUserLeftState.set(Unit.unit());
-        super.onUserLeaveHint();
+    public void onBackPressed() {
+        WebContents webContents = CastWebContentsIntentUtils.getWebContents(getIntent());
+        if (webContents == null) {
+            super.onBackPressed();
+            return;
+        }
+        webContents.evaluateJavaScript(BACK_PRESSED_JAVASCRIPT, defaultPrevented -> {
+            if (!"true".equals(defaultPrevented)) {
+                super.onBackPressed();
+            }
+        });
     }
 
     @Override
@@ -236,58 +276,12 @@ public class CastWebContentsActivity extends Activity {
     }
 
     @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        if (DEBUG) Log.d(TAG, "dispatchKeyEvent");
-        int keyCode = event.getKeyCode();
-        int action = event.getAction();
-
-        // Similar condition for all single-click events.
-        if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND
-                    || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_STOP
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_NEXT
-                    || keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
-                if (mSurfaceHelper != null) {
-                    CastWebContentsComponent.onKeyDown(mSurfaceHelper.getSessionId(), keyCode);
-                }
-                return true;
-            }
-        }
-
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            return super.dispatchKeyEvent(event);
-        }
-        return false;
-    }
-
-    @Override
-    public boolean dispatchGenericMotionEvent(MotionEvent ev) {
-        return false;
-    }
-
-    @Override
-    public boolean dispatchKeyShortcutEvent(KeyEvent event) {
-        return false;
-    }
-
-    @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (mSurfaceHelper != null && mSurfaceHelper.isTouchInputEnabled()) {
             return super.dispatchTouchEvent(ev);
         } else {
             return false;
         }
-    }
-
-    @Override
-    public boolean dispatchTrackballEvent(MotionEvent ev) {
-        return false;
     }
 
     private void turnScreenOn() {
@@ -298,22 +292,18 @@ public class CastWebContentsActivity extends Activity {
         }
     }
 
-    @RemovableInRelease
     public void finishForTesting() {
         mIsFinishingState.set("Finish for testing");
     }
 
-    @RemovableInRelease
     public void testingModeForTesting() {
         mIsTestingState.set(Unit.unit());
     }
 
-    @RemovableInRelease
     public void setAudioManagerForTesting(CastAudioManager audioManager) {
         mAudioManagerState.set(audioManager);
     }
 
-    @RemovableInRelease
     public void setSurfaceHelperForTesting(CastWebContentsSurfaceHelper surfaceHelper) {
         mSurfaceHelperState.set(surfaceHelper);
     }

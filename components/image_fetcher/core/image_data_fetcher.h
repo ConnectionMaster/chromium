@@ -12,12 +12,13 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/sequence_checker.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
+#include "components/image_fetcher/core/image_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_types.h"
 #include "components/image_fetcher/core/request_metadata.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/referrer_policy.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace network {
@@ -38,23 +39,38 @@ class ImageDataFetcher {
 
   // Sets an upper limit for image downloads.
   // Already running downloads are not affected.
-  void SetImageDownloadLimit(base::Optional<int64_t> max_download_bytes);
+  void SetImageDownloadLimit(absl::optional<int64_t> max_download_bytes);
 
   // Fetches the raw image bytes from the given |image_url| and calls the given
   // |callback|. The callback is run even if fetching the URL fails. In case
-  // of an error an empty string is passed to the callback.
+  // of an error an empty string is passed to the callback. May return
+  // synchronously.
+  void FetchImageData(const GURL& image_url,
+                      ImageDataFetcherCallback callback,
+                      ImageFetcherParams params,
+                      bool send_cookies = false);
+
+  // Like above, but lets the caller set a referrer.
+  void FetchImageData(const GURL& image_url,
+                      ImageDataFetcherCallback callback,
+                      ImageFetcherParams params,
+                      const std::string& referrer,
+                      net::ReferrerPolicy referrer_policy,
+                      bool send_cookies = false);
+
+  // Like above, but supports providing only a traffic annotation.
   void FetchImageData(
       const GURL& image_url,
       ImageDataFetcherCallback callback,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
       bool send_cookies = false);
 
-  // Like above, but lets the caller set a referrer.
+  // Like above, but supports providing only a traffic annotation.
   void FetchImageData(
       const GURL& image_url,
       ImageDataFetcherCallback callback,
       const std::string& referrer,
-      net::URLRequest::ReferrerPolicy referrer_policy,
+      net::ReferrerPolicy referrer_policy,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
       bool send_cookies = false);
 
@@ -68,6 +84,7 @@ class ImageDataFetcher {
   struct ImageDataFetcherRequest;
 
   void OnURLLoaderComplete(const network::SimpleURLLoader* source,
+                           ImageFetcherParams params,
                            std::unique_ptr<std::string> response_body);
 
   void FinishRequest(const network::SimpleURLLoader* source,
@@ -82,7 +99,7 @@ class ImageDataFetcher {
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   // Upper limit for the number of bytes to download per image.
-  base::Optional<int64_t> max_download_bytes_;
+  absl::optional<int64_t> max_download_bytes_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

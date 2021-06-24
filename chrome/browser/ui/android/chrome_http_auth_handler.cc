@@ -6,13 +6,14 @@
 
 #include <jni.h>
 
+#include <string>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/logging.h"
-#include "base/strings/string16.h"
+#include "base/check.h"
 #include "base/strings/utf_string_conversions.h"
-#include "jni/ChromeHttpAuthHandler_jni.h"
+#include "chrome/android/chrome_jni_headers/ChromeHttpAuthHandler_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::CheckException;
@@ -23,22 +24,22 @@ using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 ChromeHttpAuthHandler::ChromeHttpAuthHandler(
-    const base::string16& authority,
-    const base::string16& explanation,
+    const std::u16string& authority,
+    const std::u16string& explanation,
     LoginHandler::LoginModelData* login_model_data)
     : observer_(nullptr),
       authority_(authority),
       explanation_(explanation),
-      login_model_(login_model_data ? login_model_data->model : nullptr) {
+      auth_manager_(login_model_data ? login_model_data->model : nullptr) {
   if (login_model_data) {
-    login_model_->AddObserverAndDeliverCredentials(this,
-                                                   login_model_data->form);
+    auth_manager_->SetObserverAndDeliverCredentials(this,
+                                                    login_model_data->form);
   }
 }
 
 ChromeHttpAuthHandler::~ChromeHttpAuthHandler() {
-  if (login_model_) {
-    login_model_->RemoveObserver(this);
+  if (auth_manager_) {
+    auth_manager_->DetachObserver(this);
   }
   if (java_chrome_http_auth_handler_) {
     JNIEnv* env = AttachCurrentThread();
@@ -70,9 +71,9 @@ void ChromeHttpAuthHandler::CloseDialog() {
   Java_ChromeHttpAuthHandler_closeDialog(env, java_chrome_http_auth_handler_);
 }
 
-void ChromeHttpAuthHandler::OnAutofillDataAvailableInternal(
-    const base::string16& username,
-    const base::string16& password) {
+void ChromeHttpAuthHandler::OnAutofillDataAvailable(
+    const std::u16string& username,
+    const std::u16string& password) {
   DCHECK(java_chrome_http_auth_handler_.obj() != NULL);
   JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jstring> j_username =
@@ -84,8 +85,8 @@ void ChromeHttpAuthHandler::OnAutofillDataAvailableInternal(
 }
 
 void ChromeHttpAuthHandler::OnLoginModelDestroying() {
-  login_model_->RemoveObserver(this);
-  login_model_ = nullptr;
+  auth_manager_->DetachObserver(this);
+  auth_manager_ = nullptr;
 }
 
 void ChromeHttpAuthHandler::SetAuth(JNIEnv* env,
@@ -93,8 +94,8 @@ void ChromeHttpAuthHandler::SetAuth(JNIEnv* env,
                                     const JavaParamRef<jstring>& username,
                                     const JavaParamRef<jstring>& password) {
   if (observer_) {
-    base::string16 username16 = ConvertJavaStringToUTF16(env, username);
-    base::string16 password16 = ConvertJavaStringToUTF16(env, password);
+    std::u16string username16 = ConvertJavaStringToUTF16(env, username);
+    std::u16string password16 = ConvertJavaStringToUTF16(env, password);
     observer_->SetAuth(username16, password16);
   }
 }
@@ -110,6 +111,5 @@ ScopedJavaLocalRef<jstring> ChromeHttpAuthHandler::GetMessageBody(
     const JavaParamRef<jobject>&) {
   if (explanation_.empty())
     return ConvertUTF16ToJavaString(env, authority_);
-  return ConvertUTF16ToJavaString(
-      env, authority_ + base::ASCIIToUTF16(" ") + explanation_);
+  return ConvertUTF16ToJavaString(env, authority_ + u" " + explanation_);
 }

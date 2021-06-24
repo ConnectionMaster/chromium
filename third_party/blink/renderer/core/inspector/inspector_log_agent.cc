@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/core/inspector/inspector_dom_agent.h"
 #include "third_party/blink/renderer/core/inspector/resolve_node.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 using protocol::Response;
@@ -82,7 +83,7 @@ InspectorLogAgent::InspectorLogAgent(
 
 InspectorLogAgent::~InspectorLogAgent() = default;
 
-void InspectorLogAgent::Trace(blink::Visitor* visitor) {
+void InspectorLogAgent::Trace(Visitor* visitor) const {
   visitor->Trace(storage_);
   visitor->Trace(performance_monitor_);
   InspectorBaseAgent::Trace(visitor);
@@ -95,12 +96,12 @@ void InspectorLogAgent::Restore() {
   InnerEnable();
   if (violation_thresholds_.IsEmpty())
     return;
-  auto settings = protocol::Array<ViolationSetting>::create();
+  auto settings = std::make_unique<protocol::Array<ViolationSetting>>();
   for (const WTF::String& key : violation_thresholds_.Keys()) {
-    settings->addItem(ViolationSetting::create()
-                          .setName(key)
-                          .setThreshold(violation_thresholds_.Get(key))
-                          .build());
+    settings->emplace_back(ViolationSetting::create()
+                               .setName(key)
+                               .setThreshold(violation_thresholds_.Get(key))
+                               .build());
   }
   startViolationsReport(std::move(settings));
 }
@@ -133,13 +134,11 @@ void InspectorLogAgent::ConsoleMessageAdded(ConsoleMessage* message) {
 
   if (v8_session_ && message->Frame() && !message->Nodes().IsEmpty()) {
     ScriptForbiddenScope::AllowUserAgentScript allow_script;
-    std::unique_ptr<
-        protocol::Array<v8_inspector::protocol::Runtime::API::RemoteObject>>
-        remote_objects = protocol::Array<
-            v8_inspector::protocol::Runtime::API::RemoteObject>::create();
+    auto remote_objects = std::make_unique<
+        protocol::Array<v8_inspector::protocol::Runtime::API::RemoteObject>>();
     for (DOMNodeId node_id : message->Nodes()) {
       std::unique_ptr<v8_inspector::protocol::Runtime::API::RemoteObject>
-          remote_object = nullptr;
+          remote_object;
       Node* node = DOMNodeIds::NodeForId(node_id);
       if (node) {
         remote_object =
@@ -150,7 +149,7 @@ void InspectorLogAgent::ConsoleMessageAdded(ConsoleMessage* message) {
             NullRemoteObject(v8_session_, message->Frame(), "console");
       }
       if (remote_object) {
-        remote_objects->addItem(std::move(remote_object));
+        remote_objects->emplace_back(std::move(remote_object));
       } else {
         // If a null object could not be referenced, we do not send the message
         // at all, to avoid situations in which the arguments are misleading.
@@ -184,24 +183,24 @@ void InspectorLogAgent::InnerEnable() {
 
 Response InspectorLogAgent::enable() {
   if (enabled_.Get())
-    return Response::OK();
+    return Response::Success();
   enabled_.Set(true);
   InnerEnable();
-  return Response::OK();
+  return Response::Success();
 }
 
 Response InspectorLogAgent::disable() {
   if (!enabled_.Get())
-    return Response::OK();
+    return Response::Success();
   enabled_.Clear();
   stopViolationsReport();
   instrumenting_agents_->RemoveInspectorLogAgent(this);
-  return Response::OK();
+  return Response::Success();
 }
 
 Response InspectorLogAgent::clear() {
   storage_->Clear();
-  return Response::OK();
+  return Response::Success();
 }
 
 static PerformanceMonitor::Violation ParseViolation(const String& name) {
@@ -225,14 +224,16 @@ static PerformanceMonitor::Violation ParseViolation(const String& name) {
 Response InspectorLogAgent::startViolationsReport(
     std::unique_ptr<protocol::Array<ViolationSetting>> settings) {
   if (!enabled_.Get())
-    return Response::Error("Log is not enabled");
-  if (!performance_monitor_)
-    return Response::Error("Violations are not supported for this target");
+    return Response::ServerError("Log is not enabled");
+  if (!performance_monitor_) {
+    return Response::ServerError(
+        "Violations are not supported for this target");
+  }
   performance_monitor_->UnsubscribeAll(this);
   violation_thresholds_.Clear();
-  for (size_t i = 0; i < settings->length(); ++i) {
-    const WTF::String& name = settings->get(i)->getName();
-    double threshold = settings->get(i)->getThreshold();
+  for (const std::unique_ptr<ViolationSetting>& setting : *settings) {
+    const WTF::String& name = setting->getName();
+    double threshold = setting->getThreshold();
     PerformanceMonitor::Violation violation = ParseViolation(name);
     if (violation == PerformanceMonitor::kAfterLast)
       continue;
@@ -240,22 +241,24 @@ Response InspectorLogAgent::startViolationsReport(
         violation, base::TimeDelta::FromMillisecondsD(threshold), this);
     violation_thresholds_.Set(name, threshold);
   }
-  return Response::OK();
+  return Response::Success();
 }
 
 Response InspectorLogAgent::stopViolationsReport() {
   violation_thresholds_.Clear();
-  if (!performance_monitor_)
-    return Response::Error("Violations are not supported for this target");
+  if (!performance_monitor_) {
+    return Response::ServerError(
+        "Violations are not supported for this target");
+  }
   performance_monitor_->UnsubscribeAll(this);
-  return Response::OK();
+  return Response::Success();
 }
 
 void InspectorLogAgent::ReportLongLayout(base::TimeDelta duration) {
   String message_text = String::Format(
       "Forced reflow while executing JavaScript took %" PRId64 "ms",
       duration.InMilliseconds());
-  ConsoleMessage* message = ConsoleMessage::Create(
+  auto* message = MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kViolation,
       mojom::ConsoleMessageLevel::kVerbose, message_text);
   ConsoleMessageAdded(message);
@@ -265,7 +268,7 @@ void InspectorLogAgent::ReportGenericViolation(PerformanceMonitor::Violation,
                                                const String& text,
                                                base::TimeDelta time,
                                                SourceLocation* location) {
-  ConsoleMessage* message = ConsoleMessage::Create(
+  auto* message = MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kViolation,
       mojom::ConsoleMessageLevel::kVerbose, text, location->Clone());
   ConsoleMessageAdded(message);

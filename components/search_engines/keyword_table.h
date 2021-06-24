@@ -14,7 +14,6 @@
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "components/search_engines/template_url_id.h"
 #include "components/webdata/common/web_database_table.h"
 
@@ -37,7 +36,8 @@ class Statement;
 //   keyword
 //   favicon_url
 //   url
-//   safe_for_autoreplace
+//   safe_for_autoreplace   This is set to false for any entry that was manually
+//                          added or edited by the user.
 //   originating_url
 //   date_created           This column was added after we allowed keywords.
 //                          Keywords created before we started tracking
@@ -65,6 +65,10 @@ class Statement;
 //                          was added in version 52.
 //   new_tab_url            See TemplateURLData::new_tab_url. This was added in
 //                          version 53.
+//   last_visited           See TemplateURLData::last_visited. This was added in
+//                          version 69.
+//   created_from_play_api  See TemplateURLData::created_from_play_api. This was
+//                          added in version 82.
 //
 // This class also manages some fields in the |meta| table:
 //
@@ -128,6 +132,7 @@ class KeywordTable : public WebDatabaseTable {
   bool MigrateToVersion69AddLastVisitedColumn();
   bool MigrateToVersion76RemoveInstantColumns();
   bool MigrateToVersion77IncreaseTimePrecision();
+  bool MigrateToVersion82AddCreatedFromPlayApiColumn();
 
  private:
   friend class KeywordTableTest;

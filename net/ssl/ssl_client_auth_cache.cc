@@ -4,19 +4,15 @@
 
 #include "net/ssl/ssl_client_auth_cache.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "net/cert/x509_certificate.h"
 #include "net/ssl/ssl_private_key.h"
 
 namespace net {
 
-SSLClientAuthCache::SSLClientAuthCache() {
-  CertDatabase::GetInstance()->AddObserver(this);
-}
+SSLClientAuthCache::SSLClientAuthCache() {}
 
-SSLClientAuthCache::~SSLClientAuthCache() {
-  CertDatabase::GetInstance()->RemoveObserver(this);
-}
+SSLClientAuthCache::~SSLClientAuthCache() {}
 
 bool SSLClientAuthCache::Lookup(const HostPortPair& server,
                                 scoped_refptr<X509Certificate>* certificate,
@@ -41,11 +37,11 @@ void SSLClientAuthCache::Add(const HostPortPair& server,
   // TODO(wtc): enforce a maximum number of entries.
 }
 
-void SSLClientAuthCache::Remove(const HostPortPair& server) {
-  cache_.erase(server);
+bool SSLClientAuthCache::Remove(const HostPortPair& server) {
+  return cache_.erase(server);
 }
 
-void SSLClientAuthCache::OnCertDBChanged() {
+void SSLClientAuthCache::Clear() {
   cache_.clear();
 }
 

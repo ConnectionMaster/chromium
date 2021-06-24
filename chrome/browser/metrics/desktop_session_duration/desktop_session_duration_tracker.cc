@@ -5,6 +5,7 @@
 #include "chrome/browser/metrics/desktop_session_duration/desktop_session_duration_tracker.h"
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/variations/variations_associated_data.h"
@@ -38,8 +39,8 @@ DesktopSessionDurationTracker* DesktopSessionDurationTracker::Get() {
 
 void DesktopSessionDurationTracker::StartTimer(base::TimeDelta duration) {
   timer_.Start(FROM_HERE, duration,
-               base::Bind(&DesktopSessionDurationTracker::OnTimerFired,
-                          weak_factory_.GetWeakPtr()));
+               base::BindOnce(&DesktopSessionDurationTracker::OnTimerFired,
+                              weak_factory_.GetWeakPtr()));
 }
 
 void DesktopSessionDurationTracker::OnVisibilityChanged(
@@ -106,8 +107,7 @@ void DesktopSessionDurationTracker::OnAudioEnd() {
 DesktopSessionDurationTracker::DesktopSessionDurationTracker()
     : session_start_(base::TimeTicks::Now()),
       last_user_event_(session_start_),
-      audio_tracker_(this),
-      weak_factory_(this) {
+      audio_tracker_(this) {
   InitInactivityTimeout();
 }
 
@@ -157,7 +157,7 @@ void DesktopSessionDurationTracker::EndSession(
     delta = base::TimeDelta();
 
   for (Observer& observer : observer_list_)
-    observer.OnSessionEnded(delta);
+    observer.OnSessionEnded(delta, session_start_ + delta);
 
   DVLOG(4) << "Logging session length of " << delta.InSeconds() << " seconds.";
 

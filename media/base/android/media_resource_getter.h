@@ -10,10 +10,13 @@
 #include <string>
 
 #include "base/callback.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "media/base/media_export.h"
 #include "url/gurl.h"
+
+namespace url {
+class Origin;
+}
 
 namespace media {
 
@@ -28,7 +31,7 @@ class MEDIA_EXPORT MediaResourceGetter {
   typedef base::OnceCallback<void(const std::string&)> GetPlatformPathCB;
 
   // Callback to get the auth credentials. Args: username and password.
-  typedef base::OnceCallback<void(const base::string16&, const base::string16&)>
+  typedef base::OnceCallback<void(const std::u16string&, const std::u16string&)>
       GetAuthCredentialsCB;
 
   // Callback to get the media metadata. Args: duration, width, height, and
@@ -44,6 +47,7 @@ class MEDIA_EXPORT MediaResourceGetter {
   // Method for getting the cookies for a given URL.
   virtual void GetCookies(const GURL& url,
                           const GURL& site_for_cookies,
+                          const url::Origin& top_frame_origin,
                           GetCookieCB callback) = 0;
 
   // Method for getting the platform path from a file system URL.

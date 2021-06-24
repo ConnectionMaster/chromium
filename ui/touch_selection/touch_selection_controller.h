@@ -7,6 +7,7 @@
 
 #include "base/macros.h"
 #include "base/time/time.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
@@ -33,9 +34,11 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionControllerClient {
   virtual void SelectBetweenCoordinates(const gfx::PointF& base,
                                         const gfx::PointF& extent) = 0;
   virtual void OnSelectionEvent(SelectionEventType event) = 0;
-  virtual void OnDragUpdate(const gfx::PointF& position) = 0;
+  virtual void OnDragUpdate(const TouchSelectionDraggable::Type type,
+                            const gfx::PointF& position) = 0;
   virtual std::unique_ptr<TouchHandleDrawable> CreateDrawable() = 0;
   virtual void DidScroll() = 0;
+  virtual void ShowTouchSelectionContextMenu(const gfx::Point& location) {}
 };
 
 // Controller for manipulating text selection via touch input.
@@ -115,9 +118,13 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
   bool Animate(base::TimeTicks animate_time);
 
   // Returns the rect between the two active selection bounds. If just one of
-  // the bounds is visible, the rect is simply the (one-dimensional) rect of
-  // that bound. If no selection is active, an empty rect will be returned.
+  // the bounds is visible, or both bounds are visible and on the same line,
+  // the rect is simply a one-dimensional rect of that bound. If no selection
+  // is active, an empty rect will be returned.
   gfx::RectF GetRectBetweenBounds() const;
+  // Returns the rect between the selection bounds (as above) but clipped by
+  // occluding layers.
+  gfx::RectF GetVisibleRectBetweenBounds() const;
 
   // Returns the visible rect of specified touch handle. For an active insertion
   // these values will be identical.
@@ -132,6 +139,11 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
   // their bottom coordinate.
   const gfx::PointF& GetStartPosition() const;
   const gfx::PointF& GetEndPosition() const;
+
+  // To be called when swipe-to-move-cursor motion begins.
+  void OnSwipeToMoveCursorBegin();
+  // To be called when swipe-to-move-cursor motion ends.
+  void OnSwipeToMoveCursorEnd();
 
   const gfx::SelectionBound& start() const { return start_; }
   const gfx::SelectionBound& end() const { return end_; }
@@ -198,6 +210,9 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
 
   InputEventType response_pending_input_event_;
 
+  // The bounds at the begin and end of the selection, which might be vertical
+  // or horizontal line and represents the position of the touch handles or
+  // caret.
   gfx::SelectionBound start_;
   gfx::SelectionBound end_;
   TouchHandleOrientation start_orientation_;

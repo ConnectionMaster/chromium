@@ -5,7 +5,6 @@
 #ifndef SERVICES_AUDIO_LOOPBACK_STREAM_H_
 #define SERVICES_AUDIO_LOOPBACK_STREAM_H_
 
-#include <atomic>
 #include <map>
 #include <memory>
 #include <utility>
@@ -15,7 +14,6 @@
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
 #include "base/synchronization/lock.h"
@@ -23,14 +21,18 @@
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "media/base/audio_parameters.h"
-#include "media/mojo/interfaces/audio_data_pipe.mojom.h"
-#include "media/mojo/interfaces/audio_input_stream.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "media/mojo/mojom/audio_data_pipe.mojom.h"
+#include "media/mojo/mojom/audio_input_stream.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/audio/input_controller.h"
 #include "services/audio/input_sync_writer.h"
 #include "services/audio/loopback_coordinator.h"
 #include "services/audio/loopback_group_member.h"
 #include "services/audio/snooper_node.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class TickClock;
@@ -53,23 +55,24 @@ namespace audio {
 // source OutputStream and format-convert it. 3) A "flow network" that runs via
 // a different task runner, to take all the audio collected in the SnooperNodes
 // and mix it into a single data stream.
-class LoopbackStream : public media::mojom::AudioInputStream,
-                       public LoopbackCoordinator::Observer {
+class LoopbackStream final : public media::mojom::AudioInputStream,
+                             public LoopbackCoordinator::Observer {
  public:
   using CreatedCallback =
       base::OnceCallback<void(media::mojom::ReadOnlyAudioDataPipePtr)>;
   using BindingLostCallback = base::OnceCallback<void(LoopbackStream*)>;
 
-  LoopbackStream(CreatedCallback created_callback,
-                 BindingLostCallback binding_lost_callback,
-                 scoped_refptr<base::SequencedTaskRunner> flow_task_runner,
-                 media::mojom::AudioInputStreamRequest request,
-                 media::mojom::AudioInputStreamClientPtr client,
-                 media::mojom::AudioInputStreamObserverPtr observer,
-                 const media::AudioParameters& params,
-                 uint32_t shared_memory_count,
-                 LoopbackCoordinator* coordinator,
-                 const base::UnguessableToken& group_id);
+  LoopbackStream(
+      CreatedCallback created_callback,
+      BindingLostCallback binding_lost_callback,
+      scoped_refptr<base::SequencedTaskRunner> flow_task_runner,
+      mojo::PendingReceiver<media::mojom::AudioInputStream> receiver,
+      mojo::PendingRemote<media::mojom::AudioInputStreamClient> client,
+      mojo::PendingRemote<media::mojom::AudioInputStreamObserver> observer,
+      const media::AudioParameters& params,
+      uint32_t shared_memory_count,
+      LoopbackCoordinator* coordinator,
+      const base::UnguessableToken& group_id);
 
   ~LoopbackStream() final;
 
@@ -153,12 +156,6 @@ class LoopbackStream : public media::mojom::AudioInputStream,
     // becomes stopped.
     void GenerateMoreAudio();
 
-    // TODO(crbug.com/888478): Remove this and all call points after diagnosis.
-    // This generates crash key strings exposing the current state of the flow
-    // network, and also ensures |mix_bus_| is valid, hasn't been corrupted, and
-    // that writing to its data arrays will not cause a page fault.
-    void HelpDiagnoseCauseOfLoopbackCrash(const char* event);
-
     const base::TickClock* clock_;
 
     // Task runner that calls GenerateMoreAudio() to drive all the audio data
@@ -185,7 +182,7 @@ class LoopbackStream : public media::mojom::AudioInputStream,
     // This is set once Start() is called, and lives until this FlowNetwork is
     // destroyed. It is used to schedule cancelable tasks run by the
     // |flow_task_runner_|.
-    base::Optional<base::OneShotTimer> timer_;
+    absl::optional<base::OneShotTimer> timer_;
 
     // These are used to compute when the |timer_| fires and calls
     // GenerateMoreAudio(). They ensure that each timer task is scheduled to
@@ -209,10 +206,6 @@ class LoopbackStream : public media::mojom::AudioInputStream,
     std::unique_ptr<media::AudioBus> transfer_bus_;
     const std::unique_ptr<media::AudioBus> mix_bus_;
 
-    // TODO(crbug.com/888478): Remove these after diagnosis.
-    volatile uint32_t magic_bytes_;
-    static std::atomic<int> instance_count_;
-
     SEQUENCE_CHECKER(control_sequence_);
 
     DISALLOW_COPY_AND_ASSIGN(FlowNetwork);
@@ -221,15 +214,15 @@ class LoopbackStream : public media::mojom::AudioInputStream,
   // Reports a fatal error to the client, and then runs the BindingLostCallback.
   void OnError();
 
-  // Run when any of |binding_|, |client_|, or |observer_| are closed. This
+  // Run when any of |receiver_|, |client_|, or |observer_| are closed. This
   // callback is generally used to automatically terminate this LoopbackStream.
   BindingLostCallback binding_lost_callback_;
 
   // Mojo bindings. If any of these is closed, the LoopbackStream will call
   // OnError(), which will run the |binding_lost_callback_|.
-  mojo::Binding<media::mojom::AudioInputStream> binding_;
-  media::mojom::AudioInputStreamClientPtr client_;
-  media::mojom::AudioInputStreamObserverPtr observer_;
+  mojo::Receiver<media::mojom::AudioInputStream> receiver_;
+  mojo::Remote<media::mojom::AudioInputStreamClient> client_;
+  mojo::Remote<media::mojom::AudioInputStreamObserver> observer_;
 
   // Used for identifying group members and snooping on their audio data flow.
   LoopbackCoordinator* const coordinator_;
@@ -247,7 +240,7 @@ class LoopbackStream : public media::mojom::AudioInputStream,
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<LoopbackStream> weak_factory_;
+  base::WeakPtrFactory<LoopbackStream> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LoopbackStream);
 };

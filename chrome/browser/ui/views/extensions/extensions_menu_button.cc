@@ -4,60 +4,56 @@
 
 #include "chrome/browser/ui/views/extensions/extensions_menu_button.h"
 
+#include "base/bind.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_controller.h"
+#include "chrome/browser/ui/views/bubble_menu_item_factory.h"
+#include "chrome/browser/ui/views/extensions/extensions_menu_item_view.h"
+#include "chrome/browser/ui/views/extensions/extensions_menu_view.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/hover_button.h"
+#include "chrome/browser/ui/views/hover_button_controller.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-
-const char ExtensionsMenuButton::kClassName[] = "ExtensionsMenuButton";
-
-namespace {
-
-content::WebContents* GetActiveWebContents(Browser* browser) {
-  return browser->tab_strip_model()->GetActiveWebContents();
-}
-
-void SetIconViewImage(views::ImageView* image_view,
-                      Browser* browser,
-                      ToolbarActionViewController* controller) {
-  image_view->SetImage(
-      controller->GetIcon(GetActiveWebContents(browser), gfx::Size(16, 16))
-          .AsImageSkia());
-}
-
-std::unique_ptr<views::View> CreateIconView(
-    Browser* browser,
-    ToolbarActionViewController* controller) {
-  auto image_view = std::make_unique<views::ImageView>();
-  SetIconViewImage(image_view.get(), browser, controller);
-  return image_view;
-}
-
-}  // namespace
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/views/animation/ink_drop.h"
+#include "ui/views/controls/button/button.h"
+#include "ui/views/style/typography.h"
 
 ExtensionsMenuButton::ExtensionsMenuButton(
     Browser* browser,
-    std::unique_ptr<ToolbarActionViewController> controller)
-    : HoverButton(this,
-                  CreateIconView(browser, controller.get()),
-                  controller->GetActionName(),
-                  base::string16()),
+    ToolbarActionViewController* controller,
+    bool allow_pinning)
+    : HoverButton(base::BindRepeating(&ExtensionsMenuButton::ButtonPressed,
+                                      base::Unretained(this)),
+                  std::u16string()),
       browser_(browser),
-      controller_(std::move(controller)) {
-  set_context_menu_controller(this);
+      controller_(controller),
+      allow_pinning_(allow_pinning) {
   controller_->SetDelegate(this);
-  UpdateState();
+  // TODO(pbos): This currently inherits HoverButton, is this not a no-op?
+  // Also see call in OnThemeChanged() to
+  // views::InkDrop::Get(this)->SetBaseColor which tries to do the same thing.
+  views::InkDrop::Get(this)->SetBaseColorCallback(base::BindRepeating(
+      [](views::View* host) { return HoverButton::GetInkDropColor(host); },
+      this));
 }
 
 ExtensionsMenuButton::~ExtensionsMenuButton() = default;
 
-const char* ExtensionsMenuButton::GetClassName() const {
-  return kClassName;
+bool ExtensionsMenuButton::CanShowIconInToolbar() const {
+  return allow_pinning_;
 }
 
-void ExtensionsMenuButton::ButtonPressed(Button* sender,
-                                         const ui::Event& event) {
-  controller_->ExecuteAction(true);
+void ExtensionsMenuButton::AddedToWidget() {
+  ConfigureBubbleMenuItem(this, 0);
+  UpdateState();
+}
+
+void ExtensionsMenuButton::OnThemeChanged() {
+  HoverButton::OnThemeChanged();
+  views::InkDrop::Get(this)->SetBaseColor(HoverButton::GetInkDropColor(this));
 }
 
 // ToolbarActionViewDelegateViews:
@@ -69,34 +65,49 @@ views::FocusManager* ExtensionsMenuButton::GetFocusManagerForAccelerator() {
   return GetFocusManager();
 }
 
-views::View* ExtensionsMenuButton::GetReferenceViewForPopup() {
+views::Button* ExtensionsMenuButton::GetReferenceButtonForPopup() {
   return BrowserView::GetBrowserViewForBrowser(browser_)
       ->toolbar()
-      ->extensions_button();
+      ->GetExtensionsButton();
 }
 
 content::WebContents* ExtensionsMenuButton::GetCurrentWebContents() const {
-  return GetActiveWebContents(browser_);
+  return browser_->tab_strip_model()->GetActiveWebContents();
 }
 
 void ExtensionsMenuButton::UpdateState() {
-  DCHECK_EQ(views::ImageView::kViewClassName, icon_view()->GetClassName());
-  SetIconViewImage(static_cast<views::ImageView*>(icon_view()), browser_,
-                   controller_.get());
-  SetTitleTextWithHintRange(controller_->GetActionName(),
-                            gfx::Range::InvalidRange());
+  SetImage(
+      Button::STATE_NORMAL,
+      controller_
+          ->GetIcon(GetCurrentWebContents(), ExtensionsMenuItemView::kIconSize)
+          .AsImageSkia());
+  SetText(controller_->GetActionName());
+  SetTooltipText(controller_->GetTooltip(GetCurrentWebContents()));
+  SetEnabled(controller_->IsEnabled(GetCurrentWebContents()));
+  // The horizontal insets reasonably align the extension icons with text inside
+  // the dialog. Note that |kIconSize| also contains space for badging, so we
+  // can't trivially use dialog-text insets (empty space inside the icon).
+  constexpr gfx::Insets kBorderInsets =
+      gfx::Insets((ExtensionsMenuItemView::kMenuItemHeightDp -
+                   ExtensionsMenuItemView::kIconSize.height()) /
+                      2,
+                  12);
+  SetBorder(views::CreateEmptyBorder(kBorderInsets));
 }
 
-bool ExtensionsMenuButton::IsMenuRunning() const {
-  // TODO(pbos): Implement when able to show context menus inside this bubble.
-  return false;
+void ExtensionsMenuButton::ShowContextMenuAsFallback() {
+  // The items in the extensions menu are disabled and unclickable if the
+  // primary action cannot be taken; ShowContextMenuAsFallback() should never
+  // be called directly.
+  NOTREACHED();
 }
 
-// views::ContextMenuController:
-void ExtensionsMenuButton::ShowContextMenuForViewImpl(
-    views::View* source,
-    const gfx::Point& point,
-    ui::MenuSourceType source_type) {
-  // TODO(pbos): Implement this. This is a no-op implementation as it prevents
-  // crashing actions that don't have a popup action.
+void ExtensionsMenuButton::ButtonPressed() {
+  base::RecordAction(
+      base::UserMetricsAction("Extensions.Toolbar.ExtensionActivatedFromMenu"));
+  controller_->ExecuteAction(
+      true, ToolbarActionViewController::InvocationSource::kMenuEntry);
 }
+
+BEGIN_METADATA(ExtensionsMenuButton, views::LabelButton)
+END_METADATA

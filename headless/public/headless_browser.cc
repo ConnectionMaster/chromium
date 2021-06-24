@@ -6,8 +6,10 @@
 
 #include <utility>
 
+#include "build/build_config.h"
 #include "content/public/common/user_agent.h"
 #include "headless/public/version.h"
+#include "ui/gl/gl_switches.h"
 
 #if defined(OS_WIN)
 #include "sandbox/win/src/sandbox_types.h"
@@ -34,11 +36,16 @@ std::string GetProductNameAndVersion() {
 Options::Options(int argc, const char** argv)
     : argc(argc),
       argv(argv),
-      gl_implementation("swiftshader-webgl"),
+      gl_implementation(gl::kGLImplementationSwiftShaderForWebGLName),
+      angle_implementation(gl::kANGLEImplementationNoneName),
       product_name_and_version(GetProductNameAndVersion()),
       user_agent(content::BuildUserAgentFromProduct(product_name_and_version)),
       window_size(kDefaultWindowSize),
       font_render_hinting(kDefaultFontRenderHinting) {
+#if (defined(OS_LINUX) && !defined(USE_OZONE)) || defined(OS_WIN)
+  gl_implementation = gl::kGLImplementationANGLEName;
+  angle_implementation = gl::kANGLEImplementationSwiftShaderForWebGLName;
+#endif
 }
 
 Options::Options(Options&& options) = default;
@@ -119,6 +126,12 @@ Builder& Builder::SetGLImplementation(const std::string& gl_implementation) {
   return *this;
 }
 
+Builder& Builder::SetANGLEImplementation(
+    const std::string& angle_implementation) {
+  options_.angle_implementation = angle_implementation;
+  return *this;
+}
+
 Builder& Builder::SetAppendCommandLineFlagsCallback(
     const Options::AppendCommandLineFlagsCallback& callback) {
   options_.append_command_line_flags_callback = callback;
@@ -163,7 +176,7 @@ Builder& Builder::SetBlockNewWebContents(bool block_new_web_contents) {
 }
 
 Builder& Builder::SetOverrideWebPreferencesCallback(
-    base::RepeatingCallback<void(WebPreferences*)> callback) {
+    base::RepeatingCallback<void(blink::web_pref::WebPreferences*)> callback) {
   options_.override_web_preferences_callback = std::move(callback);
   return *this;
 }

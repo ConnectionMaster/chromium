@@ -5,15 +5,15 @@
 #include "chromeos/services/secure_channel/public/cpp/client/client_channel_impl.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
+#include "base/containers/contains.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/test/null_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "chromeos/components/multidevice/remote_device_test_util.h"
 #include "chromeos/services/secure_channel/fake_channel.h"
@@ -23,12 +23,10 @@
 #include "chromeos/services/secure_channel/public/cpp/client/connection_attempt_impl.h"
 #include "chromeos/services/secure_channel/public/cpp/client/fake_client_channel_observer.h"
 #include "chromeos/services/secure_channel/public/cpp/client/fake_connection_attempt.h"
-#include "chromeos/services/secure_channel/public/mojom/constants.mojom.h"
 #include "chromeos/services/secure_channel/public/mojom/secure_channel.mojom.h"
 #include "chromeos/services/secure_channel/secure_channel_impl.h"
-#include "chromeos/services/secure_channel/secure_channel_service.h"
-#include "services/service_manager/public/cpp/test/test_connector_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -42,9 +40,9 @@ class SecureChannelClientChannelImplTest : public testing::Test {
   void SetUp() override {
     fake_channel_ = std::make_unique<FakeChannel>();
 
-    client_channel_ = ClientChannelImpl::Factory::Get()->BuildInstance(
-        fake_channel_->GenerateInterfacePtr(),
-        mojo::MakeRequest(&message_receiver_ptr_));
+    client_channel_ = ClientChannelImpl::Factory::Create(
+        fake_channel_->GenerateRemote(),
+        message_receiver_remote_.BindNewPipeAndPassReceiver());
 
     fake_observer_ = std::make_unique<FakeClientChannelObserver>();
     client_channel_->AddObserver(fake_observer_.get());
@@ -99,10 +97,10 @@ class SecureChannelClientChannelImplTest : public testing::Test {
     static_cast<ClientChannelImpl*>(client_channel_.get())->FlushForTesting();
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   std::unique_ptr<FakeChannel> fake_channel_;
-  mojom::MessageReceiverPtr message_receiver_ptr_;
+  mojo::Remote<mojom::MessageReceiver> message_receiver_remote_;
   std::unique_ptr<FakeClientChannelObserver> fake_observer_;
 
   mojom::ConnectionMetadataPtr connection_metadata_;
@@ -157,20 +155,20 @@ TEST_F(SecureChannelClientChannelImplTest, TestSendMessage) {
   CallSendMessageCallback(std::move(sent_messages[0].second));
   CallSendMessageCallback(std::move(sent_messages[1].second));
 
-  EXPECT_TRUE(base::ContainsKey(message_counters_received_, message_1_counter));
-  EXPECT_TRUE(base::ContainsKey(message_counters_received_, message_2_counter));
+  EXPECT_TRUE(base::Contains(message_counters_received_, message_1_counter));
+  EXPECT_TRUE(base::Contains(message_counters_received_, message_2_counter));
 }
 
 TEST_F(SecureChannelClientChannelImplTest, TestReceiveMessage) {
-  message_receiver_ptr_->OnMessageReceived("payload");
-  message_receiver_ptr_.FlushForTesting();
+  message_receiver_remote_->OnMessageReceived("payload");
+  message_receiver_remote_.FlushForTesting();
 
   EXPECT_EQ(1u, fake_observer_->received_messages().size());
   EXPECT_EQ("payload", fake_observer_->received_messages()[0]);
 }
 
 TEST_F(SecureChannelClientChannelImplTest, TestDisconnectRemotely) {
-  fake_channel_->DisconnectGeneratedPtr();
+  fake_channel_->DisconnectGeneratedRemote();
 
   SendPendingMojoMessages();
 

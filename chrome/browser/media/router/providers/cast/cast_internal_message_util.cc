@@ -5,16 +5,68 @@
 #include "chrome/browser/media/router/providers/cast/cast_internal_message_util.h"
 
 #include <string>
+#include <utility>
 
 #include "base/base64url.h"
 #include "base/hash/sha1.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ptr_util.h"
-#include "chrome/common/media_router/discovery/media_sink_internal.h"
-#include "chrome/common/media_router/providers/cast/cast_media_source.h"
+#include "base/strings/string_piece.h"
 #include "components/cast_channel/cast_socket.h"
-#include "components/cast_channel/proto/cast_channel.pb.h"
+#include "components/cast_channel/enum_table.h"
+#include "components/media_router/common/discovery/media_sink_internal.h"
+#include "components/media_router/common/providers/cast/cast_media_source.h"
 #include "net/base/escape.h"
+
+namespace cast_util {
+
+using media_router::CastInternalMessage;
+
+template <>
+const EnumTable<CastInternalMessage::Type>&
+EnumTable<CastInternalMessage::Type>::GetInstance() {
+  static const EnumTable<CastInternalMessage::Type> kInstance(
+      {
+          {CastInternalMessage::Type::kClientConnect, "client_connect"},
+          {CastInternalMessage::Type::kAppMessage, "app_message"},
+          {CastInternalMessage::Type::kV2Message, "v2_message"},
+          {CastInternalMessage::Type::kLeaveSession, "leave_session"},
+          {CastInternalMessage::Type::kReceiverAction, "receiver_action"},
+          {CastInternalMessage::Type::kNewSession, "new_session"},
+          {CastInternalMessage::Type::kUpdateSession, "update_session"},
+          {CastInternalMessage::Type::kError, "error"},
+          {CastInternalMessage::Type::kOther},
+      },
+      CastInternalMessage::Type::kMaxValue);
+  return kInstance;
+}
+
+template <>
+const EnumTable<CastInternalMessage::ErrorCode>&
+EnumTable<CastInternalMessage::ErrorCode>::GetInstance() {
+  static const EnumTable<CastInternalMessage::ErrorCode> kInstance(
+      {
+          {CastInternalMessage::ErrorCode::kInternalError, "internal_error"},
+          {CastInternalMessage::ErrorCode::kCancel, "cancel"},
+          {CastInternalMessage::ErrorCode::kTimeout, "timeout"},
+          {CastInternalMessage::ErrorCode::kApiNotInitialized,
+           "api_not_initialized"},
+          {CastInternalMessage::ErrorCode::kInvalidParameter,
+           "invalid_parameter"},
+          {CastInternalMessage::ErrorCode::kExtensionNotCompatible,
+           "extension_not_compatible"},
+          {CastInternalMessage::ErrorCode::kReceiverUnavailable,
+           "receiver_unavailable"},
+          {CastInternalMessage::ErrorCode::kSessionError, "session_error"},
+          {CastInternalMessage::ErrorCode::kChannelError, "channel_error"},
+          {CastInternalMessage::ErrorCode::kLoadMediaFailed,
+           "load_media_failed"},
+      },
+      CastInternalMessage::ErrorCode::kMaxValue);
+  return kInstance;
+}
+
+}  // namespace cast_util
 
 namespace media_router {
 
@@ -23,14 +75,6 @@ namespace {
 // The ID for the backdrop app. Cast devices running the backdrop app is
 // considered idle, and an active session should not be reported.
 constexpr char kBackdropAppId[] = "E8C28D3C";
-
-constexpr char kClientConnect[] = "client_connect";
-constexpr char kAppMessage[] = "app_message";
-constexpr char kV2Message[] = "v2_message";
-constexpr char kLeaveSession[] = "leave_session";
-constexpr char kReceiverAction[] = "receiver_action";
-constexpr char kNewSession[] = "new_session";
-constexpr char kUpdateSession[] = "update_session";
 
 bool GetString(const base::Value& value,
                const std::string& key,
@@ -62,46 +106,14 @@ void CopyValue(const base::Value& from,
 
 CastInternalMessage::Type CastInternalMessageTypeFromString(
     const std::string& type) {
-  if (type == kClientConnect)
-    return CastInternalMessage::Type::kClientConnect;
-  if (type == kAppMessage)
-    return CastInternalMessage::Type::kAppMessage;
-  if (type == kV2Message)
-    return CastInternalMessage::Type::kV2Message;
-  if (type == kLeaveSession)
-    return CastInternalMessage::Type::kLeaveSession;
-  if (type == kReceiverAction)
-    return CastInternalMessage::Type::kReceiverAction;
-  if (type == kNewSession)
-    return CastInternalMessage::Type::kNewSession;
-  if (type == kUpdateSession)
-    return CastInternalMessage::Type::kUpdateSession;
-
-  return CastInternalMessage::Type::kOther;
+  return cast_util::StringToEnum<CastInternalMessage::Type>(type).value_or(
+      CastInternalMessage::Type::kOther);
 }
 
 std::string CastInternalMessageTypeToString(CastInternalMessage::Type type) {
-  switch (type) {
-    case CastInternalMessage::Type::kClientConnect:
-      return kClientConnect;
-    case CastInternalMessage::Type::kAppMessage:
-      return kAppMessage;
-    case CastInternalMessage::Type::kV2Message:
-      return kV2Message;
-    case CastInternalMessage::Type::kLeaveSession:
-      return kLeaveSession;
-    case CastInternalMessage::Type::kReceiverAction:
-      return kReceiverAction;
-    case CastInternalMessage::Type::kNewSession:
-      return kNewSession;
-    case CastInternalMessage::Type::kUpdateSession:
-      return kUpdateSession;
-    case CastInternalMessage::Type::kOther:
-      NOTREACHED();
-      return "";
-  }
-  NOTREACHED();
-  return "";
+  auto found = cast_util::EnumToString(type);
+  DCHECK(found);
+  return std::string(found.value_or(base::StringPiece()));
 }
 
 // Possible types in a receiver_action message.
@@ -110,17 +122,16 @@ constexpr char kReceiverActionTypeStop[] = "stop";
 
 base::ListValue CapabilitiesToListValue(uint8_t capabilities) {
   base::ListValue value;
-  auto& storage = value.GetList();
   if (capabilities & cast_channel::VIDEO_OUT)
-    storage.emplace_back("video_out");
+    value.Append("video_out");
   if (capabilities & cast_channel::VIDEO_IN)
-    storage.emplace_back("video_in");
+    value.Append("video_in");
   if (capabilities & cast_channel::AUDIO_OUT)
-    storage.emplace_back("audio_out");
+    value.Append("audio_out");
   if (capabilities & cast_channel::AUDIO_IN)
-    storage.emplace_back("audio_in");
+    value.Append("audio_in");
   if (capabilities & cast_channel::MULTIZONE_GROUP)
-    storage.emplace_back("multizone_group");
+    value.Append("multizone_group");
   return value;
 }
 
@@ -156,7 +167,7 @@ blink::mojom::PresentationConnectionMessagePtr CreateMessageCommon(
     CastInternalMessage::Type type,
     base::Value payload,
     const std::string& client_id,
-    base::Optional<int> sequence_number = base::nullopt) {
+    absl::optional<int> sequence_number = absl::nullopt) {
   base::Value message(base::Value::Type::DICTIONARY);
   message.SetKey("type", base::Value(CastInternalMessageTypeToString(type)));
   message.SetKey("message", std::move(payload));
@@ -186,7 +197,7 @@ blink::mojom::PresentationConnectionMessagePtr CreateReceiverActionMessage(
 
 base::Value CreateAppMessageBody(
     const std::string& session_id,
-    const cast_channel::CastMessage& cast_message) {
+    const cast::channel::CastMessage& cast_message) {
   // TODO(https://crbug.com/862532): Investigate whether it is possible to move
   // instead of copying the contents of |cast_message|. Right now copying is
   // done because the message is passed as a const ref at the
@@ -195,10 +206,10 @@ base::Value CreateAppMessageBody(
   message.SetKey("sessionId", base::Value(session_id));
   message.SetKey("namespaceName", base::Value(cast_message.namespace_()));
   switch (cast_message.payload_type()) {
-    case cast_channel::CastMessage_PayloadType_STRING:
+    case cast::channel::CastMessage_PayloadType_STRING:
       message.SetKey("message", base::Value(cast_message.payload_utf8()));
       break;
-    case cast_channel::CastMessage_PayloadType_BINARY: {
+    case cast::channel::CastMessage_PayloadType_BINARY: {
       const auto& payload = cast_message.payload_binary();
       message.SetKey("message",
                      base::Value(base::Value::BlobStorage(
@@ -312,7 +323,7 @@ std::unique_ptr<CastInternalMessage> CastInternalMessage::From(
   return base::WrapUnique(new CastInternalMessage(
       message_type, client_id,
       sequence_number_value ? sequence_number_value->GetInt()
-                            : base::Optional<int>(),
+                            : absl::optional<int>(),
       session_id, namespace_or_v2_type, std::move(new_message_body)));
 }
 
@@ -321,13 +332,13 @@ CastInternalMessage::~CastInternalMessage() = default;
 CastInternalMessage::CastInternalMessage(
     Type type,
     const std::string& client_id,
-    base::Optional<int> sequence_number,
+    absl::optional<int> sequence_number,
     const std::string& session_id,
     const std::string& namespace_or_v2_type,
     base::Value message_body)
-    : type(type),
-      client_id(client_id),
-      sequence_number(sequence_number),
+    : type_(type),
+      client_id_(client_id),
+      sequence_number_(sequence_number),
       session_id_(session_id),
       namespace_or_v2_type_(namespace_or_v2_type),
       message_body_(std::move(message_body)) {}
@@ -386,6 +397,9 @@ std::unique_ptr<CastSession> CastSession::From(
   CopyValueWithDefault(app_value, "statusText", base::Value(), &session_value);
   CopyValueWithDefault(app_value, "appImages", base::ListValue(),
                        &session_value);
+  // Optional fields
+  CopyValue(app_value, "appType", &session_value);
+  CopyValue(app_value, "universalAppId", &session_value);
 
   const base::Value* namespaces_value =
       app_value.FindKeyOfType("namespaces", base::Value::Type::LIST);
@@ -483,7 +497,7 @@ blink::mojom::PresentationConnectionMessagePtr CreateAppMessageAck(
 blink::mojom::PresentationConnectionMessagePtr CreateAppMessage(
     const std::string& session_id,
     const std::string& client_id,
-    const cast_channel::CastMessage& cast_message) {
+    const cast::channel::CastMessage& cast_message) {
   return CreateMessageCommon(CastInternalMessage::Type::kAppMessage,
                              CreateAppMessageBody(session_id, cast_message),
                              client_id);
@@ -492,29 +506,40 @@ blink::mojom::PresentationConnectionMessagePtr CreateAppMessage(
 blink::mojom::PresentationConnectionMessagePtr CreateV2Message(
     const std::string& client_id,
     const base::Value& payload,
-    base::Optional<int> sequence_number) {
+    absl::optional<int> sequence_number) {
   return CreateMessageCommon(CastInternalMessage::Type::kV2Message,
                              payload.Clone(), client_id, sequence_number);
 }
 
 blink::mojom::PresentationConnectionMessagePtr CreateLeaveSessionAckMessage(
     const std::string& client_id,
-    base::Optional<int> sequence_number) {
+    absl::optional<int> sequence_number) {
   return CreateMessageCommon(CastInternalMessage::Type::kLeaveSession,
                              base::Value(), client_id, sequence_number);
 }
 
-base::Value SupportedMediaRequestsToListValue(int media_requests) {
+blink::mojom::PresentationConnectionMessagePtr CreateErrorMessage(
+    const std::string& client_id,
+    base::Value error,
+    absl::optional<int> sequence_number) {
+  return CreateMessageCommon(CastInternalMessage::Type::kError,
+                             std::move(error), client_id, sequence_number);
+}
+
+base::Value SupportedMediaCommandsToListValue(int media_commands) {
   base::Value value(base::Value::Type::LIST);
-  auto& storage = value.GetList();
-  if (media_requests & 1)
-    storage.emplace_back("pause");
-  if (media_requests & 2)
-    storage.emplace_back("seek");
-  if (media_requests & 4)
-    storage.emplace_back("stream_volume");
-  if (media_requests & 8)
-    storage.emplace_back("stream_mute");
+  if (media_commands & static_cast<int>(MediaCommand::kPause))
+    value.Append(kMediaCommandPause);
+  if (media_commands & static_cast<int>(MediaCommand::kSeek))
+    value.Append(kMediaCommandSeek);
+  if (media_commands & static_cast<int>(MediaCommand::kStreamVolume))
+    value.Append(kMediaCommandStreamVolume);
+  if (media_commands & static_cast<int>(MediaCommand::kStreamMute))
+    value.Append(kMediaCommandStreamMute);
+  if (media_commands & static_cast<int>(MediaCommand::kQueueNext))
+    value.Append(kMediaCommandQueueNext);
+  if (media_commands & static_cast<int>(MediaCommand::kQueuePrev))
+    value.Append(kMediaCommandQueuePrev);
   return value;
 }
 

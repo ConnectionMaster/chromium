@@ -9,9 +9,10 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension_id.h"
 
@@ -23,7 +24,6 @@ class NotificationSource;
 
 namespace extensions {
 class Extension;
-class ExtensionRegistry;
 class ExtensionPrefs;
 class ExternalInstallError;
 
@@ -33,6 +33,9 @@ class ExternalInstallManager : public ExtensionRegistryObserver,
   ExternalInstallManager(content::BrowserContext* browser_context,
                          bool is_first_run);
   ~ExternalInstallManager() override;
+
+  // Called when the associated profile will be destroyed.
+  void Shutdown();
 
   // Returns true if prompting for external extensions is enabled.
   static bool IsPromptingEnabled();
@@ -117,8 +120,8 @@ class ExternalInstallManager : public ExtensionRegistryObserver,
 
   content::NotificationRegistrar registrar_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExternalInstallManager);
 };

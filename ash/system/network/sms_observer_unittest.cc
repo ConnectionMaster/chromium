@@ -6,7 +6,6 @@
 
 #include <memory>
 
-#include "ash/public/interfaces/vpn_list.mojom.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "base/macros.h"
@@ -64,10 +63,8 @@ TEST_F(SmsObserverTest, SendTextMessage) {
       MessageCenter::Get()->GetVisibleNotifications();
   EXPECT_EQ(1u, notifications.size());
 
-  EXPECT_EQ(base::ASCIIToUTF16("000-000-0000"),
-            (*notifications.begin())->title());
-  EXPECT_EQ(base::UTF8ToUTF16("FakeSMSClient: \xF0\x9F\x98\x8A"),
-            (*notifications.begin())->message());
+  EXPECT_EQ(u"000-000-0000", (*notifications.begin())->title());
+  EXPECT_EQ(u"FakeSMSClient: 😊", (*notifications.begin())->message());
   MessageCenter::Get()->RemoveAllNotifications(false /* by_user */,
                                                MessageCenter::RemoveType::ALL);
   EXPECT_EQ(0u, MessageCenter::Get()->GetVisibleNotifications().size());
@@ -99,7 +96,7 @@ TEST_F(SmsObserverTest, TextMessageEmptyText) {
 TEST_F(SmsObserverTest, TextMessageMissingText) {
   SmsObserver* sms_observer = GetSmsObserver();
   EXPECT_EQ(0u, MessageCenter::Get()->GetVisibleNotifications().size());
-  std::unique_ptr<base::DictionaryValue> sms(CreateMessage(nullptr));
+  std::unique_ptr<base::DictionaryValue> sms(CreateMessage(""));
   sms_observer->MessageReceived(*sms);
   EXPECT_EQ(0u, MessageCenter::Get()->GetVisibleNotifications().size());
 }
@@ -120,11 +117,11 @@ TEST_F(SmsObserverTest, MultipleTextMessages) {
 
   for (message_center::Notification* iter : notifications) {
     if (iter->id().find("chrome://network/sms1") != std::string::npos) {
-      EXPECT_EQ(base::ASCIIToUTF16("000-000-0000"), iter->title());
-      EXPECT_EQ(base::ASCIIToUTF16("first message"), iter->message());
+      EXPECT_EQ(u"000-000-0000", iter->title());
+      EXPECT_EQ(u"first message", iter->message());
     } else if (iter->id().find("chrome://network/sms2") != std::string::npos) {
-      EXPECT_EQ(base::ASCIIToUTF16("000-000-0000"), iter->title());
-      EXPECT_EQ(base::ASCIIToUTF16("second message"), iter->message());
+      EXPECT_EQ(u"000-000-0000", iter->title());
+      EXPECT_EQ(u"second message", iter->message());
     } else {
       ASSERT_TRUE(false);
     }

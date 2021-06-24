@@ -5,25 +5,22 @@
 #ifndef EXTENSIONS_COMMON_MANIFEST_HANDLERS_INCOGNITO_INFO_H_
 #define EXTENSIONS_COMMON_MANIFEST_HANDLERS_INCOGNITO_INFO_H_
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
+#include "extensions/common/api/incognito.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handler.h"
 
 namespace extensions {
 
 struct IncognitoInfo : public Extension::ManifestData {
-  enum Mode { SPLIT, SPANNING, NOT_ALLOWED };
-
-  explicit IncognitoInfo(Mode mode);
-
+  explicit IncognitoInfo(api::incognito::IncognitoMode mode);
   ~IncognitoInfo() override;
 
-  // If true, a separate process will be used for the extension in incognito
-  // mode.
-  Mode mode;
+  api::incognito::IncognitoMode mode;
 
-  // Return the incognito mode information for the given |extension|.
+  // Return whether the |extension| should run in split incognito mode.
   static bool IsSplitMode(const Extension* extension);
 
   // Return whether this extension can be run in incognito mode as specified
@@ -37,7 +34,7 @@ class IncognitoHandler : public ManifestHandler {
   IncognitoHandler();
   ~IncognitoHandler() override;
 
-  bool Parse(Extension* extension, base::string16* error) override;
+  bool Parse(Extension* extension, std::u16string* error) override;
   bool AlwaysParseForType(Manifest::Type type) const override;
 
  private:

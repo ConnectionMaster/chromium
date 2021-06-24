@@ -2,297 +2,374 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "third_party/blink/renderer/core/paint/text_paint_timing_detector.h"
+
 #include <memory>
 
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
-#include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
-#include "third_party/blink/renderer/core/layout/layout_file_upload_control.h"
-#include "third_party/blink/renderer/core/layout/layout_text.h"
-#include "third_party/blink/renderer/core/layout/layout_view.h"
-#include "third_party/blink/renderer/core/page/chrome_client.h"
-#include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/paint/largest_contentful_paint_calculator.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_timing_detector.h"
-#include "third_party/blink/renderer/core/paint/text_paint_timing_detector.h"
-#include "third_party/blink/renderer/platform/geometry/layout_rect.h"
-#include "third_party/blink/renderer/platform/graphics/paint/geometry_mapper.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/traced_value.h"
 
 namespace blink {
 
-// Calculate metrics candidate every 1 second after the first text pre-paint.
-static constexpr TimeDelta kTimerDelay = TimeDelta::FromSeconds(1);
-constexpr size_t kTextNodeNumberLimit = 5000;
+namespace {
 
-static bool LargeTextFirst(const base::WeakPtr<TextRecord>& a,
-                           const base::WeakPtr<TextRecord>& b) {
+bool LargeTextFirst(const base::WeakPtr<TextRecord>& a,
+                    const base::WeakPtr<TextRecord>& b) {
   DCHECK(a);
   DCHECK(b);
   if (a->first_size != b->first_size)
     return a->first_size > b->first_size;
   // This make sure that two different nodes with the same |first_size| wouldn't
   // be merged in the set.
-  return a->node_id > b->node_id;
+  return a->insertion_index_ < b->insertion_index_;
 }
 
-TextPaintTimingDetector::TextPaintTimingDetector(LocalFrameView* frame_view)
-    : records_manager_(),
-      timer_(frame_view->GetFrame().GetTaskRunner(TaskType::kInternalDefault),
-             this,
-             &TextPaintTimingDetector::TimerFired),
+}  // namespace
+
+TextPaintTimingDetector::TextPaintTimingDetector(
+    LocalFrameView* frame_view,
+    PaintTimingDetector* paint_timing_detector,
+    PaintTimingCallbackManager* callback_manager)
+    : records_manager_(frame_view, paint_timing_detector),
+      callback_manager_(callback_manager),
       frame_view_(frame_view) {}
 
-void TextPaintTimingDetector::PopulateTraceValue(
+void LargestTextPaintManager::PopulateTraceValue(
     TracedValue& value,
-    const TextRecord& first_text_paint,
-    unsigned candidate_index) const {
+    const TextRecord& first_text_paint) {
+  // TODO(crbug.com/976893): Remove DOMNodeId.
   value.SetInteger("DOMNodeId", static_cast<int>(first_text_paint.node_id));
-#ifndef NDEBUG
-  value.SetString("text", first_text_paint.text);
-#endif
   value.SetInteger("size", static_cast<int>(first_text_paint.first_size));
-  value.SetInteger("candidateIndex", candidate_index);
-  value.SetString("frame",
-                  IdentifiersFactory::FrameId(&frame_view_->GetFrame()));
+  value.SetInteger("candidateIndex", ++count_candidates_);
   value.SetBoolean("isMainFrame", frame_view_->GetFrame().IsMainFrame());
   value.SetBoolean("isOOPIF",
                    !frame_view_->GetFrame().LocalFrameRoot().IsMainFrame());
-}
-
-void TextPaintTimingDetector::OnLargestTextDetected(
-    const TextRecord& largest_text_record) {
-  largest_text_paint_ = largest_text_record.paint_time;
-  largest_text_paint_size_ = largest_text_record.first_size;
-  auto value = std::make_unique<TracedValue>();
-  PopulateTraceValue(*value, largest_text_record, count_candidates_++);
-  TRACE_EVENT_INSTANT_WITH_TIMESTAMP1(
-      "loading", "LargestTextPaint::Candidate", TRACE_EVENT_SCOPE_THREAD,
-      largest_text_paint_, "data", std::move(value));
-}
-
-void TextPaintTimingDetector::TimerFired(TimerBase* time) {
-  // Wrap Analyze method in TimerFired so that we can drop |time| for Analyze
-  // in testing.
-  Analyze();
-}
-
-void TextPaintTimingDetector::Analyze() {
-  TextRecord* candidate = records_manager_.FindLargestPaintCandidate();
-  DCHECK(!candidate || !candidate->paint_time.is_null());
-  if (candidate && candidate->paint_time != largest_text_paint_) {
-    OnLargestTextDetected(*candidate);
-    frame_view_->GetPaintTimingDetector().DidChangePerformanceTiming();
+  if (first_text_paint.lcp_rect_info_) {
+    first_text_paint.lcp_rect_info_->OutputToTraceValue(value);
   }
 }
 
+void LargestTextPaintManager::ReportCandidateToTrace(
+    const TextRecord& largest_text_record) {
+  if (!PaintTimingDetector::IsTracing())
+    return;
+  auto value = std::make_unique<TracedValue>();
+  PopulateTraceValue(*value, largest_text_record);
+  TRACE_EVENT_MARK_WITH_TIMESTAMP2("loading", "LargestTextPaint::Candidate",
+                                   largest_text_record.paint_time, "data",
+                                   std::move(value), "frame",
+                                   ToTraceValue(&frame_view_->GetFrame()));
+}
+
+void LargestTextPaintManager::ReportNoCandidateToTrace() {
+  if (!PaintTimingDetector::IsTracing())
+    return;
+  auto value = std::make_unique<TracedValue>();
+  value->SetInteger("candidateIndex", ++count_candidates_);
+  value->SetBoolean("isMainFrame", frame_view_->GetFrame().IsMainFrame());
+  value->SetBoolean("isOOPIF",
+                    !frame_view_->GetFrame().LocalFrameRoot().IsMainFrame());
+  TRACE_EVENT2("loading", "LargestTextPaint::NoCandidate", "data",
+               std::move(value), "frame",
+               ToTraceValue(&frame_view_->GetFrame()));
+}
+
+base::WeakPtr<TextRecord> LargestTextPaintManager::UpdateCandidate() {
+  base::WeakPtr<TextRecord> largest_text_record = FindLargestPaintCandidate();
+  const base::TimeTicks time =
+      largest_text_record ? largest_text_record->paint_time : base::TimeTicks();
+  const uint64_t size =
+      largest_text_record ? largest_text_record->first_size : 0;
+  DCHECK(paint_timing_detector_);
+  bool changed =
+      paint_timing_detector_->NotifyIfChangedLargestTextPaint(time, size);
+  if (changed) {
+    if (!time.is_null())
+      ReportCandidateToTrace(*largest_text_record);
+    else
+      ReportNoCandidateToTrace();
+  }
+  return largest_text_record;
+}
+
 void TextPaintTimingDetector::OnPaintFinished() {
+  if (need_update_timing_at_frame_end_) {
+    need_update_timing_at_frame_end_ = false;
+    frame_view_->GetPaintTimingDetector()
+        .UpdateLargestContentfulPaintCandidate();
+  }
   if (records_manager_.NeedMeausuringPaintTime()) {
-    // Start repeating timer only once at the first text paint.
-    if (!timer_.IsActive())
-      timer_.StartRepeating(kTimerDelay, FROM_HERE);
-    if (!awaiting_swap_promise_) {
-      RegisterNotifySwapTime(
-          CrossThreadBind(&TextPaintTimingDetector::ReportSwapTime,
-                          WrapCrossThreadWeakPersistent(this)));
+    if (!awaiting_presentation_promise_) {
+      // |WrapCrossThreadWeakPersistent| guarantees that when |this| is killed,
+      // the callback function will not be invoked.
+      RegisterNotifyPresentationTime(
+          WTF::Bind(&TextPaintTimingDetector::ReportPresentationTime,
+                    WrapCrossThreadWeakPersistent(this)));
     }
   }
 }
 
-void TextPaintTimingDetector::NotifyNodeRemoved(DOMNodeId node_id) {
-  if (!is_recording_)
-    return;
-  if (!records_manager_.IsKnownVisibleNode(node_id))
-    return;
-  records_manager_.SetNodeDetachedIfNeeded(node_id);
-  if (records_manager_.AreAllVisibleNodesDetached() &&
-      largest_text_paint_ != base::TimeTicks()) {
-    largest_text_paint_ = base::TimeTicks();
-    frame_view_->GetPaintTimingDetector().DidChangePerformanceTiming();
+void TextPaintTimingDetector::LayoutObjectWillBeDestroyed(
+    const LayoutObject& object) {
+  if (records_manager_.IsKnownVisible(object)) {
+    records_manager_.RemoveVisibleRecord(object);
+    need_update_timing_at_frame_end_ = true;
+  } else if (records_manager_.IsKnownInvisible(object)) {
+    records_manager_.RemoveInvisibleRecord(object);
+    need_update_timing_at_frame_end_ = true;
   }
 }
 
-void TextPaintTimingDetector::RegisterNotifySwapTime(
-    ReportTimeCallback callback) {
-  // ReportSwapTime on layerTreeView will queue a swap-promise, the callback is
-  // called when the swap for current render frame completes or fails to happen.
-  LocalFrame& frame = frame_view_->GetFrame();
-  if (!frame.GetPage())
-    return;
-  frame.GetPage()->GetChromeClient().NotifySwapTime(
-      frame, ConvertToBaseCallback(std::move(callback)));
-  awaiting_swap_promise_ = true;
+void TextPaintTimingDetector::RegisterNotifyPresentationTime(
+    PaintTimingCallbackManager::LocalThreadCallback callback) {
+  callback_manager_->RegisterCallback(std::move(callback));
+  awaiting_presentation_promise_ = true;
 }
 
-void TextPaintTimingDetector::ReportSwapTime(WebWidgetClient::SwapResult result,
-                                             base::TimeTicks timestamp) {
-  records_manager_.AssignPaintTimeToQueuedNodes(timestamp);
-  awaiting_swap_promise_ = false;
+void TextPaintTimingDetector::ReportPresentationTime(
+    base::TimeTicks timestamp) {
+  if (!records_manager_.HasTextElementTiming()) {
+    Document* document = frame_view_->GetFrame().GetDocument();
+    if (document) {
+      LocalDOMWindow* window = document->domWindow();
+      if (window) {
+        records_manager_.SetTextElementTiming(
+            &TextElementTiming::From(*window));
+      }
+    }
+  }
+  records_manager_.AssignPaintTimeToQueuedRecords(timestamp);
+  if (IsRecordingLargestTextPaint())
+    UpdateCandidate();
+  awaiting_presentation_promise_ = false;
 }
 
-void TextPaintTimingDetector::RecordText(
-    const LayoutObject& object,
-    const PropertyTreeState& current_paint_chunk_properties) {
-  if (!is_recording_)
-    return;
-  DCHECK(!records_manager_.HasTooManyNodes());
+bool TextPaintTimingDetector::ShouldWalkObject(
+    const LayoutBoxModelObject& object) const {
   // TODO(crbug.com/933479): Use LayoutObject::GeneratingNode() to include
   // anonymous objects' rect.
   Node* node = object.GetNode();
   if (!node)
+    return false;
+  // If we have finished recording Largest Text Paint and the element is a
+  // shadow element or has no elementtiming attribute, then we should not record
+  // its text.
+  if (!records_manager_.IsRecordingLargestTextPaint() &&
+      !TextElementTiming::NeededForElementTiming(*node)) {
+    return false;
+  }
+
+  // This metric defines the size of a text block by its first size, so we
+  // should not walk the object if it has been recorded.
+  return !records_manager_.HasRecorded(object);
+}
+
+void TextPaintTimingDetector::RecordAggregatedText(
+    const LayoutBoxModelObject& aggregator,
+    const IntRect& aggregated_visual_rect,
+    const PropertyTreeStateOrAlias& property_tree_state) {
+  DCHECK(ShouldWalkObject(aggregator));
+
+  // The caller should check this.
+  DCHECK(!aggregated_visual_rect.IsEmpty());
+
+  FloatRect mapped_visual_rect =
+      frame_view_->GetPaintTimingDetector().CalculateVisualRect(
+          aggregated_visual_rect, property_tree_state);
+  uint64_t aggregated_size = mapped_visual_rect.Size().Area();
+  DCHECK_LE(IgnorePaintTimingScope::IgnoreDepth(), 1);
+  // Record the largest aggregated text that is hidden due to documentElement
+  // being invisible but by no other reason (i.e. IgnoreDepth() needs to be 1).
+  if (IgnorePaintTimingScope::IgnoreDepth() == 1) {
+    if (IgnorePaintTimingScope::IsDocumentElementInvisible() &&
+        records_manager_.IsRecordingLargestTextPaint()) {
+      records_manager_.MaybeUpdateLargestIgnoredText(
+          aggregator, aggregated_size, aggregated_visual_rect,
+          mapped_visual_rect);
+    }
+    return;
+  }
+
+  if (aggregated_size == 0) {
+    records_manager_.RecordInvisibleObject(aggregator);
+  } else {
+    records_manager_.RecordVisibleObject(
+        aggregator, aggregated_size,
+        TextElementTiming::ComputeIntersectionRect(
+            aggregator, aggregated_visual_rect, property_tree_state,
+            frame_view_),
+        aggregated_visual_rect, mapped_visual_rect);
+    if (absl::optional<PaintTimingVisualizer>& visualizer =
+            frame_view_->GetPaintTimingDetector().Visualizer()) {
+      visualizer->DumpTextDebuggingRect(aggregator, mapped_visual_rect);
+    }
+  }
+}
+
+void TextPaintTimingDetector::StopRecordingLargestTextPaint() {
+  records_manager_.CleanUpLargestTextPaint();
+}
+
+void TextPaintTimingDetector::ReportLargestIgnoredText() {
+  records_manager_.ReportLargestIgnoredText();
+}
+
+void TextPaintTimingDetector::Trace(Visitor* visitor) const {
+  visitor->Trace(records_manager_);
+  visitor->Trace(frame_view_);
+  visitor->Trace(callback_manager_);
+}
+
+LargestTextPaintManager::LargestTextPaintManager(
+    LocalFrameView* frame_view,
+    PaintTimingDetector* paint_timing_detector)
+    : size_ordered_set_(&LargeTextFirst),
+      frame_view_(frame_view),
+      paint_timing_detector_(paint_timing_detector) {}
+
+void LargestTextPaintManager::MaybeUpdateLargestIgnoredText(
+    const LayoutObject& object,
+    const uint64_t& size,
+    const IntRect& frame_visual_rect,
+    const FloatRect& root_visual_rect) {
+  if (size &&
+      (!largest_ignored_text_ || size > largest_ignored_text_->first_size)) {
+    Node* node = object.GetNode();
+    DCHECK(node);
+    DOMNodeId node_id = DOMNodeIds::IdForNode(node);
+    largest_ignored_text_ = std::make_unique<TextRecord>(
+        node_id, size, FloatRect(), frame_visual_rect, root_visual_rect);
+  }
+}
+
+void LargestTextPaintManager::Trace(Visitor* visitor) const {
+  visitor->Trace(frame_view_);
+  visitor->Trace(paint_timing_detector_);
+}
+
+void TextRecordsManager::RemoveVisibleRecord(const LayoutObject& object) {
+  DCHECK(visible_objects_.Contains(&object));
+  if (ltp_manager_) {
+    ltp_manager_->RemoveVisibleRecord(
+        visible_objects_.at(&object)->AsWeakPtr());
+  }
+  visible_objects_.erase(&object);
+  // We don't need to remove elements in |texts_queued_for_paint_time_| and
+  // |cached_largest_paint_candidate_| as they are weak ptr.
+}
+
+void TextRecordsManager::CleanUpLargestTextPaint() {
+  ltp_manager_.Clear();
+}
+
+void TextRecordsManager::RemoveInvisibleRecord(const LayoutObject& object) {
+  DCHECK(invisible_objects_.Contains(&object));
+  invisible_objects_.erase(&object);
+}
+
+void TextRecordsManager::AssignPaintTimeToQueuedRecords(
+    const base::TimeTicks& timestamp) {
+  // If the number of TextRecords to be processed is 0, it means they have been
+  // consumed in a callback earlier than this one. That violates the assumption
+  // that only one or zero callback will be called after one OnPaintFinished.
+  DCHECK_GT(texts_queued_for_paint_time_.size() +
+                size_zero_texts_queued_for_paint_time_.size(),
+            0UL);
+  bool can_report_element_timing =
+      text_element_timing_ ? text_element_timing_->CanReportElements() : false;
+  for (auto iterator = texts_queued_for_paint_time_.begin();
+       iterator != texts_queued_for_paint_time_.end(); ++iterator) {
+    // The record may have been removed between the callback registration and
+    // invoking.
+    base::WeakPtr<TextRecord>& record = *iterator;
+    if (!record) {
+      texts_queued_for_paint_time_.erase(iterator);
+      continue;
+    }
+    DCHECK_EQ(record->paint_time, base::TimeTicks());
+    record->paint_time = timestamp;
+    if (can_report_element_timing)
+      text_element_timing_->OnTextObjectPainted(*record);
+  }
+  if (can_report_element_timing) {
+    for (const auto& record : size_zero_texts_queued_for_paint_time_) {
+      record->paint_time = timestamp;
+      text_element_timing_->OnTextObjectPainted(*record);
+    }
+  }
+  texts_queued_for_paint_time_.clear();
+  size_zero_texts_queued_for_paint_time_.clear();
+  if (ltp_manager_)
+    ltp_manager_->SetCachedResultInvalidated(true);
+}
+
+void TextRecordsManager::RecordVisibleObject(
+    const LayoutObject& object,
+    const uint64_t& visual_size,
+    const FloatRect& element_timing_rect,
+    const IntRect& frame_visual_rect,
+    const FloatRect& root_visual_rect) {
+  DCHECK_GT(visual_size, 0u);
+
+  Node* node = object.GetNode();
+  DCHECK(node);
+  DOMNodeId node_id = DOMNodeIds::IdForNode(node);
+  DCHECK_NE(node_id, kInvalidDOMNodeId);
+  std::unique_ptr<TextRecord> record =
+      std::make_unique<TextRecord>(node_id, visual_size, element_timing_rect,
+                                   frame_visual_rect, root_visual_rect);
+  base::WeakPtr<TextRecord> record_weak_ptr = record->AsWeakPtr();
+  if (ltp_manager_)
+    ltp_manager_->InsertRecord(record_weak_ptr);
+
+  QueueToMeasurePaintTime(record_weak_ptr);
+  visible_objects_.insert(&object, std::move(record));
+}
+
+void TextRecordsManager::RecordInvisibleObject(const LayoutObject& object) {
+  invisible_objects_.insert(&object);
+  Node* node = object.GetNode();
+  DCHECK(node);
+  if (!TextElementTiming::NeededForElementTiming(*node))
     return;
   DOMNodeId node_id = DOMNodeIds::IdForNode(node);
   DCHECK_NE(node_id, kInvalidDOMNodeId);
+  // Since it is invisible, the record will have a size of 0 and an empty rect.
+  std::unique_ptr<TextRecord> record = std::make_unique<TextRecord>(
+      node_id, 0, FloatRect(), IntRect(), FloatRect());
+  size_zero_texts_queued_for_paint_time_.push_back(std::move(record));
+}
 
-  records_manager_.MarkNodeReattachedIfNeeded(node_id);
-
-  // This metric defines the size of a text by its first size. So it
-  // early-returns if the text has been recorded.
-  if (records_manager_.HasRecorded(node_id))
+void TextRecordsManager::ReportLargestIgnoredText() {
+  if (!ltp_manager_)
+    return;
+  std::unique_ptr<TextRecord> record = ltp_manager_->PopLargestIgnoredText();
+  if (!record)
+    return;
+  Node* node = DOMNodeIds::NodeForId(record->node_id);
+  // If the content has been removed, abort. It was never visible.
+  if (!node || !node->GetLayoutObject())
     return;
 
-  uint64_t visual_size = 0;
-  // Compared to object.FirstFragment().VisualRect(), this will include other
-  // fragments of the object.
-  IntRect visual_rect = object.FragmentsVisualRectBoundingBox();
-  if (!visual_rect.IsEmpty()) {
-    visual_size = frame_view_->GetPaintTimingDetector().CalculateVisualSize(
-        visual_rect, current_paint_chunk_properties);
-  }
-  DVLOG(2) << "Node id (" << node_id << "): size=" << visual_size
-           << ", type=" << object.DebugName();
-
-  // When visual_size == 0, it either means the text size is 0 or the text is
-  // out of viewport. In either case, we don't record their time for efficiency.
-  if (visual_size == 0) {
-    records_manager_.RecordInvisibleNode(node_id);
-  } else {
-    records_manager_.RecordVisibleNode(node_id, visual_size, object);
-  }
-
-  if (records_manager_.HasTooManyNodes()) {
-    TRACE_EVENT_INSTANT2("loading", "TextPaintTimingDetector::OverNodeLimit",
-                         TRACE_EVENT_SCOPE_THREAD, "count_size_non_zero_nodes",
-                         records_manager_.CountVisibleNodes(),
-                         "count_size_zero_nodes",
-                         records_manager_.CountInvisibleNodes());
-    StopRecordEntries();
-  }
+  base::WeakPtr<TextRecord> record_weak_ptr = record->AsWeakPtr();
+  ltp_manager_->InsertRecord(record_weak_ptr);
+  QueueToMeasurePaintTime(record_weak_ptr);
+  visible_objects_.insert(node->GetLayoutObject(), std::move(record));
 }
 
-TextRecord* TextPaintTimingDetector::FindLargestPaintCandidate() {
-  return records_manager_.FindLargestPaintCandidate();
-}
-
-void TextPaintTimingDetector::StopRecordEntries() {
-  timer_.Stop();
-  is_recording_ = false;
-}
-
-void TextPaintTimingDetector::Trace(blink::Visitor* visitor) {
-  visitor->Trace(frame_view_);
-}
-
-TextRecordsManager::TextRecordsManager() : size_ordered_set_(&LargeTextFirst) {}
-
-bool TextRecordsManager::AreAllVisibleNodesDetached() const {
-  return visible_node_map_.size() == detached_ids_.size();
-}
-
-void TextRecordsManager::SetNodeDetachedIfNeeded(const DOMNodeId& node_id) {
-  if (!visible_node_map_.Contains(node_id))
-    return;
-  if (detached_ids_.Contains(node_id))
-    return;
-  detached_ids_.insert(node_id);
-  is_result_invalidated_ = true;
-}
-
-void TextRecordsManager::AssignPaintTimeToQueuedNodes(
-    const base::TimeTicks& timestamp) {
-  // If texts_queued_for_paint_time_.size == 0, it means the array has been
-  // consumed in a callback earlier than this one. That violates the assumption
-  // that only one or zero callback will be called after one OnPaintFinished.
-  DCHECK_GT(texts_queued_for_paint_time_.size(), 0UL);
-  while (!texts_queued_for_paint_time_.empty()) {
-    base::WeakPtr<TextRecord>& record = texts_queued_for_paint_time_.front();
-    DCHECK(visible_node_map_.Contains(record->node_id));
-    DCHECK_EQ(record->paint_time, base::TimeTicks());
-    record->paint_time = timestamp;
-
-    texts_queued_for_paint_time_.pop();
-    is_result_invalidated_ = true;
-  }
-}
-
-void TextRecordsManager::MarkNodeReattachedIfNeeded(const DOMNodeId& node_id) {
-  if (!detached_ids_.Contains(node_id))
-    return;
-  DCHECK(visible_node_map_.Contains(node_id) ||
-         invisible_node_ids_.Contains(node_id));
-  detached_ids_.erase(node_id);
-  is_result_invalidated_ = true;
-}
-
-bool TextRecordsManager::HasRecorded(const DOMNodeId& node_id) const {
-  return visible_node_map_.Contains(node_id) ||
-         invisible_node_ids_.Contains(node_id);
-}
-
-void TextRecordsManager::RecordInvisibleNode(const DOMNodeId& node_id) {
-  DCHECK(!HasTooManyNodes());
-  invisible_node_ids_.insert(node_id);
-}
-
-void TextRecordsManager::RecordVisibleNode(const DOMNodeId& node_id,
-                                           const uint64_t& visual_size,
-                                           const LayoutObject& text_object) {
-  DCHECK(!HasTooManyNodes());
-  DCHECK_GT(visual_size, 0u);
-  std::unique_ptr<TextRecord> record =
-      std::make_unique<TextRecord>(node_id, visual_size);
-#ifndef NDEBUG
-  String text;
-  if (text_object.IsText()) {
-    text = ToLayoutText(&text_object)->GetText();
-  } else if (text_object.IsFileUploadControl()) {
-    text = ToLayoutFileUploadControl(&text_object)->FileTextValue();
-  } else {
-    text = String("NON-TEXT-OBJECT");
-  }
-  record->text = text;
-#endif
-  size_ordered_set_.emplace(record->AsWeakPtr());
-  QueueToMeasurePaintTime(record->AsWeakPtr());
-  visible_node_map_.insert(node_id, std::move(record));
-  is_result_invalidated_ = true;
-}
-
-void TextRecordsManager::QueueToMeasurePaintTime(
-    base::WeakPtr<TextRecord> record) {
-  texts_queued_for_paint_time_.emplace(record);
-}
-
-bool TextRecordsManager::HasTooManyNodes() const {
-  return visible_node_map_.size() + invisible_node_ids_.size() >=
-         kTextNodeNumberLimit;
-}
-
-TextRecord* TextRecordsManager::FindLargestPaintCandidate() {
-  DCHECK_EQ(visible_node_map_.size(), size_ordered_set_.size());
-  if (!is_result_invalidated_)
+base::WeakPtr<TextRecord> LargestTextPaintManager::FindLargestPaintCandidate() {
+  if (!is_result_invalidated_ && cached_largest_paint_candidate_)
     return cached_largest_paint_candidate_;
-  TextRecord* new_largest_paint_candidate = nullptr;
-  for (auto it = size_ordered_set_.begin(); it != size_ordered_set_.end();
-       ++it) {
-    // WeakPtr::IsValid() is expensive. We use raw pointer to reduce the checks.
-    TextRecord* text_record = (*it).get();
+  base::WeakPtr<TextRecord> new_largest_paint_candidate = nullptr;
+  for (const auto& text_record : size_ordered_set_) {
     DCHECK(text_record);
-    if (detached_ids_.Contains(text_record->node_id) ||
-        text_record->paint_time.is_null())
+    if (text_record->paint_time.is_null())
       continue;
-    DCHECK(visible_node_map_.Contains(text_record->node_id));
     new_largest_paint_candidate = text_record;
     break;
   }
@@ -300,4 +377,17 @@ TextRecord* TextRecordsManager::FindLargestPaintCandidate() {
   is_result_invalidated_ = false;
   return new_largest_paint_candidate;
 }
+
+TextRecordsManager::TextRecordsManager(
+    LocalFrameView* frame_view,
+    PaintTimingDetector* paint_timing_detector)
+    : ltp_manager_(MakeGarbageCollected<LargestTextPaintManager>(
+          frame_view,
+          paint_timing_detector)) {}
+
+void TextRecordsManager::Trace(Visitor* visitor) const {
+  visitor->Trace(text_element_timing_);
+  visitor->Trace(ltp_manager_);
+}
+
 }  // namespace blink

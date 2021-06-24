@@ -22,28 +22,31 @@
 #include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
+#include "ios/chrome/app/tests_hook.h"
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/arch_util.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state_manager.h"
 #include "ios/chrome/browser/browser_state_metrics/browser_state_metrics.h"
 #include "ios/chrome/browser/install_time_util.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
+#import "ios/chrome/browser/upgrade/upgrade_constants.h"
 #include "ios/chrome/browser/upgrade/upgrade_recommended_details.h"
 #include "ios/chrome/common/channel_info.h"
 #include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #include "ios/public/provider/chrome/browser/omaha/omaha_service_provider.h"
 #include "ios/public/provider/chrome/browser/omaha/omaha_xml_writer.h"
-#include "ios/web/public/web_task_traits.h"
-#include "ios/web/public/web_thread.h"
-#include "libxml/xmlwriter.h"
+#include "ios/web/public/thread/web_task_traits.h"
+#include "ios/web/public/thread/web_thread.h"
 #include "net/base/backoff_entry.h"
 #include "net/base/load_flags.h"
 #include "net/url_request/url_fetcher.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "third_party/libxml/chromium/xml_writer.h"
 #include "url/gurl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -68,53 +71,42 @@ NSString* const kNumberTriesKey = @"ChromeOmahaServiceNumberTries";
 NSString* const kLastSentVersionKey = @"ChromeOmahaServiceLastSentVersion";
 NSString* const kLastSentTimeKey = @"ChromeOmahaServiceLastSentTime";
 NSString* const kRetryRequestIdKey = @"ChromeOmahaServiceRetryRequestId";
+NSString* const kLastServerDateKey = @"ChromeOmahaServiceLastServerDate";
 
 class XmlWrapper : public OmahaXmlWriter {
  public:
-  XmlWrapper()
-      : buffer_(xmlBufferCreate()),
-        writer_(xmlNewTextWriterMemory(buffer_, /* compression */ 0)) {
-    DCHECK(buffer_);
-    DCHECK(writer_);
+  XmlWrapper() {
+    writer_.StartWriting();
+    writer_.StopIndenting();
   }
 
-  ~XmlWrapper() override {
-    xmlFreeTextWriter(writer_);
-    xmlBufferFree(buffer_);
-  }
+  ~XmlWrapper() override = default;
 
   void StartElement(const char* name) override {
     DCHECK(name);
-    int result = xmlTextWriterStartElement(
-        writer_, reinterpret_cast<const xmlChar*>(name));
-    DCHECK_GE(result, 0);
+    bool ok = writer_.StartElement(name);
+    DCHECK(ok);
   }
 
   void EndElement() override {
-    int result = xmlTextWriterEndElement(writer_);
-    DCHECK_GE(result, 0);
+    bool ok = writer_.EndElement();
+    DCHECK(ok);
   }
 
   void WriteAttribute(const char* name, const char* value) override {
     DCHECK(name);
-    int result = xmlTextWriterWriteAttribute(
-        writer_, reinterpret_cast<const xmlChar*>(name),
-        reinterpret_cast<const xmlChar*>(value));
-    DCHECK_GE(result, 0);
+    bool ok = writer_.AddAttribute(name, value);
+    DCHECK(ok);
   }
 
-  void Finalize() override {
-    int result = xmlTextWriterEndDocument(writer_);
-    DCHECK_GE(result, 0);
-  }
+  void Finalize() override { writer_.StopWriting(); }
 
   std::string GetContentAsString() override {
-    return std::string(reinterpret_cast<char*>(buffer_->content));
+    return writer_.GetWrittenString();
   }
 
  private:
-  xmlBufferPtr buffer_;
-  xmlTextWriterPtr writer_;
+  XmlWriter writer_;
 
   DISALLOW_COPY_AND_ASSIGN(XmlWrapper);
 };
@@ -125,16 +117,18 @@ class XmlWrapper : public OmahaXmlWriter {
 
 // XML parser for the server response.
 @interface ResponseParser : NSObject<NSXMLParserDelegate> {
-  BOOL hasError_;
-  BOOL responseIsParsed_;
-  BOOL appIsParsed_;
-  BOOL updateCheckIsParsed_;
-  BOOL urlIsParsed_;
-  BOOL manifestIsParsed_;
-  BOOL pingIsParsed_;
-  BOOL eventIsParsed_;
-  NSString* appId_;
-  std::unique_ptr<UpgradeRecommendedDetails> updateInformation_;
+  BOOL _hasError;
+  BOOL _responseIsParsed;
+  BOOL _appIsParsed;
+  BOOL _updateCheckIsParsed;
+  BOOL _urlIsParsed;
+  BOOL _manifestIsParsed;
+  BOOL _pingIsParsed;
+  BOOL _eventIsParsed;
+  BOOL _dayStartIsParsed;
+  NSString* _appId;
+  int _serverDate;
+  std::unique_ptr<UpgradeRecommendedDetails> _updateInformation;
 }
 
 // Initialization method. |appId| is the application id one expects to find in
@@ -144,9 +138,13 @@ class XmlWrapper : public OmahaXmlWriter {
 // Returns YES if the message has been correctly parsed.
 - (BOOL)isCorrect;
 
-// If an upgrade is possible, returns the details of the notification to send.
-// Otherwise, return NULL.
+// If an upgrade is available, returns the details of the notification to send,
+// and returns if Chrome is up to date.
 - (UpgradeRecommendedDetails*)upgradeRecommendedDetails;
+
+// If the response was successfully parsed, returns the date according to the
+// server.
+- (int)serverDate;
 
 @end
 
@@ -154,7 +152,7 @@ class XmlWrapper : public OmahaXmlWriter {
 
 - (instancetype)initWithAppId:(NSString*)appId {
   if (self = [super init]) {
-    appId_ = appId;
+    _appId = appId;
   }
   return self;
 }
@@ -162,16 +160,20 @@ class XmlWrapper : public OmahaXmlWriter {
 - (BOOL)isCorrect {
   // A response should have either a ping ACK or an event ACK, depending on the
   // contents of the request.
-  return !hasError_ && (pingIsParsed_ || eventIsParsed_);
+  return !_hasError && (_pingIsParsed || _eventIsParsed);
 }
 
 - (UpgradeRecommendedDetails*)upgradeRecommendedDetails {
-  return updateInformation_.get();
+  return _updateInformation.get();
+}
+
+- (int)serverDate {
+  return _serverDate;
 }
 
 // This method is parsing a message with the following type:
 // <response...>
-//   <daystart.../>
+//   <daystart elapsed_days="???" .../>
 //   <app...>
 //     <updatecheck status="ok">
 //       <urls>
@@ -203,135 +205,201 @@ class XmlWrapper : public OmahaXmlWriter {
        namespaceURI:(NSString*)namespaceURI
       qualifiedName:(NSString*)qualifiedName
          attributes:(NSDictionary*)attributeDict {
-  if (hasError_)
+  if (_hasError)
     return;
 
   // Array of uninteresting tags in the Omaha xml response.
   NSArray* ignoredTagNames =
-      @[ @"action", @"actions", @"daystart", @"package", @"packages", @"urls" ];
+      @[ @"action", @"actions", @"package", @"packages", @"urls" ];
   if ([ignoredTagNames containsObject:elementName])
     return;
 
-  if (!responseIsParsed_) {
+  if (!_responseIsParsed) {
     if ([elementName isEqualToString:@"response"] &&
         [[attributeDict valueForKey:@"protocol"] isEqualToString:@"3.0"] &&
         [[attributeDict valueForKey:@"server"] isEqualToString:@"prod"]) {
-      responseIsParsed_ = YES;
+      _responseIsParsed = YES;
     } else {
-      hasError_ = YES;
+      _hasError = YES;
     }
-  } else if (!appIsParsed_) {
+  } else if (!_dayStartIsParsed) {
+    if ([elementName isEqualToString:@"daystart"]) {
+      _dayStartIsParsed = YES;
+      _serverDate = [[attributeDict valueForKey:@"elapsed_days"] integerValue];
+    } else {
+      _hasError = YES;
+    }
+  } else if (!_appIsParsed) {
     if ([elementName isEqualToString:@"app"] &&
         [[attributeDict valueForKey:@"status"] isEqualToString:@"ok"] &&
-        [[attributeDict valueForKey:@"appid"] isEqualToString:appId_]) {
-      appIsParsed_ = YES;
+        [[attributeDict valueForKey:@"appid"] isEqualToString:_appId]) {
+      _appIsParsed = YES;
     } else {
-      hasError_ = YES;
+      _hasError = YES;
     }
-  } else if (!eventIsParsed_ && !updateCheckIsParsed_) {
+  } else if (!_eventIsParsed && !_updateCheckIsParsed) {
     if ([elementName isEqualToString:@"updatecheck"]) {
-      updateCheckIsParsed_ = YES;
+      _updateCheckIsParsed = YES;
       NSString* status = [attributeDict valueForKey:@"status"];
+      _updateInformation = std::make_unique<UpgradeRecommendedDetails>();
       if ([status isEqualToString:@"noupdate"]) {
         // No update is available on the Market, so we won't get a <url> or
         // <manifest> tag.
-        urlIsParsed_ = YES;
-        manifestIsParsed_ = YES;
+        _urlIsParsed = YES;
+        _manifestIsParsed = YES;
+        _updateInformation->is_up_to_date = true;
+        [[NSUserDefaults standardUserDefaults] setBool:true
+                                                forKey:kIOSChromeUpToDateKey];
       } else if ([status isEqualToString:@"ok"]) {
-        updateInformation_ = std::make_unique<UpgradeRecommendedDetails>();
+        _updateInformation->is_up_to_date = false;
+        [[NSUserDefaults standardUserDefaults] setBool:false
+                                                forKey:kIOSChromeUpToDateKey];
       } else {
-        hasError_ = YES;
+        _updateInformation = nullptr;
+        _hasError = YES;
       }
     } else if ([elementName isEqualToString:@"event"]) {
       if ([[attributeDict valueForKey:@"status"] isEqualToString:@"ok"]) {
-        eventIsParsed_ = YES;
+        _eventIsParsed = YES;
       } else {
-        hasError_ = YES;
+        _hasError = YES;
       }
     } else {
-      hasError_ = YES;
+      _hasError = YES;
     }
-  } else if (!urlIsParsed_) {
+  } else if (!_urlIsParsed) {
     if ([elementName isEqualToString:@"url"] &&
         [[attributeDict valueForKey:@"codebase"] length] > 0) {
-      urlIsParsed_ = YES;
-      DCHECK(updateInformation_);
+      _urlIsParsed = YES;
+      DCHECK(_updateInformation);
       NSString* url = [attributeDict valueForKey:@"codebase"];
       if ([[url substringFromIndex:([url length] - 1)] isEqualToString:@"/"])
         url = [url substringToIndex:([url length] - 1)];
-      updateInformation_.get()->upgrade_url =
-          GURL(base::SysNSStringToUTF8(url));
-      if (!updateInformation_.get()->upgrade_url.is_valid())
-        hasError_ = YES;
+      _updateInformation->upgrade_url = GURL(base::SysNSStringToUTF8(url));
+      if (!_updateInformation->upgrade_url.is_valid())
+        _hasError = YES;
     } else {
-      hasError_ = YES;
+      _hasError = YES;
     }
-  } else if (!manifestIsParsed_) {
+  } else if (!_manifestIsParsed) {
     if ([elementName isEqualToString:@"manifest"] &&
         [attributeDict valueForKey:@"version"]) {
-      manifestIsParsed_ = YES;
-      DCHECK(updateInformation_);
-      updateInformation_.get()->next_version =
+      _manifestIsParsed = YES;
+      DCHECK(_updateInformation);
+      _updateInformation->next_version =
           base::SysNSStringToUTF8([attributeDict valueForKey:@"version"]);
     } else {
-      hasError_ = YES;
+      _hasError = YES;
     }
-  } else if (!pingIsParsed_) {
+  } else if (!_pingIsParsed) {
     if ([elementName isEqualToString:@"ping"] &&
         [[attributeDict valueForKey:@"status"] isEqualToString:@"ok"]) {
-      pingIsParsed_ = YES;
+      _pingIsParsed = YES;
     } else {
-      hasError_ = YES;
+      _hasError = YES;
     }
   } else {
-    hasError_ = YES;
+    _hasError = YES;
   }
 }
 
 @end
 
 // static
+bool OmahaService::IsEnabled() {
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  return !tests_hook::DisableUpdateService();
+#else
+  return false;
+#endif
+}
+
+// static
 OmahaService* OmahaService::GetInstance() {
+  // base::NoDestructor creates its OmahaService as soon as this method is
+  // entered for the first time. In build variants where Omaha is disabled, that
+  // can lead to a scenario where the OmahaService is started but never
+  // stopped. Guard against this by ensuring that GetInstance() can only be
+  // called when Omaha is enabled.
+  DCHECK(IsEnabled());
+
   static base::NoDestructor<OmahaService> instance;
   return instance.get();
 }
 
 // static
-void OmahaService::Start(std::unique_ptr<network::SharedURLLoaderFactoryInfo>
-                             url_loader_factory_info,
+void OmahaService::Start(std::unique_ptr<network::PendingSharedURLLoaderFactory>
+                             pending_url_loader_factory,
                          const UpgradeRecommendedCallback& callback) {
-  DCHECK(url_loader_factory_info);
+  DCHECK(pending_url_loader_factory);
   DCHECK(!callback.is_null());
-  OmahaService* result = GetInstance();
-  result->set_upgrade_recommended_callback(callback);
+
+  if (!OmahaService::IsEnabled()) {
+    return;
+  }
+
+  OmahaService* service = GetInstance();
+  service->StartInternal();
+
+  service->set_upgrade_recommended_callback(callback);
   // This should only be called once.
-  DCHECK(!result->url_loader_factory_info_ || !result->url_loader_factory_);
-  result->url_loader_factory_info_ = std::move(url_loader_factory_info);
-  result->locale_lang_ = GetApplicationContext()->GetApplicationLocale();
-  base::PostTaskWithTraits(FROM_HERE, {web::WebThread::IO},
-                           base::BindOnce(&OmahaService::SendOrScheduleNextPing,
-                                          base::Unretained(result)));
+  DCHECK(!service->pending_url_loader_factory_ ||
+         !service->url_loader_factory_);
+  service->pending_url_loader_factory_ = std::move(pending_url_loader_factory);
+  service->locale_lang_ = GetApplicationContext()->GetApplicationLocale();
+  base::PostTask(FROM_HERE, {web::WebThread::IO},
+                 base::BindOnce(&OmahaService::SendOrScheduleNextPing,
+                                base::Unretained(service)));
 }
 
-OmahaService::OmahaService()
-    : schedule_(true),
-      application_install_date_(0),
-      sending_install_event_(false) {
-  Initialize();
+// static
+void OmahaService::CheckNow(OneOffCallback callback) {
+  DCHECK(!callback.is_null());
+
+  OmahaService* service = GetInstance();
+  DCHECK(service->started_);
+
+  DCHECK(service->one_off_check_callback_.is_null());
+  service->one_off_check_callback_ = std::move(callback);
+
+  // If there is not an ongoing ping, send one.
+  if (!service->url_loader_) {
+    service->SendPing();
+  } else {
+    // The one off ping is taking the scheduled one, so the scheduled ping is
+    // now "canceled".
+    service->scheduled_ping_canceled_ = true;
+  }
 }
+
+// static
+void OmahaService::Stop() {
+  if (!OmahaService::IsEnabled()) {
+    return;
+  }
+
+  OmahaService* service = GetInstance();
+  service->StopInternal();
+}
+
+OmahaService::OmahaService() : OmahaService(/*schedule=*/true) {}
 
 OmahaService::OmahaService(bool schedule)
-    : schedule_(schedule),
+    : started_(false),
+      schedule_(schedule),
       application_install_date_(0),
-      sending_install_event_(false) {
-  Initialize();
-}
+      sending_install_event_(false) {}
 
 OmahaService::~OmahaService() {}
 
-void OmahaService::Initialize() {
-  // Initialize the provider at the same time as the rest of the service.
-  ios::GetChromeBrowserProvider()->GetOmahaServiceProvider()->Initialize();
+void OmahaService::StartInternal() {
+  if (started_) {
+    return;
+  }
+  started_ = true;
+
+  // Start the provider at the same time as the rest of the service.
+  ios::GetChromeBrowserProvider()->GetOmahaServiceProvider()->Start();
 
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   next_tries_time_ = base::Time::FromCFAbsoluteTime(
@@ -341,6 +409,10 @@ void OmahaService::Initialize() {
   number_of_tries_ = [defaults integerForKey:kNumberTriesKey];
   last_sent_time_ =
       base::Time::FromCFAbsoluteTime([defaults doubleForKey:kLastSentTimeKey]);
+  last_server_date_ = [defaults integerForKey:kLastServerDateKey];
+  if (last_server_date_ == 0) {
+    last_server_date_ = -2;  // -2 indicates "unknown" to the Omaha Server.
+  }
   NSString* lastSentVersion = [defaults stringForKey:kLastSentVersionKey];
   if (lastSentVersion) {
     last_sent_version_ =
@@ -387,13 +459,31 @@ void OmahaService::Initialize() {
     PersistStates();
 }
 
+void OmahaService::StopInternal() {
+  if (!started_) {
+    return;
+  }
+
+  ios::GetChromeBrowserProvider()->GetOmahaServiceProvider()->Stop();
+}
+
 // static
 void OmahaService::GetDebugInformation(
-    const base::Callback<void(base::DictionaryValue*)> callback) {
-  base::PostTaskWithTraits(
-      FROM_HERE, {web::WebThread::IO},
-      base::BindOnce(&OmahaService::GetDebugInformationOnIOThread,
-                     base::Unretained(GetInstance()), callback));
+    base::OnceCallback<void(base::DictionaryValue*)> callback) {
+  if (OmahaService::IsEnabled()) {
+    OmahaService* service = GetInstance();
+    base::PostTask(
+        FROM_HERE, {web::WebThread::IO},
+        base::BindOnce(&OmahaService::GetDebugInformationOnIOThread,
+                       base::Unretained(service), std::move(callback)));
+
+  } else {
+    auto result = std::make_unique<base::DictionaryValue>();
+    // Invoke the callback with an empty response.
+    base::PostTask(
+        FROM_HERE, {web::WebThread::UI},
+        base::BindOnce(std::move(callback), base::Owned(result.release())));
+  }
 }
 
 // static
@@ -429,7 +519,9 @@ std::string OmahaService::GetPingContent(const std::string& requestId,
   XmlWrapper xml_wrapper;
   xml_wrapper.StartElement("request");
   xml_wrapper.WriteAttribute("protocol", "3.0");
-  xml_wrapper.WriteAttribute("version", "iOS-1.0.0.0");
+  xml_wrapper.WriteAttribute("updater", "iOS");
+  xml_wrapper.WriteAttribute("updaterversion", versionName.c_str());
+  xml_wrapper.WriteAttribute("updaterchannel", channelName.c_str());
   xml_wrapper.WriteAttribute("ismachine", "1");
   xml_wrapper.WriteAttribute("requestid", requestId.c_str());
   xml_wrapper.WriteAttribute("sessionid", sessionId.c_str());
@@ -495,8 +587,11 @@ std::string OmahaService::GetPingContent(const std::string& requestId,
     xml_wrapper.EndElement();
 
     // Set up <ping active=1/>
+    std::string last_server_date = base::StringPrintf("%d", last_server_date_);
     xml_wrapper.StartElement("ping");
     xml_wrapper.WriteAttribute("active", "1");
+    xml_wrapper.WriteAttribute("ad", last_server_date.c_str());
+    xml_wrapper.WriteAttribute("rd", last_server_date.c_str());
     xml_wrapper.EndElement();
   }
 
@@ -525,6 +620,12 @@ std::string OmahaService::GetCurrentPingContent() {
 }
 
 void OmahaService::SendPing() {
+  // If a scheduled ping comes during a one off, drop it.
+  if (url_loader_ && !one_off_check_callback_.is_null()) {
+    scheduled_ping_canceled_ = true;
+    return;
+  }
+
   // Check that no request is in progress.
   DCHECK(!url_loader_);
 
@@ -536,13 +637,13 @@ void OmahaService::SendPing() {
   }
 
   // There are 2 situations here:
-  // 1) production code, where |url_loader_factory_info_| is used.
+  // 1) production code, where |pending_url_loader_factory_| is used.
   // 2) testing code, where the |url_loader_factory_| creation is triggered by
   // the test.
-  if (url_loader_factory_info_) {
+  if (pending_url_loader_factory_) {
     DCHECK(!url_loader_factory_);
     url_loader_factory_ = network::SharedURLLoaderFactory::Create(
-        std::move(url_loader_factory_info_));
+        std::move(pending_url_loader_factory_));
   }
 
   DCHECK(url_loader_factory_);
@@ -550,8 +651,7 @@ void OmahaService::SendPing() {
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = url;
   resource_request->method = "POST";
-  resource_request->load_flags =
-      net::LOAD_DO_NOT_SEND_COOKIES | net::LOAD_DO_NOT_SAVE_COOKIES;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
   // If this is not the first try, notify the omaha server.
   if (number_of_tries_ && IsNextPingInstallRetry()) {
@@ -601,6 +701,7 @@ void OmahaService::PersistStates() {
   [defaults setInteger:number_of_tries_ forKey:kNumberTriesKey];
   [defaults setObject:base::SysUTF8ToNSString(last_sent_version_.GetString())
                forKey:kLastSentVersionKey];
+  [defaults setInteger:last_server_date_ forKey:kLastServerDateKey];
 
   // Save critical state information for usage reporting.
   [defaults synchronize];
@@ -644,21 +745,37 @@ void OmahaService::OnURLLoadComplete(
   last_sent_time_ = base::Time::Now();
   last_sent_version_ = version_info::GetVersion();
   sending_install_event_ = false;
+  last_server_date_ = [delegate serverDate];
   ClearInstallRetryRequestId();
   PersistStates();
-  SendOrScheduleNextPing();
+  bool need_to_schedule_ping = true;
 
   // Send notification for updates if needed.
   UpgradeRecommendedDetails* details = [delegate upgradeRecommendedDetails];
   if (details) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {web::WebThread::UI},
-        base::BindOnce(upgrade_recommended_callback_, *details));
+    // Use the correct callback based on if a one-off check is ongoing.
+    if (!one_off_check_callback_.is_null()) {
+      base::PostTask(
+          FROM_HERE, {web::WebThread::UI},
+          base::BindOnce(std::move(one_off_check_callback_), *details));
+      // Do not schedule another ping for one-off checks, unless
+      // it canceled a scheduled ping.
+      need_to_schedule_ping = scheduled_ping_canceled_;
+      scheduled_ping_canceled_ = false;
+    } else if (!details->is_up_to_date) {
+      base::PostTask(FROM_HERE, {web::WebThread::UI},
+                     base::BindOnce(upgrade_recommended_callback_, *details));
+    }
+  }
+
+  // Schedule next ping if necessary.
+  if (need_to_schedule_ping) {
+    SendOrScheduleNextPing();
   }
 }
 
 void OmahaService::GetDebugInformationOnIOThread(
-    const base::Callback<void(base::DictionaryValue*)> callback) {
+    base::OnceCallback<void(base::DictionaryValue*)> callback) {
   auto result = std::make_unique<base::DictionaryValue>();
 
   result->SetString("message", GetCurrentPingContent());
@@ -682,9 +799,9 @@ void OmahaService::GetDebugInformationOnIOThread(
                         (timer_.desired_run_time() - base::TimeTicks::Now())));
 
   // Sending the value to the callback.
-  base::PostTaskWithTraits(
+  base::PostTask(
       FROM_HERE, {web::WebThread::UI},
-      base::BindOnce(callback, base::Owned(result.release())));
+      base::BindOnce(std::move(callback), base::Owned(result.release())));
 }
 
 bool OmahaService::IsNextPingInstallRetry() {
@@ -734,4 +851,6 @@ void OmahaService::ClearPersistentStateForTests() {
   [defaults removeObjectForKey:kLastSentVersionKey];
   [defaults removeObjectForKey:kLastSentTimeKey];
   [defaults removeObjectForKey:kRetryRequestIdKey];
+  [defaults removeObjectForKey:kLastServerDateKey];
+  [defaults removeObjectForKey:kIOSChromeUpToDateKey];
 }

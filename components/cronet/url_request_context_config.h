@@ -11,17 +11,17 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/hash_value.h"
 #include "net/cert/cert_verifier.h"
 #include "net/http/http_network_session.h"
 #include "net/nqe/effective_connection_type.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace net {
 class CertVerifier;
-class NetLog;
+struct QuicParams;
 class URLRequestContextBuilder;
 }  // namespace net
 
@@ -128,13 +128,12 @@ struct URLRequestContextConfig {
       // On Android, corresponds to android.os.Process.setThreadPriority()
       // values. On iOS, corresponds to NSThread::setThreadPriority values. Do
       // not specify for other targets.
-      base::Optional<double> network_thread_priority);
+      absl::optional<double> network_thread_priority);
   ~URLRequestContextConfig();
 
   // Configures |context_builder| based on |this|.
   void ConfigureURLRequestContextBuilder(
-      net::URLRequestContextBuilder* context_builder,
-      net::NetLog* net_log);
+      net::URLRequestContextBuilder* context_builder);
 
   // Enable QUIC.
   const bool enable_quic;
@@ -181,12 +180,11 @@ struct URLRequestContextConfig {
   int host_cache_persistence_delay_ms = 60000;
 
   // Experimental options that are recognized by the config parser.
-  std::unique_ptr<base::DictionaryValue> effective_experimental_options =
-      nullptr;
+  std::unique_ptr<base::DictionaryValue> effective_experimental_options;
 
   // If set, forces NQE to return the set value as the effective connection
   // type.
-  base::Optional<net::EffectiveConnectionType>
+  absl::optional<net::EffectiveConnectionType>
       nqe_forced_effective_connection_type;
 
   // Preloaded Report-To headers, to preconfigure the Reporting API.
@@ -198,7 +196,7 @@ struct URLRequestContextConfig {
   // Optional network thread priority.
   // On Android, corresponds to android.os.Process.setThreadPriority() values.
   // On iOS, corresponds to NSThread::setThreadPriority values.
-  const base::Optional<double> network_thread_priority;
+  const absl::optional<double> network_thread_priority;
 
  private:
   // Parses experimental options and makes appropriate changes to settings in
@@ -206,7 +204,7 @@ struct URLRequestContextConfig {
   void ParseAndSetExperimentalOptions(
       net::URLRequestContextBuilder* context_builder,
       net::HttpNetworkSession::Params* session_params,
-      net::NetLog* net_log);
+      net::QuicParams* quic_params);
 
   // Experimental options encoded as a string in a JSON format containing
   // experiments and their corresponding configuration options. The format
@@ -233,7 +231,7 @@ struct URLRequestContextConfigBuilder {
   std::unique_ptr<URLRequestContextConfig> Build();
 
   // Enable QUIC.
-  bool enable_quic = false;
+  bool enable_quic = true;
   // QUIC User Agent ID.
   std::string quic_user_agent_id = "";
   // Enable SPDY.
@@ -263,7 +261,7 @@ struct URLRequestContextConfigBuilder {
   std::string experimental_options = "{}";
 
   // Certificate verifier for testing.
-  std::unique_ptr<net::CertVerifier> mock_cert_verifier = nullptr;
+  std::unique_ptr<net::CertVerifier> mock_cert_verifier;
 
   // Enable network quality estimator.
   bool enable_network_quality_estimator = false;
@@ -275,7 +273,7 @@ struct URLRequestContextConfigBuilder {
   // On Android, corresponds to android.os.Process.setThreadPriority() values.
   // On iOS, corresponds to NSThread::setThreadPriority values.
   // Do not specify for other targets.
-  base::Optional<double> network_thread_priority;
+  absl::optional<double> network_thread_priority;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(URLRequestContextConfigBuilder);

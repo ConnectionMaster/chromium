@@ -39,6 +39,7 @@
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/scrolling/scrolling_coordinator.h"
+#include "third_party/blink/renderer/core/paint/compositing/paint_layer_compositor.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_layer.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_layer_client.h"
@@ -50,9 +51,17 @@ FrameOverlay::FrameOverlay(LocalFrame* local_frame,
                            std::unique_ptr<FrameOverlay::Delegate> delegate)
     : frame_(local_frame), delegate_(std::move(delegate)) {
   DCHECK(frame_);
+  frame_->View()->SetVisualViewportOrOverlayNeedsRepaint();
+}
+
+FrameOverlay::~FrameOverlay() {
+  frame_->View()->SetVisualViewportOrOverlayNeedsRepaint();
 }
 
 void FrameOverlay::UpdatePrePaint() {
+  // Invalidate DisplayItemClient.
+  Invalidate();
+
   if (RuntimeEnabledFeatures::CompositeAfterPaintEnabled()) {
     delegate_->Invalidate();
     return;
@@ -71,25 +80,16 @@ void FrameOverlay::UpdatePrePaint() {
   if (!layer_) {
     layer_ = std::make_unique<GraphicsLayer>(*this);
     layer_->SetDrawsContent(true);
-    layer_->SetHitTestable(true);
-
-    if (!RuntimeEnabledFeatures::BlinkGenPropertyTreesEnabled()) {
-      // This is required for contents of overlay to stay in sync with the page
-      // while scrolling. When BlinkGenPropertyTrees is enabled, scrolling is
-      // prevented by using the root scroll node in the root property tree
-      // state.
-      cc::Layer* cc_layer = layer_->CcLayer();
-      cc_layer->AddMainThreadScrollingReasons(
-          cc::MainThreadScrollingReason::kFrameOverlay);
-    }
+    layer_->SetHitTestable(false);
   }
 
   DCHECK(parent_layer);
-  if (layer_->Parent() != parent_layer)
+  if (layer_->Parent() != parent_layer ||
+      // Keep the layer the last child of parent to make it topmost.
+      parent_layer->Children().back() != layer_.get())
     parent_layer->AddChild(layer_.get());
   layer_->SetLayerState(DefaultPropertyTreeState(), IntPoint());
   layer_->SetSize(gfx::Size(Size()));
-  layer_->SetNeedsDisplay();
 }
 
 IntSize FrameOverlay::Size() const {
@@ -99,13 +99,17 @@ IntSize FrameOverlay::Size() const {
       frame_->View()->Size());
 }
 
-IntRect FrameOverlay::VisualRect() const {
-  return IntRect(IntPoint(), Size());
-}
-
 IntRect FrameOverlay::ComputeInterestRect(const GraphicsLayer* graphics_layer,
                                           const IntRect&) const {
   DCHECK(!RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
+  DCHECK(!RuntimeEnabledFeatures::CullRectUpdateEnabled());
+  return IntRect(IntPoint(), Size());
+}
+
+IntRect FrameOverlay::PaintableRegion(
+    const GraphicsLayer* graphics_layer) const {
+  DCHECK(!RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
+  DCHECK(RuntimeEnabledFeatures::CullRectUpdateEnabled());
   return IntRect(IntPoint(), Size());
 }
 
@@ -117,6 +121,19 @@ void FrameOverlay::PaintContents(const GraphicsLayer* graphics_layer,
   DCHECK_EQ(graphics_layer, layer_.get());
   DCHECK_EQ(DefaultPropertyTreeState(), layer_->GetPropertyTreeState());
   Paint(context);
+}
+
+void FrameOverlay::GraphicsLayersDidChange() {
+  frame_->View()->SetPaintArtifactCompositorNeedsUpdate();
+}
+
+PaintArtifactCompositor* FrameOverlay::GetPaintArtifactCompositor() {
+  return frame_->View()->GetPaintArtifactCompositor();
+}
+
+void FrameOverlay::ServiceScriptedAnimations(
+    base::TimeTicks monotonic_frame_begin_time) {
+  delegate_->ServiceScriptedAnimations(monotonic_frame_begin_time);
 }
 
 String FrameOverlay::DebugName(const GraphicsLayer*) const {

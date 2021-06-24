@@ -7,18 +7,19 @@
 #include <windows.h>
 
 #include <memory>
+#include <string>
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
-#include "base/stl_util.h"
-#include "base/strings/string16.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/multiprocess_test.h"
@@ -102,7 +103,7 @@ MULTIPROCESS_TEST_MAIN(ProcessSingletonTestProcessMain) {
   if (user_data_dir.empty())
     return kErrorResultCode;
 
-  base::string16 ready_event_name =
+  std::wstring ready_event_name =
       cmd_line->GetSwitchValueNative(kReadyEventNameFlag);
 
   base::win::ScopedHandle ready_event(
@@ -110,7 +111,7 @@ MULTIPROCESS_TEST_MAIN(ProcessSingletonTestProcessMain) {
   if (!ready_event.IsValid())
     return kErrorResultCode;
 
-  base::string16 continue_event_name =
+  std::wstring continue_event_name =
       cmd_line->GetSwitchValueNative(kContinueEventNameFlag);
 
   base::win::ScopedHandle continue_event(
@@ -125,8 +126,8 @@ MULTIPROCESS_TEST_MAIN(ProcessSingletonTestProcessMain) {
   }
 
   // Instantiate the process singleton.
-  ProcessSingleton process_singleton(user_data_dir,
-                                     base::Bind(&NotificationCallback));
+  ProcessSingleton process_singleton(
+      user_data_dir, base::BindRepeating(&NotificationCallback));
 
   if (!process_singleton.Create())
     return kErrorResultCode;
@@ -221,12 +222,12 @@ class ProcessSingletonTest : public base::MultiProcessTest {
 
     // The ready event has been signalled - the process singleton is held by
     // the hung sub process.
-    test_singleton_.reset(new ProcessSingleton(
-        user_data_dir(), base::Bind(&NotificationCallback)));
+    test_singleton_ = std::make_unique<ProcessSingleton>(
+        user_data_dir(), base::BindRepeating(&NotificationCallback));
 
     test_singleton_->OverrideShouldKillRemoteProcessCallbackForTesting(
-        base::Bind(&ProcessSingletonTest::MockShouldKillRemoteProcess,
-                   base::Unretained(this), allow_kill));
+        base::BindRepeating(&ProcessSingletonTest::MockShouldKillRemoteProcess,
+                            base::Unretained(this), allow_kill));
   }
 
   base::Process* browser_victim() { return &browser_victim_; }
@@ -246,8 +247,8 @@ class ProcessSingletonTest : public base::MultiProcessTest {
     return allow_kill;
   }
 
-  base::string16 ready_event_name_;
-  base::string16 continue_event_name_;
+  std::wstring ready_event_name_;
+  std::wstring continue_event_name_;
 
   WindowOption window_option_;
   base::ScopedTempDir user_data_dir_;

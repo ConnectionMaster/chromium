@@ -16,7 +16,9 @@
 #include "base/location.h"
 #include "base/stl_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "net/cert/nss_cert_database.h"
 
 namespace net {
 
@@ -39,16 +41,22 @@ void NSSCertDatabaseChromeOS::SetSystemSlot(
   profile_filter_.Init(GetPublicSlot(), GetPrivateSlot(), GetSystemSlot());
 }
 
-ScopedCERTCertificateList NSSCertDatabaseChromeOS::ListCertsSync() {
-  return ListCertsImpl(profile_filter_);
-}
-
 void NSSCertDatabaseChromeOS::ListCerts(
     NSSCertDatabase::ListCertsCallback callback) {
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
       {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
       base::BindOnce(&NSSCertDatabaseChromeOS::ListCertsImpl, profile_filter_),
+      std::move(callback));
+}
+
+void NSSCertDatabaseChromeOS::ListCertsInfo(ListCertsInfoCallback callback) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(&NSSCertDatabaseChromeOS::ListCertsInfoImpl,
+                     profile_filter_, /*slot=*/GetSystemSlot(),
+                     /*add_certs_info=*/true),
       std::move(callback));
 }
 
@@ -72,8 +80,45 @@ void NSSCertDatabaseChromeOS::ListModules(
            << " modules";
 }
 
+bool NSSCertDatabaseChromeOS::SetCertTrust(CERTCertificate* cert,
+                                           CertType type,
+                                           TrustBits trust_bits) {
+  crypto::ScopedPK11Slot public_slot = GetPublicSlot();
+
+  // Ensure that the certificate exists on the public slot so NSS puts the trust
+  // settings there (https://crbug.com/1132030).
+  if (public_slot == GetSystemSlot()) {
+    // Never attempt to store trust setting on the system slot.
+    return false;
+  }
+
+  if (!IsCertificateOnSlot(cert, public_slot.get())) {
+    // Copy the certificate to the public slot.
+    SECStatus srv =
+        PK11_ImportCert(public_slot.get(), cert, CK_INVALID_HANDLE,
+                        cert->nickname, PR_FALSE /* includeTrust (unused) */);
+    if (srv != SECSuccess) {
+      LOG(ERROR) << "Failed to import certificate onto public slot.";
+      return false;
+    }
+  }
+  return NSSCertDatabase::SetCertTrust(cert, type, trust_bits);
+}
+
+// static
 ScopedCERTCertificateList NSSCertDatabaseChromeOS::ListCertsImpl(
     const NSSProfileFilterChromeOS& profile_filter) {
+  CertInfoList certs_info = ListCertsInfoImpl(
+      profile_filter, crypto::ScopedPK11Slot(), /*add_certs_info=*/false);
+
+  return ExtractCertificates(std::move(certs_info));
+}
+
+// static
+NSSCertDatabase::CertInfoList NSSCertDatabaseChromeOS::ListCertsInfoImpl(
+    const NSSProfileFilterChromeOS& profile_filter,
+    crypto::ScopedPK11Slot system_slot,
+    bool add_certs_info) {
   // This method may acquire the NSS lock or reenter this code via extension
   // hooks (such as smart card UI). To ensure threads are not starved or
   // deadlocked, the base::ScopedBlockingCall below increments the thread pool
@@ -81,16 +126,27 @@ ScopedCERTCertificateList NSSCertDatabaseChromeOS::ListCertsImpl(
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
 
-  ScopedCERTCertificateList certs(
-      NSSCertDatabase::ListCertsImpl(crypto::ScopedPK11Slot()));
+  CertInfoList certs_info(NSSCertDatabase::ListCertsInfoImpl(
+      crypto::ScopedPK11Slot(), add_certs_info));
 
-  size_t pre_size = certs.size();
-  base::EraseIf(certs, [&profile_filter](ScopedCERTCertificate& cert) {
-    return !profile_filter.IsCertAllowed(cert.get());
+  // Filter certificate information according to user profile.
+  size_t pre_size = certs_info.size();
+  base::EraseIf(certs_info, [&profile_filter](CertInfo& cert_info) {
+    return !profile_filter.IsCertAllowed(cert_info.cert.get());
   });
-  DVLOG(1) << "filtered " << pre_size - certs.size() << " of " << pre_size
+  DVLOG(1) << "filtered " << pre_size - certs_info.size() << " of " << pre_size
            << " certs";
-  return certs;
+
+  if (add_certs_info) {
+    // Add Chrome OS specific information.
+    for (auto& cert_info : certs_info) {
+      cert_info.device_wide =
+          IsCertificateOnSlot(cert_info.cert.get(), system_slot.get());
+      cert_info.hardware_backed = IsHardwareBacked(cert_info.cert.get());
+    }
+  }
+
+  return certs_info;
 }
 
 }  // namespace net

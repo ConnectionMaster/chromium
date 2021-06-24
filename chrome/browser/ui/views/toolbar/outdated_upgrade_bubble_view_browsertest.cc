@@ -8,10 +8,14 @@
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "content/public/test/browser_test.h"
 
 class OutdatedUpgradeBubbleTest : public DialogBrowserTest {
  public:
   OutdatedUpgradeBubbleTest() = default;
+  OutdatedUpgradeBubbleTest(const OutdatedUpgradeBubbleTest&) = delete;
+  OutdatedUpgradeBubbleTest& operator=(const OutdatedUpgradeBubbleTest&) =
+      delete;
 
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
@@ -26,9 +30,6 @@ class OutdatedUpgradeBubbleTest : public DialogBrowserTest {
     else
       ADD_FAILURE();
   }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(OutdatedUpgradeBubbleTest);
 };
 
 IN_PROC_BROWSER_TEST_F(OutdatedUpgradeBubbleTest, InvokeUi_Outdated) {

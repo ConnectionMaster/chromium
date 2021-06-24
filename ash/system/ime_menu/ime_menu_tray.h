@@ -6,16 +6,15 @@
 #define ASH_SYSTEM_IME_MENU_IME_MENU_TRAY_H_
 
 #include "ash/ash_export.h"
-#include "ash/public/interfaces/ime_controller.mojom.h"
-#include "ash/public/interfaces/ime_info.mojom.h"
+#include "ash/public/cpp/keyboard/keyboard_controller_observer.h"
 #include "ash/system/ime/ime_observer.h"
 #include "ash/system/tray/tray_background_view.h"
 #include "ash/system/tray/tray_bubble_view.h"
 #include "ash/system/tray/tray_bubble_wrapper.h"
 #include "ash/system/virtual_keyboard/virtual_keyboard_observer.h"
 #include "base/macros.h"
-#include "ui/base/ime/chromeos/public/interfaces/ime_keyset.mojom.h"
-#include "ui/keyboard/keyboard_controller_observer.h"
+#include "ui/base/ime/chromeos/ime_keyset.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 
 namespace views {
 class ImageView;
@@ -23,7 +22,7 @@ class Label;
 }  // namespace views
 
 namespace ash {
-class ImeController;
+class ImeControllerImpl;
 class ImeListView;
 
 // A button in the tray which displays the short name of the currently-activated
@@ -32,15 +31,19 @@ class ImeListView;
 // for emoji, handwriting, and voice.
 class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
                                public IMEObserver,
-                               public keyboard::KeyboardControllerObserver,
+                               public KeyboardControllerObserver,
                                public VirtualKeyboardObserver {
  public:
+  METADATA_HEADER(ImeMenuTray);
+
   explicit ImeMenuTray(Shelf* shelf);
+  ImeMenuTray(const ImeMenuTray&) = delete;
+  ImeMenuTray& operator=(const ImeMenuTray&) = delete;
   ~ImeMenuTray() override;
 
   // Shows the virtual keyboard with the given keyset: emoji, handwriting or
   // voice.
-  void ShowKeyboardWithKeyset(chromeos::input_method::mojom::ImeKeyset keyset);
+  void ShowKeyboardWithKeyset(chromeos::input_method::ImeKeyset keyset);
 
   // Returns true if the menu should show emoji, handwriting and voice buttons
   // on the bottom. Otherwise, the menu will show a 'Customize...' bottom row
@@ -52,24 +55,27 @@ class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
   bool ShouldShowKeyboardToggle() const;
 
   // TrayBackgroundView:
-  base::string16 GetAccessibleNameForTray() override;
+  void OnThemeChanged() override;
+  std::u16string GetAccessibleNameForTray() override;
+  void HandleLocaleChange() override;
   void HideBubbleWithView(const TrayBubbleView* bubble_view) override;
   void ClickedOutsideBubble() override;
   bool PerformAction(const ui::Event& event) override;
   void CloseBubble() override;
-  void ShowBubble(bool show_by_click) override;
+  void ShowBubble() override;
   TrayBubbleView* GetBubbleView() override;
+  views::Widget* GetBubbleWidget() const override;
 
   // IMEObserver:
   void OnIMERefresh() override;
   void OnIMEMenuActivationChanged(bool is_activated) override;
 
   // TrayBubbleView::Delegate:
-  base::string16 GetAccessibleNameForBubble() override;
+  std::u16string GetAccessibleNameForBubble() override;
   bool ShouldEnableExtraKeyboardAccessibility() override;
   void HideBubble(const TrayBubbleView* bubble_view) override;
 
-  // keyboard::KeyboardControllerObserver:
+  // KeyboardControllerObserver:
   void OnKeyboardHidden(bool is_temporary_hide) override;
 
   // VirtualKeyboardObserver:
@@ -78,16 +84,15 @@ class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
  private:
   friend class ImeMenuTrayTest;
 
-  // Show the IME menu bubble immediately. Set |show_by_click| to true if bubble
-  // is shown by mouse or gesture click.
-  void ShowImeMenuBubbleInternal(bool show_by_click);
+  // Show the IME menu bubble immediately.
+  void ShowImeMenuBubbleInternal();
 
   // Updates the text of the label on the tray.
   void UpdateTrayLabel();
   void CreateLabel();
   void CreateImageView();
 
-  ImeController* ime_controller_;
+  ImeControllerImpl* ime_controller_;
 
   // Bubble for default and detailed views.
   std::unique_ptr<TrayBubbleWrapper> bubble_;
@@ -103,9 +108,7 @@ class ASH_EXPORT ImeMenuTray : public TrayBackgroundView,
   bool is_handwriting_enabled_;
   bool is_voice_enabled_;
 
-  base::WeakPtrFactory<ImeMenuTray> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(ImeMenuTray);
+  base::WeakPtrFactory<ImeMenuTray> weak_ptr_factory_{this};
 };
 
 }  // namespace ash

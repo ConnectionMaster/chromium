@@ -28,6 +28,10 @@ class UMABrowsingActivityObserver : public content::NotificationObserver {
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
+  // Calculates the time from an update being visible to the browser and
+  // the browser restarting or quitting and logs it.
+  void LogTimeBeforeUpdate() const;
+
   // Counts the number of active RenderProcessHosts and logs them.
   void LogRenderProcessHostCount() const;
 
@@ -36,6 +40,10 @@ class UMABrowsingActivityObserver : public content::NotificationObserver {
   // can be used for popups and in dialog boxes. We're just counting toplevel
   // tabs here.
   void LogBrowserTabCount() const;
+
+  // Maps |total_tab_count| to the corresponding histogram bucket with the
+  // proper name suffix.
+  std::string AppendTabBucketCountToHistogramName(int total_tab_count) const;
 
   content::NotificationRegistrar registrar_;
   TabStripModelStatsRecorder tab_recorder_;

@@ -16,10 +16,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/common/extensions/api/signed_in_devices.h"
-#include "components/sync/device_info/device_info.h"
-#include "components/sync/device_info/device_info_sync_service.h"
+#include "components/sync_device_info/device_info.h"
+#include "components/sync_device_info/device_info_sync_service.h"
 #include "extensions/browser/event_router.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 
 using syncer::DeviceInfo;
@@ -72,8 +71,7 @@ void SignedInDevicesChangeObserver::OnDeviceInfoChange() {
     args.push_back(std::move(api_device));
   }
 
-  std::unique_ptr<base::ListValue> result =
-      api::signed_in_devices::OnDeviceInfoChange::Create(args);
+  auto result = api::signed_in_devices::OnDeviceInfoChange::Create(args);
   auto event = std::make_unique<Event>(
       events::SIGNED_IN_DEVICES_ON_DEVICE_INFO_CHANGE,
       api::signed_in_devices::OnDeviceInfoChange::kEventName, std::move(result),
@@ -93,13 +91,9 @@ SignedInDevicesManager::GetFactoryInstance() {
   return g_signed_in_devices_manager_factory.Pointer();
 }
 
-SignedInDevicesManager::SignedInDevicesManager()
-    : profile_(NULL), extension_registry_observer_(this) {
-}
-
+SignedInDevicesManager::SignedInDevicesManager() = default;
 SignedInDevicesManager::SignedInDevicesManager(content::BrowserContext* context)
-    : profile_(Profile::FromBrowserContext(context)),
-      extension_registry_observer_(this) {
+    : profile_(Profile::FromBrowserContext(context)) {
   EventRouter* router = EventRouter::Get(profile_);
   if (router) {
     router->RegisterObserver(
@@ -108,7 +102,7 @@ SignedInDevicesManager::SignedInDevicesManager(content::BrowserContext* context)
 
   // Register for unload event so we could clear all our listeners when
   // extensions have unloaded.
-  extension_registry_observer_.Add(ExtensionRegistry::Get(profile_));
+  extension_registry_observation_.Observe(ExtensionRegistry::Get(profile_));
 }
 
 SignedInDevicesManager::~SignedInDevicesManager() = default;

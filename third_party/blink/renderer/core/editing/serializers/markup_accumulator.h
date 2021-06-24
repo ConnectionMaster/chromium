@@ -29,7 +29,6 @@
 
 #include <utility>
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/editing/editing_strategy.h"
 #include "third_party/blink/renderer/core/editing/serializers/markup_formatter.h"
 #include "third_party/blink/renderer/core/editing/serializers/serialization.h"
@@ -47,7 +46,11 @@ class MarkupAccumulator {
 
  public:
   MarkupAccumulator(AbsoluteURLs,
-                    SerializationType = SerializationType::kAsOwnerDocument);
+                    SerializationType,
+                    IncludeShadowRoots,
+                    ClosedRootsSet = ClosedRootsSet());
+  MarkupAccumulator(const MarkupAccumulator&) = delete;
+  MarkupAccumulator& operator=(const MarkupAccumulator&) = delete;
   virtual ~MarkupAccumulator();
 
   template <typename Strategy>
@@ -60,9 +63,11 @@ class MarkupAccumulator {
 
   MarkupFormatter formatter_;
   StringBuilder markup_;
+  IncludeShadowRoots include_shadow_roots_;
+  ClosedRootsSet include_closed_roots_;
 
  private:
-  bool SerializeAsHTMLDocument(const Node&) const;
+  bool SerializeAsHTML() const;
   String ToString() { return markup_.ToString(); }
 
   void AppendString(const String&);
@@ -119,8 +124,6 @@ class MarkupAccumulator {
 
   // https://w3c.github.io/DOM-Parsing/#dfn-generated-namespace-prefix-index
   uint32_t prefix_index_;
-
-  DISALLOW_COPY_AND_ASSIGN(MarkupAccumulator);
 };
 
 extern template String MarkupAccumulator::SerializeNodes<EditingStrategy>(
@@ -129,4 +132,4 @@ extern template String MarkupAccumulator::SerializeNodes<EditingStrategy>(
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SERIALIZERS_MARKUP_ACCUMULATOR_H_

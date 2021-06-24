@@ -4,7 +4,7 @@
 
 package org.chromium.content.browser;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -14,10 +14,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
-import org.chromium.content_public.browser.test.util.Criteria;
-import org.chromium.content_public.browser.test.util.CriteriaHelper;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.content_shell_apk.ContentShellActivityTestRule;
 
@@ -35,7 +34,7 @@ public class WakeLockTest {
     private static final String TEST_PATH = "content/test/data/android/title1.html";
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         try {
             mActivityTestRule.launchContentShellWithUrlSync(TEST_PATH);
         } catch (Throwable t) {
@@ -43,17 +42,13 @@ public class WakeLockTest {
         }
     }
 
-    private void getWakeLock(String type) throws InterruptedException, TimeoutException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("navigator.getWakeLock('" + type + "').then(wake => {");
-        sb.append("  var request" + type + " = wake.createRequest();");
-        sb.append("});");
-        JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                mActivityTestRule.getWebContents(), sb.toString());
+    private void getWakeLock(String type) throws TimeoutException {
+        final String code = "navigator.wakeLock.request('" + type + "');";
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(mActivityTestRule.getWebContents(), code);
     }
 
     @After
-    public void tearDown() throws Exception {}
+    public void tearDown() {}
 
     @Test
     @SmallTest
@@ -66,14 +61,10 @@ public class WakeLockTest {
 
         getWakeLock("screen");
 
-        CriteriaHelper.pollInstrumentationThread(new Criteria() {
-            @Override
-            public boolean isSatisfied() {
-                return mActivityTestRule.getActivity()
-                        .getActiveShell()
-                        .getContentView()
-                        .getKeepScreenOn();
-            }
-        });
+        CriteriaHelper.pollInstrumentationThread(()
+                                                         -> mActivityTestRule.getActivity()
+                                                                    .getActiveShell()
+                                                                    .getContentView()
+                                                                    .getKeepScreenOn());
     }
 }

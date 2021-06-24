@@ -13,12 +13,15 @@ namespace content {
 class BrowserContext;
 }
 
+namespace permissions {
 class PermissionManager;
+}
+
 class Profile;
 
 class PermissionManagerFactory : public BrowserContextKeyedServiceFactory {
  public:
-  static PermissionManager* GetForProfile(Profile* profile);
+  static permissions::PermissionManager* GetForProfile(Profile* profile);
   static PermissionManagerFactory* GetInstance();
 
  private:
@@ -27,7 +30,7 @@ class PermissionManagerFactory : public BrowserContextKeyedServiceFactory {
   PermissionManagerFactory();
   ~PermissionManagerFactory() override;
 
-  // BrowserContextKeyedBaseFactory methods:
+  // BrowserContextKeyedServiceFactory methods:
   KeyedService* BuildServiceInstanceFor(
       content::BrowserContext* profile) const override;
   content::BrowserContext* GetBrowserContextToUse(

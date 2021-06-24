@@ -12,7 +12,8 @@
 #include "base/memory/ref_counted.h"
 #include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/device/public/mojom/wake_lock.mojom.h"
 #include "services/device/public/mojom/wake_lock_context.mojom.h"
 #include "services/device/wake_lock/power_save_blocker/power_save_blocker.h"
@@ -23,13 +24,11 @@ namespace device {
 // Callback that maps a context ID to the NativeView associated with
 // that context. This callback is provided to the Device Service by its
 // embedder.
-using WakeLockContextCallback = base::Callback<gfx::NativeView(int)>;
+using WakeLockContextCallback = base::RepeatingCallback<gfx::NativeView(int)>;
 
 class WakeLock : public mojom::WakeLock {
  public:
   // This is an interface for classes to be notified of wake lock events.
-  // Observers should register themselves by calling the parent class's
-  // |AddObserver| method.
   class Observer {
    public:
     virtual ~Observer() = default;
@@ -53,7 +52,7 @@ class WakeLock : public mojom::WakeLock {
   };
 
   // |observer| must outlive this WakeLock instance.
-  WakeLock(mojom::WakeLockRequest request,
+  WakeLock(mojo::PendingReceiver<mojom::WakeLock> receiver,
            mojom::WakeLockType type,
            mojom::WakeLockReason reason,
            const std::string& description,
@@ -63,10 +62,10 @@ class WakeLock : public mojom::WakeLock {
            Observer* observer);
   ~WakeLock() override;
 
-  // WakeLockSevice implementation.
+  // mojom::WakeLock implementation.
   void RequestWakeLock() override;
   void CancelWakeLock() override;
-  void AddClient(mojom::WakeLockRequest request) override;
+  void AddClient(mojo::PendingReceiver<mojom::WakeLock> receiver) override;
   void ChangeType(mojom::WakeLockType type,
                   ChangeTypeCallback callback) override;
   void HasWakeLockForTests(HasWakeLockForTestsCallback callback) override;
@@ -103,9 +102,9 @@ class WakeLock : public mojom::WakeLock {
   // Multiple clients that associate to the same WebContents share the same one
   // WakeLock instance. Two consecutive |RequestWakeLock| requests
   // from the same client should be coalesced as one request. Everytime a new
-  // client is being added into the BindingSet, we create an unique_ptr<bool>
+  // client is being added into the ReceiverSet, we create an unique_ptr<bool>
   // as its context, which records this client's request status.
-  mojo::BindingSet<mojom::WakeLock, std::unique_ptr<bool>> binding_set_;
+  mojo::ReceiverSet<mojom::WakeLock, std::unique_ptr<bool>> receiver_set_;
 
   DISALLOW_COPY_AND_ASSIGN(WakeLock);
 };

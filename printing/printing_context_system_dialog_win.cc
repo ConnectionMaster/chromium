@@ -7,8 +7,9 @@
 #include <utility>
 
 #include "base/auto_reset.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/stl_util.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/task/current_thread.h"
 #include "printing/backend/win_helper.h"
 #include "printing/print_settings_initializer_win.h"
 #include "skia/ext/skia_utils_win.h"
@@ -90,7 +91,7 @@ HRESULT PrintingContextSystemDialogWin::ShowPrintDialog(PRINTDLGEX* options) {
   // browser frame (but still being modal) so neither the browser frame nor
   // the print dialog will get any input. See http://crbug.com/342697
   // http://crbug.com/180997 for details.
-  base::MessageLoopCurrent::ScopedNestableTaskAllower allow;
+  base::CurrentThread::ScopedNestableTaskAllower allow;
 
   return PrintDlgEx(options);
 }
@@ -132,11 +133,11 @@ bool PrintingContextSystemDialogWin::InitializeSettingsWithRanges(
     }
   }
 
-  settings_.set_ranges(ranges_vector);
-  settings_.set_device_name(new_device_name);
-  settings_.set_selection_only(selection_only);
-  PrintSettingsInitializerWin::InitPrintSettings(
-      context(), dev_mode, &settings_);
+  settings_->set_ranges(ranges_vector);
+  settings_->set_device_name(base::WideToUTF16(new_device_name));
+  settings_->set_selection_only(selection_only);
+  PrintSettingsInitializerWin::InitPrintSettings(context(), dev_mode,
+                                                 settings_.get());
 
   return true;
 }
@@ -146,11 +147,11 @@ PrintingContext::Result PrintingContextSystemDialogWin::ParseDialogResultEx(
   // If the user clicked OK or Apply then Cancel, but not only Cancel.
   if (dialog_options.dwResultAction != PD_RESULT_CANCEL) {
     // Start fresh, but preserve is_modifiable and GDI print setting.
-    bool is_modifiable = settings_.is_modifiable();
-    bool print_text_with_gdi = settings_.print_text_with_gdi();
+    bool is_modifiable = settings_->is_modifiable();
+    bool print_text_with_gdi = settings_->print_text_with_gdi();
     ResetSettings();
-    settings_.set_is_modifiable(is_modifiable);
-    settings_.set_print_text_with_gdi(print_text_with_gdi);
+    settings_->set_is_modifiable(is_modifiable);
+    settings_->set_print_text_with_gdi(print_text_with_gdi);
 
     DEVMODE* dev_mode = NULL;
     if (dialog_options.hDevMode) {

@@ -4,10 +4,12 @@
 
 #include "media/audio/audio_thread_impl.h"
 
+#include "base/message_loop/message_pump_type.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/default_tick_clock.h"
 #include "build/build_config.h"
 #include "media/audio/audio_thread_hang_monitor.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -19,11 +21,11 @@ AudioThreadImpl::AudioThreadImpl()
   thread_.init_com_with_mta(true);
 #elif defined(OS_FUCHSIA)
   // FIDL-based APIs require async_t, which is initialized on IO thread.
-  thread_options.message_loop_type = base::MessageLoop::TYPE_IO;
+  thread_options.message_pump_type = base::MessagePumpType::IO;
 #endif
-  CHECK(thread_.StartWithOptions(thread_options));
+  CHECK(thread_.StartWithOptions(std::move(thread_options)));
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // On Mac, the audio task runner must belong to the main thread.
   // See http://crbug.com/158170.
   task_runner_ = base::ThreadTaskRunnerHandle::Get();
@@ -32,12 +34,13 @@ AudioThreadImpl::AudioThreadImpl()
 #endif
   worker_task_runner_ = thread_.task_runner();
 
-#if !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#if !defined(OS_MAC) && !defined(OS_ANDROID)
   // Since we run on the main thread on Mac, we don't need a hang monitor.
   // https://crbug.com/946968: The hang monitor possibly causes crashes on
   // Android
   hang_monitor_ = AudioThreadHangMonitor::Create(
-      false, base::DefaultTickClock::GetInstance(), task_runner_);
+      AudioThreadHangMonitor::HangAction::kDoNothing, absl::nullopt,
+      base::DefaultTickClock::GetInstance(), task_runner_);
 #endif
 }
 
@@ -52,7 +55,7 @@ void AudioThreadImpl::Stop() {
 
   // Note that on MACOSX, we can still have tasks posted on the |task_runner_|,
   // since it is the main thread task runner and we do not stop the main thread.
-  // But this is fine becuase none of those tasks will actually run.
+  // But this is fine because none of those tasks will actually run.
   thread_.Stop();
 }
 

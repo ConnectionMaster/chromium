@@ -5,7 +5,9 @@
 #include "extensions/common/extension_builder.h"
 
 #include "base/version.h"
+#include "components/version_info/channel.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/content_scripts_handler.h"
@@ -70,6 +72,7 @@ TEST(ExtensionBuilderTest, Actions) {
             .Build();
     EXPECT_TRUE(extension->manifest()->HasKey(manifest_keys::kPageAction));
     EXPECT_FALSE(extension->manifest()->HasKey(manifest_keys::kBrowserAction));
+    EXPECT_FALSE(extension->manifest()->HasKey(manifest_keys::kAction));
   }
   {
     scoped_refptr<const Extension> extension =
@@ -78,6 +81,16 @@ TEST(ExtensionBuilderTest, Actions) {
             .Build();
     EXPECT_FALSE(extension->manifest()->HasKey(manifest_keys::kPageAction));
     EXPECT_TRUE(extension->manifest()->HasKey(manifest_keys::kBrowserAction));
+    EXPECT_FALSE(extension->manifest()->HasKey(manifest_keys::kAction));
+  }
+  {
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder("action")
+            .SetAction(ExtensionBuilder::ActionType::ACTION)
+            .Build();
+    EXPECT_FALSE(extension->manifest()->HasKey(manifest_keys::kPageAction));
+    EXPECT_FALSE(extension->manifest()->HasKey(manifest_keys::kBrowserAction));
+    EXPECT_TRUE(extension->manifest()->HasKey(manifest_keys::kAction));
   }
 }
 
@@ -90,18 +103,36 @@ TEST(ExtensionBuilderTest, Background) {
   {
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("persistent background page")
-            .SetBackgroundPage(ExtensionBuilder::BackgroundPage::PERSISTENT)
+            .SetBackgroundContext(
+                ExtensionBuilder::BackgroundContext::BACKGROUND_PAGE)
             .Build();
     EXPECT_TRUE(BackgroundInfo::HasBackgroundPage(extension.get()));
     EXPECT_TRUE(BackgroundInfo::HasPersistentBackgroundPage(extension.get()));
+    EXPECT_FALSE(BackgroundInfo::IsServiceWorkerBased(extension.get()));
   }
   {
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("event page")
-            .SetBackgroundPage(ExtensionBuilder::BackgroundPage::EVENT)
+            .SetBackgroundContext(
+                ExtensionBuilder::BackgroundContext::EVENT_PAGE)
             .Build();
     EXPECT_TRUE(BackgroundInfo::HasBackgroundPage(extension.get()));
     EXPECT_TRUE(BackgroundInfo::HasLazyBackgroundPage(extension.get()));
+    EXPECT_FALSE(BackgroundInfo::IsServiceWorkerBased(extension.get()));
+  }
+  {
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder("service worker")
+            .SetBackgroundContext(
+                ExtensionBuilder::BackgroundContext::SERVICE_WORKER)
+            .Build();
+    EXPECT_FALSE(BackgroundInfo::HasBackgroundPage(extension.get()));
+    EXPECT_FALSE(BackgroundInfo::HasLazyBackgroundPage(extension.get()));
+    EXPECT_FALSE(BackgroundInfo::HasPersistentBackgroundPage(extension.get()));
+    EXPECT_TRUE(BackgroundInfo::IsServiceWorkerBased(extension.get()));
+    EXPECT_EQ(
+        ExtensionBuilder::kServiceWorkerScriptFile,
+        BackgroundInfo::GetBackgroundServiceWorkerScript(extension.get()));
   }
 }
 

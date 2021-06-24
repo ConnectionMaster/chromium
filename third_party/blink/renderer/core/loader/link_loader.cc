@@ -31,22 +31,23 @@
 
 #include "third_party/blink/renderer/core/loader/link_loader.h"
 
-#include "third_party/blink/public/common/prerender/prerender_rel_type.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/loader/importance_attribute.h"
 #include "third_party/blink/renderer/core/loader/link_load_parameters.h"
 #include "third_party/blink/renderer/core/loader/link_loader_client.h"
 #include "third_party/blink/renderer/core/loader/preload_helper.h"
-#include "third_party/blink/renderer/core/loader/private/prerender_handle.h"
+#include "third_party/blink/renderer/core/loader/prerender_handle.h"
 #include "third_party/blink/renderer/core/loader/resource/css_style_sheet_resource.h"
 #include "third_party/blink/renderer/core/loader/subresource_integrity_helper.h"
+#include "third_party/blink/renderer/core/page/viewport_description.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_client.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_finish_observer.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_loader_options.h"
 #include "third_party/blink/renderer/platform/loader/subresource_integrity.h"
-#include "third_party/blink/renderer/platform/prerender.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
@@ -55,33 +56,28 @@ class WebPrescientNetworking;
 
 namespace {
 
-unsigned PrerenderRelTypesFromRelAttribute(
-    const LinkRelAttribute& rel_attribute,
-    Document& document) {
-  unsigned result = 0;
+// Decide the prerender type based on the link rel attribute. Returns
+// absl::nullopt if the attribute doesn't indicate the prerender type.
+absl::optional<mojom::blink::PrerenderTriggerType>
+PrerenderTriggerTypeFromRelAttribute(const LinkRelAttribute& rel_attribute,
+                                     Document& document) {
+  absl::optional<mojom::blink::PrerenderTriggerType> trigger_type;
   if (rel_attribute.IsLinkPrerender()) {
-    result |= kPrerenderRelTypePrerender;
     UseCounter::Count(document, WebFeature::kLinkRelPrerender);
+    trigger_type = mojom::blink::PrerenderTriggerType::kLinkRelPrerender;
   }
   if (rel_attribute.IsLinkNext()) {
-    result |= kPrerenderRelTypeNext;
     UseCounter::Count(document, WebFeature::kLinkRelNext);
+    // Prioritize mojom::blink::PrerenderTriggerType::kLinkRelPrerender.
+    if (!trigger_type)
+      trigger_type = mojom::blink::PrerenderTriggerType::kLinkRelNext;
   }
-
-  return result;
+  return trigger_type;
 }
 
 }  // namespace
 
-LinkLoader* LinkLoader::Create(LinkLoaderClient* client) {
-  return MakeGarbageCollected<LinkLoader>(client,
-                                          client->GetLoadingTaskRunner());
-}
-
-class LinkLoader::FinishObserver final
-    : public GarbageCollectedFinalized<ResourceFinishObserver>,
-      public ResourceFinishObserver {
-  USING_GARBAGE_COLLECTED_MIXIN(FinishObserver);
+class LinkLoader::FinishObserver final : public ResourceFinishObserver {
   USING_PRE_FINALIZER(FinishObserver, ClearResource);
 
  public:
@@ -110,7 +106,7 @@ class LinkLoader::FinishObserver final
     resource_ = nullptr;
   }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(loader_);
     visitor->Trace(resource_);
     blink::ResourceFinishObserver::Trace(visitor);
@@ -132,10 +128,14 @@ LinkLoader::~LinkLoader() = default;
 void LinkLoader::NotifyFinished() {
   DCHECK(finish_observer_);
   Resource* resource = finish_observer_->GetResource();
-  if (resource->ErrorOccurred())
+  if (resource->ErrorOccurred() ||
+      (resource->IsLinkPreload() &&
+       resource->IntegrityDisposition() ==
+           ResourceIntegrityDisposition::kFailed)) {
     client_->LinkLoadingErrored();
-  else
+  } else {
     client_->LinkLoaded();
+  }
 }
 
 // https://html.spec.whatwg.org/C/#link-type-modulepreload
@@ -147,22 +147,6 @@ void LinkLoader::NotifyModuleLoadFinished(ModuleScript* module) {
     client_->LinkLoadingErrored();
   else
     client_->LinkLoaded();
-}
-
-void LinkLoader::DidStartPrerender() {
-  client_->DidStartLinkPrerender();
-}
-
-void LinkLoader::DidStopPrerender() {
-  client_->DidStopLinkPrerender();
-}
-
-void LinkLoader::DidSendLoadForPrerender() {
-  client_->DidSendLoadForLinkPrerender();
-}
-
-void LinkLoader::DidSendDOMContentLoadedForPrerender() {
-  client_->DidSendDOMContentLoadedForLinkPrerender();
 }
 
 Resource* LinkLoader::GetResourceForTesting() {
@@ -185,7 +169,7 @@ bool LinkLoader::LoadLink(const LinkLoadParameters& params,
 
   Resource* resource = PreloadHelper::PreloadIfNeeded(
       params, document, NullURL(), PreloadHelper::kLinkCalledFromMarkup,
-      nullptr,
+      nullptr /* viewport_description */,
       client_->IsLinkCreatedByParser() ? kParserInserted : kNotParserInserted);
   if (!resource) {
     resource = PreloadHelper::PrefetchIfNeeded(params, document);
@@ -193,53 +177,49 @@ bool LinkLoader::LoadLink(const LinkLoadParameters& params,
   if (resource)
     finish_observer_ = MakeGarbageCollected<FinishObserver>(this, resource);
 
-  PreloadHelper::ModulePreloadIfNeeded(params, document, nullptr, this);
+  PreloadHelper::ModulePreloadIfNeeded(
+      params, document, nullptr /* viewport_description */, this);
 
-  if (const unsigned prerender_rel_types =
-          PrerenderRelTypesFromRelAttribute(params.rel, document)) {
-    if (!prerender_) {
-      prerender_ = PrerenderHandle::Create(document, this, params.href,
-                                           prerender_rel_types);
-    } else if (prerender_->Url() != params.href) {
-      prerender_->Cancel();
-      prerender_ = PrerenderHandle::Create(document, this, params.href,
-                                           prerender_rel_types);
-    }
-    // TODO(gavinp): Handle changes to rel types of existing prerenders.
-  } else if (prerender_) {
-    prerender_->Cancel();
-    prerender_.Clear();
+  absl::optional<mojom::blink::PrerenderTriggerType> trigger_type =
+      PrerenderTriggerTypeFromRelAttribute(params.rel, document);
+  if (trigger_type) {
+    // The previous prerender should already be aborted by Abort().
+    DCHECK(!prerender_);
+    prerender_ = PrerenderHandle::Create(document, params.href, *trigger_type);
   }
   return true;
 }
 
-void LinkLoader::LoadStylesheet(const LinkLoadParameters& params,
-                                const AtomicString& local_name,
-                                const WTF::TextEncoding& charset,
-                                FetchParameters::DeferOption defer_option,
-                                Document& document,
-                                ResourceClient* link_client) {
-  ResourceRequest resource_request(document.CompleteURL(params.href));
+void LinkLoader::LoadStylesheet(
+    const LinkLoadParameters& params,
+    const AtomicString& local_name,
+    const WTF::TextEncoding& charset,
+    FetchParameters::DeferOption defer_option,
+    Document& document,
+    ResourceClient* link_client,
+    RenderBlockingBehavior render_blocking_behavior) {
+  ExecutionContext* context = document.GetExecutionContext();
+  ResourceRequest resource_request(context->CompleteURL(params.href));
   resource_request.SetReferrerPolicy(params.referrer_policy);
 
   mojom::FetchImportanceMode importance_mode =
       GetFetchImportanceAttributeValue(params.importance);
   DCHECK(importance_mode == mojom::FetchImportanceMode::kImportanceAuto ||
-         RuntimeEnabledFeatures::PriorityHintsEnabled(&document));
+         RuntimeEnabledFeatures::PriorityHintsEnabled(context));
   resource_request.SetFetchImportanceMode(importance_mode);
 
-  ResourceLoaderOptions options;
+  ResourceLoaderOptions options(context->GetCurrentWorld());
   options.initiator_info.name = local_name;
-  FetchParameters link_fetch_params(resource_request, options);
+
+  FetchParameters link_fetch_params(std::move(resource_request), options);
   link_fetch_params.SetCharset(charset);
-
   link_fetch_params.SetDefer(defer_option);
-
+  link_fetch_params.SetRenderBlockingBehavior(render_blocking_behavior);
   link_fetch_params.SetContentSecurityPolicyNonce(params.nonce);
 
   CrossOriginAttributeValue cross_origin = params.cross_origin;
   if (cross_origin != kCrossOriginAttributeNotSet) {
-    link_fetch_params.SetCrossOriginAccessControl(document.GetSecurityOrigin(),
+    link_fetch_params.SetCrossOriginAccessControl(context->GetSecurityOrigin(),
                                                   cross_origin);
   }
 
@@ -247,14 +227,14 @@ void LinkLoader::LoadStylesheet(const LinkLoadParameters& params,
   if (!integrity_attr.IsEmpty()) {
     IntegrityMetadataSet metadata_set;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        integrity_attr, SubresourceIntegrityHelper::GetFeatures(&document),
+        integrity_attr, SubresourceIntegrityHelper::GetFeatures(context),
         metadata_set);
     link_fetch_params.SetIntegrityMetadata(metadata_set);
     link_fetch_params.MutableResourceRequest().SetFetchIntegrity(
         integrity_attr);
   }
 
-  CSSStyleSheetResource::Fetch(link_fetch_params, document.Fetcher(),
+  CSSStyleSheetResource::Fetch(link_fetch_params, context->Fetcher(),
                                link_client);
 }
 
@@ -269,12 +249,11 @@ void LinkLoader::Abort() {
   }
 }
 
-void LinkLoader::Trace(blink::Visitor* visitor) {
+void LinkLoader::Trace(Visitor* visitor) const {
   visitor->Trace(finish_observer_);
   visitor->Trace(client_);
   visitor->Trace(prerender_);
   SingleModuleClient::Trace(visitor);
-  PrerenderClient::Trace(visitor);
 }
 
 }  // namespace blink

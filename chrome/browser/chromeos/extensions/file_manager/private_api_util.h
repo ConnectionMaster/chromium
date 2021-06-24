@@ -7,15 +7,23 @@
 #ifndef CHROME_BROWSER_CHROMEOS_EXTENSIONS_FILE_MANAGER_PRIVATE_API_UTIL_H_
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_FILE_MANAGER_PRIVATE_API_UTIL_H_
 
+#include <memory>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/callback_forward.h"
-#include "chrome/browser/chromeos/file_system_provider/icon_set.h"
+#include "base/memory/weak_ptr.h"
+#include "base/strings/strcat.h"
+#include "chrome/browser/ash/file_system_provider/icon_set.h"
+#include "chromeos/components/drivefs/mojom/drivefs.mojom-forward.h"
+#include "components/drive/file_errors.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 class GURL;
 class Profile;
 
 namespace base {
+class File;
 class FilePath;
 }
 
@@ -30,6 +38,7 @@ class EventLogger;
 namespace extensions {
 namespace api {
 namespace file_manager_private {
+struct EntryProperties;
 struct IconSet;
 struct VolumeMetadata;
 }
@@ -46,9 +55,50 @@ class Volume;
 
 namespace util {
 
+class SingleEntryPropertiesGetterForDriveFs {
+ public:
+  using ResultCallback = base::OnceCallback<void(
+      std::unique_ptr<extensions::api::file_manager_private::EntryProperties>
+          properties,
+      base::File::Error error)>;
+
+  // Creates an instance and starts the process.
+  static void Start(const storage::FileSystemURL& file_system_url,
+                    Profile* const profile,
+                    ResultCallback callback);
+  ~SingleEntryPropertiesGetterForDriveFs();
+
+  SingleEntryPropertiesGetterForDriveFs(
+      const SingleEntryPropertiesGetterForDriveFs&) = delete;
+  SingleEntryPropertiesGetterForDriveFs& operator=(
+      const SingleEntryPropertiesGetterForDriveFs&) = delete;
+
+ private:
+  SingleEntryPropertiesGetterForDriveFs(
+      const storage::FileSystemURL& file_system_url,
+      Profile* const profile,
+      ResultCallback callback);
+  void StartProcess();
+  void OnGetFileInfo(drive::FileError error,
+                     drivefs::mojom::FileMetadataPtr metadata);
+  void CompleteGetEntryProperties(drive::FileError error);
+
+  // Given parameters.
+  ResultCallback callback_;
+  const storage::FileSystemURL file_system_url_;
+  Profile* const running_profile_;
+
+  // Values used in the process.
+  std::unique_ptr<extensions::api::file_manager_private::EntryProperties>
+      properties_;
+
+  base::WeakPtrFactory<SingleEntryPropertiesGetterForDriveFs> weak_ptr_factory_{
+      this};
+};
+
 // Fills out IDL IconSet struct with the provided icon set.
 void FillIconSet(extensions::api::file_manager_private::IconSet* output,
-                 const chromeos::file_system_provider::IconSet& input);
+                 const ash::file_system_provider::IconSet& input);
 
 // Converts the |volume| to VolumeMetadata to communicate with JavaScript via
 // private API.
@@ -93,11 +143,6 @@ void GetSelectedFileInfo(content::RenderFrameHost* render_frame_host,
                          const std::vector<GURL>& file_urls,
                          GetSelectedFileInfoLocalPathOption local_path_option,
                          GetSelectedFileInfoCallback callback);
-
-// Grants permission to access per-profile folder (Downloads, Drive) of
-// |profile| for the process |render_view_process_id|.
-void SetupProfileFileAccessPermissions(int render_view_process_id,
-                                       Profile* profile);
 
 // Get event logger to chrome://drive-internals page for the |profile|.
 drive::EventLogger* GetLogger(Profile* profile);

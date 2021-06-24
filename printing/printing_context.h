@@ -9,10 +9,10 @@
 #include <string>
 
 #include "base/callback.h"
-#include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "printing/mojom/print.mojom.h"
 #include "printing/native_drawing_context.h"
 #include "printing/print_settings.h"
 #include "ui/gfx/native_widget_types.h"
@@ -23,7 +23,7 @@ namespace printing {
 // user selected printing context. This includes the OS-dependent UI to ask the
 // user about the print settings. Concrete implementations directly talk to the
 // printer and manage the document and page breaks.
-class PRINTING_EXPORT PrintingContext {
+class COMPONENT_EXPORT(PRINTING) PrintingContext {
  public:
   // Printing context delegate.
   class Delegate {
@@ -45,6 +45,8 @@ class PRINTING_EXPORT PrintingContext {
     FAILED,
   };
 
+  PrintingContext(const PrintingContext&) = delete;
+  PrintingContext& operator=(const PrintingContext&) = delete;
   virtual ~PrintingContext();
 
   // Callback of AskUserForSettings, used to notify the PrintJobWorker when
@@ -55,7 +57,7 @@ class PRINTING_EXPORT PrintingContext {
   // context with the select device settings. The result of the call is returned
   // in the callback. This is necessary for Linux, which only has an
   // asynchronous printing API.
-  // On Android, when |is_scripted| is true, calling it initiates a full
+  // On Android, when `is_scripted` is true, calling it initiates a full
   // printing flow from the framework's PrintManager.
   // (see https://codereview.chromium.org/740983002/)
   virtual void AskUserForSettings(int max_pages,
@@ -74,13 +76,13 @@ class PRINTING_EXPORT PrintingContext {
   virtual gfx::Size GetPdfPaperSizeDeviceUnits() = 0;
 
   // Updates printer settings.
-  // |external_preview| is true if pdf is going to be opened in external
+  // `external_preview` is true if pdf is going to be opened in external
   // preview. Used by MacOS only now to open Preview.app.
   virtual Result UpdatePrinterSettings(bool external_preview,
                                        bool show_system_dialog,
                                        int page_count) = 0;
 
-  // Updates Print Settings. |job_settings| contains all print job
+  // Updates Print Settings. `job_settings` contains all print job
   // settings information.
   Result UpdatePrintSettings(base::Value job_settings);
 
@@ -96,7 +98,7 @@ class PRINTING_EXPORT PrintingContext {
   // like IPC message processing! Some printers have side-effects on this call
   // like virtual printers that ask the user for the path of the saved document;
   // for example a PDF printer.
-  virtual Result NewDocument(const base::string16& document_name) = 0;
+  virtual Result NewDocument(const std::u16string& document_name) = 0;
 
   // Starts a new page.
   virtual Result NewPage() = 0;
@@ -122,12 +124,12 @@ class PRINTING_EXPORT PrintingContext {
   // implement this method to create an object of their implementation.
   static std::unique_ptr<PrintingContext> Create(Delegate* delegate);
 
-  void set_margin_type(MarginType type);
+  void set_margin_type(mojom::MarginType type);
   void set_is_modifiable(bool is_modifiable);
 
-  const PrintSettings& settings() const {
-    return settings_;
-  }
+  const PrintSettings& settings() const;
+
+  std::unique_ptr<PrintSettings> TakeAndResetSettings();
 
   int job_id() const { return job_id_; }
 
@@ -141,7 +143,7 @@ class PRINTING_EXPORT PrintingContext {
   PrintingContext::Result OnError();
 
   // Complete print context settings.
-  PrintSettings settings_;
+  std::unique_ptr<PrintSettings> settings_;
 
   // Printing context delegate.
   Delegate* const delegate_;
@@ -154,9 +156,6 @@ class PRINTING_EXPORT PrintingContext {
 
   // The job id for the current job. The value is 0 if no jobs are active.
   int job_id_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(PrintingContext);
 };
 
 }  // namespace printing

@@ -9,10 +9,18 @@
 
 namespace ui {
 
-PropertyHandler::PropertyHandler() {}
+PropertyHandler::PropertyHandler() = default;
+
+PropertyHandler::PropertyHandler(PropertyHandler&& other) = default;
 
 PropertyHandler::~PropertyHandler() {
   ClearProperties();
+}
+
+void PropertyHandler::AcquireAllPropertiesFrom(PropertyHandler&& other) {
+  for (auto& prop_pair : other.prop_map_)
+    prop_map_[std::move(prop_pair.first)] = std::move(prop_pair.second);
+  other.prop_map_.clear();
 }
 
 int64_t PropertyHandler::SetPropertyInternal(const void* key,
@@ -20,14 +28,6 @@ int64_t PropertyHandler::SetPropertyInternal(const void* key,
                                              PropertyDeallocator deallocator,
                                              int64_t value,
                                              int64_t default_value) {
-  // TODO(https://crbug.com/952087): ideally this code would early out if the
-  // value isn't changing. Unfortunately that breaks some assumptions.
-  // |is_value_changing| is a best guess at whether the value is changing, and
-  // doesn't handle non-POD types.
-  const bool is_value_changing =
-      value != GetPropertyInternal(key, default_value);
-  std::unique_ptr<PropertyData> data =
-      BeforePropertyChange(key, is_value_changing);
   int64_t old = GetPropertyInternal(key, default_value);
   if (value == default_value) {
     prop_map_.erase(key);
@@ -38,14 +38,8 @@ int64_t PropertyHandler::SetPropertyInternal(const void* key,
     prop_value.deallocator = deallocator;
     prop_map_[key] = prop_value;
   }
-  AfterPropertyChange(key, old, std::move(data));
+  AfterPropertyChange(key, old);
   return old;
-}
-
-std::unique_ptr<PropertyData> PropertyHandler::BeforePropertyChange(
-    const void* key,
-    bool is_value_changing) {
-  return nullptr;
 }
 
 void PropertyHandler::ClearProperties() {

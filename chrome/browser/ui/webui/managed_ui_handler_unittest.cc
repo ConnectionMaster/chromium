@@ -4,27 +4,25 @@
 
 #include "chrome/browser/ui/webui/managed_ui_handler.h"
 
-#include "base/test/scoped_feature_list.h"
 #include "base/token.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/policy/profile_policy_connector_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_service_impl.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/test_web_ui_data_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 #include "components/policy/core/browser/browser_policy_connector_base.h"
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
 
 class TestManagedUIHandler : public ManagedUIHandler {
  public:
@@ -36,8 +34,6 @@ class ManagedUIHandlerTest : public testing::Test {
   ManagedUIHandlerTest()
       : source_(content::TestWebUIDataSource::Create(
             base::Token::CreateRandom().ToString())) {
-    features_.InitAndEnableFeature(features::kShowManagedUi);
-
     // Create a TestingProfile that uses our MockConfigurationPolicyProvider.
     policy_provider()->Init();
     policy::PolicyServiceImpl::Providers providers = {policy_provider()};
@@ -59,8 +55,7 @@ class ManagedUIHandlerTest : public testing::Test {
     return &policy_provider_;
   }
   policy::ProfilePolicyConnector* profile_policy_connector() {
-    return policy::ProfilePolicyConnectorFactory::GetForBrowserContext(
-        profile());
+    return profile()->GetProfilePolicyConnector();
   }
 
   void InitializeHandler() {
@@ -81,8 +76,7 @@ class ManagedUIHandlerTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle bundle_;
-  base::test::ScopedFeatureList features_;
+  content::BrowserTaskEnvironment task_environment_;
 
   testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
   std::unique_ptr<TestingProfile> profile_;
@@ -111,14 +105,14 @@ TEST_F(ManagedUIHandlerTest, ManagedUIBecomesEnabledByProfile) {
   policy::PolicyMap non_empty_map;
   non_empty_map.Set("FakePolicyName", policy::POLICY_LEVEL_MANDATORY,
                     policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD,
-                    std::make_unique<base::Value>("fake"), nullptr);
+                    base::Value("fake"), nullptr);
   policy_provider()->UpdateChromePolicy(non_empty_map);
 
   // Source should auto-update.
   EXPECT_TRUE(IsSourceManaged());
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 TEST_F(ManagedUIHandlerTest, ManagedUIDisabledForChildAccount) {
   profile_policy_connector()->OverrideIsManagedForTesting(true);
   profile()->SetSupervisedUserId("supervised");

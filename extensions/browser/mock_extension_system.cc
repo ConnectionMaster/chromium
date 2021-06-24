@@ -13,12 +13,13 @@ MockExtensionSystem::MockExtensionSystem(content::BrowserContext* context)
     : browser_context_(context) {
 }
 
-MockExtensionSystem::~MockExtensionSystem() {
+MockExtensionSystem::~MockExtensionSystem() = default;
+
+void MockExtensionSystem::SetReady() {
+  ready_.Signal();
 }
 
 void MockExtensionSystem::InitForRegularProfile(bool extensions_enabled) {}
-
-void MockExtensionSystem::InitForIncognitoProfile() {}
 
 ExtensionService* MockExtensionSystem::extension_service() {
   return nullptr;
@@ -36,7 +37,7 @@ ServiceWorkerManager* MockExtensionSystem::service_worker_manager() {
   return nullptr;
 }
 
-SharedUserScriptMaster* MockExtensionSystem::shared_user_script_master() {
+UserScriptManager* MockExtensionSystem::user_script_manager() {
   return nullptr;
 }
 
@@ -68,13 +69,17 @@ const base::OneShotEvent& MockExtensionSystem::ready() const {
   return ready_;
 }
 
+bool MockExtensionSystem::is_ready() const {
+  return ready_.is_signaled();
+}
+
 ContentVerifier* MockExtensionSystem::content_verifier() {
   return nullptr;
 }
 
 std::unique_ptr<ExtensionSet> MockExtensionSystem::GetDependentExtensions(
     const Extension* extension) {
-  return std::unique_ptr<ExtensionSet>();
+  return nullptr;
 }
 
 void MockExtensionSystem::InstallUpdate(
@@ -85,6 +90,10 @@ void MockExtensionSystem::InstallUpdate(
     InstallUpdateCallback install_update_callback) {
   NOTREACHED();
 }
+
+void MockExtensionSystem::PerformActionBasedOnOmahaAttributes(
+    const std::string& extension_id,
+    const base::Value& attributes) {}
 
 bool MockExtensionSystem::FinishDelayedInstallationIfReady(
     const std::string& extension_id,

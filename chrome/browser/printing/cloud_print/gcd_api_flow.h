@@ -20,7 +20,7 @@ namespace base {
 class DictionaryValue;
 }
 
-namespace identity {
+namespace signin {
 class IdentityManager;
 }
 
@@ -67,7 +67,9 @@ class GCDApiFlow {
     virtual std::string GetOAuthScope() = 0;
 
     // Returns extra headers, if any, to send with this request.
-    virtual std::vector<std::string> GetExtraRequestHeaders() = 0;
+    virtual std::vector<
+        std::pair<std::string /* name */, std::string /* value */>>
+    GetExtraRequestHeaders() = 0;
 
     // Returns the network traffic annotation tag for this request.
     virtual NetworkTrafficAnnotation GetNetworkTrafficAnnotationType() = 0;
@@ -78,7 +80,7 @@ class GCDApiFlow {
 
   static std::unique_ptr<GCDApiFlow> Create(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      identity::IdentityManager* identity_manager);
+      signin::IdentityManager* identity_manager);
 
   virtual void Start(std::unique_ptr<Request> request) = 0;
 
@@ -93,7 +95,8 @@ class CloudPrintApiFlowRequest : public GCDApiFlow::Request {
 
   // GCDApiFlowRequest implementation
   std::string GetOAuthScope() override;
-  std::vector<std::string> GetExtraRequestHeaders() override;
+  std::vector<std::pair<std::string, std::string>> GetExtraRequestHeaders()
+      override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CloudPrintApiFlowRequest);

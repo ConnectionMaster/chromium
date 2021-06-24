@@ -8,6 +8,7 @@
 
 #include "base/metrics/histogram_macros.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_thread.h"
 #include "ui/gfx/animation/animation.h"
 
 @interface NSWorkspace (Partials)
@@ -31,59 +32,71 @@ void SetupAccessibilityDisplayOptionsNotifier() {
   // so ensure that we setup the notification on the correct thread.
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  if (@available(macOS 10.10, *)) {
-    // Listen to accessibility display options changing, so that we can update
-    // the renderer for the prefers reduced motion settings.
-    //
-    // BrowserAccessibilityStateImpl is a deliberately leaked singleton, so we
-    // don't need to record the notification token for later cleanup.
-    [[[NSWorkspace sharedWorkspace] notificationCenter]
-        addObserverForName:
-            NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
-                    object:nil
-                     queue:nil
-                usingBlock:^(NSNotification* notification) {
-                  gfx::Animation::UpdatePrefersReducedMotion();
-                  for (WebContentsImpl* wc :
-                       WebContentsImpl::GetAllWebContents()) {
-                    wc->GetRenderViewHost()->OnWebkitPreferencesChanged();
-                  }
-                }];
-  }
+  // Listen to accessibility display options changing, so that we can update
+  // the renderer for the prefers reduced motion settings.
+  //
+  // BrowserAccessibilityStateImpl is a deliberately leaked singleton, so we
+  // don't need to record the notification token for later cleanup.
+  [[[NSWorkspace sharedWorkspace] notificationCenter]
+      addObserverForName:
+          NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+                  object:nil
+                   queue:nil
+              usingBlock:^(NSNotification* notification) {
+                gfx::Animation::UpdatePrefersReducedMotion();
+                for (WebContentsImpl* wc :
+                     WebContentsImpl::GetAllWebContents()) {
+                  wc->OnWebPreferencesChanged();
+                }
+              }];
 }
 }  // namespace
 
-void BrowserAccessibilityStateImpl::PlatformInitialize() {
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
-      base::BindOnce(&SetupAccessibilityDisplayOptionsNotifier));
+class BrowserAccessibilityStateImplMac : public BrowserAccessibilityStateImpl {
+ public:
+  BrowserAccessibilityStateImplMac() = default;
+  ~BrowserAccessibilityStateImplMac() override {}
+
+ protected:
+  void InitBackgroundTasks() override;
+  void UpdateHistogramsOnOtherThread() override;
+  void UpdateUniqueUserHistograms() override;
+};
+
+void BrowserAccessibilityStateImplMac::InitBackgroundTasks() {
+  BrowserAccessibilityStateImpl::InitBackgroundTasks();
+
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&SetupAccessibilityDisplayOptionsNotifier));
 }
 
-void BrowserAccessibilityStateImpl::UpdatePlatformSpecificHistograms() {
-  // NOTE: This function is running on the file thread.
-  NSWorkspace* workspace = [NSWorkspace sharedWorkspace];
+void BrowserAccessibilityStateImplMac::UpdateHistogramsOnOtherThread() {
+  BrowserAccessibilityStateImpl::UpdateHistogramsOnOtherThread();
 
-  SEL sel = @selector(accessibilityDisplayShouldIncreaseContrast);
-  if ([workspace respondsToSelector:sel]) {
-    UMA_HISTOGRAM_BOOLEAN(
-        "Accessibility.Mac.DifferentiateWithoutColor",
-        workspace.accessibilityDisplayShouldDifferentiateWithoutColor);
-    UMA_HISTOGRAM_BOOLEAN("Accessibility.Mac.IncreaseContrast",
-                          workspace.accessibilityDisplayShouldIncreaseContrast);
-    UMA_HISTOGRAM_BOOLEAN(
-        "Accessibility.Mac.ReduceTransparency",
-        workspace.accessibilityDisplayShouldReduceTransparency);
+  // Screen reader metric.
+  ui::AXMode mode =
+      BrowserAccessibilityStateImpl::GetInstance()->GetAccessibilityMode();
+  UMA_HISTOGRAM_BOOLEAN("Accessibility.Mac.ScreenReader",
+                        mode.has_mode(ui::AXMode::kScreenReader));
+}
 
-    UMA_HISTOGRAM_BOOLEAN(
-        "Accessibility.Mac.FullKeyboardAccessEnabled",
-        static_cast<NSApplication*>(NSApp).fullKeyboardAccessEnabled);
-  }
+void BrowserAccessibilityStateImplMac::UpdateUniqueUserHistograms() {
+  BrowserAccessibilityStateImpl::UpdateUniqueUserHistograms();
 
-  sel = @selector(accessibilityDisplayShouldReduceMotion);
-  if ([workspace respondsToSelector:sel]) {
-    UMA_HISTOGRAM_BOOLEAN("Accessibility.Mac.ReduceMotion",
-                          workspace.accessibilityDisplayShouldReduceMotion);
-  }
+  ui::AXMode mode = GetAccessibilityMode();
+  UMA_HISTOGRAM_BOOLEAN("Accessibility.Mac.ScreenReader.EveryReport",
+                        mode.has_mode(ui::AXMode::kScreenReader));
+}
+
+//
+// BrowserAccessibilityStateImpl::GetInstance implementation that constructs
+// this class instead of the base class.
+//
+
+// static
+BrowserAccessibilityStateImpl* BrowserAccessibilityStateImpl::GetInstance() {
+  static base::NoDestructor<BrowserAccessibilityStateImplMac> instance;
+  return &*instance;
 }
 
 }  // namespace content

@@ -7,10 +7,10 @@
 #include <android/bitmap.h>
 #include <memory>
 
+#include "android_webview/browser_jni_headers/JavaBrowserViewRendererHelper_jni.h"
 #include "android_webview/public/browser/draw_sw.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/trace_event/trace_event.h"
-#include "jni/JavaBrowserViewRendererHelper_jni.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/utils/SkCanvasStateUtils.h"
@@ -119,7 +119,7 @@ AuxiliaryCanvasHolder::AuxiliaryCanvasHolder(
 
   SkImageInfo info =
       SkImageInfo::MakeN32Premul(bitmap_info.width, bitmap_info.height);
-  bitmap_.reset(new SkBitmap);
+  bitmap_ = std::make_unique<SkBitmap>();
   bitmap_->installPixels(info, pixels, bitmap_info.stride);
   canvas_ = std::make_unique<SkCanvas>(*bitmap_);
 }
@@ -156,12 +156,13 @@ std::unique_ptr<SoftwareCanvasHolder> SoftwareCanvasHolder::Create(
   JNIEnv* env = base::android::AttachCurrentThread();
   std::unique_ptr<SoftwareCanvasHolder> holder;
   if (!force_auxiliary_bitmap) {
-    holder.reset(new JavaCanvasHolder(env, java_canvas, scroll_correction));
+    holder =
+        std::make_unique<JavaCanvasHolder>(env, java_canvas, scroll_correction);
   }
   if (!holder.get() || !holder->GetCanvas()) {
     holder.reset();
-    holder.reset(new AuxiliaryCanvasHolder(env, java_canvas, scroll_correction,
-                                           auxiliary_bitmap_size));
+    holder = std::make_unique<AuxiliaryCanvasHolder>(
+        env, java_canvas, scroll_correction, auxiliary_bitmap_size);
   }
   if (!holder->GetCanvas()) {
     holder.reset();

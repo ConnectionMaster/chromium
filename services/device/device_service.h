@@ -8,50 +8,50 @@
 #include <memory>
 #include <string>
 
+#include "base/callback.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
-#include "device/usb/mojo/device_manager_impl.h"
-#include "device/usb/mojo/device_manager_test.h"
-#include "device/usb/public/mojom/device_manager.mojom.h"
-#include "device/usb/public/mojom/device_manager_test.mojom.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "build/chromeos_buildflags.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/device/geolocation/geolocation_provider.h"
 #include "services/device/geolocation/geolocation_provider_impl.h"
 #include "services/device/geolocation/public_ip_address_geolocation_provider.h"
 #include "services/device/public/mojom/battery_monitor.mojom.h"
+#include "services/device/public/mojom/device_service.mojom.h"
 #include "services/device/public/mojom/fingerprint.mojom.h"
 #include "services/device/public/mojom/geolocation.mojom.h"
 #include "services/device/public/mojom/geolocation_config.mojom.h"
 #include "services/device/public/mojom/geolocation_context.mojom.h"
 #include "services/device/public/mojom/geolocation_control.mojom.h"
-#include "services/device/public/mojom/nfc_provider.mojom.h"
 #include "services/device/public/mojom/power_monitor.mojom.h"
 #include "services/device/public/mojom/screen_orientation.mojom.h"
 #include "services/device/public/mojom/sensor_provider.mojom.h"
 #include "services/device/public/mojom/serial.mojom.h"
 #include "services/device/public/mojom/time_zone_monitor.mojom.h"
+#include "services/device/public/mojom/usb_manager.mojom.h"
+#include "services/device/public/mojom/usb_manager_test.mojom.h"
 #include "services/device/public/mojom/vibration_manager.mojom.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
+#include "services/device/usb/mojo/device_manager_impl.h"
+#include "services/device/usb/mojo/device_manager_test.h"
 #include "services/device/wake_lock/wake_lock_context.h"
 #include "services/device/wake_lock/wake_lock_provider.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
-#include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/cpp/service_binding.h"
-#include "services/service_manager/public/mojom/service.mojom.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/scoped_java_ref.h"
+#include "services/device/public/mojom/nfc_provider.mojom.h"
 #else
 #include "services/device/public/mojom/hid.mojom.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "services/device/media_transfer_protocol/mtp_device_manager.h"
 #include "services/device/public/mojom/bluetooth_system.mojom.h"
 #endif
 
-#if defined(OS_LINUX) && defined(USE_UDEV)
+#if (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)
 #include "services/device/public/mojom/input_service.mojom.h"
 #endif
 
@@ -60,6 +60,7 @@ class SingleThreadTaskRunner;
 }
 
 namespace network {
+class NetworkConnectionTracker;
 class SharedURLLoaderFactory;
 }  // namespace network
 
@@ -71,114 +72,137 @@ class SerialPortManagerImpl;
 #endif
 
 class DeviceService;
+class GeolocationManager;
+class PlatformSensorProvider;
 class PowerMonitorMessageBroadcaster;
 class PublicIpAddressLocationNotifier;
+class SensorProviderImpl;
 class TimeZoneMonitor;
 
-#if defined(OS_ANDROID)
 // NOTE: See the comments on the definitions of PublicIpAddressLocationNotifier,
 // |WakeLockContextCallback|, |CustomLocationProviderCallback| and
 // NFCDelegate.java to understand the semantics and usage of these parameters.
-std::unique_ptr<DeviceService> CreateDeviceService(
-    scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const std::string& geolocation_api_key,
-    bool use_gms_core_location_provider,
-    const WakeLockContextCallback& wake_lock_context_callback,
-    const CustomLocationProviderCallback& custom_location_provider_callback,
-    const base::android::JavaRef<jobject>& java_nfc_delegate,
-    service_manager::mojom::ServiceRequest request);
-#else
-std::unique_ptr<DeviceService> CreateDeviceService(
-    scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const std::string& geolocation_api_key,
-    const CustomLocationProviderCallback& custom_location_provider_callback,
-    service_manager::mojom::ServiceRequest request);
-#endif
+struct DeviceServiceParams {
+  DeviceServiceParams();
+  ~DeviceServiceParams();
 
-class DeviceService : public service_manager::Service {
- public:
+  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner;
+  scoped_refptr<base::SingleThreadTaskRunner> io_task_runner;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory;
+  network::NetworkConnectionTracker* network_connection_tracker = nullptr;
+  std::string geolocation_api_key;
+  CustomLocationProviderCallback custom_location_provider_callback;
+  bool use_gms_core_location_provider = false;
+  GeolocationManager* geolocation_manager = nullptr;
+  WakeLockContextCallback wake_lock_context_callback;
+
 #if defined(OS_ANDROID)
-  DeviceService(
-      scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const std::string& geolocation_api_key,
-      const WakeLockContextCallback& wake_lock_context_callback,
-      const base::android::JavaRef<jobject>& java_nfc_delegate,
-      service_manager::mojom::ServiceRequest request);
-#else
-  DeviceService(
-      scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const std::string& geolocation_api_key,
-      service_manager::mojom::ServiceRequest request);
-#endif
+  base::android::ScopedJavaGlobalRef<jobject> java_nfc_delegate;
+#endif  // defined(OS_ANDROID)
+};
+
+std::unique_ptr<DeviceService> CreateDeviceService(
+    std::unique_ptr<DeviceServiceParams> params,
+    mojo::PendingReceiver<mojom::DeviceService> receiver);
+
+class DeviceService : public mojom::DeviceService {
+ public:
+  DeviceService(std::unique_ptr<DeviceServiceParams> params,
+                mojo::PendingReceiver<mojom::DeviceService> receiver);
   ~DeviceService() override;
 
+  void AddReceiver(mojo::PendingReceiver<mojom::DeviceService> receiver);
+
+  void SetPlatformSensorProviderForTesting(
+      std::unique_ptr<PlatformSensorProvider> provider);
+
+  // Supports global override of GeolocationContext binding within the service.
+  using GeolocationContextBinder = base::RepeatingCallback<void(
+      mojo::PendingReceiver<mojom::GeolocationContext>)>;
+  static void OverrideGeolocationContextBinderForTesting(
+      GeolocationContextBinder binder);
+
  private:
-  // service_manager::Service:
-  void OnStart() override;
-  void OnBindInterface(const service_manager::BindSourceInfo& source_info,
-                       const std::string& interface_name,
-                       mojo::ScopedMessagePipeHandle interface_pipe) override;
+  // mojom::DeviceService implementation:
+  void BindFingerprint(
+      mojo::PendingReceiver<mojom::Fingerprint> receiver) override;
+  void BindGeolocationConfig(
+      mojo::PendingReceiver<mojom::GeolocationConfig> receiver) override;
+  void BindGeolocationContext(
+      mojo::PendingReceiver<mojom::GeolocationContext> receiver) override;
+  void BindGeolocationControl(
+      mojo::PendingReceiver<mojom::GeolocationControl> receiver) override;
 
-  void BindFingerprintRequest(mojom::FingerprintRequest request);
-  void BindGeolocationConfigRequest(mojom::GeolocationConfigRequest request);
-  void BindGeolocationContextRequest(mojom::GeolocationContextRequest request);
-  void BindGeolocationControlRequest(mojom::GeolocationControlRequest request);
-
-#if defined(OS_LINUX) && defined(USE_UDEV)
-  void BindInputDeviceManagerRequest(mojom::InputDeviceManagerRequest request);
+#if (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)
+  void BindInputDeviceManager(
+      mojo::PendingReceiver<mojom::InputDeviceManager> receiver) override;
 #endif
+
+  void BindBatteryMonitor(
+      mojo::PendingReceiver<mojom::BatteryMonitor> receiver) override;
+
+#if defined(OS_ANDROID)
+  void BindNFCProvider(
+      mojo::PendingReceiver<mojom::NFCProvider> receiver) override;
+#endif
+
+  void BindVibrationManager(
+      mojo::PendingReceiver<mojom::VibrationManager> receiver) override;
 
 #if !defined(OS_ANDROID)
-  void BindBatteryMonitorRequest(mojom::BatteryMonitorRequest request);
-  void BindHidManagerRequest(mojom::HidManagerRequest request);
-  void BindNFCProviderRequest(mojom::NFCProviderRequest request);
-  void BindVibrationManagerRequest(mojom::VibrationManagerRequest request);
+  void BindHidManager(
+      mojo::PendingReceiver<mojom::HidManager> receiver) override;
 #endif
 
-#if defined(OS_CHROMEOS)
-  void BindBluetoothSystemFactoryRequest(
-      mojom::BluetoothSystemFactoryRequest request);
-  void BindMtpManagerRequest(mojom::MtpManagerRequest request);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  void BindBluetoothSystemFactory(
+      mojo::PendingReceiver<mojom::BluetoothSystemFactory> receiver) override;
+  void BindMtpManager(
+      mojo::PendingReceiver<mojom::MtpManager> receiver) override;
 #endif
 
-  void BindPowerMonitorRequest(mojom::PowerMonitorRequest request);
+  void BindPowerMonitor(
+      mojo::PendingReceiver<mojom::PowerMonitor> receiver) override;
 
-  void BindPublicIpAddressGeolocationProviderRequest(
-      mojom::PublicIpAddressGeolocationProviderRequest request);
+  void BindPublicIpAddressGeolocationProvider(
+      mojo::PendingReceiver<mojom::PublicIpAddressGeolocationProvider> receiver)
+      override;
 
-  void BindScreenOrientationListenerRequest(
-      mojom::ScreenOrientationListenerRequest request);
+  void BindScreenOrientationListener(
+      mojo::PendingReceiver<mojom::ScreenOrientationListener> receiver)
+      override;
 
-  void BindSensorProviderRequest(mojom::SensorProviderRequest request);
+  void BindSensorProvider(
+      mojo::PendingReceiver<mojom::SensorProvider> receiver) override;
 
-  void BindTimeZoneMonitorRequest(mojom::TimeZoneMonitorRequest request);
+  void BindSerialPortManager(
+      mojo::PendingReceiver<mojom::SerialPortManager> receiver) override;
 
-  void BindWakeLockProviderRequest(mojom::WakeLockProviderRequest request);
+  void BindTimeZoneMonitor(
+      mojo::PendingReceiver<mojom::TimeZoneMonitor> receiver) override;
 
-  void BindUsbDeviceManagerRequest(mojom::UsbDeviceManagerRequest request);
+  void BindWakeLockProvider(
+      mojo::PendingReceiver<mojom::WakeLockProvider> receiver) override;
 
-  void BindUsbDeviceManagerTestRequest(
-      mojom::UsbDeviceManagerTestRequest request);
+  void BindUsbDeviceManager(
+      mojo::PendingReceiver<mojom::UsbDeviceManager> receiver) override;
 
-  service_manager::ServiceBinding service_binding_;
+  void BindUsbDeviceManagerTest(
+      mojo::PendingReceiver<mojom::UsbDeviceManagerTest> receiver) override;
+
+  mojo::ReceiverSet<mojom::DeviceService> receivers_;
   std::unique_ptr<PowerMonitorMessageBroadcaster>
       power_monitor_message_broadcaster_;
   std::unique_ptr<PublicIpAddressGeolocationProvider>
       public_ip_address_geolocation_provider_;
+  std::unique_ptr<SensorProviderImpl> sensor_provider_;
   std::unique_ptr<TimeZoneMonitor> time_zone_monitor_;
   std::unique_ptr<usb::DeviceManagerImpl> usb_device_manager_;
   std::unique_ptr<usb::DeviceManagerTest> usb_device_manager_test_;
   scoped_refptr<base::SingleThreadTaskRunner> file_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  network::NetworkConnectionTracker* network_connection_tracker_;
 
   const std::string geolocation_api_key_;
   WakeLockContextCallback wake_lock_context_callback_;
@@ -190,17 +214,18 @@ class DeviceService : public service_manager::Service {
   service_manager::InterfaceProvider* GetJavaInterfaceProvider();
 
   // InterfaceProvider that is bound to the Java-side interface registry.
-  service_manager::InterfaceProvider java_interface_provider_;
+  service_manager::InterfaceProvider java_interface_provider_{
+      base::ThreadTaskRunnerHandle::Get()};
 
-  bool java_interface_provider_initialized_;
+  bool java_interface_provider_initialized_ = false;
 
   base::android::ScopedJavaGlobalRef<jobject> java_nfc_delegate_;
 #else
   std::unique_ptr<HidManagerImpl> hid_manager_;
 #endif
 
-#if (defined(OS_LINUX) && defined(USE_UDEV)) || defined(OS_WIN) || \
-    defined(OS_MACOSX)
+#if ((defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)) || \
+    defined(OS_WIN) || defined(OS_MAC)
   // Requests for the SerialPortManager interface must be bound to
   // |serial_port_manager_| on |serial_port_manager_task_runner_| and it will
   // be destroyed on that sequence.
@@ -208,11 +233,9 @@ class DeviceService : public service_manager::Service {
   scoped_refptr<base::SequencedTaskRunner> serial_port_manager_task_runner_;
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<MtpDeviceManager> mtp_device_manager_;
 #endif
-
-  service_manager::BinderRegistry registry_;
 
   DISALLOW_COPY_AND_ASSIGN(DeviceService);
 };

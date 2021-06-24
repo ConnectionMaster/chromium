@@ -4,6 +4,9 @@
 
 #include "ui/views/controls/button/radio_button.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/base_event_utils.h"
@@ -28,11 +31,10 @@ class RadioButtonTest : public ViewsTestBase {
     Widget::InitParams params =
         CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
     params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-    widget_->Init(params);
+    widget_->Init(std::move(params));
     widget_->Show();
 
-    button_container_ = new View();
-    widget_->SetContentsView(button_container_);
+    button_container_ = widget_->SetContentsView(std::make_unique<View>());
   }
 
   void TearDown() override {
@@ -52,24 +54,24 @@ class RadioButtonTest : public ViewsTestBase {
 };
 
 TEST_F(RadioButtonTest, Basics) {
-  RadioButton* button1 = new RadioButton(base::ASCIIToUTF16("Blah"), kGroup);
+  RadioButton* button1 = new RadioButton(u"Blah", kGroup);
   button_container().AddChildView(button1);
-  RadioButton* button2 = new RadioButton(base::ASCIIToUTF16("Blah"), kGroup);
+  RadioButton* button2 = new RadioButton(u"Blah", kGroup);
   button_container().AddChildView(button2);
 
   button1->SetChecked(true);
-  EXPECT_TRUE(button1->checked());
-  EXPECT_FALSE(button2->checked());
+  EXPECT_TRUE(button1->GetChecked());
+  EXPECT_FALSE(button2->GetChecked());
 
   button2->SetChecked(true);
-  EXPECT_FALSE(button1->checked());
-  EXPECT_TRUE(button2->checked());
+  EXPECT_FALSE(button1->GetChecked());
+  EXPECT_TRUE(button2->GetChecked());
 }
 
 TEST_F(RadioButtonTest, Focus) {
-  RadioButton* button1 = new RadioButton(base::ASCIIToUTF16("Blah"), kGroup);
+  RadioButton* button1 = new RadioButton(u"Blah", kGroup);
   button_container().AddChildView(button1);
-  RadioButton* button2 = new RadioButton(base::ASCIIToUTF16("Blah"), kGroup);
+  RadioButton* button2 = new RadioButton(u"Blah", kGroup);
   button_container().AddChildView(button2);
 
   // Tabbing through only focuses the checked button.
@@ -85,22 +87,22 @@ TEST_F(RadioButtonTest, Focus) {
   focus_manager->OnKeyEvent(
       ui::KeyEvent(ui::ET_KEY_PRESSED, ui::VKEY_DOWN, ui::EF_NONE));
   EXPECT_EQ(button2, focus_manager->GetFocusedView());
-  EXPECT_FALSE(button1->checked());
-  EXPECT_TRUE(button2->checked());
+  EXPECT_FALSE(button1->GetChecked());
+  EXPECT_TRUE(button2->GetChecked());
 
   focus_manager->OnKeyEvent(
       ui::KeyEvent(ui::ET_KEY_PRESSED, ui::VKEY_UP, ui::EF_NONE));
   EXPECT_EQ(button1, focus_manager->GetFocusedView());
-  EXPECT_TRUE(button1->checked());
-  EXPECT_FALSE(button2->checked());
+  EXPECT_TRUE(button1->GetChecked());
+  EXPECT_FALSE(button2->GetChecked());
 }
 
 TEST_F(RadioButtonTest, FocusOnClick) {
-  RadioButton* button1 = new RadioButton(base::string16(), kGroup);
+  RadioButton* button1 = new RadioButton(std::u16string(), kGroup);
   button1->SetSize(gfx::Size(10, 10));
   button_container().AddChildView(button1);
   button1->SetChecked(true);
-  RadioButton* button2 = new RadioButton(base::string16(), kGroup);
+  RadioButton* button2 = new RadioButton(std::u16string(), kGroup);
   button2->SetSize(gfx::Size(10, 10));
   button_container().AddChildView(button2);
 
@@ -111,7 +113,7 @@ TEST_F(RadioButtonTest, FocusOnClick) {
   button2->OnMousePressed(event);
   button2->OnMouseReleased(event);
 
-  EXPECT_TRUE(button2->checked());
+  EXPECT_TRUE(button2->GetChecked());
   auto* focus_manager = button_container().GetFocusManager();
   // No focus on click.
   EXPECT_EQ(nullptr, focus_manager->GetFocusedView());
@@ -123,7 +125,7 @@ TEST_F(RadioButtonTest, FocusOnClick) {
   button1->OnMousePressed(event);
   button1->OnMouseReleased(event);
   // Button 1 gets focus on click because button 2 already had it.
-  EXPECT_TRUE(button1->checked());
+  EXPECT_TRUE(button1->GetChecked());
   EXPECT_EQ(button1, focus_manager->GetFocusedView());
 }
 

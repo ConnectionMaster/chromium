@@ -28,6 +28,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/synchronization/waitable_event.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node.h"
@@ -51,7 +52,9 @@ class WaitableEvent;
 // periodically with an AudioProcessingEvent which has AudioBuffers for each
 // input and output.
 
-class ScriptProcessorHandler final : public AudioHandler {
+class ScriptProcessorHandler final
+    : public AudioHandler,
+      public base::SupportsWeakPtr<ScriptProcessorHandler> {
  public:
   static scoped_refptr<ScriptProcessorHandler> Create(
       AudioNode&,
@@ -76,6 +79,8 @@ class ScriptProcessorHandler final : public AudioHandler {
     return number_of_output_channels_;
   }
 
+  Mutex& GetBufferLock() { return buffer_lock_; }
+
  private:
   ScriptProcessorHandler(AudioNode&,
                          float sample_rate,
@@ -87,7 +92,6 @@ class ScriptProcessorHandler final : public AudioHandler {
   double TailTime() const override;
   double LatencyTime() const override;
   bool RequiresTailProcessing() const final;
-  bool PropagatesSilence() const final;
 
   void FireProcessEvent(uint32_t);
   void FireProcessEventForOfflineAudioContext(uint32_t, base::WaitableEvent*);
@@ -97,18 +101,17 @@ class ScriptProcessorHandler final : public AudioHandler {
   void SwapBuffers() { double_buffer_index_ = 1 - double_buffer_index_; }
   uint32_t double_buffer_index_;
 
+  // Protects |shared_input_buffers| and |shared_output_buffers_|.
+  mutable Mutex buffer_lock_;
   WTF::Vector<std::unique_ptr<SharedAudioBuffer>> shared_input_buffers_;
   WTF::Vector<std::unique_ptr<SharedAudioBuffer>> shared_output_buffers_;
 
   uint32_t buffer_size_;
   uint32_t buffer_read_write_index_;
-
   uint32_t number_of_input_channels_;
   uint32_t number_of_output_channels_;
 
   scoped_refptr<AudioBus> internal_input_bus_;
-  // Synchronize process() with fireProcessEvent().
-  mutable Mutex process_event_lock_;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
@@ -119,7 +122,6 @@ class ScriptProcessorNode final
     : public AudioNode,
       public ActiveScriptWrappable<ScriptProcessorNode> {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(ScriptProcessorNode);
 
  public:
   // bufferSize must be one of the following values: 256, 512, 1024, 2048,
@@ -158,11 +160,17 @@ class ScriptProcessorNode final
   // ScriptWrappable
   bool HasPendingActivity() const final;
 
-  void Trace(blink::Visitor* visitor) override;
+  void Trace(Visitor* visitor) const override;
+
+  // InspectorHelperMixin
+  void ReportDidCreate() final;
+  void ReportWillBeDestroyed() final;
 
  private:
   HeapVector<Member<AudioBuffer>> input_buffers_;
   HeapVector<Member<AudioBuffer>> output_buffers_;
+  Member<AudioBuffer> external_input_buffer_;
+  Member<AudioBuffer> external_output_buffer_;
 };
 
 }  // namespace blink

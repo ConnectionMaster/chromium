@@ -8,7 +8,9 @@
 
 #include "base/command_line.h"
 #include "base/containers/queue.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "components/services/storage/public/mojom/cache_storage_control.mojom.h"
 #include "content/browser/background_fetch/background_fetch_constants.h"
 #include "content/browser/background_fetch/background_fetch_data_manager_observer.h"
 #include "content/browser/background_fetch/background_fetch_request_info.h"
@@ -24,26 +26,26 @@
 #include "content/browser/background_fetch/storage/mark_request_complete_task.h"
 #include "content/browser/background_fetch/storage/match_requests_task.h"
 #include "content/browser/background_fetch/storage/start_next_pending_request_task.h"
-#include "content/browser/cache_storage/cache_storage_manager.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
 
 namespace content {
 
 BackgroundFetchDataManager::BackgroundFetchDataManager(
     BrowserContext* browser_context,
+    StoragePartition* storage_partition,
     scoped_refptr<ServiceWorkerContextWrapper> service_worker_context,
-    scoped_refptr<CacheStorageContextImpl> cache_storage_context,
     scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy)
     : service_worker_context_(std::move(service_worker_context)),
-      cache_storage_context_(std::move(cache_storage_context)),
-      quota_manager_proxy_(std::move(quota_manager_proxy)),
-      weak_ptr_factory_(this) {
-  // Constructed on the UI thread, then used on the IO thread.
+      storage_partition_(storage_partition),
+      quota_manager_proxy_(std::move(quota_manager_proxy)) {
+  // Constructed on the UI thread, then used on the service worker core thread.
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(browser_context);
 
@@ -53,27 +55,22 @@ BackgroundFetchDataManager::BackgroundFetchDataManager(
   DCHECK(blob_storage_context_);
 }
 
-void BackgroundFetchDataManager::InitializeOnIOThread() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  // The CacheStorageManager can only be accessed from the IO thread.
-  cache_manager_ =
-      base::WrapRefCounted(cache_storage_context_->cache_manager());
+void BackgroundFetchDataManager::InitializeOnCoreThread() {
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   // Delete inactive registrations still in the DB.
   Cleanup();
-
-  DCHECK(cache_manager_);
 }
 
 void BackgroundFetchDataManager::AddObserver(
     BackgroundFetchDataManagerObserver* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
   observers_.AddObserver(observer);
 }
 
 void BackgroundFetchDataManager::RemoveObserver(
     BackgroundFetchDataManagerObserver* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
   observers_.RemoveObserver(observer);
 }
 
@@ -81,44 +78,81 @@ void BackgroundFetchDataManager::Cleanup() {
   AddDatabaseTask(std::make_unique<background_fetch::CleanupTask>(this));
 }
 
-CacheStorageHandle BackgroundFetchDataManager::GetOrOpenCacheStorage(
-    const url::Origin& origin,
+mojo::Remote<blink::mojom::CacheStorage>&
+BackgroundFetchDataManager::GetOrOpenCacheStorage(
+    const blink::StorageKey& storage_key,
     const std::string& unique_id) {
-  auto it = cache_storage_handle_map_.find(unique_id);
-  if (it != cache_storage_handle_map_.end()) {
-    if (it->second.value()) {
-      DCHECK_EQ(origin, it->second.value()->Origin());
-    } else {
-      // The backing CacheStorage has been forcibly closed due to an external
-      // event. Re-open the CacheStorage and update the handle.
-      it->second = cache_manager()->OpenCacheStorage(
-          origin, CacheStorageOwner::kBackgroundFetch);
-    }
-    return it->second.Clone();
+  auto it = cache_storage_remote_map_.find(unique_id);
+  if (it != cache_storage_remote_map_.end()) {
+    // TODO(enne): should we store `storage_key` so we can DCHECK it matches
+    // here?
+    return it->second;
   }
 
-  // This origin and unique_id has never been opened before. Open
-  // the CacheStorage, remember the association in the map, and return the
-  // handle.
-  CacheStorageHandle handle = cache_manager()->OpenCacheStorage(
-      origin, CacheStorageOwner::kBackgroundFetch);
-  cache_storage_handle_map_.emplace(unique_id, handle.Clone());
-  return handle;
+  // This storage key and unique_id has never been opened before.
+  mojo::Remote<blink::mojom::CacheStorage> remote;
+  network::CrossOriginEmbedderPolicy cross_origin_embedder_policy;
+
+  storage_partition_->GetCacheStorageControl()->AddReceiver(
+      cross_origin_embedder_policy, mojo::NullRemote(), storage_key,
+      storage::mojom::CacheStorageOwner::kBackgroundFetch,
+      remote.BindNewPipeAndPassReceiver());
+
+  auto result = cache_storage_remote_map_.emplace(unique_id, std::move(remote));
+  DCHECK(result.second);
+  return result.first->second;
 }
 
-void BackgroundFetchDataManager::ReleaseCacheStorage(
-    const std::string& unique_id) {
-  bool erased = cache_storage_handle_map_.erase(unique_id);
-  DCHECK(erased);
+void BackgroundFetchDataManager::OpenCache(
+    const blink::StorageKey& storage_key,
+    const std::string& unique_id,
+    int64_t trace_id,
+    blink::mojom::CacheStorage::OpenCallback callback) {
+  auto& cache_storage = GetOrOpenCacheStorage(storage_key, unique_id);
+  cache_storage->Open(base::UTF8ToUTF16(unique_id), trace_id,
+                      std::move(callback));
+}
+
+void BackgroundFetchDataManager::DeleteCache(
+    const blink::StorageKey& storage_key,
+    const std::string& unique_id,
+    int64_t trace_id,
+    blink::mojom::CacheStorage::DeleteCallback callback) {
+  auto& cache_storage = GetOrOpenCacheStorage(storage_key, unique_id);
+  cache_storage->Delete(
+      base::UTF8ToUTF16(unique_id), trace_id,
+      base::BindOnce(&BackgroundFetchDataManager::DidDeleteCache,
+                     weak_ptr_factory_.GetWeakPtr(), unique_id,
+                     std::move(callback)));
+}
+
+void BackgroundFetchDataManager::DidDeleteCache(
+    const std::string& unique_id,
+    blink::mojom::CacheStorage::DeleteCallback callback,
+    blink::mojom::CacheStorageError result) {
+  // Preserve the lifetime of the cache storage remote until here so that this
+  // DidDeleteCache callback will not be dropped.
+  cache_storage_remote_map_.erase(unique_id);
+  std::move(callback).Run(result);
+}
+
+void BackgroundFetchDataManager::HasCache(
+    const blink::StorageKey& storage_key,
+    const std::string& unique_id,
+    int64_t trace_id,
+    blink::mojom::CacheStorage::HasCallback callback) {
+  auto& cache_storage = GetOrOpenCacheStorage(storage_key, unique_id);
+  cache_storage->Has(base::UTF8ToUTF16(unique_id), trace_id,
+                     std::move(callback));
 }
 
 BackgroundFetchDataManager::~BackgroundFetchDataManager() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 }
 
 void BackgroundFetchDataManager::GetInitializationData(
     GetInitializationDataCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::GetInitializationDataTask>(
       this, std::move(callback)));
@@ -131,7 +165,7 @@ void BackgroundFetchDataManager::CreateRegistration(
     const SkBitmap& icon,
     bool start_paused,
     CreateRegistrationCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::CreateMetadataTask>(
       this, registration_id, std::move(requests), std::move(options), icon,
@@ -140,20 +174,20 @@ void BackgroundFetchDataManager::CreateRegistration(
 
 void BackgroundFetchDataManager::GetRegistration(
     int64_t service_worker_registration_id,
-    const url::Origin& origin,
+    const blink::StorageKey& storage_key,
     const std::string& developer_id,
     GetRegistrationCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::GetRegistrationTask>(
-      this, service_worker_registration_id, origin, developer_id,
+      this, service_worker_registration_id, storage_key, developer_id,
       std::move(callback)));
 }
 
 void BackgroundFetchDataManager::PopNextRequest(
     const BackgroundFetchRegistrationId& registration_id,
     NextRequestCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(
       std::make_unique<background_fetch::StartNextPendingRequestTask>(
@@ -164,7 +198,7 @@ void BackgroundFetchDataManager::GetRequestBlob(
     const BackgroundFetchRegistrationId& registration_id,
     const scoped_refptr<BackgroundFetchRequestInfo>& request_info,
     GetRequestBlobCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::GetRequestBlobTask>(
       this, registration_id, request_info, std::move(callback)));
@@ -174,7 +208,7 @@ void BackgroundFetchDataManager::MarkRequestAsComplete(
     const BackgroundFetchRegistrationId& registration_id,
     scoped_refptr<BackgroundFetchRequestInfo> request_info,
     MarkRequestCompleteCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::MarkRequestCompleteTask>(
       this, registration_id, std::move(request_info), std::move(callback)));
@@ -184,7 +218,7 @@ void BackgroundFetchDataManager::MatchRequests(
     const BackgroundFetchRegistrationId& registration_id,
     std::unique_ptr<BackgroundFetchRequestMatchParams> match_params,
     SettledFetchesCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::MatchRequestsTask>(
       this, registration_id, std::move(match_params), std::move(callback)));
@@ -194,7 +228,7 @@ void BackgroundFetchDataManager::MarkRegistrationForDeletion(
     const BackgroundFetchRegistrationId& registration_id,
     bool check_for_failure,
     MarkRegistrationForDeletionCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(
       std::make_unique<background_fetch::MarkRegistrationForDeletionTask>(
@@ -204,30 +238,26 @@ void BackgroundFetchDataManager::MarkRegistrationForDeletion(
 void BackgroundFetchDataManager::DeleteRegistration(
     const BackgroundFetchRegistrationId& registration_id,
     HandleBackgroundFetchErrorCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::DeleteRegistrationTask>(
       this, registration_id.service_worker_registration_id(),
-      registration_id.origin(), registration_id.unique_id(),
+      registration_id.storage_key(), registration_id.unique_id(),
       std::move(callback)));
 }
 
 void BackgroundFetchDataManager::GetDeveloperIdsForServiceWorker(
     int64_t service_worker_registration_id,
-    const url::Origin& origin,
+    const blink::StorageKey& storage_key,
     blink::mojom::BackgroundFetchService::GetDeveloperIdsCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   AddDatabaseTask(std::make_unique<background_fetch::GetDeveloperIdsTask>(
-      this, service_worker_registration_id, origin, std::move(callback)));
+      this, service_worker_registration_id, storage_key, std::move(callback)));
 }
 
-void BackgroundFetchDataManager::ShutdownOnIO() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  // Release reference to CacheStorageManager. DatabaseTasks that need it
-  // hold their own copy, so they can continue their work.
-  cache_manager_ = nullptr;
+void BackgroundFetchDataManager::ShutdownOnCoreThread() {
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   shutting_down_ = true;
 }
@@ -245,7 +275,7 @@ void BackgroundFetchDataManager::AddDatabaseTask(
 
 void BackgroundFetchDataManager::OnTaskFinished(
     background_fetch::DatabaseTask* task) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(ServiceWorkerContext::GetCoreThreadId());
 
   DCHECK(!database_tasks_.empty());
   DCHECK_EQ(database_tasks_.front().get(), task);

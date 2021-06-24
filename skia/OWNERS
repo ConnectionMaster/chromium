@@ -1,3 +1,4 @@
+set noparent
 alokp@chromium.org
 borenet@google.com
 brianosman@google.com
@@ -8,15 +9,13 @@ egdaniel@google.com
 fmalita@chromium.org
 jvanverth@google.com
 michaelludwig@google.com
-mtklein@chromium.org
+mtklein@google.com
 reed@google.com
 rmistry@google.com
 robertphillips@google.com
-scroggo@chromium.org
+scroggo@google.com
 senorblanco@chromium.org
 thakis@chromium.org
 
 # For Fuchsia-specific changes:
 per-file *_fuchsia*=file://build/fuchsia/OWNERS
-
-# COMPONENT: Internals>Skia

@@ -4,50 +4,53 @@
 
 #include "chrome/browser/ui/views/select_file_dialog_extension.h"
 
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "ash/constants/ash_features.h"
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/feature_list.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "base/single_thread_task_runner.h"
+#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/apps/platform_apps/app_window_registry_util.h"
+#include "chrome/browser/ash/file_manager/fileapi_util.h"
+#include "chrome/browser/ash/login/ui/login_display_host.h"
+#include "chrome/browser/ash/login/ui/login_web_dialog.h"
+#include "chrome/browser/ash/login/ui/webui_login_view.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/chromeos/extensions/file_manager/select_file_dialog_extension_user_data.h"
 #include "chrome/browser/chromeos/file_manager/app_id.h"
-#include "chrome/browser/chromeos/file_manager/fileapi_util.h"
 #include "chrome/browser/chromeos/file_manager/select_file_dialog_util.h"
 #include "chrome/browser/chromeos/file_manager/url_util.h"
-#include "chrome/browser/chromeos/login/ui/login_web_dialog.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/extension_dialog.h"
-#include "chrome/common/pref_names.h"
-#include "content/public/browser/browser_thread.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "extensions/browser/extension_system.h"
 #include "ui/base/base_window.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/ui/login_display_host.h"
-#include "chrome/browser/chromeos/login/ui/webui_login_view.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#endif
-
 using extensions::AppWindow;
-using content::BrowserThread;
 
 namespace {
 
@@ -55,6 +58,11 @@ const int kFileManagerWidth = 972;  // pixels
 const int kFileManagerHeight = 640;  // pixels
 const int kFileManagerMinimumWidth = 640;  // pixels
 const int kFileManagerMinimumHeight = 240;  // pixels
+
+// Specific color for File Picker (Files app).
+// TODO(crbug/1072904): Get these colors from ui::NativeTheme.
+constexpr SkColor kFilePickerActiveTitleColor = gfx::kGoogleGrey200;
+constexpr SkColor kFilePickerInactiveTitleColor = gfx::kGoogleGrey200;
 
 // Holds references to file manager dialogs that have callbacks pending
 // to their listeners.
@@ -69,14 +77,15 @@ class PendingDialog {
 
  private:
   friend struct base::DefaultSingletonTraits<PendingDialog>;
-  typedef std::map<SelectFileDialogExtension::RoutingID,
-                   scoped_refptr<SelectFileDialogExtension> > Map;
+  using Map = std::map<SelectFileDialogExtension::RoutingID,
+                       scoped_refptr<SelectFileDialogExtension>>;
   Map map_;
 };
 
 // static
 PendingDialog* PendingDialog::GetInstance() {
-  return base::Singleton<PendingDialog>::get();
+  static base::NoDestructor<PendingDialog> instance;
+  return instance.get();
 }
 
 void PendingDialog::Add(SelectFileDialogExtension::RoutingID id,
@@ -96,29 +105,27 @@ scoped_refptr<SelectFileDialogExtension> PendingDialog::Find(
     SelectFileDialogExtension::RoutingID id) {
   Map::const_iterator it = map_.find(id);
   if (it == map_.end())
-    return NULL;
+    return nullptr;
   return it->second;
 }
 
-#if defined(OS_CHROMEOS)
 // Return the Chrome OS WebUI login WebContents, if applicable.
 content::WebContents* GetLoginWebContents() {
-  chromeos::LoginDisplayHost* host = chromeos::LoginDisplayHost::default_host();
+  auto* host = ash::LoginDisplayHost::default_host();
   return host ? host->GetOobeWebContents() : nullptr;
 }
-#endif
 
 // Given |owner_window| finds corresponding |base_window|, it's associated
 // |web_contents| and |profile|.
 void FindRuntimeContext(gfx::NativeWindow owner_window,
                         ui::BaseWindow** base_window,
                         content::WebContents** web_contents) {
-  *base_window = NULL;
-  *web_contents = NULL;
+  *base_window = nullptr;
+  *web_contents = nullptr;
   // To get the base_window and web contents, either a Browser or AppWindow is
   // needed.
-  Browser* owner_browser =  NULL;
-  AppWindow* app_window = NULL;
+  Browser* owner_browser = nullptr;
+  AppWindow* app_window = nullptr;
 
   // If owner_window is supplied, use that to find a browser or a app window.
   if (owner_window) {
@@ -152,28 +159,36 @@ void FindRuntimeContext(gfx::NativeWindow owner_window,
   if (chrome::IsRunningInForcedAppMode() && !(*web_contents))
     *web_contents = chromeos::LoginWebDialog::GetCurrentWebContents();
 
-#if defined(OS_CHROMEOS)
   // Check for a WebContents used for the Chrome OS WebUI login flow.
   if (!*web_contents)
     *web_contents = GetLoginWebContents();
-#endif
+}
+
+SelectFileDialogExtension::RoutingID GetRoutingID(
+    content::WebContents* web_contents,
+    const SelectFileDialogExtension::Owner& owner) {
+  if (owner.android_task_id.has_value())
+    return base::StringPrintf("android.%d", *owner.android_task_id);
+
+  // Lacros ids are already prefixed with "lacros".
+  if (owner.lacros_window_id.has_value())
+    return *owner.lacros_window_id;
+
+  if (web_contents) {
+    return base::StringPrintf(
+        "web.%d", web_contents->GetMainFrame()->GetFrameTreeNodeId());
+  }
+  LOG(ERROR) << "Unable to generate a RoutingID";
+  return "";
 }
 
 }  // namespace
 
 /////////////////////////////////////////////////////////////////////////////
 
-// static
-SelectFileDialogExtension::RoutingID
-SelectFileDialogExtension::GetRoutingIDFromWebContents(
-    const content::WebContents* web_contents) {
-  // Use the raw pointer value as the identifier. Previously we have used the
-  // tab ID for the purpose, but some web_contents, especially those of the
-  // packaged apps, don't have tab IDs assigned.
-  return web_contents;
-}
+SelectFileDialogExtension::Owner::Owner() = default;
+SelectFileDialogExtension::Owner::~Owner() = default;
 
-// TODO(jamescook): Move this into a new file shell_dialogs_chromeos.cc
 // static
 SelectFileDialogExtension* SelectFileDialogExtension::Create(
     Listener* listener,
@@ -184,14 +199,7 @@ SelectFileDialogExtension* SelectFileDialogExtension::Create(
 SelectFileDialogExtension::SelectFileDialogExtension(
     Listener* listener,
     std::unique_ptr<ui::SelectFilePolicy> policy)
-    : SelectFileDialog(listener, std::move(policy)),
-      has_multiple_file_type_choices_(false),
-      routing_id_(),
-      profile_(NULL),
-      owner_window_(NULL),
-      selection_type_(CANCEL),
-      selection_index_(0),
-      params_(NULL) {}
+    : SelectFileDialog(listener, std::move(policy)) {}
 
 SelectFileDialogExtension::~SelectFileDialogExtension() {
   if (extension_dialog_.get())
@@ -204,17 +212,17 @@ bool SelectFileDialogExtension::IsRunning(
 }
 
 void SelectFileDialogExtension::ListenerDestroyed() {
-  listener_ = NULL;
-  params_ = NULL;
+  listener_ = nullptr;
+  params_ = nullptr;
   PendingDialog::GetInstance()->Remove(routing_id_);
 }
 
 void SelectFileDialogExtension::ExtensionDialogClosing(
     ExtensionDialog* /*dialog*/) {
-  profile_ = NULL;
-  owner_window_ = NULL;
+  profile_ = nullptr;
+  owner_window_ = nullptr;
   // Release our reference to the underlying dialog to allow it to close.
-  extension_dialog_ = NULL;
+  extension_dialog_ = nullptr;
   PendingDialog::GetInstance()->Remove(routing_id_);
   // Actually invoke the appropriate callback on our listener.
   NotifyListener();
@@ -287,86 +295,50 @@ void SelectFileDialogExtension::OnFileSelectionCanceled(RoutingID routing_id) {
   dialog->selection_index_ = 0;
 }
 
-content::RenderViewHost* SelectFileDialogExtension::GetRenderViewHost() {
-  if (extension_dialog_.get())
-    return extension_dialog_->host()->render_view_host();
-  return NULL;
+content::RenderFrameHost* SelectFileDialogExtension::GetMainFrame() {
+  if (extension_dialog_)
+    return extension_dialog_->host()->main_frame_host();
+  return nullptr;
 }
 
-bool SelectFileDialogExtension::IsResizeable() const {
-  DCHECK(extension_dialog_.get());
-  return extension_dialog_->CanResize();
-}
-
-void SelectFileDialogExtension::NotifyListener() {
-  if (!listener_)
-    return;
-  switch (selection_type_) {
-    case CANCEL:
-      listener_->FileSelectionCanceled(params_);
-      break;
-    case SINGLE_FILE:
-      listener_->FileSelectedWithExtraInfo(selection_files_[0],
-                                           selection_index_,
-                                           params_);
-      break;
-    case MULTIPLE_FILES:
-      listener_->MultiFilesSelectedWithExtraInfo(selection_files_, params_);
-      break;
-    default:
-      NOTREACHED();
-      break;
-  }
-}
-
-void SelectFileDialogExtension::AddPending(RoutingID routing_id) {
-  PendingDialog::GetInstance()->Add(routing_id, this);
-}
-
-// static
-bool SelectFileDialogExtension::PendingExists(RoutingID routing_id) {
-  return PendingDialog::GetInstance()->Find(routing_id).get() != NULL;
-}
-
-bool SelectFileDialogExtension::HasMultipleFileTypeChoicesImpl() {
-  return has_multiple_file_type_choices_;
-}
-
-void SelectFileDialogExtension::SelectFileImpl(
+void SelectFileDialogExtension::SelectFileWithFileManagerParams(
     Type type,
-    const base::string16& title,
+    const std::u16string& title,
     const base::FilePath& default_path,
     const FileTypeInfo* file_types,
     int file_type_index,
-    const base::FilePath::StringType& default_extension,
-    gfx::NativeWindow owner_window,
-    void* params) {
+    void* params,
+    const Owner& owner,
+    const std::string& search_query,
+    bool show_android_picker_apps) {
   if (owner_window_) {
     LOG(ERROR) << "File dialog already in use!";
     return;
   }
 
   // The base window to associate the dialog with.
-  ui::BaseWindow* base_window = NULL;
+  ui::BaseWindow* base_window = nullptr;
 
   // The web contents to associate the dialog with.
-  content::WebContents* web_contents = NULL;
-  FindRuntimeContext(owner_window, &base_window, &web_contents);
+  content::WebContents* web_contents = nullptr;
+
+  // Obtain BaseWindow and WebContents if the owner window is browser.
+  if (!owner.android_task_id.has_value() && !owner.lacros_window_id.has_value())
+    FindRuntimeContext(owner.window, &base_window, &web_contents);
+
   if (web_contents)
     profile_ = Profile::FromBrowserContext(web_contents->GetBrowserContext());
 
-#if defined(OS_CHROMEOS)
   // Handle the cases where |web_contents| is not available or |web_contents| is
   // associated with Default profile.
   if (!web_contents || chromeos::ProfileHelper::IsSigninProfile(profile_))
     profile_ = ProfileManager::GetActiveUserProfile();
-#endif
 
   DCHECK(profile_);
 
   // Check if we have another dialog opened for the contents. It's unlikely, but
   // possible. In such situation, discard this request.
-  RoutingID routing_id = GetRoutingIDFromWebContents(web_contents);
+  RoutingID routing_id = GetRoutingID(web_contents, owner);
   if (PendingExists(routing_id))
     return;
 
@@ -382,19 +354,15 @@ void SelectFileDialogExtension::SelectFileImpl(
   // Convert the above absolute paths to file system URLs.
   GURL selection_url;
   if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
-      profile_,
-      selection_path,
-      file_manager::kFileManagerAppId,
-      &selection_url)) {
+          profile_, selection_path, file_manager::util::GetFileManagerURL(),
+          &selection_url)) {
     // Due to the current design, an invalid temporal cache file path may passed
     // as |default_path| (crbug.com/178013 #9-#11). In such a case, we use the
     // last selected directory as a workaround. Real fix is tracked at
     // crbug.com/110119.
     if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
-        profile_,
-        fallback_path.Append(default_path.BaseName()),
-        file_manager::kFileManagerAppId,
-        &selection_url)) {
+            profile_, fallback_path.Append(default_path.BaseName()),
+            file_manager::util::GetFileManagerURL(), &selection_url)) {
       DVLOG(1) << "Unable to resolve the selection URL.";
     }
   }
@@ -402,15 +370,11 @@ void SelectFileDialogExtension::SelectFileImpl(
   GURL current_directory_url;
   base::FilePath current_directory_path = selection_path.DirName();
   if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
-      profile_,
-      current_directory_path,
-      file_manager::kFileManagerAppId,
-      &current_directory_url)) {
+          profile_, current_directory_path,
+          file_manager::util::GetFileManagerURL(), &current_directory_url)) {
     // Fallback if necessary, see the comment above.
     if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
-            profile_,
-            fallback_path,
-            file_manager::kFileManagerAppId,
+            profile_, fallback_path, file_manager::util::GetFileManagerURL(),
             &current_directory_url)) {
       DVLOG(1) << "Unable to resolve the current directory URL for: "
                << fallback_path.value();
@@ -422,26 +386,32 @@ void SelectFileDialogExtension::SelectFileImpl(
 
   GURL file_manager_url =
       file_manager::util::GetFileManagerMainPageUrlWithParams(
-          type,
-          title,
-          current_directory_url,
-          selection_url,
-          default_path.BaseName().value(),
-          file_types,
-          file_type_index,
-          default_extension);
+          type, title, current_directory_url, selection_url,
+          default_path.BaseName().value(), file_types, file_type_index,
+          search_query, show_android_picker_apps);
+
+  ExtensionDialog::InitParams dialog_params(
+      {kFileManagerWidth, kFileManagerHeight});
+  dialog_params.is_modal = (owner.window != nullptr);
+  dialog_params.min_size = {kFileManagerMinimumWidth,
+                            kFileManagerMinimumHeight};
+  dialog_params.title =
+      !title.empty() ? title
+                     : file_manager::util::GetSelectFileDialogTitle(type);
+  dialog_params.title_color = kFilePickerActiveTitleColor;
+  dialog_params.title_inactive_color = kFilePickerInactiveTitleColor;
 
   ExtensionDialog* dialog = ExtensionDialog::Show(
       file_manager_url,
-      base_window ? base_window->GetNativeWindow() : owner_window, profile_,
-      web_contents, (owner_window != nullptr) /* is_modal */, kFileManagerWidth,
-      kFileManagerHeight, kFileManagerMinimumWidth, kFileManagerMinimumHeight,
-      file_manager::util::GetSelectFileDialogTitle(type),
-      this /* ExtensionDialog::Observer */);
+      base_window ? base_window->GetNativeWindow() : owner.window, profile_,
+      web_contents, this /* ExtensionDialog::Observer */, dialog_params);
   if (!dialog) {
     LOG(ERROR) << "Unable to create extension dialog";
     return;
   }
+
+  SelectFileDialogExtensionUserData::SetRoutingIdForWebContents(
+      dialog->host()->host_contents(), routing_id);
 
   // Connect our listener to FileDialogFunction's per-tab callbacks.
   AddPending(routing_id);
@@ -449,5 +419,68 @@ void SelectFileDialogExtension::SelectFileImpl(
   extension_dialog_ = dialog;
   params_ = params;
   routing_id_ = routing_id;
-  owner_window_ = owner_window;
+  owner_window_ = owner.window;
+}
+
+void SelectFileDialogExtension::SelectFileImpl(
+    Type type,
+    const std::u16string& title,
+    const base::FilePath& default_path,
+    const FileTypeInfo* file_types,
+    int file_type_index,
+    const base::FilePath::StringType& default_extension,
+    gfx::NativeWindow owner_window,
+    void* params) {
+  // |default_extension| is ignored.
+  Owner owner;
+  owner.window = owner_window;
+  SelectFileWithFileManagerParams(type, title, default_path, file_types,
+                                  file_type_index, params, owner,
+                                  /*search_query=*/"",
+                                  /*show_android_picker_apps=*/false);
+}
+
+bool SelectFileDialogExtension::HasMultipleFileTypeChoicesImpl() {
+  return has_multiple_file_type_choices_;
+}
+
+bool SelectFileDialogExtension::IsResizeable() const {
+  DCHECK(extension_dialog_.get());
+  return extension_dialog_->CanResize();
+}
+
+void SelectFileDialogExtension::NotifyListener() {
+  if (!listener_)
+    return;
+
+  // The selected files are passed by reference to the listener. Ensure they
+  // outlive the dialog if it is immediately deleted by the listener.
+  std::vector<ui::SelectedFileInfo> selection_files =
+      std::move(selection_files_);
+  selection_files_.clear();
+
+  switch (selection_type_) {
+    case CANCEL:
+      listener_->FileSelectionCanceled(params_);
+      break;
+    case SINGLE_FILE:
+      listener_->FileSelectedWithExtraInfo(selection_files[0], selection_index_,
+                                           params_);
+      break;
+    case MULTIPLE_FILES:
+      listener_->MultiFilesSelectedWithExtraInfo(selection_files, params_);
+      break;
+    default:
+      NOTREACHED();
+      break;
+  }
+}
+
+void SelectFileDialogExtension::AddPending(RoutingID routing_id) {
+  PendingDialog::GetInstance()->Add(routing_id, this);
+}
+
+// static
+bool SelectFileDialogExtension::PendingExists(RoutingID routing_id) {
+  return PendingDialog::GetInstance()->Find(routing_id).get() != nullptr;
 }

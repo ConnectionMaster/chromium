@@ -4,12 +4,14 @@
 
 #include "chrome/browser/android/vr/vr_module_provider.h"
 
+#include <memory>
+#include <utility>
+
+#include "chrome/android/features/vr/jni_headers/VrModuleProvider_jni.h"
 #include "chrome/browser/android/vr/register_jni.h"
-#include "chrome/browser/android/vr/vr_module_provider.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "device/vr/android/gvr/vr_module_delegate.h"
-#include "jni/VrModuleProvider_jni.h"
+#include "device/vr/buildflags/buildflags.h"
 
 namespace vr {
 
@@ -29,7 +31,7 @@ VrModuleProvider::~VrModuleProvider() {
                                         j_vr_module_provider_);
 }
 
-bool VrModuleProvider::ModuleInstalled() {
+bool VrModuleProvider::ModuleInstalled() const {
   return Java_VrModuleProvider_isModuleInstalled(
       base::android::AttachCurrentThread());
 }
@@ -53,16 +55,17 @@ void VrModuleProvider::OnInstalledModule(
     const base::android::JavaParamRef<jobject>& obj,
     bool success) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(on_finished_callbacks_.size() > 0);
+  DCHECK_GT(on_finished_callbacks_.size(), 0UL);
   while (!on_finished_callbacks_.empty()) {
     std::move(on_finished_callbacks_.front()).Run(success);
     on_finished_callbacks_.pop();
   }
 }
 
-std::unique_ptr<device::VrModuleDelegate>
-VrModuleProviderFactory::CreateDelegate(int render_process_id,
-                                        int render_frame_id) {
+// static
+std::unique_ptr<VrModuleProvider> VrModuleProviderFactory::CreateModuleProvider(
+    int render_process_id,
+    int render_frame_id) {
   content::RenderFrameHost* render_frame_host =
       content::RenderFrameHost::FromID(render_process_id, render_frame_id);
   DCHECK(render_frame_host);
@@ -75,11 +78,6 @@ VrModuleProviderFactory::CreateDelegate(int render_process_id,
   DCHECK(tab);
 
   return std::make_unique<VrModuleProvider>(tab);
-}
-
-static void JNI_VrModuleProvider_Init(JNIEnv* env) {
-  device::VrModuleDelegateFactory::Set(
-      std::make_unique<VrModuleProviderFactory>());
 }
 
 static void JNI_VrModuleProvider_RegisterJni(JNIEnv* env) {

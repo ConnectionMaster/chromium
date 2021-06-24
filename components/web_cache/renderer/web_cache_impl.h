@@ -10,8 +10,11 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/memory/memory_pressure_listener.h"
 #include "components/web_cache/public/mojom/web_cache.mojom.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace web_cache {
 
@@ -21,7 +24,7 @@ class WebCacheImpl : public mojom::WebCache {
   WebCacheImpl();
   ~WebCacheImpl() override;
 
-  void BindRequest(mojom::WebCacheRequest web_cache_request);
+  void BindReceiver(mojo::PendingReceiver<mojom::WebCache> web_cache_receiver);
 
   // Needs to be called by RenderViews in case of navigations to execute
   // any 'clear cache' commands that were delayed until the next navigation.
@@ -43,9 +46,11 @@ class WebCacheImpl : public mojom::WebCache {
   // Records status regarding the sequence of navigation event and
   // ClearCache(true) call, to ensure delayed 'clear cache' command always
   // get executed on navigation.
-  State clear_cache_state_;
+  State clear_cache_state_ = kInit;
 
-  mojo::BindingSet<mojom::WebCache> bindings_;
+  mojo::ReceiverSet<mojom::WebCache> receivers_;
+
+  absl::optional<base::MemoryPressureListener> memory_pressure_listener_;
 
   DISALLOW_COPY_AND_ASSIGN(WebCacheImpl);
 };

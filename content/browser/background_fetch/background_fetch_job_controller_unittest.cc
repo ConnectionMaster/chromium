@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/guid.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
@@ -111,7 +111,7 @@ class BackgroundFetchJobControllerTest : public BackgroundFetchTestBase {
 
     // New |unique_id|, since this is a new Background Fetch registration.
     *registration_id = BackgroundFetchRegistrationId(
-        kExampleServiceWorkerRegistrationId, origin(), kExampleDeveloperId,
+        kExampleServiceWorkerRegistrationId, storage_key(), kExampleDeveloperId,
         base::GenerateGUID());
 
     std::vector<scoped_refptr<BackgroundFetchRequestInfo>> request_infos;
@@ -179,15 +179,14 @@ class BackgroundFetchJobControllerTest : public BackgroundFetchTestBase {
     BackgroundFetchTestBase::SetUp();
 
     StoragePartitionImpl* partition = static_cast<StoragePartitionImpl*>(
-        BrowserContext::GetDefaultStoragePartition(browser_context()));
+        browser_context()->GetDefaultStoragePartition());
 
     delegate_proxy_ =
         std::make_unique<BackgroundFetchDelegateProxy>(browser_context());
 
     context_ = base::MakeRefCounted<BackgroundFetchContext>(
-        browser_context(),
+        browser_context(), partition,
         base::WrapRefCounted(embedded_worker_test_helper()->context_wrapper()),
-        base::WrapRefCounted(partition->GetCacheStorageContext()),
         /* quota_manager_proxy= */ nullptr, devtools_context());
   }
 

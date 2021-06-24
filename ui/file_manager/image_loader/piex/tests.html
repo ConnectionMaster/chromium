@@ -5,14 +5,8 @@ found in the LICENSE file.
 -->
 <!doctype html>
 <head>
-<title>
-piex wasm raw image preview / thumbnail test page
-</title>
-<style>
-  canvas, img { margin: 0 9px 0 0; vertical-align: top }
-  pre { font-size: 18pt }
-  .zoom { width: 50% }
-</style>
+ <title>piex wasm raw image preview / thumbnail test page</title>
+ <link type="text/css" rel="stylesheet" href="/tests.css">
 </head>
 
 <body>
@@ -26,21 +20,15 @@ piex wasm raw image preview / thumbnail test page
       this.length = buffer.byteLength;
     }
 
-    process(resolve, reject) {
-      if (this.length <= 0 || this.length >= Math.pow(2, 30))
-        throw new Error('invalid image length');
-
+    process() {
       this.memory = Module._malloc(this.length);
       if (!this.memory)
-        throw Error('image malloc failure');
+        throw new Error('image malloc failure');
 
-      this.callback = Module.addFunction((result) => {
-        resolve(this.result = result);
-      }, 'vi');
-
-      // Process the image: blocks until |callback| is called.
       Module.HEAP8.set(this.source, this.memory);
-      Module._image(this.memory, this.length, this.callback);
+      this.result = Module.image(this.memory, this.length);
+
+      return this.result;
     }
 
     preview() {
@@ -74,16 +62,36 @@ piex wasm raw image preview / thumbnail test page
         throw new Error('failed to extract thumbnail');
 
       const view = new Uint8Array(this.source.buffer, offset, length);
+      thumbnail.data = new Uint8Array(view);
       if (thumbnail.format == 1)  // RGB
         thumbnail.size = thumbnail.width * thumbnail.height * 3;
-      thumbnail.data = new Uint8Array(view);
       thumbnail.type = 'thumbnail';
 
       return thumbnail;
     }
 
+    details() {
+      const details = this.result ? this.result.details : null;
+      if (!details || this.result.error)
+        return null;
+
+      let format = {};
+      for (const [key, value] of Object.entries(details)) {
+        if (typeof value === 'string') {
+          format[key] = value.replace(/\0+$/, '').trim();
+        } else if (typeof value === 'number') {
+          if (!Number.isInteger(value)) {
+            format[key] = Number(value.toFixed(3).replace(/0+$/, ''));
+          } else {
+            format[key] = value;
+          }
+        }
+      }
+
+      return JSON.stringify(format);
+    }
+
     close() {
-      Module.removeFunction(this.callback);
       Module._free(this.memory);
     }
   }
@@ -93,7 +101,7 @@ piex wasm raw image preview / thumbnail test page
       document.title = 'createFileSystem';
 
       function failed(error) {
-        reject(new Error('Creating file system: ' + error.name));
+        reject(new Error('Creating file system: ' + error));
       }
 
       function createdFileSystem(fileSystem) {
@@ -119,7 +127,7 @@ piex wasm raw image preview / thumbnail test page
       }).catch(reject);
 
       function failure(error) {
-        reject(new Error('Writing file system: ' + error.name));
+        reject(new Error('Writing file system: ' + error));
       }
 
       function writeEntry(fileEntry) {
@@ -140,11 +148,17 @@ piex wasm raw image preview / thumbnail test page
       document.title = image;
 
       function failure(error) {
-        reject(new Error('Reading file system: ' + error.name));
+        reject(new Error('Reading file system: ' + error));
+      }
+
+      function invalid(size) {
+        return size <= 0 || size >= Math.pow(2, 30);
       }
 
       function readEntry(fileEntry) {
         fileEntry.file((file) => {
+          if (invalid(file.size))
+            return failure('invalid file size');
           const reader = new FileReader();
           reader.onerror = failure;
           reader.onload = () => resolve(reader.result);
@@ -221,18 +235,26 @@ piex wasm raw image preview / thumbnail test page
       return renderRGB(name, image);
   }
 
-  function removeNullBytes(string) {
-    return (string || '').replace(/\0/g, '');
-  }
+  function renderDetails(name, details) {
+    if (!details)
+      return;
 
-  window.Module = {
-    onRuntimeInitialized: () => document.title = 'READY',
-  };
+    const text = new TextEncoder('UTF-8').encode(details);
+    const hash = hashUint8Array(text);
+
+    console.log('test:', name, 'details hash', hash, details);
+  }
 
   window.onload = function loadPiexModule() {
     let script = document.createElement('script');
     document.head.appendChild(script);
-    script.src = '/a.out.js';
+    script.src = '/piex.js.wasm';
+    script.onload = () => {
+      createPiexModule().then(module => {
+        window.Module = module;
+        document.title = 'READY';
+      });
+    };
   };
 
   window.onerror = (error) => {
@@ -247,12 +269,8 @@ piex wasm raw image preview / thumbnail test page
     document.body.innerHTML = `<pre>${image}</pre>`;
 
     // Fetch the image in an array buffer.
-    let time = performance.now();
-    const buffer = await fetch(image).then((response) => {
-      if (!response.ok)
-        throw new Error('failed fetching image ' + image);
-      return response.arrayBuffer();
-    }).catch(onerror);
+    let time = window.performance.now();
+    const buffer = await readFromFileSystem(image).catch(onerror);
     if (!buffer)
       return;
 
@@ -260,17 +278,16 @@ piex wasm raw image preview / thumbnail test page
     const fetched = window.performance.now() - time;
 
     // Extract the preview|thumbnail images, render them.
-    return new Promise((resolve, reject) => {
-      imageBuffer.process(resolve, reject);
+    return new Promise((resolve) => {
+      resolve(imageBuffer.process());
     }).then((result) => {
       let preview = imageBuffer.preview();
       let thumb = imageBuffer.thumbnail();
+      let details = imageBuffer.details();
       imageBuffer.close();
       time = window.performance.now() - time;
-      const maker = removeNullBytes(result.maker);
-      const model = removeNullBytes(result.model);
-      console.log('test:', image, maker, model);
       window.images_ = 0;
+      renderDetails(image, details);
       renderResult(image, preview);
       renderResult(image, thumb);
       console.log('test: done',

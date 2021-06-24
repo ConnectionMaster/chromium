@@ -10,7 +10,7 @@
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/properties/css_property.h"
 #include "third_party/blink/renderer/core/dom/qualified_name.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -100,7 +100,7 @@ class CORE_EXPORT PropertyHandle {
     return PropertyHandle(kHandleDeletedValueForHashTraits);
   }
 
-  bool IsDeletedValueForHashTraits() {
+  bool IsDeletedValueForHashTraits() const {
     return handle_type_ == kHandleDeletedValueForHashTraits;
   }
 
@@ -140,10 +140,10 @@ struct HashTraits<blink::PropertyHandle>
     : SimpleClassHashTraits<blink::PropertyHandle> {
   static const bool kNeedsDestruction = true;
   static void ConstructDeletedValue(blink::PropertyHandle& slot, bool) {
-    new (NotNull, &slot) blink::PropertyHandle(
+    new (NotNullTag::kNotNull, &slot) blink::PropertyHandle(
         blink::PropertyHandle::DeletedValueForHashTraits());
   }
-  static bool IsDeletedValue(blink::PropertyHandle value) {
+  static bool IsDeletedValue(const blink::PropertyHandle& value) {
     return value.IsDeletedValueForHashTraits();
   }
 

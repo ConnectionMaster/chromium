@@ -4,11 +4,12 @@
 
 #include "chrome/installer/setup/user_hive_visitor.h"
 
+#include <string>
 #include <vector>
 
 #include "base/bind.h"
+#include "base/callback.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/win/registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -31,12 +32,10 @@ class UserHiveVisitor {
 
   void set_early_exit(bool early_exit) { early_exit_ = early_exit; }
 
-  const std::vector<base::string16> sids_visited() const {
-    return sids_visited_;
-  }
+  const std::vector<std::wstring> sids_visited() const { return sids_visited_; }
 
  private:
-  std::vector<base::string16> sids_visited_;
+  std::vector<std::wstring> sids_visited_;
   bool early_exit_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(UserHiveVisitor);
@@ -49,8 +48,8 @@ class UserHiveVisitor {
 TEST(UserHiveVisitorTest, VisitAllUserHives) {
   UserHiveVisitor visitor;
 
-  VisitUserHives(
-      base::Bind(&UserHiveVisitor::OnUserHive, base::Unretained(&visitor)));
+  VisitUserHives(base::BindRepeating(&UserHiveVisitor::OnUserHive,
+                                     base::Unretained(&visitor)));
 
   EXPECT_GT(visitor.sids_visited().size(), 0U);
 }
@@ -61,8 +60,8 @@ TEST(UserHiveVisitor, VisitOneHive) {
   UserHiveVisitor visitor;
 
   visitor.set_early_exit(true);
-  VisitUserHives(
-      base::Bind(&UserHiveVisitor::OnUserHive, base::Unretained(&visitor)));
+  VisitUserHives(base::BindRepeating(&UserHiveVisitor::OnUserHive,
+                                     base::Unretained(&visitor)));
 
   EXPECT_EQ(1U, visitor.sids_visited().size());
 }

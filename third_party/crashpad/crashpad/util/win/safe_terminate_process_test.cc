@@ -19,10 +19,10 @@
 #include <string>
 #include <memory>
 
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "build/build_config.h"
 #include "gtest/gtest.h"
 #include "test/errors.h"
@@ -62,7 +62,7 @@ class ScopedExecutablePatch {
    public:
     // If either the constructor or destructor fails, PCHECK() to terminate
     // immediately, because the process will be in a weird and untrustworthy
-    // state, and gtest error handling isn’t worthwhile at that point.
+    // state, and Google Test error handling isn’t worthwhile at that point.
 
     ScopedVirtualProtectRWX(void* address, size_t size)
         : address_(address), size_(size) {

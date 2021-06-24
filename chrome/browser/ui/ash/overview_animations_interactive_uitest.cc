@@ -2,16 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/public/cpp/test/shell_test_api.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
-#include "chrome/browser/ui/ash/ash_test_util.h"
-#include "chrome/browser/ui/ash/tablet_mode_client_test_util.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/perf/performance_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "ui/base/test/ui_controls.h"
 
 // Test overview enter/exit animations with following conditions
@@ -35,7 +35,7 @@ class OverviewAnimationsTest
     tablet_mode_ = std::get<2>(GetParam());
 
     if (tablet_mode_)
-      test::SetAndWaitForTabletMode(true);
+      ash::ShellTestApi().SetTabletModeEnabledForTest(true);
 
     GURL ntp_url("chrome://newtab");
     // The default is blank page.
@@ -52,8 +52,9 @@ class OverviewAnimationsTest
     int wait_seconds = (base::SysInfo::IsRunningOnChromeOS() ? 5 : 0) +
                        additional_browsers * cost_per_browser;
     base::RunLoop run_loop;
-    base::PostDelayedTask(FROM_HERE, run_loop.QuitClosure(),
-                          base::TimeDelta::FromSeconds(wait_seconds));
+    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+        FROM_HERE, run_loop.QuitClosure(),
+        base::TimeDelta::FromSeconds(wait_seconds));
     run_loop.Run();
   }
 
@@ -72,7 +73,8 @@ class OverviewAnimationsTest
   DISALLOW_COPY_AND_ASSIGN(OverviewAnimationsTest);
 };
 
-IN_PROC_BROWSER_TEST_P(OverviewAnimationsTest, EnterExit) {
+// TODO(https://crbug.com/1033653) flaky test
+IN_PROC_BROWSER_TEST_P(OverviewAnimationsTest, DISABLED_EnterExit) {
   // Browser window is used just to identify display.
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   gfx::NativeWindow browser_window =
@@ -82,19 +84,19 @@ IN_PROC_BROWSER_TEST_P(OverviewAnimationsTest, EnterExit) {
                             /*control=*/false,
                             /*shift=*/false,
                             /*alt=*/false,
-                            /* command = */ false);
-  test::WaitForOverviewAnimationState(
-      ash::mojom::OverviewAnimationState::kEnterAnimationComplete);
+                            /*command=*/false);
+  ash::ShellTestApi().WaitForOverviewAnimationState(
+      ash::OverviewAnimationState::kEnterAnimationComplete);
   ui_controls::SendKeyPress(browser_window, ui::VKEY_MEDIA_LAUNCH_APP1,
                             /*control=*/false,
                             /*shift=*/false,
                             /*alt=*/false,
-                            /* command = */ false);
-  test::WaitForOverviewAnimationState(
-      ash::mojom::OverviewAnimationState::kExitAnimationComplete);
+                            /*command=*/false);
+  ash::ShellTestApi().WaitForOverviewAnimationState(
+      ash::OverviewAnimationState::kExitAnimationComplete);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          OverviewAnimationsTest,
                          ::testing::Combine(::testing::Values(2, 8),
                                             /*blank=*/testing::Bool(),

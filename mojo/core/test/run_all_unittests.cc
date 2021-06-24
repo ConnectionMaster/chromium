@@ -10,19 +10,20 @@
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/multiprocess_test.h"
 #include "base/test/test_io_thread.h"
-#include "base/test/test_suite.h"
 #include "build/build_config.h"
 #include "mojo/core/embedder/configuration.h"
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
+#include "mojo/core/test/mojo_test_base.h"
+#include "mojo/core/test/mojo_test_suite_base.h"
 #include "mojo/core/test/multiprocess_test_helper.h"
 #include "mojo/core/test/test_support_impl.h"
 #include "mojo/public/tests/test_support_private.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-#include "mojo/core/embedder/default_mach_broker.h"
-#endif
+namespace {
+const char kDisableAllCapabilities[] = "disable-all-capabilities";
+}
 
 int main(int argc, char** argv) {
 #if !defined(OS_ANDROID)
@@ -40,19 +41,24 @@ int main(int argc, char** argv) {
   signal(SIGABRT, SIG_DFL);
 #endif
 
-  base::TestSuite test_suite(argc, argv);
+  mojo::core::test::MojoTestSuiteBase test_suite(argc, argv);
 
   mojo::core::Configuration mojo_config;
+
+  // A relatively low limit to make it easier to test behavior at the limit.
+  mojo_config.max_message_num_bytes =
+      mojo::core::test::MojoTestBase::kMaxMessageSizeInTests;
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kTestChildProcess)) {
     mojo_config.is_broker_process = true;
   }
-  mojo::core::Init(mojo_config);
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-  mojo::core::SetMachPortProvider(
-      mojo::core::DefaultMachBroker::Get()->port_provider());
-#endif
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kDisableAllCapabilities)) {
+    mojo_config.dont_advertise_capabilities = true;
+  }
+
+  mojo::core::Init(mojo_config);
 
   mojo::test::TestSupport::Init(new mojo::core::test::TestSupportImpl());
   base::TestIOThread test_io_thread(base::TestIOThread::kAutoStart);
@@ -62,5 +68,5 @@ int main(int argc, char** argv) {
       mojo::core::ScopedIPCSupport::ShutdownPolicy::CLEAN);
   return base::LaunchUnitTests(
       argc, argv,
-      base::Bind(&base::TestSuite::Run, base::Unretained(&test_suite)));
+      base::BindOnce(&base::TestSuite::Run, base::Unretained(&test_suite)));
 }

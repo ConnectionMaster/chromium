@@ -41,7 +41,7 @@ class FakeVideoStream : public protocol::VideoStream {
  private:
   Observer* observer_ = nullptr;
 
-  base::WeakPtrFactory<FakeVideoStream> weak_factory_;
+  base::WeakPtrFactory<FakeVideoStream> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeVideoStream);
 };
@@ -67,6 +67,9 @@ class FakeConnectionToClient : public ConnectionToClient {
   void set_host_stub(HostStub* host_stub) override;
   void set_input_stub(InputStub* input_stub) override;
 
+  PeerConnectionControls* peer_connection_controls() override;
+  WebrtcEventLogData* rtc_event_log() override;
+
   base::WeakPtr<FakeVideoStream> last_video_stream() {
     return last_video_stream_;
   }
@@ -89,6 +92,10 @@ class FakeConnectionToClient : public ConnectionToClient {
   ErrorCode disconnect_error() { return disconnect_error_; }
 
  private:
+  // TODO(crbug.com/1043325): Remove the requirement that ConnectionToClient
+  // retains a pointer to the capturer if the relative pointer experiment is
+  // a success.
+  std::unique_ptr<webrtc::DesktopCapturer> desktop_capturer_;
   std::unique_ptr<Session> session_;
   EventHandler* event_handler_ = nullptr;
 

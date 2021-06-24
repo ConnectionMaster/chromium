@@ -8,7 +8,8 @@
 #include "apps/app_lifetime_monitor.h"
 #include "base/containers/flat_map.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension_id.h"
 
@@ -19,8 +20,6 @@ class BrowserContext;
 }  // namespace content
 
 namespace extensions {
-
-class ExtensionRegistry;
 
 // Maintains keep-alives while apps are loading or launching.
 //
@@ -65,10 +64,11 @@ class ShellKeepAliveRequester : public ExtensionRegistryObserver,
   base::flat_map<ExtensionId, std::unique_ptr<ScopedKeepAlive>>
       app_reloading_keep_alives_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
-  ScopedObserver<apps::AppLifetimeMonitor, apps::AppLifetimeMonitor::Observer>
-      app_lifetime_monitor_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
+  base::ScopedObservation<apps::AppLifetimeMonitor,
+                          apps::AppLifetimeMonitor::Observer>
+      app_lifetime_monitor_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ShellKeepAliveRequester);
 };

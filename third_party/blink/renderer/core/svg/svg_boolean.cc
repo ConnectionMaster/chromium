@@ -30,8 +30,6 @@
 
 #include "third_party/blink/renderer/core/svg/svg_boolean.h"
 
-#include "third_party/blink/renderer/core/svg/svg_animation_element.h"
-
 namespace blink {
 
 String SVGBoolean::ValueAsString() const {
@@ -50,28 +48,22 @@ SVGParsingError SVGBoolean::SetValueAsString(const String& value) {
   return SVGParseStatus::kExpectedBoolean;
 }
 
-void SVGBoolean::Add(SVGPropertyBase*, SVGElement*) {
+void SVGBoolean::Add(const SVGPropertyBase*, const SVGElement*) {
   NOTREACHED();
 }
 
-void SVGBoolean::CalculateAnimatedValue(SVGAnimationElement* animation_element,
+void SVGBoolean::CalculateAnimatedValue(const SMILAnimationEffectParameters&,
                                         float percentage,
                                         unsigned repeat_count,
-                                        SVGPropertyBase* from,
-                                        SVGPropertyBase* to,
-                                        SVGPropertyBase*,
-                                        SVGElement*) {
-  DCHECK(animation_element);
-  bool from_boolean = animation_element->GetAnimationMode() == kToAnimation
-                          ? value_
-                          : ToSVGBoolean(from)->Value();
-  bool to_boolean = ToSVGBoolean(to)->Value();
-
-  animation_element->AnimateDiscreteType<bool>(percentage, from_boolean,
-                                               to_boolean, value_);
+                                        const SVGPropertyBase* from,
+                                        const SVGPropertyBase* to,
+                                        const SVGPropertyBase*,
+                                        const SVGElement*) {
+  NOTREACHED();
 }
 
-float SVGBoolean::CalculateDistance(SVGPropertyBase*, SVGElement*) {
+float SVGBoolean::CalculateDistance(const SVGPropertyBase*,
+                                    const SVGElement*) const {
   // No paced animations for boolean.
   return -1;
 }

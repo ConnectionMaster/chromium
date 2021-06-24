@@ -7,6 +7,7 @@
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view_observer.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -25,15 +27,22 @@
 #include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "media/base/media_switches.h"
 #include "ui/accessibility/platform/ax_platform_node.h"
 #include "ui/accessibility/platform/ax_platform_node_test_helper.h"
 #include "ui/base/l10n/l10n_util.h"
 
+#if defined(USE_AURA)
+#include "ui/aura/client/focus_client.h"
+#include "ui/views/widget/native_widget_aura.h"
+#endif  // USE_AURA
+
 class BrowserViewTest : public InProcessBrowserTest {
  public:
-  BrowserViewTest() : InProcessBrowserTest(), devtools_(nullptr) {}
+  BrowserViewTest() : devtools_(nullptr) {}
 
  protected:
   BrowserView* browser_view() {
@@ -64,6 +73,8 @@ class BrowserViewTest : public InProcessBrowserTest {
   DevToolsWindow* devtools_;
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+
   DISALLOW_COPY_AND_ASSIGN(BrowserViewTest);
 };
 
@@ -94,10 +105,8 @@ class TestTabModalConfirmDialogDelegate : public TabModalConfirmDialogDelegate {
  public:
   explicit TestTabModalConfirmDialogDelegate(content::WebContents* contents)
       : TabModalConfirmDialogDelegate(contents) {}
-  base::string16 GetTitle() override {
-    return base::string16(base::ASCIIToUTF16("Dialog Title"));
-  }
-  base::string16 GetDialogMessage() override { return base::string16(); }
+  std::u16string GetTitle() override { return std::u16string(u"Dialog Title"); }
+  std::u16string GetDialogMessage() override { return std::u16string(); }
 
   DISALLOW_COPY_AND_ASSIGN(TestTabModalConfirmDialogDelegate);
 };
@@ -108,7 +117,7 @@ class TestTabModalConfirmDialogDelegate : public TabModalConfirmDialogDelegate {
 // is invoked on the other.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, CloseWithTabs) {
   Browser* browser2 =
-      new Browser(Browser::CreateParams(browser()->profile(), true));
+      Browser::Create(Browser::CreateParams(browser()->profile(), true));
   chrome::AddTabAt(browser2, GURL(), -1, true);
   chrome::AddTabAt(browser2, GURL(), -1, true);
   TestWebContentsObserver observer(
@@ -121,7 +130,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, CloseWithTabs) {
 // BrowserView will destroy.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, CloseWithTabsStartWithActive) {
   Browser* browser2 =
-      new Browser(Browser::CreateParams(browser()->profile(), true));
+      Browser::Create(Browser::CreateParams(browser()->profile(), true));
   chrome::AddTabAt(browser2, GURL(), -1, true);
   chrome::AddTabAt(browser2, GURL(), -1, true);
   browser2->tab_strip_model()->ActivateTabAt(
@@ -226,19 +235,19 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, AvoidUnnecessaryVisibilityChanges) {
   BookmarkBarViewObserverImpl observer;
   BookmarkBarView* bookmark_bar = browser_view()->bookmark_bar();
   bookmark_bar->AddObserver(&observer);
-  EXPECT_FALSE(bookmark_bar->visible());
+  EXPECT_FALSE(bookmark_bar->GetVisible());
 
   // Go to empty tab. Bookmark bar should hide.
   browser()->tab_strip_model()->ActivateTabAt(
       0, {TabStripModel::GestureType::kOther});
-  EXPECT_FALSE(bookmark_bar->visible());
+  EXPECT_FALSE(bookmark_bar->GetVisible());
   EXPECT_EQ(0, observer.change_count());
   observer.clear_change_count();
 
   // Go to ntp tab. Bookmark bar should not show.
   browser()->tab_strip_model()->ActivateTabAt(
       1, {TabStripModel::GestureType::kOther});
-  EXPECT_FALSE(bookmark_bar->visible());
+  EXPECT_FALSE(bookmark_bar->GetVisible());
   EXPECT_EQ(0, observer.change_count());
   observer.clear_change_count();
 
@@ -247,13 +256,13 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, AvoidUnnecessaryVisibilityChanges) {
       bookmarks::prefs::kShowBookmarkBar, true);
   browser()->tab_strip_model()->ActivateTabAt(
       0, {TabStripModel::GestureType::kOther});
-  EXPECT_TRUE(bookmark_bar->visible());
+  EXPECT_TRUE(bookmark_bar->GetVisible());
   EXPECT_EQ(1, observer.change_count());
   observer.clear_change_count();
 
   browser()->tab_strip_model()->ActivateTabAt(
       1, {TabStripModel::GestureType::kOther});
-  EXPECT_TRUE(bookmark_bar->visible());
+  EXPECT_TRUE(bookmark_bar->GetVisible());
   EXPECT_EQ(0, observer.change_count());
   observer.clear_change_count();
 
@@ -264,7 +273,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, AvoidUnnecessaryVisibilityChanges) {
 // is set before load finishes and the throbber state updates when the title
 // changes. Regression test for crbug.com/752266
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, TitleAndLoadState) {
-  const base::string16 test_title(base::ASCIIToUTF16("Title Of Awesomeness"));
+  const std::u16string test_title(u"Title Of Awesomeness");
   auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
   content::TitleWatcher title_watcher(contents, test_title);
   content::TestNavigationObserver navigation_watcher(
@@ -306,23 +315,25 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, ShowFaviconInTab) {
 
 // On Mac, voiceover treats tab modal dialogs as native windows, so setting an
 // accessible title for tab-modal dialogs is not necessary.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
 
 // Open a tab-modal dialog and check that the accessible window title is the
 // title of the dialog.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
-  base::string16 window_title = base::ASCIIToUTF16("about:blank - ") +
-                                l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
+  std::u16string window_title =
+      u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
                                window_title, base::CompareCase::SENSITIVE));
 
   content::WebContents* contents = browser_view()->GetActiveWebContents();
-  TestTabModalConfirmDialogDelegate* delegate =
-      new TestTabModalConfirmDialogDelegate(contents);
-  TabModalConfirmDialog::Create(delegate, contents);
-  EXPECT_EQ(browser_view()->GetAccessibleWindowTitle(), delegate->GetTitle());
+  auto delegate = std::make_unique<TestTabModalConfirmDialogDelegate>(contents);
+  TestTabModalConfirmDialogDelegate* delegate_observer = delegate.get();
+  TabModalConfirmDialog::Create(std::move(delegate), contents);
+  EXPECT_EQ(browser_view()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
 
-  delegate->Close();
+  delegate_observer->Close();
+
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
                                window_title, base::CompareCase::SENSITIVE));
 }
@@ -330,6 +341,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
 // Open a tab-modal dialog and check that the accessibility tree only contains
 // the dialog.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
+  ui::testing::ScopedAxModeSetter ax_mode_setter(ui::kAXModeComplete);
   ui::AXPlatformNode* ax_node = ui::AXPlatformNode::FromNativeViewAccessible(
       browser_view()->GetWidget()->GetRootView()->GetNativeViewAccessible());
 // We expect this conversion to be safe on Windows, but can't guarantee that it
@@ -349,9 +361,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
             nullptr);
 
   content::WebContents* contents = browser_view()->GetActiveWebContents();
-  TestTabModalConfirmDialogDelegate* delegate =
-      new TestTabModalConfirmDialogDelegate(contents);
-  TabModalConfirmDialog::Create(delegate, contents);
+  auto delegate = std::make_unique<TestTabModalConfirmDialogDelegate>(contents);
+  TabModalConfirmDialog::Create(std::move(delegate), contents);
 
   // The tab modal dialog should be in the accessibility tree; everything else
   // should be hidden. So we expect an "OK" button and no reload button.
@@ -361,4 +372,4 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTree) {
             nullptr);
 }
 
-#endif  // !defined(OS_MACOSX)
+#endif  // !defined(OS_MAC)

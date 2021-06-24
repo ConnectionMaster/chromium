@@ -24,12 +24,12 @@ void PointerHandler::RegisterMessages() {
 
 void PointerHandler::OnJavascriptAllowed() {
   if (!pointer_device_observer_) {
-    pointer_device_observer_.reset(new system::PointerDeviceObserver());
+    pointer_device_observer_ =
+        std::make_unique<system::PointerDeviceObserver>();
     pointer_device_observer_->Init();
   }
 
   pointer_device_observer_->AddObserver(this);
-  pointer_device_observer_->CheckDevices();
 }
 
 void PointerHandler::OnJavascriptDisallowed() {
@@ -44,8 +44,15 @@ void PointerHandler::MouseExists(bool exists) {
   FireWebUIListener("has-mouse-changed", base::Value(exists));
 }
 
+void PointerHandler::PointingStickExists(bool exists) {
+  FireWebUIListener("has-pointing-stick-changed", base::Value(exists));
+}
+
 void PointerHandler::HandleInitialize(const base::ListValue* args) {
   AllowJavascript();
+
+  // CheckDevices() results in TouchpadExists() and MouseExists() being called.
+  pointer_device_observer_->CheckDevices();
 }
 
 }  // namespace settings

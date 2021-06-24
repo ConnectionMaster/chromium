@@ -93,7 +93,11 @@ unsigned FirstLetterPseudoElement::FirstLetterLength(const String& text) {
 // Once we see any of these layoutObjects we can stop looking for first-letter
 // as they signal the end of the first line of text.
 static bool IsInvalidFirstLetterLayoutObject(const LayoutObject* obj) {
-  return (obj->IsBR() || (obj->IsText() && ToLayoutText(obj)->IsWordBreak()));
+  return (obj->IsBR() || (obj->IsText() && To<LayoutText>(obj)->IsWordBreak()));
+}
+
+static bool IsParentInlineLayoutObject(const LayoutObject* obj) {
+  return (obj && obj->Parent() && obj->Parent()->IsLayoutInline());
 }
 
 LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
@@ -101,7 +105,7 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
   LayoutObject* parent_layout_object = nullptr;
 
   // If we are looking at a first letter element then we need to find the
-  // first letter text layoutObject from the parent node, and not ourselves.
+  // first letter text LayoutObject from the parent node, and not ourselves.
   if (element.IsFirstLetterPseudoElement()) {
     parent_layout_object =
         element.ParentOrShadowHostElement()->GetLayoutObject();
@@ -110,15 +114,12 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
   }
 
   if (!parent_layout_object ||
-      !parent_layout_object->Style()->HasPseudoStyle(kPseudoIdFirstLetter) ||
+      !parent_layout_object->Style()->HasPseudoElementStyle(
+          kPseudoIdFirstLetter) ||
       !CanHaveGeneratedChildren(*parent_layout_object) ||
       !parent_layout_object->BehavesLikeBlockContainer())
     return nullptr;
 
-  LayoutObject* marker =
-      parent_layout_object->IsLayoutNGListItem()
-          ? ToLayoutNGListItem(parent_layout_object)->Marker()
-          : nullptr;
   // Drill down into our children and look for our first text child.
   LayoutObject* first_letter_text_layout_object =
       parent_layout_object->SlowFirstChild();
@@ -136,20 +137,33 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
       // FIXME: If there is leading punctuation in a different LayoutText than
       // the first letter, we'll not apply the correct style to it.
       scoped_refptr<StringImpl> str =
-          ToLayoutText(first_letter_text_layout_object)->IsTextFragment()
-              ? ToLayoutTextFragment(first_letter_text_layout_object)
+          To<LayoutText>(first_letter_text_layout_object)->IsTextFragment()
+              ? To<LayoutTextFragment>(first_letter_text_layout_object)
                     ->CompleteText()
-              : ToLayoutText(first_letter_text_layout_object)->OriginalText();
+              : To<LayoutText>(first_letter_text_layout_object)->OriginalText();
       if (FirstLetterLength(str.get()) ||
           IsInvalidFirstLetterLayoutObject(first_letter_text_layout_object))
         break;
+
+      // In case of inline level content made of punctuation and there is no
+      // sibling, we'll apply style to it.
+      if (IsParentInlineLayoutObject(first_letter_text_layout_object) &&
+          str->length() && !first_letter_text_layout_object->NextSibling())
+        break;
+
       first_letter_text_layout_object =
           first_letter_text_layout_object->NextSibling();
-    } else if (first_letter_text_layout_object->IsListMarker() ||
-               first_letter_text_layout_object == marker) {
-      first_letter_text_layout_object =
-          first_letter_text_layout_object->NextInPreOrderAfterChildren(
-              parent_layout_object);
+    } else if (first_letter_text_layout_object->IsListMarkerIncludingAll()) {
+      // The list item marker may have out-of-flow siblings inside an anonymous
+      // block. Skip them to make sure we leave the anonymous block before
+      // continuing looking for the first letter text.
+      do {
+        first_letter_text_layout_object =
+            first_letter_text_layout_object->NextInPreOrderAfterChildren(
+                parent_layout_object);
+      } while (
+          first_letter_text_layout_object &&
+          first_letter_text_layout_object->IsFloatingOrOutOfFlowPositioned());
     } else if (first_letter_text_layout_object
                    ->IsFloatingOrOutOfFlowPositioned()) {
       if (first_letter_text_layout_object->Style()->StyleType() ==
@@ -161,33 +175,44 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
       first_letter_text_layout_object =
           first_letter_text_layout_object->NextSibling();
     } else if (first_letter_text_layout_object->IsAtomicInlineLevel() ||
-               first_letter_text_layout_object->IsLayoutButton() ||
-               first_letter_text_layout_object->IsMenuList()) {
+               first_letter_text_layout_object->IsButtonIncludingNG() ||
+               IsMenuList(first_letter_text_layout_object)) {
       return nullptr;
     } else if (first_letter_text_layout_object
                    ->IsFlexibleBoxIncludingDeprecatedAndNG() ||
-               first_letter_text_layout_object->IsLayoutGrid()) {
+               first_letter_text_layout_object->IsLayoutGridIncludingNG()) {
       first_letter_text_layout_object =
           first_letter_text_layout_object->NextSibling();
     } else if (!first_letter_text_layout_object->IsInline() &&
-               first_letter_text_layout_object->Style()->HasPseudoStyle(
+               first_letter_text_layout_object->Style()->HasPseudoElementStyle(
                    kPseudoIdFirstLetter) &&
                CanHaveGeneratedChildren(*first_letter_text_layout_object)) {
       // There is a layoutObject further down the tree which has
       // PseudoIdFirstLetter set. When that node is attached we will handle
       // setting up the first letter then.
       return nullptr;
+    } else if ((first_letter_text_layout_object->IsInline() ||
+                first_letter_text_layout_object->IsAnonymousBlock()) &&
+               !first_letter_text_layout_object->SlowFirstChild()) {
+      if (LayoutObject* next_sibling =
+              first_letter_text_layout_object->NextSibling()) {
+        first_letter_text_layout_object = next_sibling;
+        continue;
+      }
+      LayoutObject* parent = first_letter_text_layout_object->Parent();
+      if (parent && parent != parent_layout_object) {
+        first_letter_text_layout_object = parent->NextSibling();
+        continue;
+      }
+      return nullptr;
     } else {
-      if (first_letter_text_layout_object->IsLayoutNGListItem())
-        marker = ToLayoutNGListItem(first_letter_text_layout_object)->Marker();
-
       first_letter_text_layout_object =
           first_letter_text_layout_object->SlowFirstChild();
     }
   }
 
   // No first letter text to display, we're done.
-  // FIXME: This black-list of disallowed LayoutText subclasses is fragile.
+  // FIXME: This list of disallowed LayoutText subclasses is fragile.
   // crbug.com/422336.
   // Should counter be on this list? What about LayoutTextFragment?
   if (!first_letter_text_layout_object ||
@@ -195,7 +220,7 @@ LayoutText* FirstLetterPseudoElement::FirstLetterTextLayoutObject(
       IsInvalidFirstLetterLayoutObject(first_letter_text_layout_object))
     return nullptr;
 
-  return ToLayoutText(first_letter_text_layout_object);
+  return To<LayoutText>(first_letter_text_layout_object);
 }
 
 FirstLetterPseudoElement::FirstLetterPseudoElement(Element* parent)
@@ -218,9 +243,9 @@ void FirstLetterPseudoElement::UpdateTextFragments() {
 
   for (auto* child = GetLayoutObject()->SlowFirstChild(); child;
        child = child->NextSibling()) {
-    if (!child->IsText() || !ToLayoutText(child)->IsTextFragment())
+    if (!child->IsText() || !To<LayoutText>(child)->IsTextFragment())
       continue;
-    LayoutTextFragment* child_fragment = ToLayoutTextFragment(child);
+    auto* child_fragment = To<LayoutTextFragment>(child);
     if (child_fragment->GetFirstLetterPseudoElement() != this)
       continue;
 
@@ -231,7 +256,7 @@ void FirstLetterPseudoElement::UpdateTextFragments() {
     // Make sure the first-letter layoutObject is set to require a layout as it
     // needs to re-create the line boxes. The remaining text layoutObject
     // will be marked by the LayoutText::setText.
-    child_fragment->SetNeedsLayoutAndPrefWidthsRecalc(
+    child_fragment->SetNeedsLayoutAndIntrinsicWidthsRecalc(
         layout_invalidation_reason::kTextChanged);
     break;
   }
@@ -241,10 +266,9 @@ void FirstLetterPseudoElement::ClearRemainingTextLayoutObject() {
   DCHECK(remaining_text_layout_object_);
   remaining_text_layout_object_ = nullptr;
 
-  if (GetDocument().ChildNeedsReattachLayoutTree()) {
-    // We are in the layout tree rebuild phase. We will do UpdateFirstLetter()
-    // as part of RebuildFirstLetterLayoutTree() or AttachLayoutTree(). Marking
-    // us style-dirty during layout tree rebuild is not allowed.
+  if (GetDocument().InStyleRecalc()) {
+    // UpdateFirstLetterPseudoElement will handle remaining_text_layout_object_
+    // changes during style recalc and layout tree rebuild.
     return;
   }
 
@@ -261,14 +285,32 @@ void FirstLetterPseudoElement::ClearRemainingTextLayoutObject() {
 void FirstLetterPseudoElement::AttachLayoutTree(AttachContext& context) {
   LayoutText* first_letter_text =
       FirstLetterPseudoElement::FirstLetterTextLayoutObject(*this);
-  PseudoElement::AttachLayoutTree(context);
-  AttachFirstLetterTextLayoutObjects(first_letter_text);
+  // The FirstLetterPseudoElement should have been removed in
+  // Element::UpdateFirstLetterPseudoElement(). However if there existed a first
+  // letter before updating it, the layout tree will be different after
+  // DetachLayoutTree() called right before this method.
+  // If there is a bug in FirstLetterTextLayoutObject(), we might end up with
+  // null here. DCHECKing here, but handling the null pointer below to avoid
+  // crashes.
+  DCHECK(first_letter_text);
+
+  AttachContext first_letter_context(context);
+  first_letter_context.next_sibling = first_letter_text;
+  first_letter_context.next_sibling_valid = true;
+  if (first_letter_text) {
+    first_letter_context.parent = first_letter_text->Parent();
+    if (first_letter_context.parent->ForceLegacyLayout())
+      first_letter_context.force_legacy_layout = true;
+  }
+  PseudoElement::AttachLayoutTree(first_letter_context);
+  if (first_letter_text)
+    AttachFirstLetterTextLayoutObjects(first_letter_text);
 }
 
-void FirstLetterPseudoElement::DetachLayoutTree(const AttachContext& context) {
+void FirstLetterPseudoElement::DetachLayoutTree(bool performing_reattach) {
   if (remaining_text_layout_object_) {
     if (remaining_text_layout_object_->GetNode() && GetDocument().IsActive()) {
-      Text* text_node = ToText(remaining_text_layout_object_->GetNode());
+      auto* text_node = To<Text>(remaining_text_layout_object_->GetNode());
       remaining_text_layout_object_->SetTextFragment(
           text_node->DataImpl(), 0, text_node->DataImpl()->length());
     }
@@ -277,19 +319,21 @@ void FirstLetterPseudoElement::DetachLayoutTree(const AttachContext& context) {
   }
   remaining_text_layout_object_ = nullptr;
 
-  PseudoElement::DetachLayoutTree(context);
+  PseudoElement::DetachLayoutTree(performing_reattach);
 }
 
 scoped_refptr<ComputedStyle>
-FirstLetterPseudoElement::CustomStyleForLayoutObject() {
+FirstLetterPseudoElement::CustomStyleForLayoutObject(
+    const StyleRecalcContext& style_recalc_context) {
   LayoutObject* first_letter_text =
       FirstLetterPseudoElement::FirstLetterTextLayoutObject(*this);
   if (!first_letter_text)
     return nullptr;
   DCHECK(first_letter_text->Parent());
   return ParentOrShadowHostElement()->StyleForPseudoElement(
-      PseudoStyleRequest(GetPseudoId()),
-      first_letter_text->Parent()->FirstLineStyle());
+      style_recalc_context,
+      StyleRequest(GetPseudoId(),
+                   first_letter_text->Parent()->FirstLineStyle()));
 }
 
 void FirstLetterPseudoElement::AttachFirstLetterTextLayoutObjects(LayoutText* first_letter_text) {
@@ -299,12 +343,22 @@ void FirstLetterPseudoElement::AttachFirstLetterTextLayoutObjects(LayoutText* fi
   // DOM node's string. We want the original string before it got transformed in
   // case first-letter has no text-transform or a different text-transform
   // applied to it.
-  String old_text = first_letter_text->IsTextFragment() ? ToLayoutTextFragment(first_letter_text)->CompleteText() : first_letter_text->OriginalText();
+  String old_text =
+      first_letter_text->IsTextFragment()
+          ? To<LayoutTextFragment>(first_letter_text)->CompleteText()
+          : first_letter_text->OriginalText();
   DCHECK(old_text.Impl());
 
   // FIXME: This would already have been calculated in firstLetterLayoutObject.
   // Can we pass the length through?
   unsigned length = FirstLetterPseudoElement::FirstLetterLength(old_text);
+
+  // In case of inline level content made of punctuation, we use
+  // first_letter_text length instead of FirstLetterLength.
+  if (IsParentInlineLayoutObject(first_letter_text) && length == 0 &&
+      first_letter_text->TextLength())
+    length = first_letter_text->TextLength();
+
   unsigned remaining_length = old_text.length() - length;
 
   // Construct a text fragment for the text after the first letter.
@@ -326,7 +380,7 @@ void FirstLetterPseudoElement::AttachFirstLetterTextLayoutObjects(LayoutText* fi
 
   remaining_text->SetFirstLetterPseudoElement(this);
   remaining_text->SetIsRemainingTextLayoutObject(true);
-  remaining_text->SetStyle(first_letter_text->MutableStyle());
+  remaining_text->SetStyle(first_letter_text->Style());
 
   if (remaining_text->GetNode())
     remaining_text->GetNode()->SetLayoutObject(remaining_text);
@@ -337,7 +391,7 @@ void FirstLetterPseudoElement::AttachFirstLetterTextLayoutObjects(LayoutText* fi
   GetLayoutObject()->Parent()->AddChild(remaining_text, next_sibling);
 
   // Construct text fragment for the first letter.
-  ComputedStyle* const letter_style = MutableComputedStyle();
+  const ComputedStyle* const letter_style = GetComputedStyle();
   LayoutTextFragment* letter = LayoutTextFragment::CreateAnonymous(
       *this, old_text.Impl(), 0, length, legacy_layout);
   letter->SetFirstLetterPseudoElement(this);

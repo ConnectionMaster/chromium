@@ -4,14 +4,14 @@
 
 #include "base/command_line.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "content/browser/find_request_manager.h"
 #include "content/browser/web_contents/web_contents_impl.h"
-#include "content/common/view_messages.h"
-#include "content/common/widget_messages.h"
 #include "content/public/browser/browser_message_filter.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -21,6 +21,13 @@
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
 #include "net/dns/mock_host_resolver.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "third_party/blink/public/mojom/page/widget.mojom-test-utils.h"
+
+#if defined(OS_ANDROID)
+#include "ui/android/view_android.h"
+#endif
 
 namespace content {
 
@@ -60,7 +67,8 @@ class FindRequestManagerTest : public ContentBrowserTest,
   // Navigates to |url| and waits for it to finish loading.
   void LoadAndWait(const std::string& url) {
     TestNavigationObserver navigation_observer(contents());
-    NavigateToURL(shell(), embedded_test_server()->GetURL("a.com", url));
+    EXPECT_TRUE(
+        NavigateToURL(shell(), embedded_test_server()->GetURL("a.com", url)));
     ASSERT_TRUE(navigation_observer.last_navigation_succeeded());
   }
 
@@ -80,10 +88,7 @@ class FindRequestManagerTest : public ContentBrowserTest,
     GURL url(embedded_test_server()->GetURL(
         "b.com", child->current_url().path()));
 
-    TestNavigationObserver observer(shell()->web_contents());
-    NavigateFrameToURL(child, url);
-    EXPECT_EQ(url, observer.last_navigation_url());
-    EXPECT_TRUE(observer.last_navigation_succeeded());
+    EXPECT_TRUE(NavigateToURLFromRenderer(child, url));
   }
 
   void Find(const std::string& search_text,
@@ -171,7 +176,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, MAYBE(Basic)) {
   EXPECT_EQ(19, results.number_of_matches);
   EXPECT_EQ(1, results.active_match_ordinal);
 
-  options->find_next = true;
+  options->new_session = false;
   for (int i = 2; i <= 10; ++i) {
     Find("result", options->Clone());
     delegate()->WaitForFinalReply();
@@ -194,16 +199,35 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, MAYBE(Basic)) {
   }
 }
 
+IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, FindInPage_Issue615291) {
+  LoadAndWait("/find_in_simple_page.html");
+
+  auto options = blink::mojom::FindOptions::New();
+  options->run_synchronously_for_testing = true;
+  options->find_match = false;
+  Find("result", options->Clone());
+  delegate()->WaitForFinalReply();
+
+  FindResults results = delegate()->GetFindResults();
+  EXPECT_EQ(5, results.number_of_matches);
+  EXPECT_EQ(0, results.active_match_ordinal);
+
+  options->new_session = false;
+  Find("result", options->Clone());
+  // With the issue being tested, this would loop forever and cause the
+  // test to timeout.
+  delegate()->WaitForFinalReply();
+  results = delegate()->GetFindResults();
+  EXPECT_EQ(5, results.number_of_matches);
+  EXPECT_EQ(0, results.active_match_ordinal);
+}
+
 bool ExecuteScriptAndExtractRect(FrameTreeNode* frame,
                                  const std::string& script,
                                  gfx::Rect* out) {
-  std::string result;
   std::string script_and_extract =
-      script +
-      "window.domAutomationController.send(rect.x + ',' + rect.y + ','" +
-      "+ rect.width + ',' + rect.height);";
-  if (!ExecuteScriptAndExtractString(frame, script_and_extract, &result))
-    return false;
+      script + "rect.x + ',' + rect.y + ',' + rect.width + ',' + rect.height;";
+  std::string result = EvalJs(frame, script_and_extract).ExtractString();
 
   std::vector<std::string> tokens = base::SplitString(
       result, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
@@ -226,10 +250,10 @@ bool ExecuteScriptAndExtractRect(FrameTreeNode* frame,
 IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, ScrollAndZoomIntoView) {
   WebContentsImpl* web_contents =
       static_cast<WebContentsImpl*>(shell()->web_contents());
-  WebPreferences prefs =
-      web_contents->GetRenderViewHost()->GetWebkitPreferences();
+  blink::web_pref::WebPreferences prefs =
+      web_contents->GetOrCreateWebPreferences();
   prefs.smooth_scroll_for_find_enabled = false;
-  web_contents->GetRenderViewHost()->UpdateWebkitPreferences(prefs);
+  web_contents->SetWebPreferences(prefs);
 
   LoadAndWait("/find_in_page_desktop.html");
   // Note: for now, don't run this test on Android in OOPIF mode.
@@ -247,7 +271,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, ScrollAndZoomIntoView) {
 
   // Start off at a non-origin scroll offset to ensure coordinate conversisons
   // work correctly.
-  ASSERT_TRUE(ExecuteScript(root, "window.scrollTo(3500, 1500);"));
+  ASSERT_TRUE(ExecJs(root, "window.scrollTo(3500, 1500);"));
 
   // Search for a result further down in the iframe.
   auto options = blink::mojom::FindOptions::New();
@@ -341,7 +365,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_RapidFire) {
   options->run_synchronously_for_testing = true;
   Find("result", options.Clone());
 
-  options->find_next = true;
+  options->new_session = false;
   for (int i = 2; i <= 1000; ++i)
     Find("result", options.Clone());
   delegate()->WaitForFinalReply();
@@ -362,7 +386,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_RemoveFrame) {
   options->run_synchronously_for_testing = true;
   Find("result", options->Clone());
   delegate()->WaitForFinalReply();
-  options->find_next = true;
+  options->new_session = false;
   options->forward = false;
   Find("result", options->Clone());
   Find("result", options->Clone());
@@ -387,6 +411,25 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_RemoveFrame) {
   EXPECT_EQ(8, results.active_match_ordinal);
 }
 
+IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, RemoveMainFrame) {
+  LoadAndWait("/find_in_page.html");
+
+  auto options = blink::mojom::FindOptions::New();
+  options->run_synchronously_for_testing = true;
+  Find("result", options->Clone());
+  delegate()->WaitForFinalReply();
+  options->new_session = false;
+  options->forward = false;
+  Find("result", options->Clone());
+  Find("result", options->Clone());
+  Find("result", options->Clone());
+  Find("result", options->Clone());
+  Find("result", options->Clone());
+
+  // Don't wait for the reply, and end the test. This will remove the main
+  // frame, which should not crash.
+}
+
 // Tests adding a frame during a find session.
 // TODO(crbug.com/657331): Test is flaky on all platforms.
 IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_AddFrame) {
@@ -395,7 +438,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_AddFrame) {
   auto options = blink::mojom::FindOptions::New();
   options->run_synchronously_for_testing = true;
   Find("result", options.Clone());
-  options->find_next = true;
+  options->new_session = false;
   Find("result", options.Clone());
   Find("result", options.Clone());
   Find("result", options.Clone());
@@ -415,7 +458,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_AddFrame) {
       "frame.src = '" + url + "';" +
       "document.body.appendChild(frame);";
   delegate()->MarkNextReply();
-  ASSERT_TRUE(ExecuteScript(shell(), script));
+  ASSERT_TRUE(ExecJs(shell(), script));
   delegate()->WaitForNextReply();
 
   // The number of matches should update automatically to include the matches
@@ -429,7 +472,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_AddFrame) {
 // matches.
 IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, MAYBE(AddFrameAfterNoMatches)) {
   TestNavigationObserver navigation_observer(contents());
-  NavigateToURL(shell(), GURL("about:blank"));
+  EXPECT_TRUE(NavigateToURL(shell(), GURL("about:blank")));
   EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
 
   auto default_options = blink::mojom::FindOptions::New();
@@ -451,7 +494,7 @@ IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, MAYBE(AddFrameAfterNoMatches)) {
       "frame.src = '" + url + "';" +
       "document.body.appendChild(frame);";
   delegate()->MarkNextReply();
-  ASSERT_TRUE(ExecuteScript(shell(), script));
+  ASSERT_TRUE(ExecJs(shell(), script));
   delegate()->WaitForNextReply();
 
   // The matches from the new frame should be found automatically, and the first
@@ -468,7 +511,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, MAYBE(NavigateFrame)) {
   auto options = blink::mojom::FindOptions::New();
   options->run_synchronously_for_testing = true;
   Find("result", options.Clone());
-  options->find_next = true;
+  options->new_session = false;
   options->forward = false;
   Find("result", options.Clone());
   Find("result", options.Clone());
@@ -488,7 +531,8 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, MAYBE(NavigateFrame)) {
       GetParam() ? "b.com" : "a.com", "/find_in_simple_page.html"));
   delegate()->MarkNextReply();
   TestNavigationObserver navigation_observer(contents());
-  NavigateFrameToURL(root->child_at(0)->child_at(1)->child_at(0), url);
+  EXPECT_TRUE(NavigateToURLFromRenderer(
+      root->child_at(0)->child_at(1)->child_at(0), url));
   EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
   delegate()->WaitForNextReply();
 
@@ -532,7 +576,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, MAYBE(FindNewMatches)) {
   auto options = blink::mojom::FindOptions::New();
   options->run_synchronously_for_testing = true;
   Find("result", options.Clone());
-  options->find_next = true;
+  options->new_session = false;
   Find("result", options.Clone());
   Find("result", options.Clone());
   delegate()->WaitForFinalReply();
@@ -544,7 +588,7 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, MAYBE(FindNewMatches)) {
 
   // Dynamically add new text to the page. This text contains 5 new matches for
   // "result".
-  ASSERT_TRUE(ExecuteScript(contents()->GetMainFrame(), "addNewText()"));
+  ASSERT_TRUE(ExecJs(contents()->GetMainFrame(), "addNewText()"));
 
   Find("result", options.Clone());
   delegate()->WaitForFinalReply();
@@ -578,7 +622,7 @@ IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, MAYBE_FindInPage_Issue627799) {
   EXPECT_EQ(1, results.active_match_ordinal);
 
   delegate()->StartReplyRecord();
-  options->find_next = true;
+  options->new_session = false;
   options->forward = false;
   Find("42", options.Clone());
   delegate()->WaitForFinalReply();
@@ -608,9 +652,9 @@ IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, DetachFrameWithMatch) {
   EXPECT_EQ(last_request_id(), results.request_id);
   EXPECT_EQ(6, results.number_of_matches);
   EXPECT_EQ(1, results.active_match_ordinal);
-  EXPECT_TRUE(ExecuteScript(shell(),
-                            "document.body.removeChild("
-                            "document.querySelectorAll('iframe')[0])"));
+  EXPECT_TRUE(ExecJs(shell(),
+                     "document.body.removeChild("
+                     "document.querySelectorAll('iframe')[0])"));
 
   Find("result", options.Clone());
   delegate()->WaitForFinalReply();
@@ -622,7 +666,7 @@ IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, DetachFrameWithMatch) {
 
 IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, MAYBE(FindInPage_Issue644448)) {
   TestNavigationObserver navigation_observer(contents());
-  NavigateToURL(shell(), GURL("about:blank"));
+  EXPECT_TRUE(NavigateToURL(shell(), GURL("about:blank")));
   EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
 
   auto default_options = blink::mojom::FindOptions::New();
@@ -650,6 +694,115 @@ IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, MAYBE(FindInPage_Issue644448)) {
 }
 
 #if defined(OS_ANDROID)
+// Tests empty active match rect when kWrapAround is false.
+IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, EmptyActiveMatchRect) {
+  LoadAndWait("/find_in_page.html");
+
+  // kWrapAround is false by default.
+  auto default_options = blink::mojom::FindOptions::New();
+  default_options->run_synchronously_for_testing = true;
+  Find("result 01", default_options.Clone());
+  delegate()->WaitForFinalReply();
+  EXPECT_EQ(1, delegate()->GetFindResults().number_of_matches);
+
+  // Request the find match rects.
+  contents()->RequestFindMatchRects(-1);
+  delegate()->WaitForMatchRects();
+  const std::vector<gfx::RectF>& rects = delegate()->find_match_rects();
+
+  // The first match should be active.
+  EXPECT_EQ(rects[0], delegate()->active_match_rect());
+
+  Find("result 00", default_options.Clone());
+  delegate()->WaitForFinalReply();
+  EXPECT_EQ(1, delegate()->GetFindResults().number_of_matches);
+
+  // Request the find match rects.
+  contents()->RequestFindMatchRects(-1);
+  delegate()->WaitForMatchRects();
+
+  // The active match rect should be empty.
+  EXPECT_EQ(gfx::RectF(), delegate()->active_match_rect());
+}
+
+class MainFrameSizeChangedWaiter : public WebContentsObserver {
+ public:
+  MainFrameSizeChangedWaiter(WebContents* web_contents)
+      : WebContentsObserver(web_contents) {}
+  void Wait() { run_loop_.Run(); }
+
+ private:
+  void FrameSizeChanged(RenderFrameHost* render_frame_host,
+                        const gfx::Size& frame_size) override {
+    if (render_frame_host == web_contents()->GetMainFrame())
+      run_loop_.Quit();
+  }
+
+  base::RunLoop run_loop_;
+};
+
+// Tests match rects in the iframe are updated with the size of the main frame,
+// and the active match rect should be in it.
+IN_PROC_BROWSER_TEST_F(FindRequestManagerTest,
+                       RectsUpdateWhenMainFrameSizeChanged) {
+  LoadAndWait("/find_in_page.html");
+
+  // Make a initial size for native view.
+  const int kWidth = 1080;
+  const int kHeight = 1286;
+  gfx::Size size(kWidth, kHeight);
+  contents()->GetNativeView()->OnSizeChanged(kWidth, kHeight);
+  contents()->GetNativeView()->OnPhysicalBackingSizeChanged(size);
+
+  // Make a FindRequest for "result".
+  auto options = blink::mojom::FindOptions::New();
+  options->run_synchronously_for_testing = true;
+  Find("result", options->Clone());
+  delegate()->WaitForFinalReply();
+  FindResults results = delegate()->GetFindResults();
+  EXPECT_EQ(19, results.number_of_matches);
+
+  contents()->RequestFindMatchRects(-1);
+  delegate()->WaitForMatchRects();
+
+  // Change the size of native view.
+  const int kNewHeight = 2121;
+  size = gfx::Size(kWidth, kNewHeight);
+  contents()->GetNativeView()->OnSizeChanged(kWidth, kNewHeight);
+  contents()->GetNativeView()->OnPhysicalBackingSizeChanged(size);
+
+  // Wait for the size of the mainframe to change, and then the position
+  // of match rects should change as expected.
+  MainFrameSizeChangedWaiter(contents()).Wait();
+
+  contents()->RequestFindMatchRects(-1);
+  delegate()->WaitForMatchRects();
+  std::vector<gfx::RectF> new_rects = delegate()->find_match_rects();
+
+  // The first match should be active.
+  EXPECT_EQ(new_rects[0], delegate()->active_match_rect());
+
+  // Check that all active rects (including iframe) matches with corresponding
+  // match rect.
+  for (int i = 1; i < 19; i++) {
+    options->new_session = false;
+    options->forward = true;
+    Find("result", options->Clone());
+    delegate()->WaitForFinalReply();
+
+    FindResults results = delegate()->GetFindResults();
+    EXPECT_EQ(19, results.number_of_matches);
+
+    // Request the find match rects.
+    contents()->RequestFindMatchRects(-1);
+    delegate()->WaitForMatchRects();
+    new_rects = delegate()->find_match_rects();
+
+    // The active rect should be equal to the corresponding match rect.
+    EXPECT_EQ(new_rects[i], delegate()->active_match_rect());
+  }
+}
+
 // TODO(wjmaclean): This test, if re-enabled, may require work to make it
 // OOPIF-compatible.
 // Tests requesting find match rects.
@@ -738,18 +891,17 @@ IN_PROC_BROWSER_TEST_F(FindRequestManagerTest, MAYBE(FindMatchRects)) {
 
 namespace {
 
-class ZoomToFindInPageRectMessageFilter : public content::BrowserMessageFilter {
+class ZoomToFindInPageRectMessageFilter
+    : public blink::mojom::FrameWidgetHostInterceptorForTesting {
  public:
-  ZoomToFindInPageRectMessageFilter()
-      : content::BrowserMessageFilter(WidgetMsgStart),
+  ZoomToFindInPageRectMessageFilter(RenderWidgetHostImpl* rwhi)
+      : impl_(rwhi->frame_widget_host_receiver_for_testing().SwapImplForTesting(
+            this)),
         widget_message_seen_(false) {}
+  ~ZoomToFindInPageRectMessageFilter() override {}
 
-  bool OnMessageReceived(const IPC::Message& message) override {
-    IPC_BEGIN_MESSAGE_MAP(ZoomToFindInPageRectMessageFilter, message)
-      IPC_MESSAGE_HANDLER(WidgetHostMsg_ZoomToFindInPageRectInMainFrame,
-                          OnWidgetHostMessage)
-    IPC_END_MESSAGE_MAP()
-    return false;
+  blink::mojom::FrameWidgetHost* GetForwardingInterface() override {
+    return impl_;
   }
 
   void Reset() {
@@ -769,15 +921,14 @@ class ZoomToFindInPageRectMessageFilter : public content::BrowserMessageFilter {
   gfx::Rect& widget_message_rect() { return widget_rect_seen_; }
 
  private:
-  ~ZoomToFindInPageRectMessageFilter() override {}
-
-  void OnWidgetHostMessage(const gfx::Rect& rect_to_zoom) {
+  void ZoomToFindInPageRectInMainFrame(const gfx::Rect& rect_to_zoom) override {
     widget_rect_seen_ = rect_to_zoom;
     widget_message_seen_ = true;
     if (!quit_closure_.is_null())
       std::move(quit_closure_).Run();
   }
 
+  blink::mojom::FrameWidgetHost* impl_;
   gfx::Rect widget_rect_seen_;
   bool widget_message_seen_;
   base::OnceClosure quit_closure_;
@@ -794,16 +945,14 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, ActivateNearestFindMatch) {
   if (test_with_oopif)
     MakeChildFrameCrossProcess();
 
-  scoped_refptr<ZoomToFindInPageRectMessageFilter> message_filter_root =
-      new ZoomToFindInPageRectMessageFilter();
-  scoped_refptr<ZoomToFindInPageRectMessageFilter> message_filter_child =
-      new ZoomToFindInPageRectMessageFilter();
+  std::unique_ptr<ZoomToFindInPageRectMessageFilter> message_interceptor_child;
 
   if (test_with_oopif) {
     FrameTreeNode* root = contents()->GetFrameTree()->root();
     FrameTreeNode* child = root->child_at(0);
-    child->current_frame_host()->GetProcess()->AddFilter(
-        message_filter_child.get());
+    message_interceptor_child =
+        std::make_unique<ZoomToFindInPageRectMessageFilter>(
+            child->current_frame_host()->GetRenderWidgetHost());
   }
 
   auto default_options = blink::mojom::FindOptions::New();
@@ -833,15 +982,105 @@ IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, ActivateNearestFindMatch) {
     bool is_match_in_oopif = order[i] > 1 && test_with_oopif;
     // Check widget message rect to make sure it matches.
     if (is_match_in_oopif) {
-      message_filter_child->WaitForWidgetHostMessage();
+      message_interceptor_child->WaitForWidgetHostMessage();
       EXPECT_EQ(find_request_manager->GetSelectionRectForTesting(),
-                message_filter_child->widget_message_rect());
-      message_filter_child->Reset();
+                message_interceptor_child->widget_message_rect());
+      message_interceptor_child->Reset();
     }
 
     EXPECT_EQ(order[i] + 1, delegate()->GetFindResults().active_match_ordinal);
   }
 }
 #endif  // defined(OS_ANDROID)
+
+// Test basic find-in-page functionality after going back and forth to the same
+// page. In particular, find-in-page should continue to work after going back to
+// a page using the back-forward cache.
+// Flaky everywhere: https://crbug.com/1115102
+IN_PROC_BROWSER_TEST_P(FindRequestManagerTest, DISABLED_HistoryBackAndForth) {
+  GURL url_a = embedded_test_server()->GetURL("a.com", "/find_in_page.html");
+  GURL url_b = embedded_test_server()->GetURL("b.com", "/find_in_page.html");
+
+  auto test_page = [&] {
+    if (GetParam())
+      MakeChildFrameCrossProcess();
+
+    auto options = blink::mojom::FindOptions::New();
+
+    // The initial find-in-page request.
+    Find("result", options->Clone());
+    delegate()->WaitForFinalReply();
+
+    FindResults results = delegate()->GetFindResults();
+    EXPECT_EQ(last_request_id(), results.request_id);
+    EXPECT_EQ(19, results.number_of_matches);
+
+    // Iterate forward/backward over a few elements.
+    int match_index = results.active_match_ordinal;
+    for (int delta : {-1, -1, +1, +1, +1, +1, -1, +1, +1}) {
+      options->new_session = false;
+      options->forward = delta > 0;
+      // |active_match_ordinal| uses 1-based index. It belongs to [1, 19].
+      match_index += delta;
+      match_index = (match_index + 18) % 19 + 1;
+
+      Find("result", options->Clone());
+      delegate()->WaitForFinalReply();
+      results = delegate()->GetFindResults();
+
+      EXPECT_EQ(last_request_id(), results.request_id);
+      EXPECT_EQ(19, results.number_of_matches);
+      EXPECT_EQ(match_index, results.active_match_ordinal);
+    }
+  };
+
+  // 1) Navigate to A.
+  EXPECT_TRUE(NavigateToURL(shell(), url_a));
+  test_page();
+
+  // 2) Navigate to B.
+  EXPECT_TRUE(NavigateToURL(shell(), url_b));
+  test_page();
+
+  // 3) Go back to A.
+  contents()->GetController().GoBack();
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  test_page();
+
+  // 4) Go forward to B.
+  contents()->GetController().GoForward();
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  test_page();
+}
+
+class FindRequestManagerPortalTest : public FindRequestManagerTest {
+ public:
+  FindRequestManagerPortalTest() {
+    scoped_feature_list_.InitAndEnableFeature(blink::features::kPortals);
+  }
+  ~FindRequestManagerPortalTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Tests that results find-in-page won't show results inside a portal.
+IN_PROC_BROWSER_TEST_F(FindRequestManagerPortalTest, Portal) {
+  TestNavigationObserver navigation_observer(contents());
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL(
+                                 "a.com", "/find_in_page_with_portal.html")));
+  ASSERT_TRUE(navigation_observer.last_navigation_succeeded());
+
+  auto options = blink::mojom::FindOptions::New();
+  options->run_synchronously_for_testing = true;
+  Find("result", options->Clone());
+  delegate()->WaitForFinalReply();
+
+  FindResults results = delegate()->GetFindResults();
+  EXPECT_EQ(last_request_id(), results.request_id);
+  EXPECT_EQ(2, results.number_of_matches);
+  EXPECT_EQ(1, results.active_match_ordinal);
+}
 
 }  // namespace content

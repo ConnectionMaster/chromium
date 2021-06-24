@@ -5,15 +5,13 @@
 #include "cc/raster/paint_worklet_image_provider.h"
 
 #include <utility>
-#include "cc/tiles/paint_worklet_image_cache.h"
+#include "base/callback_helpers.h"
 
 namespace cc {
 
 PaintWorkletImageProvider::PaintWorkletImageProvider(
-    PaintWorkletImageCache* cache)
-    : cache_(cache) {
-  DCHECK(cache_);
-}
+    PaintWorkletRecordMap records)
+    : records_(std::move(records)) {}
 
 PaintWorkletImageProvider::~PaintWorkletImageProvider() = default;
 
@@ -24,11 +22,15 @@ PaintWorkletImageProvider& PaintWorkletImageProvider::operator=(
     PaintWorkletImageProvider&& other) = default;
 
 ImageProvider::ScopedResult PaintWorkletImageProvider::GetPaintRecordResult(
-    PaintWorkletInput* input) {
-  std::pair<sk_sp<PaintRecord>, base::OnceCallback<void()>>
-      record_and_callback = cache_->GetPaintRecordAndRef(input);
-  return ImageProvider::ScopedResult(std::move(record_and_callback.first),
-                                     std::move(record_and_callback.second));
+    scoped_refptr<PaintWorkletInput> input) {
+  auto it = records_.find(input);
+  // In the DiscardableImageMap::GatherDiscardableImages(), a DrawImageRect can
+  // early exit the for loop if its paint rect is empty. In that case, the
+  // |records_| will not contain that PaintWorkletInput, and we should return
+  // an empty result.
+  if (it == records_.end())
+    return ImageProvider::ScopedResult();
+  return ImageProvider::ScopedResult(it->second.second);
 }
 
 }  // namespace cc

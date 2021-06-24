@@ -9,8 +9,10 @@ import os
 import argparse
 import sys
 import json
+import tempfile
 import time
 import logging
+import zlib
 
 _log = logging.getLogger(__name__)
 
@@ -30,14 +32,45 @@ BLINK_TOOLS_PATH = 'third_party/blink/tools'
 BLINK_TOOLS_ABS_PATH = os.path.join(SRC_DIR, BLINK_TOOLS_PATH)
 
 sys.path.insert(0, BLINK_TOOLS_ABS_PATH)
+from blinkpy.common import exit_codes
 from blinkpy.common.host import Host
-from blinkpy.common.system.log_utils import configure_logging
-from blinkpy.web_tests.models import test_expectations
 from blinkpy.common.path_finder import PathFinder
+from blinkpy.common.system.log_utils import configure_logging
+from blinkpy.w3c.common import CHROMIUM_WPT_DIR
+from blinkpy.web_tests.models.test_expectations import TestExpectations
+from blinkpy.web_tests.models.typ_types import ResultType
 
-WD_CLIENT_PATH = 'blinkpy/third_party/wpt/wpt/tools/webdriver'
-WEBDRIVER_CLIENT_ABS_PATH = os.path.join(BLINK_TOOLS_ABS_PATH, WD_CLIENT_PATH)
+WPT_TOOLS_PATH = 'third_party/wpt_tools/wpt/tools'
+WPT_TOOLS_ABSPATH = os.path.join(SRC_DIR, WPT_TOOLS_PATH)
+sys.path.insert(0, WPT_TOOLS_ABSPATH)
+# Importing localpaths allows us to use vendored-in dependencies from the
+# wpt_tools/wpt/tools/third_party directory.
+import localpaths  # noqa: F401
 
+WD_CLIENT_PATH = os.path.join(WPT_TOOLS_PATH, 'webdriver')
+WEBDRIVER_CLIENT_ABS_PATH = os.path.join(SRC_DIR, WD_CLIENT_PATH)
+
+
+class TestShard(object):
+  def __init__(self, total_shards, shard_index):
+    self.total_shards = total_shards
+    self.shard_index = shard_index
+
+  def is_matched_test(self, test_path):
+    """Determines if a test belongs to the current shard_index.
+
+    Returns:
+      A boolean: True if tests in test_dir should be run in the
+      current shard index; False otherwise.
+    """
+    if self.total_shards == 1:
+      return True
+
+    # zlip.adler32 doesn't have perfect distribution, but should suffice for our
+    # needs. Note that the built-in string __hash__ in Python is
+    # non-deterministic between runs of Python so cannot be used for sharding!
+    hashed_path = zlib.adler32(test_path.encode('utf-8')) & 0xFFFFFFFF
+    return (hashed_path % self.total_shards) == self.shard_index
 
 class WebDriverTestResult(object):
   def __init__(self, test_name, test_status, messsage=None):
@@ -49,26 +82,55 @@ def parse_webdriver_expectations(host, port):
   expectations_path = port.path_to_webdriver_expectations_file()
   file_contents = host.filesystem.read_text_file(expectations_path)
   expectations_dict = {expectations_path: file_contents}
-  expectations = test_expectations.TestExpectations(
+  exp = TestExpectations(
       port, expectations_dict=expectations_dict)
-  return expectations
+  return exp
 
-def preprocess_skipped_tests(test_results, expectations, path_finder):
+def prepare_filtered_tests(isolated_script_test_filter, finder, shard, port):
+  filter_list = isolated_script_test_filter.split('::')
+  filtered_tests = [get_relative_subtest_path(
+      test, finder, shard, port) for test in filter_list]
+  return filter(None, filtered_tests)
+
+def get_relative_subtest_path(external_test_path, finder, shard, port):
+  test_name, subtest_suffix = port.split_webdriver_test_name(
+      external_test_path)
+  abs_skipped_test_path = finder.path_from_web_tests(test_name)
+  if not shard.is_matched_test(abs_skipped_test_path):
+    return None
+
+  relative_path = os.path.relpath(abs_skipped_test_path)
+  relative_subtest_path = port.add_webdriver_subtest_pytest_suffix(
+      relative_path, subtest_suffix)
+  return relative_subtest_path
+
+def process_skip_list(skipped_tests, results, finder, port, test_path, shard):
   skip_list = []
-  skipped_tests = expectations.model().get_tests_with_result_type(
-      test_expectations.SKIP).copy()
-
+  abs_test_path = os.path.abspath(test_path)
   for skipped_test in skipped_tests:
-    test_results.append(WebDriverTestResult(
-      skipped_test, 'SKIP'))
-    skip_list.append(path_finder.strip_webdriver_tests_path(skipped_test))
+    test_name, subtest_suffix = port.split_webdriver_test_name(
+        skipped_test)
+    abs_path = finder.path_from_web_tests(test_name)
+    if not abs_path.startswith(abs_test_path):
+      continue
+
+    if not shard.is_matched_test(abs_path):
+      continue
+
+    pytest_subtest_path = port.add_webdriver_subtest_pytest_suffix(
+        test_name, subtest_suffix)
+    skip_list.append(pytest_subtest_path)
+    results.append(WebDriverTestResult(
+        skipped_test, 'SKIP'))
 
   return skip_list
 
 class SubtestResultRecorder(object):
-  def __init__(self, path):
+  def __init__(self, path, port):
     self.result = []
-    self.test_path = path
+    self.filename, _ = port.split_webdriver_subtest_pytest_name(
+        path)
+    self.port = port
 
   def pytest_runtest_logreport(self, report):
     if report.passed and report.when == "call":
@@ -99,14 +161,17 @@ class SubtestResultRecorder(object):
                 "In-test skip decorators are disallowed.")
 
   def record(self, report, status, message=None):
-    # location is a (filesystempath, lineno, domaininfo) tuple
-    # https://docs.pytest.org/en/3.6.2/reference.html#_pytest.runner.TestReport.location
-    test_name = report.location[2]
-    output_name = self.test_path + '::' + test_name
+    # location is a (filesystempath, lineno, domaininfo) tuple,
+    # indicating the actual location of a test item; domaininfo is
+    # the subtest name.
+    subtest_name = report.location[2]
+    output_name = self.port.add_webdriver_subtest_suffix(
+        self.filename, subtest_name)
+
     self.result.append(WebDriverTestResult(
         output_name, status, message))
 
-def set_up_config(chromedriver_server):
+def set_up_config(path_finder, chromedriver_server):
   # These envs are used to create a WebDriver session in the fixture.py file.
   os.environ["WD_HOST"] = chromedriver_server.GetHost()
   os.environ["WD_PORT"] = str(chromedriver_server.GetPort())
@@ -129,22 +194,34 @@ def set_up_config(chromedriver_server):
       }
   })
 
+  config_path = os.path.join(tempfile.mkdtemp(), "wd_server_config.json")
+  os.environ["WD_SERVER_CONFIG_FILE"] = config_path
   # Port numbers are defined at
   # https://cs.chromium.org/chromium/src/third_party/blink/tools
   # /blinkpy/web_tests/servers/wptserve.py?l=23&rcl=375b34c6ba64
   # 5d00c1413e4c6106c7bb74581c85
-  os.environ["WD_SERVER_CONFIG"] = json.dumps({
+  config_dict = {
+    "doc_root": path_finder.path_from_chromium_base(CHROMIUM_WPT_DIR),
     "browser_host": "web-platform.test",
-    "ports": {"ws": [9001], "wss": [9444], "http": [8001], "https": [8444]}})
+    "domains": {"": {"": "web-platform.test",
+                     "www": "www.web-platform.test",
+                     "www.www": "www.www.web-platform.test",
+                     "www1": "www1.web-platform.test",
+                     "www2": "www2.web-platform.test"}},
+    "ports": {"ws": [9001], "wss": [9444], "http": [8001], "https": [8444]}}
+  with open(config_path, "w") as f:
+    json.dump(config_dict, f)
 
-def run_test(path, path_finder, skipped_tests=[]):
+
+def run_test(path, path_finder, port, skipped_tests=[]):
   abs_path = os.path.abspath(path)
   external_path = path_finder.strip_web_tests_path(abs_path)
-  subtests = SubtestResultRecorder(external_path)
+  subtests = SubtestResultRecorder(external_path, port)
 
   skip_test_flag = ['--deselect=' +
                     skipped_test for skipped_test in skipped_tests]
-  pytest_args = [path] + skip_test_flag
+  pytest_args = [path] + skip_test_flag + \
+      ['--rootdir=' + path_finder.web_tests_dir()]
 
   pytest.main(pytest_args, plugins=[subtests])
   return subtests.result
@@ -162,35 +239,62 @@ if __name__ == '__main__':
   parser.add_argument(
       '--chrome', help='Path to chrome binary')
   parser.add_argument(
+      '--output-dir',
+      help='Output directory for misc logs (e.g. wptserve)')
+  parser.add_argument(
       '--isolated-script-test-output',
       help='JSON output file used by swarming')
   parser.add_argument(
       '--isolated-script-test-perf-output',
       help='JSON perf output file used by swarming, ignored')
   parser.add_argument(
+      '--isolated-script-test-filter',
+      help='isolated script filter string with :: separators')
+  parser.add_argument(
       '--test-path',
+      required=True,
       help='Path to the WPT WebDriver tests')
   parser.add_argument(
       '-v', '--verbose', action='store_true',
       help='log extra details that may be helpful when debugging')
 
   options = parser.parse_args()
+  env = os.environ
+
+  total_shards = 1
+  shard_index = 0
+  if 'GTEST_TOTAL_SHARDS' in env:
+      total_shards = int(env['GTEST_TOTAL_SHARDS'])
+  if 'GTEST_SHARD_INDEX' in env:
+      shard_index = int(env['GTEST_SHARD_INDEX'])
+  test_shard = TestShard(total_shards, shard_index)
 
   test_results = []
+  test_path = options.test_path
   log_level = logging.DEBUG if options.verbose else logging.INFO
   configure_logging(logging_level=log_level, include_time=True)
 
   host = Host()
   port = host.port_factory.get()
+  if options.output_dir:
+    port.set_option_default('results_directory', options.output_dir)
+    output_dir = options.output_dir
+  else:
+    output_dir = tempfile.mkdtemp('webdriver_tests')
+    _log.info('Using a temporary output dir %s', output_dir)
+    port.set_option_default('results_directory', output_dir)
   path_finder = PathFinder(host.filesystem)
 
   # Starts WPT Serve to serve the WPT WebDriver test content.
-  port.start_wptserve()
+  port.start_wptserve(output_dir=output_dir)
 
   # WebDriverExpectations stores skipped and failed WebDriver tests.
-  expectations = parse_webdriver_expectations(host, port)
-  skipped_tests = preprocess_skipped_tests(
-      test_results, expectations, path_finder)
+  webdriver_expectations = parse_webdriver_expectations(host, port)
+  skip_list = webdriver_expectations.get_tests_with_expected_result(
+      ResultType.Skip)
+
+  skipped_tests = process_skip_list(
+      skip_list, test_results, path_finder, port, test_path, test_shard)
 
   options.chromedriver = util.GetAbsolutePathOfUserPath(options.chromedriver)
   if (not os.path.exists(options.chromedriver) and
@@ -213,22 +317,30 @@ if __name__ == '__main__':
     _log.error('ChromeDriver is not running.')
     sys.exit(1)
 
-  set_up_config(chromedriver_server)
-
-  test_path = options.test_path
+  set_up_config(path_finder, chromedriver_server)
   start_time = time.time()
 
   sys.path.insert(0, WEBDRIVER_CLIENT_ABS_PATH)
   try:
-    if os.path.isfile(test_path):
-      test_results = run_test(test_path, path_finder, skipped_tests)
+    if options.isolated_script_test_filter:
+      filtered_tests = prepare_filtered_tests(
+          options.isolated_script_test_filter, path_finder, test_shard, port)
+      for filter_test in filtered_tests:
+        test_results += run_test(filter_test, path_finder, port)
+
+    elif os.path.isfile(test_path):
+      test_results += run_test(test_path, path_finder, port, skipped_tests)
     elif os.path.isdir(test_path):
       for root, dirnames, filenames in os.walk(test_path):
         for filename in filenames:
-          if '__init__' in filename:
+          if '__init__' in filename or not filename.endswith('.py'):
             continue
+
           test_file = os.path.join(root, filename)
-          test_results += run_test(test_file, path_finder, skipped_tests)
+
+          if not test_shard.is_matched_test(os.path.abspath(test_file)):
+            continue
+          test_results += run_test(test_file, path_finder, port, skipped_tests)
     else:
       _log.error('%s is not a file nor directory.' % test_path)
       sys.exit(1)
@@ -238,6 +350,7 @@ if __name__ == '__main__':
     chromedriver_server.Kill()
     port.stop_wptserve()
 
+  exit_code = 0
   if options.isolated_script_test_output:
     output = {
       'interrupted': False,
@@ -251,16 +364,14 @@ if __name__ == '__main__':
     success_count = 0
 
     for test_result in test_results:
-      expected_result = test_result.test_status
-      if expectations.model().has_test(test_result.test_name):
-        expected_result = expectations.get_expectations_string(
-            test_result.test_name)
+      exp = webdriver_expectations.get_expectations(test_result.test_name)
+      expected_result = ' '.join(exp.results)
+      is_unexpected = test_result.test_status not in exp.results
 
-      # TODO(crbug.com/934919): is_unexpected needs to be set for
-      # unexpected failures once expectations have been supported.
       output['tests'][test_result.test_name] = {
         'expected': expected_result,
         'actual': test_result.test_status,
+        'is_unexpected': is_unexpected,
       }
 
       if test_result.message:
@@ -268,6 +379,9 @@ if __name__ == '__main__':
 
       if test_result.test_status == 'PASS':
         success_count += 1
+
+      if is_unexpected and test_result.test_status != 'PASS':
+        exit_code += 1
 
     output['num_failures_by_type']['PASS'] = success_count
     output['num_failures_by_type']['SKIP'] = len(skipped_tests)
@@ -277,7 +391,9 @@ if __name__ == '__main__':
     with open(options.isolated_script_test_output, 'w') as fp:
       json.dump(output, fp)
 
-  # TODO(crbug.com/934919): exit code should be non-zero once
-  # the runner is able to detect unexpected failures. Currently set
-  # to 0 because all failures are expected.
-  sys.exit(0)
+  if exit_code > exit_codes.MAX_FAILURES_EXIT_STATUS:
+    _log.warning('num regressions (%d) exceeds max exit status (%d)',
+                 exit_code, exit_codes.MAX_FAILURES_EXIT_STATUS)
+    exit_code = exit_codes.MAX_FAILURES_EXIT_STATUS
+
+  sys.exit(exit_code)

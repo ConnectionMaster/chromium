@@ -9,7 +9,6 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
-import android.support.annotation.IntDef;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -20,9 +19,10 @@ import android.view.WindowManager;
 import android.widget.PopupWindow;
 import android.widget.PopupWindow.OnDismissListener;
 
-import org.chromium.base.ApiCompatibilityUtils;
+import androidx.annotation.IntDef;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ObserverList;
-import org.chromium.base.VisibleForTesting;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -135,6 +135,11 @@ public class AnchoredPopupWindow implements OnTouchListener, RectProvider.Observ
      * The maximum width of the popup. This width is used as long as the popup still fits on screen.
      */
     private int mMaxWidthPx;
+
+    /**
+     * The desired width for the content.
+     */
+    private int mDesiredContentWidth;
 
     // Preferred orientation for the popup with respect to the anchor.
     // Preferred vertical orientation for the popup with respect to the anchor.
@@ -348,10 +353,17 @@ public class AnchoredPopupWindow implements OnTouchListener, RectProvider.Observ
     }
 
     /**
-     * Sets the elevation of the popup, if elevation is supported.
+     * Sets the elevation of the popup.
      */
     public void setElevation(float elevation) {
-        ApiCompatibilityUtils.setElevation(mPopupWindow, elevation);
+        mPopupWindow.setElevation(elevation);
+    }
+
+    /**
+     * Sets the width for the content of the popup window.
+     */
+    public void setDesiredContentWidth(int width) {
+        mDesiredContentWidth = width;
     }
 
     // RectProvider.Observer implementation.
@@ -372,6 +384,11 @@ public class AnchoredPopupWindow implements OnTouchListener, RectProvider.Observ
     private void updatePopupLayout() {
         // TODO(twellington): Add more unit tests for this large method.
 
+        // If the root view is not attached to the Window, this may result in an
+        // IllegalArgumentException. Regardless, sizing the popup won't work properly so exit early.
+        // See https://crbug.com/1212602 for details.
+        if (!mRootView.isAttachedToWindow()) return;
+
         // Determine the size of the text popup.
         boolean currentPositionBelow = mPositionBelow;
         boolean currentPositionToLeft = mPositionToLeft;
@@ -387,7 +404,16 @@ public class AnchoredPopupWindow implements OnTouchListener, RectProvider.Observ
         // Determine whether or not the popup should be above or below the anchor.
         // Aggressively try to put it below the anchor.  Put it above only if it would fit better.
         View contentView = mPopupWindow.getContentView();
-        int widthSpec = MeasureSpec.makeMeasureSpec(maxContentWidth, MeasureSpec.AT_MOST);
+
+        int widthSpec = 0;
+        if (mDesiredContentWidth > 0) {
+            int width =
+                    mDesiredContentWidth < maxContentWidth ? mDesiredContentWidth : maxContentWidth;
+            widthSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY);
+        } else {
+            widthSpec = MeasureSpec.makeMeasureSpec(maxContentWidth, MeasureSpec.AT_MOST);
+        }
+
         contentView.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
         int idealContentHeight = contentView.getMeasuredHeight();
         int idealContentWidth = contentView.getMeasuredWidth();

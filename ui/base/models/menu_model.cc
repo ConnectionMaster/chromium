@@ -4,6 +4,8 @@
 
 #include "ui/base/models/menu_model.h"
 
+#include "ui/base/models/image_model.h"
+
 namespace ui {
 
 MenuModel::MenuModel() : menu_model_delegate_(nullptr) {}
@@ -15,6 +17,18 @@ MenuModel::~MenuModel() {
 
 bool MenuModel::IsVisibleAt(int index) const {
   return true;
+}
+
+bool MenuModel::IsAlertedAt(int index) const {
+  return false;
+}
+
+bool MenuModel::IsNewFeatureAt(int index) const {
+  return false;
+}
+
+ElementIdentifier MenuModel::GetElementIdentifierAt(int index) const {
+  return ElementIdentifier();
 }
 
 // static
@@ -46,20 +60,24 @@ bool MenuModel::GetModelAndIndexForCommandId(int command_id,
   return false;
 }
 
-base::string16 MenuModel::GetSublabelAt(int index) const {
-  return base::string16();
+std::u16string MenuModel::GetMinorTextAt(int index) const {
+  return std::u16string();
 }
 
-base::string16 MenuModel::GetMinorTextAt(int index) const {
-  return base::string16();
+std::u16string MenuModel::GetSecondaryLabelAt(int index) const {
+  return std::u16string();
 }
 
-const gfx::VectorIcon* MenuModel::GetMinorIconAt(int index) const {
-  return nullptr;
+ImageModel MenuModel::GetMinorIconAt(int index) const {
+  return ImageModel();
+}
+
+bool MenuModel::MayHaveMnemonicsAt(int index) const {
+  return true;
 }
 
 const gfx::FontList* MenuModel::GetLabelFontListAt(int index) const {
-  return NULL;
+  return nullptr;
 }
 
 // Default implementation ignores the event flags.

@@ -46,15 +46,34 @@ void ScopedRasterFlags::DecodeImageShader(const SkMatrix& ctm) {
       flags()->getShader()->shader_type() != PaintShader::Type::kImage)
     return;
 
+  PaintImage image = flags()->getShader()->paint_image();
+  if (image.IsPaintWorklet()) {
+    ImageProvider::ScopedResult result =
+        decode_stashing_image_provider_->GetRasterContent(DrawImage(image));
+    if (result && result.paint_record()) {
+      const PaintShader* shader = flags()->getShader();
+      SkMatrix local_matrix = shader->GetLocalMatrix();
+      auto decoded_shader = PaintShader::MakePaintRecord(
+          sk_ref_sp<PaintRecord>(result.paint_record()), shader->tile(),
+          shader->tx(), shader->tx(), &local_matrix);
+      MutableFlags()->setShader(decoded_shader);
+    } else {
+      decode_failed_ = true;
+    }
+    return;
+  }
+
   uint32_t transfer_cache_entry_id = kInvalidImageTransferCacheEntryId;
   SkFilterQuality raster_quality = flags()->getFilterQuality();
   bool transfer_cache_entry_needs_mips = false;
+  gpu::Mailbox mailbox;
   auto decoded_shader = flags()->getShader()->CreateDecodedImage(
       ctm, flags()->getFilterQuality(), &*decode_stashing_image_provider_,
       &transfer_cache_entry_id, &raster_quality,
-      &transfer_cache_entry_needs_mips);
+      &transfer_cache_entry_needs_mips, &mailbox);
   DCHECK_EQ(transfer_cache_entry_id, kInvalidImageTransferCacheEntryId);
   DCHECK_EQ(transfer_cache_entry_needs_mips, false);
+  DCHECK(mailbox.IsZero());
 
   if (!decoded_shader) {
     decode_failed_ = true;
@@ -82,8 +101,8 @@ void ScopedRasterFlags::DecodeRecordShader(const SkMatrix& ctm,
   gfx::SizeF raster_scale(1.f, 1.f);
   auto decoded_shader = flags()->getShader()->CreateScaledPaintRecord(
       ctm, max_texture_size, &raster_scale);
-  decoded_shader->CreateSkShader(&raster_scale,
-                                 &*decode_stashing_image_provider_);
+  decoded_shader->ResolveSkObjects(&raster_scale,
+                                   &*decode_stashing_image_provider_);
   MutableFlags()->setShader(std::move(decoded_shader));
 }
 

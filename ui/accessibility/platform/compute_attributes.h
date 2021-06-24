@@ -7,16 +7,17 @@
 
 #include <cstddef>
 
-#include "base/optional.h"
-#include "ui/accessibility/ax_enums.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_export.h"
-#include "ui/accessibility/platform/ax_platform_node_delegate.h"
 
 namespace ui {
 
+class AXPlatformNodeDelegate;
+
 // Compute the attribute value instead of returning the "raw" attribute value
 // for those attributes that have computation methods.
-AX_EXPORT base::Optional<int32_t> ComputeAttribute(
+AX_EXPORT absl::optional<int32_t> ComputeAttribute(
     const ui::AXPlatformNodeDelegate* delegate,
     ax::mojom::IntAttribute attribute);
 

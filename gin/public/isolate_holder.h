@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "gin/gin_export.h"
 #include "gin/public/v8_idle_task_runner.h"
@@ -76,14 +75,13 @@ class GIN_EXPORT IsolateHolder {
       AllowAtomicsWaitMode atomics_wait_mode,
       IsolateType isolate_type,
       IsolateCreationMode isolate_creation_mode = IsolateCreationMode::kNormal);
+  IsolateHolder(const IsolateHolder&) = delete;
+  IsolateHolder& operator=(const IsolateHolder&) = delete;
   ~IsolateHolder();
 
   // Should be invoked once before creating IsolateHolder instances to
   // initialize V8 and Gin. In case V8_USE_EXTERNAL_STARTUP_DATA is
-  // defined, V8's initial natives should be loaded (by calling
-  // V8Initializer::LoadV8NativesFromFD or
-  // V8Initializer::LoadV8Natives) before calling this method.  If the
-  // snapshot file is available, it should also be loaded (by calling
+  // defined and the snapshot file is available, it should be loaded (by calling
   // V8Initializer::LoadV8SnapshotFromFD or
   // V8Initializer::LoadV8Snapshot) before calling this method.
   // If the snapshot file contains customised contexts which have static
@@ -122,8 +120,6 @@ class GIN_EXPORT IsolateHolder {
   std::unique_ptr<V8IsolateMemoryDumpProvider> isolate_memory_dump_provider_;
   AccessMode access_mode_;
   IsolateType isolate_type_;
-
-  DISALLOW_COPY_AND_ASSIGN(IsolateHolder);
 };
 
 }  // namespace gin

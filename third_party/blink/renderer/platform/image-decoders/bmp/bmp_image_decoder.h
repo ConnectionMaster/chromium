@@ -37,6 +37,7 @@
 namespace blink {
 
 class BMPImageReader;
+class FastSharedBufferReader;
 
 // This class decodes the BMP image format.
 class PLATFORM_EXPORT BMPImageDecoder final : public ImageDecoder {
@@ -72,6 +73,14 @@ class PLATFORM_EXPORT BMPImageDecoder final : public ImageDecoder {
   // file header could be decoded.
   bool ProcessFileHeader(size_t& img_data_offset);
 
+  // Uses |fast_reader| and |buffer| to read the file header into |file_header|.
+  // Computes |file_type| from the file header.  Returns whether there was
+  // sufficient data available to read the header.
+  bool GetFileType(const FastSharedBufferReader& fast_reader,
+                   char* buffer,
+                   const char*& file_header,
+                   uint16_t& file_type) const;
+
   // An index into |data_| representing how much we've already decoded.
   // Note that this only tracks data _this_ class decodes; once the
   // BMPImageReader takes over this will not be updated further.
@@ -83,4 +92,4 @@ class PLATFORM_EXPORT BMPImageDecoder final : public ImageDecoder {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_BMP_BMP_IMAGE_DECODER_H_

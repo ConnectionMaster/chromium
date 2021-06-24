@@ -6,13 +6,13 @@
 
 #include <stddef.h>
 
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "base/win/scoped_bstr.h"
@@ -183,7 +183,7 @@ bool WriteConfig(const std::string& content) {
   // Extract the unprivileged fields from the configuration.
   base::DictionaryValue unprivileged_config_dict;
   for (const char* key : kUnprivilegedConfigKeys) {
-    base::string16 value;
+    std::u16string value;
     if (config_dict->GetString(key, &value)) {
       unprivileged_config_dict.SetString(key, value);
     }
@@ -261,11 +261,11 @@ ScopedScHandle OpenService(DWORD access) {
   return service;
 }
 
-void InvokeCompletionCallback(
-    const DaemonController::CompletionCallback& done, bool success) {
+void InvokeCompletionCallback(DaemonController::CompletionCallback done,
+                              bool success) {
   DaemonController::AsyncResult async_result =
       success ? DaemonController::RESULT_OK : DaemonController::RESULT_FAILED;
-  done.Run(async_result);
+  std::move(done).Run(async_result);
 }
 
 bool StartDaemon() {
@@ -383,13 +383,13 @@ DaemonControllerDelegateWin::GetConfig() {
 
 void DaemonControllerDelegateWin::UpdateConfig(
     std::unique_ptr<base::DictionaryValue> config,
-    const DaemonController::CompletionCallback& done) {
+    DaemonController::CompletionCallback done) {
   // Check for bad keys.
   for (size_t i = 0; i < base::size(kReadonlyKeys); ++i) {
     if (config->HasKey(kReadonlyKeys[i])) {
       LOG(ERROR) << "Cannot update config: '" << kReadonlyKeys[i]
                  << "' is read only.";
-      InvokeCompletionCallback(done, false);
+      InvokeCompletionCallback(std::move(done), false);
       return;
     }
   }
@@ -397,7 +397,7 @@ void DaemonControllerDelegateWin::UpdateConfig(
   base::FilePath config_dir = remoting::GetConfigDir();
   std::unique_ptr<base::DictionaryValue> config_old;
   if (!ReadConfig(config_dir.Append(kConfigFileName), &config_old)) {
-    InvokeCompletionCallback(done, false);
+    InvokeCompletionCallback(std::move(done), false);
     return;
   }
 
@@ -409,14 +409,14 @@ void DaemonControllerDelegateWin::UpdateConfig(
   base::JSONWriter::Write(*config_old, &config_updated_str);
   bool result = WriteConfig(config_updated_str);
 
-  InvokeCompletionCallback(done, result);
+  InvokeCompletionCallback(std::move(done), result);
 }
 
 void DaemonControllerDelegateWin::Stop(
-    const DaemonController::CompletionCallback& done) {
+    DaemonController::CompletionCallback done) {
   bool result = StopDaemon();
 
-  InvokeCompletionCallback(done, result);
+  InvokeCompletionCallback(std::move(done), result);
 }
 
 DaemonController::UsageStatsConsent
@@ -439,13 +439,19 @@ DaemonControllerDelegateWin::GetUsageStatsConsent() {
   return consent;
 }
 
+void DaemonControllerDelegateWin::CheckPermission(
+    bool it2me,
+    DaemonController::BoolCallback callback) {
+  std::move(callback).Run(true);
+}
+
 void DaemonControllerDelegateWin::SetConfigAndStart(
     std::unique_ptr<base::DictionaryValue> config,
     bool consent,
-    const DaemonController::CompletionCallback& done) {
+    DaemonController::CompletionCallback done) {
   // Record the user's consent.
   if (!remoting::SetUsageStatsConsent(consent)) {
-    InvokeCompletionCallback(done, false);
+    InvokeCompletionCallback(std::move(done), false);
     return;
   }
 
@@ -457,17 +463,17 @@ void DaemonControllerDelegateWin::SetConfigAndStart(
   base::FilePath config_dir = remoting::GetConfigDir();
   if (!base::CreateDirectory(config_dir)) {
     PLOG(ERROR) << "Failed to create the config directory.";
-    InvokeCompletionCallback(done, false);
+    InvokeCompletionCallback(std::move(done), false);
     return;
   }
 
   if (!WriteConfig(config_str)) {
-    InvokeCompletionCallback(done, false);
+    InvokeCompletionCallback(std::move(done), false);
     return;
   }
 
   // Start daemon.
-  InvokeCompletionCallback(done, StartDaemon());
+  InvokeCompletionCallback(std::move(done), StartDaemon());
 }
 
 scoped_refptr<DaemonController> DaemonController::Create() {

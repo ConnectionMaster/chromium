@@ -15,6 +15,7 @@ component("io_thread") {
     "//components/variations",
     "//components/version_info",
     "//ios/web",
+    "//ios/web/common:user_agent",
     "//ios/web/public",
     "//net",
   ]
@@ -22,6 +23,7 @@ component("io_thread") {
   sources = [
     "ios_io_thread.h",
     "ios_io_thread.mm",
+    "leak_tracker.h",
   ]
 }
 
@@ -30,6 +32,7 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "ios_io_thread_unittest.mm",
+    "leak_tracker_unittest.cc",
   ]
   deps = [
     ":io_thread",

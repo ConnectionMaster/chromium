@@ -33,7 +33,6 @@
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/text.h"
-#include "third_party/blink/renderer/core/dom/v0_insertion_point.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/generated_children.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
@@ -45,73 +44,46 @@
 
 namespace blink {
 
-LayoutTreeBuilderForElement::LayoutTreeBuilderForElement(Element& element,
-                                                         ComputedStyle* style)
-    : LayoutTreeBuilder(element, nullptr), style_(style) {
-  DCHECK(element.CanParticipateInFlatTree());
+LayoutTreeBuilderForElement::LayoutTreeBuilderForElement(
+    Element& element,
+    Node::AttachContext& context,
+    const ComputedStyle* style,
+    LegacyLayout legacy)
+    : LayoutTreeBuilder(element, context, style), legacy_(legacy) {
   DCHECK(style_);
   DCHECK(!style_->IsEnsuredInDisplayNone());
-  // TODO(ecobos): Move the first-letter logic inside ParentLayoutObject too?
-  // It's an extra (unnecessary) check for text nodes, though.
-  if (element.IsFirstLetterPseudoElement()) {
-    if (LayoutObject* next_layout_object =
-            FirstLetterPseudoElement::FirstLetterTextLayoutObject(element))
-      layout_object_parent_ = next_layout_object->Parent();
-  } else {
-    layout_object_parent_ =
-        LayoutTreeBuilderTraversal::ParentLayoutObject(element);
-  }
 }
 
 LayoutObject* LayoutTreeBuilderForElement::NextLayoutObject() const {
-  DCHECK(layout_object_parent_);
-
+  if (node_->IsFirstLetterPseudoElement())
+    return context_.next_sibling;
   if (node_->IsInTopLayer())
     return LayoutTreeBuilderTraversal::NextInTopLayer(*node_);
-
-  if (node_->IsFirstLetterPseudoElement())
-    return FirstLetterPseudoElement::FirstLetterTextLayoutObject(*node_);
-
   return LayoutTreeBuilder::NextLayoutObject();
 }
 
 LayoutObject* LayoutTreeBuilderForElement::ParentLayoutObject() const {
-  if (layout_object_parent_) {
-    // FIXME: Guarding this by ParentLayoutObject isn't quite right as the spec
-    // for top layer only talks about display: none ancestors so putting a
-    // <dialog> inside an <optgroup> seems like it should still work even though
-    // this check will prevent it.
-    if (node_->IsInTopLayer())
-      return node_->GetDocument().GetLayoutView();
-  }
-
-  return layout_object_parent_;
+  if (node_->IsInTopLayer())
+    return node_->GetDocument().GetLayoutView();
+  return context_.parent;
 }
 
 DISABLE_CFI_PERF
-bool LayoutTreeBuilderForElement::ShouldCreateLayoutObject() const {
-  if (!layout_object_parent_)
-    return false;
-
+void LayoutTreeBuilderForElement::CreateLayoutObject() {
   LayoutObject* parent_layout_object = ParentLayoutObject();
   if (!parent_layout_object)
-    return false;
+    return;
   if (!parent_layout_object->CanHaveChildren())
-    return false;
+    return;
   if (node_->IsPseudoElement() &&
-      !CanHaveGeneratedChildren(*parent_layout_object)) {
-    return false;
-  }
-  return node_->LayoutObjectIsNeeded(*style_);
-}
-
-DISABLE_CFI_PERF
-void LayoutTreeBuilderForElement::CreateLayoutObject(LegacyLayout legacy) {
-  LayoutObject* new_layout_object = node_->CreateLayoutObject(*style_, legacy);
-  if (!new_layout_object)
+      !CanHaveGeneratedChildren(*parent_layout_object))
+    return;
+  if (!node_->LayoutObjectIsNeeded(*style_))
     return;
 
-  LayoutObject* parent_layout_object = ParentLayoutObject();
+  LayoutObject* new_layout_object = node_->CreateLayoutObject(*style_, legacy_);
+  if (!new_layout_object)
+    return;
 
   if (!parent_layout_object->IsChildAllowed(new_layout_object, *style_)) {
     new_layout_object->Destroy();
@@ -126,9 +98,11 @@ void LayoutTreeBuilderForElement::CreateLayoutObject(LegacyLayout legacy) {
       parent_layout_object->IsInsideFlowThread());
 
   LayoutObject* next_layout_object = NextLayoutObject();
+  // SetStyle() can depend on LayoutObject() already being set.
   node_->SetLayoutObject(new_layout_object);
-  new_layout_object->SetStyle(
-      style_);  // SetStyle() can depend on LayoutObject() already being set.
+
+  DCHECK(!new_layout_object->Style());
+  new_layout_object->SetStyle(style_);
 
   // Note: Adding new_layout_object instead of LayoutObject(). LayoutObject()
   // may be a child of new_layout_object.
@@ -137,9 +111,16 @@ void LayoutTreeBuilderForElement::CreateLayoutObject(LegacyLayout legacy) {
 
 LayoutObject*
 LayoutTreeBuilderForText::CreateInlineWrapperForDisplayContentsIfNeeded() {
+  // If the parent element is not a display:contents element, the style and the
+  // parent style will be the same ComputedStyle object. Early out here.
+  if (style_ == context_.parent->Style())
+    return nullptr;
+
   scoped_refptr<ComputedStyle> wrapper_style =
-      ComputedStyle::CreateInheritedDisplayContentsStyleIfNeeded(
-          *style_, layout_object_parent_->StyleRef());
+      node_->GetDocument()
+          .GetStyleResolver()
+          .CreateInheritedDisplayContentsStyleIfNeeded(
+              *style_, context_.parent->StyleRef());
   if (!wrapper_style)
     return nullptr;
 
@@ -150,35 +131,29 @@ LayoutTreeBuilderForText::CreateInlineWrapperForDisplayContentsIfNeeded() {
   LayoutObject* inline_wrapper =
       LayoutInline::CreateAnonymous(&node_->GetDocument());
   inline_wrapper->SetStyle(wrapper_style);
-  if (!layout_object_parent_->IsChildAllowed(inline_wrapper, *wrapper_style)) {
+  if (!context_.parent->IsChildAllowed(inline_wrapper, *wrapper_style)) {
     inline_wrapper->Destroy();
     return nullptr;
   }
-  layout_object_parent_->AddChild(inline_wrapper, NextLayoutObject());
+  context_.parent->AddChild(inline_wrapper, NextLayoutObject());
   return inline_wrapper;
 }
 
 void LayoutTreeBuilderForText::CreateLayoutObject() {
-  ComputedStyle& style = *style_;
-
-  DCHECK(style_ == layout_object_parent_->GetNode()->GetComputedStyle() ||
-         ToElement(LayoutTreeBuilderTraversal::Parent(*node_))
-             ->HasDisplayContentsStyle());
-
-  LayoutObject* next_layout_object;
+  const ComputedStyle& style = *style_;
+  LayoutObject* layout_object_parent = context_.parent;
+  LayoutObject* next_layout_object = NextLayoutObject();
   if (LayoutObject* wrapper = CreateInlineWrapperForDisplayContentsIfNeeded()) {
-    layout_object_parent_ = wrapper;
+    layout_object_parent = wrapper;
     next_layout_object = nullptr;
-  } else {
-    next_layout_object = NextLayoutObject();
   }
 
-  LegacyLayout legacy_layout = layout_object_parent_->ForceLegacyLayout()
+  LegacyLayout legacy_layout = layout_object_parent->ForceLegacyLayout()
                                    ? LegacyLayout::kForce
                                    : LegacyLayout::kAuto;
   LayoutText* new_layout_object =
       node_->CreateTextLayoutObject(style, legacy_layout);
-  if (!layout_object_parent_->IsChildAllowed(new_layout_object, style)) {
+  if (!layout_object_parent->IsChildAllowed(new_layout_object, style)) {
     new_layout_object->Destroy();
     return;
   }
@@ -188,11 +163,13 @@ void LayoutTreeBuilderForText::CreateLayoutObject() {
   // using IsInsideFlowThread() in the StyleWillChange and StyleDidChange will
   // fail.
   new_layout_object->SetIsInsideFlowThread(
-      layout_object_parent_->IsInsideFlowThread());
+      context_.parent->IsInsideFlowThread());
 
   node_->SetLayoutObject(new_layout_object);
+  DCHECK(!new_layout_object->Style());
   new_layout_object->SetStyle(&style);
-  layout_object_parent_->AddChild(new_layout_object, next_layout_object);
+
+  layout_object_parent->AddChild(new_layout_object, next_layout_object);
 }
 
 }  // namespace blink

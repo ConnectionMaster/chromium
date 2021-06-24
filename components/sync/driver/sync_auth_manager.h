@@ -14,32 +14,35 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "components/signin/core/browser/account_info.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/driver/sync_auth_util.h"
 #include "components/sync/driver/sync_token_status.h"
 #include "components/sync/engine/connection_status.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/backoff_entry.h"
-#include "services/identity/public/cpp/identity_manager.h"
 
-namespace identity {
+namespace signin {
 class AccessTokenFetcher;
-}
+struct AccessTokenInfo;
+}  // namespace signin
 
 namespace syncer {
+
+extern const base::Feature kSyncRetryFirstCanceledTokenFetch;
 
 struct SyncCredentials;
 
 // SyncAuthManager tracks the account to be used for Sync and its authentication
 // state. Note that this account may or may not be the primary account (as per
 // IdentityManager::GetPrimaryAccountInfo() etc).
-class SyncAuthManager : public identity::IdentityManager::Observer {
+class SyncAuthManager : public signin::IdentityManager::Observer {
  public:
   // Called when the existence of an authenticated account changes. It's
   // guaranteed that this is only called for going from "no account" to "have
-  // account" or vice versa, i.e. SyncAuthManager will never directly switch
-  // from one account to a different one. Call GetActiveAccountInfo to get the
-  // new state.
+  // account" or vice versa, or if the existing account's |is_primary| bit
+  // changed. I.e. SyncAuthManager will never directly switch from one account
+  // to a different one. Call GetActiveAccountInfo to get the new state.
   using AccountStateChangedCallback = base::RepeatingClosure;
   // Called when the credential state changes, i.e. an access token was
   // added/changed/removed. Call GetCredentials to get the new state.
@@ -47,7 +50,7 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
 
   // |identity_manager| may be null (this is the case if local Sync is enabled),
   // but if non-null, must outlive this object.
-  SyncAuthManager(identity::IdentityManager* identity_manager,
+  SyncAuthManager(signin::IdentityManager* identity_manager,
                   const AccountStateChangedCallback& account_state_changed,
                   const CredentialsChangedCallback& credentials_changed);
   ~SyncAuthManager() override;
@@ -59,9 +62,13 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
   // callbacks, even if there is an active account afterwards.
   void RegisterForAuthNotifications();
 
+  // Returns whether all relevant account information as returned by
+  // GetActiveAccountInfo() has been fully loaded.
+  bool IsActiveAccountInfoFullyLoaded() const;
+
   // Returns the account which should be used when communicating with the Sync
   // server. Note that this account may not be blessed for Sync-the-feature.
-  syncer::SyncAccountInfo GetActiveAccountInfo() const;
+  SyncAccountInfo GetActiveAccountInfo() const;
 
   // Returns the last auth error that was encountered. The error could have come
   // from the Sync server or from the IdentityManager.
@@ -76,50 +83,48 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
   bool IsSyncPaused() const;
 
   // Returns the credentials to be passed to the SyncEngine.
-  syncer::SyncCredentials GetCredentials() const;
+  SyncCredentials GetCredentials() const;
 
   const std::string& access_token() const { return access_token_; }
 
   // Returns the state of the access token and token request, for display in
   // internals UI.
-  syncer::SyncTokenStatus GetSyncTokenStatus() const;
+  SyncTokenStatus GetSyncTokenStatus() const;
 
-  // Called by ProfileSyncService when Sync starts up and will try talking to
+  // Called by SyncServiceImpl when Sync starts up and will try talking to
   // the server soon. This initiates fetching an access token.
   void ConnectionOpened();
 
-  // Called by ProfileSyncService when the status of the connection to the Sync
+  // Called by SyncServiceImpl when the status of the connection to the Sync
   // server changed. Updates auth error state accordingly.
-  void ConnectionStatusChanged(syncer::ConnectionStatus status);
+  void ConnectionStatusChanged(ConnectionStatus status);
 
-  // Called by ProfileSyncService when the connection to the Sync server is
+  // Called by SyncServiceImpl when the connection to the Sync server is
   // closed (due to Sync being shut down). Clears all related state (such as
   // cached access token, error from the server, etc).
   void ConnectionClosed();
 
-  // identity::IdentityManager::Observer implementation.
-  void OnPrimaryAccountSet(
-      const CoreAccountInfo& primary_account_info) override;
-  void OnPrimaryAccountCleared(
-      const CoreAccountInfo& previous_primary_account_info) override;
+  // signin::IdentityManager::Observer implementation.
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event) override;
   void OnRefreshTokenUpdatedForAccount(
       const CoreAccountInfo& account_info) override;
-  void OnRefreshTokenRemovedForAccount(const std::string& account_id) override;
-  void OnAccountsInCookieUpdated(
-      const identity::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
-      const GoogleServiceAuthError& error) override;
+  void OnRefreshTokenRemovedForAccount(
+      const CoreAccountId& account_id) override;
+  void OnRefreshTokensLoaded() override;
 
   // Test-only methods for inspecting/modifying internal state.
   bool IsRetryingAccessTokenFetchForTest() const;
   void ResetRequestAccessTokenBackoffForTest();
 
  private:
-  syncer::SyncAccountInfo DetermineAccountToUse() const;
+  SyncAccountInfo DetermineAccountToUse() const;
 
   // Updates |sync_account_| to the appropriate account (i.e.
   // DetermineAccountToUse) if necessary, and notifies observers of any changes
   // (sign-in/sign-out/"primary" bit change). Note that changing from one
   // account to another is exposed to observers as a sign-out + sign-in.
+  // Returns whether the syncing account was updated.
   bool UpdateSyncAccountIfNecessary();
 
   // Invalidates any current access token, which means invalidating it with the
@@ -143,11 +148,11 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
 
   // Callback for |ongoing_access_token_fetch_|.
   void AccessTokenFetched(GoogleServiceAuthError error,
-                          identity::AccessTokenInfo access_token_info);
+                          signin::AccessTokenInfo access_token_info);
 
   void SetLastAuthError(const GoogleServiceAuthError& error);
 
-  identity::IdentityManager* const identity_manager_;
+  signin::IdentityManager* const identity_manager_;
 
   const AccountStateChangedCallback account_state_changed_callback_;
   const CredentialsChangedCallback credentials_changed_callback_;
@@ -157,7 +162,7 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
   // The account which we are using to sync. If this is non-empty, that does
   // *not* necessarily imply that Sync is actually running, e.g. because of
   // delayed startup.
-  syncer::SyncAccountInfo sync_account_;
+  SyncAccountInfo sync_account_;
 
   // This is a cache of the last authentication response we received from
   // Chrome's identity/token management system.
@@ -179,7 +184,7 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
 
   // Pending request for an access token. Non-null iff there is a request
   // ongoing.
-  std::unique_ptr<identity::AccessTokenFetcher> ongoing_access_token_fetch_;
+  std::unique_ptr<signin::AccessTokenFetcher> ongoing_access_token_fetch_;
 
   // If RequestAccessToken fails with transient error then retry requesting
   // access token with exponential backoff.
@@ -189,9 +194,15 @@ class SyncAuthManager : public identity::IdentityManager::Observer {
   // Info about the state of our access token, for display in the internals UI.
   // "Partial" because this instance is not fully populated - in particular,
   // |has_token| and |next_token_request_time| get computed on demand.
-  syncer::SyncTokenStatus partial_token_status_;
+  SyncTokenStatus partial_token_status_;
 
-  base::WeakPtrFactory<SyncAuthManager> weak_ptr_factory_;
+  // Whether there was a retry done to fetch the access token when the request
+  // was cancelled for the first time. This works around an issue that can only
+  // happen once during browser startup, so it's sufficient to have a single
+  // retry (i.e. not per request).
+  bool access_token_retried_ = false;
+
+  base::WeakPtrFactory<SyncAuthManager> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SyncAuthManager);
 };

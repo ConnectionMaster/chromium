@@ -9,7 +9,7 @@
 namespace chromeos {
 namespace input_method {
 
-MockInputMethodManager::State::State() {}
+MockInputMethodManager::State::State() = default;
 
 scoped_refptr<InputMethodManager::State> MockInputMethodManager::State::Clone()
     const {
@@ -112,16 +112,22 @@ const GURL& MockInputMethodManager::State::GetInputViewUrl() const {
   return GURL::EmptyGURL();
 }
 
-MockInputMethodManager::State::~State() {}
+InputMethodManager::UIStyle MockInputMethodManager::State::GetUIStyle() const {
+  return ui_style_;
+}
+
+void MockInputMethodManager::State::SetUIStyle(
+    InputMethodManager::UIStyle ui_style) {
+  ui_style_ = ui_style;
+}
+
+MockInputMethodManager::State::~State() = default;
 
 MockInputMethodManager::MockInputMethodManager()
-    : features_enabled_state_(InputMethodManager::FEATURE_ALL) {}
+    : state_(new State()),
+      features_enabled_state_(InputMethodManager::FEATURE_ALL) {}
 
-MockInputMethodManager::~MockInputMethodManager() {}
-
-InputMethodManager::UISessionState MockInputMethodManager::GetUISessionState() {
-  return InputMethodManager::STATE_BROWSER_SCREEN;
-}
+MockInputMethodManager::~MockInputMethodManager() = default;
 
 void MockInputMethodManager::AddObserver(
     InputMethodManager::Observer* observer) {}
@@ -141,19 +147,22 @@ void MockInputMethodManager::RemoveCandidateWindowObserver(
 void MockInputMethodManager::RemoveImeMenuObserver(
     InputMethodManager::ImeMenuObserver* observer) {}
 
-std::unique_ptr<InputMethodDescriptors>
-MockInputMethodManager::GetSupportedInputMethods() const {
-  return nullptr;
-}
-
 void MockInputMethodManager::ActivateInputMethodMenuItem(
     const std::string& key) {}
+
+void MockInputMethodManager::ConnectInputEngineManager(
+    mojo::PendingReceiver<chromeos::ime::mojom::InputEngineManager> receiver) {}
 
 bool MockInputMethodManager::IsISOLevel5ShiftUsedByCurrentInputMethod() const {
   return false;
 }
 
 bool MockInputMethodManager::IsAltGrUsedByCurrentInputMethod() const {
+  return false;
+}
+
+bool MockInputMethodManager::ArePositionalShortcutsUsedByCurrentInputMethod()
+    const {
   return false;
 }
 
@@ -185,7 +194,7 @@ scoped_refptr<InputMethodManager::State> MockInputMethodManager::CreateNewState(
 
 scoped_refptr<InputMethodManager::State>
 MockInputMethodManager::GetActiveIMEState() {
-  return nullptr;
+  return state_;
 }
 
 void MockInputMethodManager::SetState(
@@ -199,7 +208,7 @@ void MockInputMethodManager::NotifyImeMenuItemsChanged(
 
 void MockInputMethodManager::MaybeNotifyImeMenuActivationChanged() {}
 
-void MockInputMethodManager::OverrideKeyboardKeyset(mojom::ImeKeyset keyset) {}
+void MockInputMethodManager::OverrideKeyboardKeyset(ImeKeyset keyset) {}
 
 void MockInputMethodManager::SetImeMenuFeatureEnabled(ImeMenuFeature feature,
                                                       bool enabled) {
@@ -216,8 +225,8 @@ bool MockInputMethodManager::GetImeMenuFeatureEnabled(
 
 void MockInputMethodManager::NotifyObserversImeExtraInputStateChange() {}
 
-ui::InputMethodKeyboardController*
-MockInputMethodManager::GetInputMethodKeyboardController() {
+ui::VirtualKeyboardController*
+MockInputMethodManager::GetVirtualKeyboardController() {
   return this;
 }
 
@@ -234,10 +243,10 @@ bool MockInputMethodManager::DisplayVirtualKeyboard() {
 void MockInputMethodManager::DismissVirtualKeyboard() {}
 
 void MockInputMethodManager::AddObserver(
-    ui::InputMethodKeyboardControllerObserver* observer) {}
+    ui::VirtualKeyboardControllerObserver* observer) {}
 
 void MockInputMethodManager::RemoveObserver(
-    ui::InputMethodKeyboardControllerObserver* observer) {}
+    ui::VirtualKeyboardControllerObserver* observer) {}
 
 bool MockInputMethodManager::IsKeyboardVisible() {
   return false;

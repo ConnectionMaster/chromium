@@ -7,10 +7,10 @@
 
 #include "ash/app_menu/app_menu_export.h"
 #include "ash/app_menu/notification_menu_view.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/message_center_observer.h"
-#include "ui/message_center/views/slide_out_controller.h"
+#include "ui/views/animation/slide_out_controller_delegate.h"
 
 namespace views {
 class MenuItemView;
@@ -25,7 +25,7 @@ class AppMenuModelAdapter;
 // as notifications come and go.
 class APP_MENU_EXPORT NotificationMenuController
     : public message_center::MessageCenterObserver,
-      public message_center::SlideOutController::Delegate,
+      public views::SlideOutControllerDelegate,
       public NotificationMenuView::Delegate {
  public:
   NotificationMenuController(const std::string& app_id,
@@ -40,7 +40,7 @@ class APP_MENU_EXPORT NotificationMenuController
   void OnNotificationRemoved(const std::string& notification_id,
                              bool by_user) override;
 
-  // message_center::SlideOutController::Delegate overrides:
+  // views::SlideOutControllerDelegate overrides:
   ui::Layer* GetSlideOutLayer() override;
   void OnSlideChanged(bool in_progress) override;
   void OnSlideOut() override;
@@ -69,9 +69,9 @@ class APP_MENU_EXPORT NotificationMenuController
   // views hierarchy.
   NotificationMenuView* notification_menu_view_ = nullptr;
 
-  ScopedObserver<message_center::MessageCenter,
-                 message_center::MessageCenterObserver>
-      message_center_observer_;
+  base::ScopedObservation<message_center::MessageCenter,
+                          message_center::MessageCenterObserver>
+      message_center_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(NotificationMenuController);
 };

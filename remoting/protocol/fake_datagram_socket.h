@@ -92,7 +92,7 @@ class FakeDatagramSocket : public P2PDatagramSocket {
   int input_pos_;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-  base::WeakPtrFactory<FakeDatagramSocket> weak_factory_;
+  base::WeakPtrFactory<FakeDatagramSocket> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeDatagramSocket);
 };
@@ -120,7 +120,7 @@ class FakeDatagramChannelFactory : public DatagramChannelFactory {
 
   // DatagramChannelFactory interface.
   void CreateChannel(const std::string& name,
-                     const ChannelCreatedCallback& callback) override;
+                     ChannelCreatedCallback callback) override;
   void CancelChannelCreation(const std::string& name) override;
 
  private:
@@ -128,7 +128,7 @@ class FakeDatagramChannelFactory : public DatagramChannelFactory {
 
   void NotifyChannelCreated(std::unique_ptr<FakeDatagramSocket> owned_socket,
                             const std::string& name,
-                            const ChannelCreatedCallback& callback);
+                            ChannelCreatedCallback callback);
 
   base::WeakPtr<FakeDatagramChannelFactory> peer_factory_;
 
@@ -138,7 +138,7 @@ class FakeDatagramChannelFactory : public DatagramChannelFactory {
 
   bool fail_create_;
 
-  base::WeakPtrFactory<FakeDatagramChannelFactory> weak_factory_;
+  base::WeakPtrFactory<FakeDatagramChannelFactory> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeDatagramChannelFactory);
 };

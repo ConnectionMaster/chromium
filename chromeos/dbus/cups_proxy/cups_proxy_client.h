@@ -5,11 +5,10 @@
 #ifndef CHROMEOS_DBUS_CUPS_PROXY_CUPS_PROXY_CLIENT_H_
 #define CHROMEOS_DBUS_CUPS_PROXY_CUPS_PROXY_CLIENT_H_
 
-#include <memory>
-
 #include "base/callback_forward.h"
 #include "base/component_export.h"
 #include "base/files/scoped_file.h"
+#include "dbus/object_proxy.h"
 
 namespace dbus {
 class Bus;
@@ -34,6 +33,14 @@ class COMPONENT_EXPORT(CUPS_PROXY) CupsProxyClient {
 
   // Returns the global instance which may be null if not initialized.
   static CupsProxyClient* Get();
+
+  // Registers |callback| to run when the CupsProxyDaemon becomes available.
+  // If the daemon is already available, or if connecting to the name-owner-
+  // changed signal fails, |callback| will be run once asynchronously.
+  // Otherwise, |callback| will be run once in the future after the service
+  // becomes available.
+  virtual void WaitForServiceToBeAvailable(
+      dbus::ObjectProxy::WaitForServiceToBeAvailableCallback callback) = 0;
 
   // Passes the file descriptor |fd| over D-Bus to the CupsProxyDaemon.
   // * The daemon expects a Mojo invitation in |fd| with an attached Mojo pipe.

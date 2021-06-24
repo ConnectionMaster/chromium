@@ -44,10 +44,12 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ManagedState {
   static std::unique_ptr<ManagedState> Create(ManagedType type,
                                               const std::string& path);
 
-  // Returns the specific class pointer if this is the correct type, or
-  // NULL if it is not.
+  // Returns the specific class pointer if this is the correct type, or null if
+  // it is not.
   NetworkState* AsNetworkState();
+  const NetworkState* AsNetworkState() const;
   DeviceState* AsDeviceState();
+  const DeviceState* AsDeviceState() const;
 
   // Called by NetworkStateHandler when a property was received. The return
   // value indicates if the state changed and is used to reduce the number of
@@ -71,6 +73,10 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ManagedState {
   // state properties for the network type. See implementations for which
   // properties are included.
   virtual void GetStateProperties(base::Value* dictionary) const;
+
+  // Returns true if a state is "Active". For networks that means connected,
+  // connecting, or activating. Devices are always "active".
+  virtual bool IsActive() const = 0;
 
   ManagedType managed_type() const { return managed_type_; }
   const std::string& path() const { return path_; }
@@ -131,10 +137,10 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ManagedState {
   std::string type_;  // shill::kTypeProperty
 
   // Set to true when the an update has been received.
-  bool update_received_;
+  bool update_received_ = false;
 
   // Tracks when an update has been requested.
-  bool update_requested_;
+  bool update_requested_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(ManagedState);
 };

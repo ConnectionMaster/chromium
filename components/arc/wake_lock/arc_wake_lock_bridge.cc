@@ -13,10 +13,9 @@
 #include "components/arc/arc_service_manager.h"
 #include "components/arc/session/arc_bridge_service.h"
 #include "components/arc/wake_lock/arc_wake_lock_bridge.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
-#include "services/device/public/mojom/constants.mojom.h"
+#include "content/public/browser/device_service.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace arc {
 
@@ -51,8 +50,8 @@ class ArcWakeLockBridgeFactory
 class ArcWakeLockBridge::WakeLockRequester {
  public:
   WakeLockRequester(device::mojom::WakeLockType type,
-                    service_manager::Connector* connector)
-      : type_(type), connector_(connector) {}
+                    device::mojom::WakeLockProvider* provider)
+      : type_(type), provider_(provider) {}
   ~WakeLockRequester() = default;
 
   // Increments the number of outstanding requests from Android and requests a
@@ -68,12 +67,9 @@ class ArcWakeLockBridge::WakeLockRequester {
     // Initialize |wake_lock_| if this is the first time we're using it.
     DVLOG(1) << "Partial wake lock new acquire. Count: " << wake_lock_count_;
     if (!wake_lock_) {
-      device::mojom::WakeLockProviderPtr provider;
-      connector_->BindInterface(device::mojom::kServiceName,
-                                mojo::MakeRequest(&provider));
-      provider->GetWakeLockWithoutContext(
+      provider_->GetWakeLockWithoutContext(
           type_, device::mojom::WakeLockReason::kOther, kWakeLockReason,
-          mojo::MakeRequest(&wake_lock_));
+          wake_lock_.BindNewPipeAndPassReceiver());
     }
 
     wake_lock_->RequestWakeLock();
@@ -108,16 +104,16 @@ class ArcWakeLockBridge::WakeLockRequester {
 
  private:
   // Type of wake lock to request.
-  device::mojom::WakeLockType type_;
+  const device::mojom::WakeLockType type_;
 
-  // Used to get services. Not owned.
-  service_manager::Connector* const connector_ = nullptr;
+  // Used to get wake locks. Not owned.
+  device::mojom::WakeLockProvider* const provider_;
 
   // Number of outstanding Android requests.
   int64_t wake_lock_count_ = 0;
 
   // Lazily initialized in response to first request.
-  device::mojom::WakeLockPtr wake_lock_;
+  mojo::Remote<device::mojom::WakeLock> wake_lock_;
 
   DISALLOW_COPY_AND_ASSIGN(WakeLockRequester);
 };
@@ -141,9 +137,7 @@ ArcWakeLockBridge* ArcWakeLockBridge::GetForBrowserContextForTesting(
 
 ArcWakeLockBridge::ArcWakeLockBridge(content::BrowserContext* context,
                                      ArcBridgeService* bridge_service)
-    : arc_bridge_service_(bridge_service),
-      binding_(this),
-      weak_ptr_factory_(this) {
+    : arc_bridge_service_(bridge_service) {
   arc_bridge_service_->wake_lock()->SetHost(this);
   arc_bridge_service_->wake_lock()->AddObserver(this);
 }
@@ -183,14 +177,14 @@ ArcWakeLockBridge::WakeLockRequester* ArcWakeLockBridge::GetWakeLockRequester(
   if (it != wake_lock_requesters_.end())
     return it->second.get();
 
-  service_manager::Connector* connector =
-      connector_for_test_
-          ? connector_for_test_
-          : content::ServiceManagerConnection::GetForProcess()->GetConnector();
-  DCHECK(connector);
+  if (!wake_lock_provider_) {
+    content::GetDeviceService().BindWakeLockProvider(
+        wake_lock_provider_.BindNewPipeAndPassReceiver());
+  }
 
   it = wake_lock_requesters_
-           .emplace(type, std::make_unique<WakeLockRequester>(type, connector))
+           .emplace(type, std::make_unique<WakeLockRequester>(
+                              type, wake_lock_provider_.get()))
            .first;
   return it->second.get();
 }

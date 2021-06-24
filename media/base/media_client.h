@@ -6,15 +6,16 @@
 #define MEDIA_BASE_MEDIA_CLIENT_H_
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "media/base/audio_codecs.h"
+#include "media/base/audio_parameters.h"
 #include "media/base/key_system_properties.h"
 #include "media/base/media_export.h"
 #include "media/base/media_types.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_color_space.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/color_space.h"
 #include "url/gurl.h"
 
@@ -57,6 +58,10 @@ class MEDIA_EXPORT MediaClient {
   // Returns true if the compressed audio |codec| format is supported by the
   // audio sink.
   virtual bool IsSupportedBitstreamAudioCodec(AudioCodec codec) = 0;
+
+  // Optionally returns audio renderer algorithm parameters.
+  virtual absl::optional<::media::AudioRendererAlgorithmParameters>
+  GetAudioRendererAlgorithmParameters(AudioParameters audio_parameters) = 0;
 };
 
 }  // namespace media

@@ -12,10 +12,10 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/cxx17_backports.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
@@ -50,32 +50,12 @@ void AddDispatcher(PlatformEventDispatcher* dispatcher) {
 
 class TestPlatformEventSource : public PlatformEventSource {
  public:
-  TestPlatformEventSource()
-      : stop_stream_(false) {
-  }
-  ~TestPlatformEventSource() override {}
+  TestPlatformEventSource() = default;
+  TestPlatformEventSource(const TestPlatformEventSource&) = delete;
+  TestPlatformEventSource& operator=(const TestPlatformEventSource&) = delete;
+  ~TestPlatformEventSource() override = default;
 
   uint32_t Dispatch(const PlatformEvent& event) { return DispatchEvent(event); }
-
-  // Dispatches the stream of events, and returns the number of events that are
-  // dispatched before it is requested to stop.
-  size_t DispatchEventStream(
-      const std::vector<std::unique_ptr<PlatformEvent>>& events) {
-    stop_stream_ = false;
-    for (size_t count = 0; count < events.size(); ++count) {
-      DispatchEvent(*events[count]);
-      if (stop_stream_)
-        return count + 1;
-    }
-    return events.size();
-  }
-
-  // PlatformEventSource:
-  void StopCurrentEventStream() override { stop_stream_ = true; }
-
- private:
-  bool stop_stream_;
-  DISALLOW_COPY_AND_ASSIGN(TestPlatformEventSource);
 };
 
 class TestPlatformEventDispatcher : public PlatformEventDispatcher {
@@ -145,7 +125,9 @@ class PlatformEventTest : public testing::Test {
 
  protected:
   // testing::Test:
-  void SetUp() override { source_.reset(new TestPlatformEventSource()); }
+  void SetUp() override {
+    source_ = std::make_unique<TestPlatformEventSource>();
+  }
 
  private:
   std::unique_ptr<TestPlatformEventSource> source_;
@@ -334,20 +316,20 @@ class RunCallbackDuringDispatch : public TestPlatformEventDispatcher {
       : TestPlatformEventDispatcher(id, list) {}
   ~RunCallbackDuringDispatch() override {}
 
-  void set_callback(const base::Closure& callback) {
-    callback_ = callback;
+  void set_callback(base::OnceClosure callback) {
+    callback_ = std::move(callback);
   }
 
  protected:
   // PlatformEventDispatcher:
   uint32_t DispatchEvent(const PlatformEvent& event) override {
     if (!callback_.is_null())
-      callback_.Run();
+      std::move(callback_).Run();
     return TestPlatformEventDispatcher::DispatchEvent(event);
   }
 
  private:
-  base::Closure callback_;
+  base::OnceClosure callback_;
 
   DISALLOW_COPY_AND_ASSIGN(RunCallbackDuringDispatch);
 };
@@ -362,7 +344,8 @@ TEST_F(PlatformEventTest, DispatcherRemovesNextDispatcherDuringDispatch) {
   TestPlatformEventDispatcher third(20, &list);
   TestPlatformEventDispatcher fourth(30, &list);
 
-  second.set_callback(base::Bind(&RemoveDispatcher, base::Unretained(&third)));
+  second.set_callback(
+      base::BindOnce(&RemoveDispatcher, base::Unretained(&third)));
 
   std::unique_ptr<PlatformEvent> event = CreatePlatformEvent();
   source()->Dispatch(*event);
@@ -382,7 +365,8 @@ TEST_F(PlatformEventTest, DispatcherRemovesSelfDuringDispatch) {
   RunCallbackDuringDispatch second(15, &list);
   TestPlatformEventDispatcher third(20, &list);
 
-  second.set_callback(base::Bind(&RemoveDispatcher, base::Unretained(&second)));
+  second.set_callback(
+      base::BindOnce(&RemoveDispatcher, base::Unretained(&second)));
 
   std::unique_ptr<PlatformEvent> event = CreatePlatformEvent();
   source()->Dispatch(*event);
@@ -402,7 +386,8 @@ TEST_F(PlatformEventTest, DispatcherRemovesSelfDuringDispatchLast) {
   TestPlatformEventDispatcher first(10, &list);
   RunCallbackDuringDispatch second(15, &list);
 
-  second.set_callback(base::Bind(&RemoveDispatcher, base::Unretained(&second)));
+  second.set_callback(
+      base::BindOnce(&RemoveDispatcher, base::Unretained(&second)));
 
   std::unique_ptr<PlatformEvent> event = CreatePlatformEvent();
   source()->Dispatch(*event);
@@ -421,7 +406,8 @@ TEST_F(PlatformEventTest, DispatcherRemovesPrevDispatcherDuringDispatch) {
   RunCallbackDuringDispatch second(15, &list);
   TestPlatformEventDispatcher third(20, &list);
 
-  second.set_callback(base::Bind(&RemoveDispatcher, base::Unretained(&first)));
+  second.set_callback(
+      base::BindOnce(&RemoveDispatcher, base::Unretained(&first)));
 
   std::unique_ptr<PlatformEvent> event = CreatePlatformEvent();
   source()->Dispatch(*event);
@@ -442,9 +428,8 @@ TEST_F(PlatformEventTest, DispatcherRemovesPrevDispatchersDuringDispatch) {
   RunCallbackDuringDispatch third(15, &list);
   TestPlatformEventDispatcher fourth(20, &list);
 
-  third.set_callback(base::Bind(&RemoveDispatchers,
-                                base::Unretained(&first),
-                                base::Unretained(&second)));
+  third.set_callback(base::BindOnce(
+      &RemoveDispatchers, base::Unretained(&first), base::Unretained(&second)));
 
   std::unique_ptr<PlatformEvent> event = CreatePlatformEvent();
   source()->Dispatch(*event);
@@ -473,7 +458,7 @@ TEST_F(PlatformEventTest, DispatcherAddedDuringDispatchReceivesEvent) {
   EXPECT_EQ(10, list[0]);
   EXPECT_EQ(15, list[1]);
 
-  second.set_callback(base::Bind(&AddDispatcher, base::Unretained(&third)));
+  second.set_callback(base::BindOnce(&AddDispatcher, base::Unretained(&third)));
   list.clear();
   source()->Dispatch(*event);
   ASSERT_EQ(3u, list.size());
@@ -481,7 +466,8 @@ TEST_F(PlatformEventTest, DispatcherAddedDuringDispatchReceivesEvent) {
   EXPECT_EQ(15, list[1]);
   EXPECT_EQ(20, list[2]);
 
-  second.set_callback(base::Bind(&AddDispatcher, base::Unretained(&fourth)));
+  second.set_callback(
+      base::BindOnce(&AddDispatcher, base::Unretained(&fourth)));
   list.clear();
   source()->Dispatch(*event);
   ASSERT_EQ(4u, list.size());
@@ -498,7 +484,7 @@ class PlatformEventTestWithMessageLoop : public PlatformEventTest {
   ~PlatformEventTestWithMessageLoop() override {}
 
   void Run() {
-    message_loop_.task_runner()->PostTask(
+    task_environment_.GetMainThreadTaskRunner()->PostTask(
         FROM_HERE,
         base::BindOnce(&PlatformEventTestWithMessageLoop::RunTestImpl,
                        base::Unretained(this)));
@@ -509,7 +495,8 @@ class PlatformEventTestWithMessageLoop : public PlatformEventTest {
   virtual void RunTestImpl() = 0;
 
  private:
-  base::MessageLoopForUI message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
 
   DISALLOW_COPY_AND_ASSIGN(PlatformEventTestWithMessageLoop);
 };
@@ -568,8 +555,8 @@ class DestroyScopedHandleDispatcher : public TestPlatformEventDispatcher {
     handler_ = std::move(handler);
   }
 
-  void set_callback(const base::Closure& callback) {
-    callback_ = callback;
+  void set_callback(base::OnceClosure callback) {
+    callback_ = std::move(callback);
   }
 
  private:
@@ -580,95 +567,16 @@ class DestroyScopedHandleDispatcher : public TestPlatformEventDispatcher {
     handler_.reset();
     uint32_t action = TestPlatformEventDispatcher::DispatchEvent(event);
     if (!callback_.is_null()) {
-      callback_.Run();
-      callback_ = base::Closure();
+      std::move(callback_).Run();
     }
     return action;
   }
 
   std::unique_ptr<ScopedEventDispatcher> handler_;
-  base::Closure callback_;
+  base::OnceClosure callback_;
 
   DISALLOW_COPY_AND_ASSIGN(DestroyScopedHandleDispatcher);
 };
-
-// Tests that resetting an overridden dispatcher causes the nested message-loop
-// iteration to stop and the rest of the events are dispatched in the next
-// iteration.
-class DestroyedNestedOverriddenDispatcherQuitsNestedLoopIteration
-    : public PlatformEventTestWithMessageLoop {
- public:
-  void NestedTask(std::vector<int>* list,
-                  TestPlatformEventDispatcher* dispatcher) {
-    std::vector<std::unique_ptr<PlatformEvent>> events;
-    events.push_back(CreatePlatformEvent());
-    events.push_back(CreatePlatformEvent());
-
-    // Attempt to dispatch a couple of events. Dispatching the first event will
-    // have terminated the ScopedEventDispatcher object, which will terminate
-    // the current iteration of the message-loop.
-    size_t count = source()->DispatchEventStream(events);
-    EXPECT_EQ(1u, count);
-    ASSERT_EQ(2u, list->size());
-    EXPECT_EQ(15, (*list)[0]);
-    EXPECT_EQ(20, (*list)[1]);
-    list->clear();
-
-    ASSERT_LT(count, events.size());
-    events.erase(events.begin(), events.begin() + count);
-
-    count = source()->DispatchEventStream(events);
-    EXPECT_EQ(1u, count);
-    ASSERT_EQ(2u, list->size());
-    EXPECT_EQ(15, (*list)[0]);
-    EXPECT_EQ(10, (*list)[1]);
-    list->clear();
-
-    // Terminate the run loop.
-    run_loop_.Quit();
-  }
-
-  // PlatformEventTestWithMessageLoop:
-  void RunTestImpl() override {
-    std::vector<int> list;
-    TestPlatformEventDispatcher dispatcher(10, &list);
-    TestPlatformEventObserver observer(15, &list);
-
-    DestroyScopedHandleDispatcher overriding(20, &list);
-    source()->RemovePlatformEventDispatcher(&overriding);
-    std::unique_ptr<ScopedEventDispatcher> override_handle =
-        source()->OverrideDispatcher(&overriding);
-
-    std::unique_ptr<PlatformEvent> event = CreatePlatformEvent();
-    source()->Dispatch(*event);
-    ASSERT_EQ(2u, list.size());
-    EXPECT_EQ(15, list[0]);
-    EXPECT_EQ(20, list[1]);
-    list.clear();
-
-    overriding.SetScopedHandle(std::move(override_handle));
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            &DestroyedNestedOverriddenDispatcherQuitsNestedLoopIteration::
-                NestedTask,
-            base::Unretained(this), base::Unretained(&list),
-            base::Unretained(&overriding)));
-    run_loop_.Run();
-
-    // Dispatching the event should now reach the default dispatcher.
-    source()->Dispatch(*event);
-    ASSERT_EQ(2u, list.size());
-    EXPECT_EQ(15, list[0]);
-    EXPECT_EQ(10, list[1]);
-  }
-
- private:
-  base::RunLoop run_loop_{base::RunLoop::Type::kNestableTasksAllowed};
-};
-
-RUN_TEST_IN_MESSAGE_LOOP(
-    DestroyedNestedOverriddenDispatcherQuitsNestedLoopIteration)
 
 // Tests that resetting an overridden dispatcher, and installing another
 // overridden dispatcher before the nested message-loop completely unwinds

@@ -4,8 +4,8 @@
 
 #include "chrome/browser/chromeos/extensions/gfx_utils.h"
 
+#include "base/containers/contains.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/profiles/profile.h"
@@ -153,7 +153,7 @@ TEST_F(DualBadgeMapTest, ArcAppToExtensionMapTest) {
   extension_ids = extensions::util::GetEquivalentInstalledExtensions(
       profile(), kGmailArcPackage);
   EXPECT_TRUE(1 == extension_ids.size());
-  EXPECT_TRUE(base::ContainsValue(extension_ids, kGmailExtensionId1));
+  EXPECT_TRUE(base::Contains(extension_ids, kGmailExtensionId1));
 
   // Install another Gmail extension app.
   scoped_refptr<const Extension> extension2 =
@@ -162,15 +162,15 @@ TEST_F(DualBadgeMapTest, ArcAppToExtensionMapTest) {
   extension_ids = extensions::util::GetEquivalentInstalledExtensions(
       profile(), kGmailArcPackage);
   EXPECT_TRUE(2 == extension_ids.size());
-  EXPECT_TRUE(base::ContainsValue(extension_ids, kGmailExtensionId1));
-  EXPECT_TRUE(base::ContainsValue(extension_ids, kGmailExtensionId2));
+  EXPECT_TRUE(base::Contains(extension_ids, kGmailExtensionId1));
+  EXPECT_TRUE(base::Contains(extension_ids, kGmailExtensionId2));
 
   RemoveExtension(extension1.get());
   extension_ids = extensions::util::GetEquivalentInstalledExtensions(
       profile(), kGmailArcPackage);
   EXPECT_TRUE(1 == extension_ids.size());
-  EXPECT_FALSE(base::ContainsValue(extension_ids, kGmailExtensionId1));
-  EXPECT_TRUE(base::ContainsValue(extension_ids, kGmailExtensionId2));
+  EXPECT_FALSE(base::Contains(extension_ids, kGmailExtensionId1));
+  EXPECT_TRUE(base::Contains(extension_ids, kGmailExtensionId2));
 
   RemoveExtension(extension2.get());
   extension_ids = extensions::util::GetEquivalentInstalledExtensions(

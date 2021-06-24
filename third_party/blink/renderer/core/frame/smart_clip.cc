@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -161,11 +162,10 @@ Node* SmartClip::FindBestOverlappingNode(Node* root_node,
 
   while (node) {
     IntRect node_rect = node->PixelSnappedBoundingBox();
-
-    if (node->IsElementNode() &&
-        DeprecatedEqualIgnoringCase(
-            ToElement(node)->FastGetAttribute(html_names::kAriaHiddenAttr),
-            "true")) {
+    auto* element = DynamicTo<Element>(node);
+    if (element &&
+        EqualIgnoringASCIICase(
+            element->FastGetAttribute(html_names::kAriaHiddenAttr), "true")) {
       node = NodeTraversal::NextSkippingChildren(*node, root_node);
       continue;
     }
@@ -196,7 +196,7 @@ Node* SmartClip::FindBestOverlappingNode(Node* root_node,
 bool SmartClip::ShouldSkipBackgroundImage(Node* node) {
   DCHECK(node);
   // Apparently we're only interested in background images on spans and divs.
-  if (!IsHTMLSpanElement(*node) && !IsHTMLDivElement(*node))
+  if (!IsA<HTMLSpanElement>(*node) && !IsA<HTMLDivElement>(*node))
     return true;
 
   // This check actually makes a bit of sense. If you're going to sprite an
@@ -246,7 +246,7 @@ String SmartClip::ExtractTextFromNode(Node* node) {
       if (current_node.IsTextNode()) {
         String node_value = current_node.nodeValue();
 
-        // It's unclear why we blacklist solitary "\n" node values.
+        // It's unclear why we disallowed solitary "\n" node values.
         // Maybe we're trying to ignore <br> tags somehow?
         if (node_value == "\n")
           node_value = "";

@@ -6,7 +6,7 @@
 
 goog.provide('__crWeb.common');
 
-goog.require('__crWeb.base');
+// Requires __crWeb.base.
 
 /** @typedef {HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement} */
 var FormControlElement;
@@ -205,38 +205,17 @@ __gCrWeb.common.removeQueryAndReferenceFromURL = function(url) {
 };
 
 /**
- * Retrieves favicon information.
- *
- * @return {Object} Object containing favicon data.
- */
-__gCrWeb.common.getFavicons = function() {
-  var favicons = [];
-  delete favicons.toJSON;  // Never inherit Array.prototype.toJSON.
-  var links = document.getElementsByTagName('link');
-  var linkCount = links.length;
-  for (var i = 0; i < linkCount; ++i) {
-    if (links[i].rel) {
-      var rel = links[i].rel.toLowerCase();
-      if (rel == 'shortcut icon' || rel == 'icon' ||
-          rel == 'apple-touch-icon' || rel == 'apple-touch-icon-precomposed') {
-        var favicon = {rel: links[i].rel.toLowerCase(), href: links[i].href};
-        if (links[i].sizes && links[i].sizes.value) {
-          favicon.sizes = links[i].sizes.value;
-        }
-        favicons.push(favicon);
-      }
-    }
-  }
-  return favicons;
-};
-
-/**
  * Checks whether the two URLs are from the same origin.
  * @param {string} url_one
  * @param {string} url_two
  * @return {boolean} Whether the two URLs have the same origin.
  */
 __gCrWeb.common.isSameOrigin = function(url_one, url_two) {
+  if (!url_one || !url_two) {
+    // Attempting to create URL representations of an empty string throws an
+    // exception.
+    return false;
+  }
   return new URL(url_one).origin == new URL(url_two).origin;
 };
 

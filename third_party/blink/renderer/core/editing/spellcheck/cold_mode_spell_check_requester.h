@@ -12,7 +12,7 @@
 namespace blink {
 
 class Element;
-class LocalFrame;
+class LocalDOMWindow;
 class IdleDeadline;
 class SpellCheckRequester;
 
@@ -20,10 +20,14 @@ class SpellCheckRequester;
 // mode invocation. Not to be confused with SpellCheckRequester. The class
 // iteratively checks the editing host currently focused when the document is
 // idle.
+// See design doc for details: https://goo.gl/zONC3v
 class ColdModeSpellCheckRequester
     : public GarbageCollected<ColdModeSpellCheckRequester> {
  public:
-  explicit ColdModeSpellCheckRequester(LocalFrame&);
+  explicit ColdModeSpellCheckRequester(LocalDOMWindow&);
+  ColdModeSpellCheckRequester(const ColdModeSpellCheckRequester&) = delete;
+  ColdModeSpellCheckRequester& operator=(const ColdModeSpellCheckRequester&) =
+      delete;
 
   void SetNeedsMoreInvocationForTesting() {
     needs_more_invocation_for_testing_ = true;
@@ -34,10 +38,9 @@ class ColdModeSpellCheckRequester
   void ClearProgress();
   bool FullyChecked() const;
 
-  void Trace(Visitor*);
+  void Trace(Visitor*) const;
 
  private:
-  LocalFrame& GetFrame() const { return *frame_; }
   SpellCheckRequester& GetSpellCheckRequester() const;
 
   const Element* CurrentFocusedEditable() const;
@@ -45,8 +48,8 @@ class ColdModeSpellCheckRequester
   void RequestCheckingForNextChunk();
   void SetHasFullyChecked();
 
-  // The LocalFrame this cold mode checker belongs to.
-  const Member<LocalFrame> frame_;
+  // The window this cold mode checker belongs to.
+  const Member<LocalDOMWindow> window_;
 
   // The root editable element checked in the last invocation. |nullptr| if not
   // invoked yet or didn't find any root editable element to check.
@@ -60,9 +63,7 @@ class ColdModeSpellCheckRequester
 
   // A test-only flag for forcing lifecycle advancing.
   mutable bool needs_more_invocation_for_testing_;
-
-  DISALLOW_COPY_AND_ASSIGN(ColdModeSpellCheckRequester);
 };
 }
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SPELLCHECK_COLD_MODE_SPELL_CHECK_REQUESTER_H_

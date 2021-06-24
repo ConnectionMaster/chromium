@@ -11,16 +11,18 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/cache_type.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
 #include "net/disk_cache/disk_cache.h"
+#include "net/disk_cache/disk_cache_test_util.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_server_properties_manager.h"
@@ -28,6 +30,7 @@
 #include "net/url_request/url_request_context.h"
 #include "services/network/network_context.h"
 #include "services/network/network_service.h"
+#include "services/network/test/fake_test_cert_verifier_params_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace network {
@@ -52,6 +55,10 @@ constexpr CacheTestEntry kCacheEntries[] = {
 
 mojom::NetworkContextParamsPtr CreateContextParams() {
   mojom::NetworkContextParamsPtr params = mojom::NetworkContextParams::New();
+  // Use a dummy CertVerifier that always passes cert verification, since
+  // these unittests don't need to test CertVerifier behavior.
+  params->cert_verifier_params =
+      FakeTestCertVerifierParamsFactory::GetCertVerifierParams();
   // Use a fixed proxy config, to avoid dependencies on local network
   // configuration.
   params->initial_proxy_config = net::ProxyConfigWithAnnotation::CreateDirect();
@@ -61,8 +68,7 @@ mojom::NetworkContextParamsPtr CreateContextParams() {
 class HttpCacheDataCounterTest : public testing::Test {
  public:
   HttpCacheDataCounterTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::IO),
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
         network_service_(NetworkService::CreateForTesting()) {}
 
   ~HttpCacheDataCounterTest() override = default;
@@ -84,19 +90,20 @@ class HttpCacheDataCounterTest : public testing::Test {
 
     // Create some entries in the cache.
     for (const CacheTestEntry& test_entry : kCacheEntries) {
-      disk_cache::Entry* entry = nullptr;
-      net::TestCompletionCallback create_entry_callback;
-      int rv = backend_->CreateEntry(test_entry.url, net::HIGHEST, &entry,
-                                     create_entry_callback.callback());
-      ASSERT_EQ(net::OK, create_entry_callback.GetResult(rv));
+      TestEntryResultCompletionCallback create_entry_callback;
+      disk_cache::EntryResult result = backend_->CreateEntry(
+          test_entry.url, net::HIGHEST, create_entry_callback.callback());
+      result = create_entry_callback.GetResult(std::move(result));
+      ASSERT_EQ(net::OK, result.net_error());
+      disk_cache::Entry* entry = result.ReleaseEntry();
       ASSERT_TRUE(entry);
 
       auto io_buf = base::MakeRefCounted<net::IOBuffer>(test_entry.size);
       std::fill(io_buf->data(), io_buf->data() + test_entry.size, 0);
 
       net::TestCompletionCallback write_data_callback;
-      rv = entry->WriteData(1, 0, io_buf.get(), test_entry.size,
-                            write_data_callback.callback(), true);
+      int rv = entry->WriteData(1, 0, io_buf.get(), test_entry.size,
+                                write_data_callback.callback(), true);
       ASSERT_EQ(static_cast<int>(test_entry.size),
                 write_data_callback.GetResult(rv));
 
@@ -104,7 +111,7 @@ class HttpCacheDataCounterTest : public testing::Test {
       ASSERT_TRUE(base::Time::FromString(test_entry.date, &time));
       entry->SetLastUsedTimeForTest(time);
       entry->Close();
-      scoped_task_environment_.RunUntilIdle();
+      task_environment_.RunUntilIdle();
     }
   }
 
@@ -179,17 +186,19 @@ class HttpCacheDataCounterTest : public testing::Test {
     context_params->http_cache_path = cache_dir_.GetPath();
 
     network_context_ = std::make_unique<NetworkContext>(
-        network_service_.get(), mojo::MakeRequest(&network_context_ptr_),
+        network_service_.get(),
+        network_context_remote_.BindNewPipeAndPassReceiver(),
         std::move(context_params));
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir cache_dir_;
   std::unique_ptr<NetworkService> network_service_;
   std::unique_ptr<NetworkContext> network_context_;
 
-  // Stores the NetworkContextPtr of the most recently created NetworkContext.
-  mojom::NetworkContextPtr network_context_ptr_;
+  // Stores the mojo::Remote<mojom::NetworkContext> of the most recently created
+  // NetworkContext.
+  mojo::Remote<mojom::NetworkContext> network_context_remote_;
   disk_cache::Backend* backend_ = nullptr;
 };
 
@@ -215,17 +224,19 @@ TEST_F(HttpCacheDataCounterTest, Basic) {
 
 // Return the sensible thing (0 bytes used) when there is no cache.
 TEST(HttpCacheDataCounterTestNoCache, BeSensible) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment(
+      base::test::TaskEnvironment::MainThreadType::IO);
   std::unique_ptr<NetworkService> network_service(
       NetworkService::CreateForTesting());
   std::unique_ptr<NetworkContext> network_context;
-  mojom::NetworkContextPtr network_context_ptr;
+  mojo::Remote<mojom::NetworkContext> network_context_remote;
 
   mojom::NetworkContextParamsPtr context_params = CreateContextParams();
   context_params->http_cache_enabled = false;
 
   network_context = std::make_unique<NetworkContext>(
-      network_service.get(), mojo::MakeRequest(&network_context_ptr),
+      network_service.get(),
+      network_context_remote.BindNewPipeAndPassReceiver(),
       std::move(context_params));
   auto result = HttpCacheDataCounterTest::CountBetween(
       network_context.get(), base::Time(), base::Time::Max());

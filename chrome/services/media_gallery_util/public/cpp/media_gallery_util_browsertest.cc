@@ -7,11 +7,9 @@
 #include "base/bind.h"
 #include "base/run_loop.h"
 #include "chrome/services/media_gallery_util/public/cpp/media_parser_provider.h"
-#include "chrome/services/media_gallery_util/public/mojom/constants.mojom.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "content/public/common/service_manager_connection.h"
+#include "content/public/test/browser_test.h"
 #include "media/media_buildflags.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/libyuv/include/libyuv.h"
 
@@ -29,14 +27,13 @@ class TestMediaParserProvider : public MediaParserProvider {
  public:
   TestMediaParserProvider() = default;
 
-  chrome::mojom::MediaParser* GetMediaParser(
-      service_manager::Connector* connector) {
+  chrome::mojom::MediaParser* GetMediaParser() {
     DCHECK(!quit_loop_);
     base::RunLoop run_loop;
     quit_loop_ = run_loop.QuitClosure();
-    RetrieveMediaParser(connector);
+    RetrieveMediaParser();
     run_loop.Run();
-    return media_parser();
+    return media_parser().get();
   }
 
  private:
@@ -44,7 +41,7 @@ class TestMediaParserProvider : public MediaParserProvider {
 
   void OnConnectionError() override { std::move(quit_loop_).Run(); }
 
-  base::Closure quit_loop_;
+  base::OnceClosure quit_loop_;
 };
 
 }  // namespace
@@ -52,15 +49,13 @@ class TestMediaParserProvider : public MediaParserProvider {
 // Tests that the MediaParserProvider class used by the client library classes
 // does initialize the CPU info correctly.
 IN_PROC_BROWSER_TEST_F(MediaGalleryUtilBrowserTest, TestThirdPartyCpuInfo) {
-  service_manager::Connector* connector =
-      content::ServiceManagerConnection::GetForProcess()->GetConnector();
   TestMediaParserProvider media_parser_provider;
   chrome::mojom::MediaParser* media_parser =
-      media_parser_provider.GetMediaParser(connector);
+      media_parser_provider.GetMediaParser();
 
   base::RunLoop run_loop;
   media_parser->GetCpuInfo(base::BindOnce(
-      [](base::Closure quit_closure, int64_t libyuv_cpu_flags,
+      [](base::OnceClosure quit_closure, int64_t libyuv_cpu_flags,
          int64_t ffmpeg_cpu_flags) {
         int64_t expected_ffmpeg_cpu_flags = 0;
 #if BUILDFLAG(ENABLE_FFMPEG)

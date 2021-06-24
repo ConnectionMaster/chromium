@@ -7,6 +7,7 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_object.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
+#include "third_party/blink/renderer/core/paint/box_painter.h"
 #include "third_party/blink/renderer/core/paint/embedded_content_painter.h"
 #include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
@@ -24,26 +25,25 @@ static const float kReplacementTextRoundedRectOpacity = 0.20f;
 static const float kReplacementTextRoundedRectRadius = 5;
 static const float kReplacementTextTextOpacity = 0.55f;
 
-static Font ReplacementTextFont() {
+static Font ReplacementTextFont(const Document* document) {
   FontDescription font_description;
   LayoutTheme::GetTheme().SystemFont(CSSValueID::kWebkitSmallControl,
-                                     font_description);
+                                     font_description, document);
   font_description.SetWeight(BoldWeightValue());
   font_description.SetComputedSize(font_description.SpecifiedSize());
   Font font(font_description);
-  font.Update(nullptr);
   return font;
 }
 
 void EmbeddedObjectPainter::PaintReplaced(const PaintInfo& paint_info,
-                                          const LayoutPoint& paint_offset) {
+                                          const PhysicalOffset& paint_offset) {
   if (!layout_embedded_object_.ShowsUnavailablePluginIndicator()) {
     EmbeddedContentPainter(layout_embedded_object_)
         .PaintReplaced(paint_info, paint_offset);
     return;
   }
 
-  if (paint_info.phase == PaintPhase::kSelection)
+  if (paint_info.phase == PaintPhase::kSelectionDragImage)
     return;
 
   GraphicsContext& context = paint_info.context;
@@ -51,11 +51,12 @@ void EmbeddedObjectPainter::PaintReplaced(const PaintInfo& paint_info,
           context, layout_embedded_object_, paint_info.phase))
     return;
 
-  LayoutRect content_rect(layout_embedded_object_.PhysicalContentBoxRect());
-  content_rect.MoveBy(paint_offset);
-  DrawingRecorder recorder(context, layout_embedded_object_, paint_info.phase);
+  PhysicalRect content_rect = layout_embedded_object_.PhysicalContentBoxRect();
+  content_rect.Move(paint_offset);
+  BoxDrawingRecorder recorder(context, layout_embedded_object_,
+                              paint_info.phase, paint_offset);
 
-  Font font = ReplacementTextFont();
+  Font font = ReplacementTextFont(&layout_embedded_object_.GetDocument());
   const SimpleFontData* font_data = font.PrimaryFont();
   DCHECK(font_data);
   if (!font_data)
@@ -65,13 +66,13 @@ void EmbeddedObjectPainter::PaintReplaced(const PaintInfo& paint_info,
   FloatSize text_geometry(font.Width(text_run),
                           font_data->GetFontMetrics().Height());
 
-  LayoutRect background_rect(
-      0, 0,
-      text_geometry.Width() +
-          2 * kReplacementTextRoundedRectLeftRightTextMargin,
-      kReplacementTextRoundedRectHeight);
-  background_rect.Move(content_rect.Center() - background_rect.Center());
-  background_rect = LayoutRect(PixelSnappedIntRect(background_rect));
+  PhysicalRect background_rect(
+      LayoutUnit(), LayoutUnit(),
+      LayoutUnit(text_geometry.Width() +
+                 2 * kReplacementTextRoundedRectLeftRightTextMargin),
+      LayoutUnit(kReplacementTextRoundedRectHeight));
+  background_rect.offset += content_rect.Center() - background_rect.Center();
+  background_rect = PhysicalRect(PixelSnappedIntRect(background_rect));
   Path rounded_background_rect;
   FloatRect float_background_rect(background_rect);
   rounded_background_rect.AddRoundedRect(

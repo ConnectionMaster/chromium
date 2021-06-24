@@ -6,30 +6,33 @@
 
 #include <vector>
 
+#include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "base/memory/ref_counted.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/chromeos/extensions/input_method_event_router.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/constants/chromeos_switches.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/api/test/test_api.h"
 #include "extensions/browser/notification_types.h"
 #include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
+#include "ui/base/ime/chromeos/ime_bridge.h"
+#include "ui/base/ime/chromeos/input_method_descriptor.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
 #include "ui/base/ime/chromeos/input_method_util.h"
-#include "ui/base/ime/chromeos/input_method_whitelist.h"
-#include "ui/base/ime/ime_bridge.h"
 
-using namespace chromeos::input_method;
+using chromeos::extension_ime_util::GetInputMethodIDByEngineID;
+using chromeos::input_method::InputMethodDescriptor;
+using chromeos::input_method::InputMethodManager;
 
 namespace {
 
@@ -39,6 +42,16 @@ const char kBackgroundReady[] = "ready";
 const char kTestIMEID[] = "_ext_ime_ilanclmaeigfpnmdlgelmhkpkegdioiptest";
 const char kTestIMEID2[] = "_ext_ime_ilanclmaeigfpnmdlgelmhkpkegdioiptest2";
 
+const InputMethodDescriptor CreateInputMethodDescriptor(
+    const std::string& engineId,
+    const std::string& indicator,
+    const std::string& layout,
+    const std::vector<std::string>& language_codes) {
+  return InputMethodDescriptor(GetInputMethodIDByEngineID(engineId), "",
+                               indicator, {layout}, language_codes, true,
+                               GURL(), GURL());
+}
+
 // Class that listens for the JS message.
 class TestListener : public content::NotificationObserver {
  public:
@@ -46,6 +59,21 @@ class TestListener : public content::NotificationObserver {
     registrar_.Add(this,
                    extensions::NOTIFICATION_EXTENSION_TEST_MESSAGE,
                    content::NotificationService::AllSources());
+
+    xkb_input_method_descriptors_ = {
+        CreateInputMethodDescriptor("xkb:us::eng", "US", "us",
+                                    {"en", "en-US", "en-AU", "en-NZ"}),
+        CreateInputMethodDescriptor("xkb:fr::fra", "FR", "fr(oss)",
+                                    {"fr", "fr-FR"}),
+        CreateInputMethodDescriptor("xkb:fr:bepo:fra", "FR", "fr(bepo)",
+                                    {"fr", "fr-FR"}),
+        CreateInputMethodDescriptor("xkb:be::fra", "BE", "fr(be)", {"fr"}),
+        CreateInputMethodDescriptor("xkb:ca::fra", "CA", "ca", {"fr", "fr-CA"}),
+        CreateInputMethodDescriptor("xkb:ch:fr::fra", "CH", "ch(fr)",
+                                    {"fr", "fr-CH"}),
+        CreateInputMethodDescriptor("xkb:ca:multix:fra", "CA", "ca(multix)",
+                                    {"fr", "fr-CA"}),
+    };
   }
 
   ~TestListener() override {}
@@ -61,12 +89,11 @@ class TestListener : public content::NotificationObserver {
       // background.
       InputMethodManager* manager = InputMethodManager::Get();
       manager->GetInputMethodUtil()->InitXkbInputMethodsForTesting(
-          *InputMethodWhitelist().GetSupportedInputMethods());
+          xkb_input_method_descriptors_);
 
       std::vector<std::string> keyboard_layouts;
       keyboard_layouts.push_back(
-          chromeos::extension_ime_util::GetInputMethodIDByEngineID(
-              kInitialInputMethodOnLoginScreen));
+          GetInputMethodIDByEngineID(kInitialInputMethodOnLoginScreen));
       manager->GetActiveIMEState()->EnableLoginLayouts(kLoginScreenUILanguage,
                                                        keyboard_layouts);
     }
@@ -74,6 +101,7 @@ class TestListener : public content::NotificationObserver {
 
  private:
   content::NotificationRegistrar registrar_;
+  std::vector<InputMethodDescriptor> xkb_input_method_descriptors_;
 };
 
 class ExtensionInputMethodApiTest : public extensions::ExtensionApiTest {
@@ -84,7 +112,7 @@ class ExtensionInputMethodApiTest : public extensions::ExtensionApiTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
     extensions::ExtensionApiTest::SetUpCommandLine(command_line);
     command_line->AppendSwitchASCII(
-        extensions::switches::kWhitelistedExtensionID,
+        extensions::switches::kAllowlistedExtensionID,
         "ilanclmaeigfpnmdlgelmhkpkegdioip");
   }
 
@@ -101,6 +129,22 @@ IN_PROC_BROWSER_TEST_F(ExtensionInputMethodApiTest, Basic) {
   TestListener listener;
 
   ASSERT_TRUE(RunExtensionTest("input_method/basic")) << message_;
+}
+
+// TODO(https://crbug.com/997888): Flaky on multiple platforms.
+IN_PROC_BROWSER_TEST_F(ExtensionInputMethodApiTest, DISABLED_Typing) {
+  // Enable the test IME from the test extension.
+  std::vector<std::string> extension_ime_ids = {
+      "_ext_ime_ilanclmaeigfpnmdlgelmhkpkegdioiptest"};
+  InputMethodManager::Get()->GetActiveIMEState()->SetEnabledExtensionImes(
+      &extension_ime_ids);
+
+  GURL test_url = ui_test_utils::GetTestUrl(
+      base::FilePath("extensions/api_test/input_method/typing/"),
+      base::FilePath("test_page.html"));
+  ui_test_utils::NavigateToURL(browser(), test_url);
+
+  ASSERT_TRUE(RunExtensionTest("input_method/typing")) << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionInputMethodApiTest, ImeMenuActivation) {
@@ -140,7 +184,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInputMethodApiTest, ImeMenuAPITest) {
   extension_ime_ids.push_back(kTestIMEID2);
   InputMethodManager::Get()->GetActiveIMEState()->SetEnabledExtensionImes(
       &extension_ime_ids);
-  InputMethodDescriptors extension_imes;
+  chromeos::input_method::InputMethodDescriptors extension_imes;
   InputMethodManager::Get()->GetActiveIMEState()->GetInputMethodExtensions(
       &extension_imes);
   InputMethodManager::Get()->GetActiveIMEState()->ChangeInputMethod(

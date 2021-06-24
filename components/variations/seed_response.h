@@ -7,18 +7,21 @@
 
 #include <string>
 
+#include "base/component_export.h"
+
 namespace variations {
 
 // Represents data received when downloading the seed: "data" is the response
 // body while the other fields come from headers.
-struct SeedResponse {
+// This is only used on Android.
+struct COMPONENT_EXPORT(VARIATIONS) SeedResponse {
   SeedResponse();
   ~SeedResponse();
 
   std::string data;  // "data" is binary, for which protobuf uses strings.
   std::string signature;
   std::string country;
-  std::string date;
+  int64_t date;
   bool is_gzip_compressed = false;
 };
 

@@ -7,6 +7,7 @@
 
 #include <gmock/gmock.h>
 #include <memory>
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key_range.h"
 #include "third_party/blink/renderer/modules/indexeddb/web_idb_database.h"
@@ -22,11 +23,13 @@ class MockWebIDBDatabase : public testing::StrictMock<WebIDBDatabase> {
                void(int64_t transaction_id,
                     int64_t object_store_id,
                     const String& new_name));
-  MOCK_METHOD4(CreateTransaction,
-               void(mojom::blink::IDBTransactionAssociatedRequest request,
+  MOCK_METHOD5(CreateTransaction,
+               void(mojo::PendingAssociatedReceiver<
+                        mojom::blink::IDBTransaction> receiver,
                     int64_t id,
                     const Vector<int64_t>& scope,
-                    mojom::IDBTransactionMode));
+                    mojom::IDBTransactionMode,
+                    mojom::IDBTransactionDurability));
   MOCK_METHOD0(Close, void());
   MOCK_METHOD0(VersionChangeIgnored, void());
   MOCK_METHOD1(Abort, void(int64_t transaction_id));
@@ -47,17 +50,6 @@ class MockWebIDBDatabase : public testing::StrictMock<WebIDBDatabase> {
                     int64_t object_store_id,
                     int64_t index_id,
                     const String& new_name));
-  MOCK_METHOD6(
-      AddObserver,
-      void(int64_t transaction_id,
-           int32_t observer_id,
-           bool include_transaction,
-           bool no_records,
-           bool values,
-           std::bitset<blink::kIDBOperationTypeCount> operation_types));
-  MOCK_CONST_METHOD1(ContainsObserverId, bool(int32_t id));
-  MOCK_METHOD1(RemoveObservers,
-               void(const Vector<int32_t>& observer_ids_to_remove));
   MOCK_METHOD6(Get,
                void(int64_t transaction_id,
                     int64_t object_store_id,

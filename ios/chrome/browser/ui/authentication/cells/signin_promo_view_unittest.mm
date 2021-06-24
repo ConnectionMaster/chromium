@@ -4,7 +4,10 @@
 
 #import "ios/chrome/browser/ui/authentication/cells/signin_promo_view.h"
 
-#import "ios/third_party/material_components_ios/src/components/Buttons/src/MaterialButtons.h"
+#import <MaterialComponents/MaterialOverlayWindow.h>
+
+#import "ios/chrome/browser/ui/authentication/cells/signin_promo_view_constants.h"
+#import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #include "testing/platform_test.h"
 #include "third_party/ocmock/gtest_support.h"
 
@@ -15,16 +18,23 @@
 using SigninPromoViewTest = PlatformTest;
 
 TEST_F(SigninPromoViewTest, ChromiumLogoImage) {
-  UIWindow* currentWindow = [[UIApplication sharedApplication] keyWindow];
+  UIWindow* currentWindow = GetAnyKeyWindow();
   SigninPromoView* view =
       [[SigninPromoView alloc] initWithFrame:CGRectMake(0, 0, 100, 100)];
-  view.mode = SigninPromoViewModeColdState;
+  view.mode = SigninPromoViewModeNoAccounts;
   [currentWindow.rootViewController.view addSubview:view];
   UIImage* chromiumLogo = view.imageView.image;
   EXPECT_NE(nil, chromiumLogo);
-  view.mode = SigninPromoViewModeWarmState;
+  view.mode = SigninPromoViewModeSigninWithAccount;
   UIImage* customImage = [[UIImage alloc] init];
   [view setProfileImage:customImage];
+  EXPECT_NE(nil, view.imageView.image);
+  // The image should has been changed from the logo.
+  EXPECT_NE(chromiumLogo, view.imageView.image);
+  // The image should be different than the one set, since a circular background
+  // should have been added.
+  EXPECT_NE(customImage, view.imageView.image);
+  view.mode = SigninPromoViewModeSyncWithPrimaryAccount;
   EXPECT_NE(nil, view.imageView.image);
   // The image should has been changed from the logo.
   EXPECT_NE(chromiumLogo, view.imageView.image);
@@ -34,12 +44,14 @@ TEST_F(SigninPromoViewTest, ChromiumLogoImage) {
 }
 
 TEST_F(SigninPromoViewTest, SecondaryButtonVisibility) {
-  UIWindow* currentWindow = [[UIApplication sharedApplication] keyWindow];
+  UIWindow* currentWindow = GetAnyKeyWindow();
   SigninPromoView* view =
       [[SigninPromoView alloc] initWithFrame:CGRectMake(0, 0, 100, 100)];
-  view.mode = SigninPromoViewModeColdState;
+  view.mode = SigninPromoViewModeNoAccounts;
   [currentWindow.rootViewController.view addSubview:view];
   EXPECT_TRUE(view.secondaryButton.hidden);
-  view.mode = SigninPromoViewModeWarmState;
+  view.mode = SigninPromoViewModeSigninWithAccount;
   EXPECT_FALSE(view.secondaryButton.hidden);
+  view.mode = SigninPromoViewModeSyncWithPrimaryAccount;
+  EXPECT_TRUE(view.secondaryButton.hidden);
 }

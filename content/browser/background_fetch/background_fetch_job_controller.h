@@ -14,7 +14,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "content/browser/background_fetch/background_fetch_delegate_proxy.h"
 #include "content/browser/background_fetch/background_fetch_registration_id.h"
 #include "content/browser/background_fetch/background_fetch_request_info.h"
@@ -22,6 +21,7 @@
 #include "content/common/background_fetch/background_fetch_types.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/browser_thread.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
 namespace content {
@@ -30,7 +30,8 @@ class BackgroundFetchDataManager;
 
 // The JobController will be responsible for coordinating communication with the
 // DownloadManager. It will get requests from the RequestManager and dispatch
-// them to the DownloadService. It lives entirely on the IO thread.
+// them to the DownloadService. It lives entirely on the service worker core
+// thread.
 //
 // Lifetime: It is created lazily only once a Background Fetch registration
 // starts downloading, and it is destroyed once no more communication with the
@@ -212,7 +213,7 @@ class CONTENT_EXPORT BackgroundFetchJobController
   // Custom callback that runs after the controller is finished.
   FinishedCallback finished_callback_;
 
-  base::WeakPtrFactory<BackgroundFetchJobController> weak_ptr_factory_;
+  base::WeakPtrFactory<BackgroundFetchJobController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundFetchJobController);
 };

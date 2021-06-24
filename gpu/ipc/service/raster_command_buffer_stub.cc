@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "base/macros.h"
-#include "base/memory/shared_memory.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/constants.h"
@@ -24,7 +24,6 @@
 #include "gpu/command_buffer/service/sync_point_manager.h"
 #include "gpu/command_buffer/service/transfer_buffer_manager.h"
 #include "gpu/config/gpu_crash_keys.h"
-#include "gpu/ipc/common/gpu_messages.h"
 #include "gpu/ipc/service/gpu_channel.h"
 #include "gpu/ipc/service/gpu_channel_manager.h"
 #include "gpu/ipc/service/gpu_channel_manager_delegate.h"
@@ -50,7 +49,7 @@ namespace gpu {
 
 RasterCommandBufferStub::RasterCommandBufferStub(
     GpuChannel* channel,
-    const GPUCreateCommandBufferConfig& init_params,
+    const mojom::CreateCommandBufferParams& init_params,
     CommandBufferId command_buffer_id,
     SequenceId sequence_id,
     int32_t stream_id,
@@ -66,7 +65,7 @@ RasterCommandBufferStub::~RasterCommandBufferStub() {}
 
 gpu::ContextResult RasterCommandBufferStub::Initialize(
     CommandBufferStub* share_command_buffer_stub,
-    const GPUCreateCommandBufferConfig& init_params,
+    const mojom::CreateCommandBufferParams& init_params,
     base::UnsafeSharedMemoryRegion shared_state_shm) {
   TRACE_EVENT0("gpu", "RasterBufferStub::Initialize");
   UpdateActiveUrl();
@@ -85,7 +84,7 @@ gpu::ContextResult RasterCommandBufferStub::Initialize(
     return ContextResult::kFatalFailure;
   }
 
-  if (init_params.attribs.gpu_preference != gl::PreferIntegratedGpu ||
+  if (init_params.attribs.gpu_preference != gl::GpuPreference::kLowPower ||
       init_params.attribs.context_type != CONTEXT_TYPE_OPENGLES2 ||
       init_params.attribs.bind_generates_resource) {
     LOG(ERROR) << "ContextResult::kFatalFailure: Incompatible creation attribs "
@@ -103,7 +102,7 @@ gpu::ContextResult RasterCommandBufferStub::Initialize(
   }
 
   if (!shared_context_state->IsGLInitialized()) {
-    if (!shared_context_state->MakeCurrent(nullptr) ||
+    if (!shared_context_state->MakeCurrent(nullptr, true /* needs_gl */) ||
         !shared_context_state->InitializeGL(
             manager->gpu_preferences(),
             base::MakeRefCounted<gles2::FeatureInfo>(
@@ -119,7 +118,7 @@ gpu::ContextResult RasterCommandBufferStub::Initialize(
   use_virtualized_gl_context_ =
       shared_context_state->use_virtualized_gl_contexts();
 
-  memory_tracker_ = CreateMemoryTracker(init_params);
+  memory_tracker_ = CreateMemoryTracker();
 
   command_buffer_ =
       std::make_unique<CommandBufferService>(this, memory_tracker_.get());
@@ -127,7 +126,7 @@ gpu::ContextResult RasterCommandBufferStub::Initialize(
       this, command_buffer_.get(), manager->outputter(),
       manager->gpu_feature_info(), manager->gpu_preferences(),
       memory_tracker_.get(), manager->shared_image_manager(),
-      shared_context_state));
+      shared_context_state, channel()->is_gpu_host()));
 
   sync_point_client_state_ =
       channel_->sync_point_manager()->CreateSyncPointClientState(
@@ -138,7 +137,7 @@ gpu::ContextResult RasterCommandBufferStub::Initialize(
                                                                         : "0");
 
   scoped_refptr<gl::GLContext> context = shared_context_state->context();
-  if (!shared_context_state->MakeCurrent(nullptr)) {
+  if (!shared_context_state->MakeCurrent(nullptr, false /* needs_gl */)) {
     LOG(ERROR) << "ContextResult::kTransientFailure: "
                   "Failed to make context current.";
     return gpu::ContextResult::kTransientFailure;
@@ -177,12 +176,8 @@ gpu::ContextResult RasterCommandBufferStub::Initialize(
   return gpu::ContextResult::kSuccess;
 }
 
-MemoryTracker* RasterCommandBufferStub::GetMemoryTracker() const {
-  return memory_tracker_.get();
-}
-
-bool RasterCommandBufferStub::HandleMessage(const IPC::Message& message) {
-  return false;
+MemoryTracker* RasterCommandBufferStub::GetContextGroupMemoryTracker() const {
+  return nullptr;
 }
 
 void RasterCommandBufferStub::OnSwapBuffers(uint64_t swap_id, uint32_t flags) {}

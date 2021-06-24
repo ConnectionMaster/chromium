@@ -4,9 +4,12 @@
 
 #include "third_party/blink/renderer/modules/device_orientation/device_sensor_event_pump.h"
 
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
+
 namespace blink {
 
-void DeviceSensorEventPump::Start(LocalFrame* frame) {
+void DeviceSensorEventPump::Start(LocalFrame& frame) {
   DVLOG(2) << "requested start";
 
   if (state_ != PumpState::STOPPED)
@@ -41,8 +44,11 @@ void DeviceSensorEventPump::HandleSensorProviderError() {
 }
 
 void DeviceSensorEventPump::SetSensorProviderForTesting(
-    device::mojom::blink::SensorProviderPtr sensor_provider) {
-  sensor_provider_ = std::move(sensor_provider);
+    mojo::PendingRemote<device::mojom::blink::SensorProvider> sensor_provider) {
+  sensor_provider_.Bind(std::move(sensor_provider), task_runner_);
+  sensor_provider_.set_disconnect_handler(
+      WTF::Bind(&DeviceSensorEventPump::HandleSensorProviderError,
+                WrapWeakPersistent(this)));
 }
 
 DeviceSensorEventPump::PumpState
@@ -50,10 +56,18 @@ DeviceSensorEventPump::GetPumpStateForTesting() {
   return state_;
 }
 
-DeviceSensorEventPump::DeviceSensorEventPump(
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner)
-    : state_(PumpState::STOPPED),
-      timer_(std::move(task_runner), this, &DeviceSensorEventPump::FireEvent) {}
+void DeviceSensorEventPump::Trace(Visitor* visitor) const {
+  visitor->Trace(sensor_provider_);
+  visitor->Trace(timer_);
+}
+
+DeviceSensorEventPump::DeviceSensorEventPump(LocalFrame& frame)
+    : sensor_provider_(frame.DomWindow()),
+      task_runner_(frame.GetTaskRunner(TaskType::kSensor)),
+      state_(PumpState::STOPPED),
+      timer_(frame.GetTaskRunner(TaskType::kSensor),
+             this,
+             &DeviceSensorEventPump::FireEvent) {}
 
 DeviceSensorEventPump::~DeviceSensorEventPump() = default;
 
@@ -69,7 +83,7 @@ void DeviceSensorEventPump::DidStartIfPossible() {
   DCHECK(!timer_.IsActive());
 
   timer_.StartRepeating(
-      WTF::TimeDelta::FromMicroseconds(kDefaultPumpDelayMicroseconds),
+      base::TimeDelta::FromMicroseconds(kDefaultPumpDelayMicroseconds),
       FROM_HERE);
   state_ = PumpState::RUNNING;
 }

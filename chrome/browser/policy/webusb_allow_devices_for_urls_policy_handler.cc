@@ -12,6 +12,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/policy/core/browser/policy_error_map.h"
@@ -29,8 +30,6 @@ constexpr char kVendorIdKey[] = "vendor_id";
 constexpr char kProductIdKey[] = "product_id";
 constexpr char kUrlsKey[] = "urls";
 constexpr char kErrorPathTemplate[] = "items[%d].%s.items[%d]";
-constexpr char kInvalidUnsignedShortIntErrorTemplate[] =
-    "The %s must be an unsigned short integer";
 constexpr char kMissingVendorIdError[] = "A vendor_id must also be specified";
 constexpr char kInvalidNumberOfUrlsError[] =
     "Each urls string entry must contain between 1 to 2 URLs";
@@ -39,11 +38,11 @@ constexpr char kInvalidUrlError[] = "The urls item must contain valid URLs";
 }  // namespace
 
 WebUsbAllowDevicesForUrlsPolicyHandler::WebUsbAllowDevicesForUrlsPolicyHandler(
-    Schema schema)
+    const Schema& chrome_schema)
     : SchemaValidatingPolicyHandler(
           key::kWebUsbAllowDevicesForUrls,
-          schema.GetKnownProperty(key::kWebUsbAllowDevicesForUrls),
-          SchemaOnErrorStrategy::SCHEMA_STRICT) {}
+          chrome_schema.GetKnownProperty(key::kWebUsbAllowDevicesForUrls),
+          SchemaOnErrorStrategy::SCHEMA_ALLOW_UNKNOWN) {}
 
 WebUsbAllowDevicesForUrlsPolicyHandler::
     ~WebUsbAllowDevicesForUrlsPolicyHandler() {}
@@ -74,34 +73,12 @@ bool WebUsbAllowDevicesForUrlsPolicyHandler::CheckPolicySettings(
     for (const auto& device : devices_list->GetList()) {
       auto* vendor_id_value =
           device.FindKeyOfType(kVendorIdKey, base::Value::Type::INTEGER);
-      if (vendor_id_value) {
-        const int vendor_id = vendor_id_value->GetInt();
-        if (vendor_id > 0xFFFF || vendor_id < 0) {
-          error_path = base::StringPrintf(kErrorPathTemplate, item_index,
-                                          kDevicesKey, device_index);
-          error = base::StringPrintf(kInvalidUnsignedShortIntErrorTemplate,
-                                     kVendorIdKey);
-          result = false;
-          break;
-        }
-      }
-
       auto* product_id_value =
           device.FindKeyOfType(kProductIdKey, base::Value::Type::INTEGER);
       if (product_id_value) {
         // If a |product_id| is specified, then a |vendor_id| must also be
-        // specified. Otherwise, the device policy is invalid.
-        if (vendor_id_value) {
-          const int product_id = product_id_value->GetInt();
-          if (product_id > 0xFFFF || product_id < 0) {
-            error_path = base::StringPrintf(kErrorPathTemplate, item_index,
-                                            kDevicesKey, device_index);
-            error = base::StringPrintf(kInvalidUnsignedShortIntErrorTemplate,
-                                       kProductIdKey);
-            result = false;
-            break;
-          }
-        } else {
+        // specified. Otherwise, the policy is invalid.
+        if (!vendor_id_value) {
           error_path = base::StringPrintf(kErrorPathTemplate, item_index,
                                           kDevicesKey, device_index);
           error = kMissingVendorIdError;

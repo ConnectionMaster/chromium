@@ -6,7 +6,6 @@
 
 #include "base/values.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/policy/profile_policy_connector_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -19,20 +18,16 @@ const char kKeyUserType[] = "user_type";
 const char kUserTypeChild[] = "child";
 const char kUserTypeGuest[] = "guest";
 const char kUserTypeManaged[] = "managed";
-const char kUserTypeSupervised[] = "supervised";
 const char kUserTypeUnmanaged[] = "unmanaged";
 
 std::string DetermineUserType(Profile* profile) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(!profile->IsOffTheRecord());
-  if (profile->IsGuestSession())
+  if (profile->IsGuestSession() || profile->IsEphemeralGuestProfile())
     return kUserTypeGuest;
   if (profile->IsChild())
     return kUserTypeChild;
-  if (profile->IsLegacySupervised())
-    return kUserTypeSupervised;
-  if (policy::ProfilePolicyConnectorFactory::GetForBrowserContext(profile)
-          ->IsManaged()) {
+  if (profile->GetProfilePolicyConnector()->IsManaged()) {
     return kUserTypeManaged;
   }
   return kUserTypeUnmanaged;

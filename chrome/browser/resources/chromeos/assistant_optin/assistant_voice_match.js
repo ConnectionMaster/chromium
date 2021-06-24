@@ -2,9 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 /** Maximum recording index. */
 const MAX_INDEX = 4;
+
+/**
+ * Name of the screen.
+ * @type {string}
+ */
+const VOICE_MATCH_SCREEN_ID = 'VoiceMatchScreen';
+
+const VoiceMatchUIState = {
+  INTRO: 'intro',
+  RECORDING: 'recording',
+  COMPLETED: 'completed',
+  ALREADY_SETUP: 'already-setup',
+};
 
 /**
  * @fileoverview Polymer element for displaying material design assistant
@@ -14,7 +26,13 @@ const MAX_INDEX = 4;
 Polymer({
   is: 'assistant-voice-match',
 
-  behaviors: [OobeDialogHostBehavior],
+  behaviors: [OobeI18nBehavior, MultiStepBehavior],
+
+  /**
+   * Whether voice match is the first screen of the flow.
+   * @type {boolean}
+   */
+  isFirstScreen: false,
 
   /**
    * Current recording index.
@@ -24,14 +42,37 @@ Polymer({
   currentIndex_: 0,
 
   /**
+   * The delay in ms between speaker ID enrollment finishes and the
+   * voice-match-done action is reported to chrome.
+   * @private {number}
+   */
+  doneActionDelayMs_: 3000,
+
+  /** @private {?assistant.BrowserProxy} */
+  browserProxy_: null,
+
+  defaultUIStep() {
+    return VoiceMatchUIState.INTRO;
+  },
+
+  UI_STEPS: VoiceMatchUIState,
+
+  /**
+   * Overrides the default delay for sending voice-match-done action.
+   * @param {number} delay The delay to be used in tests.
+   */
+  setDoneActionDelayForTesting(delay) {
+    this.doneActionDelayMs_ = delay;
+  },
+
+  /**
    * On-tap event handler for skip button.
    *
    * @private
    */
-  onSkipTap_: function() {
-    chrome.send(
-        'login.AssistantOptInFlowScreen.VoiceMatchScreen.userActed',
-        ['skip-pressed']);
+  onSkipTap_() {
+    this.$['voice-match-lottie'].setPlay(false);
+    this.browserProxy_.userActed(VOICE_MATCH_SCREEN_ID, ['skip-pressed']);
   },
 
   /**
@@ -39,51 +80,51 @@ Polymer({
    *
    * @private
    */
-  onAgreeTap_: function() {
-    this.removeClass_('intro');
-    this.addClass_('recording');
+  onAgreeTap_() {
+    this.setUIStep(VoiceMatchUIState.RECORDING);
     this.fire('loading');
-    chrome.send(
-        'login.AssistantOptInFlowScreen.VoiceMatchScreen.userActed',
-        ['record-pressed']);
+    this.browserProxy_.userActed(VOICE_MATCH_SCREEN_ID, ['record-pressed']);
   },
 
   /**
-   * Add class to the list of classes of root elements.
-   * @param {string} className class to add
+   * Reset the status of page elements.
    *
    * @private
    */
-  addClass_: function(className) {
-    this.$['voice-match-dialog'].classList.add(className);
+  resetElements_() {
+    this.currentIndex_ = 0;
+
+    this.$['voice-match-entries'].hidden = false;
+    this.$['later-button'].hidden = false;
+    this.$['loading-animation'].hidden = true;
+
+    for (var i = 0; i < MAX_INDEX; ++i) {
+      var entry = this.$['voice-entry-' + i];
+      entry.removeAttribute('active');
+      entry.removeAttribute('completed');
+    }
   },
 
-  /**
-   * Remove class to the list of classes of root elements.
-   * @param {string} className class to remove
-   *
-   * @private
-   */
-  removeClass_: function(className) {
-    this.$['voice-match-dialog'].classList.remove(className);
+  /** @override */
+  created() {
+    this.browserProxy_ = assistant.BrowserProxyImpl.getInstance();
   },
 
   /**
    * Reloads voice match flow.
    */
-  reloadPage: function() {
-    this.removeClass_('recording');
-    this.removeClass_('already-setup');
-    this.removeClass_('completed');
-    this.addClass_('intro');
+  reloadPage() {
+    this.setUIStep(VoiceMatchUIState.INTRO);
     this.$['agree-button'].focus();
+    this.resetElements_();
+    this.browserProxy_.userActed(VOICE_MATCH_SCREEN_ID, ['reload-requested']);
     this.fire('loaded');
   },
 
   /**
    * Called when the server is ready to listening for hotword.
    */
-  listenForHotword: function() {
+  listenForHotword() {
     if (this.currentIndex_ == 0) {
       this.fire('loaded');
       announceAccessibleMessage(
@@ -98,7 +139,7 @@ Polymer({
   /**
    * Called when the server has detected and processing hotword.
    */
-  processingHotword: function() {
+  processingHotword() {
     var currentEntry = this.$['voice-entry-' + this.currentIndex_];
     currentEntry.removeAttribute('active');
     currentEntry.setAttribute('completed', true);
@@ -115,34 +156,47 @@ Polymer({
     }
   },
 
-  voiceMatchDone: function() {
-    this.removeClass_('recording');
+  voiceMatchDone() {
     this.fire('loaded');
     announceAccessibleMessage(
         loadTimeData.getString('assistantVoiceMatchCompleted'));
     if (this.currentIndex_ != MAX_INDEX) {
       // Existing voice model found on cloud. No need to train.
       this.$['later-button'].hidden = true;
-      this.addClass_('already-setup');
+      this.setUIStep(VoiceMatchUIState.ALREADY_SETUP);
     } else {
-      this.addClass_('completed');
+      this.setUIStep(VoiceMatchUIState.COMPLETED);
     }
 
     window.setTimeout(function() {
-      chrome.send(
-          'login.AssistantOptInFlowScreen.VoiceMatchScreen.userActed',
-          ['voice-match-done']);
-    }, 3000);
+      this.$['voice-match-lottie'].setPlay(false);
+      this.browserProxy_.userActed(VOICE_MATCH_SCREEN_ID, ['voice-match-done']);
+    }.bind(this), this.doneActionDelayMs_);
   },
 
   /**
    * Signal from host to show the screen.
    */
-  onShow: function() {
-    chrome.send('login.AssistantOptInFlowScreen.VoiceMatchScreen.screenShown');
-    this.$['agree-button'].focus();
-    if (loadTimeData.getBoolean('hotwordDspAvailable')) {
-      this.$['no-dsp-message'].hidden = true;
+  onShow() {
+    if (this.isFirstScreen) {
+      // If voice match is the first screen, slightly delay showing the content
+      // for the lottie animations to load.
+      this.fire('loading');
+      window.setTimeout(function() {
+        this.fire('loaded');
+      }.bind(this), 100);
     }
+
+    this.browserProxy_.screenShown(VOICE_MATCH_SCREEN_ID);
+    this.$['voice-match-lottie'].setPlay(true);
+    Polymer.RenderStatus.afterNextRender(
+        this, () => this.$['agree-button'].focus());
+  },
+
+  /**
+   * Returns the text for subtitle.
+   */
+  getSubtitleMessage_(locale) {
+    return this.i18nAdvanced('assistantVoiceMatchMessage');
   },
 });

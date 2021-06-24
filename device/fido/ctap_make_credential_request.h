@@ -14,12 +14,13 @@
 #include "base/component_export.h"
 #include "base/containers/span.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "device/fido/fido_constants.h"
+#include "device/fido/pin.h"
 #include "device/fido/public_key_credential_descriptor.h"
 #include "device/fido/public_key_credential_params.h"
 #include "device/fido/public_key_credential_rp_entity.h"
 #include "device/fido/public_key_credential_user_entity.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace cbor {
 class Value;
@@ -30,9 +31,25 @@ namespace device {
 // Object containing request parameters for AuthenticatorMakeCredential command
 // as specified in
 // https://fidoalliance.org/specs/fido-v2.0-rd-20170927/fido-client-to-authenticator-protocol-v2.0-rd-20170927.html
-class COMPONENT_EXPORT(DEVICE_FIDO) CtapMakeCredentialRequest {
+struct COMPONENT_EXPORT(DEVICE_FIDO) CtapMakeCredentialRequest {
  public:
   using ClientDataHash = std::array<uint8_t, kClientDataHashLength>;
+
+  // ParseOpts are optional parameters passed to Parse().
+  struct ParseOpts {
+    // reject_all_extensions makes parsing fail if any extensions are present.
+    bool reject_all_extensions = false;
+  };
+
+  // Decodes a CTAP2 authenticatorMakeCredential request message. The request's
+  // |client_data_json| will be empty and |client_data_hash| will be set.
+  static absl::optional<CtapMakeCredentialRequest> Parse(
+      const cbor::Value::MapValue& request_map) {
+    return Parse(request_map, ParseOpts());
+  }
+  static absl::optional<CtapMakeCredentialRequest> Parse(
+      const cbor::Value::MapValue& request_map,
+      const ParseOpts& opts);
 
   CtapMakeCredentialRequest(
       std::string client_data_json,
@@ -45,91 +62,78 @@ class COMPONENT_EXPORT(DEVICE_FIDO) CtapMakeCredentialRequest {
   CtapMakeCredentialRequest& operator=(CtapMakeCredentialRequest&& that);
   ~CtapMakeCredentialRequest();
 
-  // Serializes MakeCredential request parameter into CBOR encoded map with
-  // integer keys and CBOR encoded values as defined by the CTAP spec.
-  // https://drafts.fidoalliance.org/fido-2/latest/fido-client-to-authenticator-protocol-v2.0-wd-20180305.html#authenticatorMakeCredential
-  std::pair<CtapRequestCommand, base::Optional<cbor::Value>> EncodeAsCBOR()
-      const;
-
-  CtapMakeCredentialRequest& SetAuthenticatorAttachment(
-      AuthenticatorAttachment authenticator_attachment);
-  CtapMakeCredentialRequest& SetUserVerification(
-      UserVerificationRequirement user_verification);
-  CtapMakeCredentialRequest& SetResidentKeyRequired(bool resident_key);
-  CtapMakeCredentialRequest& SetExcludeList(
-      std::vector<PublicKeyCredentialDescriptor> exclude_list);
-  CtapMakeCredentialRequest& SetPinAuth(std::vector<uint8_t> pin_auth);
-  CtapMakeCredentialRequest& SetPinProtocol(uint8_t pin_protocol);
-  CtapMakeCredentialRequest& SetHmacSecret(bool hmac_secret);
-
-  const std::string& client_data_json() const { return client_data_json_; }
-  const std::array<uint8_t, kClientDataHashLength>& client_data_hash() const {
-    return client_data_hash_;
-  }
-  const PublicKeyCredentialRpEntity& rp() const { return rp_; }
-  const PublicKeyCredentialUserEntity user() const { return user_; }
-  const PublicKeyCredentialParams& public_key_credential_params() const {
-    return public_key_credential_params_;
-  }
-  UserVerificationRequirement user_verification() const {
-    return user_verification_;
-  }
-  AuthenticatorAttachment authenticator_attachment() const {
-    return authenticator_attachment_;
-  }
-  bool resident_key_required() const { return resident_key_required_; }
-  bool hmac_secret() const { return hmac_secret_; }
-  const base::Optional<std::vector<PublicKeyCredentialDescriptor>>&
-  exclude_list() const {
-    return exclude_list_;
-  }
-  const base::Optional<std::vector<uint8_t>>& pin_auth() const {
-    return pin_auth_;
-  }
-  const base::Optional<uint8_t>& pin_protocol() const { return pin_protocol_; }
-
-  void set_is_u2f_only(bool is_u2f_only) { is_u2f_only_ = is_u2f_only; }
-  bool is_u2f_only() { return is_u2f_only_; }
-
-  bool is_incognito_mode() const { return is_incognito_mode_; }
-  void set_is_incognito_mode(bool is_incognito_mode) {
-    is_incognito_mode_ = is_incognito_mode;
-  }
-
-  AttestationConveyancePreference attestation_preference() const {
-    return attestation_preference_;
-  }
-  void set_attestation_preference(
-      AttestationConveyancePreference attestation_preference) {
-    attestation_preference_ = attestation_preference;
-  }
-
- private:
-  std::string client_data_json_;
-  std::array<uint8_t, kClientDataHashLength> client_data_hash_;
-  PublicKeyCredentialRpEntity rp_;
-  PublicKeyCredentialUserEntity user_;
-  PublicKeyCredentialParams public_key_credential_params_;
-  UserVerificationRequirement user_verification_ =
+  std::string client_data_json;
+  ClientDataHash client_data_hash;
+  PublicKeyCredentialRpEntity rp;
+  PublicKeyCredentialUserEntity user;
+  PublicKeyCredentialParams public_key_credential_params;
+  UserVerificationRequirement user_verification =
       UserVerificationRequirement::kDiscouraged;
-  AuthenticatorAttachment authenticator_attachment_ =
+  AuthenticatorAttachment authenticator_attachment =
       AuthenticatorAttachment::kAny;
-  bool resident_key_required_ = false;
-  // hmac_secret_ indicates whether the "hmac-secret" extension should be
+  bool resident_key_required = false;
+
+  // hmac_secret indicates whether the "hmac-secret" extension should be
   // asserted to CTAP2 authenticators.
-  bool hmac_secret_ = false;
+  bool hmac_secret = false;
 
-  // If true, instruct the request handler only to dispatch this request via
-  // U2F.
-  bool is_u2f_only_ = false;
-  bool is_incognito_mode_ = false;
+  // large_blob_key indicates whether a large blob key should be associated to
+  // the new credential through the "largeBlobKey" extension.
+  bool large_blob_key = false;
 
-  base::Optional<std::vector<PublicKeyCredentialDescriptor>> exclude_list_;
-  base::Optional<std::vector<uint8_t>> pin_auth_;
-  base::Optional<uint8_t> pin_protocol_;
-  AttestationConveyancePreference attestation_preference_ =
-      AttestationConveyancePreference::NONE;
+  // Instructs the request handler only to dispatch this request via U2F.
+  bool is_u2f_only = false;
+
+  // Indicates whether the request was created in an off-the-record
+  // BrowserContext (e.g. Chrome Incognito mode).
+  bool is_off_the_record_context = false;
+
+  std::vector<PublicKeyCredentialDescriptor> exclude_list;
+
+  // The pinUvAuthParam field. This is the result of calling
+  // |pin::TokenResponse::PinAuth(client_data_hash)| with the PIN/UV Auth Token
+  // response obtained from the authenticator.
+  absl::optional<std::vector<uint8_t>> pin_auth;
+
+  // The pinUvAuthProtocol field. It is the version of the PIN/UV Auth Token
+  // response obtained from the authenticator.
+  absl::optional<PINUVAuthProtocol> pin_protocol;
+
+  // The PIN/UV Auth Token response obtained from the authenticator. This field
+  // is only used for computing a fresh pinUvAuthParam for getAssertion requests
+  // during silent probing of |exclude_list| credentials. It is ignored when
+  // encoding this request to CBOR (|pin_auth| and |pin_protocol| are used for
+  // that).
+  absl::optional<pin::TokenResponse> pin_token_for_exclude_list_probing;
+
+  AttestationConveyancePreference attestation_preference =
+      AttestationConveyancePreference::kNone;
+
+  // U2F AppID for excluding credentials.
+  absl::optional<std::string> app_id;
+
+  // cred_protect indicates the level of protection afforded to a credential.
+  // This depends on a CTAP2 extension that not all authenticators will support.
+  // This is filled out by |MakeCredentialRequestHandler|.
+  absl::optional<CredProtect> cred_protect;
+
+  // If |cred_protect| is not |nullopt|, this is true if the credProtect level
+  // must be provided by the target authenticator for the MakeCredential request
+  // to be sent. This only makes sense when there is a collection of
+  // authenticators to consider, i.e. for the Windows API.
+  bool cred_protect_enforce = false;
+
+  // cred_blob contains an optional credBlob extension.
+  // https://fidoalliance.org/specs/fido-v2.1-rd-20201208/fido-client-to-authenticator-protocol-v2.1-rd-20201208.html#sctn-credBlob-extension
+  absl::optional<std::vector<uint8_t>> cred_blob;
 };
+
+// Serializes MakeCredential request parameter into CBOR encoded map with
+// integer keys and CBOR encoded values as defined by the CTAP spec.
+// https://drafts.fidoalliance.org/fido-2/latest/fido-client-to-authenticator-protocol-v2.0-wd-20180305.html#authenticatorMakeCredential
+COMPONENT_EXPORT(DEVICE_FIDO)
+std::pair<CtapRequestCommand, absl::optional<cbor::Value>>
+AsCTAPRequestValuePair(const CtapMakeCredentialRequest& request);
 
 }  // namespace device
 

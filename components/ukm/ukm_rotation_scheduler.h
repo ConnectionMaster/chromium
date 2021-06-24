@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_UKM_METRICS_REPORTING_SCHEDULER_H_
-#define COMPONENTS_UKM_METRICS_REPORTING_SCHEDULER_H_
+#ifndef COMPONENTS_UKM_UKM_ROTATION_SCHEDULER_H_
+#define COMPONENTS_UKM_UKM_ROTATION_SCHEDULER_H_
 
 #include "base/time/time.h"
 #include "components/metrics/metrics_rotation_scheduler.h"
@@ -17,8 +17,9 @@ class UkmRotationScheduler : public metrics::MetricsRotationScheduler {
   // callback to call when log rotation should happen and |interval_callback|
   // to determine the interval between rotations in steady state.
   UkmRotationScheduler(
-      const base::Closure& rotation_callback,
-      const base::Callback<base::TimeDelta(void)>& interval_callback);
+      const base::RepeatingClosure& rotation_callback,
+      bool fast_startup_for_testing,
+      const base::RepeatingCallback<base::TimeDelta(void)>& interval_callback);
   ~UkmRotationScheduler() override;
 
  private:
@@ -30,4 +31,4 @@ class UkmRotationScheduler : public metrics::MetricsRotationScheduler {
 
 }  // namespace ukm
 
-#endif  // COMPONENTS_UKM_METRICS_REPORTING_SCHEDULER_H_
+#endif  // COMPONENTS_UKM_UKM_ROTATION_SCHEDULER_H_

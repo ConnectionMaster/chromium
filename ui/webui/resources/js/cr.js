@@ -17,22 +17,16 @@ var cr = cr || function(global) {
    * example:
    * "a.b.c" -> a = {};a.b={};a.b.c={};
    * @param {string} name Name of the object that this file defines.
-   * @param {*=} opt_object The object to expose at the end of the path.
-   * @param {Object=} opt_objectToExportTo The object to add the path to;
-   *     default is {@code global}.
    * @return {!Object} The last object exported (i.e. exportPath('cr.ui')
    *     returns a reference to the ui property of window.cr).
    * @private
    */
-  function exportPath(name, opt_object, opt_objectToExportTo) {
+  function exportPath(name) {
     const parts = name.split('.');
-    let cur = opt_objectToExportTo || global;
+    let cur = global;
 
     for (let part; parts.length && (part = parts.shift());) {
-      if (!parts.length && opt_object !== undefined) {
-        // last part and we have an object; use it
-        cur[part] = opt_object;
-      } else if (part in cur) {
+      if (part in cur) {
         cur = cur[part];
       } else {
         cur = cur[part] = {};
@@ -157,7 +151,7 @@ var cr = cr || function(global) {
         return function(value) {
           const oldValue = this[name];
           if (value !== oldValue) {
-            if (value == undefined) {
+            if (value === undefined) {
               this.removeAttribute(attributeName);
             } else {
               this.setAttribute(attributeName, value);
@@ -200,21 +194,51 @@ var cr = cr || function(global) {
    * @param {PropertyKind=} opt_kind What kind of underlying storage to use.
    * @param {function(*, *):void=} opt_setHook A function to run after the
    *     property is set, but before the propertyChange event is fired.
+   *
+   * TODO(crbug.com/425829): This function makes use of deprecated getter or
+   * setter functions.
+   * @suppress {deprecated}
    */
   function defineProperty(obj, name, opt_kind, opt_setHook) {
-    if (typeof obj == 'function') {
+    if (typeof obj === 'function') {
       obj = obj.prototype;
     }
 
     const kind = /** @type {PropertyKind} */ (opt_kind || PropertyKind.JS);
 
+    // TODO(crbug.com/425829): Remove above suppression once we no longer use
+    // deprecated functions lookupGetter, defineGetter, lookupSetter, and
+    // defineSetter.
+    // eslint-disable-next-line no-restricted-properties
     if (!obj.__lookupGetter__(name)) {
+      // eslint-disable-next-line no-restricted-properties
       obj.__defineGetter__(name, getGetter(name, kind));
     }
 
+    // eslint-disable-next-line no-restricted-properties
     if (!obj.__lookupSetter__(name)) {
+      // eslint-disable-next-line no-restricted-properties
       obj.__defineSetter__(name, getSetter(name, kind, opt_setHook));
     }
+  }
+
+  /**
+   * Returns a getter and setter to be used as property descriptor in
+   * Object.defineProperty(). When the setter changes the value a property
+   * change event with the type {@code name + 'Change'} is fired.
+   * @param {string} name The name of the property.
+   * @param {PropertyKind=} opt_kind What kind of underlying storage to use.
+   * @param {function(*, *):void=} opt_setHook A function to run after the
+   *     property is set, but before the propertyChange event is fired.
+   */
+  function getPropertyDescriptor(name, opt_kind, opt_setHook) {
+    const kind = /** @type {PropertyKind} */ (opt_kind || PropertyKind.JS);
+
+    const desc = {
+      get: getGetter(name, kind),
+      set: getSetter(name, kind, opt_setHook),
+    };
+    return desc;
   }
 
   /**
@@ -227,19 +251,6 @@ var cr = cr || function(global) {
    */
   function createUid() {
     return uidCounter++;
-  }
-
-  /**
-   * Returns a unique ID for the item. This mutates the item so it needs to be
-   * an object
-   * @param {!Object} item The item to get the unique ID for.
-   * @return {number} The unique ID for the item.
-   */
-  function getUid(item) {
-    if (item.hasOwnProperty('uid')) {
-      return item.uid;
-    }
-    return item.uid = createUid();
   }
 
   /**
@@ -304,28 +315,6 @@ var cr = cr || function(global) {
     ctor.getInstance = function() {
       return ctor.instance_ || (ctor.instance_ = new ctor());
     };
-  }
-
-  /**
-   * Forwards public APIs to private implementations.
-   * @param {Function} ctor Constructor that have private implementations in its
-   *     prototype.
-   * @param {Array<string>} methods List of public method names that have their
-   *     underscored counterparts in constructor's prototype.
-   * @param {string=} opt_target Selector for target node.
-   */
-  function makePublic(ctor, methods, opt_target) {
-    methods.forEach(function(method) {
-      ctor[method] = function() {
-        const target = opt_target ?
-            // Disable document.getElementById restriction since cr.js should
-            // not depend on util.js.
-            // eslint-disable-next-line no-restricted-properties
-            document.getElementById(opt_target) :
-            ctor.getInstance();
-        return target[method + '_'].apply(target, arguments);
-      };
-    });
   }
 
   /**
@@ -443,14 +432,11 @@ var cr = cr || function(global) {
 
   return {
     addSingletonGetter: addSingletonGetter,
-    createUid: createUid,
     define: define,
     defineProperty: defineProperty,
+    getPropertyDescriptor: getPropertyDescriptor,
     dispatchPropertyChange: dispatchPropertyChange,
     dispatchSimpleEvent: dispatchSimpleEvent,
-    exportPath: exportPath,
-    getUid: getUid,
-    makePublic: makePublic,
     PropertyKind: PropertyKind,
 
     // C++ <-> JS communication related methods.
@@ -459,10 +445,6 @@ var cr = cr || function(global) {
     sendWithPromise: sendWithPromise,
     webUIListenerCallback: webUIListenerCallback,
     webUIResponse: webUIResponse,
-
-    get doc() {
-      return document;
-    },
 
     /** Whether we are using a Mac or not. */
     get isMac() {
@@ -474,9 +456,26 @@ var cr = cr || function(global) {
       return /Win/.test(navigator.platform);
     },
 
-    /** Whether this is on chromeOS or not. */
+    /** Whether this is the ChromeOS/ash web browser. */
     get isChromeOS() {
-      return /CrOS/.test(navigator.userAgent);
+      let returnValue = false;
+      // TODO(https://crbug.com/1118190): grit conditionals do not work in many
+      // WebUI tests.
+      // <if expr="chromeos">
+      returnValue = true;
+      // </if>
+      return returnValue;
+    },
+
+    /** Whether this is the ChromeOS/Lacros web browser. */
+    get isLacros() {
+      let returnValue = false;
+      // TODO(https://crbug.com/1118190): grit conditionals do not work in many
+      // WebUI tests.
+      // <if expr="lacros">
+      returnValue = true;
+      // </if>
+      return returnValue;
     },
 
     /** Whether this is on vanilla Linux (not chromeOS). */
@@ -491,7 +490,7 @@ var cr = cr || function(global) {
 
     /** Whether this is on iOS. */
     get isIOS() {
-      return /iPad|iPhone|iPod/.test(navigator.platform);
+      return /CriOS/.test(navigator.userAgent);
     }
   };
 }(this);

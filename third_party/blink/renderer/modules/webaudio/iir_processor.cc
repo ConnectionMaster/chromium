@@ -5,16 +5,19 @@
 #include "third_party/blink/renderer/modules/webaudio/iir_processor.h"
 
 #include <memory>
-#include "third_party/blink/renderer/modules/webaudio/iirdsp_kernel.h"
+#include "third_party/blink/renderer/modules/webaudio/iir_dsp_kernel.h"
 
 namespace blink {
 
 IIRProcessor::IIRProcessor(float sample_rate,
                            uint32_t number_of_channels,
+                           unsigned render_quantum_frames,
                            const Vector<double>& feedforward_coef,
                            const Vector<double>& feedback_coef,
                            bool is_filter_stable)
-    : AudioDSPKernelProcessor(sample_rate, number_of_channels),
+    : AudioDSPKernelProcessor(sample_rate,
+                              number_of_channels,
+                              render_quantum_frames),
       is_filter_stable_(is_filter_stable) {
   unsigned feedback_length = feedback_coef.size();
   unsigned feedforward_length = feedforward_coef.size();

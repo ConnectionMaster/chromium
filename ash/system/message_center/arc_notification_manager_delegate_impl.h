@@ -5,7 +5,7 @@
 #ifndef ASH_SYSTEM_MESSAGE_CENTER_ARC_NOTIFICATION_MANAGER_DELEGATE_IMPL_H_
 #define ASH_SYSTEM_MESSAGE_CENTER_ARC_NOTIFICATION_MANAGER_DELEGATE_IMPL_H_
 
-#include "ash/system/message_center/arc/arc_notification_manager_delegate.h"
+#include "ash/public/cpp/message_center/arc_notification_manager_delegate.h"
 #include "base/macros.h"
 
 namespace ash {
@@ -18,8 +18,6 @@ class ArcNotificationManagerDelegateImpl
 
   // ArcNotificationManagerDelegate:
   bool IsPublicSessionOrKiosk() const override;
-  void GetAppIdByPackageName(const std::string& package_name,
-                             GetAppIdByPackageNameCallback callback) override;
   void ShowMessageCenter() override;
   void HideMessageCenter() override;
 

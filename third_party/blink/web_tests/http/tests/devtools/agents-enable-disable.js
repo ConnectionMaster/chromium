@@ -3,60 +3,57 @@
 // found in the LICENSE file.
 
 (async function() {
+  'use strict';
   TestRunner.addResult(`Test that each agent could be enabled/disabled separately.\n`);
 
-
-  var requestsSent = 0;
-  var responsesReceived = 0;
-
-  function finishWhenDone(agentName, action, errorString) {
+  function printResult(agentName, action, errorString) {
     if (action === 'enable')
       TestRunner.addResult('');
     if (errorString)
       TestRunner.addResult(agentName + '.' + action + ' finished with error ' + errorString);
     else
       TestRunner.addResult(agentName + '.' + action + ' finished successfully');
-
-    ++responsesReceived;
-    if (responsesReceived === requestsSent)
-      TestRunner.completeTest();
   }
 
-  var targets = SDK.targetManager.targets();
-  for (var target of targets) {
-    var agentNames = Object.keys(target._agents)
-                         .filter(function(agentName) {
-                           var agent = target._agents[agentName];
-                           return agent['enable'] && agent['disable']
-                               && agentName !== 'ServiceWorker'
-                               && agentName !== 'Security'
-                               && agentName !== 'Inspector'
-                               && agentName !== 'HeadlessExperimental'
-                               && agentName !== 'Fetch'
-                               && agentName !== 'Cast'
-                               && agentName !== 'BackgroundService';
-                         })
-                         .sort();
+  const targets = SDK.targetManager.targets();
+  for (const target of targets) {
+    const agentNames =
+        Object.keys(target._agents)
+            .filter(function(agentName) {
+              const agent = target._agents[agentName];
+              return agent['enable'] && agent['disable'] &&
+                  agentName !== 'ServiceWorker' && agentName !== 'Security' &&
+                  agentName !== 'Inspector' &&
+                  agentName !== 'HeadlessExperimental' &&
+                  agentName !== 'Fetch' && agentName !== 'Cast' &&
+                  agentName !== 'BackgroundService';
+            })
+            .sort();
 
     async function disableAgent(agentName) {
-      ++requestsSent;
-      var agent = target._agents[agentName];
-      var response = await agent.invoke_disable({});
-      finishWhenDone(agentName, 'disable', response[Protocol.Error]);
+      const agent = target._agents[agentName];
+      const response = await agent.invoke_disable({});
+      printResult(
+          agentName, 'disable',
+          response[ProtocolClient.InspectorBackend.ProtocolError]);
     }
 
     async function enableAgent(agentName) {
-      ++requestsSent;
-      var agent = target._agents[agentName];
-      var response = await agent.invoke_enable({});
-      finishWhenDone(agentName, 'enable', response[Protocol.Error]);
+      const agent = target._agents[agentName];
+      const response = await agent.invoke_enable({});
+      printResult(
+          agentName, 'enable',
+          response[ProtocolClient.InspectorBackend.ProtocolError]);
     }
 
-    agentNames.forEach(disableAgent);
+    for (const agentName of agentNames)
+      await disableAgent(agentName);
 
-    agentNames.forEach(agentName => {
-      enableAgent(agentName);
-      disableAgent(agentName);
-    });
+    for (const agentName of agentNames) {
+      await enableAgent(agentName);
+      await disableAgent(agentName);
+    }
   }
+
+  TestRunner.completeTest();
 })();

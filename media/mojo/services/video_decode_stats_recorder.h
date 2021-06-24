@@ -6,16 +6,13 @@
 #define MEDIA_MOJO_SERVICES_VIDEO_DECODE_STATS_RECORDER_H_
 
 #include <stdint.h>
-#include <string>
 
-#include "base/time/time.h"
 #include "media/base/video_codecs.h"
 #include "media/learning/common/value.h"
-#include "media/mojo/interfaces/media_types.mojom.h"
-#include "media/mojo/interfaces/video_decode_stats_recorder.mojom.h"
+#include "media/mojo/mojom/media_types.mojom.h"
+#include "media/mojo/mojom/video_decode_stats_recorder.mojom.h"
 #include "media/mojo/services/media_mojo_export.h"
 #include "media/mojo/services/video_decode_perf_history.h"
-#include "services/service_manager/public/cpp/bind_source_info.h"
 #include "url/gurl.h"
 
 namespace media {

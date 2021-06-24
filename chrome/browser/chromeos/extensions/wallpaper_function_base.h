@@ -13,7 +13,6 @@
 #include "ui/gfx/image/image_skia.h"
 
 namespace base {
-class RefCountedBytes;
 class SequencedTaskRunner;
 }
 
@@ -33,7 +32,7 @@ void RecordCustomWallpaperLayout(const ash::WallpaperLayout& layout);
 
 // Wallpaper manager function base. It contains a image decoder to decode
 // wallpaper data.
-class WallpaperFunctionBase : public UIThreadExtensionFunction {
+class WallpaperFunctionBase : public ExtensionFunction {
  public:
   static const int kWallpaperThumbnailWidth;
   static const int kWallpaperThumbnailHeight;
@@ -69,10 +68,8 @@ class WallpaperFunctionBase : public UIThreadExtensionFunction {
   void OnFailure(const std::string& error);
 
   // Resize the image to |size|, encode it and save to |thumbnail_data_out|.
-  void GenerateThumbnail(
-      const gfx::ImageSkia& image,
-      const gfx::Size& size,
-      scoped_refptr<base::RefCountedBytes>* thumbnail_data_out);
+  std::vector<uint8_t> GenerateThumbnail(const gfx::ImageSkia& image,
+                                         const gfx::Size& size);
 
  private:
   virtual void OnWallpaperDecoded(const gfx::ImageSkia& wallpaper) = 0;

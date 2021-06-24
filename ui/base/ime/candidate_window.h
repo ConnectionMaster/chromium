@@ -38,6 +38,10 @@ class COMPONENT_EXPORT(UI_BASE_IME_TYPES) CandidateWindow {
     // window.
     std::string auxiliary_text;
     bool is_auxiliary_text_visible;
+
+    // The index of the current chosen candidate out of total candidates
+    int current_candidate_index;
+    int total_candidates;
   };
 
   // Represents a candidate entry.
@@ -45,11 +49,11 @@ class COMPONENT_EXPORT(UI_BASE_IME_TYPES) CandidateWindow {
     Entry();
     Entry(const Entry& other);
     virtual ~Entry();
-    base::string16 value;
-    base::string16 label;
-    base::string16 annotation;
-    base::string16 description_title;
-    base::string16 description_body;
+    std::u16string value;
+    std::u16string label;
+    std::u16string annotation;
+    std::u16string description_title;
+    std::u16string description_body;
   };
 
   CandidateWindow();
@@ -112,6 +116,12 @@ class COMPONENT_EXPORT(UI_BASE_IME_TYPES) CandidateWindow {
   void set_auxiliary_text(const std::string& auxiliary_text) const {
     property_->auxiliary_text = auxiliary_text;
   }
+
+  const int& current_candidate_index() const {
+    return property_->current_candidate_index;
+  }
+
+  const int& total_candidates() const { return property_->total_candidates; }
 
   const std::vector<Entry>& candidates() const { return candidates_; }
   std::vector<Entry>* mutable_candidates() { return &candidates_; }

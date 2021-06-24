@@ -7,8 +7,9 @@
 #include "base/metrics/field_trial_param_associator.h"
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/task/post_task.h"
 #include "base/test/scoped_feature_list.h"
@@ -24,7 +25,6 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/common/content_features.h"
-#include "content/public/common/service_manager_connection.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
 #include "content/public/test/browser_test_utils.h"
@@ -35,31 +35,12 @@
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_quality_tracker.h"
 
-namespace {
-
-// Simulates a network quality change. This is only called when network service
-// is running in the browser process, in which case, the network quality
-// estimator lives on the browser IO thread.
-void SimulateNetworkQualityChangeOnIO(net::EffectiveConnectionType type) {
-  DCHECK(!base::FeatureList::IsEnabled(network::features::kNetworkService));
-  DCHECK(content::GetNetworkServiceImpl());
-  DCHECK(content::GetNetworkServiceImpl()->network_quality_estimator());
-  content::GetNetworkServiceImpl()
-      ->network_quality_estimator()
-      ->SimulateNetworkQualityChangeForTesting(type);
-  base::RunLoop().RunUntilIdle();
-}
-
-}  // namespace
-
 // Tests if the save data header holdback works as expected.
 class NetInfoNetworkQualityEstimatorHoldbackBrowserTest
     : public InProcessBrowserTest,
       public testing::WithParamInterface<bool> {
  protected:
-  NetInfoNetworkQualityEstimatorHoldbackBrowserTest()
-      : network_service_enabled_(
-            base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+  NetInfoNetworkQualityEstimatorHoldbackBrowserTest() {
     ConfigureHoldbackExperiment();
   }
 
@@ -112,32 +93,24 @@ class NetInfoNetworkQualityEstimatorHoldbackBrowserTest
 
   // Simulates a network quality change.
   void SimulateNetworkQualityChange(net::EffectiveConnectionType type) {
-    if (network_service_enabled_) {
+    g_browser_process->network_quality_tracker()
+        ->ReportEffectiveConnectionTypeForTesting(type);
+
+    // Values taken from net/nqe/network_quality_estimator_params.h.
+    // TODO(tbansal): Declare the values in a common place, and read
+    // them directly.
+    if (type == net::EFFECTIVE_CONNECTION_TYPE_3G) {
       g_browser_process->network_quality_tracker()
-          ->ReportEffectiveConnectionTypeForTesting(type);
-
-      // Values taken from net/nqe/network_quality_estimator_params.h.
-      // TODO(tbansal): Declare the values in a common place, and read
-      // them directly.
-      if (type == net::EFFECTIVE_CONNECTION_TYPE_3G) {
-        g_browser_process->network_quality_tracker()
-            ->ReportRTTsAndThroughputForTesting(
-                base::TimeDelta::FromMilliseconds(450), 400);
-      } else if (type == net::EFFECTIVE_CONNECTION_TYPE_SLOW_2G) {
-        g_browser_process->network_quality_tracker()
-            ->ReportRTTsAndThroughputForTesting(
-                base::TimeDelta::FromMilliseconds(3600), 40);
-      } else {
-        NOTREACHED();
-      }
-      return;
+          ->ReportRTTsAndThroughputForTesting(
+              base::TimeDelta::FromMilliseconds(450), 400);
+    } else if (type == net::EFFECTIVE_CONNECTION_TYPE_SLOW_2G) {
+      g_browser_process->network_quality_tracker()
+          ->ReportRTTsAndThroughputForTesting(
+              base::TimeDelta::FromMilliseconds(3600), 40);
+    } else {
+      NOTREACHED();
     }
-    base::PostTaskWithTraits(
-        FROM_HERE, {content::BrowserThread::IO},
-        base::BindOnce(&SimulateNetworkQualityChangeOnIO, type));
   }
-
-  bool network_service_enabled() const { return network_service_enabled_; }
 
  private:
   content::WebContents* GetWebContents() const {
@@ -188,29 +161,25 @@ class NetInfoNetworkQualityEstimatorHoldbackBrowserTest
   }
 
   std::string RunScriptExtractString(const std::string& script) {
-    std::string data;
-    EXPECT_TRUE(content::ExecuteScriptAndExtractString(
-        browser()->tab_strip_model()->GetActiveWebContents(), script, &data));
-    return data;
+    return content::EvalJs(browser()->tab_strip_model()->GetActiveWebContents(),
+                           script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractString();
   }
 
   double RunScriptExtractDouble(const std::string& script) {
-    double data = 0.0;
-    EXPECT_TRUE(ExecuteScriptAndExtractDouble(
-        browser()->tab_strip_model()->GetActiveWebContents(), script, &data));
-    return data;
+    return content::EvalJs(browser()->tab_strip_model()->GetActiveWebContents(),
+                           script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractDouble();
   }
 
   int RunScriptExtractInt(const std::string& script) {
-    int data = 0;
-    EXPECT_TRUE(ExecuteScriptAndExtractInt(
-        browser()->tab_strip_model()->GetActiveWebContents(), script, &data));
-    return data;
+    return content::EvalJs(browser()->tab_strip_model()->GetActiveWebContents(),
+                           script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractInt();
   }
 
   net::EmbeddedTestServer test_server_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  const bool network_service_enabled_;
 };
 
 // Make sure the changes in the effective connection typeare notified to the
@@ -243,6 +212,6 @@ IN_PROC_BROWSER_TEST_P(NetInfoNetworkQualityEstimatorHoldbackBrowserTest,
 
 // The network quality estimator web holdback is enabled only if the first
 // param is true.
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          NetInfoNetworkQualityEstimatorHoldbackBrowserTest,
                          testing::Bool());

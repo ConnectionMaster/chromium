@@ -14,10 +14,9 @@
 #include "ash/wm/fullscreen_window_finder.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "ash/wm/overview/overview_controller.h"
+#include "ash/wm/window_animations.h"
 #include "ash/wm/window_state.h"
-#include "ash/wm/wm_window_animations.h"
 #include "ash/wm/workspace/backdrop_controller.h"
-#include "ash/wm/workspace/backdrop_delegate.h"
 #include "ash/wm/workspace/workspace_event_handler.h"
 #include "ash/wm/workspace/workspace_layout_manager.h"
 #include "ui/aura/window.h"
@@ -65,36 +64,37 @@ WorkspaceController::~WorkspaceController() {
   viewport_->SetLayoutManager(nullptr);
 }
 
-wm::WorkspaceWindowState WorkspaceController::GetWindowState() const {
+WorkspaceWindowState WorkspaceController::GetWindowState() const {
   if (!viewport_)
-    return wm::WORKSPACE_WINDOW_STATE_DEFAULT;
+    return WorkspaceWindowState::kDefault;
 
   // Always use DEFAULT state in overview mode so that work area stays
   // the same regardles of the window we have.
   // The |overview_controller| can be null during shutdown.
   if (Shell::Get()->overview_controller() &&
-      Shell::Get()->overview_controller()->IsSelecting()) {
-    return wm::WORKSPACE_WINDOW_STATE_DEFAULT;
+      Shell::Get()->overview_controller()->InOverviewSession()) {
+    return WorkspaceWindowState::kDefault;
   }
 
   const aura::Window* fullscreen =
-      wm::GetWindowForFullscreenModeForContext(viewport_);
+      GetWindowForFullscreenModeForContext(viewport_);
   if (fullscreen)
-    return wm::WORKSPACE_WINDOW_STATE_FULL_SCREEN;
+    return WorkspaceWindowState::kFullscreen;
 
   auto mru_list =
-      Shell::Get()->mru_window_tracker()->BuildWindowListIgnoreModal();
+      Shell::Get()->mru_window_tracker()->BuildWindowListIgnoreModal(
+          kActiveDesk);
 
   for (aura::Window* window : mru_list) {
     if (window->GetRootWindow() != viewport_->GetRootWindow())
       continue;
-    wm::WindowState* window_state = wm::GetWindowState(window);
+    WindowState* window_state = WindowState::Get(window);
     if (window->layer() && !window->layer()->GetTargetVisibility())
       continue;
     if (window_state->IsMaximized())
-      return wm::WORKSPACE_WINDOW_STATE_MAXIMIZED;
+      return WorkspaceWindowState::kMaximized;
   }
-  return wm::WORKSPACE_WINDOW_STATE_DEFAULT;
+  return WorkspaceWindowState::kDefault;
 }
 
 void WorkspaceController::DoInitialAnimation() {
@@ -123,11 +123,6 @@ void WorkspaceController::DoInitialAnimation() {
     layer->SetTransform(gfx::Transform());
     layer->SetOpacity(1.0f);
   }
-}
-
-void WorkspaceController::SetBackdropDelegate(
-    std::unique_ptr<BackdropDelegate> delegate) {
-  layout_manager_->SetBackdropDelegate(std::move(delegate));
 }
 
 void WorkspaceController::OnWindowDestroying(aura::Window* window) {

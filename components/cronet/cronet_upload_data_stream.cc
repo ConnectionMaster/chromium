@@ -17,8 +17,7 @@ CronetUploadDataStream::CronetUploadDataStream(Delegate* delegate, int64_t size)
       waiting_on_rewind_(false),
       rewind_in_progress_(false),
       at_front_of_stream_(true),
-      delegate_(delegate),
-      weak_factory_(this) {}
+      delegate_(delegate) {}
 
 CronetUploadDataStream::~CronetUploadDataStream() {
   delegate_->OnUploadDataStreamDestroyed();
@@ -68,7 +67,8 @@ int CronetUploadDataStream::ReadInternal(net::IOBuffer* buf, int buf_len) {
   read_in_progress_ = true;
   waiting_on_read_ = true;
   at_front_of_stream_ = false;
-  delegate_->Read(buf, buf_len);
+  scoped_refptr<net::IOBuffer> buffer(base::WrapRefCounted(buf));
+  delegate_->Read(std::move(buffer), buf_len);
   return net::ERR_IO_PENDING;
 }
 

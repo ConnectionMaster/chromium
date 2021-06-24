@@ -30,7 +30,7 @@
 #include "third_party/blink/renderer/platform/transforms/transformation_matrix.h"
 
 #include <string.h>  // for memcpy
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -200,4 +200,4 @@ PLATFORM_EXPORT std::ostream& operator<<(std::ostream&, const AffineTransform&);
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_TRANSFORMS_AFFINE_TRANSFORM_H_

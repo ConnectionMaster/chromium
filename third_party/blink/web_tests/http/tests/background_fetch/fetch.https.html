@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- TODO(crbug.com/1198604): convert to WPT. -->
 <meta charset="utf-8">
 <title>Background Fetch API: CORS preflight blocking test</title>
 <script src="/resources/testharness.js"></script>
@@ -9,6 +10,7 @@
 'use strict';
 
 // https://crbug.com/889401
+// TODO(crbug.com/1198604): convert to WPT.
 backgroundFetchTest(async (t, bgFetch) => {
   const registrationPromises = [];
   for (let i = 0; i < 6; i++) {
@@ -26,5 +28,10 @@ backgroundFetchTest(async (t, bgFetch) => {
   }
 
 }, 'Registration rejected after limit exceeded');
+
+backgroundFetchTest(async (t, bgFetch) => {
+  const registration = await bgFetch.fetch(
+      'my-fetch', '/', {icons: [{src: '/'}]});
+}, 'Registration with icons works.');
 
 </script>

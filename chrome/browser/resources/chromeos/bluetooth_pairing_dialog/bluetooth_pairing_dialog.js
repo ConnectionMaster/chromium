@@ -2,6 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_components/chromeos/bluetooth/bluetooth_dialog.m.js';
+import 'chrome://resources/cr_elements/shared_style_css.m.js';
+import 'chrome://resources/cr_elements/shared_vars_css.m.js';
+import 'chrome://resources/cr_elements/cr_page_host_style_css.js';
+import './strings.m.js';
+
+import {I18nBehavior} from 'chrome://resources/js/i18n_behavior.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
 /**
  * @fileoverview
  * 'bluetooth-dialog-host' is used to host a <bluetooth-dialog> element to
@@ -13,6 +22,8 @@
 
 Polymer({
   is: 'bluetooth-pairing-dialog',
+
+  _template: html`{__html_template__}`,
 
   behaviors: [I18nBehavior],
 
@@ -26,26 +37,40 @@ Polymer({
   },
 
   /** @override */
-  attached: function() {
-    var dialogArgs = chrome.getVariableValue('dialogArguments');
-    this.pairingDevice_ =
-        /** @type {!chrome.bluetooth.Device} */ (
-            dialogArgs ? JSON.parse(dialogArgs) : {});
-    this.connect_();
+  attached() {
+    let dialogArgs = chrome.getVariableValue('dialogArguments');
+    if (!dialogArgs) {
+      // This situation currently only occurs if the user navigates to the debug
+      // chrome://bluetooth-pairing.
+      console.warn('No arguments were provided to the dialog.');
+      this.$.deviceDialog.open();
+      return;
+    }
+
+    let parsedDialogArgs = JSON.parse(dialogArgs);
+    this.connect_(parsedDialogArgs.address);
   },
 
-  /** @private */
-  connect_: function() {
+  /**
+   * @param {!string} address The address of the pairing device.
+   * @private
+   */
+  connect_(address) {
     this.$.deviceDialog.open();
-    var device = this.pairingDevice_;
-    chrome.bluetoothPrivate.connect(device.address, result => {
-      var dialog = this.$.deviceDialog;
-      dialog.handleError(device, chrome.runtime.lastError, result);
+
+    chrome.bluetooth.getDevice(address, device => {
+      this.pairingDevice_ = device;
+      chrome.bluetoothPrivate.connect(address, result => {
+        var dialog = this.$.deviceDialog;
+        dialog.endConnectionAttempt(
+            this.pairingDevice_, true /* wasPairing */,
+            chrome.runtime.lastError, result);
+      });
     });
   },
 
   /** @private */
-  onDialogClose_: function() {
+  onDialogClose_() {
     chrome.send('dialogClose');
   },
 });

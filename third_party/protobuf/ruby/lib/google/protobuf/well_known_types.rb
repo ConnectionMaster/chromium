@@ -39,6 +39,12 @@ module Google
   module Protobuf
 
     Any.class_eval do
+      def self.pack(msg, type_url_prefix='type.googleapis.com/')
+        any = self.new
+        any.pack(msg, type_url_prefix)
+        any
+      end
+
       def pack(msg, type_url_prefix='type.googleapis.com/')
         if type_url_prefix.empty? or type_url_prefix[-1] != '/' then
           self.type_url = "#{type_url_prefix}/#{msg.class.descriptor.name}"
@@ -66,8 +72,14 @@ module Google
     end
 
     Timestamp.class_eval do
-      def to_time
-        Time.at(self.to_f)
+      if RUBY_VERSION < "2.5"
+        def to_time
+          Time.at(self.to_f)
+        end
+      else
+        def to_time
+          Time.at(seconds, nanos, :nanosecond)
+        end
       end
 
       def from_time(time)
@@ -149,6 +161,8 @@ module Google
     Struct.class_eval do
       def [](key)
         self.fields[key].to_ruby
+      rescue NoMethodError
+        nil
       end
 
       def []=(key, value)
@@ -169,6 +183,10 @@ module Google
         ret = Struct.new
         hash.each { |key, val| ret[key] = val }
         ret
+      end
+
+      def has_key?(key)
+        self.fields.has_key?(key)
       end
     end
 

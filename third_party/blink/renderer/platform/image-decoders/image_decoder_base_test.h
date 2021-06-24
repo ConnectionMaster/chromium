@@ -7,12 +7,8 @@
 
 #include <stdint.h>
 
-#include <string>
-#include <vector>
-
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
-#include "base/macros.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -33,7 +29,9 @@ namespace blink {
 
 class ImageDecoderBaseTest : public testing::Test {
  public:
-  explicit ImageDecoderBaseTest(const std::string& format) : format_(format) {}
+  explicit ImageDecoderBaseTest(const String& format) : format_(format) {}
+  ImageDecoderBaseTest(const ImageDecoderBaseTest&) = delete;
+  ImageDecoderBaseTest& operator=(const ImageDecoderBaseTest&) = delete;
 
   enum class FileSelection {
     kAll,
@@ -48,7 +46,7 @@ class ImageDecoderBaseTest : public testing::Test {
   base::FilePath GetMD5SumPath(const base::FilePath& path);
 
   // Returns the vector of image files for testing.
-  std::vector<base::FilePath> GetImageFiles() const;
+  Vector<base::FilePath> GetImageFiles() const;
 
   // Returns true if the image is bogus and should not be successfully decoded.
   bool ShouldImageFail(const base::FilePath& path) const;
@@ -72,7 +70,7 @@ class ImageDecoderBaseTest : public testing::Test {
   virtual std::unique_ptr<ImageDecoder> CreateImageDecoder() const = 0;
 
   // The format to be decoded, like "bmp" or "ico".
-  std::string format_;
+  String format_;
 
  protected:
   const base::FilePath& data_dir() const { return data_dir_; }
@@ -80,8 +78,6 @@ class ImageDecoderBaseTest : public testing::Test {
  private:
   // Path to the test files.
   base::FilePath data_dir_;
-
-  DISALLOW_COPY_AND_ASSIGN(ImageDecoderBaseTest);
 };
 
 }  // namespace blink

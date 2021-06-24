@@ -6,66 +6,44 @@
 
 #include "third_party/blink/renderer/platform/graphics/logging_canvas.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_display_item.h"
-#include "third_party/blink/renderer/platform/graphics/paint/paint_chunk.h"
 
 namespace blink {
 
-DisplayItemList::Range<DisplayItemList::iterator>
-DisplayItemList::ItemsInPaintChunk(const PaintChunk& paint_chunk) {
-  return Range<iterator>(begin() + paint_chunk.begin_index,
-                         begin() + paint_chunk.end_index);
-}
-
-DisplayItemList::Range<DisplayItemList::const_iterator>
-DisplayItemList::ItemsInPaintChunk(const PaintChunk& paint_chunk) const {
-  return Range<const_iterator>(begin() + paint_chunk.begin_index,
-                               begin() + paint_chunk.end_index);
+DisplayItemList::~DisplayItemList() {
+  for (auto& item : *this)
+    item.Destruct();
 }
 
 #if DCHECK_IS_ON()
 
-std::unique_ptr<JSONArray> DisplayItemList::SubsequenceAsJSON(
-    size_t begin_index,
-    size_t end_index,
-    JsonFlags flags) const {
+std::unique_ptr<JSONArray> DisplayItemList::DisplayItemsAsJSON(
+    wtf_size_t first_item_index,
+    const DisplayItemRange& display_items,
+    JsonFlags flags) {
   auto json_array = std::make_unique<JSONArray>();
-  AppendSubsequenceAsJSON(begin_index, end_index, flags, *json_array);
-  return json_array;
-}
-
-void DisplayItemList::AppendSubsequenceAsJSON(size_t begin_index,
-                                              size_t end_index,
-                                              JsonFlags flags,
-                                              JSONArray& json_array) const {
-  for (size_t i = begin_index; i < end_index; ++i) {
-    auto json = std::make_unique<JSONObject>();
-
-    const auto& item = (*this)[i];
-    json->SetInteger("index", i);
-
-    if (flags & kShownOnlyDisplayItemTypes) {
-      json->SetString("type", DisplayItem::TypeAsDebugString(item.GetType()));
+  wtf_size_t i = first_item_index;
+  DCHECK(!(flags & kCompact) || !(flags & kShowPaintRecords))
+      << "kCompact and kShowPaintRecords are exclusive";
+  for (auto& item : display_items) {
+    if (flags & kCompact) {
+      json_array->PushString(
+          String::Format("%u: %s", i, item.IdAsString().Utf8().data()));
     } else {
-      json->SetString("clientDebugName", item.Client().SafeDebugName(
-                                             flags & kClientKnownToBeAlive));
-      if (flags & kClientKnownToBeAlive) {
-        json->SetString("invalidation",
-                        PaintInvalidationReasonToString(
-                            item.Client().GetPaintInvalidationReason()));
+      auto json = std::make_unique<JSONObject>();
+      json->SetInteger("index", i);
+      item.PropertiesAsJSON(*json, flags & kClientKnownToBeAlive);
+
+      if ((flags & kShowPaintRecords) && item.IsDrawing()) {
+        const auto& drawing_item = To<DrawingDisplayItem>(item);
+        if (const auto* record = drawing_item.GetPaintRecord().get())
+          json->SetArray("record", RecordAsJSON(*record));
       }
-      item.PropertiesAsJSON(*json);
-    }
 
-#if DCHECK_IS_ON()
-    if ((flags & kShowPaintRecords) && item.IsDrawing()) {
-      const auto& drawing_item = static_cast<const DrawingDisplayItem&>(item);
-      if (const auto* record = drawing_item.GetPaintRecord().get())
-        json->SetArray("record", RecordAsJSON(*record));
+      json_array->PushObject(std::move(json));
     }
-#endif
-
-    json_array.PushObject(std::move(json));
+    i++;
   }
+  return json_array;
 }
 
 #endif  // DCHECK_IS_ON()

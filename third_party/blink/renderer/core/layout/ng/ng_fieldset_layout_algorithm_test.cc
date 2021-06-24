@@ -6,64 +6,45 @@
 
 #include "third_party/blink/renderer/core/layout/ng/ng_base_layout_algorithm_test.h"
 #include "third_party/blink/renderer/core/layout/ng/ng_block_layout_algorithm.h"
+#include "third_party/blink/renderer/core/layout/ng/ng_length_utils.h"
 #include "third_party/blink/renderer/core/layout/ng/ng_physical_box_fragment.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 namespace {
 
-class NGFieldsetLayoutAlgorithmTest : public NGBaseLayoutAlgorithmTest {
+class NGFieldsetLayoutAlgorithmTest
+    : public NGBaseLayoutAlgorithmTest,
+      private ScopedLayoutNGBlockFragmentationForTest {
  protected:
-  void SetUp() override {
-    NGBaseLayoutAlgorithmTest::SetUp();
-    style_ = ComputedStyle::Create();
-    was_fieldset_enabled_ = RuntimeEnabledFeatures::LayoutNGFieldsetEnabled();
-    was_block_fragmentation_enabled_ =
-        RuntimeEnabledFeatures::LayoutNGBlockFragmentationEnabled();
-    RuntimeEnabledFeatures::SetLayoutNGFieldsetEnabled(true);
-    RuntimeEnabledFeatures::SetLayoutNGBlockFragmentationEnabled(true);
-  }
-
-  void TearDown() override {
-    RuntimeEnabledFeatures::SetLayoutNGFieldsetEnabled(was_fieldset_enabled_);
-    RuntimeEnabledFeatures::SetLayoutNGBlockFragmentationEnabled(
-        was_block_fragmentation_enabled_);
-  }
-
-  scoped_refptr<const NGPhysicalBoxFragment> RunBlockLayoutAlgorithm(
-      const NGConstraintSpace& space,
-      NGBlockNode node) {
-    scoped_refptr<const NGLayoutResult> result =
-        NGBlockLayoutAlgorithm(node, space).Layout();
-
-    return To<NGPhysicalBoxFragment>(result->PhysicalFragment());
-  }
+  NGFieldsetLayoutAlgorithmTest()
+      : ScopedLayoutNGBlockFragmentationForTest(true) {}
 
   scoped_refptr<const NGPhysicalBoxFragment> RunBlockLayoutAlgorithm(
       Element* element) {
-    NGBlockNode container(ToLayoutBox(element->GetLayoutObject()));
+    NGBlockNode container(element->GetLayoutBox());
     NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
-        WritingMode::kHorizontalTb, TextDirection::kLtr,
-        NGLogicalSize(LayoutUnit(1000), NGSizeIndefinite));
-    return RunBlockLayoutAlgorithm(space, container);
+        {WritingMode::kHorizontalTb, TextDirection::kLtr},
+        LogicalSize(LayoutUnit(1000), kIndefiniteSize));
+    return NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(container, space);
   }
 
-  MinMaxSize RunComputeMinAndMax(NGBlockNode node) {
+  MinMaxSizes RunComputeMinMaxSizes(NGBlockNode node) {
     NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
-        WritingMode::kHorizontalTb, TextDirection::kLtr,
-        NGLogicalSize(LayoutUnit(), LayoutUnit()));
+        {WritingMode::kHorizontalTb, TextDirection::kLtr},
+        LogicalSize(LayoutUnit(), LayoutUnit()),
+        /* stretch_inline_size_if_auto */ true,
+        node.CreatesNewFormattingContext());
+    NGFragmentGeometry fragment_geometry =
+        CalculateInitialFragmentGeometry(space, node, /* is_intrinsic */ true);
 
-    NGFieldsetLayoutAlgorithm algorithm(node, space);
-    MinMaxSizeInput input(
-        /* percentage_resolution_block_size */ (LayoutUnit()));
-    auto min_max = algorithm.ComputeMinMaxSize(input);
-    EXPECT_TRUE(min_max.has_value());
-    return *min_max;
+    NGFieldsetLayoutAlgorithm algorithm({node, fragment_geometry, space});
+    return algorithm.ComputeMinMaxSizes(MinMaxSizesFloatInput()).sizes;
   }
 
-  MinMaxSize RunComputeMinAndMax(const char* element_id) {
-    Element* element = GetDocument().getElementById(element_id);
-    NGBlockNode node(ToLayoutBox(element->GetLayoutObject()));
-    return RunComputeMinAndMax(node);
+  MinMaxSizes RunComputeMinMaxSizes(const char* element_id) {
+    NGBlockNode node(GetLayoutBoxByElementId(element_id));
+    return RunComputeMinMaxSizes(node);
   }
 
   String DumpFragmentTree(const NGPhysicalBoxFragment* fragment) {
@@ -79,10 +60,6 @@ class NGFieldsetLayoutAlgorithmTest : public NGBaseLayoutAlgorithmTest {
     auto fragment = RunBlockLayoutAlgorithm(element);
     return DumpFragmentTree(fragment.get());
   }
-
-  scoped_refptr<ComputedStyle> style_;
-  bool was_fieldset_enabled_ = false;
-  bool was_block_fragmentation_enabled_ = false;
 };
 
 TEST_F(NGFieldsetLayoutAlgorithmTest, Empty) {
@@ -168,7 +145,7 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, SmallLegendLargeBorder) {
   String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
   offset:unplaced size:1000x200
     offset:0,0 size:200x200
-      offset:50,10 size:10x10
+      offset:50,15 size:10x10
       offset:40,40 size:120x120
         offset:10,10 size:100x100
 )DUMP";
@@ -192,10 +169,10 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, LegendOrthogonalWritingMode) {
 
   String dump = DumpFragmentTree(GetElementById("container"));
   String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
-  offset:unplaced size:1000x203
-    offset:0,0 size:126x203
-      offset:43,10 size:10x50
-      offset:3,80 size:120x120
+  offset:unplaced size:1000x193
+    offset:0,0 size:126x193
+      offset:43,0 size:10x50
+      offset:3,70 size:120x120
         offset:10,10 size:100x100
 )DUMP";
   EXPECT_EQ(expectation, dump);
@@ -219,9 +196,9 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, VerticalLr) {
   String dump = DumpFragmentTree(GetElementById("container"));
   String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
   offset:unplaced size:1000x126
-    offset:0,0 size:178x126
-      offset:30,23 size:10x50
-      offset:55,3 size:120x120
+    offset:0,0 size:148x126
+      offset:0,23 size:10x50
+      offset:25,3 size:120x120
         offset:10,10 size:100x100
 )DUMP";
   EXPECT_EQ(expectation, dump);
@@ -245,7 +222,7 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, VerticalRl) {
   String dump = DumpFragmentTree(GetElementById("container"));
   String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
   offset:unplaced size:1000x126
-    offset:0,0 size:178x126
+    offset:0,0 size:163x126
       offset:153,23 size:10x50
       offset:3,3 size:120x120
         offset:10,10 size:100x100
@@ -274,9 +251,8 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, LegendAutoSize) {
   offset:unplaced size:1000x323
     offset:0,0 size:126x323
       offset:13,0 size:50x200
-        offset:50,0 size:0x0
-          offset:-50,0 size:25x200
-          offset:-25,0 size:25x200
+        offset:0,0 size:25x200
+        offset:25,0 size:25x200
       offset:3,200 size:120x120
         offset:10,10 size:100x100
 )DUMP";
@@ -362,7 +338,7 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, ZeroHeight) {
   offset:unplaced size:1000x53
     offset:0,0 size:126x53
       offset:13,0 size:30x30
-      offset:3,30 size:120x0
+      offset:3,30 size:120x20
         offset:10,10 size:100x200
 )DUMP";
   EXPECT_EQ(expectation, dump);
@@ -390,7 +366,7 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, ZeroMaxHeight) {
   offset:unplaced size:1000x53
     offset:0,0 size:126x53
       offset:13,0 size:30x30
-      offset:3,30 size:120x220
+      offset:3,30 size:120x0
         offset:10,10 size:100x200
 )DUMP";
   EXPECT_EQ(expectation, dump);
@@ -457,6 +433,47 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, LegendPercentHeightQuirks) {
   EXPECT_EQ(expectation, dump);
 }
 
+// This test makes sure that the fieldset content handles fieldset padding
+// when the fieldset is expanded to encompass the legend.
+TEST_F(NGFieldsetLayoutAlgorithmTest, FieldsetPaddingWithLegend) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:none; margin:0; padding:10px; width: 150px; height: 100px;
+        }
+        #legend {
+          padding:0px; margin:0; width: 50px; height: 120px;
+        }
+        #child {
+          width: 100px; height: 40px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+        <div id="child"></div>
+      </fieldset>
+  )HTML");
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext());
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:170x140
+    offset:10,0 size:50x120
+    offset:0,120 size:170x20
+      offset:10,10 size:100x40
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
 TEST_F(NGFieldsetLayoutAlgorithmTest, MinMax) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -496,31 +513,1375 @@ TEST_F(NGFieldsetLayoutAlgorithmTest, MinMax) {
     </div>
   )HTML");
 
-  MinMaxSize size;
+  MinMaxSizes sizes;
 
-  size = RunComputeMinAndMax("fieldset1");
-  EXPECT_EQ(size.min_size, LayoutUnit(26));
-  EXPECT_EQ(size.max_size, LayoutUnit(26));
+  sizes = RunComputeMinMaxSizes("fieldset1");
+  EXPECT_EQ(sizes.min_size, LayoutUnit(26));
+  EXPECT_EQ(sizes.max_size, LayoutUnit(26));
 
-  size = RunComputeMinAndMax("fieldset2");
-  EXPECT_EQ(size.min_size, LayoutUnit(102));
-  EXPECT_EQ(size.max_size, LayoutUnit(102));
+  sizes = RunComputeMinMaxSizes("fieldset2");
+  EXPECT_EQ(sizes.min_size, LayoutUnit(102));
+  EXPECT_EQ(sizes.max_size, LayoutUnit(102));
 
-  size = RunComputeMinAndMax("fieldset3");
-  EXPECT_EQ(size.min_size, LayoutUnit(102));
-  EXPECT_EQ(size.max_size, LayoutUnit(126));
+  sizes = RunComputeMinMaxSizes("fieldset3");
+  EXPECT_EQ(sizes.min_size, LayoutUnit(102));
+  EXPECT_EQ(sizes.max_size, LayoutUnit(126));
 
-  size = RunComputeMinAndMax("fieldset4");
-  EXPECT_EQ(size.min_size, LayoutUnit(152));
-  EXPECT_EQ(size.max_size, LayoutUnit(202));
+  sizes = RunComputeMinMaxSizes("fieldset4");
+  EXPECT_EQ(sizes.min_size, LayoutUnit(152));
+  EXPECT_EQ(sizes.max_size, LayoutUnit(202));
 
-  size = RunComputeMinAndMax("fieldset5");
-  EXPECT_EQ(size.min_size, LayoutUnit(152));
-  EXPECT_EQ(size.max_size, LayoutUnit(176));
+  sizes = RunComputeMinMaxSizes("fieldset5");
+  EXPECT_EQ(sizes.min_size, LayoutUnit(152));
+  EXPECT_EQ(sizes.max_size, LayoutUnit(176));
 
-  size = RunComputeMinAndMax("fieldset6");
-  EXPECT_EQ(size.min_size, LayoutUnit(76));
-  EXPECT_EQ(size.max_size, LayoutUnit(126));
+  sizes = RunComputeMinMaxSizes("fieldset6");
+  EXPECT_EQ(sizes.min_size, LayoutUnit(76));
+  EXPECT_EQ(sizes.max_size, LayoutUnit(126));
+}
+
+// Tests that a fieldset won't fragment if it doesn't reach the fragmentation
+// line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, NoFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px; height: 100px;
+        }
+      </style>
+      <fieldset id="fieldset"></fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  // We should only have one 176x126 fragment with no fragmentation.
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  EXPECT_EQ(PhysicalSize(176, 126), fragment->Size());
+  ASSERT_FALSE(fragment->BreakToken());
+}
+
+// Tests that a fieldset will fragment if it reaches the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, SimpleFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px; height: 500px;
+        }
+      </style>
+      <fieldset id="fieldset"></fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  EXPECT_EQ(PhysicalSize(176, 200), fragment->Size());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  EXPECT_EQ(PhysicalSize(176, 200), fragment->Size());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  EXPECT_EQ(PhysicalSize(176, 126), fragment->Size());
+  ASSERT_FALSE(fragment->BreakToken());
+}
+
+// Tests that a fieldset with no content or padding will fragment if it reaches
+// the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, FragmentationNoPadding) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset { margin:0; border:10px solid; padding:0px; width:100px; }
+    </style>
+    <fieldset id="fieldset"></fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(10);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:120x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:120x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with auto height will fragment when its content reaches
+// the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, FieldsetContentFragmentationAutoHeight) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px;
+        }
+        #child {
+          margin:0; width: 50px; height: 500px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <div id="child"></div>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x200
+    offset:3,3 size:170x197
+      offset:10,10 size:50x187
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x200
+    offset:3,0 size:170x200
+      offset:10,0 size:50x200
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x126
+    offset:3,0 size:170x123
+      offset:10,0 size:50x113
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a set height will fragment when its content
+// reaches the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, FieldsetContentFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px; height: 100px;
+        }
+        #child {
+          margin:0; width: 50px; height: 500px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <div id="child"></div>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x126
+    offset:3,3 size:170x120
+      offset:10,10 size:50x187
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x0
+    offset:3,0 size:170x0
+      offset:10,0 size:50x200
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x0
+    offset:3,0 size:170x0
+      offset:10,0 size:50x113
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with auto height will not fragment when its legend
+// reaches the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendFragmentationAutoHeight) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px;
+        }
+        #legend {
+          padding:0px; margin:0; width: 50px; height: 500px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x520
+    offset:13,0 size:50x500
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x23
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a set height will not fragment when its legend
+// reaches the fragmentation line. The used height should also be extended to
+// encompass the legend.
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px; height: 100px;
+        }
+        #legend {
+          padding:0px; margin:0; width: 50px; height: 500px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x520
+    offset:13,0 size:50x500
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x23
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with auto height will not fragment when its legend
+// reaches the fragmentation line. The content of the fieldset should fragment
+// when it reaches the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendAndContentFragmentationAutoHeight) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px;
+        }
+        #legend {
+          padding:0px; margin:0; width: 50px; height: 500px;
+        }
+        #child {
+          margin:0; width: 100px; height: 200px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+        <div id="child"></div>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x500
+    offset:13,0 size:50x500
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x200
+    offset:3,0 size:170x200
+      offset:10,10 size:100x190
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x23
+    offset:3,0 size:170x20
+      offset:10,0 size:100x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a set height will fragment when its legend reaches
+// the fragmentation line. The content of the fieldset should fragment when it
+// reaches the fragmentation line.
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendAndContentFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:3px solid; margin:0; padding:10px; width: 150px; height: 100px;
+        }
+        #legend {
+          padding:0px; margin:0; width: 50px; height: 500px;
+        }
+        #child {
+          margin:0; width: 100px; height: 200px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+        <div id="child"></div>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(200);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x500
+    offset:13,0 size:50x500
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x23
+    offset:3,0 size:170x20
+      offset:10,10 size:100x190
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:176x0
+    offset:3,0 size:170x0
+      offset:10,0 size:100x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests fragmentation when a legend's child content overflows.
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendFragmentationWithOverflow) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        fieldset, legend { margin:0; border:none; padding:0; }
+      </style>
+      <fieldset id="fieldset">
+        <legend style="height:30px;">
+          <div style="width:55px; height:150px;"></div>
+        </legend>
+        <div style="width:44px; height:150px;"></div>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x100
+    offset:0,0 size:55x30
+      offset:0,0 size:55x150
+    offset:0,30 size:1000x70
+      offset:0,0 size:44x70
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x80
+    offset:0,0 size:1000x80
+      offset:0,0 size:44x80
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that fragmentation works as expected when the fieldset content has a
+// negative margin block start.
+TEST_F(NGFieldsetLayoutAlgorithmTest,
+       LegendAndContentFragmentationNegativeMargin) {
+  SetBodyInnerHTML(R"HTML(
+      <style>
+        #fieldset {
+          border:none; margin:0; padding:0px; width: 150px; height: 100px;
+        }
+        #legend {
+          padding:0px; margin:0; width: 50px; height: 100px;
+        }
+        #child {
+          margin-top: -20px; width: 100px; height: 40px;
+        }
+      </style>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+        <div id="child"></div>
+      </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:150x100
+    offset:0,0 size:50x100
+    offset:0,100 size:150x0
+      offset:0,-20 size:100x20
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:150x0
+    offset:0,0 size:150x0
+      offset:0,0 size:100x20
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, OverflowedLegend) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px; height: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+    <fieldset id="fieldset">
+      <legend id="legend" style="width:75%; height:60px;">
+        <div id="grandchild1" style="width:50px; height:120px;"></div>
+        <div id="grandchild2" style="width:40px; height:20px;"></div>
+      </legend>
+      <div id="child" style="width:85%; height:10px;"></div>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_FALSE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x100
+    offset:0,0 size:75x60
+      offset:0,0 size:50x120
+      offset:0,120 size:40x20
+    offset:0,60 size:100x40
+      offset:0,0 size:85x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, OverflowedFieldsetContent) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px; height: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+    <fieldset id="fieldset">
+      <legend id="legend" style="width:75%; height:10px;">
+        <div style="width:50px; height:220px;"></div>
+      </legend>
+      <div style="width:85%; height:10px;"></div>
+      <div id="child" style="width:65%; height:10px;">
+        <div style="width:51px; height:220px;"></div>
+      </div>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x100
+    offset:0,0 size:75x10
+      offset:0,0 size:50x220
+    offset:0,10 size:100x90
+      offset:0,0 size:85x10
+      offset:0,10 size:65x10
+        offset:0,0 size:51x80
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x0
+    offset:0,0 size:100x0
+      offset:0,0 size:65x0
+        offset:0,0 size:51x100
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x0
+    offset:0,0 size:100x0
+      offset:0,0 size:65x0
+        offset:0,0 size:51x40
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, BreakInsideAvoid) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px; height: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+     <fieldset id="fieldset">
+      <legend id="legend" style="width:10px; height:50px;"></legend>
+      <div style="break-inside:avoid; width:20px; height:70px;"></div>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x100
+    offset:0,0 size:10x50
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x0
+    offset:0,0 size:100x0
+      offset:0,0 size:20x70
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, BreakInsideAvoidTallBlock) {
+  // The block that has break-inside:avoid is too tall to fit in one
+  // fragmentainer. So a break is unavoidable. Let's check that:
+  // 1. The block is still shifted to the start of the next fragmentainer
+  // 2. We give up shifting it any further (would cause infinite an loop)
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px; height: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+     <fieldset id="fieldset">
+      <legend id="legend" style="width:10px; height:50px;"></legend>
+      <div style="break-inside:avoid; width:20px; height:170px;"></div>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x100
+    offset:0,0 size:10x50
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x0
+    offset:0,0 size:100x0
+      offset:0,0 size:20x100
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x0
+    offset:0,0 size:100x0
+      offset:0,0 size:20x70
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendBreakInsideAvoid) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px; height: 50px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+    <div id="container">
+      <div style="width:20px; height:50px;"></div>
+      <fieldset id="fieldset">
+        <legend id="legend" style="break-inside:avoid; width:10px; height:60px;">
+        </legend>
+      </fieldset>
+    </div>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("container"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x100
+    offset:0,0 size:20x50
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x60
+    offset:0,0 size:100x60
+      offset:0,0 size:10x60
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, BreakBeforeAvoid) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+    <div id="container">
+      <div style="width:20px; height:50px;"></div>
+      <fieldset id="fieldset">
+        <legend id="legend" style="width:10px; height:25px;"></legend>
+        <div style="width:30px; height:25px;"></div>
+        <div style="break-before:avoid; width:15px; height:25px;"></div>
+      </fieldset>
+    </div>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("container"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x75
+    offset:0,0 size:20x50
+    offset:0,50 size:100x25
+      offset:0,0 size:10x25
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x50
+    offset:0,0 size:100x50
+      offset:0,0 size:100x50
+        offset:0,0 size:30x25
+        offset:0,25 size:15x25
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendBreakBeforeAvoid) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:10px solid; margin:0; padding:0px; width: 100px;
+      }
+      #legend {
+        padding:0px; margin:10px; width:10px; height:25px;
+      }
+    </style>
+    <div id="container">
+      <div style="width:20px; height:90px;"></div>
+      <fieldset id="fieldset">
+        <legend id="legend" style="break-before:avoid;"></legend>
+      </fieldset>
+    </div>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("container"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x100
+    offset:0,0 size:20x90
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x45
+    offset:0,0 size:120x45
+      offset:20,0 size:10x25
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, BreakAfterAvoid) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+    <div id="container">
+      <div style="width:20px; height:50px;"></div>
+      <fieldset id="fieldset">
+        <legend id="legend" style="width:10px; height:25px;"></legend>
+        <div style="break-after:avoid; width:30px; height:25px;"></div>
+        <div style="width:15px; height:25px;"></div>
+      </fieldset>
+    </div>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("container"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x75
+    offset:0,0 size:20x50
+    offset:0,50 size:100x25
+      offset:0,0 size:10x25
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x50
+    offset:0,0 size:100x50
+      offset:0,0 size:100x50
+        offset:0,0 size:30x25
+        offset:0,25 size:15x25
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, LegendBreakAfterAvoid) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:0px solid; margin:0; padding:0px; width: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px; width:10px; height:50px;
+      }
+    </style>
+    <div id="container">
+      <div style="width:20px; height:50px;"></div>
+      <fieldset id="fieldset">
+        <legend id="legend" style="break-after:avoid;"></legend>
+        <div style="width:15px; height:25px;"></div>
+      </fieldset>
+    </div>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("container"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x100
+    offset:0,0 size:20x50
+    offset:0,50 size:100x50
+      offset:0,0 size:10x50
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:1000x25
+    offset:0,0 size:100x25
+      offset:0,0 size:100x25
+        offset:0,0 size:15x25
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+TEST_F(NGFieldsetLayoutAlgorithmTest, MarginBottomPastEndOfFragmentainer) {
+  // A block whose border box would start past the end of the current
+  // fragmentainer should start exactly at the start of the next fragmentainer,
+  // discarding what's left of the margin.
+  // https://www.w3.org/TR/css-break-3/#break-margins
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset {
+        border:none; margin:0; padding:0px; width: 100px; height: 100px;
+      }
+      #legend {
+        padding:0px; margin:0px;
+      }
+    </style>
+     <fieldset id="fieldset">
+      <legend id="legend" style="margin-bottom:20px; height:90px;"></legend>
+      <div style="width:20px; height:20px;"></div>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x110
+    offset:0,0 size:0x90
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:100x0
+    offset:0,0 size:100x0
+      offset:0,0 size:20x20
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a large border and a small legend fragment
+// correctly. Since we don't allow breaking inside borders, they will overflow
+// fragmentainers.
+TEST_F(NGFieldsetLayoutAlgorithmTest, SmallLegendLargeBorderFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset { margin:0; border:60px solid; padding:0px; width:100px;
+                  height:10px; }
+      #legend { padding:0; width:10px; height:50px; }
+    </style>
+    <fieldset id="fieldset">
+      <legend id="legend"></legend>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(40);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x60
+    offset:60,5 size:10x50
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x60
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a large border and a small legend fragment
+// correctly. In this case, the legend block offset is adjusted because the
+// legend fits inside the first fragment.
+TEST_F(NGFieldsetLayoutAlgorithmTest, SmallerLegendLargeBorderFragmentation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset { margin:0; border:60px solid; padding:0px; width:100px;
+                  height:10px; }
+      #legend { padding:0; width:10px; height:5px; }
+    </style>
+    <fieldset id="fieldset">
+      <legend id="legend"></legend>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(40);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x60
+    offset:60,27.5 size:10x5
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x60
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a large border and a small legend fragment
+// correctly. In this case, since the legend doesn't stick below the block-start
+// border, there's no class C breakpoint before the fieldset contents.
+// Therefore, prefer breaking before the fieldset to breaking before the child
+// DIV.
+TEST_F(NGFieldsetLayoutAlgorithmTest, SmallerLegendLargeBorderFragmentation2) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset { margin:0; border:30px solid; padding:0px; width:100px; }
+      #legend { padding:0; width:10px; height:5px; }
+    </style>
+    <div id="container" style="width:300px;">
+      <div style="width:33px; height:70px;"></div>
+      <fieldset id="fieldset">
+        <legend id="legend"></legend>
+        <div style="width:44px; height:30px; break-inside:avoid;"></div>
+      </fieldset>
+    </div>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(100);
+
+  NGBlockNode node(GetLayoutBoxByElementId("container"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:300x100
+    offset:0,0 size:33x70
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunBlockLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  EXPECT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:300x90
+    offset:0,0 size:160x90
+      offset:30,12.5 size:10x5
+      offset:30,30 size:100x30
+        offset:0,0 size:44x30
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+}
+
+// Tests that a fieldset with a large border and a small legend fragment
+// correctly.
+TEST_F(NGFieldsetLayoutAlgorithmTest, SmallerLegendLargeBorderWithBreak) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #fieldset { margin:0; border:60px solid; padding:0px; width:100px;
+                  height:10px; }
+      #legend { padding:0; width:10px; height:5px; margin-top:16px; }
+    </style>
+    <fieldset id="fieldset">
+      <legend id="legend"></legend>
+    </fieldset>
+  )HTML");
+
+  LayoutUnit kFragmentainerSpaceAvailable(40);
+
+  NGBlockNode node(GetLayoutBoxByElementId("fieldset"));
+  NGConstraintSpace space = ConstructBlockLayoutTestConstraintSpace(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      LogicalSize(LayoutUnit(1000), kIndefiniteSize),
+      /* stretch_inline_size_if_auto */ true,
+      node.CreatesNewFormattingContext(), kFragmentainerSpaceAvailable);
+
+  scoped_refptr<const NGPhysicalBoxFragment> fragment =
+      NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(node, space);
+  ASSERT_TRUE(fragment->BreakToken());
+
+  String dump = DumpFragmentTree(fragment.get());
+  String expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x60
+    offset:60,27.5 size:10x5
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_TRUE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x10
+)DUMP";
+  EXPECT_EQ(expectation, dump);
+
+  fragment = NGBaseLayoutAlgorithmTest::RunFieldsetLayoutAlgorithm(
+      node, space, fragment->BreakToken());
+  ASSERT_FALSE(fragment->BreakToken());
+
+  dump = DumpFragmentTree(fragment.get());
+  expectation = R"DUMP(.:: LayoutNG Physical Fragment Tree ::.
+  offset:unplaced size:220x60
+)DUMP";
+  EXPECT_EQ(expectation, dump);
 }
 
 }  // anonymous namespace

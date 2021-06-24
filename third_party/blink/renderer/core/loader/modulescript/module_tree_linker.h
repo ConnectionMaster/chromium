@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_MODULESCRIPT_MODULE_TREE_LINKER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_MODULESCRIPT_MODULE_TREE_LINKER_H_
 
+#include "base/dcheck_is_on.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/web_url_request.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/script/modulator.h"
@@ -16,57 +18,52 @@
 
 namespace blink {
 
-class ModuleScriptFetchRequest;
 class ModuleTreeLinkerRegistry;
 
 // A ModuleTreeLinker is responsible for running and keeping intermediate states
-// for a top-level [IMSGF] "internal module script graph fetching procedure" or
-// a top-level [FDaI] "fetch the descendants of and instantiate", and all the
-// invocations of [IMSGF] and [FD] "fetch the descendants" under that.
+// for top-level fetch * module script graph spec concepts and all the
+// invocations of #internal-module-script-graph-fetching-procedure and
+// #fetch-the-descendants-of-a-module-script.
 //
 // Modulator represents "a module map settings object" and
 // ResourceFetcher represents "a fetch client settings object"
 // by its |Context()->GetFetchClientSettingsObject()|.
-//
-// Spec links:
-// [IMSGF]
-// https://html.spec.whatwg.org/C/#internal-module-script-graph-fetching-procedure
-// [FD]
-// https://html.spec.whatwg.org/C/#fetch-the-descendants-of-a-module-script
-// [FDaI]
-// https://html.spec.whatwg.org/C/#fetch-the-descendants-of-and-instantiate-a-module-script
-// [FFPE]
-// https://html.spec.whatwg.org/C/#finding-the-first-parse-error
 class CORE_EXPORT ModuleTreeLinker final : public SingleModuleClient {
  public:
   // https://html.spec.whatwg.org/C/#fetch-a-module-script-tree
-  static void Fetch(const KURL&,
+  // https://html.spec.whatwg.org/C/#fetch-a-module-worker-script-tree
+  // https://html.spec.whatwg.org/C/#fetch-an-import()-module-script-graph
+  static void Fetch(const KURL& url,
+                    const ModuleType&,
                     ResourceFetcher* fetch_client_settings_object_fetcher,
-                    mojom::RequestContextType destination,
+                    mojom::blink::RequestContextType context_type,
+                    network::mojom::RequestDestination destination,
                     const ScriptFetchOptions&,
                     Modulator*,
                     ModuleScriptCustomFetchType,
                     ModuleTreeLinkerRegistry*,
                     ModuleTreeClient*);
 
-  // [FDaI] for an inline script.
+  // https://html.spec.whatwg.org/C/#fetch-an-inline-module-script-graph
   static void FetchDescendantsForInlineScript(
       ModuleScript*,
       ResourceFetcher* fetch_client_settings_object_fetcher,
-      mojom::RequestContextType destination,
+      mojom::blink::RequestContextType context_type,
+      network::mojom::RequestDestination destination,
       Modulator*,
       ModuleScriptCustomFetchType,
       ModuleTreeLinkerRegistry*,
       ModuleTreeClient*);
 
   ModuleTreeLinker(ResourceFetcher* fetch_client_settings_object_fetcher,
-                   mojom::RequestContextType destination,
+                   mojom::blink::RequestContextType context_type,
+                   network::mojom::RequestDestination destination,
                    Modulator*,
                    ModuleScriptCustomFetchType,
                    ModuleTreeLinkerRegistry*,
                    ModuleTreeClient*);
   ~ModuleTreeLinker() override = default;
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
   bool IsFetching() const {
     return State::kFetchingSelf <= state_ && state_ < State::kFinished;
@@ -84,21 +81,15 @@ class CORE_EXPORT ModuleTreeLinker final : public SingleModuleClient {
     kInstantiating,
     kFinished,
   };
+
 #if DCHECK_IS_ON()
   static const char* StateToString(State);
 #endif
   void AdvanceState(State);
 
-  void FetchRoot(const KURL&, const ScriptFetchOptions&);
+  void FetchRoot(const KURL&, ModuleType, const ScriptFetchOptions&);
   void FetchRootInline(ModuleScript*);
 
-  // Steps 1--2 of [IMSGF].
-  void InitiateInternalModuleScriptGraphFetching(
-      const ModuleScriptFetchRequest&,
-      ModuleGraphLevel);
-
-  // Steps 3--7 of [IMSGF], and [FD]/[FDaI] called from [IMSGF].
-  // TODO(hiroshige): Currently
   void NotifyModuleLoadFinished(ModuleScript*) override;
   void FetchDescendants(const ModuleScript*);
 
@@ -115,16 +106,17 @@ class CORE_EXPORT ModuleTreeLinker final : public SingleModuleClient {
 
   const Member<ResourceFetcher> fetch_client_settings_object_fetcher_;
 
-  const mojom::RequestContextType destination_;
+  const mojom::blink::RequestContextType context_type_;
+  const network::mojom::RequestDestination destination_;
   const Member<Modulator> modulator_;
   const ModuleScriptCustomFetchType custom_fetch_type_;
-  HashSet<KURL> visited_set_;
+  HashSet<std::pair<KURL, ModuleType>> visited_set_;
   const Member<ModuleTreeLinkerRegistry> registry_;
   const Member<ModuleTreeClient> client_;
   State state_ = State::kInitial;
 
-  // Correspond to _result_ in
-  // https://html.spec.whatwg.org/C/#internal-module-script-graph-fetching-procedure
+  // Correspond to _result_ in the top-level fetch * module script graph
+  // algorithms.
   Member<ModuleScript> result_;
 
   bool found_parse_error_ = false;
@@ -134,8 +126,10 @@ class CORE_EXPORT ModuleTreeLinker final : public SingleModuleClient {
 #if DCHECK_IS_ON()
   KURL original_url_;
   KURL url_;
+  ModuleType module_type_;
   bool root_is_inline_;
 
+  friend CORE_EXPORT std::ostream& operator<<(std::ostream&, ModuleType);
   friend CORE_EXPORT std::ostream& operator<<(std::ostream&,
                                               const ModuleTreeLinker&);
 #endif
@@ -147,4 +141,4 @@ CORE_EXPORT std::ostream& operator<<(std::ostream&, const ModuleTreeLinker&);
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_MODULESCRIPT_MODULE_TREE_LINKER_H_

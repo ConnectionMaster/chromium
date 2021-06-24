@@ -8,14 +8,17 @@
 #include <stdint.h>
 
 #include <set>
+#include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/message_loop/message_pump_libevent.h"
+#include "base/task/current_thread.h"
+#include "ui/events/devices/gamepad_device.h"
 #include "ui/events/devices/input_device.h"
+#include "ui/events/devices/stylus_state.h"
 #include "ui/events/ozone/evdev/event_dispatch_callback.h"
-#include "ui/events/ozone/evdev/events_ozone_evdev_export.h"
 #include "ui/gfx/geometry/size.h"
 
 struct input_event;
@@ -23,8 +26,8 @@ struct input_event;
 namespace ui {
 enum class DomCode;
 
-class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
-    : public base::MessagePumpLibevent::FdWatcher {
+class COMPONENT_EXPORT(EVDEV) EventConverterEvdev
+    : public base::MessagePumpForUI::FdWatcher {
  public:
   EventConverterEvdev(int fd,
                       const base::FilePath& path,
@@ -33,7 +36,8 @@ class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
                       const std::string& name,
                       const std::string& phys,
                       uint16_t vendor_id,
-                      uint16_t product_id);
+                      uint16_t product_id,
+                      uint16_t version);
   ~EventConverterEvdev() override;
 
   int id() const { return input_device_.id; }
@@ -71,8 +75,13 @@ class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
   // Returns true if the converter is used for a keyboard device.
   virtual bool HasKeyboard() const;
 
-  // Returns true if the converter is used for a mouse device;
+  // Returns true if the converter is used for a mouse device (that isn't a
+  // pointing stick);
   virtual bool HasMouse() const;
+
+  // Returns true if the converter is used for a pointing stick device (such as
+  // a TrackPoint);
+  virtual bool HasPointingStick() const;
 
   // Returns true if the converter is used for a touchpad device.
   virtual bool HasTouchpad() const;
@@ -89,6 +98,15 @@ class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
   // Returns true if the converter is used for a device with a caps lock LED.
   virtual bool HasCapsLockLed() const;
 
+  // Returns true if the converter is used for a device with a stylus switch
+  // (also known as garage or dock sensor, not buttons on a stylus).
+  virtual bool HasStylusSwitch() const;
+
+  // Returns the current state of the stylus garage switch, indicating whether a
+  // stylus is inserted in (or attached) to a stylus dock or garage, or has been
+  // removed.
+  virtual ui::StylusState GetStylusSwitchState();
+
   // Returns the size of the touchscreen device if the converter is used for a
   // touchscreen device.
   virtual gfx::Size GetTouchscreenSize() const;
@@ -96,6 +114,13 @@ class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
   // Returns the number of touch points this device supports. Should not be
   // called unless HasTouchscreen() returns true
   virtual int GetTouchPoints() const;
+
+  // Returns information for all axes if the converter is used for a gamepad
+  // device.
+  virtual std::vector<GamepadDevice::Axis> GetGamepadAxes() const;
+
+  // Returns whether the gamepad device supports rumble type force feedback.
+  virtual bool GetGamepadRumbleCapability() const;
 
   // Sets which keyboard keys should be processed. If |enable_filter| is
   // false, all keys are allowed and |allowed_keys| is ignored.
@@ -115,15 +140,19 @@ class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
   // Helper to generate a base::TimeTicks from an input_event's time
   static base::TimeTicks TimeTicksFromInputEvent(const input_event& event);
 
+  // Handle gamepad force feedback effects.
+  virtual void PlayVibrationEffect(uint8_t amplitude, uint16_t duration_millis);
+  virtual void StopVibration();
+
  protected:
-  // base::MessagePumpLibevent::FdWatcher:
+  // base::MessagePumpForUI::FdWatcher:
   void OnFileCanWriteWithoutBlocking(int fd) override;
 
   // File descriptor to read.
-  int fd_;
+  const int fd_;
 
   // Path to input device.
-  base::FilePath path_;
+  const base::FilePath path_;
 
   // Input device information, including id (which uniquely identifies an
   // event converter) and type.
@@ -133,7 +162,7 @@ class EVENTS_OZONE_EVDEV_EXPORT EventConverterEvdev
   bool watching_ = false;
 
   // Controller for watching the input fd.
-  base::MessagePumpLibevent::FdWatchController controller_;
+  base::MessagePumpForUI::FdWatchController controller_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(EventConverterEvdev);

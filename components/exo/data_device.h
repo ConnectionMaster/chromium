@@ -8,12 +8,13 @@
 #include <cstdint>
 
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "components/exo/data_offer_observer.h"
 #include "components/exo/seat_observer.h"
 #include "components/exo/surface.h"
 #include "components/exo/surface_observer.h"
-#include "components/exo/wm_helper.h"
 #include "ui/base/clipboard/clipboard_observer.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
 
 namespace ui {
 class DropTargetEvent;
@@ -23,14 +24,12 @@ namespace exo {
 
 class DataDeviceDelegate;
 class DataOffer;
+class ScopedDataOffer;
 class DataSource;
-class FileHelper;
 class Seat;
+class ScopedSurface;
 
 enum class DndAction { kNone, kCopy, kMove, kAsk };
-
-class ScopedDataOffer;
-class ScopedSurface;
 
 // DataDevice to start drag and drop and copy and paste oprations.
 class DataDevice : public WMHelper::DragDropObserver,
@@ -39,9 +38,7 @@ class DataDevice : public WMHelper::DragDropObserver,
                    public SurfaceObserver,
                    public SeatObserver {
  public:
-  explicit DataDevice(DataDeviceDelegate* delegate,
-                      Seat* seat,
-                      FileHelper* file_helper);
+  DataDevice(DataDeviceDelegate* delegate, Seat* seat);
   ~DataDevice() override;
 
   // Starts drag-and-drop operation.
@@ -49,25 +46,27 @@ class DataDevice : public WMHelper::DragDropObserver,
   // be null if the data will be transferred only in the client.  |origin| is
   // the surface which starts the drag and drop operation. |icon| is the
   // nullable image which is rendered at the next to cursor while drag
-  // operation. |serial| is the unique number comes from input events which
-  // triggers the drag and drop operation.
-  void StartDrag(const DataSource* source,
+  // operation.
+  void StartDrag(DataSource* source,
                  Surface* origin,
                  Surface* icon,
-                 uint32_t serial);
+                 ui::mojom::DragEventSource event_source);
 
   // Sets selection data to the clipboard.
-  // |source| represents data comes from the client. |serial| is the unique
-  // number comes from input events which triggers the drag and drop operation.
-  void SetSelection(DataSource* source, uint32_t serial);
+  // |source| represents data comes from the client.
+  void SetSelection(DataSource* source);
 
   // Overridden from WMHelper::DragDropObserver:
   void OnDragEntered(const ui::DropTargetEvent& event) override;
-  int OnDragUpdated(const ui::DropTargetEvent& event) override;
+  aura::client::DragUpdateInfo OnDragUpdated(
+      const ui::DropTargetEvent& event) override;
   void OnDragExited() override;
-  int OnPerformDrop(const ui::DropTargetEvent& event) override;
+  ui::mojom::DragOperation OnPerformDrop(
+      const ui::DropTargetEvent& event) override;
+  WMHelper::DropCallback GetDropCallback(
+      const ui::DropTargetEvent& event) override;
 
-  // Overridden from ui::ClipbaordObserver:
+  // Overridden from ui::ClipboardObserver:
   void OnClipboardDataChanged() override;
 
   // Overridden from SeatObserver:
@@ -80,15 +79,20 @@ class DataDevice : public WMHelper::DragDropObserver,
   // Overridden from SurfaceObserver:
   void OnSurfaceDestroying(Surface* surface) override;
 
+  DataDeviceDelegate* get_delegate() { return delegate_; }
+
  private:
   Surface* GetEffectiveTargetForEvent(const ui::DropTargetEvent& event) const;
   void SetSelectionToCurrentClipboardData();
 
   DataDeviceDelegate* const delegate_;
   Seat* const seat_;
-  FileHelper* const file_helper_;
   std::unique_ptr<ScopedDataOffer> data_offer_;
   std::unique_ptr<ScopedSurface> focused_surface_;
+
+  base::OnceClosure quit_closure_;
+  bool drop_succeeded_;
+  base::WeakPtrFactory<DataDevice> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DataDevice);
 };

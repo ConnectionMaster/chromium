@@ -36,13 +36,13 @@ class LoginUserViewUnittest : public LoginTestBase {
     }
 
     auto* view =
-        new LoginUserView(display_style, show_dropdown, public_account,
+        new LoginUserView(display_style, show_dropdown,
                           base::BindRepeating(&LoginUserViewUnittest::OnTapped,
                                               base::Unretained(this)),
                           on_remove_warning_shown, on_remove);
 
     std::string email = "foo@foo.com";
-    mojom::LoginUserInfoPtr user =
+    LoginUserInfo user =
         public_account ? CreatePublicAccountUser(email) : CreateUser(email);
     view->UpdateForUser(user, false /*animate*/);
     container_->AddChildView(view);
@@ -55,12 +55,12 @@ class LoginUserViewUnittest : public LoginTestBase {
     LoginTestBase::SetUp();
 
     container_ = new views::View();
-    container_->SetLayoutManager(
-        std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+    container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical));
 
     auto* root = new views::View();
-    root->SetLayoutManager(
-        std::make_unique<views::BoxLayout>(views::BoxLayout::kHorizontal));
+    root->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal));
     root->AddChildView(container_);
     SetWidget(CreateWidgetWithContent(root));
   }
@@ -101,7 +101,7 @@ TEST_F(LoginUserViewUnittest, DifferentUsernamesHaveSameWidth) {
   EXPECT_GT(extra_small_width, 0);
 
   for (int i = 0; i < 25; ++i) {
-    mojom::LoginUserInfoPtr user = CreateUser("user@domain.com");
+    LoginUserInfo user = CreateUser("user@domain.com");
     large->UpdateForUser(user, false /*animate*/);
     small->UpdateForUser(user, false /*animate*/);
     extra_small->UpdateForUser(user, false /*animate*/);
@@ -281,8 +281,7 @@ TEST_F(LoginUserViewUnittest, ElideUserLabel) {
                   false /*public_account*/);
   LoginUserView::TestApi view_test(view);
 
-  mojom::LoginUserInfoPtr user =
-      CreateUser("verylongusernamethatfillsthebox@domain.com");
+  LoginUserInfo user = CreateUser("verylongusernamethatfillsthebox@domain.com");
   view->UpdateForUser(user, false /*animate*/);
   container_->Layout();
 

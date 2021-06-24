@@ -5,14 +5,13 @@
 
 # pylint: disable=protected-access
 
+from __future__ import absolute_import
 import unittest
 
 from pylib.base import base_test_result
-from pylib.constants import host_paths
 from pylib.local.device import local_device_test_run
 
-with host_paths.SysPath(host_paths.PYMOCK_PATH):
-  import mock # pylint: disable=import-error
+import mock  # pylint: disable=import-error
 
 
 class SubstituteDeviceRootTest(unittest.TestCase):

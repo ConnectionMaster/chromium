@@ -5,13 +5,16 @@
 #include "ash/wm/ash_focus_rules.h"
 
 #include "ash/public/cpp/shell_window_ids.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/shell_delegate.h"
 #include "ash/wm/container_finder.h"
 #include "ash/wm/desks/desks_util.h"
+#include "ash/wm/full_restore/full_restore_controller.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "ash/wm/window_state.h"
+#include "base/containers/contains.h"
+#include "components/full_restore/full_restore_utils.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/events/event.h"
@@ -23,7 +26,7 @@ namespace {
 bool BelongsToContainerWithEqualOrGreaterId(const aura::Window* window,
                                             int container_id) {
   for (; window; window = window->parent()) {
-    if (window->id() >= container_id)
+    if (window->GetId() >= container_id)
       return true;
   }
   return false;
@@ -31,10 +34,15 @@ bool BelongsToContainerWithEqualOrGreaterId(const aura::Window* window,
 
 bool BelongsToContainerWithId(const aura::Window* window, int container_id) {
   for (; window; window = window->parent()) {
-    if (window->id() == container_id)
+    if (window->GetId() == container_id)
       return true;
   }
   return false;
+}
+
+bool IsInactiveDeskContainerId(int id) {
+  return desks_util::IsDeskContainerId(id) &&
+         id != desks_util::GetActiveDeskContainerId();
 }
 
 }  // namespace
@@ -42,7 +50,8 @@ bool BelongsToContainerWithId(const aura::Window* window, int container_id) {
 ////////////////////////////////////////////////////////////////////////////////
 // AshFocusRules, public:
 
-AshFocusRules::AshFocusRules() = default;
+AshFocusRules::AshFocusRules()
+    : activatable_container_ids_(GetActivatableShellWindowIds()) {}
 
 AshFocusRules::~AshFocusRules() = default;
 
@@ -57,11 +66,11 @@ bool AshFocusRules::IsToplevelWindow(const aura::Window* window) const {
 
   // The window must exist within a container that supports activation.
   // The window cannot be blocked by a modal transient.
-  return IsActivatableShellWindowId(window->parent()->id());
+  return base::Contains(activatable_container_ids_, window->parent()->GetId());
 }
 
 bool AshFocusRules::SupportsChildActivation(const aura::Window* window) const {
-  return ash::IsActivatableShellWindowId(window->id());
+  return base::Contains(activatable_container_ids_, window->GetId());
 }
 
 bool AshFocusRules::IsWindowConsideredVisibleForActivation(
@@ -77,23 +86,30 @@ bool AshFocusRules::IsWindowConsideredVisibleForActivation(
 
   // Minimized windows are hidden in their minimized state, but they can always
   // be activated.
-  if (wm::GetWindowState(window)->IsMinimized())
+  if (WindowState::Get(window)->IsMinimized())
     return true;
 
   if (!window->TargetVisibility())
     return false;
 
-  const aura::Window* parent = window->parent();
-  if (desks_util::IsActiveDeskContainer(parent))
-    return true;
-
-  return parent->id() == kShellWindowId_LockScreenContainer;
+  const aura::Window* const parent = window->parent();
+  return desks_util::IsDeskContainer(parent) ||
+         parent->GetId() == kShellWindowId_LockScreenContainer;
 }
 
 bool AshFocusRules::CanActivateWindow(const aura::Window* window) const {
   // Clearing activation is always permissible.
   if (!window)
     return true;
+
+  if (window->GetProperty(full_restore::kLaunchedFromFullRestoreKey))
+    return false;
+
+  // Special case during Full Restore that prevents the app list from being
+  // activated during tablet mode if the topmost window of any root window is a
+  // Full Restore'd window. See http://crbug/1202923.
+  if (!FullRestoreController::CanActivateAppList(window))
+    return false;
 
   if (!BaseFocusRules::CanActivateWindow(window))
     return false;
@@ -141,7 +157,7 @@ aura::Window* AshFocusRules::GetNextActivatableWindow(
     starting_window = transient_parent;
   } else {
     MruWindowTracker* mru = Shell::Get()->mru_window_tracker();
-    aura::Window::Windows windows = mru->BuildMruWindowList();
+    aura::Window::Windows windows = mru->BuildMruWindowList(kActiveDesk);
     starting_window = windows.empty() ? ignore : windows[0];
   }
   DCHECK(starting_window);
@@ -153,10 +169,10 @@ aura::Window* AshFocusRules::GetNextActivatableWindow(
   aura::Window* root = starting_window->GetRootWindow();
   if (!root)
     root = Shell::GetRootWindowForNewWindows();
-  int container_count = static_cast<int>(kNumActivatableShellWindowIds);
+  const int container_count = activatable_container_ids_.size();
   for (int i = 0; i < container_count; i++) {
     aura::Window* container =
-        Shell::GetContainer(root, kActivatableShellWindowIds[i]);
+        Shell::GetContainer(root, activatable_container_ids_[i]);
     if (container && container->Contains(starting_window)) {
       starting_container_index = i;
       break;
@@ -179,10 +195,15 @@ aura::Window* AshFocusRules::GetNextActivatableWindow(
 aura::Window* AshFocusRules::GetTopmostWindowToActivateForContainerIndex(
     int index,
     aura::Window* ignore) const {
+  const int container_id = activatable_container_ids_[index];
+  // Inactive desk containers should be ignored, since windows in them should
+  // never be returned as a next activatable window.
+  if (IsInactiveDeskContainerId(container_id))
+    return nullptr;
   aura::Window* window = nullptr;
   aura::Window* root = ignore ? ignore->GetRootWindow() : nullptr;
-  aura::Window::Windows containers = wm::GetContainersFromAllRootWindows(
-      kActivatableShellWindowIds[index], root);
+  aura::Window::Windows containers =
+      GetContainersForAllRootWindows(container_id, root);
   for (aura::Window* container : containers) {
     window = GetTopmostWindowToActivateInContainer(container, ignore);
     if (window)
@@ -197,7 +218,7 @@ aura::Window* AshFocusRules::GetTopmostWindowToActivateInContainer(
   for (aura::Window::Windows::const_reverse_iterator i =
            container->children().rbegin();
        i != container->children().rend(); ++i) {
-    wm::WindowState* window_state = wm::GetWindowState(*i);
+    WindowState* window_state = WindowState::Get(*i);
     if (*i != ignore && window_state->CanActivate() &&
         !window_state->IsMinimized())
       return *i;

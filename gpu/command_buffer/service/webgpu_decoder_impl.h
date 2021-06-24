@@ -11,6 +11,9 @@ namespace gpu {
 
 class CommandBufferServiceBase;
 class DecoderClient;
+struct GpuPreferences;
+class MemoryTracker;
+class SharedImageManager;
 
 namespace gles2 {
 class Outputter;
@@ -23,7 +26,10 @@ class WebGPUDecoder;
 GPU_GLES2_EXPORT WebGPUDecoder* CreateWebGPUDecoderImpl(
     DecoderClient* client,
     CommandBufferServiceBase* command_buffer_service,
-    gles2::Outputter* outputter);
+    SharedImageManager* shared_image_manager,
+    MemoryTracker* memory_tracker,
+    gles2::Outputter* outputter,
+    const GpuPreferences& gpu_preferences);
 
 }  // namespace webgpu
 }  // namespace gpu

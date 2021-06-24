@@ -32,7 +32,7 @@ class ButtonLayout : public views::LayoutManager {
   // The dialog's one or two action button(s) must be the only children of
   // |view|. |view_width| is the desired width of the view, which controls the
   // width of the individual buttons as above. The layout manager of |view|'s
-  // parent must respect this width (by, for example, using SizeType::USE_PREF
+  // parent must respect this width (by, for example, using ColumnSize::kUsePref
   // for the hosting column's size_type if it uses GridLayout).
   explicit ButtonLayout(int view_width);
   ~ButtonLayout() override;
@@ -47,10 +47,6 @@ class ButtonLayout : public views::LayoutManager {
 
   // The horizontal or vertical space between two buttons.
   enum { kPaddingBetweenButtons = 4 };
-
-  // Returns true if |host| contains two buttons, or false if it contains only
-  // one.
-  static bool HasTwoButtons(const views::View* host);
 
   // Returns the preferred size of the largest child of |host|.
   static gfx::Size GetMaxChildPreferredSize(const views::View* host);

@@ -11,6 +11,7 @@
 #include "base/macros.h"
 #include "base/values.h"
 #include "extensions/browser/extension_function.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace extensions {
 
@@ -21,7 +22,6 @@ extern const char kErrorInvalidArguments[];
 extern const char kErrorInvalidNetworkGuid[];
 extern const char kErrorInvalidNetworkOperation[];
 extern const char kErrorNetworkUnavailable[];
-extern const char kErrorNotReady[];
 extern const char kErrorNotSupported[];
 extern const char kErrorPolicyControlled[];
 extern const char kErrorSimLocked[];
@@ -30,8 +30,7 @@ extern const char kErrorUnconfiguredNetwork[];
 }  // namespace networking_private
 
 // Implements the chrome.networkingPrivate.getProperties method.
-class NetworkingPrivateGetPropertiesFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateGetPropertiesFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetPropertiesFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getProperties",
@@ -44,15 +43,14 @@ class NetworkingPrivateGetPropertiesFunction
   ResponseAction Run() override;
 
  private:
-  void Success(std::unique_ptr<base::DictionaryValue> result);
-  void Failure(const std::string& error_name);
+  void Result(absl::optional<base::Value> result,
+              absl::optional<std::string> error);
 
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateGetPropertiesFunction);
 };
 
 // Implements the chrome.networkingPrivate.getManagedProperties method.
-class NetworkingPrivateGetManagedPropertiesFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateGetManagedPropertiesFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetManagedPropertiesFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getManagedProperties",
@@ -65,14 +63,14 @@ class NetworkingPrivateGetManagedPropertiesFunction
   ResponseAction Run() override;
 
  private:
-  void Success(std::unique_ptr<base::DictionaryValue> result);
-  void Failure(const std::string& error);
+  void Result(absl::optional<base::Value> result,
+              absl::optional<std::string> error);
 
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateGetManagedPropertiesFunction);
 };
 
 // Implements the chrome.networkingPrivate.getState method.
-class NetworkingPrivateGetStateFunction : public UIThreadExtensionFunction {
+class NetworkingPrivateGetStateFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetStateFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getState",
@@ -92,8 +90,7 @@ class NetworkingPrivateGetStateFunction : public UIThreadExtensionFunction {
 };
 
 // Implements the chrome.networkingPrivate.setProperties method.
-class NetworkingPrivateSetPropertiesFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateSetPropertiesFunction : public ExtensionFunction {
  public:
   NetworkingPrivateSetPropertiesFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.setProperties",
@@ -113,8 +110,7 @@ class NetworkingPrivateSetPropertiesFunction
 };
 
 // Implements the chrome.networkingPrivate.createNetwork method.
-class NetworkingPrivateCreateNetworkFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateCreateNetworkFunction : public ExtensionFunction {
  public:
   NetworkingPrivateCreateNetworkFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.createNetwork",
@@ -134,8 +130,7 @@ class NetworkingPrivateCreateNetworkFunction
 };
 
 // Implements the chrome.networkingPrivate.createNetwork method.
-class NetworkingPrivateForgetNetworkFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateForgetNetworkFunction : public ExtensionFunction {
  public:
   NetworkingPrivateForgetNetworkFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.forgetNetwork",
@@ -155,7 +150,7 @@ class NetworkingPrivateForgetNetworkFunction
 };
 
 // Implements the chrome.networkingPrivate.getNetworks method.
-class NetworkingPrivateGetNetworksFunction : public UIThreadExtensionFunction {
+class NetworkingPrivateGetNetworksFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetNetworksFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getNetworks",
@@ -175,8 +170,7 @@ class NetworkingPrivateGetNetworksFunction : public UIThreadExtensionFunction {
 };
 
 // Implements the chrome.networkingPrivate.getVisibleNetworks method.
-class NetworkingPrivateGetVisibleNetworksFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateGetVisibleNetworksFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetVisibleNetworksFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getVisibleNetworks",
@@ -197,7 +191,7 @@ class NetworkingPrivateGetVisibleNetworksFunction
 
 // Implements the chrome.networkingPrivate.getEnabledNetworkTypes method.
 class NetworkingPrivateGetEnabledNetworkTypesFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   NetworkingPrivateGetEnabledNetworkTypesFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getEnabledNetworkTypes",
@@ -214,8 +208,7 @@ class NetworkingPrivateGetEnabledNetworkTypesFunction
 };
 
 // Implements the chrome.networkingPrivate.getDeviceStates method.
-class NetworkingPrivateGetDeviceStatesFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateGetDeviceStatesFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetDeviceStatesFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getDeviceStates",
@@ -232,8 +225,7 @@ class NetworkingPrivateGetDeviceStatesFunction
 };
 
 // Implements the chrome.networkingPrivate.enableNetworkType method.
-class NetworkingPrivateEnableNetworkTypeFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateEnableNetworkTypeFunction : public ExtensionFunction {
  public:
   NetworkingPrivateEnableNetworkTypeFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.enableNetworkType",
@@ -250,8 +242,7 @@ class NetworkingPrivateEnableNetworkTypeFunction
 };
 
 // Implements the chrome.networkingPrivate.disableNetworkType method.
-class NetworkingPrivateDisableNetworkTypeFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateDisableNetworkTypeFunction : public ExtensionFunction {
  public:
   NetworkingPrivateDisableNetworkTypeFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.disableNetworkType",
@@ -268,8 +259,7 @@ class NetworkingPrivateDisableNetworkTypeFunction
 };
 
 // Implements the chrome.networkingPrivate.requestNetworkScan method.
-class NetworkingPrivateRequestNetworkScanFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateRequestNetworkScanFunction : public ExtensionFunction {
  public:
   NetworkingPrivateRequestNetworkScanFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.requestNetworkScan",
@@ -286,7 +276,7 @@ class NetworkingPrivateRequestNetworkScanFunction
 };
 
 // Implements the chrome.networkingPrivate.startConnect method.
-class NetworkingPrivateStartConnectFunction : public UIThreadExtensionFunction {
+class NetworkingPrivateStartConnectFunction : public ExtensionFunction {
  public:
   NetworkingPrivateStartConnectFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.startConnect",
@@ -306,8 +296,7 @@ class NetworkingPrivateStartConnectFunction : public UIThreadExtensionFunction {
 };
 
 // Implements the chrome.networkingPrivate.startDisconnect method.
-class NetworkingPrivateStartDisconnectFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateStartDisconnectFunction : public ExtensionFunction {
  public:
   NetworkingPrivateStartDisconnectFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.startDisconnect",
@@ -327,8 +316,7 @@ class NetworkingPrivateStartDisconnectFunction
 };
 
 // Implements the chrome.networkingPrivate.startActivate method.
-class NetworkingPrivateStartActivateFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateStartActivateFunction : public ExtensionFunction {
  public:
   NetworkingPrivateStartActivateFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.startActivate",
@@ -347,92 +335,8 @@ class NetworkingPrivateStartActivateFunction
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateStartActivateFunction);
 };
 
-// Implements the chrome.networkingPrivate.verifyDestination method.
-class NetworkingPrivateVerifyDestinationFunction
-    : public UIThreadExtensionFunction {
- public:
-  NetworkingPrivateVerifyDestinationFunction() {}
-  DECLARE_EXTENSION_FUNCTION("networkingPrivate.verifyDestination",
-                             NETWORKINGPRIVATE_VERIFYDESTINATION)
-
- protected:
-  ~NetworkingPrivateVerifyDestinationFunction() override;
-
-  // ExtensionFunction:
-  ResponseAction Run() override;
-
-  void Success(bool result);
-  void Failure(const std::string& error);
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateVerifyDestinationFunction);
-};
-
-// Implements the chrome.networkingPrivate.verifyAndEncryptData method.
-class NetworkingPrivateVerifyAndEncryptDataFunction
-    : public UIThreadExtensionFunction {
- public:
-  NetworkingPrivateVerifyAndEncryptDataFunction() {}
-  DECLARE_EXTENSION_FUNCTION("networkingPrivate.verifyAndEncryptData",
-                             NETWORKINGPRIVATE_VERIFYANDENCRYPTDATA)
-
- protected:
-  ~NetworkingPrivateVerifyAndEncryptDataFunction() override;
-
-  // ExtensionFunction:
-  ResponseAction Run() override;
-
-  void Success(const std::string& result);
-  void Failure(const std::string& error);
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateVerifyAndEncryptDataFunction);
-};
-
-// Implements the chrome.networkingPrivate.setWifiTDLSEnabledState method.
-class NetworkingPrivateSetWifiTDLSEnabledStateFunction
-    : public UIThreadExtensionFunction {
- public:
-  NetworkingPrivateSetWifiTDLSEnabledStateFunction() {}
-  DECLARE_EXTENSION_FUNCTION("networkingPrivate.setWifiTDLSEnabledState",
-                             NETWORKINGPRIVATE_SETWIFITDLSENABLEDSTATE)
-
- protected:
-  ~NetworkingPrivateSetWifiTDLSEnabledStateFunction() override;
-
-  // ExtensionFunction:
-  ResponseAction Run() override;
-
-  void Success(const std::string& result);
-  void Failure(const std::string& error);
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateSetWifiTDLSEnabledStateFunction);
-};
-
-// Implements the chrome.networkingPrivate.getWifiTDLSStatus method.
-class NetworkingPrivateGetWifiTDLSStatusFunction
-    : public UIThreadExtensionFunction {
- public:
-  NetworkingPrivateGetWifiTDLSStatusFunction() {}
-  DECLARE_EXTENSION_FUNCTION("networkingPrivate.getWifiTDLSStatus",
-                             NETWORKINGPRIVATE_GETWIFITDLSSTATUS)
-
- protected:
-  ~NetworkingPrivateGetWifiTDLSStatusFunction() override;
-
-  // ExtensionFunction:
-  ResponseAction Run() override;
-
-  void Success(const std::string& result);
-  void Failure(const std::string& error);
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateGetWifiTDLSStatusFunction);
-};
-
 class NetworkingPrivateGetCaptivePortalStatusFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   NetworkingPrivateGetCaptivePortalStatusFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getCaptivePortalStatus",
@@ -451,8 +355,7 @@ class NetworkingPrivateGetCaptivePortalStatusFunction
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateGetCaptivePortalStatusFunction);
 };
 
-class NetworkingPrivateUnlockCellularSimFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateUnlockCellularSimFunction : public ExtensionFunction {
  public:
   NetworkingPrivateUnlockCellularSimFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.unlockCellularSim",
@@ -471,8 +374,7 @@ class NetworkingPrivateUnlockCellularSimFunction
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateUnlockCellularSimFunction);
 };
 
-class NetworkingPrivateSetCellularSimStateFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateSetCellularSimStateFunction : public ExtensionFunction {
  public:
   NetworkingPrivateSetCellularSimStateFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.setCellularSimState",
@@ -492,7 +394,7 @@ class NetworkingPrivateSetCellularSimStateFunction
 };
 
 class NetworkingPrivateSelectCellularMobileNetworkFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   NetworkingPrivateSelectCellularMobileNetworkFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.selectCellularMobileNetwork",
@@ -512,8 +414,7 @@ class NetworkingPrivateSelectCellularMobileNetworkFunction
       NetworkingPrivateSelectCellularMobileNetworkFunction);
 };
 
-class NetworkingPrivateGetGlobalPolicyFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateGetGlobalPolicyFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetGlobalPolicyFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getGlobalPolicy",
@@ -529,8 +430,7 @@ class NetworkingPrivateGetGlobalPolicyFunction
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateGetGlobalPolicyFunction);
 };
 
-class NetworkingPrivateGetCertificateListsFunction
-    : public UIThreadExtensionFunction {
+class NetworkingPrivateGetCertificateListsFunction : public ExtensionFunction {
  public:
   NetworkingPrivateGetCertificateListsFunction() {}
   DECLARE_EXTENSION_FUNCTION("networkingPrivate.getCertificateLists",

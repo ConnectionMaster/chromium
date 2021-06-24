@@ -10,42 +10,57 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/unguessable_token.h"
-#include "gpu/command_buffer/service/gl_stream_texture_image.h"
-#include "gpu/ipc/common/android/surface_owner_android.h"
+#include "gpu/command_buffer/service/shared_context_state.h"
+#include "gpu/command_buffer/service/stream_texture_shared_image_interface.h"
+#include "gpu/command_buffer/service/texture_owner.h"
+#include "gpu/ipc/common/gpu_channel.mojom.h"
 #include "gpu/ipc/service/command_buffer_stub.h"
-#include "ipc/ipc_listener.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "ui/gl/android/surface_texture.h"
 #include "ui/gl/gl_image.h"
-
-namespace ui {
-class ScopedMakeCurrent;
-}
 
 namespace gfx {
 class Size;
 }
 
 namespace gpu {
+class GpuChannel;
+struct Mailbox;
 
-class StreamTexture : public gpu::gles2::GLStreamTextureImage,
-                      public IPC::Listener,
-                      public CommandBufferStub::DestructionObserver {
+class StreamTexture : public StreamTextureSharedImageInterface,
+                      public SharedContextState::ContextLostObserver,
+                      public mojom::StreamTexture {
  public:
-  static bool Create(CommandBufferStub* owner_stub,
-                     uint32_t client_texture_id,
-                     int stream_id);
+  static scoped_refptr<StreamTexture> Create(
+      GpuChannel* channel,
+      int stream_id,
+      mojo::PendingAssociatedReceiver<mojom::StreamTexture> receiver);
+
+  // Cleans up related data and nulls |channel_|. Called when the channel
+  // releases its ref on this class.
+  void ReleaseChannel();
 
  private:
-  StreamTexture(CommandBufferStub* owner_stub,
+  StreamTexture(GpuChannel* channel,
                 int32_t route_id,
-                uint32_t texture_id);
+                mojo::PendingAssociatedReceiver<mojom::StreamTexture> receiver,
+                scoped_refptr<SharedContextState> context_state);
   ~StreamTexture() override;
+
+  // Static function which is used to access |weak_stream_texture| on correct
+  // thread since WeakPtr is not thread safe.
+  static void RunCallback(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+      base::WeakPtr<StreamTexture> weak_stream_texture);
 
   // gl::GLImage implementation:
   gfx::Size GetSize() override;
   unsigned GetInternalFormat() override;
+  unsigned GetDataType() override;
   BindOrCopy ShouldBindOrCopy() override;
   bool BindTexImage(unsigned target) override;
   void ReleaseTexImage(unsigned target) override;
@@ -65,50 +80,66 @@ class StreamTexture : public gpu::gles2::GLStreamTextureImage,
   void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
                     uint64_t process_tracing_id,
                     const std::string& dump_name) override;
+  bool HasMutableState() const override;
+  std::unique_ptr<base::android::ScopedHardwareBufferFenceSync>
+  GetAHardwareBuffer() override;
 
-  // gpu::gles2::GLStreamTextureMatrix implementation
-  void GetTextureMatrix(float xform[16]) override;
-  void NotifyPromotionHint(bool promotion_hint,
-                           int display_x,
-                           int display_y,
-                           int display_width,
-                           int display_height) override {}
+  // gpu::StreamTextureSharedImageInterface implementation.
+  void ReleaseResources() override {}
+  bool IsUsingGpuMemory() const override;
+  void UpdateAndBindTexImage(GLuint service_id) override;
+  bool HasTextureOwner() const override;
+  TextureBase* GetTextureBase() const override;
+  void NotifyOverlayPromotion(bool promotion, const gfx::Rect& bounds) override;
+  bool RenderToOverlay() override;
+  bool TextureOwnerBindsTextureOnUpdate() override;
 
-  // CommandBufferStub::DestructionObserver implementation.
-  void OnWillDestroyStub(bool have_context) override;
+  // SharedContextState::ContextLostObserver implementation.
+  void OnContextLost() override;
 
-  std::unique_ptr<ui::ScopedMakeCurrent> MakeStubCurrent();
+  // Update the TextureOwner to get the latest image. Also bind the latest image
+  // to the provided |service_id| if TextureOwner does not binds texture on
+  // update. If |bindings_mode| is other than kEnsureTexImageBound, then
+  // |service_id| is not required.
+  void UpdateTexImage(BindingsMode bindings_mode, GLuint service_id);
 
-  void UpdateTexImage();
+  // Ensure that the latest image is bound to the texture |service_id| if
+  // TextureOwner does not binds texture on update. If TextureOwner binds
+  // texture on update, then it will always be bound to the TextureOwners
+  // texture and |service_id| will be ignored.
+  void EnsureBoundIfNeeded(BindingsMode mode, GLuint service_id);
+  gpu::Mailbox CreateSharedImage(const gfx::Size& coded_size);
 
   // Called when a new frame is available for the SurfaceOwner.
   void OnFrameAvailable();
 
-  // IPC::Listener implementation:
-  bool OnMessageReceived(const IPC::Message& message) override;
+  // mojom::StreamTexture:
+  void ForwardForSurfaceRequest(const base::UnguessableToken& token) override;
+  void StartListening(mojo::PendingAssociatedRemote<mojom::StreamTextureClient>
+                          client) override;
+  void UpdateRotatedVisibleSize(const gfx::Size& natural_size) override;
 
-  // IPC message handlers:
-  void OnStartListening();
-  void OnForwardForSurfaceRequest(const base::UnguessableToken& request_token);
-  void OnSetSize(const gfx::Size& size) { size_ = size; }
+  // The TextureOwner which receives frames.
+  scoped_refptr<TextureOwner> texture_owner_;
 
-  std::unique_ptr<SurfaceOwner> surface_owner_;
-
-  // Current transform matrix of the surface owner.
-  float current_matrix_[16];
-
-  // Current size of the surface owner.
-  gfx::Size size_;
+  // Current visible size from media player, includes rotation.
+  gfx::Size rotated_visible_size_;
 
   // Whether a new frame is available that we should update to.
   bool has_pending_frame_;
 
-  CommandBufferStub* owner_stub_;
-  int32_t route_id_;
-  bool has_listener_;
-  uint32_t texture_id_;
+  GpuChannel* channel_;
+  const int32_t route_id_;
+  scoped_refptr<SharedContextState> context_state_;
+  SequenceId sequence_;
 
-  base::WeakPtrFactory<StreamTexture> weak_factory_;
+  mojo::AssociatedReceiver<mojom::StreamTexture> receiver_;
+  mojo::AssociatedRemote<mojom::StreamTextureClient> client_;
+
+  gfx::Size coded_size_;
+  gfx::Rect visible_rect_;
+
+  base::WeakPtrFactory<StreamTexture> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(StreamTexture);
 };
 

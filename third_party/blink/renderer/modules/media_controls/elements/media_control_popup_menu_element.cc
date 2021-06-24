@@ -33,6 +33,9 @@ class MediaControlPopupMenuElement::EventListener final
     popup_menu_->addEventListener(event_type_names::kKeydown, this, false);
 
     LocalDOMWindow* window = popup_menu_->GetDocument().domWindow();
+    if (!window)
+      return;
+
     window->addEventListener(event_type_names::kScroll, this, true);
     if (DOMWindow* outer_window = window->top()) {
       if (outer_window != window)
@@ -45,6 +48,9 @@ class MediaControlPopupMenuElement::EventListener final
     popup_menu_->removeEventListener(event_type_names::kKeydown, this, false);
 
     LocalDOMWindow* window = popup_menu_->GetDocument().domWindow();
+    if (!window)
+      return;
+
     window->removeEventListener(event_type_names::kScroll, this, true);
     if (DOMWindow* outer_window = window->top()) {
       if (outer_window != window) {
@@ -55,16 +61,15 @@ class MediaControlPopupMenuElement::EventListener final
     }
   }
 
-  void Trace(blink::Visitor* visitor) final {
+  void Trace(Visitor* visitor) const final {
     NativeEventListener::Trace(visitor);
     visitor->Trace(popup_menu_);
   }
 
  private:
   void Invoke(ExecutionContext*, Event* event) final {
-    if (event->type() == event_type_names::kKeydown &&
-        event->IsKeyboardEvent()) {
-      KeyboardEvent* keyboard_event = ToKeyboardEvent(event);
+    auto* keyboard_event = DynamicTo<KeyboardEvent>(event);
+    if (event->type() == event_type_names::kKeydown && keyboard_event) {
       bool handled = true;
 
       switch (keyboard_event->keyCode()) {
@@ -83,7 +88,7 @@ class MediaControlPopupMenuElement::EventListener final
           break;
         case VKEY_RETURN:
         case VKEY_SPACE:
-          ToElement(event->target()->ToNode())->DispatchSimulatedClick(event);
+          To<Element>(event->target()->ToNode())->DispatchSimulatedClick(event);
           break;
         default:
           handled = false;
@@ -128,32 +133,34 @@ void MediaControlPopupMenuElement::OnItemSelected() {
 void MediaControlPopupMenuElement::DefaultEventHandler(Event& event) {
   if (event.type() == event_type_names::kPointermove &&
       event.target() != this) {
-    ToElement(event.target()->ToNode())->focus();
-    last_focused_element_ = ToElement(event.target()->ToNode());
+    To<Element>(event.target()->ToNode())->focus();
+    last_focused_element_ = To<Element>(event.target()->ToNode());
   } else if (event.type() == event_type_names::kFocusout) {
     GetDocument()
         .GetTaskRunner(TaskType::kMediaElementEvent)
         ->PostTask(FROM_HERE,
                    WTF::Bind(&MediaControlPopupMenuElement::HideIfNotFocused,
                              WrapWeakPersistent(this)));
-  } else if (event.type() == event_type_names::kClick) {
+  } else if (event.type() == event_type_names::kClick &&
+             event.target() != this) {
+    // Since event.target() != this, we know that one of our children was
+    // clicked.
     OnItemSelected();
 
     event.stopPropagation();
     event.SetDefaultHandled();
   } else if (event.type() == event_type_names::kFocus) {
-    // When popup menu gain focus from scrolling, switch focus
-    // back to the last focused item in the menu
-    DCHECK(last_focused_element_);
-    last_focused_element_->focus();
+    // When the popup menu gains focus from scrolling, switch focus
+    // back to the last focused item in the menu.
+    if (last_focused_element_)
+      last_focused_element_->focus();
   }
 
   MediaControlDivElement::DefaultEventHandler(event);
 }
 
 bool MediaControlPopupMenuElement::KeepEventInNode(const Event& event) const {
-  return MediaControlsImpl::IsModern() &&
-         MediaControlElementsHelper::IsUserInteractionEvent(event);
+  return MediaControlElementsHelper::IsUserInteractionEvent(event);
 }
 
 void MediaControlPopupMenuElement::RemovedFrom(ContainerNode& container) {
@@ -164,7 +171,7 @@ void MediaControlPopupMenuElement::RemovedFrom(ContainerNode& container) {
   MediaControlDivElement::RemovedFrom(container);
 }
 
-void MediaControlPopupMenuElement::Trace(blink::Visitor* visitor) {
+void MediaControlPopupMenuElement::Trace(Visitor* visitor) const {
   MediaControlDivElement::Trace(visitor);
   visitor->Trace(event_listener_);
   visitor->Trace(last_focused_element_);
@@ -182,8 +189,7 @@ void MediaControlPopupMenuElement::SetPosition() {
   static const char kImportant[] = "important";
   static const char kPx[] = "px";
 
-  DOMRect* bounding_client_rect =
-      EffectivePopupAnchor()->getBoundingClientRect();
+  DOMRect* bounding_client_rect = PopupAnchor()->getBoundingClientRect();
   LocalDOMWindow* dom_window = GetDocument().domWindow();
 
   DCHECK(bounding_client_rect);
@@ -198,15 +204,14 @@ void MediaControlPopupMenuElement::SetPosition() {
                           bounding_client_rect->right() + kPopupMenuMarginPx) +
       kPx;
 
-  style()->setProperty(&GetDocument(), "bottom", bottom_str_value, kImportant,
+  style()->setProperty(dom_window, "bottom", bottom_str_value, kImportant,
                        ASSERT_NO_EXCEPTION);
-  style()->setProperty(&GetDocument(), "right", right_str_value, kImportant,
+  style()->setProperty(dom_window, "right", right_str_value, kImportant,
                        ASSERT_NO_EXCEPTION);
 }
 
-Element* MediaControlPopupMenuElement::EffectivePopupAnchor() const {
-  return MediaControlsImpl::IsModern() ? &GetMediaControls().OverflowButton()
-                                       : PopupAnchor();
+Element* MediaControlPopupMenuElement::PopupAnchor() const {
+  return &GetMediaControls().OverflowButton();
 }
 
 void MediaControlPopupMenuElement::HideIfNotFocused() {
@@ -229,7 +234,7 @@ void MediaControlPopupMenuElement::HideIfNotFocused() {
 // Focus the given item in the list if it is displayed. Returns whether it was
 // focused.
 bool MediaControlPopupMenuElement::FocusListItemIfDisplayed(Node* node) {
-  Element* element = ToElement(node);
+  auto* element = To<Element>(node);
 
   if (!element->InlineStyle() ||
       !element->InlineStyle()->HasProperty(CSSPropertyID::kDisplay)) {
@@ -274,7 +279,7 @@ void MediaControlPopupMenuElement::SelectPreviousitem() {
 
 void MediaControlPopupMenuElement::CloseFromKeyboard() {
   SetIsWanted(false);
-  EffectivePopupAnchor()->focus();
+  PopupAnchor()->focus();
 }
 
 }  // namespace blink

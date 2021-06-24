@@ -6,10 +6,10 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
 #include "chrome/browser/resource_coordinator/intervention_policy_database.h"
 #include "components/component_updater/component_updater_paths.h"
 #include "components/component_updater/component_updater_service.h"
@@ -108,11 +108,6 @@ update_client::InstallerAttributes
 InterventionPolicyDatabaseComponentInstallerPolicy::GetInstallerAttributes()
     const {
   return update_client::InstallerAttributes();
-}
-
-std::vector<std::string>
-InterventionPolicyDatabaseComponentInstallerPolicy::GetMimeTypes() const {
-  return std::vector<std::string>();
 }
 
 void RegisterInterventionPolicyDatabaseComponent(

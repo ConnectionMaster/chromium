@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_HANDLE_CLOSER_AGENT_H_
-#define SANDBOX_SRC_HANDLE_CLOSER_AGENT_H_
+#ifndef SANDBOX_WIN_SRC_HANDLE_CLOSER_AGENT_H_
+#define SANDBOX_WIN_SRC_HANDLE_CLOSER_AGENT_H_
+
+#include <string>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/win/scoped_handle.h"
 #include "sandbox/win/src/handle_closer.h"
 #include "sandbox/win/src/sandbox_types.h"
@@ -32,8 +33,7 @@ class HandleCloserAgent {
 
  private:
   // Attempt to stuff a closed handle with a dummy Event.
-  bool AttemptToStuffHandleSlot(HANDLE closed_handle,
-                                const base::string16& type);
+  bool AttemptToStuffHandleSlot(HANDLE closed_handle, const std::wstring& type);
 
   HandleMap handles_to_close_;
   base::win::ScopedHandle dummy_handle_;
@@ -43,4 +43,4 @@ class HandleCloserAgent {
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_HANDLE_CLOSER_AGENT_H_
+#endif  // SANDBOX_WIN_SRC_HANDLE_CLOSER_AGENT_H_

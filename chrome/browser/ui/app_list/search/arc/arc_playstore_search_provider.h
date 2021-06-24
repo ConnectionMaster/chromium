@@ -10,7 +10,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/app_list/search/search_provider.h"
-#include "components/arc/common/app.mojom.h"
+#include "components/arc/mojom/app.mojom-forward.h"
 
 class Profile;
 class AppListControllerDelegate;
@@ -29,17 +29,20 @@ class ArcPlayStoreSearchProvider : public SearchProvider {
   ~ArcPlayStoreSearchProvider() override;
 
   // SearchProvider:
-  void Start(const base::string16& query) override;
+  void Start(const std::u16string& query) override;
+  ash::AppListSearchResultType ResultType() override;
 
  private:
-  void OnResults(base::TimeTicks query_start_time,
+  void OnResults(const std::u16string& query,
+                 base::TimeTicks query_start_time,
                  arc::ArcPlayStoreSearchRequestState state,
                  std::vector<arc::mojom::AppDiscoveryResultPtr> results);
 
   const int max_results_;
   Profile* const profile_;                            // Owned by ProfileInfo.
   AppListControllerDelegate* const list_controller_;  // Owned by AppListClient.
-  base::WeakPtrFactory<ArcPlayStoreSearchProvider> weak_ptr_factory_;
+  std::u16string last_query_;  // Most recent query issued.
+  base::WeakPtrFactory<ArcPlayStoreSearchProvider> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ArcPlayStoreSearchProvider);
 };

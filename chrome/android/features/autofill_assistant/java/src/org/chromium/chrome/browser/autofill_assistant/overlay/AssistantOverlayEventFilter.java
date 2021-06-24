@@ -6,14 +6,18 @@ package org.chromium.chrome.browser.autofill_assistant.overlay;
 
 import android.content.Context;
 import android.graphics.RectF;
-import android.support.annotation.IntDef;
 import android.view.GestureDetector;
-import android.view.GestureDetector.SimpleOnGestureListener;
 import android.view.MotionEvent;
 import android.view.View;
 
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilter;
-import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.content.browser.RenderCoordinatesImpl;
+import org.chromium.content_public.browser.GestureListenerManager;
+import org.chromium.content_public.browser.GestureStateListenerWithScroll;
+import org.chromium.content_public.browser.WebContents;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -24,15 +28,12 @@ import java.util.List;
 
 /**
  * Filters gestures that happen on the overlay.
+ *
+ * <p>This must implement and add itself as a {@link GestureStateListenerWithScroll} such that the
+ * {@link RenderCoordinatesImpl} receive proper updates when scrolling.
  */
-class AssistantOverlayEventFilter extends EventFilter {
-    /**
-     * Complain after there's been {@link TAP_TRACKING_COUNT} taps within
-     * {@link @TAP_TRACKING_DURATION_MS} in the unallowed area.
-     */
-    private static final int TAP_TRACKING_COUNT = 3;
-    private static final long TAP_TRACKING_DURATION_MS = 15_000;
-
+class AssistantOverlayEventFilter
+        extends GestureDetector implements GestureStateListenerWithScroll {
     /** A mode that describes what's happening to the current gesture. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({GestureMode.NONE, GestureMode.TRACKING, GestureMode.FORWARDING})
@@ -49,8 +50,21 @@ class AssistantOverlayEventFilter extends EventFilter {
     }
 
     private AssistantOverlayDelegate mDelegate;
-    private ChromeFullscreenManager mFullscreenManager;
-    private View mCompositorView;
+    private final BrowserControlsStateProvider mBrowserControls;
+    private final View mCompositorView;
+
+    /**
+     * Complain after there's been {@link #mTapTrackingCount} taps within
+     * {@link #mTapTrackingDurationMs} in the unallowed area.
+     *
+     * <p>The feature is disabled unless both are positive.
+     */
+    private int mTapTrackingCount;
+
+    /**
+     * How long to wait before resetting the tracking duration.
+     */
+    private long mTapTrackingDurationMs;
 
     /**
      * When in partial mode, let through scroll and pinch/zoom.
@@ -59,7 +73,14 @@ class AssistantOverlayEventFilter extends EventFilter {
      */
     private boolean mPartial;
 
+    /** The {@link WebContents} this Autofill Assistant is currently associated with. */
+    private WebContents mWebContents;
+
+    /** Touchable area, expressed in CSS pixels relative to the layout viewport. */
     private List<RectF> mTouchableArea = Collections.emptyList();
+
+    /** Restricted area, expressed in CSS pixels relative to the layout viewport. */
+    private List<RectF> mRestrictedArea = Collections.emptyList();
 
     /**
      * Detects taps: {@link GestureDetector#onTouchEvent} returns {@code true} after a tap event.
@@ -88,10 +109,10 @@ class AssistantOverlayEventFilter extends EventFilter {
     private final List<Long> mUnexpectedTapTimes = new ArrayList<>();
 
     AssistantOverlayEventFilter(
-            Context context, ChromeFullscreenManager fullscreenManager, View compositorView) {
-        super(context);
+            Context context, BrowserControlsStateProvider browserControls, View compositorView) {
+        super(context, new SimpleOnGestureListener());
 
-        mFullscreenManager = fullscreenManager;
+        mBrowserControls = browserControls;
         mCompositorView = compositorView;
 
         mTapDetector = new GestureDetector(context, new SimpleOnGestureListener() {
@@ -117,6 +138,9 @@ class AssistantOverlayEventFilter extends EventFilter {
 
     void destroy() {
         cleanupCurrentGestureBuffer();
+        if (mWebContents != null) {
+            GestureListenerManager.fromWebContents(mWebContents).removeListener(this);
+        }
     }
 
     /** Resets tap times and current gestures. */
@@ -134,6 +158,14 @@ class AssistantOverlayEventFilter extends EventFilter {
         mDelegate = delegate;
     }
 
+    void setTapTrackingCount(int count) {
+        mTapTrackingCount = count;
+    }
+
+    void setTapTrackingDurationMs(long durationMs) {
+        mTapTrackingDurationMs = durationMs;
+    }
+
     /**
      * Set the touchable area. This only applies if current state is AssistantOverlayState.PARTIAL.
      */
@@ -141,14 +173,24 @@ class AssistantOverlayEventFilter extends EventFilter {
         mTouchableArea = touchableArea;
     }
 
-    @Override
-    protected boolean onInterceptTouchEventInternal(MotionEvent event, boolean isKeyboardShowing) {
-        // All events should be sent to onTouchEvent().
-        return true;
+    /**
+     * Set the restricted area. This only applies if current state is AssistantOverlayState.PARTIAL.
+     */
+    void setRestrictedArea(List<RectF> restrictedArea) {
+        mRestrictedArea = restrictedArea;
+    }
+
+    /** Sets the current {@link WebContents}. */
+    void setWebContents(@NonNull WebContents webContents) {
+        if (mWebContents != null) {
+            GestureListenerManager.fromWebContents(mWebContents).removeListener(this);
+        }
+        mWebContents = webContents;
+        GestureListenerManager.fromWebContents(mWebContents).addListener(this);
     }
 
     @Override
-    protected boolean onTouchEventInternal(MotionEvent event) {
+    public boolean onTouchEvent(MotionEvent event) {
         if (mPartial) {
             return onTouchEventWithPartialOverlay(event);
         } else {
@@ -295,46 +337,50 @@ class AssistantOverlayEventFilter extends EventFilter {
      * or the top/bottom bar.
      */
     private boolean shouldLetEventThrough(MotionEvent event) {
-        int yTop = (int) mFullscreenManager.getContentOffset();
-        int height = mCompositorView.getHeight() - getBottomBarHeight() - yTop;
-        return isInTouchableArea(((float) event.getX()) / mCompositorView.getWidth(),
-                (((float) event.getY() - yTop) / height));
+        int yTop = mBrowserControls.getContentOffset();
+        return isInTouchableArea(event.getX(), event.getY() - yTop);
     }
 
     /** Considers whether to let the client know about unexpected taps. */
     private void onUnexpectedTap(MotionEvent e) {
+        if (mTapTrackingCount <= 0 || mTapTrackingDurationMs <= 0) return;
+
         long eventTimeMs = e.getEventTime();
         for (Iterator<Long> iter = mUnexpectedTapTimes.iterator(); iter.hasNext();) {
             Long timeMs = iter.next();
-            if ((eventTimeMs - timeMs) >= TAP_TRACKING_DURATION_MS) {
+            if ((eventTimeMs - timeMs) >= mTapTrackingDurationMs) {
                 iter.remove();
             }
         }
         mUnexpectedTapTimes.add(eventTimeMs);
-        if (mUnexpectedTapTimes.size() == TAP_TRACKING_COUNT && mDelegate != null) {
+        if (mUnexpectedTapTimes.size() == mTapTrackingCount && mDelegate != null) {
             mDelegate.onUnexpectedTaps();
             mUnexpectedTapTimes.clear();
         }
     }
 
-    private void askForTouchableAreaUpdate() {
-        if (mDelegate != null) {
-            mDelegate.updateTouchableArea();
-        }
-    }
-
     private boolean isInTouchableArea(float x, float y) {
+        if (mWebContents == null || mTouchableArea.isEmpty()) return false;
+
+        RenderCoordinatesImpl renderCoordinates =
+                RenderCoordinatesImpl.fromWebContents(mWebContents);
+
+        // Ratio of to use to convert physical pixels to zoomed CSS pixels. Aspect ratio is
+        // conserved, so width and height are always converted with the same value.
+        float physicalToCssPixels = 1.0f
+                / (renderCoordinates.getPageScaleFactor()
+                        * renderCoordinates.getDeviceScaleFactor());
+
+        float absoluteXCss = (x * physicalToCssPixels) + renderCoordinates.getScrollX();
+        float absoluteYCss = (y * physicalToCssPixels) + renderCoordinates.getScrollY();
+
+        for (RectF rect : mRestrictedArea) {
+            if (rect.contains(absoluteXCss, absoluteYCss)) return false;
+        }
+
         for (RectF rect : mTouchableArea) {
-            if (rect.contains(x, y, x, y)) {
-                return true;
-            }
+            if (rect.contains(absoluteXCss, absoluteYCss)) return true;
         }
         return false;
-    }
-
-    /** Gets the current height of the bottom bar. */
-    private int getBottomBarHeight() {
-        return (int) (mFullscreenManager.getBottomControlsHeight()
-                - mFullscreenManager.getBottomControlOffset());
     }
 }

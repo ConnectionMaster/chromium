@@ -7,6 +7,7 @@ package org.chromium.base.test.util;
 import org.junit.Assert;
 
 import org.chromium.base.PathUtils;
+import org.chromium.base.StrictModeContext;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.MainDex;
 
@@ -15,7 +16,7 @@ import org.chromium.base.annotations.MainDex;
  */
 @MainDex
 public class UrlUtils {
-    private static final String DATA_DIR = "/chrome/test/data/";
+    private static final String DATA_DIR = "chrome/test/data/";
 
     /**
      * Construct the full path of a test data file.
@@ -41,7 +42,9 @@ public class UrlUtils {
      */
     @CalledByNative
     public static String getIsolatedTestRoot() {
-        return PathUtils.getExternalStorageDirectory() + "/chromium_tests_root";
+        try (StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
+            return PathUtils.getExternalStorageDirectory() + "/chromium_tests_root";
+        }
     }
 
     /**

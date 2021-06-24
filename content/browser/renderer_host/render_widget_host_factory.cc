@@ -4,6 +4,7 @@
 
 #include "content/browser/renderer_host/render_widget_host_factory.h"
 
+#include "content/browser/renderer_host/frame_token_message_queue.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 
 namespace content {
@@ -12,18 +13,20 @@ namespace content {
 RenderWidgetHostFactory* RenderWidgetHostFactory::factory_ = nullptr;
 
 // static
-RenderWidgetHostImpl* RenderWidgetHostFactory::Create(
+std::unique_ptr<RenderWidgetHostImpl> RenderWidgetHostFactory::Create(
+    FrameTree* frame_tree,
     RenderWidgetHostDelegate* delegate,
-    RenderProcessHost* process,
+    AgentSchedulingGroupHost& agent_scheduling_group,
     int32_t routing_id,
-    mojom::WidgetPtr widget_interface,
-    bool hidden) {
+    bool hidden,
+    bool renderer_initiated_creation) {
   if (factory_) {
     return factory_->CreateRenderWidgetHost(
-        delegate, process, routing_id, std::move(widget_interface), hidden);
+        frame_tree, delegate, agent_scheduling_group, routing_id, hidden);
   }
-  return new RenderWidgetHostImpl(delegate, process, routing_id,
-                                  std::move(widget_interface), hidden);
+  return RenderWidgetHostImpl::Create(
+      frame_tree, delegate, agent_scheduling_group, routing_id, hidden,
+      renderer_initiated_creation, std::make_unique<FrameTokenMessageQueue>());
 }
 
 // static

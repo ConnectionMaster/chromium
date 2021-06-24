@@ -7,29 +7,25 @@
 #include "base/mac/foundation_util.h"
 #include "base/stl_util.h"
 #include "base/strings/sys_string_conversions.h"
-#include "components/autofill/core/browser/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/payments/payments_service_url.h"
 #include "components/autofill/core/browser/personal_data_manager.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "ios/chrome/browser/application_context.h"
 #import "ios/chrome/browser/ui/autofill/autofill_ui_type.h"
 #import "ios/chrome/browser/ui/autofill/autofill_ui_type_util.h"
 #import "ios/chrome/browser/ui/autofill/cells/autofill_edit_item.h"
-#include "ios/chrome/browser/ui/commands/application_commands.h"
-#import "ios/chrome/browser/ui/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/ui/settings/autofill/autofill_constants.h"
 #import "ios/chrome/browser/ui/table_view/table_view_model.h"
+#import "ios/chrome/browser/ui/table_view/table_view_utils.h"
 #include "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "url/gurl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
-NSString* const kAutofillProfileEditTableViewId =
-    @"kAutofillProfileEditTableViewId";
 
 namespace {
 using ::AutofillTypeFromAutofillUIType;
@@ -42,36 +38,6 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeField = kItemTypeEnumZero,
 };
-
-struct AutofillFieldDisplayInfo {
-  autofill::ServerFieldType autofillType;
-  int displayStringID;
-  UIReturnKeyType returnKeyType;
-  UIKeyboardType keyboardType;
-  UITextAutocapitalizationType autoCapitalizationType;
-};
-
-static const AutofillFieldDisplayInfo kFieldsToDisplay[] = {
-    {autofill::NAME_FULL, IDS_IOS_AUTOFILL_FULLNAME, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::COMPANY_NAME, IDS_IOS_AUTOFILL_COMPANY_NAME, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::ADDRESS_HOME_LINE1, IDS_IOS_AUTOFILL_ADDRESS1, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::ADDRESS_HOME_LINE2, IDS_IOS_AUTOFILL_ADDRESS2, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::ADDRESS_HOME_CITY, IDS_IOS_AUTOFILL_CITY, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::ADDRESS_HOME_STATE, IDS_IOS_AUTOFILL_STATE, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::ADDRESS_HOME_ZIP, IDS_IOS_AUTOFILL_ZIP, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeAllCharacters},
-    {autofill::ADDRESS_HOME_COUNTRY, IDS_IOS_AUTOFILL_COUNTRY, UIReturnKeyNext,
-     UIKeyboardTypeDefault, UITextAutocapitalizationTypeSentences},
-    {autofill::PHONE_HOME_WHOLE_NUMBER, IDS_IOS_AUTOFILL_PHONE, UIReturnKeyNext,
-     UIKeyboardTypePhonePad, UITextAutocapitalizationTypeSentences},
-    {autofill::EMAIL_ADDRESS, IDS_IOS_AUTOFILL_EMAIL, UIReturnKeyDone,
-     UIKeyboardTypeEmailAddress, UITextAutocapitalizationTypeNone}};
 
 }  // namespace
 
@@ -96,11 +62,7 @@ static const AutofillFieldDisplayInfo kFieldsToDisplay[] = {
             personalDataManager:(autofill::PersonalDataManager*)dataManager {
   DCHECK(dataManager);
 
-  UITableViewStyle style = base::FeatureList::IsEnabled(kSettingsRefresh)
-                               ? UITableViewStylePlain
-                               : UITableViewStyleGrouped;
-  self = [super initWithTableViewStyle:style
-                           appBarStyle:ChromeTableViewControllerStyleNoAppBar];
+  self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
     _personalDataManager = dataManager;
     _autofillProfile = profile;
@@ -128,19 +90,6 @@ static const AutofillFieldDisplayInfo kFieldsToDisplay[] = {
 #pragma mark - SettingsRootTableViewController
 
 - (void)editButtonPressed {
-  // In the case of server profiles, open the Payments editing page instead.
-  if (_autofillProfile.record_type() ==
-      autofill::AutofillProfile::SERVER_PROFILE) {
-    GURL paymentsURL = autofill::payments::GetManageAddressesUrl();
-    OpenNewTabCommand* command =
-        [OpenNewTabCommand commandWithURLFromChrome:paymentsURL];
-    [self.dispatcher closeSettingsUIAndOpenURL:command];
-
-    // Don't call [super editButtonPressed] because edit mode is not actually
-    // entered in this case.
-    return;
-  }
-
   [super editButtonPressed];
 
   if (!self.tableView.editing) {
@@ -188,12 +137,12 @@ static const AutofillFieldDisplayInfo kFieldsToDisplay[] = {
 
   std::string locale = GetApplicationContext()->GetApplicationLocale();
   [model addSectionWithIdentifier:SectionIdentifierFields];
-  for (size_t i = 0; i < base::size(kFieldsToDisplay); ++i) {
-    const AutofillFieldDisplayInfo& field = kFieldsToDisplay[i];
+  for (size_t i = 0; i < base::size(kProfileFieldsToDisplay); ++i) {
+    const AutofillProfileFieldDisplayInfo& field = kProfileFieldsToDisplay[i];
 
-    if ((field.autofillType == autofill::COMPANY_NAME) &&
+    if (field.autofillType == autofill::NAME_HONORIFIC_PREFIX &&
         !base::FeatureList::IsEnabled(
-            autofill::features::kAutofillEnableCompanyName)) {
+            autofill::features::kAutofillEnableSupportForHonorificPrefixes)) {
       continue;
     }
 
@@ -204,6 +153,7 @@ static const AutofillFieldDisplayInfo kFieldsToDisplay[] = {
         autofill::AutofillType(field.autofillType), locale));
     item.autofillUIType = AutofillUITypeFromAutofillType(field.autofillType);
     item.textFieldEnabled = self.tableView.editing;
+    item.hideIcon = !self.tableView.editing;
     item.autoCapitalizationType = field.autoCapitalizationType;
     item.returnKeyType = field.returnKeyType;
     item.keyboardType = field.keyboardType;
@@ -237,10 +187,22 @@ static const AutofillFieldDisplayInfo kFieldsToDisplay[] = {
   }
 }
 
+#pragma mark - UITableViewDelegate
+
 - (BOOL)tableView:(UITableView*)tableView
     canEditRowAtIndexPath:(NSIndexPath*)indexPath {
-  // Items in this collection view are not deletable, so should not be seen
-  // as editable by the table view.
+  // If we don't allow the edit of the cell, the selection of the cell isn't
+  // forwarded.
+  return YES;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView*)tableView
+           editingStyleForRowAtIndexPath:(NSIndexPath*)indexPath {
+  return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView*)tableview
+    shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath*)indexPath {
   return NO;
 }
 

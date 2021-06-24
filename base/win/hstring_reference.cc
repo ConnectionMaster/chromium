@@ -8,7 +8,7 @@
 
 #include <winstring.h>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/char_traits.h"
 
@@ -20,7 +20,8 @@ bool g_winrt_string_loaded = false;
 decltype(&::WindowsCreateStringReference) GetWindowsCreateStringReference() {
   static auto const create_string_reference_func =
       []() -> decltype(&::WindowsCreateStringReference) {
-    const HMODULE handle = ::LoadLibrary(L"combase.dll");
+    const HMODULE handle =
+        ::LoadLibraryEx(L"combase.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (handle) {
       return reinterpret_cast<decltype(&::WindowsCreateStringReference)>(
           ::GetProcAddress(handle, "WindowsCreateStringReference"));

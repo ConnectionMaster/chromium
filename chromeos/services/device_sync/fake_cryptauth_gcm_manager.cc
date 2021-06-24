@@ -15,7 +15,11 @@ FakeCryptAuthGCMManager::FakeCryptAuthGCMManager(
 FakeCryptAuthGCMManager::~FakeCryptAuthGCMManager() = default;
 
 void FakeCryptAuthGCMManager::StartListening() {
-  has_started_listening_ = true;
+  is_listening_ = true;
+}
+
+bool FakeCryptAuthGCMManager::IsListening() {
+  return is_listening_;
 }
 
 void FakeCryptAuthGCMManager::RegisterWithGCM() {
@@ -44,14 +48,18 @@ void FakeCryptAuthGCMManager::CompleteRegistration(
     observer.OnGCMRegistrationResult(success);
 }
 
-void FakeCryptAuthGCMManager::PushReenrollMessage() {
+void FakeCryptAuthGCMManager::PushReenrollMessage(
+    const absl::optional<std::string>& session_id,
+    const absl::optional<CryptAuthFeatureType>& feature_type) {
   for (auto& observer : observers_)
-    observer.OnReenrollMessage();
+    observer.OnReenrollMessage(session_id, feature_type);
 }
 
-void FakeCryptAuthGCMManager::PushResyncMessage() {
+void FakeCryptAuthGCMManager::PushResyncMessage(
+    const absl::optional<std::string>& session_id,
+    const absl::optional<CryptAuthFeatureType>& feature_type) {
   for (auto& observer : observers_)
-    observer.OnResyncMessage();
+    observer.OnResyncMessage(session_id, feature_type);
 }
 
 }  // namespace device_sync

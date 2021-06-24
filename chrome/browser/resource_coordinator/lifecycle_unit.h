@@ -6,17 +6,17 @@
 #define CHROME_BROWSER_RESOURCE_COORDINATOR_LIFECYCLE_UNIT_H_
 
 #include <stdint.h>
+#include <string>
 #include <vector>
 
 #include "base/containers/flat_set.h"
-#include "base/optional.h"
 #include "base/process/process_handle.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "chrome/browser/resource_coordinator/decision_details.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom-forward.h"
 #include "content/public/browser/visibility.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace resource_coordinator {
 
@@ -35,37 +35,22 @@ class TabLifecycleUnitExternal;
 // use any system resource.
 class LifecycleUnit {
  public:
-  // Used to sort LifecycleUnit by importance using a reactivation score or the
-  // last focused time.
+  // Used to sort LifecycleUnit by importance using the last focused time.
   // The most important LifecycleUnit has the greatest SortKey.
   struct SortKey {
-    // kMaxScore is used when a SortKey should rank ahead of any other SortKey.
-    // Two SortKeys with kMaxScore are compared using |last_focused_time|.
-    static constexpr float kMaxScore = std::numeric_limits<float>::max();
 
     SortKey();
 
     // Creates a SortKey based on the LifecycleUnit's last focused time.
     explicit SortKey(base::TimeTicks last_focused_time);
 
-    // Creates a SortKey based on a score calculated for the LifecycleUnit and
-    // the last focused time. Used when the TabRanker feature is enabled.
-    SortKey(float score, base::TimeTicks last_focused_time);
-
     SortKey(const SortKey& other);
 
     bool operator<(const SortKey& other) const;
     bool operator>(const SortKey& other) const;
 
-    // Abstract importance score calculated by the Tab Ranker where a higher
-    // score suggests the tab is more likely to be reactivated.
-    // kMaxScore if the LifecycleUnit is currently focused.
-    float score = kMaxScore;
-
     // Last time at which the LifecycleUnit was focused. base::TimeTicks::Max()
     // if the LifecycleUnit is currently focused.
-    // Used when the TabRanker feature is disabled. Also used as a tiebreaker
-    // when two scores are the same.
     base::TimeTicks last_focused_time;
   };
 
@@ -83,7 +68,7 @@ class LifecycleUnit {
 
   // Returns a title describing this LifecycleUnit, or an empty string if no
   // title is available.
-  virtual base::string16 GetTitle() const = 0;
+  virtual std::u16string GetTitle() const = 0;
 
   // Returns the last time at which the LifecycleUnit was focused, or
   // base::TimeTicks::Max() if the LifecycleUnit is currently focused.
@@ -140,13 +125,6 @@ class LifecycleUnit {
   // than for individual LifecycleUnits. https://crbug.com/775644
   virtual int GetEstimatedMemoryFreedOnDiscardKB() const = 0;
 
-  // Returns true if this LifecycleUnit can be frozen. Full details regarding
-  // the policy decision are recorded in |decision_details|, for logging.
-  // Returning false but with an empty |decision_details| means the transition
-  // is not possible for a trivial reason that doesn't need to be reported (ie,
-  // the page is already frozen).
-  virtual bool CanFreeze(DecisionDetails* decision_details) const = 0;
-
   // Returns true if this LifecycleUnit can be discarded. Full details regarding
   // the policy decision are recorded in the |decision_details|, for logging.
   // Returning false but with an empty |decision_details| means the transition
@@ -154,13 +132,6 @@ class LifecycleUnit {
   // (ie, the page is already discarded).
   virtual bool CanDiscard(LifecycleUnitDiscardReason reason,
                           DecisionDetails* decision_details) const = 0;
-
-  // Request that the LifecycleUnit be frozen, return true if the request is
-  // successfully sent.
-  virtual bool Freeze() = 0;
-
-  // Unfreezes this LifecycleUnit. Returns true on success.
-  virtual bool Unfreeze() = 0;
 
   // Discards this LifecycleUnit.
   //

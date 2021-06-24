@@ -26,8 +26,8 @@ class ShellJavaScriptDialogManager : public JavaScriptDialogManager {
   void RunJavaScriptDialog(WebContents* web_contents,
                            RenderFrameHost* render_frame_host,
                            JavaScriptDialogType dialog_type,
-                           const base::string16& message_text,
-                           const base::string16& default_prompt_text,
+                           const std::u16string& message_text,
+                           const std::u16string& default_prompt_text,
                            DialogClosedCallback callback,
                            bool* did_suppress_message) override;
 
@@ -43,8 +43,8 @@ class ShellJavaScriptDialogManager : public JavaScriptDialogManager {
   void DialogClosed(ShellJavaScriptDialog* dialog);
 
   // Used for content_browsertests.
-  void set_dialog_request_callback(const base::Closure& callback) {
-    dialog_request_callback_ = callback;
+  void set_dialog_request_callback(base::OnceClosure callback) {
+    dialog_request_callback_ = std::move(callback);
   }
   void set_should_proceed_on_beforeunload(bool proceed, bool success) {
     should_proceed_on_beforeunload_ = proceed;
@@ -52,14 +52,14 @@ class ShellJavaScriptDialogManager : public JavaScriptDialogManager {
   }
 
  private:
-#if defined(OS_MACOSX) || defined(OS_WIN)
+#if defined(OS_MAC) || defined(OS_WIN)
   // The dialog being shown. No queueing.
   std::unique_ptr<ShellJavaScriptDialog> dialog_;
 #else
   // TODO: implement ShellJavaScriptDialog for other platforms, drop this #if
 #endif
 
-  base::Closure dialog_request_callback_;
+  base::OnceClosure dialog_request_callback_;
 
   // Whether to automatically proceed when asked to display a BeforeUnload
   // dialog, and the return value that should be passed (success or failure).

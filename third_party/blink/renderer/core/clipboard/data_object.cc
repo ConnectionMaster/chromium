@@ -30,6 +30,8 @@
 
 #include "third_party/blink/renderer/core/clipboard/data_object.h"
 
+#include "base/notreached.h"
+#include "third_party/blink/public/platform/file_path_conversion.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_drag_data.h"
 #include "third_party/blink/renderer/core/clipboard/clipboard_mime_types.h"
@@ -42,18 +44,38 @@
 
 namespace blink {
 
-DataObject* DataObject::CreateFromClipboard(PasteMode paste_mode) {
+// static
+DataObject* DataObject::CreateFromClipboard(SystemClipboard* system_clipboard,
+                                            PasteMode paste_mode) {
   DataObject* data_object = Create();
 #if DCHECK_IS_ON()
   HashSet<String> types_seen;
 #endif
-  uint64_t sequence_number = SystemClipboard::GetInstance().SequenceNumber();
-  for (const String& type :
-       SystemClipboard::GetInstance().ReadAvailableTypes()) {
+  uint64_t sequence_number = system_clipboard->SequenceNumber();
+  for (const String& type : system_clipboard->ReadAvailableTypes()) {
     if (paste_mode == PasteMode::kPlainTextOnly && type != kMimeTypeTextPlain)
       continue;
-    data_object->item_list_.push_back(
-        DataObjectItem::CreateFromClipboard(type, sequence_number));
+    mojom::blink::ClipboardFilesPtr files;
+    if (type == kMimeTypeTextURIList) {
+      files = system_clipboard->ReadFiles();
+      // Ignore ReadFiles() result if clipboard sequence number has changed.
+      if (system_clipboard->SequenceNumber() != sequence_number) {
+        files->files.clear();
+      }
+      for (const mojom::blink::DataTransferFilePtr& file : files->files) {
+        data_object->AddFilename(
+            FilePathToString(file->path), FilePathToString(file->display_name),
+            files->file_system_id,
+            base::MakeRefCounted<FileSystemAccessDropData>(
+                std::move(file->file_system_access_token)));
+      }
+    }
+    if (files && !files->files.IsEmpty()) {
+      DraggedIsolatedFileSystem::PrepareForDataObject(data_object);
+    } else {
+      data_object->item_list_.push_back(DataObjectItem::CreateFromClipboard(
+          system_clipboard, type, sequence_number));
+    }
 #if DCHECK_IS_ON()
     DCHECK(types_seen.insert(type).is_new_entry);
 #endif
@@ -61,12 +83,14 @@ DataObject* DataObject::CreateFromClipboard(PasteMode paste_mode) {
   return data_object;
 }
 
+// static
 DataObject* DataObject::CreateFromString(const String& data) {
   DataObject* data_object = Create();
   data_object->Add(data, kMimeTypeTextPlain);
   return data_object;
 }
 
+// static
 DataObject* DataObject::Create() {
   return MakeGarbageCollected<DataObject>();
 }
@@ -222,11 +246,14 @@ Vector<String> DataObject::Filenames() const {
   return results;
 }
 
-void DataObject::AddFilename(const String& filename,
-                             const String& display_name,
-                             const String& file_system_id) {
+void DataObject::AddFilename(
+    const String& filename,
+    const String& display_name,
+    const String& file_system_id,
+    scoped_refptr<FileSystemAccessDropData> file_system_access_entry) {
   InternalAddFileItem(DataObjectItem::CreateFromFileWithFileSystemId(
-      File::CreateForUserProvidedFile(filename, display_name), file_system_id));
+      File::CreateForUserProvidedFile(filename, display_name), file_system_id,
+      std::move(file_system_access_entry)));
 }
 
 void DataObject::AddSharedBuffer(scoped_refptr<SharedBuffer> buffer,
@@ -276,12 +303,13 @@ void DataObject::NotifyItemListChanged() const {
     observer->OnItemListChanged();
 }
 
-void DataObject::Trace(blink::Visitor* visitor) {
+void DataObject::Trace(Visitor* visitor) const {
   visitor->Trace(item_list_);
   visitor->Trace(observers_);
   Supplementable<DataObject>::Trace(visitor);
 }
 
+// static
 DataObject* DataObject::Create(WebDragData data) {
   DataObject* data_object = Create();
   bool has_file_system = false;
@@ -299,14 +327,15 @@ DataObject* DataObject::Create(WebDragData data) {
       case WebDragData::Item::kStorageTypeFilename:
         has_file_system = true;
         data_object->AddFilename(item.filename_data, item.display_name_data,
-                                 data.FilesystemId());
+                                 data.FilesystemId(),
+                                 item.file_system_access_entry);
         break;
       case WebDragData::Item::kStorageTypeBinaryData:
         // This should never happen when dragging in.
         break;
       case WebDragData::Item::kStorageTypeFileSystemFile: {
-        // FIXME: The file system URL may refer a user visible file, see
-        // http://crbug.com/429077
+        // TODO(http://crbug.com/429077): The file system URL may refer a user
+        // visible file.
         has_file_system = true;
         FileMetadata file_metadata;
         file_metadata.length = item.file_system_file_size;
@@ -329,8 +358,6 @@ DataObject* DataObject::Create(WebDragData data) {
 
 WebDragData DataObject::ToWebDragData() {
   WebDragData data;
-  data.Initialize();
-  data.SetModifierKeyState(modifiers_);
   WebVector<WebDragData::Item> item_list(length());
 
   for (wtf_size_t i = 0; i < length(); ++i) {
@@ -363,8 +390,8 @@ WebDragData DataObject::ToWebDragData() {
             item.file_system_file_size = file->size();
             item.file_system_id = original_item->FileSystemId();
           } else {
-            // FIXME: support dragging constructed Files across renderers, see
-            // http://crbug.com/394955
+            // TODO(http://crbug.com/394955): support dragging constructed Files
+            // across renderers.
             item.storage_type = WebDragData::Item::kStorageTypeString;
             item.string_type = "text/plain";
             item.string_data = file->name();

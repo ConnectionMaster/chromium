@@ -4,6 +4,7 @@
 
 #include "ui/aura/window_tree_host_platform.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -16,72 +17,83 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tree_host_observer.h"
+#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/base/layout.h"
 #include "ui/compositor/compositor.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/events/keyboard_hook.h"
 #include "ui/events/keycodes/dom/dom_code.h"
-#include "ui/events/keycodes/dom/dom_keyboard_layout_map.h"
+#include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_init_properties.h"
 
-#if defined(OS_ANDROID)
-#include "ui/platform_window/android/platform_window_android.h"
-#endif
-
 #if defined(USE_OZONE)
+#include "ui/base/ui_base_features.h"
+#include "ui/events/keycodes/dom/dom_keyboard_layout_map.h"
 #include "ui/ozone/public/ozone_platform.h"
 #endif
 
 #if defined(OS_WIN)
-#include "ui/base/cursor/cursor_loader_win.h"
 #include "ui/platform_window/win/win_window.h"
 #endif
 
 #if defined(USE_X11)
-#include "ui/platform_window/x11/x11_window.h"
+#include "ui/platform_window/x11/x11_window.h"  // nogncheck
 #endif
 
 namespace aura {
 
 // static
 std::unique_ptr<WindowTreeHost> WindowTreeHost::Create(
-    ui::PlatformWindowInitProperties properties,
-    Env* env) {
+    ui::PlatformWindowInitProperties properties) {
   return std::make_unique<WindowTreeHostPlatform>(
       std::move(properties),
-      std::make_unique<aura::Window>(nullptr, client::WINDOW_TYPE_UNKNOWN,
-                                     env ? env : Env::GetInstance()));
+      std::make_unique<aura::Window>(nullptr, client::WINDOW_TYPE_UNKNOWN));
 }
 
 WindowTreeHostPlatform::WindowTreeHostPlatform(
     ui::PlatformWindowInitProperties properties,
-    std::unique_ptr<Window> window,
-    const char* trace_environment_name)
+    std::unique_ptr<Window> window)
     : WindowTreeHost(std::move(window)) {
   bounds_in_pixels_ = properties.bounds;
-  CreateCompositor(viz::FrameSinkId(),
-                   /* force_software_compositor */ false,
-                   /* external_begin_frames_enabled */ nullptr,
-                   /* are_events_in_pixels */ true, trace_environment_name);
+  CreateCompositor(false, false,
+                   properties.enable_compositing_based_throttling);
   CreateAndSetPlatformWindow(std::move(properties));
 }
 
 WindowTreeHostPlatform::WindowTreeHostPlatform(std::unique_ptr<Window> window)
     : WindowTreeHost(std::move(window)),
       widget_(gfx::kNullAcceleratedWidget),
-      current_cursor_(ui::CursorType::kNull) {}
+      current_cursor_(ui::mojom::CursorType::kNull) {}
 
 void WindowTreeHostPlatform::CreateAndSetPlatformWindow(
     ui::PlatformWindowInitProperties properties) {
+  // Cache initial bounds used to create |platform_window_| so that it does not
+  // end up propagating unneeded bounds change event when it is first notified
+  // through OnBoundsChanged, which may lead to unneeded re-layouts, etc.
+  bounds_in_pixels_ = properties.bounds;
+
+#if defined(USE_OZONE) || defined(USE_X11)
 #if defined(USE_OZONE)
-  platform_window_ = ui::OzonePlatform::GetInstance()->CreatePlatformWindow(
-      this, std::move(properties));
+  if (features::IsUsingOzonePlatform()) {
+    platform_window_ = ui::OzonePlatform::GetInstance()->CreatePlatformWindow(
+        this, std::move(properties));
+    return;
+  }
+#endif
+#if defined(USE_X11)
+  auto platform_window = std::make_unique<ui::X11Window>(this);
+  auto* x11_window = platform_window.get();
+  // platform_window() may be called during Initialize(), so call
+  // SetPlatformWindow() now.
+  SetPlatformWindow(std::move(platform_window));
+  x11_window->Initialize(std::move(properties));
+  return;
+#endif
+  NOTREACHED();
 #elif defined(OS_WIN)
-  platform_window_.reset(new ui::WinWindow(this, properties.bounds));
-#elif defined(OS_ANDROID)
-  platform_window_.reset(new ui::PlatformWindowAndroid(this));
-#elif defined(USE_X11)
-  platform_window_.reset(new ui::X11Window(this, properties.bounds));
+  platform_window_ = std::make_unique<ui::WinWindow>(this, properties.bounds);
 #else
   NOTIMPLEMENTED();
 #endif
@@ -121,11 +133,8 @@ gfx::Rect WindowTreeHostPlatform::GetBoundsInPixels() const {
   return platform_window_ ? platform_window_->GetBounds() : gfx::Rect();
 }
 
-void WindowTreeHostPlatform::SetBoundsInPixels(
-    const gfx::Rect& bounds,
-    const viz::LocalSurfaceIdAllocation& local_surface_id_allocation) {
+void WindowTreeHostPlatform::SetBoundsInPixels(const gfx::Rect& bounds) {
   pending_size_ = bounds.size();
-  pending_local_surface_id_allocation_ = local_surface_id_allocation;
   platform_window_->SetBounds(bounds);
 }
 
@@ -142,7 +151,7 @@ void WindowTreeHostPlatform::ReleaseCapture() {
 }
 
 bool WindowTreeHostPlatform::CaptureSystemKeyEventsImpl(
-    base::Optional<base::flat_set<ui::DomCode>> dom_codes) {
+    absl::optional<base::flat_set<ui::DomCode>> dom_codes) {
   // Only one KeyboardHook should be active at a time, otherwise there will be
   // problems with event routing (i.e. which Hook takes precedence) and
   // destruction ordering.
@@ -168,23 +177,19 @@ bool WindowTreeHostPlatform::IsKeyLocked(ui::DomCode dom_code) {
 
 base::flat_map<std::string, std::string>
 WindowTreeHostPlatform::GetKeyboardLayoutMap() {
-#if !defined(X11)
-  return ui::GenerateDomKeyboardLayoutMap();
-#else
+#if defined(USE_OZONE)
+  // USE_X11 supports keyboard layout map through LinuxUI.
+  if (features::IsUsingOzonePlatform())
+    return ui::GenerateDomKeyboardLayoutMap();
+#endif
   NOTIMPLEMENTED();
   return {};
-#endif
 }
 
 void WindowTreeHostPlatform::SetCursorNative(gfx::NativeCursor cursor) {
   if (cursor == current_cursor_)
     return;
   current_cursor_ = cursor;
-
-#if defined(OS_WIN)
-  ui::CursorLoaderWin cursor_loader;
-  cursor_loader.SetPlatformCursor(&cursor);
-#endif
 
   platform_window_->SetCursor(cursor.platform());
 }
@@ -198,28 +203,39 @@ void WindowTreeHostPlatform::OnCursorVisibilityChangedNative(bool show) {
   NOTIMPLEMENTED();
 }
 
-void WindowTreeHostPlatform::OnBoundsChanged(const gfx::Rect& new_bounds) {
-  for (WindowTreeHostObserver& observer : observers())
-    observer.OnHostWillProcessBoundsChange(this);
+void WindowTreeHostPlatform::OnBoundsChanged(const BoundsChange& change) {
+  // It's possible this function may be called recursively. Only notify
+  // observers on initial entry. This way observers can safely assume that
+  // OnHostDidProcessBoundsChange() is called when all bounds changes have
+  // completed.
+  if (++on_bounds_changed_recursion_depth_ == 1) {
+    for (WindowTreeHostObserver& observer : observers())
+      observer.OnHostWillProcessBoundsChange(this);
+  }
   float current_scale = compositor()->device_scale_factor();
   float new_scale = ui::GetScaleFactorForNativeView(window());
   gfx::Rect old_bounds = bounds_in_pixels_;
-  bounds_in_pixels_ = new_bounds;
-  if (bounds_in_pixels_.origin() != old_bounds.origin())
+  auto weak_ref = GetWeakPtr();
+  bounds_in_pixels_ = change.bounds;
+  if (bounds_in_pixels_.origin() != old_bounds.origin()) {
     OnHostMovedInPixels(bounds_in_pixels_.origin());
-  if (pending_local_surface_id_allocation_.IsValid() ||
-      bounds_in_pixels_.size() != old_bounds.size() ||
-      current_scale != new_scale) {
-    viz::LocalSurfaceIdAllocation local_surface_id_allocation;
-    if (bounds_in_pixels_.size() == pending_size_)
-      local_surface_id_allocation = pending_local_surface_id_allocation_;
-    pending_local_surface_id_allocation_ = viz::LocalSurfaceIdAllocation();
-    pending_size_ = gfx::Size();
-    OnHostResizedInPixels(bounds_in_pixels_.size(),
-                          local_surface_id_allocation);
+    // Changing the bounds may destroy this.
+    if (!weak_ref)
+      return;
   }
-  for (WindowTreeHostObserver& observer : observers())
-    observer.OnHostDidProcessBoundsChange(this);
+  if (bounds_in_pixels_.size() != old_bounds.size() ||
+      current_scale != new_scale) {
+    pending_size_ = gfx::Size();
+    OnHostResizedInPixels(bounds_in_pixels_.size());
+    // Changing the size may destroy this.
+    if (!weak_ref)
+      return;
+  }
+  DCHECK_GT(on_bounds_changed_recursion_depth_, 0);
+  if (--on_bounds_changed_recursion_depth_ == 0) {
+    for (WindowTreeHostObserver& observer : observers())
+      observer.OnHostDidProcessBoundsChange(this);
+  }
 }
 
 void WindowTreeHostPlatform::OnDamageRect(const gfx::Rect& damage_rect) {
@@ -229,38 +245,18 @@ void WindowTreeHostPlatform::OnDamageRect(const gfx::Rect& damage_rect) {
 void WindowTreeHostPlatform::DispatchEvent(ui::Event* event) {
   TRACE_EVENT0("input", "WindowTreeHostPlatform::DispatchEvent");
   ui::EventDispatchDetails details = SendEventToSink(event);
-  if (details.dispatcher_destroyed) {
+  if (details.dispatcher_destroyed)
     event->SetHandled();
-    return;
-  }
-
-  // Reset the cursor on ET_MOUSE_EXITED, so that when the mouse re-enters the
-  // window, the cursor is updated correctly.
-  if (event->type() == ui::ET_MOUSE_EXITED) {
-    client::CursorClient* cursor_client = client::GetCursorClient(window());
-    if (cursor_client) {
-      // The cursor-change needs to happen through the CursorClient so that
-      // other external states are updated correctly, instead of just changing
-      // |current_cursor_| here.
-      cursor_client->SetCursor(ui::CursorType::kNone);
-      DCHECK(cursor_client->IsCursorLocked() ||
-             ui::CursorType::kNone == current_cursor_.native_type());
-    }
-  }
 }
 
 void WindowTreeHostPlatform::OnCloseRequest() {
-#if defined(OS_WIN)
-  // TODO: this obviously shouldn't be here.
-  base::RunLoop::QuitCurrentWhenIdleDeprecated();
-#else
   OnHostCloseRequested();
-#endif
 }
 
 void WindowTreeHostPlatform::OnClosed() {}
 
 void WindowTreeHostPlatform::OnWindowStateChanged(
+    ui::PlatformWindowState old_state,
     ui::PlatformWindowState new_state) {}
 
 void WindowTreeHostPlatform::OnLostCapture() {
@@ -275,13 +271,24 @@ void WindowTreeHostPlatform::OnAcceleratedWidgetAvailable(
     WindowTreeHost::OnAcceleratedWidgetAvailable();
 }
 
+void WindowTreeHostPlatform::OnWillDestroyAcceleratedWidget() {}
+
 void WindowTreeHostPlatform::OnAcceleratedWidgetDestroyed() {
   gfx::AcceleratedWidget widget = compositor()->ReleaseAcceleratedWidget();
   DCHECK_EQ(widget, widget_);
   widget_ = gfx::kNullAcceleratedWidget;
 }
 
-void WindowTreeHostPlatform::OnActivationChanged(bool active) {
+void WindowTreeHostPlatform::OnActivationChanged(bool active) {}
+
+void WindowTreeHostPlatform::OnMouseEnter() {
+  client::CursorClient* cursor_client = client::GetCursorClient(window());
+  if (cursor_client) {
+    auto display =
+        display::Screen::GetScreen()->GetDisplayNearestWindow(window());
+    DCHECK(display.is_valid());
+    cursor_client->SetDisplay(display);
+  }
 }
 
 }  // namespace aura

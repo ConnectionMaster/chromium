@@ -14,20 +14,20 @@
 #include "ash/app_list/model/app_list_item_list.h"
 #include "ash/app_list/model/app_list_item_list_observer.h"
 #include "ash/app_list/model/app_list_model_export.h"
-#include "ash/public/interfaces/app_list.mojom.h"
-#include "ash/public/interfaces/app_list_view.mojom.h"
+#include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "base/scoped_multi_source_observation.h"
 
-namespace app_list {
+namespace ash {
 
 class AppListFolderItem;
 class AppListItem;
 class AppListItemList;
 class AppListModelObserver;
 
-// Master model of app list that holds AppListItemList, which owns a list
-// of AppListItems and is displayed in the grid view.
+// Main model for the app list. Holds AppListItemList, which owns a list of
+// AppListItems and is displayed in the grid view.
 // NOTE: Currently this class observes |top_level_item_list_|. The View code may
 // move entries in the item list directly (but can not add or remove them) and
 // the model needs to notify its observers when this occurs.
@@ -39,16 +39,14 @@ class APP_LIST_MODEL_EXPORT AppListModel : public AppListItemListObserver {
   void AddObserver(AppListModelObserver* observer);
   void RemoveObserver(AppListModelObserver* observer);
 
-  void SetStatus(ash::AppListModelStatus status);
+  void SetStatus(AppListModelStatus status);
 
-  void SetState(ash::AppListState state);
-  ash::AppListState state() const { return state_; }
+  void SetState(AppListState state);
+  AppListState state() const { return state_; }
 
   // The current state of the AppListView. Controlled by AppListView.
-  void SetStateFullscreen(ash::mojom::AppListViewState state);
-  ash::mojom::AppListViewState state_fullscreen() const {
-    return state_fullscreen_;
-  }
+  void SetStateFullscreen(AppListViewState state);
+  AppListViewState state_fullscreen() const { return state_fullscreen_; }
 
   // Finds the item matching |id|.
   AppListItem* FindItem(const std::string& id);
@@ -123,9 +121,11 @@ class APP_LIST_MODEL_EXPORT AppListModel : public AppListItemListObserver {
   // Deletes all items. This is used in profile switches.
   void DeleteAllItems();
 
-  AppListItemList* top_level_item_list() { return top_level_item_list_.get(); }
+  AppListItemList* top_level_item_list() const {
+    return top_level_item_list_.get();
+  }
 
-  ash::AppListModelStatus status() const { return status_; }
+  AppListModelStatus status() const { return status_; }
 
  private:
   // AppListItemListObserver
@@ -162,16 +162,16 @@ class APP_LIST_MODEL_EXPORT AppListModel : public AppListItemListObserver {
 
   std::unique_ptr<AppListItemList> top_level_item_list_;
 
-  ash::AppListModelStatus status_ = ash::AppListModelStatus::kStatusNormal;
-  ash::AppListState state_ = ash::AppListState::kInvalidState;
+  AppListModelStatus status_ = AppListModelStatus::kStatusNormal;
+  AppListState state_ = AppListState::kInvalidState;
   // The AppListView state. Controlled by the AppListView.
-  ash::mojom::AppListViewState state_fullscreen_ =
-      ash::mojom::AppListViewState::kClosed;
-  base::ObserverList<AppListModelObserver, true>::Unchecked observers_;
-
+  AppListViewState state_fullscreen_ = AppListViewState::kClosed;
+  base::ObserverList<AppListModelObserver, true> observers_;
+  base::ScopedMultiSourceObservation<AppListItemList, AppListItemListObserver>
+      item_list_scoped_observations_{this};
   DISALLOW_COPY_AND_ASSIGN(AppListModel);
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_MODEL_APP_LIST_MODEL_H_

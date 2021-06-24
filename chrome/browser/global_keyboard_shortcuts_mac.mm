@@ -7,17 +7,19 @@
 #import <AppKit/AppKit.h>
 #include <Carbon/Carbon.h>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/feature_list.h"
 #include "base/mac/foundation_util.h"
 #include "base/no_destructor.h"
-#include "base/stl_util.h"
 #include "build/buildflag.h"
 #include "chrome/app/chrome_command_ids.h"
 #import "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/ui/cocoa/accelerators_cocoa.h"
-#import "chrome/browser/ui/cocoa/nsmenuitem_additions.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/platform_accelerator_cocoa.h"
+#import "ui/base/cocoa/nsmenuitem_additions.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_code_conversion_mac.h"
 
@@ -134,8 +136,8 @@ CommandForKeyEventResult ShortcutCommand(int cmd) {
 const std::vector<KeyboardShortcutData>& GetShortcutsNotPresentInMainMenu() {
   // clang-format off
   static base::NoDestructor<std::vector<KeyboardShortcutData>> keys({
-    //cmd   shift  cntrl  option vkeycode               command
-    //---   -----  -----  ------ --------               -------
+  // cmd    shift  cntrl  option vkeycode               command
+  // ---    -----  -----  ------ --------               -------
     {true,  true,  false, false, kVK_ANSI_RightBracket, IDC_SELECT_NEXT_TAB},
     {true,  true,  false, false, kVK_ANSI_LeftBracket,  IDC_SELECT_PREVIOUS_TAB},
     {false, false, true,  false, kVK_PageDown,          IDC_SELECT_NEXT_TAB},
@@ -144,29 +146,43 @@ const std::vector<KeyboardShortcutData>& GetShortcutsNotPresentInMainMenu() {
     {true,  false, false, true,  kVK_LeftArrow,         IDC_SELECT_PREVIOUS_TAB},
 
     // Cmd-0..8 select the nth tab, with cmd-9 being "last tab".
-    {true, false, false, false, kVK_ANSI_1,             IDC_SELECT_TAB_0},
-    {true, false, false, false, kVK_ANSI_Keypad1,       IDC_SELECT_TAB_0},
-    {true, false, false, false, kVK_ANSI_2,             IDC_SELECT_TAB_1},
-    {true, false, false, false, kVK_ANSI_Keypad2,       IDC_SELECT_TAB_1},
-    {true, false, false, false, kVK_ANSI_3,             IDC_SELECT_TAB_2},
-    {true, false, false, false, kVK_ANSI_Keypad3,       IDC_SELECT_TAB_2},
-    {true, false, false, false, kVK_ANSI_4,             IDC_SELECT_TAB_3},
-    {true, false, false, false, kVK_ANSI_Keypad4,       IDC_SELECT_TAB_3},
-    {true, false, false, false, kVK_ANSI_5,             IDC_SELECT_TAB_4},
-    {true, false, false, false, kVK_ANSI_Keypad5,       IDC_SELECT_TAB_4},
-    {true, false, false, false, kVK_ANSI_6,             IDC_SELECT_TAB_5},
-    {true, false, false, false, kVK_ANSI_Keypad6,       IDC_SELECT_TAB_5},
-    {true, false, false, false, kVK_ANSI_7,             IDC_SELECT_TAB_6},
-    {true, false, false, false, kVK_ANSI_Keypad7,       IDC_SELECT_TAB_6},
-    {true, false, false, false, kVK_ANSI_8,             IDC_SELECT_TAB_7},
-    {true, false, false, false, kVK_ANSI_Keypad8,       IDC_SELECT_TAB_7},
-    {true, false, false, false, kVK_ANSI_9,             IDC_SELECT_LAST_TAB},
-    {true, false, false, false, kVK_ANSI_Keypad9,       IDC_SELECT_LAST_TAB},
-    {true, true,  false, false, kVK_ANSI_M,             IDC_SHOW_AVATAR_MENU},
-    {true, false, false, true,  kVK_ANSI_L,             IDC_SHOW_DOWNLOADS},
+    {true,  false, false, false, kVK_ANSI_1,            IDC_SELECT_TAB_0},
+    {true,  false, false, false, kVK_ANSI_Keypad1,      IDC_SELECT_TAB_0},
+    {true,  false, false, false, kVK_ANSI_2,            IDC_SELECT_TAB_1},
+    {true,  false, false, false, kVK_ANSI_Keypad2,      IDC_SELECT_TAB_1},
+    {true,  false, false, false, kVK_ANSI_3,            IDC_SELECT_TAB_2},
+    {true,  false, false, false, kVK_ANSI_Keypad3,      IDC_SELECT_TAB_2},
+    {true,  false, false, false, kVK_ANSI_4,            IDC_SELECT_TAB_3},
+    {true,  false, false, false, kVK_ANSI_Keypad4,      IDC_SELECT_TAB_3},
+    {true,  false, false, false, kVK_ANSI_5,            IDC_SELECT_TAB_4},
+    {true,  false, false, false, kVK_ANSI_Keypad5,      IDC_SELECT_TAB_4},
+    {true,  false, false, false, kVK_ANSI_6,            IDC_SELECT_TAB_5},
+    {true,  false, false, false, kVK_ANSI_Keypad6,      IDC_SELECT_TAB_5},
+    {true,  false, false, false, kVK_ANSI_7,            IDC_SELECT_TAB_6},
+    {true,  false, false, false, kVK_ANSI_Keypad7,      IDC_SELECT_TAB_6},
+    {true,  false, false, false, kVK_ANSI_8,            IDC_SELECT_TAB_7},
+    {true,  false, false, false, kVK_ANSI_Keypad8,      IDC_SELECT_TAB_7},
+    {true,  false, false, false, kVK_ANSI_9,            IDC_SELECT_LAST_TAB},
+    {true,  false, false, false, kVK_ANSI_Keypad9,      IDC_SELECT_LAST_TAB},
+    {true,  true,  false, false, kVK_ANSI_M,            IDC_SHOW_AVATAR_MENU},
+    {true,  false, false, true,  kVK_ANSI_L,            IDC_SHOW_DOWNLOADS},
     {true,  true,  false, false, kVK_ANSI_C,            IDC_DEV_TOOLS_INSPECT},
-    {true,  false,  false, true, kVK_ANSI_C,            IDC_DEV_TOOLS_INSPECT},
+    {true,  false, false, true,  kVK_ANSI_C,            IDC_DEV_TOOLS_INSPECT},
+
+    {true,  false, false, true,  kVK_DownArrow,         IDC_FOCUS_NEXT_PANE},
+    {true,  false, false, true,  kVK_UpArrow,           IDC_FOCUS_PREVIOUS_PANE},
   });
+
+  keys->push_back({true,  true,  false, false, kVK_ANSI_A, IDC_TAB_SEARCH});
+
+  if (base::FeatureList::IsEnabled(features::kUIDebugTools)) {
+    keys->push_back({false, true, true, true, kVK_ANSI_T,
+                     IDC_DEBUG_TOGGLE_TABLET_MODE});
+    keys->push_back({false, true, true, true, kVK_ANSI_V,
+                     IDC_DEBUG_PRINT_VIEW_TREE});
+    keys->push_back({false, true, true, true, kVK_ANSI_M,
+                     IDC_DEBUG_PRINT_VIEW_TREE_DETAILS});
+  }
   // clang-format on
   return *keys;
 }

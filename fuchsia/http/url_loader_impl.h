@@ -52,6 +52,7 @@ class URLLoaderImpl : public ::fuchsia::net::oldhttp::URLLoader,
       net::URLRequest* request,
       net::SSLCertRequestInfo* cert_request_info) override;
   void OnSSLCertificateError(net::URLRequest* request,
+                             int net_error,
                              const net::SSLInfo& ssl_info,
                              bool fatal) override;
   void OnResponseStarted(net::URLRequest* request, int net_error) override;
@@ -90,6 +91,9 @@ class URLLoaderImpl : public ::fuchsia::net::oldhttp::URLLoader,
   // Populated from the FIDL URLRequest. Indicates whether to let the client
   // manually handle redirects.
   bool auto_follow_redirects_;
+
+  // Set to true when the URLRequest is loading.
+  bool is_loading_ = false;
 
   // Populated from the FIDL URLRequest. Indicates how the response body should
   // be populated.

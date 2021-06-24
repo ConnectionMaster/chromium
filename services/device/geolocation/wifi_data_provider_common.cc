@@ -12,7 +12,7 @@
 
 namespace device {
 
-base::string16 MacAddressAsString16(const uint8_t mac_as_int[6]) {
+std::u16string MacAddressAsString16(const uint8_t mac_as_int[6]) {
   // |mac_as_int| is big-endian. Write in byte chunks.
   // Format is XX-XX-XX-XX-XX-XX.
   static const char* const kMacFormatString = "%02x-%02x-%02x-%02x-%02x-%02x";
@@ -21,7 +21,7 @@ base::string16 MacAddressAsString16(const uint8_t mac_as_int[6]) {
       mac_as_int[3], mac_as_int[4], mac_as_int[5]));
 }
 
-WifiDataProviderCommon::WifiDataProviderCommon() : weak_factory_(this) {}
+WifiDataProviderCommon::WifiDataProviderCommon() {}
 
 WifiDataProviderCommon::~WifiDataProviderCommon() = default;
 
@@ -56,6 +56,10 @@ bool WifiDataProviderCommon::GetData(WifiData* data) {
   // If we've successfully completed a scan, indicate that we have all of the
   // data we can get.
   return is_first_scan_complete_;
+}
+
+void WifiDataProviderCommon::ForceRescan() {
+  DoWifiScanTask();
 }
 
 void WifiDataProviderCommon::DoWifiScanTask() {

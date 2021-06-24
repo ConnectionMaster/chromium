@@ -301,17 +301,20 @@ _NAMED_TYPE_INFO = {
       'GL_TRANSFORM_FEEDBACK_ACTIVE',
       'GL_TRANSFORM_FEEDBACK_BUFFER_BINDING',
       'GL_TRANSFORM_FEEDBACK_PAUSED',
-      'GL_TRANSFORM_FEEDBACK_BUFFER_SIZE',
-      'GL_TRANSFORM_FEEDBACK_BUFFER_START',
       'GL_UNIFORM_BUFFER_BINDING',
       'GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT',
-      'GL_UNIFORM_BUFFER_SIZE',
-      'GL_UNIFORM_BUFFER_START',
       'GL_UNPACK_IMAGE_HEIGHT',
       'GL_UNPACK_ROW_LENGTH',
       'GL_UNPACK_SKIP_IMAGES',
       'GL_UNPACK_SKIP_PIXELS',
       'GL_UNPACK_SKIP_ROWS',
+      'GL_BLEND_EQUATION_RGB',
+      'GL_BLEND_EQUATION_ALPHA',
+      'GL_BLEND_SRC_RGB',
+      'GL_BLEND_SRC_ALPHA',
+      'GL_BLEND_DST_RGB',
+      'GL_BLEND_DST_ALPHA',
+      'GL_COLOR_WRITEMASK',
       # GL_VERTEX_ARRAY_BINDING is the same as GL_VERTEX_ARRAY_BINDING_OES
       # 'GL_VERTEX_ARRAY_BINDING',
     ],
@@ -328,6 +331,13 @@ _NAMED_TYPE_INFO = {
       'GL_UNIFORM_BUFFER_BINDING',
       'GL_UNIFORM_BUFFER_SIZE',
       'GL_UNIFORM_BUFFER_START',
+      'GL_BLEND_EQUATION_RGB',
+      'GL_BLEND_EQUATION_ALPHA',
+      'GL_BLEND_SRC_RGB',
+      'GL_BLEND_SRC_ALPHA',
+      'GL_BLEND_DST_RGB',
+      'GL_BLEND_DST_ALPHA',
+      'GL_COLOR_WRITEMASK',
     ],
     'invalid': [
       'GL_FOG_HINT',
@@ -374,6 +384,21 @@ _NAMED_TYPE_INFO = {
     ]
   },
   'TextureTarget': {
+    'type': 'GLenum',
+    'valid': [
+      'GL_TEXTURE_2D',
+      'GL_TEXTURE_CUBE_MAP_POSITIVE_X',
+      'GL_TEXTURE_CUBE_MAP_NEGATIVE_X',
+      'GL_TEXTURE_CUBE_MAP_POSITIVE_Y',
+      'GL_TEXTURE_CUBE_MAP_NEGATIVE_Y',
+      'GL_TEXTURE_CUBE_MAP_POSITIVE_Z',
+      'GL_TEXTURE_CUBE_MAP_NEGATIVE_Z',
+    ],
+    'invalid': [
+      'GL_PROXY_TEXTURE_CUBE_MAP',
+    ]
+  },
+  'TextureFboTarget': {
     'type': 'GLenum',
     'valid': [
       'GL_TEXTURE_2D',
@@ -688,14 +713,6 @@ _NAMED_TYPE_INFO = {
     'type': 'GLenum',
     'valid' : [],
   },
-  'MatrixMode': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_PATH_PROJECTION_CHROMIUM',
-      'GL_PATH_MODELVIEW_CHROMIUM',
-    ],
-  },
   'ProgramParameter': {
     'type': 'GLenum',
     'valid': [
@@ -744,10 +761,12 @@ _NAMED_TYPE_INFO = {
       'GL_ANY_SAMPLES_PASSED_EXT',
       'GL_ANY_SAMPLES_PASSED_CONSERVATIVE_EXT',
       'GL_COMMANDS_ISSUED_CHROMIUM',
+      'GL_COMMANDS_ISSUED_TIMESTAMP_CHROMIUM',
       'GL_LATENCY_QUERY_CHROMIUM',
       'GL_ASYNC_PIXEL_PACK_COMPLETED_CHROMIUM',
       'GL_COMMANDS_COMPLETED_CHROMIUM',
       'GL_READBACK_SHADOW_COPIES_UPDATED_CHROMIUM',
+      'GL_PROGRAM_COMPLETION_QUERY_CHROMIUM',
     ],
   },
   'RenderBufferParameter': {
@@ -777,7 +796,6 @@ _NAMED_TYPE_INFO = {
   },
   'SamplerParameter': {
     'type': 'GLenum',
-    'is_complete': True,
     'valid': [
       'GL_TEXTURE_MAG_FILTER',
       'GL_TEXTURE_MIN_FILTER',
@@ -1059,109 +1077,6 @@ _NAMED_TYPE_INFO = {
       'GL_UNSIGNED_BYTE_3_3_2',
     ],
   },
-  'PathCoordType': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_BYTE',
-      'GL_UNSIGNED_BYTE',
-      'GL_SHORT',
-      'GL_UNSIGNED_SHORT',
-      'GL_FLOAT',
-    ],
-  },
-  'PathCoverMode': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_CONVEX_HULL_CHROMIUM',
-      'GL_BOUNDING_BOX_CHROMIUM',
-    ],
-  },
-  'PathFillMode': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_INVERT',
-      'GL_COUNT_UP_CHROMIUM',
-      'GL_COUNT_DOWN_CHROMIUM',
-    ],
-  },
-  'PathInstancedCoverMode': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_CONVEX_HULL_CHROMIUM',
-      'GL_BOUNDING_BOX_CHROMIUM',
-      'GL_BOUNDING_BOX_OF_BOUNDING_BOXES_CHROMIUM',
-    ],
-  },
-  'PathNameType': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_UNSIGNED_BYTE',
-      'GL_BYTE',
-      'GL_UNSIGNED_SHORT',
-      'GL_SHORT',
-      'GL_UNSIGNED_INT',
-      'GL_INT',
-    ],
-  },
-  'PathParameter': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_PATH_STROKE_WIDTH_CHROMIUM',
-      'GL_PATH_END_CAPS_CHROMIUM',
-      'GL_PATH_JOIN_STYLE_CHROMIUM',
-      'GL_PATH_MITER_LIMIT_CHROMIUM',
-      'GL_PATH_STROKE_BOUND_CHROMIUM',
-    ]
-  },
-  'PathParameterCapValues': {
-    'type': 'GLint',
-    'is_complete': True,
-    'valid': [
-      'GL_FLAT',
-      'GL_SQUARE_CHROMIUM',
-      'GL_ROUND_CHROMIUM',
-    ]
-  },
-  'PathParameterJoinValues': {
-    'type': 'GLint',
-    'is_complete': True,
-    'valid': [
-      'GL_MITER_REVERT_CHROMIUM',
-      'GL_BEVEL_CHROMIUM',
-      'GL_ROUND_CHROMIUM',
-    ]
-  },
-  'PathTransformType': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_NONE',
-      'GL_TRANSLATE_X_CHROMIUM',
-      'GL_TRANSLATE_Y_CHROMIUM',
-      'GL_TRANSLATE_2D_CHROMIUM',
-      'GL_TRANSLATE_3D_CHROMIUM',
-      'GL_AFFINE_2D_CHROMIUM',
-      'GL_AFFINE_3D_CHROMIUM',
-      'GL_TRANSPOSE_AFFINE_2D_CHROMIUM',
-      'GL_TRANSPOSE_AFFINE_3D_CHROMIUM',
-    ],
-  },
-  'PathFragmentInputGenMode': {
-    'type': 'GLenum',
-    'is_complete': True,
-    'valid': [
-      'GL_NONE',
-      'GL_EYE_LINEAR_CHROMIUM',
-      'GL_OBJECT_LINEAR_CHROMIUM',
-      'GL_CONSTANT_CHROMIUM',
-    ],
-  },
   'ReadPixelType': {
     'type': 'GLenum',
     'valid': [
@@ -1426,6 +1341,7 @@ _NAMED_TYPE_INFO = {
       'GL_RGB_YCRCB_420_CHROMIUM',
       'GL_RGB_YCBCR_422_CHROMIUM',
       'GL_RGB_YCBCR_420V_CHROMIUM',
+      'GL_RGB_YCBCR_P010_CHROMIUM',
       'GL_R16_EXT',
     ],
   },
@@ -1513,6 +1429,7 @@ _NAMED_TYPE_INFO = {
       'GL_RGB_YCRCB_420_CHROMIUM',
       'GL_RGB_YCBCR_422_CHROMIUM',
       'GL_RGB_YCBCR_420V_CHROMIUM',
+      'GL_RGB_YCBCR_P010_CHROMIUM',
       'GL_RGBA',
     ],
   },
@@ -1692,6 +1609,7 @@ _NAMED_TYPE_INFO = {
     'type': 'GLenum',
     'is_complete': True,
     'valid': [
+      'GL_SHARED_IMAGE_ACCESS_MODE_OVERLAY_CHROMIUM',
       'GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM',
       'GL_SHARED_IMAGE_ACCESS_MODE_READ_CHROMIUM',
     ],
@@ -1766,13 +1684,6 @@ _FUNCTION_INFO = {
     'decoder_func': 'DoActiveTexture',
     'unit_test': False,
     'impl_func': False,
-    'client_test': False,
-  },
-  'ApplyScreenSpaceAntialiasingCHROMIUM': {
-    'decoder_func': 'DoApplyScreenSpaceAntialiasingCHROMIUM',
-    'extension': 'CHROMIUM_screen_space_antialiasing',
-    'extension_flag': 'chromium_screen_space_antialiasing',
-    'unit_test': False,
     'client_test': False,
   },
   'AttachShader': {'decoder_func': 'DoAttachShader'},
@@ -1949,6 +1860,17 @@ _FUNCTION_INFO = {
     'no_gl': True,
     'expectation': False,
   },
+  'ColorMaskiOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'unit_test': False,
+    'extension': 'OES_draw_buffers_indexed',
+  },
+  'ContextVisibilityHintCHROMIUM': {
+    'decoder_func': 'DoContextVisibilityHintCHROMIUM',
+    'extension': 'CHROMIUM_context_visibility_hint',
+    'unit_test': False,
+    'client_test': False,
+  },
   'CopyBufferSubData': {
     'decoder_func': 'DoCopyBufferSubData',
     'impl_func': False,
@@ -2069,6 +1991,15 @@ _FUNCTION_INFO = {
       '0': 'GL_FUNC_SUBTRACT'
     },
   },
+  'BlendEquationiOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'unit_test': False,
+    'extension': 'OES_draw_buffers_indexed',
+    'valid_args': {
+      '1': 'GL_FUNC_SUBTRACT',
+      '2': 'GL_FUNC_SUBTRACT'
+    },
+  },
   'BlendEquationSeparate': {
     'type': 'StateSet',
     'state': 'BlendEquation',
@@ -2076,13 +2007,32 @@ _FUNCTION_INFO = {
       '0': 'GL_FUNC_SUBTRACT'
     },
   },
+  'BlendEquationSeparateiOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'unit_test': False,
+    'extension': 'OES_draw_buffers_indexed',
+    'valid_args': {
+      '1': 'GL_FUNC_SUBTRACT',
+      '2': 'GL_FUNC_SUBTRACT'
+    },
+  },
   'BlendFunc': {
     'type': 'StateSetRGBAlpha',
     'state': 'BlendFunc',
   },
+  'BlendFunciOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'unit_test': False,
+    'extension': 'OES_draw_buffers_indexed',
+  },
   'BlendFuncSeparate': {
     'type': 'StateSet',
     'state': 'BlendFunc',
+  },
+  'BlendFuncSeparateiOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'unit_test': False,
+    'extension': 'OES_draw_buffers_indexed',
   },
   'BlendBarrierKHR': {
     'gl_test_func': 'glBlendBarrierKHR',
@@ -2194,6 +2144,13 @@ _FUNCTION_INFO = {
     'impl_func': False,
     'client_test': False,
   },
+  'DisableiOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'extension': 'OES_draw_buffers_indexed',
+    'decoder_func': 'DoDisableiOES',
+    'impl_func': False,
+    'unit_test': False,
+  },
   'DisableVertexAttribArray': {
     'decoder_func': 'DoDisableVertexAttribArray',
     'impl_func': False,
@@ -2205,12 +2162,27 @@ _FUNCTION_INFO = {
     'es31': True,
     'unit_test': False,
   },
+  'DispatchComputeIndirect': {
+    'cmd_args': 'GLintptrNotNegative offset',
+    'trace_level': 2,
+    'es31': True,
+    'unit_test': False,
+  },
   'DrawArrays': {
     'type': 'Custom',
     'impl_func': False,
     'cmd_args': 'GLenumDrawMode mode, GLint first, GLsizei count',
     'defer_draws': True,
     'trace_level': 2,
+  },
+  'DrawArraysIndirect': {
+    'type': 'Custom',
+    'impl_func': False,
+    'cmd_args': 'GLenumDrawMode mode, GLuint offset',
+    'trace_level': 2,
+    'es31': True,
+    'unit_test': False,
+    'client_test': False,
   },
   'DrawElements': {
     'type': 'Custom',
@@ -2221,6 +2193,15 @@ _FUNCTION_INFO = {
     'defer_draws': True,
     'trace_level': 2,
   },
+  'DrawElementsIndirect': {
+    'type': 'Custom',
+    'impl_func': False,
+    'cmd_args': 'GLenumDrawMode mode, GLenumIndexType type, GLuint offset',
+    'trace_level': 2,
+    'es31': True,
+    'unit_test': False,
+    'client_test': False,
+  },
   'DrawRangeElements': {
     'type': 'NoCommand',
     'es3': True,
@@ -2229,6 +2210,13 @@ _FUNCTION_INFO = {
     'decoder_func': 'DoEnable',
     'impl_func': False,
     'client_test': False,
+  },
+  'EnableiOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'extension': 'OES_draw_buffers_indexed',
+    'decoder_func': 'DoEnableiOES',
+    'impl_func': False,
+    'unit_test': False,
   },
   'EnableVertexAttribArray': {
     'decoder_func': 'DoEnableVertexAttribArray',
@@ -2415,6 +2403,15 @@ _FUNCTION_INFO = {
     'result': ['SizedResult<GLboolean>'],
     'decoder_func': 'DoGetBooleanv',
     'gl_test_func': 'glGetIntegerv',
+  },
+  'GetBooleani_v': {
+    'type': 'GETn',
+    'result': ['SizedResult<GLboolean>'],
+    'decoder_func': 'DoGetBooleani_v',
+    'shadowed': True,
+    'client_test': False,
+    'unit_test': False,
+    'es3': True
   },
   'GetBufferParameteri64v': {
     'type': 'GETn',
@@ -2812,6 +2809,16 @@ _FUNCTION_INFO = {
     'impl_func': False,
     'expectation': False,
   },
+  'IsEnablediOES': {
+    'extension_flag': 'oes_draw_buffers_indexed',
+    'unit_test': False,
+    'extension': 'OES_draw_buffers_indexed',
+    'type': 'Is',
+    'decoder_func': 'DoIsEnablediOES',
+    'client_test': False,
+    'impl_func': False,
+    'expectation': False,
+  },
   'IsFramebuffer': {
     'type': 'Is',
     'decoder_func': 'DoIsFramebuffer',
@@ -2952,13 +2959,38 @@ _FUNCTION_INFO = {
                 'uint32_t counts_shm_id, uint32_t counts_shm_offset, '
                 'uint32_t instance_counts_shm_id, '
                 'uint32_t instance_counts_shm_offset, GLsizei drawcount',
-    'extension': 'WEBGL_multi_draw_instanced',
-    'extension_flag': 'webgl_multi_draw_instanced',
+    'extension': 'WEBGL_multi_draw',
+    'extension_flag': 'webgl_multi_draw',
     'data_transfer_methods': ['shm'],
     'size_args': {
       'firsts': 'drawcount * sizeof(GLint)',
       'counts': 'drawcount * sizeof(GLsizei)',
       'instance_counts': 'drawcount * sizeof(GLsizei)', },
+    'defer_draws': True,
+    'impl_func': False,
+    'client_test': False,
+    'internal': True,
+    'trace_level': 2,
+  },
+  'MultiDrawArraysInstancedBaseInstanceCHROMIUM': {
+    'type': 'Custom',
+    'cmd_args': 'GLenumDrawMode mode, '
+                'uint32_t firsts_shm_id, uint32_t firsts_shm_offset, '
+                'uint32_t counts_shm_id, uint32_t counts_shm_offset, '
+                'uint32_t instance_counts_shm_id, '
+                'uint32_t instance_counts_shm_offset, '
+                'uint32_t baseinstances_shm_id, '
+                'uint32_t baseinstances_shm_offset, '
+                'GLsizei drawcount',
+    'extension': 'WEBGL_multi_draw_instanced_base_vertex_base_instance',
+    'extension_flag': 'webgl_multi_draw_instanced_base_vertex_base_instance',
+    'data_transfer_methods': ['shm'],
+    'size_args': {
+      'firsts': 'drawcount * sizeof(GLint)',
+      'counts': 'drawcount * sizeof(GLsizei)',
+      'instance_counts': 'drawcount * sizeof(GLsizei)',
+      'baseinstances': 'drawcount * sizeof(GLuint)',
+    },
     'defer_draws': True,
     'impl_func': False,
     'client_test': False,
@@ -2992,13 +3024,42 @@ _FUNCTION_INFO = {
                 'uint32_t offsets_shm_id, uint32_t offsets_shm_offset, '
                 'uint32_t instance_counts_shm_id, '
                 'uint32_t instance_counts_shm_offset, GLsizei drawcount',
-    'extension': 'WEBGL_multi_draw_instanced',
-    'extension_flag': 'webgl_multi_draw_instanced',
+    'extension': 'WEBGL_multi_draw',
+    'extension_flag': 'webgl_multi_draw',
     'data_transfer_methods': ['shm'],
     'size_args': {
       'counts': 'drawcount * sizeof(GLsizei)',
       'offsets': 'drawcount * sizeof(GLsizei)',
       'instance_counts': 'drawcount * sizeof(GLsizei)', },
+    'defer_draws': True,
+    'impl_func': False,
+    'client_test': False,
+    'internal': True,
+    'trace_level': 2,
+  },
+  'MultiDrawElementsInstancedBaseVertexBaseInstanceCHROMIUM': {
+    'type': 'Custom',
+    'cmd_args': 'GLenumDrawMode mode, '
+                'uint32_t counts_shm_id, uint32_t counts_shm_offset, '
+                'GLenumIndexType type, '
+                'uint32_t offsets_shm_id, uint32_t offsets_shm_offset, '
+                'uint32_t instance_counts_shm_id, '
+                'uint32_t instance_counts_shm_offset, '
+                'uint32_t basevertices_shm_id, '
+                'uint32_t basevertices_shm_offset, '
+                'uint32_t baseinstances_shm_id, '
+                'uint32_t baseinstances_shm_offset, '
+                'GLsizei drawcount',
+    'extension': 'WEBGL_multi_draw_instanced_base_vertex_base_instance',
+    'extension_flag': 'webgl_multi_draw_instanced_base_vertex_base_instance',
+    'data_transfer_methods': ['shm'],
+    'size_args': {
+      'counts': 'drawcount * sizeof(GLsizei)',
+      'offsets': 'drawcount * sizeof(GLsizei)',
+      'instance_counts': 'drawcount * sizeof(GLsizei)',
+      'basevertices': 'drawcount * sizeof(GLint)',
+      'baseinstances': 'drawcount * sizeof(GLuint)',
+    },
     'defer_draws': True,
     'impl_func': False,
     'client_test': False,
@@ -3012,8 +3073,13 @@ _FUNCTION_INFO = {
   },
   'MultiDrawArraysInstancedWEBGL': {
     'type': 'NoCommand',
-    'extension': 'WEBGL_multi_draw_instanced',
-    'extension_flag': 'webgl_multi_draw_instanced',
+    'extension': 'WEBGL_multi_draw',
+    'extension_flag': 'webgl_multi_draw',
+  },
+  'MultiDrawArraysInstancedBaseInstanceWEBGL': {
+    'type': 'NoCommand',
+    'extension': 'WEBGL_multi_draw_instanced_base_vertex_base_instance',
+    'extension_flag': 'webgl_multi_draw_instanced_base_vertex_base_instance',
   },
   'MultiDrawElementsWEBGL': {
     'type': 'NoCommand',
@@ -3022,14 +3088,13 @@ _FUNCTION_INFO = {
   },
   'MultiDrawElementsInstancedWEBGL': {
     'type': 'NoCommand',
-    'extension': 'WEBGL_multi_draw_instanced',
-    'extension_flag': 'webgl_multi_draw_instanced',
+    'extension': 'WEBGL_multi_draw',
+    'extension_flag': 'webgl_multi_draw',
   },
-  'OverlayPromotionHintCHROMIUM': {
-    'decoder_func': 'DoOverlayPromotionHintCHROMIUM',
-    'extension': "CHROMIUM_uniform_stream_texture_matrix",
-    'unit_test': False,
-    'client_test': False,
+  'MultiDrawElementsInstancedBaseVertexBaseInstanceWEBGL': {
+    'type': 'NoCommand',
+    'extension': 'WEBGL_multi_draw_instanced_base_vertex_base_instance',
+    'extension_flag': 'webgl_multi_draw_instanced_base_vertex_base_instance',
   },
   'PauseTransformFeedback': {
     'decoder_func': 'DoPauseTransformFeedback',
@@ -3434,14 +3499,6 @@ _FUNCTION_INFO = {
     'decoder_func': 'DoUniformMatrix4fv',
     'unit_test': False,
   },
-  'UniformMatrix4fvStreamTextureMatrixCHROMIUM': {
-    'type': 'PUT',
-    'count': 16,
-    'decoder_func': 'DoUniformMatrix4fvStreamTextureMatrixCHROMIUM',
-    'extension': "CHROMIUM_uniform_stream_texture_matrix",
-    'unit_test': False,
-    'client_test': False,
-  },
   'UniformMatrix4x2fv': {
     'type': 'PUTn',
     'count': 8,
@@ -3568,6 +3625,10 @@ _FUNCTION_INFO = {
   'ResizeCHROMIUM': {
     'type': 'Custom',
     'impl_func': False,
+    'client_test': False,
+    'cmd_args': 'GLint width, GLint height, GLfloat scale_factor, GLboolean '
+                'alpha, GLuint shm_id, GLuint shm_offset, GLsizei '
+                'color_space_size',
     'extension': True,
     'trace_level': 1,
   },
@@ -3613,6 +3674,15 @@ _FUNCTION_INFO = {
     'defer_draws': True,
     'trace_level': 2,
   },
+  'DrawArraysInstancedBaseInstanceANGLE': {
+    'type': 'Custom',
+    'impl_func': False,
+    'cmd_args': 'GLenumDrawMode mode, GLint first, GLsizei count, '
+                'GLsizei primcount, GLuint baseinstance',
+    'extension': 'ANGLE_base_vertex_base_instance',
+    'defer_draws': True,
+    'trace_level': 2,
+  },
   'DrawBuffersEXT': {
     'type': 'PUTn',
     'decoder_func': 'DoDrawBuffersEXT',
@@ -3632,6 +3702,17 @@ _FUNCTION_INFO = {
     'extension': 'ANGLE_instanced_arrays',
     'client_test': False,
     'pepper_interface': 'InstancedArrays',
+    'defer_draws': True,
+    'trace_level': 2,
+  },
+  'DrawElementsInstancedBaseVertexBaseInstanceANGLE': {
+    'type': 'Custom',
+    'impl_func': False,
+    'cmd_args': 'GLenumDrawMode mode, GLsizei count, '
+                'GLenumIndexType type, GLuint index_offset, GLsizei primcount, '
+                'GLint basevertex, GLuint baseinstance',
+    'extension': 'ANGLE_base_vertex_base_instance',
+    'client_test': False,
     'defer_draws': True,
     'trace_level': 2,
   },
@@ -3842,10 +3923,6 @@ _FUNCTION_INFO = {
     'type': 'NoCommand',
     'extension': 'CHROMIUM_ordering_barrier',
   },
-  'ShallowFlushCHROMIUM': {
-    'type': 'NoCommand',
-    'extension': 'CHROMIUM_ordering_barrier',
-  },
   'OrderingBarrierCHROMIUM': {
     'type': 'NoCommand',
     'extension': 'CHROMIUM_ordering_barrier',
@@ -3902,7 +3979,8 @@ _FUNCTION_INFO = {
     'impl_func': False,
     'client_test': False,
     'cmd_args': 'GLfloat opacity, GLboolean is_clipped, '
-                'GLint sorting_context_id, GLuint shm_id, GLuint shm_offset',
+                'GLint sorting_context_id, '
+                'GLuint shm_id, GLuint shm_offset',
     'extension': 'CHROMIUM_schedule_ca_layer',
   },
   'ScheduleCALayerCHROMIUM': {
@@ -3923,7 +4001,7 @@ _FUNCTION_INFO = {
     'unit_test': False,
   },
   'ScheduleDCLayerCHROMIUM': {
-    'cmd_args': 'GLuint y_texture_id, GLuint uv_texture_id, GLint z_order, '
+    'cmd_args': 'GLuint texture_0, GLuint texture_1, GLint z_order, '
                 'GLint content_x, GLint content_y, GLint content_width, '
                 'GLint content_height, GLint quad_x, GLint quad_y, '
                 'GLint quad_width, GLint quad_height, '
@@ -3943,138 +4021,6 @@ _FUNCTION_INFO = {
     'unit_test': False,
     'client_test': False,
     'extension': 'CHROMIUM_commit_overlay_planes',
-  },
-  'MatrixLoadfCHROMIUM': {
-    'type': 'PUT',
-    'count': 16,
-    'data_type': 'GLfloat',
-    'decoder_func': 'DoMatrixLoadfCHROMIUM',
-    'gl_test_func': 'glMatrixLoadfEXT',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'MatrixLoadIdentityCHROMIUM': {
-    'decoder_func': 'DoMatrixLoadIdentityCHROMIUM',
-    'gl_test_func': 'glMatrixLoadIdentityEXT',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'GenPathsCHROMIUM': {
-    'type': 'Custom',
-    'cmd_args': 'GLuint first_client_id, GLsizei range',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'DeletePathsCHROMIUM': {
-    'type': 'Custom',
-    'cmd_args': 'GLuint first_client_id, GLsizei range',
-    'impl_func': False,
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'IsPathCHROMIUM': {
-    'type': 'Is',
-    'decoder_func': 'DoIsPathCHROMIUM',
-    'gl_test_func': 'glIsPathNV',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'PathCommandsCHROMIUM': {
-    'type': 'Custom',
-    'impl_func': False,
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'PathParameterfCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'PathParameteriCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'PathStencilFuncCHROMIUM': {
-    'type': 'StateSet',
-    'state': 'PathStencilFuncCHROMIUM',
-    'decoder_func': 'glPathStencilFuncNV',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilFillPathCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilStrokePathCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'CoverFillPathCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'CoverStrokePathCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilThenCoverFillPathCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilThenCoverStrokePathCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilFillPathInstancedCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilStrokePathInstancedCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'CoverFillPathInstancedCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'CoverStrokePathInstancedCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilThenCoverFillPathInstancedCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'StencilThenCoverStrokePathInstancedCHROMIUM': {
-    'type': 'Custom',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'BindFragmentInputLocationCHROMIUM': {
-    'type': 'GLchar',
-    'data_transfer_methods': ['bucket'],
-    'needs_size': True,
-    'gl_test_func': 'DoBindFragmentInputLocationCHROMIUM',
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
-  },
-  'ProgramPathFragmentInputGenCHROMIUM': {
-    'type': 'Custom',
-    'data_transfer_methods': ['shm'],
-    'extension': 'CHROMIUM_path_rendering',
-    'extension_flag': 'chromium_path_rendering',
   },
   'SetDrawRectangleCHROMIUM': {
     'decoder_func': 'DoSetDrawRectangleCHROMIUM',
@@ -4106,72 +4052,6 @@ _FUNCTION_INFO = {
     'cmd_args': 'GLuint texture_id',
     'impl_func': False,
     'client_test': False,
-    'extension': True,
-  },
-  'BeginRasterCHROMIUM': {
-    'decoder_func': 'DoBeginRasterCHROMIUM',
-    'impl_func': True,
-    'unit_test': False,
-    'extension': 'CHROMIUM_raster_transport',
-    'extension_flag': 'chromium_raster_transport',
-  },
-  'RasterCHROMIUM': {
-    'decoder_func': 'DoRasterCHROMIUM',
-    'internal': True,
-    'impl_func': True,
-    'unit_test': False,
-    'cmd_args': 'GLuint raster_shm_id, GLuint raster_shm_offset,'
-                'GLsizeiptr raster_shm_size, GLuint font_shm_id,'
-                'GLuint font_shm_offset, GLsizeiptr font_shm_size',
-    'extension': 'CHROMIUM_raster_transport',
-    'extension_flag': 'chromium_raster_transport',
-  },
-  'MapRasterCHROMIUM': {
-    'type': 'NoCommand',
-    'extension': "CHROMIUM_raster_transport",
-  },
-  'UnmapRasterCHROMIUM': {
-    'type': 'NoCommand',
-    'extension': "CHROMIUM_raster_transport",
-  },
-  'MapFontBufferCHROMIUM': {
-    'type': 'NoCommand',
-    'extension': "CHROMIUM_raster_transport",
-  },
-  'EndRasterCHROMIUM': {
-    'decoder_func': 'DoEndRasterCHROMIUM',
-    'impl_func': True,
-    'unit_test': False,
-    'extension': 'CHROMIUM_raster_transport',
-    'extension_flag': 'chromium_raster_transport',
-  },
-  'CreateTransferCacheEntryINTERNAL': {
-    'decoder_func': 'DoCreateTransferCacheEntryINTERNAL',
-    'cmd_args': 'GLuint entry_type, GLuint entry_id, GLuint handle_shm_id, '
-                'GLuint handle_shm_offset, GLuint data_shm_id, '
-                'GLuint data_shm_offset, GLuint data_size',
-    'internal': True,
-    'impl_func': True,
-    'client_test': False,
-    'unit_test': False,
-    'extension': True,
-  },
-  'DeleteTransferCacheEntryINTERNAL': {
-    'decoder_func': 'DoDeleteTransferCacheEntryINTERNAL',
-    'cmd_args': 'GLuint entry_type, GLuint entry_id',
-    'internal': True,
-    'impl_func': True,
-    'client_test': False,
-    'unit_test': False,
-    'extension': True,
-  },
-  'UnlockTransferCacheEntryINTERNAL': {
-    'decoder_func': 'DoUnlockTransferCacheEntryINTERNAL',
-    'cmd_args': 'GLuint entry_type, GLuint entry_id',
-    'internal': True,
-    'impl_func': True,
-    'client_test': False,
-    'unit_test': False,
     'extension': True,
   },
   'TexStorage2DImageCHROMIUM': {
@@ -4306,7 +4186,18 @@ _FUNCTION_INFO = {
     'decoder_func': 'DoEndSharedImageAccessDirectCHROMIUM',
     'extension': 'CHROMIUM_shared_image',
     'unit_test': False,
+  },
+  'BeginBatchReadAccessSharedImageCHROMIUM': {
+    'decoder_func': 'DoBeginBatchReadAccessSharedImageCHROMIUM',
+    'extension': 'CHROMIUM_shared_image',
+    'unit_test': False,
+  },
+  'EndBatchReadAccessSharedImageCHROMIUM': {
+    'decoder_func': 'DoEndBatchReadAccessSharedImageCHROMIUM',
+    'extension': 'CHROMIUM_shared_image',
+    'unit_test': False,
   }
+
 }
 
 
@@ -4411,6 +4302,8 @@ def main(argv):
     "gpu/command_buffer/service/context_state_autogen.h")
   gen.WriteServiceContextStateImpl(
     "gpu/command_buffer/service/context_state_impl_autogen.h")
+  gen.WriteServiceContextStateTestHelpers(
+    "gpu/command_buffer/service/context_state_test_helpers_autogen.h")
   gen.WriteClientContextStateHeader(
     "gpu/command_buffer/client/client_context_state_autogen.h")
   gen.WriteClientContextStateImpl(

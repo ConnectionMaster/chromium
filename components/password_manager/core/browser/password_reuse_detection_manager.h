@@ -5,10 +5,14 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_REUSE_DETECTION_MANAGER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_REUSE_DETECTION_MANAGER_H_
 
+#include <string>
+
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_reuse_detector.h"
 #include "components/password_manager/core/browser/password_reuse_detector_consumer.h"
 #include "url/gurl.h"
 
@@ -28,29 +32,43 @@ class PasswordReuseDetectionManager : public PasswordReuseDetectorConsumer {
   explicit PasswordReuseDetectionManager(PasswordManagerClient* client);
   ~PasswordReuseDetectionManager() override;
   void DidNavigateMainFrame(const GURL& main_frame_url);
-  void OnKeyPressed(const base::string16& text);
+  void OnKeyPressedCommitted(const std::u16string& text);
+#if defined(OS_ANDROID)
+  void OnKeyPressedUncommitted(const std::u16string& text);
+#endif
+  void OnPaste(const std::u16string text);
 
   // PasswordReuseDetectorConsumer implementation
-  void OnReuseFound(
+  void OnReuseCheckDone(
+      bool is_reuse_found,
       size_t password_length,
-      base::Optional<PasswordHashData> reused_protected_password_hash,
-      const std::vector<std::string>& matching_domains,
+      absl::optional<PasswordHashData> reused_protected_password_hash,
+      const std::vector<MatchingReusedCredential>& matching_reused_credentials,
       int saved_passwords) override;
 
   void SetClockForTesting(base::Clock* clock);
 
  private:
+  void OnKeyPressed(const std::u16string& text, const bool is_committed);
   // Determines the type of password being reused.
   metrics_util::PasswordType GetReusedPasswordType(
-      base::Optional<PasswordHashData> reused_protected_password_hash,
+      absl::optional<PasswordHashData> reused_protected_password_hash,
       size_t match_domain_count);
+
+  void CheckStoresForReuse(const std::u16string& input);
+
   PasswordManagerClient* client_;
-  base::string16 input_characters_;
+  std::u16string input_characters_;
   GURL main_frame_url_;
   base::Time last_keystroke_time_;
   // Used to retrieve the current time, in base::Time units.
   base::Clock* clock_;
   bool reuse_on_this_page_was_found_ = false;
+
+  // Caches the results returned from each store until all stores
+  // respond. All credentials are then forwarded to the `client_`.
+  base::flat_set<MatchingReusedCredential> all_matching_reused_credentials_;
+  int wait_counter_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(PasswordReuseDetectionManager);
 };

@@ -11,21 +11,26 @@
 
 namespace chromeos {
 class CrosDBusService;
-}  // namespace chromeos
+}
+
+namespace dbus {
+class Bus;
+}
 
 namespace ash {
 
-// Handles starting/stopping the D-Bus thread for ash services and also
-// manages the liftime of the ash D-Bus services.
+// Owns and manages the lifetime of the ash D-Bus services.
 class AshDBusServices {
  public:
-  AshDBusServices();
+  explicit AshDBusServices(dbus::Bus* system_bus);
   ~AshDBusServices();
 
  private:
   std::unique_ptr<chromeos::CrosDBusService> display_service_;
+  std::unique_ptr<chromeos::CrosDBusService> gesture_properties_service_;
   std::unique_ptr<chromeos::CrosDBusService> liveness_service_;
   std::unique_ptr<chromeos::CrosDBusService> url_handler_service_;
+  std::unique_ptr<chromeos::CrosDBusService> user_authentication_service_;
 
   DISALLOW_COPY_AND_ASSIGN(AshDBusServices);
 };

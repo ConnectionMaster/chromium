@@ -10,10 +10,8 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/optional.h"
 #include "mojo/core/channel.h"
 #include "mojo/core/dispatcher.h"
-#include "mojo/core/message_pipe_dispatcher.h"
 #include "mojo/core/ports/event.h"
 #include "mojo/core/ports/name.h"
 #include "mojo/core/ports/port_ref.h"
@@ -21,6 +19,7 @@
 #include "mojo/core/system_impl_export.h"
 #include "mojo/public/c/system/message_pipe.h"
 #include "mojo/public/c/system/types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace mojo {
 namespace core {
@@ -50,7 +49,8 @@ class MOJO_SYSTEM_IMPL_EXPORT UserMessageImpl : public ports::UserMessage {
   ~UserMessageImpl() override;
 
   // Creates a new ports::UserMessageEvent with an attached UserMessageImpl.
-  static std::unique_ptr<ports::UserMessageEvent> CreateEventForNewMessage();
+  static std::unique_ptr<ports::UserMessageEvent> CreateEventForNewMessage(
+      MojoCreateMessageFlags flags);
 
   // Creates a new ports::UserMessageEvent with an attached serialized
   // UserMessageImpl. May fail iff one or more |dispatchers| fails to serialize
@@ -121,20 +121,13 @@ class MOJO_SYSTEM_IMPL_EXPORT UserMessageImpl : public ports::UserMessage {
   MojoResult SetContext(uintptr_t context,
                         MojoMessageContextSerializer serializer,
                         MojoMessageContextDestructor destructor);
-  MojoResult AppendData(
-      uint32_t additional_payload_size,
-      const MojoHandle* handles,
-      uint32_t num_handles,
-      const MojoAppendMessageDataHandleOptions* handle_options);
+  MojoResult AppendData(uint32_t additional_payload_size,
+                        const MojoHandle* handles,
+                        uint32_t num_handles);
   MojoResult CommitSize();
 
   // If this message is not already serialized, this serializes it.
   MojoResult SerializeIfNecessary();
-
-  // If this message has any spliced handles serialized into it, this allocates
-  // respective slots on |sending_port| and fixes up both the serialized port
-  // descriptors as well as the spliced handle's local peers.
-  void PrepareSplicedHandles(const ports::PortRef& sending_port);
 
   // Extracts handles from this (serialized) message.
   //
@@ -162,7 +155,8 @@ class MOJO_SYSTEM_IMPL_EXPORT UserMessageImpl : public ports::UserMessage {
   // |thunks|. If the message is ever going to be routed to another node (see
   // |WillBeRoutedExternally()| below), it will be serialized at that time using
   // operations provided by |thunks|.
-  UserMessageImpl(ports::UserMessageEvent* message_event);
+  UserMessageImpl(ports::UserMessageEvent* message_event,
+                  MojoCreateMessageFlags flags);
 
   // Creates a serialized UserMessageImpl backed by an existing Channel::Message
   // object. |header| and |user_payload| must be pointers into
@@ -191,6 +185,10 @@ class MOJO_SYSTEM_IMPL_EXPORT UserMessageImpl : public ports::UserMessage {
   // message.
   Channel::MessagePtr channel_message_;
 
+  // Whether or not this message should enforce size constraints at
+  // serialization time.
+  const bool unlimited_size_ = false;
+
   // Indicates whether any handles serialized within |channel_message_| have
   // yet to be extracted.
   bool has_serialized_handles_ = false;
@@ -212,12 +210,6 @@ class MOJO_SYSTEM_IMPL_EXPORT UserMessageImpl : public ports::UserMessage {
   // Handles which have been attached to the serialized message but which have
   // not yet been serialized.
   std::vector<Dispatcher::DispatcherInTransit> pending_handle_attachments_;
-
-  // Message pipe dispatchers to splice into the dispatcher which eventually
-  // sends this message. These are the peers of any spliced handles attached to
-  // this message.
-  std::vector<scoped_refptr<MessagePipeDispatcher>>
-      pipes_to_splice_with_sender_;
 
   // The node name from which this message was received, iff it came from
   // out-of-process and the source is known.

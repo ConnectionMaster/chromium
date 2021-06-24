@@ -6,7 +6,7 @@ package org.chromium.android_webview.test;
 
 import static org.chromium.base.test.util.ScalableTimeout.scaleTimeout;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -44,7 +44,7 @@ public class ArchiveTest {
     private AwTestContainerView mTestContainerView;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         mTestContainerView = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
     }
 

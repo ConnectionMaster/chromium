@@ -5,7 +5,7 @@
 #include "chromeos/components/tether/tether_network_disconnection_handler.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
@@ -35,8 +35,7 @@ TetherNetworkDisconnectionHandler::TetherNetworkDisconnectionHandler(
       network_configuration_remover_(network_configuration_remover),
       disconnect_tethering_request_sender_(disconnect_tethering_request_sender),
       tether_session_completion_logger_(tether_session_completion_logger),
-      task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      weak_ptr_factory_(this) {
+      task_runner_(base::ThreadTaskRunnerHandle::Get()) {
   network_state_handler_->AddObserver(this, FROM_HERE);
 }
 

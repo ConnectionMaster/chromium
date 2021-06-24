@@ -10,9 +10,10 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/double_or_double_or_null_sequence.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_iterator.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
 
 namespace blink {
@@ -36,18 +37,18 @@ DoubleOrDoubleOrNullSequence DoubleOrDoubleOrNullSequence::FromDouble(double val
   return container;
 }
 
-const Vector<base::Optional<double>>& DoubleOrDoubleOrNullSequence::GetAsDoubleOrNullSequence() const {
+const Vector<absl::optional<double>>& DoubleOrDoubleOrNullSequence::GetAsDoubleOrNullSequence() const {
   DCHECK(IsDoubleOrNullSequence());
   return double_or_null_sequence_;
 }
 
-void DoubleOrDoubleOrNullSequence::SetDoubleOrNullSequence(const Vector<base::Optional<double>>& value) {
+void DoubleOrDoubleOrNullSequence::SetDoubleOrNullSequence(const Vector<absl::optional<double>>& value) {
   DCHECK(IsNull());
   double_or_null_sequence_ = value;
   type_ = SpecificType::kDoubleOrNullSequence;
 }
 
-DoubleOrDoubleOrNullSequence DoubleOrDoubleOrNullSequence::FromDoubleOrNullSequence(const Vector<base::Optional<double>>& value) {
+DoubleOrDoubleOrNullSequence DoubleOrDoubleOrNullSequence::FromDoubleOrNullSequence(const Vector<absl::optional<double>>& value) {
   DoubleOrDoubleOrNullSequence container;
   container.SetDoubleOrNullSequence(value);
   return container;
@@ -57,7 +58,7 @@ DoubleOrDoubleOrNullSequence::DoubleOrDoubleOrNullSequence(const DoubleOrDoubleO
 DoubleOrDoubleOrNullSequence::~DoubleOrDoubleOrNullSequence() = default;
 DoubleOrDoubleOrNullSequence& DoubleOrDoubleOrNullSequence::operator=(const DoubleOrDoubleOrNullSequence&) = default;
 
-void DoubleOrDoubleOrNullSequence::Trace(blink::Visitor* visitor) {
+void DoubleOrDoubleOrNullSequence::Trace(Visitor* visitor) const {
 }
 
 void V8DoubleOrDoubleOrNullSequence::ToImpl(
@@ -72,16 +73,22 @@ void V8DoubleOrDoubleOrNullSequence::ToImpl(
   if (conversion_mode == UnionTypeConversionMode::kNullable && IsUndefinedOrNull(v8_value))
     return;
 
-  if (HasCallableIteratorSymbol(isolate, v8_value, exception_state)) {
-    Vector<base::Optional<double>> cpp_value = NativeValueTraits<IDLSequence<IDLNullable<IDLDouble>>>::NativeValue(isolate, v8_value, exception_state);
+  if (v8_value->IsObject()) {
+    ScriptIterator script_iterator = ScriptIterator::FromIterable(
+        isolate, v8_value.As<v8::Object>(), exception_state);
     if (exception_state.HadException())
       return;
-    impl.SetDoubleOrNullSequence(cpp_value);
-    return;
+    if (!script_iterator.IsNull()) {
+      Vector<absl::optional<double>> cpp_value{ NativeValueTraits<IDLSequence<IDLNullable<IDLDouble>>>::NativeValue(isolate, std::move(script_iterator), exception_state) };
+      if (exception_state.HadException())
+        return;
+      impl.SetDoubleOrNullSequence(cpp_value);
+      return;
+    }
   }
 
   if (v8_value->IsNumber()) {
-    double cpp_value = NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state);
+    double cpp_value{ NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetDouble(cpp_value);
@@ -89,7 +96,7 @@ void V8DoubleOrDoubleOrNullSequence::ToImpl(
   }
 
   {
-    double cpp_value = NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state);
+    double cpp_value{ NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetDouble(cpp_value);
@@ -119,3 +126,4 @@ DoubleOrDoubleOrNullSequence NativeValueTraits<DoubleOrDoubleOrNullSequence>::Na
 }
 
 }  // namespace blink
+

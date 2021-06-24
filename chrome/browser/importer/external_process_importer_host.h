@@ -132,10 +132,8 @@ class ExternalProcessImporterHost
   // True if we're waiting for the model to finish loading.
   bool waiting_for_bookmarkbar_model_;
 
-  // May contain a Subscription waiting for the TemplateURLService to finish
-  // loading.
-  std::unique_ptr<TemplateURLService::Subscription>
-      template_service_subscription_;
+  // Non-empty when waiting for the TemplateURLService to finish loading.
+  base::CallbackListSubscription template_service_subscription_;
 
   // Have we installed a listener on the bookmark model?
   bool installed_bookmark_observer_;
@@ -159,7 +157,7 @@ class ExternalProcessImporterHost
   bool cancelled_;
 
   // Vends weak pointers for the importer to call us back.
-  base::WeakPtrFactory<ExternalProcessImporterHost> weak_ptr_factory_;
+  base::WeakPtrFactory<ExternalProcessImporterHost> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExternalProcessImporterHost);
 };

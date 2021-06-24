@@ -8,15 +8,17 @@ source_set("lib") {
   sources = [
     "av_products.cc",
     "av_products.h",
+    "processor_metrics.cc",
+    "processor_metrics.h",
+    "util_read_icon.cc",
+    "util_read_icon.h",
     "util_win_impl.cc",
     "util_win_impl.h",
-    "util_win_service.cc",
-    "util_win_service.h",
   ]
 
   deps = [
     "//base",
-    "//chrome/browser/conflicts:module_info",
+    "//chrome/browser/win/conflicts:module_info",
     "//chrome/common",
     "//components/variations",
     "//components/version_info",
@@ -25,7 +27,6 @@ source_set("lib") {
 
   public_deps = [
     "//chrome/services/util_win/public/mojom",
-    "//services/service_manager/public/cpp",
     "//third_party/metrics_proto",
   ]
 }
@@ -34,11 +35,13 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "av_products_unittest.cc",
+    "processor_metrics_unittest.cc",
   ]
 
   deps = [
     ":lib",
     "//base",
+    "//base/test:test_support",
     "//components/variations",
     "//testing/gtest",
   ]

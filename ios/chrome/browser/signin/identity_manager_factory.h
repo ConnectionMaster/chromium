@@ -10,31 +10,24 @@
 #include "base/observer_list.h"
 #include "components/keyed_service/ios/browser_state_keyed_service_factory.h"
 
+class ChromeBrowserState;
 class IdentityManagerFactoryObserver;
 
-namespace identity {
+namespace signin {
 class IdentityManager;
-}
-
-namespace ios {
-class ChromeBrowserState;
 }
 
 // Singleton that owns all IdentityManager instances and associates them with
 // BrowserStates.
 class IdentityManagerFactory : public BrowserStateKeyedServiceFactory {
  public:
-  static identity::IdentityManager* GetForBrowserState(
-      ios::ChromeBrowserState* browser_state);
-  static identity::IdentityManager* GetForBrowserStateIfExists(
-      ios::ChromeBrowserState* browser_state);
+  static signin::IdentityManager* GetForBrowserState(
+      ChromeBrowserState* browser_state);
+  static signin::IdentityManager* GetForBrowserStateIfExists(
+      ChromeBrowserState* browser_state);
 
   // Returns an instance of the IdentityManagerFactory singleton.
   static IdentityManagerFactory* GetInstance();
-
-  // Ensures that IdentityManagerFactory and the factories on which it depends
-  // are built.
-  static void EnsureFactoryAndDependeeFactoriesBuilt();
 
   // Methods to register or remove observers of IdentityManager
   // creation/shutdown.
@@ -56,7 +49,6 @@ class IdentityManagerFactory : public BrowserStateKeyedServiceFactory {
   // BrowserStateKeyedServiceFactory:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
       web::BrowserState* context) const override;
-  void BrowserStateShutdown(web::BrowserState* context) override;
   void RegisterBrowserStatePrefs(
       user_prefs::PrefRegistrySyncable* registry) override;
 

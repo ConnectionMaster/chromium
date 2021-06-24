@@ -4,36 +4,23 @@
 
 package org.chromium.chrome.test.util;
 
+import org.hamcrest.Matchers;
+
+import org.chromium.base.test.util.Criteria;
+import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.chrome.browser.compositor.layouts.EmptyOverviewModeObserver;
 import org.chromium.chrome.browser.compositor.layouts.OverviewModeBehavior;
 import org.chromium.chrome.browser.compositor.layouts.OverviewModeBehavior.OverviewModeObserver;
-import org.chromium.content_public.browser.test.util.Criteria;
-import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 /**
  * Checks and waits for certain overview mode events to happen.  Can be used to block test threads
  * until certain overview mode state criteria are met.
  */
-public class OverviewModeBehaviorWatcher implements OverviewModeObserver {
+public class OverviewModeBehaviorWatcher {
     private final OverviewModeBehavior mOverviewModeBehavior;
+    private final OverviewModeObserver mOverviewModeObserver;
     private boolean mWaitingForShow;
     private boolean mWaitingForHide;
-
-    private final Criteria mCriteria = new Criteria() {
-        @Override
-        public boolean isSatisfied() {
-            if (mWaitingForShow) {
-                updateFailureReason(
-                        "OverviewModeObserver#onOverviewModeFinishedShowing() not called.");
-                return false;
-            }
-            if (mWaitingForHide) {
-                updateFailureReason(
-                        "OverviewModeObserver#onOverviewModeFinishedHiding() not called.");
-                return false;
-            }
-            return true;
-        }
-    };
 
     /**
      * Creates an instance of an {@link OverviewModeBehaviorWatcher}.  Note that at this point
@@ -46,26 +33,22 @@ public class OverviewModeBehaviorWatcher implements OverviewModeObserver {
     public OverviewModeBehaviorWatcher(OverviewModeBehavior behavior, boolean waitForShow,
             boolean waitForHide) {
         mOverviewModeBehavior = behavior;
-        mOverviewModeBehavior.addOverviewModeObserver(this);
+        mOverviewModeObserver = new EmptyOverviewModeObserver() {
+            @Override
+            public void onOverviewModeFinishedShowing() {
+                mWaitingForShow = false;
+            }
+
+            @Override
+            public void onOverviewModeFinishedHiding() {
+                mWaitingForHide = false;
+            }
+        };
+
+        mOverviewModeBehavior.addOverviewModeObserver(mOverviewModeObserver);
 
         mWaitingForShow = waitForShow;
         mWaitingForHide = waitForHide;
-    }
-
-    @Override
-    public void onOverviewModeStartedShowing(boolean showToolbar) { }
-
-    @Override
-    public void onOverviewModeFinishedShowing() {
-        mWaitingForShow = false;
-    }
-
-    @Override
-    public void onOverviewModeStartedHiding(boolean showToolbar, boolean delayAnimation) { }
-
-    @Override
-    public void onOverviewModeFinishedHiding() {
-        mWaitingForHide = false;
     }
 
     /**
@@ -74,9 +57,16 @@ public class OverviewModeBehaviorWatcher implements OverviewModeObserver {
      */
     public void waitForBehavior() {
         try {
-            CriteriaHelper.pollUiThread(mCriteria);
+            CriteriaHelper.pollUiThread(() -> {
+                Criteria.checkThat(
+                        "OverviewModeObserver#onOverviewModeFinishedShowing() not called.",
+                        mWaitingForShow, Matchers.is(false));
+                Criteria.checkThat(
+                        "OverviewModeObserver#onOverviewModeFinishedHiding() not called.",
+                        mWaitingForHide, Matchers.is(false));
+            });
         } finally {
-            mOverviewModeBehavior.removeOverviewModeObserver(this);
+            mOverviewModeBehavior.removeOverviewModeObserver(mOverviewModeObserver);
         }
     }
 }

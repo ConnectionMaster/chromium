@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/boolean_or_test_callback_interface.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -58,7 +58,7 @@ BooleanOrTestCallbackInterface::BooleanOrTestCallbackInterface(const BooleanOrTe
 BooleanOrTestCallbackInterface::~BooleanOrTestCallbackInterface() = default;
 BooleanOrTestCallbackInterface& BooleanOrTestCallbackInterface::operator=(const BooleanOrTestCallbackInterface&) = default;
 
-void BooleanOrTestCallbackInterface::Trace(blink::Visitor* visitor) {
+void BooleanOrTestCallbackInterface::Trace(Visitor* visitor) const {
   visitor->Trace(test_callback_interface_);
 }
 
@@ -113,3 +113,4 @@ BooleanOrTestCallbackInterface NativeValueTraits<BooleanOrTestCallbackInterface>
 }
 
 }  // namespace blink
+

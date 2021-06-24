@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_SID_H_
-#define SANDBOX_SRC_SID_H_
+#ifndef SANDBOX_WIN_SRC_SID_H_
+#define SANDBOX_WIN_SRC_SID_H_
 
 #include <windows.h>
 
-#include "base/strings/string16.h"
+#include <string>
 
 namespace sandbox {
 
@@ -31,7 +31,8 @@ enum WellKnownCapabilities {
 // This class is used to hold and generate SIDS.
 class Sid {
  public:
-  // As PSID is just a void* make it explicit.
+  // As PSID is just a void* make it explicit. Copies
+  // the memory referenced by |sid|.
   explicit Sid(PSID sid);
   // Constructors initializing the object with the SID passed.
   // This is a converting constructor. It is not explicit.
@@ -52,6 +53,8 @@ class Sid {
                                 PDWORD sub_authorities);
   // Create the restricted all application packages sid.
   static Sid AllRestrictedApplicationPackages();
+  // Generate a random SID value.
+  static Sid GenerateRandomSid();
 
   // Returns sid_.
   PSID GetPSID() const;
@@ -60,7 +63,7 @@ class Sid {
   bool IsValid() const;
 
   // Converts the SID to a SDDL format string.
-  bool ToSddlString(base::string16* sddl_string) const;
+  bool ToSddlString(std::wstring* sddl_string) const;
 
  private:
   Sid();
@@ -69,4 +72,4 @@ class Sid {
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_SID_H_
+#endif  // SANDBOX_WIN_SRC_SID_H_

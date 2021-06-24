@@ -6,9 +6,7 @@ package org.chromium.chrome.browser.sync.ui;
 
 import android.app.Activity;
 import android.app.Dialog;
-import android.app.DialogFragment;
 import android.os.Bundle;
-import android.support.v7.app.AlertDialog;
 import android.text.SpannableString;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ClickableSpan;
@@ -20,8 +18,11 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.TextView.OnEditorActionListener;
 
+import androidx.appcompat.app.AlertDialog;
+import androidx.fragment.app.DialogFragment;
+
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.help.HelpAndFeedback;
+import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherImpl;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.ui.text.SpanApplier;
 import org.chromium.ui.text.SpanApplier.SpanInfo;
@@ -76,9 +77,9 @@ public class PassphraseCreationDialogFragment extends DialogFragment {
                 new SpanInfo("<learnmore>", "</learnmore>", new ClickableSpan() {
                     @Override
                     public void onClick(View view) {
-                        HelpAndFeedback.getInstance(activity).show(activity,
+                        HelpAndFeedbackLauncherImpl.getInstance().show(activity,
                                 activity.getString(R.string.help_context_change_sync_passphrase),
-                                Profile.getLastUsedProfile(), null);
+                                Profile.getLastUsedRegularProfile(), null);
                     }
                 }));
     }

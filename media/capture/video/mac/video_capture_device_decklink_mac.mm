@@ -11,6 +11,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "media/capture/video/video_capture_device_info.h"
 #include "third_party/decklink/mac/include/DeckLinkAPI.h"
 
 namespace {
@@ -292,10 +293,14 @@ HRESULT DeckLinkCaptureDelegate::VideoInputFrameArrived(
     } else {
       timestamp = now - first_ref_time_;
     }
+    // TODO(julien.isorce): Build a gfx::ColorSpace from DeckLink API, .i.e
+    // using BMDDisplayModeFlags or BMDDeckLinkFrameMetadataID. See
+    // http://crbug.com/959953.
     frame_receiver_->OnIncomingCapturedData(
         video_data, video_frame->GetRowBytes() * video_frame->GetHeight(),
-        capture_format,
-        0,  // Rotation.
+        capture_format, gfx::ColorSpace(),
+        0,      // Rotation.
+        false,  // Vertical flip.
         now, timestamp);
   }
   return S_OK;
@@ -358,7 +363,7 @@ static std::string JoinDeviceNameAndFormat(CFStringRef name,
 
 // static
 void VideoCaptureDeviceDeckLinkMac::EnumerateDevices(
-    VideoCaptureDeviceDescriptors* device_descriptors) {
+    std::vector<VideoCaptureDeviceInfo>* devices_info) {
   scoped_refptr<IDeckLinkIterator> decklink_iter(
       CreateDeckLinkIteratorInstance());
   // At this point, not being able to create a DeckLink iterator means that
@@ -408,68 +413,22 @@ void VideoCaptureDeviceDeckLinkMac::EnumerateDevices(
             JoinDeviceNameAndFormat(device_model_name, format_name);
         descriptor.capture_api = VideoCaptureApi::MACOSX_DECKLINK;
         descriptor.transport_type = VideoCaptureTransportType::OTHER_TRANSPORT;
-        device_descriptors->push_back(descriptor);
+        descriptor.set_control_support(VideoCaptureControlSupport());
         DVLOG(1) << "Blackmagic camera enumerated: "
                  << descriptor.display_name();
+        devices_info->emplace_back(std::move(descriptor));
+
+        // IDeckLinkDisplayMode does not have information on pixel format, this
+        // is only available on capture.
+        const media::VideoCaptureFormat format(
+            gfx::Size(display_mode->GetWidth(), display_mode->GetHeight()),
+            GetDisplayModeFrameRate(display_mode), PIXEL_FORMAT_UNKNOWN);
+        devices_info->back().supported_formats.push_back(format);
+        DVLOG(2) << devices_info->back().descriptor.display_name() << " "
+                 << VideoCaptureFormat::ToString(format);
       }
       display_mode.Release();
     }
-  }
-}
-
-// static
-void VideoCaptureDeviceDeckLinkMac::EnumerateDeviceCapabilities(
-    const VideoCaptureDeviceDescriptor& device,
-    VideoCaptureFormats* supported_formats) {
-  scoped_refptr<IDeckLinkIterator> decklink_iter(
-      CreateDeckLinkIteratorInstance());
-  DLOG_IF(ERROR, !decklink_iter.get()) << "Error creating DeckLink iterator";
-  if (!decklink_iter.get())
-    return;
-
-  ScopedDeckLinkPtr<IDeckLink> decklink;
-  while (decklink_iter->Next(decklink.Receive()) == S_OK) {
-    ScopedDeckLinkPtr<IDeckLink> decklink_local;
-    decklink_local.swap(decklink);
-
-    ScopedDeckLinkPtr<IDeckLinkInput> decklink_input;
-    if (decklink_local->QueryInterface(IID_IDeckLinkInput,
-                                       decklink_input.ReceiveVoid()) != S_OK) {
-      DLOG(ERROR) << "Error Blackmagic querying input interface.";
-      return;
-    }
-
-    ScopedDeckLinkPtr<IDeckLinkDisplayModeIterator> display_mode_iter;
-    if (decklink_input->GetDisplayModeIterator(display_mode_iter.Receive()) !=
-        S_OK) {
-      continue;
-    }
-
-    CFStringRef device_model_name = NULL;
-    if (decklink_local->GetModelName(&device_model_name) != S_OK)
-      continue;
-
-    ScopedDeckLinkPtr<IDeckLinkDisplayMode> display_mode;
-    while (display_mode_iter->Next(display_mode.Receive()) == S_OK) {
-      CFStringRef format_name = NULL;
-      if (display_mode->GetName(&format_name) == S_OK &&
-          device.device_id !=
-              JoinDeviceNameAndFormat(device_model_name, format_name)) {
-        display_mode.Release();
-        continue;
-      }
-
-      // IDeckLinkDisplayMode does not have information on pixel format, this
-      // is only available on capture.
-      const media::VideoCaptureFormat format(
-          gfx::Size(display_mode->GetWidth(), display_mode->GetHeight()),
-          GetDisplayModeFrameRate(display_mode), PIXEL_FORMAT_UNKNOWN);
-      supported_formats->push_back(format);
-      DVLOG(2) << device.display_name() << " "
-               << VideoCaptureFormat::ToString(format);
-      display_mode.Release();
-    }
-    return;
   }
 }
 
@@ -486,14 +445,16 @@ void VideoCaptureDeviceDeckLinkMac::OnIncomingCapturedData(
     const uint8_t* data,
     size_t length,
     const VideoCaptureFormat& frame_format,
+    const gfx::ColorSpace& color_space,
     int rotation,  // Clockwise.
+    bool flip_y,
     base::TimeTicks reference_time,
     base::TimeDelta timestamp) {
   base::AutoLock lock(lock_);
-  if (client_) {
-    client_->OnIncomingCapturedData(data, length, frame_format, rotation,
-                                    reference_time, timestamp);
-  }
+  if (!client_)
+    return;
+  client_->OnIncomingCapturedData(data, length, frame_format, color_space,
+                                  rotation, flip_y, reference_time, timestamp);
 }
 
 void VideoCaptureDeviceDeckLinkMac::SendErrorString(

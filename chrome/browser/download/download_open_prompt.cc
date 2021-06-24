@@ -4,6 +4,9 @@
 
 #include "chrome/browser/download/download_open_prompt.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/callback.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/browser_dialogs.h"
@@ -26,10 +29,10 @@ class DownloadOpenConfirmationDialog : public DownloadOpenPrompt,
       DownloadOpenPrompt::OpenCallback open_callback);
   ~DownloadOpenConfirmationDialog() override;
 
-  base::string16 GetTitle() override;
-  base::string16 GetDialogMessage() override;
-  base::string16 GetAcceptButtonTitle() override;
-  base::string16 GetCancelButtonTitle() override;
+  std::u16string GetTitle() override;
+  std::u16string GetDialogMessage() override;
+  std::u16string GetAcceptButtonTitle() override;
+  std::u16string GetCancelButtonTitle() override;
 
  private:
   void OnAccepted() override;
@@ -60,22 +63,22 @@ DownloadOpenConfirmationDialog::DownloadOpenConfirmationDialog(
 
 DownloadOpenConfirmationDialog::~DownloadOpenConfirmationDialog() = default;
 
-base::string16 DownloadOpenConfirmationDialog::GetTitle() {
+std::u16string DownloadOpenConfirmationDialog::GetTitle() {
   return l10n_util::GetStringUTF16(IDS_DOWNLOAD_OPEN_CONFIRMATION_DIALOG_TITLE);
 }
 
-base::string16 DownloadOpenConfirmationDialog::GetDialogMessage() {
+std::u16string DownloadOpenConfirmationDialog::GetDialogMessage() {
   return l10n_util::GetStringFUTF16(
       IDS_DOWNLOAD_OPEN_CONFIRMATION_DIALOG_MESSAGE,
       base::UTF8ToUTF16(extension_name_),
       file_path_.BaseName().AsUTF16Unsafe());
 }
 
-base::string16 DownloadOpenConfirmationDialog::GetAcceptButtonTitle() {
+std::u16string DownloadOpenConfirmationDialog::GetAcceptButtonTitle() {
   return l10n_util::GetStringUTF16(IDS_CONFIRM_MESSAGEBOX_YES_BUTTON_LABEL);
 }
 
-base::string16 DownloadOpenConfirmationDialog::GetCancelButtonTitle() {
+std::u16string DownloadOpenConfirmationDialog::GetCancelButtonTitle() {
   return l10n_util::GetStringUTF16(IDS_CONFIRM_MESSAGEBOX_NO_BUTTON_LABEL);
 }
 
@@ -102,10 +105,11 @@ DownloadOpenPrompt* DownloadOpenPrompt::CreateDownloadOpenConfirmationDialog(
     const std::string& extension_name,
     const base::FilePath& file_path,
     DownloadOpenPrompt::OpenCallback open_callback) {
-  DownloadOpenConfirmationDialog* prompt = new DownloadOpenConfirmationDialog(
+  auto prompt = std::make_unique<DownloadOpenConfirmationDialog>(
       web_contents, extension_name, file_path, std::move(open_callback));
-  TabModalConfirmDialog::Create(prompt, web_contents);
-  return prompt;
+  DownloadOpenConfirmationDialog* prompt_observer = prompt.get();
+  TabModalConfirmDialog::Create(std::move(prompt), web_contents);
+  return prompt_observer;
 }
 
 void DownloadOpenPrompt::AcceptConfirmationDialogForTesting(

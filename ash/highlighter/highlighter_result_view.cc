@@ -12,6 +12,7 @@
 #include "ash/shell.h"
 #include "base/bind.h"
 #include "base/timer/timer.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -79,7 +80,7 @@ class ResultLayer : public ui::Layer, public ui::LayerDelegate {
 };
 
 ResultLayer::ResultLayer(const gfx::Rect& box) {
-  set_name("HighlighterResultView:ResultLayer");
+  SetName("HighlighterResultView:ResultLayer");
   gfx::Rect bounds = box;
   bounds.Inset(-kResultLayerMargin, -kResultLayerMargin);
   SetBounds(bounds);
@@ -165,33 +166,35 @@ void ResultLayer::DrawHorizontalBar(gfx::Canvas& canvas,
 
 }  // namespace
 
-HighlighterResultView::HighlighterResultView(aura::Window* root_window) {
-  widget_ = std::make_unique<views::Widget>();
+HighlighterResultView::HighlighterResultView() = default;
 
+HighlighterResultView::~HighlighterResultView() = default;
+
+// static
+views::UniqueWidgetPtr HighlighterResultView::Create(
+    aura::Window* root_window) {
   views::Widget::InitParams params;
   params.type = views::Widget::InitParams::TYPE_WINDOW_FRAMELESS;
   params.name = "HighlighterResult";
   params.accept_events = false;
-  params.activatable = views::Widget::InitParams::ACTIVATABLE_NO;
-  params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  params.activatable = views::Widget::InitParams::Activatable::kNo;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.parent =
       Shell::GetContainer(root_window, kShellWindowId_OverlayContainer);
   params.layer_type = ui::LAYER_SOLID_COLOR;
 
-  widget_->Init(params);
-  widget_->Show();
-  widget_->SetContentsView(this);
-  widget_->SetFullscreen(true);
-  set_owned_by_client();
+  auto widget = views::UniqueWidgetPtr(
+      std::make_unique<views::Widget>(std::move(params)));
+  widget->SetContentsView(std::make_unique<HighlighterResultView>());
+  widget->SetFullscreen(true);
+  widget->Show();
+  return widget;
 }
-
-HighlighterResultView::~HighlighterResultView() = default;
 
 void HighlighterResultView::Animate(const gfx::RectF& bounds,
                                     HighlighterGestureType gesture_type,
-                                    const base::Closure& done) {
-  ui::Layer* layer = widget_->GetLayer();
+                                    base::OnceClosure done) {
+  ui::Layer* layer = GetWidget()->GetLayer();
 
   base::TimeDelta delay;
   base::TimeDelta duration;
@@ -200,11 +203,11 @@ void HighlighterResultView::Animate(const gfx::RectF& bounds,
     // The original stroke is fading out in place.
     // Fade in a solid transparent rectangle.
     result_layer_ = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
-    result_layer_->set_name("HighlighterResultView:SOLID_LAYER");
+    result_layer_->SetName("HighlighterResultView:SOLID_LAYER");
     result_layer_->SetBounds(gfx::ToEnclosingRect(bounds));
     result_layer_->SetFillsBoundsOpaquely(false);
     result_layer_->SetMasksToBounds(false);
-    result_layer_->SetColor(HighlighterView::kPenColor);
+    result_layer_->SetColor(fast_ink::FastInkPoints::kDefaultColor);
 
     layer->Add(result_layer_.get());
 
@@ -232,14 +235,15 @@ void HighlighterResultView::Animate(const gfx::RectF& bounds,
   layer->SetOpacity(0);
 
   animation_timer_ = std::make_unique<base::OneShotTimer>();
-  animation_timer_->Start(FROM_HERE, delay,
-                          base::Bind(&HighlighterResultView::FadeIn,
-                                     base::Unretained(this), duration, done));
+  animation_timer_->Start(
+      FROM_HERE, delay,
+      base::BindOnce(&HighlighterResultView::FadeIn, base::Unretained(this),
+                     duration, std::move(done)));
 }
 
 void HighlighterResultView::FadeIn(const base::TimeDelta& duration,
-                                   const base::Closure& done) {
-  ui::Layer* layer = widget_->GetLayer();
+                                   base::OnceClosure done) {
+  ui::Layer* layer = GetWidget()->GetLayer();
 
   {
     ui::ScopedLayerAnimationSettings settings(layer->GetAnimator());
@@ -257,12 +261,12 @@ void HighlighterResultView::FadeIn(const base::TimeDelta& duration,
   animation_timer_->Start(
       FROM_HERE,
       duration + base::TimeDelta::FromMilliseconds(kResultFadeoutDelayMs),
-      base::Bind(&HighlighterResultView::FadeOut, base::Unretained(this),
-                 done));
+      base::BindOnce(&HighlighterResultView::FadeOut, base::Unretained(this),
+                     std::move(done)));
 }
 
-void HighlighterResultView::FadeOut(const base::Closure& done) {
-  ui::Layer* layer = widget_->GetLayer();
+void HighlighterResultView::FadeOut(base::OnceClosure done) {
+  ui::Layer* layer = GetWidget()->GetLayer();
 
   base::TimeDelta duration =
       base::TimeDelta::FromMilliseconds(kResultFadeoutDurationMs);
@@ -273,7 +277,7 @@ void HighlighterResultView::FadeOut(const base::Closure& done) {
   layer->SetOpacity(0);
 
   animation_timer_ = std::make_unique<base::OneShotTimer>();
-  animation_timer_->Start(FROM_HERE, duration, done);
+  animation_timer_->Start(FROM_HERE, duration, std::move(done));
 }
 
 }  // namespace ash

@@ -18,8 +18,8 @@
 #include "base/time/time.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/linux/gbm_device.h"
 #include "ui/gfx/overlay_transform.h"
-#include "ui/ozone/common/linux/gbm_device.h"
 #include "ui/ozone/platform/drm/common/scoped_drm_types.h"
 #include "ui/ozone/platform/drm/gpu/page_flip_request.h"
 
@@ -106,12 +106,7 @@ class DrmDevice : public base::RefCountedThreadSafe<DrmDevice> {
   virtual bool SetCrtc(uint32_t crtc_id,
                        uint32_t framebuffer,
                        std::vector<uint32_t> connectors,
-                       drmModeModeInfo* mode);
-
-  // Used to set a specific configuration to the CRTC. Normally this function
-  // would be called with a CRTC saved state (from |GetCrtc|) to restore it to
-  // its original configuration.
-  virtual bool SetCrtc(drmModeCrtc* crtc, std::vector<uint32_t> connectors);
+                       const drmModeModeInfo& mode);
 
   virtual bool DisableCrtc(uint32_t crtc_id);
 
@@ -168,7 +163,8 @@ class DrmDevice : public base::RefCountedThreadSafe<DrmDevice> {
                            uint64_t value);
 
   // Creates a property blob with data |blob| of size |size|.
-  virtual ScopedDrmPropertyBlob CreatePropertyBlob(void* blob, size_t size);
+  virtual ScopedDrmPropertyBlob CreatePropertyBlob(const void* blob,
+                                                   size_t size);
 
   virtual void DestroyPropertyBlob(uint32_t id);
 
@@ -219,11 +215,10 @@ class DrmDevice : public base::RefCountedThreadSafe<DrmDevice> {
 
   // On success, true is returned and |page_flip_request| will receive a
   // callback signalling completion of the flip, if provided.
-  virtual bool CommitProperties(
-      drmModeAtomicReq* properties,
-      uint32_t flags,
-      uint32_t crtc_count,
-      scoped_refptr<PageFlipRequest> page_flip_request);
+  bool CommitProperties(drmModeAtomicReq* properties,
+                        uint32_t flags,
+                        uint32_t crtc_count,
+                        scoped_refptr<PageFlipRequest> page_flip_request);
 
   virtual bool SetCapability(uint64_t capability, uint64_t value);
 
@@ -233,6 +228,8 @@ class DrmDevice : public base::RefCountedThreadSafe<DrmDevice> {
   // Drm master related
   virtual bool SetMaster();
   virtual bool DropMaster();
+
+  int modeset_sequence_id() const { return modeset_sequence_id_; }
 
   int get_fd() const { return file_.GetPlatformFile(); }
 
@@ -244,10 +241,22 @@ class DrmDevice : public base::RefCountedThreadSafe<DrmDevice> {
 
  protected:
   friend class base::RefCountedThreadSafe<DrmDevice>;
+  friend class DrmDisplayTest;
 
   virtual ~DrmDevice();
 
+  virtual bool CommitPropertiesInternal(
+      drmModeAtomicReq* properties,
+      uint32_t flags,
+      uint32_t crtc_count,
+      scoped_refptr<PageFlipRequest> page_flip_request);
+
   std::unique_ptr<HardwareDisplayPlaneManager> plane_manager_;
+
+  // Sequence ID incremented at each modeset.
+  // Currently used by DRM Framebuffer to indicate when was the fb initialized
+  // wrt the preceding modeset.
+  int modeset_sequence_id_ = 0;
 
  private:
   class IOWatcher;

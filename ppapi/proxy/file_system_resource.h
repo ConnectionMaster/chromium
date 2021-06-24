@@ -55,21 +55,24 @@ class PPAPI_PROXY_EXPORT FileSystemResource : public PluginResource,
   PP_FileSystemType GetType() override;
   void OpenQuotaFile(PP_Resource file_io) override;
   void CloseQuotaFile(PP_Resource file_io) override;
-  typedef base::Callback<void(int64_t)> RequestQuotaCallback;
-  int64_t RequestQuota(int64_t amount,
-                       const RequestQuotaCallback& callback) override;
+  int64_t RequestQuota(
+      int64_t amount,
+      thunk::PPB_FileSystem_API::RequestQuotaCallback callback) override;
 
   int32_t InitIsolatedFileSystem(const std::string& fsid,
                                  PP_IsolatedFileSystemType_Private type,
-                                 const base::Callback<void(int32_t)>& callback);
+                                 base::OnceCallback<void(int32_t)> callback);
+
  private:
   struct QuotaRequest {
     QuotaRequest(int64_t amount,
-                 const RequestQuotaCallback& callback);
+                 thunk::PPB_FileSystem_API::RequestQuotaCallback callback);
+    QuotaRequest(QuotaRequest&& other);
+    QuotaRequest& operator=(QuotaRequest&& other);
     ~QuotaRequest();
 
     int64_t amount;
-    RequestQuotaCallback callback;
+    thunk::PPB_FileSystem_API::RequestQuotaCallback callback;
   };
 
   // Called when the host has responded to our open request.
@@ -77,9 +80,10 @@ class PPAPI_PROXY_EXPORT FileSystemResource : public PluginResource,
                     const ResourceMessageReplyParams& params);
 
   // Called when the host has responded to our InitIsolatedFileSystem request.
+  void InitIsolatedFileSystemReply(base::OnceClosure callback,
+                                   const ResourceMessageReplyParams& params);
   void InitIsolatedFileSystemComplete(
-      const base::Callback<void(int32_t)>& callback,
-      const ResourceMessageReplyParams& params);
+      base::OnceCallback<void(int32_t)> callback);
 
   void ReserveQuota(int64_t amount);
   typedef std::map<int32_t, int64_t> OffsetMap;

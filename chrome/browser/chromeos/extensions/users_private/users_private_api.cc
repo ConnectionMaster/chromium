@@ -10,17 +10,18 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
+#include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/settings/cros_settings.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/chromeos/extensions/users_private/users_private_delegate.h"
 #include "chrome/browser/chromeos/extensions/users_private/users_private_delegate_factory.h"
-#include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos.h"
-#include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos_factory.h"
-#include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
+#include "chrome/browser/chromeos/policy/core/browser_policy_connector_chromeos.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/users_private.h"
 #include "chromeos/settings/cros_settings_names.h"
@@ -35,10 +36,10 @@ namespace extensions {
 
 namespace {
 
-bool IsEnterpriseManaged() {
+bool IsDeviceEnterpriseManaged() {
   return g_browser_process->platform_part()
       ->browser_policy_connector_chromeos()
-      ->IsEnterpriseManaged();
+      ->IsDeviceEnterpriseManaged();
 }
 
 bool IsChild(Profile* profile) {
@@ -52,13 +53,19 @@ bool IsChild(Profile* profile) {
 
 bool IsOwnerProfile(Profile* profile) {
   return profile &&
-         chromeos::OwnerSettingsServiceChromeOSFactory::GetForBrowserContext(
-             profile)
+         ash::OwnerSettingsServiceAshFactory::GetForBrowserContext(profile)
              ->IsOwner();
 }
 
-bool CanModifyWhitelistedUsers(Profile* profile) {
-  return !IsEnterpriseManaged() && IsOwnerProfile(profile) && !IsChild(profile);
+bool CanModifyUserList(content::BrowserContext* browser_context) {
+  Profile* profile = Profile::FromBrowserContext(browser_context);
+  return !IsDeviceEnterpriseManaged() && IsOwnerProfile(profile) &&
+         !IsChild(profile);
+}
+
+bool IsExistingUser(const std::string& username) {
+  return ash::CrosSettings::Get()->FindEmailInList(
+      chromeos::kAccountsPrefUsers, username, /*wildcard_match=*/nullptr);
 }
 
 // Creates User object for the exising user_manager::User .
@@ -70,7 +77,7 @@ api::users_private::User CreateApiUser(const std::string& email,
   api_user.name = base::UTF16ToUTF8(user.GetDisplayName());
   api_user.is_owner = user.GetAccountId() ==
                       user_manager::UserManager::Get()->GetOwnerAccountId();
-  api_user.is_supervised = user.IsSupervised();
+  api_user.is_supervised = user.IsChildOrDeprecatedSupervised();
   api_user.is_child = user.IsChild();
   return api_user;
 }
@@ -87,79 +94,62 @@ api::users_private::User CreateUnknownApiUser(const std::string& email) {
   return api_user;
 }
 
-}  // anonymous namespace
-
-////////////////////////////////////////////////////////////////////////////////
-// UsersPrivateGetWhitelistedUsersFunction
-
-UsersPrivateGetWhitelistedUsersFunction::
-    UsersPrivateGetWhitelistedUsersFunction()
-    : chrome_details_(this) {
-}
-
-UsersPrivateGetWhitelistedUsersFunction::
-    ~UsersPrivateGetWhitelistedUsersFunction() {
-}
-
-ExtensionFunction::ResponseAction
-UsersPrivateGetWhitelistedUsersFunction::Run() {
-  Profile* profile = chrome_details_.GetProfile();
+std::unique_ptr<base::ListValue> GetUsersList(
+    content::BrowserContext* browser_context) {
   std::unique_ptr<base::ListValue> user_list(new base::ListValue);
 
-  if (!CanModifyWhitelistedUsers(profile))
-    return RespondNow(OneArgument(std::move(user_list)));
+  if (!CanModifyUserList(browser_context))
+    return user_list;
 
   // Create one list to set. This is needed because user white list update is
-  // asynchronous and sequential. Before previous write comes back, cached list
-  // is stale and should not be used for appending. See http://crbug.com/127215
-  std::unique_ptr<base::ListValue> email_list;
+  // asynchronous and sequential. Before previous write comes back, cached
+  // list is stale and should not be used for appending. See
+  // http://crbug.com/127215
+  base::Value email_list(base::Value::Type::LIST);
 
   UsersPrivateDelegate* delegate =
-      UsersPrivateDelegateFactory::GetForBrowserContext(browser_context());
+      UsersPrivateDelegateFactory::GetForBrowserContext(browser_context);
   PrefsUtil* prefs_util = delegate->GetPrefsUtil();
 
   std::unique_ptr<api::settings_private::PrefObject> users_pref_object =
       prefs_util->GetPref(chromeos::kAccountsPrefUsers);
-  if (users_pref_object->value) {
-    const base::ListValue* existing = nullptr;
-    users_pref_object->value->GetAsList(&existing);
-    email_list.reset(existing->DeepCopy());
-  } else {
-    email_list.reset(new base::ListValue());
+  if (users_pref_object->value && users_pref_object->value->is_list()) {
+    email_list = users_pref_object->value->Clone();
   }
 
   const user_manager::UserManager* user_manager =
       user_manager::UserManager::Get();
 
-  // Remove all supervised users. On the next step only supervised users present
-  // on the device will be added back. Thus not present SU are removed.
-  // No need to remove usual users as they can simply login back.
-  for (size_t i = 0; i < email_list->GetSize(); ++i) {
-    std::string whitelisted_user;
-    email_list->GetString(i, &whitelisted_user);
-    if (user_manager->IsSupervisedAccountId(
-            AccountId::FromUserEmail(whitelisted_user))) {
-      email_list->Remove(i, NULL);
+  // Remove all supervised users. On the next step only supervised users
+  // present on the device will be added back. Thus not present SU are
+  // removed. No need to remove usual users as they can simply login back.
+  base::Value::ListView email_list_view = email_list.GetList();
+  for (size_t i = 0; i < email_list_view.size(); ++i) {
+    const std::string* email = email_list_view[i].GetIfString();
+    if (email && user_manager->IsDeprecatedSupervisedAccountId(
+                     AccountId::FromUserEmail(*email))) {
+      email_list.EraseListIter(email_list_view.begin() + i);
       --i;
     }
   }
 
   const user_manager::UserList& users = user_manager->GetUsers();
   for (const auto* user : users) {
-    email_list->AppendIfNotPresent(
-        std::make_unique<base::Value>(user->GetAccountId().GetUserEmail()));
+    base::Value email_value(user->GetAccountId().GetUserEmail());
+    if (!base::Contains(email_list_view, email_value))
+      email_list.Append(std::move(email_value));
   }
 
-  if (chromeos::OwnerSettingsServiceChromeOS* service =
-          chromeos::OwnerSettingsServiceChromeOSFactory::GetForBrowserContext(
-              profile)) {
-    service->Set(chromeos::kAccountsPrefUsers, *email_list.get());
+  if (ash::OwnerSettingsServiceAsh* service =
+          ash::OwnerSettingsServiceAshFactory::GetForBrowserContext(
+              browser_context)) {
+    service->Set(chromeos::kAccountsPrefUsers, email_list);
   }
 
   // Now populate the list of User objects for returning to the JS.
-  for (size_t i = 0; i < email_list->GetSize(); ++i) {
-    std::string email;
-    email_list->GetString(i, &email);
+  for (size_t i = 0; i < email_list_view.size(); ++i) {
+    const std::string* maybe_email = email_list_view[i].GetIfString();
+    std::string email = maybe_email ? *maybe_email : std::string();
     AccountId account_id = AccountId::FromUserEmail(email);
     const user_manager::User* user = user_manager->FindUser(account_id);
     user_list->Append(
@@ -167,35 +157,62 @@ UsersPrivateGetWhitelistedUsersFunction::Run() {
             .ToValue());
   }
 
-  return RespondNow(OneArgument(std::move(user_list)));
+  return user_list;
+}
+
+}  // anonymous namespace
+
+////////////////////////////////////////////////////////////////////////////////
+// UsersPrivateGetUsersFunction
+
+UsersPrivateGetUsersFunction::UsersPrivateGetUsersFunction() = default;
+
+UsersPrivateGetUsersFunction::~UsersPrivateGetUsersFunction() = default;
+
+ExtensionFunction::ResponseAction UsersPrivateGetUsersFunction::Run() {
+  return RespondNow(OneArgument(
+      base::Value::FromUniquePtrValue(GetUsersList(browser_context()))));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// UsersPrivateAddWhitelistedUserFunction
+// UsersPrivateIsUserInListFunction
 
-UsersPrivateAddWhitelistedUserFunction::UsersPrivateAddWhitelistedUserFunction()
-    : chrome_details_(this) {
+UsersPrivateIsUserInListFunction::UsersPrivateIsUserInListFunction() = default;
+
+UsersPrivateIsUserInListFunction::~UsersPrivateIsUserInListFunction() = default;
+
+ExtensionFunction::ResponseAction UsersPrivateIsUserInListFunction::Run() {
+  std::unique_ptr<api::users_private::IsUserInList::Params> parameters =
+      api::users_private::IsUserInList::Params::Create(*args_);
+  EXTENSION_FUNCTION_VALIDATE(parameters.get());
+
+  std::string username = gaia::CanonicalizeEmail(parameters->email);
+  if (IsExistingUser(username)) {
+    return RespondNow(OneArgument(base::Value(true)));
+  }
+  return RespondNow(OneArgument(base::Value(false)));
 }
 
-UsersPrivateAddWhitelistedUserFunction::
-    ~UsersPrivateAddWhitelistedUserFunction() {
-}
+////////////////////////////////////////////////////////////////////////////////
+// UsersPrivateAddUserFunction
 
-ExtensionFunction::ResponseAction
-UsersPrivateAddWhitelistedUserFunction::Run() {
-  std::unique_ptr<api::users_private::AddWhitelistedUser::Params> parameters =
-      api::users_private::AddWhitelistedUser::Params::Create(*args_);
+UsersPrivateAddUserFunction::UsersPrivateAddUserFunction() = default;
+
+UsersPrivateAddUserFunction::~UsersPrivateAddUserFunction() = default;
+
+ExtensionFunction::ResponseAction UsersPrivateAddUserFunction::Run() {
+  std::unique_ptr<api::users_private::AddUser::Params> parameters =
+      api::users_private::AddUser::Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(parameters.get());
 
   // Non-owners should not be able to add users.
-  if (!CanModifyWhitelistedUsers(chrome_details_.GetProfile())) {
-    return RespondNow(OneArgument(std::make_unique<base::Value>(false)));
+  if (!CanModifyUserList(browser_context())) {
+    return RespondNow(OneArgument(base::Value(false)));
   }
 
   std::string username = gaia::CanonicalizeEmail(parameters->email);
-  if (chromeos::CrosSettings::Get()->FindEmailInList(
-          chromeos::kAccountsPrefUsers, username, NULL)) {
-    return RespondNow(OneArgument(std::make_unique<base::Value>(false)));
+  if (IsExistingUser(username)) {
+    return RespondNow(OneArgument(base::Value(false)));
   }
 
   base::Value username_value(username);
@@ -205,31 +222,24 @@ UsersPrivateAddWhitelistedUserFunction::Run() {
   PrefsUtil* prefs_util = delegate->GetPrefsUtil();
   bool added = prefs_util->AppendToListCrosSetting(chromeos::kAccountsPrefUsers,
                                                    username_value);
-  return RespondNow(OneArgument(std::make_unique<base::Value>(added)));
+  return RespondNow(OneArgument(base::Value(added)));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// UsersPrivateRemoveWhitelistedUserFunction
+// UsersPrivateRemoveUserFunction
 
-UsersPrivateRemoveWhitelistedUserFunction::
-    UsersPrivateRemoveWhitelistedUserFunction()
-    : chrome_details_(this) {
-}
+UsersPrivateRemoveUserFunction::UsersPrivateRemoveUserFunction() = default;
 
-UsersPrivateRemoveWhitelistedUserFunction::
-    ~UsersPrivateRemoveWhitelistedUserFunction() {
-}
+UsersPrivateRemoveUserFunction::~UsersPrivateRemoveUserFunction() = default;
 
-ExtensionFunction::ResponseAction
-UsersPrivateRemoveWhitelistedUserFunction::Run() {
-  std::unique_ptr<api::users_private::RemoveWhitelistedUser::Params>
-      parameters =
-          api::users_private::RemoveWhitelistedUser::Params::Create(*args_);
+ExtensionFunction::ResponseAction UsersPrivateRemoveUserFunction::Run() {
+  std::unique_ptr<api::users_private::RemoveUser::Params> parameters =
+      api::users_private::RemoveUser::Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(parameters.get());
 
   // Non-owners should not be able to remove users.
-  if (!CanModifyWhitelistedUsers(chrome_details_.GetProfile())) {
-    return RespondNow(OneArgument(std::make_unique<base::Value>(false)));
+  if (!CanModifyUserList(browser_context())) {
+    return RespondNow(OneArgument(base::Value(false)));
   }
 
   base::Value canonical_email(gaia::CanonicalizeEmail(parameters->email));
@@ -241,41 +251,38 @@ UsersPrivateRemoveWhitelistedUserFunction::Run() {
       chromeos::kAccountsPrefUsers, canonical_email);
   user_manager::UserManager::Get()->RemoveUser(
       AccountId::FromUserEmail(parameters->email), NULL);
-  return RespondNow(OneArgument(std::make_unique<base::Value>(removed)));
+  return RespondNow(OneArgument(base::Value(removed)));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// UsersPrivateIsWhitelistManagedFunction
+// UsersPrivateIsUserListManagedFunction
 
-UsersPrivateIsWhitelistManagedFunction::
-    UsersPrivateIsWhitelistManagedFunction() {
+UsersPrivateIsUserListManagedFunction::UsersPrivateIsUserListManagedFunction() {
 }
 
-UsersPrivateIsWhitelistManagedFunction::
-    ~UsersPrivateIsWhitelistManagedFunction() {
-}
+UsersPrivateIsUserListManagedFunction::
+    ~UsersPrivateIsUserListManagedFunction() {}
 
-ExtensionFunction::ResponseAction
-UsersPrivateIsWhitelistManagedFunction::Run() {
-  return RespondNow(
-      OneArgument(std::make_unique<base::Value>(IsEnterpriseManaged())));
+ExtensionFunction::ResponseAction UsersPrivateIsUserListManagedFunction::Run() {
+  return RespondNow(OneArgument(base::Value(IsDeviceEnterpriseManaged())));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // UsersPrivateGetCurrentUserFunction
 
-UsersPrivateGetCurrentUserFunction::UsersPrivateGetCurrentUserFunction()
-    : chrome_details_(this) {}
+UsersPrivateGetCurrentUserFunction::UsersPrivateGetCurrentUserFunction() =
+    default;
 
-UsersPrivateGetCurrentUserFunction::~UsersPrivateGetCurrentUserFunction() {}
+UsersPrivateGetCurrentUserFunction::~UsersPrivateGetCurrentUserFunction() =
+    default;
 
 ExtensionFunction::ResponseAction UsersPrivateGetCurrentUserFunction::Run() {
   const user_manager::User* user =
       chromeos::ProfileHelper::Get()->GetUserByProfile(
-          chrome_details_.GetProfile());
-  return user ? RespondNow(OneArgument(
+          Profile::FromBrowserContext(browser_context()));
+  return user ? RespondNow(OneArgument(base::Value::FromUniquePtrValue(
                     CreateApiUser(user->GetAccountId().GetUserEmail(), *user)
-                        .ToValue()))
+                        .ToValue())))
               : RespondNow(Error("No Current User"));
 }
 
@@ -297,7 +304,8 @@ ExtensionFunction::ResponseAction UsersPrivateGetLoginStatusFunction::Run() {
   auto result = std::make_unique<base::DictionaryValue>();
   result->SetKey("isLoggedIn", base::Value(is_logged_in));
   result->SetKey("isScreenLocked", base::Value(is_screen_locked));
-  return RespondNow(OneArgument(std::move(result)));
+  return RespondNow(
+      OneArgument(base::Value::FromUniquePtrValue(std::move(result))));
 }
 
 }  // namespace extensions

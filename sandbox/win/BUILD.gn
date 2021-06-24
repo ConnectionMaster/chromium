@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
 
 # This needs to be a static library rather than a sources set because small
@@ -12,9 +13,9 @@ static_library("sandbox") {
   sources = [
     "src/acl.cc",
     "src/acl.h",
-    "src/app_container_profile.h",
-    "src/app_container_profile_base.cc",
-    "src/app_container_profile_base.h",
+    "src/app_container.h",
+    "src/app_container_base.cc",
+    "src/app_container_base.h",
     "src/broker_services.cc",
     "src/broker_services.h",
     "src/crosscall_client.h",
@@ -102,6 +103,8 @@ static_library("sandbox") {
     "src/sandbox_policy.h",
     "src/sandbox_policy_base.cc",
     "src/sandbox_policy_base.h",
+    "src/sandbox_policy_diagnostic.cc",
+    "src/sandbox_policy_diagnostic.h",
     "src/sandbox_rand.cc",
     "src/sandbox_rand.h",
     "src/sandbox_types.h",
@@ -118,6 +121,14 @@ static_library("sandbox") {
     "src/sharedmem_ipc_server.h",
     "src/sid.cc",
     "src/sid.h",
+    "src/signed_dispatcher.cc",
+    "src/signed_dispatcher.h",
+    "src/signed_interception.cc",
+    "src/signed_interception.h",
+    "src/signed_policy.cc",
+    "src/signed_policy.h",
+    "src/startup_information_helper.cc",
+    "src/startup_information_helper.h",
     "src/sync_dispatcher.cc",
     "src/sync_dispatcher.h",
     "src/sync_interception.cc",
@@ -130,10 +141,10 @@ static_library("sandbox") {
     "src/target_process.h",
     "src/target_services.cc",
     "src/target_services.h",
+    "src/threadpool.cc",
+    "src/threadpool.h",
     "src/top_level_dispatcher.cc",
     "src/top_level_dispatcher.h",
-    "src/win2k_threadpool.cc",
-    "src/win2k_threadpool.h",
     "src/win_utils.cc",
     "src/win_utils.h",
     "src/window.cc",
@@ -171,8 +182,10 @@ static_library("sandbox") {
 
   configs += [ "//build/config:precompiled_headers" ]
 
+  public_deps = [ "//base" ]
+
   deps = [
-    "//base",
+    ":maybe_set_appcontainer_acls",
     "//base:base_static",
     "//sandbox:common",
   ]
@@ -215,34 +228,47 @@ test("sbox_integration_tests") {
   deps = [
     ":sandbox",
     "//base/test:test_support",
+    "//sandbox/policy:tests",
     "//testing/gtest",
   ]
 
   data_deps = [
-    ":cfi_unittest_exe",
     ":sbox_integration_test_hijack_dll",
     ":sbox_integration_test_hijack_shim_dll",
     ":sbox_integration_test_hooking_dll",
     ":sbox_integration_test_win_proc",
   ]
 
-  libs = [ "dxva2.lib" ]
-}
-
-executable("cfi_unittest_exe") {
-  sources = [
-    "tests/integration_tests/cfi_unittest_exe.cc",
-  ]
-  deps = [
-    "//base",
-    "//build/win:default_exe_manifest",
-  ]
+  libs = [ "ktmw32.lib" ]
 }
 
 shared_library("sbox_integration_test_hijack_dll") {
   sources = [
     "tests/integration_tests/hijack_dll.cc",
     "tests/integration_tests/hijack_dll.def",
+  ]
+
+  deps = [ ":maybe_set_appcontainer_acls" ]
+}
+
+group("maybe_set_appcontainer_acls") {
+  # NACL on 32-bit builds this target twice, once for 64-bit and once for 32-bit
+  # so avoid this dep from running twice with the same output in that case.
+  # Additionally, exclude setting ACLs when build is not happening on Windows.
+  if (current_cpu == target_cpu && host_os == "win") {
+    deps = [ ":set_appcontainer_acls" ]
+  }
+}
+
+action("set_appcontainer_acls") {
+  script = "//build/win/set_appcontainer_acls.py"
+  stamp_file = "$target_out_dir/acls.stamp"
+  inputs = [ script ]
+  outputs = [ stamp_file ]
+
+  args = [
+    "--stamp=" + rebase_path(stamp_file, root_out_dir),
+    "--dir=" + rebase_path(root_out_dir, root_out_dir),
   ]
 }
 
@@ -360,4 +386,18 @@ shared_library("pocdll") {
   ]
 
   defines = [ "POCDLL_EXPORTS" ]
+}
+
+# This fuzzer will only work on Windows, add fuzz targets which could run on
+# Linux to //sandbox/ directly.
+fuzzer_test("sandbox_policy_rule_fuzzer") {
+  sources = [
+    "fuzzer/fuzzer_types.h",
+    "fuzzer/sandbox_policy_rule_fuzzer.cc",
+  ]
+  dict = "fuzzer/sandbox_policy_rule.dict"
+  deps = [
+    "//base",
+    "//sandbox",
+  ]
 }

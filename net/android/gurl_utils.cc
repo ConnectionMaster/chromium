@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/android/jni_string.h"
-#include "jni/GURLUtils_jni.h"
+#include "net/net_jni_headers/GURLUtils_jni.h"
 #include "url/gurl.h"
 
 using base::android::JavaParamRef;
@@ -17,14 +17,6 @@ ScopedJavaLocalRef<jstring> JNI_GURLUtils_GetOrigin(
   GURL host(base::android::ConvertJavaStringToUTF16(env, url));
 
   return base::android::ConvertUTF8ToJavaString(env, host.GetOrigin().spec());
-}
-
-ScopedJavaLocalRef<jstring> JNI_GURLUtils_GetScheme(
-    JNIEnv* env,
-    const JavaParamRef<jstring>& url) {
-  GURL host(base::android::ConvertJavaStringToUTF16(env, url));
-
-  return base::android::ConvertUTF8ToJavaString(env, host.scheme());
 }
 
 }  // namespace net

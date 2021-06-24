@@ -4,6 +4,8 @@
   "Name": "Test Network",
   "Cellular.ActivationState": "activated",
   "Cellular.ActivationType": "OTASP",
+  "Cellular.EID": "test_eid",
+  "Cellular.ICCID": "test_iccid",
   "Cellular.NetworkTechnology": "LTE Advanced",
   "Cellular.Olp": {
     "method": "GET",
@@ -45,10 +47,11 @@
       {
         "apn": "test-apn3",
         "username": "test-username3",
-        "password": "test-password3"
+        "password": "test-password3",
+        "attach": "attach"
       }
     ],
-    "Cellular.Carrier": "cellular_provider",
+    "Cellular.ICCID": "test_iccid",
     "Cellular.HomeProvider": {
       "country": "us",
       "name": "cellular_provider"
@@ -57,10 +60,7 @@
       "LockType": "sim-pin",
       "LockEnabled": true
     },
-    "Cellular.SupportedCarriers": [
-      "cellular_provider",
-      "generic_provider"
-    ],
+    "Scanning": true
   },
-  "Profile": "/profile/default",
+  "Profile": "/profile/default"
 }

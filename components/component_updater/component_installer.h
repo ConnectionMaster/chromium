@@ -26,6 +26,8 @@ class SingleThreadTaskRunner;
 }  // namespace base
 
 namespace component_updater {
+using RegisterCallback =
+    base::OnceCallback<bool(const update_client::CrxComponent&)>;
 
 class ComponentUpdateService;
 
@@ -65,6 +67,7 @@ class ComponentInstallerPolicy {
   // OnCustomUninstall is called during the unregister (uninstall) process.
   // Components that require custom uninstallation operations should implement
   // them here.
+  // Called only from a thread belonging to a blocking thread pool.
   virtual void OnCustomUninstall() = 0;
 
   // ComponentReady is called in two cases:
@@ -92,9 +95,6 @@ class ComponentInstallerPolicy {
   // Returns the human-readable name of the component.
   virtual std::string GetName() const = 0;
 
-  // If this component is a plugin, returns the media types it can handle.
-  virtual std::vector<std::string> GetMimeTypes() const = 0;
-
   // Returns a container of name-value pairs representing arbitrary,
   // installer-defined metadata.
   // The installer metadata may be used in the update checks for this component.
@@ -102,7 +102,7 @@ class ComponentInstallerPolicy {
   // rules when issuing an update response.
   // Valid values for the name part of an attribute match
   // ^[-_a-zA-Z0-9]{1,256}$ and valid values the value part of an attribute
-  // match ^[-.,;+_=a-zA-Z0-9]{0,256}$ .
+  // match ^[-.,;+_=$a-zA-Z0-9]{0,256}$ .
   virtual update_client::InstallerAttributes GetInstallerAttributes() const = 0;
 };
 
@@ -110,19 +110,28 @@ class ComponentInstallerPolicy {
 // controlled by an instance of ComponentInstallerPolicy, at construction time.
 class ComponentInstaller final : public update_client::CrxInstaller {
  public:
-  explicit ComponentInstaller(
-      std::unique_ptr<ComponentInstallerPolicy> installer_policy);
+  ComponentInstaller(
+      std::unique_ptr<ComponentInstallerPolicy> installer_policy,
+      scoped_refptr<update_client::ActionHandler> action_handler = nullptr);
 
   // Registers the component for update checks and installs.
+  // |cus| provides the registration logic.
   // The passed |callback| will be called once the initial check for installed
   // versions is done and the component has been registered.
   void Register(ComponentUpdateService* cus, base::OnceClosure callback);
+
+  // Registers the component for update checks and installs.
+  // |register_callback| is called to do the registration.
+  // |callback| is called when registration finishes.
+  void Register(RegisterCallback register_callback, base::OnceClosure callback);
 
   // Overrides from update_client::CrxInstaller.
   void OnUpdateError(int error) override;
 
   void Install(const base::FilePath& unpack_path,
                const std::string& public_key,
+               std::unique_ptr<InstallParams> install_params,
+               ProgressCallback progress_callback,
                Callback callback) override;
 
   bool GetInstalledFile(const std::string& file,
@@ -157,27 +166,28 @@ class ComponentInstaller final : public update_client::CrxInstaller {
                            scoped_refptr<RegistrationInfo> registration_info);
   update_client::CrxInstaller::Result InstallHelper(
       const base::FilePath& unpack_path,
-      std::unique_ptr<base::DictionaryValue>* manifest,
+      base::Value* manifest,
       base::Version* version,
       base::FilePath* install_path);
   void StartRegistration(scoped_refptr<RegistrationInfo> registration_info);
   void FinishRegistration(scoped_refptr<RegistrationInfo> registration_info,
-                          ComponentUpdateService* cus,
+                          RegisterCallback register_callback,
                           base::OnceClosure callback);
   void ComponentReady(std::unique_ptr<base::DictionaryValue> manifest);
   void UninstallOnTaskRunner();
+
+  THREAD_CHECKER(thread_checker_);
 
   base::FilePath current_install_dir_;
   base::Version current_version_;
   std::string current_fingerprint_;
 
   std::unique_ptr<ComponentInstallerPolicy> installer_policy_;
+  scoped_refptr<update_client::ActionHandler> action_handler_;
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
   // Posts responses back to the main thread.
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
-
-  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(ComponentInstaller);
 };

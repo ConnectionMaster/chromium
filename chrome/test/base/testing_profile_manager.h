@@ -11,12 +11,12 @@
 
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
-#include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
-#include "base/strings/string16.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/test/scoped_path_override.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/policy/core/common/policy_service.h"
 
 class ProfileInfoCache;
 class ProfileAttributesStorage;
@@ -34,12 +34,14 @@ class PrefServiceSyncable;
 // When a Profile is needed for testing, create it through the factory method
 // below instead of creating it via |new TestingProfile|. It is not possible
 // to register profiles created in that fashion with the ProfileManager.
-class TestingProfileManager {
+class TestingProfileManager : public ProfileObserver {
  public:
   explicit TestingProfileManager(TestingBrowserProcess* browser_process);
   TestingProfileManager(TestingBrowserProcess* browser_process,
                         ScopedTestingLocalState* local_state);
-  ~TestingProfileManager();
+  TestingProfileManager(const TestingProfileManager&) = delete;
+  TestingProfileManager& operator=(const TestingProfileManager&) = delete;
+  ~TestingProfileManager() override;
 
   // This needs to be called in testing::Test::SetUp() to put the object in a
   // valid state. Some work cannot be done in a constructor because it may
@@ -63,13 +65,19 @@ class TestingProfileManager {
   TestingProfile* CreateTestingProfile(
       const std::string& profile_name,
       std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs,
-      const base::string16& user_name,
+      const std::u16string& user_name,
       int avatar_id,
       const std::string& supervised_user_id,
-      TestingProfile::TestingFactories testing_factories);
+      TestingProfile::TestingFactories testing_factories,
+      absl::optional<bool> is_new_profile = absl::nullopt,
+      absl::optional<std::unique_ptr<policy::PolicyService>> policy_service =
+          absl::nullopt);
 
-  // Small helper for creating testing profiles. Just forwards to above.
+  // Small helpers for creating testing profiles. Just forward to above.
   TestingProfile* CreateTestingProfile(const std::string& name);
+  TestingProfile* CreateTestingProfile(
+      const std::string& name,
+      TestingProfile::TestingFactories testing_factories);
 
   // Creates a new guest TestingProfile whose data lives in the guest profile
   // test environment directory, as specified by the profile manager.
@@ -102,9 +110,6 @@ class TestingProfileManager {
   // properly persisting data.
   void DeleteProfileInfoCache();
 
-  // Sets ProfileManager's logged_in state. This is only useful on ChromeOS.
-  void SetLoggedIn(bool logged_in);
-
   // Sets the last used profile; also sets the active time to now.
   void UpdateLastUser(Profile* last_active);
 
@@ -113,6 +118,9 @@ class TestingProfileManager {
   ProfileManager* profile_manager();
   ProfileAttributesStorage* profile_attributes_storage();
   ScopedTestingLocalState* local_state() { return local_state_; }
+
+  // ProfileObserver:
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
  private:
   friend class ProfileAttributesStorageTest;
@@ -133,13 +141,8 @@ class TestingProfileManager {
   bool called_set_up_;
 
   // |profiles_path_| is the path under which new directories for the profiles
-  // will be placed. Depending on the way SetUp is invoked, this path might
-  // either be a directory owned by TestingProfileManager, in which case
-  // ownership will be managed by |profiles_dir_|, or the directory will be
-  // owned by the test which has instantiated |this|, and then |profiles_dir_|
-  // will remain empty.
+  // will be placed.
   base::FilePath profiles_path_;
-  base::ScopedTempDir profiles_dir_;
 
   // The user data directory in the path service is overriden because some
   // functions, e.g. GetPathOfHighResAvatarAtIndex, get the user data directory
@@ -162,7 +165,9 @@ class TestingProfileManager {
   // Map of profile_name to TestingProfile* from CreateTestingProfile().
   TestingProfilesMap testing_profiles_;
 
-  DISALLOW_COPY_AND_ASSIGN(TestingProfileManager);
+  // Listens for Profile* destruction to perform some cleanup.
+  base::ScopedMultiSourceObservation<Profile, ProfileObserver>
+      profile_observations_{this};
 };
 
 #endif  // CHROME_TEST_BASE_TESTING_PROFILE_MANAGER_H_

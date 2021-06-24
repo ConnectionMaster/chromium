@@ -38,7 +38,7 @@ namespace {
 
 class HeadersArray : public bidirectional_stream_header_array {
  public:
-  explicit HeadersArray(const spdy::SpdyHeaderBlock& header_block);
+  explicit HeadersArray(const spdy::Http2HeaderBlock& header_block);
   ~HeadersArray();
 
  private:
@@ -46,19 +46,34 @@ class HeadersArray : public bidirectional_stream_header_array {
   DISALLOW_COPY_AND_ASSIGN(HeadersArray);
 };
 
-HeadersArray::HeadersArray(const spdy::SpdyHeaderBlock& header_block)
+HeadersArray::HeadersArray(const spdy::Http2HeaderBlock& header_block)
     : headers_strings_(header_block.size()) {
-  // Count and headers are inherited from parent structure.
-  count = capacity = header_block.size();
+  // Split coalesced headers by '\0' and copy them into |header_strings_|.
+  for (const auto& it : header_block) {
+    auto value = std::string(it.second);
+    size_t start = 0;
+    size_t end = 0;
+    do {
+      end = value.find('\0', start);
+      std::string split_value;
+      if (end != value.npos) {
+        split_value = value.substr(start, end - start);
+      } else {
+        split_value = value.substr(start);
+      }
+      // |headers_strings_| is initialized to the size of header_block, but
+      // split headers might take up more space.
+      headers_strings_.push_back(
+          std::make_pair(std::string(it.first), split_value));
+      start = end + 1;
+    } while (end != value.npos);
+  }
+  count = capacity = headers_strings_.size();
   headers = new bidirectional_stream_header[count];
   size_t i = 0;
-  // Copy headers into |headers_strings_| because string pieces are not
-  // '\0'-terminated.
-  for (const auto& it : header_block) {
-    headers_strings_[i].first = it.first.as_string();
-    headers_strings_[i].second = it.second.as_string();
-    headers[i].key = headers_strings_[i].first.c_str();
-    headers[i].value = headers_strings_[i].second.c_str();
+  for (const auto& it : headers_strings_) {
+    headers[i].key = it.first.c_str();
+    headers[i].value = it.second.c_str();
     ++i;
   }
 }
@@ -78,14 +93,15 @@ class BidirectionalStreamAdapter
 
   void OnStreamReady() override;
 
-  void OnHeadersReceived(const spdy::SpdyHeaderBlock& headers_block,
+  void OnHeadersReceived(const spdy::Http2HeaderBlock& headers_block,
                          const char* negotiated_protocol) override;
 
   void OnDataRead(char* data, int size) override;
 
   void OnDataSent(const char* data) override;
 
-  void OnTrailersReceived(const spdy::SpdyHeaderBlock& trailers_block) override;
+  void OnTrailersReceived(
+      const spdy::Http2HeaderBlock& trailers_block) override;
 
   void OnSucceeded() override;
 
@@ -134,7 +150,7 @@ void BidirectionalStreamAdapter::OnStreamReady() {
 }
 
 void BidirectionalStreamAdapter::OnHeadersReceived(
-    const spdy::SpdyHeaderBlock& headers_block,
+    const spdy::Http2HeaderBlock& headers_block,
     const char* negotiated_protocol) {
   DCHECK(c_callback_->on_response_headers_received);
   HeadersArray response_headers(headers_block);
@@ -153,7 +169,7 @@ void BidirectionalStreamAdapter::OnDataSent(const char* data) {
 }
 
 void BidirectionalStreamAdapter::OnTrailersReceived(
-    const spdy::SpdyHeaderBlock& trailers_block) {
+    const spdy::Http2HeaderBlock& trailers_block) {
   DCHECK(c_callback_->on_response_trailers_received);
   HeadersArray response_trailers(trailers_block);
   c_callback_->on_response_trailers_received(c_stream(), &response_trailers);

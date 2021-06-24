@@ -10,7 +10,7 @@ click of a button you can understand where memory is being used in your system.
 ## Taking a memory-infra trace
 
  1. [Record a trace as usual][record-trace]: open [chrome://tracing][tracing]
-    on Desktop Chrome or [chrome://inspect?tracing][inspect-tracing] to trace
+    on Desktop Chrome or [chrome://inspect][inspect-tracing] to trace
     Chrome for Android.
 
  2. Make sure to enable the **memory-infra** category on the right.
@@ -20,7 +20,7 @@ click of a button you can understand where memory is being used in your system.
 
 [record-trace]:     https://sites.google.com/a/chromium.org/dev/developers/how-tos/trace-event-profiling-tool/recording-tracing-runs
 [tracing]:          chrome://tracing
-[inspect-tracing]:  chrome://inspect?tracing
+[inspect-tracing]:  chrome://inspect
 [memory-infra-box]: https://storage.googleapis.com/chromium-docs.appspot.com/1c6d1886584e7cc6ffed0d377f32023f8da53e02
 
 ## Navigating a memory-infra trace
@@ -161,7 +161,7 @@ or take a look at one of the existing examples such as
 [tracing@chromium.org][mailtracing] for questions and support.
 
 [dp-slides]:   https://docs.google.com/presentation/d/1GI3HY3Mm5-Mvp6eZyVB0JiaJ-u3L1MMJeKHJg4lxjEI/present?slide=id.g995514d5c_1_45
-[malloc-dp]:   https://chromium.googlesource.com/chromium/src.git/+/master/base/trace_event/malloc_dump_provider.cc
+[malloc-dp]:   https://chromium.googlesource.com/chromium/src.git/+/main/base/trace_event/malloc_dump_provider.cc
 [hotlist]:     https://code.google.com/p/chromium/issues/list?q=label:Hotlist-MemoryInfra
 [mailtracing]: mailto:tracing@chromium.org
 

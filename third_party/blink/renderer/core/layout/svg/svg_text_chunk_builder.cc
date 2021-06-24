@@ -21,39 +21,40 @@
 
 #include "third_party/blink/renderer/core/layout/api/line_layout_svg_inline_text.h"
 #include "third_party/blink/renderer/core/layout/svg/line/svg_inline_text_box.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_length_context.h"
 #include "third_party/blink/renderer/core/svg/svg_text_content_element.h"
 
 namespace blink {
 
-namespace {
-
 float CalculateTextAnchorShift(const ComputedStyle& style, float length) {
   bool is_ltr = style.IsLeftToRightDirection();
-  switch (style.SvgStyle().TextAnchor()) {
+  switch (style.TextAnchor()) {
     default:
       NOTREACHED();
       FALLTHROUGH;
-    case TA_START:
+    case ETextAnchor::kStart:
       return is_ltr ? 0 : -length;
-    case TA_MIDDLE:
+    case ETextAnchor::kMiddle:
       return -length / 2;
-    case TA_END:
+    case ETextAnchor::kEnd:
       return is_ltr ? -length : 0;
   }
 }
 
+namespace {
+
 bool NeedsTextAnchorAdjustment(const ComputedStyle& style) {
   bool is_ltr = style.IsLeftToRightDirection();
-  switch (style.SvgStyle().TextAnchor()) {
+  switch (style.TextAnchor()) {
     default:
       NOTREACHED();
       FALLTHROUGH;
-    case TA_START:
+    case ETextAnchor::kStart:
       return !is_ltr;
-    case TA_MIDDLE:
+    case ETextAnchor::kMiddle:
       return true;
-    case TA_END:
+    case ETextAnchor::kEnd:
       return is_ltr;
   }
 }
@@ -143,10 +144,7 @@ void SVGTextChunkBuilder::ProcessTextChunks(
 }
 
 SVGTextPathChunkBuilder::SVGTextPathChunkBuilder()
-    : SVGTextChunkBuilder(),
-      total_length_(0),
-      total_characters_(0),
-      total_text_anchor_shift_(0) {}
+    : SVGTextChunkBuilder(), total_length_(0), total_characters_(0) {}
 
 void SVGTextPathChunkBuilder::HandleTextChunk(BoxListConstIterator box_start,
                                               BoxListConstIterator box_end) {
@@ -154,10 +152,6 @@ void SVGTextPathChunkBuilder::HandleTextChunk(BoxListConstIterator box_start,
 
   ChunkLengthAccumulator length_accumulator(!style.IsHorizontalWritingMode());
   length_accumulator.ProcessRange(box_start, box_end);
-
-  // Handle text-anchor as additional start offset for text paths.
-  total_text_anchor_shift_ +=
-      CalculateTextAnchorShift(style, length_accumulator.length());
 
   total_length_ += length_accumulator.length();
   total_characters_ += length_accumulator.NumCharacters();
@@ -183,8 +177,7 @@ void SVGTextChunkBuilder::HandleTextChunk(BoxListConstIterator box_start,
   if (SVGTextContentElement* text_content_element =
           SVGTextContentElement::ElementFromLineLayoutItem(
               text_line_layout.Parent())) {
-    length_adjust =
-        text_content_element->lengthAdjust()->CurrentValue()->EnumValue();
+    length_adjust = text_content_element->lengthAdjust()->CurrentEnumValue();
 
     SVGLengthContext length_context(text_content_element);
     if (text_content_element->TextLengthIsSpecifiedByUser())

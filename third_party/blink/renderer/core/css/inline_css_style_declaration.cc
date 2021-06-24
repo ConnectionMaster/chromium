@@ -40,10 +40,8 @@ void InlineCSSStyleDeclaration::DidMutate(MutationType type) {
   if (!parent_element_)
     return;
 
+  parent_element_->NotifyInlineStyleMutation();
   parent_element_->ClearMutableInlineStyleIfEmpty();
-  parent_element_->SetNeedsStyleRecalc(
-      kLocalStyleChange, StyleChangeReasonForTracing::Create(
-                             style_change_reason::kInlineCSSStyleMutated));
   parent_element_->InvalidateStyleAttribute();
   StyleAttributeMutationScope(this).DidInvalidateStyleAttr();
 }
@@ -53,12 +51,7 @@ CSSStyleSheet* InlineCSSStyleDeclaration::ParentStyleSheet() const {
                          : nullptr;
 }
 
-PropertyRegistry* InlineCSSStyleDeclaration::GetPropertyRegistry() const {
-  return parent_element_ ? parent_element_->GetDocument().GetPropertyRegistry()
-                         : nullptr;
-}
-
-void InlineCSSStyleDeclaration::Trace(blink::Visitor* visitor) {
+void InlineCSSStyleDeclaration::Trace(Visitor* visitor) const {
   visitor->Trace(parent_element_);
   AbstractPropertySetCSSStyleDeclaration::Trace(visitor);
 }

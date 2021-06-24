@@ -6,10 +6,9 @@
 
 #include <string>
 
-#include "content/public/common/webplugininfo.h"
 #include "content/public/renderer/render_frame.h"
-#include "content/public/renderer/render_frame_observer.h"
-#include "content/public/renderer/render_thread.h"
+#include "extensions/renderer/guest_view/mime_handler_view/mime_handler_view_container_manager.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_frame.h"
 #include "third_party/blink/public/web/web_local_frame.h"
@@ -18,166 +17,72 @@
 
 namespace extensions {
 
-class MimeHandlerViewFrameContainer::RenderFrameLifetimeObserver
-    : public content::RenderFrameObserver {
- public:
-  RenderFrameLifetimeObserver(MimeHandlerViewFrameContainer* container,
-                              content::RenderFrame* render_frame);
-  ~RenderFrameLifetimeObserver() override;
-
-  // content:RenderFrameObserver override.
-  void OnDestruct() final;
-
- private:
-  MimeHandlerViewFrameContainer* const container_;
-};
-
-MimeHandlerViewFrameContainer::RenderFrameLifetimeObserver::
-    RenderFrameLifetimeObserver(MimeHandlerViewFrameContainer* container,
-                                content::RenderFrame* render_frame)
-    : content::RenderFrameObserver(render_frame), container_(container) {}
-
-MimeHandlerViewFrameContainer::RenderFrameLifetimeObserver::
-    ~RenderFrameLifetimeObserver() {}
-
-void MimeHandlerViewFrameContainer::RenderFrameLifetimeObserver::OnDestruct() {
-  container_->DestroyFrameContainer();
-}
-
-// static
-bool MimeHandlerViewFrameContainer::Create(
-    const blink::WebElement& plugin_element,
-    const GURL& resource_url,
-    const std::string& mime_type,
-    const content::WebPluginInfo& plugin_info) {
-  if (plugin_info.type != content::WebPluginInfo::PLUGIN_TYPE_BROWSER_PLUGIN) {
-    // TODO(ekaramad): Rename this plugin type once https://crbug.com/659750 is
-    // fixed. We only create a MHVFC for the plugin types of BrowserPlugin
-    // (which used to create a MimeHandlerViewContainer).
-    return false;
-  }
-
-  // Life time is managed by the class itself: when the MimeHandlerViewGuest
-  // is destroyed an IPC is sent to renderer to cleanup this instance.
-  return new MimeHandlerViewFrameContainer(plugin_element, resource_url,
-                                           mime_type, plugin_info);
-}
-
-v8::Local<v8::Object> MimeHandlerViewFrameContainer::GetScriptableObject(
-    const blink::WebElement& plugin_element,
-    v8::Isolate* isolate) {
-  auto containers = FromRenderFrame(content::RenderFrame::FromWebFrame(
-      plugin_element.GetDocument().GetFrame()));
-  for (auto* container : containers) {
-    auto* frame_container =
-        static_cast<MimeHandlerViewFrameContainer*>(container);
-    if (frame_container->plugin_element_ != plugin_element)
-      continue;
-    return frame_container->GetScriptableObjectInternal(isolate);
-  }
-  return v8::Local<v8::Object>();
-}
-
-// static
-void MimeHandlerViewFrameContainer::CreateWithFrame(
-    blink::WebLocalFrame* web_frame,
-    const GURL& resource_url,
-    const std::string& mime_type,
-    const std::string& view_id) {
-  // TODO(ekaramad): Eventually MHVFC should not request the resource which
-  // means this mode of MHVFC is no longer necessary. After intercepting the
-  // response we should just proceed with creating the MimeHandlerViewGuest
-  // and attaching to the inserted <iframe> on the browser side. The current
-  // renderer state for it seems unnecessary.
-  new MimeHandlerViewFrameContainer(web_frame, resource_url, mime_type,
-                                    view_id);
-}
-
 MimeHandlerViewFrameContainer::MimeHandlerViewFrameContainer(
+    MimeHandlerViewContainerManager* container_manager,
     const blink::WebElement& plugin_element,
     const GURL& resource_url,
-    const std::string& mime_type,
-    const content::WebPluginInfo& plugin_info)
-    : MimeHandlerViewContainerBase(content::RenderFrame::FromWebFrame(
-                                       plugin_element.GetDocument().GetFrame()),
-                                   plugin_info,
-                                   mime_type,
-                                   resource_url),
+    const std::string& mime_type)
+    : container_manager_(container_manager),
       plugin_element_(plugin_element),
-      element_instance_id_(content::RenderThread::Get()->GenerateRoutingID()),
-      render_frame_lifetime_observer_(
-          new RenderFrameLifetimeObserver(this, GetEmbedderRenderFrame())) {
-  RecordInteraction(
-      MimeHandlerViewUMATypes::Type::kDidCreateMimeHandlerViewContainerBase);
-  is_embedded_ = true;
-  SendResourceRequest();
-}
-
-MimeHandlerViewFrameContainer::MimeHandlerViewFrameContainer(
-    blink::WebLocalFrame* web_local_frame,
-    const GURL& resource_url,
-    const std::string& mime_type,
-    const std::string& view_id)
-    : MimeHandlerViewContainerBase(
-          content::RenderFrame::FromWebFrame(
-              web_local_frame->Parent()->ToWebLocalFrame()),
-          content::WebPluginInfo(),
-          mime_type,
-          resource_url),
-      element_instance_id_(content::RenderThread::Get()->GenerateRoutingID()),
-      render_frame_lifetime_observer_(
-          new RenderFrameLifetimeObserver(this, GetEmbedderRenderFrame())) {
-  is_embedded_ = false;
-  view_id_ = view_id;
-  plugin_frame_routing_id_ =
-      content::RenderFrame::FromWebFrame(web_local_frame)->GetRoutingID();
-  MimeHandlerViewContainerBase::CreateMimeHandlerViewGuestIfNecessary();
-}
+      resource_url_(resource_url),
+      mime_type_(mime_type),
+      is_resource_accessible_to_embedder_(
+          GetSourceFrame()->GetSecurityOrigin().CanAccess(
+              blink::WebSecurityOrigin::Create(resource_url))) {}
 
 MimeHandlerViewFrameContainer::~MimeHandlerViewFrameContainer() {}
 
-void MimeHandlerViewFrameContainer::CreateMimeHandlerViewGuestIfNecessary() {
-  if (auto* frame = GetContentFrame()) {
-    plugin_frame_routing_id_ =
-        content::RenderFrame::GetRoutingIdForWebFrame(frame);
-  }
-  if (plugin_frame_routing_id_ == MSG_ROUTING_NONE) {
-    DestroyFrameContainer();
-    return;
-  }
-  MimeHandlerViewContainerBase::CreateMimeHandlerViewGuestIfNecessary();
+blink::WebLocalFrame* MimeHandlerViewFrameContainer::GetSourceFrame() {
+  return container_manager_->render_frame()->GetWebFrame();
 }
 
-void MimeHandlerViewFrameContainer::RetryCreatingMimeHandlerViewGuest() {
-  CreateMimeHandlerViewGuestIfNecessary();
+blink::WebFrame* MimeHandlerViewFrameContainer::GetTargetFrame() {
+  if (!AreFramesValid())
+    return nullptr;
+  return GetContentFrame()->FirstChild();
 }
 
-void MimeHandlerViewFrameContainer::DidLoad() {
-  DidLoadInternal();
+bool MimeHandlerViewFrameContainer::IsEmbedded() const {
+  return true;
 }
 
-void MimeHandlerViewFrameContainer::DestroyFrameContainer() {
-  delete this;
-}
-
-blink::WebRemoteFrame* MimeHandlerViewFrameContainer::GetGuestProxyFrame()
-    const {
-  return GetContentFrame()->ToWebRemoteFrame();
-}
-
-int32_t MimeHandlerViewFrameContainer::GetInstanceId() const {
-  return element_instance_id_;
-}
-
-gfx::Size MimeHandlerViewFrameContainer::GetElementSize() const {
-  return gfx::Size();
+bool MimeHandlerViewFrameContainer::IsResourceAccessibleBySource() const {
+  return is_resource_accessible_to_embedder_;
 }
 
 blink::WebFrame* MimeHandlerViewFrameContainer::GetContentFrame() const {
-  if (is_embedded_)
-    return blink::WebFrame::FromFrameOwnerElement(plugin_element_);
+  return blink::WebFrame::FromFrameOwnerElement(plugin_element_);
+}
 
-  return GetEmbedderRenderFrame()->GetWebFrame()->FirstChild();
+bool MimeHandlerViewFrameContainer::AreFramesAlive() {
+  if (!GetContentFrame() || !GetContentFrame()->FirstChild()) {
+    container_manager_->RemoveFrameContainer(this, false /* retain_manager */);
+    return false;
+  }
+  return true;
+}
+
+void MimeHandlerViewFrameContainer::SetRoutingIds(int32_t content_frame_id,
+                                                  int32_t guest_frame_id) {
+  DCHECK_EQ(content_frame_id_, MSG_ROUTING_NONE);
+  DCHECK(!post_message_support()->is_active());
+  content_frame_id_ = content_frame_id;
+  guest_frame_id_ = guest_frame_id;
+  post_message_support()->SetActive();
+}
+
+bool MimeHandlerViewFrameContainer::AreFramesValid() {
+  if (!AreFramesAlive())
+    return false;
+  if (content_frame_id_ ==
+      content::RenderFrame::GetRoutingIdForWebFrame(GetContentFrame())) {
+    if (guest_frame_id_ == content::RenderFrame::GetRoutingIdForWebFrame(
+                               GetContentFrame()->FirstChild())) {
+      return true;
+    }
+  }
+  container_manager_->RemoveFrameContainer(this, false /* retain_manager */);
+  return false;
 }
 
 }  // namespace extensions

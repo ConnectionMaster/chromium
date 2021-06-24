@@ -15,7 +15,11 @@ namespace media {
 class CAPTURE_EXPORT VideoCaptureBufferTrackerFactoryImpl
     : public VideoCaptureBufferTrackerFactory {
  public:
-  std::unique_ptr<VideoCaptureBufferTracker> CreateTracker() override;
+  std::unique_ptr<VideoCaptureBufferTracker> CreateTracker(
+      VideoCaptureBufferType buffer_type) override;
+  std::unique_ptr<VideoCaptureBufferTracker>
+  CreateTrackerForExternalGpuMemoryBuffer(
+      const gfx::GpuMemoryBufferHandle& handle) override;
 };
 
 }  // namespace media

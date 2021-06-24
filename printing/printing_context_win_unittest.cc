@@ -7,12 +7,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <utility>
+
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/test/task_environment.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/scoped_hdc.h"
 #include "printing/backend/printing_info_win.h"
 #include "printing/backend/win_helper.h"
+#include "printing/mojom/print.mojom.h"
 #include "printing/print_settings.h"
 #include "printing/printing_context_system_dialog_win.h"
 #include "printing/printing_test.h"
@@ -61,7 +65,7 @@ class MockPrintingContextWin : public PrintingContextSystemDialogWin {
 
  protected:
   // This is a fake PrintDlgEx implementation that sets the right fields in
-  // |lppd| to trigger a bug in older revisions of PrintingContext.
+  // `lppd` to trigger a bug in older revisions of PrintingContext.
   HRESULT ShowPrintDialog(PRINTDLGEX* lppd) override {
     // The interesting bits:
     // Pretend the user hit print
@@ -73,9 +77,9 @@ class MockPrintingContextWin : public PrintingContextSystemDialogWin {
     lppd->lpPageRanges[0].nFromPage = 1;
     lppd->lpPageRanges[0].nToPage = 5;
 
-    base::string16 printer_name = PrintingContextTest::GetDefaultPrinter();
+    std::wstring printer_name = PrintingContextTest::GetDefaultPrinter();
     ScopedPrinterHandle printer;
-    if (!printer.OpenPrinter(printer_name.c_str()))
+    if (!printer.OpenPrinterWithName(printer_name.c_str()))
       return E_FAIL;
 
     const DEVMODE* dev_mode = nullptr;
@@ -145,7 +149,7 @@ TEST_F(PrintingContextTest, PrintAll) {
   if (IsTestCaseDisabled())
     return;
 
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   MockPrintingContextWin context(this);
   context.AskUserForSettings(
       123, false, false,
@@ -160,7 +164,7 @@ TEST_F(PrintingContextTest, Color) {
   if (IsTestCaseDisabled())
     return;
 
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   MockPrintingContextWin context(this);
   context.AskUserForSettings(
       123, false, false,
@@ -168,22 +172,23 @@ TEST_F(PrintingContextTest, Color) {
                      base::Unretained(this)));
   EXPECT_EQ(PrintingContext::OK, result());
   const PrintSettings& settings = context.settings();
-  EXPECT_NE(settings.color(), UNKNOWN_COLOR_MODEL);
+  EXPECT_NE(settings.color(), mojom::ColorModel::kUnknownColorModel);
 }
 
 TEST_F(PrintingContextTest, Base) {
   if (IsTestCaseDisabled())
     return;
 
-  PrintSettings settings;
-  settings.set_device_name(GetDefaultPrinter());
+  auto settings = std::make_unique<PrintSettings>();
+  settings->set_device_name(base::WideToUTF16(GetDefaultPrinter()));
   // Initialize it.
   PrintingContextWin context(this);
-  EXPECT_EQ(PrintingContext::OK, context.InitWithSettingsForTest(settings));
+  EXPECT_EQ(PrintingContext::OK,
+            context.InitWithSettingsForTest(std::move(settings)));
 
   // The print may lie to use and may not support world transformation.
   // Verify right now.
-  XFORM random_matrix = { 1, 0.1f, 0, 1.5f, 0, 1 };
+  XFORM random_matrix = {1, 0.1f, 0, 1.5f, 0, 1};
   EXPECT_TRUE(SetWorldTransform(context.context(), &random_matrix));
   EXPECT_TRUE(ModifyWorldTransform(context.context(), nullptr, MWT_IDENTITY));
 }

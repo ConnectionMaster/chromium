@@ -1,8 +1,6 @@
 #include "rar.hpp"
 #include "log.cpp"
 
-namespace third_party_unrar {
-
 static MESSAGE_TYPE MsgStream=MSG_STDOUT;
 static RAR_CHARSET RedirectCharset=RCH_DEFAULT;
 
@@ -53,13 +51,13 @@ void InitConsole()
 
 void SetConsoleMsgStream(MESSAGE_TYPE MsgStream)
 {
-  ::third_party_unrar::MsgStream=MsgStream;
+  ::MsgStream=MsgStream;
 }
 
 
 void SetConsoleRedirectCharset(RAR_CHARSET RedirectCharset)
 {
-  ::third_party_unrar::RedirectCharset=RedirectCharset;
+  ::RedirectCharset=RedirectCharset;
 }
 
 
@@ -72,7 +70,7 @@ static void cvt_wprintf(FILE *dest,const wchar *fmt,va_list arglist)
   PrintfPrepareFmt(fmt,fmtw,ASIZE(fmtw));
 #ifdef _WIN_ALL
   safebuf wchar Msg[MaxMsgSize];
-  if ((dest==stdout && StdoutRedirected) || (dest==stderr && StderrRedirected))
+  if (dest==stdout && StdoutRedirected || dest==stderr && StderrRedirected)
   {
     HANDLE hOut=GetStdHandle(dest==stdout ? STD_OUTPUT_HANDLE:STD_ERROR_HANDLE);
     vswprintf(Msg,ASIZE(Msg),fmtw,arglist);
@@ -166,7 +164,7 @@ static void GetPasswordText(wchar *Str,uint MaxLength)
     SetConsoleMode(hConIn,ConInMode);
     SetConsoleMode(hConOut,ConOutMode);
 #else
-    char StrA[MAXPASSWORD];
+    char StrA[MAXPASSWORD*4]; // "*4" for multibyte UTF-8 characters.
 #if defined(_EMX) || defined (__VMS)
     fgets(StrA,ASIZE(StrA)-1,stdin);
 #elif defined(__sun)
@@ -193,16 +191,10 @@ bool GetConsolePassword(UIPASSWORD_TYPE Type,const wchar *FileName,SecPassword *
   while (true)
   {
     if (!StdinRedirected)
-    {
       if (Type==UIPASSWORD_GLOBAL)
-      {
         eprintf(L"\n%s: ",St(MAskPsw));
-      }
       else
-      {
         eprintf(St(MAskPswFor),FileName);
-      }
-    }
 
     wchar PlainPsw[MAXPASSWORD];
     GetPasswordText(PlainPsw,ASIZE(PlainPsw));
@@ -256,6 +248,12 @@ bool getwstr(wchar *str,size_t n)
       ErrHandler.Exit(RARX_USERBREAK);
     }
     StrA[ReadSize]=0;
+
+    // We expect ANSI encoding here, but "echo text|rar ..." to pipe to RAR,
+    // such as send passwords, we get OEM encoding by default, unless we
+    // use "chcp" in console. But we avoid OEM to ANSI conversion,
+    // because we also want to handle ANSI files redirection correctly,
+    // like "rar ... < ansifile.txt".
     CharToWide(&StrA[0],str,n);
     cleandata(&StrA[0],StrA.Size()); // We can use this function to enter passwords.
   }
@@ -313,7 +311,7 @@ int Ask(const wchar *AskStr)
 
   for (int I=0;I<NumItems;I++)
   {
-    eprintf(I==0 ? (NumItems>4 ? L"\n":L" "):L", ");
+    eprintf(I==0 ? (NumItems>3 ? L"\n":L" "):L", ");
     int KeyPos=ItemKeyPos[I];
     for (int J=0;J<KeyPos;J++)
       eprintf(L"%c",Item[I][J]);
@@ -363,5 +361,3 @@ void OutComment(const wchar *Comment,size_t Size)
   }
   mprintf(L"\n");
 }
-
-}  // namespace third_party_unrar

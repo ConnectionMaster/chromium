@@ -8,17 +8,87 @@
 
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/task/sequence_manager/sequence_manager.h"
 #include "base/task/sequence_manager/sequence_manager_impl.h"
+#include "base/task/sequence_manager/task_queue.h"
 #include "base/task/sequence_manager/time_domain.h"
 #include "base/threading/platform_thread.h"
 #include "build/build_config.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_features.h"
 
 namespace content {
+
+namespace features {
+// When the "BrowserPrioritizeNativeWork" feature is enabled, the main thread
+// will process native messages between each batch of application tasks for some
+// duration after an input event. The duration is controlled by the
+// "prioritize_for_next_ms" feature param. Special case: If
+// "prioritize_for_next_ms" is TimeDelta::Max(), native messages will be
+// processed between each batch of application tasks, independently from input
+// events.
+//
+// The goal is to reduce jank by processing subsequent input events sooner after
+// a first input event is received. Checking for native messages more frequently
+// incurs some overhead, but allows the browser to handle input more
+// consistently.
+constexpr base::Feature kBrowserPrioritizeNativeWork{
+    "BrowserPrioritizeNativeWork", base::FEATURE_DISABLED_BY_DEFAULT};
+constexpr base::FeatureParam<base::TimeDelta>
+    kBrowserPrioritizeNativeWorkAfterInputForNMsParam{
+        &kBrowserPrioritizeNativeWork, "prioritize_for_next_ms",
+        base::TimeDelta::Max()};
+}  // namespace features
+
+BrowserUIThreadScheduler::UserInputActiveHandle::UserInputActiveHandle(
+    BrowserUIThreadScheduler* scheduler)
+    : scheduler_(scheduler) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  DCHECK(scheduler_);
+  DCHECK_GE(scheduler_->user_input_active_handle_count, 0);
+
+  ++scheduler_->user_input_active_handle_count;
+  if (scheduler_->user_input_active_handle_count == 1) {
+    scheduler_->DidStartUserInput();
+  }
+}
+
+BrowserUIThreadScheduler::UserInputActiveHandle::UserInputActiveHandle(
+    UserInputActiveHandle&& other) {
+  MoveFrom(&other);
+}
+
+BrowserUIThreadScheduler::UserInputActiveHandle&
+BrowserUIThreadScheduler::UserInputActiveHandle::operator=(
+    UserInputActiveHandle&& other) {
+  MoveFrom(&other);
+  return *this;
+}
+
+void BrowserUIThreadScheduler::UserInputActiveHandle::MoveFrom(
+    UserInputActiveHandle* other) {
+  scheduler_ = other->scheduler_;
+  // Prevent the other's deconstructor from decrementing
+  // |user_input_active_handle_counter|.
+  other->scheduler_ = nullptr;
+}
+
+BrowserUIThreadScheduler::UserInputActiveHandle::~UserInputActiveHandle() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!scheduler_) {
+    return;
+  }
+  DCHECK_GE(scheduler_->user_input_active_handle_count, 1);
+
+  --scheduler_->user_input_active_handle_count;
+  if (scheduler_->user_input_active_handle_count == 0) {
+    scheduler_->DidEndUserInput();
+  }
+}
 
 BrowserUIThreadScheduler::~BrowserUIThreadScheduler() = default;
 
@@ -31,98 +101,87 @@ BrowserUIThreadScheduler::CreateForTesting(
       new BrowserUIThreadScheduler(sequence_manager, time_domain));
 }
 
-void BrowserUIThreadScheduler::PostFeatureListSetup() {
-  if (base::FeatureList::IsEnabled(features::kPrioritizeBootstrapTasks)) {
-    task_queues_[QueueType::kBootstrap]->SetQueuePriority(
-        base::sequence_manager::TaskQueue::kHighestPriority);
-
-    // Navigation and preconnection tasks are also important during startup so
-    // prioritize them too.
-    task_queues_[QueueType::kNavigationAndPreconnection]->SetQueuePriority(
-        base::sequence_manager::TaskQueue::kHighPriority);
-  }
-}
-
-void BrowserUIThreadScheduler::Shutdown() {
-  task_queues_.clear();
-  owned_sequence_manager_.reset();
-  sequence_manager_ = nullptr;
-}
-
 BrowserUIThreadScheduler::BrowserUIThreadScheduler()
     : owned_sequence_manager_(
           base::sequence_manager::CreateUnboundSequenceManager(
-              base::sequence_manager::SequenceManager::Settings{
-                  .message_loop_type = base::MessageLoop::TYPE_UI})),
-      sequence_manager_(owned_sequence_manager_.get()),
-      time_domain_(sequence_manager_->GetRealTimeDomain()) {
-  InitialiseTaskQueues();
+              base::sequence_manager::SequenceManager::Settings::Builder()
+                  .SetMessagePumpType(base::MessagePumpType::UI)
+                  .Build())),
+      task_queues_(BrowserThread::UI,
+                   owned_sequence_manager_.get(),
+                   owned_sequence_manager_->GetRealTimeDomain()),
+      handle_(task_queues_.GetHandle()) {
+  CommonSequenceManagerSetup(owned_sequence_manager_.get());
+  owned_sequence_manager_->SetDefaultTaskRunner(
+      handle_->GetDefaultTaskRunner());
 
-  sequence_manager_->SetDefaultTaskRunner(GetTaskRunner(QueueType::kDefault));
-
-  sequence_manager_->BindToMessagePump(
-      base::MessageLoop::CreateMessagePumpForType(base::MessageLoop::TYPE_UI));
+  owned_sequence_manager_->BindToMessagePump(
+      base::MessagePump::Create(base::MessagePumpType::UI));
 }
 
 BrowserUIThreadScheduler::BrowserUIThreadScheduler(
     base::sequence_manager::SequenceManager* sequence_manager,
     base::sequence_manager::TimeDomain* time_domain)
-    : sequence_manager_(sequence_manager), time_domain_(time_domain) {
-  InitialiseTaskQueues();
+    : task_queues_(BrowserThread::UI, sequence_manager, time_domain),
+      handle_(task_queues_.GetHandle()) {
+  CommonSequenceManagerSetup(sequence_manager);
 }
 
-void BrowserUIThreadScheduler::InitialiseTaskQueues() {
-  DCHECK(sequence_manager_);
-  sequence_manager_->EnableCrashKeys("ui_scheduler_async_stack");
+void BrowserUIThreadScheduler::CommonSequenceManagerSetup(
+    base::sequence_manager::SequenceManager* sequence_manager) {
+  sequence_manager->EnableCrashKeys("ui_scheduler_async_stack");
+}
 
-  // To avoid locks in BrowserUIThreadScheduler::GetTaskRunner, eagerly
-  // create all the well known task queues.
-  for (int i = 0;
-       i < static_cast<int>(BrowserUIThreadTaskQueue::QueueType::kCount); i++) {
-    BrowserUIThreadTaskQueue::QueueType queue_type =
-        static_cast<BrowserUIThreadTaskQueue::QueueType>(i);
-    scoped_refptr<BrowserUIThreadTaskQueue> task_queue =
-        sequence_manager_->CreateTaskQueueWithType<BrowserUIThreadTaskQueue>(
-            base::sequence_manager::TaskQueue::Spec(
-                BrowserUIThreadTaskQueue::NameForQueueType(queue_type))
-                .SetTimeDomain(time_domain_),
-            queue_type);
-    task_queues_.emplace(queue_type, task_queue);
-    task_runners_.emplace(queue_type, task_queue->task_runner());
+BrowserUIThreadScheduler::UserInputActiveHandle
+BrowserUIThreadScheduler::OnUserInputStart() {
+  return BrowserUIThreadScheduler::UserInputActiveHandle(this);
+}
+
+void BrowserUIThreadScheduler::DidStartUserInput() {
+  if (!browser_prioritize_native_work_ ||
+      browser_prioritize_native_work_after_input_end_ms_.is_inf()) {
+    return;
   }
+  owned_sequence_manager_->PrioritizeYieldingToNative(base::TimeTicks::Max());
 }
 
-scoped_refptr<base::SingleThreadTaskRunner>
-BrowserUIThreadScheduler::GetTaskRunnerForTesting(QueueType queue_type) {
-  return GetTaskRunner(queue_type);
-}
-
-scoped_refptr<base::SingleThreadTaskRunner>
-BrowserUIThreadScheduler::GetTaskRunner(QueueType queue_type) {
-  auto it = task_runners_.find(queue_type);
-  if (it != task_runners_.end())
-    return it->second;
-  NOTREACHED();
-  return scoped_refptr<base::SingleThreadTaskRunner>();
-}
-
-void BrowserUIThreadScheduler::RunAllPendingTasksForTesting() {
-  std::vector<scoped_refptr<BrowserUIThreadTaskQueue>> fenced_queues;
-  for (const auto& queue : task_queues_) {
-    bool had_fence = queue.second->HasActiveFence();
-    queue.second->InsertFence(
-        base::sequence_manager::TaskQueue::InsertFencePosition::kNow);
-    // If there was a fence already this must be a re-entrant call to this
-    // method. The previous statement just moved the fence further back. In this
-    // case we do not remove the fence as the parent run loop needs all queues
-    // to be fenced to be able to exit the run loop (i.e. become idle)
-    if (!had_fence)
-      fenced_queues.push_back(queue.second);
+void BrowserUIThreadScheduler::DidEndUserInput() {
+  if (!browser_prioritize_native_work_ ||
+      browser_prioritize_native_work_after_input_end_ms_.is_inf()) {
+    return;
   }
-  base::RunLoop(base::RunLoop::Type::kNestableTasksAllowed).RunUntilIdle();
-  for (const auto& queue : fenced_queues) {
-    queue->RemoveFence();
+  owned_sequence_manager_->PrioritizeYieldingToNative(
+      base::TimeTicks::Now() +
+      browser_prioritize_native_work_after_input_end_ms_);
+}
+
+void BrowserUIThreadScheduler::PostFeatureListSetup() {
+  if (!base::FeatureList::IsEnabled(features::kBrowserPrioritizeNativeWork)) {
+    return;
   }
+  browser_prioritize_native_work_after_input_end_ms_ =
+      features::kBrowserPrioritizeNativeWorkAfterInputForNMsParam.Get();
+  // Rather than just enable immediately we post a task at default priority.
+  // This ensures most start up work should be finished before we start using
+  // this policy.
+  //
+  // TODO(nuskos): Switch this to use ThreadControllerObserver after start up
+  // notification once available on android.
+  handle_->GetDefaultTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](BrowserUIThreadScheduler* scheduler) {
+            scheduler->browser_prioritize_native_work_ = true;
+            if (scheduler->browser_prioritize_native_work_after_input_end_ms_
+                    .is_inf()) {
+              // We will always prioritize yielding to native if the
+              // experiment is enabled but the delay after input is infinity.
+              // So enable it now.
+              scheduler->owned_sequence_manager_->PrioritizeYieldingToNative(
+                  base::TimeTicks::Max());
+            }
+          },
+          base::Unretained(this)));
 }
 
 }  // namespace content

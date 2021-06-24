@@ -10,8 +10,8 @@
 #include <iostream>
 
 #include "base/command_line.h"
+#include "base/strings/string_number_conversions.h"
 #include "net/third_party/quiche/src/quic/core/crypto/crypto_framer.h"
-#include "net/third_party/quiche/src/quic/platform/api/quic_text_utils.h"
 
 using quic::Perspective;
 using std::cerr;
@@ -50,8 +50,9 @@ int main(int argc, char* argv[]) {
   quic::CryptoFramer framer;
   framer.set_visitor(&printer);
   framer.set_process_truncated_messages(true);
-  std::string input = quic::QuicTextUtils::HexDecode(argv[1]);
-  if (!framer.ProcessInput(input)) {
+  std::string input;
+  if (!base::HexStringToString(argv[1], &input) ||
+      !framer.ProcessInput(input)) {
     return 1;
   }
   if (framer.InputBytesRemaining() != 0) {

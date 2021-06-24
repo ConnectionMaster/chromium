@@ -21,6 +21,7 @@ extern const char kAllowed[];
 extern const char kBlocked[];
 extern const char kForceInstalled[];
 extern const char kNormalInstalled[];
+extern const char kRemoved[];
 
 extern const char kBlockedPermissions[];
 extern const char kAllowedPermissions[];
@@ -30,12 +31,17 @@ extern const char kPolicyAllowedHosts[];
 extern const size_t kMaxItemsURLPatternSet;
 
 extern const char kUpdateUrl[];
+extern const char kOverrideUpdateUrl[];
 extern const char kInstallSources[];
 extern const char kAllowedTypes[];
 
 extern const char kMinimumVersionRequired[];
 
 extern const char kUpdateUrlPrefix[];
+
+extern const char kToolbarPin[];
+extern const char kForcePinned[];
+extern const char kDefaultUnpinned[];
 
 // If the install of an extension is blocked this admin defined message is
 // appended to the error message displayed in the Chrome Webstore.

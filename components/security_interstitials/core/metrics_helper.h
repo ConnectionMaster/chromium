@@ -10,11 +10,11 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "base/time/time.h"
 #include "url/gurl.h"
 
 namespace history {
 class HistoryService;
+struct VisibleVisitCountToHostResult;
 }
 
 namespace security_interstitials {
@@ -52,6 +52,8 @@ class MetricsHelper {
     EXTENDED_REPORTING_IS_ENABLED,
     REPORT_PHISHING_ERROR,
     SHOW_WHITEPAPER,
+    SHOW_ENHANCED_PROTECTION,
+    OPEN_ENHANCED_PROTECTION,
     MAX_INTERACTION
   };
 
@@ -99,7 +101,7 @@ class MetricsHelper {
  private:
   // Used to query the HistoryService to see if the URL is in history.  It will
   // only be invoked if the constructor received |history_service|.
-  void OnGotHistoryCount(bool success, int num_visits, base::Time first_visit);
+  void OnGotHistoryCount(history::VisibleVisitCountToHostResult result);
 
   void RecordUserDecisionToMetrics(Decision decision,
                                    const std::string& histogram_name);

@@ -14,15 +14,22 @@
 #include "base/memory/ref_counted.h"
 #include "base/sequence_checker.h"
 #include "base/strings/string_piece.h"
+#include "components/speech/chunked_byte_buffer.h"
+#include "components/speech/downstream_loader.h"
+#include "components/speech/downstream_loader_client.h"
+#include "components/speech/upstream_loader.h"
+#include "components/speech/upstream_loader_client.h"
 #include "content/browser/speech/audio_encoder.h"
-#include "content/browser/speech/chunked_byte_buffer.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/speech_recognition_session_preamble.h"
 #include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
-#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "third_party/blink/public/mojom/speech/speech_recognition_error.mojom.h"
 #include "third_party/blink/public/mojom/speech/speech_recognition_grammar.mojom.h"
 #include "third_party/blink/public/mojom/speech/speech_recognition_result.mojom.h"
+
+namespace base {
+class TimeDelta;
+}
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -59,7 +66,9 @@ struct SpeechRecognitionError;
 // EndRecognition. If a recognition was started, the caller can free the
 // SpeechRecognitionEngine only after calling EndRecognition.
 
-class CONTENT_EXPORT SpeechRecognitionEngine {
+class CONTENT_EXPORT SpeechRecognitionEngine
+    : public speech::UpstreamLoaderClient,
+      public speech::DownstreamLoaderClient {
  public:
   class Delegate {
    public:
@@ -104,7 +113,7 @@ class CONTENT_EXPORT SpeechRecognitionEngine {
   SpeechRecognitionEngine(
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       const std::string& accept_language);
-  ~SpeechRecognitionEngine();
+  ~SpeechRecognitionEngine() override;
 
   // Sets the URL requests are sent to for tests.
   static void set_web_service_base_url_for_tests(
@@ -119,8 +128,8 @@ class CONTENT_EXPORT SpeechRecognitionEngine {
   int GetDesiredAudioChunkDurationMs() const;
 
  private:
-  class UpstreamLoader;
-  class DownstreamLoader;
+  friend class speech::UpstreamLoaderClient;
+  friend class speech::DownstreamLoader;
 
   Delegate* delegate_;
 
@@ -171,10 +180,12 @@ class CONTENT_EXPORT SpeechRecognitionEngine {
     DISALLOW_COPY_AND_ASSIGN(FSMEventArgs);
   };
 
-  void OnUpstreamDataComplete(bool success, int response_code);
+  // speech::UpstreamLoaderClient
+  void OnUpstreamDataComplete(bool success, int response_code) override;
 
-  void OnDownstreamDataReceived(base::StringPiece new_response_data);
-  void OnDownstreamDataComplete(bool success, int response_code);
+  // speech::DownstreamLoaderClient
+  void OnDownstreamDataReceived(base::StringPiece new_response_data) override;
+  void OnDownstreamDataComplete(bool success, int response_code) override;
 
   // Entry point for pushing any new external event into the recognizer FSM.
   void DispatchEvent(const FSMEventArgs& event_args);
@@ -203,14 +214,17 @@ class CONTENT_EXPORT SpeechRecognitionEngine {
   // upload formats, and uses the appropriate one.
   void UploadAudioChunk(const std::string& data, FrameType type, bool is_final);
 
+  // The total audio duration of the upstream request.
+  base::TimeDelta upstream_audio_duration_;
+
   Config config_;
-  std::unique_ptr<UpstreamLoader> upstream_loader_;
-  std::unique_ptr<DownstreamLoader> downstream_loader_;
+  std::unique_ptr<speech::UpstreamLoader> upstream_loader_;
+  std::unique_ptr<speech::DownstreamLoader> downstream_loader_;
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory_;
   const std::string accept_language_;
   std::unique_ptr<AudioEncoder> encoder_;
   std::unique_ptr<AudioEncoder> preamble_encoder_;
-  ChunkedByteBuffer chunked_byte_buffer_;
+  speech::ChunkedByteBuffer chunked_byte_buffer_;
   bool got_last_definitive_result_;
   bool is_dispatching_event_;
   bool use_framed_post_data_;

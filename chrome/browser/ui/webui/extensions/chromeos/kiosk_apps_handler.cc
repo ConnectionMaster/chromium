@@ -18,10 +18,10 @@
 #include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chromeos/constants/chromeos_switches.h"
+#include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/settings/cros_settings.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/crx_file/id_util.h"
 #include "components/strings/grit/components_strings.h"
@@ -102,13 +102,12 @@ bool ExtractsAppIdFromInput(const std::string& input,
 
 }  // namespace
 
-KioskAppsHandler::KioskAppsHandler(OwnerSettingsServiceChromeOS* service)
+KioskAppsHandler::KioskAppsHandler(OwnerSettingsServiceAsh* service)
     : kiosk_app_manager_(KioskAppManager::Get()),
       initialized_(false),
       is_kiosk_enabled_(false),
       is_auto_launch_enabled_(false),
-      owner_settings_service_(service),
-      weak_ptr_factory_(this) {}
+      owner_settings_service_(service) {}
 
 KioskAppsHandler::~KioskAppsHandler() {
   // TODO(tommycli): This is needed because OnJavascriptDisallowed only called
@@ -175,7 +174,7 @@ void KioskAppsHandler::OnKioskExtensionDownloadFailed(
 
 void KioskAppsHandler::OnGetConsumerKioskAutoLaunchStatus(
     const std::string& callback_id,
-    chromeos::KioskAppManager::ConsumerKioskAutoLaunchStatus status) {
+    ash::KioskAppManager::ConsumerKioskAutoLaunchStatus status) {
   initialized_ = true;
   if (KioskAppManager::IsConsumerKioskEnabled()) {
     if (!base::SysInfo::IsRunningOnChromeOS()) {
@@ -187,7 +186,7 @@ void KioskAppsHandler::OnGetConsumerKioskAutoLaunchStatus(
       is_kiosk_enabled_ =
           ProfileHelper::IsOwnerProfile(Profile::FromWebUI(web_ui()));
       is_auto_launch_enabled_ =
-          status == KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_ENABLED;
+          status == KioskAppManager::ConsumerKioskAutoLaunchStatus::kEnabled;
     }
   } else {
     // Otherwise, consumer kiosk is disabled.
@@ -200,7 +199,6 @@ void KioskAppsHandler::OnGetConsumerKioskAutoLaunchStatus(
   kiosk_params.SetBoolean("autoLaunchEnabled", is_auto_launch_enabled_);
   ResolveJavascriptCallback(base::Value(callback_id), kiosk_params);
 }
-
 
 void KioskAppsHandler::OnKioskAppsSettingsChanged() {
   FireWebUIListener("kiosk-app-settings-changed", *GetSettingsDictionary());
@@ -225,7 +223,7 @@ KioskAppsHandler::GetSettingsDictionary() {
   settings->SetBoolean("hasAutoLaunchApp",
                        !kiosk_app_manager_->GetAutoLaunchApp().empty());
 
-  KioskAppManager::Apps apps;
+  KioskAppManager::AppList apps;
   kiosk_app_manager_->GetApps(&apps);
 
   std::unique_ptr<base::ListValue> apps_list(new base::ListValue);
@@ -236,7 +234,8 @@ KioskAppsHandler::GetSettingsDictionary() {
     PopulateAppDict(app_data, app_info.get());
     apps_list->Append(std::move(app_info));
   }
-  settings->SetWithoutPathExpansion("apps", std::move(apps_list));
+  settings->SetKey("apps",
+                   base::Value::FromUniquePtrValue(std::move(apps_list)));
 
   return settings;
 }
@@ -249,8 +248,8 @@ void KioskAppsHandler::HandleInitializeKioskAppSettings(
 
   AllowJavascript();
   KioskAppManager::Get()->GetConsumerKioskAutoLaunchStatus(
-      base::Bind(&KioskAppsHandler::OnGetConsumerKioskAutoLaunchStatus,
-                 weak_ptr_factory_.GetWeakPtr(), callback_id));
+      base::BindOnce(&KioskAppsHandler::OnGetConsumerKioskAutoLaunchStatus,
+                     weak_ptr_factory_.GetWeakPtr(), callback_id));
 }
 
 void KioskAppsHandler::HandleGetKioskAppSettings(const base::ListValue* args) {

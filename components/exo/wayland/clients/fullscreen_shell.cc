@@ -7,12 +7,11 @@
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/gpu/GrBackendSurface.h"
-#include "third_party/skia/include/gpu/GrContext.h"
+#include "third_party/skia/include/gpu/GrDirectContext.h"
 #include "third_party/skia/include/gpu/gl/GrGLAssembleInterface.h"
 #include "third_party/skia/include/gpu/gl/GrGLInterface.h"
 #include "ui/gfx/geometry/rect.h"
@@ -73,7 +72,9 @@ bool FullscreenClient::Run(const InitParams& params) {
 
 void FullscreenClient::AllocateBuffers(const InitParams& params) {
   for (size_t i = 0; i < params.num_buffers; ++i) {
-    auto buffer = CreateBuffer(size_, params.drm_format, params.bo_usage);
+    auto buffer =
+        CreateBuffer(size_, params.drm_format, params.bo_usage,
+                     /*add_buffer_listener=*/!params.use_release_fences);
     if (!buffer) {
       LOG(ERROR) << "Failed to create buffer";
       return;
@@ -112,13 +113,14 @@ void FullscreenClient::Paint(const wl_callback_listener& frame_listener) {
   canvas->drawRect(rect, paint);
 
   if (gr_context_) {
-    gr_context_->flush();
+    gr_context_->flushAndSubmit();
     glFinish();
   }
 
   wl_surface_set_buffer_scale(surface_.get(), scale_);
   wl_surface_set_buffer_transform(surface_.get(), transform_);
-  wl_surface_damage(surface_.get(), 0, 0, size_.width(), size_.height());
+  wl_surface_damage(surface_.get(), 0, 0, surface_size_.width(),
+                    surface_size_.height());
   wl_surface_attach(surface_.get(), buffer->buffer.get(), 0, 0);
 
   // Set up the frame callback.
@@ -156,6 +158,19 @@ void FullscreenClient::HandleMode(void* data,
     return;
 
   size_.SetSize(width, height);
+  switch (transform_) {
+    case WL_OUTPUT_TRANSFORM_NORMAL:
+    case WL_OUTPUT_TRANSFORM_180:
+      surface_size_.SetSize(width, height);
+      break;
+    case WL_OUTPUT_TRANSFORM_90:
+    case WL_OUTPUT_TRANSFORM_270:
+      surface_size_.SetSize(height, width);
+      break;
+    default:
+      NOTREACHED();
+      break;
+  }
 
   std::unique_ptr<wl_region> opaque_region(static_cast<wl_region*>(
       wl_compositor_create_region(globals_.compositor.get())));
@@ -165,7 +180,8 @@ void FullscreenClient::HandleMode(void* data,
     return;
   }
 
-  wl_region_add(opaque_region.get(), 0, 0, size_.width(), size_.height());
+  wl_region_add(opaque_region.get(), 0, 0, surface_size_.width(),
+                surface_size_.height());
   wl_surface_set_opaque_region(surface_.get(), opaque_region.get());
   wl_surface_set_input_region(surface_.get(), opaque_region.get());
 

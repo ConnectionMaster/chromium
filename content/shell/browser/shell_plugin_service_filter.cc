@@ -16,13 +16,12 @@ ShellPluginServiceFilter::~ShellPluginServiceFilter() {}
 bool ShellPluginServiceFilter::IsPluginAvailable(
     int render_process_id,
     int render_frame_id,
-    const void* context,
     const GURL& url,
     const url::Origin& main_frame_origin,
     WebPluginInfo* plugin) {
-  return plugin->name == base::ASCIIToUTF16("Blink Test Plugin") ||
-         plugin->name == base::ASCIIToUTF16("Blink Deprecated Test Plugin") ||
-         plugin->name == base::ASCIIToUTF16("WebKit Test PlugIn");
+  return plugin->name == u"Blink Test Plugin" ||
+         plugin->name == u"Blink Deprecated Test Plugin" ||
+         plugin->name == u"WebKit Test PlugIn";
 }
 
 bool ShellPluginServiceFilter::CanLoadPlugin(int render_process_id,

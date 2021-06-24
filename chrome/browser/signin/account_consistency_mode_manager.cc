@@ -11,56 +11,71 @@
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_consistency_mode_manager_factory.h"
+#include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/signin_buildflags.h"
-#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/base/signin_pref_names.h"
 #include "google_apis/google_api_keys.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/account_manager/account_manager_util.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/account_manager/account_manager_util.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "chrome/browser/lacros/account_manager_util.h"
 #endif
 
 using signin::AccountConsistencyMethod;
 
-const base::Feature kAccountConsistencyFeature{
-    "AccountConsistency", base::FEATURE_ENABLED_BY_DEFAULT};
-const char kAccountConsistencyFeatureMethodParameter[] = "method";
-const char kAccountConsistencyFeatureMethodMirror[] = "mirror";
-const char kAccountConsistencyFeatureMethodDiceMigration[] = "dice_migration";
-const char kAccountConsistencyFeatureMethodDice[] = "dice";
-
 namespace {
 
+// By default, DICE is not enabled in builds lacking an API key. May be set to
+// true for tests.
+bool g_ignore_missing_oauth_client_for_testing = false;
+
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// Preference indicating that the Dice migration should happen at the next
-// Chrome startup.
-const char kDiceMigrationOnStartupPref[] =
-    "signin.AccountReconcilor.kDiceMigrationOnStartup2";
 // Preference indicating that the Dice migraton has happened.
 const char kDiceMigrationCompletePref[] = "signin.DiceMigrationComplete";
 
-const char kDiceMigrationStatusHistogram[] = "Signin.DiceMigrationStatus";
+const char kAllowBrowserSigninArgument[] = "allow-browser-signin";
 
-// Used for UMA histogram kDiceMigrationStatusHistogram.
-// Do not remove or re-order values.
-enum class DiceMigrationStatus {
-  kEnabled,
-  kDisabledReadyForMigration,
-  kDisabledNotReadyForMigration,
+bool IsBrowserSigninAllowedByCommandLine() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(kAllowBrowserSigninArgument)) {
+    std::string allowBrowserSignin =
+        command_line->GetSwitchValueASCII(kAllowBrowserSigninArgument);
+    return base::ToLowerASCII(allowBrowserSignin) == "true";
+  }
+  // If the commandline flag is not provided, the default is true.
+  return true;
+}
 
-  // This is the last value. New values should be inserted above.
-  kDiceMigrationStatusCount
-};
+// Returns true if Desktop Identity Consistency can be enabled for this build
+// (i.e. if OAuth client ID and client secret are configured).
+bool CanEnableDiceForBuild() {
+  if (g_ignore_missing_oauth_client_for_testing ||
+      google_apis::HasOAuthClientConfigured()) {
+    return true;
+  }
+
+  // Only log this once.
+  static bool logged_warning = []() {
+    LOG(WARNING) << "Desktop Identity Consistency cannot be enabled as no "
+                    "OAuth client ID and client secret have been configured.";
+    return true;
+  }();
+  ALLOW_UNUSED_LOCAL(logged_warning);
+
+  return false;
+}
 #endif
 
 }  // namespace
-
-bool AccountConsistencyModeManager::ignore_missing_oauth_client_for_testing_ =
-    false;
 
 // static
 AccountConsistencyModeManager* AccountConsistencyModeManager::GetForProfile(
@@ -75,13 +90,17 @@ AccountConsistencyModeManager::AccountConsistencyModeManager(Profile* profile)
   DCHECK(profile_);
   DCHECK(ShouldBuildServiceForProfile(profile));
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // Lacros doesn't support account inconsistency.
+  // TODO(crbug.com/1220066): Remove this section when Lacros stops building
+  // with DICE.
+  profile->GetPrefs()->SetBoolean(prefs::kSigninAllowed, true);
+#elif BUILDFLAG(ENABLE_DICE_SUPPORT)
   PrefService* prefs = profile->GetPrefs();
   // Propagate settings changes from the previous launch to the signin-allowed
   // pref.
-  bool signin_allowed =
-      prefs->GetBoolean(prefs::kSigninAllowedOnNextStartup) &&
-      !base::CommandLine::ForCurrentProcess()->HasSwitch("disallow-signin");
+  bool signin_allowed = IsDiceSignInAllowed() &&
+                        prefs->GetBoolean(prefs::kSigninAllowedOnNextStartup);
   prefs->SetBoolean(prefs::kSigninAllowed, signin_allowed);
 
   UMA_HISTOGRAM_BOOLEAN("Signin.SigninAllowed", signin_allowed);
@@ -90,23 +109,10 @@ AccountConsistencyModeManager::AccountConsistencyModeManager(Profile* profile)
   account_consistency_ = ComputeAccountConsistencyMethod(profile_);
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  bool is_ready_for_dice = IsReadyForDiceMigration(profile_);
-  if (is_ready_for_dice &&
-      signin::DiceMethodGreaterOrEqual(
-          account_consistency_, AccountConsistencyMethod::kDiceMigration)) {
-    if (account_consistency_ != AccountConsistencyMethod::kDice)
-      VLOG(1) << "Profile is migrating to Dice";
-    profile_->GetPrefs()->SetBoolean(kDiceMigrationCompletePref, true);
-    account_consistency_ = AccountConsistencyMethod::kDice;
-  }
-  UMA_HISTOGRAM_ENUMERATION(
-      kDiceMigrationStatusHistogram,
-      account_consistency_ == AccountConsistencyMethod::kDice
-          ? DiceMigrationStatus::kEnabled
-          : (is_ready_for_dice
-                 ? DiceMigrationStatus::kDisabledReadyForMigration
-                 : DiceMigrationStatus::kDisabledNotReadyForMigration),
-      DiceMigrationStatus::kDiceMigrationStatusCount);
+  // New profiles don't need Dice migration. Old profiles may need it if they
+  // were created before Dice.
+  if (profile_->IsNewProfile())
+    SetDiceMigrationCompleted();
 #endif
 
   DCHECK_EQ(account_consistency_, ComputeAccountConsistencyMethod(profile_));
@@ -119,12 +125,7 @@ AccountConsistencyModeManager::~AccountConsistencyModeManager() {}
 void AccountConsistencyModeManager::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  registry->RegisterBooleanPref(kDiceMigrationOnStartupPref, false);
   registry->RegisterBooleanPref(kDiceMigrationCompletePref, false);
-#endif
-#if defined(OS_CHROMEOS)
-  registry->RegisterBooleanPref(prefs::kAccountConsistencyMirrorRequired,
-                                false);
 #endif
   registry->RegisterBooleanPref(prefs::kSigninAllowedOnNextStartup, true);
 }
@@ -145,23 +146,19 @@ bool AccountConsistencyModeManager::IsDiceEnabledForProfile(Profile* profile) {
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-void AccountConsistencyModeManager::SetReadyForDiceMigration(bool is_ready) {
-  SetDiceMigrationOnStartup(profile_->GetPrefs(), is_ready);
+void AccountConsistencyModeManager::SetDiceMigrationCompleted() {
+  VLOG(1) << "Dice migration completed.";
+  profile_->GetPrefs()->SetBoolean(kDiceMigrationCompletePref, true);
 }
 
 // static
-void AccountConsistencyModeManager::SetDiceMigrationOnStartup(
-    PrefService* prefs,
-    bool migrate) {
-  VLOG(1) << "Dice migration on next startup: " << migrate;
-  prefs->SetBoolean(kDiceMigrationOnStartupPref, migrate);
+bool AccountConsistencyModeManager::IsDiceMigrationCompleted(Profile* profile) {
+  return profile->GetPrefs()->GetBoolean(kDiceMigrationCompletePref);
 }
 
 // static
-bool AccountConsistencyModeManager::IsReadyForDiceMigration(Profile* profile) {
-  return ShouldBuildServiceForProfile(profile) &&
-         (profile->IsNewProfile() ||
-          profile->GetPrefs()->GetBoolean(kDiceMigrationOnStartupPref));
+bool AccountConsistencyModeManager::IsDiceSignInAllowed() {
+  return CanEnableDiceForBuild() && IsBrowserSigninAllowedByCommandLine();
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
@@ -173,23 +170,18 @@ bool AccountConsistencyModeManager::IsMirrorEnabledForProfile(
 
 // static
 void AccountConsistencyModeManager::SetIgnoreMissingOAuthClientForTesting() {
-  ignore_missing_oauth_client_for_testing_ = true;
+  g_ignore_missing_oauth_client_for_testing = true;
 }
 
 // static
 bool AccountConsistencyModeManager::ShouldBuildServiceForProfile(
     Profile* profile) {
-  // IsGuestSession() returns true for the ProfileImpl associated with Guest
-  // profiles. This profile manually sets the kSigninAllowed prference, which
-  // causes crashes if the AccountConsistencyModeManager is instantiated. See
-  // https://crbug.com/940026
-  return profile->GetProfileType() == Profile::ProfileType::REGULAR_PROFILE &&
-         !profile->IsGuestSession() && !profile->IsSystemProfile();
+  return profile->IsRegularProfile() || profile->IsEphemeralGuestProfile();
 }
 
 AccountConsistencyMethod
 AccountConsistencyModeManager::GetAccountConsistencyMethod() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // TODO(https://crbug.com/860671): ChromeOS should use the cached value.
   // Changing the value dynamically is not supported.
   return ComputeAccountConsistencyMethod(profile_);
@@ -213,57 +205,29 @@ AccountConsistencyModeManager::ComputeAccountConsistencyMethod(
   return AccountConsistencyMethod::kMirror;
 #endif
 
-  std::string method_value = base::GetFieldTrialParamValueByFeature(
-      kAccountConsistencyFeature, kAccountConsistencyFeatureMethodParameter);
-
-#if defined(OS_CHROMEOS)
-  if (chromeos::IsAccountManagerAvailable(profile))
-    return AccountConsistencyMethod::kMirror;
-
-  return (method_value == kAccountConsistencyFeatureMethodMirror ||
-          profile->GetPrefs()->GetBoolean(
-              prefs::kAccountConsistencyMirrorRequired))
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  return ash::IsAccountManagerAvailable(profile)
              ? AccountConsistencyMethod::kMirror
              : AccountConsistencyMethod::kDisabled;
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // Mirror / Account Manager is available only for the first / Main Profile.
+  if (IsAccountManagerAvailable(profile))
+    return AccountConsistencyMethod::kMirror;
+    // else: Fall through to ENABLE_DICE_SUPPORT section below.
+    // TODO(crbug.com/1198490): Return `AccountConsistencyMethod::kDisabled` if
+    // AccountManager is not available, when DICE has been disabled on Lacros.
+#endif
+
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  AccountConsistencyMethod method = AccountConsistencyMethod::kDiceMigration;
-
-  if (method_value == kAccountConsistencyFeatureMethodDiceMigration)
-    method = AccountConsistencyMethod::kDiceMigration;
-  else if (method_value == kAccountConsistencyFeatureMethodDice)
-    method = AccountConsistencyMethod::kDice;
-
-  DCHECK(signin::DiceMethodGreaterOrEqual(
-      method, AccountConsistencyMethod::kDiceMigration));
-
-  // Legacy supervised users cannot get Dice.
-  // TODO(droger): remove this once legacy supervised users are no longer
-  // supported.
-  if (profile->IsLegacySupervised())
-    return AccountConsistencyMethod::kDisabled;
-
-  bool can_enable_dice_for_build = ignore_missing_oauth_client_for_testing_ ||
-                                   google_apis::HasOAuthClientConfigured();
-  if (!can_enable_dice_for_build) {
-    LOG(WARNING) << "Desktop Identity Consistency cannot be enabled as no "
-                    "OAuth client ID and client secret have been configured.";
-    return AccountConsistencyMethod::kDisabled;
-  }
-
   if (!profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed)) {
     VLOG(1) << "Desktop Identity Consistency disabled as sign-in to Chrome"
                "is not allowed";
     return AccountConsistencyMethod::kDisabled;
   }
 
-  if (method == AccountConsistencyMethod::kDiceMigration &&
-      profile->GetPrefs()->GetBoolean(kDiceMigrationCompletePref)) {
-    return AccountConsistencyMethod::kDice;
-  }
-
-  return method;
+  return AccountConsistencyMethod::kDice;
 #endif
 
   NOTREACHED();

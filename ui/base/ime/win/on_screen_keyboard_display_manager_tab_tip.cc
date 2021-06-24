@@ -20,7 +20,7 @@
 #include "base/win/scoped_co_mem.h"
 #include "base/win/win_util.h"
 #include "base/win/windows_version.h"
-#include "ui/base/ime/input_method_keyboard_controller_observer.h"
+#include "ui/base/ime/virtual_keyboard_controller_observer.h"
 #include "ui/base/win/hidden_window.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/gfx/geometry/dip_util.h"
@@ -102,7 +102,8 @@ class OnScreenKeyboardDetector {
 
   // Should be the last member in the class. Helps ensure that tasks spawned
   // by this class instance are canceled when it is destroyed.
-  base::WeakPtrFactory<OnScreenKeyboardDetector> keyboard_detector_factory_;
+  base::WeakPtrFactory<OnScreenKeyboardDetector> keyboard_detector_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(OnScreenKeyboardDetector);
 };
@@ -110,7 +111,7 @@ class OnScreenKeyboardDetector {
 // OnScreenKeyboardDetector member definitions.
 OnScreenKeyboardDetector::OnScreenKeyboardDetector(
     OnScreenKeyboardDisplayManagerTabTip* display_manager)
-    : display_manager_(display_manager), keyboard_detector_factory_(this) {}
+    : display_manager_(display_manager) {}
 
 OnScreenKeyboardDetector::~OnScreenKeyboardDetector() {}
 
@@ -254,13 +255,13 @@ void OnScreenKeyboardDetector::HandleKeyboardHidden() {
 OnScreenKeyboardDisplayManagerTabTip::OnScreenKeyboardDisplayManagerTabTip(
     HWND hwnd)
     : hwnd_(hwnd) {
-  DCHECK_GE(base::win::GetVersion(), base::win::VERSION_WIN8);
+  DCHECK_GE(base::win::GetVersion(), base::win::Version::WIN8);
 }
 
 OnScreenKeyboardDisplayManagerTabTip::~OnScreenKeyboardDisplayManagerTabTip() {}
 
 bool OnScreenKeyboardDisplayManagerTabTip::DisplayVirtualKeyboard() {
-  if (base::win::IsKeyboardPresentOnSlate(nullptr, ui::GetHiddenWindow()))
+  if (base::win::IsKeyboardPresentOnSlate(ui::GetHiddenWindow(), nullptr))
     return false;
 
   if (osk_path_.empty() && !GetOSKPath(&osk_path_)) {
@@ -287,17 +288,16 @@ void OnScreenKeyboardDisplayManagerTabTip::DismissVirtualKeyboard() {
 }
 
 void OnScreenKeyboardDisplayManagerTabTip::AddObserver(
-    InputMethodKeyboardControllerObserver* observer) {
+    VirtualKeyboardControllerObserver* observer) {
   observers_.AddObserver(observer);
 }
 
 void OnScreenKeyboardDisplayManagerTabTip::RemoveObserver(
-    InputMethodKeyboardControllerObserver* observer) {
+    VirtualKeyboardControllerObserver* observer) {
   observers_.RemoveObserver(observer);
 }
 
-bool OnScreenKeyboardDisplayManagerTabTip::GetOSKPath(
-    base::string16* osk_path) {
+bool OnScreenKeyboardDisplayManagerTabTip::GetOSKPath(std::wstring* osk_path) {
   DCHECK(osk_path);
 
   // We need to launch TabTip.exe from the location specified under the
@@ -316,7 +316,7 @@ bool OnScreenKeyboardDisplayManagerTabTip::GetOSKPath(
     return false;
   }
 
-  osk_path->resize(base::string16::traits_type::length(osk_path->c_str()));
+  osk_path->resize(wcslen(osk_path->c_str()));
 
   *osk_path = base::ToLowerASCII(*osk_path);
 
@@ -325,7 +325,7 @@ bool OnScreenKeyboardDisplayManagerTabTip::GetOSKPath(
   // %CommonProgramFiles% which needs to be replaced with the corrsponding
   // expanded string.
   // If the path does not begin with %CommonProgramFiles% we use it as is.
-  if (common_program_files_offset != base::string16::npos) {
+  if (common_program_files_offset != std::wstring::npos) {
     // Preserve the beginning quote in the path.
     osk_path->erase(common_program_files_offset,
                     wcslen(L"%commonprogramfiles%"));
@@ -339,7 +339,7 @@ bool OnScreenKeyboardDisplayManagerTabTip::GetOSKPath(
 
     // We then replace the %CommonProgramFiles% value with the actual common
     // files path found in the process.
-    base::string16 common_program_files_path;
+    std::wstring common_program_files_path;
     DWORD buffer_size =
         GetEnvironmentVariable(L"CommonProgramW6432", nullptr, 0);
     if (buffer_size) {
@@ -367,12 +367,12 @@ bool OnScreenKeyboardDisplayManagerTabTip::IsKeyboardVisible() {
 
 void OnScreenKeyboardDisplayManagerTabTip::NotifyKeyboardVisible(
     const gfx::Rect& occluded_rect) {
-  for (InputMethodKeyboardControllerObserver& observer : observers_)
+  for (VirtualKeyboardControllerObserver& observer : observers_)
     observer.OnKeyboardVisible(occluded_rect);
 }
 
 void OnScreenKeyboardDisplayManagerTabTip::NotifyKeyboardHidden() {
-  for (InputMethodKeyboardControllerObserver& observer : observers_)
+  for (VirtualKeyboardControllerObserver& observer : observers_)
     observer.OnKeyboardHidden();
 }
 

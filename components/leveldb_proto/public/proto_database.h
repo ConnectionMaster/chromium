@@ -8,7 +8,7 @@
 #include <map>
 #include <vector>
 
-#include "base/files/file_path.h"
+#include "base/component_export.h"
 #include "base/sequenced_task_runner.h"
 #include "base/threading/thread_checker.h"
 #include "third_party/leveldatabase/env_chromium.h"
@@ -20,10 +20,24 @@ class ProtoLevelDBWrapper;
 class Enums {
  public:
   enum InitStatus {
+    // Failed to migrate from shared to unique or unique to shared, or failed to
+    // create a non-existent database.
     kError = -1,
+    // Internal state, never returned to clients. TODO: This should be removed.
     kNotInitialized = 0,
+    // Leveldb initialization successful.
     kOK = 1,
+    // In case of unique database, this status is never returned. The legacy
+    // behavior is to delete the database on corruption and return a clean one
+    // (if possible). In case of shared database, the default behavior is to
+    // delete on corruption and not return this flag. In the future we will have
+    // a delete_on_corruption flag that clients can set to false and handle
+    // corruption with partial data. TODO(salg): Expose delete_on_corruption
+    // flag.
     kCorrupt = 2,
+    // Invalid arguments were passed (like database doesn't exist and
+    // create_if_missing was false), or the current platform does not support
+    // leveldb.
     kInvalidOperation = 3,
   };
 };
@@ -102,37 +116,25 @@ class ProtoDatabase {
   //
   // DEPRECATED: |unique_db_options| is used only when a unique DB is loaded,
   // once migration to shared DB is done, this parameter will be ignored.
-  //
-  // DEPRECATED: |client_uma_name| was used to record UMA metrics, new clients
-  // should instead add their name to
-  // SharedProtoDatabaseClientList::ProtoDbTypeToString.
   virtual void Init(Callbacks::InitStatusCallback callback) = 0;
-  virtual void Init(const std::string& client_uma_name,
-                    Callbacks::InitStatusCallback callback) = 0;
   virtual void Init(const leveldb_env::Options& unique_db_options,
                     Callbacks::InitStatusCallback callback) = 0;
 
-  // DEPRECATED. This version of Init is for compatibility, must be called only
-  // when the object is created by the ProtoDatabaseProvider::CreateUniqueDB<T>
-  // function.
-  virtual void Init(const char* client_name,
-                    const base::FilePath& database_dir,
-                    const leveldb_env::Options& options,
-                    Callbacks::InitCallback callback) = 0;
-
   // Asynchronously saves |entries_to_save| and deletes entries from
   // |keys_to_remove| from the database. |callback| will be invoked on the
-  // calling thread when complete.
+  // calling thread when complete. |entries_to_save| and |keys_to_remove| must
+  // be non-null.
   virtual void UpdateEntries(
       std::unique_ptr<typename Util::Internal<T>::KeyEntryVector>
           entries_to_save,
       std::unique_ptr<std::vector<std::string>> keys_to_remove,
       Callbacks::UpdateCallback callback) = 0;
 
-  // Asynchronously saves |entries_to_save| and deletes entries that satisfies
-  // the |delete_key_filter| from the database. |callback| will be invoked on
+  // Asynchronously deletes entries that satisfies the |delete_key_filter|
+  // from the database, and saves |entries_to_save|. |entries_to_save| will not
+  // be deleted if they match |delete_key_filter|. |callback| will be invoked on
   // the calling thread when complete. The filter will be called on
-  // ProtoDatabase's taskrunner.
+  // ProtoDatabase's taskrunner. |entries_to_save| must be non-null.
   virtual void UpdateEntriesWithRemoveFilter(
       std::unique_ptr<typename Util::Internal<T>::KeyEntryVector>
           entries_to_save,
@@ -202,7 +204,7 @@ class ProtoDatabase {
 // Return a new instance of Options, but with two additions:
 // 1) create_if_missing = true
 // 2) max_open_files = 0
-leveldb_env::Options CreateSimpleOptions();
+leveldb_env::Options COMPONENT_EXPORT(LEVELDB_PROTO) CreateSimpleOptions();
 
 }  // namespace leveldb_proto
 

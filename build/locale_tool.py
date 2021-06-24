@@ -27,6 +27,9 @@ remoting/resources/remoting_strings.grd contains an in-line comment element
 inside its <outputs> section that breaks the script. The check will fail, and
 trying to fix it too, but at least the file will not be modified.
 """
+
+from __future__ import print_function
+
 import argparse
 import json
 import os
@@ -103,9 +106,9 @@ def _CompareLocaleLists(list_a, list_expected, list_name):
     errors.append('Unexpected locales: %s' % extra_locales)
 
   if errors:
-    print 'Errors in %s definition:' % list_name
+    print('Errors in %s definition:' % list_name)
     for error in errors:
-      print '  %s\n' % error
+      print('  %s\n' % error)
     return True
 
   return False
@@ -202,22 +205,22 @@ def _ProcessFile(input_file, locales, check_func, fix_func):
   Returns:
     True at the moment.
   """
-  print '%sProcessing %s...' % (_CONSOLE_START_LINE, input_file),
+  print('%sProcessing %s...' % (_CONSOLE_START_LINE, input_file), end=' ')
   sys.stdout.flush()
   with open(input_file) as f:
     input_lines = f.readlines()
   errors = check_func(input_file, input_lines, locales)
   if errors:
-    print '\n%s%s' % (_CONSOLE_START_LINE, '\n'.join(errors))
+    print('\n%s%s' % (_CONSOLE_START_LINE, '\n'.join(errors)))
     if fix_func:
       try:
         input_lines = fix_func(input_file, input_lines, locales)
         output = ''.join(input_lines)
         with open(input_file, 'wt') as f:
           f.write(output)
-        print 'Fixed %s.' % input_file
+        print('Fixed %s.' % input_file)
       except Exception as e:  # pylint: disable=broad-except
-        print 'Skipped %s: %s' % (input_file, e)
+        print('Skipped %s: %s' % (input_file, e))
 
   return True
 
@@ -319,10 +322,9 @@ class _PrettyPrintListAsLinesTest(unittest.TestCase):
 ##########################################################################
 
 # Various list of locales that will be extracted from build/config/locales.gni
-# Do not use these directly, use ChromeLocales(), AndroidOmittedLocales() and
-# IosUnsupportedLocales() instead to access these lists.
+# Do not use these directly, use ChromeLocales(), and IosUnsupportedLocales()
+# instead to access these lists.
 _INTERNAL_CHROME_LOCALES = []
-_INTERNAL_ANDROID_OMITTED_LOCALES = []
 _INTERNAL_IOS_UNSUPPORTED_LOCALES = []
 
 
@@ -331,13 +333,6 @@ def ChromeLocales():
   if not _INTERNAL_CHROME_LOCALES:
     _ExtractAllChromeLocalesLists()
   return _INTERNAL_CHROME_LOCALES
-
-
-def AndroidOmittedLocales():
-  """Reutrn the list of locales omitted from Android APKs."""
-  if not _INTERNAL_ANDROID_OMITTED_LOCALES:
-    _ExtractAllChromeLocalesLists()
-  return _INTERNAL_ANDROID_OMITTED_LOCALES
 
 
 def IosUnsupportedLocales():
@@ -367,10 +362,12 @@ def _PrepareTinyGnWorkspace(work_dir, out_subdir_name='out'):
              'buildconfig = "//BUILDCONFIG.gn"\n')
   # Create BUILDCONFIG.gn which must set a default toolchain. Also add
   # all variables that may be used in locales.gni in a declare_args() block.
-  _WriteFile(os.path.join(work_dir, 'BUILDCONFIG.gn'),
-             r'''set_default_toolchain("toolchain")
+  _WriteFile(
+      os.path.join(work_dir, 'BUILDCONFIG.gn'),
+      r'''set_default_toolchain("toolchain")
 declare_args () {
   is_ios = false
+  is_android = true
 }
 ''')
 
@@ -387,8 +384,8 @@ declare_args () {
   # Create top-level BUILD.gn, GN requires at least one target to build so do
   # that with a fake action which will never be invoked. Also write the locales
   # to misc files in the output directory.
-  _WriteFile(os.path.join(work_dir, 'BUILD.gn'),
-             r'''import("//locales.gni")
+  _WriteFile(
+      os.path.join(work_dir, 'BUILD.gn'), r'''import("//locales.gni")
 
 action("create_foo") {   # fake action to avoid GN complaints.
   script = "//build/create_foo.py"
@@ -399,9 +396,6 @@ action("create_foo") {   # fake action to avoid GN complaints.
 # Write the locales lists to files in the output directory.
 _filename = root_build_dir + "/foo"
 write_file(_filename + ".locales", locales, "json")
-write_file(_filename + ".android_omitted_locales",
-            android_chrome_omitted_locales,
-            "json")
 write_file(_filename + ".ios_unsupported_locales",
             ios_unsupported_locales,
             "json")
@@ -445,16 +439,16 @@ def _ExtractAllChromeLocalesLists():
     # NOTE: The file suffixes used here should be kept in sync with
     # build/config/locales.gni
     gn_executable = _FindGnExecutable()
-    subprocess.check_output(
-        [gn_executable, 'gen', out_path, '--root=' + tmp_path])
+    try:
+      subprocess.check_output(
+          [gn_executable, 'gen', out_path, '--root=' + tmp_path])
+    except subprocess.CalledProcessError as e:
+      print(e.output)
+      raise e
 
     global _INTERNAL_CHROME_LOCALES
     _INTERNAL_CHROME_LOCALES = _ReadJsonList(
         os.path.join(out_path, 'foo.locales'))
-
-    global _INTERNAL_ANDROID_OMITTED_LOCALES
-    _INTERNAL_ANDROID_OMITTED_LOCALES = _ReadJsonList(
-        os.path.join(out_path, 'foo.android_omitted_locales'))
 
     global _INTERNAL_IOS_UNSUPPORTED_LOCALES
     _INTERNAL_IOS_UNSUPPORTED_LOCALES = _ReadJsonList(
@@ -481,15 +475,12 @@ def _ExtractAllChromeLocalesLists():
 
 # Misc regular expressions used to match elements and their attributes.
 _RE_OUTPUT_ELEMENT = re.compile(r'<output (.*)\s*/>')
-_RE_TRANSLATION_ELEMENT = re.compile(r'<file (.*\.xtb")\s*/>')
+_RE_TRANSLATION_ELEMENT = re.compile(r'<file( | .* )path="(.*\.xtb)".*/>')
 _RE_FILENAME_ATTRIBUTE = re.compile(r'filename="([^"]*)"')
 _RE_LANG_ATTRIBUTE = re.compile(r'lang="([^"]*)"')
 _RE_PATH_ATTRIBUTE = re.compile(r'path="([^"]*)"')
 _RE_TYPE_ANDROID_ATTRIBUTE = re.compile(r'type="android"')
 
-assert _RE_TRANSLATION_ELEMENT.match('<file path="foo/bar.xtb" />')
-assert _RE_TRANSLATION_ELEMENT.match('<file path="foo/bar.xtb"/>')
-assert _RE_TRANSLATION_ELEMENT.match('<file path="foo/bar.xml" />') is None
 
 
 def _IsGritInputFile(input_file):
@@ -497,12 +488,32 @@ def _IsGritInputFile(input_file):
   return input_file.endswith('.grd')
 
 
+def _GetXmlLangAttribute(xml_line):
+  """Extract the lang attribute value from an XML input line."""
+  m = _RE_LANG_ATTRIBUTE.search(xml_line)
+  if not m:
+    return None
+  return m.group(1)
+
+
+class _GetXmlLangAttributeTest(unittest.TestCase):
+  TEST_DATA = {
+      '': None,
+      'foo': None,
+      'lang=foo': None,
+      'lang="foo"': 'foo',
+      '<something lang="foo bar" />': 'foo bar',
+      '<file lang="fr-CA" path="path/to/strings_fr-CA.xtb" />': 'fr-CA',
+  }
+
+  def test_GetXmlLangAttribute(self):
+    for test_line, expected in self.TEST_DATA.iteritems():
+      self.assertEquals(_GetXmlLangAttribute(test_line), expected)
+
+
 def _SortGrdElementsRanges(grd_lines, element_predicate):
   """Sort all .grd elements of a given type by their lang attribute."""
-  return _SortElementsRanges(
-      grd_lines,
-      element_predicate,
-      lambda x: _RE_LANG_ATTRIBUTE.search(x).group(1))
+  return _SortElementsRanges(grd_lines, element_predicate, _GetXmlLangAttribute)
 
 
 def _CheckGrdElementRangeLang(grd_lines, start, end, wanted_locales):
@@ -526,12 +537,11 @@ def _CheckGrdElementRangeLang(grd_lines, start, end, wanted_locales):
   locales = set()
   for pos in xrange(start, end):
     line = grd_lines[pos]
-    m = _RE_LANG_ATTRIBUTE.search(line)
-    if not m:
+    lang = _GetXmlLangAttribute(line)
+    if not lang:
       errors.append('%d: Missing "lang" attribute in <output> element' % pos +
                     1)
       continue
-    lang = m.group(1)
     cr_locale = _FixChromiumLangAttribute(lang)
     if cr_locale in locales:
       errors.append(
@@ -590,10 +600,9 @@ def _CheckGrdElementRangeAndroidOutputFilename(grd_lines, start, end,
   errors = []
   for pos in xrange(start, end):
     line = grd_lines[pos]
-    m = _RE_LANG_ATTRIBUTE.search(line)
-    if not m:
+    lang = _GetXmlLangAttribute(line)
+    if not lang:
       continue
-    lang = m.group(1)
     cr_locale = _FixChromiumLangAttribute(lang)
 
     m = _RE_FILENAME_ATTRIBUTE.search(line)
@@ -650,7 +659,7 @@ def _AddMissingLocalesInGrdAndroidOutputs(grd_file, grd_lines, wanted_locales):
   for start, end in reversed(intervals):
     locales = set()
     for pos in xrange(start, end):
-      lang = _RE_LANG_ATTRIBUTE.search(grd_lines[pos]).group(1)
+      lang = _GetXmlLangAttribute(grd_lines[pos])
       locale = _FixChromiumLangAttribute(lang)
       locales.add(locale)
 
@@ -698,6 +707,29 @@ def _IsTranslationGrdOutputLine(line):
   return m is not None
 
 
+class _IsTranslationGrdOutputLineTest(unittest.TestCase):
+
+  def test_GrdTranslationOutputLines(self):
+    _VALID_INPUT_LINES = [
+        '<file path="foo/bar.xtb" />',
+        '<file path="foo/bar.xtb"/>',
+        '<file lang="fr-CA" path="translations/aw_strings_fr-CA.xtb"/>',
+        '<file lang="fr-CA" path="translations/aw_strings_fr-CA.xtb" />',
+        '  <file path="translations/aw_strings_ar.xtb" lang="ar" />',
+    ]
+    _INVALID_INPUT_LINES = ['<file path="foo/bar.xml" />']
+
+    for line in _VALID_INPUT_LINES:
+      self.assertTrue(
+          _IsTranslationGrdOutputLine(line),
+          '_IsTranslationGrdOutputLine() returned False for [%s]' % line)
+
+    for line in _INVALID_INPUT_LINES:
+      self.assertFalse(
+          _IsTranslationGrdOutputLine(line),
+          '_IsTranslationGrdOutputLine() returned True for [%s]' % line)
+
+
 def _CheckGrdTranslationElementRange(grd_lines, start, end,
                                      wanted_locales):
   """Check all <translations> sub-elements in specific input .grd lines range.
@@ -717,8 +749,8 @@ def _CheckGrdTranslationElementRange(grd_lines, start, end,
   errors = []
   for pos in xrange(start, end):
     line = grd_lines[pos]
-    m = _RE_LANG_ATTRIBUTE.search(line)
-    if not m:
+    lang = _GetXmlLangAttribute(line)
+    if not lang:
       continue
     m = _RE_PATH_ATTRIBUTE.search(line)
     if not m:
@@ -799,7 +831,7 @@ def _AddMissingLocalesInGrdTranslations(grd_file, grd_lines, wanted_locales):
   for start, end in reversed(intervals):
     locales = set()
     for pos in xrange(start, end):
-      lang = _RE_LANG_ATTRIBUTE.search(grd_lines[pos]).group(1)
+      lang = _GetXmlLangAttribute(grd_lines[pos])
       locale = _FixChromiumLangAttribute(lang)
       locales.add(locale)
 
@@ -1140,7 +1172,6 @@ def _UpdateLocalesInExpectationFile(pyl_path, wanted_locales):
     input_lines = [l.rstrip() for l in f.readlines()]
 
   updated_lines = _UpdateLocalesInExpectationLines(input_lines, tc_locales)
-  print repr(updated_lines)
   with build_utils.AtomicOutput(pyl_path) as f:
     f.writelines('\n'.join(updated_lines) + '\n')
 
@@ -1240,9 +1271,8 @@ class _ListLocalesCommand(_Command):
   description = 'List supported Chrome locales'
   long_description = r'''
 List locales of interest, by default this prints all locales supported by
-Chrome, but `--type=android_omitted` can be used to print the list of locales
-omitted from Android APKs (but not app bundles), and `--type=ios_unsupported`
-for the list of locales unsupported on iOS.
+Chrome, but `--type=ios_unsupported` can be used for the list of locales
+unsupported on iOS.
 
 These values are extracted directly from build/config/locales.gni.
 
@@ -1252,9 +1282,8 @@ instead of the default format (which is a space-separated list of locale names).
 
   # Maps type argument to a function returning the corresponding locales list.
   TYPE_MAP = {
-    'all': ChromeLocales,
-    'android_omitted': AndroidOmittedLocales,
-    'ios_unsupported': IosUnsupportedLocales,
+      'all': ChromeLocales,
+      'ios_unsupported': IosUnsupportedLocales,
   }
 
   def RegisterExtraArgs(self, group):
@@ -1271,9 +1300,9 @@ instead of the default format (which is a space-separated list of locale names).
   def Run(self):
     locale_list = self.TYPE_MAP[self.args.type]()
     if self.args.as_json:
-      print '[%s]' % ", ".join("'%s'" % loc for loc in locale_list)
+      print('[%s]' % ", ".join("'%s'" % loc for loc in locale_list))
     else:
-      print ' '.join(locale_list)
+      print(' '.join(locale_list))
 
 
 class _CheckInputFileBaseCommand(_Command):
@@ -1331,7 +1360,7 @@ class _CheckInputFileBaseCommand(_Command):
                    locales,
                    self.check_func.__func__,
                    self.fix_func.__func__ if args.fix_inplace else None)
-    print '%sDone.' % (_CONSOLE_START_LINE)
+    print('%sDone.' % (_CONSOLE_START_LINE))
 
 
 class _CheckGrdAndroidOutputsCommand(_CheckInputFileBaseCommand):

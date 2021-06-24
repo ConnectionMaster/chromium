@@ -11,65 +11,36 @@
 #include "chrome/browser/media/router/mojo/media_sink_service_status.h"
 #include "chrome/browser/media/router/providers/cast/dual_media_sink_service.h"
 #include "chrome/browser/media/router/providers/dial/dial_media_route_provider.h"
-#include "chrome/browser/media/router/providers/extension/extension_media_route_provider_proxy.h"
-
-namespace content {
-class RenderFrameHost;
-}
-
-namespace extensions {
-class Extension;
-}
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace media_router {
 class CastMediaRouteProvider;
 class DualMediaSinkService;
 class WiredDisplayMediaRouteProvider;
 
-// MediaRouter implementation that uses the MediaRouteProvider implemented in
-// the component extension.
+// MediaRouter implementation that uses the desktop MediaRouteProviders.
 class MediaRouterDesktop : public MediaRouterMojoImpl {
  public:
+  // This constructor performs a firewall check on Windows and is not suitable
+  // for use in unit tests; instead use the constructor below.
+  explicit MediaRouterDesktop(content::BrowserContext* context);
   ~MediaRouterDesktop() override;
-
-  // Max number of Mojo connection error counts on a MediaRouteProvider message
-  // pipe before MediaRouterDesktop treats it as a permanent error. Used for
-  // ExtensionMediaRouteProviderProxy only.
-  static constexpr int kMaxMediaRouteProviderErrorCount = 10;
-
-  // Sets up the MediaRouter instance owned by |context| to handle
-  // MediaRouterObserver requests from the component extension given by
-  // |extension|. Creates the MediaRouterMojoImpl instance if it does not
-  // exist.
-  // Called by the Mojo module registry.
-  // |extension|: The component extension, used for querying
-  //     suspension state.
-  // |context|: The BrowserContext which owns the extension process.
-  // |request|: The Mojo connection request used for binding.
-  static void BindToRequest(const extensions::Extension* extension,
-                            content::BrowserContext* context,
-                            mojom::MediaRouterRequest request,
-                            content::RenderFrameHost* source);
 
   // MediaRouter implementation.
   void OnUserGesture() override;
   base::Value GetState() const override;
+  void GetProviderState(
+      MediaRouteProviderId provider_id,
+      mojom::MediaRouteProvider::GetStateCallback callback) const override;
 
  protected:
   // MediaRouterMojoImpl override:
-  base::Optional<MediaRouteProviderId> GetProviderIdForPresentation(
+  absl::optional<MediaRouteProviderId> GetProviderIdForPresentation(
       const std::string& presentation_id) override;
 
  private:
-  template <bool>
-  friend class MediaRouterDesktopTestBase;
-  friend class MediaRouterFactory;
-  FRIEND_TEST_ALL_PREFIXES(MediaRouterDesktopTest, ProvideSinks);
-  FRIEND_TEST_ALL_PREFIXES(MediaRouterDesktopTest,
-                           ExtensionMrpRecoversFromConnectionError);
-  // This constructor performs a firewall check on Windows and is not suitable
-  // for use in unit tests; instead use the constructor below.
-  explicit MediaRouterDesktop(content::BrowserContext* context);
+  friend class MediaRouterDesktopTest;
 
   // Used by tests only. This constructor skips the firewall check so unit tests
   // do not have to depend on the system's firewall configuration.
@@ -77,10 +48,9 @@ class MediaRouterDesktop : public MediaRouterMojoImpl {
                      DualMediaSinkService* media_sink_service);
 
   // mojom::MediaRouter implementation.
-  void RegisterMediaRouteProvider(
-      MediaRouteProviderId provider_id,
-      mojom::MediaRouteProviderPtr media_route_provider_ptr,
-      mojom::MediaRouter::RegisterMediaRouteProviderCallback callback) override;
+  void RegisterMediaRouteProvider(MediaRouteProviderId provider_id,
+                                  mojo::PendingRemote<mojom::MediaRouteProvider>
+                                      media_route_provider_remote) override;
   void OnSinksReceived(MediaRouteProviderId provider_id,
                        const std::string& media_source,
                        const std::vector<MediaSinkInternal>& internal_sinks,
@@ -88,44 +58,16 @@ class MediaRouterDesktop : public MediaRouterMojoImpl {
   void GetMediaSinkServiceStatus(
       mojom::MediaRouter::GetMediaSinkServiceStatusCallback callback) override;
 
-  // Registers a Mojo pointer to the extension MRP with
-  // |extension_provider_proxy_| and does initializations specific to the
-  // extension MRP.
-  void RegisterExtensionMediaRouteProvider(
-      mojom::MediaRouteProviderPtr extension_provider_ptr);
-
-  // Binds |this| to a Mojo interface request, so that clients can acquire a
-  // handle to a MediaRouter instance via the Mojo service connector.
-  // Passes the extension's ID to the event page request manager.
-  void BindToMojoRequest(mojo::InterfaceRequest<mojom::MediaRouter> request,
-                         const extensions::Extension& extension);
-
-  // Provides the current list of sinks from |media_sink_service_| to the
-  // extension. Also registers with |media_sink_service_| to listen for updates.
-  void ProvideSinksToExtension();
-
-  // Notifies the Media Router that the list of MediaSinks discovered by a
-  // MediaSinkService has been updated.
-  // |provider_name|: Name of the MediaSinkService providing the sinks.
-  // |sinks|: sinks discovered by MediaSinkService.
-  void ProvideSinks(const std::string& provider_name,
-                    const std::vector<MediaSinkInternal>& sinks);
-
   // Initializes MRPs and adds them to |media_route_providers_|.
   void InitializeMediaRouteProviders();
 
   // Helper methods for InitializeMediaRouteProviders().
-  void InitializeExtensionMediaRouteProviderProxy();
   void InitializeWiredDisplayMediaRouteProvider();
   void InitializeCastMediaRouteProvider();
   void InitializeDialMediaRouteProvider();
 
-  // Invoked when a Mojo connection error is encountered with the message pipe
-  // to |extension_provider_proxy_|.
-  void OnExtensionProviderError();
-
 #if defined(OS_WIN)
-  // Ensures that mDNS discovery is enabled in the MRPM extension. This can be
+  // Ensures that mDNS discovery is enabled in the Cast MRP. This can be
   // called many times but the MRPM will only be called once per registration
   // period.
   void EnsureMdnsDiscoveryEnabled();
@@ -139,10 +81,6 @@ class MediaRouterDesktop : public MediaRouterMojoImpl {
   // Gets the per-profile Cast SDK hash token used by Cast and DIAL MRPs.
   std::string GetHashToken();
 
-  // MediaRouteProvider proxy that forwards calls to the MRPM in the component
-  // extension.
-  std::unique_ptr<ExtensionMediaRouteProviderProxy> extension_provider_proxy_;
-
   // MediaRouteProvider for casting to local screens.
   std::unique_ptr<WiredDisplayMediaRouteProvider> wired_display_provider_;
 
@@ -155,29 +93,13 @@ class MediaRouterDesktop : public MediaRouterMojoImpl {
       dial_provider_;
 
   DualMediaSinkService* media_sink_service_;
-  DualMediaSinkService::Subscription media_sink_service_subscription_;
-
-  // A flag to ensure that we record the provider version once, during the
-  // initial event page wakeup attempt.
-  bool provider_version_was_recorded_ = false;
+  base::CallbackListSubscription media_sink_service_subscription_;
 
   // A status object that keeps track of sinks discovered by media sink
   // services.
   MediaSinkServiceStatus media_sink_service_status_;
 
-#if defined(OS_WIN)
-  // A flag to ensure that mDNS discovery is only enabled on Windows when there
-  // will be appropriate context for the user to associate a firewall prompt
-  // with Media Router. |should_enable_mdns_discovery_| can only go from
-  // |false| to |true|.
-  bool should_enable_mdns_discovery_ = false;
-#endif
-
-  // The number of times a Mojo connection error is encountered with the
-  // message pipe to |extension_provider_proxy_|.
-  int extension_provider_error_count_ = 0;
-
-  base::WeakPtrFactory<MediaRouterDesktop> weak_factory_;
+  base::WeakPtrFactory<MediaRouterDesktop> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaRouterDesktop);
 };

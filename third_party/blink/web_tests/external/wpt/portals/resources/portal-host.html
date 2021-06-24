@@ -1,14 +1,11 @@
 <!DOCTYPE html>
+<script src="stash-utils.sub.js"></script>
 <body>
   <script>
-    let message = {
-      hasHost: !!window.portalHost
-    };
-    let broadcastChannel = new BroadcastChannel(new URL(location).searchParams.get('broadcastchannel'));
-    try {
-      broadcastChannel.postMessage(message);
-    } finally {
-      broadcastChannel.close();
+    let queryParams = new URLSearchParams(window.location.search);
+    let key = queryParams.get('key');
+    if (key) {
+      StashUtils.putValue(key, window.portalHost ? "passed" : "failed");
     }
   </script>
 </body>

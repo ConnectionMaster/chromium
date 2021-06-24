@@ -4,28 +4,27 @@
 
 import("//chromecast/chromecast.gni")
 
-cast_source_set("utility") {
+group("utility") {
+  public_deps = [ ":utility_base" ]
+}
+
+cast_source_set("utility_base") {
   sources = [
+    "cast_content_utility_client.cc",
     "cast_content_utility_client.h",
   ]
 
-  deps = [
+  public_deps = [
     "//base",
     "//content/public/utility",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
+    "//services/service_manager/public/mojom",
   ]
+}
 
-  if (chromecast_branding == "public") {
-    sources += [ "cast_content_utility_client_simple.cc" ]
-  }
+cast_source_set("simple_client") {
+  sources = [ "cast_content_utility_client_simple.cc" ]
 
-  if (!is_fuchsia) {
-    sources += [ "cast_content_utility_client.cc" ]
-
-    deps += [
-      "//chromecast:chromecast_buildflags",
-      "//components/services/heap_profiling",
-      "//components/services/heap_profiling/public/mojom",
-      "//services/service_manager/public/cpp",
-    ]
-  }
+  public_deps = [ ":utility_base" ]
 }

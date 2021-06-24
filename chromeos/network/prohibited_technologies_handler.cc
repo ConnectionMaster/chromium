@@ -38,8 +38,7 @@ void ProhibitedTechnologiesHandler::Init(
   // Clear the list of prohibited network technologies. As a user logout always
   // triggers a browser process restart, Init() is always invoked to reallow any
   // network technology forbidden for the previous user.
-  network_state_handler_->SetProhibitedTechnologies(
-      std::vector<std::string>(), chromeos::network_handler::ErrorCallback());
+  network_state_handler_->SetProhibitedTechnologies(std::vector<std::string>());
 
   if (LoginState::IsInitialized())
     LoggedInStateChanged();
@@ -66,7 +65,7 @@ void ProhibitedTechnologiesHandler::SetProhibitedTechnologies(
   // Build up prohibited network type list and save it for furthur use when
   // enforced
   session_prohibited_technologies_.clear();
-  for (const auto& item : *prohibited_list) {
+  for (const auto& item : prohibited_list->GetList()) {
     std::string prohibited_technology;
     bool item_is_string = item.GetAsString(&prohibited_technology);
     DCHECK(item_is_string);
@@ -80,8 +79,7 @@ void ProhibitedTechnologiesHandler::SetProhibitedTechnologies(
 
 void ProhibitedTechnologiesHandler::EnforceProhibitedTechnologies() {
   auto prohibited_technologies_ = GetCurrentlyProhibitedTechnologies();
-  network_state_handler_->SetProhibitedTechnologies(
-      prohibited_technologies_, network_handler::ErrorCallback());
+  network_state_handler_->SetProhibitedTechnologies(prohibited_technologies_);
   // Enable ethernet back as user doesn't have a place to enable it back
   // if user shuts down directly in a user session. As shill will persist
   // ProhibitedTechnologies which may include ethernet, making users can

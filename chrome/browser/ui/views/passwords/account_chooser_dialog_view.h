@@ -7,21 +7,27 @@
 
 #include "base/macros.h"
 #include "chrome/browser/ui/passwords/password_dialog_prompts.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
-#include "ui/views/controls/button/button.h"
 
 namespace content {
 class WebContents;
 }
 
-class PasswordDialogController;
+namespace password_manager {
+struct PasswordForm;
+}  // namespace password_manager
+
+class CredentialManagerDialogController;
 
 class AccountChooserDialogView : public views::BubbleDialogDelegateView,
-                                 public views::ButtonListener,
                                  public AccountChooserPrompt {
  public:
-  AccountChooserDialogView(PasswordDialogController* controller,
+  METADATA_HEADER(AccountChooserDialogView);
+  AccountChooserDialogView(CredentialManagerDialogController* controller,
                            content::WebContents* web_contents);
+  AccountChooserDialogView(const AccountChooserDialogView&) = delete;
+  AccountChooserDialogView& operator=(const AccountChooserDialogView&) = delete;
   ~AccountChooserDialogView() override;
 
   // AccountChooserPrompt:
@@ -30,32 +36,21 @@ class AccountChooserDialogView : public views::BubbleDialogDelegateView,
 
  private:
   // WidgetDelegate:
-  ui::ModalType GetModalType() const override;
-  base::string16 GetWindowTitle() const override;
+  std::u16string GetWindowTitle() const override;
   bool ShouldShowCloseButton() const override;
   void WindowClosing() override;
 
   // DialogDelegate:
   bool Accept() override;
-  int GetDialogButtons() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  views::View* CreateFootnoteView() override;
-
-  // ButtonListener:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
   // Sets up the child views.
   void InitWindow();
 
-  // A weak pointer to the controller.
-  PasswordDialogController* controller_;
-  content::WebContents* web_contents_;
-  // The "Sign in" button is shown for one credential only. The variable is
-  // cached because the framework can call GetDialogButtons() after the
-  // controller is gone.
-  bool show_signin_button_;
+  void CredentialsItemPressed(const password_manager::PasswordForm* form);
 
-  DISALLOW_COPY_AND_ASSIGN(AccountChooserDialogView);
+  // A weak pointer to the controller.
+  CredentialManagerDialogController* controller_;
+  content::WebContents* web_contents_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PASSWORDS_ACCOUNT_CHOOSER_DIALOG_VIEW_H_

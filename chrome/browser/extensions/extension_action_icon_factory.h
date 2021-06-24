@@ -5,17 +5,15 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_EXTENSION_ACTION_ICON_FACTORY_H_
 #define CHROME_BROWSER_EXTENSIONS_EXTENSION_ACTION_ICON_FACTORY_H_
 
-#include <memory>
-
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "extensions/browser/extension_icon_image.h"
 
-class ExtensionAction;
 class Profile;
 
 namespace extensions {
 class Extension;
+class ExtensionAction;
 }
 
 // Used to get an icon to be used in the UI for an extension action.
@@ -35,7 +33,7 @@ class ExtensionActionIconFactory : public extensions::IconImage::Observer {
   // Observer should outlive this.
   ExtensionActionIconFactory(Profile* profile,
                              const extensions::Extension* extension,
-                             ExtensionAction* action,
+                             extensions::ExtensionAction* action,
                              Observer* observer);
   ~ExtensionActionIconFactory() override;
 
@@ -58,13 +56,14 @@ class ExtensionActionIconFactory : public extensions::IconImage::Observer {
 
  private:
   Profile* profile_;
-  const ExtensionAction* action_;
+  const extensions::ExtensionAction* action_;
   Observer* observer_;
   const bool should_check_icons_;
   gfx::Image cached_default_icon_image_;
 
-  ScopedObserver<extensions::IconImage, extensions::IconImage::Observer>
-      icon_image_observer_;
+  base::ScopedObservation<extensions::IconImage,
+                          extensions::IconImage::Observer>
+      icon_image_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionActionIconFactory);
 };

@@ -51,9 +51,13 @@ void SharedWorkerDevToolsManager::WorkerCreated(
 }
 
 void SharedWorkerDevToolsManager::WorkerReadyForInspection(
-    SharedWorkerHost* worker_host) {
+    SharedWorkerHost* worker_host,
+    mojo::PendingRemote<blink::mojom::DevToolsAgent> agent_remote,
+    mojo::PendingReceiver<blink::mojom::DevToolsAgentHost>
+        agent_host_receiver) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  live_hosts_[worker_host]->WorkerReadyForInspection();
+  live_hosts_[worker_host]->WorkerReadyForInspection(
+      std::move(agent_remote), std::move(agent_host_receiver));
 }
 
 void SharedWorkerDevToolsManager::WorkerDestroyed(
@@ -77,10 +81,13 @@ void SharedWorkerDevToolsManager::AgentHostDestroyed(
     terminated_hosts_.erase(it);
 }
 
-SharedWorkerDevToolsManager::SharedWorkerDevToolsManager() {
+SharedWorkerDevToolsAgentHost* SharedWorkerDevToolsManager::GetDevToolsHost(
+    SharedWorkerHost* host) {
+  auto it = live_hosts_.find(host);
+  return it == live_hosts_.end() ? nullptr : it->second.get();
 }
 
-SharedWorkerDevToolsManager::~SharedWorkerDevToolsManager() {
-}
+SharedWorkerDevToolsManager::SharedWorkerDevToolsManager() = default;
+SharedWorkerDevToolsManager::~SharedWorkerDevToolsManager() = default;
 
 }  // namespace content

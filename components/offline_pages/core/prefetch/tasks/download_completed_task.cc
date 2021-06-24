@@ -6,8 +6,8 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "components/offline_pages/core/offline_store_utils.h"
 #include "components/offline_pages/core/prefetch/prefetch_dispatcher.h"
@@ -116,8 +116,7 @@ DownloadCompletedTask::DownloadCompletedTask(
     const PrefetchDownloadResult& download_result)
     : prefetch_dispatcher_(prefetch_dispatcher),
       prefetch_store_(prefetch_store),
-      download_result_(download_result),
-      weak_ptr_factory_(this) {
+      download_result_(download_result) {
   DCHECK(!download_result_.download_id.empty());
 }
 

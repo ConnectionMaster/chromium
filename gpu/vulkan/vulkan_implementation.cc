@@ -11,13 +11,18 @@
 
 namespace gpu {
 
-VulkanImplementation::VulkanImplementation() {}
+VulkanImplementation::VulkanImplementation(bool use_swiftshader,
+                                           bool allow_protected_memory)
+    : use_swiftshader_(use_swiftshader),
+      allow_protected_memory_(allow_protected_memory) {}
 
 VulkanImplementation::~VulkanImplementation() {}
 
 std::unique_ptr<VulkanDeviceQueue> CreateVulkanDeviceQueue(
     VulkanImplementation* vulkan_implementation,
-    uint32_t option) {
+    uint32_t option,
+    const GPUInfo* gpu_info,
+    uint32_t heap_memory_limit) {
   auto device_queue = std::make_unique<VulkanDeviceQueue>(
       vulkan_implementation->GetVulkanInstance()->vk_instance());
   auto callback = base::BindRepeating(
@@ -25,8 +30,14 @@ std::unique_ptr<VulkanDeviceQueue> CreateVulkanDeviceQueue(
       base::Unretained(vulkan_implementation));
   std::vector<const char*> required_extensions =
       vulkan_implementation->GetRequiredDeviceExtensions();
-  if (!device_queue->Initialize(option, std::move(required_extensions),
-                                callback)) {
+  std::vector<const char*> optional_extensions =
+      vulkan_implementation->GetOptionalDeviceExtensions();
+  if (!device_queue->Initialize(
+          option, gpu_info,
+          vulkan_implementation->GetVulkanInstance()->vulkan_info(),
+          std::move(required_extensions), std::move(optional_extensions),
+          vulkan_implementation->allow_protected_memory(), callback,
+          heap_memory_limit)) {
     device_queue->Destroy();
     return nullptr;
   }

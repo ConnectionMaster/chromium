@@ -2,10 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//media/gpu/args.gni")
+
 static_library("video_accelerator") {
   sources = [
-    "arc_video_accelerator_util.cc",
-    "arc_video_accelerator_util.h",
     "gpu_arc_video_decode_accelerator.cc",
     "gpu_arc_video_decode_accelerator.h",
     "gpu_arc_video_encode_accelerator.cc",
@@ -19,8 +19,30 @@ static_library("video_accelerator") {
   ]
 
   deps = [
-    "//components/arc/common:media",
+    ":common",
+    "//components/arc:arc_features",
+    "//components/arc/mojom:media",
+    "//gpu/ipc/common:common",
     "//media",
     "//ui/ozone",
   ]
+}
+
+source_set("common") {
+  sources = [
+    "arc_video_accelerator_util.cc",
+    "arc_video_accelerator_util.h",
+    "video_frame_plane.h",
+  ]
+
+  deps = [
+    "//media",
+    "//media/gpu:gpu",
+    "//mojo/public/cpp/system:system",
+    "//ui/gfx:memory_buffer",
+  ]
+
+  if (use_v4l2_codec || use_vaapi) {
+    deps += [ "//media/gpu/chromeos:chromeos" ]
+  }
 }

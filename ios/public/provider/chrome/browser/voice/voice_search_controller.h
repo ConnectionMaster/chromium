@@ -7,9 +7,13 @@
 
 #include "base/memory/ref_counted.h"
 
+class Browser;
 @protocol LoadQueryCommands;
-@class Tab;
 @class UIViewController;
+
+namespace web {
+class WebState;
+}
 
 // TODO(crbug.com/607204): Convert to Objective-C class.
 class VoiceSearchController
@@ -28,7 +32,8 @@ class VoiceSearchController
   // |presenting_view_controller| is the UIViewController from which to present
   // the Voice Search input UI.
   virtual void StartRecognition(UIViewController* presenting_view_controller,
-                                Tab* current_tab);
+                                web::WebState* current_web_state,
+                                Browser* browser);
 
   // Whether or not the Text To Speech user preference is enabled.
   virtual bool IsTextToSpeechEnabled();

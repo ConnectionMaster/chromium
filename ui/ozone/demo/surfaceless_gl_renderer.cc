@@ -9,9 +9,10 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/macros.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/display/types/display_snapshot.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -57,7 +58,6 @@ OverlaySurfaceCandidate MakeOverlayCandidate(int z_order,
 
   // The demo overlay instance is always ontop and not clipped. Clipped quads
   // cannot be placed in overlays.
-  overlay_candidate.is_clipped = false;
 
   return overlay_candidate;
 }
@@ -86,7 +86,8 @@ bool SurfacelessGlRenderer::BufferWrapper::Initialize(
   scoped_refptr<gfx::NativePixmap> pixmap =
       OzonePlatform::GetInstance()
           ->GetSurfaceFactoryOzone()
-          ->CreateNativePixmap(widget, size, format, gfx::BufferUsage::SCANOUT);
+          ->CreateNativePixmap(widget, nullptr, size, format,
+                               gfx::BufferUsage::SCANOUT);
   auto image = base::MakeRefCounted<gl::GLImageNativePixmap>(size, format);
   if (!image->Initialize(std::move(pixmap))) {
     LOG(ERROR) << "Failed to create GLImage";
@@ -126,8 +127,7 @@ SurfacelessGlRenderer::SurfacelessGlRenderer(
                            ->GetOverlayManager()
                            ->CreateOverlayCandidates(widget)),
       window_surface_(std::move(window_surface)),
-      gl_surface_(gl_surface),
-      weak_ptr_factory_(this) {}
+      gl_surface_(gl_surface) {}
 
 SurfacelessGlRenderer::~SurfacelessGlRenderer() {
   // Need to make current when deleting the framebuffer resources allocated in
@@ -136,8 +136,10 @@ SurfacelessGlRenderer::~SurfacelessGlRenderer() {
   for (size_t i = 0; i < base::size(buffers_); ++i)
     buffers_[i].reset();
 
-  for (size_t i = 0; i < base::size(overlay_buffers_); ++i)
-    overlay_buffers_[i].reset();
+  for (size_t i = 0; i < kMaxLayers; ++i) {
+    for (size_t j = 0; j < base::size(overlay_buffers_[i]); ++j)
+      overlay_buffers_[i][j].reset();
+  }
 }
 
 bool SurfacelessGlRenderer::Initialize() {
@@ -148,7 +150,7 @@ bool SurfacelessGlRenderer::Initialize() {
     return false;
   }
 
-  gl_surface_->Resize(size_, 1.f, gl::GLSurface::ColorSpace::UNSPECIFIED, true);
+  gl_surface_->Resize(size_, 1.f, gfx::ColorSpace(), true);
 
   if (!context_->MakeCurrent(gl_surface_.get())) {
     LOG(ERROR) << "Failed to make GL context current";
@@ -162,26 +164,35 @@ bool SurfacelessGlRenderer::Initialize() {
     primary_plane_rect_ = gfx::Rect(size_);
 
   for (size_t i = 0; i < base::size(buffers_); ++i) {
-    buffers_[i].reset(new BufferWrapper());
+    buffers_[i] = std::make_unique<BufferWrapper>();
     if (!buffers_[i]->Initialize(widget_, primary_plane_rect_.size()))
       return false;
   }
 
   if (command_line->HasSwitch("enable-overlay")) {
-    gfx::Size overlay_size = gfx::Size(size_.width() / 8, size_.height() / 8);
-    for (size_t i = 0; i < base::size(overlay_buffers_); ++i) {
-      overlay_buffers_[i].reset(new BufferWrapper());
-      overlay_buffers_[i]->Initialize(gfx::kNullAcceleratedWidget,
-                                      overlay_size);
+    int requested_overlay_cnt;
+    base::StringToInt(
+        command_line->GetSwitchValueASCII("enable-overlay").c_str(),
+        &requested_overlay_cnt);
+    overlay_cnt_ = std::max(1, std::min(kMaxLayers, requested_overlay_cnt));
 
-      glViewport(0, 0, overlay_size.width(), overlay_size.height());
-      glClearColor(i, 1.0, 0.0, 1.0);
-      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-      // Ensure that the rendering has been committed to the buffer and thus
-      // that the buffer is ready for display without additional
-      // synchronization. This allows us to avoid using fences for display
-      // synchronization of the non-overlay buffers in RenderFrame.
-      glFinish();
+    const gfx::Size overlay_size =
+        gfx::Size(size_.width() / 8, size_.height() / 8);
+    for (size_t i = 0; i < overlay_cnt_; ++i) {
+      for (size_t j = 0; j < base::size(overlay_buffers_[i]); ++j) {
+        overlay_buffers_[i][j] = std::make_unique<BufferWrapper>();
+        overlay_buffers_[i][j]->Initialize(gfx::kNullAcceleratedWidget,
+                                           overlay_size);
+
+        glViewport(0, 0, overlay_size.width(), overlay_size.height());
+        glClearColor(j, 1.0, 0.0, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        // Ensure that the rendering has been committed to the buffer and thus
+        // that the buffer is ready for display without additional
+        // synchronization. This allows us to avoid using fences for display
+        // synchronization of the non-overlay buffers in RenderFrame.
+        glFinish();
+      }
     }
   }
 
@@ -190,7 +201,7 @@ bool SurfacelessGlRenderer::Initialize() {
   use_gpu_fences_ = gl_surface_->SupportsPlaneGpuFences();
 
   // Schedule the initial render.
-  PostRenderFrameTask(gfx::SwapResult::SWAP_ACK, nullptr);
+  PostRenderFrameTask(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK));
   return true;
 }
 
@@ -199,7 +210,7 @@ void SurfacelessGlRenderer::RenderFrame() {
 
   float fraction = NextFraction();
 
-  gfx::Rect overlay_rect;
+  gfx::Rect overlay_rect[kMaxLayers];
   const gfx::RectF unity_rect = gfx::RectF(0, 0, 1, 1);
 
   OverlayCandidatesOzone::OverlaySurfaceCandidateList overlay_list;
@@ -209,17 +220,20 @@ void SurfacelessGlRenderer::RenderFrame() {
     // We know at least the primary plane can be scanned out.
     overlay_list.back().overlay_handled = true;
   }
-  if (overlay_buffers_[0]) {
-    overlay_rect = gfx::Rect(overlay_buffers_[0]->size());
+
+  for (size_t i = 0; i < overlay_cnt_; ++i) {
+    overlay_rect[i] = gfx::Rect(overlay_buffers_[i][0]->size());
 
     float steps_num = 5.0f;
     float stepped_fraction =
         std::floor((fraction + 0.5f / steps_num) * steps_num) / steps_num;
     gfx::Vector2d offset(
-        stepped_fraction * (size_.width() - overlay_rect.width()),
-        (size_.height() - overlay_rect.height()) / 2);
-    overlay_rect += offset;
-    overlay_list.push_back(MakeOverlayCandidate(1, overlay_rect, unity_rect));
+        stepped_fraction * (size_.width() - overlay_rect[i].width()),
+        ((size_.height() / (overlay_cnt_ + 1)) * (i + 1) -
+         overlay_rect[i].height() / 2));
+    overlay_rect[i] += offset;
+    overlay_list.push_back(
+        MakeOverlayCandidate(1, overlay_rect[i], unity_rect));
   }
 
   // The actual validation for a specific overlay configuration is done
@@ -256,30 +270,31 @@ void SurfacelessGlRenderer::RenderFrame() {
         gl_fence ? gl_fence->GetGpuFence() : nullptr);
   }
 
-  if (overlay_buffers_[0] && overlay_list.back().overlay_handled) {
-    gl_surface_->ScheduleOverlayPlane(1, gfx::OVERLAY_TRANSFORM_NONE,
-                                      overlay_buffers_[back_buffer_]->image(),
-                                      overlay_rect, unity_rect, false,
-                                      /* gpu_fence */ nullptr);
+  for (size_t i = 0; i < overlay_cnt_; ++i) {
+    if (overlay_list.back().overlay_handled) {
+      gl_surface_->ScheduleOverlayPlane(
+          1, gfx::OVERLAY_TRANSFORM_NONE,
+          overlay_buffers_[i][back_buffer_]->image(), overlay_rect[i],
+          unity_rect, false, /* gpu_fence */ nullptr);
+    }
   }
 
   back_buffer_ ^= 1;
   gl_surface_->SwapBuffersAsync(
-      base::Bind(&SurfacelessGlRenderer::PostRenderFrameTask,
-                 weak_ptr_factory_.GetWeakPtr()),
-      base::Bind([](const gfx::PresentationFeedback&) {}));
+      base::BindOnce(&SurfacelessGlRenderer::PostRenderFrameTask,
+                     weak_ptr_factory_.GetWeakPtr()),
+      base::DoNothing());
 }
 
 void SurfacelessGlRenderer::PostRenderFrameTask(
-    gfx::SwapResult result,
-    std::unique_ptr<gfx::GpuFence> gpu_fence) {
-  if (gpu_fence)
-    gpu_fence->Wait();
+    gfx::SwapCompletionResult result) {
+  if (!result.release_fence.is_null())
+    gfx::GpuFence(std::move(result.release_fence)).Wait();
 
-  switch (result) {
+  switch (result.swap_result) {
     case gfx::SwapResult::SWAP_NAK_RECREATE_BUFFERS:
       for (size_t i = 0; i < base::size(buffers_); ++i) {
-        buffers_[i].reset(new BufferWrapper());
+        buffers_[i] = std::make_unique<BufferWrapper>();
         if (!buffers_[i]->Initialize(widget_, primary_plane_rect_.size()))
           LOG(FATAL) << "Failed to recreate buffer";
       }
@@ -297,7 +312,6 @@ void SurfacelessGlRenderer::PostRenderFrameTask(
 
 void SurfacelessGlRenderer::OnPresentation(
     const gfx::PresentationFeedback& feedback) {
-  DCHECK(gl_surface_->SupportsPresentationCallback());
   LOG_IF(ERROR, feedback.timestamp.is_null()) << "Last frame is discarded!";
 }
 

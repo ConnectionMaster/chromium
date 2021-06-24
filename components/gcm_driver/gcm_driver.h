@@ -14,32 +14,35 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
-#include "components/gcm_driver/common/gcm_messages.h"
+#include "base/time/time.h"
+#include "components/gcm_driver/common/gcm_message.h"
 #include "components/gcm_driver/crypto/gcm_encryption_provider.h"
 #include "components/gcm_driver/gcm_client.h"
 
 namespace base {
 class FilePath;
 class SequencedTaskRunner;
-}
+}  // namespace base
 
 namespace gcm {
 
 class GCMAppHandler;
 class GCMConnectionObserver;
 enum class GCMDecryptionResult;
+enum class GCMEncryptionResult;
 struct AccountMapping;
 
 // Provides the InstanceID support via GCMDriver.
 class InstanceIDHandler {
  public:
-  using GetTokenCallback =
-      base::Callback<void(const std::string& token, GCMClient::Result result)>;
-  using ValidateTokenCallback = base::Callback<void(bool is_valid)>;
-  using DeleteTokenCallback = base::Callback<void(GCMClient::Result result)>;
+  using GetTokenCallback = base::OnceCallback<void(const std::string& token,
+                                                   GCMClient::Result result)>;
+  using ValidateTokenCallback = base::OnceCallback<void(bool is_valid)>;
+  using DeleteTokenCallback =
+      base::OnceCallback<void(GCMClient::Result result)>;
   using GetInstanceIDDataCallback =
-      base::Callback<void(const std::string& instance_id,
-                          const std::string& extra_data)>;
+      base::OnceCallback<void(const std::string& instance_id,
+                              const std::string& extra_data)>;
 
   InstanceIDHandler();
   virtual ~InstanceIDHandler();
@@ -48,34 +51,34 @@ class InstanceIDHandler {
   virtual void GetToken(const std::string& app_id,
                         const std::string& authorized_entity,
                         const std::string& scope,
-                        const std::map<std::string, std::string>& options,
-                        const GetTokenCallback& callback) = 0;
+                        base::TimeDelta time_to_live,
+                        GetTokenCallback callback) = 0;
   virtual void ValidateToken(const std::string& app_id,
                              const std::string& authorized_entity,
                              const std::string& scope,
                              const std::string& token,
-                             const ValidateTokenCallback& callback) = 0;
+                             ValidateTokenCallback callback) = 0;
   virtual void DeleteToken(const std::string& app_id,
                            const std::string& authorized_entity,
                            const std::string& scope,
-                           const DeleteTokenCallback& callback) = 0;
+                           DeleteTokenCallback callback) = 0;
   void DeleteAllTokensForApp(const std::string& app_id,
-                             const DeleteTokenCallback& callback);
+                             DeleteTokenCallback callback);
 
   // Persistence support.
   virtual void AddInstanceIDData(const std::string& app_id,
                                  const std::string& instance_id,
                                  const std::string& extra_data) = 0;
   virtual void RemoveInstanceIDData(const std::string& app_id) = 0;
-  virtual void GetInstanceIDData(
-      const std::string& app_id,
-      const GetInstanceIDDataCallback& callback) = 0;
+  virtual void GetInstanceIDData(const std::string& app_id,
+                                 GetInstanceIDDataCallback callback) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(InstanceIDHandler);
 };
 
 // Bridge between GCM users in Chrome and the platform-specific implementation.
+// Obtain instances of this object by using |GCMProfileServiceFactory|.
 class GCMDriver {
  public:
   // Max number of sender IDs that can be passed to |Register| on desktop.
@@ -83,32 +86,38 @@ class GCMDriver {
 
   using GCMAppHandlerMap = std::map<std::string, GCMAppHandler*>;
   using RegisterCallback =
-      base::Callback<void(const std::string& registration_id,
-                          GCMClient::Result result)>;
-  using ValidateRegistrationCallback = base::Callback<void(bool is_valid)>;
-  using UnregisterCallback = base::Callback<void(GCMClient::Result result)>;
-  using SendCallback = base::Callback<void(const std::string& message_id,
-                                           GCMClient::Result result)>;
+      base::OnceCallback<void(const std::string& registration_id,
+                              GCMClient::Result result)>;
+  using ValidateRegistrationCallback = base::OnceCallback<void(bool is_valid)>;
+  using UnregisterCallback = base::OnceCallback<void(GCMClient::Result result)>;
+  using SendCallback = base::OnceCallback<void(const std::string& message_id,
+                                               GCMClient::Result result)>;
   using GetEncryptionInfoCallback =
-      base::Callback<void(const std::string&, const std::string&)>;
+      base::OnceCallback<void(std::string p256dh, std::string auth_secret)>;
+  using EncryptMessageCallback =
+      base::OnceCallback<void(GCMEncryptionResult result, std::string message)>;
+  using DecryptMessageCallback =
+      base::OnceCallback<void(GCMDecryptionResult result, std::string message)>;
+
   using GetGCMStatisticsCallback =
-      base::Callback<void(const GCMClient::GCMStatistics& stats)>;
+      base::OnceCallback<void(const GCMClient::GCMStatistics& stats)>;
+  using GCMStatisticsRecordingCallback =
+      base::RepeatingCallback<void(const GCMClient::GCMStatistics& stats)>;
 
   // Enumeration to be used with GetGCMStatistics() for indicating whether the
   // existing logs should be cleared or kept.
-  enum ClearActivityLogs {
-    CLEAR_LOGS,
-    KEEP_LOGS
-  };
+  enum ClearActivityLogs { CLEAR_LOGS, KEEP_LOGS };
 
   GCMDriver(
       const base::FilePath& store_path,
       const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner);
   virtual ~GCMDriver();
 
-  // Registers |sender_ids| for an app. A registration ID will be returned by
-  // the GCM server. On Android, only a single sender ID is supported, but
-  // instead multiple simultaneous registrations are allowed.
+  // Registers |sender_ids| for an app. *Use |InstanceID| instead in new code.*
+  //
+  // A registration ID will be returned by the GCM server. On Android, only a
+  // single sender ID is supported, but instead multiple simultaneous
+  // registrations are allowed.
   // |app_id|: application ID.
   // |sender_ids|: list of IDs of the servers allowed to send messages to the
   //               application. The IDs are assigned by the Google API Console.
@@ -116,22 +125,20 @@ class GCMDriver {
   // |callback|: to be called once the asynchronous operation is done.
   void Register(const std::string& app_id,
                 const std::vector<std::string>& sender_ids,
-                const RegisterCallback& callback);
+                RegisterCallback callback);
 
   // Checks that the provided |sender_ids| and |registration_id| matches the
   // stored registration info for |app_id|.
-  virtual void ValidateRegistration(
-      const std::string& app_id,
-      const std::vector<std::string>& sender_ids,
-      const std::string& registration_id,
-      const ValidateRegistrationCallback& callback) = 0;
+  virtual void ValidateRegistration(const std::string& app_id,
+                                    const std::vector<std::string>& sender_ids,
+                                    const std::string& registration_id,
+                                    ValidateRegistrationCallback callback) = 0;
 
   // Unregisters all sender_ids for an app. Only works on non-Android. Will also
   // remove any encryption keys associated with the |app_id|.
   // |app_id|: application ID.
   // |callback|: to be called once the asynchronous operation is done.
-  void Unregister(const std::string& app_id,
-                  const UnregisterCallback& callback);
+  void Unregister(const std::string& app_id, UnregisterCallback callback);
 
   // Unregisters an (app_id, sender_id) pair from using GCM. Only works on
   // Android. Will also remove any encryption keys associated with the |app_id|.
@@ -141,7 +148,7 @@ class GCMDriver {
   // |callback|: to be called once the asynchronous operation is done.
   void UnregisterWithSenderId(const std::string& app_id,
                               const std::string& sender_id,
-                              const UnregisterCallback& callback);
+                              UnregisterCallback callback);
 
   // Sends a message to a given receiver.
   // |app_id|: application ID.
@@ -151,14 +158,39 @@ class GCMDriver {
   void Send(const std::string& app_id,
             const std::string& receiver_id,
             const OutgoingMessage& message,
-            const SendCallback& callback);
+            SendCallback callback);
 
   // Get the public encryption key and the authentication secret associated with
   // |app_id|. If none have been associated with |app_id| yet, they will be
   // created. The |callback| will be invoked when it is available. Only use with
   // GCM registrations; use InstanceID::GetEncryptionInfo for InstanceID tokens.
-  void GetEncryptionInfo(const std::string& app_id,
-                         const GetEncryptionInfoCallback& callback);
+  virtual void GetEncryptionInfo(const std::string& app_id,
+                                 GetEncryptionInfoCallback callback);
+
+  // Attempts to encrypt the |message| using draft-ietf-webpush-encryption-08
+  // scheme using keys from internal key store. Either GetEncryptionInfo or
+  // InstanceID::GetEncryptionInfo must be called once for keys to be available.
+  // |callback| will be called asynchronously when |message| has been encrypted.
+  // A dispatchable message will be used in case of success, an empty message in
+  // case of failure.
+  virtual void EncryptMessage(const std::string& app_id,
+                              const std::string& authorized_entity,
+                              const std::string& p256dh,
+                              const std::string& auth_secret,
+                              const std::string& message,
+                              EncryptMessageCallback callback);
+
+  // Attempts to decrypt the |message|using draft-ietf-webpush-encryption-08
+  // scheme using keys from internal key store. Either GetEncryptionInfo or
+  // InstanceID::GetEncryptionInfo must be called once for keys to be available.
+  // |callback| will be called asynchronously when |message| has been decrypted.
+  // A dispatchable message will be used in case of success, an empty message in
+  // case of failure.
+  // TODO(crbug/1045907): Decouple this from GCMDriver.
+  virtual void DecryptMessage(const std::string& app_id,
+                              const std::string& authorized_entity,
+                              const std::string& message,
+                              DecryptMessageCallback callback);
 
   const GCMAppHandlerMap& app_handlers() const { return app_handlers_; }
 
@@ -186,10 +218,6 @@ class GCMDriver {
   // Removes a connection state observer.
   virtual void RemoveConnectionObserver(GCMConnectionObserver* observer) = 0;
 
-  // Enables/disables GCM service.
-  virtual void Enable() = 0;
-  virtual void Disable() = 0;
-
   // For testing purpose. Always NULL on Android.
   virtual GCMClient* GetGCMClientForTesting() const = 0;
 
@@ -201,11 +229,12 @@ class GCMDriver {
 
   // Get GCM client internal states and statistics. The activity logs will be
   // cleared before returning the stats when |clear_logs| is set to CLEAR_LOGS.
-  virtual void GetGCMStatistics(const GetGCMStatisticsCallback& callback,
+  virtual void GetGCMStatistics(GetGCMStatisticsCallback callback,
                                 ClearActivityLogs clear_logs) = 0;
 
   // Enables/disables GCM activity recording, and then returns the stats.
-  virtual void SetGCMRecording(const GetGCMStatisticsCallback& callback,
+  // |callback| will be called for new activity.
+  virtual void SetGCMRecording(const GCMStatisticsRecordingCallback& callback,
                                bool recording) = 0;
 
   // sets a list of signed in accounts with OAuth2 access tokens, when GCMDriver
@@ -221,21 +250,17 @@ class GCMDriver {
 
   // Removes the account mapping information reated to |account_id| from
   // persistent store.
-  virtual void RemoveAccountMapping(const std::string& account_id) = 0;
+  virtual void RemoveAccountMapping(const CoreAccountId& account_id) = 0;
 
   // Getter and setter of last token fetch time.
   virtual base::Time GetLastTokenFetchTime() = 0;
   virtual void SetLastTokenFetchTime(const base::Time& time) = 0;
 
-  // Sets whether or not GCM should try to wake the system from suspend in order
-  // to send a heartbeat message.
-  virtual void WakeFromSuspendForHeartbeat(bool wake) = 0;
-
   // These methods must only be used by the InstanceID system.
   // The InstanceIDHandler provides an implementation for the InstanceID system.
   virtual InstanceIDHandler* GetInstanceIDHandlerInternal() = 0;
   // Allows the InstanceID system to integrate with GCM encryption storage.
-  GCMEncryptionProvider* GetEncryptionProviderInternal();
+  virtual GCMEncryptionProvider* GetEncryptionProviderInternal();
 
   // Adds or removes a custom client requested heartbeat interval. If multiple
   // components set that setting, the lowest setting will be used. If the
@@ -317,22 +342,30 @@ class GCMDriver {
   // Common code shared by Unregister and UnregisterWithSenderId.
   void UnregisterInternal(const std::string& app_id,
                           const std::string* sender_id,
-                          const UnregisterCallback& callback);
+                          UnregisterCallback callback);
 
   // Dispatches the OnMessage event to the app handler associated with |app_id|
   // if |result| indicates that it is safe to do so, or will report a decryption
   // failure for the |app_id| otherwise.
   void DispatchMessageInternal(const std::string& app_id,
                                GCMDecryptionResult result,
-                               const IncomingMessage& message);
+                               IncomingMessage message);
 
   // Called after unregistration completes in order to trigger the pending
   // registration.
   void RegisterAfterUnregister(
       const std::string& app_id,
       const std::vector<std::string>& normalized_sender_ids,
-      const UnregisterCallback& unregister_callback,
+      UnregisterCallback unregister_callback,
       GCMClient::Result result);
+
+  void OnMessageEncrypted(EncryptMessageCallback callback,
+                          GCMEncryptionResult result,
+                          std::string message);
+
+  void OnMessageDecrypted(DecryptMessageCallback callback,
+                          GCMDecryptionResult result,
+                          IncomingMessage message);
 
   // Callback map (from app_id to callback) for Register.
   std::map<std::string, RegisterCallback> register_callbacks_;
@@ -350,7 +383,7 @@ class GCMDriver {
   // App handler map (from app_id to handler pointer). The handler is not owned.
   GCMAppHandlerMap app_handlers_;
 
-  base::WeakPtrFactory<GCMDriver> weak_ptr_factory_;
+  base::WeakPtrFactory<GCMDriver> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(GCMDriver);
 };

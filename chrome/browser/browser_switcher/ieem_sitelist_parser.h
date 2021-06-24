@@ -7,7 +7,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace browser_switcher {
@@ -17,17 +17,15 @@ class ParsedXml {
  public:
   ParsedXml();
   ParsedXml(ParsedXml&&);
-  ParsedXml(std::vector<std::string>&& sitelist,
-            std::vector<std::string>&& greylist,
-            base::Optional<std::string>&& error);
+  ParsedXml(std::vector<std::string>&& rules,
+            absl::optional<std::string>&& error);
   ~ParsedXml();
 
-  std::vector<std::string> sitelist;
-  std::vector<std::string> greylist;
-  base::Optional<std::string> error;
+  ParsedXml(const ParsedXml&) = delete;
+  ParsedXml& operator=(const ParsedXml&) = delete;
 
- private:
-  DISALLOW_COPY_AND_ASSIGN(ParsedXml);
+  std::vector<std::string> rules;
+  absl::optional<std::string> error;
 };
 
 // Parses the XML contained in |xml|, and calls |callback| with the parsed XML

@@ -48,21 +48,78 @@ base::JSONReader::ValueWithError ExtractSessionDict(GURL restore_session_url) {
   NSString* fragment = net::NSURLWithGURL(restore_session_url).fragment;
   NSString* encoded_session =
       [fragment substringFromIndex:strlen(kRestoreSessionSessionHashPrefix)];
-  std::string session_json = net::UnescapeURLComponent(
-      base::SysNSStringToUTF8(encoded_session),
-      net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS);
-
+  std::string session_json =
+      net::UnescapeBinaryURLComponent(base::SysNSStringToUTF8(encoded_session));
   return base::JSONReader::ReadAndReturnValueWithError(session_json,
                                                        base::JSON_PARSE_RFC);
 }
-}
+
+}  // namespace
 
 typedef PlatformTest WKNavigationUtilTest;
+
+// Tests various inputs for GetSafeItemRange.
+TEST_F(WKNavigationUtilTest, GetSafeItemRange) {
+  // Session size does not exceed kMaxSessionSize and last_committed_item_index
+  // is in range.
+  for (int item_count = 0; item_count <= kMaxSessionSize; item_count++) {
+    for (int item_index = 0; item_index < item_count; item_index++) {
+      int offset = 0;
+      int size = 0;
+      EXPECT_EQ(item_index,
+                GetSafeItemRange(item_index, item_count, &offset, &size))
+          << "item_count: " << item_count << " item_index: " << item_index;
+      EXPECT_EQ(0, offset) << "item_count: " << item_count
+                           << " item_index: " << item_index;
+      EXPECT_EQ(item_count, size)
+          << "item_count: " << item_count << " item_index: " << item_index;
+    }
+  }
+
+  // Session size is 1 item longer than kMaxSessionSize.
+  int offset = 0;
+  int size = 0;
+  EXPECT_EQ(0, GetSafeItemRange(0, kMaxSessionSize + 1, &offset, &size));
+  EXPECT_EQ(0, offset);
+  EXPECT_EQ(kMaxSessionSize, size);
+
+  offset = 0;
+  size = 0;
+  EXPECT_EQ(
+      kMaxSessionSize - 1,
+      GetSafeItemRange(kMaxSessionSize, kMaxSessionSize + 1, &offset, &size));
+  EXPECT_EQ(1, offset);
+  EXPECT_EQ(kMaxSessionSize, size);
+
+  offset = 0;
+  size = 0;
+  EXPECT_EQ(kMaxSessionSize / 2,
+            GetSafeItemRange(kMaxSessionSize / 2, kMaxSessionSize + 1, &offset,
+                             &size));
+  EXPECT_EQ(0, offset);
+  EXPECT_EQ(kMaxSessionSize, size);
+
+  offset = 0;
+  size = 0;
+  EXPECT_EQ(kMaxSessionSize / 2,
+            GetSafeItemRange(kMaxSessionSize / 2 + 1, kMaxSessionSize + 1,
+                             &offset, &size));
+  EXPECT_EQ(1, offset);
+  EXPECT_EQ(kMaxSessionSize, size);
+
+  offset = 0;
+  size = 0;
+  EXPECT_EQ(kMaxSessionSize / 2 - 1,
+            GetSafeItemRange(kMaxSessionSize / 2 - 1, kMaxSessionSize + 1,
+                             &offset, &size));
+  EXPECT_EQ(0, offset);
+  EXPECT_EQ(kMaxSessionSize, size);
+}
 
 TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrl) {
   auto item0 = std::make_unique<NavigationItemImpl>();
   item0->SetURL(GURL("http://www.0.com"));
-  item0->SetTitle(base::ASCIIToUTF16("Test Website 0"));
+  item0->SetTitle(u"Test Website 0");
   auto item1 = std::make_unique<NavigationItemImpl>();
   item1->SetURL(GURL("http://www.1.com"));
   // Create an App-specific URL
@@ -83,23 +140,43 @@ TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrl) {
                           &restore_session_url, &first_index);
   ASSERT_EQ(0, first_index);
   ASSERT_TRUE(IsRestoreSessionUrl(restore_session_url));
+  ASSERT_TRUE(IsRestoreSessionUrl(net::NSURLWithGURL(restore_session_url)));
 
-  net::UnescapeRule::Type unescape_rules =
-      net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-      net::UnescapeRule::SPACES | net::UnescapeRule::PATH_SEPARATORS;
   std::string session_json =
-      net::UnescapeURLComponent(restore_session_url.ref(), unescape_rules);
-
-  std::string testwebui_url =
-      web::features::WebUISchemeHandlingEnabled()
-          ? "testwebui://webui/"
-          : "about:blank?for=testwebui%3A%2F%2Fwebui%2F";
+      net::UnescapeBinaryURLComponent(restore_session_url.ref());
 
   EXPECT_EQ("session={\"offset\":-2,\"titles\":[\"Test Website 0\",\"\",\"\"],"
             "\"urls\":[\"http://www.0.com/\",\"http://www.1.com/\","
-            "\"" +
-                testwebui_url + "\"]}",
+            "\"testwebui://webui/\"]}",
             session_json);
+}
+
+// In the past the math within CreateRestoreSessionUrl has had some edge case
+// crashes.  Ensure that nothing crashes.
+TEST_F(WKNavigationUtilTest, CreateRestoreSessionBruteForce) {
+  std::vector<std::unique_ptr<NavigationItem>> items;
+  int first_index = 0;
+  GURL restore_session_url;
+  for (int num_items = 70; num_items < 80; num_items++) {
+    std::vector<std::unique_ptr<NavigationItem>> items;
+    CreateTestNavigationItems(num_items, items);
+    for (int last_committed_index = 0; last_committed_index < num_items;
+         last_committed_index++) {
+      CreateRestoreSessionUrl(last_committed_index, items, &restore_session_url,
+                              &first_index);
+      // Extract session JSON from restoration URL.
+      base::JSONReader::ValueWithError value_with_error =
+          ExtractSessionDict(restore_session_url);
+
+      base::Value* urls_value = value_with_error.value->FindKey("urls");
+      if (num_items > kMaxSessionSize) {
+        ASSERT_EQ(kMaxSessionSize,
+                  static_cast<int>(urls_value->GetList().size()));
+      } else {
+        ASSERT_EQ(num_items, static_cast<int>(urls_value->GetList().size()));
+      }
+    }
+  }
 }
 
 // Verifies that large session can be stored in NSURL. GURL is converted to
@@ -115,11 +192,11 @@ TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrlForLargeSession) {
       /*last_committed_item_index=*/0, items, &restore_session_url,
       &first_index);
   ASSERT_TRUE(IsRestoreSessionUrl(restore_session_url));
+  ASSERT_TRUE(IsRestoreSessionUrl(net::NSURLWithGURL(restore_session_url)));
 
   // Extract session JSON from restoration URL.
   base::JSONReader::ValueWithError value_with_error =
       ExtractSessionDict(restore_session_url);
-  ASSERT_EQ(base::JSONReader::JSON_NO_ERROR, value_with_error.error_code);
   ASSERT_TRUE(value_with_error.value.has_value());
 
   // Verify that all titles and URLs are present.
@@ -149,11 +226,11 @@ TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrlForExtraLargeForwardList) {
       &first_index);
   ASSERT_EQ(0, first_index);
   ASSERT_TRUE(IsRestoreSessionUrl(restore_session_url));
+  ASSERT_TRUE(IsRestoreSessionUrl(net::NSURLWithGURL(restore_session_url)));
 
   // Extract session JSON from restoration URL.
   base::JSONReader::ValueWithError value_with_error =
       ExtractSessionDict(restore_session_url);
-  ASSERT_EQ(base::JSONReader::JSON_NO_ERROR, value_with_error.error_code);
   ASSERT_TRUE(value_with_error.value.has_value());
 
   // Verify that first kMaxSessionSize titles and URLs are present.
@@ -169,8 +246,8 @@ TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrlForExtraLargeForwardList) {
   ASSERT_TRUE(urls_value);
   ASSERT_TRUE(urls_value->is_list());
   ASSERT_EQ(static_cast<size_t>(kMaxSessionSize), urls_value->GetList().size());
-  ASSERT_EQ("http:%2F%2Fwww.0.com%2F", urls_value->GetList()[0].GetString());
-  ASSERT_EQ("http:%2F%2Fwww.74.com%2F",
+  ASSERT_EQ("http://www.0.com/", urls_value->GetList()[0].GetString());
+  ASSERT_EQ("http://www.74.com/",
             urls_value->GetList()[kMaxSessionSize - 1].GetString());
 
   // Verify the offset is correct.
@@ -193,11 +270,11 @@ TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrlForExtraLargeBackList) {
       &first_index);
   ASSERT_EQ(150, first_index);
   ASSERT_TRUE(IsRestoreSessionUrl(restore_session_url));
+  ASSERT_TRUE(IsRestoreSessionUrl(net::NSURLWithGURL(restore_session_url)));
 
   // Extract session JSON from restoration URL.
   base::JSONReader::ValueWithError value_with_error =
       ExtractSessionDict(restore_session_url);
-  ASSERT_EQ(base::JSONReader::JSON_NO_ERROR, value_with_error.error_code);
   ASSERT_TRUE(value_with_error.value.has_value());
 
   // Verify that last kMaxSessionSize titles and URLs are present.
@@ -214,8 +291,8 @@ TEST_F(WKNavigationUtilTest, CreateRestoreSessionUrlForExtraLargeBackList) {
   ASSERT_TRUE(urls_value);
   ASSERT_TRUE(urls_value->is_list());
   ASSERT_EQ(static_cast<size_t>(kMaxSessionSize), urls_value->GetList().size());
-  ASSERT_EQ("http:%2F%2Fwww.150.com%2F", urls_value->GetList()[0].GetString());
-  ASSERT_EQ("http:%2F%2Fwww.224.com%2F",
+  ASSERT_EQ("http://www.150.com/", urls_value->GetList()[0].GetString());
+  ASSERT_EQ("http://www.224.com/",
             urls_value->GetList()[kMaxSessionSize - 1].GetString());
 
   // Verify the offset is correct.
@@ -238,11 +315,11 @@ TEST_F(WKNavigationUtilTest,
       &restore_session_url, &first_index);
   ASSERT_EQ(38, first_index);
   ASSERT_TRUE(IsRestoreSessionUrl(restore_session_url));
+  ASSERT_TRUE(IsRestoreSessionUrl(net::NSURLWithGURL(restore_session_url)));
 
   // Extract session JSON from restoration URL.
   base::JSONReader::ValueWithError value_with_error =
       ExtractSessionDict(restore_session_url);
-  ASSERT_EQ(base::JSONReader::JSON_NO_ERROR, value_with_error.error_code);
   ASSERT_TRUE(value_with_error.value.has_value());
 
   // Verify that last kMaxSessionSize titles and URLs are present.
@@ -259,8 +336,8 @@ TEST_F(WKNavigationUtilTest,
   ASSERT_TRUE(urls_value);
   ASSERT_TRUE(urls_value->is_list());
   ASSERT_EQ(static_cast<size_t>(kMaxSessionSize), urls_value->GetList().size());
-  ASSERT_EQ("http:%2F%2Fwww.38.com%2F", urls_value->GetList()[0].GetString());
-  ASSERT_EQ("http:%2F%2Fwww.112.com%2F",
+  ASSERT_EQ("http://www.38.com/", urls_value->GetList()[0].GetString());
+  ASSERT_EQ("http://www.112.com/",
             urls_value->GetList()[kMaxSessionSize - 1].GetString());
 
   // Verify the offset is correct.
@@ -270,8 +347,11 @@ TEST_F(WKNavigationUtilTest,
 
 TEST_F(WKNavigationUtilTest, IsNotRestoreSessionUrl) {
   EXPECT_FALSE(IsRestoreSessionUrl(GURL()));
+  EXPECT_FALSE(IsRestoreSessionUrl([NSURL URLWithString:@""]));
   EXPECT_FALSE(IsRestoreSessionUrl(GURL("file://somefile")));
+  EXPECT_FALSE(IsRestoreSessionUrl([NSURL URLWithString:@"file://somefile"]));
   EXPECT_FALSE(IsRestoreSessionUrl(GURL("http://www.1.com")));
+  EXPECT_FALSE(IsRestoreSessionUrl([NSURL URLWithString:@"http://www.1.com"]));
 }
 
 // Tests that CreateRedirectUrl and ExtractTargetURL used back-to-back is an
@@ -287,23 +367,41 @@ TEST_F(WKNavigationUtilTest, CreateAndExtractTargetURL) {
 }
 
 TEST_F(WKNavigationUtilTest, IsPlaceholderUrl) {
+  if (base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage))
+    return;
+
   // Valid placeholder URLs.
   EXPECT_TRUE(IsPlaceholderUrl(GURL("about:blank?for=")));
   EXPECT_TRUE(IsPlaceholderUrl(GURL("about:blank?for=chrome%3A%2F%2Fnewtab")));
+  EXPECT_TRUE(IsPlaceholderUrl([NSURL URLWithString:@"about:blank?for="]));
+  EXPECT_TRUE(IsPlaceholderUrl(GURL("about:blank?for=chrome%3A%2F%2Fnewtab")));
+  EXPECT_TRUE(IsPlaceholderUrl(
+      [NSURL URLWithString:@"about:blank?for=chrome%3A%2F%2Fnewtab"]));
 
   // Not an about:blank URL.
   EXPECT_FALSE(IsPlaceholderUrl(GURL::EmptyGURL()));
+  EXPECT_FALSE(IsPlaceholderUrl([NSURL URLWithString:@""]));
+
   // Missing ?for= query parameter.
   EXPECT_FALSE(IsPlaceholderUrl(GURL("about:blank")));
+  EXPECT_FALSE(IsPlaceholderUrl([NSURL URLWithString:@"about:blank"]));
   EXPECT_FALSE(IsPlaceholderUrl(GURL("about:blank?chrome:%3A%2F%2Fnewtab")));
+  EXPECT_FALSE(IsPlaceholderUrl(
+      [NSURL URLWithString:@"about:blank?chrome:%3A%2F%2Fnewtab"]));
 }
 
 TEST_F(WKNavigationUtilTest, EncodReturnsEmptyOnInvalidUrls) {
+  if (base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage))
+    return;
+
   EXPECT_EQ(GURL::EmptyGURL(), CreatePlaceholderUrlForUrl(GURL::EmptyGURL()));
   EXPECT_EQ(GURL::EmptyGURL(), CreatePlaceholderUrlForUrl(GURL("notaurl")));
 }
 
 TEST_F(WKNavigationUtilTest, EncodeDecodeValidUrls) {
+  if (base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage))
+    return;
+
   {
     GURL original("chrome://chrome-urls");
     GURL encoded("about:blank?for=chrome%3A%2F%2Fchrome-urls");
@@ -320,6 +418,9 @@ TEST_F(WKNavigationUtilTest, EncodeDecodeValidUrls) {
 
 // Tests that invalid URLs will be rejected in decoding.
 TEST_F(WKNavigationUtilTest, DecodeRejectInvalidUrls) {
+  if (base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage))
+    return;
+
   GURL encoded("about:blank?for=thisisnotanurl");
   EXPECT_EQ(GURL::EmptyGURL(), ExtractUrlFromPlaceholderUrl(encoded));
 }
@@ -330,15 +431,21 @@ TEST_F(WKNavigationUtilTest, URLNeedsUserAgentType) {
   // Not app specific or non-placeholder about urls.
   GURL non_user_agent_urls("http://newtab");
   GURL::Replacements scheme_replacements;
-  scheme_replacements.SetSchemeStr(kTestNativeContentScheme);
+  scheme_replacements.SetSchemeStr(kTestAppSpecificScheme);
   EXPECT_FALSE(URLNeedsUserAgentType(
       non_user_agent_urls.ReplaceComponents(scheme_replacements)));
   scheme_replacements.SetSchemeStr(url::kAboutScheme);
   EXPECT_FALSE(URLNeedsUserAgentType(
       non_user_agent_urls.ReplaceComponents(scheme_replacements)));
 
-  // Not a placeholder or normal URL.
-  EXPECT_TRUE(URLNeedsUserAgentType(GURL("about:blank?for=")));
+  if (base::FeatureList::IsEnabled(features::kUseJSForErrorPage)) {
+    // about:blank pages.
+    EXPECT_FALSE(URLNeedsUserAgentType(GURL("about:blank")));
+  } else {
+    // Not a placeholder.
+    EXPECT_TRUE(URLNeedsUserAgentType(GURL("about:blank?for=")));
+  }
+  // Normal URL.
   EXPECT_TRUE(URLNeedsUserAgentType(GURL("http://www.0.com")));
 
   // file:// URL.
@@ -348,7 +455,9 @@ TEST_F(WKNavigationUtilTest, URLNeedsUserAgentType) {
   GURL app_specific(
       url::SchemeHostPort(kTestAppSpecificScheme, "foo", 0).Serialize());
   EXPECT_FALSE(URLNeedsUserAgentType(app_specific));
-  EXPECT_FALSE(URLNeedsUserAgentType(CreatePlaceholderUrlForUrl(app_specific)));
+  if (!base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage))
+    EXPECT_FALSE(
+        URLNeedsUserAgentType(CreatePlaceholderUrlForUrl(app_specific)));
 }
 
 }  // namespace wk_navigation_util

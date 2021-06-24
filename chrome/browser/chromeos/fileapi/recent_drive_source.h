@@ -6,26 +6,19 @@
 #define CHROME_BROWSER_CHROMEOS_FILEAPI_RECENT_DRIVE_SOURCE_H_
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "base/files/file.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "chrome/browser/chromeos/fileapi/recent_source.h"
 #include "chromeos/components/drivefs/mojom/drivefs.mojom.h"
-#include "components/drive/chromeos/file_system_interface.h"
 #include "components/drive/file_errors.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class Profile;
-
-namespace storage {
-
-class FileSystemURL;
-
-}  // namespace storage
 
 namespace chromeos {
 
@@ -47,31 +40,24 @@ class RecentDriveSource : public RecentSource {
  private:
   static const char kLoadHistogramName[];
 
-  void OnSearchMetadata(
-      drive::FileError error,
-      std::unique_ptr<drive::MetadataSearchResultVector> results);
-  void OnGetMetadata(const storage::FileSystemURL& url,
-                     base::File::Error result,
-                     const base::File::Info& info);
   void OnComplete();
 
   void GotSearchResults(
       drive::FileError error,
-      base::Optional<std::vector<drivefs::mojom::QueryItemPtr>> results);
+      absl::optional<std::vector<drivefs::mojom::QueryItemPtr>> results);
 
   Profile* const profile_;
 
   // Set at the beginning of GetRecentFiles().
-  base::Optional<Params> params_;
+  absl::optional<Params> params_;
 
   base::TimeTicks build_start_time_;
 
-  int num_inflight_stats_ = 0;
   std::vector<RecentFile> files_;
 
-  drivefs::mojom::SearchQueryPtr search_query_;
+  mojo::Remote<drivefs::mojom::SearchQuery> search_query_;
 
-  base::WeakPtrFactory<RecentDriveSource> weak_ptr_factory_;
+  base::WeakPtrFactory<RecentDriveSource> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RecentDriveSource);
 };

@@ -7,7 +7,9 @@
 #include <urlmon.h>
 #include <wrl/client.h>
 
+#include "base/logging.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "net/http/http_auth_filter.h"
@@ -26,7 +28,7 @@
 
 namespace net {
 
-class URLSecurityManagerWin : public URLSecurityManagerWhitelist {
+class URLSecurityManagerWin : public URLSecurityManagerAllowlist {
  public:
   URLSecurityManagerWin();
   ~URLSecurityManagerWin() override;
@@ -47,12 +49,12 @@ URLSecurityManagerWin::~URLSecurityManagerWin() {}
 
 bool URLSecurityManagerWin::CanUseDefaultCredentials(
     const GURL& auth_origin) const {
-  if (HasDefaultWhitelist())
-    return URLSecurityManagerWhitelist::CanUseDefaultCredentials(auth_origin);
+  if (HasDefaultAllowlist())
+    return URLSecurityManagerAllowlist::CanUseDefaultCredentials(auth_origin);
   if (!const_cast<URLSecurityManagerWin*>(this)->EnsureSystemSecurityManager())
     return false;
 
-  base::string16 url16 = base::ASCIIToUTF16(auth_origin.spec());
+  std::u16string url16 = base::ASCIIToUTF16(auth_origin.spec());
   DWORD policy = 0;
   HRESULT hr;
   hr = security_manager_->ProcessUrlAction(

@@ -4,6 +4,7 @@
 
 #include "components/offline_pages/core/background/request_queue_store.h"
 
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -300,7 +301,7 @@ AddRequestResult InsertSync(sql::Database* db, const SavePageRequest& request) {
   statement.BindString(10, request.original_url().spec());
   statement.BindString(11, request.request_origin());
   statement.BindInt64(12, static_cast<int64_t>(request.fail_state()));
-  statement.BindInt(
+  statement.BindInt64(
       13, static_cast<int64_t>(request.auto_fetch_notification_state()));
 
   if (!statement.Run())
@@ -371,10 +372,7 @@ UpdateRequestsResult StoreErrorForAllIds(const std::vector<int64_t>& item_ids) {
 }
 
 bool InitDatabaseSync(sql::Database* db, const base::FilePath& path) {
-  db->set_page_size(4096);
-  db->set_cache_size(500);
   db->set_histogram_tag("BackgroundRequestQueue");
-  db->set_exclusive_locking();
 
   if (path.empty()) {
     if (!db->OpenInMemory())
@@ -391,7 +389,7 @@ bool InitDatabaseSync(sql::Database* db, const base::FilePath& path) {
   return CreateSchemaSync(db);
 }
 
-base::Optional<std::vector<std::unique_ptr<SavePageRequest>>>
+absl::optional<std::vector<std::unique_ptr<SavePageRequest>>>
 GetAllRequestsSync(sql::Database* db) {
   static const char kSql[] =
       "SELECT " REQUEST_QUEUE_FIELDS " FROM " REQUEST_QUEUE_TABLE_NAME;
@@ -400,14 +398,14 @@ GetAllRequestsSync(sql::Database* db) {
   while (statement.Step())
     requests.push_back(MakeSavePageRequest(statement));
   if (!statement.Succeeded())
-    return base::nullopt;
+    return absl::nullopt;
   return requests;
 }
 
 // Calls |callback| with the result of |requests|.
 void InvokeGetRequestsCallback(
     RequestQueueStore::GetRequestsCallback callback,
-    base::Optional<std::vector<std::unique_ptr<SavePageRequest>>> requests) {
+    absl::optional<std::vector<std::unique_ptr<SavePageRequest>>> requests) {
   if (requests) {
     std::move(callback).Run(true, std::move(requests).value());
   } else {
@@ -454,7 +452,7 @@ AddRequestResult AddRequestSync(sql::Database* db,
   // check preconditions.
   if (options.maximum_in_flight_requests_for_namespace > 0 ||
       options.disallow_duplicate_requests) {
-    base::Optional<std::vector<std::unique_ptr<SavePageRequest>>> requests =
+    absl::optional<std::vector<std::unique_ptr<SavePageRequest>>> requests =
         GetAllRequestsSync(db);
     if (!requests)
       return AddRequestResult::STORE_FAILURE;
@@ -542,7 +540,7 @@ bool ResetSync(sql::Database* db, const base::FilePath& db_file_path) {
     success = db->Raze();
     db->Close();
   }
-  return base::DeleteFile(db_file_path, true /* recursive */) && success;
+  return base::DeletePathRecursively(db_file_path) && success;
 }
 
 bool SetAutoFetchNotificationStateSync(
@@ -561,7 +559,7 @@ UpdateRequestsResult RemoveRequestsIfSync(
     sql::Database* db,
     const base::RepeatingCallback<bool(const SavePageRequest&)>&
         remove_predicate) {
-  base::Optional<std::vector<std::unique_ptr<SavePageRequest>>> requests =
+  absl::optional<std::vector<std::unique_ptr<SavePageRequest>>> requests =
       GetAllRequestsSync(db);
   if (!requests)
     return UpdateRequestsResult(StoreState::LOADED);
@@ -579,8 +577,7 @@ UpdateRequestsResult RemoveRequestsIfSync(
 RequestQueueStore::RequestQueueStore(
     scoped_refptr<base::SequencedTaskRunner> background_task_runner)
     : background_task_runner_(std::move(background_task_runner)),
-      state_(StoreState::NOT_LOADED),
-      weak_ptr_factory_(this) {}
+      state_(StoreState::NOT_LOADED) {}
 
 RequestQueueStore::RequestQueueStore(
     scoped_refptr<base::SequencedTaskRunner> background_task_runner,
@@ -597,7 +594,8 @@ RequestQueueStore::~RequestQueueStore() {
 
 void RequestQueueStore::Initialize(InitializeCallback callback) {
   DCHECK(!db_);
-  db_.reset(new sql::Database());
+  db_ = std::make_unique<sql::Database>(sql::DatabaseOptions{
+      .exclusive_locking = true, .page_size = 4096, .cache_size = 500});
 
   base::PostTaskAndReplyWithResult(
       background_task_runner_.get(), FROM_HERE,

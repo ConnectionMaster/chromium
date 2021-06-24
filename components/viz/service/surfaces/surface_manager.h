@@ -12,19 +12,19 @@
 #include <unordered_set>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/optional.h"
 #include "base/threading/thread_checker.h"
 #include "base/timer/timer.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "components/viz/service/surfaces/surface_observer.h"
 #include "components/viz/service/surfaces/surface_reference.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if DCHECK_IS_ON()
 #include <iosfwd>
@@ -37,7 +37,6 @@ class TickClock;
 
 namespace viz {
 
-class BeginFrameSource;
 class Surface;
 class SurfaceAllocationGroup;
 class SurfaceClient;
@@ -49,7 +48,7 @@ struct BeginFrameArgs;
 class VIZ_SERVICE_EXPORT SurfaceManager {
  public:
   SurfaceManager(SurfaceManagerDelegate* delegate,
-                 base::Optional<uint32_t> activation_deadline_in_frames);
+                 absl::optional<uint32_t> activation_deadline_in_frames);
   ~SurfaceManager();
 
 #if DCHECK_IS_ON()
@@ -58,12 +57,12 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
 #endif
 
   // Sets an alternative system default frame activation deadline for unit
-  // tests. base::nullopt indicates no deadline (in other words, an unlimited
+  // tests. absl::nullopt indicates no deadline (in other words, an unlimited
   // deadline).
   void SetActivationDeadlineInFramesForTesting(
-      base::Optional<uint32_t> deadline);
+      absl::optional<uint32_t> deadline);
 
-  base::Optional<uint32_t> activation_deadline_in_frames() const {
+  absl::optional<uint32_t> activation_deadline_in_frames() const {
     return activation_deadline_in_frames_;
   }
 
@@ -79,10 +78,7 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
   // dependencies are satisfied, and it is not reachable from the root surface.
   // A temporary reference will be added to the new Surface.
   Surface* CreateSurface(base::WeakPtr<SurfaceClient> surface_client,
-                         const SurfaceInfo& surface_info,
-                         BeginFrameSource* begin_frame_source,
-                         bool needs_sync_tokens,
-                         bool block_activation_on_parent);
+                         const SurfaceInfo& surface_info);
 
   // Marks |surface_id| for destruction. The surface will get destroyed when
   // it's not reachable from the root or any other surface that is not marked
@@ -90,7 +86,7 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
   void MarkSurfaceForDestruction(const SurfaceId& surface_id);
 
   // Returns a Surface corresponding to the provided |surface_id|.
-  Surface* GetSurfaceForId(const SurfaceId& surface_id);
+  Surface* GetSurfaceForId(const SurfaceId& surface_id) const;
 
   void AddObserver(SurfaceObserver* obs) { observer_list_.AddObserver(obs); }
 
@@ -108,12 +104,8 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
   // Called when a surface has an active frame for the first time.
   void FirstSurfaceActivation(const SurfaceInfo& surface_info);
 
-  // Called when a CompositorFrame within |surface| has activated. |duration| is
-  // a measure of the time the frame has spent waiting on dependencies to
-  // arrive. If |duration| is base::nullopt, then that indicates that this frame
-  // was not blocked on dependencies.
-  void SurfaceActivated(Surface* surface,
-                        base::Optional<base::TimeDelta> duration);
+  // Called when a CompositorFrame within |surface| has activated.
+  void SurfaceActivated(Surface* surface);
 
   // Called when |surface| is being destroyed.
   void SurfaceDestroyed(Surface* surface);
@@ -196,6 +188,14 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
   // collection.
   void SetAllocationGroupsNeedGarbageCollection();
 
+  // Returns whether there is any surface blocked on a surface from
+  // |frame_sink_id|.
+  bool HasBlockedEmbedder(const FrameSinkId& frame_sink_id) const;
+
+  // Indicates that the set of frame sinks being aggregated for display has
+  // changed since the previous aggregation.
+  void AggregatedFrameSinksChanged();
+
  private:
   friend class CompositorFrameSinkSupportTest;
   friend class FrameSinkManagerTest;
@@ -269,7 +269,7 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
   // Can be nullptr.
   SurfaceManagerDelegate* const delegate_;
 
-  base::Optional<uint32_t> activation_deadline_in_frames_;
+  absl::optional<uint32_t> activation_deadline_in_frames_;
 
   base::flat_map<base::UnguessableToken,
                  std::unique_ptr<SurfaceAllocationGroup>>
@@ -318,11 +318,11 @@ class VIZ_SERVICE_EXPORT SurfaceManager {
   // Timer to remove old temporary references that aren't removed after an
   // interval of time. The timer will started/stopped so it only runs if there
   // are temporary references. Also the timer isn't used with Android WebView.
-  base::Optional<base::RepeatingTimer> expire_timer_;
+  absl::optional<base::RepeatingTimer> expire_timer_;
 
   bool allocation_groups_need_garbage_collection_ = false;
 
-  base::WeakPtrFactory<SurfaceManager> weak_factory_;
+  base::WeakPtrFactory<SurfaceManager> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SurfaceManager);
 };

@@ -7,10 +7,10 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_checker.h"
@@ -47,18 +47,17 @@ SecurityKeyIpcServerImpl::SecurityKeyIpcServerImpl(
     ClientSessionDetails* client_session_details,
     base::TimeDelta initial_connect_timeout,
     const SecurityKeyAuthHandler::SendMessageCallback& message_callback,
-    const base::Closure& connect_callback,
-    const base::Closure& done_callback)
+    base::OnceClosure connect_callback,
+    base::OnceClosure done_callback)
     : connection_id_(connection_id),
       client_session_details_(client_session_details),
       initial_connect_timeout_(initial_connect_timeout),
-      connect_callback_(connect_callback),
-      done_callback_(done_callback),
-      message_callback_(message_callback),
-      weak_factory_(this) {
+      connect_callback_(std::move(connect_callback)),
+      done_callback_(std::move(done_callback)),
+      message_callback_(message_callback) {
   DCHECK_GT(connection_id_, 0);
-  DCHECK(!done_callback_.is_null());
-  DCHECK(!message_callback_.is_null());
+  DCHECK(done_callback_);
+  DCHECK(message_callback_);
 }
 
 SecurityKeyIpcServerImpl::~SecurityKeyIpcServerImpl() {
@@ -85,9 +84,8 @@ bool SecurityKeyIpcServerImpl::CreateChannel(
   if (!base::win::GetUserSidString(&user_sid)) {
     return false;
   }
-  std::string user_sid_utf8 = base::WideToUTF8(user_sid);
-  options.security_descriptor = base::UTF8ToUTF16(base::StringPrintf(
-      "O:%sG:%sD:(A;;GA;;;AU)", user_sid_utf8.c_str(), user_sid_utf8.c_str()));
+  options.security_descriptor = base::StringPrintf(
+      L"O:%lsG:%lsD:(A;;GA;;;AU)", user_sid.c_str(), user_sid.c_str());
 
 #endif  // defined(OS_WIN)
   mojo::NamedPlatformChannel channel(options);
@@ -106,8 +104,8 @@ bool SecurityKeyIpcServerImpl::CreateChannel(
   // methods must execute on the same thread (due to |thread_Checker_| so
   // the posted task and D'Tor can not execute concurrently.
   timer_.Start(FROM_HERE, initial_connect_timeout_,
-               base::Bind(&SecurityKeyIpcServerImpl::OnChannelError,
-                          base::Unretained(this)));
+               base::BindOnce(&SecurityKeyIpcServerImpl::OnChannelError,
+                              base::Unretained(this)));
   return true;
 }
 
@@ -117,8 +115,8 @@ bool SecurityKeyIpcServerImpl::SendResponse(const std::string& response) {
   // Since we have received a response, we update the timer and wait
   // for a subsequent request.
   timer_.Start(FROM_HERE, security_key_request_timeout_,
-               base::Bind(&SecurityKeyIpcServerImpl::OnChannelError,
-                          base::Unretained(this)));
+               base::BindOnce(&SecurityKeyIpcServerImpl::OnChannelError,
+                              base::Unretained(this)));
 
   return ipc_channel_->Send(
       new ChromotingNetworkToRemoteSecurityKeyMsg_Response(response));
@@ -146,8 +144,8 @@ bool SecurityKeyIpcServerImpl::OnMessageReceived(const IPC::Message& message) {
 void SecurityKeyIpcServerImpl::OnChannelConnected(int32_t peer_pid) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  if (!connect_callback_.is_null()) {
-    base::ResetAndReturn(&connect_callback_).Run();
+  if (connect_callback_) {
+    std::move(connect_callback_).Run();
   }
 
 #if defined(OS_WIN)
@@ -174,8 +172,8 @@ void SecurityKeyIpcServerImpl::OnChannelConnected(int32_t peer_pid) {
 
   // Reset the timer to give the client a chance to send the request.
   timer_.Start(FROM_HERE, initial_connect_timeout_,
-               base::Bind(&SecurityKeyIpcServerImpl::OnChannelError,
-                          base::Unretained(this)));
+               base::BindOnce(&SecurityKeyIpcServerImpl::OnChannelError,
+                              base::Unretained(this)));
 
   ipc_channel_->Send(
       new ChromotingNetworkToRemoteSecurityKeyMsg_ConnectionReady());
@@ -185,12 +183,12 @@ void SecurityKeyIpcServerImpl::OnChannelError() {
   DCHECK(thread_checker_.CalledOnValidThread());
   CloseChannel();
 
-  if (!connect_callback_.is_null()) {
-    base::ResetAndReturn(&connect_callback_).Run();
+  if (connect_callback_) {
+    std::move(connect_callback_).Run();
   }
-  if (!done_callback_.is_null()) {
+  if (done_callback_) {
     // Note: This callback may result in this object being torn down.
-    base::ResetAndReturn(&done_callback_).Run();
+    std::move(done_callback_).Run();
   }
 }
 
@@ -200,8 +198,8 @@ void SecurityKeyIpcServerImpl::OnSecurityKeyRequest(
 
   // Reset the timer to give the client a chance to send the response.
   timer_.Start(FROM_HERE, security_key_request_timeout_,
-               base::Bind(&SecurityKeyIpcServerImpl::OnChannelError,
-                          base::Unretained(this)));
+               base::BindOnce(&SecurityKeyIpcServerImpl::OnChannelError,
+                              base::Unretained(this)));
 
   HOST_LOG << "Received security key request: " << GetCommandCode(request_data);
   message_callback_.Run(connection_id_, request_data);

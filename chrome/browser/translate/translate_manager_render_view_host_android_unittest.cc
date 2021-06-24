@@ -11,15 +11,13 @@
 #include <vector>
 
 #include "build/build_config.h"
-#include "chrome/browser/infobars/infobar_service.h"
-#include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
-#include "chrome/browser/translate/translate_fake_page.h"
+#include "chrome/browser/translate/fake_translate_agent.h"
 #include "chrome/browser/translate/translate_service.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_manager.h"
 #include "components/translate/content/browser/content_translate_driver.h"
@@ -34,7 +32,6 @@
 #include "content/public/common/url_constants.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
-#include "mojo/public/cpp/bindings/binding.h"
 #include "url/gurl.h"
 
 class TranslateManagerRenderViewHostAndroidTest
@@ -58,26 +55,26 @@ class TranslateManagerRenderViewHostAndroidTest
     details.adopted_language = lang;
     ChromeTranslateClient::FromWebContents(web_contents())
         ->translate_driver()
-        .RegisterPage(fake_page_.BindToNewPagePtr(), details,
-                      page_translatable);
+        ->RegisterPage(fake_agent_.BindToNewPageRemote(), details,
+                       page_translatable);
   }
 
-  InfoBarService* infobar_service() {
-    return InfoBarService::FromWebContents(web_contents());
+  infobars::ContentInfoBarManager* infobar_manager() {
+    return infobars::ContentInfoBarManager::FromWebContents(web_contents());
   }
 
   // Returns the translate infobar if there is 1 infobar and it is a translate
   // infobar.
   translate::TranslateInfoBarDelegate* GetTranslateInfoBar() {
-    return (infobar_service()->infobar_count() == 1)
-               ? infobar_service()
+    return (infobar_manager()->infobar_count() == 1)
+               ? infobar_manager()
                      ->infobar_at(0)
                      ->delegate()
                      ->AsTranslateInfoBarDelegate()
                : NULL;
   }
 
-#if !defined(USE_AURA) && !defined(OS_MACOSX)
+#if !defined(USE_AURA) && !defined(OS_MAC)
   // If there is 1 infobar and it is a translate infobar, closes it and returns
   // true.  Returns false otherwise.
   bool CloseTranslateInfoBar() {
@@ -85,7 +82,7 @@ class TranslateManagerRenderViewHostAndroidTest
     if (!infobar)
       return false;
     infobar->InfoBarDismissed();  // Simulates closing the infobar.
-    infobar_service()->RemoveInfoBar(infobar_service()->infobar_at(0));
+    infobar_manager()->RemoveInfoBar(infobar_manager()->infobar_at(0));
     return true;
   }
 #endif
@@ -103,11 +100,11 @@ class TranslateManagerRenderViewHostAndroidTest
     TranslateService::InitializeForTesting(
         network::mojom::ConnectionType::CONNECTION_WIFI);
 
-    InfoBarService::CreateForWebContents(web_contents());
+    infobars::ContentInfoBarManager::CreateForWebContents(web_contents());
     ChromeTranslateClient::CreateForWebContents(web_contents());
     ChromeTranslateClient::FromWebContents(web_contents())
         ->translate_driver()
-        .set_translate_max_reload_attempts(0);
+        ->set_translate_max_reload_attempts(0);
   }
 
   void TearDown() override {
@@ -120,7 +117,7 @@ class TranslateManagerRenderViewHostAndroidTest
   // WARNING: the pointers point to deleted objects, use only for comparison.
   std::set<infobars::InfoBarDelegate*> removed_infobars_;
 
-  FakePageImpl fake_page_;
+  FakeTranslateAgent fake_agent_;
 
   DISALLOW_COPY_AND_ASSIGN(TranslateManagerRenderViewHostAndroidTest);
 };

@@ -5,8 +5,6 @@
 #ifndef CHROMECAST_BROWSER_EXTENSIONS_API_ACCESSIBILITY_PRIVATE_ACCESSIBILITY_EXTENSION_API_H_
 #define CHROMECAST_BROWSER_EXTENSIONS_API_ACCESSIBILITY_PRIVATE_ACCESSIBILITY_EXTENSION_API_H_
 
-#include <string>
-
 #include "extensions/browser/extension_function.h"
 
 namespace extensions {
@@ -15,7 +13,7 @@ namespace api {
 
 // API function that enables or disables web content accessibility support.
 class AccessibilityPrivateSetNativeAccessibilityEnabledFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
   ~AccessibilityPrivateSetNativeAccessibilityEnabledFunction() override {}
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION(
@@ -24,17 +22,15 @@ class AccessibilityPrivateSetNativeAccessibilityEnabledFunction
 };
 
 // API function that sets the location of the accessibility focus ring.
-class AccessibilityPrivateSetFocusRingFunction
-    : public UIThreadExtensionFunction {
-  ~AccessibilityPrivateSetFocusRingFunction() override {}
+class AccessibilityPrivateSetFocusRingsFunction : public ExtensionFunction {
+  ~AccessibilityPrivateSetFocusRingsFunction() override {}
   ResponseAction Run() override;
-  DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.setFocusRing",
+  DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.setFocusRings",
                              ACCESSIBILITY_PRIVATE_SETFOCUSRING)
 };
 
 // API function that sets the location of the accessibility highlights.
-class AccessibilityPrivateSetHighlightsFunction
-    : public UIThreadExtensionFunction {
+class AccessibilityPrivateSetHighlightsFunction : public ExtensionFunction {
   ~AccessibilityPrivateSetHighlightsFunction() override {}
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.setHighlights",
@@ -43,7 +39,7 @@ class AccessibilityPrivateSetHighlightsFunction
 
 // API function that sets keyboard capture mode.
 class AccessibilityPrivateSetKeyboardListenerFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
   ~AccessibilityPrivateSetKeyboardListenerFunction() override {}
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.setKeyboardListener",
@@ -51,26 +47,16 @@ class AccessibilityPrivateSetKeyboardListenerFunction
 };
 
 // API function that darkens or undarkens the screen.
-class AccessibilityPrivateDarkenScreenFunction
-    : public UIThreadExtensionFunction {
+class AccessibilityPrivateDarkenScreenFunction : public ExtensionFunction {
   ~AccessibilityPrivateDarkenScreenFunction() override {}
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.darkenScreen",
                              ACCESSIBILITY_PRIVATE_DARKENSCREEN)
 };
 
-// API function that sets the keys to be captured by Switch Access.
-class AccessibilityPrivateSetSwitchAccessKeysFunction
-    : public UIThreadExtensionFunction {
-  ~AccessibilityPrivateSetSwitchAccessKeysFunction() override {}
-  ResponseAction Run() override;
-  DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.setSwitchAccessKeys",
-                             ACCESSIBILITY_PRIVATE_SETSWITCHACCESSKEYS)
-};
-
 // API function that sets native ChromeVox ARC support.
 class AccessibilityPrivateSetNativeChromeVoxArcSupportForCurrentAppFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
   ~AccessibilityPrivateSetNativeChromeVoxArcSupportForCurrentAppFunction()
       override {}
   ResponseAction Run() override;
@@ -81,11 +67,20 @@ class AccessibilityPrivateSetNativeChromeVoxArcSupportForCurrentAppFunction
 
 // API function that injects key events.
 class AccessibilityPrivateSendSyntheticKeyEventFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
   ~AccessibilityPrivateSendSyntheticKeyEventFunction() override {}
   ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.sendSyntheticKeyEvent",
                              ACCESSIBILITY_PRIVATE_SENDSYNTHETICKEYEVENT)
+};
+
+// API function that injects mouse events.
+class AccessibilityPrivateSendSyntheticMouseEventFunction
+    : public ExtensionFunction {
+  ~AccessibilityPrivateSendSyntheticMouseEventFunction() override {}
+  ResponseAction Run() override;
+  DECLARE_EXTENSION_FUNCTION("accessibilityPrivate.sendSyntheticMouseEvent",
+                             ACCESSIBILITY_PRIVATE_SENDSYNTHETICMOUSEEVENT)
 };
 
 }  // namespace api

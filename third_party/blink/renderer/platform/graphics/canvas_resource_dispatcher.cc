@@ -4,26 +4,33 @@
 
 #include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
 
-#include <memory>
+#include <utility>
+
+#include "base/debug/stack_trace.h"
 #include "base/single_thread_task_runner.h"
-#include "components/viz/common/features.h"
+#include "base/trace_event/trace_event.h"
+#include "components/power_scheduler/power_mode.h"
+#include "components/power_scheduler/power_mode_arbiter.h"
+#include "components/power_scheduler/power_mode_voter.h"
 #include "components/viz/common/quads/compositor_frame.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
+#include "components/viz/common/resources/release_callback.h"
 #include "components/viz/common/resources/resource_format.h"
-#include "components/viz/common/resources/single_release_callback.h"
-#include "services/viz/public/interfaces/hit_test/hit_test_region_list.mojom-blink.h"
+#include "services/viz/public/mojom/compositing/frame_timing_details.mojom-blink.h"
+#include "services/viz/public/mojom/hit_test/hit_test_region_list.mojom-blink.h"
+#include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/frame_sinks/embedded_frame_sink.mojom-blink.h"
-#include "third_party/blink/public/platform/interface_provider.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/offscreen_canvas_placeholder.h"
-#include "third_party/blink/renderer/platform/histogram.h"
+#include "third_party/blink/renderer/platform/graphics/resource_id_traits.h"
+#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "ui/gfx/mojo/presentation_feedback.mojom-blink.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "ui/gfx/mojom/presentation_feedback.mojom-blink.h"
 
 namespace blink {
 
@@ -36,13 +43,13 @@ struct CanvasResourceDispatcher::FrameResource {
   FrameResource() = default;
   ~FrameResource() {
     if (release_callback)
-      release_callback->Run(sync_token, is_lost);
+      std::move(release_callback).Run(sync_token, is_lost);
   }
 
   // TODO(junov):  What does this do?
   bool spare_lock = true;
 
-  std::unique_ptr<viz::SingleReleaseCallback> release_callback;
+  viz::ReleaseCallback release_callback;
   gpu::SyncToken sync_token;
   bool is_lost = false;
 };
@@ -57,29 +64,28 @@ CanvasResourceDispatcher::CanvasResourceDispatcher(
       size_(size),
       change_size_for_next_commit_(false),
       needs_begin_frame_(false),
-      binding_(this),
       placeholder_canvas_id_(canvas_id),
       num_unreclaimed_frames_posted_(0),
       client_(client),
-      enable_surface_synchronization_(
-          ::features::IsSurfaceSynchronizationEnabled()),
-      weak_ptr_factory_(this) {
+      animation_power_mode_voter_(
+          power_scheduler::PowerModeArbiter::GetInstance()->NewVoter(
+              "PowerModeVoter.Animation.Canvas")) {
   // Frameless canvas pass an invalid |frame_sink_id_|; don't create mojo
   // channel for this special case.
   if (!frame_sink_id_.is_valid())
     return;
 
   DCHECK(!sink_.is_bound());
-  mojom::blink::EmbeddedFrameSinkProviderPtr provider;
-  Platform::Current()->GetInterfaceProvider()->GetInterface(
-      mojo::MakeRequest(&provider));
+  mojo::Remote<mojom::blink::EmbeddedFrameSinkProvider> provider;
+  Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
+      provider.BindNewPipeAndPassReceiver());
 
   DCHECK(provider);
-  binding_.Bind(mojo::MakeRequest(&client_ptr_));
-  provider->CreateCompositorFrameSink(frame_sink_id_, std::move(client_ptr_),
-                                      mojo::MakeRequest(&sink_));
+  provider->CreateCompositorFrameSink(frame_sink_id_,
+                                      receiver_.BindNewPipeAndPassRemote(),
+                                      sink_.BindNewPipeAndPassReceiver());
   provider->ConnectToEmbedder(frame_sink_id_,
-                              mojo::MakeRequest(&surface_embedder_));
+                              surface_embedder_.BindNewPipeAndPassReceiver());
 }
 
 CanvasResourceDispatcher::~CanvasResourceDispatcher() = default;
@@ -87,19 +93,30 @@ CanvasResourceDispatcher::~CanvasResourceDispatcher() = default;
 namespace {
 
 void UpdatePlaceholderImage(
-    base::WeakPtr<CanvasResourceDispatcher> dispatcher,
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
     int placeholder_canvas_id,
     scoped_refptr<blink::CanvasResource> canvas_resource,
     viz::ResourceId resource_id) {
   DCHECK(IsMainThread());
   OffscreenCanvasPlaceholder* placeholder_canvas =
-      OffscreenCanvasPlaceholder::GetPlaceholderById(placeholder_canvas_id);
+      OffscreenCanvasPlaceholder::GetPlaceholderCanvasById(
+          placeholder_canvas_id);
   if (placeholder_canvas) {
-    placeholder_canvas->SetPlaceholderFrame(
-        std::move(canvas_resource), std::move(dispatcher),
-        std::move(task_runner), resource_id);
+    placeholder_canvas->SetOffscreenCanvasResource(std::move(canvas_resource),
+                                                   resource_id);
   }
+}
+
+void UpdatePlaceholderDispatcher(
+    base::WeakPtr<CanvasResourceDispatcher> dispatcher,
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+    int placeholder_canvas_id) {
+  OffscreenCanvasPlaceholder* placeholder_canvas =
+      OffscreenCanvasPlaceholder::GetPlaceholderCanvasById(
+          placeholder_canvas_id);
+  // Note that the placeholder canvas may be destroyed when this post task get
+  // to executed.
+  if (placeholder_canvas)
+    placeholder_canvas->SetOffscreenCanvasDispatcher(dispatcher, task_runner);
 }
 
 }  // namespace
@@ -114,7 +131,7 @@ void CanvasResourceDispatcher::PostImageToPlaceholderIfNotBlocked(
   // Determines whether the main thread may be blocked. If unblocked, post
   // |canvas_resource|. Otherwise, save it but do not post it.
   if (num_unreclaimed_frames_posted_ < kMaxUnreclaimedPlaceholderFrames) {
-    this->PostImageToPlaceholder(std::move(canvas_resource), resource_id);
+    PostImageToPlaceholder(std::move(canvas_resource), resource_id);
     num_unreclaimed_frames_posted_++;
   } else {
     DCHECK(num_unreclaimed_frames_posted_ == kMaxUnreclaimedPlaceholderFrames);
@@ -131,19 +148,13 @@ void CanvasResourceDispatcher::PostImageToPlaceholderIfNotBlocked(
 void CanvasResourceDispatcher::PostImageToPlaceholder(
     scoped_refptr<CanvasResource> canvas_resource,
     viz::ResourceId resource_id) {
-  scoped_refptr<base::SingleThreadTaskRunner> dispatcher_task_runner =
-      Thread::Current()->GetTaskRunner();
-
   // After this point, |canvas_resource| can only be used on the main thread,
   // until it is returned.
   canvas_resource->Transfer();
-
   PostCrossThreadTask(
       *Thread::MainThread()->Scheduler()->CompositorTaskRunner(), FROM_HERE,
-      CrossThreadBind(UpdatePlaceholderImage, this->GetWeakPtr(),
-                      WTF::Passed(std::move(dispatcher_task_runner)),
-                      placeholder_canvas_id_, std::move(canvas_resource),
-                      resource_id));
+      CrossThreadBindOnce(UpdatePlaceholderImage, placeholder_canvas_id_,
+                          std::move(canvas_resource), resource_id));
 }
 
 void CanvasResourceDispatcher::DispatchFrameSync(
@@ -162,10 +173,9 @@ void CanvasResourceDispatcher::DispatchFrameSync(
   pending_compositor_frames_++;
   WTF::Vector<viz::ReturnedResource> resources;
   sink_->SubmitCompositorFrameSync(
-      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id(),
-      std::move(frame), nullptr, 0, &resources);
-  DidReceiveCompositorFrameAck(resources);
+      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
+      std::move(frame), absl::nullopt, 0, &resources);
+  DidReceiveCompositorFrameAck(std::move(resources));
 }
 
 void CanvasResourceDispatcher::DispatchFrame(
@@ -183,9 +193,8 @@ void CanvasResourceDispatcher::DispatchFrame(
 
   pending_compositor_frames_++;
   sink_->SubmitCompositorFrame(
-      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id(),
-      std::move(frame), nullptr, 0);
+      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
+      std::move(frame), absl::nullopt, 0);
 }
 
 bool CanvasResourceDispatcher::PrepareFrame(
@@ -200,19 +209,18 @@ bool CanvasResourceDispatcher::PrepareFrame(
     return false;
   }
 
-  next_resource_id_++;
+  auto next_resource_id = id_generator_.GenerateNextId();
 
   // For frameless canvas, we don't get a valid frame_sink_id and should drop.
   if (!frame_sink_id_.is_valid()) {
     PostImageToPlaceholderIfNotBlocked(std::move(canvas_resource),
-                                       next_resource_id_);
+                                       next_resource_id);
     return false;
   }
 
   // TODO(crbug.com/652931): update the device_scale_factor
   frame->metadata.device_scale_factor = 1.0f;
-  if (current_begin_frame_ack_.sequence_number ==
-      viz::BeginFrameArgs::kInvalidFrameNumber) {
+  if (!current_begin_frame_ack_.frame_id.IsSequenceValid()) {
     // TODO(eseckler): This shouldn't be necessary when OffscreenCanvas no
     // longer submits CompositorFrames without prior BeginFrame.
     current_begin_frame_ack_ = viz::BeginFrameAck::CreateManualAckWithDamage();
@@ -224,32 +232,36 @@ bool CanvasResourceDispatcher::PrepareFrame(
   frame->metadata.frame_token = ++next_frame_token_;
 
   const gfx::Rect bounds(size_.Width(), size_.Height());
-  constexpr int kRenderPassId = 1;
-  constexpr bool is_clipped = false;
-  std::unique_ptr<viz::RenderPass> pass = viz::RenderPass::Create();
+  constexpr viz::CompositorRenderPassId kRenderPassId{1};
+  auto pass =
+      viz::CompositorRenderPass::Create(/*shared_quad_state_list_size=*/1u,
+                                        /*quad_list_size=*/1u);
   pass->SetNew(kRenderPassId, bounds,
                gfx::Rect(damage_rect.x(), damage_rect.y(), damage_rect.width(),
                          damage_rect.height()),
                gfx::Transform());
 
   viz::SharedQuadState* sqs = pass->CreateAndAppendSharedQuadState();
-  sqs->SetAll(gfx::Transform(), bounds, bounds, gfx::RRectF(), bounds,
-              is_clipped, is_opaque, 1.f, SkBlendMode::kSrcOver, 0);
+  sqs->SetAll(gfx::Transform(), bounds, bounds, gfx::MaskFilterInfo(),
+              absl::nullopt, is_opaque, 1.f, SkBlendMode::kSrcOver, 0);
 
   viz::TransferableResource resource;
   auto frame_resource = std::make_unique<FrameResource>();
 
+  bool nearest_neighbor =
+      canvas_resource->FilterQuality() == kNone_SkFilterQuality;
+
   canvas_resource->PrepareTransferableResource(
       &resource, &frame_resource->release_callback, kVerifiedSyncToken);
-  resource.id = next_resource_id_;
+  const viz::ResourceId resource_id = next_resource_id;
+  resource.id = resource_id;
 
-  resources_.insert(next_resource_id_, std::move(frame_resource));
+  resources_.insert(resource_id, std::move(frame_resource));
 
   // TODO(crbug.com/869913): add unit testing for this.
   const gfx::Size canvas_resource_size(canvas_resource->Size());
 
-  PostImageToPlaceholderIfNotBlocked(std::move(canvas_resource),
-                                     next_resource_id_);
+  PostImageToPlaceholderIfNotBlocked(std::move(canvas_resource), resource_id);
 
   frame->resource_list.push_back(std::move(resource));
 
@@ -263,52 +275,57 @@ bool CanvasResourceDispatcher::PrepareFrame(
   constexpr gfx::PointF uv_top_left(0.f, 0.f);
   constexpr gfx::PointF uv_bottom_right(1.f, 1.f);
   constexpr float vertex_opacity[4] = {1.f, 1.f, 1.f, 1.f};
-  // TODO(crbug.com/645994): this should be true when using style
-  // "image-rendering: pixelated".
-  // TODO(crbug.com/645590): filter should respect the image-rendering CSS
-  // property of associated canvas element.
-  constexpr bool kNearestNeighbor = false;
+
   // Accelerated resources have the origin of coordinates in the upper left
   // corner while canvases have it in the lower left corner. The DrawQuad is
   // marked as vertically flipped unless someone else has done the flip for us.
   const bool yflipped =
       SharedGpuContext::IsGpuCompositingEnabled() && needs_vertical_flip;
-  quad->SetAll(sqs, bounds, bounds, needs_blending, resource.id,
+  quad->SetAll(sqs, bounds, bounds, needs_blending, resource_id,
                canvas_resource_size, kPremultipliedAlpha, uv_top_left,
                uv_bottom_right, SK_ColorTRANSPARENT, vertex_opacity, yflipped,
-               kNearestNeighbor, /*secure_output_only=*/false,
-               ui::ProtectedVideoType::kClear);
+               nearest_neighbor, /*secure_output_only=*/false,
+               gfx::ProtectedVideoType::kClear);
 
   frame->render_pass_list.push_back(std::move(pass));
 
   if (change_size_for_next_commit_ ||
-      !parent_local_surface_id_allocator_.HasValidLocalSurfaceIdAllocation()) {
+      !parent_local_surface_id_allocator_.HasValidLocalSurfaceId()) {
     parent_local_surface_id_allocator_.GenerateId();
-    if (enable_surface_synchronization_) {
-      surface_embedder_->SetLocalSurfaceId(
-          parent_local_surface_id_allocator_
-              .GetCurrentLocalSurfaceIdAllocation()
-              .local_surface_id());
-    }
+    surface_embedder_->SetLocalSurfaceId(
+        parent_local_surface_id_allocator_.GetCurrentLocalSurfaceId());
     change_size_for_next_commit_ = false;
   }
-  frame->metadata.local_surface_id_allocation_time =
-      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .allocation_time();
 
   return true;
 }
 
 void CanvasResourceDispatcher::DidReceiveCompositorFrameAck(
-    const WTF::Vector<viz::ReturnedResource>& resources) {
-  ReclaimResources(resources);
+    WTF::Vector<viz::ReturnedResource> resources) {
+  ReclaimResources(std::move(resources));
   pending_compositor_frames_--;
   DCHECK_GE(pending_compositor_frames_, 0);
 }
 
 void CanvasResourceDispatcher::SetNeedsBeginFrame(bool needs_begin_frame) {
-  if (needs_begin_frame_ == needs_begin_frame)
+  if (needs_begin_frame_ == needs_begin_frame) {
+    // If the offscreencanvas is in the same tread as the canvas, and we are
+    // trying for a second time to request the being frame, and we are in a
+    // capture_stream scenario, we will call a BeginFrame right away. So
+    // Offscreen Canvas can behave in a more synchronous way when it's on the
+    // main thread.
+    if (needs_begin_frame_ && IsMainThread()) {
+      OffscreenCanvasPlaceholder* placeholder_canvas =
+          OffscreenCanvasPlaceholder::GetPlaceholderCanvasById(
+              placeholder_canvas_id_);
+      if (placeholder_canvas &&
+          placeholder_canvas->IsOffscreenCanvasRegistered() &&
+          placeholder_canvas->HasCanvasCapture() && Client()) {
+        Client()->BeginFrame();
+      }
+    }
     return;
+  }
   needs_begin_frame_ = needs_begin_frame;
   if (!suspend_animation_)
     SetNeedsBeginFrameInternal();
@@ -323,30 +340,52 @@ void CanvasResourceDispatcher::SetSuspendAnimation(bool suspend_animation) {
 }
 
 void CanvasResourceDispatcher::SetNeedsBeginFrameInternal() {
-  if (sink_)
-    sink_->SetNeedsBeginFrame(needs_begin_frame_ && !suspend_animation_);
+  if (!sink_)
+    return;
+
+  bool needs_begin_frame = needs_begin_frame_ && !suspend_animation_;
+  sink_->SetNeedsBeginFrame(needs_begin_frame);
+
+  if (needs_begin_frame) {
+    animation_power_mode_voter_->VoteFor(
+        power_scheduler::PowerMode::kAnimation);
+  } else {
+    animation_power_mode_voter_->ResetVoteAfterTimeout(
+        power_scheduler::PowerModeVoter::kAnimationTimeout);
+  }
+}
+
+bool CanvasResourceDispatcher::HasTooManyPendingFrames() const {
+  return pending_compositor_frames_ >= kMaxPendingCompositorFrames;
 }
 
 void CanvasResourceDispatcher::OnBeginFrame(
     const viz::BeginFrameArgs& begin_frame_args,
-    WTF::HashMap<uint32_t, ::gfx::mojom::blink::PresentationFeedbackPtr>) {
+    const WTF::HashMap<uint32_t, viz::FrameTimingDetails>&) {
   current_begin_frame_ack_ = viz::BeginFrameAck(begin_frame_args, false);
-  if (pending_compositor_frames_ >= kMaxPendingCompositorFrames ||
+  if (HasTooManyPendingFrames() ||
       (begin_frame_args.type == viz::BeginFrameArgs::MISSED &&
        base::TimeTicks::Now() > begin_frame_args.deadline)) {
     sink_->DidNotProduceFrame(current_begin_frame_ack_);
     return;
   }
 
-  if (Client())
-    Client()->BeginFrame();
-  // TODO(eseckler): Tell |sink_| if we did not draw during the BeginFrame.
-  current_begin_frame_ack_.sequence_number =
+  // TODO(fserb): should EnqueueMicrotask BeginFrame().
+  // We usually never get to BeginFrame if we are on RAF mode. But it could
+  // still happen that begin frame gets requested and we don't have a frame
+  // anymore, so we shouldn't let the compositor wait.
+  bool submitted_frame = Client() && Client()->BeginFrame();
+  if (!submitted_frame) {
+    sink_->DidNotProduceFrame(current_begin_frame_ack_);
+  }
+
+  // TODO(fserb): Update this with the correct value if we are on RAF submit.
+  current_begin_frame_ack_.frame_id.sequence_number =
       viz::BeginFrameArgs::kInvalidFrameNumber;
 }
 
 void CanvasResourceDispatcher::ReclaimResources(
-    const WTF::Vector<viz::ReturnedResource>& resources) {
+    WTF::Vector<viz::ReturnedResource> resources) {
   for (const auto& resource : resources) {
     auto it = resources_.find(resource.id);
 
@@ -372,7 +411,7 @@ void CanvasResourceDispatcher::ReclaimResource(viz::ResourceId resource_id) {
            kMaxUnreclaimedPlaceholderFrames - 1);
     PostImageToPlaceholderIfNotBlocked(std::move(latest_unposted_image_),
                                        latest_unposted_resource_id_);
-    latest_unposted_resource_id_ = 0;
+    latest_unposted_resource_id_ = viz::kInvalidResourceId;
   }
 }
 
@@ -388,16 +427,41 @@ void CanvasResourceDispatcher::Reshape(const IntSize& size) {
 }
 
 void CanvasResourceDispatcher::DidAllocateSharedBitmap(
-    mojo::ScopedSharedBufferHandle buffer,
-    ::gpu::mojom::blink::MailboxPtr id) {
+    base::ReadOnlySharedMemoryRegion region,
+    const gpu::Mailbox& id) {
   if (sink_)
-    sink_->DidAllocateSharedBitmap(std::move(buffer), std::move(id));
+    sink_->DidAllocateSharedBitmap(std::move(region), id);
 }
 
-void CanvasResourceDispatcher::DidDeleteSharedBitmap(
-    ::gpu::mojom::blink::MailboxPtr id) {
+void CanvasResourceDispatcher::DidDeleteSharedBitmap(const gpu::Mailbox& id) {
   if (sink_)
-    sink_->DidDeleteSharedBitmap(std::move(id));
+    sink_->DidDeleteSharedBitmap(id);
+}
+
+void CanvasResourceDispatcher::SetFilterQuality(
+    SkFilterQuality filter_quality) {
+  if (Client())
+    Client()->SetFilterQualityInResource(filter_quality);
+}
+
+void CanvasResourceDispatcher::SetPlaceholderCanvasDispatcher(
+    int placeholder_canvas_id) {
+  scoped_refptr<base::SingleThreadTaskRunner> dispatcher_task_runner =
+      Thread::Current()->GetTaskRunner();
+
+  // If the offscreencanvas is in the same tread as the canvas, we will update
+  // the canvas resource dispatcher directly. So Offscreen Canvas can behave in
+  // a more synchronous way when it's on the main thread.
+  if (IsMainThread()) {
+    UpdatePlaceholderDispatcher(GetWeakPtr(), dispatcher_task_runner,
+                                placeholder_canvas_id);
+  } else {
+    PostCrossThreadTask(
+        *Thread::MainThread()->Scheduler()->CompositorTaskRunner(), FROM_HERE,
+        CrossThreadBindOnce(UpdatePlaceholderDispatcher, GetWeakPtr(),
+                            std::move(dispatcher_task_runner),
+                            placeholder_canvas_id));
+  }
 }
 
 void CanvasResourceDispatcher::ReclaimResourceInternal(

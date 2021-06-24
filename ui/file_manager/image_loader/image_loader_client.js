@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {LRUCache} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/common/js/lru_cache.js';
+import {LoadImageRequest, LoadImageResponse, LoadImageResponseStatus} from './load_image_request.js';
+
 /**
  * Client used to connect to the remote ImageLoader extension. Client class runs
  * in the extension, where the client.js is included (eg. Files app).
@@ -12,7 +15,7 @@
  *
  * @constructor
  */
-function ImageLoaderClient() {
+export function ImageLoaderClient() {
   /**
    * @type {number}
    * @private
@@ -22,7 +25,12 @@ function ImageLoaderClient() {
   /**
    * LRU cache for images.
    * @type {!LRUCache.<{
-   *     data: string, width:number, height:number, timestamp: ?number}>}
+   *   timestamp: ?number,
+   *   width: number,
+   *   height: number,
+   *   ifd: ?string,
+   *   data: string
+   * }>}
    * @private
    */
   this.cache_ = new LRUCache(ImageLoaderClient.CACHE_MEMORY_LIMIT);
@@ -83,6 +91,27 @@ ImageLoaderClient.sendMessage_ = function(request, callback) {
 };
 
 /**
+ * Image loader client extension request URL matcher.
+ * @const {!RegExp}
+ */
+ImageLoaderClient.CLIENT_URL_REGEX = /filesystem:chrome-extension:\/\/[a-z]+/;
+
+/**
+ * Image loader client chrome://file-manager request URL matcher.
+ * @const {!RegExp}
+ */
+ImageLoaderClient.CLIENT_SWA_REGEX = /filesystem:chrome:\/\/file-manager/;
+
+/**
+ * All client request URL match ImageLoaderClient.CLIENT_URL_REGEX and all are
+ * rewritten: the client extension id part of the request URL is replaced with
+ * the image loader extension id.
+ * @const {string}
+ */
+ImageLoaderClient.IMAGE_LOADER_URL =
+    'filesystem:chrome-extension://' + ImageLoaderClient.EXTENSION_ID;
+
+/**
  * Loads and resizes and image.
  *
  * @param {!LoadImageRequest} request
@@ -94,13 +123,11 @@ ImageLoaderClient.prototype.load = function(request, callback) {
   ImageLoaderClient.recordPercentage('Cache.Usage',
       this.cache_.size() / ImageLoaderClient.CACHE_MEMORY_LIMIT * 100.0);
 
-  // Replace the extension id.
-  const sourceId = chrome.i18n.getMessage('@@extension_id');
-  const targetId = ImageLoaderClient.EXTENSION_ID;
-
+  // Replace the client origin with the image loader extension origin.
   request.url = request.url.replace(
-      'filesystem:chrome-extension://' + sourceId,
-      'filesystem:chrome-extension://' + targetId);
+      ImageLoaderClient.CLIENT_URL_REGEX, ImageLoaderClient.IMAGE_LOADER_URL);
+  request.url = request.url.replace(
+      ImageLoaderClient.CLIENT_SWA_REGEX, ImageLoaderClient.IMAGE_LOADER_URL);
 
   // Try to load from cache, if available.
   const cacheKey = LoadImageRequest.cacheKey(request);
@@ -120,6 +147,7 @@ ImageLoaderClient.prototype.load = function(request, callback) {
         callback(new LoadImageResponse(LoadImageResponseStatus.SUCCESS, null, {
           width: cachedValue.width,
           height: cachedValue.height,
+          ifd: cachedValue.ifd,
           data: cachedValue.data,
         }));
         return null;
@@ -183,7 +211,7 @@ ImageLoaderClient.CACHE_MEMORY_LIMIT = 20 * 1024 * 1024;  // 20 MB.
  * @return {?number} Remote task id or null if loaded from cache.
  */
 ImageLoaderClient.loadToImage = function(request, image, onSuccess, onError) {
-  var callback = function(result) {
+  const callback = function(result) {
     if (result.status == LoadImageResponseStatus.ERROR) {
       onError();
       return;

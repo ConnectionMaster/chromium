@@ -5,9 +5,10 @@
 #ifndef CHROME_BROWSER_UI_TAB_UI_HELPER_H_
 #define CHROME_BROWSER_UI_TAB_UI_HELPER_H_
 
+#include <string>
+
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "components/favicon_base/favicon_callback.h"
@@ -28,7 +29,7 @@ class TabUIHelper : public content::WebContentsObserver,
 
   // Get the title of the tab. When the associated WebContents' title is empty,
   // a customized title is used.
-  base::string16 GetTitle() const;
+  std::u16string GetTitle() const;
 
   // Get the favicon of the tab. It will return a favicon from history service
   // if it needs to, otherwise, it will return the favicon of the WebContents.
@@ -50,13 +51,16 @@ class TabUIHelper : public content::WebContentsObserver,
   void set_created_by_session_restore(bool created_by_session_restore) {
     created_by_session_restore_ = created_by_session_restore;
   }
+  bool is_created_by_session_restore_for_testing() {
+    return created_by_session_restore_;
+  }
 
  private:
   friend class content::WebContentsUserData<TabUIHelper>;
 
   struct TabUIData {
     explicit TabUIData(const GURL& url);
-    base::string16 title;
+    std::u16string title;
     gfx::Image favicon;
   };
 
@@ -66,9 +70,8 @@ class TabUIHelper : public content::WebContentsObserver,
   // new tab is opened in the background and its initial navigation is delayed.
   bool ShouldUseFaviconFromHistory() const;
 
-  void FetchFaviconFromHistory(
-      const GURL& url,
-      const favicon_base::FaviconImageCallback& callback);
+  void FetchFaviconFromHistory(const GURL& url,
+                               favicon_base::FaviconImageCallback callback);
   void OnURLFaviconFetched(const favicon_base::FaviconImageResult& favicon);
   void OnHostFaviconFetched(const favicon_base::FaviconImageResult& favicon);
   void UpdateFavicon(const favicon_base::FaviconImageResult& favicon);
@@ -81,7 +84,7 @@ class TabUIHelper : public content::WebContentsObserver,
   // navigation when the tab is opened in background.
   std::unique_ptr<TabUIData> tab_ui_data_;
   base::CancelableTaskTracker favicon_tracker_;
-  base::WeakPtrFactory<TabUIHelper> weak_ptr_factory_;
+  base::WeakPtrFactory<TabUIHelper> weak_ptr_factory_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

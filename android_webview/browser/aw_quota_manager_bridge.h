@@ -15,7 +15,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 
 namespace content {
 class StoragePartition;
@@ -29,6 +28,8 @@ namespace android_webview {
 
 class AwBrowserContext;
 
+// TODO(crbug.com/1215208): Change the functions in this class to reference
+// StorageKey instead of Origin.
 class AwQuotaManagerBridge
     : public base::RefCountedThreadSafe<AwQuotaManagerBridge> {
  public:
@@ -69,9 +70,9 @@ class AwQuotaManagerBridge
   storage::QuotaManager* GetQuotaManager() const;
 
   void DeleteAllDataOnUiThread();
-  void DeleteOriginOnUiThread(const base::string16& origin);
+  void DeleteOriginOnUiThread(const std::u16string& origin);
   void GetOriginsOnUiThread(jint callback_id);
-  void GetUsageAndQuotaForOriginOnUiThread(const base::string16& origin,
+  void GetUsageAndQuotaForOriginOnUiThread(const std::u16string& origin,
                                            jint callback_id,
                                            bool is_quota);
 
@@ -87,7 +88,7 @@ class AwQuotaManagerBridge
   AwBrowserContext* browser_context_;
   JavaObjectWeakGlobalRef java_ref_;
 
-  base::WeakPtrFactory<AwQuotaManagerBridge> weak_factory_;
+  base::WeakPtrFactory<AwQuotaManagerBridge> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AwQuotaManagerBridge);
 };

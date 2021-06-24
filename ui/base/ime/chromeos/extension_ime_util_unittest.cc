@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include "base/strings/strcat.h"
+#include "build/branding_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -82,38 +84,30 @@ TEST(ExtensionIMEUtilTest, IsArcIMETest) {
   EXPECT_FALSE(extension_ime_util::IsArcIME("mozc"));
 }
 
-TEST(ExtensionIMEUtilTest, IsMemberOfExtension) {
-  const char* extention1 = "abcdefg";
-  const char* extention2 = "hijklmn";
-  const char* extention3 = "opqrstu";
-  const char* engine_id1 = "12345";
-  const char* engine_id2 = "67890";
-  const char* engine_id3 = "31415";
+TEST(ExtensionIMEUtilTest, IsExperimentalMultilingualTest) {
+  // TODO(crbug.com/1162211): Input method IDs are tuples of extension type,
+  // extension ID, and extension-local input method ID. However, currently
+  // they're just concats of the three constituent pieces of info, hence StrCat
+  // here. Replace StrCat once they're no longer unstructured string concats.
 
-  const std::string extention_1_engine_1 =
-      extension_ime_util::GetInputMethodID(extention1, engine_id1);
-  const std::string extention_1_engine_2 =
-      extension_ime_util::GetInputMethodID(extention1, engine_id2);
-  const std::string component_3_engine_3 =
-      extension_ime_util::GetComponentInputMethodID(extention3, engine_id3);
+  EXPECT_FALSE(extension_ime_util::IsExperimentalMultilingual(
+      base::StrCat({"some_extension_type", "some_extension_id",
+                    "experimental_hello_world"})));
 
-  EXPECT_TRUE(extension_ime_util::IsMemberOfExtension(extention_1_engine_1,
-                                                      extention1));
-  EXPECT_TRUE(extension_ime_util::IsMemberOfExtension(extention_1_engine_2,
-                                                      extention1));
-  EXPECT_FALSE(extension_ime_util::IsMemberOfExtension(extention_1_engine_1,
-                                                       extention2));
-  EXPECT_FALSE(extension_ime_util::IsMemberOfExtension(extention_1_engine_2,
-                                                       extention2));
-  EXPECT_FALSE(extension_ime_util::IsMemberOfExtension(component_3_engine_3,
-                                                       extention3));
-}
+  EXPECT_FALSE(extension_ime_util::IsExperimentalMultilingual(base::StrCat(
+      {"_comp_ime_", "some_extension_id", "experimental_hello_world"})));
 
-TEST(ExtensionIMEUtilTest, IsLanguageForArcIMETest) {
-  EXPECT_TRUE(extension_ime_util::IsLanguageForArcIME(
-      extension_ime_util::kArcImeLanguage));
-  EXPECT_FALSE(extension_ime_util::IsLanguageForArcIME(
-      extension_ime_util::kArcImeLanguage + std::string(" ")));
+  EXPECT_FALSE(extension_ime_util::IsExperimentalMultilingual(base::StrCat(
+      {"_comp_ime_", "jkghodnilhceideoidjikpgommlajknk", "hello_world"})));
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  EXPECT_TRUE(
+#else
+  EXPECT_FALSE(
+#endif
+      extension_ime_util::IsExperimentalMultilingual(
+          base::StrCat({"_comp_ime_", "jkghodnilhceideoidjikpgommlajknk",
+                        "experimental_hello_world"})));
 }
 
 }  // namespace chromeos

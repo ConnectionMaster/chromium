@@ -13,19 +13,19 @@ namespace chromecast {
 
 struct MinidumpParams {
   MinidumpParams();
-  MinidumpParams(const std::string& p_process_name,
-                 const uint64_t p_process_uptime,
+  MinidumpParams(const uint64_t p_process_uptime,
                  const std::string& p_suffix,
                  const std::string& p_previous_app_name,
                  const std::string& p_current_app_name,
                  const std::string& p_last_app_name,
                  const std::string& p_cast_release_version,
                  const std::string& p_cast_build_number,
-                 const std::string& p_reason);
+                 const std::string& p_reason,
+                 const std::string& p_stadia_session_id,
+                 const std::string& p_extra_info = "");
   MinidumpParams(const MinidumpParams& params);
   ~MinidumpParams();
 
-  std::string process_name;
   uint64_t process_uptime;
   std::string suffix;
   std::string previous_app_name;
@@ -37,6 +37,9 @@ struct MinidumpParams {
   std::string cast_build_number;
   // Reason for crash, if one is available.
   std::string reason;
+  // Stadia Session ID, if a Stadia session was running at the time of crash.
+  std::string stadia_session_id;
+  std::string extra_info;
 };
 
 }  // namespace chromecast

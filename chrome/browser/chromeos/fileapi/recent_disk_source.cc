@@ -10,21 +10,28 @@
 #include "base/files/file_path.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
-#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "storage/browser/fileapi/external_mount_points.h"
-#include "storage/browser/fileapi/file_system_context.h"
-#include "storage/browser/fileapi/file_system_operation.h"
-#include "storage/browser/fileapi/file_system_operation_runner.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "net/base/mime_util.h"
+#include "storage/browser/file_system/external_mount_points.h"
+#include "storage/browser/file_system/file_system_context.h"
+#include "storage/browser/file_system/file_system_operation.h"
+#include "storage/browser/file_system/file_system_operation_runner.h"
+#include "storage/browser/file_system/file_system_url.h"
+#include "url/origin.h"
 
 using content::BrowserThread;
 
 namespace chromeos {
 
 namespace {
+
+constexpr char kAudioMimeType[] = "audio/*";
+constexpr char kImageMimeType[] = "image/*";
+constexpr char kVideoMimeType[] = "video/*";
+constexpr char kAmrMimeType[] = "audio/amr";
+constexpr char kAmrExtension[] = ".amr";
 
 void OnReadDirectoryOnIOThread(
     const storage::FileSystemOperation::ReadDirectoryCallback& callback,
@@ -33,8 +40,8 @@ void OnReadDirectoryOnIOThread(
     bool has_more) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(callback, result, std::move(entries), has_more));
 }
 
@@ -54,8 +61,8 @@ void OnGetMetadataOnIOThread(
     const base::File::Info& info) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                           base::BindOnce(std::move(callback), result, info));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), result, info));
 }
 
 void GetMetadataOnIOThread(
@@ -70,6 +77,38 @@ void GetMetadataOnIOThread(
       base::BindOnce(&OnGetMetadataOnIOThread, std::move(callback)));
 }
 
+// Returns true if the files at |path| matches the given |file_type|.
+bool MatchesFileType(const base::FilePath& path,
+                     RecentSource::FileType file_type) {
+  if (file_type == RecentSource::FileType::kAll)
+    return true;
+
+  // File type for |path| is guessed using net::GetMimeTypeFromFile.
+  // It guesses mime types based on file extensions, but it has a limited set
+  // of file extensions.
+  // TODO(fukino): It is better to have better coverage of file extensions to be
+  // consistent with file-type detection on Android system. crbug.com/1034874.
+  std::string mime_type;
+  if (!net::GetMimeTypeFromFile(path, &mime_type)) {
+    const base::FilePath::StringType ext = path.Extension();
+    if (base::ToLowerASCII(ext) != kAmrExtension) {
+      return false;
+    }
+    mime_type = kAmrMimeType;
+  }
+
+  switch (file_type) {
+    case RecentSource::FileType::kAudio:
+      return net::MatchesMimeType(kAudioMimeType, mime_type);
+    case RecentSource::FileType::kImage:
+      return net::MatchesMimeType(kImageMimeType, mime_type);
+    case RecentSource::FileType::kVideo:
+      return net::MatchesMimeType(kVideoMimeType, mime_type);
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 RecentDiskSource::RecentDiskSource(std::string mount_point_name,
@@ -79,8 +118,7 @@ RecentDiskSource::RecentDiskSource(std::string mount_point_name,
     : mount_point_name_(std::move(mount_point_name)),
       ignore_dotfiles_(ignore_dotfiles),
       max_depth_(max_depth),
-      uma_histogram_name_(std::move(uma_histogram_name)),
-      weak_ptr_factory_(this) {
+      uma_histogram_name_(std::move(uma_histogram_name)) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 }
 
@@ -121,8 +159,8 @@ void RecentDiskSource::ScanDirectory(const base::FilePath& path, int depth) {
   storage::FileSystemURL url = BuildDiskURL(path);
 
   ++inflight_readdirs_;
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
           &ReadDirectoryOnIOThread,
           base::WrapRefCounted(params_.value().file_system_context()), url,
@@ -154,10 +192,13 @@ void RecentDiskSource::OnReadDirectory(
       }
       ScanDirectory(subpath, depth + 1);
     } else {
+      if (!MatchesFileType(entry.name, params_.value().file_type())) {
+        continue;
+      }
       storage::FileSystemURL url = BuildDiskURL(subpath);
       ++inflight_stats_;
-      base::PostTaskWithTraits(
-          FROM_HERE, {BrowserThread::IO},
+      content::GetIOThreadTaskRunner({})->PostTask(
+          FROM_HERE,
           base::BindOnce(
               &GetMetadataOnIOThread,
               base::WrapRefCounted(params_.value().file_system_context()), url,
@@ -228,8 +269,8 @@ storage::FileSystemURL RecentDiskSource::BuildDiskURL(
 
   storage::ExternalMountPoints* mount_points =
       storage::ExternalMountPoints::GetSystemInstance();
-  return mount_points->CreateExternalFileSystemURL(params_.value().origin(),
-                                                   mount_point_name_, path);
+  return mount_points->CreateExternalFileSystemURL(
+      url::Origin::Create(params_.value().origin()), mount_point_name_, path);
 }
 
 }  // namespace chromeos

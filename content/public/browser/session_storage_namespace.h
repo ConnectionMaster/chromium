@@ -11,6 +11,8 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
+#include "content/common/content_export.h"
+#include "content/public/browser/storage_partition_config.h"
 
 namespace content {
 
@@ -21,13 +23,13 @@ class SessionStorageNamespace
  public:
   // Returns the ID for the |SessionStorageNamespace|. The ID is unique among
   // all SessionStorageNamespace objects and across browser runs.
-  virtual const std::string& id() const = 0;
+  virtual const std::string& id() = 0;
 
   // For marking that the sessionStorage will be needed or won't be needed by
   // session restore.
   virtual void SetShouldPersist(bool should_persist) = 0;
 
-  virtual bool should_persist() const = 0;
+  virtual bool should_persist() = 0;
 
  protected:
   friend class base::RefCountedThreadSafe<SessionStorageNamespace>;
@@ -35,8 +37,15 @@ class SessionStorageNamespace
 };
 
 // Used to store mappings of StoragePartition id to SessionStorageNamespace.
-typedef std::map<std::string, scoped_refptr<SessionStorageNamespace> >
+typedef std::map<StoragePartitionId, scoped_refptr<SessionStorageNamespace>>
     SessionStorageNamespaceMap;
+
+// Helper function that creates a SessionStorageNamespaceMap and assigns
+// `session_storage_namespace` to the default StoragePartitionId.
+CONTENT_EXPORT SessionStorageNamespaceMap
+CreateMapWithDefaultSessionStorageNamespace(
+    BrowserContext* browser_context,
+    scoped_refptr<SessionStorageNamespace> session_storage_namespace);
 
 }  // namespace content
 

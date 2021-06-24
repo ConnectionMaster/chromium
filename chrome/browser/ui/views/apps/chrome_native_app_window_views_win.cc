@@ -24,8 +24,7 @@
 #include "ui/views/win/hwnd_util.h"
 
 ChromeNativeAppWindowViewsWin::ChromeNativeAppWindowViewsWin()
-    : glass_frame_view_(NULL), is_translucent_(false), weak_ptr_factory_(this) {
-}
+    : glass_frame_view_(nullptr), is_translucent_(false) {}
 
 ChromeNativeAppWindowViewsWin::~ChromeNativeAppWindowViewsWin() {
 }
@@ -51,8 +50,8 @@ void ChromeNativeAppWindowViewsWin::OnBeforeWidgetInit(
                                                      widget);
   init_params->native_widget = new AppWindowDesktopNativeWidgetAuraWin(this);
 
-  is_translucent_ =
-      init_params->opacity == views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  is_translucent_ = init_params->opacity ==
+                    views::Widget::InitParams::WindowOpacity::kTranslucent;
 }
 
 void ChromeNativeAppWindowViewsWin::InitializeDefaultWindow(
@@ -65,11 +64,11 @@ void ChromeNativeAppWindowViewsWin::InitializeDefaultWindow(
 
   std::string app_name =
       web_app::GenerateApplicationNameFromAppId(extension->id());
-  base::string16 app_name_wide = base::UTF8ToWide(app_name);
+  std::wstring app_name_wide = base::UTF8ToWide(app_name);
   HWND hwnd = GetNativeAppWindowHWND();
   Profile* profile =
       Profile::FromBrowserContext(app_window()->browser_context());
-  app_model_id_ = shell_integration::win::GetAppModelIdForProfile(
+  app_model_id_ = shell_integration::win::GetAppUserModelIdForApp(
       app_name_wide, profile->GetPath());
   ui::win::SetAppIdForWindow(app_model_id_, hwnd);
   web_app::UpdateRelaunchDetailsForApp(profile, extension, hwnd);
@@ -78,13 +77,15 @@ void ChromeNativeAppWindowViewsWin::InitializeDefaultWindow(
     EnsureCaptionStyleSet();
 }
 
-views::NonClientFrameView*
+std::unique_ptr<views::NonClientFrameView>
 ChromeNativeAppWindowViewsWin::CreateStandardDesktopAppFrame() {
-  glass_frame_view_ = NULL;
   if (ui::win::IsAeroGlassEnabled()) {
-    glass_frame_view_ = new GlassAppWindowFrameViewWin(widget());
-    return glass_frame_view_;
+    auto glass_frame_view =
+        std::make_unique<GlassAppWindowFrameViewWin>(widget());
+    glass_frame_view_ = glass_frame_view.get();
+    return glass_frame_view;
   }
+  glass_frame_view_ = nullptr;
   return ChromeNativeAppWindowViewsAura::CreateStandardDesktopAppFrame();
 }
 

@@ -2,20 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/profile_resetter/triggered_profile_resetter.h"
-
 #include <stdint.h>
 
+#include "base/logging.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_util.h"
 #include "base/win/registry.h"
+#include "build/branding_buildflags.h"
+#include "chrome/browser/profile_resetter/triggered_profile_resetter.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #define PRODUCT_NAME L"Google\\Chrome"
-#elif defined(CHROMIUM_BUILD)
+#elif BUILDFLAG(CHROMIUM_BRANDING)
 #define PRODUCT_NAME L"Chromium"
 #else
 #error Unknown branding
@@ -80,12 +82,14 @@ void TriggeredProfileResetter::Activate() {
 
     has_reset_trigger_ = true;
 
-    if (reset_reg_key.ReadValue(kTriggeredResetToolName, &tool_name_) !=
+    std::wstring tool_name;
+    if (reset_reg_key.ReadValue(kTriggeredResetToolName, &tool_name) !=
         ERROR_SUCCESS) {
       DVLOG(1) << "Failed to read triggered profile reset tool name.";
-    } else if (tool_name_.length() > kMaxToolNameLength) {
-      tool_name_.resize(kMaxToolNameLength);
+    } else if (tool_name.length() > kMaxToolNameLength) {
+      tool_name.resize(kMaxToolNameLength);
     }
+    tool_name_ = base::AsString16(tool_name);
 
     pref_service->SetInt64(prefs::kLastProfileResetTimestamp, timestamp);
   }

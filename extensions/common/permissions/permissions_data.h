@@ -15,6 +15,8 @@
 #include "base/threading/thread_checker.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest.h"
+#include "extensions/common/mojom/api_permission_id.mojom-shared.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/permission_message.h"
 #include "extensions/common/permissions/permission_set.h"
@@ -58,11 +60,6 @@ class PermissionsData {
                 // the given page.
   };
 
-  enum class EffectiveHostPermissionsMode {
-    kOmitTabSpecific,
-    kIncludeTabSpecific,
-  };
-
   using TabPermissionsMap = std::map<int, std::unique_ptr<const PermissionSet>>;
 
   // Delegate class to allow different contexts (e.g. browser vs renderer) to
@@ -81,16 +78,16 @@ class PermissionsData {
 
   PermissionsData(const ExtensionId& extension_id,
                   Manifest::Type manifest_type,
-                  Manifest::Location location,
+                  mojom::ManifestLocation location,
                   std::unique_ptr<const PermissionSet> initial_permissions);
   virtual ~PermissionsData();
 
   // Returns true if the extension is a COMPONENT extension or is on the
-  // whitelist of extensions that can script all pages.
+  // allowlist of extensions that can script all pages.
   // NOTE: This is static because it is used during extension initialization,
   // before the extension has an associated PermissionsData object.
   static bool CanExecuteScriptEverywhere(const ExtensionId& extension_id,
-                                         Manifest::Location location);
+                                         mojom::ManifestLocation location);
 
   // Returns true if the given |url| is restricted for the given |extension|,
   // as is commonly the case for chrome:// urls.
@@ -127,17 +124,15 @@ class PermissionsData {
   // which URLs extensions can interact with. A default policy can be set with
   // SetDefaultPolicyHostRestrictions. A policy specific to this extension
   // can be set with SetPolicyHostRestrictions.
-  void SetUsesDefaultHostRestrictions() const;
+  void SetUsesDefaultHostRestrictions(int context_id) const;
 
-  // Applies restrictions from enterprise policy limiting which URLs all
-  // extensions can interact with. This restriction can be overridden on a
-  // per-extension basis with SetPolicyHostRestrictions.
+  // Applies profile dependent restrictions from enterprise policy limiting
+  // which URLs all extensions can interact with. This restriction can
+  // be overridden on a per-extension basis with SetPolicyHostRestrictions.
   static void SetDefaultPolicyHostRestrictions(
+      int context_id,
       const URLPatternSet& default_policy_blocked_hosts,
       const URLPatternSet& default_policy_allowed_hosts);
-
-  // Sets the active permissions, leaving withheld the same.
-  void SetActivePermissions(std::unique_ptr<const PermissionSet> active) const;
 
   // Updates the tab-specific permissions of |tab_id| to include those from
   // |permissions|.
@@ -153,18 +148,18 @@ class PermissionsData {
   // Note this does not include APIs with no corresponding permission, like
   // "runtime" or "browserAction".
   // TODO(mpcomplete): drop the "API" from these names, it's confusing.
-  bool HasAPIPermission(APIPermission::ID permission) const;
+  bool HasAPIPermission(mojom::APIPermissionID permission) const;
   bool HasAPIPermission(const std::string& permission_name) const;
-  bool HasAPIPermissionForTab(int tab_id, APIPermission::ID permission) const;
+  bool HasAPIPermissionForTab(int tab_id,
+                              mojom::APIPermissionID permission) const;
   bool CheckAPIPermissionWithParam(
-      APIPermission::ID permission,
+      mojom::APIPermissionID permission,
       const APIPermission::CheckParam* param) const;
 
   // Returns the hosts this extension effectively has access to, including
   // explicit and scriptable hosts, and any hosts on tabs the extension has
   // active tab permissions for.
-  URLPatternSet GetEffectiveHostPermissions(
-      EffectiveHostPermissionsMode mode) const;
+  URLPatternSet GetEffectiveHostPermissions() const;
 
   // TODO(rdevlin.cronin): HasHostPermission() and
   // HasEffectiveAccessToAllHosts() are just forwards for the active
@@ -255,27 +250,27 @@ class PermissionsData {
   // This should only be used for 1. Serialization when initializing renderers
   // or 2. Called from utility methods above. For all other uses, call utility
   // methods instead (e.g. CanAccessPage()).
-  static const URLPatternSet& default_policy_blocked_hosts();
+  static URLPatternSet GetDefaultPolicyBlockedHosts(int context_id);
 
   // Returns list of hosts this extension may interact with regardless of
   // what is defined by policy_blocked_hosts().
   // This should only be used for 1. Serialization when initializing renderers
   // or 2. Called from utility methods above. For all other uses, call utility
   // methods instead (e.g. CanAccessPage()).
-  static const URLPatternSet& default_policy_allowed_hosts();
+  static URLPatternSet GetDefaultPolicyAllowedHosts(int context_id);
 
   // Returns list of hosts this extension may not interact with by policy.
   // This should only be used for 1. Serialization when initializing renderers
   // or 2. Called from utility methods above. For all other uses, call utility
   // methods instead (e.g. CanAccessPage()).
-  const URLPatternSet policy_blocked_hosts() const;
+  URLPatternSet policy_blocked_hosts() const;
 
   // Returns list of hosts this extension may interact with regardless of
   // what is defined by policy_blocked_hosts().
   // This should only be used for 1. Serialization when initializing renderers
   // or 2. Called from utility methods above. For all other uses, call utility
   // methods instead (e.g. CanAccessPage()).
-  const URLPatternSet policy_allowed_hosts() const;
+  URLPatternSet policy_allowed_hosts() const;
 
   // Check if a specific URL is blocked by policy from extension use at runtime.
   bool IsPolicyBlockedHost(const GURL& url) const {
@@ -311,14 +306,6 @@ class PermissionsData {
   // You must acquire the runtime_lock_ before calling.
   bool IsPolicyBlockedHostUnsafe(const GURL& url) const;
 
-  // Same as policy_blocked_hosts but instead returns a reference.
-  // You must acquire runtime_lock_ before calling this.
-  const URLPatternSet& PolicyBlockedHostsUnsafe() const;
-
-  // Same as policy_allowed_hosts but instead returns a reference.
-  // You must acquire runtime_lock_ before calling this.
-  const URLPatternSet& PolicyAllowedHostsUnsafe() const;
-
   // The associated extension's id.
   std::string extension_id_;
 
@@ -326,7 +313,7 @@ class PermissionsData {
   Manifest::Type manifest_type_;
 
   // The associated extension's location.
-  Manifest::Location location_;
+  mojom::ManifestLocation location_;
 
   mutable base::Lock runtime_lock_;
 
@@ -354,9 +341,11 @@ class PermissionsData {
   // policy_allowed_hosts() accessor.
   mutable URLPatternSet policy_allowed_hosts_unsafe_;
 
-  // If the ExtensionSettings policy is not being used, or no per-extension
-  // exception to the default policy was declared for this extension.
-  mutable bool uses_default_policy_host_restrictions = true;
+  // An identifier for the context associated with the PermissionsData.
+  // It required in order to properly map the context to the right default
+  // policy hosts.
+  // The context_id is empty if the default policy hosts are not used.
+  mutable absl::optional<int> context_id_;
 
   mutable TabPermissionsMap tab_specific_permissions_;
 

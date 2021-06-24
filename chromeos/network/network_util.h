@@ -70,6 +70,18 @@ struct COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularScanResult {
   std::string technology;  // Access technology.
 };
 
+// Struct for passing cellular SIM slot info data.
+struct COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularSIMSlotInfo {
+  CellularSIMSlotInfo();
+  CellularSIMSlotInfo(const CellularSIMSlotInfo& other);
+  ~CellularSIMSlotInfo();
+  int32_t slot_id;      // The physical slot number.
+  std::string eid;      // For eSIM capable SIM cards only, the EID of
+                        // the SIM Card.
+  std::string iccid;    // The ICCID of the SIM Card.
+  bool primary;         // True if the slot is primary (active).
+};
+
 typedef std::vector<WifiAccessPoint> WifiAccessPointVector;
 typedef std::vector<CellTower> CellTowerVector;
 
@@ -81,12 +93,6 @@ enum NetworkMethodErrorType {
   NETWORK_METHOD_ERROR_LOCAL = 1,
   NETWORK_METHOD_ERROR_REMOTE = 2,
 };
-
-// Callback for methods that initiate an operation and return no data.
-typedef base::Callback<void(
-    const std::string& path,
-    NetworkMethodErrorType error,
-    const std::string& error_message)> NetworkOperationCallback;
 
 namespace network_util {
 
@@ -112,6 +118,13 @@ COMPONENT_EXPORT(CHROMEOS_NETWORK)
 bool ParseCellularScanResults(const base::ListValue& list,
                               std::vector<CellularScanResult>* scan_results);
 
+// Parses |list|, which contains DictionaryValues and returns a vector of
+// CellularSIMSlotInfo in |sim_slot_infos|. Returns false if parsing fails,
+// in which case the contents of |sim_slot_infos| will be undefined.
+COMPONENT_EXPORT(CHROMEOS_NETWORK)
+bool ParseCellularSIMSlotInfo(const base::Value::ConstListView list,
+                              std::vector<CellularSIMSlotInfo>* sim_slot_infos);
+
 // Retrieves the ONC state dictionary for |network| using GetStateProperties.
 // This includes properties from the corresponding NetworkState if it exists.
 // Assumed to be called from the primary user profile.
@@ -132,7 +145,7 @@ std::unique_ptr<base::ListValue> TranslateNetworkListToONC(
     int limit);
 
 // Returns the Shill type corresponding to ONC |type| or an empty string if
-// there is no match. Only valid for ethernet, wifi, wimax, cellular, and vpn.
+// there is no match. Only valid for ethernet, wifi, cellular, and vpn.
 COMPONENT_EXPORT(CHROMEOS_NETWORK)
 std::string TranslateONCTypeToShill(const std::string& type);
 

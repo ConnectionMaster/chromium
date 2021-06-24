@@ -5,6 +5,8 @@
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "components/policy/core/common/cloud/cloud_policy_constants.h"
 
 #if defined(OS_WIN)
 #include <Windows.h>  // For GetComputerNameW()
@@ -16,28 +18,43 @@
 #include <wincred.h>
 #endif
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) || defined(OS_MACOSX)
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS) || defined(OS_APPLE)
 #include <pwd.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
 
-#if defined(OS_MACOSX)
-#import <SystemConfiguration/SCDynamicStoreCopySpecific.h>
+#if defined(OS_APPLE)
 #include <stddef.h>
 #include <sys/sysctl.h>
 #endif
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+#if defined(OS_MAC)
+#import <SystemConfiguration/SCDynamicStoreCopySpecific.h>
+#endif
+
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #include <limits.h>  // For HOST_NAME_MAX
 #endif
 
 #include <utility>
 
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check.h"
+#include "base/cxx17_backports.h"
+#include "base/notreached.h"
 #include "base/system/sys_info.h"
+#if defined(OS_WIN)
+#include "base/win/wmi.h"
+#endif
 #include "components/version_info/version_info.h"
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chromeos/system/statistics_provider.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
+#endif
 
 #if defined(OS_WIN)
 #include "base/strings/stringprintf.h"
@@ -45,28 +62,56 @@
 #include "base/win/windows_version.h"
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include "base/mac/scoped_cftyperef.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/system/sys_info.h"
 #endif
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #include "base/system/sys_info.h"
+#endif
+
+#if defined(OS_IOS)
+#include "base/ios/device_util.h"
 #endif
 
 namespace policy {
 
 namespace em = enterprise_management;
 
+std::string GetDeviceManufacturer() {
+#if defined(OS_IOS)
+  return "Apple Inc.";
+#else
+  return std::string();
+#endif
+}
+
+std::string GetDeviceModel() {
+#if defined(OS_IOS)
+  // Obtains the Apple internal device name (e.g. "iPad6,11").
+  return base::SysInfo::HardwareModelName();
+#else
+  return std::string();
+#endif
+}
+
 std::string GetMachineName() {
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   char hostname[HOST_NAME_MAX];
   if (gethostname(hostname, HOST_NAME_MAX) == 0)  // Success.
     return hostname;
   return std::string();
-#elif defined(OS_MACOSX)
+#elif defined(OS_IOS)
+  // Use the Vendor ID as the machine name.
+  return ios::device_util::GetVendorId();
+#elif defined(OS_MAC)
   // Do not use NSHost currentHost, as it's very slow. http://crbug.com/138570
   SCDynamicStoreContext context = {0, NULL, NULL, NULL};
   base::ScopedCFTypeRef<SCDynamicStoreRef> store(SCDynamicStoreCreate(
@@ -104,6 +149,8 @@ std::string GetMachineName() {
     return result;
   }
   return std::string();
+#elif defined(OS_ANDROID)
+  return std::string();
 #else
   NOTREACHED();
   return std::string();
@@ -111,14 +158,16 @@ std::string GetMachineName() {
 }
 
 std::string GetOSVersion() {
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) || defined(OS_MACOSX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_APPLE)
   return base::SysInfo::OperatingSystemVersion();
 #elif defined(OS_WIN)
   base::win::OSInfo::VersionNumber version_number =
       base::win::OSInfo::GetInstance()->version_number();
-  return base::StringPrintf("%d.%d.%d.%d", version_number.major,
+  return base::StringPrintf("%u.%u.%u.%u", version_number.major,
                             version_number.minor, version_number.build,
                             version_number.patch);
+#elif defined(OS_ANDROID)
+  return std::string();
 #else
   NOTREACHED();
   return std::string();
@@ -134,7 +183,7 @@ std::string GetOSArchitecture() {
 }
 
 std::string GetOSUsername() {
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) || defined(OS_MACOSX)
+#if (defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)) || defined(OS_APPLE)
   struct passwd* creds = getpwuid(getuid());
   if (!creds || !creds->pw_name)
     return std::string();
@@ -153,6 +202,15 @@ std::string GetOSUsername() {
   }
 
   return base::WideToUTF8(username);
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
+  if (!user_manager::UserManager::IsInitialized())
+    return std::string();
+  auto* user = user_manager::UserManager::Get()->GetPrimaryUser();
+  if (!user)
+    return std::string();
+  return user->GetAccountId().GetUserEmail();
+#elif defined(OS_ANDROID)
+  return std::string();
 #else
   NOTREACHED();
   return std::string();
@@ -172,6 +230,42 @@ em::Channel ConvertToProtoChannel(version_info::Channel channel) {
     case version_info::Channel::STABLE:
       return em::CHANNEL_STABLE;
   }
+}
+
+std::string GetDeviceName() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  return chromeos::system::StatisticsProvider::GetInstance()
+      ->GetEnterpriseMachineID();
+#else
+  return GetMachineName();
+#endif
+}
+
+std::unique_ptr<em::BrowserDeviceIdentifier> GetBrowserDeviceIdentifier() {
+  std::unique_ptr<em::BrowserDeviceIdentifier> device_identifier =
+      std::make_unique<em::BrowserDeviceIdentifier>();
+  device_identifier->set_computer_name(GetMachineName());
+#if defined(OS_WIN)
+  device_identifier->set_serial_number(base::WideToUTF8(
+      base::win::WmiComputerSystemInfo::Get().serial_number()));
+#else
+  device_identifier->set_serial_number("");
+#endif
+  return device_identifier;
+}
+
+bool IsMachineLevelUserCloudPolicyType(const std::string& type) {
+  return type == GetMachineLevelUserCloudPolicyTypeForCurrentOS();
+}
+
+std::string GetMachineLevelUserCloudPolicyTypeForCurrentOS() {
+#if defined(OS_IOS)
+  return dm_protocol::kChromeMachineLevelUserCloudPolicyIOSType;
+#elif defined(OS_ANDROID)
+  return dm_protocol::kChromeMachineLevelUserCloudPolicyAndroidType;
+#else
+  return dm_protocol::kChromeMachineLevelUserCloudPolicyType;
+#endif
 }
 
 }  // namespace policy

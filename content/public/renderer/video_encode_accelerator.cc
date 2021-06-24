@@ -12,24 +12,25 @@
 namespace content {
 
 void CreateVideoEncodeAccelerator(
-    const OnCreateVideoEncodeAcceleratorCallback& callback) {
+    OnCreateVideoEncodeAcceleratorCallback callback) {
   DCHECK(!callback.is_null());
 
   media::GpuVideoAcceleratorFactories* gpu_factories =
       RenderThreadImpl::current()->GetGpuFactories();
   if (!gpu_factories || !gpu_factories->IsGpuVideoAcceleratorEnabled()) {
-    callback.Run(nullptr, std::unique_ptr<media::VideoEncodeAccelerator>());
+    std::move(callback).Run(nullptr,
+                            std::unique_ptr<media::VideoEncodeAccelerator>());
     return;
   }
 
-  scoped_refptr<base::SingleThreadTaskRunner> encode_task_runner =
+  scoped_refptr<base::SequencedTaskRunner> encode_task_runner =
       gpu_factories->GetTaskRunner();
   base::PostTaskAndReplyWithResult(
       encode_task_runner.get(), FROM_HERE,
-      base::Bind(
+      base::BindOnce(
           &media::GpuVideoAcceleratorFactories::CreateVideoEncodeAccelerator,
           base::Unretained(gpu_factories)),
-      base::Bind(callback, encode_task_runner));
+      base::BindOnce(std::move(callback), encode_task_runner));
 }
 
 media::VideoEncodeAccelerator::SupportedProfiles
@@ -43,7 +44,8 @@ GetSupportedVideoEncodeAcceleratorProfiles() {
       RenderThreadImpl::current()->GetGpuFactories();
   if (!gpu_factories || !gpu_factories->IsGpuVideoAcceleratorEnabled())
     return media::VideoEncodeAccelerator::SupportedProfiles();
-  return gpu_factories->GetVideoEncodeAcceleratorSupportedProfiles();
+  return gpu_factories->GetVideoEncodeAcceleratorSupportedProfiles().value_or(
+      media::VideoEncodeAccelerator::SupportedProfiles());
 #endif  // defined(OS_ANDROID)
 }
 

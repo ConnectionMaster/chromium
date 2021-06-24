@@ -12,7 +12,7 @@
 
 #include "base/callback.h"
 #include "base/callback_helpers.h"
-#include "base/stl_util.h"
+#include "base/strings/string_util.h"
 #include "chrome/credential_provider/gaiacp/gcp_utils.h"
 #include "chrome/credential_provider/gaiacp/logging.h"
 #include "chrome/credential_provider/gaiacp/os_user_manager.h"
@@ -236,8 +236,8 @@ HRESULT KerbInteractiveUnlockLogonPack(
 
 HRESULT UnpackUserInfoFromAuthenticationBuffer(
     const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* cpcs,
-    base::string16* domain,
-    base::string16* username) {
+    std::wstring* domain,
+    std::wstring* username) {
   DCHECK(cpcs);
   DCHECK(domain);
   DCHECK(username);
@@ -248,8 +248,8 @@ HRESULT UnpackUserInfoFromAuthenticationBuffer(
   ULONG buffer_size = cpcs->cbSerialization;
   KERB_INTERACTIVE_LOGON* pkil = &pkiul->Logon;
 
-  base::string16 serialization_domain;
-  base::string16 serialization_username;
+  std::wstring serialization_domain;
+  std::wstring serialization_username;
   // Check to see if the buffer is packed:
   // 1. Ensure that the buffer can possibly contain the serialization.
   // 2. Also if the range described by each (Buffer + MaximumSize) falls
@@ -278,12 +278,12 @@ HRESULT UnpackUserInfoFromAuthenticationBuffer(
       const wchar_t* username_buffer_pos = reinterpret_cast<wchar_t*>(
           (reinterpret_cast<ptrdiff_t>(pkiul) +
            reinterpret_cast<ptrdiff_t>(pkil->UserName.Buffer)));
-      serialization_domain = base::string16(
-          domain_buffer_pos,
-          pkil->LogonDomainName.MaximumLength / sizeof(domain_buffer_pos[0]));
-      serialization_username = base::string16(
-          username_buffer_pos,
-          pkil->UserName.MaximumLength / sizeof(username_buffer_pos[0]));
+      serialization_domain =
+          std::wstring(domain_buffer_pos, pkil->LogonDomainName.MaximumLength /
+                                              sizeof(domain_buffer_pos[0]));
+      serialization_username =
+          std::wstring(username_buffer_pos, pkil->UserName.MaximumLength /
+                                                sizeof(username_buffer_pos[0]));
     }
   } else {
     // If the authentication package is not packed, assume that the buffer
@@ -328,13 +328,13 @@ HRESULT GetAuthenticationPackageId(ULONG* id) {
 
 HRESULT DetermineUserSidFromAuthenticationBuffer(
     const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* cpcs,
-    base::string16* sid) {
+    std::wstring* sid) {
   DCHECK(sid);
 
   sid->clear();
 
-  base::string16 serialization_domain;
-  base::string16 serialization_username;
+  std::wstring serialization_domain;
+  std::wstring serialization_username;
   HRESULT hr = UnpackUserInfoFromAuthenticationBuffer(
       cpcs, &serialization_domain, &serialization_username);
 
@@ -350,7 +350,7 @@ HRESULT DetermineUserSidFromAuthenticationBuffer(
     // user on the local domain we could possibly signin and return the SID for
     // that user if it exists.
     if (FAILED(hr)) {
-      base::string16 local_domain = OSUserManager::GetLocalDomain();
+      std::wstring local_domain = OSUserManager::GetLocalDomain();
       if (!base::EqualsCaseInsensitiveASCII(local_domain,
                                             serialization_domain)) {
         hr = OSUserManager::Get()->GetUserSID(
@@ -395,7 +395,7 @@ HRESULT BuildCredPackAuthenticationBuffer(
                                          &protected_password);
 
   // Zero out the unencrypted copy of the password.
-  ::RtlSecureZeroMemory(&copy_password[0], copy_password.size());
+  SecurelyClearBuffer(&copy_password[0], copy_password.size());
   if (FAILED(hr)) {
     LOGFN(ERROR) << "ProtectIfNecessaryAndCopyPassword hr=" << putHR(hr);
     return hr;
@@ -403,7 +403,7 @@ HRESULT BuildCredPackAuthenticationBuffer(
 
   // Protected password may still be insecure so make sure to zero it out.
   base::ScopedClosureRunner zero_buffer_on_exit(
-      base::BindOnce(base::IgnoreResult(&RtlSecureZeroMemory),
+      base::BindOnce(base::IgnoreResult(&SecurelyClearBuffer),
                      &protected_password[0], protected_password.size()));
 
   wchar_t* logon_domain = domain;

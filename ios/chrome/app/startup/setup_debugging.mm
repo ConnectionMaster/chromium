@@ -6,7 +6,7 @@
 
 #include <objc/runtime.h>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/strings/sys_string_conversions.h"
 #include "components/crash/core/common/objc_zombie.h"
 
@@ -18,24 +18,50 @@ namespace {
 
 #if !defined(NDEBUG)
 
+// Swizzles [UIColor colorNamed:] to trigger a DCHECK if an invalid color is
+// attempted to be loaded.
+void SwizzleUIColorColorNamed() {
+  // The original implementation of [UIColor colorNamed:].
+  // Called by the new implementation.
+  static IMP originalImp;
+  IMP* originalImpPtr = &originalImp;
+
+  id swizzleBlock = ^(id self, NSString* colorName) {
+    // Call the original [UIColor colorNamed:] method.
+    UIColor* (*imp)(id, SEL, id) =
+        (UIColor * (*)(id, SEL, id)) * originalImpPtr;
+    Class aClass = objc_getClass("UIColor");
+    UIColor* color = imp(aClass, @selector(colorNamed:), colorName);
+    DCHECK(color) << "Missing color: " << base::SysNSStringToUTF8(colorName);
+    return color;
+  };
+
+  Method method = class_getClassMethod([UIColor class], @selector(colorNamed:));
+  DCHECK(method);
+
+  IMP blockImp = imp_implementationWithBlock(swizzleBlock);
+  originalImp = method_setImplementation(method, blockImp);
+}
+
 // Swizzles [UIImage imageNamed:] to trigger a DCHECK if an invalid image is
 // attempted to be loaded.
-void swizzleUIImageImageNamed() {
+void SwizzleUIImageImageNamed() {
   // Retained by the swizzle block.
-  NSMutableSet* whiteList = [NSMutableSet set];
+  // A set of image names that are exceptions to the 'missing image' check.
+  NSMutableSet* exceptions = [NSMutableSet set];
 
   // TODO(crbug.com/720337): Add missing image.
-  [whiteList addObject:@"card_close_button_pressed_incognito"];
+  [exceptions addObject:@"card_close_button_pressed_incognito"];
   // TODO(crbug.com/720355): Add missing image.
-  [whiteList addObject:@"find_close_pressed_incognito"];
+  [exceptions addObject:@"find_close_pressed_incognito"];
   // TODO(crbug.com/720338): Add missing images.
-  [whiteList addObject:@"glif-mic-to-dots-small_37"];
-  [whiteList addObject:@"glif-mic-to-dots-large_37"];
-  [whiteList addObject:@"glif-google-to-dots_28"];
+  [exceptions addObject:@"glif-mic-to-dots-small_37"];
+  [exceptions addObject:@"glif-mic-to-dots-large_37"];
+  [exceptions addObject:@"glif-google-to-dots_28"];
   // TODO(crbug.com/721338): Add missing image.
-  [whiteList addObject:@"voice_icon_keyboard_accessory"];
+  [exceptions addObject:@"voice_icon_keyboard_accessory"];
   // TODO(crbug.com/754032): Add missing image.
-  [whiteList addObject:@"ios_default_avatar"];
+  [exceptions addObject:@"ios_default_avatar"];
 
   // The original implementation of [UIImage imageNamed:].
   // Called by the new implementation.
@@ -48,7 +74,8 @@ void swizzleUIImageImageNamed() {
     Class aClass = objc_getClass("UIImage");
     UIImage* image = imp(aClass, @selector(imageNamed:), imageName);
 
-    if (![whiteList containsObject:imageName]) {
+    if (![exceptions containsObject:imageName] &&
+        ![imageName containsString:@".FAUXBUNDLEID."]) {
       DCHECK(image) << "Missing image: " << base::SysNSStringToUTF8(imageName);
     }
     return image;
@@ -61,7 +88,7 @@ void swizzleUIImageImageNamed() {
   originalImp = method_setImplementation(method, blockImp);
 }
 
-#endif  // !defined(NDEBUG) && TARGET_IPHONE_SIMULATOR
+#endif  // !defined(NDEBUG)
 
 }  // namespace
 
@@ -75,8 +102,9 @@ void swizzleUIImageImageNamed() {
 #endif
 
 #if !defined(NDEBUG)
-  // Enable the detection of missing image assets.
-  swizzleUIImageImageNamed();
+  // Enable the detection of missing assets.
+  SwizzleUIColorColorNamed();
+  SwizzleUIImageImageNamed();
 #endif
 }
 

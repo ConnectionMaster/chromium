@@ -6,23 +6,38 @@
  * @fileoverview
  * 'site-list-entry' shows an Allowed and Blocked site for a given category.
  */
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.m.js';
+import 'chrome://resources/cr_elements/icons.m.js';
+import 'chrome://resources/cr_elements/policy/cr_policy_pref_indicator.m.js';
+import 'chrome://resources/cr_elements/policy/cr_tooltip_icon.m.js';
+import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
+import '../icons.js';
+import '../settings_shared_css.js';
+import '../site_favicon.js';
+
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {FocusRowBehavior} from 'chrome://resources/js/cr/ui/focus_row_behavior.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+import {routes} from '../route.js';
+import {Router} from '../router.js';
+
+import {ChooserType, ContentSettingsTypes, SITE_EXCEPTION_WILDCARD} from './constants.js';
+import {SiteSettingsBehavior} from './site_settings_behavior.js';
+import {SiteException} from './site_settings_prefs_browser_proxy.js';
+
 Polymer({
   is: 'site-list-entry',
 
+  _template: html`{__html_template__}`,
+
   behaviors: [
     SiteSettingsBehavior,
-    cr.ui.FocusRowBehavior,
+    FocusRowBehavior,
   ],
 
   properties: {
-    /** @private */
-    enableSiteSettings_: {
-      type: Boolean,
-      value: function() {
-        return loadTimeData.getBoolean('enableSiteSettings');
-      },
-    },
-
     /**
      * Some content types (like Location) do not allow the user to manually
      * edit the exception list from within Settings.
@@ -45,11 +60,11 @@ Polymer({
     /**
      * If the site represented is part of a chooser exception, the chooser type
      * will be stored here to allow the permission to be manipulated.
-     * @private {!settings.ChooserType}
+     * @private {!ChooserType}
      */
     chooserType: {
       type: String,
-      value: settings.ChooserType.NONE,
+      value: ChooserType.NONE,
     },
 
     /**
@@ -60,12 +75,6 @@ Polymer({
     chooserObject: {
       type: Object,
       value: null,
-    },
-
-    /** @private */
-    siteDescription_: {
-      type: String,
-      computed: 'computeSiteDescription_(model)',
     },
 
     /** @private */
@@ -82,7 +91,7 @@ Polymer({
   },
 
   /** @private */
-  onShowTooltip_: function() {
+  onShowTooltip_() {
     const indicator = assert(this.$$('cr-policy-pref-indicator'));
     // The tooltip text is used by an paper-tooltip contained inside the
     // cr-policy-pref-indicator. The text is currently held in a private
@@ -92,16 +101,27 @@ Polymer({
     this.fire('show-tooltip', {target: indicator, text});
   },
 
+  /** @private */
+  onShowIncognitoTooltip_: function() {
+    const tooltip = assert(this.$$('#incognitoTooltip'));
+    // The tooltip text is used by an paper-tooltip contained inside the
+    // cr-policy-pref-indicator. The text is currently held in a private
+    // property. This text is needed here to send up to the common tooltip
+    // component.
+    const text = loadTimeData.getString('incognitoSiteExceptionDesc');
+    this.fire('show-tooltip', {target: tooltip, text});
+  },
+
   /**
    * @return {boolean}
    * @private
    */
-  shouldHideResetButton_: function() {
+  shouldHideResetButton_() {
     if (this.model === undefined) {
       return false;
     }
 
-    return this.model.enforcement ==
+    return this.model.enforcement ===
         chrome.settingsPrivate.Enforcement.ENFORCED ||
         !(this.readOnlyList || !!this.model.embeddingOrigin);
   },
@@ -110,12 +130,12 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  shouldHideActionMenu_: function() {
+  shouldHideActionMenu_() {
     if (this.model === undefined) {
       return false;
     }
 
-    return this.model.enforcement ==
+    return this.model.enforcement ===
         chrome.settingsPrivate.Enforcement.ENFORCED ||
         this.readOnlyList || !!this.model.embeddingOrigin;
   },
@@ -124,61 +144,86 @@ Polymer({
    * A handler for selecting a site (by clicking on the origin).
    * @private
    */
-  onOriginTap_: function() {
+  onOriginTap_() {
     if (!this.allowNavigateToSiteDetail_) {
       return;
     }
-    settings.navigateTo(
-        settings.routes.SITE_SETTINGS_SITE_DETAILS,
+    Router.getInstance().navigateTo(
+        routes.SITE_SETTINGS_SITE_DETAILS,
         new URLSearchParams('site=' + this.model.origin));
   },
 
   /**
-   * Returns the appropriate site description to display. This can, for example,
-   * be blank, an 'embedded on <site>' or 'Current incognito session' (or a
-   * mix of the last two).
-   * @return {string} The site description.
+   * Returns the appropriate display name to show for the exception.
+   * This can, for example, be the website that is affected itself,
+   * or the website whose third parties are also affected.
+   * @return {string}
    */
-  computeSiteDescription_: function() {
-    let displayName = '';
-    if (this.model.embeddingOrigin) {
-      displayName = loadTimeData.getStringF(
-          'embeddedOnHost', this.sanitizePort(this.model.embeddingOrigin));
-    } else if (this.category == settings.ContentSettingsTypes.GEOLOCATION) {
-      displayName = loadTimeData.getString('embeddedOnAnyHost');
+  computeDisplayName_() {
+    if (this.model.embeddingOrigin &&
+        this.model.category === ContentSettingsTypes.COOKIES &&
+        this.model.origin.trim() === SITE_EXCEPTION_WILDCARD) {
+      return this.model.embeddingOrigin;
+    }
+    return this.model.displayName;
+  },
+
+  /**
+   * Returns the appropriate site description to display. This can, for example,
+   * be blank, an 'embedded on <site>' string, or a third-party exception
+   * description string.
+   * @return {string}
+   */
+  computeSiteDescription_() {
+    // If the SiteException specifies its own label, use that.
+    if (this.model.settingDetail) {
+      return this.model.settingDetail;
+    }
+
+    let description = '';
+
+    if (this.model.isEmbargoed) {
+      assert(
+          !this.model.embeddingOrigin,
+          'Embedding origin should be empty for embargoed origin.');
+      description = loadTimeData.getString('siteSettingsSourceEmbargo');
+    } else if (this.model.embeddingOrigin) {
+      if (this.model.category === ContentSettingsTypes.COOKIES &&
+          this.model.origin.trim() === SITE_EXCEPTION_WILDCARD) {
+        description = loadTimeData.getString(
+            'siteSettingsCookiesThirdPartyExceptionLabel');
+      } else {
+        description = loadTimeData.getStringF(
+            'embeddedOnHost', this.sanitizePort(this.model.embeddingOrigin));
+      }
+    } else if (this.model.category === ContentSettingsTypes.GEOLOCATION) {
+      description = loadTimeData.getString('embeddedOnAnyHost');
     }
 
     // <if expr="chromeos">
-    if (this.model.category === settings.ContentSettingsTypes.NOTIFICATIONS &&
+    if (this.model.category === ContentSettingsTypes.NOTIFICATIONS &&
         this.model.showAndroidSmsNote) {
-      displayName = loadTimeData.getString('androidSmsNote');
+      description = loadTimeData.getString('androidSmsNote');
     }
     // </if>
 
-    if (this.model.incognito) {
-      if (displayName.length > 0) {
-        return loadTimeData.getStringF('embeddedIncognitoSite', displayName);
-      }
-      return loadTimeData.getString('incognitoSite');
-    }
-    return displayName;
+    return description;
   },
 
   /**
    * @return {boolean}
    * @private
    */
-  computeShowPolicyPrefIndicator_: function() {
-    return this.model.enforcement ==
+  computeShowPolicyPrefIndicator_() {
+    return this.model.enforcement ===
         chrome.settingsPrivate.Enforcement.ENFORCED &&
         !!this.model.controlledBy;
   },
 
   /** @private */
-  onResetButtonTap_: function() {
+  onResetButtonTap_() {
     // Use the appropriate method to reset a chooser exception.
-    if (this.chooserType !== settings.ChooserType.NONE &&
-        this.chooserObject != null) {
+    if (this.chooserType !== ChooserType.NONE && this.chooserObject !== null) {
       this.browserProxy.resetChooserExceptionForSite(
           this.chooserType, this.model.origin, this.model.embeddingOrigin,
           this.chooserObject);
@@ -191,9 +236,9 @@ Polymer({
   },
 
   /** @private */
-  onShowActionMenuTap_: function() {
+  onShowActionMenuTap_() {
     // Chooser exceptions do not support the action menu, so do nothing.
-    if (this.chooserType !== settings.ChooserType.NONE) {
+    if (this.chooserType !== ChooserType.NONE) {
       return;
     }
 
@@ -203,13 +248,13 @@ Polymer({
   },
 
   /** @private */
-  onModelChanged_: function() {
+  onModelChanged_() {
     if (!this.model) {
       this.allowNavigateToSiteDetail_ = false;
       return;
     }
     this.browserProxy.isOriginValid(this.model.origin).then((valid) => {
-      this.allowNavigateToSiteDetail_ = valid && this.enableSiteSettings_;
+      this.allowNavigateToSiteDetail_ = valid;
     });
   }
 });

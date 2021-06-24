@@ -4,16 +4,21 @@
 
 #include "components/signin/core/browser/mirror_account_reconcilor_delegate.h"
 
+#include "base/containers/contains.h"
 #include "base/logging.h"
+#include "build/build_config.h"
 #include "components/signin/core/browser/account_reconcilor.h"
+#include "components/signin/public/base/account_consistency_method.h"
 
 namespace signin {
 
 MirrorAccountReconcilorDelegate::MirrorAccountReconcilorDelegate(
-    identity::IdentityManager* identity_manager)
+    IdentityManager* identity_manager)
     : identity_manager_(identity_manager) {
   DCHECK(identity_manager_);
   identity_manager_->AddObserver(this);
+  reconcile_enabled_ =
+      identity_manager_->HasPrimaryAccount(GetConsentLevelForPrimaryAccount());
 }
 
 MirrorAccountReconcilorDelegate::~MirrorAccountReconcilorDelegate() {
@@ -21,11 +26,7 @@ MirrorAccountReconcilorDelegate::~MirrorAccountReconcilorDelegate() {
 }
 
 bool MirrorAccountReconcilorDelegate::IsReconcileEnabled() const {
-  return identity_manager_->HasPrimaryAccount();
-}
-
-bool MirrorAccountReconcilorDelegate::IsAccountConsistencyEnforced() const {
-  return true;
+  return reconcile_enabled_;
 }
 
 gaia::GaiaSource MirrorAccountReconcilorDelegate::GetGaiaApiSource() const {
@@ -37,23 +38,42 @@ bool MirrorAccountReconcilorDelegate::ShouldAbortReconcileIfPrimaryHasError()
   return true;
 }
 
-std::string MirrorAccountReconcilorDelegate::GetFirstGaiaAccountForReconcile(
-    const std::vector<std::string>& chrome_accounts,
+ConsentLevel MirrorAccountReconcilorDelegate::GetConsentLevelForPrimaryAccount()
+    const {
+#if defined(OS_ANDROID) || defined(OS_IOS)
+  if (base::FeatureList::IsEnabled(kMobileIdentityConsistency)) {
+    return ConsentLevel::kSignin;
+  }
+  return ConsentLevel::kSync;
+#elif BUILDFLAG(IS_CHROMEOS_LACROS)
+  // Whenever Mirror is enabled on a Lacros Profile, the Primary Account may or
+  // may not have consented to Chrome Sync. But we want to enable
+  // `AccountReconcilor` regardless - for minting Gaia cookies.
+  return ConsentLevel::kSignin;
+#else
+  return ConsentLevel::kSync;
+#endif
+}
+
+CoreAccountId MirrorAccountReconcilorDelegate::GetFirstGaiaAccountForReconcile(
+    const std::vector<CoreAccountId>& chrome_accounts,
     const std::vector<gaia::ListedAccount>& gaia_accounts,
-    const std::string& primary_account,
+    const CoreAccountId& primary_account,
     bool first_execution,
     bool will_logout) const {
   // Mirror only uses the primary account, and it is never empty.
   DCHECK(!primary_account.empty());
-  DCHECK(base::ContainsValue(chrome_accounts, primary_account));
+  DCHECK(base::Contains(chrome_accounts, primary_account));
   return primary_account;
 }
 
-std::vector<std::string>
+std::vector<CoreAccountId>
 MirrorAccountReconcilorDelegate::GetChromeAccountsForReconcile(
-    const std::vector<std::string>& chrome_accounts,
-    const std::string& primary_account,
+    const std::vector<CoreAccountId>& chrome_accounts,
+    const CoreAccountId& primary_account,
     const std::vector<gaia::ListedAccount>& gaia_accounts,
+    bool first_execution,
+    bool primary_has_error,
     const gaia::MultiloginMode mode) const {
   DCHECK_EQ(mode,
             gaia::MultiloginMode::MULTILOGIN_UPDATE_COOKIE_ACCOUNTS_ORDER);
@@ -61,14 +81,21 @@ MirrorAccountReconcilorDelegate::GetChromeAccountsForReconcile(
                                            gaia_accounts);
 }
 
-void MirrorAccountReconcilorDelegate::OnPrimaryAccountSet(
-    const CoreAccountInfo& primary_account_info) {
-  reconcilor()->EnableReconcile();
-}
+void MirrorAccountReconcilorDelegate::OnPrimaryAccountChanged(
+    const PrimaryAccountChangeEvent& event) {
+  // Have to check whether the state has actually changed, as calling
+  // DisableReconcile logs out all accounts even if it was already disabled.
+  bool should_enable_reconcile =
+      identity_manager_->HasPrimaryAccount(GetConsentLevelForPrimaryAccount());
+  if (reconcile_enabled_ == should_enable_reconcile)
+    return;
 
-void MirrorAccountReconcilorDelegate::OnPrimaryAccountCleared(
-    const CoreAccountInfo& previous_primary_account_info) {
-  reconcilor()->DisableReconcile(true /* logout_all_gaia_accounts */);
+  reconcile_enabled_ = should_enable_reconcile;
+  if (should_enable_reconcile) {
+    reconcilor()->EnableReconcile();
+  } else {
+    reconcilor()->DisableReconcile(true /* logout_all_gaia_accounts */);
+  }
 }
 
 }  // namespace signin

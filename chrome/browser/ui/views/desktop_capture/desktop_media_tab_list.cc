@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_tab_list.h"
 
+#include "base/numerics/ranges.h"
 #include "base/numerics/safe_conversions.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
@@ -25,8 +27,8 @@ class TabListModel : public ui::TableModel,
 
   // ui::TableModel:
   int RowCount() override;
-  base::string16 GetText(int row, int column) override;
-  gfx::ImageSkia GetIcon(int row) override;
+  std::u16string GetText(int row, int column) override;
+  ui::ImageModel GetIcon(int row) override;
   void SetObserver(ui::TableModelObserver* observer) override;
 
   // DesktopMediaListController::SourceListListener:
@@ -51,12 +53,12 @@ int TabListModel::RowCount() {
   return base::checked_cast<int>(controller_->GetSourceCount());
 }
 
-base::string16 TabListModel::GetText(int row, int column) {
+std::u16string TabListModel::GetText(int row, int column) {
   return controller_->GetSource(row).name;
 }
 
-gfx::ImageSkia TabListModel::GetIcon(int row) {
-  return controller_->GetSource(row).thumbnail;
+ui::ImageModel TabListModel::GetIcon(int row) {
+  return ui::ImageModel::FromImageSkia(controller_->GetSource(row).thumbnail);
 }
 
 void TabListModel::SetObserver(ui::TableModelObserver* observer) {
@@ -90,7 +92,6 @@ class TabListViewObserver : public views::TableViewObserver {
   explicit TabListViewObserver(DesktopMediaListController* controller);
 
   void OnSelectionChanged() override;
-  void OnDoubleClick() override;
   void OnKeyDown(ui::KeyboardCode virtual_keycode) override;
 
  private:
@@ -107,10 +108,6 @@ void TabListViewObserver::OnSelectionChanged() {
   controller_->OnSourceSelectionChanged();
 }
 
-void TabListViewObserver::OnDoubleClick() {
-  controller_->AcceptSource();
-}
-
 void TabListViewObserver::OnKeyDown(ui::KeyboardCode virtual_keycode) {
   if (virtual_keycode == ui::VKEY_RETURN)
     controller_->AcceptSource();
@@ -119,7 +116,7 @@ void TabListViewObserver::OnKeyDown(ui::KeyboardCode virtual_keycode) {
 }  // namespace
 
 DesktopMediaTabList::DesktopMediaTabList(DesktopMediaListController* controller,
-                                         const base::string16& accessible_name)
+                                         const std::u16string& accessible_name)
     : controller_(controller) {
   // The thumbnail size isn't allowed to be smaller than gfx::kFaviconSize by
   // the underlying media list. TableView requires that the icon size be exactly
@@ -151,14 +148,24 @@ DesktopMediaTabList::~DesktopMediaTabList() {
   child_->SetModel(nullptr);
 }
 
-const char* DesktopMediaTabList::GetClassName() const {
-  return "DesktopMediaTabList";
+gfx::Size DesktopMediaTabList::CalculatePreferredSize() const {
+  // The picker should have a fixed height of 10 rows.
+  return gfx::Size(0, child_->GetRowHeight() * 10);
 }
 
-base::Optional<content::DesktopMediaID> DesktopMediaTabList::GetSelection() {
-  int row = child_->FirstSelectedRow();
+int DesktopMediaTabList::GetHeightForWidth(int width) const {
+  // If this method isn't overridden here, the default implementation would fall
+  // back to FillLayout's GetHeightForWidth, which would ask the TableView,
+  // which would return something based on the total number of rows, since
+  // TableView expects to always be sized by its container. Avoid even asking it
+  // by using the same height as CalculatePreferredSize().
+  return CalculatePreferredSize().height();
+}
+
+absl::optional<content::DesktopMediaID> DesktopMediaTabList::GetSelection() {
+  int row = child_->GetFirstSelectedRow();
   if (row == -1)
-    return base::nullopt;
+    return absl::nullopt;
   return controller_->GetSource(row).id;
 }
 
@@ -166,3 +173,6 @@ DesktopMediaListController::SourceListListener*
 DesktopMediaTabList::GetSourceListListener() {
   return model_.get();
 }
+
+BEGIN_METADATA(DesktopMediaTabList, DesktopMediaListController::ListView)
+END_METADATA

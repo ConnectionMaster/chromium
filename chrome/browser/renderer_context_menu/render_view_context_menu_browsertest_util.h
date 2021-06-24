@@ -7,9 +7,9 @@
 
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/strings/string16.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu.h"
-#include "content/public/common/context_menu_params.h"
+#include "content/public/browser/context_menu_params.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class RenderViewContextMenu;
 
@@ -36,6 +36,7 @@ class ContextMenuWaiter {
   ~ContextMenuWaiter();
 
   content::ContextMenuParams& params();
+  const std::vector<int>& GetCapturedCommandIds() const;
 
   // Wait until the context menu is opened and closed.
   void WaitForMenuOpenAndClose();
@@ -46,8 +47,10 @@ class ContextMenuWaiter {
   void Cancel(RenderViewContextMenu* context_menu);
 
   content::ContextMenuParams params_;
+  std::vector<int> captured_command_ids_;
+
   base::RunLoop run_loop_;
-  base::Optional<int> maybe_command_to_execute_;
+  absl::optional<int> maybe_command_to_execute_;
 
   DISALLOW_COPY_AND_ASSIGN(ContextMenuWaiter);
 };

@@ -32,6 +32,7 @@
 #include <memory>
 #include <utility>
 
+#include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
@@ -69,77 +70,73 @@
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/json/json_values.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/text/text_break_iterator.h"
 
 namespace blink {
 
-using blink::WebLocalizedString;
-using namespace html_names;
-
-using InputTypeFactoryFunction = InputType* (*)(HTMLInputElement&);
-using InputTypeFactoryMap = HashMap<AtomicString, InputTypeFactoryFunction>;
-
-static std::unique_ptr<InputTypeFactoryMap> CreateInputTypeFactoryMap() {
-  std::unique_ptr<InputTypeFactoryMap> map =
-      std::make_unique<InputTypeFactoryMap>();
-  map->insert(input_type_names::kButton, ButtonInputType::Create);
-  map->insert(input_type_names::kCheckbox, CheckboxInputType::Create);
-  map->insert(input_type_names::kColor, ColorInputType::Create);
-  map->insert(input_type_names::kDate, DateInputType::Create);
-  map->insert(input_type_names::kDatetimeLocal, DateTimeLocalInputType::Create);
-  map->insert(input_type_names::kEmail, EmailInputType::Create);
-  map->insert(input_type_names::kFile, FileInputType::Create);
-  map->insert(input_type_names::kHidden, HiddenInputType::Create);
-  map->insert(input_type_names::kImage, ImageInputType::Create);
-  map->insert(input_type_names::kMonth, MonthInputType::Create);
-  map->insert(input_type_names::kNumber, NumberInputType::Create);
-  map->insert(input_type_names::kPassword, PasswordInputType::Create);
-  map->insert(input_type_names::kRadio, RadioInputType::Create);
-  map->insert(input_type_names::kRange, RangeInputType::Create);
-  map->insert(input_type_names::kReset, ResetInputType::Create);
-  map->insert(input_type_names::kSearch, SearchInputType::Create);
-  map->insert(input_type_names::kSubmit, SubmitInputType::Create);
-  map->insert(input_type_names::kTel, TelephoneInputType::Create);
-  map->insert(input_type_names::kTime, TimeInputType::Create);
-  map->insert(input_type_names::kUrl, URLInputType::Create);
-  map->insert(input_type_names::kWeek, WeekInputType::Create);
-  // No need to register "text" because it is the default type.
-  return map;
-}
-
-static const InputTypeFactoryMap* FactoryMap() {
-  static const InputTypeFactoryMap* factory_map =
-      CreateInputTypeFactoryMap().release();
-  return factory_map;
-}
+// Listed once to avoid any discrepancy between InputType::Create and
+// InputType::NormalizeTypeName.
+//
+// No need to register "text" because it is the default type.
+#define INPUT_TYPES(INPUT_TYPE)                      \
+  INPUT_TYPE(kButton, ButtonInputType)               \
+  INPUT_TYPE(kCheckbox, CheckboxInputType)           \
+  INPUT_TYPE(kColor, ColorInputType)                 \
+  INPUT_TYPE(kDate, DateInputType)                   \
+  INPUT_TYPE(kDatetimeLocal, DateTimeLocalInputType) \
+  INPUT_TYPE(kEmail, EmailInputType)                 \
+  INPUT_TYPE(kFile, FileInputType)                   \
+  INPUT_TYPE(kHidden, HiddenInputType)               \
+  INPUT_TYPE(kImage, ImageInputType)                 \
+  INPUT_TYPE(kMonth, MonthInputType)                 \
+  INPUT_TYPE(kNumber, NumberInputType)               \
+  INPUT_TYPE(kPassword, PasswordInputType)           \
+  INPUT_TYPE(kRadio, RadioInputType)                 \
+  INPUT_TYPE(kRange, RangeInputType)                 \
+  INPUT_TYPE(kReset, ResetInputType)                 \
+  INPUT_TYPE(kSearch, SearchInputType)               \
+  INPUT_TYPE(kSubmit, SubmitInputType)               \
+  INPUT_TYPE(kTel, TelephoneInputType)               \
+  INPUT_TYPE(kTime, TimeInputType)                   \
+  INPUT_TYPE(kUrl, URLInputType)                     \
+  INPUT_TYPE(kWeek, WeekInputType)
 
 InputType* InputType::Create(HTMLInputElement& element,
                              const AtomicString& type_name) {
-  InputTypeFactoryFunction factory =
-      type_name.IsEmpty() ? nullptr : FactoryMap()->at(type_name);
-  if (!factory)
-    factory = TextInputType::Create;
-  return factory(element);
-}
+  if (type_name.IsEmpty())
+    return MakeGarbageCollected<TextInputType>(element);
 
-InputType* InputType::CreateText(HTMLInputElement& element) {
-  return TextInputType::Create(element);
+#define INPUT_TYPE_FACTORY(input_type, class_name) \
+  if (type_name == input_type_names::input_type)   \
+    return MakeGarbageCollected<class_name>(element);
+  INPUT_TYPES(INPUT_TYPE_FACTORY)
+#undef INPUT_TYPE_FACTORY
+
+  return MakeGarbageCollected<TextInputType>(element);
 }
 
 const AtomicString& InputType::NormalizeTypeName(
     const AtomicString& type_name) {
   if (type_name.IsEmpty())
     return input_type_names::kText;
-  InputTypeFactoryMap::const_iterator it =
-      FactoryMap()->find(type_name.LowerASCII());
-  return it == FactoryMap()->end() ? input_type_names::kText : it->key;
+
+  AtomicString type_name_lower = type_name.LowerASCII();
+
+#define NORMALIZE_INPUT_TYPE(input_type, class_name)   \
+  if (type_name_lower == input_type_names::input_type) \
+    return input_type_names::input_type;
+  INPUT_TYPES(NORMALIZE_INPUT_TYPE)
+#undef NORMALIZE_INPUT_TYPE
+
+  return input_type_names::kText;
 }
 
 InputType::~InputType() = default;
 
-void InputType::Trace(Visitor* visitor) {
+void InputType::Trace(Visitor* visitor) const {
   visitor->Trace(element_);
 }
 
@@ -161,14 +158,15 @@ void InputType::AppendToFormData(FormData& form_data) const {
 }
 
 String InputType::ResultForDialogSubmit() const {
-  return GetElement().FastGetAttribute(kValueAttr);
+  return GetElement().FastGetAttribute(html_names::kValueAttr);
 }
 
 double InputType::ValueAsDate() const {
   return DateComponents::InvalidMilliseconds();
 }
 
-void InputType::SetValueAsDate(double, ExceptionState& exception_state) const {
+void InputType::SetValueAsDate(const absl::optional<base::Time>&,
+                               ExceptionState& exception_state) const {
   exception_state.ThrowDOMException(
       DOMExceptionCode::kInvalidStateError,
       "This input element does not support Date values.");
@@ -193,6 +191,8 @@ void InputType::SetValueAsDecimal(const Decimal& new_value,
 }
 
 void InputType::ReadingChecked() const {}
+
+void InputType::WillUpdateCheckedness(bool) {}
 
 bool InputType::SupportsValidation() const {
   return true;
@@ -237,7 +237,15 @@ bool InputType::RangeUnderflow(const String& value) const {
   if (!numeric_value.IsFinite())
     return false;
 
-  return numeric_value < CreateStepRange(kRejectAny).Minimum();
+  StepRange step_range = CreateStepRange(kRejectAny);
+  if (step_range.HasReversedRange()) {
+    // With a reversed range, any value outside of the midnight-crossing valid
+    // range is considered underflow and overflow.
+    return numeric_value > step_range.Maximum() &&
+           numeric_value < step_range.Minimum();
+  } else {
+    return numeric_value < step_range.Minimum();
+  }
 }
 
 bool InputType::RangeOverflow(const String& value) const {
@@ -248,7 +256,15 @@ bool InputType::RangeOverflow(const String& value) const {
   if (!numeric_value.IsFinite())
     return false;
 
-  return numeric_value > CreateStepRange(kRejectAny).Maximum();
+  StepRange step_range = CreateStepRange(kRejectAny);
+  if (step_range.HasReversedRange()) {
+    // With a reversed range, any value outside of the midnight-crossing valid
+    // range is considered underflow and overflow.
+    return numeric_value > step_range.Maximum() &&
+           numeric_value < step_range.Minimum();
+  } else {
+    return numeric_value > step_range.Maximum();
+  }
 }
 
 Decimal InputType::DefaultValueForStepUp() const {
@@ -317,7 +333,12 @@ bool InputType::StepMismatch(const String& value) const {
 
 String InputType::BadInputText() const {
   NOTREACHED();
-  return GetLocale().QueryString(WebLocalizedString::kValidationTypeMismatch);
+  return GetLocale().QueryString(IDS_FORM_VALIDATION_TYPE_MISMATCH);
+}
+
+String InputType::ValueNotEqualText(const Decimal& value) const {
+  NOTREACHED();
+  return String();
 }
 
 String InputType::RangeOverflowText(const Decimal&) const {
@@ -330,12 +351,23 @@ String InputType::RangeUnderflowText(const Decimal&) const {
   return String();
 }
 
+String InputType::ReversedRangeOutOfRangeText(const Decimal&,
+                                              const Decimal&) const {
+  NOTREACHED();
+  return String();
+}
+
+String InputType::RangeInvalidText(const Decimal&, const Decimal&) const {
+  NOTREACHED();
+  return String();
+}
+
 String InputType::TypeMismatchText() const {
-  return GetLocale().QueryString(WebLocalizedString::kValidationTypeMismatch);
+  return GetLocale().QueryString(IDS_FORM_VALIDATION_TYPE_MISMATCH);
 }
 
 String InputType::ValueMissingText() const {
-  return GetLocale().QueryString(WebLocalizedString::kValidationValueMissing);
+  return GetLocale().QueryString(IDS_FORM_VALIDATION_VALUE_MISSING);
 }
 
 std::pair<String, String> InputType::ValidationMessage(
@@ -360,8 +392,8 @@ std::pair<String, String> InputType::ValidationMessage(
     //   pattern. User agents may use the contents of this attribute, if it
     //   is present, when informing the user that the pattern is not matched
     return std::make_pair(
-        GetLocale().QueryString(WebLocalizedString::kValidationPatternMismatch),
-        GetElement().FastGetAttribute(kTitleAttr).GetString());
+        GetLocale().QueryString(IDS_FORM_VALIDATION_PATTERN_MISMATCH),
+        GetElement().FastGetAttribute(html_names::kTitleAttr).GetString());
   }
 
   if (GetElement().TooLong()) {
@@ -385,6 +417,26 @@ std::pair<String, String> InputType::ValidationMessage(
 
   StepRange step_range(CreateStepRange(kRejectAny));
 
+  if (step_range.Minimum() > step_range.Maximum() &&
+      !step_range.HasReversedRange()) {
+    return std::make_pair(
+        RangeInvalidText(step_range.Minimum(), step_range.Maximum()),
+        g_empty_string);
+  }
+
+  if (step_range.HasReversedRange() && numeric_value < step_range.Minimum() &&
+      numeric_value > step_range.Maximum()) {
+    return std::make_pair(
+        ReversedRangeOutOfRangeText(step_range.Minimum(), step_range.Maximum()),
+        g_empty_string);
+  }
+
+  if (numeric_value != step_range.Minimum() &&
+      step_range.Minimum() == step_range.Maximum()) {
+    return std::make_pair(ValueNotEqualText(step_range.Minimum()),
+                          g_empty_string);
+  }
+
   if (numeric_value < step_range.Minimum())
     return std::make_pair(RangeUnderflowText(step_range.Minimum()),
                           g_empty_string);
@@ -404,19 +456,19 @@ std::pair<String, String> InputType::ValidationMessage(
         candidate2 > step_range.Maximum()) {
       return std::make_pair(
           GetLocale().QueryString(
-              WebLocalizedString::kValidationStepMismatchCloseToLimit,
+              IDS_FORM_VALIDATION_STEP_MISMATCH_CLOSE_TO_LIMIT,
               localized_candidate1),
           g_empty_string);
     }
     String localized_candidate2 = LocalizeValue(Serialize(candidate2));
     if (candidate1 < candidate2) {
       return std::make_pair(
-          GetLocale().QueryString(WebLocalizedString::kValidationStepMismatch,
+          GetLocale().QueryString(IDS_FORM_VALIDATION_STEP_MISMATCH,
                                   localized_candidate1, localized_candidate2),
           g_empty_string);
     }
     return std::make_pair(
-        GetLocale().QueryString(WebLocalizedString::kValidationStepMismatch,
+        GetLocale().QueryString(IDS_FORM_VALIDATION_STEP_MISMATCH,
                                 localized_candidate2, localized_candidate1),
         g_empty_string);
   }
@@ -454,7 +506,7 @@ bool InputType::CanSetStringValue() const {
 }
 
 bool InputType::IsKeyboardFocusable() const {
-  return GetElement().IsFocusable();
+  return GetElement().IsBaseElementFocusable();
 }
 
 bool InputType::MayTriggerVirtualKeyboard() const {
@@ -529,6 +581,9 @@ void InputType::SetValue(const String& sanitized_value,
   switch (event_behavior) {
     case TextFieldEventBehavior::kDispatchChangeEvent:
       GetElement().DispatchFormControlChangeEvent();
+      break;
+    case TextFieldEventBehavior::kDispatchInputEvent:
+      GetElement().DispatchInputEvent();
       break;
     case TextFieldEventBehavior::kDispatchInputAndChangeEvent:
       GetElement().DispatchInputEvent();
@@ -704,8 +759,9 @@ void InputType::ApplyStep(const Decimal& current,
   Decimal step = step_range.Step();
   EventQueueScope scope;
   Decimal new_value = current;
-  const AtomicString& step_string = GetElement().FastGetAttribute(kStepAttr);
-  if (!DeprecatedEqualIgnoringCase(step_string, "any") &&
+  const AtomicString& step_string =
+      GetElement().FastGetAttribute(html_names::kStepAttr);
+  if (!EqualIgnoringASCIICase(step_string, "any") &&
       step_range.StepMismatch(current)) {
     // Snap-to-step / clamping steps
     // If the current value is not matched to step value:
@@ -726,10 +782,10 @@ void InputType::ApplyStep(const Decimal& current,
   }
   new_value = new_value + step_range.Step() * Decimal::FromDouble(count);
 
-  if (!DeprecatedEqualIgnoringCase(step_string, "any"))
+  if (!EqualIgnoringASCIICase(step_string, "any"))
     new_value = step_range.AlignValueForStep(current, new_value);
 
-  // 7. If the element has a minimum, and value is less than that minimum,
+  // 8. If the element has a minimum, and value is less than that minimum,
   // then set value to the smallest value that, when subtracted from the step
   // base, is an integral multiple of the allowed value step, and that is more
   // than or equal to minimum.
@@ -740,17 +796,23 @@ void InputType::ApplyStep(const Decimal& current,
     new_value = aligned_minimum;
   }
 
-  // 8. If the element has a maximum, and value is greater than that maximum,
+  // 9. If the element has a maximum, and value is greater than that maximum,
   // then set value to the largest value that, when subtracted from the step
   // base, is an integral multiple of the allowed value step, and that is less
   // than or equal to maximum.
   if (new_value > step_range.Maximum())
     new_value = aligned_maximum;
 
-  // 9. Let value as string be the result of running the algorithm to convert
+  // 10. If either the method invoked was the stepDown() method and value is
+  // greater than valueBeforeStepping, or the method invoked was the stepUp()
+  // method and value is less than valueBeforeStepping, then return.
+  if ((count < 0 && current < new_value) || (count > 0 && current > new_value))
+    return;
+
+  // 11. Let value as string be the result of running the algorithm to convert
   // a number to a string, as defined for the input element's type attribute's
   // current state, on value.
-  // 10. Set the value of the element to value as string.
+  // 12. Set the value of the element to value as string.
   SetValueAsDecimal(new_value, event_behavior, exception_state);
 
   if (AXObjectCache* cache = GetElement().GetDocument().ExistingAXObjectCache())
@@ -796,7 +858,7 @@ void InputType::StepUpFromLayoutObject(int n) {
   //   * If 0 is in-range, but not matched to step value
   //     - The value should be the larger matched value nearest to 0 if n > 0
   //       e.g. <input type=number min=-100 step=3> -> 2
-  //     - The value should be the smaler matched value nearest to 0 if n < 0
+  //     - The value should be the smaller matched value nearest to 0 if n < 0
   //       e.g. <input type=number min=-100 step=3> -> -1
   //   As for date/datetime-local/month/time/week types, the current value is
   //   assumed as "the current local date/time".
@@ -872,13 +934,24 @@ void InputType::CountUsageIfVisible(WebFeature feature) const {
 }
 
 Decimal InputType::FindStepBase(const Decimal& default_value) const {
-  Decimal step_base =
-      ParseToNumber(GetElement().FastGetAttribute(kMinAttr), Decimal::Nan());
+  Decimal step_base = ParseToNumber(
+      GetElement().FastGetAttribute(html_names::kMinAttr), Decimal::Nan());
   if (!step_base.IsFinite()) {
-    step_base =
-        ParseToNumber(GetElement().FastGetAttribute(kValueAttr), default_value);
+    step_base = ParseToNumber(
+        GetElement().FastGetAttribute(html_names::kValueAttr), default_value);
   }
   return step_base;
+}
+
+StepRange InputType::CreateReversibleStepRange(
+    AnyStepHandling any_step_handling,
+    const Decimal& step_base_default,
+    const Decimal& minimum_default,
+    const Decimal& maximum_default,
+    const StepRange::StepDescription& step_description) const {
+  return CreateStepRange(any_step_handling, step_base_default, minimum_default,
+                         maximum_default, step_description,
+                         /*supports_reversed_range=*/true);
 }
 
 StepRange InputType::CreateStepRange(
@@ -887,32 +960,49 @@ StepRange InputType::CreateStepRange(
     const Decimal& minimum_default,
     const Decimal& maximum_default,
     const StepRange::StepDescription& step_description) const {
+  return CreateStepRange(any_step_handling, step_base_default, minimum_default,
+                         maximum_default, step_description,
+                         /*supports_reversed_range=*/false);
+}
+
+StepRange InputType::CreateStepRange(
+    AnyStepHandling any_step_handling,
+    const Decimal& step_base_default,
+    const Decimal& minimum_default,
+    const Decimal& maximum_default,
+    const StepRange::StepDescription& step_description,
+    bool supports_reversed_range) const {
   bool has_range_limitations = false;
   const Decimal step_base = FindStepBase(step_base_default);
-  Decimal minimum = ParseToNumberOrNaN(GetElement().FastGetAttribute(kMinAttr));
+  Decimal minimum =
+      ParseToNumberOrNaN(GetElement().FastGetAttribute(html_names::kMinAttr));
   if (minimum.IsFinite())
     has_range_limitations = true;
   else
     minimum = minimum_default;
-  Decimal maximum = ParseToNumberOrNaN(GetElement().FastGetAttribute(kMaxAttr));
+  Decimal maximum =
+      ParseToNumberOrNaN(GetElement().FastGetAttribute(html_names::kMaxAttr));
   if (maximum.IsFinite())
     has_range_limitations = true;
   else
     maximum = maximum_default;
-  const Decimal step =
-      StepRange::ParseStep(any_step_handling, step_description,
-                           GetElement().FastGetAttribute(kStepAttr));
-  return StepRange(step_base, minimum, maximum, has_range_limitations, step,
-                   step_description);
+  const Decimal step = StepRange::ParseStep(
+      any_step_handling, step_description,
+      GetElement().FastGetAttribute(html_names::kStepAttr));
+  bool has_reversed_range =
+      has_range_limitations && supports_reversed_range && maximum < minimum;
+  return StepRange(step_base, minimum, maximum, has_range_limitations,
+                   has_reversed_range, step, step_description);
 }
 
 void InputType::AddWarningToConsole(const char* message_format,
                                     const String& value) const {
-  GetElement().GetDocument().AddConsoleMessage(ConsoleMessage::Create(
-      mojom::ConsoleMessageSource::kRendering,
-      mojom::ConsoleMessageLevel::kWarning,
-      String::Format(message_format,
-                     JSONValue::QuoteString(value).Utf8().data())));
+  GetElement().GetDocument().AddConsoleMessage(
+      MakeGarbageCollected<ConsoleMessage>(
+          mojom::ConsoleMessageSource::kRendering,
+          mojom::ConsoleMessageLevel::kWarning,
+          String::Format(message_format,
+                         JSONValue::QuoteString(value).Utf8().c_str())));
 }
 
 }  // namespace blink

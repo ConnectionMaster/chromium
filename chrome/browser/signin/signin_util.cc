@@ -9,19 +9,15 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/supports_user_data.h"
 #include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_internal.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_list_observer.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/simple_message_box.h"
 #include "chrome/browser/ui/startup/startup_types.h"
 #include "chrome/browser/ui/webui/profile_helper.h"
@@ -30,21 +26,28 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/google/core/common/google_util.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/identity_utils.h"
-#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_utils.h"
+#include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "google_apis/gaia/gaia_auth_util.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/primary_account_mutator.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
+    defined(OS_MAC)
+#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_list_observer.h"
+#include "chrome/browser/ui/browser_window.h"
+#define CAN_DELETE_PROFILE
+#endif
 
 namespace signin_util {
 namespace {
 
 constexpr char kSignoutSettingKey[] = "signout_setting";
-
-#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_MACOSX)
-#define CAN_DELETE_PROFILE
-#endif
+constexpr char kGuestSignedInUserDataKey[] = "guest_signin";
 
 #if defined(CAN_DELETE_PROFILE)
 // Manager that presents the profile will be deleted dialog on the first active
@@ -63,12 +66,12 @@ class DeleteProfileDialogManager : public BrowserListObserver {
                              Delegate* delegate)
       : profile_(profile),
         primary_account_email_(primary_account_email),
-        delegate_(delegate),
-        browser_observer_(this) {}
-  ~DeleteProfileDialogManager() override {}
+        delegate_(delegate) {}
+
+  ~DeleteProfileDialogManager() override { BrowserList::RemoveObserver(this); }
 
   void PresentDialogOnAllBrowserWindows() {
-    browser_observer_.Add(BrowserList::GetInstance());
+    BrowserList::AddObserver(this);
     Browser* active_browser = chrome::FindLastActiveWithProfile(profile_);
     if (active_browser)
       OnBrowserSetLastActive(active_browser);
@@ -87,8 +90,7 @@ class DeleteProfileDialogManager : public BrowserListObserver {
             IDS_PROFILE_WILL_BE_DELETED_DIALOG_DESCRIPTION,
             base::ASCIIToUTF16(primary_account_email_),
             base::ASCIIToUTF16(
-                gaia::ExtractDomainName(primary_account_email_))),
-        /*can_close=*/false);
+                gaia::ExtractDomainName(primary_account_email_))));
 
     webui::DeleteProfileAtPath(
         profile_->GetPath(),
@@ -100,7 +102,6 @@ class DeleteProfileDialogManager : public BrowserListObserver {
   Profile* profile_;
   std::string primary_account_email_;
   Delegate* delegate_;
-  ScopedObserver<BrowserList, DeleteProfileDialogManager> browser_observer_;
 
   DISALLOW_COPY_AND_ASSIGN(DeleteProfileDialogManager);
 };
@@ -170,6 +171,15 @@ void SetForceSigninPolicy(bool enable) {
 
 }  // namespace
 
+ScopedForceSigninSetterForTesting::ScopedForceSigninSetterForTesting(
+    bool enable) {
+  SetForceSigninForTesting(enable);  // IN-TEST
+}
+
+ScopedForceSigninSetterForTesting::~ScopedForceSigninSetterForTesting() {
+  ResetForceSigninForTesting();  // IN-TEST
+}
+
 bool IsForceSigninEnabled() {
   if (g_is_force_signin_enabled_cache == NOT_CACHED) {
     PrefService* prefs = g_browser_process->local_state();
@@ -211,16 +221,16 @@ void SetUserSignoutAllowedForProfile(Profile* profile, bool is_allowed) {
 void EnsurePrimaryAccountAllowedForProfile(Profile* profile) {
 // All primary accounts are allowed on ChromeOS, so this method is a no-op on
 // ChromeOS.
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
-  if (!identity_manager->HasPrimaryAccount())
+  if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync))
     return;
 
-  CoreAccountInfo primary_account = identity_manager->GetPrimaryAccountInfo();
+  CoreAccountInfo primary_account =
+      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync);
   if (profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed) &&
-      identity::LegacyIsUsernameAllowedByPatternFromPrefs(
-          g_browser_process->local_state(), primary_account.email,
-          prefs::kGoogleServicesUsernamePattern)) {
+      signin::IsUsernameAllowedByPatternFromPrefs(
+          g_browser_process->local_state(), primary_account.email)) {
     return;
   }
 
@@ -236,9 +246,8 @@ void EnsurePrimaryAccountAllowedForProfile(Profile* profile) {
       auto* primary_account_mutator =
           identity_manager->GetPrimaryAccountMutator();
       primary_account_mutator->ClearPrimaryAccount(
-          identity::PrimaryAccountMutator::ClearAccountsAction::kDefault,
           signin_metrics::SIGNIN_NOT_ALLOWED_ON_PROFILE_INIT,
-          signin_metrics::SignoutDelete::IGNORE_METRIC);
+          signin_metrics::SignoutDelete::kIgnoreMetric);
       break;
     }
     case UserSignoutSetting::State::kDisallowed:
@@ -258,7 +267,30 @@ void EnsurePrimaryAccountAllowedForProfile(Profile* profile) {
 #endif  // defined(CAN_DELETE_PROFILE)
       break;
   }
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+}
+
+// TODO(crbug.com/1134111): Remove GuestSignedInUserData when Ephemeral Guest
+// sign in functioncality is implemented.
+void GuestSignedInUserData::SetIsSignedIn(Profile* profile, bool is_signed_in) {
+  GuestSignedInUserData* data = GetForProfile(profile);
+  data->is_signed_in_ = is_signed_in;
+}
+
+bool GuestSignedInUserData::IsSignedIn(Profile* profile) {
+  return GetForProfile(profile)->is_signed_in_;
+}
+
+GuestSignedInUserData* GuestSignedInUserData::GetForProfile(Profile* profile) {
+  GuestSignedInUserData* data = static_cast<GuestSignedInUserData*>(
+      profile->GetUserData(kGuestSignedInUserDataKey));
+  if (!data) {
+    profile->SetUserData(kGuestSignedInUserDataKey,
+                         std::make_unique<GuestSignedInUserData>());
+    data = static_cast<GuestSignedInUserData*>(
+        profile->GetUserData(kGuestSignedInUserDataKey));
+  }
+  return data;
 }
 
 }  // namespace signin_util

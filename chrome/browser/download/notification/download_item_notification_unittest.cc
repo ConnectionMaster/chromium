@@ -5,13 +5,17 @@
 #include "chrome/browser/download/notification/download_item_notification.h"
 
 #include <stddef.h>
+
+#include <memory>
 #include <utility>
 
 #include "base/guid.h"
+#include "base/json/json_reader.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/notification/download_notification_manager.h"
 #include "chrome/browser/download/offline_item_utils.h"
 #include "chrome/browser/notifications/notification_display_service.h"
@@ -20,13 +24,14 @@
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/notifications/notification_test_util.h"
 #include "chrome/browser/notifications/platform_notification_service_impl.h"
+#include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_test_utils.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/download/public/common/mock_download_item.h"
 #include "content/public/browser/download_item_utils.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_download_manager.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -51,19 +56,19 @@ class DownloadItemNotificationTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
 
-    profile_manager_.reset(
-        new TestingProfileManager(TestingBrowserProcess::GetGlobal()));
+    profile_manager_ = std::make_unique<TestingProfileManager>(
+        TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
     profile_ = profile_manager_->CreateTestingProfile("test-user");
 
     service_tester_ =
         std::make_unique<NotificationDisplayServiceTester>(profile_);
 
-    download_notification_manager_.reset(
-        new DownloadNotificationManager(profile_));
+    download_notification_manager_ =
+        std::make_unique<DownloadNotificationManager>(profile_);
 
     base::FilePath download_item_target_path(kDownloadItemTargetPathString);
-    download_item_.reset(new NiceMock<download::MockDownloadItem>());
+    download_item_ = std::make_unique<NiceMock<download::MockDownloadItem>>();
     ON_CALL(*download_item_, GetId()).WillByDefault(Return(12345));
     ON_CALL(*download_item_, GetGuid())
         .WillByDefault(ReturnRefOfCopy(base::GenerateGUID()));
@@ -132,7 +137,7 @@ class DownloadItemNotificationTest : public testing::Test {
         *download_item_notification_->notification_, /*metadata=*/nullptr);
   }
 
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   std::unique_ptr<TestingProfileManager> profile_manager_;
   Profile* profile_;
@@ -174,13 +179,13 @@ TEST_F(DownloadItemNotificationTest, PauseAndResumeNotification) {
   // Pauses and makes sure the DownloadItem::Pause() is called.
   EXPECT_CALL(*download_item_, Pause()).Times(1);
   EXPECT_CALL(*download_item_, IsPaused()).WillRepeatedly(Return(true));
-  download_item_notification_->Click(0, base::nullopt);
+  download_item_notification_->Click(0, absl::nullopt);
   download_item_->NotifyObserversDownloadUpdated();
 
   // Resumes and makes sure the DownloadItem::Resume() is called.
   EXPECT_CALL(*download_item_, Resume(true)).Times(1);
   EXPECT_CALL(*download_item_, IsPaused()).WillRepeatedly(Return(false));
-  download_item_notification_->Click(0, base::nullopt);
+  download_item_notification_->Click(0, absl::nullopt);
   download_item_->NotifyObserversDownloadUpdated();
 }
 
@@ -197,7 +202,7 @@ TEST_F(DownloadItemNotificationTest, OpenDownload) {
   // Clicks and confirms that the OpenDownload() is called.
   EXPECT_CALL(*download_item_, OpenDownload()).Times(1);
   EXPECT_CALL(*download_item_, SetOpenWhenComplete(_)).Times(0);
-  download_item_notification_->Click(base::nullopt, base::nullopt);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
 }
 
 TEST_F(DownloadItemNotificationTest, OpenWhenComplete) {
@@ -211,7 +216,7 @@ TEST_F(DownloadItemNotificationTest, OpenWhenComplete) {
   EXPECT_CALL(*download_item_, SetOpenWhenComplete(true))
       .Times(1)
       .WillOnce(Return());
-  download_item_notification_->Click(base::nullopt, base::nullopt);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
   EXPECT_CALL(*download_item_, GetOpenWhenComplete())
       .WillRepeatedly(Return(true));
 
@@ -219,7 +224,7 @@ TEST_F(DownloadItemNotificationTest, OpenWhenComplete) {
   EXPECT_CALL(*download_item_, SetOpenWhenComplete(false))
       .Times(1)
       .WillOnce(Return());
-  download_item_notification_->Click(base::nullopt, base::nullopt);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
   EXPECT_CALL(*download_item_, GetOpenWhenComplete())
       .WillRepeatedly(Return(false));
 
@@ -227,7 +232,7 @@ TEST_F(DownloadItemNotificationTest, OpenWhenComplete) {
   EXPECT_CALL(*download_item_, SetOpenWhenComplete(true))
       .Times(1)
       .WillOnce(Return());
-  download_item_notification_->Click(base::nullopt, base::nullopt);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
   EXPECT_CALL(*download_item_, GetOpenWhenComplete())
       .WillRepeatedly(Return(true));
 
@@ -259,6 +264,72 @@ TEST_F(DownloadItemNotificationTest, DisablePopup) {
 
   // Priority is increased by the download's completion.
   EXPECT_GT(LookUpNotification()->priority(), message_center::LOW_PRIORITY);
+}
+
+TEST_F(DownloadItemNotificationTest, DeepScanning) {
+  // Setup deep scanning in progress.
+  EXPECT_CALL(*download_item_, GetDangerType())
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_ASYNC_SCANNING));
+  auto state =
+      std::make_unique<ChromeDownloadManagerDelegate::SafeBrowsingState>();
+  download_item_->SetUserData(&ChromeDownloadManagerDelegate::
+                                  SafeBrowsingState::kSafeBrowsingUserDataKey,
+                              std::move(state));
+  CreateDownloadItemNotification();
+
+  // Can't open while scanning.
+  safe_browsing::SetAnalysisConnector(profile_->GetPrefs(),
+                                      enterprise_connectors::FILE_DOWNLOADED,
+                                      R"(
+        {
+          "service_provider": "google",
+          "enable": [{"url_list": ["*"], "tags": ["malware"]}],
+          "block_until_verdict": 1
+        }
+      )");
+  EXPECT_CALL(*download_item_, OpenDownload()).Times(0);
+  EXPECT_CALL(*download_item_, SetOpenWhenComplete(true)).Times(1);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
+
+  // Can be opened while scanning.
+  safe_browsing::SetAnalysisConnector(profile_->GetPrefs(),
+                                      enterprise_connectors::FILE_DOWNLOADED,
+                                      R"(
+        {
+          "service_provider": "google",
+          "enable": [{"url_list": ["*"], "tags": ["malware"]}],
+          "block_until_verdict": 0
+        }
+      )");
+  EXPECT_CALL(*download_item_, OpenDownload()).Times(1);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
+
+  // Scanning finished, warning.
+  EXPECT_CALL(*download_item_, IsDangerous()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*download_item_, GetDangerType())
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING));
+  EXPECT_CALL(*download_item_, OpenDownload()).Times(0);
+  EXPECT_CALL(*download_item_, SetOpenWhenComplete(true)).Times(0);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
+
+  // Scanning finished, blocked.
+  EXPECT_CALL(*download_item_, IsDangerous()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*download_item_, GetDangerType())
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_BLOCK));
+  EXPECT_CALL(*download_item_, OpenDownload()).Times(0);
+  EXPECT_CALL(*download_item_, SetOpenWhenComplete(true)).Times(0);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
+
+  // Scanning finished, safe.
+  EXPECT_CALL(*download_item_, IsDangerous()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*download_item_, GetDangerType())
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_SAFE));
+  EXPECT_CALL(*download_item_, GetState())
+      .WillRepeatedly(Return(download::DownloadItem::COMPLETE));
+  EXPECT_CALL(*download_item_, OpenDownload()).Times(1);
+  download_item_notification_->Click(absl::nullopt, absl::nullopt);
 }
 
 }  // namespace test

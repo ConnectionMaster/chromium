@@ -21,9 +21,12 @@ namespace blink {
 class CORE_EXPORT TestInterfaceEventInit : public EventInit {
  public:
   static TestInterfaceEventInit* Create() { return MakeGarbageCollected<TestInterfaceEventInit>(); }
+  static TestInterfaceEventInit* Create(v8::Isolate* isolate) {
+    return MakeGarbageCollected<TestInterfaceEventInit>();
+  }
 
   TestInterfaceEventInit();
-  virtual ~TestInterfaceEventInit();
+  ~TestInterfaceEventInit() override;
 
   bool hasStringMember() const { return !string_member_.IsNull(); }
   const String& stringMember() const {
@@ -32,7 +35,7 @@ class CORE_EXPORT TestInterfaceEventInit : public EventInit {
   inline void setStringMember(const String&);
 
   v8::Local<v8::Value> ToV8Impl(v8::Local<v8::Object>, v8::Isolate*) const override;
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
 

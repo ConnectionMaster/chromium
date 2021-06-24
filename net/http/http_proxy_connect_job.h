@@ -14,11 +14,14 @@
 #include "base/time/time.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_export.h"
+#include "net/base/network_isolation_key.h"
 #include "net/base/request_priority.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "net/http/http_auth.h"
 #include "net/quic/quic_chromium_client_session.h"
 #include "net/socket/connect_job.h"
 #include "net/socket/ssl_client_socket.h"
+#include "net/spdy/spdy_session_key.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 
@@ -37,8 +40,7 @@ class QuicStreamRequest;
 // HttpProxySocketParams only needs the socket params for one of the proxy
 // types.  The other param must be NULL.  When using an HTTP proxy,
 // |transport_params| must be set.  When using an HTTPS proxy or QUIC proxy,
-// |ssl_params| must be set. Also, if using a QUIC proxy, |quic_version| must
-// not be quic::QUIC_VERSION_UNSUPPORTED.
+// |ssl_params| must be set.
 class NET_EXPORT_PRIVATE HttpProxySocketParams
     : public base::RefCounted<HttpProxySocketParams> {
  public:
@@ -46,9 +48,9 @@ class NET_EXPORT_PRIVATE HttpProxySocketParams
                         scoped_refptr<SSLSocketParams> ssl_params,
                         bool is_quic,
                         const HostPortPair& endpoint,
-                        bool is_trusted_proxy,
                         bool tunnel,
-                        const NetworkTrafficAnnotationTag traffic_annotation);
+                        const NetworkTrafficAnnotationTag traffic_annotation,
+                        const NetworkIsolationKey& network_isolation_key);
 
   const scoped_refptr<TransportSocketParams>& transport_params() const {
     return transport_params_;
@@ -58,8 +60,10 @@ class NET_EXPORT_PRIVATE HttpProxySocketParams
   }
   bool is_quic() const { return is_quic_; }
   const HostPortPair& endpoint() const { return endpoint_; }
-  bool is_trusted_proxy() const { return is_trusted_proxy_; }
   bool tunnel() const { return tunnel_; }
+  const NetworkIsolationKey& network_isolation_key() const {
+    return network_isolation_key_;
+  }
   const NetworkTrafficAnnotationTag traffic_annotation() const {
     return traffic_annotation_;
   }
@@ -72,8 +76,8 @@ class NET_EXPORT_PRIVATE HttpProxySocketParams
   const scoped_refptr<SSLSocketParams> ssl_params_;
   bool is_quic_;
   const HostPortPair endpoint_;
-  const bool is_trusted_proxy_;
   const bool tunnel_;
+  const NetworkIsolationKey network_isolation_key_;
   const NetworkTrafficAnnotationTag traffic_annotation_;
 
   DISALLOW_COPY_AND_ASSIGN(HttpProxySocketParams);
@@ -102,6 +106,7 @@ class NET_EXPORT_PRIVATE HttpProxyConnectJob : public ConnectJob,
   // ConnectJob methods.
   LoadState GetLoadState() const override;
   bool HasEstablishedConnection() const override;
+  ResolveErrorInfo GetResolveErrorInfo() const override;
   bool IsSSLError() const override;
   scoped_refptr<SSLCertRequestInfo> GetCertRequestInfo() override;
 
@@ -200,6 +205,8 @@ class NET_EXPORT_PRIVATE HttpProxyConnectJob : public ConnectJob,
 
   std::string GetUserAgent() const;
 
+  SpdySessionKey CreateSpdySessionKey() const;
+
   scoped_refptr<HttpProxySocketParams> params_;
 
   scoped_refptr<SSLCertRequestInfo> ssl_cert_request_info_;
@@ -214,6 +221,8 @@ class NET_EXPORT_PRIVATE HttpProxyConnectJob : public ConnectJob,
   // Set to true once a connection has been successfully established. Remains
   // true even if a new socket is being connected to retry with auth.
   bool has_established_connection_;
+
+  ResolveErrorInfo resolve_error_info_;
 
   std::unique_ptr<ConnectJob> nested_connect_job_;
   std::unique_ptr<ProxyClientSocket> transport_socket_;
@@ -230,7 +239,7 @@ class NET_EXPORT_PRIVATE HttpProxyConnectJob : public ConnectJob,
   // Time when the connection to the proxy was started.
   base::TimeTicks connect_start_time_;
 
-  base::WeakPtrFactory<HttpProxyConnectJob> weak_ptr_factory_;
+  base::WeakPtrFactory<HttpProxyConnectJob> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HttpProxyConnectJob);
 };

@@ -10,9 +10,6 @@
 // Default created delegate class for the entire application.
 @interface AppDelegate : UIResponder<UIApplicationDelegate>
 
-- (void)showMenuAnimated:(BOOL)animated;
-- (void)hideMenuAnimated:(BOOL)animated;
-
 @property(strong, nonatomic) UIWindow* window;
 @property(class, strong, nonatomic, readonly) AppDelegate* instance;
 
@@ -20,7 +17,7 @@
 // controller.
 - (void)navigateToHelpCenter:(UINavigationController*)navigationController;
 
-// Presents the help center modally onto the topmost view controller.
+// Presents contents modally onto the topmost view controller.
 - (void)presentHelpCenter;
 
 // TODO(yuweih): Replace calls to this method with methods from HelpAndFeedback.

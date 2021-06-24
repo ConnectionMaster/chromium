@@ -11,7 +11,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_BINDINGS_TESTS_RESULTS_CORE_BOOLEAN_OR_TEST_CALLBACK_INTERFACE_H_
 #define THIRD_PARTY_BLINK_RENDERER_BINDINGS_TESTS_RESULTS_CORE_BOOLEAN_OR_TEST_CALLBACK_INTERFACE_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -42,7 +42,7 @@ class CORE_EXPORT BooleanOrTestCallbackInterface final {
   BooleanOrTestCallbackInterface(const BooleanOrTestCallbackInterface&);
   ~BooleanOrTestCallbackInterface();
   BooleanOrTestCallbackInterface& operator=(const BooleanOrTestCallbackInterface&);
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   enum class SpecificType {

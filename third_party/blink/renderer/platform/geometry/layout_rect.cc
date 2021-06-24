@@ -40,9 +40,6 @@
 
 namespace blink {
 
-LayoutRect::LayoutRect(const FloatRect& r)
-    : location_(LayoutPoint(r.Location())), size_(LayoutSize(r.Size())) {}
-
 LayoutRect::LayoutRect(const DoubleRect& r)
     : location_(LayoutPoint(r.Location())), size_(LayoutSize(r.Size())) {}
 
@@ -124,8 +121,8 @@ void LayoutRect::UniteEvenIfEmpty(const LayoutRect& other) {
   LayoutPoint new_max_point(std::max(MaxX(), other.MaxX()),
                             std::max(MaxY(), other.MaxY()));
 
-  location_ = new_location;
   size_ = new_max_point - new_location;
+  location_ = new_max_point - size_;
 }
 
 void LayoutRect::Scale(float s) {
@@ -164,8 +161,8 @@ std::ostream& operator<<(std::ostream& ostream, const LayoutRect& rect) {
 }
 
 String LayoutRect::ToString() const {
-  return String::Format("%s %s", Location().ToString().Ascii().data(),
-                        Size().ToString().Ascii().data());
+  return String::Format("%s %s", Location().ToString().Ascii().c_str(),
+                        Size().ToString().Ascii().c_str());
 }
 
 WTF::TextStream& operator<<(WTF::TextStream& ts, const LayoutRect& rect) {

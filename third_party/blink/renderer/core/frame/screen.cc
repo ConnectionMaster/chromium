@@ -28,122 +28,244 @@
 
 #include "third_party/blink/renderer/core/frame/screen.h"
 
-#include "third_party/blink/public/platform/web_screen_info.h"
+#include "third_party/blink/public/common/privacy_budget/identifiability_metric_builder.h"
+#include "third_party/blink/public/common/privacy_budget/identifiability_metrics.h"
+#include "third_party/blink/renderer/core/event_target_names.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
-#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_statics.h"
+#include "ui/display/screen_info.h"
 
 namespace blink {
 
-Screen::Screen(LocalFrame* frame) : DOMWindowClient(frame) {}
+namespace {
+
+const display::ScreenInfo& GetScreenInfo(LocalFrame& frame) {
+  return frame.GetChromeClient().GetScreenInfo(frame);
+}
+
+}  // namespace
+
+Screen::Screen(LocalDOMWindow* window) : ExecutionContextClient(window) {}
 
 int Screen::height() const {
-  if (!GetFrame())
+  if (display_)
+    return display_->bounds.height();
+  if (!DomWindow())
     return 0;
-  Page* page = GetFrame()->GetPage();
-  if (!page)
-    return 0;
-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
-    WebScreenInfo screen_info = page->GetChromeClient().GetScreenInfo();
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
     return static_cast<int>(
-        lroundf(screen_info.rect.height * screen_info.device_scale_factor));
+        lroundf(screen_info.rect.height() * screen_info.device_scale_factor));
   }
-  return page->GetChromeClient().GetScreenInfo().rect.height;
+  return screen_info.rect.height();
 }
 
 int Screen::width() const {
-  if (!GetFrame())
+  if (display_)
+    return display_->bounds.width();
+  if (!DomWindow())
     return 0;
-  Page* page = GetFrame()->GetPage();
-  if (!page)
-    return 0;
-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
-    WebScreenInfo screen_info = page->GetChromeClient().GetScreenInfo();
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
     return static_cast<int>(
-        lroundf(screen_info.rect.width * screen_info.device_scale_factor));
+        lroundf(screen_info.rect.width() * screen_info.device_scale_factor));
   }
-  return page->GetChromeClient().GetScreenInfo().rect.width;
+  return screen_info.rect.width();
 }
 
 unsigned Screen::colorDepth() const {
-  if (!GetFrame() || !GetFrame()->GetPage())
+  if (display_)
+    return display_->color_depth;
+  if (!DomWindow())
     return 0;
-  return static_cast<unsigned>(
-      GetFrame()->GetPage()->GetChromeClient().GetScreenInfo().depth);
+  return static_cast<unsigned>(GetScreenInfo(*DomWindow()->GetFrame()).depth);
 }
 
 unsigned Screen::pixelDepth() const {
-  if (!GetFrame())
-    return 0;
-  return static_cast<unsigned>(
-      GetFrame()->GetPage()->GetChromeClient().GetScreenInfo().depth);
+  return colorDepth();
 }
 
 int Screen::availLeft() const {
-  if (!GetFrame())
+  if (display_)
+    return display_->work_area.x();
+  if (!DomWindow())
     return 0;
-  Page* page = GetFrame()->GetPage();
-  if (!page)
-    return 0;
-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
-    WebScreenInfo screen_info = page->GetChromeClient().GetScreenInfo();
-    return static_cast<int>(lroundf(screen_info.available_rect.x *
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+    return static_cast<int>(lroundf(screen_info.available_rect.x() *
                                     screen_info.device_scale_factor));
   }
-  return static_cast<int>(
-      page->GetChromeClient().GetScreenInfo().available_rect.x);
+  return static_cast<int>(screen_info.available_rect.x());
 }
 
 int Screen::availTop() const {
-  if (!GetFrame())
+  if (display_)
+    return display_->work_area.y();
+  if (!DomWindow())
     return 0;
-  Page* page = GetFrame()->GetPage();
-  if (!page)
-    return 0;
-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
-    WebScreenInfo screen_info = page->GetChromeClient().GetScreenInfo();
-    return static_cast<int>(lroundf(screen_info.available_rect.y *
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+    return static_cast<int>(lroundf(screen_info.available_rect.y() *
                                     screen_info.device_scale_factor));
   }
-  return static_cast<int>(
-      page->GetChromeClient().GetScreenInfo().available_rect.y);
+  return static_cast<int>(screen_info.available_rect.y());
 }
 
 int Screen::availHeight() const {
-  if (!GetFrame())
+  if (display_)
+    return display_->work_area.height();
+  if (!DomWindow())
     return 0;
-  Page* page = GetFrame()->GetPage();
-  if (!page)
-    return 0;
-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
-    WebScreenInfo screen_info = page->GetChromeClient().GetScreenInfo();
-    return static_cast<int>(lroundf(screen_info.available_rect.height *
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+    return static_cast<int>(lroundf(screen_info.available_rect.height() *
                                     screen_info.device_scale_factor));
   }
-  return page->GetChromeClient().GetScreenInfo().available_rect.height;
+  return screen_info.available_rect.height();
 }
 
 int Screen::availWidth() const {
-  if (!GetFrame())
+  if (display_)
+    return display_->work_area.width();
+  if (!DomWindow())
     return 0;
-  Page* page = GetFrame()->GetPage();
-  if (!page)
-    return 0;
-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
-    WebScreenInfo screen_info = page->GetChromeClient().GetScreenInfo();
-    return static_cast<int>(lroundf(screen_info.available_rect.width *
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+    return static_cast<int>(lroundf(screen_info.available_rect.width() *
                                     screen_info.device_scale_factor));
   }
-  return page->GetChromeClient().GetScreenInfo().available_rect.width;
+  return screen_info.available_rect.width();
 }
 
-void Screen::Trace(blink::Visitor* visitor) {
-  ScriptWrappable::Trace(visitor);
-  DOMWindowClient::Trace(visitor);
+void Screen::Trace(Visitor* visitor) const {
+  EventTargetWithInlineData::Trace(visitor);
+  ExecutionContextClient::Trace(visitor);
   Supplementable<Screen>::Trace(visitor);
+}
+
+const WTF::AtomicString& Screen::InterfaceName() const {
+  return event_target_names::kScreen;
+}
+
+ExecutionContext* Screen::GetExecutionContext() const {
+  return ExecutionContextClient::GetExecutionContext();
+}
+
+bool Screen::isExtended() const {
+  if (!DomWindow())
+    return false;
+  LocalFrame* frame = DomWindow()->GetFrame();
+
+  auto* context = GetExecutionContext();
+  if (!context->IsFeatureEnabled(
+          mojom::blink::PermissionsPolicyFeature::kWindowPlacement)) {
+    return false;
+  }
+
+  return GetScreenInfo(*frame).is_extended;
+}
+
+Screen::Screen(display::mojom::blink::DisplayPtr display,
+               bool internal,
+               bool primary,
+               const String& id)
+    : ExecutionContextClient(static_cast<ExecutionContext*>(nullptr)),
+      display_(std::move(display)),
+      internal_(internal),
+      primary_(primary),
+      id_(id) {}
+
+int Screen::left() const {
+  if (display_)
+    return display_->bounds.x();
+  if (!DomWindow())
+    return 0;
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+    return static_cast<int>(
+        lroundf(screen_info.rect.x() * screen_info.device_scale_factor));
+  }
+  return screen_info.rect.x();
+}
+
+int Screen::top() const {
+  if (display_)
+    return display_->bounds.y();
+  if (!DomWindow())
+    return 0;
+  LocalFrame* frame = DomWindow()->GetFrame();
+  const display::ScreenInfo& screen_info = GetScreenInfo(*frame);
+  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+    return static_cast<int>(
+        lroundf(screen_info.rect.y() * screen_info.device_scale_factor));
+  }
+  return screen_info.rect.y();
+}
+
+bool Screen::internal() const {
+  if (display_)
+    return internal_.has_value() && internal_.value();
+  // TODO(crbug.com/1116528): Move permission-gated attributes to an interface
+  // that inherits from Screen: https://github.com/webscreens/window-placement
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+bool Screen::primary() const {
+  if (display_)
+    return primary_.has_value() && primary_.value();
+  // TODO(crbug.com/1116528): Move permission-gated attributes to an interface
+  // that inherits from Screen: https://github.com/webscreens/window-placement
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+float Screen::scaleFactor() const {
+  if (display_)
+    return display_->device_scale_factor;
+  if (!DomWindow())
+    return 0;
+  return GetScreenInfo(*DomWindow()->GetFrame()).device_scale_factor;
+}
+
+const String& Screen::id() const {
+  if (display_)
+    return id_;
+  // TODO(crbug.com/1116528): Move permission-gated attributes to an interface
+  // that inherits from Screen: https://github.com/webscreens/window-placement
+  NOTIMPLEMENTED_LOG_ONCE();
+  return g_empty_string;
+}
+
+bool Screen::touchSupport() const {
+  if (display_) {
+    return display_->touch_support ==
+           display::mojom::blink::TouchSupport::AVAILABLE;
+  }
+  // TODO(crbug.com/1116528): Move permission-gated attributes to an interface
+  // that inherits from Screen: https://github.com/webscreens/window-placement
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+int64_t Screen::DisplayId() const {
+  if (display_)
+    return display_->id;
+  if (!DomWindow())
+    return kInvalidDisplayId;
+  return GetScreenInfo(*DomWindow()->GetFrame()).display_id;
 }
 
 }  // namespace blink

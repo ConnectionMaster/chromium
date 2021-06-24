@@ -10,7 +10,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/time/time.h"
+#include "base/sequence_checker.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_decoder.h"
 #include "media/base/demuxer_stream.h"
@@ -22,7 +22,7 @@ struct AVCodecContext;
 struct AVFrame;
 
 namespace base {
-class SingleThreadTaskRunner;
+class SequencedTaskRunner;
 }
 
 namespace media {
@@ -34,20 +34,19 @@ class FFmpegDecodingLoop;
 class MEDIA_EXPORT FFmpegAudioDecoder : public AudioDecoder {
  public:
   FFmpegAudioDecoder(
-      const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
+      const scoped_refptr<base::SequencedTaskRunner>& task_runner,
       MediaLog* media_log);
   ~FFmpegAudioDecoder() override;
 
   // AudioDecoder implementation.
-  std::string GetDisplayName() const override;
+  AudioDecoderType GetDecoderType() const override;
   void Initialize(const AudioDecoderConfig& config,
                   CdmContext* cdm_context,
-                  const InitCB& init_cb,
+                  InitCB init_cb,
                   const OutputCB& output_cb,
                   const WaitingCB& waiting_cb) override;
-  void Decode(scoped_refptr<DecoderBuffer> buffer,
-              const DecodeCB& decode_cb) override;
-  void Reset(const base::Closure& closure) override;
+  void Decode(scoped_refptr<DecoderBuffer> buffer, DecodeCB decode_cb) override;
+  void Reset(base::OnceClosure closure) override;
 
   // Callback called from within FFmpeg to allocate a buffer based on the
   // properties of |codec_context| and |frame|. See AVCodecContext.get_buffer2
@@ -85,7 +84,7 @@ class MEDIA_EXPORT FFmpegAudioDecoder : public AudioDecoder {
   void DoReset();
 
   // Handles decoding an unencrypted encoded buffer.
-  void DecodeBuffer(const DecoderBuffer& buffer, const DecodeCB& decode_cb);
+  void DecodeBuffer(const DecoderBuffer& buffer, DecodeCB decode_cb);
   bool FFmpegDecode(const DecoderBuffer& buffer);
   bool OnNewFrame(const DecoderBuffer& buffer,
                   bool* decoded_frame_this_loop,
@@ -100,7 +99,8 @@ class MEDIA_EXPORT FFmpegAudioDecoder : public AudioDecoder {
 
   void ResetTimestampState(const AudioDecoderConfig& config);
 
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
+  SEQUENCE_CHECKER(sequence_checker_);
 
   OutputCB output_cb_;
 

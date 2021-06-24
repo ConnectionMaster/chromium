@@ -7,9 +7,9 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -21,7 +21,6 @@ namespace test {
 FakeFidoDiscovery::FakeFidoDiscovery(FidoTransportProtocol transport,
                                      StartMode mode)
     : FidoDeviceDiscovery(transport), mode_(mode) {}
-FakeFidoDiscovery::~FakeFidoDiscovery() = default;
 
 void FakeFidoDiscovery::WaitForCallToStart() {
   wait_for_start_loop_.Run();
@@ -30,11 +29,6 @@ void FakeFidoDiscovery::WaitForCallToStart() {
 void FakeFidoDiscovery::SimulateStarted(bool success) {
   ASSERT_FALSE(is_running());
   NotifyDiscoveryStarted(success);
-}
-
-void FakeFidoDiscovery::WaitForCallToStartAndSimulateSuccess() {
-  WaitForCallToStart();
-  SimulateStarted(true /* success */);
 }
 
 void FakeFidoDiscovery::StartInternal() {
@@ -47,58 +41,56 @@ void FakeFidoDiscovery::StartInternal() {
   }
 }
 
-// ScopedFakeFidoDiscoveryFactory ---------------------------------------------
+// FakeFidoDiscoveryFactory ---------------------------------------------
 
-ScopedFakeFidoDiscoveryFactory::ScopedFakeFidoDiscoveryFactory() = default;
-ScopedFakeFidoDiscoveryFactory::~ScopedFakeFidoDiscoveryFactory() = default;
+FakeFidoDiscoveryFactory::FakeFidoDiscoveryFactory() = default;
+FakeFidoDiscoveryFactory::~FakeFidoDiscoveryFactory() = default;
 
-FakeFidoDiscovery* ScopedFakeFidoDiscoveryFactory::ForgeNextHidDiscovery(
+FakeFidoDiscovery* FakeFidoDiscoveryFactory::ForgeNextHidDiscovery(
     FakeFidoDiscovery::StartMode mode) {
   next_hid_discovery_ = std::make_unique<FakeFidoDiscovery>(
       FidoTransportProtocol::kUsbHumanInterfaceDevice, mode);
   return next_hid_discovery_.get();
 }
 
-FakeFidoDiscovery* ScopedFakeFidoDiscoveryFactory::ForgeNextNfcDiscovery(
+FakeFidoDiscovery* FakeFidoDiscoveryFactory::ForgeNextNfcDiscovery(
     FakeFidoDiscovery::StartMode mode) {
   next_nfc_discovery_ = std::make_unique<FakeFidoDiscovery>(
       FidoTransportProtocol::kNearFieldCommunication, mode);
   return next_nfc_discovery_.get();
 }
 
-FakeFidoDiscovery* ScopedFakeFidoDiscoveryFactory::ForgeNextBleDiscovery(
-    FakeFidoDiscovery::StartMode mode) {
-  next_ble_discovery_ = std::make_unique<FakeFidoDiscovery>(
-      FidoTransportProtocol::kBluetoothLowEnergy, mode);
-  return next_ble_discovery_.get();
-}
-
-FakeFidoDiscovery* ScopedFakeFidoDiscoveryFactory::ForgeNextCableDiscovery(
+FakeFidoDiscovery* FakeFidoDiscoveryFactory::ForgeNextCableDiscovery(
     FakeFidoDiscovery::StartMode mode) {
   next_cable_discovery_ = std::make_unique<FakeFidoDiscovery>(
       FidoTransportProtocol::kCloudAssistedBluetoothLowEnergy, mode);
   return next_cable_discovery_.get();
 }
 
-std::unique_ptr<FidoDiscoveryBase>
-ScopedFakeFidoDiscoveryFactory::CreateFidoDiscovery(
-    FidoTransportProtocol transport,
-    ::service_manager::Connector* connector) {
+FakeFidoDiscovery* FakeFidoDiscoveryFactory::ForgeNextPlatformDiscovery(
+    FakeFidoDiscovery::StartMode mode) {
+  next_platform_discovery_ = std::make_unique<FakeFidoDiscovery>(
+      FidoTransportProtocol::kInternal, mode);
+  return next_platform_discovery_.get();
+}
+
+std::vector<std::unique_ptr<FidoDiscoveryBase>>
+FakeFidoDiscoveryFactory::Create(FidoTransportProtocol transport) {
   switch (transport) {
     case FidoTransportProtocol::kUsbHumanInterfaceDevice:
-      return std::move(next_hid_discovery_);
+      return SingleDiscovery(std::move(next_hid_discovery_));
     case FidoTransportProtocol::kNearFieldCommunication:
-      return std::move(next_nfc_discovery_);
+      return SingleDiscovery(std::move(next_nfc_discovery_));
     case FidoTransportProtocol::kBluetoothLowEnergy:
-      return std::move(next_ble_discovery_);
+    case FidoTransportProtocol::kAndroidAccessory:
+      return {};
     case FidoTransportProtocol::kCloudAssistedBluetoothLowEnergy:
-      return std::move(next_cable_discovery_);
+      return SingleDiscovery(std::move(next_cable_discovery_));
     case FidoTransportProtocol::kInternal:
-      NOTREACHED() << "Internal authenticators should be handled separately.";
-      return nullptr;
+      return SingleDiscovery(std::move(next_platform_discovery_));
   }
   NOTREACHED();
-  return nullptr;
+  return {};
 }
 
 }  // namespace test

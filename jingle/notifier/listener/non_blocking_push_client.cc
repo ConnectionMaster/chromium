@@ -5,8 +5,8 @@
 #include "jingle/notifier/listener/non_blocking_push_client.h"
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "jingle/notifier/listener/push_client_observer.h"
@@ -30,8 +30,7 @@ class NonBlockingPushClient::Core
   // This is separated out from the constructor since posting tasks
   // from the constructor is dangerous.
   void CreateOnDelegateThread(
-      const CreateBlockingPushClientCallback&
-          create_blocking_push_client_callback);
+      CreateBlockingPushClientCallback create_blocking_push_client_callback);
 
   // Must be called before being destroyed.
   void DestroyOnDelegateThread();
@@ -78,11 +77,10 @@ NonBlockingPushClient::Core::~Core() {
 }
 
 void NonBlockingPushClient::Core::CreateOnDelegateThread(
-    const CreateBlockingPushClientCallback&
-        create_blocking_push_client_callback) {
+    CreateBlockingPushClientCallback create_blocking_push_client_callback) {
   DCHECK(delegate_task_runner_->BelongsToCurrentThread());
   DCHECK(!delegate_push_client_.get());
-  delegate_push_client_ = create_blocking_push_client_callback.Run();
+  delegate_push_client_ = std::move(create_blocking_push_client_callback).Run();
   delegate_push_client_->AddObserver(this);
 }
 
@@ -154,15 +152,13 @@ void NonBlockingPushClient::Core::OnPingResponse() {
 
 NonBlockingPushClient::NonBlockingPushClient(
     const scoped_refptr<base::SingleThreadTaskRunner>& delegate_task_runner,
-    const CreateBlockingPushClientCallback&
-        create_blocking_push_client_callback)
-    : delegate_task_runner_(delegate_task_runner),
-      weak_ptr_factory_(this) {
+    CreateBlockingPushClientCallback create_blocking_push_client_callback)
+    : delegate_task_runner_(delegate_task_runner) {
   core_ = new Core(delegate_task_runner_, weak_ptr_factory_.GetWeakPtr());
   delegate_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&NonBlockingPushClient::Core::CreateOnDelegateThread,
-                     core_, create_blocking_push_client_callback));
+                     core_, std::move(create_blocking_push_client_callback)));
 }
 
 NonBlockingPushClient::~NonBlockingPushClient() {

@@ -3,7 +3,8 @@
       `Tests that service worker requests are intercepted.`);
 
   const FetchHelper = await testRunner.loadScript('resources/fetch-test.js');
-  const globalFetcher = new FetchHelper(testRunner, testRunner.browserP(), "[browser] ");
+  const globalFetcher = new FetchHelper(testRunner, testRunner.browserP());
+  globalFetcher.setLogPrefix("[browser] ");
   await globalFetcher.enable();
 
   globalFetcher.onRequest().continueRequest({});
@@ -11,10 +12,11 @@
   await dp.Target.setAutoAttach({autoAttach: true, waitForDebuggerOnStart: true, flatten: true});
   dp.Target.onAttachedToTarget(async event => {
     const dp1 = session.createChild(event.params.sessionId).protocol;
-    const swFetcher = new FetchHelper(testRunner, dp1, "[renderer] ");
+    const swFetcher = new FetchHelper(testRunner, dp1);
+    swFetcher.setLogPrefix("[renderer] ");
     await swFetcher.enable();
     swFetcher.onRequest().continueRequest({});
-    dp1.Runtime.runIfWaitingForDebugger();
+    await dp1.Runtime.runIfWaitingForDebugger();
   });
 
   await dp.ServiceWorker.enable();
@@ -31,8 +33,9 @@
   }
 
   await waitForServiceWorkerActivation();
-  dp.Page.reload();
-  await dp.Page.onceLifecycleEvent(event => event.params.name === 'load');
+  const onLifecyclePromise = dp.Page.onceLifecycleEvent(event => event.params.name === 'load');
+  await dp.Page.reload();
+  await onLifecyclePromise;
 
   globalFetcher.onceRequest().fulfill({
     responseCode: 200,

@@ -11,13 +11,14 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
 #include "base/task_runner_util.h"
 #include "base/values.h"
 #include "components/favicon/core/favicon_service.h"
+#include "components/ntp_tiles/constants.h"
 #include "components/ntp_tiles/most_visited_sites.h"
 #include "components/ntp_tiles/pref_names.h"
 #include "components/ntp_tiles/webui/ntp_tiles_internals_message_handler_client.h"
@@ -58,10 +59,7 @@ NTPTilesInternalsMessageHandler::NTPTilesInternalsMessageHandler(
     favicon::FaviconService* favicon_service)
     : favicon_service_(favicon_service),
       client_(nullptr),
-      // 9 tiles are required for the custom links feature in order to balance
-      // the Most Visited rows (this is due to an additional "Add" button).
-      site_count_(9),
-      weak_ptr_factory_(this) {}
+      site_count_(ntp_tiles::kMaxNumMostVisited) {}
 
 NTPTilesInternalsMessageHandler::~NTPTilesInternalsMessageHandler() = default;
 
@@ -101,9 +99,10 @@ void NTPTilesInternalsMessageHandler::HandleRegisterForEvents(
     disabled.SetBoolean("suggestionsService", false);
     disabled.SetBoolean("popular", false);
     disabled.SetBoolean("customLinks", false);
-    disabled.SetBoolean("whitelist", false);
-    client_->CallJavascriptFunction(
-        "chrome.ntp_tiles_internals.receiveSourceInfo", disabled);
+    disabled.SetBoolean("allowlist", false);
+    client_->CallJavascriptFunction("cr.webUIListenerCallback",
+                                    base::Value("receive-source-info"),
+                                    disabled);
     SendTiles(NTPTilesVector(), FaviconResultMap());
     return;
   }
@@ -112,7 +111,7 @@ void NTPTilesInternalsMessageHandler::HandleRegisterForEvents(
   suggestions_status_.clear();
   popular_sites_json_.clear();
   most_visited_sites_ = client_->MakeMostVisitedSites();
-  most_visited_sites_->SetMostVisitedURLsObserver(this, site_count_);
+  most_visited_sites_->AddMostVisitedURLsObserver(this, site_count_);
   SendSourceInfo();
 }
 
@@ -171,7 +170,7 @@ void NTPTilesInternalsMessageHandler::HandleUpdate(
   // TODO(sfiera): refresh MostVisitedSites without re-creating it, as soon as
   // that will pick up changes to the Popular Sites overrides.
   most_visited_sites_ = client_->MakeMostVisitedSites();
-  most_visited_sites_->SetMostVisitedURLsObserver(this, site_count_);
+  most_visited_sites_->AddMostVisitedURLsObserver(this, site_count_);
   SendSourceInfo();
 }
 
@@ -211,8 +210,8 @@ void NTPTilesInternalsMessageHandler::SendSourceInfo() {
                    most_visited_sites_->DoesSourceExist(TileSource::TOP_SITES));
   value.SetBoolean("customLinks", most_visited_sites_->DoesSourceExist(
                                       TileSource::CUSTOM_LINKS));
-  value.SetBoolean("whitelist",
-                   most_visited_sites_->DoesSourceExist(TileSource::WHITELIST));
+  value.SetBoolean("allowlist",
+                   most_visited_sites_->DoesSourceExist(TileSource::ALLOWLIST));
 
   if (most_visited_sites_->DoesSourceExist(TileSource::SUGGESTIONS_SERVICE)) {
     value.SetString("suggestionsService.status", suggestions_status_);
@@ -245,8 +244,8 @@ void NTPTilesInternalsMessageHandler::SendSourceInfo() {
     value.SetBoolean("popular", false);
   }
 
-  client_->CallJavascriptFunction(
-      "chrome.ntp_tiles_internals.receiveSourceInfo", value);
+  client_->CallJavascriptFunction("cr.webUIListenerCallback",
+                                  base::Value("receive-source-info"), value);
 }
 
 void NTPTilesInternalsMessageHandler::SendTiles(
@@ -258,8 +257,8 @@ void NTPTilesInternalsMessageHandler::SendTiles(
     entry->SetString("title", tile.title);
     entry->SetString("url", tile.url.spec());
     entry->SetInteger("source", static_cast<int>(tile.source));
-    entry->SetString("whitelistIconPath",
-                     tile.whitelist_icon_path.LossyDisplayName());
+    entry->SetString("allowlistIconPath",
+                     tile.allowlist_icon_path.LossyDisplayName());
     if (tile.source == TileSource::CUSTOM_LINKS) {
       entry->SetBoolean("fromMostVisited", tile.from_most_visited);
     }
@@ -287,8 +286,8 @@ void NTPTilesInternalsMessageHandler::SendTiles(
 
   base::DictionaryValue result;
   result.Set("sites", std::move(sites_list));
-  client_->CallJavascriptFunction("chrome.ntp_tiles_internals.receiveSites",
-                                  result);
+  client_->CallJavascriptFunction("cr.webUIListenerCallback",
+                                  base::Value("receive-sites"), result);
 }
 
 void NTPTilesInternalsMessageHandler::OnURLsAvailable(
@@ -312,8 +311,8 @@ void NTPTilesInternalsMessageHandler::OnURLsAvailable(
     for (const auto& entry : kIconTypesAndNames) {
       favicon_service_->GetLargestRawFaviconForPageURL(
           tile.url, std::vector<favicon_base::IconTypeSet>({{entry.type_enum}}),
-          /*minimum_size_in_pixels=*/0, base::Bind(on_lookup_done, tile.url),
-          &cancelable_task_tracker_);
+          /*minimum_size_in_pixels=*/0,
+          base::BindOnce(on_lookup_done, tile.url), &cancelable_task_tracker_);
     }
   }
 }

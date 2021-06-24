@@ -9,7 +9,7 @@
 
 #include "build/build_config.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #if defined(__OBJC__)
 @class NSBundle;
 #else
@@ -45,7 +45,7 @@ void GetUserCacheDirectory(const base::FilePath& profile_dir, base::FilePath* re
 // Get the path to the user's documents directory.
 bool GetUserDocumentsDirectory(base::FilePath* result);
 
-#if defined(OS_WIN) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 // Gets the path to a safe default download directory for a user.
 bool GetUserDownloadsDirectorySafe(base::FilePath* result);
 #endif
@@ -62,18 +62,12 @@ bool GetUserPicturesDirectory(base::FilePath* result);
 // Gets the path to the user's videos directory.
 bool GetUserVideosDirectory(base::FilePath* result);
 
-#if defined(OS_MACOSX)
-// The "versioned directory" is a directory in the browser .app bundle.  It
-// contains the bulk of the application, except for the things that the system
-// requires be located at spepcific locations.  The versioned directory is
-// in the .app at Contents/Versions/w.x.y.z.
-base::FilePath GetVersionedDirectory();
-
-// Most of the application is further contained within the framework.  The
-// framework bundle is located within the versioned directory at a specific
-// path.  The only components in the versioned directory not included in the
-// framework are things that also depend on the framework, such as the helper
-// app bundle.
+#if defined(OS_MAC)
+// Most of the application is further contained within the framework, which
+// resides in the Frameworks directory of the top-level Contents folder. The
+// framework is versioned with the full product version. This function returns
+// the full path to the versioned sub-directory of the framework, i.e.:
+// Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/X.
 base::FilePath GetFrameworkBundlePath();
 
 // Get the local library directory.
@@ -95,7 +89,7 @@ NSBundle* OuterAppBundle();
 bool GetUserDataDirectoryForBrowserBundle(NSBundle* bundle,
                                           base::FilePath* result);
 
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 // Checks if the |process_type| has the rights to access the profile.
 bool ProcessNeedsProfileDir(const std::string& process_type);
 

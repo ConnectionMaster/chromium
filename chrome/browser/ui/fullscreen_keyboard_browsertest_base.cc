@@ -10,24 +10,27 @@
 #include "base/macros.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
-#include "content/public/browser/notification_service.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
+#include "third_party/blink/public/common/switches.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/mac/mac_util.h"
 #endif
 
@@ -43,7 +46,7 @@ constexpr char kFullscreenKeyboardLockHTML[] =
 // On MacOSX command key is used for most of the shortcuts, so replace it with
 // control to reduce the complexity of comparison of the results.
 void NormalizeMetaKeyForMacOS(std::string* output) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   base::ReplaceSubstringsAfterOffset(output, 0, "MetaLeft", "ControlLeft");
 #endif
 }
@@ -145,12 +148,12 @@ void FullscreenKeyboardBrowserTestBase::StartFullscreenLockPage() {
       GetActiveBrowser(),
       GetEmbeddedTestServer()->GetURL(kFullscreenKeyboardLockHTML),
       WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 }
 
 void FullscreenKeyboardBrowserTestBase::SendShortcut(ui::KeyboardCode key,
                                                      bool shift /* = false */) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   const bool control_modifier = false;
   const bool command_modifier = true;
 #else
@@ -181,15 +184,13 @@ void FullscreenKeyboardBrowserTestBase::SendShiftShortcut(
 void FullscreenKeyboardBrowserTestBase::SendFullscreenShortcutAndWait() {
   // On MacOSX, entering and exiting fullscreen are not synchronous. So we wait
   // for the observer to notice the change of fullscreen state.
-  content::WindowedNotificationObserver observer(
-      chrome::NOTIFICATION_FULLSCREEN_CHANGED,
-      content::NotificationService::AllSources());
+  FullscreenNotificationObserver observer(GetActiveBrowser());
 // Enter fullscreen.
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // On MACOSX, Command + Control + F is used.
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(GetActiveBrowser(), ui::VKEY_F,
                                               true, false, false, true));
-#elif defined(OS_CHROMEOS)
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   // A dedicated fullscreen key is used on Chrome OS, so send a fullscreen
   // command directly instead, to avoid constructing the key press.
   ASSERT_TRUE(chrome::ExecuteCommand(GetActiveBrowser(), IDC_FULLSCREEN));
@@ -202,16 +203,14 @@ void FullscreenKeyboardBrowserTestBase::SendFullscreenShortcutAndWait() {
 // keyboard events. As a result, content doesn't actually know it has entered
 // fullscreen. For more details, see ScopedFakeNSWindowFullscreen.
 // TODO(crbug.com/837438): Remove this once ScopedFakeNSWindowFullscreen fires
-// NOTIFICATION_FULLSCREEN_CHANGED.
-#if !defined(OS_MACOSX)
+// OnFullscreenStateChanged.
+#if !defined(OS_MAC)
   observer.Wait();
 #endif
 }
 
 void FullscreenKeyboardBrowserTestBase::SendJsFullscreenShortcutAndWait() {
-  content::WindowedNotificationObserver observer(
-      chrome::NOTIFICATION_FULLSCREEN_CHANGED,
-      content::NotificationService::AllSources());
+  FullscreenNotificationObserver observer(GetActiveBrowser());
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(GetActiveBrowser(), ui::VKEY_S,
                                               false, false, false, false));
   expected_result_ += "KeyS ctrl:false shift:false alt:false meta:false\n";
@@ -227,9 +226,7 @@ void FullscreenKeyboardBrowserTestBase::SendEscape() {
 
 void FullscreenKeyboardBrowserTestBase::
     SendEscapeAndWaitForExitingFullscreen() {
-  content::WindowedNotificationObserver observer(
-      chrome::NOTIFICATION_FULLSCREEN_CHANGED,
-      content::NotificationService::AllSources());
+  FullscreenNotificationObserver observer(GetActiveBrowser());
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
       GetActiveBrowser(), ui::VKEY_ESCAPE, false, false, false, false));
   observer.Wait();
@@ -288,7 +285,7 @@ void FullscreenKeyboardBrowserTestBase::SendShortcutsAndExpectNotPrevented(
         ui_test_utils::NavigateToURLWithDisposition(
             this->GetActiveBrowser(), GURL("data:text/html," + page),
             WindowOpenDisposition::CURRENT_TAB,
-            ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+            ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
         ASSERT_NO_FATAL_FAILURE(this->SendJsFullscreenShortcutAndWait());
       }
     } else {
@@ -436,4 +433,10 @@ std::string FullscreenKeyboardBrowserTestBase::GetFullscreenFramePath() {
 
 void FullscreenKeyboardBrowserTestBase::SetUpOnMainThread() {
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(GetActiveBrowser()));
+}
+
+void FullscreenKeyboardBrowserTestBase::SetUpCommandLine(
+    base::CommandLine* command_line) {
+  BrowserTestBase::SetUpCommandLine(command_line);
+  command_line->AppendSwitch(blink::switches::kAllowPreCommitInput);
 }

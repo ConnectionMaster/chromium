@@ -7,10 +7,10 @@
 #include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/modules/cache_storage/cache_storage.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 
 namespace blink {
@@ -19,10 +19,8 @@ namespace {
 
 template <typename T>
 class GlobalCacheStorageImpl final
-    : public GarbageCollectedFinalized<GlobalCacheStorageImpl<T>>,
+    : public GarbageCollected<GlobalCacheStorageImpl<T>>,
       public Supplement<T> {
-  USING_GARBAGE_COLLECTED_MIXIN(GlobalCacheStorageImpl);
-
  public:
   static const char kSupplementName[];
 
@@ -37,13 +35,14 @@ class GlobalCacheStorageImpl final
     return *supplement;
   }
 
-  GlobalCacheStorageImpl() = default;
-  ~GlobalCacheStorageImpl() {}
+  GlobalCacheStorageImpl() : Supplement<T>(nullptr) {}
+  ~GlobalCacheStorageImpl() = default;
 
   CacheStorage* Caches(T& fetching_scope, ExceptionState& exception_state) {
     ExecutionContext* context = fetching_scope.GetExecutionContext();
     if (!context->GetSecurityOrigin()->CanAccessCacheStorage()) {
-      if (context->GetSecurityContext().IsSandboxed(WebSandboxFlags::kOrigin)) {
+      if (context->IsSandboxed(
+              network::mojom::blink::WebSandboxFlags::kOrigin)) {
         exception_state.ThrowSecurityError(
             "Cache storage is disabled because the context is sandboxed and "
             "lacks the 'allow-same-origin' flag.");
@@ -62,10 +61,11 @@ class GlobalCacheStorageImpl final
     }
 
     if (!caches_) {
-      if (!context->GetInterfaceProvider()) {
+      if (&context->GetBrowserInterfaceBroker() ==
+          &GetEmptyBrowserInterfaceBroker()) {
         exception_state.ThrowSecurityError(
-            "Cache storage isn't available on detached context. No interface "
-            "provider.");
+            "Cache storage isn't available on detached context. No browser "
+            "interface broker.");
         return nullptr;
       }
       caches_ = MakeGarbageCollected<CacheStorage>(
@@ -74,9 +74,7 @@ class GlobalCacheStorageImpl final
     return caches_;
   }
 
-  // Promptly dispose of associated CacheStorage.
-  EAGERLY_FINALIZE();
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(caches_);
     Supplement<T>::Trace(visitor);
   }

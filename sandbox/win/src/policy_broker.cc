@@ -8,7 +8,7 @@
 
 #include <map>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/win/pe_image.h"
 #include "base/win/windows_version.h"
 #include "sandbox/win/src/interception.h"
@@ -55,6 +55,8 @@ bool InitGlobalNt() {
   INIT_GLOBAL_NT(QuerySection);
   INIT_GLOBAL_NT(QueryVirtualMemory);
   INIT_GLOBAL_NT(UnmapViewOfSection);
+  INIT_GLOBAL_NT(SignalAndWaitForSingleObject);
+  INIT_GLOBAL_NT(WaitForSingleObject);
 
   INIT_GLOBAL_RTL(RtlAllocateHeap);
   INIT_GLOBAL_RTL(RtlAnsiStringToUnicodeString);
@@ -71,7 +73,7 @@ bool InitGlobalNt() {
   return true;
 }
 
-bool SetupNtdllImports(TargetProcess* child) {
+bool SetupNtdllImports(TargetProcess& child) {
   if (!InitGlobalNt()) {
     return false;
   }
@@ -81,7 +83,7 @@ bool SetupNtdllImports(TargetProcess* child) {
   for (size_t i = 0; i < sizeof(g_nt) / sizeof(void*); i++)
     DCHECK(reinterpret_cast<char**>(&g_nt)[i]);
 #endif
-  return (SBOX_ALL_OK == child->TransferVariable("g_nt", &g_nt, sizeof(g_nt)));
+  return (SBOX_ALL_OK == child.TransferVariable("g_nt", &g_nt, sizeof(g_nt)));
 }
 
 #undef INIT_GLOBAL_NT

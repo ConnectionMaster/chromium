@@ -28,14 +28,14 @@ class SupervisedProvider : public ObservableProvider {
   // ProviderInterface implementations.
   std::unique_ptr<RuleIterator> GetRuleIterator(
       ContentSettingsType content_type,
-      const ResourceIdentifier& resource_identifier,
       bool incognito) const override;
 
-  bool SetWebsiteSetting(const ContentSettingsPattern& primary_pattern,
-                         const ContentSettingsPattern& secondary_pattern,
-                         ContentSettingsType content_type,
-                         const ResourceIdentifier& resource_identifier,
-                         base::Value* value) override;
+  bool SetWebsiteSetting(
+      const ContentSettingsPattern& primary_pattern,
+      const ContentSettingsPattern& secondary_pattern,
+      ContentSettingsType content_type,
+      std::unique_ptr<base::Value>&& value,
+      const ContentSettingConstraints& constraints = {}) override;
 
   void ClearAllContentSettingsRules(ContentSettingsType content_type) override;
 
@@ -51,9 +51,7 @@ class SupervisedProvider : public ObservableProvider {
   // thread safety.
   mutable base::Lock lock_;
 
-  std::unique_ptr<
-      base::CallbackList<void(const base::DictionaryValue*)>::Subscription>
-      user_settings_subscription_;
+  base::CallbackListSubscription user_settings_subscription_;
 
   DISALLOW_COPY_AND_ASSIGN(SupervisedProvider);
 };

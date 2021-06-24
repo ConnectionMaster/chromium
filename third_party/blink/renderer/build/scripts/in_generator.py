@@ -26,13 +26,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from __future__ import print_function
+
 import os
 import os.path
 import shlex
 import shutil
+import sys
 import optparse
 
 from in_file import InFile
+
+# TODO(crbug.com/1174969): Remove this once Python2 is obsoleted.
+if sys.version_info.major != 2:
+    basestring = str
 
 
 #########################################################
@@ -79,7 +86,9 @@ class Writer(GenericWriter):
         if isinstance(in_files, basestring):
             in_files = [in_files]
         if in_files:
-            self.in_file = InFile.load_from_files(in_files, self.defaults, self.valid_values, self.default_parameters)
+            self.in_file = InFile.load_from_files(in_files, self.defaults,
+                                                  self.valid_values,
+                                                  self.default_parameters)
         else:
             self.in_file = None
 
@@ -92,19 +101,14 @@ class Maker(object):
         script_name = os.path.basename(argv[0])
         args = argv[1:]
         if len(args) < 1:
-            print "USAGE: %s INPUT_FILES" % script_name
+            print("USAGE: %s INPUT_FILES" % script_name)
             exit(1)
 
         parser = optparse.OptionParser()
 
         parser.add_option("--gperf", default="gperf")
-        parser.add_option("--developer_dir",
-                          help='Path to Xcode.')
         parser.add_option("--output_dir", default=os.getcwd())
         options, args = parser.parse_args()
-
-        if options.developer_dir:
-            os.environ['DEVELOPER_DIR'] = options.developer_dir
 
         writer = self._writer_class(args)
         writer.set_gperf_path(options.gperf)

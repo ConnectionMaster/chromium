@@ -10,83 +10,93 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/base64.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
-#include "base/containers/flat_map.h"
-#include "base/feature_list.h"
+#include "base/containers/contains.h"
 #include "base/i18n/number_formatting.h"
 #include "base/json/json_reader.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/account_manager_facade_factory.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/bad_message.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/printing/background_printing_manager.h"
-#include "chrome/browser/printing/print_dialog_cloud.h"
 #include "chrome/browser/printing/print_error_dialog.h"
 #include "chrome/browser/printing/print_job_manager.h"
 #include "chrome/browser/printing/print_preview_dialog_controller.h"
+#include "chrome/browser/printing/print_preview_sticky_settings.h"
 #include "chrome/browser/printing/print_view_manager.h"
 #include "chrome/browser/printing/printer_manager_dialog.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/account_consistency_mode_manager.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/webui/print_preview/cloud_print_signin.h"
 #include "chrome/browser/ui/webui/print_preview/pdf_printer_handler.h"
 #include "chrome/browser/ui/webui/print_preview/policy_settings.h"
+#include "chrome/browser/ui/webui/print_preview/print_preview_metrics.h"
 #include "chrome/browser/ui/webui/print_preview/print_preview_ui.h"
 #include "chrome/browser/ui/webui/print_preview/printer_handler.h"
-#include "chrome/browser/ui/webui/print_preview/sticky_settings.h"
 #include "chrome/common/buildflags.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/cloud_print/cloud_print_constants.h"
 #include "chrome/common/crash_keys.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/printing/printer_capabilities.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/cloud_devices/common/cloud_device_description.h"
 #include "components/cloud_devices/common/cloud_devices_urls.h"
 #include "components/cloud_devices/common/printer_description.h"
 #include "components/prefs/pref_service.h"
-#include "components/printing/browser/printer_capabilities.h"
+#include "components/printing/browser/prefs_util.h"
 #include "components/printing/common/cloud_print_cdd_conversion.h"
-#include "components/printing/common/print_messages.h"
-#include "components/signin/core/browser/account_consistency_method.h"
 #include "components/url_formatter/url_formatter.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
-#include "google_apis/gaia/oauth2_token_service.h"
+#include "google_apis/gaia/gaia_auth_util.h"
 #include "net/base/url_util.h"
 #include "printing/backend/print_backend.h"
 #include "printing/backend/print_backend_consts.h"
+#include "printing/backend/print_backend_utils.h"
+#include "printing/backend/printing_restrictions.h"
 #include "printing/buildflags/buildflags.h"
-#include "printing/print_settings.h"
-#include "services/identity/public/cpp/primary_account_access_token_fetcher.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/icu/source/i18n/unicode/ulocdata.h"
 
 #if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/settings/device_oauth2_token_service.h"
-#include "chrome/browser/chromeos/settings/device_oauth2_token_service_factory.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chromeos/printing/printer_configuration.h"
-#include "services/identity/public/cpp/scope_set.h"
+#include "chromeos/crosapi/mojom/local_printer.mojom.h"
+#include "components/account_manager_core/account_manager_facade.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/account_manager/account_manager_util.h"
+#include "chrome/browser/ash/crosapi/local_printer_ash.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#elif BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "chrome/browser/lacros/account_manager_util.h"
+#include "chromeos/crosapi/mojom/drive_integration_service.mojom.h"
+#include "chromeos/lacros/lacros_chrome_service_impl.h"
 #endif
 
 using content::RenderFrameHost;
 using content::WebContents;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+using ash::IsAccountManagerAvailable;
+#endif
 
 namespace printing {
 
@@ -97,152 +107,33 @@ namespace {
 // crbug.com/372240.
 constexpr size_t kMaxCloudPrintPdfDataSizeInBytes = 80 * 1024 * 1024 / 2;
 
-// This enum is used to back an UMA histogram, and should therefore be treated
-// as append only.
-enum UserActionBuckets {
-  PRINT_TO_PRINTER,
-  PRINT_TO_PDF,
-  CANCEL,
-  FALLBACK_TO_ADVANCED_SETTINGS_DIALOG,
-  PREVIEW_FAILED,
-  PREVIEW_STARTED,
-  INITIATOR_CRASHED_UNUSED,
-  INITIATOR_CLOSED,
-  PRINT_WITH_CLOUD_PRINT,
-  PRINT_WITH_PRIVET,
-  PRINT_WITH_EXTENSION,
-  OPEN_IN_MAC_PREVIEW,
-  PRINT_TO_GOOGLE_DRIVE,
-  USERACTION_BUCKET_BOUNDARY
-};
-
-// This enum is used to back an UMA histogram, and should therefore be treated
-// as append only.
-enum PrintSettingsBuckets {
-  LANDSCAPE = 0,
-  PORTRAIT,
-  COLOR,
-  BLACK_AND_WHITE,
-  COLLATE,
-  SIMPLEX,
-  DUPLEX,
-  TOTAL,
-  HEADERS_AND_FOOTERS,
-  CSS_BACKGROUND,
-  SELECTION_ONLY,
-  EXTERNAL_PDF_PREVIEW_UNUSED,
-  PAGE_RANGE,
-  DEFAULT_MEDIA,
-  NON_DEFAULT_MEDIA,
-  COPIES,
-  NON_DEFAULT_MARGINS,
-  DISTILL_PAGE_UNUSED,
-  SCALING,
-  PRINT_AS_IMAGE,
-  PAGES_PER_SHEET,
-  FIT_TO_PAGE,
-  DEFAULT_DPI,
-  NON_DEFAULT_DPI,
-  PRINT_SETTINGS_BUCKET_BOUNDARY
-};
-
-// This enum is used to back an UMA histogram, and should therefore be treated
-// as append only.
-enum PrintDocumentTypeBuckets {
-  HTML_DOCUMENT = 0,
-  PDF_DOCUMENT,
-  PRINT_DOCUMENT_TYPE_BUCKET_BOUNDARY
-};
-
-void ReportUserActionHistogram(UserActionBuckets event) {
-  UMA_HISTOGRAM_ENUMERATION("PrintPreview.UserAction", event,
-                            USERACTION_BUCKET_BOUNDARY);
-}
-
-void ReportPrintSettingHistogram(PrintSettingsBuckets setting) {
-  UMA_HISTOGRAM_ENUMERATION("PrintPreview.PrintSettings", setting,
-                            PRINT_SETTINGS_BUCKET_BOUNDARY);
-}
-
-void ReportPrintDocumentTypeAndSizeHistograms(PrintDocumentTypeBuckets doctype,
-                                              size_t average_page_size_in_kb) {
-  UMA_HISTOGRAM_ENUMERATION("PrintPreview.PrintDocumentType", doctype,
-                            PRINT_DOCUMENT_TYPE_BUCKET_BOUNDARY);
-  switch (doctype) {
-    case HTML_DOCUMENT:
-      UMA_HISTOGRAM_MEMORY_KB("PrintPreview.PrintDocumentSize.HTML",
-                              average_page_size_in_kb);
-      break;
-    case PDF_DOCUMENT:
-      UMA_HISTOGRAM_MEMORY_KB("PrintPreview.PrintDocumentSize.PDF",
-                              average_page_size_in_kb);
-      break;
-    default:
-      NOTREACHED();
-      break;
-  }
-}
-
-bool ReportPageCountHistogram(UserActionBuckets user_action, int page_count) {
-  switch (user_action) {
-    case PRINT_TO_PRINTER:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.PrintToPrinter",
-                              page_count);
-      return true;
-    case PRINT_TO_PDF:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.PrintToPDF", page_count);
-      return true;
-    case FALLBACK_TO_ADVANCED_SETTINGS_DIALOG:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.SystemDialog",
-                              page_count);
-      return true;
-    case PRINT_WITH_CLOUD_PRINT:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.PrintToCloudPrint",
-                              page_count);
-      return true;
-    case PRINT_WITH_PRIVET:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.PrintWithPrivet",
-                              page_count);
-      return true;
-    case PRINT_WITH_EXTENSION:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.PrintWithExtension",
-                              page_count);
-      return true;
-    case OPEN_IN_MAC_PREVIEW:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.OpenInMacPreview",
-                              page_count);
-      return true;
-    case PRINT_TO_GOOGLE_DRIVE:
-      UMA_HISTOGRAM_COUNTS_1M("PrintPreview.PageCount.PrintToGoogleDrive",
-                              page_count);
-      return true;
-    default:
-      return false;
-  }
-}
-
 PrinterType GetPrinterTypeForUserAction(UserActionBuckets user_action) {
   switch (user_action) {
-    case PRINT_WITH_PRIVET:
-      return PrinterType::kPrivetPrinter;
-    case PRINT_WITH_EXTENSION:
-      return PrinterType::kExtensionPrinter;
-    case PRINT_TO_PDF:
-      return PrinterType::kPdfPrinter;
-    case PRINT_TO_PRINTER:
-    case FALLBACK_TO_ADVANCED_SETTINGS_DIALOG:
-    case OPEN_IN_MAC_PREVIEW:
-      return PrinterType::kLocalPrinter;
+    case UserActionBuckets::kPrintWithPrivet:
+      return PrinterType::kPrivet;
+    case UserActionBuckets::kPrintWithExtension:
+      return PrinterType::kExtension;
+    // On Chrome OS, printing to Google Drive needs to open the local file
+    // picker so |kPrintToGoogleDriveCros| action should be handled by the
+    // PDFPrinterHandler.
+    case UserActionBuckets::kPrintToGoogleDriveCros:
+    case UserActionBuckets::kPrintToPdf:
+      return PrinterType::kPdf;
+    case UserActionBuckets::kPrintToPrinter:
+    case UserActionBuckets::kFallbackToAdvancedSettingsDialog:
+    case UserActionBuckets::kOpenInMacPreview:
+      return PrinterType::kLocal;
     default:
       NOTREACHED();
-      return PrinterType::kLocalPrinter;
+      return PrinterType::kLocal;
   }
 }
 
 base::Value GetErrorValue(UserActionBuckets user_action,
                           base::StringPiece description) {
-  return user_action == PRINT_WITH_PRIVET ? base::Value(-1)
-                                          : base::Value(description);
+  return user_action == UserActionBuckets::kPrintWithPrivet
+             ? base::Value(-1)
+             : base::Value(description);
 }
 
 // Dictionary Fields for Print Preview initial settings. Keep in sync with
@@ -255,12 +146,14 @@ const char kIsInKioskAutoPrintMode[] = "isInKioskAutoPrintMode";
 // Dictionary field to indicate whether Chrome is running in forced app (app
 // kiosk) mode. It's not the same as desktop Chrome kiosk (the one above).
 const char kIsInAppKioskMode[] = "isInAppKioskMode";
-// Name of a dictionary field holding the thousands delimeter according to the
+// Name of a dictionary field holding the UI locale.
+const char kUiLocale[] = "uiLocale";
+// Name of a dictionary field holding the thousands delimiter according to the
 // locale.
-const char kThousandsDelimeter[] = "thousandsDelimeter";
-// Name of a dictionary field holding the decimal delimeter according to the
+const char kThousandsDelimiter[] = "thousandsDelimiter";
+// Name of a dictionary field holding the decimal delimiter according to the
 // locale.
-const char kDecimalDelimeter[] = "decimalDelimeter";
+const char kDecimalDelimiter[] = "decimalDelimiter";
 // Name of a dictionary field holding the measurement system according to the
 // locale.
 const char kUnitType[] = "unitType";
@@ -273,17 +166,45 @@ const char kAppState[] = "serializedAppStateStr";
 // Name of a dictionary field holding the default destination selection rules.
 const char kDefaultDestinationSelectionRules[] =
     "serializedDefaultDestinationSelectionRulesStr";
-// Name of a dictionary pref holding the default value for the header/footer
-// checkbox. If set, takes priority over sticky settings.
+// Name of a dictionary field holding policy values for printing settings.
+const char kPolicies[] = "policies";
+// Name of a dictionary field holding policy allowed mode value for the setting.
+const char kAllowedMode[] = "allowedMode";
+// Name of a dictionary field holding policy default mode value for the setting.
+const char kDefaultMode[] = "defaultMode";
+// Name of a dictionary pref holding the policy value for the header/footer
+// checkbox.
 const char kHeaderFooter[] = "headerFooter";
-// Name of a dictionary field telling us whether the kPrintHeaderFooter pref is
-// managed by an enterprise policy.
-const char kIsHeaderFooterManaged[] = "isHeaderFooterManaged";
+// Name of a dictionary pref holding the policy value for the background
+// graphics checkbox.
+const char kCssBackground[] = "cssBackground";
+// Name of a dictionary pref holding the policy value for the paper size
+// setting.
+const char kMediaSize[] = "mediaSize";
+#if defined(OS_CHROMEOS)
+// Name of a dictionary field holding policy value for the setting.
+const char kValue[] = "value";
+// Name of a dictionary pref holding the policy value for the sheets number.
+const char kSheets[] = "sheets";
+#endif  // defined(OS_CHROMEOS)
+// Name of a dictionary field indicating whether the 'Save to PDF' destination
+// is disabled.
+const char kPdfPrinterDisabled[] = "pdfPrinterDisabled";
+// Name of a dictionary field indicating whether the destinations are managed by
+// the PrinterTypeDenyList enterprise policy.
+const char kDestinationsManaged[] = "destinationsManaged";
+// Name of a dictionary field holding the cloud print URL.
+const char kCloudPrintURL[] = "cloudPrintURL";
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+// Name of a dictionary field indicating whether the user's Drive directory is
+// mounted.
+const char kIsDriveMounted[] = "isDriveMounted";
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
 
 // Get the print job settings dictionary from |json_str|.
 // Returns |base::Value()| on failure.
 base::Value GetSettingsDictionary(const std::string& json_str) {
-  base::Optional<base::Value> settings = base::JSONReader::Read(json_str);
+  absl::optional<base::Value> settings = base::JSONReader::Read(json_str);
   if (!settings || !settings->is_dict()) {
     NOTREACHED() << "Print job settings must be a dictionary.";
     return base::Value();
@@ -297,195 +218,171 @@ base::Value GetSettingsDictionary(const std::string& json_str) {
   return std::move(*settings);
 }
 
-// Track the popularity of print settings and report the stats.
-void ReportPrintSettingsStats(const base::Value& print_settings,
-                              const base::Value& preview_settings,
-                              bool is_pdf) {
-  ReportPrintSettingHistogram(TOTAL);
-
-  // Print settings can be categorized into 2 groups: settings that are applied
-  // via preview generation (page range, selection, headers/footers, background
-  // graphics, scaling, layout, page size, pages per sheet, fit to page,
-  // margins, rasterize), and settings that are applied at the printer (color,
-  // duplex, copies, collate, dpi). The former should be captured from the most
-  // recent preview request, as some of them are set to dummy values in the
-  // print ticket. Similarly, settings applied at the printer should be pulled
-  // from the print ticket, as they may have dummy values in the preview
-  // request.
-  const base::Value* page_range_array =
-      preview_settings.FindKey(kSettingPageRange);
-  if (page_range_array && page_range_array->is_list() &&
-      !page_range_array->GetList().empty()) {
-    ReportPrintSettingHistogram(PAGE_RANGE);
-  }
-
-  const base::Value* media_size_value =
-      preview_settings.FindKey(kSettingMediaSize);
-  if (media_size_value && media_size_value->is_dict() &&
-      !media_size_value->DictEmpty()) {
-    if (media_size_value->FindBoolKey(kSettingMediaSizeIsDefault)
-            .value_or(false)) {
-      ReportPrintSettingHistogram(DEFAULT_MEDIA);
-    } else {
-      ReportPrintSettingHistogram(NON_DEFAULT_MEDIA);
-    }
-  }
-
-  base::Optional<bool> landscape_opt =
-      preview_settings.FindBoolKey(kSettingLandscape);
-  if (landscape_opt)
-    ReportPrintSettingHistogram(landscape_opt.value() ? LANDSCAPE : PORTRAIT);
-
-  if (print_settings.FindIntKey(kSettingCopies).value_or(1) > 1)
-    ReportPrintSettingHistogram(COPIES);
-
-  if (preview_settings.FindIntKey(kSettingScaleFactor).value_or(100) != 100)
-    ReportPrintSettingHistogram(SCALING);
-
-  if (preview_settings.FindIntKey(kSettingPagesPerSheet).value_or(1) != 1)
-    ReportPrintSettingHistogram(PAGES_PER_SHEET);
-
-  if (print_settings.FindBoolKey(kSettingCollate).value_or(false))
-    ReportPrintSettingHistogram(COLLATE);
-
-  base::Optional<int> duplex_mode_opt =
-      print_settings.FindIntKey(kSettingDuplexMode);
-  if (duplex_mode_opt)
-    ReportPrintSettingHistogram(duplex_mode_opt.value() ? DUPLEX : SIMPLEX);
-
-  base::Optional<int> color_mode_opt = print_settings.FindIntKey(kSettingColor);
-  if (color_mode_opt) {
-    ReportPrintSettingHistogram(
-        IsColorModelSelected(color_mode_opt.value()) ? COLOR : BLACK_AND_WHITE);
-  }
-
-  if (preview_settings.FindIntKey(kSettingMarginsType).value_or(0) != 0)
-    ReportPrintSettingHistogram(NON_DEFAULT_MARGINS);
-
-  if (preview_settings.FindBoolKey(kSettingHeaderFooterEnabled).value_or(false))
-    ReportPrintSettingHistogram(HEADERS_AND_FOOTERS);
-
-  if (preview_settings.FindBoolKey(kSettingShouldPrintBackgrounds)
-          .value_or(false)) {
-    ReportPrintSettingHistogram(CSS_BACKGROUND);
-  }
-
-  if (preview_settings.FindBoolKey(kSettingShouldPrintSelectionOnly)
-          .value_or(false)) {
-    ReportPrintSettingHistogram(SELECTION_ONLY);
-  }
-
-  if (preview_settings.FindBoolKey(kSettingRasterizePdf).value_or(false))
-    ReportPrintSettingHistogram(PRINT_AS_IMAGE);
-
-  if (is_pdf &&
-      preview_settings.FindBoolKey(kSettingFitToPageEnabled).value_or(false)) {
-    ReportPrintSettingHistogram(FIT_TO_PAGE);
-  }
-
-  if (print_settings.FindIntKey(kSettingDpiHorizontal).value_or(0) > 0 &&
-      print_settings.FindIntKey(kSettingDpiVertical).value_or(0) > 0) {
-    base::Optional<bool> is_default_opt =
-        print_settings.FindBoolKey(kSettingDpiDefault);
-    if (is_default_opt) {
-      ReportPrintSettingHistogram(is_default_opt.value() ? DEFAULT_DPI
-                                                         : NON_DEFAULT_DPI);
-    }
-  }
-}
-
 UserActionBuckets DetermineUserAction(const base::Value& settings) {
-#if defined(OS_MACOSX)
-  if (settings.FindKey(kSettingOpenPDFInPreview) != nullptr)
-    return OPEN_IN_MAC_PREVIEW;
+#if defined(OS_MAC)
+  if (settings.FindKey(kSettingOpenPDFInPreview))
+    return UserActionBuckets::kOpenInMacPreview;
 #endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  if (settings.FindBoolKey(kSettingPrintToGoogleDrive).value_or(false)) {
+    return UserActionBuckets::kPrintToGoogleDriveCros;
+  }
+#endif
+
   // This needs to be checked before checking for a cloud print ID, since a
   // print ticket for printing to Drive will also contain a cloud print ID.
   if (settings.FindBoolKey(kSettingPrintToGoogleDrive).value_or(false))
-    return PRINT_TO_GOOGLE_DRIVE;
-  if (settings.FindKey(kSettingCloudPrintId) != nullptr)
-    return PRINT_WITH_CLOUD_PRINT;
-  if (settings.FindBoolKey(kSettingPrintWithPrivet).value_or(false))
-    return PRINT_WITH_PRIVET;
-  if (settings.FindBoolKey(kSettingPrintWithExtension).value_or(false))
-    return PRINT_WITH_EXTENSION;
-  if (settings.FindBoolKey(kSettingPrintToPDF).value_or(false))
-    return PRINT_TO_PDF;
+    return UserActionBuckets::kPrintToGoogleDrive;
+  if (settings.FindKey(kSettingCloudPrintId))
+    return UserActionBuckets::kPrintWithCloudPrint;
+
+  PrinterType type = static_cast<PrinterType>(
+      settings.FindIntKey(kSettingPrinterType).value());
+  switch (type) {
+    case PrinterType::kPrivet:
+      return UserActionBuckets::kPrintWithPrivet;
+    case PrinterType::kExtension:
+      return UserActionBuckets::kPrintWithExtension;
+    case PrinterType::kPdf:
+      return UserActionBuckets::kPrintToPdf;
+    case PrinterType::kLocal:
+      break;
+    default:
+      NOTREACHED();
+      break;
+  }
+
   if (settings.FindBoolKey(kSettingShowSystemDialog).value_or(false))
-    return FALLBACK_TO_ADVANCED_SETTINGS_DIALOG;
-  return PRINT_TO_PRINTER;
+    return UserActionBuckets::kFallbackToAdvancedSettingsDialog;
+  return UserActionBuckets::kPrintToPrinter;
 }
 
-base::LazyInstance<StickySettings>::DestructorAtExit g_sticky_settings =
-    LAZY_INSTANCE_INITIALIZER;
+#if defined(OS_CHROMEOS)
+base::Value PoliciesToValue(crosapi::mojom::PoliciesPtr ptr) {
+  base::Value policies(base::Value::Type::DICTIONARY);
 
-StickySettings* GetStickySettings() {
-  return g_sticky_settings.Pointer();
+  base::Value header_footer_policy(base::Value::Type::DICTIONARY);
+  if (ptr->print_header_footer_allowed !=
+      crosapi::mojom::Policies::OptionalBool::kUnset) {
+    header_footer_policy.SetBoolKey(
+        kAllowedMode, ptr->print_header_footer_allowed ==
+                          crosapi::mojom::Policies::OptionalBool::kTrue);
+  }
+  if (ptr->print_header_footer_default !=
+      crosapi::mojom::Policies::OptionalBool::kUnset) {
+    header_footer_policy.SetBoolKey(
+        kDefaultMode, ptr->print_header_footer_default ==
+                          crosapi::mojom::Policies::OptionalBool::kTrue);
+  }
+  if (!header_footer_policy.DictEmpty())
+    policies.SetKey(kHeaderFooter, std::move(header_footer_policy));
+
+  base::Value background_graphics_policy(base::Value::Type::DICTIONARY);
+  int value = static_cast<int>(ptr->allowed_background_graphics_modes);
+  if (value)
+    background_graphics_policy.SetIntKey(kAllowedMode, value);
+  value = static_cast<int>(ptr->background_graphics_default);
+  if (value)
+    background_graphics_policy.SetIntKey(kDefaultMode, value);
+  if (!background_graphics_policy.DictEmpty())
+    policies.SetKey(kCssBackground, std::move(background_graphics_policy));
+
+  base::Value paper_size_policy(base::Value::Type::DICTIONARY);
+  const absl::optional<gfx::Size>& default_paper_size = ptr->paper_size_default;
+  if (default_paper_size.has_value()) {
+    base::Value default_paper_size_value(base::Value::Type::DICTIONARY);
+    default_paper_size_value.SetIntKey(kPaperSizeWidth,
+                                       default_paper_size.value().width());
+    default_paper_size_value.SetIntKey(kPaperSizeHeight,
+                                       default_paper_size.value().height());
+    paper_size_policy.SetKey(kDefaultMode, std::move(default_paper_size_value));
+  }
+  if (!paper_size_policy.DictEmpty())
+    policies.SetKey(kMediaSize, std::move(paper_size_policy));
+
+  if (ptr->max_sheets_allowed_has_value) {
+    base::Value sheets_policy(base::Value::Type::DICTIONARY);
+    sheets_policy.SetIntKey(kValue, ptr->max_sheets_allowed);
+    policies.SetKey(kSheets, std::move(sheets_policy));
+  }
+
+  return policies;
 }
+
+#else
+base::Value GetPolicies(const PrefService& prefs) {
+  base::Value policies(base::Value::Type::DICTIONARY);
+
+  base::Value header_footer_policy(base::Value::Type::DICTIONARY);
+  if (prefs.HasPrefPath(prefs::kPrintHeaderFooter)) {
+    if (prefs.IsManagedPreference(prefs::kPrintHeaderFooter)) {
+      header_footer_policy.SetBoolKey(
+          kAllowedMode, prefs.GetBoolean(prefs::kPrintHeaderFooter));
+    } else {
+      header_footer_policy.SetBoolKey(
+          kDefaultMode, prefs.GetBoolean(prefs::kPrintHeaderFooter));
+    }
+  }
+  if (!header_footer_policy.DictEmpty())
+    policies.SetKey(kHeaderFooter, std::move(header_footer_policy));
+
+  base::Value background_graphics_policy(base::Value::Type::DICTIONARY);
+  if (prefs.HasPrefPath(prefs::kPrintingAllowedBackgroundGraphicsModes)) {
+    background_graphics_policy.SetIntKey(
+        kAllowedMode,
+        prefs.GetInteger(prefs::kPrintingAllowedBackgroundGraphicsModes));
+  }
+  if (prefs.HasPrefPath(prefs::kPrintingBackgroundGraphicsDefault)) {
+    background_graphics_policy.SetIntKey(
+        kDefaultMode,
+        prefs.GetInteger(prefs::kPrintingBackgroundGraphicsDefault));
+  }
+  if (!background_graphics_policy.DictEmpty())
+    policies.SetKey(kCssBackground, std::move(background_graphics_policy));
+
+  base::Value paper_size_policy(base::Value::Type::DICTIONARY);
+  absl::optional<gfx::Size> default_paper_size = ParsePaperSizeDefault(prefs);
+  if (default_paper_size.has_value()) {
+    base::Value default_paper_size_value(base::Value::Type::DICTIONARY);
+    default_paper_size_value.SetIntKey(kPaperSizeWidth,
+                                       default_paper_size.value().width());
+    default_paper_size_value.SetIntKey(kPaperSizeHeight,
+                                       default_paper_size.value().height());
+    paper_size_policy.SetKey(kDefaultMode, std::move(default_paper_size_value));
+  }
+  if (!paper_size_policy.DictEmpty())
+    policies.SetKey(kMediaSize, std::move(paper_size_policy));
+
+  return policies;
+}
+#endif  // defined(OS_CHROMEOS)
 
 }  // namespace
 
-#if defined(OS_CHROMEOS)
-class PrintPreviewHandler::AccessTokenService
-    : public OAuth2TokenService::Consumer {
- public:
-  AccessTokenService() : OAuth2TokenService::Consumer("print_preview") {}
-
-  void RequestToken(base::OnceCallback<void(const std::string&)> callback) {
-    // There can only be one pending request at a time. See
-    // cloud_print_interface_js.js.
-    const identity::ScopeSet scopes{cloud_devices::kCloudPrintAuthScope};
-    DCHECK(!device_request_callback_);
-
-    chromeos::DeviceOAuth2TokenService* token_service =
-        chromeos::DeviceOAuth2TokenServiceFactory::Get();
-    std::string account_id = token_service->GetRobotAccountId();
-
-    device_request_ = token_service->StartRequest(account_id, scopes, this);
-    device_request_callback_ = std::move(callback);
+PrintPreviewHandler::PrintPreviewHandler() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  local_printer_ = std::make_unique<crosapi::LocalPrinterAsh>();
+#elif BUILDFLAG(IS_CHROMEOS_LACROS)
+  chromeos::LacrosChromeServiceImpl* service =
+      chromeos::LacrosChromeServiceImpl::Get();
+  if (service->IsAvailable<crosapi::mojom::LocalPrinter>()) {
+    local_printer_ = service->GetRemote<crosapi::mojom::LocalPrinter>().get();
+  } else {
+    LOG(ERROR) << "Local printer not available";
   }
 
-  void OnGetTokenSuccess(
-      const OAuth2TokenService::Request* request,
-      const OAuth2AccessTokenConsumer::TokenResponse& token_response) override {
-    OnServiceResponse(request, token_response.access_token);
+  if (service->IsAvailable<crosapi::mojom::DriveIntegrationService>()) {
+    drive_integration_service_ =
+        service->GetRemote<crosapi::mojom::DriveIntegrationService>().get();
+  } else {
+    LOG(ERROR) << "Drive integration service not available";
   }
-
-  void OnGetTokenFailure(const OAuth2TokenService::Request* request,
-                         const GoogleServiceAuthError& error) override {
-    OnServiceResponse(request, std::string());
-  }
-
- private:
-  void OnServiceResponse(const OAuth2TokenService::Request* request,
-                         const std::string& access_token) {
-    DCHECK_EQ(request, device_request_.get());
-    std::move(device_request_callback_).Run(access_token);
-    device_request_.reset();
-  }
-
-  std::unique_ptr<OAuth2TokenService::Request> device_request_;
-  base::OnceCallback<void(const std::string&)> device_request_callback_;
-
-  DISALLOW_COPY_AND_ASSIGN(AccessTokenService);
-};
-#endif  // defined(OS_CHROMEOS)
-
-PrintPreviewHandler::PrintPreviewHandler()
-    : regenerate_preview_request_count_(0),
-      manage_printers_dialog_request_count_(0),
-      reported_failed_preview_(false),
-      has_logged_printers_count_(false),
-      identity_manager_(nullptr),
-      weak_factory_(this) {
-  ReportUserActionHistogram(PREVIEW_STARTED);
+#endif
+  ReportUserActionHistogram(UserActionBuckets::kPreviewStarted);
 }
 
-PrintPreviewHandler::~PrintPreviewHandler() {
-  UMA_HISTOGRAM_COUNTS_1M("PrintPreview.ManagePrinters",
-                          manage_printers_dialog_request_count_);
-  UnregisterForGaiaCookieChanges();
-}
+PrintPreviewHandler::~PrintPreviewHandler() = default;
 
 void PrintPreviewHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
@@ -502,10 +399,6 @@ void PrintPreviewHandler::RegisterMessages() {
       "getPrinterCapabilities",
       base::BindRepeating(&PrintPreviewHandler::HandleGetPrinterCapabilities,
                           base::Unretained(this)));
-  web_ui()->RegisterMessageCallback(
-      "setupPrinter",
-      base::BindRepeating(&PrintPreviewHandler::HandlePrinterSetup,
-                          base::Unretained(this)));
 #if BUILDFLAG(ENABLE_BASIC_PRINT_DIALOG)
   web_ui()->RegisterMessageCallback(
       "showSystemDialog",
@@ -515,12 +408,6 @@ void PrintPreviewHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "signIn", base::BindRepeating(&PrintPreviewHandler::HandleSignin,
                                     base::Unretained(this)));
-#if defined(OS_CHROMEOS)
-  web_ui()->RegisterMessageCallback(
-      "getAccessToken",
-      base::BindRepeating(&PrintPreviewHandler::HandleGetAccessToken,
-                          base::Unretained(this)));
-#endif
   web_ui()->RegisterMessageCallback(
       "closePrintPreviewDialog",
       base::BindRepeating(&PrintPreviewHandler::HandleClosePreviewDialog,
@@ -542,23 +429,14 @@ void PrintPreviewHandler::RegisterMessages() {
       base::BindRepeating(&PrintPreviewHandler::HandleGetInitialSettings,
                           base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
-      "grantExtensionPrinterAccess",
-      base::BindRepeating(
-          &PrintPreviewHandler::HandleGrantExtensionPrinterAccess,
-          base::Unretained(this)));
-#if defined(OS_CHROMEOS)
-  web_ui()->RegisterMessageCallback(
-      "openPrinterSettings",
-      base::BindRepeating(&PrintPreviewHandler::HandleOpenPrinterSettings,
+      "managePrinters",
+      base::BindRepeating(&PrintPreviewHandler::HandleManagePrinters,
                           base::Unretained(this)));
-#endif
 }
 
 void PrintPreviewHandler::OnJavascriptAllowed() {
   print_preview_ui()->SetPreviewUIId();
-  // Now that the UI is initialized, any future account changes will require
-  // a printer list refresh.
-  RegisterForGaiaCookieChanges();
+  ReadPrinterTypeDenyListFromPrefs();
 }
 
 void PrintPreviewHandler::OnJavascriptDisallowed() {
@@ -568,20 +446,49 @@ void PrintPreviewHandler::OnJavascriptDisallowed() {
   print_preview_ui()->ClearPreviewUIId();
   preview_callbacks_.clear();
   preview_failures_.clear();
-  UnregisterForGaiaCookieChanges();
+  printer_type_deny_list_.clear();
 }
 
-WebContents* PrintPreviewHandler::preview_web_contents() const {
+WebContents* PrintPreviewHandler::preview_web_contents() {
   return web_ui()->GetWebContents();
 }
 
-PrefService* PrintPreviewHandler::GetPrefs() const {
+PrefService* PrintPreviewHandler::GetPrefs() {
   auto* prefs = Profile::FromWebUI(web_ui())->GetPrefs();
   DCHECK(prefs);
   return prefs;
 }
 
-PrintPreviewUI* PrintPreviewHandler::print_preview_ui() const {
+void PrintPreviewHandler::ReadPrinterTypeDenyListFromPrefs() {
+  PrefService* prefs = GetPrefs();
+  if (!prefs->HasPrefPath(prefs::kPrinterTypeDenyList))
+    return;
+
+  const base::Value* deny_list_types = prefs->Get(prefs::kPrinterTypeDenyList);
+  if (!deny_list_types || !deny_list_types->is_list())
+    return;
+
+  for (const base::Value& deny_list_type : deny_list_types->GetList()) {
+    if (!deny_list_type.is_string())
+      continue;
+
+    // The expected printer type strings are enumerated in
+    // components/policy/resources/policy_templates.json
+    const std::string& deny_list_str = deny_list_type.GetString();
+    if (deny_list_str == "privet")
+      printer_type_deny_list_.insert(PrinterType::kPrivet);
+    else if (deny_list_str == "extension")
+      printer_type_deny_list_.insert(PrinterType::kExtension);
+    else if (deny_list_str == "pdf")
+      printer_type_deny_list_.insert(PrinterType::kPdf);
+    else if (deny_list_str == "local")
+      printer_type_deny_list_.insert(PrinterType::kLocal);
+    else if (deny_list_str == "cloud")
+      printer_type_deny_list_.insert(PrinterType::kCloud);
+  }
+}
+
+PrintPreviewUI* PrintPreviewHandler::print_preview_ui() {
   return static_cast<PrintPreviewUI*>(web_ui()->GetController());
 }
 
@@ -591,7 +498,7 @@ bool PrintPreviewHandler::ShouldReceiveRendererMessage(int request_id) {
     return false;
   }
 
-  if (!base::ContainsKey(preview_callbacks_, request_id)) {
+  if (!base::Contains(preview_callbacks_, request_id)) {
     BadMessageReceived();
     return false;
   }
@@ -617,12 +524,21 @@ std::string PrintPreviewHandler::GetCallbackId(int request_id) {
 }
 
 void PrintPreviewHandler::HandleGetPrinters(const base::ListValue* args) {
+  // TODO(crbug.com/1195284): Remove log once bug is confirmed fix.
+  LOG(ERROR) << "Initiated PrintPreviewHandler::HandleGetPrinters()";
   std::string callback_id;
   CHECK(args->GetString(0, &callback_id));
   CHECK(!callback_id.empty());
   int type;
   CHECK(args->GetInteger(1, &type));
   PrinterType printer_type = static_cast<PrinterType>(type);
+
+  // Immediately resolve the callback without fetching printers if the printer
+  // type is on the deny list.
+  if (base::Contains(printer_type_deny_list_, printer_type)) {
+    ResolveJavascriptCallback(base::Value(callback_id), base::Value());
+    return;
+  }
 
   PrinterHandler* handler = GetPrinterHandler(printer_type);
   if (!handler) {
@@ -633,29 +549,16 @@ void PrintPreviewHandler::HandleGetPrinters(const base::ListValue* args) {
   // starts.
   handler->Reset();
   handler->StartGetPrinters(
-      base::Bind(&PrintPreviewHandler::OnAddedPrinters,
-                 weak_factory_.GetWeakPtr(), printer_type),
-      base::Bind(&PrintPreviewHandler::OnGetPrintersDone,
-                 weak_factory_.GetWeakPtr(), callback_id));
-}
-
-void PrintPreviewHandler::HandleGrantExtensionPrinterAccess(
-    const base::ListValue* args) {
-  std::string callback_id;
-  std::string printer_id;
-  bool ok = args->GetString(0, &callback_id) &&
-            args->GetString(1, &printer_id) && !callback_id.empty();
-  DCHECK(ok);
-
-  GetPrinterHandler(PrinterType::kExtensionPrinter)
-      ->StartGrantPrinterAccess(
-          printer_id,
-          base::Bind(&PrintPreviewHandler::OnGotExtensionPrinterInfo,
+      base::BindRepeating(&PrintPreviewHandler::OnAddedPrinters,
+                          weak_factory_.GetWeakPtr(), printer_type),
+      base::BindOnce(&PrintPreviewHandler::OnGetPrintersDone,
                      weak_factory_.GetWeakPtr(), callback_id));
 }
 
 void PrintPreviewHandler::HandleGetPrinterCapabilities(
     const base::ListValue* args) {
+  // TODO(crbug.com/1195284): Remove log once bug is confirmed fix.
+  LOG(ERROR) << "Initiated PrintPreviewHandler::HandleGetPrinterCapabilities()";
   std::string callback_id;
   std::string printer_name;
   int type;
@@ -666,6 +569,12 @@ void PrintPreviewHandler::HandleGetPrinterCapabilities(
     return;
   }
   PrinterType printer_type = static_cast<PrinterType>(type);
+
+  // Reject the callback if the printer type is on the deny list.
+  if (base::Contains(printer_type_deny_list_, printer_type)) {
+    RejectJavascriptCallback(base::Value(callback_id), base::Value());
+    return;
+  }
 
   PrinterHandler* handler = GetPrinterHandler(printer_type);
   if (!handler) {
@@ -680,6 +589,8 @@ void PrintPreviewHandler::HandleGetPrinterCapabilities(
 }
 
 void PrintPreviewHandler::HandleGetPreview(const base::ListValue* args) {
+  // TODO(crbug.com/1195284): Remove log once bug is confirmed fix.
+  LOG(ERROR) << "Initiated PrintPreviewHandler::HandleGetPreview()";
   DCHECK_EQ(2U, args->GetSize());
   std::string callback_id;
   std::string json_str;
@@ -693,8 +604,11 @@ void PrintPreviewHandler::HandleGetPreview(const base::ListValue* args) {
   CHECK(settings.is_dict());
   int request_id = settings.FindIntKey(kPreviewRequestID).value();
   CHECK_GT(request_id, -1);
+  PrinterType printer_type = static_cast<PrinterType>(
+      settings.FindIntKey(kSettingPrinterType).value());
+  CHECK(printer_type != PrinterType::kCloud || IsCloudPrintEnabled());
 
-  CHECK(!base::ContainsKey(preview_callbacks_, request_id));
+  CHECK(!base::Contains(preview_callbacks_, request_id));
   preview_callbacks_[request_id] = callback_id;
   print_preview_ui()->OnPrintPreviewRequest(request_id);
   // Add an additional key in order to identify |print_preview_ui| later on
@@ -712,14 +626,14 @@ void PrintPreviewHandler::HandleGetPreview(const base::ListValue* args) {
           ? PrintViewManager::FromWebContents(initiator)->print_preview_rfh()
           : nullptr;
   if (!rfh) {
-    ReportUserActionHistogram(INITIATOR_CLOSED);
+    ReportUserActionHistogram(UserActionBuckets::kInitiatorClosed);
     print_preview_ui()->OnClosePrintPreviewDialog();
     return;
   }
 
   // Retrieve the page title and url and send it to the renderer process if
   // headers and footers are to be displayed.
-  base::Optional<bool> display_header_footer_opt =
+  absl::optional<bool> display_header_footer_opt =
       settings.FindBoolKey(kSettingHeaderFooterEnabled);
   DCHECK(display_header_footer_opt);
   if (display_header_footer_opt.value_or(false)) {
@@ -737,16 +651,20 @@ void PrintPreviewHandler::HandleGetPreview(const base::ListValue* args) {
 
   VLOG(1) << "Print preview request start";
 
-  rfh->Send(new PrintMsg_PrintPreview(
-      rfh->GetRoutingID(), static_cast<base::DictionaryValue&>(settings)));
+  if (!print_render_frame_.is_bound())
+    rfh->GetRemoteAssociatedInterfaces()->GetInterface(&print_render_frame_);
+
+  if (!print_preview_ui()->IsBound()) {
+    print_render_frame_->SetPrintPreviewUI(
+        print_preview_ui()->BindPrintPreviewUI());
+  }
+  print_render_frame_->PrintPreview(settings.Clone());
   last_preview_settings_ = std::move(settings);
 }
 
 void PrintPreviewHandler::HandlePrint(const base::ListValue* args) {
-  // Record the number of times the user requests to regenerate preview data
-  // before printing.
-  UMA_HISTOGRAM_COUNTS_1M("PrintPreview.RegeneratePreviewRequest.BeforePrint",
-                          regenerate_preview_request_count_);
+  ReportRegeneratePreviewRequestCountBeforePrint(
+      regenerate_preview_request_count_);
   std::string callback_id;
   CHECK(args->GetString(0, &callback_id));
   CHECK(!callback_id.empty());
@@ -785,19 +703,17 @@ void PrintPreviewHandler::HandlePrint(const base::ListValue* args) {
   if (last_preview_settings_.is_dict())
     ReportPrintSettingsStats(settings, last_preview_settings_, is_pdf);
   {
-    PrintDocumentTypeBuckets doc_type = is_pdf ? PDF_DOCUMENT : HTML_DOCUMENT;
+    PrintDocumentTypeBuckets doc_type =
+        is_pdf ? PrintDocumentTypeBuckets::kPdfDocument
+               : PrintDocumentTypeBuckets::kHtmlDocument;
     size_t average_page_size_in_kb = data->size() / page_count;
     average_page_size_in_kb /= 1024;
     ReportPrintDocumentTypeAndSizeHistograms(doc_type, average_page_size_in_kb);
   }
   ReportUserActionHistogram(user_action);
-  if (!ReportPageCountHistogram(user_action, page_count)) {
-    NOTREACHED();
-    return;
-  }
 
-  if (user_action == PRINT_WITH_CLOUD_PRINT ||
-      user_action == PRINT_TO_GOOGLE_DRIVE) {
+  if (user_action == UserActionBuckets::kPrintWithCloudPrint ||
+      user_action == UserActionBuckets::kPrintToGoogleDrive) {
     // Does not send the title like the other printer handler types below,
     // because JS already has the document title from the initial settings.
     SendCloudPrintJob(callback_id, data.get());
@@ -826,69 +742,45 @@ void PrintPreviewHandler::HandleCancelPendingPrintRequest(
 
 void PrintPreviewHandler::HandleSaveAppState(const base::ListValue* args) {
   std::string data_to_save;
-  StickySettings* sticky_settings = GetStickySettings();
+  PrintPreviewStickySettings* sticky_settings =
+      PrintPreviewStickySettings::GetInstance();
   if (args->GetString(0, &data_to_save) && !data_to_save.empty())
     sticky_settings->StoreAppState(data_to_save);
   sticky_settings->SaveInPrefs(GetPrefs());
 }
 
-// |args| is expected to contain a string with representing the callback id
-// followed by a list of arguments the first of which should be the printer id.
-void PrintPreviewHandler::HandlePrinterSetup(const base::ListValue* args) {
-  std::string callback_id;
-  std::string printer_name;
-  if (!args->GetString(0, &callback_id) || !args->GetString(1, &printer_name) ||
-      callback_id.empty() || printer_name.empty()) {
-    RejectJavascriptCallback(base::Value(callback_id),
-                             base::Value(printer_name));
-    return;
-  }
-
-  GetPrinterHandler(PrinterType::kLocalPrinter)
-      ->StartGetCapability(
-          printer_name, base::BindOnce(&PrintPreviewHandler::SendPrinterSetup,
-                                       weak_factory_.GetWeakPtr(), callback_id,
-                                       printer_name));
-}
-
-void PrintPreviewHandler::OnSigninComplete(const std::string& callback_id) {
-  ResolveJavascriptCallback(base::Value(callback_id), base::Value());
-}
-
-void PrintPreviewHandler::HandleSignin(const base::ListValue* args) {
-  std::string callback_id;
-  bool add_account = false;
-  CHECK(args->GetString(0, &callback_id));
-  CHECK(!callback_id.empty());
-  CHECK(args->GetBoolean(1, &add_account));
-
-  chrome::ScopedTabbedBrowserDisplayer displayer(Profile::FromWebUI(web_ui()));
-  print_dialog_cloud::CreateCloudPrintSigninTab(
-      displayer.browser(), add_account,
-      base::Bind(&PrintPreviewHandler::OnSigninComplete,
-                 weak_factory_.GetWeakPtr(), callback_id));
-}
+void PrintPreviewHandler::HandleSignin(const base::ListValue* /*args*/) {
+  Profile* profile = Profile::FromWebUI(web_ui());
+  DCHECK(profile);
 
 #if defined(OS_CHROMEOS)
-void PrintPreviewHandler::HandleGetAccessToken(const base::ListValue* args) {
-  std::string callback_id;
+  if (IsAccountManagerAvailable(profile)) {
+    // Chrome OS Account Manager is enabled on this Profile and hence, all
+    // account management flows will go through native UIs and not through a
+    // tabbed browser window.
+    ::GetAccountManagerFacade(profile->GetPath().value())
+        ->ShowAddAccountDialog(account_manager::AccountManagerFacade::
+                                   AccountAdditionSource::kPrintPreviewDialog);
+    return;
+  }
+#endif  // defined(OS_CHROMEOS)
 
-  bool ok = args->GetString(0, &callback_id) && !callback_id.empty();
-  DCHECK(ok);
-
-  if (!token_service_)
-    token_service_ = std::make_unique<AccessTokenService>();
-  token_service_->RequestToken(
-      base::BindOnce(&PrintPreviewHandler::SendAccessToken,
-                     weak_factory_.GetWeakPtr(), callback_id));
+  chrome::ScopedTabbedBrowserDisplayer displayer(profile);
+  CreateCloudPrintSigninTab(
+      displayer.browser(),
+      base::BindOnce(&PrintPreviewHandler::OnSignInTabClosed,
+                     weak_factory_.GetWeakPtr()));
 }
-#endif
+
+void PrintPreviewHandler::OnSignInTabClosed() {
+  FireWebUIListener("check-for-account-update");
+}
 
 #if BUILDFLAG(ENABLE_BASIC_PRINT_DIALOG)
 void PrintPreviewHandler::HandleShowSystemDialog(
     const base::ListValue* /*args*/) {
-  manage_printers_dialog_request_count_++;
-  ReportUserActionHistogram(FALLBACK_TO_ADVANCED_SETTINGS_DIALOG);
+  ReportUserActionHistogram(
+      UserActionBuckets::kFallbackToAdvancedSettingsDialog);
 
   WebContents* initiator = GetInitiator();
   if (!initiator)
@@ -905,30 +797,17 @@ void PrintPreviewHandler::HandleShowSystemDialog(
 
 void PrintPreviewHandler::HandleClosePreviewDialog(
     const base::ListValue* /*args*/) {
-  ReportUserActionHistogram(CANCEL);
+  ReportUserActionHistogram(UserActionBuckets::kCancel);
 
-  // Record the number of times the user requests to regenerate preview data
-  // before cancelling.
-  UMA_HISTOGRAM_COUNTS_1M("PrintPreview.RegeneratePreviewRequest.BeforeCancel",
-                          regenerate_preview_request_count_);
+  ReportRegeneratePreviewRequestCountBeforeCancel(
+      regenerate_preview_request_count_);
 }
 
-#if defined(OS_CHROMEOS)
-void PrintPreviewHandler::HandleOpenPrinterSettings(
-    const base::ListValue* args) {
-  auto* const settings_manager = chrome::SettingsWindowManager::GetInstance();
-  settings_manager->ShowChromePageForProfile(
-      Profile::FromWebUI(web_ui()),
-      chrome::GetSettingsUrl(chrome::kPrintingSettingsSubPage));
-}
-#endif
-
-void PrintPreviewHandler::GetNumberFormatAndMeasurementSystem(
-    base::DictionaryValue* settings) {
-
+void PrintPreviewHandler::GetLocaleInformation(base::Value* settings) {
   // Getting the measurement system based on the locale.
   UErrorCode errorCode = U_ZERO_ERROR;
   const char* locale = g_browser_process->GetApplicationLocale().c_str();
+  settings->SetStringKey(kUiLocale, std::string(locale));
   UMeasurementSystem system = ulocdata_getMeasurementSystem(locale, &errorCode);
   // On error, assume the units are SI.
   // Since the only measurement units print preview's WebUI cares about are
@@ -938,89 +817,143 @@ void PrintPreviewHandler::GetNumberFormatAndMeasurementSystem(
 
   // Getting the number formatting based on the locale and writing to
   // dictionary.
-  base::string16 number_format = base::FormatDouble(123456.78, 2);
-  settings->SetString(kDecimalDelimeter, number_format.substr(7, 1));
-  settings->SetString(kThousandsDelimeter, number_format.substr(3, 1));
-  settings->SetInteger(kUnitType, system);
+  std::u16string number_format = base::FormatDouble(123456.78, 2);
+  size_t thousands_pos = number_format.find('3') + 1;
+  std::u16string thousands_delimiter = number_format.substr(thousands_pos, 1);
+  if (number_format[thousands_pos] == '4')
+    thousands_delimiter.clear();
+  size_t decimal_pos = number_format.find('6') + 1;
+  DCHECK_NE(number_format[decimal_pos], '7');
+  std::u16string decimal_delimiter = number_format.substr(decimal_pos, 1);
+  settings->SetStringKey(kDecimalDelimiter, decimal_delimiter);
+  settings->SetStringKey(kThousandsDelimiter, thousands_delimiter);
+  settings->SetIntKey(kUnitType, system);
 }
 
 void PrintPreviewHandler::HandleGetInitialSettings(
     const base::ListValue* args) {
+  // TODO(crbug.com/1195284): Remove log once bug is confirmed fix.
+  LOG(ERROR) << "Initiated PrintPreviewHandler::HandleGetInitialSettings()";
   std::string callback_id;
   CHECK(args->GetString(0, &callback_id));
   CHECK(!callback_id.empty());
 
   AllowJavascript();
 
-  // Send before SendInitialSettings() to allow cloud printer auto select.
-  SendCloudPrintEnabled();
-  GetPrinterHandler(PrinterType::kLocalPrinter)
-      ->GetDefaultPrinter(base::Bind(&PrintPreviewHandler::SendInitialSettings,
-                                     weak_factory_.GetWeakPtr(), callback_id));
+  PrinterHandler* handler = GetPrinterHandler(PrinterType::kLocal);
+  base::OnceCallback<void(base::Value, const std::string&)> cb =
+      base::BindOnce(&PrintPreviewHandler::SendInitialSettings,
+                     weak_factory_.GetWeakPtr(), callback_id);
+#if defined(OS_CHROMEOS)
+  if (!local_printer_) {
+    LOG(ERROR) << "Local printer not available";
+    handler->GetDefaultPrinter(base::BindOnce(std::move(cb), base::Value()));
+    return;
+  }
+  local_printer_->GetPolicies(
+      base::BindOnce(PoliciesToValue)
+          .Then(base::BindOnce(
+              [](base::OnceCallback<void(base::Value, const std::string&)> cb,
+                 PrinterHandler* handler, base::Value policies) {
+                handler->GetDefaultPrinter(
+                    base::BindOnce(std::move(cb), std::move(policies)));
+              },
+              std::move(cb), handler)));
+#else
+  handler->GetDefaultPrinter(
+      base::BindOnce(std::move(cb), GetPolicies(*GetPrefs())));
+#endif
 }
 
 void PrintPreviewHandler::SendInitialSettings(
     const std::string& callback_id,
+    base::Value policies,
     const std::string& default_printer) {
-  base::DictionaryValue initial_settings;
-  initial_settings.SetString(kDocumentTitle,
-                             print_preview_ui()->initiator_title());
-  initial_settings.SetBoolean(kSettingPreviewModifiable,
+  base::Value initial_settings(base::Value::Type::DICTIONARY);
+  initial_settings.SetStringKey(kDocumentTitle,
+                                print_preview_ui()->initiator_title());
+  initial_settings.SetBoolKey(kSettingPreviewModifiable,
                               print_preview_ui()->source_is_modifiable());
-  initial_settings.SetString(kSettingPrinterName, default_printer);
-  initial_settings.SetBoolean(kDocumentHasSelection,
+  initial_settings.SetBoolKey(kSettingPreviewIsFromArc,
+                              print_preview_ui()->source_is_arc());
+  initial_settings.SetStringKey(kSettingPrinterName, default_printer);
+  initial_settings.SetBoolKey(kDocumentHasSelection,
                               print_preview_ui()->source_has_selection());
-  initial_settings.SetBoolean(kSettingShouldPrintSelectionOnly,
+  initial_settings.SetBoolKey(kSettingShouldPrintSelectionOnly,
                               print_preview_ui()->print_selection_only());
   PrefService* prefs = GetPrefs();
-  StickySettings* sticky_settings = GetStickySettings();
+  PrintPreviewStickySettings* sticky_settings =
+      PrintPreviewStickySettings::GetInstance();
   sticky_settings->RestoreFromPrefs(prefs);
   if (sticky_settings->printer_app_state()) {
-    initial_settings.SetString(kAppState,
-                               *sticky_settings->printer_app_state());
+    initial_settings.SetStringKey(kAppState,
+                                  *sticky_settings->printer_app_state());
   } else {
     initial_settings.SetKey(kAppState, base::Value());
   }
 
-  if (prefs->HasPrefPath(prefs::kPrintHeaderFooter)) {
-    // Don't override sticky settings, unless kPrintHeaderFooter is actually
-    // customized.
-    initial_settings.SetBoolean(kHeaderFooter,
-                                prefs->GetBoolean(prefs::kPrintHeaderFooter));
+  if (policies.is_dict() && !policies.DictEmpty())
+    initial_settings.SetKey(kPolicies, std::move(policies));
+
+  if (IsCloudPrintEnabled()) {
+    initial_settings.SetStringKey(
+        kCloudPrintURL, GURL(cloud_devices::GetCloudPrintURL()).spec());
   }
-  initial_settings.SetBoolean(
-      kIsHeaderFooterManaged,
-      prefs->IsManagedPreference(prefs::kPrintHeaderFooter));
+
+  initial_settings.SetBoolKey(
+      kPdfPrinterDisabled,
+      base::Contains(printer_type_deny_list_, PrinterType::kPdf));
+
+  const bool destinations_managed =
+      !printer_type_deny_list_.empty() &&
+      prefs->IsManagedPreference(prefs::kPrinterTypeDenyList);
+  initial_settings.SetBoolKey(kDestinationsManaged, destinations_managed);
 
   base::CommandLine* cmdline = base::CommandLine::ForCurrentProcess();
-  initial_settings.SetBoolean(kIsInKioskAutoPrintMode,
+  initial_settings.SetBoolKey(kIsInKioskAutoPrintMode,
                               cmdline->HasSwitch(switches::kKioskModePrinting));
-  initial_settings.SetBoolean(kIsInAppKioskMode,
+  initial_settings.SetBoolKey(kIsInAppKioskMode,
                               chrome::IsRunningInForcedAppMode());
   const std::string rules_str =
       prefs->GetString(prefs::kPrintPreviewDefaultDestinationSelectionRules);
   if (rules_str.empty()) {
     initial_settings.SetKey(kDefaultDestinationSelectionRules, base::Value());
   } else {
-    initial_settings.SetString(kDefaultDestinationSelectionRules, rules_str);
+    initial_settings.SetStringKey(kDefaultDestinationSelectionRules, rules_str);
   }
 
-  GetNumberFormatAndMeasurementSystem(&initial_settings);
+  GetLocaleInformation(&initial_settings);
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  drive::DriveIntegrationService* drive_service =
+      drive::DriveIntegrationServiceFactory::GetForProfile(
+          Profile::FromWebUI(web_ui()));
+  initial_settings.SetBoolKey(kIsDriveMounted,
+                              drive_service && drive_service->IsMounted());
+#elif BUILDFLAG(IS_CHROMEOS_LACROS)
+  if (drive_integration_service_) {
+    drive_integration_service_->GetMountPointPath(base::BindOnce(
+        &PrintPreviewHandler::OnDrivePathReady, weak_factory_.GetWeakPtr(),
+        std::move(initial_settings), callback_id));
+    return;
+  }
+#endif
+
   ResolveJavascriptCallback(base::Value(callback_id), initial_settings);
 }
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+void PrintPreviewHandler::OnDrivePathReady(base::Value initial_settings,
+                                           const std::string& callback_id,
+                                           const base::FilePath& drive_path) {
+  initial_settings.SetBoolKey(kIsDriveMounted, !drive_path.empty());
+  ResolveJavascriptCallback(base::Value(callback_id), initial_settings);
+}
+#endif
 
 void PrintPreviewHandler::ClosePreviewDialog() {
   print_preview_ui()->OnClosePrintPreviewDialog();
 }
-
-#if defined(OS_CHROMEOS)
-void PrintPreviewHandler::SendAccessToken(const std::string& callback_id,
-                                          const std::string& access_token) {
-  VLOG(1) << "Get getAccessToken finished";
-  ResolveJavascriptCallback(base::Value(callback_id),
-                            base::Value(access_token));
-}
-#endif
 
 void PrintPreviewHandler::SendPrinterCapabilities(
     const std::string& callback_id,
@@ -1038,49 +971,12 @@ void PrintPreviewHandler::SendPrinterCapabilities(
   RejectJavascriptCallback(base::Value(callback_id), base::Value());
 }
 
-void PrintPreviewHandler::SendPrinterSetup(const std::string& callback_id,
-                                           const std::string& printer_name,
-                                           base::Value destination_info) {
-  base::Value response(base::Value::Type::DICTIONARY);
-  base::Value* caps_value =
-      destination_info.is_dict()
-          ? destination_info.FindKeyOfType(kSettingCapabilities,
-                                           base::Value::Type::DICTIONARY)
-          : nullptr;
-  response.SetKey("printerId", base::Value(printer_name));
-  response.SetKey("success", base::Value(!!caps_value));
-  response.SetKey("capabilities",
-                  caps_value ? std::move(*caps_value)
-                             : base::Value(base::Value::Type::DICTIONARY));
-  if (caps_value) {
-    base::Value* printer =
-        destination_info.FindKeyOfType(kPrinter, base::Value::Type::DICTIONARY);
-    if (printer) {
-      base::Value* policies_value = printer->FindKeyOfType(
-          kSettingPolicies, base::Value::Type::DICTIONARY);
-      if (policies_value)
-        response.SetKey("policies", std::move(*policies_value));
-    }
-  } else {
-    LOG(WARNING) << "Printer setup failed";
-  }
-  ResolveJavascriptCallback(base::Value(callback_id), response);
-}
-
-void PrintPreviewHandler::SendCloudPrintEnabled() {
-  PrefService* prefs = GetPrefs();
-  if (prefs->GetBoolean(prefs::kCloudPrintSubmitEnabled) &&
-      !base::FeatureList::IsEnabled(features::kCloudPrinterHandler)) {
-    FireWebUIListener(
-        "use-cloud-print",
-        base::Value(GURL(cloud_devices::GetCloudPrintURL()).spec()),
-        base::Value(chrome::IsRunningInForcedAppMode()));
-  }
-}
-
 void PrintPreviewHandler::SendCloudPrintJob(
     const std::string& callback_id,
     const base::RefCountedMemory* data) {
+  // Crash if a cloud print job is requested and cloud print is not enabled.
+  CHECK(IsCloudPrintEnabled());
+
   // BASE64 encode the job data.
   const base::StringPiece raw_data(data->front_as<char>(), data->size());
   std::string base64_data;
@@ -1094,20 +990,12 @@ void PrintPreviewHandler::SendCloudPrintJob(
   ResolveJavascriptCallback(base::Value(callback_id), base::Value(base64_data));
 }
 
-WebContents* PrintPreviewHandler::GetInitiator() const {
+WebContents* PrintPreviewHandler::GetInitiator() {
   PrintPreviewDialogController* dialog_controller =
       PrintPreviewDialogController::GetInstance();
   if (!dialog_controller)
-    return NULL;
+    return nullptr;
   return dialog_controller->GetInitiator(preview_web_contents());
-}
-
-// TODO(crbug.com/932692): Investigate the replacement or removal of
-// this override altogether.
-void PrintPreviewHandler::OnAccountsInCookieUpdated(
-    const identity::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
-    const GoogleServiceAuthError& error) {
-  FireWebUIListener("reload-printer-list");
 }
 
 void PrintPreviewHandler::OnPrintPreviewReady(int preview_uid, int request_id) {
@@ -1119,13 +1007,17 @@ void PrintPreviewHandler::OnPrintPreviewReady(int preview_uid, int request_id) {
 }
 
 void PrintPreviewHandler::OnPrintPreviewFailed(int request_id) {
+  WebContents* initiator = GetInitiator();
+  if (!initiator || initiator->IsBeingDestroyed())
+    return;  // Drop notification if fired during destruction sequence.
+
   std::string callback_id = GetCallbackId(request_id);
   if (callback_id.empty())
     return;
 
   if (!reported_failed_preview_) {
     reported_failed_preview_ = true;
-    ReportUserActionHistogram(PREVIEW_FAILED);
+    ReportUserActionHistogram(UserActionBuckets::kPreviewFailed);
   }
 
   // Keep track of failures.
@@ -1146,13 +1038,13 @@ void PrintPreviewHandler::OnInvalidPrinterSettings(int request_id) {
 
 void PrintPreviewHandler::SendPrintPresetOptions(bool disable_scaling,
                                                  int copies,
-                                                 int duplex,
+                                                 mojom::DuplexMode duplex,
                                                  int request_id) {
   if (!ShouldReceiveRendererMessage(request_id))
     return;
 
   FireWebUIListener("print-preset-options", base::Value(disable_scaling),
-                    base::Value(copies), base::Value(duplex));
+                    base::Value(copies), base::Value(static_cast<int>(duplex)));
 }
 
 void PrintPreviewHandler::SendPageCountReady(int page_count,
@@ -1183,7 +1075,7 @@ void PrintPreviewHandler::SendPagePreviewReady(int page_index,
   // gets called, the print preview may have failed. Since the failure message
   // may have arrived first, check for this case and bail out instead of
   // thinking this may be a bad IPC message.
-  if (base::ContainsKey(preview_failures_, preview_request_id))
+  if (base::Contains(preview_failures_, preview_request_id))
     return;
 
   if (!ShouldReceiveRendererMessage(preview_request_id))
@@ -1221,7 +1113,7 @@ void PrintPreviewHandler::ClearInitiatorDetails() {
 
 PrinterHandler* PrintPreviewHandler::GetPrinterHandler(
     PrinterType printer_type) {
-  if (printer_type == PrinterType::kExtensionPrinter) {
+  if (printer_type == PrinterType::kExtension) {
     if (!extension_printer_handler_) {
       extension_printer_handler_ = PrinterHandler::CreateForExtensionPrinters(
           Profile::FromWebUI(web_ui()));
@@ -1229,7 +1121,8 @@ PrinterHandler* PrintPreviewHandler::GetPrinterHandler(
     return extension_printer_handler_.get();
   }
 #if BUILDFLAG(ENABLE_SERVICE_DISCOVERY)
-  if (printer_type == PrinterType::kPrivetPrinter) {
+  if (printer_type == PrinterType::kPrivet &&
+      GetPrefs()->GetBoolean(prefs::kForceEnablePrivetPrinting)) {
     if (!privet_printer_handler_) {
       privet_printer_handler_ =
           PrinterHandler::CreateForPrivetPrinters(Profile::FromWebUI(web_ui()));
@@ -1237,66 +1130,46 @@ PrinterHandler* PrintPreviewHandler::GetPrinterHandler(
     return privet_printer_handler_.get();
   }
 #endif
-  if (printer_type == PrinterType::kPdfPrinter) {
+  if (printer_type == PrinterType::kPdf) {
     if (!pdf_printer_handler_) {
       pdf_printer_handler_ = PrinterHandler::CreateForPdfPrinter(
           Profile::FromWebUI(web_ui()), preview_web_contents(),
-          GetStickySettings());
+          PrintPreviewStickySettings::GetInstance());
     }
     return pdf_printer_handler_.get();
   }
-  if (printer_type == PrinterType::kLocalPrinter) {
+  if (printer_type == PrinterType::kLocal) {
     if (!local_printer_handler_) {
       local_printer_handler_ = PrinterHandler::CreateForLocalPrinters(
           preview_web_contents(), Profile::FromWebUI(web_ui()));
     }
     return local_printer_handler_.get();
   }
-  if (printer_type == PrinterType::kCloudPrinter) {
-    // This printer handler is currently experimental. Ensure it is never
-    // created unless the flag is enabled.
-    CHECK(base::FeatureList::IsEnabled(features::kCloudPrinterHandler));
-    if (!cloud_printer_handler_)
-      cloud_printer_handler_ = PrinterHandler::CreateForCloudPrinters();
-    return cloud_printer_handler_.get();
-  }
   NOTREACHED();
   return nullptr;
 }
 
 PdfPrinterHandler* PrintPreviewHandler::GetPdfPrinterHandler() {
-  return static_cast<PdfPrinterHandler*>(
-      GetPrinterHandler(PrinterType::kPdfPrinter));
+  return static_cast<PdfPrinterHandler*>(GetPrinterHandler(PrinterType::kPdf));
 }
 
 void PrintPreviewHandler::OnAddedPrinters(PrinterType printer_type,
                                           const base::ListValue& printers) {
-  DCHECK(printer_type == PrinterType::kExtensionPrinter ||
-         printer_type == PrinterType::kPrivetPrinter ||
-         printer_type == PrinterType::kLocalPrinter);
+  DCHECK(printer_type == PrinterType::kExtension ||
+         printer_type == PrinterType::kPrivet ||
+         printer_type == PrinterType::kLocal);
   DCHECK(!printers.empty());
-  FireWebUIListener("printers-added", base::Value(printer_type), printers);
+  FireWebUIListener("printers-added",
+                    base::Value(static_cast<int>(printer_type)), printers);
 
-  if (printer_type == PrinterType::kLocalPrinter &&
-      !has_logged_printers_count_) {
-    UMA_HISTOGRAM_COUNTS_1M("PrintPreview.NumberOfPrinters",
-                            printers.GetSize());
+  if (printer_type == PrinterType::kLocal && !has_logged_printers_count_) {
+    ReportNumberOfPrinters(printers.GetSize());
     has_logged_printers_count_ = true;
   }
 }
 
 void PrintPreviewHandler::OnGetPrintersDone(const std::string& callback_id) {
   ResolveJavascriptCallback(base::Value(callback_id), base::Value());
-}
-
-void PrintPreviewHandler::OnGotExtensionPrinterInfo(
-    const std::string& callback_id,
-    const base::DictionaryValue& printer_info) {
-  if (printer_info.empty()) {
-    RejectJavascriptCallback(base::Value(callback_id), base::Value());
-    return;
-  }
-  ResolveJavascriptCallback(base::Value(callback_id), printer_info);
 }
 
 void PrintPreviewHandler::OnPrintResult(const std::string& callback_id,
@@ -1317,20 +1190,9 @@ void PrintPreviewHandler::OnPrintResult(const std::string& callback_id,
   }
 }
 
-void PrintPreviewHandler::RegisterForGaiaCookieChanges() {
-  DCHECK(!identity_manager_);
-  Profile* profile = Profile::FromWebUI(web_ui());
-  if (AccountConsistencyModeManager::IsMirrorEnabledForProfile(profile)) {
-    identity_manager_ = IdentityManagerFactory::GetForProfile(profile);
-    identity_manager_->AddObserver(this);
-  }
-}
-
-void PrintPreviewHandler::UnregisterForGaiaCookieChanges() {
-  if (identity_manager_) {
-    identity_manager_->RemoveObserver(this);
-    identity_manager_ = nullptr;
-  }
+bool PrintPreviewHandler::IsCloudPrintEnabled() {
+  return !base::Contains(printer_type_deny_list_, PrinterType::kCloud) &&
+         GetPrefs()->GetBoolean(prefs::kCloudPrintSubmitEnabled);
 }
 
 void PrintPreviewHandler::BadMessageReceived() {
@@ -1346,8 +1208,8 @@ void PrintPreviewHandler::FileSelectedForTesting(const base::FilePath& path,
 }
 
 void PrintPreviewHandler::SetPdfSavedClosureForTesting(
-    const base::Closure& closure) {
-  GetPdfPrinterHandler()->SetPdfSavedClosureForTesting(closure);
+    base::OnceClosure closure) {
+  GetPdfPrinterHandler()->SetPdfSavedClosureForTesting(std::move(closure));
 }
 
 void PrintPreviewHandler::SendEnableManipulateSettingsForTest() {
@@ -1357,6 +1219,19 @@ void PrintPreviewHandler::SendEnableManipulateSettingsForTest() {
 void PrintPreviewHandler::SendManipulateSettingsForTest(
     const base::DictionaryValue& settings) {
   FireWebUIListener("manipulate-settings-for-test", settings);
+}
+
+void PrintPreviewHandler::HandleManagePrinters(const base::ListValue* args) {
+#if defined(OS_CHROMEOS)
+  if (!local_printer_) {
+    LOG(ERROR) << "Local printer not available";
+    return;
+  }
+  local_printer_->ShowSystemPrintSettings(base::DoNothing());
+#else
+  printing::PrinterManagerDialog::ShowPrinterManagerDialog(
+      Profile::FromWebUI(web_ui()));
+#endif
 }
 
 }  // namespace printing

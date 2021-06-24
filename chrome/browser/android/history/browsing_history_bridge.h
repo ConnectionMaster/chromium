@@ -22,7 +22,7 @@ class BrowsingHistoryBridge : public ProfileBasedBrowsingHistoryDriver {
  public:
   explicit BrowsingHistoryBridge(JNIEnv* env,
                                  const JavaParamRef<jobject>& obj,
-                                 bool is_incognito);
+                                 const JavaParamRef<jobject>& j_profile);
   void Destroy(JNIEnv*, const JavaParamRef<jobject>&);
 
   void QueryHistory(JNIEnv* env,
@@ -39,7 +39,7 @@ class BrowsingHistoryBridge : public ProfileBasedBrowsingHistoryDriver {
   // ::removeItems() is called.
   void MarkItemForRemoval(JNIEnv* env,
                           const JavaParamRef<jobject>& obj,
-                          jstring j_url,
+                          const JavaParamRef<jobject>& j_url,
                           const JavaParamRef<jlongArray>& j_native_timestamps);
 
   // Removes all items that have been marked for removal through

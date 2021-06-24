@@ -12,8 +12,11 @@
 #include "android_webview/browser/aw_browser_context.h"
 #include "android_webview/browser/aw_browser_terminator.h"
 #include "android_webview/browser/aw_content_browser_client.h"
-#include "android_webview/browser/aw_metrics_service_client.h"
-#include "android_webview/browser/net/aw_network_change_notifier_factory.h"
+#include "android_webview/browser/aw_web_ui_controller_factory.h"
+#include "android_webview/browser/metrics/aw_metrics_service_accessor.h"
+#include "android_webview/browser/metrics/aw_metrics_service_client.h"
+#include "android_webview/browser/network_service/aw_network_change_notifier_factory.h"
+#include "android_webview/browser/tracing/background_tracing_field_trial.h"
 #include "android_webview/common/aw_descriptors.h"
 #include "android_webview/common/aw_paths.h"
 #include "android_webview/common/aw_resource.h"
@@ -21,31 +24,36 @@
 #include "android_webview/common/crash_reporter/aw_crash_reporter_client.h"
 #include "base/android/apk_assets.h"
 #include "base/android/build_info.h"
+#include "base/android/bundle_utils.h"
 #include "base/android/memory_pressure_listener_android.h"
 #include "base/base_paths_android.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/i18n/rtl.h"
-#include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_current.h"
+#include "base/logging.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/path_service.h"
+#include "base/task/current_thread.h"
 #include "components/crash/content/browser/child_exit_observer_android.h"
-#include "components/heap_profiling/supervisor.h"
+#include "components/crash/core/common/crash_key.h"
+#include "components/embedder_support/android/metrics/memory_metrics_logger.h"
+#include "components/heap_profiling/multi_process/supervisor.h"
+#include "components/metrics/metrics_service.h"
 #include "components/services/heap_profiling/public/cpp/settings.h"
 #include "components/user_prefs/user_prefs.h"
+#include "components/variations/synthetic_trials_active_group_id_provider.h"
 #include "components/variations/variations_crash_keys.h"
+#include "components/variations/variations_ids_provider.h"
 #include "content/public/browser/android/synchronous_compositor.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/result_codes.h"
-#include "content/public/common/service_manager_connection.h"
-#include "content/public/common/service_names.mojom.h"
 #include "net/android/network_change_notifier_factory_android.h"
 #include "net/base/network_change_notifier.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/layout.h"
 #include "ui/gl/gl_surface.h"
@@ -71,11 +79,16 @@ int AwBrowserMainParts::PreEarlyInitialization() {
         new AwNetworkChangeNotifierFactory());
   }
 
-  // Creates a MessageLoop for Android WebView if doesn't yet exist.
-  DCHECK(!main_message_loop_.get());
-  if (!base::MessageLoopCurrent::IsSet())
-    main_message_loop_.reset(new base::MessageLoopForUI);
-  return service_manager::RESULT_CODE_NORMAL_EXIT;
+  // Creates a SingleThreadTaskExecutor for Android WebView if doesn't exist.
+  DCHECK(!main_task_executor_.get());
+  if (!base::CurrentThread::IsSet()) {
+    main_task_executor_ = std::make_unique<base::SingleThreadTaskExecutor>(
+        base::MessagePumpType::UI);
+  }
+
+  browser_process_ = std::make_unique<AwBrowserProcess>(
+      browser_client_->aw_feature_list_creator());
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
 int AwBrowserMainParts::PreCreateThreads() {
@@ -108,31 +121,62 @@ int AwBrowserMainParts::PreCreateThreads() {
         std::make_unique<AwBrowserTerminator>());
   }
 
+  crash_reporter::InitializeCrashKeys();
   variations::InitCrashKeys();
 
-  return service_manager::RESULT_CODE_NORMAL_EXIT;
+  RegisterSyntheticTrials();
+
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
-void AwBrowserMainParts::PreMainMessageLoopRun() {
-  AwBrowserContext* context = browser_client_->InitBrowserContext();
-  context->PreMainMessageLoopRun(browser_client_->GetNetLog());
+void AwBrowserMainParts::RegisterSyntheticTrials() {
+  metrics::MetricsService* metrics =
+      AwMetricsServiceClient::GetInstance()->GetMetricsService();
+  metrics->synthetic_trial_registry()->AddSyntheticTrialObserver(
+      variations::VariationsIdsProvider::GetInstance());
+  metrics->synthetic_trial_registry()->AddSyntheticTrialObserver(
+      variations::SyntheticTrialsActiveGroupIdProvider::GetInstance());
 
-  content::RenderFrameHost::AllowInjectingJavaScript();
-}
-
-bool AwBrowserMainParts::MainMessageLoopRun(int* result_code) {
-  // Android WebView does not use default MessageLoop. It has its own
-  // Android specific MessageLoop.
-  return true;
-}
-
-void AwBrowserMainParts::ServiceManagerConnectionStarted(
-    content::ServiceManagerConnection* connection) {
-  heap_profiling::Mode mode = heap_profiling::GetModeForStartup();
-  if (mode != heap_profiling::Mode::kNone) {
-    heap_profiling::Supervisor::GetInstance()->Start(connection,
-                                                     base::OnceClosure());
+  static constexpr char kWebViewApkTypeTrial[] = "WebViewApkType";
+  ApkType apk_type = AwBrowserProcess::GetApkType();
+  std::string apk_type_string;
+  switch (apk_type) {
+    case ApkType::TRICHROME:
+      apk_type_string = "Trichrome";
+      break;
+    case ApkType::MONOCHROME:
+      apk_type_string = "Monochrome";
+      break;
+    case ApkType::STANDALONE:
+      apk_type_string = "Standalone";
+      break;
   }
+  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+      metrics, kWebViewApkTypeTrial, apk_type_string);
+}
+
+int AwBrowserMainParts::PreMainMessageLoopRun() {
+  TRACE_EVENT0("startup", "AwBrowserMainParts::PreMainMessageLoopRun");
+  AwBrowserProcess::GetInstance()->PreMainMessageLoopRun();
+  browser_client_->InitBrowserContext();
+  content::WebUIControllerFactory::RegisterFactory(
+      AwWebUIControllerFactory::GetInstance());
+  content::RenderFrameHost::AllowInjectingJavaScript();
+  metrics_logger_ = std::make_unique<metrics::MemoryMetricsLogger>();
+  return content::RESULT_CODE_NORMAL_EXIT;
+}
+
+void AwBrowserMainParts::WillRunMainMessageLoop(
+    std::unique_ptr<base::RunLoop>& run_loop) {
+  NOTREACHED();
+}
+
+void AwBrowserMainParts::PostCreateThreads() {
+  heap_profiling::Mode mode = heap_profiling::GetModeForStartup();
+  if (mode != heap_profiling::Mode::kNone)
+    heap_profiling::Supervisor::GetInstance()->Start(base::NullCallback());
+
+  SetupBackgroundTracingFieldTrial();
 }
 
 }  // namespace android_webview

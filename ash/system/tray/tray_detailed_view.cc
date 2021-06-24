@@ -8,14 +8,16 @@
 
 #include "ash/public/cpp/ash_view_ids.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "ash/style/ash_color_provider.h"
 #include "ash/system/tray/detailed_view_delegate.h"
 #include "ash/system/tray/hover_highlight_view.h"
 #include "ash/system/tray/system_menu_button.h"
 #include "ash/system/tray/tray_constants.h"
-#include "ash/system/tray/tray_popup_item_style.h"
 #include "ash/system/tray/tray_popup_utils.h"
 #include "ash/system/tray/tri_view.h"
+#include "base/bind.h"
 #include "base/containers/adapters.h"
+#include "base/strings/string_number_conversions.h"
 #include "third_party/skia/include/core/SkDrawLooper.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -28,7 +30,7 @@
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/skia_paint_util.h"
 #include "ui/gfx/vector_icon_types.h"
-#include "ui/native_theme/native_theme.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
@@ -40,6 +42,7 @@
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_targeter.h"
 #include "ui/views/view_targeter_delegate.h"
+#include "ui/views/widget/widget.h"
 
 namespace ash {
 namespace {
@@ -51,13 +54,13 @@ const int kTitleRowSeparatorIndex = 1;
 // the children as sticky header rows. The sticky header rows are not scrolled
 // above the top of the visible viewport until the next one "pushes" it up and
 // are painted above other children. To indicate that a child is a sticky header
-// row use set_id(VIEW_ID_STICKY_HEADER).
+// row use SetID(VIEW_ID_STICKY_HEADER).
 class ScrollContentsView : public views::View {
  public:
   explicit ScrollContentsView(DetailedViewDelegate* delegate)
       : delegate_(delegate) {
-    box_layout_ = SetLayoutManager(
-        std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+    box_layout_ = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical));
   }
   ~ScrollContentsView() override = default;
 
@@ -73,7 +76,7 @@ class ScrollContentsView : public views::View {
       // Sticky header is at the top.
       if (header.view->y() != header.natural_offset) {
         sticky_header_height = header.view->bounds().height();
-        DCHECK_EQ(VIEW_ID_STICKY_HEADER, header.view->id());
+        DCHECK_EQ(VIEW_ID_STICKY_HEADER, header.view->GetID());
         break;
       }
     }
@@ -84,19 +87,18 @@ class ScrollContentsView : public views::View {
       gfx::Rect clip_rect = gfx::Rect(paint_info.paint_recording_size()) -
                             paint_info.offset_from_parent();
       gfx::Insets clip_insets(sticky_header_height, 0, 0, 0);
-      clip_rect.Inset(clip_insets.Scale(paint_info.paint_recording_scale_x(),
-                                        paint_info.paint_recording_scale_y()));
+      clip_rect.Inset(gfx::ScaleToFlooredInsets(
+          clip_insets, paint_info.paint_recording_scale_x(),
+          paint_info.paint_recording_scale_y()));
       clip_recorder.ClipRect(clip_rect);
-      for (int i = 0; i < child_count(); ++i) {
-        auto* child = child_at(i);
-        if (child->id() != VIEW_ID_STICKY_HEADER && !child->layer())
+      for (auto* child : children()) {
+        if (child->GetID() != VIEW_ID_STICKY_HEADER && !child->layer())
           child->Paint(paint_info);
       }
     }
     // Paint sticky headers.
-    for (int i = 0; i < child_count(); ++i) {
-      auto* child = child_at(i);
-      if (child->id() == VIEW_ID_STICKY_HEADER && !child->layer())
+    for (auto* child : children()) {
+      if (child->GetID() == VIEW_ID_STICKY_HEADER && !child->layer())
         child->Paint(paint_info);
     }
 
@@ -118,28 +120,24 @@ class ScrollContentsView : public views::View {
   void Layout() override {
     views::View::Layout();
     headers_.clear();
-    for (int i = 0; i < child_count(); ++i) {
-      views::View* view = child_at(i);
-      if (view->id() == VIEW_ID_STICKY_HEADER)
-        headers_.emplace_back(view);
+    for (auto* child : children()) {
+      if (child->GetID() == VIEW_ID_STICKY_HEADER)
+        headers_.emplace_back(child);
     }
     PositionHeaderRows();
   }
 
+  const char* GetClassName() const override { return "ScrollContentsView"; }
+
   View::Views GetChildrenInZOrder() override {
-    View::Views children;
-    // Iterate over regular children and later over the sticky headers to keep
-    // the sticky headers above in Z-order.
-    for (int i = 0; i < child_count(); ++i) {
-      if (child_at(i)->id() != VIEW_ID_STICKY_HEADER)
-        children.push_back(child_at(i));
-    }
-    for (int i = 0; i < child_count(); ++i) {
-      if (child_at(i)->id() == VIEW_ID_STICKY_HEADER)
-        children.push_back(child_at(i));
-    }
-    DCHECK_EQ(child_count(), static_cast<int>(children.size()));
-    return children;
+    // Place sticky headers last in the child order so that they wind up on top
+    // in Z order.
+    View::Views children_in_z_order = children();
+    std::stable_partition(children_in_z_order.begin(),
+                          children_in_z_order.end(), [](const View* child) {
+                            return child->GetID() != VIEW_ID_STICKY_HEADER;
+                          });
+    return children_in_z_order;
   }
 
   void ViewHierarchyChanged(
@@ -151,14 +149,14 @@ class ScrollContentsView : public views::View {
                                     }),
                      headers_.end());
     } else if (details.is_add && details.parent == this &&
-               details.child == child_at(0)) {
+               details.child == children().front()) {
       // We always want padding on the bottom of the scroll contents.
       // We only want padding on the top of the scroll contents if the first
       // child is not a header (in that case, the padding is built into the
       // header).
       DCHECK_EQ(box_layout_, GetLayoutManager());
       box_layout_->set_inside_border_insets(
-          gfx::Insets(details.child->id() == VIEW_ID_STICKY_HEADER
+          gfx::Insets(details.child->GetID() == VIEW_ID_STICKY_HEADER
                           ? 0
                           : kMenuSeparatorVerticalPadding,
                       0, kMenuSeparatorVerticalPadding, 0));
@@ -245,8 +243,10 @@ class ScrollContentsView : public views::View {
     gfx::Canvas* canvas = recorder.canvas();
     cc::PaintFlags flags;
     gfx::ShadowValues shadow;
-    shadow.emplace_back(gfx::Vector2d(0, kShadowOffsetY), kShadowBlur,
-                        kMenuSeparatorColor);
+    shadow.emplace_back(
+        gfx::Vector2d(0, kShadowOffsetY), kShadowBlur,
+        AshColorProvider::Get()->GetContentLayerColor(
+            AshColorProvider::ContentLayerType::kSeparatorColor));
     flags.setLooper(gfx::CreateShadowDrawLooper(shadow));
     flags.setAntiAlias(true);
     canvas->ClipRect(shadowed_area, SkClipOp::kDifference);
@@ -269,17 +269,12 @@ class ScrollContentsView : public views::View {
 // TrayDetailedView:
 
 TrayDetailedView::TrayDetailedView(DetailedViewDelegate* delegate)
-    : delegate_(delegate),
-      box_layout_(nullptr),
-      scroller_(nullptr),
-      scroll_content_(nullptr),
-      progress_bar_(nullptr),
-      tri_view_(nullptr),
-      back_button_(nullptr) {
-  box_layout_ = SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+    : delegate_(delegate) {
+  box_layout_ = SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical,
+      delegate->GetInsetsForDetailedView()));
   SetBackground(views::CreateSolidBackground(
-      delegate_->GetBackgroundColor(GetNativeTheme())));
+      delegate_->GetBackgroundColor().value_or(SK_ColorTRANSPARENT)));
 }
 
 TrayDetailedView::~TrayDetailedView() = default;
@@ -288,22 +283,13 @@ void TrayDetailedView::OnViewClicked(views::View* sender) {
   HandleViewClicked(sender);
 }
 
-void TrayDetailedView::ButtonPressed(views::Button* sender,
-                                     const ui::Event& event) {
-  if (sender == back_button_) {
-    TransitionToMainView();
-    return;
-  }
-
-  HandleButtonPressed(sender, event);
-}
-
 void TrayDetailedView::CreateTitleRow(int string_id) {
   DCHECK(!tri_view_);
 
   tri_view_ = delegate_->CreateTitleRow(string_id);
 
-  back_button_ = delegate_->CreateBackButton(this);
+  back_button_ = delegate_->CreateBackButton(base::BindRepeating(
+      &TrayDetailedView::TransitionToMainView, base::Unretained(this)));
   tri_view_->AddView(TriView::Container::START, back_button_);
 
   AddChildViewAt(tri_view_, 0);
@@ -316,21 +302,22 @@ void TrayDetailedView::CreateTitleRow(int string_id) {
 void TrayDetailedView::CreateScrollableList() {
   DCHECK(!scroller_);
   auto scroll_content = std::make_unique<ScrollContentsView>(delegate_);
-  scroller_ = new views::ScrollView;
-  scroller_->set_draw_overflow_indicator(
-      delegate_->IsOverflowIndicatorEnabled());
+  scroller_ = AddChildView(std::make_unique<views::ScrollView>());
+  scroller_->SetDrawOverflowIndicator(delegate_->IsOverflowIndicatorEnabled());
   scroll_content_ = scroller_->SetContents(std::move(scroll_content));
   // TODO(varkha): Make the sticky rows work with EnableViewPortLayer().
-  scroller_->SetBackgroundColor(
-      delegate_->GetBackgroundColor(GetNativeTheme()));
+  scroller_->SetBackgroundColor(delegate_->GetBackgroundColor());
 
-  AddChildView(scroller_);
   box_layout_->SetFlexForView(scroller_, 1);
+}
+
+void TrayDetailedView::AddScrollListChild(std::unique_ptr<views::View> child) {
+  scroll_content_->AddChildView(std::move(child));
 }
 
 HoverHighlightView* TrayDetailedView::AddScrollListItem(
     const gfx::VectorIcon& icon,
-    const base::string16& text) {
+    const std::u16string& text) {
   HoverHighlightView* item = delegate_->CreateScrollListItem(this, icon, text);
   scroll_content_->AddChildView(item);
   return item;
@@ -338,27 +325,50 @@ HoverHighlightView* TrayDetailedView::AddScrollListItem(
 
 HoverHighlightView* TrayDetailedView::AddScrollListCheckableItem(
     const gfx::VectorIcon& icon,
-    const base::string16& text,
-    bool checked) {
+    const std::u16string& text,
+    bool checked,
+    bool enterprise_managed) {
   HoverHighlightView* item = AddScrollListItem(icon, text);
-  TrayPopupUtils::InitializeAsCheckableRow(item, checked);
+  if (enterprise_managed) {
+    item->SetAccessibleName(l10n_util::GetStringFUTF16(
+        IDS_ASH_ACCESSIBILITY_FEATURE_MANAGED, text));
+  }
+  TrayPopupUtils::InitializeAsCheckableRow(item, checked, enterprise_managed);
   return item;
 }
 
 HoverHighlightView* TrayDetailedView::AddScrollListCheckableItem(
-    const base::string16& text,
-    bool checked) {
-  return AddScrollListCheckableItem(gfx::kNoneIcon, text, checked);
+    const std::u16string& text,
+    bool checked,
+    bool enterprise_managed) {
+  return AddScrollListCheckableItem(gfx::kNoneIcon, text, checked,
+                                    enterprise_managed);
 }
 
 void TrayDetailedView::SetupConnectedScrollListItem(HoverHighlightView* view) {
+  SetupConnectedScrollListItem(view, absl::nullopt /* battery_percentage */);
+}
+
+void TrayDetailedView::SetupConnectedScrollListItem(
+    HoverHighlightView* view,
+    absl::optional<uint8_t> battery_percentage) {
   DCHECK(view->is_populated());
 
-  view->SetSubText(
-      l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED));
-  TrayPopupItemStyle style(TrayPopupItemStyle::FontStyle::CAPTION);
-  style.set_color_style(TrayPopupItemStyle::ColorStyle::CONNECTED);
-  style.SetupLabel(view->sub_text_label());
+  std::u16string status;
+
+  if (battery_percentage) {
+    view->SetSubText(l10n_util::GetStringFUTF16(
+        IDS_ASH_STATUS_TRAY_BLUETOOTH_DEVICE_CONNECTED_WITH_BATTERY_LABEL,
+        base::NumberToString16(battery_percentage.value())));
+  } else {
+    view->SetSubText(l10n_util::GetStringUTF16(
+        IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED));
+  }
+
+  view->sub_text_label()->SetAutoColorReadabilityEnabled(false);
+  view->sub_text_label()->SetEnabledColor(
+      AshColorProvider::Get()->GetContentLayerColor(
+          AshColorProvider::ContentLayerType::kTextColorPositive));
 }
 
 void TrayDetailedView::SetupConnectingScrollListItem(HoverHighlightView* view) {
@@ -373,17 +383,21 @@ TriView* TrayDetailedView::AddScrollListSubHeader(const gfx::VectorIcon& icon,
   TriView* header = TrayPopupUtils::CreateSubHeaderRowView(true);
   TrayPopupUtils::ConfigureAsStickyHeader(header);
 
-  views::Label* label = TrayPopupUtils::CreateDefaultLabel();
-  label->SetText(l10n_util::GetStringUTF16(text_id));
-  TrayPopupItemStyle style(TrayPopupItemStyle::FontStyle::SUB_HEADER);
-  style.SetupLabel(label);
-  header->AddView(TriView::Container::CENTER, label);
+  auto* color_provider = AshColorProvider::Get();
+  sub_header_label_ = TrayPopupUtils::CreateDefaultLabel();
+  sub_header_label_->SetText(l10n_util::GetStringUTF16(text_id));
+  sub_header_label_->SetEnabledColor(color_provider->GetContentLayerColor(
+      AshColorProvider::ContentLayerType::kTextColorPrimary));
+  TrayPopupUtils::SetLabelFontList(sub_header_label_,
+                                   TrayPopupUtils::FontStyle::kSubHeader);
+  header->AddView(TriView::Container::CENTER, sub_header_label_);
 
-  views::ImageView* image_view = TrayPopupUtils::CreateMainImageView();
-  image_view->SetImage(gfx::CreateVectorIcon(
-      icon, GetNativeTheme()->GetSystemColor(
-                ui::NativeTheme::kColorId_ProminentButtonColor)));
-  header->AddView(TriView::Container::START, image_view);
+  sub_header_image_view_ = TrayPopupUtils::CreateMainImageView();
+  sub_header_icon_ = &icon;
+  sub_header_image_view_->SetImage(gfx::CreateVectorIcon(
+      icon, color_provider->GetContentLayerColor(
+                AshColorProvider::ContentLayerType::kIconColorPrimary)));
+  header->AddView(TriView::Container::START, sub_header_image_view_);
 
   scroll_content_->AddChildView(header);
   return header;
@@ -405,27 +419,40 @@ void TrayDetailedView::Reset() {
 void TrayDetailedView::ShowProgress(double value, bool visible) {
   DCHECK(tri_view_);
   if (!progress_bar_) {
-    progress_bar_ = new views::ProgressBar(kTitleRowProgressBarHeight);
+    progress_bar_ = AddChildViewAt(
+        std::make_unique<views::ProgressBar>(kTitleRowProgressBarHeight),
+        kTitleRowSeparatorIndex + 1);
+    progress_bar_->GetViewAccessibility().OverrideName(
+        l10n_util::GetStringUTF16(
+            IDS_ASH_STATUS_TRAY_NETWORK_PROGRESS_ACCESSIBLE_NAME));
     progress_bar_->SetVisible(false);
-    AddChildViewAt(progress_bar_, kTitleRowSeparatorIndex + 1);
+    progress_bar_->SetForegroundColor(
+        AshColorProvider::Get()->GetContentLayerColor(
+            AshColorProvider::ContentLayerType::kIconColorProminent));
   }
 
   progress_bar_->SetValue(value);
   progress_bar_->SetVisible(visible);
-  child_at(kTitleRowSeparatorIndex)->SetVisible(!visible);
+  children()[size_t{kTitleRowSeparatorIndex}]->SetVisible(!visible);
 }
 
-views::Button* TrayDetailedView::CreateInfoButton(int info_accessible_name_id) {
-  return delegate_->CreateInfoButton(this, info_accessible_name_id);
+views::Button* TrayDetailedView::CreateInfoButton(
+    views::Button::PressedCallback callback,
+    int info_accessible_name_id) {
+  return delegate_->CreateInfoButton(std::move(callback),
+                                     info_accessible_name_id);
 }
 
 views::Button* TrayDetailedView::CreateSettingsButton(
+    views::Button::PressedCallback callback,
     int setting_accessible_name_id) {
-  return delegate_->CreateSettingsButton(this, setting_accessible_name_id);
+  return delegate_->CreateSettingsButton(std::move(callback),
+                                         setting_accessible_name_id);
 }
 
-views::Button* TrayDetailedView::CreateHelpButton() {
-  return delegate_->CreateHelpButton(this);
+views::Button* TrayDetailedView::CreateHelpButton(
+    views::Button::PressedCallback callback) {
+  return delegate_->CreateHelpButton(std::move(callback));
 }
 
 views::Separator* TrayDetailedView::CreateListSubHeaderSeparator() {
@@ -436,11 +463,6 @@ void TrayDetailedView::HandleViewClicked(views::View* view) {
   NOTREACHED();
 }
 
-void TrayDetailedView::HandleButtonPressed(views::Button* sender,
-                                           const ui::Event& event) {
-  NOTREACHED();
-}
-
 void TrayDetailedView::CreateExtraTitleRowButtons() {}
 
 void TrayDetailedView::TransitionToMainView() {
@@ -448,6 +470,13 @@ void TrayDetailedView::TransitionToMainView() {
 }
 
 void TrayDetailedView::CloseBubble() {
+  // widget may be null in tests, in this case we do not need to do anything.
+  views::Widget* widget = GetWidget();
+  if (!widget)
+    return;
+  // Don't close again if we're already closing.
+  if (widget->IsClosed())
+    return;
   delegate_->CloseBubble();
 }
 
@@ -465,6 +494,27 @@ int TrayDetailedView::GetHeightForWidth(int width) const {
   // the preferred height of the default view, and that determines the
   // initial height of |this|. Always request to stay the same height.
   return height();
+}
+
+const char* TrayDetailedView::GetClassName() const {
+  return "TrayDetailedView";
+}
+
+void TrayDetailedView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  delegate_->UpdateColors();
+
+  auto* color_provider = AshColorProvider::Get();
+  if (sub_header_label_) {
+    sub_header_label_->SetEnabledColor(color_provider->GetContentLayerColor(
+        AshColorProvider::ContentLayerType::kTextColorPrimary));
+  }
+  if (sub_header_image_view_) {
+    sub_header_image_view_->SetImage(gfx::CreateVectorIcon(
+        *sub_header_icon_,
+        color_provider->GetContentLayerColor(
+            AshColorProvider::ContentLayerType::kIconColorPrimary)));
+  }
 }
 
 }  // namespace ash

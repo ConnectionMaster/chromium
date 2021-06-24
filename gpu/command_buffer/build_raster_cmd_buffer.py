@@ -47,6 +47,7 @@ _NAMED_TYPE_INFO = {
     'is_complete': True,
     'valid': [
       'GL_COMMANDS_ISSUED_CHROMIUM',
+      'GL_COMMANDS_ISSUED_TIMESTAMP_CHROMIUM',
       'GL_COMMANDS_COMPLETED_CHROMIUM',
     ],
     'invalid': [
@@ -107,7 +108,6 @@ _NAMED_TYPE_INFO = {
       'gfx::BufferUsage::GPU_READ',
       'gfx::BufferUsage::SCANOUT',
       'gfx::BufferUsage::GPU_READ_CPU_READ_WRITE',
-      'gfx::BufferUsage::GPU_READ_CPU_READ_WRITE_PERSISTENT',
     ],
     'invalid': [
       'gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE',
@@ -131,12 +131,11 @@ _NAMED_TYPE_INFO = {
       'viz::ResourceFormat::R16_EXT',
       'viz::ResourceFormat::RGBX_8888',
       'viz::ResourceFormat::BGRX_8888',
-      'viz::ResourceFormat::RGBX_1010102',
-      'viz::ResourceFormat::BGRX_1010102',
+      'viz::ResourceFormat::RGBA_1010102',
+      'viz::ResourceFormat::BGRA_1010102',
       'viz::ResourceFormat::YVU_420',
       'viz::ResourceFormat::YUV_420_BIPLANAR',
-      'viz::ResourceFormat::UYVY_422',
-
+      'viz::ResourceFormat::P010',
     ],
     'invalid': [
       'viz::ResourceFormat::ETC1',
@@ -190,15 +189,51 @@ _FUNCTION_INFO = {
     'unit_test': False,
     'trace_level': 2,
   },
+  'WritePixelsINTERNAL': {
+    'decoder_func': 'DoWritePixelsINTERNAL',
+    'internal': True,
+    'type': 'PUT',
+    'count': 16,  # GL_MAILBOX_SIZE_CHROMIUM
+    'unit_test': False,
+    'trace_level': 2,
+  },
+  'ReadbackARGBImagePixelsINTERNAL': {
+    'decoder_func': 'DoReadbackARGBImagePixelsINTERNAL',
+    'internal': True,
+    'type': 'PUT',
+    'count': 16,  # GL_MAILBOX_SIZE_CHROMIUM
+    'unit_test': False,
+    'result': ['uint32_t'],
+    'trace_level': 2,
+  },
+  'ReadbackYUVImagePixelsINTERNAL': {
+    'decoder_func': 'DoReadbackYUVImagePixelsINTERNAL',
+    'internal': True,
+    'type': 'PUT',
+    'count': 16, # GL_MAILBOX_SIZE_CHROMIUM
+    'unit_test': False,
+    'result': ['uint32_t'],
+    'trace_level': 2,
+  },
+  'ConvertYUVAMailboxesToRGBINTERNAL': {
+    'decoder_func': 'DoConvertYUVAMailboxesToRGBINTERNAL',
+    'internal': True,
+    'type': 'PUT',
+    'count': 80, #GL_MAILBOX_SIZE_CHROMIUM x5
+    'unit_test': False,
+    'trace_level': 2,
+  },
   'Finish': {
     'impl_func': False,
     'client_test': False,
     'decoder_func': 'DoFinish',
+    'unit_test': False,
     'trace_level': 1,
   },
   'Flush': {
     'impl_func': False,
     'decoder_func': 'DoFlush',
+    'unit_test': False,
     'trace_level': 1,
   },
   'GetError': {
@@ -241,12 +276,21 @@ _FUNCTION_INFO = {
     'gl_test_func': 'glEndnQuery',
     'client_test': False,
   },
+  'QueryCounterEXT' : {
+    'type': 'Custom',
+    'impl_func': False,
+    'cmd_args': 'GLidQuery id, GLenumQueryTarget target, '
+                'void* sync_data, GLuint submit_count',
+    'data_transfer_methods': ['shm'],
+    'gl_test_func': 'glQueryCounter',
+  },
   'GetQueryObjectuivEXT': {
     'type': 'NoCommand',
     'gl_test_func': 'glGetQueryObjectuiv',
   },
-  'ShallowFlushCHROMIUM': {
+  'GetQueryObjectui64vEXT': {
     'type': 'NoCommand',
+    'gl_test_func': 'glGetQueryObjectui64v',
   },
   'OrderingBarrierCHROMIUM': {
     'type': 'NoCommand',

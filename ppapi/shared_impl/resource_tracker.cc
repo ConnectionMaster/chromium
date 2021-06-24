@@ -4,8 +4,11 @@
 
 #include "ppapi/shared_impl/resource_tracker.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "ppapi/shared_impl/callback_tracker.h"
 #include "ppapi/shared_impl/id_assignment.h"
@@ -16,9 +19,9 @@
 namespace ppapi {
 
 ResourceTracker::ResourceTracker(ThreadMode thread_mode)
-    : last_resource_value_(0), weak_ptr_factory_(this) {
+    : last_resource_value_(0) {
   if (thread_mode == SINGLE_THREADED)
-    thread_checker_.reset(new base::ThreadChecker);
+    thread_checker_ = std::make_unique<base::ThreadChecker>();
 }
 
 ResourceTracker::~ResourceTracker() {}

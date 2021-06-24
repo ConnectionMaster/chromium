@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/modules/xr/xr_view.h"
 
+#include "base/numerics/ranges.h"
+#include "third_party/blink/renderer/modules/xr/xr_camera.h"
 #include "third_party/blink/renderer/modules/xr/xr_frame.h"
 #include "third_party/blink/renderer/modules/xr/xr_session.h"
 #include "third_party/blink/renderer/modules/xr/xr_utils.h"
@@ -11,90 +13,77 @@
 
 namespace blink {
 
-XRView::XRView(XRSession* session, XREye eye)
-    : eye_(eye),
-      session_(session),
-      projection_matrix_(DOMFloat32Array::Create(16)) {
-  eye_string_ = (eye_ == kEyeLeft ? "left" : "right");
-}
+namespace {
 
-XRView::XRView()
-    : eye_(XREye::kEyeLeft),
-      eye_string_("left"),
-      session_(nullptr),
-      projection_matrix_(DOMFloat32Array::Create(16)) {}
+// Arbitrary minimum size multiplier for dynamic viewport scaling,
+// where 1.0 is full framebuffer size (which may in turn be adjusted
+// by framebufferScaleFactor). TODO(klausw): a value around 0.2 would
+// be more reasonable. Intentionally allow extreme viewport scaling
+// to make the effect more obvious in initial testing.
+constexpr double kMinViewportScale = 0.05;
 
-// deep copy
-XRView::XRView(const XRView& other)
-    : projection_matrix_(DOMFloat32Array::Create(16)) {
-  *this = other;
-}
+const double kDegToRad = M_PI / 180.0;
 
-// deep copy
-XRView& XRView::operator=(const XRView& other) {
-  if (&other == this)
-    return *this;
+}  // namespace
 
-  eye_ = other.eye_;
-  eye_string_ = other.eye_string_;
-  session_ = other.session_;
-  AssignMatrices(other);
-  offset_ = other.offset_;
-
-  transform_ =
-      MakeGarbageCollected<XRRigidTransform>(*(other.transform_.Get()));
-
-  // Don't copy the inverse projection matrix because it is rarely used.
-  // Just set this flag so that if UnprojectPointer is called, this matrix
-  // gets computed.
-  inv_projection_dirty_ = true;
-
-  return *this;
-}
-
-void XRView::AssignMatrices(const XRView& other) {
-  const float* src_projection_data = other.projection_matrix_->Data();
-  float* dst_projection_data = projection_matrix_->Data();
-
-  for (int i = 0; i < 16; ++i) {
-    dst_projection_data[i] = src_projection_data[i];
+XRView::XRView(XRFrame* frame, XRViewData* view_data)
+    : eye_(view_data->Eye()), frame_(frame), view_data_(view_data) {
+  switch (eye_) {
+    case device::mojom::blink::XREye::kLeft:
+      eye_string_ = "left";
+      break;
+    case device::mojom::blink::XREye::kRight:
+      eye_string_ = "right";
+      break;
+    default:
+      eye_string_ = "none";
   }
+  ref_space_from_eye_ =
+      MakeGarbageCollected<XRRigidTransform>(view_data->Transform());
+  projection_matrix_ =
+      transformationMatrixToDOMFloat32Array(view_data->ProjectionMatrix());
+}
+
+XRFrame* XRView::frame() const {
+  return frame_;
 }
 
 XRSession* XRView::session() const {
-  return session_;
+  return frame_->session();
 }
 
-// TODO(http://crbug.com/836496): This method only supports
-// straight-ahead projection matrices. In order to support
-// multiple sessions embedded with projection matrices that act
-// like views into the shared camera space, this math needs to
-// be updated.
-void XRView::UpdateProjectionMatrixFromRawValues(
-    const WTF::Vector<float>& projection_matrix,
-    float near_depth,
-    float far_depth) {
-  DCHECK_EQ(projection_matrix.size(), 16lu);
-  float* out = projection_matrix_->Data();
-  for (int i = 0; i < 16; i++) {
-    out[i] = projection_matrix[i];
+DOMFloat32Array* XRView::projectionMatrix() const {
+  if (!projection_matrix_ || !projection_matrix_->Data()) {
+    // A page may take the projection matrix value and detach it so
+    // projection_matrix_ is a detached array buffer.  This breaks the
+    // inspector, so return null instead.
+    return nullptr;
   }
 
-  // Recalculate elements that depend on near/far depth. The input matrix used
-  // arbitrary values, need to adjust to what the client uses.
-  float inverse_near_far = 1.0f / (near_depth - far_depth);
-  out[10] = (near_depth + far_depth) * inverse_near_far;
-  out[14] = (2.0f * far_depth * near_depth) * inverse_near_far;
-
-  inv_projection_dirty_ = true;
+  return projection_matrix_;
 }
 
-void XRView::UpdateProjectionMatrixFromFoV(float up_rad,
-                                           float down_rad,
-                                           float left_rad,
-                                           float right_rad,
-                                           float near_depth,
-                                           float far_depth) {
+XRViewData::XRViewData(const device::mojom::blink::XRViewPtr& view,
+                       double depth_near,
+                       double depth_far)
+    : eye_(view->eye) {
+  const device::mojom::blink::VRFieldOfViewPtr& fov = view->field_of_view;
+
+  UpdateProjectionMatrixFromFoV(
+      fov->up_degrees * kDegToRad, fov->down_degrees * kDegToRad,
+      fov->left_degrees * kDegToRad, fov->right_degrees * kDegToRad, depth_near,
+      depth_far);
+
+  const TransformationMatrix matrix(view->head_from_eye.matrix());
+  SetHeadFromEyeTransform(matrix);
+}
+
+void XRViewData::UpdateProjectionMatrixFromFoV(float up_rad,
+                                               float down_rad,
+                                               float left_rad,
+                                               float right_rad,
+                                               float near_depth,
+                                               float far_depth) {
   float up_tan = tanf(up_rad);
   float down_tan = tanf(down_rad);
   float left_tan = tanf(left_rad);
@@ -103,73 +92,35 @@ void XRView::UpdateProjectionMatrixFromFoV(float up_rad,
   float y_scale = 2.0f / (up_tan + down_tan);
   float inv_nf = 1.0f / (near_depth - far_depth);
 
-  float* out = projection_matrix_->Data();
-  out[0] = x_scale;
-  out[1] = 0.0f;
-  out[2] = 0.0f;
-  out[3] = 0.0f;
-  out[4] = 0.0f;
-  out[5] = y_scale;
-  out[6] = 0.0f;
-  out[7] = 0.0f;
-  out[8] = -((left_tan - right_tan) * x_scale * 0.5);
-  out[9] = ((up_tan - down_tan) * y_scale * 0.5);
-  out[10] = (near_depth + far_depth) * inv_nf;
-  out[11] = -1.0f;
-  out[12] = 0.0f;
-  out[13] = 0.0f;
-  out[14] = (2.0f * far_depth * near_depth) * inv_nf;
-  out[15] = 0.0f;
-
-  inv_projection_dirty_ = true;
+  projection_matrix_ = TransformationMatrix(
+      x_scale, 0.0f, 0.0f, 0.0f, 0.0f, y_scale, 0.0f, 0.0f,
+      -((left_tan - right_tan) * x_scale * 0.5),
+      ((up_tan - down_tan) * y_scale * 0.5), (near_depth + far_depth) * inv_nf,
+      -1.0f, 0.0f, 0.0f, (2.0f * far_depth * near_depth) * inv_nf, 0.0f);
 }
 
-void XRView::UpdateProjectionMatrixFromAspect(float fovy,
-                                              float aspect,
-                                              float near_depth,
-                                              float far_depth) {
+void XRViewData::UpdateProjectionMatrixFromAspect(float fovy,
+                                                  float aspect,
+                                                  float near_depth,
+                                                  float far_depth) {
   float f = 1.0f / tanf(fovy / 2);
   float inv_nf = 1.0f / (near_depth - far_depth);
 
-  float* out = projection_matrix_->Data();
-  out[0] = f / aspect;
-  out[1] = 0.0f;
-  out[2] = 0.0f;
-  out[3] = 0.0f;
-  out[4] = 0.0f;
-  out[5] = f;
-  out[6] = 0.0f;
-  out[7] = 0.0f;
-  out[8] = 0.0f;
-  out[9] = 0.0f;
-  out[10] = (far_depth + near_depth) * inv_nf;
-  out[11] = -1.0f;
-  out[12] = 0.0f;
-  out[13] = 0.0f;
-  out[14] = (2.0f * far_depth * near_depth) * inv_nf;
-  out[15] = 0.0f;
+  projection_matrix_ = TransformationMatrix(
+      f / aspect, 0.0f, 0.0f, 0.0f, 0.0f, f, 0.0f, 0.0f, 0.0f, 0.0f,
+      (far_depth + near_depth) * inv_nf, -1.0f, 0.0f, 0.0f,
+      (2.0f * far_depth * near_depth) * inv_nf, 0.0f);
 
   inv_projection_dirty_ = true;
 }
 
-void XRView::UpdateOffset(float x, float y, float z) {
-  offset_.Set(x, y, z);
-}
-
-std::unique_ptr<TransformationMatrix> XRView::UnprojectPointer(
-    double x,
-    double y,
-    double canvas_width,
-    double canvas_height) {
+TransformationMatrix XRViewData::UnprojectPointer(double x,
+                                                  double y,
+                                                  double canvas_width,
+                                                  double canvas_height) {
   // Recompute the inverse projection matrix if needed.
   if (inv_projection_dirty_) {
-    float* m = projection_matrix_->Data();
-    std::unique_ptr<TransformationMatrix> projection =
-        std::make_unique<TransformationMatrix>(
-            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10],
-            m[11], m[12], m[13], m[14], m[15]);
-    inv_projection_ =
-        std::make_unique<TransformationMatrix>(projection->Inverse());
+    inv_projection_ = projection_matrix_.Inverse();
     inv_projection_dirty_ = false;
   }
 
@@ -181,7 +132,7 @@ std::unique_ptr<TransformationMatrix> XRView::UnprojectPointer(
       (canvas_height - y) / canvas_height * 2.0 - 1.0, -1.0);
 
   FloatPoint3D point_in_view_space =
-      inv_projection_->MapPoint(point_in_projection_space);
+      inv_projection_.MapPoint(point_in_projection_space);
 
   const FloatPoint3D kOrigin(0.0, 0.0, 0.0);
   const FloatPoint3D kUp(0.0, 1.0, 0.0);
@@ -205,28 +156,75 @@ std::unique_ptr<TransformationMatrix> XRView::UnprojectPointer(
                           -point_in_view_space.Z());
 
   // LookAt matrices are view matrices (inverted), so invert before returning.
-  std::unique_ptr<TransformationMatrix> pointer =
-      std::make_unique<TransformationMatrix>(inv_pointer.Inverse());
-
-  return pointer;
+  return inv_pointer.Inverse();
 }
 
-// Pass pose_matrix by value because this method modifies its offset, but
-// the calling code doesn't want it changed.
-void XRView::UpdatePoseMatrix(TransformationMatrix pose_matrix) {
-  pose_matrix.Translate3d(offset_.X(), offset_.Y(), offset_.Z());
-  transform_ = MakeGarbageCollected<XRRigidTransform>(pose_matrix);
+void XRViewData::SetHeadFromEyeTransform(
+    const TransformationMatrix& head_from_eye) {
+  head_from_eye_ = head_from_eye;
+}
+
+// ref_space_from_eye_ = ref_space_from_head * head_from_eye_
+void XRViewData::UpdatePoseMatrix(
+    const TransformationMatrix& ref_space_from_head) {
+  ref_space_from_eye_ = ref_space_from_head;
+  ref_space_from_eye_.Multiply(head_from_eye_);
 }
 
 XRRigidTransform* XRView::transform() const {
-  return transform_;
+  return ref_space_from_eye_;
 }
 
-void XRView::Trace(blink::Visitor* visitor) {
-  visitor->Trace(session_);
+absl::optional<double> XRView::recommendedViewportScale() const {
+  return view_data_->recommendedViewportScale();
+}
+
+void XRView::requestViewportScale(absl::optional<double> scale) {
+  view_data_->requestViewportScale(scale);
+}
+
+XRCamera* XRView::camera() const {
+  const bool camera_access_enabled = frame_->session()->IsFeatureEnabled(
+      device::mojom::XRSessionFeature::CAMERA_ACCESS);
+  const bool is_immersive_ar_session =
+      frame_->session()->mode() ==
+      device::mojom::blink::XRSessionMode::kImmersiveAr;
+
+  if (camera_access_enabled && is_immersive_ar_session) {
+    // The feature is enabled and we're in immersive-ar session, so let's return
+    // a camera object if the camera image was received in the current frame.
+    // Note: currently our only implementation of AR sessions is provided by
+    // ARCore device, which should *not* return a frame data with camera image
+    // that is not set in case the raw camera access is enabled, so we could
+    // DCHECK that the camera image size has value. Since there may be other AR
+    // devices that implement raw camera access via a different mechanism that's
+    // not neccessarily frame-aligned, a DCHECK here would affect them.
+    if (frame_->session()->CameraImageSize().has_value()) {
+      return MakeGarbageCollected<XRCamera>(frame_);
+    }
+  }
+
+  return nullptr;
+}
+
+void XRView::Trace(Visitor* visitor) const {
+  visitor->Trace(frame_);
   visitor->Trace(projection_matrix_);
-  visitor->Trace(transform_);
+  visitor->Trace(ref_space_from_eye_);
+  visitor->Trace(view_data_);
   ScriptWrappable::Trace(visitor);
+}
+
+absl::optional<double> XRViewData::recommendedViewportScale() const {
+  return recommended_viewport_scale_;
+}
+
+void XRViewData::requestViewportScale(absl::optional<double> scale) {
+  if (!scale)
+    return;
+
+  requested_viewport_scale_ =
+      base::ClampToRange(*scale, kMinViewportScale, 1.0);
 }
 
 }  // namespace blink

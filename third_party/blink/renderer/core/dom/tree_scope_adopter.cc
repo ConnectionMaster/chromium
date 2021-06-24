@@ -69,16 +69,16 @@ void TreeScopeAdopter::MoveTreeToNewScope(Node& root) const {
         rare_data->NodeLists()->AdoptTreeScope();
     }
 
-    if (!node.IsElementNode())
+    auto* element = DynamicTo<Element>(node);
+    if (!element)
       continue;
-    Element& element = ToElement(node);
 
-    if (HeapVector<Member<Attr>>* attrs = element.GetAttrNodeList()) {
+    if (HeapVector<Member<Attr>>* attrs = element->GetAttrNodeList()) {
       for (const auto& attr : *attrs)
         MoveTreeToNewScope(*attr);
     }
 
-    if (ShadowRoot* shadow = element.GetShadowRoot()) {
+    if (ShadowRoot* shadow = element->GetShadowRoot()) {
       shadow->SetParentTreeScope(NewScope());
       if (will_move_to_new_document)
         MoveShadowTreeToNewDocument(*shadow, old_document, new_document);
@@ -91,13 +91,16 @@ void TreeScopeAdopter::MoveShadowTreeToNewDocument(
     Document& old_document,
     Document& new_document) const {
   DCHECK_NE(old_document, new_document);
-  HeapVector<Member<CSSStyleSheet>> empty_vector;
-  shadow_root.SetAdoptedStyleSheets(empty_vector);
+  if (old_document.TemplateDocumentHost() != &new_document &&
+      new_document.TemplateDocumentHost() != &old_document) {
+    // If this is not a move from a document to a <template> within it or vice
+    // versa, we need to clear |shadow_root|'s adoptedStyleSheets.
+    HeapVector<Member<CSSStyleSheet>> empty_vector;
+    shadow_root.SetAdoptedStyleSheets(empty_vector);
+  }
 
-  if (shadow_root.GetType() == ShadowRootType::V0) {
-    new_document.SetShadowCascadeOrder(ShadowCascadeOrder::kShadowCascadeV0);
-  } else if (shadow_root.IsV1() && !shadow_root.IsUserAgent()) {
-    new_document.SetShadowCascadeOrder(ShadowCascadeOrder::kShadowCascadeV1);
+  if (!shadow_root.IsUserAgent()) {
+    new_document.SetShadowCascadeOrder(ShadowCascadeOrder::kShadowCascade);
   }
   MoveTreeToNewDocument(shadow_root, old_document, new_document);
 }
@@ -109,16 +112,16 @@ void TreeScopeAdopter::MoveTreeToNewDocument(Node& root,
   for (Node& node : NodeTraversal::InclusiveDescendantsOf(root)) {
     MoveNodeToNewDocument(node, old_document, new_document);
 
-    if (!node.IsElementNode())
+    auto* element = DynamicTo<Element>(node);
+    if (!element)
       continue;
-    Element& element = ToElement(node);
 
-    if (HeapVector<Member<Attr>>* attrs = element.GetAttrNodeList()) {
+    if (HeapVector<Member<Attr>>* attrs = element->GetAttrNodeList()) {
       for (const auto& attr : *attrs)
         MoveTreeToNewDocument(*attr, old_document, new_document);
     }
 
-    if (ShadowRoot* shadow_root = element.GetShadowRoot())
+    if (ShadowRoot* shadow_root = element->GetShadowRoot())
       MoveShadowTreeToNewDocument(*shadow_root, old_document, new_document);
   }
 }
@@ -161,7 +164,7 @@ inline void TreeScopeAdopter::MoveNodeToNewDocument(
   old_document.MoveNodeIteratorsToNewDocument(node, new_document);
 
   if (node.GetCustomElementState() == CustomElementState::kCustom) {
-    CustomElement::EnqueueAdoptedCallback(ToElement(node), old_document,
+    CustomElement::EnqueueAdoptedCallback(To<Element>(node), old_document,
                                           new_document);
   }
 

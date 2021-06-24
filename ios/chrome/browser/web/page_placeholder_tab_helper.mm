@@ -5,10 +5,12 @@
 #import "ios/chrome/browser/web/page_placeholder_tab_helper.h"
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/threading/thread_task_runner_handle.h"
 #import "ios/chrome/browser/snapshots/snapshot_tab_helper.h"
-#import "ios/web/public/web_state/ui/crw_web_view_proxy.h"
+#import "ios/chrome/browser/ui/util/named_guide.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/web/public/ui/crw_web_view_proxy.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -44,6 +46,7 @@ void PagePlaceholderTabHelper::CancelPlaceholderForNextNavigation() {
 
 void PagePlaceholderTabHelper::WasShown(web::WebState* web_state) {
   if (add_placeholder_for_next_navigation_) {
+    add_placeholder_for_next_navigation_ = false;
     AddPlaceholder();
   }
 }
@@ -56,7 +59,7 @@ void PagePlaceholderTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
   DCHECK_EQ(web_state_, web_state);
-  if (add_placeholder_for_next_navigation_) {
+  if (add_placeholder_for_next_navigation_ && web_state->IsVisible()) {
     add_placeholder_for_next_navigation_ = false;
     AddPlaceholder();
   }
@@ -76,18 +79,20 @@ void PagePlaceholderTabHelper::WebStateDestroyed(web::WebState* web_state) {
 }
 
 void PagePlaceholderTabHelper::AddPlaceholder() {
-  if (displaying_placeholder_)
+  // WebState::WasShown() and WebState::IsVisible() are bookkeeping mechanisms
+  // that do not guarantee the WebState's view is in the view hierarchy.
+  // TODO(crbug.com/971364): Do not DCHECK([webState->GetView() window]) here
+  // since this is a known issue.
+  if (displaying_placeholder_ || ![web_state_->GetView() window])
     return;
 
   displaying_placeholder_ = true;
 
   // Lazily create the placeholder view.
   if (!placeholder_view_) {
-    placeholder_view_ = [[UIImageView alloc] init];
+    placeholder_view_ = [[TopAlignedImageView alloc] init];
     placeholder_view_.backgroundColor = [UIColor whiteColor];
-    placeholder_view_.contentMode = UIViewContentModeScaleAspectFit;
-    placeholder_view_.autoresizingMask =
-        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    placeholder_view_.translatesAutoresizingMaskIntoConstraints = NO;
   }
 
   // Update placeholder view's image and display it on top of WebState's view.
@@ -112,15 +117,21 @@ void PagePlaceholderTabHelper::AddPlaceholder() {
 }
 
 void PagePlaceholderTabHelper::DisplaySnapshotImage(UIImage* snapshot) {
-  CGRect frame = web_state_->GetView().frame;
-  UIEdgeInsets inset = web_state_->GetWebViewProxy().contentInset;
-  frame.origin.x += inset.left;
-  frame.origin.y += inset.top;
-  frame.size.width -= (inset.right + inset.left);
-  frame.size.height -= (inset.bottom + inset.top);
-  placeholder_view_.frame = frame;
+  UIView* web_state_view = web_state_->GetView();
+  NamedGuide* guide = [NamedGuide guideWithName:kContentAreaGuide
+                                           view:web_state_view];
+
+  // TODO(crbug.com/971364): It is a known issue that the guide may be nil,
+  // causing a crash when attempting to display the placeholder. Choose to not
+  // display the placeholder rather than crashing, since the placeholder is not
+  // critical to the user experience.
+  if (!guide) {
+    displaying_placeholder_ = false;
+    return;
+  }
   placeholder_view_.image = snapshot;
-  [web_state_->GetView() addSubview:placeholder_view_];
+  [web_state_view addSubview:placeholder_view_];
+  AddSameConstraints(guide, placeholder_view_);
 }
 
 void PagePlaceholderTabHelper::RemovePlaceholder() {
@@ -130,7 +141,7 @@ void PagePlaceholderTabHelper::RemovePlaceholder() {
   displaying_placeholder_ = false;
 
   // Remove placeholder view with a fade-out animation.
-  __weak UIImageView* weak_placeholder_view = placeholder_view_;
+  __weak UIView* weak_placeholder_view = placeholder_view_;
   [UIView animateWithDuration:kPlaceholderFadeOutAnimationLengthInSeconds
       animations:^{
         weak_placeholder_view.alpha = 0.0f;

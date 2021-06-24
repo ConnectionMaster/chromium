@@ -6,16 +6,16 @@
 
 #include "base/bind.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/constrained_window/constrained_window_views.h"
-#include "components/safe_browsing/features.h"
-#include "components/safe_browsing/password_protection/password_protection_service.h"
-#include "ui/views/window/dialog_client_view.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/safe_browsing/content/password_protection/password_protection_service.h"
+#include "components/safe_browsing/core/features.h"
+#include "content/public/test/browser_test.h"
 
 namespace safe_browsing {
 
@@ -30,9 +30,10 @@ class PasswordReuseModalWarningTest : public DialogBrowserTest {
   void ShowUi(const std::string& name) override {
     content::WebContents* web_contents =
         browser()->tab_strip_model()->GetActiveWebContents();
+    ReusedPasswordAccountType password_type;
+    password_type.set_account_type(ReusedPasswordAccountType::GSUITE);
     dialog_ = new PasswordReuseModalWarningDialog(
-        web_contents, nullptr,
-        LoginReputationClientRequest::PasswordReuseEvent::SIGN_IN_PASSWORD,
+        web_contents, nullptr, password_type,
         base::BindOnce(&PasswordReuseModalWarningTest::DialogCallback,
                        base::Unretained(this)));
     constrained_window::CreateBrowserModalDialogViews(
@@ -68,13 +69,13 @@ IN_PROC_BROWSER_TEST_F(PasswordReuseModalWarningTest, TestBasicDialogBehavior) {
   // Simulating a click on ui::DIALOG_BUTTON_OK button results in a
   // CHANGE_PASSWORD action.
   ShowUi(std::string());
-  dialog_->GetDialogClientView()->AcceptWindow();
+  dialog_->AcceptDialog();
   EXPECT_EQ(WarningAction::CHANGE_PASSWORD, latest_user_action_);
 
   // Simulating a click on ui::DIALOG_BUTTON_CANCEL button results in an
   // IGNORE_WARNING action.
   ShowUi(std::string());
-  dialog_->GetDialogClientView()->CancelWindow();
+  dialog_->CancelDialog();
   EXPECT_EQ(WarningAction::IGNORE_WARNING, latest_user_action_);
 }
 

@@ -7,8 +7,6 @@
 
 #import <Cocoa/Cocoa.h>
 
-#include <memory>
-
 #include "base/mac/scoped_nsobject.h"
 #import "content/public/browser/render_widget_host_view_mac_delegate.h"
 
@@ -20,13 +18,14 @@ class RenderWidgetHost;
 @interface ChromeRenderWidgetHostViewMacDelegate
     : NSObject<RenderWidgetHostViewMacDelegate> {
  @private
-  content::RenderWidgetHost* renderWidgetHost_;  // weak
+  content::RenderWidgetHost* _renderWidgetHost;  // weak
 
   // Responsible for 2-finger swipes history navigation.
-  base::scoped_nsobject<HistorySwiper> historySwiper_;
+  base::scoped_nsobject<HistorySwiper> _historySwiper;
 }
 
-- (id)initWithRenderWidgetHost:(content::RenderWidgetHost*)renderWidgetHost;
+- (instancetype)initWithRenderWidgetHost:
+    (content::RenderWidgetHost*)renderWidgetHost;
 
 - (BOOL)handleEvent:(NSEvent*)event;
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item

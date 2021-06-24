@@ -7,6 +7,7 @@
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/shell/browser/shell.h"
@@ -67,7 +68,7 @@ class AccessibilityTreeLinkageWinBrowserTest
 };
 
 IN_PROC_BROWSER_TEST_P(AccessibilityTreeLinkageWinBrowserTest, Linkage) {
-  NavigateToURL(shell(), GURL(url::kAboutBlankURL));
+  EXPECT_TRUE(NavigateToURL(shell(), GURL(url::kAboutBlankURL)));
 
   GetParentWindow()->SetProperty(
       aura::client::kParentNativeViewAccessibleKey,
@@ -82,18 +83,11 @@ IN_PROC_BROWSER_TEST_P(AccessibilityTreeLinkageWinBrowserTest, Linkage) {
   // the WebView's parent
   gfx::NativeViewAccessible native_view_accessible =
       GetView()->GetNativeViewAccessible();
-  if (GetParam().is_uia_enabled && !GetParam().is_legacy_window_disabled) {
-    EXPECT_EQ(native_view_accessible,
-              ui::AXFragmentRootWin::GetForAcceleratedWidget(
-                  GetView()->AccessibilityGetAcceleratedWidget())
-                  ->GetNativeViewAccessible());
-  } else {
-    EXPECT_EQ(native_view_accessible, GetView()
-                                          ->host()
-                                          ->GetRootBrowserAccessibilityManager()
-                                          ->GetRoot()
-                                          ->GetNativeViewAccessible());
-  }
+  EXPECT_EQ(native_view_accessible, GetView()
+                                        ->host()
+                                        ->GetRootBrowserAccessibilityManager()
+                                        ->GetRoot()
+                                        ->GetNativeViewAccessible());
 
   // Used by LegacyRenderWidgetHostHWND to find the parent of the UIA fragment
   // root for web content
@@ -110,19 +104,12 @@ IN_PROC_BROWSER_TEST_P(AccessibilityTreeLinkageWinBrowserTest, Linkage) {
     EXPECT_EQ(accessibility_native_view_accessible,
               dummy_ax_platform_node_->GetNativeViewAccessible());
   } else {
-    if (GetParam().is_uia_enabled) {
-      EXPECT_EQ(accessibility_native_view_accessible,
-                ui::AXFragmentRootWin::GetForAcceleratedWidget(
-                    GetView()->AccessibilityGetAcceleratedWidget())
-                    ->GetNativeViewAccessible());
-    } else {
-      EXPECT_EQ(accessibility_native_view_accessible,
-                GetLegacyRenderWidgetHostHWND()->window_accessible());
-    }
+    EXPECT_EQ(accessibility_native_view_accessible,
+              GetLegacyRenderWidgetHostHWND()->window_accessible());
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          AccessibilityTreeLinkageWinBrowserTest,
                          testing::ValuesIn(kTestParameters));
 

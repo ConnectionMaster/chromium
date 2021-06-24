@@ -6,31 +6,31 @@
 
 #include <utility>
 
+#include "ash/public/cpp/tablet_mode.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/app_list_client_impl.h"
 #include "chrome/browser/ui/app_list/app_list_syncable_service_factory.h"
 #include "chrome/browser/ui/app_list/chrome_app_list_model_updater.h"
-#include "chrome/browser/ui/ash/tablet_mode_client.h"
+#include "chrome/browser/ui/ash/notification_badge_color_cache.h"
 #include "extensions/browser/app_sorting.h"
 #include "extensions/browser/extension_system.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image_skia_operations.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/demo_mode/demo_session.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #endif
 
 namespace {
 
 AppListControllerDelegate* g_controller_for_test = nullptr;
 
-ash::mojom::AppListItemMetadataPtr CreateDefaultMetadata(
+std::unique_ptr<ash::AppListItemMetadata> CreateDefaultMetadata(
     const std::string& app_id) {
-  return ash::mojom::AppListItemMetadata::New(
-      app_id, std::string() /* name */, std::string() /* short_name */,
-      std::string() /* folder_id */, syncer::StringOrdinal(),
-      false /* is_folder */, false /* is_persistent */,
-      gfx::ImageSkia() /* icon */, false /* is_page_break */);
+  auto metadata = std::make_unique<ash::AppListItemMetadata>();
+  metadata->id = app_id;
+  return metadata;
 }
 
 }  // namespace
@@ -74,32 +74,21 @@ ChromeAppListItem::ChromeAppListItem(Profile* profile,
 
 ChromeAppListItem::~ChromeAppListItem() = default;
 
-void ChromeAppListItem::SetIsInstalling(bool is_installing) {
-  AppListModelUpdater* updater = model_updater();
-  if (updater)
-    updater->SetItemIsInstalling(id(), is_installing);
-}
-
-void ChromeAppListItem::SetPercentDownloaded(int32_t percent_downloaded) {
-  AppListModelUpdater* updater = model_updater();
-  if (updater)
-    updater->SetItemPercentDownloaded(id(), percent_downloaded);
-}
-
 void ChromeAppListItem::SetMetadata(
-    ash::mojom::AppListItemMetadataPtr metadata) {
+    std::unique_ptr<ash::AppListItemMetadata> metadata) {
   metadata_ = std::move(metadata);
 }
 
-ash::mojom::AppListItemMetadataPtr ChromeAppListItem::CloneMetadata() const {
-  return metadata_.Clone();
+std::unique_ptr<ash::AppListItemMetadata> ChromeAppListItem::CloneMetadata()
+    const {
+  return std::make_unique<ash::AppListItemMetadata>(*metadata_);
 }
 
 void ChromeAppListItem::PerformActivate(int event_flags) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Handle recording app launch source from the AppList in Demo Mode.
-  chromeos::DemoSession::RecordAppLaunchSourceIfInDemoMode(
-      chromeos::DemoSession::AppLaunchSource::kAppList);
+  ash::DemoSession::RecordAppLaunchSourceIfInDemoMode(
+      ash::DemoSession::AppLaunchSource::kAppList);
 #endif
   Activate(event_flags);
   MaybeDismissAppList();
@@ -126,17 +115,9 @@ app_list::AppContextMenu* ChromeAppListItem::GetAppContextMenu() {
 void ChromeAppListItem::MaybeDismissAppList() {
   // Launching apps can take some time. It looks nicer to dismiss the app list.
   // Do not close app list for home launcher.
-  if (!TabletModeClient::Get() ||
-      !TabletModeClient::Get()->tablet_mode_enabled()) {
+  if (!ash::TabletMode::Get() || !ash::TabletMode::Get()->InTabletMode()) {
     GetController()->DismissView();
   }
-}
-
-void ChromeAppListItem::ContextMenuItemSelected(int command_id,
-                                                int event_flags) {
-  app_list::AppContextMenu* menu = GetAppContextMenu();
-  if (menu)
-    menu->ExecuteCommand(command_id, event_flags);
 }
 
 extensions::AppSorting* ChromeAppListItem::GetAppSorting() {
@@ -188,9 +169,15 @@ void ChromeAppListItem::SetDefaultPositionIfApplicable(
 void ChromeAppListItem::SetIcon(const gfx::ImageSkia& icon) {
   metadata_->icon = icon;
   metadata_->icon.EnsureRepsForSupportedScales();
+  metadata_->badge_color =
+      ash::NotificationBadgeColorCache::GetInstance().GetBadgeColorForApp(id(),
+                                                                          icon);
+
   AppListModelUpdater* updater = model_updater();
-  if (updater)
+  if (updater) {
     updater->SetItemIcon(id(), metadata_->icon);
+    updater->SetNotificationBadgeColor(id(), metadata_->badge_color);
+  }
 }
 
 void ChromeAppListItem::SetName(const std::string& name) {
@@ -206,6 +193,13 @@ void ChromeAppListItem::SetNameAndShortName(const std::string& name,
   AppListModelUpdater* updater = model_updater();
   if (updater)
     updater->SetItemNameAndShortName(id(), name, short_name);
+}
+
+void ChromeAppListItem::SetAppStatus(ash::AppStatus app_status) {
+  metadata_->app_status = app_status;
+  AppListModelUpdater* updater = model_updater();
+  if (updater)
+    updater->SetAppStatus(id(), app_status);
 }
 
 void ChromeAppListItem::SetFolderId(const std::string& folder_id) {

@@ -5,8 +5,8 @@
 (async function() {
   TestRunner.addResult(
       `Tests that style property disablement is propagated into the stylesheet UISourceCode working copy.\n`);
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.loadHTML(`
       <div id="inspected">
@@ -44,9 +44,9 @@
       toggleProperty(false, next);
     },
 
-    function dumpDisabledText(next) {
+    async function dumpDisabledText(next) {
       SourcesTestRunner.dumpSourceFrameContents(cssSourceFrame);
-      ElementsTestRunner.dumpSelectedElementStyles(true);
+      await ElementsTestRunner.dumpSelectedElementStyles(true);
       next();
     },
 
@@ -54,9 +54,9 @@
       toggleProperty(true, next);
     },
 
-    function dumpEnabledText(next) {
+    async function dumpEnabledText(next) {
       SourcesTestRunner.dumpSourceFrameContents(cssSourceFrame);
-      ElementsTestRunner.dumpSelectedElementStyles(true);
+      await ElementsTestRunner.dumpSelectedElementStyles(true);
       next();
     }
   ]);

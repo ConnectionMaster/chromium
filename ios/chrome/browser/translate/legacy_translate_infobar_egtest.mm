@@ -13,12 +13,10 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#include "base/test/scoped_feature_list.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/translate/core/browser/translate_download_manager.h"
 #include "components/translate/core/browser/translate_manager.h"
 #include "components/translate/core/browser/translate_pref_names.h"
-#include "components/translate/core/browser/translate_prefs.h"
 #include "components/translate/core/common/translate_constants.h"
 #include "components/translate/core/common/translate_switches.h"
 #include "components/translate/ios/browser/ios_translate_driver.h"
@@ -27,9 +25,6 @@
 #include "ios/chrome/browser/translate/chrome_ios_translate_client.h"
 #include "ios/chrome/browser/ui/translate/language_selection_view_controller.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
-#include "ios/chrome/test/app/navigation_test_util.h"
-#import "ios/chrome/test/app/tab_test_util.h"
-#import "ios/chrome/test/app/web_view_interaction_test_util.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
@@ -215,7 +210,6 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 using chrome_test_util::ButtonWithAccessibilityLabel;
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::CloseButton;
-using chrome_test_util::TapWebViewElementWithId;
 using translate::LanguageDetectionController;
 
 #pragma mark - MockTranslateScriptManager
@@ -266,7 +260,7 @@ using translate::LanguageDetectionController;
       base::UTF8ToUTF16("__gCrWeb.message.invokeOnHost({"
                         "  'command': 'translate.status',"
                         "  'errorCode': 0,"
-                        "  'originalPageLanguage': 'fr',"
+                        "  'pageSourceLanguage': 'fr',"
                         "  'translationTime': 0});"));
 }
 
@@ -283,7 +277,7 @@ using translate::LanguageDetectionController;
 
 + (void)setUp {
   [super setUp];
-  if (base::FeatureList::IsEnabled(translate::kCompactTranslateInfobarIOS)) {
+  if ([ChromeEarlGrey isCompactTranslateInfobarIOSEnabled]) {
     // translate::kCompactTranslateInfobarIOS feature is enabled. You need
     // to pass --disable-features=CompactTranslateInfobarIOS command line
     // argument in order to run this test.
@@ -478,11 +472,11 @@ using translate::LanguageDetectionController;
       performAction:grey_tap()];
 
   // Check that the translation happened.
-  [ChromeEarlGrey waitForWebViewContainingText:"Translated"];
+  [ChromeEarlGrey waitForWebStateContainingText:"Translated"];
 
   // Click on the link.
-  [ChromeEarlGrey tapWebViewElementWithID:@"link"];
-  [ChromeEarlGrey waitForWebViewNotContainingText:"link"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"link"];
+  [ChromeEarlGrey waitForWebStateNotContainingText:"link"];
 
   GURL frenchPagePathURL = web::test::HttpServer::MakeUrl(
       base::StringPrintf("http://%s", kFrenchPagePath));
@@ -491,7 +485,7 @@ using translate::LanguageDetectionController;
       assertWithMatcher:grey_notNil()];
 
   // Check that the auto-translation happened.
-  [ChromeEarlGrey waitForWebViewContainingText:"Translated"];
+  [ChromeEarlGrey waitForWebStateContainingText:"Translated"];
 }
 
 #pragma mark - Utility methods
@@ -507,7 +501,7 @@ using translate::LanguageDetectionController;
 
   // The infobar is presented with an animation. Wait for the "Done" button
   // to become visibile before considering the animation as complete.
-  [ChromeEarlGrey waitForElementWithMatcherSufficientlyVisible:
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
                       ButtonWithAccessibilityLabelId(IDS_DONE)];
 
   // Assert that the infobar is visible.

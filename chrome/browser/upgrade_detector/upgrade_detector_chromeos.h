@@ -5,15 +5,16 @@
 #ifndef CHROME_BROWSER_UPGRADE_DETECTOR_UPGRADE_DETECTOR_CHROMEOS_H_
 #define CHROME_BROWSER_UPGRADE_DETECTOR_UPGRADE_DETECTOR_CHROMEOS_H_
 
-#include <string>
-
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/upgrade_detector/build_state_observer.h"
+#include "chrome/browser/upgrade_detector/installed_version_updater_chromeos.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chromeos/dbus/update_engine_client.h"
 
+class PrefRegistrySimple;
 namespace base {
 class Clock;
 template <typename T>
@@ -22,23 +23,26 @@ class TickClock;
 }  // namespace base
 
 class UpgradeDetectorChromeos : public UpgradeDetector,
+                                public BuildStateObserver,
                                 public chromeos::UpdateEngineClient::Observer {
  public:
   ~UpgradeDetectorChromeos() override;
 
+  // Register ChromeOS specific Prefs.
+  static void RegisterPrefs(PrefRegistrySimple* registry);
+
   static UpgradeDetectorChromeos* GetInstance();
 
-  // Initializes the object. Starts observing changes from the update
-  // engine.
-  void Init();
-
-  // Shuts down the object. Stops observing observe changes from the
-  // update engine.
-  void Shutdown();
-
   // UpgradeDetector:
+  void Init() override;
+  void Shutdown() override;
   base::TimeDelta GetHighAnnoyanceLevelDelta() override;
   base::Time GetHighAnnoyanceDeadline() override;
+  void OverrideHighAnnoyanceDeadline(base::Time deadline) override;
+  void ResetOverriddenDeadline() override;
+
+  // BuildStateObserver:
+  void OnUpdate(const BuildState* build_state) override;
 
  protected:
   UpgradeDetectorChromeos(const base::Clock* clock,
@@ -47,15 +51,22 @@ class UpgradeDetectorChromeos : public UpgradeDetector,
  private:
   friend class base::NoDestructor<UpgradeDetectorChromeos>;
 
-  // Returns the threshold to reach high annoyance level.
-  static base::TimeDelta DetermineHighThreshold();
+  // Returns the period between first notification and Recommended / Required
+  // deadline specified via the RelaunchHeadsUpPeriod policy setting, or a
+  // zero delta if unset or out of range.
+  static base::TimeDelta GetRelaunchHeadsUpPeriod();
+
+  // Calculates |elevated_deadline_| and |high_deadline_| using either
+  // |high_deadline_override_| if it is not null or the threshold values
+  // computed based on the RelaunchNotificationPeriod, RelaunchHeadsUpPeriod and
+  // RelaunchWindow policy settings.
+  void CalculateDeadlines();
 
   // UpgradeDetector:
-  void OnRelaunchNotificationPeriodPrefChanged() override;
+  void OnMonitoredPrefsChanged() override;
 
   // chromeos::UpdateEngineClient::Observer implementation.
-  void UpdateStatusChanged(
-      const chromeos::UpdateEngineClient::Status& status) override;
+  void UpdateStatusChanged(const update_engine::StatusResult& status) override;
   void OnUpdateOverCellularOneTimePermissionGranted() override;
 
   // The function that sends out a notification (after a certain time has
@@ -63,18 +74,32 @@ class UpgradeDetectorChromeos : public UpgradeDetector,
   // user that a new version is available.
   void NotifyOnUpgrade();
 
-  void OnChannelsReceived(std::string current_channel,
-                          std::string target_channel);
+  absl::optional<InstalledVersionUpdater> installed_version_updater_;
 
-  // The delta from upgrade detection until high annoyance level is reached.
-  base::TimeDelta high_threshold_;
+  // The time when elevated annoyance deadline is reached.
+  base::Time elevated_deadline_;
+
+  // The time when high annoyance deadline is reached.
+  base::Time high_deadline_;
+
+  // The overridden high annoyance deadline which takes priority over
+  // |high_deadline_| for showing relaunch notifications.
+  base::Time high_deadline_override_;
+
+  // Observes changes to the browser.relaunch_heads_up_period Local State
+  // preference.
+  PrefChangeRegistrar pref_change_registrar_;
 
   // A timer used to move through the various upgrade notification stages and
   // call UpgradeDetector::NotifyUpgrade.
   base::OneShotTimer upgrade_notification_timer_;
   bool initialized_;
 
-  base::WeakPtrFactory<UpgradeDetectorChromeos> weak_factory_;
+  // Indicates whether the flag status has been sent to update engine.
+  bool toggled_update_flag_;
+
+  // Indicates whether there is an update in progress.
+  bool update_in_progress_;
 
   DISALLOW_COPY_AND_ASSIGN(UpgradeDetectorChromeos);
 };

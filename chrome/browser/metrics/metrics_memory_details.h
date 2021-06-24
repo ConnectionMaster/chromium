@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_METRICS_METRICS_MEMORY_DETAILS_H_
 #define CHROME_BROWSER_METRICS_METRICS_MEMORY_DETAILS_H_
 
-#include <map>
-
 #include "base/callback.h"
 #include "base/macros.h"
 #include "build/build_config.h"
@@ -17,7 +15,7 @@
 // Will run the provided callback when finished.
 class MetricsMemoryDetails : public MemoryDetails {
  public:
-  explicit MetricsMemoryDetails(const base::Closure& callback);
+  explicit MetricsMemoryDetails(base::OnceClosure callback);
 
  protected:
   ~MetricsMemoryDetails() override;
@@ -29,10 +27,9 @@ class MetricsMemoryDetails : public MemoryDetails {
   // Updates the global histograms for tracking memory usage.
   void UpdateHistograms();
 
-  void UpdateSiteIsolationMetrics(int all_renderer_count,
-                                  int non_renderer_count);
+  void UpdateSiteIsolationMetrics();
 
-  base::Closure callback_;
+  base::OnceClosure callback_;
 
   DISALLOW_COPY_AND_ASSIGN(MetricsMemoryDetails);
 };

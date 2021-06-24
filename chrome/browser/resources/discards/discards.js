@@ -2,21 +2,33 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.define('discards', function() {
-  'use strict';
+import {DetailsProvider, DetailsProviderRemote} from './chrome/browser/ui/webui/discards/discards.mojom-webui.js';
+import {SiteDataProvider, SiteDataProviderRemote} from './chrome/browser/ui/webui/discards/site_data.mojom-webui.js';
 
-  // The following variables are initialized by 'initialize'.
-  // Points to the Mojo WebUI handler.
-  let uiHandler;
+// The following variables are initialized by 'initialize'.
+// Points to the DiscardsDetailsProviderRemote.
+let discardsDetailsProvider;
+
+/**
+ * @return {!DetailsProviderRemote} Provides discards details.
+ */
+export function getOrCreateDetailsProvider() {
+  if (!discardsDetailsProvider) {
+    discardsDetailsProvider = DetailsProvider.getRemote();
+  }
+  return discardsDetailsProvider;
+}
+
+  let siteDataProvider;
 
   /**
-   * @return {!mojom.DiscardsDetailsProviderProxy} The UI handler.
+   * @return {!SiteDataProviderRemote} Provides site data info.
    */
-  function getOrCreateUiHandler() {
-    if (!uiHandler) {
-      uiHandler = mojom.DiscardsDetailsProvider.getProxy();
+  export function getOrCreateSiteDataProvider() {
+    if (!siteDataProvider) {
+      siteDataProvider = SiteDataProvider.getRemote();
     }
-    return uiHandler;
+    return siteDataProvider;
   }
 
   /**
@@ -24,10 +36,10 @@ cr.define('discards', function() {
    * 's' is sufficient to make a string plural.
    * @param {string} s The string to be made plural if necessary.
    * @param {number} n The count of the number of ojects.
-   * @return {string} The plural version of |s| if n != 1, otherwise |s|.
+   * @return {string} The plural version of |s| if n !== 1, otherwise |s|.
    */
-  function maybeMakePlural(s, n) {
-    return n == 1 ? s : s + 's';
+  export function maybeMakePlural(s, n) {
+    return n === 1 ? s : s + 's';
   }
 
   /**
@@ -35,7 +47,7 @@ cr.define('discards', function() {
    * @param {number} seconds The interval to render.
    * @return {string} An English string representing the interval.
    */
-  function secondsToString(seconds) {
+  export function secondsToString(seconds) {
     // These constants aren't perfect, but close enough.
     const SECONDS_PER_MINUTE = 60;
     const MINUTES_PER_HOUR = 60;
@@ -98,7 +110,7 @@ cr.define('discards', function() {
    * @param {number} secondsAgo The duration to render.
    * @return {string} An English string representing the duration.
    */
-  function durationToString(secondsAgo) {
+  export function durationToString(secondsAgo) {
     const ret = secondsToString(secondsAgo);
 
     if (ret.endsWith(' seconds') || ret.endsWith(' second')) {
@@ -113,17 +125,6 @@ cr.define('discards', function() {
    * @param {boolean} bool A boolean value.
    * @return {string} A string representing the bool.
    */
-  function boolToString(bool) {
+  export function boolToString(bool) {
     return bool ? '✔' : '✘️';
   }
-
-  // These functions are exposed on the 'discards' object created by
-  // cr.define. This allows unittesting of these functions.
-  return {
-    boolToString: boolToString,
-    durationToString: durationToString,
-    getOrCreateUiHandler: getOrCreateUiHandler,
-    maybeMakePlural: maybeMakePlural,
-    secondsToString: secondsToString
-  };
-});

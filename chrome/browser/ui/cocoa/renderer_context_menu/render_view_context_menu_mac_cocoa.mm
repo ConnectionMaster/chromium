@@ -11,16 +11,16 @@
 #import "base/mac/scoped_objc_class_swizzler.h"
 #import "base/mac/scoped_sending_event.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop_current.h"
 #import "base/message_loop/message_pump_mac.h"
 #include "base/no_destructor.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/task/current_thread.h"
 #import "chrome/browser/mac/nsprocessinfo_additions.h"
 #import "ui/base/cocoa/menu_controller.h"
 
 namespace {
 
-IMP g_original_populatemenu_implementation = nullptr;
+base::mac::ScopedObjCClassSwizzler* g_populatemenu_swizzler = nullptr;
 
 // |g_filtered_entries_array| is only set during testing (see
 // +[ChromeSwizzleServicesMenuUpdater storeFilteredEntriesForTestingInArray:]).
@@ -71,13 +71,26 @@ NSMenuItem* GetMenuItemByID(ui::MenuModel* model,
 - (void)populateMenu:(NSMenu*)menu
     withServiceEntries:(NSArray*)entries
             forDisplay:(BOOL)display {
-  // Create a new service entry array that does not include the redundant
-  // Services vended by Safari.
   NSMutableArray* remainingEntries = [NSMutableArray array];
   [g_filtered_entries_array removeAllObjects];
 
+  // Remove some services.
+  //   - Remove the ones from Safari, as they are redundant to the ones provided
+  //     by Chromium, and confusing to the user due to them switching apps
+  //     upon their selection.
+  //   - Remove the "Open URL" one provided by SystemUIServer, as it is
+  //     redundant to the one provided by Chromium and has other serious issues.
+  //     (https://crbug.com/960209)
+
   for (_NSServiceEntry* nextEntry in entries) {
-    if (![[nextEntry bundleIdentifier] isEqualToString:@"com.apple.Safari"]) {
+    NSString* bundleIdentifier = [nextEntry bundleIdentifier];
+    NSString* message = [nextEntry valueForKey:@"message"];
+    bool shouldRemove =
+        ([bundleIdentifier isEqualToString:@"com.apple.Safari"]) ||
+        ([bundleIdentifier isEqualToString:@"com.apple.systemuiserver"] &&
+         [message isEqualToString:@"openURL"]);
+
+    if (!shouldRemove) {
       [remainingEntries addObject:nextEntry];
     } else {
       [g_filtered_entries_array addObject:nextEntry];
@@ -85,8 +98,8 @@ NSMenuItem* GetMenuItemByID(ui::MenuModel* model,
   }
 
   // Pass the filtered array along to the _NSServicesMenuUpdater.
-  g_original_populatemenu_implementation(self, _cmd, menu, remainingEntries,
-                                         display);
+  g_populatemenu_swizzler->InvokeOriginal<void, NSMenu*, NSArray*, BOOL>(
+      self, _cmd, menu, remainingEntries, display);
 }
 
 + (void)storeFilteredEntriesForTestingInArray:(NSMutableArray*)array {
@@ -132,8 +145,7 @@ NSMenuItem* GetMenuItemByID(ui::MenuModel* model,
     Class swizzleClass = [ChromeSwizzleServicesMenuUpdater class];
     static base::NoDestructor<base::mac::ScopedObjCClassSwizzler>
         servicesMenuFilter(targetClass, swizzleClass, targetSelector);
-    g_original_populatemenu_implementation =
-        servicesMenuFilter->GetOriginalImplementation();
+    g_populatemenu_swizzler = servicesMenuFilter.get();
   });
 }
 
@@ -160,7 +172,7 @@ class ToolkitDelegateMacCocoa : public RenderViewContextMenu::ToolkitDelegate {
   void UpdateMenuItem(int command_id,
                       bool enabled,
                       bool hidden,
-                      const base::string16& title) override {
+                      const std::u16string& title) override {
     context_menu_->UpdateToolkitMenuItem(command_id, enabled, hidden, title);
   }
 
@@ -180,10 +192,14 @@ RenderViewContextMenuMacCocoa::RenderViewContextMenuMacCocoa(
   set_toolkit_delegate(std::move(delegate));
 }
 
-RenderViewContextMenuMacCocoa::~RenderViewContextMenuMacCocoa() {}
+RenderViewContextMenuMacCocoa::~RenderViewContextMenuMacCocoa() {
+  if (menu_controller_)
+    [menu_controller_ cancel];
+}
 
 void RenderViewContextMenuMacCocoa::Show() {
   menu_controller_.reset([[MenuControllerCocoa alloc] initWithModel:&menu_model_
+                                                           delegate:nil
                                              useWithPopUpButtonCell:NO]);
 
   gfx::Point params_position(params_.x, params_.y);
@@ -209,7 +225,7 @@ void RenderViewContextMenuMacCocoa::Show() {
 
   {
     // Make sure events can be pumped while the menu is up.
-    base::MessageLoopCurrent::ScopedNestableTaskAllower allow;
+    base::CurrentThread::ScopedNestableTaskAllower allow;
 
     // Ensure the UI can update while the menu is fading out.
     base::ScopedPumpMessagesInPrivateModes pump_private;
@@ -236,7 +252,7 @@ void RenderViewContextMenuMacCocoa::UpdateToolkitMenuItem(
     int command_id,
     bool enabled,
     bool hidden,
-    const base::string16& title) {
+    const std::u16string& title) {
   NSMenuItem* item =
       GetMenuItemByID(&menu_model_, [menu_controller_ menu], command_id);
   if (!item)

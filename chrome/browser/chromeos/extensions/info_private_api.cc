@@ -9,24 +9,25 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/devicetype.h"
 #include "ash/public/cpp/ash_pref_names.h"
 #include "ash/public/cpp/stylus_utils.h"
+#include "ash/public/cpp/tablet_mode.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/values.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
+#include "chrome/browser/ash/arc/arc_util.h"
+#include "chrome/browser/ash/login/startup_utils.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/settings/cros_settings.h"
+#include "chrome/browser/ash/system/timezone_util.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/arc/arc_util.h"
-#include "chrome/browser/chromeos/login/startup_utils.h"
-#include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/system/timezone_util.h"
+#include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/chromeos/policy/core/browser_policy_connector_chromeos.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/constants/chromeos_switches.h"
-#include "chromeos/constants/devicetype.h"
 #include "chromeos/network/device_state.h"
 #include "chromeos/network/network_handler.h"
 #include "chromeos/network/network_state_handler.h"
@@ -51,6 +52,9 @@ const char kPropertyHWID[] = "hwid";
 
 // Key which corresponds to the customization ID setting.
 const char kPropertyCustomizationID[] = "customizationId";
+
+// Key which corresponds to the oem_device_requisition setting.
+const char kPropertyDeviceRequisition[] = "deviceRequisition";
 
 // Key which corresponds to the home provider property.
 const char kPropertyHomeProvider[] = "homeProvider";
@@ -106,14 +110,17 @@ const char kPropertyFocusHighlightEnabled[] = "a11yFocusHighlightEnabled";
 // Key which corresponds to the select-to-speak A11Y property in JS.
 const char kPropertySelectToSpeakEnabled[] = "a11ySelectToSpeakEnabled";
 
-// Key which corresponds to the switch access A11Y property in JS.
+// Key which corresponds to the Switch Access A11Y property in JS.
 const char kPropertySwitchAccessEnabled[] = "a11ySwitchAccessEnabled";
+
+// Key which corresponds to the cursor color A11Y property in JS.
+const char kPropertyCursorColorEnabled[] = "a11yCursorColorEnabled";
+
+// Key which corresponds to the docked magnifier property in JS.
+const char kPropertyDockedMagnifierEnabled[] = "a11yDockedMagnifierEnabled";
 
 // Key which corresponds to the send-function-keys property in JS.
 const char kPropertySendFunctionsKeys[] = "sendFunctionKeys";
-
-// Key which corresponds to the camera-media-consolidated property in JS.
-const char kPropertyCameraMediaConsolidated[] = "cameraMediaConsolidated";
 
 // Property not found error message.
 const char kPropertyNotFound[] = "Property '*' does not exist.";
@@ -191,10 +198,6 @@ const char kStylusStatusSeen[] = "seen";
 // Key which corresponds to the assistantStatus property in JS.
 const char kPropertyAssistantStatus[] = "assistantStatus";
 
-// Value to which assistantStatus property is set when the device does not
-// support Assistant.
-const char kAssistantStatusUnsupported[] = "unsupported";
-
 // Value to which assistantStatus property is set when the device supports
 // Assistant.
 const char kAssistantStatusSupported[] = "supported";
@@ -224,8 +227,9 @@ const struct {
      ash::prefs::kAccessibilitySelectToSpeakEnabled},
     {kPropertySwitchAccessEnabled,
      ash::prefs::kAccessibilitySwitchAccessEnabled},
-    {kPropertySendFunctionsKeys, prefs::kLanguageSendFunctionKeys},
-    {kPropertyCameraMediaConsolidated, prefs::kCameraMediaConsolidated}};
+    {kPropertyCursorColorEnabled, ash::prefs::kAccessibilityCursorColorEnabled},
+    {kPropertyDockedMagnifierEnabled, ash::prefs::kDockedMagnifierEnabled},
+    {kPropertySendFunctionsKeys, prefs::kLanguageSendFunctionKeys}};
 
 const char* GetBoolPrefNameForApiProperty(const char* api_name) {
   for (size_t i = 0;
@@ -244,7 +248,7 @@ bool IsEnterpriseKiosk() {
 
   policy::BrowserPolicyConnectorChromeOS* connector =
       g_browser_process->platform_part()->browser_policy_connector_chromeos();
-  return connector->IsEnterpriseManaged();
+  return connector->IsDeviceEnterpriseManaged();
 }
 
 std::string GetClientId() {
@@ -262,15 +266,19 @@ ChromeosInfoPrivateGetFunction::~ChromeosInfoPrivateGetFunction() {
 }
 
 ExtensionFunction::ResponseAction ChromeosInfoPrivateGetFunction::Run() {
-  base::ListValue* list = nullptr;
-  EXTENSION_FUNCTION_VALIDATE(args_->GetList(0, &list));
-  auto result = std::make_unique<base::DictionaryValue>();
-  for (size_t i = 0; i < list->GetSize(); ++i) {
-    std::string property_name;
-    EXTENSION_FUNCTION_VALIDATE(list->GetString(i, &property_name));
+  base::Value::ConstListView args_list = args_->GetList();
+  EXTENSION_FUNCTION_VALIDATE(!args_list.empty() && args_list[0].is_list());
+  base::Value::ConstListView list = args_list[0].GetList();
+
+  base::Value result(base::Value::Type::DICTIONARY);
+  for (size_t i = 0; i < list.size(); ++i) {
+    EXTENSION_FUNCTION_VALIDATE(list[i].is_string());
+    std::string property_name = list[i].GetString();
     std::unique_ptr<base::Value> value = GetValue(property_name);
-    if (value)
-      result->Set(property_name, std::move(value));
+    if (value) {
+      result.SetPath(property_name,
+                     base::Value::FromUniquePtrValue(std::move(value)));
+    }
   }
   return RespondNow(OneArgument(std::move(result)));
 }
@@ -292,6 +300,15 @@ std::unique_ptr<base::Value> ChromeosInfoPrivateGetFunction::GetValue(
     provider->GetMachineStatistic(chromeos::system::kCustomizationIdKey,
                                   &customization_id);
     return std::make_unique<base::Value>(customization_id);
+  }
+
+  if (property_name == kPropertyDeviceRequisition) {
+    std::string device_requisition;
+    chromeos::system::StatisticsProvider* provider =
+        chromeos::system::StatisticsProvider::GetInstance();
+    provider->GetMachineStatistic(chromeos::system::kOemDeviceRequisitionKey,
+                                  &device_requisition);
+    return std::make_unique<base::Value>(device_requisition);
   }
 
   if (property_name == kPropertyHomeProvider) {
@@ -334,7 +351,8 @@ std::unique_ptr<base::Value> ChromeosInfoPrivateGetFunction::GetValue(
   }
 
   if (property_name == kPropertyPlayStoreStatus) {
-    if (arc::IsArcAllowedForProfile(Profile::FromBrowserContext(context_)))
+    if (arc::IsArcAllowedForProfile(
+            Profile::FromBrowserContext(browser_context())))
       return std::make_unique<base::Value>(kPlayStoreStatusEnabled);
     if (arc::IsArcAvailable())
       return std::make_unique<base::Value>(kPlayStoreStatusAvailable);
@@ -344,7 +362,7 @@ std::unique_ptr<base::Value> ChromeosInfoPrivateGetFunction::GetValue(
   if (property_name == kPropertyManagedDeviceStatus) {
     policy::BrowserPolicyConnectorChromeOS* connector =
         g_browser_process->platform_part()->browser_policy_connector_chromeos();
-    if (connector->IsEnterpriseManaged()) {
+    if (connector->IsDeviceEnterpriseManaged()) {
       return std::make_unique<base::Value>(kManagedDeviceStatusManaged);
     }
     return std::make_unique<base::Value>(kManagedDeviceStatusNotManaged);
@@ -377,9 +395,7 @@ std::unique_ptr<base::Value> ChromeosInfoPrivateGetFunction::GetValue(
   }
 
   if (property_name == kPropertyAssistantStatus) {
-    return std::make_unique<base::Value>(
-        chromeos::switches::IsAssistantEnabled() ? kAssistantStatusSupported
-                                                 : kAssistantStatusUnsupported);
+    return std::make_unique<base::Value>(kAssistantStatusSupported);
   }
 
   if (property_name == kPropertyClientId) {
@@ -387,28 +403,28 @@ std::unique_ptr<base::Value> ChromeosInfoPrivateGetFunction::GetValue(
   }
 
   if (property_name == kPropertyTimezone) {
-    if (chromeos::system::PerUserTimezoneEnabled()) {
+    if (ash::system::PerUserTimezoneEnabled()) {
       const PrefService::Preference* timezone =
-          Profile::FromBrowserContext(context_)->GetPrefs()->FindPreference(
-              prefs::kUserTimezone);
+          Profile::FromBrowserContext(browser_context())
+              ->GetPrefs()
+              ->FindPreference(prefs::kUserTimezone);
       return std::make_unique<base::Value>(timezone->GetValue()->Clone());
     }
     // TODO(crbug.com/697817): Convert CrosSettings::Get to take a unique_ptr.
-    return base::WrapUnique<base::Value>(
-        chromeos::CrosSettings::Get()
-            ->GetPref(chromeos::kSystemTimezone)
-            ->DeepCopy());
+    return base::Value::ToUniquePtrValue(
+        ash::CrosSettings::Get()->GetPref(chromeos::kSystemTimezone)->Clone());
   }
 
   if (property_name == kPropertySupportedTimezones) {
-    return chromeos::system::GetTimezoneList();
+    return ash::system::GetTimezoneList();
   }
 
   const char* pref_name = GetBoolPrefNameForApiProperty(property_name.c_str());
   if (pref_name) {
     return std::make_unique<base::Value>(
-        Profile::FromBrowserContext(context_)->GetPrefs()->GetBoolean(
-            pref_name));
+        Profile::FromBrowserContext(browser_context())
+            ->GetPrefs()
+            ->GetBoolean(pref_name));
   }
 
   DLOG(ERROR) << "Unknown property request: " << property_name;
@@ -427,15 +443,16 @@ ExtensionFunction::ResponseAction ChromeosInfoPrivateSetFunction::Run() {
   if (param_name == kPropertyTimezone) {
     std::string param_value;
     EXTENSION_FUNCTION_VALIDATE(args_->GetString(1, &param_value));
-    if (chromeos::system::PerUserTimezoneEnabled()) {
-      Profile::FromBrowserContext(context_)->GetPrefs()->SetString(
-          prefs::kUserTimezone, param_value);
+    if (ash::system::PerUserTimezoneEnabled()) {
+      Profile::FromBrowserContext(browser_context())
+          ->GetPrefs()
+          ->SetString(prefs::kUserTimezone, param_value);
     } else {
       const user_manager::User* user =
           chromeos::ProfileHelper::Get()->GetUserByProfile(
-              Profile::FromBrowserContext(context_));
+              Profile::FromBrowserContext(browser_context()));
       if (user)
-        chromeos::system::SetSystemTimezone(user, param_value);
+        ash::system::SetSystemTimezone(user, param_value);
     }
 
   } else {
@@ -443,15 +460,27 @@ ExtensionFunction::ResponseAction ChromeosInfoPrivateSetFunction::Run() {
     if (pref_name) {
       bool param_value;
       EXTENSION_FUNCTION_VALIDATE(args_->GetBoolean(1, &param_value));
-      Profile::FromBrowserContext(context_)->GetPrefs()->SetBoolean(
-          pref_name,
-          param_value);
+      Profile::FromBrowserContext(browser_context())
+          ->GetPrefs()
+          ->SetBoolean(pref_name, param_value);
     } else {
       return RespondNow(Error(kPropertyNotFound, param_name));
     }
   }
 
   return RespondNow(NoArguments());
+}
+
+ChromeosInfoPrivateIsTabletModeEnabledFunction::
+    ChromeosInfoPrivateIsTabletModeEnabledFunction() {}
+
+ChromeosInfoPrivateIsTabletModeEnabledFunction::
+    ~ChromeosInfoPrivateIsTabletModeEnabledFunction() {}
+
+ExtensionFunction::ResponseAction
+ChromeosInfoPrivateIsTabletModeEnabledFunction::Run() {
+  return RespondNow(
+      OneArgument(base::Value(ash::TabletMode::Get()->InTabletMode())));
 }
 
 }  // namespace extensions

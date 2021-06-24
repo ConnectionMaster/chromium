@@ -3,23 +3,24 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
-#include "chrome/browser/extensions/extension_action.h"
 #include "chrome/browser/extensions/extension_action_icon_factory.h"
-#include "chrome/browser/extensions/extension_action_manager.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_action_test_util.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/result_catcher.h"
@@ -30,17 +31,37 @@ using content::WebContents;
 namespace extensions {
 namespace {
 
-class PageActionApiTest : public ExtensionApiTest {
+using ContextType = ExtensionBrowserTest::ContextType;
+
+class PageActionApiTest : public ExtensionApiTest,
+                          public testing::WithParamInterface<ContextType> {
  protected:
   ExtensionAction* GetPageAction(const Extension& extension) {
-    return ExtensionActionManager::Get(browser()->profile())->
-        GetPageAction(extension);
+    ExtensionAction* extension_action =
+        ExtensionActionManager::Get(browser()->profile())
+            ->GetExtensionAction(extension);
+    return extension_action->action_type() == ActionInfo::TYPE_PAGE
+               ? extension_action
+               : nullptr;
+  }
+
+  bool RunTest(const char* name) {
+    return RunExtensionTest(
+        name, {},
+        {.load_as_service_worker = GetParam() == ContextType::kServiceWorker});
   }
 };
 
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, Basic) {
+INSTANTIATE_TEST_SUITE_P(PersistentBackground,
+                         PageActionApiTest,
+                         ::testing::Values(ContextType::kPersistentBackground));
+INSTANTIATE_TEST_SUITE_P(ServiceWorker,
+                         PageActionApiTest,
+                         ::testing::Values(ContextType::kServiceWorker));
+
+IN_PROC_BROWSER_TEST_P(PageActionApiTest, Basic) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  ASSERT_TRUE(RunExtensionTest("page_action/basics")) << message_;
+  ASSERT_TRUE(RunTest("page_action/basics")) << message_;
   const Extension* extension = GetSingleLoadedExtension();
   ASSERT_TRUE(extension) << message_;
   {
@@ -52,8 +73,10 @@ IN_PROC_BROWSER_TEST_F(PageActionApiTest, Basic) {
   }
 
   // Test that we received the changes.
-  int tab_id = SessionTabHelper::FromWebContents(
-      browser()->tab_strip_model()->GetActiveWebContents())->session_id().id();
+  int tab_id = sessions::SessionTabHelper::FromWebContents(
+                   browser()->tab_strip_model()->GetActiveWebContents())
+                   ->session_id()
+                   .id();
   ExtensionAction* action = GetPageAction(*extension);
   ASSERT_TRUE(action);
   EXPECT_EQ("Modified", action->GetTitle(tab_id));
@@ -80,15 +103,17 @@ IN_PROC_BROWSER_TEST_F(PageActionApiTest, Basic) {
   ExtensionActionIconFactory icon_factory(profile(), extension, action, NULL);
 
   // Test that we received the changes.
-  tab_id = SessionTabHelper::FromWebContents(
-      browser()->tab_strip_model()->GetActiveWebContents())->session_id().id();
+  tab_id = sessions::SessionTabHelper::FromWebContents(
+               browser()->tab_strip_model()->GetActiveWebContents())
+               ->session_id()
+               .id();
   EXPECT_FALSE(icon_factory.GetIcon(tab_id).IsEmpty());
 }
 
 // Test that calling chrome.pageAction.setPopup() can enable a popup.
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, AddPopup) {
+IN_PROC_BROWSER_TEST_P(PageActionApiTest, AddPopup) {
   // Load the extension, which has no default popup.
-  ASSERT_TRUE(RunExtensionTest("page_action/add_popup")) << message_;
+  ASSERT_TRUE(RunTest("page_action/add_popup")) << message_;
   const Extension* extension = GetSingleLoadedExtension();
   ASSERT_TRUE(extension) << message_;
 
@@ -133,9 +158,9 @@ IN_PROC_BROWSER_TEST_F(PageActionApiTest, AddPopup) {
 }
 
 // Test that calling chrome.pageAction.setPopup() can remove a popup.
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, RemovePopup) {
+IN_PROC_BROWSER_TEST_P(PageActionApiTest, RemovePopup) {
   // Load the extension, which has a page action with a default popup.
-  ASSERT_TRUE(RunExtensionTest("page_action/remove_popup")) << message_;
+  ASSERT_TRUE(RunTest("page_action/remove_popup")) << message_;
   const Extension* extension = GetSingleLoadedExtension();
   ASSERT_TRUE(extension) << message_;
 
@@ -162,38 +187,26 @@ IN_PROC_BROWSER_TEST_F(PageActionApiTest, RemovePopup) {
       << "Page action popup should have been removed.";
 }
 
-// Tests popups in page actions.
-// Flaky on the trybots. See http://crbug.com/96725.
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, DISABLED_ShowPageActionPopup) {
-  ASSERT_TRUE(RunExtensionTest("page_action/popup")) << message_;
-  const Extension* extension = GetSingleLoadedExtension();
-  ASSERT_TRUE(extension) << message_;
-
-  ASSERT_TRUE(WaitForPageActionVisibilityChangeTo(1));
-
-  {
-    ResultCatcher catcher;
-    ExtensionActionAPI::Get(browser()->profile())->ShowExtensionActionPopup(
-        extension, browser(), true);
-    ASSERT_TRUE(catcher.GetNextResult());
-  }
-}
-
 // Test http://crbug.com/57333: that two page action extensions using the same
 // icon for the page action icon and the extension icon do not crash.
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, TestCrash57333) {
+IN_PROC_BROWSER_TEST_P(PageActionApiTest, TestCrash57333) {
+  const bool load_as_service_worker = GetParam() == ContextType::kServiceWorker;
   // Load extension A.
-  ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("page_action")
-                                          .AppendASCII("crash_57333")
-                                          .AppendASCII("Extension1")));
+  ASSERT_TRUE(
+      LoadExtension(test_data_dir_.AppendASCII("page_action")
+                        .AppendASCII("crash_57333")
+                        .AppendASCII("Extension1"),
+                    {.load_as_service_worker = load_as_service_worker}));
   // Load extension B.
-  ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("page_action")
-                                          .AppendASCII("crash_57333")
-                                          .AppendASCII("Extension2")));
+  ASSERT_TRUE(
+      LoadExtension(test_data_dir_.AppendASCII("page_action")
+                        .AppendASCII("crash_57333")
+                        .AppendASCII("Extension2"),
+                    {.load_as_service_worker = load_as_service_worker}));
 }
 
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, Getters) {
-  ASSERT_TRUE(RunExtensionTest("page_action/getters")) << message_;
+IN_PROC_BROWSER_TEST_P(PageActionApiTest, Getters) {
+  ASSERT_TRUE(RunTest("page_action/getters")) << message_;
   const Extension* extension = GetSingleLoadedExtension();
   ASSERT_TRUE(extension) << message_;
 
@@ -204,10 +217,10 @@ IN_PROC_BROWSER_TEST_F(PageActionApiTest, Getters) {
 }
 
 // Verify triggering page action.
-IN_PROC_BROWSER_TEST_F(PageActionApiTest, TestTriggerPageAction) {
+IN_PROC_BROWSER_TEST_P(PageActionApiTest, TestTriggerPageAction) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  ASSERT_TRUE(RunExtensionTest("trigger_actions/page_action")) << message_;
+  ASSERT_TRUE(RunTest("trigger_actions/page_action")) << message_;
   const Extension* extension = GetSingleLoadedExtension();
   ASSERT_TRUE(extension) << message_;
 

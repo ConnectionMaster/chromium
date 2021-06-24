@@ -40,14 +40,12 @@ void PrefetchBackgroundTaskHandlerImpl::CancelBackgroundTask() {
   PrefetchBackgroundTaskScheduler::Cancel();
 }
 
-void PrefetchBackgroundTaskHandlerImpl::EnsureTaskScheduled(
-    const std::string& gcm_token) {
+void PrefetchBackgroundTaskHandlerImpl::EnsureTaskScheduled() {
   if (prefetch_prefs::IsLimitlessPrefetchingEnabled(prefs_)) {
     PrefetchBackgroundTaskScheduler::ScheduleLimitless(
-        GetAdditionalBackoffSeconds(), gcm_token);
+        GetAdditionalBackoffSeconds());
   } else {
-    PrefetchBackgroundTaskScheduler::Schedule(GetAdditionalBackoffSeconds(),
-                                              gcm_token);
+    PrefetchBackgroundTaskScheduler::Schedule(GetAdditionalBackoffSeconds());
   }
 }
 
@@ -119,9 +117,9 @@ void PrefetchBackgroundTaskHandlerImpl::SetTickClockForTesting(
 
 void PrefetchBackgroundTaskHandlerImpl::UpdateBackoff(
     net::BackoffEntry* backoff) {
-  std::unique_ptr<base::Value> value =
+  base::Value value =
       net::BackoffEntrySerializer::SerializeToValue(*backoff, OfflineTimeNow());
-  prefs_->Set(prefetch_prefs::kBackoff, *value);
+  prefs_->Set(prefetch_prefs::kBackoff, value);
 }
 
 }  // namespace offline_pages

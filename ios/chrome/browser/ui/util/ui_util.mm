@@ -9,9 +9,7 @@
 
 #include "base/feature_list.h"
 #include "base/ios/ios_util.h"
-#include "base/logging.h"
 #include "ios/chrome/app/tests_hook.h"
-#import "ios/chrome/browser/ui/toolbar/public/features.h"
 #import "ios/chrome/browser/ui/ui_feature_flags.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #include "ui/base/device_form_factor.h"
@@ -21,27 +19,17 @@
 #error "This file requires ARC support."
 #endif
 
+namespace {
+
+// The em-width value used to differentiate small and large devices.
+// With Larger Text Off, Bold Text Off and the device orientation in portrait:
+// iPhone 5s is considered as a small device, unlike iPhone 8 or iPhone 12 mini.
+const CGFloat kSmallDeviceThreshold = 22.0;
+
+}  // namespace
+
 bool IsIPadIdiom() {
   return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
-}
-
-const CGFloat kPortraitWidth[INTERFACE_IDIOM_COUNT] = {
-    320,  // IPHONE_IDIOM
-    768   // IPAD_IDIOM
-};
-
-bool IsHighResScreen() {
-  return [[UIScreen mainScreen] scale] > 1.0;
-}
-
-bool IsPortrait() {
-  UIInterfaceOrientation orient = GetInterfaceOrientation();
-  return UIInterfaceOrientationIsPortrait(orient) ||
-         orient == UIInterfaceOrientationUnknown;
-}
-
-bool IsLandscape() {
-  return UIInterfaceOrientationIsLandscape(GetInterfaceOrientation());
 }
 
 CGFloat CurrentScreenHeight() {
@@ -59,31 +47,12 @@ bool IsIPhoneX() {
           (height == 2436 || height == 2688 || height == 1792));
 }
 
-// TODO(crbug.com/893314) : Remove this flag.
-bool IsClosingLastIncognitoTabEnabled() {
-  return base::FeatureList::IsEnabled(kClosingLastIncognitoTab);
-}
-
-bool IsRefreshLocationBarEnabled() {
-  return true;
-}
-
-CGFloat StatusBarHeight() {
-  if (base::FeatureList::IsEnabled(kBrowserContainerContainsNTP)) {
-    DCHECK(!base::ios::IsRunningOnIOS11OrLater());
-  }
-
-  // This is a temporary solution until usage of StatusBarHeight has been
-  // replaced with topLayoutGuide.
-  if (IsIPhoneX()) {
-    return IsPortrait() ? 44 : 0;
-  }
-
-  // The location bar is hidden on landscape.
-  BOOL isCompactHeight = [UIApplication sharedApplication]
-                             .keyWindow.traitCollection.verticalSizeClass ==
-                         UIUserInterfaceSizeClassCompact;
-  return isCompactHeight ? 0 : 20;
+bool IsSmallDevice() {
+  CGSize mSize = [@"m" sizeWithAttributes:@{
+    NSFontAttributeName : [UIFont preferredFontForTextStyle:UIFontTextStyleBody]
+  }];
+  CGFloat emWidth = CurrentScreenWidth() / mSize.width;
+  return emWidth < kSmallDeviceThreshold;
 }
 
 CGFloat DeviceCornerRadius() {
@@ -110,13 +79,15 @@ CGRect AlignRectOriginAndSizeToPixels(CGRect rect) {
   return rect;
 }
 
-CGRect CGRectCopyWithOrigin(CGRect rect, CGFloat x, CGFloat y) {
-  return CGRectMake(x, y, rect.size.width, rect.size.height);
-}
-
 CGRect CGRectMakeAlignedAndCenteredAt(CGFloat x, CGFloat y, CGFloat width) {
   return AlignRectOriginAndSizeToPixels(
       CGRectMake(x - width / 2.0, y - width / 2.0, width, width));
+}
+
+CGRect CGRectMakeCenteredRectInFrame(CGSize frameSize, CGSize rectSize) {
+  CGFloat rectX = AlignValueToPixel((frameSize.width - rectSize.width) / 2);
+  CGFloat rectY = AlignValueToPixel((frameSize.height - rectSize.height) / 2);
+  return CGRectMake(rectX, rectY, rectSize.width, rectSize.height);
 }
 
 bool AreCGFloatsEqual(CGFloat a, CGFloat b) {

@@ -1,6 +1,8 @@
 // Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+#include "build/chromeos_buildflags.h"
+
 #if defined(USE_AURA)
 
 #include <stddef.h>
@@ -14,9 +16,10 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/chrome_notification_types.h"
+#include "build/build_config.h"
 #include "chrome/browser/language/url_language_histogram_factory.h"
 #include "chrome/browser/translate/translate_service.h"
+#include "chrome/browser/translate/translate_test_utils.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -31,21 +34,18 @@
 #include "components/translate/core/browser/translate_ui_delegate.h"
 #include "components/translate/core/common/language_detection_details.h"
 #include "components/translate/core/common/translate_switches.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/test/browser_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "url/gurl.h"
 
+namespace translate {
+
 namespace {
 
-const base::FilePath::CharType kEnglishTestPath[] =
-    FILE_PATH_LITERAL("english_page.html");
-const base::FilePath::CharType kItalianTestPath[] =
-    FILE_PATH_LITERAL("italian_page.html");
-const base::FilePath::CharType kFrenchTestPath[] =
-    FILE_PATH_LITERAL("french_page.html");
-const base::FilePath::CharType kGermanTestPath[] =
-    FILE_PATH_LITERAL("german_page.html");
+const char kEnglishTestPath[] = "/english_page.html";
+const char kItalianTestPath[] = "/italian_page.html";
+const char kFrenchTestPath[] = "/french_page.html";
+const char kGermanTestPath[] = "/german_page.html";
 
 static const char kTestValidScript[] =
     "var google = {};"
@@ -62,7 +62,7 @@ static const char kTestValidScript[] =
     "        getDetectedLanguage : function() {"
     "          return \"\";"
     "        },"
-    "        translatePage : function(originalLang, targetLang,"
+    "        translatePage : function(sourceLang, targetLang,"
     "                                 onTranslateProgress) {"
     "          onTranslateProgress(100, true, false);"
     "        }"
@@ -72,7 +72,7 @@ static const char kTestValidScript[] =
     "})();"
     "cr.googleTranslate.onTranslateElementLoad();";
 
-using translate::test_utils::GetCurrentModel;
+using test_utils::GetCurrentModel;
 
 using LanguageInfo = language::UrlLanguageHistogram::LanguageInfo;
 
@@ -84,14 +84,14 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
 
   void SetUp() override {
     set_open_about_blank_on_browser_launch(true);
-    translate::TranslateManager::SetIgnoreMissingKeyForTesting(true);
+    TranslateManager::SetIgnoreMissingKeyForTesting(true);
     ASSERT_TRUE(embedded_test_server()->InitializeAndListen());
     InProcessBrowserTest::SetUp();
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitchASCII(
-        translate::switches::kTranslateScriptURL,
+        switches::kTranslateScriptURL,
         embedded_test_server()->GetURL("/mock_translate_script.js").spec());
   }
 
@@ -113,7 +113,7 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
     browser_ = incognito ? CreateIncognitoBrowser() : browser();
   }
 
-  void NavigateToUrl(const base::FilePath::StringPieceType path) {
+  void NavigateToUrl(const char* path) {
     // Close previous Translate bubble, if it exists. This is intended to
     // prevent a race condition in which the previous page's call to
     // TranslateBubbleView::WindowClosing doesn't occur until after the new page
@@ -122,24 +122,29 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
     // TODO(789593): investigate a more robust fix.
     TranslateBubbleView::CloseCurrentBubble();
 
-    const GURL url =
-        ui_test_utils::GetTestUrl(base::FilePath(), base::FilePath(path));
-    ui_test_utils::NavigateToURL(browser_, url);
+    ui_test_utils::NavigateToURL(browser_,
+                                 GURL(embedded_test_server()->GetURL(path)));
   }
 
-  void CheckForTranslateUI(const base::FilePath::StringPieceType path,
-                           const bool expect_translate) {
-    CHECK(browser_);
+  void CheckForTranslateUI(const char* path, const bool expect_translate) {
+    ASSERT_TRUE(browser_);
 
-    content::WindowedNotificationObserver language_detected_signal(
-        chrome::NOTIFICATION_TAB_LANGUAGE_DETERMINED,
-        base::Bind(&TranslateLanguageBrowserTest::ValidLanguageDetected,
-                   base::Unretained(this)));
+    auto waiter = CreateTranslateWaiter(
+        browser_->tab_strip_model()->GetActiveWebContents(),
+        TranslateWaiter::WaitEvent::kLanguageDetermined);
     NavigateToUrl(path);
-    language_detected_signal.Wait();
+    waiter->Wait();
+
+    // Language detection sometimes fires early with an "und" detected code.
+    while (GetLanguageState().source_language() == "und" ||
+           GetLanguageState().source_language().empty()) {
+      CreateTranslateWaiter(browser_->tab_strip_model()->GetActiveWebContents(),
+                            TranslateWaiter::WaitEvent::kLanguageDetermined)
+          ->Wait();
+    }
 
     TranslateBubbleView* const bubble = TranslateBubbleView::GetCurrentBubble();
-    CHECK_NE(expect_translate, bubble == nullptr);
+    ASSERT_NE(expect_translate, bubble == nullptr);
   }
 
   language::UrlLanguageHistogram* GetUrlLanguageHistogram() {
@@ -152,30 +157,30 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
     return UrlLanguageHistogramFactory::GetForBrowserContext(browser_context);
   }
 
-  void SetTargetLanguageByDisplayName(const base::string16& name) {
-    translate::test_utils::SelectTargetLanguageByDisplayName(browser_, name);
+  void SetTargetLanguageByDisplayName(const std::u16string& name) {
+    test_utils::SelectTargetLanguageByDisplayName(browser_, name);
   }
 
   void Translate(const bool first_translate) {
-    content::WindowedNotificationObserver page_translated_signal(
-        chrome::NOTIFICATION_PAGE_TRANSLATED,
-        content::NotificationService::AllSources());
+    auto waiter = CreateTranslateWaiter(
+        browser_->tab_strip_model()->GetActiveWebContents(),
+        TranslateWaiter::WaitEvent::kPageTranslated);
 
     EXPECT_EQ(TranslateBubbleModel::VIEW_STATE_BEFORE_TRANSLATE,
               GetCurrentModel(browser_)->GetViewState());
 
-    translate::test_utils::PressTranslate(browser_);
+    test_utils::PressTranslate(browser_);
     if (first_translate)
       SimulateURLFetch();
 
-    page_translated_signal.Wait();
+    waiter->Wait();
     EXPECT_EQ(TranslateBubbleModel::VIEW_STATE_AFTER_TRANSLATE,
               GetCurrentModel(browser_)->GetViewState());
   }
 
-  void Revert() { translate::test_utils::PressRevert(browser_); }
+  void Revert() { test_utils::PressRevert(browser_); }
 
-  translate::LanguageState& GetLanguageState() {
+  const LanguageState& GetLanguageState() {
     auto* const client = ChromeTranslateClient::FromWebContents(
         browser_->tab_strip_model()->GetActiveWebContents());
     CHECK(client);
@@ -183,7 +188,7 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
     return client->GetLanguageState();
   }
 
-  std::unique_ptr<translate::TranslatePrefs> GetTranslatePrefs() {
+  std::unique_ptr<TranslatePrefs> GetTranslatePrefs() {
     auto* const client = ChromeTranslateClient::FromWebContents(
         browser_->tab_strip_model()->GetActiveWebContents());
     CHECK(client);
@@ -193,16 +198,6 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
 
  private:
   Browser* browser_;
-
-  // Language detection sometimes fires early with an "und" detected code. This
-  // callback is used to wait until language detection succeeds.
-  bool ValidLanguageDetected(const content::NotificationSource& source,
-                             const content::NotificationDetails& details) {
-    const std::string& language =
-        content::Details<translate::LanguageDetectionDetails>(details)
-            ->adopted_language;
-    return language != "und";
-  }
 
   void SimulateURLFetch() {
     controllable_http_response_->WaitForRequest();
@@ -220,7 +215,9 @@ class TranslateLanguageBrowserTest : public InProcessBrowserTest {
   DISALLOW_COPY_AND_ASSIGN(TranslateLanguageBrowserTest);
 };
 
-IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTest, LanguageModelLogSucceed) {
+// Flaky failures & timeouts: https://crbug.com/1131622
+IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTest,
+                       DISABLED_LanguageModelLogSucceed) {
   InitInIncognitoMode(false);
 
   for (int i = 0; i < 10; ++i) {
@@ -245,7 +242,10 @@ IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTest, LanguageModelLogSucceed) {
   EXPECT_NEAR(10.0 / (11.0 + 10.0), langs[1].frequency, 0.001f);
 }
 
-#if defined(OS_LINUX)
+// https://crbug.com/863241
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #define MAYBE_DontLogInIncognito DISABLED_DontLogInIncognito
 #else
 #define MAYBE_DontLogInIncognito DontLogInIncognito
@@ -282,33 +282,43 @@ IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTest, TranslateAndRevert) {
   EXPECT_EQ("fr", GetLanguageState().current_language());
 }
 
-IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTest, RecentTargetLanguage) {
-  base::test::ScopedFeatureList enable_feature;
-  enable_feature.InitAndEnableFeature(translate::kTranslateRecentTarget);
+class TranslateLanguageBrowserTestWithTranslateRecentTarget
+    : public TranslateLanguageBrowserTest {
+ public:
+  TranslateLanguageBrowserTestWithTranslateRecentTarget() {
+    feature_list_.InitAndEnableFeature(kTranslateRecentTarget);
+  }
 
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// The test is flakily crahing on Linux, Windows, and ChromeOS:
+// crbug.com/1122170
+IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTestWithTranslateRecentTarget,
+                       DISABLED_RecentTargetLanguage) {
   InitInIncognitoMode(false);
 
   // Before browsing: set auto translate from French to Chinese.
-  GetTranslatePrefs()->WhitelistLanguagePair("fr", "zh-CN");
+  GetTranslatePrefs()->AddLanguagePairToAlwaysTranslateList("fr", "zh-CN");
   EXPECT_EQ("", GetTranslatePrefs()->GetRecentTargetLanguage());
 
   // Load an Italian page and translate to Spanish. After this, Spanish should
   // be our recent target language.
   ASSERT_NO_FATAL_FAILURE(CheckForTranslateUI(kItalianTestPath, true));
   EXPECT_EQ("it", GetLanguageState().current_language());
-  ASSERT_NO_FATAL_FAILURE(
-      SetTargetLanguageByDisplayName(base::ASCIIToUTF16("Spanish")));
+  ASSERT_NO_FATAL_FAILURE(SetTargetLanguageByDisplayName(u"Spanish"));
   ASSERT_NO_FATAL_FAILURE(Translate(true));
   EXPECT_EQ("es", GetLanguageState().current_language());
   EXPECT_EQ("es", GetTranslatePrefs()->GetRecentTargetLanguage());
 
   // Load a French page. This should trigger an auto-translate to Chinese, but
   // not a recent target update.
-  content::WindowedNotificationObserver page_translated_signal(
-      chrome::NOTIFICATION_PAGE_TRANSLATED,
-      content::NotificationService::AllSources());
+  auto waiter = CreateTranslateWaiter(
+      browser()->tab_strip_model()->GetActiveWebContents(),
+      TranslateWaiter::WaitEvent::kPageTranslated);
   NavigateToUrl(kFrenchTestPath);
-  page_translated_signal.Wait();
+  waiter->Wait();
   EXPECT_EQ("zh-CN", GetLanguageState().current_language());
   EXPECT_EQ("es", GetTranslatePrefs()->GetRecentTargetLanguage());
 
@@ -320,5 +330,7 @@ IN_PROC_BROWSER_TEST_F(TranslateLanguageBrowserTest, RecentTargetLanguage) {
   EXPECT_EQ("es", GetLanguageState().current_language());
   EXPECT_EQ("es", GetTranslatePrefs()->GetRecentTargetLanguage());
 }
+
+}  // namespace translate
 
 #endif  // defined(USE_AURA)

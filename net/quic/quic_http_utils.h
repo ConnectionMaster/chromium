@@ -15,25 +15,34 @@
 
 namespace net {
 
+// TODO(crbug/988608): Convert to SpdyStreamPrecedence directly instead of to
+// SpdyPriority which will go away eventually.
 NET_EXPORT_PRIVATE spdy::SpdyPriority ConvertRequestPriorityToQuicPriority(
     RequestPriority priority);
 
 NET_EXPORT_PRIVATE RequestPriority
 ConvertQuicPriorityToRequestPriority(spdy::SpdyPriority priority);
 
-// Converts a spdy::SpdyHeaderBlock and priority into NetLog event parameters.
-NET_EXPORT std::unique_ptr<base::Value> QuicRequestNetLogCallback(
+// Converts a spdy::Http2HeaderBlock, stream_id and priority into NetLog event
+// parameters.
+NET_EXPORT base::Value QuicRequestNetLogParams(
     quic::QuicStreamId stream_id,
-    const spdy::SpdyHeaderBlock* headers,
+    const spdy::Http2HeaderBlock* headers,
     spdy::SpdyPriority priority,
     NetLogCaptureMode capture_mode);
 
-// Parses |alt_svc_versions| into a quic::QuicTransportVersionVector and removes
+// Converts a spdy::Http2HeaderBlock and stream into NetLog event parameters.
+NET_EXPORT base::Value QuicResponseNetLogParams(
+    quic::QuicStreamId stream_id,
+    bool fin_received,
+    const spdy::Http2HeaderBlock* headers,
+    NetLogCaptureMode capture_mode);
+
+// Parses |alt_svc_versions| into a quic::ParsedQuicVersionVector and removes
 // all entries that aren't found in |supported_versions|.
-NET_EXPORT quic::QuicTransportVersionVector FilterSupportedAltSvcVersions(
+NET_EXPORT quic::ParsedQuicVersionVector FilterSupportedAltSvcVersions(
     const spdy::SpdyAltSvcWireFormat::AlternativeService& quic_alt_svc,
-    const quic::QuicTransportVersionVector& supported_versions,
-    bool support_ietf_format_quic_altsvc);
+    const quic::ParsedQuicVersionVector& supported_versions);
 
 }  // namespace net
 

@@ -6,6 +6,7 @@
 
 #include "net/base/host_port_pair.h"
 #include "net/base/privacy_mode.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/socket/socket_tag.h"
 #include "net/test/gtest_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -61,12 +62,16 @@ class Http2PushPromiseIndexTest : public testing::Test {
               ProxyServer::Direct(),
               PRIVACY_MODE_ENABLED,
               SpdySessionKey::IsProxySession::kFalse,
-              SocketTag()),
+              SocketTag(),
+              NetworkIsolationKey(),
+              SecureDnsPolicy::kAllow),
         key2_(HostPortPair::FromURL(url2_),
               ProxyServer::Direct(),
               PRIVACY_MODE_ENABLED,
               SpdySessionKey::IsProxySession::kFalse,
-              SocketTag()) {}
+              SocketTag(),
+              NetworkIsolationKey(),
+              SecureDnsPolicy::kAllow) {}
 
   const GURL url1_;
   const GURL url2_;

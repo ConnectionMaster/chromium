@@ -12,11 +12,12 @@
 #include <unordered_map>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/memory/ref_counted.h"
+#include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "content/renderer/pepper/resource_converter.h"
 #include "ppapi/c/pp_bool.h"
@@ -58,9 +59,7 @@ class MockResourceConverter : public content::ResourceConverter {
   ~MockResourceConverter() override {}
   void Reset() override {}
   bool NeedsFlush() override { return false; }
-  void Flush(const base::Callback<void(bool)>& callback) override {
-    NOTREACHED();
-  }
+  void Flush(base::OnceCallback<void(bool)> callback) override { NOTREACHED(); }
   bool FromV8Value(v8::Local<v8::Object> val,
                    v8::Local<v8::Context> context,
                    PP_Var* result,
@@ -177,8 +176,8 @@ class V8VarConverterTest : public testing::Test {
   V8VarConverterTest()
       : isolate_(v8::Isolate::GetCurrent()) {
     PP_Instance dummy = 1234;
-    converter_.reset(new V8VarConverter(
-        dummy, std::unique_ptr<ResourceConverter>(new MockResourceConverter)));
+    converter_ = std::make_unique<V8VarConverter>(
+        dummy, std::unique_ptr<ResourceConverter>(new MockResourceConverter));
   }
   ~V8VarConverterTest() override {}
 
@@ -199,10 +198,8 @@ class V8VarConverterTest : public testing::Test {
   bool FromV8ValueSync(v8::Local<v8::Value> val,
                        v8::Local<v8::Context> context,
                        PP_Var* result) {
-    V8VarConverter::VarResult conversion_result =
-        converter_->FromV8Value(val,
-                                context,
-                                base::Bind(&FromV8ValueComplete));
+    V8VarConverter::VarResult conversion_result = converter_->FromV8Value(
+        val, context, base::BindOnce(&FromV8ValueComplete));
     DCHECK(conversion_result.completed_synchronously);
     if (conversion_result.success)
       *result = conversion_result.var.Release();
@@ -215,6 +212,8 @@ class V8VarConverterTest : public testing::Test {
     v8::Local<v8::Context> context =
         v8::Local<v8::Context>::New(isolate_, context_);
     v8::Context::Scope context_scope(context);
+    v8::MicrotasksScope microtasks(isolate_,
+                                   v8::MicrotasksScope::kDoNotRunMicrotasks);
     v8::Local<v8::Value> v8_result;
     if (!converter_->ToV8Value(var, context, &v8_result))
       return false;
@@ -243,8 +242,8 @@ class V8VarConverterTest : public testing::Test {
   std::unique_ptr<V8VarConverter> converter_;
 
  private:
-  base::test::ScopedTaskEnvironment
-      task_environment_;  // Required to receive callbacks.
+  // Required to receive callbacks.
+  base::test::TaskEnvironment task_environment_;
 
   TestGlobals globals_;
 };
@@ -342,6 +341,8 @@ TEST_F(V8VarConverterTest, Cycles) {
   v8::Local<v8::Context> context =
       v8::Local<v8::Context>::New(isolate_, context_);
   v8::Context::Scope context_scope(context);
+  v8::MicrotasksScope microtasks(isolate_,
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
 
   // Var->V8 conversion.
   {
@@ -431,10 +432,8 @@ TEST_F(V8VarConverterTest, StrangeDictionaryKeyTest) {
         "})();";
 
     v8::Local<v8::Script> script(
-        v8::Script::Compile(context,
-                            v8::String::NewFromUtf8(isolate_, source,
-                                                    v8::NewStringType::kNormal)
-                                .ToLocalChecked())
+        v8::Script::Compile(
+            context, v8::String::NewFromUtf8(isolate_, source).ToLocalChecked())
             .ToLocalChecked());
     v8::Local<v8::Object> object =
         script->Run(context).ToLocalChecked().As<v8::Object>();

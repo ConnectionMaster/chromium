@@ -4,10 +4,10 @@
 
 #include "ash/public/cpp/stylus_utils.h"
 
-#include "ash/public/cpp/ash_switches.h"
+#include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "ui/display/display.h"
-#include "ui/events/devices/input_device_manager.h"
+#include "ui/events/devices/device_data_manager.h"
 #include "ui/events/devices/touchscreen_device.h"
 #include "ui/gfx/geometry/point.h"
 
@@ -36,9 +36,10 @@ bool HasStylusInput() {
 
   // Check to see if the hardware reports it is stylus capable.
   for (const ui::TouchscreenDevice& device :
-       ui::InputDeviceManager::GetInstance()->GetTouchscreenDevices()) {
+       ui::DeviceDataManager::GetInstance()->GetTouchscreenDevices()) {
     if (device.has_stylus &&
-        device.type == ui::InputDeviceType::INPUT_DEVICE_INTERNAL) {
+        (device.type == ui::InputDeviceType::INPUT_DEVICE_INTERNAL ||
+         device.type == ui::InputDeviceType::INPUT_DEVICE_USB)) {
       return true;
     }
   }
@@ -58,6 +59,10 @@ bool HasInternalStylus() {
 
 void SetHasStylusInputForTesting() {
   g_has_stylus_input_for_testing = true;
+}
+
+void SetNoStylusInputForTesting() {
+  g_has_stylus_input_for_testing = false;
 }
 
 }  // namespace stylus_utils

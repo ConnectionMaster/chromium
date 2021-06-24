@@ -32,31 +32,33 @@ class MockPermissionManager : public PermissionControllerDelegate {
                    PermissionType permission,
                    content::RenderFrameHost* render_frame_host,
                    const GURL& requesting_origin));
-  int RequestPermission(
+  void RequestPermission(
       PermissionType permission,
       RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
       bool user_gesture,
-      const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
+      base::OnceCallback<void(blink::mojom::PermissionStatus)> callback)
       override;
-  int RequestPermissions(
+  void RequestPermissions(
       const std::vector<PermissionType>& permission,
       RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
       bool user_gesture,
-      const base::Callback<
-          void(const std::vector<blink::mojom::PermissionStatus>&)>& callback)
+      base::OnceCallback<
+          void(const std::vector<blink::mojom::PermissionStatus>&)> callback)
       override;
   void ResetPermission(PermissionType permission,
                        const GURL& requesting_origin,
                        const GURL& embedding_origin) override {}
-  int SubscribePermissionStatusChange(
-      PermissionType permission,
-      RenderFrameHost* render_frame_host,
-      const GURL& requesting_origin,
-      const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
-      override;
-  void UnsubscribePermissionStatusChange(int subscription_id) override {}
+  MOCK_METHOD4(SubscribePermissionStatusChange,
+               SubscriptionId(
+                   PermissionType permission,
+                   RenderFrameHost* render_frame_host,
+                   const GURL& requesting_origin,
+                   base::RepeatingCallback<void(blink::mojom::PermissionStatus)>
+                       callback));
+  MOCK_METHOD1(UnsubscribePermissionStatusChange,
+               void(SubscriptionId subscription_id));
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MockPermissionManager);

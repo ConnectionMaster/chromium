@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "ui/accessibility/ax_mode.h"
 
 namespace blink {
 namespace test {
@@ -36,7 +37,7 @@ TEST_F(AccessibilityObjectModelTest, DOMElementsHaveAnAccessibleNode) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
   main_resource.Complete("<button id=button>Click me</button>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* button = GetDocument().getElementById("button");
   EXPECT_NE(nullptr, button->accessibleNode());
@@ -44,11 +45,15 @@ TEST_F(AccessibilityObjectModelTest, DOMElementsHaveAnAccessibleNode) {
   EXPECT_TRUE(button->accessibleNode()->label().IsNull());
 }
 
+// AccessibleNode is being refactored to remove it's ability to modify the
+// underlying accessibility tree. This test has been modified to assert that no
+// changes in corresponding AXObjects are observed, but will likely be removed
+// in the future.
 TEST_F(AccessibilityObjectModelTest, SetAccessibleNodeRole) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
   main_resource.Complete("<button id=button>Click me</button>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
@@ -62,16 +67,19 @@ TEST_F(AccessibilityObjectModelTest, SetAccessibleNodeRole) {
   button->accessibleNode()->setRole("slider");
   EXPECT_EQ("slider", button->accessibleNode()->role());
 
-  GetDocument().View()->UpdateLifecycleToLayoutClean();
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
   axButton = cache->GetOrCreate(button);
-  EXPECT_EQ(ax::mojom::Role::kSlider, axButton->RoleValue());
+
+  // No change in the AXObject role should be observed.
+  EXPECT_EQ(ax::mojom::Role::kButton, axButton->RoleValue());
 }
 
 TEST_F(AccessibilityObjectModelTest, AOMDoesNotReflectARIA) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
   main_resource.Complete("<input id=textbox>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   // Set ARIA attributes.
   auto* textbox = GetDocument().getElementById("textbox");
@@ -93,16 +101,14 @@ TEST_F(AccessibilityObjectModelTest, AOMDoesNotReflectARIA) {
   // The AOM properties should still all be null.
   EXPECT_EQ(nullptr, textbox->accessibleNode()->role());
   EXPECT_EQ(nullptr, textbox->accessibleNode()->label());
-  bool is_null = false;
-  EXPECT_FALSE(textbox->accessibleNode()->disabled(is_null));
-  EXPECT_TRUE(is_null);
+  EXPECT_FALSE(textbox->accessibleNode()->disabled().has_value());
 }
 
 TEST_F(AccessibilityObjectModelTest, AOMPropertiesCanBeCleared) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
   main_resource.Complete("<input type=button id=button>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   // Set ARIA attributes.
   auto* button = GetDocument().getElementById("button");
@@ -114,7 +120,8 @@ TEST_F(AccessibilityObjectModelTest, AOMPropertiesCanBeCleared) {
   // Assert that the AX object was affected by ARIA attributes.
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
-  GetDocument().View()->UpdateLifecycleToLayoutClean();
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
   auto* axButton = cache->GetOrCreate(button);
   EXPECT_EQ(ax::mojom::Role::kCheckBox, axButton->RoleValue());
   ax::mojom::NameFrom name_from;
@@ -125,20 +132,22 @@ TEST_F(AccessibilityObjectModelTest, AOMPropertiesCanBeCleared) {
   // Now set the AOM properties to override.
   button->accessibleNode()->setRole("radio");
   button->accessibleNode()->setLabel("Radio");
-  button->accessibleNode()->setDisabled(false, false);
-  GetDocument().View()->UpdateLifecycleToLayoutClean();
+  button->accessibleNode()->setDisabled(false);
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
 
-  // Assert that the AX object was affected by AOM properties.
+  // Assert that AOM does not affect the AXObject.
   axButton = cache->GetOrCreate(button);
-  EXPECT_EQ(ax::mojom::Role::kRadioButton, axButton->RoleValue());
-  EXPECT_EQ("Radio", axButton->GetName(name_from, &name_objects));
-  EXPECT_EQ(axButton->Restriction(), kRestrictionNone);
+  EXPECT_EQ(ax::mojom::Role::kCheckBox, axButton->RoleValue());
+  EXPECT_EQ("Check", axButton->GetName(name_from, &name_objects));
+  EXPECT_EQ(axButton->Restriction(), kRestrictionDisabled);
 
   // Null the AOM properties.
   button->accessibleNode()->setRole(g_null_atom);
   button->accessibleNode()->setLabel(g_null_atom);
-  button->accessibleNode()->setDisabled(false, true);
-  GetDocument().View()->UpdateLifecycleToLayoutClean();
+  button->accessibleNode()->setDisabled(absl::nullopt);
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
 
   // The AX Object should now revert to ARIA.
   axButton = cache->GetOrCreate(button);
@@ -151,41 +160,42 @@ TEST_F(AccessibilityObjectModelTest, RangeProperties) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
   main_resource.Complete("<div role=slider id=slider>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* slider = GetDocument().getElementById("slider");
   ASSERT_NE(nullptr, slider);
-  slider->accessibleNode()->setValueMin(-0.5, false);
-  slider->accessibleNode()->setValueMax(0.5, false);
-  slider->accessibleNode()->setValueNow(0.1, false);
+  slider->accessibleNode()->setValueMin(-0.5);
+  slider->accessibleNode()->setValueMax(0.5);
+  slider->accessibleNode()->setValueNow(0.1);
 
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
-  GetDocument().View()->UpdateLifecycleToLayoutClean();
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
   auto* ax_slider = cache->GetOrCreate(slider);
   float value = 0.0f;
   EXPECT_TRUE(ax_slider->MinValueForRange(&value));
-  EXPECT_EQ(-0.5f, value);
+  EXPECT_EQ(0.0f, value);
   EXPECT_TRUE(ax_slider->MaxValueForRange(&value));
-  EXPECT_EQ(0.5f, value);
+  EXPECT_EQ(100.0f, value);
   EXPECT_TRUE(ax_slider->ValueForRange(&value));
-  EXPECT_EQ(0.1f, value);
+  EXPECT_EQ(50.0f, value);
 }
 
 TEST_F(AccessibilityObjectModelTest, Level) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
   main_resource.Complete("<div role=heading id=heading>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* heading = GetDocument().getElementById("heading");
   ASSERT_NE(nullptr, heading);
-  heading->accessibleNode()->setLevel(5, false);
+  heading->accessibleNode()->setLevel(5);
 
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
   auto* ax_heading = cache->GetOrCreate(heading);
-  EXPECT_EQ(5, ax_heading->HeadingLevel());
+  EXPECT_EQ(2, ax_heading->HeadingLevel());
 }
 
 TEST_F(AccessibilityObjectModelTest, ListItem) {
@@ -193,18 +203,18 @@ TEST_F(AccessibilityObjectModelTest, ListItem) {
   LoadURL("https://example.com/");
   main_resource.Complete(
       "<div role=list><div role=listitem id=listitem></div></div>");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* listitem = GetDocument().getElementById("listitem");
   ASSERT_NE(nullptr, listitem);
-  listitem->accessibleNode()->setPosInSet(9, false);
-  listitem->accessibleNode()->setSetSize(10, false);
+  listitem->accessibleNode()->setPosInSet(9);
+  listitem->accessibleNode()->setSetSize(10);
 
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
   auto* ax_listitem = cache->GetOrCreate(listitem);
-  EXPECT_EQ(9, ax_listitem->PosInSet());
-  EXPECT_EQ(10, ax_listitem->SetSize());
+  EXPECT_EQ(0, ax_listitem->PosInSet());
+  EXPECT_EQ(0, ax_listitem->SetSize());
 }
 
 TEST_F(AccessibilityObjectModelTest, Grid) {
@@ -218,31 +228,31 @@ TEST_F(AccessibilityObjectModelTest, Grid) {
       </div>
     </div>
   )HTML");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* grid = GetDocument().getElementById("grid");
   ASSERT_NE(nullptr, grid);
-  grid->accessibleNode()->setColCount(16, false);
-  grid->accessibleNode()->setRowCount(9, false);
+  grid->accessibleNode()->setColCount(16);
+  grid->accessibleNode()->setRowCount(9);
 
   auto* row = GetDocument().getElementById("row");
   ASSERT_NE(nullptr, row);
-  row->accessibleNode()->setColIndex(8, false);
-  row->accessibleNode()->setRowIndex(5, false);
+  row->accessibleNode()->setColIndex(8);
+  row->accessibleNode()->setRowIndex(5);
 
   auto* cell = GetDocument().getElementById("cell");
 
   auto* cell2 = GetDocument().getElementById("cell2");
   ASSERT_NE(nullptr, cell2);
-  cell2->accessibleNode()->setColIndex(10, false);
-  cell2->accessibleNode()->setRowIndex(7, false);
+  cell2->accessibleNode()->setColIndex(10);
+  cell2->accessibleNode()->setRowIndex(7);
 
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
 
   auto* ax_grid = cache->GetOrCreate(grid);
-  EXPECT_EQ(16, ax_grid->AriaColumnCount());
-  EXPECT_EQ(9, ax_grid->AriaRowCount());
+  EXPECT_EQ(0, ax_grid->AriaColumnCount());
+  EXPECT_EQ(0, ax_grid->AriaRowCount());
 
   auto* ax_cell = cache->GetOrCreate(cell);
   EXPECT_TRUE(ax_cell->IsTableCellLikeRole());
@@ -251,48 +261,9 @@ TEST_F(AccessibilityObjectModelTest, Grid) {
 
   auto* ax_cell2 = cache->GetOrCreate(cell2);
   EXPECT_TRUE(ax_cell2->IsTableCellLikeRole());
-  EXPECT_EQ(10U, ax_cell2->AriaColumnIndex());
-  EXPECT_EQ(7U, ax_cell2->AriaRowIndex());
+  EXPECT_EQ(0U, ax_cell2->AriaColumnIndex());
+  EXPECT_EQ(0U, ax_cell2->AriaRowIndex());
 }
-
-class SparseAttributeAdapter : public AXSparseAttributeClient {
-  STACK_ALLOCATED();
-
- public:
-  SparseAttributeAdapter() = default;
-  ~SparseAttributeAdapter() = default;
-
-  HashMap<AXBoolAttribute, bool> bool_attributes;
-  HashMap<AXStringAttribute, String> string_attributes;
-  HeapHashMap<AXObjectAttribute, Member<AXObject>> object_attributes;
-  HeapHashMap<AXObjectVectorAttribute, VectorOf<AXObject>>
-      object_vector_attributes;
-
- private:
-  void AddBoolAttribute(AXBoolAttribute attribute, bool value) override {
-    ASSERT_TRUE(bool_attributes.find(attribute) == bool_attributes.end());
-    bool_attributes.insert(attribute, value);
-  }
-
-  void AddStringAttribute(AXStringAttribute attribute,
-                          const String& value) override {
-    ASSERT_TRUE(string_attributes.find(attribute) == string_attributes.end());
-    string_attributes.insert(attribute, value);
-  }
-
-  void AddObjectAttribute(AXObjectAttribute attribute,
-                          AXObject& value) override {
-    ASSERT_TRUE(object_attributes.find(attribute) == object_attributes.end());
-    object_attributes.insert(attribute, &value);
-  }
-
-  void AddObjectVectorAttribute(AXObjectVectorAttribute attribute,
-                                VectorOf<AXObject>& value) override {
-    ASSERT_TRUE(object_vector_attributes.find(attribute) ==
-                object_vector_attributes.end());
-    object_vector_attributes.insert(attribute, value);
-  }
-};
 
 TEST_F(AccessibilityObjectModelTest, SparseAttributes) {
   SimRequest main_resource("https://example.com/", "text/html");
@@ -301,6 +272,7 @@ TEST_F(AccessibilityObjectModelTest, SparseAttributes) {
     <input id=target
      aria-keyshortcuts=Ctrl+K
      aria-roledescription=Widget
+     aria-virtualcontent=block-end
      aria-activedescendant=active
      aria-details=details
      aria-errormessage=error>
@@ -311,59 +283,74 @@ TEST_F(AccessibilityObjectModelTest, SparseAttributes) {
     <div id=error role=article>Error</div>
     <div id=error2 role=banner>Error 2</div>
   )HTML");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* target = GetDocument().getElementById("target");
   auto* cache = AXObjectCache();
   ASSERT_NE(nullptr, cache);
   auto* ax_target = cache->GetOrCreate(target);
-  SparseAttributeAdapter sparse_attributes;
-  ax_target->GetSparseAXAttributes(sparse_attributes);
+  ui::AXNodeData node_data;
+  ax_target->Serialize(&node_data, ui::kAXModeComplete);
 
-  ASSERT_EQ("Ctrl+K", sparse_attributes.string_attributes.at(
-                          AXStringAttribute::kAriaKeyShortcuts));
-  ASSERT_EQ("Widget", sparse_attributes.string_attributes.at(
-                          AXStringAttribute::kAriaRoleDescription));
+  ASSERT_EQ("Ctrl+K", node_data.GetStringAttribute(
+                          ax::mojom::blink::StringAttribute::kKeyShortcuts));
+  ASSERT_EQ("Widget", node_data.GetStringAttribute(
+                          ax::mojom::blink::StringAttribute::kRoleDescription));
+  ASSERT_EQ("block-end",
+            node_data.GetStringAttribute(
+                ax::mojom::blink::StringAttribute::kVirtualContent));
+  auto* active_descendant_target =
+      cache->ObjectFromAXID(node_data.GetIntAttribute(
+          ax::mojom::blink::IntAttribute::kActivedescendantId));
+  ASSERT_NE(nullptr, active_descendant_target);
   ASSERT_EQ(ax::mojom::Role::kListBoxOption,
-            sparse_attributes.object_attributes
-                .at(AXObjectAttribute::kAriaActiveDescendant)
-                ->RoleValue());
-  ASSERT_EQ(
-      ax::mojom::Role::kContentInfo,
-      sparse_attributes.object_attributes.at(AXObjectAttribute::kAriaDetails)
-          ->RoleValue());
-  ASSERT_EQ(ax::mojom::Role::kArticle,
-            sparse_attributes.object_attributes
-                .at(AXObjectAttribute::kAriaErrorMessage)
-                ->RoleValue());
+            active_descendant_target->RoleValue());
+  auto* aria_details_target =
+      cache->ObjectFromAXID(node_data.GetIntListAttribute(
+          ax::mojom::blink::IntListAttribute::kDetailsIds)[0]);
+  ASSERT_EQ(ax::mojom::Role::kContentInfo, aria_details_target->RoleValue());
+  auto* error_message_target = cache->ObjectFromAXID(node_data.GetIntAttribute(
+      ax::mojom::blink::IntAttribute::kErrormessageId));
+  ASSERT_NE(nullptr, error_message_target);
+  ASSERT_EQ(ax::mojom::Role::kArticle, error_message_target->RoleValue());
 
   target->accessibleNode()->setKeyShortcuts("Ctrl+L");
   target->accessibleNode()->setRoleDescription("Object");
+  target->accessibleNode()->setVirtualContent("inline-start");
   target->accessibleNode()->setActiveDescendant(
       GetDocument().getElementById("active2")->accessibleNode());
-  target->accessibleNode()->setDetails(
+  AccessibleNodeList* details_node_list =
+      MakeGarbageCollected<AccessibleNodeList>();
+  details_node_list->add(
       GetDocument().getElementById("details2")->accessibleNode());
+  target->accessibleNode()->setDetails(details_node_list);
   target->accessibleNode()->setErrorMessage(
       GetDocument().getElementById("error2")->accessibleNode());
 
-  SparseAttributeAdapter sparse_attributes2;
-  ax_target->GetSparseAXAttributes(sparse_attributes2);
+  ui::AXNodeData node_data2;
+  ax_target->Serialize(&node_data2, ui::kAXModeComplete);
 
-  ASSERT_EQ("Ctrl+L", sparse_attributes2.string_attributes.at(
-                          AXStringAttribute::kAriaKeyShortcuts));
-  ASSERT_EQ("Object", sparse_attributes2.string_attributes.at(
-                          AXStringAttribute::kAriaRoleDescription));
-  ASSERT_EQ(ax::mojom::Role::kCell,
-            sparse_attributes2.object_attributes
-                .at(AXObjectAttribute::kAriaActiveDescendant)
-                ->RoleValue());
-  ASSERT_EQ(ax::mojom::Role::kForm, sparse_attributes2.object_attributes
-                                        .at(AXObjectAttribute::kAriaDetails)
-                                        ->RoleValue());
-  ASSERT_EQ(ax::mojom::Role::kBanner,
-            sparse_attributes2.object_attributes
-                .at(AXObjectAttribute::kAriaErrorMessage)
-                ->RoleValue());
+  ASSERT_EQ("Ctrl+K", node_data.GetStringAttribute(
+                          ax::mojom::blink::StringAttribute::kKeyShortcuts));
+  ASSERT_EQ("Widget", node_data.GetStringAttribute(
+                          ax::mojom::blink::StringAttribute::kRoleDescription));
+  ASSERT_EQ(target->accessibleNode()->virtualContent(), "inline-start");
+  ASSERT_EQ("block-end",
+            node_data.GetStringAttribute(
+                ax::mojom::blink::StringAttribute::kVirtualContent));
+  auto* active_descendant_target2 =
+      cache->ObjectFromAXID(node_data2.GetIntAttribute(
+          ax::mojom::blink::IntAttribute::kActivedescendantId));
+  ASSERT_EQ(ax::mojom::Role::kListBoxOption,
+            active_descendant_target2->RoleValue());
+  auto* aria_details_target2 =
+      cache->ObjectFromAXID(node_data2.GetIntListAttribute(
+          ax::mojom::blink::IntListAttribute::kDetailsIds)[0]);
+  ASSERT_EQ(ax::mojom::Role::kContentInfo, aria_details_target2->RoleValue());
+  auto* error_message_target2 = cache->ObjectFromAXID(node_data.GetIntAttribute(
+      ax::mojom::blink::IntAttribute::kErrormessageId));
+  ASSERT_NE(nullptr, error_message_target2);
+  ASSERT_EQ(ax::mojom::Role::kArticle, error_message_target2->RoleValue());
 }
 
 TEST_F(AccessibilityObjectModelTest, LabeledBy) {
@@ -375,7 +362,7 @@ TEST_F(AccessibilityObjectModelTest, LabeledBy) {
     <label id=l2>Label 2</label>
     <label id=l3>Label 3</label>
   )HTML");
-  AXContext ax_context(GetDocument());
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
 
   auto* target = GetDocument().getElementById("target");
   auto* l1 = GetDocument().getElementById("l1");
@@ -399,8 +386,7 @@ TEST_F(AccessibilityObjectModelTest, LabeledBy) {
   labeled_by.clear();
   ASSERT_TRUE(AccessibleNode::GetPropertyOrARIAAttribute(
       target, AOMRelationListProperty::kLabeledBy, labeled_by));
-  ASSERT_EQ(1U, labeled_by.size());
-  ASSERT_EQ(l3, labeled_by[0]);
+  ASSERT_EQ(2U, labeled_by.size());
 }
 
 }  // namespace

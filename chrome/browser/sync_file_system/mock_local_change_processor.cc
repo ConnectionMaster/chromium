@@ -10,7 +10,7 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/sync_file_system/file_change.h"
 #include "chrome/browser/sync_file_system/sync_file_metadata.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 using ::testing::_;
 using ::testing::Invoke;
@@ -32,9 +32,9 @@ void MockLocalChangeProcessor::ApplyLocalChangeStub(
     const base::FilePath& local_file_path,
     const SyncFileMetadata& local_file_metadata,
     const storage::FileSystemURL& url,
-    const SyncStatusCallback& callback) {
+    SyncStatusCallback callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, SYNC_STATUS_OK));
+      FROM_HERE, base::BindOnce(std::move(callback), SYNC_STATUS_OK));
 }
 
 }  // namespace sync_file_system

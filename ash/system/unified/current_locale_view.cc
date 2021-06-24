@@ -4,7 +4,7 @@
 
 #include "ash/system/unified/current_locale_view.h"
 
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/system/model/system_tray_model.h"
@@ -13,6 +13,7 @@
 #include "base/i18n/case_conversion.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/label.h"
 
 namespace ash {
@@ -21,6 +22,8 @@ CurrentLocaleView::CurrentLocaleView(Shelf* shelf) : TrayItemView(shelf) {
   SetVisible(false);
   CreateLabel();
   SetupLabelForTray(label());
+  SetBorder(views::CreateEmptyBorder(kUnifiedTrayTextTopPadding, 0, 0,
+                                     kUnifiedTrayTextRightPadding));
 
   Shell::Get()->system_tray_model()->locale()->AddObserver(this);
 }
@@ -37,12 +40,11 @@ void CurrentLocaleView::OnLocaleListSet() {
   label()->SetEnabledColor(
       TrayIconColor(Shell::Get()->session_controller()->GetSessionState()));
 
-  const std::vector<mojom::LocaleInfoPtr>& locales =
-      locale_model->locale_list();
+  const std::vector<LocaleInfo>& locales = locale_model->locale_list();
   for (auto& entry : locales) {
-    if (entry->iso_code == locale_model->current_locale_iso_code()) {
-      const base::string16 description = l10n_util::GetStringFUTF16(
-          IDS_ASH_STATUS_TRAY_INDICATOR_LOCALE_TOOLTIP, entry->display_name);
+    if (entry.iso_code == locale_model->current_locale_iso_code()) {
+      const std::u16string description = l10n_util::GetStringFUTF16(
+          IDS_ASH_STATUS_TRAY_INDICATOR_LOCALE_TOOLTIP, entry.display_name);
       label()->SetTooltipText(description);
       label()->SetCustomAccessibleName(description);
       break;
@@ -50,4 +52,14 @@ void CurrentLocaleView::OnLocaleListSet() {
   }
   Layout();
 }
+
+const char* CurrentLocaleView::GetClassName() const {
+  return "CurrentLocaleView";
+}
+
+void CurrentLocaleView::HandleLocaleChange() {
+  // Nothing to do here, when this view is used, the locale will be updated
+  // using locale_model.
+}
+
 }  // namespace ash

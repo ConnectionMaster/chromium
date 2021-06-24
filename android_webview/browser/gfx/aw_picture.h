@@ -5,8 +5,6 @@
 #ifndef ANDROID_WEBVIEW_BROWSER_GFX_AW_PICTURE_H_
 #define ANDROID_WEBVIEW_BROWSER_GFX_AW_PICTURE_H_
 
-#include <memory>
-
 #include "base/android/jni_weak_ref.h"
 #include "base/macros.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
@@ -21,7 +19,7 @@ class AwPicture {
   ~AwPicture();
 
   // Methods called from Java.
-  void Destroy(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void Destroy(JNIEnv* env);
   jint GetWidth(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
   jint GetHeight(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
   void Draw(JNIEnv* env,

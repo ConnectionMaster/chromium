@@ -5,7 +5,7 @@
 #include "services/device/generic_sensor/platform_sensor_fusion_algorithm.h"
 
 #include <cmath>
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 
 namespace device {
 
@@ -33,7 +33,7 @@ bool PlatformSensorFusionAlgorithm::IsReadingSignificantlyDifferent(
 bool PlatformSensorFusionAlgorithm::GetFusedData(
     mojom::SensorType which_sensor_changed,
     SensorReading* fused_reading) {
-  DCHECK(base::ContainsValue(source_types_, which_sensor_changed));
+  DCHECK(base::Contains(source_types_, which_sensor_changed));
   return GetFusedDataInternal(which_sensor_changed, fused_reading);
 }
 

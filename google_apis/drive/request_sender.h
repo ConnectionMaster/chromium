@@ -65,7 +65,7 @@ class RequestSender {
   //
   // Returns a closure to cancel the request. The closure cancels the request
   // if it is in-flight, and does nothing if it is already terminated.
-  base::Closure StartRequestWithAuthRetry(
+  base::RepeatingClosure StartRequestWithAuthRetry(
       std::unique_ptr<AuthenticatedRequestInterface> request);
 
   // Notifies to this RequestSender that |request| has finished.
@@ -78,7 +78,7 @@ class RequestSender {
   }
 
  private:
-  base::Closure StartRequestWithAuthRetryInternal(
+  base::RepeatingClosure StartRequestWithAuthRetryInternal(
       AuthenticatedRequestInterface* request);
 
   // Called when the access token is fetched.
@@ -111,7 +111,7 @@ class RequestSender {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<RequestSender> weak_ptr_factory_;
+  base::WeakPtrFactory<RequestSender> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RequestSender);
 };

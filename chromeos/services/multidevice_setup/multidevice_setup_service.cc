@@ -7,7 +7,7 @@
 #include "base/bind.h"
 #include "chromeos/components/multidevice/logging/logging.h"
 #include "chromeos/services/multidevice_setup/account_status_change_delegate_notifier_impl.h"
-#include "chromeos/services/multidevice_setup/device_reenroller.h"
+#include "chromeos/services/multidevice_setup/android_sms_app_installing_status_observer.h"
 #include "chromeos/services/multidevice_setup/grandfathered_easy_unlock_host_disabler.h"
 #include "chromeos/services/multidevice_setup/host_backend_delegate_impl.h"
 #include "chromeos/services/multidevice_setup/host_device_timestamp_manager_impl.h"
@@ -18,6 +18,7 @@
 #include "chromeos/services/multidevice_setup/public/cpp/android_sms_app_helper_delegate.h"
 #include "chromeos/services/multidevice_setup/public/cpp/android_sms_pairing_state_tracker.h"
 #include "chromeos/services/multidevice_setup/public/cpp/prefs.h"
+#include "chromeos/services/multidevice_setup/wifi_sync_feature_manager_impl.h"
 
 namespace chromeos {
 
@@ -29,60 +30,51 @@ void MultiDeviceSetupService::RegisterProfilePrefs(
   HostDeviceTimestampManagerImpl::RegisterPrefs(registry);
   AccountStatusChangeDelegateNotifierImpl::RegisterPrefs(registry);
   HostBackendDelegateImpl::RegisterPrefs(registry);
+  WifiSyncFeatureManagerImpl::RegisterPrefs(registry);
   HostVerifierImpl::RegisterPrefs(registry);
   GrandfatheredEasyUnlockHostDisabler::RegisterPrefs(registry);
+  AndroidSmsAppInstallingStatusObserver::RegisterPrefs(registry);
   RegisterFeaturePrefs(registry);
 }
 
 MultiDeviceSetupService::MultiDeviceSetupService(
-    service_manager::mojom::ServiceRequest request,
     PrefService* pref_service,
     device_sync::DeviceSyncClient* device_sync_client,
     AuthTokenValidator* auth_token_validator,
     OobeCompletionTracker* oobe_completion_tracker,
     AndroidSmsAppHelperDelegate* android_sms_app_helper_delegate,
     AndroidSmsPairingStateTracker* android_sms_pairing_state_tracker,
-    const device_sync::GcmDeviceInfoProvider* gcm_device_info_provider)
-    : service_binding_(this, std::move(request)),
-      multidevice_setup_(
-          MultiDeviceSetupInitializer::Factory::Get()->BuildInstance(
-              pref_service,
-              device_sync_client,
-              auth_token_validator,
-              oobe_completion_tracker,
-              android_sms_app_helper_delegate,
-              android_sms_pairing_state_tracker,
-              gcm_device_info_provider)),
+    const device_sync::GcmDeviceInfoProvider* gcm_device_info_provider,
+    bool is_secondary_user)
+    : multidevice_setup_(MultiDeviceSetupInitializer::Factory::Create(
+          pref_service,
+          device_sync_client,
+          auth_token_validator,
+          oobe_completion_tracker,
+          android_sms_app_helper_delegate,
+          android_sms_pairing_state_tracker,
+          gcm_device_info_provider,
+          is_secondary_user)),
       privileged_host_device_setter_(
-          PrivilegedHostDeviceSetterImpl::Factory::Get()->BuildInstance(
+          PrivilegedHostDeviceSetterImpl::Factory::Create(
               multidevice_setup_.get())) {}
 
 MultiDeviceSetupService::~MultiDeviceSetupService() {
   // Subclasses may hold onto message response callbacks. It's important that
-  // all bindings are closed by the time those callbacks are destroyed, or they
+  // all receivers are closed by the time those callbacks are destroyed, or they
   // will DCHECK.
   if (multidevice_setup_)
-    multidevice_setup_->CloseAllBindings();
+    multidevice_setup_->CloseAllReceivers();
 }
 
-void MultiDeviceSetupService::OnStart() {
-  PA_LOG(VERBOSE) << "MultiDeviceSetupService::OnStart()";
-  registry_.AddInterface(
-      base::BindRepeating(&MultiDeviceSetupBase::BindRequest,
-                          base::Unretained(multidevice_setup_.get())));
-  registry_.AddInterface(base::BindRepeating(
-      &PrivilegedHostDeviceSetterBase::BindRequest,
-      base::Unretained(privileged_host_device_setter_.get())));
+void MultiDeviceSetupService::BindMultiDeviceSetup(
+    mojo::PendingReceiver<mojom::MultiDeviceSetup> receiver) {
+  multidevice_setup_->BindReceiver(std::move(receiver));
 }
 
-void MultiDeviceSetupService::OnBindInterface(
-    const service_manager::BindSourceInfo& source_info,
-    const std::string& interface_name,
-    mojo::ScopedMessagePipeHandle interface_pipe) {
-  PA_LOG(VERBOSE)
-      << "MultiDeviceSetupService::OnBindInterface() from interface "
-      << interface_name << ".";
-  registry_.BindInterface(interface_name, std::move(interface_pipe));
+void MultiDeviceSetupService::BindPrivilegedHostDeviceSetter(
+    mojo::PendingReceiver<mojom::PrivilegedHostDeviceSetter> receiver) {
+  privileged_host_device_setter_->BindReceiver(std::move(receiver));
 }
 
 }  // namespace multidevice_setup

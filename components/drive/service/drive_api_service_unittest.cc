@@ -22,16 +22,15 @@ const char kTestUserAgent[] = "test-user-agent";
 
 class TestAuthService : public google_apis::DummyAuthService {
  public:
-  void StartAuthentication(
-      const google_apis::AuthStatusCallback& callback) override {
-    callback_ = callback;
+  void StartAuthentication(google_apis::AuthStatusCallback callback) override {
+    callback_ = std::move(callback);
   }
 
   bool HasAccessToken() const override { return false; }
 
   void SendHttpError() {
     ASSERT_FALSE(callback_.is_null());
-    callback_.Run(google_apis::HTTP_UNAUTHORIZED, "");
+    std::move(callback_).Run(google_apis::HTTP_UNAUTHORIZED, "");
   }
 
  private:
@@ -58,7 +57,7 @@ TEST(DriveAPIServiceTest, BatchRequestConfiguratorWithAuthFailure) {
   sender.StartRequestWithAuthRetry(std::move(request));
   BatchRequestConfigurator configurator(
       request_ptr->GetWeakPtrAsBatchUploadRequest(), task_runner.get(),
-      url_generator, google_apis::CancelCallback());
+      url_generator, google_apis::CancelCallbackRepeating());
   static_cast<TestAuthService*>(sender.auth_service())->SendHttpError();
 
   {

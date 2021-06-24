@@ -10,10 +10,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
+#include "base/test/task_environment.h"
 #include "remoting/codec/audio_encoder.h"
 #include "remoting/proto/audio.pb.h"
 #include "remoting/protocol/audio_source.h"
@@ -71,7 +71,7 @@ class AudioPumpTest : public testing::Test, public protocol::AudioStub {
                           base::OnceClosure done) override;
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   // |source_| and |encoder_| are owned by the |pump_|.
   FakeAudioSource* source_;
@@ -89,9 +89,9 @@ class AudioPumpTest : public testing::Test, public protocol::AudioStub {
 void AudioPumpTest::SetUp() {
   source_ = new FakeAudioSource();
   encoder_ = new FakeAudioEncoder();
-  pump_.reset(new AudioPump(message_loop_.task_runner(),
-                            base::WrapUnique(source_),
-                            base::WrapUnique(encoder_), this));
+  pump_ = std::make_unique<AudioPump>(
+      task_environment_.GetMainThreadTaskRunner(), base::WrapUnique(source_),
+      base::WrapUnique(encoder_), this);
 }
 
 void AudioPumpTest::TearDown() {

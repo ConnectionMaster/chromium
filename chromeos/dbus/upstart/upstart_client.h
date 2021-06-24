@@ -49,8 +49,11 @@ class COMPONENT_EXPORT(UPSTART_CLIENT) UpstartClient {
 
   // Stops an Upstart job.
   // |job|: Name of Upstart job.
+  // |upstart_env|: List of upstart environment variables to be passed to the
+  // upstart service.
   // |callback|: Called with a response.
   virtual void StopJob(const std::string& job,
+                       const std::vector<std::string>& upstart_env,
                        VoidDBusMethodCallback callback) = 0;
 
   // Starts authpolicyd.
@@ -59,8 +62,11 @@ class COMPONENT_EXPORT(UPSTART_CLIENT) UpstartClient {
   // Restarts authpolicyd.
   virtual void RestartAuthPolicyService() = 0;
 
-  // Starts kerberosd.
-  virtual void StartKerberosService(VoidDBusMethodCallback callback) = 0;
+  // Starts the Linux Wayland client version of chrome.
+  // |upstart_env|: List of upstart environment variables to be passed to the
+  // upstart service.
+  virtual void StartLacrosChrome(
+      const std::vector<std::string>& upstart_env) = 0;
 
   // Starts the media analytics process.
   // |upstart_env|: List of upstart environment variables to be passed to the
@@ -83,6 +89,14 @@ class COMPONENT_EXPORT(UPSTART_CLIENT) UpstartClient {
   // Stops wilco DTC services.
   virtual void StopWilcoDtcService(VoidDBusMethodCallback callback) = 0;
 
+  // Starts arc-data-snapshotd daemon.
+  virtual void StartArcDataSnapshotd(
+      const std::vector<std::string>& upstart_env,
+      VoidDBusMethodCallback callback) = 0;
+
+  // Stops arc-data-snapshotd daemon.
+  virtual void StopArcDataSnapshotd(VoidDBusMethodCallback callback) = 0;
+
  protected:
   // Initialize() should be used instead.
   UpstartClient();
@@ -92,5 +106,10 @@ class COMPONENT_EXPORT(UPSTART_CLIENT) UpstartClient {
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when //chromeos/dbus moved to ash.
+namespace ash {
+using ::chromeos::UpstartClient;
+}  // namespace ash
 
 #endif  // CHROMEOS_DBUS_UPSTART_UPSTART_CLIENT_H_

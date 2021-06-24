@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "base/check.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "media/base/cdm_key_information.h"
@@ -45,6 +46,19 @@ class MEDIA_EXPORT CdmPromise {
     INT_TYPE,
     STRING_TYPE,
     KEY_STATUS_TYPE
+  };
+
+  // These values are reported to UMA. Never change existing values. Only add
+  // new values at the bottom of the list.
+  // TODO(xhwang): Make SystemCode an enum class and pass |system_code| as
+  // SystemCode everywhere.
+  enum SystemCode : uint32_t {
+    kMinValue = 1000000,  // To avoid conflict with system code reported by CDM.
+    kOk = kMinValue,
+    kFailure,
+    kAborted,
+    kConnectionError,
+    kMaxValue = kConnectionError,
   };
 
   CdmPromise() = default;
@@ -125,7 +139,7 @@ class CdmPromiseTemplate : public CdmPromise {
     std::string message =
         "Unfulfilled promise rejected automatically during destruction.";
     DVLOG(1) << message;
-    reject(Exception::INVALID_STATE_ERROR, 0, message);
+    reject(Exception::INVALID_STATE_ERROR, SystemCode::kAborted, message);
     DCHECK(is_settled_);
   }
 
@@ -154,6 +168,25 @@ CdmPromiseTemplate<std::string>::GetResolveParameterType() const;
 template <>
 MEDIA_EXPORT CdmPromise::ResolveParameterType CdmPromiseTemplate<
     CdmKeyInformation::KeyStatus>::GetResolveParameterType() const;
+
+// A dummy CdmPromise that does nothing. Used for APIs requiring a CdmPromise
+// while the result will be ignored.
+template <typename... T>
+class MEDIA_EXPORT DoNothingCdmPromise : public CdmPromiseTemplate<T...> {
+ public:
+  DoNothingCdmPromise() = default;
+  DoNothingCdmPromise(const DoNothingCdmPromise&) = delete;
+  DoNothingCdmPromise& operator=(const DoNothingCdmPromise&) = delete;
+  ~DoNothingCdmPromise() override = default;
+
+  // CdmPromiseTemplate.
+  void resolve() final { CdmPromiseTemplate<T...>::MarkPromiseSettled(); }
+  void reject(CdmPromise::Exception exception_code,
+              uint32_t system_code,
+              const std::string& error_message) final {
+    CdmPromiseTemplate<T...>::MarkPromiseSettled();
+  }
+};
 
 }  // namespace media
 

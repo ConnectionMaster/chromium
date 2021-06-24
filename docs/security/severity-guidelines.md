@@ -10,23 +10,31 @@ for guidance on how to release fixes based on severity.
 
 Any significant mitigating factors, such as unusual or additional user
 interaction, or running Chrome with a specific command line flag or non-default
-feature enabled, may reduce an issue’s severity by one or more levels. Also note
-that most crashes do not indicate vulnerabilities. Chromium is designed to crash
-in a controlled manner (e.g., with a ```__debugBreak```) when memory is
+feature enabled, may reduce an issue’s severity by one or more levels.
+
+Conversely, we do not consider it a mitigating factor if a vulnerability applies
+only to a particular group of users. For instance, a Critical vulnerability is
+still considered Critical even if it applies only to Linux or to those users
+running with accessibility features enabled.
+
+Also note that most crashes do not indicate vulnerabilities. Chromium is designed
+to crash in a controlled manner (e.g., with a ```__debugBreak```) when memory is
 exhausted or in other exceptional circumstances.
 
 
 ## Critical severity {#TOC-Critical-severity}
 
-Critical severity issues allow an attacker run arbitrary code on the underlying
-platform with the user's privileges.
+Critical severity issues allow an attacker to read or write arbitrary resources
+(including but not limited to the file system, registry, network, et c.) on the
+underlying platform, with the user's full privileges.
 
 They are normally assigned priority **Pri-0** and assigned to the current stable
 milestone (or earliest milestone affected). For critical severity bugs,
 [SheriffBot](https://www.chromium.org/issue-tracking/autotriage) will
 automatically assign the milestone.
 
-#### For critical vulnerabilities, we aim to deploy the patch to all Chrome users in under 30 days.
+**For critical severity vulnerabilities, we aim to deploy the patch to all
+Chrome users in under 30 days.**
 
 Critical vulnerability details may be made public in 60 days,
 in accordance with Google's general [vulnerability disclosure recommendations](https://security.googleblog.com/2010/07/rebooting-responsible-disclosure-focus.html),
@@ -35,9 +43,11 @@ if there is evidence of active exploitation.
 
 Example bugs:
 
-* Memory corruption in the browser process ([564501](https://crbug.com/564501)).
+* Memory corruption in the browser process ([319125](https://crbug.com/319125#c10)).
 * Exploit chains made up of multiple bugs that can lead to code execution
-outside of the sandbox ([416449](https://crbug.com/416449)).
+  outside of the sandbox ([416449](https://crbug.com/416449)).
+* A bug that enables web content to read local files
+  ([962500](https://crbug.com/962500)).
 
 Note that the individual bugs that make up the chain will have lower severity
 ratings.
@@ -46,19 +56,21 @@ ratings.
 ## High severity {#TOC-High-severity}
 
 High severity vulnerabilities allow an attacker to execute code in the context
-of, or otherwise impersonate other origins. Bugs which would normally be
+of, or otherwise impersonate other origins or read cross-origin data.
+Bugs which would normally be
 critical severity with unusual mitigating factors may be rated as high severity.
 For example, renderer sandbox escapes fall into this category as their impact is
 that of a critical severity bug, but they require the precondition of a
-compromised renderer.
+compromised renderer. (Bugs which involve using [MojoJS](../../mojo/public/js/README.md)
+to trigger an exploitable browser process crash usually fall into this category).
 
 They are normally assigned priority **Pri-1** and assigned to the current stable
 milestone (or earliest milestone affected). For high severity bugs,
 [SheriffBot](https://www.chromium.org/issue-tracking/autotriage) will
 automatically assign the milestone.
 
-For high severity vulnerabilities, we aim to deploy the patch to all Chrome
-users in under 60 days.
+**For high severity vulnerabilities, we aim to deploy the patch to all Chrome
+users in under 60 days.**
 
 Example bugs:
 
@@ -77,6 +89,11 @@ compromised renderer, leading to a sandbox escape
 compromised renderer ([377392](https://crbug.com/377392)).
 * Memory corruption in the browser process that requires specific user
 interaction, such as granting a permission ([455735](https://crbug.com/455735)).
+* Site Isolation bypasses:
+    - Cross-site execution contexts unexpectedly sharing a renderer process
+      ([863069](https://crbug.com/863069), [886976](https://crbug.com/886976)).
+    - Cross-site data disclosure
+      ([917668](https://crbug.com/917668), [927849](https://crbug.com/927849)).
 
 
 ## Medium severity {#TOC-Medium-severity}
@@ -85,9 +102,9 @@ Medium severity bugs allow attackers to read or modify limited amounts of
 information, or are not harmful on their own but potentially harmful when
 combined with other bugs. This includes information leaks that could be useful
 in potential memory corruption exploits, or exposure of sensitive user
-information that an attacker can exfiltrate. Bugs that would normally rated at a
-higher severity level with unusual mitigating factors may be rated as medium
-severity.
+information that an attacker can exfiltrate. Bugs that would normally be rated
+at a higher severity level with unusual mitigating factors may be rated as
+medium severity.
 
 They are normally assigned priority **Pri-1** and assigned to the current stable
 milestone (or earliest milestone affected). If the fix seems too complicated to
@@ -136,6 +153,18 @@ Example bugs:
 * An uncontrolled single-byte out-of-bounds read
 ([128163](https://crbug.com/128163)).
 
-The [security FAQ](faq.md) covers many of the cases that we do not consider to
-be security bugs, such as [denial of service](faq.md#TOC-Are-denial-of-service-issues-considered-security-bugs-).
 
+## Can't impact Chrome users by default {#TOC-No-impact}
+
+If the bug can't impact Chrome users by default, this is denoted instead by
+the **Security-Impact_None** label. See
+[the security labels document](security-labels.md#TOC-Security_Impact-None)
+for more information. The bug should still have a severity set according
+to these guidelines.
+
+
+## Not a security bug {#TOC-Not-a-security-bug}
+
+The [security FAQ](faq.md) covers many of the cases that we do not consider to
+be security bugs, such as [denial of service](faq.md#TOC-Are-denial-of-service-issues-considered-security-bugs-)
+and, in particular, null pointer dereferences with consistent fixed offsets.

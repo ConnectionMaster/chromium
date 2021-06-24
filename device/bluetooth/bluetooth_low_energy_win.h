@@ -13,9 +13,9 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "device/bluetooth/bluetooth_export.h"
 #include "device/bluetooth/bluetooth_low_energy_defs_win.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device {
 namespace win {
@@ -104,7 +104,7 @@ struct DEVICE_BLUETOOTH_EXPORT BluetoothLowEnergyDeviceInfo {
 
   base::FilePath path;
   std::string id;
-  base::Optional<std::string> friendly_name;
+  absl::optional<std::string> friendly_name;
   BLUETOOTH_ADDRESS address;
   bool visible;
   bool authenticated;
@@ -188,7 +188,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothLowEnergyWrapper {
   virtual HRESULT WriteCharacteristicValue(
       base::FilePath& service_path,
       const PBTH_LE_GATT_CHARACTERISTIC characteristic,
-      PBTH_LE_GATT_CHARACTERISTIC_VALUE new_value);
+      PBTH_LE_GATT_CHARACTERISTIC_VALUE new_value,
+      ULONG flags);
 
   // Register GATT events of |event_type| in the service with service device
   // path |service_path|. |event_parameter| is the event's parameter. |callback|

@@ -16,11 +16,10 @@ namespace ui {
 // AXTreeSource abstraction and doesn't need to actually know about
 // AXTree directly. Another AXTreeSource is used to abstract the Blink
 // accessibility tree.
-class AX_EXPORT AXTreeSourceAdapter
-    : public AXTreeSource<const AXNode*, AXNodeData, AXTreeData> {
+class AX_EXPORT AXTreeSourceAdapter : public AXTreeSource<const AXNode*> {
  public:
-  AXTreeSourceAdapter(AXTree* tree) : tree_(tree) {}
-  ~AXTreeSourceAdapter() override {}
+  explicit AXTreeSourceAdapter(AXTree* tree) : tree_(tree) {}
+  ~AXTreeSourceAdapter() override = default;
 
   // AXTreeSource implementation.
   bool GetTreeData(AXTreeData* data) const override {
@@ -30,18 +29,22 @@ class AX_EXPORT AXTreeSourceAdapter
 
   AXNode* GetRoot() const override { return tree_->root(); }
 
-  AXNode* GetFromId(int32_t id) const override { return tree_->GetFromId(id); }
+  AXNode* GetFromId(AXNodeID id) const override { return tree_->GetFromId(id); }
 
-  int32_t GetId(const AXNode* node) const override { return node->id(); }
+  AXNodeID GetId(const AXNode* node) const override { return node->id(); }
 
   void GetChildren(const AXNode* node,
                    std::vector<const AXNode*>* out_children) const override {
-    for (int i = 0; i < node->child_count(); ++i)
-      out_children->push_back(node->ChildAtIndex(i));
+    *out_children = std::vector<const AXNode*>(node->children().cbegin(),
+                                               node->children().cend());
   }
 
   AXNode* GetParent(const AXNode* node) const override {
     return node->parent();
+  }
+
+  bool IsIgnored(const AXNode* node) const override {
+    return node->IsIgnored();
   }
 
   bool IsValid(const AXNode* node) const override { return node != nullptr; }
@@ -71,8 +74,7 @@ AXSerializableTree::AXSerializableTree(
 AXSerializableTree::~AXSerializableTree() {
 }
 
-AXTreeSource<const AXNode*, AXNodeData, AXTreeData>*
-AXSerializableTree::CreateTreeSource() {
+AXTreeSource<const AXNode*>* AXSerializableTree::CreateTreeSource() {
   return new AXTreeSourceAdapter(this);
 }
 

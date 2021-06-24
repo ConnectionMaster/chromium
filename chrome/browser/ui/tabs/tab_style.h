@@ -5,8 +5,11 @@
 #ifndef CHROME_BROWSER_UI_TABS_TAB_STYLE_H_
 #define CHROME_BROWSER_UI_TABS_TAB_STYLE_H_
 
-#include "base/macros.h"
+#include <tuple>
+
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
@@ -37,8 +40,6 @@ class TabStyle {
     // The area inside the tab where children can be rendered, used to clip
     // child views. Does not have to be the same shape as the border.
     kInteriorClip,
-    // The outline of the tab, used for occlusion in certain special situations.
-    kExteriorClip,
     // The path used for focus rings.
     kHighlight,
   };
@@ -76,15 +77,21 @@ class TabStyle {
 
   // Colors for various parts of the tab derived by TabStyle.
   struct TabColors {
-    SkColor background_color;
-    SkColor title_color;
-    SkColor button_icon_idle_color;
-    SkColor button_icon_hovered_color;
-    SkColor button_icon_pressed_color;
-    SkColor button_background_hovered_color;
-    SkColor button_background_pressed_color;
+    SkColor foreground_color = gfx::kPlaceholderColor;
+    SkColor background_color = gfx::kPlaceholderColor;
+
+    TabColors() = default;
+    TabColors(SkColor foreground_color, SkColor background_color)
+        : foreground_color(foreground_color),
+          background_color(background_color) {}
+    bool operator==(const TabColors& other) const {
+      return std::tie(foreground_color, background_color) ==
+             std::tie(other.foreground_color, other.background_color);
+    }
   };
 
+  TabStyle(const TabStyle&) = delete;
+  TabStyle& operator=(const TabStyle&) = delete;
   virtual ~TabStyle();
 
   // Gets the specific |path_type| associated with the specific |tab|.
@@ -107,8 +114,11 @@ class TabStyle {
   // Derives and returns colors for the tab. See TabColors, above.
   virtual TabColors CalculateColors() const = 0;
 
+  // Returns the appropriate fonts for the current theme and active state.
+  virtual const gfx::FontList& GetFontList() const = 0;
+
   // Paints the tab.
-  virtual void PaintTab(gfx::Canvas* canvas, const SkPath& clip) const = 0;
+  virtual void PaintTab(gfx::Canvas* canvas) const = 0;
 
   // Sets the center of the radial highlight in the hover animation.
   virtual void SetHoverLocation(const gfx::Point& location) = 0;
@@ -118,6 +128,9 @@ class TabStyle {
 
   // Hides the hover animation.
   virtual void HideHover(HideHoverStyle style) = 0;
+
+  // Opacity of the active tab background painted over inactive selected tabs.
+  static constexpr float kSelectedTabOpacity = 0.75f;
 
   // Returns the preferred width of a single Tab, assuming space is
   // available.
@@ -146,19 +159,16 @@ class TabStyle {
   // or og:image images, etc.
   static gfx::Size GetPreviewImageSize();
 
+  // Returns the radius of the outer corners of the tab shape.
+  static int GetCornerRadius();
+
  protected:
   // Avoid implicitly-deleted constructor.
   TabStyle() = default;
 
-  // Returns the radius of the outer corners of the tab shape.
-  static int GetCornerRadius();
-
   // Returns how far from the leading and trailing edges of a tab the contents
   // should actually be laid out.
   static int GetContentsHorizontalInsetSize();
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TabStyle);
 };
 
 #endif  // CHROME_BROWSER_UI_TABS_TAB_STYLE_H_

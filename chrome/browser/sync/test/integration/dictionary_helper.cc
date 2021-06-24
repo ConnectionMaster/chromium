@@ -11,7 +11,6 @@
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "chrome/browser/spellchecker/spellcheck_custom_dictionary.h"
 #include "chrome/browser/spellchecker/spellcheck_factory.h"
 #include "chrome/browser/spellchecker/spellcheck_service.h"
@@ -47,11 +46,6 @@ SpellcheckCustomDictionary* GetDictionary(int index) {
       sync_datatype_helper::test()->GetProfile(index))->GetCustomDictionary();
 }
 
-SpellcheckCustomDictionary* GetVerifierDictionary() {
-  return SpellcheckServiceFactory::GetForContext(
-      sync_datatype_helper::test()->verifier())->GetCustomDictionary();
-}
-
 void LoadDictionary(SpellcheckCustomDictionary* dictionary) {
   if (dictionary->IsLoaded())
     return;
@@ -67,42 +61,18 @@ void LoadDictionary(SpellcheckCustomDictionary* dictionary) {
 
 }  // namespace
 
+const std::set<std::string>& GetDictionaryWords(int profile_index) {
+  return GetDictionary(profile_index)->GetWords();
+}
 
 void LoadDictionaries() {
-  for (int i = 0; i < sync_datatype_helper::test()->num_clients(); ++i)
+  for (int i = 0; i < sync_datatype_helper::test()->num_clients(); ++i) {
     LoadDictionary(GetDictionary(i));
-  if (sync_datatype_helper::test()->use_verifier())
-    LoadDictionary(GetVerifierDictionary());
+  }
 }
 
 size_t GetDictionarySize(int index) {
   return GetDictionary(index)->GetWords().size();
-}
-
-size_t GetVerifierDictionarySize() {
-  return GetVerifierDictionary()->GetWords().size();
-}
-
-bool DictionariesMatch() {
-  const std::set<std::string>& reference =
-      sync_datatype_helper::test()->use_verifier()
-          ? GetVerifierDictionary()->GetWords()
-          : GetDictionary(0)->GetWords();
-  for (int i = 0; i < sync_datatype_helper::test()->num_clients(); ++i) {
-    const std::set<std::string>& dictionary = GetDictionary(i)->GetWords();
-    if (reference.size() != dictionary.size() ||
-        !std::equal(reference.begin(), reference.end(), dictionary.begin())) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool DictionaryMatchesVerifier(int index) {
-  const std::set<std::string>& expected = GetVerifierDictionary()->GetWords();
-  const std::set<std::string>& actual = GetDictionary(index)->GetWords();
-  return expected.size() == actual.size() &&
-         std::equal(expected.begin(), expected.end(), actual.begin());
 }
 
 bool AddWord(int index, const std::string& word) {
@@ -110,10 +80,6 @@ bool AddWord(int index, const std::string& word) {
   dictionary_change.AddWord(word);
   bool result = DictionarySyncIntegrationTestHelper::ApplyChange(
       GetDictionary(index), &dictionary_change);
-  if (sync_datatype_helper::test()->use_verifier()) {
-    result &= DictionarySyncIntegrationTestHelper::ApplyChange(
-        GetVerifierDictionary(), &dictionary_change);
-  }
   return result;
 }
 
@@ -130,25 +96,25 @@ bool RemoveWord(int index, const std::string& word) {
   dictionary_change.RemoveWord(word);
   bool result = DictionarySyncIntegrationTestHelper::ApplyChange(
       GetDictionary(index), &dictionary_change);
-  if (sync_datatype_helper::test()->use_verifier()) {
-    result &= DictionarySyncIntegrationTestHelper::ApplyChange(
-        GetVerifierDictionary(), &dictionary_change);
-  }
   return result;
 }
 
-}  // namespace dictionary_helper
-
-DictionaryMatchChecker::DictionaryMatchChecker()
+DictionaryChecker::DictionaryChecker(
+    const std::vector<std::string>& expected_words)
     : MultiClientStatusChangeChecker(
-          sync_datatype_helper::test()->GetSyncServices()) {}
+          sync_datatype_helper::test()->GetSyncServices()),
+      expected_words_(expected_words.begin(), expected_words.end()) {}
 
-bool DictionaryMatchChecker::IsExitConditionSatisfied() {
-  return dictionary_helper::DictionariesMatch();
-}
+DictionaryChecker::~DictionaryChecker() = default;
 
-std::string DictionaryMatchChecker::GetDebugMessage() const {
-  return "Waiting for matching dictionaries";
+bool DictionaryChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for matching dictionaries";
+  for (int i = 0; i < sync_datatype_helper::test()->num_clients(); ++i) {
+    if (GetDictionaryWords(/*profile_index=*/i) != expected_words_) {
+      return false;
+    }
+  }
+  return true;
 }
 
 NumDictionaryEntriesChecker::NumDictionaryEntriesChecker(int index,
@@ -158,12 +124,11 @@ NumDictionaryEntriesChecker::NumDictionaryEntriesChecker(int index,
       index_(index),
       num_words_(num_words) {}
 
-bool NumDictionaryEntriesChecker::IsExitConditionSatisfied() {
-  return dictionary_helper::GetDictionarySize(index_) == num_words_;
+bool NumDictionaryEntriesChecker::IsExitConditionSatisfied(std::ostream* os) {
+  size_t actual_size = GetDictionarySize(index_);
+  *os << "Waiting for client " << index_ << ": " << actual_size << " / "
+      << num_words_ << " words downloaded";
+  return actual_size == num_words_;
 }
 
-std::string NumDictionaryEntriesChecker::GetDebugMessage() const {
-  return base::StringPrintf(
-      "Waiting for client %d: %" PRIuS " / %" PRIuS " words downloaded", index_,
-      dictionary_helper::GetDictionarySize(index_), num_words_);
-}
+}  // namespace dictionary_helper

@@ -4,9 +4,12 @@
 
 #import "ios/chrome/browser/ui/toolbar/adaptive_toolbar_view_controller.h"
 
-#include "base/logging.h"
+#import <MaterialComponents/MaterialProgressView.h>
+
 #include "base/metrics/user_metrics.h"
+#include "base/notreached.h"
 #import "ios/chrome/browser/ui/commands/browser_commands.h"
+#import "ios/chrome/browser/ui/commands/omnibox_commands.h"
 #import "ios/chrome/browser/ui/popup_menu/public/popup_menu_long_press_delegate.h"
 #import "ios/chrome/browser/ui/toolbar/adaptive_toolbar_view.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_button.h"
@@ -14,15 +17,12 @@
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_configuration.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_tab_grid_button.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_tools_menu_button.h"
-#import "ios/chrome/browser/ui/toolbar/public/features.h"
-#import "ios/chrome/browser/ui/toolbar/public/omnibox_focuser.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_constants.h"
+#import "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/browser/ui/util/animation_util.h"
 #import "ios/chrome/browser/ui/util/force_touch_long_press_gesture_recognizer.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/material_timing.h"
-#import "ios/third_party/material_components_ios/src/components/ProgressView/src/MaterialProgressView.h"
-#import "ios/third_party/material_components_ios/src/components/Typography/src/MaterialTypography.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -59,15 +59,10 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
 - (void)updateForSideSwipeSnapshotOnNTP:(BOOL)onNTP {
   self.view.progressBar.hidden = YES;
   self.view.progressBar.alpha = 0;
-  self.view.blur.hidden = YES;
-  self.view.backgroundColor =
-      self.buttonFactory.toolbarConfiguration.backgroundColor;
 }
 
 - (void)resetAfterSideSwipeSnapshot {
   self.view.progressBar.alpha = 1;
-  self.view.blur.hidden = NO;
-  self.view.backgroundColor = [UIColor clearColor];
 }
 
 #pragma mark - UIViewController
@@ -91,32 +86,34 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
   // Adds the layout guide to the buttons.
   self.view.toolsMenuButton.guideName = kToolsMenuGuide;
   self.view.tabGridButton.guideName = kTabSwitcherGuide;
-  self.view.omniboxButton.guideName = kSearchButtonGuide;
+  self.view.openNewTabButton.guideName = kNewTabButtonGuide;
   self.view.forwardButton.guideName = kForwardButtonGuide;
   self.view.backButton.guideName = kBackButtonGuide;
 
   // Add navigation popup menu triggers.
   [self addLongPressGestureToView:self.view.backButton];
   [self addLongPressGestureToView:self.view.forwardButton];
-  [self addLongPressGestureToView:self.view.omniboxButton];
+  [self addLongPressGestureToView:self.view.openNewTabButton];
   [self addLongPressGestureToView:self.view.tabGridButton];
   [self addLongPressGestureToView:self.view.toolsMenuButton];
+
+  [self updateLayoutBasedOnTraitCollection];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
   [super traitCollectionDidChange:previousTraitCollection];
-  [self updateAllButtonsVisibility];
-  if (IsRegularXRegularSizeClass(self)) {
-    [self.view.progressBar setHidden:YES animated:NO completion:nil];
-  } else if (self.loading) {
-    [self.view.progressBar setHidden:NO animated:NO completion:nil];
-  }
+  [self updateLayoutBasedOnTraitCollection];
 }
 
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
   // TODO(crbug.com/882723): Remove this call once iPad trait collection
   // override issue is fixed.
+  [self updateAllButtonsVisibility];
+}
+
+- (void)didMoveToParentViewController:(UIViewController*)parent {
+  [super didMoveToParentViewController:parent];
   [self updateAllButtonsVisibility];
 }
 
@@ -151,8 +148,8 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
              !IsRegularXRegularSizeClass(self) && !self.isNTP) {
     [self.view.progressBar setProgress:0];
     [self updateProgressBarVisibility];
-    // Layout if needed the progress bar to avoid having the progress bar going
-    // backward when opening a page from the NTP.
+    // Layout if needed the progress bar to avoid having the progress bar
+    // going backward when opening a page from the NTP.
     [self.view.progressBar layoutIfNeeded];
   }
 }
@@ -167,6 +164,10 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
 
   CGFloat scaleSign = tabCount > self.view.tabGridButton.tabCount ? 1 : -1;
   self.view.tabGridButton.tabCount = tabCount;
+
+  if (IsRegularXRegularSizeClass(self))
+    // No animation on Regular x Regular.
+    return;
 
   CGFloat scaleFactor = 1 + scaleSign * kScaleFactorDiff;
 
@@ -202,6 +203,10 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
   self.view.bookmarkButton.spotlighted = bookmarked;
 }
 
+- (void)setBookmarkEnabled:(BOOL)enabled {
+  self.view.bookmarkButton.enabled = enabled;
+}
+
 - (void)setVoiceSearchEnabled:(BOOL)enabled {
   // No-op, should be handled by the location bar.
 }
@@ -212,10 +217,6 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
 
 - (void)setIsNTP:(BOOL)isNTP {
   _isNTP = isNTP;
-}
-
-- (void)setSearchIcon:(UIImage*)searchIcon {
-  [self.view.omniboxButton setImage:searchIcon forState:UIControlStateNormal];
 }
 
 #pragma mark - NewTabPageControllerDelegate
@@ -246,8 +247,8 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
     case PopupMenuTypeNavigationBackward:
       selectedButton = self.view.backButton;
       break;
-    case PopupMenuTypeSearch:
-      selectedButton = self.view.omniboxButton;
+    case PopupMenuTypeNewTab:
+      selectedButton = self.view.openNewTabButton;
       break;
     case PopupMenuTypeTabGrid:
       selectedButton = self.view.tabGridButton;
@@ -270,7 +271,7 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
 - (void)updateUIForMenuDismissed {
   self.view.backButton.spotlighted = NO;
   self.view.forwardButton.spotlighted = NO;
-  self.view.omniboxButton.spotlighted = NO;
+  self.view.openNewTabButton.spotlighted = NO;
   self.view.tabGridButton.spotlighted = NO;
   self.view.toolsMenuButton.spotlighted = NO;
 
@@ -342,7 +343,7 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
 - (void)addStandardActionsForAllButtons {
   for (ToolbarButton* button in self.view.allButtons) {
     if (button != self.view.toolsMenuButton &&
-        button != self.view.omniboxButton) {
+        button != self.view.openNewTabButton) {
       [button addTarget:self.dispatcher
                     action:@selector(cancelOmniboxEdit)
           forControlEvents:UIControlEventTouchUpInside];
@@ -374,8 +375,8 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
     base::RecordAction(base::UserMetricsAction("MobileToolbarShowStackView"));
   } else if (sender == self.view.shareButton) {
     base::RecordAction(base::UserMetricsAction("MobileToolbarShareMenu"));
-  } else if (sender == self.view.omniboxButton) {
-    base::RecordAction(base::UserMetricsAction("MobileToolbarOmniboxShortcut"));
+  } else if (sender == self.view.openNewTabButton) {
+    base::RecordAction(base::UserMetricsAction("MobileToolbarNewTabShortcut"));
   } else {
     NOTREACHED();
   }
@@ -398,8 +399,8 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
       [self.dispatcher showNavigationHistoryBackPopupMenu];
     } else if (gesture.view == self.view.forwardButton) {
       [self.dispatcher showNavigationHistoryForwardPopupMenu];
-    } else if (gesture.view == self.view.omniboxButton) {
-      [self.dispatcher showSearchButtonPopup];
+    } else if (gesture.view == self.view.openNewTabButton) {
+      [self.dispatcher showNewTabButtonPopup];
     } else if (gesture.view == self.view.tabGridButton) {
       [self.dispatcher showTabGridButtonPopup];
     } else if (gesture.view == self.view.toolsMenuButton) {
@@ -413,6 +414,15 @@ const CGFloat kTabGridAnimationsTotalDuration = 0.5;
   } else if (gesture.state == UIGestureRecognizerStateChanged) {
     [self.longPressDelegate
         longPressFocusPointChangedTo:[gesture locationOfTouch:0 inView:nil]];
+  }
+}
+
+- (void)updateLayoutBasedOnTraitCollection {
+  [self updateAllButtonsVisibility];
+  if (IsRegularXRegularSizeClass(self)) {
+    [self.view.progressBar setHidden:YES animated:NO completion:nil];
+  } else if (self.loading) {
+    [self.view.progressBar setHidden:NO animated:NO completion:nil];
   }
 }
 

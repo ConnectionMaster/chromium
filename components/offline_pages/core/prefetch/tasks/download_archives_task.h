@@ -47,9 +47,8 @@ class DownloadArchivesTask : public Task {
                        PrefService* prefs);
   ~DownloadArchivesTask() override;
 
-  void Run() override;
-
  private:
+  void Run() override;
   void SendItemsToPrefetchDownloader(
       std::unique_ptr<ItemsToDownload> items_to_download);
 
@@ -60,7 +59,7 @@ class DownloadArchivesTask : public Task {
 
   PrefService* prefs_;
 
-  base::WeakPtrFactory<DownloadArchivesTask> weak_ptr_factory_;
+  base::WeakPtrFactory<DownloadArchivesTask> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DownloadArchivesTask);
 };

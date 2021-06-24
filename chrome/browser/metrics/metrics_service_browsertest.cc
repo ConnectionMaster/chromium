@@ -12,18 +12,18 @@
 #include "base/command_line.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/process/memory.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/metrics/chrome_metrics_service_client.h"
 #include "chrome/browser/metrics/chrome_metrics_services_manager_client.h"
-#include "chrome/browser/metrics/persistent_histograms.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
@@ -33,11 +33,16 @@
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_reporting_default_state.h"
 #include "components/metrics/metrics_switches.h"
+#include "components/metrics/persistent_histograms.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/base/filename_util.h"
-#include "services/service_manager/embedder/switches.h"
+#include "testing/gmock/include/gmock/gmock-matchers.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
@@ -49,7 +54,7 @@
 #include "sandbox/win/src/sandbox_types.h"
 #endif
 
-#if defined(OS_MACOSX) || defined(OS_LINUX)
+#if defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 namespace {
 
 // Check CrashExitCodes.Renderer histogram for a single bucket entry and then
@@ -67,7 +72,7 @@ void VerifyRendererExitCodeIsSignal(
 }
 
 }  // namespace
-#endif  // OS_MACOSX || OS_LINUX
+#endif  // defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 // This test class verifies that metrics reporting works correctly for various
 // renderer behaviors such as page loads, recording crashed tabs, and browser
@@ -128,7 +133,7 @@ class MetricsServiceBrowserTest : public InProcessBrowserTest {
   void OpenThreeTabs() {
     const int kBrowserTestFlags =
         ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION;
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP;
 
     base::FilePath test_directory;
     ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_directory));
@@ -163,7 +168,7 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, CloseRenderersNormally) {
 // Flaky on Linux. See http://crbug.com/131094
 // Child crashes fail the process on ASan (see crbug.com/411251,
 // crbug.com/368525).
-#if defined(OS_LINUX) || defined(ADDRESS_SANITIZER)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(ADDRESS_SANITIZER)
 #define MAYBE_CrashRenderers DISABLED_CrashRenderers
 #define MAYBE_CheckCrashRenderers DISABLED_CheckCrashRenderers
 #else
@@ -174,7 +179,7 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, CloseRenderersNormally) {
 IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, MAYBE_CrashRenderers) {
   base::HistogramTester histogram_tester;
 
-  OpenTabsAndNavigateToCrashyUrl(content::kChromeUICrashURL);
+  OpenTabsAndNavigateToCrashyUrl(blink::kChromeUICrashURL);
 
   // Verify that the expected stability metrics were recorded.
   const PrefService* prefs = g_browser_process->local_state();
@@ -184,20 +189,31 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, MAYBE_CrashRenderers) {
   EXPECT_EQ(1, prefs->GetInteger(metrics::prefs::kStabilityRendererCrashCount));
 
 #if defined(OS_WIN)
+  // Consult Stability Team before changing this test as it's recorded to
+  // histograms and used for stability measurement.
   histogram_tester.ExpectUniqueSample(
       "CrashExitCodes.Renderer",
       std::abs(static_cast<int32_t>(STATUS_ACCESS_VIOLATION)), 1);
-#elif defined(OS_MACOSX) || defined(OS_LINUX)
+#elif defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS)
   VerifyRendererExitCodeIsSignal(histogram_tester, SIGSEGV);
 #endif
   histogram_tester.ExpectUniqueSample("Tabs.SadTab.CrashCreated", 1, 1);
 }
 
+// Test is disabled on Windows AMR64 because
+// TerminateWithHeapCorruption() isn't expected to work there.
+// See: https://crbug.com/1054423
 #if defined(OS_WIN)
-IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, HeapCorruptionInRenderer) {
+#if defined(ARCH_CPU_ARM64)
+#define MAYBE_HeapCorruptionInRenderer DISABLED_HeapCorruptionInRenderer
+#else
+#define MAYBE_HeapCorruptionInRenderer HeapCorruptionInRenderer
+#endif
+IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest,
+                       MAYBE_HeapCorruptionInRenderer) {
   base::HistogramTester histogram_tester;
 
-  OpenTabsAndNavigateToCrashyUrl(content::kChromeUIHeapCorruptionCrashURL);
+  OpenTabsAndNavigateToCrashyUrl(blink::kChromeUIHeapCorruptionCrashURL);
 
   // Verify that the expected stability metrics were recorded.
   const PrefService* prefs = g_browser_process->local_state();
@@ -217,7 +233,7 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, HeapCorruptionInRenderer) {
 IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, MAYBE_CheckCrashRenderers) {
   base::HistogramTester histogram_tester;
 
-  OpenTabsAndNavigateToCrashyUrl(content::kChromeUICheckCrashURL);
+  OpenTabsAndNavigateToCrashyUrl(blink::kChromeUICheckCrashURL);
 
   // Verify that the expected stability metrics were recorded.
   const PrefService* prefs = g_browser_process->local_state();
@@ -228,10 +244,12 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, MAYBE_CheckCrashRenderers) {
   EXPECT_EQ(1, prefs->GetInteger(metrics::prefs::kStabilityRendererCrashCount));
 
 #if defined(OS_WIN)
+  // Consult Stability Team before changing this test as it's recorded to
+  // histograms and used for stability measurement.
   histogram_tester.ExpectUniqueSample(
       "CrashExitCodes.Renderer",
       std::abs(static_cast<int32_t>(STATUS_BREAKPOINT)), 1);
-#elif defined(OS_MACOSX) || defined(OS_LINUX)
+#elif defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS)
   VerifyRendererExitCodeIsSignal(histogram_tester, SIGTRAP);
 #endif
   histogram_tester.ExpectUniqueSample("Tabs.SadTab.CrashCreated", 1, 1);
@@ -243,11 +261,11 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, OOMRenderers) {
   // Disable stack traces during this test since DbgHelp is unreliable in
   // low-memory conditions (see crbug.com/692564).
   base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      service_manager::switches::kDisableInProcessStackTraces);
+      switches::kDisableInProcessStackTraces);
 
   base::HistogramTester histogram_tester;
 
-  OpenTabsAndNavigateToCrashyUrl(content::kChromeUIMemoryExhaustURL);
+  OpenTabsAndNavigateToCrashyUrl(blink::kChromeUIMemoryExhaustURL);
 
   // Verify that the expected stability metrics were recorded.
   const PrefService* prefs = g_browser_process->local_state();
@@ -257,17 +275,25 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, OOMRenderers) {
   EXPECT_EQ(4, prefs->GetInteger(metrics::prefs::kStabilityPageLoadCount));
   EXPECT_EQ(1, prefs->GetInteger(metrics::prefs::kStabilityRendererCrashCount));
 
-// On 64-bit, the Job object should terminate the renderer on an OOM.
+// On 64-bit, the Job object should terminate the renderer on an OOM. However,
+// if the system is low on memory already, then the allocator might just return
+// a normal OOM before hitting the Job limit.
+// Note: Exit codes are recorded after being passed through std::abs see
+// MapCrashExitCodeForHistogram.
 #if defined(ARCH_CPU_64_BITS)
-  const int expected_exit_code = sandbox::SBOX_FATAL_MEMORY_EXCEEDED;
+  const base::Bucket expected_possible_exit_codes[] = {
+      base::Bucket(
+          std::abs(static_cast<int32_t>(sandbox::SBOX_FATAL_MEMORY_EXCEEDED)),
+          1),
+      base::Bucket(std::abs(static_cast<int32_t>(base::win::kOomExceptionCode)),
+                   1)};
 #else
-  const int expected_exit_code = base::win::kOomExceptionCode;
+  const base::Bucket expected_possible_exit_codes[] = {base::Bucket(
+      std::abs(static_cast<int32_t>(base::win::kOomExceptionCode)), 1)};
 #endif
 
-  // Exit codes are recorded after being passed through std::abs see
-  // MapCrashExitCodeForHistogram.
-  histogram_tester.ExpectUniqueSample("CrashExitCodes.Renderer",
-                                      std::abs(expected_exit_code), 1);
+  EXPECT_THAT(histogram_tester.GetAllSamples("CrashExitCodes.Renderer"),
+              ::testing::IsSubsetOf(expected_possible_exit_codes));
 
   histogram_tester.ExpectUniqueSample("Tabs.SadTab.OomCreated", 1, 1);
 }
@@ -296,7 +322,7 @@ class MetricsServiceBrowserFilesTest : public InProcessBrowserTest {
     // "Local State" directory is hard-coded because the FILE_LOCAL_STATE
     // path is not yet defined at this point.
     {
-      base::test::ScopedTaskEnvironment task_env;
+      base::test::TaskEnvironment task_env;
       auto state = base::MakeRefCounted<JsonPrefStore>(
           user_dir.Append(FILE_PATH_LITERAL("Local State")));
       state->SetValue(

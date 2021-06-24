@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "services/device/hid/hid_device_info.h"
 #include "services/device/hid/hid_service.h"
 
@@ -25,7 +26,8 @@ class HidServiceLinux : public HidService {
 
   // HidService:
   void Connect(const std::string& device_id,
-               const ConnectCallback& callback) override;
+               bool allow_protected_reports,
+               ConnectCallback callback) override;
   base::WeakPtr<HidService> GetWeakPtr() override;
 
  private:
@@ -36,11 +38,11 @@ class HidServiceLinux : public HidService {
 // opening a device. Because this operation crosses multiple threads these
 // functions are static and the necessary parameters are passed as a single
 // struct.
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   static void OnPathOpenComplete(std::unique_ptr<ConnectParams> params,
                                  base::ScopedFD fd);
   static void OnPathOpenError(const std::string& device_path,
-                              const ConnectCallback& callback,
+                              ConnectCallback callback,
                               const std::string& error_name,
                               const std::string& error_message);
 #else
@@ -53,7 +55,7 @@ class HidServiceLinux : public HidService {
   // |helper_| lives on the sequence |blocking_task_runner_| posts to and holds
   // a weak reference back to the service that owns it.
   std::unique_ptr<BlockingTaskRunnerHelper, base::OnTaskRunnerDeleter> helper_;
-  base::WeakPtrFactory<HidServiceLinux> weak_factory_;
+  base::WeakPtrFactory<HidServiceLinux> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HidServiceLinux);
 };

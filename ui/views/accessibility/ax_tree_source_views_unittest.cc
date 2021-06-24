@@ -4,9 +4,10 @@
 
 #include "ui/views/accessibility/ax_tree_source_views.h"
 
+#include <memory>
+#include <utility>
 #include <vector>
 
-#include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_tree_data.h"
@@ -28,16 +29,16 @@ class TestAXTreeSourceViews : public AXTreeSourceViews {
  public:
   TestAXTreeSourceViews(AXAuraObjWrapper* root, AXAuraObjCache* cache)
       : AXTreeSourceViews(root, ui::AXTreeID::CreateNewAXTreeID(), cache) {}
-
+  TestAXTreeSourceViews(const TestAXTreeSourceViews&) = delete;
+  TestAXTreeSourceViews& operator=(const TestAXTreeSourceViews&) = delete;
   ~TestAXTreeSourceViews() override = default;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TestAXTreeSourceViews);
 };
 
 class AXTreeSourceViewsTest : public ViewsTestBase {
  public:
   AXTreeSourceViewsTest() = default;
+  AXTreeSourceViewsTest(const AXTreeSourceViewsTest&) = delete;
+  AXTreeSourceViewsTest& operator=(const AXTreeSourceViewsTest&) = delete;
   ~AXTreeSourceViewsTest() override = default;
 
   // testing::Test:
@@ -48,14 +49,14 @@ class AXTreeSourceViewsTest : public ViewsTestBase {
     params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
     params.bounds = gfx::Rect(11, 22, 333, 444);
     params.context = GetContext();
-    widget_->Init(params);
-    widget_->SetContentsView(new View());
+    widget_->Init(std::move(params));
+    widget_->SetContentsView(std::make_unique<View>());
 
-    label1_ = new Label(base::ASCIIToUTF16("Label 1"));
+    label1_ = new Label(u"Label 1");
     label1_->SetBounds(1, 1, 111, 111);
     widget_->GetContentsView()->AddChildView(label1_);
 
-    label2_ = new Label(base::ASCIIToUTF16("Label 2"));
+    label2_ = new Label(u"Label 2");
     label2_->SetBounds(2, 2, 222, 222);
     widget_->GetContentsView()->AddChildView(label2_);
 
@@ -73,9 +74,6 @@ class AXTreeSourceViewsTest : public ViewsTestBase {
   Label* label1_ = nullptr;         // Owned by views hierarchy.
   Label* label2_ = nullptr;         // Owned by views hierarchy.
   Textfield* textfield_ = nullptr;  // Owned by views hierarchy.
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(AXTreeSourceViewsTest);
 };
 
 TEST_F(AXTreeSourceViewsTest, Basics) {
@@ -151,7 +149,22 @@ TEST_F(AXTreeSourceViewsTest, IgnoredView) {
 
   AXAuraObjCache cache;
   TestAXTreeSourceViews tree(cache.GetOrCreate(widget_.get()), &cache);
-  EXPECT_FALSE(tree.IsValid(cache.GetOrCreate(ignored_view)));
+  EXPECT_TRUE(tree.IsValid(cache.GetOrCreate(ignored_view)));
+}
+
+TEST_F(AXTreeSourceViewsTest, ViewWithChildTreeHasNoChildren) {
+  View* contents_view = widget_->GetContentsView();
+  contents_view->GetViewAccessibility().OverrideChildTreeID(
+      ui::AXTreeID::CreateNewAXTreeID());
+
+  AXAuraObjCache cache;
+  TestAXTreeSourceViews tree(cache.GetOrCreate(widget_.get()), &cache);
+  auto* ax_obj = cache.GetOrCreate(contents_view);
+  EXPECT_TRUE(tree.IsValid(ax_obj));
+  std::vector<AXAuraObjWrapper*> children;
+  ax_obj->GetChildren(&children);
+  EXPECT_TRUE(children.empty());
+  EXPECT_EQ(nullptr, cache.GetOrCreate(textfield_)->GetParent());
 }
 
 }  // namespace

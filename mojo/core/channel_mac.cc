@@ -22,9 +22,9 @@
 #include "base/mac/scoped_mach_msg_destroy.h"
 #include "base/mac/scoped_mach_port.h"
 #include "base/mac/scoped_mach_vm.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/message_loop/message_pump_for_io.h"
-#include "base/strings/stringprintf.h"
+#include "base/task/current_thread.h"
+#include "base/trace_event/typed_macros.h"
 
 extern "C" {
 kern_return_t fileport_makeport(int fd, mach_port_t*);
@@ -41,13 +41,13 @@ constexpr mach_msg_id_t kChannelMacInlineMsgId = 'MOJO';
 constexpr mach_msg_id_t kChannelMacOOLMsgId = 'MOJ+';
 
 class ChannelMac : public Channel,
-                   public base::MessageLoopCurrent::DestructionObserver,
+                   public base::CurrentThread::DestructionObserver,
                    public base::MessagePumpKqueue::MachPortWatcher {
  public:
   ChannelMac(Delegate* delegate,
              ConnectionParams connection_params,
              HandlePolicy handle_policy,
-             scoped_refptr<base::TaskRunner> io_task_runner)
+             scoped_refptr<base::SingleThreadTaskRunner> io_task_runner)
       : Channel(delegate, handle_policy, DispatchBufferPolicy::kUnmanaged),
         self_(this),
         io_task_runner_(io_task_runner),
@@ -133,8 +133,8 @@ class ChannelMac : public Channel,
     }
 
     for (uint16_t i = 0; i < mach_ports_header->num_ports; ++i) {
-      auto type = static_cast<PlatformHandle::Type>(
-          mach_ports_header->entries[i].mach_entry.type);
+      auto type =
+          static_cast<PlatformHandle::Type>(mach_ports_header->entries[i].type);
       if (type == PlatformHandle::Type::kNone) {
         return false;
       } else if (type == PlatformHandle::Type::kFd &&
@@ -193,13 +193,13 @@ class ChannelMac : public Channel,
       NOTREACHED();
     }
 
-    base::MessageLoopCurrent::Get()->AddDestructionObserver(this);
-    base::MessageLoopCurrentForIO::Get()->WatchMachReceivePort(
+    base::CurrentThread::Get()->AddDestructionObserver(this);
+    base::CurrentIOThread::Get()->WatchMachReceivePort(
         receive_port_.get(), &watch_controller_, this);
   }
 
   void ShutDownOnIOThread() {
-    base::MessageLoopCurrent::Get()->RemoveDestructionObserver(this);
+    base::CurrentThread::Get()->RemoveDestructionObserver(this);
 
     watch_controller_.StopWatchingMachPort();
 
@@ -287,7 +287,7 @@ class ChannelMac : public Channel,
     // Record the audit token of the sender. All messages received by the
     // channel must be from this same sender.
     auto* trailer = buffer.Object<mach_msg_audit_trailer_t>();
-    peer_audit_token_.reset(new audit_token_t);
+    peer_audit_token_ = std::make_unique<audit_token_t>();
     memcpy(peer_audit_token_.get(), &trailer->msgh_audit,
            sizeof(audit_token_t));
 
@@ -345,20 +345,22 @@ class ChannelMac : public Channel,
     auto* header = buffer.MutableObject<mach_msg_header_t>();
     *header = mach_msg_header_t{};
 
+    std::vector<PlatformHandleInTransit> handles = message->TakeHandles();
+
     // Compute the total size of the message. If the message data are larger
     // than the allocated receive buffer, the data will be transferred out-of-
     // line. The receive buffer is the same size as the send buffer, but there
     // also needs to be room to receive the trailer.
     const size_t mach_header_size =
         sizeof(mach_msg_header_t) + sizeof(mach_msg_body_t) +
-        (message->num_handles() * sizeof(mach_msg_port_descriptor_t));
+        (handles.size() * sizeof(mach_msg_port_descriptor_t));
     const size_t expected_message_size =
-        round_msg(mach_header_size + message->data_num_bytes() +
-                  sizeof(mach_msg_audit_trailer_t));
+        round_msg(mach_header_size + sizeof(uint64_t) +
+                  message->data_num_bytes() + sizeof(mach_msg_audit_trailer_t));
     const bool transfer_message_ool =
         expected_message_size >= send_buffer_.size();
 
-    const bool is_complex = message->has_handles() || transfer_message_ool;
+    const bool is_complex = !handles.empty() || transfer_message_ool;
 
     header->msgh_bits = MACH_MSGH_BITS_REMOTE(MACH_MSG_TYPE_COPY_SEND) |
                         (is_complex ? MACH_MSGH_BITS_COMPLEX : 0);
@@ -367,12 +369,11 @@ class ChannelMac : public Channel,
         transfer_message_ool ? kChannelMacOOLMsgId : kChannelMacInlineMsgId;
 
     auto* body = buffer.MutableObject<mach_msg_body_t>();
-    body->msgh_descriptor_count = message->num_handles();
+    body->msgh_descriptor_count = handles.size();
 
-    std::vector<PlatformHandleInTransit> handles = message->TakeHandles();
     auto descriptors =
         buffer.MutableSpan<mach_msg_port_descriptor_t>(handles.size());
-    for (size_t i = 0; i < message->num_handles(); ++i) {
+    for (size_t i = 0; i < handles.size(); ++i) {
       auto* descriptor = &descriptors[i];
       descriptor->pad1 = 0;
       descriptor->pad2 = 0;
@@ -445,12 +446,19 @@ class ChannelMac : public Channel,
         io_task_runner_->PostTask(
             FROM_HERE, base::BindOnce(&ChannelMac::SendPendingMessages, this));
       } else {
-        // If the message failed to send for other reasons, destroy it and
-        // close the channel.
-        MACH_LOG_IF(ERROR, kr != MACH_SEND_INVALID_DEST, kr) << "mach_msg send";
+        // If the message failed to send for other reasons, destroy it.
         send_buffer_contains_message_ = false;
         mach_msg_destroy(header);
-        OnWriteErrorLocked(Error::kDisconnected);
+        if (kr != MACH_SEND_INVALID_DEST) {
+          // If the message failed to send because the receiver is a dead-name,
+          // wait for the Channel to process the dead-name notification.
+          // Otherwise, the notification message will never be received and the
+          // dead-name right contained within it will be leaked
+          // (https://crbug.com/1041682). If the message failed to send for any
+          // other reason, report an error and shut down.
+          MACH_LOG(ERROR, kr) << "mach_msg send";
+          OnWriteErrorLocked(Error::kDisconnected);
+        }
       }
       return false;
     }
@@ -459,7 +467,7 @@ class ChannelMac : public Channel,
     return true;
   }
 
-  // base::MessageLoopCurrent::DestructionObserver:
+  // base::CurrentThread::DestructionObserver:
   void WillDestroyCurrentMessageLoop() override {
     DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
     if (self_)
@@ -468,6 +476,8 @@ class ChannelMac : public Channel,
 
   // base::MessagePumpKqueue::MachPortWatcher:
   void OnMachMessageReceived(mach_port_t port) override {
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("toplevel.ipc"), "Mojo read message");
+
     DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
 
     base::BufferIterator<const char> buffer(
@@ -653,7 +663,7 @@ class ChannelMac : public Channel,
   // Keeps the Channel alive at least until explicit shutdown on the IO thread.
   scoped_refptr<ChannelMac> self_;
 
-  scoped_refptr<base::TaskRunner> io_task_runner_;
+  scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
   base::mac::ScopedMachReceiveRight receive_port_;
   base::mac::ScopedMachSendRight send_port_;
@@ -703,13 +713,12 @@ class ChannelMac : public Channel,
 
 }  // namespace
 
-// TODO(crbug.com/932175): This will be renamed Channel::Create.
 MOJO_SYSTEM_IMPL_EXPORT
-scoped_refptr<Channel> ChannelMacCreate(
+scoped_refptr<Channel> Channel::Create(
     Channel::Delegate* delegate,
     ConnectionParams connection_params,
     Channel::HandlePolicy handle_policy,
-    scoped_refptr<base::TaskRunner> io_task_runner) {
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) {
   return new ChannelMac(delegate, std::move(connection_params), handle_policy,
                         io_task_runner);
 }

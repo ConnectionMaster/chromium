@@ -14,9 +14,10 @@ namespace autofill {
 
 class TestAutofillExternalDelegate : public AutofillExternalDelegate {
  public:
-  explicit TestAutofillExternalDelegate(AutofillManager* autofill_manager,
-                                        AutofillDriver* autofill_driver,
-                                        bool call_parent_methods);
+  explicit TestAutofillExternalDelegate(
+      BrowserAutofillManager* autofill_manager,
+      AutofillDriver* autofill_driver,
+      bool call_parent_methods);
   ~TestAutofillExternalDelegate() override;
 
   // AutofillExternalDelegate overrides.
@@ -31,7 +32,7 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
                              bool autoselect_first_suggestion,
                              bool is_all_server_suggestions) override;
   bool HasActiveScreenReader() const override;
-  void OnAutofillAvailabilityEvent(bool has_suggestions) override;
+  void OnAutofillAvailabilityEvent(const mojom::AutofillState state) override;
 
   // Functions unique to TestAutofillExternalDelegate.
 

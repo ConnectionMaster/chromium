@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.ProviderInfo;
 import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
 import android.os.Bundle;
@@ -17,6 +18,9 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
 import org.robolectric.shadows.ShadowPackageManager;
 
+import org.chromium.webapk.lib.common.WebApkCommonUtils;
+import org.chromium.webapk.lib.common.WebApkConstants;
+
 import java.net.URISyntaxException;
 
 /**
@@ -24,6 +28,17 @@ import java.net.URISyntaxException;
  */
 public class WebApkTestHelper {
     private static final String SHARE_TARGET_ACTIVITY_CLASS_NAME_PREFIX = "TestShareTargetActivity";
+
+    /**
+     * Returns the simplest intent for launching a WebAPK.
+     */
+    public static Intent createMinimalWebApkIntent(String webApkPackageName, String url) {
+        Intent intent = new Intent();
+        intent.setPackage(RuntimeEnvironment.application.getPackageName());
+        intent.putExtra(WebApkConstants.EXTRA_WEBAPK_PACKAGE_NAME, webApkPackageName);
+        intent.putExtra(WebApkConstants.EXTRA_URL, url);
+        return intent;
+    }
 
     /**
      * Registers WebAPK. This function also creates an empty resource for the WebAPK.
@@ -87,21 +102,25 @@ public class WebApkTestHelper {
         ShadowPackageManager.resources.put(packageName, res);
     }
 
-    private static PackageInfo newPackageInfo(String packageName, Bundle metaData,
+    private static PackageInfo newPackageInfo(String webApkPackageName, Bundle metaData,
             String[] shareTargetActivityClassNames, Bundle[] shareTargetMetaData) {
         ApplicationInfo applicationInfo = new ApplicationInfo();
         applicationInfo.metaData = metaData;
         PackageInfo packageInfo = new PackageInfo();
-        packageInfo.packageName = packageName;
+        packageInfo.packageName = webApkPackageName;
         packageInfo.applicationInfo = applicationInfo;
 
         if (shareTargetMetaData != null) {
             packageInfo.activities = new ActivityInfo[shareTargetMetaData.length];
             for (int i = 0; i < shareTargetMetaData.length; ++i) {
-                packageInfo.activities[i] = newActivityInfo(
-                        packageName, shareTargetActivityClassNames[i], shareTargetMetaData[i]);
+                packageInfo.activities[i] = newActivityInfo(webApkPackageName,
+                        shareTargetActivityClassNames[i], shareTargetMetaData[i]);
             }
         }
+
+        packageInfo.providers =
+                new ProviderInfo[] {newSplashContentProviderInfo(webApkPackageName)};
+
         return packageInfo;
     }
 
@@ -117,8 +136,16 @@ public class WebApkTestHelper {
             String packageName, String activityClassName, Bundle metaData) {
         ActivityInfo activityInfo = new ActivityInfo();
         activityInfo.packageName = packageName;
-        activityInfo.targetActivity = activityClassName;
+        activityInfo.name = activityClassName;
         activityInfo.metaData = metaData;
         return activityInfo;
+    }
+
+    private static ProviderInfo newSplashContentProviderInfo(String webApkPackageName) {
+        ProviderInfo providerInfo = new ProviderInfo();
+        providerInfo.authority =
+                WebApkCommonUtils.generateSplashContentProviderAuthority(webApkPackageName);
+        providerInfo.packageName = webApkPackageName;
+        return providerInfo;
     }
 }

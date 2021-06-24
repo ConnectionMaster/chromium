@@ -17,7 +17,6 @@
 #include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/single_thread_task_runner.h"
@@ -27,18 +26,20 @@
 #include "gpu/gpu_export.h"
 #include "gpu/ipc/client/image_decode_accelerator_proxy.h"
 #include "gpu/ipc/client/shared_image_interface_proxy.h"
+#include "gpu/ipc/common/gpu_channel.mojom.h"
 #include "ipc/ipc_channel_handle.h"
 #include "ipc/message_filter.h"
 #include "ipc/message_router.h"
+#include "mojo/public/cpp/bindings/shared_associated_remote.h"
 #include "ui/gfx/gpu_memory_buffer.h"
 
 namespace IPC {
 struct PendingSyncMsg;
 class ChannelMojo;
 }
-struct GpuDeferredMessage;
 
 namespace gpu {
+class ClientSharedImageInterface;
 struct SyncToken;
 class GpuChannelHost;
 class GpuMemoryBufferManager;
@@ -63,10 +64,12 @@ class GPU_EXPORT GpuChannelHost
     : public IPC::Sender,
       public base::RefCountedThreadSafe<GpuChannelHost> {
  public:
-  GpuChannelHost(int channel_id,
-                 const gpu::GPUInfo& gpu_info,
-                 const gpu::GpuFeatureInfo& gpu_feature_info,
-                 mojo::ScopedMessagePipeHandle handle);
+  GpuChannelHost(
+      int channel_id,
+      const gpu::GPUInfo& gpu_info,
+      const gpu::GpuFeatureInfo& gpu_feature_info,
+      mojo::ScopedMessagePipeHandle handle,
+      scoped_refptr<base::SingleThreadTaskRunner> io_task_runner = nullptr);
 
   bool IsLost() const {
     DCHECK(listener_.get());
@@ -74,6 +77,13 @@ class GPU_EXPORT GpuChannelHost
   }
 
   int channel_id() const { return channel_id_; }
+
+  const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner() {
+    return io_thread_;
+  }
+
+  // Virtual for testing.
+  virtual mojom::GpuChannel& GetGpuChannel();
 
   // The GPU stats reported by the GPU process.
   const gpu::GPUInfo& gpu_info() const { return gpu_info_; }
@@ -95,13 +105,13 @@ class GPU_EXPORT GpuChannelHost
   // being released, but is handled in-order relative to other such IPCs and/or
   // OrderingBarriers. Returns a deferred message id just like OrderingBarrier.
   uint32_t EnqueueDeferredMessage(
-      const IPC::Message& message,
+      mojom::DeferredRequestParamsPtr params,
       std::vector<SyncToken> sync_token_fences = {});
 
   // Ensure that the all deferred messages prior upto |deferred_message_id| have
   // been flushed. Pass UINT32_MAX to force all pending deferred messages to be
   // flushed.
-  void EnsureFlush(uint32_t deferred_message_id);
+  virtual void EnsureFlush(uint32_t deferred_message_id);
 
   // Verify that the all deferred messages prior upto |deferred_message_id| have
   // reached the service. Pass UINT32_MAX to force all pending deferred messages
@@ -124,15 +134,6 @@ class GPU_EXPORT GpuChannelHost
   // Remove the message route associated with |route_id|.
   void RemoveRoute(int route_id);
 
-  // Returns a handle to the shared memory that can be sent via IPC to the
-  // GPU process. The caller is responsible for ensuring it is closed. Returns
-  // an invalid handle on failure.
-  base::SharedMemoryHandle ShareToGpuProcess(
-      const base::SharedMemoryHandle& source_handle);
-
-  base::UnsafeSharedMemoryRegion ShareToGpuProcess(
-      const base::UnsafeSharedMemoryRegion& source_region);
-
   // Reserve one unused image ID.
   int32_t ReserveImageId();
 
@@ -145,9 +146,12 @@ class GPU_EXPORT GpuChannelHost
   // otherwise ignored.
   void CrashGpuProcessForTesting();
 
-  SharedImageInterface* shared_image_interface() {
-    return &shared_image_interface_;
-  }
+  // Termintes the GPU process with an exit code of 0. This only works when
+  // running tests and is otherwise ignored.
+  void TerminateGpuProcessForTesting();
+
+  std::unique_ptr<ClientSharedImageInterface>
+  CreateClientSharedImageInterface();
 
   ImageDecodeAcceleratorProxy* image_decode_accelerator_proxy() {
     return &image_decode_accelerator_proxy_;
@@ -163,10 +167,13 @@ class GPU_EXPORT GpuChannelHost
   // all the contexts.
   class GPU_EXPORT Listener : public IPC::Listener {
    public:
-    Listener(mojo::ScopedMessagePipeHandle handle,
-             scoped_refptr<base::SingleThreadTaskRunner> io_task_runner);
-
+    Listener();
     ~Listener() override;
+
+    // Called on the GpuChannelHost's thread.
+    void Initialize(mojo::ScopedMessagePipeHandle handle,
+                    mojo::PendingAssociatedReceiver<mojom::GpuChannel> receiver,
+                    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner);
 
     // Called on the IO thread.
     void Close();
@@ -254,6 +261,7 @@ class GPU_EXPORT GpuChannelHost
   // with base::Unretained(listener_).
   std::unique_ptr<Listener, base::OnTaskRunnerDeleter> listener_;
 
+  mojo::SharedAssociatedRemote<mojom::GpuChannel> gpu_channel_;
   SharedImageInterfaceProxy shared_image_interface_;
 
   // A client-side helper to send image decode requests to the GPU process.
@@ -268,8 +276,8 @@ class GPU_EXPORT GpuChannelHost
   // Protects |deferred_messages_|, |pending_ordering_barrier_| and
   // |*_deferred_message_id_|.
   mutable base::Lock context_lock_;
-  std::vector<GpuDeferredMessage> deferred_messages_;
-  base::Optional<OrderingBarrierInfo> pending_ordering_barrier_;
+  std::vector<mojom::DeferredRequestPtr> deferred_messages_;
+  absl::optional<OrderingBarrierInfo> pending_ordering_barrier_;
   uint32_t next_deferred_message_id_ = 1;
   // Highest deferred message id in |deferred_messages_|.
   uint32_t enqueued_deferred_message_id_ = 0;

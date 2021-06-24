@@ -7,10 +7,7 @@
 
 #import <Cocoa/Cocoa.h>
 
-#include <memory>
-
 #import "base/mac/scoped_nsobject.h"
-#import "ui/base/cocoa/touch_bar_forward_declarations.h"
 
 @class BrowserWindowTouchBarController;
 @class CreditCardAutofillTouchBarController;
@@ -27,9 +24,9 @@ class WebContents;
 // implements the NSTouchBarDelegate and handles the items in the touch bar.
 API_AVAILABLE(macos(10.12.2))
 @interface WebTextfieldTouchBarController : NSObject<NSTouchBarDelegate> {
-  BrowserWindowTouchBarController* controller_;  // weak.
+  BrowserWindowTouchBarController* _controller;  // weak.
   base::scoped_nsobject<CreditCardAutofillTouchBarController>
-      autofillTouchBarController_;
+      _autofillTouchBarController;
 }
 
 + (WebTextfieldTouchBarController*)controllerForWindow:(NSWindow*)window;

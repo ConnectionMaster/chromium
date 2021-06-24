@@ -27,7 +27,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SERIALIZERS_MARKUP_FORMATTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SERIALIZERS_MARKUP_FORMATTER_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/editing/editing_strategy.h"
 #include "third_party/blink/renderer/core/editing/serializers/serialization.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -63,7 +62,7 @@ enum EntityMask {
   kEntityMaskInHTMLAttributeValue = kEntityAmp | kEntityQuot | kEntityNbsp,
 };
 
-enum class SerializationType { kAsOwnerDocument, kForcedXML };
+enum class SerializationType { kHTML, kXML };
 
 class MarkupFormatter final {
   STACK_ALLOCATED();
@@ -82,11 +81,9 @@ class MarkupFormatter final {
                               const String& value,
                               bool document_is_html);
   static void AppendCDATASection(StringBuilder&, const String&);
-  static void AppendCharactersReplacingEntities(StringBuilder&,
-                                                const String&,
-                                                unsigned,
-                                                unsigned,
-                                                EntityMask);
+  static void AppendCharactersReplacingEntities(StringBuilder& result,
+                                                const StringView& source,
+                                                EntityMask entity_mask);
   static void AppendComment(StringBuilder&, const String&);
   static void AppendDocumentType(StringBuilder&, const DocumentType&);
   static void AppendProcessingInstruction(StringBuilder&,
@@ -94,9 +91,9 @@ class MarkupFormatter final {
                                           const String& data);
   static void AppendXMLDeclaration(StringBuilder&, const Document&);
 
-  MarkupFormatter(AbsoluteURLs,
-                  SerializationType = SerializationType::kAsOwnerDocument);
-  ~MarkupFormatter();
+  MarkupFormatter(AbsoluteURLs, SerializationType);
+  MarkupFormatter(const MarkupFormatter&) = delete;
+  MarkupFormatter& operator=(const MarkupFormatter&) = delete;
 
   void AppendStartMarkup(StringBuilder&, const Node&);
   void AppendEndMarkup(StringBuilder&, const Element&);
@@ -105,7 +102,7 @@ class MarkupFormatter final {
                        const AtomicString& prefix,
                        const AtomicString& local_name);
 
-  bool SerializeAsHTMLDocument(const Node&) const;
+  bool SerializeAsHTML() const;
 
   void AppendText(StringBuilder&, const Text&);
   // Serialize '<' and the element name.
@@ -123,10 +120,8 @@ class MarkupFormatter final {
  private:
   const AbsoluteURLs resolve_urls_method_;
   SerializationType serialization_type_;
-
-  DISALLOW_COPY_AND_ASSIGN(MarkupFormatter);
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SERIALIZERS_MARKUP_FORMATTER_H_

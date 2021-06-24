@@ -8,6 +8,7 @@
 
 #include "base/atomicops.h"
 #include "base/bits.h"
+#include "base/containers/contains.h"
 #include "base/memory/singleton.h"
 #include "base/metrics/persistent_memory_allocator.h"
 #include "base/pickle.h"
@@ -41,8 +42,8 @@ static_assert(sizeof(RecordHeader) == sizeof(base::subtle::Atomic32),
 // for the record header and rounds up to the next multiple of the record-header
 // size.
 size_t CalculateRecordSize(size_t data_amount) {
-  return base::bits::Align(data_amount + sizeof(RecordHeader),
-                           sizeof(RecordHeader));
+  return base::bits::AlignUp(data_amount + sizeof(RecordHeader),
+                             sizeof(RecordHeader));
 }
 
 }  // namespace
@@ -297,10 +298,8 @@ void PersistentSystemProfile::SetSystemProfile(
     // Don't overwrite a complete profile with an incomplete one.
     if (!complete && allocator.has_complete_profile())
       continue;
-    // A full system profile always starts fresh. Incomplete keeps existing
-    // records for merging.
-    if (complete)
-      allocator.Reset();
+    // System profile always starts fresh.
+    allocator.Reset();
     // Write out the serialized profile.
     allocator.Write(kSystemProfileProto, serialized_profile);
     // Indicate if this is a complete profile.
@@ -412,7 +411,7 @@ void PersistentSystemProfile::MergeUpdateRecords(
         if (iter.ReadStringPiece(&trial) && iter.ReadStringPiece(&group)) {
           variations::ActiveGroupId field_ids =
               variations::MakeActiveGroupId(trial, group);
-          if (!base::ContainsKey(known_field_trial_ids, field_ids.name)) {
+          if (!base::Contains(known_field_trial_ids, field_ids.name)) {
             SystemProfileProto::FieldTrial* field_trial =
                 system_profile->add_field_trial();
             field_trial->set_name_id(field_ids.name);

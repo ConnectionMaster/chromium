@@ -14,6 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "cc/paint/paint_canvas.h"
 #include "cc/resources/shared_bitmap_id_registrar.h"
+#include "components/viz/common/resources/release_callback.h"
 #include "content/common/content_export.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/sync_token.h"
@@ -33,8 +34,7 @@ class Rect;
 }
 
 namespace viz {
-class ContextProvider;
-class SingleReleaseCallback;
+class RasterContextProvider;
 struct TransferableResource;
 }
 
@@ -78,7 +78,7 @@ class CONTENT_EXPORT PepperGraphics2DHost
   bool PrepareTransferableResource(
       cc::SharedBitmapIdRegistrar* bitmap_registrar,
       viz::TransferableResource* transferable_resource,
-      std::unique_ptr<viz::SingleReleaseCallback>* release_callback);
+      viz::ReleaseCallback* release_callback);
   void AttachedToNewLayer();
 
   // Notifications about the view's progress painting.  See PluginInstance.
@@ -185,7 +185,7 @@ class CONTENT_EXPORT PepperGraphics2DHost
   // has been destroyed.
   static void ReleaseTextureCallback(
       base::WeakPtr<PepperGraphics2DHost> host,
-      scoped_refptr<viz::ContextProvider> context,
+      scoped_refptr<viz::RasterContextProvider> context,
       const gfx::Size& size,
       const gpu::Mailbox& mailbox,
       const gpu::SyncToken& sync_token,
@@ -234,7 +234,7 @@ class CONTENT_EXPORT PepperGraphics2DHost
   bool is_gpu_compositing_disabled_ = false;
   // The shared main thread context provider, used to upload 2d pepper frames
   // if the compositor is expecting gpu content.
-  scoped_refptr<viz::ContextProvider> main_thread_context_;
+  scoped_refptr<viz::RasterContextProvider> main_thread_context_;
   struct SharedImageInfo {
     SharedImageInfo(gpu::SyncToken sync_token,
                     gpu::Mailbox mailbox,
@@ -253,6 +253,9 @@ class CONTENT_EXPORT PepperGraphics2DHost
   // to give the bitmap to the compositor.
   scoped_refptr<cc::CrossThreadSharedBitmap> cached_bitmap_;
   cc::SharedBitmapIdRegistration cached_bitmap_registration_;
+
+  // Whether to use gpu memory for compositor resources.
+  const bool enable_gpu_memory_buffer_;
 
   friend class PepperGraphics2DHostTest;
   DISALLOW_COPY_AND_ASSIGN(PepperGraphics2DHost);

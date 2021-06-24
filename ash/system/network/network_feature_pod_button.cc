@@ -10,121 +10,75 @@
 #include "ash/system/network/active_network_icon.h"
 #include "ash/system/network/network_icon.h"
 #include "ash/system/network/network_icon_animation.h"
+#include "ash/system/network/tray_network_state_model.h"
 #include "ash/system/tray/system_tray_notifier.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chromeos/network/network_state.h"
-#include "chromeos/network/network_state_handler.h"
+#include "chromeos/services/network_config/public/cpp/cros_network_config_util.h"
+#include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
+#include "components/onc/onc_constants.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 #include "ui/base/l10n/l10n_util.h"
 
-using chromeos::NetworkConnectionHandler;
-using chromeos::NetworkHandler;
-using chromeos::NetworkState;
-using chromeos::NetworkStateHandler;
-using chromeos::NetworkTypePattern;
+using chromeos::network_config::mojom::ActivationStateType;
+using chromeos::network_config::mojom::CellularStateProperties;
+using chromeos::network_config::mojom::ConnectionStateType;
+using chromeos::network_config::mojom::DeviceStateType;
+using chromeos::network_config::mojom::NetworkStateProperties;
+using chromeos::network_config::mojom::NetworkType;
 
 namespace ash {
 
 namespace {
 
-const NetworkState* GetCurrentConnectedNetwork() {
-  NetworkStateHandler* state_handler =
-      NetworkHandler::Get()->network_state_handler();
-  const NetworkState* connected_network =
-      state_handler->ConnectedNetworkByType(NetworkTypePattern::NonVirtual());
+std::u16string GetSubLabelForConnectedNetwork(
+    const NetworkStateProperties* network) {
+  DCHECK(network &&
+         chromeos::network_config::StateIsConnected(network->connection_state));
 
-  if (!connected_network)
-    return nullptr;
-
-  // It is possible that a device type has been disabled but a network
-  // corresponding to that device has not yet been updated. If this is the case,
-  // that network should not be considered connected in this UI surface.
-  if (!state_handler->IsTechnologyEnabled(
-          NetworkTypePattern::Primitive(connected_network->type()))) {
-    return nullptr;
+  if (!chromeos::network_config::NetworkStateMatchesType(
+          network, NetworkType::kWireless)) {
+    return l10n_util::GetStringUTF16(
+        IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED);
   }
 
-  return connected_network;
-}
-
-bool ShouldToggleBeOn() {
-  // The toggle should always be on if Wi-Fi is enabled.
-  if (NetworkHandler::Get()->network_state_handler()->IsTechnologyEnabled(
-          NetworkTypePattern::WiFi())) {
-    return true;
-  }
-
-  // Otherwise, the toggle should be on if there is a connected network.
-  return GetCurrentConnectedNetwork() != nullptr;
-}
-
-const NetworkState* GetCurrentNetwork() {
-  NetworkStateHandler* state_handler =
-      NetworkHandler::Get()->network_state_handler();
-  const NetworkState* connected_network = GetCurrentConnectedNetwork();
-  const NetworkState* connecting_network =
-      state_handler->ConnectingNetworkByType(NetworkTypePattern::Wireless());
-
-  // If connecting to a network, and there is either no connected network or
-  // the connection was user requested, use the connecting network.
-  if (connecting_network &&
-      (!connected_network || connecting_network->connect_requested())) {
-    return connecting_network;
-  }
-
-  if (connected_network)
-    return connected_network;
-
-  // If no connecting network, check if we are activating a network.
-  const NetworkState* mobile_network =
-      state_handler->FirstNetworkByType(NetworkTypePattern::Mobile());
-  if (mobile_network && (mobile_network->activation_state() ==
-                         shill::kActivationStateActivating)) {
-    return mobile_network;
-  }
-
-  return nullptr;
-}
-
-base::string16 GetSubLabelForConnectedNetwork(const NetworkState* network) {
-  DCHECK(network && network->IsConnectedState());
-
-  if (NetworkTypePattern::Cellular().MatchesType(network->type())) {
-    if (network->network_technology() == shill::kNetworkTechnology1Xrtt) {
+  if (network->type == NetworkType::kCellular) {
+    CellularStateProperties* cellular =
+        network->type_state->get_cellular().get();
+    if (cellular->network_technology == onc::cellular::kTechnologyCdma1Xrtt) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_ONE_X);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyGsm) {
+    if (cellular->network_technology == onc::cellular::kTechnologyGsm) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_GSM);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyGprs) {
+    if (cellular->network_technology == onc::cellular::kTechnologyGprs) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_GPRS);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyEdge) {
+    if (cellular->network_technology == onc::cellular::kTechnologyEdge) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_EDGE);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyEvdo ||
-        network->network_technology() == shill::kNetworkTechnologyUmts) {
+    if (cellular->network_technology == onc::cellular::kTechnologyEvdo ||
+        cellular->network_technology == onc::cellular::kTechnologyUmts) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_THREE_G);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyHspa) {
+    if (cellular->network_technology == onc::cellular::kTechnologyHspa) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_HSPA);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyHspaPlus) {
+    if (cellular->network_technology == onc::cellular::kTechnologyHspaPlus) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_HSPA_PLUS);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyLte) {
+    if (cellular->network_technology == onc::cellular::kTechnologyLte) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_LTE);
     }
-    if (network->network_technology() == shill::kNetworkTechnologyLteAdvanced) {
+    if (cellular->network_technology == onc::cellular::kTechnologyLteAdvanced) {
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_CELLULAR_TYPE_LTE_PLUS);
     }
@@ -137,7 +91,12 @@ base::string16 GetSubLabelForConnectedNetwork(const NetworkState* network) {
         IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED);
   }
 
-  switch (network_icon::GetSignalStrengthForNetwork(network)) {
+  int signal_strength =
+      chromeos::network_config::GetWirelessSignalStrength(network);
+  switch (network_icon::GetSignalStrength(signal_strength)) {
+    case network_icon::SignalStrength::NONE:
+      return l10n_util::GetStringUTF16(
+          IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED);
     case network_icon::SignalStrength::WEAK:
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_SIGNAL_WEAK_SUBLABEL);
@@ -147,10 +106,10 @@ base::string16 GetSubLabelForConnectedNetwork(const NetworkState* network) {
     case network_icon::SignalStrength::STRONG:
       return l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_NETWORK_SIGNAL_STRONG_SUBLABEL);
-    default:
-      return l10n_util::GetStringUTF16(
-          IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED);
   }
+  NOTREACHED();
+  return l10n_util::GetStringUTF16(
+      IDS_ASH_STATUS_TRAY_NETWORK_STATUS_CONNECTED);
 }
 
 }  // namespace
@@ -158,87 +117,122 @@ base::string16 GetSubLabelForConnectedNetwork(const NetworkState* network) {
 NetworkFeaturePodButton::NetworkFeaturePodButton(
     FeaturePodControllerBase* controller)
     : FeaturePodButton(controller) {
-  // NetworkHandler can be uninitialized in unit tests.
-  if (!NetworkHandler::IsInitialized())
-    return;
-  network_state_observer_ = std::make_unique<TrayNetworkStateObserver>(this);
+  Shell::Get()->system_tray_model()->network_state_model()->AddObserver(this);
   ShowDetailedViewArrow();
   Update();
 }
 
 NetworkFeaturePodButton::~NetworkFeaturePodButton() {
   network_icon::NetworkIconAnimation::GetInstance()->RemoveObserver(this);
+  Shell::Get()->system_tray_model()->network_state_model()->RemoveObserver(
+      this);
 }
 
 void NetworkFeaturePodButton::NetworkIconChanged() {
   Update();
 }
 
-void NetworkFeaturePodButton::NetworkStateChanged(bool notify_a11y) {
+void NetworkFeaturePodButton::ActiveNetworkStateChanged() {
   Update();
 }
 
+void NetworkFeaturePodButton::OnThemeChanged() {
+  FeaturePodButton::OnThemeChanged();
+
+  // Need to redraw all network icons with new colors.
+  Shell::Get()
+      ->system_tray_model()
+      ->active_network_icon()
+      ->PurgeNetworkIconCache();
+  NetworkIconChanged();
+}
+
+const char* NetworkFeaturePodButton::GetClassName() const {
+  return "NetworkFeaturePodButton";
+}
+
 void NetworkFeaturePodButton::Update() {
-  bool animating = false;
+  TrayNetworkStateModel* model =
+      Shell::Get()->system_tray_model()->network_state_model();
+  const NetworkStateProperties* network = model->default_network();
+
+  const bool toggled = network || model->GetDeviceState(NetworkType::kWiFi) ==
+                                      DeviceStateType::kEnabled;
+  network_icon::IconType icon_type =
+      toggled ? network_icon::ICON_TYPE_FEATURE_POD_TOGGLED
+              : network_icon::ICON_TYPE_FEATURE_POD;
+  bool image_animating = false;
   gfx::ImageSkia image =
-      Shell::Get()->system_tray_model()->active_network_icon()->GetSingleImage(
-          network_icon::ICON_TYPE_DEFAULT_VIEW, &animating);
-  if (animating)
+      Shell::Get()->system_tray_model()->active_network_icon()->GetImage(
+          ActiveNetworkIcon::Type::kSingle, icon_type, &image_animating);
+  gfx::ImageSkia image_disabled =
+      Shell::Get()->system_tray_model()->active_network_icon()->GetImage(
+          ActiveNetworkIcon::Type::kSingle,
+          network_icon::ICON_TYPE_FEATURE_POD_DISABLED, &image_animating);
+
+  if (image_animating)
     network_icon::NetworkIconAnimation::GetInstance()->AddObserver(this);
   else
     network_icon::NetworkIconAnimation::GetInstance()->RemoveObserver(this);
 
-  SetToggled(ShouldToggleBeOn());
   icon_button()->SetImage(views::Button::STATE_NORMAL, image);
+  icon_button()->SetImage(views::Button::STATE_DISABLED, image_disabled);
+  SetToggled(toggled);
 
-  const NetworkState* network = GetCurrentNetwork();
-  if (!network) {
+  std::u16string network_name;
+  if (network) {
+    network_name = network->type == NetworkType::kEthernet
+                       ? l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_ETHERNET)
+                       : base::UTF8ToUTF16(network->name);
+  }
+  // Check for Activating first since activating networks may be connected.
+  if (network && network->type == NetworkType::kCellular &&
+      network->type_state->get_cellular()->activation_state ==
+          ActivationStateType::kActivating) {
+    SetLabel(network_name);
+    SetSubLabel(l10n_util::GetStringUTF16(
+        IDS_ASH_STATUS_TRAY_NETWORK_ACTIVATING_SUBLABEL));
+  } else if (network && chromeos::network_config::StateIsConnected(
+                            network->connection_state)) {
+    SetLabel(network_name);
+    SetSubLabel(GetSubLabelForConnectedNetwork(network));
+  } else if (network &&
+             network->connection_state == ConnectionStateType::kConnecting) {
+    SetLabel(network_name);
+    SetSubLabel(l10n_util::GetStringUTF16(
+        IDS_ASH_STATUS_TRAY_NETWORK_CONNECTING_SUBLABEL));
+  } else {
     SetLabel(l10n_util::GetStringUTF16(
         IDS_ASH_STATUS_TRAY_NETWORK_DISCONNECTED_LABEL));
     SetSubLabel(l10n_util::GetStringUTF16(
         IDS_ASH_STATUS_TRAY_NETWORK_DISCONNECTED_SUBLABEL));
-    SetTooltipState(l10n_util::GetStringUTF16(
-        IDS_ASH_STATUS_TRAY_NETWORK_DISCONNECTED_TOOLTIP));
-    return;
   }
-
-  base::string16 network_name =
-      network->Matches(NetworkTypePattern::Ethernet())
-          ? l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_ETHERNET)
-          : base::UTF8ToUTF16(network->name());
-
-  SetLabel(network_name);
-
-  if (network->IsConnectingState()) {
-    SetSubLabel(l10n_util::GetStringUTF16(
-        IDS_ASH_STATUS_TRAY_NETWORK_CONNECTING_SUBLABEL));
-    SetTooltipState(l10n_util::GetStringFUTF16(
-        IDS_ASH_STATUS_TRAY_NETWORK_CONNECTING_TOOLTIP, network_name));
-    return;
-  }
-
-  if (network->IsConnectedState()) {
-    SetSubLabel(GetSubLabelForConnectedNetwork(network));
-    SetTooltipState(l10n_util::GetStringFUTF16(
-        IDS_ASH_STATUS_TRAY_NETWORK_CONNECTED_TOOLTIP, network_name));
-    return;
-  }
-
-  if (network->activation_state() == shill::kActivationStateActivating) {
-    SetSubLabel(l10n_util::GetStringUTF16(
-        IDS_ASH_STATUS_TRAY_NETWORK_ACTIVATING_SUBLABEL));
-    SetTooltipState(l10n_util::GetStringFUTF16(
-        IDS_ASH_STATUS_TRAY_NETWORK_ACTIVATING_TOOLTIP, network_name));
-    return;
-  }
+  std::u16string tooltip;
+  Shell::Get()
+      ->system_tray_model()
+      ->active_network_icon()
+      ->GetConnectionStatusStrings(ActiveNetworkIcon::Type::kSingle,
+                                   /*a11y_name=*/nullptr,
+                                   /*a11y_desc=*/nullptr, &tooltip);
+  UpdateTooltip(tooltip);
 }
 
-void NetworkFeaturePodButton::SetTooltipState(
-    const base::string16& tooltip_state) {
+void NetworkFeaturePodButton::UpdateTooltip(
+    const std::u16string& connection_state_message) {
+  // When the button is enabled, use tooltips to alert the user of the actions
+  // that will be taken when interacting with the button/toggle. However, if the
+  // button is disabled, those actions cannot be taken, so simply display the
+  // state of the connection as a tooltip
+  if (!GetEnabled()) {
+    SetIconTooltip(connection_state_message);
+    SetLabelTooltip(connection_state_message);
+    return;
+  }
+
   SetIconTooltip(l10n_util::GetStringFUTF16(
-      IDS_ASH_STATUS_TRAY_NETWORK_TOGGLE_TOOLTIP, tooltip_state));
+      IDS_ASH_STATUS_TRAY_NETWORK_TOGGLE_TOOLTIP, connection_state_message));
   SetLabelTooltip(l10n_util::GetStringFUTF16(
-      IDS_ASH_STATUS_TRAY_NETWORK_SETTINGS_TOOLTIP, tooltip_state));
+      IDS_ASH_STATUS_TRAY_NETWORK_SETTINGS_TOOLTIP, connection_state_message));
 }
 
 }  // namespace ash

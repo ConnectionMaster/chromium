@@ -9,18 +9,31 @@
 #include <tuple>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
-#include "base/optional.h"
 #include "base/strings/string_util.h"
-#include "base/value_conversions.h"
+#include "base/util/values/values_util.h"
+#include "build/build_config.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/user_prefs/user_prefs.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_handle.h"
-#include "media/base/android/media_drm_key_type.h"
+#include "media/base/media_drm_key_type.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
+
+#if defined(OS_ANDROID)
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "media/base/android/media_drm_bridge.h"
+#include "third_party/widevine/cdm/widevine_cdm_common.h"  // nogncheck
+#endif
 
 // The storage will be managed by PrefService. All data will be stored in a
 // dictionary under the key "media.media_drm_storage". The dictionary is
@@ -51,9 +64,14 @@
 
 namespace cdm {
 
-namespace {
+namespace prefs {
 
 const char kMediaDrmStorage[] = "media.media_drm_storage";
+
+}  // namespace prefs
+
+namespace {
+
 const char kCreationTime[] = "creation_time";
 const char kSessions[] = "sessions";
 const char kKeySetId[] = "key_set_id";
@@ -130,7 +148,7 @@ class OriginData {
   base::Value ToDictValue() const {
     base::Value dict(base::Value::Type::DICTIONARY);
 
-    dict.SetKey(kOriginId, base::CreateUnguessableTokenValue(origin_id_));
+    dict.SetKey(kOriginId, util::UnguessableTokenToValue(origin_id_));
     dict.SetKey(kCreationTime, base::Value(provision_time_.ToDoubleT()));
 
     return dict;
@@ -148,15 +166,16 @@ class OriginData {
     if (!origin_id_value)
       return nullptr;
 
-    base::UnguessableToken origin_id;
-    if (!base::GetValueAsUnguessableToken(*origin_id_value, &origin_id))
+    absl::optional<base::UnguessableToken> origin_id =
+        util::ValueToUnguessableToken(*origin_id_value);
+    if (!origin_id)
       return nullptr;
 
     base::Time time;
     if (!GetCreationTimeFromDict(origin_dict, &time))
       return nullptr;
 
-    return base::WrapUnique(new OriginData(origin_id, time));
+    return base::WrapUnique(new OriginData(*origin_id, time));
   }
 
  private:
@@ -286,6 +305,7 @@ base::Value* CreateOriginDictAndReturnSessionsDict(
       ->SetKey(kSessions, base::Value(base::Value::Type::DICTIONARY));
 }
 
+#if defined(OS_ANDROID)
 // Clear sessions whose creation time falls in [start, end] from
 // |sessions_dict|. This function also cleans corruption data and should never
 // fail.
@@ -390,10 +410,34 @@ std::vector<base::UnguessableToken> ClearMatchingLicenseData(
   return origin_ids_to_unprovision;
 }
 
+// Unprovision MediaDrm in IO thread.
+void ClearMediaDrmLicensesBlocking(
+    std::vector<base::UnguessableToken> origin_ids) {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::WILL_BLOCK);
+
+  for (const auto& origin_id : origin_ids) {
+    // MediaDrm will unprovision |origin_id| for all security level. Passing
+    // DEFAULT here is OK.
+    scoped_refptr<media::MediaDrmBridge> media_drm_bridge =
+        media::MediaDrmBridge::CreateWithoutSessionSupport(
+            kWidevineKeySystem, origin_id.ToString(),
+            media::MediaDrmBridge::SECURITY_LEVEL_DEFAULT,
+            base::NullCallback());
+
+    DCHECK(media_drm_bridge);
+
+    media_drm_bridge->Unprovision();
+  }
+}
+#endif  // defined(OS_ANDROID)
+
 // Returns true if any session in |sessions_dict| has been modified more
-// recently than |modified_since|, and otherwise returns false.
-bool SessionsModifiedSince(const base::Value* sessions_dict,
-                           base::Time modified_since) {
+// recently than |start| and before |end|, and otherwise
+// returns false.
+bool SessionsModifiedBetween(const base::Value* sessions_dict,
+                             base::Time start,
+                             base::Time end) {
   DCHECK(sessions_dict->is_dict());
   for (const auto& key_value : sessions_dict->DictItems()) {
     const base::Value* session_dict = &key_value.second;
@@ -405,11 +449,11 @@ bool SessionsModifiedSince(const base::Value* sessions_dict,
     if (!session_data)
       continue;
 
-    if (session_data->creation_time() >= modified_since)
+    if (session_data->creation_time() >= start &&
+        session_data->creation_time() < end)
       return true;
   }
 
-  // No session creation time >= |modified_since|.
   return false;
 }
 
@@ -477,10 +521,12 @@ class InitializationSerializer {
 
     // Check if the preference has an existing origin ID.
     const base::DictionaryValue* storage_dict =
-        pref_service->GetDictionary(kMediaDrmStorage);
+        pref_service->GetDictionary(prefs::kMediaDrmStorage);
     base::UnguessableToken origin_id =
         GetOriginIdForOrigin(storage_dict, origin);
     if (origin_id) {
+      DVLOG(3) << __func__
+               << ": Found origin ID in pref service dictionary: " << origin_id;
       std::move(origin_id_obtained_cb).Run(true, origin_id);
       return;
     }
@@ -505,6 +551,7 @@ class InitializationSerializer {
     // which will call all the callbacks saved for this preference and origin
     // pair. Use of base::Unretained() is valid as |this| is a singleton stored
     // in a static variable.
+    DVLOG(3) << __func__ << ": Call |get_origin_id_cb| to get origin ID.";
     get_origin_id_cb.Run(
         base::BindOnce(&InitializationSerializer::OnOriginIdObtained,
                        base::Unretained(this), pref_service, origin));
@@ -521,7 +568,7 @@ class InitializationSerializer {
 
     // Save the origin ID in the preference as long as it is not null.
     if (origin_id) {
-      DictionaryPrefUpdate update(pref_service, kMediaDrmStorage);
+      DictionaryPrefUpdate update(pref_service, prefs::kMediaDrmStorage);
       CreateOriginDictAndReturnSessionsDict(update.Get(), origin,
                                             origin_id.value());
     }
@@ -552,7 +599,7 @@ class InitializationSerializer {
 
 // static
 void MediaDrmStorageImpl::RegisterProfilePrefs(PrefRegistrySimple* registry) {
-  registry->RegisterDictionaryPref(kMediaDrmStorage);
+  registry->RegisterDictionaryPref(prefs::kMediaDrmStorage);
 }
 
 // static
@@ -561,12 +608,12 @@ std::set<GURL> MediaDrmStorageImpl::GetAllOrigins(
   DCHECK(pref_service);
 
   const base::DictionaryValue* storage_dict =
-      pref_service->GetDictionary(kMediaDrmStorage);
+      pref_service->GetDictionary(prefs::kMediaDrmStorage);
   if (!storage_dict)
     return std::set<GURL>();
 
   std::set<GURL> origin_set;
-  for (const auto& key_value : *storage_dict) {
+  for (const auto& key_value : storage_dict->DictItems()) {
     GURL origin(key_value.first);
     if (origin.is_valid())
       origin_set.insert(origin);
@@ -576,18 +623,20 @@ std::set<GURL> MediaDrmStorageImpl::GetAllOrigins(
 }
 
 // static
-std::vector<GURL> MediaDrmStorageImpl::GetOriginsModifiedSince(
+std::vector<GURL> MediaDrmStorageImpl::GetOriginsModifiedBetween(
     const PrefService* pref_service,
-    base::Time modified_since) {
+    base::Time start,
+    base::Time end) {
   DCHECK(pref_service);
 
   const base::DictionaryValue* storage_dict =
-      pref_service->GetDictionary(kMediaDrmStorage);
+      pref_service->GetDictionary(prefs::kMediaDrmStorage);
   if (!storage_dict)
     return {};
 
-  // Check each origin to see if it has been modified since |modified_since|.
-  // If there are any errors in kMediaDrmStorage, ignore them.
+  // Check each origin to see if it has been modified after |start| and
+  // before |end|. If there are any errors in prefs::kMediaDrmStorage,
+  // ignore them.
   std::vector<GURL> matching_origins;
   for (const auto& key_value : storage_dict->DictItems()) {
     GURL origin(key_value.first);
@@ -604,8 +653,8 @@ std::vector<GURL> MediaDrmStorageImpl::GetOriginsModifiedSince(
       continue;
 
     // There is no need to check the sessions if the origin was provisioned
-    // after |modified_since|.
-    if (origin_data->provision_time() < modified_since) {
+    // after |start|.
+    if (origin_data->provision_time() < start) {
       // See if any session created recently.
       const base::Value* sessions =
           origin_dict->FindKeyOfType(kSessions, base::Value::Type::DICTIONARY);
@@ -613,12 +662,15 @@ std::vector<GURL> MediaDrmStorageImpl::GetOriginsModifiedSince(
         continue;
 
       // If no sessions modified recently, move on to the next origin.
-      if (!SessionsModifiedSince(sessions, modified_since))
+      if (!SessionsModifiedBetween(sessions, start, end))
         continue;
     }
 
-    // Either the origin has been provisioned after |modified_since| or there
-    // are sessions created after |modified_since|, so add the origin to the
+    if (origin_data->provision_time() >= end)
+      continue;
+
+    // Either the origin has been provisioned after |start| or there
+    // are sessions created after |start|, so add the origin to the
     // list returned.
     matching_origins.push_back(origin);
   }
@@ -626,18 +678,36 @@ std::vector<GURL> MediaDrmStorageImpl::GetOriginsModifiedSince(
   return matching_origins;
 }
 
+#if defined(OS_ANDROID)
 // static
-std::vector<base::UnguessableToken> MediaDrmStorageImpl::ClearMatchingLicenses(
+void MediaDrmStorageImpl::ClearMatchingLicenses(
     PrefService* pref_service,
     base::Time start,
     base::Time end,
-    const base::RepeatingCallback<bool(const GURL&)>& filter) {
+    const base::RepeatingCallback<bool(const GURL&)>& filter,
+    base::OnceClosure complete_cb) {
   DVLOG(1) << __func__ << ": Clear licenses [" << start << ", " << end << "]";
 
-  DictionaryPrefUpdate update(pref_service, kMediaDrmStorage);
+  DictionaryPrefUpdate update(pref_service, prefs::kMediaDrmStorage);
 
-  return ClearMatchingLicenseData(update.Get(), start, end, filter);
+  std::vector<base::UnguessableToken> no_license_origin_ids =
+      ClearMatchingLicenseData(update.Get(), start, end, filter);
+  if (no_license_origin_ids.empty()) {
+    std::move(complete_cb).Run();
+    return;
+  }
+
+  // Create a single thread task runner for MediaDrmBridge, for posting Java
+  // callbacks immediately to avoid rentrancy issues.
+  // TODO(yucliu): Remove task runner from MediaDrmBridge in this case.
+  base::ThreadPool::CreateSingleThreadTaskRunner(
+      {base::TaskPriority::USER_VISIBLE, base::MayBlock()})
+      ->PostTaskAndReply(FROM_HERE,
+                         base::BindOnce(&ClearMediaDrmLicensesBlocking,
+                                        std::move(no_license_origin_ids)),
+                         std::move(complete_cb));
 }
+#endif
 
 // MediaDrmStorageImpl
 
@@ -646,12 +716,11 @@ MediaDrmStorageImpl::MediaDrmStorageImpl(
     PrefService* pref_service,
     GetOriginIdCB get_origin_id_cb,
     AllowEmptyOriginIdCB allow_empty_origin_id_cb,
-    media::mojom::MediaDrmStorageRequest request)
-    : FrameServiceBase(render_frame_host, std::move(request)),
+    mojo::PendingReceiver<media::mojom::MediaDrmStorage> receiver)
+    : DocumentServiceBase(render_frame_host, std::move(receiver)),
       pref_service_(pref_service),
       get_origin_id_cb_(get_origin_id_cb),
-      allow_empty_origin_id_cb_(allow_empty_origin_id_cb),
-      weak_factory_(this) {
+      allow_empty_origin_id_cb_(allow_empty_origin_id_cb) {
   DVLOG(1) << __func__ << ": origin = " << origin();
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(pref_service_);
@@ -660,11 +729,25 @@ MediaDrmStorageImpl::MediaDrmStorageImpl(
   DCHECK(!origin().opaque());
 }
 
+MediaDrmStorageImpl::MediaDrmStorageImpl(
+    content::RenderFrameHost* render_frame_host,
+    GetOriginIdCB get_origin_id_cb,
+    AllowEmptyOriginIdCB allow_empty_origin_id_cb,
+    mojo::PendingReceiver<media::mojom::MediaDrmStorage> receiver)
+    : MediaDrmStorageImpl(
+          render_frame_host,
+          user_prefs::UserPrefs::Get(
+              content::WebContents::FromRenderFrameHost(render_frame_host)
+                  ->GetBrowserContext()),
+          get_origin_id_cb,
+          allow_empty_origin_id_cb,
+          std::move(receiver)) {}
+
 MediaDrmStorageImpl::~MediaDrmStorageImpl() {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   if (init_cb_)
-    std::move(init_cb_).Run(false, base::nullopt);
+    std::move(init_cb_).Run(false, absl::nullopt);
 }
 
 void MediaDrmStorageImpl::Initialize(InitializeCallback callback) {
@@ -709,7 +792,7 @@ void MediaDrmStorageImpl::OnOriginIdObtained(
 }
 
 void MediaDrmStorageImpl::OnEmptyOriginIdAllowed(bool allowed) {
-  std::move(init_cb_).Run(allowed, base::nullopt);
+  std::move(init_cb_).Run(allowed, absl::nullopt);
 }
 
 void MediaDrmStorageImpl::OnProvisioned(OnProvisionedCallback callback) {
@@ -729,7 +812,7 @@ void MediaDrmStorageImpl::OnProvisioned(OnProvisionedCallback callback) {
     return;
   }
 
-  DictionaryPrefUpdate update(pref_service_, kMediaDrmStorage);
+  DictionaryPrefUpdate update(pref_service_, prefs::kMediaDrmStorage);
   base::DictionaryValue* storage_dict = update.Get();
   DCHECK(storage_dict);
 
@@ -761,7 +844,7 @@ void MediaDrmStorageImpl::SavePersistentSession(
     return;
   }
 
-  DictionaryPrefUpdate update(pref_service_, kMediaDrmStorage);
+  DictionaryPrefUpdate update(pref_service_, prefs::kMediaDrmStorage);
   base::DictionaryValue* storage_dict = update.Get();
   DCHECK(storage_dict);
 
@@ -816,7 +899,8 @@ void MediaDrmStorageImpl::LoadPersistentSession(
 
   const base::Value* sessions_dict =
       GetSessionsDictFromStorageDict<const base::Value>(
-          pref_service_->GetDictionary(kMediaDrmStorage), origin().Serialize());
+          pref_service_->GetDictionary(prefs::kMediaDrmStorage),
+          origin().Serialize());
   if (!sessions_dict) {
     std::move(callback).Run(nullptr);
     return;
@@ -861,7 +945,7 @@ void MediaDrmStorageImpl::RemovePersistentSession(
     return;
   }
 
-  DictionaryPrefUpdate update(pref_service_, kMediaDrmStorage);
+  DictionaryPrefUpdate update(pref_service_, prefs::kMediaDrmStorage);
 
   base::Value* sessions_dict = GetSessionsDictFromStorageDict<base::Value>(
       update.Get(), origin().Serialize());

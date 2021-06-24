@@ -9,13 +9,13 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/location.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/local_discovery/service_discovery_shared_client.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_handler.h"
@@ -25,21 +25,22 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/webui/local_discovery/local_discovery_ui_handler.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/consent_level.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "net/net_buildflags.h"
-#include "services/identity/public/cpp/identity_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -58,24 +59,6 @@ const int kTenMinutesInSeconds = 600;
 const char kPrivetInfoKeyUptime[] = "uptime";
 const char kPrivetNotificationID[] = "privet_notification";
 const char kPrivetNotificationOriginUrl[] = "chrome://devices";
-const int kStartDelaySeconds = 5;
-
-enum PrivetNotificationsEvent {
-  PRIVET_SERVICE_STARTED,
-  PRIVET_LISTER_STARTED,
-  PRIVET_DEVICE_CHANGED,
-  PRIVET_INFO_DONE,
-  PRIVET_NOTIFICATION_SHOWN,
-  PRIVET_NOTIFICATION_CANCELED,
-  PRIVET_NOTIFICATION_CLICKED,
-  PRIVET_DISABLE_NOTIFICATIONS_CLICKED,
-  PRIVET_EVENT_MAX,
-};
-
-void ReportPrivetUmaEvent(PrivetNotificationsEvent privet_event) {
-  UMA_HISTOGRAM_ENUMERATION("LocalDiscovery.PrivetNotificationsEvent",
-                            privet_event, PRIVET_EVENT_MAX);
-}
 
 }  // namespace
 
@@ -92,7 +75,6 @@ PrivetNotificationsListener::~PrivetNotificationsListener() {
 void PrivetNotificationsListener::DeviceChanged(
     const std::string& name,
     const DeviceDescription& description) {
-  ReportPrivetUmaEvent(PRIVET_DEVICE_CHANGED);
   auto it = devices_seen_.find(name);
   if (it != devices_seen_.end()) {
     if (!description.id.empty() &&  // Device is registered
@@ -105,7 +87,7 @@ void PrivetNotificationsListener::DeviceChanged(
   }
 
   std::unique_ptr<DeviceContext>& device_context = devices_seen_[name];
-  device_context.reset(new DeviceContext);
+  device_context = std::make_unique<DeviceContext>();
   device_context->notification_may_be_active = false;
   device_context->registered = !description.id.empty();
 
@@ -116,8 +98,8 @@ void PrivetNotificationsListener::DeviceChanged(
       privet_http_factory_->CreatePrivetHTTP(name);
   device_context->privet_http_resolution->Start(
       description.address,
-      base::Bind(&PrivetNotificationsListener::CreateInfoOperation,
-                 base::Unretained(this)));
+      base::BindOnce(&PrivetNotificationsListener::CreateInfoOperation,
+                     base::Unretained(this)));
 }
 
 void PrivetNotificationsListener::CreateInfoOperation(
@@ -134,9 +116,8 @@ void PrivetNotificationsListener::CreateInfoOperation(
   DeviceContext* device = it->second.get();
   device->privet_http.swap(http_client);
   device->info_operation = device->privet_http->CreateInfoOperation(
-      base::Bind(&PrivetNotificationsListener::OnPrivetInfoDone,
-                 base::Unretained(this),
-                 device));
+      base::BindOnce(&PrivetNotificationsListener::OnPrivetInfoDone,
+                     base::Unretained(this), device));
   device->info_operation->Start();
 }
 
@@ -199,13 +180,15 @@ PrivetNotificationsListener::DeviceContext::DeviceContext() {
 PrivetNotificationsListener::DeviceContext::~DeviceContext() {
 }
 
+// static
+constexpr base::TimeDelta PrivetNotificationService::kStartDelay;
+
 PrivetNotificationService::PrivetNotificationService(
     content::BrowserContext* profile)
     : profile_(profile) {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE, base::BindOnce(&PrivetNotificationService::Start, AsWeakPtr()),
-      base::TimeDelta::FromSeconds(kStartDelaySeconds +
-                                   base::RandInt(0, kStartDelaySeconds / 4)));
+      kStartDelay + base::TimeDelta::FromMilliseconds(base::RandInt(0, 1000)));
 }
 
 PrivetNotificationService::~PrivetNotificationService() {
@@ -229,13 +212,6 @@ void PrivetNotificationService::DeviceCacheFlushed() {
 // static
 bool PrivetNotificationService::IsEnabled() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  return !command_line->HasSwitch(
-      switches::kDisableDeviceDiscoveryNotifications);
-}
-
-// static
-bool PrivetNotificationService::IsForced() {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   return command_line->HasSwitch(switches::kEnableDeviceDiscoveryNotifications);
 }
 
@@ -245,8 +221,8 @@ void PrivetNotificationService::PrivetNotify(int devices_active,
 
   NotificationDisplayService::GetForProfile(
       Profile::FromBrowserContext(profile_))
-      ->GetDisplayed(base::Bind(&PrivetNotificationService::AddNotification,
-                                AsWeakPtr(), devices_active, added));
+      ->GetDisplayed(base::BindOnce(&PrivetNotificationService::AddNotification,
+                                    AsWeakPtr(), devices_active, added));
 }
 
 void PrivetNotificationService::AddNotification(
@@ -257,11 +233,8 @@ void PrivetNotificationService::AddNotification(
   // If the UI is already open or a device was removed, we'll update the
   // existing notification but not add a new one.
   const bool notification_exists =
-      base::ContainsKey(displayed_notifications, kPrivetNotificationID);
-  const bool add_new_notification =
-      device_added &&
-      !local_discovery::LocalDiscoveryUIHandler::GetHasVisible();
-  if (!notification_exists && !add_new_notification)
+      base::Contains(displayed_notifications, kPrivetNotificationID);
+  if (!notification_exists && !device_added)
     return;
 
   message_center::RichNotificationData rich_notification_data;
@@ -272,11 +245,11 @@ void PrivetNotificationService::AddNotification(
       message_center::ButtonInfo(l10n_util::GetStringUTF16(
           IDS_LOCAL_DISCOVERY_NOTIFICATIONS_DISABLE_BUTTON_LABEL)));
 
-  base::string16 title = l10n_util::GetPluralStringFUTF16(
+  std::u16string title = l10n_util::GetPluralStringFUTF16(
       IDS_LOCAL_DISCOVERY_NOTIFICATION_TITLE_PRINTER, devices_active);
-  base::string16 body = l10n_util::GetPluralStringFUTF16(
+  std::u16string body = l10n_util::GetPluralStringFUTF16(
       IDS_LOCAL_DISCOVERY_NOTIFICATION_CONTENTS_PRINTER, devices_active);
-  base::string16 product_name =
+  std::u16string product_name =
       l10n_util::GetStringUTF16(IDS_LOCAL_DISCOVERY_SERVICE_NAME_PRINTER);
 
   Profile* profile = Profile::FromBrowserContext(profile_);
@@ -290,9 +263,6 @@ void PrivetNotificationService::AddNotification(
                                  kPrivetNotificationID),
       rich_notification_data, CreateNotificationDelegate(profile));
 
-  if (add_new_notification)
-    ReportPrivetUmaEvent(PRIVET_NOTIFICATION_SHOWN);
-
   NotificationDisplayService::GetForProfile(
       Profile::FromBrowserContext(profile_))
       ->Display(NotificationHandler::Type::TRANSIENT, notification,
@@ -300,26 +270,29 @@ void PrivetNotificationService::AddNotification(
 }
 
 void PrivetNotificationService::PrivetRemoveNotification() {
-  ReportPrivetUmaEvent(PRIVET_NOTIFICATION_CANCELED);
   NotificationDisplayService::GetForProfile(
       Profile::FromBrowserContext(profile_))
       ->Close(NotificationHandler::Type::TRANSIENT, kPrivetNotificationID);
 }
 
 void PrivetNotificationService::Start() {
-#if defined(CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   auto* identity_manager = IdentityManagerFactory::GetForProfileIfExists(
       Profile::FromBrowserContext(profile_));
 
-  if (!identity_manager || !identity_manager->HasPrimaryAccount())
+  // Only show notifications for signed-in accounts. https://crbug.com/349098
+  if (!identity_manager ||
+      !identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     return;
-#endif
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   enable_privet_notification_member_.Init(
       prefs::kLocalDiscoveryNotificationsEnabled,
       Profile::FromBrowserContext(profile_)->GetPrefs(),
-      base::Bind(&PrivetNotificationService::OnNotificationsEnabledChanged,
-                 base::Unretained(this)));
+      base::BindRepeating(
+          &PrivetNotificationService::OnNotificationsEnabledChanged,
+          base::Unretained(this)));
   OnNotificationsEnabledChanged();
 }
 
@@ -327,10 +300,7 @@ void PrivetNotificationService::OnNotificationsEnabledChanged() {
 #if BUILDFLAG(ENABLE_MDNS)
   traffic_detector_.reset();
 
-  if (IsForced()) {
-    StartLister();
-  } else if (*enable_privet_notification_member_) {
-    ReportPrivetUmaEvent(PRIVET_SERVICE_STARTED);
+  if (*enable_privet_notification_member_) {
     traffic_detector_ = std::make_unique<PrivetTrafficDetector>(
         profile_, base::BindRepeating(&PrivetNotificationService::StartLister,
                                       AsWeakPtr()));
@@ -340,7 +310,7 @@ void PrivetNotificationService::OnNotificationsEnabledChanged() {
     privet_notifications_listener_.reset();
   }
 #else
-  if (IsForced() || *enable_privet_notification_member_) {
+  if (*enable_privet_notification_member_) {
     StartLister();
   } else {
     device_lister_.reset();
@@ -351,21 +321,21 @@ void PrivetNotificationService::OnNotificationsEnabledChanged() {
 }
 
 void PrivetNotificationService::StartLister() {
-  ReportPrivetUmaEvent(PRIVET_LISTER_STARTED);
   service_discovery_client_ =
       local_discovery::ServiceDiscoverySharedClient::GetInstance();
-  device_lister_.reset(
-      new PrivetDeviceListerImpl(service_discovery_client_.get(), this));
+  device_lister_ = std::make_unique<PrivetDeviceListerImpl>(
+      service_discovery_client_.get(), this);
   device_lister_->Start();
   device_lister_->DiscoverNewDevices();
 
   std::unique_ptr<PrivetHTTPAsynchronousFactory> http_factory(
       PrivetHTTPAsynchronousFactory::CreateInstance(
-          content::BrowserContext::GetDefaultStoragePartition(profile_)
+          profile_->GetDefaultStoragePartition()
               ->GetURLLoaderFactoryForBrowserProcess()));
 
-  privet_notifications_listener_.reset(
-      new PrivetNotificationsListener(std::move(http_factory), this));
+  privet_notifications_listener_ =
+      std::make_unique<PrivetNotificationsListener>(std::move(http_factory),
+                                                    this);
 }
 
 PrivetNotificationDelegate*
@@ -380,17 +350,15 @@ PrivetNotificationDelegate::~PrivetNotificationDelegate() {
 }
 
 void PrivetNotificationDelegate::Click(
-    const base::Optional<int>& button_index,
-    const base::Optional<base::string16>& reply) {
+    const absl::optional<int>& button_index,
+    const absl::optional<std::u16string>& reply) {
   if (!button_index)
     return;
 
   if (*button_index == 0) {
-    ReportPrivetUmaEvent(PRIVET_NOTIFICATION_CLICKED);
     OpenTab(GURL(kPrivetNotificationOriginUrl));
   } else {
     DCHECK_EQ(1, *button_index);
-    ReportPrivetUmaEvent(PRIVET_DISABLE_NOTIFICATIONS_CLICKED);
     DisableNotifications();
   }
   CloseNotification();

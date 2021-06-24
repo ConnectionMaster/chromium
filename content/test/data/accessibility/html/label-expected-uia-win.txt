@@ -1,5 +1,4 @@
-region
-++document
-++++group
-++++++description
-++++++++description Name='Label'
+Document
+++Group IsControlElement=false
+++++Text
+++++++Text Name='Label'

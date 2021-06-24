@@ -5,12 +5,12 @@
 #include "base/bind.h"
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/test_suite.h"
-#include "chromeos/chromeos_buildflags.h"
+#include "build/chromeos_buildflags.h"
 #include "mojo/core/embedder/embedder.h"
 
-#if BUILDFLAG(IS_CROS_CHROME_SDK)
-#error This test target only builds with linux-chromeos, not cros chrome-sdk.\
-  See comment in build/config/chromeos/rules.gni.
+#if BUILDFLAG(IS_CHROMEOS_DEVICE)
+#error This test target only builds with linux-chromeos, not for real ChromeOS\
+ devices. See comment in build/config/chromeos/args.gni.
 #endif
 
 int main(int argc, char** argv) {

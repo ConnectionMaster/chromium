@@ -4,18 +4,24 @@
 
 #include "ios/web/public/test/fakes/fake_download_controller_delegate.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "ios/web/public/download/download_controller.h"
 #include "ios/web/public/download/download_task.h"
 
 namespace web {
 
 FakeDownloadControllerDelegate::FakeDownloadControllerDelegate(
-    DownloadController* controller) {
-  controller->SetDelegate(this);
+    DownloadController* controller)
+    : controller_(controller) {
+  DCHECK(controller_);
+  controller_->SetDelegate(this);
 }
 
-FakeDownloadControllerDelegate::~FakeDownloadControllerDelegate() = default;
+FakeDownloadControllerDelegate::~FakeDownloadControllerDelegate() {
+  controller_->SetDelegate(nullptr);
+  controller_ = nullptr;
+}
 
 void FakeDownloadControllerDelegate::OnDownloadCreated(
     DownloadController* download_controller,
@@ -26,7 +32,9 @@ void FakeDownloadControllerDelegate::OnDownloadCreated(
 
 void FakeDownloadControllerDelegate::OnDownloadControllerDestroyed(
     DownloadController* controller) {
+  DCHECK_EQ(controller_, controller);
   controller->SetDelegate(nullptr);
+  controller_ = nullptr;
 }
 
 }  // namespace web

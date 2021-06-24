@@ -5,57 +5,56 @@
 {
   const LONG_TOUCH_TIME_MS = 1000;
 
-  function TitleLongTouchDetector(element, callback) {
-    this.callback_ = callback;
+  class TitleLongTouchDetector {
+    constructor(element, callback) {
+      this.callback_ = callback;
+      /**
+       * This is timeout ID used to kill window timeout that fires "detected"
+       * callback if touch event was cancelled.
+       *
+       * @private {number|null}
+       */
+      this.timeoutId_ = null;
 
-    element.addEventListener('touchstart', this.onTouchStart_.bind(this));
-    element.addEventListener('touchend', this.killTimer_.bind(this));
-    element.addEventListener('touchcancel', this.killTimer_.bind(this));
+      element.addEventListener('touchstart', this.onTouchStart_.bind(this));
+      element.addEventListener('touchend', this.killTimer_.bind(this));
+      element.addEventListener('touchcancel', this.killTimer_.bind(this));
 
-    element.addEventListener('mousedown', this.onTouchStart_.bind(this));
-    element.addEventListener('mouseup', this.killTimer_.bind(this));
-    element.addEventListener('mouseleave', this.killTimer_.bind(this));
-  }
-
-  TitleLongTouchDetector.prototype = {
-    /**
-     * This is timeout ID used to kill window timeout that fires "detected"
-     * callback if touch event was cancelled.
-     *
-     * @private {number|null}
-     */
-    timeoutId_: null,
+      element.addEventListener('mousedown', this.onTouchStart_.bind(this));
+      element.addEventListener('mouseup', this.killTimer_.bind(this));
+      element.addEventListener('mouseleave', this.killTimer_.bind(this));
+    }
 
     /**
      *  window.setTimeout() callback.
      *
      * @private
      */
-    onTimeout_: function() {
+    onTimeout_() {
       this.killTimer_();
       this.callback_();
-    },
+    }
 
     /**
      * @private
      */
-    onTouchStart_: function() {
+    onTouchStart_() {
       this.killTimer_();
-      this.timeoutId_ = window.setTimeout(
-          this.onTimeout_.bind(this, this.attempt_), LONG_TOUCH_TIME_MS);
-    },
+      this.timeoutId_ =
+          window.setTimeout(this.onTimeout_.bind(this), LONG_TOUCH_TIME_MS);
+    }
 
     /**
      * @private
      */
-    killTimer_: function() {
+    killTimer_() {
       if (this.timeoutId_ === null)
         return;
 
       window.clearTimeout(this.timeoutId_);
       this.timeoutId_ = null;
-    },
-  };
+    }
+  }
 
   const VIDEO_DEVICE = {
     CHROMEBOX: 'chromebox',
@@ -234,8 +233,12 @@
      *  Starts active video.
      */
     play() {
-      if (this.getActiveVideo_())
+      let activeVideo = this.getActiveVideo_();
+      if (activeVideo) {
+        // The active video could be paused, even if it hasn't changed
+        activeVideo.play();
         return;
+      }
 
       let key = this.calcKey_(this.device, this.orientation, this.type);
       let video = this.videos.get(key);
@@ -245,12 +248,21 @@
         video.play();
       }
     }
+    /**
+     *  Pauses active video.
+     */
+    pause() {
+      let video = this.getActiveVideo_();
+      if (video) {
+        video.pause();
+      }
+    }
   }
 
   Polymer({
     is: 'oobe-welcome-dialog',
 
-    behaviors: [I18nBehavior, OobeDialogHostBehavior],
+    behaviors: [OobeI18nBehavior],
 
     properties: {
       /**
@@ -289,22 +301,68 @@
       isInPortraitMode: {
         type: Boolean,
         observer: 'updateVideoMode_',
+      },
+
+      /**
+       * Observer for when this screen is hidden, or shown.
+       */
+      hidden: {
+        type: Boolean,
+        observer: 'updateHidden_',
+        reflectToAttribute: true,
+      },
+
+      isNewLayout_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.valueExists('newLayoutEnabled') &&
+              loadTimeData.getBoolean('newLayoutEnabled');
+        },
+        readOnly: true,
+        reflectToAttribute: true,
+      },
+
+      isMeet_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.valueExists('flowType') &&
+              (loadTimeData.getString('flowType') == 'meet');
+        },
+        readOnly: true,
+      },
+
+      osInstallEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.valueExists('osInstallEnabled') &&
+              loadTimeData.getBoolean('osInstallEnabled');
+        },
+        readOnly: true,
+      },
+    },
+
+    onBeforeShow() {
+      if (this.isNewLayout_) {
+        document.documentElement.setAttribute('new-layout', '');
+        this.setVideoPlay_(true);
+      } else {
+        this.$.oldDialog.onBeforeShow();
       }
     },
 
-    getVideoDeviceType_: function() {
+    getVideoDeviceType_() {
       if (this.timezoneButtonVisible)
         return VIDEO_DEVICE.CHROMEBOX;
 
       return this.isInTabletMode ? VIDEO_DEVICE.TABLET : VIDEO_DEVICE.LAPTOP;
     },
 
-    getVideoOrientationType_: function() {
+    getVideoOrientationType_() {
       return this.isInPortraitMode ? VIDEO_ORIENTATION.PORTRAIT :
                                      VIDEO_ORIENTATION.LANDSCAPE;
     },
 
-    updateVideoMode_: function() {
+    updateVideoMode_() {
       // Depending on the order of events, this might be called before
       // attached().
       if (!this.welcomeVideoController_)
@@ -328,29 +386,38 @@
      * This is stored ID of currently focused element to restore id on returns
      * to this dialog from Language / Timezone Selection dialogs.
      */
-    focusedElement_: 'languageSelectionButton',
+    focusedElement_: null,
 
-    onLanguageClicked_: function() {
-      this.focusedElement_ = 'languageSelectionButton';
+    onLanguageClicked_(e) {
+      this.focusedElement_ = this.isNewLayout_ ? 'newLanguageSelectionButton' :
+                                                 'languageSelectionButton';
       this.fire('language-button-clicked');
     },
 
-    onAccessibilityClicked_: function() {
-      this.focusedElement_ = 'accessibilitySettingsButton';
+    onAccessibilityClicked_() {
+      this.focusedElement_ = this.isNewLayout_ ?
+          'newAccessibilitySettingsButton' :
+          'accessibilitySettingsButton';
       this.fire('accessibility-button-clicked');
     },
 
-    onTimezoneClicked_: function() {
-      this.focusedElement_ = 'timezoneSettingsButton';
+    onTimezoneClicked_() {
+      this.focusedElement_ = this.isNewLayout_ ? 'newTimezoneSettingsButton' :
+                                                 'timezoneSettingsButton';
       this.fire('timezone-button-clicked');
     },
 
-    onNextClicked_: function() {
-      this.focusedElement_ = 'welcomeNextButton';
+    onNextClicked_() {
+      this.focusedElement_ =
+          this.isNewLayout_ ? 'getStarted' : 'welcomeNextButton';
       this.fire('next-button-clicked');
     },
 
-    onDebuggingLinkClicked_: function() {
+    onOsInstallClicked_() {
+      this.fire('os-install-clicked');
+    },
+
+    onDebuggingLinkClicked_() {
       this.fire('enable-debugging-clicked');
     },
 
@@ -359,35 +426,80 @@
      *
      * @private
      */
-    onTitleLongTouch_: function() {
+    onTitleLongTouch_() {
       this.fire('launch-advanced-options');
     },
 
-    attached: function() {
-      this.welcomeVideoController_ = new WelcomeVideoController(
-          this.getVideoDeviceType_(), this.getVideoOrientationType_());
-      let videos = Polymer.dom(this.root).querySelectorAll('video');
-      for (let video of videos)
-        this.welcomeVideoController_.add(video);
+    attached() {
+      if (!this.isNewLayout_) {
+        this.welcomeVideoController_ = new WelcomeVideoController(
+            this.getVideoDeviceType_(), this.getVideoOrientationType_());
+        let videos = Polymer.dom(this.root).querySelectorAll('video');
+        for (let video of videos)
+          this.welcomeVideoController_.add(video);
+      }
 
       this.titleLongTouchDetector_ = new TitleLongTouchDetector(
-          this.$.title, this.onTitleLongTouch_.bind(this));
+          this.isNewLayout_ ? this.$.newTitle : this.$.title,
+          this.onTitleLongTouch_.bind(this));
+      this.$.chromeVoxHint.addEventListener('keydown', (event) => {
+        // When the ChromeVox hint dialog is open, allow users to press the
+        // space bar to activate ChromeVox. This is intended to help first time
+        // users easily activate ChromeVox.
+        if (this.$.chromeVoxHint.open && event.key === ' ') {
+          this.activateChromeVox_();
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      });
       this.focus();
     },
 
-    focus: function() {
+    focus() {
+      if (!this.focusedElement_) {
+        this.focusedElement_ =
+            this.isNewLayout_ ? 'getStarted' : 'welcomeNextButton';
+      }
       this.onWindowResize();
       let focusedElement = this.$[this.focusedElement_];
       if (focusedElement)
         focusedElement.focus();
     },
 
-    /**
-     * This is called from oobe_welcome when this dialog is shown.
+    /*
+     * Observer method for changes to the hidden property.
+     * This replaces the show() function, in this class.
      */
-    show: function() {
-      this.focus();
-      this.welcomeVideoController_.play();
+    updateHidden_(newValue, oldValue) {
+      let visible = !newValue;
+      if (visible) {
+        this.focus();
+      }
+
+      this.setVideoPlay_(visible);
+    },
+
+    /**
+     * Play or pause welcome video.
+     * @param Boolean play - whether play or pause welcome video.
+     * @private
+     */
+    setVideoPlay_(play) {
+      if (this.isNewLayout_) {
+        if (this.isMeet_)
+          return;
+        this.$.newWelcomeAnimation.setPlay(play);
+        return;
+      }
+
+      if (!this.welcomeVideoController_)
+        return;
+
+      if (play) {
+        this.welcomeVideoController_.play();
+      } else {
+        this.welcomeVideoController_.pause();
+      }
     },
 
     /**
@@ -396,15 +508,48 @@
      * @param String parameter i18n string parameter.
      * @private
      */
-    formatMessage_: function(label, parameter) {
+    formatMessage_(label, parameter) {
       return loadTimeData.getStringF(label, parameter);
     },
 
     /**
      * Window-resize event listener (delivered through the display_manager).
      */
-    onWindowResize: function() {
+    onWindowResize() {
       this.isInPortraitMode = window.innerHeight > window.innerWidth;
     },
+
+    // ChromeVox hint section.
+
+    /**
+     * Called to show the ChromeVox hint dialog.
+     */
+    showChromeVoxHint() {
+      this.$.chromeVoxHint.showDialog();
+      this.setVideoPlay_(false);
+    },
+
+    /**
+     * Called to close the ChromeVox hint dialog.
+     */
+    closeChromeVoxHint() {
+      this.setVideoPlay_(true);
+      this.$.chromeVoxHint.hideDialog();
+    },
+
+    /**
+     * Called when the 'Continue without ChromeVox' button is clicked.
+     * @private
+     */
+    dismissChromeVoxHint_() {
+      this.fire('chromevox-hint-dismissed');
+      this.closeChromeVoxHint();
+    },
+
+    /** @private */
+    activateChromeVox_() {
+      this.closeChromeVoxHint();
+      this.fire('chromevox-hint-accepted');
+    }
   });
 }

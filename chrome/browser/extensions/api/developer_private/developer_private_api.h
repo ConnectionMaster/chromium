@@ -11,11 +11,11 @@
 #include "base/files/file.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/extensions/api/commands/command_service.h"
 #include "chrome/browser/extensions/api/developer_private/entry_picker.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/browser/extensions/error_console/error_console.h"
+#include "chrome/browser/extensions/extension_allowlist.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "chrome/browser/extensions/load_error_reporter.h"
@@ -30,12 +30,16 @@
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_observer.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
+#include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_manager_observer.h"
 #include "extensions/browser/warning_service.h"
-#include "storage/browser/fileapi/file_system_context.h"
-#include "storage/browser/fileapi/file_system_operation.h"
+#include "extensions/common/extension_id.h"
+#include "storage/browser/file_system/file_system_context.h"
+#include "storage/browser/file_system/file_system_operation.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 
 class Profile;
@@ -45,10 +49,14 @@ namespace extensions {
 class EventRouter;
 class ExtensionError;
 class ExtensionInfoGenerator;
-class ExtensionRegistry;
-class ProcessManager;
 
 namespace api {
+
+namespace developer_private {
+
+struct ProfileInfo;
+
+}
 
 class EntryPickerClient;
 
@@ -60,6 +68,7 @@ class DeveloperPrivateEventRouter : public ExtensionRegistryObserver,
                                     public AppWindowRegistry::Observer,
                                     public CommandService::Observer,
                                     public ExtensionPrefsObserver,
+                                    public ExtensionAllowlist::Observer,
                                     public ExtensionManagement::Observer,
                                     public WarningService::Observer,
                                     public content::NotificationObserver {
@@ -96,6 +105,8 @@ class DeveloperPrivateEventRouter : public ExtensionRegistryObserver,
   void OnExtensionFrameUnregistered(
       const std::string& extension_id,
       content::RenderFrameHost* render_frame_host) override;
+  void OnServiceWorkerRegistered(const WorkerId& worker_id) override;
+  void OnServiceWorkerUnregistered(const WorkerId& worker_id) override;
 
   // AppWindowRegistry::Observer:
   void OnAppWindowAdded(AppWindow* window) override;
@@ -113,6 +124,10 @@ class DeveloperPrivateEventRouter : public ExtensionRegistryObserver,
   void OnExtensionRuntimePermissionsChanged(
       const std::string& extension_id) override;
 
+  // ExtensionAllowlist::Observer
+  void OnExtensionAllowlistWarningStateChanged(const std::string& extension_id,
+                                               bool show_warning) override;
+
   // ExtensionManagement::Observer:
   void OnExtensionManagementSettingsChanged() override;
 
@@ -125,7 +140,7 @@ class DeveloperPrivateEventRouter : public ExtensionRegistryObserver,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
-  // Handles a profile preferance change.
+  // Handles a profile preference change.
   void OnProfilePrefChanged();
 
   // Broadcasts an event to all listeners.
@@ -137,21 +152,24 @@ class DeveloperPrivateEventRouter : public ExtensionRegistryObserver,
       std::unique_ptr<ExtensionInfoGenerator> info_generator,
       std::vector<api::developer_private::ExtensionInfo> infos);
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
-  ScopedObserver<ErrorConsole, ErrorConsole::Observer> error_console_observer_;
-  ScopedObserver<ProcessManager, ProcessManagerObserver>
-      process_manager_observer_;
-  ScopedObserver<AppWindowRegistry, AppWindowRegistry::Observer>
-      app_window_registry_observer_;
-  ScopedObserver<WarningService, WarningService::Observer>
-      warning_service_observer_;
-  ScopedObserver<ExtensionPrefs, ExtensionPrefsObserver>
-      extension_prefs_observer_;
-  ScopedObserver<ExtensionManagement, ExtensionManagement::Observer>
-      extension_management_observer_;
-  ScopedObserver<CommandService, CommandService::Observer>
-      command_service_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
+  base::ScopedObservation<ErrorConsole, ErrorConsole::Observer>
+      error_console_observation_{this};
+  base::ScopedObservation<ProcessManager, ProcessManagerObserver>
+      process_manager_observation_{this};
+  base::ScopedObservation<AppWindowRegistry, AppWindowRegistry::Observer>
+      app_window_registry_observation_{this};
+  base::ScopedObservation<WarningService, WarningService::Observer>
+      warning_service_observation_{this};
+  base::ScopedObservation<ExtensionPrefs, ExtensionPrefsObserver>
+      extension_prefs_observation_{this};
+  base::ScopedObservation<ExtensionManagement, ExtensionManagement::Observer>
+      extension_management_observation_{this};
+  base::ScopedObservation<CommandService, CommandService::Observer>
+      command_service_observation_{this};
+  base::ScopedObservation<ExtensionAllowlist, ExtensionAllowlist::Observer>
+      extension_allowlist_observer_{this};
 
   Profile* profile_;
 
@@ -169,7 +187,7 @@ class DeveloperPrivateEventRouter : public ExtensionRegistryObserver,
 
   content::NotificationRegistrar notification_registrar_;
 
-  base::WeakPtrFactory<DeveloperPrivateEventRouter> weak_factory_;
+  base::WeakPtrFactory<DeveloperPrivateEventRouter> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DeveloperPrivateEventRouter);
 };
@@ -182,6 +200,9 @@ class DeveloperPrivateAPI : public BrowserContextKeyedAPI,
 
   static BrowserContextKeyedAPIFactory<DeveloperPrivateAPI>*
       GetFactoryInstance();
+
+  static std::unique_ptr<api::developer_private::ProfileInfo> CreateProfileInfo(
+      Profile* profile);
 
   // Convenience method to get the DeveloperPrivateAPI for a profile.
   static DeveloperPrivateAPI* Get(content::BrowserContext* context);
@@ -274,7 +295,7 @@ class DeveloperPrivateAPI : public BrowserContextKeyedAPI,
   // Created lazily upon OnListenerAdded.
   std::unique_ptr<DeveloperPrivateEventRouter> developer_private_event_router_;
 
-  base::WeakPtrFactory<DeveloperPrivateAPI> weak_factory_;
+  base::WeakPtrFactory<DeveloperPrivateAPI> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DeveloperPrivateAPI);
 };
@@ -285,7 +306,7 @@ void BrowserContextKeyedAPIFactory<
 
 namespace api {
 
-class DeveloperPrivateAPIFunction : public UIThreadExtensionFunction {
+class DeveloperPrivateAPIFunction : public ExtensionFunction {
  protected:
   ~DeveloperPrivateAPIFunction() override;
 
@@ -379,7 +400,7 @@ class DeveloperPrivateGetExtensionSizeFunction
   ~DeveloperPrivateGetExtensionSizeFunction() override;
   ResponseAction Run() override;
 
-  void OnSizeCalculated(const base::string16& size);
+  void OnSizeCalculated(const std::u16string& size);
 
   DISALLOW_COPY_AND_ASSIGN(DeveloperPrivateGetExtensionSizeFunction);
 };
@@ -454,10 +475,10 @@ class DeveloperPrivateReloadFunction : public DeveloperPrivateAPIFunction,
   // The file path of the extension that's reloading.
   base::FilePath reloading_extension_path_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      registry_observer_;
-  ScopedObserver<LoadErrorReporter, LoadErrorReporter::Observer>
-      error_reporter_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      registry_observation_{this};
+  base::ScopedObservation<LoadErrorReporter, LoadErrorReporter::Observer>
+      error_reporter_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DeveloperPrivateReloadFunction);
 };
@@ -479,16 +500,15 @@ class DeveloperPrivateShowPermissionsDialogFunction
   DISALLOW_COPY_AND_ASSIGN(DeveloperPrivateShowPermissionsDialogFunction);
 };
 
-class DeveloperPrivateChooseEntryFunction : public UIThreadExtensionFunction,
+class DeveloperPrivateChooseEntryFunction : public ExtensionFunction,
                                             public EntryPickerClient {
  protected:
   ~DeveloperPrivateChooseEntryFunction() override;
   bool ShowPicker(ui::SelectFileDialog::Type picker_type,
-                  const base::string16& select_title,
+                  const std::u16string& select_title,
                   const ui::SelectFileDialog::FileTypeInfo& info,
                   int file_type_index);
 };
-
 
 class DeveloperPrivateLoadUnpackedFunction
     : public DeveloperPrivateChooseEntryFunction {
@@ -602,8 +622,7 @@ class DeveloperPrivatePackDirectoryFunction
   std::string key_path_str_;
 };
 
-class DeveloperPrivateIsProfileManagedFunction
-    : public UIThreadExtensionFunction {
+class DeveloperPrivateIsProfileManagedFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("developerPrivate.isProfileManaged",
                              DEVELOPERPRIVATE_ISPROFILEMANAGED)
@@ -615,8 +634,7 @@ class DeveloperPrivateIsProfileManagedFunction
   ResponseAction Run() override;
 };
 
-class DeveloperPrivateLoadDirectoryFunction
-    : public ChromeAsyncExtensionFunction {
+class DeveloperPrivateLoadDirectoryFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("developerPrivate.loadDirectory",
                              DEVELOPERPRIVATE_LOADUNPACKEDCROS)
@@ -627,9 +645,10 @@ class DeveloperPrivateLoadDirectoryFunction
   ~DeveloperPrivateLoadDirectoryFunction() override;
 
   // ExtensionFunction:
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
-  bool LoadByFileSystemAPI(const ::storage::FileSystemURL& directory_url);
+  ResponseAction LoadByFileSystemAPI(
+      const ::storage::FileSystemURL& directory_url);
 
   void ClearExistingDirectoryContent(const base::FilePath& project_path);
 
@@ -669,6 +688,9 @@ class DeveloperPrivateLoadDirectoryFunction
   // This is set to false if any of the copyFile operations fail on
   // call of the API. It is returned as a response of the API call.
   bool success_;
+
+  // Error string if |success_| is false.
+  std::string error_;
 };
 
 class DeveloperPrivateRequestFileSourceFunction

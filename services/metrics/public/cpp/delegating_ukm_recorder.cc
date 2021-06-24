@@ -65,14 +65,16 @@ void DelegatingUkmRecorder::RecordNavigation(
   }
 }
 
-void DelegatingUkmRecorder::UpdateAppURL(SourceId source_id, const GURL& url) {
+void DelegatingUkmRecorder::UpdateAppURL(SourceId source_id,
+                                         const GURL& url,
+                                         const AppType app_type) {
   if (GetSourceIdType(source_id) != SourceIdType::APP_ID) {
     DLOG(FATAL) << "UpdateAppURL invoked for non-APP_ID SourceId";
     return;
   }
   base::AutoLock auto_lock(lock_);
   for (auto& iterator : delegates_)
-    iterator.second.UpdateAppURL(source_id, url);
+    iterator.second.UpdateAppURL(source_id, url, app_type);
 }
 
 void DelegatingUkmRecorder::AddEntry(mojom::UkmEntryPtr entry) {
@@ -85,6 +87,12 @@ void DelegatingUkmRecorder::AddEntry(mojom::UkmEntryPtr entry) {
   // Otherwise, make a copy for each delegate.
   for (auto& iterator : delegates_)
     iterator.second.AddEntry(entry->Clone());
+}
+
+void DelegatingUkmRecorder::MarkSourceForDeletion(ukm::SourceId source_id) {
+  base::AutoLock auto_lock(lock_);
+  for (auto& iterator : delegates_)
+    iterator.second.MarkSourceForDeletion(source_id);
 }
 
 DelegatingUkmRecorder::Delegate::Delegate(
@@ -109,13 +117,15 @@ void DelegatingUkmRecorder::Delegate::UpdateSourceURL(ukm::SourceId source_id,
 }
 
 void DelegatingUkmRecorder::Delegate::UpdateAppURL(ukm::SourceId source_id,
-                                                   const GURL& url) {
+                                                   const GURL& url,
+                                                   const AppType app_type) {
   if (task_runner_->RunsTasksInCurrentSequence()) {
-    ptr_->UpdateAppURL(source_id, url);
+    ptr_->UpdateAppURL(source_id, url, app_type);
     return;
   }
-  task_runner_->PostTask(FROM_HERE, base::BindOnce(&UkmRecorder::UpdateAppURL,
-                                                   ptr_, source_id, url));
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&UkmRecorder::UpdateAppURL, ptr_, source_id,
+                                url, app_type));
 }
 
 void DelegatingUkmRecorder::Delegate::RecordNavigation(
@@ -137,6 +147,17 @@ void DelegatingUkmRecorder::Delegate::AddEntry(mojom::UkmEntryPtr entry) {
   }
   task_runner_->PostTask(FROM_HERE, base::BindOnce(&UkmRecorder::AddEntry, ptr_,
                                                    std::move(entry)));
+}
+
+void DelegatingUkmRecorder::Delegate::MarkSourceForDeletion(
+    ukm::SourceId source_id) {
+  if (task_runner_->RunsTasksInCurrentSequence()) {
+    ptr_->MarkSourceForDeletion(source_id);
+    return;
+  }
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&UkmRecorder::MarkSourceForDeletion, ptr_, source_id));
 }
 
 }  // namespace ukm

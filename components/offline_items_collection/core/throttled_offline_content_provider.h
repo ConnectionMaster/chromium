@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_OFFLINE_ITEMS_COLLETION_CORE_THROTTLED_OFFLINE_CONTENT_PROVIDER_H_
-#define COMPONENTS_OFFLINE_ITEMS_COLLETION_CORE_THROTTLED_OFFLINE_CONTENT_PROVIDER_H_
+#ifndef COMPONENTS_OFFLINE_ITEMS_COLLECTION_CORE_THROTTLED_OFFLINE_CONTENT_PROVIDER_H_
+#define COMPONENTS_OFFLINE_ITEMS_COLLECTION_CORE_THROTTLED_OFFLINE_CONTENT_PROVIDER_H_
 
 #include <map>
+#include <utility>
 
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
+#include "base/scoped_observation.h"
 #include "components/offline_items_collection/core/offline_content_provider.h"
 
 namespace base {
@@ -33,7 +34,7 @@ class ThrottledOfflineContentProvider
   // Taking actions on the OfflineContentProvider will flush any queued updates
   // immediately after performing the action. This is to make sure item updates
   // in response to the update are immediately reflected back to the caller.
-  void OpenItem(LaunchLocation location, const ContentId& id) override;
+  void OpenItem(const OpenParams& open_params, const ContentId& id) override;
   void RemoveItem(const ContentId& id) override;
   void CancelDownload(const ContentId& id) override;
   void PauseDownload(const ContentId& id) override;
@@ -45,14 +46,15 @@ class ThrottledOfflineContentProvider
   void GetItemById(const ContentId& id, SingleItemCallback callback) override;
   void GetAllItems(MultipleItemCallback callback) override;
   void GetVisualsForItem(const ContentId& id,
+                         GetVisualsOptions options,
                          VisualsCallback callback) override;
   void GetShareInfoForItem(const ContentId& id,
                            ShareCallback callback) override;
   void RenameItem(const ContentId& id,
                   const std::string& name,
                   RenameCallback callback) override;
-  void AddObserver(OfflineContentProvider::Observer* observer) override;
-  void RemoveObserver(OfflineContentProvider::Observer* observer) override;
+  void ChangeSchedule(const ContentId& id,
+                      absl::optional<OfflineItemSchedule> schedule) override;
 
   // Visible for testing. Overrides the time at which this throttle last pushed
   // updates to observers.
@@ -62,12 +64,14 @@ class ThrottledOfflineContentProvider
   // OfflineContentProvider::Observer implementation.
   void OnItemsAdded(const OfflineItemList& items) override;
   void OnItemRemoved(const ContentId& id) override;
-  void OnItemUpdated(const OfflineItem& item) override;
+  void OnItemUpdated(const OfflineItem& item,
+                     const absl::optional<UpdateDelta>& update_delta) override;
+  void OnContentProviderGoingDown() override;
 
   void OnGetAllItemsDone(MultipleItemCallback callback,
                          const OfflineItemList& items);
   void OnGetItemByIdDone(SingleItemCallback callback,
-                         const base::Optional<OfflineItem>& item);
+                         const absl::optional<OfflineItem>& item);
 
   // Checks if |item| already has an update pending. If so, replaces the content
   // of the update with |item|.
@@ -83,16 +87,20 @@ class ThrottledOfflineContentProvider
   bool update_queued_;
 
   OfflineContentProvider* const wrapped_provider_;
-  base::ObserverList<OfflineContentProvider::Observer>::Unchecked observers_;
+  base::ScopedObservation<OfflineContentProvider,
+                          OfflineContentProvider::Observer>
+      observation_{this};
 
-  typedef std::map<ContentId, OfflineItem> OfflineItemMap;
+  typedef std::map<ContentId,
+                   std::pair<OfflineItem, absl::optional<UpdateDelta>>>
+      OfflineItemMap;
   OfflineItemMap updates_;
 
-  base::WeakPtrFactory<ThrottledOfflineContentProvider> weak_ptr_factory_;
+  base::WeakPtrFactory<ThrottledOfflineContentProvider> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ThrottledOfflineContentProvider);
 };
 
 }  // namespace offline_items_collection
 
-#endif  // COMPONENTS_OFFLINE_ITEMS_COLLETION_CORE_THROTTLED_OFFLINE_CONTENT_PROVIDER_H_
+#endif  // COMPONENTS_OFFLINE_ITEMS_COLLECTION_CORE_THROTTLED_OFFLINE_CONTENT_PROVIDER_H_

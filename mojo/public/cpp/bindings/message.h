@@ -14,10 +14,12 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/component_export.h"
-#include "base/logging.h"
+#include "base/containers/span.h"
 #include "base/memory/ptr_util.h"
+#include "mojo/public/cpp/bindings/connection_group.h"
 #include "mojo/public/cpp/bindings/lib/buffer.h"
 #include "mojo/public/cpp/bindings/lib/message_internal.h"
 #include "mojo/public/cpp/bindings/lib/unserialized_message_context.h"
@@ -40,6 +42,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   static const uint32_t kFlagExpectsResponse = 1 << 0;
   static const uint32_t kFlagIsResponse = 1 << 1;
   static const uint32_t kFlagIsSync = 1 << 2;
+  static const uint32_t kFlagNoInterrupt = 1 << 3;
 
   // Constructs an uninitialized Message object.
   Message();
@@ -49,8 +52,8 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
 
   // Constructs a new message with an unserialized context attached. This
   // message may be serialized later if necessary.
-  explicit Message(
-      std::unique_ptr<internal::UnserializedMessageContext> context);
+  Message(std::unique_ptr<internal::UnserializedMessageContext> context,
+          MojoCreateMessageFlags create_message_flags);
 
   // Constructs a new serialized Message object with optional handles attached.
   // This message is fully functional and may be exchanged for a
@@ -66,17 +69,28 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
           uint32_t flags,
           size_t payload_size,
           size_t payload_interface_id_count,
+          MojoCreateMessageFlags create_message_flags,
           std::vector<ScopedHandle>* handles);
 
-  // Same as above, but with additional per-handle options to control how
-  // each handle in |handles| is attached.
-  Message(
-      uint32_t name,
-      uint32_t flags,
-      size_t payload_size,
-      size_t payload_interface_id_count,
-      std::vector<ScopedHandle>* handles,
-      const std::vector<MojoAppendMessageDataHandleOptions>* handle_options);
+  // Same as above, but the with default MojoCreateMessageFlags.
+  Message(uint32_t name,
+          uint32_t flags,
+          size_t payload_size,
+          size_t payload_interface_id_count,
+          std::vector<ScopedHandle>* handles);
+
+  // Constructs a new Message object from an existing message handle. Used
+  // exclusively for serializing an existing unserialized message.
+  explicit Message(ScopedMessageHandle handle,
+                   const internal::MessageHeaderV1& header);
+
+  // Constructs a new serialized Message object from a fully populated message
+  // payload (including a well-formed message header) and an optional set of
+  // handle attachments. This Message may not be extended with additional
+  // payload or handles once constructed, but its payload remains mutable as
+  // long as the Message is not moved and neither |Reset()| nor
+  // |TakeMojoMessage()| is called.
+  Message(base::span<const uint8_t> payload, base::span<ScopedHandle> handles);
 
   // Constructs a new serialized Message object from an existing
   // ScopedMessageHandle; e.g., one read from a message pipe.
@@ -188,10 +202,16 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
     return &associated_endpoint_handles_;
   }
 
-  // Takes ownership of any handles within |*context| and attaches them to this
-  // Message.
-  void AttachHandlesFromSerializationContext(
-      internal::SerializationContext* context);
+  // Sets the ConnectionGroup to which this Message's local receiver belongs, if
+  // any. This is called immediately after a Message is read from a message pipe
+  // but before it's deserialized. If non-null, |ref| must point to a Ref that
+  // outlives this Message object.
+  void set_receiver_connection_group(const ConnectionGroup::Ref* ref) {
+    receiver_connection_group_ = ref;
+  }
+  const ConnectionGroup::Ref* receiver_connection_group() const {
+    return receiver_connection_group_;
+  }
 
   // Takes a scoped MessageHandle which may be passed to |WriteMessageNew()| for
   // transmission. Note that this invalidates this Message object, taking
@@ -202,13 +222,12 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   // rejected by bindings validation code.
   void NotifyBadMessage(const std::string& error);
 
-  // Serializes |associated_endpoint_handles_| into the payload_interface_ids
-  // field.
-  void SerializeAssociatedEndpointHandles(
-      AssociatedGroupController* group_controller);
+  // Serializes and attaches Mojo handles and associated endpoint handles from
+  // |handles_| and |associated_endpoint_handles_| respectively.
+  void SerializeHandles(AssociatedGroupController* group_controller);
 
-  // Deserializes |associated_endpoint_handles_| from the payload_interface_ids
-  // field.
+  // Deserializes associated endpoint handles from the payload_interface_ids
+  // field, into |associated_endpoint_handles_|.
   bool DeserializeAssociatedEndpointHandles(
       AssociatedGroupController* group_controller);
 
@@ -228,6 +247,11 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
       return nullptr;
     return base::WrapUnique(
         generic_context.release()->template SafeCast<MessageType>());
+  }
+
+  const char* heap_profiler_tag() const { return heap_profiler_tag_; }
+  void set_heap_profiler_tag(const char* heap_profiler_tag) {
+    heap_profiler_tag_ = heap_profiler_tag;
   }
 
 #if defined(ENABLE_IPC_FUZZER)
@@ -257,6 +281,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
 
   std::vector<ScopedHandle> handles_;
   std::vector<ScopedInterfaceEndpointHandle> associated_endpoint_handles_;
+  const ConnectionGroup::Ref* receiver_connection_group_ = nullptr;
 
   // Indicates whether this Message object is transferable, i.e. can be sent
   // elsewhere. In general this is true unless |handle_| is invalid or
@@ -267,12 +292,29 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   // Indicates whether this Message object is serialized.
   bool serialized_ = false;
 
+  const char* heap_profiler_tag_ = nullptr;
 #if defined(ENABLE_IPC_FUZZER)
   const char* interface_name_ = nullptr;
   const char* method_name_ = nullptr;
 #endif
 
   DISALLOW_COPY_AND_ASSIGN(Message);
+};
+
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageFilter {
+ public:
+  virtual ~MessageFilter() {}
+
+  // The filter may mutate the given message.  This method is called before
+  // the message is dispatched to the associated MessageReceiver. Returns true
+  // if the message was accepted and false otherwise, indicating that the
+  // message was invalid or malformed.
+  virtual bool WillDispatch(Message* message) WARN_UNUSED_RESULT = 0;
+
+  // The filter receives notification that the message was dispatched or
+  // rejected. Since the message filter is owned by the receiver it will not be
+  // invoked if the receiver is closed during a dispatch of a message.
+  virtual void DidDispatchOrReject(Message* message, bool accepted) = 0;
 };
 
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageReceiver {
@@ -346,43 +388,6 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) PassThroughFilter
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PassThroughFilter);
-};
-
-namespace internal {
-class SyncMessageResponseSetup;
-}
-
-// An object which should be constructed on the stack immediately before making
-// a sync request for which the caller wishes to perform custom validation of
-// the response value(s). It is illegal to make more than one sync call during
-// the lifetime of the topmost SyncMessageResponseContext, but it is legal to
-// nest contexts to support reentrancy.
-//
-// Usage should look something like:
-//
-//     SyncMessageResponseContext response_context;
-//     foo_interface->SomeSyncCall(&response_value);
-//     if (response_value.IsBad())
-//       response_context.ReportBadMessage("Bad response_value!");
-//
-class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) SyncMessageResponseContext {
- public:
-  SyncMessageResponseContext();
-  ~SyncMessageResponseContext();
-
-  static SyncMessageResponseContext* current();
-
-  void ReportBadMessage(const std::string& error);
-
-  ReportBadMessageCallback GetBadMessageCallback();
-
- private:
-  friend class internal::SyncMessageResponseSetup;
-
-  SyncMessageResponseContext* outer_context_;
-  Message response_;
-
-  DISALLOW_COPY_AND_ASSIGN(SyncMessageResponseContext);
 };
 
 // Reports the currently dispatching Message as bad. Note that this is only

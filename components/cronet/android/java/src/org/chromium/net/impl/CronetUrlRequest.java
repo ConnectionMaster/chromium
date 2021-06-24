@@ -4,14 +4,17 @@
 
 package org.chromium.net.impl;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.Log;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNIAdditionalImport;
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.base.annotations.NativeClassQualifiedName;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.net.CallbackException;
 import org.chromium.net.CronetException;
+import org.chromium.net.Idempotency;
 import org.chromium.net.InlineExecutionProhibitedException;
 import org.chromium.net.NetworkException;
 import org.chromium.net.RequestFinishedInfo;
@@ -75,6 +78,7 @@ public final class CronetUrlRequest extends UrlRequestBase {
     private final VersionSafeCallbacks.UrlRequestCallback mCallback;
     private final String mInitialUrl;
     private final int mPriority;
+    private final int mIdempotency;
     private String mInitialMethod;
     private final HeadersList mRequestHeaders = new HeadersList();
     private final Collection<Object> mRequestAnnotations;
@@ -137,7 +141,8 @@ public final class CronetUrlRequest extends UrlRequestBase {
             UrlRequest.Callback callback, Executor executor, Collection<Object> requestAnnotations,
             boolean disableCache, boolean disableConnectionMigration, boolean allowDirectExecutor,
             boolean trafficStatsTagSet, int trafficStatsTag, boolean trafficStatsUidSet,
-            int trafficStatsUid, RequestFinishedInfo.Listener requestFinishedListener) {
+            int trafficStatsUid, RequestFinishedInfo.Listener requestFinishedListener,
+            int idempotency) {
         if (url == null) {
             throw new NullPointerException("URL is required");
         }
@@ -165,6 +170,7 @@ public final class CronetUrlRequest extends UrlRequestBase {
         mRequestFinishedListener = requestFinishedListener != null
                 ? new VersionSafeCallbacks.RequestFinishedInfoListener(requestFinishedListener)
                 : null;
+        mIdempotency = convertIdempotency(idempotency);
     }
 
     @Override
@@ -205,16 +211,17 @@ public final class CronetUrlRequest extends UrlRequestBase {
             checkNotStarted();
 
             try {
-                mUrlRequestAdapter =
-                        nativeCreateRequestAdapter(mRequestContext.getUrlRequestContextAdapter(),
-                                mInitialUrl, mPriority, mDisableCache, mDisableConnectionMigration,
-                                mRequestContext.hasRequestFinishedListener()
-                                        || mRequestFinishedListener != null,
-                                mTrafficStatsTagSet, mTrafficStatsTag, mTrafficStatsUidSet,
-                                mTrafficStatsUid);
+                mUrlRequestAdapter = CronetUrlRequestJni.get().createRequestAdapter(
+                        CronetUrlRequest.this, mRequestContext.getUrlRequestContextAdapter(),
+                        mInitialUrl, mPriority, mDisableCache, mDisableConnectionMigration,
+                        mRequestContext.hasRequestFinishedListener()
+                                || mRequestFinishedListener != null,
+                        mTrafficStatsTagSet, mTrafficStatsTag, mTrafficStatsUidSet,
+                        mTrafficStatsUid, mIdempotency);
                 mRequestContext.onRequestStarted();
                 if (mInitialMethod != null) {
-                    if (!nativeSetHttpMethod(mUrlRequestAdapter, mInitialMethod)) {
+                    if (!CronetUrlRequestJni.get().setHttpMethod(
+                                mUrlRequestAdapter, CronetUrlRequest.this, mInitialMethod)) {
                         throw new IllegalArgumentException("Invalid http method " + mInitialMethod);
                     }
                 }
@@ -225,8 +232,8 @@ public final class CronetUrlRequest extends UrlRequestBase {
                             && !header.getValue().isEmpty()) {
                         hasContentType = true;
                     }
-                    if (!nativeAddRequestHeader(
-                                mUrlRequestAdapter, header.getKey(), header.getValue())) {
+                    if (!CronetUrlRequestJni.get().addRequestHeader(mUrlRequestAdapter,
+                                CronetUrlRequest.this, header.getKey(), header.getValue())) {
                         throw new IllegalArgumentException(
                                 "Invalid header " + header.getKey() + "=" + header.getValue());
                     }
@@ -269,7 +276,7 @@ public final class CronetUrlRequest extends UrlRequestBase {
      */
     @GuardedBy("mUrlRequestAdapterLock")
     private void startInternalLocked() {
-        nativeStart(mUrlRequestAdapter);
+        CronetUrlRequestJni.get().start(mUrlRequestAdapter, CronetUrlRequest.this);
     }
 
     @Override
@@ -284,7 +291,8 @@ public final class CronetUrlRequest extends UrlRequestBase {
                 return;
             }
 
-            nativeFollowDeferredRedirect(mUrlRequestAdapter);
+            CronetUrlRequestJni.get().followDeferredRedirect(
+                    mUrlRequestAdapter, CronetUrlRequest.this);
         }
     }
 
@@ -302,7 +310,8 @@ public final class CronetUrlRequest extends UrlRequestBase {
                 return;
             }
 
-            if (!nativeReadData(mUrlRequestAdapter, buffer, buffer.position(), buffer.limit())) {
+            if (!CronetUrlRequestJni.get().readData(mUrlRequestAdapter, CronetUrlRequest.this,
+                        buffer, buffer.position(), buffer.limit())) {
                 // Still waiting on read. This is just to have consistent
                 // behavior with the other error cases.
                 mWaitingOnRead = true;
@@ -339,7 +348,8 @@ public final class CronetUrlRequest extends UrlRequestBase {
                 new VersionSafeCallbacks.UrlRequestStatusListener(unsafeListener);
         synchronized (mUrlRequestAdapterLock) {
             if (mUrlRequestAdapter != 0) {
-                nativeGetStatus(mUrlRequestAdapter, listener);
+                CronetUrlRequestJni.get().getStatus(
+                        mUrlRequestAdapter, CronetUrlRequest.this, listener);
                 return;
             }
         }
@@ -411,6 +421,19 @@ public final class CronetUrlRequest extends UrlRequestBase {
         }
     }
 
+    private static int convertIdempotency(int idempotency) {
+        switch (idempotency) {
+            case Builder.DEFAULT_IDEMPOTENCY:
+                return Idempotency.DEFAULT_IDEMPOTENCY;
+            case Builder.IDEMPOTENT:
+                return Idempotency.IDEMPOTENT;
+            case Builder.NOT_IDEMPOTENT:
+                return Idempotency.NOT_IDEMPOTENT;
+            default:
+                return Idempotency.DEFAULT_IDEMPOTENCY;
+        }
+    }
+
     private UrlResponseInfoImpl prepareResponseInfoOnNetworkThread(int httpStatusCode,
             String httpStatusText, String[] headers, boolean wasCached, String negotiatedProtocol,
             String proxyServer, long receivedByteCount) {
@@ -446,7 +469,8 @@ public final class CronetUrlRequest extends UrlRequestBase {
         }
         mRequestContext.onRequestDestroyed();
         // Posts a task to destroy the native adapter.
-        nativeDestroy(mUrlRequestAdapter, finishedReason == RequestFinishedInfo.CANCELED);
+        CronetUrlRequestJni.get().destroy(mUrlRequestAdapter, CronetUrlRequest.this,
+                finishedReason == RequestFinishedInfo.CANCELED);
         mUrlRequestAdapter = 0;
     }
 
@@ -802,7 +826,7 @@ public final class CronetUrlRequest extends UrlRequestBase {
         if (mMetrics != null) {
             final RequestFinishedInfo requestInfo = new RequestFinishedInfoImpl(mInitialUrl,
                     mRequestAnnotations, mMetrics, mFinishedReason, mResponseInfo, mException);
-            mRequestContext.reportFinished(requestInfo);
+            mRequestContext.reportRequestFinished(requestInfo);
             if (mRequestFinishedListener != null) {
                 try {
                     mRequestFinishedListener.getExecutor().execute(new Runnable() {
@@ -820,32 +844,35 @@ public final class CronetUrlRequest extends UrlRequestBase {
     }
 
     // Native methods are implemented in cronet_url_request_adapter.cc.
+    @NativeMethods
+    interface Natives {
+        long createRequestAdapter(CronetUrlRequest caller, long urlRequestContextAdapter,
+                String url, int priority, boolean disableCache, boolean disableConnectionMigration,
+                boolean enableMetrics, boolean trafficStatsTagSet, int trafficStatsTag,
+                boolean trafficStatsUidSet, int trafficStatsUid, int idempotency);
 
-    private native long nativeCreateRequestAdapter(long urlRequestContextAdapter, String url,
-            int priority, boolean disableCache, boolean disableConnectionMigration,
-            boolean enableMetrics, boolean trafficStatsTagSet, int trafficStatsTag,
-            boolean trafficStatsUidSet, int trafficStatsUid);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        boolean setHttpMethod(long nativePtr, CronetUrlRequest caller, String method);
 
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native boolean nativeSetHttpMethod(long nativePtr, String method);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        boolean addRequestHeader(
+                long nativePtr, CronetUrlRequest caller, String name, String value);
 
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native boolean nativeAddRequestHeader(long nativePtr, String name, String value);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        void start(long nativePtr, CronetUrlRequest caller);
 
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native void nativeStart(long nativePtr);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        void followDeferredRedirect(long nativePtr, CronetUrlRequest caller);
 
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native void nativeFollowDeferredRedirect(long nativePtr);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        boolean readData(long nativePtr, CronetUrlRequest caller, ByteBuffer byteBuffer,
+                int position, int capacity);
 
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native boolean nativeReadData(
-            long nativePtr, ByteBuffer byteBuffer, int position, int capacity);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        void destroy(long nativePtr, CronetUrlRequest caller, boolean sendOnCanceled);
 
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native void nativeDestroy(long nativePtr, boolean sendOnCanceled);
-
-    @NativeClassQualifiedName("CronetURLRequestAdapter")
-    private native void nativeGetStatus(
-            long nativePtr, VersionSafeCallbacks.UrlRequestStatusListener listener);
+        @NativeClassQualifiedName("CronetURLRequestAdapter")
+        void getStatus(long nativePtr, CronetUrlRequest caller,
+                VersionSafeCallbacks.UrlRequestStatusListener listener);
+    }
 }

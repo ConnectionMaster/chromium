@@ -12,16 +12,20 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "content/grit/content_resources.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/url_constants.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/base/template_expressions.h"
 #include "ui/base/webui/jstemplate_builder.h"
+#include "ui/base/webui/resource_path.h"
 #include "ui/base/webui/web_ui_util.h"
 
 namespace content {
@@ -49,8 +53,14 @@ namespace {
 
 std::string CleanUpPath(const std::string& path) {
   // Remove the query string for named resource lookups.
-  return path.substr(0, path.find_first_of('?'));
+  std::string clean_path = path.substr(0, path.find_first_of('?'));
+  // Remove a URL fragment (for example #foo) if it exists.
+  clean_path = clean_path.substr(0, path.find_first_of('#'));
+
+  return clean_path;
 }
+
+const int kNonExistentResource = -1;
 
 }  // namespace
 
@@ -63,44 +73,54 @@ class WebUIDataSourceImpl::InternalDataSource : public URLDataSource {
   ~InternalDataSource() override {}
 
   // URLDataSource implementation.
-  std::string GetSource() const override { return parent_->GetSource(); }
-  std::string GetMimeType(const std::string& path) const override {
+  std::string GetSource() override { return parent_->GetSource(); }
+  std::string GetMimeType(const std::string& path) override {
     return parent_->GetMimeType(path);
   }
-  void StartDataRequest(
-      const std::string& path,
-      const ResourceRequestInfo::WebContentsGetter& wc_getter,
-      const URLDataSource::GotDataCallback& callback) override {
-    return parent_->StartDataRequest(path, wc_getter, callback);
+  void StartDataRequest(const GURL& url,
+                        const WebContents::Getter& wc_getter,
+                        URLDataSource::GotDataCallback callback) override {
+    return parent_->StartDataRequest(url, wc_getter, std::move(callback));
   }
-  bool ShouldReplaceExistingSource() const override {
+  bool ShouldReplaceExistingSource() override {
     return parent_->replace_existing_source_;
   }
-  bool AllowCaching() const override { return false; }
-  bool ShouldAddContentSecurityPolicy() const override {
-    return parent_->add_csp_;
+  bool AllowCaching() override { return false; }
+  bool ShouldAddContentSecurityPolicy() override { return parent_->add_csp_; }
+  std::string GetContentSecurityPolicy(
+      network::mojom::CSPDirectiveName directive) override {
+    if (parent_->csp_overrides_.contains(directive)) {
+      return parent_->csp_overrides_.at(directive);
+    } else if (directive == network::mojom::CSPDirectiveName::FrameAncestors) {
+      std::string frame_ancestors;
+      if (parent_->frame_ancestors_.size() == 0)
+        frame_ancestors += " 'none'";
+      for (const GURL& frame_ancestor : parent_->frame_ancestors_) {
+        frame_ancestors += " " + frame_ancestor.spec();
+      }
+      return "frame-ancestors" + frame_ancestors + ";";
+    }
+
+    return URLDataSource::GetContentSecurityPolicy(directive);
   }
-  std::string GetContentSecurityPolicyScriptSrc() const override {
-    if (parent_->script_src_set_)
-      return parent_->script_src_;
-    return URLDataSource::GetContentSecurityPolicyScriptSrc();
+  std::string GetCrossOriginOpenerPolicy() override {
+    return parent_->coop_value_;
   }
-  std::string GetContentSecurityPolicyObjectSrc() const override {
-    if (parent_->object_src_set_)
-      return parent_->object_src_;
-    return URLDataSource::GetContentSecurityPolicyObjectSrc();
+  std::string GetCrossOriginEmbedderPolicy() override {
+    return parent_->coep_value_;
   }
-  std::string GetContentSecurityPolicyChildSrc() const override {
-    if (parent_->frame_src_set_)
-      return parent_->frame_src_;
-    return URLDataSource::GetContentSecurityPolicyChildSrc();
+  std::string GetCrossOriginResourcePolicy() override {
+    return parent_->corp_value_;
   }
-  bool ShouldDenyXFrameOptions() const override {
+  bool ShouldDenyXFrameOptions() override {
     return parent_->deny_xframe_options_;
   }
-  bool ShouldServeMimeTypeAsContentTypeHeader() const override { return true; }
-  bool IsGzipped(const std::string& path) const override {
-    return parent_->IsGzipped(path);
+  bool ShouldServeMimeTypeAsContentTypeHeader() override { return true; }
+  const ui::TemplateReplacements* GetReplacements() override {
+    return &parent_->replacements_;
+  }
+  bool ShouldReplaceI18nInJS() override {
+    return parent_->ShouldReplaceI18nInJS();
   }
 
  private:
@@ -111,37 +131,34 @@ WebUIDataSourceImpl::WebUIDataSourceImpl(const std::string& source_name)
     : URLDataSourceImpl(source_name,
                         std::make_unique<InternalDataSource>(this)),
       source_name_(source_name),
-      default_resource_(-1),
-      add_csp_(true),
-      script_src_set_(false),
-      object_src_set_(false),
-      frame_src_set_(false),
-      deny_xframe_options_(true),
-      add_load_time_data_defaults_(true),
-      replace_existing_source_(true),
-      use_gzip_(false) {}
+      default_resource_(kNonExistentResource) {}
 
-WebUIDataSourceImpl::~WebUIDataSourceImpl() {
-}
+WebUIDataSourceImpl::~WebUIDataSourceImpl() = default;
 
 void WebUIDataSourceImpl::AddString(base::StringPiece name,
-                                    const base::string16& value) {
+                                    const std::u16string& value) {
   // TODO(dschuyler): Share only one copy of these strings.
   localized_strings_.SetKey(name, base::Value(value));
-  replacements_[name.as_string()] = base::UTF16ToUTF8(value);
+  replacements_[std::string(name)] = base::UTF16ToUTF8(value);
 }
 
 void WebUIDataSourceImpl::AddString(base::StringPiece name,
                                     const std::string& value) {
   localized_strings_.SetKey(name, base::Value(value));
-  replacements_[name.as_string()] = value;
+  replacements_[std::string(name)] = value;
 }
 
 void WebUIDataSourceImpl::AddLocalizedString(base::StringPiece name, int ids) {
   std::string utf8_str =
       base::UTF16ToUTF8(GetContentClient()->GetLocalizedString(ids));
   localized_strings_.SetKey(name, base::Value(utf8_str));
-  replacements_[name.as_string()] = utf8_str;
+  replacements_[std::string(name)] = utf8_str;
+}
+
+void WebUIDataSourceImpl::AddLocalizedStrings(
+    base::span<const webui::LocalizedString> strings) {
+  for (const auto& str : strings)
+    AddLocalizedString(str.name, str.id);
 }
 
 void WebUIDataSourceImpl::AddLocalizedStrings(
@@ -164,16 +181,23 @@ void WebUIDataSourceImpl::AddInteger(base::StringPiece name, int32_t value) {
   localized_strings_.SetInteger(name, value);
 }
 
-void WebUIDataSourceImpl::SetJsonPath(base::StringPiece path) {
-  DCHECK(json_path_.empty());
-  DCHECK(!path.empty());
+void WebUIDataSourceImpl::AddDouble(base::StringPiece name, double value) {
+  localized_strings_.SetDouble(name, value);
+}
 
-  json_path_ = path.as_string();
+void WebUIDataSourceImpl::UseStringsJs() {
+  use_strings_js_ = true;
 }
 
 void WebUIDataSourceImpl::AddResourcePath(base::StringPiece path,
                                           int resource_id) {
-  path_to_idr_map_[path.as_string()] = resource_id;
+  path_to_idr_map_[std::string(path)] = resource_id;
+}
+
+void WebUIDataSourceImpl::AddResourcePaths(
+    base::span<const webui::ResourcePath> paths) {
+  for (const auto& path : paths)
+    AddResourcePath(path.path, path.id);
 }
 
 void WebUIDataSourceImpl::SetDefaultResource(int resource_id) {
@@ -183,6 +207,8 @@ void WebUIDataSourceImpl::SetDefaultResource(int resource_id) {
 void WebUIDataSourceImpl::SetRequestFilter(
     const ShouldHandleRequestCallback& should_handle_request_callback,
     const HandleRequestCallback& handle_request_callback) {
+  CHECK(!should_handle_request_callback_);
+  CHECK(!filter_callback_);
   should_handle_request_callback_ = should_handle_request_callback;
   filter_callback_ = handle_request_callback;
 }
@@ -199,40 +225,51 @@ void WebUIDataSourceImpl::DisableContentSecurityPolicy() {
   add_csp_ = false;
 }
 
-void WebUIDataSourceImpl::OverrideContentSecurityPolicyScriptSrc(
-    const std::string& data) {
-  script_src_set_ = true;
-  script_src_ = data;
+void WebUIDataSourceImpl::OverrideContentSecurityPolicy(
+    network::mojom::CSPDirectiveName directive,
+    const std::string& value) {
+  csp_overrides_.insert_or_assign(directive, value);
 }
 
-void WebUIDataSourceImpl::OverrideContentSecurityPolicyObjectSrc(
-    const std::string& data) {
-  object_src_set_ = true;
-  object_src_ = data;
+void WebUIDataSourceImpl::OverrideCrossOriginOpenerPolicy(
+    const std::string& value) {
+  coop_value_ = value;
 }
 
-void WebUIDataSourceImpl::OverrideContentSecurityPolicyChildSrc(
-    const std::string& data) {
-  frame_src_set_ = true;
-  frame_src_ = data;
+void WebUIDataSourceImpl::OverrideCrossOriginEmbedderPolicy(
+    const std::string& value) {
+  coep_value_ = value;
+}
+
+void WebUIDataSourceImpl::OverrideCrossOriginResourcePolicy(
+    const std::string& value) {
+  corp_value_ = value;
+}
+
+void WebUIDataSourceImpl::DisableTrustedTypesCSP() {
+  // TODO(crbug.com/1098685): Trusted Type remaining WebUI
+  // This removes require-trusted-types-for and trusted-types directives
+  // from the CSP header.
+  OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::RequireTrustedTypesFor, std::string());
+  OverrideContentSecurityPolicy(network::mojom::CSPDirectiveName::TrustedTypes,
+                                std::string());
+}
+
+void WebUIDataSourceImpl::AddFrameAncestor(const GURL& frame_ancestor) {
+  // Do not allow a wildcard to be a frame ancestor or it will allow any website
+  // to embed the WebUI.
+  CHECK(frame_ancestor.SchemeIs(kChromeUIScheme) ||
+        frame_ancestor.SchemeIs(kChromeUIUntrustedScheme));
+  frame_ancestors_.insert(frame_ancestor);
 }
 
 void WebUIDataSourceImpl::DisableDenyXFrameOptions() {
   deny_xframe_options_ = false;
 }
 
-void WebUIDataSourceImpl::UseGzip() {
-  use_gzip_ = true;
-}
-
-void WebUIDataSourceImpl::UseGzip(
-    base::RepeatingCallback<bool(const std::string&)> is_gzipped_callback) {
-  UseGzip();
-  is_gzipped_callback_ = std::move(is_gzipped_callback);
-}
-
-const ui::TemplateReplacements* WebUIDataSourceImpl::GetReplacements() const {
-  return &replacements_;
+void WebUIDataSourceImpl::EnableReplaceI18nInJS() {
+  should_replace_i18n_in_js_ = true;
 }
 
 void WebUIDataSourceImpl::EnsureLoadTimeDataDefaultsAdded() {
@@ -246,7 +283,7 @@ void WebUIDataSourceImpl::EnsureLoadTimeDataDefaultsAdded() {
   AddLocalizedStrings(defaults);
 }
 
-std::string WebUIDataSourceImpl::GetSource() const {
+std::string WebUIDataSourceImpl::GetSource() {
   return source_name_;
 }
 
@@ -275,67 +312,85 @@ std::string WebUIDataSourceImpl::GetMimeType(const std::string& path) const {
   if (base::EndsWith(file_path, ".png", base::CompareCase::INSENSITIVE_ASCII))
     return "image/png";
 
+  if (base::EndsWith(file_path, ".mp4", base::CompareCase::INSENSITIVE_ASCII))
+    return "video/mp4";
+
+  if (base::EndsWith(file_path, ".wasm", base::CompareCase::INSENSITIVE_ASCII))
+    return "application/wasm";
+
+  if (base::EndsWith(file_path, ".woff2", base::CompareCase::INSENSITIVE_ASCII))
+    return "application/font-woff2";
+
   return "text/html";
 }
 
 void WebUIDataSourceImpl::StartDataRequest(
-    const std::string& path,
-    const ResourceRequestInfo::WebContentsGetter& wc_getter,
-    const URLDataSource::GotDataCallback& callback) {
+    const GURL& url,
+    const WebContents::Getter& wc_getter,
+    URLDataSource::GotDataCallback callback) {
+  const std::string path = URLDataSource::URLToRequestPath(url);
   if (!should_handle_request_callback_.is_null() &&
       should_handle_request_callback_.Run(path)) {
-    filter_callback_.Run(path, callback);
+    filter_callback_.Run(path, std::move(callback));
     return;
   }
 
   EnsureLoadTimeDataDefaultsAdded();
 
-  if (!json_path_.empty() && path == json_path_) {
-    SendLocalizedStringsAsJSON(callback);
-    return;
+  if (use_strings_js_) {
+    bool from_js_module = path == "strings.m.js";
+    if (from_js_module || path == "strings.js") {
+      SendLocalizedStringsAsJSON(std::move(callback), from_js_module);
+      return;
+    }
   }
 
-  int resource_id = default_resource_;
-  std::map<std::string, int>::iterator result;
-  // Remove the query string for named resource lookups.
-  result = path_to_idr_map_.find(CleanUpPath(path));
-  if (result != path_to_idr_map_.end())
-    resource_id = result->second;
-  DCHECK_NE(resource_id, -1);
-  scoped_refptr<base::RefCountedMemory> response(
-      GetContentClient()->GetDataResourceBytes(resource_id));
-  callback.Run(response.get());
+  int resource_id = PathToIdrOrDefault(CleanUpPath(path));
+  if (resource_id == kNonExistentResource) {
+    std::move(callback).Run(nullptr);
+  } else {
+    scoped_refptr<base::RefCountedMemory> response(
+        GetContentClient()->GetDataResourceBytes(resource_id));
+    std::move(callback).Run(response.get());
+  }
 }
 
 void WebUIDataSourceImpl::SendLocalizedStringsAsJSON(
-    const URLDataSource::GotDataCallback& callback) {
+    URLDataSource::GotDataCallback callback,
+    bool from_js_module) {
   std::string template_data;
-  webui::AppendJsonJS(&localized_strings_, &template_data);
-  callback.Run(base::RefCountedString::TakeString(&template_data));
+  webui::AppendJsonJS(&localized_strings_, &template_data, from_js_module);
+  std::move(callback).Run(base::RefCountedString::TakeString(&template_data));
 }
 
 const base::DictionaryValue* WebUIDataSourceImpl::GetLocalizedStrings() const {
   return &localized_strings_;
 }
 
-bool WebUIDataSourceImpl::IsGzipped(const std::string& path) const {
-  if (!use_gzip_)
-    return false;
+bool WebUIDataSourceImpl::ShouldReplaceI18nInJS() const {
+  return should_replace_i18n_in_js_;
+}
 
-  // Note: In the hypothetical case of requests handled by |filter_callback_|
-  // that involve gzipped data, the callback itself is responsible for
-  // ungzipping, and IsGzipped will return false for such cases.
-  if (!should_handle_request_callback_.is_null() &&
-      should_handle_request_callback_.Run(path)) {
-    return false;
+int WebUIDataSourceImpl::PathToIdrOrDefault(const std::string& path) const {
+  auto it = path_to_idr_map_.find(path);
+  if (it != path_to_idr_map_.end())
+    return it->second;
+
+  if (default_resource_ != kNonExistentResource)
+    return default_resource_;
+
+  // Use GetMimeType() to check for most file requests. It returns text/html by
+  // default regardless of the extension if it does not match a different file
+  // type, so check for HTML file requests separately.
+  if (GetMimeType(path) != "text/html" ||
+      base::EndsWith(path, ".html", base::CompareCase::INSENSITIVE_ASCII)) {
+    return kNonExistentResource;
   }
 
-  // TODO(dbeam): does anybody care about the "dirty" path (i.e. stuff after ?).
-  const std::string clean_path = CleanUpPath(path);
-  if (!json_path_.empty() && clean_path == json_path_)
-    return false;
-
-  return is_gzipped_callback_.is_null() || is_gzipped_callback_.Run(clean_path);
+  // If not a file request, try to get the resource for the empty key.
+  auto it_empty = path_to_idr_map_.find("");
+  return (it_empty != path_to_idr_map_.end()) ? it_empty->second
+                                              : kNonExistentResource;
 }
 
 }  // namespace content

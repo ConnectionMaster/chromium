@@ -28,37 +28,32 @@
 
 #include "base/macros.h"
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
-#include "third_party/blink/renderer/modules/accessibility/ax_mock_object.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_node_object.h"
 
 namespace blink {
 
 class AXObjectCacheImpl;
 
-class AXMenuListOption final : public AXMockObject {
+class AXMenuListOption final : public AXNodeObject {
  public:
   AXMenuListOption(HTMLOptionElement*, AXObjectCacheImpl&);
-  ~AXMenuListOption() override;
+  ~AXMenuListOption() override = default;
 
-  int PosInSet() const override;
-  int SetSize() const override;
+  // For an <option>/<optgroup>, return an AXObject* for its popup, if any,
+  // otherwise return null.
+  static AXObject* ComputeParentAXMenuPopupFor(AXObjectCacheImpl& cache,
+                                               HTMLOptionElement* option);
 
  private:
-  void Trace(blink::Visitor*) override;
-
   bool IsMenuListOption() const override { return true; }
 
-  Node* GetNode() const override { return element_; }
-  void Detach() override;
-  bool IsDetached() const override { return !element_; }
-  LocalFrameView* DocumentFrameView() const override;
-  ax::mojom::Role RoleValue() const override;
   bool CanHaveChildren() const override { return false; }
-  AXObject* ComputeParent() const override;
 
   Element* ActionElement() const override;
   bool IsVisible() const override;
   bool IsOffScreen() const override;
   AccessibilitySelectedState IsSelected() const override;
+  bool OnNativeClickAction() override;
   bool OnNativeSetSelectedAction(bool) override;
 
   void GetRelativeBounds(AXObject** out_container,
@@ -66,20 +61,22 @@ class AXMenuListOption final : public AXMockObject {
                          SkMatrix44& out_container_transform,
                          bool* clips_children = nullptr) const override;
   String TextAlternative(bool recursive,
-                         bool in_aria_labelled_by_traversal,
+                         const AXObject* aria_label_or_description_root,
                          AXObjectSet& visited,
                          ax::mojom::NameFrom&,
                          AXRelatedObjectVector*,
                          NameSources*) const override;
   bool ComputeAccessibilityIsIgnored(IgnoredReasons* = nullptr) const override;
-  HTMLSelectElement* ParentSelectNode() const;
-
-  Member<HTMLOptionElement> element_;
 
   DISALLOW_COPY_AND_ASSIGN(AXMenuListOption);
 };
 
-DEFINE_AX_OBJECT_TYPE_CASTS(AXMenuListOption, IsMenuListOption());
+template <>
+struct DowncastTraits<AXMenuListOption> {
+  static bool AllowFrom(const AXObject& object) {
+    return object.IsMenuListOption();
+  }
+};
 
 }  // namespace blink
 

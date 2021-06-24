@@ -9,8 +9,8 @@
 
 #include "extensions/browser/api/extensions_api_client.h"
 
-#include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 
 namespace extensions {
 
@@ -20,6 +20,8 @@ class VirtualKeyboardDelegate;
 class ShellExtensionsAPIClient : public ExtensionsAPIClient {
  public:
   ShellExtensionsAPIClient();
+  ShellExtensionsAPIClient(const ShellExtensionsAPIClient&) = delete;
+  ShellExtensionsAPIClient& operator=(const ShellExtensionsAPIClient&) = delete;
   ~ShellExtensionsAPIClient() override;
 
   // ExtensionsAPIClient implementation.
@@ -30,20 +32,24 @@ class ShellExtensionsAPIClient : public ExtensionsAPIClient {
       WebViewGuest* web_view_guest) const override;
   std::unique_ptr<VirtualKeyboardDelegate> CreateVirtualKeyboardDelegate(
       content::BrowserContext* browser_context) const override;
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+  std::unique_ptr<DisplayInfoProvider> CreateDisplayInfoProvider()
+      const override;
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   FileSystemDelegate* GetFileSystemDelegate() override;
 #endif
   MessagingDelegate* GetMessagingDelegate() override;
   FeedbackPrivateDelegate* GetFeedbackPrivateDelegate() override;
 
  private:
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   std::unique_ptr<FileSystemDelegate> file_system_delegate_;
 #endif
   std::unique_ptr<MessagingDelegate> messaging_delegate_;
   std::unique_ptr<FeedbackPrivateDelegate> feedback_private_delegate_;
-
-  DISALLOW_COPY_AND_ASSIGN(ShellExtensionsAPIClient);
 };
 
 }  // namespace extensions

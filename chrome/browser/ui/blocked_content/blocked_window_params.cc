@@ -6,7 +6,6 @@
 
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -15,6 +14,7 @@
 BlockedWindowParams::BlockedWindowParams(
     const GURL& target_url,
     const url::Origin& initiator_origin,
+    content::SiteInstance* source_site_instance,
     const content::Referrer& referrer,
     const std::string& frame_name,
     WindowOpenDisposition disposition,
@@ -23,6 +23,7 @@ BlockedWindowParams::BlockedWindowParams(
     bool opener_suppressed)
     : target_url_(target_url),
       initiator_origin_(initiator_origin),
+      source_site_instance_(source_site_instance),
       referrer_(referrer),
       frame_name_(frame_name),
       disposition_(disposition),
@@ -36,18 +37,19 @@ BlockedWindowParams::BlockedWindowParams(const BlockedWindowParams& other) =
 BlockedWindowParams::~BlockedWindowParams() = default;
 
 NavigateParams BlockedWindowParams::CreateNavigateParams(
+    content::RenderProcessHost* opener_process,
     content::WebContents* web_contents) const {
   GURL popup_url(target_url_);
-  web_contents->GetMainFrame()->GetProcess()->FilterURL(false, &popup_url);
+  opener_process->FilterURL(false, &popup_url);
   NavigateParams nav_params(
       Profile::FromBrowserContext(web_contents->GetBrowserContext()), popup_url,
       ui::PAGE_TRANSITION_LINK);
   nav_params.initiator_origin = initiator_origin_;
+  nav_params.source_site_instance = source_site_instance_;
   nav_params.referrer = referrer_;
   nav_params.frame_name = frame_name_;
   nav_params.source_contents = web_contents;
   nav_params.is_renderer_initiated = true;
-  nav_params.tabstrip_add_types = TabStripModel::ADD_ACTIVE;
   nav_params.window_action = NavigateParams::SHOW_WINDOW;
   nav_params.user_gesture = user_gesture_;
   nav_params.created_with_opener = !opener_suppressed_;

@@ -14,15 +14,12 @@ namespace offline_pages {
 // Stub implementation of PrefetchService interface for testing.
 class StubPrefetchService : public PrefetchService {
  public:
-  void SetContentSuggestionsService(
-      ntp_snippets::ContentSuggestionsService* content_suggestions) override;
   void SetSuggestionProvider(
       SuggestionsProvider* suggestions_provider) override;
   void NewSuggestionsAvailable() override;
   void RemoveSuggestion(GURL url) override;
-  void SetCachedGCMToken(const std::string& gcm_token) override;
-  const std::string& GetCachedGCMToken() const override;
-  void GetGCMToken(GCMTokenCallback callback) override;
+  std::string GetCachedGCMToken() const override;
+  void ForceRefreshSuggestions() override;
   PrefetchGCMHandler* GetPrefetchGCMHandler() override;
   OfflineEventLogger* GetLogger() override;
   OfflineMetricsCollector* GetOfflineMetricsCollector() override;
@@ -32,14 +29,9 @@ class StubPrefetchService : public PrefetchService {
   PrefetchStore* GetPrefetchStore() override;
   PrefetchImporter* GetPrefetchImporter() override;
   PrefetchBackgroundTaskHandler* GetPrefetchBackgroundTaskHandler() override;
-  ThumbnailFetcher* GetThumbnailFetcher() override;
   OfflinePageModel* GetOfflinePageModel() override;
   image_fetcher::ImageFetcher* GetImageFetcher() override;
-
-  SuggestedArticlesObserver* GetSuggestedArticlesObserverForTesting() override;
-
- private:
-  std::string gcm_token_;
+  void SetEnabledByServer(PrefService* pref_service, bool enabled) override;
 };
 
 }  // namespace offline_pages

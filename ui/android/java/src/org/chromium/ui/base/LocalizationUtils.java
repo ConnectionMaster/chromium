@@ -7,11 +7,13 @@ package org.chromium.ui.base;
 import android.content.res.Configuration;
 import android.view.View;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ContextUtils;
 import org.chromium.base.LocaleUtils;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.annotations.NativeMethods;
 
 import java.util.Locale;
 
@@ -73,7 +75,11 @@ public class LocalizationUtils {
      */
     public static int getFirstStrongCharacterDirection(String string) {
         assert string != null;
-        return nativeGetFirstStrongCharacterDirection(string);
+        return LocalizationUtilsJni.get().getFirstStrongCharacterDirection(string);
+    }
+
+    public static String getNativeUiLocale() {
+        return LocalizationUtilsJni.get().getNativeUiLocale();
     }
 
     public static String substituteLocalePlaceholder(String str) {
@@ -120,5 +126,9 @@ public class LocalizationUtils {
         return LocaleUtils.toLanguage(locale).equals(lang);
     }
 
-    private static native int nativeGetFirstStrongCharacterDirection(String string);
+    @NativeMethods
+    interface Natives {
+        int getFirstStrongCharacterDirection(String string);
+        String getNativeUiLocale();
+    }
 }

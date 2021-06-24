@@ -9,9 +9,10 @@
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "base/i18n/icu_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/single_thread_task_executor.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "build/build_config.h"
 #include "mojo/core/embedder/embedder.h"
 #include "net/base/network_change_notifier.h"
@@ -19,24 +20,30 @@
 #include "remoting/base/breakpad.h"
 #include "remoting/host/chromoting_host_context.h"
 #include "remoting/host/host_exit_codes.h"
+#include "remoting/host/host_settings.h"
 #include "remoting/host/it2me/it2me_native_messaging_host.h"
 #include "remoting/host/logging.h"
 #include "remoting/host/native_messaging/native_messaging_pipe.h"
 #include "remoting/host/native_messaging/pipe_messaging_channel.h"
 #include "remoting/host/policy_watcher.h"
 #include "remoting/host/resources.h"
+#include "remoting/host/switches.h"
 #include "remoting/host/usage_stats_consent.h"
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 #include <gtk/gtk.h>
 
 #include "base/linux_util.h"
-#include "ui/gfx/x/x11.h"
-#endif  // defined(OS_LINUX)
+#include "ui/events/platform/x11/x11_event_source.h"
+#include "ui/gfx/x/xlib_support.h"
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
+#include "base/mac/mac_util.h"
 #include "base/mac/scoped_nsautorelease_pool.h"
-#endif  // defined(OS_MACOSX)
+#include "remoting/host/desktop_capturer_checker.h"
+#include "remoting/host/mac/permission_utils.h"
+#endif  // defined(OS_APPLE)
 
 #if defined(OS_WIN)
 #include <commctrl.h>
@@ -67,18 +74,26 @@ bool CurrentProcessHasUiAccess() {
 }  // namespace
 
 // Creates a It2MeNativeMessagingHost instance, attaches it to stdin/stdout and
-// runs the message loop until It2MeNativeMessagingHost signals shutdown.
+// runs the task executor until It2MeNativeMessagingHost signals shutdown.
 int It2MeNativeMessagingHostMain(int argc, char** argv) {
-  // This object instance is required by Chrome code (such as MessageLoop).
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  // Initialize Xlib for multi-threaded use, allowing non-Chromium code to
+  // use X11 safely (such as the WebRTC capturer, GTK ...)
+  x11::InitXlib();
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
+
+  // This object instance is required by Chrome code (such as
+  // SingleThreadTaskExecutor).
   base::AtExitManager exit_manager;
 
   base::CommandLine::Init(argc, argv);
   remoting::InitHostLogging();
+  remoting::HostSettings::Initialize();
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Needed so we don't leak objects when threads are created.
   base::mac::ScopedNSAutoreleasePool pool;
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_APPLE)
 
 #if defined(REMOTING_ENABLE_BREAKPAD)
   // Initialize Breakpad as early as possible. On Mac the command-line needs to
@@ -102,14 +117,11 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
 
   mojo::core::Init();
 
-  base::ThreadPool::CreateAndStartWithDefaultParams("It2Me");
+  base::ThreadPoolInstance::CreateAndStartWithDefaultParams("It2Me");
 
   remoting::LoadResources("");
 
-#if defined(OS_LINUX)
-  // Required in order for us to run multiple X11 threads.
-  XInitThreads();
-
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   // Required for any calls into GTK functions, such as the Disconnect and
   // Continue windows. Calling with nullptr arguments because we don't have
   // any command line arguments for gtk to consume.
@@ -122,11 +134,11 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
   // Need to prime the host OS version value for linux to prevent IO on the
   // network thread. base::GetLinuxDistro() caches the result.
   base::GetLinuxDistro();
-#endif  // OS_LINUX
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
   base::File read_file;
   base::File write_file;
-  bool needs_elevation = false;
+  bool is_process_elevated_ = false;
 
 #if defined(OS_WIN)
 
@@ -134,6 +146,7 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
       base::CommandLine::ForCurrentProcess();
 
   if (command_line->HasSwitch(kElevateSwitchName)) {
+    is_process_elevated_ = true;
 #if defined(OFFICIAL_BUILD)
     // Unofficial builds won't have 'UiAccess' since it requires signing.
     if (!CurrentProcessHasUiAccess()) {
@@ -171,8 +184,6 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
       return kInitializationFailed;
     }
   } else {
-    needs_elevation = true;
-
     // GetStdHandle() returns pseudo-handles for stdin and stdout even if
     // the hosting executable specifies "Windows" subsystem. However the
     // returned  handles are invalid in that case unless standard input and
@@ -199,12 +210,29 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
 #error Not implemented.
 #endif
 
-  base::MessageLoopForUI message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   base::RunLoop run_loop;
 
-  // NetworkChangeNotifier must be initialized after MessageLoop.
+#if defined(OS_APPLE)
+  auto* cmd_line = base::CommandLine::ForCurrentProcess();
+  if (cmd_line->HasSwitch(kCheckAccessibilityPermissionSwitchName)) {
+    return mac::CanInjectInput() ? EXIT_SUCCESS : EXIT_FAILURE;
+  }
+  if (cmd_line->HasSwitch(kCheckScreenRecordingPermissionSwitchName)) {
+    // Trigger screen-capture, even if CanRecordScreen() returns true. It uses a
+    // heuristic that might not be 100% reliable, but it is critically
+    // important to add the host bundle to the list of apps under
+    // Security & Privacy -> Screen Recording.
+    if (base::mac::IsAtLeastOS10_15()) {
+      DesktopCapturerChecker().TriggerSingleCapture();
+    }
+    return mac::CanRecordScreen() ? EXIT_SUCCESS : EXIT_FAILURE;
+  }
+#endif  // defined(OS_APPLE)
+
+  // NetworkChangeNotifier must be initialized after SingleThreadTaskExecutor.
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier(
-      net::NetworkChangeNotifier::Create());
+      net::NetworkChangeNotifier::CreateIfNeeded());
 
   std::unique_ptr<It2MeHostFactory> factory(new It2MeHostFactory());
 
@@ -215,15 +243,31 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
   std::unique_ptr<extensions::NativeMessagingChannel> channel(
       new PipeMessagingChannel(std::move(read_file), std::move(write_file)));
 
+#if defined(OS_POSIX)
+  PipeMessagingChannel::ReopenStdinStdout();
+#endif  // defined(OS_POSIX)
+
   std::unique_ptr<ChromotingHostContext> context =
       ChromotingHostContext::Create(new remoting::AutoThreadTaskRunner(
-          message_loop.task_runner(), run_loop.QuitClosure()));
+          main_task_executor.task_runner(), run_loop.QuitClosure()));
   std::unique_ptr<PolicyWatcher> policy_watcher =
       PolicyWatcher::CreateWithTaskRunner(context->file_task_runner());
-  std::unique_ptr<extensions::NativeMessageHost> host(
-      new It2MeNativeMessagingHost(needs_elevation, std::move(policy_watcher),
-                                   std::move(context), std::move(factory)));
 
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  // Create an X11EventSource on all UI threads, so the global X11 connection
+  // (x11::Connection::Get()) can dispatch X events.
+  auto event_source =
+      std::make_unique<ui::X11EventSource>(x11::Connection::Get());
+  auto input_task_runner = context->input_task_runner();
+  input_task_runner->PostTask(FROM_HERE, base::BindOnce([]() {
+                                new ui::X11EventSource(x11::Connection::Get());
+                              }));
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
+
+  std::unique_ptr<extensions::NativeMessageHost> host(
+      new It2MeNativeMessagingHost(is_process_elevated_,
+                                   std::move(policy_watcher),
+                                   std::move(context), std::move(factory)));
   host->Start(native_messaging_pipe.get());
 
   native_messaging_pipe->Start(std::move(host), std::move(channel));
@@ -231,8 +275,14 @@ int It2MeNativeMessagingHostMain(int argc, char** argv) {
   // Run the loop until channel is alive.
   run_loop.Run();
 
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  input_task_runner->PostTask(FROM_HERE, base::BindOnce([]() {
+                                delete ui::X11EventSource::GetInstance();
+                              }));
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
+
   // Block until tasks blocking shutdown have completed their execution.
-  base::ThreadPool::GetInstance()->Shutdown();
+  base::ThreadPoolInstance::Get()->Shutdown();
 
   return kSuccessExitCode;
 }

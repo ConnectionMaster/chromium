@@ -6,6 +6,7 @@
 
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/public/cpp/window_properties.h"
+#include "ash/wm/desks/desks_controller.h"
 #include "ash/wm/desks/desks_util.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/workspace/workspace_layout_manager.h"
@@ -40,22 +41,44 @@ AlwaysOnTopController::~AlwaysOnTopController() {
   DCHECK(!pip_container_);
 }
 
+// static
+void AlwaysOnTopController::SetDisallowReparent(aura::Window* window) {
+  window->SetProperty(kDisallowReparentKey, true);
+}
+
 aura::Window* AlwaysOnTopController::GetContainer(aura::Window* window) const {
   DCHECK(always_on_top_container_);
   DCHECK(pip_container_);
 
-  if (!window->GetProperty(aura::client::kAlwaysOnTopKey)) {
+  // On other platforms, there are different window levels. For now, treat any
+  // window with non-normal level as "always on top". Perhaps the nuance of
+  // multiple levels will be needed later.
+  if (window->GetProperty(aura::client::kZOrderingKey) ==
+      ui::ZOrderLevel::kNormal) {
     aura::Window* root = always_on_top_container_->GetRootWindow();
 
     // TODO(afakhry): Do we need to worry about the context of |window| here? Or
     // is it safe to assume that |window| should always be parented to the
     // active desks' container.
+    int window_workspace =
+        window->GetProperty(aura::client::kWindowWorkspaceKey);
+    if (window_workspace != aura::client::kUnassignedWorkspace) {
+      auto* desk_container =
+          DesksController::Get()->GetDeskContainer(root, window_workspace);
+      if (desk_container)
+        return desk_container;
+    }
     return desks_util::GetActiveDeskContainerForRoot(root);
   }
-  if (window->parent() && wm::GetWindowState(window)->IsPip())
+  if (window->parent() && WindowState::Get(window)->IsPip())
     return pip_container_;
 
   return always_on_top_container_;
+}
+
+void AlwaysOnTopController::ClearLayoutManagers() {
+  always_on_top_container_->SetLayoutManager(nullptr);
+  pip_container_->SetLayoutManager(nullptr);
 }
 
 void AlwaysOnTopController::SetLayoutManagerForTest(
@@ -63,26 +86,22 @@ void AlwaysOnTopController::SetLayoutManagerForTest(
   always_on_top_container_->SetLayoutManager(layout_manager.release());
 }
 
-void AlwaysOnTopController::SetDisallowReparent(aura::Window* window) {
-  window->SetProperty(kDisallowReparentKey, true);
-}
-
 void AlwaysOnTopController::AddWindow(aura::Window* window) {
   window->AddObserver(this);
-  wm::GetWindowState(window)->AddObserver(this);
+  WindowState::Get(window)->AddObserver(this);
 }
 
 void AlwaysOnTopController::RemoveWindow(aura::Window* window) {
   window->RemoveObserver(this);
-  wm::GetWindowState(window)->RemoveObserver(this);
+  WindowState::Get(window)->RemoveObserver(this);
 }
 
 void AlwaysOnTopController::ReparentWindow(aura::Window* window) {
-  DCHECK(window->type() == aura::client::WINDOW_TYPE_NORMAL ||
-         window->type() == aura::client::WINDOW_TYPE_POPUP);
+  DCHECK(window->GetType() == aura::client::WINDOW_TYPE_NORMAL ||
+         window->GetType() == aura::client::WINDOW_TYPE_POPUP);
   aura::Window* container = GetContainer(window);
   if (window->parent() != container &&
-      !window->GetProperty(ash::kDisallowReparentKey))
+      !window->GetProperty(kDisallowReparentKey))
     container->AddChild(window);
 }
 
@@ -103,7 +122,7 @@ void AlwaysOnTopController::OnWindowPropertyChanged(aura::Window* window,
                                                     const void* key,
                                                     intptr_t old) {
   if (window != always_on_top_container_ && window != pip_container_ &&
-      key == aura::client::kAlwaysOnTopKey) {
+      key == aura::client::kZOrderingKey) {
     ReparentWindow(window);
   }
 }
@@ -121,8 +140,8 @@ void AlwaysOnTopController::OnWindowDestroying(aura::Window* window) {
 }
 
 void AlwaysOnTopController::OnPreWindowStateTypeChange(
-    wm::WindowState* window_state,
-    mojom::WindowStateType old_type) {
+    WindowState* window_state,
+    chromeos::WindowStateType old_type) {
   ReparentWindow(window_state->window());
 }
 

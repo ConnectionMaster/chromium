@@ -4,7 +4,7 @@
 
 #include <jni.h>
 
-#include "android_webview/test/jni/AwEmbeddedTestServerImpl_jni.h"
+#include "android_webview/test/embedded_test_server/aw_net_jni_headers/AwEmbeddedTestServerImpl_jni.h"
 #include "base/android/jni_array.h"
 #include "base/base64.h"
 #include "base/strings/stringprintf.h"
@@ -157,9 +157,10 @@ std::unique_ptr<HttpResponse> HandleSetImageResponse(
   bool header_exist = false;
   if (query.find("header") != query.end()) {
     for (const auto& header : query.at("header")) {
-      if (request.headers.find(header) != request.headers.end())
+      if (request.headers.find(header) != request.headers.end()) {
         header_exist = true;
-      break;
+        break;
+      }
     }
   }
 

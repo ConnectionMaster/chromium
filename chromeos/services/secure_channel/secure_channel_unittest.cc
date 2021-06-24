@@ -43,15 +43,6 @@ struct ReceivedMessage {
   std::string payload;
 };
 
-class FakeSecureMessageDelegateFactory
-    : public multidevice::SecureMessageDelegateImpl::Factory {
- public:
-  // multidevice::SecureMessageDelegateImpl::Factory:
-  std::unique_ptr<multidevice::SecureMessageDelegate> BuildInstance() override {
-    return std::make_unique<multidevice::FakeSecureMessageDelegate>();
-  }
-};
-
 class TestObserver final : public SecureChannel::Observer {
  public:
   explicit TestObserver(SecureChannel* secure_channel)
@@ -132,9 +123,8 @@ class TestAuthenticatorFactory final
  public:
   TestAuthenticatorFactory() : last_instance_(nullptr) {}
 
-  std::unique_ptr<Authenticator> BuildInstance(
+  std::unique_ptr<Authenticator> CreateInstance(
       Connection* connection,
-      const std::string& account_id,
       std::unique_ptr<multidevice::SecureMessageDelegate>
           secure_message_delegate) override {
     last_instance_ = new FakeAuthenticator();
@@ -157,17 +147,16 @@ multidevice::RemoteDeviceRef CreateTestRemoteDevice() {
 
 class SecureChannelConnectionTest : public testing::Test {
  protected:
-  SecureChannelConnectionTest()
-      : test_device_(CreateTestRemoteDevice()), weak_ptr_factory_(this) {}
+  SecureChannelConnectionTest() : test_device_(CreateTestRemoteDevice()) {}
 
   void SetUp() override {
     test_authenticator_factory_ = std::make_unique<TestAuthenticatorFactory>();
-    DeviceToDeviceAuthenticator::Factory::SetInstanceForTesting(
+    DeviceToDeviceAuthenticator::Factory::SetFactoryForTesting(
         test_authenticator_factory_.get());
 
     fake_secure_message_delegate_factory_ =
-        std::make_unique<FakeSecureMessageDelegateFactory>();
-    multidevice::SecureMessageDelegateImpl::Factory::SetInstanceForTesting(
+        std::make_unique<multidevice::FakeSecureMessageDelegateFactory>();
+    multidevice::SecureMessageDelegateImpl::Factory::SetFactoryForTesting(
         fake_secure_message_delegate_factory_.get());
 
     fake_secure_context_ = nullptr;
@@ -197,7 +186,7 @@ class SecureChannelConnectionTest : public testing::Test {
     if (secure_channel_)
       VerifyNoMessageBeingSent();
 
-    multidevice::SecureMessageDelegateImpl::Factory::SetInstanceForTesting(
+    multidevice::SecureMessageDelegateImpl::Factory::SetFactoryForTesting(
         nullptr);
   }
 
@@ -311,9 +300,9 @@ class SecureChannelConnectionTest : public testing::Test {
     // the implementation will call |VerifyWireMessageContents()| synchronously.
     fake_secure_context_->Encode(
         payload,
-        base::Bind(&SecureChannelConnectionTest::VerifyWireMessageContents,
-                   weak_ptr_factory_.GetWeakPtr(), message_being_sent,
-                   feature));
+        base::BindOnce(&SecureChannelConnectionTest::VerifyWireMessageContents,
+                       weak_ptr_factory_.GetWeakPtr(), message_being_sent,
+                       feature));
   }
 
   void VerifyWireMessageContents(WireMessage* wire_message,
@@ -323,25 +312,25 @@ class SecureChannelConnectionTest : public testing::Test {
     EXPECT_EQ(expected_payload, wire_message->payload());
   }
 
-  void VerifyRssi(base::Optional<int32_t> expected_rssi) {
+  void VerifyRssi(absl::optional<int32_t> expected_rssi) {
     fake_connection_->set_rssi_to_return(expected_rssi);
 
     secure_channel_->GetConnectionRssi(
         base::BindOnce(&SecureChannelConnectionTest::OnConnectionRssi,
                        base::Unretained(this)));
 
-    base::Optional<int32_t> rssi = rssi_;
+    absl::optional<int32_t> rssi = rssi_;
     rssi_.reset();
 
     EXPECT_EQ(expected_rssi, rssi);
   }
 
-  void OnConnectionRssi(base::Optional<int32_t> rssi) { rssi_ = rssi; }
+  void OnConnectionRssi(absl::optional<int32_t> rssi) { rssi_ = rssi; }
 
   // Owned by secure_channel_.
   FakeConnection* fake_connection_;
 
-  std::unique_ptr<FakeSecureMessageDelegateFactory>
+  std::unique_ptr<multidevice::FakeSecureMessageDelegateFactory>
       fake_secure_message_delegate_factory_;
 
   // Owned by secure_channel_ once authentication has completed successfully.
@@ -359,9 +348,9 @@ class SecureChannelConnectionTest : public testing::Test {
 
   const multidevice::RemoteDeviceRef test_device_;
 
-  base::Optional<int32_t> rssi_;
+  absl::optional<int32_t> rssi_;
 
-  base::WeakPtrFactory<SecureChannelConnectionTest> weak_ptr_factory_;
+  base::WeakPtrFactory<SecureChannelConnectionTest> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SecureChannelConnectionTest);
 };

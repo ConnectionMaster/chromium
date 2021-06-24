@@ -8,8 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/i18n/time_formatting.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -18,13 +18,11 @@
 #include "build/build_config.h"
 #include "chrome/browser/browsing_data/cookies_tree_model.h"
 #include "chrome/grit/generated_resources.h"
-#include "content/public/browser/cache_storage_context.h"
-#include "content/public/browser/indexed_db_context.h"
 #include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/storage_usage_info.h"
 #include "extensions/buildflags/buildflags.h"
 #include "net/cookies/canonical_cookie.h"
-#include "storage/common/fileapi/file_system_types.h"
+#include "storage/common/file_system/file_system_types.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/text/bytes_formatting.h"
 
@@ -88,7 +86,7 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
   // Use node's address as an id for WebUI to look it up.
   dict->SetString(kKeyId, GetTreeNodeId(&node));
   dict->SetString(kKeyTitle, node.GetTitle());
-  dict->SetBoolean(kKeyHasChildren, !node.empty());
+  dict->SetBoolean(kKeyHasChildren, !node.children().empty());
 
   switch (node.GetDetailedInfo().node_type) {
     case CookieTreeNode::DetailedInfo::TYPE_HOST: {
@@ -177,7 +175,7 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
     case CookieTreeNode::DetailedInfo::TYPE_FILE_SYSTEM: {
       dict->SetString(kKeyType, "file_system");
 
-      const BrowsingDataFileSystemHelper::FileSystemInfo& file_system_info =
+      const browsing_data::FileSystemHelper::FileSystemInfo& file_system_info =
           *node.GetDetailedInfo().file_system_info;
       const storage::FileSystemType kPerm = storage::kFileSystemTypePersistent;
       const storage::FileSystemType kTemp = storage::kFileSystemTypeTemporary;
@@ -185,13 +183,13 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
       dict->SetString(kKeyOrigin, file_system_info.origin.Serialize());
       dict->SetString(
           kKeyPersistent,
-          base::ContainsKey(file_system_info.usage_map, kPerm)
+          base::Contains(file_system_info.usage_map, kPerm)
               ? base::UTF16ToUTF8(ui::FormatBytes(
                     file_system_info.usage_map.find(kPerm)->second))
               : l10n_util::GetStringUTF8(IDS_COOKIES_FILE_SYSTEM_USAGE_NONE));
       dict->SetString(
           kKeyTemporary,
-          base::ContainsKey(file_system_info.usage_map, kTemp)
+          base::Contains(file_system_info.usage_map, kTemp)
               ? base::UTF16ToUTF8(ui::FormatBytes(
                     file_system_info.usage_map.find(kTemp)->second))
               : l10n_util::GetStringUTF8(IDS_COOKIES_FILE_SYSTEM_USAGE_NONE));
@@ -236,7 +234,7 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
     case CookieTreeNode::DetailedInfo::TYPE_SHARED_WORKER: {
       dict->SetString(kKeyType, "shared_worker");
 
-      const BrowsingDataSharedWorkerHelper::SharedWorkerInfo&
+      const browsing_data::SharedWorkerHelper::SharedWorkerInfo&
           shared_worker_info = *node.GetDetailedInfo().shared_worker_info;
 
       dict->SetString(kKeyOrigin, shared_worker_info.worker.spec());
@@ -254,12 +252,6 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
       dict->SetString(kKeyModified,
                       base::UTF16ToUTF8(base::TimeFormatFriendlyDateAndTime(
                           usage_info.last_modified)));
-      break;
-    }
-    case CookieTreeNode::DetailedInfo::TYPE_FLASH_LSO: {
-      dict->SetString(kKeyType, "flash_lso");
-
-      dict->SetString(kKeyDomain, node.GetDetailedInfo().flash_lso_domain);
       break;
     }
     case CookieTreeNode::DetailedInfo::TYPE_MEDIA_LICENSE: {
@@ -282,16 +274,16 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
   const extensions::ExtensionSet* protecting_apps =
       node.GetModel()->ExtensionsProtectingNode(node);
   if (protecting_apps && !protecting_apps->is_empty()) {
-    auto app_infos = std::make_unique<base::ListValue>();
+    base::ListValue app_infos;
     for (extensions::ExtensionSet::const_iterator it = protecting_apps->begin();
          it != protecting_apps->end(); ++it) {
       std::unique_ptr<base::DictionaryValue> app_info(
           new base::DictionaryValue());
       app_info->SetString(kKeyId, (*it)->id());
       app_info->SetString(kKeyName, (*it)->name());
-      app_infos->Append(std::move(app_info));
+      app_infos.Append(std::move(app_info));
     }
-    dict->Set(kKeyAppsProtectingThis, std::move(app_infos));
+    dict->SetKey(kKeyAppsProtectingThis, std::move(app_infos));
   }
 #endif
 
@@ -299,24 +291,21 @@ bool CookiesTreeModelUtil::GetCookieTreeNodeDictionary(
 }
 
 void CookiesTreeModelUtil::GetChildNodeDetails(const CookieTreeNode* parent,
-                                               int start,
-                                               int count,
                                                bool include_quota_nodes,
                                                base::ListValue* list) {
   std::string id_path = GetTreeNodeId(parent);
-  for (int i = 0; i < count; ++i) {
-    const CookieTreeNode* child = parent->GetChild(start + i);
-    int cookie_count = child->child_count();
-    std::string cookie_id_path = id_path + "," + GetTreeNodeId(child) + ",";
-    for (int k = 0; k < cookie_count; ++k) {
-      const CookieTreeNode* details = child->GetChild(k);
+  for (const auto& child : parent->children()) {
+    std::string cookie_id_path =
+        id_path + "," + GetTreeNodeId(child.get()) + ",";
+    for (const auto& details : child->children()) {
       std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue);
       if (GetCookieTreeNodeDictionary(*details, include_quota_nodes,
                                       dict.get())) {
         // TODO(dschuyler): This ID path is an artifact from using tree nodes to
         // hold the cookies. Can this be changed to a dictionary with a key
         // lookup (and remove use of id_map_)?
-        dict->SetString("idPath", cookie_id_path + GetTreeNodeId(details));
+        dict->SetString("idPath",
+                        cookie_id_path + GetTreeNodeId(details.get()));
         list->Append(std::move(dict));
       }
     }
@@ -324,13 +313,13 @@ void CookiesTreeModelUtil::GetChildNodeDetails(const CookieTreeNode* parent,
 }
 
 void CookiesTreeModelUtil::GetChildNodeList(const CookieTreeNode* parent,
-                                            int start,
-                                            int count,
+                                            size_t start,
+                                            size_t count,
                                             bool include_quota_nodes,
                                             base::ListValue* nodes) {
-  for (int i = 0; i < count; ++i) {
+  for (size_t i = 0; i < count; ++i) {
     std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue);
-    const CookieTreeNode* child = parent->GetChild(start + i);
+    const CookieTreeNode* child = parent->children()[start + i].get();
     if (GetCookieTreeNodeDictionary(*child, include_quota_nodes, dict.get()))
       nodes->Append(std::move(dict));
   }
@@ -363,15 +352,11 @@ const CookieTreeNode* CookiesTreeModelUtil::GetTreeNodeFromPath(
 
 const CookieTreeNode* CookiesTreeModelUtil::GetTreeNodeFromTitle(
     const CookieTreeNode* root,
-    const base::string16& title) {
-  // TODO(dschuyler): This method reduces an old O(n^2) lookup with an O(n)
-  // lookup for O(1) space, but it could be further improved to O(1) lookup if
-  // desired (by trading O(n) space for the time improvement).
-  int site_count = root->child_count();
-  for (int i = 0; i < site_count; ++i) {
-    const CookieTreeNode* child = root->GetChild(i);
-    if (title == child->GetTitle())
-      return child;
-  }
-  return nullptr;
+    const std::u16string& title) {
+  // TODO(dschuyler): This is an O(n) lookup for O(1) space, but it could be
+  // improved to O(1) lookup if desired (by using O(n) space).
+  const auto i = std::find_if(
+      root->children().cbegin(), root->children().cend(),
+      [&title](const auto& child) { return title == child->GetTitle(); });
+  return (i == root->children().cend()) ? nullptr : i->get();
 }

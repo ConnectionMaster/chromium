@@ -1,6 +1,7 @@
 <html>
 <head>
     <script src="../../resources/js-test.js"></script>
+    <script src="../../resources/visibility.js"></script>
     <script>
         description('<a href="https://bugs.webkit.org/show_bug.cgi?id=98474">Bug 98474</a>: Throttle DOM timers on hidden pages.');
 
@@ -10,7 +11,9 @@
         var firstTimerWhileNotVisible = true;
         var isPageVisible = true;
         var timeoutInterval = 100;
-        var tolerance = 20;
+        // Some of our testing hardware runs very slowly, so we need a generous
+        // tolerance value.
+        var tolerance = 200;
         var timerAlignmentInterval = 1000;
 
         function testTimer()
@@ -19,7 +22,9 @@
             if (!isPageVisible) {
                 if (firstTimerWhileNotVisible) {
                     firstTimerIntervalWhilePageNotVisible = time - previousTime;
-                    var minValue = timeoutInterval - tolerance;
+                    // Even if (tolerance > timeoutInterval), we should never
+                    // get a negative elapsed time, so clamp minValue to zero.
+                    var minValue = Math.max(0, timeoutInterval - tolerance);
                     shouldBeGreaterThanOrEqual("firstTimerIntervalWhilePageNotVisible", minValue.toString());
                     var maxValue = timeoutInterval + timerAlignmentInterval + tolerance;
                     shouldBeTrue("firstTimerIntervalWhilePageNotVisible <= " + maxValue);
@@ -36,18 +41,23 @@
             timerCount++;
             previousTime = time;
 
+            var promise;
             if (timerCount == 1) {
-                testRunner.setPageVisibility("hidden");
+                promise = setMainWindowHidden(true);
                 isPageVisible = false;
             } else if (timerCount == 3) {
-                testRunner.setPageVisibility("visible");
+                promise = setMainWindowHidden(false);
                 isPageVisible = true;
-            } else if (timerCount >= 5) {
+            } else if (timerCount < 5) {
+                promise = Promise.resolve();
+            } else {
                 finishJSTest();
                 return;
             }
-            previousTime = Date.now();
-            setTimeout(testTimer, timeoutInterval);
+            promise.then(() => {
+                previousTime = Date.now();
+                setTimeout(testTimer, timeoutInterval);
+            });
         }
 
         function runTest()

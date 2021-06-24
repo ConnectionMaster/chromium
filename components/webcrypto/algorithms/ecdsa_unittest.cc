@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/stl_util.h"
 #include "components/webcrypto/algorithm_dispatch.h"
 #include "components/webcrypto/algorithms/test_helpers.h"
 #include "components/webcrypto/crypto_data.h"
@@ -219,7 +218,6 @@ blink::WebCryptoKeyUsageMask GetExpectedUsagesForKeyImport(
       return kPublicUsages;
     case blink::kWebCryptoKeyFormatPkcs8:
       return kPrivateUsages;
-      break;
     case blink::kWebCryptoKeyFormatJwk: {
       const base::DictionaryValue* key = nullptr;
       if (!test->GetDictionary("key", &key))

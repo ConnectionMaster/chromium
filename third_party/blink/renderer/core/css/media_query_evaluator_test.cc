@@ -6,15 +6,18 @@
 
 #include <memory>
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/css/forced_colors.h"
 #include "third_party/blink/renderer/core/css/media_list.h"
+#include "third_party/blink/renderer/core/css/media_values.h"
 #include "third_party/blink/renderer/core/css/media_values_cached.h"
-#include "third_party/blink/renderer/core/css/media_values_initial_viewport.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
 #include "third_party/blink/renderer/core/css/parser/media_query_parser.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/media_type_names.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -67,8 +70,6 @@ MediaQueryEvaluatorTestCase g_screen_test_cases[] = {
     {"(display-mode: @browser)", 0},
     {"(display-mode: 'browser')", 0},
     {"(display-mode: @junk browser)", 0},
-    {"(shape: rect)", 1},
-    {"(shape: round)", 0},
     {"(max-device-aspect-ratio: 4294967295/1)", 1},
     {"(min-device-aspect-ratio: 1/4294967296)", 1},
     {nullptr, 0}  // Do not remove the terminator line.
@@ -173,10 +174,183 @@ MediaQueryEvaluatorTestCase g_non_ua_sheet_immersive_test_cases[] = {
     {nullptr, 0}  // Do not remove the terminator line.
 };
 
+MediaQueryEvaluatorTestCase g_forcedcolors_active_cases[] = {
+    {"(forced-colors: active)", 1},
+    {"(forced-colors: none)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_forcedcolors_none_cases[] = {
+    {"(forced-colors: active)", 0},
+    {"(forced-colors: none)", 1},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_preferscontrast_nopreference_cases[] = {
+    {"(prefers-contrast)", 0},
+    {"(prefers-contrast: more)", 0},
+    {"(prefers-contrast: less)", 0},
+    {"(prefers-contrast: forced)", 0},
+    {"(prefers-contrast: no-preference)", 1},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_preferscontrast_more_cases[] = {
+    {"(prefers-contrast)", 1},
+    {"(prefers-contrast: more)", 1},
+    {"(prefers-contrast: less)", 0},
+    {"(prefers-contrast: forced)", 0},
+    {"(prefers-contrast: no-preference)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_preferscontrast_less_cases[] = {
+    {"(prefers-contrast)", 1},
+    {"(prefers-contrast: more)", 0},
+    {"(prefers-contrast: less)", 1},
+    {"(prefers-contrast: forced)", 0},
+    {"(prefers-contrast: no-preference)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_preferscontrast_forced_cases[] = {
+    {"(prefers-contrast)", 1},
+    {"(prefers-contrast: more)", 0},
+    {"(prefers-contrast: less)", 0},
+    {"(prefers-contrast: forced)", 1},
+    {"(prefers-contrast: no-preference)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_preferscontrast_forced_more_cases[] = {
+    {"(prefers-contrast)", 1},
+    {"(prefers-contrast: more)", 1},
+    {"(prefers-contrast: less)", 0},
+    {"(prefers-contrast: forced)", 1},
+    {"(prefers-contrast: no-preference)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_preferscontrast_forced_less_cases[] = {
+    {"(prefers-contrast)", 1},
+    {"(prefers-contrast: more)", 0},
+    {"(prefers-contrast: less)", 1},
+    {"(prefers-contrast: forced)", 1},
+    {"(prefers-contrast: no-preference)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_navigationcontrols_back_button_cases[] = {
+    {"(navigation-controls: back-button)", 1},
+    {"(navigation-controls: none)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_navigationcontrols_none_cases[] = {
+    {"(navigation-controls: back-button)", 0},
+    {"(navigation-controls: none)", 1},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_screen_spanning_none_cases[] = {
+    {"(screen-spanning)", 0},
+    {"(screen-spanning: single-fold-vertical)", 0},
+    {"(screen-spanning: single-fold-horizontal)", 0},
+    {"(screen-spanning: none)", 1},
+    {"(screen-spanning: 1px)", 0},
+    {"(screen-spanning: 16/9)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_screen_spanning_single_fold_vertical_cases[] = {
+    {"(screen-spanning)", 1},
+    {"(screen-spanning: single-fold-vertical)", 1},
+    {"(screen-spanning: single-fold-horizontal)", 0},
+    {"(screen-spanning: none)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_screen_spanning_single_fold_horizontal_cases[] = {
+    {"(screen-spanning)", 1},
+    {"(screen-spanning: single-fold-vertical)", 0},
+    {"(screen-spanning: single-fold-horizontal)", 1},
+    {"(screen-spanning: none)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_device_posture_none_cases[] = {
+    {"(device-posture)", 1},
+    {"(device-posture: laptop)", 0},
+    {"(device-posture: flat)", 0},
+    {"(device-posture: tent)", 0},
+    {"(device-posture: tablet)", 0},
+    {"(device-posture: book)", 0},
+    {"(device-posture: no-fold)", 1},
+    {"(device-posture: 15)", 0},
+    {"(device-posture: 2px)", 0},
+    {"(device-posture: 16/9)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_device_posture_laptop_cases[] = {
+    {"(device-posture)", 1},
+    {"(device-posture: laptop)", 1},
+    {"(device-posture: flat)", 0},
+    {"(device-posture: tent)", 0},
+    {"(device-posture: tablet)", 0},
+    {"(device-posture: book)", 0},
+    {"(device-posture: no-fold)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_device_posture_flat_cases[] = {
+    {"(device-posture)", 1},
+    {"(device-posture: laptop)", 0},
+    {"(device-posture: flat)", 1},
+    {"(device-posture: tent)", 0},
+    {"(device-posture: tablet)", 0},
+    {"(device-posture: book)", 0},
+    {"(device-posture: no-fold)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_device_posture_tent_cases[] = {
+    {"(device-posture)", 1},
+    {"(device-posture: laptop)", 0},
+    {"(device-posture: flat)", 0},
+    {"(device-posture: tent)", 1},
+    {"(device-posture: tablet)", 0},
+    {"(device-posture: book)", 0},
+    {"(device-posture: no-fold)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_device_posture_tablet_cases[] = {
+    {"(device-posture)", 1},
+    {"(device-posture: laptop)", 0},
+    {"(device-posture: flat)", 0},
+    {"(device-posture: tent)", 0},
+    {"(device-posture: tablet)", 1},
+    {"(device-posture: book)", 0},
+    {"(device-posture: no-fold)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
+MediaQueryEvaluatorTestCase g_device_posture_book_cases[] = {
+    {"(device-posture)", 1},
+    {"(device-posture: laptop)", 0},
+    {"(device-posture: flat)", 0},
+    {"(device-posture: tent)", 0},
+    {"(device-posture: tablet)", 0},
+    {"(device-posture: book)", 1},
+    {"(device-posture: no-fold)", 0},
+    {nullptr, 0}  // Do not remove the terminator line.
+};
+
 void TestMQEvaluator(MediaQueryEvaluatorTestCase* test_cases,
                      const MediaQueryEvaluator& media_query_evaluator,
                      CSSParserMode mode) {
-  scoped_refptr<MediaQuerySet> query_set = nullptr;
+  scoped_refptr<MediaQuerySet> query_set;
   for (unsigned i = 0; test_cases[i].input; ++i) {
     if (String(test_cases[i].input).IsEmpty()) {
       query_set = MediaQuerySet::Create();
@@ -184,7 +358,7 @@ void TestMQEvaluator(MediaQueryEvaluatorTestCase* test_cases,
       query_set = MediaQueryParser::ParseMediaQuerySetInMode(
           CSSParserTokenRange(
               CSSTokenizer(test_cases[i].input).TokenizeToEOF()),
-          mode);
+          mode, nullptr);
     }
     EXPECT_EQ(test_cases[i].output, media_query_evaluator.Eval(*query_set))
         << "Query: " << test_cases[i].input;
@@ -205,14 +379,13 @@ TEST(MediaQueryEvaluatorTest, Cached) {
   data.device_pixel_ratio = 2.0;
   data.color_bits_per_component = 24;
   data.monochrome_bits_per_component = 0;
-  data.primary_pointer_type = kPointerTypeFine;
-  data.primary_hover_type = kHoverTypeHover;
+  data.primary_pointer_type = mojom::blink::PointerType::kPointerFineType;
+  data.primary_hover_type = mojom::blink::HoverType::kHoverHoverType;
   data.default_font_size = 16;
   data.three_d_enabled = true;
   data.media_type = media_type_names::kScreen;
   data.strict_mode = true;
-  data.display_mode = kWebDisplayModeBrowser;
-  data.display_shape = kDisplayShapeRect;
+  data.display_mode = blink::mojom::DisplayMode::kBrowser;
   data.immersive_mode = false;
 
   // Default values.
@@ -274,7 +447,8 @@ TEST(MediaQueryEvaluatorTest, DynamicNoView) {
   page_holder.reset();
   ASSERT_EQ(nullptr, frame->View());
   MediaQueryEvaluator media_query_evaluator(frame);
-  scoped_refptr<MediaQuerySet> query_set = MediaQuerySet::Create("foobar");
+  scoped_refptr<MediaQuerySet> query_set =
+      MediaQuerySet::Create("foobar", nullptr);
   EXPECT_FALSE(media_query_evaluator.Eval(*query_set));
 }
 
@@ -299,20 +473,6 @@ TEST(MediaQueryEvaluatorTest, CachedFloatViewportNonFloatFriendly) {
                   media_query_evaluator);
 }
 
-TEST(MediaQueryEvaluatorTest, InitialViewport) {
-  auto page_holder = std::make_unique<DummyPageHolder>(IntSize(500, 500));
-  page_holder->GetFrameView().SetMediaType(media_type_names::kScreen);
-  page_holder->GetFrameView().SetLayoutSizeFixedToFrameSize(false);
-  page_holder->GetFrameView().SetInitialViewportSize(IntSize(500, 500));
-  page_holder->GetFrameView().SetLayoutSize(IntSize(800, 800));
-  page_holder->GetFrameView().SetFrameRect(IntRect(0, 0, 800, 800));
-
-  MediaQueryEvaluator media_query_evaluator(
-      MakeGarbageCollected<MediaValuesInitialViewport>(
-          page_holder->GetFrame()));
-  TestMQEvaluator(g_viewport_test_cases, media_query_evaluator);
-}
-
 TEST(MediaQueryEvaluatorTest, DynamicImmersive) {
   auto page_holder = std::make_unique<DummyPageHolder>(IntSize(500, 500));
   page_holder->GetFrameView().SetMediaType(media_type_names::kScreen);
@@ -324,6 +484,158 @@ TEST(MediaQueryEvaluatorTest, DynamicImmersive) {
                   kUASheetMode);
   page_holder->GetDocument().GetSettings()->SetImmersiveModeEnabled(true);
   TestMQEvaluator(g_immersive_test_cases, media_query_evaluator, kUASheetMode);
+}
+
+TEST(MediaQueryEvaluatorTest, CachedForcedColors) {
+  ScopedForcedColorsForTest scoped_feature(true);
+
+  MediaValuesCached::MediaValuesCachedData data;
+  data.forced_colors = ForcedColors::kNone;
+  MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+
+  // Forced colors - none.
+  MediaQueryEvaluator media_query_evaluator(*media_values);
+  TestMQEvaluator(g_forcedcolors_none_cases, media_query_evaluator);
+
+  // Forced colors - active.
+  {
+    data.forced_colors = ForcedColors::kActive;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_forcedcolors_active_cases, media_query_evaluator);
+  }
+}
+
+TEST(MediaQueryEvaluatorTest, CachedPrefersContrast) {
+  ScopedForcedColorsForTest forced_scoped_feature(true);
+  ScopedPrefersContrastForTest contrast_scoped_feature(true);
+
+  MediaValuesCached::MediaValuesCachedData data;
+  data.forced_colors = ForcedColors::kNone;
+  data.preferred_contrast = mojom::blink::PreferredContrast::kNoPreference;
+  MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+
+  // Prefers-contrast - no-preference.
+  MediaQueryEvaluator media_query_evaluator(*media_values);
+  TestMQEvaluator(g_preferscontrast_nopreference_cases, media_query_evaluator);
+
+  // Prefers-contrast - more.
+  {
+    data.preferred_contrast = mojom::blink::PreferredContrast::kMore;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_preferscontrast_more_cases, media_query_evaluator);
+  }
+
+  // Prefers-contrast - less.
+  {
+    data.preferred_contrast = mojom::blink::PreferredContrast::kLess;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_preferscontrast_less_cases, media_query_evaluator);
+  }
+
+  // Prefers-contrast - forced.
+  {
+    data.preferred_contrast = mojom::blink::PreferredContrast::kNoPreference;
+    data.forced_colors = ForcedColors::kActive;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_preferscontrast_forced_cases, media_query_evaluator);
+  }
+
+  // Prefers-contrast - forced and more.
+  {
+    data.preferred_contrast = mojom::blink::PreferredContrast::kMore;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_preferscontrast_forced_more_cases, media_query_evaluator);
+  }
+
+  // Prefers-contrast - forced and less.
+  {
+    data.preferred_contrast = mojom::blink::PreferredContrast::kLess;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_preferscontrast_forced_less_cases, media_query_evaluator);
+  }
+}
+
+TEST(MediaQueryEvaluatorTest, CachedScreenSpanning) {
+  ScopedCSSFoldablesForTest scoped_feature(true);
+
+  MediaValuesCached::MediaValuesCachedData data;
+  {
+    data.screen_spanning = ScreenSpanning::kNone;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_screen_spanning_none_cases, media_query_evaluator);
+  }
+
+  {
+    data.screen_spanning = ScreenSpanning::kSingleFoldVertical;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_screen_spanning_single_fold_vertical_cases,
+                    media_query_evaluator);
+  }
+
+  {
+    data.screen_spanning = ScreenSpanning::kSingleFoldHorizontal;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_screen_spanning_single_fold_horizontal_cases,
+                    media_query_evaluator);
+  }
+}
+
+TEST(MediaQueryEvaluatorTest, CachedDevicePosture) {
+  ScopedDevicePostureForTest scoped_feature(true);
+
+  MediaValuesCached::MediaValuesCachedData data;
+  {
+    data.device_posture = DevicePosture::kNoFold;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_device_posture_none_cases, media_query_evaluator);
+  }
+
+  {
+    data.device_posture = DevicePosture::kLaptop;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_device_posture_laptop_cases, media_query_evaluator);
+  }
+
+  {
+    data.device_posture = DevicePosture::kFlat;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_device_posture_flat_cases, media_query_evaluator);
+  }
+
+  {
+    data.device_posture = DevicePosture::kTent;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_device_posture_tent_cases, media_query_evaluator);
+  }
+
+  {
+    data.device_posture = DevicePosture::kTablet;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_device_posture_tablet_cases, media_query_evaluator);
+  }
+
+  {
+    data.device_posture = DevicePosture::kBook;
+    MediaValues* media_values = MakeGarbageCollected<MediaValuesCached>(data);
+    MediaQueryEvaluator media_query_evaluator(*media_values);
+    TestMQEvaluator(g_device_posture_book_cases, media_query_evaluator);
+  }
 }
 
 }  // namespace blink

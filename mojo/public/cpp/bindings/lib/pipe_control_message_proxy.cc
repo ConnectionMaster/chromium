@@ -7,8 +7,8 @@
 #include <stddef.h>
 #include <utility>
 
-#include "base/logging.h"
 #include "base/macros.h"
+#include "mojo/public/cpp/bindings/lib/message_fragment.h"
 #include "mojo/public/cpp/bindings/lib/serialization.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/interfaces/bindings/pipe_control_messages.mojom.h"
@@ -16,17 +16,22 @@
 namespace mojo {
 namespace {
 
+const char kMessageTag[] = "PipeControlMessageProxy";
+
 Message ConstructRunOrClosePipeMessage(
     pipe_control::RunOrClosePipeInputPtr input_ptr) {
   auto params_ptr = pipe_control::RunOrClosePipeMessageParams::New();
   params_ptr->input = std::move(input_ptr);
 
   Message message(pipe_control::kRunOrClosePipeMessageId, 0, 0, 0, nullptr);
-  internal::SerializationContext context;
-  pipe_control::internal::RunOrClosePipeMessageParams_Data::BufferWriter params;
+  internal::MessageFragment<
+      pipe_control::internal::RunOrClosePipeMessageParams_Data>
+      fragment(message);
   internal::Serialize<pipe_control::RunOrClosePipeMessageParamsDataView>(
-      params_ptr, message.payload_buffer(), &params, &context);
+      params_ptr, fragment);
   message.set_interface_id(kInvalidInterfaceId);
+  message.set_heap_profiler_tag(kMessageTag);
+  message.SerializeHandles(/*group_controller=*/nullptr);
   return message;
 }
 
@@ -37,15 +42,31 @@ PipeControlMessageProxy::PipeControlMessageProxy(MessageReceiver* receiver)
 
 void PipeControlMessageProxy::NotifyPeerEndpointClosed(
     InterfaceId id,
-    const base::Optional<DisconnectReason>& reason) {
+    const absl::optional<DisconnectReason>& reason) {
   Message message(ConstructPeerEndpointClosedMessage(id, reason));
+  message.set_heap_profiler_tag(kMessageTag);
+  ignore_result(receiver_->Accept(&message));
+}
+
+void PipeControlMessageProxy::PausePeerUntilFlushCompletes(PendingFlush flush) {
+  auto input = pipe_control::RunOrClosePipeInput::New();
+  input->set_pause_until_flush_completes(
+      pipe_control::PauseUntilFlushCompletes::New(flush.PassPipe()));
+  Message message(ConstructRunOrClosePipeMessage(std::move(input)));
+  ignore_result(receiver_->Accept(&message));
+}
+
+void PipeControlMessageProxy::FlushAsync(AsyncFlusher flusher) {
+  auto input = pipe_control::RunOrClosePipeInput::New();
+  input->set_flush_async(pipe_control::FlushAsync::New(flusher.PassPipe()));
+  Message message(ConstructRunOrClosePipeMessage(std::move(input)));
   ignore_result(receiver_->Accept(&message));
 }
 
 // static
 Message PipeControlMessageProxy::ConstructPeerEndpointClosedMessage(
     InterfaceId id,
-    const base::Optional<DisconnectReason>& reason) {
+    const absl::optional<DisconnectReason>& reason) {
   auto event = pipe_control::PeerAssociatedEndpointClosedEvent::New();
   event->id = id;
   if (reason) {

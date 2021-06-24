@@ -7,120 +7,188 @@
 #include <string>
 #include <vector>
 
+#include "base/test/scoped_feature_list.h"
+#include "net/base/features.h"
 #include "net/base/host_port_pair.h"
+#include "net/base/network_isolation_key.h"
+#include "net/base/privacy_mode.h"
+#include "net/base/schemeful_site.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
+#include "url/scheme_host_port.h"
+#include "url/url_constants.h"
 
 namespace net {
 
 namespace {
 
 TEST(ClientSocketPool, GroupIdOperators) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kPartitionConnectionsByNetworkIsolationKey);
+
   // Each of these lists is in "<" order, as defined by Group::operator< on the
   // corresponding field.
 
-  // HostPortPair::operator< compares port before host.
-  const HostPortPair kHostPortPairs[] = {
-      {"b", 79}, {"a", 80}, {"b", 80}, {"c", 81}, {"a", 443}, {"c", 443},
+  const uint16_t kPorts[] = {
+      80,
+      81,
+      443,
   };
 
-  const ClientSocketPool::SocketType kSocketTypes[] = {
-      ClientSocketPool::SocketType::kHttp,
-      ClientSocketPool::SocketType::kSsl,
-      ClientSocketPool::SocketType::kSslVersionInterferenceProbe,
-      ClientSocketPool::SocketType::kFtp,
+  const char* kSchemes[] = {
+      url::kHttpScheme,
+      url::kHttpsScheme,
   };
 
-  const bool kPrivacyModes[] = {false, true};
+  const char* kHosts[] = {
+      "a",
+      "b",
+      "c",
+  };
+
+  const PrivacyMode kPrivacyModes[] = {
+      PrivacyMode::PRIVACY_MODE_DISABLED,
+      PrivacyMode::PRIVACY_MODE_ENABLED,
+  };
+
+  const SchemefulSite kSiteA(GURL("http://a.test/"));
+  const SchemefulSite kSiteB(GURL("http://b.test/"));
+  const NetworkIsolationKey kNetworkIsolationKeys[] = {
+      NetworkIsolationKey(kSiteA, kSiteA),
+      NetworkIsolationKey(kSiteB, kSiteB),
+  };
+
+  const SecureDnsPolicy kDisableSecureDnsValues[] = {SecureDnsPolicy::kAllow,
+                                                     SecureDnsPolicy::kDisable};
 
   // All previously created |group_ids|. They should all be less than the
   // current group under consideration.
   std::vector<ClientSocketPool::GroupId> group_ids;
 
   // Iterate through all sets of group ids, from least to greatest.
-  for (const auto& host_port_pair : kHostPortPairs) {
-    SCOPED_TRACE(host_port_pair.ToString());
-    for (const auto& socket_type : kSocketTypes) {
-      SCOPED_TRACE(static_cast<int>(socket_type));
-      for (const auto& privacy_mode : kPrivacyModes) {
-        SCOPED_TRACE(privacy_mode);
+  for (const auto& port : kPorts) {
+    SCOPED_TRACE(port);
+    for (const char* scheme : kSchemes) {
+      SCOPED_TRACE(scheme);
+      for (const char* host : kHosts) {
+        SCOPED_TRACE(host);
+        for (const auto& privacy_mode : kPrivacyModes) {
+          SCOPED_TRACE(privacy_mode);
+          for (const auto& network_isolation_key : kNetworkIsolationKeys) {
+            SCOPED_TRACE(network_isolation_key.ToString());
+            for (const auto& secure_dns_policy : kDisableSecureDnsValues) {
+              ClientSocketPool::GroupId group_id(
+                  url::SchemeHostPort(scheme, host, port), privacy_mode,
+                  network_isolation_key, secure_dns_policy);
+              for (const auto& lower_group_id : group_ids) {
+                EXPECT_FALSE(lower_group_id == group_id);
+                EXPECT_TRUE(lower_group_id < group_id);
+                EXPECT_FALSE(group_id < lower_group_id);
+              }
 
-        ClientSocketPool::GroupId group_id(host_port_pair, socket_type,
-                                           privacy_mode);
-        for (const auto& lower_group_id : group_ids) {
-          EXPECT_FALSE(lower_group_id == group_id);
-          EXPECT_TRUE(lower_group_id < group_id);
-          EXPECT_FALSE(group_id < lower_group_id);
+              group_ids.push_back(group_id);
+
+              // Compare |group_id| to itself. Use two different copies of
+              // |group_id|'s value, since to protect against bugs where an
+              // object only equals itself.
+              EXPECT_TRUE(group_ids.back() == group_id);
+              EXPECT_FALSE(group_ids.back() < group_id);
+              EXPECT_FALSE(group_id < group_ids.back());
+            }
+          }
         }
-
-        group_ids.push_back(group_id);
-
-        // Compare |group_id| to itself. Use two different copies of
-        // |group_id|'s value, since to protect against bugs where an object
-        // only equals itself.
-        EXPECT_TRUE(group_ids.back() == group_id);
-        EXPECT_FALSE(group_ids.back() < group_id);
-        EXPECT_FALSE(group_id < group_ids.back());
       }
     }
   }
 }
 
 TEST(ClientSocketPool, GroupIdToString) {
-  EXPECT_EQ("foo:80",
-            ClientSocketPool::GroupId(HostPortPair("foo", 80),
-                                      ClientSocketPool::SocketType::kHttp,
-                                      false /* privacy_mode */)
-                .ToString());
-  EXPECT_EQ("bar:443",
-            ClientSocketPool::GroupId(HostPortPair("bar", 443),
-                                      ClientSocketPool::SocketType::kHttp,
-                                      false /* privacy_mode */)
-                .ToString());
-  EXPECT_EQ("pm/bar:80",
-            ClientSocketPool::GroupId(HostPortPair("bar", 80),
-                                      ClientSocketPool::SocketType::kHttp,
-                                      true /* privacy_mode */)
-                .ToString());
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kPartitionConnectionsByNetworkIsolationKey);
 
-  EXPECT_EQ("ssl/foo:80",
-            ClientSocketPool::GroupId(HostPortPair("foo", 80),
-                                      ClientSocketPool::SocketType::kSsl,
-                                      false /* privacy_mode */)
-                .ToString());
-  EXPECT_EQ("ssl/bar:443",
-            ClientSocketPool::GroupId(HostPortPair("bar", 443),
-                                      ClientSocketPool::SocketType::kSsl,
-                                      false /* privacy_mode */)
-                .ToString());
-  EXPECT_EQ("pm/ssl/bar:80",
-            ClientSocketPool::GroupId(HostPortPair("bar", 80),
-                                      ClientSocketPool::SocketType::kSsl,
-                                      true /* privacy_mode */)
-                .ToString());
-
-  EXPECT_EQ("version-interference-probe/ssl/foo:443",
+  EXPECT_EQ("http://foo <null null>",
             ClientSocketPool::GroupId(
-                HostPortPair("foo", 443),
-                ClientSocketPool::SocketType::kSslVersionInterferenceProbe,
-                false /* privacy_mode */)
+                url::SchemeHostPort(url::kHttpScheme, "foo", 80),
+                PrivacyMode::PRIVACY_MODE_DISABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kAllow)
                 .ToString());
-  EXPECT_EQ("pm/version-interference-probe/ssl/bar:444",
+  EXPECT_EQ("http://bar:443 <null null>",
             ClientSocketPool::GroupId(
-                HostPortPair("bar", 444),
-                ClientSocketPool::SocketType::kSslVersionInterferenceProbe,
-                true /* privacy_mode */)
+                url::SchemeHostPort(url::kHttpScheme, "bar", 443),
+                PrivacyMode::PRIVACY_MODE_DISABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kAllow)
+                .ToString());
+  EXPECT_EQ("pm/http://bar <null null>",
+            ClientSocketPool::GroupId(
+                url::SchemeHostPort(url::kHttpScheme, "bar", 80),
+                PrivacyMode::PRIVACY_MODE_ENABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kAllow)
                 .ToString());
 
-  EXPECT_EQ("ftp/foo:80",
-            ClientSocketPool::GroupId(HostPortPair("foo", 80),
-                                      ClientSocketPool::SocketType::kFtp,
-                                      false /* privacy_mode */)
+  EXPECT_EQ("https://foo:80 <null null>",
+            ClientSocketPool::GroupId(
+                url::SchemeHostPort(url::kHttpsScheme, "foo", 80),
+                PrivacyMode::PRIVACY_MODE_DISABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kAllow)
                 .ToString());
-  EXPECT_EQ("pm/ftp/bar:81",
-            ClientSocketPool::GroupId(HostPortPair("bar", 81),
-                                      ClientSocketPool::SocketType::kFtp,
-                                      true /* privacy_mode */)
+  EXPECT_EQ("https://bar <null null>",
+            ClientSocketPool::GroupId(
+                url::SchemeHostPort(url::kHttpsScheme, "bar", 443),
+                PrivacyMode::PRIVACY_MODE_DISABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kAllow)
                 .ToString());
+  EXPECT_EQ("pm/https://bar:80 <null null>",
+            ClientSocketPool::GroupId(
+                url::SchemeHostPort(url::kHttpsScheme, "bar", 80),
+                PrivacyMode::PRIVACY_MODE_ENABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kAllow)
+                .ToString());
+
+  EXPECT_EQ("https://foo <https://foo.test https://bar.test>",
+            ClientSocketPool::GroupId(
+                url::SchemeHostPort(url::kHttpsScheme, "foo", 443),
+                PrivacyMode::PRIVACY_MODE_DISABLED,
+                NetworkIsolationKey(SchemefulSite(GURL("https://foo.test")),
+                                    SchemefulSite(GURL("https://bar.test"))),
+                SecureDnsPolicy::kAllow)
+                .ToString());
+
+  EXPECT_EQ("dsd/pm/https://bar:80 <null null>",
+            ClientSocketPool::GroupId(
+                url::SchemeHostPort(url::kHttpsScheme, "bar", 80),
+                PrivacyMode::PRIVACY_MODE_ENABLED, NetworkIsolationKey(),
+                SecureDnsPolicy::kDisable)
+                .ToString());
+}
+
+TEST(ClientSocketPool, PartitionConnectionsByNetworkIsolationKeyDisabled) {
+  const SchemefulSite kSiteFoo(GURL("https://foo.com"));
+  const SchemefulSite kSiteBar(GURL("https://bar.com"));
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kPartitionConnectionsByNetworkIsolationKey);
+
+  ClientSocketPool::GroupId group_id1(
+      url::SchemeHostPort(url::kHttpsScheme, "foo", 443),
+      PrivacyMode::PRIVACY_MODE_DISABLED,
+      NetworkIsolationKey(kSiteFoo, kSiteFoo), SecureDnsPolicy::kAllow);
+
+  ClientSocketPool::GroupId group_id2(
+      url::SchemeHostPort(url::kHttpsScheme, "foo", 443),
+      PrivacyMode::PRIVACY_MODE_DISABLED,
+      NetworkIsolationKey(kSiteBar, kSiteBar), SecureDnsPolicy::kAllow);
+
+  EXPECT_FALSE(group_id1.network_isolation_key().IsFullyPopulated());
+  EXPECT_FALSE(group_id2.network_isolation_key().IsFullyPopulated());
+  EXPECT_EQ(group_id1.network_isolation_key(),
+            group_id2.network_isolation_key());
+  EXPECT_EQ(group_id1, group_id2);
+
+  EXPECT_EQ("https://foo", group_id1.ToString());
+  EXPECT_EQ("https://foo", group_id2.ToString());
 }
 
 }  // namespace

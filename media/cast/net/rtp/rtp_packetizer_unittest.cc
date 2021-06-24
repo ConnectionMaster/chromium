@@ -27,7 +27,7 @@ static const uint16_t kSeqNum = 33;
 static const int kMaxPacketLength = 1500;
 static const int kSsrc = 0x12345;
 static const unsigned int kFrameSize = 5000;
-}
+}  // namespace
 
 class TestRtpPacketTransport : public PacketTransport {
  public:
@@ -65,7 +65,7 @@ class TestRtpPacketTransport : public PacketTransport {
     }
   }
 
-  bool SendPacket(PacketRef packet, const base::Closure& cb) final {
+  bool SendPacket(PacketRef packet, base::OnceClosure cb) final {
     ++packets_sent_;
     RtpParser parser(kSsrc, kPayload);
     RtpCastHeader rtp_header;
@@ -81,8 +81,7 @@ class TestRtpPacketTransport : public PacketTransport {
 
   int64_t GetBytesSent() final { return 0; }
 
-  void StartReceiving(
-      const PacketReceiverCallbackWithStatus& packet_receiver) final {}
+  void StartReceiving(PacketReceiverCallbackWithStatus packet_receiver) final {}
 
   void StopReceiving() final {}
 
@@ -118,13 +117,13 @@ class RtpPacketizerTest : public ::testing::Test {
     config_.ssrc = kSsrc;
     config_.payload_type = kPayload;
     config_.max_payload_length = kMaxPacketLength;
-    transport_.reset(new TestRtpPacketTransport(config_));
-    pacer_.reset(new PacedSender(kTargetBurstSize, kMaxBurstSize,
-                                 &testing_clock_, nullptr, transport_.get(),
-                                 task_runner_));
+    transport_ = std::make_unique<TestRtpPacketTransport>(config_);
+    pacer_ = std::make_unique<PacedSender>(kTargetBurstSize, kMaxBurstSize,
+                                           &testing_clock_, nullptr,
+                                           transport_.get(), task_runner_);
     pacer_->RegisterSsrc(config_.ssrc, false);
-    rtp_packetizer_.reset(new RtpPacketizer(
-        pacer_.get(), &packet_storage_, config_));
+    rtp_packetizer_ = std::make_unique<RtpPacketizer>(
+        pacer_.get(), &packet_storage_, config_);
     video_frame_.dependency = EncodedFrame::DEPENDENT;
     video_frame_.frame_id = FrameId::first() + 1;
     video_frame_.referenced_frame_id = video_frame_.frame_id - 1;

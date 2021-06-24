@@ -11,7 +11,8 @@
 #include "base/compiler_specific.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/public/mojom/test/fake_bluetooth.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 
 namespace bluetooth {
 
@@ -26,19 +27,23 @@ class FakeRemoteGattService;
 // device/bluetooth/bluetooth_adapter.h.
 //
 // Not intended for direct use by clients.  See README.md.
-class FakeCentral : public mojom::FakeCentral, public device::BluetoothAdapter {
+class FakeCentral final : public mojom::FakeCentral,
+                          public device::BluetoothAdapter {
  public:
-  FakeCentral(mojom::CentralState state, mojom::FakeCentralRequest request);
+  FakeCentral(mojom::CentralState state,
+              mojo::PendingReceiver<mojom::FakeCentral> receiver);
 
   // FakeCentral overrides:
   void SimulatePreconnectedPeripheral(
       const std::string& address,
       const std::string& name,
+      const base::flat_map<uint16_t, std::vector<uint8_t>>& manufacturer_data,
       const std::vector<device::BluetoothUUID>& known_service_uuids,
       SimulatePreconnectedPeripheralCallback callback) override;
   void SimulateAdvertisementReceived(
       mojom::ScanResultPtr scan_result_ptr,
       SimulateAdvertisementReceivedCallback callback) override;
+  void SetState(mojom::CentralState state, SetStateCallback callback) override;
   void SetNextGATTConnectionResponse(
       const std::string& address,
       uint16_t code,
@@ -82,7 +87,7 @@ class FakeCentral : public mojom::FakeCentral, public device::BluetoothAdapter {
                             RemoveFakeDescriptorCallback callback) override;
   void SetNextReadCharacteristicResponse(
       uint16_t gatt_code,
-      const base::Optional<std::vector<uint8_t>>& value,
+      const absl::optional<std::vector<uint8_t>>& value,
       const std::string& characteristic_id,
       const std::string& service_id,
       const std::string& peripheral_address,
@@ -116,7 +121,7 @@ class FakeCentral : public mojom::FakeCentral, public device::BluetoothAdapter {
       GetLastWrittenCharacteristicValueCallback callback) override;
   void SetNextReadDescriptorResponse(
       uint16_t gatt_code,
-      const base::Optional<std::vector<uint8_t>>& value,
+      const absl::optional<std::vector<uint8_t>>& value,
       const std::string& descriptor_id,
       const std::string& characteristic_id,
       const std::string& service_id,
@@ -137,62 +142,66 @@ class FakeCentral : public mojom::FakeCentral, public device::BluetoothAdapter {
       GetLastWrittenDescriptorValueCallback callback) override;
 
   // BluetoothAdapter overrides:
+  void Initialize(base::OnceClosure callback) override;
   std::string GetAddress() const override;
   std::string GetName() const override;
   void SetName(const std::string& name,
-               const base::Closure& callback,
-               const ErrorCallback& error_callback) override;
+               base::OnceClosure callback,
+               ErrorCallback error_callback) override;
   bool IsInitialized() const override;
   bool IsPresent() const override;
   bool IsPowered() const override;
   void SetPowered(bool powered,
-                  const base::Closure& callback,
-                  const ErrorCallback& error_callback) override;
+                  base::OnceClosure callback,
+                  ErrorCallback error_callback) override;
   bool IsDiscoverable() const override;
   void SetDiscoverable(bool discoverable,
-                       const base::Closure& callback,
-                       const ErrorCallback& error_callback) override;
+                       base::OnceClosure callback,
+                       ErrorCallback error_callback) override;
   bool IsDiscovering() const override;
   UUIDList GetUUIDs() const override;
-  void CreateRfcommService(
-      const device::BluetoothUUID& uuid,
-      const ServiceOptions& options,
-      const CreateServiceCallback& callback,
-      const CreateServiceErrorCallback& error_callback) override;
-  void CreateL2capService(
-      const device::BluetoothUUID& uuid,
-      const ServiceOptions& options,
-      const CreateServiceCallback& callback,
-      const CreateServiceErrorCallback& error_callback) override;
+  void CreateRfcommService(const device::BluetoothUUID& uuid,
+                           const ServiceOptions& options,
+                           CreateServiceCallback callback,
+                           CreateServiceErrorCallback error_callback) override;
+  void CreateL2capService(const device::BluetoothUUID& uuid,
+                          const ServiceOptions& options,
+                          CreateServiceCallback callback,
+                          CreateServiceErrorCallback error_callback) override;
   void RegisterAdvertisement(
       std::unique_ptr<device::BluetoothAdvertisement::Data> advertisement_data,
-      const CreateAdvertisementCallback& callback,
-      const AdvertisementErrorCallback& error_callback) override;
+      CreateAdvertisementCallback callback,
+      AdvertisementErrorCallback error_callback) override;
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
   void SetAdvertisingInterval(
       const base::TimeDelta& min,
       const base::TimeDelta& max,
-      const base::Closure& callback,
-      const AdvertisementErrorCallback& error_callback) override;
-  void ResetAdvertising(
-      const base::Closure& callback,
-      const AdvertisementErrorCallback& error_callback) override;
+      base::OnceClosure callback,
+      AdvertisementErrorCallback error_callback) override;
+  void ResetAdvertising(base::OnceClosure callback,
+                        AdvertisementErrorCallback error_callback) override;
+  void ConnectDevice(
+      const std::string& address,
+      const absl::optional<device::BluetoothDevice::AddressType>& address_type,
+      ConnectDeviceCallback callback,
+      ErrorCallback error_callback) override;
 #endif
   device::BluetoothLocalGattService* GetGattService(
       const std::string& identifier) const override;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  void SetServiceAllowList(const UUIDList& uuids,
+                           base::OnceClosure callback,
+                           ErrorCallback error_callback) override;
+#endif
+  base::WeakPtr<BluetoothAdapter> GetWeakPtr() override;
   bool SetPoweredImpl(bool powered) override;
-  void AddDiscoverySession(
-      device::BluetoothDiscoveryFilter* discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) override;
-  void RemoveDiscoverySession(
-      device::BluetoothDiscoveryFilter* discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) override;
-  void SetDiscoveryFilter(
+  void UpdateFilter(
       std::unique_ptr<device::BluetoothDiscoveryFilter> discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) override;
+      DiscoverySessionResultCallback callback) override;
+  void StartScanWithFilter(
+      std::unique_ptr<device::BluetoothDiscoveryFilter> discovery_filter,
+      DiscoverySessionResultCallback callback) override;
+  void StopScan(DiscoverySessionResultCallback callback) override;
   void RemovePairingDelegateInternal(
       device::BluetoothDevice::PairingDelegate* pairing_delegate) override;
 
@@ -215,8 +224,8 @@ class FakeCentral : public mojom::FakeCentral, public device::BluetoothAdapter {
       const std::string& descriptor_id) const;
 
   mojom::CentralState state_;
-  mojo::Binding<mojom::FakeCentral> binding_;
-  size_t num_discovery_sessions_ = 0;
+  mojo::Receiver<mojom::FakeCentral> receiver_;
+  base::WeakPtrFactory<FakeCentral> weak_ptr_factory_{this};
 };
 
 }  // namespace bluetooth

@@ -4,6 +4,8 @@
 
 #include "chrome/browser/extensions/api/permissions/permissions_api.h"
 
+#include <memory>
+
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/strings/stringprintf.h"
@@ -21,6 +23,7 @@
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/manifest_handlers/permissions_parser.h"
+#include "extensions/common/permissions/permissions_data.h"
 #include "extensions/test/test_extension_dir.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -42,7 +45,7 @@ scoped_refptr<const Extension> CreateExtensionWithPermissions(
   if (allow_file_access)
     creation_flags |= Extension::ALLOW_FILE_ACCESS;
   return ExtensionBuilder()
-      .SetLocation(Manifest::INTERNAL)
+      .SetLocation(mojom::ManifestLocation::kInternal)
       .SetManifest(DictionaryBuilder()
                        .Set("name", name)
                        .Set("description", "foo")
@@ -58,10 +61,7 @@ scoped_refptr<const Extension> CreateExtensionWithPermissions(
 // Helper function to create a base::Value from a list of strings.
 std::unique_ptr<base::Value> StringVectorToValue(
     const std::vector<std::string>& strings) {
-  ListBuilder builder;
-  for (const auto& str : strings)
-    builder.Append(str);
-  return builder.Build();
+  return ListBuilder().Append(strings.begin(), strings.end()).Build();
 }
 
 // Runs permissions.request() with the provided |args|, and returns the result
@@ -140,11 +140,11 @@ class PermissionsAPIUnitTest : public ExtensionServiceTestWithInstall {
     ExtensionServiceTestWithInstall::SetUp();
     PermissionsRequestFunction::SetAutoConfirmForTests(true);
     InitializeEmptyExtensionService();
-    browser_window_.reset(new TestBrowserWindow());
+    browser_window_ = std::make_unique<TestBrowserWindow>();
     Browser::CreateParams params(profile(), true);
-    params.type = Browser::TYPE_TABBED;
+    params.type = Browser::TYPE_NORMAL;
     params.window = browser_window_.get();
-    browser_.reset(new Browser(params));
+    browser_.reset(Browser::Create(params));
   }
   // ExtensionServiceTestBase:
   void TearDown() override {
@@ -688,7 +688,7 @@ TEST_F(PermissionsAPIUnitTest, RequestingFilePermissions) {
     // This will reload the extension, so we need to reset the extension
     // pointer.
     util::SetAllowFileAccess(extension->id(), profile(), true);
-    extension = base::WrapRefCounted(observer.WaitForExtensionLoaded());
+    extension = observer.WaitForExtensionLoaded();
     ASSERT_TRUE(extension);
   }
 

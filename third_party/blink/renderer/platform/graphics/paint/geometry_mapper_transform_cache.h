@@ -5,8 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_GEOMETRY_MAPPER_TRANSFORM_CACHE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_GEOMETRY_MAPPER_TRANSFORM_CACHE_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-
 #include "third_party/blink/renderer/platform/transforms/transformation_matrix.h"
 
 namespace blink {
@@ -20,6 +20,9 @@ class PLATFORM_EXPORT GeometryMapperTransformCache {
   USING_FAST_MALLOC(GeometryMapperTransformCache);
  public:
   GeometryMapperTransformCache() = default;
+  GeometryMapperTransformCache(const GeometryMapperTransformCache&) = delete;
+  GeometryMapperTransformCache& operator=(const GeometryMapperTransformCache&) =
+      delete;
 
   static void ClearCache();
   bool IsValid() const;
@@ -71,6 +74,13 @@ class PLATFORM_EXPORT GeometryMapperTransformCache {
     else
       ApplyFromPlaneRoot(m);
   }
+  bool has_animation_to_screen() const {
+#if DCHECK_IS_ON()
+    CheckScreenTransformUpdated();
+#endif
+    return UNLIKELY(screen_transform_) ? screen_transform_->has_animation
+                                       : has_animation_to_plane_root();
+  }
 
   const TransformationMatrix& to_plane_root() const {
     DCHECK(plane_root_transform_);
@@ -100,6 +110,12 @@ class PLATFORM_EXPORT GeometryMapperTransformCache {
     return UNLIKELY(plane_root_transform_) ? plane_root_transform_->plane_root
                                            : root_of_2d_translation();
   }
+  bool has_animation_to_plane_root() const {
+    return UNLIKELY(plane_root_transform_) &&
+           plane_root_transform_->has_animation;
+  }
+
+  bool has_fixed() const { return has_fixed_; }
 
  private:
   friend class GeometryMapperTransformCacheTest;
@@ -180,6 +196,7 @@ class PLATFORM_EXPORT GeometryMapperTransformCache {
     TransformationMatrix to_plane_root;
     TransformationMatrix from_plane_root;
     const TransformPaintPropertyNode* plane_root;
+    bool has_animation;
   };
   std::unique_ptr<PlaneRootTransform> plane_root_transform_;
 
@@ -187,11 +204,14 @@ class PLATFORM_EXPORT GeometryMapperTransformCache {
     TransformationMatrix to_screen;
     TransformationMatrix projection_from_screen;
     bool projection_from_screen_is_valid;
+    bool has_animation;
   };
   std::unique_ptr<ScreenTransform> screen_transform_;
 
+  // Whether or not there is a fixed position transform to the root.
+  bool has_fixed_ = false;
+
   unsigned cache_generation_ = s_global_generation - 1;
-  DISALLOW_COPY_AND_ASSIGN(GeometryMapperTransformCache);
 };
 
 }  // namespace blink

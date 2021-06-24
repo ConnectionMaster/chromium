@@ -6,8 +6,8 @@
 
 #include <string>
 
+#include "base/check.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "chromecast/chromecast_buildflags.h"
 #include "chromecast/media/base/key_systems_common.h"
@@ -65,7 +65,13 @@ class PlayReadyKeySystemProperties : public ::media::KeySystemProperties {
 
   EmeConfigRule GetRobustnessConfigRule(
       EmeMediaType media_type,
-      const std::string& requested_robustness) const override {
+      const std::string& requested_robustness,
+      const bool* /*hw_secure_requirement*/) const override {
+    // `hw_secure_requirement` is ignored here because it's a temporary solution
+    // until a larger refactoring of the key system logic is done. It also does
+    // not need to account for it here because if it does introduce an
+    // incompatibility at this point, it will still be caught by the rule logic
+    // in KeySystemConfigSelector: crbug.com/1204284
     if (requested_robustness.empty()) {
 #if defined(OS_ANDROID)
       return EmeConfigRule::HW_SECURE_CODECS_REQUIRED;
@@ -84,11 +90,6 @@ class PlayReadyKeySystemProperties : public ::media::KeySystemProperties {
                                        : EmeSessionTypeSupport::NOT_SUPPORTED;
   }
 
-  EmeSessionTypeSupport GetPersistentUsageRecordSessionSupport()
-      const override {
-    return EmeSessionTypeSupport::NOT_SUPPORTED;
-  }
-
   EmeFeatureSupport GetPersistentStateSupport() const override {
     return EmeFeatureSupport::ALWAYS_ENABLED;
   }
@@ -97,8 +98,8 @@ class PlayReadyKeySystemProperties : public ::media::KeySystemProperties {
   }
 
   EmeConfigRule GetEncryptionSchemeConfigRule(
-      ::media::EncryptionMode encryption_mode) const override {
-    if (encryption_mode == ::media::EncryptionMode::kCenc)
+      ::media::EncryptionScheme encryption_scheme) const override {
+    if (encryption_scheme == ::media::EncryptionScheme::kCenc)
       return EmeConfigRule::SUPPORTED;
     return EmeConfigRule::NOT_SUPPORTED;
   }
@@ -112,7 +113,7 @@ class PlayReadyKeySystemProperties : public ::media::KeySystemProperties {
 };
 #endif  // BUILDFLAG(ENABLE_PLAYREADY)
 
-#if BUILDFLAG(USE_CHROMECAST_CDMS)
+#if BUILDFLAG(USE_CHROMECAST_CDMS) || BUILDFLAG(ENABLE_WIDEVINE)
 SupportedCodecs GetCastEmeSupportedCodecs() {
   SupportedCodecs codecs = ::media::EME_CODEC_AAC | ::media::EME_CODEC_AVC1 |
                            ::media::EME_CODEC_VP9_PROFILE0 |
@@ -123,24 +124,25 @@ SupportedCodecs GetCastEmeSupportedCodecs() {
   codecs |= ::media::EME_CODEC_FLAC | ::media::EME_CODEC_OPUS;
 #endif  // BUILDFLAG(DISABLE_SECURE_FLAC_OPUS_DECODING)
 
-#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
-  codecs |= ::media::EME_CODEC_HEVC;
-#endif  // BUILDFLAG(ENABLE_HEVC_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
+  codecs |= ::media::EME_CODEC_HEVC_PROFILE_MAIN;
+  codecs |= ::media::EME_CODEC_HEVC_PROFILE_MAIN10;
+#endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
 
-#if BUILDFLAG(ENABLE_DOLBY_VISION_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
   codecs |= ::media::EME_CODEC_DOLBY_VISION_AVC;
-#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
   codecs |= ::media::EME_CODEC_DOLBY_VISION_HEVC;
-#endif  // BUILDFLAG(ENABLE_HEVC_DEMUXING)
-#endif  // BUILDFLAG(ENABLE_DOLBY_VISION_DEMUXING)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
 
-#if BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
   codecs |= ::media::EME_CODEC_AC3 | ::media::EME_CODEC_EAC3;
-#endif  // BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
 
-#if BUILDFLAG(ENABLE_MPEG_H_AUDIO_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_MPEG_H_AUDIO)
   codecs |= ::media::EME_CODEC_MPEG_H_AUDIO;
-#endif  // BUILDFLAG(ENABLE_MPEG_H_AUDIO_DEMUXING)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_MPEG_H_AUDIO)
 
   return codecs;
 }
@@ -162,18 +164,17 @@ void AddCmaKeySystems(
 #if BUILDFLAG(ENABLE_WIDEVINE)
   using Robustness = cdm::WidevineKeySystemProperties::Robustness;
 
-  base::flat_set<::media::EncryptionMode> encryption_schemes = {
-      ::media::EncryptionMode::kCenc, ::media::EncryptionMode::kCbcs};
+  base::flat_set<::media::EncryptionScheme> encryption_schemes = {
+      ::media::EncryptionScheme::kCenc, ::media::EncryptionScheme::kCbcs};
 
   key_systems_properties->emplace_back(new cdm::WidevineKeySystemProperties(
       codecs,                            // Regular codecs.
       encryption_schemes,                // Encryption schemes.
       codecs,                            // Hardware secure codecs.
       encryption_schemes,                // Hardware secure encryption schemes.
-      Robustness::HW_SECURE_ALL,         // Max audio robustness.
+      Robustness::HW_SECURE_CRYPTO,      // Max audio robustness.
       Robustness::HW_SECURE_ALL,         // Max video robustness.
       EmeSessionTypeSupport::SUPPORTED,  // persistent-license.
-      EmeSessionTypeSupport::NOT_SUPPORTED,  // persistent-release-message.
       // Note: On Chromecast, all CDMs may have persistent state.
       EmeFeatureSupport::ALWAYS_ENABLED,    // Persistent state.
       EmeFeatureSupport::ALWAYS_ENABLED));  // Distinctive identifier.
@@ -218,7 +219,7 @@ void AddChromecastKeySystems(
         key_systems_properties,
     bool enable_persistent_license_support,
     bool force_software_crypto) {
-#if BUILDFLAG(USE_CHROMECAST_CDMS)
+#if BUILDFLAG(USE_CHROMECAST_CDMS) || BUILDFLAG(ENABLE_WIDEVINE)
   AddCmaKeySystems(key_systems_properties, enable_persistent_license_support);
 #elif defined(OS_ANDROID)
   AddCastAndroidKeySystems(key_systems_properties);

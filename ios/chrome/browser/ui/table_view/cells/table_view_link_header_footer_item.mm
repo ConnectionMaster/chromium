@@ -4,8 +4,15 @@
 
 #import "ios/chrome/browser/ui/table_view/cells/table_view_link_header_footer_item.h"
 
+#import "base/check_op.h"
+#import "base/containers/contains.h"
+#import "ios/chrome/browser/ui/table_view/cells/table_view_cells_constants.h"
+#import "ios/chrome/browser/ui/ui_feature_flags.h"
+#import "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/string_util.h"
+#import "ios/chrome/common/ui/colors/UIColor+cr_semantic_colors.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "net/base/mac/url_conversions.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -13,17 +20,15 @@
 #endif
 
 namespace {
-// Padding used on the leading and trailing edges of the cell.
-const CGFloat kHorizontalPadding = 24;
 
 // Padding used on the top and bottom edges of the cell.
 const CGFloat kVerticalPadding = 8;
 
-// Text color.
-const int kTextColor = 0x8A8A8F;
 }  // namespace
 
-@implementation TableViewLinkHeaderFooterItem
+@implementation TableViewLinkHeaderFooterItem {
+  std::vector<GURL> urls_;
+}
 
 - (instancetype)initWithType:(NSInteger)type {
   self = [super initWithType:type];
@@ -33,13 +38,31 @@ const int kTextColor = 0x8A8A8F;
   return self;
 }
 
+#pragma mark Properties
+
+- (const std::vector<GURL>&)urls {
+  return urls_;
+}
+
+- (void)setUrls:(const std::vector<GURL>&)urls {
+  for (const GURL& url : urls_) {
+    DCHECK(url.is_valid());
+  }
+  urls_ = urls;
+}
+
 #pragma mark CollectionViewItem
 
 - (void)configureHeaderFooterView:(TableViewLinkHeaderFooterView*)headerFooter
                        withStyler:(ChromeTableViewStyler*)styler {
   [super configureHeaderFooterView:headerFooter withStyler:styler];
 
-  headerFooter.linkURL = self.linkURL;
+  if (self.urls.empty()) {
+    headerFooter.accessibilityTraits &= ~UIAccessibilityTraitLink;
+  } else {
+    headerFooter.urls = self.urls;
+    headerFooter.accessibilityTraits |= UIAccessibilityTraitLink;
+  }
   [headerFooter setText:self.text];
 }
 
@@ -52,7 +75,9 @@ const int kTextColor = 0x8A8A8F;
 
 @end
 
-@implementation TableViewLinkHeaderFooterView
+@implementation TableViewLinkHeaderFooterView {
+  std::vector<GURL> urls_;
+}
 
 @synthesize textView = _textView;
 
@@ -65,10 +90,13 @@ const int kTextColor = 0x8A8A8F;
     _textView.scrollEnabled = NO;
     _textView.editable = NO;
     _textView.delegate = self;
-    _textView.backgroundColor = [UIColor clearColor];
-    _textView.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _textView.backgroundColor = UIColor.clearColor;
+    _textView.font =
+        [UIFont preferredFontForTextStyle:kTableViewSublabelFontStyle];
     _textView.adjustsFontForContentSizeCategory = YES;
     _textView.translatesAutoresizingMaskIntoConstraints = NO;
+    _textView.linkTextAttributes =
+        @{NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor]};
 
     [self.contentView addSubview:_textView];
 
@@ -80,47 +108,58 @@ const int kTextColor = 0x8A8A8F;
                          constant:-kVerticalPadding],
       [_textView.trailingAnchor
           constraintEqualToAnchor:self.contentView.trailingAnchor
-                         constant:-kHorizontalPadding],
+                         constant:-HorizontalPadding()],
       [_textView.leadingAnchor
           constraintEqualToAnchor:self.contentView.leadingAnchor
-                         constant:kHorizontalPadding],
+                         constant:HorizontalPadding()],
     ]];
   }
   return self;
-}
-
-- (void)setText:(NSString*)text {
-  NSRange range;
-
-  NSString* strippedText = ParseStringWithLink(text, &range);
-  NSRange fullRange = NSMakeRange(0, strippedText.length);
-  NSMutableAttributedString* attributedText =
-      [[NSMutableAttributedString alloc] initWithString:strippedText];
-  [attributedText addAttribute:NSForegroundColorAttributeName
-                         value:UIColorFromRGB(kTextColor)
-                         range:fullRange];
-
-  [attributedText
-      addAttribute:NSFontAttributeName
-             value:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]
-             range:fullRange];
-
-  if (range.location != NSNotFound && range.length != 0) {
-    NSURL* URL = net::NSURLWithGURL(self.linkURL);
-    id linkValue = URL ? URL : @"";
-    [attributedText addAttribute:NSLinkAttributeName
-                           value:linkValue
-                           range:range];
-  }
-
-  self.textView.attributedText = attributedText;
 }
 
 - (void)prepareForReuse {
   [super prepareForReuse];
   self.textView.text = nil;
   self.delegate = nil;
-  self.linkURL = GURL();
+  self.urls = std::vector<GURL>();
+}
+
+#pragma mark - Properties
+
+- (void)setText:(NSString*)text {
+  StringWithTags parsedString = ParseStringWithLinks(text);
+
+  NSDictionary* textAttributes = @{
+    NSFontAttributeName :
+        [UIFont preferredFontForTextStyle:kTableViewSublabelFontStyle],
+    NSForegroundColorAttributeName : UIColor.cr_secondaryLabelColor
+  };
+
+  NSMutableAttributedString* attributedText =
+      [[NSMutableAttributedString alloc] initWithString:parsedString.string
+                                             attributes:textAttributes];
+
+  DCHECK_EQ(parsedString.ranges.size(), self.urls.size());
+  size_t index = 0;
+  for (const GURL& url : self.urls) {
+    [attributedText addAttribute:NSLinkAttributeName
+                           value:net::NSURLWithGURL(url)
+                           range:parsedString.ranges[index]];
+    index += 1;
+  }
+
+  self.textView.attributedText = attributedText;
+}
+
+- (const std::vector<GURL>&)urls {
+  return urls_;
+}
+
+- (void)setUrls:(const std::vector<GURL>&)urls {
+  for (const GURL& url : urls_) {
+    DCHECK(url.is_valid());
+  }
+  urls_ = urls;
 }
 
 #pragma mark - UITextViewDelegate
@@ -130,10 +169,18 @@ const int kTextColor = 0x8A8A8F;
                   inRange:(NSRange)characterRange
               interaction:(UITextItemInteraction)interaction {
   DCHECK(self.textView == textView);
-  GURL convertedURL = URL ? net::GURLWithNSURL(URL) : self.linkURL;
-  [self.delegate view:self didTapLinkURL:convertedURL];
+  const GURL gURL = net::GURLWithNSURL(URL);
+  DCHECK(gURL.is_valid());
+  DCHECK(base::Contains(self.urls, gURL));
+  [self.delegate view:self didTapLinkURL:gURL];
   // Returns NO as the app is handling the opening of the URL.
   return NO;
+}
+
+#pragma mark - NSObject(Accessibility)
+
+- (NSString*)accessibilityLabel {
+  return [self.textView.attributedText string];
 }
 
 @end

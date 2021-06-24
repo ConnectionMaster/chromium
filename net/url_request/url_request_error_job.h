@@ -17,20 +17,18 @@ namespace net {
 class NET_EXPORT URLRequestErrorJob : public URLRequestJob {
  public:
   URLRequestErrorJob(URLRequest* request,
-                     NetworkDelegate* network_delegate,
                      int error);
+  ~URLRequestErrorJob() override;
 
   void Start() override;
   void Kill() override;
 
  private:
-  ~URLRequestErrorJob() override;
-
   void StartAsync();
 
   int error_;
 
-  base::WeakPtrFactory<URLRequestErrorJob> weak_factory_;
+  base::WeakPtrFactory<URLRequestErrorJob> weak_factory_{this};
 };
 
 }  // namespace net

@@ -5,17 +5,17 @@
 package org.chromium.chrome.browser.explore_sites;
 
 import android.content.Context;
-import android.support.annotation.IntDef;
-import android.support.annotation.Nullable;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
+
+import androidx.annotation.IntDef;
+import androidx.annotation.Nullable;
 
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.native_page.ContextMenuManager;
 import org.chromium.chrome.browser.native_page.NativePageNavigationDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.widget.LoadingView;
-import org.chromium.chrome.browser.widget.RoundedIconGenerator;
+import org.chromium.components.browser_ui.widget.RoundedIconGenerator;
 import org.chromium.ui.modelutil.ForwardingListObservable;
 import org.chromium.ui.modelutil.ListObservable.ListObserver;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -23,6 +23,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyObservable;
 import org.chromium.ui.modelutil.RecyclerViewAdapter;
 import org.chromium.ui.widget.ChromeBulletSpan;
+import org.chromium.ui.widget.LoadingView;
 import org.chromium.ui.widget.TextViewWithLeading;
 
 import java.lang.annotation.Retention;
@@ -47,7 +48,10 @@ class CategoryCardAdapter extends ForwardingListObservable<Void>
     private final ContextMenuManager mContextMenuManager;
     private final NativePageNavigationDelegate mNavDelegate;
     private final Profile mProfile;
-
+    private final int mMaxRows;
+    private final int mMaxColumns;
+    @DenseVariation
+    private final int mDenseVariation;
     private StableScrollLayoutManager mLayoutManager;
     private PropertyModel mCategoryModel;
 
@@ -58,6 +62,9 @@ class CategoryCardAdapter extends ForwardingListObservable<Void>
         mCategoryModel.addObserver(this);
         mCategoryModel.get(ExploreSitesPage.CATEGORY_LIST_KEY).addObserver(this);
 
+        mMaxRows = mCategoryModel.get(ExploreSitesPage.MAX_ROWS_KEY);
+        mMaxColumns = mCategoryModel.get(ExploreSitesPage.MAX_COLUMNS_KEY);
+        mDenseVariation = mCategoryModel.get(ExploreSitesPage.DENSE_VARIATION_KEY);
         mLayoutManager = layoutManager;
         mIconGenerator = iconGenerator;
         mContextMenuManager = contextMenuManager;
@@ -97,6 +104,7 @@ class CategoryCardAdapter extends ForwardingListObservable<Void>
             int position, @Nullable Void payload) {
         if (holder.getItemViewType() == ViewType.CATEGORY) {
             ExploreSitesCategoryCardView view = (ExploreSitesCategoryCardView) holder.itemView;
+            view.setTileGridParams(mMaxRows, mMaxColumns, mDenseVariation);
             view.setCategory(mCategoryModel.get(ExploreSitesPage.CATEGORY_LIST_KEY).get(position),
                     position, mIconGenerator, mContextMenuManager, mNavDelegate, mProfile);
         } else if (holder.getItemViewType() == ViewType.LOADING) {

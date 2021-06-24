@@ -24,6 +24,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_ANCHOR_ELEMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_ANCHOR_ELEMENT_H_
 
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/platform/web_impression.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
@@ -56,34 +58,31 @@ enum {
   //     RelationTag         = 0x00010000,
   //     RelationUp          = 0x00020000,
   kRelationNoOpener = 0x00040000,
+  kRelationOpener = 0x00080000
 };
-
-class ExceptionState;
-class USVStringOrTrustedURL;
 
 class CORE_EXPORT HTMLAnchorElement : public HTMLElement, public DOMURLUtils {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  static HTMLAnchorElement* Create(Document&);
-
+  HTMLAnchorElement(Document& document);
   HTMLAnchorElement(const QualifiedName&, Document&);
   ~HTMLAnchorElement() override;
 
-  // Returns attributes that should be checked against Trusted Types
-  const AttrNameToTrustedType& GetCheckedAttributeTypes() const override;
-
   KURL Href() const;
   void SetHref(const AtomicString&);
-  void setHref(const USVStringOrTrustedURL&, ExceptionState&);
+  void setHref(const String&);
 
   const AtomicString& GetName() const;
+
+  // Returns the anchor's |target| attribute, unless it is empty, in which case
+  // the BaseTarget from the document is returned.
+  const AtomicString& GetEffectiveTarget() const;
 
   KURL Url() const final;
   void SetURL(const KURL&) final;
 
   String Input() const final;
-  void SetInput(const String&) final;
 
   bool IsLiveLink() const final;
 
@@ -98,14 +97,17 @@ class CORE_EXPORT HTMLAnchorElement : public HTMLElement, public DOMURLUtils {
   LinkHash VisitedLinkHash() const;
   void InvalidateCachedVisitedLinkHash() { cached_visited_link_hash_ = 0; }
 
+  // Returns whether this element is a valid impression declaration tag. This is
+  // determined by looking at the presence of required attributes.
+  bool HasImpression() const;
+
   void SendPings(const KURL& destination_url) const;
 
-  void Trace(Visitor*) override;
+  void Trace(Visitor*) const override;
 
  protected:
   void ParseAttribute(const AttributeModificationParams&) override;
   bool SupportsFocus() const override;
-  bool MatchesEnabledPseudoClass() const override;
 
  private:
   void AttributeChanged(const AttributeModificationParams&) override;
@@ -114,12 +116,11 @@ class CORE_EXPORT HTMLAnchorElement : public HTMLElement, public DOMURLUtils {
   bool IsKeyboardFocusable() const override;
   void DefaultEventHandler(Event&) final;
   bool HasActivationBehavior() const override;
-  void SetActive(bool = true) final;
-  void AccessKeyAction(bool send_mouse_events) final;
+  void SetActive(bool active) final;
   bool IsURLAttribute(const Attribute&) const final;
   bool HasLegalLinkAttribute(const QualifiedName&) const final;
   bool CanStartSelection() const final;
-  int tabIndex() const final;
+  int DefaultTabIndex() const final;
   bool draggable() const final;
   bool IsInteractiveContent() const final;
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;

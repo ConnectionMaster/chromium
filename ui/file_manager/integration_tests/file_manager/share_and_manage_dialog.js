@@ -2,7 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import {addEntries, ENTRIES, EntryType, getCaller, pending, repeatUntil, RootPath, sendTestMessage, TestEntryInfo} from '../test_util.js';
+import {testcase} from '../testcase.js';
+
+import {expandTreeItem, IGNORE_APP_ERRORS, mountCrostini, navigateWithDirectoryTree, openNewWindow, remoteCall, setupAndWaitUntilReady} from './background.js';
+import {BASIC_DRIVE_ENTRY_SET, SHARED_DRIVE_ENTRY_SET} from './test_data.js';
 
 /**
  * Test 'Share with others' for a file or directory on Drive.
@@ -107,16 +111,9 @@ async function manageWithDriveExpectBrowserURL(
   chrome.test.assertTrue(!!await remoteCall.waitForElement(
       appId, '#file-context-menu:not([hidden])'));
 
-  // Wait for the "Manage in Drive" menu item to appear.
-  chrome.test.assertTrue(!!await remoteCall.waitForElement(
-      appId, '[command="#manage-in-drive"]:not([hidden]):not([disabled])'));
-
   // Click the "Manage in Drive" menu item.
-  chrome.test.assertTrue(
-      !!await remoteCall.callRemoteTestUtil(
-          'fakeMouseClick', appId,
-          ['[command="#manage-in-drive"]:not([hidden]):not([disabled])']),
-      'fakeMouseClick failed');
+  await remoteCall.waitAndClickElement(
+      appId, '[command="#manage-in-drive"]:not([hidden]):not([disabled])');
 
   // Wait for the context menu to disappear.
   chrome.test.assertTrue(

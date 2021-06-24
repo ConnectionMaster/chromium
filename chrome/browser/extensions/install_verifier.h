@@ -15,20 +15,20 @@
 #include "base/memory/weak_ptr.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/management_policy.h"
-#include "extensions/common/extension.h"
+#include "extensions/common/extension_id.h"
 
 namespace content {
 class BrowserContext;
 }
 
 namespace extensions {
-
+class Extension;
 class ExtensionPrefs;
 class InstallSigner;
 struct InstallSignature;
 
 // This class implements verification that a set of extensions are either from
-// the webstore or are whitelisted by enterprise policy.  The webstore
+// the webstore or are allowlisted by enterprise policy.  The webstore
 // verification process works by sending a request to a backend server to get a
 // signature proving that a set of extensions are verified. This signature is
 // written into the extension preferences and is checked for validity when
@@ -49,10 +49,12 @@ class InstallVerifier : public KeyedService,
   static bool ShouldEnforce();
 
   // Returns whether |extension| is of a type that needs verification.
-  static bool NeedsVerification(const Extension& extension);
+  static bool NeedsVerification(const Extension& extension,
+                                content::BrowserContext* context);
 
   // Determines if an extension claims to be from the webstore.
-  static bool IsFromStore(const Extension& extension);
+  static bool IsFromStore(const Extension& extension,
+                          content::BrowserContext* context);
 
   // Initializes this object for use, including reading preferences and
   // validating the stored signature.
@@ -90,7 +92,7 @@ class InstallVerifier : public KeyedService,
   std::string GetDebugPolicyProviderName() const override;
   bool MustRemainDisabled(const Extension* extension,
                           disable_reason::DisableReason* reason,
-                          base::string16* error) const override;
+                          std::u16string* error) const override;
 
  private:
   // We keep a list of operations to the current set of extensions.
@@ -171,7 +173,7 @@ class InstallVerifier : public KeyedService,
   // consider allowed until we hear back from the server signature request.
   ExtensionIdSet provisional_;
 
-  base::WeakPtrFactory<InstallVerifier> weak_factory_;
+  base::WeakPtrFactory<InstallVerifier> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(InstallVerifier);
 };

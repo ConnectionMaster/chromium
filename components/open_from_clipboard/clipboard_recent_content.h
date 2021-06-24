@@ -8,10 +8,14 @@
 #include <memory>
 #include <string>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/time/time.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
+
+enum class ClipboardContentType { URL, Text, Image };
 
 // Helper class returning an URL if the content of the clipboard can be turned
 // into an URL, and if it estimates that the content of the clipboard is not too
@@ -30,16 +34,48 @@ class ClipboardRecentContent {
   static void SetInstance(std::unique_ptr<ClipboardRecentContent> new_instance);
 
   // Returns clipboard content as URL, if it has a compatible type,
-  // is recent enough and has not been suppressed.
-  virtual base::Optional<GURL> GetRecentURLFromClipboard() = 0;
+  // is recent enough, has not been suppressed and will not trigger a system
+  // notification that the clipboard has been accessed.
+  virtual absl::optional<GURL> GetRecentURLFromClipboard() = 0;
 
   // Returns clipboard content as text, if it has a compatible type,
-  // is recent enough and has not been suppressed.
-  virtual base::Optional<base::string16> GetRecentTextFromClipboard() = 0;
+  // is recent enough, has not been suppressed and will not trigger a system
+  // notification that the clipboard has been accessed.
+  virtual absl::optional<std::u16string> GetRecentTextFromClipboard() = 0;
 
-  // Returns clipboard content as image, if it has a compatible type,
+  // Return if system's clipboard contains an image that will not trigger a
+  // system notification that the clipboard has been accessed.
+  virtual bool HasRecentImageFromClipboard() = 0;
+
+  /*
+   On iOS, iOS 14 introduces new clipboard APIs that are async. The asynchronous
+   forms of clipboard access below should be preferred.
+   */
+  using HasDataCallback =
+      base::OnceCallback<void(std::set<ClipboardContentType>)>;
+  using GetRecentURLCallback = base::OnceCallback<void(absl::optional<GURL>)>;
+  using GetRecentTextCallback =
+      base::OnceCallback<void(absl::optional<std::u16string>)>;
+  using GetRecentImageCallback =
+      base::OnceCallback<void(absl::optional<gfx::Image>)>;
+
+  // Returns whether the clipboard contains a URL to |HasDataCallback| if it
   // is recent enough and has not been suppressed.
-  virtual base::Optional<gfx::Image> GetRecentImageFromClipboard() = 0;
+  virtual void HasRecentContentFromClipboard(
+      std::set<ClipboardContentType> types,
+      HasDataCallback callback) = 0;
+
+  // Returns clipboard content as URL to |GetRecentURLCallback|, if it has a
+  // compatible type, is recent enough and has not been suppressed.
+  virtual void GetRecentURLFromClipboard(GetRecentURLCallback callback) = 0;
+
+  // Returns clipboard content as a string to |GetRecentTextCallback|, if it has
+  // a compatible type, is recent enough and has not been suppressed.
+  virtual void GetRecentTextFromClipboard(GetRecentTextCallback callback) = 0;
+
+  // Returns clipboard content as image to |GetRecentImageCallback|, if it has a
+  // compatible type, is recent enough and has not been suppressed.
+  virtual void GetRecentImageFromClipboard(GetRecentImageCallback callback) = 0;
 
   // Returns how old the content of the clipboard is.
   virtual base::TimeDelta GetClipboardContentAge() const = 0;
@@ -47,6 +83,10 @@ class ClipboardRecentContent {
   // Prevent GetRecentURLFromClipboard from returning anything until the
   // clipboard's content changed.
   virtual void SuppressClipboardContent() = 0;
+
+  // Clear clipboard content. Different with |SuppressClipboardContent|, this
+  // function will clear content in the clipboard.
+  virtual void ClearClipboardContent() = 0;
 
  protected:
   // GetRecentURLFromClipboard() should never return a URL from a clipboard

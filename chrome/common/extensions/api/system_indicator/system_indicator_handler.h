@@ -5,10 +5,13 @@
 #ifndef CHROME_COMMON_EXTENSIONS_API_SYSTEM_INDICATOR_SYSTEM_INDICATOR_HANDLER_H_
 #define CHROME_COMMON_EXTENSIONS_API_SYSTEM_INDICATOR_SYSTEM_INDICATOR_HANDLER_H_
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handler.h"
+
+class ExtensionIconSet;
 
 namespace extensions {
 
@@ -18,7 +21,15 @@ class SystemIndicatorHandler : public ManifestHandler {
   SystemIndicatorHandler();
   ~SystemIndicatorHandler() override;
 
-  bool Parse(Extension* extension, base::string16* error) override;
+  // Returns the default system indicator icon for the given |extension|, if
+  // the extension has a system indicator, and null otherwise. Note that if the
+  // extension has a system indicator, the result is never null (though the
+  // set may be empty).
+  static const ExtensionIconSet* GetSystemIndicatorIcon(
+      const Extension& extension);
+
+  // ManifestHandler:
+  bool Parse(Extension* extension, std::u16string* error) override;
 
  private:
   base::span<const char* const> Keys() const override;

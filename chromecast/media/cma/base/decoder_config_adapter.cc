@@ -10,6 +10,7 @@
 #include "media/base/channel_layout.h"
 #include "media/base/encryption_pattern.h"
 #include "media/base/encryption_scheme.h"
+#include "ui/gfx/hdr_metadata.h"
 
 namespace chromecast {
 namespace media {
@@ -46,25 +47,6 @@ AudioCodec ToAudioCodec(const ::media::AudioCodec audio_codec) {
   return kAudioCodecUnknown;
 }
 
-ChannelLayout ToChannelLayout(const ::media::ChannelLayout channel_layout) {
-  switch (channel_layout) {
-    case ::media::ChannelLayout::CHANNEL_LAYOUT_UNSUPPORTED:
-      return ChannelLayout::UNSUPPORTED;
-    case ::media::ChannelLayout::CHANNEL_LAYOUT_MONO:
-      return ChannelLayout::MONO;
-    case ::media::ChannelLayout::CHANNEL_LAYOUT_STEREO:
-      return ChannelLayout::STEREO;
-    case ::media::ChannelLayout::CHANNEL_LAYOUT_5_1:
-      return ChannelLayout::SURROUND_5_1;
-    case ::media::ChannelLayout::CHANNEL_LAYOUT_BITSTREAM:
-      return ChannelLayout::BITSTREAM;
-
-    default:
-      NOTREACHED();
-      return ChannelLayout::UNSUPPORTED;
-  }
-}
-
 SampleFormat ToSampleFormat(const ::media::SampleFormat sample_format) {
   switch (sample_format) {
     case ::media::kUnknownSampleFormat:
@@ -91,26 +73,6 @@ SampleFormat ToSampleFormat(const ::media::SampleFormat sample_format) {
   }
   NOTREACHED();
   return kUnknownSampleFormat;
-}
-
-::media::ChannelLayout ToMediaChannelLayout(
-    const ChannelLayout channel_layout) {
-  switch (channel_layout) {
-    case ChannelLayout::UNSUPPORTED:
-      return ::media::ChannelLayout::CHANNEL_LAYOUT_UNSUPPORTED;
-    case ChannelLayout::MONO:
-      return ::media::ChannelLayout::CHANNEL_LAYOUT_MONO;
-    case ChannelLayout::STEREO:
-      return ::media::ChannelLayout::CHANNEL_LAYOUT_STEREO;
-    case ChannelLayout::SURROUND_5_1:
-      return ::media::ChannelLayout::CHANNEL_LAYOUT_5_1;
-    case ChannelLayout::BITSTREAM:
-      return ::media::ChannelLayout::CHANNEL_LAYOUT_BITSTREAM;
-
-    default:
-      NOTREACHED();
-      return ::media::ChannelLayout::CHANNEL_LAYOUT_UNSUPPORTED;
-  }
 }
 
 ::media::SampleFormat ToMediaSampleFormat(const SampleFormat sample_format) {
@@ -169,28 +131,13 @@ SampleFormat ToSampleFormat(const ::media::SampleFormat sample_format) {
   }
 }
 
-::media::EncryptionScheme::CipherMode ToMediaCipherMode(
-    EncryptionScheme scheme) {
+EncryptionScheme ToEncryptionScheme(::media::EncryptionScheme scheme) {
   switch (scheme) {
-    case EncryptionScheme::kUnencrypted:
-      return ::media::EncryptionScheme::CIPHER_MODE_UNENCRYPTED;
-    case EncryptionScheme::kAesCtr:
-      return ::media::EncryptionScheme::CIPHER_MODE_AES_CTR;
-    case EncryptionScheme::kAesCbc:
-      return ::media::EncryptionScheme::CIPHER_MODE_AES_CBC;
-    default:
-      NOTREACHED();
-      return ::media::EncryptionScheme::CIPHER_MODE_UNENCRYPTED;
-  }
-}
-
-EncryptionScheme ToEncryptionScheme(const ::media::EncryptionScheme& scheme) {
-  switch (scheme.mode()) {
-    case ::media::EncryptionScheme::CIPHER_MODE_UNENCRYPTED:
+    case ::media::EncryptionScheme::kUnencrypted:
       return EncryptionScheme::kUnencrypted;
-    case ::media::EncryptionScheme::CIPHER_MODE_AES_CTR:
+    case ::media::EncryptionScheme::kCenc:
       return EncryptionScheme::kAesCtr;
-    case ::media::EncryptionScheme::CIPHER_MODE_AES_CBC:
+    case ::media::EncryptionScheme::kCbcs:
       return EncryptionScheme::kAesCbc;
     default:
       NOTREACHED();
@@ -198,13 +145,68 @@ EncryptionScheme ToEncryptionScheme(const ::media::EncryptionScheme& scheme) {
   }
 }
 
-// TODO(yucliu): Remove pattern after update ::media::Audio/VideoDecoderConfig.
 ::media::EncryptionScheme ToMediaEncryptionScheme(EncryptionScheme scheme) {
-  return ::media::EncryptionScheme(ToMediaCipherMode(scheme),
-                                   ::media::EncryptionPattern());
+  switch (scheme) {
+    case EncryptionScheme::kUnencrypted:
+      return ::media::EncryptionScheme::kUnencrypted;
+    case EncryptionScheme::kAesCtr:
+      return ::media::EncryptionScheme::kCenc;
+    case EncryptionScheme::kAesCbc:
+      return ::media::EncryptionScheme::kCbcs;
+    default:
+      NOTREACHED();
+      return ::media::EncryptionScheme::kUnencrypted;
+  }
 }
 
 }  // namespace
+
+// static
+ChannelLayout DecoderConfigAdapter::ToChannelLayout(
+    ::media::ChannelLayout channel_layout) {
+  switch (channel_layout) {
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_UNSUPPORTED:
+      return ChannelLayout::UNSUPPORTED;
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_MONO:
+      return ChannelLayout::MONO;
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_STEREO:
+      return ChannelLayout::STEREO;
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_5_1:
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_5_1_BACK:
+      return ChannelLayout::SURROUND_5_1;
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_BITSTREAM:
+      return ChannelLayout::BITSTREAM;
+    case ::media::ChannelLayout::CHANNEL_LAYOUT_DISCRETE:
+      return ChannelLayout::DISCRETE;
+
+    default:
+      NOTREACHED();
+      return ChannelLayout::UNSUPPORTED;
+  }
+}
+
+// static
+::media::ChannelLayout DecoderConfigAdapter::ToMediaChannelLayout(
+    ChannelLayout channel_layout) {
+  switch (channel_layout) {
+    case ChannelLayout::UNSUPPORTED:
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_UNSUPPORTED;
+    case ChannelLayout::MONO:
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_MONO;
+    case ChannelLayout::STEREO:
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_STEREO;
+    case ChannelLayout::SURROUND_5_1:
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_5_1;
+    case ChannelLayout::BITSTREAM:
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_BITSTREAM;
+    case ChannelLayout::DISCRETE:
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_DISCRETE;
+
+    default:
+      NOTREACHED();
+      return ::media::ChannelLayout::CHANNEL_LAYOUT_UNSUPPORTED;
+  }
+}
 
 // static
 AudioConfig DecoderConfigAdapter::ToCastAudioConfig(
@@ -219,8 +221,7 @@ AudioConfig DecoderConfigAdapter::ToCastAudioConfig(
   audio_config.sample_format = ToSampleFormat(config.sample_format());
   audio_config.bytes_per_channel = config.bytes_per_channel();
   audio_config.channel_layout = ToChannelLayout(config.channel_layout());
-  audio_config.channel_number =
-      ::media::ChannelLayoutToChannelCount(config.channel_layout()),
+  audio_config.channel_number = config.channels();
   audio_config.samples_per_second = config.samples_per_second();
   audio_config.extra_data = config.extra_data();
   audio_config.encryption_scheme =
@@ -239,11 +240,15 @@ AudioConfig DecoderConfigAdapter::ToCastAudioConfig(
 // static
 ::media::AudioDecoderConfig DecoderConfigAdapter::ToMediaAudioDecoderConfig(
     const AudioConfig& config) {
-  return ::media::AudioDecoderConfig(
+  ::media::AudioDecoderConfig audio_decoder_config(
       ToMediaAudioCodec(config.codec),
       ToMediaSampleFormat(config.sample_format),
       ToMediaChannelLayout(config.channel_layout), config.samples_per_second,
       config.extra_data, ToMediaEncryptionScheme(config.encryption_scheme));
+  if (config.channel_layout == ChannelLayout::DISCRETE) {
+    audio_decoder_config.SetChannelsForDiscrete(config.channel_number);
+  }
+  return audio_decoder_config;
 }
 
 // static
@@ -327,7 +332,7 @@ VideoConfig DecoderConfigAdapter::ToCastVideoConfig(
   video_config.matrix = static_cast<MatrixID>(config.color_space_info().matrix);
   video_config.range = static_cast<RangeID>(config.color_space_info().range);
 
-  base::Optional<::media::HDRMetadata> hdr_metadata = config.hdr_metadata();
+  absl::optional<::gfx::HDRMetadata> hdr_metadata = config.hdr_metadata();
   if (hdr_metadata) {
     video_config.have_hdr_metadata = true;
     video_config.hdr_metadata.max_content_light_level =

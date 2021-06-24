@@ -4,8 +4,8 @@
 
 #include "gpu/config/gpu_driver_bug_list.h"
 
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
 #include "gpu/config/gpu_driver_bug_list_autogen.h"
 #include "gpu/config/gpu_driver_bug_workaround_type.h"
 #include "gpu/config/gpu_switches.h"
@@ -77,13 +77,13 @@ void GpuDriverBugList::AppendWorkaroundsFromCommandLine(
 
       // Removing conflicting workarounds.
       switch (kFeatureList[i].type) {
-        case FORCE_DISCRETE_GPU:
-          workarounds->erase(FORCE_INTEGRATED_GPU);
-          workarounds->insert(FORCE_DISCRETE_GPU);
+        case FORCE_HIGH_PERFORMANCE_GPU:
+          workarounds->erase(FORCE_LOW_POWER_GPU);
+          workarounds->insert(FORCE_HIGH_PERFORMANCE_GPU);
           break;
-        case FORCE_INTEGRATED_GPU:
-          workarounds->erase(FORCE_DISCRETE_GPU);
-          workarounds->insert(FORCE_INTEGRATED_GPU);
+        case FORCE_LOW_POWER_GPU:
+          workarounds->erase(FORCE_HIGH_PERFORMANCE_GPU);
+          workarounds->insert(FORCE_LOW_POWER_GPU);
           break;
         default:
           workarounds->insert(kFeatureList[i].type);

@@ -16,10 +16,12 @@
 #include "remoting/host/host_status_observer.h"
 #include "remoting/host/it2me/it2me_confirmation_dialog.h"
 #include "remoting/host/it2me/it2me_confirmation_dialog_proxy.h"
+#include "remoting/host/it2me/it2me_constants.h"
+#include "remoting/host/register_support_host_request.h"
 #include "remoting/protocol/errors.h"
 #include "remoting/protocol/port_range.h"
 #include "remoting/protocol/validating_authenticator.h"
-#include "remoting/signaling/xmpp_signal_strategy.h"
+#include "remoting/signaling/signal_strategy.h"
 
 namespace base {
 class DictionaryValue;
@@ -32,6 +34,7 @@ class ChromotingHostContext;
 class DesktopEnvironmentFactory;
 class HostEventLogger;
 class HostStatusLogger;
+class LogToServer;
 class RegisterSupportHostRequest;
 class RsaKeyPair;
 
@@ -39,29 +42,30 @@ namespace protocol {
 struct IceConfig;
 }  // namespace protocol
 
-// These state values are duplicated in host_session.js.  Remember to update
-// both copies when making changes.
-enum It2MeHostState {
-  kDisconnected,
-  kStarting,
-  kRequestedAccessCode,
-  kReceivedAccessCode,
-  kConnecting,
-  kConnected,
-  kError,
-  kInvalidDomainError,
-};
-
 // Internal implementation of the plugin's It2Me host function.
 class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
                   public HostStatusObserver {
  public:
+  struct DeferredConnectContext {
+    DeferredConnectContext();
+    ~DeferredConnectContext();
+
+    std::unique_ptr<LogToServer> log_to_server;
+    std::unique_ptr<RegisterSupportHostRequest> register_request;
+    std::unique_ptr<SignalStrategy> signal_strategy;
+  };
+
+  using CreateDeferredConnectContext =
+      base::OnceCallback<std::unique_ptr<DeferredConnectContext>(
+          ChromotingHostContext*)>;
+
   class Observer {
    public:
     virtual void OnClientAuthenticated(const std::string& client_username) = 0;
     virtual void OnStoreAccessCode(const std::string& access_code,
                                    base::TimeDelta access_code_lifetime) = 0;
-    virtual void OnNatPolicyChanged(bool nat_traversal_enabled) = 0;
+    virtual void OnNatPoliciesChanged(bool nat_traversal_enabled,
+                                      bool relay_connections_allowed) = 0;
     virtual void OnStateChanged(It2MeHostState state,
                                 protocol::ErrorCode error_code) = 0;
   };
@@ -73,17 +77,28 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   void set_enable_dialogs(bool enable);
   bool enable_dialogs() const { return enable_dialogs_; }
 
+  // Enable, disable, or query whether or not connection notifications are
+  // shown when a remote user has connected.
+  void set_enable_notifications(bool enable);
+  bool enable_notifications() const { return enable_notifications_; }
+
+  // Enable or disable whether or not the session should be terminated if local
+  // input is detected.
+  void set_terminate_upon_input(bool terminate_upon_input);
+
   // Methods called by the script object, from the plugin thread.
 
   // Creates It2Me host structures and starts the host.
+  //
+  // XmppLogToServer cannot be created and used in different sequence, so pass
+  // in a factory callback instead.
   virtual void Connect(
       std::unique_ptr<ChromotingHostContext> context,
       std::unique_ptr<base::DictionaryValue> policies,
       std::unique_ptr<It2MeConfirmationDialogFactory> dialog_factory,
       base::WeakPtr<It2MeHost::Observer> observer,
-      std::unique_ptr<SignalStrategy> signal_strategy,
+      CreateDeferredConnectContext create_context,
       const std::string& username,
-      const std::string& directory_bot_jid,
       const protocol::IceConfig& ice_config);
 
   // Disconnects and shuts down the host.
@@ -127,13 +142,13 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
 
   // Processes the result of the confirmation dialog.
   void OnConfirmationResult(
-      const protocol::ValidatingAuthenticator::ResultCallback& result_callback,
+      protocol::ValidatingAuthenticator::ResultCallback result_callback,
       It2MeConfirmationDialog::Result result);
 
   // Task posted to the network thread from Connect().
   void ConnectOnNetworkThread(const std::string& username,
-                              const std::string& directory_bot_jid,
-                              const protocol::IceConfig& ice_config);
+                              const protocol::IceConfig& ice_config,
+                              CreateDeferredConnectContext create_context);
 
   // Called when the support host registration completes.
   void OnReceivedSupportID(const std::string& support_id,
@@ -141,7 +156,7 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
                            protocol::ErrorCode error_code);
 
   // Handlers for NAT traversal and domain policies.
-  void UpdateNatPolicy(bool nat_traversal_enabled);
+  void UpdateNatPolicies(bool nat_policy_value, bool relay_policy_value);
   void UpdateHostDomainListPolicy(std::vector<std::string> host_domain_list);
   void UpdateClientDomainListPolicy(
       std::vector<std::string> client_domain_list);
@@ -153,14 +168,15 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   // connection should be accepted or rejected.
   void ValidateConnectionDetails(
       const std::string& remote_jid,
-      const protocol::ValidatingAuthenticator::ResultCallback& result_callback);
+      protocol::ValidatingAuthenticator::ResultCallback result_callback);
 
   // Caller supplied fields.
   std::unique_ptr<ChromotingHostContext> host_context_;
   base::WeakPtr<It2MeHost::Observer> observer_;
   std::unique_ptr<SignalStrategy> signal_strategy_;
+  std::unique_ptr<LogToServer> log_to_server_;
 
-  It2MeHostState state_ = kDisconnected;
+  It2MeHostState state_ = It2MeHostState::kDisconnected;
 
   scoped_refptr<RsaKeyPair> host_key_pair_;
   std::unique_ptr<RegisterSupportHostRequest> register_request_;
@@ -174,8 +190,11 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   std::unique_ptr<It2MeConfirmationDialogFactory> confirmation_dialog_factory_;
   std::unique_ptr<It2MeConfirmationDialogProxy> confirmation_dialog_proxy_;
 
-  // Host the current nat traversal policy setting.
+  // Stores the current nat traversal policy value.
   bool nat_traversal_enabled_ = false;
+
+  // Stores the current relay connections allowed policy value.
+  bool relay_connections_allowed_ = false;
 
   // The client and host domain policy setting.
   std::vector<std::string> required_client_domain_list_;
@@ -188,6 +207,8 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   std::string connecting_jid_;
 
   bool enable_dialogs_ = true;
+  bool enable_notifications_ = true;
+  bool terminate_upon_input_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(It2MeHost);
 };

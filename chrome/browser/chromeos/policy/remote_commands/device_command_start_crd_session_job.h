@@ -11,7 +11,6 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "base/values.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
 
 namespace policy {
@@ -45,7 +44,6 @@ class DeviceCommandStartCRDSessionJob : public RemoteCommandJob {
 
   using OAuthTokenCallback = base::OnceCallback<void(const std::string&)>;
   using AccessCodeCallback = base::OnceCallback<void(const std::string&)>;
-  using ICEConfigCallback = base::OnceCallback<void(base::Value)>;
   using ErrorCallback =
       base::OnceCallback<void(ResultCode, const std::string&)>;
 
@@ -74,14 +72,9 @@ class DeviceCommandStartCRDSessionJob : public RemoteCommandJob {
     virtual void FetchOAuthToken(OAuthTokenCallback success_callback,
                                  ErrorCallback error_callback) = 0;
 
-    // Attempts to get ICE configuration for CRD Host.
-    virtual void FetchICEConfig(const std::string& oauth_token,
-                                ICEConfigCallback success_callback,
-                                ErrorCallback error_callback) = 0;
-
     // Attempts to start CRD host and get Auth Code.
     virtual void StartCRDHostAndGetCode(const std::string& oauth_token,
-                                        base::Value ice_config,
+                                        bool terminate_upon_input,
                                         AccessCodeCallback success_callback,
                                         ErrorCallback error_callback) = 0;
   };
@@ -106,7 +99,6 @@ class DeviceCommandStartCRDSessionJob : public RemoteCommandJob {
   void FinishWithError(ResultCode result_code, const std::string& message);
 
   void OnOAuthTokenReceived(const std::string& token);
-  void OnICEConfigReceived(base::Value ice_config);
   void OnAccessCodeReceived(const std::string& access_code);
 
   // The callback that will be called when the access code was successfully
@@ -121,8 +113,11 @@ class DeviceCommandStartCRDSessionJob : public RemoteCommandJob {
   // Defines whether connection attempt to active user should succeed or fail.
   base::TimeDelta idleness_cutoff_;
 
+  // Defines if CRD session should be terminated upon any input event from local
+  // user.
+  bool terminate_upon_input_ = false;
+
   std::string oauth_token_;
-  base::Value ice_config_;
 
   // The Delegate is used to interact with chrome services and CRD host.
   // Owned by DeviceCommandsFactoryChromeOS.
@@ -130,7 +125,7 @@ class DeviceCommandStartCRDSessionJob : public RemoteCommandJob {
 
   bool terminate_session_attemtpted_;
 
-  base::WeakPtrFactory<DeviceCommandStartCRDSessionJob> weak_factory_;
+  base::WeakPtrFactory<DeviceCommandStartCRDSessionJob> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DeviceCommandStartCRDSessionJob);
 };

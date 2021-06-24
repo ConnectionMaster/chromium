@@ -19,7 +19,6 @@
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
-#include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
@@ -37,6 +36,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "url/gurl.h"
 
@@ -165,7 +165,7 @@ void MoveTab(int from_browser_index, int to_browser_index, int tab_index) {
       test()
           ->GetBrowser(from_browser_index)
           ->tab_strip_model()
-          ->DetachWebContentsAt(tab_index);
+          ->DetachWebContentsAtForInsertion(tab_index);
 
   TabStripModel* target_strip =
       test()->GetBrowser(to_browser_index)->tab_strip_model();
@@ -182,21 +182,19 @@ void NavigateTab(int browser_index, const GURL& url) {
 }
 
 void NavigateTabBack(int browser_index) {
-  test()
-      ->GetBrowser(browser_index)
-      ->tab_strip_model()
-      ->GetWebContentsAt(0)
-      ->GetController()
-      .GoBack();
+  content::WebContents* web_contents =
+      test()->GetBrowser(browser_index)->tab_strip_model()->GetWebContentsAt(0);
+  content::TestNavigationObserver observer(web_contents);
+  web_contents->GetController().GoBack();
+  observer.WaitForNavigationFinished();
 }
 
 void NavigateTabForward(int browser_index) {
-  test()
-      ->GetBrowser(browser_index)
-      ->tab_strip_model()
-      ->GetWebContentsAt(0)
-      ->GetController()
-      .GoForward();
+  content::WebContents* web_contents =
+      test()->GetBrowser(browser_index)->tab_strip_model()->GetWebContentsAt(0);
+  content::TestNavigationObserver observer(web_contents);
+  web_contents->GetController().GoForward();
+  observer.WaitForNavigationFinished();
 }
 
 bool ExecJs(int browser_index, int tab_index, const std::string& script) {
@@ -361,10 +359,7 @@ bool NavigationEquals(const sessions::SerializedNavigationEntry& expected,
   return true;
 }
 
-namespace {
-
-template <typename T1, typename T2>
-bool WindowsMatchImpl(const T1& win1, const T2& win2) {
+bool WindowsMatch(const ScopedWindowMap& win1, const ScopedWindowMap& win2) {
   sessions::SessionTab* client0_tab;
   sessions::SessionTab* client1_tab;
   if (win1.size() != win2.size()) {
@@ -405,47 +400,6 @@ bool WindowsMatchImpl(const T1& win1, const T2& win2) {
   return true;
 }
 
-}  // namespace
-
-bool WindowsMatch(const ScopedWindowMap& win1, const ScopedWindowMap& win2) {
-  return WindowsMatchImpl(win1, win2);
-}
-
-bool WindowsMatch(const SessionWindowMap& win1, const ScopedWindowMap& win2) {
-  return WindowsMatchImpl(win1, win2);
-}
-
-bool CheckForeignSessionsAgainst(int browser_index,
-                                 const std::vector<ScopedWindowMap>& windows) {
-  SyncedSessionVector sessions;
-
-  if (!GetSessionData(browser_index, &sessions)) {
-    LOG(ERROR) << "Cannot get session data";
-    return false;
-  }
-
-  for (size_t w_index = 0; w_index < windows.size(); ++w_index) {
-    // Skip the client's local window
-    if (static_cast<int>(w_index) == browser_index) {
-      continue;
-    }
-
-    size_t s_index = 0;
-
-    for (; s_index < sessions.size(); ++s_index) {
-      if (WindowsMatch(sessions[s_index]->windows, windows[w_index]))
-        break;
-    }
-
-    if (s_index == sessions.size()) {
-      LOG(ERROR) << "Cannot find window #" << w_index;
-      return false;
-    }
-  }
-
-  return true;
-}
-
 void DeleteForeignSession(int browser_index, std::string session_tag) {
   SessionSyncServiceFactory::GetInstance()
       ->GetForProfile(test()->GetProfile(browser_index))
@@ -453,20 +407,44 @@ void DeleteForeignSession(int browser_index, std::string session_tag) {
       ->DeleteForeignSession(session_tag);
 }
 
-}  // namespace sessions_helper
-
 ForeignSessionsMatchChecker::ForeignSessionsMatchChecker(
-    int browser_index,
-    const std::vector<sessions_helper::ScopedWindowMap>& windows)
+    int profile_index,
+    int foreign_profile_index)
     : MultiClientStatusChangeChecker(
           sync_datatype_helper::test()->GetSyncServices()),
-      browser_index_(browser_index),
-      windows_(windows) {}
+      profile_index_(profile_index),
+      foreign_profile_index_(foreign_profile_index) {}
 
-bool ForeignSessionsMatchChecker::IsExitConditionSatisfied() {
-  return sessions_helper::CheckForeignSessionsAgainst(browser_index_, windows_);
+bool ForeignSessionsMatchChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for matching foreign sessions";
+
+  const sync_sessions::SyncedSession* foreign_local_sessions;
+  if (!GetLocalSession(foreign_profile_index_, &foreign_local_sessions)) {
+    *os << "Cannot get local sessions from profile " << foreign_profile_index_
+        << ".";
+    return false;
+  }
+  DCHECK(foreign_local_sessions);
+
+  SyncedSessionVector sessions;
+  GetSessionData(profile_index_, &sessions);
+
+  if (foreign_local_sessions->windows.empty() && sessions.empty()) {
+    // The case when the remote session has deleted all tabs. In this case if
+    // there is no local windows and remote sessions, then it is considered to
+    // match.
+    return true;
+  }
+
+  for (const sync_sessions::SyncedSession* remote_session : sessions) {
+    if (WindowsMatch(remote_session->windows,
+                     foreign_local_sessions->windows)) {
+      return true;
+    }
+  }
+
+  *os << "Can't match sessions for profile " << foreign_profile_index_ << ".";
+  return false;
 }
 
-std::string ForeignSessionsMatchChecker::GetDebugMessage() const {
-  return "Waiting for matching foreign sessions";
-}
+}  // namespace sessions_helper

@@ -5,23 +5,34 @@
 package org.chromium.chrome.browser;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.os.Bundle;
-import android.support.annotation.CallSuper;
-import android.support.annotation.Nullable;
-import android.support.annotation.StyleRes;
-import android.support.v7.app.AppCompatActivity;
 
-import org.chromium.chrome.browser.night_mode.GlobalNightModeStateController;
+import androidx.annotation.CallSuper;
+import androidx.annotation.Nullable;
+import androidx.annotation.StyleRes;
+import androidx.appcompat.app.AppCompatActivity;
+
+import org.chromium.base.ContextUtils;
+import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.base.SplitCompatUtils;
+import org.chromium.chrome.browser.language.GlobalAppLocaleController;
+import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
 import org.chromium.chrome.browser.night_mode.NightModeStateProvider;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 
 /**
- * A subclass of {@link AppCompatActivity} that maintains states applied to all activities in
- * {@link ChromeApplication} (e.g. night mode).
+ * A subclass of {@link AppCompatActivity} that maintains states and objects applied to all
+ * activities in {@link ChromeApplication} (e.g. night mode).
  */
 public class ChromeBaseAppCompatActivity
         extends AppCompatActivity implements NightModeStateProvider.Observer {
+    private final ObservableSupplierImpl<ModalDialogManager> mModalDialogManagerSupplier =
+            new ObservableSupplierImpl<>();
     private NightModeStateProvider mNightModeStateProvider;
     private @StyleRes int mThemeResId;
 
@@ -35,19 +46,32 @@ public class ChromeBaseAppCompatActivity
         // that applyOverrideConfiguration() does not interpret it as an overridden value.
         // https://crbug.com/834191
         config.fontScale = 0;
+        // NightMode and other applyOverrides must be done before onCreate in attachBaseContext.
+        // https://crbug.com/1139760
         if (applyOverrides(newBase, config)) applyOverrideConfiguration(config);
     }
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
+        getSupportFragmentManager().setFragmentFactory(SplitCompatUtils.createFragmentFactory());
+        mModalDialogManagerSupplier.set(createModalDialogManager());
+
         initializeNightModeStateProvider();
         mNightModeStateProvider.addObserver(this);
+        setTheme(R.style.ColorOverlay);
         super.onCreate(savedInstanceState);
+
+        // Activity level locale overrides must be done in onCreate.
+        GlobalAppLocaleController.getInstance().maybeOverrideContextConfig(this);
     }
 
     @Override
     protected void onDestroy() {
         mNightModeStateProvider.removeObserver(this);
+        if (mModalDialogManagerSupplier.get() != null) {
+            mModalDialogManagerSupplier.get().destroy();
+            mModalDialogManagerSupplier.set(null);
+        }
         super.onDestroy();
     }
 
@@ -60,7 +84,24 @@ public class ChromeBaseAppCompatActivity
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        NightModeUtils.updateConfigurationForNightMode(this, newConfig, mThemeResId);
+        NightModeUtils.updateConfigurationForNightMode(
+                this, mNightModeStateProvider.isInNightMode(), newConfig, mThemeResId);
+    }
+
+    /**
+     * Returns the supplier of {@link ModalDialogManager} that manages the display of modal dialogs.
+     */
+    public ObservableSupplier<ModalDialogManager> getModalDialogManagerSupplier() {
+        return mModalDialogManagerSupplier;
+    }
+
+    /**
+     * Creates a {@link ModalDialogManager} for this class. Subclasses that need one should override
+     * this method.
+     */
+    @Nullable
+    protected ModalDialogManager createModalDialogManager() {
+        return null;
     }
 
     /**
@@ -81,7 +122,7 @@ public class ChromeBaseAppCompatActivity
     /**
      * @return The {@link NightModeStateProvider} that provides the state of night mode.
      */
-    public final NightModeStateProvider getNightModeStateProvider() {
+    protected final NightModeStateProvider getNightModeStateProvider() {
         return mNightModeStateProvider;
     }
 
@@ -90,7 +131,7 @@ public class ChromeBaseAppCompatActivity
      *         of this class.
      */
     protected NightModeStateProvider createNightModeStateProvider() {
-        return GlobalNightModeStateController.getInstance();
+        return GlobalNightModeStateProviderHolder.getInstance();
     }
 
     /**
@@ -104,5 +145,13 @@ public class ChromeBaseAppCompatActivity
     @Override
     public void onNightModeStateChanged() {
         if (!isFinishing()) recreate();
+    }
+
+    /**
+     * Required to make preference fragments use InMemorySharedPreferences in tests.
+     */
+    @Override
+    public SharedPreferences getSharedPreferences(String name, int mode) {
+        return ContextUtils.getApplicationContext().getSharedPreferences(name, mode);
     }
 }

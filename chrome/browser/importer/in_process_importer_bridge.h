@@ -30,7 +30,7 @@ class InProcessImporterBridge : public ImporterBridge {
 
   // Begin ImporterBridge implementation:
   void AddBookmarks(const std::vector<ImportedBookmarkEntry>& bookmarks,
-                    const base::string16& first_folder_name) override;
+                    const std::u16string& first_folder_name) override;
 
   void AddHomePage(const GURL& home_page) override;
 
@@ -43,10 +43,7 @@ class InProcessImporterBridge : public ImporterBridge {
       const std::vector<importer::SearchEngineInfo>& search_engines,
       bool unique_on_host_and_path) override;
 
-  void SetFirefoxSearchEnginesXMLData(
-      const std::vector<std::string>& search_engine_data) override;
-
-  void SetPasswordForm(const autofill::PasswordForm& form) override;
+  void SetPasswordForm(const importer::ImportedPasswordForm& form) override;
 
   void SetAutofillFormData(
       const std::vector<ImporterAutofillFormDataEntry>& entries) override;
@@ -56,7 +53,7 @@ class InProcessImporterBridge : public ImporterBridge {
   void NotifyItemEnded(importer::ImportItem item) override;
   void NotifyEnded() override;
 
-  base::string16 GetLocalizedString(int message_id) override;
+  std::u16string GetLocalizedString(int message_id) override;
   // End ImporterBridge implementation.
 
  private:

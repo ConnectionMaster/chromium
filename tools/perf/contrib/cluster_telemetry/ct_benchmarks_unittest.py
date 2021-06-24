@@ -69,7 +69,7 @@ class CTBenchmarks(unittest.TestCase):
       try:
         benchmark.CreateStorySet(parser)
         self.fail('Expected ValueError')
-      except ValueError, e:
+      except ValueError as e:
         self.assertEquals('user_agent mobileeeeee is unrecognized', e.message)
 
   def testCTBenchmarks_missingDataFile(self):
@@ -77,13 +77,14 @@ class CTBenchmarks(unittest.TestCase):
       parser = OptionParser()
       parser.user_agent = 'mobile'
       parser.urls_list = self.urls_list
+      parser.use_live_sites = False
       benchmark.AddBenchmarkCommandLineArgs(parser)
 
       # Should fail due to missing archive_data_file.
       try:
         benchmark.ProcessCommandLineArgs(None, parser)
         self.fail('Expected AttributeError')
-      except AttributeError, e:
+      except AttributeError as e:
         self.assertEquals(
             'OptionParser instance has no attribute \'archive_data_file\'',
             e.message)
@@ -93,6 +94,19 @@ class CTBenchmarks(unittest.TestCase):
       benchmark.ProcessCommandLineArgs(self.mock_parser, parser)
       self.assertEquals(
           'Please specify --archive-data-file.', self.mock_parser.err_msg)
+
+  def testCTBenchmarks_missingDataFileUseLiveSites(self):
+    for benchmark in self.ct_benchmarks:
+      parser = OptionParser()
+      parser.user_agent = 'mobile'
+      parser.urls_list = self.urls_list
+      parser.use_live_sites = True
+      parser.archive_data_file = None
+      benchmark.AddBenchmarkCommandLineArgs(parser)
+
+      # Should pass.
+      benchmark.ProcessCommandLineArgs(self.mock_parser, parser)
+      self.assertIsNone(self.mock_parser.err_msg)
 
   def testCTBenchmarks_missingUrlsList(self):
     for benchmark in self.ct_benchmarks:
@@ -105,7 +119,7 @@ class CTBenchmarks(unittest.TestCase):
       try:
         benchmark.ProcessCommandLineArgs(None, parser)
         self.fail('Expected AttributeError')
-      except AttributeError, e:
+      except AttributeError as e:
         self.assertEquals(
             'OptionParser instance has no attribute \'urls_list\'',
             e.message)

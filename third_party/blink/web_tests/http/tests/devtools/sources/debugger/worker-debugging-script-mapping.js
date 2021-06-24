@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Tests stopping in debugger in the worker with source mapping.\n`);
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
       function installWorker()
@@ -34,10 +34,10 @@
     maybeFinishTest();
   }
 
-  function maybeFinishTest() {
+  async function maybeFinishTest() {
     if (--callbacksLeft)
       return;
-    SourcesTestRunner.captureStackTrace(callFrames);
+    await SourcesTestRunner.captureStackTrace(callFrames);
     SourcesTestRunner.completeDebuggerTest();
   }
 })();

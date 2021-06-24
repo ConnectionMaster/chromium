@@ -3,16 +3,15 @@
 // found in the LICENSE file.
 
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/process/process_handle.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_file_util.h"
@@ -59,7 +58,7 @@ class PrintingLayoutTest : public PrintingTest<InProcessBrowserTest>,
 
   void TearDown() override {
     InProcessBrowserTest::TearDown();
-    base::DeleteFile(emf_path_, true);
+    base::DeletePathRecursively(emf_path_);
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -228,7 +227,7 @@ class PrintingLayoutTest : public PrintingTest<InProcessBrowserTest>,
               "\" when looking for \"" << verification_name << "\"";
           prn_file = file.value();
           found_prn = true;
-          base::DeleteFile(file, false);
+          base::DeleteFile(file);
           continue;
         }
         EXPECT_TRUE(false);

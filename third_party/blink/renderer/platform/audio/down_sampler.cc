@@ -33,6 +33,7 @@
 #include <memory>
 
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/fdlibm/ieee754.h"
 
 namespace blink {
 
@@ -61,13 +62,13 @@ std::unique_ptr<AudioFloatArray> MakeReducedKernel(size_t size) {
   for (int i = 1; i < n; i += 2) {
     // Compute the sinc() with offset.
     double s = sinc_scale_factor * kPiDouble * (i - half_size);
-    double sinc = !s ? 1.0 : sin(s) / s;
+    double sinc = !s ? 1.0 : fdlibm::sin(s) / s;
     sinc *= sinc_scale_factor;
 
     // Compute Blackman window, matching the offset of the sinc().
     double x = static_cast<double>(i) / n;
-    double window =
-        a0 - a1 * cos(kTwoPiDouble * x) + a2 * cos(kTwoPiDouble * 2.0 * x);
+    double window = a0 - a1 * fdlibm::cos(kTwoPiDouble * x) +
+                    a2 * fdlibm::cos(kTwoPiDouble * 2.0 * x);
 
     // Window the sinc() function.
     // Then store only the odd terms in the kernel.
@@ -91,33 +92,19 @@ DownSampler::DownSampler(size_t input_block_size)
 void DownSampler::Process(const float* source_p,
                           float* dest_p,
                           size_t source_frames_to_process) {
-  bool is_input_block_size_good = source_frames_to_process == input_block_size_;
-  DCHECK(is_input_block_size_good);
-  if (!is_input_block_size_good)
-    return;
+  DCHECK_EQ(source_frames_to_process, input_block_size_);
 
   size_t dest_frames_to_process = source_frames_to_process / 2;
 
-  bool is_temp_buffer_good = dest_frames_to_process == temp_buffer_.size();
-  DCHECK(is_temp_buffer_good);
-  if (!is_temp_buffer_good)
-    return;
-
-  bool is_reduced_kernel_good =
-      convolver_.ConvolutionKernelSize() == kDefaultKernelSize / 2;
-  DCHECK(is_reduced_kernel_good);
-  if (!is_reduced_kernel_good)
-    return;
+  DCHECK_EQ(dest_frames_to_process, temp_buffer_.size());
+  DCHECK_EQ(convolver_.ConvolutionKernelSize(),
+            static_cast<unsigned>(kDefaultKernelSize / 2));
 
   size_t half_size = kDefaultKernelSize / 2;
 
   // Copy source samples to 2nd half of input buffer.
-  bool is_input_buffer_good =
-      input_buffer_.size() == source_frames_to_process * 2 &&
-      half_size <= source_frames_to_process;
-  DCHECK(is_input_buffer_good);
-  if (!is_input_buffer_good)
-    return;
+  DCHECK_EQ(input_buffer_.size(), source_frames_to_process * 2);
+  DCHECK_LE(half_size, source_frames_to_process);
 
   float* input_p = input_buffer_.Data() + source_frames_to_process;
   memcpy(input_p, source_p, sizeof(float) * source_frames_to_process);

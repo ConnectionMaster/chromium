@@ -10,53 +10,61 @@
 
 #include "base/base64.h"
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/memory/ref_counted.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/data_use_measurement/chrome_data_use_measurement.h"
-#include "chrome/browser/loader/chrome_navigation_data.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
-#include "chrome/browser/previews/previews_service.h"
-#include "chrome/browser/previews/previews_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/renderer_host/chrome_navigation_ui_data.h"
+#include "chrome/browser/subresource_redirect/https_image_compression_infobar_decider.h"
+#include "chrome/browser/subresource_redirect/litepages_service_bypass_decider.h"
+#include "chrome/browser/subresource_redirect/origin_robots_rules_cache.h"
 #include "chrome/common/channel_info.h"
+#include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
-#include "components/data_reduction_proxy/content/browser/data_reduction_proxy_pingback_client_impl.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_compression_stats.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_config.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_data.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_io_data.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_service.h"
 #include "components/data_reduction_proxy/core/browser/data_store.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_features.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_headers.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_params.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_pref_names.h"
+#include "components/embedder_support/user_agent_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/previews/content/previews_ui_service.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
 #include "components/proxy_config/proxy_prefs.h"
+#include "components/subresource_redirect/common/subresource_redirect_features.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/network_service_instance.h"
+#include "content/public/browser/storage_partition.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/proxy_server.h"
 #include "net/proxy_resolution/proxy_config.h"
 #include "net/proxy_resolution/proxy_list.h"
-#include "net/url_request/url_request_context_getter.h"
 #include "services/network/public/cpp/network_quality_tracker.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "sql/database.h"
+#include "third_party/blink/public/common/features.h"
 
 namespace {
+
+// Deletes Previews opt-out database file. Opt-out database is no longer needed
+// since Previews has been turned down.
+void DeletePreviewsOptOutDatabaseOnDBThread(
+    const base::FilePath& previews_optout_database_file) {
+  sql::Database::Delete(previews_optout_database_file);
+}
 
 // Assume that any proxy host ending with this suffix is a Data Reduction Proxy.
 const char kDataReductionProxyDefaultHostSuffix[] = ".googlezip.net";
@@ -124,7 +132,7 @@ DataReductionProxyChromeSettings::MigrateDataReductionProxyOffProxyPrefsHelper(
     return PROXY_PREF_NOT_CLEARED;
 
   // Clear empty "proxy" dictionary created by a bug. See http://crbug/448172.
-  if (dict->empty()) {
+  if (dict->DictEmpty()) {
     prefs->ClearPref(proxy_config::prefs::kProxy);
     return PROXY_PREF_CLEARED_EMPTY;
   }
@@ -152,9 +160,7 @@ DataReductionProxyChromeSettings::MigrateDataReductionProxyOffProxyPrefsHelper(
     // ensure that any DRP in the pref is cleared even if the DRP configuration
     // was changed. See http://crbug.com/476610.
     ProxyPrefMigrationResult rv;
-    if (Config()->ContainsDataReductionProxy(proxy_rules))
-      rv = PROXY_PREF_CLEARED_DRP;
-    else if (ContainsDataReductionProxyDefaultHostSuffix(proxy_rules))
+    if (ContainsDataReductionProxyDefaultHostSuffix(proxy_rules))
       rv = PROXY_PREF_CLEARED_GOOGLEZIP;
     else
       return PROXY_PREF_NOT_CLEARED;
@@ -188,9 +194,13 @@ DataReductionProxyChromeSettings::MigrateDataReductionProxyOffProxyPrefsHelper(
   return PROXY_PREF_NOT_CLEARED;
 }
 
-DataReductionProxyChromeSettings::DataReductionProxyChromeSettings()
-    : data_reduction_proxy::DataReductionProxySettings(),
-      profile_(nullptr) {}
+DataReductionProxyChromeSettings::DataReductionProxyChromeSettings(
+    bool is_off_the_record_profile)
+    : data_reduction_proxy::DataReductionProxySettings(
+          is_off_the_record_profile),
+      profile_(nullptr) {
+  DCHECK(!is_off_the_record_profile);
+}
 
 DataReductionProxyChromeSettings::~DataReductionProxyChromeSettings() {}
 
@@ -202,16 +212,21 @@ void DataReductionProxyChromeSettings::Shutdown() {
 }
 
 void DataReductionProxyChromeSettings::InitDataReductionProxySettings(
-    data_reduction_proxy::DataReductionProxyIOData* io_data,
-    PrefService* profile_prefs,
-    net::URLRequestContextGetter* request_context_getter,
     Profile* profile,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     std::unique_ptr<data_reduction_proxy::DataStore> store,
-    const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
     const scoped_refptr<base::SequencedTaskRunner>& db_task_runner) {
   profile_ = profile;
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  // Delete Previews OptOut database file.
+  // Deletion started in M-91, and should run for few milestones.
+  // TODO(https://crbug.com/1183505): Delete this logic.
+  const base::FilePath& profile_path = profile->GetPath();
+  db_task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(DeletePreviewsOptOutDatabaseOnDBThread,
+                     profile_path.Append(chrome::kPreviewsOptOutDBFilename)));
+
 #if defined(OS_ANDROID)
   // On mobile we write Data Reduction Proxy prefs directly to the pref service.
   // On desktop we store Data Reduction Proxy prefs in memory, writing to disk
@@ -223,145 +238,43 @@ void DataReductionProxyChromeSettings::InitDataReductionProxySettings(
   base::TimeDelta commit_delay = base::TimeDelta::FromMinutes(60);
 #endif
 
-  if (!data_use_measurement::ChromeDataUseMeasurement::GetInstance()) {
-    data_use_measurement::ChromeDataUseMeasurement::CreateInstance(
-        g_browser_process->local_state());
-  }
+  PrefService* profile_prefs = profile->GetPrefs();
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
+      profile->GetDefaultStoragePartition()
+          ->GetURLLoaderFactoryForBrowserProcess();
   std::unique_ptr<data_reduction_proxy::DataReductionProxyService> service =
       std::make_unique<data_reduction_proxy::DataReductionProxyService>(
-          this, profile_prefs, request_context_getter, url_loader_factory,
-          std::move(store),
-          std::make_unique<
-              data_reduction_proxy::DataReductionProxyPingbackClientImpl>(
-              url_loader_factory, ui_task_runner,
-              version_info::GetChannelString(chrome::GetChannel())),
-          g_browser_process->network_quality_tracker(),
-          content::GetNetworkConnectionTracker(),
+          this, profile_prefs, std::move(store),
           data_use_measurement::ChromeDataUseMeasurement::GetInstance(),
-          ui_task_runner, io_data->io_task_runner(), db_task_runner,
-          commit_delay);
+          db_task_runner, commit_delay);
   data_reduction_proxy::DataReductionProxySettings::
-      InitDataReductionProxySettings(profile_prefs, io_data,
-                                     std::move(service));
-  io_data->SetDataReductionProxyService(
-      data_reduction_proxy_service()->GetWeakPtr());
+      InitDataReductionProxySettings(profile_prefs, std::move(service));
 
   data_reduction_proxy::DataReductionProxySettings::
-      SetCallbackToRegisterSyntheticFieldTrial(base::Bind(
+      SetCallbackToRegisterSyntheticFieldTrial(base::BindRepeating(
           &ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial));
-  // TODO(bengr): Remove after M46. See http://crbug.com/445599.
+  // In M35 and earlier, the Data Reduction Proxy enabled/disabled setting was
+  // stored in prefs, so this setting needs to be migrated to the new way of
+  // storing the setting. Removing this migration code would cause users
+  // upgrading from M35 and earlier with the Data Reduction Proxy enabled to be
+  // unable to browse non-SSL sites for the most part (see
+  // http://crbug.com/476610).
   MigrateDataReductionProxyOffProxyPrefs(profile_prefs);
-}
-
-void DataReductionProxyChromeSettings::SetIgnoreLongTermBlackListRules(
-    bool ignore_long_term_black_list_rules) {
-  // |previews_service| is null if |profile_| is off the record.
-  PreviewsService* previews_service =
-      PreviewsServiceFactory::GetForProfile(profile_);
-  if (previews_service && previews_service->previews_ui_service()) {
-    previews_service->previews_ui_service()
-        ->SetIgnoreLongTermBlackListForServerPreviews(
-            ignore_long_term_black_list_rules);
+  if (subresource_redirect::ShouldEnablePublicImageHintsBasedCompression() ||
+      subresource_redirect::ShouldEnableLoginRobotsCheckedImageCompression()) {
+    https_image_compression_infobar_decider_ =
+        std::make_unique<HttpsImageCompressionInfoBarDecider>(profile_prefs,
+                                                              this);
   }
-}
-
-std::unique_ptr<data_reduction_proxy::DataReductionProxyData>
-DataReductionProxyChromeSettings::CreateDataFromNavigationHandle(
-    content::NavigationHandle* handle,
-    const net::HttpResponseHeaders* headers) {
-  ChromeNavigationData* chrome_navigation_data =
-      static_cast<ChromeNavigationData*>(handle->GetNavigationData());
-  if (chrome_navigation_data) {
-    if (chrome_navigation_data->GetDataReductionProxyData())
-      return chrome_navigation_data->GetDataReductionProxyData()->DeepCopy();
-    return nullptr;
+  if (subresource_redirect::ShouldEnablePublicImageHintsBasedCompression() ||
+      subresource_redirect::ShouldEnableLoginRobotsCheckedImageCompression() ||
+      subresource_redirect::ShouldEnableRobotsRulesFetching()) {
+    litepages_service_bypass_decider_ =
+        std::make_unique<LitePagesServiceBypassDecider>();
   }
-
-  // Some unit tests don't have data_reduction_proxy_service() set.
-  if (!data_reduction_proxy_service())
-    return nullptr;
-
-  // TODO(721403): Need to fill in:
-  //  - request_info_
-  auto data = std::make_unique<data_reduction_proxy::DataReductionProxyData>();
-  data->set_request_url(handle->GetURL());
-  data->set_effective_connection_type(
-      data_reduction_proxy_service()->GetEffectiveConnectionType());
-  data->set_connection_type(net::NetworkChangeNotifier::ConnectionType(
-      data_reduction_proxy_service()->GetConnectionType()));
-  data->set_used_data_reduction_proxy(
-      IsConfiguredDataReductionProxy(handle->GetProxyServer()));
-
-  if (!headers || headers->IsRedirect(nullptr))
-    return data;
-
-  if (handle->WasResponseCached() &&
-      (headers->HasHeader(data_reduction_proxy::chrome_proxy_header()) ||
-       // Check for via header since Chrome-Proxy header maybe missing in
-       // streamed responses.
-       data_reduction_proxy::HasDataReductionProxyViaHeader(*headers,
-                                                            nullptr)) &&
-      !handle->GetURL().SchemeIsCryptographic()) {
-    data->set_was_cached_data_reduction_proxy_response(true);
+  if (subresource_redirect::ShouldEnableRobotsRulesFetching()) {
+    origin_robots_rules_cache_ =
+        std::make_unique<subresource_redirect::OriginRobotsRulesCache>(
+            url_loader_factory, litepages_service_bypass_decider_->AsWeakPtr());
   }
-
-  switch (data_reduction_proxy::ParseResponseTransform(*headers)) {
-    case data_reduction_proxy::TRANSFORM_LITE_PAGE:
-      data->set_lite_page_received(true);
-      break;
-    case data_reduction_proxy::TRANSFORM_PAGE_POLICIES_EMPTY_IMAGE:
-      data->set_lofi_policy_received(true);
-      break;
-    case data_reduction_proxy::TRANSFORM_EMPTY_IMAGE:
-      data->set_lofi_received(true);
-      break;
-    case data_reduction_proxy::TRANSFORM_IDENTITY:
-    case data_reduction_proxy::TRANSFORM_COMPRESSED_VIDEO:
-    case data_reduction_proxy::TRANSFORM_NONE:
-    case data_reduction_proxy::TRANSFORM_UNKNOWN:
-      break;
-  }
-
-  const ChromeNavigationUIData* chrome_navigation_ui_data =
-      static_cast<const ChromeNavigationUIData*>(handle->GetNavigationUIData());
-  if (data_reduction_proxy::params::IsEnabledWithNetworkService() &&
-      base::FeatureList::IsEnabled(
-          data_reduction_proxy::features::
-              kDataReductionProxyPopulatePreviewsPageIDToPingback)) {
-    if (chrome_navigation_ui_data) {
-      data->set_page_id(
-          chrome_navigation_ui_data->data_reduction_proxy_page_id());
-    }
-    const auto session_key =
-        data_reduction_proxy::DataReductionProxyRequestOptions::
-            GetSessionKeyFromRequestHeaders(GetProxyRequestHeaders());
-    if (session_key)
-      data->set_session_key(session_key.value());
-  }
-  return data;
-}
-
-// static
-data_reduction_proxy::Client DataReductionProxyChromeSettings::GetClient() {
-#if defined(OS_ANDROID)
-  return data_reduction_proxy::Client::CHROME_ANDROID;
-#elif defined(OS_MACOSX)
-  return data_reduction_proxy::Client::CHROME_MAC;
-#elif defined(OS_CHROMEOS)
-  return data_reduction_proxy::Client::CHROME_CHROMEOS;
-#elif defined(OS_LINUX)
-  return data_reduction_proxy::Client::CHROME_LINUX;
-#elif defined(OS_WIN)
-  return data_reduction_proxy::Client::CHROME_WINDOWS;
-#elif defined(OS_FREEBSD)
-  return data_reduction_proxy::Client::CHROME_FREEBSD;
-#elif defined(OS_OPENBSD)
-  return data_reduction_proxy::Client::CHROME_OPENBSD;
-#elif defined(OS_SOLARIS)
-  return data_reduction_proxy::Client::CHROME_SOLARIS;
-#elif defined(OS_QNX)
-  return data_reduction_proxy::Client::CHROME_QNX;
-#else
-  return data_reduction_proxy::Client::UNKNOWN;
-#endif
 }

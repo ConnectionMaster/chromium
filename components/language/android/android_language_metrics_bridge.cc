@@ -5,7 +5,7 @@
 #include "base/android/jni_string.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/metrics_hashes.h"
-#include "jni/AndroidLanguageMetricsBridge_jni.h"
+#include "components/language/android/jni_headers/AndroidLanguageMetricsBridge_jni.h"
 
 const char kTranslateExplicitLanguageAskLanguageAdded[] =
     "Translate.ExplicitLanguageAsk.LanguageAdded";
@@ -23,4 +23,14 @@ JNI_AndroidLanguageMetricsBridge_ReportExplicitLanguageAskStateChanged(
       added ? kTranslateExplicitLanguageAskLanguageAdded
             : kTranslateExplicitLanguageAskLanguageRemoved,
       base::HashMetricName(base::android::ConvertJavaStringToUTF8(language)));
+}
+
+// Records the HashMetric of |value| in the sparse histogram |histogramName|.
+static void JNI_AndroidLanguageMetricsBridge_ReportHashMetricName(
+    JNIEnv* env,
+    const base::android::JavaParamRef<jstring>& histogramName,
+    const base::android::JavaParamRef<jstring>& value) {
+  base::UmaHistogramSparse(
+      base::android::ConvertJavaStringToUTF8(histogramName),
+      base::HashMetricName(base::android::ConvertJavaStringToUTF8(value)));
 }

@@ -2,7 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-(function() {
+import {$} from 'chrome://resources/js/util.m.js';
+
+// <if expr="is_linux">
+import './strings.m.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+// </if>
+
 /**
  * CSS classes for different statuses.
  * @enum {string}
@@ -22,10 +28,10 @@ const StatusClass = {
  * @return {Element} The newly added TR.
  */
 function addStatusRow(name, value, cssClass) {
-  const row = cr.doc.createElement('tr');
+  const row = document.createElement('tr');
 
-  const nameCol = row.appendChild(cr.doc.createElement('td'));
-  const valueCol = row.appendChild(cr.doc.createElement('td'));
+  const nameCol = row.appendChild(document.createElement('td'));
+  const valueCol = row.appendChild(document.createElement('td'));
 
   nameCol.textContent = name;
   valueCol.textContent = value;
@@ -52,7 +58,7 @@ function addGoodBadRow(name, result) {
 
 /**
  * Reports the overall sandbox status evaluation message.
- * @param {boolean}
+ * @param {boolean} result
  */
 function setEvaluation(result) {
   const message = result ? 'You are adequately sandboxed.' :
@@ -60,6 +66,7 @@ function setEvaluation(result) {
   $('evaluation').innerText = message;
 }
 
+// <if expr="is_android">
 /**
  * Main page handler for Android.
  */
@@ -123,7 +130,9 @@ function androidHandler() {
     setEvaluation(isIsolated && isTsync && isChromeSeccomp);
   });
 }
+// </if>
 
+// <if expr="is_linux">
 /**
  * Main page handler for desktop Linux.
  */
@@ -166,12 +175,13 @@ function linuxHandler() {
 
   setEvaluation(loadTimeData.getBoolean('sandboxGood'));
 }
+// </if>
 
 document.addEventListener('DOMContentLoaded', () => {
-  if (cr.isAndroid) {
-    androidHandler();
-  } else {
-    linuxHandler();
-  }
+  // <if expr="is_android">
+  androidHandler();
+  // </if>
+  // <if expr="is_linux">
+  linuxHandler();
+  // </if>
 });
-})();

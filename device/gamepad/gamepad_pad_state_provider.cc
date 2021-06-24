@@ -5,8 +5,10 @@
 #include "device/gamepad/gamepad_pad_state_provider.h"
 
 #include <cmath>
+#include <memory>
 
 #include "device/gamepad/gamepad_data_fetcher.h"
+#include "device/gamepad/gamepad_provider.h"
 #include "device/gamepad/public/cpp/gamepads.h"
 
 namespace device {
@@ -17,8 +19,11 @@ const float kMinAxisResetValue = 0.1f;
 
 }  // namespace
 
+PadState::PadState() = default;
+PadState::~PadState() = default;
+
 GamepadPadStateProvider::GamepadPadStateProvider() {
-  pad_states_.reset(new PadState[Gamepads::kItemsLengthCap]);
+  pad_states_ = std::make_unique<PadState[]>(Gamepads::kItemsLengthCap);
 
   for (size_t i = 0; i < Gamepads::kItemsLengthCap; ++i)
     ClearPadState(pad_states_.get()[i]);
@@ -27,9 +32,11 @@ GamepadPadStateProvider::GamepadPadStateProvider() {
 GamepadPadStateProvider::~GamepadPadStateProvider() = default;
 
 PadState* GamepadPadStateProvider::GetPadState(GamepadSource source,
-                                               int source_id) {
+                                               int source_id,
+                                               bool new_gamepad_recognized) {
   // Check to see if the device already has a reserved slot
   PadState* empty_slot = nullptr;
+  PadState* unrecognized_slot = nullptr;
   for (size_t i = 0; i < Gamepads::kItemsLengthCap; ++i) {
     PadState& state = pad_states_.get()[i];
     if (state.source == source && state.source_id == source_id) {
@@ -39,6 +46,14 @@ PadState* GamepadPadStateProvider::GetPadState(GamepadSource source,
     }
     if (!empty_slot && state.source == GAMEPAD_SOURCE_NONE)
       empty_slot = &state;
+    if (!state.is_recognized)
+      unrecognized_slot = &state;
+  }
+
+  if (!empty_slot && unrecognized_slot && new_gamepad_recognized) {
+    DisconnectUnrecognizedGamepad(unrecognized_slot->source,
+                                  unrecognized_slot->source_id);
+    empty_slot = unrecognized_slot;
   }
   if (empty_slot) {
     empty_slot->source = source;
@@ -46,6 +61,7 @@ PadState* GamepadPadStateProvider::GetPadState(GamepadSource source,
     empty_slot->is_active = true;
     empty_slot->is_newly_active = true;
     empty_slot->is_initialized = false;
+    empty_slot->is_recognized = new_gamepad_recognized;
   }
   return empty_slot;
 }

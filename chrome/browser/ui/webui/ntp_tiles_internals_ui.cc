@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/webui/ntp_tiles_internals_ui.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/bind.h"
 #include "build/build_config.h"
@@ -15,10 +17,10 @@
 #include "chrome/browser/search/suggestions/suggestions_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/common/url_constants.h"
-#include "components/grit/components_resources.h"
+#include "components/grit/dev_ui_components_resources.h"
 #include "components/history/core/browser/top_sites.h"
 #include "components/image_fetcher/core/image_fetcher_impl.h"
-#include "components/ntp_tiles/constants.h"
+#include "components/ntp_tiles/features.h"
 #include "components/ntp_tiles/icon_cacher.h"
 #include "components/ntp_tiles/most_visited_sites.h"
 #include "components/ntp_tiles/webui/ntp_tiles_internals_message_handler.h"
@@ -27,6 +29,7 @@
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 
 namespace {
 
@@ -68,7 +71,8 @@ void ChromeNTPTilesInternalsMessageHandlerClient::RegisterMessages() {
 
 bool ChromeNTPTilesInternalsMessageHandlerClient::SupportsNTPTiles() {
   Profile* profile = Profile::FromWebUI(web_ui());
-  return !(profile->IsGuestSession() || profile->IsOffTheRecord());
+  return !(profile->IsGuestSession() || profile->IsEphemeralGuestProfile() ||
+           profile->IsOffTheRecord());
 }
 
 bool ChromeNTPTilesInternalsMessageHandlerClient::DoesSourceExist(
@@ -76,21 +80,22 @@ bool ChromeNTPTilesInternalsMessageHandlerClient::DoesSourceExist(
   switch (source) {
     case ntp_tiles::TileSource::TOP_SITES:
     case ntp_tiles::TileSource::SUGGESTIONS_SERVICE:
-    case ntp_tiles::TileSource::WHITELIST:
+    case ntp_tiles::TileSource::ALLOWLIST:
     case ntp_tiles::TileSource::HOMEPAGE:
       return true;
     case ntp_tiles::TileSource::POPULAR_BAKED_IN:
     case ntp_tiles::TileSource::POPULAR:
+    case ntp_tiles::TileSource::EXPLORE:
 #if defined(OS_ANDROID)
       return true;
 #else
       return false;
 #endif
     case ntp_tiles::TileSource::CUSTOM_LINKS:
-#if !defined(OS_ANDROID)
-      return true;
-#else
+#if defined(OS_ANDROID)
       return false;
+#else
+      return true;
 #endif
   }
   NOTREACHED();
@@ -122,14 +127,17 @@ void ChromeNTPTilesInternalsMessageHandlerClient::CallJavascriptFunctionVector(
 content::WebUIDataSource* CreateNTPTilesInternalsHTMLSource() {
   content::WebUIDataSource* source =
       content::WebUIDataSource::Create(chrome::kChromeUINTPTilesInternalsHost);
-  source->OverrideContentSecurityPolicyScriptSrc(
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::ScriptSrc,
       "script-src chrome://resources 'self' 'unsafe-eval';");
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::TrustedTypes,
+      "trusted-types jstemplate;");
 
   source->AddResourcePath("ntp_tiles_internals.js", IDR_NTP_TILES_INTERNALS_JS);
   source->AddResourcePath("ntp_tiles_internals.css",
                           IDR_NTP_TILES_INTERNALS_CSS);
   source->SetDefaultResource(IDR_NTP_TILES_INTERNALS_HTML);
-  source->UseGzip();
   return source;
 }
 

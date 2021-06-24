@@ -29,10 +29,10 @@
 #include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
-#include "services/network/public/mojom/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/frame/from_ad_state.h"
+#include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/public/web/web_view_client.h"
 #include "third_party/blink/public/web/web_window_features.h"
 #include "third_party/blink/renderer/core/core_initializer.h"
@@ -41,14 +41,21 @@
 #include "third_party/blink/renderer/core/frame/ad_tracker.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/frame_client.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/local_frame_client.h"
+#include "third_party/blink/renderer/core/html/conversion_measurement_parsing.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/loader/frame_load_request.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/number_parsing_options.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 
 namespace blink {
 
@@ -59,23 +66,31 @@ static bool IsWindowFeaturesSeparator(UChar c) {
          c == ',' || c == '\f';
 }
 
-WebWindowFeatures GetWindowFeaturesFromString(const String& feature_string) {
+WebWindowFeatures GetWindowFeaturesFromString(const String& feature_string,
+                                              LocalDOMWindow* dom_window) {
   WebWindowFeatures window_features;
+
+  ImpressionFeatures impression_features;
+  bool conversion_measurement_enabled =
+      dom_window &&
+      RuntimeEnabledFeatures::ConversionMeasurementEnabled(dom_window);
 
   // This code follows the HTML spec, specifically
   // https://html.spec.whatwg.org/C/#concept-window-open-features-tokenize
   if (feature_string.IsEmpty())
     return window_features;
 
-  window_features.menu_bar_visible = false;
-  window_features.status_bar_visible = false;
-  window_features.tool_bar_visible = false;
-  window_features.scrollbars_visible = false;
+  bool ui_features_were_disabled = false;
+
+  // See crbug.com/1192701 for details, but we're working on changing the
+  // popup-triggering conditions for window.open. This bool represents the "new"
+  // state after this change.
+  bool is_popup_with_new_behavior = false;
 
   unsigned key_begin, key_end;
   unsigned value_begin, value_end;
 
-  String buffer = feature_string.DeprecatedLower();
+  String buffer = feature_string.LowerASCII();
   unsigned length = buffer.length();
   for (unsigned i = 0; i < length;) {
     // skip to first non-separator (start of key name), but don't skip
@@ -128,20 +143,39 @@ WebWindowFeatures GetWindowFeaturesFromString(const String& feature_string) {
       value_end = i;
     }
 
-    String key_string(
-        buffer.Substring(key_begin, key_end - key_begin).LowerASCII());
-    String value_string(
-        buffer.Substring(value_begin, value_end - value_begin).LowerASCII());
+    if (key_begin == key_end)
+      continue;
+
+    StringView key_string(buffer, key_begin, key_end - key_begin);
+    StringView value_string(buffer, value_begin, value_end - value_begin);
 
     // Listing a key with no value is shorthand for key=yes
     int value;
-    if (value_string.IsEmpty() || value_string == "yes")
+    if (value_string.IsEmpty() || value_string == "yes") {
       value = 1;
-    else
-      value = value_string.ToInt();
+    } else if (value_string.Is8Bit()) {
+      value = CharactersToInt(value_string.Characters8(), value_string.length(),
+                              WTF::NumberParsingOptions::kLoose, nullptr);
+    } else {
+      value =
+          CharactersToInt(value_string.Characters16(), value_string.length(),
+                          WTF::NumberParsingOptions::kLoose, nullptr);
+    }
 
-    if (key_string.IsEmpty())
-      continue;
+    if (!ui_features_were_disabled && key_string != "noopener" &&
+        key_string != "noreferrer" &&
+        (!conversion_measurement_enabled ||
+         (key_string != "attributionsourceeventid" &&
+          key_string != "attributiondestination" &&
+          key_string != "attributionreportto" &&
+          key_string != "attributionexpiry" &&
+          key_string != "attributionsourcepriority"))) {
+      ui_features_were_disabled = true;
+      window_features.menu_bar_visible = false;
+      window_features.status_bar_visible = false;
+      window_features.tool_bar_visible = false;
+      window_features.scrollbars_visible = false;
+    }
 
     if (key_string == "left" || key_string == "screenx") {
       window_features.x_set = true;
@@ -152,6 +186,8 @@ WebWindowFeatures GetWindowFeaturesFromString(const String& feature_string) {
     } else if (key_string == "width" || key_string == "innerwidth") {
       window_features.width_set = true;
       window_features.width = value;
+      // Width will be the only trigger for a popup.
+      is_popup_with_new_behavior = true;
     } else if (key_string == "height" || key_string == "innerheight") {
       window_features.height_set = true;
       window_features.height = value;
@@ -166,12 +202,47 @@ WebWindowFeatures GetWindowFeaturesFromString(const String& feature_string) {
     } else if (key_string == "resizable") {
       window_features.resizable = value;
     } else if (key_string == "noopener") {
-      window_features.noopener = true;
+      window_features.noopener = value;
+    } else if (key_string == "noreferrer") {
+      window_features.noreferrer = value;
     } else if (key_string == "background") {
       window_features.background = true;
     } else if (key_string == "persistent") {
       window_features.persistent = true;
+    } else if (conversion_measurement_enabled) {
+      if (key_string == "attributionsourceeventid") {
+        impression_features.impression_data = value_string.ToString();
+      } else if (key_string == "attributiondestination") {
+        impression_features.conversion_destination = value_string.ToString();
+      } else if (key_string == "attributionreportto") {
+        impression_features.reporting_origin = value_string.ToString();
+      } else if (key_string == "attributionexpiry") {
+        impression_features.expiry = value_string.ToString();
+      } else if (key_string == "attributionsourcepriority") {
+        impression_features.priority = value_string.ToString();
+      }
     }
+  }
+
+  // Existing logic from NavigationPolicy::NavigationPolicyForCreateWindow():
+  if (dom_window && dom_window->document()) {
+    bool is_popup_with_current_behavior = !window_features.tool_bar_visible ||
+                                          !window_features.status_bar_visible ||
+                                          !window_features.scrollbars_visible ||
+                                          !window_features.menu_bar_visible ||
+                                          !window_features.resizable;
+    if (is_popup_with_current_behavior != is_popup_with_new_behavior) {
+      UseCounter::Count(dom_window->document(),
+                        WebFeature::kWindowOpenNewPopupBehaviorMismatch);
+    }
+  }
+
+  if (window_features.noreferrer)
+    window_features.noopener = true;
+
+  if (conversion_measurement_enabled) {
+    window_features.impression =
+        GetImpressionFromWindowFeatures(dom_window, impression_features);
   }
 
   return window_features;
@@ -183,7 +254,8 @@ static void MaybeLogWindowOpen(LocalFrame& opener_frame) {
     return;
 
   bool is_ad_subframe = opener_frame.IsAdSubframe();
-  bool is_ad_script_in_stack = ad_tracker->IsAdScriptInStack();
+  bool is_ad_script_in_stack =
+      ad_tracker->IsAdScriptInStack(AdTracker::StackType::kBottomAndTop);
   FromAdState state =
       blink::GetFromAdState(is_ad_subframe, is_ad_script_in_stack);
 
@@ -203,101 +275,88 @@ static void MaybeLogWindowOpen(LocalFrame& opener_frame) {
 
 Frame* CreateNewWindow(LocalFrame& opener_frame,
                        FrameLoadRequest& request,
-                       bool& created) {
+                       const AtomicString& frame_name) {
+  LocalDOMWindow& opener_window = *opener_frame.DomWindow();
   DCHECK(request.GetResourceRequest().RequestorOrigin() ||
-         opener_frame.GetDocument()->Url().IsEmpty());
+         opener_window.Url().IsEmpty());
+  DCHECK_EQ(kNavigationPolicyCurrentTab, request.GetNavigationPolicy());
 
-  // Exempting window.open() from this check here is necessary to support a
-  // special policy that will be removed in Chrome 82.
-  // See https://crbug.com/937569
-  if (!request.IsWindowOpen() &&
-      opener_frame.GetDocument()->PageDismissalEventBeingDispatched() !=
-          Document::kNoDismissal) {
+  if (opener_window.document()->PageDismissalEventBeingDispatched() !=
+      Document::kNoDismissal) {
     return nullptr;
   }
 
-  request.SetFrameType(network::mojom::RequestContextFrameType::kAuxiliary);
+  request.SetFrameType(mojom::RequestContextFrameType::kAuxiliary);
 
   const KURL& url = request.GetResourceRequest().Url();
-  if (url.ProtocolIsJavaScript() &&
-      opener_frame.GetDocument()->GetContentSecurityPolicy() &&
-      !ContentSecurityPolicy::ShouldBypassMainWorld(
-          opener_frame.GetDocument())) {
+  auto* csp_for_world = opener_window.GetContentSecurityPolicyForCurrentWorld();
+  if (url.ProtocolIsJavaScript() && csp_for_world) {
     String script_source = DecodeURLEscapeSequences(
         url.GetString(), DecodeURLMode::kUTF8OrIsomorphic);
 
-    if (!opener_frame.GetDocument()->GetContentSecurityPolicy()->AllowInline(
+    if (!csp_for_world->AllowInline(
             ContentSecurityPolicy::InlineType::kNavigation,
             nullptr /* element */, script_source, String() /* nonce */,
-            opener_frame.GetDocument()->Url(), OrdinalNumber())) {
+            opener_window.Url(), OrdinalNumber::First())) {
       return nullptr;
     }
   }
 
+  if (!opener_window.GetSecurityOrigin()->CanDisplay(url)) {
+    opener_window.AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+        mojom::blink::ConsoleMessageSource::kSecurity,
+        mojom::blink::ConsoleMessageLevel::kError,
+        "Not allowed to load local resource: " + url.ElidedString()));
+    return nullptr;
+  }
+
   const WebWindowFeatures& features = request.GetWindowFeatures();
-  probe::WindowOpen(opener_frame.GetDocument(), url, request.FrameName(),
-                    features,
+  request.SetNavigationPolicy(NavigationPolicyForCreateWindow(features));
+  probe::WindowOpen(&opener_window, url, frame_name, features,
                     LocalFrame::HasTransientUserActivation(&opener_frame));
 
   // Sandboxed frames cannot open new auxiliary browsing contexts.
-  if (opener_frame.GetDocument()->IsSandboxed(WebSandboxFlags::kPopups)) {
+  if (opener_window.IsSandboxed(
+          network::mojom::blink::WebSandboxFlags::kPopups)) {
     // FIXME: This message should be moved off the console once a solution to
     // https://bugs.webkit.org/show_bug.cgi?id=103274 exists.
-    opener_frame.GetDocument()->AddConsoleMessage(ConsoleMessage::Create(
-        mojom::ConsoleMessageSource::kSecurity,
-        mojom::ConsoleMessageLevel::kError,
+    opener_window.AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+        mojom::blink::ConsoleMessageSource::kSecurity,
+        mojom::blink::ConsoleMessageLevel::kError,
         "Blocked opening '" + url.ElidedString() +
             "' in a new window because the request was made in a sandboxed "
             "frame whose 'allow-popups' permission is not set."));
     return nullptr;
   }
 
-  bool propagate_sandbox = opener_frame.GetDocument()->IsSandboxed(
-      WebSandboxFlags::kPropagatesToAuxiliaryBrowsingContexts);
-  const SandboxFlags sandbox_flags =
-      propagate_sandbox ? opener_frame.GetDocument()->GetSandboxFlags()
-                        : WebSandboxFlags::kNone;
-  bool not_sandboxed =
-      opener_frame.GetDocument()->GetSandboxFlags() == WebSandboxFlags::kNone;
-  FeaturePolicy::FeatureState opener_feature_state =
-      (not_sandboxed || propagate_sandbox)
-          ? opener_frame.GetDocument()->GetFeaturePolicy()->GetFeatureState()
-          : FeaturePolicy::FeatureState();
+  network::mojom::blink::WebSandboxFlags sandbox_flags =
+      opener_window.IsSandboxed(network::mojom::blink::WebSandboxFlags::
+                                    kPropagatesToAuxiliaryBrowsingContexts)
+          ? opener_window.GetSandboxFlags()
+          : network::mojom::blink::WebSandboxFlags::kNone;
 
   SessionStorageNamespaceId new_namespace_id =
       AllocateSessionStorageNamespaceId();
 
   Page* old_page = opener_frame.GetPage();
-  if (base::FeatureList::IsEnabled(features::kOnionSoupDOMStorage)) {
-    // TODO(dmurph): Don't copy session storage when features.noopener is true:
-    // https://html.spec.whatwg.org/C/#copy-session-storage
-    // https://crbug.com/771959
+  if (!features.noopener) {
     CoreInitializer::GetInstance().CloneSessionStorage(old_page,
                                                        new_namespace_id);
   }
 
+  bool consumed_user_gesture = false;
   Page* page = old_page->GetChromeClient().CreateWindow(
-      &opener_frame, request, features, sandbox_flags, opener_feature_state,
-      new_namespace_id);
+      &opener_frame, request, frame_name, features, sandbox_flags,
+      new_namespace_id, consumed_user_gesture);
   if (!page)
     return nullptr;
-
-  auto* new_local_frame = DynamicTo<LocalFrame>(page->MainFrame());
-  if (request.GetShouldSendReferrer() == kMaybeSendReferrer) {
-    // TODO(japhet): Does network::mojom::ReferrerPolicy need to be proagated
-    // for RemoteFrames?
-    if (new_local_frame) {
-      new_local_frame->GetDocument()->SetReferrerPolicy(
-          opener_frame.GetDocument()->GetReferrerPolicy());
-    }
-  }
 
   if (page == old_page) {
     Frame* frame = &opener_frame.Tree().Top();
     if (!opener_frame.CanNavigate(*frame))
       return nullptr;
     if (!features.noopener)
-      frame->Client()->SetOpener(&opener_frame);
+      frame->SetOpener(&opener_frame);
     return frame;
   }
 
@@ -318,11 +377,12 @@ Frame* CreateNewWindow(LocalFrame& opener_frame,
   if (features.height_set)
     window_rect.SetHeight(features.height);
 
-  page->GetChromeClient().SetWindowRectWithAdjustment(window_rect, frame);
-  page->GetChromeClient().Show(request.GetNavigationPolicy());
-
+  IntRect rect = page->GetChromeClient().CalculateWindowRectWithAdjustment(
+      window_rect, frame, opener_frame);
+  page->GetChromeClient().Show(opener_frame.GetLocalFrameToken(),
+                               request.GetNavigationPolicy(), rect,
+                               consumed_user_gesture);
   MaybeLogWindowOpen(opener_frame);
-  created = true;
   return &frame;
 }
 

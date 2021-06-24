@@ -3,36 +3,37 @@
 // found in the LICENSE file.
 
 #include "services/test/echo/echo_service.h"
-#include "base/bind.h"
+
+#include <string.h>
+
+#include "base/immediate_crash.h"
+#include "base/memory/shared_memory_mapping.h"
 
 namespace echo {
 
-EchoService::EchoService(service_manager::mojom::ServiceRequest request)
-    : service_binding_(this, std::move(request)) {
-  registry_.AddInterface<mojom::Echo>(base::BindRepeating(
-      &EchoService::BindEchoRequest, base::Unretained(this)));
-}
+EchoService::EchoService(mojo::PendingReceiver<mojom::EchoService> receiver)
+    : receiver_(this, std::move(receiver)) {}
 
 EchoService::~EchoService() = default;
-
-void EchoService::OnBindInterface(
-    const service_manager::BindSourceInfo& source_info,
-    const std::string& interface_name,
-    mojo::ScopedMessagePipeHandle interface_pipe) {
-  registry_.BindInterface(interface_name, std::move(interface_pipe));
-}
-
-void EchoService::BindEchoRequest(mojom::EchoRequest request) {
-  bindings_.AddBinding(this, std::move(request));
-}
 
 void EchoService::EchoString(const std::string& input,
                              EchoStringCallback callback) {
   std::move(callback).Run(input);
 }
 
+void EchoService::EchoStringToSharedMemory(
+    const std::string& input,
+    base::UnsafeSharedMemoryRegion region) {
+  base::WritableSharedMemoryMapping mapping = region.Map();
+  memcpy(mapping.memory(), input.data(), input.size());
+}
+
 void EchoService::Quit() {
-  service_binding_.RequestClose();
+  receiver_.reset();
+}
+
+void EchoService::Crash() {
+  IMMEDIATE_CRASH();
 }
 
 }  // namespace echo

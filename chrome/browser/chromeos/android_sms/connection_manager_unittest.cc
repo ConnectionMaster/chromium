@@ -12,8 +12,8 @@
 #include "chrome/browser/chromeos/android_sms/fake_connection_establisher.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/services/multidevice_setup/public/cpp/fake_multidevice_setup_client.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/fake_service_worker_context.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -149,7 +149,7 @@ class ConnectionManagerTest : public testing::Test {
 
   void SetPwaState(PwaState pwa_state) {
     if (pwa_state == PwaState::kDisabled) {
-      fake_android_sms_app_manager_->SetInstalledAppUrl(base::nullopt);
+      fake_android_sms_app_manager_->SetInstalledAppUrl(absl::nullopt);
       fake_multidevice_setup_client_->SetFeatureState(
           multidevice_setup::mojom::Feature::kMessages,
           multidevice_setup::mojom::FeatureState::kDisabledByUser);
@@ -173,7 +173,7 @@ class ConnectionManagerTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   TestingProfile profile_;
   std::unique_ptr<content::FakeServiceWorkerContext>

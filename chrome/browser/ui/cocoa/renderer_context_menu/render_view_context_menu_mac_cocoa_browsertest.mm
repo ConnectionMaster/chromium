@@ -5,11 +5,11 @@
 #include "chrome/browser/ui/cocoa/renderer_context_menu/render_view_context_menu_mac_cocoa.h"
 
 #include "base/mac/foundation_util.h"
-#include "base/mac/mac_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #import "testing/gtest_mac.h"
 
@@ -24,10 +24,11 @@ class RenderViewContextMenuMacCocoaBrowserTest : public InProcessBrowserTest {
         storeFilteredEntriesForTestingInArray:filteredItems_];
 
     // Add a textfield, which we'll use to present a contextual menu for
-    // testing.
+    // testing. Fill it with a URL, as the services that need to be filtered
+    // primarily appear for URLs.
     textField_.reset(
         [[NSTextField alloc] initWithFrame:NSMakeRect(20, 20, 100, 20)]);
-    [textField_ setStringValue:@"some text"];
+    [textField_ setStringValue:@"http://someurl.com/"];
     NSWindow* window =
         browser()->window()->GetNativeWindow().GetNativeNSWindow();
     [[window contentView] addSubview:textField_];
@@ -93,9 +94,21 @@ IN_PROC_BROWSER_TEST_F(RenderViewContextMenuMacCocoaBrowserTest,
                  withEvent:[NSApp currentEvent]
                    forView:firstResponder];
 
-  // Confirm that Services items were removed from the contextual menu. This
-  // check was failing on the 10.10 bot, for some reason. Most-important is
-  // making sure it continues to work as OS X evolves.
-  if (base::mac::IsAtLeastOS10_11())
-    EXPECT_LT(0LU, [filteredItems_ count]);
+  // Confirm that Services items were removed from the contextual menu.
+
+  bool was_safari_item_removed = false;
+  bool was_open_url_item_removed = false;
+
+  for (id item in filteredItems_.get()) {
+    if ([[item valueForKey:@"bundleIdentifier"]
+            isEqualToString:@"com.apple.Safari"]) {
+      was_safari_item_removed = true;
+    }
+    if ([[item valueForKey:@"message"] isEqualToString:@"openURL"]) {
+      was_open_url_item_removed = true;
+    }
+  }
+
+  EXPECT_TRUE(was_safari_item_removed);
+  EXPECT_TRUE(was_open_url_item_removed);
 }

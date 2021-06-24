@@ -5,18 +5,23 @@
 #ifndef CHROMEOS_SERVICES_DEVICE_SYNC_CRYPTAUTH_CLIENT_IMPL_H_
 #define CHROMEOS_SERVICES_DEVICE_SYNC_CRYPTAUTH_CLIENT_IMPL_H_
 
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chromeos/services/device_sync/cryptauth_api_call_flow.h"
 #include "chromeos/services/device_sync/cryptauth_client.h"
 #include "chromeos/services/device_sync/proto/cryptauth_api.pb.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "services/identity/public/cpp/access_token_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
-namespace identity {
+namespace signin {
+struct AccessTokenInfo;
 class IdentityManager;
 class PrimaryAccountAccessTokenFetcher;
-}  // namespace identity
+}  // namespace signin
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -40,93 +45,117 @@ class CryptAuthClientImpl : public CryptAuthClient {
   // methods are no longer needed.
   CryptAuthClientImpl(
       std::unique_ptr<CryptAuthApiCallFlow> api_call_flow,
-      identity::IdentityManager* identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const cryptauth::DeviceClassifier& device_classifier);
   ~CryptAuthClientImpl() override;
 
   // CryptAuthClient:
   void GetMyDevices(const cryptauth::GetMyDevicesRequest& request,
-                    const GetMyDevicesCallback& callback,
-                    const ErrorCallback& error_callback,
+                    GetMyDevicesCallback callback,
+                    ErrorCallback error_callback,
                     const net::PartialNetworkTrafficAnnotationTag&
                         partial_traffic_annotation) override;
   void FindEligibleUnlockDevices(
       const cryptauth::FindEligibleUnlockDevicesRequest& request,
-      const FindEligibleUnlockDevicesCallback& callback,
-      const ErrorCallback& error_callback) override;
+      FindEligibleUnlockDevicesCallback callback,
+      ErrorCallback error_callback) override;
   void FindEligibleForPromotion(
       const cryptauth::FindEligibleForPromotionRequest& request,
-      const FindEligibleForPromotionCallback& callback,
-      const ErrorCallback& error_callback) override;
+      FindEligibleForPromotionCallback callback,
+      ErrorCallback error_callback) override;
   void SendDeviceSyncTickle(
       const cryptauth::SendDeviceSyncTickleRequest& request,
-      const SendDeviceSyncTickleCallback& callback,
-      const ErrorCallback& error_callback,
+      SendDeviceSyncTickleCallback callback,
+      ErrorCallback error_callback,
       const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation)
       override;
   void ToggleEasyUnlock(const cryptauth::ToggleEasyUnlockRequest& request,
-                        const ToggleEasyUnlockCallback& callback,
-                        const ErrorCallback& error_callback) override;
+                        ToggleEasyUnlockCallback callback,
+                        ErrorCallback error_callback) override;
   void SetupEnrollment(const cryptauth::SetupEnrollmentRequest& request,
-                       const SetupEnrollmentCallback& callback,
-                       const ErrorCallback& error_callback) override;
+                       SetupEnrollmentCallback callback,
+                       ErrorCallback error_callback) override;
   void FinishEnrollment(const cryptauth::FinishEnrollmentRequest& request,
-                        const FinishEnrollmentCallback& callback,
-                        const ErrorCallback& error_callback) override;
+                        FinishEnrollmentCallback callback,
+                        ErrorCallback error_callback) override;
   void SyncKeys(const cryptauthv2::SyncKeysRequest& request,
-                const SyncKeysCallback& callback,
-                const ErrorCallback& error_callback) override;
+                SyncKeysCallback callback,
+                ErrorCallback error_callback) override;
   void EnrollKeys(const cryptauthv2::EnrollKeysRequest& request,
-                  const EnrollKeysCallback& callback,
-                  const ErrorCallback& error_callback) override;
+                  EnrollKeysCallback callback,
+                  ErrorCallback error_callback) override;
   void SyncMetadata(const cryptauthv2::SyncMetadataRequest& request,
-                    const SyncMetadataCallback& callback,
-                    const ErrorCallback& error_callback) override;
+                    SyncMetadataCallback callback,
+                    ErrorCallback error_callback) override;
   void ShareGroupPrivateKey(
       const cryptauthv2::ShareGroupPrivateKeyRequest& request,
-      const ShareGroupPrivateKeyCallback& callback,
-      const ErrorCallback& error_callback) override;
+      ShareGroupPrivateKeyCallback callback,
+      ErrorCallback error_callback) override;
   void BatchNotifyGroupDevices(
       const cryptauthv2::BatchNotifyGroupDevicesRequest& request,
-      const BatchNotifyGroupDevicesCallback& callback,
-      const ErrorCallback& error_callback) override;
+      BatchNotifyGroupDevicesCallback callback,
+      ErrorCallback error_callback) override;
   void BatchGetFeatureStatuses(
       const cryptauthv2::BatchGetFeatureStatusesRequest& request,
-      const BatchGetFeatureStatusesCallback& callback,
-      const ErrorCallback& error_callback) override;
+      BatchGetFeatureStatusesCallback callback,
+      ErrorCallback error_callback) override;
   void BatchSetFeatureStatuses(
       const cryptauthv2::BatchSetFeatureStatusesRequest& request,
-      const BatchSetFeatureStatusesCallback& callback,
-      const ErrorCallback& error_callback) override;
+      BatchSetFeatureStatusesCallback callback,
+      ErrorCallback error_callback) override;
+  void GetDevicesActivityStatus(
+      const cryptauthv2::GetDevicesActivityStatusRequest& request,
+      GetDevicesActivityStatusCallback callback,
+      ErrorCallback error_callback) override;
   std::string GetAccessTokenUsed() override;
 
  private:
-  // Starts a call to the API given by |request_url|, with the templated
-  // request and response types. The client first fetches the access token and
-  // then makes the HTTP request.
-  template <class RequestProto, class ResponseProto>
+  enum class RequestType { kGet, kPost };
+
+  // Starts a call to the API given by |request_url|. The client first fetches
+  // the access token and then makes the HTTP request.
+  //   |request_url|: API endpoint.
+  //   |request_type|: Whether the request is a GET or POST.
+  //   |serialized_request|: Serialized request message proto that will be sent
+  //                         as the body of a POST request. Null if
+  //                         request type is not POST.
+  //   |request_as_query_parameters|: The request message proto represented as
+  //                                  key-value pairs that will be sent as query
+  //                                  parameters in a GET request. Note: A key
+  //                                  can have multiple values. Null if request
+  //                                  type is not GET.
+  //   |response_callback|: Callback for a successful request.
+  //   |error_callback|: Callback for a failed request.
+  //   |partial_traffic_annotation|: A partial tag used to mark a source of
+  template <class ResponseProto>
   void MakeApiCall(
       const GURL& request_url,
-      const RequestProto& request_proto,
-      const base::Callback<void(const ResponseProto&)>& response_callback,
-      const ErrorCallback& error_callback,
+      RequestType request_type,
+      const absl::optional<std::string>& serialized_request,
+      const absl::optional<std::vector<std::pair<std::string, std::string>>>&
+          request_as_query_parameters,
+      base::OnceCallback<void(const ResponseProto&)> response_callback,
+      ErrorCallback error_callback,
       const net::PartialNetworkTrafficAnnotationTag&
           partial_traffic_annotation);
 
   // Called when the access token is obtained so the API request can be made.
   template <class ResponseProto>
   void OnAccessTokenFetched(
-      const std::string& serialized_request,
-      const base::Callback<void(const ResponseProto&)>& response_callback,
+      RequestType request_type,
+      const absl::optional<std::string>& serialized_request,
+      const absl::optional<std::vector<std::pair<std::string, std::string>>>&
+          request_as_query_parameters,
+      base::OnceCallback<void(const ResponseProto&)> response_callback,
       GoogleServiceAuthError error,
-      identity::AccessTokenInfo access_token_info);
+      signin::AccessTokenInfo access_token_info);
 
   // Called with CryptAuthApiCallFlow completes successfully to deserialize and
   // return the result.
   template <class ResponseProto>
   void OnFlowSuccess(
-      const base::Callback<void(const ResponseProto&)>& result_callback,
+      base::OnceCallback<void(const ResponseProto&)> result_callback,
       const std::string& serialized_response);
 
   // Called when the current API call fails at any step.
@@ -140,10 +169,10 @@ class CryptAuthClientImpl : public CryptAuthClient {
   // Constructs and executes the actual HTTP request.
   std::unique_ptr<CryptAuthApiCallFlow> api_call_flow_;
 
-  identity::IdentityManager* identity_manager_;
+  signin::IdentityManager* identity_manager_;
 
   // Fetches the access token authorizing the API calls.
-  std::unique_ptr<identity::PrimaryAccountAccessTokenFetcher>
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
       access_token_fetcher_;
 
   // The context for network requests.
@@ -166,7 +195,7 @@ class CryptAuthClientImpl : public CryptAuthClient {
   // Called when the current request fails.
   ErrorCallback error_callback_;
 
-  base::WeakPtrFactory<CryptAuthClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<CryptAuthClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CryptAuthClientImpl);
 };
@@ -179,7 +208,7 @@ class CryptAuthClientFactoryImpl : public CryptAuthClientFactory {
   // |url_request_context|: The request context to make the HTTP requests.
   // |device_classifier|: Contains basic device information of the client.
   CryptAuthClientFactoryImpl(
-      identity::IdentityManager* identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const cryptauth::DeviceClassifier& device_classifier);
   ~CryptAuthClientFactoryImpl() override;
@@ -188,7 +217,7 @@ class CryptAuthClientFactoryImpl : public CryptAuthClientFactory {
   std::unique_ptr<CryptAuthClient> CreateInstance() override;
 
  private:
-  identity::IdentityManager* identity_manager_;
+  signin::IdentityManager* identity_manager_;
   const scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   const cryptauth::DeviceClassifier device_classifier_;
 

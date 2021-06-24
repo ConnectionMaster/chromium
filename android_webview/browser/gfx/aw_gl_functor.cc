@@ -4,12 +4,11 @@
 
 #include "android_webview/browser/gfx/aw_gl_functor.h"
 
+#include "android_webview/browser_jni_headers/AwGLFunctor_jni.h"
 #include "android_webview/public/browser/draw_gl.h"
 #include "base/stl_util.h"
-#include "base/task/post_task.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "jni/AwGLFunctor_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::JavaParamRef;
@@ -36,8 +35,7 @@ int g_instance_count = 0;
 
 AwGLFunctor::AwGLFunctor(const JavaObjectWeakGlobalRef& java_ref)
     : java_ref_(java_ref),
-      render_thread_manager_(
-          base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI})) {
+      render_thread_manager_(content::GetUIThreadTaskRunner({})) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   ++g_instance_count;
 }
@@ -51,7 +49,7 @@ bool AwGLFunctor::RequestInvokeGL(bool wait_for_completion) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
-  if (obj.is_null())
+  if (!obj)
     return false;
   return Java_AwGLFunctor_requestInvokeGL(env, obj, wait_for_completion);
 }
@@ -60,12 +58,11 @@ void AwGLFunctor::DetachFunctorFromView() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
-  if (!obj.is_null())
+  if (obj)
     Java_AwGLFunctor_detachFunctorFromView(env, obj);
 }
 
-void AwGLFunctor::Destroy(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& obj) {
+void AwGLFunctor::Destroy(JNIEnv* env) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   java_ref_.reset();
   delete this;
@@ -116,7 +113,7 @@ void AwGLFunctor::DrawGL(AwDrawGLInfo* draw_info) {
       for (unsigned int i = 0; i < base::size(params.transform); ++i) {
         params.transform[i] = draw_info->transform[i];
       }
-      render_thread_manager_.DrawOnRT(save_restore, &params);
+      render_thread_manager_.DrawOnRT(save_restore, params, OverlaysParams());
       break;
     }
   }

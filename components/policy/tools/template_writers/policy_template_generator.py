@@ -1,10 +1,23 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
 import copy
+import os
 import re
+import sys
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir,
+                 os.pardir, 'third_party', 'six', 'src'))
+
+import six
+
+
+def IsGroupOrAtomicGroup(policy):
+  return policy['type'] == 'group' or policy['type'] == 'atomic_group'
 
 
 class PolicyTemplateGenerator:
@@ -17,13 +30,9 @@ class PolicyTemplateGenerator:
   '''
 
   def _ImportMessage(self, msg_txt):
-    msg_txt = msg_txt.decode('utf-8')
-    # Replace the placeholder of app name.
-    msg_txt = msg_txt.replace('$1', self._config['app_name'])
-    msg_txt = msg_txt.replace('$2', self._config['os_name'])
-    msg_txt = msg_txt.replace('$3', self._config['frame_name'])
-
+    msg_txt = six.ensure_text(msg_txt)
     lines = msg_txt.split('\n')
+
     # Strip any extra leading spaces, but keep useful indentation:
     min_leading_spaces = min(list(self._IterateLeadingSpaces(lines)) or [0])
     if min_leading_spaces > 0:
@@ -60,10 +69,42 @@ class PolicyTemplateGenerator:
     for key in self._messages.keys():
       self._messages[key]['text'] = self._ImportMessage(
           self._messages[key]['text'])
+    self._AddGroups(self._policy_data['policy_definitions'])
+    self._AddAtomicGroups(self._policy_data['policy_definitions'],
+                          self._policy_data['policy_atomic_group_definitions'])
+    self._policy_data[
+        'policy_atomic_group_definitions'] = self._ExpandAtomicGroups(
+            self._policy_data['policy_definitions'],
+            self._policy_data['policy_atomic_group_definitions'])
+    self._ProcessPolicyList(
+        self._policy_data['policy_atomic_group_definitions'])
     self._policy_data['policy_definitions'] = self._ExpandGroups(
         self._policy_data['policy_definitions'])
     self._policy_definitions = self._policy_data['policy_definitions']
     self._ProcessPolicyList(self._policy_definitions)
+
+  def _ProcessProductPlatformString(self, product_platform_string):
+    '''Splits the |product_platform_string| string to product and a list of
+    platforms.'''
+    if '.' in product_platform_string:
+      product, platform = product_platform_string.split('.')
+      if platform == '*':
+        # e.g.: 'chrome.*:8-10'
+        platforms = ['linux', 'mac', 'win']
+      else:
+        # e.g.: 'chrome.win:-10'
+        platforms = [platform]
+    else:
+      # e.g.: 'chrome_frame:7-'
+      product, platform = {
+          'android': ('chrome', 'android'),
+          'webview_android': ('webview', 'android'),
+          'ios': ('chrome', 'ios'),
+          'chrome_os': ('chrome_os', 'chrome_os'),
+          'chrome_frame': ('chrome_frame', 'win'),
+      }[product_platform_string]
+      platforms = [platform]
+    return product, platforms
 
   def _ProcessSupportedOn(self, supported_on):
     '''Parses and converts the string items of the list of supported platforms
@@ -77,12 +118,12 @@ class PolicyTemplateGenerator:
       supported_on: The list with its items converted to dictionaries. E.g.:
       [{
         'product': 'chrome',
-        'platforms': 'win',
+        'platform': 'win',
         'since_version': '8',
         'until_version': '10'
       }, {
         'product': 'chrome_frame',
-        'platforms': 'win',
+        'platform': 'win',
         'since_version': '10',
         'until_version': ''
       }]
@@ -90,31 +131,44 @@ class PolicyTemplateGenerator:
     result = []
     for supported_on_item in supported_on:
       product_platform_part, version_part = supported_on_item.split(':')
+      product, platforms = self._ProcessProductPlatformString(
+          product_platform_part)
 
-      if '.' in product_platform_part:
-        product, platform = product_platform_part.split('.')
-        if platform == '*':
-          # e.g.: 'chrome.*:8-10'
-          platforms = ['linux', 'mac', 'win']
-        else:
-          # e.g.: 'chrome.win:-10'
-          platforms = [platform]
-      else:
-        # e.g.: 'chrome_frame:7-'
-        product, platform = {
-            'android': ('chrome', 'android'),
-            'webview_android': ('webview', 'android'),
-            'chrome_os': ('chrome_os', 'chrome_os'),
-            'chrome_frame': ('chrome_frame', 'win'),
-        }[product_platform_part]
-        platforms = [platform]
       since_version, until_version = version_part.split('-')
-      result.append({
-          'product': product,
-          'platforms': platforms,
-          'since_version': since_version,
-          'until_version': until_version
-      })
+      for platform in platforms:
+        result.append({
+            'product': product,
+            'platform': platform,
+            'since_version': since_version,
+            'until_version': until_version
+        })
+    return result
+
+  def _ProcessFutureOn(self, future_on):
+    '''Parses and converts the |future_on| strings into a list of dictionaries
+    contain product and platform string pair.
+
+    Args:
+      future_on: A list of platform strings. E.g.:
+      ['chrome.win', 'chromeos']
+    Returns:
+      future_on: A list of dictionaries. E.g.:
+      [{
+        'product': 'chrome',
+        'platform': 'win',
+      },{
+        'product': 'chrome_os',
+        'platform': 'chrome_os',
+      }]
+    '''
+    result = []
+    for future in future_on:
+      product, platforms = self._ProcessProductPlatformString(future)
+      for platform in platforms:
+        result.append({
+            'product': product,
+            'platform': platform,
+        })
     return result
 
   def _ProcessPolicy(self, policy):
@@ -125,24 +179,29 @@ class PolicyTemplateGenerator:
       policy: The data structure of the policy or group, that will get message
         strings here.
     '''
-    policy['desc'] = self._ImportMessage(policy['desc'])
+    if policy['type'] != 'atomic_group':
+      policy['desc'] = self._ImportMessage(policy['desc'])
     policy['caption'] = self._ImportMessage(policy['caption'])
     if 'label' in policy:
       policy['label'] = self._ImportMessage(policy['label'])
     if 'arc_support' in policy:
       policy['arc_support'] = self._ImportMessage(policy['arc_support'])
 
-    if policy['type'] == 'group':
+    if IsGroupOrAtomicGroup(policy):
       self._ProcessPolicyList(policy['policies'])
     elif policy['type'] in ('string-enum', 'int-enum', 'string-enum-list'):
       # Iterate through all the items of an enum-type policy, and add captions.
       for item in policy['items']:
         item['caption'] = self._ImportMessage(item['caption'])
-    if policy['type'] != 'group':
+        if 'supported_on' in item:
+          item['supported_on'] = self._ProcessSupportedOn(item['supported_on'])
+    if not IsGroupOrAtomicGroup(policy):
       if not 'label' in policy:
         # If 'label' is not specified, then it defaults to 'caption':
         policy['label'] = policy['caption']
-      policy['supported_on'] = self._ProcessSupportedOn(policy['supported_on'])
+      policy['supported_on'] = self._ProcessSupportedOn(
+          policy.get('supported_on', []))
+      policy['future_on'] = self._ProcessFutureOn(policy.get('future_on', []))
 
   def _ProcessPolicyList(self, policy_list):
     '''Adds localized message strings to each item in a list of policies and
@@ -171,6 +230,62 @@ class PolicyTemplateGenerator:
     policy_data_copy = copy.deepcopy(self._policy_data)
     return template_writer.WriteTemplate(policy_data_copy)
 
+
+  def _AddGroups(self, policy_list):
+    '''Adds a 'group' field, which is set to be the group's name, to the
+       policies that are part of a group.
+
+    Args:
+      policy_list: A list of policies and groups whose policies will have a
+      'group' field added.
+    '''
+    groups = [policy for policy in policy_list if policy['type'] == 'group']
+    policy_lookup = {
+        policy['name']: policy
+        for policy in policy_list
+        if not IsGroupOrAtomicGroup(policy)
+    }
+    for group in groups:
+      for policy_name in group['policies']:
+        policy_lookup[policy_name]['group'] = group['name']
+
+  def _AddAtomicGroups(self, policy_list, policy_atomic_groups):
+    '''Adds an 'atomic_group' field to the policies that are part of an atomic
+    group.
+
+    Args:
+      policy_list: A list of policies and groups.
+      policy_atomic_groups: A list of policy atomic groups
+    '''
+    policy_lookup = {
+        policy['name']: policy
+        for policy in policy_list
+        if not IsGroupOrAtomicGroup(policy)
+    }
+    for group in policy_atomic_groups:
+      for policy_name in group['policies']:
+        policy_lookup[policy_name]['atomic_group'] = group['name']
+        break
+
+  def _ExpandAtomicGroups(self, policy_list, policy_atomic_groups):
+    '''Replaces policies names inside atomic group definitions for actual
+    policies definitions.
+
+    Args:
+      policy_list: A list of policies and groups.
+
+    Returns:
+      Modified policy_list
+    '''
+    policies = [
+        policy for policy in policy_list if not IsGroupOrAtomicGroup(policy)
+    ]
+    for group in policy_atomic_groups:
+      group['type'] = 'atomic_group'
+    expanded = self._ExpandGroups(policies + policy_atomic_groups)
+    expanded = [policy for policy in expanded if IsGroupOrAtomicGroup(policy)]
+    return copy.deepcopy(expanded)
+
   def _ExpandGroups(self, policy_list):
     '''Replaces policies names inside group definitions for actual policies
     definitions. If policy does not belong to any group, leave it as is.
@@ -181,11 +296,11 @@ class PolicyTemplateGenerator:
     Returns:
       Modified policy_list
     '''
-    groups = [policy for policy in policy_list if policy['type'] == 'group']
+    groups = [policy for policy in policy_list if IsGroupOrAtomicGroup(policy)]
     policies = {
         policy['name']: policy
         for policy in policy_list
-        if policy['type'] != 'group'
+        if not IsGroupOrAtomicGroup(policy)
     }
     policies_in_groups = set()
     result_policies = []
@@ -200,7 +315,7 @@ class PolicyTemplateGenerator:
       result_policies.append(group)
 
     result_policies.extend([
-        policy for policy in policy_list if policy['type'] != 'group' and
+        policy for policy in policy_list if not IsGroupOrAtomicGroup(policy) and
         policy['name'] not in policies_in_groups
     ])
     return result_policies

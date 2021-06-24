@@ -13,21 +13,10 @@ namespace base {
 namespace win {
 
 TEST(CoreWinrtUtilTest, PreloadFunctions) {
-  if (GetVersion() < VERSION_WIN8)
+  if (GetVersion() < Version::WIN8)
     EXPECT_FALSE(ResolveCoreWinRTDelayload());
   else
     EXPECT_TRUE(ResolveCoreWinRTDelayload());
-}
-
-TEST(CoreWinrtUtilTest, RoInitializeAndUninitialize) {
-  if (GetVersion() < VERSION_WIN8)
-    return;
-
-  ASSERT_TRUE(ResolveCoreWinRTDelayload());
-  ASSERT_HRESULT_SUCCEEDED(base::win::RoInitialize(RO_INIT_MULTITHREADED));
-  AssertComApartmentType(ComApartmentType::MTA);
-  base::win::RoUninitialize();
-  AssertComApartmentType(ComApartmentType::NONE);
 }
 
 }  // namespace win

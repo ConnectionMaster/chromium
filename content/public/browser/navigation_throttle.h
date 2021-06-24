@@ -6,15 +6,19 @@
 #define CONTENT_PUBLIC_BROWSER_NAVIGATION_THROTTLE_H_
 
 #include "base/callback.h"
-#include "base/optional.h"
 #include "content/common/content_export.h"
 #include "net/base/net_errors.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace content {
 class NavigationHandle;
 
 // A NavigationThrottle tracks and allows interaction with a navigation on the
-// UI thread.
+// UI thread. NavigationThrottles may not be run for some kinds of navigations
+// (e.g. same-document navigations, about:blank, activations into the primary
+// frame tree like prerendering and back-forward cache, etc.). Content-internal
+// code that just wishes to defer a commit, including activations to the
+// primary frame tree, should instead use a CommitDeferringCondition.
 class CONTENT_EXPORT NavigationThrottle {
  public:
   // Represents what a NavigationThrottle can decide to do to a navigation. Note
@@ -41,16 +45,14 @@ class CONTENT_EXPORT NavigationThrottle {
     CANCEL_AND_IGNORE,
 
     // Blocks a navigation due to rules asserted before the request is made.
-    // This can only be returned from WillStartRequest and also from
-    // WillRedirectRequest when PlzNavigate is enabled. This will result in an
-    // default net_error code of net::ERR_BLOCKED_BY_CLIENT being loaded in
-    // the frame that is navigated.
+    // This can only be returned from WillStartRequest or WillRedirectRequest.
+    // This will result in a default net_error code of
+    // net::ERR_BLOCKED_BY_CLIENT being loaded in the frame that is navigated.
     BLOCK_REQUEST,
 
     // Blocks a navigation taking place in a subframe, and collapses the frame
     // owner element in the parent document (i.e. removes it from the layout).
-    // This can only be returned from WillStartRequest, and also from
-    // WillRedirectRequest when PlzNavigate is enabled.
+    // This can only be returned from WillStartRequest or WillRedirectRequest.
     BLOCK_REQUEST_AND_COLLAPSE,
 
     // Blocks a navigation due to rules asserted by a response (for instance,
@@ -107,7 +109,7 @@ class CONTENT_EXPORT NavigationThrottle {
     // Construct with an action, error, and error page HTML.
     ThrottleCheckResult(ThrottleAction action,
                         net::Error net_error_code,
-                        base::Optional<std::string> error_page_content);
+                        absl::optional<std::string> error_page_content);
 
     ThrottleCheckResult(const ThrottleCheckResult& other);
 
@@ -115,14 +117,14 @@ class CONTENT_EXPORT NavigationThrottle {
 
     ThrottleAction action() const { return action_; }
     net::Error net_error_code() const { return net_error_code_; }
-    const base::Optional<std::string>& error_page_content() {
+    const absl::optional<std::string>& error_page_content() {
       return error_page_content_;
     }
 
    private:
     ThrottleAction action_;
     net::Error net_error_code_;
-    base::Optional<std::string> error_page_content_;
+    absl::optional<std::string> error_page_content_;
   };
 
   NavigationThrottle(NavigationHandle* navigation_handle);
@@ -204,7 +206,7 @@ class CONTENT_EXPORT NavigationThrottle {
   virtual void CancelDeferredNavigation(ThrottleCheckResult result);
 
  private:
-  NavigationHandle* navigation_handle_;
+  NavigationHandle* const navigation_handle_;
 
   // Used in tests.
   base::RepeatingClosure resume_callback_;

@@ -2,33 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <EarlGrey/EarlGrey.h>
 #import <XCTest/XCTest.h>
 
 #include <memory>
 
+#import "base/ios/ios_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/url_formatter/url_formatter.h"
 #import "ios/chrome/browser/ui/popup_menu/popup_menu_constants.h"
-#include "ios/chrome/browser/ui/util/ui_util.h"
-#import "ios/chrome/test/app/chrome_test_util.h"
-#include "ios/chrome/test/app/navigation_test_util.h"
-#import "ios/chrome/test/app/web_view_interaction_test_util.h"
+#import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
+#import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
+#import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
-#import "ios/web/public/test/earl_grey/web_view_actions.h"
-#import "ios/web/public/test/earl_grey/web_view_matchers.h"
 #include "ios/web/public/test/element_selector.h"
 #include "ios/web/public/test/http_server/data_response_provider.h"
 #import "ios/web/public/test/http_server/http_server.h"
 #include "ios/web/public/test/http_server/http_server_util.h"
-#include "ios/web/public/test/url_test_util.h"
-#import "ios/web/public/web_client.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -36,7 +32,9 @@
 
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::OmniboxText;
-using chrome_test_util::TapWebViewElementWithId;
+using chrome_test_util::TapWebElement;
+using chrome_test_util::WebViewMatcher;
+
 using testing::ElementToDismissAlert;
 
 namespace {
@@ -48,7 +46,7 @@ const char kDestinationText[] = "bar!";
 const char kGenericText[] = "A generic page";
 
 // Label for the button in the form.
-const char kSubmitButtonLabel[] = "submit";
+NSString* kSubmitButtonLabel = @"submit";
 
 // Html form template with a submission button named "submit".
 const char* kFormHtmlTemplate =
@@ -149,7 +147,7 @@ void TestFormResponseProvider::GetResponseHeadersAndBody(
 }  // namespace
 
 // Tests submition of HTTP forms POST data including cases involving navigation.
-@interface FormsTestCase : ChromeTestCase
+@interface FormsTestCase : WebHttpServerChromeTestCase
 @end
 
 @implementation FormsTestCase
@@ -212,24 +210,35 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   const GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
-  // WKBasedNavigationManager presents repost confirmation dialog before loading
-  // stops.
-  if (web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    [chrome_test_util::BrowserCommandDispatcherForMainBVC() reload];
-  } else {
-    // Legacy navigation manager presents repost confirmation dialog after
-    // loading stops.
-    [ChromeEarlGrey reload];
-  }
-  [self confirmResendWarning];
+  // Repost confirmation dialog is presented before loading stops so do not wait
+  // for load to complete because it never will.
+  [ChromeEarlGrey reloadAndWaitForCompletion:NO];
 
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  {
+    // Synchronization must be disabled until after the repost confirmation is
+    // dismissed because it is presented during the load. It is always disabled,
+    // but immediately re-enabled if slim navigation manger is not enabled. This
+    // is necessary in order to keep the correct scope of
+    // ScopedSynchronizationDisabler which ensures synchronization is not left
+    // disabled if the test fails.
+    std::unique_ptr<ScopedSynchronizationDisabler> disabler =
+        std::make_unique<ScopedSynchronizationDisabler>();
+    // TODO(crbug.com/989615): Investigate why this is necessary even with a
+    // visible check below.
+    base::test::ios::SpinRunLoopWithMinDelay(
+        base::TimeDelta::FromSecondsD(0.5));
+
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:ResendPostButtonMatcher()];
+    [self confirmResendWarning];
+  }
+
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 }
@@ -241,9 +250,8 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   const GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
@@ -251,16 +259,31 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   [ChromeEarlGrey loadURL:GetGenericUrl()];
   [ChromeEarlGrey goBack];
 
-  // WKBasedNavigationManager doesn't triggere repost on |goForward| due to
-  // WKWebView's back-forward cache. Force reload to trigger repost. Not using
-  // [ChromeEarlGrey reload] because WKBasedNavigationManager presents repost
-  // confirmation dialog before loading stops.
-  if (web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    [chrome_test_util::BrowserCommandDispatcherForMainBVC() reload];
+  // NavigationManager doesn't trigger repost on |goForward| due to WKWebView's
+  // back-forward cache. Force reload to trigger repost. Not waiting because
+  // NavigationManager presents repost confirmation dialog before loading stops.
+  [ChromeEarlGrey reloadAndWaitForCompletion:NO];
+
+  {
+    // Synchronization must be disabled until after the repost confirmation is
+    // dismissed because it is presented during the load. It is always disabled,
+    // but immediately re-enabled if slim navigation manger is not enabled. This
+    // is necessary in order to keep the correct scope of
+    // ScopedSynchronizationDisabler which ensures synchronization is not left
+    // disabled if the test fails.
+    std::unique_ptr<ScopedSynchronizationDisabler> disabler =
+        std::make_unique<ScopedSynchronizationDisabler>();
+      // TODO(crbug.com/989615): Investigate why this is necessary even with a
+      // visible check below.
+      base::test::ios::SpinRunLoopWithMinDelay(
+          base::TimeDelta::FromSecondsD(0.5));
+
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:ResendPostButtonMatcher()];
+    [self confirmResendWarning];
   }
 
-  [self confirmResendWarning];
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 }
@@ -272,25 +295,39 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   const GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
   [ChromeEarlGrey goBack];
   [ChromeEarlGrey goForward];
 
-  // WKBasedNavigationManager doesn't triggere repost on |goForward| due to
-  // WKWebView's back-forward cache. Force reload to trigger repost. Not using
-  // [ChromeEarlGrey reload] because WKBasedNavigationManager presents repost
-  // confirmation dialog before loading stops.
-  if (web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    [chrome_test_util::BrowserCommandDispatcherForMainBVC() reload];
+  // NavigationManager doesn't trigger repost on |goForward| due to WKWebView's
+  // back-forward cache. Force reload to trigger repost. Not waiting because
+  // NavigationManager presents repost confirmation dialog before loading stops.
+  [ChromeEarlGrey reloadAndWaitForCompletion:NO];
+
+  {
+    // Synchronization must be disabled until after the repost confirmation is
+    // dismissed because it is presented during the load. It is always disabled,
+    // but immediately re-enabled if slim navigation manger is not enabled. This
+    // is necessary in order to keep the correct scope of
+    // ScopedSynchronizationDisabler which ensures synchronization is not left
+    // disabled if the test fails.
+    std::unique_ptr<ScopedSynchronizationDisabler> disabler =
+        std::make_unique<ScopedSynchronizationDisabler>();
+      // TODO(crbug.com/989615): Investigate why this is necessary even with a
+      // visible check below.
+      base::test::ios::SpinRunLoopWithMinDelay(
+          base::TimeDelta::FromSecondsD(0.5));
+
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:ResendPostButtonMatcher()];
+    [self confirmResendWarning];
   }
 
-  [self confirmResendWarning];
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 }
@@ -302,9 +339,8 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   const GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
@@ -312,18 +348,17 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   [ChromeEarlGrey loadURL:GetGenericUrl()];
   [self openBackHistory];
   [self waitForTabHistoryView];
-  id<GREYMatcher> historyItem = grey_text(
-      base::SysUTF16ToNSString(web::GetDisplayTitleForUrl(destinationURL)));
+
+  // Mimic |web::GetDisplayTitleForUrl| behavior which uses FormatUrl
+  // internally. It can't be called directly from the EarlGrey 2 test process.
+  std::u16string title = url_formatter::FormatUrl(destinationURL);
+  id<GREYMatcher> historyItem = grey_text(base::SysUTF16ToNSString(title));
   [[EarlGrey selectElementWithMatcher:historyItem] performAction:grey_tap()];
   [ChromeEarlGrey waitForPageToFinishLoading];
 
-  // Back-forward navigation with WKBasedNavigationManager is served from
-  // WKWebView's app-cache, so it won't trigger repost warning.
-  if (!web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    [self confirmResendWarning];
-  }
-
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  // Back-forward navigation is served from WKWebView's app-cache, so it won't
+  // trigger repost warning.
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 }
@@ -334,47 +369,44 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   const GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
   [ChromeEarlGrey goBack];
   [ChromeEarlGrey goForward];
 
-  // WKBasedNavigationManager doesn't triggere repost on |goForward| due to
-  // WKWebView's back-forward cache. Force reload to trigger repost. Not using
-  // [ChromeEarlGrey reload] because WKBasedNavigationManager presents repost
-  // confirmation dialog before loading stops.
-  if (web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    [chrome_test_util::BrowserCommandDispatcherForMainBVC() reload];
+  // NavigationManager doesn't trigger repost on |goForward| due to WKWebView's
+  // back-forward cache. Force reload to trigger repost. Not waiting because
+  // NavigationManager presents repost confirmation dialog before loading stops.
+  [ChromeEarlGrey reloadAndWaitForCompletion:NO];
+
+  {
+    // Synchronization must be disabled until after the repost confirmation is
+    // dismissed because it is presented during the load. It is always disabled,
+    // but immediately re-enabled if slim navigation manger is not enabled. This
+    // is necessary in order to keep the correct scope of
+    // ScopedSynchronizationDisabler which ensures synchronization is not left
+    // disabled if the test fails.
+    std::unique_ptr<ScopedSynchronizationDisabler> disabler =
+        std::make_unique<ScopedSynchronizationDisabler>();
+
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:ResendPostButtonMatcher()];
+    [[EarlGrey selectElementWithMatcher:ElementToDismissAlert(@"Cancel")]
+        performAction:grey_tap()];
   }
 
-  [[EarlGrey selectElementWithMatcher:ElementToDismissAlert(@"Cancel")]
-      performAction:grey_tap()];
   [ChromeEarlGrey waitForPageToFinishLoading];
 
-  // Expected behavior is different between the two navigation manager
-  // implementations.
-  if (!web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    // LegacyNavigationManager displays repost on |goBack|. So after cancelling,
-    // web view should show form URL.
-    [ChromeEarlGrey waitForWebViewContainingText:kSubmitButtonLabel];
-    [[EarlGrey selectElementWithMatcher:OmniboxText(GetFormUrl().GetContent())]
-        assertWithMatcher:grey_notNil()];
-    [[EarlGrey selectElementWithMatcher:chrome_test_util::ForwardButton()]
-        assertWithMatcher:grey_interactable()];
-  } else {
-    // WKBasedNavigationManager displays repost on |reload|. So after
-    // cancelling, web view should show |destinationURL|.
-    [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
-    [[EarlGrey
-        selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
-        assertWithMatcher:grey_notNil()];
-    [[EarlGrey selectElementWithMatcher:chrome_test_util::BackButton()]
-        assertWithMatcher:grey_interactable()];
-  }
+  // NavigationManagerImpl displays repost on |reload|. So after
+  // cancelling, web view should show |destinationURL|.
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
+  [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
+      assertWithMatcher:grey_notNil()];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::BackButton()]
+      assertWithMatcher:grey_interactable()];
 }
 
 // A new navigation dismisses the repost dialog.
@@ -383,30 +415,34 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   const GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
-  // WKBasedNavigationManager presents repost confirmation dialog before loading
-  // stops.
-  if (web::GetWebClient()->IsSlimNavigationManagerEnabled()) {
-    [chrome_test_util::BrowserCommandDispatcherForMainBVC() reload];
-  } else {
-    // Legacy navigation manager presents repost confirmation dialog after
-    // loading stops.
-    [ChromeEarlGrey reload];
-  }
+  // Repost confirmation dialog is presented before loading stops so do not wait
+  // for load to complete because it never will.
+  [ChromeEarlGrey reloadAndWaitForCompletion:NO];
 
-  // Repost confirmation box should be visible.
-  [ChromeEarlGrey
-      waitForElementWithMatcherSufficientlyVisible:ResendPostButtonMatcher()];
+  {
+    // Synchronization must be disabled until after the repost confirmation is
+    // dismissed because it is presented during the load. It is always disabled,
+    // but immediately re-enabled if slim navigation manger is not enabled. This
+    // is necessary in order to keep the correct scope of
+    // ScopedSynchronizationDisabler which ensures synchronization is not left
+    // disabled if the test fails.
+    std::unique_ptr<ScopedSynchronizationDisabler> disabler =
+        std::make_unique<ScopedSynchronizationDisabler>();
+
+    // Repost confirmation box should be visible.
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:ResendPostButtonMatcher()];
+  }
 
   // Starting a new navigation while the repost dialog is presented should not
   // crash.
   [ChromeEarlGrey loadURL:GetGenericUrl()];
-  [ChromeEarlGrey waitForWebViewContainingText:kGenericText];
+  [ChromeEarlGrey waitForWebStateContainingText:kGenericText];
 
   // Repost dialog should not be visible anymore.
   [[EarlGrey selectElementWithMatcher:ResendPostButtonMatcher()]
@@ -420,15 +456,15 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   GURL destinationURL = GetDestinationUrl();
 
   [ChromeEarlGrey loadURL:GetFormUrl()];
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
-  [ChromeEarlGrey waitForWebViewContainingText:kDestinationText];
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDestinationText];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
   // Go back and verify the browser navigates to the original URL.
   [ChromeEarlGrey goBack];
-  [ChromeEarlGrey waitForWebViewContainingText:kSubmitButtonLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:(base::SysNSStringToUTF8(
+                                                    kSubmitButtonLabel))];
   [[EarlGrey selectElementWithMatcher:OmniboxText(GetFormUrl().GetContent())]
       assertWithMatcher:grey_notNil()];
 }
@@ -441,11 +477,10 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   [ChromeEarlGrey loadURL:GetRedirectFormUrl()];
 
   // Submit the form, which redirects before printing the data.
-  GREYAssert(TapWebViewElementWithId(kSubmitButtonLabel), @"Failed to tap %s",
-             kSubmitButtonLabel);
+  [ChromeEarlGrey tapWebStateElementWithID:kSubmitButtonLabel];
 
   // Check that the redirect changes the POST to a GET.
-  [ChromeEarlGrey waitForWebViewContainingText:"GET"];
+  [ChromeEarlGrey waitForWebStateContainingText:"GET"];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
@@ -454,7 +489,8 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   // Check that the popup did not show
   [[EarlGrey selectElementWithMatcher:ResendPostButtonMatcher()]
       assertWithMatcher:grey_nil()];
-  [ChromeEarlGrey waitForWebViewContainingText:"GET"];
+
+  [ChromeEarlGrey waitForWebStateContainingText:"GET"];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 }
@@ -462,13 +498,7 @@ id<GREYMatcher> ResendPostButtonMatcher() {
 // Tests that pressing the button on a POST-based form with same-page action
 // does not change the page URL and that the back button works as expected
 // afterwards.
-// TODO(crbug.com/714303): Re-enable this test on devices.
-#if TARGET_IPHONE_SIMULATOR
-#define MAYBE_testPostFormToSamePage testPostFormToSamePage
-#else
-#define MAYBE_testPostFormToSamePage FLAKY_testPostFormToSamePage
-#endif
-- (void)MAYBE_testPostFormToSamePage {
+- (void)testPostFormToSamePage {
   web::test::SetUpHttpServer(std::make_unique<TestFormResponseProvider>());
   const GURL formURL = GetFormPostOnSamePageUrl();
 
@@ -478,8 +508,8 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   // Open the second URL, tap the button, and verify the browser navigates to
   // the expected URL.
   [ChromeEarlGrey loadURL:formURL];
-  GREYAssert(TapWebViewElementWithId("button"), @"Failed to tap \"button\"");
-  [ChromeEarlGrey waitForWebViewContainingText:"POST"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"button"];
+  [ChromeEarlGrey waitForWebStateContainingText:"POST"];
   [[EarlGrey selectElementWithMatcher:OmniboxText(formURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
@@ -497,7 +527,13 @@ id<GREYMatcher> ResendPostButtonMatcher() {
 // Tests that submitting a POST-based form by tapping the 'Go' button on the
 // keyboard navigates to the correct URL and the back button works as expected
 // afterwards.
-- (void)testPostFormEntryWithKeyboard {
+// TODO:(crbug.com/1147654): re-enable after figuring out why it is failing.
+- (void)DISABLE_testPostFormEntryWithKeyboard {
+  // Test fails on iPad Air 2 13.4 crbug.com/1102608.
+  if ([ChromeEarlGrey isIPadIdiom] && base::ios::IsRunningOnOrLater(13, 0, 0)) {
+    EARL_GREY_TEST_DISABLED(@"Fails in iOS 13 on iPads.");
+  }
+
   [self setUpFormTestSimpleHttpServer];
   const GURL destinationURL = GetDestinationUrl();
 
@@ -505,7 +541,7 @@ id<GREYMatcher> ResendPostButtonMatcher() {
   [self submitFormUsingKeyboardGoButtonWithInputID:"textfield"];
 
   // Verify that the browser navigates to the expected URL.
-  [ChromeEarlGrey waitForWebViewContainingText:"bar!"];
+  [ChromeEarlGrey waitForWebStateContainingText:"bar!"];
   [[EarlGrey selectElementWithMatcher:OmniboxText(destinationURL.GetContent())]
       assertWithMatcher:grey_notNil()];
 
@@ -520,53 +556,44 @@ id<GREYMatcher> ResendPostButtonMatcher() {
 - (void)submitFormUsingKeyboardGoButtonWithInputID:(const std::string&)ID {
   // Disable EarlGrey's synchronization since it is blocked by opening the
   // keyboard from a web view.
-  [[GREYConfiguration sharedInstance]
-          setValue:@NO
-      forConfigKey:kGREYConfigKeySynchronizationEnabled];
+  {
+    ScopedSynchronizationDisabler disabler;
 
-  // Wait for web view to be interactable before tapping.
-  GREYCondition* interactableCondition = [GREYCondition
-      conditionWithName:@"Wait for web view to be interactable."
-                  block:^BOOL {
-                    NSError* error = nil;
-                    id<GREYMatcher> webViewMatcher = WebViewInWebState(
-                        chrome_test_util::GetCurrentWebState());
-                    [[EarlGrey selectElementWithMatcher:webViewMatcher]
-                        assertWithMatcher:grey_interactable()
-                                    error:&error];
-                    return !error;
-                  }];
-  GREYAssert([interactableCondition
-                 waitWithTimeout:base::test::ios::kWaitForUIElementTimeout],
-             @"Web view did not become interactable.");
+    // Wait for web view to be interactable before tapping.
+    GREYCondition* interactableCondition = [GREYCondition
+        conditionWithName:@"Wait for web view to be interactable."
+                    block:^BOOL {
+                      NSError* error = nil;
+                      [[EarlGrey selectElementWithMatcher:WebViewMatcher()]
+                          assertWithMatcher:grey_interactable()
+                                      error:&error];
+                      return !error;
+                    }];
+    GREYAssert([interactableCondition
+                   waitWithTimeout:base::test::ios::kWaitForUIElementTimeout],
+               @"Web view did not become interactable.");
 
-  web::WebState* currentWebState = chrome_test_util::GetCurrentWebState();
-  [[EarlGrey selectElementWithMatcher:web::WebViewInWebState(currentWebState)]
-      performAction:web::WebViewTapElement(
-                        currentWebState,
-                        [ElementSelector selectorWithElementID:ID])];
+    [[EarlGrey selectElementWithMatcher:WebViewMatcher()]
+        performAction:TapWebElement(
+                          [ElementSelector selectorWithElementID:ID])];
 
-  // Wait until the keyboard shows up before tapping.
-  GREYCondition* condition = [GREYCondition
-      conditionWithName:@"Wait for the keyboard to show up."
-                  block:^BOOL {
-                    NSError* error = nil;
-                    [[EarlGrey selectElementWithMatcher:GoButtonMatcher()]
-                        assertWithMatcher:grey_notNil()
-                                    error:&error];
-                    return (error == nil);
-                  }];
-  GREYAssert(
-      [condition waitWithTimeout:base::test::ios::kWaitForUIElementTimeout],
-      @"No keyboard with 'Go' button showed up.");
+    // Wait until the keyboard shows up before tapping.
+    GREYCondition* condition = [GREYCondition
+        conditionWithName:@"Wait for the keyboard to show up."
+                    block:^BOOL {
+                      NSError* error = nil;
+                      [[EarlGrey selectElementWithMatcher:GoButtonMatcher()]
+                          assertWithMatcher:grey_notNil()
+                                      error:&error];
+                      return (error == nil);
+                    }];
+    GREYAssert(
+        [condition waitWithTimeout:base::test::ios::kWaitForUIElementTimeout],
+        @"No keyboard with 'Go' button showed up.");
 
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(@"Go")]
-      performAction:grey_tap()];
-
-  // Reenable synchronization now that the keyboard has been closed.
-  [[GREYConfiguration sharedInstance]
-          setValue:@YES
-      forConfigKey:kGREYConfigKeySynchronizationEnabled];
+    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(@"Go")]
+        performAction:grey_tap()];
+  }
 }
 
 @end

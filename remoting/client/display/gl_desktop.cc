@@ -4,7 +4,7 @@
 
 #include "remoting/client/display/gl_desktop.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/memory/ptr_util.h"
 #include "remoting/client/display/canvas.h"
 #include "remoting/client/display/gl_math.h"
@@ -57,7 +57,7 @@ struct GlDesktop::GlDesktopTextureContainer {
   webrtc::DesktopRect rect;
 };
 
-GlDesktop::GlDesktop() : weak_factory_(this) {}
+GlDesktop::GlDesktop() {}
 
 GlDesktop::~GlDesktop() {
   DCHECK(thread_checker_.CalledOnValidThread());

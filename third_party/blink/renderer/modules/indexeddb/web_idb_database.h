@@ -27,7 +27,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_INDEXEDDB_WEB_IDB_DATABASE_H_
 
 #include <bitset>
+#include <memory>
 
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "third_party/blink/public/common/indexeddb/web_idb_types.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink.h"
 #include "third_party/blink/renderer/modules/indexeddb/web_idb_cursor.h"
@@ -47,10 +49,12 @@ class MODULES_EXPORT WebIDBDatabase {
                                  int64_t object_store_id,
                                  const String& name) = 0;
   virtual void CreateTransaction(
-      mojom::blink::IDBTransactionAssociatedRequest transaction_request,
+      mojo::PendingAssociatedReceiver<mojom::blink::IDBTransaction>
+          transaction_receiver,
       int64_t id,
       const Vector<int64_t>& scope,
-      mojom::IDBTransactionMode) = 0;
+      mojom::IDBTransactionMode,
+      mojom::IDBTransactionDurability) = 0;
   virtual void Close() = 0;
   virtual void VersionChangeIgnored() = 0;
 
@@ -73,15 +77,6 @@ class MODULES_EXPORT WebIDBDatabase {
 
   static const int64_t kMinimumIndexId = 30;
 
-  virtual void AddObserver(
-      int64_t transaction_id,
-      int32_t observer_id,
-      bool include_transaction,
-      bool no_records,
-      bool values,
-      std::bitset<blink::kIDBOperationTypeCount> operation_types) = 0;
-  virtual void RemoveObservers(
-      const Vector<int32_t>& observer_ids_to_remove) = 0;
   virtual void Get(int64_t transaction_id,
                    int64_t object_store_id,
                    int64_t index_id,

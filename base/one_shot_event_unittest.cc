@@ -5,9 +5,9 @@
 #include "base/one_shot_event.h"
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,6 +24,8 @@ class RefCountedClass : public base::RefCounted<RefCountedClass> {
       : did_delete_instance_(did_delete_instance) {
     DCHECK(!*did_delete_instance_);
   }
+  RefCountedClass(const RefCountedClass&) = delete;
+  RefCountedClass& operator=(const RefCountedClass&) = delete;
 
   void PerformTask() { did_perform_task_ = true; }
   bool did_perform_task() const { return did_perform_task_; }
@@ -36,8 +38,6 @@ class RefCountedClass : public base::RefCounted<RefCountedClass> {
   bool* const did_delete_instance_;  // Not owned.
 
   bool did_perform_task_ = false;
-
-  DISALLOW_COPY_AND_ASSIGN(RefCountedClass);
 };
 
 TEST(OneShotEventTest, RecordsSignal) {
@@ -52,8 +52,8 @@ TEST(OneShotEventTest, CallsQueueAsDistinctTask) {
   scoped_refptr<base::TestSimpleTaskRunner> runner(
       new base::TestSimpleTaskRunner);
   int i = 0;
-  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
-  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &i), runner);
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &i), runner);
   EXPECT_EQ(0U, runner->NumPendingTasks());
   event.Signal();
 
@@ -69,8 +69,8 @@ TEST(OneShotEventTest, CallsQueue) {
   scoped_refptr<base::TestSimpleTaskRunner> runner(
       new base::TestSimpleTaskRunner);
   int i = 0;
-  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
-  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &i), runner);
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &i), runner);
   EXPECT_EQ(0U, runner->NumPendingTasks());
   event.Signal();
   ASSERT_EQ(2U, runner->NumPendingTasks());
@@ -87,7 +87,7 @@ TEST(OneShotEventTest, CallsAfterSignalDontRunInline) {
   int i = 0;
 
   event.Signal();
-  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &i), runner);
   EXPECT_EQ(1U, runner->NumPendingTasks());
   EXPECT_EQ(0, i);
   runner->RunPendingTasks();
@@ -98,12 +98,12 @@ TEST(OneShotEventTest, PostDefaultsToCurrentMessageLoop) {
   OneShotEvent event;
   scoped_refptr<base::TestSimpleTaskRunner> runner(
       new base::TestSimpleTaskRunner);
-  base::MessageLoop loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   int runner_i = 0;
   int loop_i = 0;
 
-  event.Post(FROM_HERE, base::Bind(&Increment, &runner_i), runner);
-  event.Post(FROM_HERE, base::Bind(&Increment, &loop_i));
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &runner_i), runner);
+  event.Post(FROM_HERE, base::BindOnce(&Increment, &loop_i));
   event.Signal();
   EXPECT_EQ(1U, runner->NumPendingTasks());
   EXPECT_EQ(0, runner_i);
@@ -119,7 +119,7 @@ void CheckSignaledAndPostIncrement(
     const scoped_refptr<base::SingleThreadTaskRunner>& runner,
     int* i) {
   EXPECT_TRUE(event->is_signaled());
-  event->Post(FROM_HERE, base::Bind(&Increment, i), runner);
+  event->Post(FROM_HERE, base::BindOnce(&Increment, i), runner);
 }
 
 TEST(OneShotEventTest, IsSignaledAndPostsFromCallbackWork) {
@@ -129,7 +129,7 @@ TEST(OneShotEventTest, IsSignaledAndPostsFromCallbackWork) {
   int i = 0;
 
   event.Post(FROM_HERE,
-             base::Bind(&CheckSignaledAndPostIncrement, &event, runner, &i),
+             base::BindOnce(&CheckSignaledAndPostIncrement, &event, runner, &i),
              runner);
   EXPECT_EQ(0, i);
   event.Signal();
@@ -157,10 +157,9 @@ TEST(OneShotEventTest, DropsCallbackRefUponSignalled) {
   {
     auto ref_counted_class =
         base::MakeRefCounted<RefCountedClass>(&did_delete_instance);
-    event.Post(
-        FROM_HERE,
-        base::BindRepeating(&RefCountedClass::PerformTask, ref_counted_class),
-        runner);
+    event.Post(FROM_HERE,
+               base::BindOnce(&RefCountedClass::PerformTask, ref_counted_class),
+               runner);
     event.Signal();
     runner->RunPendingTasks();
     EXPECT_TRUE(ref_counted_class->did_perform_task());

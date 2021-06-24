@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # Copyright 2018 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -12,6 +12,8 @@ $ tools/android/native_lib_memory/java_code_pages_pss.py
     --chrome-package com.android.chrome
     --app-package com.google.android.gms --verbose
 """
+
+from __future__ import print_function
 
 import argparse
 import logging
@@ -47,7 +49,7 @@ def _GetPssInKb(mappings, app_package, verbose):
       else:
         other_pss += mapping.fields['Pss']
       if verbose:
-        print mapping.ToString()
+        print(mapping.ToString())
   return (executable_pss, other_pss)
 
 
@@ -82,8 +84,8 @@ def main():
     total_executable_pss_kb += executable_pss_kb
     total_other_pss_kb += other_pss_kb
 
-  print 'Total executable PSS = %dkB' % total_executable_pss_kb
-  print 'Total other mappings PSS = %dkB' % total_other_pss_kb
+  print('Total executable PSS = %dkB' % total_executable_pss_kb)
+  print('Total other mappings PSS = %dkB' % total_other_pss_kb)
 
 
 if __name__ == '__main__':

@@ -3,46 +3,36 @@
 // found in the LICENSE file.
 
 #include <wayland-server-core.h>
-#include <xdg-shell-unstable-v5-server-protocol.h>
+#include <xdg-shell-server-protocol.h>
 
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/ozone/platform/wayland/common/wayland.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
+#include "ui/ozone/platform/wayland/host/wayland_event_source.h"
+#include "ui/ozone/platform/wayland/test/test_compositor.h"
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
 
 namespace ui {
 
-namespace {
-constexpr uint32_t kXdgVersion5 = 5;
-}
-
-TEST(WaylandConnectionTest, UseUnstableVersion) {
-  base::MessageLoopForUI message_loop;
-  wl::TestWaylandServerThread server;
-  EXPECT_CALL(*server.xdg_shell(),
-              UseUnstableVersion(XDG_SHELL_VERSION_CURRENT));
-  ASSERT_TRUE(server.Start(kXdgVersion5));
-  WaylandConnection connection;
-  ASSERT_TRUE(connection.Initialize());
-  connection.StartProcessingEvents();
-
-  base::RunLoop().RunUntilIdle();
-  server.Pause();
-}
-
 TEST(WaylandConnectionTest, Ping) {
-  base::MessageLoopForUI message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment(
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI);
   wl::TestWaylandServerThread server;
-  ASSERT_TRUE(server.Start(kXdgVersion5));
+  ASSERT_TRUE(server.Start({.shell_version = wl::ShellVersion::kStable}));
   WaylandConnection connection;
   ASSERT_TRUE(connection.Initialize());
-  connection.StartProcessingEvents();
+  connection.event_source()->UseSingleThreadedPollingForTesting();
+  connection.event_source()->StartProcessingEvents();
 
   base::RunLoop().RunUntilIdle();
   server.Pause();
 
-  xdg_shell_send_ping(server.xdg_shell()->resource(), 1234);
+  EXPECT_EQ(wl::TestCompositor::kVersion,
+            wl::get_version_of_object(connection.compositor()));
+
+  xdg_wm_base_send_ping(server.xdg_shell()->resource(), 1234);
   EXPECT_CALL(*server.xdg_shell(), Pong(1234));
 
   server.Resume();

@@ -7,8 +7,6 @@
 
 #include <jni.h>
 
-#include <memory>
-
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
 #include "media/base/android/media_crypto_context.h"
@@ -29,20 +27,8 @@ class MEDIA_EXPORT MediaCryptoContextImpl : public MediaCryptoContext {
 
   ~MediaCryptoContextImpl() final;
 
-  // PlayerTracker implementation.
-  // Methods can be called on any thread. The registered callbacks will be fired
-  // on |task_runner_|. The caller should make sure that the callbacks are
-  // posted to the correct thread.
-  //
-  // Note: RegisterPlayer() must be called before SetMediaCryptoReadyCB() to
-  // avoid missing any new key notifications.
-  int RegisterPlayer(const base::Closure& new_key_cb,
-                     const base::Closure& cdm_unset_cb) final;
-  void UnregisterPlayer(int registration_id) final;
-
   // MediaCryptoContext implementation.
-  void SetMediaCryptoReadyCB(
-      const MediaCryptoReadyCB& media_crypto_ready_cb) final;
+  void SetMediaCryptoReadyCB(MediaCryptoReadyCB media_crypto_ready_cb) final;
 
  private:
   MediaDrmBridge* const media_drm_bridge_;

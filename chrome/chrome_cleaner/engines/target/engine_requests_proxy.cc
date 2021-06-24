@@ -9,8 +9,9 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/win/registry.h"
-#include "chrome/chrome_cleaner/strings/string16_embedded_nulls.h"
+#include "chrome/chrome_cleaner/strings/wstring_embedded_nulls.h"
 #include "mojo/public/cpp/system/platform_handle.h"
 
 namespace chrome_cleaner {
@@ -20,28 +21,39 @@ namespace {
 template <typename ResultType>
 void SaveBoolAndCopyableDataCallback(bool* out_success,
                                      ResultType* out_result,
-                                     base::OnceClosure quit_closure,
+                                     base::WaitableEvent* async_call_done_event,
                                      bool success,
                                      const ResultType& result) {
   *out_success = success;
   *out_result = result;
-  std::move(quit_closure).Run();
+  async_call_done_event->Signal();
 }
 
-void SaveOpenReadOnlyRegistryCallback(uint32_t* out_return_code,
-                                      HANDLE* result_holder,
-                                      base::OnceClosure quit_closure,
-                                      uint32_t return_code,
-                                      HANDLE handle) {
+void SaveGetFileAttributesCallback(uint32_t* out_result,
+                                   uint32_t* out_attributes,
+                                   base::WaitableEvent* async_call_done_event,
+                                   uint32_t result,
+                                   uint32_t attributes) {
+  *out_result = result;
+  *out_attributes = attributes;
+  async_call_done_event->Signal();
+}
+
+void SaveOpenReadOnlyRegistryCallback(
+    uint32_t* out_return_code,
+    HANDLE* result_holder,
+    base::WaitableEvent* async_call_done_event,
+    uint32_t return_code,
+    HANDLE handle) {
   *out_return_code = return_code;
   *result_holder = std::move(handle);
-  std::move(quit_closure).Run();
+  async_call_done_event->Signal();
 }
 
 void SaveBoolAndScheduledTasksCallback(
     bool* out_success,
     std::vector<TaskScheduler::TaskInfo>* out_tasks,
-    base::OnceClosure quit_closure,
+    base::WaitableEvent* async_call_done_event,
     bool in_success,
     std::vector<mojom::ScheduledTaskPtr> in_tasks) {
   out_tasks->clear();
@@ -63,31 +75,49 @@ void SaveBoolAndScheduledTasksCallback(
   }
 
   *out_success = in_success;
-  std::move(quit_closure).Run();
+  async_call_done_event->Signal();
 }
 
 void SaveUserInformationCallback(bool* out_success,
                                  mojom::UserInformation* out_result,
-                                 base::OnceClosure quit_closure,
+                                 base::WaitableEvent* async_call_done_event,
                                  bool in_success,
                                  mojom::UserInformationPtr in_result) {
   *out_success = in_success;
   out_result->name = std::move(in_result->name);
   out_result->domain = std::move(in_result->domain);
   out_result->account_type = in_result->account_type;
-  std::move(quit_closure).Run();
+  async_call_done_event->Signal();
 }
 
 }  // namespace
 
 EngineRequestsProxy::EngineRequestsProxy(
-    mojom::EngineRequestsAssociatedPtr engine_requests_ptr,
+    mojo::PendingAssociatedRemote<mojom::EngineRequests> engine_requests,
     scoped_refptr<base::SingleThreadTaskRunner> task_runner)
-    : engine_requests_ptr_(std::move(engine_requests_ptr)),
-      task_runner_(task_runner) {}
+    : engine_requests_(std::move(engine_requests)), task_runner_(task_runner) {}
 
-void EngineRequestsProxy::UnbindRequestsPtr() {
-  engine_requests_ptr_.reset();
+void EngineRequestsProxy::UnbindRequestsRemote() {
+  engine_requests_.reset();
+}
+
+uint32_t EngineRequestsProxy::GetFileAttributes(const base::FilePath& file_path,
+                                                uint32_t* attributes) {
+  if (!attributes) {
+    LOG(ERROR) << "GetFileAttributes given a null pointer |attributes|";
+    return NULL_DATA_HANDLE;
+  }
+  uint32_t result;
+  MojoCallStatus call_status = SyncSandboxRequest(
+      this,
+      base::BindOnce(&EngineRequestsProxy::SandboxGetFileAttributes,
+                     base::Unretained(this), file_path),
+      base::BindOnce(SaveGetFileAttributesCallback, &result, attributes));
+  if (call_status.state == MojoCallStatus::MOJO_CALL_ERROR) {
+    *attributes = INVALID_FILE_ATTRIBUTES;
+    return SandboxErrorCode::INTERNAL_ERROR;
+  }
+  return result;
 }
 
 bool EngineRequestsProxy::GetKnownFolderPath(mojom::KnownFolder folder_id,
@@ -166,9 +196,8 @@ bool EngineRequestsProxy::GetProcessImagePath(base::ProcessId pid,
   return result;
 }
 
-bool EngineRequestsProxy::GetLoadedModules(
-    base::ProcessId pid,
-    std::vector<base::string16>* modules) {
+bool EngineRequestsProxy::GetLoadedModules(base::ProcessId pid,
+                                           std::vector<std::wstring>* modules) {
   if (modules == nullptr) {
     LOG(ERROR) << "GetLoadedModulesCallback received a null modules";
     return false;
@@ -179,8 +208,8 @@ bool EngineRequestsProxy::GetLoadedModules(
       base::BindOnce(&EngineRequestsProxy::SandboxGetLoadedModules,
                      base::Unretained(this), pid),
       base::BindOnce(
-          &SaveBoolAndCopyableDataCallback<std::vector<base::string16>>,
-          &result, modules));
+          &SaveBoolAndCopyableDataCallback<std::vector<std::wstring>>, &result,
+          modules));
   if (call_status.state == MojoCallStatus::MOJO_CALL_ERROR) {
     return false;
   }
@@ -188,7 +217,7 @@ bool EngineRequestsProxy::GetLoadedModules(
 }
 
 bool EngineRequestsProxy::GetProcessCommandLine(base::ProcessId pid,
-                                                base::string16* command_line) {
+                                                std::wstring* command_line) {
   if (command_line == nullptr) {
     LOG(ERROR) << "GetProcessCommandLineCallback received a null command_line";
     return false;
@@ -198,7 +227,7 @@ bool EngineRequestsProxy::GetProcessCommandLine(base::ProcessId pid,
       this,
       base::BindOnce(&EngineRequestsProxy::SandboxGetProcessCommandLine,
                      base::Unretained(this), pid),
-      base::BindOnce(&SaveBoolAndCopyableDataCallback<base::string16>, &result,
+      base::BindOnce(&SaveBoolAndCopyableDataCallback<std::wstring>, &result,
                      command_line));
   if (call_status.state == MojoCallStatus::MOJO_CALL_ERROR) {
     return false;
@@ -226,11 +255,10 @@ bool EngineRequestsProxy::GetUserInfoFromSID(
   return result;
 }
 
-uint32_t EngineRequestsProxy::OpenReadOnlyRegistry(
-    HANDLE root_key,
-    const base::string16& sub_key,
-    uint32_t dw_access,
-    HANDLE* registry_handle) {
+uint32_t EngineRequestsProxy::OpenReadOnlyRegistry(HANDLE root_key,
+                                                   const std::wstring& sub_key,
+                                                   uint32_t dw_access,
+                                                   HANDLE* registry_handle) {
   uint32_t return_code;
   MojoCallStatus call_status = SyncSandboxRequest(
       this,
@@ -246,7 +274,7 @@ uint32_t EngineRequestsProxy::OpenReadOnlyRegistry(
 
 uint32_t EngineRequestsProxy::NtOpenReadOnlyRegistry(
     HANDLE root_key,
-    const String16EmbeddedNulls& sub_key,
+    const WStringEmbeddedNulls& sub_key,
     uint32_t dw_access,
     HANDLE* registry_handle) {
   uint32_t return_code;
@@ -264,42 +292,57 @@ uint32_t EngineRequestsProxy::NtOpenReadOnlyRegistry(
   return return_code;
 }
 
+EngineRequestsProxy::EngineRequestsProxy() = default;
+
 EngineRequestsProxy::~EngineRequestsProxy() = default;
+
+MojoCallStatus EngineRequestsProxy::SandboxGetFileAttributes(
+    const base::FilePath& file_path,
+    mojom::EngineRequests::SandboxGetFileAttributesCallback result_callback) {
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetFileAttributes called without bound remote";
+    return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
+  }
+
+  engine_requests_->SandboxGetFileAttributes(file_path,
+                                             std::move(result_callback));
+  return MojoCallStatus::Success();
+}
 
 MojoCallStatus EngineRequestsProxy::SandboxGetKnownFolderPath(
     mojom::KnownFolder folder_id,
     mojom::EngineRequests::SandboxGetKnownFolderPathCallback result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetKnownFolderPath called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetKnownFolderPath called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxGetKnownFolderPath(folder_id,
-                                                  std::move(result_callback));
+  engine_requests_->SandboxGetKnownFolderPath(folder_id,
+                                              std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
 
 MojoCallStatus EngineRequestsProxy::SandboxGetProcesses(
     mojom::EngineRequests::SandboxGetProcessesCallback result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetProcesses called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetProcesses called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxGetProcesses(std::move(result_callback));
+  engine_requests_->SandboxGetProcesses(std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
 
 MojoCallStatus EngineRequestsProxy::SandboxGetTasks(
     mojom::EngineRequests::SandboxGetTasksCallback result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetTasks called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetTasks called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxGetTasks(std::move(result_callback));
+  engine_requests_->SandboxGetTasks(std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
@@ -307,13 +350,12 @@ MojoCallStatus EngineRequestsProxy::SandboxGetTasks(
 MojoCallStatus EngineRequestsProxy::SandboxGetProcessImagePath(
     base::ProcessId pid,
     mojom::EngineRequests::SandboxGetProcessImagePathCallback result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetProcessImagePath called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetProcessImagePath called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxGetProcessImagePath(pid,
-                                                   std::move(result_callback));
+  engine_requests_->SandboxGetProcessImagePath(pid, std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
@@ -321,13 +363,12 @@ MojoCallStatus EngineRequestsProxy::SandboxGetProcessImagePath(
 MojoCallStatus EngineRequestsProxy::SandboxGetLoadedModules(
     base::ProcessId pid,
     mojom::EngineRequests::SandboxGetLoadedModulesCallback result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetLoadedModules called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetLoadedModules called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxGetLoadedModules(pid,
-                                                std::move(result_callback));
+  engine_requests_->SandboxGetLoadedModules(pid, std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
@@ -336,13 +377,13 @@ MojoCallStatus EngineRequestsProxy::SandboxGetProcessCommandLine(
     base::ProcessId pid,
     mojom::EngineRequestsProxy::SandboxGetProcessCommandLineCallback
         result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetProcessCommandLine called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetProcessCommandLine called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxGetProcessCommandLine(
-      pid, std::move(result_callback));
+  engine_requests_->SandboxGetProcessCommandLine(pid,
+                                                 std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
@@ -350,8 +391,8 @@ MojoCallStatus EngineRequestsProxy::SandboxGetProcessCommandLine(
 MojoCallStatus EngineRequestsProxy::SandboxGetUserInfoFromSID(
     const SID* const sid,
     mojom::EngineRequests::SandboxGetUserInfoFromSIDCallback result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxGetUserInfoFromSID called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxGetUserInfoFromSID called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
@@ -364,41 +405,41 @@ MojoCallStatus EngineRequestsProxy::SandboxGetUserInfoFromSID(
   auto mojom_string_sid = mojom::StringSid::New(sid_buffer);
   LocalFree(sid_buffer);
 
-  engine_requests_ptr_->SandboxGetUserInfoFromSID(std::move(mojom_string_sid),
-                                                  std::move(result_callback));
+  engine_requests_->SandboxGetUserInfoFromSID(std::move(mojom_string_sid),
+                                              std::move(result_callback));
 
   return MojoCallStatus::Success();
 }
 
 MojoCallStatus EngineRequestsProxy::SandboxOpenReadOnlyRegistry(
     HANDLE root_key,
-    const base::string16& sub_key,
+    const std::wstring& sub_key,
     uint32_t dw_access,
     mojom::EngineRequests::SandboxOpenReadOnlyRegistryCallback
         result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxOpenReadOnlyRegistry called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxOpenReadOnlyRegistry called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxOpenReadOnlyRegistry(
-      root_key, sub_key, dw_access, std::move(result_callback));
+  engine_requests_->SandboxOpenReadOnlyRegistry(root_key, sub_key, dw_access,
+                                                std::move(result_callback));
   return MojoCallStatus::Success();
 }
 
 MojoCallStatus EngineRequestsProxy::SandboxNtOpenReadOnlyRegistry(
     HANDLE root_key,
-    const String16EmbeddedNulls& sub_key,
+    const WStringEmbeddedNulls& sub_key,
     uint32_t dw_access,
     mojom::EngineRequests::SandboxNtOpenReadOnlyRegistryCallback
         result_callback) {
-  if (!engine_requests_ptr_.is_bound()) {
-    LOG(ERROR) << "SandboxNtOpenReadOnlyRegistry called without bound pointer";
+  if (!engine_requests_.is_bound()) {
+    LOG(ERROR) << "SandboxNtOpenReadOnlyRegistry called without bound remote";
     return MojoCallStatus::Failure(SandboxErrorCode::INTERNAL_ERROR);
   }
 
-  engine_requests_ptr_->SandboxNtOpenReadOnlyRegistry(
-      root_key, sub_key, dw_access, std::move(result_callback));
+  engine_requests_->SandboxNtOpenReadOnlyRegistry(root_key, sub_key, dw_access,
+                                                  std::move(result_callback));
 
   return MojoCallStatus::Success();
 }

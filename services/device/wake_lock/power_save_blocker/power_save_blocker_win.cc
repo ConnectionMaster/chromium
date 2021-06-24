@@ -7,7 +7,7 @@
 #include <windows.h>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
@@ -20,11 +20,11 @@ namespace {
 HANDLE CreatePowerRequest(POWER_REQUEST_TYPE type,
                           const std::string& description) {
   if (type == PowerRequestExecutionRequired &&
-      base::win::GetVersion() == base::win::VERSION_WIN7) {
+      base::win::GetVersion() == base::win::Version::WIN7) {
     return INVALID_HANDLE_VALUE;
   }
 
-  base::string16 wide_description = base::ASCIIToUTF16(description);
+  std::wstring wide_description = base::ASCIIToWide(description);
   REASON_CONTEXT context = {0};
   context.Version = POWER_REQUEST_CONTEXT_VERSION;
   context.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
@@ -49,7 +49,7 @@ void DeletePowerRequest(POWER_REQUEST_TYPE type, HANDLE handle) {
     return;
 
   if (type == PowerRequestExecutionRequired &&
-      base::win::GetVersion() == base::win::VERSION_WIN7) {
+      base::win::GetVersion() == base::win::Version::WIN7) {
     return;
   }
 
@@ -103,7 +103,7 @@ POWER_REQUEST_TYPE PowerSaveBlocker::Delegate::RequestType() {
       type_ == mojom::WakeLockType::kPreventDisplaySleepAllowDimming)
     return PowerRequestDisplayRequired;
 
-  if (base::win::GetVersion() == base::win::VERSION_WIN7)
+  if (base::win::GetVersion() == base::win::Version::WIN7)
     return PowerRequestSystemRequired;
 
   return PowerRequestExecutionRequired;

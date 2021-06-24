@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/extensions/external_install_error.h"
-
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/external_install_error.h"
 #include "chrome/browser/extensions/external_install_manager.h"
+#include "chrome/browser/ui/global_error/global_error_waiter.h"
 #include "content/public/browser/notification_service.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
@@ -17,14 +17,7 @@
 
 namespace extensions {
 
-class ExternalInstallErrorTest : public ExtensionBrowserTest {
- public:
-  ExternalInstallErrorTest() = default;
-  ~ExternalInstallErrorTest() override = default;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ExternalInstallErrorTest);
-};
+using ExternalInstallErrorTest = ExtensionBrowserTest;
 
 // Test that global errors don't crash on shutdown. See crbug.com/720081.
 IN_PROC_BROWSER_TEST_F(ExternalInstallErrorTest, TestShutdown) {
@@ -36,20 +29,18 @@ IN_PROC_BROWSER_TEST_F(ExternalInstallErrorTest, TestShutdown) {
   {
     // Wait for an external extension to be installed and a global error about
     // it added.
-    content::WindowedNotificationObserver global_error_observer(
-        chrome::NOTIFICATION_GLOBAL_ERRORS_CHANGED,
-        content::NotificationService::AllSources());
+    test::GlobalErrorWaiter waiter(profile());
     content::WindowedNotificationObserver install_observer(
         NOTIFICATION_CRX_INSTALLER_DONE,
         content::NotificationService::AllSources());
     auto provider = std::make_unique<MockExternalProvider>(
-        extension_service(), Manifest::EXTERNAL_PREF);
+        extension_service(), mojom::ManifestLocation::kExternalPref);
     provider->UpdateOrAddExtension(kId, "1.0.0.0",
                                    test_data_dir_.AppendASCII("good.crx"));
     extension_service()->AddProviderForTesting(std::move(provider));
     extension_service()->CheckForExternalUpdates();
     install_observer.Wait();
-    global_error_observer.Wait();
+    waiter.Wait();
   }
 
   // Verify the extension is in the expected state (disabled for being

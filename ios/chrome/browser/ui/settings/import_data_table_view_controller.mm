@@ -4,12 +4,13 @@
 
 #import "ios/chrome/browser/ui/settings/import_data_table_view_controller.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #import "base/mac/foundation_util.h"
 #include "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/ui/settings/cells/settings_multiline_detail_item.h"
+#import "ios/chrome/browser/ui/settings/cells/settings_image_detail_text_item.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_text_item.h"
 #import "ios/chrome/browser/ui/table_view/table_view_model.h"
+#import "ios/chrome/browser/ui/table_view/table_view_utils.h"
 #include "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
 #include "ios/chrome/grit/ios_strings.h"
@@ -24,6 +25,7 @@ NSString* const kImportDataImportCellId = @"kImportDataImportCellId";
 // The accessibility identifier of the Keep Data Separate cell.
 NSString* const kImportDataKeepSeparateCellId =
     @"kImportDataKeepSeparateCellId";
+NSString* const kImportDataContinueButtonId = @"kImportDataContinueButtonId";
 
 namespace {
 
@@ -46,8 +48,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   NSString* _toEmail;
   BOOL _isSignedIn;
   ShouldClearData _shouldClearData;
-  SettingsMultilineDetailItem* _importDataItem;
-  SettingsMultilineDetailItem* _keepDataSeparateItem;
+  SettingsImageDetailTextItem* _importDataItem;
+  SettingsImageDetailTextItem* _keepDataSeparateItem;
 }
 
 #pragma mark - Initialization
@@ -58,11 +60,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
                       isSignedIn:(BOOL)isSignedIn {
   DCHECK(fromEmail);
   DCHECK(toEmail);
-  UITableViewStyle style = base::FeatureList::IsEnabled(kSettingsRefresh)
-                               ? UITableViewStylePlain
-                               : UITableViewStyleGrouped;
-  self = [super initWithTableViewStyle:style
-                           appBarStyle:ChromeTableViewControllerStyleNoAppBar];
+
+  self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
     _delegate = delegate;
     _fromEmail = [fromEmail copy];
@@ -89,7 +88,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
               style:UIBarButtonItemStyleDone
              target:self
              action:@selector(didTapContinue)];
-
+  self.navigationItem.rightBarButtonItem.accessibilityIdentifier =
+      kImportDataContinueButtonId;
   [self loadModel];
 }
 
@@ -126,12 +126,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
       [[TableViewTextItem alloc] initWithType:ItemTypeFooter];
   item.text = l10n_util::GetNSStringF(IDS_IOS_OPTIONS_IMPORT_DATA_HEADER,
                                       base::SysNSStringToUTF16(_fromEmail));
-  item.textColor = UIColor.blackColor;
   return item;
 }
 
-- (SettingsMultilineDetailItem*)importDataItem {
-  SettingsMultilineDetailItem* item = [[SettingsMultilineDetailItem alloc]
+- (SettingsImageDetailTextItem*)importDataItem {
+  SettingsImageDetailTextItem* item = [[SettingsImageDetailTextItem alloc]
       initWithType:ItemTypeOptionImportData];
   item.text = l10n_util::GetNSString(IDS_IOS_OPTIONS_IMPORT_DATA_IMPORT_TITLE);
   item.detailText =
@@ -143,8 +142,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   return item;
 }
 
-- (SettingsMultilineDetailItem*)keepDataSeparateItem {
-  SettingsMultilineDetailItem* item = [[SettingsMultilineDetailItem alloc]
+- (SettingsImageDetailTextItem*)keepDataSeparateItem {
+  SettingsImageDetailTextItem* item = [[SettingsImageDetailTextItem alloc]
       initWithType:ItemTypeOptionKeepDataSeparate];
   item.text = l10n_util::GetNSString(IDS_IOS_OPTIONS_IMPORT_DATA_KEEP_TITLE);
   if (_isSignedIn) {

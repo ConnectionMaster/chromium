@@ -3,46 +3,60 @@
 # found in the LICENSE file.
 
 import("//third_party/closure_compiler/compile_js.gni")
+import("//tools/polymer/html_to_js.gni")
+import("../settings.gni")
 
 js_type_check("closure_compile") {
+  is_polymer3 = true
+  closure_flags = settings_closure_flags
   deps = [
     ":a11y_page",
-    ":externs",
-    ":manage_a11y_page",
-    ":tts_subpage",
+    ":captions_browser_proxy",
+    ":captions_subpage",
+    ":live_caption_section",
   ]
 }
 
 js_library("a11y_page") {
   deps = [
+    ":captions_browser_proxy",
     "..:route",
-    "../settings_page:settings_animated_pages",
-    "//ui/webui/resources/js:load_time_data",
-    "//ui/webui/resources/js:web_ui_listener_behavior",
+    "..:router",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+    "//ui/webui/resources/js:load_time_data.m",
+    "//ui/webui/resources/js:web_ui_listener_behavior.m",
   ]
 }
 
-js_library("manage_a11y_page") {
+js_library("captions_browser_proxy") {
+  deps = [ "//ui/webui/resources/js:cr.m" ]
+}
+
+js_library("captions_subpage") {
   deps = [
-    "..:route",
-    "//ui/webui/resources/js:load_time_data",
-    "//ui/webui/resources/js:web_ui_listener_behavior",
+    "../appearance_page:fonts_browser_proxy",
+    "../controls:settings_dropdown_menu",
+    "../prefs:prefs_behavior",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+    "//ui/webui/resources/js:i18n_behavior.m",
+    "//ui/webui/resources/js:web_ui_listener_behavior.m",
   ]
-  externs_list = [ "$externs_path/settings_private.js" ]
 }
 
-js_library("tts_subpage") {
+js_library("live_caption_section") {
   deps = [
-    ":externs",
-    "..:route",
-    "../controls:settings_slider",
-    "../languages_page:languages_browser_proxy",
-    "../settings_page:settings_animated_pages",
-    "//ui/webui/resources/js:i18n_behavior",
-    "//ui/webui/resources/js:load_time_data",
-    "//ui/webui/resources/js:web_ui_listener_behavior",
+    "../controls:settings_toggle_button",
+    "../prefs:prefs_behavior",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+    "//ui/webui/resources/js:i18n_behavior.m",
+    "//ui/webui/resources/js:web_ui_listener_behavior.m",
   ]
 }
 
-js_library("externs") {
+html_to_js("web_components") {
+  js_files = [
+    "a11y_page.js",
+    "captions_subpage.js",
+    "live_caption_section.js",
+  ]
 }

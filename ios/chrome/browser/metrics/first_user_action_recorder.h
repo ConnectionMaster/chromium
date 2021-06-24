@@ -5,6 +5,7 @@
 #ifndef IOS_CHROME_BROWSER_METRICS_FIRST_USER_ACTION_RECORDER_H_
 #define IOS_CHROME_BROWSER_METRICS_FIRST_USER_ACTION_RECORDER_H_
 
+#include <string>
 #include <vector>
 
 #include "base/cancelable_callback.h"
@@ -57,7 +58,8 @@ class FirstUserActionRecorder {
  private:
   // Records metrics if |action_name| indicates the start of a new task or the
   // continuation of an existing task.
-  void OnUserAction(const std::string& action_name);
+  void OnUserAction(const std::string& action_name,
+                    base::TimeTicks action_time);
 
   // Records the appropriate metrics for the given action type.
   void RecordAction(const FirstUserActionType& action_type,
@@ -65,7 +67,8 @@ class FirstUserActionRecorder {
 
   // Returns true if the specified action should be processed, or false if the
   // action should be ignored.
-  bool ShouldProcessAction(const std::string& action_name);
+  bool ShouldProcessAction(const std::string& action_name,
+                           base::TimeTicks action_time);
 
   // Returns true if the given array contains the given string.
   bool ArrayContainsString(const char* to_search[],

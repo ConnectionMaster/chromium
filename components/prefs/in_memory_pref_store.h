@@ -46,10 +46,12 @@ class COMPONENTS_PREFS_EXPORT InMemoryPrefStore : public PersistentPrefStore {
   PrefReadError GetReadError() const override;
   PersistentPrefStore::PrefReadError ReadPrefs() override;
   void ReadPrefsAsync(ReadErrorDelegate* error_delegate) override {}
+  void CommitPendingWriteSynchronously() override;
   void SchedulePendingLossyWrites() override {}
   void ClearMutableValues() override {}
   void OnStoreDeletionFromDisk() override {}
   bool IsInMemoryPrefStore() const override;
+  void RemoveValuesByPrefixSilently(const std::string& prefix) override;
 
  protected:
   ~InMemoryPrefStore() override;

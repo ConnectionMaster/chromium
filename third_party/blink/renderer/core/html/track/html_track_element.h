@@ -39,15 +39,10 @@ class LoadableTextTrack;
 class HTMLTrackElement final : public HTMLElement,
                                private TextTrackLoaderClient {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(HTMLTrackElement);
 
  public:
-  DECLARE_NODE_FACTORY(HTMLTrackElement);
-
   explicit HTMLTrackElement(Document&);
-
-  // Returns attributes that should be checked against Trusted Types
-  const AttrNameToTrustedType& GetCheckedAttributeTypes() const override;
+  ~HTMLTrackElement() override;
 
   const AtomicString& kind();
   void setKind(const AtomicString&);
@@ -58,11 +53,9 @@ class HTMLTrackElement final : public HTMLElement,
 
   TextTrack* track();
 
-  void Trace(Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
-  ~HTMLTrackElement() override;
-
   void ParseAttribute(const AttributeModificationParams&) override;
 
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;
@@ -89,7 +82,7 @@ class HTMLTrackElement final : public HTMLElement,
 
   Member<LoadableTextTrack> track_;
   Member<TextTrackLoader> loader_;
-  TaskRunnerTimer<HTMLTrackElement> load_timer_;
+  HeapTaskRunnerTimer<HTMLTrackElement> load_timer_;
   KURL url_;
 };
 

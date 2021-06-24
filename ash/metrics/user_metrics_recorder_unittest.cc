@@ -9,7 +9,7 @@
 #include "ash/login_status.h"
 #include "ash/metrics/user_metrics_recorder_test_api.h"
 #include "ash/public/cpp/shelf_model.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
@@ -32,6 +32,8 @@ const char kAsh_Shelf_NumberOfPinnedItems[] = "Ash.Shelf.NumberOfPinnedItems";
 
 const char kAsh_Shelf_NumberOfUnpinnedItems[] =
     "Ash.Shelf.NumberOfUnpinnedItems";
+
+const char kAsh_NotificationBadgeShownPref[] = "Ash.AppNotificationBadgingPref";
 
 }  // namespace
 
@@ -59,7 +61,7 @@ class UserMetricsRecorderTest : public NoSessionAshTestBase {
 // Verifies the return value of IsUserInActiveDesktopEnvironment() for the
 // different login status values.
 TEST_F(UserMetricsRecorderTest, VerifyIsUserInActiveDesktopEnvironmentValues) {
-  SessionController* session = Shell::Get()->session_controller();
+  SessionControllerImpl* session = Shell::Get()->session_controller();
 
   // Environment is not active before login.
   ASSERT_FALSE(session->IsActiveUserSessionStarted());
@@ -102,6 +104,7 @@ TEST_F(UserMetricsRecorderTest,
   histograms().ExpectTotalCount(kAsh_Shelf_NumberOfItems, 0);
   histograms().ExpectTotalCount(kAsh_Shelf_NumberOfPinnedItems, 0);
   histograms().ExpectTotalCount(kAsh_Shelf_NumberOfUnpinnedItems, 0);
+  histograms().ExpectTotalCount(kAsh_NotificationBadgeShownPref, 0);
 }
 
 // Verifies that the IsUserInActiveDesktopEnvironment() dependent stats are
@@ -116,6 +119,7 @@ TEST_F(UserMetricsRecorderTest,
   histograms().ExpectTotalCount(kAsh_Shelf_NumberOfItems, 1);
   histograms().ExpectTotalCount(kAsh_Shelf_NumberOfPinnedItems, 1);
   histograms().ExpectTotalCount(kAsh_Shelf_NumberOfUnpinnedItems, 1);
+  histograms().ExpectTotalCount(kAsh_NotificationBadgeShownPref, 1);
 }
 
 // Verifies recording of stats which are always recorded by
@@ -132,20 +136,18 @@ TEST_F(UserMetricsRecorderTest, VerifyStatsRecordedByRecordPeriodicMetrics) {
 TEST_F(UserMetricsRecorderTest, ValuesRecordedByRecordShelfItemCounts) {
   CreateUserSessions(1);
 
-  // Make sure the shelf contains the app list launcher and back button.
-  ShelfModel* shelf_model = Shell::Get()->shelf_model();
-  ASSERT_EQ(2u, shelf_model->items().size());
-  ASSERT_EQ(TYPE_BACK_BUTTON, shelf_model->items()[0].type);
-  ASSERT_EQ(TYPE_APP_LIST, shelf_model->items()[1].type);
+  // Make sure the shelf model is empty at first.
+  ShelfModel* shelf_model = ShelfModel::Get();
+  ASSERT_EQ(0u, shelf_model->items().size());
 
   ShelfItem shelf_item;
-  shelf_item.type = ash::TYPE_PINNED_APP;
+  shelf_item.type = TYPE_PINNED_APP;
   shelf_item.id = ShelfID("app_id_1");
   shelf_model->Add(shelf_item);
   shelf_item.id = ShelfID("app_id_2");
   shelf_model->Add(shelf_item);
 
-  shelf_item.type = ash::TYPE_APP;
+  shelf_item.type = TYPE_APP;
   shelf_item.id = ShelfID("app_id_3");
   shelf_model->Add(shelf_item);
   shelf_item.id = ShelfID("app_id_4");

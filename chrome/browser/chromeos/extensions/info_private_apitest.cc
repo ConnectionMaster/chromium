@@ -2,30 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/ash_pref_names.h"
-#include "ash/public/cpp/ash_switches.h"
 #include "ash/public/cpp/stylus_utils.h"
-#include "base/system/sys_info.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_chromeos_version_info.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/arc/arc_util.h"
-#include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
+#include "chrome/browser/ash/arc/arc_util.h"
+#include "chrome/browser/chromeos/policy/core/browser_policy_connector_chromeos.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "chromeos/tpm/stub_install_attributes.h"
-#include "components/arc/arc_util.h"
+#include "components/arc/test/arc_util_test_support.h"
 #include "components/prefs/pref_service.h"
-#include "services/ws/public/cpp/input_devices/input_device_client_test_api.h"
+#include "content/public/test/browser_test.h"
 #include "ui/aura/window.h"
-#include "ui/base/ui_base_features.h"
+#include "ui/events/devices/device_data_manager_test_api.h"
 #include "ui/events/devices/input_device.h"
 #include "ui/events/devices/touchscreen_device.h"
 #include "ui/events/test/event_generator.h"
+
+using base::test::ScopedChromeOSVersionInfo;
 
 namespace {
 
@@ -45,12 +44,6 @@ class ChromeOSInfoPrivateTest : public extensions::ExtensionApiTest {
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(switches::kAppId,
                                                               kTestAppId);
   }
-
-  void SetDeviceType(const std::string& device_type) {
-    const std::string lsb_release = std::string("DEVICETYPE=") + device_type;
-    base::SysInfo::SetChromeOSVersionInfoForTest(lsb_release,
-                                                 base::Time::Now());
-  }
 };
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, TestGetAndSet) {
@@ -66,16 +59,14 @@ IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, TestGetAndSet) {
       prefs->GetBoolean(ash::prefs::kAccessibilitySpokenFeedbackEnabled));
   ASSERT_FALSE(
       prefs->GetBoolean(ash::prefs::kAccessibilityHighContrastEnabled));
-  ASSERT_FALSE(
-      prefs->GetBoolean(ash::prefs::kAccessibilityScreenMagnifierEnabled));
   ASSERT_FALSE(prefs->GetBoolean(ash::prefs::kAccessibilityAutoclickEnabled));
+  ASSERT_FALSE(prefs->GetBoolean(ash::prefs::kAccessibilityCursorColorEnabled));
 
-  ASSERT_FALSE(profile()->GetPrefs()->GetBoolean(
-      prefs::kLanguageSendFunctionKeys));
   ASSERT_FALSE(
-      profile()->GetPrefs()->GetBoolean(prefs::kCameraMediaConsolidated));
+      profile()->GetPrefs()->GetBoolean(prefs::kLanguageSendFunctionKeys));
 
-  ASSERT_TRUE(RunComponentExtensionTest("chromeos_info_private/basic"))
+  ASSERT_TRUE(RunExtensionTest("chromeos_info_private/basic", {},
+                               {.load_as_component = true}))
       << message_;
 
   // Check that all accessibility settings have been flipped by the test.
@@ -84,12 +75,39 @@ IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, TestGetAndSet) {
   ASSERT_TRUE(
       prefs->GetBoolean(ash::prefs::kAccessibilitySpokenFeedbackEnabled));
   ASSERT_TRUE(prefs->GetBoolean(ash::prefs::kAccessibilityHighContrastEnabled));
-  ASSERT_TRUE(
-      prefs->GetBoolean(ash::prefs::kAccessibilityScreenMagnifierEnabled));
   ASSERT_TRUE(prefs->GetBoolean(ash::prefs::kAccessibilityAutoclickEnabled));
+  ASSERT_TRUE(prefs->GetBoolean(ash::prefs::kAccessibilityCursorColorEnabled));
 
   ASSERT_TRUE(prefs->GetBoolean(prefs::kLanguageSendFunctionKeys));
-  ASSERT_TRUE(prefs->GetBoolean(prefs::kCameraMediaConsolidated));
+}
+
+// docked magnifier and screen magnifier are mutually exclusive. test each of
+// them one by one.
+
+IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, TestGetAndSetDockedMagnifier) {
+  PrefService* prefs = profile()->GetPrefs();
+  ASSERT_FALSE(prefs->GetBoolean(ash::prefs::kDockedMagnifierEnabled));
+
+  ASSERT_TRUE(RunExtensionTest("chromeos_info_private/basic",
+                               {.custom_arg = "dockedMagnifier"},
+                               {.load_as_component = true}))
+      << message_;
+
+  ASSERT_TRUE(prefs->GetBoolean(ash::prefs::kDockedMagnifierEnabled));
+}
+
+IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, TestGetAndSetScreenMagnifier) {
+  PrefService* prefs = profile()->GetPrefs();
+  ASSERT_FALSE(
+      prefs->GetBoolean(ash::prefs::kAccessibilityScreenMagnifierEnabled));
+
+  ASSERT_TRUE(RunExtensionTest("chromeos_info_private/basic",
+                               {.custom_arg = "screenMagnifier"},
+                               {.load_as_component = true}))
+      << message_;
+
+  ASSERT_TRUE(
+      prefs->GetBoolean(ash::prefs::kAccessibilityScreenMagnifierEnabled));
 }
 
 // TODO(steel): Investigate merging the following tests.
@@ -97,93 +115,90 @@ IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, TestGetAndSet) {
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, Kiosk) {
   EnableKioskSession();
   ASSERT_TRUE(
-      RunPlatformAppTestWithArg("chromeos_info_private/extended", "kiosk"))
+      RunExtensionTest("chromeos_info_private/extended",
+                       {.custom_arg = "kiosk", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, ArcNotAvailable) {
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "arc not-available"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "arc not-available", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, Chromebase) {
-  SetDeviceType("CHROMEBASE");
-  ASSERT_TRUE(
-      RunPlatformAppTestWithArg("chromeos_info_private/extended", "chromebase"))
+  ScopedChromeOSVersionInfo version("DEVICETYPE=CHROMEBASE", base::Time::Now());
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "chromebase", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, Chromebit) {
-  SetDeviceType("CHROMEBIT");
-  ASSERT_TRUE(
-      RunPlatformAppTestWithArg("chromeos_info_private/extended", "chromebit"))
+  ScopedChromeOSVersionInfo version("DEVICETYPE=CHROMEBIT", base::Time::Now());
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "chromebit", .launch_as_platform_app = true}))
       << message_;
 }
+
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, Chromebook) {
-  SetDeviceType("CHROMEBOOK");
-  ASSERT_TRUE(
-      RunPlatformAppTestWithArg("chromeos_info_private/extended", "chromebook"))
+  ScopedChromeOSVersionInfo version("DEVICETYPE=CHROMEBOOK", base::Time::Now());
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "chromebook", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, Chromebox) {
-  SetDeviceType("CHROMEBOX");
-  ASSERT_TRUE(
-      RunPlatformAppTestWithArg("chromeos_info_private/extended", "chromebox"))
+  ScopedChromeOSVersionInfo version("DEVICETYPE=CHROMEBOX", base::Time::Now());
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "chromebox", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, UnknownDeviceType) {
-  SetDeviceType("UNKNOWN");
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "unknown device type"))
+  ScopedChromeOSVersionInfo version("DEVICETYPE=UNKNOWN", base::Time::Now());
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "unknown device type", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, AssistantSupported) {
-  // Enable native Assistant.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(chromeos::switches::kAssistantFeature);
-
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "assistant supported"))
-      << message_;
-}
-
-IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, AssistantUnsupported) {
-  // Disable native Assistant.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(chromeos::switches::kAssistantFeature);
-
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "assistant unsupported"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "assistant supported", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, StylusUnsupported) {
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "stylus unsupported"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "stylus unsupported", .launch_as_platform_app = true}))
       << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, StylusSupported) {
-  ws::InputDeviceClientTestApi test_api;
+  ui::DeviceDataManagerTestApi test_api;
   ui::TouchscreenDevice touchscreen(1,
                                     ui::InputDeviceType::INPUT_DEVICE_INTERNAL,
                                     "Touchscreen", gfx::Size(1024, 768), 0);
   touchscreen.has_stylus = true;
   test_api.SetTouchscreenDevices({touchscreen});
 
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "stylus supported"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "stylus supported", .launch_as_platform_app = true}))
       << message_;
 }
 
 // TODO(https://crbug.com/814675): Excluded from Mash because pointer events
 // aren't seen.
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, StylusSeen) {
-  ws::InputDeviceClientTestApi test_api;
+  ui::DeviceDataManagerTestApi test_api;
   ui::TouchscreenDevice touchscreen(1,
                                     ui::InputDeviceType::INPUT_DEVICE_INTERNAL,
                                     "Touchscreen", gfx::Size(1024, 768), 0);
@@ -191,16 +206,15 @@ IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateTest, StylusSeen) {
   test_api.SetTouchscreenDevices({touchscreen});
 
   ui::test::EventGenerator generator(
-      features::IsUsingWindowService()
-          ? nullptr
-          : browser()->window()->GetNativeWindow()->GetRootWindow());
+      browser()->window()->GetNativeWindow()->GetRootWindow());
   generator.EnterPenPointerMode();
   generator.PressTouch();
   generator.ReleaseTouch();
   generator.ExitPenPointerMode();
 
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "stylus seen"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "stylus seen", .launch_as_platform_app = true}))
       << message_;
 }
 
@@ -221,8 +235,9 @@ class ChromeOSInfoPrivateInternalStylusTest : public ChromeOSInfoPrivateTest {
 IN_PROC_BROWSER_TEST_F(ChromeOSInfoPrivateInternalStylusTest,
                        StylusSeenInternal) {
   ash::stylus_utils::SetHasStylusInputForTesting();
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "stylus seen"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "stylus seen", .launch_as_platform_app = true}))
       << message_;
 }
 
@@ -242,8 +257,9 @@ class ChromeOSArcInfoPrivateTest : public ChromeOSInfoPrivateTest {
 };
 
 IN_PROC_BROWSER_TEST_F(ChromeOSArcInfoPrivateTest, ArcEnabled) {
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "arc enabled"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "arc enabled", .launch_as_platform_app = true}))
       << message_;
 }
 
@@ -254,8 +270,9 @@ IN_PROC_BROWSER_TEST_F(ChromeOSArcInfoPrivateTest, ArcAvailable) {
   // does not seem to run with such cases, unfortunately. So, here directly
   // control the function.
   arc::DisallowArcForTesting();
-  ASSERT_TRUE(RunPlatformAppTestWithArg("chromeos_info_private/extended",
-                                        "arc available"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "arc available", .launch_as_platform_app = true}))
       << message_;
 }
 
@@ -273,7 +290,8 @@ class ChromeOSManagedDeviceInfoPrivateTest : public ChromeOSInfoPrivateTest {
 };
 
 IN_PROC_BROWSER_TEST_F(ChromeOSManagedDeviceInfoPrivateTest, Managed) {
-  ASSERT_TRUE(
-      RunPlatformAppTestWithArg("chromeos_info_private/extended", "managed"))
+  ASSERT_TRUE(RunExtensionTest(
+      "chromeos_info_private/extended",
+      {.custom_arg = "managed", .launch_as_platform_app = true}))
       << message_;
 }

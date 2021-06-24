@@ -4,6 +4,7 @@
 
 #include "chromeos/services/device_sync/sync_scheduler_impl.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/macros.h"
@@ -35,11 +36,9 @@ bool IsTimeDeltaWithinJitter(const base::TimeDelta& base_time_delta,
   if (base_time_delta.is_zero())
     return jittered_time_delta.is_zero();
 
-  base::TimeDelta difference =
+  const base::TimeDelta difference =
       (jittered_time_delta - base_time_delta).magnitude();
-  double percentage_of_base =
-      difference.InMillisecondsF() / base_time_delta.InMillisecondsF();
-  return percentage_of_base < max_jitter_ratio;
+  return (difference / base_time_delta) < max_jitter_ratio;
 }
 
 // Test harness for the SyncSchedulerImpl to create MockOneShotTimers.
@@ -240,8 +239,8 @@ TEST_F(DeviceSyncSyncSchedulerImplTest, InitialSyncShorterByElapsedTime) {
 }
 
 TEST_F(DeviceSyncSyncSchedulerImplTest, PeriodicRefreshJitter) {
-  scheduler_.reset(new TestSyncSchedulerImpl(
-      this, refresh_period_, base_recovery_period_, kMaxJitterPercentage));
+  scheduler_ = std::make_unique<TestSyncSchedulerImpl>(
+      this, refresh_period_, base_recovery_period_, kMaxJitterPercentage);
 
   scheduler_->Start(zero_elapsed_time_, Strategy::PERIODIC_REFRESH);
 
@@ -264,8 +263,8 @@ TEST_F(DeviceSyncSyncSchedulerImplTest, PeriodicRefreshJitter) {
 TEST_F(DeviceSyncSyncSchedulerImplTest, JitteredTimeDeltaIsNonNegative) {
   base::TimeDelta zero_delta = base::TimeDelta::FromSeconds(0);
   double max_jitter_ratio = 1;
-  scheduler_.reset(new TestSyncSchedulerImpl(this, zero_delta, zero_delta,
-                                             max_jitter_ratio));
+  scheduler_ = std::make_unique<TestSyncSchedulerImpl>(
+      this, zero_delta, zero_delta, max_jitter_ratio);
   scheduler_->Start(zero_elapsed_time_, Strategy::PERIODIC_REFRESH);
 
   for (int i = 0; i < 10; ++i) {

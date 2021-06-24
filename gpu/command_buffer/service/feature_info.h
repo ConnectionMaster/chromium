@@ -39,7 +39,7 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     GpuMemoryBufferFormatSet gpu_memory_buffer_formats = {
         gfx::BufferFormat::BGR_565,   gfx::BufferFormat::RGBA_4444,
         gfx::BufferFormat::RGBA_8888, gfx::BufferFormat::RGBX_8888,
-        gfx::BufferFormat::YVU_420,
+        gfx::BufferFormat::YVU_420,   gfx::BufferFormat::YUV_420_BIPLANAR,
     };
     // Use glBlitFramebuffer() and glRenderbufferStorageMultisample() with
     // GL_EXT_framebuffer_multisample-style semantics (as opposed to
@@ -53,11 +53,13 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     bool use_chromium_screen_space_antialiasing_via_shaders = false;
     bool oes_standard_derivatives = false;
     bool oes_egl_image_external = false;
+    bool oes_egl_image_external_essl3 = false;
     bool nv_egl_stream_consumer_external = false;
     bool oes_depth24 = false;
     bool oes_compressed_etc1_rgb8_texture = false;
     bool packed_depth24_stencil8 = false;
     bool npot_ok = false;
+    bool enable_texture_filter_anisotropic = false;
     bool enable_texture_float_linear = false;
     bool enable_texture_half_float_linear = false;
     bool enable_color_buffer_float = false;
@@ -72,6 +74,7 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     bool use_arb_occlusion_query_for_occlusion_query_boolean = false;
     bool native_vertex_array_object = false;
     bool ext_texture_format_astc = false;
+    bool ext_texture_format_astc_hdr = false;
     bool ext_texture_format_atc = false;
     bool ext_texture_format_bgra8888 = false;
     bool ext_texture_format_dxt1 = false;
@@ -87,11 +90,9 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     bool ext_discard_framebuffer = false;
     bool angle_depth_texture = false;
     bool is_swiftshader_for_webgl = false;
-    bool is_swiftshader = false;
     bool chromium_texture_filtering_hint = false;
     bool angle_texture_usage = false;
     bool ext_texture_storage = false;
-    bool chromium_path_rendering = false;
     bool chromium_raster_transport = false;
     bool chromium_framebuffer_mixed_samples = false;
     bool blend_equation_advanced = false;
@@ -100,8 +101,9 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     bool ext_texture_norm16 = false;
     bool chromium_image_ycbcr_420v = false;
     bool chromium_image_ycbcr_422 = false;
-    bool chromium_image_xr30 = false;
-    bool chromium_image_xb30 = false;
+    bool chromium_image_ar30 = false;
+    bool chromium_image_ab30 = false;
+    bool chromium_image_ycbcr_p010 = false;
     bool emulate_primitive_restart_fixed_index = false;
     bool ext_render_buffer_format_bgra8888 = false;
     bool ext_multisample_compatibility = false;
@@ -123,9 +125,6 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     bool angle_client_arrays = false;
     bool angle_request_extension = false;
     bool ext_debug_marker = false;
-    bool arb_robustness = false;
-    bool khr_robustness = false;
-    bool ext_robustness = false;
     bool ext_pixel_buffer_object = false;
     bool ext_unpack_subimage = false;
     bool oes_rgb8_rgba8 = false;
@@ -142,10 +141,17 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     bool android_surface_control = false;
     bool khr_robust_buffer_access_behavior = false;
     bool webgl_multi_draw = false;
-    bool webgl_multi_draw_instanced = false;
     bool nv_internalformat_sample_query = false;
     bool amd_framebuffer_multisample_advanced = false;
     bool ext_float_blend = false;
+    bool chromium_completion_query = false;
+    bool oes_fbo_render_mipmap = false;
+    bool webgl_draw_instanced_base_vertex_base_instance = false;
+    bool webgl_multi_draw_instanced_base_vertex_base_instance = false;
+    bool ext_texture_compression_bptc = false;
+    bool ext_texture_compression_rgtc = false;
+    bool oes_draw_buffers_indexed = false;
+    bool ext_yuv_target = false;
   };
 
   FeatureInfo();
@@ -199,7 +205,7 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
   bool IsWebGL1OrES2Context() const;
   bool IsWebGL2OrES3Context() const;
   bool IsWebGL2OrES3OrHigherContext() const;
-  bool IsWebGL2ComputeContext() const;
+  bool IsES31ForTestingContext() const;
 
   void EnableCHROMIUMTextureStorageImage();
   void EnableCHROMIUMColorBufferFloatRGBA();
@@ -207,6 +213,9 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
   void EnableEXTFloatBlend();
   void EnableEXTColorBufferFloat();
   void EnableEXTColorBufferHalfFloat();
+  void EnableEXTTextureFilterAnisotropic();
+  void EnableOESDrawBuffersIndexed();
+  void EnableOESFboRenderMipmap();
   void EnableOESTextureFloatLinear();
   void EnableOESTextureHalfFloatLinear();
 
@@ -226,6 +235,10 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
     return oes_texture_half_float_linear_available_;
   }
 
+  bool is_passthrough_cmd_decoder() const {
+    return is_passthrough_cmd_decoder_;
+  }
+
  private:
   friend class base::RefCounted<FeatureInfo>;
   friend class BufferManagerClientSideArraysTest;
@@ -236,6 +249,9 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
   void InitializeBasicState(const base::CommandLine* command_line);
   void InitializeFeatures();
   void InitializeFloatAndHalfFloatFeatures(const gfx::ExtensionSet& extensions);
+
+  void EnableANGLEInstancedArrayIfPossible(const gfx::ExtensionSet& extensions);
+  void EnableWEBGLMultiDrawIfPossible(const gfx::ExtensionSet& extensions);
 
   bool initialized_ = false;
 
@@ -257,6 +273,7 @@ class GPU_GLES2_EXPORT FeatureInfo : public base::RefCounted<FeatureInfo> {
 
   bool ext_color_buffer_float_available_ = false;
   bool ext_color_buffer_half_float_available_ = false;
+  bool ext_texture_filter_anisotropic_available_ = false;
   bool oes_texture_float_linear_available_ = false;
   bool oes_texture_half_float_linear_available_ = false;
 

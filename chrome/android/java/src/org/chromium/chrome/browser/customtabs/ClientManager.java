@@ -13,35 +13,39 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.SystemClock;
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
-import android.support.customtabs.CustomTabsCallback;
-import android.support.customtabs.CustomTabsService;
-import android.support.customtabs.CustomTabsService.Relation;
-import android.support.customtabs.CustomTabsSessionToken;
-import android.support.customtabs.PostMessageServiceConnection;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
 import android.util.SparseBooleanArray;
 
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.VisibleForTesting;
+import androidx.browser.customtabs.CustomTabsCallback;
+import androidx.browser.customtabs.CustomTabsService;
+import androidx.browser.customtabs.CustomTabsService.Relation;
+import androidx.browser.customtabs.CustomTabsSessionToken;
+import androidx.browser.customtabs.PostMessageServiceConnection;
+
 import org.chromium.base.ContextUtils;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.chrome.browser.IntentHandler;
-import org.chromium.chrome.browser.browserservices.Origin;
-import org.chromium.chrome.browser.browserservices.OriginVerifier;
-import org.chromium.chrome.browser.browserservices.OriginVerifier.OriginVerificationListener;
+import org.chromium.chrome.browser.browserservices.BrowserServicesMetrics;
 import org.chromium.chrome.browser.browserservices.PostMessageHandler;
-import org.chromium.chrome.browser.installedapp.InstalledAppProviderImpl;
-import org.chromium.chrome.browser.util.UrlUtilities;
+import org.chromium.chrome.browser.browserservices.verification.OriginVerifier;
+import org.chromium.chrome.browser.browserservices.verification.OriginVerifier.OriginVerificationListener;
+import org.chromium.chrome.browser.browserservices.verification.OriginVerifierFactory;
+import org.chromium.chrome.browser.browserservices.verification.OriginVerifierFactoryImpl;
+import org.chromium.components.embedder_support.util.Origin;
+import org.chromium.components.embedder_support.util.UrlUtilities;
+import org.chromium.components.installedapp.InstalledAppProviderImpl;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.Referrer;
+import org.chromium.url.URI;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -185,7 +189,6 @@ class ClientManager {
         private boolean mAllowParallelRequest;
         private boolean mAllowResourcePrefetch;
         private boolean mShouldGetPageLoadMetrics;
-        private boolean mShouldHideTopBar;
 
         public SessionParams(Context context, int uid, CustomTabsCallback customTabsCallback,
                 DisconnectCallback callback, PostMessageHandler postMessageHandler,
@@ -271,13 +274,16 @@ class ClientManager {
         }
     }
 
+    // TODO(crbug.com/1164866): Inject the Factory/Supplier.
+    private final OriginVerifierFactory mOriginVerifierFactory = new OriginVerifierFactoryImpl();
+
     private final Map<CustomTabsSessionToken, SessionParams> mSessionParams = new HashMap<>();
 
     private final SparseBooleanArray mUidHasCalledWarmup = new SparseBooleanArray();
     private boolean mWarmupHasBeenCalled;
 
     public ClientManager() {
-        RequestThrottler.loadInBackground(ContextUtils.getApplicationContext());
+        RequestThrottler.loadInBackground();
     }
 
     /** Creates a new session.
@@ -346,8 +352,7 @@ class ClientManager {
                 TextUtils.isEmpty(url) && lowConfidence && !params.lowConfidencePrediction;
         params.setPredictionMetrics(url, SystemClock.elapsedRealtime(), lowConfidence);
         if (firstLowConfidencePrediction) return true;
-        RequestThrottler throttler =
-                RequestThrottler.getForUid(ContextUtils.getApplicationContext(), uid);
+        RequestThrottler throttler = RequestThrottler.getForUid(uid);
         return throttler.updateStatsAndReturnWhetherAllowed();
     }
 
@@ -401,8 +406,7 @@ class ClientManager {
         if (outcome == PredictionStatus.GOOD) {
             long elapsedTimeMs = SystemClock.elapsedRealtime()
                     - params.getLastMayLaunchUrlTimestamp();
-            RequestThrottler.getForUid(ContextUtils.getApplicationContext(), params.uid)
-                    .registerSuccess(params.mPredictedUrl);
+            RequestThrottler.getForUid(params.uid).registerSuccess(params.mPredictedUrl);
             RecordHistogram.recordCustomTimesHistogram("CustomTabs.PredictionToLaunch",
                     elapsedTimeMs, 1, DateUtils.MINUTE_IN_MILLIS * 3, 100);
         }
@@ -478,13 +482,15 @@ class ClientManager {
             }
         };
 
-        params.originVerifier = new OriginVerifier(params.getPackageName(), relation);
+        params.originVerifier = mOriginVerifierFactory.create(params.getPackageName(), relation,
+                /* webContents= */ null, /* externalAuthUtils= */ null,
+                new BrowserServicesMetrics.OriginVerifierMetricsListener());
+
         PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT,
                 () -> { params.originVerifier.start(listener, origin); });
         if (relation == CustomTabsService.RELATION_HANDLE_ALL_URLS
                 && InstalledAppProviderImpl.isAppInstalledAndAssociatedWithOrigin(
-                           params.getPackageName(), URI.create(origin.toString()),
-                           ContextUtils.getApplicationContext().getPackageManager())) {
+                        params.getPackageName(), URI.create(origin.toString()))) {
             params.mLinkedOrigins.add(origin);
         }
         return true;
@@ -513,7 +519,7 @@ class ClientManager {
     /**
      * @return The referrer that is associated with the client owning given session.
      */
-    public synchronized Referrer getReferrerForSession(CustomTabsSessionToken session) {
+    public synchronized Referrer getDefaultReferrerForSession(CustomTabsSessionToken session) {
         return IntentHandler.constructValidReferrerForAuthority(
                 getClientPackageNameForSession(session));
     }
@@ -624,26 +630,6 @@ class ClientManager {
     }
 
     /**
-     * @return Whether the CCT TopBar should be hidden on dynamic module managed URLs
-     * for a given session.
-     */
-    public synchronized boolean shouldHideTopBarOnModuleManagedUrlsForSession(
-            CustomTabsSessionToken session) {
-        SessionParams params = mSessionParams.get(session);
-        return params != null && params.mShouldHideTopBar;
-    }
-
-    /**
-     * Sets whether the CCT TopBar should be hidden on dynamic module managed URLs
-     * for a given session.
-     */
-    public synchronized void setHideCCTTopBarOnModuleManagedUrls(
-            CustomTabsSessionToken session, boolean hide) {
-        SessionParams params = mSessionParams.get(session);
-        if (params != null) params.mShouldHideTopBar = hide;
-    }
-
-    /**
      * @return Whether the session is using the default parameters (that is, don't ignore
      *         fragments and don't speculate loads on cellular connections).
      */
@@ -718,6 +704,14 @@ class ClientManager {
     }
 
     /**
+     * Returns the uid associated with the session, {@code -1} if there is no matching session.
+     */
+    public synchronized int getUidForSession(CustomTabsSessionToken session) {
+        SessionParams params = mSessionParams.get(session);
+        return params != null ? params.uid : -1;
+    }
+
+    /**
      * Returns whether an origin is first-party with respect to a session, that is if the
      * application linked to the session has a relation with the provided origin. This does not
      * calls OriginVerifier, but only checks the cached relations.
@@ -769,24 +763,22 @@ class ClientManager {
 
     /** See {@link RequestThrottler#isPrerenderingAllowed()} */
     public synchronized boolean isPrerenderingAllowed(int uid) {
-        return RequestThrottler.getForUid(ContextUtils.getApplicationContext(), uid)
-                .isPrerenderingAllowed();
+        return RequestThrottler.getForUid(uid).isPrerenderingAllowed();
     }
 
     /** See {@link RequestThrottler#registerPrerenderRequest(String)} */
     public synchronized void registerPrerenderRequest(int uid, String url) {
-        RequestThrottler.getForUid(ContextUtils.getApplicationContext(), uid)
-                .registerPrerenderRequest(url);
+        RequestThrottler.getForUid(uid).registerPrerenderRequest(url);
     }
 
     /** See {@link RequestThrottler#reset()} */
     public synchronized void resetThrottling(int uid) {
-        RequestThrottler.getForUid(ContextUtils.getApplicationContext(), uid).reset();
+        RequestThrottler.getForUid(uid).reset();
     }
 
     /** See {@link RequestThrottler#ban()} */
     public synchronized void ban(int uid) {
-        RequestThrottler.getForUid(ContextUtils.getApplicationContext(), uid).ban();
+        RequestThrottler.getForUid(uid).ban();
     }
 
     /**
@@ -820,7 +812,7 @@ class ClientManager {
      * @param session The session with invalid callback.
      */
     public synchronized void cleanupSession(CustomTabsSessionToken session) {
-        if (session.hasId()) {
+        if (session.hasId() && mSessionParams.containsKey(session)) {
             // Leave session parameters, so client might update callback later.
             // The session will be completely removed when system runs low on memory.
             // {@see #cleanupUnusedSessions}

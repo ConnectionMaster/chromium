@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 
+#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/containers/mru_cache.h"
 #include "base/macros.h"
@@ -18,6 +19,10 @@ namespace content {
 class BrowserContext;
 }  // namespace content
 
+namespace data_decoder {
+class DataDecoder;
+}  // namespace data_decoder
+
 class BitmapFetcher;
 class BitmapFetcherRequest;
 class GURL;
@@ -28,6 +33,8 @@ class BitmapFetcherService : public KeyedService, public BitmapFetcherDelegate {
  public:
   typedef int RequestId;
   static const RequestId REQUEST_ID_INVALID = 0;
+  using BitmapFetchedCallback =
+      base::OnceCallback<void(const SkBitmap& bitmap)>;
 
   class Observer {
    public:
@@ -47,20 +54,19 @@ class BitmapFetcherService : public KeyedService, public BitmapFetcherDelegate {
   void CancelRequest(RequestId requestId);
 
   // Requests a new image. Will either trigger download or satisfy from cache.
-  // Takes ownership of |observer|. If there are too many outstanding requests,
-  // the request will fail and |observer| will be called to signal failure.
-  // Otherwise, |observer| will be called with either the cached image or the
-  // downloaded one.
-  // NOTE: The observer might be called back synchronously from RequestImage if
+  // If there are too many outstanding requests, the request will fail and
+  // |callback| will be called to signal failure. Otherwise, |callback| will be
+  // called with either the cached image or the downloaded one.
+  // NOTE: The callback might be called back synchronously from RequestImage if
   // the image is already in the cache.
-  RequestId RequestImage(
-      const GURL& url,
-      Observer* observer,
-      const net::NetworkTrafficAnnotationTag& traffic_annotation);
+  RequestId RequestImage(const GURL& url, BitmapFetchedCallback callback);
 
   // Start fetching the image at the given |url|.
-  void Prefetch(const GURL& url,
-                const net::NetworkTrafficAnnotationTag& traffic_annotation);
+  void Prefetch(const GURL& url);
+
+  // Return true if |url| is found in |cache_|. This will move the |url| to the
+  // front of the recency list.
+  bool IsCached(const GURL& url);
 
  protected:
   // Create a bitmap fetcher for the given |url| and start it. Virtual method
@@ -71,6 +77,17 @@ class BitmapFetcherService : public KeyedService, public BitmapFetcherDelegate {
 
  private:
   friend class BitmapFetcherServiceTest;
+
+  // Same as the public RequestImage above. Used for testing.
+  RequestId RequestImageForTesting(
+      const GURL& url,
+      BitmapFetchedCallback callback,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation);
+
+  RequestId RequestImageImpl(
+      const GURL& url,
+      BitmapFetchedCallback callback,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation);
 
   // Gets the existing fetcher for |url| or constructs a new one if it doesn't
   // exist.
@@ -87,6 +104,12 @@ class BitmapFetcherService : public KeyedService, public BitmapFetcherDelegate {
 
   // BitmapFetcherDelegate implementation.
   void OnFetchComplete(const GURL& url, const SkBitmap* bitmap) override;
+
+  // The data decoder shared by requests. Using a shared decoder has latency
+  // benefits. Can be a nullptr if the appropriate corresponding feature is
+  // disabled, in which case, BitmapFetcher will start up an isolated decoder
+  // per request.
+  std::unique_ptr<data_decoder::DataDecoder> shared_data_decoder_;
 
   // Currently active image fetchers.
   std::vector<std::unique_ptr<BitmapFetcher>> active_fetchers_;

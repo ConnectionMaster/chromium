@@ -5,6 +5,7 @@
 #include "components/offline_pages/core/model/store_visuals_task.h"
 
 #include "base/bind.h"
+#include "base/memory/ptr_util.h"
 #include "components/offline_pages/core/offline_clock.h"
 #include "components/offline_pages/core/offline_page_metadata_store.h"
 #include "components/offline_pages/core/offline_store_utils.h"
@@ -125,8 +126,7 @@ StoreVisualsTask::StoreVisualsTask(OfflinePageMetadataStore* store,
       offline_id_(offline_id),
       thumbnail_(std::move(thumbnail)),
       favicon_(std::move(favicon)),
-      complete_callback_(std::move(complete_callback)),
-      weak_ptr_factory_(this) {}
+      complete_callback_(std::move(complete_callback)) {}
 
 StoreVisualsTask::~StoreVisualsTask() = default;
 

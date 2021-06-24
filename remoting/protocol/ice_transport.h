@@ -56,7 +56,7 @@ class IceTransport : public Transport,
 
   // DatagramChannelFactory interface.
   void CreateChannel(const std::string& name,
-                     const ChannelCreatedCallback& callback) override;
+                     ChannelCreatedCallback callback) override;
   void CancelChannelCreation(const std::string& name) override;
 
   // Passes transport info to a new |channel| in case it was received before the
@@ -106,7 +106,7 @@ class IceTransport : public Transport,
   std::unique_ptr<IceTransportInfo> pending_transport_info_message_;
   base::OneShotTimer transport_info_timer_;
 
-  base::WeakPtrFactory<IceTransport> weak_factory_;
+  base::WeakPtrFactory<IceTransport> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(IceTransport);
 };

@@ -8,13 +8,14 @@
 #include <utility>
 
 #include "ash/metrics/pip_uma.h"
+#include "ash/wm/collision_detection/collision_detection_utils.h"
 #include "ash/wm/pip/pip_positioner.h"
-#include "ash/wm/widget_finder.h"
 #include "ash/wm/window_util.h"
 #include "ash/wm/wm_event.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "ui/aura/window.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/screen.h"
 #include "ui/views/widget/widget.h"
@@ -69,7 +70,7 @@ void CollectFreeResizeAreaMetric(const char* metric_name,
   if (root_window_area != 0) {
     const int percentage =
         std::round(float(window_area) / float(root_window_area) * 100.f);
-    base::UmaHistogramPercentage(metric_name, percentage);
+    base::UmaHistogramPercentageObsoleteDoNotUse(metric_name, percentage);
   }
 }
 
@@ -135,7 +136,7 @@ void CollectPositionMetric(const gfx::Rect& bounds_in_screen,
 
 }  // namespace
 
-PipWindowResizer::PipWindowResizer(wm::WindowState* window_state)
+PipWindowResizer::PipWindowResizer(WindowState* window_state)
     : WindowResizer(window_state) {
   window_state->OnDragStarted(details().window_component);
 
@@ -147,7 +148,8 @@ PipWindowResizer::PipWindowResizer(wm::WindowState* window_state)
                                 GetTarget());
   } else {
     // Don't allow swipe-to-dismiss for resizes.
-    gfx::Rect area = PipPositioner::GetMovementArea(window_state->GetDisplay());
+    gfx::Rect area =
+        CollisionDetectionUtils::GetMovementArea(window_state->GetDisplay());
     // Check in which directions we can dismiss. Usually this is only in one
     // direction, except when the PIP window is in the corner. In that case,
     // we initially mark both directions as viable, and later choose one based
@@ -166,16 +168,16 @@ PipWindowResizer::~PipWindowResizer() {
 }
 
 // TODO(edcourtney): Implement swipe-to-dismiss on fling.
-void PipWindowResizer::Drag(const gfx::Point& location_in_parent,
+void PipWindowResizer::Drag(const gfx::PointF& location_in_parent,
                             int event_flags) {
   last_location_in_screen_ = location_in_parent;
   ::wm::ConvertPointToScreen(GetTarget()->parent(), &last_location_in_screen_);
 
-  gfx::Vector2d movement_direction =
+  gfx::Vector2dF movement_direction =
       location_in_parent - details().initial_location_in_parent;
   // If we are not sure if this is a swipe or not yet, don't modify any bounds.
-  int movement_distance2 = movement_direction.x() * movement_direction.x() +
-                           movement_direction.y() * movement_direction.y();
+  float movement_distance2 = movement_direction.x() * movement_direction.x() +
+                             movement_direction.y() * movement_direction.y();
   if ((may_dismiss_horizontally_ || may_dismiss_vertically_) &&
       movement_distance2 <= kPipDismissSlop * kPipDismissSlop) {
     return;
@@ -186,7 +188,7 @@ void PipWindowResizer::Drag(const gfx::Point& location_in_parent,
   ::wm::ConvertRectToScreen(GetTarget()->parent(), &new_bounds);
 
   display::Display display = window_state()->GetDisplay();
-  gfx::Rect area = PipPositioner::GetMovementArea(display);
+  gfx::Rect area = CollisionDetectionUtils::GetMovementArea(display);
 
   // If the PIP window is at a corner, lock swipe to dismiss to the axis
   // of movement. Require that the direction of movement is mainly in the
@@ -251,13 +253,14 @@ void PipWindowResizer::Drag(const gfx::Point& location_in_parent,
 }
 
 void PipWindowResizer::CompleteDrag() {
-  if (details().bounds_change & kBoundsChange_Resizes) {
+  const bool is_resize = details().bounds_change & kBoundsChange_Resizes;
+  if (is_resize) {
     CollectFreeResizeAreaMetric(kAshPipFreeResizeFinishAreaHistogramName,
                                 GetTarget());
   } else {
     // Collect final position on drag-move.
     display::Display display = window_state()->GetDisplay();
-    gfx::Rect area = PipPositioner::GetMovementArea(display);
+    gfx::Rect area = CollisionDetectionUtils::GetMovementArea(display);
     CollectPositionMetric(GetTarget()->GetBoundsInScreen(), area);
   }
 
@@ -278,25 +281,25 @@ void PipWindowResizer::CompleteDrag() {
   if (should_dismiss) {
     // Close the widget. This will trigger an animation dismissing the PIP
     // window.
-    wm::CloseWidgetForWindow(window_state()->window());
+    window_util::CloseWidgetForWindow(window_state()->window());
   } else {
     // Animate the PIP window to its resting position.
     gfx::Rect bounds;
-    if (fling_amount > kPipMovementFlingThresholdSquared) {
+    if (!is_resize && fling_amount > kPipMovementFlingThresholdSquared) {
       bounds = ComputeFlungPosition();
     } else {
       bounds = GetTarget()->GetBoundsInScreen();
     }
 
     // Compute resting position even if it was a fling to avoid obstacles.
-    bounds =
-        PipPositioner::GetRestingPosition(window_state()->GetDisplay(), bounds);
+    bounds = CollisionDetectionUtils::GetRestingPosition(
+        window_state()->GetDisplay(), bounds,
+        CollisionDetectionUtils::RelativePriority::kPictureInPicture);
 
     base::TimeDelta duration =
         base::TimeDelta::FromMilliseconds(kPipSnapToEdgeAnimationDurationMs);
     ::wm::ConvertRectFromScreen(GetTarget()->parent(), &bounds);
-    wm::SetBoundsEvent event(wm::WM_EVENT_SET_BOUNDS, bounds, /*animate=*/true,
-                             duration);
+    SetBoundsWMEvent event(bounds, /*animate=*/true, duration);
     window_state()->OnWMEvent(&event);
 
     // Animate opacity back to normal opacity:
@@ -312,7 +315,7 @@ void PipWindowResizer::CompleteDrag() {
     // TODO(edcourtney): This may not be the best place for this. Consider
     // doing this a different way or saving these bounds at a later point when
     // the work area changes.
-    window_state()->SetRestoreBoundsInParent(bounds);
+    PipPositioner::SaveSnapFraction(window_state(), bounds);
   }
 }
 
@@ -336,7 +339,8 @@ gfx::Rect PipWindowResizer::ComputeFlungPosition() {
   if (fling_velocity_x_ == 0 && fling_velocity_y_ == 0)
     return bounds;
 
-  gfx::Rect area = PipPositioner::GetMovementArea(window_state()->GetDisplay());
+  gfx::Rect area =
+      CollisionDetectionUtils::GetMovementArea(window_state()->GetDisplay());
 
   // Compute signed distance to travel in x and y axes.
   int x_dist = 0;

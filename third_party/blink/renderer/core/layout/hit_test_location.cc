@@ -29,9 +29,9 @@ HitTestLocation::HitTestLocation()
     : is_rect_based_(false), is_rectilinear_(true) {}
 
 HitTestLocation::HitTestLocation(const IntPoint& point)
-    : HitTestLocation(LayoutPoint(point)) {}
+    : HitTestLocation(PhysicalOffset(point)) {}
 
-HitTestLocation::HitTestLocation(const LayoutPoint& point)
+HitTestLocation::HitTestLocation(const PhysicalOffset& point)
     : point_(point),
       bounding_box_(RectForPoint(point)),
       transformed_point_(point),
@@ -40,10 +40,19 @@ HitTestLocation::HitTestLocation(const LayoutPoint& point)
       is_rectilinear_(true) {}
 
 HitTestLocation::HitTestLocation(const FloatPoint& point)
-    : point_(FlooredLayoutPoint(point)),
+    : point_(PhysicalOffset::FromFloatPointFloor(point)),
       bounding_box_(RectForPoint(point_)),
       transformed_point_(point),
       transformed_rect_(FloatRect(bounding_box_)),
+      is_rect_based_(false),
+      is_rectilinear_(true) {}
+
+HitTestLocation::HitTestLocation(const FloatPoint& point,
+                                 const PhysicalRect& bounding_box)
+    : point_(PhysicalOffset::FromFloatPointFloor(point)),
+      bounding_box_(bounding_box),
+      transformed_point_(point),
+      transformed_rect_(FloatRect(bounding_box)),
       is_rect_based_(false),
       is_rectilinear_(true) {}
 
@@ -52,12 +61,12 @@ HitTestLocation::HitTestLocation(const DoublePoint& point)
 
 HitTestLocation::HitTestLocation(const FloatPoint& point, const FloatQuad& quad)
     : transformed_point_(point), transformed_rect_(quad), is_rect_based_(true) {
-  point_ = FlooredLayoutPoint(point);
-  bounding_box_ = EnclosingLayoutRect(quad.BoundingBox());
+  point_ = PhysicalOffset::FromFloatPointFloor(point);
+  bounding_box_ = PhysicalRect::EnclosingRect(quad.BoundingBox());
   is_rectilinear_ = quad.IsRectilinear();
 }
 
-HitTestLocation::HitTestLocation(const LayoutRect& rect)
+HitTestLocation::HitTestLocation(const PhysicalRect& rect)
     : point_(rect.Center()),
       bounding_box_(rect),
       transformed_point_(point_),
@@ -67,7 +76,7 @@ HitTestLocation::HitTestLocation(const LayoutRect& rect)
 }
 
 HitTestLocation::HitTestLocation(const HitTestLocation& other,
-                                 const LayoutSize& offset)
+                                 const PhysicalOffset& offset)
     : point_(other.point_),
       bounding_box_(other.bounding_box_),
       transformed_point_(other.transformed_point_),
@@ -77,18 +86,26 @@ HitTestLocation::HitTestLocation(const HitTestLocation& other,
   Move(offset);
 }
 
-HitTestLocation::HitTestLocation(const HitTestLocation& other) = default;
+HitTestLocation::HitTestLocation(const HitTestLocation& other,
+                                 wtf_size_t fragment_index)
+    : point_(other.point_),
+      bounding_box_(other.bounding_box_),
+      transformed_point_(other.transformed_point_),
+      transformed_rect_(other.transformed_rect_),
+      fragment_index_(fragment_index),
+      is_rect_based_(other.is_rect_based_),
+      is_rectilinear_(other.is_rectilinear_) {}
 
-HitTestLocation::~HitTestLocation() = default;
+HitTestLocation::HitTestLocation(const HitTestLocation& other) = default;
 
 HitTestLocation& HitTestLocation::operator=(const HitTestLocation& other) =
     default;
 
-void HitTestLocation::Move(const LayoutSize& offset) {
-  point_.Move(offset);
+void HitTestLocation::Move(const PhysicalOffset& offset) {
+  point_ += offset;
   bounding_box_.Move(offset);
-  transformed_point_.Move(offset);
-  transformed_rect_.Move(offset);
+  transformed_point_.Move(FloatSize(offset));
+  transformed_rect_.Move(FloatSize(offset));
 }
 
 template <typename RectType>
@@ -116,7 +133,7 @@ bool HitTestLocation::IntersectsRect(const RectType& rect,
   return transformed_rect_.IntersectsRect(FloatRect(rect));
 }
 
-bool HitTestLocation::Intersects(const LayoutRect& rect) const {
+bool HitTestLocation::Intersects(const PhysicalRect& rect) const {
   return IntersectsRect(rect, bounding_box_);
 }
 

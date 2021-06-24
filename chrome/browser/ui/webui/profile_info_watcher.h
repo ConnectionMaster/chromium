@@ -14,7 +14,7 @@
 
 class Profile;
 
-namespace identity {
+namespace signin {
 class IdentityManager;
 }
 
@@ -22,7 +22,7 @@ class IdentityManager;
 // username changes).
 class ProfileInfoWatcher : public ProfileAttributesStorage::Observer {
  public:
-  ProfileInfoWatcher(Profile* profile, const base::Closure& callback);
+  ProfileInfoWatcher(Profile* profile, base::RepeatingClosure callback);
   ~ProfileInfoWatcher() override;
 
   // Gets the authenticated username (e.g. username@gmail.com) for |profile_|.
@@ -33,7 +33,7 @@ class ProfileInfoWatcher : public ProfileAttributesStorage::Observer {
   void OnProfileAuthInfoChanged(const base::FilePath& profile_path) override;
 
   // Gets the IdentityManager for |profile_|.
-  identity::IdentityManager* GetIdentityManager() const;
+  signin::IdentityManager* GetIdentityManager() const;
 
   // Runs |callback_| when a profile changes. No-ops if |GetIdentityManager()|
   // returns nullptr.
@@ -43,7 +43,7 @@ class ProfileInfoWatcher : public ProfileAttributesStorage::Observer {
   Profile* const profile_;
 
   // Called when the authenticated username changes.
-  base::Closure callback_;
+  base::RepeatingClosure callback_;
 
   BooleanPrefMember signin_allowed_pref_;
 

@@ -17,6 +17,7 @@
 #include "components/storage_monitor/storage_info.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/common/referrer.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
@@ -33,7 +34,7 @@ MediaGalleryPrefInfo MakePrefInfo(MediaGalleryPrefId id) {
   gallery.device_id = storage_monitor::StorageInfo::MakeDeviceId(
       storage_monitor::StorageInfo::FIXED_MASS_STORAGE,
       base::NumberToString(id));
-  gallery.display_name = base::ASCIIToUTF16("Display Name");
+  gallery.display_name = u"Display Name";
   return gallery;
 }
 
@@ -57,8 +58,7 @@ class MediaGalleriesInteractiveDialogTest : public DialogBrowserTest {
   }
 
   void ShowUi(const std::string& name) override {
-    std::vector<base::string16> headers = {base::string16(),
-                                           base::ASCIIToUTF16("header2")};
+    std::vector<std::u16string> headers = {std::u16string(), u"header2"};
     MediaGalleriesDialogController::Entries attached_permissions = {
         MediaGalleriesDialogController::Entry(MakePrefInfo(1), true),
         MediaGalleriesDialogController::Entry(MakePrefInfo(2), false)};

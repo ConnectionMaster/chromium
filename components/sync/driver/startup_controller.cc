@@ -9,6 +9,7 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/location.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/string_number_conversions.h"
@@ -21,7 +22,8 @@ namespace {
 
 // The amount of time we'll wait to initialize sync if no data type requests
 // immediately initialization.
-const int kDefaultDeferredInitDelaySeconds = 10;
+constexpr base::TimeDelta kDefaultDeferredInitDelay =
+    base::TimeDelta::FromSeconds(10);
 
 base::TimeDelta GetDeferredInitDelay() {
   const base::CommandLine* cmdline = base::CommandLine::ForCurrentProcess();
@@ -36,7 +38,7 @@ base::TimeDelta GetDeferredInitDelay() {
       return base::TimeDelta::FromSeconds(timeout);
     }
   }
-  return base::TimeDelta::FromSeconds(kDefaultDeferredInitDelaySeconds);
+  return kDefaultDeferredInitDelay;
 }
 
 bool IsDeferredStartupEnabled() {
@@ -60,14 +62,29 @@ enum DeferredInitTrigger {
 StartupController::StartupController(
     base::RepeatingCallback<ModelTypeSet()> get_preferred_data_types,
     base::RepeatingCallback<bool()> should_start,
-    base::RepeatingClosure start_engine)
+    base::RepeatingClosure start_engine,
+    policy::PolicyService* policy_service)
     : get_preferred_data_types_callback_(std::move(get_preferred_data_types)),
       should_start_callback_(std::move(should_start)),
       start_engine_callback_(std::move(start_engine)),
       bypass_deferred_startup_(false),
-      weak_factory_(this) {}
+      policy_service_(policy_service) {
+  if (policy_service_ && policy_service_->IsFirstPolicyLoadComplete(
+                             policy::PolicyDomain::POLICY_DOMAIN_CHROME)) {
+    // Policies are already loaded; no need to track the policy service.
+    policy_service_ = nullptr;
+  } else if (policy_service_) {
+    policy_service_->AddObserver(policy::PolicyDomain::POLICY_DOMAIN_CHROME,
+                                 this);
+  }
+}
 
-StartupController::~StartupController() {}
+StartupController::~StartupController() {
+  if (policy_service_) {
+    policy_service_->RemoveObserver(policy::PolicyDomain::POLICY_DOMAIN_CHROME,
+                                    this);
+  }
+}
 
 void StartupController::Reset() {
   bypass_deferred_startup_ = false;
@@ -102,6 +119,23 @@ void StartupController::StartUp(StartUpDeferredOption deferred_option) {
 }
 
 void StartupController::TryStart(bool force_immediate) {
+  // Try starting up the sync engine if all policies are ready, otherwise wait
+  // at most |switches::kSyncPolicyLoadTimeout|.
+  if (!ArePoliciesReady()) {
+    if (waiting_for_policies_start_time_.is_null()) {
+      waiting_for_policies_start_time_ = base::Time::Now();
+      wait_for_policy_timer_.Start(
+          FROM_HERE, switches::kSyncPolicyLoadTimeout.Get(),
+          base::BindOnce(&StartupController::OnFirstPoliciesLoadedTimeout,
+                         base::Unretained(this)));
+    }
+    // If the Service had to start immediately, bypass the deferred startup when
+    // we receive the policies.
+    if (force_immediate)
+      bypass_deferred_startup_ = true;
+    return;
+  }
+
   if (!should_start_callback_.Run()) {
     return;
   }
@@ -144,9 +178,49 @@ void StartupController::OnFallbackStartupTimerExpired() {
 StartupController::State StartupController::GetState() const {
   if (!start_engine_time_.is_null())
     return State::STARTED;
+  if (!ArePoliciesReady() && !waiting_for_policies_start_time_.is_null())
+    return State::STARTING_DEFERRED;
   if (!start_up_time_.is_null())
     return State::STARTING_DEFERRED;
   return State::NOT_STARTED;
+}
+
+void StartupController::OnFirstPoliciesLoaded(policy::PolicyDomain domain) {
+  DCHECK_EQ(domain, policy::PolicyDomain::POLICY_DOMAIN_CHROME);
+
+  // Cancel the timeout timer.
+  wait_for_policy_timer_.AbandonAndStop();
+  OnFirstPoliciesLoadedImpl(/*timeout=*/false);
+}
+
+void StartupController::OnFirstPoliciesLoadedTimeout() {
+  OnFirstPoliciesLoadedImpl(/*timeout=*/true);
+}
+
+bool StartupController::ArePoliciesReady() const {
+  // |policy_service_| is non-null iff we're waiting for policies to load.
+  return policy_service_ == nullptr;
+}
+
+void StartupController::TriggerPolicyWaitTimeoutForTest() {
+  OnFirstPoliciesLoadedTimeout();
+}
+
+void StartupController::OnFirstPoliciesLoadedImpl(bool timeout) {
+  policy_service_->RemoveObserver(policy::PolicyDomain::POLICY_DOMAIN_CHROME,
+                                  this);
+  policy_service_ = nullptr;
+  base::UmaHistogramBoolean("Sync.Startup.PolicyLoadTimeout2", timeout);
+  base::UmaHistogramTimes(
+      "Sync.Startup.PolicyLoadStartupDelay",
+      waiting_for_policies_start_time_.is_null()
+          ? base::TimeDelta()
+          : base::Time::Now() - waiting_for_policies_start_time_);
+
+  // Only try to start the engine if we explicitly tried to start but had to
+  // wait for policies to be loaded.
+  if (!waiting_for_policies_start_time_.is_null())
+    TryStart(/*force_immediate=*/false);
 }
 
 void StartupController::OnDataTypeRequestsSyncStartup(ModelType type) {
@@ -163,10 +237,8 @@ void StartupController::OnDataTypeRequestsSyncStartup(ModelType type) {
   // Measure the time spent waiting for init and the type that triggered it.
   // We could measure the time spent deferred on a per-datatype basis, but
   // for now this is probably sufficient.
-  // TODO(wychen): enum uma should be strongly typed. crbug.com/661401
   UMA_HISTOGRAM_ENUMERATION("Sync.Startup.TypeTriggeringInit",
-                            ModelTypeToHistogramInt(type),
-                            static_cast<int>(ModelType::NUM_ENTRIES));
+                            ModelTypeHistogramValue(type));
   if (!start_up_time_.is_null()) {
     RecordTimeDeferred();
     UMA_HISTOGRAM_ENUMERATION("Sync.Startup.DeferredInitTrigger",

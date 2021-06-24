@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_EDIT_CONTROLLER_H_
 #define COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_EDIT_CONTROLLER_H_
 
-#include "base/macros.h"
 #include "base/time/time.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/search_engines/template_url.h"
@@ -17,12 +16,14 @@ class LocationBarModel;
 
 class OmniboxEditController {
  public:
-  virtual void OnAutocompleteAccept(const GURL& destination_url,
-                                    TemplateURLRef::PostContent* post_content,
-                                    WindowOpenDisposition disposition,
-                                    ui::PageTransition transition,
-                                    AutocompleteMatchType::Type match_type,
-                                    base::TimeTicks match_selection_timestamp);
+  virtual void OnAutocompleteAccept(
+      const GURL& destination_url,
+      TemplateURLRef::PostContent* post_content,
+      WindowOpenDisposition disposition,
+      ui::PageTransition transition,
+      AutocompleteMatchType::Type match_type,
+      base::TimeTicks match_selection_timestamp,
+      bool destination_url_entered_without_scheme);
 
   virtual void OnInputInProgress(bool in_progress);
 
@@ -40,6 +41,8 @@ class OmniboxEditController {
  protected:
   OmniboxEditController();
   virtual ~OmniboxEditController();
+  OmniboxEditController(const OmniboxEditController&) = delete;
+  OmniboxEditController& operator=(const OmniboxEditController&) = delete;
 
   GURL destination_url() const { return destination_url_; }
   TemplateURLRef::PostContent* post_content() const { return post_content_; }
@@ -47,6 +50,9 @@ class OmniboxEditController {
   ui::PageTransition transition() const { return transition_; }
   base::TimeTicks match_selection_timestamp() const {
     return match_selection_timestamp_;
+  }
+  bool destination_url_entered_without_scheme() const {
+    return destination_url_entered_without_scheme_;
   }
 
  private:
@@ -56,8 +62,7 @@ class OmniboxEditController {
   WindowOpenDisposition disposition_;
   ui::PageTransition transition_;
   base::TimeTicks match_selection_timestamp_;
-
-  DISALLOW_COPY_AND_ASSIGN(OmniboxEditController);
+  bool destination_url_entered_without_scheme_;
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_EDIT_CONTROLLER_H_

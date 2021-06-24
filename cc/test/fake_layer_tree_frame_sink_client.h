@@ -8,23 +8,28 @@
 #include "cc/trees/layer_tree_frame_sink_client.h"
 
 #include "cc/trees/managed_memory_policy.h"
+#include "components/viz/common/hit_test/hit_test_region_list.h"
+
+namespace viz {
+struct FrameTimingDetails;
+}
 
 namespace cc {
 
 class FakeLayerTreeFrameSinkClient : public LayerTreeFrameSinkClient {
  public:
-  FakeLayerTreeFrameSinkClient() : memory_policy_(0) {}
+  FakeLayerTreeFrameSinkClient();
+  ~FakeLayerTreeFrameSinkClient() override;
 
   void SetBeginFrameSource(viz::BeginFrameSource* source) override;
-  base::Optional<viz::HitTestRegionList> BuildHitTestData() override;
+  absl::optional<viz::HitTestRegionList> BuildHitTestData() override;
   void DidReceiveCompositorFrameAck() override;
   void DidPresentCompositorFrame(
-      uint32_t presentation_token,
-      const gfx::PresentationFeedback& feedback) override {}
-  void ReclaimResources(
-      const std::vector<viz::ReturnedResource>& resources) override {}
+      uint32_t frame_token,
+      const viz::FrameTimingDetails& details) override {}
+  void ReclaimResources(std::vector<viz::ReturnedResource> resources) override {
+  }
   void DidLoseLayerTreeFrameSink() override;
-  void DidNotNeedBeginFrame() override {}
   void SetExternalTilePriorityConstraints(
       const gfx::Rect& viewport_rect_for_tile_priority,
       const gfx::Transform& transform_for_tile_priority) override {}
@@ -47,11 +52,17 @@ class FakeLayerTreeFrameSinkClient : public LayerTreeFrameSinkClient {
     return begin_frame_source_;
   }
 
+  void set_hit_test_region_list(
+      const absl::optional<viz::HitTestRegionList>& hit_test_region_list) {
+    hit_test_region_list_ = hit_test_region_list;
+  }
+
  private:
   int ack_count_ = 0;
   bool did_lose_layer_tree_frame_sink_called_ = false;
-  ManagedMemoryPolicy memory_policy_;
+  ManagedMemoryPolicy memory_policy_{0};
   viz::BeginFrameSource* begin_frame_source_;
+  absl::optional<viz::HitTestRegionList> hit_test_region_list_;
 };
 
 }  // namespace cc

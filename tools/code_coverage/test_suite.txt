@@ -12,7 +12,6 @@ boringssl_crypto_tests
 boringssl_ssl_tests
 breakpad_unittests
 browser_tests
-cacheinvalidation_unittests
 capture_unittests
 cast_unittests
 cc_unittests
@@ -46,9 +45,7 @@ interactive_ui_tests
 ipc_tests
 jingle_unittests
 latency_unittests
-leveldb_service_unittests
 libjingle_xmpp_unittests
-media_blink_unittests
 media_mojo_unittests
 media_service_unittests
 media_unittests

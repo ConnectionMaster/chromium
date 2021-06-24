@@ -6,38 +6,32 @@
 #define IOS_CHROME_BROWSER_UI_CONTENT_SUGGESTIONS_CONTENT_SUGGESTIONS_COORDINATOR_H_
 
 #import "ios/chrome/browser/ui/coordinators/chrome_coordinator.h"
-#import "ios/web/public/web_state/ui/crw_native_content.h"
 
-namespace ios {
-class ChromeBrowserState;
+namespace web {
+class WebState;
 }
 
-@protocol ApplicationCommands;
-@protocol BrowserCommands;
+@class BubblePresenter;
 @class ContentSuggestionsHeaderViewController;
+@class DiscoverFeedMetricsRecorder;
+@protocol NewTabPageCommands;
 @protocol NewTabPageControllerDelegate;
-@protocol OmniboxFocuser;
-@protocol FakeboxFocuser;
-@protocol SnackbarCommands;
-class WebStateList;
+@protocol NewTabPageFeedDelegate;
+@class NTPHomeMediator;
+@protocol ThumbStripSupporting;
+@class ViewRevealingVerticalPanHandler;
 
 // Coordinator to manage the Suggestions UI via a
 // ContentSuggestionsViewController.
-@interface ContentSuggestionsCoordinator : ChromeCoordinator<CRWNativeContent>
+@interface ContentSuggestionsCoordinator : ChromeCoordinator
 
-// BrowserState used to create the ContentSuggestionFactory.
-@property(nonatomic, assign) ios::ChromeBrowserState* browserState;
-// URLLoader used to open pages.
-@property(nonatomic, assign) WebStateList* webStateList;
+// Webstate associated with this coordinator.
+@property(nonatomic, assign) web::WebState* webState;
+
 @property(nonatomic, weak) id<NewTabPageControllerDelegate> toolbarDelegate;
-@property(nonatomic, weak) id<ApplicationCommands,
-                              BrowserCommands,
-                              OmniboxFocuser,
-                              FakeboxFocuser,
-                              SnackbarCommands>
-    dispatcher;
-// Whether the Suggestions UI is displayed. If this is true, start is a no-op.
-@property(nonatomic, readonly) BOOL visible;
+
+// YES if the coordinator has started. If YES, start is a no-op.
+@property(nonatomic, readonly) BOOL started;
 
 @property(nonatomic, strong, readonly)
     ContentSuggestionsHeaderViewController* headerController;
@@ -45,6 +39,62 @@ class WebStateList;
 @property(nonatomic, strong, readonly)
     UICollectionViewController* viewController;
 
+// The pan gesture handler for the view controller.
+@property(nonatomic, weak) ViewRevealingVerticalPanHandler* panGestureHandler;
+
+// Allows for the in-flight enabling/disabling of the thumb strip.
+@property(nonatomic, weak, readonly) id<ThumbStripSupporting>
+    thumbStripSupporting;
+
+// NTP Mediator used by this Coordinator.
+// TODO(crbug.com/1114792): Move all usage of this mediator to NTPCoordinator.
+// It might also be necessary to split it and create a ContentSuggestions
+// mediator for non NTP logic.
+@property(nonatomic, strong) NTPHomeMediator* ntpMediator;
+
+// Command handler for NTP related commands.
+@property(nonatomic, weak) id<NewTabPageCommands> ntpCommandHandler;
+
+// Delegate for providing information relating to the feed.
+@property(nonatomic, weak) id<NewTabPageFeedDelegate> ntpFeedDelegate;
+
+// Bubble presenter for displaying IPH bubbles relating to the NTP.
+@property(nonatomic, strong) BubblePresenter* bubblePresenter;
+
+// Metrics recorder for the Discover feed events related to ContentSuggestions.
+@property(nonatomic, strong)
+    DiscoverFeedMetricsRecorder* discoverFeedMetricsRecorder;
+
+// Dismisses all modals owned by the NTP mediator.
+- (void)dismissModals;
+
+// Called when a snapshot of the content will be taken.
+- (void)willUpdateSnapshot;
+
+// Stop any scrolling in the scroll view.
+- (void)stopScrolling;
+
+// The content inset and offset of the scroll view.
+- (UIEdgeInsets)contentInset;
+- (CGPoint)contentOffset;
+
+// The current NTP view.
+- (UIView*)view;
+
+// Reloads the suggestions.
+- (void)reload;
+
+// The location bar has lost focus.
+- (void)locationBarDidResignFirstResponder;
+
+// Tell location bar has taken focus.
+- (void)locationBarDidBecomeFirstResponder;
+
+// Constrains the named layout guide for the Discover header menu button.
+- (void)constrainDiscoverHeaderMenuButtonNamedGuide;
+
+// Configure Content Suggestions if showing the Start Surface.
+- (void)configureStartSurfaceIfNeeded;
 @end
 
 #endif  // IOS_CHROME_BROWSER_UI_CONTENT_SUGGESTIONS_CONTENT_SUGGESTIONS_COORDINATOR_H_

@@ -17,14 +17,16 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/ppapi/ppapi_test.h"
 #include "chrome/test/ppapi/ppapi_test_select_file_dialog_factory.h"
-#include "components/download/quarantine/test_support.h"
+#include "components/safe_browsing/buildflags.h"
+#include "components/services/quarantine/test_support.h"
+#include "content/public/test/browser_test.h"
 #include "ppapi/shared_impl/test_utils.h"
 
-#if defined(FULL_SAFE_BROWSING)
+#if BUILDFLAG(FULL_SAFE_BROWSING)
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "components/safe_browsing/db/test_database_manager.h"
+#include "components/safe_browsing/core/db/test_database_manager.h"
 
 using safe_browsing::DownloadProtectionService;
 using safe_browsing::SafeBrowsingService;
@@ -34,7 +36,7 @@ namespace {
 
 class PPAPIFileChooserTest : public OutOfProcessPPAPITest {};
 
-#if defined(FULL_SAFE_BROWSING)
+#if BUILDFLAG(FULL_SAFE_BROWSING)
 
 struct SafeBrowsingTestConfiguration {
   std::map<base::FilePath::StringType, safe_browsing::DownloadCheckResult>
@@ -56,24 +58,24 @@ class FakeDownloadProtectionService : public DownloadProtectionService {
       const base::FilePath& default_file_path,
       const std::vector<base::FilePath::StringType>& alternate_extensions,
       Profile* /* profile */,
-      const safe_browsing::CheckDownloadCallback& callback) override {
+      safe_browsing::CheckDownloadCallback callback) override {
     const auto iter =
         test_configuration_->result_map.find(default_file_path.Extension());
     if (iter != test_configuration_->result_map.end()) {
-      callback.Run(iter->second);
+      std::move(callback).Run(iter->second);
       return;
     }
 
-    for (const auto extension : alternate_extensions) {
+    for (const auto& extension : alternate_extensions) {
       EXPECT_EQ(base::FilePath::kExtensionSeparator, extension[0]);
       const auto iter = test_configuration_->result_map.find(extension);
       if (iter != test_configuration_->result_map.end()) {
-        callback.Run(iter->second);
+        std::move(callback).Run(iter->second);
         return;
       }
     }
 
-    callback.Run(test_configuration_->default_result);
+    std::move(callback).Run(test_configuration_->default_result);
   }
 
  private:
@@ -242,7 +244,12 @@ IN_PROC_BROWSER_TEST_F(PPAPIFileChooserTest, FileChooser_SaveAs_Cancel) {
 // file is created. This MotW prevents the file being opened without due
 // security warnings if the file is executable.
 //
-// TODO(crbug.com/927074): Enable this test on macOS.
+// This test is disabled on Mac even though quarantine support is implemented on
+// Mac. New files created on Mac only receive the MOTW if the process creating
+// them comes from an app with LSFileQuarantineEnabled in its Info.plist. Since
+// PPAPI delegates file creation to the browser process, which in browser_tests
+// is not part of an app, files downloaded by them do not receive the MOTW and
+// this test fails.
 IN_PROC_BROWSER_TEST_F(PPAPIFileChooserTest, FileChooser_Quarantine) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::ScopedTempDir temp_dir;
@@ -260,11 +267,11 @@ IN_PROC_BROWSER_TEST_F(PPAPIFileChooserTest, FileChooser_Quarantine) {
       temp_dir.GetPath().AppendASCII("dangerous.exe");
 
   ASSERT_TRUE(base::PathExists(actual_filename));
-  EXPECT_TRUE(download::IsFileQuarantined(actual_filename, GURL(), GURL()));
+  EXPECT_TRUE(quarantine::IsFileQuarantined(actual_filename, GURL(), GURL()));
 }
-#endif  // defined(OS_WIN)
+#endif  // defined(OS_WIN) || defined(OS_MAC)
 
-#if defined(FULL_SAFE_BROWSING)
+#if BUILDFLAG(FULL_SAFE_BROWSING)
 // These tests only make sense when SafeBrowsing is enabled. They verify
 // that files written via the FileChooser_Trusted API are properly passed
 // through Safe Browsing.

@@ -5,23 +5,36 @@
 #ifndef UI_VIEWS_ACCESSIBILITY_VIEW_AX_PLATFORM_NODE_DELEGATE_AURALINUX_H_
 #define UI_VIEWS_ACCESSIBILITY_VIEW_AX_PLATFORM_NODE_DELEGATE_AURALINUX_H_
 
-#include "base/macros.h"
+#include "base/scoped_observation.h"
 #include "ui/views/accessibility/view_ax_platform_node_delegate.h"
+#include "ui/views/view_observer.h"
 
 namespace views {
 
 class View;
 
-class ViewAXPlatformNodeDelegateAuraLinux : public ViewAXPlatformNodeDelegate {
+class ViewAXPlatformNodeDelegateAuraLinux : public ViewAXPlatformNodeDelegate,
+                                            public ViewObserver {
  public:
   explicit ViewAXPlatformNodeDelegateAuraLinux(View* view);
+  ViewAXPlatformNodeDelegateAuraLinux(
+      const ViewAXPlatformNodeDelegateAuraLinux&) = delete;
+  ViewAXPlatformNodeDelegateAuraLinux& operator=(
+      const ViewAXPlatformNodeDelegateAuraLinux&) = delete;
   ~ViewAXPlatformNodeDelegateAuraLinux() override;
+
+  void Init() override;
 
   // |ViewAXPlatformNodeDelegate| overrides:
   gfx::NativeViewAccessible GetParent() override;
+  bool IsChildOfLeaf() const override;
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(ViewAXPlatformNodeDelegateAuraLinux);
+  void OnViewHierarchyChanged(
+      View* observed_view,
+      const ViewHierarchyChangedDetails& details) override;
+
+  base::ScopedObservation<View, ViewObserver> view_observation_{this};
 };
 
 }  // namespace views

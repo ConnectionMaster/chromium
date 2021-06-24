@@ -8,16 +8,16 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
 #include "content/browser/background_fetch/background_fetch_test_base.h"
 #include "content/public/browser/background_fetch_delegate.h"
 #include "content/public/browser/background_fetch_description.h"
 #include "content/public/browser/background_fetch_response.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/service_worker_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/background_fetch/background_fetch.mojom.h"
 
@@ -37,12 +37,6 @@ class FakeBackgroundFetchDelegate : public BackgroundFetchDelegate {
   void GetIconDisplaySize(
       BackgroundFetchDelegate::GetIconDisplaySizeCallback callback) override {
     std::move(callback).Run(gfx::Size(kIconDisplaySize, kIconDisplaySize));
-  }
-  void GetPermissionForOrigin(
-      const url::Origin& origin,
-      const ResourceRequestInfo::WebContentsGetter& wc_getter,
-      GetPermissionForOriginCallback callback) override {
-    std::move(callback).Run(BackgroundFetchPermission::ALLOWED);
   }
   void CreateDownloadJob(
       base::WeakPtr<Client> client,
@@ -70,10 +64,13 @@ class FakeBackgroundFetchDelegate : public BackgroundFetchDelegate {
     job_id_to_client_[job_unique_id]->OnDownloadStarted(job_unique_id, guid,
                                                         std::move(response));
     if (complete_downloads_) {
-      base::PostTaskWithTraits(
-          FROM_HERE, {BrowserThread::IO},
-          base::BindOnce(&FakeBackgroundFetchDelegate::CompleteDownload,
-                         base::Unretained(this), job_unique_id, guid));
+      // Post a task so that Abort() can cancel this download before completing.
+      BrowserThread::GetTaskRunnerForThread(
+          ServiceWorkerContext::GetCoreThreadId())
+          ->PostTask(
+              FROM_HERE,
+              base::BindOnce(&FakeBackgroundFetchDelegate::CompleteDownload,
+                             base::Unretained(this), job_unique_id, guid));
     }
   }
 
@@ -84,8 +81,8 @@ class FakeBackgroundFetchDelegate : public BackgroundFetchDelegate {
   void MarkJobComplete(const std::string& job_unique_id) override {}
 
   void UpdateUI(const std::string& job_unique_id,
-                const base::Optional<std::string>& title,
-                const base::Optional<SkBitmap>& icon) override {
+                const absl::optional<std::string>& title,
+                const absl::optional<SkBitmap>& icon) override {
     ++ui_update_count_;
   }
 
@@ -112,7 +109,7 @@ class FakeBackgroundFetchDelegate : public BackgroundFetchDelegate {
         job_unique_id, guid,
         std::make_unique<BackgroundFetchResult>(
             std::move(response), base::Time::Now(), base::FilePath(),
-            base::nullopt /* blob_handle */, 10u));
+            absl::nullopt /* blob_handle */, 10u));
     download_guid_to_url_map_.erase(guid);
   }
 
@@ -140,7 +137,7 @@ class FakeTestBrowserContext : public TestBrowserContext {
 
 class FakeController : public BackgroundFetchDelegateProxy::Controller {
  public:
-  FakeController() : weak_ptr_factory_(this) {}
+  FakeController() {}
 
   void DidStartRequest(
       const std::string& guid,
@@ -167,7 +164,7 @@ class FakeController : public BackgroundFetchDelegateProxy::Controller {
 
   bool request_started_ = false;
   bool request_completed_ = false;
-  base::WeakPtrFactory<FakeController> weak_ptr_factory_;
+  base::WeakPtrFactory<FakeController> weak_ptr_factory_{this};
 };
 
 class BackgroundFetchDelegateProxyTest : public BackgroundFetchTestBase {
@@ -175,7 +172,7 @@ class BackgroundFetchDelegateProxyTest : public BackgroundFetchTestBase {
   BackgroundFetchDelegateProxyTest() : delegate_proxy_(&browser_context_) {
     delegate_ = browser_context_.GetBackgroundFetchDelegate();
   }
-  void DidGetIconDisplaySize(base::Closure quit_closure,
+  void DidGetIconDisplaySize(base::OnceClosure quit_closure,
                              gfx::Size* out_display_size,
                              const gfx::Size& display_size) {
     DCHECK(out_display_size);
@@ -333,7 +330,7 @@ TEST_F(BackgroundFetchDelegateProxyTest, UpdateUI) {
   EXPECT_TRUE(controller.request_started_);
   EXPECT_TRUE(controller.request_completed_);
 
-  delegate_proxy_.UpdateUI(kExampleUniqueId, "Job 1 Complete!", base::nullopt,
+  delegate_proxy_.UpdateUI(kExampleUniqueId, "Job 1 Complete!", absl::nullopt,
                            base::DoNothing());
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(delegate_->ui_update_count_, 1);

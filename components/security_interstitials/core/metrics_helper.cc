@@ -9,6 +9,7 @@
 
 #include "base/bind.h"
 #include "base/metrics/histogram.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "components/history/core/browser/history_service.h"
@@ -21,25 +22,16 @@ namespace security_interstitials {
 
 namespace {
 
-// Directly adds to the UMA histograms, using the same properties as
-// UMA_HISTOGRAM_ENUMERATION, because the macro doesn't allow non-constant
-// histogram names.
 void RecordSingleDecisionToMetrics(MetricsHelper::Decision decision,
                                    const std::string& histogram_name) {
-  base::HistogramBase* histogram = base::LinearHistogram::FactoryGet(
-      histogram_name, 1, MetricsHelper::MAX_DECISION,
-      MetricsHelper::MAX_DECISION + 1,
-      base::HistogramBase::kUmaTargetedHistogramFlag);
-  histogram->Add(decision);
+  base::UmaHistogramExactLinear(histogram_name, decision,
+                                MetricsHelper::MAX_DECISION);
 }
 
 void RecordSingleInteractionToMetrics(MetricsHelper::Interaction interaction,
                                       const std::string& histogram_name) {
-  base::HistogramBase* histogram = base::LinearHistogram::FactoryGet(
-      histogram_name, 1, MetricsHelper::MAX_INTERACTION,
-      MetricsHelper::MAX_INTERACTION + 1,
-      base::HistogramBase::kUmaTargetedHistogramFlag);
-  histogram->Add(interaction);
+  base::UmaHistogramExactLinear(histogram_name, interaction,
+                                MetricsHelper::MAX_INTERACTION);
 }
 
 void MaybeRecordDecisionAsAction(MetricsHelper::Decision decision,
@@ -115,7 +107,8 @@ MetricsHelper::MetricsHelper(const GURL& request_url,
   if (history_service) {
     history_service->GetVisibleVisitCountToHost(
         request_url_,
-        base::Bind(&MetricsHelper::OnGotHistoryCount, base::Unretained(this)),
+        base::BindOnce(&MetricsHelper::OnGotHistoryCount,
+                       base::Unretained(this)),
         &request_tracker_);
   }
 }
@@ -173,11 +166,10 @@ void MetricsHelper::RecordExtraUserInteractionMetrics(Interaction interaction) {
 
 void MetricsHelper::RecordExtraShutdownMetrics() {}
 
-void MetricsHelper::OnGotHistoryCount(bool success,
-                                      int num_visits,
-                                      base::Time /*first_visit*/) {
-  if (success)
-    num_visits_ = num_visits;
+void MetricsHelper::OnGotHistoryCount(
+    history::VisibleVisitCountToHostResult result) {
+  if (result.success)
+    num_visits_ = result.count;
 }
 
 }  // namespace security_interstitials

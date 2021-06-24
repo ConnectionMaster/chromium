@@ -5,7 +5,10 @@
 #ifndef UI_VIEWS_DRAG_UTILS_H_
 #define UI_VIEWS_DRAG_UTILS_H_
 
-#include "ui/base/dragdrop/drag_drop_types.h"
+#include <memory>
+
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
+#include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/views/views_export.h"
 
@@ -13,19 +16,15 @@ namespace gfx {
 class Point;
 }
 
-namespace ui {
-class OSExchangeData;
-}
-
 namespace views {
 class Widget;
 
 // Starts a drag operation. This blocks until the drag operation completes.
 VIEWS_EXPORT void RunShellDrag(gfx::NativeView view,
-                               const ui::OSExchangeData& data,
+                               std::unique_ptr<ui::OSExchangeData> data,
                                const gfx::Point& location,
                                int operation,
-                               ui::DragDropTypes::DragEventSource source);
+                               ui::mojom::DragEventSource source);
 
 // Returns the device scale for the display associated with this |widget|'s
 // native view.

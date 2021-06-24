@@ -7,29 +7,29 @@
 #include <cstring>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/containers/contains.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/optional.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/test_data_decoder_service.h"
-#include "services/data_decoder/public/mojom/constants.mojom.h"
+#include "services/data_decoder/public/cpp/data_decoder.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/data_decoder/public/mojom/json_parser.mojom.h"
 #include "services/image_annotation/image_annotation_metrics.h"
 #include "services/image_annotation/public/mojom/image_annotation.mojom.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader.mojom-shared.h"
 #include "services/network/test/test_url_loader_factory.h"
-#include "services/service_manager/public/cpp/connector.h"
-#include "services/service_manager/public/mojom/service.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace image_annotation {
 
@@ -47,6 +47,7 @@ MATCHER_P3(AnnotatorEq, type, score, text, "") {
 }
 
 constexpr char kTestServerUrl[] = "https://ia-pa.googleapis.com/v1/annotation";
+constexpr char kLangsServerUrl[] = "https://ia-pa.googleapis.com/v1/langs";
 
 // Example image URLs.
 
@@ -229,19 +230,23 @@ constexpr base::TimeDelta kThrottle = base::TimeDelta::FromSeconds(1);
 // The minimum dimension required for description annotation.
 constexpr int32_t kDescDim = Annotator::kDescMinDimension;
 
+// The description language to use in tests that don't exercise
+// language-handling logic.
+constexpr char kDescLang[] = "";
+
 // An image processor that holds and exposes the callbacks it is passed.
 class TestImageProcessor : public mojom::ImageProcessor {
  public:
   TestImageProcessor() = default;
 
-  mojom::ImageProcessorPtr GetPtr() {
-    mojom::ImageProcessorPtr ptr;
-    bindings_.AddBinding(this, mojo::MakeRequest(&ptr));
-    return ptr;
+  mojo::PendingRemote<mojom::ImageProcessor> GetPendingRemote() {
+    mojo::PendingRemote<mojom::ImageProcessor> remote;
+    receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+    return remote;
   }
 
   void Reset() {
-    bindings_.CloseAllBindings();
+    receivers_.Clear();
     callbacks_.clear();
   }
 
@@ -254,7 +259,7 @@ class TestImageProcessor : public mojom::ImageProcessor {
  private:
   std::vector<GetJpgImageDataCallback> callbacks_;
 
-  mojo::BindingSet<mojom::ImageProcessor> bindings_;
+  mojo::ReceiverSet<mojom::ImageProcessor> receivers_;
 
   DISALLOW_COPY_AND_ASSIGN(TestImageProcessor);
 };
@@ -286,7 +291,7 @@ class TestServerURLLoaderFactory {
   // to the second-earliest received request and so on).
   void ExpectRequestAndSimulateResponse(
       const std::string& expected_url_suffix,
-      const std::map<std::string, base::Optional<std::string>>&
+      const std::map<std::string, absl::optional<std::string>>&
           expected_headers,
       const std::string& expected_body,
       const std::string& response,
@@ -321,11 +326,12 @@ class TestServerURLLoaderFactory {
           request.request_body->elements();
 
       // We only support the simplest body structure.
-      CHECK(elements && elements->size() == 1 &&
-            (*elements)[0].type() == network::mojom::DataElementType::kBytes);
-
-      actual_body =
-          std::string((*elements)[0].bytes(), (*elements)[0].length());
+      if (elements && elements->size() == 1 &&
+          (*elements)[0].type() ==
+              network::mojom::DataElementDataView::Tag::kBytes) {
+        actual_body = std::string(
+            (*elements)[0].As<network::DataElementBytes>().AsStringPiece());
+      }
     }
 
     EXPECT_THAT(actual_body, Eq(expected_body));
@@ -362,7 +368,7 @@ std::string ReformatJson(const std::string& in) {
 
 // Receives the result of an annotation request and writes the result data into
 // the given variables.
-void ReportResult(base::Optional<mojom::AnnotateImageError>* const error,
+void ReportResult(absl::optional<mojom::AnnotateImageError>* const error,
                   std::vector<mojom::Annotation>* const annotations,
                   mojom::AnnotateImageResultPtr result) {
   if (result->which() == mojom::AnnotateImageResult::Tag::ERROR_CODE) {
@@ -376,30 +382,62 @@ void ReportResult(base::Optional<mojom::AnnotateImageError>* const error,
   }
 }
 
+class TestAnnotatorClient : public Annotator::Client {
+ public:
+  explicit TestAnnotatorClient() = default;
+  ~TestAnnotatorClient() override = default;
+
+  // Set up tests.
+  void SetAcceptLanguages(const std::vector<std::string> accept_langs) {
+    accept_langs_ = accept_langs;
+  }
+  void SetTopLanguages(const std::vector<std::string> top_langs) {
+    top_langs_ = top_langs;
+  }
+
+ private:
+  // Annotator::Client implementation:
+  void BindJsonParser(mojo::PendingReceiver<data_decoder::mojom::JsonParser>
+                          receiver) override {
+    decoder_.GetService()->BindJsonParser(std::move(receiver));
+  }
+  std::vector<std::string> GetAcceptLanguages() override {
+    return accept_langs_;
+  }
+  std::vector<std::string> GetTopLanguages() override { return top_langs_; }
+  void RecordLanguageMetrics(const std::string& page_language,
+                             const std::string& requested_language) override {}
+
+  data_decoder::DataDecoder decoder_;
+  std::vector<std::string> accept_langs_ = {"en", "it", "fr"};
+  std::vector<std::string> top_langs_;
+};
+
 }  // namespace
 
 // Test that annotation works for one client, and that the cache is populated.
 TEST(AnnotatorTest, OcrSuccessAndCache) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
   TestImageProcessor processor;
 
   // First call performs original image annotation.
   {
-    base::Optional<mojom::AnnotateImageError> error;
+    absl::optional<mojom::AnnotateImageError> error;
     std::vector<mojom::Annotation> annotations;
 
     annotator.AnnotateImage(
-        kImage1Url, processor.GetPtr(),
+        kImage1Url, kDescLang, processor.GetPendingRemote(),
         base::BindOnce(&ReportResult, &error, &annotations));
     test_task_env.RunUntilIdle();
 
@@ -426,7 +464,7 @@ TEST(AnnotatorTest, OcrSuccessAndCache) {
     test_task_env.RunUntilIdle();
 
     // HTTP response should have completed and callback should have been called.
-    ASSERT_THAT(error, Eq(base::nullopt));
+    ASSERT_THAT(error, Eq(absl::nullopt));
     EXPECT_THAT(annotations,
                 UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr,
                                                  1.0, "Region 1\nRegion 2")));
@@ -461,11 +499,11 @@ TEST(AnnotatorTest, OcrSuccessAndCache) {
 
   // Second call uses cached results.
   {
-    base::Optional<mojom::AnnotateImageError> error;
+    absl::optional<mojom::AnnotateImageError> error;
     std::vector<mojom::Annotation> annotations;
 
     annotator.AnnotateImage(
-        kImage1Url, processor.GetPtr(),
+        kImage1Url, kDescLang, processor.GetPendingRemote(),
         base::BindOnce(&ReportResult, &error, &annotations));
     test_task_env.RunUntilIdle();
 
@@ -473,7 +511,7 @@ TEST(AnnotatorTest, OcrSuccessAndCache) {
     ASSERT_THAT(processor.callbacks(), IsEmpty());
 
     // Results should have been directly returned without any server call.
-    ASSERT_THAT(error, Eq(base::nullopt));
+    ASSERT_THAT(error, Eq(absl::nullopt));
     EXPECT_THAT(annotations,
                 UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr,
                                                  1.0, "Region 1\nRegion 2")));
@@ -486,23 +524,24 @@ TEST(AnnotatorTest, OcrSuccessAndCache) {
 
 // Test that description annotations are successfully returned.
 TEST(AnnotatorTest, DescriptionSuccess) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
   TestImageProcessor processor;
 
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -558,7 +597,7 @@ TEST(AnnotatorTest, DescriptionSuccess) {
   test_task_env.RunUntilIdle();
 
   // HTTP response should have completed and callback should have been called.
-  ASSERT_THAT(error, Eq(base::nullopt));
+  ASSERT_THAT(error, Eq(absl::nullopt));
   EXPECT_THAT(
       annotations,
       UnorderedElementsAre(
@@ -593,23 +632,24 @@ TEST(AnnotatorTest, DescriptionSuccess) {
 
 // Test that the specialized OCR result takes precedence.
 TEST(AnnotatorTest, DoubleOcrResult) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
   TestImageProcessor processor;
 
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -672,7 +712,7 @@ TEST(AnnotatorTest, DoubleOcrResult) {
   test_task_env.RunUntilIdle();
 
   // HTTP response should have completed and callback should have been called.
-  ASSERT_THAT(error, Eq(base::nullopt));
+  ASSERT_THAT(error, Eq(absl::nullopt));
   EXPECT_THAT(annotations,
               UnorderedElementsAre(
                   AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "Region 1"),
@@ -708,23 +748,24 @@ TEST(AnnotatorTest, DoubleOcrResult) {
 
 // Test that HTTP failure is gracefully handled.
 TEST(AnnotatorTest, HttpError) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor;
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -753,8 +794,9 @@ TEST(AnnotatorTest, HttpError) {
   EXPECT_THAT(annotations, IsEmpty());
 
   // Metrics about the HTTP request failure should have been logged.
-  histogram_tester.ExpectUniqueSample(metrics_internal::kServerNetError,
-                                      net::Error::ERR_FAILED, 1);
+  histogram_tester.ExpectUniqueSample(
+      metrics_internal::kServerNetError,
+      net::Error::ERR_HTTP_RESPONSE_CODE_FAILURE, 1);
   histogram_tester.ExpectUniqueSample(metrics_internal::kServerHttpResponseCode,
                                       net::HTTP_INTERNAL_SERVER_ERROR, 1);
   histogram_tester.ExpectUniqueSample(metrics_internal::kClientResult,
@@ -763,23 +805,24 @@ TEST(AnnotatorTest, HttpError) {
 
 // Test that backend failure is gracefully handled.
 TEST(AnnotatorTest, BackendError) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor;
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -846,23 +889,24 @@ TEST(AnnotatorTest, BackendError) {
 
 // Test that partial results are returned if the OCR backend fails.
 TEST(AnnotatorTest, OcrBackendError) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor;
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -913,7 +957,7 @@ TEST(AnnotatorTest, OcrBackendError) {
   test_task_env.RunUntilIdle();
 
   // HTTP response should have completed and callback should have been called.
-  EXPECT_THAT(error, Eq(base::nullopt));
+  EXPECT_THAT(error, Eq(absl::nullopt));
   EXPECT_THAT(annotations, UnorderedElementsAre(
                                AnnotatorEq(mojom::AnnotationType::kCaption, 0.9,
                                            "This is an example image.")));
@@ -940,23 +984,24 @@ TEST(AnnotatorTest, OcrBackendError) {
 
 // Test that partial results are returned if the description backend fails.
 TEST(AnnotatorTest, DescriptionBackendError) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor;
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -1006,7 +1051,7 @@ TEST(AnnotatorTest, DescriptionBackendError) {
   test_task_env.RunUntilIdle();
 
   // HTTP response should have completed and callback should have been called.
-  EXPECT_THAT(error, Eq(base::nullopt));
+  EXPECT_THAT(error, Eq(absl::nullopt));
   EXPECT_THAT(annotations, UnorderedElementsAre(AnnotatorEq(
                                mojom::AnnotationType::kOcr, 1.0, "1")));
 
@@ -1030,23 +1075,24 @@ TEST(AnnotatorTest, DescriptionBackendError) {
 
 // Test that server failure (i.e. nonsense response) is gracefully handled.
 TEST(AnnotatorTest, ServerError) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor;
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -1088,23 +1134,24 @@ TEST(AnnotatorTest, ServerError) {
 
 // Test that adult content returns an error.
 TEST(AnnotatorTest, AdultError) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor;
-  base::Optional<mojom::AnnotateImageError> error;
+  absl::optional<mojom::AnnotateImageError> error;
   std::vector<mojom::Annotation> annotations;
 
-  annotator.AnnotateImage(kImage1Url, processor.GetPtr(),
+  annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
                           base::BindOnce(&ReportResult, &error, &annotations));
   test_task_env.RunUntilIdle();
 
@@ -1163,25 +1210,26 @@ TEST(AnnotatorTest, AdultError) {
 
 // Test that work is reassigned if a processor fails.
 TEST(AnnotatorTest, ProcessorFails) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor[3];
-  base::Optional<mojom::AnnotateImageError> error[3];
+  absl::optional<mojom::AnnotateImageError> error[3];
   std::vector<mojom::Annotation> annotations[3];
 
   for (int i = 0; i < 3; ++i) {
     annotator.AnnotateImage(
-        kImage1Url, processor[i].GetPtr(),
+        kImage1Url, kDescLang, processor[i].GetPendingRemote(),
         base::BindOnce(&ReportResult, &error[i], &annotations[i]));
   }
   test_task_env.RunUntilIdle();
@@ -1221,7 +1269,7 @@ TEST(AnnotatorTest, ProcessorFails) {
   // Annotator should have called all callbacks, but request 1 received an error
   // when we returned empty bytes.
   ASSERT_THAT(error, ElementsAre(mojom::AnnotateImageError::kFailure,
-                                 base::nullopt, base::nullopt));
+                                 absl::nullopt, absl::nullopt));
   EXPECT_THAT(annotations[0], IsEmpty());
   EXPECT_THAT(annotations[1],
               UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
@@ -1240,27 +1288,99 @@ TEST(AnnotatorTest, ProcessorFails) {
                   Bucket(static_cast<int32_t>(ClientResult::kSucceeded), 2)));
 }
 
-// Test that work is reassigned if processor dies.
-TEST(AnnotatorTest, ProcessorDies) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+// Test a case that was previously buggy: when one client requests annotations,
+// then fails local processing, then another client makes the same request.
+TEST(AnnotatorTest, ProcessorFailedPreviously) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
+
+  TestImageProcessor processor[2];
+  absl::optional<mojom::AnnotateImageError> error[2];
+  std::vector<mojom::Annotation> annotations[2];
+
+  // Processor 1 makes a request for annotation of a given image.
+  annotator.AnnotateImage(
+      kImage1Url, kDescLang, processor[0].GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error[0], &annotations[0]));
+  test_task_env.RunUntilIdle();
+
+  // Annotator should have asked processor 1 for the image's pixels.
+  ASSERT_THAT(processor[0].callbacks(), SizeIs(1));
+  ASSERT_THAT(processor[1].callbacks(), IsEmpty());
+
+  // Make processor 1 fail by returning empty bytes.
+  std::move(processor[0].callbacks()[0]).Run({}, 0, 0);
+  processor[0].callbacks().pop_back();
+  test_task_env.RunUntilIdle();
+
+  // Processor 2 makes a request for annotation of the same image.
+  annotator.AnnotateImage(
+      kImage1Url, kDescLang, processor[1].GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error[1], &annotations[1]));
+  test_task_env.RunUntilIdle();
+
+  // Annotator should have asked processor 2 for the image's pixels.
+  ASSERT_THAT(processor[1].callbacks(), SizeIs(1));
+
+  // Send back image data.
+  std::move(processor[1].callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor[1].callbacks().pop_back();
+  test_task_env.RunUntilIdle();
+
+  // No request should be sent yet (because service is waiting to batch up
+  // multiple requests).
+  EXPECT_THAT(test_url_factory.requests(), IsEmpty());
+  test_task_env.FastForwardBy(base::TimeDelta::FromSeconds(1));
+
+  // HTTP request for image 1 should have been made.
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */,
+      ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
+      kOcrSuccessResponse, net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  // Annotator should have called all callbacks, but request 1 received an error
+  // when we returned empty bytes.
+  ASSERT_THAT(error,
+              ElementsAre(mojom::AnnotateImageError::kFailure, absl::nullopt));
+  EXPECT_THAT(annotations[0], IsEmpty());
+  EXPECT_THAT(annotations[1],
+              UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
+                                               "Region 1\nRegion 2")));
+}
+
+// Test that work is reassigned if processor dies.
+TEST(AnnotatorTest, ProcessorDies) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
+  base::HistogramTester histogram_tester;
+
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor[3];
-  base::Optional<mojom::AnnotateImageError> error[3];
+  absl::optional<mojom::AnnotateImageError> error[3];
   std::vector<mojom::Annotation> annotations[3];
 
   for (int i = 0; i < 3; ++i) {
     annotator.AnnotateImage(
-        kImage1Url, processor[i].GetPtr(),
+        kImage1Url, kDescLang, processor[i].GetPendingRemote(),
         base::BindOnce(&ReportResult, &error[i], &annotations[i]));
   }
   test_task_env.RunUntilIdle();
@@ -1299,7 +1419,7 @@ TEST(AnnotatorTest, ProcessorDies) {
   // Annotator should have called all callbacks, but request 1 was canceled when
   // we reset processor 1.
   ASSERT_THAT(error, ElementsAre(mojom::AnnotateImageError::kCanceled,
-                                 base::nullopt, base::nullopt));
+                                 absl::nullopt, absl::nullopt));
   EXPECT_THAT(annotations[0], IsEmpty());
   EXPECT_THAT(annotations[1],
               UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
@@ -1317,31 +1437,32 @@ TEST(AnnotatorTest, ProcessorDies) {
 
 // Test that multiple concurrent requests are handled in the same batch.
 TEST(AnnotatorTest, ConcurrentSameBatch) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor[3];
-  base::Optional<mojom::AnnotateImageError> error[3];
+  absl::optional<mojom::AnnotateImageError> error[3];
   std::vector<mojom::Annotation> annotations[3];
 
   // Request OCR for images 1, 2 and 3.
   annotator.AnnotateImage(
-      kImage1Url, processor[0].GetPtr(),
+      kImage1Url, kDescLang, processor[0].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[0], &annotations[0]));
   annotator.AnnotateImage(
-      kImage2Url, processor[1].GetPtr(),
+      kImage2Url, kDescLang, processor[1].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[1], &annotations[1]));
   annotator.AnnotateImage(
-      kImage3Url, processor[2].GetPtr(),
+      kImage3Url, kDescLang, processor[2].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[2], &annotations[2]));
   test_task_env.RunUntilIdle();
 
@@ -1373,7 +1494,7 @@ TEST(AnnotatorTest, ConcurrentSameBatch) {
 
   // Annotator should have called each callback with its corresponding text or
   // failure.
-  ASSERT_THAT(error, ElementsAre(base::nullopt, base::nullopt,
+  ASSERT_THAT(error, ElementsAre(absl::nullopt, absl::nullopt,
                                  mojom::AnnotateImageError::kFailure));
   EXPECT_THAT(annotations[0], UnorderedElementsAre(AnnotatorEq(
                                   mojom::AnnotationType::kOcr, 1.0, "1")));
@@ -1404,25 +1525,26 @@ TEST(AnnotatorTest, ConcurrentSameBatch) {
 
 // Test that multiple concurrent requests are handled in separate batches.
 TEST(AnnotatorTest, ConcurrentSeparateBatches) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor[2];
-  base::Optional<mojom::AnnotateImageError> error[2];
+  absl::optional<mojom::AnnotateImageError> error[2];
   std::vector<mojom::Annotation> annotations[2];
 
   // Request OCR for image 1.
   annotator.AnnotateImage(
-      kImage1Url, processor[0].GetPtr(),
+      kImage1Url, kDescLang, processor[0].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[0], &annotations[0]));
   test_task_env.RunUntilIdle();
 
@@ -1442,7 +1564,7 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
 
   // Request OCR for image 2.
   annotator.AnnotateImage(
-      kImage2Url, processor[1].GetPtr(),
+      kImage2Url, kDescLang, processor[1].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[1], &annotations[1]));
   test_task_env.RunUntilIdle();
 
@@ -1523,7 +1645,7 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
   test_task_env.RunUntilIdle();
 
   // Annotator should have called each callback with its corresponding text.
-  ASSERT_THAT(error, ElementsAre(base::nullopt, base::nullopt));
+  ASSERT_THAT(error, ElementsAre(absl::nullopt, absl::nullopt));
   EXPECT_THAT(annotations[0], UnorderedElementsAre(AnnotatorEq(
                                   mojom::AnnotationType::kOcr, 1.0, "1")));
   EXPECT_THAT(annotations[1], UnorderedElementsAre(AnnotatorEq(
@@ -1548,25 +1670,26 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
 
 // Test that work is not duplicated if it is already ongoing.
 TEST(AnnotatorTest, DuplicateWork) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor[4];
-  base::Optional<mojom::AnnotateImageError> error[4];
+  absl::optional<mojom::AnnotateImageError> error[4];
   std::vector<mojom::Annotation> annotations[4];
 
   // First request annotation of the image with processor 1.
   annotator.AnnotateImage(
-      kImage1Url, processor[0].GetPtr(),
+      kImage1Url, kDescLang, processor[0].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[0], &annotations[0]));
   test_task_env.RunUntilIdle();
 
@@ -1578,7 +1701,7 @@ TEST(AnnotatorTest, DuplicateWork) {
 
   // Now request annotation of the image with processor 2.
   annotator.AnnotateImage(
-      kImage1Url, processor[1].GetPtr(),
+      kImage1Url, kDescLang, processor[1].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[1], &annotations[1]));
   test_task_env.RunUntilIdle();
 
@@ -1596,7 +1719,7 @@ TEST(AnnotatorTest, DuplicateWork) {
 
   // Now request annotation of the image with processor 3.
   annotator.AnnotateImage(
-      kImage1Url, processor[2].GetPtr(),
+      kImage1Url, kDescLang, processor[2].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[2], &annotations[2]));
   test_task_env.RunUntilIdle();
 
@@ -1613,7 +1736,7 @@ TEST(AnnotatorTest, DuplicateWork) {
   test_task_env.FastForwardBy(base::TimeDelta::FromSeconds(1));
   EXPECT_THAT(test_url_factory.requests(), SizeIs(1));
   annotator.AnnotateImage(
-      kImage1Url, processor[3].GetPtr(),
+      kImage1Url, kDescLang, processor[3].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[3], &annotations[3]));
   test_task_env.RunUntilIdle();
 
@@ -1633,8 +1756,8 @@ TEST(AnnotatorTest, DuplicateWork) {
   test_task_env.RunUntilIdle();
 
   // Annotator should have called all callbacks with annotation results.
-  ASSERT_THAT(error, ElementsAre(base::nullopt, base::nullopt, base::nullopt,
-                                 base::nullopt));
+  ASSERT_THAT(error, ElementsAre(absl::nullopt, absl::nullopt, absl::nullopt,
+                                 absl::nullopt));
   EXPECT_THAT(annotations[0],
               UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
                                                "Region 1\nRegion 2")));
@@ -1656,31 +1779,32 @@ TEST(AnnotatorTest, DuplicateWork) {
 // Test that the description engine is not requested for images that violate
 // model policy (i.e. are too small or have too-high an aspect ratio).
 TEST(AnnotatorTest, DescPolicy) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
-  data_decoder::TestDataDecoderService test_dd_service;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester;
 
-  Annotator annotator(
-      GURL(kTestServerUrl), std::string() /* api_key */, kThrottle,
-      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
-      test_url_factory.AsSharedURLLoaderFactory(), test_dd_service.connector());
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
 
   TestImageProcessor processor[3];
-  base::Optional<mojom::AnnotateImageError> error[3];
+  absl::optional<mojom::AnnotateImageError> error[3];
   std::vector<mojom::Annotation> annotations[3];
 
   // Request annotation for images 1, 2 and 3.
   annotator.AnnotateImage(
-      kImage1Url, processor[0].GetPtr(),
+      kImage1Url, kDescLang, processor[0].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[0], &annotations[0]));
   annotator.AnnotateImage(
-      kImage2Url, processor[1].GetPtr(),
+      kImage2Url, kDescLang, processor[1].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[1], &annotations[1]));
   annotator.AnnotateImage(
-      kImage3Url, processor[2].GetPtr(),
+      kImage3Url, kDescLang, processor[2].GetPendingRemote(),
       base::BindOnce(&ReportResult, &error[2], &annotations[2]));
   test_task_env.RunUntilIdle();
 
@@ -1820,7 +1944,7 @@ TEST(AnnotatorTest, DescPolicy) {
   test_task_env.RunUntilIdle();
 
   // Annotator should have called each callback with its corresponding results.
-  ASSERT_THAT(error, ElementsAre(base::nullopt, base::nullopt, base::nullopt));
+  ASSERT_THAT(error, ElementsAre(absl::nullopt, absl::nullopt, absl::nullopt));
   EXPECT_THAT(
       annotations[0],
       UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "1"),
@@ -1856,12 +1980,308 @@ TEST(AnnotatorTest, DescPolicy) {
       false, 1);
 }
 
+// Test that description language preferences are sent to the server.
+TEST(AnnotatorTest, DescLanguage) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
+  base::HistogramTester histogram_tester;
+
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      3 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
+  annotator.server_languages_ = {"en", "it", "fr"};
+
+  TestImageProcessor processor[3];
+  absl::optional<mojom::AnnotateImageError> error[3];
+  std::vector<mojom::Annotation> annotations[3];
+
+  // Request annotation for one image in two languages, and one other image in
+  // one language.
+  annotator.AnnotateImage(
+      kImage1Url, "fr", processor[0].GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error[0], &annotations[0]));
+  annotator.AnnotateImage(
+      kImage1Url, "it", processor[1].GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error[1], &annotations[1]));
+  annotator.AnnotateImage(
+      kImage2Url, "en", processor[2].GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error[2], &annotations[2]));
+  test_task_env.RunUntilIdle();
+
+  // Annotator should have asked processor 1 and 2 for image 1's pixels and
+  // processor 3 for image 2's pixels.
+  ASSERT_THAT(processor[0].callbacks(), SizeIs(1));
+  ASSERT_THAT(processor[1].callbacks(), SizeIs(1));
+  ASSERT_THAT(processor[2].callbacks(), SizeIs(1));
+
+  // Send back image data. Image 2 is out of policy.
+  std::move(processor[0].callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor[0].callbacks().pop_back();
+  std::move(processor[1].callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor[1].callbacks().pop_back();
+  std::move(processor[2].callbacks()[0])
+      .Run({4, 5, 6}, Annotator::kDescMinDimension - 1,
+           Annotator::kDescMinDimension);
+  processor[2].callbacks().pop_back();
+  test_task_env.RunUntilIdle();
+
+  // No request should be sent yet (because service is waiting to batch up
+  // multiple requests).
+  EXPECT_THAT(test_url_factory.requests(), IsEmpty());
+  test_task_env.FastForwardBy(base::TimeDelta::FromSeconds(1));
+
+  // A single HTTP request for all images should have been sent.
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */,
+      // Image requests should include the preferred language in their image IDs
+      // and description parameters (except for image 2 which should not include
+      // description parameters).
+      ReformatJson(R"(
+        {
+          "imageRequests": [
+            {
+              "imageId": "https://www.example.com/image2.jpg en",
+              "imageBytes": "BAUG",
+              "engineParameters": [
+                {"ocrParameters": {}}
+              ]
+            },
+            {
+              "imageId": "https://www.example.com/image1.jpg it",
+              "imageBytes": "AQID",
+              "engineParameters": [
+                {"ocrParameters": {}},
+                {
+                  "descriptionParameters": {
+                    "preferredLanguages": ["it"]
+                  }
+                }
+              ]
+            },
+            {
+              "imageId": "https://www.example.com/image1.jpg fr",
+              "imageBytes": "AQID",
+              "engineParameters": [
+                {"ocrParameters": {}},
+                {
+                  "descriptionParameters": {
+                    "preferredLanguages": ["fr"]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )"),
+      R"(
+        {
+          "results": [
+            {
+              "imageId": "https://www.example.com/image1.jpg it",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "1",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                },
+                {
+                  "status": {},
+                  "descriptionEngine": {
+                    "descriptionList": {
+                      "descriptions": [{
+                        "type": "CAPTION",
+                        "text": "This is an example image.",
+                        "score": 1.0
+                      }]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "imageId": "https://www.example.com/image1.jpg fr",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "1",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                },
+                {
+                  "status": {},
+                  "descriptionEngine": {
+                    "descriptionList": {
+                      "descriptions": [{
+                        "type": "CAPTION",
+                        "text": "Ceci est un exemple d'image.",
+                        "score": 1.0
+                      }]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "imageId": "https://www.example.com/image2.jpg en",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "2",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  // Annotator should have called each callback with its corresponding results.
+  ASSERT_THAT(error, ElementsAre(absl::nullopt, absl::nullopt, absl::nullopt));
+  EXPECT_THAT(
+      annotations[0],
+      UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "1"),
+                           AnnotatorEq(mojom::AnnotationType::kCaption, 1.0,
+                                       "Ceci est un exemple d'image.")));
+  EXPECT_THAT(
+      annotations[1],
+      UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "1"),
+                           AnnotatorEq(mojom::AnnotationType::kCaption, 1.0,
+                                       "This is an example image.")));
+  EXPECT_THAT(annotations[2], UnorderedElementsAre(AnnotatorEq(
+                                  mojom::AnnotationType::kOcr, 1.0, "2")));
+}
+
+// Test that annotation works properly when we need to fall back on a
+// different language because the page language isn't available.
+TEST(AnnotatorTest, LanguageFallback) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
+  base::HistogramTester histogram_tester;
+
+  Annotator annotator(GURL(kTestServerUrl), GURL(""),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
+  annotator.server_languages_ = {"en", "it", "fr"};
+
+  TestImageProcessor processor;
+  absl::optional<mojom::AnnotateImageError> error;
+  std::vector<mojom::Annotation> annotations;
+
+  // Send a request in an unsupported language.
+  annotator.AnnotateImage(kImage1Url, "hu", processor.GetPendingRemote(),
+                          base::BindOnce(&ReportResult, &error, &annotations));
+  test_task_env.RunUntilIdle();
+
+  // Send back image data.
+  std::move(processor.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor.callbacks().pop_back();
+  test_task_env.RunUntilIdle();
+
+  // Fast-forward time so that server sends batch.
+  EXPECT_THAT(test_url_factory.requests(), IsEmpty());
+  test_task_env.FastForwardBy(base::TimeDelta::FromSeconds(1));
+
+  // A single HTTP request for all images should have been sent.
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */, ReformatJson(R"(
+        {
+          "imageRequests": [
+            {
+              "imageId": "https://www.example.com/image1.jpg en",
+              "imageBytes": "AQID",
+              "engineParameters": [
+                {"ocrParameters": {}},
+                {
+                  "descriptionParameters": {
+                    "preferredLanguages": ["en"]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )"),
+      R"(
+        {
+          "results": [
+            {
+              "imageId": "https://www.example.com/image1.jpg en",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "1",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                },
+                {
+                  "status": {},
+                  "descriptionEngine": {
+                    "descriptionList": {
+                      "descriptions": [{
+                        "type": "CAPTION",
+                        "text": "Result in fallback language.",
+                        "score": 1.0
+                      }]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  // Annotator should have called each callback with its corresponding results.
+  ASSERT_EQ(error, absl::nullopt);
+  EXPECT_THAT(
+      annotations,
+      UnorderedElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "1"),
+                           AnnotatorEq(mojom::AnnotationType::kCaption, 1.0,
+                                       "Result in fallback language.")));
+}
+
 // Test that the specified API key is sent, but only to Google-associated server
 // domains.
 TEST(AnnotatorTest, ApiKey) {
-  base::test::ScopedTaskEnvironment test_task_env(
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
-  data_decoder::TestDataDecoderService test_dd_service;
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
 
   // A call to a secure Google-owner server URL should include the specified API
   // key.
@@ -1869,13 +2289,14 @@ TEST(AnnotatorTest, ApiKey) {
     TestServerURLLoaderFactory test_url_factory(
         "https://ia-pa.googleapis.com/v1/");
 
-    Annotator annotator(GURL(kTestServerUrl), "my_api_key", kThrottle,
+    Annotator annotator(GURL(kTestServerUrl), GURL(""), "my_api_key", kThrottle,
                         1 /* batch_size */, 1.0 /* min_ocr_confidence */,
                         test_url_factory.AsSharedURLLoaderFactory(),
-                        test_dd_service.connector());
+                        std::make_unique<TestAnnotatorClient>());
     TestImageProcessor processor;
 
-    annotator.AnnotateImage(kImage1Url, processor.GetPtr(), base::DoNothing());
+    annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
+                            base::DoNothing());
     test_task_env.RunUntilIdle();
 
     // Annotator should have asked processor for pixels.
@@ -1902,13 +2323,14 @@ TEST(AnnotatorTest, ApiKey) {
         "http://ia-pa.googleapis.com/v1/");
 
     Annotator annotator(GURL("http://ia-pa.googleapis.com/v1/annotation"),
-                        "my_api_key", kThrottle, 1 /* batch_size */,
+                        GURL(""), "my_api_key", kThrottle, 1 /* batch_size */,
                         1.0 /* min_ocr_confidence */,
                         test_url_factory.AsSharedURLLoaderFactory(),
-                        test_dd_service.connector());
+                        std::make_unique<TestAnnotatorClient>());
     TestImageProcessor processor;
 
-    annotator.AnnotateImage(kImage1Url, processor.GetPtr(), base::DoNothing());
+    annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
+                            base::DoNothing());
     test_task_env.RunUntilIdle();
 
     // Annotator should have asked processor for pixels.
@@ -1922,7 +2344,7 @@ TEST(AnnotatorTest, ApiKey) {
 
     // HTTP request should have been made without the API key included.
     test_url_factory.ExpectRequestAndSimulateResponse(
-        "annotation", {{Annotator::kGoogApiKeyHeader, base::nullopt}},
+        "annotation", {{Annotator::kGoogApiKeyHeader, absl::nullopt}},
         ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
         kOcrSuccessResponse, net::HTTP_OK);
   }
@@ -1931,14 +2353,15 @@ TEST(AnnotatorTest, ApiKey) {
   {
     TestServerURLLoaderFactory test_url_factory("https://datascraper.com/");
 
-    Annotator annotator(GURL("https://datascraper.com/annotation"),
+    Annotator annotator(GURL("https://datascraper.com/annotation"), GURL(""),
                         "my_api_key", kThrottle, 1 /* batch_size */,
                         1.0 /* min_ocr_confidence */,
                         test_url_factory.AsSharedURLLoaderFactory(),
-                        test_dd_service.connector());
+                        std::make_unique<TestAnnotatorClient>());
     TestImageProcessor processor;
 
-    annotator.AnnotateImage(kImage1Url, processor.GetPtr(), base::DoNothing());
+    annotator.AnnotateImage(kImage1Url, kDescLang, processor.GetPendingRemote(),
+                            base::DoNothing());
     test_task_env.RunUntilIdle();
 
     // Annotator should have asked processor for pixels.
@@ -1952,10 +2375,149 @@ TEST(AnnotatorTest, ApiKey) {
 
     // HTTP request should have been made without the API key included.
     test_url_factory.ExpectRequestAndSimulateResponse(
-        "annotation", {{Annotator::kGoogApiKeyHeader, base::nullopt}},
+        "annotation", {{Annotator::kGoogApiKeyHeader, absl::nullopt}},
         ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
         kOcrSuccessResponse, net::HTTP_OK);
   }
+}
+
+// Tests that the Annotator computes a reasonable preferred language
+// based on the page language, top languages, accept languages, and
+// server languages.
+TEST(AnnotatorTest, ComputePreferredLanguage) {
+  TestAnnotatorClient* annotator_client = new TestAnnotatorClient();
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  Annotator annotator(GURL("https://datascraper.com/annotation"), GURL(""),
+                      "my_api_key", kThrottle, 1 /* batch_size */,
+                      1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      base::WrapUnique(annotator_client));
+
+  // Simplest case: the page language is in the list of top languages,
+  // accept languages, and server languages.
+  annotator.server_languages_ = {"fr", "ja"};
+  annotator_client->SetTopLanguages({"fr", "hu"});
+  annotator_client->SetAcceptLanguages({"fr", "es"});
+  EXPECT_EQ("fr", annotator.ComputePreferredLanguage("fr"));
+
+  // Case and locale are ignored (except for zh, see below).
+  annotator.server_languages_ = {"fR-FR", "ja"};
+  annotator_client->SetTopLanguages({"Fr-CA", "hu"});
+  annotator_client->SetAcceptLanguages({"fr-BE", "es"});
+  EXPECT_EQ("fr", annotator.ComputePreferredLanguage("FR-ch"));
+
+  // The page language is respected if it appears in the list of accept
+  // languages OR top languages, and it's also a supported server language.
+  annotator.server_languages_ = {"fr", "en", "de", "pt", "ja"};
+  annotator_client->SetTopLanguages({"fr", "de"});
+  annotator_client->SetAcceptLanguages({"en", "pt"});
+  EXPECT_EQ("pt", annotator.ComputePreferredLanguage("pt"));
+  EXPECT_EQ("de", annotator.ComputePreferredLanguage("de"));
+  EXPECT_EQ("en", annotator.ComputePreferredLanguage("en"));
+  EXPECT_EQ("fr", annotator.ComputePreferredLanguage("fr"));
+
+  // If the page language is not in the list of accept languages or top
+  // languages, the first choice should be an accept language that's
+  // also a top language and server language.
+  annotator.server_languages_ = {"en", "es"};
+  annotator_client->SetTopLanguages({"es"});
+  annotator_client->SetAcceptLanguages({"en", "es"});
+  EXPECT_EQ("es", annotator.ComputePreferredLanguage("hu"));
+
+  // If the page language is not in the list of accept languages or top
+  // languages, and no accept languages are top languages, return the
+  // first accept language that's a server language.
+  annotator.server_languages_ = {"en", "es"};
+  annotator_client->SetTopLanguages({});
+  annotator_client->SetAcceptLanguages({"en", "es"});
+  EXPECT_EQ("en", annotator.ComputePreferredLanguage("ja"));
+
+  // If the page language is not in the list of accept languages and none
+  // of the accept languages are server languages either, return the first
+  // top language that's a server language.
+  annotator.server_languages_ = {"en", "de", "pt"};
+  annotator_client->SetTopLanguages({"it", "hu", "de", "pt"});
+  annotator_client->SetAcceptLanguages({"es"});
+  EXPECT_EQ("de", annotator.ComputePreferredLanguage("ja"));
+
+  // If nothing matches, just return the first accept language. The server can
+  // still return OCR results, and it can log the request.
+  annotator.server_languages_ = {"en", "de", "pt"};
+  annotator_client->SetTopLanguages({"it", "hu"});
+  annotator_client->SetAcceptLanguages({"zh-TW"});
+  EXPECT_EQ("zh-TW", annotator.ComputePreferredLanguage("zh-CN"));
+}
+
+TEST(AnnotatorTest, FetchServerLanguages) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
+
+  Annotator annotator(GURL(kTestServerUrl), GURL(kLangsServerUrl),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
+
+  // Assert that initially server_languages_ doesn't contain the made-up
+  // language code zz.
+  EXPECT_FALSE(base::Contains(annotator.server_languages_, "zz"));
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "langs", {} /* expected headers */, "" /* body */,
+      R"({
+           "status": {},
+           "langs": [
+             "de",
+             "en",
+             "hu",
+             "zz"
+           ]
+         })",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_TRUE(base::Contains(annotator.server_languages_, "zz"));
+}
+
+// If the server langs don't contain English, they're ignored.
+TEST(AnnotatorTest, ServerLanguagesMustContainEnglish) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
+
+  Annotator annotator(GURL(kTestServerUrl), GURL(kLangsServerUrl),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<TestAnnotatorClient>());
+
+  // Assert that initially server_languages_ does contain "en" but
+  // doesn't contain the made-up language code zz.
+  EXPECT_FALSE(base::Contains(annotator.server_languages_, "zz"));
+
+  // The server response doesn't include "en", so we should ignore it.
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "langs", {} /* expected headers */, "" /* body */,
+      R"({
+           "status": {},
+           "langs": [
+             "de",
+             "zz"
+           ]
+         })",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  // We shouldn't have updated our languages because the response didn't
+  // include "en".
+  EXPECT_TRUE(base::Contains(annotator.server_languages_, "en"));
+  EXPECT_FALSE(base::Contains(annotator.server_languages_, "zz"));
 }
 
 }  // namespace image_annotation

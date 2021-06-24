@@ -13,16 +13,18 @@
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/demuxer_stream.h"
 #include "media/base/video_decoder_config.h"
 #include "media/mojo/common/mojo_data_pipe_read_write.h"
-#include "media/mojo/interfaces/remoting.mojom.h"
+#include "media/mojo/mojom/remoting.mojom.h"
 #include "media/remoting/rpc_broker.h"
 #include "media/remoting/triggers.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -40,7 +42,10 @@ namespace remoting {
 // while RPC message should be sent on main thread using |main_task_runner|.
 class DemuxerStreamAdapter {
  public:
-  using ErrorCallback = base::Callback<void(StopTrigger)>;
+  using ErrorCallback = base::OnceCallback<void(StopTrigger)>;
+
+  // The capacity in bytes for the Mojo data pipes used with this class.
+  static constexpr uint32_t kMojoDataPipeCapacityInBytes = 512 * 1024;
 
   // |main_task_runner|: Task runner to post RPC message on main thread
   // |media_task_runner|: Task runner to run whole class on media thread.
@@ -49,8 +54,8 @@ class DemuxerStreamAdapter {
   // |rpc_broker|: Broker class to handle incoming and outgoing RPC message. It
   //               is used only on the main thread.
   // |rpc_handle|: Unique value that references this DemuxerStreamAdapter.
-  // |stream_sender_info|: Transfer of pipe binding on the media thread. It is
-  //                       to access mojo interface for sending data stream.
+  // |stream_sender_remote|: Transfer of pipe binding on the media thread. It is
+  //                         to access mojo remote for sending data stream.
   // |producer_handle|: handle to send data using mojo data pipe.
   // |error_callback|: Run if a fatal runtime error occurs and remoting should
   //                   be shut down.
@@ -61,9 +66,9 @@ class DemuxerStreamAdapter {
       DemuxerStream* demuxer_stream,
       const base::WeakPtr<RpcBroker>& rpc_broker,
       int rpc_handle,
-      mojom::RemotingDataStreamSenderPtrInfo stream_sender_info,
+      mojo::PendingRemote<mojom::RemotingDataStreamSender> stream_sender_remote,
       mojo::ScopedDataPipeProducerHandle producer_handle,
-      const ErrorCallback& error_callback);
+      ErrorCallback error_callback);
   ~DemuxerStreamAdapter();
 
   // Rpc handle for this class. This is used for sending/receiving RPC message
@@ -79,8 +84,8 @@ class DemuxerStreamAdapter {
   // signal when flush starts and when is done. During flush operation, all
   // fetching data actions will be discarded. The return value indicates frame
   // count in order to signal receiver what frames are in flight before flush,
-  // or base::nullopt if the flushing state was unchanged.
-  base::Optional<uint32_t> SignalFlush(bool flushing);
+  // or absl::nullopt if the flushing state was unchanged.
+  absl::optional<uint32_t> SignalFlush(bool flushing);
 
   bool is_processing_read_request() const {
     // |read_until_callback_handle_| is set when RPC_DS_READUNTIL message is
@@ -94,19 +99,15 @@ class DemuxerStreamAdapter {
   // pipe.
   bool is_data_pending() const { return !pending_frame_.empty(); }
 
-  // Creates a Mojo data pipe configured appropriately for use with a
-  // DemuxerStreamAdapter.
-  static mojo::DataPipe* CreateDataPipe();
-
  private:
   friend class MockDemuxerStreamAdapter;
 
   // Receives RPC message from RpcBroker.
-  void OnReceivedRpc(std::unique_ptr<pb::RpcMessage> message);
+  void OnReceivedRpc(std::unique_ptr<openscreen::cast::RpcMessage> message);
 
   // RPC message tasks.
   void Initialize(int remote_callback_handle);
-  void ReadUntil(std::unique_ptr<pb::RpcMessage> message);
+  void ReadUntil(std::unique_ptr<openscreen::cast::RpcMessage> message);
   void EnableBitstreamConverter();
   void RequestBuffer();
   void SendReadAck();
@@ -180,7 +181,7 @@ class DemuxerStreamAdapter {
   AudioDecoderConfig audio_config_;
   VideoDecoderConfig video_config_;
 
-  mojom::RemotingDataStreamSenderPtr stream_sender_;
+  mojo::Remote<mojom::RemotingDataStreamSender> stream_sender_;
   MojoDataPipeWriter data_pipe_writer_;
 
   // Tracks the number of bytes written to the pipe.
@@ -189,9 +190,9 @@ class DemuxerStreamAdapter {
   // WeakPtrFactory only for reading buffer from demuxer stream. This is used
   // for canceling all read callbacks provided to the |demuxer_stream_| before a
   // flush.
-  base::WeakPtrFactory<DemuxerStreamAdapter> request_buffer_weak_factory_;
+  base::WeakPtrFactory<DemuxerStreamAdapter> request_buffer_weak_factory_{this};
   // WeakPtrFactory for normal usage.
-  base::WeakPtrFactory<DemuxerStreamAdapter> weak_factory_;
+  base::WeakPtrFactory<DemuxerStreamAdapter> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DemuxerStreamAdapter);
 };

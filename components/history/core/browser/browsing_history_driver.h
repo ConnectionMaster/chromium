@@ -64,11 +64,11 @@ class BrowsingHistoryDriver {
 
   // Whether the Clear Browsing Data UI should show a notice about the existence
   // of other forms of browsing history stored in user's account. The response
-  // is returned in a |callback|.
+  // is returned in a `callback`.
   virtual void ShouldShowNoticeAboutOtherFormsOfBrowsingHistory(
       const syncer::SyncService* sync_service,
       WebHistoryService* history_service,
-      base::Callback<void(bool)> callback) = 0;
+      base::OnceCallback<void(bool)> callback) = 0;
 
  protected:
   BrowsingHistoryDriver() {}

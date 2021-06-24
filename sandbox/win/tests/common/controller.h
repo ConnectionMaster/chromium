@@ -8,7 +8,7 @@
 #include <windows.h>
 #include <string>
 
-#include "base/strings/string16.h"
+#include "base/time/time.h"
 #include "base/win/scoped_handle.h"
 #include "sandbox/win/src/sandbox.h"
 
@@ -98,6 +98,7 @@ class TestRunner {
 
   // Sets the timeout value for the child to run the command and return.
   void SetTimeout(DWORD timeout_ms);
+  void SetTimeout(base::TimeDelta timeout);
 
   // Sets TestRunner to return without waiting for the process to exit.
   void SetAsynchronous(bool is_async) { is_async_ = is_async; }
@@ -136,10 +137,11 @@ class TestRunner {
 
   // The actual runner.
   int InternalRunTest(const wchar_t* command);
+  DWORD timeout_ms();
 
   BrokerServices* broker_;
   scoped_refptr<TargetPolicy> policy_;
-  DWORD timeout_;
+  base::TimeDelta timeout_;
   SboxTestsState state_;
   bool is_init_;
   bool is_async_;
@@ -155,14 +157,14 @@ class TestRunner {
 BrokerServices* GetBroker();
 
 // Constructs a full path to a file inside the system32 folder.
-base::string16 MakePathToSys32(const wchar_t* name, bool is_obj_man_path);
+std::wstring MakePathToSys32(const wchar_t* name, bool is_obj_man_path);
 
 // Constructs a full path to a file inside the syswow64 folder.
-base::string16 MakePathToSysWow64(const wchar_t* name, bool is_obj_man_path);
+std::wstring MakePathToSysWow64(const wchar_t* name, bool is_obj_man_path);
 
 // Constructs a full path to a file inside the system32 (or syswow64) folder
 // depending on whether process is running in wow64 or not.
-base::string16 MakePathToSys(const wchar_t* name, bool is_obj_man_path);
+std::wstring MakePathToSys(const wchar_t* name, bool is_obj_man_path);
 
 // Runs the given test on the target process.
 int DispatchCall(int argc, wchar_t **argv);

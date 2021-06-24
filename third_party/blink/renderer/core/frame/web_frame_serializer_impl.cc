@@ -86,6 +86,7 @@
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/core/html/html_all_collection.h"
+#include "third_party/blink/renderer/core/html/html_document.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_frame_element_base.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
@@ -101,12 +102,11 @@ namespace blink {
 namespace {
 
 // Generate the default base tag declaration.
-String GenerateBaseTagDeclaration(const WebString& base_target) {
+String GenerateBaseTagDeclaration(const String& base_target) {
   // TODO(yosin) We should call |FrameSerializer::baseTagDeclarationOf()|.
   if (base_target.IsEmpty())
     return String("<base href=\".\">");
-  String base_string = "<base href=\".\" target=\"" +
-                       static_cast<const String&>(base_target) + "\">";
+  String base_string = "<base href=\".\" target=\"" + base_target + "\">";
   return base_string;
 }
 
@@ -124,7 +124,7 @@ WebFrameSerializerImpl::SerializeDomParam::SerializeDomParam(
     : url(url),
       text_encoding(text_encoding),
       document(document),
-      is_html_document(document->IsHTMLDocument()),
+      is_html_document(IsA<HTMLDocument>(document)),
       have_seen_doc_type(false),
       have_added_charset_declaration(false),
       skip_meta_element(nullptr),
@@ -143,13 +143,13 @@ String WebFrameSerializerImpl::PreActionBeforeSerializeOpenTag(
     // have overrided the META which have correct charset declaration after
     // serializing open tag of HEAD element.
     DCHECK(element);
-    if (IsHTMLMetaElement(element) &&
-        ToHTMLMetaElement(element)->ComputeEncoding().IsValid()) {
+    auto* meta = DynamicTo<HTMLMetaElement>(element);
+    if (meta && meta->ComputeEncoding().IsValid()) {
       // Found META tag declared charset, we need to skip it when
       // serializing DOM.
       param->skip_meta_element = element;
       *need_skip = true;
-    } else if (IsHTMLHtmlElement(*element)) {
+    } else if (IsA<HTMLHtmlElement>(element)) {
       // Check something before processing the open tag of HEAD element.
       // First we add doc type declaration if original document has it.
       if (!param->have_seen_doc_type) {
@@ -161,7 +161,7 @@ String WebFrameSerializerImpl::PreActionBeforeSerializeOpenTag(
       // See http://msdn2.microsoft.com/en-us/library/ms537628(VS.85).aspx.
       result.Append(
           WebFrameSerializer::GenerateMarkOfTheWebDeclaration(param->url));
-    } else if (IsHTMLBaseElement(*element)) {
+    } else if (IsA<HTMLBaseElement>(*element)) {
       // Comment the BASE tag when serializing dom.
       result.Append("<!--");
     }
@@ -201,7 +201,8 @@ String WebFrameSerializerImpl::PostActionAfterSerializeOpenTag(
   if (!param->is_html_document)
     return result.ToString();
   // Check after processing the open tag of HEAD element
-  if (!param->have_added_charset_declaration && IsHTMLHeadElement(*element)) {
+  if (!param->have_added_charset_declaration &&
+      IsA<HTMLHeadElement>(*element)) {
     param->have_added_charset_declaration = true;
     // Check meta element. WebKit only pre-parse the first 512 bytes of the
     // document. If the whole <HEAD> is larger and meta is the end of head
@@ -250,7 +251,7 @@ String WebFrameSerializerImpl::PostActionAfterSerializeEndTag(
   if (!param->is_html_document)
     return result.ToString();
   // Comment the BASE tag when serializing DOM.
-  if (IsHTMLBaseElement(*element)) {
+  if (IsA<HTMLBaseElement>(*element)) {
     result.Append("-->");
     // Append a new base tag declaration.
     result.Append(GenerateBaseTagDeclaration(param->document->BaseTarget()));
@@ -278,12 +279,12 @@ void WebFrameSerializerImpl::EncodeAndFlushBuffer(
   String content = data_buffer_.ToString();
   data_buffer_.Clear();
 
-  CString encoded_content =
+  std::string encoded_content =
       param->text_encoding.Encode(content, WTF::kEntitiesForUnencodables);
 
   // Send result to the client.
   client_->DidSerializeDataForFrame(
-      WebVector<char>(encoded_content.data(), encoded_content.length()),
+      WebVector<char>(encoded_content.c_str(), encoded_content.length()),
       status);
 }
 
@@ -319,7 +320,7 @@ void WebFrameSerializerImpl::OpenTagToString(Element* element,
   // Find out if we need to do frame-specific link rewriting.
   WebFrame* frame = nullptr;
   if (auto* frame_owner_element = DynamicTo<HTMLFrameOwnerElement>(element)) {
-    frame = WebFrame::FromFrame(frame_owner_element->ContentFrame());
+    frame = WebFrame::FromCoreFrame(frame_owner_element->ContentFrame());
   }
   WebString rewritten_frame_link;
   bool should_rewrite_frame_src =
@@ -363,7 +364,7 @@ void WebFrameSerializerImpl::OpenTagToString(Element* element,
   // is written even if the original document didn't have that attribute
   // (mainly needed for iframes with srcdoc, but with no src attribute).
   if (should_rewrite_frame_src && !did_rewrite_frame_src &&
-      IsHTMLIFrameElement(element)) {
+      IsA<HTMLIFrameElement>(element)) {
     AppendAttribute(result, param->is_html_document,
                     html_names::kSrcAttr.ToString(), rewritten_frame_link);
   }
@@ -398,8 +399,8 @@ void WebFrameSerializerImpl::EndTagToString(Element* element,
     if (param->is_html_document) {
       result.Append('>');
       // FIXME: This code is horribly wrong.  WebFrameSerializerImpl must die.
-      if (!element->IsHTMLElement() ||
-          ToHTMLElement(element)->ShouldSerializeEndTag()) {
+      auto* html_element = DynamicTo<HTMLElement>(element);
+      if (!html_element || html_element->ShouldSerializeEndTag()) {
         // We need to write end tag when it is required.
         result.Append("</");
         result.Append(element->nodeName().DeprecatedLower());
@@ -419,16 +420,19 @@ void WebFrameSerializerImpl::EndTagToString(Element* element,
 void WebFrameSerializerImpl::BuildContentForNode(Node* node,
                                                  SerializeDomParam* param) {
   switch (node->getNodeType()) {
-    case Node::kElementNode:
+    case Node::kElementNode: {
+      auto* element = To<Element>(node);
       // Process open tag of element.
-      OpenTagToString(ToElement(node), param);
+      OpenTagToString(element, param);
       // Walk through the children nodes and process it.
-      for (Node* child = node->firstChild(); child;
-           child = child->nextSibling())
+      for (Node* child = element->firstChild(); child;
+           child = child->nextSibling()) {
         BuildContentForNode(child, param);
+      }
       // Process end tag of element.
-      EndTagToString(ToElement(node), param);
+      EndTagToString(element, param);
       break;
+    }
     case Node::kTextNode:
       SaveHTMLContentToBuffer(CreateMarkup(node), param);
       break;

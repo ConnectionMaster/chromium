@@ -13,11 +13,13 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check.h"
 #include "base/files/file_path.h"
 #include "base/task/post_task.h"
 #include "base/test/test_simple_task_runner.h"
 #include "components/leveldb_proto/internal/proto_database_impl.h"
 #include "components/leveldb_proto/public/proto_database.h"
+#include "components/leveldb_proto/public/shared_proto_database_client_list.h"
 
 namespace leveldb_proto {
 namespace test {
@@ -32,15 +34,9 @@ class FakeDB : public ProtoDatabaseImpl<P, T> {
   explicit FakeDB(EntryMap* db);
 
   // ProtoDatabase implementation.
-  void Init(const std::string& client_name,
-            Callbacks::InitStatusCallback callback) override;
   void Init(Callbacks::InitStatusCallback callback) override;
   void Init(const leveldb_env::Options& unique_db_options,
             Callbacks::InitStatusCallback callback) override;
-  void Init(const char* client_name,
-            const base::FilePath& database_dir,
-            const leveldb_env::Options& options,
-            Callbacks::InitCallback callback) override;
   void UpdateEntries(std::unique_ptr<typename ProtoDatabase<T>::KeyEntryVector>
                          entries_to_save,
                      std::unique_ptr<std::vector<std::string>> keys_to_remove,
@@ -102,6 +98,7 @@ class FakeDB : public ProtoDatabaseImpl<P, T> {
   static base::FilePath DirectoryForTestDB();
 
  private:
+  void InvokingInvalidCallback(const std::string& callback_name);
   static void RunLoadCallback(
       typename Callbacks::Internal<T>::LoadCallback callback,
       std::unique_ptr<typename std::vector<T>> entries,
@@ -173,13 +170,14 @@ void ProtoToDataWrap(const P& proto, T* data) {
 template <typename P, typename T>
 FakeDB<P, T>::FakeDB(EntryMap* db)
     : ProtoDatabaseImpl<P, T>(
+          ProtoDbType::TEST_DATABASE0,
+          base::FilePath(FILE_PATH_LITERAL("db_dir")),
           base::MakeRefCounted<base::TestSimpleTaskRunner>()) {
   db_ = db;
 }
 
 template <typename P, typename T>
-void FakeDB<P, T>::Init(const std::string& client_name,
-                        Callbacks::InitStatusCallback callback) {
+void FakeDB<P, T>::Init(Callbacks::InitStatusCallback callback) {
   dir_ = base::FilePath(FILE_PATH_LITERAL("db_dir"));
   init_status_callback_ = std::move(callback);
 }
@@ -187,21 +185,7 @@ void FakeDB<P, T>::Init(const std::string& client_name,
 template <typename P, typename T>
 void FakeDB<P, T>::Init(const leveldb_env::Options& unique_db_options,
                         Callbacks::InitStatusCallback callback) {
-  Init("fake_db", std::move(callback));
-}
-
-template <typename P, typename T>
-void FakeDB<P, T>::Init(Callbacks::InitStatusCallback callback) {
-  Init("fake_db", std::move(callback));
-}
-
-template <typename P, typename T>
-void FakeDB<P, T>::Init(const char* client_name,
-                        const base::FilePath& database_dir,
-                        const leveldb_env::Options& options,
-                        Callbacks::InitCallback callback) {
-  dir_ = database_dir;
-  init_callback_ = std::move(callback);
+  Init(std::move(callback));
 }
 
 template <typename P, typename T>
@@ -223,9 +207,6 @@ void FakeDB<P, T>::UpdateEntriesWithRemoveFilter(
     std::unique_ptr<typename Util::Internal<T>::KeyEntryVector> entries_to_save,
     const KeyFilter& delete_key_filter,
     Callbacks::UpdateCallback callback) {
-  for (auto& pair : *entries_to_save)
-    DataToProtoWrap(&pair.second, &(*db_)[pair.first]);
-
   auto it = db_->begin();
   while (it != db_->end()) {
     if (!delete_key_filter.is_null() && delete_key_filter.Run(it->first))
@@ -233,6 +214,9 @@ void FakeDB<P, T>::UpdateEntriesWithRemoveFilter(
     else
       ++it;
   }
+
+  for (auto& pair : *entries_to_save)
+    DataToProtoWrap(&pair.second, &(*db_)[pair.first]);
 
   update_callback_ = std::move(callback);
 }
@@ -357,37 +341,75 @@ base::FilePath& FakeDB<P, T>::GetDirectory() {
 
 template <typename P, typename T>
 void FakeDB<P, T>::InitCallback(bool success) {
+  if (!init_callback_)
+    InvokingInvalidCallback("InitCallback");
   std::move(init_callback_).Run(success);
 }
 
 template <typename P, typename T>
 void FakeDB<P, T>::InitStatusCallback(Enums::InitStatus status) {
+  if (!init_status_callback_)
+    InvokingInvalidCallback("InitCallback");
   std::move(init_status_callback_).Run(status);
 }
 
 template <typename P, typename T>
 void FakeDB<P, T>::LoadCallback(bool success) {
+  if (!load_callback_)
+    InvokingInvalidCallback("LoadCallback");
   std::move(load_callback_).Run(success);
 }
 
 template <typename P, typename T>
 void FakeDB<P, T>::LoadKeysCallback(bool success) {
+  if (!load_keys_callback_)
+    InvokingInvalidCallback("LoadKeysCallback");
   std::move(load_keys_callback_).Run(success);
 }
 
 template <typename P, typename T>
 void FakeDB<P, T>::GetCallback(bool success) {
+  if (get_callback_.is_null())
+    InvokingInvalidCallback("GetCallback");
   std::move(get_callback_).Run(success);
 }
 
 template <typename P, typename T>
 void FakeDB<P, T>::UpdateCallback(bool success) {
+  if (!update_callback_)
+    InvokingInvalidCallback("UpdateCallback");
   std::move(update_callback_).Run(success);
 }
 
 template <typename P, typename T>
 void FakeDB<P, T>::DestroyCallback(bool success) {
+  if (!destroy_callback_)
+    InvokingInvalidCallback("DestroyCallback");
   std::move(destroy_callback_).Run(success);
+}
+
+template <typename P, typename T>
+void FakeDB<P, T>::InvokingInvalidCallback(const std::string& callback_name) {
+  std::string present_callbacks;
+  if (init_callback_)
+    present_callbacks += " InitCallback";
+  if (init_status_callback_)
+    present_callbacks += " InitStatusCallback";
+  if (load_callback_)
+    present_callbacks += " LoadCallback";
+  if (load_keys_callback_)
+    present_callbacks += " LoadKeysCallback";
+  if (get_callback_)
+    present_callbacks += " GetCallback";
+  if (update_callback_)
+    present_callbacks += " UpdateCallback";
+  if (destroy_callback_)
+    present_callbacks += " DestroyCallback";
+
+  CHECK(false) << "Test tried to invoke FakeDB " << callback_name
+               << ", but this callback is not present. Did you mean to invoke "
+                  "one of the present callbacks: ("
+               << present_callbacks << ")?";
 }
 
 // static

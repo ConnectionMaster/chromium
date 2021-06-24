@@ -23,14 +23,16 @@
 
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
-#include "third_party/blink/renderer/platform/wtf/dtoa/dtoa.h"
+#include "third_party/blink/renderer/platform/wtf/dtoa.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_table.h"
+#include "third_party/blink/renderer/platform/wtf/text/case_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_impl.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
 
 namespace WTF {
 
-static_assert(sizeof(AtomicString) == sizeof(String),
-              "AtomicString and String must be same size");
+ASSERT_SIZE(AtomicString, String);
 
 #if defined(ARCH_CPU_64_BITS)
 AtomicString::AtomicString(const LChar* chars, size_t length)
@@ -70,19 +72,8 @@ AtomicString AtomicString::FromUTF8(const char* chars) {
   return AtomicString(AtomicStringTable::Instance().AddUTF8(chars, nullptr));
 }
 
-AtomicString AtomicString::DeprecatedLower() const {
-  // Note: This is a hot function in the Dromaeo benchmark.
-  StringImpl* impl = this->Impl();
-  if (UNLIKELY(!impl))
-    return *this;
-  scoped_refptr<StringImpl> new_impl = impl->LowerUnicode();
-  if (LIKELY(new_impl == impl))
-    return *this;
-  return AtomicString(String(std::move(new_impl)));
-}
-
 AtomicString AtomicString::LowerASCII() const {
-  StringImpl* impl = this->Impl();
+  StringImpl* impl = Impl();
   if (UNLIKELY(!impl))
     return *this;
   scoped_refptr<StringImpl> new_impl = impl->LowerASCII();
@@ -92,7 +83,7 @@ AtomicString AtomicString::LowerASCII() const {
 }
 
 AtomicString AtomicString::UpperASCII() const {
-  StringImpl* impl = this->Impl();
+  StringImpl* impl = Impl();
   if (UNLIKELY(!impl))
     return *this;
   return AtomicString(impl->UpperASCII());
@@ -105,6 +96,10 @@ AtomicString AtomicString::Number(double number, unsigned precision) {
 
 std::ostream& operator<<(std::ostream& out, const AtomicString& s) {
   return out << s.GetString();
+}
+
+void AtomicString::WriteIntoTrace(perfetto::TracedValue context) const {
+  perfetto::WriteIntoTracedValue(std::move(context), GetString());
 }
 
 #ifndef NDEBUG

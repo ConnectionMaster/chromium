@@ -8,11 +8,13 @@
 #include <set>
 #include <vector>
 
+#include "ash/constants/ash_features.h"
 #include "base/bind.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/common/pref_names.h"
@@ -43,7 +45,7 @@ void CheckAndResolveInputMethodIDs(
                  extension_ime_util::GetInputMethodIDByEngineID);
 
   // Remove values that aren't found in the set of supported input method IDs.
-  std::vector<std::string>::iterator it = values->begin();
+  auto it = values->begin();
   while (it != values->end()) {
     if (it->size() && supported_input_method_ids.find(*it) !=
                       supported_input_method_ids.end()) {
@@ -69,7 +71,7 @@ std::string CheckAndResolveLocales(const std::string& languages) {
   std::sort(accept_language_codes.begin(), accept_language_codes.end());
 
   // Remove unsupported language values.
-  std::vector<std::string>::iterator value_iter = values.begin();
+  auto value_iter = values.begin();
   while (value_iter != values.end()) {
     if (binary_search(accept_language_codes.begin(),
                       accept_language_codes.end(),
@@ -116,10 +118,7 @@ void MergeLists(std::vector<base::StringPiece>* dest,
 InputMethodSyncer::InputMethodSyncer(
     sync_preferences::PrefServiceSyncable* prefs,
     scoped_refptr<input_method::InputMethodManager::State> ime_state)
-    : prefs_(prefs),
-      ime_state_(ime_state),
-      merging_(false),
-      weak_factory_(this) {}
+    : prefs_(prefs), ime_state_(ime_state), merging_(false) {}
 
 InputMethodSyncer::~InputMethodSyncer() {
   prefs_->RemoveObserver(this);
@@ -129,17 +128,19 @@ InputMethodSyncer::~InputMethodSyncer() {
 void InputMethodSyncer::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterStringPref(
-      prefs::kLanguagePreloadEnginesSyncable,
-      "",
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterStringPref(prefs::kLanguageEnabledImesSyncable, "",
-                               user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+      prefs::kLanguagePreloadEnginesSyncable, "",
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
+  registry->RegisterStringPref(
+      prefs::kLanguageEnabledImesSyncable, "",
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
+  // Locally tracks whether we should do the first-sync merge, hence not a
+  // syncable pref itself.
   registry->RegisterBooleanPref(prefs::kLanguageShouldMergeInputMethods, false);
 }
 
 void InputMethodSyncer::Initialize() {
-  // This causes OnIsSyncingChanged to be called when the value of
-  // PrefService::IsSyncing() changes.
+  // This causes OnIsSyncingChanged to be called when the PrefService starts
+  // syncing prefs.
   prefs_->AddObserver(this);
 
   preferred_languages_syncable_.Init(
@@ -148,9 +149,8 @@ void InputMethodSyncer::Initialize() {
                                  prefs_);
   enabled_imes_syncable_.Init(prefs::kLanguageEnabledImesSyncable, prefs_);
 
-  BooleanPrefMember::NamedChangeCallback callback =
-      base::Bind(&InputMethodSyncer::OnPreferenceChanged,
-                 base::Unretained(this));
+  BooleanPrefMember::NamedChangeCallback callback = base::BindRepeating(
+      &InputMethodSyncer::OnPreferenceChanged, base::Unretained(this));
   preferred_languages_.Init(language::prefs::kPreferredLanguages, prefs_,
                             callback);
   preload_engines_.Init(prefs::kLanguagePreloadEngines,
@@ -230,10 +230,11 @@ void InputMethodSyncer::MergeSyncedPrefs() {
   std::string languages(AddSupportedInputMethodValues(
       preferred_languages_.GetValue(), preferred_languages_syncable,
       language::prefs::kPreferredLanguages));
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-      base::Bind(&CheckAndResolveLocales, languages),
-      base::Bind(&InputMethodSyncer::FinishMerge, weak_factory_.GetWeakPtr()));
+      base::BindOnce(&CheckAndResolveLocales, languages),
+      base::BindOnce(&InputMethodSyncer::FinishMerge,
+                     weak_factory_.GetWeakPtr()));
 }
 
 std::string InputMethodSyncer::AddSupportedInputMethodValues(
@@ -250,11 +251,11 @@ std::string InputMethodSyncer::AddSupportedInputMethodValues(
       pref_name == prefs::kLanguageEnabledImes) {
     input_method::InputMethodManager* manager =
         input_method::InputMethodManager::Get();
-    std::unique_ptr<input_method::InputMethodDescriptors> supported_descriptors;
+    std::unique_ptr<input_method::InputMethodDescriptors>
+        supported_descriptors =
+            std::make_unique<input_method::InputMethodDescriptors>();
 
     if (pref_name == prefs::kLanguagePreloadEngines) {
-      // Set the known input methods.
-      supported_descriptors = manager->GetSupportedInputMethods();
       // Add the available component extension IMEs.
       ComponentExtensionIMEManager* component_extension_manager =
           manager->GetComponentExtensionIMEManager();
@@ -264,7 +265,6 @@ std::string InputMethodSyncer::AddSupportedInputMethodValues(
                                     component_descriptors.begin(),
                                     component_descriptors.end());
     } else {
-      supported_descriptors.reset(new input_method::InputMethodDescriptors);
       ime_state_->GetInputMethodExtensions(supported_descriptors.get());
     }
     CheckAndResolveInputMethodIDs(*supported_descriptors, &new_token_values);
@@ -315,10 +315,15 @@ void InputMethodSyncer::OnPreferenceChanged(const std::string& pref_name) {
 }
 
 void InputMethodSyncer::OnIsSyncingChanged() {
-  if (prefs_->GetBoolean(prefs::kLanguageShouldMergeInputMethods) &&
-      prefs_->IsSyncing()) {
+  // Only merge once.
+  if (!prefs_->GetBoolean(prefs::kLanguageShouldMergeInputMethods))
+    return;
+  // Wait for the correct type of prefs to sync before merging.
+  bool is_syncing = chromeos::features::IsSplitSettingsSyncEnabled()
+                        ? prefs_->AreOsPrefsSyncing()
+                        : prefs_->IsSyncing();
+  if (is_syncing)
     MergeSyncedPrefs();
-  }
 }
 
 }  // namespace input_method

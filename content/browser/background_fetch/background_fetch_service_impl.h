@@ -14,33 +14,30 @@
 #include "base/memory/ref_counted.h"
 #include "content/browser/background_fetch/background_fetch_context.h"
 #include "content/common/content_export.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/background_fetch/background_fetch.mojom.h"
-#include "url/origin.h"
 
 namespace content {
 
-class BackgroundFetchContext;
-class RenderProcessHost;
+struct ServiceWorkerVersionBaseInfo;
 
 class CONTENT_EXPORT BackgroundFetchServiceImpl
     : public blink::mojom::BackgroundFetchService {
  public:
   BackgroundFetchServiceImpl(
       scoped_refptr<BackgroundFetchContext> background_fetch_context,
-      url::Origin origin,
+      blink::StorageKey storage_key,
       int render_frame_tree_node_id,
-      ResourceRequestInfo::WebContentsGetter wc_getter);
+      WebContents::Getter wc_getter);
   ~BackgroundFetchServiceImpl() override;
 
   static void CreateForWorker(
-      blink::mojom::BackgroundFetchServiceRequest request,
-      RenderProcessHost* render_process_host,
-      const url::Origin& origin);
+      const ServiceWorkerVersionBaseInfo& info,
+      mojo::PendingReceiver<blink::mojom::BackgroundFetchService> receiver);
 
   static void CreateForFrame(
-      RenderProcessHost* render_process_host,
-      int render_frame_id,
-      blink::mojom::BackgroundFetchServiceRequest request);
+      RenderFrameHost* render_frame_host,
+      mojo::PendingReceiver<blink::mojom::BackgroundFetchService> receiver);
 
   // blink::mojom::BackgroundFetchService implementation.
   void Fetch(int64_t service_worker_registration_id,
@@ -58,12 +55,12 @@ class CONTENT_EXPORT BackgroundFetchServiceImpl
                        GetDeveloperIdsCallback callback) override;
 
  private:
-  static void CreateOnIoThread(
+  static void CreateOnCoreThread(
       scoped_refptr<BackgroundFetchContext> background_fetch_context,
-      url::Origin origin,
+      blink::StorageKey storage_key,
       int render_frame_tree_node_id,
-      ResourceRequestInfo::WebContentsGetter wc_getter,
-      blink::mojom::BackgroundFetchServiceRequest request);
+      WebContents::Getter wc_getter,
+      mojo::PendingReceiver<blink::mojom::BackgroundFetchService> receiver);
 
   // Validates and returns whether the |developer_id|, |unique_id|, |requests|
   // and |title| respectively have valid values. The renderer will be flagged
@@ -76,10 +73,10 @@ class CONTENT_EXPORT BackgroundFetchServiceImpl
   // The Background Fetch context on which operations will be dispatched.
   scoped_refptr<BackgroundFetchContext> background_fetch_context_;
 
-  const url::Origin origin_;
+  const blink::StorageKey storage_key_;
 
   int render_frame_tree_node_id_;
-  ResourceRequestInfo::WebContentsGetter wc_getter_;
+  WebContents::Getter wc_getter_;
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundFetchServiceImpl);
 };

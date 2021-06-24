@@ -58,8 +58,8 @@ VulkanCommandPool::CreatePrimaryCommandBuffer() {
 
 std::unique_ptr<VulkanCommandBuffer>
 VulkanCommandPool::CreateSecondaryCommandBuffer() {
-  std::unique_ptr<VulkanCommandBuffer> command_buffer(
-      new VulkanCommandBuffer(device_queue_, this, false));
+  auto command_buffer =
+      std::make_unique<VulkanCommandBuffer>(device_queue_, this, false);
   if (!command_buffer->Initialize())
     return nullptr;
 

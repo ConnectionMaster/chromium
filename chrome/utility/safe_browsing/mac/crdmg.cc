@@ -17,7 +17,6 @@
 
 #include "base/files/file.h"
 #include "base/logging.h"
-#include "base/mac/availability.h"
 #include "base/macros.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/stringprintf.h"
@@ -89,16 +88,11 @@ int SafeDMG::Main(int argc, const char* argv[]) {
   if (argc == 3 && !PrepareUnpack(argv[2]))
     return EXIT_FAILURE;
 
-  if (__builtin_available(macOS 10.10, *)) {
-    if (!EnableSandbox())
-      return EXIT_FAILURE;
-
-    if (!ParseDMG())
-      return EXIT_FAILURE;
-  } else {
-    LOG(ERROR) << "Requires 10.10 or higher";
+  if (!EnableSandbox())
     return EXIT_FAILURE;
-  }
+
+  if (!ParseDMG())
+    return EXIT_FAILURE;
 
   return EXIT_SUCCESS;
 }

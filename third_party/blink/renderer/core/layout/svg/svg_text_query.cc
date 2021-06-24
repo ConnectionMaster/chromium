@@ -34,6 +34,9 @@ namespace blink {
 
 // Base structure for callback user data
 struct QueryData {
+  STACK_ALLOCATED();
+
+ public:
   QueryData()
       : is_vertical_text(false),
         current_offset(0),
@@ -54,7 +57,7 @@ static inline InlineFlowBox* FlowBoxForLayoutObject(
   if (layout_object->IsLayoutBlock()) {
     // If we're given a block element, it has to be a LayoutSVGText.
     DCHECK(layout_object->IsSVGText());
-    LayoutBlockFlow* layout_block_flow = ToLayoutBlockFlow(layout_object);
+    auto* layout_block_flow = To<LayoutBlockFlow>(layout_object);
 
     // LayoutSVGText only ever contains a single line box.
     InlineFlowBox* flow_box = layout_block_flow->FirstLineBox();
@@ -65,7 +68,7 @@ static inline InlineFlowBox* FlowBoxForLayoutObject(
   if (layout_object->IsLayoutInline()) {
     // We're given a LayoutSVGInline or objects that derive from it
     // (LayoutSVGTSpan / LayoutSVGTextPath)
-    LayoutInline* layout_inline = ToLayoutInline(layout_object);
+    auto* layout_inline = To<LayoutInline>(layout_object);
 
     // LayoutSVGInline only ever contains a single line box.
     InlineFlowBox* flow_box = layout_inline->FirstLineBox();
@@ -89,12 +92,12 @@ static void CollectTextBoxesInFlowBox(InlineFlowBox* flow_box,
       if (!child->GetLineLayoutItem().GetNode())
         continue;
 
-      CollectTextBoxesInFlowBox(ToInlineFlowBox(child), text_boxes);
+      CollectTextBoxesInFlowBox(To<InlineFlowBox>(child), text_boxes);
       continue;
     }
 
-    if (child->IsSVGInlineTextBox())
-      text_boxes.push_back(ToSVGInlineTextBox(child));
+    if (auto* svg_inline_text_box = DynamicTo<SVGInlineTextBox>(child))
+      text_boxes.push_back(svg_inline_text_box);
   }
 }
 
@@ -139,7 +142,7 @@ static void CollectTextBoxesInLogicalOrder(
   text_boxes.Shrink(0);
   for (InlineTextBox* text_box = text_line_layout.FirstTextBox(); text_box;
        text_box = text_box->NextForSameLayoutObject())
-    text_boxes.push_back(ToSVGInlineTextBox(text_box));
+    text_boxes.push_back(To<SVGInlineTextBox>(text_box));
   std::sort(text_boxes.begin(), text_boxes.end(),
             InlineTextBox::CompareByStart);
 }
@@ -161,8 +164,8 @@ static void LogicalQuery(LayoutObject* query_root,
     if (!layout_object->IsSVGInlineText())
       continue;
 
-    LineLayoutSVGInlineText text_line_layout =
-        LineLayoutSVGInlineText(ToLayoutSVGInlineText(layout_object));
+    auto text_line_layout =
+        LineLayoutSVGInlineText(To<LayoutSVGInlineText>(layout_object));
     DCHECK(text_line_layout.Style());
 
     // TODO(fs): Allow filtering the search earlier, since we should be

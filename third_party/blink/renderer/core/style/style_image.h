@@ -25,6 +25,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_IMAGE_H_
 
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/platform/graphics/image_orientation.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 
@@ -34,7 +35,6 @@ class CSSValue;
 class FloatSize;
 class Image;
 class ImageResourceContent;
-class LayoutSize;
 class SVGImage;
 class Document;
 class ComputedStyle;
@@ -45,7 +45,7 @@ typedef void* WrappedImagePtr;
 // This class represents a CSS <image> value in ComputedStyle. The underlying
 // object can be an image, a gradient or anything else defined as an <image>
 // value.
-class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
+class CORE_EXPORT StyleImage : public GarbageCollected<StyleImage> {
  public:
   virtual ~StyleImage() = default;
 
@@ -60,7 +60,8 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
   // Returns a CSSValue suitable for using as part of a computed style
   // value. This often means that any URLs have been made absolute, and similar
   // actions described by a "Computed value" in the relevant specification.
-  virtual CSSValue* ComputedCSSValue() const = 0;
+  virtual CSSValue* ComputedCSSValue(const ComputedStyle&,
+                                     bool allow_visited_style) const = 0;
 
   // An Image can be provided for rendering by GetImage.
   virtual bool CanRender() const { return true; }
@@ -70,6 +71,11 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
 
   // Any underlying resources this <image> references failed to load.
   virtual bool ErrorOccurred() const { return false; }
+
+  // Is the <image> considered same-origin? Can only be called if IsLoaded()
+  // returns true. |failing_url| is set to the (potentially formatted) URL of
+  // the first non-same-origin <image>.
+  virtual bool IsAccessAllowed(String& failing_url) const = 0;
 
   // Determine the concrete object size of this <image>, scaled by multiplier,
   // using the specified default object size. Return value as a FloatSize
@@ -85,9 +91,12 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
   // not zoomed. Note that the |default_object_size| has already been snapped
   // to LayoutUnit resolution because it represents the target painted size of
   // a container.
-  virtual FloatSize ImageSize(const Document&,
-                              float multiplier,
-                              const LayoutSize& default_object_size) const = 0;
+  //
+  // The size will respect the image orientation if requested and if the image
+  // supports it.
+  virtual FloatSize ImageSize(float multiplier,
+                              const FloatSize& default_object_size,
+                              RespectImageOrientationEnum) const = 0;
 
   // The <image> has intrinsic dimensions.
   //
@@ -128,6 +137,13 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
   // underlying ImageResourceContent, or otherwise nullptr.
   virtual ImageResourceContent* CachedImage() const { return nullptr; }
 
+  // Correct the image orientation preference for potentially cross-origin
+  // content.
+  virtual RespectImageOrientationEnum ForceOrientationIfNecessary(
+      RespectImageOrientationEnum default_orientation) const {
+    return default_orientation;
+  }
+
   ALWAYS_INLINE bool IsImageResource() const { return is_image_resource_; }
   ALWAYS_INLINE bool IsPendingImage() const { return is_pending_image_; }
   ALWAYS_INLINE bool IsGeneratedImage() const { return is_generated_image_; }
@@ -135,12 +151,13 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
     return is_image_resource_set_;
   }
   ALWAYS_INLINE bool IsPaintImage() const { return is_paint_image_; }
+  ALWAYS_INLINE bool IsCrossfadeImage() const { return is_crossfade_; }
 
   bool IsLazyloadPossiblyDeferred() const {
     return is_lazyload_possibly_deferred_;
   }
 
-  virtual void Trace(blink::Visitor* visitor) {}
+  virtual void Trace(Visitor* visitor) const {}
 
  protected:
   StyleImage()
@@ -148,12 +165,14 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
         is_pending_image_(false),
         is_generated_image_(false),
         is_image_resource_set_(false),
+        is_crossfade_(false),
         is_paint_image_(false),
         is_lazyload_possibly_deferred_(false) {}
   bool is_image_resource_ : 1;
   bool is_pending_image_ : 1;
   bool is_generated_image_ : 1;
   bool is_image_resource_set_ : 1;
+  bool is_crossfade_ : 1;
   bool is_paint_image_ : 1;
   bool is_lazyload_possibly_deferred_ : 1;
 
@@ -162,8 +181,8 @@ class CORE_EXPORT StyleImage : public GarbageCollectedFinalized<StyleImage> {
   FloatSize ApplyZoom(const FloatSize&, float multiplier) const;
   FloatSize ImageSizeForSVGImage(SVGImage*,
                                  float multiplier,
-                                 const LayoutSize& default_object_size) const;
+                                 const FloatSize& default_object_size) const;
 };
 
 }  // namespace blink
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_IMAGE_H_

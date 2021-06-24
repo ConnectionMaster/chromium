@@ -6,7 +6,7 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/navigation_simulator.h"
@@ -80,7 +80,7 @@ TEST_F(NavigationConsoleLoggerTest, NavigationCommitsSuccessfully_Logs) {
   EXPECT_TRUE(GetConsoleMessages(main_rfh()).empty());
   navigation->Commit();
 
-  EXPECT_TRUE(base::ContainsValue(GetConsoleMessages(main_rfh()), "foo"));
+  EXPECT_TRUE(base::Contains(GetConsoleMessages(main_rfh()), "foo"));
 }
 
 TEST_F(NavigationConsoleLoggerTest, NavigationAlreadyCommit_Logs) {
@@ -90,7 +90,7 @@ TEST_F(NavigationConsoleLoggerTest, NavigationAlreadyCommit_Logs) {
   };
   NavigationFinishCaller caller(web_contents(), base::BindRepeating(on_finish));
   NavigateAndCommit(GURL("http://example.test/"));
-  EXPECT_TRUE(base::ContainsValue(GetConsoleMessages(main_rfh()), "foo"));
+  EXPECT_TRUE(base::Contains(GetConsoleMessages(main_rfh()), "foo"));
 }
 
 TEST_F(NavigationConsoleLoggerTest, NavigationAlreadyFailed_NoLog) {

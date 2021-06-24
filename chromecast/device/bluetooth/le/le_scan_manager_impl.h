@@ -9,7 +9,6 @@
 #include <list>
 #include <map>
 #include <set>
-#include <string>
 #include <vector>
 
 #include "base/callback.h"
@@ -31,17 +30,20 @@ class LeScanManagerImpl : public LeScanManager,
 
   static constexpr int kMaxScanResultEntries = 1024;
 
-  void Initialize(scoped_refptr<base::SingleThreadTaskRunner> io_task_runner);
-  void Finalize();
-
   // LeScanManager implementation:
+  void Initialize(
+      scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) override;
+  void Finalize() override;
   void AddObserver(Observer* o) override;
   void RemoveObserver(Observer* o) override;
   void RequestScan(RequestScanCallback cb) override;
   void GetScanResults(
       GetScanResultsCallback cb,
-      base::Optional<ScanFilter> service_uuid = base::nullopt) override;
+      absl::optional<ScanFilter> service_uuid = absl::nullopt) override;
   void ClearScanResults() override;
+  void PauseScan() override;
+  void ResumeScan() override;
+  void SetScanParameters(int scan_interval_ms, int scan_window_ms) override;
 
  private:
   class ScanHandleImpl;
@@ -50,10 +52,12 @@ class LeScanManagerImpl : public LeScanManager,
   void OnScanResult(const bluetooth_v2_shlib::LeScanner::ScanResult&
                         scan_result_shlib) override;
 
+  void InitializeOnIoThread();
+
   // Returns a list of all BLE scan results. The results are sorted by RSSI.
   // Must be called on |io_task_runner|.
   std::vector<LeScanResult> GetScanResultsInternal(
-      base::Optional<ScanFilter> service_uuid);
+      absl::optional<ScanFilter> service_uuid);
 
   void NotifyScanHandleDestroyed(int32_t id);
 

@@ -6,14 +6,20 @@
 
 #include <string>
 
+#include "base/base_switches.h"
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/process/launch.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/launcher/test_launcher.h"
+#include "base/test/launcher/test_launcher_test_utils.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_run_loop_timeout.h"
+#include "base/test/test_switches.h"
+#include "base/test/test_timeouts.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
@@ -21,14 +27,20 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/common/shell_switches.h"
-#include "services/service_manager/sandbox/switches.h"
+#include "sandbox/policy/switches.h"
+#include "testing/gtest/include/gtest/gtest-spi.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if defined(USE_OZONE)
+#include "ui/ozone/public/ozone_switches.h"
+#endif
 
 namespace content {
 
@@ -39,8 +51,36 @@ namespace content {
 // TODO(mac): figure out why symbolization doesn't happen in the renderer.
 // http://crbug.com/521456
 // TODO(win): send PDB files for component build. http://crbug.com/521459
-#if !defined(OFFICIAL_BUILD) && !defined(OS_ANDROID) && !defined(OS_MACOSX) && \
+#if !defined(OFFICIAL_BUILD) && !defined(OS_ANDROID) && !defined(OS_MAC) && \
     !(defined(COMPONENT_BUILD) && defined(OS_WIN))
+
+namespace {
+
+const char* kSwitchesToCopy[] = {
+#if defined(USE_OZONE)
+    // Keep the kOzonePlatform switch that the Ozone must use.
+    switches::kOzonePlatform,
+#endif
+    // Some tests use custom cmdline that doesn't hold switches from previous
+    // cmdline. Only a couple of switches are copied. That can result in
+    // incorrect initialization of a process. For example, the work that we do
+    // to have use_x11 && use_ozone, requires UseOzonePlatform feature flag to
+    // be passed to all the process to ensure correct path is chosen.
+    // TODO(https://crbug.com/1096425): update this comment once USE_X11 goes
+    // away.
+    switches::kEnableFeatures,
+    switches::kDisableFeatures,
+};
+
+base::CommandLine CreateCommandLine() {
+  const base::CommandLine& cmdline = *base::CommandLine::ForCurrentProcess();
+  base::CommandLine command_line = base::CommandLine(cmdline.GetProgram());
+  command_line.CopySwitchesFrom(cmdline, kSwitchesToCopy,
+                                base::size(kSwitchesToCopy));
+  return command_line;
+}
+
+}  // namespace
 
 IN_PROC_BROWSER_TEST_F(ContentBrowserTest, MANUAL_ShouldntRun) {
   // Ensures that tests with MANUAL_ prefix don't run automatically.
@@ -52,7 +92,7 @@ IN_PROC_BROWSER_TEST_F(ContentBrowserTest, MANUAL_RendererCrash) {
       shell()->web_contents()->GetMainFrame()->GetProcess(),
       content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
 
-  NavigateToURL(shell(), GURL("chrome:crash"));
+  EXPECT_FALSE(NavigateToURL(shell(), GetWebUIURL("crash")));
   renderer_shutdown_observer.Wait();
 
   EXPECT_FALSE(renderer_shutdown_observer.did_exit_normally());
@@ -73,17 +113,17 @@ IN_PROC_BROWSER_TEST_F(ContentBrowserTest, RendererCrashCallStack) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  base::CommandLine new_test =
-      base::CommandLine(base::CommandLine::ForCurrentProcess()->GetProgram());
+
+  base::CommandLine new_test = CreateCommandLine();
   new_test.AppendSwitchASCII(base::kGTestFilterFlag,
                              "ContentBrowserTest.MANUAL_RendererCrash");
-  new_test.AppendSwitch(kRunManualTestsFlag);
-  new_test.AppendSwitch(kSingleProcessTestsFlag);
+  new_test.AppendSwitch(switches::kRunManualTestsFlag);
+  new_test.AppendSwitch(switches::kSingleProcessTests);
 
 #if defined(THREAD_SANITIZER)
   // TSan appears to not be able to report intentional crashes from sandboxed
   // renderer processes.
-  new_test.AppendSwitch(service_manager::switches::kNoSandbox);
+  new_test.AppendSwitch(sandbox::policy::switches::kNoSandbox);
 #endif
 
   std::string output;
@@ -94,7 +134,7 @@ IN_PROC_BROWSER_TEST_F(ContentBrowserTest, RendererCrashCallStack) {
   // "#0 0x0000007ea911 (...content_browsertests+0x7ea910)"
   std::string crash_string =
 #if !USE_EXTERNAL_SYMBOLIZER
-      "content::RenderFrameImpl::HandleRendererDebugURL";
+      "blink::LocalFrame::HandleRendererDebugURL";
 #else
       "#0 ";
 #endif
@@ -105,21 +145,34 @@ IN_PROC_BROWSER_TEST_F(ContentBrowserTest, RendererCrashCallStack) {
   }
 }
 
+#ifdef __clang__
+// Don't optimize this out of stack traces in ThinLTO builds.
+#pragma clang optimize off
+#endif
 IN_PROC_BROWSER_TEST_F(ContentBrowserTest, MANUAL_BrowserCrash) {
   CHECK(false);
 }
+#ifdef __clang__
+#pragma clang optimize on
+#endif
 
 // Tests that browser tests print the callstack on asserts.
-IN_PROC_BROWSER_TEST_F(ContentBrowserTest, BrowserCrashCallStack) {
+// Disabled on Windows crbug.com/1034784
+#if defined(OS_WIN)
+#define MAYBE_BrowserCrashCallStack DISABLED_BrowserCrashCallStack
+#else
+#define MAYBE_BrowserCrashCallStack BrowserCrashCallStack
+#endif
+IN_PROC_BROWSER_TEST_F(ContentBrowserTest, MAYBE_BrowserCrashCallStack) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  base::CommandLine new_test =
-      base::CommandLine(base::CommandLine::ForCurrentProcess()->GetProgram());
+
+  base::CommandLine new_test = CreateCommandLine();
   new_test.AppendSwitchASCII(base::kGTestFilterFlag,
                              "ContentBrowserTest.MANUAL_BrowserCrash");
-  new_test.AppendSwitch(kRunManualTestsFlag);
-  new_test.AppendSwitch(kSingleProcessTestsFlag);
+  new_test.AppendSwitch(switches::kRunManualTestsFlag);
+  new_test.AppendSwitch(switches::kSingleProcessTests);
   std::string output;
   base::GetAppOutputAndError(new_test, &output);
 
@@ -140,6 +193,79 @@ IN_PROC_BROWSER_TEST_F(ContentBrowserTest, BrowserCrashCallStack) {
   }
 }
 
+// The following 3 tests are disabled as they are meant to only run from
+// |RunMockTests| to validate tests launcher output for known results.
+using MockContentBrowserTest = ContentBrowserTest;
+
+// Basic Test to pass
+IN_PROC_BROWSER_TEST_F(MockContentBrowserTest, DISABLED_PassTest) {
+  ASSERT_TRUE(true);
+}
+// Basic Test to fail
+IN_PROC_BROWSER_TEST_F(MockContentBrowserTest, DISABLED_FailTest) {
+  ASSERT_TRUE(false);
+}
+// Basic Test to crash
+IN_PROC_BROWSER_TEST_F(MockContentBrowserTest, DISABLED_CrashTest) {
+  IMMEDIATE_CRASH();
+}
+
+// This is disabled due to flakiness: https://crbug.com/1086372
+#if defined(OS_WIN)
+#define MAYBE_RunMockTests DISABLED_RunMockTests
+#elif defined(OS_LINUX) && defined(THREAD_SANITIZER)
+// This is disabled because it fails on bionic: https://crbug.com/1202220
+#define MAYBE_RunMockTests DISABLED_RunMockTests
+#else
+#define MAYBE_RunMockTests RunMockTests
+#endif
+// Using TestLauncher to launch 3 simple browser tests
+// and validate the resulting json file.
+IN_PROC_BROWSER_TEST_F(ContentBrowserTest, MAYBE_RunMockTests) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  base::ScopedTempDir temp_dir;
+
+  base::CommandLine command_line = CreateCommandLine();
+  command_line.AppendSwitchASCII("gtest_filter",
+                                 "MockContentBrowserTest.DISABLED_*");
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath path =
+      temp_dir.GetPath().AppendASCII("SaveSummaryResult.json");
+  command_line.AppendSwitchPath("test-launcher-summary-output", path);
+  command_line.AppendSwitch("gtest_also_run_disabled_tests");
+  command_line.AppendSwitchASCII("test-launcher-retry-limit", "0");
+
+  std::string output;
+  base::GetAppOutputAndError(command_line, &output);
+
+  // Validate the resulting JSON file is the expected output.
+  absl::optional<base::Value> root =
+      base::test_launcher_utils::ReadSummary(path);
+  ASSERT_TRUE(root);
+
+  base::Value* val = root->FindDictKey("test_locations");
+  ASSERT_TRUE(val);
+  EXPECT_EQ(3u, val->DictSize());
+  EXPECT_TRUE(base::test_launcher_utils::ValidateTestLocations(
+      val, "MockContentBrowserTest"));
+
+  val = root->FindListKey("per_iteration_data");
+  ASSERT_TRUE(val);
+  ASSERT_EQ(1u, val->GetList().size());
+
+  base::Value* iteration_val = &(val->GetList()[0]);
+  ASSERT_TRUE(iteration_val);
+  ASSERT_TRUE(iteration_val->is_dict());
+  EXPECT_EQ(3u, iteration_val->DictSize());
+  // We expect the result to be stripped of disabled prefix.
+  EXPECT_TRUE(base::test_launcher_utils::ValidateTestResult(
+      iteration_val, "MockContentBrowserTest.PassTest", "SUCCESS", 0u));
+  EXPECT_TRUE(base::test_launcher_utils::ValidateTestResult(
+      iteration_val, "MockContentBrowserTest.FailTest", "FAILURE", 1u));
+  EXPECT_TRUE(base::test_launcher_utils::ValidateTestResult(
+      iteration_val, "MockContentBrowserTest.CrashTest", "CRASH", 0u));
+}
+
 #endif
 
 class ContentBrowserTestSanityTest : public ContentBrowserTest {
@@ -154,10 +280,10 @@ class ContentBrowserTestSanityTest : public ContentBrowserTest {
   void Test() {
     GURL url = GetTestUrl(".", "simple_page.html");
 
-    base::string16 expected_title(base::ASCIIToUTF16("OK"));
+    std::u16string expected_title(u"OK");
     TitleWatcher title_watcher(shell()->web_contents(), expected_title);
-    NavigateToURL(shell(), url);
-    base::string16 title = title_watcher.WaitAndGetTitle();
+    EXPECT_TRUE(NavigateToURL(shell(), url));
+    std::u16string title = title_watcher.WaitAndGetTitle();
     EXPECT_EQ(expected_title, title);
   }
 };
@@ -220,6 +346,22 @@ IN_PROC_BROWSER_TEST_F(ContentBrowserTest, NonNestableTask) {
       FROM_HERE, base::BindOnce(&CallbackChecker, &non_nested_task_ran));
   content::RunAllPendingInMessageLoop();
   ASSERT_TRUE(non_nested_task_ran);
+}
+
+IN_PROC_BROWSER_TEST_F(ContentBrowserTest, RunTimeoutInstalled) {
+  // Verify that a RunLoop timeout is installed and shorter than the test
+  // timeout itself.
+  const base::RunLoop::RunLoopTimeout* run_timeout =
+      base::test::ScopedRunLoopTimeout::GetTimeoutForCurrentThread();
+  EXPECT_TRUE(run_timeout);
+  EXPECT_LT(run_timeout->timeout, TestTimeouts::test_launcher_timeout());
+
+  static auto& static_on_timeout_cb = run_timeout->on_timeout;
+  EXPECT_FATAL_FAILURE(static_on_timeout_cb.Run(FROM_HERE),
+                       "RunLoop::Run() timed out. Timeout set at "
+                       // We don't test the line number but it would be present.
+                       "ProxyRunTestOnMainThreadLoop@content/public/test/"
+                       "browser_test_base.cc:");
 }
 
 }  // namespace content

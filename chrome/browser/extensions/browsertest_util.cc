@@ -6,20 +6,23 @@
 
 #include <memory>
 
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
+#include "base/test/bind.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/apps/app_service/app_launch_params.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/extensions/app_launch_params.h"
-#include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/web_applications/components/install_manager.h"
 #include "chrome/browser/web_applications/components/web_app_helpers.h"
-#include "chrome/browser/web_applications/components/web_app_provider_base.h"
-#include "chrome/browser/web_applications/components/web_app_tab_helper_base.h"
-#include "chrome/common/web_application_info.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_registry.h"
@@ -27,57 +30,35 @@
 #include "extensions/browser/notification_types.h"
 #include "extensions/common/extension.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_paths.h"
 #include "chrome/browser/extensions/updater/local_extension_cache.h"
-#include "chromeos/constants/chromeos_paths.h"
 #endif
 
 namespace extensions {
 namespace browsertest_util {
 
 void CreateAndInitializeLocalCache() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   base::FilePath extension_cache_dir;
   CHECK(base::PathService::Get(chromeos::DIR_DEVICE_EXTENSION_LOCAL_CACHE,
                                &extension_cache_dir));
   base::FilePath cache_init_file = extension_cache_dir.Append(
       extensions::LocalExtensionCache::kCacheReadyFlagFileName);
-  EXPECT_EQ(base::WriteFile(cache_init_file, "", 0), 0);
+  EXPECT_TRUE(base::WriteFile(cache_init_file, ""));
 #endif
 }
 
-const Extension* InstallBookmarkApp(Profile* profile, WebApplicationInfo info) {
-  size_t num_extensions =
-      ExtensionRegistry::Get(profile)->enabled_extensions().size();
-
-  content::WindowedNotificationObserver windowed_observer(
-      NOTIFICATION_CRX_INSTALLER_DONE,
-      content::NotificationService::AllSources());
-
-  auto* provider = web_app::WebAppProviderBase::GetProviderBase(profile);
-  DCHECK(provider);
-  provider->install_manager().InstallWebAppForTesting(
-      std::make_unique<WebApplicationInfo>(info), base::DoNothing());
-
-  windowed_observer.Wait();
-
-  EXPECT_EQ(++num_extensions,
-            ExtensionRegistry::Get(profile)->enabled_extensions().size());
-  const Extension* app =
-      content::Details<const Extension>(windowed_observer.details()).ptr();
-  extensions::SetLaunchType(profile, app->id(),
-                            info.open_as_window
-                                ? extensions::LAUNCH_TYPE_WINDOW
-                                : extensions::LAUNCH_TYPE_REGULAR);
-
-  return app;
-}
-
 Browser* LaunchAppBrowser(Profile* profile, const Extension* extension_app) {
-  EXPECT_TRUE(OpenApplication(
-      AppLaunchParams(profile, extension_app, LAUNCH_CONTAINER_WINDOW,
-                      WindowOpenDisposition::CURRENT_TAB, SOURCE_TEST)));
+  EXPECT_TRUE(
+      apps::AppServiceProxyFactory::GetForProfile(profile)
+          ->BrowserAppLauncher()
+          ->LaunchAppWithParams(apps::AppLaunchParams(
+              extension_app->id(), LaunchContainer::kLaunchContainerWindow,
+              WindowOpenDisposition::CURRENT_TAB,
+              AppLaunchSource::kSourceTest)));
 
   Browser* browser = chrome::FindLastActive();
   bool is_correct_app_browser =
@@ -88,22 +69,14 @@ Browser* LaunchAppBrowser(Profile* profile, const Extension* extension_app) {
   return is_correct_app_browser ? browser : nullptr;
 }
 
-Browser* LaunchBrowserForAppInTab(Profile* profile,
-                                  const Extension* extension_app) {
-  content::WebContents* web_contents = OpenApplication(
-      AppLaunchParams(profile, extension_app, LAUNCH_CONTAINER_TAB,
-                      WindowOpenDisposition::NEW_FOREGROUND_TAB, SOURCE_TEST));
-  DCHECK(web_contents);
-
-  web_app::WebAppTabHelperBase* tab_helper =
-      web_app::WebAppTabHelperBase::FromWebContents(web_contents);
-  DCHECK(tab_helper);
-  DCHECK_EQ(extension_app->id(), tab_helper->app_id());
-
-  Browser* browser = chrome::FindBrowserWithWebContents(web_contents);
-  DCHECK_EQ(browser, chrome::FindLastActive());
-  DCHECK_EQ(web_contents, browser->tab_strip_model()->GetActiveWebContents());
-  return browser;
+content::WebContents* AddTab(Browser* browser, const GURL& url) {
+  int starting_tab_count = browser->tab_strip_model()->count();
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser, url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  int tab_count = browser->tab_strip_model()->count();
+  EXPECT_EQ(starting_tab_count + 1, tab_count);
+  return browser->tab_strip_model()->GetActiveWebContents();
 }
 
 }  // namespace browsertest_util

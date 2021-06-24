@@ -6,8 +6,9 @@
 
 #include <utility>
 
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
+#include "base/no_destructor.h"
 #include "net/base/io_buffer.h"
 #include "net/http/http_request_info.h"
 #include "net/http/http_response_body_drainer.h"
@@ -19,13 +20,10 @@
 namespace net {
 
 HttpBasicState::HttpBasicState(std::unique_ptr<ClientSocketHandle> connection,
-                               bool using_proxy,
-                               bool http_09_on_non_default_ports_enabled)
+                               bool using_proxy)
     : read_buf_(base::MakeRefCounted<GrowableIOBuffer>()),
       connection_(std::move(connection)),
-      using_proxy_(using_proxy),
-      http_09_on_non_default_ports_enabled_(
-          http_09_on_non_default_ports_enabled) {
+      using_proxy_(using_proxy) {
   CHECK(connection_) << "ClientSocketHandle passed to HttpBasicState must "
                         "not be NULL. See crbug.com/790776";
 }
@@ -42,8 +40,6 @@ void HttpBasicState::Initialize(const HttpRequestInfo* request_info,
   parser_ = std::make_unique<HttpStreamParser>(
       connection_->socket(), connection_->is_reused(), request_info,
       read_buf_.get(), net_log);
-  parser_->set_http_09_on_non_default_ports_enabled(
-      http_09_on_non_default_ports_enabled_);
 }
 
 std::unique_ptr<ClientSocketHandle> HttpBasicState::ReleaseConnection() {
@@ -77,6 +73,13 @@ std::string HttpBasicState::GenerateRequestLine() const {
 bool HttpBasicState::IsConnectionReused() const {
   return connection_->is_reused() ||
          connection_->reuse_type() == ClientSocketHandle::UNUSED_IDLE;
+}
+
+const std::vector<std::string>& HttpBasicState::GetDnsAliases() const {
+  static const base::NoDestructor<std::vector<std::string>> emptyvector_result;
+  return (connection_ && connection_->socket())
+             ? connection_->socket()->GetDnsAliases()
+             : *emptyvector_result;
 }
 
 }  // namespace net

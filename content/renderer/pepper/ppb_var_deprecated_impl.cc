@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <limits>
+#include <memory>
 
 #include "content/renderer/pepper/host_globals.h"
 #include "content/renderer/pepper/message_channel.h"
@@ -23,7 +24,6 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_plugin_container.h"
 #include "third_party/blink/public/web/web_plugin_script_forbidden_scope.h"
-#include "third_party/blink/public/web/web_scoped_user_gesture.h"
 
 using ppapi::V8ObjectVar;
 using ppapi::PpapiGlobals;
@@ -46,8 +46,8 @@ class ObjectAccessor {
       : object_var_(V8ObjectVar::FromPPVar(var).get()),
         instance_(object_var_ ? object_var_->instance() : nullptr) {
     if (instance_) {
-      converter_.reset(new V8VarConverter(instance_->pp_instance(),
-                                          V8VarConverter::kAllowObjectVars));
+      converter_ = std::make_unique<V8VarConverter>(
+          instance_->pp_instance(), V8VarConverter::kAllowObjectVars);
     }
   }
 
@@ -94,6 +94,9 @@ bool HasPropertyDeprecated(PP_Var var, PP_Var name, PP_Var* exception) {
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Value> v8_name = try_catch.ToV8(name);
   if (try_catch.HasException())
     return false;
@@ -118,6 +121,9 @@ bool HasMethodDeprecated(PP_Var var, PP_Var name, PP_Var* exception) {
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Value> v8_name = try_catch.ToV8(name);
   if (try_catch.HasException())
     return false;
@@ -147,6 +153,9 @@ PP_Var GetProperty(PP_Var var, PP_Var name, PP_Var* exception) {
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Value> v8_name = try_catch.ToV8(name);
   if (try_catch.HasException())
     return PP_MakeUndefined();
@@ -170,6 +179,9 @@ void EnumerateProperties(PP_Var var,
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
 
   *properties = nullptr;
   *property_count = 0;
@@ -203,6 +215,9 @@ void SetPropertyDeprecated(PP_Var var,
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Value> v8_name = try_catch.ToV8(name);
   v8::Local<v8::Value> v8_value = try_catch.ToV8(value);
 
@@ -223,6 +238,9 @@ void DeletePropertyDeprecated(PP_Var var, PP_Var name, PP_Var* exception) {
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Value> v8_name = try_catch.ToV8(name);
 
   if (try_catch.HasException())
@@ -259,6 +277,9 @@ PP_Var CallDeprecatedInternal(PP_Var var,
 
   PepperTryCatchVar try_catch(accessor.instance(), accessor.converter(),
                               exception);
+  v8::MicrotasksScope microtasks_scope(
+      accessor.GetObject()->GetIsolate(),
+      v8::MicrotasksScope::kDoNotRunMicrotasks);
   v8::Local<v8::Value> v8_method_name = try_catch.ToV8(scoped_name.get());
   if (try_catch.HasException())
     return PP_MakeUndefined();
@@ -328,9 +349,8 @@ PP_Var CallDeprecated(PP_Var var,
                       PP_Var* argv,
                       PP_Var* exception) {
   ObjectAccessor accessor(var);
-  if (accessor.instance() && accessor.instance()->IsProcessingUserGesture()) {
-    blink::WebScopedUserGesture user_gesture(
-        accessor.instance()->CurrentUserGestureToken());
+  if (accessor.instance() &&
+      accessor.instance()->HasTransientUserActivation()) {
     return CallDeprecatedInternal(var, method_name, argc, argv, exception);
   }
   return CallDeprecatedInternal(var, method_name, argc, argv, exception);

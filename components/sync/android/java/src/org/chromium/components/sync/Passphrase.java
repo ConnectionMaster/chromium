@@ -4,61 +4,56 @@
 
 package org.chromium.components.sync;
 
-import android.support.annotation.IntDef;
-
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * This class describes the type of passphrase required, if any, to decrypt synced data.
- * It maps the native enum PassphraseType.
+ * This class provides some utility functions to deal with sync passphrases.
  */
 public class Passphrase {
-    @IntDef({Type.IMPLICIT, Type.KEYSTORE, Type.FROZEN_IMPLICIT, Type.CUSTOM})
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface Type {
-        // Update {@link ProfileSyncService#getPassphraseType()} after changing lowest value.
-        int IMPLICIT = 0; // GAIA-based passphrase (deprecated).
-        int KEYSTORE = 1; // Keystore passphrase.
-        int FROZEN_IMPLICIT = 2; // Frozen GAIA passphrase.
-        int CUSTOM = 3; // User-provided passphrase.
-        int NUM_ENTRIES = 4;
+    /**
+     * Returns whether a passphrase type represents an "explicit" passphrase, which usually means
+     * a custom passphrase, but also includes the legacy equivalent, a frozen implicit passphrase.
+     */
+    private static boolean isExplicitPassphraseType(@PassphraseType int type) {
+        switch (type) {
+            case PassphraseType.IMPLICIT_PASSPHRASE: // Intentional fall through.
+            case PassphraseType.TRUSTED_VAULT_PASSPHRASE: // Intentional fall through.
+            case PassphraseType.KEYSTORE_PASSPHRASE:
+                return false;
+            case PassphraseType.FROZEN_IMPLICIT_PASSPHRASE: // Intentional fall through.
+            case PassphraseType.CUSTOM_PASSPHRASE:
+                return true;
+        }
+
+        return false;
     }
 
     /**
      * Get the types that are displayed for the current type.
      */
-    public static List<Integer /* @Type */> getVisibleTypes(@Type int type) {
+    public static List<Integer /* @Type */> getVisibleTypes(@PassphraseType int type) {
         List<Integer /* @Type */> visibleTypes = new ArrayList<>();
-        switch (type) {
-            case Type.IMPLICIT: // Intentional fall through.
-            case Type.KEYSTORE:
-                visibleTypes.add(Type.CUSTOM);
-                visibleTypes.add(type);
-                break;
-            case Type.FROZEN_IMPLICIT: // Intentional fall through.
-            case Type.CUSTOM:
-                visibleTypes.add(type);
-                visibleTypes.add(Type.KEYSTORE);
-                break;
-            default:
-                assert false;
+        if (isExplicitPassphraseType(type)) {
+            visibleTypes.add(type);
+            visibleTypes.add(PassphraseType.KEYSTORE_PASSPHRASE);
+        } else {
+            visibleTypes.add(PassphraseType.CUSTOM_PASSPHRASE);
+            visibleTypes.add(type);
         }
         return visibleTypes;
     }
 
     /**
      * Get the types that are allowed to be enabled from the current type.
-     * @param isEncryptEverythingAllowed Whether encrypting all data is allowed.
+     * @param isCustomPassphraseAllowed Whether setting a custom passphrase is allowed.
      */
     public static List<Integer /* @Type */> getAllowedTypes(
-            @Type int type, boolean isEncryptEverythingAllowed) {
+            @PassphraseType int type, boolean isCustomPassphraseAllowed) {
         List<Integer /* @Type */> allowedTypes = new ArrayList<>();
-        if (type == Type.IMPLICIT || type == Type.KEYSTORE) {
+        if (!isExplicitPassphraseType(type)) {
             allowedTypes.add(type);
-            if (isEncryptEverythingAllowed) allowedTypes.add(Type.CUSTOM);
+            if (isCustomPassphraseAllowed) allowedTypes.add(PassphraseType.CUSTOM_PASSPHRASE);
         }
         return allowedTypes;
     }

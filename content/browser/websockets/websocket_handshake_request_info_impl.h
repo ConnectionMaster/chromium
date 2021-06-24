@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CONTENT_BROWSER_WEBSOCKET_WEBSOCKET_HANDSHAKE_REQUEST_INFO_IMPL_H_
-#define CONTENT_BROWSER_WEBSOCKET_WEBSOCKET_HANDSHAKE_REQUEST_INFO_IMPL_H_
+#ifndef CONTENT_BROWSER_WEBSOCKETS_WEBSOCKET_HANDSHAKE_REQUEST_INFO_IMPL_H_
+#define CONTENT_BROWSER_WEBSOCKETS_WEBSOCKET_HANDSHAKE_REQUEST_INFO_IMPL_H_
 
 #include "content/public/browser/websocket_handshake_request_info.h"
 
@@ -22,8 +22,8 @@ class WebSocketHandshakeRequestInfoImpl final
                                                 int render_frame_id,
                                                 net::URLRequest* request);
 
-  int GetChildId() const override;
-  int GetRenderFrameId() const override;
+  int GetChildId() override;
+  int GetRenderFrameId() override;
 
  private:
   WebSocketHandshakeRequestInfoImpl(int child_id, int render_frame_id);
@@ -36,4 +36,4 @@ class WebSocketHandshakeRequestInfoImpl final
 
 }  // namespace content
 
-#endif  // CONTENT_BROWSER_WEBSOCKET_WEBSOCKET_HANDSHAKE_REQUEST_INFO_IMPL_H_
+#endif  // CONTENT_BROWSER_WEBSOCKETS_WEBSOCKET_HANDSHAKE_REQUEST_INFO_IMPL_H_

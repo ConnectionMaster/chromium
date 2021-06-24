@@ -5,6 +5,8 @@
 #ifndef CC_TEST_FAKE_PROXY_H_
 #define CC_TEST_FAKE_PROXY_H_
 
+#include <memory>
+
 #include "base/single_thread_task_runner.h"
 #include "cc/trees/layer_tree_host.h"
 #include "cc/trees/proxy.h"
@@ -20,7 +22,6 @@ class FakeProxy : public Proxy {
   void SetLayerTreeHost(LayerTreeHost* host);
 
   bool IsStarted() const override;
-  bool CommitToActiveTree() const override;
   void SetLayerTreeFrameSink(
       LayerTreeFrameSink* layer_tree_frame_sink) override {}
   void ReleaseLayerTreeFrameSink() override {}
@@ -30,27 +31,31 @@ class FakeProxy : public Proxy {
   void SetNeedsCommit() override {}
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override {}
   void SetNextCommitWaitsForActivation() override {}
+  void SetTargetLocalSurfaceId(
+      const viz::LocalSurfaceId& target_local_surface_id) override {}
   bool RequestedAnimatePending() override;
   void SetDeferMainFrameUpdate(bool defer_main_frame_update) override {}
   void StartDeferringCommits(base::TimeDelta timeout) override {}
-  void StopDeferringCommits() override {}
+  void StopDeferringCommits(PaintHoldingCommitTrigger) override {}
   bool CommitRequested() const override;
   void Start() override {}
   void Stop() override {}
   void SetMutator(std::unique_ptr<LayerTreeMutator> mutator) override;
   void SetPaintWorkletLayerPainter(
       std::unique_ptr<PaintWorkletLayerPainter> painter) override;
-  bool SupportsImplScrolling() const override;
   bool MainFrameWillHappenForTesting() override;
   void UpdateBrowserControlsState(BrowserControlsState constraints,
                                   BrowserControlsState current,
                                   bool animate) override {}
   void RequestBeginMainFrameNotExpected(bool new_state) override {}
-  void SetURLForUkm(const GURL& url) override {}
+  void SetSourceURL(ukm::SourceId source_id, const GURL& url) override {}
+  void SetUkmSmoothnessDestination(
+      base::WritableSharedMemoryMapping ukm_smoothness_data) override {}
   void ClearHistory() override {}
   void SetRenderFrameObserver(
       std::unique_ptr<RenderFrameMetadataObserver> observer) override {}
-  uint32_t GenerateChildSurfaceSequenceNumberSync() override;
+  void SetEnableFrameRateThrottling(
+      bool enable_frame_rate_throttling) override {}
 
  private:
   LayerTreeHost* layer_tree_host_;

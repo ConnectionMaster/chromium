@@ -4,12 +4,12 @@
 
 #include "ui/base/clipboard/clipboard_monitor.h"
 
-#include "ui/base/clipboard/clipboard.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/base/clipboard/clipboard_observer.h"
 
 namespace ui {
 
-ClipboardMonitor::ClipboardMonitor() {}
+ClipboardMonitor::ClipboardMonitor() = default;
 
 ClipboardMonitor::~ClipboardMonitor() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
@@ -26,6 +26,14 @@ void ClipboardMonitor::NotifyClipboardDataChanged() {
   for (ClipboardObserver& observer : observers_)
     observer.OnClipboardDataChanged();
 }
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+void ClipboardMonitor::NotifyClipboardDataRead() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  for (ClipboardObserver& observer : observers_)
+    observer.OnClipboardDataRead();
+}
+#endif
 
 void ClipboardMonitor::AddObserver(ClipboardObserver* observer) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);

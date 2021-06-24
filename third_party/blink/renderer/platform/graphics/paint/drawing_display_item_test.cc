@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/testing/fake_display_item_client.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/skia/include/core/SkTypes.h"
 
 namespace blink {
@@ -48,9 +49,8 @@ static sk_sp<PaintRecord> CreateRectRecordWithTranslate(
 
 TEST_F(DrawingDisplayItemTest, DrawsContent) {
   FloatRect record_bounds(5.5, 6.6, 7.7, 8.8);
-  client_.SetVisualRect(EnclosingIntRect(record_bounds));
-
   DrawingDisplayItem item(client_, DisplayItem::Type::kDocumentBackground,
+                          EnclosingIntRect(record_bounds),
                           CreateRectRecord(record_bounds));
   EXPECT_EQ(EnclosingIntRect(record_bounds), item.VisualRect());
   EXPECT_TRUE(item.DrawsContent());
@@ -58,66 +58,69 @@ TEST_F(DrawingDisplayItemTest, DrawsContent) {
 
 TEST_F(DrawingDisplayItemTest, NullPaintRecord) {
   DrawingDisplayItem item(client_, DisplayItem::Type::kDocumentBackground,
-                          nullptr);
+                          IntRect(), nullptr);
   EXPECT_FALSE(item.DrawsContent());
 }
 
 TEST_F(DrawingDisplayItemTest, EmptyPaintRecord) {
   DrawingDisplayItem item(client_, DisplayItem::Type::kDocumentBackground,
-                          sk_make_sp<PaintRecord>());
+                          IntRect(), sk_make_sp<PaintRecord>());
   EXPECT_FALSE(item.DrawsContent());
 }
 
-TEST_F(DrawingDisplayItemTest, Equals) {
+TEST_F(DrawingDisplayItemTest, EqualsForUnderInvalidation) {
+  ScopedPaintUnderInvalidationCheckingForTest under_invalidation_checking(true);
+
   FloatRect bounds1(100.1, 100.2, 100.3, 100.4);
-  client_.SetVisualRect(EnclosingIntRect(bounds1));
   DrawingDisplayItem item1(client_, DisplayItem::kDocumentBackground,
+                           EnclosingIntRect(bounds1),
                            CreateRectRecord(bounds1));
   DrawingDisplayItem translated(client_, DisplayItem::kDocumentBackground,
+                                EnclosingIntRect(bounds1),
                                 CreateRectRecordWithTranslate(bounds1, 10, 20));
   // This item contains a DrawingRecord that is different from but visually
   // equivalent to item1's.
   DrawingDisplayItem zero_translated(
-      client_, DisplayItem::kDocumentBackground,
+      client_, DisplayItem::kDocumentBackground, EnclosingIntRect(bounds1),
       CreateRectRecordWithTranslate(bounds1, 0, 0));
 
   FloatRect bounds2(100.5, 100.6, 100.7, 100.8);
-  client_.SetVisualRect(EnclosingIntRect(bounds2));
   DrawingDisplayItem item2(client_, DisplayItem::kDocumentBackground,
+                           EnclosingIntRect(bounds1),
                            CreateRectRecord(bounds2));
 
   DrawingDisplayItem empty_item(client_, DisplayItem::kDocumentBackground,
-                                nullptr);
+                                IntRect(), nullptr);
 
-  EXPECT_TRUE(item1.Equals(item1));
-  EXPECT_FALSE(item1.Equals(item2));
-  EXPECT_FALSE(item1.Equals(translated));
-  EXPECT_TRUE(item1.Equals(zero_translated));
-  EXPECT_FALSE(item1.Equals(empty_item));
+  EXPECT_TRUE(item1.EqualsForUnderInvalidation(item1));
+  EXPECT_FALSE(item1.EqualsForUnderInvalidation(item2));
+  EXPECT_FALSE(item1.EqualsForUnderInvalidation(translated));
+  EXPECT_TRUE(item1.EqualsForUnderInvalidation(zero_translated));
+  EXPECT_FALSE(item1.EqualsForUnderInvalidation(empty_item));
 
-  EXPECT_FALSE(item2.Equals(item1));
-  EXPECT_TRUE(item2.Equals(item2));
-  EXPECT_FALSE(item2.Equals(translated));
-  EXPECT_FALSE(item2.Equals(zero_translated));
-  EXPECT_FALSE(item2.Equals(empty_item));
+  EXPECT_FALSE(item2.EqualsForUnderInvalidation(item1));
+  EXPECT_TRUE(item2.EqualsForUnderInvalidation(item2));
+  EXPECT_FALSE(item2.EqualsForUnderInvalidation(translated));
+  EXPECT_FALSE(item2.EqualsForUnderInvalidation(zero_translated));
+  EXPECT_FALSE(item2.EqualsForUnderInvalidation(empty_item));
 
-  EXPECT_FALSE(translated.Equals(item1));
-  EXPECT_FALSE(translated.Equals(item2));
-  EXPECT_TRUE(translated.Equals(translated));
-  EXPECT_FALSE(translated.Equals(zero_translated));
-  EXPECT_FALSE(translated.Equals(empty_item));
+  EXPECT_FALSE(translated.EqualsForUnderInvalidation(item1));
+  EXPECT_FALSE(translated.EqualsForUnderInvalidation(item2));
+  EXPECT_TRUE(translated.EqualsForUnderInvalidation(translated));
+  EXPECT_FALSE(translated.EqualsForUnderInvalidation(zero_translated));
+  EXPECT_FALSE(translated.EqualsForUnderInvalidation(empty_item));
 
-  EXPECT_TRUE(zero_translated.Equals(item1));
-  EXPECT_FALSE(zero_translated.Equals(item2));
-  EXPECT_FALSE(zero_translated.Equals(translated));
-  EXPECT_TRUE(zero_translated.Equals(zero_translated));
-  EXPECT_FALSE(zero_translated.Equals(empty_item));
+  EXPECT_TRUE(zero_translated.EqualsForUnderInvalidation(item1));
+  EXPECT_FALSE(zero_translated.EqualsForUnderInvalidation(item2));
+  EXPECT_FALSE(zero_translated.EqualsForUnderInvalidation(translated));
+  EXPECT_TRUE(zero_translated.EqualsForUnderInvalidation(zero_translated));
+  EXPECT_FALSE(zero_translated.EqualsForUnderInvalidation(empty_item));
 
-  EXPECT_FALSE(empty_item.Equals(item1));
-  EXPECT_FALSE(empty_item.Equals(item2));
-  EXPECT_FALSE(empty_item.Equals(translated));
-  EXPECT_FALSE(empty_item.Equals(zero_translated));
-  EXPECT_TRUE(empty_item.Equals(empty_item));
+  EXPECT_FALSE(empty_item.EqualsForUnderInvalidation(item1));
+  EXPECT_FALSE(empty_item.EqualsForUnderInvalidation(item2));
+  EXPECT_FALSE(empty_item.EqualsForUnderInvalidation(translated));
+  EXPECT_FALSE(empty_item.EqualsForUnderInvalidation(zero_translated));
+  EXPECT_TRUE(empty_item.EqualsForUnderInvalidation(empty_item));
 }
 
 }  // namespace

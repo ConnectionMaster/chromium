@@ -15,15 +15,16 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
-#include "base/time/time.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
-#include "components/viz/common/quads/compositor_frame_metadata.h"
+#include "cc/trees/render_frame_metadata.h"
 #include "content/browser/devtools/devtools_video_consumer.h"
 #include "content/browser/devtools/protocol/devtools_domain_handler.h"
 #include "content/browser/devtools/protocol/devtools_download_manager_delegate.h"
 #include "content/browser/devtools/protocol/page.h"
+#include "content/public/browser/download_manager.h"
 #include "content/public/browser/javascript_dialog_manager.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/common/javascript_dialog_type.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom.h"
@@ -40,25 +41,31 @@ class Image;
 }  // namespace gfx
 
 namespace blink {
-struct WebDeviceEmulationParams;
+struct DeviceEmulationParams;
 }
 
 namespace content {
 
+class BackForwardCacheCanStoreDocumentResult;
 class DevToolsAgentHostImpl;
+class FrameTreeNode;
 class NavigationRequest;
 class RenderFrameHostImpl;
 class WebContentsImpl;
 
 namespace protocol {
 
+class BrowserHandler;
 class EmulationHandler;
 
 class PageHandler : public DevToolsDomainHandler,
                     public Page::Backend,
-                    public RenderWidgetHostObserver {
+                    public RenderWidgetHostObserver,
+                    public download::DownloadItem::Observer {
  public:
-  PageHandler(EmulationHandler* handler, bool allow_set_download_behavior);
+  PageHandler(EmulationHandler* emulation_handler,
+              BrowserHandler* browser_handler,
+              bool allow_file_access);
   ~PageHandler() override;
 
   static std::vector<PageHandler*> EnabledForWebContents(
@@ -68,25 +75,33 @@ class PageHandler : public DevToolsDomainHandler,
   void Wire(UberDispatcher* dispatcher) override;
   void SetRenderer(int process_host_id,
                    RenderFrameHostImpl* frame_host) override;
+  // Instrumentation signals.
   void OnSynchronousSwapCompositorFrame(
-      viz::CompositorFrameMetadata frame_metadata);
+      const cc::RenderFrameMetadata& frame_metadata);
   void DidAttachInterstitialPage();
   void DidDetachInterstitialPage();
   bool screencast_enabled() const { return enabled_ && screencast_enabled_; }
   using JavaScriptDialogCallback =
       content::JavaScriptDialogManager::DialogClosedCallback;
   void DidRunJavaScriptDialog(const GURL& url,
-                              const base::string16& message,
-                              const base::string16& default_prompt,
+                              const std::u16string& message,
+                              const std::u16string& default_prompt,
                               JavaScriptDialogType dialog_type,
                               bool has_non_devtools_handlers,
                               JavaScriptDialogCallback callback);
   void DidRunBeforeUnloadConfirm(const GURL& url,
                                  bool has_non_devtools_handlers,
                                  JavaScriptDialogCallback callback);
-  void DidCloseJavaScriptDialog(bool success, const base::string16& user_input);
+  void DidCloseJavaScriptDialog(bool success, const std::u16string& user_input);
   void NavigationReset(NavigationRequest* navigation_request);
+  void DownloadWillBegin(FrameTreeNode* ftn, download::DownloadItem* item);
+
   WebContentsImpl* GetWebContents();
+
+  bool ShouldBypassCSP();
+  void BackForwardCacheNotUsed(
+      const NavigationRequest* nav_request,
+      const BackForwardCacheCanStoreDocumentResult* result);
 
   Response Enable() override;
   Response Disable() override;
@@ -100,6 +115,7 @@ class PageHandler : public DevToolsDomainHandler,
                 Maybe<std::string> referrer,
                 Maybe<std::string> transition_type,
                 Maybe<std::string> frame_id,
+                Maybe<std::string> referrer_policy,
                 std::unique_ptr<NavigateCallback> callback) override;
   Response StopLoading() override;
 
@@ -115,6 +131,7 @@ class PageHandler : public DevToolsDomainHandler,
       Maybe<int> quality,
       Maybe<Page::Viewport> clip,
       Maybe<bool> from_surface,
+      Maybe<bool> capture_beyond_viewport,
       std::unique_ptr<CaptureScreenshotCallback> callback) override;
   void CaptureSnapshot(
       Maybe<std::string> format,
@@ -134,6 +151,7 @@ class PageHandler : public DevToolsDomainHandler,
                   Maybe<String> header_template,
                   Maybe<String> footer_template,
                   Maybe<bool> prefer_css_page_size,
+                  Maybe<String> transfer_mode,
                   std::unique_ptr<PrintToPDFCallback> callback) override;
   Response StartScreencast(Maybe<std::string> format,
                            Maybe<int> quality,
@@ -158,9 +176,15 @@ class PageHandler : public DevToolsDomainHandler,
   void GetInstallabilityErrors(
       std::unique_ptr<GetInstallabilityErrorsCallback> callback) override;
 
+  void GetManifestIcons(
+      std::unique_ptr<GetManifestIconsCallback> callback) override;
+
+  Response SetBypassCSP(bool enabled) override;
+
  private:
   enum EncodingFormat { PNG, JPEG };
 
+  bool ShouldCaptureNextScreencastFrame();
   void NotifyScreencastVisibility(bool visible);
   void InnerSwapCompositorFrame();
   void OnFrameFromVideoConsumer(scoped_refptr<media::VideoFrame> frame);
@@ -177,11 +201,13 @@ class PageHandler : public DevToolsDomainHandler,
       int quality,
       const gfx::Size& original_view_size,
       const gfx::Size& requested_image_size,
-      const blink::WebDeviceEmulationParams& original_params,
+      const blink::DeviceEmulationParams& original_params,
+      const absl::optional<blink::web_pref::WebPreferences>& original_web_prefs,
       const gfx::Image& image);
 
   void GotManifest(std::unique_ptr<GetAppManifestCallback> callback,
                    const GURL& manifest_url,
+                   const ::blink::Manifest& parsed_manifest,
                    blink::mojom::ManifestDebugInfoPtr debug_info);
 
   // RenderWidgetHostObserver overrides.
@@ -189,7 +215,12 @@ class PageHandler : public DevToolsDomainHandler,
                                          bool became_visible) override;
   void RenderWidgetHostDestroyed(RenderWidgetHost* widget_host) override;
 
+  // DownloadItem::Observer overrides
+  void OnDownloadUpdated(download::DownloadItem* item) override;
+  void OnDownloadDestroyed(download::DownloadItem* item) override;
+
   bool enabled_;
+  bool bypass_csp_ = false;
 
   bool screencast_enabled_;
   std::string screencast_format_;
@@ -198,9 +229,7 @@ class PageHandler : public DevToolsDomainHandler,
   int screencast_max_height_;
   int capture_every_nth_frame_;
   int capture_retry_count_;
-  bool has_compositor_frame_metadata_;
-  viz::CompositorFrameMetadata next_compositor_frame_metadata_;
-  viz::CompositorFrameMetadata last_compositor_frame_metadata_;
+  absl::optional<cc::RenderFrameMetadata> frame_metadata_;
   int session_id_;
   int frame_counter_;
   int frames_in_flight_;
@@ -216,15 +245,19 @@ class PageHandler : public DevToolsDomainHandler,
 
   RenderFrameHostImpl* host_;
   EmulationHandler* emulation_handler_;
-  bool allow_set_download_behavior_;
+  BrowserHandler* browser_handler_;
+
   std::unique_ptr<Page::Frontend> frontend_;
-  ScopedObserver<RenderWidgetHost, RenderWidgetHostObserver> observer_;
+
+  base::ScopedObservation<RenderWidgetHost, RenderWidgetHostObserver>
+      observation_{this};
   JavaScriptDialogCallback pending_dialog_;
-  scoped_refptr<DevToolsDownloadManagerDelegate> download_manager_delegate_;
+  // Maps DevTools navigation tokens to pending NavigateCallbacks.
   base::flat_map<base::UnguessableToken, std::unique_ptr<NavigateCallback>>
       navigate_callbacks_;
+  base::flat_set<download::DownloadItem*> pending_downloads_;
 
-  base::WeakPtrFactory<PageHandler> weak_factory_;
+  base::WeakPtrFactory<PageHandler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PageHandler);
 };

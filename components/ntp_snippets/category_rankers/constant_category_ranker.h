@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_NTP_SNIPPETS_SECTION_RANKERS_CONSTANT_SECTION_RANKER_H_
-#define COMPONENTS_NTP_SNIPPETS_SECTION_RANKERS_CONSTANT_SECTION_RANKER_H_
+#ifndef COMPONENTS_NTP_SNIPPETS_CATEGORY_RANKERS_CONSTANT_CATEGORY_RANKER_H_
+#define COMPONENTS_NTP_SNIPPETS_CATEGORY_RANKERS_CONSTANT_CATEGORY_RANKER_H_
 
-#include <string>
 #include <vector>
 
+#include "base/macros.h"
 #include "base/time/time.h"
 #include "components/ntp_snippets/category.h"
 #include "components/ntp_snippets/category_rankers/category_ranker.h"
@@ -48,4 +48,4 @@ class ConstantCategoryRanker : public CategoryRanker {
 
 }  // namespace ntp_snippets
 
-#endif  // COMPONENTS_NTP_SNIPPETS_SECTION_RANKERS_CONSTANT_SECTION_RANKER_H_
+#endif  // COMPONENTS_NTP_SNIPPETS_CATEGORY_RANKERS_CONSTANT_CATEGORY_RANKER_H_

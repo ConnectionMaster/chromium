@@ -5,10 +5,6 @@
 #ifndef CHROME_BROWSER_SYNC_GLUE_SYNCED_TAB_DELEGATE_ANDROID_H_
 #define CHROME_BROWSER_SYNC_GLUE_SYNCED_TAB_DELEGATE_ANDROID_H_
 
-#include <memory>
-#include <string>
-#include <vector>
-
 #include "base/macros.h"
 #include "chrome/browser/ui/sync/tab_contents_synced_tab_delegate.h"
 
@@ -32,7 +28,6 @@ class SyncedTabDelegateAndroid : public TabContentsSyncedTabDelegate {
   // SyncedTabDelegate:
   SessionID GetWindowId() const override;
   SessionID GetSessionId() const override;
-  SessionID GetSourceTabID() const override;
   bool IsPlaceholderTab() const override;
 
   // Set the web contents for this tab and handles source tab ID initialization.
@@ -43,7 +38,6 @@ class SyncedTabDelegateAndroid : public TabContentsSyncedTabDelegate {
 
  private:
   TabAndroid* tab_android_;
-  SessionID source_tab_id_;
 
   DISALLOW_COPY_AND_ASSIGN(SyncedTabDelegateAndroid);
 };

@@ -16,16 +16,17 @@ namespace {
 class SpellCheckProviderMacTest : public SpellCheckProviderTest {};
 
 TEST_F(SpellCheckProviderMacTest, SingleRoundtripSuccess) {
-  FakeTextCheckingCompletion completion;
+  FakeTextCheckingResult completion;
 
-  provider_.RequestTextChecking(base::ASCIIToUTF16("hello "), &completion);
+  provider_.RequestTextChecking(
+      u"hello ", std::make_unique<FakeTextCheckingCompletion>(&completion));
   EXPECT_EQ(completion.completion_count_, 0U);
   EXPECT_EQ(provider_.text_check_requests_.size(), 1U);
   EXPECT_EQ(provider_.pending_text_request_size(), 1U);
 
   const auto& text = provider_.text_check_requests_.back().first;
   auto& callback = provider_.text_check_requests_.back().second;
-  EXPECT_EQ(text, base::ASCIIToUTF16("hello "));
+  EXPECT_EQ(text, u"hello ");
   EXPECT_TRUE(callback);
 
   std::vector<SpellCheckResult> fake_results;
@@ -39,10 +40,12 @@ TEST_F(SpellCheckProviderMacTest, SingleRoundtripSuccess) {
 }
 
 TEST_F(SpellCheckProviderMacTest, TwoRoundtripSuccess) {
-  FakeTextCheckingCompletion completion1;
-  provider_.RequestTextChecking(base::ASCIIToUTF16("hello "), &completion1);
-  FakeTextCheckingCompletion completion2;
-  provider_.RequestTextChecking(base::ASCIIToUTF16("bye "), &completion2);
+  FakeTextCheckingResult completion1;
+  provider_.RequestTextChecking(
+      u"hello ", std::make_unique<FakeTextCheckingCompletion>(&completion1));
+  FakeTextCheckingResult completion2;
+  provider_.RequestTextChecking(
+      u"bye ", std::make_unique<FakeTextCheckingCompletion>(&completion2));
 
   EXPECT_EQ(completion1.completion_count_, 0U);
   EXPECT_EQ(completion2.completion_count_, 0U);
@@ -51,12 +54,12 @@ TEST_F(SpellCheckProviderMacTest, TwoRoundtripSuccess) {
 
   const auto& text1 = provider_.text_check_requests_[0].first;
   auto& callback1 = provider_.text_check_requests_[0].second;
-  EXPECT_EQ(text1, base::ASCIIToUTF16("hello "));
+  EXPECT_EQ(text1, u"hello ");
   EXPECT_TRUE(callback1);
 
   const auto& text2 = provider_.text_check_requests_[1].first;
   auto& callback2 = provider_.text_check_requests_[1].second;
-  EXPECT_EQ(text2, base::ASCIIToUTF16("bye "));
+  EXPECT_EQ(text2, u"bye ");
   EXPECT_TRUE(callback2);
 
   std::vector<SpellCheckResult> fake_results;

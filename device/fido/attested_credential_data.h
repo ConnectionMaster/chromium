@@ -13,12 +13,12 @@
 #include "base/component_export.h"
 #include "base/containers/span.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "device/fido/fido_constants.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device {
 
-class PublicKey;
+struct PublicKey;
 
 // https://www.w3.org/TR/2017/WD-webauthn-20170505/#sec-attestation-data
 class COMPONENT_EXPORT(DEVICE_FIDO) AttestedCredentialData {
@@ -26,19 +26,25 @@ class COMPONENT_EXPORT(DEVICE_FIDO) AttestedCredentialData {
   // Parses an |AttestedCredentialData| from a prefix of |*buffer|. Returns
   // nullopt on error, or else the parse return and a (possibly empty) suffix of
   // |buffer| that was not parsed.
-  static base::Optional<
+  static absl::optional<
       std::pair<AttestedCredentialData, base::span<const uint8_t>>>
   ConsumeFromCtapResponse(base::span<const uint8_t> buffer);
 
-  static base::Optional<AttestedCredentialData> CreateFromU2fRegisterResponse(
+  static absl::optional<AttestedCredentialData> CreateFromU2fRegisterResponse(
       base::span<const uint8_t> u2f_data,
       std::unique_ptr<PublicKey> public_key);
 
-  // Moveable.
   AttestedCredentialData(AttestedCredentialData&& other);
-  AttestedCredentialData& operator=(AttestedCredentialData&& other);
+
+  AttestedCredentialData(
+      base::span<const uint8_t, kAaguidLength> aaguid,
+      base::span<const uint8_t, kCredentialIdLengthLength> credential_id_length,
+      std::vector<uint8_t> credential_id,
+      std::unique_ptr<PublicKey> public_key);
 
   ~AttestedCredentialData();
+
+  AttestedCredentialData& operator=(AttestedCredentialData&& other);
 
   const std::vector<uint8_t>& credential_id() const { return credential_id_; }
 
@@ -56,11 +62,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) AttestedCredentialData {
   // * Credential Public Key.
   std::vector<uint8_t> SerializeAsBytes() const;
 
-  AttestedCredentialData(
-      base::span<const uint8_t, kAaguidLength> aaguid,
-      base::span<const uint8_t, kCredentialIdLengthLength> credential_id_length,
-      std::vector<uint8_t> credential_id,
-      std::unique_ptr<PublicKey> public_key);
+  const PublicKey* public_key() const;
 
  private:
   // The 16-byte AAGUID of the authenticator.

@@ -11,7 +11,6 @@
 #include <memory>
 #include <vector>
 
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/net_export.h"
@@ -29,6 +28,9 @@ class NET_EXPORT ElementsUploadDataStream : public UploadDataStream {
   ElementsUploadDataStream(
       std::vector<std::unique_ptr<UploadElementReader>> element_readers,
       int64_t identifier);
+
+  ElementsUploadDataStream(const ElementsUploadDataStream&) = delete;
+  ElementsUploadDataStream& operator=(const ElementsUploadDataStream&) = delete;
 
   ~ElementsUploadDataStream() override;
 
@@ -80,9 +82,7 @@ class NET_EXPORT ElementsUploadDataStream : public UploadDataStream {
   // Set to actual error if read fails, otherwise set to net::OK.
   int read_error_;
 
-  base::WeakPtrFactory<ElementsUploadDataStream> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(ElementsUploadDataStream);
+  base::WeakPtrFactory<ElementsUploadDataStream> weak_ptr_factory_{this};
 };
 
 }  // namespace net

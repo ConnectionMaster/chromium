@@ -4,7 +4,9 @@
 
 #import "ios/chrome/browser/ui/dialogs/completion_block_util.h"
 
-#include "base/logging.h"
+#include <ostream>
+
+#include "base/notreached.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -14,6 +16,7 @@ using completion_block_util::AlertCallback;
 using completion_block_util::ConfirmCallback;
 using completion_block_util::PromptCallback;
 using completion_block_util::HTTPAuthCallack;
+using completion_block_util::DecidePolicyCallback;
 
 #pragma mark - WebCompletionWrapper
 
@@ -201,6 +204,45 @@ using completion_block_util::HTTPAuthCallack;
 
 @end
 
+#pragma mark - DecidePolicyCompletionWrapper
+
+// Completion wrapper for decide policy completions.
+@interface DecidePolicyCompletionWrapper : WebCompletionWrapper {
+  DecidePolicyCallback _callback;
+}
+
+// Initializer that takes a JavaScript dialog callback.
+- (instancetype)initWithCallback:(DecidePolicyCallback)callback
+    NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+// Executes |_callback| with |shouldContinue|.
+- (void)executeCallbackToConinue:(BOOL)shouldContinue;
+
+@end
+
+@implementation DecidePolicyCompletionWrapper
+
+- (instancetype)initWithCallback:(DecidePolicyCallback)callback {
+  if (self = [super init]) {
+    _callback = callback;
+  }
+  return self;
+}
+
+- (void)executeCompletionForCancellation {
+  [self executeCallbackToConinue:NO];
+}
+
+- (void)executeCallbackToConinue:(BOOL)shouldContinue {
+  if (self.executed || !_callback)
+    return;
+  _callback(shouldContinue);
+  self.executed = YES;
+}
+
+@end
+
 namespace completion_block_util {
 
 AlertCallback GetSafeJavaScriptAlertCompletion(AlertCallback callback) {
@@ -233,6 +275,15 @@ HTTPAuthCallack GetSafeHTTPAuthCompletion(HTTPAuthCallack callback) {
       [[HTTPAuthCompletionWrapper alloc] initWithCallback:callback];
   return ^(NSString* user, NSString* password) {
     [wrapper executeCallbackWithUser:user password:password];
+  };
+}
+
+DecidePolicyCallback GetSafeDecidePolicyCompletion(
+    DecidePolicyCallback callback) {
+  DecidePolicyCompletionWrapper* wrapper =
+      [[DecidePolicyCompletionWrapper alloc] initWithCallback:callback];
+  return ^(BOOL shouldContinue) {
+    [wrapper executeCallbackToConinue:shouldContinue];
   };
 }
 

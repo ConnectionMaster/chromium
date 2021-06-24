@@ -2,9 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/viz/service/hit_test/hit_test_aggregator.h"
+#include "components/viz/service/hit_test/hit_test_manager.h"
+
+#include <utility>
+#include <vector>
 
 #include "components/viz/common/hit_test/aggregated_hit_test_region.h"
+#include "components/viz/service/hit_test/hit_test_aggregator.h"
 #include "components/viz/service/surfaces/latest_local_surface_id_lookup_delegate.h"
 #include "components/viz/service/surfaces/surface.h"
 
@@ -14,6 +18,16 @@ namespace {
 // TODO(gklassen): Review and select appropriate sizes based on
 // telemetry / UMA.
 constexpr uint32_t kMaxRegionsPerSurface = 1024;
+
+// Whenever a hit test region is marked as kHitTestAsk there must be a reason
+// for async hit test and vice versa.
+bool FlagsAndAsyncReasonsMatch(uint32_t flags,
+                               uint32_t async_hit_test_reasons) {
+  if (flags & kHitTestAsk)
+    return async_hit_test_reasons != kNotAsyncHitTest;
+  return async_hit_test_reasons == kNotAsyncHitTest;
+}
+
 }  // namespace
 
 HitTestManager::HitTestAsyncQueriedDebugRegion::
@@ -44,9 +58,7 @@ void HitTestManager::OnSurfaceDestroyed(const SurfaceId& surface_id) {
   hit_test_region_lists_.erase(surface_id);
 }
 
-void HitTestManager::OnSurfaceActivated(
-    const SurfaceId& surface_id,
-    base::Optional<base::TimeDelta> duration) {
+void HitTestManager::OnSurfaceActivated(const SurfaceId& surface_id) {
   // When a Surface is activated we can confidently remove all
   // associated HitTestRegionList objects with an older frame_index.
   auto search = hit_test_region_lists_.find(surface_id);
@@ -69,7 +81,7 @@ void HitTestManager::OnSurfaceActivated(
 void HitTestManager::SubmitHitTestRegionList(
     const SurfaceId& surface_id,
     const uint64_t frame_index,
-    base::Optional<HitTestRegionList> hit_test_region_list) {
+    absl::optional<HitTestRegionList> hit_test_region_list) {
   if (!hit_test_region_list) {
     auto& frame_index_map = hit_test_region_lists_[surface_id];
     if (!frame_index_map.empty()) {
@@ -128,7 +140,7 @@ const HitTestRegionList* HitTestManager::GetActiveHitTestRegionList(
 
 int64_t HitTestManager::GetTraceId(const SurfaceId& id) const {
   Surface* surface = surface_manager_->GetSurfaceForId(id);
-  return surface->GetActiveFrame().metadata.begin_frame_ack.trace_id;
+  return surface->GetActiveFrameMetadata().begin_frame_ack.trace_id;
 }
 
 const base::flat_set<FrameSinkId>*
@@ -156,6 +168,11 @@ bool HitTestManager::ValidateHitTestRegionList(
     HitTestRegionList* hit_test_region_list) {
   if (hit_test_region_list->regions.size() > kMaxRegionsPerSurface)
     return false;
+  if (!FlagsAndAsyncReasonsMatch(
+          hit_test_region_list->flags,
+          hit_test_region_list->async_hit_test_reasons)) {
+    return false;
+  }
   for (auto& region : hit_test_region_list->regions) {
     // TODO(gklassen): Ensure that |region->frame_sink_id| is a child of
     // |frame_sink_id|.
@@ -163,6 +180,8 @@ bool HitTestManager::ValidateHitTestRegionList(
       region.frame_sink_id = FrameSinkId(surface_id.frame_sink_id().client_id(),
                                          region.frame_sink_id.sink_id());
     }
+    if (!FlagsAndAsyncReasonsMatch(region.flags, region.async_hit_test_reasons))
+      return false;
   }
   return true;
 }

@@ -11,22 +11,19 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "components/autofill/content/common/autofill_agent.mojom.h"
-#include "components/autofill/content/common/autofill_driver.mojom.h"
-#include "components/autofill/core/common/password_form_field_prediction_map.h"
+#include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
+#include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
 #include "components/autofill/core/common/password_form_generation_data.h"
+#include "components/autofill/core/common/unique_ids.h"
 #include "components/password_manager/core/browser/password_autofill_manager.h"
 #include "components/password_manager/core/browser/password_generation_frame_helper.h"
 #include "components/password_manager/core/browser/password_manager.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
-
-namespace autofill {
-struct PasswordForm;
-}
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 
 namespace content {
-class NavigationHandle;
 class RenderFrameHost;
 }
 
@@ -48,33 +45,30 @@ class ContentPasswordManagerDriver
   static ContentPasswordManagerDriver* GetForRenderFrameHost(
       content::RenderFrameHost* render_frame_host);
 
-  void BindRequest(
-      autofill::mojom::PasswordManagerDriverAssociatedRequest request);
+  void BindPendingReceiver(
+      mojo::PendingAssociatedReceiver<autofill::mojom::PasswordManagerDriver>
+          pending_receiver);
 
   // PasswordManagerDriver implementation.
+  int GetId() const override;
   void FillPasswordForm(
       const autofill::PasswordFormFillData& form_data) override;
-  void AllowPasswordGenerationForForm(
-      const autofill::PasswordForm& form) override;
-  void FormsEligibleForGenerationFound(
-      const std::vector<autofill::PasswordFormGenerationData>& forms) override;
+  void InformNoSavedCredentials(
+      bool should_show_popup_without_passwords) override;
   void FormEligibleForGenerationFound(
-      const autofill::NewPasswordFormGenerationData& form) override;
-  void AutofillDataReceived(
-      const std::map<autofill::FormData,
-                     autofill::PasswordFormFieldPredictionMap>& predictions)
-      override;
-  void GeneratedPasswordAccepted(const base::string16& password) override;
-  void FillSuggestion(const base::string16& username,
-                      const base::string16& password) override;
+      const autofill::PasswordFormGenerationData& form) override;
+  void GeneratedPasswordAccepted(const std::u16string& password) override;
+  void GeneratedPasswordAccepted(
+      const autofill::FormData& form_data,
+      autofill::FieldRendererId generation_element_id,
+      const std::u16string& password) override;
+  void TouchToFillClosed(ShowVirtualKeyboard show_virtual_keyboard) override;
+  void FillSuggestion(const std::u16string& username,
+                      const std::u16string& password) override;
   void FillIntoFocusedField(bool is_password,
-                            const base::string16& credential,
-                            base::OnceCallback<void(autofill::FillingStatus)>
-                                compeleted_callback) override;
-  void PreviewSuggestion(const base::string16& username,
-                         const base::string16& password) override;
-  void ShowInitialPasswordAccountSuggestions(
-      const autofill::PasswordFormFillData& form_data) override;
+                            const std::u16string& credential) override;
+  void PreviewSuggestion(const std::u16string& username,
+                         const std::u16string& password) override;
   void ClearPreviewedForm() override;
   PasswordGenerationFrameHelper* GetPasswordGenerationHelper() override;
   PasswordManager* GetPasswordManager() override;
@@ -82,12 +76,14 @@ class ContentPasswordManagerDriver
   void SendLoggingAvailability() override;
   autofill::AutofillDriver* GetAutofillDriver() override;
   bool IsMainFrame() const override;
-  GURL GetLastCommittedURL() const override;
+  bool CanShowAutofillUi() const override;
+  const GURL& GetLastCommittedURL() const override;
+  void AnnotateFieldsWithParsingResult(
+      const autofill::ParsingResult& parsing_result) override;
 
-  void DidNavigateFrame(content::NavigationHandle* navigation_handle);
-  // Notify the renderer that the user wants to generate password manually.
+  // Notify the renderer that the user wants to trigger password generation.
   void GeneratePassword(autofill::mojom::PasswordGenerationAgent::
-                            UserTriggeredGeneratePasswordCallback callback);
+                            TriggeredGeneratePasswordCallback callback);
 
   content::RenderFrameHost* render_frame_host() const {
     return render_frame_host_;
@@ -99,35 +95,41 @@ class ContentPasswordManagerDriver
   // For that reason, any access to form data should be validated via
   // bad_message::CheckChildProcessSecurityPolicy.
   void PasswordFormsParsed(
-      const std::vector<autofill::PasswordForm>& forms) override;
+      const std::vector<autofill::FormData>& forms_data) override;
   void PasswordFormsRendered(
-      const std::vector<autofill::PasswordForm>& visible_forms,
+      const std::vector<autofill::FormData>& visible_forms_data,
       bool did_stop_loading) override;
-  void PasswordFormSubmitted(
-      const autofill::PasswordForm& password_form) override;
-  void ShowManualFallbackForSaving(const autofill::PasswordForm& form) override;
-  void HideManualFallbackForSaving() override;
-  void SameDocumentNavigation(
-      const autofill::PasswordForm& password_form) override;
-  void ShowPasswordSuggestions(base::i18n::TextDirection text_direction,
-                               const base::string16& typed_username,
-                               int options,
-                               const gfx::RectF& bounds) override;
+  void PasswordFormSubmitted(const autofill::FormData& form_data) override;
+  void InformAboutUserInput(const autofill::FormData& form_data) override;
+  void DynamicFormSubmission(autofill::mojom::SubmissionIndicatorEvent
+                                 submission_indication_event) override;
+  void PasswordFormCleared(const autofill::FormData& form_data) override;
   void RecordSavePasswordProgress(const std::string& log) override;
   void UserModifiedPasswordField() override;
+  void UserModifiedNonPasswordField(autofill::FieldRendererId renderer_id,
+                                    const std::u16string& field_name,
+                                    const std::u16string& value) override;
+  void ShowPasswordSuggestions(base::i18n::TextDirection text_direction,
+                               const std::u16string& typed_username,
+                               int options,
+                               const gfx::RectF& bounds) override;
+  void ShowTouchToFill() override;
   void CheckSafeBrowsingReputation(const GURL& form_action,
                                    const GURL& frame_url) override;
-  void FocusedInputChanged(bool is_fillable, bool is_password_field) override;
-  void LogFirstFillingResult(uint32_t form_renderer_id,
+  void FocusedInputChanged(
+      autofill::FieldRendererId focused_field_id,
+      autofill::mojom::FocusedFieldType focused_field_type) override;
+  void LogFirstFillingResult(autofill::FormRendererId form_renderer_id,
                              int32_t result) override;
 
  private:
-  const autofill::mojom::AutofillAgentAssociatedPtr& GetAutofillAgent();
+  const mojo::AssociatedRemote<autofill::mojom::AutofillAgent>&
+  GetAutofillAgent();
 
-  const autofill::mojom::PasswordAutofillAgentAssociatedPtr&
+  const mojo::AssociatedRemote<autofill::mojom::PasswordAutofillAgent>&
   GetPasswordAutofillAgent();
 
-  const autofill::mojom::PasswordGenerationAgentAssociatedPtr&
+  const mojo::AssociatedRemote<autofill::mojom::PasswordGenerationAgent>&
   GetPasswordGenerationAgent();
 
   content::RenderFrameHost* render_frame_host_;
@@ -140,14 +142,18 @@ class ContentPasswordManagerDriver
   // frame.
   const bool is_main_frame_;
 
-  autofill::mojom::PasswordAutofillAgentAssociatedPtr password_autofill_agent_;
+  int id_;
 
-  autofill::mojom::PasswordGenerationAgentAssociatedPtr password_gen_agent_;
+  mojo::AssociatedRemote<autofill::mojom::PasswordAutofillAgent>
+      password_autofill_agent_;
 
-  mojo::AssociatedBinding<autofill::mojom::PasswordManagerDriver>
-      password_manager_binding_;
+  mojo::AssociatedRemote<autofill::mojom::PasswordGenerationAgent>
+      password_gen_agent_;
 
-  base::WeakPtrFactory<ContentPasswordManagerDriver> weak_factory_;
+  mojo::AssociatedReceiver<autofill::mojom::PasswordManagerDriver>
+      password_manager_receiver_;
+
+  base::WeakPtrFactory<ContentPasswordManagerDriver> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ContentPasswordManagerDriver);
 };

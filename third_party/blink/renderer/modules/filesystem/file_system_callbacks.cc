@@ -34,7 +34,6 @@
 #include <utility>
 
 #include "base/memory/ptr_util.h"
-#include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
@@ -46,7 +45,6 @@
 #include "third_party/blink/renderer/modules/filesystem/dom_file_system_base.h"
 #include "third_party/blink/renderer/modules/filesystem/entry.h"
 #include "third_party/blink/renderer/modules/filesystem/file_entry.h"
-#include "third_party/blink/renderer/modules/filesystem/file_system_base_handle.h"
 #include "third_party/blink/renderer/modules/filesystem/file_writer.h"
 #include "third_party/blink/renderer/modules/filesystem/metadata.h"
 #include "third_party/blink/renderer/platform/file_metadata.h"
@@ -292,18 +290,10 @@ SnapshotFileCallback::SnapshotFileCallback(DOMFileSystemBase* filesystem,
       success_callback_(std::move(success_callback)),
       error_callback_(std::move(error_callback)) {}
 
-void SnapshotFileCallback::DidCreateSnapshotFile(
-    const FileMetadata& metadata,
-    scoped_refptr<BlobDataHandle> snapshot) {
+void SnapshotFileCallback::DidCreateSnapshotFile(const FileMetadata& metadata) {
   if (!success_callback_)
     return;
 
-  // We can't directly use the snapshot blob data handle because the content
-  // type on it hasn't been set.  The |snapshot| param is here to provide a
-  // chain of custody thru thread bridging that is held onto until *after* we've
-  // coined a File with a new handle that has the correct type set on it. This
-  // allows the blob storage system to track when a temp file can and can't be
-  // safely deleted.
   std::move(success_callback_)
       .Run(DOMFileSystemBase::CreateFile(metadata, url_,
                                          file_system_->GetType(), name_));

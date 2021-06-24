@@ -4,6 +4,8 @@
 
 #include "media/base/android/media_codec_loop.h"
 
+#include <memory>
+
 #include "base/android/build_info.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
@@ -17,6 +19,7 @@
 
 using ::testing::_;
 using ::testing::AtLeast;
+using ::testing::DoAll;
 using ::testing::Eq;
 using ::testing::Field;
 using ::testing::InSequence;
@@ -45,7 +48,7 @@ class MediaCodecLoopTest : public testing::Test {
  public:
   MediaCodecLoopTest()
       : task_runner_handle_(mock_task_runner_),
-        client_(new StrictMock<MockMediaCodecLoopClient>()) {}
+        client_(std::make_unique<MockMediaCodecLoopClient>()) {}
 
   ~MediaCodecLoopTest() override {}
 
@@ -89,8 +92,8 @@ class MediaCodecLoopTest : public testing::Test {
     std::unique_ptr<MediaCodecBridge> codec(new MockMediaCodecBridge());
     // Since we're providing a codec, we do not expect an error.
     EXPECT_CALL(*client_, OnCodecLoopError()).Times(0);
-    codec_loop_.reset(new MediaCodecLoop(sdk_int, client_.get(),
-                                         std::move(codec), mock_task_runner_));
+    codec_loop_ = std::make_unique<MediaCodecLoop>(
+        sdk_int, client_.get(), std::move(codec), mock_task_runner_);
     codec_loop_->SetTestTickClock(mock_task_runner_->GetMockTickClock());
     Mock::VerifyAndClearExpectations(client_.get());
   }
@@ -196,9 +199,9 @@ TEST_F(MediaCodecLoopTest, TestConstructionWithNullCodec) {
   std::unique_ptr<MediaCodecBridge> codec;
   EXPECT_CALL(*client_, OnCodecLoopError()).Times(1);
   const int sdk_int = base::android::SDK_VERSION_LOLLIPOP;
-  codec_loop_.reset(
-      new MediaCodecLoop(sdk_int, client_.get(), std::move(codec),
-                         scoped_refptr<base::SingleThreadTaskRunner>()));
+  codec_loop_ = std::make_unique<MediaCodecLoop>(
+      sdk_int, client_.get(), std::move(codec),
+      scoped_refptr<base::SingleThreadTaskRunner>());
   // Do not WaitUntilIdle() here, since that assumes that we have a codec.
 
   ASSERT_FALSE(codec_loop_->GetCodec());
@@ -408,28 +411,6 @@ TEST_F(MediaCodecLoopTest, TestSeveralPendingIOBuffers) {
   ExpectEmptyIOLoop();
 
   codec_loop_->ExpectWork();
-}
-
-TEST_F(MediaCodecLoopTest, TestTryFlushOnJellyBeanMR2) {
-  // On JB MR2+ MCL should be willing to use MediaCodecBridge::Flush.
-  ConstructCodecLoop(base::android::SDK_VERSION_JELLY_BEAN_MR2);
-  EXPECT_CALL(Codec(), Flush()).Times(1).WillOnce(Return(MEDIA_CODEC_OK));
-  ASSERT_TRUE(codec_loop_->TryFlush());
-}
-
-TEST_F(MediaCodecLoopTest, TestTryFlushAfterJellyBeanMR2Fails) {
-  // On JB MR2+, MCL should be willing to use MediaCodecBridge::Flush.  Try
-  // that, but make Flush fail.
-  ConstructCodecLoop(base::android::SDK_VERSION_JELLY_BEAN_MR2);
-  EXPECT_CALL(Codec(), Flush()).Times(1).WillOnce(Return(MEDIA_CODEC_ERROR));
-  EXPECT_CALL(*client_, OnCodecLoopError()).Times(1);
-  ASSERT_FALSE(codec_loop_->TryFlush());
-}
-
-TEST_F(MediaCodecLoopTest, TestTryFlushOnJellyBeanMR1) {
-  // In JB MR1, MCL should not be willing to use MediaCodecBridge::Flush.
-  ConstructCodecLoop(base::android::SDK_VERSION_JELLY_BEAN_MR1);
-  ASSERT_FALSE(codec_loop_->TryFlush());
 }
 
 TEST_F(MediaCodecLoopTest, TestOnKeyAdded) {

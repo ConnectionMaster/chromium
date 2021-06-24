@@ -12,26 +12,17 @@ enum StackMode {
 
   // Instruction addresses from unwinding the stack.
   NATIVE_WITHOUT_THREAD_NAMES,
+};
 
-  // Uses trace events as identifiers.
-  PSEUDO,
-
-  // Uses a combination of trace events and selective native addresses.
-  MIXED
+// Type of the allocator responsible for the allocation sample.
+enum AllocatorType {
+  kMalloc,
+  kPartitionAlloc,
 };
 
 // A wrapper for parameters that affect each client's implementation of
 // profiling.
 struct ProfilingParams {
-  // When |stream_samples| is true the samples are streamed through the
-  // provided |sender_pipe|. Otherwise, the samples are stored on
-  // the client side during recording and can be retrieved using
-  // |ProfilingClient.RetrieveHeapProfile| method.
-  bool stream_samples;
-
-  // The client should record allocations into |memlog_sender_pipe|.
-  handle sender_pipe;
-
   // |stack_mode| refers to the type of data that should be recorded for each
   // allocation.
   StackMode stack_mode;
@@ -46,10 +37,15 @@ struct ProfilingParams {
 // A single memory allocation sample.
 struct HeapProfileSample {
   // Allocator type.
-  uint32 allocator;
+  AllocatorType allocator;
 
-  // The size in bytes accounted for the sample.
+  // The size of the allocation.
   uint64 size;
+
+  // The total bytes attributed to the desampled allocation. Each sampled
+  // allocation represents a series of similar allocations. Dividing |total| by
+  // |size| yields the expected number of allocations.
+  uint64 total;
 
   // Id of the context string.
   uint64 context_id;
@@ -79,12 +75,7 @@ interface ProfilingClient {
   // |params.sender_pipe|, or accumulated in the profiled process depending on
   // the |params.use_in_process_storage|.
   // There is currently no mechanism to stop recording allocations.
-  StartProfiling(ProfilingParams params);
-
-  // Flushes the memlog pipe associated with this client. A barrier packet is
-  // set over the memlog pipe with the given identifier. This allows the
-  // receiver to synchronize with the flush.
-  FlushMemlogPipe(uint32 barrier_id);
+  StartProfiling(ProfilingParams params) => ();
 
   RetrieveHeapProfile() => (HeapProfile profile);
 };

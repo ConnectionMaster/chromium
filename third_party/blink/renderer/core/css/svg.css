@@ -84,3 +84,17 @@ tspan, textPath {
 *:not(svg), *:not(foreignObject) > svg {
     transform-origin: 0 0;
 }
+
+/*
+   This is added as to not break SVG content in forced colors mode:
+   https://drafts.csswg.org/css-color-adjust-1/#forced-colors-properties
+*/
+@media ua-forced-colors {
+  svg {
+      forced-color-adjust: none;
+  }
+
+  foreignObject {
+      forced-color-adjust: auto;
+  }
+}

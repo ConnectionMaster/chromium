@@ -4,16 +4,12 @@
 
 #include "third_party/blink/renderer/platform/scheduler/main_thread/auto_advancing_virtual_time_domain.h"
 
+#include <atomic>
+
 #include "base/atomicops.h"
 #include "base/time/time_override.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/scheduler/common/scheduler_helper.h"
-
-// windows.h #defines MemoryBarrier on x64. So we copy this bit
-// from base/atomicops.h to be independent of the include order in this file.
-#if defined(OS_WIN) && defined(ARCH_CPU_64_BITS)
-#undef MemoryBarrier
-#endif
 
 namespace blink {
 namespace scheduler {
@@ -35,7 +31,7 @@ AutoAdvancingVirtualTimeDomain::AutoAdvancingVirtualTimeDomain(
   AutoAdvancingVirtualTimeDomain::g_time_domain_ = this;
 
   // GetVirtualTime / GetVirtualTimeTicks access g_time_domain_.
-  base::subtle::MemoryBarrier();
+  std::atomic_thread_fence(std::memory_order_seq_cst);
 
   if (policy == BaseTimeOverridePolicy::OVERRIDE) {
     time_overrides_ = std::make_unique<base::subtle::ScopedTimeClockOverrides>(
@@ -53,7 +49,7 @@ AutoAdvancingVirtualTimeDomain::~AutoAdvancingVirtualTimeDomain() {
 
   // GetVirtualTime / GetVirtualTimeTicks (the functions we may have
   // temporariliy installed in the constructor) access g_time_domain_.
-  base::subtle::MemoryBarrier();
+  std::atomic_thread_fence(std::memory_order_seq_cst);
 
   DCHECK_EQ(AutoAdvancingVirtualTimeDomain::g_time_domain_, this);
   AutoAdvancingVirtualTimeDomain::g_time_domain_ = nullptr;
@@ -70,12 +66,12 @@ base::TimeTicks AutoAdvancingVirtualTimeDomain::Now() const {
   return now_ticks_;
 }
 
-base::Optional<base::TimeDelta>
+absl::optional<base::TimeDelta>
 AutoAdvancingVirtualTimeDomain::DelayTillNextTask(
     base::sequence_manager::LazyNow* lazy_now) {
-  base::Optional<base::TimeTicks> run_time = NextScheduledRunTime();
+  absl::optional<base::TimeTicks> run_time = NextScheduledRunTime();
   if (!run_time)
-    return base::nullopt;
+    return absl::nullopt;
 
   // We may have advanced virtual time past the next task when a
   // WebScopedVirtualTimePauser unpauses.
@@ -84,7 +80,7 @@ AutoAdvancingVirtualTimeDomain::DelayTillNextTask(
 
   // Rely on MaybeFastForwardToNextTask to be called to advance
   // virtual time.
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 bool AutoAdvancingVirtualTimeDomain::MaybeFastForwardToNextTask(
@@ -92,7 +88,7 @@ bool AutoAdvancingVirtualTimeDomain::MaybeFastForwardToNextTask(
   if (!can_advance_virtual_time_)
     return false;
 
-  base::Optional<base::TimeTicks> run_time = NextScheduledRunTime();
+  absl::optional<base::TimeTicks> run_time = NextScheduledRunTime();
   if (!run_time)
     return false;
 
@@ -165,7 +161,8 @@ const char* AutoAdvancingVirtualTimeDomain::GetName() const {
 }
 
 void AutoAdvancingVirtualTimeDomain::WillProcessTask(
-    const base::PendingTask& pending_task) {}
+    const base::PendingTask& pending_task,
+    bool was_blocked_or_low_priority) {}
 
 void AutoAdvancingVirtualTimeDomain::DidProcessTask(
     const base::PendingTask& pending_task) {
@@ -176,7 +173,7 @@ void AutoAdvancingVirtualTimeDomain::DidProcessTask(
 
   // Delayed tasks are being excessively starved, so allow virtual time to
   // advance.
-  base::Optional<base::TimeTicks> run_time = NextScheduledRunTime();
+  absl::optional<base::TimeTicks> run_time = NextScheduledRunTime();
   if (run_time && MaybeAdvanceVirtualTime(*run_time))
     task_starvation_count_ = 0;
 }

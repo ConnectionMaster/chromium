@@ -8,23 +8,27 @@
 #include "base/callback.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread.h"
 #include "media/base/android/mock_android_overlay.h"
-#include "media/gpu/android/avda_surface_bundle.h"
+#include "media/gpu/android/codec_surface_bundle.h"
+#include "media/gpu/android/mock_codec_image.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
 
 namespace {
+// Size used to create MockCodecImage.
+constexpr gfx::Size kMockImageSize(100, 100);
+
 // Subclass of CodecImageGroup which will notify us when it's destroyed.
 class CodecImageGroupWithDestructionHook : public CodecImageGroup {
  public:
   CodecImageGroupWithDestructionHook(
       scoped_refptr<base::SequencedTaskRunner> task_runner,
-      scoped_refptr<AVDASurfaceBundle> surface_bundle)
+      scoped_refptr<CodecSurfaceBundle> surface_bundle)
       : CodecImageGroup(std::move(task_runner), std::move(surface_bundle)) {}
 
   void SetDestructionCallback(base::OnceClosure cb) {
@@ -40,20 +44,6 @@ class CodecImageGroupWithDestructionHook : public CodecImageGroup {
   base::OnceClosure destruction_cb_;
 };
 
-// CodecImage with a mocked ReleaseCodecBuffer.
-class MockCodecImage : public CodecImage {
- public:
-  MockCodecImage()
-      : CodecImage(nullptr,
-                   nullptr,
-                   PromotionHintAggregator::NotifyPromotionHintCB()) {}
-
-  MOCK_METHOD0(ReleaseCodecBuffer, void());
-
- protected:
-  ~MockCodecImage() override {}
-};
-
 }  // namespace
 
 class CodecImageGroupTest : public testing::Test {
@@ -67,11 +57,11 @@ class CodecImageGroupTest : public testing::Test {
   void TearDown() override {}
 
   struct Record {
-    scoped_refptr<AVDASurfaceBundle> surface_bundle;
+    scoped_refptr<CodecSurfaceBundle> surface_bundle;
     scoped_refptr<CodecImageGroupWithDestructionHook> image_group;
 
     MockAndroidOverlay* overlay() const {
-      return static_cast<MockAndroidOverlay*>(surface_bundle->overlay.get());
+      return static_cast<MockAndroidOverlay*>(surface_bundle->overlay());
     }
   };
 
@@ -82,7 +72,7 @@ class CodecImageGroupTest : public testing::Test {
     EXPECT_CALL(*overlay.get(), MockAddSurfaceDestroyedCallback());
     Record rec;
     rec.surface_bundle =
-        base::MakeRefCounted<AVDASurfaceBundle>(std::move(overlay));
+        base::MakeRefCounted<CodecSurfaceBundle>(std::move(overlay));
     rec.image_group = base::MakeRefCounted<CodecImageGroupWithDestructionHook>(
         gpu_task_runner_, rec.surface_bundle);
 
@@ -92,7 +82,7 @@ class CodecImageGroupTest : public testing::Test {
   // Handy method to check that CodecImage destruction is relayed properly.
   MOCK_METHOD1(OnCodecImageDestroyed, void(CodecImage*));
 
-  base::test::ScopedTaskEnvironment env_;
+  base::test::TaskEnvironment env_;
 
   // Our thread is the mcvd thread.  This is the task runner for the gpu thread.
   scoped_refptr<base::TestSimpleTaskRunner> gpu_task_runner_;
@@ -118,8 +108,8 @@ TEST_F(CodecImageGroupTest, GroupRegistersForOverlayDestruction) {
 TEST_F(CodecImageGroupTest, SurfaceBundleWithoutOverlayDoesntCrash) {
   // Make sure that it's okay not to have an overlay.  CodecImageGroup should
   // handle ST surface bundles without crashing.
-  scoped_refptr<AVDASurfaceBundle> surface_bundle =
-      base::MakeRefCounted<AVDASurfaceBundle>();
+  scoped_refptr<CodecSurfaceBundle> surface_bundle =
+      base::MakeRefCounted<CodecSurfaceBundle>();
   scoped_refptr<CodecImageGroup> image_group =
       base::MakeRefCounted<CodecImageGroup>(gpu_task_runner_, surface_bundle);
   // TODO(liberato): we should also make sure that adding an image doesn't call
@@ -132,7 +122,7 @@ TEST_F(CodecImageGroupTest, ImagesRetainRefToGroup) {
   bool was_destroyed = false;
   rec.image_group->SetDestructionCallback(
       base::BindOnce([](bool* flag) -> void { *flag = true; }, &was_destroyed));
-  scoped_refptr<CodecImage> image = new MockCodecImage();
+  scoped_refptr<CodecImage> image = new MockCodecImage(kMockImageSize);
   // We're supposed to call this from |gpu_task_runner_|, but all
   // CodecImageGroup really cares about is being single sequence.
   rec.image_group->AddCodecImage(image.get());
@@ -146,34 +136,13 @@ TEST_F(CodecImageGroupTest, ImagesRetainRefToGroup) {
   ASSERT_TRUE(was_destroyed);
 }
 
-TEST_F(CodecImageGroupTest, DestroyedImagesForwardsImageDestruction) {
-  // Make sure that CodecImageGroup relays CodecImage destruction callbacks.
-  Record rec = CreateImageGroup();
-  scoped_refptr<CodecImage> image_1 = new MockCodecImage();
-  scoped_refptr<CodecImage> image_2 = new MockCodecImage();
-  rec.image_group->SetDestructionCb(base::Bind(
-      &CodecImageGroupTest::OnCodecImageDestroyed, base::Unretained(this)));
-  rec.image_group->AddCodecImage(image_1.get());
-  rec.image_group->AddCodecImage(image_2.get());
-
-  // Destroying |image_1| should call us back.
-  EXPECT_CALL(*this, OnCodecImageDestroyed(image_1.get()));
-  image_1 = nullptr;
-  testing::Mock::VerifyAndClearExpectations(this);
-
-  // Same for |image_2|.
-  EXPECT_CALL(*this, OnCodecImageDestroyed(image_2.get()));
-  image_2 = nullptr;
-  testing::Mock::VerifyAndClearExpectations(this);
-}
-
 TEST_F(CodecImageGroupTest, ImageGroupDropsForwardsSurfaceDestruction) {
   // CodecImageGroup should notify all images when the surface is destroyed.  We
   // also verify that the image group drops its ref to the surface bundle, so
   // that it doesn't prevent destruction of the overlay that provided it.
   Record rec = CreateImageGroup();
-  scoped_refptr<MockCodecImage> image_1 = new MockCodecImage();
-  scoped_refptr<MockCodecImage> image_2 = new MockCodecImage();
+  scoped_refptr<MockCodecImage> image_1 = new MockCodecImage(kMockImageSize);
+  scoped_refptr<MockCodecImage> image_2 = new MockCodecImage(kMockImageSize);
   rec.image_group->AddCodecImage(image_1.get());
   rec.image_group->AddCodecImage(image_2.get());
 

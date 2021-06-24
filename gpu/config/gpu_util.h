@@ -15,9 +15,11 @@ class CommandLine;
 
 namespace gpu {
 
+struct DevicePerfInfo;
 struct GPUInfo;
 struct GpuPreferences;
-enum class GpuSeriesType;
+enum class IntelGpuSeriesType;
+enum class IntelGpuGeneration;
 
 // Set GPU feature status if hardware acceleration is disabled.
 GPU_EXPORT GpuFeatureInfo
@@ -57,7 +59,7 @@ GPU_EXPORT bool PopGpuFeatureInfoCache(GpuFeatureInfo* gpu_feature_info);
 
 #if defined(OS_ANDROID)
 // Check if GL bindings are initialized. If not, initializes GL
-// bindings, create a GL context, collects GPUInfo, make blacklist and
+// bindings, create a GL context, collects GPUInfo, make blocklist and
 // GPU driver bug workaround decisions. This is intended to be called
 // by Android WebView render thread and in-process GPU thread.
 GPU_EXPORT bool InitializeGLThreadSafe(base::CommandLine* command_line,
@@ -72,10 +74,32 @@ GPU_EXPORT bool EnableSwiftShaderIfNeeded(
     base::CommandLine* command_line,
     const GpuFeatureInfo& gpu_feature_info,
     bool disable_software_rasterizer,
-    bool blacklist_needs_more_info);
+    bool blocklist_needs_more_info);
 
-GPU_EXPORT GpuSeriesType GetGpuSeriesType(uint32_t vendor_id,
-                                          uint32_t device_id);
+GPU_EXPORT IntelGpuSeriesType GetIntelGpuSeriesType(uint32_t vendor_id,
+                                                    uint32_t device_id);
+
+GPU_EXPORT std::string GetIntelGpuGeneration(uint32_t vendor_id,
+                                             uint32_t device_id);
+
+// If multiple Intel GPUs are detected, this returns the latest generation.
+GPU_EXPORT IntelGpuGeneration GetIntelGpuGeneration(const GPUInfo& gpu_info);
+
+// If this function is called in browser process (|in_browser_process| is set
+// to true), don't collect total disk space (which may block) and D3D related
+// info.
+GPU_EXPORT void CollectDevicePerfInfo(DevicePerfInfo* device_perf_info,
+                                      bool in_browser_process);
+GPU_EXPORT void RecordDevicePerfInfoHistograms();
+
+// In a multi-gpu device, record the discrete gpu device id.
+// Currently only record for AMD/Nvidia GPUs.
+GPU_EXPORT void RecordDiscreteGpuHistograms(const GPUInfo& gpu_info);
+
+#if defined(OS_WIN)
+GPU_EXPORT std::string D3DFeatureLevelToString(uint32_t d3d_feature_level);
+GPU_EXPORT std::string VulkanVersionToString(uint32_t vulkan_version);
+#endif  // OS_WIN
 
 }  // namespace gpu
 

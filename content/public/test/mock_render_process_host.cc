@@ -9,20 +9,18 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/process/process_handle.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "base/token.h"
 #include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/common/child_process_host_impl.h"
-#include "content/common/frame_messages.h"
-#include "content/common/input_messages.h"
 #include "content/common/renderer.mojom.h"
 #include "content/public/browser/android/child_process_importance.h"
 #include "content/public/browser/browser_context.h"
@@ -34,37 +32,40 @@
 #include "content/public/browser/render_widget_host_iterator.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
-#include "content/public/common/service_manager_connection.h"
-#include "content/public/common/service_names.mojom.h"
-#include "content/test/not_implemented_network_url_loader_factory.h"
+#include "content/test/fake_network_url_loader_factory.h"
 #include "media/media_buildflags.h"
-#include "mojo/public/cpp/bindings/associated_interface_ptr.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
 namespace content {
 
-MockRenderProcessHost::MockRenderProcessHost(BrowserContext* browser_context)
+namespace {
+
+MockRenderProcessHost::CreateNetworkFactoryCallback&
+GetNetworkFactoryCallback() {
+  static base::NoDestructor<MockRenderProcessHost::CreateNetworkFactoryCallback>
+      callback;
+  return *callback;
+}
+
+}  // namespace
+
+MockRenderProcessHost::MockRenderProcessHost(BrowserContext* browser_context,
+                                             bool is_for_guests_only)
     : bad_msg_count_(0),
-      factory_(nullptr),
       id_(ChildProcessHostImpl::GenerateChildProcessUniqueId()),
       has_connection_(false),
       browser_context_(browser_context),
       prev_routing_id_(0),
+      shutdown_requested_(false),
       fast_shutdown_started_(false),
       deletion_callback_called_(false),
-      is_for_guests_only_(false),
-      is_never_suitable_for_reuse_(false),
+      is_for_guests_only_(is_for_guests_only),
       is_process_backgrounded_(false),
       is_unused_(true),
       keep_alive_ref_count_(0),
       foreground_service_worker_count_(0),
-      child_identity_(
-          mojom::kRendererServiceName,
-          BrowserContext::GetServiceInstanceGroupFor(browser_context),
-          base::Token::CreateRandom(),
-          base::Token::CreateRandom()),
-      url_loader_factory_(nullptr),
-      weak_ptr_factory_(this) {
+      url_loader_factory_(std::make_unique<FakeNetworkURLLoaderFactory>()) {
   // Child process security operations can't be unit tested unless we add
   // ourselves as an existing child process.
   ChildProcessSecurityPolicyImpl::GetInstance()->Add(GetID(), browser_context);
@@ -74,9 +75,6 @@ MockRenderProcessHost::MockRenderProcessHost(BrowserContext* browser_context)
 
 MockRenderProcessHost::~MockRenderProcessHost() {
   ChildProcessSecurityPolicyImpl::GetInstance()->Remove(GetID());
-  if (factory_)
-    factory_->Remove(this);
-
   // In unit tests, Cleanup() might not have been called.
   if (!deletion_callback_called_) {
     for (auto& observer : observers_)
@@ -93,32 +91,22 @@ void MockRenderProcessHost::SimulateRenderProcessExit(
     base::TerminationStatus status,
     int exit_code) {
   has_connection_ = false;
-  ChildProcessTerminationInfo termination_info{status, exit_code};
+  ChildProcessTerminationInfo termination_info;
+  termination_info.status = status;
+  termination_info.exit_code = exit_code;
+  termination_info.renderer_has_visible_clients = VisibleClientCount() > 0;
   NotificationService::current()->Notify(
       NOTIFICATION_RENDERER_PROCESS_CLOSED, Source<RenderProcessHost>(this),
       Details<ChildProcessTerminationInfo>(&termination_info));
 
   for (auto& observer : observers_)
     observer.RenderProcessExited(this, termination_info);
+}
 
-  // Send every routing ID a FrameHostMsg_RenderProcessGone message. To ensure a
-  // predictable order for unittests which may assert against the order, we sort
-  // the listeners by descending routing ID, instead of using the arbitrary
-  // hash-map order like RenderProcessHostImpl.
-  std::vector<std::pair<int32_t, IPC::Listener*>> sorted_listeners_;
-  base::IDMap<IPC::Listener*>::iterator iter(&listeners_);
-  while (!iter.IsAtEnd()) {
-    sorted_listeners_.push_back(
-        std::make_pair(iter.GetCurrentKey(), iter.GetCurrentValue()));
-    iter.Advance();
-  }
-  std::sort(sorted_listeners_.rbegin(), sorted_listeners_.rend());
-
-  for (auto& entry_pair : sorted_listeners_) {
-    entry_pair.second->OnMessageReceived(FrameHostMsg_RenderProcessGone(
-        entry_pair.first, static_cast<int>(termination_info.status),
-        termination_info.exit_code));
-  }
+// static
+void MockRenderProcessHost::SetNetworkFactory(
+    const CreateNetworkFactoryCallback& create_network_factory_callback) {
+  GetNetworkFactoryCallback() = create_network_factory_callback;
 }
 
 bool MockRenderProcessHost::Init() {
@@ -155,6 +143,7 @@ void MockRenderProcessHost::RemoveObserver(
 void MockRenderProcessHost::ShutdownForBadMessage(
     CrashReportMode crash_report_mode) {
   ++bad_msg_count_;
+  shutdown_requested_ = true;
 }
 
 void MockRenderProcessHost::UpdateClientPriority(PriorityClient* client) {}
@@ -184,9 +173,8 @@ bool MockRenderProcessHost::IsForGuestsOnly() {
   return is_for_guests_only_;
 }
 
-RendererAudioOutputStreamFactoryContext*
-MockRenderProcessHost::GetRendererAudioOutputStreamFactoryContext() {
-  return nullptr;
+bool MockRenderProcessHost::IsJitDisabled() {
+  return false;
 }
 
 void MockRenderProcessHost::OnMediaStreamAdded() {}
@@ -203,14 +191,18 @@ void MockRenderProcessHost::OnForegroundServiceWorkerRemoved() {
 }
 
 StoragePartition* MockRenderProcessHost::GetStoragePartition() {
-  return BrowserContext::GetDefaultStoragePartition(browser_context_);
+  return browser_context_->GetDefaultStoragePartition();
 }
 
-void MockRenderProcessHost::AddWord(const base::string16& word) {
-}
+void MockRenderProcessHost::AddWord(const std::u16string& word) {}
 
 bool MockRenderProcessHost::Shutdown(int exit_code) {
+  shutdown_requested_ = true;
   return true;
+}
+
+bool MockRenderProcessHost::ShutdownRequested() {
+  return shutdown_requested_;
 }
 
 bool MockRenderProcessHost::FastShutdownIfPossible(size_t page_count,
@@ -262,26 +254,27 @@ bool MockRenderProcessHost::IsBlocked() {
   return false;
 }
 
-std::unique_ptr<base::CallbackList<void(bool)>::Subscription>
+base::CallbackListSubscription
 MockRenderProcessHost::RegisterBlockStateChangedCallback(
-    const base::RepeatingCallback<void(bool)>& cb) {
-  return nullptr;
-}
-
-static void DeleteIt(base::WeakPtr<MockRenderProcessHost> h) {
-  if (h)
-    delete h.get();
+    const BlockStateChangedCallback& cb) {
+  return {};
 }
 
 void MockRenderProcessHost::Cleanup() {
-  if (listeners_.IsEmpty()) {
+  if (listeners_.IsEmpty() && !deletion_callback_called_) {
+    if (IsInitializedAndNotDead()) {
+      ChildProcessTerminationInfo termination_info;
+      termination_info.status = base::TERMINATION_STATUS_NORMAL_TERMINATION;
+      termination_info.exit_code = 0;
+      termination_info.renderer_has_visible_clients = VisibleClientCount() > 0;
+      for (auto& observer : observers_)
+        observer.RenderProcessExited(this, termination_info);
+    }
+
     for (auto& observer : observers_)
       observer.RenderProcessHostDestroyed(this);
-    // Post the delete of |this| as a WeakPtr so that if |this| is deleted by a
-    // test directly, we don't double free.
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(&DeleteIt, weak_ptr_factory_.GetWeakPtr()));
     RenderProcessHostImpl::UnregisterHost(GetID());
+    has_connection_ = false;
     deletion_callback_called_ = true;
   }
 }
@@ -300,6 +293,14 @@ void MockRenderProcessHost::RemovePriorityClient(
     PriorityClient* priority_client) {
   priority_clients_.erase(priority_client);
 }
+
+void MockRenderProcessHost::SetPriorityOverride(bool foreground) {}
+
+bool MockRenderProcessHost::HasPriorityOverride() {
+  return false;
+}
+
+void MockRenderProcessHost::ClearPriorityOverride() {}
 
 #if defined(OS_ANDROID)
 ChildProcessImportance MockRenderProcessHost::GetEffectiveImportance() {
@@ -338,15 +339,11 @@ base::TimeDelta MockRenderProcessHost::GetChildProcessIdleTime() {
   return base::TimeDelta::FromMilliseconds(0);
 }
 
-void MockRenderProcessHost::BindInterface(
-    const std::string& interface_name,
-    mojo::ScopedMessagePipeHandle interface_pipe) {
-  if (binder_overrides_.count(interface_name) > 0)
-    binder_overrides_[interface_name].Run(std::move(interface_pipe));
-}
-
-const service_manager::Identity& MockRenderProcessHost::GetChildIdentity() {
-  return child_identity_;
+void MockRenderProcessHost::BindReceiver(
+    mojo::GenericPendingReceiver receiver) {
+  auto it = binder_overrides_.find(*receiver.interface_name());
+  if (it != binder_overrides_.end())
+    it->second.Run(receiver.PassPipe());
 }
 
 std::unique_ptr<base::PersistentMemoryAllocator>
@@ -354,8 +351,7 @@ MockRenderProcessHost::TakeMetricsAllocator() {
   return nullptr;
 }
 
-const base::TimeTicks&
-MockRenderProcessHost::GetInitTimeForNavigationMetrics() {
+const base::TimeTicks& MockRenderProcessHost::GetLastInitTime() {
   static base::TimeTicks dummy_time = base::TimeTicks::Now();
   return dummy_time;
 }
@@ -368,13 +364,11 @@ size_t MockRenderProcessHost::GetKeepAliveRefCount() const {
   return keep_alive_ref_count_;
 }
 
-void MockRenderProcessHost::IncrementKeepAliveRefCount(
-    KeepAliveClientType client) {
+void MockRenderProcessHost::IncrementKeepAliveRefCount() {
   ++keep_alive_ref_count_;
 }
 
-void MockRenderProcessHost::DecrementKeepAliveRefCount(
-    KeepAliveClientType client) {
+void MockRenderProcessHost::DecrementKeepAliveRefCount() {
   --keep_alive_ref_count_;
 }
 
@@ -396,29 +390,32 @@ bool MockRenderProcessHost::IsKeepAliveRefCountDisabled() {
   return false;
 }
 
-void MockRenderProcessHost::Resume() {}
-
 mojom::Renderer* MockRenderProcessHost::GetRendererInterface() {
   if (!renderer_interface_) {
-    renderer_interface_.reset(new mojom::RendererAssociatedPtr);
-    mojo::MakeRequestAssociatedWithDedicatedPipe(renderer_interface_.get());
+    renderer_interface_ =
+        std::make_unique<mojo::AssociatedRemote<mojom::Renderer>>();
+    ignore_result(
+        renderer_interface_->BindNewEndpointAndPassDedicatedReceiver());
   }
   return renderer_interface_->get();
 }
 
 void MockRenderProcessHost::CreateURLLoaderFactory(
-    const base::Optional<url::Origin>& origin,
-    network::mojom::TrustedURLLoaderHeaderClientPtrInfo header_client,
-    network::mojom::URLLoaderFactoryRequest request) {
-  url_loader_factory_->Clone(std::move(request));
-}
+    mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+    network::mojom::URLLoaderFactoryParamsPtr params) {
+  if (GetNetworkFactoryCallback().is_null()) {
+    url_loader_factory_->Clone(std::move(receiver));
+    return;
+  }
 
-void MockRenderProcessHost::SetIsNeverSuitableForReuse() {
-  is_never_suitable_for_reuse_ = true;
+  mojo::Remote<network::mojom::URLLoaderFactory> original_factory;
+  url_loader_factory_->Clone(original_factory.BindNewPipeAndPassReceiver());
+  GetNetworkFactoryCallback().Run(std::move(receiver), GetID(),
+                                  original_factory.Unbind());
 }
 
 bool MockRenderProcessHost::MayReuseHost() {
-  return !is_never_suitable_for_reuse_;
+  return true;
 }
 
 bool MockRenderProcessHost::IsUnused() {
@@ -433,28 +430,47 @@ bool MockRenderProcessHost::HostHasNotBeenUsed() {
   return IsUnused() && listeners_.IsEmpty() && GetKeepAliveRefCount() == 0;
 }
 
-void MockRenderProcessHost::LockToOrigin(
+void MockRenderProcessHost::SetProcessLock(
     const IsolationContext& isolation_context,
-    const GURL& lock_url) {
-  ChildProcessSecurityPolicyImpl::GetInstance()->LockToOrigin(
-      isolation_context, GetID(), lock_url);
-  if (SiteInstanceImpl::IsOriginLockASite(lock_url))
+    const ProcessLock& process_lock) {
+  ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(
+      isolation_context, GetID(), process_lock);
+  if (process_lock.IsASiteOrOrigin())
     is_renderer_locked_to_site_ = true;
 }
 
+bool MockRenderProcessHost::IsProcessLockedToSiteForTesting() {
+  ProcessLock lock =
+      ChildProcessSecurityPolicyImpl::GetInstance()->GetProcessLock(GetID());
+  return lock.is_locked_to_site();
+}
+
 void MockRenderProcessHost::BindCacheStorage(
-    blink::mojom::CacheStorageRequest request,
-    const url::Origin& origin) {
-  cache_storage_request_ = std::move(request);
+    const network::CrossOriginEmbedderPolicy&,
+    mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>,
+    const url::Origin& origin,
+    mojo::PendingReceiver<blink::mojom::CacheStorage> receiver) {
+  cache_storage_receiver_ = std::move(receiver);
 }
 
 void MockRenderProcessHost::BindIndexedDB(
-    blink::mojom::IDBFactoryRequest request,
-    const url::Origin& origin) {
-  idb_factory_request_ = std::move(request);
+    const url::Origin& origin,
+    mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) {
+  idb_factory_receiver_ = std::move(receiver);
 }
 
-void MockRenderProcessHost::CleanupCorbExceptionForPluginUponDestruction() {}
+void MockRenderProcessHost::
+    CleanupNetworkServicePluginExceptionsUponDestruction() {}
+
+std::string
+MockRenderProcessHost::GetInfoForBrowserContextDestructionCrashReporting() {
+  return std::string();
+}
+
+void MockRenderProcessHost::WriteIntoTrace(perfetto::TracedValue context) {
+  auto dict = std::move(context).WriteDictionary();
+  dict.Add("id", GetID());
+}
 
 void MockRenderProcessHost::FilterURL(bool empty_allowed, GURL* url) {
   RenderProcessHostImpl::FilterURL(this, empty_allowed, url);
@@ -466,21 +482,12 @@ void MockRenderProcessHost::EnableAudioDebugRecordings(
 
 void MockRenderProcessHost::DisableAudioDebugRecordings() {}
 
-void MockRenderProcessHost::SetEchoCanceller3(
-    bool enable,
-    base::OnceCallback<void(bool, const std::string&)> callback) {}
-
 RenderProcessHost::WebRtcStopRtpDumpCallback
-MockRenderProcessHost::StartRtpDump(
-    bool incoming,
-    bool outgoing,
-    const WebRtcRtpPacketCallback& packet_callback) {
-  return WebRtcStopRtpDumpCallback();
+MockRenderProcessHost::StartRtpDump(bool incoming,
+                                    bool outgoing,
+                                    WebRtcRtpPacketCallback packet_callback) {
+  return base::NullCallback();
 }
-
-void MockRenderProcessHost::EnableWebRtcEventLogOutput(int lid,
-                                                       int output_period_ms) {}
-void MockRenderProcessHost::DisableWebRtcEventLogOutput(int lid) {}
 
 bool MockRenderProcessHost::OnMessageReceived(const IPC::Message& msg) {
   IPC::Listener* listener = listeners_.Lookup(msg.routing_id());
@@ -498,42 +505,30 @@ void MockRenderProcessHost::OverrideBinderForTesting(
 }
 
 void MockRenderProcessHost::OverrideRendererInterfaceForTesting(
-    std::unique_ptr<mojo::AssociatedInterfacePtr<mojom::Renderer>>
+    std::unique_ptr<mojo::AssociatedRemote<mojom::Renderer>>
         renderer_interface) {
   renderer_interface_ = std::move(renderer_interface);
 }
 
-void MockRenderProcessHost::OverrideURLLoaderFactory(
-    network::mojom::URLLoaderFactory* factory) {
-  url_loader_factory_ = factory;
-}
-
-MockRenderProcessHostFactory::MockRenderProcessHostFactory()
-    : default_mock_url_loader_factory_(
-          std::make_unique<NotImplementedNetworkURLLoaderFactory>()) {}
+MockRenderProcessHostFactory::MockRenderProcessHostFactory() = default;
 
 MockRenderProcessHostFactory::~MockRenderProcessHostFactory() {
-  // Detach this object from MockRenderProcesses to prevent them from calling
-  // MockRenderProcessHostFactory::Remove() when destroyed.
-  for (const auto& process : processes_)
-    process->SetFactory(nullptr);
 }
 
 RenderProcessHost* MockRenderProcessHostFactory::CreateRenderProcessHost(
     BrowserContext* browser_context,
-    SiteInstance* site_instance) const {
+    SiteInstance* site_instance) {
+  const bool is_for_guests_only = site_instance && site_instance->IsGuest();
   std::unique_ptr<MockRenderProcessHost> host =
-      std::make_unique<MockRenderProcessHost>(browser_context);
-  host->OverrideURLLoaderFactory(default_mock_url_loader_factory_.get());
+      std::make_unique<MockRenderProcessHost>(browser_context,
+                                              is_for_guests_only);
   processes_.push_back(std::move(host));
-  processes_.back()->SetFactory(this);
   return processes_.back().get();
 }
 
 void MockRenderProcessHostFactory::Remove(MockRenderProcessHost* host) const {
   for (auto it = processes_.begin(); it != processes_.end(); ++it) {
     if (it->get() == host) {
-      it->release();
       processes_.erase(it);
       break;
     }

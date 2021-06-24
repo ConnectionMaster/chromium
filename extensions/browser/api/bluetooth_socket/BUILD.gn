@@ -23,10 +23,10 @@ source_set("bluetooth_socket") {
   ]
 
   deps = [
+    "//extensions/browser/api",
+    "//extensions/common",
     "//extensions/common/api",
   ]
 
-  public_deps = [
-    "//extensions/browser:browser_sources",
-  ]
+  public_deps = [ "//extensions/browser:browser_sources" ]
 }

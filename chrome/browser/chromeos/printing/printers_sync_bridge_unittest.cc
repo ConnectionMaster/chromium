@@ -8,10 +8,9 @@
 
 #include "base/bind.h"
 #include "base/debug/dump_without_crashing.h"
-#include "base/strings/stringprintf.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "chrome/browser/chromeos/printing/printers_sync_bridge.h"
-#include "components/sync/model/model_type_store_test_util.h"
+#include "components/sync/test/model/model_type_store_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -25,7 +24,7 @@ constexpr char kUUID[] = "DEADBEEFDEADBEEFDEADBEEF";
 
 class PrintersSyncBridgeTest : public testing::Test {
  public:
-  PrintersSyncBridgeTest() : scoped_task_environment_() {
+  PrintersSyncBridgeTest() : task_environment_() {
     bridge_ = std::make_unique<PrintersSyncBridge>(
         syncer::ModelTypeStoreTestUtil::FactoryForInMemoryStoreForTest(),
         base::BindRepeating(
@@ -36,7 +35,7 @@ class PrintersSyncBridgeTest : public testing::Test {
   std::unique_ptr<PrintersSyncBridge> bridge_;
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 };
 
 std::unique_ptr<PrinterSpecifics> TestPrinter(const std::string& id) {
@@ -57,7 +56,7 @@ TEST_F(PrintersSyncBridgeTest, AddPrinterOverwrites) {
   overwrite->set_description(kLazerDescription);
   bridge_->AddPrinter(std::move(overwrite));
 
-  base::Optional<PrinterSpecifics> printer = bridge_->GetPrinter("0");
+  absl::optional<PrinterSpecifics> printer = bridge_->GetPrinter("0");
   ASSERT_TRUE(printer.has_value());
   EXPECT_EQ("0", printer->id());
   EXPECT_EQ(kLazerDescription, printer->description());
@@ -77,7 +76,7 @@ TEST_F(PrintersSyncBridgeTest, UpdatePrinterMerge) {
   bool is_new = bridge_->UpdatePrinter(std::move(overwrite));
   EXPECT_FALSE(is_new);
 
-  base::Optional<PrinterSpecifics> printer = bridge_->GetPrinter("0");
+  absl::optional<PrinterSpecifics> printer = bridge_->GetPrinter("0");
   ASSERT_TRUE(printer.has_value());
   EXPECT_EQ("0", printer->id());
   // Description is overwritten.
@@ -94,7 +93,7 @@ TEST_F(PrintersSyncBridgeTest, UpdatePrinterNewPrinter) {
   bool is_new = bridge_->UpdatePrinter(std::move(first));
   EXPECT_TRUE(is_new);
 
-  base::Optional<PrinterSpecifics> printer = bridge_->GetPrinter("0");
+  absl::optional<PrinterSpecifics> printer = bridge_->GetPrinter("0");
   ASSERT_TRUE(printer.has_value());
   EXPECT_EQ("0", printer->id());
   EXPECT_EQ(kInkyDescription, printer->description());

@@ -4,19 +4,20 @@
 
 #include "net/base/file_stream.h"
 
+#include <string>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/task/current_thread.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
@@ -27,7 +28,7 @@
 #include "net/base/test_completion_callback.h"
 #include "net/log/test_net_log.h"
 #include "net/test/gtest_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -56,7 +57,7 @@ scoped_refptr<IOBufferWithSize> CreateTestDataBuffer() {
 
 }  // namespace
 
-class FileStreamTest : public PlatformTest, public WithScopedTaskEnvironment {
+class FileStreamTest : public PlatformTest, public WithTaskEnvironment {
  public:
   void SetUp() override {
     PlatformTest::SetUp();
@@ -68,7 +69,7 @@ class FileStreamTest : public PlatformTest, public WithScopedTaskEnvironment {
     // FileStreamContexts must be asynchronously closed on the file task runner
     // before they can be deleted. Pump the RunLoop to avoid leaks.
     base::RunLoop().RunUntilIdle();
-    EXPECT_TRUE(base::DeleteFile(temp_file_path_, false));
+    EXPECT_TRUE(base::DeleteFile(temp_file_path_));
 
     PlatformTest::TearDown();
   }
@@ -141,7 +142,7 @@ TEST_F(FileStreamTest, UseFileHandle) {
   read_stream.reset();
 
   // 2. Test writing with a file handle.
-  base::DeleteFile(temp_file_path(), false);
+  base::DeleteFile(temp_file_path());
   flags = base::File::FLAG_OPEN_ALWAYS | base::File::FLAG_WRITE |
           base::File::FLAG_ASYNC;
   file.Initialize(temp_file_path(), flags);
@@ -513,6 +514,11 @@ class TestWriteReadCompletionCallback {
             base::MakeRefCounted<DrainableIOBuffer>(CreateTestDataBuffer(),
                                                     kTestDataSize)) {}
 
+  TestWriteReadCompletionCallback(const TestWriteReadCompletionCallback&) =
+      delete;
+  TestWriteReadCompletionCallback& operator=(
+      const TestWriteReadCompletionCallback&) = delete;
+
   int WaitForResult() {
     DCHECK(!waiting_for_result_);
     while (!have_result_) {
@@ -537,7 +543,6 @@ class TestWriteReadCompletionCallback {
           base::MakeRefCounted<IOBufferWithSize>(4);
       rv = stream_->Read(buf.get(), buf->size(), callback.callback());
       if (rv == ERR_IO_PENDING) {
-        base::MessageLoopCurrent::ScopedNestableTaskAllower allow;
         rv = callback.WaitForResult();
       }
       EXPECT_LE(0, rv);
@@ -574,7 +579,6 @@ class TestWriteReadCompletionCallback {
       EXPECT_THAT(stream_->Seek(0, callback64.callback()),
                   IsError(ERR_IO_PENDING));
       {
-        base::MessageLoopCurrent::ScopedNestableTaskAllower allow;
         EXPECT_LE(0, callback64.WaitForResult());
       }
     }
@@ -593,8 +597,6 @@ class TestWriteReadCompletionCallback {
   int* total_bytes_read_;
   std::string* data_read_;
   scoped_refptr<DrainableIOBuffer> drainable_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestWriteReadCompletionCallback);
 };
 
 TEST_F(FileStreamTest, WriteRead) {
@@ -652,6 +654,10 @@ class TestWriteCloseCompletionCallback {
         drainable_(
             base::MakeRefCounted<DrainableIOBuffer>(CreateTestDataBuffer(),
                                                     kTestDataSize)) {}
+  TestWriteCloseCompletionCallback(const TestWriteCloseCompletionCallback&) =
+      delete;
+  TestWriteCloseCompletionCallback& operator=(
+      const TestWriteCloseCompletionCallback&) = delete;
 
   int WaitForResult() {
     DCHECK(!waiting_for_result_);
@@ -700,8 +706,6 @@ class TestWriteCloseCompletionCallback {
   FileStream* stream_;
   int* total_bytes_written_;
   scoped_refptr<DrainableIOBuffer> drainable_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestWriteCloseCompletionCallback);
 };
 
 TEST_F(FileStreamTest, WriteClose) {
@@ -839,7 +843,8 @@ TEST_F(FileStreamTest, AsyncFlagMismatch) {
 #endif
 
 #if defined(OS_ANDROID)
-TEST_F(FileStreamTest, ContentUriRead) {
+// TODO(https://crbug.com/894599): flaky on both android and cronet bots.
+TEST_F(FileStreamTest, DISABLED_ContentUriRead) {
   base::FilePath test_dir;
   base::PathService::Get(base::DIR_SOURCE_ROOT, &test_dir);
   test_dir = test_dir.AppendASCII("net");

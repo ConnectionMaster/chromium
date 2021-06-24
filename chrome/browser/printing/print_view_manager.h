@@ -7,7 +7,9 @@
 
 #include "base/macros.h"
 #include "chrome/browser/printing/print_view_manager_base.h"
+#include "components/printing/common/print.mojom-forward.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "printing/buildflags/buildflags.h"
 
 namespace content {
@@ -33,11 +35,16 @@ class PrintViewManager : public PrintViewManagerBase,
   // preview dialog.
   bool BasicPrint(content::RenderFrameHost* rfh);
 
-  // Initiate print preview of the current document by first notifying the
-  // renderer. Since this happens asynchronous, the print preview dialog
-  // creation will not be completed on the return of this function. Returns
-  // false if print preview is impossible at the moment.
+  // Initiate print preview of the current document and specify whether a
+  // selection or the entire frame is being printed.
   bool PrintPreviewNow(content::RenderFrameHost* rfh, bool has_selection);
+
+  // Initiate print preview of the current document and provide the renderer
+  // a printing::mojom::PrintRenderer to perform the actual rendering of
+  // the print document.
+  bool PrintPreviewWithPrintRenderer(
+      content::RenderFrameHost* rfh,
+      mojo::PendingAssociatedRemote<mojom::PrintRenderer> print_renderer);
 
   // Notify PrintViewManager that print preview is starting in the renderer for
   // a particular WebNode.
@@ -51,11 +58,19 @@ class PrintViewManager : public PrintViewManagerBase,
   // renderer in the case of scripted print preview if needed.
   void PrintPreviewDone();
 
+  // mojom::PrintManagerHost:
+  void DidShowPrintDialog() override;
+  void SetupScriptedPrintPreview(
+      SetupScriptedPrintPreviewCallback callback) override;
+  void ShowScriptedPrintPreview(bool source_is_modifiable) override;
+  void RequestPrintPreview(mojom::RequestPrintPreviewParamsPtr params) override;
+  void CheckForCancel(int32_t preview_ui_id,
+                      int32_t request_id,
+                      CheckForCancelCallback callback) override;
+
   // content::WebContentsObserver implementation.
   void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
   void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
-  bool OnMessageReceived(const IPC::Message& message,
-                         content::RenderFrameHost* render_frame_host) override;
 
   content::RenderFrameHost* print_preview_rfh() { return print_preview_rfh_; }
 
@@ -71,17 +86,26 @@ class PrintViewManager : public PrintViewManagerBase,
     SCRIPTED_PREVIEW,
   };
 
-  struct FrameDispatchHelper;
+  // Helper method for PrintPreviewNow() and PrintPreviewWithRenderer().
+  // Initiate print preview of the current document by first notifying the
+  // renderer. Since this happens asynchronously, the print preview dialog
+  // creation will not be completed on the return of this function. Returns
+  // false if print preview is impossible at the moment.
+  bool PrintPreview(
+      content::RenderFrameHost* rfh,
+      mojo::PendingAssociatedRemote<mojom::PrintRenderer> print_renderer,
+      bool has_selection);
 
-  // IPC Message handlers.
-  void OnDidShowPrintDialog(content::RenderFrameHost* rfh);
-  void OnSetupScriptedPrintPreview(content::RenderFrameHost* rfh,
-                                   IPC::Message* reply_msg);
-  void OnShowScriptedPrintPreview(content::RenderFrameHost* rfh,
-                                  bool source_is_modifiable);
-  void OnScriptedPrintPreviewReply(IPC::Message* reply_msg);
+  void OnScriptedPrintPreviewReply(SetupScriptedPrintPreviewCallback callback);
 
   void MaybeUnblockScriptedPreviewRPH();
+
+  // Checks whether printing is restricted due to Data Leak Protection rules.
+  bool IsPrintingRestricted() const;
+
+  // Checks whether printing is currently restricted and aborts print preview if
+  // needed.
+  bool RejectPrintPreviewRequestIfRestricted(content::RenderFrameHost* rfh);
 
   base::OnceClosure on_print_dialog_shown_callback_;
 

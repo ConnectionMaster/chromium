@@ -10,6 +10,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "build/chromeos_buildflags.h"
 #include "extensions/browser/extension_icon_image.h"
 #include "ui/gfx/image/image_skia.h"
 
@@ -33,13 +34,21 @@ class ChromeAppIcon : public IconImage::Observer {
   using ResizeFunction =
       base::RepeatingCallback<void(const gfx::Size&, gfx::ImageSkia*)>;
 
+  // Type of badges that can be applied to app icons.
+  enum class Badge {
+    kNone,     // No badge applied
+    kChrome,   // Applied to Chrome apps that have ARC++ 'duplicate' installed.
+    kBlocked,  // Applied to disabled apps.
+    kPaused    // Applied to apps that run out of daily time limit.
+  };
+
   // Applies image processing effects to |image_skia|, such as resizing, adding
   // badges, converting to gray and rounding corners.
   static void ApplyEffects(int resource_size_in_dip,
                            const ResizeFunction& resize_function,
-                           bool apply_chrome_badge,
                            bool app_launchable,
                            bool from_bookmark,
+                           Badge badge_type,
                            gfx::ImageSkia* image_skia);
 
   // |resize_function| overrides icon resizing behavior if non-null. Otherwise
@@ -66,10 +75,10 @@ class ChromeAppIcon : public IconImage::Observer {
 
   const gfx::ImageSkia& image_skia() const { return image_skia_; }
   const std::string& app_id() const { return app_id_; }
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Returns whether the icon is badged because it's an extension app that has
   // its Android analog installed.
-  bool icon_is_badged() const { return icon_is_badged_; }
+  bool has_chrome_badge() const { return has_chrome_badge_; }
 #endif
 
  private:
@@ -91,10 +100,10 @@ class ChromeAppIcon : public IconImage::Observer {
   // it is updated each time when |icon_| is updated.
   gfx::ImageSkia image_skia_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Whether the icon got badged because it's an extension app that has its
   // Android analog installed.
-  bool icon_is_badged_ = false;
+  bool has_chrome_badge_ = false;
 #endif
 
   const int resource_size_in_dip_;

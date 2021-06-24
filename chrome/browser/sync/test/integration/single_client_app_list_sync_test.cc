@@ -4,26 +4,45 @@
 
 #include <stddef.h>
 
+#include "ash/constants/ash_features.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "chrome/browser/sync/profile_sync_service_factory.h"
+#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/test/integration/apps_helper.h"
+#include "chrome/browser/sync/test/integration/os_sync_test.h"
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 #include "chrome/browser/sync/test/integration/sync_app_list_helper.h"
+#include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "chrome/browser/ui/app_list/app_list_syncable_service.h"
 #include "chrome/browser/ui/app_list/app_list_syncable_service_factory.h"
 #include "chrome/browser/ui/app_list/internal_app/internal_app_metadata.h"
 #include "chrome/browser/ui/app_list/page_break_constants.h"
+#include "components/sync/base/user_selectable_type.h"
 #include "components/sync/driver/sync_service.h"
 #include "components/sync/driver/sync_user_settings.h"
-#include "extensions/browser/extension_system.h"
+#include "content/public/test/browser_test.h"
+
+using syncer::UserSelectableOsType;
+using syncer::UserSelectableOsTypeSet;
+using syncer::UserSelectableType;
+using syncer::UserSelectableTypeSet;
 
 namespace {
 
 bool AllProfilesHaveSameAppList() {
   return SyncAppListHelper::GetInstance()->AllProfilesHaveSameAppList();
+}
+
+// Returns true if sync items from |service| all have non-empty names.
+bool SyncItemsHaveNames(const app_list::AppListSyncableService* service) {
+  for (const auto& it : service->sync_items()) {
+    if (it.second->item_name.empty()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Returns true if sync items from |service1| match to sync items in |service2|.
@@ -64,18 +83,15 @@ class AppListSyncUpdateWaiter
   }
 
   // StatusChangeChecker:
-  std::string GetDebugMessage() const override {
-    return "AwaitAppListSyncUpdated";
-  }
-
-  bool IsExitConditionSatisfied() override {
+  bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "AwaitAppListSyncUpdated";
     return service_updated_;
   }
 
   // app_list::AppListSyncableService::Observer:
   void OnSyncModelUpdated() override {
     service_updated_ = true;
-    StopWaiting();
+    CheckExitCondition();
   }
 
  private:
@@ -90,8 +106,7 @@ class AppListSyncUpdateWaiter
 class SingleClientAppListSyncTest : public SyncTest {
  public:
   SingleClientAppListSyncTest() : SyncTest(SINGLE_CLIENT) {}
-
-  ~SingleClientAppListSyncTest() override {}
+  ~SingleClientAppListSyncTest() override = default;
 
   // SyncTest
   bool SetupClients() override {
@@ -103,25 +118,38 @@ class SingleClientAppListSyncTest : public SyncTest {
     SyncAppListHelper::GetInstance();
     return true;
   }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(SingleClientAppListSyncTest);
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTest, AppListEmpty) {
+class SingleClientAppListSyncTestWithVerifier
+    : public SingleClientAppListSyncTest {
+ public:
+  SingleClientAppListSyncTestWithVerifier() = default;
+  ~SingleClientAppListSyncTestWithVerifier() override = default;
+
+  bool UseVerifier() override {
+    // TODO(crbug.com/1137772): rewrite tests to not use verifier.
+    return true;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTestWithVerifier, AppListEmpty) {
   ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(AllProfilesHaveSameAppList());
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTest, AppListSomeApps) {
+IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTestWithVerifier,
+                       AppListSomeApps) {
   ASSERT_TRUE(SetupSync());
 
   const size_t kNumApps = 5;
   for (int i = 0; i < static_cast<int>(kNumApps); ++i) {
-    apps_helper::InstallApp(GetProfile(0), i);
-    apps_helper::InstallApp(verifier(), i);
+    apps_helper::InstallHostedApp(GetProfile(0), i);
+    apps_helper::InstallHostedApp(verifier(), i);
   }
+
+  // Allow async callbacks to run, such as App Service Mojo calls.
+  base::RunLoop().RunUntilIdle();
 
   app_list::AppListSyncableService* service =
       app_list::AppListSyncableServiceFactory::GetForProfile(verifier());
@@ -146,24 +174,31 @@ IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTest, LocalStorage) {
   app_list::AppListSyncableService* service =
       app_list::AppListSyncableServiceFactory::GetForProfile(profile);
   syncer::SyncService* sync_service =
-      ProfileSyncServiceFactory::GetForProfile(profile);
+      SyncServiceFactory::GetForProfile(profile);
 
   const size_t kNumApps = 5;
   syncer::StringOrdinal pin_position =
       syncer::StringOrdinal::CreateInitialOrdinal();
   std::vector<std::string> app_ids;
   for (int i = 0; i < static_cast<int>(kNumApps); ++i) {
-    app_ids.push_back(apps_helper::InstallApp(profile, i));
-    service->SetPinPosition(app_ids.back(), pin_position);
+    app_ids.push_back(apps_helper::InstallHostedApp(profile, i));
+  }
+
+  // Allow async callbacks to run, such as App Service Mojo calls.
+  base::RunLoop().RunUntilIdle();
+
+  for (const std::string& app_id : app_ids) {
+    service->SetPinPosition(app_id, pin_position);
     pin_position = pin_position.CreateAfter();
   }
+  EXPECT_TRUE(SyncItemsHaveNames(service));
+
   SyncAppListHelper::GetInstance()->MoveAppToFolder(profile, app_ids[2],
                                                     "folder1");
   SyncAppListHelper::GetInstance()->MoveAppToFolder(profile, app_ids[3],
                                                     "folder2");
 
-  app_list::AppListSyncableService compare_service(
-      profile, extensions::ExtensionSystem::Get(profile));
+  app_list::AppListSyncableService compare_service(profile);
 
   // Make sure that that on start, when sync has not been started yet, model
   // content is filled from local prefs and it matches latest state.
@@ -171,9 +206,14 @@ IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTest, LocalStorage) {
 
   ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
 
-  // Disable app sync.
-  sync_service->GetUserSettings()->SetChosenDataTypes(false,
-                                                      syncer::ModelTypeSet());
+  // Disable app sync by disabling all user-selectable types.
+  if (chromeos::features::IsSplitSettingsSyncEnabled()) {
+    sync_service->GetUserSettings()->SetSelectedOsTypes(
+        /*sync_all_os_types=*/false, syncer::UserSelectableOsTypeSet());
+  } else {
+    sync_service->GetUserSettings()->SetSelectedTypes(
+        /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  }
 
   // Change data when sync is off.
   for (const auto& app_id : app_ids) {
@@ -187,9 +227,47 @@ IN_PROC_BROWSER_TEST_F(SingleClientAppListSyncTest, LocalStorage) {
 
   EXPECT_FALSE(SyncItemsMatch(service, &compare_service));
 
-  // Restore sync and sync data should override local changes.
-  sync_service->GetUserSettings()->SetChosenDataTypes(true,
-                                                      syncer::ModelTypeSet());
+  // Restore app sync and sync data should override local changes.
+  if (chromeos::features::IsSplitSettingsSyncEnabled()) {
+    sync_service->GetUserSettings()->SetSelectedOsTypes(
+        /*sync_all_os_types=*/true, syncer::UserSelectableOsTypeSet());
+  } else {
+    sync_service->GetUserSettings()->SetSelectedTypes(
+        /*sync_everything=*/true, syncer::UserSelectableTypeSet());
+  }
   EXPECT_TRUE(AppListSyncUpdateWaiter(service).Wait());
   EXPECT_TRUE(SyncItemsMatch(service, &compare_service));
+}
+
+// Tests for SplitSettingsSync.
+class SingleClientAppListOsSyncTest : public OsSyncTest {
+ public:
+  SingleClientAppListOsSyncTest() : OsSyncTest(SINGLE_CLIENT) {}
+  ~SingleClientAppListOsSyncTest() override = default;
+};
+
+IN_PROC_BROWSER_TEST_F(SingleClientAppListOsSyncTest,
+                       AppListSyncedByOsSettings) {
+  ASSERT_TRUE(SetupSync());
+  syncer::SyncService* service = GetSyncService(0);
+  syncer::SyncUserSettings* settings = service->GetUserSettings();
+
+  // Initially app list is enabled.
+  ASSERT_TRUE(settings->IsSyncEverythingEnabled());
+  ASSERT_TRUE(settings->IsSyncAllOsTypesEnabled());
+  ASSERT_TRUE(service->GetActiveDataTypes().Has(syncer::APP_LIST));
+
+  // Disable all browser types.
+  settings->SetSelectedTypes(false, UserSelectableTypeSet());
+  GetClient(0)->AwaitSyncSetupCompletion();
+
+  // APP_LIST is still synced because it is an OS setting.
+  EXPECT_TRUE(service->GetActiveDataTypes().Has(syncer::APP_LIST));
+
+  // Disable OS types.
+  settings->SetSelectedOsTypes(false, UserSelectableOsTypeSet());
+  GetClient(0)->AwaitSyncSetupCompletion();
+
+  // APP_LIST is not synced.
+  EXPECT_FALSE(service->GetActiveDataTypes().Has(syncer::APP_LIST));
 }

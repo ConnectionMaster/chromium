@@ -7,8 +7,6 @@
 #import <Cocoa/Cocoa.h>
 
 #include "base/mac/mac_util.h"
-#import "base/mac/sdk_forward_declarations.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #import "testing/gtest_mac.h"
@@ -82,7 +80,7 @@ class FlexibleRoleTestView : public View {
 
 class TestLabelButton : public LabelButton {
  public:
-  TestLabelButton() : LabelButton(nullptr, base::string16()) {
+  TestLabelButton() {
     // Make sure the label doesn't cover the hit test co-ordinates.
     label()->SetSize(gfx::Size(1, 1));
   }
@@ -97,18 +95,18 @@ class TestWidgetDelegate : public test::TestDesktopWidgetDelegate {
  public:
   TestWidgetDelegate() = default;
 
-  static constexpr char kAccessibleWindowTitle[] = "My Accessible Window";
+  static constexpr char16_t kAccessibleWindowTitle[] = u"My Accessible Window";
 
   // WidgetDelegate:
-  base::string16 GetAccessibleWindowTitle() const override {
-    return base::ASCIIToUTF16(kAccessibleWindowTitle);
+  std::u16string GetAccessibleWindowTitle() const override {
+    return kAccessibleWindowTitle;
   }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(TestWidgetDelegate);
 };
 
-constexpr char TestWidgetDelegate::kAccessibleWindowTitle[];
+constexpr char16_t TestWidgetDelegate::kAccessibleWindowTitle[];
 
 // Widget-level tests for accessibility properties - these are actually mostly
 // tests of accessibility behavior for individual Views *as they appear* in
@@ -272,7 +270,7 @@ TEST_F(AXNativeWidgetMacTest, ChildrenAttribute) {
 
   // Check ignored children don't show up in the accessibility tree.
   widget()->GetContentsView()->AddChildView(
-      new FlexibleRoleTestView(ax::mojom::Role::kIgnored));
+      new FlexibleRoleTestView(ax::mojom::Role::kNone));
   EXPECT_EQ(kNumChildren, ax_node.accessibilityChildren.count);
 }
 
@@ -304,7 +302,7 @@ TEST_F(AXNativeWidgetMacTest, ParentAttribute) {
   EXPECT_NSEQ(NSAccessibilityGroupRole, ax_parent.accessibilityRole);
 
   // Test an ignored role parent is skipped in favor of the grandparent.
-  parent->set_role(ax::mojom::Role::kIgnored);
+  parent->set_role(ax::mojom::Role::kNone);
   ASSERT_NSNE(nil, AXParentOf(ax_child));
   EXPECT_NSEQ(NSAccessibilityGroupRole, AXParentOf(ax_child).accessibilityRole);
 }
@@ -349,7 +347,7 @@ TEST_F(AXNativeWidgetMacTest, NativeWindowProperties) {
   EXPECT_NSEQ(window, ax_view.accessibilityWindow);
   EXPECT_NSEQ(window, ax_view.accessibilityTopLevelUIElement);
   EXPECT_NSEQ(
-      base::SysUTF8ToNSString(TestWidgetDelegate::kAccessibleWindowTitle),
+      base::SysUTF16ToNSString(TestWidgetDelegate::kAccessibleWindowTitle),
       window.accessibilityTitle);
 }
 
@@ -414,8 +412,7 @@ TEST_F(AXNativeWidgetMacTest, TextfieldGenericAttributes) {
 
 TEST_F(AXNativeWidgetMacTest, TextfieldEditableAttributes) {
   Textfield* textfield = AddChildTextfield(GetWidgetBounds().size());
-  textfield->set_placeholder_text(
-      base::SysNSStringToUTF16(kTestPlaceholderText));
+  textfield->SetPlaceholderText(base::SysNSStringToUTF16(kTestPlaceholderText));
   id<NSAccessibility> ax_node = A11yElementAtMidpoint();
 
   // NSAccessibilityInsertionPointLineNumberAttribute.
@@ -439,7 +436,7 @@ TEST_F(AXNativeWidgetMacTest, TextfieldEditableAttributes) {
   // Select some text in the middle of the textfield.
   const gfx::Range forward_range(2, 6);
   const NSRange ns_range = forward_range.ToNSRange();
-  textfield->SelectRange(forward_range);
+  textfield->SetSelectedRange(forward_range);
   EXPECT_NSEQ([kTestStringValue substringWithRange:ns_range],
               ax_node.accessibilitySelectedText);
   EXPECT_EQ(textfield->GetSelectedText(),
@@ -447,7 +444,7 @@ TEST_F(AXNativeWidgetMacTest, TextfieldEditableAttributes) {
   EXPECT_EQ(forward_range, gfx::Range(ax_node.accessibilitySelectedTextRange));
 
   const gfx::Range reversed_range(6, 2);
-  textfield->SelectRange(reversed_range);
+  textfield->SetSelectedRange(reversed_range);
   // NSRange has no direction, so these are unchanged from the forward range.
   EXPECT_NSEQ([kTestStringValue substringWithRange:ns_range],
               ax_node.accessibilitySelectedText);
@@ -459,12 +456,19 @@ TEST_F(AXNativeWidgetMacTest, TextfieldEditableAttributes) {
   EXPECT_EQ(gfx::Range(0, kTestStringValue.length),
             gfx::Range(ax_node.accessibilityVisibleCharacterRange));
 
+  // accessibilityLineForIndex:
+  EXPECT_EQ(0, [ax_node accessibilityLineForIndex:3]);
+
+  // accessibilityStringForRange:
+  EXPECT_NSEQ(@"string",
+              [ax_node accessibilityStringForRange:NSMakeRange(5, 6)]);
+
   // Test an RTL string.
   textfield->SetText(base::SysNSStringToUTF16(kTestRTLStringValue));
-  textfield->SelectRange(forward_range);
+  textfield->SetSelectedRange(forward_range);
   EXPECT_EQ(textfield->GetSelectedText(),
             base::SysNSStringToUTF16(ax_node.accessibilitySelectedText));
-  textfield->SelectRange(reversed_range);
+  textfield->SetSelectedRange(reversed_range);
   EXPECT_EQ(textfield->GetSelectedText(),
             base::SysNSStringToUTF16(ax_node.accessibilitySelectedText));
 }
@@ -510,7 +514,8 @@ TEST_F(AXNativeWidgetMacTest, TextfieldWritableAttributes) {
       AXObjectHandlesSelector(ax_node, @selector(setAccessibilityValue:)));
   ax_node.accessibilityValue = kTestPlaceholderText;
   EXPECT_NSEQ(kTestPlaceholderText, ax_node.accessibilityValue);
-  EXPECT_EQ(base::SysNSStringToUTF16(kTestPlaceholderText), textfield->text());
+  EXPECT_EQ(base::SysNSStringToUTF16(kTestPlaceholderText),
+            textfield->GetText());
 
   // Test a read-only textfield.
   textfield->SetReadOnly(true);
@@ -518,11 +523,12 @@ TEST_F(AXNativeWidgetMacTest, TextfieldWritableAttributes) {
       isAccessibilitySelectorAllowed:@selector(setAccessibilityValue:)]);
   ax_node.accessibilityValue = kTestStringValue;
   EXPECT_NSEQ(kTestPlaceholderText, ax_node.accessibilityValue);
-  EXPECT_EQ(base::SysNSStringToUTF16(kTestPlaceholderText), textfield->text());
+  EXPECT_EQ(base::SysNSStringToUTF16(kTestPlaceholderText),
+            textfield->GetText());
   textfield->SetReadOnly(false);
 
   // Change the selection text when there is no selected text.
-  textfield->SelectRange(gfx::Range(0, 0));
+  textfield->SetSelectedRange(gfx::Range(0, 0));
   EXPECT_TRUE(AXObjectHandlesSelector(
       ax_node, @selector(setAccessibilitySelectedText:)));
 
@@ -530,30 +536,30 @@ TEST_F(AXNativeWidgetMacTest, TextfieldWritableAttributes) {
       [kTestStringValue stringByAppendingString:kTestPlaceholderText];
   ax_node.accessibilitySelectedText = kTestStringValue;
   EXPECT_NSEQ(new_string, ax_node.accessibilityValue);
-  EXPECT_EQ(base::SysNSStringToUTF16(new_string), textfield->text());
+  EXPECT_EQ(base::SysNSStringToUTF16(new_string), textfield->GetText());
 
   // Replace entire selection.
   gfx::Range test_range(0, [new_string length]);
-  textfield->SelectRange(test_range);
+  textfield->SetSelectedRange(test_range);
   ax_node.accessibilitySelectedText = kTestStringValue;
   EXPECT_NSEQ(kTestStringValue, ax_node.accessibilityValue);
-  EXPECT_EQ(base::SysNSStringToUTF16(kTestStringValue), textfield->text());
+  EXPECT_EQ(base::SysNSStringToUTF16(kTestStringValue), textfield->GetText());
   // Make sure the cursor is at the end of the Textfield.
   EXPECT_EQ(gfx::Range([kTestStringValue length]),
             textfield->GetSelectedRange());
 
   // Replace a middle section only (with a backwards selection range).
-  base::string16 front = base::ASCIIToUTF16("Front ");
-  base::string16 middle = base::ASCIIToUTF16("middle");
-  base::string16 back = base::ASCIIToUTF16(" back");
-  base::string16 replacement = base::ASCIIToUTF16("replaced");
+  std::u16string front = u"Front ";
+  std::u16string middle = u"middle";
+  std::u16string back = u" back";
+  std::u16string replacement = u"replaced";
   textfield->SetText(front + middle + back);
   test_range = gfx::Range(front.length() + middle.length(), front.length());
   new_string = base::SysUTF16ToNSString(front + replacement + back);
-  textfield->SelectRange(test_range);
+  textfield->SetSelectedRange(test_range);
   ax_node.accessibilitySelectedText = base::SysUTF16ToNSString(replacement);
   EXPECT_NSEQ(new_string, ax_node.accessibilityValue);
-  EXPECT_EQ(base::SysNSStringToUTF16(new_string), textfield->text());
+  EXPECT_EQ(base::SysNSStringToUTF16(new_string), textfield->GetText());
   // Make sure the cursor is at the end of the replacement.
   EXPECT_EQ(gfx::Range(front.length() + replacement.length()),
             textfield->GetSelectedRange());
@@ -582,7 +588,7 @@ TEST_F(AXNativeWidgetMacTest, TextfieldWritableAttributes) {
   EXPECT_EQ(gfx::Range(2, 7), textfield->GetSelectedRange());
   // If the length is longer than the value length, default to the max possible.
   ax_node.accessibilitySelectedTextRange = NSMakeRange(0, 1000);
-  EXPECT_EQ(gfx::Range(0, textfield->text().length()),
+  EXPECT_EQ(gfx::Range(0, textfield->GetText().length()),
             textfield->GetSelectedRange());
   // Check just moving the cursor works, too.
   ax_node.accessibilitySelectedTextRange = NSMakeRange(5, 0);
@@ -614,7 +620,8 @@ TEST_F(AXNativeWidgetMacTest, TextParameterizedAttributes) {
   EXPECT_NSEQ(NSMakeRange(0, 0), [ax_node accessibilityRangeForIndex:4]);
   EXPECT_NSEQ(NSZeroRect, [ax_node accessibilityFrameForRange:test_range]);
   EXPECT_NSEQ(nil, [ax_node accessibilityRTFForRange:test_range]);
-  EXPECT_NSEQ(NSMakeRange(0, 0), [ax_node accessibilityStyleRangeForIndex:4]);
+  EXPECT_NSEQ(NSMakeRange(0, kTestStringLength),
+              [ax_node accessibilityStyleRangeForIndex:4]);
 }
 
 // Test performing a 'click' on Views with clickable roles work.
@@ -689,13 +696,13 @@ TEST_F(AXNativeWidgetMacTest, ProtectedTextfields) {
   EXPECT_EQ(0, ax_node.accessibilityInsertionPointLineNumber);
 
   // Test replacing text.
-  textfield->SetText(base::ASCIIToUTF16("123"));
+  textfield->SetText(u"123");
   EXPECT_NSEQ(@"•••", ax_node.accessibilityValue);
   EXPECT_EQ(3, ax_node.accessibilityNumberOfCharacters);
 
-  textfield->SelectRange(gfx::Range(2, 3));  // Selects "3".
+  textfield->SetSelectedRange(gfx::Range(2, 3));  // Selects "3".
   ax_node.accessibilitySelectedText = @"ab";
-  EXPECT_EQ(base::ASCIIToUTF16("12ab"), textfield->text());
+  EXPECT_EQ(u"12ab", textfield->GetText());
   EXPECT_NSEQ(@"••••", ax_node.accessibilityValue);
   EXPECT_EQ(4, ax_node.accessibilityNumberOfCharacters);
 }
@@ -764,9 +771,9 @@ class TestComboboxModel : public ui::ComboboxModel {
 
   // ui::ComboboxModel:
   int GetItemCount() const override { return 2; }
-  base::string16 GetItemAt(int index) override {
+  std::u16string GetItemAt(int index) const override {
     return index == 0 ? base::SysNSStringToUTF16(kTestStringValue)
-                      : base::ASCIIToUTF16("Second Item");
+                      : u"Second Item";
   }
 
  private:

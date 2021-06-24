@@ -7,22 +7,9 @@
 
 #import <UIKit/UIKit.h>
 
-#include "components/signin/core/browser/signin_metrics.h"
+#import "ios/chrome/browser/ui/authentication/cells/signin_promo_view_constants.h"
 
 @protocol SigninPromoViewDelegate;
-
-typedef NS_ENUM(NSInteger, SigninPromoViewMode) {
-  // No identity available on the device.
-  SigninPromoViewModeColdState,
-  // At least one identity is available on the device and the user can sign
-  // without entering their credentials.
-  SigninPromoViewModeWarmState,
-};
-
-extern NSString* const kSigninPromoViewId;
-extern NSString* const kSigninPromoPrimaryButtonId;
-extern NSString* const kSigninPromoSecondaryButtonId;
-extern NSString* const kSigninPromoCloseButtonId;
 
 // This class creates an image view, a label and 2 buttons. This view can be
 // configured with 2 modes : "Cold State" and "Warm State".
@@ -54,7 +41,6 @@ extern NSString* const kSigninPromoCloseButtonId;
 
 // Designated initializer.
 - (instancetype)initWithFrame:(CGRect)frame NS_DESIGNATED_INITIALIZER;
-- (instancetype)initWithFrame:(CGRect)frame NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)aDecoder NS_UNAVAILABLE;
 
 // Sets the image in |imageView|. This method will add a circular background

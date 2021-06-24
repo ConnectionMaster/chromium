@@ -8,10 +8,9 @@
 #include <string>
 #include <tuple>
 
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/gfx_export.h"
-
-class SkBitmap;
 
 namespace color_utils {
 
@@ -22,9 +21,21 @@ struct HSL {
   double l;
 };
 
+// The blend alpha and resulting color when blending to achieve a desired
+// contrast raio.
+struct BlendResult {
+  SkAlpha alpha;
+  SkColor color;
+};
+
 // The minimum contrast between text and background that is still readable.
 // This value is taken from w3c accessibility guidelines.
 constexpr float kMinimumReadableContrastRatio = 4.5f;
+
+// The minimum contrast between button glyphs, focus indicators, large text, or
+// other "have to see it but perhaps don't have to read fine detail" cases and
+// background.
+constexpr float kMinimumVisibleContrastRatio = 3.0f;
 
 // Determines the contrast ratio of two colors or two relative luminance values
 // (as computed by RelativeLuminance()), calculated according to
@@ -85,15 +96,6 @@ GFX_EXPORT bool IsHSLShiftMeaningful(const HSL& hsl);
 //    1 = full lightness (make all pixels white).
 GFX_EXPORT SkColor HSLShift(SkColor color, const HSL& shift);
 
-// Builds a histogram based on the Y' of the Y'UV representation of this image.
-GFX_EXPORT void BuildLumaHistogram(const SkBitmap& bitmap, int histogram[256]);
-
-// Calculates how "boring" an image is. The boring score is the
-// 0,1 ranged percentage of pixels that are the most common
-// luma. Higher boring scores indicate that a higher percentage of a
-// bitmap are all the same brightness.
-GFX_EXPORT double CalculateBoringScore(const SkBitmap& bitmap);
-
 // Returns a blend of the supplied colors, ranging from |background| (for
 // |alpha| == 0) to |foreground| (for |alpha| == 255). The alpha channels of
 // the supplied colors are also taken into account, so the returned color may
@@ -119,6 +121,10 @@ GFX_EXPORT bool IsDark(SkColor color);
 // |color|.
 GFX_EXPORT SkColor GetColorWithMaxContrast(SkColor color);
 
+// Returns whichever of white or the darkest available color contrasts less with
+// |color|.
+GFX_EXPORT SkColor GetEndpointColorWithMinContrast(SkColor color);
+
 // Blends towards the color with max contrast by |alpha|. The alpha of
 // the original color is preserved.
 GFX_EXPORT SkColor BlendTowardMaxContrast(SkColor color, SkAlpha alpha);
@@ -129,42 +135,18 @@ GFX_EXPORT SkColor PickContrastingColor(SkColor foreground1,
                                         SkColor foreground2,
                                         SkColor background);
 
-// The same as |GetColorWithContrast| only for |kMinimumReadableContrastRatio|.
-GFX_EXPORT SkColor GetColorWithMinimumContrast(SkColor default_foreground,
-                                               SkColor background);
-
-// This function attempts to select a color based on |default_foreground| that
-// will meet the given |contrast_ratio| when used as a text color on top of
-// |background|. If |default_foreground| already meets the given contrast
-// ratio, this function will simply return it. Otherwise it will blend the color
-// darker/lighter until either the contrast ratio is acceptable or the color
-// cannot become any more extreme. Only use with opaque background.
-GFX_EXPORT SkColor GetColorWithContrast(SkColor default_foreground,
-                                        SkColor background,
-                                        float contrast_ratio);
-
-// Attempts to select an alpha value such that blending |target| onto |source|
-// with that alpha produces a color of at least |contrast_ratio| against |base|.
-// If |source| already meets the minimum contrast ratio, this function will
-// simply return 0. Otherwise it will blend the |target| onto |source| until
-// either the contrast ratio is acceptable or the color cannot become any more
-// extreme. |base| must be opaque.
-GFX_EXPORT SkAlpha GetBlendValueWithMinimumContrast(SkColor source,
-                                                    SkColor target,
-                                                    SkColor base,
-                                                    float contrast_ratio);
-
-// Returns the minimum alpha value such that blending |target| onto |source|
-// produces a color that contrasts against |base| with at least |contrast_ratio|
-// unless this is impossible, in which case SK_AlphaOPAQUE is returned.
-// Use only with opaque colors. |alpha_error_tolerance| should normally be 0 for
-// best accuracy, but if performance is critical then it can be a positive value
-// (4 is recommended) to save a few cycles and give "close enough" alpha.
-GFX_EXPORT SkAlpha FindBlendValueForContrastRatio(SkColor source,
-                                                  SkColor target,
-                                                  SkColor base,
-                                                  float contrast_ratio,
-                                                  int alpha_error_tolerance);
+// Alpha-blends |default_foreground| toward either |high_contrast_foreground|
+// (if specified) or the color with max contrast with |background| until either
+// the result has a contrast ratio against |background| of at least
+// |contrast_ratio| or the blend can go no further.  Returns the blended color
+// and the alpha used to achieve that blend.  If |default_foreground| already
+// has sufficient contrast, returns an alpha of 0 and color of
+// |default_foreground|.
+GFX_EXPORT BlendResult BlendForMinContrast(
+    SkColor default_foreground,
+    SkColor background,
+    absl::optional<SkColor> high_contrast_foreground = absl::nullopt,
+    float contrast_ratio = kMinimumReadableContrastRatio);
 
 // Invert a color.
 GFX_EXPORT SkColor InvertColor(SkColor color);
@@ -172,14 +154,16 @@ GFX_EXPORT SkColor InvertColor(SkColor color);
 // Gets a Windows system color as a SkColor
 GFX_EXPORT SkColor GetSysSkColor(int which);
 
-// Returns true only if Chrome should use an inverted color scheme - which is
-// only true if the system has high-contrast mode enabled and and is using a
-// light-on-dark color scheme.
-GFX_EXPORT bool IsInvertedColorScheme();
-
 // Derives a color for icons on a UI surface based on the text color on the same
 // surface.
 GFX_EXPORT SkColor DeriveDefaultIconColor(SkColor text_color);
+
+// Gets a Google color that matches the hue of `color` and contrasts well
+// enough against `background_color` to meet `min_contrast`. If `color` isn't
+// very saturated, grey will be used instead.
+GFX_EXPORT SkColor PickGoogleColor(SkColor color,
+                                   SkColor background_color,
+                                   float min_contrast);
 
 // Creates an rgba string for an SkColor. For example: 'rgba(255,0,255,0.5)'.
 GFX_EXPORT std::string SkColorToRgbaString(SkColor color);

@@ -5,6 +5,7 @@ per-file flag_descriptions.*=*
 per-file flag-metadata.json=*
 
 per-file about_flags_unittest.cc=file://components/flags_ui/OWNERS
+per-file about_flags_browsertest.cc=file://components/flags_ui/OWNERS
 
 # This is for the common case of adding or renaming files. If you're doing
 # structural changes, use usual OWNERS rules.
@@ -14,8 +15,12 @@ per-file BUILD.gn=*
 per-file *.xtb=file://tools/translation/TRANSLATION_OWNERS
 
 per-file *_android.*=file://chrome/browser/android/OWNERS
+per-file *.java=file://chrome/browser/android/OWNERS
+
+per-file *_lacros*=file://chrome/browser/lacros/OWNERS
 
 per-file browser_resources.grd=file://ui/webui/PLATFORM_OWNERS
+per-file dev_ui_browser_resources.grd=file://ui/webui/PLATFORM_OWNERS
 
 per-file browser_close_manager_browsertest.cc=creis@chromium.org
 
@@ -42,15 +47,13 @@ per-file chrome_service_worker_browsertest.cc=file://content/browser/service_wor
 per-file chrome_webusb_browser_client*=file://chrome/browser/usb/OWNERS
 
 per-file chrome_worker_browsertest.cc=file://content/browser/worker_host/OWNERS
+per-file ukm_worker_browsertest.cc=file://content/browser/worker_host/OWNERS
 
-per-file exo_parts.*=reveman@chromium.org
+per-file exo_parts.*=dcastagna@chromium.org
+per-file exo_parts.*=oshima@chromium.org
 
 per-file flag-never-expire-list.json=avi@chromium.org
 per-file flag-never-expire-list.json=ellyjones@chromium.org
-
-per-file io_thread*=mmenke@chromium.org
-per-file io_thread*=rch@chromium.org
-per-file io_thread*=rsleevi@chromium.org
 
 per-file *.mm=avi@chromium.org
 per-file *.mm=mark@chromium.org
@@ -62,8 +65,6 @@ per-file *_mac.h=mark@chromium.org
 per-file *_mac.h=rsesek@chromium.org
 per-file *_mac.h=thakis@chromium.org
 
-per-file media_router_resources.grdp=file://chrome/browser/media/router/OWNERS
-
 per-file shell_integration_win*=gab@chromium.org
 per-file shell_integration_win*=grt@chromium.org
 per-file shell_integration_linux*=thomasanderson@chromium.org
@@ -71,3 +72,22 @@ per-file shell_integration_linux*=thomasanderson@chromium.org
 per-file unload_browsertest.cc=file://content/OWNERS
 
 per-file web_bluetooth*=file://content/browser/bluetooth/OWNERS
+
+# For security review.
+per-file chrome_browser_interface_binders.*=set noparent
+per-file chrome_browser_interface_binders.*=file://ipc/SECURITY_OWNERS
+per-file chrome_content_browser_client_receiver_bindings.*=set noparent
+per-file chrome_content_browser_client_receiver_bindings.*=file://ipc/SECURITY_OWNERS
+per-file chrome_content_browser_client_binder_policies.*=set noparent
+per-file chrome_content_browser_client_binder_policies.*=file://ipc/SECURITY_OWNERS
+
+# Changes to service sandbox configuration require a security review.
+per-file service_sandbox_type.h=file://ipc/SECURITY_OWNERS
+
+# BackForwardCache
+per-file chrome_back_forward_cache_browsertest.cc=arthursonzogni@chromium.org
+per-file chrome_back_forward_cache_browsertest.cc=altimin@chromium.org
+per-file chrome_back_forward_cache_browsertest.cc=file://content/OWNERS
+
+# Web Platform security metrics tests:
+per-file chrome_web_platform_security_metrics_browsertest.cc=file://content/OWNERS

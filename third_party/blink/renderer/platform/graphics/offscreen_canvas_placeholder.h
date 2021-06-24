@@ -5,13 +5,14 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_OFFSCREEN_CANVAS_PLACEHOLDER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_OFFSCREEN_CANVAS_PLACEHOLDER_H_
 
-#include <memory>
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
 #include "components/viz/common/resources/resource_id.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/skia/include/core/SkFilterQuality.h"
 
 namespace blink {
 
@@ -24,34 +25,41 @@ class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
  public:
   ~OffscreenCanvasPlaceholder();
 
-  virtual void SetPlaceholderFrame(scoped_refptr<CanvasResource>,
-                                   base::WeakPtr<CanvasResourceDispatcher>,
-                                   scoped_refptr<base::SingleThreadTaskRunner>,
-                                   viz::ResourceId resource_id);
-  void ReleasePlaceholderFrame();
+  virtual void SetOffscreenCanvasResource(scoped_refptr<CanvasResource>,
+                                          viz::ResourceId resource_id);
+  void SetOffscreenCanvasDispatcher(
+      base::WeakPtr<CanvasResourceDispatcher>,
+      scoped_refptr<base::SingleThreadTaskRunner>);
+
+  void ReleaseOffscreenCanvasFrame();
 
   void SetSuspendOffscreenCanvasAnimation(bool);
 
-  static OffscreenCanvasPlaceholder* GetPlaceholderById(
+  static OffscreenCanvasPlaceholder* GetPlaceholderCanvasById(
       unsigned placeholder_id);
 
-  void RegisterPlaceholder(unsigned placeholder_id);
-  void UnregisterPlaceholder();
-  const scoped_refptr<CanvasResource>& PlaceholderFrame() const {
+  void RegisterPlaceholderCanvas(unsigned placeholder_id);
+  void UnregisterPlaceholderCanvas();
+  const scoped_refptr<CanvasResource>& OffscreenCanvasFrame() const {
     return placeholder_frame_;
   }
 
-  bool IsPlaceholderRegistered() const {
+  bool IsOffscreenCanvasRegistered() const {
     return placeholder_id_ != kNoPlaceholderId;
   }
+
+  void UpdateOffscreenCanvasFilterQuality(SkFilterQuality filter_quality);
+
+  virtual bool HasCanvasCapture() const { return false; }
 
  private:
   bool PostSetSuspendAnimationToOffscreenCanvasThread(bool suspend);
 
+  // Information about the Offscreen Canvas:
   scoped_refptr<CanvasResource> placeholder_frame_;
   base::WeakPtr<CanvasResourceDispatcher> frame_dispatcher_;
   scoped_refptr<base::SingleThreadTaskRunner> frame_dispatcher_task_runner_;
-  viz::ResourceId placeholder_frame_resource_id_ = 0;
+  viz::ResourceId placeholder_frame_resource_id_ = viz::kInvalidResourceId;
 
   enum {
     kNoPlaceholderId = -1,
@@ -65,8 +73,9 @@ class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
     kShouldActivateAnimation,
   };
   AnimationState animation_state_ = kActiveAnimation;
+  absl::optional<SkFilterQuality> filter_quality_ = absl::nullopt;
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_OFFSCREEN_CANVAS_PLACEHOLDER_H_

@@ -29,8 +29,9 @@ namespace content {
 
 class BrowserMainParts;
 class ContentMainDelegate;
+class ContentMainRunner;
 
-using CreatedMainPartsClosure = base::Callback<void(BrowserMainParts*)>;
+using CreatedMainPartsClosure = base::OnceCallback<void(BrowserMainParts*)>;
 
 struct ContentMainParams {
   explicit ContentMainParams(ContentMainDelegate* delegate)
@@ -51,17 +52,24 @@ struct ContentMainParams {
 
   // Used by browser_tests. If non-null BrowserMain schedules this task to run
   // on the MessageLoop. It's owned by the test code.
-  base::Closure* ui_task = nullptr;
+  base::OnceClosure* ui_task = nullptr;
 
   // Used by InProcessBrowserTest. If non-null this is Run() after
   // BrowserMainParts has been created and before PreEarlyInitialization().
   CreatedMainPartsClosure* created_main_parts_closure = nullptr;
 
-#if defined(OS_MACOSX)
+  // Indicates whether to run in a minimal browser mode where most subsystems
+  // are left uninitialized.
+  bool minimal_browser_mode = false;
+
+#if defined(OS_MAC)
   // The outermost autorelease pool to pass to main entry points.
   base::mac::ScopedNSAutoreleasePool* autorelease_pool = nullptr;
 #endif
 };
+
+CONTENT_EXPORT int RunContentProcess(const ContentMainParams& params,
+                                     ContentMainRunner* content_main_runner);
 
 #if defined(OS_ANDROID)
 // In the Android, the content main starts from ContentMain.java, This function
@@ -70,11 +78,19 @@ struct ContentMainParams {
 // This should only be called once before ContentMainRunner actually running.
 // The ownership of |delegate| is transferred.
 CONTENT_EXPORT void SetContentMainDelegate(ContentMainDelegate* delegate);
+
+#if defined(CONTENT_IMPLEMENTATION)
+// In browser tests, ContentMain.java is not run either, and the browser test
+// harness does not run ContentMain() at all. It does need to make use of the
+// delegate though while replacing ContentMain().
+ContentMainDelegate* GetContentMainDelegate();
+#endif
+
 #else
 // ContentMain should be called from the embedder's main() function to do the
 // initial setup for every process. The embedder has a chance to customize
 // startup using the ContentMainDelegate interface. The embedder can also pass
-// in NULL for |delegate| if they don't want to override default startup.
+// in null for |delegate| if they don't want to override default startup.
 CONTENT_EXPORT int ContentMain(const ContentMainParams& params);
 #endif
 

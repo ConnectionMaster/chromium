@@ -29,8 +29,7 @@ public class FullScreenView extends FrameLayout {
     private final AwContents mAwContents;
     private InternalAccessAdapter mInternalAccessAdapter;
 
-    public FullScreenView(Context context, AwViewMethods awViewMethods,
-            AwContents awContents) {
+    public FullScreenView(Context context, AwViewMethods awViewMethods, AwContents awContents) {
         super(context);
         setAwViewMethods(awViewMethods);
         mAwContents = awContents;

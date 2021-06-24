@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -18,22 +19,17 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/safe_browsing/incident_reporting/incident_reporting_service.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/safe_browsing/download_type_util.h"
-#include "chrome/common/safe_browsing/file_type_policies.h"
 #include "components/history/core/browser/download_constants.h"
-#include "components/history/core/browser/history_service.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/proto/csd.pb.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
+#include "components/safe_browsing/core/file_type_policies.h"
+#include "components/safe_browsing/core/proto/csd.pb.h"
 #include "crypto/sha2.h"
 #include "extensions/buildflags/buildflags.h"
 
@@ -66,7 +62,7 @@ bool IsBinaryDownloadForCurrentOS(
                 "Update logic below");
 
 // Platform-specific types are relevant only for their own platforms.
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   if (download_type == ClientDownloadRequest::MAC_EXECUTABLE ||
       download_type == ClientDownloadRequest::MAC_ARCHIVE_FAILED_PARSING)
     return true;
@@ -240,47 +236,39 @@ void PopulateNonBinaryDetailsFromRow(
 }  // namespace
 
 LastDownloadFinder::~LastDownloadFinder() {
+  g_browser_process->profile_manager()->RemoveObserver(this);
+  for (const auto& state : profile_states_)
+    state.first->RemoveObserver(this);
 }
 
 // static
 std::unique_ptr<LastDownloadFinder> LastDownloadFinder::Create(
-    const DownloadDetailsGetter& download_details_getter,
-    const LastDownloadCallback& callback) {
+    DownloadDetailsGetter download_details_getter,
+    LastDownloadCallback callback) {
   std::unique_ptr<LastDownloadFinder> finder(
       base::WrapUnique(new LastDownloadFinder(
-          download_details_getter,
-          g_browser_process->profile_manager()->GetLoadedProfiles(),
-          callback)));
+          std::move(download_details_getter), std::move(callback))));
   // Return NULL if there is no work to do.
   if (finder->profile_states_.empty())
-    return std::unique_ptr<LastDownloadFinder>();
+    return nullptr;
   return finder;
 }
 
-LastDownloadFinder::LastDownloadFinder()
-    : history_service_observer_(this), weak_ptr_factory_(this) {
-}
+LastDownloadFinder::LastDownloadFinder() = default;
 
 LastDownloadFinder::LastDownloadFinder(
-    const DownloadDetailsGetter& download_details_getter,
-    const std::vector<Profile*>& profiles,
-    const LastDownloadCallback& callback)
-    : download_details_getter_(download_details_getter),
-      callback_(callback),
-      history_service_observer_(this),
-      weak_ptr_factory_(this) {
-  // Observe profile lifecycle events so that the finder can begin or abandon
-  // the search in profiles while it is running.
-  notification_registrar_.Add(this,
-                              chrome::NOTIFICATION_PROFILE_ADDED,
-                              content::NotificationService::AllSources());
-  notification_registrar_.Add(this,
-                              chrome::NOTIFICATION_PROFILE_DESTROYED,
-                              content::NotificationService::AllSources());
-
-  // Begin the search for all given profiles.
-  for (auto* profile : profiles)
+    DownloadDetailsGetter download_details_getter,
+    LastDownloadCallback callback)
+    : download_details_getter_(std::move(download_details_getter)),
+      callback_(std::move(callback)) {
+  // Begin the search for all existing profiles.
+  for (auto* profile :
+       g_browser_process->profile_manager()->GetLoadedProfiles()) {
     SearchInProfile(profile);
+  }
+
+  // Also search on new profiles when they are added.
+  g_browser_process->profile_manager()->AddObserver(this);
 }
 
 void LastDownloadFinder::SearchInProfile(Profile* profile) {
@@ -290,17 +278,19 @@ void LastDownloadFinder::SearchInProfile(Profile* profile) {
     return;
 
   // Exit early if already processing this profile. This could happen if, for
-  // example, NOTIFICATION_PROFILE_ADDED arrives after construction while
-  // waiting for OnHistoryServiceLoaded.
+  // example, OnProfileAdded is called after construction while waiting for
+  // OnHistoryServiceLoaded.
   if (profile_states_.count(profile))
     return;
 
-  // Initiate a metadata search.
+  profile->AddObserver(this);
+
+  // Initiate a metadata search. As with IncidentReportingService, it's assumed
+  // that all passed profiles will outlive |this|.
   profile_states_[profile] = WAITING_FOR_METADATA;
-  download_details_getter_.Run(profile,
-                               base::Bind(&LastDownloadFinder::OnMetadataQuery,
-                                          weak_ptr_factory_.GetWeakPtr(),
-                                          profile));
+  download_details_getter_.Run(
+      profile, base::BindOnce(&LastDownloadFinder::OnMetadataQuery,
+                              weak_ptr_factory_.GetWeakPtr(), profile));
 }
 
 void LastDownloadFinder::OnMetadataQuery(
@@ -333,24 +323,17 @@ void LastDownloadFinder::OnMetadataQuery(
   }
   if (history_service->BackendLoaded()) {
     history_service->QueryDownloads(
-        base::Bind(&LastDownloadFinder::OnDownloadQuery,
-                   weak_ptr_factory_.GetWeakPtr(), profile));
+        base::BindOnce(&LastDownloadFinder::OnDownloadQuery,
+                       weak_ptr_factory_.GetWeakPtr(), profile));
   } else {
     // else wait until history is loaded.
-    history_service_observer_.Add(history_service);
+    history_service_observations_.AddObservation(history_service);
   }
-}
-
-void LastDownloadFinder::AbandonSearchInProfile(Profile* profile) {
-  // |profile| may not be present in the set of profiles.
-  auto iter = profile_states_.find(profile);
-  if (iter != profile_states_.end())
-    RemoveProfileAndReportIfDone(iter);
 }
 
 void LastDownloadFinder::OnDownloadQuery(
     Profile* profile,
-    std::unique_ptr<std::vector<history::DownloadRow>> downloads) {
+    std::vector<history::DownloadRow> downloads) {
   // Early-exit if the history search for this profile was abandoned.
   auto iter = profile_states_.find(profile);
   if (iter == profile_states_.end())
@@ -361,7 +344,7 @@ void LastDownloadFinder::OnDownloadQuery(
     // Find the most recent from this profile and use it if it's better than
     // anything else found so far.
     const history::DownloadRow* profile_best_binary =
-        FindMostInteresting(*downloads, true);
+        FindMostInteresting(downloads, true);
     if (profile_best_binary &&
         IsMostInterestingBinary(*profile_best_binary, details_.get(),
                                 most_recent_binary_row_)) {
@@ -371,7 +354,7 @@ void LastDownloadFinder::OnDownloadQuery(
   }
 
   const history::DownloadRow* profile_best_non_binary =
-      FindMostInteresting(*downloads, false);
+      FindMostInteresting(downloads, false);
   if (profile_best_non_binary &&
       IsMoreInterestingNonBinaryThan(*profile_best_non_binary,
                                      most_recent_non_binary_row_)) {
@@ -384,6 +367,7 @@ void LastDownloadFinder::OnDownloadQuery(
 void LastDownloadFinder::RemoveProfileAndReportIfDone(
     std::map<Profile*, ProfileWaitState>::iterator iter) {
   DCHECK(iter != profile_states_.end());
+  iter->first->RemoveObserver(this);
   profile_states_.erase(iter);
 
   // Finish processing if all results are in.
@@ -395,43 +379,40 @@ void LastDownloadFinder::RemoveProfileAndReportIfDone(
 void LastDownloadFinder::ReportResults() {
   DCHECK(profile_states_.empty());
 
-  std::unique_ptr<ClientIncidentReport_DownloadDetails> binary_details =
-      nullptr;
+  std::unique_ptr<ClientIncidentReport_DownloadDetails> binary_details;
   std::unique_ptr<ClientIncidentReport_NonBinaryDownloadDetails>
-      non_binary_details = nullptr;
+      non_binary_details;
 
   if (details_) {
-    binary_details.reset(new ClientIncidentReport_DownloadDetails(*details_));
+    binary_details =
+        std::make_unique<ClientIncidentReport_DownloadDetails>(*details_);
   } else if (!most_recent_binary_row_.end_time.is_null()) {
-    binary_details.reset(new ClientIncidentReport_DownloadDetails());
+    binary_details = std::make_unique<ClientIncidentReport_DownloadDetails>();
     PopulateDetailsFromRow(most_recent_binary_row_, binary_details.get());
   }
 
   if (!most_recent_non_binary_row_.end_time.is_null()) {
-    non_binary_details.reset(
-        new ClientIncidentReport_NonBinaryDownloadDetails());
+    non_binary_details =
+        std::make_unique<ClientIncidentReport_NonBinaryDownloadDetails>();
     PopulateNonBinaryDetailsFromRow(most_recent_non_binary_row_,
                                     non_binary_details.get());
   }
 
-  callback_.Run(std::move(binary_details), std::move(non_binary_details));
+  std::move(callback_).Run(std::move(binary_details),
+                           std::move(non_binary_details));
   // Do not touch this LastDownloadFinder after running the callback, since it
   // may have been deleted.
 }
 
-void LastDownloadFinder::Observe(int type,
-                                 const content::NotificationSource& source,
-                                 const content::NotificationDetails& details) {
-  switch (type) {
-    case chrome::NOTIFICATION_PROFILE_ADDED:
-      SearchInProfile(content::Source<Profile>(source).ptr());
-      break;
-    case chrome::NOTIFICATION_PROFILE_DESTROYED:
-      AbandonSearchInProfile(content::Source<Profile>(source).ptr());
-      break;
-    default:
-      break;
-  }
+void LastDownloadFinder::OnProfileAdded(Profile* profile) {
+  SearchInProfile(profile);
+}
+
+void LastDownloadFinder::OnProfileWillBeDestroyed(Profile* profile) {
+  // |profile| may not be present in the set of profiles.
+  auto iter = profile_states_.find(profile);
+  DCHECK(iter != profile_states_.end());
+  RemoveProfileAndReportIfDone(iter);
 }
 
 void LastDownloadFinder::OnHistoryServiceLoaded(
@@ -445,9 +426,8 @@ void LastDownloadFinder::OnHistoryServiceLoaded(
       if (pair.second == WAITING_FOR_HISTORY ||
           pair.second == WAITING_FOR_NON_BINARY_HISTORY) {
         history_service->QueryDownloads(
-            base::Bind(&LastDownloadFinder::OnDownloadQuery,
-                       weak_ptr_factory_.GetWeakPtr(),
-                       pair.first));
+            base::BindOnce(&LastDownloadFinder::OnDownloadQuery,
+                           weak_ptr_factory_.GetWeakPtr(), pair.first));
       }
       return;
     }
@@ -456,7 +436,7 @@ void LastDownloadFinder::OnHistoryServiceLoaded(
 
 void LastDownloadFinder::HistoryServiceBeingDeleted(
     history::HistoryService* history_service) {
-  history_service_observer_.Remove(history_service);
+  history_service_observations_.RemoveObservation(history_service);
 }
 
 }  // namespace safe_browsing

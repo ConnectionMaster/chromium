@@ -29,12 +29,14 @@
                          // code with COBJMACROS.
 #include <ole2.h>  // CreateStreamOnHGlobal()
 #include <shlwapi.h>
+#include <tchar.h>
 #include <windows.h>
 #include <wincodec.h>
 
-#include "webp/encode.h"
+#include "../examples/unicode.h"
 #include "./imageio_util.h"
 #include "./metadata.h"
+#include "webp/encode.h"
 
 #define IFS(fn)                                                     \
   do {                                                              \
@@ -85,7 +87,7 @@ WEBP_DEFINE_GUID(GUID_WICPixelFormat64bppRGBA_,
 
 static HRESULT OpenInputStream(const char* filename, IStream** stream) {
   HRESULT hr = S_OK;
-  if (!strcmp(filename, "-")) {
+  if (!WSTRCMP(filename, "-")) {
     const uint8_t* data = NULL;
     size_t data_size = 0;
     const int ok = ImgIoUtilReadFile(filename, &data, &data_size);
@@ -108,11 +110,12 @@ static HRESULT OpenInputStream(const char* filename, IStream** stream) {
       hr = E_FAIL;
     }
   } else {
-    IFS(SHCreateStreamOnFileA(filename, STGM_READ, stream));
+    IFS(SHCreateStreamOnFile((const LPTSTR)filename, STGM_READ, stream));
   }
 
   if (FAILED(hr)) {
-    fprintf(stderr, "Error opening input file %s (%08lx)\n", filename, hr);
+    _ftprintf(stderr, _T("Error opening input file %s (%08lx)\n"),
+              (const LPTSTR)filename, hr);
   }
   return hr;
 }
@@ -295,9 +298,15 @@ int ReadPictureWithWIC(const char* const filename,
           factory, stream, NULL,
           WICDecodeMetadataCacheOnDemand, &decoder));
   IFS(IWICBitmapDecoder_GetFrameCount(decoder, &frame_count));
-  if (SUCCEEDED(hr) && frame_count == 0) {
-    fprintf(stderr, "No frame found in input file.\n");
-    hr = E_FAIL;
+  if (SUCCEEDED(hr)) {
+    if (frame_count == 0) {
+      fprintf(stderr, "No frame found in input file.\n");
+      hr = E_FAIL;
+    } else if (frame_count > 1) {
+      // WIC will be tried before native WebP decoding so avoid duplicating the
+      // error message.
+      hr = E_FAIL;
+    }
   }
   IFS(IWICBitmapDecoder_GetFrame(decoder, 0, &frame));
   IFS(IWICBitmapFrameDecode_GetPixelFormat(frame, &src_pixel_format));

@@ -5,22 +5,21 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_SETTINGS_PRIVATE_SETTINGS_PRIVATE_EVENT_ROUTER_H_
 #define CHROME_BROWSER_EXTENSIONS_API_SETTINGS_PRIVATE_SETTINGS_PRIVATE_EVENT_ROUTER_H_
 
+#include <map>
 #include <memory>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/settings_private/generated_pref.h"
 #include "chrome/browser/extensions/api/settings_private/prefs_util.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "extensions/browser/event_router.h"
 
-// TODO(wychen): ChromeOS headers should only be included when building
-//               ChromeOS, and the following headers should be guarded by
-//               #if defined(OS_CHROMEOS). However, the types are actually
-//               used, and it takes another CL to clean them up.
-//               Reference: crbug.com/720159
-#include "chrome/browser/chromeos/settings/cros_settings.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/settings/cros_settings.h"
+#endif
 
 namespace content {
 class BrowserContext;
@@ -42,6 +41,8 @@ class SettingsPrivateEventRouter
 
   // settings_private::GeneratedPref::Observer implementation.
   void OnGeneratedPrefChanged(const std::string& pref_name) override;
+
+  content::BrowserContext* context_for_test() { return context_; }
 
  protected:
   explicit SettingsPrivateEventRouter(content::BrowserContext* context);
@@ -73,17 +74,17 @@ class SettingsPrivateEventRouter
 
   PrefChangeRegistrar* FindRegistrarForPref(const std::string& pref_name);
 
-  using SubscriptionMap =
-      std::map<std::string,
-               std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>>;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  using SubscriptionMap = std::map<std::string, base::CallbackListSubscription>;
   SubscriptionMap cros_settings_subscription_map_;
+#endif
 
-  content::BrowserContext* context_;
-  bool listening_;
+  content::BrowserContext* const context_;
+  bool listening_ = false;
 
   std::unique_ptr<PrefsUtil> prefs_util_;
 
-  base::WeakPtrFactory<SettingsPrivateEventRouter> weak_ptr_factory_;
+  base::WeakPtrFactory<SettingsPrivateEventRouter> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SettingsPrivateEventRouter);
 };

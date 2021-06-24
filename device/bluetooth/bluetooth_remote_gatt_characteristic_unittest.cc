@@ -8,18 +8,20 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic.h"
 #include "device/bluetooth/bluetooth_remote_gatt_service.h"
+#include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "device/bluetooth/test/test_bluetooth_adapter_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_ANDROID)
 #include "device/bluetooth/test/bluetooth_test_android.h"
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
 #include "device/bluetooth/test/bluetooth_test_mac.h"
 #elif defined(OS_WIN)
 #include "device/bluetooth/test/bluetooth_test_win.h"
@@ -30,6 +32,10 @@
 #elif defined(OS_FUCHSIA)
 #include "device/bluetooth/test/bluetooth_test_fuchsia.h"
 #endif
+
+using testing::_;
+using testing::Invoke;
+using WriteType = device::BluetoothRemoteGattCharacteristic::WriteType;
 
 namespace device {
 
@@ -46,8 +52,8 @@ class BluetoothRemoteGattCharacteristicTest :
     InitWithFakeAdapter();
     StartLowEnergyDiscoverySession();
     device_ = SimulateLowEnergyDevice(3);
-    device_->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                                  GetConnectErrorCallback(Call::NOT_EXPECTED));
+    device_->CreateGattConnection(
+        GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
     SimulateGattConnection(device_);
     base::RunLoop().RunUntilIdle();
 
@@ -147,7 +153,7 @@ class BluetoothRemoteGattCharacteristicTest :
   // these two cases, this small utility function is added.
   bool IsClassicWin() {
 #if defined(OS_WIN)
-    return !GetParam();
+    return !UsesNewBleImplementation();
 #else
     return false;
 #endif
@@ -168,7 +174,7 @@ using BluetoothRemoteGattCharacteristicTestWinrtOnly =
     BluetoothRemoteGattCharacteristicTest;
 #endif
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_GetIdentifier GetIdentifier
 #else
 #define MAYBE_GetIdentifier DISABLED_GetIdentifier
@@ -188,10 +194,10 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetIdentifier) {
   // 2 devices to verify unique IDs across them.
   BluetoothDevice* device1 = SimulateLowEnergyDevice(3);
   BluetoothDevice* device2 = SimulateLowEnergyDevice(4);
-  device1->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                                GetConnectErrorCallback(Call::NOT_EXPECTED));
-  device2->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                                GetConnectErrorCallback(Call::NOT_EXPECTED));
+  device1->CreateGattConnection(
+      GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
+  device2->CreateGattConnection(
+      GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
   SimulateGattConnection(device1);
   SimulateGattConnection(device2);
   base::RunLoop().RunUntilIdle();
@@ -246,7 +252,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetIdentifier) {
   EXPECT_NE(char5->GetIdentifier(), char6->GetIdentifier());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_GetUUID GetUUID
 #else
 #define MAYBE_GetUUID DISABLED_GetUUID
@@ -263,8 +269,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetUUID) {
   InitWithFakeAdapter();
   StartLowEnergyDiscoverySession();
   BluetoothDevice* device = SimulateLowEnergyDevice(3);
-  device->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                               GetConnectErrorCallback(Call::NOT_EXPECTED));
+  device->CreateGattConnection(
+      GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
   SimulateGattConnection(device);
   base::RunLoop().RunUntilIdle();
   SimulateGattServicesDiscovered(
@@ -295,7 +301,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetUUID) {
   EXPECT_EQ(uuid2, char3->GetUUID());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_GetProperties GetProperties
 #else
 #define MAYBE_GetProperties DISABLED_GetProperties
@@ -312,8 +318,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetProperties) {
   InitWithFakeAdapter();
   StartLowEnergyDiscoverySession();
   BluetoothDevice* device = SimulateLowEnergyDevice(3);
-  device->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                               GetConnectErrorCallback(Call::NOT_EXPECTED));
+  device->CreateGattConnection(
+      GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
   SimulateGattConnection(device);
   base::RunLoop().RunUntilIdle();
   SimulateGattServicesDiscovered(
@@ -335,7 +341,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetProperties) {
   EXPECT_EQ(7, properties2);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_GetService GetService
 #else
 #define MAYBE_GetService DISABLED_GetService
@@ -356,7 +362,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GetService) {
   EXPECT_EQ(service_, characteristic2_->GetService());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_Empty ReadRemoteCharacteristic_Empty
 #else
 #define MAYBE_ReadRemoteCharacteristic_Empty \
@@ -378,8 +384,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
   std::vector<uint8_t> empty_vector;
   SimulateGattCharacteristicRead(characteristic1_, empty_vector);
   base::RunLoop().RunUntilIdle();
@@ -393,7 +398,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(empty_vector, characteristic1_->GetValue());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic_Empty WriteRemoteCharacteristic_Empty
 #else
 #define MAYBE_WriteRemoteCharacteristic_Empty \
@@ -415,7 +420,50 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
   std::vector<uint8_t> empty_vector;
+  base::RunLoop loop;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+        EXPECT_EQ(empty_vector, last_write_value_);
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop.Quit();
+          }));
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop.Run();
+
+  // Duplicate write reported from OS shouldn't cause a problem:
+  SimulateGattCharacteristicWrite(characteristic1_);
+  base::RunLoop().RunUntilIdle();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_Empty \
+  DeprecatedWriteRemoteCharacteristic_Empty
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_Empty \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_Empty
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic with empty value buffer.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       DeprecatedWriteRemoteCharacteristic_Empty) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_Empty) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
   SimulateGattCharacteristicWrite(characteristic1_);
@@ -429,7 +477,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(empty_vector, last_write_value_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_Retry_ReadRemoteCharacteristic_DuringDestruction_Fails \
   Retry_ReadRemoteCharacteristic_DuringDestruction_Fails
 #else
@@ -450,28 +498,25 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
-  bool read_error_callback_called = false;
-  characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      base::BindLambdaForTesting(
-          [&](BluetoothRemoteGattService::GattErrorCode error_code) {
-            EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-                      error_code);
-            read_error_callback_called = true;
-            // Retrying Read should fail:
-            characteristic1_->ReadRemoteCharacteristic(
-                GetReadValueCallback(Call::NOT_EXPECTED),
-                GetGattErrorCallback(Call::EXPECTED));
-          }));
+  bool read_characteristic_failed = false;
+  characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+      [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+          const std::vector<uint8_t>&) {
+        EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+        read_characteristic_failed = true;
+        // Retrying Read should fail:
+        characteristic1_->ReadRemoteCharacteristic(
+            GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
+      }));
 
   DeleteDevice(device_);  // TODO(576906) delete only the characteristic.
   base::RunLoop().RunUntilIdle();
-  EXPECT_TRUE(read_error_callback_called);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS,
+  EXPECT_TRUE(read_characteristic_failed);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
             last_gatt_error_code_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_Retry_WriteRemoteCharacteristic_DuringDestruction_Fails \
   Retry_WriteRemoteCharacteristic_DuringDestruction_Fails
 #else
@@ -492,16 +537,65 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
-  bool write_error_callback_called = false;
+  base::RunLoop loop;
   characteristic1_->WriteRemoteCharacteristic(
-      {} /* value */, GetCallback(Call::NOT_EXPECTED),
+      {} /* value */, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
       base::BindLambdaForTesting(
-          [&](BluetoothRemoteGattService::GattErrorCode error_code) {
-            EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-                      error_code);
-            write_error_callback_called = true;
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
             // Retrying Write should fail:
             characteristic1_->WriteRemoteCharacteristic(
+                {} /* value */, WriteType::kWithResponse,
+                base::BindLambdaForTesting([&] {
+                  ADD_FAILURE() << "unexpected success";
+                  loop.Quit();
+                }),
+                base::BindLambdaForTesting(
+                    [&](BluetoothGattService::GattErrorCode error_code) {
+                      EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
+                                error_code);
+                      loop.Quit();
+                    }));
+          }));
+
+  DeleteDevice(device_);  // TODO(576906) delete only the characteristic.
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_Retry_DeprecatedWriteRemoteCharacteristic_DuringDestruction_Fails \
+  Retry_DeprecatedWriteRemoteCharacteristic_DuringDestruction_Fails
+#else
+#define MAYBE_Retry_DeprecatedWriteRemoteCharacteristic_DuringDestruction_Fails \
+  DISABLED_Retry_DeprecatedWriteRemoteCharacteristic_DuringDestruction_Fails
+#endif
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       Retry_DeprecatedWriteRemoteCharacteristic_DuringDestruction_Fails) {
+#else
+TEST_F(
+    BluetoothRemoteGattCharacteristicTest,
+    MAYBE_Retry_DeprecatedWriteRemoteCharacteristic_DuringDestruction_Fails) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  bool write_error_callback_called = false;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
+      {} /* value */, GetCallback(Call::NOT_EXPECTED),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            write_error_callback_called = true;
+            // Retrying Write should fail:
+            characteristic1_->DeprecatedWriteRemoteCharacteristic(
                 {} /* value */, GetCallback(Call::NOT_EXPECTED),
                 GetGattErrorCallback(Call::EXPECTED));
           }));
@@ -509,7 +603,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   DeleteDevice(device_);  // TODO(576906) delete only the characteristic.
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(write_error_callback_called);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
             last_gatt_error_code_);
 }
 
@@ -540,8 +634,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
 
   RememberCharacteristicForSubsequentAction(characteristic1_);
   DeleteDevice(device_);  // TODO(576906) delete only the characteristic.
@@ -555,7 +648,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
 // TODO(crbug.com/663131): Enable test on windows when disconnection is
 // implemented.
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_Disconnected \
   ReadRemoteCharacteristic_Disconnected
 #else
@@ -577,8 +670,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
 
 // Set up for receiving a read response after disconnection.
 // On macOS or WinRT no events arrive after disconnection so there is no point
@@ -592,8 +684,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 
 // Dispatch read response after disconnection. See above explanation for why
 // we don't do this in macOS on WinRT.
@@ -613,8 +704,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   DISABLED_WriteRemoteCharacteristic_AfterDeleted
 #endif
 // Tests WriteRemoteCharacteristic completing after Chrome objects are deleted.
-// macOS: Not applicable: This can never happen if CBPeripheral delegate is set
-// to nil.
+// macOS: Not applicable: This can never happen if CBPeripheral
+// delegate is set to nil.
 // WinRT: Not applicable: Pending callbacks won't fire once the underlying
 // object is destroyed.
 #if defined(OS_WIN)
@@ -632,7 +723,54 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
   std::vector<uint8_t> empty_vector;
+  base::RunLoop loop;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop.Quit();
+          }));
+
+  RememberCharacteristicForSubsequentAction(characteristic1_);
+  DeleteDevice(device_);  // TODO(576906) delete only the characteristic.
+
+  SimulateGattCharacteristicWrite(/* use remembered characteristic */ nullptr);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_AfterDeleted \
+  DeprecatedWriteRemoteCharacteristic_AfterDeleted
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_AfterDeleted \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_AfterDeleted
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic completing after Chrome objects are
+// deleted.
+// macOS: Not applicable: This can never happen if CBPeripheral
+// delegate is set to nil.
+// WinRT: Not applicable: Pending callbacks won't fire once the underlying
+// object is destroyed.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWin32Only,
+       DeprecatedWriteRemoteCharacteristic_AfterDeleted) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_AfterDeleted) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
 
@@ -646,7 +784,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
 // TODO(crbug.com/663131): Enable test on windows when disconnection is
 // implemented.
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic_Disconnected \
   WriteRemoteCharacteristic_Disconnected
 #else
@@ -667,8 +805,64 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop;
   std::vector<uint8_t> empty_vector;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop.Quit();
+          }));
+
+// Set up for receiving a write response after disconnection.
+// On macOS and WinRT no events arrive after disconnection so there is no point
+// in building the infrastructure to test this behavior. FYI
+// the code CHECKs that responses arrive only when the device is connected.
+#if defined(OS_ANDROID)
+  RememberCharacteristicForSubsequentAction(characteristic1_);
+#endif  // defined(OS_ANDROID)
+
+  ASSERT_EQ(1u, adapter_->GetDevices().size());
+  SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
+  loop.Run();
+
+// Dispatch write response after disconnection. See above explanation for why
+// we don't do this in macOS and WinRT.
+#if defined(OS_ANDROID)
+  SimulateGattCharacteristicWrite(/* use remembered characteristic */ nullptr);
+  base::RunLoop().RunUntilIdle();
+#endif  // defined(OS_ANDROID)
+}
+
+// TODO(crbug.com/663131): Enable test on windows when disconnection is
+// implemented.
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_Disconnected \
+  DeprecatedWriteRemoteCharacteristic_Disconnected
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_Disconnected \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_Disconnected
+#endif
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
+       DeprecatedWriteRemoteCharacteristic_Disconnected) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_Disconnected) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
 
@@ -684,8 +878,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 
 // Dispatch write response after disconnection. See above explanation for why
 // we don't do this in macOS and WinRT.
@@ -695,7 +888,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 #endif  // defined(OS_ANDROID)
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic ReadRemoteCharacteristic
 #else
 #define MAYBE_ReadRemoteCharacteristic DISABLED_ReadRemoteCharacteristic
@@ -714,8 +907,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_ReadRemoteCharacteristic) {
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
 
   std::vector<uint8_t> test_vector = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
   SimulateGattCharacteristicRead(characteristic1_, test_vector);
@@ -733,15 +925,16 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_ReadRemoteCharacteristic) {
 
 // Callback that make sure GattCharacteristicValueChanged has been called
 // before the callback runs.
-static void test_callback(
+static void TestCallback(
     BluetoothRemoteGattCharacteristic::ValueCallback callback,
     const TestBluetoothAdapterObserver& callback_observer,
+    absl::optional<BluetoothGattService::GattErrorCode> error_code,
     const std::vector<uint8_t>& value) {
   EXPECT_EQ(0, callback_observer.gatt_characteristic_value_changed_count());
-  callback.Run(value);
+  std::move(callback).Run(error_code, value);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_GattCharacteristicValueChangedNotCalled \
   ReadRemoteCharacteristic_GattCharacteristicValueChangedNotCalled
 #else
@@ -766,18 +959,17 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
   TestBluetoothAdapterObserver observer(adapter_);
 
-  characteristic1_->ReadRemoteCharacteristic(
-      base::Bind(test_callback, GetReadValueCallback(Call::EXPECTED),
-                 std::cref(observer)),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+  characteristic1_->ReadRemoteCharacteristic(base::BindOnce(
+      TestCallback, GetReadValueCallback(Call::EXPECTED, Result::SUCCESS),
+      std::cref(observer)));
 
   std::vector<uint8_t> test_vector = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
   SimulateGattCharacteristicRead(characteristic1_, test_vector);
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(0, observer.gatt_characteristic_value_changed_count());
-// TODO(https://crbug.com/699694): Remove this #if once the bug on Windows is
-// fixed.
+  // TODO(https://crbug.com/699694): Remove this #if once the bug on Windows is
+  // fixed.
   if (IsClassicWin()) {
     EXPECT_FALSE(observer.last_gatt_characteristic_id().empty());
     EXPECT_TRUE(observer.last_gatt_characteristic_uuid().IsValid());
@@ -788,7 +980,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_TRUE(observer.last_changed_characteristic_value().empty());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic WriteRemoteCharacteristic
 #else
 #define MAYBE_WriteRemoteCharacteristic DISABLED_WriteRemoteCharacteristic
@@ -808,9 +1000,57 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_WriteRemoteCharacteristic) {
 
   TestBluetoothAdapterObserver observer(adapter_);
 
+  base::RunLoop loop;
   uint8_t values[] = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
   std::vector<uint8_t> test_vector(values, values + base::size(values));
   characteristic1_->WriteRemoteCharacteristic(
+      test_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+
+        // TODO(crbug.com/653291): remove this if once the bug on windows is
+        // fixed.
+        if (!IsClassicWin())
+          EXPECT_EQ(0, observer.gatt_characteristic_value_changed_count());
+        EXPECT_EQ(test_vector, last_write_value_);
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop.Quit();
+          }));
+
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic \
+  DeprecatedWriteRemoteCharacteristic
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic \
+  DISABLED_DeprecatedWriteRemoteCharacteristic
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic with non-empty value buffer.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       DeprecatedWriteRemoteCharacteristic) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  TestBluetoothAdapterObserver observer(adapter_);
+
+  uint8_t values[] = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
+  std::vector<uint8_t> test_vector(values, values + base::size(values));
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       test_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
 
@@ -824,7 +1064,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_WriteRemoteCharacteristic) {
   EXPECT_EQ(test_vector, last_write_value_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_Twice ReadRemoteCharacteristic_Twice
 #else
 #define MAYBE_ReadRemoteCharacteristic_Twice \
@@ -846,8 +1086,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
 
   uint8_t values[] = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
   std::vector<uint8_t> test_vector(values, values + base::size(values));
@@ -862,8 +1101,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   // Read again, with different value:
   ResetEventCounts();
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
   std::vector<uint8_t> empty_vector;
   SimulateGattCharacteristicRead(characteristic1_, empty_vector);
   base::RunLoop().RunUntilIdle();
@@ -874,11 +1112,11 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(empty_vector, characteristic1_->GetValue());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic_Twice WriteRemoteCharacteristic_Twice
 #else
 #define MAYBE_WriteRemoteCharacteristic_Twice \
-  DISABLEDWriteRemoteCharacteristic_Twice
+  DISABLED_WriteRemoteCharacteristic_Twice
 #endif
 // Tests WriteRemoteCharacteristic multiple times.
 #if defined(OS_WIN)
@@ -895,9 +1133,69 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop1;
   uint8_t values[] = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
   std::vector<uint8_t> test_vector(values, values + base::size(values));
   characteristic1_->WriteRemoteCharacteristic(
+      test_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+        EXPECT_EQ(test_vector, last_write_value_);
+        loop1.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error" << error_code;
+            loop1.Quit();
+          }));
+
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop1.Run();
+
+  // Write again, with different value:
+  ResetEventCounts();
+  base::RunLoop loop2;
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+        EXPECT_EQ(empty_vector, last_write_value_);
+        loop2.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error" << error_code;
+            loop2.Quit();
+          }));
+
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop2.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_Twice \
+  DeprecatedWriteRemoteCharacteristic_Twice
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_Twice \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_Twice
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic multiple times.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       DeprecatedWriteRemoteCharacteristic_Twice) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_Twice) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  uint8_t values[] = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
+  std::vector<uint8_t> test_vector(values, values + base::size(values));
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       test_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
 
@@ -911,7 +1209,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   // Write again, with different value:
   ResetEventCounts();
   std::vector<uint8_t> empty_vector;
-  characteristic1_->WriteRemoteCharacteristic(
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
 
@@ -923,7 +1221,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(empty_vector, last_write_value_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_MultipleCharacteristics \
   ReadRemoteCharacteristic_MultipleCharacteristics
 #else
@@ -946,11 +1244,9 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
   characteristic2_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(0, error_callback_count_);
 
@@ -973,7 +1269,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(test_vector2, characteristic2_->GetValue());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic_MultipleCharacteristics \
   WriteRemoteCharacteristic_MultipleCharacteristics
 #else
@@ -995,9 +1291,76 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop1;
   std::vector<uint8_t> test_vector1;
   test_vector1.push_back(111);
   characteristic1_->WriteRemoteCharacteristic(
+      test_vector1, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        if (IsClassicWin()) {
+          EXPECT_EQ(test_vector1, last_write_value_);
+        }
+        loop1.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error" << error_code;
+            loop1.Quit();
+          }));
+  if (!IsClassicWin()) {
+    EXPECT_EQ(test_vector1, last_write_value_);
+  }
+
+  base::RunLoop loop2;
+  std::vector<uint8_t> test_vector2;
+  test_vector2.push_back(222);
+  characteristic2_->WriteRemoteCharacteristic(
+      test_vector2, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        if (IsClassicWin()) {
+          EXPECT_EQ(test_vector2, last_write_value_);
+        }
+        loop2.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error" << error_code;
+            loop2.Quit();
+          }));
+  if (!IsClassicWin()) {
+    EXPECT_EQ(test_vector2, last_write_value_);
+  }
+
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop1.Run();
+
+  SimulateGattCharacteristicWrite(characteristic2_);
+  loop2.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_MultipleCharacteristics \
+  DeprecatedWriteRemoteCharacteristic_MultipleCharacteristics
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_MultipleCharacteristics \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_MultipleCharacteristics
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic on two characteristics.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       DeprecatedWriteRemoteCharacteristic_MultipleCharacteristics) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_MultipleCharacteristics) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> test_vector1;
+  test_vector1.push_back(111);
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       test_vector1, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
   if (!IsClassicWin())
@@ -1005,7 +1368,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
   std::vector<uint8_t> test_vector2;
   test_vector2.push_back(222);
-  characteristic2_->WriteRemoteCharacteristic(
+  characteristic2_->DeprecatedWriteRemoteCharacteristic(
       test_vector2, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
   if (!IsClassicWin())
@@ -1031,7 +1394,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   // TODO(591740): Remove if define for OS_ANDROID in this test.
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_RemoteCharacteristic_Nested_Read_Read \
   RemoteCharacteristic_Nested_Read_Read
 #else
@@ -1057,9 +1420,11 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
   std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
 
-  characteristic1_->ReadRemoteCharacteristic(
-      base::BindLambdaForTesting([&](const std::vector<uint8_t>& data) {
-        GetReadValueCallback(Call::EXPECTED).Run(data);
+  characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+      [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+          const std::vector<uint8_t>& data) {
+        GetReadValueCallback(Call::EXPECTED, Result::SUCCESS)
+            .Run(error_code, data);
 
         EXPECT_EQ(1, gatt_read_characteristic_attempts_);
         EXPECT_EQ(1, callback_count_);
@@ -1068,11 +1433,9 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
         EXPECT_EQ(test_vector_1, characteristic1_->GetValue());
 
         characteristic1_->ReadRemoteCharacteristic(
-            GetReadValueCallback(Call::EXPECTED),
-            GetGattErrorCallback(Call::NOT_EXPECTED));
+            GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
         SimulateGattCharacteristicRead(characteristic1_, test_vector_2);
-      }),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      }));
 
   SimulateGattCharacteristicRead(characteristic1_, test_vector_1);
   base::RunLoop().RunUntilIdle();
@@ -1083,7 +1446,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(test_vector_2, characteristic1_->GetValue());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_RemoteCharacteristic_Nested_Write_Write \
   RemoteCharacteristic_Nested_Write_Write
 #else
@@ -1106,10 +1469,67 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop;
   std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
   std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
 
   characteristic1_->WriteRemoteCharacteristic(
+      test_vector_1, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+        EXPECT_EQ(test_vector_1, last_write_value_);
+
+        characteristic1_->WriteRemoteCharacteristic(
+            test_vector_2, WriteType::kWithResponse,
+            base::BindLambdaForTesting([&] {
+              EXPECT_EQ(2, gatt_write_characteristic_attempts_);
+              EXPECT_EQ(test_vector_2, last_write_value_);
+              loop.Quit();
+            }),
+            base::BindLambdaForTesting(
+                [&](BluetoothGattService::GattErrorCode error_code) {
+                  ADD_FAILURE() << "unexpected error: " << error_code;
+                  loop.Quit();
+                }));
+
+        SimulateGattCharacteristicWrite(characteristic1_);
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop.Quit();
+          }));
+
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_RemoteCharacteristic_Nested_DeprecatedWrite_DeprecatedWrite \
+  RemoteCharacteristic_Nested_DeprecatedWrite_DeprecatedWrite
+#else
+#define MAYBE_RemoteCharacteristic_Nested_DeprecatedWrite_DeprecatedWrite \
+  DISABLED_RemoteCharacteristic_Nested_DeprecatedWrite_DeprecatedWrite
+#endif
+// Tests a nested DeprecatedWriteRemoteCharacteristic from within another
+// DeprecatedWriteRemoteCharacteristic.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       RemoteCharacteristic_Nested_DeprecatedWrite_DeprecatedWrite) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_RemoteCharacteristic_Nested_DeprecatedWrite_DeprecatedWrite) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
+  std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
+
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       test_vector_1, base::BindLambdaForTesting([&] {
         GetCallback(Call::EXPECTED).Run();
 
@@ -1118,7 +1538,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
         EXPECT_EQ(0, error_callback_count_);
         EXPECT_EQ(test_vector_1, last_write_value_);
 
-        characteristic1_->WriteRemoteCharacteristic(
+        characteristic1_->DeprecatedWriteRemoteCharacteristic(
             test_vector_2, GetCallback(Call::EXPECTED),
             GetGattErrorCallback(Call::NOT_EXPECTED));
         SimulateGattCharacteristicWrite(characteristic1_);
@@ -1134,7 +1554,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(test_vector_2, last_write_value_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_RemoteCharacteristic_Nested_Read_Write \
   RemoteCharacteristic_Nested_Read_Write
 #else
@@ -1158,12 +1578,73 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ |
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop;
   std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
   std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
 
-  characteristic1_->ReadRemoteCharacteristic(
-      base::BindLambdaForTesting([&](const std::vector<uint8_t>& data) {
-        GetReadValueCallback(Call::EXPECTED).Run(data);
+  characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+      [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+          const std::vector<uint8_t>& data) {
+        ASSERT_FALSE(error_code.has_value())
+            << "unexpected error: " << error_code.value();
+        EXPECT_EQ(1, gatt_read_characteristic_attempts_);
+        EXPECT_EQ(0, gatt_write_characteristic_attempts_);
+        EXPECT_EQ(test_vector_1, data);
+        EXPECT_EQ(test_vector_1, characteristic1_->GetValue());
+
+        characteristic1_->WriteRemoteCharacteristic(
+            test_vector_2, WriteType::kWithResponse,
+            base::BindLambdaForTesting([&] {
+              EXPECT_EQ(1, gatt_read_characteristic_attempts_);
+              EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+              EXPECT_EQ(test_vector_2, last_write_value_);
+              loop.Quit();
+            }),
+            base::BindLambdaForTesting(
+                [&](BluetoothGattService::GattErrorCode error_code) {
+                  ADD_FAILURE() << "unexpected error: " << error_code;
+                  loop.Quit();
+                }));
+
+        SimulateGattCharacteristicWrite(characteristic1_);
+      }));
+
+  SimulateGattCharacteristicRead(characteristic1_, test_vector_1);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_RemoteCharacteristic_Nested_Read_DeprecatedWrite \
+  RemoteCharacteristic_Nested_Read_DeprecatedWrite
+#else
+#define MAYBE_RemoteCharacteristic_Nested_Read_DeprecatedWrite \
+  DISABLED_RemoteCharacteristic_Nested_Read_DeprecatedWrite
+#endif
+// Tests a nested DeprecatedWriteRemoteCharacteristic from within a
+// ReadRemoteCharacteristic.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       RemoteCharacteristic_Nested_Read_DeprecatedWrite) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_RemoteCharacteristic_Nested_Read_DeprecatedWrite) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_READ |
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
+  std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
+
+  characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+      [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+          const std::vector<uint8_t>& data) {
+        GetReadValueCallback(Call::EXPECTED, Result::SUCCESS)
+            .Run(error_code, data);
 
         EXPECT_EQ(1, gatt_read_characteristic_attempts_);
         EXPECT_EQ(0, gatt_write_characteristic_attempts_);
@@ -1172,12 +1653,11 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
         EXPECT_EQ(test_vector_1, last_read_value_);
         EXPECT_EQ(test_vector_1, characteristic1_->GetValue());
 
-        characteristic1_->WriteRemoteCharacteristic(
+        characteristic1_->DeprecatedWriteRemoteCharacteristic(
             test_vector_2, GetCallback(Call::EXPECTED),
             GetGattErrorCallback(Call::NOT_EXPECTED));
         SimulateGattCharacteristicWrite(characteristic1_);
-      }),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      }));
 
   SimulateGattCharacteristicRead(characteristic1_, test_vector_1);
   base::RunLoop().RunUntilIdle();
@@ -1188,7 +1668,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(test_vector_2, last_write_value_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_RemoteCharacteristic_Nested_Write_Read \
   RemoteCharacteristic_Nested_Write_Read
 #else
@@ -1212,10 +1692,66 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ |
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop;
   std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
   std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
 
   characteristic1_->WriteRemoteCharacteristic(
+      test_vector_1, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(0, gatt_read_characteristic_attempts_);
+        EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+        EXPECT_EQ(test_vector_1, last_write_value_);
+
+        characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+            [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+                const std::vector<uint8_t>& data) {
+              EXPECT_EQ(error_code, absl::nullopt);
+              EXPECT_EQ(1, gatt_read_characteristic_attempts_);
+              EXPECT_EQ(1, gatt_write_characteristic_attempts_);
+              EXPECT_EQ(test_vector_2, data);
+              EXPECT_EQ(test_vector_2, characteristic1_->GetValue());
+              loop.Quit();
+            }));
+        SimulateGattCharacteristicRead(characteristic1_, test_vector_2);
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop.Quit();
+          }));
+
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_RemoteCharacteristic_Nested_DeprecatedWrite_Read \
+  RemoteCharacteristic_Nested_DeprecatedWrite_Read
+#else
+#define MAYBE_RemoteCharacteristic_Nested_DeprecatedWrite_Read \
+  DISABLED_RemoteCharacteristic_Nested_DeprecatedWrite_Read
+#endif
+// Tests a nested ReadRemoteCharacteristic from within a
+// DeprecatedWriteRemoteCharacteristic.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       RemoteCharacteristic_Nested_DeprecatedWrite_Read) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_RemoteCharacteristic_Nested_DeprecatedWrite_Read) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_READ |
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> test_vector_1 = {0, 1, 2, 3, 4};
+  std::vector<uint8_t> test_vector_2 = {0xf, 0xf0, 0xff};
+
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       test_vector_1, base::BindLambdaForTesting([&] {
         GetCallback(Call::EXPECTED).Run();
 
@@ -1226,8 +1762,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
         EXPECT_EQ(test_vector_1, last_write_value_);
 
         characteristic1_->ReadRemoteCharacteristic(
-            GetReadValueCallback(Call::EXPECTED),
-            GetGattErrorCallback(Call::NOT_EXPECTED));
+            GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
         SimulateGattCharacteristicRead(characteristic1_, test_vector_2);
       }),
       GetGattErrorCallback(Call::NOT_EXPECTED));
@@ -1242,7 +1777,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(test_vector_2, characteristic1_->GetValue());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadError ReadError
 #else
 #define MAYBE_ReadError DISABLED_ReadError
@@ -1263,19 +1798,18 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_ReadError) {
   TestBluetoothAdapterObserver observer(adapter_);
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
   SimulateGattCharacteristicReadError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_INVALID_LENGTH);
-  SimulateGattCharacteristicReadError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_FAILED);
+      characteristic1_, BluetoothGattService::GATT_ERROR_INVALID_LENGTH);
+  SimulateGattCharacteristicReadError(characteristic1_,
+                                      BluetoothGattService::GATT_ERROR_FAILED);
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_INVALID_LENGTH,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_INVALID_LENGTH,
             last_gatt_error_code_);
   EXPECT_EQ(0, observer.gatt_characteristic_value_changed_count());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteError WriteError
 #else
 #define MAYBE_WriteError DISABLED_WriteError
@@ -1293,17 +1827,56 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_WriteError) {
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop;
   std::vector<uint8_t> empty_vector;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_INVALID_LENGTH,
+                      error_code);
+            loop.Quit();
+          }));
+  SimulateGattCharacteristicWriteError(
+      characteristic1_, BluetoothGattService::GATT_ERROR_INVALID_LENGTH);
+  // Only the error above should be reported to the caller.
+  SimulateGattCharacteristicWriteError(characteristic1_,
+                                       BluetoothGattService::GATT_ERROR_FAILED);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteError DeprecatedWriteError
+#else
+#define MAYBE_DeprecatedWriteError DISABLED_DeprecatedWriteError
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic asynchronous error.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt, DeprecatedWriteError) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_DeprecatedWriteError) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
   SimulateGattCharacteristicWriteError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_INVALID_LENGTH);
-  SimulateGattCharacteristicWriteError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_FAILED);
+      characteristic1_, BluetoothGattService::GATT_ERROR_INVALID_LENGTH);
+  SimulateGattCharacteristicWriteError(characteristic1_,
+                                       BluetoothGattService::GATT_ERROR_FAILED);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_INVALID_LENGTH,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_INVALID_LENGTH,
             last_gatt_error_code_);
 }
 
@@ -1320,20 +1893,17 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_ReadSynchronousError) {
 
   SimulateGattCharacteristicReadWillFailSynchronouslyOnce(characteristic1_);
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
   EXPECT_EQ(0, gatt_read_characteristic_attempts_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 
   // After failing once, can succeed:
   ResetEventCounts();
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
   EXPECT_EQ(1, gatt_read_characteristic_attempts_);
   std::vector<uint8_t> empty_vector;
   SimulateGattCharacteristicRead(characteristic1_, empty_vector);
@@ -1354,20 +1924,64 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_WriteSynchronousError) {
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate());
 
   SimulateGattCharacteristicWriteWillFailSynchronouslyOnce(characteristic1_);
+  base::RunLoop loop1;
   std::vector<uint8_t> empty_vector;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop1.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop1.Quit();
+          }));
+  loop1.Run();
+
+  // After failing once, can succeed:
+  ResetEventCounts();
+  base::RunLoop loop2;
+  characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        SUCCEED();
+        loop2.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop2.Quit();
+          }));
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop2.Run();
+}
+
+#if defined(OS_ANDROID)
+#define MAYBE_DeprecatedWriteSynchronousError DeprecatedWriteSynchronousError
+#else
+#define MAYBE_DeprecatedWriteSynchronousError \
+  DISABLED_DeprecatedWriteSynchronousError
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic synchronous error.
+// This test doesn't apply to macOS and WinRT since a synchronous API does not
+// exist.
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteSynchronousError) {
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate());
+
+  SimulateGattCharacteristicWriteWillFailSynchronouslyOnce(characteristic1_);
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
   EXPECT_EQ(0, gatt_write_characteristic_attempts_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 
   // After failing once, can succeed:
   ResetEventCounts();
-  characteristic1_->WriteRemoteCharacteristic(
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
   EXPECT_EQ(1, gatt_write_characteristic_attempts_);
@@ -1377,7 +1991,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_WriteSynchronousError) {
   EXPECT_EQ(0, error_callback_count_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_ReadPending \
   ReadRemoteCharacteristic_ReadPending
 #else
@@ -1400,17 +2014,15 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ));
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
 
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
             last_gatt_error_code_);
 
   // Initial read should still succeed:
@@ -1422,14 +2034,15 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic_WritePending \
   WriteRemoteCharacteristic_WritePending
 #else
 #define MAYBE_WriteRemoteCharacteristic_WritePending \
   DISABLED_WriteRemoteCharacteristic_WritePending
 #endif
-// Tests WriteRemoteCharacteristic error with a pending write operation.
+// Tests WriteRemoteCharacteristic error with a pending write
+// operation.
 #if defined(OS_WIN)
 TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
        WriteRemoteCharacteristic_WritePending) {
@@ -1444,11 +2057,66 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop1;
   std::vector<uint8_t> empty_vector;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        SUCCEED();
+        loop1.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop1.Quit();
+          }));
+  base::RunLoop loop2;
+  characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop2.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS, error_code);
+            loop2.Quit();
+          }));
+
+  loop2.Run();
+
+  // Initial write should still succeed:
+  ResetEventCounts();
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop1.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_WritePending \
+  DeprecatedWriteRemoteCharacteristic_WritePending
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_WritePending \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_WritePending
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic error with a pending write
+// operation.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       DeprecatedWriteRemoteCharacteristic_WritePending) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_WritePending) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
-  characteristic1_->WriteRemoteCharacteristic(
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
 
@@ -1456,7 +2124,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
             last_gatt_error_code_);
 
   // Initial write should still succeed:
@@ -1467,7 +2135,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_ReadRemoteCharacteristic_WritePending \
   ReadRemoteCharacteristic_WritePending
 #else
@@ -1490,19 +2158,69 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ |
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop1;
+  base::RunLoop loop2;
   std::vector<uint8_t> empty_vector;
   characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        SUCCEED();
+        loop1.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop1.Quit();
+          }));
+  characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+      [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+          const std::vector<uint8_t>& data) {
+        EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS, error_code);
+        loop2.Quit();
+      }));
+
+  loop2.Run();
+
+  // Initial write should still succeed:
+  ResetEventCounts();
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop1.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_ReadRemoteCharacteristic_DeprecatedWritePending \
+  ReadRemoteCharacteristic_DeprecatedWritePending
+#else
+#define MAYBE_ReadRemoteCharacteristic_DeprecatedWritePending \
+  DISABLED_ReadRemoteCharacteristic_DeprecatedWritePending
+#endif
+// Tests ReadRemoteCharacteristic error with a pending write operation.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       ReadRemoteCharacteristic_DeprecatedWritePending) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_ReadRemoteCharacteristic_DeprecatedWritePending) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_READ |
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
 
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
             last_gatt_error_code_);
 
   // Initial write should still succeed:
@@ -1513,7 +2231,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_WriteRemoteCharacteristic_ReadPending \
   WriteRemoteCharacteristic_ReadPending
 #else
@@ -1536,18 +2254,68 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       BluetoothRemoteGattCharacteristic::PROPERTY_READ |
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop1;
+  base::RunLoop loop2;
+  std::vector<uint8_t> empty_vector;
+  characteristic1_->ReadRemoteCharacteristic(base::BindLambdaForTesting(
+      [&](absl::optional<BluetoothGattService::GattErrorCode> error_code,
+          const std::vector<uint8_t>& data) {
+        EXPECT_FALSE(error_code.has_value()) << "unexpected failure";
+        loop1.Quit();
+      }));
+  characteristic1_->WriteRemoteCharacteristic(
+      empty_vector, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop2.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS, error_code);
+            loop2.Quit();
+          }));
+  loop2.Run();
+
+  // Initial read should still succeed:
+  ResetEventCounts();
+  SimulateGattCharacteristicRead(characteristic1_, empty_vector);
+  loop1.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_ReadPending \
+  DeprecatedWriteRemoteCharacteristic_ReadPending
+#else
+#define MAYBE_DeprecatedWriteRemoteCharacteristic_ReadPending \
+  DISABLED_DeprecatedWriteRemoteCharacteristic_ReadPending
+#endif
+// Tests DeprecatedWriteRemoteCharacteristic error with a pending Read
+// operation.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       DeprecatedWriteRemoteCharacteristic_ReadPending) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteRemoteCharacteristic_ReadPending) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_READ |
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
   std::vector<uint8_t> empty_vector;
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
-  characteristic1_->WriteRemoteCharacteristic(
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       empty_vector, GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_IN_PROGRESS,
             last_gatt_error_code_);
 
   // Initial read should still succeed:
@@ -1558,7 +2326,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_Notification_During_ReadRemoteCharacteristic \
   Notification_During_ReadRemoteCharacteristic
 #else
@@ -1588,44 +2356,43 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   TestBluetoothAdapterObserver observer(adapter_);
 
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::SUCCESS));
 
   std::vector<uint8_t> notification_value = {111};
   SimulateGattCharacteristicChanged(characteristic1_, notification_value);
   base::RunLoop().RunUntilIdle();
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // Because macOS uses the same event for notifications and read value
   // responses, we can't know what the event was for. Because there is a pending
   // read request we assume is a read request on macOS.
   EXPECT_EQ(notification_value, last_read_value_);
   EXPECT_EQ(notification_value, characteristic1_->GetValue());
   EXPECT_EQ(0, observer.gatt_characteristic_value_changed_count());
-#else   // !defined(OS_MACOSX)
+#else   // !defined(OS_MAC)
   EXPECT_EQ(std::vector<uint8_t>(), last_read_value_);
   EXPECT_EQ(notification_value, characteristic1_->GetValue());
   EXPECT_EQ(1, observer.gatt_characteristic_value_changed_count());
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
   observer.Reset();
   std::vector<uint8_t> read_value = {222};
   SimulateGattCharacteristicRead(characteristic1_, read_value);
   base::RunLoop().RunUntilIdle();
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // There are no pending read requests anymore so we assume the event
   // was a notification.
   EXPECT_EQ(notification_value, last_read_value_);
   EXPECT_EQ(read_value, characteristic1_->GetValue());
   EXPECT_EQ(1, observer.gatt_characteristic_value_changed_count());
-#else   // !defined(OS_MACOSX)
+#else   // !defined(OS_MAC)
   EXPECT_EQ(read_value, last_read_value_);
   EXPECT_EQ(read_value, characteristic1_->GetValue());
   EXPECT_EQ(0, observer.gatt_characteristic_value_changed_count());
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_Notification_During_WriteRemoteCharacteristic \
   Notification_During_WriteRemoteCharacteristic
 #else
@@ -1652,8 +2419,60 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
   TestBluetoothAdapterObserver observer(adapter_);
 
+  base::RunLoop loop;
   std::vector<uint8_t> write_value = {111};
   characteristic1_->WriteRemoteCharacteristic(
+      write_value, WriteType::kWithResponse, base::BindLambdaForTesting([&] {
+        EXPECT_EQ(write_value, last_write_value_);
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            ADD_FAILURE() << "unexpected error: " << error_code;
+            loop.Quit();
+          }));
+
+  std::vector<uint8_t> notification_value = {222};
+  SimulateGattCharacteristicChanged(characteristic1_, notification_value);
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(notification_value, characteristic1_->GetValue());
+  EXPECT_EQ(1, observer.gatt_characteristic_value_changed_count());
+
+  observer.Reset();
+  SimulateGattCharacteristicWrite(characteristic1_);
+  loop.Run();
+}
+
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_Notification_During_DeprecatedWriteRemoteCharacteristic \
+  Notification_During_DeprecatedWriteRemoteCharacteristic
+#else
+#define MAYBE_Notification_During_DeprecatedWriteRemoteCharacteristic \
+  DISABLED_Notification_During_DeprecatedWriteRemoteCharacteristic
+#endif
+// Tests that a notification arriving during a pending write doesn't
+// cause a crash.
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrt,
+       Notification_During_DeprecatedWriteRemoteCharacteristic) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_Notification_During_DeprecatedWriteRemoteCharacteristic) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(StartNotifyBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_NOTIFY |
+          BluetoothRemoteGattCharacteristic::PROPERTY_WRITE,
+      NotifyValueState::NOTIFY));
+
+  TestBluetoothAdapterObserver observer(adapter_);
+
+  std::vector<uint8_t> write_value = {111};
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       write_value, GetCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED));
 
@@ -1671,7 +2490,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(write_value, last_write_value_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_NoNotifyOrIndicate \
   StartNotifySession_NoNotifyOrIndicate
 #else
@@ -1701,11 +2520,11 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_NOT_SUPPORTED,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_NOT_SUPPORTED,
             last_gatt_error_code_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_NoConfigDescriptor \
   StartNotifySession_NoConfigDescriptor
 #else
@@ -1735,11 +2554,11 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_NOT_SUPPORTED,
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_NOT_SUPPORTED,
             last_gatt_error_code_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_MultipleConfigDescriptor \
   StartNotifySession_MultipleConfigDescriptor
 #else
@@ -1769,8 +2588,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, error_callback_count_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1, error_callback_count_);
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
 #if defined(OS_ANDROID)
@@ -1830,7 +2648,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ASSERT_EQ(0u, notify_sessions_.size());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession StartNotifySession
 #else
 #define MAYBE_StartNotifySession DISABLED_StartNotifySession
@@ -1849,7 +2667,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_StartNotifySession) {
       /* properties: NOTIFY */ 0x10, NotifyValueState::NOTIFY));
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_OnIndicate StartNotifySession_OnIndicate
 #else
 #define MAYBE_StartNotifySession_OnIndicate \
@@ -1871,7 +2689,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       /* properties: INDICATE */ 0x20, NotifyValueState::INDICATE));
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_OnNotifyAndIndicate \
   StartNotifySession_OnNotifyAndIndicate
 #else
@@ -1896,7 +2714,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
       NotifyValueState::NOTIFY));
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_Multiple StartNotifySession_Multiple
 #else
 #define MAYBE_StartNotifySession_Multiple DISABLED_StartNotifySession_Multiple
@@ -1946,7 +2764,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_TRUE(notify_sessions_[1]->IsActive());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySessionError_Multiple StartNotifySessionError_Multiple
 #else
 #define MAYBE_StartNotifySessionError_Multiple \
@@ -1980,14 +2798,13 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   ExpectedChangeNotifyValueAttempts(1);
   ExpectedNotifyValue(NotifyValueState::NOTIFY);
   EXPECT_EQ(0, callback_count_);
-  SimulateGattNotifySessionStartError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_FAILED);
+  SimulateGattNotifySessionStartError(characteristic1_,
+                                      BluetoothGattService::GATT_ERROR_FAILED);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(2, error_callback_count_);
   ASSERT_EQ(0u, notify_sessions_.size());
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
 #if defined(OS_ANDROID)
@@ -2024,11 +2841,10 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(0, callback_count_);
   EXPECT_EQ(1, error_callback_count_);
   ASSERT_EQ(0u, notify_sessions_.size());
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StartNotifySession_BeforeDeleted StartNotifySession_BeforeDeleted
 #else
 #define MAYBE_StartNotifySession_BeforeDeleted \
@@ -2083,7 +2899,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(notify_sessions_[0]->IsActive());
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_StartNotifySession_Reentrant_Success_Success \
   StartNotifySession_Reentrant_Success_Success
 #else
@@ -2151,8 +2967,8 @@ TEST_P(BluetoothRemoteGattCharacteristicTestWin32Only,
       BluetoothGattDescriptor::ClientCharacteristicConfigurationUuid().value());
   ASSERT_EQ(1u, characteristic1_->GetDescriptors().size());
 
-  SimulateGattNotifySessionStartError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_UNKNOWN);
+  SimulateGattNotifySessionStartError(characteristic1_,
+                                      BluetoothGattService::GATT_ERROR_UNKNOWN);
 
   characteristic1_->StartNotifySession(
       GetReentrantStartNotifySessionSuccessCallback(Call::NOT_EXPECTED,
@@ -2175,7 +2991,7 @@ TEST_P(BluetoothRemoteGattCharacteristicTestWin32Only,
 }
 #endif
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession StopNotifySession
 #else
 #define MAYBE_StopNotifySession DISABLED_StopNotifySession
@@ -2207,7 +3023,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_StopNotifySession) {
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_SessionDeleted StopNotifySession_SessionDeleted
 #else
 #define MAYBE_StopNotifySession_SessionDeleted \
@@ -2241,7 +3057,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_SessionDeleted2 \
   StopNotifySession_SessionDeleted2
 #else
@@ -2311,7 +3127,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Cancelled StopNotifySession_Cancelled
 #else
 #define MAYBE_StopNotifySession_Cancelled DISABLED_StopNotifySession_Cancelled
@@ -2345,7 +3161,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   DeleteDevice(device_);  // TODO(576906) delete only the characteristic.
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_AfterDeleted StopNotifySession_AfterDeleted
 #else
 #define MAYBE_StopNotifySession_AfterDeleted \
@@ -2392,7 +3208,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(notify_sessions_[0]->IsActive());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_OnIndicate StopNotifySession_OnIndicate
 #else
 #define MAYBE_StopNotifySession_OnIndicate DISABLED_StopNotifySession_OnIndicate
@@ -2426,7 +3242,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_OnNotifyAndIndicate \
   StopNotifySession_OnNotifyAndIndicate
 #else
@@ -2464,7 +3280,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Error StopNotifySession_Error
 #else
 #define MAYBE_StopNotifySession_Error DISABLED_StopNotifySession_Error
@@ -2491,8 +3307,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_StopNotifySession_Error) {
   EXPECT_TRUE(characteristic1_->IsNotifying());
 
   notify_sessions_[0]->Stop(GetStopNotifyCallback(Call::EXPECTED));
-  SimulateGattNotifySessionStopError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_UNKNOWN);
+  SimulateGattNotifySessionStopError(characteristic1_,
+                                     BluetoothGattService::GATT_ERROR_UNKNOWN);
   base::RunLoop().RunUntilIdle();
 
   // Check that the notify session is inactive.
@@ -2500,7 +3316,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_StopNotifySession_Error) {
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Multiple1 StopNotifySession_Multiple1
 #else
 #define MAYBE_StopNotifySession_Multiple1 DISABLED_StopNotifySession_Multiple1
@@ -2556,7 +3372,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Multiple2 StopNotifySession_Multiple2
 #else
 #define MAYBE_StopNotifySession_Multiple2 DISABLED_StopNotifySession_Multiple2
@@ -2623,7 +3439,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_StopStart StopNotifySession_StopStart
 #else
 #define MAYBE_StopNotifySession_StopStart DISABLED_StopNotifySession_StopStart
@@ -2683,7 +3499,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_TRUE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_StartStopStart StopNotifySession_StartStopStart
 #else
 #define MAYBE_StopNotifySession_StartStopStart \
@@ -2747,7 +3563,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_TRUE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_StopStopStart StopNotifySession_StopStopStart
 #else
 #define MAYBE_StopNotifySession_StopStopStart \
@@ -2822,7 +3638,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_TRUE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Reentrant_Success_Stop \
   StopNotifySession_Reentrant_Success_Stop
 #else
@@ -2851,14 +3667,14 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
 
   // Start notify session
   characteristic1_->StartNotifySession(
-      base::Bind(
+      base::BindOnce(
           [](BluetoothRemoteGattCharacteristic::NotifySessionCallback
-                 notifyCallback,
-             base::Closure stopNotifyCallback,
+                 notify_callback,
+             base::OnceClosure stop_notify_callback,
              std::unique_ptr<BluetoothGattNotifySession> session) {
             BluetoothGattNotifySession* s = session.get();
-            notifyCallback.Run(std::move(session));
-            s->Stop(stopNotifyCallback);
+            std::move(notify_callback).Run(std::move(session));
+            s->Stop(std::move(stop_notify_callback));
           },
           GetNotifyCallback(Call::EXPECTED),
           GetStopNotifyCallback(Call::EXPECTED)),
@@ -2877,7 +3693,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Reentrant_Stop_StartSuccess \
   StopNotifySession_Reentrant_Stop_StartSuccess
 #else
@@ -2905,12 +3721,13 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(characteristic1_, notify_sessions_[0]->GetCharacteristic());
   EXPECT_TRUE(characteristic1_->IsNotifying());
 
-  notify_sessions_[0]->Stop(base::Bind(
+  notify_sessions_[0]->Stop(base::BindOnce(
       [](BluetoothRemoteGattCharacteristic* characteristic,
          BluetoothRemoteGattCharacteristic::NotifySessionCallback
-             notifyCallback,
-         BluetoothRemoteGattCharacteristic::ErrorCallback errorCallback) {
-        characteristic->StartNotifySession(notifyCallback, errorCallback);
+             notify_callback,
+         BluetoothRemoteGattCharacteristic::ErrorCallback error_callback) {
+        characteristic->StartNotifySession(std::move(notify_callback),
+                                           std::move(error_callback));
       },
       characteristic1_, GetNotifyCallback(Call::EXPECTED),
       GetGattErrorCallback(Call::NOT_EXPECTED)));
@@ -2932,7 +3749,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_TRUE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_StopNotifySession_Reentrant_Stop_StartError \
   StopNotifySession_Reentrant_Stop_StartError
 #else
@@ -2960,12 +3777,13 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(characteristic1_, notify_sessions_[0]->GetCharacteristic());
   EXPECT_TRUE(characteristic1_->IsNotifying());
 
-  notify_sessions_[0]->Stop(base::Bind(
+  notify_sessions_[0]->Stop(base::BindOnce(
       [](BluetoothRemoteGattCharacteristic* characteristic,
          BluetoothRemoteGattCharacteristic::NotifySessionCallback
-             notifyCallback,
-         BluetoothRemoteGattCharacteristic::ErrorCallback errorCallback) {
-        characteristic->StartNotifySession(notifyCallback, errorCallback);
+             notify_callback,
+         BluetoothRemoteGattCharacteristic::ErrorCallback error_callback) {
+        characteristic->StartNotifySession(std::move(notify_callback),
+                                           std::move(error_callback));
       },
       characteristic1_, GetNotifyCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED)));
@@ -2975,8 +3793,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(notify_sessions_[0]->IsActive());
   EXPECT_FALSE(characteristic1_->IsNotifying());
 
-  SimulateGattNotifySessionStartError(
-      characteristic1_, BluetoothRemoteGattService::GATT_ERROR_FAILED);
+  SimulateGattNotifySessionStartError(characteristic1_,
+                                      BluetoothGattService::GATT_ERROR_FAILED);
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(1u, notify_sessions_.size());
   ASSERT_TRUE(notify_sessions_[0]);
@@ -2985,7 +3803,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_FALSE(characteristic1_->IsNotifying());
 }
 
-#if defined(OS_MACOSX) || defined(OS_WIN)
+#if defined(OS_MAC) || defined(OS_WIN)
 #define MAYBE_GattCharacteristicAdded GattCharacteristicAdded
 #else
 #define MAYBE_GattCharacteristicAdded DISABLED_GattCharacteristicAdded
@@ -3009,7 +3827,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_GattCharacteristicAdded) {
   EXPECT_EQ(1, observer.gatt_services_discovered_count());
 }
 
-#if defined(OS_ANDROID) || defined(OS_MACOSX)
+#if defined(OS_ANDROID) || defined(OS_MAC)
 #define MAYBE_GattCharacteristicValueChanged GattCharacteristicValueChanged
 #else
 #define MAYBE_GattCharacteristicValueChanged \
@@ -3113,6 +3931,60 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE("Did not crash!");
   EXPECT_EQ(0, observer.gatt_characteristic_value_changed_count());
+}
+
+// Tests that closing the GATT connection during a characteristic
+// value notification is safe.
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_GattCharacteristicValueChanged_DisconnectDuring \
+  GattCharacteristicValueChanged_DisconnectDuring
+#else
+#define MAYBE_GattCharacteristicValueChanged_DisconnectDuring \
+  DISABLED_GattCharacteristicValueChanged_DisconnectDuring
+#endif
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
+       GattCharacteristicValueChanged_DisconnectDuring) {
+#else
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_GattCharacteristicValueChanged_DisconnectDuring) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(StartNotifyBoilerplate(
+      /* properties: NOTIFY */ 0x10, NotifyValueState::NOTIFY));
+  MockBluetoothAdapter::Observer observer1(adapter_);
+  MockBluetoothAdapter::Observer observer2(adapter_);
+
+  // |observer1| will be notified first and close the GATT connection which
+  // may prevent |observer2| from being notified if |characteristic1_| has been
+  // freed.
+  base::RunLoop loop;
+  EXPECT_CALL(observer1, GattCharacteristicValueChanged(adapter_.get(),
+                                                        characteristic1_, _))
+      .WillOnce(
+          Invoke([&](BluetoothAdapter*, BluetoothRemoteGattCharacteristic*,
+                     const std::vector<uint8_t>& value) {
+            gatt_connections_[0]->Disconnect();
+            loop.Quit();
+          }));
+  EXPECT_CALL(observer2, GattCharacteristicValueChanged(adapter_.get(),
+                                                        characteristic1_, _))
+      .Times(testing::AtMost(1))
+      .WillRepeatedly(
+          Invoke([&](BluetoothAdapter*,
+                     BluetoothRemoteGattCharacteristic* characteristic,
+                     const std::vector<uint8_t>& value) {
+            // Call a method on |characteristic| to check the pointer is still
+            // valid.
+            EXPECT_EQ(value, characteristic->GetValue());
+          }));
+
+  std::vector<uint8_t> empty_vector;
+  SimulateGattCharacteristicChanged(characteristic1_, empty_vector);
+  loop.Run();
 }
 
 #if defined(OS_ANDROID)
@@ -3259,12 +4131,10 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_ReadDuringDisconnect) {
   SimulateGattDisconnection(device_);
   // Do not yet call RunUntilIdle() to process the disconnect task.
   characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      GetReadValueCallback(Call::EXPECTED, Result::FAILURE));
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
 #if defined(OS_ANDROID)
@@ -3284,18 +4154,54 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, MAYBE_WriteDuringDisconnect) {
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
 
+  base::RunLoop loop;
+  SimulateGattDisconnection(device_);
+  // Do not yet call loop.Run() to process the disconnect task.
+  characteristic1_->WriteRemoteCharacteristic(
+      std::vector<uint8_t>(), WriteType::kWithResponse,
+      base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop.Quit();
+          }));
+
+  loop.Run();
+}
+
+#if defined(OS_ANDROID)
+#define MAYBE_DeprecatedWriteDuringDisconnect DeprecatedWriteDuringDisconnect
+#else
+#define MAYBE_DeprecatedWriteDuringDisconnect \
+  DISABLED_DeprecatedWriteDuringDisconnect
+#endif
+// Tests that write requests after a device disconnects but before the
+// disconnect task runs result in an error.
+// macOS: Does not apply. All events arrive on the UI Thread.
+// TODO(crbug.com/694102): Enable this test on Windows.
+TEST_F(BluetoothRemoteGattCharacteristicTest,
+       MAYBE_DeprecatedWriteDuringDisconnect) {
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
+
   SimulateGattDisconnection(device_);
   // Do not yet call RunUntilIdle() to process the disconnect task.
-  characteristic1_->WriteRemoteCharacteristic(
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_WriteWithoutResponseOnlyCharacteristic_WriteRemoteCharacteristicDuringDisconnect \
   WriteWithoutResponseOnlyCharacteristic_WriteRemoteCharacteristicDuringDisconnect
 #else
@@ -3322,17 +4228,139 @@ TEST_F(
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
 
+  base::RunLoop loop;
   characteristic1_->WriteRemoteCharacteristic(
+      std::vector<uint8_t>(), WriteType::kWithoutResponse,
+      base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop.Quit();
+          }));
+  SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
+
+  loop.Run();
+}
+
+#if defined(OS_MAC)
+#define MAYBE_WriteWithoutResponseOnlyCharacteristic_DeprecatedWriteRemoteCharacteristicDuringDisconnect \
+  WriteWithoutResponseOnlyCharacteristic_DeprecatedWriteRemoteCharacteristicDuringDisconnect
+#else
+#define MAYBE_WriteWithoutResponseOnlyCharacteristic_DeprecatedWriteRemoteCharacteristicDuringDisconnect \
+  DISABLED_WriteWithoutResponseOnlyCharacteristic_DeprecatedWriteRemoteCharacteristicDuringDisconnect
+#endif
+// Tests that writing without response during a disconnect results in an error.
+// Only applies to macOS and WinRT whose events arrive all on the UI thread. See
+// other *DuringDisconnect tests for Android and Windows whose events arrive on
+// a different thread.
+#if defined(OS_WIN)
+TEST_P(
+    BluetoothRemoteGattCharacteristicTestWinrtOnly,
+    WriteWithoutResponseOnlyCharacteristic_DeprecatedWriteRemoteCharacteristicDuringDisconnect) {
+#else
+TEST_F(
+    BluetoothRemoteGattCharacteristicTest,
+    MAYBE_WriteWithoutResponseOnlyCharacteristic_DeprecatedWriteRemoteCharacteristicDuringDisconnect) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
+
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
       std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
       GetGattErrorCallback(Call::EXPECTED));
   SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
-#if defined(OS_MACOSX)
+// Tests that closing the GATT connection when a characteristic value write
+// fails due to a disconnect is safe.
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_WriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect \
+  WriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect
+#else
+#define MAYBE_WriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect \
+  DISABLED_WriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect
+#endif
+#if defined(OS_WIN)
+TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
+       WriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect) {
+#else
+TEST_F(
+    BluetoothRemoteGattCharacteristicTest,
+    MAYBE_WriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
+
+  base::RunLoop loop;
+  characteristic1_->WriteRemoteCharacteristic(
+      std::vector<uint8_t>(), WriteType::kWithoutResponse,
+      base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            gatt_connections_[0]->Disconnect();
+            loop.Quit();
+          }));
+  SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
+  loop.Run();
+}
+
+// Tests that closing the GATT connection when a characteristic value write
+// fails due to a disconnect is safe.
+#if defined(OS_ANDROID) || defined(OS_MAC)
+#define MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect \
+  DeprecatedWriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect
+#else
+#define MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect \
+  DISABLED_DeprecatedWriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect
+#endif
+#if defined(OS_WIN)
+TEST_P(
+    BluetoothRemoteGattCharacteristicTestWinrtOnly,
+    DeprecatedWriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect) {
+#else
+TEST_F(
+    BluetoothRemoteGattCharacteristicTest,
+    MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_CloseConnectionDuringDisconnect) {
+#endif
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
+
+  base::RunLoop loop;
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
+      std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            gatt_connections_[0]->Disconnect();
+            loop.Quit();
+          }));
+  SimulateDeviceBreaksConnection(adapter_->GetDevices()[0]);
+  loop.Run();
+}
+
+#if defined(OS_MAC)
 #define MAYBE_WriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic \
   WriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic
 #else
@@ -3353,20 +4381,59 @@ TEST_F(
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
 
+  base::RunLoop loop;
   characteristic1_->WriteRemoteCharacteristic(
-      std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
+      std::vector<uint8_t>(), WriteType::kWithoutResponse,
+      base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop.Quit();
+          }));
   gatt_connections_[0]->Disconnect();
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  loop.Run();
 
   SimulateGattDisconnection(device_);
   base::RunLoop().RunUntilIdle();
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
+#define MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic \
+  DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic
+#else
+#define MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic \
+  DISABLED_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic
+#endif
+// Tests that disconnecting right after a write without response results in an
+// error.
+// TODO(crbug.com/726534): Enable on other platforms depending on the resolution
+// of crbug.com/726534.
+TEST_F(
+    BluetoothRemoteGattCharacteristicTest,
+    MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledDuringWriteRemoteCharacteristic) {
+  if (!PlatformSupportsLowEnergy()) {
+    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
+    return;
+  }
+  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
+      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
+
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
+      std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
+      GetGattErrorCallback(Call::EXPECTED));
+  gatt_connections_[0]->Disconnect();
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
+
+  SimulateGattDisconnection(device_);
+  base::RunLoop().RunUntilIdle();
+}
+
+#if defined(OS_MAC)
 #define MAYBE_WriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic \
   WriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic
 #else
@@ -3387,159 +4454,56 @@ TEST_F(
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
 
+  base::RunLoop loop;
   gatt_connections_[0]->Disconnect();
   characteristic1_->WriteRemoteCharacteristic(
-      std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
-      GetGattErrorCallback(Call::EXPECTED));
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+      std::vector<uint8_t>(), WriteType::kWithoutResponse,
+      base::BindLambdaForTesting([&] {
+        ADD_FAILURE() << "unexpected success";
+        loop.Quit();
+      }),
+      base::BindLambdaForTesting(
+          [&](BluetoothGattService::GattErrorCode error_code) {
+            EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, error_code);
+            loop.Quit();
+          }));
+  loop.Run();
 
   SimulateGattDisconnection(device_);
   base::RunLoop().RunUntilIdle();
 }
 
-#if defined(OS_MACOSX)
-#define MAYBE_WriteWithoutResponse_PropertyNotPresent \
-  WriteWithoutResponse_PropertyNotPresent
+#if defined(OS_MAC)
+#define MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic \
+  DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic
 #else
-#define MAYBE_WriteWithoutResponse_PropertyNotPresent \
-  DISABLED_WriteWithoutResponse_PropertyNotPresent
+#define MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic \
+  DISABLED_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic
 #endif
-// Tests that WriteWithoutResponse fails when a characteristic does not have the
-// required property.
-// TODO(https://crbug.com/831524): Enable for other platforms once supported.
-#if defined(OS_WIN)
-TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
-       WriteWithoutResponse_PropertyNotPresent) {
-#else
-TEST_F(BluetoothRemoteGattCharacteristicTest,
-       MAYBE_WriteWithoutResponse_PropertyNotPresent) {
-#endif
+// Tests that disconnecting right before a write without response results in an
+// error.
+// TODO(crbug.com/726534): Enable on other platforms depending on the resolution
+// of crbug.com/726534.
+TEST_F(
+    BluetoothRemoteGattCharacteristicTest,
+    MAYBE_DeprecatedWriteWithoutResponseOnlyCharacteristic_DisconnectCalledBeforeWriteRemoteCharacteristic) {
   if (!PlatformSupportsLowEnergy()) {
     LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
     return;
   }
   ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
-      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE));
-
-  std::vector<uint8_t> test_vector = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
-  EXPECT_FALSE(characteristic1_->WriteWithoutResponse(test_vector));
-}
-
-#if defined(OS_MACOSX)
-#define MAYBE_WriteWithoutResponse_PendingWrite \
-  WriteWithoutResponse_PendingWrite
-#else
-#define MAYBE_WriteWithoutResponse_PendingWrite \
-  DISABLED_WriteWithoutResponse_PendingWrite
-#endif
-// Tests that WriteWithoutResponse fails when a characteristic already has a
-// pending write.
-// TODO(https://crbug.com/831524): Enable for other platforms once supported.
-#if defined(OS_WIN)
-TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
-       WriteWithoutResponse_PendingWrite) {
-#else
-TEST_F(BluetoothRemoteGattCharacteristicTest,
-       MAYBE_WriteWithoutResponse_PendingWrite) {
-#endif
-  if (!PlatformSupportsLowEnergy()) {
-    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
-    return;
-  }
-  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
-      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE |
       BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
 
-  std::vector<uint8_t> test_vector = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
-  characteristic1_->WriteRemoteCharacteristic(
-      test_vector, GetCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
-
-  // Explicitly make sure that the callback has not been invoked yet. Since
-  // WriteRemoteCharacteristic is still pending, this results in an error for
-  // WriteWithoutResponse.
-  EXPECT_EQ(0, callback_count_);
-  EXPECT_FALSE(characteristic1_->WriteWithoutResponse(test_vector));
-
-  // Test that the failed WriteWithoutReponse request does not interfere with
-  // the pending WriteRemoteCharacteristic request.
-  SimulateGattCharacteristicWrite(characteristic1_);
+  gatt_connections_[0]->Disconnect();
+  characteristic1_->DeprecatedWriteRemoteCharacteristic(
+      std::vector<uint8_t>(), GetCallback(Call::NOT_EXPECTED),
+      GetGattErrorCallback(Call::EXPECTED));
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1, callback_count_);
-  EXPECT_EQ(test_vector, last_write_value_);
-}
 
-#if defined(OS_MACOSX)
-#define MAYBE_WriteWithoutResponse_PendingRead WriteWithoutResponse_PendingRead
-#else
-#define MAYBE_WriteWithoutResponse_PendingRead \
-  DISABLED_WriteWithoutResponse_PendingRead
-#endif
-// Tests that WriteWithoutResponse fails when a characteristic already has a
-// pending read.
-// TODO(https://crbug.com/831524): Enable for other platforms once supported.
-#if defined(OS_WIN)
-TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
-       WriteWithoutResponse_PendingRead) {
-#else
-TEST_F(BluetoothRemoteGattCharacteristicTest,
-       MAYBE_WriteWithoutResponse_PendingRead) {
-#endif
-  if (!PlatformSupportsLowEnergy()) {
-    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
-    return;
-  }
-  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
-      BluetoothRemoteGattCharacteristic::PROPERTY_READ |
-      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 
-  characteristic1_->ReadRemoteCharacteristic(
-      GetReadValueCallback(Call::EXPECTED),
-      GetGattErrorCallback(Call::NOT_EXPECTED));
-
-  // Explicitly make sure that the callback has not been invoked yet. Since
-  // ReadRemoteCharacteristic is still pending, this results in an error for
-  // WriteWithoutResponse.
-  EXPECT_EQ(0, callback_count_);
-  std::vector<uint8_t> test_vector = {0, 1, 2, 3, 4, 0xf, 0xf0, 0xff};
-  EXPECT_FALSE(characteristic1_->WriteWithoutResponse(test_vector));
-
-  // Test that the failed WriteWithoutReponse request does not interfere with
-  // the pending ReadRemoteCharacteristic request.
-  SimulateGattCharacteristicRead(characteristic1_, test_vector);
+  SimulateGattDisconnection(device_);
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(1, callback_count_);
-  EXPECT_EQ(test_vector, last_read_value_);
-}
-
-#if defined(OS_MACOSX)
-#define MAYBE_WriteWithoutResponse_Success WriteWithoutResponse_Success
-#else
-#define MAYBE_WriteWithoutResponse_Success DISABLED_WriteWithoutResponse_Success
-#endif
-// Tests that WriteWithoutResponse indicates success if the proper conditions
-// are met.
-// TODO(https://crbug.com/831524): Enable for other platforms once supported.
-#if defined(OS_WIN)
-TEST_P(BluetoothRemoteGattCharacteristicTestWinrtOnly,
-       WriteWithoutResponse_Success) {
-#else
-TEST_F(BluetoothRemoteGattCharacteristicTest,
-       MAYBE_WriteWithoutResponse_Success) {
-#endif
-  if (!PlatformSupportsLowEnergy()) {
-    LOG(WARNING) << "Low Energy Bluetooth unavailable, skipping unit test.";
-    return;
-  }
-  ASSERT_NO_FATAL_FAILURE(FakeCharacteristicBoilerplate(
-      BluetoothRemoteGattCharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE));
-
-  std::vector<uint8_t> test_vector = {1, 2, 3, 4};
-  EXPECT_TRUE(characteristic1_->WriteWithoutResponse(test_vector));
-  EXPECT_EQ(test_vector, last_write_value_);
 }
 
 #if defined(OS_ANDROID)
@@ -3572,8 +4536,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
                                        GetGattErrorCallback(Call::EXPECTED));
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(BluetoothRemoteGattService::GATT_ERROR_FAILED,
-            last_gatt_error_code_);
+  EXPECT_EQ(BluetoothGattService::GATT_ERROR_FAILED, last_gatt_error_code_);
 }
 
 #if defined(OS_ANDROID)
@@ -3628,7 +4591,7 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   base::RunLoop().RunUntilIdle();
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 // Tests to receive a services changed notification from macOS, while
 // discovering descriptors. This test simulate having 2 descriptor scan at the
 // same time. Only once both descriptor scanning is done, the gatt device is
@@ -3644,8 +4607,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   InitWithFakeAdapter();
   StartLowEnergyDiscoverySession();
   BluetoothDevice* device = SimulateLowEnergyDevice(3);
-  device->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                               GetConnectErrorCallback(Call::NOT_EXPECTED));
+  device->CreateGattConnection(
+      GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
 
   TestBluetoothAdapterObserver observer(adapter_);
 
@@ -3691,9 +4654,9 @@ TEST_F(BluetoothRemoteGattCharacteristicTest,
   EXPECT_EQ(1, observer.gatt_service_changed_count());
   EXPECT_EQ(1, observer.device_changed_count());
 }
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 // Simulates to receive an extra discovery descriptor notifications from  macOS.
 // Those notifications should be ignored.
 // Android: This test doesn't apply to Android because there is no services
@@ -3706,8 +4669,8 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, ExtraDidDiscoverDescriptorsCall) {
   InitWithFakeAdapter();
   StartLowEnergyDiscoverySession();
   BluetoothDevice* device = SimulateLowEnergyDevice(3);
-  device->CreateGattConnection(GetGattConnectionCallback(Call::EXPECTED),
-                               GetConnectErrorCallback(Call::NOT_EXPECTED));
+  device->CreateGattConnection(
+      GetGattConnectionCallback(Call::EXPECTED, Result::SUCCESS));
 
   TestBluetoothAdapterObserver observer(adapter_);
 
@@ -3742,23 +4705,22 @@ TEST_F(BluetoothRemoteGattCharacteristicTest, ExtraDidDiscoverDescriptorsCall) {
   SimulateDidDiscoverDescriptorsMac(characteristic);  // Extra system call.
   EXPECT_EQ(2, observer.device_changed_count());
 }
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
 #if defined(OS_WIN)
-INSTANTIATE_TEST_SUITE_P(
-    /* no prefix */,
-    BluetoothRemoteGattCharacteristicTestWinrt,
-    ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All,
+                         BluetoothRemoteGattCharacteristicTestWinrt,
+                         ::testing::ValuesIn(kBluetoothTestWinrtParamAll));
 
 INSTANTIATE_TEST_SUITE_P(
-    /* no prefix */,
+    All,
     BluetoothRemoteGattCharacteristicTestWin32Only,
-    ::testing::Values(false));
+    ::testing::ValuesIn(kBluetoothTestWinrtParamWin32Only));
 
 INSTANTIATE_TEST_SUITE_P(
-    /* no prefix */,
+    All,
     BluetoothRemoteGattCharacteristicTestWinrtOnly,
-    ::testing::Values(true));
+    ::testing::ValuesIn(kBluetoothTestWinrtParamWinrtOnly));
 #endif  // defined(OS_WIN)
 
 }  // namespace device

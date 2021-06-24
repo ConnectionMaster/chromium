@@ -7,10 +7,13 @@
 
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
+#include "chrome/browser/web_applications/components/web_application_info.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/gfx/image/image_skia.h"
 #include "url/gurl.h"
 
 namespace web_app {
@@ -34,36 +37,55 @@ enum {
 
 }  // namespace icon_size
 
-struct BitmapAndSource {
-  BitmapAndSource();
-  BitmapAndSource(const GURL& source_url_p, const SkBitmap& bitmap_p);
-  ~BitmapAndSource();
+using SizeToBitmap = std::map<SquareSizePx, SkBitmap>;
 
-  GURL source_url;
-  SkBitmap bitmap;
-};
+// Returns icon sizes to be generated from downloaded icons.
+std::set<SquareSizePx> SizesToGenerate();
 
 // This finds the closest not-smaller bitmap in |bitmaps| for each size in
 // |sizes| and resizes it to that size. This returns a map of sizes to bitmaps
 // which contains only bitmaps of a size in |sizes| and at most one bitmap of
 // each size.
-std::map<int, BitmapAndSource> ConstrainBitmapsToSizes(
-    const std::vector<BitmapAndSource>& bitmaps,
-    const std::set<int>& sizes);
+SizeToBitmap ConstrainBitmapsToSizes(const std::vector<SkBitmap>& bitmaps,
+                                     const std::set<SquareSizePx>& sizes);
 
 // Generates a square container icon of |output_size| by drawing the given
-// |letter| into a rounded background of |color|.
-SkBitmap GenerateBitmap(int output_size, SkColor color, char letter);
+// |icon_letter| into a rounded background of |color|.
+SkBitmap GenerateBitmap(SquareSizePx output_size,
+                        SkColor color,
+                        char16_t icon_letter);
+
+// Returns the first letter from |app_url| that will be painted on the generated
+// icon.
+char16_t GenerateIconLetterFromUrl(const GURL& app_url);
+
+// Returns the first letter from |app_name| that will be painted on the
+// generated icon.
+char16_t GenerateIconLetterFromAppName(const std::u16string& app_name);
 
 // Resize icons to the accepted sizes, and generate any that are missing.
-// Note that |app_url| is the launch URL for the app.
+// Note that |icon_letter| is the first letter of app name if available
+// otherwise the first letter of app url.
 // Output: |generated_icon_color| is the color to use if an icon needs to be
-// generated for the web app.
-std::map<int, BitmapAndSource> ResizeIconsAndGenerateMissing(
-    const std::vector<BitmapAndSource>& icons,
-    const std::set<int>& sizes_to_generate,
-    const GURL& app_url,
-    SkColor* generated_icon_color);
+// generated for the web app. |is_generated_icon| represents whether the icons
+// were generated.
+SizeToBitmap ResizeIconsAndGenerateMissing(
+    const std::vector<SkBitmap>& icons,
+    const std::set<SquareSizePx>& sizes_to_generate,
+    char16_t icon_letter,
+    SkColor* generated_icon_color,
+    bool* is_generated_icon);
+
+// Generate icons for default sizes, using the first letter of the application
+// name and some background color. |app_name| is encoded as UTF8.
+SizeToBitmap GenerateIcons(const std::string& app_name,
+                           SkColor background_icon_color);
+
+// Converts any image with arbitrary RGB channels to a monochrome image
+// according to the spec.
+// https://www.w3.org/TR/appmanifest/#monochrome-icons-and-solid-fills
+gfx::ImageSkia ConvertImageToSolidFillMonochrome(SkColor solid_color,
+                                                 const gfx::ImageSkia& image);
 
 }  // namespace web_app
 

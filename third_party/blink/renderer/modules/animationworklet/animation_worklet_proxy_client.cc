@@ -8,13 +8,15 @@
 
 #include "base/metrics/histogram_macros.h"
 #include "base/timer/elapsed_timer.h"
+#include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/renderer/core/animation/worklet_animation_controller.h"
 #include "third_party/blink/renderer/core/dom/document.h"
-#include "third_party/blink/renderer/core/frame/web_frame_widget_base.h"
+#include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/graphics/animation_worklet_mutator_dispatcher_impl.h"
+#include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
 
@@ -39,7 +41,8 @@ AnimationWorkletProxyClient::AnimationWorkletProxyClient(
     base::WeakPtr<AnimationWorkletMutatorDispatcherImpl>
         main_thread_mutator_dispatcher,
     scoped_refptr<base::SingleThreadTaskRunner> main_thread_mutator_runner)
-    : worklet_id_(worklet_id),
+    : Supplement(nullptr),
+      worklet_id_(worklet_id),
       state_(RunState::kUninitialized),
       next_global_scope_switch_countdown_(0),
       current_global_scope_index_(0) {
@@ -57,7 +60,7 @@ AnimationWorkletProxyClient::AnimationWorkletProxyClient(
   }
 }
 
-void AnimationWorkletProxyClient::Trace(blink::Visitor* visitor) {
+void AnimationWorkletProxyClient::Trace(Visitor* visitor) const {
   Supplement<WorkerClients>::Trace(visitor);
   AnimationWorkletMutator::Trace(visitor);
 }
@@ -86,7 +89,7 @@ void AnimationWorkletProxyClient::SynchronizeAnimatorName(
   for (auto& mutator_item : mutator_items_) {
     PostCrossThreadTask(
         *mutator_item.mutator_runner, FROM_HERE,
-        CrossThreadBind(
+        CrossThreadBindOnce(
             &AnimationWorkletMutatorDispatcherImpl::SynchronizeAnimatorName,
             mutator_item.mutator_dispatcher, animator_name));
   }
@@ -118,10 +121,11 @@ void AnimationWorkletProxyClient::AddGlobalScope(
   for (auto& mutator_item : mutator_items_) {
     PostCrossThreadTask(
         *mutator_item.mutator_runner, FROM_HERE,
-        CrossThreadBind(&AnimationWorkletMutatorDispatcherImpl::
-                            RegisterAnimationWorkletMutator,
-                        mutator_item.mutator_dispatcher,
-                        WrapCrossThreadPersistent(this), global_scope_runner));
+        CrossThreadBindOnce(&AnimationWorkletMutatorDispatcherImpl::
+                                RegisterAnimationWorkletMutator,
+                            mutator_item.mutator_dispatcher,
+                            WrapCrossThreadPersistent(this),
+                            global_scope_runner));
   }
 }
 
@@ -132,10 +136,10 @@ void AnimationWorkletProxyClient::Dispose() {
     for (auto& mutator_item : mutator_items_) {
       PostCrossThreadTask(
           *mutator_item.mutator_runner, FROM_HERE,
-          CrossThreadBind(&AnimationWorkletMutatorDispatcherImpl::
-                              UnregisterAnimationWorkletMutator,
-                          mutator_item.mutator_dispatcher,
-                          WrapCrossThreadPersistent(this)));
+          CrossThreadBindOnce(&AnimationWorkletMutatorDispatcherImpl::
+                                  UnregisterAnimationWorkletMutator,
+                              mutator_item.mutator_dispatcher,
+                              WrapCrossThreadPersistent(this)));
     }
   }
   state_ = RunState::kDisposed;
@@ -210,17 +214,25 @@ AnimationWorkletProxyClient* AnimationWorkletProxyClient::FromDocument(
   WebLocalFrameImpl* local_frame =
       WebLocalFrameImpl::FromFrame(document->GetFrame());
 
-  scoped_refptr<base::SingleThreadTaskRunner> compositor_host_queue;
+  // By default web tests run without threaded compositing. See
+  // https://crbug.com/770028. If threaded compositing is disabled, we
+  // run on the main thread's compositor task runner otherwise we run
+  // tasks on the compositor thread's default task runner.
+  scoped_refptr<base::SingleThreadTaskRunner> compositor_host_queue =
+      Thread::CompositorThread()
+          ? Thread::CompositorThread()->GetTaskRunner()
+          : local_frame->GetAgentGroupScheduler()->CompositorTaskRunner();
   base::WeakPtr<AnimationWorkletMutatorDispatcherImpl>
       compositor_mutator_dispatcher =
           local_frame->LocalRootFrameWidget()
-              ->EnsureCompositorMutatorDispatcher(&compositor_host_queue);
+              ->EnsureCompositorMutatorDispatcher(compositor_host_queue);
 
-  scoped_refptr<base::SingleThreadTaskRunner> main_thread_host_queue;
+  scoped_refptr<base::SingleThreadTaskRunner> main_thread_host_queue =
+      local_frame->GetAgentGroupScheduler()->CompositorTaskRunner();
   base::WeakPtr<AnimationWorkletMutatorDispatcherImpl>
       main_thread_mutator_dispatcher =
           document->GetWorkletAnimationController()
-              .EnsureMainThreadMutatorDispatcher(&main_thread_host_queue);
+              .EnsureMainThreadMutatorDispatcher(main_thread_host_queue);
 
   return MakeGarbageCollected<AnimationWorkletProxyClient>(
       worklet_id, std::move(compositor_mutator_dispatcher),

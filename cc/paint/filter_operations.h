@@ -6,11 +6,11 @@
 #define CC_PAINT_FILTER_OPERATIONS_H_
 
 #include <stddef.h>
-
 #include <memory>
+#include <string>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "cc/paint/filter_operation.h"
 
 namespace base {
@@ -62,8 +62,10 @@ class CC_PAINT_EXPORT FilterOperations {
   gfx::Rect MapRectReverse(const gfx::Rect& rect, const SkMatrix& matrix) const;
 
   bool HasFilterThatMovesPixels() const;
+  float MaximumPixelMovement() const;
   bool HasFilterThatAffectsOpacity() const;
   bool HasReferenceFilter() const;
+  bool HasFilterOfType(FilterOperation::FilterType type) const;
 
   size_t size() const { return operations_.size(); }
 

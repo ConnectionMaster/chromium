@@ -7,7 +7,6 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/logging.h"
 #include "base/path_service.h"
 #include "build/build_config.h"
 
@@ -27,7 +26,7 @@ bool PathProvider(int key, base::FilePath* result) {
     case DIR_LOCALES:
       if (!base::PathService::Get(base::DIR_MODULE, &cur))
         return false;
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
       // On Mac, locale files are in Contents/Resources, a sibling of the
       // App dir.
       cur = cur.DirName();
@@ -65,7 +64,7 @@ bool PathProvider(int key, base::FilePath* result) {
       if (!base::PathService::Get(ui::DIR_RESOURCE_PAKS_ANDROID, &cur))
         return false;
 #else
-      if (!base::PathService::Get(base::DIR_MODULE, &cur))
+      if (!base::PathService::Get(base::DIR_ASSETS, &cur))
         return false;
 #endif
       cur = cur.AppendASCII("ui_test.pak");
@@ -74,8 +73,7 @@ bool PathProvider(int key, base::FilePath* result) {
       return false;
   }
 
-  if (create_dir && !base::PathExists(cur) &&
-      !base::CreateDirectory(cur))
+  if (create_dir && !base::CreateDirectory(cur))
     return false;
 
   *result = cur;

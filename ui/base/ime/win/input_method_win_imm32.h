@@ -7,7 +7,6 @@
 
 #include <windows.h>
 
-#include <string>
 
 #include "base/compiler_specific.h"
 #include "base/component_export.h"
@@ -75,11 +74,14 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) InputMethodWinImm32
 
   void RefreshInputLanguage();
 
-  // Asks the client to confirm current composition text.
-  void ConfirmCompositionText();
-
   // Enables or disables the IME according to the current text input type.
   void UpdateIMEState();
+
+  void ConfirmCompositionText();
+
+  // Gets the text input mode of the focused text input client. Returns
+  // ui::TEXT_INPUT_MODE_DEFAULT if there is no focused client.
+  TextInputMode GetTextInputMode() const;
 
   // Windows IMM32 wrapper.
   // (See "ui/base/ime/win/ime_input.h" for its details.)

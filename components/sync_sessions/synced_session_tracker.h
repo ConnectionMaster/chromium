@@ -17,12 +17,10 @@
 #include "base/macros.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
+#include "components/sync/protocol/session_specifics.pb.h"
 #include "components/sync_sessions/synced_session.h"
 #include "components/sync_sessions/tab_node_pool.h"
-
-namespace sync_pb {
-class SessionSpecifics;
-}
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace sync_sessions {
 
@@ -31,6 +29,8 @@ class SyncSessionsClient;
 // TODO(crbug.com/882489): Remove feature toggle during code cleanup when a
 // satisfying solution is found for closed tabs.
 extern const base::Feature kDeferRecyclingOfSyncTabNodesIfUnsynced;
+
+extern const base::Feature kSyncPopulateTabBrowserTypeInGetData;
 
 // Class to manage synced sessions. The tracker will own all SyncedSession
 // and SyncedSessionTab objects it creates, and deletes them appropriately on
@@ -67,10 +67,6 @@ class SyncedSessionTracker {
   // session having tag |session_tag|.
   std::set<int> LookupTabNodeIds(const std::string& session_tag) const;
 
-  // Returns tabs that are unmapped for session with tag |session_tag|.
-  std::vector<const sessions::SessionTab*> LookupUnmappedTabs(
-      const std::string& session_tag) const;
-
   // Attempts to look up the session windows associatd with the session given
   // by |session_tag|. Ownership of SessionWindows stays within the
   // SyncedSessionTracker.
@@ -87,6 +83,10 @@ class SyncedSessionTracker {
   // Returns null if lookup fails.
   const sessions::SessionTab* LookupSessionTab(const std::string& session_tag,
                                                SessionID tab_id) const;
+
+  absl::optional<sync_pb::SessionWindow::BrowserType> LookupWindowType(
+      const std::string& session_tag,
+      SessionID window_id) const;
 
   // Allows retrieval of existing data for the local session. Unlike GetSession
   // this won't create-if-not-present and will return null instead.
@@ -121,8 +121,9 @@ class SyncedSessionTracker {
   // |session_tag|. If none existed for that session, creates one. Similarly, if
   // the session did not exist yet, creates it. Ownership of the SessionWindow
   // remains within the SyncedSessionTracker.
-  // Attempting to add a window to a session multiple times will have no effect.
-  void PutWindowInSession(const std::string& session_tag, SessionID window_id);
+  // Attempting to add a window to a session multiple times will have no effect
+  // and in that case the function returns false.
+  bool PutWindowInSession(const std::string& session_tag, SessionID window_id);
 
   // Adds the tab with id |tab_id| to the window |window_id|. If none existed
   // for that session, creates one. Ownership of the SessionTab remains within

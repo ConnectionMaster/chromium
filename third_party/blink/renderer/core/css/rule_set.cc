@@ -38,6 +38,7 @@
 #include "third_party/blink/renderer/core/css/selector_filter.h"
 #include "third_party/blink/renderer/core/css/style_rule_import.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/html/track/text_track_cue.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
@@ -50,20 +51,44 @@ static inline ValidPropertyFilter DetermineValidPropertyFilter(
     const CSSSelector& selector) {
   for (const CSSSelector* component = &selector; component;
        component = component->TagHistory()) {
-    if (component->GetPseudoType() == CSSSelector::kPseudoCue ||
-        (component->Match() == CSSSelector::kPseudoElement &&
-         component->Value() == TextTrackCue::CueShadowPseudoId()))
+    if (component->Match() == CSSSelector::kPseudoElement &&
+        component->Value() == TextTrackCue::CueShadowPseudoId()) {
       return ValidPropertyFilter::kCue;
-    if (component->GetPseudoType() == CSSSelector::kPseudoFirstLetter)
-      return ValidPropertyFilter::kFirstLetter;
+    }
+    switch (component->GetPseudoType()) {
+      case CSSSelector::kPseudoCue:
+        return ValidPropertyFilter::kCue;
+      case CSSSelector::kPseudoFirstLetter:
+        return ValidPropertyFilter::kFirstLetter;
+      case CSSSelector::kPseudoFirstLine:
+        return ValidPropertyFilter::kFirstLine;
+      case CSSSelector::kPseudoMarker:
+        return ValidPropertyFilter::kMarker;
+      case CSSSelector::kPseudoSelection:
+      case CSSSelector::kPseudoTargetText:
+        return ValidPropertyFilter::kHighlight;
+      default:
+        break;
+    }
   }
   return ValidPropertyFilter::kNoFilter;
+}
+
+static unsigned DetermineLinkMatchType(const AddRuleFlags add_rule_flags,
+                                       const CSSSelector& selector) {
+  if (selector.HasLinkOrVisited()) {
+    return (add_rule_flags & kRuleIsVisitedDependent)
+               ? CSSSelector::kMatchVisited
+               : CSSSelector::kMatchLink;
+  }
+  return CSSSelector::kMatchAll;
 }
 
 RuleData* RuleData::MaybeCreate(StyleRule* rule,
                                 unsigned selector_index,
                                 unsigned position,
-                                AddRuleFlags add_rule_flags) {
+                                AddRuleFlags add_rule_flags,
+                                const ContainerQuery* container_query) {
   // The selector index field in RuleData is only 13 bits so we can't support
   // selectors at index 8192 or beyond.
   // See https://crbug.com/804179
@@ -71,6 +96,11 @@ RuleData* RuleData::MaybeCreate(StyleRule* rule,
     return nullptr;
   if (position >= (1 << RuleData::kPositionBits))
     return nullptr;
+  if (container_query) {
+    return MakeGarbageCollected<ExtendedRuleData>(
+        base::PassKey<RuleData>(), rule, selector_index, position,
+        add_rule_flags, container_query);
+  }
   return MakeGarbageCollected<RuleData>(rule, selector_index, position,
                                         add_rule_flags);
 }
@@ -79,16 +109,24 @@ RuleData::RuleData(StyleRule* rule,
                    unsigned selector_index,
                    unsigned position,
                    AddRuleFlags add_rule_flags)
+    : RuleData(Type::kNormal, rule, selector_index, position, add_rule_flags) {}
+
+RuleData::RuleData(Type type,
+                   StyleRule* rule,
+                   unsigned selector_index,
+                   unsigned position,
+                   AddRuleFlags add_rule_flags)
     : rule_(rule),
       selector_index_(selector_index),
       position_(position),
       specificity_(Selector().Specificity()),
-      link_match_type_(Selector().ComputeLinkMatchType(CSSSelector::kMatchAll)),
+      link_match_type_(DetermineLinkMatchType(add_rule_flags, Selector())),
       has_document_security_origin_(add_rule_flags &
                                     kRuleHasDocumentSecurityOrigin),
       valid_property_filter_(
           static_cast<std::underlying_type_t<ValidPropertyFilter>>(
               DetermineValidPropertyFilter(add_rule_flags, Selector()))),
+      type_(static_cast<unsigned>(type)),
       descendant_selector_identifier_hashes_() {
   SelectorFilter::CollectIdentifierHashes(
       Selector(), descendant_selector_identifier_hashes_,
@@ -110,6 +148,7 @@ static void ExtractSelectorValues(const CSSSelector* selector,
                                   AtomicString& class_name,
                                   AtomicString& custom_pseudo_element_name,
                                   AtomicString& tag_name,
+                                  AtomicString& part_name,
                                   CSSSelector::PseudoType& pseudo_type) {
   switch (selector->Match()) {
     case CSSSelector::kId:
@@ -134,8 +173,9 @@ static void ExtractSelectorValues(const CSSSelector* selector,
         case CSSSelector::kPseudoWebkitAnyLink:
         case CSSSelector::kPseudoAnyLink:
         case CSSSelector::kPseudoFocus:
+        case CSSSelector::kPseudoFocusVisible:
         case CSSSelector::kPseudoPlaceholder:
-        case CSSSelector::kPseudoPart:
+        case CSSSelector::kPseudoFileSelectorButton:
         case CSSSelector::kPseudoHost:
         case CSSSelector::kPseudoHostContext:
         case CSSSelector::kPseudoSpatialNavigationInterest:
@@ -144,6 +184,9 @@ static void ExtractSelectorValues(const CSSSelector* selector,
         case CSSSelector::kPseudoWebKitCustomElement:
         case CSSSelector::kPseudoBlinkInternalElement:
           custom_pseudo_element_name = selector->Value();
+          break;
+        case CSSSelector::kPseudoPart:
+          part_name = selector->Value();
           break;
         default:
           break;
@@ -160,6 +203,7 @@ bool RuleSet::FindBestRuleSetAndAdd(const CSSSelector& component,
   AtomicString class_name;
   AtomicString custom_pseudo_element_name;
   AtomicString tag_name;
+  AtomicString part_name;
   CSSSelector::PseudoType pseudo_type = CSSSelector::kPseudoUnknown;
 
 #ifndef NDEBUG
@@ -170,11 +214,11 @@ bool RuleSet::FindBestRuleSetAndAdd(const CSSSelector& component,
   for (; it && it->Relation() == CSSSelector::kSubSelector;
        it = it->TagHistory()) {
     ExtractSelectorValues(it, id, class_name, custom_pseudo_element_name,
-                          tag_name, pseudo_type);
+                          tag_name, part_name, pseudo_type);
   }
   if (it) {
     ExtractSelectorValues(it, id, class_name, custom_pseudo_element_name,
-                          tag_name, pseudo_type);
+                          tag_name, part_name, pseudo_type);
   }
 
   // Prefer rule sets in order of most likely to apply infrequently.
@@ -196,7 +240,13 @@ bool RuleSet::FindBestRuleSetAndAdd(const CSSSelector& component,
     DCHECK(id.IsEmpty());
     DCHECK(class_name.IsEmpty());
     AddToRuleSet(custom_pseudo_element_name,
-                 EnsurePendingRules()->shadow_pseudo_element_rules, rule_data);
+                 EnsurePendingRules()->ua_shadow_pseudo_element_rules,
+                 rule_data);
+    return true;
+  }
+
+  if (!part_name.IsEmpty()) {
+    part_pseudo_rules_.push_back(rule_data);
     return true;
   }
 
@@ -216,23 +266,24 @@ bool RuleSet::FindBestRuleSetAndAdd(const CSSSelector& component,
     case CSSSelector::kPseudoFocus:
       focus_pseudo_class_rules_.push_back(rule_data);
       return true;
+    case CSSSelector::kPseudoFocusVisible:
+      focus_visible_pseudo_class_rules_.push_back(rule_data);
+      return true;
     case CSSSelector::kPseudoPlaceholder:
+    case CSSSelector::kPseudoFileSelectorButton:
       if (it->FollowsPart()) {
         part_pseudo_rules_.push_back(rule_data);
       } else {
-        AddToRuleSet(AtomicString("-webkit-input-placeholder"),
-                     EnsurePendingRules()->shadow_pseudo_element_rules,
+        const auto& name = pseudo_type == CSSSelector::kPseudoFileSelectorButton
+                               ? shadow_element_names::kPseudoFileUploadButton
+                               : shadow_element_names::kPseudoInputPlaceholder;
+        AddToRuleSet(name, EnsurePendingRules()->ua_shadow_pseudo_element_rules,
                      rule_data);
       }
       return true;
     case CSSSelector::kPseudoHost:
     case CSSSelector::kPseudoHostContext:
       shadow_host_rules_.push_back(rule_data);
-      return true;
-    case CSSSelector::kPseudoPart:
-      if (RuntimeEnabledFeatures::CSSPartPseudoElementEnabled()) {
-        part_pseudo_rules_.push_back(rule_data);
-      }
       return true;
     default:
       break;
@@ -248,9 +299,10 @@ bool RuleSet::FindBestRuleSetAndAdd(const CSSSelector& component,
 
 void RuleSet::AddRule(StyleRule* rule,
                       unsigned selector_index,
-                      AddRuleFlags add_rule_flags) {
-  RuleData* rule_data =
-      RuleData::MaybeCreate(rule, selector_index, rule_count_, add_rule_flags);
+                      AddRuleFlags add_rule_flags,
+                      const ContainerQuery* container_query) {
+  RuleData* rule_data = RuleData::MaybeCreate(rule, selector_index, rule_count_,
+                                              add_rule_flags, container_query);
   if (!rule_data) {
     // This can happen if selector_index or position is out of range.
     return;
@@ -265,6 +317,19 @@ void RuleSet::AddRule(StyleRule* rule,
     // rules.
     universal_rules_.push_back(rule_data);
   }
+
+  // If the rule has CSSSelector::kMatchLink, it means that there is a :visited
+  // or :link pseudo-class somewhere in the selector. In those cases, we
+  // effectively split the rule into two: one which covers the situation
+  // where we are in an unvisited link (kMatchLink), and another which covers
+  // the visited link case (kMatchVisited).
+  if (rule_data->LinkMatchType() == CSSSelector::kMatchLink) {
+    RuleData* visited_dependent = RuleData::MaybeCreate(
+        rule, rule_data->SelectorIndex(), rule_data->GetPosition(),
+        add_rule_flags | kRuleIsVisitedDependent, container_query);
+    DCHECK(visited_dependent);
+    visited_dependent_rules_.push_back(visited_dependent);
+  }
 }
 
 void RuleSet::AddPageRule(StyleRulePage* rule) {
@@ -277,19 +342,31 @@ void RuleSet::AddFontFaceRule(StyleRuleFontFace* rule) {
   font_face_rules_.push_back(rule);
 }
 
-void RuleSet::AddFontFeatureValuesRule(StyleRuleFontFeatureValues* rule) {
-  EnsurePendingRules();
-  font_feature_values_rules_.push_back(rule);
-}
-
 void RuleSet::AddKeyframesRule(StyleRuleKeyframes* rule) {
   EnsurePendingRules();  // So that keyframes_rules_.ShrinkToFit() gets called.
   keyframes_rules_.push_back(rule);
 }
 
+void RuleSet::AddPropertyRule(StyleRuleProperty* rule) {
+  EnsurePendingRules();  // So that property_rules_.ShrinkToFit() gets called.
+  property_rules_.push_back(rule);
+}
+
+void RuleSet::AddCounterStyleRule(StyleRuleCounterStyle* rule) {
+  EnsurePendingRules();  // So that counter_style_rules_.ShrinkToFit() gets
+                         // called.
+  counter_style_rules_.push_back(rule);
+}
+
+void RuleSet::AddScrollTimelineRule(StyleRuleScrollTimeline* rule) {
+  EnsurePendingRules();  // So that property_rules_.ShrinkToFit() gets called.
+  scroll_timeline_rules_.push_back(rule);
+}
+
 void RuleSet::AddChildRules(const HeapVector<Member<StyleRuleBase>>& rules,
                             const MediaQueryEvaluator& medium,
-                            AddRuleFlags add_rule_flags) {
+                            AddRuleFlags add_rule_flags,
+                            const ContainerQuery* container_query) {
   for (unsigned i = 0; i < rules.size(); ++i) {
     StyleRuleBase* rule = rules[i].Get();
 
@@ -298,39 +375,56 @@ void RuleSet::AddChildRules(const HeapVector<Member<StyleRuleBase>>& rules,
       for (const CSSSelector* selector = selector_list.First(); selector;
            selector = selector_list.Next(*selector)) {
         wtf_size_t selector_index = selector_list.SelectorIndex(*selector);
-        if (selector->HasDeepCombinatorOrShadowPseudo()) {
-          deep_combinator_or_shadow_pseudo_rules_.push_back(
-              MinimalRuleData(style_rule, selector_index, add_rule_flags));
-        } else if (selector->HasContentPseudo()) {
-          content_pseudo_element_rules_.push_back(
-              MinimalRuleData(style_rule, selector_index, add_rule_flags));
-        } else if (selector->HasSlottedPseudo()) {
+        if (selector->HasSlottedPseudo()) {
           slotted_pseudo_element_rules_.push_back(
               MinimalRuleData(style_rule, selector_index, add_rule_flags));
         } else {
-          AddRule(style_rule, selector_index, add_rule_flags);
+          AddRule(style_rule, selector_index, add_rule_flags, container_query);
         }
       }
     } else if (auto* page_rule = DynamicTo<StyleRulePage>(rule)) {
       AddPageRule(page_rule);
     } else if (auto* media_rule = DynamicTo<StyleRuleMedia>(rule)) {
-      if (!media_rule->MediaQueries() ||
-          medium.Eval(*media_rule->MediaQueries(),
-                      &features_.ViewportDependentMediaQueryResults(),
-                      &features_.DeviceDependentMediaQueryResults()))
-        AddChildRules(media_rule->ChildRules(), medium, add_rule_flags);
+      if (MatchMediaForAddRules(medium, media_rule->MediaQueries())) {
+        AddChildRules(media_rule->ChildRules(), medium, add_rule_flags,
+                      container_query);
+      }
     } else if (auto* font_face_rule = DynamicTo<StyleRuleFontFace>(rule)) {
       AddFontFaceRule(font_face_rule);
-    } else if (auto* font_feature_values_rule =
-                   DynamicTo<StyleRuleFontFeatureValues>(rule)) {
-      AddFontFeatureValuesRule(font_feature_values_rule);
     } else if (auto* keyframes_rule = DynamicTo<StyleRuleKeyframes>(rule)) {
       AddKeyframesRule(keyframes_rule);
+    } else if (auto* property_rule = DynamicTo<StyleRuleProperty>(rule)) {
+      AddPropertyRule(property_rule);
+    } else if (auto* counter_style_rule =
+                   DynamicTo<StyleRuleCounterStyle>(rule)) {
+      AddCounterStyleRule(counter_style_rule);
+    } else if (auto* scroll_timeline_rule =
+                   DynamicTo<StyleRuleScrollTimeline>(rule)) {
+      AddScrollTimelineRule(scroll_timeline_rule);
     } else if (auto* supports_rule = DynamicTo<StyleRuleSupports>(rule)) {
-      if (supports_rule->ConditionIsSupported())
-        AddChildRules(supports_rule->ChildRules(), medium, add_rule_flags);
+      if (supports_rule->ConditionIsSupported()) {
+        AddChildRules(supports_rule->ChildRules(), medium, add_rule_flags,
+                      container_query);
+      }
+    } else if (auto* container_rule = DynamicTo<StyleRuleContainer>(rule)) {
+      // TODO(crbug.com/1145970): Handle nested container queries.
+      // For now only the innermost applies.
+      AddChildRules(container_rule->ChildRules(), medium, add_rule_flags,
+                    &container_rule->GetContainerQuery());
     }
   }
+}
+
+bool RuleSet::MatchMediaForAddRules(const MediaQueryEvaluator& evaluator,
+                                    const MediaQuerySet* media_queries) {
+  if (!media_queries)
+    return true;
+  bool match_media = evaluator.Eval(
+      *media_queries, &features_.ViewportDependentMediaQueryResults(),
+      &features_.DeviceDependentMediaQueryResults());
+  media_query_set_results_.push_back(
+      MediaQuerySetResult(*media_queries, match_media));
+  return match_media;
 }
 
 void RuleSet::AddRulesFromSheet(StyleSheetContents* sheet,
@@ -345,14 +439,13 @@ void RuleSet::AddRulesFromSheet(StyleSheetContents* sheet,
   for (unsigned i = 0; i < import_rules.size(); ++i) {
     StyleRuleImport* import_rule = import_rules[i].Get();
     if (import_rule->GetStyleSheet() &&
-        (!import_rule->MediaQueries() ||
-         medium.Eval(*import_rule->MediaQueries(),
-                     &features_.ViewportDependentMediaQueryResults(),
-                     &features_.DeviceDependentMediaQueryResults())))
+        MatchMediaForAddRules(medium, import_rule->MediaQueries())) {
       AddRulesFromSheet(import_rule->GetStyleSheet(), medium, add_rule_flags);
+    }
   }
 
-  AddChildRules(sheet->ChildRules(), medium, add_rule_flags);
+  AddChildRules(sheet->ChildRules(), medium, add_rule_flags,
+                nullptr /* container_query */);
 }
 
 void RuleSet::AddStyleRule(StyleRule* rule, AddRuleFlags add_rule_flags) {
@@ -360,8 +453,10 @@ void RuleSet::AddStyleRule(StyleRule* rule, AddRuleFlags add_rule_flags) {
            rule->SelectorList().SelectorIndex(*rule->SelectorList().First());
        selector_index != kNotFound;
        selector_index =
-           rule->SelectorList().IndexOfNextSelectorAfter(selector_index))
-    AddRule(rule, selector_index, add_rule_flags);
+           rule->SelectorList().IndexOfNextSelectorAfter(selector_index)) {
+    AddRule(rule, selector_index, add_rule_flags,
+            nullptr /* container_query */);
+  }
 }
 
 void RuleSet::CompactPendingRules(PendingRuleMap& pending_map,
@@ -390,57 +485,97 @@ void RuleSet::CompactRules() {
   CompactPendingRules(pending_rules->id_rules, id_rules_);
   CompactPendingRules(pending_rules->class_rules, class_rules_);
   CompactPendingRules(pending_rules->tag_rules, tag_rules_);
-  CompactPendingRules(pending_rules->shadow_pseudo_element_rules,
-                      shadow_pseudo_element_rules_);
+  CompactPendingRules(pending_rules->ua_shadow_pseudo_element_rules,
+                      ua_shadow_pseudo_element_rules_);
   link_pseudo_class_rules_.ShrinkToFit();
   cue_pseudo_rules_.ShrinkToFit();
   focus_pseudo_class_rules_.ShrinkToFit();
+  focus_visible_pseudo_class_rules_.ShrinkToFit();
   spatial_navigation_interest_class_rules_.ShrinkToFit();
   universal_rules_.ShrinkToFit();
   shadow_host_rules_.ShrinkToFit();
+  part_pseudo_rules_.ShrinkToFit();
+  visited_dependent_rules_.ShrinkToFit();
   page_rules_.ShrinkToFit();
   font_face_rules_.ShrinkToFit();
-  font_feature_values_rules_.ShrinkToFit();
   keyframes_rules_.ShrinkToFit();
-  deep_combinator_or_shadow_pseudo_rules_.ShrinkToFit();
-  part_pseudo_rules_.ShrinkToFit();
-  content_pseudo_element_rules_.ShrinkToFit();
+  property_rules_.ShrinkToFit();
+  counter_style_rules_.ShrinkToFit();
+  scroll_timeline_rules_.ShrinkToFit();
   slotted_pseudo_element_rules_.ShrinkToFit();
 }
 
-void MinimalRuleData::Trace(blink::Visitor* visitor) {
+bool RuleSet::DidMediaQueryResultsChange(
+    const MediaQueryEvaluator& evaluator) const {
+  return evaluator.DidResultsChange(media_query_set_results_);
+}
+
+void MinimalRuleData::Trace(Visitor* visitor) const {
   visitor->Trace(rule_);
 }
 
-void RuleData::Trace(blink::Visitor* visitor) {
+const ContainerQuery* RuleData::GetContainerQuery() const {
+  if (auto* extended = DynamicTo<ExtendedRuleData>(this))
+    return extended->container_query_;
+  return nullptr;
+}
+
+void RuleData::Trace(Visitor* visitor) const {
+  switch (static_cast<Type>(type_)) {
+    case Type::kNormal:
+      TraceAfterDispatch(visitor);
+      break;
+    case Type::kExtended:
+      To<ExtendedRuleData>(*this).TraceAfterDispatch(visitor);
+      break;
+  }
+}
+
+void RuleData::TraceAfterDispatch(blink::Visitor* visitor) const {
   visitor->Trace(rule_);
 }
 
-void RuleSet::PendingRuleMaps::Trace(blink::Visitor* visitor) {
+ExtendedRuleData::ExtendedRuleData(base::PassKey<RuleData>,
+                                   StyleRule* rule,
+                                   unsigned selector_index,
+                                   unsigned position,
+                                   AddRuleFlags flags,
+                                   const ContainerQuery* container_query)
+    : RuleData(Type::kExtended, rule, selector_index, position, flags),
+      container_query_(container_query) {}
+
+void ExtendedRuleData::TraceAfterDispatch(Visitor* visitor) const {
+  RuleData::TraceAfterDispatch(visitor);
+  visitor->Trace(container_query_);
+}
+
+void RuleSet::PendingRuleMaps::Trace(Visitor* visitor) const {
   visitor->Trace(id_rules);
   visitor->Trace(class_rules);
   visitor->Trace(tag_rules);
-  visitor->Trace(shadow_pseudo_element_rules);
+  visitor->Trace(ua_shadow_pseudo_element_rules);
 }
 
-void RuleSet::Trace(blink::Visitor* visitor) {
+void RuleSet::Trace(Visitor* visitor) const {
   visitor->Trace(id_rules_);
   visitor->Trace(class_rules_);
   visitor->Trace(tag_rules_);
-  visitor->Trace(shadow_pseudo_element_rules_);
+  visitor->Trace(ua_shadow_pseudo_element_rules_);
   visitor->Trace(link_pseudo_class_rules_);
   visitor->Trace(cue_pseudo_rules_);
   visitor->Trace(focus_pseudo_class_rules_);
+  visitor->Trace(focus_visible_pseudo_class_rules_);
   visitor->Trace(spatial_navigation_interest_class_rules_);
   visitor->Trace(universal_rules_);
   visitor->Trace(shadow_host_rules_);
+  visitor->Trace(part_pseudo_rules_);
+  visitor->Trace(visited_dependent_rules_);
   visitor->Trace(page_rules_);
   visitor->Trace(font_face_rules_);
-  visitor->Trace(font_feature_values_rules_);
   visitor->Trace(keyframes_rules_);
-  visitor->Trace(deep_combinator_or_shadow_pseudo_rules_);
-  visitor->Trace(part_pseudo_rules_);
-  visitor->Trace(content_pseudo_element_rules_);
+  visitor->Trace(property_rules_);
+  visitor->Trace(counter_style_rules_);
+  visitor->Trace(scroll_timeline_rules_);
   visitor->Trace(slotted_pseudo_element_rules_);
   visitor->Trace(pending_rules_);
 #ifndef NDEBUG

@@ -10,8 +10,8 @@
 
 #include "base/json/json_writer.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
-
 #include "components/update_client/updater_state.h"
 
 namespace update_client {
@@ -67,7 +67,7 @@ std::string ProtocolSerializerJSON::Serialize(
   if (!request.os.service_pack.empty())
     os_node->SetKey("sp", Value(request.os.service_pack));
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   if (request.updater) {
     const auto& updater = *request.updater;
     auto* updater_node =
@@ -97,6 +97,10 @@ std::string ProtocolSerializerJSON::Serialize(
       app_node.SetKey("installsource", Value(app.install_source));
     if (!app.install_location.empty())
       app_node.SetKey("installedby", Value(app.install_location));
+    // TODO(crbug/1120685): Test that this is never sent to the server if the
+    // machine is not enterprise managed.
+    if (!app.release_channel.empty())
+      app_node.SetKey("release_channel", Value(app.release_channel));
     if (!app.cohort.empty())
       app_node.SetKey("cohort", Value(app.cohort));
     if (!app.cohort_name.empty())

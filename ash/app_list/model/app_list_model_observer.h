@@ -7,14 +7,16 @@
 
 #include <string>
 
-#include "ash/app_list/model/app_list_model.h"
 #include "ash/app_list/model/app_list_model_export.h"
+#include "base/observer_list_types.h"
 
-namespace app_list {
+namespace ash {
 
 class AppListItem;
+enum class AppListState;
 
-class APP_LIST_MODEL_EXPORT AppListModelObserver {
+class APP_LIST_MODEL_EXPORT AppListModelObserver
+    : public base::CheckedObserver {
  public:
   // Triggered after AppListModel's status has changed.
   virtual void OnAppListModelStatusChanged() {}
@@ -32,16 +34,16 @@ class APP_LIST_MODEL_EXPORT AppListModelObserver {
   virtual void OnAppListItemUpdated(AppListItem* item) {}
 
   // Triggered after AppListState has changed.
-  virtual void OnAppListStateChanged(ash::AppListState new_state,
-                                     ash::AppListState old_state) {}
+  virtual void OnAppListStateChanged(AppListState new_state,
+                                     AppListState old_state) {}
 
   // Triggered when the custom launcher page enabled state is changed.
   virtual void OnCustomLauncherPageEnabledStateChanged(bool enabled) {}
 
  protected:
-  virtual ~AppListModelObserver() {}
+  ~AppListModelObserver() override;
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_MODEL_APP_LIST_MODEL_OBSERVER_H_

@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include <memory>
-#include <vector>
 
 #include "base/macros.h"
 #include "ui/display/manager/display_configurator.h"
@@ -57,9 +55,13 @@ class DISPLAY_MANAGER_EXPORT DisplayChangeObserver
   void OnInputDeviceConfigurationChanged(uint8_t input_device_types) override;
 
   // Exposed for testing.
-  DISPLAY_EXPORT static float FindDeviceScaleFactor(float dpi);
+  DISPLAY_EXPORT static float FindDeviceScaleFactor(
+      float dpi,
+      const gfx::Size& size_in_pixels);
 
  private:
+  friend class DisplayChangeObserverTest;
+
   void UpdateInternalDisplay(
       const DisplayConfigurator::DisplayStateList& display_states);
 

@@ -11,11 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/debug/alias.h"
 #include "base/files/file_path.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -61,10 +61,10 @@ base::FilePath ColumnFilePath(sql::Statement& statement, int col) {
 void BindFilePath(sql::Statement& statement,
                   const base::FilePath& path,
                   int col) {
-  statement.BindString16(col, path.value());
+  statement.BindString(col, path.AsUTF8Unsafe());
 }
 base::FilePath ColumnFilePath(sql::Statement& statement, int col) {
-  return base::FilePath(statement.ColumnString16(col));
+  return base::FilePath::FromUTF8Unsafe(statement.ColumnString(col));
 }
 
 #endif
@@ -268,7 +268,7 @@ bool DownloadDatabase::MigrateHashHttpMethodAndGenerateGuids() {
       base::StringPrintf("UPDATE %s SET guid = ? WHERE id = ?", kDownloadsTable)
           .c_str()));
   while (select.Step()) {
-    uint32_t id = select.ColumnInt(0);
+    int id = select.ColumnInt(0);
     uint64_t r1 = base::RandUint64();
     uint64_t r2 = base::RandUint64();
     std::string guid = base::StringPrintf(
@@ -394,11 +394,11 @@ uint32_t DownloadDatabase::GetNextDownloadId() {
   // return 0 = kInvalidDownloadId, so GetNextDownloadId() will set
   // *id = kInvalidDownloadId + 1.
   //
-  // If there is at least one record but all of the |id|s are
+  // If there is at least one record but all of the `id`s are
   // <= kInvalidDownloadId, then max(id) will return <= kInvalidDownloadId,
   // so GetNextDownloadId() should return kInvalidDownloadId + 1.
   //
-  // Note that any records with |id <= kInvalidDownloadId| will be dropped in
+  // Note that any records with `id <= kInvalidDownloadId` will be dropped in
   // QueryDownloads().
   //
   // SQLITE doesn't have unsigned integers.
@@ -437,7 +437,7 @@ void DownloadDatabase::QueryDownloads(std::vector<DownloadRow>* results) {
     int column = 0;
 
     // SQLITE does not have unsigned integers, so explicitly handle negative
-    // |id|s instead of casting them to very large uint32s, which would break
+    // `id`s instead of casting them to very large uint32s, which would break
     // the max(id) logic in GetNextDownloadId().
     int64_t signed_id = statement_main.ColumnInt64(column++);
     bool valid = ConvertIntToDownloadId(signed_id, &(info->id));
@@ -488,7 +488,7 @@ void DownloadDatabase::QueryDownloads(std::vector<DownloadRow>* results) {
       dropped_reason = DROPPED_REASON_BAD_DANGER_TYPE;
     }
     if (dropped_reason == DROPPED_REASON_MAX) {
-      DCHECK(!base::ContainsKey(info_map, info->id));
+      DCHECK(!base::Contains(info_map, info->id));
       uint32_t id = info->id;
       info_map[id] = info.release();
     }
@@ -511,7 +511,7 @@ void DownloadDatabase::QueryDownloads(std::vector<DownloadRow>* results) {
 
     // Confirm the id has already been seen--if it hasn't, discard the
     // record.
-    if (!base::ContainsKey(info_map, id))
+    if (!base::Contains(info_map, id))
       continue;
 
     // Confirm all previous URLs in the chain have already been seen;
@@ -598,7 +598,7 @@ bool DownloadDatabase::UpdateDownload(const DownloadRow& data) {
   statement.BindString(column++, data.by_ext_name);
   statement.BindString(column++, data.etag);
   statement.BindString(column++, data.last_modified);
-  statement.BindInt(column++, DownloadIdToInt(data.id));
+  statement.BindInt64(column++, DownloadIdToInt(data.id));
 
   if (!statement.Run())
     return false;
@@ -667,7 +667,7 @@ bool DownloadDatabase::CreateDownload(const DownloadRow& info) {
             .c_str()));
 
     int column = 0;
-    statement_insert.BindInt(column++, DownloadIdToInt(info.id));
+    statement_insert.BindInt64(column++, DownloadIdToInt(info.id));
     statement_insert.BindString(column++, info.guid);
     BindFilePath(statement_insert, info.current_path, column++);
     BindFilePath(statement_insert, info.target_path, column++);
@@ -711,7 +711,7 @@ bool DownloadDatabase::CreateDownload(const DownloadRow& info) {
   {
     sql::Statement count_urls(GetDB().GetCachedStatement(SQL_FROM_HERE,
         "SELECT count(*) FROM downloads_url_chains WHERE id=?"));
-    count_urls.BindInt(0, info.id);
+    count_urls.BindInt64(0, info.id);
     if (count_urls.Step()) {
       bool corrupt_urls = count_urls.ColumnInt(0) > 0;
       if (corrupt_urls) {
@@ -729,7 +729,7 @@ bool DownloadDatabase::CreateDownload(const DownloadRow& info) {
                                  "(id, chain_index, url) "
                                  "VALUES (?, ?, ?)"));
   for (size_t i = 0; i < info.url_chain.size(); ++i) {
-    statement_insert_chain.BindInt(0, info.id);
+    statement_insert_chain.BindInt64(0, info.id);
     statement_insert_chain.BindInt(1, static_cast<int>(i));
     statement_insert_chain.BindString(2, info.url_chain[i].spec());
     if (!statement_insert_chain.Run()) {
@@ -758,7 +758,7 @@ void DownloadDatabase::RemoveDownload(DownloadId id) {
       SQL_FROM_HERE,
       base::StringPrintf("DELETE FROM %s WHERE id=?", kDownloadsTable)
           .c_str()));
-  downloads_statement.BindInt(0, id);
+  downloads_statement.BindInt64(0, id);
   if (!downloads_statement.Run()) {
     UMA_HISTOGRAM_ENUMERATION("Download.DatabaseMainDeleteError",
                               GetDB().GetErrorCode() & 0xff, 50);
@@ -771,7 +771,7 @@ void DownloadDatabase::RemoveDownload(DownloadId id) {
 void DownloadDatabase::RemoveDownloadURLs(DownloadId id) {
   sql::Statement urlchain_statement(GetDB().GetCachedStatement(SQL_FROM_HERE,
       "DELETE FROM downloads_url_chains WHERE id=?"));
-  urlchain_statement.BindInt(0, id);
+  urlchain_statement.BindInt64(0, id);
   if (!urlchain_statement.Run()) {
     UMA_HISTOGRAM_ENUMERATION("Download.DatabaseURLChainDeleteError",
                               GetDB().GetErrorCode() & 0xff, 50);
@@ -791,8 +791,8 @@ size_t DownloadDatabase::CountDownloads() {
 bool DownloadDatabase::CreateOrUpdateDownloadSlice(
     const DownloadSliceInfo& info) {
   // If the slice has no data, there is no need to insert it into the db. Note
-  // that for each slice, |received_bytes| can only go up. So if a slice is
-  // already in the db, its |received_bytes| should always be larger than 0.
+  // that for each slice, `received_bytes` can only go up. So if a slice is
+  // already in the db, its `received_bytes` should always be larger than 0.
   if (info.received_bytes == 0)
     return true;
   sql::Statement statement_replace(GetDB().GetCachedStatement(
@@ -803,7 +803,7 @@ bool DownloadDatabase::CreateOrUpdateDownloadSlice(
                          kDownloadsSlicesTable)
           .c_str()));
   int column = 0;
-  statement_replace.BindInt(column++, info.download_id);
+  statement_replace.BindInt64(column++, info.download_id);
   statement_replace.BindInt64(column++, info.offset);
   statement_replace.BindInt64(column++, info.received_bytes);
   statement_replace.BindInt64(column++, (info.finished ? 1 : 0));
@@ -815,7 +815,7 @@ void DownloadDatabase::RemoveDownloadSlices(DownloadId id) {
       SQL_FROM_HERE, base::StringPrintf("DELETE FROM %s WHERE download_id=?",
                                         kDownloadsSlicesTable)
                          .c_str()));
-  statement_delete.BindInt(0, id);
+  statement_delete.BindInt64(0, id);
   statement_delete.Run();
 }
 
@@ -845,8 +845,6 @@ void DownloadDatabase::QueryDownloadSlices(DownloadRowMap* download_row_map) {
     // record.
     auto it = download_row_map->find(info.download_id);
     bool found = (it != download_row_map->end());
-    UMA_HISTOGRAM_BOOLEAN(
-        "Download.DatabaseDownloadExistsForDownloadSlice", found);
     if (!found) {
       RemoveDownloadSlices(info.download_id);
       continue;

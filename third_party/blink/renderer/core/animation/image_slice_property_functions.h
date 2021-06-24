@@ -7,7 +7,7 @@
 
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -24,8 +24,9 @@ class ImageSlicePropertyFunctions {
   STATIC_ONLY(ImageSlicePropertyFunctions);
 
  public:
-  static ImageSlice GetInitialImageSlice(const CSSProperty& property) {
-    return GetImageSlice(property, ComputedStyle::InitialStyle());
+  static ImageSlice GetInitialImageSlice(const CSSProperty& property,
+                                         const ComputedStyle& initial_style) {
+    return GetImageSlice(property, initial_style);
   }
 
   static ImageSlice GetImageSlice(const CSSProperty& property,

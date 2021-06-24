@@ -6,7 +6,8 @@
 
 #include <stddef.h>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "base/notreached.h"
 #include "chromeos/network/network_event_log.h"
 #include "chromeos/network/tether_constants.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
@@ -25,12 +26,10 @@ enum NetworkTypeBitFlag {
   kNetworkTypeNone = 0,
   kNetworkTypeEthernet = 1 << 0,
   kNetworkTypeWifi = 1 << 1,
-  kNetworkTypeWimax = 1 << 2,
-  kNetworkTypeCellular = 1 << 3,
-  kNetworkTypeVPN = 1 << 4,
-  kNetworkTypeEthernetEap = 1 << 5,
-  kNetworkTypeBluetooth = 1 << 6,
-  kNetworkTypeTether = 1 << 7
+  kNetworkTypeCellular = 1 << 2,
+  kNetworkTypeVPN = 1 << 3,
+  kNetworkTypeEthernetEap = 1 << 4,
+  kNetworkTypeTether = 1 << 5
 };
 
 struct ShillToBitFlagEntry {
@@ -39,10 +38,8 @@ struct ShillToBitFlagEntry {
 } shill_type_to_flag[] = {{shill::kTypeEthernet, kNetworkTypeEthernet},
                           {shill::kTypeEthernetEap, kNetworkTypeEthernetEap},
                           {shill::kTypeWifi, kNetworkTypeWifi},
-                          {shill::kTypeWimax, kNetworkTypeWimax},
                           {shill::kTypeCellular, kNetworkTypeCellular},
                           {shill::kTypeVPN, kNetworkTypeVPN},
-                          {shill::kTypeBluetooth, kNetworkTypeBluetooth},
                           {kTypeTether, kNetworkTypeTether}};
 
 NetworkTypeBitFlag ShillNetworkTypeToFlag(const std::string& shill_type) {
@@ -50,7 +47,7 @@ NetworkTypeBitFlag ShillNetworkTypeToFlag(const std::string& shill_type) {
     if (shill_type_to_flag[i].shill_network_type == shill_type)
       return shill_type_to_flag[i].bit_flag;
   }
-  NET_LOG_ERROR("ShillNetworkTypeToFlag", "Unknown type: " + shill_type);
+  NET_LOG(ERROR) << "ShillNetworkTypeToFlag unknown type: " << shill_type;
   return kNetworkTypeNone;
 }
 
@@ -63,20 +60,19 @@ NetworkTypePattern NetworkTypePattern::Default() {
 
 // static
 NetworkTypePattern NetworkTypePattern::Wireless() {
-  return NetworkTypePattern(kNetworkTypeWifi | kNetworkTypeWimax |
-                            kNetworkTypeCellular | kNetworkTypeTether);
-}
-
-// static
-NetworkTypePattern NetworkTypePattern::Mobile() {
-  return NetworkTypePattern(kNetworkTypeCellular | kNetworkTypeWimax |
+  return NetworkTypePattern(kNetworkTypeWifi | kNetworkTypeCellular |
                             kNetworkTypeTether);
 }
 
 // static
+NetworkTypePattern NetworkTypePattern::Mobile() {
+  return NetworkTypePattern(kNetworkTypeCellular | kNetworkTypeTether);
+}
+
+// static
 NetworkTypePattern NetworkTypePattern::Physical() {
-  return NetworkTypePattern(kNetworkTypeWifi | kNetworkTypeWimax |
-                            kNetworkTypeCellular | kNetworkTypeEthernet);
+  return NetworkTypePattern(kNetworkTypeWifi | kNetworkTypeCellular |
+                            kNetworkTypeEthernet);
 }
 
 // static
@@ -110,11 +106,6 @@ NetworkTypePattern NetworkTypePattern::VPN() {
 }
 
 // static
-NetworkTypePattern NetworkTypePattern::Wimax() {
-  return NetworkTypePattern(kNetworkTypeWimax);
-}
-
-// static
 NetworkTypePattern NetworkTypePattern::Tether() {
   return NetworkTypePattern(kNetworkTypeTether);
 }
@@ -132,8 +123,8 @@ bool NetworkTypePattern::Equals(const NetworkTypePattern& other) const {
 bool NetworkTypePattern::MatchesType(
     const std::string& shill_network_type) const {
   if (shill_network_type.empty()) {
-    NOTREACHED() << "NetworkTypePattern: " << ToDebugString()
-                 << ": Can not match empty type.";
+    NET_LOG(ERROR) << "NetworkTypePattern: " << ToDebugString()
+                   << ": Can not match empty type.";
     return false;
   }
   return MatchesPattern(Primitive(shill_network_type));

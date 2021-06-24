@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #include "base/macros.h"
-#include "components/arc/common/appfuse.mojom.h"
+#include "components/arc/mojom/appfuse.mojom.h"
 #include "components/keyed_service/core/keyed_service.h"
 
 namespace content {
@@ -25,6 +25,8 @@ class ArcAppfuseBridge : public KeyedService, public mojom::AppfuseHost {
   // Returns singleton instance for the given BrowserContext,
   // or nullptr if the browser |context| is not allowed to use ARC.
   static ArcAppfuseBridge* GetForBrowserContext(
+      content::BrowserContext* context);
+  static ArcAppfuseBridge* GetForBrowserContextForTesting(
       content::BrowserContext* context);
 
   ArcAppfuseBridge(content::BrowserContext* context,

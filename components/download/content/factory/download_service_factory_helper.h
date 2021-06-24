@@ -11,24 +11,23 @@
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
-#include "components/download/internal/background_service/blob_task_proxy.h"
+#include "components/download/public/background_service/blob_context_getter_factory.h"
 #include "components/download/public/background_service/clients.h"
 
 class SimpleFactoryKey;
-class PrefService;
-
-namespace content {
-class BrowserContext;
-}  // namespace content
 
 namespace network {
 class NetworkConnectionTracker;
 class SharedURLLoaderFactory;
 }  // namespace network
 
+namespace leveldb_proto {
+class ProtoDatabaseProvider;
+}  // namespace leveldb_proto
+
 namespace download {
 
-class DownloadService;
+class BackgroundDownloadService;
 class SimpleDownloadManagerCoordinator;
 class TaskScheduler;
 
@@ -42,25 +41,24 @@ class TaskScheduler;
 // will act as an in-memory only service (this means no auto-retries after
 // restarts, no files written on completion, etc.).
 // |background_task_runner| will be used for all disk reads and writes.
-DownloadService* BuildDownloadService(
-    content::BrowserContext* browser_context,
+std::unique_ptr<BackgroundDownloadService> BuildDownloadService(
     SimpleFactoryKey* simple_factory_key,
-    PrefService* prefs,
     std::unique_ptr<DownloadClientMap> clients,
     network::NetworkConnectionTracker* network_connection_tracker,
     const base::FilePath& storage_dir,
     SimpleDownloadManagerCoordinator* download_manager_coordinator,
+    leveldb_proto::ProtoDatabaseProvider* proto_db_provider,
     const scoped_refptr<base::SequencedTaskRunner>& background_task_runner,
     std::unique_ptr<TaskScheduler> task_scheduler);
 
 // Create download service used in incognito mode, without any database or
 // download file IO.
-DownloadService* BuildInMemoryDownloadService(
+std::unique_ptr<BackgroundDownloadService> BuildInMemoryDownloadService(
     SimpleFactoryKey* simple_factory_key,
     std::unique_ptr<DownloadClientMap> clients,
     network::NetworkConnectionTracker* network_connection_tracker,
     const base::FilePath& storage_dir,
-    BlobTaskProxy::BlobContextGetter blob_context_getter,
+    BlobContextGetterFactoryPtr blob_context_getter_factory,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 

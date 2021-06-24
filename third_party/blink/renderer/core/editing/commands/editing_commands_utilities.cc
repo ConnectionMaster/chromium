@@ -38,13 +38,16 @@
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
 #include "third_party/blink/renderer/core/frame/web_feature_forward.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/layout/layout_text.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
@@ -75,10 +78,6 @@ Node* HighestNodeToRemoveInPruning(Node* node, const Node* exclude_node) {
     previous_node = node;
   }
   return nullptr;
-}
-
-Element* EnclosingTableCell(const Position& p) {
-  return ToElement(EnclosingNodeOfType(p, IsTableCell));
 }
 
 bool IsTableStructureNode(const Node* node) {
@@ -130,18 +129,18 @@ Node* EnclosingEmptyListItem(const VisiblePosition& visible_pos) {
 }
 
 bool AreIdenticalElements(const Node& first, const Node& second) {
-  if (!first.IsElementNode() || !second.IsElementNode())
+  const auto* first_element = DynamicTo<Element>(first);
+  const auto* second_element = DynamicTo<Element>(second);
+  if (!first_element || !second_element)
     return false;
 
-  const Element& first_element = ToElement(first);
-  const Element& second_element = ToElement(second);
-  if (!first_element.HasTagName(second_element.TagQName()))
+  if (!first_element->HasTagName(second_element->TagQName()))
     return false;
 
-  if (!first_element.HasEquivalentAttributes(second_element))
+  if (!first_element->HasEquivalentAttributes(*second_element))
     return false;
 
-  return HasEditableStyle(first_element) && HasEditableStyle(second_element);
+  return HasEditableStyle(*first_element) && HasEditableStyle(*second_element);
 }
 
 // FIXME: need to dump this
@@ -156,11 +155,10 @@ static bool IsSpecialHTMLElement(const Node& n) {
   if (!layout_object)
     return false;
 
-  if (layout_object->Style()->Display() == EDisplay::kTable ||
-      layout_object->Style()->Display() == EDisplay::kInlineTable)
+  if (layout_object->Style()->IsDisplayTableBox())
     return true;
 
-  if (layout_object->Style()->IsFloating())
+  if (layout_object->IsFloating())
     return true;
 
   return false;
@@ -173,7 +171,7 @@ static HTMLElement* FirstInSpecialElement(const Position& pos) {
     if (RootEditableElement(runner) != element)
       break;
     if (IsSpecialHTMLElement(runner)) {
-      HTMLElement* special_element = ToHTMLElement(&runner);
+      auto* special_element = To<HTMLElement>(&runner);
       VisiblePosition v_pos = CreateVisiblePosition(pos);
       VisiblePosition first_in_element =
           CreateVisiblePosition(FirstPositionInOrBeforeNode(*special_element));
@@ -196,7 +194,7 @@ static HTMLElement* LastInSpecialElement(const Position& pos) {
     if (RootEditableElement(runner) != element)
       break;
     if (IsSpecialHTMLElement(runner)) {
-      HTMLElement* special_element = ToHTMLElement(&runner);
+      auto* special_element = To<HTMLElement>(&runner);
       VisiblePosition v_pos = CreateVisiblePosition(pos);
       VisiblePosition last_in_element =
           CreateVisiblePosition(LastPositionInOrAfterNode(*special_element));
@@ -247,18 +245,17 @@ bool LineBreakExistsAtPosition(const Position& position) {
   if (position.IsNull())
     return false;
 
-  if (IsHTMLBRElement(*position.AnchorNode()) &&
+  if (IsA<HTMLBRElement>(*position.AnchorNode()) &&
       position.AtFirstEditingPositionForNode())
     return true;
 
   if (!position.AnchorNode()->GetLayoutObject())
     return false;
 
-  if (!position.AnchorNode()->IsTextNode() ||
-      !position.AnchorNode()->GetLayoutObject()->Style()->PreserveNewline())
+  const auto* text_node = DynamicTo<Text>(position.AnchorNode());
+  if (!text_node || !text_node->GetLayoutObject()->Style()->PreserveNewline())
     return false;
 
-  const Text* text_node = ToText(position.AnchorNode());
   unsigned offset = position.OffsetInContainerNode();
   return offset < text_node->length() && text_node->data()[offset] == '\n';
 }
@@ -309,14 +306,15 @@ Position LeadingCollapsibleWhitespacePosition(const Position& position,
   if (position.IsNull())
     return Position();
 
-  if (IsHTMLBRElement(*MostBackwardCaretPosition(position).AnchorNode()))
+  if (IsA<HTMLBRElement>(*MostBackwardCaretPosition(position).AnchorNode()))
     return Position();
 
   const Position& prev = PreviousCharacterPosition(position, affinity);
   if (prev == position)
     return Position();
   const Node* const anchor_node = prev.AnchorNode();
-  if (!anchor_node || !anchor_node->IsTextNode())
+  auto* anchor_text_node = DynamicTo<Text>(anchor_node);
+  if (!anchor_text_node)
     return Position();
   if (EnclosingBlockFlowElement(*anchor_node) !=
       EnclosingBlockFlowElement(*position.AnchorNode()))
@@ -325,7 +323,7 @@ Position LeadingCollapsibleWhitespacePosition(const Position& position,
       anchor_node->GetLayoutObject() &&
       !anchor_node->GetLayoutObject()->Style()->CollapseWhiteSpace())
     return Position();
-  const String& string = ToText(anchor_node)->data();
+  const String& string = anchor_text_node->data();
   const UChar previous_character = string[prev.ComputeOffsetInContainerNode()];
   const bool is_space = option == kConsiderNonCollapsibleWhitespace
                             ? (IsSpaceOrNewline(previous_character) ||
@@ -353,7 +351,7 @@ bool LineBreakExistsAtVisiblePosition(const VisiblePosition& visible_position) {
 HTMLElement* CreateHTMLElement(Document& document, const QualifiedName& name) {
   DCHECK_EQ(name.NamespaceURI(), html_names::xhtmlNamespaceURI)
       << "Unexpected namespace: " << name;
-  return ToHTMLElement(document.CreateElement(
+  return To<HTMLElement>(document.CreateElement(
       name, CreateElementFlags::ByCloneNode(), g_null_atom));
 }
 
@@ -364,8 +362,8 @@ HTMLElement* EnclosingList(const Node* node) {
   ContainerNode* root = HighestEditableRoot(FirstPositionInOrBeforeNode(*node));
 
   for (Node& runner : NodeTraversal::AncestorsOf(*node)) {
-    if (IsHTMLUListElement(runner) || IsHTMLOListElement(runner))
-      return ToHTMLElement(&runner);
+    if (IsA<HTMLUListElement>(runner) || IsA<HTMLOListElement>(runner))
+      return To<HTMLElement>(&runner);
     if (runner == root)
       return nullptr;
   }
@@ -385,9 +383,9 @@ Node* EnclosingListChild(const Node* node) {
   // instead of node->parentNode()
   for (Node* n = const_cast<Node*>(node); n && n->parentNode();
        n = n->parentNode()) {
-    if (IsHTMLLIElement(*n) ||
-        (IsHTMLListElement(n->parentNode()) && n != root))
+    if ((IsListItemTag(n) || IsListElementTag(n->parentNode())) && n != root) {
       return n;
+    }
     if (n == root || IsTableCell(n))
       return nullptr;
   }
@@ -518,31 +516,33 @@ void TidyUpHTMLStructure(Document& document) {
     return;
 
   Element* const current_root = document.documentElement();
-  if (current_root && IsHTMLHtmlElement(current_root))
+  if (current_root && IsA<HTMLHtmlElement>(current_root))
     return;
   Element* const existing_head =
-      current_root && IsHTMLHeadElement(current_root) ? current_root : nullptr;
+      current_root && IsA<HTMLHeadElement>(current_root) ? current_root
+                                                         : nullptr;
   Element* const existing_body =
-      current_root && (IsHTMLBodyElement(current_root) ||
-                       IsHTMLFrameSetElement(current_root))
+      current_root && (IsA<HTMLBodyElement>(current_root) ||
+                       IsA<HTMLFrameSetElement>(current_root))
           ? current_root
           : nullptr;
   // We ensure only "the root is <html>."
   // documentElement as rootEditableElement is problematic.  So we move
   // non-<html> root elements under <body>, and the <body> works as
   // rootEditableElement.
-  document.AddConsoleMessage(ConsoleMessage::Create(
+  document.AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kJavaScript,
       mojom::ConsoleMessageLevel::kWarning,
       "document.execCommand() doesn't work with an invalid HTML structure. It "
       "is corrected automatically."));
   UseCounter::Count(document, WebFeature::kExecCommandAltersHTMLStructure);
 
-  Element* const root = HTMLHtmlElement::Create(document);
+  auto* const root = MakeGarbageCollected<HTMLHtmlElement>(document);
   if (existing_head)
     root->AppendChild(existing_head);
-  Element* const body =
-      existing_body ? existing_body : HTMLBodyElement::Create(document);
+  auto* const body = existing_body
+                         ? existing_body
+                         : MakeGarbageCollected<HTMLBodyElement>(document);
   if (document.documentElement() && body != document.documentElement())
     body->AppendChild(document.documentElement());
   root->AppendChild(body);
@@ -581,11 +581,11 @@ InputEvent::InputType DeletionInputTypeFromTextGranularity(
 void DispatchEditableContentChangedEvents(Element* start_root,
                                           Element* end_root) {
   if (start_root) {
-    start_root->DispatchEvent(
+    start_root->DefaultEventHandler(
         *Event::Create(event_type_names::kWebkitEditableContentChanged));
   }
   if (end_root && end_root != start_root) {
-    end_root->DispatchEvent(
+    end_root->DefaultEventHandler(
         *Event::Create(event_type_names::kWebkitEditableContentChanged));
   }
 }
@@ -655,7 +655,8 @@ void ChangeSelectionAfterCommand(LocalFrame* frame,
   if (!selection_did_not_change_dom_position)
     return;
   frame->Client()->DidChangeSelection(
-      frame->Selection().GetSelectionInDOMTree().Type() != kRangeSelection);
+      !frame->Selection().GetSelectionInDOMTree().IsRange(),
+      blink::SyncCondition::kNotForced);
 }
 
 InputEvent::EventIsComposing IsComposingFromCommand(

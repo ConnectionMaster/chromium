@@ -39,6 +39,7 @@
 #include "third_party/blink/renderer/platform/audio/audio_io_callback.h"
 #include "third_party/blink/renderer/platform/audio/media_multi_channel_resampler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
+#include "third_party/blink/renderer/platform/wtf/threading_primitives.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 
@@ -63,17 +64,29 @@ class PLATFORM_EXPORT AudioDestination
   USING_FAST_MALLOC(AudioDestination);
 
  public:
+  // Represents the current state of the underlying |WebAudioDevice| object
+  // (RendererWebAudioDeviceImpl).
+  enum DeviceState {
+    kRunning,
+    kPaused,
+    kStopped,
+  };
+
   AudioDestination(AudioIOCallback&,
                    unsigned number_of_output_channels,
                    const WebAudioLatencyHint&,
-                   base::Optional<float> context_sample_rate);
+                   absl::optional<float> context_sample_rate,
+                   unsigned render_quantum_frames);
+  AudioDestination(const AudioDestination&) = delete;
+  AudioDestination& operator=(const AudioDestination&) = delete;
   ~AudioDestination() override;
 
   static scoped_refptr<AudioDestination> Create(
       AudioIOCallback&,
       unsigned number_of_output_channels,
       const WebAudioLatencyHint&,
-      base::Optional<float> context_sample_rate);
+      absl::optional<float> context_sample_rate,
+      unsigned render_quantum_frames);
 
   // The actual render function (WebAudioDevice::RenderCallback) isochronously
   // invoked by the media renderer. This is never called after Stop() is called.
@@ -112,26 +125,34 @@ class PLATFORM_EXPORT AudioDestination
   // hardware.
   int FramesPerBuffer() const;
 
-  // The information from the actual audio hardware. (via Platform::current)
+  // The information from the actual audio hardware. (via Platform::Current)
+  static size_t HardwareBufferSize();
   static float HardwareSampleRate();
   static uint32_t MaxChannelCount();
 
+  // Sets the detect silence flag for |web_audio_device_|.
+  void SetDetectSilence(bool detect_silence);
+
+  // This should only be called from the audio thread.
+  unsigned RenderQuantumFrames() const { return render_quantum_frames_; }
+
  private:
+  void SetDeviceState(DeviceState);
+
   // Provide input to the resampler (if used).
   void ProvideResamplerInput(int resampler_frame_delay, AudioBus* dest);
 
-  enum class PlayState { kStopped, kPlaying, kPaused };
-
   // Check if the buffer size chosen by the WebAudioDevice is too large.
-  bool CheckBufferSize();
+  bool CheckBufferSize(unsigned render_quantum_frames);
 
-  size_t HardwareBufferSize();
+  void SendLogMessage(const String& message);
+
+  unsigned render_quantum_frames_;
 
   // Accessed by the main thread.
   std::unique_ptr<WebAudioDevice> web_audio_device_;
   const unsigned number_of_output_channels_;
   uint32_t callback_buffer_size_;
-  PlayState play_state_;
 
   // The task runner for AudioWorklet operation. This is only valid when
   // the AudioWorklet is activated.
@@ -152,12 +173,6 @@ class PLATFORM_EXPORT AudioDestination
   // engine. (i.e. DestinationNode)
   AudioIOCallback& callback_;
 
-  // When the last callback function from the device is called.
-  base::TimeTicks previous_callback_request_;
-
-  // The time duration spent on rendering previous render quanta per callback.
-  base::TimeDelta previous_render_duration_;
-
   // Accessed by rendering thread.
   size_t frames_elapsed_;
 
@@ -171,9 +186,15 @@ class PLATFORM_EXPORT AudioDestination
 
   // Required for RequestRender and also in the resampling callback (if used).
   AudioIOPosition output_position_;
-  AudioIOCallbackMetric metric_;
 
-  DISALLOW_COPY_AND_ASSIGN(AudioDestination);
+  AudioCallbackMetricReporter metric_reporter_;
+
+  // This protects |device_state_| below.
+  mutable Mutex state_change_lock_;
+
+  // Modified only on the main thread, so it can be read without holding a lock
+  // there.
+  DeviceState device_state_;
 };
 
 }  // namespace blink

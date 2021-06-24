@@ -7,10 +7,10 @@
 #include <memory>
 #include <utility>
 
-#include "base/base64url.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
+#include "base/test/gmock_move_support.h"
 #include "base/test/simple_test_clock.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
@@ -19,6 +19,7 @@
 #include "chromeos/services/device_sync/fake_cryptauth_gcm_manager.h"
 #include "chromeos/services/device_sync/mock_sync_scheduler.h"
 #include "chromeos/services/device_sync/pref_names.h"
+#include "chromeos/services/device_sync/value_string_encoding.h"
 #include "components/prefs/testing_pref_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -26,7 +27,6 @@
 using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::Return;
-using ::testing::SaveArg;
 
 namespace chromeos {
 
@@ -65,7 +65,7 @@ class MockCryptAuthEnroller : public CryptAuthEnroller {
                     const std::string& user_private_key,
                     const cryptauth::GcmDeviceInfo& device_info,
                     cryptauth::InvocationReason invocation_reason,
-                    const EnrollmentFinishedCallback& callback));
+                    EnrollmentFinishedCallback callback));
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MockCryptAuthEnroller);
@@ -82,7 +82,8 @@ class MockCryptAuthEnrollerFactory : public CryptAuthEnrollerFactory {
   // CryptAuthEnrollerFactory:
   std::unique_ptr<CryptAuthEnroller> CreateInstance() override {
     auto passed_cryptauth_enroller = std::move(next_cryptauth_enroller_);
-    next_cryptauth_enroller_.reset(new NiceMock<MockCryptAuthEnroller>());
+    next_cryptauth_enroller_ =
+        std::make_unique<NiceMock<MockCryptAuthEnroller>>();
     return std::move(passed_cryptauth_enroller);
   }
 
@@ -177,18 +178,10 @@ class DeviceSyncCryptAuthEnrollmentManagerImplTest
     pref_service_.SetUserPref(
         prefs::kCryptAuthEnrollmentReason,
         std::make_unique<base::Value>(cryptauth::INVOCATION_REASON_UNKNOWN));
-
-    std::string public_key_b64, private_key_b64;
-    base::Base64UrlEncode(public_key_,
-                          base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                          &public_key_b64);
-    base::Base64UrlEncode(private_key_,
-                          base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                          &private_key_b64);
-    pref_service_.SetString(prefs::kCryptAuthEnrollmentUserPublicKey,
-                            public_key_b64);
-    pref_service_.SetString(prefs::kCryptAuthEnrollmentUserPrivateKey,
-                            private_key_b64);
+    pref_service_.Set(prefs::kCryptAuthEnrollmentUserPublicKey,
+                      util::EncodeAsValueString(public_key_));
+    pref_service_.Set(prefs::kCryptAuthEnrollmentUserPrivateKey,
+                      util::EncodeAsValueString(private_key_));
 
     ON_CALL(*sync_scheduler(), GetStrategy())
         .WillByDefault(Return(SyncScheduler::Strategy::PERIODIC_REFRESH));
@@ -219,7 +212,7 @@ class DeviceSyncCryptAuthEnrollmentManagerImplTest
     EXPECT_CALL(
         *next_cryptauth_enroller(),
         Enroll(public_key_, private_key_, _, expected_invocation_reason, _))
-        .WillOnce(SaveArg<4>(&completion_callback));
+        .WillOnce(MoveArg<4>(&completion_callback));
 
     auto sync_request = std::make_unique<SyncScheduler::SyncRequest>(
         enrollment_manager_.GetSyncScheduler());
@@ -354,14 +347,15 @@ TEST_F(DeviceSyncCryptAuthEnrollmentManagerImplTest, ForceEnrollment) {
 
   EXPECT_CALL(*sync_scheduler(), ForceSync());
   enrollment_manager_.ForceEnrollmentNow(
-      cryptauth::INVOCATION_REASON_SERVER_INITIATED);
+      cryptauth::INVOCATION_REASON_SERVER_INITIATED,
+      absl::nullopt /* session_id */);
 
   auto completion_callback =
       FireSchedulerForEnrollment(cryptauth::INVOCATION_REASON_SERVER_INITIATED);
 
   clock_.SetNow(base::Time::FromDoubleT(kLaterTimeNow));
   EXPECT_CALL(*this, OnEnrollmentFinishedProxy(true));
-  completion_callback.Run(true);
+  std::move(completion_callback).Run(true);
   EXPECT_EQ(clock_.Now(), enrollment_manager_.GetLastEnrollmentTime());
 }
 
@@ -377,7 +371,7 @@ TEST_F(DeviceSyncCryptAuthEnrollmentManagerImplTest,
       FireSchedulerForEnrollment(cryptauth::INVOCATION_REASON_PERIODIC);
   clock_.SetNow(base::Time::FromDoubleT(kLaterTimeNow));
   EXPECT_CALL(*this, OnEnrollmentFinishedProxy(false));
-  completion_callback.Run(false);
+  std::move(completion_callback).Run(false);
   EXPECT_EQ(old_enrollment_time, enrollment_manager_.GetLastEnrollmentTime());
   EXPECT_TRUE(pref_service_.GetBoolean(
       prefs::kCryptAuthEnrollmentIsRecoveringFromFailure));
@@ -389,7 +383,7 @@ TEST_F(DeviceSyncCryptAuthEnrollmentManagerImplTest,
       FireSchedulerForEnrollment(cryptauth::INVOCATION_REASON_FAILURE_RECOVERY);
   clock_.SetNow(base::Time::FromDoubleT(kLaterTimeNow + 30));
   EXPECT_CALL(*this, OnEnrollmentFinishedProxy(true));
-  completion_callback.Run(true);
+  std::move(completion_callback).Run(true);
   EXPECT_EQ(clock_.Now(), enrollment_manager_.GetLastEnrollmentTime());
   EXPECT_FALSE(pref_service_.GetBoolean(
       prefs::kCryptAuthEnrollmentIsRecoveringFromFailure));
@@ -419,7 +413,7 @@ TEST_F(DeviceSyncCryptAuthEnrollmentManagerImplTest,
   EXPECT_CALL(*next_cryptauth_enroller(),
               Enroll(public_key_, private_key_, _,
                      cryptauth::INVOCATION_REASON_INITIALIZATION, _))
-      .WillOnce(SaveArg<4>(&enrollment_callback));
+      .WillOnce(MoveArg<4>(&enrollment_callback));
   ASSERT_TRUE(gcm_manager_.registration_in_progress());
   gcm_manager_.CompleteRegistration(kGCMRegistrationId);
 
@@ -427,7 +421,7 @@ TEST_F(DeviceSyncCryptAuthEnrollmentManagerImplTest,
   ASSERT_FALSE(enrollment_callback.is_null());
   clock_.SetNow(base::Time::FromDoubleT(kLaterTimeNow));
   EXPECT_CALL(*this, OnEnrollmentFinishedProxy(true));
-  enrollment_callback.Run(true);
+  std::move(enrollment_callback).Run(true);
   EXPECT_EQ(clock_.Now(), enrollment_manager_.GetLastEnrollmentTime());
   EXPECT_TRUE(enrollment_manager_.IsEnrollmentValid());
 
@@ -459,12 +453,13 @@ TEST_F(DeviceSyncCryptAuthEnrollmentManagerImplTest, ReenrollOnGCMPushMessage) {
   enrollment_manager_.Start();
 
   // Simulate receiving a GCM push message, forcing the device to re-enroll.
-  gcm_manager_.PushReenrollMessage();
+  gcm_manager_.PushReenrollMessage(absl::nullopt /* session_id */,
+                                   absl::nullopt /* feature_type */);
   auto completion_callback =
       FireSchedulerForEnrollment(cryptauth::INVOCATION_REASON_SERVER_INITIATED);
 
   EXPECT_CALL(*this, OnEnrollmentFinishedProxy(true));
-  completion_callback.Run(true);
+  std::move(completion_callback).Run(true);
 }
 
 }  // namespace device_sync

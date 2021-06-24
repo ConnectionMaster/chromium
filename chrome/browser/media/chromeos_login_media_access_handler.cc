@@ -8,9 +8,9 @@
 
 #include "base/logging.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/login/ui/login_display_host.h"
-#include "chrome/browser/chromeos/login/ui/webui_login_view.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
+#include "chrome/browser/ash/login/ui/login_display_host.h"
+#include "chrome/browser/ash/login/ui/webui_login_view.h"
+#include "chrome/browser/ash/settings/cros_settings.h"
 #include "chrome/common/url_constants.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
@@ -23,20 +23,20 @@ ChromeOSLoginMediaAccessHandler::~ChromeOSLoginMediaAccessHandler() {}
 
 bool ChromeOSLoginMediaAccessHandler::SupportsStreamType(
     content::WebContents* web_contents,
-    const blink::MediaStreamType type,
+    const blink::mojom::MediaStreamType type,
     const extensions::Extension* extension) {
   if (!web_contents)
     return false;
-  chromeos::LoginDisplayHost* host = chromeos::LoginDisplayHost::default_host();
+  auto* host = ash::LoginDisplayHost::default_host();
   return host && web_contents == host->GetOobeWebContents();
 }
 
 bool ChromeOSLoginMediaAccessHandler::CheckMediaAccessPermission(
     content::RenderFrameHost* render_frame_host,
     const GURL& security_origin,
-    blink::MediaStreamType type,
+    blink::mojom::MediaStreamType type,
     const extensions::Extension* extension) {
-  if (type != blink::MEDIA_DEVICE_VIDEO_CAPTURE)
+  if (type != blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE)
     return false;
 
   // When creating new user (including supervised user), we must be able to use
@@ -44,7 +44,7 @@ bool ChromeOSLoginMediaAccessHandler::CheckMediaAccessPermission(
   if (security_origin.spec() == chrome::kChromeUIOobeURL)
     return true;
 
-  const chromeos::CrosSettings* const settings = chromeos::CrosSettings::Get();
+  const ash::CrosSettings* const settings = ash::CrosSettings::Get();
   if (!settings)
     return false;
 
@@ -57,7 +57,7 @@ bool ChromeOSLoginMediaAccessHandler::CheckMediaAccessPermission(
   const base::ListValue* list_value;
   const bool is_list = raw_list_value->GetAsList(&list_value);
   DCHECK(is_list);
-  for (const auto& base_value : *list_value) {
+  for (const auto& base_value : list_value->GetList()) {
     std::string value;
     if (base_value.GetAsString(&value)) {
       const ContentSettingsPattern pattern =
@@ -82,12 +82,13 @@ void ChromeOSLoginMediaAccessHandler::HandleRequest(
     const extensions::Extension* extension) {
   bool audio_allowed = false;
   bool video_allowed =
-      request.video_type == blink::MEDIA_DEVICE_VIDEO_CAPTURE &&
+      request.video_type ==
+          blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE &&
       CheckMediaAccessPermission(
           content::RenderFrameHost::FromID(request.render_process_id,
                                            request.render_frame_id),
-          request.security_origin, blink::MEDIA_DEVICE_VIDEO_CAPTURE,
-          extension);
+          request.security_origin,
+          blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, extension);
 
   CheckDevicesAndRunCallback(web_contents, request, std::move(callback),
                              audio_allowed, video_allowed);

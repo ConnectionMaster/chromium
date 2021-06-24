@@ -2,6 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {LanguagesBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
+import {CrSettingsPrefs} from 'chrome://settings/settings.js';
+import {FakeLanguageSettingsPrivate} from 'chrome://test/settings/fake_language_settings_private.js';
+import {FakeSettingsPrivate} from 'chrome://test/settings/fake_settings_private.js';
+import {TestLanguagesBrowserProxy} from 'chrome://test/settings/test_languages_browser_proxy.js';
+
+// clang-format on
+
 suite('settings-edit-dictionary-page', function() {
   function getFakePrefs() {
     const fakePrefs = [
@@ -26,24 +36,6 @@ suite('settings-edit-dictionary-page', function() {
         value: ['en-US'],
       }
     ];
-    if (cr.isChromeOS) {
-      fakePrefs.push({
-        key: 'settings.language.preferred_languages',
-        type: chrome.settingsPrivate.PrefType.STRING,
-        value: 'en-US,sw',
-      });
-      fakePrefs.push({
-        key: 'settings.language.preload_engines',
-        type: chrome.settingsPrivate.PrefType.STRING,
-        value: '_comp_ime_fgoepimhcoialccpbmpnnblemnepkkaoxkb:us::eng,' +
-            '_comp_ime_fgoepimhcoialccpbmpnnblemnepkkaoxkb:us:dvorak:eng',
-      });
-      fakePrefs.push({
-        key: 'settings.language.enabled_extension_imes',
-        type: chrome.settingsPrivate.PrefType.STRING,
-        value: '',
-      });
-    }
     return fakePrefs;
   }
 
@@ -61,12 +53,14 @@ suite('settings-edit-dictionary-page', function() {
   setup(function() {
     PolymerTest.clearBody();
     settingsPrefs = document.createElement('settings-prefs');
-    const settingsPrivate = new settings.FakeSettingsPrivate(getFakePrefs());
+    const settingsPrivate = new FakeSettingsPrivate(getFakePrefs());
     settingsPrefs.initialize(settingsPrivate);
 
-    languageSettingsPrivate = new settings.FakeLanguageSettingsPrivate();
+    languageSettingsPrivate = new FakeLanguageSettingsPrivate();
     languageSettingsPrivate.setSettingsPrefs(settingsPrefs);
-    settings.languageSettingsPrivateApiForTest = languageSettingsPrivate;
+    const browserProxy = new TestLanguagesBrowserProxy();
+    LanguagesBrowserProxyImpl.instance_ = browserProxy;
+    browserProxy.setLanguageSettingsPrivate(languageSettingsPrivate);
 
     editDictPage = document.createElement('settings-edit-dictionary-page');
 
@@ -91,11 +85,27 @@ suite('settings-edit-dictionary-page', function() {
         'none');  // Make sure add-word button actually clickable.
   });
 
+  test('add duplicate word', function() {
+    const WORD = 'unique';
+    languageSettingsPrivate.onCustomDictionaryChanged.callListeners([WORD], []);
+    editDictPage.$.newWord.value = `${WORD} ${WORD}`;
+    flush();
+    assertFalse(editDictPage.$.addWord.disabled);
+
+    editDictPage.$.newWord.value = WORD;
+    flush();
+    assertTrue(editDictPage.$.addWord.disabled);
+
+    languageSettingsPrivate.onCustomDictionaryChanged.callListeners([], [WORD]);
+    flush();
+    assertFalse(editDictPage.$.addWord.disabled);
+  });
+
   test('spellcheck edit dictionary page message when empty', function() {
     assertTrue(!!editDictPage);
     return languageSettingsPrivate.whenCalled('getSpellcheckWords')
         .then(function() {
-          Polymer.dom.flush();
+          flush();
 
           assertFalse(editDictPage.$.noWordsLabel.hidden);
           assertFalse(!!editDictPage.$$('#list'));
@@ -108,7 +118,7 @@ suite('settings-edit-dictionary-page', function() {
     addWordButton.click();
     editDictPage.$.newWord.value = 'valid word2';
     addWordButton.click();
-    Polymer.dom.flush();
+    flush();
 
     assertTrue(editDictPage.$.noWordsLabel.hidden);
     assertTrue(!!editDictPage.$$('#list'));
@@ -119,7 +129,7 @@ suite('settings-edit-dictionary-page', function() {
     const addWordButton = editDictPage.$$('#addWord');
     editDictPage.$.newWord.value = 'valid word';
     addWordButton.click();
-    Polymer.dom.flush();
+    flush();
 
     assertTrue(editDictPage.$.noWordsLabel.hidden);
     assertTrue(!!editDictPage.$$('#list'));
@@ -129,13 +139,13 @@ suite('settings-edit-dictionary-page', function() {
     // Button should be reachable in the tab order.
     assertEquals('0', removeWordButton.getAttribute('tabindex'));
     removeWordButton.click();
-    Polymer.dom.flush();
+    flush();
 
     assertFalse(editDictPage.$.noWordsLabel.hidden);
 
     editDictPage.$.newWord.value = 'valid word2';
     addWordButton.click();
-    Polymer.dom.flush();
+    flush();
 
     assertTrue(editDictPage.$.noWordsLabel.hidden);
     assertTrue(!!editDictPage.$$('#list'));

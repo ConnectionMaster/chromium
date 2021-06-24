@@ -19,22 +19,16 @@ class SystemProfileProto;
 // Stores and loads system information to prefs for stability logs.
 class StabilityMetricsProvider : public MetricsProvider {
  public:
-  StabilityMetricsProvider(PrefService* local_state);
+  explicit StabilityMetricsProvider(PrefService* local_state);
   ~StabilityMetricsProvider() override;
 
   static void RegisterPrefs(PrefRegistrySimple* registry);
-
-  void RecordBreakpadRegistration(bool success);
-  void RecordBreakpadHasDebugger(bool has_debugger);
 
   void CheckLastSessionEndCompleted();
   void MarkSessionEndCompleted(bool end_completed);
 
   void LogCrash(base::Time last_live_timestamp);
-  void LogStabilityLogDeferred();
-  void LogStabilityDataDiscarded();
   void LogLaunch();
-  void LogStabilityVersionMismatch();
 
  private:
 #if defined(OS_WIN)
@@ -49,7 +43,7 @@ class StabilityMetricsProvider : public MetricsProvider {
   void IncrementPrefValue(const char* path);
 
   // Gets pref value specified by |path| and resets it to 0 after retrieving.
-  int GetPrefValue(const char* path, int* value);
+  int GetAndClearPrefValue(const char* path, int* value);
 
   // MetricsProvider:
   void Init() override;

@@ -44,8 +44,8 @@ class SearchEnginesHandler : public SettingsPageUIHandler,
 
   // EditSearchEngineControllerDelegate implementation.
   void OnEditedKeyword(TemplateURL* template_url,
-                       const base::string16& title,
-                       const base::string16& keyword,
+                       const std::u16string& title,
+                       const std::u16string& keyword,
                        const std::string& url) override;
 
   // SettingsPageUIHandler implementation.
@@ -101,7 +101,7 @@ class SearchEnginesHandler : public SettingsPageUIHandler,
   KeywordEditorController list_controller_;
   std::unique_ptr<EditSearchEngineController> edit_controller_;
   PrefChangeRegistrar pref_change_registrar_;
-  base::WeakPtrFactory<SearchEnginesHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<SearchEnginesHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SearchEnginesHandler);
 };

@@ -4,16 +4,17 @@
 
 #include "ash/wm/immersive_context_ash.h"
 
-#include "ash/public/cpp/immersive/immersive_fullscreen_controller.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
-#include "base/logging.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
 #include "ui/display/screen.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
+
+using ::chromeos::ImmersiveFullscreenController;
 
 ImmersiveContextAsh::ImmersiveContextAsh() = default;
 
@@ -23,7 +24,7 @@ void ImmersiveContextAsh::OnEnteringOrExitingImmersive(
     ImmersiveFullscreenController* controller,
     bool entering) {
   aura::Window* window = controller->widget()->GetNativeWindow();
-  wm::WindowState* window_state = wm::GetWindowState(window);
+  WindowState* window_state = WindowState::Get(window);
   // Auto hide the shelf in immersive fullscreen instead of hiding it.
   window_state->SetHideShelfWhenFullscreen(!entering);
 
@@ -39,7 +40,7 @@ gfx::Rect ImmersiveContextAsh::GetDisplayBoundsInScreen(views::Widget* widget) {
 }
 
 bool ImmersiveContextAsh::DoesAnyWindowHaveCapture() {
-  return wm::GetCaptureWindow() != nullptr;
+  return window_util::GetCaptureWindow() != nullptr;
 }
 
 }  // namespace ash

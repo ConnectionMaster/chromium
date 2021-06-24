@@ -10,10 +10,15 @@
 #include "base/macros.h"
 #include "chrome/browser/shell_integration.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/page_transition_types.h"
 
 namespace content {
 class WebContents;
+}
+
+namespace url {
+class Origin;
 }
 
 class GURL;
@@ -43,21 +48,25 @@ class ExternalProtocolHandler {
   class Delegate {
    public:
     virtual scoped_refptr<shell_integration::DefaultProtocolClientWorker>
-    CreateShellWorker(
-        const shell_integration::DefaultWebClientWorkerCallback& callback,
-        const std::string& protocol) = 0;
+    CreateShellWorker(const std::string& protocol) = 0;
     virtual BlockState GetBlockState(const std::string& scheme,
                                      Profile* profile) = 0;
     virtual void BlockRequest() = 0;
-    virtual void RunExternalProtocolDialog(const GURL& url,
-                                           content::WebContents* web_contents,
-                                           ui::PageTransition page_transition,
-                                           bool has_user_gesture) = 0;
+    virtual void RunExternalProtocolDialog(
+        const GURL& url,
+        content::WebContents* web_contents,
+        ui::PageTransition page_transition,
+        bool has_user_gesture,
+        const absl::optional<url::Origin>& initiating_origin) = 0;
     virtual void LaunchUrlWithoutSecurityCheck(
         const GURL& url,
         content::WebContents* web_contents) = 0;
     virtual void FinishedProcessingCheck() = 0;
-    virtual ~Delegate() {}
+
+    virtual void OnSetBlockState(const std::string& scheme,
+                                 const url::Origin& initiating_origin,
+                                 ExternalProtocolHandler::BlockState state) {}
+    virtual ~Delegate() = default;
   };
 
   // UMA histogram metric names.
@@ -67,34 +76,48 @@ class ExternalProtocolHandler {
   // ExternalProtocolHandler::Delegate for testing code.
   static void SetDelegateForTesting(Delegate* delegate);
 
-  // Returns whether we should block a given scheme.
-  static BlockState GetBlockState(const std::string& scheme, Profile* profile);
+  // True if |initiating_origin| is not nullptr and is considered
+  // potentially trustworthy.
+  static bool MayRememberAllowDecisionsForThisOrigin(
+      const url::Origin* initiating_origin);
 
-  // Sets whether we should block a given scheme.
+  // Returns whether we should block a given scheme.
+  // |initiating_origin| can be nullptr if the user is performing a
+  // browser initiated top frame navigation, for example by typing in the
+  // address bar or right-clicking a link and selecting 'Open In New Tab'.
+  // Renderer-initiated navigations will set |initiating_origin| to the origin
+  // of the content requesting the navigation.
+  static BlockState GetBlockState(const std::string& scheme,
+                                  const url::Origin* initiating_origin,
+                                  Profile* profile);
+
+  // Sets whether we should block a given scheme + origin.
   static void SetBlockState(const std::string& scheme,
+                            const url::Origin& initiating_origin,
                             BlockState state,
                             Profile* profile);
 
-  // Checks to see if the protocol is allowed, if it is whitelisted,
+  // Checks to see if the protocol is allowed, if it is allowlisted,
   // the application associated with the protocol is launched on the io thread,
-  // if it is blacklisted, returns silently. Otherwise, an
+  // if it is denylisted, returns silently. Otherwise, an
   // ExternalProtocolDialog is created asking the user. If the user accepts,
   // LaunchUrlWithoutSecurityCheck is called on the io thread and the
   // application is launched.
   // Must run on the UI thread.
   static void LaunchUrl(const GURL& url,
-                        int render_process_host_id,
-                        int render_view_routing_id,
+                        content::WebContents::Getter web_contents_getter,
                         ui::PageTransition page_transition,
-                        bool has_user_gesture);
+                        bool has_user_gesture,
+                        const absl::optional<url::Origin>& initiating_origin);
 
   // Starts a url using the external protocol handler with the help
-  // of shellexecute. Should only be called if the protocol is whitelisted
+  // of shellexecute. Should only be called if the protocol is allowlisted
   // (checked in LaunchUrl) or if the user explicitly allows it. (By selecting
-  // "Launch Application" in an ExternalProtocolDialog.) It is assumed that the
-  // url has already been escaped, which happens in LaunchUrl.
-  // NOTE: You should Not call this function directly unless you are sure the
-  // url you have has been checked against the blacklist, and has been escaped.
+  // "Open Application" in an ExternalProtocolDialog.) |url| might be escaped
+  // already when calling into this function but e.g. from LaunchUrl but it
+  // doesn't have to be because is also escaped in it.
+  // NOTE: You should NOT call this function directly unless you are sure the
+  // url you have has been checked against the denylist.
   // All calls to this function should originate in some way from LaunchUrl.
   static void LaunchUrlWithoutSecurityCheck(const GURL& url,
                                             content::WebContents* web_contents);
@@ -125,10 +148,18 @@ class ExternalProtocolHandler {
   // This is implemented separately on each platform.
   // TODO(davidsac): Consider refactoring this to take a WebContents directly.
   // crbug.com/668289
-  static void RunExternalProtocolDialog(const GURL& url,
-                                        content::WebContents* web_contents,
-                                        ui::PageTransition page_transition,
-                                        bool has_user_gesture);
+  //
+  // The dialog displays |initiating_origin| to the user so that they can
+  // attribute the external protocol request to a site that initiated it. If an
+  // opaque origin (for example, an origin inside a sandboxed iframe) initiated
+  // the request, then |initiating_origin| should be set to the precursor origin
+  // (that is, the origin that created the opaque origin).
+  static void RunExternalProtocolDialog(
+      const GURL& url,
+      content::WebContents* web_contents,
+      ui::PageTransition page_transition,
+      bool has_user_gesture,
+      const absl::optional<url::Origin>& initiating_origin);
 
   // Clears the external protocol handling data.
   static void ClearData(Profile* profile);

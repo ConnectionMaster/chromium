@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that removed Elements logged in the Console are properly formatted.\n`);
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
 
   TestRunner.addResult(`Adding element`);
@@ -19,7 +19,7 @@
   TestRunner.evaluateInPagePromise(`console.log(el)`);
   await nodePromise;
   await ConsoleTestRunner.waitForPendingViewportUpdates();
-  ConsoleTestRunner.dumpConsoleMessages();
+  await ConsoleTestRunner.dumpConsoleMessages();
 
   TestRunner.addResult(`Removing element`);
   await TestRunner.evaluateInPagePromise(`el.remove()`);
@@ -27,7 +27,7 @@
   TestRunner.addResult(`Expanding element in Console`);
   await ConsoleTestRunner.expandConsoleMessagesPromise();
   await ConsoleTestRunner.waitForRemoteObjectsConsoleMessagesPromise();
-  ConsoleTestRunner.dumpConsoleMessages();
+  await ConsoleTestRunner.dumpConsoleMessages();
 
   TestRunner.completeTest();
 })();

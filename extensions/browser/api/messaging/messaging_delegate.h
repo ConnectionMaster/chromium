@@ -68,6 +68,7 @@ class MessagingDelegate {
   // Creates a MessagePort for a native app. If the port cannot be created,
   // returns nullptr and may populate |error_out|.
   virtual std::unique_ptr<MessagePort> CreateReceiverForNativeApp(
+      content::BrowserContext* browser_context,
       base::WeakPtr<MessagePort::ChannelDelegate> channel_delegate,
       content::RenderFrameHost* source,
       const std::string& extension_id,
@@ -85,7 +86,7 @@ class MessagingDelegate {
       const Extension* extension,
       content::WebContents* web_contents,
       const GURL& url,
-      const base::Callback<void(bool)>& callback);
+      base::OnceCallback<void(bool)> callback);
 };
 
 }  // namespace extensions

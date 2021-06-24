@@ -34,8 +34,8 @@ const InterpolableValue& TransitionInterpolation::CurrentInterpolableValue()
   return *cached_interpolable_value_;
 }
 
-NonInterpolableValue* TransitionInterpolation::CurrentNonInterpolableValue()
-    const {
+const NonInterpolableValue*
+TransitionInterpolation::CurrentNonInterpolableValue() const {
   if (cached_fraction_ == 0) {
     return start_.non_interpolable_value.get();
   }
@@ -48,7 +48,7 @@ NonInterpolableValue* TransitionInterpolation::CurrentNonInterpolableValue()
 void TransitionInterpolation::Apply(StyleResolverState& state) const {
   CSSInterpolationTypesMap map(state.GetDocument().GetPropertyRegistry(),
                                state.GetDocument());
-  CSSInterpolationEnvironment environment(map, state, nullptr);
+  CSSInterpolationEnvironment environment(map, state, nullptr, nullptr);
   type_.Apply(CurrentInterpolableValue(), CurrentNonInterpolableValue(),
               environment);
 }

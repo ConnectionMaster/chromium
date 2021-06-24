@@ -10,15 +10,14 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "services/service_manager/public/mojom/service.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace service_manager {
 namespace {
@@ -72,7 +71,7 @@ class ServiceProcessLauncherDelegateImpl
 #define MAYBE_StartJoin StartJoin
 #endif  // defined(OS_ANDROID)
 TEST(ServiceProcessLauncherTest, MAYBE_StartJoin) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
 
   base::FilePath test_service_path;
 #if defined(OS_FUCHSIA)
@@ -85,22 +84,22 @@ TEST(ServiceProcessLauncherTest, MAYBE_StartJoin) {
                           .AddExtension(kServiceExtension);
 
   ServiceProcessLauncherDelegateImpl service_process_launcher_delegate;
-  base::Optional<ServiceProcessLauncher> launcher(
-      base::in_place, &service_process_launcher_delegate, test_service_path);
+  absl::optional<ServiceProcessLauncher> launcher(
+      absl::in_place, &service_process_launcher_delegate, test_service_path);
   base::RunLoop run_loop;
   launcher->Start(
-      Identity(), SANDBOX_TYPE_NO_SANDBOX,
+      Identity(), sandbox::policy::SandboxType::kNoSandbox,
       base::BindOnce(&ProcessReadyCallbackAdapter,
                      true /*expect_process_id_valid*/, run_loop.QuitClosure()));
   run_loop.Run();
 
   launcher.reset();
-  scoped_task_environment.RunUntilIdle();
+  task_environment.RunUntilIdle();
 
   EXPECT_EQ(1u, service_process_launcher_delegate.get_and_clear_adjust_count());
 }
 
-#if !defined(OS_POSIX) || defined(OS_MACOSX)
+#if !defined(OS_POSIX) || defined(OS_MAC)
 // Verify that if ServiceProcessLauncher cannot launch a process running the
 // service from the specified path, then we are able to clean up without e.g.
 // double-freeing the platform-channel handle reserved for the peer.
@@ -108,25 +107,25 @@ TEST(ServiceProcessLauncherTest, MAYBE_StartJoin) {
 // launch child processes, since we won't fail until exec(), therefore the test
 // will see a valid child process-Id. We use posix_spawn() on Mac OS X.
 TEST(ServiceProcessLauncherTest, FailToLaunchProcess) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
 
   // Pick a service path that could not possibly ever exist.
   base::FilePath test_service_path(FILE_PATH_LITERAL("rockot@_rules.service"));
 
   ServiceProcessLauncherDelegateImpl service_process_launcher_delegate;
-  base::Optional<ServiceProcessLauncher> launcher(
-      base::in_place, &service_process_launcher_delegate, test_service_path);
+  absl::optional<ServiceProcessLauncher> launcher(
+      absl::in_place, &service_process_launcher_delegate, test_service_path);
   base::RunLoop run_loop;
-  launcher->Start(Identity(), SANDBOX_TYPE_NO_SANDBOX,
+  launcher->Start(Identity(), sandbox::policy::SandboxType::kNoSandbox,
                   base::BindOnce(&ProcessReadyCallbackAdapter,
                                  false /*expect_process_id_valid*/,
                                  run_loop.QuitClosure()));
   run_loop.Run();
 
   launcher.reset();
-  scoped_task_environment.RunUntilIdle();
+  task_environment.RunUntilIdle();
 }
-#endif  //  !defined(OS_POSIX) || defined(OS_MACOSX)
+#endif  //  !defined(OS_POSIX) || defined(OS_MAC)
 
 }  // namespace
 }  // namespace service_manager

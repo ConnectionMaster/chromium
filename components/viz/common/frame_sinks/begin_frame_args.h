@@ -6,13 +6,22 @@
 #define COMPONENTS_VIZ_COMMON_FRAME_SINKS_BEGIN_FRAME_ARGS_H_
 
 #include <stdint.h>
+
 #include <memory>
+#include <string>
 
 #include "base/location.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
-#include "base/values.h"
 #include "components/viz/common/viz_common_export.h"
+
+namespace perfetto {
+namespace protos {
+namespace pbzero {
+class BeginFrameArgs;
+}
+}  // namespace protos
+}  // namespace perfetto
 
 namespace base {
 namespace trace_event {
@@ -38,6 +47,28 @@ class TracedValue;
 #endif
 
 namespace viz {
+
+struct VIZ_COMMON_EXPORT BeginFrameId {
+  // |source_id| and |sequence_number| identify a BeginFrame. These are set by
+  // the original BeginFrameSource that created the BeginFrameArgs. When
+  // |source_id| of consecutive BeginFrameArgs changes, observers should expect
+  // the continuity of |sequence_number| to break.
+  uint64_t source_id = 0;
+  uint64_t sequence_number = 0;
+
+  // Creates an invalid set of values.
+  BeginFrameId();
+  BeginFrameId(const BeginFrameId& id);
+  BeginFrameId(uint64_t source_id, uint64_t sequence_number);
+
+  bool operator<(const BeginFrameId& other) const;
+  bool operator==(const BeginFrameId& other) const;
+  bool operator!=(const BeginFrameId& other) const;
+  bool IsNextInSequenceTo(const BeginFrameId& previous) const;
+  bool IsSequenceValid() const;
+  BeginFrameId& operator=(const BeginFrameId& id);
+  std::string ToString() const;
+};
 
 struct VIZ_COMMON_EXPORT BeginFrameArgs {
   enum BeginFrameArgsType {
@@ -83,7 +114,19 @@ struct VIZ_COMMON_EXPORT BeginFrameArgs {
   // This is the default interval assuming 60Hz to use to avoid sprinkling the
   // code with magic numbers.
   static constexpr base::TimeDelta DefaultInterval() {
-    return base::TimeDelta::FromMicroseconds(16666);
+    return base::TimeDelta::FromSeconds(1) / 60;
+  }
+
+  // This is the preferred interval to use when the producer can animate at the
+  // max interval supported by the Display.
+  static constexpr base::TimeDelta MinInterval() {
+    return base::TimeDelta::FromSeconds(0);
+  }
+
+  // This is the preferred interval to use when the producer doesn't have any
+  // frame rate preference. The Display can use any value which is appropriate.
+  static constexpr base::TimeDelta MaxInterval() {
+    return base::TimeDelta::Max();
   }
 
   // This is a hard-coded deadline adjustment used by the display compositor.
@@ -102,27 +145,31 @@ struct VIZ_COMMON_EXPORT BeginFrameArgs {
 
   bool IsValid() const { return interval >= base::TimeDelta(); }
 
+  // TODO(nuskos): Once we have a protozero -> String utility function remove
+  // these base::trace_event json dictionary functions.
   std::unique_ptr<base::trace_event::ConvertableToTraceFormat> AsValue() const;
   void AsValueInto(base::trace_event::TracedValue* dict) const;
+  void AsProtozeroInto(perfetto::protos::pbzero::BeginFrameArgs* args) const;
 
+  std::string ToString() const;
+
+  // The time at which the frame started. Used, for example, by animations to
+  // decide to slow down or skip ahead.
   base::TimeTicks frame_time;
+  // The time by which the receiving pipeline stage should do its work.
   base::TimeTicks deadline;
+  // The inverse of the desired frame rate.
   base::TimeDelta interval;
 
-  // |source_id| and |sequence_number| identify a BeginFrame within a single
-  // process and are set by the original BeginFrameSource that created the
-  // BeginFrameArgs. When |source_id| of consecutive BeginFrameArgs changes,
-  // observers should expect the continuity of |sequence_number| to break.
-  uint64_t source_id;
-  uint64_t sequence_number;
+  BeginFrameId frame_id;
 
   // |trace_id| is used as the id for the trace-events associated with this
   // begin-frame. The trace-id is set by the service, and can be used by both
   // the client and service as the id for trace-events.
   int64_t trace_id = -1;
 
-  BeginFrameArgsType type;
-  bool on_critical_path;
+  BeginFrameArgsType type = INVALID;
+  bool on_critical_path = true;
 
   // If true, observers of this BeginFrame should not produce a new
   // CompositorFrame, but instead only run the (web-visible) side effects of the
@@ -136,7 +183,11 @@ struct VIZ_COMMON_EXPORT BeginFrameArgs {
   // Designed for use in headless, in conjunction with
   // --disable-threaded-animation, --disable-threaded-scrolling, and
   // --disable-checker-imaging, see bit.ly/headless-rendering.
-  bool animate_only;
+  bool animate_only = false;
+
+  // Number of frames being skipped during throttling since last BeginFrame
+  // sent.
+  uint64_t frames_throttled_since_last = 0;
 
  private:
   BeginFrameArgs(uint64_t source_id,
@@ -149,7 +200,7 @@ struct VIZ_COMMON_EXPORT BeginFrameArgs {
 
 // Sent by a BeginFrameObserver as acknowledgment of completing a BeginFrame.
 struct VIZ_COMMON_EXPORT BeginFrameAck {
-  BeginFrameAck();
+  BeginFrameAck() = default;
 
   // Constructs an instance as a response to the specified BeginFrameArgs.
   BeginFrameAck(const BeginFrameArgs& args, bool has_damage);
@@ -163,22 +214,19 @@ struct VIZ_COMMON_EXPORT BeginFrameAck {
   // a CompositorFrame without prior BeginFrame, e.g. for synchronous drawing.
   static BeginFrameAck CreateManualAckWithDamage();
 
-  // Source identifier of the BeginFrame that is acknowledged. The
-  // BeginFrameSource that receives the acknowledgment uses this to discard
-  // BeginFrameAcks for BeginFrames sent by a different source. Such a situation
-  // may occur when the BeginFrameSource of the observer changes while a
-  // BeginFrame from the old source is still in flight.
-  uint64_t source_id;
-
-  // Sequence number of the BeginFrame that is acknowledged.
-  uint64_t sequence_number;
+  // Source identifier and Sequence number of the BeginFrame that is
+  // acknowledged. The BeginFrameSource that receives the acknowledgment uses
+  // this to discard BeginFrameAcks for BeginFrames sent by a different source.
+  // Such a situation may occur when the BeginFrameSource of the observer
+  // changes while a BeginFrame from the old source is still in flight.
+  BeginFrameId frame_id;
 
   // The |trace_id| of the BeginFrame that is acknowledged.
   int64_t trace_id = -1;
 
   // |true| if the observer has produced damage (e.g. sent a CompositorFrame or
   // damaged a surface) as part of responding to the BeginFrame.
-  bool has_damage;
+  bool has_damage = false;
 };
 
 }  // namespace viz

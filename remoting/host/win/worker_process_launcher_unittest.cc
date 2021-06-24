@@ -6,14 +6,15 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/scoped_process_information.h"
 #include "ipc/ipc_channel.h"
@@ -27,18 +28,14 @@
 #include "remoting/host/win/launch_process_with_token.h"
 #include "remoting/host/worker_process_ipc_delegate.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "testing/gmock_mutant.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::win::ScopedHandle;
 using testing::_;
 using testing::AnyNumber;
-using testing::CreateFunctor;
-using testing::DoAll;
 using testing::Expectation;
 using testing::Invoke;
 using testing::InvokeWithoutArgs;
-using testing::Return;
 
 namespace remoting {
 
@@ -158,7 +155,8 @@ class WorkerProcessLauncherTest
  protected:
   void DoLaunchProcess();
 
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
   scoped_refptr<AutoThreadTaskRunner> task_runner_;
 
   // Receives messages sent to the worker process.
@@ -195,12 +193,12 @@ WorkerProcessLauncherTest::~WorkerProcessLauncherTest() {
 
 void WorkerProcessLauncherTest::SetUp() {
   task_runner_ = new AutoThreadTaskRunner(
-      message_loop_.task_runner(),
-      base::Bind(&WorkerProcessLauncherTest::QuitMainMessageLoop,
-                 base::Unretained(this)));
+      task_environment_.GetMainThreadTaskRunner(),
+      base::BindOnce(&WorkerProcessLauncherTest::QuitMainMessageLoop,
+                     base::Unretained(this)));
 
   // Set up process launcher delegate
-  launcher_delegate_.reset(new MockProcessLauncherDelegate());
+  launcher_delegate_ = std::make_unique<MockProcessLauncherDelegate>();
   EXPECT_CALL(*launcher_delegate_, Send(_))
       .Times(AnyNumber())
       .WillRepeatedly(Invoke(this, &WorkerProcessLauncherTest::SendToProcess));
@@ -324,8 +322,8 @@ void WorkerProcessLauncherTest::CrashWorker() {
 }
 
 void WorkerProcessLauncherTest::StartWorker() {
-  launcher_.reset(new WorkerProcessLauncher(std::move(launcher_delegate_),
-                                            &server_listener_));
+  launcher_ = std::make_unique<WorkerProcessLauncher>(
+      std::move(launcher_delegate_), &server_listener_);
 
   launcher_->SetKillProcessTimeoutForTest(
       base::TimeDelta::FromMilliseconds(100));
@@ -340,7 +338,7 @@ void WorkerProcessLauncherTest::StopWorker() {
 }
 
 void WorkerProcessLauncherTest::QuitMainMessageLoop() {
-  message_loop_.task_runner()->PostTask(
+  task_environment_.GetMainThreadTaskRunner()->PostTask(
       FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
 }
 
@@ -433,12 +431,10 @@ TEST_F(WorkerProcessLauncherTest, Restart) {
   Expectation first_connect =
       EXPECT_CALL(server_listener_, OnChannelConnected(_))
           .Times(2)
-          .WillOnce(InvokeWithoutArgs(CreateFunctor(
-              &WorkerProcessLauncherTest::TerminateWorker,
-              base::Unretained(this),
-              CONTROL_C_EXIT)))
-          .WillOnce(InvokeWithoutArgs(this,
-                                      &WorkerProcessLauncherTest::StopWorker));
+          .WillOnce(
+              InvokeWithoutArgs([=]() { TerminateWorker(CONTROL_C_EXIT); }))
+          .WillOnce(
+              InvokeWithoutArgs(this, &WorkerProcessLauncherTest::StopWorker));
 
   EXPECT_CALL(server_listener_, OnPermanentError(_))
       .Times(0);
@@ -484,10 +480,8 @@ TEST_F(WorkerProcessLauncherTest, PermanentError) {
 
   EXPECT_CALL(server_listener_, OnChannelConnected(_))
       .Times(1)
-      .WillOnce(InvokeWithoutArgs(CreateFunctor(
-          &WorkerProcessLauncherTest::TerminateWorker,
-          base::Unretained(this),
-          kMinPermanentErrorExitCode)));
+      .WillOnce(InvokeWithoutArgs(
+          [=] { TerminateWorker(kMinPermanentErrorExitCode); }));
   EXPECT_CALL(server_listener_, OnPermanentError(_))
       .Times(1)
       .WillOnce(InvokeWithoutArgs(this,
@@ -515,10 +509,8 @@ TEST_F(WorkerProcessLauncherTest, Crash) {
 
   EXPECT_CALL(client_listener_, OnCrash(_, _, _))
       .Times(1)
-      .WillOnce(InvokeWithoutArgs(CreateFunctor(
-          &WorkerProcessLauncherTest::TerminateWorker,
-          base::Unretained(this),
-          EXCEPTION_BREAKPOINT)));
+      .WillOnce(
+          InvokeWithoutArgs([=]() { TerminateWorker(EXCEPTION_BREAKPOINT); }));
   EXPECT_CALL(server_listener_, OnWorkerProcessStopped())
       .Times(1);
 

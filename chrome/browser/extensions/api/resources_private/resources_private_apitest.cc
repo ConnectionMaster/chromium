@@ -4,9 +4,12 @@
 
 #include "base/macros.h"
 #include "chrome/browser/extensions/extension_apitest.h"
+#include "content/public/test/browser_test.h"
 
 using ResourcesPrivateApiTest = extensions::ExtensionApiTest;
 
 IN_PROC_BROWSER_TEST_F(ResourcesPrivateApiTest, GetStrings) {
-  ASSERT_TRUE(RunComponentExtensionTest("resources_private/get_strings"));
+  ASSERT_TRUE(RunExtensionTest("resources_private/get_strings", {},
+                               {.load_as_component = true}))
+      << message_;
 }

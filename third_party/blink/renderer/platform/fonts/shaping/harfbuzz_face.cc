@@ -30,6 +30,11 @@
 
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_face.h"
 
+// clang-format off
+#include <hb.h>
+#include <hb-ot.h>
+// clang-format on
+
 #include <memory>
 
 #include "build/build_config.h"
@@ -42,52 +47,54 @@
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/skia/skia_text_metrics.h"
 #include "third_party/blink/renderer/platform/fonts/unicode_range_set.h"
-#include "third_party/blink/renderer/platform/histogram.h"
 #include "third_party/blink/renderer/platform/resolution_units.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
-
-#include <hb-ot.h>
-#include <hb.h>
-
-#include <SkPaint.h>
-#include <SkPath.h>
-#include <SkPoint.h>
-#include <SkRect.h>
-#include <SkStream.h>
-#include <SkTypeface.h>
+#include "third_party/harfbuzz-ng/utils/hb_scoped.h"
+#include "third_party/skia/include/core/SkPaint.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPoint.h"
+#include "third_party/skia/include/core/SkRect.h"
+#include "third_party/skia/include/core/SkStream.h"
+#include "third_party/skia/include/core/SkTypeface.h"
 
 namespace blink {
 
-void HbFontDeleter::operator()(hb_font_t* font) {
-  if (font)
-    hb_font_destroy(font);
-}
+namespace {
 
-void HbFaceDeleter::operator()(hb_face_t* face) {
-  if (face)
-    hb_face_destroy(face);
-}
+#if defined(OS_MAC)
+void DetermineTrakSbix(SkTypeface* typeface, bool* has_trak, bool* has_sbix) {
+  int num_tags = typeface->countTables();
 
-struct HbSetDeleter {
-  void operator()(hb_set_t* set) {
-    if (set)
-      hb_set_destroy(set);
+  SkFontTableTag tags[num_tags];
+
+  int returned_tags = typeface->getTableTags(tags);
+  DCHECK_EQ(num_tags, returned_tags);
+
+  for (auto& tag : tags) {
+    if (tag == SkSetFourByteTag('t', 'r', 'a', 'k'))
+      *has_trak = true;
+    if (tag == SkSetFourByteTag('s', 'b', 'i', 'x'))
+      *has_sbix = true;
   }
-};
+}
+#endif
 
-using HbSetUniquePtr = std::unique_ptr<hb_set_t, HbSetDeleter>;
+}  // namespace
 
-static scoped_refptr<HbFontCacheEntry> CreateHbFontCacheEntry(hb_face_t*);
+static scoped_refptr<HbFontCacheEntry> CreateHbFontCacheEntry(
+    hb_face_t*,
+    SkTypeface* typefaces);
 
 HarfBuzzFace::HarfBuzzFace(FontPlatformData* platform_data, uint64_t unique_id)
     : platform_data_(platform_data), unique_id_(unique_id) {
   HarfBuzzFontCache::AddResult result =
-      FontGlobalContext::GetHarfBuzzFontCache().insert(unique_id_, nullptr);
+      FontGlobalContext::GetHarfBuzzFontCache()->insert(unique_id_, nullptr);
   if (result.is_new_entry) {
-    HbFaceUniquePtr face(CreateFace());
-    result.stored_value->value = CreateHbFontCacheEntry(face.get());
+    HbScoped<hb_face_t> face(CreateFace());
+    result.stored_value->value =
+        CreateHbFontCacheEntry(face.get(), platform_data->Typeface());
   }
   result.stored_value->value->AddRef();
   unscaled_font_ = result.stored_value->value->HbFont();
@@ -95,13 +102,14 @@ HarfBuzzFace::HarfBuzzFace(FontPlatformData* platform_data, uint64_t unique_id)
 }
 
 HarfBuzzFace::~HarfBuzzFace() {
-  HarfBuzzFontCache::iterator result =
-      FontGlobalContext::GetHarfBuzzFontCache().find(unique_id_);
-  SECURITY_DCHECK(result != FontGlobalContext::GetHarfBuzzFontCache().end());
+  HarfBuzzFontCache* harfbuzz_font_cache =
+      FontGlobalContext::GetHarfBuzzFontCache();
+  HarfBuzzFontCache::iterator result = harfbuzz_font_cache->find(unique_id_);
+  SECURITY_DCHECK(result != harfbuzz_font_cache->end());
   DCHECK(!result.Get()->value->HasOneRef());
   result.Get()->value->Release();
   if (result.Get()->value->HasOneRef())
-    FontGlobalContext::GetHarfBuzzFontCache().erase(unique_id_);
+    harfbuzz_font_cache->erase(unique_id_);
 }
 
 static hb_bool_t HarfBuzzGetGlyph(hb_font_t* hb_font,
@@ -229,7 +237,7 @@ bool HarfBuzzFace::HasSpaceInLigaturesOrKerning(TypesettingFeatures features) {
   const hb_codepoint_t kInvalidCodepoint = static_cast<hb_codepoint_t>(-1);
   hb_codepoint_t space = kInvalidCodepoint;
 
-  HbSetUniquePtr glyphs(hb_set_create());
+  HbScoped<hb_set_t> glyphs(hb_set_create());
 
   // Check whether computing is needed and compute for gpos/gsub.
   if (features & kKerning &&
@@ -281,31 +289,43 @@ bool HarfBuzzFace::ShouldSubpixelPosition() {
   return harfbuzz_font_data_->font_.isSubpixel();
 }
 
-static hb_font_funcs_t* HarfBuzzSkiaGetFontFuncs() {
-  hb_font_funcs_t* funcs = FontGlobalContext::GetHarfBuzzFontFuncs();
+static hb_font_funcs_t* create_populated_hb_font_funcs(
+    FontGlobalContext::HorizontalAdvanceSource horizontal_advance_source) {
+  hb_font_funcs_t* funcs = hb_font_funcs_create();
 
-  // We don't set callback functions which we can't support.
-  // HarfBuzz will use the fallback implementation if they aren't set.
-  if (!funcs) {
-    funcs = hb_font_funcs_create();
-    hb_font_funcs_set_variation_glyph_func(funcs, HarfBuzzGetGlyph, nullptr,
-                                           nullptr);
-    hb_font_funcs_set_nominal_glyph_func(funcs, HarfBuzzGetNominalGlyph,
-                                         nullptr, nullptr);
+  if (horizontal_advance_source == FontGlobalContext::kSkiaHorizontalAdvances) {
     hb_font_funcs_set_glyph_h_advance_func(
         funcs, HarfBuzzGetGlyphHorizontalAdvance, nullptr, nullptr);
     hb_font_funcs_set_glyph_h_advances_func(
         funcs, HarfBuzzGetGlyphHorizontalAdvances, nullptr, nullptr);
-    // TODO(https://crbug.com/899718): Replace vertical metrics callbacks with
-    // HarfBuzz VORG/VMTX internal implementation by deregistering those.
-    hb_font_funcs_set_glyph_v_advance_func(
-        funcs, HarfBuzzGetGlyphVerticalAdvance, nullptr, nullptr);
-    hb_font_funcs_set_glyph_v_origin_func(funcs, HarfBuzzGetGlyphVerticalOrigin,
-                                          nullptr, nullptr);
-    hb_font_funcs_set_glyph_extents_func(funcs, HarfBuzzGetGlyphExtents,
+  }
+  hb_font_funcs_set_variation_glyph_func(funcs, HarfBuzzGetGlyph, nullptr,
+                                         nullptr);
+  hb_font_funcs_set_nominal_glyph_func(funcs, HarfBuzzGetNominalGlyph, nullptr,
+                                       nullptr);
+  // TODO(https://crbug.com/899718): Replace vertical metrics callbacks with
+  // HarfBuzz VORG/VMTX internal implementation by deregistering those.
+  hb_font_funcs_set_glyph_v_advance_func(funcs, HarfBuzzGetGlyphVerticalAdvance,
                                          nullptr, nullptr);
-    hb_font_funcs_make_immutable(funcs);
-    FontGlobalContext::SetHarfBuzzFontFuncs(funcs);
+  hb_font_funcs_set_glyph_v_origin_func(funcs, HarfBuzzGetGlyphVerticalOrigin,
+                                        nullptr, nullptr);
+  hb_font_funcs_set_glyph_extents_func(funcs, HarfBuzzGetGlyphExtents, nullptr,
+                                       nullptr);
+
+  hb_font_funcs_make_immutable(funcs);
+  return funcs;
+}
+
+static hb_font_funcs_t* HarfBuzzSkiaGetFontFuncs(
+    FontGlobalContext::HorizontalAdvanceSource advance_source) {
+  hb_font_funcs_t* funcs =
+      FontGlobalContext::GetHarfBuzzFontFuncs(advance_source);
+
+  // We don't set callback functions which we can't support.
+  // HarfBuzz will use the fallback implementation if they aren't set.
+  if (!funcs) {
+    funcs = create_populated_hb_font_funcs(advance_source);
+    FontGlobalContext::SetHarfBuzzFontFuncs(advance_source, funcs);
   }
   DCHECK(funcs);
   return funcs;
@@ -336,7 +356,7 @@ static hb_blob_t* HarfBuzzSkiaGetTable(hb_face_t* face,
                         WTF::Partitions::FastFree);
 }
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
 static void DeleteTypefaceStream(void* stream_asset_ptr) {
   SkStreamAsset* stream_asset =
       reinterpret_cast<SkStreamAsset*>(stream_asset_ptr);
@@ -347,25 +367,22 @@ static void DeleteTypefaceStream(void* stream_asset_ptr) {
 hb_face_t* HarfBuzzFace::CreateFace() {
   hb_face_t* face = nullptr;
 
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(BooleanHistogram, zero_copy_success_histogram,
-                                  ("Blink.Fonts.HarfBuzzFaceZeroCopyAccess"));
   SkTypeface* typeface = platform_data_->Typeface();
   CHECK(typeface);
   // The attempt of doing zero copy-mmaped memory access to the font blobs does
   // not work efficiently on Mac, since what is returned from
   // typeface->openStream is a synthesized font assembled from copying all font
   // tables on Mac. See the implementation of SkTypeface_Mac::onOpenStream.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
   int ttc_index = 0;
   std::unique_ptr<SkStreamAsset> tf_stream(typeface->openStream(&ttc_index));
   if (tf_stream && tf_stream->getMemoryBase()) {
     const void* tf_memory = tf_stream->getMemoryBase();
     size_t tf_size = tf_stream->getLength();
-    std::unique_ptr<hb_blob_t, void (*)(hb_blob_t*)> face_blob(
+    HbScoped<hb_blob_t> face_blob(
         hb_blob_create(reinterpret_cast<const char*>(tf_memory),
                        SafeCast<unsigned int>(tf_size), HB_MEMORY_MODE_READONLY,
-                       tf_stream.release(), DeleteTypefaceStream),
-        hb_blob_destroy);
+                       tf_stream.release(), DeleteTypefaceStream));
     face = hb_face_create(face_blob.get(), ttc_index);
   }
 #endif
@@ -374,24 +391,45 @@ hb_face_t* HarfBuzzFace::CreateFace() {
   if (!face) {
     face = hb_face_create_for_tables(HarfBuzzSkiaGetTable,
                                      platform_data_->Typeface(), nullptr);
-    zero_copy_success_histogram.Count(false);
-  } else {
-    zero_copy_success_histogram.Count(true);
   }
 
   DCHECK(face);
   return face;
 }
 
-scoped_refptr<HbFontCacheEntry> CreateHbFontCacheEntry(hb_face_t* face) {
-  HbFontUniquePtr ot_font(hb_font_create(face));
+scoped_refptr<HbFontCacheEntry> CreateHbFontCacheEntry(hb_face_t* face,
+                                                       SkTypeface* typeface) {
+  HbScoped<hb_font_t> ot_font(hb_font_create(face));
   hb_ot_font_set_funcs(ot_font.get());
+
+  int axis_count = typeface->getVariationDesignPosition(nullptr, 0);
+  if (axis_count > 0) {
+    Vector<SkFontArguments::VariationPosition::Coordinate> axis_values;
+    axis_values.resize(axis_count);
+    if (typeface->getVariationDesignPosition(axis_values.data(),
+                                             axis_values.size()) > 0) {
+      hb_font_set_variations(
+          ot_font.get(), reinterpret_cast<hb_variation_t*>(axis_values.data()),
+          axis_values.size());
+    }
+  }
+
   // Creating a sub font means that non-available functions
   // are found from the parent.
   hb_font_t* unscaled_font = hb_font_create_sub_font(ot_font.get());
   scoped_refptr<HbFontCacheEntry> cache_entry =
       HbFontCacheEntry::Create(unscaled_font);
-  hb_font_set_funcs(unscaled_font, HarfBuzzSkiaGetFontFuncs(),
+
+  FontGlobalContext::HorizontalAdvanceSource advance_source =
+      FontGlobalContext::kSkiaHorizontalAdvances;
+#if defined(OS_MAC)
+  bool has_trak = false;
+  bool has_sbix = false;
+  DetermineTrakSbix(typeface, &has_trak, &has_sbix);
+  if (has_trak && !has_sbix)
+    advance_source = FontGlobalContext::kHarfBuzzHorizontalAdvances;
+#endif
+  hb_font_set_funcs(unscaled_font, HarfBuzzSkiaGetFontFuncs(advance_source),
                     cache_entry->HbFontData(), nullptr);
   return cache_entry;
 }
@@ -416,20 +454,13 @@ hb_font_t* HarfBuzzFace::GetScaledFont(
 
   int scale = SkiaScalarToHarfBuzzPosition(platform_data_->size());
   hb_font_set_scale(unscaled_font_, scale, scale);
-  hb_font_set_ptem(unscaled_font_, platform_data_->size() / kCssPixelsPerPoint);
-
-  SkTypeface* typeface = harfbuzz_font_data_->font_.getTypeface();
-  int axis_count = typeface->getVariationDesignPosition(nullptr, 0);
-  if (axis_count > 0) {
-    Vector<SkFontArguments::VariationPosition::Coordinate> axis_values;
-    axis_values.resize(axis_count);
-    if (typeface->getVariationDesignPosition(axis_values.data(),
-                                             axis_values.size()) > 0) {
-      hb_font_set_variations(
-          unscaled_font_, reinterpret_cast<hb_variation_t*>(axis_values.data()),
-          axis_values.size());
-    }
-  }
+  // See contended discussion in https://github.com/harfbuzz/harfbuzz/pull/1484
+  // Setting ptem here is critical for HarfBuzz to know where to lookup spacing
+  // offset in the AAT trak table, the unit pt in ptem here means "CoreText"
+  // points. After discussion on the pull request and with Apple developers, the
+  // meaning of HarfBuzz' hb_font_set_ptem API was changed to expect the
+  // equivalent of CSS pixels here.
+  hb_font_set_ptem(unscaled_font_, platform_data_->size());
 
   return unscaled_font_;
 }

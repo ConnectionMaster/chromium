@@ -51,13 +51,8 @@ static int CollapsedSpaceLength(LayoutText* layout_text, int text_end) {
 
 static int MaxOffsetIncludingCollapsedSpaces(const Node* node) {
   int offset = CaretMaxOffset(node);
-
-  if (node->GetLayoutObject() && node->GetLayoutObject()->IsText()) {
-    offset +=
-        CollapsedSpaceLength(ToLayoutText(node->GetLayoutObject()), offset) +
-        ToLayoutText(node->GetLayoutObject())->TextStartOffset();
-  }
-
+  if (auto* text = DynamicTo<LayoutText>(node->GetLayoutObject()))
+    offset += CollapsedSpaceLength(text, offset) + text->TextStartOffset();
   return offset;
 }
 
@@ -224,7 +219,7 @@ bool SimplifiedBackwardsTextIteratorAlgorithm<Strategy>::HandleTextNode() {
     return true;
 
   String text = layout_object->GetText();
-  if (!layout_object->HasTextBoxes() && text.length() > 0)
+  if (!layout_object->HasInlineFragments() && text.length() > 0)
     return true;
 
   const int position_end_offset = offset_;
@@ -241,7 +236,7 @@ bool SimplifiedBackwardsTextIteratorAlgorithm<Strategy>::HandleTextNode() {
   const int text_length = position_end_offset - position_start_offset;
   const int text_offset = position_start_offset - offset_in_node;
   CHECK_LE(static_cast<unsigned>(text_offset + text_length), text.length());
-  text_state_.EmitText(ToText(*node_), position_start_offset,
+  text_state_.EmitText(To<Text>(*node_), position_start_offset,
                        position_end_offset, text, text_offset,
                        text_offset + text_length);
   return !should_handle_first_letter_;
@@ -250,7 +245,7 @@ bool SimplifiedBackwardsTextIteratorAlgorithm<Strategy>::HandleTextNode() {
 template <typename Strategy>
 LayoutText* SimplifiedBackwardsTextIteratorAlgorithm<
     Strategy>::HandleFirstLetter(int& start_offset, int& offset_in_node) {
-  LayoutText* layout_object = ToLayoutText(node_->GetLayoutObject());
+  auto* layout_object = To<LayoutText>(node_->GetLayoutObject());
   start_offset = (node_ == start_node_) ? start_offset_ : 0;
 
   if (!layout_object->IsTextFragment()) {
@@ -258,7 +253,7 @@ LayoutText* SimplifiedBackwardsTextIteratorAlgorithm<
     return layout_object;
   }
 
-  LayoutTextFragment* fragment = ToLayoutTextFragment(layout_object);
+  auto* fragment = To<LayoutTextFragment>(layout_object);
   int offset_after_first_letter = fragment->Start();
   if (start_offset >= offset_after_first_letter) {
     // We'll stop in remaining part.
@@ -286,8 +281,8 @@ LayoutText* SimplifiedBackwardsTextIteratorAlgorithm<
       fragment->GetFirstLetterPseudoElement()->GetLayoutObject();
   DCHECK(pseudo_element_layout_object);
   DCHECK(pseudo_element_layout_object->SlowFirstChild());
-  LayoutText* first_letter_layout_object =
-      ToLayoutText(pseudo_element_layout_object->SlowFirstChild());
+  auto* first_letter_layout_object =
+      To<LayoutText>(pseudo_element_layout_object->SlowFirstChild());
 
   const int end_offset =
       end_node_ == node_ && end_offset_ < offset_after_first_letter
@@ -338,7 +333,7 @@ void SimplifiedBackwardsTextIteratorAlgorithm<Strategy>::ExitNode() {
     // TODO(editing-dev): The start of this emitted range is wrong. Ensuring
     // correctness would require |VisiblePositions| and so would be slow.
     // previousBoundary expects this.
-    text_state_.EmitChar16BeforeChildren('\n', ToContainerNode(*node_));
+    text_state_.EmitChar16BeforeChildren('\n', To<ContainerNode>(*node_));
   }
 }
 

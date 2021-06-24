@@ -9,9 +9,12 @@
 #include <string>
 
 #include "base/files/file_path.h"
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "ipc/ipc_message.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
+class Profile;
 
 namespace content {
 class BrowserContext;
@@ -92,21 +95,21 @@ extern const base::FilePath::CharType kWebRtcEventLogHistoryExtension[];
 // Such expired files will be purged from disk when examined.
 extern const base::TimeDelta kRemoteBoundWebRtcEventLogsMaxRetention;
 
-// StartRemoteLogging could fail for several reasons, but we only report
-// individually those failures that relate to either bad parameters, or calls
-// at a time that makes no sense. Anything else  would leak information to
-// the JS application (too many pending logs, etc.), and is not actionable
-// anyhow.
 // These are made globally visible so that unit tests may check for them.
-extern const char kStartRemoteLoggingFailureFeatureDisabled[];
-extern const char kStartRemoteLoggingFailureUnlimitedSizeDisallowed[];
-extern const char kStartRemoteLoggingFailureMaxSizeTooSmall[];
-extern const char kStartRemoteLoggingFailureMaxSizeTooLarge[];
-extern const char kStartRemoteLoggingFailureOutputPeriodMsTooLarge[];
-extern const char kStartRemoteLoggingFailureIllegalWebAppId[];
-extern const char kStartRemoteLoggingFailureUnknownOrInactivePeerConnection[];
 extern const char kStartRemoteLoggingFailureAlreadyLogging[];
-extern const char kStartRemoteLoggingFailureGeneric[];
+extern const char kStartRemoteLoggingFailureDeadRenderProcessHost[];
+extern const char kStartRemoteLoggingFailureFeatureDisabled[];
+extern const char kStartRemoteLoggingFailureFileCreationError[];
+extern const char kStartRemoteLoggingFailureFilePathUsedHistory[];
+extern const char kStartRemoteLoggingFailureFilePathUsedLog[];
+extern const char kStartRemoteLoggingFailureIllegalWebAppId[];
+extern const char kStartRemoteLoggingFailureLoggingDisabledBrowserContext[];
+extern const char kStartRemoteLoggingFailureMaxSizeTooLarge[];
+extern const char kStartRemoteLoggingFailureMaxSizeTooSmall[];
+extern const char kStartRemoteLoggingFailureNoAdditionalActiveLogsAllowed[];
+extern const char kStartRemoteLoggingFailureOutputPeriodMsTooLarge[];
+extern const char kStartRemoteLoggingFailureUnknownOrInactivePeerConnection[];
+extern const char kStartRemoteLoggingFailureUnlimitedSizeDisallowed[];
 
 // Values for the histogram for the result of the API call to collect
 // a WebRTC event log.
@@ -155,6 +158,11 @@ enum class WebRtcEventLoggingUploadUma {
 
 void UmaRecordWebRtcEventLoggingUpload(WebRtcEventLoggingUploadUma result);
 
+// Success is signalled by 0.
+// All negative values signal errors.
+// Positive values are not used.
+void UmaRecordWebRtcEventLoggingNetErrorType(int net_error);
+
 // For a given Chrome session, this is a unique key for PeerConnections.
 // It's not, however, unique between sessions (after Chrome is restarted).
 struct WebRtcEventLogPeerConnectionKey {
@@ -162,24 +170,32 @@ struct WebRtcEventLogPeerConnectionKey {
 
   constexpr WebRtcEventLogPeerConnectionKey()
       : WebRtcEventLogPeerConnectionKey(
-            /* render_process_id = */ 0,
-            /* lid = */ 0,
-            reinterpret_cast<BrowserContextId>(nullptr)) {}
+            /*render_process_id=*/0,
+            /*lid=*/0,
+            reinterpret_cast<BrowserContextId>(nullptr),
+            /*render_frame_id=*/MSG_ROUTING_NONE) {}
 
   constexpr WebRtcEventLogPeerConnectionKey(int render_process_id,
                                             int lid,
-                                            BrowserContextId browser_context_id)
+                                            BrowserContextId browser_context_id,
+                                            int render_frame_id)
       : render_process_id(render_process_id),
         lid(lid),
-        browser_context_id(browser_context_id) {}
+        browser_context_id(browser_context_id),
+        render_frame_id(render_frame_id) {}
 
   bool operator==(const WebRtcEventLogPeerConnectionKey& other) const {
     // Each RPH is associated with exactly one BrowserContext.
     DCHECK(render_process_id != other.render_process_id ||
            browser_context_id == other.browser_context_id);
+    // If render_process_id and lid are the same, then render_frame_id is also
+    // the same.
+    DCHECK(render_process_id != other.render_process_id || lid != other.lid ||
+           render_frame_id == other.render_frame_id);
 
     const bool equal = std::tie(render_process_id, lid) ==
                        std::tie(other.render_process_id, other.lid);
+
     return equal;
   }
 
@@ -187,6 +203,10 @@ struct WebRtcEventLogPeerConnectionKey {
     // Each RPH is associated with exactly one BrowserContext.
     DCHECK(render_process_id != other.render_process_id ||
            browser_context_id == other.browser_context_id);
+    // If render_process_id and lid are the same, then render_frame_id is also
+    // the same.
+    DCHECK(render_process_id != other.render_process_id || lid != other.lid ||
+           render_frame_id == other.render_frame_id);
 
     return std::tie(render_process_id, lid) <
            std::tie(other.render_process_id, other.lid);
@@ -202,6 +222,11 @@ struct WebRtcEventLogPeerConnectionKey {
   // is associated with a BrowserContext, and that BrowserContext is almost
   // always necessary, so it makes sense to remember it along with the key.
   BrowserContextId browser_context_id;
+
+  // The frame ID is not actually part of the key, since `lid` is kept unique
+  // per renderer process. The frame ID is needed to obtain the RenderFrameHost
+  // used for communicating with the renderer process.
+  int render_frame_id;
 };
 
 // Sentinel value for an unknown BrowserContext.
@@ -293,7 +318,7 @@ class LogFileWriter {
     // If !max_file_size_bytes.has_value(), the LogFileWriter is unlimited.
     virtual std::unique_ptr<LogFileWriter> Create(
         const base::FilePath& path,
-        base::Optional<size_t> max_file_size_bytes) const = 0;
+        absl::optional<size_t> max_file_size_bytes) const = 0;
   };
 
   virtual ~LogFileWriter() = default;
@@ -338,7 +363,7 @@ class BaseLogFileWriterFactory : public LogFileWriter::Factory {
 
   std::unique_ptr<LogFileWriter> Create(
       const base::FilePath& path,
-      base::Optional<size_t> max_file_size_bytes) const override;
+      absl::optional<size_t> max_file_size_bytes) const override;
 };
 
 // Interface for a class that provides compression of a stream, while attempting
@@ -371,7 +396,7 @@ class LogCompressor {
     // initializations are successful; en empty unique_ptr otherwise.
     // If !max_size_bytes.has_value(), an unlimited compressor is created.
     virtual std::unique_ptr<LogCompressor> Create(
-        base::Optional<size_t> max_size_bytes) const = 0;
+        absl::optional<size_t> max_size_bytes) const = 0;
   };
 
   // Result of a call to Compress().
@@ -457,7 +482,7 @@ class GzipLogCompressorFactory : public LogCompressor::Factory {
   size_t MinSizeBytes() const override;
 
   std::unique_ptr<LogCompressor> Create(
-      base::Optional<size_t> max_size_bytes) const override;
+      absl::optional<size_t> max_size_bytes) const override;
 
  private:
   std::unique_ptr<CompressedSizeEstimator::Factory> estimator_factory_;
@@ -477,7 +502,7 @@ class GzippedLogFileWriterFactory : public LogFileWriter::Factory {
 
   std::unique_ptr<LogFileWriter> Create(
       const base::FilePath& path,
-      base::Optional<size_t> max_file_size_bytes) const override;
+      absl::optional<size_t> max_file_size_bytes) const override;
 
  private:
   std::unique_ptr<GzipLogCompressorFactory> gzip_compressor_factory_;
@@ -532,6 +557,9 @@ std::string ExtractRemoteBoundWebRtcEventLogLocalIdFromPath(
 // Returns kInvalidWebRtcEventLogWebAppId in case of an error.
 size_t ExtractRemoteBoundWebRtcEventLogWebAppIdFromPath(
     const base::FilePath& path);
+
+// Used to determine the default value for the policy controlling event logging.
+bool DoesProfileDefaultToLoggingEnabled(const Profile* const profile);
 
 }  // namespace webrtc_event_logging
 

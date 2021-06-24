@@ -9,7 +9,6 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/i18n/unicode/numfmt.h"
@@ -27,13 +26,17 @@ class CurrencyFormatter {
                     const std::string& locale_name);
   ~CurrencyFormatter();
 
+  // Set the maximum number of fractional digits. (kMaximumNumFractionalDigits
+  // is the default if unset)
+  void SetMaxFractionalDigits(const int maxFractionalDigits);
+
   // Formats the |amount| according to the currency code that was set. The
   // result will NOT contain the currency code, nor a subset of it. Rather, the
   // caller of this function should display the currency code separately. The
   // return value may contain non-breaking space and is ready for display. In
   // the case of a failure in initialization of the formatter or during
   // formatter, this method will return |amount|.
-  base::string16 Format(const std::string& amount);
+  std::u16string Format(const std::string& amount);
 
   // Returns the formatted currency code (<= 6 characters including ellipsis if
   // applicable).

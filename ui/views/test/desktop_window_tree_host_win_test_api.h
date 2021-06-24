@@ -6,6 +6,7 @@
 #define UI_VIEWS_TEST_DESKTOP_WINDOW_TREE_HOST_WIN_TEST_API_H_
 
 #include "base/macros.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace ui {
@@ -15,6 +16,7 @@ class AXSystemCaretWin;
 namespace views {
 
 class DesktopWindowTreeHostWin;
+class HWNDMessageHandler;
 
 namespace test {
 
@@ -27,6 +29,10 @@ class DesktopWindowTreeHostWinTestApi {
   ui::AXSystemCaretWin* GetAXSystemCaret();
   gfx::NativeViewAccessible GetNativeViewAccessible();
 
+  HWNDMessageHandler* GetHwndMessageHandler();
+
+  void SetMockCursorPositionForTesting(const gfx::Point& position);
+
  private:
   DesktopWindowTreeHostWin* host_;
 
@@ -34,7 +40,6 @@ class DesktopWindowTreeHostWinTestApi {
 };
 
 }  // namespace test
-
 }  // namespace views
 
 #endif  // UI_VIEWS_TEST_DESKTOP_WINDOW_TREE_HOST_WIN_TEST_API_H_

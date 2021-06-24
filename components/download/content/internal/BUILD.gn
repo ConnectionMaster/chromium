@@ -13,6 +13,10 @@ source_set("internal") {
     "download_driver_impl.h",
   ]
 
+  if (is_android) {
+    sources += [ "context_menu_download.cc" ]
+  }
+
   public_deps = [
     "//components/download/content/public",
     "//components/download/internal/background_service:internal",
@@ -30,9 +34,7 @@ source_set("internal") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [
-    "download_driver_impl_unittest.cc",
-  ]
+  sources = [ "download_driver_impl_unittest.cc" ]
 
   deps = [
     ":internal",

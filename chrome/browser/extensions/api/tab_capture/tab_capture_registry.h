@@ -10,12 +10,13 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/common/extensions/api/tab_capture.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/browser/media_request_state.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 
 namespace base {
@@ -28,8 +29,6 @@ class WebContents;
 }
 
 namespace extensions {
-
-class ExtensionRegistry;
 
 namespace tab_capture = api::tab_capture;
 
@@ -99,7 +98,7 @@ class TabCaptureRegistry : public BrowserContextKeyedAPI,
   // MediaCaptureDevicesDispatcher::Observer implementation.
   void OnRequestUpdate(int target_render_process_id,
                        int target_render_frame_id,
-                       blink::MediaStreamType stream_type,
+                       blink::mojom::MediaStreamType stream_type,
                        const content::MediaRequestState state) override;
 
   // Send a StatusChanged event containing the current state of |request|.
@@ -117,8 +116,8 @@ class TabCaptureRegistry : public BrowserContextKeyedAPI,
   content::BrowserContext* const browser_context_;
   std::vector<std::unique_ptr<LiveRequest>> requests_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TabCaptureRegistry);
 };

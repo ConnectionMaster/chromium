@@ -3,8 +3,8 @@
 // found in the LICENSE file.
 
 (async function() {
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.loadHTML(`<script>function foo() {
           console.log(42);
@@ -24,13 +24,13 @@
   TestRunner.addResult('Call function and dump stack trace');
   TestRunner.evaluateInPageAnonymously('foo()');
   let callFrames = await SourcesTestRunner.waitUntilPausedPromise();
-  SourcesTestRunner.captureStackTrace(callFrames);
+  await SourcesTestRunner.captureStackTrace(callFrames);
 
   TestRunner.addResult('Dump console mesage with its location:');
   let messagePromise = ConsoleTestRunner.waitUntilMessageReceivedPromise();
   SourcesTestRunner.resumeExecution();
   await messagePromise;
-  ConsoleTestRunner.dumpConsoleMessages();
+  await ConsoleTestRunner.dumpConsoleMessages();
 
   SourcesTestRunner.completeDebuggerTest();
 })();

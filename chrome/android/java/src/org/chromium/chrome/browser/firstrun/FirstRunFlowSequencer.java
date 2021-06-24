@@ -10,29 +10,30 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.text.TextUtils;
+import android.os.SystemClock;
+import android.provider.Settings;
+
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.CommandLine;
+import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
-import org.chromium.base.VisibleForTesting;
-import org.chromium.chrome.browser.AppHooks;
-import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.chrome.browser.IntentHandler;
-import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.chrome.browser.LaunchIntentDispatcher;
+import org.chromium.chrome.browser.childaccounts.ChildAccountService;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.net.spdyproxy.DataReductionProxySettings;
-import org.chromium.chrome.browser.preferences.PrefServiceBridge;
-import org.chromium.chrome.browser.preferences.privacy.PrivacyPreferencesManager;
-import org.chromium.chrome.browser.services.AndroidEduAndChildAccountHelper;
-import org.chromium.chrome.browser.signin.SigninManager;
-import org.chromium.chrome.browser.signin.SigninPromoController;
-import org.chromium.chrome.browser.util.FeatureUtilities;
-import org.chromium.chrome.browser.util.IntentUtils;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.search_engines.SearchEnginePromoType;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.vr.VrModuleProvider;
-import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.ChildAccountStatus;
-import org.chromium.components.signin.ChromeSigninController;
 
 import java.util.List;
 
@@ -49,12 +50,8 @@ public abstract class FirstRunFlowSequencer  {
     private static final String TAG = "firstrun";
 
     private final Activity mActivity;
-
-    // The following are initialized via initializeSharedState().
-    private boolean mIsAndroidEduDevice;
     private @ChildAccountStatus.Status int mChildAccountStatus;
     private List<Account> mGoogleAccounts;
-    private boolean mForceEduSignIn;
 
     /**
      * Callback that is called once the flow is determined.
@@ -73,19 +70,15 @@ public abstract class FirstRunFlowSequencer  {
      * Once finished, calls onFlowIsKnown().
      */
     public void start() {
-        if (CommandLine.getInstance().hasSwitch(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
-                || ApiCompatibilityUtils.isDemoUser(mActivity)) {
-            onFlowIsKnown(null);
-            return;
-        }
-
-        new AndroidEduAndChildAccountHelper() {
-            @Override
-            public void onParametersReady() {
-                initializeSharedState(isAndroidEduDevice(), getChildAccountStatus());
+        long childAccountStatusStart = SystemClock.elapsedRealtime();
+        AccountManagerFacadeProvider.getInstance().getAccounts().then(accounts -> {
+            ChildAccountService.checkChildAccountStatus(accounts, status -> {
+                RecordHistogram.recordTimesHistogram("MobileFre.ChildAccountStatusDuration",
+                        SystemClock.elapsedRealtime() - childAccountStatusStart);
+                initializeSharedState(status, accounts);
                 processFreEnvironmentPreNative();
-            }
-        }.start();
+            });
+        });
     }
 
     @VisibleForTesting
@@ -95,62 +88,42 @@ public abstract class FirstRunFlowSequencer  {
 
     @VisibleForTesting
     protected boolean isSignedIn() {
-        return ChromeSigninController.get().isSignedIn();
+        return IdentityServicesProvider.get()
+                .getIdentityManager(Profile.getLastUsedRegularProfile())
+                .hasPrimaryAccount();
     }
 
     @VisibleForTesting
     protected boolean isSyncAllowed() {
-        SigninManager signinManager = SigninManager.get();
-        return FeatureUtilities.canAllowSync() && !signinManager.isSigninDisabledByPolicy()
+        SigninManager signinManager = IdentityServicesProvider.get().getSigninManager(
+                Profile.getLastUsedRegularProfile());
+        return FirstRunUtils.canAllowSync() && !signinManager.isSigninDisabledByPolicy()
                 && signinManager.isSigninSupported();
     }
 
     @VisibleForTesting
-    protected boolean isSigninPromoAllowed() {
-        return SigninPromoController.isSignInPromoAllowed();
-    }
-
-    @VisibleForTesting
-    protected List<Account> getGoogleAccounts() {
-        return AccountManagerFacade.get().tryGetGoogleAccounts();
-    }
-
-    @VisibleForTesting
-    protected boolean hasAnyUserSeenToS() {
-        return ToSAckedReceiver.checkAnyUserHasSeenToS();
-    }
-
-    @VisibleForTesting
     protected boolean shouldSkipFirstUseHints() {
-        return ApiCompatibilityUtils.shouldSkipFirstUseHints(mActivity.getContentResolver());
+        return Settings.Secure.getInt(
+                       mActivity.getContentResolver(), Settings.Secure.SKIP_FIRST_USE_HINTS, 0)
+                != 0;
     }
 
     @VisibleForTesting
     protected boolean isFirstRunEulaAccepted() {
-        return PrefServiceBridge.getInstance().isFirstRunEulaAccepted();
+        return FirstRunUtils.isFirstRunEulaAccepted();
     }
 
     protected boolean shouldShowDataReductionPage() {
-        // See http://crbug.com/946357
-        if (LocaleManager.getInstance().isSpecialUser()) {
-            return false;
-        }
         return !DataReductionProxySettings.getInstance().isDataReductionProxyManaged()
                 && DataReductionProxySettings.getInstance().isDataReductionProxyFREPromoAllowed();
     }
 
     @VisibleForTesting
     protected boolean shouldShowSearchEnginePage() {
-        @LocaleManager.SearchEnginePromoType
+        @SearchEnginePromoType
         int searchPromoType = LocaleManager.getInstance().getSearchEnginePromoShowType();
-        return searchPromoType == LocaleManager.SearchEnginePromoType.SHOW_NEW
-                || searchPromoType == LocaleManager.SearchEnginePromoType.SHOW_EXISTING;
-    }
-
-    @VisibleForTesting
-    protected void setDefaultMetricsAndCrashReporting() {
-        PrivacyPreferencesManager.getInstance().setUsageAndCrashReporting(
-                FirstRunActivity.DEFAULT_METRICS_AND_CRASH_REPORTING);
+        return searchPromoType == SearchEnginePromoType.SHOW_NEW
+                || searchPromoType == SearchEnginePromoType.SHOW_EXISTING;
     }
 
     @VisibleForTesting
@@ -158,63 +131,35 @@ public abstract class FirstRunFlowSequencer  {
         FirstRunSignInProcessor.setFirstRunFlowSignInComplete(true);
     }
 
+    @VisibleForTesting
     void initializeSharedState(
-            boolean isAndroidEduDevice, @ChildAccountStatus.Status int childAccountStatus) {
-        mIsAndroidEduDevice = isAndroidEduDevice;
+            @ChildAccountStatus.Status int childAccountStatus, List<Account> accounts) {
         mChildAccountStatus = childAccountStatus;
-        mGoogleAccounts = getGoogleAccounts();
-        // EDU devices should always have exactly 1 google account, which will be automatically
-        // signed-in. All FRE screens are skipped in this case.
-        mForceEduSignIn = mIsAndroidEduDevice && mGoogleAccounts.size() == 1 && !isSignedIn();
+        mGoogleAccounts = accounts;
     }
 
     void processFreEnvironmentPreNative() {
-        if (isFirstRunFlowComplete()) {
-            assert isFirstRunEulaAccepted();
-            // We do not need any interactive FRE.
-            onFlowIsKnown(null);
-            return;
-        }
-
         Bundle freProperties = new Bundle();
-
-        // In the full FRE we always show the Welcome page, except on EDU devices.
-        boolean showWelcomePage = !mForceEduSignIn;
-        freProperties.putBoolean(FirstRunActivity.SHOW_WELCOME_PAGE, showWelcomePage);
-        freProperties.putInt(AccountFirstRunFragment.CHILD_ACCOUNT_STATUS, mChildAccountStatus);
-
-        // Initialize usage and crash reporting according to the default value.
-        // The user can explicitly enable or disable the reporting on the Welcome page.
-        // This is controlled by the administrator via a policy on EDU devices.
-        setDefaultMetricsAndCrashReporting();
+        freProperties.putInt(SyncConsentFirstRunFragment.CHILD_ACCOUNT_STATUS, mChildAccountStatus);
 
         onFlowIsKnown(freProperties);
-        if (ChildAccountStatus.isChild(mChildAccountStatus) || mForceEduSignIn) {
-            // Child and Edu forced signins are processed independently.
+        if (ChildAccountStatus.isChild(mChildAccountStatus)) {
             setFirstRunFlowSignInComplete();
         }
     }
 
     /**
-     * Called onNativeInitialized() a given flow as completed.
+     * Will be called either when policies are initialized, or when native is initialized if we have
+     * no on-device policies.
      * @param freProperties Resulting FRE properties bundle.
      */
-    public void onNativeInitialized(Bundle freProperties) {
-        // We show the sign-in page if sync is allowed, and not signed in, and this is not
-        // an EDU device, and
+    public void onNativeAndPoliciesInitialized(Bundle freProperties) {
+        // We show the sign-in page if sync is allowed, and not signed in, and
         // - no "skip the first use hints" is set, or
         // - "skip the first use hints" is set, but there is at least one account.
-        boolean offerSignInOk = isSyncAllowed() && !isSignedIn() && !mForceEduSignIn
-                && isSigninPromoAllowed()
+        boolean offerSignInOk = isSyncAllowed() && !isSignedIn()
                 && (!shouldSkipFirstUseHints() || !mGoogleAccounts.isEmpty());
         freProperties.putBoolean(FirstRunActivity.SHOW_SIGNIN_PAGE, offerSignInOk);
-        if (mForceEduSignIn || ChildAccountStatus.isChild(mChildAccountStatus)) {
-            // If the device is an Android EDU device or has a child account, there should be
-            // exactly account on the device. Force sign-in in to that account.
-            freProperties.putString(
-                    AccountFirstRunFragment.FORCE_SIGNIN_ACCOUNT_TO, mGoogleAccounts.get(0).name);
-        }
-
         freProperties.putBoolean(
                 FirstRunActivity.SHOW_DATA_REDUCTION_PAGE, shouldShowDataReductionPage());
         freProperties.putBoolean(
@@ -227,10 +172,10 @@ public abstract class FirstRunFlowSequencer  {
      * @param showSignInSettings Whether the user selected to see the settings once signed in.
      */
     public static void markFlowAsCompleted(String signInAccountName, boolean showSignInSettings) {
-        // When the user accepts ToS in the Setup Wizard (see ToSAckedReceiver), we do not
-        // show the ToS page to the user because the user has already accepted one outside FRE.
-        if (!PrefServiceBridge.getInstance().isFirstRunEulaAccepted()) {
-            PrefServiceBridge.getInstance().setEulaAccepted();
+        // When the user accepts ToS in the Setup Wizard, we do not show the ToS page to the user
+        // because the user has already accepted one outside FRE.
+        if (!FirstRunUtils.isFirstRunEulaAccepted()) {
+            FirstRunUtils.setEulaAccepted();
         }
 
         // Mark the FRE flow as complete and set the sign-in flow preferences if necessary.
@@ -238,34 +183,48 @@ public abstract class FirstRunFlowSequencer  {
     }
 
     /**
-     * Checks if the First Run needs to be launched.
-     * @param context The context.
-     * @param fromIntent The intent that was used to launch Chrome.
+     * Checks if the First Run Experience needs to be launched.
      * @param preferLightweightFre Whether to prefer the Lightweight First Run Experience.
+     * @param fromIntent Intent used to launch the caller.
      * @return Whether the First Run Experience needs to be launched.
      */
     public static boolean checkIfFirstRunIsNecessary(
-            Context context, Intent fromIntent, boolean preferLightweightFre) {
+            boolean preferLightweightFre, Intent fromIntent) {
+        boolean isCct = fromIntent.getBooleanExtra(
+                                FirstRunActivityBase.EXTRA_CHROME_LAUNCH_INTENT_IS_CCT, false)
+                || LaunchIntentDispatcher.isCustomTabIntent(fromIntent);
+        return checkIfFirstRunIsNecessary(preferLightweightFre, isCct);
+    }
+
+    /**
+     * Checks if the First Run Experience needs to be launched.
+     * @param preferLightweightFre Whether to prefer the Lightweight First Run Experience.
+     * @param isCct Whether this check is being made in the context of a CCT.
+     * @return Whether the First Run Experience needs to be launched.
+     */
+    public static boolean checkIfFirstRunIsNecessary(boolean preferLightweightFre, boolean isCct) {
         // If FRE is disabled (e.g. in tests), proceed directly to the intent handling.
         if (CommandLine.getInstance().hasSwitch(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
-                || ApiCompatibilityUtils.isDemoUser(context)) {
+                || ApiCompatibilityUtils.isDemoUser()
+                || ApiCompatibilityUtils.isRunningInUserTestHarness()) {
             return false;
         }
-
-        // If Chrome isn't opened via the Chrome icon, and the user accepted the ToS
-        // in the Setup Wizard, skip any First Run Experience screens and proceed directly
-        // to the intent handling.
-        final boolean fromChromeIcon =
-                fromIntent != null && TextUtils.equals(fromIntent.getAction(), Intent.ACTION_MAIN);
-        if (!fromChromeIcon && ToSAckedReceiver.checkAnyUserHasSeenToS()) return false;
-
         if (FirstRunStatus.getFirstRunFlowComplete()) {
             // Promo pages are removed, so there is nothing else to show in FRE.
             return false;
         }
-        return !preferLightweightFre
-                || (!FirstRunStatus.shouldSkipWelcomePage()
-                           && !FirstRunStatus.getLightweightFirstRunFlowComplete());
+        if (FirstRunStatus.isFirstRunSkippedByPolicy() && (isCct || preferLightweightFre)) {
+            // Domain policies may have caused CCTs to skip the FRE. While this needs to be figured
+            // out at runtime for each app restart, it should apply to all CCTs for the duration of
+            // the app's lifetime.
+            return false;
+        }
+        if (preferLightweightFre
+                && (FirstRunStatus.shouldSkipWelcomePage()
+                        || FirstRunStatus.getLightweightFirstRunFlowComplete())) {
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -281,7 +240,7 @@ public abstract class FirstRunFlowSequencer  {
     public static boolean launch(Context caller, Intent fromIntent, boolean requiresBroadcast,
             boolean preferLightweightFre) {
         // Check if the user needs to go through First Run at all.
-        if (!checkIfFirstRunIsNecessary(caller, fromIntent, preferLightweightFre)) return false;
+        if (!checkIfFirstRunIsNecessary(preferLightweightFre, fromIntent)) return false;
 
         String intentUrl = IntentHandler.getUrlFromIntent(fromIntent);
         Uri uri = intentUrl != null ? Uri.parse(intentUrl) : null;
@@ -291,12 +250,22 @@ public abstract class FirstRunFlowSequencer  {
         }
 
         Log.d(TAG, "Redirecting user through FRE.");
+
+        // Launch the async restriction checking as soon as we know we'll be running FRE.
+        FirstRunAppRestrictionInfo.startInitializationHint();
+
         if ((fromIntent.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) != 0) {
-            FreIntentCreator intentCreator = AppHooks.get().createFreIntentCreator();
+            FreIntentCreator intentCreator = new FreIntentCreator();
             Intent freIntent = intentCreator.create(
                     caller, fromIntent, requiresBroadcast, preferLightweightFre);
 
-            if (!(caller instanceof Activity)) freIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            // Although the FRE tries to run in the same task now, this is still needed for
+            // non-activity entry points like the search widget to launch at all. This flag does not
+            // seem to preclude an old task from being reused.
+            if (!(caller instanceof Activity)) {
+                freIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
+
             boolean isVrIntent = VrModuleProvider.getIntentDelegate().isVrIntent(fromIntent);
             if (isVrIntent) {
                 freIntent =

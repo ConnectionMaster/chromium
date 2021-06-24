@@ -4,62 +4,25 @@
 
 #include "third_party/blink/renderer/core/page/scrolling/element_fragment_anchor.h"
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_scroll_into_view_options.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
+#include "third_party/blink/renderer/core/display_lock/display_lock_context.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/node.h"
+#include "third_party/blink/renderer/core/editing/frame_selection.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
-#include "third_party/blink/renderer/core/frame/scroll_into_view_options.h"
 #include "third_party/blink/renderer/core/svg/svg_svg_element.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 
 namespace blink {
 
-namespace {
-
-constexpr char kCssFragmentIdentifierPrefix[] = "targetElement=";
-constexpr size_t kCssFragmentIdentifierPrefixLength =
-    base::size(kCssFragmentIdentifierPrefix);
-
-bool ParseCSSFragmentIdentifier(const String& fragment, String* selector) {
-  size_t pos = fragment.Find(kCssFragmentIdentifierPrefix);
-  if (pos == 0) {
-    *selector = fragment.Substring(kCssFragmentIdentifierPrefixLength - 1);
-    return true;
-  }
-
-  return false;
-}
-
-Element* FindCSSFragmentAnchor(const AtomicString& selector,
-                               Document& document) {
-  DummyExceptionStateForTesting exception_state;
-  return document.QuerySelector(selector, exception_state);
-}
-
-Node* FindAnchorFromFragment(const String& fragment, Document& doc) {
-  Element* anchor_node;
-  String selector;
-  if (RuntimeEnabledFeatures::CSSFragmentIdentifiersEnabled() &&
-      ParseCSSFragmentIdentifier(fragment, &selector)) {
-    anchor_node = FindCSSFragmentAnchor(AtomicString(selector), doc);
-  } else {
-    anchor_node = doc.FindAnchor(fragment);
-  }
-
-  // Implement the rule that "" and "top" both mean top of page as in other
-  // browsers.
-  if (!anchor_node &&
-      (fragment.IsEmpty() || DeprecatedEqualIgnoringCase(fragment, "top")))
-    return &doc;
-
-  return anchor_node;
-}
-
-}  // namespace
-
 ElementFragmentAnchor* ElementFragmentAnchor::TryCreate(const KURL& url,
-                                                        LocalFrame& frame) {
+                                                        LocalFrame& frame,
+                                                        bool should_scroll) {
   DCHECK(frame.GetDocument());
   Document& doc = *frame.GetDocument();
 
@@ -73,35 +36,22 @@ ElementFragmentAnchor* ElementFragmentAnchor::TryCreate(const KURL& url,
     return nullptr;
 
   String fragment = url.FragmentIdentifier();
-
-  Node* anchor_node = nullptr;
-
-  // Try the raw fragment for HTML documents, but skip it for `svgView()`:
-  if (!doc.IsSVGDocument())
-    anchor_node = FindAnchorFromFragment(fragment, doc);
-
-  // https://html.spec.whatwg.org/C/#the-indicated-part-of-the-document
-  // 5. Let decodedFragment be the result of running UTF-8 decode without BOM
-  // on fragmentBytes.
-  if (!anchor_node) {
-    fragment = DecodeURLEscapeSequences(fragment, DecodeURLMode::kUTF8);
-    anchor_node = FindAnchorFromFragment(fragment, doc);
-  }
+  Node* anchor_node = doc.FindAnchor(fragment);
 
   // Setting to null will clear the current target.
-  Element* target = anchor_node && anchor_node->IsElementNode()
-                        ? ToElement(anchor_node)
-                        : nullptr;
+  auto* target = DynamicTo<Element>(anchor_node);
   doc.SetCSSTarget(target);
 
   if (doc.IsSVGDocument()) {
-    if (SVGSVGElement* svg = ToSVGSVGElementOrNull(doc.documentElement()))
-      svg->SetupInitialView(fragment, target);
+    if (auto* svg = DynamicTo<SVGSVGElement>(doc.documentElement())) {
+      String decoded = DecodeURLEscapeSequences(fragment, DecodeURLMode::kUTF8);
+      svg->SetupInitialView(decoded, target);
+    }
   }
 
   if (target) {
-    target->ActivateDisplayLockIfNeeded();
-    target->DispatchActivateInvisibleEventIfNeeded();
+    target->ActivateDisplayLockIfNeeded(
+        DisplayLockActivationReason::kFragmentNavigation);
   }
 
   if (doc.IsSVGDocument() && (!frame.IsMainFrame() || !target))
@@ -109,6 +59,16 @@ ElementFragmentAnchor* ElementFragmentAnchor::TryCreate(const KURL& url,
 
   if (!anchor_node)
     return nullptr;
+
+  // Element fragment anchors only need to be kept alive if they need scrolling.
+  if (!should_scroll)
+    return nullptr;
+
+  if (RuntimeEnabledFeatures::BeforeMatchEventEnabled(
+          frame.GetDocument()->GetExecutionContext())) {
+    anchor_node->DispatchEvent(
+        *Event::CreateBubble(event_type_names::kBeforematch));
+  }
 
   return MakeGarbageCollected<ElementFragmentAnchor>(*anchor_node, frame);
 }
@@ -142,9 +102,10 @@ bool ElementFragmentAnchor::Invoke() {
     boundary_local_frame->View()->SetSafeToPropagateScrollToParent(false);
   }
 
-  Element* element_to_scroll = anchor_node_->IsElementNode()
-                                   ? ToElement(anchor_node_)
-                                   : doc.documentElement();
+  auto* element_to_scroll = DynamicTo<Element>(anchor_node_.Get());
+  if (!element_to_scroll)
+    element_to_scroll = doc.documentElement();
+
   if (element_to_scroll) {
     ScrollIntoViewOptions* options = ScrollIntoViewOptions::Create();
     options->setBlock("start");
@@ -177,7 +138,7 @@ void ElementFragmentAnchor::Installed() {
   needs_invoke_ = true;
 }
 
-void ElementFragmentAnchor::DidScroll(ScrollType type) {
+void ElementFragmentAnchor::DidScroll(mojom::blink::ScrollType type) {
   if (!IsExplicitScrollType(type))
     return;
 
@@ -188,17 +149,7 @@ void ElementFragmentAnchor::DidScroll(ScrollType type) {
   needs_invoke_ = false;
 }
 
-void ElementFragmentAnchor::DidCompleteLoad() {
-  DCHECK(frame_);
-  DCHECK(frame_->View());
-
-  // If there is a pending layout, the fragment anchor will be cleared when it
-  // finishes.
-  if (!frame_->View()->NeedsLayout())
-    needs_invoke_ = false;
-}
-
-void ElementFragmentAnchor::Trace(blink::Visitor* visitor) {
+void ElementFragmentAnchor::Trace(Visitor* visitor) const {
   visitor->Trace(anchor_node_);
   visitor->Trace(frame_);
   FragmentAnchor::Trace(visitor);
@@ -224,19 +175,40 @@ void ElementFragmentAnchor::ApplyFocusIfNeeded() {
   if (!anchor_node_)
     return;
 
+  frame_->GetDocument()->UpdateStyleAndLayoutTree();
+
+  // If caret browsing is enabled, move the caret to the beginning of the
+  // fragment, or to the first non-inert position after it.
+  if (frame_->IsCaretBrowsingEnabled()) {
+    const Position& pos = Position::FirstPositionInOrBeforeNode(*anchor_node_);
+    if (pos.IsConnected()) {
+      frame_->Selection().SetSelection(
+          SelectionInDOMTree::Builder().Collapse(pos).Build(),
+          SetSelectionOptions::Builder()
+              .SetShouldCloseTyping(true)
+              .SetShouldClearTypingStyle(true)
+              .SetDoNotSetFocus(true)
+              .Build());
+    }
+  }
+
   // If the anchor accepts keyboard focus and fragment scrolling is allowed,
   // move focus there to aid users relying on keyboard navigation.
   // If anchorNode is not focusable or fragment scrolling is not allowed,
   // clear focus, which matches the behavior of other browsers.
-  frame_->GetDocument()->UpdateStyleAndLayoutTree();
-  if (anchor_node_->IsElementNode() && ToElement(anchor_node_)->IsFocusable()) {
-    ToElement(anchor_node_)->focus();
+  auto* element = DynamicTo<Element>(anchor_node_.Get());
+  if (element && element->IsFocusable()) {
+    element->focus();
   } else {
     frame_->GetDocument()->SetSequentialFocusNavigationStartingPoint(
         anchor_node_);
     frame_->GetDocument()->ClearFocusedElement();
   }
   needs_focus_ = false;
+}
+
+bool ElementFragmentAnchor::Dismiss() {
+  return false;
 }
 
 }  // namespace blink

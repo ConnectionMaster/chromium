@@ -13,7 +13,7 @@ source_set("images") {
     "//base",
     "//components/search_engines",
   ]
-  libs = [ "UIKit.framework" ]
+  frameworks = [ "UIKit.framework" ]
 }
 
 source_set("test_support") {
@@ -23,7 +23,5 @@ source_set("test_support") {
     "test_branded_image_provider.h",
     "test_branded_image_provider.mm",
   ]
-  deps = [
-    ":images",
-  ]
+  deps = [ ":images" ]
 }

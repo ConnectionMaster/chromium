@@ -5,8 +5,8 @@
 #include "chrome/browser/chromeos/android_sms/pairing_lost_notifier.h"
 
 #include "ash/public/cpp/notification_utils.h"
-#include "ash/public/cpp/vector_icons/vector_icons.h"
 #include "base/bind.h"
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/grit/generated_resources.h"
@@ -45,10 +45,14 @@ PairingLostNotifier::PairingLostNotifier(
     : profile_(profile),
       multidevice_setup_client_(multidevice_setup_client),
       pref_service_(pref_service),
-      android_sms_app_helper_delegate_(android_sms_app_helper_delegate),
-      weak_ptr_factory_(this) {
+      android_sms_app_helper_delegate_(android_sms_app_helper_delegate) {
   multidevice_setup_client_->AddObserver(this);
-  HandleMessagesFeatureState();
+
+  // Wait until the app registry is loaded before querying for installed PWA
+  // info.
+  android_sms_app_helper_delegate_->ExecuteOnAppRegistryReady(
+      base::BindOnce(&PairingLostNotifier::HandleMessagesFeatureState,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 PairingLostNotifier::~PairingLostNotifier() {
@@ -62,15 +66,27 @@ void PairingLostNotifier::OnFeatureStatesChanged(
 }
 
 void PairingLostNotifier::HandleMessagesFeatureState() {
+  if (!android_sms_app_helper_delegate_->IsAppRegistryReady()) {
+    return;
+  }
+
   multidevice_setup::mojom::FeatureState state =
       multidevice_setup_client_->GetFeatureStates()
           .find(multidevice_setup::mojom::Feature::kMessages)
           ->second;
 
-  // If Messages is currently enabled or disabled, the user has completed the
-  // setup process.
-  if (state == multidevice_setup::mojom::FeatureState::kDisabledByUser ||
-      state == multidevice_setup::mojom::FeatureState::kEnabledByUser) {
+  // If the feature is disabled we should never show any notifications or
+  // track the pairing state.  To avoid showing the notification immediately
+  // if the feature is ever enabled in the future, the pref should also be
+  // cleared.
+  if (state == multidevice_setup::mojom::FeatureState::kDisabledByUser) {
+    pref_service_->SetBoolean(kWasPreviouslySetUpPrefName, false);
+    ClosePairingLostNotificationIfVisible();
+    return;
+  }
+
+  // If Messages is enabled, the user has completed the setup process.
+  if (state == multidevice_setup::mojom::FeatureState::kEnabledByUser) {
     HandleSetUpFeatureState();
     return;
   }
@@ -115,7 +131,7 @@ void PairingLostNotifier::ShowPairingLostNotification() {
               IDS_ANDROID_MESSAGES_PAIRING_LOST_NOTIFICATION_TITLE),
           l10n_util::GetStringUTF16(
               IDS_ANDROID_MESSAGES_PAIRING_LOST_NOTIFICATION_MESSAGE),
-          base::string16() /* display_source */, GURL() /* origin_url */,
+          std::u16string() /* display_source */, GURL() /* origin_url */,
           message_center::NotifierId(
               message_center::NotifierType::SYSTEM_COMPONENT,
               kAndroidSmsNotifierId),
@@ -124,7 +140,7 @@ void PairingLostNotifier::ShowPairingLostNotification() {
               base::BindRepeating(
                   &PairingLostNotifier::OnPairingLostNotificationClick,
                   weak_ptr_factory_.GetWeakPtr())),
-          ash::kNotificationMessagesIcon,
+          kNotificationMessagesIcon,
           message_center::SystemNotificationWarningLevel::NORMAL),
       /*metadata=*/nullptr);
 }
@@ -139,7 +155,7 @@ void PairingLostNotifier::ClosePairingLostNotificationIfVisible() {
 }
 
 void PairingLostNotifier::OnPairingLostNotificationClick(
-    base::Optional<int> button_index) {
+    absl::optional<int> button_index) {
   PA_LOG(INFO) << "PairingLostNotifier::OnPairingLostNotificationClick(): "
                << "Pairing notification clicked; opening PWA.";
 

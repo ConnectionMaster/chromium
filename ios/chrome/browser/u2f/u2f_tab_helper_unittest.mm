@@ -10,8 +10,8 @@
 #include "base/strings/utf_string_conversions.h"
 #import "ios/chrome/browser/chrome_url_util.h"
 #import "ios/chrome/browser/web/tab_id_tab_helper.h"
-#import "ios/web/public/test/fakes/test_web_state.h"
-#include "ios/web/public/web_state/url_verification_constants.h"
+#include "ios/web/public/deprecated/url_verification_constants.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #include "net/base/escape.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
@@ -77,7 +77,8 @@ class U2FTabHelperTest : public PlatformTest {
     ] componentsJoinedByString:@""];
   }
 
-  web::TestWebState web_state_;
+  web::FakeWebState web_state_;
+  url::ScopedSchemeRegistryForTests scoped_registry_;
 };
 
 // Tests that IsU2FUrl returns true only if U2F url param is true.
@@ -147,8 +148,8 @@ TEST_F(U2FTabHelperTest, TestGetXCallbackUrlWithDuplicatedParams) {
   EXPECT_EQ(1u, [matches count]);
 }
 
-// Tests when request site is not whitelisted.
-TEST_F(U2FTabHelperTest, TestGetXCallbackUrlWithNonWhitelistedUrl) {
+// Tests when request site is not allow-listed.
+TEST_F(U2FTabHelperTest, TestGetXCallbackUrlWithNonAllowListedUrl) {
   GURL request_url("u2f://accounts.google.com?data=abc&def%26ghi");
   GURL evil_origin_url("https://evil.appspot.com");
   GURL tab_url("https://accounts.google.com");

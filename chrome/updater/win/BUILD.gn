@@ -2,13 +2,26 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/util/process_version.gni")
 import("//chrome/process_version_rc_template.gni")
+import("//chrome/updater/branding.gni")
+import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
 
+# This target builds the updater executable, its installer, and unittests.
 group("win") {
   deps = [
     ":updater",
+    "//chrome/updater/win/installer:installer",
+    "//chrome/updater/win/signing",
   ]
+}
+
+config("wrl_strict") {
+  # This definition is used in <wrl/module.h> to specify that only COM
+  # support is provided by WRL, and thus, avoid a dependency on WinRT, which
+  # is not available in Windows 7.
+  defines = [ "__WRL_CLASSIC_COM_STRICT__" ]
 }
 
 executable("updater") {
@@ -17,55 +30,98 @@ executable("updater") {
     "updater.rc",
   ]
 
+  configs -= [ "//build/config/compiler:cet_shadow_stack" ]
   configs += [ "//build/config/win:windowed" ]
 
-  libs = [ "winhttp.lib" ]
   deps = [
-    ":code",
     ":version_resources",
     "//build/win:default_exe_manifest",
-    "//chrome/updater:common",
+    "//chrome/updater:base",
+    "//chrome/updater:updater_version_cc",
+    "//chrome/updater/win/ui:ui_resources",
+  ]
+
+  data_deps = [ ":uninstall.cmd" ]
+}
+
+executable("updater_exe_test_v2") {
+  sources = [
+    "main.cc",
+    "updater.rc",
+  ]
+
+  configs -= [ "//build/config/compiler:cet_shadow_stack" ]
+  configs += [ "//build/config/win:windowed" ]
+
+  deps = [
+    ":version_resources",
+    "//build/win:default_exe_manifest",
+    "//chrome/updater:base",
+    "//chrome/updater:updater_version_cc_offset",
+    "//chrome/updater/win/ui:ui_resources",
+  ]
+
+  data_deps = [ ":uninstall.cmd" ]
+}
+
+process_version("uninstall.cmd") {
+  template_file = "setup/uninstall.cmd"
+  output = "$target_gen_dir/uninstall.cmd"
+  process_only = true
+  extra_args = [
+    "-e",
+    "PRODUCT_FULLNAME=\"$updater_product_full_name\"",
+    "-e",
+    "COMPANY_SHORTNAME=\"$updater_company_short_name\"",
   ]
 }
 
 process_version_rc_template("version_resources") {
-  sources = [
-    "updater.ver",
-  ]
+  sources = [ "updater.ver" ]
   output = "$target_gen_dir/updater_exe.rc"
 }
 
-source_set("code") {
-  sources = [
-    "net/net_util.cc",
-    "net/net_util.h",
-    "net/network.h",
-    "net/network_fetcher.cc",
-    "net/network_fetcher.h",
-    "net/network_winhttp.cc",
-    "net/network_winhttp.h",
-    "net/scoped_hinternet.h",
-    "util.cc",
-    "util.h",
-  ]
+# This build target is defined to minimize the impact of -Wno-missing-braces
+# compiler switch. In the future it might be possible to isolate the
+# dependency of ATL in the UI so ATL headers are not visible in the
+# compilation units outside the UI itself.
+# TODO(sorin): https://crbug.com/1014311
+source_set("app_install_controller") {
+  cflags_cc = [ "-Wno-missing-braces" ]
+
+  sources = [ "app_install_controller.cc" ]
 
   deps = [
     "//base",
-    "//components/update_client",
+    "//base:i18n",
+    "//chrome/updater:version_header",
+    "//chrome/updater/win/ui",
   ]
 }
 
-source_set("unittest") {
-  testonly = true
+source_set("tag_extractor") {
+  public = [ "tag_extractor.h" ]
 
   sources = [
-    "net/network_unittest.cc",
-    "util_unittest.cc",
+    "tag_extractor.cc",
+    "tag_extractor_impl.h",
   ]
 
-  deps = [
-    ":code",
-    "//base/test:test_support",
-    "//testing/gtest",
+  friend = [
+    "//chrome/updater:updater_test_sources",
+    ":updater_fuzzer",
   ]
+
+  # In the future, we want to rely on the base numerics headers and
+  # PeImageReader directly, but right now that isn't possible due to the
+  # visibility of the lib, so we depend on the entire base temporarily.
+  deps = [ "//base" ]
+}
+
+fuzzer_test("updater_fuzzer") {
+  sources = [ "tag_extractor_fuzzer.cc" ]
+
+  deps = [ ":tag_extractor" ]
+
+  seed_corpus = "../test/data/tag_extractor_corpus/"
 }

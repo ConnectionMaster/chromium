@@ -3,8 +3,12 @@
 # found in the LICENSE file.
 
 import("//third_party/closure_compiler/compile_js.gni")
+import("//tools/polymer/html_to_js.gni")
+import("../settings.gni")
 
 js_type_check("closure_compile") {
+  is_polymer3 = true
+  closure_flags = settings_closure_flags
   deps = [
     ":main_page_behavior",
     ":settings_animated_pages",
@@ -17,34 +21,51 @@ js_library("main_page_behavior") {
   deps = [
     ":settings_section",
     "..:route",
-    "//ui/webui/resources/js:assert",
-    "//ui/webui/resources/js:util",
+    "..:router",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+    "//ui/webui/resources/js:assert.m",
+    "//ui/webui/resources/js:util.m",
   ]
-  externs_list = [ "$externs_path/pending.js" ]
 }
 
 js_library("settings_animated_pages") {
   deps = [
     ":settings_subpage",
-    "..:route",
-    "//ui/webui/resources/js:assert",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js:load_time_data",
-    "//ui/webui/resources/js:util",
-    "//ui/webui/resources/js/cr/ui:focus_without_ink",
+    "..:router",
+    "..:setting_id_param_util",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+    "//ui/webui/resources/js:assert.m",
+    "//ui/webui/resources/js:load_time_data.m",
+    "//ui/webui/resources/js/cr/ui:focus_without_ink.m",
   ]
 }
 
 js_library("settings_section") {
+  deps = [
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+  ]
 }
 
 js_library("settings_subpage") {
   deps = [
-    "..:route",
-    "//third_party/polymer/v1_0/components-chromium/iron-resizable-behavior:iron-resizable-behavior-extracted",
+    "..:router",
+    "..:setting_id_param_util",
+    "//third_party/polymer/v3_0/components-chromium/iron-resizable-behavior:iron-resizable-behavior",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+    "//ui/webui/resources/cr_elements:find_shortcut_behavior",
     "//ui/webui/resources/cr_elements/cr_search_field:cr_search_field",
-    "//ui/webui/resources/js:assert",
-    "//ui/webui/resources/js:find_shortcut_behavior",
-    "//ui/webui/resources/js/cr/ui:focus_without_ink",
+    "//ui/webui/resources/js:assert.m",
+    "//ui/webui/resources/js:i18n_behavior.m",
+    "//ui/webui/resources/js:load_time_data.m",
+    "//ui/webui/resources/js:util.m",
+    "//ui/webui/resources/js/cr/ui:focus_without_ink.m",
+  ]
+}
+
+html_to_js("web_components") {
+  js_files = [
+    "settings_animated_pages.js",
+    "settings_section.js",
+    "settings_subpage.js",
   ]
 }

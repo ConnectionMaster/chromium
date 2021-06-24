@@ -14,15 +14,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/ntp/app_launcher_handler.h"
+#include "chrome/browser/ui/webui/ntp/cookie_controls_handler.h"
 #include "chrome/browser/ui/webui/ntp/core_app_launcher_handler.h"
+#include "chrome/browser/ui/webui/ntp/ephemeral_guest_signin_handler.h"
 #include "chrome/browser/ui/webui/ntp/ntp_resource_cache.h"
 #include "chrome/browser/ui/webui/ntp/ntp_resource_cache_factory.h"
 #include "chrome/browser/ui/webui/theme_handler.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
-#include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_thread.h"
@@ -30,6 +31,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/native_theme/native_theme.h"
 #include "url/gurl.h"
@@ -41,11 +43,10 @@ namespace {
 const char kRTLHtmlTextDirection[] = "rtl";
 const char kLTRHtmlTextDirection[] = "ltr";
 
-const char* GetHtmlTextDirection(const base::string16& text) {
+const char* GetHtmlTextDirection(const std::u16string& text) {
   if (base::i18n::IsRTL() && base::i18n::StringContainsStrongRTLChars(text))
     return kRTLHtmlTextDirection;
-  else
-    return kLTRHtmlTextDirection;
+  return kLTRHtmlTextDirection;
 }
 
 }  // namespace
@@ -53,57 +54,37 @@ const char* GetHtmlTextDirection(const base::string16& text) {
 ///////////////////////////////////////////////////////////////////////////////
 // NewTabUI
 
-NewTabUI::NewTabUI(content::WebUI* web_ui)
-    : content::WebUIController(web_ui),
-      dark_mode_observer_(ui::NativeTheme::GetInstanceForNativeUi(),
-                          base::BindRepeating(&NewTabUI::OnDarkModeChanged,
-                                              base::Unretained(this))) {
-  web_ui->OverrideTitle(l10n_util::GetStringUTF16(IDS_NEW_TAB_TITLE));
-
+NewTabUI::NewTabUI(content::WebUI* web_ui) : content::WebUIController(web_ui) {
   Profile* profile = GetProfile();
 
-  if (!profile->IsGuestSession())
+  // The title should be "New Tab" for regular mode and guest mode, while it
+  // should be "New Incognito Tab" for incognito mode.
+  const int title_resource_id =
+      base::FeatureList::IsEnabled(
+          features::kUpdateHistoryEntryPointsInIncognito) &&
+              profile->IsOffTheRecord() && !profile->IsGuestSession()
+          ? IDS_NEW_INCOGNITO_TAB_TITLE
+          : IDS_NEW_TAB_TITLE;
+  web_ui->OverrideTitle(l10n_util::GetStringUTF16(title_resource_id));
+
+  if (!profile->IsGuestSession() && !profile->IsEphemeralGuestProfile()) {
     web_ui->AddMessageHandler(std::make_unique<ThemeHandler>());
+    if (profile->IsOffTheRecord()) {
+      web_ui->AddMessageHandler(
+          std::make_unique<CookieControlsHandler>(profile));
+    }
+  } else if (profile->IsEphemeralGuestProfile()) {
+    web_ui->AddMessageHandler(
+        std::make_unique<EphemeralGuestSigninHandler>(profile));
+  }
 
   // content::URLDataSource assumes the ownership of the html source.
   content::URLDataSource::Add(profile, std::make_unique<NewTabHTMLSource>(
                                            profile->GetOriginalProfile()));
-
-  pref_change_registrar_.Init(profile->GetPrefs());
-  pref_change_registrar_.Add(bookmarks::prefs::kShowBookmarkBar,
-                             base::Bind(&NewTabUI::OnShowBookmarkBarChanged,
-                                        base::Unretained(this)));
-  pref_change_registrar_.Add(
-      prefs::kWebKitDefaultFontSize,
-      base::Bind(&NewTabUI::OnDefaultFontSizeChanged, base::Unretained(this)));
-
-  dark_mode_observer_.Start();
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 }
 
 NewTabUI::~NewTabUI() {}
-
-void NewTabUI::OnShowBookmarkBarChanged() {
-  base::Value attached(
-      GetProfile()->GetPrefs()->GetBoolean(bookmarks::prefs::kShowBookmarkBar)
-          ? "true"
-          : "false");
-  web_ui()->CallJavascriptFunctionUnsafe("ntp.setBookmarkBarAttached",
-                                         attached);
-}
-
-void NewTabUI::OnDarkModeChanged(bool /*dark_mode*/) {
-  if (!web_ui() || !web_ui()->CanCallJavascript())
-    return;
-
-  bool enabled = base::FeatureList::IsEnabled(features::kWebUIDarkMode);
-  web_ui()->CallJavascriptFunctionUnsafe(
-      "document.documentElement.toggleAttribute", base::Value("dark"),
-      base::Value(enabled && dark_mode_observer_.InDarkMode()));
-}
-
-void NewTabUI::OnDefaultFontSizeChanged() {
-  web_ui()->CallJavascriptFunctionUnsafe("ntp.defaultFontSizeChanged");
-}
 
 // static
 void NewTabUI::RegisterProfilePrefs(
@@ -118,13 +99,13 @@ bool NewTabUI::IsNewTab(const GURL& url) {
 }
 
 // static
-void NewTabUI::SetUrlTitleAndDirection(base::DictionaryValue* dictionary,
-                                       const base::string16& title,
+void NewTabUI::SetUrlTitleAndDirection(base::Value* dictionary,
+                                       const std::u16string& title,
                                        const GURL& gurl) {
-  dictionary->SetString("url", gurl.spec());
+  dictionary->SetStringKey("url", gurl.spec());
 
   bool using_url_as_the_title = false;
-  base::string16 title_to_set(title);
+  std::u16string title_to_set(title);
   if (title_to_set.empty()) {
     using_url_as_the_title = true;
     title_to_set = base::UTF8ToUTF16(gurl.spec());
@@ -147,12 +128,12 @@ void NewTabUI::SetUrlTitleAndDirection(base::DictionaryValue* dictionary,
   else
     direction = GetHtmlTextDirection(title);
 
-  dictionary->SetString("title", title_to_set);
-  dictionary->SetString("direction", direction);
+  dictionary->SetStringKey("title", title_to_set);
+  dictionary->SetStringKey("direction", direction);
 }
 
 // static
-void NewTabUI::SetFullNameAndDirection(const base::string16& full_name,
+void NewTabUI::SetFullNameAndDirection(const std::u16string& full_name,
                                        base::DictionaryValue* dictionary) {
   dictionary->SetString("full_name", full_name);
   dictionary->SetString("full_name_direction", GetHtmlTextDirection(full_name));
@@ -169,21 +150,22 @@ NewTabUI::NewTabHTMLSource::NewTabHTMLSource(Profile* profile)
     : profile_(profile) {
 }
 
-std::string NewTabUI::NewTabHTMLSource::GetSource() const {
+std::string NewTabUI::NewTabHTMLSource::GetSource() {
   return chrome::kChromeUINewTabHost;
 }
 
 void NewTabUI::NewTabHTMLSource::StartDataRequest(
-    const std::string& path,
-    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
-    const content::URLDataSource::GotDataCallback& callback) {
+    const GURL& url,
+    const content::WebContents::Getter& wc_getter,
+    content::URLDataSource::GotDataCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
+  // TODO(crbug/1009127): Simplify usages of |path| since |url| is available.
+  const std::string path = content::URLDataSource::URLToRequestPath(url);
   if (!path.empty() && path[0] != '#') {
     // A path under new-tab was requested; it's likely a bad relative
     // URL from the new tab page, but in any case it's an error.
     NOTREACHED() << path << " should not have been requested on the NTP";
-    callback.Run(NULL);
+    std::move(callback).Run(nullptr);
     return;
   }
 
@@ -196,39 +178,42 @@ void NewTabUI::NewTabHTMLSource::StartDataRequest(
       NTPResourceCacheFactory::GetForProfile(profile_)->
       GetNewTabHTML(win_type));
 
-  callback.Run(html_bytes.get());
+  std::move(callback).Run(html_bytes.get());
 }
 
-std::string NewTabUI::NewTabHTMLSource::GetMimeType(const std::string& resource)
-    const {
+std::string NewTabUI::NewTabHTMLSource::GetMimeType(
+    const std::string& resource) {
   return "text/html";
 }
 
-bool NewTabUI::NewTabHTMLSource::ShouldReplaceExistingSource() const {
+bool NewTabUI::NewTabHTMLSource::ShouldReplaceExistingSource() {
   return false;
 }
 
-std::string NewTabUI::NewTabHTMLSource::GetContentSecurityPolicyScriptSrc()
-    const {
-  // 'unsafe-inline' and google resources are added to script-src.
-  return "script-src chrome://resources 'self' 'unsafe-eval' 'unsafe-inline' "
-      "*.google.com *.gstatic.com;";
-}
+std::string NewTabUI::NewTabHTMLSource::GetContentSecurityPolicy(
+    network::mojom::CSPDirectiveName directive) {
+  if (directive == network::mojom::CSPDirectiveName::ScriptSrc) {
+    // 'unsafe-inline' and google resources are added to script-src.
+    return "script-src chrome://resources 'self' 'unsafe-eval' 'unsafe-inline' "
+           "*.google.com *.gstatic.com;";
+  } else if (directive == network::mojom::CSPDirectiveName::StyleSrc) {
+    return "style-src 'self' chrome://resources 'unsafe-inline' "
+           "chrome://theme;";
+  } else if (directive == network::mojom::CSPDirectiveName::ImgSrc) {
+    return "img-src chrome-search://thumb chrome-search://thumb2 "
+           "chrome-search://theme chrome://theme data:;";
+  } else if (directive == network::mojom::CSPDirectiveName::ChildSrc) {
+    return "child-src chrome-search://most-visited;";
+  } else if (directive ==
+                 network::mojom::CSPDirectiveName::RequireTrustedTypesFor ||
+             directive == network::mojom::CSPDirectiveName::TrustedTypes) {
+    // TODO(crbug.com/1098687): Trusted Type New Tab Page
+    // This removes require-trusted-types-for and trusted-types directives
+    // from the CSP header.
+    return std::string();
+  }
 
-std::string NewTabUI::NewTabHTMLSource::GetContentSecurityPolicyStyleSrc()
-    const {
-  return "style-src 'self' chrome://resources 'unsafe-inline' chrome://theme;";
-}
-
-std::string NewTabUI::NewTabHTMLSource::GetContentSecurityPolicyImgSrc()
-    const {
-  return "img-src chrome-search://thumb chrome-search://thumb2 "
-      "chrome-search://theme chrome://theme data:;";
-}
-
-std::string NewTabUI::NewTabHTMLSource::GetContentSecurityPolicyChildSrc()
-    const {
-  return "child-src chrome-search://most-visited;";
+  return content::URLDataSource::GetContentSecurityPolicy(directive);
 }
 
 NewTabUI::NewTabHTMLSource::~NewTabHTMLSource() {}

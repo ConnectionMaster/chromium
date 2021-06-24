@@ -8,17 +8,17 @@
 
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
+#include "components/tab_groups/tab_group_id.h"
 
-TestTabStripModelDelegate::TestTabStripModelDelegate() {
-}
+TestTabStripModelDelegate::TestTabStripModelDelegate() = default;
 
-TestTabStripModelDelegate::~TestTabStripModelDelegate() {
-}
+TestTabStripModelDelegate::~TestTabStripModelDelegate() = default;
 
-void TestTabStripModelDelegate::AddTabAt(const GURL& url,
-                                         int index,
-                                         bool foreground,
-                                         const TabGroupData* group) {}
+void TestTabStripModelDelegate::AddTabAt(
+    const GURL& url,
+    int index,
+    bool foreground,
+    absl::optional<tab_groups::TabGroupId> group) {}
 
 Browser* TestTabStripModelDelegate::CreateNewStripWithContents(
     std::vector<NewStripContents> contentses,
@@ -43,12 +43,44 @@ bool TestTabStripModelDelegate::CanDuplicateContentsAt(int index) {
   return false;
 }
 
+bool TestTabStripModelDelegate::IsTabStripEditable() {
+  return true;
+}
+
 void TestTabStripModelDelegate::DuplicateContentsAt(int index) {
 }
 
-void TestTabStripModelDelegate::CreateHistoricalTab(
-    content::WebContents* contents) {
+void TestTabStripModelDelegate::MoveToExistingWindow(
+    const std::vector<int>& indices,
+    int browser_index) {}
+
+std::vector<std::u16string>
+TestTabStripModelDelegate::GetExistingWindowsForMoveMenu() {
+  std::vector<std::u16string> existing_windows;
+  return existing_windows;
 }
+
+bool TestTabStripModelDelegate::CanMoveTabsToWindow(
+    const std::vector<int>& indices) {
+  return false;
+}
+
+void TestTabStripModelDelegate::MoveTabsToNewWindow(
+    const std::vector<int>& indices) {}
+
+void TestTabStripModelDelegate::MoveGroupToNewWindow(
+    const tab_groups::TabGroupId& group) {}
+
+absl::optional<SessionID> TestTabStripModelDelegate::CreateHistoricalTab(
+    content::WebContents* contents) {
+  return absl::nullopt;
+}
+
+void TestTabStripModelDelegate::CreateHistoricalGroup(
+    const tab_groups::TabGroupId& group) {}
+
+void TestTabStripModelDelegate::GroupCloseStopped(
+    const tab_groups::TabGroupId& group) {}
 
 bool TestTabStripModelDelegate::ShouldRunUnloadListenerBeforeClosing(
     content::WebContents* contents) {
@@ -60,17 +92,7 @@ bool TestTabStripModelDelegate::RunUnloadListenerBeforeClosing(
   return false;
 }
 
-TabStripModelDelegate::RestoreTabType
-TestTabStripModelDelegate::GetRestoreTabType() {
-  return TabStripModelDelegate::RESTORE_NONE;
-}
-
-void TestTabStripModelDelegate::RestoreTab() {
-}
-
-bool TestTabStripModelDelegate::CanBookmarkAllTabs() const {
+bool TestTabStripModelDelegate::ShouldDisplayFavicon(
+    content::WebContents* web_contents) const {
   return true;
-}
-
-void TestTabStripModelDelegate::BookmarkAllTabs() {
 }

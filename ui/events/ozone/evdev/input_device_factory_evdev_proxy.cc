@@ -4,9 +4,12 @@
 
 #include "ui/events/ozone/evdev/input_device_factory_evdev_proxy.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "ui/events/devices/stylus_state.h"
 #include "ui/events/ozone/evdev/input_device_factory_evdev.h"
 
 namespace ui {
@@ -28,6 +31,14 @@ void ForwardGetTouchEventLogReply(
   // Thread hop back to UI for reply.
   reply_runner->PostTask(FROM_HERE,
                          base::BindOnce(std::move(reply), log_paths));
+}
+
+void ForwardGetStylusSwitchStateReply(
+    scoped_refptr<base::SingleThreadTaskRunner> reply_runner,
+    InputController::GetStylusSwitchStateReply reply,
+    ui::StylusState state) {
+  // Thread hop back to UI for reply.
+  reply_runner->PostTask(FROM_HERE, base::BindOnce(std::move(reply), state));
 }
 
 }  // namespace
@@ -67,6 +78,17 @@ void InputDeviceFactoryEvdevProxy::SetCapsLockLed(bool enabled) {
                                 input_device_factory_, enabled));
 }
 
+void InputDeviceFactoryEvdevProxy::GetStylusSwitchState(
+    InputController::GetStylusSwitchStateReply reply) {
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&InputDeviceFactoryEvdev::GetStylusSwitchState,
+                     input_device_factory_,
+                     base::BindOnce(&ForwardGetStylusSwitchStateReply,
+                                    base::ThreadTaskRunnerHandle::Get(),
+                                    std::move(reply))));
+}
+
 void InputDeviceFactoryEvdevProxy::UpdateInputDeviceSettings(
     const InputDeviceSettingsEvdev& settings) {
   task_runner_->PostTask(
@@ -96,6 +118,30 @@ void InputDeviceFactoryEvdevProxy::GetTouchEventLog(
                      base::BindOnce(&ForwardGetTouchEventLogReply,
                                     base::ThreadTaskRunnerHandle::Get(),
                                     std::move(reply))));
+}
+
+void InputDeviceFactoryEvdevProxy::GetGesturePropertiesService(
+    mojo::PendingReceiver<ozone::mojom::GesturePropertiesService> receiver) {
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&InputDeviceFactoryEvdev::GetGesturePropertiesService,
+                     input_device_factory_, std::move(receiver)));
+}
+
+void InputDeviceFactoryEvdevProxy::PlayVibrationEffect(
+    int id,
+    uint8_t amplitude,
+    uint16_t duration_millis) {
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&InputDeviceFactoryEvdev::PlayVibrationEffect,
+                     input_device_factory_, id, amplitude, duration_millis));
+}
+
+void InputDeviceFactoryEvdevProxy::StopVibration(int id) {
+  task_runner_->PostTask(FROM_HERE,
+                         base::BindOnce(&InputDeviceFactoryEvdev::StopVibration,
+                                        input_device_factory_, id));
 }
 
 }  // namespace ui

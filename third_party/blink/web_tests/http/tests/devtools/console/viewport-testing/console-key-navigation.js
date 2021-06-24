@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that console messages are navigable with the keyboard.\n`);
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
   ConsoleTestRunner.fixConsoleViewportDimensions(600, 200);
   await ConsoleTestRunner.waitUntilConsoleEditorLoaded();
@@ -24,104 +24,125 @@
   await ConsoleTestRunner.waitForPendingViewportUpdates();
 
   TestRunner.runTestSuite([
-    function testBetweenViewportAndExternal(next) {
+    async function testBetweenViewportAndExternal(next) {
       TestRunner.addResult(`Setting focus in prompt:`);
       prompt.focus();
-      dumpFocus();
+      await dumpFocus();
 
       shiftPress('Tab');
-      dumpFocus();
+      await dumpFocus();
+
+      press('ArrowUp');
+      await dumpFocus();
 
       shiftPress('Tab');
-      dumpFocus();
+      await dumpFocus();
 
       press('Tab');
-      dumpFocus();
+      await dumpFocus();
+
+      press('ArrowUp');
+      await dumpFocus();
 
       press('Tab');
-      dumpFocus();
+      await dumpFocus();
 
       next();
     },
 
-    function testBetweenViewportAndExternalWithSelectedItemNotInDOM(next) {
+    async function testBetweenViewportAndExternalWithSelectedItemNotInDOM(next) {
       TestRunner.addResult(`Setting focus in prompt:`);
       prompt.focus();
-      dumpFocus();
+      await dumpFocus();
 
       shiftPress('Tab');
-      dumpFocus();
+      await dumpFocus();
+
+      press('ArrowUp');
+      await dumpFocus();
 
       scrollViewportToTop();
-      dumpFocus();
+      await dumpFocus();
 
       shiftPress('Tab');
-      dumpFocus();
+      await dumpFocus();
 
       press('Tab');
-      dumpFocus();
+      await dumpFocus();
+
+      press('ArrowUp');
+      await dumpFocus();
 
       TestRunner.addResult(`\nSetting focus in prompt:`);
       prompt.focus();
-      dumpFocus();
+      await dumpFocus();
 
       shiftPress('Tab');
-      dumpFocus();
-
-      scrollViewportToTop();
-      dumpFocus();
-
-      press('Tab');
-      dumpFocus();
-
-      next();
-    },
-
-    function testMoveAcrossLogsWithinViewport(next) {
-      forceSelect(logCount - 1);
-      dumpFocus();
-
-      press('Home');
-      dumpFocus();
-
-      press('ArrowDown');
-      dumpFocus();
-
-      press('End');
-      dumpFocus();
+      await dumpFocus();
 
       press('ArrowUp');
-      dumpFocus();
-
-      next();
-    },
-
-    function testViewportDoesNotChangeFocusOnScroll(next) {
-      forceSelect(logCount - 2);
-      dumpFocus();
+      await dumpFocus();
 
       scrollViewportToTop();
-      dumpFocus();
+      await dumpFocus();
 
-      scrollViewportToBottom();
-      dumpFocus();
+      press('Tab');
+      await dumpFocus();
 
       next();
     },
 
-    function testViewportDoesNotStealFocusOnScroll(next) {
+    async function testMoveAcrossLogsWithinViewport(next) {
       forceSelect(logCount - 1);
-      dumpFocus();
+      await dumpFocus();
+
+      press('Home');
+      await dumpFocus();
+
+      press('ArrowDown');
+      await dumpFocus();
+
+      press('ArrowDown');
+      await dumpFocus();
+
+      press('End');
+      await dumpFocus();
+
+      press('ArrowUp');
+      await dumpFocus();
+
+      press('ArrowUp');
+      await dumpFocus();
+
+      next();
+    },
+
+    async function testViewportDoesNotChangeFocusOnScroll(next) {
+      forceSelect(logCount - 2);
+      await dumpFocus();
+
+      scrollViewportToTop();
+      await dumpFocus();
+
+      scrollViewportToBottom();
+      await dumpFocus();
+
+      next();
+    },
+
+    async function testViewportDoesNotStealFocusOnScroll(next) {
+      forceSelect(logCount - 1);
+      await dumpFocus();
 
       TestRunner.addResult(`Setting focus in prompt:`);
       prompt.focus();
-      dumpFocus();
+      await dumpFocus();
 
       scrollViewportToTop();
-      dumpFocus();
+      await dumpFocus();
 
       scrollViewportToBottom();
-      dumpFocus();
+      await dumpFocus();
 
       next();
     },
@@ -129,20 +150,20 @@
     async function testNewLogsShouldNotMoveFocus(next) {
       TestRunner.addResult(`Setting focus in prompt:`);
       prompt.focus();
-      dumpFocus();
+      await dumpFocus();
 
       await TestRunner.evaluateInPagePromise(`console.log("New Message")`);
       await ConsoleTestRunner.waitForConsoleMessagesPromise(logCount + 1);
       await ConsoleTestRunner.waitForPendingViewportUpdates();
 
-      dumpFocus();
+      await dumpFocus();
       next();
     },
 
-    function testClearingConsoleFocusesPrompt(next) {
+    async function testClearingConsoleFocusesPrompt(next) {
       TestRunner.addResult(`\nConsole cleared:`);
       consoleView._consoleCleared();
-      dumpFocus();
+      await dumpFocus();
       next();
     }
   ]);
@@ -179,8 +200,10 @@
     eventSender.keyDown(key, ['shiftKey']);
   }
 
-  function dumpFocus() {
+  async function dumpFocus() {
     var element = document.deepActiveElement();
+    // Console elements contain live locations that might not be fully resolved yet.
+    await TestRunner.waitForPendingLiveLocationUpdates();
     if (!element) {
       TestRunner.addResult('null');
       return;
@@ -190,8 +213,8 @@
       name += '#' + element.id;
     if (element.getAttribute('aria-label'))
       name += ':' + element.getAttribute('aria-label');
-    else if (element.title)
-      name += ':' + element.title;
+    else if (UI.Tooltip.getContent(element))
+      name += ':' + UI.Tooltip.getContent(element);
     else if (element.textContent && element.textContent.length < 50) {
       name += ':' + element.textContent.replace('\u200B', '');
     } else if (element.className)

@@ -17,6 +17,8 @@
 #include "ui/ozone/platform/scenic/scenic_surface_factory.h"
 #include "ui/ozone/public/surface_ozone_canvas.h"
 
+class SkSurface;
+
 namespace scenic {
 class Session;
 }  // namespace scenic
@@ -35,8 +37,8 @@ class ScenicWindowCanvas : public SurfaceOzoneCanvas {
   ~ScenicWindowCanvas() override;
 
   // SurfaceOzoneCanvas implementation.
-  void ResizeCanvas(const gfx::Size& viewport_size) override;
-  sk_sp<SkSurface> GetSurface() override;
+  void ResizeCanvas(const gfx::Size& viewport_size, float scale) override;
+  SkCanvas* GetCanvas() override;
   void PresentCanvas(const gfx::Rect& damage) override;
   std::unique_ptr<gfx::VSyncProvider> CreateVSyncProvider() override;
 

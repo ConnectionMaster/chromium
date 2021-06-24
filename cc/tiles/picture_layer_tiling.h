@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -17,6 +18,7 @@
 #include "cc/base/region.h"
 #include "cc/base/tiling_data.h"
 #include "cc/cc_export.h"
+#include "cc/paint/paint_worklet_input.h"
 #include "cc/tiles/tile.h"
 #include "cc/tiles/tile_priority.h"
 #include "cc/trees/occlusion.h"
@@ -40,8 +42,7 @@ class CC_EXPORT PictureLayerTilingClient {
   // Create a tile at the given content_rect (in the contents scale of the
   // tiling) This might return null if the client cannot create such a tile.
   virtual std::unique_ptr<Tile> CreateTile(const Tile::CreateInfo& info) = 0;
-  virtual gfx::Size CalculateTileSize(
-    const gfx::Size& content_bounds) const = 0;
+  virtual gfx::Size CalculateTileSize(const gfx::Size& content_bounds) = 0;
   // This invalidation region defines the area (if any, it can by null) that
   // tiles can not be shared between pending and active trees.
   virtual const Region* GetPendingInvalidation() = 0;
@@ -49,6 +50,10 @@ class CC_EXPORT PictureLayerTilingClient {
       const PictureLayerTiling* tiling) const = 0;
   virtual bool HasValidTilePriorities() const = 0;
   virtual bool RequiresHighResToDraw() const = 0;
+  virtual const PaintWorkletRecordMap& GetPaintWorkletRecords() const = 0;
+  virtual bool IsDirectlyCompositedImage() const = 0;
+  virtual bool ScrollInteractionInProgress() const = 0;
+  virtual bool DidCheckerboardQuad() const = 0;
 
  protected:
   virtual ~PictureLayerTilingClient() {}
@@ -93,7 +98,8 @@ class CC_EXPORT PictureLayerTiling {
                      scoped_refptr<RasterSource> raster_source,
                      PictureLayerTilingClient* client,
                      float min_preraster_distance,
-                     float max_preraster_distance);
+                     float max_preraster_distance,
+                     bool can_use_lcd_text);
   PictureLayerTiling(const PictureLayerTiling&) = delete;
   ~PictureLayerTiling();
 
@@ -135,6 +141,9 @@ class CC_EXPORT PictureLayerTiling {
   const scoped_refptr<RasterSource>& raster_source() const {
     return raster_source_;
   }
+  const PaintWorkletRecordMap& GetPaintWorkletRecords() const {
+    return client_->GetPaintWorkletRecords();
+  }
   gfx::Size tiling_size() const { return tiling_data_.tiling_size(); }
   gfx::Rect live_tiles_rect() const { return live_tiles_rect_; }
   gfx::Size tile_size() const { return tiling_data_.max_texture_size(); }
@@ -142,7 +151,10 @@ class CC_EXPORT PictureLayerTiling {
   // as the key for indexing and sorting. In theory we can have multiple
   // tilings with the same scale but different translation, but currently
   // we only allow tilings with unique scale for the sake of simplicity.
-  float contents_scale_key() const { return raster_transform_.scale(); }
+  float contents_scale_key() const {
+    const gfx::Vector2dF& scale = raster_transform_.scale();
+    return std::max(scale.x(), scale.y());
+  }
   const gfx::AxisTransform2d& raster_transform() const {
     return raster_transform_;
   }
@@ -159,6 +171,8 @@ class CC_EXPORT PictureLayerTiling {
   void set_all_tiles_done(bool all_tiles_done) {
     all_tiles_done_ = all_tiles_done;
   }
+
+  bool can_use_lcd_text() const { return can_use_lcd_text_; }
 
   WhichTree tree() const { return tree_; }
 
@@ -394,6 +408,7 @@ class CC_EXPORT PictureLayerTiling {
   bool has_soon_border_rect_tiles_ = false;
   bool has_eventually_rect_tiles_ = false;
   bool all_tiles_done_ = true;
+  bool can_use_lcd_text_;
 };
 
 }  // namespace cc

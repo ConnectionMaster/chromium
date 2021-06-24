@@ -5,6 +5,7 @@
 #include "base/at_exit.h"
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/debug/debugger.h"
 #include "base/debug/stack_trace.h"
 #include "base/feature_list.h"
@@ -13,17 +14,16 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/process/launch.h"
-#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "build/build_config.h"
 #include "services/service_manager/public/cpp/service_executable/service_executable_environment.h"
 #include "services/service_manager/public/cpp/service_executable/service_main.h"
 #include "services/service_manager/public/mojom/service.mojom.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/mac/bundle_locations.h"
 #endif
 
@@ -45,10 +45,10 @@ void WaitForDebuggerIfNecessary() {
         break;
       }
     }
-    if (apps_to_debug.empty() || base::ContainsValue(apps_to_debug, app)) {
+    if (apps_to_debug.empty() || base::Contains(apps_to_debug, app)) {
 #if defined(OS_WIN)
-      base::string16 appw = base::UTF8ToUTF16(app);
-      base::string16 message = base::UTF8ToUTF16(
+      std::wstring appw = base::UTF8ToWide(app);
+      std::wstring message = base::UTF8ToWide(
           base::StringPrintf("%s - %ld", app.c_str(), GetCurrentProcessId()));
       MessageBox(NULL, message.c_str(), appw.c_str(), MB_OK | MB_SETFOREGROUND);
 #else
@@ -70,7 +70,8 @@ int main(int argc, char** argv) {
 #endif
 
   logging::LoggingSettings settings;
-  settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+  settings.logging_dest =
+      logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   logging::InitLogging(settings);
   // To view log output with IDs and timestamps use "adb logcat -v threadtime".
   logging::SetLogItems(true,   // Process ID
@@ -94,7 +95,7 @@ int main(int argc, char** argv) {
   WaitForDebuggerIfNecessary();
   service_manager::ServiceExecutableEnvironment environment;
   ServiceMain(environment.TakeServiceRequestFromCommandLine());
-  base::ThreadPool::GetInstance()->Shutdown();
+  base::ThreadPoolInstance::Get()->Shutdown();
 
   return 0;
 }

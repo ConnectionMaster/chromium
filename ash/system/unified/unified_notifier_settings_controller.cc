@@ -8,6 +8,8 @@
 #include "ash/system/message_center/notifier_settings_view.h"
 #include "ash/system/tray/detailed_view_delegate.h"
 #include "ash/system/tray/tray_detailed_view.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/message_center_observer.h"
 #include "ui/views/layout/box_layout.h"
 
@@ -37,6 +39,10 @@ class UnifiedNotifierSettingsView
     settings_view_->SetQuietModeState(in_quiet_mode);
   }
 
+  const char* GetClassName() const override {
+    return "UnifiedNotifierSettingsView";
+  }
+
  private:
   NotifierSettingsView* const settings_view_;
 
@@ -55,6 +61,11 @@ UnifiedNotifierSettingsController::~UnifiedNotifierSettingsController() =
 
 views::View* UnifiedNotifierSettingsController::CreateView() {
   return new UnifiedNotifierSettingsView(detailed_view_delegate_.get());
+}
+
+std::u16string UnifiedNotifierSettingsController::GetAccessibleName() const {
+  return l10n_util::GetStringUTF16(
+      IDS_ASH_QUICK_SETTINGS_BUBBLE_NOTIFIER_SETTINGS_ACCESSIBLE_DESCRIPTION);
 }
 
 }  // namespace ash

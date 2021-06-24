@@ -14,6 +14,7 @@
 #include "ui/views/controls/menu/menu_runner_impl_interface.h"
 
 @class MenuControllerCocoa;
+@class MenuControllerDelegate;
 
 namespace views {
 namespace test {
@@ -30,10 +31,11 @@ class VIEWS_EXPORT MenuRunnerImplCocoa : public MenuRunnerImplInterface {
   bool IsRunning() const override;
   void Release() override;
   void RunMenuAt(Widget* parent,
-                 MenuButton* button,
+                 MenuButtonController* button_controller,
                  const gfx::Rect& bounds,
                  MenuAnchorPosition anchor,
-                 int32_t run_types) override;
+                 int32_t run_types,
+                 gfx::NativeView native_view_for_gestures) override;
   void Cancel() override;
   base::TimeTicks GetClosingEventTime() const override;
 
@@ -44,6 +46,9 @@ class VIEWS_EXPORT MenuRunnerImplCocoa : public MenuRunnerImplInterface {
 
   // The Cocoa menu controller that this instance is bridging.
   base::scoped_nsobject<MenuControllerCocoa> menu_controller_;
+
+  // The delegate for the |menu_controller_|.
+  base::scoped_nsobject<MenuControllerDelegate> menu_delegate_;
 
   // Are we in run waiting for it to return?
   bool running_;

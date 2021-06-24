@@ -4,328 +4,212 @@
 
 #include "chrome/browser/ui/views/permission_bubble/permission_prompt_impl.h"
 
-#include <stddef.h>
 #include <memory>
-#include <utility>
 
-#include "base/strings/string16.h"
-#include "build/build_config.h"
-#include "chrome/browser/permissions/permission_request.h"
-#include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/views/bubble_anchor_util_views.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/page_info/permission_selector_row.h"
-#include "chrome/browser/ui/views/page_info/permission_selector_row_observer.h"
-#include "chrome/grit/generated_resources.h"
-#include "components/strings/grit/components_strings.h"
-#include "ui/base/l10n/l10n_util.h"
-#include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/color_palette.h"
-#include "ui/gfx/geometry/insets.h"
-#include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/text_constants.h"
-#include "ui/native_theme/native_theme.h"
-#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "chrome/browser/content_settings/chrome_content_settings_utils.h"
+#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/permission_bubble/permission_prompt.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/permission_bubble/file_handling_permission_prompt.h"
+#include "chrome/browser/ui/views/permission_bubble/permission_prompt_bubble_view.h"
+#include "chrome/browser/web_launch/web_launch_files_helper.h"
+#include "components/permissions/features.h"
+#include "components/permissions/permission_request.h"
+#include "components/permissions/permission_request_manager.h"
+#include "components/permissions/permission_ui_selector.h"
+#include "components/permissions/permission_uma_util.h"
+#include "components/permissions/request_type.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/controls/image_view.h"
-#include "ui/views/controls/label.h"
-#include "ui/views/layout/box_layout.h"
 
-#if defined(OS_MACOSX)
-#include "chrome/common/chrome_features.h"
-#endif
-
-using bubble_anchor_util::AnchorConfiguration;
-
-namespace {
-
-// (Square) pixel size of icon.
-constexpr int kPermissionIconSize = 18;
-
-// Returns the view to anchor the permission bubble to (may be null) and the
-// arrow position of the bubble.
-AnchorConfiguration GetPermissionAnchorConfiguration(Browser* browser) {
-  return bubble_anchor_util::GetPageInfoAnchorConfiguration(browser);
-}
-
-// Returns the anchor rect to anchor the permission bubble to, as a fallback.
-// Only used if GetPermissionAnchorView() returns nullptr.
-gfx::Rect GetPermissionAnchorRect(Browser* browser) {
-  return bubble_anchor_util::GetPageInfoAnchorRect(browser);
-}
-
-}  // namespace
-
-// A custom view for the title label that will be ignored by screen readers
-// (since the PermissionsBubble handles the context).
-class PermissionsLabel : public views::Label {
- public:
-  explicit PermissionsLabel(const base::string16& text)
-      : views::Label(text, views::style::CONTEXT_DIALOG_TITLE) {}
-  ~PermissionsLabel() override {}
-
-  // views::Label:
-  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
-    node_data->role = ax::mojom::Role::kIgnored;
+std::unique_ptr<permissions::PermissionPrompt> CreatePermissionPrompt(
+    content::WebContents* web_contents,
+    permissions::PermissionPrompt::Delegate* delegate) {
+  Browser* browser = chrome::FindBrowserWithWebContents(web_contents);
+  if (!browser) {
+    DLOG(WARNING) << "Permission prompt suppressed because the WebContents is "
+                     "not attached to any Browser window.";
+    return nullptr;
   }
 
- private:
-  DISALLOW_COPY_AND_ASSIGN(PermissionsLabel);
-};
-
-///////////////////////////////////////////////////////////////////////////////
-// View implementation for the permissions bubble.
-class PermissionsBubbleDialogDelegateView
-    : public views::BubbleDialogDelegateView {
- public:
-  PermissionsBubbleDialogDelegateView(
-      PermissionPromptImpl* owner,
-      const std::vector<PermissionRequest*>& requests,
-      const PermissionPrompt::DisplayNameOrOrigin& name_or_origin);
-  ~PermissionsBubbleDialogDelegateView() override;
-
-  void CloseBubble();
-
-  // BubbleDialogDelegateView overrides.
-  bool ShouldShowCloseButton() const override;
-  base::string16 GetWindowTitle() const override;
-  void OnWidgetDestroying(views::Widget* widget) override;
-  bool Cancel() override;
-  bool Accept() override;
-  bool Close() override;
-  void AddedToWidget() override;
-  int GetDefaultDialogButton() const override;
-  int GetDialogButtons() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  void SizeToContents() override;
-
-  // Repositions the bubble so it's displayed in the correct location based on
-  // the updated anchor view, or anchor rect if that is (or became) null.
-  void UpdateAnchor();
-
- private:
-  PermissionPromptImpl* owner_;
-  PermissionPrompt::DisplayNameOrOrigin name_or_origin_;
-
-  DISALLOW_COPY_AND_ASSIGN(PermissionsBubbleDialogDelegateView);
-};
-
-PermissionsBubbleDialogDelegateView::PermissionsBubbleDialogDelegateView(
-    PermissionPromptImpl* owner,
-    const std::vector<PermissionRequest*>& requests,
-    const PermissionPrompt::DisplayNameOrOrigin& name_or_origin)
-    : owner_(owner), name_or_origin_(name_or_origin) {
-  DCHECK(!requests.empty());
-
-  set_close_on_deactivate(false);
-
-  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
-  SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::kVertical, gfx::Insets(),
-      provider->GetDistanceMetric(views::DISTANCE_RELATED_CONTROL_VERTICAL)));
-
-  for (size_t index = 0; index < requests.size(); index++) {
-    views::View* label_container = new views::View();
-    int indent =
-        provider->GetDistanceMetric(DISTANCE_SUBSECTION_HORIZONTAL_INDENT);
-    label_container->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::kHorizontal, gfx::Insets(0, indent),
-        provider->GetDistanceMetric(views::DISTANCE_RELATED_LABEL_HORIZONTAL)));
-    views::ImageView* icon = new views::ImageView();
-    const gfx::VectorIcon& vector_id = requests[index]->GetIconId();
-    const SkColor icon_color = icon->GetNativeTheme()->GetSystemColor(
-        ui::NativeTheme::kColorId_DefaultIconColor);
-    icon->SetImage(
-        gfx::CreateVectorIcon(vector_id, kPermissionIconSize, icon_color));
-    label_container->AddChildView(icon);
-    views::Label* label =
-        new views::Label(requests.at(index)->GetMessageTextFragment());
-    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    label_container->AddChildView(label);
-    AddChildView(label_container);
+  if (base::FeatureList::IsEnabled(features::kFileHandlingPermissionUiV2) &&
+      delegate->Requests().size() == 1U &&
+      delegate->Requests()[0]->GetRequestType() ==
+          permissions::RequestType::kFileHandling) {
+    return FileHandlingPermissionPrompt::Create(web_contents, delegate);
   }
 
-  chrome::RecordDialogCreation(chrome::DialogIdentifier::PERMISSIONS);
+  return std::make_unique<PermissionPromptImpl>(browser, web_contents,
+                                                delegate);
 }
 
-PermissionsBubbleDialogDelegateView::~PermissionsBubbleDialogDelegateView() {
-  if (owner_)
-    owner_->Closing();
-}
-
-void PermissionsBubbleDialogDelegateView::CloseBubble() {
-  owner_ = nullptr;
-  GetWidget()->Close();
-}
-
-void PermissionsBubbleDialogDelegateView::AddedToWidget() {
-  // There is no URL spoofing risk from non-origins.
-  if (!name_or_origin_.is_origin)
-    return;
-
-  std::unique_ptr<views::Label> title =
-      std::make_unique<PermissionsLabel>(GetWindowTitle());
-  title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  title->set_collapse_when_hidden(true);
-  title->SetMultiLine(true);
-
-  // Elide from head in order to keep the most significant part of the origin
-  // and avoid spoofing. Note that in English, GetWindowTitle() returns a string
-  // "$ORIGIN wants to", so the "wants to" will not be elided. In other
-  // languages, the non-origin part may appear fully or partly before the origin
-  // (e.g., in Filipino, "Gusto ng $ORIGIN na"), which means it may be elided.
-  // This is not optimal, but it is necessary to avoid origin spoofing. See
-  // crbug.com/774438.
-  title->SetElideBehavior(gfx::ELIDE_HEAD);
-
-  // Multiline breaks elision, which would mean a very long origin gets
-  // truncated from the least significant side. Explicitly disable multiline.
-  title->SetMultiLine(false);
-  GetBubbleFrameView()->SetTitleView(std::move(title));
-}
-
-bool PermissionsBubbleDialogDelegateView::ShouldShowCloseButton() const {
-  return true;
-}
-
-base::string16 PermissionsBubbleDialogDelegateView::GetWindowTitle() const {
-  return l10n_util::GetStringFUTF16(IDS_PERMISSIONS_BUBBLE_PROMPT,
-                                    name_or_origin_.name_or_origin);
-}
-
-void PermissionsBubbleDialogDelegateView::SizeToContents() {
-  BubbleDialogDelegateView::SizeToContents();
-}
-
-void PermissionsBubbleDialogDelegateView::OnWidgetDestroying(
-    views::Widget* widget) {
-  views::BubbleDialogDelegateView::OnWidgetDestroying(widget);
-  if (owner_) {
-    owner_->Closing();
-    owner_ = nullptr;
+PermissionPromptImpl::PermissionPromptImpl(Browser* browser,
+                                           content::WebContents* web_contents,
+                                           Delegate* delegate)
+    : prompt_bubble_(nullptr),
+      web_contents_(web_contents),
+      delegate_(delegate),
+      browser_(browser),
+      permission_requested_time_(base::TimeTicks::Now()) {
+  permissions::PermissionRequestManager* manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents_);
+  if (manager->ShouldCurrentRequestUseQuietUI()) {
+    prompt_style_ = PermissionPromptStyle::kQuiet;
+    // Shows the prompt as an indicator in the right side of the omnibox.
+    content_settings::UpdateLocationBarUiForWebContents(web_contents_);
+  } else {
+    LocationBarView* lbv = GetLocationBarView();
+    if (lbv && lbv->IsDrawn() && ShouldCurrentRequestUseChipUI()) {
+      ShowChipUI();
+    } else {
+      ShowBubble();
+    }
   }
 }
 
-int PermissionsBubbleDialogDelegateView::GetDefaultDialogButton() const {
-  // To prevent permissions being accepted accidentally, and as a security
-  // measure against crbug.com/619429, permission prompts should not be accepted
-  // as the default action.
-  return ui::DIALOG_BUTTON_NONE;
-}
-
-int PermissionsBubbleDialogDelegateView::GetDialogButtons() const {
-  return ui::DIALOG_BUTTON_OK | ui::DIALOG_BUTTON_CANCEL;
-}
-
-base::string16 PermissionsBubbleDialogDelegateView::GetDialogButtonLabel(
-    ui::DialogButton button) const {
-  if (button == ui::DIALOG_BUTTON_CANCEL)
-    return l10n_util::GetStringUTF16(IDS_PERMISSION_DENY);
-
-  // The text differs based on whether OK is the only visible button.
-  return l10n_util::GetStringUTF16(GetDialogButtons() == ui::DIALOG_BUTTON_OK
-                                       ? IDS_OK
-                                       : IDS_PERMISSION_ALLOW);
-}
-
-bool PermissionsBubbleDialogDelegateView::Cancel() {
-  if (owner_)
-    owner_->Deny();
-  return true;
-}
-
-bool PermissionsBubbleDialogDelegateView::Accept() {
-  if (owner_)
-    owner_->Accept();
-  return true;
-}
-
-bool PermissionsBubbleDialogDelegateView::Close() {
-  // Neither explicit accept nor explicit deny.
-  return true;
-}
-
-void PermissionsBubbleDialogDelegateView::UpdateAnchor() {
-  AnchorConfiguration configuration =
-      GetPermissionAnchorConfiguration(owner_->browser());
-  SetAnchorView(configuration.anchor_view);
-  SetHighlightedButton(configuration.highlighted_button);
-  if (!configuration.anchor_view)
-    SetAnchorRect(GetPermissionAnchorRect(owner_->browser()));
-  SetArrow(configuration.bubble_arrow);
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// PermissionPromptImpl
-
-PermissionPromptImpl::PermissionPromptImpl(Browser* browser, Delegate* delegate)
-    : browser_(browser), delegate_(delegate), bubble_delegate_(nullptr) {
-  Show();
+void PermissionPromptImpl::OnWidgetClosing(views::Widget* widget) {
+  DCHECK_EQ(widget, prompt_bubble_->GetWidget());
+  widget->RemoveObserver(this);
+  prompt_bubble_ = nullptr;
 }
 
 PermissionPromptImpl::~PermissionPromptImpl() {
-  if (bubble_delegate_)
-    bubble_delegate_->CloseBubble();
+  switch (prompt_style_) {
+    case PermissionPromptStyle::kBubbleOnly:
+      DCHECK(!chip_);
+      if (prompt_bubble_)
+        prompt_bubble_->GetWidget()->Close();
+      break;
+    case PermissionPromptStyle::kChip:
+      DCHECK(!prompt_bubble_);
+      DCHECK(chip_);
+      FinalizeChip();
+      break;
+    case PermissionPromptStyle::kQuiet:
+      DCHECK(!prompt_bubble_);
+      DCHECK(!chip_);
+      content_settings::UpdateLocationBarUiForWebContents(web_contents_);
+      break;
+  }
+
+  CHECK(!IsInObserverList());
 }
 
-void PermissionPromptImpl::UpdateAnchorPosition() {
-  DCHECK(browser_);
-  DCHECK(browser_->window());
+void PermissionPromptImpl::UpdateAnchor() {
+  Browser* current_browser = chrome::FindBrowserWithWebContents(web_contents_);
+  // Browser for |web_contents_| might change when for example the tab was
+  // dragged to another window.
+  bool was_browser_changed = false;
+  if (current_browser != browser_) {
+    browser_ = current_browser;
+    was_browser_changed = true;
+  }
+  LocationBarView* lbv = GetLocationBarView();
+  const bool is_location_bar_drawn = lbv && lbv->IsDrawn();
+  switch (prompt_style_) {
+    case PermissionPromptStyle::kBubbleOnly:
+      DCHECK(!chip_);
+      // TODO(crbug.com/1175231): Investigate why prompt_bubble_ can be null
+      // here. Early return is preventing the crash from happening but we still
+      // don't know the reason why it is null here and cannot reproduce it.
+      if (!prompt_bubble_)
+        return;
 
-  if (bubble_delegate_) {
-    bubble_delegate_->set_parent_window(
-        platform_util::GetViewForWindow(browser_->window()->GetNativeWindow()));
-    bubble_delegate_->UpdateAnchor();
+      if (ShouldCurrentRequestUseChipUI() && is_location_bar_drawn) {
+        // Change prompt style to chip to avoid dismissing request while
+        // switching UI style.
+        prompt_bubble_->SetPromptStyle(PermissionPromptStyle::kChip);
+        prompt_bubble_->GetWidget()->Close();
+        ShowChipUI();
+        chip_->OpenBubble();
+      } else {
+        // If |browser_| changed, recreate bubble for correct browser.
+        if (was_browser_changed) {
+          prompt_bubble_->GetWidget()->CloseWithReason(
+              views::Widget::ClosedReason::kUnspecified);
+          ShowBubble();
+        } else {
+          prompt_bubble_->UpdateAnchorPosition();
+        }
+      }
+      break;
+    case PermissionPromptStyle::kChip:
+      DCHECK(!prompt_bubble_);
+
+      if (!lbv->chip()) {
+        chip_ = lbv->DisplayChip(delegate_);
+      }
+      // If there is fresh pending request shown as chip UI and location bar
+      // isn't visible anymore, show bubble UI instead.
+      if (!chip_->is_fully_collapsed() && !is_location_bar_drawn) {
+        FinalizeChip();
+        ShowBubble();
+      }
+      break;
+    case PermissionPromptStyle::kQuiet:
+      break;
   }
 }
 
-gfx::NativeWindow PermissionPromptImpl::GetNativeWindow() {
-  if (bubble_delegate_ && bubble_delegate_->GetWidget())
-    return bubble_delegate_->GetWidget()->GetNativeWindow();
-  return nullptr;
+LocationBarView* PermissionPromptImpl::GetLocationBarView() {
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
+  return browser_view ? browser_view->GetLocationBarView() : nullptr;
 }
 
-void PermissionPromptImpl::Closing() {
-  if (bubble_delegate_)
-    bubble_delegate_ = nullptr;
-  if (delegate_)
-    delegate_->Closing();
+void PermissionPromptImpl::ShowChipUI() {
+  LocationBarView* lbv = GetLocationBarView();
+  DCHECK(lbv);
+
+  chip_ = lbv->DisplayChip(delegate_);
+  prompt_style_ = PermissionPromptStyle::kChip;
 }
 
-void PermissionPromptImpl::Accept() {
-  if (delegate_)
-    delegate_->Accept();
+void PermissionPromptImpl::ShowBubble() {
+  prompt_style_ = PermissionPromptStyle::kBubbleOnly;
+  prompt_bubble_ = new PermissionPromptBubbleView(
+      browser_, delegate_, permission_requested_time_, prompt_style_);
+  prompt_bubble_->Show();
+  prompt_bubble_->GetWidget()->AddObserver(this);
 }
 
-void PermissionPromptImpl::Deny() {
-  if (delegate_)
-    delegate_->Deny();
+bool PermissionPromptImpl::ShouldCurrentRequestUseChipUI() {
+  if (!base::FeatureList::IsEnabled(permissions::features::kPermissionChip))
+    return false;
+
+  std::vector<permissions::PermissionRequest*> requests = delegate_->Requests();
+  return std::all_of(requests.begin(), requests.end(), [](auto* request) {
+    return request->GetChipText().has_value();
+  });
 }
 
-void PermissionPromptImpl::Show() {
-  DCHECK(browser_);
-  DCHECK(browser_->window());
+void PermissionPromptImpl::FinalizeChip() {
+  GetLocationBarView()->FinalizeChip();
+  chip_ = nullptr;
+}
 
-  bubble_delegate_ = new PermissionsBubbleDialogDelegateView(
-      this, delegate_->Requests(), delegate_->GetDisplayNameOrOrigin());
+permissions::PermissionPrompt::TabSwitchingBehavior
+PermissionPromptImpl::GetTabSwitchingBehavior() {
+  return permissions::PermissionPrompt::TabSwitchingBehavior::
+      kDestroyPromptButKeepRequestPending;
+}
 
-  // Set |parent_window| because some valid anchors can become hidden.
-  bubble_delegate_->set_parent_window(
-      platform_util::GetViewForWindow(browser_->window()->GetNativeWindow()));
-
-  views::Widget* widget =
-      views::BubbleDialogDelegateView::CreateBubble(bubble_delegate_);
-  // If a browser window (or popup) other than the bubble parent has focus,
-  // don't take focus.
-  if (browser_->window()->IsActive())
-    widget->Show();
-  else
-    widget->ShowInactive();
-
-  bubble_delegate_->SizeToContents();
-
-  bubble_delegate_->UpdateAnchor();
+permissions::PermissionPromptDisposition
+PermissionPromptImpl::GetPromptDisposition() const {
+  switch (prompt_style_) {
+    case PermissionPromptStyle::kBubbleOnly:
+      return permissions::PermissionPromptDisposition::ANCHORED_BUBBLE;
+    case PermissionPromptStyle::kChip:
+      return permissions::PermissionPromptDisposition::LOCATION_BAR_LEFT_CHIP;
+    case PermissionPromptStyle::kQuiet: {
+      permissions::PermissionRequestManager* manager =
+          permissions::PermissionRequestManager::FromWebContents(web_contents_);
+      return permissions::PermissionUiSelector::ShouldSuppressAnimation(
+                 manager->ReasonForUsingQuietUi())
+                 ? permissions::PermissionPromptDisposition::
+                       LOCATION_BAR_RIGHT_STATIC_ICON
+                 : permissions::PermissionPromptDisposition::
+                       LOCATION_BAR_RIGHT_ANIMATED_ICON;
+    }
+  }
 }

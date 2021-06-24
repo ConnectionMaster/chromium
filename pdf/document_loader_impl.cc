@@ -10,11 +10,16 @@
 #include <algorithm>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/bind.h"
+#include "base/callback.h"
+#include "base/check_op.h"
+#include "base/feature_list.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/string_util.h"
+#include "pdf/pdf_features.h"
+#include "pdf/ppapi_migration/result_codes.h"
 #include "pdf/url_loader_wrapper.h"
-#include "ppapi/c/pp_errors.h"
 #include "ui/gfx/range/range.h"
 
 namespace chrome_pdf {
@@ -27,7 +32,7 @@ namespace {
 // Experimentally chosen value.
 constexpr int kChunkCloseDistance = 10;
 
-// Return true if the HTTP response of |loader| is a successful one and loading
+// Return true if the HTTP response of `loader` is a successful one and loading
 // should continue. 4xx error indicate subsequent requests will fail too.
 // e.g. resource has been removed from the server while loading it. 301
 // indicates a redirect was returned which won't be successful because we
@@ -63,7 +68,9 @@ void DocumentLoaderImpl::Chunk::Clear() {
 }
 
 DocumentLoaderImpl::DocumentLoaderImpl(Client* client)
-    : client_(client), loader_factory_(this) {}
+    : client_(client),
+      partial_loading_enabled_(
+          base::FeatureList::IsEnabled(features::kPdfPartialLoading)) {}
 
 DocumentLoaderImpl::~DocumentLoaderImpl() = default;
 
@@ -98,15 +105,7 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
   loader_ = std::move(loader);
 
   if (!loader_->IsContentEncoded())
-    SetDocumentSize(std::max(0, loader_->GetContentLength()));
-
-  int64_t bytes_received = 0;
-  int64_t total_bytes_to_be_received = 0;
-  if (GetDocumentSize() == 0 &&
-      loader_->GetDownloadProgress(&bytes_received,
-                                   &total_bytes_to_be_received)) {
-    SetDocumentSize(std::max(0, static_cast<int>(total_bytes_to_be_received)));
-  }
+    chunk_stream_.set_eof_pos(std::max(0, loader_->GetContentLength()));
 
   SetPartialLoadingEnabled(
       partial_loading_enabled_ &&
@@ -120,10 +119,6 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
 
 bool DocumentLoaderImpl::IsDocumentComplete() const {
   return chunk_stream_.IsComplete();
-}
-
-void DocumentLoaderImpl::SetDocumentSize(uint32_t size) {
-  chunk_stream_.set_eof_pos(size);
 }
 
 uint32_t DocumentLoaderImpl::GetDocumentSize() const {
@@ -250,10 +245,7 @@ void DocumentLoaderImpl::ContinueDownload() {
 
   loader_.reset();
   chunk_.Clear();
-  if (!is_partial_loader_active_) {
-    client_->CancelBrowserDownload();
-    is_partial_loader_active_ = true;
-  }
+  is_partial_loader_active_ = true;
 
   const uint32_t start = next_request.start() * DataStream::kChunkSize;
   const uint32_t length =
@@ -262,15 +254,14 @@ void DocumentLoaderImpl::ContinueDownload() {
 
   loader_ = client_->CreateURLLoader();
 
-  loader_->OpenRange(
-      url_, url_, start, length,
-      loader_factory_.NewCallback(&DocumentLoaderImpl::DidOpenPartial));
+  loader_->OpenRange(url_, url_, start, length,
+                     base::BindOnce(&DocumentLoaderImpl::DidOpenPartial,
+                                    weak_factory_.GetWeakPtr()));
 }
 
 void DocumentLoaderImpl::DidOpenPartial(int32_t result) {
-  if (result != PP_OK) {
+  if (result != Result::kSuccess)
     return ReadComplete();
-  }
 
   if (!ResponseStatusSuccess(loader_.get()))
     return ReadComplete();
@@ -303,7 +294,7 @@ void DocumentLoaderImpl::DidOpenPartial(int32_t result) {
 void DocumentLoaderImpl::ReadMore() {
   loader_->ReadResponseBody(
       buffer_, sizeof(buffer_),
-      loader_factory_.NewCallback(&DocumentLoaderImpl::DidRead));
+      base::BindOnce(&DocumentLoaderImpl::DidRead, weak_factory_.GetWeakPtr()));
 }
 
 void DocumentLoaderImpl::DidRead(int32_t result) {
@@ -387,7 +378,7 @@ uint32_t DocumentLoaderImpl::EndOfCurrentChunk() const {
 
 void DocumentLoaderImpl::ReadComplete() {
   if (GetDocumentSize() != 0) {
-    // If there is remaining data in |chunk_|, then save whatever can be saved.
+    // If there is remaining data in `chunk_`, then save whatever can be saved.
     // e.g. In the underrun case.
     if (chunk_.data_size != 0)
       SaveChunkData();
@@ -398,7 +389,7 @@ void DocumentLoaderImpl::ReadComplete() {
           chunk_stream_.filled_chunks().Last().end() * DataStream::kChunkSize,
           eof);
     }
-    SetDocumentSize(eof);
+    chunk_stream_.set_eof_pos(eof);
     if (eof == EndOfCurrentChunk())
       SaveChunkData();
   }

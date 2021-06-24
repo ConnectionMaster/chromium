@@ -22,9 +22,9 @@ function dc_onclose() {
 }
 
 function dc_onmessage_sharedarraybuffer_view() {
-    if (window.SharedArrayBuffer) {
-        shouldThrow("dc.send(new Uint8Array(new SharedArrayBuffer(16)));");
-    }
+    // See https://github.com/whatwg/html/issues/5380 for why not `new SharedArrayBuffer()`
+    shouldThrow("dc.send(new Uint8Array(new (new WebAssembly.Memory(" +
+                   "{ shared:true, initial:0, maximum:0 }).buffer.constructor)()));");
 
     dc2.onclose = dc_onclose;
     dc.close();
@@ -141,8 +141,11 @@ shouldBe("dc.reliable", "true");
 shouldBe("dc.ordered", "false");
 shouldNotThrow('dc = pc.createDataChannel("label3", {maxRetransmits:0});');
 shouldBe("dc.reliable", "false");
-shouldNotThrow('dc = pc.createDataChannel("label3", {maxRetransmitTime:0});');
+shouldNotThrow('dc = pc.createDataChannel("label3", {maxPacketLifeTime:0});');
 shouldBe("dc.reliable", "false");
+// Test that older name has stopped affecting the reliability mode.
+shouldNotThrow('dc = pc.createDataChannel("label3", {maxRetransmitTime:0});');
+shouldBe("dc.reliable", "true");
 
 pc = new RTCPeerConnection();
 pc2 = new RTCPeerConnection();

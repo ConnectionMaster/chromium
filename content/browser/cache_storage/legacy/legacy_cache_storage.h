@@ -15,31 +15,39 @@
 #include "base/memory/memory_pressure_listener.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "build/build_config.h"
+#include "components/services/storage/public/mojom/blob_storage_context.mojom.h"
+#include "components/services/storage/public/mojom/cache_storage_control.mojom.h"
+#include "content/browser/cache_storage/blob_storage_context_wrapper.h"
 #include "content/browser/cache_storage/cache_storage.h"
 #include "content/browser/cache_storage/cache_storage_cache_observer.h"
+#include "content/browser/cache_storage/cache_storage_manager.h"
+#include "content/browser/cache_storage/cache_storage_scheduler_types.h"
 #include "content/browser/cache_storage/legacy/legacy_cache_storage_cache.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
+
+#if defined(OS_ANDROID)
+#include "base/android/application_status_listener.h"
+#endif
 
 namespace base {
 class SequencedTaskRunner;
 }
 
-namespace storage {
-class BlobStorageContext;
-}
-
 namespace content {
 class CacheStorageIndex;
-class CacheStorageManager;
 class CacheStorageScheduler;
-enum class CacheStorageOwner;
+class LegacyCacheStorageManager;
 
 namespace cache_storage_manager_unittest {
 class CacheStorageManagerTest;
 FORWARD_DECLARE_TEST(CacheStorageManagerTest, PersistedCacheKeyUsed);
+FORWARD_DECLARE_TEST(CacheStorageManagerTest, PutResponseWithExistingFileTest);
 FORWARD_DECLARE_TEST(CacheStorageManagerTest, TestErrorInitializingCache);
 }  // namespace cache_storage_manager_unittest
 
-// TODO(jkarlin): Constrain the total bytes used per origin.
+// TODO(jkarlin): Constrain the total bytes used per storage key.
 
 // Concrete implementation of the CacheStorage abstract class.  This is
 // the legacy implementation using LegacyCacheStorageCache objects.
@@ -54,11 +62,12 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
       const base::FilePath& origin_path,
       bool memory_only,
       base::SequencedTaskRunner* cache_task_runner,
+      scoped_refptr<base::SequencedTaskRunner> scheduler_task_runner,
       scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy,
-      base::WeakPtr<storage::BlobStorageContext> blob_context,
-      CacheStorageManager* cache_storage_manager,
-      const url::Origin& origin,
-      CacheStorageOwner owner);
+      scoped_refptr<BlobStorageContextWrapper> blob_storage_context,
+      LegacyCacheStorageManager* cache_storage_manager,
+      const blink::StorageKey& storage_key,
+      storage::mojom::CacheStorageOwner owner);
 
   // Any unfinished asynchronous operations may not complete or call their
   // callbacks.
@@ -74,6 +83,8 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DCHECK(!handle_ref_count_);
   }
+
+  void Init() override;
 
   void OpenCache(const std::string& cache_name,
                  int64_t trace_id,
@@ -93,11 +104,13 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   void MatchCache(const std::string& cache_name,
                   blink::mojom::FetchAPIRequestPtr request,
                   blink::mojom::CacheQueryOptionsPtr match_options,
+                  CacheStorageSchedulerPriority priority,
                   int64_t trace_id,
                   CacheStorageCache::ResponseCallback callback) override;
 
   void MatchAllCaches(blink::mojom::FetchAPIRequestPtr request,
                       blink::mojom::CacheQueryOptionsPtr match_options,
+                      CacheStorageSchedulerPriority priority,
                       int64_t trace_id,
                       CacheStorageCache::ResponseCallback callback) override;
 
@@ -112,14 +125,14 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   // caches even if there are existing handles to them.
   void GetSizeThenCloseAllCaches(SizeCallback callback);
 
-  // The size of all of the origin's contents. This value should be used as an
-  // estimate only since the cache may be modified at any time.
+  // The size of all of the storage key's contents. This value should be used as
+  // an estimate only since the cache may be modified at any time.
   void Size(SizeCallback callback);
 
   // The functions below are for tests to verify that the operations run
   // serially.
-  void StartAsyncOperationForTesting();
-  void CompleteAsyncOperationForTesting();
+  CacheStorageSchedulerId StartAsyncOperationForTesting();
+  void CompleteAsyncOperationForTesting(CacheStorageSchedulerId id);
 
   // Removes the manager reference. Called before this storage is deleted by the
   // manager, since it is removed from manager's storage map before deleting.
@@ -136,12 +149,19 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
     return static_cast<LegacyCacheStorage*>(handle.value());
   }
 
+ protected:
+  // Virtual for testing
+  virtual void CacheUnreferenced(LegacyCacheStorageCache* cache);
+
  private:
   friend class LegacyCacheStorageCache;
   friend class cache_storage_manager_unittest::CacheStorageManagerTest;
   FRIEND_TEST_ALL_PREFIXES(
       cache_storage_manager_unittest::CacheStorageManagerTest,
       PersistedCacheKeyUsed);
+  FRIEND_TEST_ALL_PREFIXES(
+      cache_storage_manager_unittest::CacheStorageManagerTest,
+      PutResponseWithExistingFileTest);
   FRIEND_TEST_ALL_PREFIXES(
       cache_storage_manager_unittest::CacheStorageManagerTest,
       TestErrorInitializingCache);
@@ -169,11 +189,11 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   void OpenCacheImpl(const std::string& cache_name,
                      int64_t trace_id,
                      CacheAndErrorCallback callback);
-  void CreateCacheDidCreateCache(
-      const std::string& cache_name,
-      int64_t trace_id,
-      CacheAndErrorCallback callback,
-      std::unique_ptr<LegacyCacheStorageCache> cache);
+  void CreateCacheDidCreateCache(const std::string& cache_name,
+                                 int64_t trace_id,
+                                 CacheAndErrorCallback callback,
+                                 std::unique_ptr<LegacyCacheStorageCache> cache,
+                                 blink::mojom::CacheStorageError status);
   void CreateCacheDidWriteIndex(CacheAndErrorCallback callback,
                                 CacheStorageCacheHandle cache_handle,
                                 int64_t trace_id,
@@ -204,6 +224,7 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   void MatchCacheImpl(const std::string& cache_name,
                       blink::mojom::FetchAPIRequestPtr request,
                       blink::mojom::CacheQueryOptionsPtr match_options,
+                      CacheStorageSchedulerPriority priority,
                       int64_t trace_id,
                       CacheStorageCache::ResponseCallback callback);
   void MatchCacheDidMatch(CacheStorageCacheHandle cache_handle,
@@ -215,6 +236,7 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   // The MatchAllCaches callbacks are below.
   void MatchAllCachesImpl(blink::mojom::FetchAPIRequestPtr request,
                           blink::mojom::CacheQueryOptionsPtr match_options,
+                          CacheStorageSchedulerPriority priority,
                           int64_t trace_id,
                           CacheStorageCache::ResponseCallback callback);
   void MatchAllCachesDidMatch(CacheStorageCacheHandle cache_handle,
@@ -254,7 +276,11 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   bool InitiateScheduledIndexWriteForTest(
       base::OnceCallback<void(bool)> callback);
 
-  void CacheUnreferenced(LegacyCacheStorageCache* cache);
+  void FlushIndexIfDirty();
+
+#if defined(OS_ANDROID)
+  void OnApplicationStateChange(base::android::ApplicationState state);
+#endif
 
   // Whether or not we've loaded the list of cache names into memory.
   bool initialized_;
@@ -289,18 +315,31 @@ class CONTENT_EXPORT LegacyCacheStorage : public CacheStorage,
   // The quota manager.
   scoped_refptr<storage::QuotaManagerProxy> quota_manager_proxy_;
 
+  // An IO thread bound wrapper for storage.mojom.BlobStorageContext.
+  scoped_refptr<BlobStorageContextWrapper> blob_storage_context_;
+
   // The owner that this CacheStorage is associated with.
-  CacheStorageOwner owner_;
+  storage::mojom::CacheStorageOwner owner_;
+
+  CacheStorageSchedulerId init_id_ = -1;
 
   // The manager that owns this cache storage. Only set to null by
   // RemoveManager() when this cache storage is being deleted.
-  CacheStorageManager* cache_storage_manager_;
+  LegacyCacheStorageManager* cache_storage_manager_;
 
   base::CancelableOnceClosure index_write_task_;
   size_t handle_ref_count_ = 0;
 
+#if defined(OS_ANDROID)
+  std::unique_ptr<base::android::ApplicationStatusListener>
+      app_status_listener_;
+#endif
+
+  // True if running on android and the app is in the background.
+  bool app_on_background_ = false;
+
   SEQUENCE_CHECKER(sequence_checker_);
-  base::WeakPtrFactory<LegacyCacheStorage> weak_factory_;
+  base::WeakPtrFactory<LegacyCacheStorage> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LegacyCacheStorage);
 };

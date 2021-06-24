@@ -20,13 +20,15 @@
 
 #include "third_party/blink/renderer/core/svg/svg_circle_element.h"
 
+#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_ellipse.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_length.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
-inline SVGCircleElement::SVGCircleElement(Document& document)
+SVGCircleElement::SVGCircleElement(Document& document)
     : SVGGeometryElement(svg_names::kCircleTag, document),
       cx_(MakeGarbageCollected<SVGAnimatedLength>(
           this,
@@ -51,28 +53,24 @@ inline SVGCircleElement::SVGCircleElement(Document& document)
   AddToPropertyMap(r_);
 }
 
-void SVGCircleElement::Trace(blink::Visitor* visitor) {
+void SVGCircleElement::Trace(Visitor* visitor) const {
   visitor->Trace(cx_);
   visitor->Trace(cy_);
   visitor->Trace(r_);
   SVGGeometryElement::Trace(visitor);
 }
 
-DEFINE_NODE_FACTORY(SVGCircleElement)
-
 Path SVGCircleElement::AsPath() const {
   Path path;
 
   SVGLengthContext length_context(this);
-  DCHECK(GetLayoutObject());
-  const ComputedStyle& style = GetLayoutObject()->StyleRef();
-  const SVGComputedStyle& svg_style = style.SvgStyle();
+  const ComputedStyle& style = ComputedStyleRef();
 
-  float r = length_context.ValueForLength(svg_style.R(), style,
-                                          SVGLengthMode::kOther);
+  float r =
+      length_context.ValueForLength(style.R(), style, SVGLengthMode::kOther);
   if (r > 0) {
-    FloatPoint center(length_context.ResolveLengthPair(svg_style.Cx(),
-                                                       svg_style.Cy(), style));
+    FloatPoint center(
+        length_context.ResolveLengthPair(style.Cx(), style.Cy(), style));
     FloatSize radii(r, r);
     path.AddEllipse(FloatRect(center - radii, radii.ScaledBy(2)));
   }
@@ -99,7 +97,9 @@ void SVGCircleElement::CollectStyleForPresentationAttribute(
   }
 }
 
-void SVGCircleElement::SvgAttributeChanged(const QualifiedName& attr_name) {
+void SVGCircleElement::SvgAttributeChanged(
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   if (attr_name == svg_names::kRAttr || attr_name == svg_names::kCxAttr ||
       attr_name == svg_names::kCyAttr) {
     UpdateRelativeLengthsInformation();
@@ -107,7 +107,7 @@ void SVGCircleElement::SvgAttributeChanged(const QualifiedName& attr_name) {
     return;
   }
 
-  SVGGraphicsElement::SvgAttributeChanged(attr_name);
+  SVGGraphicsElement::SvgAttributeChanged(params);
 }
 
 bool SVGCircleElement::SelfHasRelativeLengths() const {

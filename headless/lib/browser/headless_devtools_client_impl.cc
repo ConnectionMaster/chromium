@@ -10,7 +10,6 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ptr_util.h"
-#include "base/task/post_task.h"
 #include "base/values.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -54,6 +53,7 @@ HeadlessDevToolsClientImpl::HeadlessDevToolsClientImpl()
       dom_snapshot_domain_(this),
       dom_storage_domain_(this),
       emulation_domain_(this),
+      fetch_domain_(this),
       headless_experimental_domain_(this),
       heap_profiler_domain_(this),
       indexeddb_domain_(this),
@@ -71,8 +71,7 @@ HeadlessDevToolsClientImpl::HeadlessDevToolsClientImpl()
       security_domain_(this),
       service_worker_domain_(this),
       target_domain_(this),
-      tracing_domain_(this),
-      weak_ptr_factory_(this) {}
+      tracing_domain_(this) {}
 
 HeadlessDevToolsClientImpl::~HeadlessDevToolsClientImpl() {
   if (parent_client_)
@@ -86,8 +85,7 @@ void HeadlessDevToolsClientImpl::AttachToExternalHost(
 }
 
 void HeadlessDevToolsClientImpl::InitBrowserMainThread() {
-  browser_main_thread_ = base::CreateSingleThreadTaskRunnerWithTraits(
-      {content::BrowserThread::UI});
+  browser_main_thread_ = content::GetUIThreadTaskRunner({});
 }
 
 void HeadlessDevToolsClientImpl::ChannelClosed() {
@@ -145,18 +143,20 @@ void HeadlessDevToolsClientImpl::SendRawDevToolsMessage(
 }
 
 void HeadlessDevToolsClientImpl::DispatchMessageFromExternalHost(
-    const std::string& json_message) {
+    base::span<const uint8_t> json_message) {
   DCHECK(external_host_);
   ReceiveProtocolMessage(json_message);
 }
 
 void HeadlessDevToolsClientImpl::ReceiveProtocolMessage(
-    const std::string& json_message) {
-  // LOG(ERROR) << "[RECV] " << json_message;
+    base::span<const uint8_t> json_message) {
+  base::StringPiece message_str(
+      reinterpret_cast<const char*>(json_message.data()), json_message.size());
+  // LOG(ERROR) << "[RECV] " << message_str;
   std::unique_ptr<base::Value> message =
-      base::JSONReader::ReadDeprecated(json_message, base::JSON_PARSE_RFC);
+      base::JSONReader::ReadDeprecated(message_str, base::JSON_PARSE_RFC);
   if (!message || !message->is_dict()) {
-    NOTREACHED() << "Badly formed reply " << json_message;
+    NOTREACHED() << "Badly formed reply " << message_str;
     return;
   }
   std::unique_ptr<base::DictionaryValue> message_dict =
@@ -174,11 +174,13 @@ void HeadlessDevToolsClientImpl::ReceiveProtocolMessage(
 }
 
 void HeadlessDevToolsClientImpl::ReceiveProtocolMessage(
-    const std::string& json_message,
+    base::span<const uint8_t> json_message,
     std::unique_ptr<base::DictionaryValue> message) {
+  base::StringPiece message_str(
+      reinterpret_cast<const char*>(json_message.data()), json_message.size());
   const base::DictionaryValue* message_dict;
   if (!message || !message->GetAsDictionary(&message_dict)) {
-    NOTREACHED() << "Badly formed reply " << json_message;
+    NOTREACHED() << "Badly formed reply " << message_str;
     return;
   }
 
@@ -193,7 +195,7 @@ void HeadlessDevToolsClientImpl::ReceiveProtocolMessage(
   else
     success = DispatchEvent(std::move(message), *message_dict);
   if (!success)
-    DLOG(ERROR) << "Unhandled protocol message: " << json_message;
+    DLOG(ERROR) << "Unhandled protocol message: " << message_str;
 }
 
 bool HeadlessDevToolsClientImpl::DispatchMessageReply(
@@ -226,6 +228,7 @@ bool HeadlessDevToolsClientImpl::DispatchMessageReply(
       }
     } else if (message_dict.GetDictionary("error", &result_dict)) {
       auto null_value = std::make_unique<base::Value>();
+      base::Value* null_value_ptr = null_value.get();
       DLOG(ERROR) << "Error in method call result: " << *result_dict;
       if (browser_main_thread_) {
         browser_main_thread_->PostTask(
@@ -233,7 +236,7 @@ bool HeadlessDevToolsClientImpl::DispatchMessageReply(
             base::BindOnce(
                 &HeadlessDevToolsClientImpl::DispatchMessageReplyWithResultTask,
                 weak_ptr_factory_.GetWeakPtr(), std::move(null_value),
-                std::move(callback.callback_with_result), null_value.get()));
+                std::move(callback.callback_with_result), null_value_ptr));
       } else {
         std::move(callback.callback_with_result).Run(*null_value);
       }
@@ -369,6 +372,10 @@ emulation::Domain* HeadlessDevToolsClientImpl::GetEmulation() {
   return &emulation_domain_;
 }
 
+fetch::Domain* HeadlessDevToolsClientImpl::GetFetch() {
+  return &fetch_domain_;
+}
+
 headless_experimental::Domain*
 HeadlessDevToolsClientImpl::GetHeadlessExperimental() {
   return &headless_experimental_domain_;
@@ -467,10 +474,11 @@ void HeadlessDevToolsClientImpl::SendProtocolMessage(
   std::string json_message;
   base::JSONWriter::Write(*message, &json_message);
   // LOG(ERROR) << "[SEND] " << json_message;
+  auto bytes_message = base::as_bytes(base::make_span(json_message));
   if (channel_)
-    channel_->SendProtocolMessage(json_message);
+    channel_->SendProtocolMessage(bytes_message);
   else
-    external_host_->SendProtocolMessage(json_message);
+    external_host_->SendProtocolMessage(bytes_message);
 }
 
 template <typename CallbackType>

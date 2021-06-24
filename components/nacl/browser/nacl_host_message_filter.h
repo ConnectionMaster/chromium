@@ -11,6 +11,7 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "components/nacl/browser/nacl_browser_delegate.h"
 #include "content/public/browser/browser_message_filter.h"
 #include "ppapi/shared_impl/ppapi_permissions.h"
 
@@ -35,6 +36,8 @@ class NaClHostMessageFilter : public content::BrowserMessageFilter {
   // content::BrowserMessageFilter methods:
   bool OnMessageReceived(const IPC::Message& message) override;
   void OnChannelClosing() override;
+  void OverrideThreadForMessage(const IPC::Message& message,
+                                content::BrowserThread::ID* thread) override;
 
   int render_process_id() { return render_process_id_; }
   bool off_the_record() { return off_the_record_; }
@@ -48,28 +51,33 @@ class NaClHostMessageFilter : public content::BrowserMessageFilter {
 
   void OnLaunchNaCl(const NaClLaunchParams& launch_params,
                     IPC::Message* reply_msg);
-  void BatchOpenResourceFiles(const nacl::NaClLaunchParams& launch_params,
-                              IPC::Message* reply_msg,
-                              ppapi::PpapiPermissions permissions);
+  void BatchOpenResourceFiles(
+      const nacl::NaClLaunchParams& launch_params,
+      IPC::Message* reply_msg,
+      ppapi::PpapiPermissions permissions,
+      bool nonsfi_mode_allowed,
+      NaClBrowserDelegate::MapUrlToLocalFilePathCallback map_url_callback);
   void LaunchNaClContinuation(
       const nacl::NaClLaunchParams& launch_params,
-      IPC::Message* reply_msg);
-  void LaunchNaClContinuationOnIOThread(
+      IPC::Message* reply_msg,
+      bool nonsfi_mode_allowed,
+      NaClBrowserDelegate::MapUrlToLocalFilePathCallback map_url_callback);
+  void LaunchNaClContinuationOnProcessThread(
       const nacl::NaClLaunchParams& launch_params,
       IPC::Message* reply_msg,
       const std::vector<NaClResourcePrefetchResult>& prefetched_resource_files,
-      ppapi::PpapiPermissions permissions);
+      ppapi::PpapiPermissions permissions,
+      bool nonsfi_mode_allowed,
+      NaClBrowserDelegate::MapUrlToLocalFilePathCallback map_url_callback);
   void OnGetReadonlyPnaclFd(const std::string& filename,
                             bool is_executable,
                             IPC::Message* reply_msg);
   void OnNaClCreateTemporaryFile(IPC::Message* reply_msg);
   void OnNaClGetNumProcessors(int* num_processors);
-  void OnGetNexeFd(int render_view_id,
-                   int pp_instance,
-                   const PnaclCacheInfo& cache_info);
+  void OnGetNexeFd(int pp_instance, const PnaclCacheInfo& cache_info);
   void OnTranslationFinished(int instance, bool success);
   void OnMissingArchError(int render_view_id);
-  void OnOpenNaClExecutable(int render_view_id,
+  void OnOpenNaClExecutable(int render_frame_id,
                             const GURL& file_url,
                             bool enable_validation_caching,
                             IPC::Message* reply_msg);
@@ -87,7 +95,7 @@ class NaClHostMessageFilter : public content::BrowserMessageFilter {
   bool off_the_record_;
   base::FilePath profile_directory_;
 
-  base::WeakPtrFactory<NaClHostMessageFilter> weak_ptr_factory_;
+  base::WeakPtrFactory<NaClHostMessageFilter> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(NaClHostMessageFilter);
 };

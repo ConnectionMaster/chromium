@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "device/fido/fido_authenticator.h"
 #include "device/fido/fido_constants.h"
 #include "device/fido/pin.h"
@@ -14,14 +14,15 @@
 namespace device {
 
 ResetRequestHandler::ResetRequestHandler(
-    service_manager::Connector* connector,
     const base::flat_set<FidoTransportProtocol>& supported_transports,
     ResetSentCallback reset_sent_callback,
-    FinishedCallback finished_callback)
-    : FidoRequestHandlerBase(connector, supported_transports),
+    FinishedCallback finished_callback,
+    std::unique_ptr<FidoDiscoveryFactory> fido_discovery_factory)
+    : FidoRequestHandlerBase(fido_discovery_factory.get(),
+                             supported_transports),
       reset_sent_callback_(std::move(reset_sent_callback)),
       finished_callback_(std::move(finished_callback)),
-      weak_factory_(this) {
+      fido_discovery_factory_(std::move(fido_discovery_factory)) {
   Start();
 }
 
@@ -47,7 +48,7 @@ void ResetRequestHandler::OnTouch(FidoAuthenticator* authenticator) {
   processed_touch_ = true;
   CancelActiveAuthenticators(authenticator->GetId());
 
-  if (authenticator->SupportedProtocol() != ProtocolVersion::kCtap) {
+  if (authenticator->SupportedProtocol() != ProtocolVersion::kCtap2) {
     std::move(finished_callback_)
         .Run(CtapDeviceResponseCode::kCtap1ErrInvalidCommand);
     return;
@@ -60,7 +61,7 @@ void ResetRequestHandler::OnTouch(FidoAuthenticator* authenticator) {
 
 void ResetRequestHandler::OnResetComplete(
     CtapDeviceResponseCode status,
-    base::Optional<pin::EmptyResponse> response) {
+    absl::optional<pin::EmptyResponse> response) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(my_sequence_checker_);
   DCHECK(processed_touch_);
 

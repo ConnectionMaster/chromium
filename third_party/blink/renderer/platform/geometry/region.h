@@ -26,10 +26,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GEOMETRY_REGION_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GEOMETRY_REGION_H_
 
+#include "base/dcheck_is_on.h"
 #include "cc/base/region.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace cc {
@@ -73,7 +74,11 @@ class PLATFORM_EXPORT Region {
 
   uint64_t Area() const;
 
-#ifndef NDEBUG
+  wtf_size_t Complexity() const {
+    return shape_.SpansSize() + shape_.SegmentsSize();
+  }
+
+#if DCHECK_IS_ON()
   void Dump() const;
 #endif
 
@@ -130,7 +135,7 @@ class PLATFORM_EXPORT Region {
     static bool CompareShapes(const Shape& shape1, const Shape& shape2);
     void TrimCapacities();
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
     void Dump() const;
 #endif
 

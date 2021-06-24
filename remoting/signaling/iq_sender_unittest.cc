@@ -4,14 +4,15 @@
 
 #include "remoting/signaling/iq_sender.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/mock_callback.h"
+#include "base/test/task_environment.h"
 #include "remoting/signaling/mock_signal_strategy.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -20,6 +21,7 @@
 
 using ::testing::_;
 using ::testing::DeleteArg;
+using ::testing::DoAll;
 using ::testing::InvokeWithoutArgs;
 using ::testing::NotNull;
 using ::testing::Return;
@@ -49,7 +51,7 @@ class IqSenderTest : public testing::Test {
  public:
   IqSenderTest() : signal_strategy_(SignalingAddress("local_jid@domain.com")) {
     EXPECT_CALL(signal_strategy_, AddListener(NotNull()));
-    sender_.reset(new IqSender(&signal_strategy_));
+    sender_ = std::make_unique<IqSender>(&signal_strategy_);
     EXPECT_CALL(signal_strategy_, RemoveListener(
         static_cast<SignalStrategy::Listener*>(sender_.get())));
   }
@@ -96,7 +98,7 @@ class IqSenderTest : public testing::Test {
     return result;
   }
 
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   MockSignalStrategy signal_strategy_;
   std::unique_ptr<IqSender> sender_;
   base::MockCallback<IqSender::ReplyCallback> callback_;

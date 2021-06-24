@@ -4,8 +4,10 @@
 
 #include "chromeos/components/multidevice/mojom/multidevice_mojom_traits.h"
 
-#include "base/logging.h"
+#include "base/notreached.h"
+#include "chromeos/components/multidevice/logging/logging.h"
 #include "chromeos/components/multidevice/remote_device_ref.h"
+#include "device/bluetooth/public/cpp/bluetooth_address.h"
 #include "mojo/public/cpp/base/time_mojom_traits.h"
 
 namespace mojo {
@@ -57,8 +59,15 @@ std::string StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
 const std::string&
 StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
              chromeos::multidevice::RemoteDevice>::
-    user_id(const chromeos::multidevice::RemoteDevice& remote_device) {
-  return remote_device.user_id;
+    user_email(const chromeos::multidevice::RemoteDevice& remote_device) {
+  return remote_device.user_email;
+}
+
+const std::string&
+StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
+             chromeos::multidevice::RemoteDevice>::
+    instance_id(const chromeos::multidevice::RemoteDevice& remote_device) {
+  return remote_device.instance_id;
 }
 
 const std::string&
@@ -106,6 +115,14 @@ StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
   return remote_device.beacon_seeds;
 }
 
+const std::string&
+StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
+             chromeos::multidevice::RemoteDevice>::
+    bluetooth_public_address(
+        const chromeos::multidevice::RemoteDevice& remote_device) {
+  return remote_device.bluetooth_public_address;
+}
+
 bool StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
                   chromeos::multidevice::RemoteDevice>::
     Read(chromeos::multidevice::mojom::RemoteDeviceDataView in,
@@ -113,18 +130,38 @@ bool StructTraits<chromeos::multidevice::mojom::RemoteDeviceDataView,
   std::string device_id;
   base::Time last_update_time;
 
-  if (!in.ReadUserId(&out->user_id) || !in.ReadDeviceName(&out->name) ||
+  if (!in.ReadUserEmail(&out->user_email) ||
+      !in.ReadInstanceId(&out->instance_id) || !in.ReadDeviceName(&out->name) ||
       !in.ReadPiiFreeDeviceName(&out->pii_free_name) ||
       !in.ReadDeviceId(&device_id) ||
       !in.ReadPersistentSymmetricKey(&out->persistent_symmetric_key) ||
       !in.ReadLastUpdateTime(&last_update_time) ||
       !in.ReadSoftwareFeatures(&out->software_features) ||
-      !in.ReadBeaconSeeds(&out->beacon_seeds)) {
+      !in.ReadBeaconSeeds(&out->beacon_seeds) ||
+      !in.ReadBluetoothPublicAddress(&out->bluetooth_public_address)) {
     return false;
   }
 
+  // Note: |bluetooth_public_address| may be empty if it has not been synced.
+  if (!out->bluetooth_public_address.empty()) {
+    std::string bluetooth_public_address_before_canonicalizing =
+        out->bluetooth_public_address;
+
+    // Canonicalize address, which capitalizes all hex digits. Note that if the
+    // input address is invalid, CanonicalizeAddress() returns an empty string.
+    out->bluetooth_public_address =
+        device::CanonicalizeBluetoothAddress(out->bluetooth_public_address);
+
+    if (out->bluetooth_public_address.empty()) {
+      PA_LOG(ERROR) << "Invalid bluetooth public address \""
+                    << bluetooth_public_address_before_canonicalizing
+                    << "\" for device with ID \"" << out->GetDeviceId()
+                    << "\"; clearing.";
+    }
+  }
+
   out->public_key =
-      chromeos::multidevice::RemoteDeviceRef::DerivePublicKey(device_id);
+      chromeos::multidevice::RemoteDevice::DerivePublicKey(device_id);
   out->last_update_time_millis = last_update_time.ToJavaTime();
 
   return true;
@@ -153,6 +190,18 @@ EnumTraits<chromeos::multidevice::mojom::SoftwareFeature,
       return chromeos::multidevice::mojom::SoftwareFeature::SMS_CONNECT_HOST;
     case chromeos::multidevice::SoftwareFeature::kMessagesForWebClient:
       return chromeos::multidevice::mojom::SoftwareFeature::SMS_CONNECT_CLIENT;
+    case chromeos::multidevice::SoftwareFeature::kPhoneHubHost:
+      return chromeos::multidevice::mojom::SoftwareFeature::PHONE_HUB_HOST;
+    case chromeos::multidevice::SoftwareFeature::kPhoneHubClient:
+      return chromeos::multidevice::mojom::SoftwareFeature::PHONE_HUB_CLIENT;
+    case chromeos::multidevice::SoftwareFeature::kWifiSyncHost:
+      return chromeos::multidevice::mojom::SoftwareFeature::WIFI_SYNC_HOST;
+    case chromeos::multidevice::SoftwareFeature::kWifiSyncClient:
+      return chromeos::multidevice::mojom::SoftwareFeature::WIFI_SYNC_CLIENT;
+    case chromeos::multidevice::SoftwareFeature::kEcheHost:
+      return chromeos::multidevice::mojom::SoftwareFeature::ECHE_HOST;
+    case chromeos::multidevice::SoftwareFeature::kEcheClient:
+      return chromeos::multidevice::mojom::SoftwareFeature::ECHE_CLIENT;
   }
 
   NOTREACHED();
@@ -187,6 +236,24 @@ bool EnumTraits<chromeos::multidevice::mojom::SoftwareFeature,
       return true;
     case chromeos::multidevice::mojom::SoftwareFeature::SMS_CONNECT_CLIENT:
       *out = chromeos::multidevice::SoftwareFeature::kMessagesForWebClient;
+      return true;
+    case chromeos::multidevice::mojom::SoftwareFeature::PHONE_HUB_HOST:
+      *out = chromeos::multidevice::SoftwareFeature::kPhoneHubHost;
+      return true;
+    case chromeos::multidevice::mojom::SoftwareFeature::PHONE_HUB_CLIENT:
+      *out = chromeos::multidevice::SoftwareFeature::kPhoneHubClient;
+      return true;
+    case chromeos::multidevice::mojom::SoftwareFeature::WIFI_SYNC_HOST:
+      *out = chromeos::multidevice::SoftwareFeature::kWifiSyncHost;
+      return true;
+    case chromeos::multidevice::mojom::SoftwareFeature::WIFI_SYNC_CLIENT:
+      *out = chromeos::multidevice::SoftwareFeature::kWifiSyncClient;
+      return true;
+    case chromeos::multidevice::mojom::SoftwareFeature::ECHE_HOST:
+      *out = chromeos::multidevice::SoftwareFeature::kEcheHost;
+      return true;
+    case chromeos::multidevice::mojom::SoftwareFeature::ECHE_CLIENT:
+      *out = chromeos::multidevice::SoftwareFeature::kEcheClient;
       return true;
   }
 

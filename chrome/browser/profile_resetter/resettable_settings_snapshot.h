@@ -84,13 +84,12 @@ class ResettableSettingsSnapshot {
 
   // Collects the shortcuts asynchronously and calls |callback|. If the request
   // has been made already, noop.
-  void RequestShortcuts(const base::Closure& callback);
+  void RequestShortcuts(base::OnceClosure callback);
 
  private:
   // Fills the |shortcuts_| member and calls |callback|.
-  void SetShortcutsAndReport(
-      const base::Closure& callback,
-      const std::vector<ShortcutCommand>& shortcuts);
+  void SetShortcutsAndReport(base::OnceClosure callback,
+                             const std::vector<ShortcutCommand>& shortcuts);
 
   // Every ResettableSettingsSnapshot instance gets a randomly created GUID.
   std::string guid_;
@@ -118,7 +117,7 @@ class ResettableSettingsSnapshot {
   // The flag to cancel shortcuts retrieving.
   scoped_refptr<SharedCancellationFlag> cancellation_flag_;
 
-  base::WeakPtrFactory<ResettableSettingsSnapshot> weak_ptr_factory_;
+  base::WeakPtrFactory<ResettableSettingsSnapshot> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ResettableSettingsSnapshot);
 };

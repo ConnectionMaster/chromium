@@ -6,8 +6,9 @@
 
 #include <stdint.h>
 
+#include <string>
+
 #include "base/i18n/case_conversion.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "content/browser/accessibility/browser_accessibility.h"
 #include "content/browser/accessibility/browser_accessibility_manager.h"
@@ -20,19 +21,17 @@ namespace content {
 // Given a node, populate a vector with all of the strings from that node's
 // attributes that might be relevant for a text search.
 void GetNodeStrings(BrowserAccessibility* node,
-                    std::vector<base::string16>* strings) {
-  if (node->HasStringAttribute(ax::mojom::StringAttribute::kName))
-    strings->push_back(
-        node->GetString16Attribute(ax::mojom::StringAttribute::kName));
-  if (node->HasStringAttribute(ax::mojom::StringAttribute::kDescription))
-    strings->push_back(
-        node->GetString16Attribute(ax::mojom::StringAttribute::kDescription));
-  if (node->HasStringAttribute(ax::mojom::StringAttribute::kValue))
-    strings->push_back(
-        node->GetString16Attribute(ax::mojom::StringAttribute::kValue));
-  if (node->HasStringAttribute(ax::mojom::StringAttribute::kPlaceholder))
-    strings->push_back(
-        node->GetString16Attribute(ax::mojom::StringAttribute::kPlaceholder));
+                    std::vector<std::u16string>* strings) {
+  std::u16string value;
+  if (node->GetString16Attribute(ax::mojom::StringAttribute::kName, &value))
+    strings->push_back(value);
+  if (node->GetString16Attribute(ax::mojom::StringAttribute::kDescription,
+                                 &value)) {
+    strings->push_back(value);
+  }
+  value = node->GetValueForControl();
+  if (!value.empty())
+    strings->push_back(value);
 }
 
 OneShotAccessibilityTreeSearch::OneShotAccessibilityTreeSearch(
@@ -44,7 +43,7 @@ OneShotAccessibilityTreeSearch::OneShotAccessibilityTreeSearch(
       result_limit_(UNLIMITED_RESULTS),
       immediate_descendants_only_(false),
       can_wrap_to_last_element_(false),
-      visible_only_(false),
+      onscreen_only_(false),
       did_search_(false) {}
 
 OneShotAccessibilityTreeSearch::~OneShotAccessibilityTreeSearch() {}
@@ -82,9 +81,9 @@ void OneShotAccessibilityTreeSearch::SetCanWrapToLastElement(
   can_wrap_to_last_element_ = can_wrap_to_last_element;
 }
 
-void OneShotAccessibilityTreeSearch::SetVisibleOnly(bool visible_only) {
+void OneShotAccessibilityTreeSearch::SetOnscreenOnly(bool onscreen_only) {
   DCHECK(!did_search_);
-  visible_only_ = visible_only;
+  onscreen_only_ = onscreen_only;
 }
 
 void OneShotAccessibilityTreeSearch::SetSearchText(const std::string& text) {
@@ -177,34 +176,48 @@ void OneShotAccessibilityTreeSearch::SearchByWalkingTree() {
     if (Matches(node))
       matches_.push_back(node);
 
-    if (direction_ == FORWARDS)
+    if (direction_ == FORWARDS) {
       node = tree_->NextInTreeOrder(node);
-    else
+    } else {
+      // This needs to be handled carefully. If not, there is a chance of
+      // getting into infinite loop.
+      if (can_wrap_to_last_element_ && !stop_node &&
+          node->manager()->GetRoot() == node) {
+        stop_node = node;
+      }
       node = tree_->PreviousInTreeOrder(node, can_wrap_to_last_element_);
+    }
   }
 }
 
 bool OneShotAccessibilityTreeSearch::Matches(BrowserAccessibility* node) {
-  for (size_t i = 0; i < predicates_.size(); ++i) {
-    if (!predicates_[i](start_node_, node))
+  if (!predicates_.empty()) {
+    bool found_predicate_match = false;
+    for (auto predicate : predicates_) {
+      if (predicate(start_node_, node)) {
+        found_predicate_match = true;
+        break;
+      }
+    }
+    if (!found_predicate_match)
       return false;
   }
 
-  if (visible_only_) {
-    if (node->HasState(ax::mojom::State::kInvisible) || node->IsOffscreen()) {
-      return false;
-    }
-  }
+  if (node->IsInvisibleOrIgnored())
+    return false;  // Programmatically hidden, e.g. aria-hidden or via CSS.
+
+  if (onscreen_only_ && node->IsOffscreen())
+    return false;  // Partly scrolled offscreen.
 
   if (!search_text_.empty()) {
-    base::string16 search_text_lower =
+    std::u16string search_text_lower =
         base::i18n::ToLower(base::UTF8ToUTF16(search_text_));
-    std::vector<base::string16> node_strings;
+    std::vector<std::u16string> node_strings;
     GetNodeStrings(node, &node_strings);
     bool found_text_match = false;
-    for (size_t i = 0; i < node_strings.size(); ++i) {
-      base::string16 node_string_lower = base::i18n::ToLower(node_strings[i]);
-      if (node_string_lower.find(search_text_lower) != base::string16::npos) {
+    for (auto node_string : node_strings) {
+      std::u16string node_string_lower = base::i18n::ToLower(node_string);
+      if (node_string_lower.find(search_text_lower) != std::u16string::npos) {
         found_text_match = true;
         break;
       }
@@ -229,7 +242,6 @@ bool AccessibilityButtonPredicate(BrowserAccessibility* start,
                                   BrowserAccessibility* node) {
   switch (node->GetRole()) {
     case ax::mojom::Role::kButton:
-    case ax::mojom::Role::kMenuButton:
     case ax::mojom::Role::kPopUpButton:
     case ax::mojom::Role::kSwitch:
     case ax::mojom::Role::kToggleButton:
@@ -266,8 +278,7 @@ bool AccessibilityControlPredicate(BrowserAccessibility* start,
       node->GetRole() != ax::mojom::Role::kIframe &&
       node->GetRole() != ax::mojom::Role::kIframePresentational &&
       !ui::IsLink(node->GetRole()) &&
-      node->GetRole() != ax::mojom::Role::kWebArea &&
-      node->GetRole() != ax::mojom::Role::kRootWebArea) {
+      !ui::IsPlatformDocument(node->GetRole())) {
     return true;
   }
   return false;
@@ -276,18 +287,14 @@ bool AccessibilityControlPredicate(BrowserAccessibility* start,
 bool AccessibilityFocusablePredicate(BrowserAccessibility* start,
                                      BrowserAccessibility* node) {
   bool focusable = node->HasState(ax::mojom::State::kFocusable);
-  if (node->GetRole() == ax::mojom::Role::kIframe ||
-      node->GetRole() == ax::mojom::Role::kIframePresentational ||
-      node->GetRole() == ax::mojom::Role::kWebArea ||
-      node->GetRole() == ax::mojom::Role::kRootWebArea) {
+  if (ui::IsIframe(node->GetRole()) || node->IsPlatformDocument())
     focusable = false;
-  }
   return focusable;
 }
 
 bool AccessibilityGraphicPredicate(BrowserAccessibility* start,
                                    BrowserAccessibility* node) {
-  return ui::IsImage(node->GetRole());
+  return ui::IsImageOrVideo(node->GetRole());
 }
 
 bool AccessibilityHeadingPredicate(BrowserAccessibility* start,
@@ -352,8 +359,7 @@ bool AccessibilityFramePredicate(BrowserAccessibility* start,
     return false;
   if (!node->PlatformGetParent())
     return false;
-  return (node->GetRole() == ax::mojom::Role::kWebArea ||
-          node->GetRole() == ax::mojom::Role::kRootWebArea);
+  return ui::IsPlatformDocument(node->GetRole());
 }
 
 bool AccessibilityLandmarkPredicate(BrowserAccessibility* start,
@@ -366,8 +372,9 @@ bool AccessibilityLandmarkPredicate(BrowserAccessibility* start,
     case ax::mojom::Role::kContentInfo:
     case ax::mojom::Role::kMain:
     case ax::mojom::Role::kNavigation:
-    case ax::mojom::Role::kSearch:
     case ax::mojom::Role::kRegion:
+    case ax::mojom::Role::kSearch:
+    case ax::mojom::Role::kSection:
       return true;
     default:
       return false;
@@ -424,7 +431,7 @@ bool AccessibilityTablePredicate(BrowserAccessibility* start,
 
 bool AccessibilityTextfieldPredicate(BrowserAccessibility* start,
                                      BrowserAccessibility* node) {
-  return (node->IsPlainTextField() || node->IsRichTextField());
+  return node->IsTextField();
 }
 
 bool AccessibilityTextStyleBoldPredicate(BrowserAccessibility* start,
@@ -444,7 +451,7 @@ bool AccessibilityTextStyleUnderlinePredicate(BrowserAccessibility* start,
 
 bool AccessibilityTreePredicate(BrowserAccessibility* start,
                                 BrowserAccessibility* node) {
-  return (node->IsPlainTextField() || node->IsRichTextField());
+  return node->IsTextField();
 }
 
 bool AccessibilityUnvisitedLinkPredicate(BrowserAccessibility* start,

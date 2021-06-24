@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "remoting/host/input_monitor/local_mouse_input_monitor.h"
+#include "remoting/host/input_monitor/local_pointer_input_monitor.h"
 
 #import <AppKit/AppKit.h>
 
@@ -23,7 +23,8 @@
 namespace remoting {
 namespace {
 
-class LocalMouseInputMonitorMac : public LocalMouseInputMonitor {
+// Note that this class does not detect touch input and so is named accordingly.
+class LocalMouseInputMonitorMac : public LocalPointerInputMonitor {
  public:
   // Invoked by LocalInputMonitorManager.
   class EventHandler {
@@ -36,7 +37,7 @@ class LocalMouseInputMonitorMac : public LocalMouseInputMonitor {
   LocalMouseInputMonitorMac(
       scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      LocalInputMonitor::MouseMoveCallback on_mouse_move);
+      LocalInputMonitor::PointerMoveCallback on_mouse_move);
   ~LocalMouseInputMonitorMac() override;
 
  private:
@@ -54,12 +55,12 @@ class LocalMouseInputMonitorMac : public LocalMouseInputMonitor {
 
 @interface LocalInputMonitorManager : NSObject {
  @private
-  CFRunLoopSourceRef mouseRunLoopSource_;
-  base::ScopedCFTypeRef<CFMachPortRef> mouseMachPort_;
-  remoting::LocalMouseInputMonitorMac::EventHandler* monitor_;
+  CFRunLoopSourceRef _mouseRunLoopSource;
+  base::ScopedCFTypeRef<CFMachPortRef> _mouseMachPort;
+  remoting::LocalMouseInputMonitorMac::EventHandler* _monitor;
 }
 
-- (id)initWithMonitor:
+- (instancetype)initWithMonitor:
     (remoting::LocalMouseInputMonitorMac::EventHandler*)monitor;
 
 // Called when the local mouse moves
@@ -86,18 +87,18 @@ static CGEventRef LocalMouseMoved(CGEventTapProxy proxy,
 
 @implementation LocalInputMonitorManager
 
-- (id)initWithMonitor:
+- (instancetype)initWithMonitor:
     (remoting::LocalMouseInputMonitorMac::EventHandler*)monitor {
   if ((self = [super init])) {
-    monitor_ = monitor;
+    _monitor = monitor;
 
-    mouseMachPort_.reset(CGEventTapCreate(
+    _mouseMachPort.reset(CGEventTapCreate(
         kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly,
         1 << kCGEventMouseMoved, LocalMouseMoved, self));
-    if (mouseMachPort_) {
-      mouseRunLoopSource_ =
-          CFMachPortCreateRunLoopSource(nullptr, mouseMachPort_, 0);
-      CFRunLoopAddSource(CFRunLoopGetMain(), mouseRunLoopSource_,
+    if (_mouseMachPort) {
+      _mouseRunLoopSource =
+          CFMachPortCreateRunLoopSource(nullptr, _mouseMachPort, 0);
+      CFRunLoopAddSource(CFRunLoopGetMain(), _mouseRunLoopSource,
                          kCFRunLoopCommonModes);
     } else {
       LOG(ERROR) << "CGEventTapCreate failed.";
@@ -109,17 +110,17 @@ static CGEventRef LocalMouseMoved(CGEventTapProxy proxy,
 }
 
 - (void)localMouseMoved:(const webrtc::DesktopVector&)mousePos {
-  monitor_->OnLocalMouseMoved(mousePos);
+  _monitor->OnLocalMouseMoved(mousePos);
 }
 
 - (void)invalidate {
-  if (mouseRunLoopSource_) {
-    CFMachPortInvalidate(mouseMachPort_);
-    CFRunLoopRemoveSource(CFRunLoopGetMain(), mouseRunLoopSource_,
+  if (_mouseRunLoopSource) {
+    CFMachPortInvalidate(_mouseMachPort);
+    CFRunLoopRemoveSource(CFRunLoopGetMain(), _mouseRunLoopSource,
                           kCFRunLoopCommonModes);
-    CFRelease(mouseRunLoopSource_);
-    mouseMachPort_.reset(0);
-    mouseRunLoopSource_ = nullptr;
+    CFRelease(_mouseRunLoopSource);
+    _mouseMachPort.reset(0);
+    _mouseRunLoopSource = nullptr;
   }
 }
 
@@ -133,7 +134,7 @@ class LocalMouseInputMonitorMac::Core : public base::RefCountedThreadSafe<Core>,
  public:
   Core(scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
        scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-       LocalInputMonitor::MouseMoveCallback on_mouse_move);
+       LocalInputMonitor::PointerMoveCallback on_mouse_move);
 
   void Start();
   void Stop();
@@ -157,7 +158,7 @@ class LocalMouseInputMonitorMac::Core : public base::RefCountedThreadSafe<Core>,
   LocalInputMonitorManager* manager_;
 
   // Invoked in the |caller_task_runner_| thread to report local mouse events.
-  LocalInputMonitor::MouseMoveCallback on_mouse_move_;
+  LocalInputMonitor::PointerMoveCallback on_mouse_move_;
 
   webrtc::DesktopVector mouse_position_;
 
@@ -167,7 +168,7 @@ class LocalMouseInputMonitorMac::Core : public base::RefCountedThreadSafe<Core>,
 LocalMouseInputMonitorMac::LocalMouseInputMonitorMac(
     scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    LocalInputMonitor::MouseMoveCallback on_mouse_move)
+    LocalInputMonitor::PointerMoveCallback on_mouse_move)
     : core_(new Core(caller_task_runner,
                      ui_task_runner,
                      std::move(on_mouse_move))) {
@@ -182,7 +183,7 @@ LocalMouseInputMonitorMac::~LocalMouseInputMonitorMac() {
 LocalMouseInputMonitorMac::Core::Core(
     scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    LocalInputMonitor::MouseMoveCallback on_mouse_move)
+    LocalInputMonitor::PointerMoveCallback on_mouse_move)
     : caller_task_runner_(caller_task_runner),
       ui_task_runner_(ui_task_runner),
       manager_(nil),
@@ -231,17 +232,17 @@ void LocalMouseInputMonitorMac::Core::OnLocalMouseMoved(
 
   mouse_position_ = position;
 
-  caller_task_runner_->PostTask(FROM_HERE,
-                                base::BindOnce(on_mouse_move_, position));
+  caller_task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(on_mouse_move_, position, ui::ET_MOUSE_MOVED));
 }
 
 }  // namespace
 
-std::unique_ptr<LocalMouseInputMonitor> LocalMouseInputMonitor::Create(
+std::unique_ptr<LocalPointerInputMonitor> LocalPointerInputMonitor::Create(
     scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    LocalInputMonitor::MouseMoveCallback on_mouse_move,
+    LocalInputMonitor::PointerMoveCallback on_mouse_move,
     base::OnceClosure disconnect_callback) {
   return std::make_unique<LocalMouseInputMonitorMac>(
       caller_task_runner, ui_task_runner, std::move(on_mouse_move));

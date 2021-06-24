@@ -4,56 +4,37 @@
 
 package org.chromium.chrome.browser.autofill_assistant;
 
-import android.app.PendingIntent;
+import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.support.annotation.Nullable;
+import android.text.TextUtils;
+
+import androidx.annotation.Nullable;
 
 import org.chromium.base.Callback;
+import org.chromium.base.Function;
+import org.chromium.base.Log;
 import org.chromium.chrome.browser.ActivityTabProvider;
-import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.autofill_assistant.metrics.DropOutReason;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.compositor.CompositorViewHolder;
+import org.chromium.chrome.browser.directactions.DirectActionHandler;
+import org.chromium.chrome.browser.flags.ActivityType;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.metrics.UmaSessionStats;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.util.IntentUtils;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.external_intents.ExternalNavigationDelegate.IntentToAutofillAllowingAppResult;
 
-import java.net.URLDecoder;
-import java.util.HashMap;
-import java.util.Map;
-
-/** Facade for starting Autofill Assistant on a custom tab. */
+/** Facade for starting Autofill Assistant on a tab. */
 public class AutofillAssistantFacade {
-    /**
-     * Prefix for Intent extras relevant to this feature.
-     *
-     * <p>Intent starting with this prefix are reported to the controller as parameters, except for
-     * the ones starting with {@code INTENT_SPECIAL_PREFIX}.
-     */
-    private static final String INTENT_EXTRA_PREFIX =
-            "org.chromium.chrome.browser.autofill_assistant.";
-
-    /** Prefix for intent extras which are not parameters. */
-    private static final String INTENT_SPECIAL_PREFIX = INTENT_EXTRA_PREFIX + "special.";
-
-    /** Special parameter that enables the feature. */
-    private static final String PARAMETER_ENABLED = "ENABLED";
-
-    /**
-     * Boolean parameter that trusted apps can use to declare that the user has agreed to Terms and
-     * Conditions that cover the use of Autofill Assistant in Chrome for that specific invocation.
-     */
-    private static final String AGREED_TO_TC = "AGREED_TO_TC";
-
-    /** Pending intent sent by first-party apps. */
-    private static final String PENDING_INTENT_NAME = INTENT_SPECIAL_PREFIX + "PENDING_INTENT";
-
-    /** Intent extra name for csv list of experiment ids. */
-    private static final String EXPERIMENT_IDS_NAME = INTENT_SPECIAL_PREFIX + "EXPERIMENT_IDS";
-
-    /** Package names of trusted first-party apps, from the pending intent. */
-    private static final String[] TRUSTED_CALLER_PACKAGES = {
-            "com.google.android.googlequicksearchbox", // GSA
-    };
+    /** Used for logging. */
+    private static final String TAG = "AutofillAssistant";
 
     /**
      * Synthetic field trial names and group names should match those specified in
@@ -61,127 +42,174 @@ public class AutofillAssistantFacade {
      * .../variations/generate_server_hashes.py and
      * .../website/components/variations_dash/variations_histogram_entry.js.
      */
-    private static final String SYNTHETIC_TRIAL = "AutofillAssistantTriggered";
+    private static final String TRIGGERED_SYNTHETIC_TRIAL = "AutofillAssistantTriggered";
     private static final String ENABLED_GROUP = "Enabled";
 
+    private static final String EXPERIMENTS_SYNTHETIC_TRIAL = "AutofillAssistantExperimentsTrial";
+
     /** Returns true if conditions are satisfied to attempt to start Autofill Assistant. */
-    public static boolean isConfigured(@Nullable Bundle intentExtras) {
-        return getBooleanParameter(intentExtras, PARAMETER_ENABLED);
+    private static boolean isConfigured(TriggerContext arguments) {
+        return arguments.isEnabled();
     }
 
-    /** Starts Autofill Assistant on the given {@code activity}. */
+    /**
+     * Starts Autofill Assistant.
+     * @param activity {@link ChromeActivity} the activity on which the Autofill Assistant is being
+     *         started. This must be a launch activity holding the correct intent for starting.
+     */
     public static void start(ChromeActivity activity) {
+        start(activity,
+                TriggerContext.newBuilder()
+                        .fromBundle(activity.getInitialIntent().getExtras())
+                        .withInitialUrl(activity.getInitialIntent().getDataString())
+                        .build());
+    }
+
+    /**
+     * Starts Autofill Assistant.
+     * @param activity {@link Activity} the activity on which the Autofill Assistant is being
+     *         started.
+     * @param bundleExtras {@link Bundle} the extras which were used to start the Autofill
+     *         Assistant.
+     * @param initialUrl the initial URL the Autofill Assistant should be started on.
+     */
+    public static void start(Activity activity, @Nullable Bundle bundleExtras, String initialUrl) {
+        // TODO(crbug.com/1155809): Remove ChromeActivity reference.
+        assert activity instanceof ChromeActivity;
+        ChromeActivity chromeActivity = (ChromeActivity) activity;
+        start(chromeActivity,
+                TriggerContext.newBuilder()
+                        .fromBundle(bundleExtras)
+                        .withInitialUrl(initialUrl)
+                        .build());
+    }
+
+    /**
+     * Starts Autofill Assistant.
+     * @param activity {@link Activity} the activity on which the Autofill Assistant is being
+     *         started.
+     * @param triggerContext {@link TriggerContext} the trigger context, containing startup
+     *         parameters and information.
+     */
+    public static void start(@Nullable Activity activity, TriggerContext triggerContext) {
+        if (!(activity instanceof ChromeActivity)) {
+            Log.v(TAG, "Failed to retrieve ChromeActivity.");
+            return;
+        }
         // Register synthetic trial as soon as possible.
-        UmaSessionStats.registerSyntheticFieldTrial(SYNTHETIC_TRIAL, ENABLED_GROUP);
+        UmaSessionStats.registerSyntheticFieldTrial(TRIGGERED_SYNTHETIC_TRIAL, ENABLED_GROUP);
+        // Synthetic trial for experiments.
+        String experimentIds = triggerContext.getExperimentIds();
+        if (!experimentIds.isEmpty()) {
+            for (String experimentId : experimentIds.split(",")) {
+                UmaSessionStats.registerSyntheticFieldTrial(
+                        EXPERIMENTS_SYNTHETIC_TRIAL, experimentId);
+            }
+        }
+
+        String intent = triggerContext.getParameters().get("INTENT");
         // Have an "attempted starts" baseline for the drop out histogram.
-        AutofillAssistantMetrics.recordDropOut(DropOutReason.AA_START);
-        if (canStart(activity.getInitialIntent())) {
-            getTab(activity, tab -> startNow(activity, tab));
-            return;
-        }
-
-        if (AutofillAssistantPreferencesUtil.getShowOnboarding()) {
-            getTab(activity, tab -> {
-                AutofillAssistantClient client =
-                        AutofillAssistantClient.fromWebContents(tab.getWebContents());
-                client.showOnboarding(() -> startNow(activity, tab));
-            });
-            return;
-        }
+        AutofillAssistantMetrics.recordDropOut(DropOutReason.AA_START, intent);
+        waitForTab((ChromeActivity) activity,
+                tab -> { AutofillAssistantTabHelper.get(tab).start(triggerContext); });
     }
 
-    private static void startNow(ChromeActivity activity, Tab tab) {
-        Bundle bundleExtras = activity.getInitialIntent().getExtras();
-        Map<String, String> parameters = extractParameters(bundleExtras);
-        parameters.remove(PARAMETER_ENABLED);
-        String initialUrl = activity.getInitialIntent().getDataString();
-
-        AutofillAssistantClient client =
-                AutofillAssistantClient.fromWebContents(tab.getWebContents());
-
-        String experimentIds = null;
-        if (bundleExtras != null) {
-            experimentIds = IntentUtils.safeGetString(bundleExtras, EXPERIMENT_IDS_NAME);
-        }
-        client.start(
-                initialUrl, parameters, experimentIds, activity.getInitialIntent().getExtras());
+    /**
+     * Asks the feature module to create a container with the required dependencies.
+     * TODO(b/173103628): move this out of the facade once we inject our dependencies in a better
+     * way.
+     */
+    public static AssistantDependencies createDependencies(
+            Activity activity, AutofillAssistantModuleEntry module) {
+        assert activity instanceof ChromeActivity;
+        ChromeActivity chromeActivity = (ChromeActivity) activity;
+        return module.createDependencies(
+                BottomSheetControllerProvider.from(chromeActivity.getWindowAndroid()),
+                chromeActivity.getBrowserControlsManager(),
+                chromeActivity.getCompositorViewHolder(), chromeActivity,
+                chromeActivity.getCurrentWebContents(),
+                chromeActivity.getWindowAndroid().getKeyboardDelegate(),
+                chromeActivity.getWindowAndroid().getApplicationBottomInsetProvider(),
+                chromeActivity.getActivityTabProvider());
     }
 
-    private static void getTab(ChromeActivity activity, Callback<Tab> callback) {
-        if (activity.getActivityTab() != null
-                && activity.getActivityTab().getWebContents() != null) {
+    /**
+     * Checks whether direct actions provided by Autofill Assistant should be available - assuming
+     * that direct actions are available at all.
+     */
+    public static boolean areDirectActionsAvailable(@ActivityType int activityType) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                && (activityType == ActivityType.CUSTOM_TAB || activityType == ActivityType.TABBED)
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_ASSISTANT_DIRECT_ACTIONS)
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_ASSISTANT);
+    }
+
+    /**
+     * Returns a {@link DirectActionHandler} for making dynamic actions available under Android Q.
+     *
+     * <p>This should only be called if {@link #areDirectActionsAvailable} returns true. This method
+     * can also return null if autofill assistant is not available for some other reasons.
+     */
+    public static DirectActionHandler createDirectActionHandler(Context context,
+            BottomSheetController bottomSheetController,
+            BrowserControlsStateProvider browserControls, CompositorViewHolder compositorViewHolder,
+            ActivityTabProvider activityTabProvider) {
+        return new AutofillAssistantDirectActionHandler(context, bottomSheetController,
+                browserControls, compositorViewHolder, activityTabProvider,
+                AutofillAssistantModuleEntryProvider.INSTANCE);
+    }
+
+    /** Provides the callback with a tab, waits if necessary. */
+    private static void waitForTab(ChromeActivity activity, Callback<Tab> callback) {
+        if (activity.getActivityTab() != null) {
             callback.onResult(activity.getActivityTab());
             return;
         }
 
         // The tab is not yet available. We need to register as listener and wait for it.
-        activity.getActivityTabProvider().addObserverAndTrigger(
-                new ActivityTabProvider.HintlessActivityTabObserver() {
-                    @Override
-                    public void onActivityTabChanged(Tab tab) {
-                        if (tab == null) return;
-                        activity.getActivityTabProvider().removeObserver(this);
-                        assert tab.getWebContents() != null;
-                        callback.onResult(tab);
-                    }
-                });
-    }
-
-    /** Return the value if the given boolean parameter from the extras. */
-    private static boolean getBooleanParameter(@Nullable Bundle extras, String parameterName) {
-        return extras != null
-                && IntentUtils.safeGetBoolean(extras, INTENT_EXTRA_PREFIX + parameterName, false);
-    }
-
-    /** Returns a map containing the extras starting with {@link #INTENT_EXTRA_PREFIX}. */
-    private static Map<String, String> extractParameters(@Nullable Bundle extras) {
-        Map<String, String> result = new HashMap<>();
-        if (extras != null) {
-            for (String key : extras.keySet()) {
-                try {
-                    if (key.startsWith(INTENT_EXTRA_PREFIX)
-                            && !key.startsWith(INTENT_SPECIAL_PREFIX)) {
-                        result.put(key.substring(INTENT_EXTRA_PREFIX.length()),
-                                URLDecoder.decode(extras.get(key).toString(), "UTF-8"));
-                    }
-                } catch (java.io.UnsupportedEncodingException e) {
-                    throw new IllegalStateException("UTF-8 encoding not available.", e);
-                }
+        activity.getActivityTabProvider().addObserver(new Callback<Tab>() {
+            @Override
+            public void onResult(Tab tab) {
+                if (tab == null) return;
+                activity.getActivityTabProvider().removeObserver(this);
+                assert tab.getWebContents() != null;
+                callback.onResult(tab);
             }
-        }
-        return result;
+        });
     }
 
-    /** Returns {@code true} if we can start right away. */
-    private static boolean canStart(Intent intent) {
-        return (AutofillAssistantPreferencesUtil.isAutofillAssistantSwitchOn()
-                       && !AutofillAssistantPreferencesUtil.getShowOnboarding())
-                || hasAgreedToTc(intent);
+    public static boolean isAutofillAssistantEnabled(Intent intent) {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_ASSISTANT)
+                && AutofillAssistantFacade.isConfigured(
+                        TriggerContext.newBuilder().fromBundle(intent.getExtras()).build());
     }
 
-    /**
-     * Returns {@code true} if the user has already agreed to specific terms and conditions for the
-     * current task, that cover the use of autofill assistant. There's no need to show the generic
-     * first-time screen for that call.
-     */
-    private static boolean hasAgreedToTc(Intent intent) {
-        return getBooleanParameter(intent.getExtras(), AGREED_TO_TC)
-                && callerIsOnWhitelist(intent, TRUSTED_CALLER_PACKAGES);
+    public static boolean isAutofillAssistantByIntentTriggeringEnabled(Intent intent) {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_ASSISTANT_CHROME_ENTRY)
+                && AutofillAssistantFacade.isAutofillAssistantEnabled(intent);
     }
 
-    /** Returns {@code true} if the caller is on the given whitelist. */
-    private static boolean callerIsOnWhitelist(Intent intent, String[] whitelist) {
-        PendingIntent pendingIntent =
-                IntentUtils.safeGetParcelableExtra(intent, PENDING_INTENT_NAME);
-        if (pendingIntent == null) {
-            return false;
+    public static @IntentToAutofillAllowingAppResult int shouldAllowOverrideWithApp(
+            Intent intent, Function<Intent, Boolean> canExternalAppHandleIntent) {
+        TriggerContext triggerContext =
+                TriggerContext.newBuilder().fromBundle(intent.getExtras()).build();
+        if (!triggerContext.allowAppOverride()) {
+            return IntentToAutofillAllowingAppResult.NONE;
         }
-        String packageName = pendingIntent.getCreatorPackage();
-        for (String whitelistedPackage : whitelist) {
-            if (whitelistedPackage.equals(packageName)) {
-                return true;
-            }
+        if (canExternalAppHandleIntent.apply(intent)) {
+            return IntentToAutofillAllowingAppResult.DEFER_TO_APP_NOW;
         }
-        return false;
+
+        String originalDeeplink = triggerContext.getOriginalDeeplink();
+        if (TextUtils.isEmpty(originalDeeplink)) {
+            return IntentToAutofillAllowingAppResult.NONE;
+        }
+        Intent originalDeeplinkIntent = new Intent(Intent.ACTION_VIEW);
+        originalDeeplinkIntent.setData(Uri.parse(originalDeeplink));
+        if (canExternalAppHandleIntent.apply(originalDeeplinkIntent)) {
+            return IntentToAutofillAllowingAppResult.DEFER_TO_APP_LATER;
+        }
+
+        return IntentToAutofillAllowingAppResult.NONE;
     }
 }

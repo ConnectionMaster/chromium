@@ -24,11 +24,11 @@ FakeTextTrackStream::~FakeTextTrackStream() {
   DCHECK(!read_cb_);
 }
 
-void FakeTextTrackStream::Read(const ReadCB& read_cb) {
+void FakeTextTrackStream::Read(ReadCB read_cb) {
   DCHECK(read_cb);
   DCHECK(!read_cb_);
   OnRead();
-  read_cb_ = read_cb;
+  read_cb_ = std::move(read_cb);
 
   if (stopping_) {
     task_runner_->PostTask(
@@ -63,8 +63,8 @@ void FakeTextTrackStream::SatisfyPendingRead(
   const uint8_t* const sd_buf = &side_data[0];
   const int sd_len = static_cast<int>(side_data.size());
 
-  scoped_refptr<DecoderBuffer> buffer;
-  buffer = DecoderBuffer::CopyFrom(data_buf, data_len, sd_buf, sd_len);
+  scoped_refptr<DecoderBuffer> buffer =
+      DecoderBuffer::CopyFrom(data_buf, data_len, sd_buf, sd_len);
 
   buffer->set_timestamp(start);
   buffer->set_duration(duration);
@@ -77,7 +77,7 @@ void FakeTextTrackStream::SatisfyPendingRead(
 
 void FakeTextTrackStream::AbortPendingRead() {
   DCHECK(read_cb_);
-  std::move(read_cb_).Run(kAborted, NULL);
+  std::move(read_cb_).Run(kAborted, nullptr);
 }
 
 void FakeTextTrackStream::SendEosNotification() {

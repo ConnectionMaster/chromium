@@ -10,10 +10,11 @@
 #include "base/feature_list.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
+#include "build/chromeos_buildflags.h"
 #include "components/metrics_services_manager/metrics_services_manager_client.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/settings/stats_reporting_controller.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/settings/stats_reporting_controller.h"
 #endif
 
 class PrefService;
@@ -24,6 +25,7 @@ class MetricsStateManager;
 
 // Used only for testing.
 namespace internal {
+// TODO(crbug.com/1068796): Replace kMetricsReportingFeature with a better name.
 extern const base::Feature kMetricsReportingFeature;
 }
 }
@@ -60,7 +62,7 @@ class ChromeMetricsServicesManagerClient
   // eligible for sampling.
   static bool GetSamplingRatePerMille(int* rate);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   void OnCrosSettingsCreated();
 #endif
 
@@ -74,7 +76,6 @@ class ChromeMetricsServicesManagerClient
   class ChromeEnabledStateProvider;
 
   // metrics_services_manager::MetricsServicesManagerClient:
-  std::unique_ptr<rappor::RapporServiceImpl> CreateRapporServiceImpl() override;
   std::unique_ptr<variations::VariationsService> CreateVariationsService()
       override;
   std::unique_ptr<metrics::MetricsServiceClient> CreateMetricsServiceClient()
@@ -83,7 +84,7 @@ class ChromeMetricsServicesManagerClient
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
   bool IsMetricsReportingEnabled() override;
   bool IsMetricsConsentGiven() override;
-  bool IsIncognitoSessionActive() override;
+  bool IsOffTheRecordSessionActive() override;
 #if defined(OS_WIN)
   // On Windows, the client controls whether Crashpad can upload crash reports.
   void UpdateRunningServices(bool may_record, bool may_upload) override;
@@ -102,9 +103,8 @@ class ChromeMetricsServicesManagerClient
   // Weak pointer to the local state prefs store.
   PrefService* const local_state_;
 
-#if defined(OS_CHROMEOS)
-  std::unique_ptr<chromeos::StatsReportingController::ObserverSubscription>
-      reporting_setting_observer_;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  base::CallbackListSubscription reporting_setting_subscription_;
 #endif
 
   DISALLOW_COPY_AND_ASSIGN(ChromeMetricsServicesManagerClient);

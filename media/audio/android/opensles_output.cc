@@ -5,14 +5,16 @@
 #include "media/audio/android/opensles_output.h"
 
 #include "base/android/build_info.h"
+#include "base/cxx17_backports.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "media/audio/android/audio_manager_android.h"
 #include "media/base/audio_sample_types.h"
 #include "media/base/audio_timestamp_helper.h"
+#include "media/base/media_switches.h"
 
 #define LOG_ON_FAILURE_AND_RETURN(op, ...)      \
   do {                                          \
@@ -45,9 +47,9 @@ OpenSLESOutputStream::OpenSLESOutputStream(AudioManagerAndroid* manager,
                                            SLint32 stream_type)
     : audio_manager_(manager),
       stream_type_(stream_type),
-      callback_(NULL),
-      player_(NULL),
-      simple_buffer_queue_(NULL),
+      callback_(nullptr),
+      player_(nullptr),
+      simple_buffer_queue_(nullptr),
       audio_data_(),
       active_buffer_index_(0),
       started_(false),
@@ -136,6 +138,8 @@ void OpenSLESOutputStream::Start(AudioSourceCallback* callback) {
   DCHECK(!callback_);
   callback_ = callback;
 
+  CacheHardwareLatencyIfNeeded();
+
   // Fill audio data with silence to avoid start-up glitches. Don't use
   // FillBufferQueueNoLock() since it can trigger recursive entry if an error
   // occurs while writing into the stream. See http://crbug.com/624877.
@@ -190,7 +194,7 @@ void OpenSLESOutputStream::Stop() {
   DCHECK_EQ(0u, buffer_queue_state.index);
 #endif
 
-  callback_ = NULL;
+  callback_ = nullptr;
   started_ = false;
 }
 
@@ -204,8 +208,8 @@ void OpenSLESOutputStream::Close() {
     // Destroy the buffer queue player object and invalidate all associated
     // interfaces.
     player_object_.Reset();
-    simple_buffer_queue_ = NULL;
-    player_ = NULL;
+    simple_buffer_queue_ = nullptr;
+    player_ = nullptr;
 
     // Destroy the mixer object. We don't store any associated interface for
     // this object.
@@ -219,6 +223,10 @@ void OpenSLESOutputStream::Close() {
 
   audio_manager_->ReleaseOutputStream(this);
 }
+
+// This stream is always used with sub second buffer sizes, where it's
+// sufficient to simply always flush upon Start().
+void OpenSLESOutputStream::Flush() {}
 
 void OpenSLESOutputStream::SetVolume(double volume) {
   DVLOG(2) << "OpenSLESOutputStream::SetVolume(" << volume << ")";
@@ -260,7 +268,7 @@ bool OpenSLESOutputStream::CreatePlayer() {
   SLEngineOption option[] = {
       {SL_ENGINEOPTION_THREADSAFE, static_cast<SLuint32>(SL_BOOLEAN_TRUE)}};
   LOG_ON_FAILURE_AND_RETURN(
-      slCreateEngine(engine_object_.Receive(), 1, option, 0, NULL, NULL),
+      slCreateEngine(engine_object_.Receive(), 1, option, 0, nullptr, nullptr),
       false);
 
   // Realize the SL engine object in synchronous mode.
@@ -273,10 +281,11 @@ bool OpenSLESOutputStream::CreatePlayer() {
                                 engine_object_.Get(), SL_IID_ENGINE, &engine),
                             false);
 
-  // Create ouput mixer object to be used by the player.
-  LOG_ON_FAILURE_AND_RETURN((*engine)->CreateOutputMix(
-                                engine, output_mixer_.Receive(), 0, NULL, NULL),
-                            false);
+  // Create output mixer object to be used by the player.
+  LOG_ON_FAILURE_AND_RETURN(
+      (*engine)->CreateOutputMix(engine, output_mixer_.Receive(), 0, nullptr,
+                                 nullptr),
+      false);
 
   // Realizing the output mix object in synchronous mode.
   LOG_ON_FAILURE_AND_RETURN(
@@ -295,7 +304,7 @@ bool OpenSLESOutputStream::CreatePlayer() {
   // Audio sink configuration.
   SLDataLocator_OutputMix locator_output_mix = {SL_DATALOCATOR_OUTPUTMIX,
                                                 output_mixer_.Get()};
-  SLDataSink audio_sink = {&locator_output_mix, NULL};
+  SLDataSink audio_sink = {&locator_output_mix, nullptr};
 
   // Create an audio player.
   const SLInterfaceID interface_id[] = {SL_IID_BUFFERQUEUE, SL_IID_VOLUME,
@@ -396,6 +405,7 @@ void OpenSLESOutputStream::FillBufferQueueNoLock() {
   // Calculate the position relative to the number of frames written.
   uint32_t position_in_ms = 0;
   SLresult err = (*player_)->GetPosition(player_, &position_in_ms);
+
   // Given the position of the playback head, compute the approximate number of
   // frames that have been queued to the buffer but not yet played out.
   // Note that the value returned by GetFramesToTarget() is negative because
@@ -405,7 +415,7 @@ void OpenSLESOutputStream::FillBufferQueueNoLock() {
   const int delay_frames =
       err == SL_RESULT_SUCCESS
           ? -delay_calculator_.GetFramesToTarget(
-                base::TimeDelta::FromMilliseconds(position_in_ms))
+                AdjustPositionForHardwareLatency(position_in_ms))
           : 0;
   DCHECK_GE(delay_frames, 0);
 
@@ -432,7 +442,9 @@ void OpenSLESOutputStream::FillBufferQueueNoLock() {
         reinterpret_cast<int16_t*>(audio_data_[active_buffer_index_]));
   } else {
     DCHECK_EQ(sample_format_, kSampleFormatF32);
-    audio_bus_->ToInterleaved<Float32SampleTypeTraits>(
+
+    // We skip clipping since that occurs at the shared memory boundary.
+    audio_bus_->ToInterleaved<Float32SampleTypeTraitsNoClip>(
         frames_filled,
         reinterpret_cast<float*>(audio_data_[active_buffer_index_]));
   }
@@ -463,15 +475,35 @@ void OpenSLESOutputStream::ReleaseAudioBuffer() {
   if (audio_data_[0]) {
     for (int i = 0; i < kMaxNumOfBuffersInQueue; ++i) {
       delete[] audio_data_[i];
-      audio_data_[i] = NULL;
+      audio_data_[i] = nullptr;
     }
   }
 }
 
 void OpenSLESOutputStream::HandleError(SLresult error) {
   DLOG(ERROR) << "OpenSLES Output error " << error;
+  // TODO(dalecurtis): Consider sending a translated |error|.
   if (callback_)
-    callback_->OnError();
+    callback_->OnError(AudioSourceCallback::ErrorType::kUnknown);
+}
+
+void OpenSLESOutputStream::CacheHardwareLatencyIfNeeded() {
+  // If the feature is turned off, then leave it at its default (zero) value.
+  // In general, GetOutputLatency is not reliable.
+  if (!base::FeatureList::IsEnabled(kUseAudioLatencyFromHAL))
+    return;
+
+  hardware_latency_ = audio_manager_->GetOutputLatency();
+}
+
+base::TimeDelta OpenSLESOutputStream::AdjustPositionForHardwareLatency(
+    uint32_t position_in_ms) {
+  base::TimeDelta position = base::TimeDelta::FromMilliseconds(position_in_ms);
+
+  if (position <= hardware_latency_)
+    return base::TimeDelta::FromMilliseconds(0);
+
+  return position - hardware_latency_;
 }
 
 }  // namespace media

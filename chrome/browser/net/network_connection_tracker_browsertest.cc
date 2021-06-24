@@ -3,14 +3,14 @@
 // found in the LICENSE file.
 
 #include "base/bind.h"
-#include "base/callback_forward.h"
+#include "base/check_op.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/sequence_checker.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -18,15 +18,13 @@
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/network_service_util.h"
-#include "content/public/common/service_manager_connection.h"
-#include "content/public/common/service_names.mojom.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/network_change_notifier.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace {
 
@@ -87,23 +85,20 @@ class TestNetworkConnectionObserver
 
 class NetworkConnectionTrackerBrowserTest : public InProcessBrowserTest {
  public:
-  NetworkConnectionTrackerBrowserTest()
-      : network_service_enabled_(
-            base::FeatureList::IsEnabled(network::features::kNetworkService)) {}
+  NetworkConnectionTrackerBrowserTest() {}
   ~NetworkConnectionTrackerBrowserTest() override {}
 
   // Simulates a network connection change.
   void SimulateNetworkChange(network::mojom::ConnectionType type) {
-    if (network_service_enabled_ && !content::IsInProcessNetworkService()) {
-      network::mojom::NetworkServiceTestPtr network_service_test;
-      content::ServiceManagerConnection::GetForProcess()
-          ->GetConnector()
-          ->BindInterface(content::mojom::kNetworkServiceName,
-                          &network_service_test);
+    if (!content::IsInProcessNetworkService()) {
+      mojo::Remote<network::mojom::NetworkServiceTest> network_service_test;
+      content::GetNetworkService()->BindTestInterface(
+          network_service_test.BindNewPipeAndPassReceiver());
       base::RunLoop run_loop;
       network_service_test->SimulateNetworkChange(
-          type, base::Bind([](base::RunLoop* run_loop) { run_loop->Quit(); },
-                           base::Unretained(&run_loop)));
+          type,
+          base::BindOnce([](base::RunLoop* run_loop) { run_loop->Quit(); },
+                         base::Unretained(&run_loop)));
       run_loop.Run();
       return;
     }
@@ -111,22 +106,16 @@ class NetworkConnectionTrackerBrowserTest : public InProcessBrowserTest {
         net::NetworkChangeNotifier::ConnectionType(type));
   }
 
-  bool network_service_enabled() const { return network_service_enabled_; }
-
  private:
-  const bool network_service_enabled_;
 };
 
 // Basic test to make sure NetworkConnectionTracker is set up.
 IN_PROC_BROWSER_TEST_F(NetworkConnectionTrackerBrowserTest,
                        NetworkConnectionTracker) {
-#if defined(OS_CHROMEOS) || defined(OS_MACOSX)
   // NetworkService on ChromeOS doesn't yet have a NetworkChangeManager
   // implementation. OSX uses a separate binary for service processes and
   // browser test fixture doesn't have NetworkServiceTest mojo code.
-  if (network_service_enabled())
-    return;
-#endif
+#if !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_MAC)
   network::NetworkConnectionTracker* tracker =
       content::GetNetworkConnectionTracker();
   EXPECT_NE(nullptr, tracker);
@@ -151,6 +140,7 @@ IN_PROC_BROWSER_TEST_F(NetworkConnectionTrackerBrowserTest,
             network_connection_observer.connection_type());
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1u, network_connection_observer.num_notifications());
+#endif
 }
 
 // Simulates a network service crash, and ensures that network change manager

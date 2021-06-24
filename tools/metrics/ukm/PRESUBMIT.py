@@ -8,6 +8,8 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details on the presubmit API built into gcl.
 """
 
+USE_PYTHON3 = True
+
 UKM_XML = 'ukm.xml'
 
 
@@ -18,13 +20,27 @@ def CheckChange(input_api, output_api):
     if (input_api.basename(p) == UKM_XML
         and input_api.os_path.dirname(p) == input_api.PresubmitLocalPath()):
       cwd = input_api.os_path.dirname(p)
+
       exit_code = input_api.subprocess.call(
           [input_api.python_executable, 'pretty_print.py', '--presubmit'],
           cwd=cwd)
       if exit_code != 0:
-        return [output_api.PresubmitError(
-            '%s is not formatted correctly; run %s/pretty_print.py to fix' %
-            (UKM_XML, input_api.PresubmitLocalPath()))]
+        return [
+            output_api.PresubmitError(
+                '%s is not prettified; run git cl format to fix.' % UKM_XML),
+        ]
+
+      exit_code = input_api.subprocess.call(
+          [input_api.python_executable, 'validate_format.py', '--presubmit'],
+          cwd=cwd)
+      if exit_code != 0:
+        return [
+            output_api.PresubmitError(
+                '%s does not pass format validation; run %s/validate_format.py '
+                'and fix the reported error(s) or warning(s).' %
+                (UKM_XML, input_api.PresubmitLocalPath())),
+        ]
+
   return []
 
 

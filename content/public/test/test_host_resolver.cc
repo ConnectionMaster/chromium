@@ -4,7 +4,7 @@
 
 #include "content/public/test/test_host_resolver.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/threading/thread.h"
 #include "content/browser/notification_service_impl.h"
 #include "net/base/net_errors.h"
@@ -45,6 +45,8 @@ class LocalHostResolverProc : public net::HostResolverProc {
     // queries, rather than perform them.
     // If you really need to make an external DNS query, use
     // net::RuleBasedHostResolverProc and its AllowDirectLookup method.
+    // TODO(crbug.com/1040686): Simulate failure using ERR_NAME_NOT_RESOLVED
+    // rather than ERR_NOT_IMPLEMENTED.
     if (!local) {
       DVLOG(1) << "To avoid external dependencies, simulating failure for "
                   "external DNS lookup of "

@@ -4,7 +4,8 @@
 
 #include "ui/ozone/platform/drm/host/drm_window_host_manager.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "ui/ozone/platform/drm/host/drm_window_host.h"
 
 namespace ui {
@@ -30,10 +31,13 @@ void DrmWindowHostManager::AddWindow(gfx::AcceleratedWidget widget,
 
 void DrmWindowHostManager::RemoveWindow(gfx::AcceleratedWidget widget) {
   WidgetToWindowMap::iterator it = window_map_.find(widget);
-  if (it != window_map_.end())
+  if (it != window_map_.end()) {
+    if (window_mouse_currently_on_ == it->second)
+      window_mouse_currently_on_ = nullptr;
     window_map_.erase(it);
-  else
+  } else {
     NOTREACHED() << "Attempting to remove non-existing window " << widget;
+  }
 
   if (event_grabber_ == widget)
     event_grabber_ = gfx::kNullAcceleratedWidget;
@@ -71,6 +75,13 @@ void DrmWindowHostManager::UngrabEvents(gfx::AcceleratedWidget widget) {
   if (event_grabber_ != widget)
     return;
   event_grabber_ = gfx::kNullAcceleratedWidget;
+}
+
+void DrmWindowHostManager::MouseOnWindow(DrmWindowHost* window) {
+  if (window_mouse_currently_on_ == window)
+    return;
+  window_mouse_currently_on_ = window;
+  window->OnMouseEnter();
 }
 
 }  // namespace ui

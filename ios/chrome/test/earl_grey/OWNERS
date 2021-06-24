@@ -1,4 +1,6 @@
-eugenebut@chromium.org
+stkhapugin@chromium.org
+zhaoyangli@chromium.org
 
-# TEAM: ios-directory-owners@chromium.org
-# OS: iOS
+# This is for the common case of adding or renaming files. If you're doing
+# structural changes, use usual OWNERS rules.
+per-file BUILD.gn=*

@@ -7,9 +7,10 @@
 
 #import "base/test/ios/wait_util.h"
 #include "ios/web/public/test/element_selector.h"
-#import "ios/web/public/web_state/web_state.h"
 
 namespace web {
+class WebState;
+
 namespace test {
 
 // Enum describing loaded/blocked state of an image html element.
@@ -24,6 +25,13 @@ enum ImageStateElement {
 // Otherwise, returns false.
 bool IsWebViewContainingText(web::WebState* web_state, const std::string& text);
 
+// Returns true if there is a frame from |web_state| that contains |text|.
+// This method waits for the JavaScript message response.
+// |FindInPageJavaScriptFeature| must be configured for |web_state| in order for
+// this function to correctly return results.
+bool IsWebViewContainingTextInFrame(web::WebState* web_state,
+                                    const std::string& text);
+
 // Waits for the given web state to contain |text|. If the condition is not met
 // within |timeout| false is returned.
 bool WaitForWebViewContainingText(
@@ -35,6 +43,16 @@ bool WaitForWebViewContainingText(
 // Waits for the given web state to not contain |text|. If the condition is not
 // met within |timeout| false is returned.
 bool WaitForWebViewNotContainingText(
+    web::WebState* web_state,
+    std::string text,
+    NSTimeInterval timeout = base::test::ios::kWaitForPageLoadTimeout)
+    WARN_UNUSED_RESULT;
+
+// Waits for the given web state to have a frame that contains |text|. If the
+// condition is not met within |timeout| false is returned.
+// |FindInPageJavaScriptFeature| must be configured for |web_state| in order for
+// this function to correctly return results.
+bool WaitForWebViewContainingTextInFrame(
     web::WebState* web_state,
     std::string text,
     NSTimeInterval timeout = base::test::ios::kWaitForPageLoadTimeout)

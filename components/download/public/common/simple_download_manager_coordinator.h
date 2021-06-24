@@ -9,8 +9,10 @@
 #include <string>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/time/time.h"
 #include "components/download/public/common/download_export.h"
 #include "components/download/public/common/download_url_parameters.h"
 #include "components/download/public/common/simple_download_manager.h"
@@ -34,7 +36,8 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
     Observer() = default;
     virtual ~Observer() = default;
 
-    virtual void OnManagerGoingDown() {}
+    virtual void OnManagerGoingDown(
+        SimpleDownloadManagerCoordinator* coordinator) {}
     virtual void OnDownloadsInitialized(bool active_downloads_only) {}
     virtual void OnDownloadCreated(DownloadItem* item) {}
 
@@ -42,7 +45,11 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
     DISALLOW_COPY_AND_ASSIGN(Observer);
   };
 
-  SimpleDownloadManagerCoordinator();
+  using DownloadWhenFullManagerStartsCallBack =
+      base::RepeatingCallback<void(std::unique_ptr<DownloadUrlParameters>)>;
+  SimpleDownloadManagerCoordinator(const DownloadWhenFullManagerStartsCallBack&
+                                       download_when_full_manager_starts_cb,
+                                   bool record_full_download_manager_delay);
   ~SimpleDownloadManagerCoordinator() override;
 
   void AddObserver(Observer* observer);
@@ -63,21 +70,24 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
   // Get the download item for |guid|.
   DownloadItem* GetDownloadByGuid(const std::string& guid);
 
-  // Return whether this object has download manager set.
-  bool HasSetDownloadManager();
-
   // Returns a non-empty notifier to be used for observing download events.
   AllDownloadEventNotifier* GetNotifier();
 
+  // Whether this object is initialized.
+  bool initialized() const { return initialized_; }
+
   bool has_all_history_downloads() const { return has_all_history_downloads_; }
+
+  // Checks whether downloaded files still exist. Updates state of downloads
+  // that refer to removed files. The check runs in the background and may
+  // finish asynchronously after this method returns.
+  void CheckForExternallyRemovedDownloads();
 
  private:
   // SimpleDownloadManager::Observer implementation.
+  void OnDownloadsInitialized() override;
   void OnManagerGoingDown() override;
   void OnDownloadCreated(DownloadItem* item) override;
-
-  // Called when |simple_download_manager_| is initialized.
-  void OnManagerInitialized(bool has_all_history_downloads);
 
   SimpleDownloadManager* simple_download_manager_;
 
@@ -87,14 +97,23 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
   // Whether all the history downloads are ready.
   bool has_all_history_downloads_;
 
+  // Whether current SimpleDownloadManager has all history downloads.
+  bool current_manager_has_all_history_downloads_;
+
   // Whether this object is initialized and active downloads are ready to be
   // retrieved.
   bool initialized_;
 
+  // Callback to download the url when full manager becomes ready.
+  DownloadWhenFullManagerStartsCallBack download_when_full_manager_starts_cb_;
+
   // Observers that want to be notified of changes to the set of downloads.
   base::ObserverList<Observer>::Unchecked observers_;
 
-  base::WeakPtrFactory<SimpleDownloadManagerCoordinator> weak_factory_;
+  // Time when this object was created.
+  base::TimeTicks creation_time_ticks_;
+
+  base::WeakPtrFactory<SimpleDownloadManagerCoordinator> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SimpleDownloadManagerCoordinator);
 };

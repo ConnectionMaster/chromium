@@ -4,9 +4,11 @@
 
 #include "ash/events/select_to_speak_event_handler.h"
 
+#include <memory>
 #include <set>
 
-#include "ash/accessibility/accessibility_controller.h"
+#include "ash/accessibility/accessibility_controller_impl.h"
+#include "ash/public/cpp/select_to_speak_event_handler_delegate.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/ash_test_helper.h"
@@ -14,10 +16,12 @@
 #include "base/macros.h"
 #include "ui/aura/test/aura_test_base.h"
 #include "ui/aura/window.h"
+#include "ui/display/manager/display_manager.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/events/test/events_test_utils.h"
+#include "ui/events/types/event_type.h"
 
 namespace ash {
 namespace {
@@ -40,13 +44,13 @@ class EventCapturer : public ui::EventHandler {
 
  private:
   void OnMouseEvent(ui::MouseEvent* event) override {
-    last_mouse_event_.reset(new ui::MouseEvent(*event));
+    last_mouse_event_ = std::make_unique<ui::MouseEvent>(*event);
   }
   void OnKeyEvent(ui::KeyEvent* event) override {
-    last_key_event_.reset(new ui::KeyEvent(*event));
+    last_key_event_ = std::make_unique<ui::KeyEvent>(*event);
   }
   void OnTouchEvent(ui::TouchEvent* event) override {
-    last_touch_event_.reset(new ui::TouchEvent(*event));
+    last_touch_event_ = std::make_unique<ui::TouchEvent>(*event);
   }
 
   std::unique_ptr<ui::KeyEvent> last_key_event_;
@@ -56,16 +60,10 @@ class EventCapturer : public ui::EventHandler {
   DISALLOW_COPY_AND_ASSIGN(EventCapturer);
 };
 
-class TestDelegate : public mojom::SelectToSpeakEventHandlerDelegate {
+class TestDelegate : public SelectToSpeakEventHandlerDelegate {
  public:
-  TestDelegate() : binding_(this) {}
-  ~TestDelegate() override = default;
-
-  mojom::SelectToSpeakEventHandlerDelegatePtr BindInterface() {
-    mojom::SelectToSpeakEventHandlerDelegatePtr ptr;
-    binding_.Bind(MakeRequest(&ptr));
-    return ptr;
-  }
+  TestDelegate() = default;
+  virtual ~TestDelegate() = default;
 
   bool CapturedMouseEvent(ui::EventType event_type) {
     return mouse_events_captured_.find(event_type) !=
@@ -75,25 +73,29 @@ class TestDelegate : public mojom::SelectToSpeakEventHandlerDelegate {
   void Reset() {
     mouse_events_captured_.clear();
     last_mouse_location_.SetPoint(0, 0);
+    last_mouse_root_location_.SetPoint(0, 0);
   }
 
   gfx::Point last_mouse_event_location() { return last_mouse_location_; }
 
+  gfx::Point last_mouse_event_root_location() {
+    return last_mouse_root_location_;
+  }
+
  private:
   // SelectToSpeakEventHandlerDelegate:
-  void DispatchMouseEvent(std::unique_ptr<ui::Event> event) override {
-    mouse_events_captured_.insert(event->type());
-    last_mouse_location_ = event->AsMouseEvent()->location();
+  void DispatchMouseEvent(const ui::MouseEvent& event) override {
+    mouse_events_captured_.insert(event.type());
+    last_mouse_location_ = event.location();
+    last_mouse_root_location_ = event.root_location();
   }
-  void DispatchKeyEvent(std::unique_ptr<ui::Event> event) override {
+  void DispatchKeyEvent(const ui::KeyEvent& event) override {
     // Unused for now.
   }
 
   gfx::Point last_mouse_location_;
+  gfx::Point last_mouse_root_location_;
   std::set<ui::EventType> mouse_events_captured_;
-
-  // The binding that backs the interface pointer held by the event handler.
-  mojo::Binding<mojom::SelectToSpeakEventHandlerDelegate> binding_;
 
   DISALLOW_COPY_AND_ASSIGN(TestDelegate);
 };
@@ -108,38 +110,36 @@ class SelectToSpeakEventHandlerTest : public AshTestBase {
     // This test triggers a resize of WindowTreeHost, which will end up
     // throttling events. set_throttle_input_on_resize_for_testing() disables
     // this.
-    Shell::Get()->aura_env()->set_throttle_input_on_resize_for_testing(false);
+    aura::Env::GetInstance()->set_throttle_input_on_resize_for_testing(false);
+
+    // Make sure the display is initialized so we don't fail the test due to any
+    // input events caused from creating the display.
+    Shell::Get()->display_manager()->UpdateDisplays();
+    base::RunLoop().RunUntilIdle();
+
     delegate_ = std::make_unique<TestDelegate>();
     generator_ = AshTestBase::GetEventGenerator();
-    CurrentContext()->AddPreTargetHandler(&event_capturer_);
+    GetContext()->AddPreTargetHandler(&event_capturer_);
 
     controller_ = Shell::Get()->accessibility_controller();
-    controller_->SetSelectToSpeakEnabled(true);
-    controller_->SetSelectToSpeakEventHandlerDelegate(
-        delegate_->BindInterface());
+    controller_->select_to_speak().SetEnabled(true);
+    controller_->SetSelectToSpeakEventHandlerDelegate(delegate_.get());
   }
 
   void TearDown() override {
-    CurrentContext()->RemovePreTargetHandler(&event_capturer_);
+    GetContext()->RemovePreTargetHandler(&event_capturer_);
     generator_ = nullptr;
     controller_ = nullptr;
     AshTestBase::TearDown();
   }
 
-  // Flush messages to the delegate before callers check its state.
-  TestDelegate* GetDelegate() {
-    controller_->FlushMojoForTest();
-    return delegate_.get();
-  }
-
  protected:
   ui::test::EventGenerator* generator_ = nullptr;
   EventCapturer event_capturer_;
-  AccessibilityController* controller_ = nullptr;
-
- private:
+  AccessibilityControllerImpl* controller_ = nullptr;
   std::unique_ptr<TestDelegate> delegate_;
 
+ private:
   DISALLOW_COPY_AND_ASSIGN(SelectToSpeakEventHandlerTest);
 };
 
@@ -177,14 +177,14 @@ TEST_F(SelectToSpeakEventHandlerTest, SearchPlusClick) {
   generator_->PressLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
 
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
-  EXPECT_EQ(click_location, GetDelegate()->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_EQ(click_location, delegate_->last_mouse_event_location());
 
   generator_->ReleaseLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
 
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
-  EXPECT_EQ(click_location, GetDelegate()->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_EQ(click_location, delegate_->last_mouse_event_location());
 
   event_capturer_.Reset();
   generator_->ReleaseKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
@@ -199,19 +199,19 @@ TEST_F(SelectToSpeakEventHandlerTest, SearchPlusDrag) {
   generator_->set_current_screen_location(click_location);
   generator_->PressLeftButton();
 
-  EXPECT_EQ(click_location, GetDelegate()->last_mouse_event_location());
+  EXPECT_EQ(click_location, delegate_->last_mouse_event_location());
 
   // Drags are not blocked.
   gfx::Point drag_location = gfx::Point(120, 32);
   generator_->DragMouseTo(drag_location);
-  EXPECT_EQ(drag_location, GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
+  EXPECT_EQ(drag_location, delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
   EXPECT_TRUE(event_capturer_.last_mouse_event());
   event_capturer_.Reset();
 
   generator_->ReleaseLeftButton();
-  EXPECT_EQ(drag_location, GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_EQ(drag_location, delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   generator_->ReleaseKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
 }
@@ -227,20 +227,20 @@ TEST_F(SelectToSpeakEventHandlerTest, SearchPlusDragOnLargeDisplay) {
   generator_->set_current_screen_location(click_location_px);
   generator_->PressLeftButton();
   EXPECT_EQ(gfx::Point(click_location_px.x() / 2, click_location_px.y() / 2),
-            GetDelegate()->last_mouse_event_location());
+            delegate_->last_mouse_event_location());
 
   gfx::Point drag_location_px = gfx::Point(120, 32);
   generator_->DragMouseTo(drag_location_px);
   EXPECT_EQ(gfx::Point(drag_location_px.x() / 2, drag_location_px.y() / 2),
-            GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
+            delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
   EXPECT_TRUE(event_capturer_.last_mouse_event());
   event_capturer_.Reset();
 
   generator_->ReleaseLeftButton();
   EXPECT_EQ(gfx::Point(drag_location_px.x() / 2, drag_location_px.y() / 2),
-            GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+            delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   generator_->ReleaseKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
 }
@@ -255,7 +255,7 @@ TEST_F(SelectToSpeakEventHandlerTest, RepeatSearchKey) {
   generator_->PressLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
 
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
 
   generator_->PressKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
   generator_->PressKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
@@ -263,7 +263,7 @@ TEST_F(SelectToSpeakEventHandlerTest, RepeatSearchKey) {
   generator_->ReleaseLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
 
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   event_capturer_.Reset();
   generator_->ReleaseKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
@@ -293,23 +293,23 @@ TEST_F(SelectToSpeakEventHandlerTest, SearchPlusClickTwice) {
   generator_->set_current_screen_location(gfx::Point(100, 12));
   generator_->PressLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
 
   generator_->ReleaseLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
-  GetDelegate()->Reset();
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  delegate_->Reset();
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   generator_->PressLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
 
   generator_->ReleaseLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   event_capturer_.Reset();
   generator_->ReleaseKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
@@ -334,13 +334,13 @@ TEST_F(SelectToSpeakEventHandlerTest, SearchPlusKeyIgnoresClicks) {
   ASSERT_TRUE(event_capturer_.last_mouse_event());
   EXPECT_FALSE(event_capturer_.last_mouse_event()->handled());
 
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
 
   generator_->ReleaseLeftButton();
   ASSERT_TRUE(event_capturer_.last_mouse_event());
   EXPECT_FALSE(event_capturer_.last_mouse_event()->handled());
 
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   event_capturer_.Reset();
   generator_->ReleaseKey(ui::VKEY_I, ui::EF_COMMAND_DOWN);
@@ -431,7 +431,7 @@ TEST_F(SelectToSpeakEventHandlerTest, DoesntStartSelectionModeIfNotInactive) {
 
   // This shouldn't cause any changes since the state is not inactive.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateSelecting);
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
 
   // Mouse event still captured.
   gfx::Point click_location = gfx::Point(100, 12);
@@ -441,7 +441,7 @@ TEST_F(SelectToSpeakEventHandlerTest, DoesntStartSelectionModeIfNotInactive) {
 
   // This shouldn't cause any changes since the state is not inactive.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateSelecting);
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
 
   generator_->ReleaseLeftButton();
 
@@ -459,17 +459,17 @@ TEST_F(SelectToSpeakEventHandlerTest,
   generator_->set_current_screen_location(click_location);
   generator_->PressLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   generator_->ReleaseLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   // Set the state to inactive.
   // This is realistic because Select-to-Speak will set the state to inactive
   // after the hittest / search for the focused node callbacks, which may occur
   // before the user actually releases the search key.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateInactive);
+      SelectToSpeakState::kSelectToSpeakStateInactive);
 
   // The search key release should still be captured.
   event_capturer_.Reset();
@@ -484,7 +484,7 @@ TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedWorksWithMouse) {
   // Mouse events are let through normally before entering selecting state.
   // Another mouse event is let through normally.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateInactive);
+      SelectToSpeakState::kSelectToSpeakStateInactive);
   generator_->PressLeftButton();
   EXPECT_TRUE(event_capturer_.last_mouse_event());
   event_capturer_.Reset();
@@ -494,17 +494,17 @@ TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedWorksWithMouse) {
 
   // Start selection mode.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateSelecting);
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
 
   generator_->PressLeftButton();
   EXPECT_FALSE(event_capturer_.last_mouse_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   event_capturer_.Reset();
 
   gfx::Point drag_location = gfx::Point(120, 32);
   generator_->DragMouseTo(drag_location);
-  EXPECT_EQ(drag_location, GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
+  EXPECT_EQ(drag_location, delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
   EXPECT_TRUE(event_capturer_.last_mouse_event());
   event_capturer_.Reset();
 
@@ -526,7 +526,7 @@ TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedWorksWithTouch) {
   // Mouse events are let through normally before entering selecting state.
   // Another mouse event is let through normally.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateInactive);
+      SelectToSpeakState::kSelectToSpeakStateInactive);
   generator_->PressTouch();
   EXPECT_TRUE(event_capturer_.last_touch_event());
   event_capturer_.Reset();
@@ -536,25 +536,25 @@ TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedWorksWithTouch) {
 
   // Start selection mode.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateSelecting);
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
 
   generator_->PressTouch();
   EXPECT_FALSE(event_capturer_.last_touch_event());
   // Touch events are converted to mouse events for the extension.
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   event_capturer_.Reset();
 
   gfx::Point drag_location = gfx::Point(120, 32);
   generator_->MoveTouch(drag_location);
-  EXPECT_EQ(drag_location, GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
+  EXPECT_EQ(drag_location, delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
   EXPECT_TRUE(event_capturer_.last_touch_event());
   event_capturer_.Reset();
 
   // Touch up is the last event captured in the sequence
   generator_->ReleaseTouch();
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
   event_capturer_.Reset();
 
   // Another touch event is let through normally.
@@ -566,7 +566,7 @@ TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedWorksWithTouch) {
 TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedIgnoresOtherInput) {
   // Start selection mode.
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateSelecting);
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
 
   // Search key events are not impacted.
   generator_->PressKey(ui::VKEY_LWIN, ui::EF_COMMAND_DOWN);
@@ -579,7 +579,7 @@ TEST_F(SelectToSpeakEventHandlerTest, SelectionRequestedIgnoresOtherInput) {
   // Start a touch selection, it should get captured and forwarded.
   generator_->PressTouch();
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   event_capturer_.Reset();
 
   // Mouse event happening during the touch selection are not impacted;
@@ -602,38 +602,38 @@ TEST_F(SelectToSpeakEventHandlerTest, TrackingTouchIgnoresOtherTouchPointers) {
   gfx::Point drag_location = gfx::Point(120, 32);
   generator_->set_current_screen_location(touch_location);
   controller_->SetSelectToSpeakState(
-      mojom::SelectToSpeakState::kSelectToSpeakStateSelecting);
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
 
   // The first touch event is captured and sent to the extension.
   generator_->PressTouchId(1);
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   event_capturer_.Reset();
-  GetDelegate()->Reset();
+  delegate_->Reset();
 
   // A second touch event up and down is canceled but not sent to the extension.
   generator_->PressTouchId(2);
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   generator_->MoveTouchId(drag_location, 2);
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
   generator_->ReleaseTouchId(2);
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_RELEASED));
 
   // A pointer type event will not be sent either, as we are tracking touch,
   // even if the ID is the same.
   generator_->EnterPenPointerMode();
   generator_->PressTouchId(1);
   EXPECT_FALSE(event_capturer_.last_touch_event());
-  EXPECT_FALSE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
+  EXPECT_FALSE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_PRESSED));
   generator_->ExitPenPointerMode();
 
   // The first pointer is still tracked.
   generator_->MoveTouchId(drag_location, 1);
-  EXPECT_EQ(drag_location, GetDelegate()->last_mouse_event_location());
-  EXPECT_TRUE(GetDelegate()->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
+  EXPECT_EQ(drag_location, delegate_->last_mouse_event_location());
+  EXPECT_TRUE(delegate_->CapturedMouseEvent(ui::ET_MOUSE_DRAGGED));
   EXPECT_TRUE(event_capturer_.last_touch_event());
   event_capturer_.Reset();
 
@@ -646,6 +646,30 @@ TEST_F(SelectToSpeakEventHandlerTest, TrackingTouchIgnoresOtherTouchPointers) {
   generator_->PressTouchId(3);
   EXPECT_TRUE(event_capturer_.last_touch_event());
   event_capturer_.Reset();
+}
+
+TEST_F(SelectToSpeakEventHandlerTest, TouchFirstOfMultipleDisplays) {
+  UpdateDisplay("1+0-800x800,801+1-800x800");
+
+  // On the first display.
+  gfx::Point touch_location(200, 200);
+  generator_->set_current_screen_location(touch_location);
+  controller_->SetSelectToSpeakState(
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
+  generator_->PressTouch();
+  EXPECT_EQ(touch_location, delegate_->last_mouse_event_root_location());
+}
+
+TEST_F(SelectToSpeakEventHandlerTest, TouchSecondOfMultipleDisplays) {
+  UpdateDisplay("1+0-800x800,801+1-800x800");
+
+  // On the second display.
+  gfx::Point touch_location(1000, 200);
+  generator_->set_current_screen_location(touch_location);
+  controller_->SetSelectToSpeakState(
+      SelectToSpeakState::kSelectToSpeakStateSelecting);
+  generator_->PressTouch();
+  EXPECT_EQ(touch_location, delegate_->last_mouse_event_root_location());
 }
 
 }  // namespace

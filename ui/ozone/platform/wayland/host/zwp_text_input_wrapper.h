@@ -5,9 +5,13 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_HOST_ZWP_TEXT_INPUT_WRAPPER_H_
 #define UI_OZONE_PLATFORM_WAYLAND_HOST_ZWP_TEXT_INPUT_WRAPPER_H_
 
-#include "ui/ozone/platform/wayland/common/wayland_object.h"
+#include <stdint.h>
 
-#include "base/strings/string16.h"
+#include <string>
+#include <vector>
+
+#include "base/strings/string_piece.h"
+#include "ui/ozone/platform/wayland/common/wayland_object.h"
 
 namespace gfx {
 class Rect;
@@ -22,21 +26,30 @@ class WaylandWindow;
 // Client interface which handles wayland text input callbacks
 class ZWPTextInputWrapperClient {
  public:
-  virtual ~ZWPTextInputWrapperClient() {}
+  struct SpanStyle {
+    uint32_t index;   // Byte offset.
+    uint32_t length;  // Length in bytes.
+    uint32_t style;   // One of preedit_style.
+  };
+
+  virtual ~ZWPTextInputWrapperClient() = default;
 
   // Called when a new composing text (pre-edit) should be set around the
   // current cursor position. Any previously set composing text should
   // be removed.
-  virtual void OnPreeditString(const std::string& text,
+  // Note that the preedit_cursor is byte-offset.
+  virtual void OnPreeditString(base::StringPiece text,
+                               const std::vector<SpanStyle>& spans,
                                int32_t preedit_cursor) = 0;
 
   // Called when a complete input sequence has been entered.  The text to
   // commit could be either just a single character after a key press or the
   // result of some composing (pre-edit).
-  virtual void OnCommitString(const std::string& text) = 0;
+  virtual void OnCommitString(base::StringPiece text) = 0;
 
   // Called when client needs to delete all or part of the text surrounding
-  // the cursor
+  // the cursor. |index| and |length| are expected to be a byte offset of |text|
+  // passed via ZWPTextInputWrapper::SetSurroundingText.
   virtual void OnDeleteSurroundingText(int32_t index, uint32_t length) = 0;
 
   // Notify when a key event was sent. Key events should not be used
@@ -51,7 +64,7 @@ class ZWPTextInputWrapperClient {
 // IME. This interface collects the functionality behind one wrapper API.
 class ZWPTextInputWrapper {
  public:
-  virtual ~ZWPTextInputWrapper() {}
+  virtual ~ZWPTextInputWrapper() = default;
 
   virtual void Initialize(WaylandConnection* connection,
                           ZWPTextInputWrapperClient* client) = 0;
@@ -65,7 +78,7 @@ class ZWPTextInputWrapper {
   virtual void HideInputPanel() = 0;
 
   virtual void SetCursorRect(const gfx::Rect& rect) = 0;
-  virtual void SetSurroundingText(const base::string16& text,
+  virtual void SetSurroundingText(const std::string& text,
                                   const gfx::Range& selection_range) = 0;
 };
 

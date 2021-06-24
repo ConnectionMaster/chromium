@@ -9,6 +9,7 @@
 
 #include "base/callback.h"
 #include "content/common/content_export.h"
+#include "third_party/blink/public/platform/web_v8_value_converter.h"
 #include "v8/include/v8.h"
 
 namespace base {
@@ -25,15 +26,11 @@ namespace content {
 // binary values are supported. For binary values, we convert to WebKit
 // ArrayBuffers, and support converting from an ArrayBuffer or any of the
 // ArrayBufferView subclasses (Uint8Array, etc.).
-class CONTENT_EXPORT V8ValueConverter {
+class CONTENT_EXPORT V8ValueConverter : public blink::WebV8ValueConverter {
  public:
   // Extends the default behaviour of V8ValueConverter.
   class CONTENT_EXPORT Strategy {
    public:
-    typedef base::Callback<std::unique_ptr<base::Value>(v8::Local<v8::Value>,
-                                                        v8::Isolate* isolate)>
-        FromV8ValueCallback;
-
     virtual ~Strategy() {}
 
     // If false is returned, V8ValueConverter proceeds with the default
@@ -42,8 +39,7 @@ class CONTENT_EXPORT V8ValueConverter {
     // the ValueConverter's internal checks for depth and cycles.
     virtual bool FromV8Object(v8::Local<v8::Object> value,
                               std::unique_ptr<base::Value>* out,
-                              v8::Isolate* isolate,
-                              const FromV8ValueCallback& callback);
+                              v8::Isolate* isolate);
 
     // If false is returned, V8ValueConverter proceeds with the default
     // behavior.
@@ -51,8 +47,7 @@ class CONTENT_EXPORT V8ValueConverter {
     // the ValueConverter's internal checks for depth and cycles.
     virtual bool FromV8Array(v8::Local<v8::Array> value,
                              std::unique_ptr<base::Value>* out,
-                             v8::Isolate* isolate,
-                             const FromV8ValueCallback& callback);
+                             v8::Isolate* isolate);
 
     // If false is returned, V8ValueConverter proceeds with the default
     // behavior. v8::Object is passed as ArrayBuffer and ArrayBufferView
@@ -74,21 +69,21 @@ class CONTENT_EXPORT V8ValueConverter {
 
   static std::unique_ptr<V8ValueConverter> Create();
 
-  virtual ~V8ValueConverter() {}
+  ~V8ValueConverter() override = default;
 
   // If true, Date objects are converted into DoubleValues with the number of
   // seconds since Unix epoch.
   //
   // Otherwise they are converted into DictionaryValues with whatever additional
   // properties has been set on them.
-  virtual void SetDateAllowed(bool val) = 0;
+  void SetDateAllowed(bool val) override = 0;
 
   // If true, RegExp objects are converted into StringValues with the regular
   // expression between / and /, for example "/ab?c/".
   //
   // Otherwise they are converted into DictionaryValues with whatever additional
   // properties has been set on them.
-  virtual void SetRegExpAllowed(bool val) = 0;
+  void SetRegExpAllowed(bool val) override = 0;
 
   // If true, Function objects are converted into DictionaryValues with whatever
   // additional properties has been set on them.
@@ -112,8 +107,8 @@ class CONTENT_EXPORT V8ValueConverter {
   // while setting a value, that property or item is skipped, leaving a hole in
   // the case of arrays.
   // TODO(dcheng): This should just take a const reference.
-  virtual v8::Local<v8::Value> ToV8Value(const base::Value* value,
-                                         v8::Local<v8::Context> context) = 0;
+  v8::Local<v8::Value> ToV8Value(const base::Value* value,
+                                 v8::Local<v8::Context> context) override = 0;
 
   // Converts a v8::Value to base::Value.
   //
@@ -124,9 +119,9 @@ class CONTENT_EXPORT V8ValueConverter {
   // Likewise, if an object throws while converting a property it will not be
   // converted, whereas if an array throws while converting an item it will be
   // converted to Value(Type::NONE).
-  virtual std::unique_ptr<base::Value> FromV8Value(
+  std::unique_ptr<base::Value> FromV8Value(
       v8::Local<v8::Value> value,
-      v8::Local<v8::Context> context) = 0;
+      v8::Local<v8::Context> context) override = 0;
 };
 
 }  // namespace content

@@ -8,9 +8,10 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_path_watcher.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
@@ -83,7 +84,7 @@ class ConfigFileWatcherImpl
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
-  base::WeakPtrFactory<ConfigFileWatcherImpl> weak_factory_;
+  base::WeakPtrFactory<ConfigFileWatcherImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ConfigFileWatcherImpl);
 };
@@ -113,8 +114,7 @@ ConfigFileWatcherImpl::ConfigFileWatcherImpl(
       retries_(0),
       delegate_(nullptr),
       main_task_runner_(main_task_runner),
-      io_task_runner_(io_task_runner),
-      weak_factory_(this) {
+      io_task_runner_(io_task_runner) {
   DCHECK(main_task_runner_->BelongsToCurrentThread());
 }
 
@@ -135,15 +135,15 @@ void ConfigFileWatcherImpl::WatchOnIoThread() {
 
   // Create the timer that will be used for delayed-reading the configuration
   // file.
-  config_updated_timer_.reset(
-      new base::DelayTimer(FROM_HERE, base::TimeDelta::FromSeconds(2), this,
-                           &ConfigFileWatcherImpl::ReloadConfig));
+  config_updated_timer_ = std::make_unique<base::DelayTimer>(
+      FROM_HERE, base::TimeDelta::FromSeconds(2), this,
+      &ConfigFileWatcherImpl::ReloadConfig);
 
   // Start watching the configuration file.
-  config_watcher_.reset(new base::FilePathWatcher());
+  config_watcher_ = std::make_unique<base::FilePathWatcher>();
   if (!config_watcher_->Watch(
-          config_path_, false,
-          base::Bind(&ConfigFileWatcherImpl::OnConfigUpdated, this))) {
+          config_path_, base::FilePathWatcher::Type::kNonRecursive,
+          base::BindRepeating(&ConfigFileWatcherImpl::OnConfigUpdated, this))) {
     PLOG(ERROR) << "Couldn't watch file '" << config_path_.value() << "'";
     main_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(&ConfigFileWatcherImpl::NotifyError,

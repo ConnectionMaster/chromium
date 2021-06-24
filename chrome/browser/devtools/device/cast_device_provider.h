@@ -26,12 +26,12 @@ class CastDeviceProvider
   CastDeviceProvider();
 
   // DeviceProvider implementation:
-  void QueryDevices(const SerialsCallback& callback) override;
+  void QueryDevices(SerialsCallback callback) override;
   void QueryDeviceInfo(const std::string& serial,
-                       const DeviceInfoCallback& callback) override;
+                       DeviceInfoCallback callback) override;
   void OpenSocket(const std::string& serial,
                   const std::string& socket_name,
-                  const SocketCallback& callback) override;
+                  SocketCallback callback) override;
 
   // ServiceDiscoveryDeviceLister::Delegate implementation:
   void OnDeviceChanged(
@@ -57,7 +57,7 @@ class CastDeviceProvider
   // Maps a service name to the hostname (IP address).
   std::map<std::string, std::string> service_hostname_map_;
 
-  base::WeakPtrFactory<CastDeviceProvider> weak_factory_;
+  base::WeakPtrFactory<CastDeviceProvider> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CastDeviceProvider);
 };

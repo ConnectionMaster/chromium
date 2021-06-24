@@ -7,6 +7,8 @@
 
 #include <wrl/client.h>
 
+#include <memory>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -26,20 +28,24 @@ class DragSourceWin;
 
 namespace views {
 class DesktopDropTargetWin;
+class DesktopWindowTreeHostWin;
 
 class VIEWS_EXPORT DesktopDragDropClientWin
     : public aura::client::DragDropClient {
  public:
-  DesktopDragDropClientWin(aura::Window* root_window, HWND window);
+  DesktopDragDropClientWin(aura::Window* root_window,
+                           HWND window,
+                           DesktopWindowTreeHostWin* desktop_host);
   ~DesktopDragDropClientWin() override;
 
   // Overridden from aura::client::DragDropClient:
-  int StartDragAndDrop(const ui::OSExchangeData& data,
-                       aura::Window* root_window,
-                       aura::Window* source_window,
-                       const gfx::Point& screen_location,
-                       int operation,
-                       ui::DragDropTypes::DragEventSource source) override;
+  ui::mojom::DragOperation StartDragAndDrop(
+      std::unique_ptr<ui::OSExchangeData> data,
+      aura::Window* root_window,
+      aura::Window* source_window,
+      const gfx::Point& screen_location,
+      int allowed_operations,
+      ui::mojom::DragEventSource source) override;
   void DragCancel() override;
   bool IsDragDropInProgress() override;
   void AddObserver(aura::client::DragDropClientObserver* observer) override;
@@ -50,13 +56,16 @@ class VIEWS_EXPORT DesktopDragDropClientWin
  private:
   bool drag_drop_in_progress_;
 
-  int drag_operation_;
-
   Microsoft::WRL::ComPtr<ui::DragSourceWin> drag_source_;
 
   scoped_refptr<DesktopDropTargetWin> drop_target_;
 
-  base::WeakPtrFactory<DesktopDragDropClientWin> weak_factory_;
+  // |this| will get deleted DesktopNativeWidgetAura is notified that the
+  // DesktopWindowTreeHost is being destroyed. So desktop_host_ should outlive
+  // |this|.
+  DesktopWindowTreeHostWin* desktop_host_ = nullptr;
+
+  base::WeakPtrFactory<DesktopDragDropClientWin> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DesktopDragDropClientWin);
 };

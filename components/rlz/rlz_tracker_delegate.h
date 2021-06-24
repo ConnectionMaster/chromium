@@ -9,7 +9,6 @@
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -50,11 +49,11 @@ class RLZTrackerDelegate {
 
   // Returns the installation language in |language| and a boolean indicating
   // whether the operation was a success or not.
-  virtual bool GetLanguage(base::string16* language) = 0;
+  virtual bool GetLanguage(std::u16string* language) = 0;
 
   // Returns the referral code in |referral| and a boolean indicating whether
   // the operation was a success or not. Deprecated.
-  virtual bool GetReferral(base::string16* referral) = 0;
+  virtual bool GetReferral(std::u16string* referral) = 0;
 
   // Clears the referral code. Deprecated.
   virtual bool ClearReferral() = 0;
@@ -62,12 +61,12 @@ class RLZTrackerDelegate {
   // Registers |callback| to be invoked the next time the user perform a search
   // using Google search engine via the omnibox. Callback will invoked at most
   // once.
-  virtual void SetOmniboxSearchCallback(const base::Closure& callback) = 0;
+  virtual void SetOmniboxSearchCallback(base::OnceClosure callback) = 0;
 
   // Registers |callback| to be invoked the next time the user perform a search
   // using Google search engine via the homepage. Callback will invoked at most
   // once.
-  virtual void SetHomepageSearchCallback(const base::Closure& callback) = 0;
+  virtual void SetHomepageSearchCallback(base::OnceClosure callback) = 0;
 
   // Returns true if the existing access point RLZ strings in the data file
   // should be updated.

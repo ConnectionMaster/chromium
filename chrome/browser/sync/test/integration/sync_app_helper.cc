@@ -10,16 +10,17 @@
 
 #include "chrome/browser/extensions/convert_web_app.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
 #include "chrome/browser/sync/test/integration/sync_extension_helper.h"
+#include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/manifest_handlers/app_icon_color_info.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "chrome/common/extensions/manifest_handlers/app_theme_color_info.h"
-#include "chrome/common/extensions/sync_helper.h"
 #include "components/crx_file/id_util.h"
 #include "extensions/browser/app_sorting.h"
 #include "extensions/browser/extension_prefs.h"
@@ -45,7 +46,7 @@ struct AppState {
   GURL launch_web_url;
   GURL bookmark_app_scope;
   std::string icon_color;
-  base::Optional<SkColor> theme_color;
+  absl::optional<SkColor> theme_color;
   std::string description;
   std::string name;
   bool from_bookmark;
@@ -82,9 +83,9 @@ void LoadApp(content::BrowserContext* context,
   app_state->app_launch_ordinal = app_sorting->GetAppLaunchOrdinal(id);
   app_state->page_ordinal = app_sorting->GetPageOrdinal(id);
   app_state->launch_type = extensions::GetLaunchTypePrefValue(prefs, id);
-  extensions::ExtensionService* service =
-      extensions::ExtensionSystem::Get(context)->extension_service();
-  const extensions::Extension* extension = service->GetInstalledExtension(id);
+  extensions::ExtensionRegistry* registry =
+      extensions::ExtensionRegistry::Get(context);
+  const extensions::Extension* extension = registry->GetInstalledExtension(id);
   // GetInstalledExtension(id) returns null if |id| is for a pending extension.
   // In case of running tests against real backend servers, pending apps won't
   // be installed.
@@ -114,7 +115,7 @@ AppStateMap GetAppStates(Profile* profile) {
           ->GenerateInstalledExtensionsSet());
   for (const auto& extension : *extensions) {
     if (extension->is_app() &&
-        extensions::sync_helper::IsSyncable(extension.get())) {
+        extensions::util::ShouldSync(extension.get(), profile)) {
       const std::string& id = extension->id();
       LoadApp(profile, id, &(app_state_map[id]));
     }
@@ -125,12 +126,11 @@ AppStateMap GetAppStates(Profile* profile) {
           ->extension_service()
           ->pending_extension_manager();
 
-  std::list<std::string> pending_crx_ids;
-  pending_extension_manager->GetPendingIdsForUpdateCheck(&pending_crx_ids);
+  std::list<std::string> pending_crx_ids =
+      pending_extension_manager->GetPendingIdsForUpdateCheck();
 
-  for (std::list<std::string>::const_iterator id = pending_crx_ids.begin();
-       id != pending_crx_ids.end(); ++id) {
-    LoadApp(profile, *id, &(app_state_map[*id]));
+  for (const auto& id : pending_crx_ids) {
+    LoadApp(profile, id, &(app_state_map[id]));
   }
 
   return app_state_map;
@@ -152,7 +152,7 @@ void SyncAppHelper::SetupIfNecessary(SyncTest* test) {
     extensions::ExtensionSystem::Get(test->GetProfile(i))
         ->InitForRegularProfile(true /* extensions_enabled */);
   }
-  if (test->use_verifier()) {
+  if (test->UseVerifier()) {
     extensions::ExtensionSystem::Get(test->verifier())
         ->InitForRegularProfile(true /* extensions_enabled */);
   }

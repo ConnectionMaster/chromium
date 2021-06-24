@@ -12,16 +12,27 @@ import tempfile
 
 REPOSITORY_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
-DOCLAVA_DIR = os.path.join(REPOSITORY_ROOT, 'buildtools', 'android', 'doclava')
-SDK_DIR = os.path.join(REPOSITORY_ROOT, 'third_party', 'android_sdk', 'public')
 
 sys.path.insert(0, os.path.join(REPOSITORY_ROOT, 'build/android/gyp'))
 sys.path.insert(0, os.path.join(REPOSITORY_ROOT, 'net/tools/net_docs'))
-from util import build_utils  # pylint: disable=import-error
+# pylint: disable=wrong-import-position
+from util import build_utils
 import net_docs
 from markdown.postprocessors import Postprocessor
 from markdown.extensions import Extension
+# pylint: enable=wrong-import-position
 
+DOCLAVA_DIR = os.path.join(REPOSITORY_ROOT, 'buildtools', 'android', 'doclava')
+SDK_DIR = os.path.join(REPOSITORY_ROOT, 'third_party', 'android_sdk', 'public')
+JAVADOC_PATH = os.path.join(build_utils.JAVA_HOME, 'bin', 'javadoc')
+
+JAVADOC_WARNING = """\
+javadoc: warning - The old Doclet and Taglet APIs in the packages
+com.sun.javadoc, com.sun.tools.doclets and their implementations
+are planned to be removed in a future JDK release. These
+components have been superseded by the new APIs in jdk.javadoc.doclet.
+Users are strongly recommended to migrate to the new APIs.
+"""
 
 class CronetPostprocessor(Postprocessor):
   def run(self, text):
@@ -38,7 +49,7 @@ def GenerateJavadoc(options, src_dir, output_dir):
   working_dir = os.path.join(options.input_dir, 'android', 'api')
   overview_file = os.path.abspath(options.overview_file)
 
-  android_sdk_jar = os.path.abspath(options.android_sdk_jar)
+  android_sdk_jar = options.android_sdk_jar
   if not android_sdk_jar:
     android_sdk_jar = os.path.join(
         SDK_DIR, 'platforms', 'android-27', 'android.jar')
@@ -46,8 +57,9 @@ def GenerateJavadoc(options, src_dir, output_dir):
   build_utils.DeleteDirectory(output_dir)
   build_utils.MakeDirectory(output_dir)
   javadoc_cmd = [
-    'javadoc',
+    os.path.abspath(JAVADOC_PATH),
     '-d', output_dir,
+    '-quiet',
     '-overview', overview_file,
     '-doclet', 'com.google.doclava.Doclava',
     '-docletpath',
@@ -56,18 +68,20 @@ def GenerateJavadoc(options, src_dir, output_dir):
     '-title', 'Cronet API',
     '-federate', 'Android', 'https://developer.android.com/',
     '-federationapi', 'Android', os.path.join(DOCLAVA_DIR, 'current.txt'),
-    '-bootclasspath',
-    '%s:%s' % (android_sdk_jar,
-               os.path.join(SDK_DIR, 'extras', 'android', 'support',
-                            'annotations', 'android-support-annotations.jar')),
+    '-classpath',
+    '%s:%s' % (os.path.abspath(android_sdk_jar),
+               os.path.abspath(options.support_annotations_jar)),
   ]
   for subdir, _, files in os.walk(src_dir):
     for filename in files:
       if filename.endswith(".java"):
         javadoc_cmd += [os.path.join(subdir, filename)]
   try:
+    def stderr_filter(stderr):
+      return stderr.replace(JAVADOC_WARNING, '')
+
     build_utils.CheckOutput(javadoc_cmd, cwd=working_dir,
-        fail_func=lambda ret, stderr: (ret != 0 or not stderr is ''))
+                            stderr_filter=stderr_filter)
   except build_utils.CalledProcessError:
     build_utils.DeleteDirectory(output_dir)
     raise
@@ -91,6 +105,8 @@ def main():
   parser.add_option('--readme-file', help='Path of the README.md')
   parser.add_option('--zip-file', help='Path to ZIP archive of javadocs.')
   parser.add_option('--android-sdk-jar', help='Path to android.jar')
+  parser.add_option('--support-annotations-jar',
+                    help='Path to support-annotations-$VERSION.jar')
 
   options, _ = parser.parse_args()
   # A temporary directory to put the output of cronet api source jar files.

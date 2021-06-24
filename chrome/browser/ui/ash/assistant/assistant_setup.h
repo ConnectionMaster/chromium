@@ -5,45 +5,51 @@
 #ifndef CHROME_BROWSER_UI_ASH_ASSISTANT_ASSISTANT_SETUP_H_
 #define CHROME_BROWSER_UI_ASH_ASSISTANT_ASSISTANT_SETUP_H_
 
-#include "ash/public/interfaces/assistant_setup.mojom.h"
+#include <memory>
+#include <string>
+
+#include "ash/public/cpp/assistant/assistant_setup.h"
+#include "ash/public/cpp/assistant/assistant_state.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/chromeos/arc/voice_interaction/voice_interaction_controller_client.h"
-#include "chromeos/services/assistant/public/mojom/settings.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
-
-namespace service_manager {
-class Connector;
-}  // namespace service_manager
+#include "chrome/browser/ui/ash/assistant/search_and_assistant_enabled_checker.h"
+#include "chromeos/services/assistant/public/cpp/assistant_service.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 // AssistantSetup is the class responsible for start Assistant OptIn flow.
-class AssistantSetup : public ash::mojom::AssistantSetup,
-                       public arc::VoiceInteractionControllerClient::Observer {
+class AssistantSetup : public ash::AssistantSetup,
+                       public ash::AssistantStateObserver,
+                       public SearchAndAssistantEnabledChecker::Delegate {
  public:
-  explicit AssistantSetup(service_manager::Connector* connector);
+  AssistantSetup();
   ~AssistantSetup() override;
 
-  // ash::mojom::AssistantSetup:
+  // ash::AssistantSetup:
   void StartAssistantOptInFlow(
-      ash::mojom::FlowType type,
+      ash::FlowType type,
       StartAssistantOptInFlowCallback callback) override;
+  bool BounceOptInWindowIfActive() override;
 
   // If prefs::kVoiceInteractionConsentStatus is nullptr, means the
   // pref is not set by user. Therefore we need to start OOBE.
   void MaybeStartAssistantOptInFlow();
 
- private:
-  // arc::VoiceInteractionControllerClient::Observer overrides
-  void OnStateChanged(ash::mojom::VoiceInteractionState state) override;
+  // SearchAndAssistantEnabledChecker::Delegate:
+  void OnError() override;
+  void OnSearchAndAssistantStateReceived(bool is_disabled) override;
 
-  void SyncActivityControlState();
+ private:
+  // ash::AssistantStateObserver:
+  void OnAssistantStatusChanged(
+      chromeos::assistant::AssistantStatus status) override;
+
+  void SyncSettingsState();
   void OnGetSettingsResponse(const std::string& settings);
 
-  service_manager::Connector* connector_;
-  chromeos::assistant::mojom::AssistantSettingsManagerPtr settings_manager_;
-  mojo::Binding<ash::mojom::AssistantSetup> binding_;
+  std::unique_ptr<SearchAndAssistantEnabledChecker>
+      search_and_assistant_enabled_checker_;
 
-  base::WeakPtrFactory<AssistantSetup> weak_factory_;
+  base::WeakPtrFactory<AssistantSetup> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AssistantSetup);
 };

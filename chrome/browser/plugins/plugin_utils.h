@@ -15,7 +15,7 @@ class GURL;
 class HostContentSettingsMap;
 
 namespace content {
-class ResourceContext;
+class BrowserContext;
 struct WebPluginInfo;
 }
 
@@ -37,38 +37,16 @@ class PluginUtils {
       bool* is_default,
       bool* is_managed);
 
-  // Returns the content setting for Flash. This is the same as
-  // |GetPluginContentSetting| but flash-specific.
-  static ContentSetting GetFlashPluginContentSetting(
-      const HostContentSettingsMap* host_content_settings_map,
-      const url::Origin& main_frame_origin,
-      const GURL& plugin_url,
-      bool* is_managed);
-
-  // Returns the raw default content setting for Flash. This should not be used
-  // to actually run Flash, as it bypasses the origin scheme filter, legacy
-  // guardrails, and plugin-specific content settings. Hence "unsafe".
-  // It's used only for displaying Flash deprecation advisories.
-  static ContentSetting UnsafeGetRawDefaultFlashContentSetting(
-      const HostContentSettingsMap* host_content_settings_map,
-      bool* is_managed);
-
-  // Remember that the user has changed the Flash permission for
-  // |top_level_url|.
-  static void RememberFlashChangedForSite(
-      HostContentSettingsMap* host_content_settings_map,
-      const GURL& top_level_url);
-
   // If there's an extension that is allowed to handle |mime_type|, returns its
   // ID. Otherwise returns an empty string.
   static std::string GetExtensionIdForMimeType(
-      content::ResourceContext* resource_context,
+      content::BrowserContext* browser_context,
       const std::string& mime_type);
 
   // Returns a map populated with MIME types that are handled by an extension as
   // keys and the corresponding extensions Ids as values.
   static base::flat_map<std::string, std::string> GetMimeTypeToExtensionIdMap(
-      content::ResourceContext* resource_context);
+      content::BrowserContext* browser_context);
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(PluginUtils);

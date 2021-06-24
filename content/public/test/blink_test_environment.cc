@@ -19,13 +19,12 @@
 #include "third_party/blink/public/platform/web_cache.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
 #include "third_party/blink/public/web/blink.h"
-#include "url/url_util.h"
 
 #if defined(OS_WIN)
 #include "ui/display/win/dpi.h"
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/test/mock_chrome_application_mac.h"
 #endif
 
@@ -73,7 +72,7 @@ void SetUpBlinkTestEnvironment() {
     blink::WebRuntimeFeatures::EnableFeatureFromString(feature, false);
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   mock_cr_app::RegisterMockCrApp();
 #endif
 
@@ -81,10 +80,6 @@ void SetUpBlinkTestEnvironment() {
   display::win::SetDefaultDeviceScaleFactor(1.0f);
 #endif
 
-  // Explicitly initialize the GURL library before spawning any threads.
-  // Otherwise crash may happend when different threads try to create a GURL
-  // at same time.
-  url::Initialize();
   test_environment = new TestEnvironment;
 }
 

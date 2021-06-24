@@ -6,28 +6,28 @@
 #define CONTENT_BROWSER_RENDERER_HOST_DISPLAY_UTIL_H_
 
 #include "content/common/content_export.h"
-#include "content/public/common/screen_info.h"
 #include "ui/display/display.h"
+#include "ui/display/screen_info.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace content {
 
 class CONTENT_EXPORT DisplayUtil {
  public:
-  static void DisplayToScreenInfo(ScreenInfo* screen_info,
+  static void DisplayToScreenInfo(display::ScreenInfo* screen_info,
                                   const display::Display& display);
 
-  static void GetNativeViewScreenInfo(ScreenInfo* screen_info,
+  static void GetNativeViewScreenInfo(display::ScreenInfo* screen_info,
                                       gfx::NativeView native_view);
 
-  static void GetDefaultScreenInfo(ScreenInfo* screen_info);
+  static void GetDefaultScreenInfo(display::ScreenInfo* screen_info);
 
   // Compute the orientation type of the display assuming it is a mobile device.
-  static ScreenOrientationValues GetOrientationTypeForMobile(
+  static display::mojom::ScreenOrientation GetOrientationTypeForMobile(
       const display::Display& display);
 
   // Compute the orientation type of the display assuming it is a desktop.
-  static ScreenOrientationValues GetOrientationTypeForDesktop(
+  static display::mojom::ScreenOrientation GetOrientationTypeForDesktop(
       const display::Display& display);
 };
 

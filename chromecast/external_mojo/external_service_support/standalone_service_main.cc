@@ -7,12 +7,15 @@
 
 #include "base/at_exit.h"
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/message_loop/message_pump_for_io.h"
-#include "base/task/task_scheduler/task_scheduler.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/run_loop.h"
+#include "base/task/single_thread_task_executor.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "chromecast/external_mojo/external_service_support/external_connector.h"
 #include "chromecast/external_mojo/external_service_support/process_setup.h"
 #include "chromecast/external_mojo/external_service_support/service_process.h"
+#include "chromecast/external_mojo/external_service_support/tracing_client.h"
 #include "chromecast/external_mojo/public/cpp/common.h"
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
@@ -24,6 +27,8 @@ struct GlobalState {
       service_process;
   std::unique_ptr<chromecast::external_service_support::ExternalConnector>
       connector;
+  std::unique_ptr<chromecast::external_service_support::TracingClient>
+      tracing_client;
 };
 
 void OnConnected(
@@ -31,6 +36,9 @@ void OnConnected(
     std::unique_ptr<chromecast::external_service_support::ExternalConnector>
         connector) {
   state->connector = std::move(connector);
+  state->tracing_client =
+      chromecast::external_service_support::TracingClient::Create(
+          state->connector.get());
   state->service_process =
       chromecast::external_service_support::ServiceProcess::Create(
           state->connector.get());
@@ -40,16 +48,17 @@ int main(int argc, char** argv) {
   base::AtExitManager exit_manager;
   chromecast::external_service_support::CommonProcessInitialization(argc, argv);
 
-  base::MessageLoopForIO main_loop;
+  base::SingleThreadTaskExecutor io_task_executor(base::MessagePumpType::IO);
   base::RunLoop run_loop;
 
   mojo::core::Init();
 
   mojo::core::ScopedIPCSupport ipc_support(
-      main_loop.task_runner(),
+      io_task_executor.task_runner(),
       mojo::core::ScopedIPCSupport::ShutdownPolicy::CLEAN);
 
-  base::TaskScheduler::CreateAndStartWithDefaultParams("StandaloneService");
+  base::ThreadPoolInstance::CreateAndStartWithDefaultParams(
+      "StandaloneService");
 
   GlobalState state;
   chromecast::external_service_support::ExternalConnector::Connect(
@@ -57,7 +66,7 @@ int main(int argc, char** argv) {
       base::BindOnce(&OnConnected, &state));
 
   run_loop.Run();
-  base::TaskScheduler::GetInstance()->Shutdown();
+  base::ThreadPoolInstance::Get()->Shutdown();
 
   return 0;
 }

@@ -31,6 +31,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_SHARED_WORKER_THREAD_H_
 
 #include <memory>
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 
@@ -40,7 +41,9 @@ struct GlobalScopeCreationParams;
 
 class CORE_EXPORT SharedWorkerThread : public WorkerThread {
  public:
-  explicit SharedWorkerThread(WorkerReportingProxy&);
+  SharedWorkerThread(WorkerReportingProxy& worker_reporting_proxy,
+                     const SharedWorkerToken& token,
+                     const base::UnguessableToken& appcache_host_id);
   ~SharedWorkerThread() override;
 
   WorkerBackingThread& GetWorkerBackingThread() override {
@@ -52,11 +55,13 @@ class CORE_EXPORT SharedWorkerThread : public WorkerThread {
   WorkerOrWorkletGlobalScope* CreateWorkerGlobalScope(
       std::unique_ptr<GlobalScopeCreationParams>) override;
 
-  WebThreadType GetThreadType() const override {
-    return WebThreadType::kSharedWorkerThread;
+  ThreadType GetThreadType() const override {
+    return ThreadType::kSharedWorkerThread;
   }
 
   std::unique_ptr<WorkerBackingThread> worker_backing_thread_;
+  const SharedWorkerToken token_;
+  const base::UnguessableToken appcache_host_id_;
 };
 
 }  // namespace blink

@@ -9,15 +9,15 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "base/win/registry.h"
-#include "chrome/browser/conflicts/incompatible_applications_updater_win.h"
-#include "chrome/browser/conflicts/registry_key_watcher_win.h"
-#include "chrome/browser/conflicts/uninstall_application_win.h"
+#include "chrome/browser/win/conflicts/incompatible_applications_updater.h"
+#include "chrome/browser/win/conflicts/registry_key_watcher.h"
+#include "chrome/browser/win/conflicts/uninstall_application.h"
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -76,7 +76,6 @@ void IncompatibleApplicationsHandler::HandleRequestIncompatibleApplicationsList(
           IncompatibleApplicationsUpdater::GetCachedApplications();
 
   base::Value application_list(base::Value::Type::LIST);
-  application_list.GetList().reserve(incompatible_applications.size());
 
   for (const auto& application : incompatible_applications) {
     // Set up a registry watcher for each problem application.
@@ -101,12 +100,12 @@ void IncompatibleApplicationsHandler::HandleRequestIncompatibleApplicationsList(
 
     // Also add the application to the list that is passed to the javascript.
     base::Value dict(base::Value::Type::DICTIONARY);
-    dict.SetKey("name", base::Value(application.info.name));
+    dict.SetKey("name", base::Value(base::WideToUTF8(application.info.name)));
     dict.SetKey("type",
-                base::Value(application.blacklist_action->message_type()));
+                base::Value(application.blocklist_action->message_type()));
     dict.SetKey("url",
-                base::Value(application.blacklist_action->message_url()));
-    application_list.GetList().push_back(std::move(dict));
+                base::Value(application.blocklist_action->message_url()));
+    application_list.Append(std::move(dict));
   }
 
   UMA_HISTOGRAM_COUNTS_100("IncompatibleApplicationsPage.NumApplications",
@@ -124,7 +123,7 @@ void IncompatibleApplicationsHandler::HandleStartApplicationUninstallation(
 
   // Open the Apps & Settings page with the application name highlighted.
   uninstall_application::LaunchUninstallFlow(
-      base::UTF8ToUTF16(args->GetList()[0].GetString()));
+      base::UTF8ToWide(args->GetList()[0].GetString()));
 }
 
 void IncompatibleApplicationsHandler::HandleGetSubtitlePluralString(
@@ -166,7 +165,7 @@ void IncompatibleApplicationsHandler::OnApplicationRemoved(
 
   registry_key_watchers_.erase(application);
   FireWebUIListener("incompatible-application-removed",
-                    base::Value(application.name));
+                    base::Value(base::WideToUTF8(application.name)));
 }
 
 }  // namespace settings

@@ -5,12 +5,11 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_PLUGIN_MANAGER_H_
 #define CHROME_BROWSER_EXTENSIONS_PLUGIN_MANAGER_H_
 
-#include <set>
-#include <string>
-
-#include "base/scoped_observer.h"
+#include "base/macros.h"
+#include "base/scoped_observation.h"
 #include "components/nacl/common/buildflags.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/manifest_handlers/nacl_modules_handler.h"
 
@@ -22,7 +21,6 @@ class BrowserContext;
 }
 
 namespace extensions {
-class ExtensionRegistry;
 
 class PluginManager : public BrowserContextKeyedAPI,
                       public ExtensionRegistryObserver {
@@ -71,8 +69,10 @@ class PluginManager : public BrowserContextKeyedAPI,
   Profile* profile_;
 
   // Listen to extension load, unloaded notifications.
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
+
+  DISALLOW_COPY_AND_ASSIGN(PluginManager);
 };
 
 }  // namespace extensions

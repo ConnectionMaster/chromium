@@ -11,24 +11,21 @@
 
 namespace gcm {
 
-FakeGCMDriver::FakeGCMDriver() : GCMDriver(base::FilePath(), nullptr) {
-}
+FakeGCMDriver::FakeGCMDriver() : GCMDriver(base::FilePath(), nullptr) {}
 
 FakeGCMDriver::FakeGCMDriver(
     const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner)
-    : GCMDriver(base::FilePath(), blocking_task_runner) {
-}
+    : GCMDriver(base::FilePath(), blocking_task_runner) {}
 
-FakeGCMDriver::~FakeGCMDriver() {
-}
+FakeGCMDriver::~FakeGCMDriver() = default;
 
 void FakeGCMDriver::ValidateRegistration(
     const std::string& app_id,
     const std::vector<std::string>& sender_ids,
     const std::string& registration_id,
-    const ValidateRegistrationCallback& callback) {
+    ValidateRegistrationCallback callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, true /* is_valid */));
+      FROM_HERE, base::BindOnce(std::move(callback), true /* is_valid */));
 }
 
 void FakeGCMDriver::OnSignedIn() {
@@ -43,12 +40,6 @@ void FakeGCMDriver::AddConnectionObserver(GCMConnectionObserver* observer) {
 void FakeGCMDriver::RemoveConnectionObserver(GCMConnectionObserver* observer) {
 }
 
-void FakeGCMDriver::Enable() {
-}
-
-void FakeGCMDriver::Disable() {
-}
-
 GCMClient* FakeGCMDriver::GetGCMClientForTesting() const {
   return nullptr;
 }
@@ -61,13 +52,12 @@ bool FakeGCMDriver::IsConnected() const {
   return true;
 }
 
-void FakeGCMDriver::GetGCMStatistics(const GetGCMStatisticsCallback& callback,
-                                     ClearActivityLogs clear_logs) {
-}
+void FakeGCMDriver::GetGCMStatistics(GetGCMStatisticsCallback callback,
+                                     ClearActivityLogs clear_logs) {}
 
-void FakeGCMDriver::SetGCMRecording(const GetGCMStatisticsCallback& callback,
-                                    bool recording) {
-}
+void FakeGCMDriver::SetGCMRecording(
+    const GCMStatisticsRecordingCallback& callback,
+    bool recording) {}
 
 GCMClient::Result FakeGCMDriver::EnsureStarted(
     GCMClient::StartMode start_mode) {
@@ -97,17 +87,13 @@ void FakeGCMDriver::UpdateAccountMapping(
     const AccountMapping& account_mapping) {
 }
 
-void FakeGCMDriver::RemoveAccountMapping(const std::string& account_id) {
-}
+void FakeGCMDriver::RemoveAccountMapping(const CoreAccountId& account_id) {}
 
 base::Time FakeGCMDriver::GetLastTokenFetchTime() {
   return base::Time();
 }
 
 void FakeGCMDriver::SetLastTokenFetchTime(const base::Time& time) {
-}
-
-void FakeGCMDriver::WakeFromSuspendForHeartbeat(bool wake) {
 }
 
 InstanceIDHandler* FakeGCMDriver::GetInstanceIDHandlerInternal() {

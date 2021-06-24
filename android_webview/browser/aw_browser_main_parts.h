@@ -7,16 +7,19 @@
 
 #include <memory>
 
+#include "android_webview/browser/aw_browser_process.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/task/single_thread_task_executor.h"
 #include "content/public/browser/browser_main_parts.h"
 
-namespace base {
-class MessageLoop;
+namespace metrics {
+class MemoryMetricsLogger;
 }
 
 namespace android_webview {
 
+class AwBrowserProcess;
 class AwContentBrowserClient;
 
 class AwBrowserMainParts : public content::BrowserMainParts {
@@ -27,16 +30,22 @@ class AwBrowserMainParts : public content::BrowserMainParts {
   // Overriding methods from content::BrowserMainParts.
   int PreEarlyInitialization() override;
   int PreCreateThreads() override;
-  void PreMainMessageLoopRun() override;
-  bool MainMessageLoopRun(int* result_code) override;
-  void ServiceManagerConnectionStarted(
-      content::ServiceManagerConnection* connection) override;
+  int PreMainMessageLoopRun() override;
+  void WillRunMainMessageLoop(
+      std::unique_ptr<base::RunLoop>& run_loop) override;
+  void PostCreateThreads() override;
 
  private:
-  // Android specific UI MessageLoop.
-  std::unique_ptr<base::MessageLoop> main_message_loop_;
+  void RegisterSyntheticTrials();
+
+  // Android specific UI SingleThreadTaskExecutor.
+  std::unique_ptr<base::SingleThreadTaskExecutor> main_task_executor_;
 
   AwContentBrowserClient* browser_client_;
+
+  std::unique_ptr<metrics::MemoryMetricsLogger> metrics_logger_;
+
+  std::unique_ptr<AwBrowserProcess> browser_process_;
 
   DISALLOW_COPY_AND_ASSIGN(AwBrowserMainParts);
 };

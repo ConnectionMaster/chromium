@@ -6,12 +6,14 @@
 #define CONTENT_BROWSER_INDEXED_DB_TRANSACTION_IMPL_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequence_checker.h"
-#include "content/public/browser/browser_thread.h"
+#include "content/browser/indexed_db/indexed_db_external_object.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 
@@ -28,14 +30,14 @@ class TransactionImpl : public blink::mojom::IDBTransaction {
  public:
   explicit TransactionImpl(
       base::WeakPtr<IndexedDBTransaction> transaction,
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       base::WeakPtr<IndexedDBDispatcherHost> dispatcher_host,
       scoped_refptr<base::SequencedTaskRunner> idb_runner);
   ~TransactionImpl() override;
 
   // blink::mojom::IDBTransaction implementation
   void CreateObjectStore(int64_t object_store_id,
-                         const base::string16& name,
+                         const std::u16string& name,
                          const blink::IndexedDBKeyPath& key_path,
                          bool auto_increment) override;
   void DeleteObjectStore(int64_t object_store_id) override;
@@ -44,7 +46,10 @@ class TransactionImpl : public blink::mojom::IDBTransaction {
            const blink::IndexedDBKey& key,
            blink::mojom::IDBPutMode mode,
            const std::vector<blink::IndexedDBIndexKeys>& index_keys,
-           blink::mojom::IDBCallbacksAssociatedPtrInfo callbacks) override;
+           blink::mojom::IDBTransaction::PutCallback callback) override;
+  void PutAll(int64_t object_store_id,
+              std::vector<blink::mojom::IDBPutParamsPtr> puts,
+              PutAllCallback callback) override;
   void Commit(int64_t num_errors_handled) override;
 
   void OnGotUsageAndQuotaForCommit(blink::mojom::QuotaStatusCode status,
@@ -52,19 +57,21 @@ class TransactionImpl : public blink::mojom::IDBTransaction {
                                    int64_t quota);
 
  private:
-  class IOHelper;
-
-  std::unique_ptr<IOHelper, BrowserThread::DeleteOnIOThread> io_helper_;
+  // Turns an IDBValue into a set of IndexedDBExternalObjects in
+  // |external_objects|.
+  void CreateExternalObjects(
+      blink::mojom::IDBValuePtr& value,
+      std::vector<IndexedDBExternalObject>* external_objects);
 
   base::WeakPtr<IndexedDBDispatcherHost> dispatcher_host_;
   scoped_refptr<IndexedDBContextImpl> indexed_db_context_;
   base::WeakPtr<IndexedDBTransaction> transaction_;
-  const url::Origin origin_;
+  const blink::StorageKey storage_key_;
   scoped_refptr<base::SequencedTaskRunner> idb_runner_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<TransactionImpl> weak_factory_;
+  base::WeakPtrFactory<TransactionImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TransactionImpl);
 };

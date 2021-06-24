@@ -4,7 +4,7 @@
 
 #include "components/bookmarks/browser/bookmark_node_data.h"
 
-#include "base/logging.h"
+#include "base/notreached.h"
 
 namespace bookmarks {
 
@@ -18,7 +18,7 @@ void BookmarkNodeData::WriteToClipboard() {
   NOTREACHED();
 }
 
-bool BookmarkNodeData::ReadFromClipboard(ui::ClipboardType type) {
+bool BookmarkNodeData::ReadFromClipboard(ui::ClipboardBuffer buffer) {
   NOTREACHED();
   return false;
 }

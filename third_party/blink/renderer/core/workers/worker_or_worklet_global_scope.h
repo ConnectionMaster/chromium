@@ -5,21 +5,28 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_WORKER_OR_WORKLET_GLOBAL_SCOPE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_WORKER_OR_WORKLET_GLOBAL_SCOPE_H_
 
+#include <bitset>
 #include "base/single_thread_task_runner.h"
-#include "services/network/public/mojom/fetch_api.mojom-shared.h"
+#include "base/unguessable_token.h"
+#include "services/network/public/mojom/fetch_api.mojom-blink-forward.h"
+#include "services/network/public/mojom/web_sandbox_flags.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/loader/code_cache.mojom-forward.h"
+#include "third_party/blink/public/mojom/v8_cache_options.mojom-blink.h"
+#include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/web_url_request.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_cache_options.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
+#include "third_party/blink/renderer/core/frame/deprecation.h"
 #include "third_party/blink/renderer/core/frame/web_feature_forward.h"
 #include "third_party/blink/renderer/core/script/modulator.h"
+#include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
 #include "third_party/blink/renderer/core/workers/worker_clients.h"
 #include "third_party/blink/renderer/core/workers/worker_navigator.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_load_scheduler.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_loader_options.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/bit_vector.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
@@ -29,6 +36,7 @@ class FetchClientSettingsObjectSnapshot;
 class Modulator;
 class ModuleTreeClient;
 class ResourceFetcher;
+class WorkerResourceTimingNotifier;
 class SubresourceFilter;
 class WebWorkerFetchContext;
 class WorkerOrWorkletScriptController;
@@ -36,18 +44,17 @@ class WorkerReportingProxy;
 class WorkerThread;
 
 class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
-                                               public ExecutionContext,
-                                               public SecurityContext {
+                                               public ExecutionContext {
  public:
-  using SecurityContext::GetSecurityOrigin;
-  using SecurityContext::GetContentSecurityPolicy;
-
   WorkerOrWorkletGlobalScope(
       v8::Isolate*,
+      scoped_refptr<SecurityOrigin> origin,
+      Agent* agent,
       const String& name,
       const base::UnguessableToken& parent_devtools_token,
-      V8CacheOptions,
+      mojom::blink::V8CacheOptions,
       WorkerClients*,
+      std::unique_ptr<WebContentSettingsClient>,
       scoped_refptr<WebWorkerFetchContext>,
       WorkerReportingProxy&);
   ~WorkerOrWorkletGlobalScope() override;
@@ -56,8 +63,7 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
   const AtomicString& InterfaceName() const override;
 
   // ScriptWrappable
-  v8::Local<v8::Object> Wrap(v8::Isolate*,
-                             v8::Local<v8::Object> creation_context) final;
+  v8::MaybeLocal<v8::Value> Wrap(ScriptState*) final;
   v8::Local<v8::Object> AssociateWithWrapper(
       v8::Isolate*,
       const WrapperTypeInfo*,
@@ -69,9 +75,6 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
   bool IsJSExecutionForbidden() const final;
   void DisableEval(const String& error_message) final;
   bool CanExecuteScripts(ReasonForCallingCanExecuteScripts) final;
-
-  // SecurityContext
-  void DidUpdateSecurityOrigin() final {}
 
   // Returns true when the WorkerOrWorkletGlobalScope is closing (e.g. via
   // WorkerGlobalScope#close() method). If this returns true, the worker is
@@ -85,12 +88,8 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
 
   void SetModulator(Modulator*);
 
-  // Called from UseCounter to record API use in this execution context.
-  void CountFeature(WebFeature);
-
-  // Called from UseCounter to record deprecated API use in this execution
-  // context.
-  void CountDeprecation(WebFeature);
+  // UseCounter
+  void CountUse(WebFeature feature) final;
 
   // May return nullptr if this global scope is not threaded (i.e.,
   // WorkletGlobalScope for the main thread) or after Dispose() is called.
@@ -99,6 +98,16 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
   // Returns nullptr if this global scope is a WorkletGlobalScope
   virtual WorkerNavigator* navigator() const { return nullptr; }
 
+  // Returns true when we should reject a response without
+  // cross-origin-embedder-policy: require-corp.
+  // TODO(crbug.com/1064920): Remove this once PlzDedicatedWorker ships.
+  virtual RejectCoepUnsafeNone ShouldRejectCoepUnsafeNoneTopModuleScript()
+      const {
+    return RejectCoepUnsafeNone(false);
+  }
+
+  // Returns the resource fetcher for subresources (a.k.a. inside settings
+  // resource fetcher). See core/workers/README.md for details.
   ResourceFetcher* Fetcher() const override;
   ResourceFetcher* EnsureFetcher();
 
@@ -112,50 +121,99 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
   // more data to the outside ResourceFetcher to fix the behavior and reduce the
   // dependencies.
   ResourceFetcher* CreateOutsideSettingsFetcher(
-      const FetchClientSettingsObject&);
+      const FetchClientSettingsObject&,
+      WorkerResourceTimingNotifier&);
 
   const String Name() const { return name_; }
   const base::UnguessableToken& GetParentDevToolsToken() {
     return parent_devtools_token_;
   }
+  virtual const base::UnguessableToken& GetDevToolsToken() const = 0;
 
   WorkerClients* Clients() const { return worker_clients_.Get(); }
+
+  // May return nullptr.
+  WebContentSettingsClient* ContentSettingsClient() const {
+    return content_settings_client_.get();
+  }
 
   WorkerOrWorkletScriptController* ScriptController() {
     return script_controller_.Get();
   }
-  V8CacheOptions GetV8CacheOptions() const { return v8_cache_options_; }
+  mojom::blink::V8CacheOptions GetV8CacheOptions() const override {
+    return v8_cache_options_;
+  }
 
   WorkerReportingProxy& ReportingProxy() { return reporting_proxy_; }
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
-  scheduler::WorkerScheduler* GetScheduler() override;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(TaskType) override;
+
+  void SetSandboxFlags(network::mojom::blink::WebSandboxFlags mask);
+
+  void SetDefersLoadingForResourceFetchers(LoaderFreezeMode);
+
+  virtual int GetOutstandingThrottledLimit() const;
+
+  // TODO(crbug.com/1146824): Remove this once PlzDedicatedWorker and
+  // PlzServiceWorker ship.
+  virtual bool IsInitialized() const = 0;
+
+  // TODO(crbug/964467): Currently all workers fetch cached code but only
+  // services workers use them. Dedicated / Shared workers don't use the cached
+  // code since we don't create a CachedMetadataHandler. We need to fix this by
+  // creating a cached metadta handler for all workers.
+  virtual blink::mojom::CodeCacheHost* GetCodeCacheHost() { return nullptr; }
+
+  Deprecation& GetDeprecation() { return deprecation_; }
 
  protected:
   // Sets outside's CSP used for off-main-thread top-level worker script
   // fetch.
-  void SetOutsideContentSecurityPolicyHeaders(const Vector<CSPHeaderAndType>&);
+  void SetOutsideContentSecurityPolicies(
+      Vector<network::mojom::blink::ContentSecurityPolicyPtr>);
 
   // Initializes inside's CSP used for subresource fetch etc.
-  void InitContentSecurityPolicyFromVector(const Vector<CSPHeaderAndType>&);
+  void InitContentSecurityPolicyFromVector(
+      Vector<network::mojom::blink::ContentSecurityPolicyPtr> policies);
   virtual void BindContentSecurityPolicyToExecutionContext();
 
   void FetchModuleScript(const KURL& module_url_record,
                          const FetchClientSettingsObjectSnapshot&,
-                         mojom::RequestContextType destination,
-                         network::mojom::FetchCredentialsMode,
+                         WorkerResourceTimingNotifier&,
+                         mojom::blink::RequestContextType context_type,
+                         network::mojom::RequestDestination destination,
+                         network::mojom::CredentialsMode,
                          ModuleScriptCustomFetchType,
                          ModuleTreeClient*);
 
-  void TasksWerePaused() override;
-  void TasksWereUnpaused() override;
+  const Vector<network::mojom::blink::ContentSecurityPolicyPtr>&
+  OutsideContentSecurityPolicies() const {
+    return outside_content_security_policies_;
+  }
+
+  void SetIsOfflineMode(bool is_offline_mode) {
+    DCHECK(web_worker_fetch_context_);
+    web_worker_fetch_context_->SetIsOfflineMode(is_offline_mode);
+  }
+
+  WebWorkerFetchContext* web_worker_fetch_context() const {
+    return web_worker_fetch_context_.get();
+  }
+
+  virtual ResourceLoadScheduler::ThrottleOptionOverride
+  GetThrottleOptionOverride() const;
+
+  // This method must be call after the fetcher is created if conditions
+  // change such that a different ThrottleOptionOverride should be applied.
+  void UpdateFetcherThrottleOptionOverride();
 
  private:
   void InitializeWebFetchContextIfNeeded();
   ResourceFetcher* CreateFetcherInternal(const FetchClientSettingsObject&,
-                                         ContentSecurityPolicy&);
+                                         ContentSecurityPolicy&,
+                                         WorkerResourceTimingNotifier&);
 
   bool web_fetch_context_initialized_ = false;
 
@@ -163,6 +221,7 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
   const base::UnguessableToken parent_devtools_token_;
 
   CrossThreadPersistent<WorkerClients> worker_clients_;
+  std::unique_ptr<WebContentSettingsClient> content_settings_client_;
 
   Member<ResourceFetcher> inside_settings_resource_fetcher_;
 
@@ -186,16 +245,21 @@ class CORE_EXPORT WorkerOrWorkletGlobalScope : public EventTargetWithInlineData,
   Member<SubresourceFilter> subresource_filter_;
 
   Member<WorkerOrWorkletScriptController> script_controller_;
-  const V8CacheOptions v8_cache_options_;
+  const mojom::blink::V8CacheOptions v8_cache_options_;
 
   // TODO(hiroshige): Pass outsideSettings-CSP via
   // outsideSettings-FetchClientSettingsObject.
-  Vector<CSPHeaderAndType> outside_content_security_policy_headers_;
+  Vector<network::mojom::blink::ContentSecurityPolicyPtr>
+      outside_content_security_policies_;
 
   WorkerReportingProxy& reporting_proxy_;
 
   // This is the set of features that this worker has used.
-  BitVector used_features_;
+  std::bitset<static_cast<size_t>(WebFeature::kNumberOfFeatures)>
+      used_features_;
+
+  // This tracks deprecation features that have been used.
+  Deprecation deprecation_;
 
   // LocalDOMWindow::modulator_ workaround equivalent.
   // TODO(kouhei): Remove this.

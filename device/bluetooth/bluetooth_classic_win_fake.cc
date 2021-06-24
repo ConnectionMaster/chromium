@@ -4,7 +4,9 @@
 
 #include "device/bluetooth/bluetooth_classic_win_fake.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
+#include "base/strings/string_util.h"
 
 namespace device {
 namespace win {
@@ -84,14 +86,14 @@ bool BluetoothClassicWrapperFake::HasHandle() {
 }
 
 BluetoothRadio* BluetoothClassicWrapperFake::SimulateARadio(
-    base::string16 name,
+    std::u16string name,
     BLUETOOTH_ADDRESS address) {
   BluetoothRadio* radio = new BluetoothRadio();
   radio->is_connectable = true;  // set it connectable by default.
   size_t length =
       ((name.size() > BLUETOOTH_MAX_NAME_SIZE) ? BLUETOOTH_MAX_NAME_SIZE
                                                : name.size());
-  wcsncpy(radio->radio_info.szName, name.c_str(), length);
+  wcsncpy(radio->radio_info.szName, base::as_wcstr(name), length);
   radio->radio_info.address = address;
   simulated_radios_.reset(radio);
   return radio;

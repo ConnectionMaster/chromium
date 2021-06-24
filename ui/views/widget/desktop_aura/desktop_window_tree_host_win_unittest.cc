@@ -2,19 +2,41 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
+
 #include <oleacc.h>
 #include <windows.h>
 
+#include <utility>
+
+#include "base/command_line.h"
 #include "ui/accessibility/accessibility_switches.h"
 #include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/accessibility/platform/ax_system_caret_win.h"
 #include "ui/views/test/desktop_window_tree_host_win_test_api.h"
 #include "ui/views/test/widget_test.h"
-#include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
 #include "ui/views/win/hwnd_message_handler.h"
 
 namespace views {
 namespace test {
+
+using DesktopWindowTreeHostWinTest = DesktopWidgetTest;
+
+TEST_F(DesktopWindowTreeHostWinTest, DebuggingId) {
+  Widget widget;
+  Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
+  params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  constexpr char kDebuggingName[] = "test-debugging-id";
+  params.name = kDebuggingName;
+  widget.Init(std::move(params));
+  DesktopWindowTreeHostWin* desktop_window_tree_host =
+      static_cast<DesktopWindowTreeHostWin*>(
+          widget.GetNativeWindow()->GetHost());
+  EXPECT_EQ(std::string(kDebuggingName),
+            DesktopWindowTreeHostWinTestApi(desktop_window_tree_host)
+                .GetHwndMessageHandler()
+                ->debugging_id());
+}
 
 class DesktopWindowTreeHostWinAccessibilityObjectTest
     : public DesktopWidgetTest {
@@ -52,7 +74,7 @@ TEST_F(DesktopWindowTreeHostWinAccessibilityObjectTest, RootDoesNotLeak) {
     Widget widget;
     Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
     params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-    widget.Init(params);
+    widget.Init(std::move(params));
     widget.Show();
 
     // Cache a pointer to the object we return to Windows.
@@ -83,7 +105,7 @@ TEST_F(DesktopWindowTreeHostWinAccessibilityObjectTest, CaretDoesNotLeak) {
     Widget widget;
     Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
     params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-    widget.Init(params);
+    widget.Init(std::move(params));
     widget.Show();
 
     // Cache a pointer to the object we return to Windows.
@@ -117,7 +139,7 @@ TEST_F(DesktopWindowTreeHostWinAccessibilityObjectTest, UiaRootDoesNotLeak) {
     Widget widget;
     Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
     params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-    widget.Init(params);
+    widget.Init(std::move(params));
     widget.Show();
 
     // Cache a pointer to the object we return to Windows.

@@ -63,11 +63,10 @@ class ExecuteSQLCallbackWrapper : public RefCounted<ExecuteSQLCallbackWrapper> {
   ExecuteSQLCallback* Get() { return callback_.get(); }
 
   void ReportTransactionFailed(SQLError* error) {
-    std::unique_ptr<protocol::Database::Error> error_object =
-        protocol::Database::Error::create()
-            .setMessage(error->message())
-            .setCode(error->code())
-            .build();
+    auto error_object = protocol::Database::Error::create()
+                            .setMessage(error->message())
+                            .setCode(error->code())
+                            .build();
     callback_->sendSuccess(Maybe<protocol::Array<String>>(),
                            Maybe<protocol::Array<protocol::Value>>(),
                            std::move(error_object));
@@ -90,26 +89,25 @@ class StatementCallback final : public SQLStatement::OnSuccessCallback {
   bool OnSuccess(SQLTransaction*, SQLResultSet* result_set) override {
     SQLResultSetRowList* row_list = result_set->rows();
 
-    std::unique_ptr<protocol::Array<String>> column_names =
-        protocol::Array<String>::create();
     const Vector<String>& columns = row_list->ColumnNames();
-    for (wtf_size_t i = 0; i < columns.size(); ++i)
-      column_names->addItem(columns[i]);
+    auto column_names = std::make_unique<protocol::Array<String>>(
+        columns.begin(), columns.end());
 
-    std::unique_ptr<protocol::Array<protocol::Value>> values =
-        protocol::Array<protocol::Value>::create();
+    auto values = std::make_unique<protocol::Array<protocol::Value>>();
     const Vector<SQLValue>& data = row_list->Values();
     for (wtf_size_t i = 0; i < data.size(); ++i) {
       const SQLValue& value = row_list->Values()[i];
       switch (value.GetType()) {
         case SQLValue::kStringValue:
-          values->addItem(protocol::StringValue::create(value.GetString()));
+          values->emplace_back(
+              protocol::StringValue::create(value.GetString()));
           break;
         case SQLValue::kNumberValue:
-          values->addItem(protocol::FundamentalValue::create(value.Number()));
+          values->emplace_back(
+              protocol::FundamentalValue::create(value.Number()));
           break;
         case SQLValue::kNullValue:
-          values->addItem(protocol::Value::null());
+          values->emplace_back(protocol::Value::null());
           break;
       }
     }
@@ -236,20 +234,20 @@ void InspectorDatabaseAgent::InnerEnable() {
 
 Response InspectorDatabaseAgent::enable() {
   if (enabled_.Get())
-    return Response::OK();
+    return Response::Success();
   enabled_.Set(true);
   InnerEnable();
-  return Response::OK();
+  return Response::Success();
 }
 
 Response InspectorDatabaseAgent::disable() {
   if (!enabled_.Get())
-    return Response::OK();
+    return Response::Success();
   enabled_.Set(false);
   if (DatabaseClient* client = DatabaseClient::FromPage(page_))
     client->SetInspectorAgent(nullptr);
   resources_.clear();
-  return Response::OK();
+  return Response::Success();
 }
 
 void InspectorDatabaseAgent::Restore() {
@@ -261,36 +259,32 @@ Response InspectorDatabaseAgent::getDatabaseTableNames(
     const String& database_id,
     std::unique_ptr<protocol::Array<String>>* names) {
   if (!enabled_.Get())
-    return Response::Error("Database agent is not enabled");
-
-  *names = protocol::Array<String>::create();
+    return Response::ServerError("Database agent is not enabled");
 
   blink::Database* database = DatabaseForId(database_id);
   if (database) {
     Vector<String> table_names = database->TableNames();
-    unsigned length = table_names.size();
-    for (unsigned i = 0; i < length; ++i)
-      (*names)->addItem(table_names[i]);
+    *names = std::make_unique<protocol::Array<String>>(table_names.begin(),
+                                                       table_names.end());
+  } else {
+    *names = std::make_unique<protocol::Array<String>>();
   }
-  return Response::OK();
+  return Response::Success();
 }
 
 void InspectorDatabaseAgent::executeSQL(
     const String& database_id,
     const String& query,
-    std::unique_ptr<ExecuteSQLCallback> prp_request_callback) {
-  std::unique_ptr<ExecuteSQLCallback> request_callback =
-      std::move(prp_request_callback);
-
+    std::unique_ptr<ExecuteSQLCallback> request_callback) {
   if (!enabled_.Get()) {
     request_callback->sendFailure(
-        Response::Error("Database agent is not enabled"));
+        Response::ServerError("Database agent is not enabled"));
     return;
   }
 
   blink::Database* database = DatabaseForId(database_id);
   if (!database) {
-    request_callback->sendFailure(Response::Error("Database not found"));
+    request_callback->sendFailure(Response::ServerError("Database not found"));
     return;
   }
 
@@ -305,10 +299,9 @@ void InspectorDatabaseAgent::executeSQL(
 
 InspectorDatabaseResource* InspectorDatabaseAgent::FindByFileName(
     const String& file_name) {
-  for (DatabaseResourcesHeapMap::iterator it = resources_.begin();
-       it != resources_.end(); ++it) {
-    if (it->value->GetDatabase()->FileName() == file_name)
-      return it->value.Get();
+  for (auto& resource : resources_) {
+    if (resource.value->GetDatabase()->FileName() == file_name)
+      return resource.value.Get();
   }
   return nullptr;
 }
@@ -321,7 +314,7 @@ blink::Database* InspectorDatabaseAgent::DatabaseForId(
   return it->value->GetDatabase();
 }
 
-void InspectorDatabaseAgent::Trace(blink::Visitor* visitor) {
+void InspectorDatabaseAgent::Trace(Visitor* visitor) const {
   visitor->Trace(page_);
   visitor->Trace(resources_);
   InspectorBaseAgent::Trace(visitor);

@@ -35,14 +35,12 @@
 #include "third_party/blink/renderer/core/dom/whitespace_attacher.h"
 #include "third_party/blink/renderer/core/layout/layout_object_factory.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
-#include "third_party/blink/renderer/core/layout/layout_text_combine.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_inline_text.h"
 #include "third_party/blink/renderer/core/svg/svg_foreign_object_element.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/bindings/dom_data_store.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -69,7 +67,7 @@ Node* Text::MergeNextSiblingNodesIfPossible() {
     if (next_sibling->getNodeType() != kTextNode)
       break;
 
-    Text* next_text = ToText(next_sibling);
+    auto* next_text = To<Text>(next_sibling);
 
     // Remove empty text nodes.
     if (!next_text->length()) {
@@ -125,8 +123,13 @@ Text* Text::splitText(unsigned offset, ExceptionState& exception_state) {
   if (exception_state.HadException())
     return nullptr;
 
-  if (GetLayoutObject())
+  if (GetLayoutObject()) {
     GetLayoutObject()->SetTextWithOffset(DataImpl(), 0, old_str.length());
+    if (data().IsEmpty()) {
+      // To avoid |LayoutText| has empty text, we rebuild layout tree.
+      SetForceReattachLayoutTree();
+    }
+  }
 
   if (parentNode())
     GetDocument().DidSplitTextNode(*this);
@@ -143,9 +146,8 @@ Text* Text::splitText(unsigned offset, ExceptionState& exception_state) {
 
 static const Text* EarliestLogicallyAdjacentTextNode(const Text* t) {
   for (const Node* n = t->previousSibling(); n; n = n->previousSibling()) {
-    Node::NodeType type = n->getNodeType();
-    if (type == Node::kTextNode || type == Node::kCdataSectionNode) {
-      t = ToText(n);
+    if (auto* text_node = DynamicTo<Text>(n)) {
+      t = text_node;
       continue;
     }
 
@@ -156,9 +158,8 @@ static const Text* EarliestLogicallyAdjacentTextNode(const Text* t) {
 
 static const Text* LatestLogicallyAdjacentTextNode(const Text* t) {
   for (const Node* n = t->nextSibling(); n; n = n->nextSibling()) {
-    Node::NodeType type = n->getNodeType();
-    if (type == Node::kTextNode || type == Node::kCdataSectionNode) {
-      t = ToText(n);
+    if (auto* text_node = DynamicTo<Text>(n)) {
+      t = text_node;
       continue;
     }
 
@@ -175,9 +176,10 @@ String Text::wholeText() const {
   unsigned result_length = 0;
   for (const Node* n = start_text; n != one_past_end_text;
        n = n->nextSibling()) {
-    if (!n->IsTextNode())
+    auto* text_node = DynamicTo<Text>(n);
+    if (!text_node)
       continue;
-    const String& data = ToText(n)->data();
+    const String& data = text_node->data();
     CHECK_GE(std::numeric_limits<unsigned>::max() - data.length(),
              result_length);
     result_length += data.length();
@@ -186,9 +188,10 @@ String Text::wholeText() const {
   result.ReserveCapacity(result_length);
   for (const Node* n = start_text; n != one_past_end_text;
        n = n->nextSibling()) {
-    if (!n->IsTextNode())
+    auto* text_node = DynamicTo<Text>(n);
+    if (!text_node)
       continue;
-    result.Append(ToText(n)->data());
+    result.Append(text_node->data());
   }
   DCHECK_EQ(result.length(), result_length);
 
@@ -250,17 +253,17 @@ static inline bool EndsWithWhitespace(const String& text) {
 }
 
 static inline bool CanHaveWhitespaceChildren(
-    const LayoutObject& parent,
     const ComputedStyle& style,
     const Text::AttachContext& context) {
+  const LayoutObject& parent = *context.parent;
   // <button> and <fieldset> should allow whitespace even though
   // LayoutFlexibleBox doesn't.
-  if (parent.IsLayoutButton() || parent.IsFieldset())
+  if (parent.IsButtonIncludingNG() || parent.IsFieldset())
     return true;
 
   if (parent.IsTable() || parent.IsTableRow() || parent.IsTableSection() ||
       parent.IsLayoutTableCol() || parent.IsFrameSet() ||
-      parent.IsFlexibleBoxIncludingNG() || parent.IsLayoutGrid() ||
+      parent.IsFlexibleBoxIncludingNG() || parent.IsLayoutGridIncludingNG() ||
       parent.IsSVGRoot() || parent.IsSVGContainer() || parent.IsSVGImage() ||
       parent.IsSVGShape()) {
     if (!context.use_previous_in_flow || !context.previous_in_flow ||
@@ -269,16 +272,14 @@ static inline bool CanHaveWhitespaceChildren(
 
     return style.PreserveNewline() ||
            !EndsWithWhitespace(
-               ToLayoutText(context.previous_in_flow)->GetText());
+               To<LayoutText>(context.previous_in_flow)->GetText());
   }
   return true;
 }
 
 bool Text::TextLayoutObjectIsNeeded(const AttachContext& context,
-                                    const ComputedStyle& style,
-                                    const LayoutObject& parent) const {
-  DCHECK(!GetDocument().ChildNeedsDistributionRecalc());
-
+                                    const ComputedStyle& style) const {
+  const LayoutObject& parent = *context.parent;
   if (!parent.CanHaveChildren())
     return false;
 
@@ -294,7 +295,7 @@ bool Text::TextLayoutObjectIsNeeded(const AttachContext& context,
   if (!ContainsOnlyWhitespaceOrEmpty())
     return true;
 
-  if (!CanHaveWhitespaceChildren(parent, style, context))
+  if (!CanHaveWhitespaceChildren(style, context))
     return false;
 
   // pre-wrap in SVG never makes layoutObject.
@@ -313,7 +314,7 @@ bool Text::TextLayoutObjectIsNeeded(const AttachContext& context,
 
   if (context.previous_in_flow->IsText()) {
     return !EndsWithWhitespace(
-        ToLayoutText(context.previous_in_flow)->GetText());
+        To<LayoutText>(context.previous_in_flow)->GetText());
   }
 
   return context.previous_in_flow->IsInline() &&
@@ -324,7 +325,7 @@ static bool IsSVGText(Text* text) {
   Node* parent_or_shadow_host_node = text->ParentOrShadowHostNode();
   DCHECK(parent_or_shadow_host_node);
   return parent_or_shadow_host_node->IsSVGElement() &&
-         !IsSVGForeignObjectElement(*parent_or_shadow_host_node);
+         !IsA<SVGForeignObjectElement>(*parent_or_shadow_host_node);
 }
 
 LayoutText* Text::CreateTextLayoutObject(const ComputedStyle& style,
@@ -333,53 +334,47 @@ LayoutText* Text::CreateTextLayoutObject(const ComputedStyle& style,
     return new LayoutSVGInlineText(this, DataImpl());
 
   if (style.HasTextCombine())
-    return new LayoutTextCombine(this, DataImpl());
+    return LayoutObjectFactory::CreateTextCombine(this, DataImpl(), legacy);
 
   return LayoutObjectFactory::CreateText(this, DataImpl(), legacy);
 }
 
 void Text::AttachLayoutTree(AttachContext& context) {
-  ContainerNode* style_parent = LayoutTreeBuilderTraversal::Parent(*this);
-  LayoutObject* parent_layout_object =
-      LayoutTreeBuilderTraversal::ParentLayoutObject(*this);
-
-  if (style_parent && parent_layout_object) {
-    DCHECK(style_parent->GetComputedStyle());
-    if (TextLayoutObjectIsNeeded(context, *style_parent->GetComputedStyle(),
-                                 *parent_layout_object)) {
-      LayoutTreeBuilderForText(*this, parent_layout_object,
-                               style_parent->MutableComputedStyle())
-          .CreateLayoutObject();
-      context.previous_in_flow = GetLayoutObject();
+  if (context.parent) {
+    ContainerNode* style_parent = LayoutTreeBuilderTraversal::Parent(*this);
+    if (style_parent) {
+      const ComputedStyle* style = style_parent->GetComputedStyle();
+      DCHECK(style);
+      if (TextLayoutObjectIsNeeded(context, *style)) {
+        LayoutTreeBuilderForText(*this, context, style).CreateLayoutObject();
+        context.previous_in_flow = GetLayoutObject();
+      }
     }
   }
   CharacterData::AttachLayoutTree(context);
 }
 
-void Text::ReattachLayoutTreeIfNeeded(const AttachContext& context) {
+void Text::ReattachLayoutTreeIfNeeded(AttachContext& context) {
   bool layout_object_is_needed = false;
   ContainerNode* style_parent = LayoutTreeBuilderTraversal::Parent(*this);
-  LayoutObject* parent_layout_object =
-      LayoutTreeBuilderTraversal::ParentLayoutObject(*this);
-  if (style_parent && parent_layout_object) {
+  if (style_parent && context.parent) {
     DCHECK(style_parent->GetComputedStyle());
-    layout_object_is_needed = TextLayoutObjectIsNeeded(
-        context, *style_parent->GetComputedStyle(), *parent_layout_object);
+    layout_object_is_needed =
+        TextLayoutObjectIsNeeded(context, *style_parent->GetComputedStyle());
   }
 
   if (layout_object_is_needed == !!GetLayoutObject())
     return;
 
-  AttachContext reattach_context;
+  AttachContext reattach_context(context);
   reattach_context.performing_reattach = true;
 
   if (layout_object_is_needed) {
     DCHECK(!GetLayoutObject());
-    LayoutTreeBuilderForText(*this, parent_layout_object,
-                             style_parent->MutableComputedStyle())
+    LayoutTreeBuilderForText(*this, context, style_parent->GetComputedStyle())
         .CreateLayoutObject();
   } else {
-    DetachLayoutTree(reattach_context);
+    DetachLayoutTree(true /* performing_reattach*/);
   }
   CharacterData::AttachLayoutTree(reattach_context);
 }
@@ -393,22 +388,24 @@ bool NeedsWhitespaceLayoutObject(const ComputedStyle& style) {
 }  // namespace
 
 void Text::RecalcTextStyle(const StyleRecalcChange change) {
-  scoped_refptr<ComputedStyle> new_style =
-      GetDocument().EnsureStyleResolver().StyleForText(this);
+  scoped_refptr<const ComputedStyle> new_style =
+      GetDocument().GetStyleResolver().StyleForText(this);
   if (LayoutText* layout_text = GetLayoutObject()) {
     const ComputedStyle* layout_parent_style =
         GetLayoutObject()->Parent()->Style();
-    if (!new_style || (new_style != layout_parent_style &&
-                       !new_style->InheritedEqual(*layout_parent_style))) {
+    if (!new_style || GetForceReattachLayoutTree() ||
+        (new_style != layout_parent_style &&
+         !new_style->InheritedEqual(*layout_parent_style))) {
       // The computed style or the need for an anonymous inline wrapper for a
       // display:contents text child changed.
       SetNeedsReattachLayoutTree();
     } else {
       layout_text->SetStyle(std::move(new_style));
       if (NeedsStyleRecalc())
-        layout_text->SetText(DataImpl());
+        layout_text->SetTextIfNeeded(DataImpl());
     }
   } else if (new_style && (NeedsStyleRecalc() || change.ReattachLayoutTree() ||
+                           GetForceReattachLayoutTree() ||
                            NeedsWhitespaceLayoutObject(*new_style))) {
     SetNeedsReattachLayoutTree();
   }
@@ -420,32 +417,43 @@ void Text::RebuildTextLayoutTree(WhitespaceAttacher& whitespace_attacher) {
   DCHECK(NeedsReattachLayoutTree());
   DCHECK(parentNode());
 
-  ReattachLayoutTree();
+  AttachContext context;
+  context.parent = LayoutTreeBuilderTraversal::ParentLayoutObject(*this);
+  ReattachLayoutTree(context);
   whitespace_attacher.DidReattachText(this);
   ClearNeedsReattachLayoutTree();
 }
 
-// Passing both |textNode| and its layout object because repeated calls to
-// |Node::layoutObject()| are discouraged.
+// Passing both |text_node| and its layout object because repeated calls to
+// |Node::GetLayoutObject()| are discouraged.
 static bool ShouldUpdateLayoutByReattaching(const Text& text_node,
                                             LayoutText* text_layout_object) {
   DCHECK_EQ(text_node.GetLayoutObject(), text_layout_object);
   if (!text_layout_object)
     return true;
-  // In general we do not want to branch on lifecycle states such as
-  // |childNeedsDistributionRecalc|, but this code tries to figure out if we can
-  // use an optimized code path that avoids reattach.
-  if (!text_node.GetDocument().ChildNeedsDistributionRecalc() &&
-      !text_node.TextLayoutObjectIsNeeded(Node::AttachContext(),
-                                          *text_layout_object->Style(),
-                                          *text_layout_object->Parent())) {
+  Node::AttachContext context;
+  context.parent = text_layout_object->Parent();
+  if (!text_node.TextLayoutObjectIsNeeded(context,
+                                          *text_layout_object->Style())) {
     return true;
   }
   if (text_layout_object->IsTextFragment()) {
     // Changes of |textNode| may change first letter part, so we should
-    // reattach.
-    return ToLayoutTextFragment(text_layout_object)
-        ->GetFirstLetterPseudoElement();
+    // reattach. Note: When |textNode| is empty or holds collapsed white spaces
+    // |text_fragment_layout_object| represents first-letter part but it isn't
+    // inside first-letter-pseudo element. See http://crbug.com/978947
+    const auto& text_fragment_layout_object =
+        *To<LayoutTextFragment>(text_layout_object);
+    return text_fragment_layout_object.GetFirstLetterPseudoElement() ||
+           !text_fragment_layout_object.IsRemainingTextLayoutObject();
+  }
+  if (auto* next = text_layout_object->NextSibling()) {
+    if (IsA<FirstLetterPseudoElement>(next->GetNode())) {
+      // This |Text| node is not a first-letter part, but it may be changed.
+      // So, we should rebuild first-letter part and remaining part.
+      // See FirstLetterPseudoElementTest.AppendDataToSpace
+      return true;
+    }
   }
   return false;
 }
@@ -456,7 +464,7 @@ void Text::UpdateTextLayoutObject(unsigned offset_of_replaced_data,
     return;
   LayoutText* text_layout_object = GetLayoutObject();
   if (ShouldUpdateLayoutByReattaching(*this, text_layout_object)) {
-    LazyReattachIfAttached();
+    SetForceReattachLayoutTree();
     return;
   }
 
@@ -468,7 +476,7 @@ Text* Text::CloneWithData(Document& factory, const String& data) const {
   return Create(factory, data);
 }
 
-void Text::Trace(Visitor* visitor) {
+void Text::Trace(Visitor* visitor) const {
   CharacterData::Trace(visitor);
 }
 

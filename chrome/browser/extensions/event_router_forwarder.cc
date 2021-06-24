@@ -9,9 +9,9 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/task/post_task.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -33,9 +33,10 @@ void EventRouterForwarder::BroadcastEventToRenderers(
     events::HistogramValue histogram_value,
     const std::string& event_name,
     std::unique_ptr<base::ListValue> event_args,
-    const GURL& event_url) {
+    const GURL& event_url,
+    bool dispatch_to_off_the_record_profiles) {
   HandleEvent(std::string(), histogram_value, event_name, std::move(event_args),
-              0, true, event_url);
+              0, true, event_url, dispatch_to_off_the_record_profiles);
 }
 
 void EventRouterForwarder::DispatchEventToRenderers(
@@ -44,11 +45,13 @@ void EventRouterForwarder::DispatchEventToRenderers(
     std::unique_ptr<base::ListValue> event_args,
     void* profile,
     bool use_profile_to_restrict_events,
-    const GURL& event_url) {
+    const GURL& event_url,
+    bool dispatch_to_off_the_record_profiles) {
   if (!profile)
     return;
   HandleEvent(std::string(), histogram_value, event_name, std::move(event_args),
-              profile, use_profile_to_restrict_events, event_url);
+              profile, use_profile_to_restrict_events, event_url,
+              dispatch_to_off_the_record_profiles);
 }
 
 void EventRouterForwarder::HandleEvent(
@@ -58,13 +61,15 @@ void EventRouterForwarder::HandleEvent(
     std::unique_ptr<base::ListValue> event_args,
     void* profile_ptr,
     bool use_profile_to_restrict_events,
-    const GURL& event_url) {
+    const GURL& event_url,
+    bool dispatch_to_off_the_record_profiles) {
   if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&EventRouterForwarder::HandleEvent, this, extension_id,
                        histogram_value, event_name, std::move(event_args),
-                       profile_ptr, use_profile_to_restrict_events, event_url));
+                       profile_ptr, use_profile_to_restrict_events, event_url,
+                       dispatch_to_off_the_record_profiles));
     return;
   }
 
@@ -78,21 +83,47 @@ void EventRouterForwarder::HandleEvent(
       return;
     profile = reinterpret_cast<Profile*>(profile_ptr);
   }
+  std::set<Profile*> profiles_to_dispatch_to;
   if (profile) {
-    CallEventRouter(profile, extension_id, histogram_value, event_name,
-                    std::move(event_args),
-                    use_profile_to_restrict_events ? profile : NULL, event_url);
+    profiles_to_dispatch_to.insert(profile);
   } else {
-    std::vector<Profile*> profiles(profile_manager->GetLoadedProfiles());
-    for (size_t i = 0; i < profiles.size(); ++i) {
-      std::unique_ptr<base::ListValue> per_profile_event_args(
-          event_args->DeepCopy());
-      CallEventRouter(profiles[i], extension_id, histogram_value, event_name,
-                      std::move(per_profile_event_args),
-                      use_profile_to_restrict_events ? profiles[i] : NULL,
-                      event_url);
+    std::vector<Profile*> on_the_record_profiles =
+        profile_manager->GetLoadedProfiles();
+    profiles_to_dispatch_to.insert(on_the_record_profiles.begin(),
+                                   on_the_record_profiles.end());
+  }
+
+  if (dispatch_to_off_the_record_profiles) {
+    for (Profile* profile : profiles_to_dispatch_to) {
+      if (profile->HasPrimaryOTRProfile())
+        profiles_to_dispatch_to.insert(
+            profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
     }
   }
+
+  // There should always be at least one profile when running as Chromium.
+  // However, some Chromium embedders are known to run without profiles, in
+  // which case there's nothing to dispatch to.
+  if (profiles_to_dispatch_to.size() == 0u)
+    return;
+
+  // Use the same event_args for each profile (making copies as needed).
+  std::vector<std::unique_ptr<base::ListValue>> per_profile_args;
+  per_profile_args.reserve(profiles_to_dispatch_to.size());
+  per_profile_args.emplace_back(std::move(event_args));
+  for (size_t i = 1; i < profiles_to_dispatch_to.size(); ++i)
+    per_profile_args.emplace_back(per_profile_args.front()->DeepCopy());
+  DCHECK_EQ(per_profile_args.size(), profiles_to_dispatch_to.size());
+
+  size_t profile_args_index = 0;
+  for (Profile* profile_to_dispatch_to : profiles_to_dispatch_to) {
+    CallEventRouter(
+        profile_to_dispatch_to, extension_id, histogram_value, event_name,
+        std::move(per_profile_args[profile_args_index++]),
+        use_profile_to_restrict_events ? profile_to_dispatch_to : nullptr,
+        event_url);
+  }
+  DCHECK_EQ(per_profile_args.size(), profile_args_index);
 }
 
 void EventRouterForwarder::CallEventRouter(
@@ -103,7 +134,7 @@ void EventRouterForwarder::CallEventRouter(
     std::unique_ptr<base::ListValue> event_args,
     Profile* restrict_to_profile,
     const GURL& event_url) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Extension does not exist for chromeos login.  This needs to be
   // removed once we have an extension service for login screen.
   // crosbug.com/12856.
@@ -112,7 +143,7 @@ void EventRouterForwarder::CallEventRouter(
 #endif
 
   auto event = std::make_unique<Event>(
-      histogram_value, event_name, std::move(event_args), restrict_to_profile);
+      histogram_value, event_name, event_args->TakeList(), restrict_to_profile);
   event->event_url = event_url;
   if (extension_id.empty()) {
     extensions::EventRouter::Get(profile)->BroadcastEvent(std::move(event));

@@ -6,7 +6,6 @@
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_DEVICE_LOCAL_ACCOUNT_EXTERNAL_POLICY_LOADER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/callback_forward.h"
 #include "base/compiler_specific.h"
@@ -60,9 +59,6 @@ class DeviceLocalAccountExternalPolicyLoader
 
   // ExternalCacheDelegate:
   void OnExtensionListsUpdated(const base::DictionaryValue* prefs) override;
-  void OnExtensionLoadedInCache(const std::string& id) override;
-  void OnExtensionDownloadFailed(const std::string& id) override;
-  std::string GetInstalledExtensionVersion(const std::string& id) override;
 
   ExternalCache* GetExternalCacheForTesting();
 

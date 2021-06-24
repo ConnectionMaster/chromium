@@ -4,6 +4,8 @@
 
 #include "chrome/app/android/chrome_main_delegate_android.h"
 
+#include <memory>
+
 #include "base/android/jni_android.h"
 #include "base/base_paths_android.h"
 #include "base/files/file_path.h"
@@ -13,28 +15,37 @@
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/android/chrome_startup_flags.h"
 #include "chrome/browser/android/metrics/uma_utils.h"
-#include "components/policy/core/browser/android/android_combined_policy_provider.h"
-#include "components/safe_browsing/android/safe_browsing_api_handler.h"
-#include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
+#include "chrome/common/profiler/main_thread_stack_sampling_profiler.h"
+#include "components/policy/core/common/android/android_combined_policy_provider.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
 #include "content/public/browser/browser_main_runner.h"
 
+#if BUILDFLAG(SAFE_BROWSING_DB_REMOTE)
+#include "components/safe_browsing/android/safe_browsing_api_handler.h"
+#include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
+#endif
+
+namespace {
 using safe_browsing::SafeBrowsingApiHandler;
 
+// Whether to use the process start time for startup metrics.
+const base::Feature kUseProcessStartTimeForMetrics{
+    "UseProcessStartTimeForMetrics", base::FEATURE_DISABLED_BY_DEFAULT};
+}  // namespace
 
 // ChromeMainDelegateAndroid is created when the library is loaded. It is always
-// done in the process's main Java thread. But for non browser process, e.g.
+// done in the process' main Java thread. But for a non-browser process, e.g.
 // renderer process, it is not the native Chrome's main thread.
-ChromeMainDelegateAndroid::ChromeMainDelegateAndroid() {
-}
-
-ChromeMainDelegateAndroid::~ChromeMainDelegateAndroid() {
-}
+ChromeMainDelegateAndroid::ChromeMainDelegateAndroid() = default;
+ChromeMainDelegateAndroid::~ChromeMainDelegateAndroid() = default;
 
 bool ChromeMainDelegateAndroid::BasicStartupComplete(int* exit_code) {
-  safe_browsing_api_handler_.reset(
-      new safe_browsing::SafeBrowsingApiHandlerBridge());
+#if BUILDFLAG(SAFE_BROWSING_DB_REMOTE)
+  safe_browsing_api_handler_ =
+      std::make_unique<safe_browsing::SafeBrowsingApiHandlerBridge>();
   SafeBrowsingApiHandler::SetInstance(safe_browsing_api_handler_.get());
+#endif
 
   policy::android::AndroidCombinedPolicyProvider::SetShouldWaitForPolicy(true);
   SetChromeSpecificCommandLineFlags();
@@ -42,9 +53,11 @@ bool ChromeMainDelegateAndroid::BasicStartupComplete(int* exit_code) {
   return ChromeMainDelegate::BasicStartupComplete(exit_code);
 }
 
-void ChromeMainDelegateAndroid::SandboxInitialized(
-    const std::string& process_type) {
-  ChromeMainDelegate::SandboxInitialized(process_type);
+void ChromeMainDelegateAndroid::PreSandboxStartup() {
+  ChromeMainDelegate::PreSandboxStartup();
+
+  // Start the sampling profiler after crashpad initialization.
+  sampling_profiler_ = std::make_unique<MainThreadStackSamplingProfiler>();
 }
 
 void ChromeMainDelegateAndroid::SecureDataDirectory() {
@@ -67,28 +80,48 @@ void ChromeMainDelegateAndroid::SecureDataDirectory() {
 int ChromeMainDelegateAndroid::RunProcess(
     const std::string& process_type,
     const content::MainFunctionParams& main_function_params) {
-  TRACE_EVENT0("startup", "ChromeMainDelegateAndroid::RunProcess")
-  if (process_type.empty()) {
-    SecureDataDirectory();
+  TRACE_EVENT0("startup", "ChromeMainDelegateAndroid::RunProcess");
+  // Defer to the default main method outside the browser process.
+  if (!process_type.empty())
+    return -1;
 
-    // Because the browser process can be started asynchronously as a series of
-    // UI thread tasks a second request to start it can come in while the
-    // first request is still being processed. Chrome must keep the same
-    // browser runner for the second request.
-    // Also only record the start time the first time round, since this is the
-    // start time of the application, and will be same for all requests.
-    if (!browser_runner_.get()) {
-      startup_metric_utils::RecordMainEntryPointTime(
-          chrome::android::GetMainEntryPointTimeTicks());
-      browser_runner_ = content::BrowserMainRunner::Create();
+  SecureDataDirectory();
+
+  // Because the browser process can be started asynchronously as a series of
+  // UI thread tasks a second request to start it can come in while the
+  // first request is still being processed. Chrome must keep the same
+  // browser runner for the second request.
+  // Also only record the start time the first time round, since this is the
+  // start time of the application, and will be same for all requests.
+  if (!browser_runner_) {
+    base::TimeTicks process_start_time = chrome::android::GetProcessStartTime();
+    base::TimeTicks application_start_time =
+        chrome::android::GetApplicationStartTime();
+    if (!process_start_time.is_null()) {
+      startup_metric_utils::RecordStartupProcessCreationTime(
+          process_start_time);
+      // TODO(crbug.com/1127482): Perf bots should add support for measuring
+      // Startup.LoadTime.ProcessCreateToApplicationStart, then the
+      // kUseProcessStartTimeForMetrics feature can be removed.
+      if (base::FeatureList::IsEnabled(kUseProcessStartTimeForMetrics))
+        application_start_time = process_start_time;
     }
-    return browser_runner_->Initialize(main_function_params);
+    startup_metric_utils::RecordApplicationStartTime(application_start_time);
+    browser_runner_ = content::BrowserMainRunner::Create();
   }
 
-  return ChromeMainDelegate::RunProcess(process_type, main_function_params);
+  int exit_code = browser_runner_->Initialize(main_function_params);
+  // On Android we do not run BrowserMain(), so the above initialization of a
+  // BrowserMainRunner is all we want to occur. Return >= 0 to avoid running
+  // BrowserMain, while preserving any error codes > 0.
+  if (exit_code > 0)
+    return exit_code;
+  return 0;
 }
 
 void ChromeMainDelegateAndroid::ProcessExiting(
     const std::string& process_type) {
+#if BUILDFLAG(SAFE_BROWSING_DB_REMOTE)
   SafeBrowsingApiHandler::SetInstance(nullptr);
+#endif
 }

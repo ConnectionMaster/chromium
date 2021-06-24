@@ -30,7 +30,6 @@
 
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 #include "third_party/blink/renderer/platform/image-decoders/png/png_image_reader.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
@@ -41,6 +40,8 @@ class PLATFORM_EXPORT PNGImageDecoder final : public ImageDecoder {
                   const ColorBehavior&,
                   size_t max_decoded_bytes,
                   size_t offset = 0);
+  PNGImageDecoder(const PNGImageDecoder&) = delete;
+  PNGImageDecoder& operator=(const PNGImageDecoder&) = delete;
   ~PNGImageDecoder() override;
 
   // ImageDecoder:
@@ -49,7 +50,7 @@ class PLATFORM_EXPORT PNGImageDecoder final : public ImageDecoder {
   int RepetitionCount() const override;
   bool ImageIsHighBitDepth() override;
   bool FrameIsReceivedAtIndex(size_t) const override;
-  TimeDelta FrameDurationAtIndex(size_t) const override;
+  base::TimeDelta FrameDurationAtIndex(size_t) const override;
   bool SetFailed() override;
 
   // Callbacks from libpng
@@ -82,10 +83,8 @@ class PLATFORM_EXPORT PNGImageDecoder final : public ImageDecoder {
   bool decode_to_half_float_;
   size_t bit_depth_;
   std::unique_ptr<ImageFrame::PixelData[]> color_transform_scanline_;
-
-  DISALLOW_COPY_AND_ASSIGN(PNGImageDecoder);
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_PNG_PNG_IMAGE_DECODER_H_

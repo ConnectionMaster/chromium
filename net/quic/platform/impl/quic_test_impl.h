@@ -5,11 +5,13 @@
 #ifndef NET_QUIC_PLATFORM_IMPL_QUIC_TEST_IMPL_H_
 #define NET_QUIC_PLATFORM_IMPL_QUIC_TEST_IMPL_H_
 
-#include "base/logging.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "base/check_op.h"
+#include "net/test/test_with_task_environment.h"
+#include "net/third_party/quiche/src/quic/core/quic_versions.h"
 #include "net/third_party/quiche/src/quic/platform/api/quic_flags.h"
-#include "testing/gmock/include/gmock/gmock.h"  // IWYU pragma: export
-#include "testing/gtest/include/gtest/gtest.h"  // IWYU pragma: export
+#include "testing/gmock/include/gmock/gmock.h"      // IWYU pragma: export
+#include "testing/gtest/include/gtest/gtest-spi.h"  // IWYU pragma: export
+#include "testing/gtest/include/gtest/gtest.h"      // IWYU pragma: export
 
 // When constructed, saves the current values of all QUIC flags. When
 // destructed, restores all QUIC flags to the saved values.
@@ -19,8 +21,8 @@ class QuicFlagSaverImpl {
   ~QuicFlagSaverImpl();
 
  private:
-#define QUIC_FLAG(type, flag, value) type saved_##flag##_;
-#include "net/quic/quic_flags_list.h"
+#define QUIC_FLAG(flag, value) bool saved_##flag##_;
+#include "net/third_party/quiche/src/quic/core/quic_flags_list.h"
 #undef QUIC_FLAG
 };
 
@@ -28,12 +30,12 @@ class QuicFlagSaverImpl {
 class QuicFlagChecker {
  public:
   QuicFlagChecker() {
-#define QUIC_FLAG(type, flag, value)                                      \
+#define QUIC_FLAG(flag, value)                                            \
   CHECK_EQ(value, flag)                                                   \
       << "Flag set to an unexpected value.  A prior test is likely "      \
       << "setting a flag without using a QuicFlagSaver. Use QuicTest to " \
          "avoid this issue.";
-#include "net/quic/quic_flags_list.h"
+#include "net/third_party/quiche/src/quic/core/quic_flags_list.h"
 #undef QUIC_FLAG
   }
 };
@@ -54,15 +56,16 @@ class QuicTestWithParamImpl : public ::testing::TestWithParam<T> {
 class ScopedEnvironmentForThreadsImpl {
  public:
   ScopedEnvironmentForThreadsImpl()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::IO) {}
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::IO) {}
 
  public:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 };
 
 #define QUIC_TEST_DISABLED_IN_CHROME_IMPL(name) DISABLED_##name
 
 std::string QuicGetTestMemoryCachePathImpl();
+
+#define QUIC_SLOW_TEST_IMPL(name) DISABLED_##name
 
 #endif  // NET_QUIC_PLATFORM_IMPL_QUIC_TEST_IMPL_H_

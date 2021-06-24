@@ -23,6 +23,8 @@ namespace bluetooth {
 
 namespace {
 
+const int kMaxDevicesInQueue = 6;
+
 #define RUN_ON_IO_THREAD(method, ...)                                       \
   io_task_runner_->PostTask(                                                \
       FROM_HERE, base::BindOnce(&GattClientManagerImpl::method, weak_this_, \
@@ -50,6 +52,14 @@ constexpr base::TimeDelta GattClientManagerImpl::kConnectTimeout;
 constexpr base::TimeDelta GattClientManagerImpl::kDisconnectTimeout;
 constexpr base::TimeDelta GattClientManagerImpl::kReadRemoteRssiTimeout;
 
+// static
+std::unique_ptr<GattClientManager> GattClientManager::Create(
+    bluetooth_v2_shlib::GattClient* gatt_client,
+    BluetoothManagerPlatform* bluetooth_manager,
+    LeScanManager* le_scan_manager) {
+  return std::make_unique<GattClientManagerImpl>(gatt_client);
+}
+
 GattClientManagerImpl::GattClientManagerImpl(
     bluetooth_v2_shlib::GattClient* gatt_client)
     : gatt_client_(gatt_client),
@@ -65,12 +75,16 @@ GattClientManagerImpl::~GattClientManagerImpl() {}
 void GattClientManagerImpl::Initialize(
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) {
   io_task_runner_ = std::move(io_task_runner);
+  InitializeOnIoThread();
+}
+
+void GattClientManagerImpl::InitializeOnIoThread() {
+  MAKE_SURE_IO_THREAD(InitializeOnIoThread);
+  gatt_client_->SetDelegate(this);
 }
 
 void GattClientManagerImpl::Finalize() {
-  io_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&GattClientManagerImpl::FinalizeOnIoThread,
-                                std::move(weak_factory_)));
+  FinalizeOnIoThread();
 }
 
 void GattClientManagerImpl::AddObserver(Observer* o) {
@@ -151,6 +165,22 @@ void GattClientManagerImpl::EnqueueConnectRequest(
 void GattClientManagerImpl::EnqueueReadRemoteRssiRequest(
     const bluetooth_v2_shlib::Addr& addr) {
   DCHECK(io_task_runner_->BelongsToCurrentThread());
+
+  // Get the last byte because whole address is PII.
+  std::string addr_str = util::AddrLastByteString(addr);
+
+  auto it = addr_to_device_.find(addr);
+  if (it == addr_to_device_.end()) {
+    LOG(ERROR) << "ReadRemoteRssi (" << addr_str << ") failed: no such device";
+    return;
+  }
+
+  if (pending_read_remote_rssi_requests_.size() >= kMaxDevicesInQueue) {
+    LOG(ERROR) << "ReadRemoteRssi (" << addr_str << ") failed: queue is full";
+    it->second->OnReadRemoteRssiComplete(false, 0);
+    return;
+  }
+
   pending_read_remote_rssi_requests_.push_back(addr);
 
   // Run the request if this is the only request in the queue. Otherwise, it
@@ -162,6 +192,10 @@ void GattClientManagerImpl::EnqueueReadRemoteRssiRequest(
 
 bool GattClientManagerImpl::SetGattClientConnectable(bool connectable) {
   DCHECK(io_task_runner_->BelongsToCurrentThread());
+
+  if (gatt_client_connectable_ == connectable) {
+    return false;
+  }
 
   if (connectable) {
     if (disconnect_all_pending_) {
@@ -443,6 +477,8 @@ void GattClientManagerImpl::RunQueuedConnectRequest() {
           return;
         } else {
           LOG(ERROR) << "Connect failed";
+          // Clear pending connect request to avoid device be in a bad state.
+          gatt_client_->ClearPendingConnect(addr);
         }
       } else {
         LOG(ERROR) << "GATT client not connectable";
@@ -460,6 +496,14 @@ void GattClientManagerImpl::RunQueuedConnectRequest() {
         return;
       }
       LOG(ERROR) << "Disconnect failed";
+      // Clear pending disconnect request to avoid device be in a bad state.
+      gatt_client_->ClearPendingDisconnect(addr);
+
+      auto it = addr_to_device_.find(addr);
+      if (it != addr_to_device_.end()) {
+        it->second->SetConnected(false);
+      }
+
       DisconnectAllComplete(false);
     }
 
@@ -524,6 +568,7 @@ void GattClientManagerImpl::OnConnectTimeout(
     gatt_client_->Disconnect(addr);
   } else {
     // Connect times out before OnConnectChanged is received.
+    gatt_client_->ClearPendingConnect(addr);
     RUN_ON_IO_THREAD(OnConnectChanged, addr, false /* status */,
                      false /* connected */);
   }
@@ -538,6 +583,7 @@ void GattClientManagerImpl::OnDisconnectTimeout(
   LOG(ERROR) << "Disconnect (" << addr_str << ")"
              << " timed out.";
 
+  gatt_client_->ClearPendingDisconnect(addr);
   DisconnectAllComplete(false);
 
   // Treat device as disconnected for this unknown case.
@@ -558,10 +604,10 @@ void GattClientManagerImpl::OnReadRemoteRssiTimeout(
   RUN_ON_IO_THREAD(OnReadRemoteRssi, addr, false /* status */, 0 /* rssi */);
 }
 
-// static
-void GattClientManagerImpl::FinalizeOnIoThread(
-    std::unique_ptr<base::WeakPtrFactory<GattClientManagerImpl>> weak_factory) {
-  weak_factory->InvalidateWeakPtrs();
+void GattClientManagerImpl::FinalizeOnIoThread() {
+  MAKE_SURE_IO_THREAD(FinalizeOnIoThread);
+  weak_factory_->InvalidateWeakPtrs();
+  gatt_client_->SetDelegate(nullptr);
 }
 
 }  // namespace bluetooth

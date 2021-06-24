@@ -3,17 +3,20 @@
 # found in the LICENSE file.
 
 import("//build/buildflag_header.gni")
+import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/compiler/compiler.gni")
-import("//build/config/jumbo.gni")
+import("//build/config/dcheck_always_on.gni")
+import("//build/config/linux/gtk/gtk.gni")
 import("//build/config/linux/pangocairo/pangocairo.gni")
+import("//build/config/locales.gni")
+import("//build/config/ozone.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/ui.gni")
 import("//build/util/branding.gni")
+import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
 import("//tools/grit/grit_rule.gni")
-import("//ui/base/mpris/buildflags/buildflags.gni")
 import("//ui/base/ui_features.gni")
-import("//ui/ozone/ozone.gni")
 
 if (is_android) {
   import("//build/config/android/config.gni")
@@ -44,6 +47,8 @@ component("ui_data_pack") {
 
   deps = [
     "//base",
+    "//net",
+    "//third_party/zlib/google:compression_utils",
   ]
 
   defines = [ "UI_DATA_PACK_IMPLEMENTATION" ]
@@ -56,148 +61,76 @@ buildflag_header("buildflags") {
   flags = [
     "ENABLE_HIDPI=$enable_hidpi",
     "ENABLE_MESSAGE_CENTER=$enable_message_center",
-    "ENABLE_MUS=$enable_mus",
     "USE_ATK=$use_atk",
     "USE_XKBCOMMON=$use_xkbcommon",
     "HAS_NATIVE_ACCESSIBILITY=$has_native_accessibility",
+    "HAS_PLATFORM_ACCESSIBILITY_SUPPORT=$has_platform_accessibility_support",
+    "USE_GTK=$use_gtk",
   ]
 }
 
-jumbo_component("base") {
+source_set("hit_test") {
+  sources = [
+    "hit_test.cc",
+    "hit_test.h",
+  ]
+
+  if (use_x11 || use_ozone) {
+    sources += [
+      "hit_test_x11.cc",
+      "hit_test_x11.h",
+    ]
+  }
+
+  deps = [ "//base" ]
+}
+
+component("base") {
   output_name = "ui_base"
 
   sources = [
-    "accelerators/media_keys_listener.cc",
-    "accelerators/media_keys_listener.h",
-    "accelerators/media_keys_util.cc",
-    "accelerators/media_keys_util.h",
-    "accelerators/menu_label_accelerator_util.cc",
-    "accelerators/menu_label_accelerator_util.h",
-    "accelerators/menu_label_accelerator_util_linux.cc",
-    "accelerators/menu_label_accelerator_util_linux.h",
-    "accelerators/platform_accelerator_cocoa.h",
-    "accelerators/platform_accelerator_cocoa.mm",
     "class_property.cc",
     "class_property.h",
-    "cocoa/accessibility_focus_overrider.h",
-    "cocoa/accessibility_focus_overrider.mm",
-    "cocoa/animation_utils.h",
-    "cocoa/appkit_utils.h",
-    "cocoa/appkit_utils.mm",
-    "cocoa/base_view.h",
-    "cocoa/base_view.mm",
-    "cocoa/cocoa_base_utils.h",
-    "cocoa/cocoa_base_utils.mm",
-    "cocoa/command_dispatcher.h",
-    "cocoa/command_dispatcher.mm",
-    "cocoa/constrained_window/constrained_window_animation.h",
-    "cocoa/constrained_window/constrained_window_animation.mm",
-    "cocoa/controls/button_utils.h",
-    "cocoa/controls/button_utils.mm",
-    "cocoa/controls/textfield_utils.h",
-    "cocoa/controls/textfield_utils.mm",
-    "cocoa/defaults_utils.h",
-    "cocoa/defaults_utils.mm",
-    "cocoa/find_pasteboard.h",
-    "cocoa/find_pasteboard.mm",
-    "cocoa/flipped_view.h",
-    "cocoa/flipped_view.mm",
-    "cocoa/focus_tracker.h",
-    "cocoa/focus_tracker.mm",
-    "cocoa/focus_window_set.h",
-    "cocoa/focus_window_set.mm",
-    "cocoa/menu_controller.h",
-    "cocoa/menu_controller.mm",
-    "cocoa/nib_loading.h",
-    "cocoa/nib_loading.mm",
-    "cocoa/ns_view_ids.h",
-    "cocoa/ns_view_ids.mm",
-    "cocoa/quartz_util.h",
-    "cocoa/quartz_util.mm",
-    "cocoa/remote_accessibility_api.h",
-    "cocoa/remote_accessibility_api.mm",
-    "cocoa/remote_layer_api.h",
-    "cocoa/remote_layer_api.mm",
-    "cocoa/remote_views_window.h",
-    "cocoa/remote_views_window.mm",
-    "cocoa/secure_password_input.h",
-    "cocoa/secure_password_input.mm",
-    "cocoa/text_services_context_menu.cc",
-    "cocoa/text_services_context_menu.h",
-    "cocoa/tool_tip_base_view.h",
-    "cocoa/tool_tip_base_view.mm",
-    "cocoa/touch_bar_forward_declarations.h",
-    "cocoa/touch_bar_forward_declarations.mm",
-    "cocoa/touch_bar_util.h",
-    "cocoa/touch_bar_util.mm",
-    "cocoa/tracking_area.h",
-    "cocoa/tracking_area.mm",
-    "cocoa/underlay_opengl_hosting_window.h",
-    "cocoa/underlay_opengl_hosting_window.mm",
-    "cocoa/user_interface_item_command_handler.h",
-    "cocoa/views_hostable.h",
-    "cocoa/weak_ptr_nsobject.h",
-    "cocoa/weak_ptr_nsobject.mm",
-    "cocoa/window_size_constants.h",
-    "cocoa/window_size_constants.mm",
-    "cursor/cursor.cc",
-    "cursor/cursor.h",
-    "cursor/cursor_android.cc",
-    "cursor/cursor_loader.h",
-    "cursor/cursor_type.h",
-    "cursor/cursor_win.cc",
     "default_style.h",
     "device_form_factor.h",
-    "device_form_factor_android.cc",
     "device_form_factor_desktop.cc",
-    "device_form_factor_ios.mm",
-    "dragdrop/download_file_interface.h",
-    "dragdrop/drag_drop_types.h",
-    "dragdrop/drag_drop_types_mac.mm",
-    "dragdrop/drag_drop_types_win.cc",
-    "dragdrop/drag_source_win.cc",
-    "dragdrop/drag_source_win.h",
     "dragdrop/drop_target_event.cc",
     "dragdrop/drop_target_event.h",
-    "dragdrop/drop_target_win.cc",
-    "dragdrop/drop_target_win.h",
     "dragdrop/os_exchange_data.cc",
     "dragdrop/os_exchange_data.h",
-    "dragdrop/os_exchange_data_provider_builder_mac.h",
-    "dragdrop/os_exchange_data_provider_builder_mac.mm",
     "dragdrop/os_exchange_data_provider_factory.cc",
     "dragdrop/os_exchange_data_provider_factory.h",
-    "dragdrop/os_exchange_data_provider_mac.h",
-    "dragdrop/os_exchange_data_provider_mac.mm",
-    "dragdrop/os_exchange_data_provider_win.cc",
-    "dragdrop/os_exchange_data_provider_win.h",
-    "hit_test.cc",
-    "hit_test.h",
+    "ime/utf_offset.cc",
+    "ime/utf_offset.h",
+    "interaction/element_identifier.cc",
+    "interaction/element_identifier.h",
+    "interaction/element_tracker.cc",
+    "interaction/element_tracker.h",
+    "interaction/interaction_sequence.cc",
+    "interaction/interaction_sequence.h",
     "l10n/formatter.cc",
     "l10n/formatter.h",
     "l10n/l10n_font_util.cc",
     "l10n/l10n_font_util.h",
     "l10n/l10n_util.cc",
     "l10n/l10n_util.h",
-    "l10n/l10n_util_android.cc",
-    "l10n/l10n_util_android.h",
     "l10n/l10n_util_collator.h",
-    "l10n/l10n_util_mac.h",
-    "l10n/l10n_util_mac.mm",
-    "l10n/l10n_util_win.cc",
-    "l10n/l10n_util_win.h",
     "l10n/time_format.cc",
     "l10n/time_format.h",
     "layout.cc",
     "layout.h",
-    "material_design/material_design_controller.cc",
-    "material_design/material_design_controller.h",
-    "material_design/material_design_controller_observer.h",
     "models/button_menu_item_model.cc",
     "models/button_menu_item_model.h",
     "models/combobox_model.cc",
     "models/combobox_model.h",
     "models/combobox_model_observer.h",
+    "models/dialog_model.cc",
+    "models/dialog_model.h",
+    "models/dialog_model_field.cc",
+    "models/dialog_model_field.h",
+    "models/dialog_model_host.h",
+    "models/image_model.cc",
+    "models/image_model.h",
     "models/list_model.h",
     "models/list_model_observer.h",
     "models/list_selection_model.cc",
@@ -221,26 +154,17 @@ jumbo_component("base") {
     "nine_image_painter_factory.h",
     "page_transition_types.cc",
     "page_transition_types.h",
-    "platform_window_defaults.cc",
-    "platform_window_defaults.h",
-    "property_data.h",
+    "pointer/touch_ui_controller.cc",
+    "pointer/touch_ui_controller.h",
+    "resource/allowlist.h",
     "resource/resource_bundle.cc",
     "resource/resource_bundle.h",
-    "resource/resource_bundle_android.cc",
-    "resource/resource_bundle_android.h",
-    "resource/resource_bundle_auralinux.cc",
-    "resource/resource_bundle_ios.mm",
-    "resource/resource_bundle_mac.mm",
-    "resource/resource_bundle_win.cc",
-    "resource/resource_bundle_win.h",
-    "resource/resource_data_dll_win.cc",
-    "resource/resource_data_dll_win.h",
-    "resource/whitelist.h",
+    "scoped_visibility_tracker.cc",
+    "scoped_visibility_tracker.h",
     "template_expressions.cc",
     "template_expressions.h",
     "theme_provider.cc",
     "theme_provider.h",
-    "ui_base_export.h",
     "ui_base_exports.cc",
     "ui_base_paths.cc",
     "ui_base_paths.h",
@@ -248,77 +172,176 @@ jumbo_component("base") {
     "ui_base_switches.h",
     "ui_base_switches_util.cc",
     "ui_base_switches_util.h",
-    "ui_base_types.cc",
-    "ui_base_types.h",
-    "user_activity/user_activity_detector.cc",
-    "user_activity/user_activity_detector.h",
-    "user_activity/user_activity_observer.h",
     "view_prop.cc",
     "view_prop.h",
     "webui/i18n_source_stream.cc",
     "webui/i18n_source_stream.h",
     "webui/jstemplate_builder.cc",
     "webui/jstemplate_builder.h",
+    "webui/resource_path.h",
     "webui/web_ui_util.cc",
     "webui/web_ui_util.h",
-    "win/accessibility_ids_win.h",
-    "win/accessibility_misc_utils.cc",
-    "win/accessibility_misc_utils.h",
-    "win/atl_module.h",
-    "win/foreground_helper.cc",
-    "win/foreground_helper.h",
-    "win/hidden_window.cc",
-    "win/hidden_window.h",
-    "win/hwnd_metrics.cc",
-    "win/hwnd_metrics.h",
-    "win/hwnd_subclass.cc",
-    "win/hwnd_subclass.h",
-    "win/internal_constants.cc",
-    "win/internal_constants.h",
-    "win/lock_state.cc",
-    "win/lock_state.h",
-    "win/message_box_win.cc",
-    "win/message_box_win.h",
-    "win/mouse_wheel_util.cc",
-    "win/mouse_wheel_util.h",
-    "win/scoped_ole_initializer.cc",
-    "win/scoped_ole_initializer.h",
-    "win/session_change_observer.cc",
-    "win/session_change_observer.h",
-    "win/shell.cc",
-    "win/shell.h",
-    "win/touch_input.cc",
-    "win/touch_input.h",
-    "win/window_event_target.cc",
-    "win/window_event_target.h",
     "window_open_disposition.cc",
     "window_open_disposition.h",
   ]
 
-  if (is_posix) {
-    sources += [ "l10n/l10n_util_posix.cc" ]
+  libs = []
+
+  if (is_android) {
+    sources += [
+      "device_form_factor_android.cc",
+      "l10n/l10n_util_android.cc",
+      "l10n/l10n_util_android.h",
+      "resource/resource_bundle_android.cc",
+      "resource/resource_bundle_android.h",
+    ]
+  }
+
+  if (is_win) {
+    sources += [
+      "dragdrop/drag_source_win.cc",
+      "dragdrop/drag_source_win.h",
+      "dragdrop/drop_target_win.cc",
+      "dragdrop/drop_target_win.h",
+      "dragdrop/os_exchange_data_provider_win.cc",
+      "dragdrop/os_exchange_data_provider_win.h",
+      "l10n/l10n_util_win.cc",
+      "l10n/l10n_util_win.h",
+      "resource/resource_bundle_win.cc",
+      "resource/resource_bundle_win.h",
+      "resource/resource_data_dll_win.cc",
+      "resource/resource_data_dll_win.h",
+      "win/accessibility_ids_win.h",
+      "win/accessibility_misc_utils.cc",
+      "win/accessibility_misc_utils.h",
+      "win/atl_module.h",
+      "win/event_creation_utils.cc",
+      "win/event_creation_utils.h",
+      "win/foreground_helper.cc",
+      "win/foreground_helper.h",
+      "win/hidden_window.cc",
+      "win/hidden_window.h",
+      "win/hwnd_metrics.cc",
+      "win/hwnd_metrics.h",
+      "win/hwnd_subclass.cc",
+      "win/hwnd_subclass.h",
+      "win/internal_constants.cc",
+      "win/internal_constants.h",
+      "win/lock_state.cc",
+      "win/lock_state.h",
+      "win/message_box_win.cc",
+      "win/message_box_win.h",
+      "win/mouse_wheel_util.cc",
+      "win/mouse_wheel_util.h",
+      "win/power_setting_change_listener.cc",
+      "win/power_setting_change_listener.h",
+      "win/scoped_ole_initializer.cc",
+      "win/scoped_ole_initializer.h",
+      "win/session_change_observer.cc",
+      "win/session_change_observer.h",
+      "win/shell.cc",
+      "win/shell.h",
+      "win/touch_input.cc",
+      "win/touch_input.h",
+      "win/window_event_target.cc",
+      "win/window_event_target.h",
+    ]
+    ldflags = [ "/DELAYLOAD:dwmapi.dll" ]
+    libs += [
+      "dwmapi.lib",
+      "wtsapi32.lib",
+    ]
+  }
+
+  if (is_mac) {
+    sources += [
+      "cocoa/accessibility_focus_overrider.h",
+      "cocoa/accessibility_focus_overrider.mm",
+      "cocoa/animation_utils.h",
+      "cocoa/appkit_utils.h",
+      "cocoa/appkit_utils.mm",
+      "cocoa/base_view.h",
+      "cocoa/base_view.mm",
+      "cocoa/cocoa_base_utils.h",
+      "cocoa/cocoa_base_utils.mm",
+      "cocoa/command_dispatcher.h",
+      "cocoa/command_dispatcher.mm",
+      "cocoa/constrained_window/constrained_window_animation.h",
+      "cocoa/constrained_window/constrained_window_animation.mm",
+      "cocoa/controls/button_utils.h",
+      "cocoa/controls/button_utils.mm",
+      "cocoa/controls/textfield_utils.h",
+      "cocoa/controls/textfield_utils.mm",
+      "cocoa/defaults_utils.h",
+      "cocoa/defaults_utils.mm",
+      "cocoa/find_pasteboard.h",
+      "cocoa/find_pasteboard.mm",
+      "cocoa/flipped_view.h",
+      "cocoa/flipped_view.mm",
+      "cocoa/focus_tracker.h",
+      "cocoa/focus_tracker.mm",
+      "cocoa/menu_controller.h",
+      "cocoa/menu_controller.mm",
+      "cocoa/nsmenuitem_additions.h",
+      "cocoa/nsmenuitem_additions.mm",
+      "cocoa/permissions_utils.h",
+      "cocoa/permissions_utils.mm",
+      "cocoa/quartz_util.h",
+      "cocoa/quartz_util.mm",
+      "cocoa/remote_accessibility_api.h",
+      "cocoa/remote_accessibility_api.mm",
+      "cocoa/remote_layer_api.h",
+      "cocoa/remote_layer_api.mm",
+      "cocoa/secure_password_input.h",
+      "cocoa/secure_password_input.mm",
+      "cocoa/text_services_context_menu.cc",
+      "cocoa/text_services_context_menu.h",
+      "cocoa/tool_tip_base_view.h",
+      "cocoa/tool_tip_base_view.mm",
+      "cocoa/touch_bar_util.h",
+      "cocoa/touch_bar_util.mm",
+      "cocoa/tracking_area.h",
+      "cocoa/tracking_area.mm",
+      "cocoa/underlay_opengl_hosting_window.h",
+      "cocoa/underlay_opengl_hosting_window.mm",
+      "cocoa/user_interface_item_command_handler.h",
+      "cocoa/views_hostable.h",
+      "cocoa/weak_ptr_nsobject.h",
+      "cocoa/weak_ptr_nsobject.mm",
+      "cocoa/window_size_constants.h",
+      "cocoa/window_size_constants.mm",
+      "dragdrop/os_exchange_data_provider_builder_mac.h",
+      "dragdrop/os_exchange_data_provider_builder_mac.mm",
+      "dragdrop/os_exchange_data_provider_mac.h",
+      "dragdrop/os_exchange_data_provider_mac.mm",
+      "l10n/l10n_util_mac.h",
+      "l10n/l10n_util_mac.mm",
+      "resource/resource_bundle_mac.mm",
+    ]
+  }
+
+  if (is_ios) {
+    sources += [
+      "device_form_factor_ios.mm",
+      "resource/resource_bundle_ios.mm",
+    ]
   }
 
   if (!is_ios) {
     sources += [
       "accelerators/accelerator.cc",
       "accelerators/accelerator.h",
-      "accelerators/accelerator_history.cc",
-      "accelerators/accelerator_history.h",
       "accelerators/accelerator_manager.cc",
       "accelerators/accelerator_manager.h",
+      "accelerators/accelerator_map.h",
+      "accelerators/media_keys_listener.cc",
+      "accelerators/media_keys_listener.h",
+      "accelerators/media_keys_util.cc",
+      "accelerators/media_keys_util.h",
+      "accelerators/menu_label_accelerator_util.cc",
+      "accelerators/menu_label_accelerator_util.h",
       "base_window.cc",
       "base_window.h",
-      "cocoa/bubble_closer.h",
-      "cocoa/bubble_closer.mm",
-      "cursor/cursor_util.cc",
-      "cursor/cursor_util.h",
-      "default_theme_provider.cc",
-      "default_theme_provider.h",
-      "dragdrop/cocoa_dnd_util.h",
-      "dragdrop/cocoa_dnd_util.mm",
-      "dragdrop/file_info.cc",
-      "dragdrop/file_info.h",
       "emoji/emoji_panel_helper.h",
       "pointer/pointer_device.h",
       "pointer/pointer_device_util.cc",
@@ -326,14 +349,41 @@ jumbo_component("base") {
       "pointer/touch_editing_controller.h",
       "text/bytes_formatting.cc",
       "text/bytes_formatting.h",
+      "ui_base_types.cc",
+      "ui_base_types.h",
+      "user_activity/user_activity_detector.cc",
+      "user_activity/user_activity_detector.h",
+      "user_activity/user_activity_observer.h",
     ]
+
+    if (is_linux || is_chromeos) {
+      sources += [
+        "accelerators/menu_label_accelerator_util_linux.cc",
+        "accelerators/menu_label_accelerator_util_linux.h",
+        "linux/linux_desktop.cc",
+        "linux/linux_desktop.h",
+        "linux/linux_ui_delegate.cc",
+        "linux/linux_ui_delegate.h",
+      ]
+    }
+
+    if (is_mac) {
+      sources += [
+        "accelerators/platform_accelerator_cocoa.h",
+        "accelerators/platform_accelerator_cocoa.mm",
+        "cocoa/bubble_closer.h",
+        "cocoa/bubble_closer.mm",
+        "dragdrop/cocoa_dnd_util.h",
+        "dragdrop/cocoa_dnd_util.mm",
+      ]
+    }
   }
 
   if (is_mac) {
     sources += [ "emoji/emoji_panel_helper_mac.mm" ]
   } else if (is_win) {
     sources += [ "emoji/emoji_panel_helper_win.cc" ]
-  } else if (is_chromeos) {
+  } else if (is_chromeos_ash) {
     sources += [ "emoji/emoji_panel_helper_chromeos.cc" ]
   } else {
     # Empty implementation for all other platforms.
@@ -341,24 +391,12 @@ jumbo_component("base") {
   }
 
   if (is_mac) {
-    sources += [
-      "accelerators/media_keys_listener_mac.mm",
-      "accelerators/remote_command_media_keys_listener_mac.h",
-      "accelerators/remote_command_media_keys_listener_mac.mm",
-    ]
+    sources += [ "accelerators/media_keys_listener_mac.mm" ]
   } else if (is_win) {
     sources += [
       "accelerators/global_media_keys_listener_win.cc",
       "accelerators/global_media_keys_listener_win.h",
       "accelerators/media_keys_listener_win.cc",
-      "accelerators/system_media_controls_media_keys_listener.cc",
-      "accelerators/system_media_controls_media_keys_listener.h",
-    ]
-  } else if (use_mpris) {
-    sources += [
-      "accelerators/media_keys_listener_linux.cc",
-      "accelerators/mpris_media_keys_listener.cc",
-      "accelerators/mpris_media_keys_listener.h",
     ]
   } else {
     sources += [ "accelerators/media_keys_listener_stub.cc" ]
@@ -370,7 +408,7 @@ jumbo_component("base") {
     sources += [ "pointer/pointer_device_android.cc" ]
   } else if (is_ios) {
     sources += [ "pointer/pointer_device_ios.cc" ]
-  } else if (is_linux) {
+  } else if (is_linux || is_chromeos) {
     sources += [ "pointer/pointer_device_linux.cc" ]
   } else {
     # Empty implementation for all other cases.
@@ -379,137 +417,130 @@ jumbo_component("base") {
   }
 
   if (is_fuchsia) {
-    sources += [
-      "l10n/l10n_util_posix.cc",
-      "resource/resource_bundle_fuchsia.cc",
-    ]
+    sources += [ "resource/resource_bundle_fuchsia.cc" ]
   }
 
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
-  defines = [ "UI_BASE_IMPLEMENTATION" ]
+  defines = [ "IS_UI_BASE_IMPL" ]
+
+  if (enable_pseudolocales) {
+    defines += [ "ENABLE_PSEUDOLOCALES" ]
+  }
 
   public_deps = [
     ":buildflags",
     ":features",
+    ":hit_test",
     ":ui_data_pack",
     "//base",
     "//skia",
+    "//third_party/abseil-cpp:absl",
     "//ui/gfx",
     "//ui/gfx/geometry",
   ]
+
   deps = [
+    ":locales_list",
     "//base:base_static",
     "//base:i18n",
     "//base/third_party/dynamic_annotations",
+    "//base/util/type_safety:type_safety",
+    "//build:chromeos_buildflags",
     "//net",
+    "//third_party/brotli:dec",
     "//third_party/icu",
+    "//third_party/modp_b64",
     "//third_party/zlib:zlib",
+    "//third_party/zlib/google:compression_utils",
+    "//ui/base:data_exchange",
     "//ui/base/clipboard:clipboard_types",
+    "//ui/base/dragdrop/mojom",
     "//ui/display",
+    "//ui/display/util:gpu_info_util",
     "//ui/events",
     "//ui/events/devices",
-    "//ui/resources",
+    "//ui/resources:webui_generated_resources_grd",
+    "//ui/resources:webui_resources_grd",
     "//ui/strings",
     "//url",
   ]
 
+  if (is_debug || dcheck_always_on) {
+    deps += [ "//third_party/re2" ]
+  }
+
   if (!is_ios) {
     # iOS does not use Chromium-specific code for event handling.
     public_deps += [
+      "//ui/base/clipboard:file_info",
+      "//ui/events:dom_keycode_converter",
       "//ui/events:events_base",
       "//ui/events/platform",
     ]
   }
 
   if (is_ios) {
-    set_sources_assignment_filter([])
     sources += [
       "l10n/l10n_util_mac.h",
       "l10n/l10n_util_mac.mm",
     ]
     public_deps += [ "//ui/events:event_constants" ]
-
-    set_sources_assignment_filter(sources_assignment_filter)
+    deps -= [
+      "//ui/events",
+      "//ui/events/devices",
+    ]
   }
 
   if (toolkit_views) {
     deps += [ "//ui/events" ]
   }
 
-  if (use_x11) {
+  if ((is_linux || is_chromeos) && (use_x11 || ozone_platform_x11)) {
     public_deps += [ "//ui/base/x" ]
-    configs += [ "//build/config/linux:x11" ]
 
-    if (!is_chromeos) {
-      configs += [ "//build/config/linux:xscrnsaver" ]
+    # X11 drag and drop wants to use common drag and drop types.
+    allow_circular_includes_from = [ "//ui/base/x" ]
+
+    if (!is_chromeos_ash) {
       deps += [ "//ui/gfx/x" ]
     }
   }
 
-  if (is_win) {
-    deps += [ "//ui/base/win/system_media_controls" ]
-  }
-
-  if (use_mpris) {
-    deps += [
-      "//dbus",
-      "//ui/base/mpris",
-    ]
-  }
-
-  if (use_x11 && use_aura) {
+  if (use_x11 && use_aura && is_linux) {
+    # These Aura X11 files aren't used on ChromeOS.
     sources += [
-      "cursor/cursor_loader_x11.cc",
-      "cursor/cursor_loader_x11.h",
-      "cursor/cursor_x11.cc",
-      "x/selection_owner.cc",
-      "x/selection_owner.h",
-      "x/selection_requestor.cc",
-      "x/selection_requestor.h",
-      "x/selection_utils.cc",
-      "x/selection_utils.h",
+      "dragdrop/os_exchange_data_provider_x11.cc",
+      "dragdrop/os_exchange_data_provider_x11.h",
     ]
     deps += [
       "//ui/events/platform/x11",
       "//ui/gfx/x",
     ]
-
-    if (!is_chromeos) {
-      # These Aura X11 files aren't used on ChromeOS.
-      sources += [
-        "dragdrop/os_exchange_data_provider_aurax11.cc",
-        "dragdrop/os_exchange_data_provider_aurax11.h",
-      ]
-    }
   }
 
-  if (use_aura) {
-    deps += [ "//ui/events" ]
-    sources += [ "window_tracker_template.h" ]
+  if (use_aura && (is_linux || is_chromeos)) {
+    sources += [ "resource/resource_bundle_auralinux.cc" ]
   }
 
-  if (!use_aura || !is_linux) {
-    sources -= [ "resource/resource_bundle_auralinux.cc" ]
-  }
-
-  if (is_linux) {
+  if (is_linux || is_chromeos) {
     deps += [ "//third_party/fontconfig" ]
   }
 
   if (use_glib) {
     configs += [ "//build/config/linux:glib" ]
     sources += [
+      "glib/glib_cast.h",
       "glib/glib_integers.h",
       "glib/glib_signal.h",
       "glib/scoped_gobject.h",
     ]
   }
 
-  if (is_chromeos || (use_aura && is_linux && !use_x11)) {
+  if (is_chromeos_ash || (use_aura && (is_linux || is_chromeos_lacros))) {
     sources += [
-      "dragdrop/os_exchange_data_provider_aura.cc",
-      "dragdrop/os_exchange_data_provider_aura.h",
+      "dragdrop/os_exchange_data_provider_non_backed.cc",
+      "dragdrop/os_exchange_data_provider_non_backed.h",
     ]
   }
 
@@ -517,46 +548,17 @@ jumbo_component("base") {
     deps += [ "//ui/base/clipboard" ]
   }
 
-  libs = []
-  if (is_win) {
-    sources += [
-      "cursor/cursor_loader_win.cc",
-      "cursor/cursor_loader_win.h",
+  if (!use_aura) {
+    sources -= [
+      "view_prop.cc",
+      "view_prop.h",
     ]
-    deps += [ "//third_party/wtl" ]
-    cflags = [ "/wd4324" ]  # Structure was padded due to __declspec(align()), which is
-                            # uninteresting.
-
-    ldflags = [
-      "/DELAYLOAD:d2d1.dll",
-      "/DELAYLOAD:d3d10_1.dll",
-      "/DELAYLOAD:dwmapi.dll",
-    ]
-    libs += [
-      "d2d1.lib",
-      "d3d10_1.lib",
-      "dwmapi.lib",
-      "d2d1.lib",
-      "dwmapi.lib",
-      "oleacc.lib",
-      "wtsapi32.lib",
-    ]
-  } else {
-    if (!use_aura) {
-      sources -= [
-        "view_prop.cc",
-        "view_prop.h",
-      ]
-    }
   }
 
   if (is_mac) {
-    deps += [
-      "//third_party/mozilla",
-      "//ui/base/now_playing",
-    ]
+    deps += [ "//third_party/mozilla" ]
 
-    libs += [
+    frameworks = [
       "Accelerate.framework",
       "AppKit.framework",
       "QuartzCore.framework",
@@ -567,28 +569,8 @@ jumbo_component("base") {
     ]
   }
 
-  if (use_ozone) {
-    sources += [
-      "cursor/cursor_loader_ozone.cc",
-      "cursor/cursor_loader_ozone.h",
-      "cursor/cursor_ozone.cc",
-      "cursor/ozone/bitmap_cursor_factory_ozone.cc",
-      "cursor/ozone/bitmap_cursor_factory_ozone.h",
-    ]
-
-    deps += [
-      "//ui/events/ozone:events_ozone_layout",
-      "//ui/ozone:ozone_base",
-    ]
-
-    if (!is_fuchsia) {
-      deps += [ "//ui/events/ozone:events_ozone_evdev" ]
-    }
-  }
-
   if (!toolkit_views && !use_aura) {
     sources -= [
-      "dragdrop/drag_drop_types.h",
       "dragdrop/drop_target_event.cc",
       "dragdrop/drop_target_event.h",
       "dragdrop/os_exchange_data.cc",
@@ -605,8 +587,6 @@ jumbo_component("base") {
     libs += [ "jnigraphics" ]
 
     sources -= [
-      "cursor/cursor_android.cc",
-      "default_theme_provider.cc",
       "l10n/l10n_font_util.cc",
       "models/button_menu_item_model.cc",
       "pointer/touch_editing_controller.cc",
@@ -615,19 +595,33 @@ jumbo_component("base") {
     ]
   }
 
-  if (use_aura) {
-    # Cursor
-    sources += [
-      "cursor/cursors_aura.cc",
-      "cursor/cursors_aura.h",
-      "cursor/image_cursors.cc",
-      "cursor/image_cursors.h",
-    ]
-  }
-
   if (is_android || is_ios) {
     sources -= [ "device_form_factor_desktop.cc" ]
   }
+}
+
+component("data_exchange") {
+  defines = [ "IS_UI_BASE_DATA_EXCHANGE_IMPL" ]
+
+  sources = [
+    "dragdrop/download_file_info.cc",
+    "dragdrop/download_file_info.h",
+    "dragdrop/download_file_interface.h",
+    "dragdrop/os_exchange_data_provider.h",
+    "dragdrop/os_exchange_data_provider_factory_ozone.cc",
+    "dragdrop/os_exchange_data_provider_factory_ozone.h",
+  ]
+
+  deps = [
+    "//base",
+    "//ui/base/clipboard:clipboard_types",
+    "//ui/base/clipboard:file_info",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//url",
+  ]
+
+  public_deps = [ "//ui/base/data_transfer_policy" ]
 }
 
 component("features") {
@@ -643,33 +637,70 @@ component("features") {
   deps = [
     ":buildflags",
     "//base",
+    "//build:chromeos_buildflags",
   ]
 }
 
-jumbo_static_library("test_support") {
+# TODO(crbug.com/1091985): Support CrOS.
+if (is_win || is_mac || (is_linux || is_chromeos_lacros)) {
+  static_library("pixel_diff_test_support") {
+    testonly = true
+    sources = [
+      "test/skia_gold_matching_algorithm.cc",
+      "test/skia_gold_matching_algorithm.h",
+      "test/skia_gold_pixel_diff.cc",
+      "test/skia_gold_pixel_diff.h",
+    ]
+    deps = [
+      "//base",
+      "//base/test:test_config",
+      "//build:chromeos_buildflags",
+      "//testing/gtest",
+      "//ui/gfx",
+      "//ui/snapshot",
+    ]
+
+    if (!is_fuchsia) {
+      data_deps = [ ":goldctl" ]
+    }
+  }
+}
+
+if (!is_ios) {
+  group("goldctl") {
+    data = []
+
+    # Because this links to a CIPD dependency, which is a symlink on Unix
+    # platforms, refer to the actual executable rather than the whole directory;
+    # copying the whole directory doesn't work, at least with "mb.py zip".
+    if (is_win) {
+      data += [ "//tools/skia_goldctl/win/goldctl.exe" ]
+    } else if (is_mac) {
+      data += [ "//tools/skia_goldctl/mac/goldctl" ]
+    } else {
+      data += [ "//tools/skia_goldctl/linux/goldctl" ]
+    }
+  }
+}
+
+static_library("test_support") {
   testonly = true
   sources = [
+    "interaction/element_test_util.cc",
+    "interaction/element_test_util.h",
+    "interaction/expect_call_in_scope.h",
     "resource/mock_resource_bundle_delegate.cc",
     "resource/mock_resource_bundle_delegate.h",
-    "test/material_design_controller_test_api.cc",
-    "test/material_design_controller_test_api.h",
-    "test/ui_controls.h",
-    "test/ui_controls_aura.cc",
-    "test/ui_controls_aura.h",
-    "test/ui_controls_internal_win.cc",
-    "test/ui_controls_internal_win.h",
-    "test/ui_controls_mac.mm",
-    "test/ui_controls_win.cc",
   ]
 
-  if (!is_ios) {
+  if (is_mac) {
     sources += [
-      "accelerators/test_accelerator_target.cc",
-      "accelerators/test_accelerator_target.h",
       "test/cocoa_helper.h",
       "test/cocoa_helper.mm",
       "test/menu_test_observer.h",
       "test/menu_test_observer.mm",
+      "test/ns_ax_tree_validator.h",
+      "test/ns_ax_tree_validator.mm",
       "test/nswindow_fullscreen_notification_waiter.h",
       "test/nswindow_fullscreen_notification_waiter.mm",
       "test/scoped_fake_full_keyboard_access.h",
@@ -680,10 +711,29 @@ jumbo_static_library("test_support") {
       "test/scoped_fake_nswindow_fullscreen.mm",
       "test/scoped_preferred_scroller_style_mac.h",
       "test/scoped_preferred_scroller_style_mac.mm",
-      "test/view_tree_validator.h",
+      "test/ui_controls_mac.mm",
       "test/view_tree_validator.mm",
       "test/windowed_nsnotification_observer.h",
       "test/windowed_nsnotification_observer.mm",
+    ]
+  }
+
+  if (is_win) {
+    sources += [
+      "test/ui_controls_internal_win.cc",
+      "test/ui_controls_internal_win.h",
+    ]
+  }
+
+  if (!is_ios) {
+    sources += [
+      "accelerators/test_accelerator_target.cc",
+      "accelerators/test_accelerator_target.h",
+      "test/mock_base_window.cc",
+      "test/mock_base_window.h",
+      "test/test_dialog_model_host.h",
+      "test/ui_controls.h",
+      "test/view_tree_validator.h",
     ]
   } else {
     sources += [
@@ -694,13 +744,19 @@ jumbo_static_library("test_support") {
     ]
   }
 
-  public_deps = [
-    ":base",
-  ]
+  if (use_aura) {
+    sources += [
+      "test/ui_controls_aura.cc",
+      "test/ui_controls_aura.h",
+    ]
+  }
+
+  public_deps = [ ":base" ]
   deps = [
     "//base",
     "//base/test:test_config",
     "//base/test:test_support",
+    "//build:chromeos_buildflags",
     "//skia",
     "//testing/gmock",
     "//testing/gtest",
@@ -712,14 +768,21 @@ jumbo_static_library("test_support") {
     "//ui/gfx/geometry",
   ]
 
+  if (is_ios) {
+    deps -= [
+      "//ui/events:events_base",
+      "//ui/events:test_support",
+    ]
+  }
+
   if (build_ime) {
     sources += [
       "ime/dummy_input_method.cc",
       "ime/dummy_input_method.h",
       "ime/dummy_text_input_client.cc",
       "ime/dummy_text_input_client.h",
-      "ime/win/mock_tsf_bridge.cc",
-      "ime/win/mock_tsf_bridge.h",
+      "ime/fake_text_input_client.cc",
+      "ime/fake_text_input_client.h",
     ]
 
     deps += [
@@ -732,27 +795,25 @@ jumbo_static_library("test_support") {
     }
   }
 
-  if (is_chromeos) {
+  if (is_chromeos_ash) {
     sources += [
-      "ime/chromeos/input_method_whitelist.cc",
-      "ime/chromeos/input_method_whitelist.h",
+      "ime/chromeos/mock_component_extension_ime_manager.cc",
+      "ime/chromeos/mock_component_extension_ime_manager.h",
+      "ime/chromeos/mock_component_extension_ime_manager_delegate.cc",
+      "ime/chromeos/mock_component_extension_ime_manager_delegate.h",
+      "ime/chromeos/mock_ime_candidate_window_handler.cc",
+      "ime/chromeos/mock_ime_candidate_window_handler.h",
+      "ime/chromeos/mock_ime_engine_handler.cc",
+      "ime/chromeos/mock_ime_engine_handler.h",
+      "ime/chromeos/mock_ime_input_context_handler.cc",
+      "ime/chromeos/mock_ime_input_context_handler.h",
       "ime/chromeos/mock_input_method_manager.cc",
       "ime/chromeos/mock_input_method_manager.h",
     ]
     deps += [
-      # Generates a header used by input_method_whitelist.cc
-      "//chromeos/ime:gencode",
       "//ui/base/ime/chromeos",
+      "//ui/base/ime/chromeos:typing_session_manager",
     ]
-  }
-
-  if (!use_aura) {
-    sources -= [
-      "test/ui_controls_aura.cc",
-      "test/ui_controls_aura.h",
-    ]
-  } else if (is_win) {
-    sources -= [ "test/ui_controls_win.cc" ]
   }
 }
 
@@ -767,19 +828,14 @@ if (is_android) {
       "../android/java/src/org/chromium/ui/base/SelectFileDialog.java",
       "../android/java/src/org/chromium/ui/base/TouchDevice.java",
     ]
-    jni_package = "base"
   }
 }
 
 bundle_data("ui_base_unittests_bundle_data") {
   testonly = true
-  sources = [
-    "test/data/data_pack_unittest/truncated-header.pak",
-  ]
-  outputs = [
-    "{{bundle_resources_dir}}/" +
-        "{{source_root_relative_dir}}/{{source_file_part}}",
-  ]
+  sources = [ "test/data/data_pack_unittest/truncated-header.pak" ]
+  outputs = [ "{{bundle_resources_dir}}/" +
+              "{{source_root_relative_dir}}/{{source_file_part}}" ]
 }
 
 # The resource labels below should not end with "_resources" or the Android
@@ -795,15 +851,9 @@ grit("ui_base_test_resources_grit") {
 
 copy("ui_base_test_resources_pak") {
   testonly = true
-  sources = [
-    "$target_gen_dir/ui_base_test_resources.pak",
-  ]
-  outputs = [
-    "$root_out_dir/ui_base_test_resources.pak",
-  ]
-  public_deps = [
-    ":ui_base_test_resources_grit",
-  ]
+  sources = [ "$target_gen_dir/ui_base_test_resources.pak" ]
+  outputs = [ "$root_out_dir/ui_base_test_resources.pak" ]
+  public_deps = [ ":ui_base_test_resources_grit" ]
 }
 
 if (is_android) {
@@ -811,118 +861,105 @@ if (is_android) {
     testonly = true
 
     # Use $target_gen_dir so the associated .pak.info file is available.
-    sources = [
-      "$target_gen_dir/ui_base_test_resources.pak",
-    ]
-    deps = [
-      ":ui_base_test_resources_grit",
-    ]
+    sources = [ "$target_gen_dir/ui_base_test_resources.pak" ]
+    deps = [ ":ui_base_test_resources_grit" ]
   }
 }
 
 if (is_ios) {
   bundle_data("ui_base_test_bundle_data") {
     testonly = true
-    public_deps = [
-      ":ui_base_test_resources_grit",
-    ]
-    sources = [
-      "$target_gen_dir/ui_base_test_resources.pak",
-    ]
-    outputs = [
-      "{{bundle_resources_dir}}/{{source_file_part}}",
-    ]
+    public_deps = [ ":ui_base_test_resources_grit" ]
+    sources = [ "$target_gen_dir/ui_base_test_resources.pak" ]
+    outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
   }
 }
 
 test("ui_base_unittests") {
+  use_xvfb = use_xvfb_in_this_config
+
   sources = [
-    "accelerators/remote_command_media_keys_listener_mac_unittest.mm",
     "class_property_unittest.cc",
-    "l10n/l10n_util_mac_unittest.mm",
+    "clipboard/file_info_unittest.cc",
+    "ime/utf_offset_unittest.cc",
+    "interaction/element_tracker_unittest.cc",
+    "interaction/interaction_sequence_unittest.cc",
     "l10n/l10n_util_unittest.cc",
     "l10n/time_format_unittest.cc",
     "layout_unittest.cc",
-    "material_design/material_design_controller_unittest.cc",
+    "models/image_model_unittest.cc",
+    "models/simple_combobox_model_unittest.cc",
     "models/simple_menu_model_unittest.cc",
     "models/tree_node_iterator_unittest.cc",
+    "pointer/touch_ui_controller_unittest.cc",
+    "prediction/empty_filter_unittests.cc",
+    "prediction/input_filter_unittest_helpers.cc",
+    "prediction/input_filter_unittest_helpers.h",
+    "prediction/input_predictor_unittest_helpers.cc",
+    "prediction/input_predictor_unittest_helpers.h",
+    "prediction/kalman_predictor_unittest.cc",
+    "prediction/least_squares_predictor_unittest.cc",
+    "prediction/linear_predictor_unittest.cc",
+    "prediction/linear_resampling_unittest.cc",
+    "prediction/one_euro_filter_unittests.cc",
+    "prediction/prediction_metrics_handler_unittest.cc",
+    "prediction/prediction_unittest_helpers.h",
     "resource/data_pack_literal.cc",
     "resource/data_pack_literal.h",
     "resource/data_pack_unittest.cc",
     "resource/resource_bundle_unittest.cc",
     "resource/scale_factor_unittest.cc",
+    "scoped_visibility_tracker_unittest.cc",
     "template_expressions_unittest.cc",
     "test/page_transition_types_unittest.cc",
     "test/run_all_unittests.cc",
-    "user_activity/user_activity_detector_unittest.cc",
     "webui/i18n_source_stream_unittest.cc",
   ]
-  if (!is_ios) {
+  if (is_mac) {
     sources += [
-      "test/scoped_fake_nswindow_fullscreen_unittest.mm",
-      "test/view_tree_validator_unittest.mm",
+      "cocoa/nsmenuitem_additions_unittest.mm",
+      "l10n/l10n_util_mac_unittest.mm",
     ]
+  }
+  if (!is_ios) {
+    sources += [ "user_activity/user_activity_detector_unittest.cc" ]
+
+    if (is_mac) {
+      sources += [
+        "test/scoped_fake_nswindow_fullscreen_unittest.mm",
+        "test/view_tree_validator_unittest.mm",
+      ]
+    }
   }
 
   data = []
   data_deps = []
-
-  if (is_android) {
-    sources -= [ "user_activity/user_activity_detector_unittest.cc" ]
-  }
-
-  if (is_ios) {
-    # Compile this Mac file on iOS as well.
-    set_sources_assignment_filter([])
-    sources += [
-      "l10n/l10n_util_mac_unittest.mm",
-      "test/ios/ui_image_test_utils_unittest.mm",
-    ]
-    set_sources_assignment_filter(sources_assignment_filter)
-  } else {  # !is_ios
-    sources += [
-      "accelerators/accelerator_history_unittest.cc",
-      "accelerators/accelerator_manager_unittest.cc",
-      "accelerators/accelerator_unittest.cc",
-      "accelerators/menu_label_accelerator_util_linux_unittest.cc",
-      "accelerators/menu_label_accelerator_util_unittest.cc",
-      "accelerators/platform_accelerator_cocoa_unittest.mm",
-      "cocoa/base_view_unittest.mm",
-      "cocoa/bubble_closer_unittest.mm",
-      "cocoa/cocoa_base_utils_unittest.mm",
-      "cocoa/constrained_window/constrained_window_animation_unittest.mm",
-      "cocoa/focus_tracker_unittest.mm",
-      "cocoa/menu_controller_unittest.mm",
-      "cocoa/touch_bar_util_unittest.mm",
-      "cocoa/tracking_area_unittest.mm",
-      "cocoa/weak_ptr_nsobject_unittest.mm",
-      "cursor/cursor_unittest.cc",
-      "cursor/cursor_util_unittest.cc",
-      "models/list_model_unittest.cc",
-      "models/list_selection_model_unittest.cc",
-      "models/tree_node_model_unittest.cc",
-      "text/bytes_formatting_unittest.cc",
-      "webui/web_ui_util_unittest.cc",
-    ]
-  }
-
   deps = [
     ":ui_base_test_resources_grit",
     ":ui_base_unittests_bundle_data",
     "//base",
     "//base/test:test_support",
+    "//build:chromeos_buildflags",
     "//mojo/core/embedder",
     "//net",
     "//net:test_support",
     "//skia",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/brotli:dec",
     "//third_party/icu",
+    "//third_party/zlib/google:compression_utils",
     "//ui/base",
+    "//ui/base:data_exchange",
     "//ui/base:test_support",
     "//ui/base:ui_data_pack",
     "//ui/base/clipboard:clipboard_test",
     "//ui/base/clipboard:clipboard_types",
+    "//ui/base/clipboard:file_info",
+    "//ui/base/cursor:unittests",
+    "//ui/base/data_transfer_policy:unittests",
+    "//ui/base/metadata:metadata_tests",
+    "//ui/base/prediction:prediction",
     "//ui/display",
     "//ui/events:events_base",
     "//ui/events:test_support",
@@ -933,12 +970,69 @@ test("ui_base_unittests") {
     "//url",
   ]
 
+  if (is_android) {
+    sources -= [ "user_activity/user_activity_detector_unittest.cc" ]
+  }
+
+  if (is_ios) {
+    sources += [
+      "l10n/l10n_util_mac_unittest.mm",
+      "test/ios/ui_image_test_utils_unittest.mm",
+    ]
+    deps -= [
+      "//ui/events:events_base",
+      "//ui/events:test_support",
+    ]
+  } else {  # !is_ios
+    sources += [
+      "accelerators/accelerator_manager_unittest.cc",
+      "accelerators/accelerator_map_unittest.cc",
+      "accelerators/accelerator_unittest.cc",
+      "accelerators/menu_label_accelerator_util_unittest.cc",
+      "models/dialog_model_unittest.cc",
+      "models/list_model_unittest.cc",
+      "models/list_selection_model_unittest.cc",
+      "models/tree_node_model_unittest.cc",
+      "text/bytes_formatting_unittest.cc",
+      "webui/web_ui_util_unittest.cc",
+    ]
+
+    if (is_linux || is_chromeos) {
+      sources +=
+          [ "accelerators/menu_label_accelerator_util_linux_unittest.cc" ]
+    }
+
+    if (is_mac) {
+      sources += [
+        "accelerators/platform_accelerator_cocoa_unittest.mm",
+        "cocoa/base_view_unittest.mm",
+        "cocoa/bubble_closer_unittest.mm",
+        "cocoa/cocoa_base_utils_unittest.mm",
+        "cocoa/constrained_window/constrained_window_animation_unittest.mm",
+        "cocoa/focus_tracker_unittest.mm",
+        "cocoa/menu_controller_unittest.mm",
+        "cocoa/touch_bar_util_unittest.mm",
+        "cocoa/tracking_area_unittest.mm",
+        "cocoa/weak_ptr_nsobject_unittest.mm",
+      ]
+    }
+  }
+
+  # TODO(crbug.com/1091985): Support CrOS.
+  if (is_win || is_mac || (is_linux || is_chromeos_lacros)) {
+    sources += [
+      "test/skia_gold_matching_algorithm_unittest.cc",
+      "test/skia_gold_pixel_diff_unittest.cc",
+    ]
+    deps += [ ":pixel_diff_test_support" ]
+  }
+
   if (build_ime) {
     sources += [
       "ime/candidate_window_unittest.cc",
       "ime/composition_text_unittest.cc",
       "ime/input_method_base_unittest.cc",
-      "ime/mojo/ime_struct_traits_unittest.cc",
+      "ime/mojom/ime_mojom_traits_unittest.cc",
     ]
     if (is_win) {
       sources += [
@@ -949,16 +1043,25 @@ test("ui_base_unittests") {
       ]
       deps += [ "//ui/base/ime/win" ]
     }
-    if (is_chromeos) {
+    if (is_chromeos_ash) {
       sources += [
+        "dragdrop/os_exchange_data_provider_non_backed_unittest.cc",
         "ime/chromeos/extension_ime_util_unittest.cc",
         "ime/chromeos/ime_keyboard_unittest.cc",
         "ime/chromeos/input_method_chromeos_unittest.cc",
+        "ime/chromeos/input_method_descriptor_unittest.cc",
         "ime/chromeos/input_method_util_unittest.cc",
+        "ime/chromeos/typing_session_manager_unittest.cc",
       ]
-      deps += [ "//ui/base/ime/chromeos" ]
+      deps += [
+        "//build:branding_buildflags",
+        "//ui/base/ime/chromeos",
+        "//ui/base/ime/chromeos:typing_session_manager",
+      ]
     }
-    if (is_linux && use_aura && !is_chromeos) {
+    if ((is_linux || is_chromeos_lacros) && use_aura) {
+      sources += [ "dragdrop/os_exchange_data_provider_non_backed_unittest.cc" ]
+
       if (use_x11 || use_ozone) {
         sources += [ "ime/linux/input_method_auralinux_unittest.cc" ]
         deps += [
@@ -973,7 +1076,7 @@ test("ui_base_unittests") {
     if (use_x11) {
       sources += [ "ime/linux/composition_text_util_pango_unittest.cc" ]
     }
-    if (is_chromeos || use_ozone) {
+    if (is_chromeos_ash || use_ozone) {
       sources += [ "ime/character_composer_unittest.cc" ]
     }
   }
@@ -992,7 +1095,7 @@ test("ui_base_unittests") {
   if (build_ime) {
     deps += [
       "//ui/base/ime",
-      "//ui/base/ime/mojo:test_interfaces",
+      "//ui/base/ime/mojom:test_interfaces",
     ]
   }
 
@@ -1000,34 +1103,17 @@ test("ui_base_unittests") {
     deps += [ "//ui/resources:ui_test_pak_bundle_data" ]
   } else {
     deps += [
-      "//ui/base/accelerators/mojo:unittests",
-      "//ui/base/mojo:unittests",
+      "//ui/base/accelerators/mojom:unittests",
+      "//ui/base/cursor/mojom:unittests",
     ]
   }
 
   if (is_win) {
     sources += [
-      "accelerators/system_media_controls_media_keys_listener_unittest.cc",
       "dragdrop/os_exchange_data_win_unittest.cc",
+      "view_prop_unittest.cc",
       "win/hwnd_subclass_unittest.cc",
     ]
-
-    deps += [ "//ui/base/win/system_media_controls:test_support" ]
-
-    ldflags = [
-      "/DELAYLOAD:d2d1.dll",
-      "/DELAYLOAD:d3d10_1.dll",
-    ]
-    libs = [
-      "d2d1.lib",
-      "d3d10_1.lib",
-      "imm32.lib",
-      "oleacc.lib",
-    ]
-  }
-
-  if (is_win) {
-    sources += [ "view_prop_unittest.cc" ]
   }
 
   if (is_android) {
@@ -1042,9 +1128,8 @@ test("ui_base_unittests") {
   }
 
   if (use_x11) {
-    configs += [ "//build/config/linux:x11" ]
-
     deps += [
+      "//ui/base/x:unittests",
       "//ui/events/platform/x11",
       "//ui/gfx/x",
     ]
@@ -1054,42 +1139,23 @@ test("ui_base_unittests") {
     deps += [
       ":ui_unittests_framework",
       "//third_party/mozilla",
-      "//ui/base/now_playing:test_support",
     ]
   }
 
-  if (use_aura || toolkit_views) {
+  # TODO(crbug.com/980371): Implement OSExchangeDataProvider for Fuchsia.
+  if ((use_aura || toolkit_views) && !is_fuchsia) {
     sources += [ "dragdrop/os_exchange_data_unittest.cc" ]
-
     deps += [
       "//ui/events",
       "//ui/events/platform",
     ]
   }
 
-  if (use_x11) {
-    sources += [
-      "dragdrop/os_exchange_data_provider_aurax11_unittest.cc",
-      "x/selection_requestor_unittest.cc",
-    ]
+  if (is_chromeos_ash) {
+    deps += [ "//ui/events:dom_keycode_converter" ]
   }
 
-  if (use_mpris) {
-    sources += [ "accelerators/mpris_media_keys_listener_unittest.cc" ]
-    deps += [
-      "//ui/base/mpris:test_support",
-      "//ui/base/mpris:unit_tests",
-    ]
-  }
-
-  if (is_chromeos) {
-    deps += [
-      "//chromeos",
-      "//ui/events:dom_keycode_converter",
-    ]
-  }
-
-  if (is_android || is_linux || is_mac || is_win || is_fuchsia) {
+  if (is_android || is_linux || is_chromeos || is_mac || is_win || is_fuchsia) {
     # TODO(brettw): We should be able to depend on //ui/resources:ui_test_pak
     # instead of depending directly on the non-test .pak files, but depending
     # on ui_test_pak seems to have no effect.
@@ -1098,11 +1164,11 @@ test("ui_base_unittests") {
       "$root_out_dir/ui_test.pak",  # TODO(brettw): remove this line.
     ]
     data_deps += [
-      "//ui/resources:ui_test_pak",  # TODO(brettw): this does nothing.
       "//third_party/mesa_headers",
+      "//ui/resources:ui_test_pak",  # TODO(brettw): this does nothing.
     ]
   }
-  if (is_linux || is_win || is_fuchsia) {
+  if (is_linux || is_chromeos || is_win || is_fuchsia) {
     data += [
       # TODO(brettw): Remove these two lines.
       "$root_out_dir/ui/en-US.pak",
@@ -1111,11 +1177,6 @@ test("ui_base_unittests") {
   }
   if (is_mac) {
     data += [ "$root_out_dir/ui_unittests Framework.framework/" ]
-
-    if (is_asan && symbol_level == 0) {
-      # TODO(crbug.com/330301): make this conditional on mac_strip_release.
-      # data += [ "$root_out_dir/ui_base_unittests.dSYM/" ]
-    }
   }
 }
 
@@ -1124,9 +1185,7 @@ if (is_mac) {
     testonly = true
     framework_version = "U"
     framework_contents = [ "Resources" ]
-    deps = [
-      "//ui/resources:ui_test_pak_bundle_data",
-    ]
+    deps = [ "//ui/resources:ui_test_pak_bundle_data" ]
     info_plist = "test/framework-Info.plist"
     extra_substitutions = [ "CHROMIUM_BUNDLE_ID=$chrome_mac_bundle_id" ]
     output_name = "ui_unittests Framework"
@@ -1145,14 +1204,24 @@ if (is_win) {
   }
 }
 
+if (is_linux || is_chromeos) {
+  # This source set defines linux wm role names and must not have any external
+  # dependencies and be kept as minimal as possible.
+  source_set("wm_role_names") {
+    sources = [
+      "wm_role_names_linux.cc",
+      "wm_role_names_linux.h",
+    ]
+  }
+}
+
 # This target is added as a dependency of browser interactive_ui_tests. It must
 # be source_set, otherwise the linker will drop the tests as dead code.
 source_set("base_interactive_ui_tests") {
   testonly = true
   if (is_win) {
-    sources = [
-      "accelerators/global_media_keys_listener_win_interactive_test.cc",
-    ]
+    sources =
+        [ "accelerators/global_media_keys_listener_win_interactive_test.cc" ]
 
     deps = [
       ":base",
@@ -1162,4 +1231,34 @@ source_set("base_interactive_ui_tests") {
       "//ui/events:events",
     ]
   }
+}
+
+fuzzer_test("file_info_fuzzer") {
+  sources = [ "clipboard/file_info_fuzzer.cc" ]
+  deps = [
+    "//base",
+    "//ui/base/clipboard:file_info",
+  ]
+}
+
+# Same as locales, but includes "en" on Apple platforms.
+# Apple platforms use "en" instead of "en-US" (see the definition of
+# |locales_as_mac_outputs| in locales.gni). However, we still want to keep
+# "en-US" in the list as the |ResourceBundle::GetLocaleFilePath| implementations
+# in ui/base/resource/resource_bundle_{mac,ios}.mm return a valid path for
+# "en-US" (as they internally rewrite it as "en" instead).
+locales_for_platform_list = locales
+if (is_apple) {
+  locales_for_platform_list += [ "en" ]
+}
+
+action("locales_list_gen") {
+  script = "//tools/l10n/generate_locales_list.py"
+  outputs = [ "$root_gen_dir/ui/base/l10n/l10n_util_locales_list.inc" ]
+  args = rebase_path(outputs, root_build_dir) + locales_for_platform_list
+}
+
+source_set("locales_list") {
+  deps = [ ":locales_list_gen" ]
+  sources = [ "$root_gen_dir/ui/base/l10n/l10n_util_locales_list.inc" ]
 }

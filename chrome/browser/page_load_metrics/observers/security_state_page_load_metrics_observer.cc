@@ -6,14 +6,14 @@
 
 #include <cmath>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
-#include "chrome/browser/engagement/site_engagement_service.h"
 #include "chrome/browser/engagement/site_engagement_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/security_state_tab_helper.h"
 #include "components/security_state/core/security_state.h"
+#include "components/site_engagement/content/site_engagement_service.h"
 #include "content/public/browser/navigation_handle.h"
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -41,10 +41,11 @@ SecurityStatePageLoadMetricsObserver::MaybeCreateForProfile(
   // If the site engagement service is not enabled, this observer will not track
   // site engagement metrics, but will still track the security level and
   // navigation related metrics.
-  if (!SiteEngagementService::IsEnabled())
+  if (!site_engagement::SiteEngagementService::IsEnabled())
     return std::make_unique<SecurityStatePageLoadMetricsObserver>(nullptr);
-  auto* engagement_service = SiteEngagementServiceFactory::GetForProfile(
-      static_cast<Profile*>(profile));
+  auto* engagement_service =
+      site_engagement::SiteEngagementServiceFactory::GetForProfile(
+          static_cast<Profile*>(profile));
   return std::make_unique<SecurityStatePageLoadMetricsObserver>(
       engagement_service);
 }
@@ -66,15 +67,23 @@ SecurityStatePageLoadMetricsObserver::GetEngagementFinalHistogramNameForTesting(
 }
 
 // static
-std::string
-SecurityStatePageLoadMetricsObserver::GetPageEndReasonHistogramNameForTesting(
-    security_state::SecurityLevel level) {
+std::string SecurityStatePageLoadMetricsObserver::
+    GetSecurityLevelPageEndReasonHistogramNameForTesting(
+        security_state::SecurityLevel level) {
   return security_state::GetSecurityLevelHistogramName(
       kPageEndReasonPrefix, level);
 }
 
+// static
+std::string SecurityStatePageLoadMetricsObserver::
+    GetSafetyTipPageEndReasonHistogramNameForTesting(
+        security_state::SafetyTipStatus safety_tip_status) {
+  return security_state::GetSafetyTipHistogramName(kPageEndReasonPrefix,
+                                                   safety_tip_status);
+}
+
 SecurityStatePageLoadMetricsObserver::SecurityStatePageLoadMetricsObserver(
-    SiteEngagementService* engagement_service)
+    site_engagement::SiteEngagementService* engagement_service)
     : content::WebContentsObserver(), engagement_service_(engagement_service) {}
 
 SecurityStatePageLoadMetricsObserver::~SecurityStatePageLoadMetricsObserver() =
@@ -120,14 +129,17 @@ SecurityStatePageLoadMetricsObserver::OnCommit(
 }
 
 void SecurityStatePageLoadMetricsObserver::OnComplete(
-    const page_load_metrics::mojom::PageLoadTiming& timing,
-    const page_load_metrics::PageLoadExtraInfo& extra_info) {
-  if (!extra_info.did_commit)
+    const page_load_metrics::mojom::PageLoadTiming& timing) {
+  if (!GetDelegate().DidCommit())
     return;
+
+  security_state::SafetyTipStatus safety_tip_status =
+      security_state_tab_helper_->GetVisibleSecurityState()
+          ->safety_tip_info.status;
 
   if (engagement_service_) {
     double final_engagement_score =
-        engagement_service_->GetScore(extra_info.url);
+        engagement_service_->GetScore(GetDelegate().GetUrl());
     // Round the engagement score down to the closest multiple of 10 to decrease
     // the granularity of the UKM collection.
     int64_t coarse_engagement_score =
@@ -137,6 +149,7 @@ void SecurityStatePageLoadMetricsObserver::OnComplete(
     ukm::builders::Security_SiteEngagement(source_id_)
         .SetInitialSecurityLevel(initial_security_level_)
         .SetFinalSecurityLevel(current_security_level_)
+        .SetSafetyTipStatus(static_cast<int64_t>(safety_tip_status))
         .SetScoreDelta(final_engagement_score - initial_engagement_score_)
         .SetScoreFinal(coarse_engagement_score)
         .Record(ukm_recorder);
@@ -153,20 +166,41 @@ void SecurityStatePageLoadMetricsObserver::OnComplete(
         security_state::GetSecurityLevelHistogramName(
             kEngagementFinalPrefix, current_security_level_),
         final_engagement_score, 100);
+    base::UmaHistogramExactLinear(
+        security_state::GetSafetyTipHistogramName(kEngagementDeltaPrefix,
+                                                  safety_tip_status),
+        delta, 100);
+    base::UmaHistogramExactLinear(
+        security_state::GetSafetyTipHistogramName(kEngagementFinalPrefix,
+                                                  safety_tip_status),
+        final_engagement_score, 100);
   }
 
+  // Record security level UMA histograms.
   base::UmaHistogramEnumeration(
-      security_state::GetSecurityLevelHistogramName(
-          kPageEndReasonPrefix, current_security_level_),
-      extra_info.page_end_reason, page_load_metrics::PAGE_END_REASON_COUNT);
+      security_state::GetSecurityLevelHistogramName(kPageEndReasonPrefix,
+                                                    current_security_level_),
+      GetDelegate().GetPageEndReason(),
+      page_load_metrics::PAGE_END_REASON_COUNT);
   base::UmaHistogramCustomTimes(
       security_state::GetSecurityLevelHistogramName(kTimeOnPagePrefix,
                                                     current_security_level_),
-      GetDelegate()->GetVisibilityTracker().GetForegroundDuration(),
+      GetDelegate().GetVisibilityTracker().GetForegroundDuration(),
       base::TimeDelta::FromMilliseconds(1), base::TimeDelta::FromHours(1), 100);
   base::UmaHistogramEnumeration(kSecurityLevelOnComplete,
                                 current_security_level_,
                                 security_state::SECURITY_LEVEL_COUNT);
+
+  // Record Safety Tip UMA histograms.
+  base::UmaHistogramEnumeration(security_state::GetSafetyTipHistogramName(
+                                    kPageEndReasonPrefix, safety_tip_status),
+                                GetDelegate().GetPageEndReason(),
+                                page_load_metrics::PAGE_END_REASON_COUNT);
+  base::UmaHistogramCustomTimes(
+      security_state::GetSafetyTipHistogramName(kTimeOnPagePrefix,
+                                                safety_tip_status),
+      GetDelegate().GetVisibilityTracker().GetForegroundDuration(),
+      base::TimeDelta::FromMilliseconds(1), base::TimeDelta::FromHours(1), 100);
 }
 
 void SecurityStatePageLoadMetricsObserver::DidChangeVisibleSecurityState() {

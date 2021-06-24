@@ -4,23 +4,23 @@
 
 #import "ios/web/web_state/ui/crw_web_controller_container_view.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #import "ios/web/common/crw_content_view.h"
+#import "ios/web/common/crw_viewport_adjustment_container.h"
 #import "ios/web/common/crw_web_view_content_view.h"
 #include "ios/web/common/features.h"
-#import "ios/web/public/web_state/ui/crw_native_content.h"
 #import "ios/web/web_state/ui/crw_web_view_proxy_impl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
-@interface CRWWebControllerContainerView ()
+@interface CRWWebControllerContainerView () <CRWViewportAdjustmentContainer>
 
 // Redefine properties as readwrite.
 @property(nonatomic, strong, readwrite)
     CRWWebViewContentView* webViewContentView;
-@property(nonatomic, strong, readwrite) id<CRWNativeContent> nativeController;
 @property(nonatomic, strong, readwrite) CRWContentView* transientContentView;
 
 // Convenience getter for the proxy object.
@@ -30,7 +30,6 @@
 
 @implementation CRWWebControllerContainerView
 @synthesize webViewContentView = _webViewContentView;
-@synthesize nativeController = _nativeController;
 @synthesize transientContentView = _transientContentView;
 @synthesize delegate = _delegate;
 
@@ -63,26 +62,20 @@
 
 #pragma mark Accessors
 
+- (UIView<CRWViewportAdjustment>*)fullscreenViewportAdjuster {
+  if (![self.webViewContentView
+          conformsToProtocol:@protocol(CRWViewportAdjustment)]) {
+    return nil;
+  }
+  return self.webViewContentView;
+}
+
 - (void)setWebViewContentView:(CRWWebViewContentView*)webViewContentView {
   if (![_webViewContentView isEqual:webViewContentView]) {
     [_webViewContentView removeFromSuperview];
     _webViewContentView = webViewContentView;
     [_webViewContentView setFrame:self.bounds];
     [self addSubview:_webViewContentView];
-  }
-}
-
-- (void)setNativeController:(id<CRWNativeContent>)nativeController {
-  if (![_nativeController isEqual:nativeController]) {
-    __weak id oldController = _nativeController;
-    if ([oldController respondsToSelector:@selector(willBeDismissed)]) {
-      [oldController willBeDismissed];
-    }
-    [[oldController view] removeFromSuperview];
-    _nativeController = nativeController;
-    // TODO(crbug.com/503297): Re-enable this DCHECK once native controller
-    // leaks are fixed.
-    //    DCHECK(!oldController);
   }
 }
 
@@ -118,18 +111,6 @@
 
   // TODO(crbug.com/570114): Move adding of the following subviews to another
   // place.
-
-  // nativeController layout.
-  if (self.nativeController) {
-    UIView* nativeView = [self.nativeController view];
-    if (!nativeView.superview) {
-      [self addSubview:nativeView];
-      [nativeView setNeedsUpdateConstraints];
-    }
-    nativeView.frame = UIEdgeInsetsInsetRect(
-        self.bounds, [self.delegate nativeContentInsetsForContainerView:self]);
-  }
-
   // transientContentView layout.
   if (self.transientContentView) {
     if (!self.transientContentView.superview)
@@ -140,8 +121,7 @@
 }
 
 - (BOOL)isViewAlive {
-  return self.webViewContentView || self.transientContentView ||
-         [self.nativeController isViewAlive];
+  return self.webViewContentView || self.transientContentView;
 }
 
 - (void)willMoveToWindow:(UIWindow*)newWindow {
@@ -162,7 +142,9 @@
       ![_delegate shouldKeepRenderProcessAliveForContainerView:self]) {
     if (self.webViewContentView.superview != self) {
       [_webViewContentView setFrame:self.bounds];
-      [self addSubview:_webViewContentView];
+      // Insert the content view on the back of the container view so any view
+      // that was presented on top of the content view can still appear.
+      [self insertSubview:_webViewContentView atIndex:0];
     }
     return;
   }
@@ -175,7 +157,6 @@
 
 - (void)resetContent {
   self.webViewContentView = nil;
-  self.nativeController = nil;
   self.transientContentView = nil;
   self.contentViewProxy.contentView = nil;
 }
@@ -183,19 +164,9 @@
 - (void)displayWebViewContentView:(CRWWebViewContentView*)webViewContentView {
   DCHECK(webViewContentView);
   self.webViewContentView = webViewContentView;
-  self.nativeController = nil;
   self.transientContentView = nil;
   self.contentViewProxy.contentView = self.webViewContentView;
   [self updateWebViewContentViewForContainerWindow:self.window];
-  [self setNeedsLayout];
-}
-
-- (void)displayNativeContent:(id<CRWNativeContent>)nativeController {
-  DCHECK(nativeController);
-  self.webViewContentView = nil;
-  self.nativeController = nativeController;
-  self.transientContentView = nil;
-  self.contentViewProxy.contentView = nil;
   [self setNeedsLayout];
 }
 
@@ -209,6 +180,18 @@
 - (void)clearTransientContentView {
   self.transientContentView = nil;
   self.contentViewProxy.contentView = self.webViewContentView;
+}
+
+#pragma mark UIView (printing)
+
+// Only print the web view by returning the web view printformatter.
+- (UIViewPrintFormatter*)viewPrintFormatter {
+  return [self.webViewContentView.webView viewPrintFormatter];
+}
+
+- (void)drawRect:(CGRect)rect
+    forViewPrintFormatter:(UIViewPrintFormatter*)formatter {
+  [self.webViewContentView.webView drawRect:rect];
 }
 
 @end

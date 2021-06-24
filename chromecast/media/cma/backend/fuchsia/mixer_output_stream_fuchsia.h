@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROMECAST_MEDIA_CMA_BACKEND_AUDIO_OUTPUT_STREAM_FUCHSIA_H_
-#define CHROMECAST_MEDIA_CMA_BACKEND_AUDIO_OUTPUT_STREAM_FUCHSIA_H_
+#ifndef CHROMECAST_MEDIA_CMA_BACKEND_FUCHSIA_MIXER_OUTPUT_STREAM_FUCHSIA_H_
+#define CHROMECAST_MEDIA_CMA_BACKEND_FUCHSIA_MIXER_OUTPUT_STREAM_FUCHSIA_H_
 
 #include <fuchsia/media/cpp/fidl.h>
 
-#include "base/memory/shared_memory.h"
+#include "base/memory/shared_memory_mapping.h"
 #include "base/time/time.h"
 #include "chromecast/public/media/mixer_output_stream.h"
 
@@ -22,6 +22,7 @@ class MixerOutputStreamFuchsia : public MixerOutputStream {
 
   // MixerOutputStream implementation:
   bool Start(int requested_sample_rate, int channels) override;
+  int GetNumChannels() override;
   int GetSampleRate() override;
   MediaPipelineBackend::AudioDecoder::RenderingDelay GetRenderingDelay()
       override;
@@ -50,7 +51,7 @@ class MixerOutputStreamFuchsia : public MixerOutputStream {
   // Audio renderer connection.
   fuchsia::media::AudioRendererPtr audio_renderer_;
 
-  base::SharedMemory payload_buffer_;
+  base::WritableSharedMemoryMapping payload_buffer_;
   size_t payload_buffer_pos_ = 0;
 
   // Set only while stream is playing.
@@ -69,4 +70,4 @@ class MixerOutputStreamFuchsia : public MixerOutputStream {
 }  // namespace media
 }  // namespace chromecast
 
-#endif  // CHROMECAST_MEDIA_CMA_BACKEND_AUDIO_OUTPUT_STREAM_FUCHSIA_H_
+#endif  // CHROMECAST_MEDIA_CMA_BACKEND_FUCHSIA_MIXER_OUTPUT_STREAM_FUCHSIA_H_

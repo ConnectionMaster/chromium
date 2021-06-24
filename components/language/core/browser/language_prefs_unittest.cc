@@ -11,15 +11,17 @@
 #include <vector>
 
 #include "base/json/json_reader.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/language/core/browser/language_prefs_test_util.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using testing::ElementsAreArray;
 
 namespace language {
 
@@ -29,7 +31,7 @@ static void ExpectEqualLanguageLists(
   const int input_size = languages.size();
   ASSERT_EQ(input_size, static_cast<int>(language_values->GetList().size()));
   for (int i = 0; i < input_size; ++i) {
-    std::string value = language_values->GetList().at(i).GetString();
+    std::string value = language_values->GetList()[i].GetString();
     EXPECT_EQ(languages[i], value);
   }
 }
@@ -39,7 +41,14 @@ class LanguagePrefsTest : public testing::Test {
   LanguagePrefsTest()
       : prefs_(new sync_preferences::TestingPrefServiceSyncable()) {
     LanguagePrefs::RegisterProfilePrefs(prefs_->registry());
-    language_prefs_.reset(new language::LanguagePrefs(prefs_.get()));
+    language_prefs_ = std::make_unique<language::LanguagePrefs>(prefs_.get());
+  }
+
+  void SetUp() override {
+    prefs_->SetString(language::prefs::kAcceptLanguages, std::string());
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    prefs_->SetString(language::prefs::kPreferredLanguages, std::string());
+#endif
   }
 
   void ExpectFluentLanguageListContent(
@@ -146,10 +155,157 @@ TEST_F(LanguagePrefsTest, ResetEmptyFluentLanguagesToDefaultTest) {
   language_prefs_->ResetEmptyFluentLanguagesToDefault();
   ExpectFluentLanguageListContent({"en", "fr"});
 
-  prefs_->Set(language::prefs::kFluentLanguages, base::ListValue());
+  prefs_->Set(language::prefs::kFluentLanguages,
+              base::Value(base::Value::Type::LIST));
   ExpectFluentLanguageListContent({});
   language_prefs_->ResetEmptyFluentLanguagesToDefault();
   ExpectFluentLanguageListContent({"en"});
 }
 
+TEST_F(LanguagePrefsTest, GetFluentLanguagesTest) {
+  // Default Fluent language is "en".
+  EXPECT_THAT(language_prefs_->GetFluentLanguages(), ElementsAreArray({"en"}));
+
+  // Add two languages with the same base.
+  language_prefs_->SetFluent("fr-FR");
+  language_prefs_->SetFluent("fr-CA");
+  EXPECT_THAT(language_prefs_->GetFluentLanguages(),
+              ElementsAreArray({"en", "fr"}));
+
+  // Add language that comes before English alphabetically. It should be
+  // appended to the list.
+  language_prefs_->SetFluent("af");
+  EXPECT_THAT(language_prefs_->GetFluentLanguages(),
+              ElementsAreArray({"en", "fr", "af"}));
+}
+
+TEST_F(LanguagePrefsTest, GetFirstLanguageTest) {
+  EXPECT_EQ("a", language::GetFirstLanguage("a,b,c"));
+  EXPECT_EQ("en-US", language::GetFirstLanguage("en-US,en,en-GB"));
+  EXPECT_EQ("en-US", language::GetFirstLanguage("en-US"));
+  EXPECT_EQ("", language::GetFirstLanguage(""));
+}
+
+TEST_F(LanguagePrefsTest, UpdateLanguageList) {
+  language::test::LanguagePrefTester content_languages_tester =
+      language::test::LanguagePrefTester(prefs_.get());
+  // Empty update.
+  std::vector<std::string> languages;
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.ExpectAcceptLanguagePrefs("");
+
+  // One language.
+  languages = {"en"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.ExpectAcceptLanguagePrefs("en");
+
+  // More than one language.
+  languages = {"en", "ja", "it"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,ja,it");
+
+  // Locale-specific codes.
+  // The list is exanded by adding the base languagese.
+  languages = {"en-US", "ja", "en-CA", "fr-CA"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.ExpectAcceptLanguagePrefs("en-US,ja,en-CA,fr-CA");
+
+  // List already expanded.
+  languages = {"en-US", "en", "fr", "fr-CA"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.ExpectAcceptLanguagePrefs("en-US,en,fr,fr-CA");
+}
+
+TEST_F(LanguagePrefsTest, UpdateForcedLanguageList) {
+  // Only test policy-forced languages on non-Chrome OS platforms.
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  GTEST_SKIP();
+#else
+  language::test::LanguagePrefTester content_languages_tester =
+      language::test::LanguagePrefTester(prefs_.get());
+  // Empty update.
+  std::vector<std::string> languages;
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.ExpectAcceptLanguagePrefs("");
+
+  // Forced languages with no duplicates.
+  languages = {"fr"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.SetForcedLanguagePrefs({"en", "it"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,it,fr");
+  content_languages_tester.SetForcedLanguagePrefs({});  // Reset pref
+
+  // Forced languages with some duplicates.
+  languages = {"en-US", "en", "fr", "fr-CA"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.SetForcedLanguagePrefs({"en", "it"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en-US,en,fr,fr-CA");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,it,en-US,fr,fr-CA");
+  content_languages_tester.SetForcedLanguagePrefs({});  // Reset pref
+
+  // Forced languages with full duplicates.
+  languages = {"en", "es", "fr"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.SetForcedLanguagePrefs({"en", "es", "fr"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,es,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,es,fr");
+  content_languages_tester.SetForcedLanguagePrefs({});  // Reset pref
+
+  // Add then remove forced languages with no duplicates.
+  languages = {"en", "fr"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.SetForcedLanguagePrefs({"it"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("it,en,fr");
+  // Remove forced languages
+  content_languages_tester.SetForcedLanguagePrefs({});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,fr");
+
+  // Add then remove forced languages with some duplicates.
+  languages = {"en", "fr"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.SetForcedLanguagePrefs({"en", "it"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,it,fr");
+  // Remove forced languages
+  content_languages_tester.SetForcedLanguagePrefs({});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,fr");
+
+  // Add then remove forced languages with full duplicates.
+  languages = {"en", "fr"};
+  language_prefs_->SetUserSelectedLanguagesList(languages);
+  content_languages_tester.SetForcedLanguagePrefs({"en", "fr"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,fr");
+  // Remove forced languages
+  content_languages_tester.SetForcedLanguagePrefs({});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,fr");
+#endif
+}
+
+TEST_F(LanguagePrefsTest, ResetLanguagePrefs) {
+  language::test::LanguagePrefTester content_languages_tester =
+      language::test::LanguagePrefTester(prefs_.get());
+
+  language_prefs_->SetUserSelectedLanguagesList({"en", "es", "fr"});
+  content_languages_tester.ExpectSelectedLanguagePrefs("en,es,fr");
+  content_languages_tester.ExpectAcceptLanguagePrefs("en,es,fr");
+
+  ResetLanguagePrefs(prefs_.get());
+  content_languages_tester.ExpectSelectedLanguagePrefs("");
+  // Accept languages pref is reset to the default value, not cleared.
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  content_languages_tester.ExpectAcceptLanguagePrefs(
+      prefs_->GetDefaultPrefValue(language::prefs::kPreferredLanguages)
+          ->GetString());
+#else   // BUILDFLAG(IS_CHROMEOS_ASH)
+  content_languages_tester.ExpectAcceptLanguagePrefs(
+      prefs_->GetDefaultPrefValue(language::prefs::kAcceptLanguages)
+          ->GetString());
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+}
 }  // namespace language

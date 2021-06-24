@@ -7,13 +7,12 @@
 
 #include <iosfwd>
 #include <iterator>
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/editing/iterators/text_iterator_behavior.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -155,6 +154,8 @@ class CORE_EXPORT TextOffsetMapping final {
 
   // Constructor |TextOffsetMapping| for the |inline_contents|.
   explicit TextOffsetMapping(const InlineContents& inline_contents);
+  TextOffsetMapping(const TextOffsetMapping&) = delete;
+  TextOffsetMapping& operator=(const TextOffsetMapping&) = delete;
 
   ~TextOffsetMapping() = default;
 
@@ -210,8 +211,6 @@ class CORE_EXPORT TextOffsetMapping final {
   const TextIteratorBehavior behavior_;
   const EphemeralRangeInFlatTree range_;
   const String text16_;
-
-  DISALLOW_COPY_AND_ASSIGN(TextOffsetMapping);
 };
 
 CORE_EXPORT std::ostream& operator<<(std::ostream&,

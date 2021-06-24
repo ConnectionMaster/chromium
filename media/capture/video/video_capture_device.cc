@@ -5,13 +5,37 @@
 #include "media/capture/video/video_capture_device.h"
 
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/i18n/timezone.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
 
 namespace media {
+
+CapturedExternalVideoBuffer::CapturedExternalVideoBuffer(
+    gfx::GpuMemoryBufferHandle handle,
+    VideoCaptureFormat format,
+    gfx::ColorSpace color_space)
+    : handle(std::move(handle)),
+      format(std::move(format)),
+      color_space(std::move(color_space)) {}
+
+CapturedExternalVideoBuffer::CapturedExternalVideoBuffer(
+    CapturedExternalVideoBuffer&& other)
+    : handle(std::move(other.handle)),
+      format(std::move(other.format)),
+      color_space(std::move(other.color_space)) {}
+
+CapturedExternalVideoBuffer::~CapturedExternalVideoBuffer() = default;
+
+CapturedExternalVideoBuffer& CapturedExternalVideoBuffer::operator=(
+    CapturedExternalVideoBuffer&& other) {
+  handle = std::move(other.handle);
+  format = std::move(other.format);
+  color_space = std::move(other.color_space);
+  return *this;
+}
 
 VideoCaptureDevice::Client::Buffer::Buffer() : id(0), frame_feedback_id(0) {}
 

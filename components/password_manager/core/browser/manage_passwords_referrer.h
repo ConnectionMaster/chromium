@@ -9,13 +9,17 @@ namespace password_manager {
 
 // Enumerates referrers that can trigger a navigation to the manage passwords
 // page.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused. Needs to stay in sync with
+// ManagePasswordsReferrer in enums.xml.
+//
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.password_manager
 enum class ManagePasswordsReferrer {
   // Corresponds to Chrome's settings page.
   kChromeSettings = 0,
   // Corresponds to the manage passwords bubble when clicking the key icon.
-  // Only used on desktop.
   kManagePasswordsBubble = 1,
   // Corresponds to the context menu following a right click into a password
   // field.
@@ -32,9 +36,17 @@ enum class ManagePasswordsReferrer {
   kProfileChooser = 5,
   // Corresponds to the passwords accessory sheet on Android, triggered by
   // tapping on the key icon above in the keyboard accessory bar.
-  // Only used on Android
   kPasswordsAccessorySheet = 6,
-  kMaxValue = kPasswordsAccessorySheet,
+  // Corresponds to the touch to fill bottom sheet that replaces the dropdown.
+  // Only used on Android.
+  kTouchToFill = 7,
+  // The bubble notifying the user that the last compromised password was
+  // updated.
+  kSafeStateBubble = 8,
+  // The dialog notifying a user about compromised credentials on sign in. Only
+  // used on iOS.
+  kPasswordBreachDialog = 9,
+  kMaxValue = kPasswordBreachDialog,
 };
 
 }  // namespace password_manager

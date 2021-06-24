@@ -4,10 +4,12 @@
 
 #import "ios/chrome/browser/ui/content_suggestions/cells/content_suggestions_footer_item.h"
 
+#import <MaterialComponents/MaterialActivityIndicator.h>
+
 #import "ios/chrome/browser/ui/colors/MDCPalette+CrAdditions.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
-#import "ios/third_party/material_components_ios/src/components/ActivityIndicator/src/MaterialActivityIndicator.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -84,7 +86,7 @@ const CGFloat kButtonPadding = 16;
   self = [super initWithFrame:frame];
   if (self) {
     _activityIndicator = [[MDCActivityIndicator alloc] init];
-    _activityIndicator.cycleColors = @[ [[MDCPalette cr_bluePalette] tint500] ];
+    _activityIndicator.cycleColors = @[ [UIColor colorNamed:kBlueColor] ];
     _activityIndicator.translatesAutoresizingMaskIntoConstraints = NO;
     _button = [UIButton buttonWithType:UIButtonTypeSystem];
     _button.translatesAutoresizingMaskIntoConstraints = NO;

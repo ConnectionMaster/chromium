@@ -4,14 +4,17 @@
 
 package org.chromium.chrome.browser.autofill;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.res.Resources;
+import android.graphics.drawable.Drawable;
 import android.os.Handler;
-import android.support.v4.text.TextUtilsCompat;
-import android.support.v4.view.ViewCompat;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.Spannable;
+import android.text.SpannableString;
 import android.text.TextWatcher;
+import android.text.style.ImageSpan;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.View.OnClickListener;
@@ -25,11 +28,15 @@ import android.widget.ImageView;
 import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.TextView.BufferType;
 
-import org.chromium.base.VisibleForTesting;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
+import androidx.core.text.TextUtilsCompat;
+import androidx.core.view.ViewCompat;
+
 import org.chromium.base.task.AsyncTask;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils.ErrorType;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -52,6 +59,7 @@ public class CardUnmaskPrompt
 
     private final View mMainView;
     private final TextView mInstructions;
+    private final TextView mTitleView;
     private final TextView mNoRetryErrorMessage;
     private final EditText mCardUnmaskInput;
     private final EditText mMonthInput;
@@ -60,6 +68,7 @@ public class CardUnmaskPrompt
     private final TextView mNewCardLink;
     private final TextView mErrorMessage;
     private final CheckBox mStoreLocallyCheckbox;
+    private final CheckBox mUseScreenlockCheckbox;
     private final ImageView mStoreLocallyTooltipIcon;
     private PopupWindow mStoreLocallyTooltipPopup;
     private final ViewGroup mControlsContainer;
@@ -99,8 +108,10 @@ public class CardUnmaskPrompt
          * @param month The value the user selected for expiration month, if any.
          * @param year The value the user selected for expiration month, if any.
          * @param shouldStoreLocally The state of the "Save locally?" checkbox at the time.
+         * @param enableFidoAuth The value the user selected for the use lockscreen checkbox.
          */
-        void onUserInput(String cvc, String month, String year, boolean shouldStoreLocally);
+        void onUserInput(String cvc, String month, String year, boolean shouldStoreLocally,
+                boolean enableFidoAuth);
 
         /**
          * Called when the "New card?" link has been clicked.
@@ -132,18 +143,25 @@ public class CardUnmaskPrompt
          * Called when the input values in the unmask prompt have been validated.
          */
         void onCardUnmaskPromptValidationDone(CardUnmaskPrompt prompt);
+
+        /**
+         * Called when submitting through the soft keyboard was disallowed.
+         */
+        void onCardUnmaskPromptSubmitRejected(CardUnmaskPrompt prompt);
     }
 
     public CardUnmaskPrompt(Context context, CardUnmaskPromptDelegate delegate, String title,
-            String instructions, String confirmButtonLabel, int drawableId,
-            boolean shouldRequestExpirationDate, boolean canStoreLocally,
-            boolean defaultToStoringLocally, long successMessageDurationMilliseconds) {
+            String instructions, String confirmButtonLabel, int cvcDrawableId,
+            int googlePayDrawableId, boolean isCardLocal, boolean shouldRequestExpirationDate,
+            boolean defaultToStoringLocally, boolean shouldOfferWebauthn,
+            boolean defaultUseScreenlockChecked, long successMessageDurationMilliseconds) {
         mDelegate = delegate;
 
         LayoutInflater inflater = LayoutInflater.from(context);
         View v = inflater.inflate(R.layout.autofill_card_unmask_prompt, null);
         mInstructions = (TextView) v.findViewById(R.id.instructions);
         mInstructions.setText(instructions);
+        mTitleView = (TextView) v.findViewById(R.id.title);
 
         mMainView = v;
         mNoRetryErrorMessage = (TextView) v.findViewById(R.id.no_retry_error_message);
@@ -155,32 +173,62 @@ public class CardUnmaskPrompt
         mNewCardLink.setOnClickListener(this);
         mErrorMessage = (TextView) v.findViewById(R.id.error_message);
         mStoreLocallyCheckbox = (CheckBox) v.findViewById(R.id.store_locally_checkbox);
-        mStoreLocallyCheckbox.setChecked(canStoreLocally && defaultToStoringLocally);
+        mUseScreenlockCheckbox = (CheckBox) v.findViewById(R.id.use_screenlock_checkbox);
+        mUseScreenlockCheckbox.setChecked(defaultUseScreenlockChecked);
+        if (!shouldOfferWebauthn) {
+            mUseScreenlockCheckbox.setVisibility(View.GONE);
+            mUseScreenlockCheckbox.setChecked(false);
+        }
         mStoreLocallyTooltipIcon = (ImageView) v.findViewById(R.id.store_locally_tooltip_icon);
         mStoreLocallyTooltipIcon.setOnClickListener(this);
-        if (!canStoreLocally) v.findViewById(R.id.store_locally_container).setVisibility(View.GONE);
+        v.findViewById(R.id.store_locally_container).setVisibility(View.GONE);
         mControlsContainer = (ViewGroup) v.findViewById(R.id.controls_container);
         mVerificationOverlay = v.findViewById(R.id.verification_overlay);
         mVerificationProgressBar = (ProgressBar) v.findViewById(R.id.verification_progress_bar);
         mVerificationView = (TextView) v.findViewById(R.id.verification_message);
         mSuccessMessageDurationMilliseconds = successMessageDurationMilliseconds;
-        ((ImageView) v.findViewById(R.id.cvc_hint_image)).setImageResource(drawableId);
+        ((ImageView) v.findViewById(R.id.cvc_hint_image)).setImageResource(cvcDrawableId);
 
         Resources resources = context.getResources();
-        mDialogModel = new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
-                               .with(ModalDialogProperties.CONTROLLER, this)
-                               .with(ModalDialogProperties.TITLE, title)
-                               .with(ModalDialogProperties.CUSTOM_VIEW, v)
-                               .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, confirmButtonLabel)
-                               .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT, resources,
-                                       R.string.cancel)
-                               .build();
+        String modalDialogTitle = null;
+        if (!isCardLocal) {
+            Drawable mInlineTitleIcon = resources.getDrawable(googlePayDrawableId);
+            // The first character will be replaced by the logo, and the consecutive spaces after
+            // are used as padding.
+            SpannableString titleWithLogo = new SpannableString("   " + title);
+            // How much the original logo should scale up in size to match height of text.
+            float scaleFactor = mTitleView.getTextSize() / mInlineTitleIcon.getIntrinsicHeight();
+            mInlineTitleIcon.setBounds(
+                    /* left */ 0, /* top */ 0,
+                    /* right */ (int) (scaleFactor * mInlineTitleIcon.getIntrinsicWidth()),
+                    /* bottom */ (int) (scaleFactor * mInlineTitleIcon.getIntrinsicHeight()));
+            titleWithLogo.setSpan(new ImageSpan(mInlineTitleIcon, ImageSpan.ALIGN_CENTER),
+                    /* start */ 0,
+                    /* end */ 1,
+                    /* flags */ Spannable.SPAN_INCLUSIVE_EXCLUSIVE);
+            mTitleView.setText(titleWithLogo, BufferType.SPANNABLE);
+        } else {
+            mTitleView.setVisibility(View.GONE);
+            modalDialogTitle = title;
+        }
+        PropertyModel.Builder dialogModelBuilder =
+                new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
+                        .with(ModalDialogProperties.CONTROLLER, this)
+                        .with(ModalDialogProperties.CUSTOM_VIEW, v)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, confirmButtonLabel)
+                        .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT, resources,
+                                R.string.cancel);
+        if (modalDialogTitle != null) {
+            dialogModelBuilder.with(ModalDialogProperties.TITLE, modalDialogTitle);
+        }
+        mDialogModel = dialogModelBuilder.build();
 
         mShouldRequestExpirationDate = shouldRequestExpirationDate;
         mThisYear = -1;
         mThisMonth = -1;
-        if (mShouldRequestExpirationDate)
+        if (mShouldRequestExpirationDate) {
             new CalendarTask().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        }
 
         // Set the max length of the CVC field.
         mCardUnmaskInput.setFilters(
@@ -189,7 +237,11 @@ public class CardUnmaskPrompt
         // Hitting the "submit" button on the software keyboard should submit the form if valid.
         mCardUnmaskInput.setOnEditorActionListener((v14, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE) {
-                onClick(mDialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                if (!mDialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED)) {
+                    onClick(mDialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                } else if (sObserverForTest != null) {
+                    sObserverForTest.onCardUnmaskPromptSubmitRejected(this);
+                }
                 return true;
             }
             return false;
@@ -228,13 +280,16 @@ public class CardUnmaskPrompt
     }
 
     /**
-     * Show the dialog. If activity is null this method will not do anything.
+     * Show the dialog.
+     *
+     * @param activity The current activity, used for context. When null, the method does nothing.
+     * @param modalDialogManager Used to display modal dialogs. When null, the method does nothing.
      */
-    public void show(ChromeActivity activity) {
-        if (activity == null) return;
+    public void show(@Nullable Activity activity, @Nullable ModalDialogManager modalDialogManager) {
+        if (activity == null || modalDialogManager == null) return;
 
         mContext = activity;
-        mModalDialogManager = activity.getModalDialogManager();
+        mModalDialogManager = modalDialogManager;
 
         mModalDialogManager.showDialog(mDialogModel, ModalDialogManager.ModalDialogType.APP);
 
@@ -397,6 +452,7 @@ public class CardUnmaskPrompt
         InputMethodManager imm =
                 (InputMethodManager) mContext.getSystemService(Context.INPUT_METHOD_SERVICE);
         View view = mShouldRequestExpirationDate ? mMonthInput : mCardUnmaskInput;
+        view.requestFocus();
         imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
         view.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
         if (sObserverForTest != null) {
@@ -539,7 +595,8 @@ public class CardUnmaskPrompt
             mDelegate.onUserInput(mCardUnmaskInput.getText().toString(),
                     mMonthInput.getText().toString(),
                     Integer.toString(AutofillUiUtils.getFourDigitYear(mYearInput)),
-                    mStoreLocallyCheckbox != null && mStoreLocallyCheckbox.isChecked());
+                    mStoreLocallyCheckbox != null && mStoreLocallyCheckbox.isChecked(),
+                    mUseScreenlockCheckbox.isChecked());
         } else if (buttonType == ModalDialogProperties.ButtonType.NEGATIVE) {
             mModalDialogManager.dismissDialog(model, DialogDismissalCause.NEGATIVE_BUTTON_CLICKED);
         }

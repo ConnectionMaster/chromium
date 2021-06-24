@@ -13,6 +13,7 @@
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
+#include "base/feature_list.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
@@ -23,6 +24,7 @@
 #include "media/base/decoder_buffer.h"
 #include "media/base/limits.h"
 #include "media/base/media_switches.h"
+#include "media/base/video_aspect_ratio.h"
 #include "media/filters/frame_buffer_pool.h"
 #include "third_party/libvpx/source/libvpx/vpx/vp8dx.h"
 #include "third_party/libvpx/source/libvpx/vpx/vpx_decoder.h"
@@ -42,13 +44,11 @@ static int GetVpxVideoDecoderThreadCount(const VideoDecoderConfig& config) {
   // maximum number of tiles possible for higher resolution streams.
   if (config.codec() == kCodecVP9) {
     const int width = config.coded_size().width();
-    if (width >= 8192)
-      desired_threads = 32;
-    else if (width >= 4096)
+    if (width >= 3840)
       desired_threads = 16;
-    else if (width >= 2048)
+    else if (width >= 2560)
       desired_threads = 8;
-    else if (width >= 1024)
+    else if (width >= 1280)
       desired_threads = 4;
   }
 
@@ -83,7 +83,7 @@ static int32_t GetVP9FrameBuffer(void* user_priv,
   FrameBufferPool* pool = static_cast<FrameBufferPool*>(user_priv);
   fb->data = pool->GetFrameBuffer(min_size, &fb->priv);
   fb->size = min_size;
-  return 0;
+  return fb->data ? 0 : VPX_CODEC_MEM_ERROR;
 }
 
 static int32_t ReleaseVP9FrameBuffer(void* user_priv,
@@ -98,6 +98,25 @@ static int32_t ReleaseVP9FrameBuffer(void* user_priv,
   return 0;
 }
 
+// static
+SupportedVideoDecoderConfigs VpxVideoDecoder::SupportedConfigs() {
+  SupportedVideoDecoderConfigs supported_configs;
+  supported_configs.emplace_back(/*profile_min=*/VP8PROFILE_ANY,
+                                 /*profile_max=*/VP8PROFILE_ANY,
+                                 /*coded_size_min=*/kDefaultSwDecodeSizeMin,
+                                 /*coded_size_max=*/kDefaultSwDecodeSizeMax,
+                                 /*allow_encrypted=*/false,
+                                 /*require_encrypted=*/false);
+
+  supported_configs.emplace_back(/*profile_min=*/VP9PROFILE_PROFILE0,
+                                 /*profile_max=*/VP9PROFILE_PROFILE2,
+                                 /*coded_size_min=*/kDefaultSwDecodeSizeMin,
+                                 /*coded_size_max=*/kDefaultSwDecodeSizeMax,
+                                 /*allow_encrypted=*/false,
+                                 /*require_encrypted=*/false);
+  return supported_configs;
+}
+
 VpxVideoDecoder::VpxVideoDecoder(OffloadState offload_state)
     : bind_callbacks_(offload_state == OffloadState::kNormal) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
@@ -108,14 +127,14 @@ VpxVideoDecoder::~VpxVideoDecoder() {
   CloseDecoder();
 }
 
-std::string VpxVideoDecoder::GetDisplayName() const {
-  return "VpxVideoDecoder";
+VideoDecoderType VpxVideoDecoder::GetDecoderType() const {
+  return VideoDecoderType::kVpx;
 }
 
 void VpxVideoDecoder::Initialize(const VideoDecoderConfig& config,
                                  bool /* low_delay */,
                                  CdmContext* /* cdm_context */,
-                                 const InitCB& init_cb,
+                                 InitCB init_cb,
                                  const OutputCB& output_cb,
                                  const WaitingCB& /* waiting_cb */) {
   DVLOG(1) << __func__ << ": " << config.AsHumanReadableString();
@@ -124,9 +143,15 @@ void VpxVideoDecoder::Initialize(const VideoDecoderConfig& config,
 
   CloseDecoder();
 
-  InitCB bound_init_cb = bind_callbacks_ ? BindToCurrentLoop(init_cb) : init_cb;
-  if (config.is_encrypted() || !ConfigureDecoder(config)) {
-    bound_init_cb.Run(false);
+  InitCB bound_init_cb = bind_callbacks_ ? BindToCurrentLoop(std::move(init_cb))
+                                         : std::move(init_cb);
+  if (config.is_encrypted()) {
+    std::move(bound_init_cb).Run(StatusCode::kEncryptedContentUnsupported);
+    return;
+  }
+
+  if (!ConfigureDecoder(config)) {
+    std::move(bound_init_cb).Run(StatusCode::kDecoderFailedInitialization);
     return;
   }
 
@@ -134,11 +159,11 @@ void VpxVideoDecoder::Initialize(const VideoDecoderConfig& config,
   config_ = config;
   state_ = kNormal;
   output_cb_ = output_cb;
-  bound_init_cb.Run(true);
+  std::move(bound_init_cb).Run(OkStatus());
 }
 
 void VpxVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
-                             const DecodeCB& decode_cb) {
+                             DecodeCB decode_cb) {
   DVLOG(3) << __func__ << ": " << buffer->AsHumanReadableString();
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(buffer);
@@ -146,54 +171,52 @@ void VpxVideoDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
   DCHECK_NE(state_, kUninitialized)
       << "Called Decode() before successful Initialize()";
 
-  DecodeCB bound_decode_cb =
-      bind_callbacks_ ? BindToCurrentLoop(decode_cb) : decode_cb;
+  DecodeCB bound_decode_cb = bind_callbacks_
+                                 ? BindToCurrentLoop(std::move(decode_cb))
+                                 : std::move(decode_cb);
 
   if (state_ == kError) {
-    bound_decode_cb.Run(DecodeStatus::DECODE_ERROR);
+    std::move(bound_decode_cb).Run(DecodeStatus::DECODE_ERROR);
     return;
   }
 
   if (state_ == kDecodeFinished) {
-    bound_decode_cb.Run(DecodeStatus::OK);
+    std::move(bound_decode_cb).Run(DecodeStatus::OK);
     return;
   }
 
   if (state_ == kNormal && buffer->end_of_stream()) {
     state_ = kDecodeFinished;
-    bound_decode_cb.Run(DecodeStatus::OK);
+    std::move(bound_decode_cb).Run(DecodeStatus::OK);
     return;
   }
 
   scoped_refptr<VideoFrame> video_frame;
   if (!VpxDecode(buffer.get(), &video_frame)) {
     state_ = kError;
-    bound_decode_cb.Run(DecodeStatus::DECODE_ERROR);
+    std::move(bound_decode_cb).Run(DecodeStatus::DECODE_ERROR);
     return;
   }
 
   // We might get a successful VpxDecode but not a frame if only a partial
   // decode happened.
   if (video_frame) {
-    video_frame->metadata()->SetBoolean(VideoFrameMetadata::POWER_EFFICIENT,
-                                        false);
-    // Safe to call |output_cb_| here even if we're on the offload thread since
-    // it is only set once during Initialize() and never changed.
+    video_frame->metadata().power_efficient = false;
     output_cb_.Run(video_frame);
   }
 
   // VideoDecoderShim expects |decode_cb| call after |output_cb_|.
-  bound_decode_cb.Run(DecodeStatus::OK);
+  std::move(bound_decode_cb).Run(DecodeStatus::OK);
 }
 
-void VpxVideoDecoder::Reset(const base::Closure& reset_cb) {
+void VpxVideoDecoder::Reset(base::OnceClosure reset_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   state_ = kNormal;
 
   if (bind_callbacks_)
-    BindToCurrentLoop(reset_cb).Run();
+    BindToCurrentLoop(std::move(reset_cb)).Run();
   else
-    reset_cb.Run();
+    std::move(reset_cb).Run();
 
   // Allow Initialize() to be called on another thread now.
   DETACH_FROM_SEQUENCE(sequence_checker_);
@@ -204,19 +227,15 @@ bool VpxVideoDecoder::ConfigureDecoder(const VideoDecoderConfig& config) {
   if (config.codec() != kCodecVP8 && config.codec() != kCodecVP9)
     return false;
 
-  // These are the combinations of codec-pixel format supported in principle.
-  DCHECK(
-      (config.codec() == kCodecVP8 && config.format() == PIXEL_FORMAT_I420) ||
-      (config.codec() == kCodecVP8 && config.format() == PIXEL_FORMAT_I420A) ||
-      (config.codec() == kCodecVP9 && config.format() == PIXEL_FORMAT_I420) ||
-      (config.codec() == kCodecVP9 && config.format() == PIXEL_FORMAT_I420A) ||
-      (config.codec() == kCodecVP9 && config.format() == PIXEL_FORMAT_I444));
-
 #if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
-  // When FFmpegVideoDecoder is available it handles VP8 that doesn't have
-  // alpha, and VpxVideoDecoder will handle VP8 with alpha.
-  if (config.codec() == kCodecVP8 && config.format() != PIXEL_FORMAT_I420A)
+  // When enabled, ffmpeg handles VP8 that doesn't have alpha, and
+  // VpxVideoDecoder will handle VP8 with alpha. FFvp8 is being deprecated.
+  // See http://crbug.com/992235.
+  if (base::FeatureList::IsEnabled(kFFmpegDecodeOpaqueVP8) &&
+      config.codec() == kCodecVP8 &&
+      config.alpha_mode() == VideoDecoderConfig::AlphaMode::kIsOpaque) {
     return false;
+  }
 #endif
 
   DCHECK(!vpx_codec_);
@@ -241,9 +260,17 @@ bool VpxVideoDecoder::ConfigureDecoder(const VideoDecoderConfig& config) {
                   << vpx_codec_error(vpx_codec_.get());
       return false;
     }
+
+    vpx_codec_err_t status =
+        vpx_codec_control(vpx_codec_.get(), VP9D_SET_LOOP_FILTER_OPT, 1);
+    if (status != VPX_CODEC_OK) {
+      DLOG(ERROR) << "Failed to enable VP9D_SET_LOOP_FILTER_OPT. "
+                  << vpx_codec_error(vpx_codec_.get());
+      return false;
+    }
   }
 
-  if (config.format() != PIXEL_FORMAT_I420A)
+  if (config.alpha_mode() == VideoDecoderConfig::AlphaMode::kIsOpaque)
     return true;
 
   DCHECK(!vpx_codec_alpha_);
@@ -308,7 +335,7 @@ bool VpxVideoDecoder::VpxDecode(const DecoderBuffer* buffer,
   }
 
   const vpx_image_t* vpx_image_alpha = nullptr;
-  AlphaDecodeStatus alpha_decode_status =
+  const auto alpha_decode_status =
       DecodeAlphaPlane(vpx_image, &vpx_image_alpha, buffer);
   if (alpha_decode_status == kAlphaPlaneError) {
     return false;
@@ -316,9 +343,10 @@ bool VpxVideoDecoder::VpxDecode(const DecoderBuffer* buffer,
     *video_frame = nullptr;
     return true;
   }
-  if (!CopyVpxImageToVideoFrame(vpx_image, vpx_image_alpha, video_frame)) {
+
+  if (!CopyVpxImageToVideoFrame(vpx_image, vpx_image_alpha, video_frame))
     return false;
-  }
+
   if (vpx_image_alpha && config_.codec() == kCodecVP8) {
     libyuv::CopyPlane(vpx_image_alpha->planes[VPX_PLANE_Y],
                       vpx_image_alpha->stride[VPX_PLANE_Y],
@@ -329,72 +357,63 @@ bool VpxVideoDecoder::VpxDecode(const DecoderBuffer* buffer,
   }
 
   (*video_frame)->set_timestamp(buffer->timestamp());
+  (*video_frame)->set_hdr_metadata(config_.hdr_metadata());
 
-  // Default to the color space from the config, but if the bistream specifies
-  // one, prefer that instead.
+  // Prefer the color space from the config if available. It generally comes
+  // from the color tag which is more expressive than the vp8 and vp9 bitstream.
   if (config_.color_space_info().IsSpecified()) {
     (*video_frame)
         ->set_color_space(config_.color_space_info().ToGfxColorSpace());
+    return true;
   }
 
-  if (config_.color_space_info().IsSpecified()) {
-    // config_.color_space_info() comes from the color tag which is
-    // more expressive than the bitstream, so prefer it over the
-    // bitstream data below.
-    (*video_frame)
-        ->set_color_space(config_.color_space_info().ToGfxColorSpace());
-  } else {
-    gfx::ColorSpace::PrimaryID primaries = gfx::ColorSpace::PrimaryID::INVALID;
-    gfx::ColorSpace::TransferID transfer = gfx::ColorSpace::TransferID::INVALID;
-    gfx::ColorSpace::MatrixID matrix = gfx::ColorSpace::MatrixID::INVALID;
-    gfx::ColorSpace::RangeID range = vpx_image->range == VPX_CR_FULL_RANGE
-                                         ? gfx::ColorSpace::RangeID::FULL
-                                         : gfx::ColorSpace::RangeID::LIMITED;
+  auto primaries = gfx::ColorSpace::PrimaryID::INVALID;
+  auto transfer = gfx::ColorSpace::TransferID::INVALID;
+  auto matrix = gfx::ColorSpace::MatrixID::INVALID;
+  auto range = vpx_image->range == VPX_CR_FULL_RANGE
+                   ? gfx::ColorSpace::RangeID::FULL
+                   : gfx::ColorSpace::RangeID::LIMITED;
 
-    switch (vpx_image->cs) {
-      case VPX_CS_BT_601:
-      case VPX_CS_SMPTE_170:
-        primaries = gfx::ColorSpace::PrimaryID::SMPTE170M;
-        transfer = gfx::ColorSpace::TransferID::SMPTE170M;
-        matrix = gfx::ColorSpace::MatrixID::SMPTE170M;
-        break;
-      case VPX_CS_SMPTE_240:
-        primaries = gfx::ColorSpace::PrimaryID::SMPTE240M;
-        transfer = gfx::ColorSpace::TransferID::SMPTE240M;
-        matrix = gfx::ColorSpace::MatrixID::SMPTE240M;
-        break;
-      case VPX_CS_BT_709:
-        primaries = gfx::ColorSpace::PrimaryID::BT709;
+  switch (vpx_image->cs) {
+    case VPX_CS_BT_601:
+    case VPX_CS_SMPTE_170:
+      primaries = gfx::ColorSpace::PrimaryID::SMPTE170M;
+      transfer = gfx::ColorSpace::TransferID::SMPTE170M;
+      matrix = gfx::ColorSpace::MatrixID::SMPTE170M;
+      break;
+    case VPX_CS_SMPTE_240:
+      primaries = gfx::ColorSpace::PrimaryID::SMPTE240M;
+      transfer = gfx::ColorSpace::TransferID::SMPTE240M;
+      matrix = gfx::ColorSpace::MatrixID::SMPTE240M;
+      break;
+    case VPX_CS_BT_709:
+      primaries = gfx::ColorSpace::PrimaryID::BT709;
+      transfer = gfx::ColorSpace::TransferID::BT709;
+      matrix = gfx::ColorSpace::MatrixID::BT709;
+      break;
+    case VPX_CS_BT_2020:
+      primaries = gfx::ColorSpace::PrimaryID::BT2020;
+      if (vpx_image->bit_depth >= 12)
+        transfer = gfx::ColorSpace::TransferID::BT2020_12;
+      else if (vpx_image->bit_depth >= 10)
+        transfer = gfx::ColorSpace::TransferID::BT2020_10;
+      else
         transfer = gfx::ColorSpace::TransferID::BT709;
-        matrix = gfx::ColorSpace::MatrixID::BT709;
-        break;
-      case VPX_CS_BT_2020:
-        primaries = gfx::ColorSpace::PrimaryID::BT2020;
-        if (vpx_image->bit_depth >= 12) {
-          transfer = gfx::ColorSpace::TransferID::BT2020_12;
-        } else if (vpx_image->bit_depth >= 10) {
-          transfer = gfx::ColorSpace::TransferID::BT2020_10;
-        } else {
-          transfer = gfx::ColorSpace::TransferID::BT709;
-        }
-        matrix = gfx::ColorSpace::MatrixID::BT2020_NCL;  // is this right?
-        break;
-      case VPX_CS_SRGB:
-        primaries = gfx::ColorSpace::PrimaryID::BT709;
-        transfer = gfx::ColorSpace::TransferID::IEC61966_2_1;
-        matrix = gfx::ColorSpace::MatrixID::BT709;
-        break;
+      matrix = gfx::ColorSpace::MatrixID::BT2020_NCL;  // is this right?
+      break;
+    case VPX_CS_SRGB:
+      primaries = gfx::ColorSpace::PrimaryID::BT709;
+      transfer = gfx::ColorSpace::TransferID::IEC61966_2_1;
+      matrix = gfx::ColorSpace::MatrixID::BT709;
+      break;
+    default:
+      break;
+  }
 
-      default:
-        break;
-    }
-
-    // TODO(ccameron): Set a color space even for unspecified values.
-    if (primaries != gfx::ColorSpace::PrimaryID::INVALID) {
-      (*video_frame)
-          ->set_color_space(
-              gfx::ColorSpace(primaries, transfer, matrix, range));
-    }
+  // TODO(ccameron): Set a color space even for unspecified values.
+  if (primaries != gfx::ColorSpace::PrimaryID::INVALID) {
+    (*video_frame)
+        ->set_color_space(gfx::ColorSpace(primaries, transfer, matrix, range));
   }
 
   return true;
@@ -522,6 +541,13 @@ bool VpxVideoDecoder::CopyVpxImageToVideoFrame(
   // benefit, and only risk copying too much data.
   const gfx::Size coded_size(vpx_image->w, vpx_image->d_h);
   const gfx::Size visible_size(vpx_image->d_w, vpx_image->d_h);
+  // Compute natural size by scaling visible size by *pixel* aspect ratio. Note
+  // that we could instead use vpx_image r_w and r_h, but doing so would allow
+  // pixel aspect ratio to change on a per-frame basis which would make
+  // vpx_video_decoder inconsistent with decoders where changes to
+  // pixel aspect ratio are not surfaced (e.g. Android MediaCodec).
+  const gfx::Size natural_size =
+      config_.aspect_ratio().GetNaturalSize(gfx::Rect(visible_size));
 
   if (memory_pool_) {
     DCHECK_EQ(kCodecVP9, config_.codec());
@@ -530,24 +556,25 @@ bool VpxVideoDecoder::CopyVpxImageToVideoFrame(
           vpx_image_alpha->stride[VPX_PLANE_Y] * vpx_image_alpha->d_h;
       uint8_t* alpha_plane = memory_pool_->AllocateAlphaPlaneForFrameBuffer(
           alpha_plane_size, vpx_image->fb_priv);
+      if (!alpha_plane)  // In case of OOM, abort copy.
+        return false;
       libyuv::CopyPlane(vpx_image_alpha->planes[VPX_PLANE_Y],
                         vpx_image_alpha->stride[VPX_PLANE_Y], alpha_plane,
                         vpx_image_alpha->stride[VPX_PLANE_Y],
                         vpx_image_alpha->d_w, vpx_image_alpha->d_h);
       *video_frame = VideoFrame::WrapExternalYuvaData(
-          codec_format, coded_size, gfx::Rect(visible_size),
-          config_.natural_size(), vpx_image->stride[VPX_PLANE_Y],
-          vpx_image->stride[VPX_PLANE_U], vpx_image->stride[VPX_PLANE_V],
-          vpx_image_alpha->stride[VPX_PLANE_Y], vpx_image->planes[VPX_PLANE_Y],
-          vpx_image->planes[VPX_PLANE_U], vpx_image->planes[VPX_PLANE_V],
-          alpha_plane, kNoTimestamp);
+          codec_format, coded_size, gfx::Rect(visible_size), natural_size,
+          vpx_image->stride[VPX_PLANE_Y], vpx_image->stride[VPX_PLANE_U],
+          vpx_image->stride[VPX_PLANE_V], vpx_image_alpha->stride[VPX_PLANE_Y],
+          vpx_image->planes[VPX_PLANE_Y], vpx_image->planes[VPX_PLANE_U],
+          vpx_image->planes[VPX_PLANE_V], alpha_plane, kNoTimestamp);
     } else {
       *video_frame = VideoFrame::WrapExternalYuvData(
-          codec_format, coded_size, gfx::Rect(visible_size),
-          config_.natural_size(), vpx_image->stride[VPX_PLANE_Y],
-          vpx_image->stride[VPX_PLANE_U], vpx_image->stride[VPX_PLANE_V],
-          vpx_image->planes[VPX_PLANE_Y], vpx_image->planes[VPX_PLANE_U],
-          vpx_image->planes[VPX_PLANE_V], kNoTimestamp);
+          codec_format, coded_size, gfx::Rect(visible_size), natural_size,
+          vpx_image->stride[VPX_PLANE_Y], vpx_image->stride[VPX_PLANE_U],
+          vpx_image->stride[VPX_PLANE_V], vpx_image->planes[VPX_PLANE_Y],
+          vpx_image->planes[VPX_PLANE_U], vpx_image->planes[VPX_PLANE_V],
+          kNoTimestamp);
     }
     if (!(*video_frame))
       return false;
@@ -558,8 +585,8 @@ bool VpxVideoDecoder::CopyVpxImageToVideoFrame(
   }
 
   *video_frame = frame_pool_.CreateFrame(codec_format, visible_size,
-                                         gfx::Rect(visible_size),
-                                         config_.natural_size(), kNoTimestamp);
+                                         gfx::Rect(visible_size), natural_size,
+                                         kNoTimestamp);
   if (!(*video_frame))
     return false;
 

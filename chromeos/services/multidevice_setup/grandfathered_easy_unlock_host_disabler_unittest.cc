@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "ash/constants/ash_features.h"
 #include "base/macros.h"
 #include "base/timer/mock_timer.h"
 #include "chromeos/components/multidevice/remote_device_test_util.h"
@@ -22,6 +23,8 @@ namespace {
 
 const char kEasyUnlockHostIdToDisablePrefName[] =
     "multidevice_setup.easy_unlock_host_id_to_disable";
+const char kEasyUnlockHostInstanceIdToDisablePrefName[] =
+    "multidevice_setup.easy_unlock_host_instance_id_to_disable";
 
 const char kNoDevice[] = "";
 
@@ -30,7 +33,7 @@ const size_t kNumTestDevices = 2;
 }  // namespace
 
 class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
-    : public testing::Test {
+    : public ::testing::Test {
  protected:
   MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest()
       : test_devices_(
@@ -39,6 +42,13 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
 
   // testing::Test:
   void SetUp() override {
+    for (auto& device : test_devices_) {
+      // Don't rely on a legacy device ID if not using v1 DeviceSync, even
+      // though we almost always expect one in practice.
+      if (!features::ShouldUseV1DeviceSync())
+        GetMutableRemoteDevice(device)->public_key.clear();
+    }
+
     fake_host_backend_delegate_ = std::make_unique<FakeHostBackendDelegate>();
 
     fake_device_sync_client_ =
@@ -51,7 +61,7 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
         test_pref_service_->registry());
   }
 
-  void SetHost(const base::Optional<multidevice::RemoteDeviceRef>& host_device,
+  void SetHost(const absl::optional<multidevice::RemoteDeviceRef>& host_device,
                multidevice::SoftwareFeature host_type) {
     if (host_type != multidevice::SoftwareFeature::kBetterTogetherHost &&
         host_type != multidevice::SoftwareFeature::kSmartLockHost)
@@ -59,8 +69,9 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
 
     for (const auto& remote_device : test_devices_) {
       bool should_be_host =
-          host_device != base::nullopt &&
-          host_device->GetDeviceId() == remote_device.GetDeviceId();
+          host_device != absl::nullopt &&
+          host_device->GetDeviceId() == remote_device.GetDeviceId() &&
+          host_device->instance_id() == remote_device.instance_id();
 
       GetMutableRemoteDevice(remote_device)->software_features[host_type] =
           should_be_host ? multidevice::SoftwareFeatureState::kEnabled
@@ -72,11 +83,17 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
   }
 
   void InitializeTest(
-      const std::string& initial_device_id_pref_value,
-      base::Optional<multidevice::RemoteDeviceRef> initial_better_together_host,
-      base::Optional<multidevice::RemoteDeviceRef> initial_easy_unlock_host) {
+      absl::optional<multidevice::RemoteDeviceRef> initial_device_in_prefs,
+      absl::optional<multidevice::RemoteDeviceRef> initial_better_together_host,
+      absl::optional<multidevice::RemoteDeviceRef> initial_easy_unlock_host) {
     test_pref_service_->SetString(kEasyUnlockHostIdToDisablePrefName,
-                                  initial_device_id_pref_value);
+                                  initial_device_in_prefs
+                                      ? initial_device_in_prefs->GetDeviceId()
+                                      : kNoDevice);
+    test_pref_service_->SetString(kEasyUnlockHostInstanceIdToDisablePrefName,
+                                  initial_device_in_prefs
+                                      ? initial_device_in_prefs->instance_id()
+                                      : kNoDevice);
 
     SetHost(initial_better_together_host,
             multidevice::SoftwareFeature::kBetterTogetherHost);
@@ -87,13 +104,58 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
     mock_timer_ = mock_timer.get();
 
     grandfathered_easy_unlock_host_disabler_ =
-        GrandfatheredEasyUnlockHostDisabler::Factory::Get()->BuildInstance(
+        GrandfatheredEasyUnlockHostDisabler::Factory::Create(
             fake_host_backend_delegate_.get(), fake_device_sync_client_.get(),
             test_pref_service_.get(), std::move(mock_timer));
   }
 
-  std::string GetEasyUnlockHostIdToDisablePrefValue() {
-    return test_pref_service_->GetString(kEasyUnlockHostIdToDisablePrefName);
+  // Verify that the IDs for |expected_device| are stored in prefs. If
+  // |expected_device| is null, prefs should have value |kNoDevice|.
+  void VerifyDeviceInPrefs(
+      const absl::optional<multidevice::RemoteDeviceRef>& expected_device) {
+    if (!expected_device) {
+      EXPECT_EQ(kNoDevice, test_pref_service_->GetString(
+                               kEasyUnlockHostIdToDisablePrefName));
+      EXPECT_EQ(kNoDevice, test_pref_service_->GetString(
+                               kEasyUnlockHostInstanceIdToDisablePrefName));
+      return;
+    }
+
+    EXPECT_EQ(
+        expected_device->GetDeviceId().empty() ? kNoDevice
+                                               : expected_device->GetDeviceId(),
+        test_pref_service_->GetString(kEasyUnlockHostIdToDisablePrefName));
+    EXPECT_EQ(expected_device->instance_id().empty()
+                  ? kNoDevice
+                  : expected_device->instance_id(),
+              test_pref_service_->GetString(
+                  kEasyUnlockHostInstanceIdToDisablePrefName));
+  }
+
+  void VerifyEasyUnlockHostDisableRequest(
+      int expected_queue_size,
+      const absl::optional<multidevice::RemoteDeviceRef>& expected_host) {
+    EXPECT_EQ(
+        expected_queue_size,
+        features::ShouldUseV1DeviceSync()
+            ? fake_device_sync_client_
+                  ->GetSetSoftwareFeatureStateInputsQueueSize()
+            : fake_device_sync_client_->GetSetFeatureStatusInputsQueueSize());
+    if (expected_queue_size > 0) {
+      ASSERT_TRUE(expected_host);
+      VerifyLatestEasyUnlockHostDisableRequest(*expected_host);
+    }
+  }
+
+  void InvokePendingEasyUnlockHostDisableRequestCallback(
+      device_sync::mojom::NetworkRequestResult result_code) {
+    if (features::ShouldUseV1DeviceSync()) {
+      fake_device_sync_client_->InvokePendingSetSoftwareFeatureStateCallback(
+          result_code);
+    } else {
+      fake_device_sync_client_->InvokePendingSetFeatureStatusCallback(
+          result_code);
+    }
   }
 
   const multidevice::RemoteDeviceRefList& test_devices() const {
@@ -107,6 +169,35 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
   base::MockOneShotTimer* mock_timer() const { return mock_timer_; }
 
  private:
+  void VerifyLatestEasyUnlockHostDisableRequest(
+      const multidevice::RemoteDeviceRef& expected_host) {
+    // Verify inputs to SetSoftwareFeatureState().
+    if (features::ShouldUseV1DeviceSync()) {
+      ASSERT_FALSE(
+          fake_device_sync_client_->set_software_feature_state_inputs_queue()
+              .empty());
+      const device_sync::FakeDeviceSyncClient::SetSoftwareFeatureStateInputs&
+          inputs = fake_device_sync_client_
+                       ->set_software_feature_state_inputs_queue()
+                       .back();
+      EXPECT_EQ(expected_host.public_key(), inputs.public_key);
+      EXPECT_EQ(multidevice::SoftwareFeature::kSmartLockHost,
+                inputs.software_feature);
+      EXPECT_FALSE(inputs.enabled);
+      EXPECT_FALSE(inputs.is_exclusive);
+      return;
+    }
+
+    // Verify inputs to SetFeatureStatus().
+    ASSERT_FALSE(
+        fake_device_sync_client_->set_feature_status_inputs_queue().empty());
+    const device_sync::FakeDeviceSyncClient::SetFeatureStatusInputs& inputs =
+        fake_device_sync_client_->set_feature_status_inputs_queue().back();
+    EXPECT_EQ(expected_host.instance_id(), inputs.device_instance_id);
+    EXPECT_EQ(multidevice::SoftwareFeature::kSmartLockHost, inputs.feature);
+    EXPECT_EQ(device_sync::FeatureStatusChange::kDisable, inputs.status_change);
+  }
+
   multidevice::RemoteDeviceRefList test_devices_;
 
   std::unique_ptr<FakeHostBackendDelegate> fake_host_backend_delegate_;
@@ -137,22 +228,19 @@ class MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest
 TEST_F(
     MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
     IfBetterTogetherHostChangedFromOneDeviceToNoDeviceThenDisableEasyUnlock) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
                  test_devices()[0] /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
-  SetHost(base::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  SetHost(absl::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(test_devices()[0].GetDeviceId(),
-            GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      1,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
-
-  fake_device_sync_client()->InvokePendingSetSoftwareFeatureStateCallback(
+  VerifyDeviceInPrefs(test_devices()[0]);
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
+  InvokePendingEasyUnlockHostDisableRequestCallback(
       device_sync::mojom::NetworkRequestResult::kSuccess);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
   EXPECT_FALSE(mock_timer()->IsRunning());
 }
 
@@ -171,16 +259,15 @@ TEST_F(
 // class.
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfBetterTogetherHostChangedFromNoDeviceToADeviceThenDoNothing) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
-                 base::nullopt /* initial_better_together_host */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
+                 absl::nullopt /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
   SetHost(test_devices()[1], multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
 }
 
 // Situation #3:
@@ -198,37 +285,33 @@ TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
 // EUH in this case to be safe.
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfBetterTogetherHostChangedFromOneDeviceToAnotherThenDisableEasyUnlock) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
                  test_devices()[0] /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
   SetHost(test_devices()[1], multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(test_devices()[0].GetDeviceId(),
-            GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      1,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
-
-  fake_device_sync_client()->InvokePendingSetSoftwareFeatureStateCallback(
+  VerifyDeviceInPrefs(test_devices()[0]);
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
+  InvokePendingEasyUnlockHostDisableRequestCallback(
       device_sync::mojom::NetworkRequestResult::kSuccess);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
   EXPECT_FALSE(mock_timer()->IsRunning());
 }
 
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfDisablePendingThenConstructorAttemptsToDisableEasyUnlock) {
-  InitializeTest(
-      test_devices()[0].GetDeviceId() /* initial_device_id_pref_value */,
-      base::nullopt /* initial_better_together_host */,
-      test_devices()[0] /* initial_easy_unlock_host */);
+  InitializeTest(test_devices()[0] /* initial_device_in_prefs */,
+                 absl::nullopt /* initial_better_together_host */,
+                 test_devices()[0] /* initial_easy_unlock_host */);
 
-  EXPECT_EQ(test_devices()[0].GetDeviceId(),
-            GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      1,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyDeviceInPrefs(test_devices()[0]);
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
+  InvokePendingEasyUnlockHostDisableRequestCallback(
+      device_sync::mojom::NetworkRequestResult::kSuccess);
 }
 
 // Situation #1 where device A is removed from list of synced devices:
@@ -240,19 +323,18 @@ TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
 // EUH| 1 | 0 |        EUH| 1 | 0 |
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfHostToDisableIsNotInListOfSyncedDevicesThenClearPref) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
                  test_devices()[0] /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
   // Remove device[0] from list
   fake_device_sync_client()->set_synced_devices({test_devices()[1]});
 
-  SetHost(base::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  SetHost(absl::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
 }
 
 // Situation #1 with failure:
@@ -264,68 +346,60 @@ TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
 // EUH| 1 | 0 |        EUH| 1 | 0 |
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfEasyUnlockDisableUnsuccessfulThenScheduleRetry) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
                  test_devices()[0] /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
-  SetHost(base::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  SetHost(absl::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(
-      1,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
-  fake_device_sync_client()->InvokePendingSetSoftwareFeatureStateCallback(
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
+  InvokePendingEasyUnlockHostDisableRequestCallback(
       device_sync::mojom::NetworkRequestResult::kInternalServerError);
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
 
-  EXPECT_EQ(test_devices()[0].GetDeviceId(),
-            GetEasyUnlockHostIdToDisablePrefValue());
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
+
+  VerifyDeviceInPrefs(test_devices()[0]);
   EXPECT_TRUE(mock_timer()->IsRunning());
 
   mock_timer()->Fire();
 
-  EXPECT_EQ(
-      1,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
 }
 
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfNoDisablePendingThenConstructorDoesNothing) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
-                 base::nullopt /* initial_better_together_host */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
+                 absl::nullopt /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
 }
 
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfDisablePendingButIsNotCurrentEasyUnlockHostThenClearPref) {
-  InitializeTest(
-      test_devices()[0].GetDeviceId() /* initial_device_id_pref_value */,
-      test_devices()[1] /* initial_better_together_host */,
-      test_devices()[1] /* initial_easy_unlock_host */);
+  InitializeTest(test_devices()[0] /* initial_device_in_prefs */,
+                 test_devices()[1] /* initial_better_together_host */,
+                 test_devices()[1] /* initial_easy_unlock_host */);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
 }
 
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfDisablePendingButIsCurrentBetterTogetherHostThenClearPref) {
-  InitializeTest(
-      test_devices()[0].GetDeviceId() /* initial_device_id_pref_value */,
-      test_devices()[0] /* initial_better_together_host */,
-      test_devices()[0] /* initial_easy_unlock_host */);
+  InitializeTest(test_devices()[0] /* initial_device_in_prefs */,
+                 test_devices()[0] /* initial_better_together_host */,
+                 test_devices()[0] /* initial_easy_unlock_host */);
 
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
 }
 
 // Simulate:
@@ -336,27 +410,26 @@ TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
 //   - Re-enable BETTER_TOGETHER_HOST on device 0
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfHostChangesWhileRetryTimerIsRunningThenCancelTimerAndClearPref) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
                  test_devices()[0] /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
 
-  SetHost(base::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  SetHost(absl::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(
-      1,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
-  fake_device_sync_client()->InvokePendingSetSoftwareFeatureStateCallback(
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
+  InvokePendingEasyUnlockHostDisableRequestCallback(
       device_sync::mojom::NetworkRequestResult::kInternalServerError);
 
   EXPECT_TRUE(mock_timer()->IsRunning());
 
   SetHost(test_devices()[0], multidevice::SoftwareFeature::kBetterTogetherHost);
 
-  EXPECT_EQ(
-      0,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
+  VerifyEasyUnlockHostDisableRequest(0 /* expected_queue_size */,
+                                     absl::nullopt /* expected_host */);
+
   EXPECT_FALSE(mock_timer()->IsRunning());
-  EXPECT_EQ(kNoDevice, GetEasyUnlockHostIdToDisablePrefValue());
+  VerifyDeviceInPrefs(absl::nullopt /* expected_device */);
 }
 
 // Simulate:
@@ -367,27 +440,23 @@ TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
 //   - SetSoftwareFeatureState callback for device 0 is called
 TEST_F(MultiDeviceSetupGrandfatheredEasyUnlockHostDisablerTest,
        IfDifferentHostDisabledBeforeFirstCallbackThenFirstCallbackDoesNothing) {
-  InitializeTest(kNoDevice /* initial_device_id_pref_value */,
+  InitializeTest(absl::nullopt /* initial_device_in_prefs */,
                  test_devices()[0] /* initial_better_together_host */,
                  test_devices()[0] /* initial_easy_unlock_host */);
-
-  SetHost(base::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  SetHost(absl::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  VerifyEasyUnlockHostDisableRequest(1 /* expected_queue_size */,
+                                     test_devices()[0]);
 
   SetHost(test_devices()[1], multidevice::SoftwareFeature::kBetterTogetherHost);
   SetHost(test_devices()[1], multidevice::SoftwareFeature::kSmartLockHost);
+  SetHost(absl::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
+  VerifyEasyUnlockHostDisableRequest(2 /* expected_queue_size */,
+                                     test_devices()[1]);
+  VerifyDeviceInPrefs(test_devices()[1]);
 
-  SetHost(base::nullopt, multidevice::SoftwareFeature::kBetterTogetherHost);
-
-  EXPECT_EQ(
-      2,
-      fake_device_sync_client()->GetSetSoftwareFeatureStateCallbackQueueSize());
-  EXPECT_EQ(test_devices()[1].GetDeviceId(),
-            GetEasyUnlockHostIdToDisablePrefValue());
-
-  fake_device_sync_client()->InvokePendingSetSoftwareFeatureStateCallback(
+  InvokePendingEasyUnlockHostDisableRequestCallback(
       device_sync::mojom::NetworkRequestResult::kSuccess);
-  EXPECT_EQ(test_devices()[1].GetDeviceId(),
-            GetEasyUnlockHostIdToDisablePrefValue());
+  VerifyDeviceInPrefs(test_devices()[1]);
 }
 
 }  // namespace multidevice_setup

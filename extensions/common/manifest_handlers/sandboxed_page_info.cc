@@ -55,7 +55,7 @@ SandboxedPageHandler::SandboxedPageHandler() {
 SandboxedPageHandler::~SandboxedPageHandler() {
 }
 
-bool SandboxedPageHandler::Parse(Extension* extension, base::string16* error) {
+bool SandboxedPageHandler::Parse(Extension* extension, std::u16string* error) {
   std::unique_ptr<SandboxedPageInfo> sandboxed_info(new SandboxedPageInfo);
 
   const base::Value* list_value = nullptr;
@@ -64,14 +64,14 @@ bool SandboxedPageHandler::Parse(Extension* extension, base::string16* error) {
     return false;
   }
 
-  const base::Value::ListStorage& list_storage = list_value->GetList();
-  for (size_t i = 0; i < list_storage.size(); ++i) {
-    if (!list_storage[i].is_string()) {
+  base::Value::ConstListView list_view = list_value->GetList();
+  for (size_t i = 0; i < list_view.size(); ++i) {
+    if (!list_view[i].is_string()) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
           errors::kInvalidSandboxedPage, base::NumberToString(i));
       return false;
     }
-    std::string relative_path = list_storage[i].GetString();
+    std::string relative_path = list_view[i].GetString();
     URLPattern pattern(URLPattern::SCHEME_EXTENSION);
     if (pattern.Parse(extension->url().spec()) !=
         URLPattern::ParseResult::kSuccess) {

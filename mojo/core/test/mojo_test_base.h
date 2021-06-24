@@ -11,7 +11,6 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
@@ -27,11 +26,14 @@ namespace test {
 
 class MojoTestBase : public testing::Test {
  public:
+  // Mojo Core is configured with this message size limit in tests so that we
+  // can reliably exercise code paths for oversized messages.
+  static constexpr size_t kMaxMessageSizeInTests = 32 * 1024 * 1024;
+
   MojoTestBase();
   ~MojoTestBase() override;
 
   using LaunchType = MultiprocessTestHelper::LaunchType;
-  using HandlerCallback = base::Callback<void(ScopedMessagePipeHandle)>;
 
   class ClientController {
    public:
@@ -197,8 +199,8 @@ class MojoTestBase : public testing::Test {
       ::mojo::core::test::MultiprocessTestHelper::ChildSetup) {         \
     client_name##_MainFixture test;                                     \
     return ::mojo::core::test::MultiprocessTestHelper::RunClientMain(   \
-        base::Bind(&client_name##_MainFixture::Main,                    \
-                   base::Unretained(&test)));                           \
+        base::BindOnce(&client_name##_MainFixture::Main,                \
+                       base::Unretained(&test)));                       \
   }                                                                     \
   int client_name##_MainFixture::Main(MojoHandle pipe_name)
 
@@ -216,8 +218,8 @@ class MojoTestBase : public testing::Test {
       ::mojo::core::test::MultiprocessTestHelper::ChildSetup) {              \
     client_name##_MainFixture test;                                          \
     return ::mojo::core::test::MultiprocessTestHelper::RunClientTestMain(    \
-        base::Bind(&client_name##_MainFixture::Main,                         \
-                   base::Unretained(&test)));                                \
+        base::BindOnce(&client_name##_MainFixture::Main,                     \
+                       base::Unretained(&test)));                            \
   }                                                                          \
   void client_name##_MainFixture::Main(MojoHandle pipe_name)
 #else  // !defined(OS_IOS)

@@ -4,6 +4,14 @@
 
 import("//build/config/ios/asset_catalog.gni")
 
+imageset("popup_menu_search") {
+  sources = [
+    "popup_menu_search.imageset/Contents.json",
+    "popup_menu_search.imageset/popup_menu_search@2x.png",
+    "popup_menu_search.imageset/popup_menu_search@3x.png",
+  ]
+}
+
 imageset("popup_menu_paste_and_go") {
   sources = [
     "popup_menu_paste_and_go.imageset/Contents.json",
@@ -106,7 +114,6 @@ imageset("popup_menu_settings") {
 imageset("popup_menu_new_incognito_tab") {
   sources = [
     "popup_menu_new_incognito_tab.imageset/Contents.json",
-    "popup_menu_new_incognito_tab.imageset/popup_menu_new_incognito_tab.png",
     "popup_menu_new_incognito_tab.imageset/popup_menu_new_incognito_tab@2x.png",
     "popup_menu_new_incognito_tab.imageset/popup_menu_new_incognito_tab@3x.png",
   ]
@@ -117,6 +124,14 @@ imageset("popup_menu_translate") {
     "popup_menu_translate.imageset/Contents.json",
     "popup_menu_translate.imageset/popup_menu_translate@2x.png",
     "popup_menu_translate.imageset/popup_menu_translate@3x.png",
+  ]
+}
+
+imageset("popup_menu_downloads") {
+  sources = [
+    "popup_menu_downloads.imageset/Contents.json",
+    "popup_menu_downloads.imageset/popup_menu_downloads@2x.png",
+    "popup_menu_downloads.imageset/popup_menu_downloads@3x.png",
   ]
 }
 
@@ -201,11 +216,35 @@ imageset("popup_menu_new_tab") {
   ]
 }
 
+imageset("popup_menu_new_window") {
+  sources = [
+    "popup_menu_new_window.imageset/Contents.json",
+    "popup_menu_new_window.imageset/popup_menu_new_window@2x.png",
+    "popup_menu_new_window.imageset/popup_menu_new_window@3x.png",
+  ]
+}
+
 imageset("popup_menu_help") {
   sources = [
     "popup_menu_help.imageset/Contents.json",
     "popup_menu_help.imageset/popup_menu_help.png",
     "popup_menu_help.imageset/popup_menu_help@2x.png",
     "popup_menu_help.imageset/popup_menu_help@3x.png",
+  ]
+}
+
+imageset("popup_menu_text_zoom") {
+  sources = [
+    "popup_menu_text_zoom.imageset/Contents.json",
+    "popup_menu_text_zoom.imageset/popup_menu_text_zoom@2x.png",
+    "popup_menu_text_zoom.imageset/popup_menu_text_zoom@3x.png",
+  ]
+}
+
+imageset("popup_menu_enterprise_icon") {
+  sources = [
+    "popup_menu_enterprise_icon.imageset/Contents.json",
+    "popup_menu_enterprise_icon.imageset/popup_menu_enterprise_icon@2x.png",
+    "popup_menu_enterprise_icon.imageset/popup_menu_enterprise_icon@3x.png",
   ]
 }

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_util.h"
 #include "net/spdy/spdy_test_util_common.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -26,23 +27,22 @@ class HeaderCoalescerTest : public ::testing::Test {
   void ExpectEntry(base::StringPiece expected_header_name,
                    base::StringPiece expected_header_value,
                    base::StringPiece expected_error_message) {
-    TestNetLogEntry::List entry_list;
-    net_log_.GetEntries(&entry_list);
+    auto entry_list = net_log_.GetEntries();
     ASSERT_EQ(1u, entry_list.size());
     EXPECT_EQ(entry_list[0].type,
               NetLogEventType::HTTP2_SESSION_RECV_INVALID_HEADER);
     EXPECT_EQ(entry_list[0].source.id, net_log_.bound().source().id);
     std::string value;
-    EXPECT_TRUE(entry_list[0].GetStringValue("header_name", &value));
-    EXPECT_EQ(expected_header_name, value);
-    EXPECT_TRUE(entry_list[0].GetStringValue("header_value", &value));
-    EXPECT_EQ(expected_header_value, value);
-    EXPECT_TRUE(entry_list[0].GetStringValue("error", &value));
-    EXPECT_EQ(expected_error_message, value);
+    EXPECT_EQ(expected_header_name,
+              GetStringValueFromParams(entry_list[0], "header_name"));
+    EXPECT_EQ(expected_header_value,
+              GetStringValueFromParams(entry_list[0], "header_value"));
+    EXPECT_EQ(expected_error_message,
+              GetStringValueFromParams(entry_list[0], "error"));
   }
 
  protected:
-  BoundTestNetLog net_log_;
+  RecordingBoundTestNetLog net_log_;
   HeaderCoalescer header_coalescer_;
 };
 
@@ -51,7 +51,7 @@ TEST_F(HeaderCoalescerTest, CorrectHeaders) {
   header_coalescer_.OnHeader("baz", "qux");
   EXPECT_FALSE(header_coalescer_.error_seen());
 
-  spdy::SpdyHeaderBlock header_block = header_coalescer_.release_headers();
+  spdy::Http2HeaderBlock header_block = header_coalescer_.release_headers();
   EXPECT_THAT(header_block,
               ElementsAre(Pair(":foo", "bar"), Pair("baz", "qux")));
 }
@@ -70,8 +70,7 @@ TEST_F(HeaderCoalescerTest, HeaderBlockTooLarge) {
   EXPECT_FALSE(header_coalescer_.error_seen());
 
   // Another 3 + 4 + 32 bytes: too large.
-  base::StringPiece header_value("abcd");
-  header_coalescer_.OnHeader("bar", header_value);
+  header_coalescer_.OnHeader("bar", "abcd");
   EXPECT_TRUE(header_coalescer_.error_seen());
   ExpectEntry("bar", "abcd", "Header list too large.");
 }
@@ -91,14 +90,14 @@ TEST_F(HeaderCoalescerTest, Append) {
   header_coalescer_.OnHeader("cookie", "qux");
   EXPECT_FALSE(header_coalescer_.error_seen());
 
-  spdy::SpdyHeaderBlock header_block = header_coalescer_.release_headers();
+  spdy::Http2HeaderBlock header_block = header_coalescer_.release_headers();
   EXPECT_THAT(header_block,
-              ElementsAre(Pair("foo", base::StringPiece("bar\0quux", 8)),
+              ElementsAre(Pair("foo", absl::string_view("bar\0quux", 8)),
                           Pair("cookie", "baz; qux")));
 }
 
 TEST_F(HeaderCoalescerTest, HeaderNameNotValid) {
-  base::StringPiece header_name("\x1\x7F\x80\xFF");
+  absl::string_view header_name("\x1\x7F\x80\xFF");
   header_coalescer_.OnHeader(header_name, "foo");
   EXPECT_TRUE(header_coalescer_.error_seen());
   ExpectEntry("%ESCAPED:\xE2\x80\x8B \x1\x7F%80%FF", "foo",
@@ -107,7 +106,7 @@ TEST_F(HeaderCoalescerTest, HeaderNameNotValid) {
 
 // RFC 7540 Section 8.1.2.6. Uppercase in header name is invalid.
 TEST_F(HeaderCoalescerTest, HeaderNameHasUppercase) {
-  base::StringPiece header_name("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  absl::string_view header_name("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   header_coalescer_.OnHeader(header_name, "foo");
   EXPECT_TRUE(header_coalescer_.error_seen());
   ExpectEntry("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "foo",
@@ -121,12 +120,12 @@ TEST_F(HeaderCoalescerTest, HeaderNameHasUppercase) {
 //                  "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
 TEST_F(HeaderCoalescerTest, HeaderNameValid) {
   // Due to RFC 7540 Section 8.1.2.6. Uppercase characters are not included.
-  base::StringPiece header_name(
+  absl::string_view header_name(
       "abcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+-."
       "^_`|~");
   header_coalescer_.OnHeader(header_name, "foo");
   EXPECT_FALSE(header_coalescer_.error_seen());
-  spdy::SpdyHeaderBlock header_block = header_coalescer_.release_headers();
+  spdy::Http2HeaderBlock header_block = header_coalescer_.release_headers();
   EXPECT_THAT(header_block, ElementsAre(Pair(header_name, "foo")));
 }
 

@@ -11,7 +11,7 @@
 #include "base/containers/mru_cache.h"
 #include "base/macros.h"
 #include "components/autofill/core/browser/proto/password_requirements.pb.h"
-#include "components/autofill/core/common/signatures_util.h"
+#include "components/autofill/core/common/signatures.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/password_manager/core/browser/generation/password_requirements_spec_fetcher.h"
 #include "url/gurl.h"
@@ -51,9 +51,10 @@ class PasswordRequirementsService : public KeyedService {
   // |main_frame_domain| and stores it into the MRU cache.
   void PrefetchSpec(const GURL& main_frame_domain);
 
-  // Stores the password requirements for the field identified via
-  // |form_signature| and |field_signature| in the MRU cache.
-  void AddSpec(autofill::FormSignature form_signature,
+  // Stores the password requirements for |main_frame_domain| and for the field
+  // identified via |form_signature| and |field_signature| in the MRU caches.
+  void AddSpec(const GURL& main_frame_domain,
+               autofill::FormSignature form_signature,
                autofill::FieldSignature field_signature,
                const autofill::PasswordRequirementsSpec& spec);
 

@@ -5,12 +5,17 @@ var playDuration = 0;
 var startTimeOfPlay = 0;
 var startTime = 0;
 
+// Tracking down the exact cause of failure in https://crbug.com/931533
+var testRangesCounter = 0;
+
 function testRanges(expectedStartTimes, expectedEndTimes) {
-    assert_equals(video.played.length, timeRangeCount);
+    testRangesCounter++;
+
+    assert_equals(video.played.length, timeRangeCount, "testRanges(" + testRangesCounter + ") played.length --");
 
     for (var i = 0; i < timeRangeCount; i++) {
-        assert_equals(video.played.start(i).toFixed(2), expectedStartTimes[i]);
-        assert_equals(video.played.end(i).toFixed(2), expectedEndTimes[i]);
+        assert_equals(video.played.start(i).toFixed(2), expectedStartTimes[i], "testRanges(" + testRangesCounter + ") start["+i+"] --");
+        assert_equals(video.played.end(i).toFixed(2), expectedEndTimes[i], "testRanges(" + testRangesCounter + ") end["+i+"] --");
     }
 }
 
@@ -77,5 +82,5 @@ function playForDuration(duration, t) {
 
 function startPlayingInNewRange(t, expectedStartTimes) {
     willCreateNewRange(expectedStartTimes);
-    playForDuration(0.1, t);
+    playForDuration(0.3, t);
 }

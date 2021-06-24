@@ -24,6 +24,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_LINE_INLINE_TEXT_BOX_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_LINE_INLINE_TEXT_BOX_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_text.h"
 #include "third_party/blink/renderer/core/layout/line/inline_box.h"
@@ -34,8 +35,7 @@
 namespace blink {
 
 class DocumentMarker;
-class GraphicsContext;
-class TextMatchMarker;
+class TextMarkerBase;
 
 class CORE_EXPORT InlineTextBox : public InlineBox {
  public:
@@ -102,6 +102,7 @@ class CORE_EXPORT InlineTextBox : public InlineBox {
   LayoutUnit LogicalBottomVisualOverflow() const {
     return LogicalOverflowRect().MaxY();
   }
+  PhysicalRect PhysicalOverflowRect() const;
 
   // charactersWithHyphen, if provided, must not be destroyed before the
   // TextRun.
@@ -114,7 +115,7 @@ class CORE_EXPORT InlineTextBox : public InlineBox {
       int maximum_length,
       StringBuilder* characters_with_hyphen = nullptr) const;
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
   void DumpBox(StringBuilder&) const override;
 #endif
   const char* BoxName() const override;
@@ -134,33 +135,33 @@ class CORE_EXPORT InlineTextBox : public InlineBox {
       bool include_newline_space_width = true) const;
   void SelectionStartEnd(int& s_pos, int& e_pos) const;
 
-  virtual void PaintDocumentMarker(GraphicsContext&,
-                                   const LayoutPoint& box_origin,
+  virtual void PaintDocumentMarker(const PaintInfo&,
+                                   const PhysicalOffset& box_origin,
                                    const DocumentMarker&,
                                    const ComputedStyle&,
                                    const Font&,
                                    bool grammar) const;
-  virtual void PaintTextMatchMarkerForeground(const PaintInfo&,
-                                              const LayoutPoint& box_origin,
-                                              const TextMatchMarker&,
-                                              const ComputedStyle&,
-                                              const Font&) const;
-  virtual void PaintTextMatchMarkerBackground(const PaintInfo&,
-                                              const LayoutPoint& box_origin,
-                                              const TextMatchMarker&,
-                                              const ComputedStyle&,
-                                              const Font&) const;
+  virtual void PaintTextMarkerForeground(const PaintInfo&,
+                                         const PhysicalOffset& box_origin,
+                                         const TextMarkerBase&,
+                                         const ComputedStyle&,
+                                         const Font&) const;
+  virtual void PaintTextMarkerBackground(const PaintInfo&,
+                                         const PhysicalOffset& box_origin,
+                                         const TextMarkerBase&,
+                                         const ComputedStyle&,
+                                         const Font&) const;
 
   void Move(const LayoutSize&) final;
 
  protected:
   void Paint(const PaintInfo&,
-             const LayoutPoint&,
+             const PhysicalOffset&,
              LayoutUnit line_top,
              LayoutUnit line_bottom) const override;
   bool NodeAtPoint(HitTestResult&,
-                   const HitTestLocation& location_in_container,
-                   const LayoutPoint& accumulated_offset,
+                   const HitTestLocation&,
+                   const PhysicalOffset& accumulated_offset,
                    LayoutUnit line_top,
                    LayoutUnit line_bottom) override;
 
@@ -220,8 +221,8 @@ class CORE_EXPORT InlineTextBox : public InlineBox {
 
  private:
   // The next/previous box that also uses our LayoutObject.
-  InlineTextBox* prev_text_box_;
-  InlineTextBox* next_text_box_;
+  InlineTextBox* prev_text_box_ = nullptr;
+  InlineTextBox* next_text_box_ = nullptr;
 
   int start_;
   uint16_t len_;
@@ -240,7 +241,10 @@ class CORE_EXPORT InlineTextBox : public InlineBox {
   }
 };
 
-DEFINE_INLINE_BOX_TYPE_CASTS(InlineTextBox);
+template <>
+struct DowncastTraits<InlineTextBox> {
+  static bool AllowFrom(const InlineBox& box) { return box.IsInlineTextBox(); }
+};
 
 }  // namespace blink
 

@@ -4,9 +4,10 @@
 
 #include "components/handoff/handoff_manager.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/mac/objc_release_properties.h"
 #include "base/mac/scoped_nsobject.h"
+#include "base/notreached.h"
 #include "net/base/mac/url_conversions.h"
 
 #if defined(OS_IOS)
@@ -14,28 +15,26 @@
 #include "components/pref_registry/pref_registry_syncable.h"  // nogncheck
 #endif
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
 #include "base/mac/mac_util.h"
-#include "base/mac/sdk_forward_declarations.h"
 #endif
 
 @interface HandoffManager ()
 
 // The active user activity.
-@property(nonatomic, retain)
-    NSUserActivity* userActivity API_AVAILABLE(macos(10.10));
+@property(nonatomic, retain) NSUserActivity* userActivity;
 
 // Whether the URL of the current tab should be exposed for Handoff.
 - (BOOL)shouldUseActiveURL;
 
 // Updates the active NSUserActivity.
-- (void)updateUserActivity API_AVAILABLE(macos(10.10));
+- (void)updateUserActivity;
 
 @end
 
 @implementation HandoffManager {
   GURL _activeURL;
-  NSUserActivity* _userActivity API_AVAILABLE(macos(10.10));
+  NSUserActivity* _userActivity;
   handoff::Origin _origin;
 }
 
@@ -52,7 +51,7 @@
 - (instancetype)init {
   self = [super init];
   if (self) {
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
     _origin = handoff::ORIGIN_MAC;
 #elif defined(OS_IOS)
     _origin = handoff::ORIGIN_IOS;
@@ -69,11 +68,6 @@
 }
 
 - (void)updateActiveURL:(const GURL&)url {
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-  // Handoff is only available on OSX 10.10+.
-  DCHECK(base::mac::IsAtLeastOS10_10());
-#endif
-
   _activeURL = url;
   [self updateUserActivity];
 }

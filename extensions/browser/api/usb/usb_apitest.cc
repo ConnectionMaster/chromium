@@ -9,15 +9,16 @@
 #include "base/memory/ref_counted_memory.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_utils.h"
-#include "device/usb/public/cpp/fake_usb_device_info.h"
-#include "device/usb/public/cpp/fake_usb_device_manager.h"
-#include "device/usb/public/cpp/mock_usb_mojo_device.h"
-#include "device/usb/public/mojom/device.mojom.h"
 #include "extensions/browser/api/device_permissions_prompt.h"
 #include "extensions/browser/api/usb/usb_api.h"
 #include "extensions/shell/browser/shell_extensions_api_client.h"
 #include "extensions/shell/test/shell_apitest.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/device/public/cpp/test/fake_usb_device_info.h"
+#include "services/device/public/cpp/test/fake_usb_device_manager.h"
+#include "services/device/public/cpp/test/mock_usb_mojo_device.h"
+#include "services/device/public/mojom/usb_device.mojom.h"
 
 using device::mojom::UsbControlTransferParams;
 using device::mojom::UsbControlTransferRecipient;
@@ -31,6 +32,7 @@ using testing::_;
 using testing::AnyNumber;
 using testing::Invoke;
 using testing::Return;
+using testing::SaveArg;
 
 namespace extensions {
 
@@ -39,16 +41,6 @@ ACTION_TEMPLATE(InvokeCallback,
                 HAS_1_TEMPLATE_PARAMS(int, k),
                 AND_1_VALUE_PARAMS(p1)) {
   std::move(*std::get<k>(args)).Run(p1);
-}
-
-ACTION_TEMPLATE(InvokeUsbTransferInCallback,
-                HAS_1_TEMPLATE_PARAMS(int, k),
-                AND_1_VALUE_PARAMS(p1)) {
-  std::vector<uint8_t> buffer;
-  if (p1 != UsbTransferStatus::TRANSFER_ERROR) {
-    buffer.push_back(0x0f);
-  }
-  std::move(*std::get<k>(args)).Run(p1, buffer);
 }
 
 ACTION_TEMPLATE(BuildIsochronousTransferReturnValue,
@@ -95,25 +87,22 @@ class TestDevicePermissionsPrompt
 
   void ShowDialog() override { prompt()->SetObserver(this); }
 
-  void OnDeviceAdded(size_t index, const base::string16& device_name) override {
-    OnDevicesChanged();
-  }
-
-  void OnDeviceRemoved(size_t index,
-                       const base::string16& device_name) override {
-    OnDevicesChanged();
-  }
-
- private:
-  void OnDevicesChanged() {
+  void OnDevicesInitialized() override {
     for (size_t i = 0; i < prompt()->GetDeviceCount(); ++i) {
       prompt()->GrantDevicePermission(i);
       if (!prompt()->multiple()) {
         break;
       }
     }
+
     prompt()->Dismissed();
   }
+
+  void OnDeviceAdded(size_t index, const std::u16string& device_name) override {
+  }
+
+  void OnDeviceRemoved(size_t index,
+                       const std::u16string& device_name) override {}
 };
 
 class TestExtensionsAPIClient : public ShellExtensionsAPIClient {
@@ -124,6 +113,12 @@ class TestExtensionsAPIClient : public ShellExtensionsAPIClient {
       content::WebContents* web_contents) const override {
     return std::make_unique<TestDevicePermissionsPrompt>(web_contents);
   }
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  bool ShouldAllowDetachingUsb(int vid, int pid) const override {
+    return vid == 1 && pid == 2;
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 };
 
 class UsbApiTest : public ShellApiTest {
@@ -132,19 +127,17 @@ class UsbApiTest : public ShellApiTest {
     ShellApiTest::SetUpOnMainThread();
 
     // Set fake USB device manager for extensions::UsbDeviceManager.
-    device::mojom::UsbDeviceManagerPtr usb_manager_ptr;
-    fake_usb_manager_.AddBinding(mojo::MakeRequest(&usb_manager_ptr));
+    mojo::PendingRemote<device::mojom::UsbDeviceManager> usb_manager;
+    fake_usb_manager_.AddReceiver(usb_manager.InitWithNewPipeAndPassReceiver());
     UsbDeviceManager::Get(browser_context())
-        ->SetDeviceManagerForTesting(std::move(usb_manager_ptr));
+        ->SetDeviceManagerForTesting(std::move(usb_manager));
     base::RunLoop().RunUntilIdle();
 
     std::vector<device::mojom::UsbConfigurationInfoPtr> configs;
-    auto config_1 = device::mojom::UsbConfigurationInfo::New();
-    config_1->configuration_value = 1;
-    configs.push_back(std::move(config_1));
-    auto config_2 = device::mojom::UsbConfigurationInfo::New();
-    config_2->configuration_value = 2;
-    configs.push_back(std::move(config_2));
+    configs.push_back(
+        device::FakeUsbDeviceInfo::CreateConfiguration(0xff, 0x00, 0x00, 1));
+    configs.push_back(
+        device::FakeUsbDeviceInfo::CreateConfiguration(0xff, 0x00, 0x00, 2));
 
     fake_device_ = base::MakeRefCounted<device::FakeUsbDeviceInfo>(
         0, 0, "Test Manufacturer", "Test Device", "ABC123", std::move(configs));
@@ -290,6 +283,45 @@ IN_PROC_BROWSER_TEST_F(UsbApiTest, InvalidTimeout) {
   ASSERT_TRUE(RunAppTest("api_test/usb/invalid_timeout"));
 }
 
+IN_PROC_BROWSER_TEST_F(UsbApiTest, CallsAfterDisconnect) {
+  ExtensionTestMessageListener ready_listener("ready", false);
+  ExtensionTestMessageListener result_listener("success", false);
+  result_listener.set_failure_message("failure");
+
+  EXPECT_CALL(mock_device_, OpenInternal(_))
+      .WillOnce(InvokeCallback<0>(UsbOpenDeviceError::OK));
+
+  ASSERT_TRUE(LoadApp("api_test/usb/calls_after_disconnect"));
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  fake_usb_manager_.RemoveDevice(fake_device_);
+  ASSERT_TRUE(result_listener.WaitUntilSatisfied());
+}
+
+IN_PROC_BROWSER_TEST_F(UsbApiTest, TransferFailureOnDisconnect) {
+  ExtensionTestMessageListener ready_listener("ready", false);
+  ExtensionTestMessageListener result_listener("success", false);
+  result_listener.set_failure_message("failure");
+
+  EXPECT_CALL(mock_device_, OpenInternal(_))
+      .WillOnce(InvokeCallback<0>(UsbOpenDeviceError::OK));
+
+  device::mojom::UsbDevice::GenericTransferInCallback saved_callback;
+  EXPECT_CALL(mock_device_, GenericTransferInInternal(_, _, _, _))
+      .WillOnce(
+          [&saved_callback](
+              uint8_t endpoint_number, uint32_t length, uint32_t timeout,
+              device::MockUsbMojoDevice::GenericTransferInCallback* callback) {
+            saved_callback = std::move(*callback);
+          });
+
+  ASSERT_TRUE(LoadApp("api_test/usb/transfer_failure_on_disconnect"));
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  fake_usb_manager_.RemoveDevice(fake_device_);
+  ASSERT_TRUE(result_listener.WaitUntilSatisfied());
+}
+
 IN_PROC_BROWSER_TEST_F(UsbApiTest, OnDeviceAdded) {
   ExtensionTestMessageListener load_listener("loaded", false);
   ExtensionTestMessageListener result_listener("success", false);
@@ -332,5 +364,39 @@ IN_PROC_BROWSER_TEST_F(UsbApiTest, GetUserSelectedDevices) {
   fake_usb_manager_.RemoveDevice(fake_device_);
   ASSERT_TRUE(result_listener.WaitUntilSatisfied());
 }
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+IN_PROC_BROWSER_TEST_F(UsbApiTest, MassStorage) {
+  ExtensionTestMessageListener ready_listener("ready", false);
+  ready_listener.set_failure_message("failure");
+  ExtensionTestMessageListener result_listener("success", false);
+  result_listener.set_failure_message("failure");
+
+  // Mass storage devices should be hidden unless allowed in policy.
+  // The TestExtensionsAPIClient allows only vid=1, pid=2.
+  TestExtensionsAPIClient test_api_client;
+  std::vector<device::mojom::UsbConfigurationInfoPtr> storage_configs;
+  auto storage_config = device::FakeUsbDeviceInfo::CreateConfiguration(
+      /* mass storage */ 0x08, 0x06, 0x50);
+  storage_configs.push_back(storage_config->Clone());
+  device::mojom::UsbDeviceInfoPtr device_1 =
+      fake_usb_manager_.CreateAndAddDevice(0x1, 0x2, 0x00,
+                                           std::move(storage_configs));
+
+  storage_configs.clear();
+  storage_configs.push_back(storage_config->Clone());
+  device::mojom::UsbDeviceInfoPtr device_2 =
+      fake_usb_manager_.CreateAndAddDevice(0x5, 0x6, 0x00,
+                                           std::move(storage_configs));
+
+  ASSERT_TRUE(LoadApp("api_test/usb/mass_storage"));
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  fake_usb_manager_.RemoveDevice(device_2->guid);
+  fake_usb_manager_.RemoveDevice(device_1->guid);
+
+  ASSERT_TRUE(result_listener.WaitUntilSatisfied());
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace extensions

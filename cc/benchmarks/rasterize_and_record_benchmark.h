@@ -8,12 +8,12 @@
 #include <stddef.h>
 
 #include <map>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
-#include "base/time/time.h"
 #include "cc/benchmarks/micro_benchmark_controller.h"
 #include "cc/layers/recording_source.h"
 
@@ -42,14 +42,9 @@ class RasterizeAndRecordBenchmark : public MicroBenchmark {
   void RecordRasterResults(std::unique_ptr<base::Value> results);
 
   struct RecordResults {
-    RecordResults();
-    ~RecordResults();
-
     int pixels_recorded = 0;
-    size_t painter_memory_usage = 0;
     size_t paint_op_memory_usage = 0;
     size_t paint_op_count = 0;
-    base::TimeDelta total_best_time[RecordingSource::RECORDING_MODE_COUNT];
   };
 
   RecordResults record_results_;
@@ -62,7 +57,7 @@ class RasterizeAndRecordBenchmark : public MicroBenchmark {
 
   LayerTreeHost* layer_tree_host_;
 
-  base::WeakPtrFactory<RasterizeAndRecordBenchmark> weak_ptr_factory_;
+  base::WeakPtrFactory<RasterizeAndRecordBenchmark> weak_ptr_factory_{this};
 };
 
 }  // namespace cc

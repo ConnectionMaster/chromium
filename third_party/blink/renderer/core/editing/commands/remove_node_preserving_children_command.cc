@@ -27,7 +27,6 @@
 
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
@@ -45,9 +44,10 @@ RemoveNodePreservingChildrenCommand::RemoveNodePreservingChildrenCommand(
 void RemoveNodePreservingChildrenCommand::DoApply(EditingState* editing_state) {
   ABORT_EDITING_COMMAND_IF(!node_->parentNode());
   ABORT_EDITING_COMMAND_IF(!HasEditableStyle(*node_->parentNode()));
-  if (node_->IsContainerNode()) {
+  auto* container_node = DynamicTo<ContainerNode>(node_.Get());
+  if (container_node) {
     NodeVector children;
-    GetChildNodes(ToContainerNode(*node_), children);
+    GetChildNodes(*container_node, children);
 
     for (auto& current_child : children) {
       Node* child = current_child.Release();
@@ -64,7 +64,7 @@ void RemoveNodePreservingChildrenCommand::DoApply(EditingState* editing_state) {
   RemoveNode(node_, editing_state, should_assume_content_is_always_editable_);
 }
 
-void RemoveNodePreservingChildrenCommand::Trace(Visitor* visitor) {
+void RemoveNodePreservingChildrenCommand::Trace(Visitor* visitor) const {
   visitor->Trace(node_);
   CompositeEditCommand::Trace(visitor);
 }

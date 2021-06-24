@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Tests that XHRs with the same url as a main resource have correct category.\n`);
-  await TestRunner.loadModule('network_test_runner');
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('network');
 
   await TestRunner.evaluateInPagePromise(`
@@ -28,10 +28,10 @@
     });
   }
 
-  function step3() {
+  async function step3() {
     var request1 = NetworkTestRunner.networkRequests().pop();
     TestRunner.addResult(request1.resourceType().name());
-    ConsoleTestRunner.dumpConsoleMessages();
+    await ConsoleTestRunner.dumpConsoleMessages();
     TestRunner.completeTest();
   }
 })();

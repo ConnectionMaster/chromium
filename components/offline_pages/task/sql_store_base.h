@@ -16,7 +16,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task_runner_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/trace_event/trace_event.h"
 #include "sql/database.h"
 
 namespace offline_pages {
@@ -179,8 +178,8 @@ class SqlStoreBase {
   // Time of the last time the store was closed. Kept for metrics reporting.
   base::TimeTicks last_closing_time_;
 
-  base::WeakPtrFactory<SqlStoreBase> weak_ptr_factory_;
-  base::WeakPtrFactory<SqlStoreBase> closing_weak_ptr_factory_;
+  base::WeakPtrFactory<SqlStoreBase> weak_ptr_factory_{this};
+  base::WeakPtrFactory<SqlStoreBase> closing_weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SqlStoreBase);
 };

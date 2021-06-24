@@ -6,6 +6,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "content/public/renderer/v8_value_converter.h"
@@ -45,13 +46,11 @@ bool RunFunctionImpl(v8::Local<v8::Function> function,
   return true;
 }
 
-bool g_mock_user_activation_v2_state_ = false;
-
 }  // namespace
 
 std::string ReplaceSingleQuotes(base::StringPiece str) {
   std::string result;
-  base::ReplaceChars(str.as_string(), "'", "\"", &result);
+  base::ReplaceChars(str, "'", "\"", &result);
   return result;
 }
 
@@ -206,19 +205,6 @@ std::string GetStringPropertyFromObject(v8::Local<v8::Object> object,
                                         v8::Local<v8::Context> context,
                                         base::StringPiece key) {
   return V8ToString(GetPropertyFromObject(object, context, key), context);
-}
-
-ScopedTestUserActivation::ScopedTestUserActivation() {
-  DCHECK(!g_mock_user_activation_v2_state_);  // Nested scopes are not allowed.
-  g_mock_user_activation_v2_state_ = true;
-}
-
-ScopedTestUserActivation::~ScopedTestUserActivation() {
-  g_mock_user_activation_v2_state_ = false;
-}
-
-bool GetTestUserActivationState(v8::Local<v8::Context>) {
-  return g_mock_user_activation_v2_state_;
 }
 
 }  // namespace extensions

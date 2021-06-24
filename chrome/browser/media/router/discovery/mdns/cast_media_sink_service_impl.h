@@ -17,10 +17,11 @@
 #include "chrome/browser/media/router/discovery/dial/dial_media_sink_service_impl.h"
 #include "chrome/browser/media/router/discovery/discovery_network_monitor.h"
 #include "chrome/browser/media/router/discovery/media_sink_discovery_metrics.h"
-#include "chrome/common/media_router/discovery/media_sink_service_base.h"
 #include "components/cast_channel/cast_channel_enum.h"
 #include "components/cast_channel/cast_socket.h"
+#include "components/media_router/common/discovery/media_sink_service_base.h"
 #include "net/base/backoff_entry.h"
+#include "third_party/openscreen/src/cast/common/channel/proto/cast_channel.pb.h"
 
 namespace cast_channel {
 class CastSocketService;
@@ -92,6 +93,8 @@ class CastMediaSinkServiceImpl : public MediaSinkServiceBase,
   // Called by CastMediaSinkService to set |allow_all_ips_|.
   void SetCastAllowAllIPs(bool allow_all_ips);
 
+  void BindLogger(mojo::PendingRemote<mojom::Logger> pending_remote);
+
  private:
   friend class CastMediaSinkServiceImplTest;
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
@@ -135,68 +138,52 @@ class CastMediaSinkServiceImpl : public MediaSinkServiceBase,
                            CacheSinksForDirectNetworkChange);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest, OpenChannelsNow);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
-                           TestInitRetryParametersWithFeatureDisabled);
-  FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
                            TestInitRetryParameters);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
                            TestInitRetryParametersWithDefaultValue);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
                            TestCreateCastSocketOpenParams);
-  FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
-                           TestInitRetryParametersWithFeatureDisabled);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest, TestInitParameters);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
                            TestInitRetryParametersWithDefaultValue);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
                            TestOnSinkAddedOrUpdatedSkipsIfNonCastDevice);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
-                           TestOnChannelErrorRetry);
+                           TestSuccessOnChannelErrorRetry);
+  FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
+                           TestFailureOnChannelErrorRetry);
   FRIEND_TEST_ALL_PREFIXES(CastMediaSinkServiceImplTest,
                            OpenChannelNewIPSameSink);
 
-  // Holds Finch field trial parameters controlling Cast channel retry strategy.
+  // Holds parameters controlling Cast channel retry strategy.
   struct RetryParams {
     // Initial delay (in ms) once backoff starts.
-    int initial_delay_in_milliseconds;
+    int initial_delay_in_milliseconds = 15 * 1000;  // 15 seconds
 
     // Max retry attempts allowed when opening a Cast socket.
-    int max_retry_attempts;
+    int max_retry_attempts = 3;
 
     // Factor by which the delay will be multiplied on each subsequent failure.
     // This must be >= 1.0.
-    double multiply_factor;
-
-    RetryParams();
-    ~RetryParams();
-
-    bool Validate();
-
-    static RetryParams GetFromFieldTrialParam();
+    double multiply_factor = 1.0;
   };
 
-  // Holds Finch field trial parameters controlling Cast channel open.
+  // Holds parameters controlling Cast channel open.
   struct OpenParams {
     // Connect timeout value when opening a Cast socket.
-    int connect_timeout_in_seconds;
+    int connect_timeout_in_seconds = 10;
 
     // Amount of idle time to wait before pinging the Cast device.
-    int ping_interval_in_seconds;
+    int ping_interval_in_seconds = 5;
 
     // Amount of idle time to wait before disconnecting.
-    int liveness_timeout_in_seconds;
+    int liveness_timeout_in_seconds = 10;
 
     // Dynamic time out delta for connect timeout and liveness timeout. If
     // previous channel open operation with opening parameters (liveness
     // timeout, connect timeout) fails, next channel open will have parameters
     // (liveness timeout + delta, connect timeout + delta).
-    int dynamic_timeout_delta_in_seconds;
-
-    OpenParams();
-    ~OpenParams();
-
-    bool Validate();
-
-    static OpenParams GetFromFieldTrialParam();
+    int dynamic_timeout_delta_in_seconds = 0;
   };
 
   // MediaSinkServiceBase implementation.
@@ -219,7 +206,7 @@ class CastMediaSinkServiceImpl : public MediaSinkServiceBase,
   void OnError(const cast_channel::CastSocket& socket,
                cast_channel::ChannelError error_state) override;
   void OnMessage(const cast_channel::CastSocket& socket,
-                 const cast_channel::CastMessage& message) override;
+                 const cast::channel::CastMessage& message) override;
 
   // DiscoveryNetworkMonitor::Observer implementation
   void OnNetworksChanged(const std::string& network_id) override;
@@ -260,7 +247,7 @@ class CastMediaSinkServiceImpl : public MediaSinkServiceBase,
   // |cast_sink|: Cast sink created from mDNS service description or DIAL sink.
   // |backoff_entry|: backoff entry holds failure count and calculates back-off
   // for next retry.
-  // |error_state|: erorr encountered when opending cast channel.
+  // |error_state|: error encountered when opending cast channel.
   void OnChannelErrorMayRetry(MediaSinkInternal cast_sink,
                               std::unique_ptr<net::BackoffEntry> backoff_entry,
                               cast_channel::ChannelError error_state,
@@ -342,6 +329,11 @@ class CastMediaSinkServiceImpl : public MediaSinkServiceBase,
   // discovery.
   MediaSinkServiceBase* const dial_media_sink_service_;
 
+  // Mojo Remote to the logger owned by the Media Router. The Remote is not
+  // bound until |BindLogger()| is called. Always check if |logger_.is_bound()|
+  // is true before using.
+  mojo::Remote<mojom::Logger> logger_;
+
   // The SequencedTaskRunner on which methods are run. This shares the
   // same SequencedTaskRunner as the one used by |cast_socket_service_|.
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
@@ -349,7 +341,7 @@ class CastMediaSinkServiceImpl : public MediaSinkServiceBase,
   base::Clock* clock_;
 
   SEQUENCE_CHECKER(sequence_checker_);
-  base::WeakPtrFactory<CastMediaSinkServiceImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<CastMediaSinkServiceImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CastMediaSinkServiceImpl);
 };

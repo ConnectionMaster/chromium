@@ -7,40 +7,37 @@
 #include <algorithm>
 #include <memory>
 
-#include "ash/wm/non_client_frame_controller.h"
-#include "ash/wm/widget_finder.h"
+#include "ash/wm/desks/desks_util.h"
 #include "ash/wm/window_state.h"
-#include "services/ws/top_level_proxy_window.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_occlusion_tracker.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_tree_owner.h"
+#include "ui/gfx/transform.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
-namespace wm {
 namespace {
 
 void EnsureAllChildrenAreVisible(ui::Layer* layer) {
-  std::list<ui::Layer*> layers;
-  layers.push_back(layer);
-  while (!layers.empty()) {
-    for (auto* child : layers.front()->children())
-      layers.push_back(child);
-    layers.front()->SetVisible(true);
-    layers.pop_front();
-  }
+  for (auto* child : layer->children())
+    EnsureAllChildrenAreVisible(child);
+
+  layer->SetVisible(true);
+  layer->SetOpacity(1);
 }
 
 }  // namespace
 
 WindowMirrorView::WindowMirrorView(aura::Window* source,
-                                   bool trilinear_filtering_on_init)
+                                   bool trilinear_filtering_on_init,
+                                   bool show_non_client_view)
     : source_(source),
-      trilinear_filtering_on_init_(trilinear_filtering_on_init) {
+      trilinear_filtering_on_init_(trilinear_filtering_on_init),
+      show_non_client_view_(show_non_client_view) {
   source_->AddObserver(this);
   DCHECK(source);
 }
@@ -69,7 +66,8 @@ void WindowMirrorView::OnWindowDestroying(aura::Window* window) {
 }
 
 gfx::Size WindowMirrorView::CalculatePreferredSize() const {
-  return GetClientAreaBounds().size();
+  return show_non_client_view_ ? source_->bounds().size()
+                               : GetClientAreaBounds().size();
 }
 
 void WindowMirrorView::Layout() {
@@ -80,13 +78,20 @@ void WindowMirrorView::Layout() {
   // Position at 0, 0.
   GetMirrorLayer()->SetBounds(gfx::Rect(GetMirrorLayer()->bounds().size()));
 
+  if (show_non_client_view_) {
+    GetMirrorLayer()->SetTransform(gfx::Transform());
+    return;
+  }
+
   gfx::Transform transform;
   gfx::Rect client_area_bounds = GetClientAreaBounds();
-  // Scale down if necessary.
+  // Scale if necessary.
   if (size() != source_->bounds().size()) {
-    const float scale =
+    const float scale_x =
         width() / static_cast<float>(client_area_bounds.width());
-    transform.Scale(scale, scale);
+    const float scale_y =
+        height() / static_cast<float>(client_area_bounds.height());
+    transform.Scale(scale_x, scale_y);
   }
   // Reposition such that the client area is the only part visible.
   transform.Translate(-client_area_bounds.x(), -client_area_bounds.y());
@@ -107,26 +112,27 @@ void WindowMirrorView::AddedToWidget() {
   target_ = GetWidget()->GetNativeWindow();
   target_->TrackOcclusionState();
 
-  force_occlusion_tracker_visible_.reset();
-  force_proxy_window_visible_.reset();
-  env_observer_.RemoveAll();
-
-  // Wait for window-occlusion tracker to be running before forcing visibility.
-  // This is done to minimize the amount of work during the initial animation
-  // when entering overview. In particular, telling the remote client it is
-  // visible is likely to result in a fair amount of work.
-  if (source_->env()->GetWindowOcclusionTracker()->IsPaused())
-    env_observer_.Add(target_->env());
-  else
-    ForceVisibilityAndOcclusion();
+  if (source_) {
+    // Force the occlusion tracker to treat the source as visible.
+    force_occlusion_tracker_visible_ =
+        std::make_unique<aura::WindowOcclusionTracker::ScopedForceVisible>(
+            source_);
+  } else {
+    force_occlusion_tracker_visible_.reset();
+  }
 }
 
 void WindowMirrorView::RemovedFromWidget() {
   target_ = nullptr;
 }
 
+ui::Layer* WindowMirrorView::GetMirrorLayerForTesting() {
+  return GetMirrorLayer();
+}
+
 void WindowMirrorView::InitLayerOwner() {
-  layer_owner_ = ::wm::MirrorLayers(source_, false /* sync_bounds */);
+  layer_owner_ = wm::MirrorLayers(source_, /*sync_bounds=*/false);
+  layer_owner_->root()->SetOpacity(1.f);
 
   SetPaintToLayer();
 
@@ -135,9 +141,10 @@ void WindowMirrorView::InitLayerOwner() {
   // This causes us to clip the non-client areas of the window.
   layer()->SetMasksToBounds(true);
 
-  // Some extra work is needed when the source window is minimized.
-  if (wm::GetWindowState(source_)->IsMinimized()) {
-    mirror_layer->SetOpacity(1);
+  // Some extra work is needed when the source window is minimized or is on an
+  // inactive desk.
+  if (WindowState::Get(source_)->IsMinimized() ||
+      !desks_util::BelongsToActiveDesk(source_)) {
     EnsureAllChildrenAreVisible(mirror_layer);
   }
 
@@ -154,6 +161,8 @@ ui::Layer* WindowMirrorView::GetMirrorLayer() {
 }
 
 gfx::Rect WindowMirrorView::GetClientAreaBounds() const {
+  DCHECK(!show_non_client_view_);
+
   const int inset = source_->GetProperty(aura::client::kTopViewInset);
   if (inset > 0) {
     gfx::Rect bounds(source_->bounds().size());
@@ -168,29 +177,4 @@ gfx::Rect WindowMirrorView::GetClientAreaBounds() const {
   return client_view->ConvertRectToWidget(client_view->GetLocalBounds());
 }
 
-void WindowMirrorView::ForceVisibilityAndOcclusion() {
-  // Force the occlusion tracker to treat the source as visible.
-  force_occlusion_tracker_visible_ =
-      std::make_unique<aura::WindowOcclusionTracker::ScopedForceVisible>(
-          source_);
-
-  NonClientFrameController* frame_controller =
-      NonClientFrameController::Get(source_);
-  if (frame_controller) {
-    // In order for the remote client to produce frames the client needs to
-    // think the window is visible. It may not actually be visible now, so force
-    // it.
-    force_proxy_window_visible_ =
-        frame_controller->top_level_proxy_window()->ForceVisible();
-  }
-}
-
-void WindowMirrorView::OnWindowOcclusionTrackingResumed() {
-  // Skip if the source_ has already been removed.
-  if (source_)
-    ForceVisibilityAndOcclusion();
-  env_observer_.RemoveAll();
-}
-
-}  // namespace wm
 }  // namespace ash

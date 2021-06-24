@@ -8,11 +8,11 @@
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/test_suite.h"
 #include "build/build_config.h"
-#include "ui/base/material_design/material_design_controller.h"
+#include "mojo/core/embedder/embedder.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include "base/test/mock_chrome_application_mac.h"
 #endif
 
@@ -37,12 +37,11 @@ ShellDialogsTestSuite::ShellDialogsTestSuite(int argc, char** argv)
 void ShellDialogsTestSuite::Initialize() {
   base::TestSuite::Initialize();
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   mock_cr_app::RegisterMockCrApp();
 #endif
 
   // Setup resource bundle.
-  ui::MaterialDesignController::Initialize();
   ui::RegisterPathProvider();
 
   base::FilePath ui_test_pak_path;
@@ -60,6 +59,8 @@ void ShellDialogsTestSuite::Shutdown() {
 
 int main(int argc, char** argv) {
   ShellDialogsTestSuite test_suite(argc, argv);
+
+  mojo::core::Init();
 
   return base::LaunchUnitTests(argc, argv,
                                base::BindOnce(&ShellDialogsTestSuite::Run,

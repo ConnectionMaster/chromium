@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/ui/content_suggestions/content_suggestions_alert_factory.h"
 
+#include "ios/chrome/browser/browser_state/chrome_browser_state.h"
+#import "ios/chrome/browser/main/browser.h"
+#import "ios/chrome/browser/policy/policy_util.h"
 #import "ios/chrome/browser/ui/alert_coordinator/action_sheet_coordinator.h"
 #import "ios/chrome/browser/ui/content_suggestions/cells/content_suggestions_gesture_commands.h"
 #import "ios/chrome/browser/ui/content_suggestions/cells/content_suggestions_item.h"
@@ -19,15 +22,18 @@
 @implementation ContentSuggestionsAlertFactory
 
 + (AlertCoordinator*)
-alertCoordinatorForSuggestionItem:(ContentSuggestionsItem*)item
-                 onViewController:(UICollectionViewController*)viewController
-                          atPoint:(CGPoint)touchLocation
-                      atIndexPath:(NSIndexPath*)indexPath
-                  readLaterAction:(BOOL)readLaterAction
-                   commandHandler:
-                       (id<ContentSuggestionsGestureCommands>)commandHandler {
+    alertCoordinatorForSuggestionItem:(ContentSuggestionsItem*)item
+                     onViewController:
+                         (UICollectionViewController*)viewController
+                              atPoint:(CGPoint)touchLocation
+                          atIndexPath:(NSIndexPath*)indexPath
+                      readLaterAction:(BOOL)readLaterAction
+                       commandHandler:
+                           (id<ContentSuggestionsGestureCommands>)commandHandler
+                              browser:(Browser*)browser {
   AlertCoordinator* alertCoordinator = [[ActionSheetCoordinator alloc]
       initWithBaseViewController:viewController
+                         browser:browser
                            title:nil
                          message:nil
                             rect:CGRectMake(touchLocation.x, touchLocation.y, 0,
@@ -90,23 +96,21 @@ alertCoordinatorForSuggestionItem:(ContentSuggestionsItem*)item
                                 }
                               }
                                style:UIAlertActionStyleDestructive];
-
-  [alertCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_APP_CANCEL)
-                              action:^{
-                              }
-                               style:UIAlertActionStyleCancel];
   return alertCoordinator;
 }
 
 + (AlertCoordinator*)
-alertCoordinatorForMostVisitedItem:(ContentSuggestionsMostVisitedItem*)item
-                  onViewController:(UICollectionViewController*)viewController
-                           atPoint:(CGPoint)touchLocation
-                       atIndexPath:(NSIndexPath*)indexPath
-                    commandHandler:
-                        (id<ContentSuggestionsGestureCommands>)commandHandler {
+    alertCoordinatorForMostVisitedItem:(ContentSuggestionsMostVisitedItem*)item
+                      onViewController:
+                          (UICollectionViewController*)viewController
+                           withBrowser:(Browser*)browser
+                               atPoint:(CGPoint)touchLocation
+                           atIndexPath:(NSIndexPath*)indexPath
+                        commandHandler:(id<ContentSuggestionsGestureCommands>)
+                                           commandHandler {
   AlertCoordinator* alertCoordinator = [[ActionSheetCoordinator alloc]
       initWithBaseViewController:viewController
+                         browser:browser
                            title:nil
                          message:nil
                             rect:CGRectMake(touchLocation.x, touchLocation.y, 0,
@@ -131,6 +135,8 @@ alertCoordinatorForMostVisitedItem:(ContentSuggestionsMostVisitedItem*)item
                 }
                  style:UIAlertActionStyleDefault];
 
+  BOOL incognitoEnabled =
+      !IsIncognitoModeDisabled(browser->GetBrowserState()->GetPrefs());
   [alertCoordinator
       addItemWithTitle:l10n_util::GetNSStringWithFixup(
                            IDS_IOS_CONTENT_CONTEXT_OPENLINKNEWINCOGNITOTAB)
@@ -143,7 +149,8 @@ alertCoordinatorForMostVisitedItem:(ContentSuggestionsMostVisitedItem*)item
                                               atIndex:indexPath.item];
                   }
                 }
-                 style:UIAlertActionStyleDefault];
+                 style:UIAlertActionStyleDefault
+               enabled:incognitoEnabled];
 
   [alertCoordinator
       addItemWithTitle:l10n_util::GetNSStringWithFixup(

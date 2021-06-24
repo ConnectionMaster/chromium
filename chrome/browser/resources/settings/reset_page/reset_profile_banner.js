@@ -7,32 +7,49 @@
  * 'settings-reset-profile-banner' is the banner shown for prompting the user to
  * clear profile settings.
  */
-Polymer({
-  // TODO(dpapad): Rename to settings-reset-warning-dialog.
-  is: 'settings-reset-profile-banner',
+import 'chrome://resources/cr_elements/cr_button/cr_button.m.js';
+import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.m.js';
 
-  listeners: {
-    'cancel': 'onCancel_',
-  },
+import {html, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {routes} from '../route.js';
+import {Router} from '../router.js';
+
+import {ResetBrowserProxyImpl} from './reset_browser_proxy.js';
+
+/** @polymer */
+class SettingsResetProfileBannerElement extends PolymerElement {
+  static get is() {
+    return 'settings-reset-profile-banner';
+  }
+
+  static get template() {
+    return html`{__html_template__}`;
+  }
 
   /** @override */
-  attached: function() {
-    this.$.dialog.showModal();
-  },
+  connectedCallback() {
+    super.connectedCallback();
+
+    /** @type {!CrDialogElement} */ (this.$.dialog).showModal();
+  }
 
   /** @private */
-  onOkTap_: function() {
-    this.$.dialog.cancel();
-  },
+  onOkTap_() {
+    /** @type {!CrDialogElement} */ (this.$.dialog).cancel();
+  }
 
   /** @private */
-  onCancel_: function() {
-    settings.ResetBrowserProxyImpl.getInstance().onHideResetProfileBanner();
-  },
+  onCancel_() {
+    ResetBrowserProxyImpl.getInstance().onHideResetProfileBanner();
+  }
 
   /** @private */
-  onResetTap_: function() {
+  onResetTap_() {
     this.$.dialog.close();
-    settings.navigateTo(settings.routes.RESET_DIALOG);
-  },
-});
+    Router.getInstance().navigateTo(routes.RESET_DIALOG);
+  }
+}
+
+customElements.define(
+    SettingsResetProfileBannerElement.is, SettingsResetProfileBannerElement);

@@ -12,13 +12,10 @@ static_library("constrained_window") {
     "constrained_window_views_client.h",
     "native_web_contents_modal_dialog_manager_views.cc",
     "native_web_contents_modal_dialog_manager_views.h",
-    "native_web_contents_modal_dialog_manager_views_mac.h",
-    "native_web_contents_modal_dialog_manager_views_mac.mm",
     "show_modal_dialog_views.cc",
   ]
 
   deps = [
-    "//components/guest_view/browser",
     "//components/web_modal",
     "//content/public/browser",
     "//ui/display",
@@ -40,9 +37,7 @@ static_library("constrained_window") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "constrained_window_views_unittest.cc",
-  ]
+  sources = [ "constrained_window_views_unittest.cc" ]
 
   deps = [
     ":constrained_window",

@@ -5,7 +5,6 @@
 #ifndef CHROME_TEST_CHROMEDRIVER_CHROME_STUB_WEB_VIEW_H_
 #define CHROME_TEST_CHROMEDRIVER_CHROME_STUB_WEB_VIEW_H_
 
-#include <list>
 #include <memory>
 #include <string>
 
@@ -18,9 +17,11 @@ class StubWebView : public WebView {
   ~StubWebView() override;
 
   // Overridden from WebView:
+  bool IsServiceWorker() const override;
   std::string GetId() override;
   bool WasCrashed() override;
   Status ConnectIfNecessary() override;
+  Status SetUpDevTools() override;
   Status HandleReceivedEvents() override;
   Status GetUrl(std::string* url) override;
   Status Load(const std::string& url, const Timeout* timeout) override;
@@ -29,12 +30,16 @@ class StubWebView : public WebView {
   Status Resume(const Timeout* timeout) override;
   Status SendCommand(const std::string& cmd,
                      const base::DictionaryValue& params) override;
+  Status SendCommandFromWebSocket(const std::string& cmd,
+                                  const base::DictionaryValue& params,
+                                  const int client_cmd_id) override;
   Status SendCommandAndGetResult(const std::string& cmd,
                                  const base::DictionaryValue& params,
                                  std::unique_ptr<base::Value>* value) override;
   Status TraverseHistory(int delta, const Timeout* timeout) override;
   Status EvaluateScript(const std::string& frame,
                         const std::string& function,
+                        const bool awaitPromise,
                         std::unique_ptr<base::Value>* result) override;
   Status CallFunction(const std::string& frame,
                       const std::string& function,
@@ -50,15 +55,27 @@ class StubWebView : public WebView {
                                const base::ListValue& args,
                                const base::TimeDelta& timeout,
                                std::unique_ptr<base::Value>* result) override;
+  Status CallUserSyncScript(const std::string& frame,
+                            const std::string& script,
+                            const base::ListValue& args,
+                            const base::TimeDelta& timeout,
+                            std::unique_ptr<base::Value>* result) override;
   Status GetFrameByFunction(const std::string& frame,
                             const std::string& function,
                             const base::ListValue& args,
                             std::string* out_frame) override;
-  Status DispatchMouseEvents(const std::list<MouseEvent>& events,
-                             const std::string& frame) override;
-  Status DispatchTouchEvent(const TouchEvent& event) override;
-  Status DispatchTouchEvents(const std::list<TouchEvent>& events) override;
-  Status DispatchKeyEvents(const std::list<KeyEvent>& events) override;
+  Status DispatchMouseEvents(const std::vector<MouseEvent>& events,
+                             const std::string& frame,
+                             bool async_dispatch_events = false) override;
+  Status DispatchTouchEvent(const TouchEvent& event,
+                            bool async_dispatch_events = false) override;
+  Status DispatchTouchEvents(const std::vector<TouchEvent>& events,
+                             bool async_dispatch_events = false) override;
+  Status DispatchTouchEventWithMultiPoints(
+      const std::vector<TouchEvent>& events,
+      bool async_dispatch_events = false) override;
+  Status DispatchKeyEvents(const std::vector<KeyEvent>& events,
+                           bool async_dispatch_events = false) override;
   Status GetCookies(std::unique_ptr<base::ListValue>* cookies,
                     const std::string& current_page_url) override;
   Status DeleteCookie(const std::string& name,
@@ -70,22 +87,28 @@ class StubWebView : public WebView {
                    const std::string& value,
                    const std::string& domain,
                    const std::string& path,
+                   const std::string& sameSite,
                    bool secure,
                    bool httpOnly,
                    double expiry) override;
   Status WaitForPendingNavigations(const std::string& frame_id,
                                    const Timeout& timeout,
                                    bool stop_load_on_timeout) override;
-  Status IsPendingNavigation(const std::string& frame_id,
-                             const Timeout* timeout,
-                             bool* is_pending) override;
+  Status IsPendingNavigation(const Timeout* timeout,
+                             bool* is_pending) const override;
   JavaScriptDialogManager* GetJavaScriptDialogManager() override;
+  MobileEmulationOverrideManager* GetMobileEmulationOverrideManager()
+      const override;
   Status OverrideGeolocation(const Geoposition& geoposition) override;
   Status OverrideNetworkConditions(
       const NetworkConditions& network_conditions) override;
+  Status OverrideDownloadDirectoryIfNeeded(
+      const std::string& download_directory) override;
   Status CaptureScreenshot(
       std::string* screenshot,
       const base::DictionaryValue& params) override;
+  Status PrintToPDF(const base::DictionaryValue& params,
+                    std::string* pdf) override;
   Status SetFileInputFiles(const std::string& frame,
                            const base::DictionaryValue& element,
                            const std::vector<base::FilePath>& files,
@@ -101,14 +124,15 @@ class StubWebView : public WebView {
                                  int y,
                                  int xoffset,
                                  int yoffset) override;
-  Status SynthesizePinchGesture(int x, int y, double scale_factor) override;
-  Status GetScreenOrientation(std::string* orientation) override;
-  Status SetScreenOrientation(std::string orientation) override;
-  Status DeleteScreenOrientation() override;
+  bool IsNonBlocking() const override;
   bool IsOOPIF(const std::string& frame_id) override;
   FrameTracker* GetFrameTracker() const override;
   std::unique_ptr<base::Value> GetCastSinks() override;
   std::unique_ptr<base::Value> GetCastIssueMessage() override;
+  void SetFrame(const std::string& new_frame_id) override;
+  Status GetNodeIdByElement(const std::string& frame,
+                            const base::DictionaryValue& element,
+                            int* node_id) override;
 
  private:
   std::string id_;

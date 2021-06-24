@@ -11,9 +11,9 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "chrome/browser/vr/databinding/binding_base.h"
 #include "chrome/browser/vr/databinding/vector_element_binding.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace vr {
 
@@ -21,9 +21,9 @@ namespace vr {
 template <typename M, typename V>
 class VectorBinding : public BindingBase {
  public:
-  typedef VectorElementBinding<M, V> ElementBinding;
-  typedef base::Callback<void(ElementBinding*)> ModelAddedCallback;
-  typedef base::Callback<void(ElementBinding*)> ModelRemovedCallback;
+  using ElementBinding = VectorElementBinding<M, V>;
+  using ModelAddedCallback = base::RepeatingCallback<void(ElementBinding*)>;
+  using ModelRemovedCallback = base::RepeatingCallback<void(ElementBinding*)>;
 
   VectorBinding(std::vector<M>* models,
                 const ModelAddedCallback& added_callback,
@@ -74,7 +74,7 @@ class VectorBinding : public BindingBase {
  private:
   std::vector<M>* models_ = nullptr;
   std::vector<std::unique_ptr<ElementBinding>> bindings_;
-  base::Optional<size_t> last_size_;
+  absl::optional<size_t> last_size_;
   ModelAddedCallback added_callback_;
   ModelRemovedCallback removed_callback_;
 

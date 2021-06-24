@@ -9,7 +9,6 @@
 
 #include "base/bind.h"
 #include "base/values.h"
-#include "content/common/frame_messages.h"
 #include "content/public/common/bindings_policy.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/renderer/chrome_object_extensions_utils.h"
@@ -76,15 +75,15 @@ void WebUIExtension::Install(blink::WebLocalFrame* frame) {
   v8::Local<v8::Object> chrome = GetOrCreateChromeObject(isolate, context);
   chrome
       ->Set(context, gin::StringToSymbol(isolate, "send"),
-            gin::CreateFunctionTemplate(isolate,
-                                        base::Bind(&WebUIExtension::Send))
+            gin::CreateFunctionTemplate(
+                isolate, base::BindRepeating(&WebUIExtension::Send))
                 ->GetFunction(context)
                 .ToLocalChecked())
       .Check();
   chrome
       ->Set(context, gin::StringToSymbol(isolate, "getVariableValue"),
             gin::CreateFunctionTemplate(
-                isolate, base::Bind(&WebUIExtension::GetVariableValue))
+                isolate, base::BindRepeating(&WebUIExtension::GetVariableValue))
                 ->GetFunction(context)
                 .ToLocalChecked())
       .Check();
@@ -107,7 +106,7 @@ void WebUIExtension::Send(gin::Arguments* args) {
   // Value to send to the browser process.
   std::unique_ptr<base::ListValue> content;
   if (args->PeekNext().IsEmpty() || args->PeekNext()->IsUndefined()) {
-    content.reset(new base::ListValue());
+    content = std::make_unique<base::ListValue>();
   } else {
     v8::Local<v8::Object> obj;
     if (!args->GetNext(&obj)) {
@@ -127,9 +126,12 @@ void WebUIExtension::Send(gin::Arguments* args) {
     }
   }
 
+  auto* webui = WebUIExtensionData::Get(render_frame);
+  if (!webui)
+    return;
+
   // Send the message up to the browser.
-  render_frame->Send(new FrameHostMsg_WebUISend(render_frame->GetRoutingID(),
-                                                message, *content));
+  webui->SendMessage(message, std::move(content));
 }
 
 // static
@@ -139,7 +141,11 @@ std::string WebUIExtension::GetVariableValue(const std::string& name) {
   if (!ShouldRespondToRequest(&frame, &render_frame))
     return std::string();
 
-  return WebUIExtensionData::Get(render_frame->GetRenderView())->GetValue(name);
+  auto* webui = WebUIExtensionData::Get(render_frame);
+  if (!webui)
+    return std::string();
+
+  return webui->GetValue(name);
 }
 
 }  // namespace content

@@ -9,10 +9,11 @@
 #include "base/command_line.h"
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/gcm_driver/gcm_client_factory.h"
 #include "components/gcm_driver/gcm_driver.h"
 #include "components/gcm_driver/gcm_driver_desktop.h"
-#include "components/sync/driver/sync_util.h"
+#include "components/sync/base/sync_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
@@ -20,20 +21,18 @@ namespace gcm {
 
 namespace {
 
-const char kChannelStatusRelativePath[] = "/experimentstatus";
-
 GCMClient::ChromePlatform GetPlatform() {
 #if defined(OS_WIN)
   return GCMClient::PLATFORM_WIN;
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
   return GCMClient::PLATFORM_MAC;
 #elif defined(OS_IOS)
   return GCMClient::PLATFORM_IOS;
 #elif defined(OS_ANDROID)
   return GCMClient::PLATFORM_ANDROID;
-#elif defined(OS_CHROMEOS)
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   return GCMClient::PLATFORM_CROS;
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   return GCMClient::PLATFORM_LINUX;
 #else
   // For all other platforms, return as LINUX.
@@ -74,20 +73,15 @@ GCMClient::ChromeBuildInfo GetChromeBuildInfo(
   return chrome_build_info;
 }
 
-std::string GetChannelStatusRequestUrl(version_info::Channel channel) {
-  GURL sync_url(syncer::GetSyncServiceURL(
-      *base::CommandLine::ForCurrentProcess(), channel));
-  return sync_url.spec() + kChannelStatusRelativePath;
-}
-
 }  // namespace
 
 std::unique_ptr<GCMDriver> CreateGCMDriverDesktop(
     std::unique_ptr<GCMClientFactory> gcm_client_factory,
     PrefService* prefs,
     const base::FilePath& store_path,
-    base::RepeatingCallback<
-        void(network::mojom::ProxyResolvingSocketFactoryRequest)>
+    bool remove_account_mappings_with_email_key,
+    base::RepeatingCallback<void(
+        mojo::PendingReceiver<network::mojom::ProxyResolvingSocketFactory>)>
         get_socket_factory_callback,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     network::NetworkConnectionTracker* network_connection_tracker,
@@ -99,11 +93,10 @@ std::unique_ptr<GCMDriver> CreateGCMDriverDesktop(
   return std::unique_ptr<GCMDriver>(new GCMDriverDesktop(
       std::move(gcm_client_factory),
       GetChromeBuildInfo(channel, product_category_for_subtypes),
-      GetChannelStatusRequestUrl(channel),
       syncer::MakeUserAgentForSync(channel), prefs, store_path,
-      get_socket_factory_callback, url_loader_factory,
-      network_connection_tracker, ui_task_runner, io_task_runner,
-      blocking_task_runner));
+      remove_account_mappings_with_email_key, get_socket_factory_callback,
+      std::move(url_loader_factory), network_connection_tracker, ui_task_runner,
+      io_task_runner, blocking_task_runner));
 }
 
 }  // namespace gcm

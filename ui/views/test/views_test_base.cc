@@ -13,79 +13,59 @@
 #include "base/run_loop.h"
 #include "mojo/core/embedder/embedder.h"
 #include "ui/base/clipboard/clipboard.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/gl/test/gl_surface_test_support.h"
-#include "ui/views/test/platform_test_helper.h"
+#include "ui/views/buildflags.h"
 #include "ui/views/test/test_platform_native_widget.h"
 
-#if BUILDFLAG(ENABLE_MUS)
-#include "base/at_exit.h"
-#include "base/base_switches.h"
-#include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
-#include "base/threading/simple_thread.h"
-#include "base/threading/thread.h"
-#include "mojo/core/embedder/scoped_ipc_support.h"
-#include "services/ws/common/switches.h"  // nogncheck
-#include "ui/aura/env.h"
-#include "ui/base/ui_base_features.h"
-#include "ui/base/ui_base_switches.h"
-#include "ui/gl/gl_switches.h"
-#include "ui/views/test/platform_test_helper_mus.h"
-#include "ui/views/views_delegate.h"
-#endif
-
 #if defined(USE_AURA)
-#include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 #include "ui/views/widget/native_widget_aura.h"
-#elif defined(OS_MACOSX)
+#if BUILDFLAG(ENABLE_DESKTOP_AURA)
+#include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
+#endif
+#elif defined(OS_MAC)
 #include "ui/views/widget/native_widget_mac.h"
 #endif
 
 #if defined(USE_X11)
-#include "ui/base/x/x11_util_internal.h"
+#include "ui/base/x/x11_util.h"
+#endif
+
+#if defined(USE_OZONE)
+#include "ui/base/ui_base_features.h"
+#include "ui/ozone/public/ozone_platform.h"
+#include "ui/ozone/public/platform_gl_egl_utility.h"
 #endif
 
 namespace views {
 
 namespace {
 
-bool InitializeVisuals() {
+bool DoesVisualHaveAlphaForTest() {
+#if defined(USE_OZONE)
+  if (features::IsUsingOzonePlatform()) {
+    const auto* const egl_utility =
+        ui::OzonePlatform::GetInstance()->GetPlatformGLEGLUtility();
+    return egl_utility ? egl_utility->X11DoesVisualHaveAlphaForTest() : false;
+  }
+#endif
 #if defined(USE_X11)
-  bool has_compositing_manager = false;
-  int depth = 0;
-  bool using_argb_visual;
-
-  if (depth > 0)
-    return has_compositing_manager;
-
-  // testing/xvfb.py runs xvfb and xcompmgr.
-  std::unique_ptr<base::Environment> env(base::Environment::Create());
-  has_compositing_manager = env->HasVar("_CHROMIUM_INSIDE_XVFB");
-  ui::XVisualManager::GetInstance()->ChooseVisualForWindow(
-      has_compositing_manager, nullptr, &depth, nullptr, &using_argb_visual);
-
-  if (using_argb_visual)
-    EXPECT_EQ(32, depth);
-
-  return using_argb_visual;
+  return ui::DoesVisualHaveAlphaForTest();
 #else
   return false;
 #endif
 }
 
-#if BUILDFLAG(ENABLE_MUS)
-std::unique_ptr<PlatformTestHelper> CreatePlatformTestHelper() {
-  return std::make_unique<PlatformTestHelperMus>();
-}
-#endif  // BUILDFLAG(ENABLE_MUS)
-
 }  // namespace
 
-ViewsTestBase::ViewsTestBase() = default;
+void ViewsTestBase::WidgetCloser::operator()(Widget* widget) const {
+  widget->CloseNow();
+}
+
+ViewsTestBase::ViewsTestBase(
+    std::unique_ptr<base::test::TaskEnvironment> task_environment)
+    : task_environment_(std::move(task_environment)) {}
 
 ViewsTestBase::~ViewsTestBase() {
   CHECK(setup_called_)
@@ -95,56 +75,18 @@ ViewsTestBase::~ViewsTestBase() {
 }
 
 void ViewsTestBase::SetUp() {
-  if (!scoped_task_environment_) {
-    scoped_task_environment_ = std::make_unique<ScopedTaskEnvironment>(
-        ScopedTaskEnvironment::MainThreadType::UI);
-  }
-
-  has_compositing_manager_ = InitializeVisuals();
-
-#if BUILDFLAG(ENABLE_MUS)
-  at_exit_manager_ = std::make_unique<base::ShadowingAtExitManager>();
-  if (!aura::Env::HasInstance()) {
-    env_ = aura::Env::CreateInstance(is_mus() ? aura::Env::Mode::MUS
-                                              : aura::Env::Mode::LOCAL);
-  }
-#endif
+  has_compositing_manager_ = DoesVisualHaveAlphaForTest();
 
   testing::Test::SetUp();
-  ui::MaterialDesignController::Initialize();
   setup_called_ = true;
-  if (!views_delegate_for_setup_)
-    views_delegate_for_setup_ = std::make_unique<TestViewsDelegate>();
 
-#if BUILDFLAG(ENABLE_MUS)
-  if (is_mus()) {
-    // Set the mash feature flag, but don't override single process mash.
-    if (!::features::IsSingleProcessMash()) {
-      feature_list_.InitAndEnableFeature(::features::kMash);
-      base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-          switches::kEnableFeatures, ::features::kMash.name);
-    }
-
-    PlatformTestHelper::set_factory(
-        base::BindRepeating(&CreatePlatformTestHelper));
-
-    mojo::core::Init();
-    ipc_thread_ = std::make_unique<base::Thread>("IPC thread");
-    ipc_thread_->StartWithOptions(
-        base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
-    ipc_support_ = std::make_unique<mojo::core::ScopedIPCSupport>(
-        ipc_thread_->task_runner(),
-        mojo::core::ScopedIPCSupport::ShutdownPolicy::CLEAN);
-  }
-#else
+  absl::optional<ViewsDelegate::NativeWidgetFactory> factory;
   if (native_widget_type_ == NativeWidgetType::kDesktop) {
-    ViewsDelegate::GetInstance()->set_native_widget_factory(base::BindRepeating(
-        &ViewsTestBase::CreateNativeWidgetForTest, base::Unretained(this)));
+    factory = base::BindRepeating(&ViewsTestBase::CreateNativeWidgetForTest,
+                                  base::Unretained(this));
   }
-#endif
-
   test_helper_ = std::make_unique<ScopedViewsTestHelper>(
-      std::move(views_delegate_for_setup_));
+      std::move(views_delegate_for_setup_), std::move(factory));
 }
 
 void ViewsTestBase::TearDown() {
@@ -158,32 +100,16 @@ void ViewsTestBase::TearDown() {
   teardown_called_ = true;
   testing::Test::TearDown();
   test_helper_.reset();
-
-#if BUILDFLAG(ENABLE_MUS)
-  ipc_support_.reset();
-  ipc_thread_.reset();
-  if (is_mus())
-    PlatformTestHelper::set_factory({});
-  env_.reset();
-  at_exit_manager_.reset();
-#endif
 }
 
 void ViewsTestBase::SetUpForInteractiveTests() {
   DCHECK(!setup_called_);
   interactive_setup_called_ = true;
 
-#if BUILDFLAG(ENABLE_MUS)
-  bool init_mojo = !is_mus();
-#else
-  bool init_mojo = true;
-#endif
-  if (init_mojo) {
-    // Mojo is initialized here similar to how each browser test case
-    // initializes Mojo when starting. This only works because each
-    // interactive_ui_test runs in a new process.
-    mojo::core::Init();
-  }
+  // Mojo is initialized here similar to how each browser test case initializes
+  // Mojo when starting. This only works because each interactive_ui_test runs
+  // in a new process.
+  mojo::core::Init();
 
   gl::GLSurfaceTestSupport::InitializeOneOff();
   ui::RegisterPathProvider();
@@ -197,11 +123,17 @@ void ViewsTestBase::RunPendingMessages() {
   run_loop.RunUntilIdle();
 }
 
-Widget::InitParams ViewsTestBase::CreateParams(
-    Widget::InitParams::Type type) {
+Widget::InitParams ViewsTestBase::CreateParams(Widget::InitParams::Type type) {
   Widget::InitParams params(type);
   params.context = GetContext();
   return params;
+}
+
+std::unique_ptr<Widget> ViewsTestBase::CreateTestWidget(
+    Widget::InitParams::Type type) {
+  std::unique_ptr<Widget> widget = AllocateTestWidget();
+  widget->Init(CreateParamsForTestWidget(type));
+  return widget;
 }
 
 bool ViewsTestBase::HasCompositingManager() const {
@@ -209,8 +141,14 @@ bool ViewsTestBase::HasCompositingManager() const {
 }
 
 void ViewsTestBase::SimulateNativeDestroy(Widget* widget) {
-  test_helper_->platform_test_helper()->SimulateNativeDestroy(widget);
+  test_helper_->SimulateNativeDestroy(widget);
 }
+
+#if !defined(OS_MAC)
+int ViewsTestBase::GetSystemReservedHeightAtTopOfScreen() {
+  return 0;
+}
+#endif
 
 gfx::NativeWindow ViewsTestBase::GetContext() {
   return test_helper_->GetContext();
@@ -219,23 +157,27 @@ gfx::NativeWindow ViewsTestBase::GetContext() {
 NativeWidget* ViewsTestBase::CreateNativeWidgetForTest(
     const Widget::InitParams& init_params,
     internal::NativeWidgetDelegate* delegate) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   return new test::TestPlatformNativeWidget<NativeWidgetMac>(delegate, false,
                                                              nullptr);
 #elif defined(USE_AURA)
   // For widgets that have a modal parent, don't force a native widget type.
   // This logic matches DesktopTestViewsDelegate as well as ChromeViewsDelegate.
-  if (init_params.parent &&
-      init_params.type != views::Widget::InitParams::TYPE_MENU &&
-      init_params.type != views::Widget::InitParams::TYPE_TOOLTIP) {
+  if (init_params.parent && init_params.type != Widget::InitParams::TYPE_MENU &&
+      init_params.type != Widget::InitParams::TYPE_TOOLTIP) {
     // Returning null results in using the platform default, which is
     // NativeWidgetAura.
     return nullptr;
   }
 
   if (native_widget_type_ == NativeWidgetType::kDesktop) {
+#if BUILDFLAG(ENABLE_DESKTOP_AURA)
     return new test::TestPlatformNativeWidget<DesktopNativeWidgetAura>(
         delegate, false, nullptr);
+#else
+    return new test::TestPlatformNativeWidget<NativeWidgetAura>(delegate, false,
+                                                                nullptr);
+#endif
   }
 
   return new test::TestPlatformNativeWidget<NativeWidgetAura>(delegate, true,
@@ -244,6 +186,18 @@ NativeWidget* ViewsTestBase::CreateNativeWidgetForTest(
   NOTREACHED();
   return nullptr;
 #endif
+}
+
+std::unique_ptr<Widget> ViewsTestBase::AllocateTestWidget() {
+  return std::make_unique<Widget>();
+}
+
+Widget::InitParams ViewsTestBase::CreateParamsForTestWidget(
+    Widget::InitParams::Type type) {
+  Widget::InitParams params = CreateParams(type);
+  params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  params.bounds = gfx::Rect(0, 0, 400, 400);
+  return params;
 }
 
 void ViewsTestBaseWithNativeWidgetType::SetUp() {

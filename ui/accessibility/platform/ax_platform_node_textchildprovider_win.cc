@@ -35,46 +35,53 @@ AXPlatformNodeTextChildProviderWin::AXPlatformNodeTextChildProviderWin() {
 
 AXPlatformNodeTextChildProviderWin::~AXPlatformNodeTextChildProviderWin() {}
 
-HRESULT AXPlatformNodeTextChildProviderWin::CreateTextChildProvider(
-    AXPlatformNodeWin* owner,
-    IUnknown** provider) {
-  win::CreateATLModuleIfNeeded();
-
+// static
+AXPlatformNodeTextChildProviderWin* AXPlatformNodeTextChildProviderWin::Create(
+    AXPlatformNodeWin* owner) {
   CComObject<AXPlatformNodeTextChildProviderWin>* text_child_provider = nullptr;
-  HRESULT hr = CComObject<AXPlatformNodeTextChildProviderWin>::CreateInstance(
-      &text_child_provider);
-  if (SUCCEEDED(hr)) {
+  if (SUCCEEDED(CComObject<AXPlatformNodeTextChildProviderWin>::CreateInstance(
+          &text_child_provider))) {
     DCHECK(text_child_provider);
     text_child_provider->owner_ = owner;
     text_child_provider->AddRef();
-    *provider = static_cast<ITextChildProvider*>(text_child_provider);
+    return text_child_provider;
   }
 
-  return hr;
+  return nullptr;
 }
 
-STDMETHODIMP AXPlatformNodeTextChildProviderWin::get_TextContainer(
+// static
+void AXPlatformNodeTextChildProviderWin::CreateIUnknown(
+    AXPlatformNodeWin* owner,
+    IUnknown** unknown) {
+  Microsoft::WRL::ComPtr<AXPlatformNodeTextChildProviderWin>
+      text_child_provider(Create(owner));
+  if (text_child_provider)
+    *unknown = text_child_provider.Detach();
+}
+
+HRESULT AXPlatformNodeTextChildProviderWin::get_TextContainer(
     IRawElementProviderSimple** result) {
   WIN_ACCESSIBILITY_API_HISTOGRAM(UMA_API_TEXTCHILD_GET_TEXTCONTAINER);
   UIA_VALIDATE_TEXTCHILDPROVIDER_CALL();
 
   *result = nullptr;
 
-  AXPlatformNodeWin* container = GetTextContainer(owner_);
+  AXPlatformNodeWin* container = GetTextContainer(owner_.Get());
   if (container)
     container->QueryInterface(IID_PPV_ARGS(result));
 
   return S_OK;
 }
 
-STDMETHODIMP AXPlatformNodeTextChildProviderWin::get_TextRange(
+HRESULT AXPlatformNodeTextChildProviderWin::get_TextRange(
     ITextRangeProvider** result) {
   WIN_ACCESSIBILITY_API_HISTOGRAM(UMA_API_TEXTCHILD_GET_TEXTRANGE);
   UIA_VALIDATE_TEXTCHILDPROVIDER_CALL();
 
   *result = nullptr;
 
-  AXPlatformNodeWin* container = GetTextContainer(owner_);
+  AXPlatformNodeWin* container = GetTextContainer(owner_.Get());
   if (container && container->IsDescendant(owner())) {
     *result =
         AXPlatformNodeTextProviderWin::GetRangeFromChild(container, owner());
@@ -96,7 +103,7 @@ AXPlatformNodeWin* AXPlatformNodeTextChildProviderWin::GetTextContainer(
 }
 
 AXPlatformNodeWin* AXPlatformNodeTextChildProviderWin::owner() const {
-  return owner_;
+  return owner_.Get();
 }
 
 }  // namespace ui

@@ -4,21 +4,25 @@
 
 #include "chrome/browser/policy/cloud/user_policy_signin_service.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_internal.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/account_id_from_account_info.h"
 #include "chrome/browser/signin/signin_util.h"
-#include "components/account_id/account_id.h"
+#include "chrome/common/pref_names.h"
 #include "components/policy/core/common/cloud/cloud_policy_client_registration_helper.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
-#include "components/signin/core/browser/account_info.h"
+#include "components/prefs/pref_change_registrar.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/consent_level.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/storage_partition.h"
@@ -35,19 +39,25 @@ UserPolicySigninService::UserPolicySigninService(
     PrefService* local_state,
     DeviceManagementService* device_management_service,
     UserCloudPolicyManager* policy_manager,
-    identity::IdentityManager* identity_manager,
+    signin::IdentityManager* identity_manager,
     scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory)
     : UserPolicySigninServiceBase(profile,
                                   local_state,
                                   device_management_service,
                                   policy_manager,
                                   identity_manager,
-                                  system_url_loader_factory),
-      profile_(profile) {
+                                  system_url_loader_factory) {
   // IdentityManager should not yet have loaded its tokens since this
   // happens in the background after PKS initialization - so this service
   // should always be created before the oauth token is available.
-  DCHECK(!identity_manager->HasPrimaryAccountWithRefreshToken());
+  DCHECK(!CanApplyPoliciesForSignedInUser(/*check_for_refresh_token=*/true));
+
+  profile_pref_change_registrar_.Init(profile->GetPrefs());
+  profile_pref_change_registrar_.Add(
+      prefs::kUserAcceptedAccountManagement,
+      base::BindRepeating(
+          &UserPolicySigninService::OnAccountManagementPrefChange,
+          base::Unretained(this)));
 }
 
 UserPolicySigninService::~UserPolicySigninService() {
@@ -62,47 +72,22 @@ void UserPolicySigninService::PrepareForUserCloudPolicyManagerShutdown() {
   UserPolicySigninServiceBase::PrepareForUserCloudPolicyManagerShutdown();
 }
 
-void UserPolicySigninService::RegisterForPolicyWithLoginToken(
-    const std::string& username,
-    const std::string& oauth2_refresh_token,
-    const PolicyRegistrationCallback& callback) {
-  DCHECK(!oauth2_refresh_token.empty());
-
-  // Create a new CloudPolicyClient for fetching the DMToken.
-  std::unique_ptr<CloudPolicyClient> policy_client =
-      CreateClientForRegistrationOnly(username);
-  if (!policy_client) {
-    callback.Run(std::string(), std::string());
-    return;
-  }
-
-  // Fire off the registration process. Callback keeps the CloudPolicyClient
-  // alive for the length of the registration process. Use the system
-  // request context because the user is not signed in to this profile yet
-  // (we are just doing a test registration to see if policy is supported for
-  // this user).
-  registration_helper_ = std::make_unique<CloudPolicyClientRegistrationHelper>(
-      policy_client.get(),
-      enterprise_management::DeviceRegisterRequest::BROWSER);
-  registration_helper_->StartRegistrationWithLoginToken(
-      oauth2_refresh_token,
-      base::Bind(&UserPolicySigninService::CallPolicyRegistrationCallback,
-                 base::Unretained(this),
-                 base::Passed(&policy_client),
-                 callback));
-}
-
 void UserPolicySigninService::RegisterForPolicyWithAccountId(
     const std::string& username,
-    const std::string& account_id,
-    const PolicyRegistrationCallback& callback) {
+    const CoreAccountId& account_id,
+    PolicyRegistrationCallback callback) {
   DCHECK(!account_id.empty());
 
+  if (policy_manager() && policy_manager()->IsClientRegistered()) {
+    std::move(callback).Run(policy_manager()->core()->client()->dm_token(),
+                            policy_manager()->core()->client()->client_id());
+    return;
+  }
   // Create a new CloudPolicyClient for fetching the DMToken.
   std::unique_ptr<CloudPolicyClient> policy_client =
       CreateClientForRegistrationOnly(username);
   if (!policy_client) {
-    callback.Run(std::string(), std::string());
+    std::move(callback).Run(std::string(), std::string());
     return;
   }
 
@@ -116,33 +101,44 @@ void UserPolicySigninService::RegisterForPolicyWithAccountId(
       enterprise_management::DeviceRegisterRequest::BROWSER);
   registration_helper_->StartRegistration(
       identity_manager(), account_id,
-      base::Bind(&UserPolicySigninService::CallPolicyRegistrationCallback,
-                 base::Unretained(this), base::Passed(&policy_client),
-                 callback));
+      base::BindOnce(&UserPolicySigninService::CallPolicyRegistrationCallback,
+                     base::Unretained(this), std::move(policy_client),
+                     std::move(callback)));
 }
 
 void UserPolicySigninService::CallPolicyRegistrationCallback(
     std::unique_ptr<CloudPolicyClient> client,
     PolicyRegistrationCallback callback) {
   registration_helper_.reset();
-  callback.Run(client->dm_token(), client->client_id());
+  std::move(callback).Run(client->dm_token(), client->client_id());
 }
 
-void UserPolicySigninService::OnPrimaryAccountSet(
-    const CoreAccountInfo& account_info) {
-  if (!identity_manager()->HasAccountWithRefreshToken(account_info.account_id))
+void UserPolicySigninService::OnPrimaryAccountChanged(
+    const signin::PrimaryAccountChangeEvent& event) {
+  UserPolicySigninServiceBase::OnPrimaryAccountChanged(event);
+
+  if (event.GetEventTypeFor(consent_level()) !=
+      signin::PrimaryAccountChangeEvent::Type::kSet) {
+    return;
+  }
+
+  DCHECK(identity_manager()->HasPrimaryAccount(consent_level()));
+  if (!CanApplyPoliciesForSignedInUser(/*check_for_refresh_token=*/true))
     return;
 
-  // ProfileOAuth2TokenService now has a refresh token for the primary account
-  // so initialize the UserCloudPolicyManager.
+  // IdentityManager has a refresh token for the primary account, so initialize
+  // the UserCloudPolicyManager.
   TryInitializeForSignedInUser();
 }
 
 void UserPolicySigninService::OnRefreshTokenUpdatedForAccount(
     const CoreAccountInfo& account_info) {
   // Ignore OAuth tokens or those for any account but the primary one.
-  if (account_info.account_id != identity_manager()->GetPrimaryAccountId())
+  if (account_info.account_id !=
+          identity_manager()->GetPrimaryAccountId(consent_level()) ||
+      !CanApplyPoliciesForSignedInUser(/*check_for_refresh_token=*/true)) {
     return;
+  }
 
   // ProfileOAuth2TokenService now has a refresh token for the primary account
   // so initialize the UserCloudPolicyManager.
@@ -150,7 +146,7 @@ void UserPolicySigninService::OnRefreshTokenUpdatedForAccount(
 }
 
 void UserPolicySigninService::TryInitializeForSignedInUser() {
-  DCHECK(identity_manager()->HasPrimaryAccountWithRefreshToken());
+  DCHECK(CanApplyPoliciesForSignedInUser(/*check_for_refresh_token=*/true));
 
   // If using a TestingProfile with no UserCloudPolicyManager, skip
   // initialization.
@@ -159,10 +155,19 @@ void UserPolicySigninService::TryInitializeForSignedInUser() {
     return;
   }
 
+  profile_pref_change_registrar_.RemoveAll();
+
   InitializeForSignedInUser(
-      AccountIdFromAccountInfo(identity_manager()->GetPrimaryAccountInfo()),
-      content::BrowserContext::GetDefaultStoragePartition(profile_)
+      AccountIdFromAccountInfo(
+          identity_manager()->GetPrimaryAccountInfo(consent_level())),
+      profile()
+          ->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess());
+}
+
+void UserPolicySigninService::OnAccountManagementPrefChange() {
+  if (CanApplyPoliciesForSignedInUser(/*check_for_refresh_token=*/true))
+    TryInitializeForSignedInUser();
 }
 
 void UserPolicySigninService::InitializeUserCloudPolicyManager(
@@ -177,7 +182,7 @@ void UserPolicySigninService::ShutdownUserCloudPolicyManager() {
   UserCloudPolicyManager* manager = policy_manager();
   // Allow the user to signout again.
   if (manager)
-    signin_util::SetUserSignoutAllowedForProfile(profile_, true);
+    signin_util::SetUserSignoutAllowedForProfile(profile(), true);
 
   UserPolicySigninServiceBase::ShutdownUserCloudPolicyManager();
 }
@@ -191,7 +196,7 @@ void UserPolicySigninService::OnCloudPolicyServiceInitializationCompleted() {
   DVLOG_IF(1, manager->IsClientRegistered())
       << "Client already registered - not fetching DMToken";
   if (!manager->IsClientRegistered()) {
-    if (!identity_manager()->HasPrimaryAccountWithRefreshToken()) {
+    if (!CanApplyPoliciesForSignedInUser(/*check_for_refresh_token=*/true)) {
       // No token yet - this class listens for OnRefreshTokenUpdatedForAccount()
       // and will re-attempt registration once the token is available.
       DLOG(WARNING) << "No OAuth Refresh Token - delaying policy download";
@@ -212,13 +217,14 @@ void UserPolicySigninService::RegisterCloudPolicyService() {
 
   // Start the process of registering the CloudPolicyClient. Once it completes,
   // policy fetch will automatically happen.
-  registration_helper_.reset(new CloudPolicyClientRegistrationHelper(
+  registration_helper_ = std::make_unique<CloudPolicyClientRegistrationHelper>(
       policy_manager()->core()->client(),
-      enterprise_management::DeviceRegisterRequest::BROWSER));
+      enterprise_management::DeviceRegisterRequest::BROWSER);
   registration_helper_->StartRegistration(
-      identity_manager(), identity_manager()->GetPrimaryAccountId(),
-      base::Bind(&UserPolicySigninService::OnRegistrationComplete,
-                 base::Unretained(this)));
+      identity_manager(),
+      identity_manager()->GetPrimaryAccountId(consent_level()),
+      base::BindOnce(&UserPolicySigninService::OnRegistrationComplete,
+                     base::Unretained(this)));
 }
 
 void UserPolicySigninService::OnRegistrationComplete() {
@@ -230,7 +236,7 @@ void UserPolicySigninService::ProhibitSignoutIfNeeded() {
   if (policy_manager()->IsClientRegistered() ||
       internal::g_force_prohibit_signout_for_tests) {
     DVLOG(1) << "User is registered for policy - prohibiting signout";
-    signin_util::SetUserSignoutAllowedForProfile(profile_, false);
+    signin_util::SetUserSignoutAllowedForProfile(profile(), false);
   }
 }
 

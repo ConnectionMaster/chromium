@@ -5,81 +5,112 @@
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 
 #include "base/strings/string_util.h"
+#include "third_party/blink/public/mojom/manifest/capture_links.mojom.h"
+#include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 
 namespace blink {
 
-std::string WebDisplayModeToString(blink::WebDisplayMode display) {
+std::string DisplayModeToString(blink::mojom::DisplayMode display) {
   switch (display) {
-    case blink::kWebDisplayModeUndefined:
+    case blink::mojom::DisplayMode::kUndefined:
       return "";
-    case blink::kWebDisplayModeBrowser:
+    case blink::mojom::DisplayMode::kBrowser:
       return "browser";
-    case blink::kWebDisplayModeMinimalUi:
+    case blink::mojom::DisplayMode::kMinimalUi:
       return "minimal-ui";
-    case blink::kWebDisplayModeStandalone:
+    case blink::mojom::DisplayMode::kStandalone:
       return "standalone";
-    case blink::kWebDisplayModeFullscreen:
+    case blink::mojom::DisplayMode::kFullscreen:
       return "fullscreen";
+    case blink::mojom::DisplayMode::kWindowControlsOverlay:
+      return "window-controls-overlay";
+    case blink::mojom::DisplayMode::kTabbed:
+      return "tabbed";
   }
   return "";
 }
 
-blink::WebDisplayMode WebDisplayModeFromString(const std::string& display) {
+blink::mojom::DisplayMode DisplayModeFromString(const std::string& display) {
   if (base::LowerCaseEqualsASCII(display, "browser"))
-    return blink::kWebDisplayModeBrowser;
+    return blink::mojom::DisplayMode::kBrowser;
   if (base::LowerCaseEqualsASCII(display, "minimal-ui"))
-    return blink::kWebDisplayModeMinimalUi;
+    return blink::mojom::DisplayMode::kMinimalUi;
   if (base::LowerCaseEqualsASCII(display, "standalone"))
-    return blink::kWebDisplayModeStandalone;
+    return blink::mojom::DisplayMode::kStandalone;
   if (base::LowerCaseEqualsASCII(display, "fullscreen"))
-    return blink::kWebDisplayModeFullscreen;
-  return blink::kWebDisplayModeUndefined;
+    return blink::mojom::DisplayMode::kFullscreen;
+  if (base::LowerCaseEqualsASCII(display, "window-controls-overlay"))
+    return blink::mojom::DisplayMode::kWindowControlsOverlay;
+  if (base::LowerCaseEqualsASCII(display, "tabbed"))
+    return blink::mojom::DisplayMode::kTabbed;
+  return blink::mojom::DisplayMode::kUndefined;
+}
+
+bool IsBasicDisplayMode(blink::mojom::DisplayMode display) {
+  if (display == blink::mojom::DisplayMode::kBrowser ||
+      display == blink::mojom::DisplayMode::kMinimalUi ||
+      display == blink::mojom::DisplayMode::kStandalone ||
+      display == blink::mojom::DisplayMode::kFullscreen) {
+    return true;
+  }
+
+  return false;
 }
 
 std::string WebScreenOrientationLockTypeToString(
-    blink::WebScreenOrientationLockType orientation) {
+    device::mojom::ScreenOrientationLockType orientation) {
   switch (orientation) {
-    case blink::kWebScreenOrientationLockDefault:
+    case device::mojom::ScreenOrientationLockType::DEFAULT:
       return "";
-    case blink::kWebScreenOrientationLockPortraitPrimary:
+    case device::mojom::ScreenOrientationLockType::PORTRAIT_PRIMARY:
       return "portrait-primary";
-    case blink::kWebScreenOrientationLockPortraitSecondary:
+    case device::mojom::ScreenOrientationLockType::PORTRAIT_SECONDARY:
       return "portrait-secondary";
-    case blink::kWebScreenOrientationLockLandscapePrimary:
+    case device::mojom::ScreenOrientationLockType::LANDSCAPE_PRIMARY:
       return "landscape-primary";
-    case blink::kWebScreenOrientationLockLandscapeSecondary:
+    case device::mojom::ScreenOrientationLockType::LANDSCAPE_SECONDARY:
       return "landscape-secondary";
-    case blink::kWebScreenOrientationLockAny:
+    case device::mojom::ScreenOrientationLockType::ANY:
       return "any";
-    case blink::kWebScreenOrientationLockLandscape:
+    case device::mojom::ScreenOrientationLockType::LANDSCAPE:
       return "landscape";
-    case blink::kWebScreenOrientationLockPortrait:
+    case device::mojom::ScreenOrientationLockType::PORTRAIT:
       return "portrait";
-    case blink::kWebScreenOrientationLockNatural:
+    case device::mojom::ScreenOrientationLockType::NATURAL:
       return "natural";
   }
   return "";
 }
 
-blink::WebScreenOrientationLockType WebScreenOrientationLockTypeFromString(
+device::mojom::ScreenOrientationLockType WebScreenOrientationLockTypeFromString(
     const std::string& orientation) {
   if (base::LowerCaseEqualsASCII(orientation, "portrait-primary"))
-    return blink::kWebScreenOrientationLockPortraitPrimary;
+    return device::mojom::ScreenOrientationLockType::PORTRAIT_PRIMARY;
   if (base::LowerCaseEqualsASCII(orientation, "portrait-secondary"))
-    return blink::kWebScreenOrientationLockPortraitSecondary;
+    return device::mojom::ScreenOrientationLockType::PORTRAIT_SECONDARY;
   if (base::LowerCaseEqualsASCII(orientation, "landscape-primary"))
-    return blink::kWebScreenOrientationLockLandscapePrimary;
+    return device::mojom::ScreenOrientationLockType::LANDSCAPE_PRIMARY;
   if (base::LowerCaseEqualsASCII(orientation, "landscape-secondary"))
-    return blink::kWebScreenOrientationLockLandscapeSecondary;
+    return device::mojom::ScreenOrientationLockType::LANDSCAPE_SECONDARY;
   if (base::LowerCaseEqualsASCII(orientation, "any"))
-    return blink::kWebScreenOrientationLockAny;
+    return device::mojom::ScreenOrientationLockType::ANY;
   if (base::LowerCaseEqualsASCII(orientation, "landscape"))
-    return blink::kWebScreenOrientationLockLandscape;
+    return device::mojom::ScreenOrientationLockType::LANDSCAPE;
   if (base::LowerCaseEqualsASCII(orientation, "portrait"))
-    return blink::kWebScreenOrientationLockPortrait;
+    return device::mojom::ScreenOrientationLockType::PORTRAIT;
   if (base::LowerCaseEqualsASCII(orientation, "natural"))
-    return blink::kWebScreenOrientationLockNatural;
-  return blink::kWebScreenOrientationLockDefault;
+    return device::mojom::ScreenOrientationLockType::NATURAL;
+  return device::mojom::ScreenOrientationLockType::DEFAULT;
+}
+
+mojom::CaptureLinks CaptureLinksFromString(const std::string& capture_links) {
+  if (base::LowerCaseEqualsASCII(capture_links, "none"))
+    return mojom::CaptureLinks::kNone;
+  if (base::LowerCaseEqualsASCII(capture_links, "new-client"))
+    return mojom::CaptureLinks::kNewClient;
+  if (base::LowerCaseEqualsASCII(capture_links, "existing-client-navigate"))
+    return mojom::CaptureLinks::kExistingClientNavigate;
+  return mojom::CaptureLinks::kUndefined;
 }
 
 }  // namespace blink

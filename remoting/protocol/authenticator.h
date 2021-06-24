@@ -83,7 +83,7 @@ class Authenticator {
   // Callback used for layered Authenticator implementations, particularly
   // third-party and pairing authenticators. They use this callback to create
   // base SPAKE2 authenticators.
-  typedef base::Callback<std::unique_ptr<Authenticator>(
+  typedef base::RepeatingCallback<std::unique_ptr<Authenticator>(
       const std::string& shared_secret,
       Authenticator::State initial_state)>
       CreateBaseAuthenticatorCallback;
@@ -119,7 +119,7 @@ class Authenticator {
   // finished. The implementation must guarantee that |resume_callback| is not
   // called after the Authenticator is destroyed.
   virtual void ProcessMessage(const jingle_xmpp::XmlElement* message,
-                              const base::Closure& resume_callback) = 0;
+                              base::OnceClosure resume_callback) = 0;
 
   // Must be called when in MESSAGE_READY state. Returns next
   // authentication message that needs to be sent to the peer.

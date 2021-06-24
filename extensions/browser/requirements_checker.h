@@ -29,7 +29,7 @@ class RequirementsChecker : public PreloadCheck {
   // PreloadCheck:
   void Start(ResultCallback callback) override;
   // Joins multiple errors into a space-separated string.
-  base::string16 GetErrorMessage() const override;
+  std::u16string GetErrorMessage() const override;
 
  private:
   // Callback for the GpuFeatureChecker.
@@ -41,12 +41,10 @@ class RequirementsChecker : public PreloadCheck {
   // Helper function to run the callback.
   void RunCallback();
 
-  scoped_refptr<content::GpuFeatureChecker> webgl_checker_;
-
   ResultCallback callback_;
   Errors errors_;
 
-  base::WeakPtrFactory<RequirementsChecker> weak_ptr_factory_;
+  base::WeakPtrFactory<RequirementsChecker> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RequirementsChecker);
 };

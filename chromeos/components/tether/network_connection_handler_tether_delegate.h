@@ -10,7 +10,6 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chromeos/network/network_connection_handler.h"
-#include "chromeos/network/network_handler_callbacks.h"
 
 namespace chromeos {
 
@@ -34,25 +33,23 @@ class NetworkConnectionHandlerTetherDelegate
   ~NetworkConnectionHandlerTetherDelegate() override;
 
   // NetworkConnectionHandler::TetherDelegate:
-  void DisconnectFromNetwork(
-      const std::string& tether_network_guid,
-      const base::Closure& success_callback,
-      const network_handler::StringResultCallback& error_callback) override;
-  void ConnectToNetwork(
-      const std::string& tether_network_guid,
-      const base::Closure& success_callback,
-      const network_handler::StringResultCallback& error_callback) override;
+  void DisconnectFromNetwork(const std::string& tether_network_guid,
+                             base::OnceClosure success_callback,
+                             StringErrorCallback error_callback) override;
+  void ConnectToNetwork(const std::string& tether_network_guid,
+                        base::OnceClosure success_callback,
+                        StringErrorCallback error_callback) override;
 
  private:
   struct Callbacks {
    public:
-    Callbacks(const base::Closure& success_callback,
-              const network_handler::StringResultCallback& error_callback);
-    Callbacks(const Callbacks& other);
+    Callbacks(base::OnceClosure success_callback,
+              StringErrorCallback error_callback);
+    Callbacks(Callbacks&&);
     ~Callbacks();
 
-    base::Closure success_callback;
-    network_handler::StringResultCallback error_callback;
+    base::OnceClosure success_callback;
+    StringErrorCallback error_callback;
   };
 
   void OnRequestSuccess(int request_num);
@@ -69,7 +66,7 @@ class NetworkConnectionHandlerTetherDelegate
   std::unordered_map<int, Callbacks> request_num_to_callbacks_map_;
 
   base::WeakPtrFactory<NetworkConnectionHandlerTetherDelegate>
-      weak_ptr_factory_;
+      weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(NetworkConnectionHandlerTetherDelegate);
 };

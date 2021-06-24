@@ -14,12 +14,9 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "device/fido/fido_discovery_factory.h"
 #include "device/fido/fido_request_handler_base.h"
 #include "device/fido/fido_transport_protocol.h"
-
-namespace service_manager {
-class Connector;
-}  // namespace service_manager
 
 namespace device {
 
@@ -27,7 +24,6 @@ class FidoAuthenticator;
 
 namespace pin {
 struct RetriesResponse;
-struct KeyAgreementResponse;
 struct EmptyResponse;
 }  // namespace pin
 
@@ -39,10 +35,16 @@ class COMPONENT_EXPORT(DEVICE_FIDO) SetPINRequestHandler
     : public FidoRequestHandlerBase {
  public:
   // GetPINCallback is called once, after the user has touched an authenticator,
-  // to request that the user enter a PIN. If the argument is |nullopt| then the
-  // authenticator has no PIN currently set. Otherwise it indicates the number
-  // of attempts remaining.
-  using GetPINCallback = base::OnceCallback<void(base::Optional<int64_t>)>;
+  // to request that the user enter a PIN.
+  // * The first argument indicates the minimum PIN length for the current PIN,
+  //   if set.
+  // * The second argument indicates the minimum PIN length for a new PIN.
+  // * If the third argument is |nullopt| then the authenticator has no PIN
+  //   currently set. Otherwise it indicates the number of attempts remaining.
+  using GetPINCallback =
+      base::OnceCallback<void(uint32_t current_min_pin_length,
+                              uint32_t new_min_pin_length,
+                              absl::optional<int64_t> attempts)>;
 
   // FinishedCallback is called multiple times once an attempt has completed.
   // This can be called prior to |GetPINCallback| if the touched authenticator
@@ -59,25 +61,24 @@ class COMPONENT_EXPORT(DEVICE_FIDO) SetPINRequestHandler
       base::RepeatingCallback<void(CtapDeviceResponseCode)>;
 
   SetPINRequestHandler(
-      service_manager::Connector* connector,
       const base::flat_set<FidoTransportProtocol>& supported_transports,
       GetPINCallback get_pin_callback,
-      FinishedCallback finished_callback);
+      FinishedCallback finished_callback,
+      std::unique_ptr<FidoDiscoveryFactory> fido_discovery_factory =
+          std::make_unique<FidoDiscoveryFactory>());
   ~SetPINRequestHandler() override;
 
   // ProvidePIN may be called after |get_pin_callback| has been used to indicate
   // that an attempt at setting the PIN can be made. If the authenticator
   // doesn't currently have a PIN set, then |old_pin| must be the empty string.
   // pin::IsValid(new_pin) must be true when calling.
-  void ProvidePIN(const std::string& old_pin,
-                  const std::string& new_pin) override;
+  void ProvidePIN(const std::string& old_pin, const std::string& new_pin);
 
  private:
   enum class State {
     kWaitingForTouch,
     kGettingRetries,
     kWaitingForPIN,
-    kGetEphemeralKey,
     kSettingPIN,
     kFinished,
   };
@@ -90,15 +91,10 @@ class COMPONENT_EXPORT(DEVICE_FIDO) SetPINRequestHandler
   void OnTouch(FidoAuthenticator* authenticator);
   void RequestRetries();
   void OnRetriesResponse(CtapDeviceResponseCode status,
-                         base::Optional<pin::RetriesResponse> response);
-
-  void OnHaveEphemeralKey(std::string old_pin,
-                          std::string new_pin,
-                          CtapDeviceResponseCode status,
-                          base::Optional<pin::KeyAgreementResponse> response);
+                         absl::optional<pin::RetriesResponse> response);
 
   void OnSetPINComplete(CtapDeviceResponseCode status,
-                        base::Optional<pin::EmptyResponse> response);
+                        absl::optional<pin::EmptyResponse> response);
 
   State state_ = State::kWaitingForTouch;
   GetPINCallback get_pin_callback_;
@@ -107,8 +103,9 @@ class COMPONENT_EXPORT(DEVICE_FIDO) SetPINRequestHandler
   // The pointed-at object is owned by the |FidoRequestHandlerBase| superclass
   // of this class.
   FidoAuthenticator* authenticator_ = nullptr;
+  std::unique_ptr<FidoDiscoveryFactory> fido_discovery_factory_;
   SEQUENCE_CHECKER(my_sequence_checker_);
-  base::WeakPtrFactory<SetPINRequestHandler> weak_factory_;
+  base::WeakPtrFactory<SetPINRequestHandler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SetPINRequestHandler);
 };

@@ -4,6 +4,7 @@
 
 #include "net/tools/quic/quic_client_message_loop_network_helper.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/logging.h"
@@ -14,6 +15,7 @@
 #include "net/http/http_response_info.h"
 #include "net/log/net_log_source.h"
 #include "net/log/net_log_with_source.h"
+#include "net/quic/address_utils.h"
 #include "net/quic/quic_chromium_alarm_factory.h"
 #include "net/quic/quic_chromium_connection_helper.h"
 #include "net/quic/quic_chromium_packet_reader.h"
@@ -26,7 +28,6 @@
 #include "net/third_party/quiche/src/quic/core/quic_packets.h"
 #include "net/third_party/quiche/src/quic/core/quic_server_id.h"
 #include "net/third_party/quiche/src/quic/platform/api/quic_flags.h"
-#include "net/third_party/quiche/src/quic/platform/api/quic_ptr_util.h"
 #include "net/third_party/quiche/src/spdy/core/spdy_header_block.h"
 
 using std::string;
@@ -46,7 +47,7 @@ bool QuicClientMessageLooplNetworkHelper::CreateUDPSocketAndBind(
     quic::QuicIpAddress bind_to_address,
     int bind_to_port) {
   auto socket = std::make_unique<UDPClientSocket>(DatagramSocket::DEFAULT_BIND,
-                                                  &net_log_, NetLogSource());
+                                                  nullptr, NetLogSource());
 
   if (bind_to_address.IsInitialized()) {
     client_address_ =
@@ -60,7 +61,7 @@ bool QuicClientMessageLooplNetworkHelper::CreateUDPSocketAndBind(
         quic::QuicSocketAddress(quic::QuicIpAddress::Any6(), bind_to_port);
   }
 
-  int rc = socket->Connect(server_address.impl().socket_address());
+  int rc = socket->Connect(ToIPEndPoint(server_address));
   if (rc != OK) {
     LOG(ERROR) << "Connect failed: " << ErrorToShortString(rc);
     return false;
@@ -84,15 +85,14 @@ bool QuicClientMessageLooplNetworkHelper::CreateUDPSocketAndBind(
     LOG(ERROR) << "GetLocalAddress failed: " << ErrorToShortString(rc);
     return false;
   }
-  client_address_ =
-      quic::QuicSocketAddress(quic::QuicSocketAddressImpl(address));
+  client_address_ = ToQuicSocketAddress(address);
 
   socket_.swap(socket);
-  packet_reader_.reset(new QuicChromiumPacketReader(
+  packet_reader_ = std::make_unique<QuicChromiumPacketReader>(
       socket_.get(), clock_, this, kQuicYieldAfterPacketsRead,
       quic::QuicTime::Delta::FromMilliseconds(
           kQuicYieldAfterDurationMilliseconds),
-      NetLogWithSource()));
+      NetLogWithSource());
 
   if (socket != nullptr) {
     socket->Close();
@@ -121,15 +121,22 @@ void QuicClientMessageLooplNetworkHelper::RunEventLoop() {
 
 quic::QuicPacketWriter*
 QuicClientMessageLooplNetworkHelper::CreateQuicPacketWriter() {
+  // This is always called once per QuicSession before
+  // StartPacketReaderIfNotStarted. However if the QuicClient is creating
+  // multiple sessions it needs to restart the packet reader for the second one
+  // so we set packet_reader_started_ to false to ensure that.
+  packet_reader_started_ = false;
+
   return new QuicChromiumPacketWriter(
       socket_.get(), base::ThreadTaskRunnerHandle::Get().get());
 }
 
-void QuicClientMessageLooplNetworkHelper::OnReadError(
+bool QuicClientMessageLooplNetworkHelper::OnReadError(
     int result,
     const DatagramClientSocket* socket) {
   LOG(ERROR) << "QuicSimpleClient read failed: " << ErrorToShortString(result);
   client_->Disconnect();
+  return false;
 }
 
 quic::QuicSocketAddress

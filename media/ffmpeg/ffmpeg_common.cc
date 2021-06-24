@@ -14,10 +14,15 @@
 #include "media/base/decoder_buffer.h"
 #include "media/base/encryption_scheme.h"
 #include "media/base/media_util.h"
+#include "media/base/video_aspect_ratio.h"
 #include "media/base/video_decoder_config.h"
 #include "media/base/video_util.h"
 #include "media/formats/mp4/box_definitions.h"
 #include "media/media_buildflags.h"
+
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
+#include "media/formats/mp4/aac.h"
+#endif
 
 namespace media {
 
@@ -26,7 +31,7 @@ namespace {
 EncryptionScheme GetEncryptionScheme(const AVStream* stream) {
   AVDictionaryEntry* key =
       av_dict_get(stream->metadata, "enc_key_id", nullptr, 0);
-  return key ? AesCtrEncryptionScheme() : Unencrypted();
+  return key ? EncryptionScheme::kCenc : EncryptionScheme::kUnencrypted;
 }
 
 }  // namespace
@@ -80,7 +85,7 @@ AudioCodec CodecIDToAudioCodec(AVCodecID codec_id) {
   switch (codec_id) {
     case AV_CODEC_ID_AAC:
       return kCodecAAC;
-#if BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
     case AV_CODEC_ID_AC3:
       return kCodecAC3;
     case AV_CODEC_ID_EAC3:
@@ -116,6 +121,10 @@ AudioCodec CodecIDToAudioCodec(AVCodecID codec_id) {
       return kCodecOpus;
     case AV_CODEC_ID_ALAC:
       return kCodecALAC;
+#if BUILDFLAG(ENABLE_PLATFORM_MPEG_H_AUDIO)
+    case AV_CODEC_ID_MPEGH_3D_AUDIO:
+      return kCodecMpegHAudio;
+#endif
     default:
       DVLOG(1) << "Unknown audio CodecID: " << codec_id;
   }
@@ -167,6 +176,10 @@ AVCodecID AudioCodecToCodecID(AudioCodec audio_codec,
       return AV_CODEC_ID_PCM_MULAW;
     case kCodecOpus:
       return AV_CODEC_ID_OPUS;
+#if BUILDFLAG(ENABLE_PLATFORM_MPEG_H_AUDIO)
+    case kCodecMpegHAudio:
+      return AV_CODEC_ID_MPEGH_3D_AUDIO;
+#endif
     default:
       DVLOG(1) << "Unknown AudioCodec: " << audio_codec;
   }
@@ -178,7 +191,7 @@ static VideoCodec CodecIDToVideoCodec(AVCodecID codec_id) {
   switch (codec_id) {
     case AV_CODEC_ID_H264:
       return kCodecH264;
-#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
     case AV_CODEC_ID_HEVC:
       return kCodecHEVC;
 #endif
@@ -202,7 +215,7 @@ AVCodecID VideoCodecToCodecID(VideoCodec video_codec) {
   switch (video_codec) {
     case kCodecH264:
       return AV_CODEC_ID_H264;
-#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
     case kCodecHEVC:
       return AV_CODEC_ID_HEVC;
 #endif
@@ -318,10 +331,9 @@ static AVSampleFormat SampleFormatToAVSampleFormat(SampleFormat sample_format) {
   return AV_SAMPLE_FMT_NONE;
 }
 
-bool AVCodecContextToAudioDecoderConfig(
-    const AVCodecContext* codec_context,
-    const EncryptionScheme& encryption_scheme,
-    AudioDecoderConfig* config) {
+bool AVCodecContextToAudioDecoderConfig(const AVCodecContext* codec_context,
+                                        EncryptionScheme encryption_scheme,
+                                        AudioDecoderConfig* config) {
   DCHECK_EQ(codec_context->codec_type, AVMEDIA_TYPE_AUDIO);
 
   AudioCodec codec = CodecIDToAudioCodec(codec_context->codec_id);
@@ -341,7 +353,7 @@ bool AVCodecContextToAudioDecoderConfig(
     // not fill |sample_fmt|.
     case kCodecAC3:
     case kCodecEAC3:
-#if BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
       // The spec for AC3/EAC3 audio is ETSI TS 102 366. According to sections
       // F.3.1 and F.5.1 in that spec the sample_format for AC3/EAC3 must be 16.
       sample_format = kSampleFormatS16;
@@ -349,6 +361,12 @@ bool AVCodecContextToAudioDecoderConfig(
       NOTREACHED();
 #endif
       break;
+#if BUILDFLAG(ENABLE_PLATFORM_MPEG_H_AUDIO)
+    case kCodecMpegHAudio:
+      channel_layout = CHANNEL_LAYOUT_BITSTREAM;
+      sample_format = kSampleFormatMpegHAudio;
+      break;
+#endif
 
     default:
       break;
@@ -382,11 +400,27 @@ bool AVCodecContextToAudioDecoderConfig(
   if (channel_layout == CHANNEL_LAYOUT_DISCRETE)
     config->SetChannelsForDiscrete(codec_context->channels);
 
-#if BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_AC3_EAC3_AUDIO)
   // These are bitstream formats unknown to ffmpeg, so they don't have
   // a known sample format size.
   if (codec == kCodecAC3 || codec == kCodecEAC3)
     return true;
+#endif
+#if BUILDFLAG(ENABLE_PLATFORM_MPEG_H_AUDIO)
+  if (codec == kCodecMpegHAudio)
+    return true;
+#endif
+
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
+  // TODO(dalecurtis): Just use the profile from the codec context if ffmpeg
+  // ever starts supporting xHE-AAC.
+  if (codec == kCodecAAC && codec_context->profile == FF_PROFILE_UNKNOWN) {
+    // Errors aren't fatal here, so just drop any MediaLog messages.
+    NullMediaLog media_log;
+    mp4::AAC aac_parser;
+    if (aac_parser.Parse(extra_data, &media_log))
+      config->set_profile(aac_parser.GetProfile());
+  }
 #endif
 
   // Verify that AudioConfig.bits_per_channel was calculated correctly for
@@ -458,19 +492,25 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
   gfx::Rect visible_rect(codec_context->width, codec_context->height);
   gfx::Size coded_size = visible_rect.size();
 
-  AVRational aspect_ratio = {1, 1};
-  if (stream->sample_aspect_ratio.num)
-    aspect_ratio = stream->sample_aspect_ratio;
-  else if (codec_context->sample_aspect_ratio.num)
-    aspect_ratio = codec_context->sample_aspect_ratio;
+  // In some cases a container may have a DAR but no PAR, but FFmpeg translates
+  // everything to PAR. It is possible to get the render width and height, but I
+  // didn't find a way to determine whether that should be preferred to the PAR.
+  VideoAspectRatio aspect_ratio;
+  if (stream->sample_aspect_ratio.num) {
+    aspect_ratio = VideoAspectRatio::PAR(stream->sample_aspect_ratio.num,
+                                         stream->sample_aspect_ratio.den);
+  } else if (codec_context->sample_aspect_ratio.num) {
+    aspect_ratio =
+        VideoAspectRatio::PAR(codec_context->sample_aspect_ratio.num,
+                              codec_context->sample_aspect_ratio.den);
+  }
+
+  // Used to guess color space and to create the config. The first use should
+  // probably change to coded size, and the second should be removed as part of
+  // crbug.com/1214061.
+  gfx::Size natural_size = aspect_ratio.GetNaturalSize(visible_rect);
 
   VideoCodec codec = CodecIDToVideoCodec(codec_context->codec_id);
-
-  gfx::Size natural_size =
-      GetNaturalSize(visible_rect.size(), aspect_ratio.num, aspect_ratio.den);
-
-  VideoPixelFormat format =
-      AVPixelFormatToVideoPixelFormat(codec_context->pix_fmt);
 
   // Without the ffmpeg decoder configured, libavformat is unable to get the
   // profile, format, or coded size. So choose sensible defaults and let
@@ -496,15 +536,10 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
       // All the heuristics failed, let's assign a default profile
       if (profile == VIDEO_CODEC_PROFILE_UNKNOWN)
         profile = H264PROFILE_BASELINE;
-
-      format = PIXEL_FORMAT_I420;
       break;
     }
 #endif
     case kCodecVP8:
-#if !BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
-      format = PIXEL_FORMAT_I420;
-#endif
       profile = VP8PROFILE_ANY;
       break;
     case kCodecVP9:
@@ -525,13 +560,11 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
           profile = VP9PROFILE_MIN;
           break;
       }
-      format = PIXEL_FORMAT_I420;
       break;
     case kCodecAV1:
-      format = PIXEL_FORMAT_I420;
       profile = AV1PROFILE_PROFILE_MAIN;
       break;
-#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
     case kCodecHEVC:
       profile = HEVCPROFILE_MAIN;
       break;
@@ -543,18 +576,8 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
       profile = ProfileIDToVideoCodecProfile(codec_context->profile);
   }
 
-  // Pad out |coded_size| for subsampled YUV formats.
-  if (format != PIXEL_FORMAT_I444 && format != PIXEL_FORMAT_UNKNOWN) {
-    coded_size.set_width((coded_size.width() + 1) / 2 * 2);
-    if (format != PIXEL_FORMAT_I422)
-      coded_size.set_height((coded_size.height() + 1) / 2 * 2);
-  }
-
-  AVDictionaryEntry* webm_alpha =
-      av_dict_get(stream->metadata, "alpha_mode", nullptr, 0);
-  if (webm_alpha && !strcmp(webm_alpha->value, "1")) {
-    format = PIXEL_FORMAT_I420A;
-  }
+  auto* alpha_mode = av_dict_get(stream->metadata, "alpha_mode", nullptr, 0);
+  const bool has_alpha = alpha_mode && !strcmp(alpha_mode->value, "1");
 
   VideoRotation video_rotation = VIDEO_ROTATION_0;
   int rotation = 0;
@@ -606,6 +629,14 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
       color_space = (natural_size.height() < 720) ? VideoColorSpace::REC601()
                                                   : VideoColorSpace::REC709();
     }
+  } else if (codec_context->codec_id == AV_CODEC_ID_H264 &&
+             codec_context->colorspace == AVCOL_SPC_RGB &&
+             AVPixelFormatToVideoPixelFormat(codec_context->pix_fmt) ==
+                 PIXEL_FORMAT_I420) {
+    // Some H.264 videos contain a VUI that specifies a color matrix of GBR,
+    // when they are actually ordinary YUV. Only 4:2:0 formats are checked,
+    // because GBR is reasonable for 4:4:4 content. See crbug.com/1067377.
+    color_space = VideoColorSpace::REC709();
   }
 
   // AVCodecContext occasionally has invalid extra data. See
@@ -621,9 +652,15 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
     extra_data.assign(codec_context->extradata,
                       codec_context->extradata + codec_context->extradata_size);
   }
-  config->Initialize(codec, profile, format, color_space, video_rotation,
+  // TODO(tmathmeyer) ffmpeg can't provide us with an actual video rotation yet.
+  config->Initialize(codec, profile,
+                     has_alpha ? VideoDecoderConfig::AlphaMode::kHasAlpha
+                               : VideoDecoderConfig::AlphaMode::kIsOpaque,
+                     color_space, VideoTransformation(video_rotation),
                      coded_size, visible_rect, natural_size, extra_data,
                      GetEncryptionScheme(stream));
+  // Set the aspect ratio explicitly since our version hasn't been rounded.
+  config->set_aspect_ratio(aspect_ratio);
 
   if (stream->nb_side_data) {
     for (int i = 0; i < stream->nb_side_data; ++i) {
@@ -631,7 +668,7 @@ bool AVStreamToVideoDecoderConfig(const AVStream* stream,
       if (side_data.type != AV_PKT_DATA_MASTERING_DISPLAY_METADATA)
         continue;
 
-      HDRMetadata hdr_metadata{};
+      gfx::HDRMetadata hdr_metadata{};
       AVMasteringDisplayMetadata* metadata =
           reinterpret_cast<AVMasteringDisplayMetadata*>(side_data.data);
       if (metadata->has_primaries) {
@@ -668,7 +705,6 @@ void VideoDecoderConfigToAVCodecContext(
   codec_context->profile = VideoCodecProfileToProfileID(config.profile());
   codec_context->coded_width = config.coded_size().width();
   codec_context->coded_height = config.coded_size().height();
-  codec_context->pix_fmt = VideoPixelFormatToAVPixelFormat(config.format());
   if (config.color_space_info().range == gfx::ColorSpace::RangeID::FULL)
     codec_context->color_range = AVCOL_RANGE_JPEG;
 
@@ -802,43 +838,6 @@ VideoPixelFormat AVPixelFormatToVideoPixelFormat(AVPixelFormat pixel_format) {
       DVLOG(1) << "Unsupported AVPixelFormat: " << pixel_format;
   }
   return PIXEL_FORMAT_UNKNOWN;
-}
-
-AVPixelFormat VideoPixelFormatToAVPixelFormat(VideoPixelFormat video_format) {
-  switch (video_format) {
-    case PIXEL_FORMAT_I420:
-      return AV_PIX_FMT_YUV420P;
-    case PIXEL_FORMAT_I422:
-      return AV_PIX_FMT_YUV422P;
-    case PIXEL_FORMAT_I420A:
-      return AV_PIX_FMT_YUVA420P;
-    case PIXEL_FORMAT_I444:
-      return AV_PIX_FMT_YUV444P;
-    case PIXEL_FORMAT_YUV420P9:
-      return AV_PIX_FMT_YUV420P9LE;
-    case PIXEL_FORMAT_YUV420P10:
-      return AV_PIX_FMT_YUV420P10LE;
-    case PIXEL_FORMAT_YUV420P12:
-      return AV_PIX_FMT_YUV420P12LE;
-    case PIXEL_FORMAT_YUV422P9:
-      return AV_PIX_FMT_YUV422P9LE;
-    case PIXEL_FORMAT_YUV422P10:
-      return AV_PIX_FMT_YUV422P10LE;
-    case PIXEL_FORMAT_YUV422P12:
-      return AV_PIX_FMT_YUV422P12LE;
-    case PIXEL_FORMAT_YUV444P9:
-      return AV_PIX_FMT_YUV444P9LE;
-    case PIXEL_FORMAT_YUV444P10:
-      return AV_PIX_FMT_YUV444P10LE;
-    case PIXEL_FORMAT_YUV444P12:
-      return AV_PIX_FMT_YUV444P12LE;
-    case PIXEL_FORMAT_P016LE:
-      return AV_PIX_FMT_P016LE;
-
-    default:
-      DVLOG(1) << "Unsupported Format: " << video_format;
-  }
-  return AV_PIX_FMT_NONE;
 }
 
 VideoColorSpace AVColorSpaceToColorSpace(AVColorSpace color_space,

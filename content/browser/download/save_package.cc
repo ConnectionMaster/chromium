@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/i18n/file_util_icu.h"
@@ -15,17 +17,17 @@
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/rand_util.h"
-#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task_runner_util.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "components/download/public/common/download_item_impl.h"
-#include "components/download/public/common/download_request_handle_interface.h"
 #include "components/download/public/common/download_stats.h"
 #include "components/download/public/common/download_task_runner.h"
 #include "components/download/public/common/download_ukm_helper.h"
@@ -37,16 +39,14 @@
 #include "content/browser/download/save_file.h"
 #include "content/browser/download/save_file_manager.h"
 #include "content/browser/download/save_item.h"
-#include "content/browser/frame_host/frame_tree.h"
-#include "content/browser/frame_host/frame_tree_node.h"
-#include "content/browser/frame_host/render_frame_host_impl.h"
-#include "content/browser/loader/resource_dispatcher_host_impl.h"
+#include "content/browser/download/save_package_serialization_handler.h"
+#include "content/browser/renderer_host/frame_tree.h"
+#include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_delegate.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
-#include "content/common/frame_messages.h"
-#include "content/common/view_messages.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
@@ -58,10 +58,11 @@
 #include "content/public/browser/resource_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/mhtml_generation_params.h"
+#include "content/public/common/referrer_type_converters.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/filename_util.h"
-#include "net/base/io_buffer.h"
 #include "net/base/mime_util.h"
-#include "net/url_request/url_request_context.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "url/url_constants.h"
 
@@ -70,8 +71,8 @@ namespace {
 
 // Generates unique ids for SavePackage::unique_id_ field.
 SavePackageId GetNextSavePackageId() {
-  static int g_save_package_id = 0;
-  return SavePackageId::FromUnsafeValue(g_save_package_id++);
+  static SavePackageId::Generator g_save_package_id_generator;
+  return g_save_package_id_generator.GenerateNextId();
 }
 
 // Default name which will be used when we can not get proper name from
@@ -125,25 +126,28 @@ bool CanSaveAsComplete(const std::string& contents_mime_type) {
          contents_mime_type == "application/xhtml+xml";
 }
 
-// Request handle for SavePackage downloads. Currently doesn't support
-// pause/resume, but returns a WebContents.
-class SavePackageRequestHandle
-    : public download::DownloadRequestHandleInterface {
- public:
-  explicit SavePackageRequestHandle(base::WeakPtr<SavePackage> save_package)
-      : save_package_(save_package) {}
+void CancelSavePackage(base::WeakPtr<SavePackage> save_package,
+                       bool user_cancel) {
+  if (save_package.get() && !save_package->canceled())
+    save_package->Cancel(user_cancel, false);
+}
 
-  // DownloadRequestHandleInterface
-  void PauseRequest() override {}
-  void ResumeRequest() override {}
-  void CancelRequest(bool user_cancel) override {
-    if (save_package_.get() && !save_package_->canceled())
-      save_package_->Cancel(user_cancel, false);
+const std::string GetMimeTypeForSaveType(SavePageType save_type) {
+  switch (save_type) {
+    case SAVE_PAGE_TYPE_AS_ONLY_HTML:
+    case SAVE_PAGE_TYPE_AS_COMPLETE_HTML:
+      return "text/html";
+    case SAVE_PAGE_TYPE_AS_MHTML:
+      return "multipart/related";
+    case SAVE_PAGE_TYPE_AS_WEB_BUNDLE:
+      return "application/webbundle";
+    case SAVE_PAGE_TYPE_UNKNOWN:
+    case SAVE_PAGE_TYPE_MAX:
+      NOTREACHED();
+      return "";
   }
-
- private:
-  base::WeakPtr<SavePackage> const save_package_;
-};
+  NOTREACHED();
+}
 
 }  // namespace
 
@@ -178,7 +182,8 @@ SavePackage::SavePackage(WebContents* web_contents,
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK((save_type_ == SAVE_PAGE_TYPE_AS_ONLY_HTML) ||
          (save_type_ == SAVE_PAGE_TYPE_AS_MHTML) ||
-         (save_type_ == SAVE_PAGE_TYPE_AS_COMPLETE_HTML))
+         (save_type_ == SAVE_PAGE_TYPE_AS_COMPLETE_HTML) ||
+         (save_type_ == SAVE_PAGE_TYPE_AS_WEB_BUNDLE))
       << save_type_;
   DCHECK(!saved_main_file_path_.empty() &&
          saved_main_file_path_.value().length() <= kMaxFilePathLength);
@@ -252,14 +257,16 @@ void SavePackage::InternalInit() {
   DCHECK(file_manager_);
 
   download_manager_ = static_cast<DownloadManagerImpl*>(
-      BrowserContext::GetDownloadManager(
-          web_contents()->GetBrowserContext()));
+      web_contents()->GetBrowserContext()->GetDownloadManager());
   DCHECK(download_manager_);
 
   download::RecordSavePackageEvent(download::SAVE_PACKAGE_STARTED);
 
+  // TODO(crbug.com/1061899): The code here should take an explicit reference
+  // to the corresponding frame instead of using the current main frame.
   ukm_source_id_ = static_cast<WebContentsImpl*>(web_contents())
-                       ->GetUkmSourceIdForLastCommittedSource();
+                       ->GetMainFrame()
+                       ->GetPageUkmSourceId();
   ukm_download_id_ = download::GetUniqueDownloadId();
   download::DownloadUkmHelper::RecordDownloadStarted(
       ukm_download_id_, ukm_source_id_, download::DownloadContent::TEXT,
@@ -271,7 +278,7 @@ void SavePackage::InternalInit() {
 }
 
 bool SavePackage::Init(
-    const SavePackageDownloadCreatedCallback& download_created_callback) {
+    SavePackageDownloadCreatedCallback download_created_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(page_url_.is_valid());
   // Set proper running state.
@@ -287,30 +294,25 @@ bool SavePackage::Init(
     return false;
   }
 
-  std::unique_ptr<download::DownloadRequestHandleInterface> request_handle(
-      new SavePackageRequestHandle(AsWeakPtr()));
-
   RenderFrameHost* frame_host = web_contents()->GetMainFrame();
   download_manager_->CreateSavePackageDownloadItem(
-      saved_main_file_path_, page_url_,
-      ((save_type_ == SAVE_PAGE_TYPE_AS_MHTML) ? "multipart/related"
-                                               : "text/html"),
+      saved_main_file_path_, page_url_, GetMimeTypeForSaveType(save_type_),
       frame_host->GetProcess()->GetID(), frame_host->GetRoutingID(),
-      std::move(request_handle),
-      base::Bind(&SavePackage::InitWithDownloadItem, AsWeakPtr(),
-                 download_created_callback));
+      base::BindOnce(&CancelSavePackage, AsWeakPtr()),
+      base::BindOnce(&SavePackage::InitWithDownloadItem, AsWeakPtr(),
+                     std::move(download_created_callback)));
   return true;
 }
 
 void SavePackage::InitWithDownloadItem(
-    const SavePackageDownloadCreatedCallback& download_created_callback,
+    SavePackageDownloadCreatedCallback download_created_callback,
     download::DownloadItemImpl* item) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(item);
   download_ = item;
   // Confirm above didn't delete the tab out from under us.
   if (!download_created_callback.is_null())
-    download_created_callback.Run(download_);
+    std::move(download_created_callback).Run(download_);
 
   // Check save type and process the save page job.
   if (save_type_ == SAVE_PAGE_TYPE_AS_COMPLETE_HTML) {
@@ -321,7 +323,11 @@ void SavePackage::InitWithDownloadItem(
     MHTMLGenerationParams mhtml_generation_params(saved_main_file_path_);
     web_contents()->GenerateMHTML(
         mhtml_generation_params,
-        base::BindOnce(&SavePackage::OnMHTMLGenerated, this));
+        base::BindOnce(&SavePackage::OnMHTMLOrWebBundleGenerated, this));
+  } else if (save_type_ == SAVE_PAGE_TYPE_AS_WEB_BUNDLE) {
+    web_contents()->GenerateWebBundle(
+        saved_main_file_path_,
+        base::BindOnce(&SavePackage::OnWebBundleGenerated, this));
   } else {
     DCHECK_EQ(SAVE_PAGE_TYPE_AS_ONLY_HTML, save_type_);
     wait_state_ = NET_FILES;
@@ -337,7 +343,7 @@ void SavePackage::InitWithDownloadItem(
   }
 }
 
-void SavePackage::OnMHTMLGenerated(int64_t size) {
+void SavePackage::OnMHTMLOrWebBundleGenerated(int64_t size) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (!download_)
     return;
@@ -353,9 +359,19 @@ void SavePackage::OnMHTMLGenerated(int64_t size) {
 
   auto* delegate = download_manager_->GetDelegate();
   if (!delegate || delegate->ShouldCompleteDownload(
-                       download_, base::Bind(&SavePackage::Finish, this))) {
+                       download_, base::BindOnce(&SavePackage::Finish, this))) {
     Finish();
   }
+}
+
+void SavePackage::OnWebBundleGenerated(
+    uint64_t size,
+    data_decoder::mojom::WebBundlerError error) {
+  if (error == data_decoder::mojom::WebBundlerError::kOK)
+    DCHECK_GT(size, 0ULL);
+  else
+    DCHECK_EQ(size, 0ULL);
+  OnMHTMLOrWebBundleGenerated(size);
 }
 
 // On POSIX, the length of |base_name| + |file_name_ext| is further
@@ -489,7 +505,7 @@ bool SavePackage::GenerateFileName(const std::string& disposition,
       base::FilePath::StringType new_name =
           base_file_name + base::StringPrintf(FILE_PATH_LITERAL("(%d)"), i) +
           file_name_ext;
-      if (!base::ContainsKey(file_name_set_, new_name)) {
+      if (!base::Contains(file_name_set_, new_name)) {
         // Resolved name conflict.
         file_name = new_name;
         file_name_count_map_[base_file_name] = ++i;
@@ -594,7 +610,7 @@ void SavePackage::PutInProgressItemToSavedMap(SaveItem* save_item) {
 
   SaveItemIdMap& map = save_item->success() ?
       saved_success_items_ : saved_failed_items_;
-  DCHECK(!base::ContainsKey(map, save_item->id()));
+  DCHECK(!base::Contains(map, save_item->id()));
   map[save_item->id()] = std::move(owned_item);
 }
 
@@ -725,7 +741,8 @@ void SavePackage::Finish() {
                                 file_manager_, list_of_failed_save_item_ids));
 
   if (download_) {
-    if (save_type_ != SAVE_PAGE_TYPE_AS_MHTML) {
+    if (save_type_ != SAVE_PAGE_TYPE_AS_MHTML &&
+        save_type_ != SAVE_PAGE_TYPE_AS_WEB_BUNDLE) {
       CHECK_EQ(download_->GetState(), download::DownloadItem::IN_PROGRESS);
       download_->DestinationUpdate(
           all_save_items_count_, CurrentSpeed(),
@@ -804,12 +821,12 @@ void SavePackage::SaveNextFile(bool process_all_remaining_items) {
     waiting_item_queue_.pop_front();
 
     // Add the item to |in_progress_items_|.
-    DCHECK(!base::ContainsKey(in_progress_items_, save_item->id()));
+    DCHECK(!base::Contains(in_progress_items_, save_item->id()));
     in_progress_items_[save_item_ptr->id()] = std::move(save_item);
     save_item_ptr->Start();
 
     // Find the frame responsible for making the network request below - it will
-    // be used in security checks made later by ResourceDispatcherHostImpl.
+    // be used in security checks made later.
     int requester_frame_tree_node_id =
         save_item_ptr->save_source() == SaveFileCreateInfo::SAVE_FILE_FROM_NET
             ? save_item_ptr->container_frame_tree_node_id()
@@ -830,9 +847,9 @@ void SavePackage::SaveNextFile(bool process_all_remaining_items) {
         requester_frame->GetProcess()->GetID(),
         requester_frame->render_view_host()->GetRoutingID(),
         requester_frame->routing_id(), save_item_ptr->save_source(),
-        save_item_ptr->full_path(),
-        web_contents()->GetBrowserContext()->GetResourceContext(),
+        save_item_ptr->full_path(), web_contents()->GetBrowserContext(),
         web_contents()
+            ->GetMainFrame()
             ->GetRenderViewHost()
             ->GetProcess()
             ->GetStoragePartition(),
@@ -860,10 +877,11 @@ int64_t SavePackage::CurrentSpeed() const {
 void SavePackage::DoSavingProcess() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (save_type_ != SAVE_PAGE_TYPE_AS_COMPLETE_HTML) {
-    // Save as HTML only or MHTML.
+    // Save as HTML only or MHTML, or Web Bundle.
     DCHECK_EQ(NET_FILES, wait_state_);
     DCHECK((save_type_ == SAVE_PAGE_TYPE_AS_ONLY_HTML) ||
-           (save_type_ == SAVE_PAGE_TYPE_AS_MHTML))
+           (save_type_ == SAVE_PAGE_TYPE_AS_MHTML) ||
+           (save_type_ == SAVE_PAGE_TYPE_AS_WEB_BUNDLE))
         << save_type_;
     if (waiting_item_queue_.size()) {
       DCHECK_EQ(all_save_items_count_, waiting_item_queue_.size());
@@ -899,22 +917,6 @@ void SavePackage::DoSavingProcess() {
   }
 }
 
-bool SavePackage::OnMessageReceived(const IPC::Message& message,
-                                    RenderFrameHost* render_frame_host) {
-  bool handled = true;
-  auto* rfhi = static_cast<RenderFrameHostImpl*>(render_frame_host);
-  IPC_BEGIN_MESSAGE_MAP_WITH_PARAM(SavePackage, message, rfhi)
-    IPC_MESSAGE_HANDLER(FrameHostMsg_SavableResourceLinksResponse,
-                        OnSavableResourceLinksResponse)
-    IPC_MESSAGE_HANDLER(FrameHostMsg_SavableResourceLinksError,
-                        OnSavableResourceLinksError)
-    IPC_MESSAGE_HANDLER(FrameHostMsg_SerializedHtmlWithLocalLinksResponse,
-                        OnSerializedHtmlWithLocalLinksResponse)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
-}
-
 // After finishing all SaveItems which need to get data from net.
 // We collect all URLs which have local storage and send the
 // map:(originalURL:currentLocalPath) to render process (backend).
@@ -941,7 +943,7 @@ void SavePackage::GetSerializedHtmlWithLocalLinks() {
   DCHECK_EQ(0, number_of_frames_pending_response_);
   FrameTree* frame_tree =
       static_cast<RenderFrameHostImpl*>(web_contents()->GetMainFrame())
-          ->frame_tree_node()->frame_tree();
+          ->frame_tree();
   for (const auto& item : frame_tree_node_id_to_save_item_) {
     int frame_tree_node_id = item.first;
     const SaveItem* save_item = item.second;
@@ -978,8 +980,9 @@ void SavePackage::GetSerializedHtmlWithLocalLinksForFrame(
   // SECURITY NOTE: We don't send *all* urls / local paths, but only
   // those that the given frame had access to already (because it contained
   // the savable resources / subframes associated with save items).
-  std::map<GURL, base::FilePath> url_to_local_path;
-  std::map<int, base::FilePath> routing_id_to_local_path;
+  base::flat_map<GURL, base::FilePath> url_to_local_path;
+  base::flat_map<blink::FrameToken, base::FilePath> frame_token_to_local_path;
+
   auto it = frame_tree_node_id_to_contained_save_items_.find(
       target_frame_tree_node_id);
   if (it != frame_tree_node_id_to_contained_save_items_.end()) {
@@ -998,7 +1001,8 @@ void SavePackage::GetSerializedHtmlWithLocalLinksForFrame(
       }
       local_path = local_path.Append(save_item->full_path().BaseName());
 
-      // Insert the link into |url_to_local_path| or |routing_id_to_local_path|.
+      // Insert the link into |url_to_local_path| or
+      // |frame_token_to_local_path|.
       if (save_item->save_source() != SaveFileCreateInfo::SAVE_FILE_FROM_DOM) {
         DCHECK_EQ(FrameTreeNode::kFrameTreeNodeInvalidId,
                   save_item->frame_tree_node_id());
@@ -1012,43 +1016,52 @@ void SavePackage::GetSerializedHtmlWithLocalLinksForFrame(
           continue;
         }
 
-        int routing_id =
+        absl::optional<blink::FrameToken> frame_token =
             save_item_frame_tree_node->render_manager()
-                ->GetRoutingIdForSiteInstance(target->GetSiteInstance());
-        DCHECK_NE(MSG_ROUTING_NONE, routing_id);
+                ->GetFrameTokenForSiteInstance(target->GetSiteInstance());
 
-        routing_id_to_local_path[routing_id] = local_path;
+        DCHECK(frame_token.has_value());
+
+        frame_token_to_local_path[frame_token.value()] = local_path;
       }
     }
   }
 
+  // Create a SavePackageSerializationHandler for the target RenderFrameHost
+  // plus the required callbacks to report progress, and make it owned by a mojo
+  // receiver that will be alive for the time that the serialization process is
+  // in progress. It's expected that the Done() callback will be called right
+  // after the last time the DidReceiveData() callback gets invoked, at which
+  // point the remote end of the pipe will be closed, disposing the receiver.
+  mojo::PendingRemote<mojom::FrameHTMLSerializerHandler> serializer_handler;
+  mojo::MakeSelfOwnedReceiver(
+      std::make_unique<SavePackageSerializationHandler>(
+          base::BindRepeating(&SavePackage::OnDidReceiveSerializedHtmlData,
+                              AsWeakPtr(), target->GetWeakPtr()),
+          base::BindOnce(&SavePackage::OnDidFinishedSerializingHtmlData,
+                         AsWeakPtr(), target->GetWeakPtr())),
+      serializer_handler.InitWithNewPipeAndPassReceiver());
+
   // Ask target frame to serialize itself.
-  target->Send(new FrameMsg_GetSerializedHtmlWithLocalLinks(
-      target->GetRoutingID(), url_to_local_path, routing_id_to_local_path,
-      web_contents()->GetBrowserContext()->IsOffTheRecord()));
+  target->GetSerializedHtmlWithLocalLinks(
+      url_to_local_path, frame_token_to_local_path,
+      web_contents()->GetBrowserContext()->IsOffTheRecord(),
+      std::move(serializer_handler));
 }
 
-// Process the serialized HTML content data of a specified frame
-// retrieved from the renderer process.
-void SavePackage::OnSerializedHtmlWithLocalLinksResponse(
-    RenderFrameHostImpl* sender,
-    const std::string& data,
-    bool end_of_data) {
+void SavePackage::OnDidReceiveSerializedHtmlData(
+    base::WeakPtr<RenderFrameHostImpl> sender,
+    const std::string& data) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   // Check current state.
-  if (wait_state_ != HTML_DATA)
+  if (!sender || wait_state_ != HTML_DATA)
     return;
 
-  int frame_tree_node_id = sender->frame_tree_node()->frame_tree_node_id();
-  auto it = frame_tree_node_id_to_save_item_.find(frame_tree_node_id);
-  if (it == frame_tree_node_id_to_save_item_.end()) {
-    // This is parimarily sanitization of IPC (renderer shouldn't send
-    // OnSerializedHtmlFragment IPC without being asked to), but it might also
-    // occur in the wild (if old renderer response reaches a new SavePackage).
-    return;
-  }
-  const SaveItem* save_item = it->second;
-  DCHECK_EQ(SaveFileCreateInfo::SAVE_FILE_FROM_DOM, save_item->save_source());
+  // This method can only get called as a response to the serialization request
+  // previously sent from the browser to the renderer for a given FrameTreeNode.
+  const SaveItem* save_item = LookupSaveItemForSender(sender);
+  DCHECK(save_item);
+
   if (save_item->state() != SaveItem::IN_PROGRESS) {
     for (const auto& saved_it : saved_success_items_) {
       if (saved_it.second->url() == save_item->url()) {
@@ -1057,7 +1070,7 @@ void SavePackage::OnSerializedHtmlWithLocalLinksResponse(
       }
     }
 
-    if (base::ContainsKey(saved_failed_items_, save_item->id()))
+    if (base::Contains(saved_failed_items_, save_item->id()))
       wrote_to_failed_file_ = true;
 
     return;
@@ -1069,17 +1082,44 @@ void SavePackage::OnSerializedHtmlWithLocalLinksResponse(
         FROM_HERE, base::BindOnce(&SaveFileManager::UpdateSaveProgress,
                                   file_manager_, save_item->id(), data));
   }
+}
+
+void SavePackage::OnDidFinishedSerializingHtmlData(
+    base::WeakPtr<RenderFrameHostImpl> sender) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // Check current state.
+  if (!sender || wait_state_ != HTML_DATA)
+    return;
+
+  // This method can only get called as a response to the serialization request
+  // previously sent from the browser to the renderer for a given FrameTreeNode.
+  const SaveItem* save_item = LookupSaveItemForSender(sender);
+  DCHECK(save_item);
 
   // Current frame is completed saving, call finish in download sequence.
-  if (end_of_data) {
-    DVLOG(20) << __func__ << "() save_item_id = " << save_item->id()
-              << " url = \"" << save_item->url().spec() << "\"";
-    download::GetDownloadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(&SaveFileManager::SaveFinished, file_manager_,
-                                  save_item->id(), id(), true));
-    number_of_frames_pending_response_--;
-    DCHECK_LE(0, number_of_frames_pending_response_);
-  }
+  DVLOG(20) << __func__ << "() save_item_id = " << save_item->id()
+            << " url = \"" << save_item->url().spec() << "\"";
+  download::GetDownloadTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&SaveFileManager::SaveFinished, file_manager_,
+                                save_item->id(), id(), true));
+  number_of_frames_pending_response_--;
+  DCHECK_LE(0, number_of_frames_pending_response_);
+}
+
+const SaveItem* SavePackage::LookupSaveItemForSender(
+    base::WeakPtr<RenderFrameHostImpl> sender) {
+  if (!sender)
+    return nullptr;
+
+  int frame_tree_node_id = sender->frame_tree_node()->frame_tree_node_id();
+  auto it = frame_tree_node_id_to_save_item_.find(frame_tree_node_id);
+  if (it == frame_tree_node_id_to_save_item_.end())
+    return nullptr;
+
+  const SaveItem* save_item = it->second;
+  DCHECK_EQ(SaveFileCreateInfo::SAVE_FILE_FROM_DOM, save_item->save_source());
+
+  return save_item;
 }
 
 // Ask for all savable resource links from backend, include main frame and
@@ -1092,12 +1132,17 @@ void SavePackage::GetSavableResourceLinks() {
   wait_state_ = RESOURCES_LIST;
 
   DCHECK_EQ(0, number_of_frames_pending_response_);
-  number_of_frames_pending_response_ = web_contents()->SendToAllFrames(
-      new FrameMsg_GetSavableResourceLinks(MSG_ROUTING_NONE));
+  for (RenderFrameHost* rfh : web_contents()->GetAllFrames()) {
+    if (!rfh->IsRenderFrameLive())
+      continue;
+    ++number_of_frames_pending_response_;
+    static_cast<RenderFrameHostImpl*>(rfh)
+        ->GetSavableResourceLinksFromRenderer();
+  }
   DCHECK_LT(0, number_of_frames_pending_response_);
 
   // Enqueue the main frame separately (because this frame won't show up in any
-  // of OnSavableResourceLinksResponse callbacks).
+  // of GetsSavableResourceLinks callbacks).
   FrameTreeNode* main_frame_tree_node =
       static_cast<RenderFrameHostImpl*>(web_contents()->GetMainFrame())
           ->frame_tree_node();
@@ -1107,11 +1152,11 @@ void SavePackage::GetSavableResourceLinks() {
   all_save_items_count_ = 1;
 }
 
-void SavePackage::OnSavableResourceLinksResponse(
+void SavePackage::SavableResourceLinksResponse(
     RenderFrameHostImpl* sender,
     const std::vector<GURL>& resources_list,
-    const Referrer& referrer,
-    const std::vector<SavableSubframe>& subframes) {
+    blink::mojom::ReferrerPtr referrer,
+    const std::vector<blink::mojom::SavableSubframePtr>& subframes) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (wait_state_ != RESOURCES_LIST)
     return;
@@ -1120,28 +1165,22 @@ void SavePackage::OnSavableResourceLinksResponse(
   int container_frame_tree_node_id =
       sender->frame_tree_node()->frame_tree_node_id();
   for (const GURL& u : resources_list) {
-    EnqueueSavableResource(container_frame_tree_node_id, u, referrer);
+    EnqueueSavableResource(container_frame_tree_node_id, u,
+                           referrer.To<content::Referrer>());
   }
-  for (const SavableSubframe& subframe : subframes) {
-    FrameTreeNode* subframe_tree_node =
-        sender->frame_tree_node()->frame_tree()->FindByRoutingID(
-            sender->GetProcess()->GetID(), subframe.routing_id);
+  for (auto& subframe : subframes) {
+    RenderFrameHostImpl* rfh_subframe = sender->FindAndVerifyChild(
+        subframe->subframe_token,
+        bad_message::DWNLD_INVALID_SAVABLE_RESOURCE_LINKS_RESPONSE);
 
-    if (!subframe_tree_node) {
+    if (!rfh_subframe) {
       // crbug.com/541354 - Raciness when saving a dynamically changing page.
-      continue;
-    }
-    if (subframe_tree_node->parent() != sender->frame_tree_node()) {
-      // Only reachable if the renderer has a bug or has been compromised.
-      ReceivedBadMessage(
-          sender->GetProcess(),
-          bad_message::DWNLD_INVALID_SAVABLE_RESOURCE_LINKS_RESPONSE);
       continue;
     }
 
     EnqueueFrame(container_frame_tree_node_id,
-                 subframe_tree_node->frame_tree_node_id(),
-                 subframe.original_url);
+                 rfh_subframe->frame_tree_node()->frame_tree_node_id(),
+                 subframe->original_url);
   }
 
   CompleteSavableResourceLinksResponse();
@@ -1211,7 +1250,7 @@ void SavePackage::EnqueueFrame(int container_frame_tree_node_id,
   frame_tree_node_id_to_save_item_[frame_tree_node_id] = save_item;
 }
 
-void SavePackage::OnSavableResourceLinksError(RenderFrameHostImpl* sender) {
+void SavePackage::SavableResourceLinksError(RenderFrameHostImpl* sender) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   CompleteSavableResourceLinksResponse();
 }
@@ -1260,33 +1299,30 @@ void SavePackage::GetSaveInfo() {
   // need before calling to it.
   base::FilePath website_save_dir;
   base::FilePath download_save_dir;
-  bool skip_dir_check = false;
   auto* delegate = download_manager_->GetDelegate();
   if (delegate) {
-    delegate->GetSaveDir(
-        web_contents()->GetBrowserContext(), &website_save_dir,
-        &download_save_dir, &skip_dir_check);
+    delegate->GetSaveDir(web_contents()->GetBrowserContext(), &website_save_dir,
+                         &download_save_dir);
   }
   std::string mime_type = web_contents()->GetContentsMimeType();
   bool can_save_as_complete = CanSaveAsComplete(mime_type);
   base::PostTaskAndReplyWithResult(
       download::GetDownloadTaskRunner().get(), FROM_HERE,
-      base::Bind(&SavePackage::CreateDirectoryOnFileThread, title_, page_url_,
-                 can_save_as_complete, mime_type, website_save_dir,
-                 download_save_dir, skip_dir_check),
-      base::Bind(&SavePackage::ContinueGetSaveInfo, this,
-                 can_save_as_complete));
+      base::BindOnce(&SavePackage::CreateDirectoryOnFileThread, title_,
+                     page_url_, can_save_as_complete, mime_type,
+                     website_save_dir, download_save_dir),
+      base::BindOnce(&SavePackage::ContinueGetSaveInfo, this,
+                     can_save_as_complete));
 }
 
 // static
 base::FilePath SavePackage::CreateDirectoryOnFileThread(
-    const base::string16& title,
+    const std::u16string& title,
     const GURL& page_url,
     bool can_save_as_complete,
     const std::string& mime_type,
     const base::FilePath& website_save_dir,
-    const base::FilePath& download_save_dir,
-    bool skip_dir_check) {
+    const base::FilePath& download_save_dir) {
   DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
 
   base::FilePath suggested_filename = filename_generation::GenerateFilename(
@@ -1294,8 +1330,7 @@ base::FilePath SavePackage::CreateDirectoryOnFileThread(
 
   base::FilePath save_dir;
   // If the default html/websites save folder doesn't exist...
-  // We skip the directory check for gdata directories on ChromeOS.
-  if (!skip_dir_check && !base::DirectoryExists(website_save_dir)) {
+  if (!base::DirectoryExists(website_save_dir)) {
     // If the default download dir doesn't exist, create it.
     if (!base::DirectoryExists(download_save_dir)) {
       bool res = base::CreateDirectory(download_save_dir);
@@ -1340,21 +1375,20 @@ void SavePackage::ContinueGetSaveInfo(bool can_save_as_complete,
     default_extension = kDefaultHtmlExtension;
 
   download_manager_->GetDelegate()->ChooseSavePath(
-      web_contents(),
-      suggested_path,
-      default_extension,
-      can_save_as_complete,
-      base::Bind(&SavePackage::OnPathPicked, AsWeakPtr()));
+      web_contents(), suggested_path, default_extension, can_save_as_complete,
+      base::BindOnce(&SavePackage::OnPathPicked, AsWeakPtr()));
 }
 
 void SavePackage::OnPathPicked(
     const base::FilePath& final_name,
     SavePageType type,
-    const SavePackageDownloadCreatedCallback& download_created_callback) {
+    SavePackageDownloadCreatedCallback download_created_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK((type == SAVE_PAGE_TYPE_AS_ONLY_HTML) ||
          (type == SAVE_PAGE_TYPE_AS_MHTML) ||
-         (type == SAVE_PAGE_TYPE_AS_COMPLETE_HTML)) << type;
+         (type == SAVE_PAGE_TYPE_AS_COMPLETE_HTML) ||
+         (type == SAVE_PAGE_TYPE_AS_WEB_BUNDLE))
+      << type;
   // Ensure the filename is safe.
   saved_main_file_path_ = final_name;
   // TODO(asanka): This call may block on IO and shouldn't be made
@@ -1371,7 +1405,7 @@ void SavePackage::OnPathPicked(
         FILE_PATH_LITERAL("_files"));
   }
 
-  Init(download_created_callback);
+  Init(std::move(download_created_callback));
 }
 
 void SavePackage::FinalizeDownloadEntry() {

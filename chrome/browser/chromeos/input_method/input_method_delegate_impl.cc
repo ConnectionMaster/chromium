@@ -4,7 +4,8 @@
 
 #include "chrome/browser/chromeos/input_method/input_method_delegate_impl.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/common/pref_names.h"
@@ -14,11 +15,9 @@
 namespace chromeos {
 namespace input_method {
 
-InputMethodDelegateImpl::InputMethodDelegateImpl() {
-}
+InputMethodDelegateImpl::InputMethodDelegateImpl() = default;
 
-InputMethodDelegateImpl::~InputMethodDelegateImpl() {
-}
+InputMethodDelegateImpl::~InputMethodDelegateImpl() = default;
 
 std::string InputMethodDelegateImpl::GetHardwareKeyboardLayouts() const {
   if (!g_browser_process)
@@ -31,12 +30,12 @@ std::string InputMethodDelegateImpl::GetHardwareKeyboardLayouts() const {
   return local_state->GetString(prefs::kHardwareKeyboardLayout);
 }
 
-base::string16 InputMethodDelegateImpl::GetLocalizedString(
+std::u16string InputMethodDelegateImpl::GetLocalizedString(
     int resource_id) const {
   return l10n_util::GetStringUTF16(resource_id);
 }
 
-base::string16 InputMethodDelegateImpl::GetDisplayLanguageName(
+std::u16string InputMethodDelegateImpl::GetDisplayLanguageName(
     const std::string& language_code) const {
   DCHECK(g_browser_process);
   return l10n_util::GetDisplayNameForLocale(

@@ -5,7 +5,7 @@
 (async function() {
   TestRunner.addResult(
       `Tests that there is no exception in front-end on page reload when breakpoint is set in HTML document and some dynamic scripts are loaded before the script with the breakpoint is loaded.`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.navigatePromise(
       'resources/dynamic-scripts-breakpoints.html');
@@ -32,12 +32,12 @@
           breakpoints[i].lineNumber);
   }
 
-  function didShowScriptSource(sourceFrame) {
+  async function didShowScriptSource(sourceFrame) {
     TestRunner.addResult('Setting breakpoint:');
     TestRunner.addSniffer(
         Bindings.BreakpointManager.ModelBreakpoint.prototype,
         '_addResolvedLocation', breakpointResolved);
-    SourcesTestRunner.setBreakpoint(sourceFrame, 7, '', true);
+    await SourcesTestRunner.setBreakpoint(sourceFrame, 7, '', true);
   }
 
   function breakpointResolved(location) {

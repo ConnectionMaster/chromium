@@ -8,6 +8,7 @@
 
 #include "base/files/file_path.h"
 #include "base/run_loop.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/test_bookmark_client.h"
 #include "components/history/core/browser/history_service.h"
@@ -15,6 +16,8 @@
 #include "components/omnibox/browser/in_memory_url_index.h"
 #include "components/omnibox/browser/in_memory_url_index_test_util.h"
 #include "components/omnibox/browser/shortcuts_backend.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/query_tiles/test/fake_tile_service.h"
 #include "components/search_engines/search_terms_data.h"
 #include "components/search_engines/template_url_service.h"
 
@@ -28,15 +31,20 @@ FakeAutocompleteProviderClient::FakeAutocompleteProviderClient(
   history_service_ =
       history::CreateHistoryService(history_dir_.GetPath(), create_history_db);
 
-  in_memory_url_index_.reset(
-      new InMemoryURLIndex(bookmark_model_.get(), history_service_.get(),
-                           nullptr, history_dir_.GetPath(), SchemeSet()));
+  in_memory_url_index_ = std::make_unique<InMemoryURLIndex>(
+      bookmark_model_.get(), history_service_.get(), nullptr,
+      history_dir_.GetPath(), SchemeSet());
   in_memory_url_index_->Init();
+
+  pref_service_ = std::make_unique<TestingPrefServiceSimple>();
+  local_state_ = std::make_unique<TestingPrefServiceSimple>();
 
   shortcuts_backend_ = base::MakeRefCounted<ShortcutsBackend>(
       GetTemplateURLService(), std::make_unique<SearchTermsData>(),
       GetHistoryService(), base::FilePath(), true);
   shortcuts_backend_->Init();
+
+  tile_service_ = std::make_unique<query_tiles::FakeTileService>();
 }
 
 FakeAutocompleteProviderClient::~FakeAutocompleteProviderClient() {
@@ -44,12 +52,24 @@ FakeAutocompleteProviderClient::~FakeAutocompleteProviderClient() {
   // its destructor.
   GetInMemoryURLIndex()->Shutdown();
   set_in_memory_url_index(nullptr);
-  // History service can have its own thread. So we need to explicitly shut down
-  // it to prevent memory leaks.
-  GetHistoryService()->Shutdown();
-  // Note that RunUntilIdle() must still be called after this, from
-  // whichever task model is being used, probably ScopedTaskEnvironment,
-  // or there will be memory leaks.
+  // Allow its final cache write to complete in the thread pool.
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  // Explicitly shut down the history service and wait for its backed to be
+  // destroyed to prevent resource leaks.
+  base::RunLoop run_loop;
+  auto* history_service = GetHistoryService();
+  history_service->SetOnBackendDestroyTask(run_loop.QuitClosure());
+  history_service->Shutdown();
+  run_loop.Run();
+}
+
+PrefService* FakeAutocompleteProviderClient::GetPrefs() {
+  return pref_service_.get();
+}
+
+PrefService* FakeAutocompleteProviderClient::GetLocalState() {
+  return local_state_.get();
 }
 
 const AutocompleteSchemeClassifier&
@@ -77,6 +97,11 @@ FakeAutocompleteProviderClient::GetShortcutsBackend() {
 scoped_refptr<ShortcutsBackend>
 FakeAutocompleteProviderClient::GetShortcutsBackendIfExists() {
   return shortcuts_backend_;
+}
+
+query_tiles::TileService* FakeAutocompleteProviderClient::GetQueryTileService()
+    const {
+  return tile_service_.get();
 }
 
 bool FakeAutocompleteProviderClient::IsTabOpenWithURL(

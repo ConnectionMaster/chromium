@@ -11,8 +11,10 @@
 #include <set>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/stl_util.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
+#include "base/logging.h"
+#include "base/values.h"
 #include "chromeos/dbus/shill/fake_shill_third_party_vpn_driver_client.h"
 #include "chromeos/dbus/shill/shill_third_party_vpn_observer.h"
 #include "dbus/bus.h"
@@ -52,23 +54,20 @@ class ShillThirdPartyVpnDriverClientImpl
   void RemoveShillThirdPartyVpnObserver(
       const std::string& object_path_value) override;
 
-  void SetParameters(
-      const std::string& object_path_value,
-      const base::DictionaryValue& parameters,
-      const ShillClientHelper::StringCallback& callback,
-      const ShillClientHelper::ErrorCallback& error_callback) override;
+  void SetParameters(const std::string& object_path_value,
+                     const base::Value& parameters,
+                     StringCallback callback,
+                     ErrorCallback error_callback) override;
 
-  void UpdateConnectionState(
-      const std::string& object_path_value,
-      const uint32_t connection_state,
-      const base::Closure& callback,
-      const ShillClientHelper::ErrorCallback& error_callback) override;
+  void UpdateConnectionState(const std::string& object_path_value,
+                             const uint32_t connection_state,
+                             base::OnceClosure callback,
+                             ErrorCallback error_callback) override;
 
-  void SendPacket(
-      const std::string& object_path_value,
-      const std::vector<char>& ip_packet,
-      const base::Closure& callback,
-      const ShillClientHelper::ErrorCallback& error_callback) override;
+  void SendPacket(const std::string& object_path_value,
+                  const std::vector<char>& ip_packet,
+                  base::OnceClosure callback,
+                  ErrorCallback error_callback) override;
 
   TestInterface* GetTestInterface() override { return nullptr; }
 
@@ -92,7 +91,7 @@ class ShillThirdPartyVpnDriverClientImpl
     ShillClientHelper helper_;
     ShillThirdPartyVpnObserver* observer_;
 
-    base::WeakPtrFactory<HelperInfo> weak_ptr_factory_;
+    base::WeakPtrFactory<HelperInfo> weak_ptr_factory_{this};
   };
   using HelperMap = std::map<std::string, HelperInfo*>;
 
@@ -128,7 +127,7 @@ class ShillThirdPartyVpnDriverClientImpl
 
 ShillThirdPartyVpnDriverClientImpl::HelperInfo::HelperInfo(
     dbus::ObjectProxy* object_proxy)
-    : helper_(object_proxy), observer_(nullptr), weak_ptr_factory_(this) {}
+    : helper_(object_proxy), observer_(nullptr) {}
 
 ShillThirdPartyVpnDriverClientImpl::ShillThirdPartyVpnDriverClientImpl(
     dbus::Bus* bus)
@@ -165,14 +164,15 @@ void ShillThirdPartyVpnDriverClientImpl::AddShillThirdPartyVpnObserver(
 
   proxy->ConnectToSignal(
       shill::kFlimflamThirdPartyVpnInterface, shill::kOnPlatformMessageFunction,
-      base::Bind(&ShillThirdPartyVpnDriverClientImpl::OnPlatformMessage,
-                 helper_info->GetWeakPtr()),
+      base::BindRepeating(
+          &ShillThirdPartyVpnDriverClientImpl::OnPlatformMessage,
+          helper_info->GetWeakPtr()),
       base::BindOnce(&ShillThirdPartyVpnDriverClientImpl::OnSignalConnected));
 
   proxy->ConnectToSignal(
       shill::kFlimflamThirdPartyVpnInterface, shill::kOnPacketReceivedFunction,
-      base::Bind(&ShillThirdPartyVpnDriverClientImpl::OnPacketReceived,
-                 helper_info->GetWeakPtr()),
+      base::BindRepeating(&ShillThirdPartyVpnDriverClientImpl::OnPacketReceived,
+                          helper_info->GetWeakPtr()),
       base::BindOnce(&ShillThirdPartyVpnDriverClientImpl::OnSignalConnected));
 }
 
@@ -205,55 +205,54 @@ void ShillThirdPartyVpnDriverClientImpl::DeleteHelper(
 
 void ShillThirdPartyVpnDriverClientImpl::SetParameters(
     const std::string& object_path_value,
-    const base::DictionaryValue& parameters,
-    const ShillClientHelper::StringCallback& callback,
-    const ShillClientHelper::ErrorCallback& error_callback) {
+    const base::Value& parameters,
+    StringCallback callback,
+    ErrorCallback error_callback) {
   dbus::MethodCall method_call(shill::kFlimflamThirdPartyVpnInterface,
                                shill::kSetParametersFunction);
   dbus::MessageWriter writer(&method_call);
   dbus::MessageWriter array_writer(nullptr);
   writer.OpenArray("{ss}", &array_writer);
-  for (base::DictionaryValue::Iterator it(parameters); !it.IsAtEnd();
-       it.Advance()) {
-    if (valid_keys_.find(it.key()) == valid_keys_.end()) {
-      LOG(WARNING) << "Unknown key " << it.key();
+  for (auto it : parameters.DictItems()) {
+    if (valid_keys_.find(it.first) == valid_keys_.end()) {
+      LOG(WARNING) << "Unknown key " << it.first;
       continue;
     }
-    std::string value;
-    if (!it.value().GetAsString(&value)) {
-      LOG(WARNING) << "Non string value " << it.value();
+    if (!it.second.is_string()) {
+      LOG(WARNING) << "Non string value " << it.second;
       continue;
     }
     dbus::MessageWriter entry_writer(nullptr);
     array_writer.OpenDictEntry(&entry_writer);
-    entry_writer.AppendString(it.key());
-    entry_writer.AppendString(value);
+    entry_writer.AppendString(it.first);
+    entry_writer.AppendString(it.second.GetString());
     array_writer.CloseContainer(&entry_writer);
   }
   writer.CloseContainer(&array_writer);
   GetHelper(object_path_value)
-      ->CallStringMethodWithErrorCallback(&method_call, callback,
-                                          error_callback);
+      ->CallStringMethodWithErrorCallback(&method_call, std::move(callback),
+                                          std::move(error_callback));
 }
 
 void ShillThirdPartyVpnDriverClientImpl::UpdateConnectionState(
     const std::string& object_path_value,
     const uint32_t connection_state,
-    const base::Closure& callback,
-    const ShillClientHelper::ErrorCallback& error_callback) {
+    base::OnceClosure callback,
+    ErrorCallback error_callback) {
   dbus::MethodCall method_call(shill::kFlimflamThirdPartyVpnInterface,
                                shill::kUpdateConnectionStateFunction);
   dbus::MessageWriter writer(&method_call);
   writer.AppendUint32(connection_state);
   GetHelper(object_path_value)
-      ->CallVoidMethodWithErrorCallback(&method_call, callback, error_callback);
+      ->CallVoidMethodWithErrorCallback(&method_call, std::move(callback),
+                                        std::move(error_callback));
 }
 
 void ShillThirdPartyVpnDriverClientImpl::SendPacket(
     const std::string& object_path_value,
     const std::vector<char>& ip_packet,
-    const base::Closure& callback,
-    const ShillClientHelper::ErrorCallback& error_callback) {
+    base::OnceClosure callback,
+    ErrorCallback error_callback) {
   dbus::MethodCall method_call(shill::kFlimflamThirdPartyVpnInterface,
                                shill::kSendPacketFunction);
   dbus::MessageWriter writer(&method_call);
@@ -262,7 +261,8 @@ void ShillThirdPartyVpnDriverClientImpl::SendPacket(
   writer.AppendArrayOfBytes(reinterpret_cast<const uint8_t*>(ip_packet.data()),
                             ip_packet.size());
   GetHelper(object_path_value)
-      ->CallVoidMethodWithErrorCallback(&method_call, callback, error_callback);
+      ->CallVoidMethodWithErrorCallback(&method_call, std::move(callback),
+                                        std::move(error_callback));
 }
 
 // static

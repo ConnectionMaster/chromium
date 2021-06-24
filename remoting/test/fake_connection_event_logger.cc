@@ -203,8 +203,11 @@ class FakeConnectionEventLogger::CounterClientStub
   void InjectClipboardEvent(const protocol::ClipboardEvent& event) override {}
   void SetCapabilities(const protocol::Capabilities& capabilities) override {}
   void SetCursorShape(const protocol::CursorShapeInfo& cursor_shape) override {}
+  void SetKeyboardLayout(const protocol::KeyboardLayout& layout) override {}
   void SetPairingResponse(const protocol::PairingResponse& response) override {}
   void SetVideoLayout(const protocol::VideoLayout& video_layout) override {}
+  void SetTransportInfo(
+      const protocol::TransportInfo& transport_info) override {}
 };
 
 FakeConnectionEventLogger::CounterClientStub::CounterClientStub()
@@ -224,6 +227,8 @@ class FakeConnectionEventLogger::CounterHostStub
  private:
   void ControlAudio(const protocol::AudioControl& audio_control) override {}
   void ControlVideo(const protocol::VideoControl& video_control) override {}
+  void ControlPeerConnection(
+      const protocol::PeerConnectionParameters& parameters) override {}
   void DeliverClientMessage(const protocol::ExtensionMessage& message) override;
   void NotifyClientResolution(
       const protocol::ClientResolution& resolution) override {}

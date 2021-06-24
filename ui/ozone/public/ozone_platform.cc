@@ -7,37 +7,43 @@
 #include <memory>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/no_destructor.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/events/devices/device_data_manager.h"
+#include "ui/ozone/common/base_keyboard_hook.h"
 #include "ui/ozone/platform_object.h"
 #include "ui/ozone/platform_selection.h"
+#include "ui/ozone/public/platform_global_shortcut_listener.h"
+#include "ui/ozone/public/platform_menu_utils.h"
 #include "ui/ozone/public/platform_screen.h"
+#include "ui/ozone/public/platform_user_input_monitor.h"
 
 namespace ui {
 
 namespace {
-
-bool g_platform_initialized_ui = false;
-bool g_platform_initialized_gpu = false;
-
 OzonePlatform* g_instance = nullptr;
 
-OzonePlatform::StartupCallback& GetInstanceCallback() {
-  static base::NoDestructor<OzonePlatform::StartupCallback> callback;
-  return *callback;
-}
+void EnsureInstance() {
+  if (g_instance)
+    return;
 
-base::Lock& GetOzoneInstanceLock() {
-  static base::Lock lock;
-  return lock;
+  TRACE_EVENT1("ozone", "OzonePlatform::Initialize", "platform",
+               GetOzonePlatformName());
+  std::unique_ptr<OzonePlatform> platform =
+      PlatformObject<OzonePlatform>::Create();
+
+  // TODO(spang): Currently need to leak this object.
+  OzonePlatform* pl = platform.release();
+  DCHECK_EQ(g_instance, pl);
 }
 
 }  // namespace
 
+OzonePlatform::PlatformProperties::PlatformProperties() = default;
+OzonePlatform::PlatformProperties::~PlatformProperties() = default;
+
 OzonePlatform::OzonePlatform() {
-  GetOzoneInstanceLock().AssertAcquired();
   DCHECK(!g_instance) << "There should only be a single OzonePlatform.";
   g_instance = this;
 }
@@ -45,88 +51,83 @@ OzonePlatform::OzonePlatform() {
 OzonePlatform::~OzonePlatform() = default;
 
 // static
+void OzonePlatform::PreEarlyInitialization() {
+  EnsureInstance();
+  if (g_instance->prearly_initialized_)
+    return;
+  g_instance->prearly_initialized_ = true;
+  g_instance->PreEarlyInitialize();
+}
+
+// static
 void OzonePlatform::InitializeForUI(const InitParams& args) {
   EnsureInstance();
-  if (g_platform_initialized_ui)
+  if (g_instance->initialized_ui_)
     return;
+  g_instance->initialized_ui_ = true;
+  g_instance->single_process_ = args.single_process;
   g_instance->InitializeUI(args);
   // This is deliberately created after initializing so that the platform can
   // create its own version of DDM.
   DeviceDataManager::CreateInstance();
-  {
-    base::AutoLock lock(GetOzoneInstanceLock());
-    g_platform_initialized_ui = true;
-  }
-  auto& instance_callback = GetInstanceCallback();
-  if (instance_callback)
-    std::move(instance_callback).Run(g_instance);
 }
 
 // static
 void OzonePlatform::InitializeForGPU(const InitParams& args) {
   EnsureInstance();
-  if (g_platform_initialized_gpu)
+  if (g_instance->initialized_gpu_)
     return;
-  g_platform_initialized_gpu = true;
+  g_instance->initialized_gpu_ = true;
+  g_instance->single_process_ = args.single_process;
   g_instance->InitializeGPU(args);
-  if (!args.single_process) {
-    auto& instance_callback = GetInstanceCallback();
-    if (instance_callback)
-      std::move(instance_callback).Run(g_instance);
-  }
 }
 
 // static
 OzonePlatform* OzonePlatform::GetInstance() {
-  base::AutoLock lock(GetOzoneInstanceLock());
   DCHECK(g_instance) << "OzonePlatform is not initialized";
   return g_instance;
 }
 
 // static
-OzonePlatform* OzonePlatform::EnsureInstance() {
-  base::AutoLock lock(GetOzoneInstanceLock());
-  if (!g_instance) {
-    TRACE_EVENT1("ozone",
-                 "OzonePlatform::Initialize",
-                 "platform",
-                 GetOzonePlatformName());
-    std::unique_ptr<OzonePlatform> platform =
-        PlatformObject<OzonePlatform>::Create();
-
-    // TODO(spang): Currently need to leak this object.
-    OzonePlatform* pl = platform.release();
-    DCHECK_EQ(g_instance, pl);
-  }
-  return g_instance;
-}
-
-// static
-void OzonePlatform::RegisterStartupCallback(StartupCallback callback) {
-  OzonePlatform* inst = nullptr;
-  {
-    base::AutoLock lock(GetOzoneInstanceLock());
-    if (!g_platform_initialized_ui) {
-      auto& instance_callback = GetInstanceCallback();
-      instance_callback = std::move(callback);
-      return;
-    }
-    inst = g_instance;
-  }
-  std::move(callback).Run(inst);
-}
-
-IPC::MessageFilter* OzonePlatform::GetGpuMessageFilter() {
-  return nullptr;
-}
-
-std::unique_ptr<PlatformScreen> OzonePlatform::CreateScreen() {
-  return nullptr;
+std::string OzonePlatform::GetPlatformNameForTest() {
+  return GetOzonePlatformName();
 }
 
 PlatformClipboard* OzonePlatform::GetPlatformClipboard() {
   // Platforms that support system clipboard must override this method.
   return nullptr;
+}
+
+PlatformGLEGLUtility* OzonePlatform::GetPlatformGLEGLUtility() {
+  return nullptr;
+}
+
+PlatformMenuUtils* OzonePlatform::GetPlatformMenuUtils() {
+  return nullptr;
+}
+
+PlatformUtils* OzonePlatform::GetPlatformUtils() {
+  return nullptr;
+}
+
+PlatformGlobalShortcutListener*
+OzonePlatform::GetPlatformGlobalShortcutListener(
+    PlatformGlobalShortcutListenerDelegate* delegate) {
+  return nullptr;
+}
+
+std::unique_ptr<PlatformKeyboardHook> OzonePlatform::CreateKeyboardHook(
+    PlatformKeyboardHookTypes type,
+    base::RepeatingCallback<void(KeyEvent* event)> callback,
+    absl::optional<base::flat_set<DomCode>> dom_codes,
+    gfx::AcceleratedWidget accelerated_widget) {
+  switch (type) {
+    case PlatformKeyboardHookTypes::kModifier:
+      return std::make_unique<BaseKeyboardHook>(std::move(dom_codes),
+                                                std::move(callback));
+    case PlatformKeyboardHookTypes::kMedia:
+      return nullptr;
+  }
 }
 
 bool OzonePlatform::IsNativePixmapConfigSupported(
@@ -136,31 +137,49 @@ bool OzonePlatform::IsNativePixmapConfigSupported(
   return false;
 }
 
+bool OzonePlatform::ShouldUseCustomFrame() {
+  return GetPlatformProperties().custom_frame_pref_default;
+}
+
 const OzonePlatform::PlatformProperties&
 OzonePlatform::GetPlatformProperties() {
   static const base::NoDestructor<OzonePlatform::PlatformProperties> properties;
   return *properties;
 }
 
+const OzonePlatform::PlatformRuntimeProperties&
+OzonePlatform::GetPlatformRuntimeProperties() {
+  static const base::NoDestructor<OzonePlatform::PlatformRuntimeProperties>
+      properties;
+  return *properties;
+}
+
 const OzonePlatform::InitializedHostProperties&
 OzonePlatform::GetInitializedHostProperties() {
-  DCHECK(g_platform_initialized_ui);
+  DCHECK(initialized_ui_);
 
   static InitializedHostProperties host_properties;
   return host_properties;
 }
 
-base::MessageLoop::Type OzonePlatform::GetMessageLoopTypeForGpu() {
-  return base::MessageLoop::TYPE_DEFAULT;
+void OzonePlatform::AddInterfaces(mojo::BinderMap* binders) {}
+
+void OzonePlatform::AfterSandboxEntry() {
+  // This should not be called in single-process mode.
+  DCHECK(!single_process_);
 }
 
-void OzonePlatform::AddInterfaces(service_manager::BinderRegistry* registry) {}
-
-void OzonePlatform::AfterSandboxEntry() {}
-
-// static
-bool OzonePlatform::has_initialized_ui() {
-  return g_platform_initialized_ui;
+std::unique_ptr<PlatformUserInputMonitor>
+OzonePlatform::GetPlatformUserInputMonitor(
+    const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner) {
+  return {};
 }
+
+void OzonePlatform::PostCreateMainMessageLoop(
+    base::OnceCallback<void()> shutdown_cb) {}
+
+void OzonePlatform::PostMainMessageLoopRun() {}
+
+void OzonePlatform::PreEarlyInitialize() {}
 
 }  // namespace ui

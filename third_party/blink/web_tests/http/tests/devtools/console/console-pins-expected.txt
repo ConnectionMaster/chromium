@@ -17,14 +17,14 @@ Running: testNoSideEffectsWhileEditing
 Focusing the first pin's editor.
 Setting text to: "window.flag = true".
 Name: window.flag = true
-Value: (...)
+Value: (…)
 window.flag is now: false
 
 Running: testRemoveSinglePin
 Name: document.activeElement
 Value: div#div2
 Name: "Second pin"
-Value: "Second pin"
+Value: 'Second pin'
 
 Removing second pin
 

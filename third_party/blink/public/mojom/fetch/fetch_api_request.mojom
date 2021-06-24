@@ -4,20 +4,24 @@
 
 module blink.mojom;
 
+import "mojo/public/mojom/base/file_path.mojom";
+import "mojo/public/mojom/base/time.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
+import "services/network/public/mojom/chunked_data_pipe_getter.mojom";
 import "services/network/public/mojom/fetch_api.mojom";
-import "services/network/public/mojom/request_context_frame_type.mojom";
-import "services/network/public/mojom/url_loader.mojom";
+import "services/network/public/mojom/url_request.mojom";
 import "third_party/blink/public/mojom/blob/serialized_blob.mojom";
-import "third_party/blink/public/mojom/referrer.mojom";
+import "third_party/blink/public/mojom/loader/request_context_frame_type.mojom";
+import "third_party/blink/public/mojom/loader/referrer.mojom";
 import "url/mojom/url.mojom";
 
 
 // Type of the context associated with a request.
 // https://fetch.spec.whatwg.org/#concept-request-destination.
-// TODO(crbug.com/889751): This is a deprecated spec concept, figure out
-// how to refactor this to match the new spec concepts, 'destination' and
-// 'initiator'.
+// TODO(https://crbug.com/889751): Fetch now defines this concept as a request's
+// "destination", represented as the enum
+// network::mojom::RequestDestination. We should use that enum rather
+// than this one.
 enum RequestContextType {
   UNSPECIFIED,
   AUDIO,
@@ -35,7 +39,6 @@ enum RequestContextType {
   IFRAME,
   IMAGE,
   IMAGE_SET,
-  IMPORT,
   INTERNAL,
   LOCATION,
   MANIFEST,
@@ -47,6 +50,7 @@ enum RequestContextType {
   SERVICE_WORKER,
   SHARED_WORKER,
   SUBRESOURCE,
+  SUBRESOURCE_WEBBUNDLE,
   STYLE,
   TRACK,
   VIDEO,
@@ -108,6 +112,29 @@ struct FetchAPIRequestHeaders {
   map<string, string> headers;
 };
 
+// Struct representing a Body for a Request:
+// https://fetch.spec.whatwg.org/#body
+// This has the same members definition with network.mojom.URLRequestBody, which
+// aims to pass around body for network.mojom.URLRequest. Both of them are
+// typemapped to scoped_refptr<network::ResourceRequestBody> for the default
+// variant, the only difference is for the Blink variant that
+// network.mojom.URLRequestBody still is typemapped to
+// scoped_refptr<network::ResourceRequestBody> but this is typemapped to
+// scoped_refptr<blink::EncodedFormData>.
+struct FetchAPIRequestBody {
+  // The body contents. DataElementChunkedDataPipe can be used in `elements`
+  // only if `elements` consists of one element.
+  array<network.mojom.DataElement> elements;
+
+  // Identifies a particular upload instance, which is used by the cache to
+  // formulate a cache key.
+  uint64 identifier;
+
+  // Indicates whether the post data contains sensitive information like
+  // passwords.
+  bool contains_sensitive_info;
+};
+
 // Struct representing a Request:
 // https://fetch.spec.whatwg.org/#request-class
 // Compared to network.mojom.URLRequest which is kind of internal data in the
@@ -118,11 +145,10 @@ struct FetchAPIRequestHeaders {
 // Note: When updating this struct, also update
 // content/common/fetch/fetch_request_type_converters.cc.
 struct FetchAPIRequest {
-  network.mojom.FetchRequestMode mode = network.mojom.FetchRequestMode.kNoCors;
+  network.mojom.RequestMode mode = network.mojom.RequestMode.kNoCors;
   bool is_main_resource_load = false;
-  RequestContextType request_context_type = RequestContextType.UNSPECIFIED;
-  network.mojom.RequestContextFrameType frame_type =
-    network.mojom.RequestContextFrameType.kNone;
+  network.mojom.RequestDestination destination = network.mojom.RequestDestination.kEmpty;
+  RequestContextFrameType frame_type = RequestContextFrameType.kNone;
   url.mojom.Url url;
   string method;
   FetchAPIRequestHeaders headers;
@@ -133,14 +159,14 @@ struct FetchAPIRequest {
   // service workers.
   // TODO(crbug.com/911930): Remove |blob| and use |body| instead everywhere.
   SerializedBlob? blob;
-  network.mojom.URLRequestBody? body;
+  FetchAPIRequestBody? body;
 
   Referrer? referrer;
-  network.mojom.FetchCredentialsMode credentials_mode =
-    network.mojom.FetchCredentialsMode.kOmit;
+  network.mojom.CredentialsMode credentials_mode =
+    network.mojom.CredentialsMode.kOmit;
   FetchCacheMode cache_mode = FetchCacheMode.kDefault;
-  network.mojom.FetchRedirectMode redirect_mode =
-    network.mojom.FetchRedirectMode.kFollow;
+  network.mojom.RedirectMode redirect_mode =
+    network.mojom.RedirectMode.kFollow;
   string? integrity;
   network.mojom.RequestPriority priority = network.mojom.RequestPriority.kIdle;
 
@@ -151,4 +177,10 @@ struct FetchAPIRequest {
   bool keepalive = false;
   bool is_reload = false;
   bool is_history_navigation = false;
+
+  // A V8 stack id string describing where the request was initiated.
+  // DevTools can use this to display the initiator call stack when debugging
+  // a process that later intercepts the request, e.g., in a service worker
+  // fetch event handler.
+  string? devtools_stack_id;
 };

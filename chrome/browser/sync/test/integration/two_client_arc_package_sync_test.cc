@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sync/test/integration/feature_toggler.h"
 #include "chrome/browser/sync/test/integration/sync_arc_package_helper.h"
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "components/sync/driver/sync_driver_switches.h"
+#include "content/public/test/browser_test.h"
 
 namespace arc {
 
@@ -20,27 +20,19 @@ bool AllProfilesHaveSameArcPackageDetails() {
 
 }  // namespace
 
-class TwoClientArcPackageSyncTest : public FeatureToggler, public SyncTest {
+class TwoClientArcPackageSyncTest : public SyncTest {
  public:
-  TwoClientArcPackageSyncTest()
-      : FeatureToggler(switches::kSyncPseudoUSSArcPackage),
-        SyncTest(TWO_CLIENT) {
-    DisableVerifier();
-  }
-
-  ~TwoClientArcPackageSyncTest() override {}
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TwoClientArcPackageSyncTest);
+  TwoClientArcPackageSyncTest() : SyncTest(TWO_CLIENT) {}
+  ~TwoClientArcPackageSyncTest() override = default;
 };
 
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, StartWithNoPackages) {
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest, StartWithNoPackages) {
   ASSERT_TRUE(SetupSync());
 
   ASSERT_TRUE(AllProfilesHaveSameArcPackageDetails());
 }
 
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, StartWithSamePackages) {
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest, StartWithSamePackages) {
   ASSERT_TRUE(SetupClients());
 
   constexpr size_t kNumPackages = 5;
@@ -56,7 +48,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, StartWithSamePackages) {
 
 // In this test, packages are installed before sync started. Client1 will have
 // package 0 to 4 installed while client2 has no package installed.
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest,
                        OneClientHasPackagesAnotherHasNone) {
   ASSERT_TRUE(SetupClients());
 
@@ -74,7 +66,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest,
 
 // In this test, packages are installed before sync started. Client1 will have
 // package 0 to 9 installed and client2 will have package 0 to 4 installed.
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest,
                        OneClientHasPackagesAnotherHasSubSet) {
   ASSERT_TRUE(SetupClients());
 
@@ -97,7 +89,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest,
 
 // In this test, packages are installed before sync started. Client1 will have
 // package 0 to 4 installed and client2 will have package 1 to 5 installed.
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest,
                        StartWithDifferentPackages) {
   ASSERT_TRUE(SetupClients());
 
@@ -117,7 +109,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest,
 }
 
 // Tests package installaton after sync started.
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, Install) {
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest, Install) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameArcPackageDetails());
 
@@ -128,7 +120,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, Install) {
 
 // In this test, packages are installed after sync started. Client1 installs
 // package 0 to 4 and client2 installs package 3 to 7.
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, InstallDifferent) {
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest, InstallDifferent) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameArcPackageDetails());
 
@@ -146,7 +138,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, InstallDifferent) {
 
 // Installs package from one client and uninstalls from another after sync
 // started.
-IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, Uninstall) {
+IN_PROC_BROWSER_TEST_F(TwoClientArcPackageSyncTest, Uninstall) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameArcPackageDetails());
 
@@ -159,9 +151,5 @@ IN_PROC_BROWSER_TEST_P(TwoClientArcPackageSyncTest, Uninstall) {
   ASSERT_TRUE(AwaitQuiescence());
   EXPECT_TRUE(AllProfilesHaveSameArcPackageDetails());
 }
-
-INSTANTIATE_TEST_SUITE_P(USS,
-                         TwoClientArcPackageSyncTest,
-                         ::testing::Values(false, true));
 
 }  // namespace arc

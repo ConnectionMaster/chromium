@@ -9,14 +9,11 @@
 
 namespace blink {
 
-class GPUTextureView : public DawnObject<DawnTextureView> {
+class GPUTextureView : public DawnObject<WGPUTextureView> {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  static GPUTextureView* Create(GPUDevice* device,
-                                DawnTextureView texture_view);
-  explicit GPUTextureView(GPUDevice* device, DawnTextureView texture_view);
-  ~GPUTextureView() override;
+  explicit GPUTextureView(GPUDevice* device, WGPUTextureView texture_view);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GPUTextureView);

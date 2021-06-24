@@ -1,0 +1,206 @@
+// Copyright 2021 The Chromium Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.attribution_reporting;
+
+import static org.mockito.Mockito.any;
+
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.view.KeyEvent;
+
+import androidx.test.filters.LargeTest;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
+
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ActivityStateListener;
+import org.chromium.base.ContextUtils;
+import org.chromium.base.IntentUtils;
+import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.ActivityTabProvider.ActivityTabTabObserver;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.init.StartupTabPreloader;
+import org.chromium.chrome.browser.tab.EmptyTabObserver;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.util.browser.Features;
+import org.chromium.content_public.browser.NavigationHandle;
+
+/**
+ * Tests attribution reporting intents.
+ */
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
+@Batch.SplitByFeature
+public class AttributionIntentIntegrationTest {
+    @Rule
+    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+
+    @Rule
+    public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
+    @Mock
+    public EmptyTabObserver mTabObserver;
+
+    @Captor
+    public ArgumentCaptor<NavigationHandle> navigationHandleCaptor;
+
+    private BroadcastReceiver mReceiver;
+    private Intent mAttributionIntentReceived;
+    private ActivityStateListener mActivityStateListener;
+    private ActivityTabTabObserver mActiveTabObserver;
+
+    @Before
+    public void setUp() {
+        AttributionIntentHandlerFactory.setInputEventValidatorForTesting((inputEvent) -> true);
+
+        // We need to pass Attribution Intents through a BroadcastReceiver if we want to track them
+        // as ActivityMonitors don't work for PendingIntents.
+        mReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                mAttributionIntentReceived = intent;
+                ContextUtils.getApplicationContext().startActivity(intent);
+            }
+        };
+        IntentFilter filter = new IntentFilter(AttributionConstants.ACTION_APP_ATTRIBUTION);
+        ContextUtils.getApplicationContext().registerReceiver(mReceiver, filter);
+
+        mActivityStateListener = (activity, newState) -> {
+            if (newState == ActivityState.CREATED && activity instanceof ChromeTabbedActivity) {
+                mActiveTabObserver = new ActivityTabTabObserver(
+                        ((ChromeTabbedActivity) activity).getActivityTabProvider()) {
+                    @Override
+                    protected void onObservingDifferentTab(Tab tab, boolean hint) {
+                        tab.addObserver(mTabObserver);
+                    }
+                };
+            }
+        };
+        ApplicationStatus.registerStateListenerForAllActivities(mActivityStateListener);
+    }
+
+    @After
+    public void tearDown() {
+        ContextUtils.getApplicationContext().unregisterReceiver(mReceiver);
+        ApplicationStatus.unregisterActivityStateListener(mActivityStateListener);
+    }
+
+    private Intent makeValidAttributionIntent(
+            String eventId, String destination, String reportTo, long expiry) {
+        Intent innerIntent = new Intent(AttributionConstants.ACTION_APP_ATTRIBUTION);
+        innerIntent.putExtra(AttributionConstants.EXTRA_ATTRIBUTION_SOURCE_EVENT_ID, eventId);
+        innerIntent.putExtra(AttributionConstants.EXTRA_ATTRIBUTION_DESTINATION, destination);
+        innerIntent.putExtra(AttributionConstants.EXTRA_ATTRIBUTION_REPORT_TO, reportTo);
+        if (expiry != 0) {
+            innerIntent.putExtra(AttributionConstants.EXTRA_ATTRIBUTION_EXPIRY, expiry);
+        }
+        innerIntent.putExtra(AttributionConstants.EXTRA_INPUT_EVENT,
+                new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+        innerIntent.setPackage(ContextUtils.getApplicationContext().getPackageName());
+        innerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        Intent outerIntent = new Intent(Intent.ACTION_VIEW);
+        PendingIntent pendingIntent =
+                PendingIntent.getBroadcast(ContextUtils.getApplicationContext(), 0, innerIntent,
+                        IntentUtils.getPendingIntentMutabilityFlag(true)
+                                | PendingIntent.FLAG_CANCEL_CURRENT);
+        outerIntent.putExtra(AttributionConstants.EXTRA_ATTRIBUTION_INTENT, pendingIntent);
+        return outerIntent;
+    }
+
+    private void doTestConversionIntentEnabledInner(boolean disableStartupTabPreloader) {
+        Intent outerIntent = makeValidAttributionIntent(
+                "1234", "https://example.com", "https://example2.com", 5678);
+        outerIntent.putExtra(StartupTabPreloader.EXTRA_DISABLE_STARTUP_TAB_PRELOADER,
+                disableStartupTabPreloader);
+        mActivityTestRule.startMainActivityFromIntent(outerIntent, "about:blank");
+        Assert.assertNotNull(mAttributionIntentReceived);
+        Assert.assertEquals("1234",
+                mAttributionIntentReceived.getStringExtra(
+                        AttributionConstants.EXTRA_ATTRIBUTION_SOURCE_EVENT_ID));
+        Assert.assertEquals("https://example.com",
+                mAttributionIntentReceived.getStringExtra(
+                        AttributionConstants.EXTRA_ATTRIBUTION_DESTINATION));
+        Assert.assertEquals("https://example2.com",
+                mAttributionIntentReceived.getStringExtra(
+                        AttributionConstants.EXTRA_ATTRIBUTION_REPORT_TO));
+        Assert.assertEquals(5678,
+                mAttributionIntentReceived.getLongExtra(
+                        AttributionConstants.EXTRA_ATTRIBUTION_EXPIRY, 0));
+
+        Mockito.verify(mTabObserver, Mockito.times(1))
+                .onDidFinishNavigation(any(), navigationHandleCaptor.capture());
+        NavigationHandle handle = navigationHandleCaptor.getValue();
+
+        Assert.assertEquals("android-app", handle.getInitiatorOrigin().getScheme());
+        Assert.assertEquals(ContextUtils.getApplicationContext().getPackageName(),
+                handle.getInitiatorOrigin().getHost());
+
+        Assert.assertEquals(1234L, handle.getImpression().impressionData);
+        Assert.assertEquals("example.com", handle.getImpression().conversionDestination.host);
+        Assert.assertEquals("example2.com", handle.getImpression().reportingOrigin.host);
+        Assert.assertEquals(5678 * 1000L, handle.getImpression().expiry.microseconds);
+    }
+
+    @Test
+    @LargeTest
+    @Feature({"ConversionMeasurement"})
+    @Features.EnableFeatures(ChromeFeatureList.APP_TO_WEB_ATTRIBUTION)
+    public void testConversionIntentEnabled() {
+        doTestConversionIntentEnabledInner(false);
+    }
+
+    @Test
+    @LargeTest
+    @Feature({"ConversionMeasurement"})
+    @Features.EnableFeatures(ChromeFeatureList.APP_TO_WEB_ATTRIBUTION)
+    public void testConversionIntentEnabled_noStartupTabPreloader() {
+        doTestConversionIntentEnabledInner(true);
+    }
+
+    @Test
+    @LargeTest
+    @Feature({"ConversionMeasurement"})
+    @Features.DisableFeatures(ChromeFeatureList.APP_TO_WEB_ATTRIBUTION)
+    public void testConversionIntentDisabled() {
+        Intent outerIntent = makeValidAttributionIntent("1234", "about:blank", "reportTo", 0);
+        mActivityTestRule.startMainActivityFromIntent(outerIntent, "about:blank");
+        Assert.assertNull(mAttributionIntentReceived);
+    }
+
+    @Test
+    @LargeTest
+    @Feature({"ConversionMeasurement"})
+    @Features.EnableFeatures(ChromeFeatureList.APP_TO_WEB_ATTRIBUTION)
+    public void testInvalidConversionIntent() {
+        Intent outerIntent = makeValidAttributionIntent(null, null, null, 0);
+        // Tests that even an invalid Attribution intent processes the original VIEW intent.
+        mActivityTestRule.startMainActivityFromIntent(outerIntent, "about:blank");
+        Assert.assertNotNull(mAttributionIntentReceived);
+    }
+}

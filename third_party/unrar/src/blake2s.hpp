@@ -2,9 +2,8 @@
 #ifndef _RAR_BLAKE2_
 #define _RAR_BLAKE2_
 
-namespace third_party_unrar {
-
 #define BLAKE2_DIGEST_SIZE 32
+#define BLAKE2_THREADS_NUMBER 8
 
 enum blake2s_constant
 {
@@ -98,8 +97,6 @@ struct blake2sp_state
 void blake2sp_init( blake2sp_state *S );
 void blake2sp_update( blake2sp_state *S, const byte *in, size_t inlen );
 void blake2sp_final( blake2sp_state *S, byte *digest );
-
-}  // namespace third_party_unrar
 
 #endif
 

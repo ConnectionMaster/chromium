@@ -9,13 +9,13 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/location.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
+#include "base/task/current_thread.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -172,10 +172,9 @@ void BalancedMediaTaskRunnerTest::ScheduleTask() {
 
   bool may_run = context.media_task_runner->PostMediaTask(
       FROM_HERE,
-      base::Bind(&BalancedMediaTaskRunnerTest::Task,
-                 base::Unretained(this),
-                 task_runner_id,
-                 context.task_timestamp_list[context.task_index]),
+      base::BindOnce(&BalancedMediaTaskRunnerTest::Task, base::Unretained(this),
+                     task_runner_id,
+                     context.task_timestamp_list[context.task_index]),
       context.task_timestamp_list[context.task_index]);
   EXPECT_EQ(may_run, expected_may_run);
 
@@ -207,12 +206,12 @@ void BalancedMediaTaskRunnerTest::Task(
 
 void BalancedMediaTaskRunnerTest::OnTestTimeout() {
   ADD_FAILURE() << "Test timed out";
-  if (base::MessageLoopCurrent::Get())
+  if (base::CurrentThread::Get())
     base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 TEST_F(BalancedMediaTaskRunnerTest, OneTaskRunner) {
-  std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
+  base::test::SingleThreadTaskEnvironment task_environment;
 
   // Timestamps of tasks for the single task runner.
   int timestamps0_ms[] = {0, 10, 20, 30, 40, 30, 50, 60, 20, 30, 70};
@@ -240,7 +239,7 @@ TEST_F(BalancedMediaTaskRunnerTest, OneTaskRunner) {
 }
 
 TEST_F(BalancedMediaTaskRunnerTest, TwoTaskRunnerUnbalanced) {
-  std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
+  base::test::SingleThreadTaskEnvironment task_environment;
 
   // Timestamps of tasks for the 2 task runners.
   int timestamps0_ms[] = {0, 10, 20, 30, 40, 30, 50, 60, 20, 30, 70};
@@ -273,7 +272,7 @@ TEST_F(BalancedMediaTaskRunnerTest, TwoTaskRunnerUnbalanced) {
 }
 
 TEST_F(BalancedMediaTaskRunnerTest, TwoStreamsOfDifferentLength) {
-  std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
+  base::test::SingleThreadTaskEnvironment task_environment;
 
   std::vector<std::vector<int>> timestamps = {
       // One longer stream and one shorter stream.

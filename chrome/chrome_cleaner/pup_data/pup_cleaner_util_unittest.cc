@@ -4,6 +4,8 @@
 
 #include "chrome/chrome_cleaner/pup_data/pup_cleaner_util.h"
 
+#include <string>
+
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -35,14 +37,14 @@ class PUPCleanerUtilTest : public testing::Test {
         temp_dir_.GetPath(), L"subfolder", &subfolder_path_));
   }
 
-  base::FilePath CreateFileInTopDir(const base::string16& basename,
+  base::FilePath CreateFileInTopDir(const std::wstring& basename,
                                     const char* content) {
     base::FilePath file_path = temp_dir_.GetPath().Append(basename);
     CreateFileWithContent(file_path, content, strlen(content));
     return file_path;
   }
 
-  base::FilePath CreateFileInSubfolder(const base::string16& basename,
+  base::FilePath CreateFileInSubfolder(const std::wstring& basename,
                                        const char* content) {
     base::FilePath file_path = subfolder_path_.Append(basename);
     CreateFileWithContent(file_path, content, strlen(content));
@@ -98,9 +100,8 @@ TEST_F(PUPCleanerUtilTest, CollectRemovablePupFiles_ActiveFiles) {
               ContainerEq(expected_collected_paths.file_paths()));
 }
 
-TEST_F(PUPCleanerUtilTest, CollectRemovablePupFiles_InactiveFiles) {
-  // Files with inactive extensions should be collected only if they were
-  //  detected as part of UwS service registration.
+TEST_F(PUPCleanerUtilTest, CollectRemovablePupFiles_NonExecutableFiles) {
+  // Files with non-executable extensions should be also collected.
   PUPData pup_data;
   TestPUPData test_pup_data;
   test_pup_data.AddPUP(kFakePupId1,
@@ -108,22 +109,21 @@ TEST_F(PUPCleanerUtilTest, CollectRemovablePupFiles_InactiveFiles) {
                        nullptr,
                        PUPData::kMaxFilesToRemoveSmallUwS);
 
-  base::FilePath inactive_path = CreateFileInTopDir(L"file.jpg", kFileContent);
-  EXPECT_FALSE(PathHasActiveExtension(inactive_path));
-  base::FilePath found_in_service_path =
-      CreateFileInTopDir(L"file.log", kFileContent);
-  EXPECT_FALSE(PathHasActiveExtension(found_in_service_path));
+  base::FilePath jpg_path = CreateFileInTopDir(L"file.jpg", kFileContent);
+  EXPECT_FALSE(PathHasActiveExtension(jpg_path));
+  base::FilePath log_path = CreateFileInTopDir(L"file.log", kFileContent);
+  EXPECT_FALSE(PathHasActiveExtension(log_path));
 
   PUPData::PUP* pup = pup_data.GetPUP(kFakePupId1);
   ASSERT_TRUE(pup);
-  pup->AddDiskFootprint(inactive_path);
-  pup->AddDiskFootprintTraceLocation(inactive_path, UwS::FOUND_IN_MEMORY);
-  pup->AddDiskFootprint(found_in_service_path);
-  pup->AddDiskFootprintTraceLocation(found_in_service_path,
-                                     UwS::FOUND_IN_SERVICE);
+  pup->AddDiskFootprint(jpg_path);
+  pup->AddDiskFootprintTraceLocation(jpg_path, UwS::FOUND_IN_MEMORY);
+  pup->AddDiskFootprint(log_path);
+  pup->AddDiskFootprintTraceLocation(log_path, UwS::FOUND_IN_SERVICE);
 
   FilePathSet expected_collected_paths;
-  expected_collected_paths.Insert(found_in_service_path);
+  expected_collected_paths.Insert(jpg_path);
+  expected_collected_paths.Insert(log_path);
 
   FilePathSet collected_paths;
   EXPECT_TRUE(

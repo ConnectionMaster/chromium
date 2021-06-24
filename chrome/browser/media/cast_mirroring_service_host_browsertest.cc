@@ -4,9 +4,9 @@
 
 #include "chrome/browser/media/cast_mirroring_service_host.h"
 
+#include "base/containers/contains.h"
 #include "base/containers/flat_map.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
@@ -20,14 +20,18 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "media/capture/mojom/video_capture.mojom.h"
+#include "media/capture/mojom/video_capture_buffer.mojom.h"
 #include "media/capture/mojom/video_capture_types.mojom.h"
 #include "media/capture/video_capture_types.h"
-#include "media/mojo/interfaces/audio_data_pipe.mojom.h"
-#include "media/mojo/interfaces/audio_input_stream.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "media/mojo/mojom/audio_data_pipe.mojom.h"
+#include "media/mojo/mojom/audio_input_stream.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/base/ui_base_features.h"
 
 using testing::_;
 using testing::InvokeWithoutArgs;
@@ -58,16 +62,17 @@ content::DesktopMediaID BuildMediaIdForTabMirroring(
   const int process_id = main_frame->GetProcess()->GetID();
   const int frame_id = main_frame->GetRoutingID();
   media_id.type = content::DesktopMediaID::TYPE_WEB_CONTENTS;
-  media_id.web_contents_id =
-      content::WebContentsMediaCaptureId(process_id, frame_id, true, true);
+  media_id.web_contents_id = content::WebContentsMediaCaptureId(
+      process_id, frame_id, true /* disable_local_echo */);
   return media_id;
 }
 
 class MockVideoCaptureObserver final
     : public media::mojom::VideoCaptureObserver {
  public:
-  explicit MockVideoCaptureObserver(media::mojom::VideoCaptureHostPtr host)
-      : host_(std::move(host)), binding_(this) {}
+  explicit MockVideoCaptureObserver(
+      mojo::PendingRemote<media::mojom::VideoCaptureHost> host)
+      : host_(std::move(host)) {}
   MOCK_METHOD1(OnBufferCreatedCall, void(int buffer_id));
   MOCK_METHOD1(OnBufferReadyCall, void(int buffer_id));
   MOCK_METHOD1(OnBufferDestroyedCall, void(int buffer_id));
@@ -82,12 +87,13 @@ class MockVideoCaptureObserver final
     OnBufferCreatedCall(buffer_id);
   }
 
-  void OnBufferReady(int32_t buffer_id,
-                     media::mojom::VideoFrameInfoPtr info) override {
-    EXPECT_TRUE(buffers_.find(buffer_id) != buffers_.end());
-    EXPECT_EQ(frame_infos_.find(buffer_id), frame_infos_.end());
-    frame_infos_[buffer_id] = std::move(info);
-    OnBufferReadyCall(buffer_id);
+  void OnBufferReady(
+      media::mojom::ReadyBufferPtr buffer,
+      std::vector<media::mojom::ReadyBufferPtr> scaled_buffer) override {
+    EXPECT_TRUE(buffers_.find(buffer->buffer_id) != buffers_.end());
+    EXPECT_EQ(frame_infos_.find(buffer->buffer_id), frame_infos_.end());
+    frame_infos_[buffer->buffer_id] = std::move(buffer->info);
+    OnBufferReadyCall(buffer->buffer_id);
   }
 
   void OnBufferDestroyed(int32_t buffer_id) override {
@@ -101,20 +107,21 @@ class MockVideoCaptureObserver final
   }
 
   void Start() {
-    media::mojom::VideoCaptureObserverPtr observer;
-    binding_.Bind(mojo::MakeRequest(&observer));
-    host_->Start(0, 0, DefaultVideoCaptureParams(), std::move(observer));
+    host_->Start(device_id_, session_id_, DefaultVideoCaptureParams(),
+                 receiver_.BindNewPipeAndPassRemote());
   }
 
-  void Stop() { host_->Stop(0); }
+  void Stop() { host_->Stop(device_id_); }
 
-  void RequestRefreshFrame() { host_->RequestRefreshFrame(0); }
+  void RequestRefreshFrame() { host_->RequestRefreshFrame(device_id_); }
 
  private:
-  media::mojom::VideoCaptureHostPtr host_;
-  mojo::Binding<media::mojom::VideoCaptureObserver> binding_;
+  mojo::Remote<media::mojom::VideoCaptureHost> host_;
+  mojo::Receiver<media::mojom::VideoCaptureObserver> receiver_{this};
   base::flat_map<int, media::mojom::VideoBufferHandlePtr> buffers_;
   base::flat_map<int, media::mojom::VideoFrameInfoPtr> frame_infos_;
+  const base::UnguessableToken device_id_ = base::UnguessableToken::Create();
+  const base::UnguessableToken session_id_ = base::UnguessableToken::Create();
 
   DISALLOW_COPY_AND_ASSIGN(MockVideoCaptureObserver);
 };
@@ -127,11 +134,8 @@ class CastMirroringServiceHostBrowserTest
       public mojom::CastMessageChannel,
       public mojom::AudioStreamCreatorClient {
  public:
-  CastMirroringServiceHostBrowserTest()
-      : observer_binding_(this),
-        outbound_channel_binding_(this),
-        audio_client_binding_(this) {}
-  ~CastMirroringServiceHostBrowserTest() override {}
+  CastMirroringServiceHostBrowserTest() = default;
+  ~CastMirroringServiceHostBrowserTest() override = default;
 
  protected:
   // Starts a tab mirroring session.
@@ -141,19 +145,21 @@ class CastMirroringServiceHostBrowserTest
     ASSERT_TRUE(web_contents);
     host_ = std::make_unique<CastMirroringServiceHost>(
         BuildMediaIdForTabMirroring(web_contents));
-    mojom::SessionObserverPtr observer;
-    observer_binding_.Bind(mojo::MakeRequest(&observer));
-    mojom::CastMessageChannelPtr outbound_channel;
-    outbound_channel_binding_.Bind(mojo::MakeRequest(&outbound_channel));
+    mojo::PendingRemote<mojom::SessionObserver> observer;
+    observer_receiver_.Bind(observer.InitWithNewPipeAndPassReceiver());
+    mojo::PendingRemote<mojom::CastMessageChannel> outbound_channel;
+    outbound_channel_receiver_.Bind(
+        outbound_channel.InitWithNewPipeAndPassReceiver());
     host_->Start(mojom::SessionParameters::New(), std::move(observer),
                  std::move(outbound_channel),
-                 mojo::MakeRequest(&inbound_channel_));
+                 inbound_channel_.BindNewPipeAndPassReceiver());
   }
 
   void GetVideoCaptureHost() {
-    media::mojom::VideoCaptureHostPtr video_capture_host;
+    mojo::PendingRemote<media::mojom::VideoCaptureHost> video_capture_host;
     static_cast<mojom::ResourceProvider*>(host_.get())
-        ->GetVideoCaptureHost(mojo::MakeRequest(&video_capture_host));
+        ->GetVideoCaptureHost(
+            video_capture_host.InitWithNewPipeAndPassReceiver());
     video_frame_receiver_ = std::make_unique<MockVideoCaptureObserver>(
         std::move(video_capture_host));
   }
@@ -194,53 +200,45 @@ class CastMirroringServiceHostBrowserTest
     media::AudioParameters params(media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
                                   media::CHANNEL_LAYOUT_STEREO, kAudioTimebase,
                                   kAudioTimebase / 100);
-    mojom::AudioStreamCreatorClientPtr audio_client_ptr;
-    audio_client_binding_.Bind(mojo::MakeRequest(&audio_client_ptr));
     base::RunLoop run_loop;
     EXPECT_CALL(*this, OnAudioStreamCreated())
         .WillOnce(InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
-    host_->CreateAudioStream(std::move(audio_client_ptr), params,
-                             kTotalSegments);
+    host_->CreateAudioStream(audio_client_receiver_.BindNewPipeAndPassRemote(),
+                             params, kTotalSegments);
     run_loop.Run();
   }
 
   // InProcessBrowserTest override.
-  void SetUp() override {
-#if defined(OS_CHROMEOS)
-    scoped_feature_list_.InitWithFeatures({}, {features::kMash});
-#endif
-    InProcessBrowserTest::SetUp();
-  }
+  void SetUp() override { InProcessBrowserTest::SetUp(); }
 
  private:
   // mojom::SessionObserver mocks.
   MOCK_METHOD1(OnError, void(mojom::SessionError));
   MOCK_METHOD0(DidStart, void());
   MOCK_METHOD0(DidStop, void());
+  MOCK_METHOD1(LogInfoMessage, void(const std::string&));
+  MOCK_METHOD1(LogErrorMessage, void(const std::string&));
 
   // mojom::CastMessageChannel mocks.
   MOCK_METHOD1(Send, void(mojom::CastMessagePtr));
 
   // mojom::AudioStreamCreatorClient mocks.
   MOCK_METHOD0(OnAudioStreamCreated, void());
-  void StreamCreated(media::mojom::AudioInputStreamPtr stream,
-                     media::mojom::AudioInputStreamClientRequest client_request,
-                     media::mojom::ReadOnlyAudioDataPipePtr data_pipe,
-                     bool initially_muted) override {
+  void StreamCreated(
+      mojo::PendingRemote<media::mojom::AudioInputStream> stream,
+      mojo::PendingReceiver<media::mojom::AudioInputStreamClient>
+          client_receiver,
+      media::mojom::ReadOnlyAudioDataPipePtr data_pipe) override {
     EXPECT_TRUE(stream);
-    EXPECT_TRUE(client_request);
+    EXPECT_TRUE(client_receiver);
     EXPECT_TRUE(data_pipe);
     OnAudioStreamCreated();
   }
 
-#if defined(OS_CHROMEOS)
-  base::test::ScopedFeatureList scoped_feature_list_;
-#endif
-
-  mojo::Binding<mojom::SessionObserver> observer_binding_;
-  mojo::Binding<mojom::CastMessageChannel> outbound_channel_binding_;
-  mojo::Binding<mojom::AudioStreamCreatorClient> audio_client_binding_;
-  mojom::CastMessageChannelPtr inbound_channel_;
+  mojo::Receiver<mojom::SessionObserver> observer_receiver_{this};
+  mojo::Receiver<mojom::CastMessageChannel> outbound_channel_receiver_{this};
+  mojo::Receiver<mojom::AudioStreamCreatorClient> audio_client_receiver_{this};
+  mojo::Remote<mojom::CastMessageChannel> inbound_channel_;
 
   std::unique_ptr<CastMirroringServiceHost> host_;
   std::unique_ptr<MockVideoCaptureObserver> video_frame_receiver_;
@@ -263,37 +261,23 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, CaptureTabAudio) {
 }
 
 IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, TabIndicator) {
-  ASSERT_EQ(TabAlertState::NONE,
-            chrome::GetTabAlertStateForContents(
-                browser()->tab_strip_model()->GetActiveWebContents()));
+  content::WebContents* const contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_THAT(chrome::GetTabAlertStatesForContents(contents),
+              ::testing::IsEmpty());
 
-  // A TabStripModelObserver that quits the MessageLoop whenever the UI's model
-  // is sent an event that changes the indicator status.
+  // A TabStripModelObserver that quits the MessageLoop whenever the
+  // UI's model is sent an event that might change the indicator status.
   class IndicatorChangeObserver : public TabStripModelObserver {
    public:
-    explicit IndicatorChangeObserver(Browser* browser)
-        : browser_(browser),
-          last_alert_state_(chrome::GetTabAlertStateForContents(
-              browser->tab_strip_model()->GetActiveWebContents())) {
+    explicit IndicatorChangeObserver(Browser* browser) : browser_(browser) {
       browser_->tab_strip_model()->AddObserver(this);
     }
-
-    ~IndicatorChangeObserver() override {
-      browser_->tab_strip_model()->RemoveObserver(this);
-    }
-
-    TabAlertState last_alert_state() const { return last_alert_state_; }
 
     void TabChangedAt(content::WebContents* contents,
                       int index,
                       TabChangeType change_type) override {
-      const TabAlertState alert_state =
-          chrome::GetTabAlertStateForContents(contents);
-      if (alert_state != last_alert_state_) {
-        last_alert_state_ = alert_state;
-        if (on_tab_changed_)
-          std::move(on_tab_changed_).Run();
-      }
+      std::move(on_tab_changed_).Run();
     }
 
     void WaitForTabChange() {
@@ -304,20 +288,22 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, TabIndicator) {
 
    private:
     Browser* const browser_;
-    TabAlertState last_alert_state_;
     base::OnceClosure on_tab_changed_;
   };
 
   IndicatorChangeObserver observer(browser());
-  ASSERT_EQ(TabAlertState::NONE, observer.last_alert_state());
+  ASSERT_THAT(chrome::GetTabAlertStatesForContents(contents),
+              ::testing::IsEmpty());
   StartTabMirroring();
 
   // Run the browser until the indicator turns on.
   const base::TimeTicks start_time = base::TimeTicks::Now();
-  while (observer.last_alert_state() != TabAlertState::TAB_CAPTURING) {
+  while (!base::Contains(chrome::GetTabAlertStatesForContents(contents),
+                         TabAlertState::TAB_CAPTURING)) {
     if (base::TimeTicks::Now() - start_time >
         TestTimeouts::action_max_timeout()) {
-      EXPECT_EQ(TabAlertState::TAB_CAPTURING, observer.last_alert_state());
+      EXPECT_THAT(chrome::GetTabAlertStatesForContents(contents),
+                  ::testing::Contains(TabAlertState::TAB_CAPTURING));
       return;
     }
     observer.WaitForTabChange();

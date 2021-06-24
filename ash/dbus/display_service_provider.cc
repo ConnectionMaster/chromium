@@ -6,14 +6,11 @@
 
 #include <utility>
 
-#include "ash/public/interfaces/ash_display_controller.mojom.h"
-#include "ash/public/interfaces/constants.mojom.h"
 #include "ash/shell.h"
 #include "ash/wm/screen_dimmer.h"
 #include "base/bind.h"
 #include "base/callback.h"
 #include "dbus/message.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "ui/base/user_activity/user_activity_detector.h"
 #include "ui/display/manager/display_configurator.h"
@@ -22,12 +19,12 @@ namespace ash {
 namespace {
 
 void OnDisplayOwnershipChanged(
-    const dbus::ExportedObject::ResponseSender& response_sender,
+    dbus::ExportedObject::ResponseSender response_sender,
     std::unique_ptr<dbus::Response> response,
     bool status) {
   dbus::MessageWriter writer(response.get());
   writer.AppendBool(status);
-  response_sender.Run(std::move(response));
+  std::move(response_sender).Run(std::move(response));
 }
 
 }  // namespace
@@ -42,23 +39,10 @@ class DisplayServiceProvider::Impl {
   void ReleaseDisplayOwnership(base::OnceCallback<void(bool)> callback);
 
  private:
-  // Tests may not have a service_manager::Connector. Connect() is called
-  // whenever ash_display_controller_ is used to lazily connect as needed.
-  bool Connect();
-
-  mojom::AshDisplayControllerPtr ash_display_controller_;
   std::unique_ptr<ScreenDimmer> screen_dimmer_;
 
   DISALLOW_COPY_AND_ASSIGN(Impl);
 };
-
-bool DisplayServiceProvider::Impl::Connect() {
-  if (ash_display_controller_)
-    return true;
-  Shell::Get()->connector()->BindInterface(mojom::kServiceName,
-                                           &ash_display_controller_);
-  return !!ash_display_controller_;
-}
 
 void DisplayServiceProvider::Impl::SetDimming(bool dimmed) {
   if (!screen_dimmer_) {
@@ -70,26 +54,26 @@ void DisplayServiceProvider::Impl::SetDimming(bool dimmed) {
 
 void DisplayServiceProvider::Impl::TakeDisplayOwnership(
     base::OnceCallback<void(bool)> callback) {
-  if (!Connect()) {
+  if (!Shell::Get()->display_configurator()) {
     LOG(ERROR) << "Display Controller not connected";
     std::move(callback).Run(false);
     return;
   }
-  ash_display_controller_->TakeDisplayControl(std::move(callback));
+  Shell::Get()->display_configurator()->TakeControl(std::move(callback));
 }
 
 void DisplayServiceProvider::Impl::ReleaseDisplayOwnership(
     base::OnceCallback<void(bool)> callback) {
-  if (!Connect()) {
+  if (!Shell::Get()->display_configurator()) {
     LOG(ERROR) << "Display Controller not connected";
     std::move(callback).Run(false);
     return;
   }
-  ash_display_controller_->RelinquishDisplayControl(std::move(callback));
+  Shell::Get()->display_configurator()->RelinquishControl(std::move(callback));
 }
 
 DisplayServiceProvider::DisplayServiceProvider()
-    : impl_(std::make_unique<Impl>()), weak_ptr_factory_(this) {}
+    : impl_(std::make_unique<Impl>()) {}
 
 DisplayServiceProvider::~DisplayServiceProvider() = default;
 
@@ -100,32 +84,32 @@ void DisplayServiceProvider::Start(
       chromeos::kDisplayServiceSetPowerMethod,
       base::BindRepeating(&DisplayServiceProvider::SetDisplayPower,
                           weak_ptr_factory_.GetWeakPtr()),
-      base::BindRepeating(&DisplayServiceProvider::OnExported,
-                          weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(&DisplayServiceProvider::OnExported,
+                     weak_ptr_factory_.GetWeakPtr()));
 
   exported_object->ExportMethod(
       chromeos::kDisplayServiceInterface,
       chromeos::kDisplayServiceSetSoftwareDimmingMethod,
       base::BindRepeating(&DisplayServiceProvider::SetDisplaySoftwareDimming,
                           weak_ptr_factory_.GetWeakPtr()),
-      base::BindRepeating(&DisplayServiceProvider::OnExported,
-                          weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(&DisplayServiceProvider::OnExported,
+                     weak_ptr_factory_.GetWeakPtr()));
 
   exported_object->ExportMethod(
       chromeos::kDisplayServiceInterface,
       chromeos::kDisplayServiceTakeOwnershipMethod,
       base::BindRepeating(&DisplayServiceProvider::TakeDisplayOwnership,
                           weak_ptr_factory_.GetWeakPtr()),
-      base::BindRepeating(&DisplayServiceProvider::OnExported,
-                          weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(&DisplayServiceProvider::OnExported,
+                     weak_ptr_factory_.GetWeakPtr()));
 
   exported_object->ExportMethod(
       chromeos::kDisplayServiceInterface,
       chromeos::kDisplayServiceReleaseOwnershipMethod,
       base::BindRepeating(&DisplayServiceProvider::ReleaseDisplayOwnership,
                           weak_ptr_factory_.GetWeakPtr()),
-      base::BindRepeating(&DisplayServiceProvider::OnExported,
-                          weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(&DisplayServiceProvider::OnExported,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void DisplayServiceProvider::SetDisplayPower(
@@ -136,7 +120,7 @@ void DisplayServiceProvider::SetDisplayPower(
   if (!reader.PopInt32(&int_state)) {
     LOG(ERROR) << "Unable to parse request: "
                << chromeos::kDisplayServiceSetPowerMethod;
-    response_sender.Run(dbus::Response::FromMethodCall(method_call));
+    std::move(response_sender).Run(dbus::Response::FromMethodCall(method_call));
     return;
   }
 
@@ -149,13 +133,14 @@ void DisplayServiceProvider::SetDisplayPower(
   Shell::Get()->display_configurator()->SetDisplayPower(
       static_cast<chromeos::DisplayPowerState>(int_state),
       display::DisplayConfigurator::kSetDisplayPowerNoFlags,
-      base::BindRepeating(
+      base::BindOnce(
           [](dbus::MethodCall* method_call,
              dbus::ExportedObject::ResponseSender response_sender,
              bool /*status*/) {
-            response_sender.Run(dbus::Response::FromMethodCall(method_call));
+            std::move(response_sender)
+                .Run(dbus::Response::FromMethodCall(method_call));
           },
-          method_call, response_sender));
+          method_call, std::move(response_sender)));
 }
 
 void DisplayServiceProvider::SetDisplaySoftwareDimming(
@@ -169,23 +154,23 @@ void DisplayServiceProvider::SetDisplaySoftwareDimming(
     LOG(ERROR) << "Unable to parse request: "
                << chromeos::kDisplayServiceSetSoftwareDimmingMethod;
   }
-  response_sender.Run(dbus::Response::FromMethodCall(method_call));
+  std::move(response_sender).Run(dbus::Response::FromMethodCall(method_call));
 }
 
 void DisplayServiceProvider::TakeDisplayOwnership(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
-  impl_->TakeDisplayOwnership(base::BindOnce(
-      &OnDisplayOwnershipChanged, response_sender,
-      base::Passed(dbus::Response::FromMethodCall(method_call))));
+  impl_->TakeDisplayOwnership(
+      base::BindOnce(&OnDisplayOwnershipChanged, std::move(response_sender),
+                     dbus::Response::FromMethodCall(method_call)));
 }
 
 void DisplayServiceProvider::ReleaseDisplayOwnership(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
-  impl_->ReleaseDisplayOwnership(base::BindOnce(
-      &OnDisplayOwnershipChanged, response_sender,
-      base::Passed(dbus::Response::FromMethodCall(method_call))));
+  impl_->ReleaseDisplayOwnership(
+      base::BindOnce(&OnDisplayOwnershipChanged, std::move(response_sender),
+                     dbus::Response::FromMethodCall(method_call)));
 }
 
 void DisplayServiceProvider::OnExported(const std::string& interface_name,

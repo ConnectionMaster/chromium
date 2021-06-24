@@ -25,7 +25,8 @@ class HidConnectionLinux : public HidConnection {
   HidConnectionLinux(
       scoped_refptr<HidDeviceInfo> device_info,
       base::ScopedFD fd,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner,
+      bool allow_protected_reports);
 
  private:
   friend class base::RefCountedThreadSafe<HidConnectionLinux>;
@@ -49,7 +50,7 @@ class HidConnectionLinux : public HidConnection {
 
   const scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
 
-  base::WeakPtrFactory<HidConnectionLinux> weak_factory_;
+  base::WeakPtrFactory<HidConnectionLinux> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HidConnectionLinux);
 };

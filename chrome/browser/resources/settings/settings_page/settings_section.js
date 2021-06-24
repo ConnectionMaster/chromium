@@ -17,8 +17,14 @@
  */
 
 // eslint-disable-next-line prefer-const
-let SettingsSectionElement = Polymer({
+import '//resources/cr_elements/shared_vars_css.m.js';
+
+import {html, Polymer} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+Polymer({
   is: 'settings-section',
+
+  _template: html`{__html_template__}`,
 
   properties: {
     /**
@@ -56,7 +62,11 @@ let SettingsSectionElement = Polymer({
    *    specs. This function ensures we have the right return type.
    * @private
    */
-  getTitleHiddenStatus_: function() {
+  getTitleHiddenStatus_() {
     return this.pageTitle ? false : 'true';
+  },
+
+  focus() {
+    this.$$('.title').focus();
   }
 });

@@ -12,10 +12,10 @@
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/payments/editor_view_controller.h"
 #include "chrome/browser/ui/views/payments/validation_delegate.h"
 #include "ui/base/models/simple_combobox_model.h"
-#include "ui/views/controls/styled_label_listener.h"
 
 namespace autofill {
 class AutofillProfile;
@@ -29,8 +29,7 @@ class PaymentRequestState;
 class PaymentRequestDialogView;
 
 // Credit card editor screen of the Payment Request flow.
-class CreditCardEditorViewController : public EditorViewController,
-                                       public views::StyledLabelListener {
+class CreditCardEditorViewController : public EditorViewController {
  public:
   // Does not take ownership of the arguments (except for the |on_edited| and
   // |on_added| callbacks), which should outlive this object. Additionally,
@@ -38,11 +37,10 @@ class CreditCardEditorViewController : public EditorViewController,
   // pointer to a card that needs to be updated, and which will outlive this
   // controller.
   CreditCardEditorViewController(
-      PaymentRequestSpec* spec,
-      PaymentRequestState* state,
-      PaymentRequestDialogView* dialog,
+      base::WeakPtr<PaymentRequestSpec> spec,
+      base::WeakPtr<PaymentRequestState> state,
+      base::WeakPtr<PaymentRequestDialogView> dialog,
       BackNavigationType back_navigation,
-      int next_ui_tag,
       base::OnceClosure on_edited,
       base::OnceCallback<void(const autofill::CreditCard&)> on_added,
       autofill::CreditCard* credit_card,
@@ -55,12 +53,12 @@ class CreditCardEditorViewController : public EditorViewController,
       autofill::ServerFieldType type,
       views::View** focusable_field,
       bool* valid,
-      base::string16* error_message) override;
+      std::u16string* error_message) override;
   std::unique_ptr<views::View> CreateExtraViewForField(
       autofill::ServerFieldType type) override;
   bool IsEditingExistingItem() override;
   std::vector<EditorField> GetFieldDefinitions() override;
-  base::string16 GetInitialValueForType(
+  std::u16string GetInitialValueForType(
       autofill::ServerFieldType type) override;
   bool ValidateModelAndSave() override;
   std::unique_ptr<ValidationDelegate> CreateValidationDelegate(
@@ -68,24 +66,18 @@ class CreditCardEditorViewController : public EditorViewController,
   std::unique_ptr<ui::ComboboxModel> GetComboboxModelForType(
       const autofill::ServerFieldType& type) override;
 
-  // views::StyledLabelListener:
-  void StyledLabelLinkClicked(views::StyledLabel* label,
-                              const gfx::Range& range,
-                              int event_flags) override;
-
   // Selects the icon in the UI corresponding to |basic_card_network| with
   // higher opacity. If empty string, selects none of them (all full opacity).
   void SelectBasicCardNetworkIcon(const std::string& basic_card_network);
 
   // Exposed for validation delegate.
-  bool IsValidCreditCardNumber(const base::string16& card_number,
-                               base::string16* error_message);
+  bool IsValidCreditCardNumber(const std::u16string& card_number,
+                               std::u16string* error_message);
 
  protected:
   // PaymentRequestSheetController:
   void FillContentView(views::View* content_view) override;
-  base::string16 GetSheetTitle() override;
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
+  std::u16string GetSheetTitle() override;
 
  private:
   class CreditCardValidationDelegate : public ValidationDelegate {
@@ -98,22 +90,22 @@ class CreditCardEditorViewController : public EditorViewController,
 
     // ValidationDelegate:
     bool ShouldFormat() override;
-    base::string16 Format(const base::string16& text) override;
+    std::u16string Format(const std::u16string& text) override;
     bool IsValidTextfield(views::Textfield* textfield,
-                          base::string16* error_message) override;
-    bool IsValidCombobox(views::Combobox* combobox,
-                         base::string16* error_message) override;
+                          std::u16string* error_message) override;
+    bool IsValidCombobox(ValidatingCombobox* combobox,
+                         std::u16string* error_message) override;
     bool TextfieldValueChanged(views::Textfield* textfield,
                                bool was_blurred) override;
-    bool ComboboxValueChanged(views::Combobox* combobox) override;
-    void ComboboxModelChanged(views::Combobox* combobox) override {}
+    bool ComboboxValueChanged(ValidatingCombobox* combobox) override;
+    void ComboboxModelChanged(ValidatingCombobox* combobox) override {}
 
    private:
     // Validates a specific |value|/|combobox|.
-    bool ValidateValue(const base::string16& value,
-                       base::string16* error_message);
-    bool ValidateCombobox(views::Combobox* combobox,
-                          base::string16* error_message);
+    bool ValidateValue(const std::u16string& value,
+                       std::u16string* error_message);
+    bool ValidateCombobox(ValidatingCombobox* combobox,
+                          std::u16string* error_message);
 
     EditorField field_;
     // Outlives this class.
@@ -146,11 +138,10 @@ class CreditCardEditorViewController : public EditorViewController,
   // network.
   std::map<std::string, views::View*> card_icons_;
 
-  // The value to use for the add billing address button tag.
-  int add_billing_address_button_tag_;
-
   // The list of supported basic card networks.
   std::set<std::string> supported_card_networks_;
+
+  base::WeakPtrFactory<CreditCardEditorViewController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CreditCardEditorViewController);
 };

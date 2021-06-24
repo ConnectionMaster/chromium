@@ -107,13 +107,14 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/notreached.h"
 #include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 
@@ -266,14 +267,14 @@ class ObservableInternals
     void AddObserver(Observer<T>* observer) {
       DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
       DCHECK(observer);
-      DCHECK(!base::ContainsValue(observers_, observer));
+      DCHECK(!base::Contains(observers_, observer));
       observers_.push_back(observer);
     }
 
     void RemoveObserver(Observer<T>* observer) {
       DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
       DCHECK(observer);
-      DCHECK(base::ContainsValue(observers_, observer));
+      DCHECK(base::Contains(observers_, observer));
       observers_.erase(
           std::remove(observers_.begin(), observers_.end(), observer),
           observers_.end());

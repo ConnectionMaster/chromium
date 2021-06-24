@@ -12,18 +12,26 @@ namespace content {
 
 class MockPointerLockRenderWidgetHostView : public RenderWidgetHostViewMac {
  public:
-  MockPointerLockRenderWidgetHostView(RenderWidgetHost* host,
-                                      bool is_guest_view_hack)
-      : RenderWidgetHostViewMac(host, is_guest_view_hack) {}
+  MockPointerLockRenderWidgetHostView(RenderWidgetHost* host)
+      : RenderWidgetHostViewMac(host) {}
   ~MockPointerLockRenderWidgetHostView() override {
     if (mouse_locked_)
       UnlockMouse();
   }
 
-  bool LockMouse() override {
+  blink::mojom::PointerLockResult LockMouse(
+      bool request_unadjusted_movement) override {
     mouse_locked_ = true;
+    mouse_lock_unadjusted_movement_ = request_unadjusted_movement;
 
-    return true;
+    return blink::mojom::PointerLockResult::kSuccess;
+  }
+
+  blink::mojom::PointerLockResult ChangeMouseLock(
+      bool request_unadjusted_movement) override {
+    mouse_lock_unadjusted_movement_ = request_unadjusted_movement;
+
+    return blink::mojom::PointerLockResult::kSuccess;
   }
 
   void UnlockMouse() override {
@@ -32,19 +40,21 @@ class MockPointerLockRenderWidgetHostView : public RenderWidgetHostViewMac {
       host->LostMouseLock();
     }
     mouse_locked_ = false;
+    mouse_lock_unadjusted_movement_ = false;
   }
 
   bool IsMouseLocked() override { return mouse_locked_; }
 
+  bool GetIsMouseLockedUnadjustedMovementForTesting() override {
+    return mouse_lock_unadjusted_movement_;
+  }
   bool HasFocus() override { return true; }
 };
 
 void InstallCreateHooksForPointerLockBrowserTests() {
   WebContentsViewMac::InstallCreateHookForTests(
-      [](RenderWidgetHost* host,
-         bool is_guest_view_hack) -> RenderWidgetHostViewMac* {
-        return new MockPointerLockRenderWidgetHostView(host,
-                                                       is_guest_view_hack);
+      [](RenderWidgetHost* host) -> RenderWidgetHostViewMac* {
+        return new MockPointerLockRenderWidgetHostView(host);
       });
 }
 

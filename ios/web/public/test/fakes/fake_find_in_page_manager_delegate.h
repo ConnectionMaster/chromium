@@ -24,7 +24,9 @@ class FakeFindInPageManagerDelegate : public FindInPageManagerDelegate {
   void DidHighlightMatches(WebState* web_state,
                            int match_count,
                            NSString* query) override;
-  void DidSelectMatch(WebState* web_state, int index) override;
+  void DidSelectMatch(WebState* web_state,
+                      int index,
+                      NSString* context_string) override;
 
   // Holds the state passed to DidHighlightMatches and DidSelectMatch.
   struct State {
@@ -34,10 +36,14 @@ class FakeFindInPageManagerDelegate : public FindInPageManagerDelegate {
     int match_count = -1;
     NSString* query;
     int index = -1;
+    NSString* context_string;
   };
 
   // Returns the current State.
   const State* state() const { return delegate_state_.get(); }
+
+  // Resets the State.
+  void Reset() { delegate_state_.reset(); }
 
  private:
   std::unique_ptr<State> delegate_state_;

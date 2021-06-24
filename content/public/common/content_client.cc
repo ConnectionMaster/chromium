@@ -4,8 +4,10 @@
 
 #include "content/public/common/content_client.h"
 
-#include "base/logging.h"
+#include "base/files/file_path.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
+#include "base/sequenced_task_runner.h"
 #include "base/strings/string_piece.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -67,52 +69,46 @@ ContentClient::ContentClient()
 ContentClient::~ContentClient() {
 }
 
-bool ContentClient::CanSendWhileSwappedOut(const IPC::Message* message) {
-  return false;
+std::u16string ContentClient::GetLocalizedString(int message_id) {
+  return std::u16string();
 }
 
-base::string16 ContentClient::GetLocalizedString(int message_id) const {
-  return base::string16();
-}
-
-base::string16 ContentClient::GetLocalizedString(
+std::u16string ContentClient::GetLocalizedString(
     int message_id,
-    const base::string16& replacement) const {
-  return base::string16();
+    const std::u16string& replacement) {
+  return std::u16string();
 }
 
-base::StringPiece ContentClient::GetDataResource(
-    int resource_id,
-    ui::ScaleFactor scale_factor) const {
+base::StringPiece ContentClient::GetDataResource(int resource_id,
+                                                 ui::ScaleFactor scale_factor) {
   return base::StringPiece();
 }
 
-base::RefCountedMemory* ContentClient::GetDataResourceBytes(
-    int resource_id) const {
+base::RefCountedMemory* ContentClient::GetDataResourceBytes(int resource_id) {
   return nullptr;
 }
 
-gfx::Image& ContentClient::GetNativeImageNamed(int resource_id) const {
+gfx::Image& ContentClient::GetNativeImageNamed(int resource_id) {
   static base::NoDestructor<gfx::Image> kEmptyImage;
   return *kEmptyImage;
 }
+
+#if defined(OS_MAC)
+base::FilePath ContentClient::GetChildProcessPath(
+    int child_flags,
+    const base::FilePath& helpers_path) {
+  NOTIMPLEMENTED();
+  return base::FilePath();
+}
+#endif
 
 std::string ContentClient::GetProcessTypeNameInEnglish(int type) {
   NOTIMPLEMENTED();
   return std::string();
 }
 
-base::DictionaryValue ContentClient::GetNetLogConstants() const {
-  return base::DictionaryValue();
-}
-
 blink::OriginTrialPolicy* ContentClient::GetOriginTrialPolicy() {
   return nullptr;
-}
-
-bool ContentClient::AllowScriptExtensionForServiceWorker(
-    const url::Origin& script_origin) {
-  return false;
 }
 
 #if defined(OS_ANDROID)
@@ -125,7 +121,8 @@ media::MediaDrmBridgeClient* ContentClient::GetMediaDrmBridgeClient() {
 }
 #endif  // OS_ANDROID
 
-void ContentClient::OnServiceManagerConnected(
-    ServiceManagerConnection* connection) {}
+void ContentClient::ExposeInterfacesToBrowser(
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+    mojo::BinderMap* binders) {}
 
 }  // namespace content

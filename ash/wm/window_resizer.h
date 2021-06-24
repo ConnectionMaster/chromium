@@ -8,9 +8,11 @@
 #include <memory>
 
 #include "ash/ash_export.h"
+#include "ash/public/cpp/presentation_time_recorder.h"
 #include "ash/wm/drag_details.h"
 #include "ash/wm/window_state.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "ui/wm/public/window_move_client.h"
 
 namespace aura {
@@ -42,7 +44,7 @@ class ASH_EXPORT WindowResizer {
   static const int kBoundsChangeDirection_Horizontal;
   static const int kBoundsChangeDirection_Vertical;
 
-  explicit WindowResizer(wm::WindowState* window_state);
+  explicit WindowResizer(WindowState* window_state);
   virtual ~WindowResizer();
 
   // Returns a bitmask of the kBoundsChange_ values.
@@ -54,7 +56,7 @@ class ASH_EXPORT WindowResizer {
   // Invoked to drag/move/resize the window. |location| is in the coordinates
   // of the window supplied to the constructor. |event_flags| is the event
   // flags from the event.
-  virtual void Drag(const gfx::Point& location, int event_flags) = 0;
+  virtual void Drag(const gfx::PointF& location, int event_flags) = 0;
 
   // Invoked to complete the drag.
   virtual void CompleteDrag() = 0;
@@ -69,7 +71,7 @@ class ASH_EXPORT WindowResizer {
   aura::Window* GetTarget() const;
 
   // See comment for |DragDetails::initial_location_in_parent|.
-  const gfx::Point& GetInitialLocation() const {
+  const gfx::PointF& GetInitialLocation() const {
     return window_state_->drag_details()->initial_location_in_parent;
   }
 
@@ -77,7 +79,7 @@ class ASH_EXPORT WindowResizer {
   const DragDetails& details() const { return *window_state_->drag_details(); }
 
  protected:
-  gfx::Rect CalculateBoundsForDrag(const gfx::Point& location);
+  gfx::Rect CalculateBoundsForDrag(const gfx::PointF& location);
 
   static bool IsBottomEdge(int component);
 
@@ -86,16 +88,19 @@ class ASH_EXPORT WindowResizer {
   void SetBoundsDuringResize(const gfx::Rect& bounds);
 
   // WindowState of the drag target.
-  wm::WindowState* window_state_;
+  WindowState* window_state_;
 
  private:
   // In case of touch resizing, adjusts deltas so that the border is positioned
   // just under the touch point.
   void AdjustDeltaForTouchResize(int* delta_x, int* delta_y);
 
-  // Returns the new origin of the window. The arguments are the difference
-  // between the current location and the initial location.
-  gfx::Point GetOriginForDrag(int delta_x, int delta_y);
+  // Returns the new origin of the window. |delta_x| and |delta_y| are the
+  // difference between the current location and the initial location.
+  // |event_location| is the current location of the mouse or touch event.
+  gfx::Point GetOriginForDrag(int delta_x,
+                              int delta_y,
+                              const gfx::PointF& event_location);
 
   // Returns the size of the window for the drag.
   gfx::Size GetSizeForDrag(int* delta_x, int* delta_y);
@@ -110,6 +115,10 @@ class ASH_EXPORT WindowResizer {
   void CalculateBoundsWithAspectRatio(float aspect_ratio,
                                       gfx::Rect* new_bounds);
 
+  std::unique_ptr<PresentationTimeRecorder> recorder_;
+
+  base::WeakPtrFactory<WindowResizer> weak_ptr_factory_{this};
+
   DISALLOW_COPY_AND_ASSIGN(WindowResizer);
 };
 
@@ -117,7 +126,7 @@ class ASH_EXPORT WindowResizer {
 // |window| should not be resized nor dragged.
 ASH_EXPORT std::unique_ptr<WindowResizer> CreateWindowResizer(
     aura::Window* window,
-    const gfx::Point& point_in_parent,
+    const gfx::PointF& point_in_parent,
     int window_component,
     ::wm::WindowMoveSource source);
 

@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/stl_util.h"
 #include "base/sys_byteorder.h"
@@ -27,7 +29,7 @@
 #include "third_party/opus/src/include/opus.h"
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include <AudioToolbox/AudioToolbox.h>
 #endif
 
@@ -55,16 +57,15 @@ class AudioEncoder::ImplBase
            int num_channels,
            int sampling_rate,
            int samples_per_frame,
-           const FrameEncodedCallback& callback)
+           FrameEncodedCallback callback)
       : cast_environment_(cast_environment),
         codec_(codec),
         num_channels_(num_channels),
         samples_per_frame_(samples_per_frame),
-        callback_(callback),
+        callback_(std::move(callback)),
         operational_status_(STATUS_UNINITIALIZED),
-        frame_duration_(base::TimeDelta::FromMicroseconds(
-            base::Time::kMicrosecondsPerSecond * samples_per_frame_ /
-            sampling_rate)),
+        frame_duration_(base::TimeDelta::FromSecondsD(
+            static_cast<double>(samples_per_frame_) / sampling_rate)),
         buffer_fill_end_(0),
         frame_id_(FrameId::first()),
         samples_dropped_from_buffer_(0) {
@@ -103,7 +104,7 @@ class AudioEncoder::ImplBase
     if (!frame_capture_time_.is_null()) {
       const base::TimeDelta amount_ahead_by =
           recorded_time - (frame_capture_time_ + buffer_fill_duration);
-      const int64_t num_frames_missed = amount_ahead_by / frame_duration_;
+      const int64_t num_frames_missed = amount_ahead_by.IntDiv(frame_duration_);
       if (num_frames_missed > kUnderrunSkipThreshold) {
         samples_dropped_from_buffer_ += buffer_fill_end_;
         buffer_fill_end_ = 0;
@@ -155,8 +156,7 @@ class AudioEncoder::ImplBase
         // Compute encoder utilization as the real-world time elapsed divided
         // by the signal duration.
         audio_frame->encoder_utilization =
-            (base::TimeTicks::Now() - start_time).InSecondsF() /
-            frame_duration_.InSecondsF();
+            (base::TimeTicks::Now() - start_time) / frame_duration_;
 
         TRACE_EVENT_ASYNC_END1("cast.stream", "Audio Encode", audio_frame.get(),
                                "encoder_utilization",
@@ -165,11 +165,9 @@ class AudioEncoder::ImplBase
         audio_frame->encode_completion_time =
             cast_environment_->Clock()->NowTicks();
         cast_environment_->PostTask(
-            CastEnvironment::MAIN,
-            FROM_HERE,
-            base::Bind(callback_,
-                       base::Passed(&audio_frame),
-                       samples_dropped_from_buffer_));
+            CastEnvironment::MAIN, FROM_HERE,
+            base::BindOnce(callback_, std::move(audio_frame),
+                           samples_dropped_from_buffer_));
         samples_dropped_from_buffer_ = 0;
       }
 
@@ -234,19 +232,19 @@ class AudioEncoder::ImplBase
 };
 
 #if !defined(OS_IOS)
-class AudioEncoder::OpusImpl : public AudioEncoder::ImplBase {
+class AudioEncoder::OpusImpl final : public AudioEncoder::ImplBase {
  public:
   OpusImpl(const scoped_refptr<CastEnvironment>& cast_environment,
            int num_channels,
            int sampling_rate,
            int bitrate,
-           const FrameEncodedCallback& callback)
+           FrameEncodedCallback callback)
       : ImplBase(cast_environment,
                  CODEC_AUDIO_OPUS,
                  num_channels,
                  sampling_rate,
                  sampling_rate / kDefaultFramesPerSecond, /* 10 ms frames */
-                 callback),
+                 std::move(callback)),
         encoder_memory_(new uint8_t[opus_encoder_get_size(num_channels)]),
         opus_encoder_(reinterpret_cast<OpusEncoder*>(encoder_memory_.get())),
         buffer_(new float[num_channels * samples_per_frame_]) {
@@ -332,7 +330,7 @@ class AudioEncoder::OpusImpl : public AudioEncoder::ImplBase {
 };
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 class AudioEncoder::AppleAacImpl : public AudioEncoder::ImplBase {
   // AAC-LC has two access unit sizes (960 and 1024). The Apple encoder only
   // supports the latter.
@@ -347,13 +345,13 @@ class AudioEncoder::AppleAacImpl : public AudioEncoder::ImplBase {
                int num_channels,
                int sampling_rate,
                int bitrate,
-               const FrameEncodedCallback& callback)
+               FrameEncodedCallback callback)
       : ImplBase(cast_environment,
                  CODEC_AUDIO_AAC,
                  num_channels,
                  sampling_rate,
                  kAccessUnitSamples,
-                 callback),
+                 std::move(callback)),
         input_buffer_(AudioBus::Create(num_channels, kAccessUnitSamples)),
         input_bus_(AudioBus::CreateWrapper(num_channels)),
         max_access_unit_size_(0),
@@ -705,20 +703,20 @@ class AudioEncoder::AppleAacImpl : public AudioEncoder::ImplBase {
 
   DISALLOW_COPY_AND_ASSIGN(AppleAacImpl);
 };
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
-class AudioEncoder::Pcm16Impl : public AudioEncoder::ImplBase {
+class AudioEncoder::Pcm16Impl final : public AudioEncoder::ImplBase {
  public:
   Pcm16Impl(const scoped_refptr<CastEnvironment>& cast_environment,
             int num_channels,
             int sampling_rate,
-            const FrameEncodedCallback& callback)
+            FrameEncodedCallback callback)
       : ImplBase(cast_environment,
                  CODEC_AUDIO_PCM16,
                  num_channels,
                  sampling_rate,
                  sampling_rate / kDefaultFramesPerSecond, /* 10 ms frames */
-                 callback),
+                 std::move(callback)),
         buffer_(new int16_t[num_channels * samples_per_frame_]) {
     if (ImplBase::operational_status_ != STATUS_UNINITIALIZED)
       return;
@@ -760,7 +758,7 @@ AudioEncoder::AudioEncoder(
     int sampling_rate,
     int bitrate,
     Codec codec,
-    const FrameEncodedCallback& frame_encoded_callback)
+    FrameEncodedCallback frame_encoded_callback)
     : cast_environment_(cast_environment) {
   // Note: It doesn't matter which thread constructs AudioEncoder, just so long
   // as all calls to InsertAudio() are by the same thread.
@@ -768,27 +766,19 @@ AudioEncoder::AudioEncoder(
   switch (codec) {
 #if !defined(OS_IOS)
     case CODEC_AUDIO_OPUS:
-      impl_ = new OpusImpl(cast_environment,
-                           num_channels,
-                           sampling_rate,
-                           bitrate,
-                           frame_encoded_callback);
+      impl_ = new OpusImpl(cast_environment, num_channels, sampling_rate,
+                           bitrate, std::move(frame_encoded_callback));
       break;
 #endif
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     case CODEC_AUDIO_AAC:
-      impl_ = new AppleAacImpl(cast_environment,
-                               num_channels,
-                               sampling_rate,
-                               bitrate,
-                               frame_encoded_callback);
+      impl_ = new AppleAacImpl(cast_environment, num_channels, sampling_rate,
+                               bitrate, std::move(frame_encoded_callback));
       break;
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
     case CODEC_AUDIO_PCM16:
-      impl_ = new Pcm16Impl(cast_environment,
-                            num_channels,
-                            sampling_rate,
-                            frame_encoded_callback);
+      impl_ = new Pcm16Impl(cast_environment, num_channels, sampling_rate,
+                            std::move(frame_encoded_callback));
       break;
     default:
       NOTREACHED() << "Unsupported or unspecified codec for audio encoder";
@@ -832,12 +822,10 @@ void AudioEncoder::InsertAudio(std::unique_ptr<AudioBus> audio_bus,
     NOTREACHED();
     return;
   }
-  cast_environment_->PostTask(CastEnvironment::AUDIO,
-                              FROM_HERE,
-                              base::Bind(&AudioEncoder::ImplBase::EncodeAudio,
-                                         impl_,
-                                         base::Passed(&audio_bus),
-                                         recorded_time));
+  cast_environment_->PostTask(
+      CastEnvironment::AUDIO, FROM_HERE,
+      base::BindOnce(&AudioEncoder::ImplBase::EncodeAudio, impl_,
+                     std::move(audio_bus), recorded_time));
 }
 
 }  // namespace cast

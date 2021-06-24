@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {$} from 'chrome://resources/js/util.m.js';
+
 const MIN_VERSION_TAB_CLOSE = 25;
 const MIN_VERSION_TARGET_ID = 26;
 const MIN_VERSION_NEW_TAB = 29;
@@ -10,8 +12,8 @@ const WEBRTC_SERIAL = 'WEBRTC';
 let HOST_CHROME_VERSION;
 
 const queryParamsObject = {};
-let browserInspector;
-let browserInspectorTitle;
+let browserInspector = 'chrome://tracing';
+let browserInspectorTitle = 'trace';
 
 (function() {
 const chromeMatch = navigator.userAgent.match(/(?:^|\W)Chrome\/(\S+)/);
@@ -29,10 +31,7 @@ for (let i = 0; i < params.length; ++i) {
   queryParamsObject[pair[0]] = pair[1];
 }
 
-if ('trace' in queryParamsObject || 'tracing' in queryParamsObject) {
-  browserInspector = 'chrome://tracing';
-  browserInspectorTitle = 'trace';
-} else {
+if ('browser-inspector' in queryParamsObject) {
   browserInspector = queryParamsObject['browser-inspector'];
   browserInspectorTitle = 'inspect';
 }
@@ -70,22 +69,6 @@ function removeChildren(element_id) {
   element.textContent = '';
 }
 
-function removeAdditionalChildren(element_id) {
-  const element = $(element_id);
-  const elements = element.querySelectorAll('.row.additional');
-  for (let i = 0; i != elements.length; i++) {
-    element.removeChild(elements[i]);
-  }
-}
-
-function removeChildrenExceptAdditional(element_id) {
-  const element = $(element_id);
-  const elements = element.querySelectorAll('.row:not(.additional)');
-  for (let i = 0; i != elements.length; i++) {
-    element.removeChild(elements[i]);
-  }
-}
-
 function onload() {
   const tabContents = document.querySelectorAll('#content > div');
   for (let i = 0; i != tabContents.length; i++) {
@@ -94,12 +77,14 @@ function onload() {
 
     const tabHeader = document.createElement('div');
     tabHeader.className = 'tab-header';
+    tabHeader.id = 'tab-'.concat(tabContent.id);
     const button = document.createElement('button');
     button.textContent = tabName;
     tabHeader.appendChild(button);
     tabHeader.addEventListener('click', selectTab.bind(null, tabContent.id));
     $('navigation').appendChild(tabHeader);
   }
+  $('tab-native-ui').hidden = true;
   onHashChange();
   initSettings();
   sendCommand('init-ui');
@@ -149,11 +134,20 @@ function populateTargets(source, data) {
   }
 }
 
-function populateAdditionalTargets(data) {
-  removeAdditionalChildren('others-list');
+function populateNativeUITargets(data) {
+  removeChildren('native-ui-list');
   for (let i = 0; i < data.length; i++) {
-    addAdditionalTargetsToOthersList(data[i]);
+    addToNativeUIList(data[i]);
   }
+}
+
+function showNativeUILaunchButton(enabled) {
+  $('native-ui').hidden = false;
+  $('tab-native-ui').hidden = false;
+  $('launch-ui-devtools').hidden = false;
+  $('launch-ui-devtools').disabled = !enabled;
+  $('ui-devtools-disabled-text').hidden = enabled;
+  $('ui-devtools-enabled-text').hidden = !enabled;
 }
 
 function populateLocalTargets(data) {
@@ -162,7 +156,9 @@ function populateLocalTargets(data) {
   removeChildren('apps-list');
   removeChildren('workers-list');
   removeChildren('service-workers-list');
-  removeChildrenExceptAdditional('others-list');
+  removeChildren('others-list');
+
+  data.sort((a, b) => a.name.localeCompare(b.name));
 
   for (let i = 0; i < data.length; i++) {
     if (data[i].type === 'page') {
@@ -197,8 +193,7 @@ function alreadyDisplayed(element, data) {
 function updateBrowserVisibility(browserSection) {
   const icon = browserSection.querySelector('.used-for-port-forwarding');
   browserSection.hidden = !browserSection.querySelector('.open') &&
-      !browserSection.querySelector('.row') && !browserInspector &&
-      (!icon || icon.hidden);
+      !browserSection.querySelector('.row') && (!icon || icon.hidden);
 }
 
 function updateUsernameVisibility(deviceSection) {
@@ -410,19 +405,17 @@ function populateRemoteTargets(devices) {
             'forwarding. Closing it will drop current connections.';
         browserHeader.appendChild(portForwardingInfo);
 
-        if (browserInspector) {
-          const link = document.createElement('span');
-          link.classList.add('action');
-          link.setAttribute('tabindex', 1);
-          link.textContent = browserInspectorTitle;
-          browserHeader.appendChild(link);
-          link.addEventListener(
-              'click',
-              sendCommand.bind(
-                  null, 'inspect-browser', browser.source, browser.id,
-                  browserInspector),
-              false);
-        }
+        const link = document.createElement('span');
+        link.classList.add('action');
+        link.setAttribute('tabindex', 1);
+        link.textContent = browserInspectorTitle;
+        browserHeader.appendChild(link);
+        link.addEventListener(
+            'click',
+            sendCommand.bind(
+                null, 'inspect-browser', browser.source, browser.id,
+                browserInspector),
+            false);
 
         pageList = document.createElement('div');
         pageList.className = 'list pages';
@@ -522,8 +515,8 @@ function addToOthersList(data) {
   addTargetToList(data, $('others-list'), ['url']);
 }
 
-function addAdditionalTargetsToOthersList(data) {
-  addTargetToList(data, $('others-list'), ['name', 'url']);
+function addToNativeUIList(data) {
+  addTargetToList(data, $('native-ui-list'), ['name', 'url']);
 }
 
 function formatValue(data, property) {
@@ -578,6 +571,9 @@ function addWebViewDescription(row, webview) {
     viewStatus.size = 'size ' + webview.width + ' \u00d7 ' + webview.height;
   } else {
     viewStatus.visibility = 'empty';
+  }
+  if (webview.never_attached) {
+    viewStatus.visibility += ' never-attached';
   }
   if (webview.attached) {
     viewStatus.position =
@@ -674,12 +670,8 @@ function addTargetToList(data, list, properties) {
   actionBox.className = 'actions';
   subrowBox.appendChild(actionBox);
 
-  if (data.isAdditional) {
-    addActionLink(
-        row, 'inspect', sendCommand.bind(null, 'inspect-additional', data.url),
-        false);
-    row.classList.add('additional');
-  } else if (!data.hasCustomInspectAction && data.type !== 'iframe') {
+  if (!data.isNative && !data.hasCustomInspectAction &&
+      data.type !== 'iframe') {
     addActionLink(
         row, 'inspect', sendTargetCommand.bind(null, 'inspect', data),
         data.hasNoUniqueId || data.adbAttachedForeign);
@@ -723,6 +715,8 @@ function initSettings() {
   checkboxSendsCommand(
       'discover-tcp-devices-enable', 'set-discover-tcp-targets-enabled');
 
+  $('launch-ui-devtools')
+      .addEventListener('click', sendCommand.bind(null, 'launch-ui-devtools'));
   $('port-forwarding-config-open')
       .addEventListener('click', openPortForwardingConfig);
   $('tcp-discovery-config-open').addEventListener('click', openTargetsConfig);
@@ -1088,8 +1082,12 @@ function populatePortStatus(devicesStatusMap) {
       // status === 0 is the default (connected) state.
       if (status === -1 || status === -2) {
         portIcon.classList.add('transient');
+        portIcon.title = 'Attempting to forward port';
       } else if (status < 0) {
         portIcon.classList.add('error');
+        portIcon.title = 'Port forwarding failed';
+      } else {
+        portIcon.title = 'Successfully forwarded port';
       }
       devicePorts.appendChild(portIcon);
 
@@ -1136,6 +1134,20 @@ function populatePortStatus(devicesStatusMap) {
   Array.prototype.forEach.call(
       document.querySelectorAll('.device'), clearPorts);
 }
+
+// Expose functions on |window| since they are called from C++ by name.
+Object.assign(window, {
+  updateDiscoverUsbDevicesEnabled,
+  updatePortForwardingEnabled,
+  updatePortForwardingConfig,
+  updateTCPDiscoveryEnabled,
+  updateTCPDiscoveryConfig,
+  populateNativeUITargets,
+  populateTargets,
+  populatePortStatus,
+  showIncognitoWarning,
+  showNativeUILaunchButton,
+});
 
 document.addEventListener('DOMContentLoaded', onload);
 window.addEventListener('hashchange', onHashChange);

@@ -5,8 +5,8 @@
 (async function() {
   TestRunner.addResult(
       `Test that watch expressions expansion state is restored after update.\n`);
-  await TestRunner.loadModule('elements_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
       var globalObject = {
@@ -29,8 +29,7 @@
       }());
   `);
 
-  var watchExpressionsPane =
-      self.runtime.sharedInstance(Sources.WatchExpressionsSidebarPane);
+  var watchExpressionsPane = Sources.WatchExpressionsSidebarPane.instance();
   UI.panels.sources._sidebarPaneStack
       .showView(UI.panels.sources._watchSidebarPane)
       .then(() => {
@@ -65,15 +64,15 @@
   }
 
   function dumpWatchExpressions() {
-    var pane = self.runtime.sharedInstance(Sources.WatchExpressionsSidebarPane);
+    var pane = Sources.WatchExpressionsSidebarPane.instance();
 
     for (var i = 0; i < pane._watchExpressions.length; i++) {
       var watch = pane._watchExpressions[i];
       TestRunner.addResult(
           watch.expression() + ': ' +
-          watch._objectPropertiesSection._object._description);
+          watch._treeElement._object._description);
       dumpObjectPropertiesTreeElement(
-          watch._objectPropertiesSection.objectTreeElement(), '  ');
+          watch._treeElement, '  ');
     }
   }
 
@@ -89,10 +88,11 @@
       dumpObjectPropertiesTreeElement(treeElement.children()[i], '  ' + indent);
   }
 
-  function expandProperties(treeoutline, path, callback) {
-    treeoutline.addEventListener(
+  function expandProperties(watchExpressionTreeElement, path, callback) {
+    const treeOutline = watchExpressionTreeElement.treeOutline;
+    treeOutline.addEventListener(
         UI.TreeOutline.Events.ElementAttached, elementAttached);
-    treeoutline.expand();
+    watchExpressionTreeElement.expand();
 
     function elementAttached(event) {
       var treeElement = event.data;
@@ -111,19 +111,19 @@
         return;
       }
 
-      treeoutline.removeEventListener(
+      treeOutline.removeEventListener(
           UI.TreeOutline.Events.ElementAttached, elementAttached);
       callback();
     }
   }
 
   function expandWatchExpression(path, callback) {
-    var pane = self.runtime.sharedInstance(Sources.WatchExpressionsSidebarPane);
+    var pane = Sources.WatchExpressionsSidebarPane.instance();
     var expression = path.shift();
     for (var i = 0; i < pane._watchExpressions.length; i++) {
       var watch = pane._watchExpressions[i];
       if (watch.expression() === expression) {
-        expandProperties(watch._objectPropertiesSection, path, callback);
+        expandProperties(watch._treeElement, path, callback);
         break;
       }
     }

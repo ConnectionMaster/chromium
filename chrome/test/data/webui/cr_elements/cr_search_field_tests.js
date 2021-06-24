@@ -2,24 +2,39 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+import {CrSearchFieldElement} from 'chrome://resources/cr_elements/cr_search_field/cr_search_field.js';
+
+import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertNotReached, assertTrue} from '../chai_assert.js';
+import {flushTasks} from '../test_util.m.js';
+// clang-format on
+
 /** @fileoverview Suite of tests for cr-search-field. */
 suite('cr-search-field', function() {
-  /** @type {?CrSearchFieldElement} */
-  let field = null;
+  /** @type {!CrSearchFieldElement} */
+  let field;
 
   /** @type {?Array<string>} */
   let searches = null;
 
   /** @param {string} term */
   function simulateSearch(term) {
-    field.$.searchInput.value = term;
+    field.shadowRoot.querySelector('#searchInput').value = term;
     field.onSearchTermInput();
     field.onSearchTermSearch();
   }
 
   setup(function() {
-    PolymerTest.clearBody();
-    field = document.createElement('cr-search-field');
+    document.body.innerHTML = '';
+    // Ensure svg, which is referred to by a relative URL, is loaded from
+    // chrome://resources and not chrome://test
+    const base = document.createElement('base');
+    base.href = 'chrome://resources/cr_elements/';
+    document.head.appendChild(base);
+    field = /** @type {!CrSearchFieldElement} */ (
+        document.createElement('cr-search-field'));
     searches = [];
     field.addEventListener('search-changed', function(event) {
       searches.push(event.detail);
@@ -28,8 +43,6 @@ suite('cr-search-field', function() {
   });
 
   teardown(function() {
-    field.remove();
-    field = null;
     searches = null;
   });
 
@@ -48,26 +61,45 @@ suite('cr-search-field', function() {
     document.body.removeEventListener('search-changed', onSearchChanged);
   });
 
-  test('clear search button clears and refocuses input', function() {
+  test('clear search button clears space and refocuses input', async () => {
+    field.click();
+
+    simulateSearch(' ');
+    flush();
+    assertTrue(field.hasSearchText);
+
+    field.shadowRoot.querySelector('#clearSearch').click();
+    assertEquals('', field.getValue());
+    await flushTasks();
+    assertEquals(
+        field.shadowRoot.querySelector('#searchInput'),
+        field.root.activeElement);
+    assertFalse(field.hasSearchText);
+  });
+
+  test('clear search button clears and refocuses input', async () => {
     field.click();
 
     simulateSearch('query1');
-    Polymer.dom.flush();
+    flush();
     assertTrue(field.hasSearchText);
 
-    field.$$('#clearSearch').click();
+    field.shadowRoot.querySelector('#clearSearch').click();
     assertEquals('', field.getValue());
-    assertEquals(field.$.searchInput, field.root.activeElement);
+    await flushTasks();
+    assertEquals(
+        field.shadowRoot.querySelector('#searchInput'),
+        field.root.activeElement);
     assertFalse(field.hasSearchText);
   });
 
   test('notifies on new searches and setValue', function() {
     field.click();
     simulateSearch('query1');
-    Polymer.dom.flush();
+    flush();
     assertEquals('query1', field.getValue());
 
-    field.$$('#clearSearch').click();
+    field.shadowRoot.querySelector('#clearSearch').click();
     assertEquals('', field.getValue());
 
     simulateSearch('query2');
@@ -79,7 +111,7 @@ suite('cr-search-field', function() {
     field.setValue('foo');
 
     field.setValue('');
-    assertEquals(['query1', '', 'query2', 'foo', ''].join(), searches.join());
+    assertDeepEquals(['query1', '', 'query2', 'foo', ''], searches);
   });
 
   test('does not notify on setValue with noEvent=true', function() {
@@ -87,6 +119,24 @@ suite('cr-search-field', function() {
     field.setValue('foo', true);
     field.setValue('bar');
     field.setValue('baz', true);
-    assertEquals(['bar'].join(), searches.join());
+    assertDeepEquals(['bar'], searches);
+  });
+
+  test('setValue will return early if the query has not changed', () => {
+    // Need a space at the end, since the effective query will strip the spaces
+    // at the beginning, but not at the end of the query.
+    const value = 'test ';
+    assertNotEquals(value, field.getValue());
+    let calledSetValue = false;
+    field.onSearchTermInput = () => {
+      if (!calledSetValue) {
+        calledSetValue = true;
+        field.setValue(value);
+      }
+    };
+    field.setValue(value, true);
+    field.setValue(`  ${value}  `);
+    assertTrue(calledSetValue);
+    assertEquals(0, searches.length);
   });
 });

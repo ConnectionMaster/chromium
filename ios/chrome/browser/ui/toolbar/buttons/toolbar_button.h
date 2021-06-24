@@ -12,13 +12,11 @@
 
 @class ToolbarConfiguration;
 
-const NSUInteger ControlStateSpotlighted = 0x00010000;
-
 // UIButton subclass used as a Toolbar component.
 @interface ToolbarButton : UIButton
 
 // Configuration object used to get colors.
-@property(nonatomic, weak) ToolbarConfiguration* configuration;
+@property(nonatomic, weak) ToolbarConfiguration* toolbarConfiguration;
 // Bitmask used for SizeClass visibility.
 @property(nonatomic, assign) ToolbarComponentVisibility visibilityMask;
 // Returns true if the ToolbarButton should be hidden in the current SizeClass.
@@ -40,12 +38,6 @@ const NSUInteger ControlStateSpotlighted = 0x00010000;
 // Whether this button is dimmed. When the button is dimmed, its tintColor is
 // changed to have a lower alpha.
 @property(nonatomic, assign) BOOL dimmed;
-
-// Returns a ToolbarButton using the three images parameters for their
-// respective state.
-+ (instancetype)toolbarButtonWithImageForNormalState:(UIImage*)normalImage
-                            imageForHighlightedState:(UIImage*)highlightedImage
-                               imageForDisabledState:(UIImage*)disabledImage;
 
 // Returns a ToolbarButton with a type system, using the |image| as image for
 // normal state.

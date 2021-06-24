@@ -4,7 +4,7 @@
 
 package org.chromium.ui.modelutil;
 
-import android.support.annotation.Nullable;
+import androidx.annotation.Nullable;
 
 import java.util.Collection;
 
@@ -31,9 +31,34 @@ public class PropertyListModel<T extends PropertyObservable<P>, P> extends ListM
     }
 
     @Override
-    public void remove(T item) {
+    public void addAll(Collection<? extends T> items, int position) {
+        super.addAll(items, position);
+        for (T item : items) {
+            item.addObserver(mPropertyObserver);
+        }
+    }
+
+    @Override
+    public void addAll(SimpleList<T> items, int insertionIndex) {
+        super.addAll(items, insertionIndex);
+        for (T item : items) {
+            item.addObserver(mPropertyObserver);
+        }
+    }
+
+    @Override
+    public T removeAt(int position) {
+        T item = super.removeAt(position);
         item.removeObserver(mPropertyObserver);
-        super.remove(item);
+        return item;
+    }
+
+    @Override
+    public void removeRange(int startPosition, int count) {
+        for (int i = 0; i < count; i++) {
+            get(startPosition + i).removeObserver(mPropertyObserver);
+        }
+        super.removeRange(startPosition, count);
     }
 
     @Override

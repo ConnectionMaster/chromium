@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_NETWORK_NETWORK_UTILS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_NETWORK_NETWORK_UTILS_H_
 
+#include <string>
 #include <tuple>
 
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -13,7 +14,6 @@
 namespace blink {
 
 class KURL;
-class SharedBuffer;
 class ResourceResponse;
 
 namespace network_utils {
@@ -25,8 +25,6 @@ enum PrivateRegistryFilter {
 
 PLATFORM_EXPORT bool IsReservedIPAddress(const String& host);
 
-PLATFORM_EXPORT bool IsLocalHostname(const String& host, bool* is_local6);
-
 PLATFORM_EXPORT String GetDomainAndRegistry(const String& host,
                                             PrivateRegistryFilter);
 
@@ -34,11 +32,14 @@ PLATFORM_EXPORT String GetDomainAndRegistry(const String& host,
 // was successful. The result is returned as net error code. It returns net::OK
 // if decoding succeeds, otherwise it failed.
 PLATFORM_EXPORT std::tuple<int, ResourceResponse, scoped_refptr<SharedBuffer>>
-ParseDataURL(const KURL&);
+ParseDataURL(const KURL&, const String& method);
 
 // Returns true if the URL is a data URL and its MIME type is in the list of
 // supported/recognized MIME types.
-PLATFORM_EXPORT bool IsDataURLMimeTypeSupported(const KURL&);
+PLATFORM_EXPORT bool IsDataURLMimeTypeSupported(
+    const KURL&,
+    std::string* data = nullptr,
+    std::string* mime_type = nullptr);
 
 PLATFORM_EXPORT bool IsRedirectResponseCode(int);
 

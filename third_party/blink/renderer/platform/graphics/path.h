@@ -29,14 +29,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PATH_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PATH_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/platform/geometry/float_rounded_rect.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_types.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/transforms/transformation_matrix.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkPathMeasure.h"
 
 namespace blink {
@@ -63,6 +64,12 @@ struct PathElement {
   FloatPoint* points;
 };
 
+// Result structure from Path::PointAndNormalAtLength() (and similar).
+struct PointAndTangent {
+  FloatPoint point;
+  float tangent_in_degrees = 0;
+};
+
 typedef void (*PathApplierFunction)(void* info, const PathElement*);
 
 class PLATFORM_EXPORT Path {
@@ -81,14 +88,25 @@ class PLATFORM_EXPORT Path {
 
   bool Contains(const FloatPoint&) const;
   bool Contains(const FloatPoint&, WindRule) const;
-  bool StrokeContains(const FloatPoint&, const StrokeData&) const;
 
+  // Determine if the path's stroke contains the point.  The transform is used
+  // only to determine the precision factor when analyzing the stroke, so that
+  // we return accurate results in high-zoom scenarios.
+  bool StrokeContains(const FloatPoint&,
+                      const StrokeData&,
+                      const AffineTransform&) const;
+  SkPath StrokePath(const StrokeData&, const AffineTransform&) const;
+
+  // Tight Bounding calculation is very expensive, but it guarantees the strict
+  // bounding box. It's always included in BoundingRect. For a logical bounding
+  // box (used for clipping or damage) BoundingRect is recommended.
+  FloatRect TightBoundingRect() const;
   FloatRect BoundingRect() const;
   FloatRect StrokeBoundingRect(const StrokeData&) const;
 
   float length() const;
   FloatPoint PointAtLength(float length) const;
-  void PointAndNormalAtLength(float length, FloatPoint&, float&) const;
+  PointAndTangent PointAndNormalAtLength(float length) const;
 
   // Helper for computing a sequence of positions and normals (normal angles) on
   // a path. The best possible access pattern will be one where the |length|
@@ -96,13 +114,14 @@ class PLATFORM_EXPORT Path {
   // vary depending on curvature and number of segments, but should never be
   // worse than that of the state-less method on Path.
   class PLATFORM_EXPORT PositionCalculator {
-    DISALLOW_COPY_AND_ASSIGN(PositionCalculator);
     USING_FAST_MALLOC(PositionCalculator);
 
    public:
     explicit PositionCalculator(const Path&);
+    PositionCalculator(const PositionCalculator&) = delete;
+    PositionCalculator& operator=(const PositionCalculator&) = delete;
 
-    void PointAndNormalAtLength(float length, FloatPoint&, float&);
+    PointAndTangent PointAndNormalAtLength(float length);
 
    private:
     SkPath path_;
@@ -171,12 +190,14 @@ class PLATFORM_EXPORT Path {
 
   void Apply(void* info, PathApplierFunction) const;
   void Transform(const AffineTransform&);
+  void Transform(const TransformationMatrix&);
 
   void AddPathForRoundedRect(const FloatRect&,
                              const FloatSize& top_left_radius,
                              const FloatSize& top_right_radius,
                              const FloatSize& bottom_left_radius,
-                             const FloatSize& bottom_right_radius);
+                             const FloatSize& bottom_right_radius,
+                             bool clockwise);
 
   bool SubtractPath(const Path&);
 
@@ -184,15 +205,13 @@ class PLATFORM_EXPORT Path {
   // argument.
   bool UnionPath(const Path& other);
 
-  bool IntersectPath(const Path& other);
-
  private:
   void AddEllipse(const FloatPoint&,
                   float radius_x,
                   float radius_y,
                   float start_angle,
                   float end_angle);
-  SkPath StrokePath(const StrokeData&) const;
+  SkPath StrokePath(const StrokeData&, float stroke_precision) const;
 
   SkPath path_;
 };
@@ -211,4 +230,4 @@ PLATFORM_EXPORT bool EllipseIsRenderable(float start_angle, float end_angle);
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PATH_H_

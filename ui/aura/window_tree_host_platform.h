@@ -14,11 +14,11 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/gfx/native_widget_types.h"
-#include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
 namespace ui {
 enum class DomCode;
+class PlatformWindow;
 class KeyboardHook;
 struct PlatformWindowInitProperties;
 }  // namespace ui
@@ -30,10 +30,8 @@ namespace aura {
 class AURA_EXPORT WindowTreeHostPlatform : public WindowTreeHost,
                                            public ui::PlatformWindowDelegate {
  public:
-  // See Compositor() for details on |trace_environment_name|.
   explicit WindowTreeHostPlatform(ui::PlatformWindowInitProperties properties,
-                                  std::unique_ptr<Window> = nullptr,
-                                  const char* trace_environment_name = nullptr);
+                                  std::unique_ptr<Window> = nullptr);
   ~WindowTreeHostPlatform() override;
 
   // WindowTreeHost:
@@ -42,9 +40,7 @@ class AURA_EXPORT WindowTreeHostPlatform : public WindowTreeHost,
   void ShowImpl() override;
   void HideImpl() override;
   gfx::Rect GetBoundsInPixels() const override;
-  void SetBoundsInPixels(const gfx::Rect& bounds,
-                         const viz::LocalSurfaceIdAllocation&
-                             local_surface_id_allocation) override;
+  void SetBoundsInPixels(const gfx::Rect& bounds) override;
   gfx::Point GetLocationOnScreenInPixels() const override;
   void SetCapture() override;
   void ReleaseCapture() override;
@@ -52,6 +48,11 @@ class AURA_EXPORT WindowTreeHostPlatform : public WindowTreeHost,
   void MoveCursorToScreenLocationInPixels(
       const gfx::Point& location_in_pixels) override;
   void OnCursorVisibilityChangedNative(bool show) override;
+
+  ui::PlatformWindow* platform_window() { return platform_window_.get(); }
+  const ui::PlatformWindow* platform_window() const {
+    return platform_window_.get();
+  }
 
  protected:
   // NOTE: this does not call CreateCompositor(); subclasses must call
@@ -63,32 +64,28 @@ class AURA_EXPORT WindowTreeHostPlatform : public WindowTreeHost,
   void CreateAndSetPlatformWindow(ui::PlatformWindowInitProperties properties);
 
   void SetPlatformWindow(std::unique_ptr<ui::PlatformWindow> window);
-  ui::PlatformWindow* platform_window() { return platform_window_.get(); }
-  const ui::PlatformWindow* platform_window() const {
-    return platform_window_.get();
-  }
 
   // ui::PlatformWindowDelegate:
-  void OnBoundsChanged(const gfx::Rect& new_bounds) override;
+  void OnBoundsChanged(const BoundsChange& change) override;
   void OnDamageRect(const gfx::Rect& damaged_region) override;
   void DispatchEvent(ui::Event* event) override;
   void OnCloseRequest() override;
   void OnClosed() override;
-  void OnWindowStateChanged(ui::PlatformWindowState new_state) override;
+  void OnWindowStateChanged(ui::PlatformWindowState old_state,
+                            ui::PlatformWindowState new_state) override;
   void OnLostCapture() override;
   void OnAcceleratedWidgetAvailable(gfx::AcceleratedWidget widget) override;
+  void OnWillDestroyAcceleratedWidget() override;
   void OnAcceleratedWidgetDestroyed() override;
   void OnActivationChanged(bool active) override;
+  void OnMouseEnter() override;
 
   // Overridden from aura::WindowTreeHost:
   bool CaptureSystemKeyEventsImpl(
-      base::Optional<base::flat_set<ui::DomCode>> dom_codes) override;
+      absl::optional<base::flat_set<ui::DomCode>> dom_codes) override;
   void ReleaseSystemKeyEventCapture() override;
   bool IsKeyLocked(ui::DomCode dom_code) override;
   base::flat_map<std::string, std::string> GetKeyboardLayoutMap() override;
-
-  // This function is only for test purpose.
-  gfx::NativeCursor* GetCursorNative() { return &current_cursor_; }
 
  private:
   gfx::AcceleratedWidget widget_;
@@ -98,13 +95,12 @@ class AURA_EXPORT WindowTreeHostPlatform : public WindowTreeHost,
 
   std::unique_ptr<ui::KeyboardHook> keyboard_hook_;
 
-  // |pending_local_surface_id_allocation_|, and |pending_size_| are set when
-  // the PlatformWindow instance is requested to adopt a new size (in
-  // SetBoundsInPixels()). When the platform confirms the new size (by way of
-  // OnBoundsChanged() callback), the LocalSurfaceIdAllocation is set on the
-  // compositor, by WindowTreeHost.
-  viz::LocalSurfaceIdAllocation pending_local_surface_id_allocation_;
   gfx::Size pending_size_;
+
+  // Tracks how nested OnBoundsChanged() is. That is, on entering
+  // OnBoundsChanged() this is incremented and on leaving OnBoundsChanged() this
+  // is decremented.
+  int on_bounds_changed_recursion_depth_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(WindowTreeHostPlatform);
 };

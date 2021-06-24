@@ -10,30 +10,38 @@
 
 #include "base/feature_list.h"
 #include "base/lazy_instance.h"
+#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/interstitials/chrome_metrics_helper.h"
+#include "chrome/browser/interstitials/chrome_settings_page_helper.h"
 #include "chrome/browser/interstitials/enterprise_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_preferences_util.h"
-#include "chrome/browser/safe_browsing/safe_browsing_controller_client.h"
+#include "chrome/browser/safe_browsing/chrome_controller_client.h"
+#include "chrome/browser/safe_browsing/safe_browsing_metrics_collector.h"
+#include "chrome/browser/safe_browsing/safe_browsing_metrics_collector_factory.h"
+#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager.h"
+#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/browser/threat_details.h"
-#include "components/safe_browsing/common/safe_browsing_prefs.h"
-#include "components/safe_browsing/features.h"
-#include "components/safe_browsing/triggers/trigger_manager.h"
+#include "components/safe_browsing/content/browser/threat_details.h"
+#include "components/safe_browsing/content/triggers/trigger_manager.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "components/safe_browsing/core/common/utils.h"
+#include "components/safe_browsing/core/features.h"
+#include "components/security_interstitials/content/content_metrics_helper.h"
 #include "components/security_interstitials/content/security_interstitial_controller_client.h"
+#include "components/security_interstitials/content/settings_page_helper.h"
+#include "components/security_interstitials/content/unsafe_resource_util.h"
 #include "components/security_interstitials/core/controller_client.h"
+#include "components/security_interstitials/core/unsafe_resource.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/interstitial_page.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 
 using content::BrowserThread;
-using content::InterstitialPage;
 using content::WebContents;
 using security_interstitials::BaseSafeBrowsingErrorUI;
 using security_interstitials::SecurityInterstitialControllerClient;
@@ -42,6 +50,29 @@ namespace safe_browsing {
 
 namespace {
 const char kHelpCenterLink[] = "cpn_safe_browsing";
+
+SafeBrowsingMetricsCollector::EventType GetEventTypeFromThreatSource(
+    ThreatSource threat_source) {
+  switch (threat_source) {
+    case ThreatSource::LOCAL_PVER4:
+    case ThreatSource::REMOTE:
+      return SafeBrowsingMetricsCollector::EventType::
+          DATABASE_INTERSTITIAL_BYPASS;
+      break;
+    case ThreatSource::CLIENT_SIDE_DETECTION:
+      return SafeBrowsingMetricsCollector::EventType::CSD_INTERSTITIAL_BYPASS;
+      break;
+    case ThreatSource::REAL_TIME_CHECK:
+      return SafeBrowsingMetricsCollector::EventType::
+          REAL_TIME_INTERSTITIAL_BYPASS;
+      break;
+    default:
+      NOTREACHED() << "Unexpected threat source.";
+      return SafeBrowsingMetricsCollector::EventType::
+          DATABASE_INTERSTITIAL_BYPASS;
+  }
+}
+
 }  // namespace
 
 // static
@@ -56,8 +87,8 @@ class SafeBrowsingBlockingPageFactoryImpl
       BaseUIManager* ui_manager,
       WebContents* web_contents,
       const GURL& main_frame_url,
-      const SafeBrowsingBlockingPage::UnsafeResourceList& unsafe_resources)
-      override {
+      const SafeBrowsingBlockingPage::UnsafeResourceList& unsafe_resources,
+      bool should_trigger_reporting) override {
     // Create appropriate display options for this blocking page.
     PrefService* prefs =
         Profile::FromBrowserContext(web_contents->GetBrowserContext())
@@ -77,14 +108,16 @@ class SafeBrowsingBlockingPageFactoryImpl
         is_extended_reporting_opt_in_allowed,
         web_contents->GetBrowserContext()->IsOffTheRecord(),
         IsExtendedReportingEnabled(*prefs),
-        IsExtendedReportingPolicyManaged(*prefs), is_proceed_anyway_disabled,
+        IsExtendedReportingPolicyManaged(*prefs),
+        IsEnhancedProtectionEnabled(*prefs), is_proceed_anyway_disabled,
         true,  // should_open_links_in_new_tab
         true,  // always_show_back_to_safety
-        kHelpCenterLink);
+        true,  // is_enhanced_protection_message_enabled
+        IsSafeBrowsingPolicyManaged(*prefs), kHelpCenterLink);
 
-    return new SafeBrowsingBlockingPage(ui_manager, web_contents,
-                                        main_frame_url, unsafe_resources,
-                                        display_options);
+    return new SafeBrowsingBlockingPage(
+        ui_manager, web_contents, main_frame_url, unsafe_resources,
+        display_options, should_trigger_reporting);
   }
 
  private:
@@ -100,7 +133,7 @@ static base::LazyInstance<SafeBrowsingBlockingPageFactoryImpl>::DestructorAtExit
     g_safe_browsing_blocking_page_factory_impl = LAZY_INSTANCE_INITIALIZER;
 
 // static
-const content::InterstitialPageDelegate::TypeID
+const security_interstitials::SecurityInterstitialPage::TypeID
     SafeBrowsingBlockingPage::kTypeForTesting =
         &SafeBrowsingBlockingPage::kTypeForTesting;
 
@@ -109,7 +142,9 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
     WebContents* web_contents,
     const GURL& main_frame_url,
     const UnsafeResourceList& unsafe_resources,
-    const BaseSafeBrowsingErrorUI::SBErrorDisplayOptions& display_options)
+    const BaseSafeBrowsingErrorUI::SBErrorDisplayOptions& display_options,
+    bool should_trigger_reporting,
+    network::SharedURLLoaderFactory* url_loader_for_testing)
     : BaseBlockingPage(
           ui_manager,
           web_contents,
@@ -117,7 +152,8 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
           unsafe_resources,
           CreateControllerClient(web_contents, unsafe_resources, ui_manager),
           display_options),
-      threat_details_in_progress_(false) {
+      threat_details_in_progress_(false),
+      threat_source_(unsafe_resources[0].threat_source) {
   // Make sure the safe browsing service is available - it may not be when
   // shutting down.
   if (!g_browser_process->safe_browsing_service())
@@ -133,72 +169,50 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
     Profile* profile =
         Profile::FromBrowserContext(web_contents->GetBrowserContext());
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
-        content::BrowserContext::GetDefaultStoragePartition(profile)
-            ->GetURLLoaderFactoryForBrowserProcess();
-    threat_details_in_progress_ =
-        g_browser_process->safe_browsing_service()
-            ->trigger_manager()
-            ->StartCollectingThreatDetails(
-                TriggerType::SECURITY_INTERSTITIAL, web_contents,
-                unsafe_resources[0], url_loader_factory,
-                HistoryServiceFactory::GetForProfile(
-                    profile, ServiceAccessType::EXPLICIT_ACCESS),
-                sb_error_ui()->get_error_display_options());
+        url_loader_for_testing ? url_loader_for_testing
+                               : profile->GetDefaultStoragePartition()
+                                     ->GetURLLoaderFactoryForBrowserProcess();
+    if (should_trigger_reporting) {
+      threat_details_in_progress_ =
+          g_browser_process->safe_browsing_service()
+              ->trigger_manager()
+              ->StartCollectingThreatDetails(
+                  TriggerType::SECURITY_INTERSTITIAL, web_contents,
+                  unsafe_resources[0], url_loader_factory,
+                  HistoryServiceFactory::GetForProfile(
+                      profile, ServiceAccessType::EXPLICIT_ACCESS),
+                  SafeBrowsingNavigationObserverManagerFactory::
+                      GetForBrowserContext(web_contents->GetBrowserContext()),
+                  sb_error_ui()->get_error_display_options());
+    }
   }
 }
 
 SafeBrowsingBlockingPage::~SafeBrowsingBlockingPage() {
 }
 
-void SafeBrowsingBlockingPage::OverrideRendererPrefs(
-    blink::mojom::RendererPreferences* prefs) {
-  Profile* profile = Profile::FromBrowserContext(
-      web_contents()->GetBrowserContext());
-  renderer_preferences_util::UpdateFromSystemSettings(prefs, profile);
-}
-
-void SafeBrowsingBlockingPage::HandleSubresourcesAfterProceed() {
-  // Check to see if some new notifications of unsafe resources have been
-  // received while we were showing the interstitial.
-  UnsafeResourceMap* unsafe_resource_map = GetUnsafeResourcesMap();
-  auto iter = unsafe_resource_map->find(web_contents());
-  if (iter != unsafe_resource_map->end() && !iter->second.empty()) {
-    // All queued unsafe resources should be for the same page:
-    UnsafeResourceList unsafe_resources = iter->second;
-    content::NavigationEntry* entry =
-        unsafe_resources[0].GetNavigationEntryForResource();
-    // Build an interstitial for all the unsafe resources notifications.
-    // Don't show it now as showing an interstitial while an interstitial is
-    // already showing would cause DontProceed() to be invoked.
-    SafeBrowsingBlockingPage* blocking_page = factory_->CreateSafeBrowsingPage(
-        ui_manager(), web_contents(), entry ? entry->GetURL() : GURL(),
-        unsafe_resources);
-    unsafe_resource_map->erase(iter);
-
-    // Now that this interstitial is gone, we can show the new one.
-    blocking_page->Show();
-  }
-}
-
-content::InterstitialPageDelegate::TypeID
-SafeBrowsingBlockingPage::GetTypeForTesting() const {
+security_interstitials::SecurityInterstitialPage::TypeID
+SafeBrowsingBlockingPage::GetTypeForTesting() {
   return SafeBrowsingBlockingPage::kTypeForTesting;
 }
 
 void SafeBrowsingBlockingPage::OnInterstitialClosing() {
-  if (base::FeatureList::IsEnabled(safe_browsing::kCommittedSBInterstitials) &&
-      IsMainPageLoadBlocked(unsafe_resources())) {
-    // With committed interstitials OnProceed and OnDontProceed don't get
-    // called, so call FinishThreatDetails from here.
-    FinishThreatDetails(
-        (proceeded()
-             ? base::TimeDelta::FromMilliseconds(threat_details_proceed_delay())
-             : base::TimeDelta()),
-        proceeded(), controller()->metrics_helper()->NumVisits());
-    if (proceeded()) {
-      HandleSubresourcesAfterProceed();
-    } else {
-      OnDontProceedDone();
+  // With committed interstitials OnProceed and OnDontProceed don't get
+  // called, so call FinishThreatDetails from here.
+  FinishThreatDetails((proceeded() ? base::TimeDelta::FromMilliseconds(
+                                         threat_details_proceed_delay())
+                                   : base::TimeDelta()),
+                      proceeded(), controller()->metrics_helper()->NumVisits());
+  if (!proceeded()) {
+    OnDontProceedDone();
+  } else {
+    Profile* profile =
+        Profile::FromBrowserContext(web_contents()->GetBrowserContext());
+    auto* metrics_collector =
+        SafeBrowsingMetricsCollectorFactory::GetForProfile(profile);
+    if (metrics_collector) {
+      metrics_collector->AddSafeBrowsingEventToPref(
+          GetEventTypeFromThreatSource(threat_source_));
     }
   }
   BaseBlockingPage::OnInterstitialClosing();
@@ -236,69 +250,22 @@ SafeBrowsingBlockingPage* SafeBrowsingBlockingPage::CreateBlockingPage(
     BaseUIManager* ui_manager,
     WebContents* web_contents,
     const GURL& main_frame_url,
-    const UnsafeResource& unsafe_resource) {
+    const UnsafeResource& unsafe_resource,
+    bool should_trigger_reporting) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "SafeBrowsing.BlockingPage.ResourceType",
+      safe_browsing::GetResourceTypeFromRequestDestination(
+          unsafe_resource.request_destination));
+  UMA_HISTOGRAM_ENUMERATION("SafeBrowsing.BlockingPage.RequestDestination",
+                            unsafe_resource.request_destination);
   const UnsafeResourceList resources{unsafe_resource};
   // Set up the factory if this has not been done already (tests do that
   // before this method is called).
   if (!factory_)
     factory_ = g_safe_browsing_blocking_page_factory_impl.Pointer();
   return factory_->CreateSafeBrowsingPage(ui_manager, web_contents,
-                                          main_frame_url, resources);
-}
-
-// static
-void SafeBrowsingBlockingPage::ShowBlockingPage(
-    BaseUIManager* ui_manager,
-    const UnsafeResource& unsafe_resource) {
-  DVLOG(1) << __func__ << " " << unsafe_resource.url.spec();
-  WebContents* web_contents = unsafe_resource.web_contents_getter.Run();
-
-  if (InterstitialPage::GetInterstitialPage(web_contents) &&
-      unsafe_resource.is_subresource) {
-    // This is an interstitial for a page's resource, let's queue it.
-    UnsafeResourceMap* unsafe_resource_map = GetUnsafeResourcesMap();
-    (*unsafe_resource_map)[web_contents].push_back(unsafe_resource);
-  } else {
-    // There is no interstitial currently showing in that tab, or we are about
-    // to display a new one for the main frame. If there is already an
-    // interstitial, showing the new one will automatically hide the old one.
-    content::NavigationEntry* entry =
-        unsafe_resource.GetNavigationEntryForResource();
-    GURL main_fram_url = entry ? entry->GetURL() : GURL();
-    SafeBrowsingBlockingPage* blocking_page = CreateBlockingPage(
-        ui_manager, web_contents, main_fram_url, unsafe_resource);
-    blocking_page->Show();
-    MaybeTriggerSecurityInterstitialShownEvent(
-        web_contents, main_fram_url,
-        GetThreatTypeStringForInterstitial(unsafe_resource.threat_type),
-        /*net_error_code=*/0);
-  }
-}
-
-void SafeBrowsingBlockingPage::CommandReceived(const std::string& page_cmd) {
-  if (page_cmd == "\"pageLoadComplete\"") {
-    // content::WaitForRenderFrameReady sends this message when the page
-    // load completes. Ignore it.
-    return;
-  }
-
-  int command = 0;
-  bool retval = base::StringToInt(page_cmd, &command);
-  DCHECK(retval) << page_cmd;
-
-  auto interstitial_command =
-      static_cast<security_interstitials::SecurityInterstitialCommand>(command);
-  if (base::FeatureList::IsEnabled(safe_browsing::kCommittedSBInterstitials) &&
-      IsMainPageLoadBlocked(unsafe_resources()) &&
-      interstitial_command ==
-          security_interstitials::SecurityInterstitialCommand::CMD_PROCEED) {
-    // With committed interstitials, OnProceed() doesn't get called, so handle
-    // adding to the allow list here.
-    set_proceeded(true);
-    ui_manager()->OnBlockingPageDone(unsafe_resources(), true /* proceed */,
-                                     web_contents(), main_frame_url());
-  }
-  BaseBlockingPage::CommandReceived(page_cmd);
+                                          main_frame_url, resources,
+                                          should_trigger_reporting);
 }
 
 // static
@@ -311,14 +278,20 @@ SafeBrowsingBlockingPage::CreateControllerClient(
       web_contents->GetBrowserContext());
   DCHECK(profile);
 
-  std::unique_ptr<ChromeMetricsHelper> metrics_helper =
-      std::make_unique<ChromeMetricsHelper>(web_contents,
-                                            unsafe_resources[0].url,
-                                            GetReportingInfo(unsafe_resources));
+  std::unique_ptr<ContentMetricsHelper> metrics_helper =
+      std::make_unique<ContentMetricsHelper>(
+          HistoryServiceFactory::GetForProfile(
+              Profile::FromBrowserContext(web_contents->GetBrowserContext()),
+              ServiceAccessType::EXPLICIT_ACCESS),
+          unsafe_resources[0].url, GetReportingInfo(unsafe_resources));
 
-  return std::make_unique<SafeBrowsingControllerClient>(
+  auto chrome_settings_page_helper =
+      std::make_unique<security_interstitials::ChromeSettingsPageHelper>();
+
+  return std::make_unique<ChromeControllerClient>(
       web_contents, std::move(metrics_helper), profile->GetPrefs(),
-      ui_manager->app_locale(), ui_manager->default_safe_page());
+      ui_manager->app_locale(), ui_manager->default_safe_page(),
+      std::move(chrome_settings_page_helper));
 }
 
 }  // namespace safe_browsing

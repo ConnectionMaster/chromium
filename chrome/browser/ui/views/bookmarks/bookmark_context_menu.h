@@ -5,9 +5,11 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_BOOKMARKS_BOOKMARK_CONTEXT_MENU_H_
 #define CHROME_BROWSER_UI_VIEWS_BOOKMARKS_BOOKMARK_CONTEXT_MENU_H_
 
+#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "chrome/browser/ui/bookmarks/bookmark_context_menu_controller.h"
+#include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "ui/views/controls/menu/menu_delegate.h"
 
 class Browser;
@@ -38,15 +40,23 @@ class BookmarkContextMenu : public BookmarkContextMenuControllerDelegate,
                             public views::MenuDelegate {
  public:
   // |browser| is used to open the bookmark manager, and is NULL in tests.
+  // |get_navigator| is used to get the current PageNavigator for opening
+  // bookmarks.
   BookmarkContextMenu(
       views::Widget* parent_widget,
       Browser* browser,
       Profile* profile,
-      content::PageNavigator* page_navigator,
+      base::RepeatingCallback<content::PageNavigator*()> get_navigator,
+      BookmarkLaunchLocation opened_from,
       const bookmarks::BookmarkNode* parent,
       const std::vector<const bookmarks::BookmarkNode*>& selection,
       bool close_on_remove);
   ~BookmarkContextMenu() override;
+
+  // Installs a callback to be run before the context menu is run. The callback
+  // runs only once, and only one such callback can be set at any time. Once the
+  // installed callback is run, another callback can be installed.
+  static void InstallPreRunCallback(base::OnceClosure callback);
 
   // Shows the context menu at the specified point.
   void RunMenuAt(const gfx::Point& point,
@@ -57,9 +67,6 @@ class BookmarkContextMenu : public BookmarkContextMenuControllerDelegate,
   void set_observer(BookmarkContextMenuObserver* observer) {
     observer_ = observer;
   }
-
-  // Sets the PageNavigator.
-  void SetPageNavigator(content::PageNavigator* navigator);
 
   // Overridden from views::MenuDelegate:
   void ExecuteCommand(int command_id, int event_flags) override;

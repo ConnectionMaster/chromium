@@ -10,10 +10,11 @@
 #include "base/bind.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "base/value_conversions.h"
+#include "base/util/values/values_util.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/system_network_context_manager.h"
@@ -54,11 +55,19 @@ const char kOriginIds[] = "origin_ids";
 // TODO(jrummell): Adjust this value if needed after initial launch.
 constexpr int kMaxPreProvisionedOriginIds = 2;
 
+// The maximum number of origin IDs logged to UMA.
+constexpr int kUMAMaxPreProvisionedOriginIds = 10;
+
 // "expirable_token" is only good for 24 hours.
 constexpr base::TimeDelta kExpirationDelta = base::TimeDelta::FromHours(24);
 
 // Time to wait before attempting pre-provisioning at startup (if enabled).
 constexpr base::TimeDelta kStartupDelay = base::TimeDelta::FromMinutes(1);
+
+// Time to wait before logging number of pre-provisioned origin IDs at startup
+constexpr base::TimeDelta kCheckDelay = base::TimeDelta::FromMinutes(5);
+static_assert(kCheckDelay > kStartupDelay,
+              "Must allow time for pre-provisioning to run first");
 
 // When unable to get an origin ID, only attempt to pre-provision more if
 // pre-provision is called within |kExpirationDelta| of the time of this
@@ -73,8 +82,7 @@ void SetExpirableTokenIfNeeded(PrefService* const pref_service) {
   DictionaryPrefUpdate update(pref_service, kMediaDrmOriginIds);
   auto* origin_id_dict = update.Get();
   origin_id_dict->SetKey(
-      kExpirableToken,
-      base::CreateTimeValue(base::Time::Now() + kExpirationDelta));
+      kExpirableToken, util::TimeToValue(base::Time::Now() + kExpirationDelta));
 }
 
 void RemoveExpirableToken(base::Value* origin_id_dict) {
@@ -110,13 +118,13 @@ bool CanPreProvision(base::Value* origin_id_dict) {
   if (!token_value)
     return false;
 
-  base::Time expiration_time;
-  if (!base::GetValueAsTime(*token_value, &expiration_time)) {
+  absl::optional<base::Time> expiration_time = util::ValueToTime(token_value);
+  if (!expiration_time) {
     RemoveExpirableToken(origin_id_dict);
     return false;
   }
 
-  if (base::Time::Now() > expiration_time) {
+  if (base::Time::Now() > *expiration_time) {
     DVLOG(3) << __func__ << ": Token exists but has expired";
     RemoveExpirableToken(origin_id_dict);
     return false;
@@ -147,24 +155,21 @@ base::UnguessableToken TakeFirstOriginId(PrefService* const pref_service) {
   auto* origin_id_dict = update.Get();
   DCHECK(origin_id_dict->is_dict());
 
-  base::Value* origin_ids =
-      origin_id_dict->FindKeyOfType(kOriginIds, base::Value::Type::LIST);
+  base::Value* origin_ids = origin_id_dict->FindListKey(kOriginIds);
   if (!origin_ids)
     return base::UnguessableToken::Null();
 
-  auto& origin_ids_list = origin_ids->GetList();
-  if (origin_ids_list.empty())
+  if (origin_ids->GetList().empty())
     return base::UnguessableToken::Null();
 
-  base::UnguessableToken result;
-  auto first_entry = origin_ids_list.begin();
-  if (!base::GetValueAsUnguessableToken(*first_entry, &result))
+  auto first_entry = origin_ids->GetList().begin();
+  absl::optional<base::UnguessableToken> result =
+      util::ValueToUnguessableToken(*first_entry);
+  if (!result)
     return base::UnguessableToken::Null();
 
-  // Update the setting with the value removed.
-  origin_ids_list.erase(first_entry);
-  origin_id_dict->SetKey(kOriginIds, base::Value(origin_ids_list));
-  return result;
+  origin_ids->EraseListIter(first_entry);
+  return *result;
 }
 
 void AddOriginId(base::Value* origin_id_dict,
@@ -173,18 +178,10 @@ void AddOriginId(base::Value* origin_id_dict,
   DCHECK(origin_id_dict);
   DCHECK(origin_id_dict->is_dict());
 
-  base::Value* origin_ids =
-      origin_id_dict->FindKeyOfType(kOriginIds, base::Value::Type::LIST);
-  if (!origin_ids) {
-    base::Value::ListStorage list;
-    list.push_back(base::CreateUnguessableTokenValue(origin_id));
-    origin_id_dict->SetKey(kOriginIds, base::Value(list));
-    return;
-  }
-
-  auto& origin_ids_list = origin_ids->GetList();
-  origin_ids_list.push_back(base::CreateUnguessableTokenValue(origin_id));
-  origin_id_dict->SetKey(kOriginIds, base::Value(origin_ids_list));
+  base::Value* origin_ids = origin_id_dict->FindListKey(kOriginIds);
+  if (!origin_ids)
+    origin_ids = origin_id_dict->SetKey(kOriginIds, base::ListValue());
+  origin_ids->Append(util::UnguessableTokenToValue(origin_id));
 }
 
 // Helper class that creates a new origin ID and provisions it for both L1
@@ -192,21 +189,33 @@ void AddOriginId(base::Value* origin_id_dict,
 // (successfully or not).
 class MediaDrmProvisionHelper {
  public:
+  using ProvisionedOriginIdCB = base::OnceCallback<void(
+      bool success,
+      const MediaDrmOriginIdManager::MediaDrmOriginId& origin_id)>;
+
   MediaDrmProvisionHelper() {
     DVLOG(1) << __func__;
     DCHECK(media::MediaDrmBridge::IsPerOriginProvisioningSupported());
-
-    create_fetcher_cb_ =
-        base::BindRepeating(&content::CreateProvisionFetcher,
-                            g_browser_process->system_network_context_manager()
-                                ->GetSharedURLLoaderFactory());
   }
 
-  void Provision(MediaDrmOriginIdManager::ProvisionedOriginIdCB callback) {
+  void Provision(ProvisionedOriginIdCB callback) {
     DVLOG(1) << __func__;
+
+    auto* network_context_manager =
+        g_browser_process->system_network_context_manager();
+    if (!network_context_manager) {
+      // system_network_context_manager() returns nullptr in unit tests.
+      DLOG(WARNING) << "Failed to provision origin ID as no "
+                       "system_network_context_manager";
+      std::move(callback).Run(false, absl::nullopt);
+      return;
+    }
 
     complete_callback_ = std::move(callback);
     origin_id_ = base::UnguessableToken::Create();
+    create_fetcher_cb_ = base::BindRepeating(
+        &content::CreateProvisionFetcher,
+        network_context_manager->GetSharedURLLoaderFactory());
 
     // Try provisioning for L3 first.
     media_drm_bridge_ = media::MediaDrmBridge::CreateWithoutSessionSupport(
@@ -262,12 +271,12 @@ class MediaDrmProvisionHelper {
     LOG_IF(WARNING, !success) << "Failed to provision origin ID";
     std::move(complete_callback_)
         .Run(success,
-             success ? base::make_optional(origin_id_) : base::nullopt);
+             success ? absl::make_optional(origin_id_) : absl::nullopt);
     delete this;
   }
 
   media::CreateFetcherCB create_fetcher_cb_;
-  MediaDrmOriginIdManager::ProvisionedOriginIdCB complete_callback_;
+  ProvisionedOriginIdCB complete_callback_;
   base::UnguessableToken origin_id_;
   scoped_refptr<media::MediaDrmBridge> media_drm_bridge_;
 };
@@ -319,17 +328,20 @@ void MediaDrmOriginIdManager::RegisterProfilePrefs(
 }
 
 MediaDrmOriginIdManager::MediaDrmOriginIdManager(PrefService* pref_service)
-    : pref_service_(pref_service), weak_factory_(this) {
+    : pref_service_(pref_service) {
   DVLOG(1) << __func__;
   DCHECK(pref_service_);
 
   // This manager can be started when the user's profile is loaded, if
-  // |kMediaDrmPreprovisioningAtStartup| is enabled. In that case attempt to
-  // pre-provisioning origin IDs if needed. If this manager is only loaded when
-  // needed (|kMediaDrmPreprovisioningAtStartup| not enabled), then the caller
-  // is most likely going to call GetOriginId(), so let it pre-provision origin
-  // IDs if necessary. This flag is also used by testing so that it can check
-  // pre-provisioning directly.
+  // |kMediaDrmPreprovisioning| is enabled. If that flag is not set, then this
+  // manager is started only when a pre-provisioned origin ID is needed.
+
+  // If |kMediaDrmPreprovisioningAtStartup| is enabled, attempt to
+  // pre-provisioning origin IDs when started. If this manager is only loaded
+  // when needed, then the caller is most likely going to call GetOriginId()
+  // right away, so it will pre-provision extra origin IDs if necessary (and the
+  // posted task won't do anything). |kMediaDrmPreprovisioningAtStartup| is also
+  // used by testing so that it can check pre-provisioning directly.
   if (base::FeatureList::IsEnabled(media::kMediaDrmPreprovisioningAtStartup)) {
     // Running this after a delay of |kStartupDelay| in order to not do too much
     // extra work when the profile is loaded.
@@ -339,13 +351,23 @@ MediaDrmOriginIdManager::MediaDrmOriginIdManager(PrefService* pref_service)
                        weak_factory_.GetWeakPtr()),
         kStartupDelay);
   }
+
+  // In order to determine how devices are pre-provisioning origin IDs, post a
+  // task to check how many pre-provisioned origin IDs are available after a
+  // delay of |kCheckDelay|.
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(
+          &MediaDrmOriginIdManager::RecordCountOfPreprovisionedOriginIds,
+          weak_factory_.GetWeakPtr()),
+      kCheckDelay);
 }
 
 MediaDrmOriginIdManager::~MediaDrmOriginIdManager() {
   // Reject any pending requests.
   while (!pending_provisioned_origin_id_cbs_.empty()) {
     std::move(pending_provisioned_origin_id_cbs_.front())
-        .Run(false, base::nullopt);
+        .Run(GetOriginIdStatus::kFailure, absl::nullopt);
     pending_provisioned_origin_id_cbs_.pop();
   }
 }
@@ -403,7 +425,8 @@ void MediaDrmOriginIdManager::GetOriginId(ProvisionedOriginIdCB callback) {
   }
 
   // There is an origin ID available so pass it to the caller.
-  std::move(callback).Run(true, origin_id);
+  std::move(callback).Run(GetOriginIdStatus::kSuccessWithPreProvisionedOriginId,
+                          origin_id);
 }
 
 void MediaDrmOriginIdManager::StartProvisioningAsync() {
@@ -467,7 +490,8 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
       base::queue<ProvisionedOriginIdCB> pending_requests;
       pending_requests.swap(pending_provisioned_origin_id_cbs_);
       while (!pending_requests.empty()) {
-        std::move(pending_requests.front()).Run(false, base::nullopt);
+        std::move(pending_requests.front())
+            .Run(GetOriginIdStatus::kFailure, absl::nullopt);
         pending_requests.pop();
       }
     }
@@ -481,7 +505,9 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
   // origin IDs in the preference.
   DCHECK(origin_id);
   if (!pending_provisioned_origin_id_cbs_.empty()) {
-    std::move(pending_provisioned_origin_id_cbs_.front()).Run(true, origin_id);
+    std::move(pending_provisioned_origin_id_cbs_.front())
+        .Run(GetOriginIdStatus::kSuccessWithNewlyProvisionedOriginId,
+             origin_id);
     pending_provisioned_origin_id_cbs_.pop();
   } else {
     DictionaryPrefUpdate update(pref_service_, kMediaDrmOriginIds);
@@ -499,4 +525,21 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
 
   // Create another pre-provisioned origin ID asynchronously.
   StartProvisioningAsync();
+}
+
+void MediaDrmOriginIdManager::RecordCountOfPreprovisionedOriginIds() {
+  int available_origin_ids = 0;
+  const auto* pref = pref_service_->GetDictionary(kMediaDrmOriginIds);
+  if (pref)
+    available_origin_ids = CountAvailableOriginIds(pref);
+
+  if (media::MediaDrmBridge::IsPerApplicationProvisioningSupported()) {
+    UMA_HISTOGRAM_EXACT_LINEAR(
+        "Media.EME.MediaDrm.PreprovisionedOriginId.PerAppProvisioningDevice",
+        available_origin_ids, kUMAMaxPreProvisionedOriginIds);
+  } else {
+    UMA_HISTOGRAM_EXACT_LINEAR(
+        "Media.EME.MediaDrm.PreprovisionedOriginId.NonPerAppProvisioningDevice",
+        available_origin_ids, kUMAMaxPreProvisionedOriginIds);
+  }
 }

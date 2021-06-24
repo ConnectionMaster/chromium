@@ -8,8 +8,9 @@
 #include <string>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/files/file_path.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 class GURL;
 class Profile;
@@ -24,11 +25,24 @@ extern const base::FilePath::CharType kRemovableMediaPath[];
 // Absolute path for the folder containing Android files.
 extern const base::FilePath::CharType kAndroidFilesPath[];
 
+// Absolute path for the folder containing font files.
+extern const base::FilePath::CharType kSystemFontsPath[];
+
+// Absolute path for the folder containing archive mounts.
+extern const base::FilePath::CharType kArchiveMountPath[];
+
+// Returns FilesApp origin chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj.
+const url::Origin& GetFilesAppOrigin();
+
 // Gets the absolute path for the 'Downloads' folder for the |profile|.
 base::FilePath GetDownloadsFolderForProfile(Profile* profile);
 
 // Gets the absolute path for the 'MyFiles' folder for the |profile|.
 base::FilePath GetMyFilesFolderForProfile(Profile* profile);
+
+// Gets the absolute path for the user's Android Play files (Movies, Pictures,
+// etc..., Android apps excluded). The default path may be overridden by tests.
+base::FilePath GetAndroidFilesPath();
 
 // Converts |old_path| to |new_path| and returns true, if the old path points
 // to an old location of user folders (in "Downloads" or "Google Drive").
@@ -87,26 +101,59 @@ std::vector<std::string> GetCrostiniMountOptions(
     const std::string& host_private_key,
     const std::string& container_public_key);
 
+// Convert a cracked |file_system_url| to a path inside a VM mounted at
+// |vm_mount| (e.g. /mnt/chromeos). If |map_crostini_home| is set, paths under
+// GetCrostiniMountDirectory() are translated to be under the user's home
+// directory (e.g. /home/user) otherwise these paths map to
+// |vm_mount|/LinuxFiles. This function is the reverse of
+// ConvertPathInsideVMToFileSystemURL(). Returns true iff path can be converted.
+bool ConvertFileSystemURLToPathInsideVM(
+    Profile* profile,
+    const storage::FileSystemURL& file_system_url,
+    const base::FilePath& vm_mount,
+    bool map_crostini_home,
+    base::FilePath* inside);
+
 // Convert a cracked url to a path inside the Crostini VM.
 bool ConvertFileSystemURLToPathInsideCrostini(
     Profile* profile,
     const storage::FileSystemURL& file_system_url,
     base::FilePath* inside);
 
+// Convert a path inside a VM mounted at |vm_mount| (e.g. /mnt/chromeos) to a
+// FileSystemURL. If |map_crostini_home| is set, paths
+// under the user's home directory (e.g. /home/user) are translated to be under
+// GetCrostiniMountDirectory(). This function is the reverse of
+// ConvertFileSystemURLToPathInsideVM(). Returns true iff path can be converted.
+bool ConvertPathInsideVMToFileSystemURL(
+    Profile* profile,
+    const base::FilePath& inside,
+    const base::FilePath& vm_mount,
+    bool map_crostini_home,
+    storage::FileSystemURL* file_system_url);
+
 // DEPRECATED. Use |ConvertToContentUrls| instead.
 // While this function can convert paths under Downloads, /media/removable
 // and /special/drive, this CANNOT convert paths under ARC media directories
 // (/special/arc-documents-provider).
 // TODO(crbug.com/811679): Migrate all callers and remove this.
-bool ConvertPathToArcUrl(const base::FilePath& path, GURL* arc_url_out);
+// |requires_sharing_out| will be set to true if |path| needs to be made
+// available to ARCVM by sharing via Seneschal.
+bool ConvertPathToArcUrl(const base::FilePath& path,
+                         GURL* arc_url_out,
+                         bool* requires_sharing_out);
 
+// |paths_to_share| is a list of paths to be made available to ARCVM by sharing
+// them via Seneschal.
 using ConvertToContentUrlsCallback =
-    base::OnceCallback<void(const std::vector<GURL>& content_urls)>;
+    base::OnceCallback<void(const std::vector<GURL>& content_urls,
+                            const std::vector<base::FilePath>& paths_to_share)>;
 
 // Asynchronously converts Chrome OS file system URLs to content:// URLs.
 // Always returns a vector of the same size as |file_system_urls|.
 // Empty GURLs are filled in the vector if conversion fails.
 void ConvertToContentUrls(
+    Profile* profile,
     const std::vector<storage::FileSystemURL>& file_system_urls,
     ConvertToContentUrlsCallback callback);
 
@@ -114,9 +161,9 @@ void ConvertToContentUrls(
 // Replacements:
 // * /home/chronos/user/Downloads                => Downloads
 // * /home/chronos/u-<hash>/Downloads            => Downloads
-// * /special/drive-<hash>/root                  => Google Drive
-// * /special/drive-<hash>/team_drives           => Team Drives
-// * /special/drive-<hash>/Computers             => Computers
+// * /media/fuse/drivefs-<hash>/root             => Google Drive
+// * /media/fuse/drivefs-<hash>/team_drives      => Team Drives
+// * /media/fuse/drivefs-<hash>/Computers        => Computers
 // * /run/arc/sdcard/write/emulated/0            => Play files
 // * /media/fuse/crostini_<hash>_termina_penguin => Linux files
 // * '/' with ' \u203a ' (angled quote sign) for display purposes.
@@ -129,6 +176,7 @@ bool ExtractMountNameFileSystemNameFullPath(const base::FilePath& absolute_path,
                                             std::string* mount_name,
                                             std::string* file_system_name,
                                             std::string* full_path);
+
 }  // namespace util
 }  // namespace file_manager
 

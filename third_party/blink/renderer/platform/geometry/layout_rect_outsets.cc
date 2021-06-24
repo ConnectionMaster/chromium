@@ -31,7 +31,6 @@
 #include "third_party/blink/renderer/platform/geometry/layout_rect_outsets.h"
 
 #include <algorithm>
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -57,9 +56,9 @@ std::ostream& operator<<(std::ostream& ostream,
 
 String LayoutRectOutsets::ToString() const {
   return String::Format(
-      "top %s; right %s; bottom %s; left %s", Top().ToString().Ascii().data(),
-      Right().ToString().Ascii().data(), Bottom().ToString().Ascii().data(),
-      Left().ToString().Ascii().data());
+      "top %s; right %s; bottom %s; left %s", Top().ToString().Ascii().c_str(),
+      Right().ToString().Ascii().c_str(), Bottom().ToString().Ascii().c_str(),
+      Left().ToString().Ascii().c_str());
 }
 
 }  // namespace blink

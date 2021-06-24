@@ -4,8 +4,15 @@
 
 #include "gpu/command_buffer/service/service_font_manager.h"
 
+#include <inttypes.h>
+
+#include "base/bits.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
+#include "base/strings/stringprintf.h"
+#include "components/crash/core/common/crash_key.h"
 #include "gpu/command_buffer/common/buffer.h"
 #include "gpu/command_buffer/common/discardable_handle.h"
 
@@ -53,19 +60,19 @@ class Deserializer {
  private:
   bool AlignMemory(uint32_t size, size_t alignment) {
     // Due to the math below, alignment must be a power of two.
-    DCHECK_GT(alignment, 0u);
-    DCHECK_EQ(alignment & (alignment - 1), 0u);
+    DCHECK(base::bits::IsPowerOfTwo(alignment));
 
-    uintptr_t memory = reinterpret_cast<uintptr_t>(memory_);
-    size_t padding = ((memory + alignment - 1) & ~(alignment - 1)) - memory;
+    size_t memory = reinterpret_cast<size_t>(memory_);
+    size_t padding = base::bits::AlignUp(memory, alignment) - memory;
 
     base::CheckedNumeric<uint32_t> checked_padded_size = bytes_read_;
     checked_padded_size += padding;
     checked_padded_size += size;
     uint32_t padded_size = 0;
     if (!checked_padded_size.AssignIfValid(&padded_size) ||
-        padded_size > memory_size_)
+        padded_size > memory_size_) {
       return false;
+    }
 
     memory_ += padding;
     bytes_read_ += padding;
@@ -81,9 +88,12 @@ class Deserializer {
 class ServiceFontManager::SkiaDiscardableManager
     : public SkStrikeClient::DiscardableHandleManager {
  public:
-  SkiaDiscardableManager(scoped_refptr<ServiceFontManager> font_manager)
+  explicit SkiaDiscardableManager(
+      scoped_refptr<ServiceFontManager> font_manager)
       : font_manager_(std::move(font_manager)) {}
   ~SkiaDiscardableManager() override = default;
+
+  static constexpr int kMaxDumps = 5;
 
   bool deleteHandle(SkDiscardableHandleId handle_id) override {
     if (!font_manager_)
@@ -91,7 +101,8 @@ class ServiceFontManager::SkiaDiscardableManager
     return font_manager_->DeleteHandle(handle_id);
   }
 
-  void notifyCacheMiss(SkStrikeClient::CacheMissType type) override {
+  void notifyCacheMiss(SkStrikeClient::CacheMissType type,
+                       int fontSize) override {
     UMA_HISTOGRAM_ENUMERATION("GPU.OopRaster.GlyphCacheMiss", type,
                               SkStrikeClient::CacheMissType::kLast + 1);
     // In general, Skia analysis of glyphs should find all cases.
@@ -99,14 +110,32 @@ class ServiceFontManager::SkiaDiscardableManager
     // it can be fixed.
     NOTREACHED();
 
-    const bool no_fallback = (type == SkStrikeClient::kGlyphMetrics ||
-                              type == SkStrikeClient::kGlyphPath ||
-                              type == SkStrikeClient::kGlyphImage);
-    constexpr int kMaxDumps = 10;
-    if (no_fallback && dump_count_ < kMaxDumps) {
-      ++dump_count_;
+    if (dump_count_ < kMaxDumps && base::RandInt(1, 100) == 1 &&
+        !font_manager_->disable_oopr_debug_crash_dump()) {
+      static crash_reporter::CrashKeyString<64> crash_key("oop_cache_miss");
+      crash_reporter::ScopedCrashKeyString auto_clear(
+          &crash_key, base::StringPrintf("type: %" PRIu32 ", fontSize: %d",
+                                         type, fontSize));
       base::debug::DumpWithoutCrashing();
+      ++dump_count_;
     }
+  }
+
+  void notifyReadFailure(
+      const DiscardableHandleManager::ReadFailureData& data) override {
+    if (dump_count_ >= kMaxDumps)
+      return;
+
+    std::string str = base::StringPrintf(
+        "ms: %zd, br: %zd, ts: %" PRIu64 ", sc: %" PRIu64 ", gic: %" PRIu64
+        ", gpc: %" PRIu64,
+        data.memorySize, data.bytesRead, data.typefaceSize, data.strikeCount,
+        data.glyphImagesCount, data.glyphPathsCount);
+    static crash_reporter::CrashKeyString<128> crash_key("oop_read_failure");
+    crash_reporter::ScopedCrashKeyString auto_clear(&crash_key, str);
+
+    ++dump_count_;
+    base::debug::DumpWithoutCrashing();
   }
 
  private:
@@ -114,10 +143,13 @@ class ServiceFontManager::SkiaDiscardableManager
   scoped_refptr<ServiceFontManager> font_manager_;
 };
 
-ServiceFontManager::ServiceFontManager(Client* client)
+ServiceFontManager::ServiceFontManager(Client* client,
+                                       bool disable_oopr_debug_crash_dump)
     : client_(client),
+      client_thread_id_(base::PlatformThread::CurrentId()),
       strike_client_(std::make_unique<SkStrikeClient>(
-          sk_make_sp<SkiaDiscardableManager>(this))) {}
+          sk_make_sp<SkiaDiscardableManager>(this))),
+      disable_oopr_debug_crash_dump_(disable_oopr_debug_crash_dump) {}
 
 ServiceFontManager::~ServiceFontManager() {
   DCHECK(destroyed_);
@@ -137,6 +169,7 @@ bool ServiceFontManager::Deserialize(
     uint32_t memory_size,
     std::vector<SkDiscardableHandleId>* locked_handles) {
   base::AutoLock hold(lock_);
+  DCHECK_EQ(client_thread_id_, base::PlatformThread::CurrentId());
 
   DCHECK(locked_handles->empty());
   DCHECK(!destroyed_);
@@ -223,10 +256,23 @@ bool ServiceFontManager::DeleteHandle(SkDiscardableHandleId handle_id) {
   if (destroyed_)
     return true;
 
+  // If this method returns true, the strike associated with the handle will be
+  // deleted which deletes the memory for all glyphs cached by the strike. On
+  // mac this is resulting in hangs during strike deserialization when a bunch
+  // of strikes may be deleted in bulk. Try to avoid that by pinging the
+  // progress reporter before deleting each strike.
+  // Note that this method should generally only run on the Gpu main thread,
+  // where skia is used, except for single process webview where the renderer
+  // and GPU run in the same process.
+  const bool report_progress =
+      base::PlatformThread::CurrentId() == client_thread_id_;
+
   auto it = discardable_handle_map_.find(handle_id);
   if (it == discardable_handle_map_.end()) {
     LOG(ERROR) << "Tried to delete invalid SkDiscardableHandleId: "
                << handle_id;
+    if (report_progress)
+      client_->ReportProgress();
     return true;
   }
 
@@ -235,6 +281,8 @@ bool ServiceFontManager::DeleteHandle(SkDiscardableHandleId handle_id) {
     return false;
 
   discardable_handle_map_.erase(it);
+  if (report_progress)
+    client_->ReportProgress();
   return true;
 }
 

@@ -8,8 +8,11 @@
 #include <map>
 #include <string>
 
+#include "base/callback_forward.h"
+#include "base/callback_list.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/string_piece.h"
 #include "net/base/net_export.h"
 #include "net/cert/ct_verifier.h"
@@ -28,10 +31,30 @@ class CTLogVerifier;
 // It must be initialized with a list of logs by calling AddLogs.
 class NET_EXPORT MultiLogCTVerifier : public CTVerifier {
  public:
-  MultiLogCTVerifier();
+  class NET_EXPORT CTLogProvider {
+   public:
+    using LogListCallbackList = base::RepeatingCallbackList<void(
+        const std::vector<scoped_refptr<const CTLogVerifier>>& log_verifiers)>;
+
+    base::CallbackListSubscription RegisterLogsListCallback(
+        LogListCallbackList::CallbackType callback);
+
+   protected:
+    CTLogProvider();
+    ~CTLogProvider();
+
+    void NotifyCallbacks(
+        const std::vector<scoped_refptr<const net::CTLogVerifier>>&
+            log_verifiers);
+
+   private:
+    LogListCallbackList callback_list_;
+  };
+
+  explicit MultiLogCTVerifier(CTLogProvider* notifier);
   ~MultiLogCTVerifier() override;
 
-  void AddLogs(
+  void SetLogs(
       const std::vector<scoped_refptr<const CTLogVerifier>>& log_verifiers);
 
   // CTVerifier implementation:
@@ -41,9 +64,6 @@ class NET_EXPORT MultiLogCTVerifier : public CTVerifier {
               base::StringPiece sct_list_from_tls_extension,
               SignedCertificateTimestampAndStatusList* output_scts,
               const NetLogWithSource& net_log) override;
-
-  void SetObserver(Observer* observer) override;
-  Observer* GetObserver() const override;
 
  private:
   // Verify a list of SCTs from |encoded_sct_list| over |expected_entry|,
@@ -68,7 +88,7 @@ class NET_EXPORT MultiLogCTVerifier : public CTVerifier {
   // of RFC6962.
   std::map<std::string, scoped_refptr<const CTLogVerifier>> logs_;
 
-  Observer* observer_;
+  base::CallbackListSubscription log_provider_subscription_;
 
   DISALLOW_COPY_AND_ASSIGN(MultiLogCTVerifier);
 };

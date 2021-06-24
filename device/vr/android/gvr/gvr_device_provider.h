@@ -2,14 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef DEVICE_VR_ANDROID_GVR_DEVICE_PROVIDER_H
-#define DEVICE_VR_ANDROID_GVR_DEVICE_PROVIDER_H
+#ifndef DEVICE_VR_ANDROID_GVR_GVR_DEVICE_PROVIDER_H_
+#define DEVICE_VR_ANDROID_GVR_GVR_DEVICE_PROVIDER_H_
 
 #include <memory>
 
 #include "base/macros.h"
-#include "device/vr/vr_device_provider.h"
+#include "device/vr/public/cpp/vr_device_provider.h"
 #include "device/vr/vr_export.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace device {
 
@@ -23,9 +24,12 @@ class DEVICE_VR_EXPORT GvrDeviceProvider : public VRDeviceProvider {
   void Initialize(
       base::RepeatingCallback<void(mojom::XRDeviceId,
                                    mojom::VRDisplayInfoPtr,
-                                   mojom::XRRuntimePtr)> add_device_callback,
+                                   mojom::XRDeviceDataPtr,
+                                   mojo::PendingRemote<mojom::XRRuntime>)>
+          add_device_callback,
       base::RepeatingCallback<void(mojom::XRDeviceId)> remove_device_callback,
-      base::OnceClosure initialization_complete) override;
+      base::OnceClosure initialization_complete,
+      XrFrameSinkClientFactory xr_frame_sink_client_factory) override;
 
   bool Initialized() override;
 
@@ -38,4 +42,4 @@ class DEVICE_VR_EXPORT GvrDeviceProvider : public VRDeviceProvider {
 
 }  // namespace device
 
-#endif  // DEVICE_VR_ANDROID_GVR_DEVICE_PROVIDER_H
+#endif  // DEVICE_VR_ANDROID_GVR_GVR_DEVICE_PROVIDER_H_

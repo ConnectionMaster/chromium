@@ -94,6 +94,17 @@
         ]
       },
       {
+        "name": "canPaste",
+        "type": "function",
+        "description": "Whether there are any bookmarks that can be pasted.",
+        "parameters": [
+          {"type": "string", "name": "parentId", "description": "The ID of the folder to paste into."},
+          {"type": "function", "name": "callback", "parameters": [
+            {"name": "result", "type": "boolean"}
+          ]}
+        ]
+      },
+      {
         "name": "sortChildren",
         "type": "function",
         "description": "Sorts the children of a given folder.",
@@ -123,6 +134,18 @@
             "name": "isFromTouch",
             "type": "boolean",
             "description": "True if the drag was initiated from touch."
+          },
+          {
+            "name": "x",
+            "type": "integer",
+            "minimum": 0,
+            "description": "The clientX of the dragStart event"
+          },
+          {
+            "name": "y",
+            "type": "integer",
+            "minimum": 0,
+            "description": "The clientY of the dragStart event"
           }
         ]
       },

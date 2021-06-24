@@ -4,11 +4,13 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/adapters/ice_transport_proxy.h"
 
+#include <utility>
+
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/modules/peerconnection/adapters/ice_transport_host.h"
 #include "third_party/blink/renderer/modules/peerconnection/adapters/web_rtc_cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
 
@@ -24,9 +26,7 @@ IceTransportProxy::IceTransportProxy(
       delegate_(delegate),
       feature_handle_for_scheduler_(frame.GetFrameScheduler()->RegisterFeature(
           SchedulingPolicy::Feature::kWebRTC,
-          {SchedulingPolicy::DisableAggressiveThrottling(),
-           SchedulingPolicy::DisableBackForwardCache()})),
-      weak_ptr_factory_(this) {
+          {SchedulingPolicy::DisableAggressiveThrottling()})) {
   DCHECK(host_thread_);
   DCHECK(delegate_);
   DCHECK(adapter_factory);
@@ -39,9 +39,9 @@ IceTransportProxy::IceTransportProxy(
   host_.reset(new IceTransportHost(proxy_thread_, host_thread_,
                                    weak_ptr_factory_.GetWeakPtr()));
   PostCrossThreadTask(*host_thread_, FROM_HERE,
-                      CrossThreadBind(&IceTransportHost::Initialize,
-                                      CrossThreadUnretained(host_.get()),
-                                      WTF::Passed(std::move(adapter_factory))));
+                      CrossThreadBindOnce(&IceTransportHost::Initialize,
+                                          CrossThreadUnretained(host_.get()),
+                                          std::move(adapter_factory)));
 }
 
 IceTransportProxy::~IceTransportProxy() {
@@ -65,35 +65,36 @@ scoped_refptr<base::SingleThreadTaskRunner> IceTransportProxy::host_thread()
 void IceTransportProxy::StartGathering(
     const cricket::IceParameters& local_parameters,
     const cricket::ServerAddresses& stun_servers,
-    const std::vector<cricket::RelayServerConfig>& turn_servers,
+    const WebVector<cricket::RelayServerConfig>& turn_servers,
     IceTransportPolicy policy) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   PostCrossThreadTask(
       *host_thread_, FROM_HERE,
-      CrossThreadBind(&IceTransportHost::StartGathering,
-                      CrossThreadUnretained(host_.get()), local_parameters,
-                      stun_servers, turn_servers, policy));
+      CrossThreadBindOnce(&IceTransportHost::StartGathering,
+                          CrossThreadUnretained(host_.get()), local_parameters,
+                          stun_servers, turn_servers, policy));
 }
 
 void IceTransportProxy::Start(
     const cricket::IceParameters& remote_parameters,
     cricket::IceRole role,
-    const std::vector<cricket::Candidate>& initial_remote_candidates) {
+    const Vector<cricket::Candidate>& initial_remote_candidates) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   PostCrossThreadTask(
       *host_thread_, FROM_HERE,
-      CrossThreadBind(&IceTransportHost::Start,
-                      CrossThreadUnretained(host_.get()), remote_parameters,
-                      role, initial_remote_candidates));
+      CrossThreadBindOnce(&IceTransportHost::Start,
+                          CrossThreadUnretained(host_.get()), remote_parameters,
+                          role, initial_remote_candidates));
 }
 
 void IceTransportProxy::HandleRemoteRestart(
     const cricket::IceParameters& new_remote_parameters) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  PostCrossThreadTask(*host_thread_, FROM_HERE,
-                      CrossThreadBind(&IceTransportHost::HandleRemoteRestart,
-                                      CrossThreadUnretained(host_.get()),
-                                      new_remote_parameters));
+  PostCrossThreadTask(
+      *host_thread_, FROM_HERE,
+      CrossThreadBindOnce(&IceTransportHost::HandleRemoteRestart,
+                          CrossThreadUnretained(host_.get()),
+                          new_remote_parameters));
 }
 
 void IceTransportProxy::AddRemoteCandidate(
@@ -101,8 +102,8 @@ void IceTransportProxy::AddRemoteCandidate(
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   PostCrossThreadTask(
       *host_thread_, FROM_HERE,
-      CrossThreadBind(&IceTransportHost::AddRemoteCandidate,
-                      CrossThreadUnretained(host_.get()), candidate));
+      CrossThreadBindOnce(&IceTransportHost::AddRemoteCandidate,
+                          CrossThreadUnretained(host_.get()), candidate));
 }
 
 bool IceTransportProxy::HasConsumer() const {

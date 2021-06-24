@@ -29,7 +29,6 @@
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
@@ -55,16 +54,16 @@ void SplitTextNodeContainingElementCommand::DoApply(EditingState*) {
   LayoutObject* parent_layout_object = parent->GetLayoutObject();
   if (!parent_layout_object || !parent_layout_object->IsInline()) {
     WrapContentsInDummySpan(parent);
-    Node* first_child = parent->firstChild();
-    if (!first_child || !first_child->IsElementNode())
+    auto* first_child_element = DynamicTo<Element>(parent->firstChild());
+    if (!first_child_element)
       return;
-    parent = ToElement(first_child);
+    parent = first_child_element;
   }
 
   SplitElement(parent, text_.Get());
 }
 
-void SplitTextNodeContainingElementCommand::Trace(Visitor* visitor) {
+void SplitTextNodeContainingElementCommand::Trace(Visitor* visitor) const {
   visitor->Trace(text_);
   CompositeEditCommand::Trace(visitor);
 }

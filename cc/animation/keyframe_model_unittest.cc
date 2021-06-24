@@ -4,6 +4,8 @@
 
 #include "cc/animation/keyframe_model.h"
 
+#include <limits>
+
 #include "base/strings/stringprintf.h"
 #include "cc/test/animation_test_common.h"
 #include "cc/trees/target_property.h"
@@ -22,9 +24,9 @@ static base::TimeTicks TicksFromSecondsF(double seconds) {
 std::unique_ptr<KeyframeModel> CreateKeyframeModel(double iterations,
                                                    double duration,
                                                    double playback_rate) {
-  std::unique_ptr<KeyframeModel> to_return(
-      KeyframeModel::Create(std::make_unique<FakeFloatAnimationCurve>(duration),
-                            0, 1, TargetProperty::OPACITY));
+  std::unique_ptr<KeyframeModel> to_return(KeyframeModel::Create(
+      std::make_unique<FakeFloatAnimationCurve>(duration), 0, 1,
+      KeyframeModel::TargetPropertyId(TargetProperty::OPACITY)));
   to_return->set_iterations(iterations);
   to_return->set_playback_rate(playback_rate);
   return to_return;
@@ -94,7 +96,8 @@ TEST(KeyframeModelTest, TrimTimeOneHalfIteration) {
 }
 
 TEST(KeyframeModelTest, TrimTimeInfiniteIterations) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity()));
   EXPECT_EQ(0.0,
             keyframe_model->TrimTimeToCurrentIteration(TicksFromSecondsF(0.0))
                 .InSecondsF());
@@ -110,7 +113,8 @@ TEST(KeyframeModelTest, TrimTimeInfiniteIterations) {
 }
 
 TEST(KeyframeModelTest, TrimTimeReverse) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity()));
   keyframe_model->set_direction(KeyframeModel::Direction::REVERSE);
   EXPECT_EQ(1.0,
             keyframe_model->TrimTimeToCurrentIteration(TicksFromSecondsF(0))
@@ -133,7 +137,8 @@ TEST(KeyframeModelTest, TrimTimeReverse) {
 }
 
 TEST(KeyframeModelTest, TrimTimeAlternateInfiniteIterations) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity()));
   keyframe_model->set_direction(KeyframeModel::Direction::ALTERNATE_NORMAL);
   EXPECT_EQ(0.0,
             keyframe_model->TrimTimeToCurrentIteration(TicksFromSecondsF(0.0))
@@ -249,7 +254,8 @@ TEST(KeyframeModelTest, TrimTimeAlternateTwoHalfIterations) {
 }
 
 TEST(KeyframeModelTest, TrimTimeAlternateReverseInfiniteIterations) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity()));
   keyframe_model->set_direction(KeyframeModel::Direction::ALTERNATE_REVERSE);
   EXPECT_EQ(1.0,
             keyframe_model->TrimTimeToCurrentIteration(TicksFromSecondsF(0.0))
@@ -650,7 +656,8 @@ TEST(KeyframeModelTest, IsFinishedAtOneIteration) {
 }
 
 TEST(KeyframeModelTest, IsFinishedAtInfiniteIterations) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity()));
   keyframe_model->SetRunState(KeyframeModel::RUNNING, TicksFromSecondsF(0.0));
   EXPECT_FALSE(keyframe_model->IsFinishedAt(TicksFromSecondsF(0.0)));
   EXPECT_FALSE(keyframe_model->IsFinishedAt(TicksFromSecondsF(0.5)));
@@ -882,7 +889,8 @@ TEST(KeyframeModelTest, TrimTimePlaybackFastReverse) {
 }
 
 TEST(KeyframeModelTest, TrimTimePlaybackFastInfiniteIterations) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1, 4, 4));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity(), 4, 4));
   EXPECT_EQ(0,
             keyframe_model->TrimTimeToCurrentIteration(TicksFromSecondsF(0.0))
                 .InSecondsF());
@@ -1324,7 +1332,8 @@ TEST(KeyframeModelTest, InEffectFillModeWithIterations) {
 }
 
 TEST(KeyframeModelTest, InEffectFillModeWithInfiniteIterations) {
-  std::unique_ptr<KeyframeModel> keyframe_model(CreateKeyframeModel(-1, 1));
+  std::unique_ptr<KeyframeModel> keyframe_model(
+      CreateKeyframeModel(std::numeric_limits<double>::infinity(), 1));
   keyframe_model->set_fill_mode(KeyframeModel::FillMode::NONE);
   EXPECT_FALSE(keyframe_model->InEffect(TicksFromSecondsF(-1.0)));
   EXPECT_TRUE(keyframe_model->InEffect(TicksFromSecondsF(0.0)));
@@ -1374,14 +1383,30 @@ TEST(KeyframeModelTest, CalculatePhaseWithMinTimeOffset) {
 }
 
 TEST(KeyframeModelTest, ToString) {
+  std::unique_ptr<KeyframeModel> keyframe_model = KeyframeModel::Create(
+      std::make_unique<FakeFloatAnimationCurve>(15), 42, 73,
+      KeyframeModel::TargetPropertyId(TargetProperty::OPACITY));
+  EXPECT_EQ(base::StringPrintf(
+                "KeyframeModel{id=%d, group=73, target_property_type=1, "
+                "custom_property_name=, native_property_type=1, "
+                "run_state=WAITING_FOR_TARGET_AVAILABILITY, element_id=(0)}",
+                keyframe_model->id()),
+            keyframe_model->ToString());
+}
+
+TEST(KeyframeModelTest, CustomPropertyKeyframe) {
   std::unique_ptr<KeyframeModel> keyframe_model =
-      KeyframeModel::Create(std::make_unique<FakeFloatAnimationCurve>(15), 42,
-                            73, TargetProperty::OPACITY);
-  EXPECT_EQ(
-      base::StringPrintf("KeyframeModel{id=%d, group=73, target_property_id=1, "
-                         "run_state=WAITING_FOR_TARGET_AVAILABILITY}",
-                         keyframe_model->id()),
-      keyframe_model->ToString());
+      KeyframeModel::Create(std::make_unique<FakeFloatAnimationCurve>(1), 1, 1,
+                            KeyframeModel::TargetPropertyId(
+                                TargetProperty::CSS_CUSTOM_PROPERTY, "foo"));
+  EXPECT_EQ(keyframe_model->custom_property_name(), "foo");
+}
+
+TEST(KeyframeModelTest, NonCustomPropertyKeyframe) {
+  std::unique_ptr<KeyframeModel> keyframe_model = KeyframeModel::Create(
+      std::make_unique<FakeFloatAnimationCurve>(1), 1, 1,
+      KeyframeModel::TargetPropertyId(TargetProperty::TRANSFORM));
+  EXPECT_EQ(keyframe_model->custom_property_name(), "");
 }
 
 }  // namespace

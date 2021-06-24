@@ -18,9 +18,14 @@ namespace policy {
 
 UserCloudPolicyStoreBase::UserCloudPolicyStoreBase(
     scoped_refptr<base::SequencedTaskRunner> background_task_runner,
-    PolicyScope policy_scope)
+    PolicyScope policy_scope,
+    PolicySource policy_source)
     : background_task_runner_(background_task_runner),
-      policy_scope_(policy_scope) {}
+      policy_scope_(policy_scope),
+      policy_source_(policy_source) {
+  DCHECK(policy_source == POLICY_SOURCE_CLOUD ||
+         policy_source == POLICY_SOURCE_PRIORITY_CLOUD);
+}
 
 UserCloudPolicyStoreBase::~UserCloudPolicyStoreBase() {}
 
@@ -46,8 +51,28 @@ void UserCloudPolicyStoreBase::InstallPolicy(
     const std::string& policy_signature_public_key) {
   // Decode the payload.
   policy_map_.Clear();
-  DecodeProtoFields(*payload, external_data_manager(), POLICY_SOURCE_CLOUD,
-                    policy_scope_, &policy_map_);
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // From the policies that Lacros fetched from the cloud, it should only
+  // respect the ones with per_profile=True. Session-wide policies
+  // (per_profile=False) are be provided by ash and installed by
+  // PolicyLoaderLacros.
+  PolicyPerProfileFilter filter = PolicyPerProfileFilter::kTrue;
+#else
+  PolicyPerProfileFilter filter = PolicyPerProfileFilter::kAny;
+#endif
+  DecodeProtoFields(*payload, external_data_manager(), policy_source_,
+                    policy_scope_, &policy_map_, filter);
+
+  if (policy_data->user_affiliation_ids_size() > 0) {
+    policy_map_.SetUserAffiliationIds(
+        {policy_data->user_affiliation_ids().begin(),
+         policy_data->user_affiliation_ids().end()});
+  }
+  if (policy_data->device_affiliation_ids_size() > 0) {
+    policy_map_.SetDeviceAffiliationIds(
+        {policy_data->device_affiliation_ids().begin(),
+         policy_data->device_affiliation_ids().end()});
+  }
   policy_ = std::move(policy_data);
   policy_signature_public_key_ = policy_signature_public_key;
 }

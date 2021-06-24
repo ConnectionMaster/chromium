@@ -7,31 +7,34 @@
 
 #include <string>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "components/autofill_assistant/browser/actions/action.h"
+#include "components/autofill_assistant/browser/web/element_finder.h"
 
 namespace autofill_assistant {
 
 class UploadDomAction : public Action {
  public:
-  explicit UploadDomAction(const ActionProto& proto);
+  explicit UploadDomAction(ActionDelegate* delegate, const ActionProto& proto);
   ~UploadDomAction() override;
 
  private:
   // Overrides Action:
-  void InternalProcessAction(ActionDelegate* delegate,
-                             ProcessActionCallback callback) override;
+  void InternalProcessAction(ProcessActionCallback callback) override;
 
-  void OnWaitForElement(ActionDelegate* delegate,
-                        ProcessActionCallback callback,
-                        const Selector& selector,
-                        bool element_found);
-  void OnGetOuterHtml(ProcessActionCallback callback,
-                      const ClientStatus& status,
+  void OnWaitForElement(const Selector& selector,
+                        bool can_match_multiple_elements,
+                        const ClientStatus& element_status);
+  void OnGetOuterHtml(const ClientStatus& status,
                       const std::string& outer_html);
+  void OnGetOuterHtmls(const ClientStatus& status,
+                       const std::vector<std::string>& outer_htmls);
+  void EndAction(const ClientStatus& status);
 
-  base::WeakPtrFactory<UploadDomAction> weak_ptr_factory_;
+  ProcessActionCallback process_action_callback_;
+  base::WeakPtrFactory<UploadDomAction> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(UploadDomAction);
 };

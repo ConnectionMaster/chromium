@@ -4,25 +4,26 @@
 
 #include "chrome/browser/web_applications/components/install_manager.h"
 
-#include "chrome/browser/web_applications/components/install_manager_observer.h"
+#include "chrome/browser/profiles/profile.h"
 
 namespace web_app {
 
-InstallManager::InstallManager() = default;
+InstallManager::InstallParams::InstallParams() = default;
+
+InstallManager::InstallParams::~InstallParams() = default;
+
+InstallManager::InstallParams::InstallParams(const InstallParams&) = default;
+
+InstallManager::InstallManager(Profile* profile) : profile_(profile) {}
 
 InstallManager::~InstallManager() = default;
 
-void InstallManager::Reset() {
-  for (InstallManagerObserver& observer : observers_)
-    observer.InstallManagerReset();
-}
-
-void InstallManager::AddObserver(InstallManagerObserver* observer) {
-  observers_.AddObserver(observer);
-}
-
-void InstallManager::RemoveObserver(InstallManagerObserver* observer) {
-  observers_.RemoveObserver(observer);
+void InstallManager::SetSubsystems(AppRegistrar* registrar,
+                                   OsIntegrationManager* os_integration_manager,
+                                   InstallFinalizer* finalizer) {
+  registrar_ = registrar;
+  os_integration_manager_ = os_integration_manager;
+  finalizer_ = finalizer;
 }
 
 }  // namespace web_app

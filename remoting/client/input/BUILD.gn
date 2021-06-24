@@ -16,8 +16,6 @@ source_set("input") {
     "keycode_map.h",
     "native_device_keymap.cc",
     "native_device_keymap.h",
-    "native_device_keymap_android.cc",
-    "native_device_keymap_ios.cc",
     "text_keyboard_input_strategy.cc",
     "text_keyboard_input_strategy.h",
     "touch_input_scaler.cc",
@@ -31,9 +29,18 @@ source_set("input") {
     ":normalizing_input_filter",
     "//remoting/base",
     "//remoting/client/ui:ui_manipulation",
-    "//third_party/webrtc/rtc_base:rtc_base_approved",
+    "//remoting/protocol",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//ui/events:dom_keycode_converter",
   ]
+
+  if (is_android) {
+    sources += [ "native_device_keymap_android.cc" ]
+  }
+
+  if (is_ios) {
+    sources += [ "native_device_keymap_ios.cc" ]
+  }
 
   if (is_android || is_ios) {
     sources -= [ "native_device_keymap.cc" ]
@@ -43,7 +50,6 @@ source_set("input") {
 source_set("normalizing_input_filter") {
   # Disabled the source filters because there are _mac files that need to
   # be compiled on all platforms.
-  set_sources_assignment_filter([])
   sources = [
     "normalizing_input_filter_cros.cc",
     "normalizing_input_filter_cros.h",
@@ -52,12 +58,11 @@ source_set("normalizing_input_filter") {
     "normalizing_input_filter_win.cc",
     "normalizing_input_filter_win.h",
   ]
-  set_sources_assignment_filter(sources_assignment_filter)
 
   deps = [
     "//remoting/base",
-    "//third_party/webrtc/modules/desktop_capture:primitives",
-    "//third_party/webrtc/rtc_base:rtc_base_approved",
+    "//remoting/protocol",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//ui/events:dom_keycode_converter",
   ]
 }
@@ -79,23 +84,23 @@ source_set("unit_tests") {
   deps = [
     ":input",
     ":normalizing_input_filter_unit_tests",
+    "//base",
     "//remoting/proto",
+    "//remoting/protocol:test_support",
     "//testing/gmock",
     "//testing/gtest",
-    "//third_party/webrtc/rtc_base:rtc_base_approved",
+    "//third_party/webrtc_overrides:webrtc_component",
   ]
 }
 
 source_set("normalizing_input_filter_unit_tests") {
   testonly = true
 
-  set_sources_assignment_filter([])
   sources = [
     "normalizing_input_filter_cros_unittest.cc",
     "normalizing_input_filter_mac_unittest.cc",
     "normalizing_input_filter_win_unittest.cc",
   ]
-  set_sources_assignment_filter(sources_assignment_filter)
 
   configs += [
     "//remoting/build/config:version",
@@ -104,9 +109,12 @@ source_set("normalizing_input_filter_unit_tests") {
 
   deps = [
     ":input",
+    "//remoting/client/input:normalizing_input_filter",
     "//remoting/proto",
+    "//remoting/protocol:test_support",
     "//testing/gmock",
     "//testing/gtest",
-    "//third_party/webrtc/rtc_base:rtc_base_approved",
+    "//third_party/webrtc_overrides:webrtc_component",
+    "//ui/events:dom_keycode_converter",
   ]
 }

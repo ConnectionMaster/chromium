@@ -7,39 +7,40 @@
 
 #include <vector>
 
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "ui/base/x/ui_base_x_export.h"
-#include "ui/gfx/x/x11_types.h"
+#include "ui/gfx/x/xproto.h"
 
 // A process wide singleton cache for X menus.
 namespace base {
-template <typename T> struct DefaultSingletonTraits;
+template <typename T>
+struct DefaultSingletonTraits;
 }
 
 namespace ui {
 
 // Keeps track of created and destroyed top level menu windows.
-class UI_BASE_X_EXPORT XMenuList {
+class COMPONENT_EXPORT(UI_BASE_X) XMenuList {
  public:
   static XMenuList* GetInstance();
 
   // Checks if |menu| has _NET_WM_WINDOW_TYPE property set to
   // "_NET_WM_WINDOW_TYPE_MENU" atom and if so caches it.
-  void MaybeRegisterMenu(XID menu);
+  void MaybeRegisterMenu(x11::Window menu);
 
   // Finds |menu| in cache and if found removes it.
-  void MaybeUnregisterMenu(XID menu);
+  void MaybeUnregisterMenu(x11::Window menu);
 
-  // Inserts cached menu XIDs at the beginning of |stack|.
-  void InsertMenuWindowXIDs(std::vector<XID>* stack);
+  // Inserts cached menu x11::Windows at the beginning of |stack|.
+  void InsertMenuWindows(std::vector<x11::Window>* stack);
 
  private:
   friend struct base::DefaultSingletonTraits<XMenuList>;
   XMenuList();
   ~XMenuList();
 
-  std::vector<XID> menus_;
-  XAtom menu_type_atom_;
+  std::vector<x11::Window> menus_;
+  x11::Atom menu_type_atom_;
   DISALLOW_COPY_AND_ASSIGN(XMenuList);
 };
 

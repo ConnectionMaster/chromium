@@ -2,92 +2,86 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.define('signin_sync_confirmation', function() {
+import 'chrome://sync-confirmation/sync_confirmation_app.js';
 
-  suite('SigninSyncConfirmationTest', function() {
-    let app;
-    setup(function() {
-      PolymerTest.clearBody();
-      app = document.createElement('sync-confirmation-app');
-      var accountImageRequested = false;
-      registerMessageCallback('accountImageRequest', this, function() {
-        accountImageRequested = true;
-      });
-      document.body.append(app);
-      // Check that the account image is requested when the app element is
-      // attached to the document.
-      assertTrue(accountImageRequested);
-    });
+import {SyncConfirmationBrowserProxyImpl} from 'chrome://sync-confirmation/sync_confirmation_browser_proxy.js';
+import {TestSyncConfirmationBrowserProxy} from './test_sync_confirmation_browser_proxy.js';
 
-    // Tests that no DCHECKS are thrown during initialization of the UI.
-    test('LoadPage', function() {
-      assertEquals(
-          'Turn on sync?', app.$.syncConfirmationHeading.textContent.trim());
-    });
+suite('SigninSyncConfirmationTest', function() {
+  let app;
+  setup(async function() {
+    const browserProxy = new TestSyncConfirmationBrowserProxy();
+    SyncConfirmationBrowserProxyImpl.instance_ = browserProxy;
+    PolymerTest.clearBody();
+    app = document.createElement('sync-confirmation-app');
+    document.body.append(app);
+    // Check that the account image is requested when the app element is
+    // attached to the document.
+    await browserProxy.whenCalled('requestAccountInfo');
   });
 
-  // This test suite verifies that the consent strings recorded in various
-  // scenarios are as expected. If the corresponding HTML file was updated
-  // without also updating the attributes referring to consent strings,
-  // this test will break.
-  suite('SigninSyncConfirmationConsentRecordingTest', function() {
-    let app;
-    let browserProxy;
+  // Tests that no DCHECKS are thrown during initialization of the UI.
+  test('LoadPage', function() {
+    assertEquals(
+        'Turn on sync?', app.$$('#syncConfirmationHeading').textContent.trim());
+  });
+});
 
-    setup(function() {
-      // This test suite makes comparisons with strings in their default locale,
-      // which is en-US.
-      assertEquals(
-          'en-US', navigator.language,
-          'Cannot verify strings for the ' + navigator.language + 'locale.');
+// This test suite verifies that the consent strings recorded in various
+// scenarios are as expected. If the corresponding HTML file was updated
+// without also updating the attributes referring to consent strings,
+// this test will break.
+suite('SigninSyncConfirmationConsentRecordingTest', function() {
+  let app;
+  let browserProxy;
 
-      browserProxy = new TestSyncConfirmationBrowserProxy();
-      sync.confirmation.SyncConfirmationBrowserProxyImpl.instance_ =
-          browserProxy;
+  setup(async function() {
+    // This test suite makes comparisons with strings in their default locale,
+    // which is en-US.
+    assertEquals(
+        'en-US', navigator.language,
+        'Cannot verify strings for the ' + navigator.language + 'locale.');
 
-      PolymerTest.clearBody();
-      app = document.createElement('sync-confirmation-app');
-      document.body.append(app);
-    });
+    browserProxy = new TestSyncConfirmationBrowserProxy();
+    SyncConfirmationBrowserProxyImpl.instance_ = browserProxy;
 
-    const STANDARD_CONSENT_DESCRIPTION_TEXT = [
-      'Turn on sync?',
-      'Sync your bookmarks, passwords, history, and more on all your devices',
-      'Google may use your history to personalize Search, ads, and other ' +
-          'Google services',
-    ];
+    PolymerTest.clearBody();
+    app = document.createElement('sync-confirmation-app');
+    document.body.append(app);
+    // Wait for the app element to get attached to the document (which is when
+    // the account image gets requested).
+    await browserProxy.whenCalled('requestAccountInfo');
+  });
+
+  const STANDARD_CONSENT_DESCRIPTION_TEXT = [
+    'Turn on sync?',
+    'Sync your bookmarks, passwords, history, and more on all your devices',
+    'Google may use your history to personalize Search and other Google ' +
+        'services',
+  ];
 
 
-    // Tests that the expected strings are recorded when clicking the Confirm
-    // button.
-    test('recordConsentOnConfirm', function() {
-      app.$$('#confirmButton').click();
-      return browserProxy.whenCalled('confirm').then(function(arguments) {
-        assertEquals(2, arguments.length);
-        var description = arguments[0];
-        var confirmation = arguments[1];
+  // Tests that the expected strings are recorded when clicking the Confirm
+  // button.
+  test('recordConsentOnConfirm', async function() {
+    app.$$('#confirmButton').click();
+    const [description, confirmation] =
+        await browserProxy.whenCalled('confirm');
+    assertEquals(
+        JSON.stringify(STANDARD_CONSENT_DESCRIPTION_TEXT),
+        JSON.stringify(description));
+    assertEquals('Yes, I\'m in', confirmation);
+  });
 
-        assertEquals(
-            JSON.stringify(STANDARD_CONSENT_DESCRIPTION_TEXT),
-            JSON.stringify(description));
-        assertEquals('Yes, I\'m in', confirmation);
-      });
-    });
-
-    // Tests that the expected strings are recorded when clicking the Confirm
-    // button.
-    test('recordConsentOnSettingsLink', function() {
-      app.$$('#settingsButton').click();
-      return browserProxy.whenCalled('goToSettings').then(function(arguments) {
-        assertEquals(2, arguments.length);
-        var description = arguments[0];
-        var confirmation = arguments[1];
-
-        assertEquals(
-            JSON.stringify(STANDARD_CONSENT_DESCRIPTION_TEXT),
-            JSON.stringify(description));
-        assertEquals('Settings', confirmation);
-      });
-    });
+  // Tests that the expected strings are recorded when clicking the Confirm
+  // button.
+  test('recordConsentOnSettingsLink', async function() {
+    app.$$('#settingsButton').click();
+    const [description, confirmation] =
+        await browserProxy.whenCalled('goToSettings');
+    assertEquals(
+        JSON.stringify(STANDARD_CONSENT_DESCRIPTION_TEXT),
+        JSON.stringify(description));
+    assertEquals('Settings', confirmation);
   });
 });

@@ -85,6 +85,9 @@ namespace feedbackPrivate {
     // Whether or not to send bluetooth logs with this report.
     boolean? sendBluetoothLogs;
 
+    // Whether or not to send tab titles with this report.
+    boolean? sendTabTitles;
+
     // Whether or not to send Assistant feedback to Assistant server.
     boolean? assistantDebugInfoAllowed;
 
@@ -99,8 +102,8 @@ namespace feedbackPrivate {
   enum Status {success, delayed};
 
   // The type of the landing page shown to the user when the feedback report is
-  // successfully sent.
-  enum LandingPageType {normal, techstop};
+  // successfully sent, if one should be shown.
+  enum LandingPageType {normal, techstop, noLandingPage};
 
   // Allowed log sources on Chrome OS.
   enum LogSource {

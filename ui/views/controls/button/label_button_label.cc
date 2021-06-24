@@ -4,45 +4,54 @@
 
 #include "ui/views/controls/button/label_button_label.h"
 
+#include "ui/base/metadata/metadata_impl_macros.h"
+
 namespace views {
 
-LabelButtonLabel::LabelButtonLabel(const base::string16& text, int text_context)
+namespace internal {
+
+LabelButtonLabel::LabelButtonLabel(const std::u16string& text, int text_context)
     : Label(text, text_context, style::STYLE_PRIMARY) {}
 
 LabelButtonLabel::~LabelButtonLabel() = default;
 
 void LabelButtonLabel::SetDisabledColor(SkColor color) {
   requested_disabled_color_ = color;
-  disabled_color_set_ = true;
-  if (!enabled())
+  if (!GetEnabled())
     Label::SetEnabledColor(color);
 }
 
 void LabelButtonLabel::SetEnabledColor(SkColor color) {
   requested_enabled_color_ = color;
-  enabled_color_set_ = true;
-  if (enabled())
+  if (GetEnabled())
     Label::SetEnabledColor(color);
+}
+
+void LabelButtonLabel::OnThemeChanged() {
+  SetColorForEnableState();
+  Label::OnThemeChanged();
 }
 
 void LabelButtonLabel::OnEnabledChanged() {
   SetColorForEnableState();
-  Label::OnEnabledChanged();
-}
-
-void LabelButtonLabel::OnNativeThemeChanged(const ui::NativeTheme* theme) {
-  SetColorForEnableState();
-  Label::OnNativeThemeChanged(theme);
 }
 
 void LabelButtonLabel::SetColorForEnableState() {
-  if (enabled() ? enabled_color_set_ : disabled_color_set_) {
-    Label::SetEnabledColor(enabled() ? requested_enabled_color_
-                                     : requested_disabled_color_);
-  } else {
-    int style = enabled() ? style::STYLE_PRIMARY : style::STYLE_DISABLED;
-    Label::SetEnabledColor(style::GetColor(*this, text_context(), style));
+  const absl::optional<SkColor>& color =
+      GetEnabled() ? requested_enabled_color_ : requested_disabled_color_;
+  if (color) {
+    Label::SetEnabledColor(*color);
+  } else if (GetWidget()) {
+    // If there is no widget, we can't actually get the colors here.
+    // An OnThemeChanged() will fire once a widget is available.
+    int style = GetEnabled() ? style::STYLE_PRIMARY : style::STYLE_DISABLED;
+    Label::SetEnabledColor(style::GetColor(*this, GetTextContext(), style));
   }
 }
+
+BEGIN_METADATA(LabelButtonLabel, Label)
+END_METADATA
+
+}  // namespace internal
 
 }  // namespace views

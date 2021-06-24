@@ -4,7 +4,7 @@
 
 #include "ui/gl/scoped_make_current.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_surface.h"
 
@@ -18,7 +18,7 @@ ScopedMakeCurrent::ScopedMakeCurrent(gl::GLContext* context,
       surface_(surface) {
   DCHECK(context);
   DCHECK(surface);
-  context->MakeCurrent(surface);
+  is_context_current_ = context->MakeCurrent(surface);
 }
 
 ScopedMakeCurrent::~ScopedMakeCurrent() {
@@ -28,20 +28,6 @@ ScopedMakeCurrent::~ScopedMakeCurrent() {
   } else {
     context_->ReleaseCurrent(surface_.get());
   }
-}
-
-ScopedReleaseCurrent::ScopedReleaseCurrent()
-    : previous_context_(gl::GLContext::GetCurrent()),
-      previous_surface_(gl::GLSurface::GetCurrent()) {
-  if (previous_context_) {
-    DCHECK(previous_surface_);
-    previous_context_->ReleaseCurrent(previous_surface_.get());
-  }
-}
-
-ScopedReleaseCurrent::~ScopedReleaseCurrent() {
-  if (previous_context_)
-    previous_context_->MakeCurrent(previous_surface_.get());
 }
 
 }  // namespace ui

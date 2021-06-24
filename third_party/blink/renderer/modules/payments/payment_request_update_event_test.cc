@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
+#include "third_party/blink/renderer/core/testing/mock_function_scope.h"
 #include "third_party/blink/renderer/modules/payments/payment_request.h"
 #include "third_party/blink/renderer/modules/payments/payment_request_delegate.h"
 #include "third_party/blink/renderer/modules/payments/payment_test_helper.h"
@@ -21,10 +22,8 @@
 namespace blink {
 namespace {
 
-class MockPaymentRequest : public GarbageCollectedFinalized<MockPaymentRequest>,
+class MockPaymentRequest : public GarbageCollected<MockPaymentRequest>,
                            public PaymentRequestDelegate {
-  USING_GARBAGE_COLLECTED_MIXIN(MockPaymentRequest);
-
  public:
   MockPaymentRequest() = default;
   ~MockPaymentRequest() override = default;
@@ -34,7 +33,7 @@ class MockPaymentRequest : public GarbageCollectedFinalized<MockPaymentRequest>,
   MOCK_METHOD1(OnUpdatePaymentDetailsFailure, void(const String& error));
   bool IsInteractive() const override { return true; }
 
-  void Trace(blink::Visitor* visitor) override {}
+  void Trace(Visitor* visitor) const override {}
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MockPaymentRequest);
@@ -135,9 +134,8 @@ TEST(PaymentRequestUpdateEventTest, UpdaterNotRequired) {
 }
 
 TEST(PaymentRequestUpdateEventTest, AddressChangeUpdateWithTimeout) {
-  V8TestingScope scope;
-  PaymentRequestMockFunctionScope funcs(scope.GetScriptState());
-  MakePaymentRequestOriginSecure(scope.GetDocument());
+  PaymentRequestV8TestingScope scope;
+  MockFunctionScope funcs(scope.GetScriptState());
   PaymentRequest* request = PaymentRequest::Create(
       scope.GetExecutionContext(), BuildPaymentMethodDataForTest(),
       BuildPaymentDetailsInitForTest(), scope.GetExceptionState());
@@ -148,7 +146,7 @@ TEST(PaymentRequestUpdateEventTest, AddressChangeUpdateWithTimeout) {
   EXPECT_FALSE(scope.GetExceptionState().HadException());
 
   String error_message;
-  request->show(scope.GetScriptState())
+  request->show(scope.GetScriptState(), scope.GetExceptionState())
       .Then(funcs.ExpectNoCall(), funcs.ExpectCall(&error_message));
 
   static_cast<payments::mojom::blink::PaymentRequestClient*>(request)
@@ -173,9 +171,8 @@ TEST(PaymentRequestUpdateEventTest, AddressChangeUpdateWithTimeout) {
 }
 
 TEST(PaymentRequestUpdateEventTest, OptionChangeUpdateWithTimeout) {
-  V8TestingScope scope;
-  PaymentRequestMockFunctionScope funcs(scope.GetScriptState());
-  MakePaymentRequestOriginSecure(scope.GetDocument());
+  PaymentRequestV8TestingScope scope;
+  MockFunctionScope funcs(scope.GetScriptState());
   PaymentRequest* request = PaymentRequest::Create(
       scope.GetExecutionContext(), BuildPaymentMethodDataForTest(),
       BuildPaymentDetailsInitForTest(), scope.GetExceptionState());
@@ -186,7 +183,7 @@ TEST(PaymentRequestUpdateEventTest, OptionChangeUpdateWithTimeout) {
   EXPECT_FALSE(scope.GetExceptionState().HadException());
 
   String error_message;
-  request->show(scope.GetScriptState())
+  request->show(scope.GetScriptState(), scope.GetExceptionState())
       .Then(funcs.ExpectNoCall(), funcs.ExpectCall(&error_message));
 
   static_cast<payments::mojom::blink::PaymentRequestClient*>(request)
@@ -211,9 +208,8 @@ TEST(PaymentRequestUpdateEventTest, OptionChangeUpdateWithTimeout) {
 }
 
 TEST(PaymentRequestUpdateEventTest, AddressChangePromiseTimeout) {
-  V8TestingScope scope;
-  PaymentRequestMockFunctionScope funcs(scope.GetScriptState());
-  MakePaymentRequestOriginSecure(scope.GetDocument());
+  PaymentRequestV8TestingScope scope;
+  MockFunctionScope funcs(scope.GetScriptState());
   PaymentRequest* request = PaymentRequest::Create(
       scope.GetExecutionContext(), BuildPaymentMethodDataForTest(),
       BuildPaymentDetailsInitForTest(), scope.GetExceptionState());
@@ -224,7 +220,7 @@ TEST(PaymentRequestUpdateEventTest, AddressChangePromiseTimeout) {
   event->SetPaymentRequest(request);
   event->SetEventPhase(Event::kCapturingPhase);
   String error_message;
-  request->show(scope.GetScriptState())
+  request->show(scope.GetScriptState(), scope.GetExceptionState())
       .Then(funcs.ExpectNoCall(), funcs.ExpectCall(&error_message));
   static_cast<payments::mojom::blink::PaymentRequestClient*>(request)
       ->OnShippingAddressChange(BuildPaymentAddressForTest());
@@ -246,9 +242,8 @@ TEST(PaymentRequestUpdateEventTest, AddressChangePromiseTimeout) {
 }
 
 TEST(PaymentRequestUpdateEventTest, OptionChangePromiseTimeout) {
-  V8TestingScope scope;
-  PaymentRequestMockFunctionScope funcs(scope.GetScriptState());
-  MakePaymentRequestOriginSecure(scope.GetDocument());
+  PaymentRequestV8TestingScope scope;
+  MockFunctionScope funcs(scope.GetScriptState());
   PaymentRequest* request = PaymentRequest::Create(
       scope.GetExecutionContext(), BuildPaymentMethodDataForTest(),
       BuildPaymentDetailsInitForTest(), scope.GetExceptionState());
@@ -259,7 +254,7 @@ TEST(PaymentRequestUpdateEventTest, OptionChangePromiseTimeout) {
   event->SetPaymentRequest(request);
   event->SetEventPhase(Event::kCapturingPhase);
   String error_message;
-  request->show(scope.GetScriptState())
+  request->show(scope.GetScriptState(), scope.GetExceptionState())
       .Then(funcs.ExpectNoCall(), funcs.ExpectCall(&error_message));
   static_cast<payments::mojom::blink::PaymentRequestClient*>(request)
       ->OnShippingAddressChange(BuildPaymentAddressForTest());

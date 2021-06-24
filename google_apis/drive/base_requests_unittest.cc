@@ -10,21 +10,24 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "google_apis/drive/drive_api_requests.h"
 #include "google_apis/drive/dummy_auth_service.h"
 #include "google_apis/drive/request_sender.h"
 #include "google_apis/drive/test_util.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
-#include "services/network/test/test_network_service_client.h"
+#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "services/network/test/fake_test_cert_verifier_params_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace google_apis {
@@ -37,10 +40,10 @@ const char kInvalidJsonString[] = "$$$";
 class FakeUrlFetchRequest : public UrlFetchRequestBase {
  public:
   FakeUrlFetchRequest(RequestSender* sender,
-                      const EntryActionCallback& callback,
+                      EntryActionCallback callback,
                       const GURL& url)
       : UrlFetchRequestBase(sender, ProgressCallback(), ProgressCallback()),
-        callback_(callback),
+        callback_(std::move(callback)),
         url_(url) {}
 
   ~FakeUrlFetchRequest() override {}
@@ -48,13 +51,13 @@ class FakeUrlFetchRequest : public UrlFetchRequestBase {
  protected:
   GURL GetURL() const override { return url_; }
   void ProcessURLFetchResults(
-      const network::ResourceResponseHead* response_head,
+      const network::mojom::URLResponseHead* response_head,
       base::FilePath response_file,
       std::string response_body) override {
-    callback_.Run(GetErrorCode());
+    std::move(callback_).Run(GetErrorCode());
   }
   void RunCallbackOnPrematureFailure(DriveApiErrorCode code) override {
-    callback_.Run(code);
+    std::move(callback_).Run(code);
   }
 
   EntryActionCallback callback_;
@@ -63,23 +66,22 @@ class FakeUrlFetchRequest : public UrlFetchRequestBase {
 
 class FakeMultipartUploadRequest : public MultipartUploadRequestBase {
  public:
-  FakeMultipartUploadRequest(
-      base::SequencedTaskRunner* blocking_task_runner,
-      const std::string& metadata_json,
-      const std::string& content_type,
-      int64_t content_length,
-      const base::FilePath& local_file_path,
-      const FileResourceCallback& callback,
-      const google_apis::ProgressCallback& progress_callback,
-      const GURL& url,
-      std::string* upload_content_type,
-      std::string* upload_content_data)
+  FakeMultipartUploadRequest(base::SequencedTaskRunner* blocking_task_runner,
+                             const std::string& metadata_json,
+                             const std::string& content_type,
+                             int64_t content_length,
+                             const base::FilePath& local_file_path,
+                             FileResourceCallback callback,
+                             google_apis::ProgressCallback progress_callback,
+                             const GURL& url,
+                             std::string* upload_content_type,
+                             std::string* upload_content_data)
       : MultipartUploadRequestBase(blocking_task_runner,
                                    metadata_json,
                                    content_type,
                                    content_length,
                                    local_file_path,
-                                   callback,
+                                   std::move(callback),
                                    progress_callback),
         url_(url),
         upload_content_type_(upload_content_type),
@@ -112,44 +114,47 @@ class FakeMultipartUploadRequest : public MultipartUploadRequestBase {
 class BaseRequestsTest : public testing::Test {
  public:
   BaseRequestsTest() : response_code_(net::HTTP_OK) {
-    network::mojom::NetworkServicePtr network_service_ptr;
-    network::mojom::NetworkServiceRequest network_service_request =
-        mojo::MakeRequest(&network_service_ptr);
-    network_service_ =
-        network::NetworkService::Create(std::move(network_service_request),
-                                        /*netlog=*/nullptr);
+    mojo::Remote<network::mojom::NetworkService> network_service_remote;
+    network_service_ = network::NetworkService::Create(
+        network_service_remote.BindNewPipeAndPassReceiver());
     network::mojom::NetworkContextParamsPtr context_params =
         network::mojom::NetworkContextParams::New();
-    network_service_ptr->CreateNetworkContext(
-        mojo::MakeRequest(&network_context_), std::move(context_params));
+    // Use a dummy CertVerifier that always passes cert verification, since
+    // these unittests don't need to test CertVerifier behavior.
+    context_params->cert_verifier_params =
+        network::FakeTestCertVerifierParamsFactory::GetCertVerifierParams();
+    network_service_remote->CreateNetworkContext(
+        network_context_.BindNewPipeAndPassReceiver(),
+        std::move(context_params));
 
-    network::mojom::NetworkServiceClientPtr network_service_client_ptr;
-    network_service_client_ =
-        std::make_unique<network::TestNetworkServiceClient>(
-            mojo::MakeRequest(&network_service_client_ptr));
-    network_service_ptr->SetClient(std::move(network_service_client_ptr),
-                                   network::mojom::NetworkServiceParams::New());
+    mojo::PendingReceiver<network::mojom::URLLoaderNetworkServiceObserver>
+        default_observer_receiver;
+    network::mojom::NetworkServiceParamsPtr network_service_params =
+        network::mojom::NetworkServiceParams::New();
+    network_service_params->default_observer =
+        default_observer_receiver.InitWithNewPipeAndPassRemote();
+    network_service_remote->SetParams(std::move(network_service_params));
 
     network::mojom::URLLoaderFactoryParamsPtr params =
         network::mojom::URLLoaderFactoryParams::New();
     params->process_id = network::mojom::kBrowserProcessId;
     params->is_corb_enabled = false;
     network_context_->CreateURLLoaderFactory(
-        mojo::MakeRequest(&url_loader_factory_), std::move(params));
+        url_loader_factory_.BindNewPipeAndPassReceiver(), std::move(params));
     test_shared_loader_factory_ =
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
             url_loader_factory_.get());
   }
 
   void SetUp() override {
-    sender_.reset(new RequestSender(
+    sender_ = std::make_unique<RequestSender>(
         std::make_unique<DummyAuthService>(), test_shared_loader_factory_,
-        scoped_task_environment_.GetMainThreadTaskRunner(),
+        task_environment_.GetMainThreadTaskRunner(),
         std::string(), /* custom user agent */
-        TRAFFIC_ANNOTATION_FOR_TESTS));
+        TRAFFIC_ANNOTATION_FOR_TESTS);
 
-    test_server_.RegisterRequestHandler(
-        base::Bind(&BaseRequestsTest::HandleRequest, base::Unretained(this)));
+    test_server_.RegisterRequestHandler(base::BindRepeating(
+        &BaseRequestsTest::HandleRequest, base::Unretained(this)));
     ASSERT_TRUE(test_server_.Start());
   }
 
@@ -157,7 +162,7 @@ class BaseRequestsTest : public testing::Test {
     // Deleting the sender here will delete all request objects.
     sender_.reset();
     // Wait for any DeleteSoon tasks to run.
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
   }
 
   std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
@@ -170,12 +175,11 @@ class BaseRequestsTest : public testing::Test {
     return std::move(response);
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_{
-      base::test::ScopedTaskEnvironment::MainThreadType::IO};
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::MainThreadType::IO};
   std::unique_ptr<network::mojom::NetworkService> network_service_;
-  std::unique_ptr<network::mojom::NetworkServiceClient> network_service_client_;
-  network::mojom::NetworkContextPtr network_context_;
-  network::mojom::URLLoaderFactoryPtr url_loader_factory_;
+  mojo::Remote<network::mojom::NetworkContext> network_context_;
+  mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory_;
   scoped_refptr<network::WeakWrapperSharedURLLoaderFactory>
       test_shared_loader_factory_;
   std::unique_ptr<RequestSender> sender_;

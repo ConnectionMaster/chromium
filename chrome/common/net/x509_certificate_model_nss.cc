@@ -5,6 +5,7 @@
 #include "chrome/common/net/x509_certificate_model_nss.h"
 
 #include <cert.h>
+#include <certt.h>
 #include <cms.h>
 #include <hasht.h>
 #include <keyhi.h>  // SECKEY_DestroyPrivateKey
@@ -29,6 +30,7 @@
 #include "chrome/third_party/mozilla_security_manager/nsNSSCertificate.h"
 #include "chrome/third_party/mozilla_security_manager/nsUsageArrayHelper.h"
 #include "components/url_formatter/url_formatter.h"
+#include "crypto/nss_key_util.h"
 #include "crypto/nss_util.h"
 #include "crypto/scoped_nss_types.h"
 #include "net/cert/x509_util_nss.h"
@@ -303,6 +305,14 @@ string ProcessSubjectPublicKeyInfo(CERTCertificate* cert_handle) {
   return psm::ProcessSubjectPublicKeyInfo(&cert_handle->subjectPublicKeyInfo);
 }
 
+string ProcessRawSubjectPublicKeyInfo(base::span<const uint8_t> spki_der) {
+  crypto::ScopedCERTSubjectPublicKeyInfo spki =
+      crypto::DecodeSubjectPublicKeyInfoNSS(spki_der);
+  if (!spki)
+    return std::string();
+  return psm::ProcessSubjectPublicKeyInfo(spki.get());
+}
+
 string ProcessRawBitsSignatureWrap(CERTCertificate* cert_handle) {
   return ProcessRawBits(cert_handle->signatureWrap.signature.data,
                         cert_handle->signatureWrap.signature.len);
@@ -310,11 +320,11 @@ string ProcessRawBitsSignatureWrap(CERTCertificate* cert_handle) {
 
 std::string ProcessIDN(const std::string& input) {
   // Convert the ASCII input to a string16 for ICU.
-  base::string16 input16;
+  std::u16string input16;
   input16.reserve(input.length());
   input16.insert(input16.end(), input.begin(), input.end());
 
-  base::string16 output16 = url_formatter::IDNToUnicode(input);
+  std::u16string output16 = url_formatter::IDNToUnicode(input);
   if (input16 == output16)
     return input;  // Input did not contain any encoded data.
 

@@ -7,22 +7,24 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
-#include "build/build_config.h"
+#include "base/scoped_observation.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/signin/core/browser/signin_error_controller.h"
-#include "services/identity/public/cpp/identity_manager.h"
+#include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+
+class ProfileAttributesStorage;
 
 // This class listens to various signin events and updates the signin-related
 // fields of ProfileAttributes.
 class SigninProfileAttributesUpdater
     : public KeyedService,
-      public SigninErrorController::Observer,
-      public identity::IdentityManager::Observer {
+      public signin::IdentityManager::Observer {
  public:
-  SigninProfileAttributesUpdater(identity::IdentityManager* identity_manager,
-                                 SigninErrorController* signin_error_controller,
-                                 const base::FilePath& profile_path);
+  SigninProfileAttributesUpdater(
+      signin::IdentityManager* identity_manager,
+      ProfileAttributesStorage* profile_attributes_storage,
+      const base::FilePath& profile_path,
+      PrefService* prefs);
 
   ~SigninProfileAttributesUpdater() override;
 
@@ -33,22 +35,17 @@ class SigninProfileAttributesUpdater
   // Updates the profile attributes on signin and signout events.
   void UpdateProfileAttributes();
 
-  // SigninErrorController::Observer:
-  void OnErrorChanged() override;
-
   // IdentityManager::Observer:
-  void OnPrimaryAccountSet(
-      const CoreAccountInfo& primary_account_info) override;
-  void OnPrimaryAccountCleared(
-      const CoreAccountInfo& previous_primary_account_info) override;
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event) override;
 
-  identity::IdentityManager* identity_manager_;
-  SigninErrorController* signin_error_controller_;
+  signin::IdentityManager* identity_manager_;
+  ProfileAttributesStorage* profile_attributes_storage_;
   const base::FilePath profile_path_;
-  ScopedObserver<identity::IdentityManager, SigninProfileAttributesUpdater>
-      identity_manager_observer_;
-  ScopedObserver<SigninErrorController, SigninProfileAttributesUpdater>
-      signin_error_controller_observer_;
+  PrefService* prefs_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SigninProfileAttributesUpdater);
 };

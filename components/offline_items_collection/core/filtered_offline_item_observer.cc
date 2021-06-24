@@ -10,11 +10,13 @@ namespace offline_items_collection {
 FilteredOfflineItemObserver::FilteredOfflineItemObserver(
     OfflineContentProvider* provider)
     : provider_(provider) {
-  provider_->AddObserver(this);
+  observation_.Observe(provider_);
 }
 
-FilteredOfflineItemObserver::~FilteredOfflineItemObserver() {
-  provider_->RemoveObserver(this);
+FilteredOfflineItemObserver::~FilteredOfflineItemObserver() = default;
+
+void FilteredOfflineItemObserver::OnContentProviderGoingDown() {
+  observation_.Reset();
 }
 
 void FilteredOfflineItemObserver::AddObserver(const ContentId& id,
@@ -33,7 +35,7 @@ void FilteredOfflineItemObserver::RemoveObserver(const ContentId& id,
 
   it->second->RemoveObserver(observer);
 
-  if (!it->second->might_have_observers())
+  if (it->second->empty())
     observers_.erase(it);
 }
 
@@ -49,13 +51,15 @@ void FilteredOfflineItemObserver::OnItemRemoved(const ContentId& id) {
     observer.OnItemRemoved(id);
 }
 
-void FilteredOfflineItemObserver::OnItemUpdated(const OfflineItem& item) {
+void FilteredOfflineItemObserver::OnItemUpdated(
+    const OfflineItem& item,
+    const absl::optional<UpdateDelta>& update_delta) {
   auto it = observers_.find(item.id);
   if (it == observers_.end())
     return;
 
   for (auto& observer : *(it->second))
-    observer.OnItemUpdated(item);
+    observer.OnItemUpdated(item, update_delta);
 }
 
 }  // namespace offline_items_collection

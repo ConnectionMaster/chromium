@@ -39,6 +39,7 @@ class PairingLostNotifierTest : public BrowserWithTestWindowTest {
     PairingLostNotifier::RegisterProfilePrefs(test_pref_service_->registry());
     fake_android_sms_app_helper_delegate_ =
         std::make_unique<multidevice_setup::FakeAndroidSmsAppHelperDelegate>();
+    fake_android_sms_app_helper_delegate_->set_is_app_registry_ready(true);
 
     pairing_lost_notifier_ = std::make_unique<PairingLostNotifier>(
         profile(), fake_multidevice_setup_client_.get(),
@@ -54,7 +55,7 @@ class PairingLostNotifierTest : public BrowserWithTestWindowTest {
     ASSERT_TRUE(IsNotificationVisible());
     display_service_tester_->SimulateClick(
         NotificationHandler::Type::TRANSIENT, kPairingLostNotificationId,
-        base::nullopt /* action_index */, base::nullopt /* reply */);
+        absl::nullopt /* action_index */, absl::nullopt /* reply */);
   }
 
   void SetWasPreviouslySetUpPreference(bool was_previously_set_up) {

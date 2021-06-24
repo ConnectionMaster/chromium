@@ -4,10 +4,13 @@
 
 #include "ash/app_list/app_list_util.h"
 
+#include "ash/app_list/model/app_list_folder_item.h"
+#include "ash/app_list/model/app_list_item.h"
+#include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/focus/focus_manager.h"
 
-namespace app_list {
+namespace ash {
 
 bool IsUnhandledUnmodifiedEvent(const ui::KeyEvent& event) {
   if (event.handled() || event.type() != ui::ET_KEY_PRESSED)
@@ -42,23 +45,30 @@ bool IsUnhandledArrowKeyEvent(const ui::KeyEvent& event) {
 }
 
 bool IsArrowKeyEvent(const ui::KeyEvent& event) {
-  return event.key_code() == ui::VKEY_DOWN ||
-         event.key_code() == ui::VKEY_RIGHT ||
-         event.key_code() == ui::VKEY_LEFT || event.key_code() == ui::VKEY_UP;
+  return IsArrowKey(event.key_code());
+}
+
+bool IsArrowKey(const ui::KeyboardCode& key_code) {
+  return key_code == ui::VKEY_DOWN || key_code == ui::VKEY_RIGHT ||
+         key_code == ui::VKEY_LEFT || key_code == ui::VKEY_UP;
+}
+
+bool IsFolderItem(AppListItem* item) {
+  return item->GetItemType() == AppListFolderItem::kItemType;
 }
 
 bool LeftRightKeyEventShouldExitText(views::Textfield* textfield,
                                      const ui::KeyEvent& key_event) {
   DCHECK(IsUnhandledLeftRightKeyEvent(key_event));
 
-  if (textfield->text().empty())
+  if (textfield->GetText().empty())
     return true;
 
   if (textfield->HasSelection())
     return false;
 
   if (textfield->GetCursorPosition() != 0 &&
-      textfield->GetCursorPosition() != textfield->text().length()) {
+      textfield->GetCursorPosition() != textfield->GetText().length()) {
     return false;
   }
 
@@ -97,4 +107,14 @@ bool ProcessLeftRightKeyTraversalForTextfield(views::Textfield* textfield,
   return true;
 }
 
-}  // namespace app_list
+gfx::ImageSkia CreateIconWithCircleBackground(const gfx::ImageSkia& icon,
+                                              SkColor background_color) {
+  DCHECK_EQ(icon.width(), icon.height());
+  // TODO(crbug.com/1185943): We should not be passing in hardcoded
+  // `background_color`s here. Callers should be updated to use the appropriate
+  // color from the NativeTheme or AshColorProvider.
+  return gfx::ImageSkiaOperations::CreateImageWithCircleBackground(
+      icon.width() / 2, background_color, icon);
+}
+
+}  // namespace ash

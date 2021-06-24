@@ -4,6 +4,9 @@
 
 #include "cc/test/fake_layer_tree_host.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -19,7 +22,6 @@ FakeLayerTreeHost::FakeLayerTreeHost(FakeLayerTreeHostClient* client,
                                      CompositorMode mode)
     : LayerTreeHost(std::move(params), mode),
       client_(client),
-      host_impl_(GetSettings(), &task_runner_provider_, task_graph_runner()),
       needs_commit_(false) {
   scoped_refptr<base::SingleThreadTaskRunner> impl_task_runner =
       mode == CompositorMode::THREADED ? base::ThreadTaskRunnerHandle::Get()
@@ -67,6 +69,22 @@ FakeLayerTreeHost::~FakeLayerTreeHost() {
 
 void FakeLayerTreeHost::SetNeedsCommit() { needs_commit_ = true; }
 
+std::unique_ptr<LayerTreeHostImpl> FakeLayerTreeHost::CreateLayerTreeHostImpl(
+    LayerTreeHostImplClient* client) {
+  DCHECK(!host_impl_);
+  auto host_impl = std::make_unique<FakeLayerTreeHostImpl>(
+      GetSettings(), &task_runner_provider(), task_graph_runner());
+  host_impl_ = host_impl.get();
+  return host_impl;
+}
+
+void FakeLayerTreeHost::CreateFakeLayerTreeHostImpl() {
+  DCHECK(!host_impl_);
+  owned_host_impl_ = std::make_unique<FakeLayerTreeHostImpl>(
+      GetSettings(), &task_runner_provider(), task_graph_runner());
+  host_impl_ = owned_host_impl_.get();
+}
+
 LayerImpl* FakeLayerTreeHost::CommitAndCreateLayerImplTree() {
   // TODO(pdr): Update the LayerTreeImpl lifecycle states here so lifecycle
   // violations can be caught.
@@ -74,26 +92,13 @@ LayerImpl* FakeLayerTreeHost::CommitAndCreateLayerImplTree() {
   active_tree()->SetPropertyTrees(property_trees());
   TreeSynchronizer::PushLayerProperties(root_layer()->layer_tree_host(),
                                         active_tree());
-  mutator_host()->PushPropertiesTo(host_impl_.mutator_host());
+  mutator_host()->PushPropertiesTo(host_impl_->mutator_host());
 
   active_tree()->property_trees()->scroll_tree.PushScrollUpdatesFromMainThread(
-      property_trees(), active_tree());
+      property_trees(), active_tree(),
+      GetSettings().commit_fractional_scroll_deltas);
 
-  if (page_scale_layer() && inner_viewport_scroll_layer()) {
-    LayerTreeImpl::ViewportLayerIds ids;
-    ids.overscroll_elasticity_element_id = overscroll_elasticity_element_id();
-    ids.page_scale = page_scale_layer()->id();
-    if (inner_viewport_container_layer())
-      ids.inner_viewport_container = inner_viewport_container_layer()->id();
-    if (outer_viewport_container_layer())
-      ids.outer_viewport_container = outer_viewport_container_layer()->id();
-    ids.inner_viewport_scroll = inner_viewport_scroll_layer()->id();
-    if (outer_viewport_scroll_layer())
-      ids.outer_viewport_scroll = outer_viewport_scroll_layer()->id();
-    active_tree()->SetViewportLayersFromIds(ids);
-  }
-
-  return active_tree()->root_layer_for_testing();
+  return active_tree()->root_layer();
 }
 
 LayerImpl* FakeLayerTreeHost::CommitAndCreatePendingTree() {
@@ -101,11 +106,12 @@ LayerImpl* FakeLayerTreeHost::CommitAndCreatePendingTree() {
   pending_tree()->SetPropertyTrees(property_trees());
   TreeSynchronizer::PushLayerProperties(root_layer()->layer_tree_host(),
                                         pending_tree());
-  mutator_host()->PushPropertiesTo(host_impl_.mutator_host());
+  mutator_host()->PushPropertiesTo(host_impl_->mutator_host());
 
   pending_tree()->property_trees()->scroll_tree.PushScrollUpdatesFromMainThread(
-      property_trees(), pending_tree());
-  return pending_tree()->root_layer_for_testing();
+      property_trees(), pending_tree(),
+      GetSettings().commit_fractional_scroll_deltas);
+  return pending_tree()->root_layer();
 }
 
 }  // namespace cc

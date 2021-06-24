@@ -10,15 +10,16 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "ipc/ipc_channel.h"
 #include "ipc/ipc_channel_proxy.h"
@@ -33,6 +34,7 @@
 #include "remoting/host/desktop_session.h"
 #include "remoting/host/desktop_session_connector.h"
 #include "remoting/host/desktop_session_proxy.h"
+#include "remoting/host/fake_keyboard_layout_monitor.h"
 #include "remoting/host/fake_mouse_cursor_monitor.h"
 #include "remoting/host/host_mock_objects.h"
 #include "remoting/protocol/fake_desktop_capturer.h"
@@ -177,6 +179,11 @@ class IpcDesktopEnvironmentTest : public testing::Test {
   // DesktopEnvironment::CreateMouseCursorMonitor
   webrtc::MouseCursorMonitor* CreateMouseCursorMonitor();
 
+  // Creates a FakeKeyboardLayoutMonitor to mock
+  // DesktopEnvironment::CreateKeyboardLayoutMonitor
+  KeyboardLayoutMonitor* CreateKeyboardLayoutMonitor(
+      base::RepeatingCallback<void(const protocol::KeyboardLayout&)> callback);
+
   void DeleteDesktopEnvironment();
 
   // Forwards |event| to |clipboard_stub_|.
@@ -197,8 +204,8 @@ class IpcDesktopEnvironmentTest : public testing::Test {
 
   void RunMainLoopUntilDone();
 
-  // The main message loop.
-  base::MessageLoopForUI message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
 
   // Runs until |desktop_session_proxy_| is connected to the desktop.
   std::unique_ptr<base::RunLoop> setup_run_loop_;
@@ -262,13 +269,14 @@ IpcDesktopEnvironmentTest::~IpcDesktopEnvironmentTest() = default;
 
 void IpcDesktopEnvironmentTest::SetUp() {
   // Arrange to run |message_loop_| until no components depend on it.
-  task_runner_ = new AutoThreadTaskRunner(
-      message_loop_.task_runner(), main_run_loop_.QuitClosure());
+  task_runner_ =
+      new AutoThreadTaskRunner(task_environment_.GetMainThreadTaskRunner(),
+                               main_run_loop_.QuitClosure());
 
-  io_task_runner_ = AutoThread::CreateWithType(
-      "IPC thread", task_runner_, base::MessageLoop::TYPE_IO);
+  io_task_runner_ = AutoThread::CreateWithType("IPC thread", task_runner_,
+                                               base::MessagePumpType::IO);
 
-  setup_run_loop_.reset(new base::RunLoop());
+  setup_run_loop_ = std::make_unique<base::RunLoop>();
 
   // Set expectation that the DaemonProcess will send DesktopAttached message
   // once it is ready.
@@ -300,14 +308,13 @@ void IpcDesktopEnvironmentTest::SetUp() {
       .Times(AnyNumber())
       .WillRepeatedly(InvokeWithoutArgs(
           this, &IpcDesktopEnvironmentTest::DeleteDesktopEnvironment));
-  EXPECT_CALL(client_session_control_, OnLocalMouseMoved(_))
-      .Times(0);
+  EXPECT_CALL(client_session_control_, OnLocalPointerMoved(_, _)).Times(0);
   EXPECT_CALL(client_session_control_, SetDisableInputs(_))
       .Times(0);
 
   // Create a desktop environment instance.
-  desktop_environment_factory_.reset(new IpcDesktopEnvironmentFactory(
-      task_runner_, task_runner_, io_task_runner_, &daemon_channel_));
+  desktop_environment_factory_ = std::make_unique<IpcDesktopEnvironmentFactory>(
+      task_runner_, task_runner_, io_task_runner_, &daemon_channel_);
   desktop_environment_ = desktop_environment_factory_->Create(
       client_session_control_factory_.GetWeakPtr(),
       DesktopEnvironmentOptions());
@@ -364,14 +371,18 @@ DesktopEnvironment* IpcDesktopEnvironmentTest::CreateDesktopEnvironment() {
       .Times(AtMost(1))
       .WillOnce(Invoke(
           this, &IpcDesktopEnvironmentTest::CreateMouseCursorMonitor));
+  EXPECT_CALL(*desktop_environment, CreateKeyboardLayoutMonitorPtr(_))
+      .Times(AtMost(1))
+      .WillOnce(Invoke(
+          this, &IpcDesktopEnvironmentTest::CreateKeyboardLayoutMonitor));
   EXPECT_CALL(*desktop_environment, GetCapabilities())
       .Times(AtMost(1));
   EXPECT_CALL(*desktop_environment, SetCapabilities(_))
       .Times(AtMost(1));
 
   // Let tests know that the remote desktop environment is created.
-  message_loop_.task_runner()->PostTask(FROM_HERE,
-                                        setup_run_loop_->QuitClosure());
+  task_environment_.GetMainThreadTaskRunner()->PostTask(
+      FROM_HERE, setup_run_loop_->QuitClosure());
 
   return desktop_environment;
 }
@@ -391,6 +402,11 @@ webrtc::DesktopCapturer* IpcDesktopEnvironmentTest::CreateVideoCapturer() {
 webrtc::MouseCursorMonitor*
 IpcDesktopEnvironmentTest::CreateMouseCursorMonitor() {
   return new FakeMouseCursorMonitor();
+}
+
+KeyboardLayoutMonitor* IpcDesktopEnvironmentTest::CreateKeyboardLayoutMonitor(
+    base::RepeatingCallback<void(const protocol::KeyboardLayout&)> callback) {
+  return new FakeKeyboardLayoutMonitor();
 }
 
 void IpcDesktopEnvironmentTest::DeleteDesktopEnvironment() {
@@ -418,8 +434,8 @@ void IpcDesktopEnvironmentTest::CreateDesktopProcess() {
       io_task_runner_.get(), base::ThreadTaskRunnerHandle::Get());
 
   // Create and start the desktop process.
-  desktop_process_.reset(new DesktopProcess(
-      task_runner_, io_task_runner_, io_task_runner_, std::move(pipe.handle1)));
+  desktop_process_ = std::make_unique<DesktopProcess>(
+      task_runner_, io_task_runner_, io_task_runner_, std::move(pipe.handle1));
 
   std::unique_ptr<MockDesktopEnvironmentFactory> desktop_environment_factory(
       new MockDesktopEnvironmentFactory());
@@ -544,7 +560,7 @@ TEST_F(IpcDesktopEnvironmentTest, Reattach) {
   setup_run_loop_->Run();
 
   // Create and start a new desktop process object.
-  setup_run_loop_.reset(new base::RunLoop());
+  setup_run_loop_ = std::make_unique<base::RunLoop>();
   DestoyDesktopProcess();
   CreateDesktopProcess();
   setup_run_loop_->Run();

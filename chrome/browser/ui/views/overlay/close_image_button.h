@@ -6,32 +6,24 @@
 #define CHROME_BROWSER_UI_VIEWS_OVERLAY_CLOSE_IMAGE_BUTTON_H_
 
 #include "chrome/browser/ui/views/overlay/overlay_window_views.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/button/image_button.h"
 
 namespace views {
 
-// An image button representing a white close button. When the user interacts
-// with the button, a grey circular background appears as an indicator.
+// An image button representing a close button.
 class CloseImageButton : public views::ImageButton {
  public:
-  explicit CloseImageButton(ButtonListener*);
+  METADATA_HEADER(CloseImageButton);
+
+  explicit CloseImageButton(PressedCallback callback);
+  CloseImageButton(const CloseImageButton&) = delete;
+  CloseImageButton& operator=(const CloseImageButton&) = delete;
   ~CloseImageButton() override = default;
-
-  // views::Button:
-  void StateChanged(ButtonState old_state) override;
-
-  // views::View:
-  void OnFocus() override;
-  void OnBlur() override;
 
   // Sets the position of itself with an offset from the given window size.
   void SetPosition(const gfx::Size& size,
                    OverlayWindowViews::WindowQuadrant quadrant);
-
- private:
-  const gfx::ImageSkia close_background_;
-
-  DISALLOW_COPY_AND_ASSIGN(CloseImageButton);
 };
 
 }  // namespace views

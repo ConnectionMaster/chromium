@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "net/socket/stream_socket.h"
 #include "services/network/public/cpp/server/web_socket.h"
 
@@ -16,7 +16,7 @@ namespace server {
 
 HttpConnection::HttpConnection(
     int id,
-    mojom::TCPConnectedSocketPtr socket,
+    mojo::PendingRemote<mojom::TCPConnectedSocket> socket,
     mojo::ScopedDataPipeConsumerHandle socket_receive_handle,
     mojo::ScopedDataPipeProducerHandle socket_send_handle,
     const net::IPEndPoint& peer_addr)

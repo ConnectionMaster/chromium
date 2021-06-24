@@ -37,30 +37,30 @@ class DriveUploaderOnWorker : public drive::DriveUploaderInterface {
 
   void StartBatchProcessing() override;
   void StopBatchProcessing() override;
-  google_apis::CancelCallback UploadNewFile(
+  google_apis::CancelCallbackOnce UploadNewFile(
       const std::string& parent_resource_id,
       const base::FilePath& local_file_path,
       const std::string& title,
       const std::string& content_type,
       const drive::UploadNewFileOptions& options,
-      const drive::UploadCompletionCallback& callback,
-      const google_apis::ProgressCallback& progress_callback) override;
+      drive::UploadCompletionCallback callback,
+      google_apis::ProgressCallback progress_callback) override;
 
-  google_apis::CancelCallback UploadExistingFile(
+  google_apis::CancelCallbackOnce UploadExistingFile(
       const std::string& resource_id,
       const base::FilePath& local_file_path,
       const std::string& content_type,
       const drive::UploadExistingFileOptions& options,
-      const drive::UploadCompletionCallback& callback,
-      const google_apis::ProgressCallback& progress_callback) override;
+      drive::UploadCompletionCallback callback,
+      google_apis::ProgressCallback progress_callback) override;
 
   // Following method is expected not to be used.
-  google_apis::CancelCallback ResumeUploadFile(
+  google_apis::CancelCallbackOnce ResumeUploadFile(
       const GURL& upload_location,
       const base::FilePath& local_file_path,
       const std::string& content_type,
-      const drive::UploadCompletionCallback& callback,
-      const google_apis::ProgressCallback& progress_callback) override;
+      drive::UploadCompletionCallback callback,
+      google_apis::ProgressCallback progress_callback) override;
 
  private:
   base::WeakPtr<DriveUploaderWrapper> wrapper_;

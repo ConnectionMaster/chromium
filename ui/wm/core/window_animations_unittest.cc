@@ -6,8 +6,8 @@
 
 #include <memory>
 
+#include "base/containers/contains.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "base/time/time.h"
 #include "ui/aura/test/aura_test_base.h"
 #include "ui/aura/test/test_windows.h"
@@ -155,10 +155,9 @@ TEST_F(WindowAnimationsTest, HideAnimationDetachLayers) {
     // Make sure the Hide animation create another layer, and both are in
     // the parent layer.
     EXPECT_NE(animating_window->layer(), animating_layer);
+    EXPECT_TRUE(base::Contains(parent->layer()->children(), animating_layer));
     EXPECT_TRUE(
-        base::ContainsValue(parent->layer()->children(), animating_layer));
-    EXPECT_TRUE(base::ContainsValue(parent->layer()->children(),
-                                    animating_window->layer()));
+        base::Contains(parent->layer()->children(), animating_window->layer()));
     // Current layer must be already hidden.
     EXPECT_FALSE(animating_window->layer()->visible());
 
@@ -177,8 +176,7 @@ TEST_F(WindowAnimationsTest, HideAnimationDetachLayers) {
 
     // Animating layer must be gone
     animating_layer->GetAnimator()->StopAnimating();
-    EXPECT_FALSE(
-        base::ContainsValue(parent->layer()->children(), animating_layer));
+    EXPECT_FALSE(base::Contains(parent->layer()->children(), animating_layer));
   }
 }
 
@@ -287,7 +285,7 @@ TEST_F(WindowAnimationsTest, RotateHideNoLeak) {
       ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
 
   std::unique_ptr<aura::Window> window(
-      aura::test::CreateTestWindowWithId(0, NULL));
+      aura::test::CreateTestWindowWithId(0, nullptr));
   ui::Layer* animating_layer = window->layer();
   wm::SetWindowVisibilityAnimationType(window.get(),
                                        WINDOW_VISIBILITY_ANIMATION_TYPE_ROTATE);
@@ -296,6 +294,37 @@ TEST_F(WindowAnimationsTest, RotateHideNoLeak) {
   AnimateOnChildWindowVisibilityChanged(window.get(), false);
 
   animating_layer->GetAnimator()->StopAnimating();
+}
+
+// The rotation animation for hiding a window should not crash with a zero
+// duration.
+TEST_F(WindowAnimationsTest, RotateHideNoCrashZeroDuration) {
+  std::unique_ptr<aura::Window> window(
+      aura::test::CreateTestWindowWithId(0, nullptr));
+  wm::SetWindowVisibilityAnimationType(window.get(),
+                                       WINDOW_VISIBILITY_ANIMATION_TYPE_ROTATE);
+
+  AnimateOnChildWindowVisibilityChanged(window.get(), true);
+  AnimateOnChildWindowVisibilityChanged(window.get(), false);
+}
+
+TEST_F(WindowAnimationsTest, RotateHideCreatesNewLayer) {
+  ui::ScopedAnimationDurationScaleMode scale_mode(
+      ui::ScopedAnimationDurationScaleMode::FAST_DURATION);
+
+  std::unique_ptr<aura::Window> window(
+      aura::test::CreateTestWindowWithId(0, nullptr));
+  wm::SetWindowVisibilityAnimationType(window.get(),
+                                       WINDOW_VISIBILITY_ANIMATION_TYPE_ROTATE);
+  AnimateOnChildWindowVisibilityChanged(window.get(), true);
+  window->layer()->GetAnimator()->StopAnimating();
+
+  auto* original_layer = window->layer();
+  AnimateOnChildWindowVisibilityChanged(window.get(), false);
+  // The layer should have changed, as the Layer is cloned and detached.
+  EXPECT_NE(original_layer, window->layer());
+  // Need to stop the animation, otherwise there is a leak.
+  original_layer->GetAnimator()->StopAnimating();
 }
 
 // The rotation animation for hiding a window should not crash when terminated

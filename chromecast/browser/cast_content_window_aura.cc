@@ -10,13 +10,13 @@
 #include "base/memory/ptr_util.h"
 #include "chromecast/chromecast_buildflags.h"
 #include "chromecast/graphics/cast_window_manager.h"
+#include "chromecast/ui/media_control_ui.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/aura/window.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 
 namespace chromecast {
-namespace shell {
 
 class TouchBlocker : public ui::EventHandler, public aura::WindowObserver {
  public:
@@ -69,25 +69,22 @@ class TouchBlocker : public ui::EventHandler, public aura::WindowObserver {
   DISALLOW_COPY_AND_ASSIGN(TouchBlocker);
 };
 
-// static
-std::unique_ptr<CastContentWindow> CastContentWindow::Create(
-    const CastContentWindow::CreateParams& params) {
-  return base::WrapUnique(new CastContentWindowAura(params));
-}
-
 CastContentWindowAura::CastContentWindowAura(
-    const CastContentWindow::CreateParams& params)
-    : delegate_(params.delegate),
+    const CastContentWindow::CreateParams& params,
+    CastWindowManager* window_manager)
+    : CastContentWindow(params),
+      window_manager_(window_manager),
       gesture_dispatcher_(
           std::make_unique<CastContentGestureHandler>(delegate_)),
       gesture_priority_(params.gesture_priority),
       is_touch_enabled_(params.enable_touch_input),
       window_(nullptr),
-      has_screen_access_(false) {
-  DCHECK(delegate_);
-}
+      has_screen_access_(false),
+      resize_window_when_navigation_starts_(true) {}
 
 CastContentWindowAura::~CastContentWindowAura() {
+  content::WebContentsObserver::Observe(nullptr);
+  CastWebContents::Observer::Observe(nullptr);
   if (window_manager_) {
     window_manager_->RemoveGestureHandler(gesture_dispatcher_.get());
   }
@@ -96,57 +93,63 @@ CastContentWindowAura::~CastContentWindowAura() {
   }
 }
 
-void CastContentWindowAura::CreateWindowForWebContents(
-    content::WebContents* web_contents,
-    CastWindowManager* window_manager,
-    CastWindowManager::WindowId z_order,
+void CastContentWindowAura::CreateWindow(
+    mojom::ZOrder z_order,
     VisibilityPriority visibility_priority) {
-  DCHECK(web_contents);
-  window_manager_ = window_manager;
-  DCHECK(window_manager_);
-  window_ = web_contents->GetNativeView();
+  DCHECK(window_manager_) << "A CastWindowManager must be provided before "
+                          << "creating a window for WebContents.";
+  CastWebContents::Observer::Observe(cast_web_contents());
+  content::WebContentsObserver::Observe(WebContents());
+  window_ = WebContents()->GetNativeView();
   if (!window_->HasObserver(this)) {
     window_->AddObserver(this);
   }
-  window_manager_->SetWindowId(window_, z_order);
+  window_manager_->SetZOrder(window_, z_order);
   window_manager_->AddWindow(window_);
   window_manager_->AddGestureHandler(gesture_dispatcher_.get());
 
   touch_blocker_ = std::make_unique<TouchBlocker>(window_, !is_touch_enabled_);
+  media_controls_ = std::make_unique<MediaControlUi>(window_manager_);
 
   if (has_screen_access_) {
     window_->Show();
   } else {
     window_->Hide();
   }
+
+  cast_web_contents()->web_contents()->Focus();
 }
 
 void CastContentWindowAura::GrantScreenAccess() {
   has_screen_access_ = true;
   if (window_) {
-#if !BUILDFLAG(IS_CAST_AUDIO_ONLY)
-    gfx::Size display_size =
-        display::Screen::GetScreen()->GetPrimaryDisplay().size();
-    window_->SetBounds(gfx::Rect(display_size.width(), display_size.height()));
-#endif
+    SetFullWindowBounds();
     window_->Show();
   }
 }
 
 void CastContentWindowAura::RevokeScreenAccess() {
   has_screen_access_ = false;
+  resize_window_when_navigation_starts_ = false;
   if (window_) {
     window_->Hide();
-    // Because rendering a larger window may require more system resources,
-    // resize the window to one pixel while hidden.
-    LOG(INFO) << "Resizing window to 1x1 pixel while hidden";
-    window_->SetBounds(gfx::Rect(1, 1));
+    SetHiddenWindowBounds();
   }
 }
 
 void CastContentWindowAura::EnableTouchInput(bool enabled) {
   if (touch_blocker_) {
     touch_blocker_->Activate(!enabled);
+  }
+}
+
+mojom::MediaControlUi* CastContentWindowAura::media_controls() {
+  return media_controls_.get();
+}
+
+void CastContentWindowAura::MainFrameResized(const gfx::Rect& bounds) {
+  if (media_controls_) {
+    media_controls_->SetBounds(bounds);
   }
 }
 
@@ -159,7 +162,9 @@ void CastContentWindowAura::SetHostContext(base::Value host_context) {}
 
 void CastContentWindowAura::NotifyVisibilityChange(
     VisibilityType visibility_type) {
-  delegate_->OnVisibilityChange(visibility_type);
+  if (delegate_) {
+    delegate_->OnVisibilityChange(visibility_type);
+  }
   for (auto& observer : observer_list_) {
     observer.OnVisibilityChange(visibility_type);
   }
@@ -180,5 +185,28 @@ void CastContentWindowAura::OnWindowDestroyed(aura::Window* window) {
   window_ = nullptr;
 }
 
-}  // namespace shell
+void CastContentWindowAura::DidStartNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!resize_window_when_navigation_starts_ || !window_) {
+    return;
+  }
+  resize_window_when_navigation_starts_ = false;
+  SetFullWindowBounds();
+}
+
+void CastContentWindowAura::SetFullWindowBounds() {
+#if !BUILDFLAG(IS_CAST_AUDIO_ONLY)
+  gfx::Size display_size =
+      display::Screen::GetScreen()->GetPrimaryDisplay().size();
+  window_->SetBounds(gfx::Rect(display_size.width(), display_size.height()));
+#endif
+}
+
+void CastContentWindowAura::SetHiddenWindowBounds() {
+  // Because rendering a larger window may require more system resources,
+  // resize the window to one pixel while hidden.
+  LOG(INFO) << "Resizing window to 1x1 pixel while hidden";
+  window_->SetBounds(gfx::Rect(1, 1));
+}
+
 }  // namespace chromecast

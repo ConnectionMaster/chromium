@@ -32,10 +32,12 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_FILEAPI_BLOB_H_
 
 #include "base/memory/scoped_refptr.h"
-#include "third_party/blink/renderer/bindings/core/v8/array_buffer_or_array_buffer_view_or_blob_or_usv_string.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/fileapi/url_registry.h"
 #include "third_party/blink/renderer/core/imagebitmap/image_bitmap_source.h"
+#include "third_party/blink/renderer/core/streams/readable_stream.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -59,14 +61,9 @@ class CORE_EXPORT Blob : public ScriptWrappable,
     return MakeGarbageCollected<Blob>(BlobDataHandle::Create());
   }
 
-  static Blob* Create(
-      ExecutionContext*,
-      const HeapVector<ArrayBufferOrArrayBufferViewOrBlobOrUSVString>&,
-      const BlobPropertyBag*);
-
-  static Blob* Create(scoped_refptr<BlobDataHandle> blob_data_handle) {
-    return MakeGarbageCollected<Blob>(std::move(blob_data_handle));
-  }
+  static Blob* Create(ExecutionContext* execution_context,
+                      const HeapVector<Member<V8BlobPart>>& blob_parts,
+                      const BlobPropertyBag* options);
 
   static Blob* Create(const unsigned char* data,
                       size_t size,
@@ -97,6 +94,9 @@ class CORE_EXPORT Blob : public ScriptWrappable,
     return slice(start, end, String(), exception_state);
   }
 
+  ReadableStream* stream(ScriptState* script_state) const;
+  ScriptPromise text(ScriptState* script_state);
+  ScriptPromise arrayBuffer(ScriptState* script_state);
   String type() const { return blob_data_handle_->GetType(); }
   String Uuid() const { return blob_data_handle_->Uuid(); }
   scoped_refptr<BlobDataHandle> GetBlobDataHandle() const {
@@ -112,16 +112,17 @@ class CORE_EXPORT Blob : public ScriptWrappable,
 
   // URLRegistrable to support PublicURLs.
   URLRegistry& Registry() const final;
-  mojom::blink::BlobPtr AsMojoBlob() final;
+  bool IsMojoBlob() final;
+  void CloneMojoBlob(mojo::PendingReceiver<mojom::blink::Blob>) final;
+  mojo::PendingRemote<mojom::blink::Blob> AsMojoBlob();
 
   // ImageBitmapSource implementation
   bool IsBlob() const override { return true; }
 
  protected:
-  static void PopulateBlobData(
-      BlobData*,
-      const HeapVector<ArrayBufferOrArrayBufferViewOrBlobOrUSVString>& parts,
-      bool normalize_line_endings_to_native);
+  static void PopulateBlobData(BlobData* blob_data,
+                               const HeapVector<Member<V8BlobPart>>& parts,
+                               bool normalize_line_endings_to_native);
   static void ClampSliceOffsets(uint64_t size, int64_t& start, int64_t& end);
 
   // Called by the Blob and File constructors when processing the 'type'

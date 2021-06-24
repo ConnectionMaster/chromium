@@ -26,6 +26,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GRAPHICS_LAYER_CLIENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GRAPHICS_LAYER_CLIENT_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/platform/geometry/layout_size.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -36,6 +37,7 @@ class GraphicsContext;
 class GraphicsLayer;
 class IntRect;
 class ScrollableArea;
+class PaintArtifactCompositor;
 
 enum GraphicsLayerPaintingPhaseFlags {
   kGraphicsLayerPaintBackground = (1 << 0),
@@ -43,42 +45,24 @@ enum GraphicsLayerPaintingPhaseFlags {
   kGraphicsLayerPaintMask = (1 << 2),
   kGraphicsLayerPaintOverflowContents = (1 << 3),
   kGraphicsLayerPaintCompositedScroll = (1 << 4),
-  kGraphicsLayerPaintChildClippingMask = (1 << 5),
-  kGraphicsLayerPaintAncestorClippingMask = (1 << 6),
-  kGraphicsLayerPaintDecoration = (1 << 7),
+  kGraphicsLayerPaintDecoration = (1 << 5),
   kGraphicsLayerPaintAllWithOverflowClip =
       (kGraphicsLayerPaintBackground | kGraphicsLayerPaintForeground |
        kGraphicsLayerPaintMask | kGraphicsLayerPaintDecoration)
 };
 typedef unsigned GraphicsLayerPaintingPhase;
 
-// These values need to be kept consistent with the layer tree flags in
-// core/testing/Internals.idl.
-enum {
-  kLayerTreeNormal = 0,
-  // Dump extra debugging info like layer addresses.
-  kLayerTreeIncludesDebugInfo = 1 << 0,
-  kLayerTreeIncludesPaintInvalidations = 1 << 1,
-  kLayerTreeIncludesPaintingPhases = 1 << 2,
-  kLayerTreeIncludesRootLayer = 1 << 3,
-  kLayerTreeIncludesClipAndScrollParents = 1 << 4,
-  kLayerTreeIncludesCompositingReasons = 1 << 5,
-  kLayerTreeIncludesPaintRecords = 1 << 6,
-  // Outputs all layers as a layer tree. The default is output children
-  // (excluding the root) as a layer list, in paint (preorder) order.
-  kOutputAsLayerTree = 0x4000,
-};
-typedef unsigned LayerTreeFlags;
-
 class PLATFORM_EXPORT GraphicsLayerClient {
  public:
   virtual ~GraphicsLayerClient() = default;
 
-  virtual void InvalidateTargetElementForTesting() {}
-
+  // Used only when CullRectUpdate is not enabled.
   virtual IntRect ComputeInterestRect(
       const GraphicsLayer*,
       const IntRect& previous_interest_rect) const = 0;
+  // Used when CullRectUpdate is enabled.
+  virtual IntRect PaintableRegion(const GraphicsLayer*) const = 0;
+
   virtual LayoutSize SubpixelAccumulation() const { return LayoutSize(); }
   // Returns whether the client needs to be repainted with respect to the given
   // graphics layer.
@@ -88,15 +72,13 @@ class PLATFORM_EXPORT GraphicsLayerClient {
                              GraphicsLayerPaintingPhase,
                              const IntRect& interest_rect) const = 0;
 
-  // Returns true if the GraphicsLayer is under a frame that should not render
-  // (see LocalFrameView::ShouldThrottleRendering()).
-  virtual bool ShouldThrottleRendering() const { return false; }
+  virtual bool ShouldSkipPaintingSubtree() const { return false; }
 
   virtual bool IsTrackingRasterInvalidations() const { return false; }
 
-  virtual void SetOverlayScrollbarsHidden(bool) {}
+  virtual void GraphicsLayersDidChange() {}
 
-  virtual void SetPaintArtifactCompositorNeedsUpdate() const {}
+  virtual PaintArtifactCompositor* GetPaintArtifactCompositor() = 0;
 
   virtual String DebugName(const GraphicsLayer*) const = 0;
 

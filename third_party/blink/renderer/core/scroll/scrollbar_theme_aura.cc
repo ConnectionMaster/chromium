@@ -31,26 +31,35 @@
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_aura.h"
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "cc/input/scrollbar.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/public/platform/web_mouse_event.h"
-#include "third_party/blink/public/platform/web_rect.h"
 #include "third_party/blink/public/platform/web_theme_engine.h"
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_overlay.h"
+#include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect_outsets.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
 
 namespace blink {
 
 namespace {
 
-static bool UseMockTheme() {
-  return WebTestSupport::IsRunningWebTest();
-}
+// Use fixed scrollbar thickness for web_tests because many tests are
+// expecting that. Rebaselining is relatively easy for platform differences,
+// but tens of testharness tests will fail without this on Windows.
+// TODO(crbug.com/953847): Adapt testharness tests to native themes and remove
+// this.
+constexpr int kScrollbarThicknessForWebTests = 15;
+
+// While the theme does not have specific values for scrollbar-width: thin
+// we just use a fixed 2/3 ratio of the default value.
+constexpr float kAutoProportion = 1.f;
+constexpr float kThinProportion = 2.f / 3.f;
 
 // Contains a flag indicating whether WebThemeEngine should paint a UI widget
 // for a scrollbar part, and if so, what part and state apply.
@@ -92,8 +101,6 @@ PartPaintingParams ButtonPartPaintingParams(const Scrollbar& scrollbar,
     if (part == kBackButtonStartPart) {
       paint_part = WebThemeEngine::kPartScrollbarLeftArrow;
       check_min = true;
-    } else if (UseMockTheme() && part != kForwardButtonEndPart) {
-      return PartPaintingParams();
     } else {
       paint_part = WebThemeEngine::kPartScrollbarRightArrow;
       check_max = true;
@@ -102,19 +109,14 @@ PartPaintingParams ButtonPartPaintingParams(const Scrollbar& scrollbar,
     if (part == kBackButtonStartPart) {
       paint_part = WebThemeEngine::kPartScrollbarUpArrow;
       check_min = true;
-    } else if (UseMockTheme() && part != kForwardButtonEndPart) {
-      return PartPaintingParams();
     } else {
       paint_part = WebThemeEngine::kPartScrollbarDownArrow;
       check_max = true;
     }
   }
 
-  if (UseMockTheme() && !scrollbar.Enabled()) {
-    state = WebThemeEngine::kStateDisabled;
-  } else if (!UseMockTheme() &&
-             ((check_min && (position <= 0)) ||
-              (check_max && position >= scrollbar.Maximum()))) {
+  if ((check_min && (position <= 0)) ||
+      (check_max && position >= scrollbar.Maximum())) {
     state = WebThemeEngine::kStateDisabled;
   } else {
     if (part == scrollbar.PressedPart())
@@ -126,36 +128,51 @@ PartPaintingParams ButtonPartPaintingParams(const Scrollbar& scrollbar,
   return PartPaintingParams(paint_part, state);
 }
 
-static int GetScrollbarThickness() {
-  return Platform::Current()
-      ->ThemeEngine()
-      ->GetSize(WebThemeEngine::kPartScrollbarVerticalThumb)
-      .width;
+inline float Proportion(EScrollbarWidth scrollbar_width) {
+  if (scrollbar_width == EScrollbarWidth::kThin)
+    return kThinProportion;
+  else
+    return kAutoProportion;
 }
 
 }  // namespace
 
 ScrollbarTheme& ScrollbarTheme::NativeTheme() {
-  if (RuntimeEnabledFeatures::OverlayScrollbarsEnabled()) {
-    DEFINE_STATIC_LOCAL(
-        ScrollbarThemeOverlay, theme,
-        (GetScrollbarThickness(), 0, ScrollbarThemeOverlay::kAllowHitTest));
-    return theme;
-  }
+  if (OverlayScrollbarsEnabled())
+    return ScrollbarThemeOverlay::GetInstance();
 
   DEFINE_STATIC_LOCAL(ScrollbarThemeAura, theme, ());
   return theme;
 }
 
-int ScrollbarThemeAura::ScrollbarThickness(ScrollbarControlSize control_size) {
+bool ScrollbarThemeAura::SupportsDragSnapBack() const {
+// Disable snapback on desktop Linux to better integrate with the desktop
+// behavior. Typically, Linux apps do not implement scrollbar snapback (this
+// is true for at least GTK and QT apps).
+// TODO(crbug.com/1052397): Revisit once build flag switch of lacros-chrome is
+// complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  return false;
+#else
+  return true;
+#endif
+}
+
+int ScrollbarThemeAura::ScrollbarThickness(float scale_from_dip,
+                                           EScrollbarWidth scrollbar_width) {
+  if (scrollbar_width == EScrollbarWidth::kNone)
+    return 0;
+
+  if (WebTestSupport::IsRunningWebTest()) {
+    return kScrollbarThicknessForWebTests * Proportion(scrollbar_width) *
+           scale_from_dip;
+  }
+
   // Horiz and Vert scrollbars are the same thickness.
-  // In unit tests we don't have the mock theme engine (because of layering
-  // violations), so we hard code the size (see bug 327470).
-  if (UseMockTheme())
-    return 15;
-  IntSize scrollbar_size = Platform::Current()->ThemeEngine()->GetSize(
-      WebThemeEngine::kPartScrollbarVerticalTrack);
-  return scrollbar_size.Width();
+  IntSize scrollbar_size = IntSize(Platform::Current()->ThemeEngine()->GetSize(
+      WebThemeEngine::kPartScrollbarVerticalTrack));
+
+  return scrollbar_size.Width() * Proportion(scrollbar_width) * scale_from_dip;
 }
 
 bool ScrollbarThemeAura::HasThumb(const Scrollbar& scrollbar) {
@@ -164,24 +181,12 @@ bool ScrollbarThemeAura::HasThumb(const Scrollbar& scrollbar) {
   return ThumbLength(scrollbar) > 0;
 }
 
-IntRect ScrollbarThemeAura::BackButtonRect(const Scrollbar& scrollbar,
-                                           ScrollbarPart part,
-                                           bool) {
-  // Windows and Linux just have single arrows.
-  if (part == kBackButtonEndPart)
-    return IntRect();
-
+IntRect ScrollbarThemeAura::BackButtonRect(const Scrollbar& scrollbar) {
   IntSize size = ButtonSize(scrollbar);
   return IntRect(scrollbar.X(), scrollbar.Y(), size.Width(), size.Height());
 }
 
-IntRect ScrollbarThemeAura::ForwardButtonRect(const Scrollbar& scrollbar,
-                                              ScrollbarPart part,
-                                              bool) {
-  // Windows and Linux just have single arrows.
-  if (part == kForwardButtonStartPart)
-    return IntRect();
-
+IntRect ScrollbarThemeAura::ForwardButtonRect(const Scrollbar& scrollbar) {
   IntSize size = ButtonSize(scrollbar);
   int x, y;
   if (scrollbar.Orientation() == kHorizontalScrollbar) {
@@ -194,7 +199,7 @@ IntRect ScrollbarThemeAura::ForwardButtonRect(const Scrollbar& scrollbar,
   return IntRect(x, y, size.Width(), size.Height());
 }
 
-IntRect ScrollbarThemeAura::TrackRect(const Scrollbar& scrollbar, bool) {
+IntRect ScrollbarThemeAura::TrackRect(const Scrollbar& scrollbar) {
   // The track occupies all space between the two buttons.
   IntSize bs = ButtonSize(scrollbar);
   if (scrollbar.Orientation() == kHorizontalScrollbar) {
@@ -210,77 +215,65 @@ IntRect ScrollbarThemeAura::TrackRect(const Scrollbar& scrollbar, bool) {
 }
 
 int ScrollbarThemeAura::MinimumThumbLength(const Scrollbar& scrollbar) {
-  if (scrollbar.Orientation() == kVerticalScrollbar) {
-    return Platform::Current()
-        ->ThemeEngine()
-        ->GetSize(WebThemeEngine::kPartScrollbarVerticalThumb)
-        .height;
-  }
+  int scrollbar_thickness =
+      (scrollbar.Orientation() == kVerticalScrollbar)
+          ? Platform::Current()
+                ->ThemeEngine()
+                ->GetSize(WebThemeEngine::kPartScrollbarVerticalThumb)
+                .height()
+          : Platform::Current()
+                ->ThemeEngine()
+                ->GetSize(WebThemeEngine::kPartScrollbarHorizontalThumb)
+                .width();
 
-  return Platform::Current()
-      ->ThemeEngine()
-      ->GetSize(WebThemeEngine::kPartScrollbarHorizontalThumb)
-      .width;
+  return scrollbar_thickness * Proportion(scrollbar.CSSScrollbarWidth()) *
+         scrollbar.ScaleFromDIP();
 }
 
-void ScrollbarThemeAura::PaintTrackBackground(GraphicsContext& context,
-                                              const Scrollbar& scrollbar,
-                                              const IntRect& rect) {
-  // Just assume a forward track part. We only paint the track as a single piece
-  // when there is no thumb.
-  if (!HasThumb(scrollbar) && !rect.IsEmpty())
-    PaintTrackPiece(context, scrollbar, rect, kForwardTrackPart);
-}
-
-void ScrollbarThemeAura::PaintTrackPiece(GraphicsContext& gc,
-                                         const Scrollbar& scrollbar,
-                                         const IntRect& rect,
-                                         ScrollbarPart part_type) {
-  DisplayItem::Type display_item_type =
-      TrackPiecePartToDisplayItemType(part_type);
-  if (DrawingRecorder::UseCachedDrawingIfPossible(gc, scrollbar,
-                                                  display_item_type))
+void ScrollbarThemeAura::PaintTrack(GraphicsContext& context,
+                                    const Scrollbar& scrollbar,
+                                    const IntRect& rect) {
+  if (rect.IsEmpty())
     return;
 
-  DrawingRecorder recorder(gc, scrollbar, display_item_type);
+  // We always paint the track as a single piece, so don't support hover state
+  // of the back track and forward track.
+  auto state = WebThemeEngine::kStateNormal;
 
-  WebThemeEngine::State state = scrollbar.HoveredPart() == part_type
-                                    ? WebThemeEngine::kStateHover
-                                    : WebThemeEngine::kStateNormal;
-
-  if (UseMockTheme() && !scrollbar.Enabled())
-    state = WebThemeEngine::kStateDisabled;
-
-  IntRect align_rect = TrackRect(scrollbar, false);
+  // TODO(wangxianzhu): The extra params for scrollbar track were for painting
+  // back and forward tracks separately, which we don't support. Remove them.
+  IntRect align_rect = TrackRect(scrollbar);
   WebThemeEngine::ExtraParams extra_params;
-  extra_params.scrollbar_track.is_back = (part_type == kBackTrackPart);
+  extra_params.scrollbar_track.is_back = false;
   extra_params.scrollbar_track.track_x = align_rect.X();
   extra_params.scrollbar_track.track_y = align_rect.Y();
   extra_params.scrollbar_track.track_width = align_rect.Width();
   extra_params.scrollbar_track.track_height = align_rect.Height();
+
   Platform::Current()->ThemeEngine()->Paint(
-      gc.Canvas(),
+      context.Canvas(),
       scrollbar.Orientation() == kHorizontalScrollbar
           ? WebThemeEngine::kPartScrollbarHorizontalTrack
           : WebThemeEngine::kPartScrollbarVerticalTrack,
-      state, WebRect(rect), &extra_params);
+      state, gfx::Rect(rect), &extra_params, scrollbar.UsedColorScheme());
 }
 
 void ScrollbarThemeAura::PaintButton(GraphicsContext& gc,
                                      const Scrollbar& scrollbar,
                                      const IntRect& rect,
                                      ScrollbarPart part) {
-  DisplayItem::Type display_item_type = ButtonPartToDisplayItemType(part);
-  if (DrawingRecorder::UseCachedDrawingIfPossible(gc, scrollbar,
-                                                  display_item_type))
-    return;
   PartPaintingParams params =
       ButtonPartPaintingParams(scrollbar, scrollbar.CurrentPos(), part);
   if (!params.should_paint)
     return;
-  DrawingRecorder recorder(gc, scrollbar, display_item_type);
+
+  WebThemeEngine::ExtraParams extra_params;
+  extra_params.scrollbar_button.zoom = scrollbar.EffectiveZoom();
+  extra_params.scrollbar_button.right_to_left =
+      scrollbar.ContainerIsRightToLeft();
   Platform::Current()->ThemeEngine()->Paint(
-      gc.Canvas(), params.part, params.state, WebRect(rect), nullptr);
+      gc.Canvas(), params.part, params.state, gfx::Rect(rect), &extra_params,
+      scrollbar.UsedColorScheme());
 }
 
 void ScrollbarThemeAura::PaintThumb(GraphicsContext& gc,
@@ -290,7 +283,7 @@ void ScrollbarThemeAura::PaintThumb(GraphicsContext& gc,
                                                   DisplayItem::kScrollbarThumb))
     return;
 
-  DrawingRecorder recorder(gc, scrollbar, DisplayItem::kScrollbarThumb);
+  DrawingRecorder recorder(gc, scrollbar, DisplayItem::kScrollbarThumb, rect);
 
   WebThemeEngine::State state;
   cc::PaintCanvas* canvas = gc.Canvas();
@@ -306,7 +299,7 @@ void ScrollbarThemeAura::PaintThumb(GraphicsContext& gc,
       scrollbar.Orientation() == kHorizontalScrollbar
           ? WebThemeEngine::kPartScrollbarHorizontalThumb
           : WebThemeEngine::kPartScrollbarVerticalThumb,
-      state, WebRect(rect), nullptr);
+      state, gfx::Rect(rect), nullptr, scrollbar.UsedColorScheme());
 }
 
 bool ScrollbarThemeAura::ShouldRepaintAllPartsOnInvalidation() const {
@@ -314,12 +307,11 @@ bool ScrollbarThemeAura::ShouldRepaintAllPartsOnInvalidation() const {
   return false;
 }
 
-ScrollbarPart ScrollbarThemeAura::InvalidateOnThumbPositionChange(
+ScrollbarPart ScrollbarThemeAura::PartsToInvalidateOnThumbPositionChange(
     const Scrollbar& scrollbar,
     float old_position,
     float new_position) const {
   ScrollbarPart invalid_parts = kNoPart;
-  DCHECK_EQ(ButtonsPlacement(), kWebScrollbarButtonsPlacementSingle);
   static const ScrollbarPart kButtonParts[] = {kBackButtonStartPart,
                                                kForwardButtonEndPart};
   for (ScrollbarPart part : kButtonParts) {
@@ -332,7 +324,9 @@ ScrollbarPart ScrollbarThemeAura::InvalidateOnThumbPositionChange(
 
 bool ScrollbarThemeAura::ShouldCenterOnThumb(const Scrollbar& scrollbar,
                                              const WebMouseEvent& event) {
-#if (defined(OS_LINUX) && !defined(OS_CHROMEOS))
+// TODO(crbug.com/1052397): Revisit once build flag switch of lacros-chrome is
+// complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   if (event.button == WebPointerProperties::Button::kMiddle)
     return true;
 #endif
@@ -344,42 +338,35 @@ bool ScrollbarThemeAura::ShouldCenterOnThumb(const Scrollbar& scrollbar,
 bool ScrollbarThemeAura::ShouldSnapBackToDragOrigin(
     const Scrollbar& scrollbar,
     const WebMouseEvent& event) {
-// Disable snapback on desktop Linux to better integrate with the desktop
-// behavior.  Typically, Linux apps do not implement scrollbar snapback (this is
-// true for at least GTK and QT apps).
-#if (defined(OS_LINUX) && !defined(OS_CHROMEOS))
-  return false;
-#endif
+  if (!SupportsDragSnapBack())
+    return false;
 
-  // Constants used to figure the drag rect outside which we should snap the
-  // scrollbar thumb back to its origin. These calculations are based on
-  // observing the behavior of the MSVC8 main window scrollbar + some
-  // guessing/extrapolation.
-  static const int kOffEndMultiplier = 3;
-  static const int kOffSideMultiplier = 8;
-  static const int kDefaultWinScrollbarThickness = 17;
-
-  // Find the rect within which we shouldn't snap, by expanding the track rect
-  // in both dimensions.
-  IntRect no_snap_rect(TrackRect(scrollbar));
+  // There is a drag rect around the scrollbar outside of which the scrollbar
+  // thumb should snap back to its origin.  This rect is infinitely large in
+  // the scrollbar's scrolling direction and an expansion of the scrollbar's
+  // width or height in the non-scrolling direction. As only one axis triggers
+  // snapping back, the code below only uses the thickness of the scrollbar for
+  // its calculations.
   bool is_horizontal = scrollbar.Orientation() == kHorizontalScrollbar;
-  int thickness = is_horizontal ? no_snap_rect.Height() : no_snap_rect.Width();
+  int thickness = is_horizontal ? TrackRect(scrollbar).Height()
+                                : TrackRect(scrollbar).Width();
   // Even if the platform's scrollbar is narrower than the default Windows one,
   // we still want to provide at least as much slop area, since a slightly
   // narrower scrollbar doesn't necessarily imply that users will drag
   // straighter.
-  thickness = std::max(thickness, kDefaultWinScrollbarThickness);
-  int width_outset =
-      (is_horizontal ? kOffEndMultiplier : kOffSideMultiplier) * thickness;
-  int height_outset =
-      (is_horizontal ? kOffSideMultiplier : kOffEndMultiplier) * thickness;
-  no_snap_rect.Expand(
-      IntRectOutsets(height_outset, width_outset, height_outset, width_outset));
+  int expansion_amount =
+      kOffSideMultiplier * std::max(thickness, kDefaultWinScrollbarThickness);
+
+  int snap_outside_of_min = -expansion_amount;
+  int snap_outside_of_max = expansion_amount + thickness;
 
   IntPoint mouse_position = scrollbar.ConvertFromRootFrame(
       FlooredIntPoint(event.PositionInRootFrame()));
-  mouse_position.Move(scrollbar.X(), scrollbar.Y());
-  return !no_snap_rect.Contains(mouse_position);
+  int mouse_offset_in_scrollbar =
+      is_horizontal ? mouse_position.Y() : mouse_position.X();
+
+  return (mouse_offset_in_scrollbar < snap_outside_of_min ||
+          mouse_offset_in_scrollbar >= snap_outside_of_max);
 }
 
 bool ScrollbarThemeAura::HasScrollbarButtons(

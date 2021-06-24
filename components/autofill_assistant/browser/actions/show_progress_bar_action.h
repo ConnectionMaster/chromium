@@ -8,19 +8,22 @@
 #include "components/autofill_assistant/browser/actions/action.h"
 
 #include "base/macros.h"
-#include "base/memory/weak_ptr.h"
+#include "components/autofill_assistant/browser/service.pb.h"
 
 namespace autofill_assistant {
 // An action to show the current progress.
 class ShowProgressBarAction : public Action {
  public:
-  explicit ShowProgressBarAction(const ActionProto& proto);
+  explicit ShowProgressBarAction(ActionDelegate* delegate,
+                                 const ActionProto& proto);
   ~ShowProgressBarAction() override;
 
  private:
   // Overrides Action:
-  void InternalProcessAction(ActionDelegate* delegate,
-                             ProcessActionCallback callback) override;
+  void InternalProcessAction(ProcessActionCallback callback) override;
+
+  void EndAction(ProcessActionCallback callback,
+                 ProcessedActionStatusProto status);
 
   DISALLOW_COPY_AND_ASSIGN(ShowProgressBarAction);
 };

@@ -4,6 +4,7 @@
 
 #include "content/browser/renderer_host/render_view_host_impl.h"
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -21,10 +22,10 @@
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/supports_user_data.h"
 #include "base/system/sys_info.h"
 #include "base/task/post_task.h"
 #include "base/time/time.h"
@@ -35,28 +36,25 @@
 #include "content/browser/bad_message.h"
 #include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/dom_storage/session_storage_namespace_impl.h"
-#include "content/browser/frame_host/frame_tree.h"
 #include "content/browser/gpu/compositor_util.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
 #include "content/browser/gpu/gpu_process_host.h"
-#include "content/browser/loader/resource_dispatcher_host_impl.h"
+#include "content/browser/renderer_host/agent_scheduling_group_host.h"
+#include "content/browser/renderer_host/frame_tree.h"
+#include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/input/timeout_monitor.h"
+#include "content/browser/renderer_host/navigation_controller_impl.h"
+#include "content/browser/renderer_host/render_frame_proxy_host.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_delegate.h"
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"
 #include "content/browser/renderer_host/render_widget_host_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/scoped_active_url.h"
-#include "content/common/browser_plugin/browser_plugin_messages.h"
+#include "content/common/agent_scheduling_group.mojom.h"
 #include "content/common/content_switches_internal.h"
-#include "content/common/frame_messages.h"
-#include "content/common/input_messages.h"
-#include "content/common/inter_process_time_ticks_converter.h"
 #include "content/common/render_message_filter.mojom.h"
 #include "content/common/renderer.mojom.h"
-#include "content/common/swapped_out_messages.h"
-#include "content/common/view_messages.h"
-#include "content/common/widget_messages.h"
 #include "content/public/browser/ax_event_notification_details.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/browser_context.h"
@@ -64,6 +62,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/native_web_keyboard_event.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
@@ -72,24 +71,28 @@
 #include "content/public/browser/render_widget_host_iterator.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/bindings_policy.h"
+#include "content/public/common/content_client.h"
 #include "content/public/common/content_constants.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/context_menu_params.h"
 #include "content/public/common/result_codes.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/common/url_utils.h"
 #include "media/base/media_switches.h"
 #include "net/base/url_util.h"
-#include "net/url_request/url_request_context_getter.h"
 #include "services/network/public/cpp/features.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/device_form_factor.h"
 #include "ui/base/pointer/pointer_device.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/display/display.h"
 #include "ui/display/display_switches.h"
+#include "ui/display/screen.h"
 #include "ui/events/blink/blink_features.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/color_space.h"
@@ -109,11 +112,11 @@
 #include "content/browser/host_zoom_map_impl.h"
 #endif
 
-using base::TimeDelta;
-using blink::WebConsoleMessage;
+#if defined(USE_OZONE)
+#include "ui/base/ui_base_features.h"
+#endif
+
 using blink::WebInputEvent;
-using blink::WebMediaPlayerAction;
-using blink::WebPluginAction;
 
 namespace content {
 namespace {
@@ -130,7 +133,7 @@ base::LazyInstance<RoutingIDViewMap>::Leaky g_routing_id_view_map =
 #if defined(OS_WIN)
 // Fetches the name and font size of a particular Windows system font.
 void GetFontInfo(gfx::win::SystemFont system_font,
-                 base::string16* name,
+                 std::u16string* name,
                  int32_t* size) {
   const gfx::Font& font = gfx::win::GetSystemFont(system_font);
   *name = base::UTF8ToUTF16(font.GetFontName());
@@ -138,40 +141,56 @@ void GetFontInfo(gfx::win::SystemFont system_font,
 }
 #endif  // OS_WIN
 
-void GetPlatformSpecificPrefs(blink::mojom::RendererPreferences* prefs) {
-#if defined(OS_WIN)
-  // Note that what is called "height" in this struct is actually the font size;
-  // font "height" typically includes ascender, descender, and padding and is
-  // often a third or so larger than the given font size.
-  GetFontInfo(gfx::win::SystemFont::kCaption, &prefs->caption_font_family_name,
-              &prefs->caption_font_height);
-  GetFontInfo(gfx::win::SystemFont::kSmallCaption,
-              &prefs->small_caption_font_family_name,
-              &prefs->small_caption_font_height);
-  GetFontInfo(gfx::win::SystemFont::kMenu, &prefs->menu_font_family_name,
-              &prefs->menu_font_height);
-  GetFontInfo(gfx::win::SystemFont::kMessage, &prefs->message_font_family_name,
-              &prefs->message_font_height);
-  GetFontInfo(gfx::win::SystemFont::kStatus, &prefs->status_font_family_name,
-              &prefs->status_font_height);
+// Set of RenderViewHostImpl* that can be attached as UserData to a
+// RenderProcessHost. Used to keep track of whether any RenderViewHostImpl
+// instances are in the bfcache.
+class PerProcessRenderViewHostSet : public base::SupportsUserData::Data {
+ public:
+  static PerProcessRenderViewHostSet* GetOrCreateForProcess(
+      RenderProcessHost* process) {
+    DCHECK(process);
+    auto* set = static_cast<PerProcessRenderViewHostSet*>(
+        process->GetUserData(UserDataKey()));
+    if (!set) {
+      auto new_set = std::make_unique<PerProcessRenderViewHostSet>();
+      set = new_set.get();
+      process->SetUserData(UserDataKey(), std::move(new_set));
+    }
+    return set;
+  }
 
-  prefs->vertical_scroll_bar_width_in_dips =
-      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXVSCROLL);
-  prefs->horizontal_scroll_bar_height_in_dips =
-      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYHSCROLL);
-  prefs->arrow_bitmap_height_vertical_scroll_bar_in_dips =
-      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYVSCROLL);
-  prefs->arrow_bitmap_width_horizontal_scroll_bar_in_dips =
-      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXHSCROLL);
-#elif defined(OS_LINUX)
-  prefs->system_font_family_name = gfx::Font().GetFontName();
-#endif
-}
+  void Insert(const RenderViewHostImpl* rvh) {
+    render_view_host_instances_.insert(rvh);
+  }
+
+  void Erase(const RenderViewHostImpl* rvh) {
+    auto it = render_view_host_instances_.find(rvh);
+    DCHECK(it != render_view_host_instances_.end());
+    render_view_host_instances_.erase(it);
+  }
+
+  bool HasNonBackForwardCachedInstances() const {
+    return std::find_if(render_view_host_instances_.begin(),
+                        render_view_host_instances_.end(),
+                        [](const RenderViewHostImpl* rvh) {
+                          return !rvh->is_in_back_forward_cache();
+                        }) != render_view_host_instances_.end();
+  }
+
+ private:
+  static const void* UserDataKey() { return &kUserDataKey; }
+
+  static constexpr int kUserDataKey = 0;
+
+  std::unordered_set<const RenderViewHostImpl*> render_view_host_instances_;
+};
+
+const int PerProcessRenderViewHostSet::kUserDataKey;
 
 }  // namespace
 
 // static
-const int64_t RenderViewHostImpl::kUnloadTimeoutMS = 500;
+const base::TimeDelta RenderViewHostImpl::kUnloadTimeout;
 
 ///////////////////////////////////////////////////////////////////////////////
 // RenderViewHost, public:
@@ -210,7 +229,57 @@ RenderViewHostImpl* RenderViewHostImpl::From(RenderWidgetHost* rwh) {
   return rvh;
 }
 
+// static
+void RenderViewHostImpl::GetPlatformSpecificPrefs(
+    blink::RendererPreferences* prefs) {
+#if defined(OS_WIN)
+  // Note that what is called "height" in this struct is actually the font size;
+  // font "height" typically includes ascender, descender, and padding and is
+  // often a third or so larger than the given font size.
+  GetFontInfo(gfx::win::SystemFont::kCaption, &prefs->caption_font_family_name,
+              &prefs->caption_font_height);
+  GetFontInfo(gfx::win::SystemFont::kSmallCaption,
+              &prefs->small_caption_font_family_name,
+              &prefs->small_caption_font_height);
+  GetFontInfo(gfx::win::SystemFont::kMenu, &prefs->menu_font_family_name,
+              &prefs->menu_font_height);
+  GetFontInfo(gfx::win::SystemFont::kMessage, &prefs->message_font_family_name,
+              &prefs->message_font_height);
+  GetFontInfo(gfx::win::SystemFont::kStatus, &prefs->status_font_family_name,
+              &prefs->status_font_height);
+
+  prefs->vertical_scroll_bar_width_in_dips =
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXVSCROLL);
+  prefs->horizontal_scroll_bar_height_in_dips =
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYHSCROLL);
+  prefs->arrow_bitmap_height_vertical_scroll_bar_in_dips =
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYVSCROLL);
+  prefs->arrow_bitmap_width_horizontal_scroll_bar_in_dips =
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXHSCROLL);
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
+  prefs->system_font_family_name = gfx::Font().GetFontName();
+#elif defined(OS_FUCHSIA)
+  // Make Blink's "focus ring" invisible. The focus ring is a hairline border
+  // that's rendered around clickable targets.
+  // TODO(crbug.com/1066605): Consider exposing this as a FIDL parameter.
+  prefs->focus_ring_color = SK_AlphaTRANSPARENT;
+#endif
+#if defined(USE_OZONE) || defined(USE_X11)
+  prefs->selection_clipboard_buffer_available =
+      ui::Clipboard::IsSupportedClipboardBuffer(
+          ui::ClipboardBuffer::kSelection);
+#endif
+}
+
+// static
+bool RenderViewHostImpl::HasNonBackForwardCachedInstancesForProcess(
+    RenderProcessHost* process) {
+  return PerProcessRenderViewHostSet::GetOrCreateForProcess(process)
+      ->HasNonBackForwardCachedInstances();
+}
+
 RenderViewHostImpl::RenderViewHostImpl(
+    FrameTree* frame_tree,
     SiteInstance* instance,
     std::unique_ptr<RenderWidgetHostImpl> widget,
     RenderViewHostDelegate* delegate,
@@ -219,29 +288,24 @@ RenderViewHostImpl::RenderViewHostImpl(
     bool swapped_out,
     bool has_initialized_audio_host)
     : render_widget_host_(std::move(widget)),
-      frames_ref_count_(0),
       delegate_(delegate),
-      instance_(static_cast<SiteInstanceImpl*>(instance)),
-      is_swapped_out_(swapped_out),
+      render_view_host_map_id_(frame_tree->GetRenderViewHostMapId(instance)),
+      site_info_(static_cast<SiteInstanceImpl*>(instance)
+                     ->GetSiteInfoForRenderViewHost()),
       routing_id_(routing_id),
       main_frame_routing_id_(main_frame_routing_id),
-      is_waiting_for_close_ack_(false),
-      sudden_termination_allowed_(false),
-      render_view_termination_status_(base::TERMINATION_STATUS_STILL_RUNNING),
-      updating_web_preferences_(false),
-      has_notified_about_creation_(false),
-      weak_factory_(this) {
-  DCHECK(instance_.get());
-  CHECK(delegate_);  // http://crbug.com/82827
+      frame_tree_(frame_tree) {
+  DCHECK(delegate_);
   DCHECK_NE(GetRoutingID(), render_widget_host_->GetRoutingID());
+
+  PerProcessRenderViewHostSet::GetOrCreateForProcess(GetProcess())
+      ->Insert(this);
 
   std::pair<RoutingIDViewMap::iterator, bool> result =
       g_routing_id_view_map.Get().emplace(
           RenderViewHostID(GetProcess()->GetID(), routing_id_), this);
   CHECK(result.second) << "Inserting a duplicate item!";
-  GetProcess()->AddRoute(routing_id_, this);
-
-  GetWidget()->set_owner_delegate(this);
+  GetAgentSchedulingGroup().AddRoute(routing_id_, this);
 
   GetProcess()->AddObserver(this);
   ui::GpuSwitchingManager::GetInstance()->AddObserver(this);
@@ -250,69 +314,77 @@ RenderViewHostImpl::RenderViewHostImpl(
   // brief window where the internal ChannelProxy is null. This ensures that the
   // ChannelProxy is re-initialized in such cases so that subsequent messages
   // make their way to the new renderer once its restarted.
+  // TODO(crbug.com/1111231): Should this go via AgentSchedulingGroupHost? Is it
+  // even needed after the migration?
   GetProcess()->EnableSendQueue();
 
   if (!is_active())
     GetWidget()->UpdatePriority();
 
-  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
-        base::BindOnce(
-            &ResourceDispatcherHostImpl::OnRenderViewHostCreated,
-            GetProcess()->GetID(), GetRoutingID(),
-            base::RetainedRef(
-                GetProcess()->GetStoragePartition()->GetURLRequestContext())));
-  }
+  close_timeout_ = std::make_unique<TimeoutMonitor>(base::BindRepeating(
+      &RenderViewHostImpl::ClosePageTimeout, weak_factory_.GetWeakPtr()));
 
-  close_timeout_.reset(new TimeoutMonitor(base::Bind(
-      &RenderViewHostImpl::ClosePageTimeout, weak_factory_.GetWeakPtr())));
+  input_device_change_observer_ =
+      std::make_unique<InputDeviceChangeObserver>(this);
 
-  input_device_change_observer_.reset(new InputDeviceChangeObserver(this));
+  bool initially_hidden = frame_tree_->delegate()->IsHidden();
+  page_lifecycle_state_manager_ = std::make_unique<PageLifecycleStateManager>(
+      this, initially_hidden ? blink::mojom::PageVisibilityState::kHidden
+                             : blink::mojom::PageVisibilityState::kVisible);
+
+  GetWidget()->set_owner_delegate(this);
+  frame_tree_->RegisterRenderViewHost(render_view_host_map_id_, this);
 }
 
 RenderViewHostImpl::~RenderViewHostImpl() {
+  PerProcessRenderViewHostSet::GetOrCreateForProcess(GetProcess())->Erase(this);
+
   // We can't release the SessionStorageNamespace until our peer
   // in the renderer has wound down.
+  // TODO(crbug.com/1111231): `WillDestroyRenderView()` should probably be
+  // called on the AgentSchedulingGroupHost rather than the
+  // RenderProcessHostImpl. If that happens, does it still make sense to test if
+  // the process is still alive, or should that be encapsulated in
+  // `AgentSchedulingGroupHost::WillDestroyRenderView()`?
   if (GetProcess()->IsInitializedAndNotDead()) {
-    RenderProcessHostImpl::ReleaseOnCloseACK(
+    RenderProcessHostImpl::WillDestroyRenderView(
         GetProcess(), delegate_->GetSessionStorageNamespaceMap(),
-        GetWidget()->GetRoutingID());
+        GetRoutingID());
   }
 
+  // Destroy the RenderWidgetHost.
   GetWidget()->ShutdownAndDestroyWidget(false);
-
-  if (!base::FeatureList::IsEnabled(network::features::kNetworkService)) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
-        base::BindOnce(&ResourceDispatcherHostImpl::OnRenderViewHostDeleted,
+  if (IsRenderViewLive()) {
+    // Destroy the RenderView, which will also destroy the RenderWidget.
+    GetAgentSchedulingGroup().DestroyView(
+        GetRoutingID(),
+        base::BindOnce(&RenderProcessHostImpl::DidDestroyRenderView,
                        GetProcess()->GetID(), GetRoutingID()));
   }
 
   ui::GpuSwitchingManager::GetInstance()->RemoveObserver(this);
 
   // Detach the routing ID as the object is going away.
-  GetProcess()->RemoveRoute(GetRoutingID());
+  GetAgentSchedulingGroup().RemoveRoute(GetRoutingID());
   g_routing_id_view_map.Get().erase(
       RenderViewHostID(GetProcess()->GetID(), GetRoutingID()));
 
   delegate_->RenderViewDeleted(this);
   GetProcess()->RemoveObserver(this);
+
+  // If |this| is in the BackForwardCache, then it was already removed from
+  // the FrameTree at the time it entered the BackForwardCache.
+  if (!is_in_back_forward_cache_)
+    frame_tree_->UnregisterRenderViewHost(render_view_host_map_id_, this);
 }
 
 RenderViewHostDelegate* RenderViewHostImpl::GetDelegate() {
   return delegate_;
 }
 
-SiteInstanceImpl* RenderViewHostImpl::GetSiteInstance() {
-  return instance_.get();
-}
-
 bool RenderViewHostImpl::CreateRenderView(
-    int opener_frame_route_id,
+    const absl::optional<blink::FrameToken>& opener_frame_token,
     int proxy_route_id,
-    const base::UnguessableToken& devtools_frame_token,
-    const FrameReplicationState& replicated_frame_state,
     bool window_was_created_with_opener) {
   TRACE_EVENT0("renderer_host,navigation",
                "RenderViewHostImpl::CreateRenderView");
@@ -320,393 +392,279 @@ bool RenderViewHostImpl::CreateRenderView(
 
   // The process may (if we're sharing a process with another host that already
   // initialized it) or may not (we have our own process or the old process
-  // crashed) have been initialized. Calling Init multiple times will be
+  // crashed) have been initialized. Calling Init() multiple times will be
   // ignored, so this is safe.
-  if (!GetProcess()->Init())
+  if (!GetAgentSchedulingGroup().Init())
     return false;
   DCHECK(GetProcess()->IsInitializedAndNotDead());
   DCHECK(GetProcess()->GetBrowserContext());
-  CHECK(main_frame_routing_id_ != MSG_ROUTING_NONE ||
-        proxy_route_id != MSG_ROUTING_NONE);
 
-  // We should not set both main_frame_routing_id_ and proxy_route_id.  Log
-  // cases that this happens (without crashing) to track down
-  // https://crbug.com/575245.
-  // TODO(creis): Remove this once we've found the cause.
-  if (main_frame_routing_id_ != MSG_ROUTING_NONE &&
-      proxy_route_id != MSG_ROUTING_NONE) {
-    NOTREACHED() << "Don't set both main_frame_routing_id_ and proxy_route_id";
-    base::debug::DumpWithoutCrashing();
-  }
+  // Exactly one of main_frame_routing_id_ or proxy_route_id should be set.
+  CHECK(!(main_frame_routing_id_ != MSG_ROUTING_NONE &&
+          proxy_route_id != MSG_ROUTING_NONE));
+  CHECK(!(main_frame_routing_id_ == MSG_ROUTING_NONE &&
+          proxy_route_id == MSG_ROUTING_NONE));
 
   RenderFrameHostImpl* main_rfh = nullptr;
+  RenderFrameProxyHost* main_rfph = nullptr;
   if (main_frame_routing_id_ != MSG_ROUTING_NONE) {
     main_rfh = RenderFrameHostImpl::FromID(GetProcess()->GetID(),
                                            main_frame_routing_id_);
     DCHECK(main_rfh);
+  } else {
+    main_rfph =
+        RenderFrameProxyHost::FromID(GetProcess()->GetID(), proxy_route_id);
+    DCHECK(main_rfph);
   }
-
-  GetWidget()->set_renderer_initialized(true);
+  const FrameTreeNode* const frame_tree_node =
+      main_rfh ? main_rfh->frame_tree_node() : main_rfph->frame_tree_node();
 
   mojom::CreateViewParamsPtr params = mojom::CreateViewParams::New();
-  params->renderer_preferences =
-      delegate_->GetRendererPrefs(GetProcess()->GetBrowserContext()).Clone();
-  GetPlatformSpecificPrefs(params->renderer_preferences.get());
-  params->web_preferences = GetWebkitPreferences();
+
+  params->renderer_preferences = delegate_->GetRendererPrefs();
+  RenderViewHostImpl::GetPlatformSpecificPrefs(&params->renderer_preferences);
+  params->web_preferences = delegate_->GetOrCreateWebPreferences();
   params->view_id = GetRoutingID();
-  params->main_frame_routing_id = main_frame_routing_id_;
-  params->main_frame_widget_routing_id = render_widget_host_->GetRoutingID();
+  params->opener_frame_token = opener_frame_token;
+  params->replication_state =
+      frame_tree_node->current_replication_state().Clone();
+  params->devtools_main_frame_token = frame_tree_node->devtools_frame_token();
+
   if (main_rfh) {
-    params->main_frame_interface_bundle =
-        mojom::DocumentScopedInterfaceBundle::New();
-    main_rfh->BindInterfaceProviderRequest(mojo::MakeRequest(
-        &params->main_frame_interface_bundle->interface_provider));
-    main_rfh->BindDocumentInterfaceBrokerRequest(
-        mojo::MakeRequest(&params->main_frame_interface_bundle
-                               ->document_interface_broker_content),
-        mojo::MakeRequest(&params->main_frame_interface_bundle
-                               ->document_interface_broker_blink));
-    RenderWidgetHostImpl* main_rwh = main_rfh->GetRenderWidgetHost();
-    params->main_frame_widget_routing_id = main_rwh->GetRoutingID();
-  }
-  params->session_storage_namespace_id =
-      delegate_->GetSessionStorageNamespace(instance_.get())->id();
-  // Ensure the RenderView sets its opener correctly.
-  params->opener_frame_route_id = opener_frame_route_id;
-  params->replicated_frame_state = replicated_frame_state;
-  params->proxy_routing_id = proxy_route_id;
-  params->hidden = GetWidget()->delegate()->IsHidden();
-  params->never_visible = delegate_->IsNeverVisible();
-  params->window_was_created_with_opener = window_was_created_with_opener;
-  if (main_rfh) {
-    params->has_committed_real_load =
+    auto local_frame_params = mojom::CreateLocalMainFrameParams::New();
+    local_frame_params->token = main_rfh->GetFrameToken();
+    local_frame_params->routing_id = main_frame_routing_id_;
+    mojo::PendingAssociatedRemote<mojom::Frame> pending_frame_remote;
+    local_frame_params->frame =
+        pending_frame_remote.InitWithNewEndpointAndPassReceiver();
+    main_rfh->SetMojomFrameRemote(std::move(pending_frame_remote));
+    main_rfh->BindBrowserInterfaceBrokerReceiver(
+        local_frame_params->interface_broker.InitWithNewPipeAndPassReceiver());
+
+    local_frame_params->has_committed_real_load =
         main_rfh->frame_tree_node()->has_committed_real_load();
+
+    // If this is a new RenderFrameHost for a frame that has already committed a
+    // document, we don't have a PolicyContainerHost yet. Indeed, in that case,
+    // this RenderFrameHost will not display any document until it commits a
+    // navigation. The policy container for the navigated document will be sent
+    // to Blink at CommitNavigation time and then stored in this RenderFrameHost
+    // in DidCommitNewDocument.
+    if (main_rfh->policy_container_host()) {
+      local_frame_params->policy_container =
+          main_rfh->policy_container_host()->CreatePolicyContainerForBlink();
+    }
+
+    local_frame_params->widget_params =
+        main_rfh->GetRenderWidgetHost()
+            ->BindAndGenerateCreateFrameWidgetParams();
+
+    local_frame_params->subresource_loader_factories =
+        main_rfh->CreateSubresourceLoaderFactoriesForInitialEmptyDocument();
+
+    params->main_frame = mojom::CreateMainFrameUnion::NewLocalParams(
+        std::move(local_frame_params));
+  } else {
+    params->main_frame = mojom::CreateMainFrameUnion::NewRemoteParams(
+        mojom::CreateRemoteMainFrameParams::New(
+            main_rfph->GetFrameToken(), proxy_route_id,
+            main_rfph->CreateAndBindRemoteMainFrameInterfaces()));
   }
-  params->devtools_main_frame_token = devtools_frame_token;
+
+  params->session_storage_namespace_id =
+      frame_tree_->controller().GetSessionStorageNamespace(site_info_)->id();
+  params->hidden = frame_tree_->delegate()->IsHidden();
+  params->never_composited = delegate_->IsNeverComposited();
+  params->window_was_created_with_opener = window_was_created_with_opener;
+  params->base_background_color = delegate_->GetBaseBackgroundColor();
+
+  bool is_portal = delegate_->IsPortal();
+  bool is_guest_view = delegate_->IsGuest();
+
   // GuestViews in the same StoragePartition need to find each other's frames.
-  params->renderer_wide_named_frame_lookup =
-      GetSiteInstance()->GetSiteURL().SchemeIs(kGuestScheme);
-  params->inside_portal = delegate_->IsPortal();
+  params->renderer_wide_named_frame_lookup = is_guest_view;
 
-  bool needs_ack = false;
-  GetWidget()->GetVisualProperties(&params->visual_properties, &needs_ack);
-  GetWidget()->SetInitialVisualProperties(params->visual_properties, needs_ack);
+  // A view cannot be inside both a <portal> and inside a <webview>.
+  DCHECK(!is_portal || !is_guest_view);
+  if (is_portal) {
+    params->type = mojom::ViewWidgetType::kPortal;
+  } else if (is_guest_view) {
+    params->type = mojom::ViewWidgetType::kGuestView;
+  } else {
+    params->type = mojom::ViewWidgetType::kTopLevel;
+  }
 
-  GetProcess()->GetRendererInterface()->CreateView(std::move(params));
+  // RenderViweHostImpls is reused after a crash, so reset any endpoint that
+  // might be a leftover from a crash.
+  page_broadcast_.reset();
+  params->blink_page_broadcast =
+      page_broadcast_.BindNewEndpointAndPassReceiver();
 
-  // Let our delegate know that we created a RenderView.
-  DispatchRenderViewCreated();
+  // The renderer process's `RenderView` is owned by this `RenderViewHost`. This
+  // call must, therefore, be accompanied by a `DestroyView()` [see destructor]
+  // or else there will be a leak in the renderer process.
+  GetAgentSchedulingGroup().CreateView(std::move(params));
 
-  // Since this method can create the main RenderFrame in the renderer process,
-  // set the proper state on its corresponding RenderFrameHost.
-  if (main_rfh)
-    main_rfh->SetRenderFrameCreated(true);
-  GetWidget()->delegate()->SendScreenRects();
+  // Set the bit saying we've made the RenderView in the renderer and notify
+  // content public observers.
+  RenderViewCreated(main_rfh);
+
+  // This must be posted after the RenderViewHost is marked live, with
+  // `renderer_view_created_`.
   PostRenderViewReady();
-
   return true;
 }
 
 void RenderViewHostImpl::SetMainFrameRoutingId(int routing_id) {
   main_frame_routing_id_ = routing_id;
   GetWidget()->UpdatePriority();
+  // TODO(crbug.com/419087): If a local main frame is no longer attached to this
+  // RenderView then the RenderWidgetHostImpl owned by this class should be
+  // informed that its renderer widget is no longer created. The RenderViewHost
+  // will need to track its own live-ness then.
+}
+
+void RenderViewHostImpl::SetFrameTree(FrameTree& frame_tree) {
+  frame_tree_->UnregisterRenderViewHost(render_view_host_map_id_, this);
+  frame_tree_ = &frame_tree;
+  frame_tree_->RegisterRenderViewHost(render_view_host_map_id_, this);
+}
+
+void RenderViewHostImpl::EnterBackForwardCache() {
+  if (!will_enter_back_forward_cache_callback_for_testing_.is_null())
+    will_enter_back_forward_cache_callback_for_testing_.Run();
+
+  TRACE_EVENT0("navigation", "RenderViewHostImpl::EnterBackForwardCache");
+  frame_tree_->UnregisterRenderViewHost(render_view_host_map_id_, this);
+  is_in_back_forward_cache_ = true;
+  page_lifecycle_state_manager_->SetIsInBackForwardCache(
+      is_in_back_forward_cache_, /*page_restore_params=*/nullptr);
+}
+
+void RenderViewHostImpl::PrepareToLeaveBackForwardCache(
+    base::OnceClosure done_cb) {
+  page_lifecycle_state_manager_->SetIsLeavingBackForwardCache(
+      std::move(done_cb));
+}
+
+void RenderViewHostImpl::LeaveBackForwardCache(
+    blink::mojom::PageRestoreParamsPtr page_restore_params) {
+  TRACE_EVENT0("navigation", "RenderViewHostImpl::LeaveBackForwardCache");
+  // At this point, the frames |this| RenderViewHostImpl belongs to are
+  // guaranteed to be committed, so it should be reused going forward.
+  frame_tree_->RegisterRenderViewHost(render_view_host_map_id_, this);
+  is_in_back_forward_cache_ = false;
+  page_lifecycle_state_manager_->SetIsInBackForwardCache(
+      is_in_back_forward_cache_, std::move(page_restore_params));
+}
+
+void RenderViewHostImpl::SetFrameTreeVisibility(
+    blink::mojom::PageVisibilityState visibility) {
+  page_lifecycle_state_manager_->SetFrameTreeVisibility(visibility);
+}
+
+void RenderViewHostImpl::SetIsFrozen(bool frozen) {
+  page_lifecycle_state_manager_->SetIsFrozen(frozen);
+}
+
+void RenderViewHostImpl::OnBackForwardCacheTimeout() {
+  // TODO(yuzus): Implement a method to get a list of RenderFrameHosts
+  // associated with |this|, instead of iterating through all the
+  // RenderFrameHosts in bfcache.
+  const auto& entries =
+      frame_tree_->controller().GetBackForwardCache().GetEntries();
+  for (auto& entry : entries) {
+    for (auto* const rvh : entry->render_view_hosts) {
+      if (rvh == this) {
+        RenderFrameHostImpl* rfh = entry->render_frame_host.get();
+        rfh->EvictFromBackForwardCacheWithReason(
+            BackForwardCacheMetrics::NotRestoredReason::kTimeoutPuttingInCache);
+        break;
+      }
+    }
+  }
+}
+
+void RenderViewHostImpl::MaybeEvictFromBackForwardCache() {
+  // TODO(yuzus): Implement a method to get a list of RenderFrameHosts
+  // associated with |this|, instead of iterating through all the
+  // RenderFrameHosts in bfcache.
+  const auto& entries =
+      frame_tree_->controller().GetBackForwardCache().GetEntries();
+  for (auto& entry : entries) {
+    for (auto* const rvh : entry->render_view_hosts) {
+      if (rvh == this) {
+        RenderFrameHostImpl* rfh = entry->render_frame_host.get();
+        rfh->MaybeEvictFromBackForwardCache();
+      }
+    }
+  }
+}
+
+void RenderViewHostImpl::EnforceBackForwardCacheSizeLimit() {
+  frame_tree_->controller().GetBackForwardCache().EnforceCacheSizeLimit();
+}
+
+bool RenderViewHostImpl::DidReceiveBackForwardCacheAck() {
+  return GetPageLifecycleStateManager()->DidReceiveBackForwardCacheAck();
 }
 
 bool RenderViewHostImpl::IsRenderViewLive() {
-  return GetProcess()->IsInitializedAndNotDead() &&
-         GetWidget()->renderer_initialized();
-}
-
-void RenderViewHostImpl::SyncRendererPrefs() {
-  blink::mojom::RendererPreferences renderer_preferences =
-      delegate_->GetRendererPrefs(GetProcess()->GetBrowserContext());
-  GetPlatformSpecificPrefs(&renderer_preferences);
-  Send(new ViewMsg_SetRendererPrefs(GetRoutingID(), renderer_preferences));
+  return GetProcess()->IsInitializedAndNotDead() && renderer_view_created_;
 }
 
 void RenderViewHostImpl::SetBackgroundOpaque(bool opaque) {
-  Send(new ViewMsg_SetBackgroundOpaque(GetRoutingID(), opaque));
+  GetWidget()->GetAssociatedFrameWidget()->SetBackgroundOpaque(opaque);
 }
 
 bool RenderViewHostImpl::IsMainFrameActive() {
   return is_active();
 }
 
-bool RenderViewHostImpl::IsNeverVisible() {
-  return GetDelegate()->IsNeverVisible();
+bool RenderViewHostImpl::IsNeverComposited() {
+  return GetDelegate()->IsNeverComposited();
 }
 
-WebPreferences RenderViewHostImpl::GetWebkitPreferencesForWidget() {
-  return GetWebkitPreferences();
+blink::web_pref::WebPreferences
+RenderViewHostImpl::GetWebkitPreferencesForWidget() {
+  if (!delegate_)
+    return blink::web_pref::WebPreferences();
+  return delegate_->GetOrCreateWebPreferences();
 }
 
-FrameTreeNode* RenderViewHostImpl::GetFocusedFrame() {
-  return GetDelegate()->GetFrameTree()->GetFocusedFrame();
-}
-
-void RenderViewHostImpl::ShowContextMenu(RenderFrameHost* render_frame_host,
-                                         const ContextMenuParams& params) {
-  GetDelegate()->GetDelegateView()->ShowContextMenu(render_frame_host, params);
-}
-
-const WebPreferences RenderViewHostImpl::ComputeWebPreferences() {
-  TRACE_EVENT0("browser", "RenderViewHostImpl::GetWebkitPrefs");
-  WebPreferences prefs;
-
-  const base::CommandLine& command_line =
-      *base::CommandLine::ForCurrentProcess();
-
-  SetSlowWebPreferences(command_line, &prefs);
-
-  prefs.web_security_enabled =
-      !command_line.HasSwitch(switches::kDisableWebSecurity);
-
-  prefs.remote_fonts_enabled =
-      !command_line.HasSwitch(switches::kDisableRemoteFonts);
-  prefs.application_cache_enabled = true;
-  prefs.xss_auditor_enabled =
-      !command_line.HasSwitch(switches::kDisableXSSAuditor);
-  prefs.local_storage_enabled =
-      !command_line.HasSwitch(switches::kDisableLocalStorage);
-  prefs.databases_enabled =
-      !command_line.HasSwitch(switches::kDisableDatabases);
-
-  prefs.webgl1_enabled = !command_line.HasSwitch(switches::kDisable3DAPIs) &&
-                         !command_line.HasSwitch(switches::kDisableWebGL);
-  prefs.webgl2_enabled = !command_line.HasSwitch(switches::kDisable3DAPIs) &&
-                         !command_line.HasSwitch(switches::kDisableWebGL) &&
-                         !command_line.HasSwitch(switches::kDisableWebGL2);
-
-  prefs.pepper_3d_enabled =
-      !command_line.HasSwitch(switches::kDisablePepper3d);
-
-  prefs.flash_3d_enabled =
-      !command_line.HasSwitch(switches::kDisableFlash3d);
-  prefs.flash_stage3d_enabled =
-      !command_line.HasSwitch(switches::kDisableFlashStage3d);
-  prefs.flash_stage3d_baseline_enabled =
-      !command_line.HasSwitch(switches::kDisableFlashStage3d);
-
-  prefs.allow_file_access_from_file_urls =
-      command_line.HasSwitch(switches::kAllowFileAccessFromFiles);
-
-  prefs.accelerated_2d_canvas_enabled =
-      !command_line.HasSwitch(switches::kDisableAccelerated2dCanvas);
-  prefs.antialiased_2d_canvas_disabled =
-      command_line.HasSwitch(switches::kDisable2dCanvasAntialiasing);
-  prefs.antialiased_clips_2d_canvas_enabled =
-      !command_line.HasSwitch(switches::kDisable2dCanvasClipAntialiasing);
-  prefs.accelerated_2d_canvas_msaa_sample_count =
-      atoi(command_line.GetSwitchValueASCII(
-      switches::kAcceleratedCanvas2dMSAASampleCount).c_str());
-
-  prefs.use_solid_color_scrollbars = false;
-
-  prefs.history_entry_requires_user_gesture =
-      command_line.HasSwitch(switches::kHistoryEntryRequiresUserGesture);
-
-  prefs.disable_ipc_flooding_protection =
-      command_line.HasSwitch(switches::kDisableIpcFloodingProtection) ||
-      command_line.HasSwitch(switches::kDisablePushStateThrottle);
-
-#if defined(OS_ANDROID)
-  prefs.use_solid_color_scrollbars = true;
-#endif  // defined(OS_ANDROID)
-
-  prefs.accelerated_video_decode_enabled =
-      !command_line.HasSwitch(switches::kDisableAcceleratedVideoDecode);
-
-  std::string autoplay_policy = media::GetEffectiveAutoplayPolicy(command_line);
-  if (autoplay_policy == switches::autoplay::kNoUserGestureRequiredPolicy) {
-    prefs.autoplay_policy = AutoplayPolicy::kNoUserGestureRequired;
-  } else if (autoplay_policy ==
-             switches::autoplay::kUserGestureRequiredPolicy) {
-    prefs.autoplay_policy = AutoplayPolicy::kUserGestureRequired;
-  } else if (autoplay_policy ==
-             switches::autoplay::kDocumentUserActivationRequiredPolicy) {
-    prefs.autoplay_policy = AutoplayPolicy::kDocumentUserActivationRequired;
-  } else {
-    NOTREACHED();
+void RenderViewHostImpl::RenderViewCreated(
+    RenderFrameHostImpl* local_main_frame) {
+  renderer_view_created_ = true;
+  if (local_main_frame) {
+    // If there is a main frame in this RenderViewHost, then the renderer-side
+    // main frame will be created along with the RenderView. The RenderFrameHost
+    // initializes its RenderWidgetHost as well, if it exists.
+    local_main_frame->RenderFrameCreated();
   }
-
-  prefs.dont_send_key_events_to_javascript =
-      base::FeatureList::IsEnabled(features::kDontSendKeyEventsToJavascript);
-
-// TODO(dtapuska): Enable barrel button selection drag support on Android.
-// crbug.com/758042
-#if defined(OS_WIN)
-  prefs.barrel_button_for_drag_enabled =
-      base::FeatureList::IsEnabled(features::kDirectManipulationStylus);
-#endif  // defined(OS_WIN)
-
-  prefs.touch_adjustment_enabled =
-      !command_line.HasSwitch(switches::kDisableTouchAdjustment);
-
-  prefs.enable_scroll_animator =
-      command_line.HasSwitch(switches::kEnableSmoothScrolling) ||
-      (!command_line.HasSwitch(switches::kDisableSmoothScrolling) &&
-      gfx::Animation::ScrollAnimationsEnabledBySystem());
-
-  prefs.prefers_reduced_motion = gfx::Animation::PrefersReducedMotion();
-
-  if (ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-          GetProcess()->GetID())) {
-    prefs.loads_images_automatically = true;
-    prefs.javascript_enabled = true;
-  }
-
-  prefs.viewport_enabled = command_line.HasSwitch(switches::kEnableViewport);
-
-  if (delegate_ && delegate_->IsOverridingUserAgent())
-    prefs.viewport_meta_enabled = false;
-
-  prefs.main_frame_resizes_are_orientation_changes =
-      command_line.HasSwitch(switches::kMainFrameResizesAreOrientationChanges);
-
-  prefs.spatial_navigation_enabled = command_line.HasSwitch(
-      switches::kEnableSpatialNavigation);
-
-  prefs.disable_reading_from_canvas = command_line.HasSwitch(
-      switches::kDisableReadingFromCanvas);
-
-  prefs.strict_mixed_content_checking = command_line.HasSwitch(
-      switches::kEnableStrictMixedContentChecking);
-
-  prefs.strict_powerful_feature_restrictions = command_line.HasSwitch(
-      switches::kEnableStrictPowerfulFeatureRestrictions);
-
-  const std::string blockable_mixed_content_group =
-      base::FieldTrialList::FindFullName("BlockableMixedContent");
-  prefs.strictly_block_blockable_mixed_content =
-      blockable_mixed_content_group == "StrictlyBlockBlockableMixedContent";
-
-  const std::string plugin_mixed_content_status =
-      base::FieldTrialList::FindFullName("PluginMixedContentStatus");
-  prefs.block_mixed_plugin_content =
-      plugin_mixed_content_status == "BlockableMixedContent";
-
-  prefs.v8_cache_options = GetV8CacheOptions();
-
-  prefs.user_gesture_required_for_presentation = !command_line.HasSwitch(
-      switches::kDisableGestureRequirementForPresentation);
-
-  if (delegate_ && delegate_->HideDownloadUI())
-    prefs.hide_download_ui = true;
-
-  // `media_controls_enabled` is `true` by default.
-  if (delegate_ && delegate_->HasPersistentVideo())
-    prefs.media_controls_enabled = false;
-
-  GetContentClient()->browser()->OverrideWebkitPrefs(this, &prefs);
-  return prefs;
-}
-
-void RenderViewHostImpl::SetSlowWebPreferences(
-    const base::CommandLine& command_line,
-    WebPreferences* prefs) {
-  if (web_preferences_.get()) {
-#define SET_FROM_CACHE(prefs, field) prefs->field = web_preferences_->field
-
-    SET_FROM_CACHE(prefs, touch_event_feature_detection_enabled);
-    SET_FROM_CACHE(prefs, available_pointer_types);
-    SET_FROM_CACHE(prefs, available_hover_types);
-    SET_FROM_CACHE(prefs, primary_pointer_type);
-    SET_FROM_CACHE(prefs, primary_hover_type);
-    SET_FROM_CACHE(prefs, pointer_events_max_touch_points);
-    SET_FROM_CACHE(prefs, number_of_cpu_cores);
-
-#if defined(OS_ANDROID)
-    SET_FROM_CACHE(prefs, video_fullscreen_orientation_lock_enabled);
-    SET_FROM_CACHE(prefs, video_rotate_to_fullscreen_enabled);
-#endif
-
-#undef SET_FROM_CACHE
-  } else {
-    // Every prefs->field modified below should have a SET_FROM_CACHE entry
-    // above.
-
-    // On Android, Touch event feature detection is enabled by default,
-    // Otherwise default is disabled.
-    std::string touch_enabled_default_switch =
-        switches::kTouchEventFeatureDetectionDisabled;
-#if defined(OS_ANDROID)
-    touch_enabled_default_switch = switches::kTouchEventFeatureDetectionEnabled;
-#endif  // defined(OS_ANDROID)
-    const std::string touch_enabled_switch =
-        command_line.HasSwitch(switches::kTouchEventFeatureDetection)
-            ? command_line.GetSwitchValueASCII(
-                  switches::kTouchEventFeatureDetection)
-            : touch_enabled_default_switch;
-
-    prefs->touch_event_feature_detection_enabled =
-        (touch_enabled_switch == switches::kTouchEventFeatureDetectionAuto)
-            ? (ui::GetTouchScreensAvailability() ==
-               ui::TouchScreensAvailability::ENABLED)
-            : (touch_enabled_switch.empty() ||
-               touch_enabled_switch ==
-                   switches::kTouchEventFeatureDetectionEnabled);
-
-    std::tie(prefs->available_pointer_types, prefs->available_hover_types) =
-        ui::GetAvailablePointerAndHoverTypes();
-    prefs->primary_pointer_type =
-        ui::GetPrimaryPointerType(prefs->available_pointer_types);
-    prefs->primary_hover_type =
-        ui::GetPrimaryHoverType(prefs->available_hover_types);
-
-    prefs->pointer_events_max_touch_points = ui::MaxTouchPoints();
-
-    prefs->number_of_cpu_cores = base::SysInfo::NumberOfProcessors();
-
-#if defined(OS_ANDROID)
-    const bool device_is_phone =
-        ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE;
-    prefs->video_fullscreen_orientation_lock_enabled = device_is_phone;
-    prefs->video_rotate_to_fullscreen_enabled = device_is_phone;
-#endif
-  }
-}
-
-void RenderViewHostImpl::DispatchRenderViewCreated() {
-  if (has_notified_about_creation_)
-    return;
-
-  // Only send RenderViewCreated if there is a current or pending main frame
-  // RenderFrameHost (current or pending).  Don't send notifications if this is
-  // an inactive RVH that is either used by subframe RFHs or not used by any
-  // RFHs at all (e.g., when created for the opener chain).
-  //
-  // While it would be nice to uniformly dispatch RenderViewCreated for all
-  // cases, some existing code (e.g., ExtensionViewHost) assumes it won't
-  // hear RenderViewCreated for a RVH created for an OOPIF.
-  //
-  // TODO(alexmos, creis): Revisit this as part of migrating RenderViewCreated
-  // usage to RenderFrameCreated.  See https://crbug.com/763548.
-  if (!GetMainFrame())
-    return;
-
-  delegate_->RenderViewCreated(this);
-  has_notified_about_creation_ = true;
 }
 
 void RenderViewHostImpl::ClosePage() {
-  is_waiting_for_close_ack_ = true;
+  // TODO(crbug.com/1161996): Remove this VLOG once the investigation is done.
+  VLOG(1) << "RenderViewHostImpl::ClosePage() IsRenderViewLive() = "
+          << IsRenderViewLive()
+          << ", SuddenTerminationAllowed() = " << SuddenTerminationAllowed();
+  is_waiting_for_page_close_completion_ = true;
 
-  bool is_javascript_dialog_showing = delegate_->IsJavaScriptDialogShowing();
-
-  // If there is a JavaScript dialog up, don't bother sending the renderer the
-  // close event because it is known unresponsive, waiting for the reply from
-  // the dialog.
-  if (IsRenderViewLive() && !is_javascript_dialog_showing) {
-    close_timeout_->Start(TimeDelta::FromMilliseconds(kUnloadTimeoutMS));
+  if (IsRenderViewLive() && !SuddenTerminationAllowed()) {
+    close_timeout_->Start(kUnloadTimeout);
 
     // TODO(creis): Should this be moved to Shutdown?  It may not be called for
     // RenderViewHosts that have been swapped out.
 #if !defined(OS_ANDROID)
-    static_cast<HostZoomMapImpl*>(HostZoomMap::Get(GetSiteInstance()))
+    static_cast<HostZoomMapImpl*>(
+        HostZoomMap::Get(GetMainFrame()->GetSiteInstance()))
         ->WillCloseRenderView(GetProcess()->GetID(), GetRoutingID());
 #endif
 
-    Send(new ViewMsg_ClosePage(GetRoutingID()));
+    static_cast<RenderFrameHostImpl*>(GetMainFrame())
+        ->GetAssociatedLocalMainFrame()
+        ->ClosePage(base::BindOnce(&RenderViewHostImpl::OnPageClosed,
+                                   weak_factory_.GetWeakPtr()));
   } else {
     // This RenderViewHost doesn't have a live renderer, so just skip the close
     // event and close the page.
@@ -716,32 +674,37 @@ void RenderViewHostImpl::ClosePage() {
 
 void RenderViewHostImpl::ClosePageIgnoringUnloadEvents() {
   close_timeout_->Stop();
-  is_waiting_for_close_ack_ = false;
+  is_waiting_for_page_close_completion_ = false;
 
   sudden_termination_allowed_ = true;
   delegate_->Close(this);
 }
 
+void RenderViewHostImpl::ZoomToFindInPageRect(const gfx::Rect& rect_to_zoom) {
+  static_cast<RenderFrameHostImpl*>(GetMainFrame())
+      ->GetAssociatedLocalMainFrame()
+      ->ZoomToFindInPageRect(rect_to_zoom);
+}
+
 void RenderViewHostImpl::RenderProcessExited(
     RenderProcessHost* host,
     const ChildProcessTerminationInfo& info) {
-  if (!GetWidget()->renderer_initialized())
-    return;
-
-  GetWidget()->RendererExited(info.status, info.exit_code);
+  renderer_view_created_ = false;
+  GetWidget()->RendererExited();
   delegate_->RenderViewTerminated(this, info.status, info.exit_code);
-}
-
-bool RenderViewHostImpl::Send(IPC::Message* msg) {
-  return GetWidget()->Send(msg);
+  // |this| might have been deleted. Do not add code here.
 }
 
 RenderWidgetHostImpl* RenderViewHostImpl::GetWidget() {
   return render_widget_host_.get();
 }
 
+AgentSchedulingGroupHost& RenderViewHostImpl::GetAgentSchedulingGroup() {
+  return render_widget_host_->agent_scheduling_group();
+}
+
 RenderProcessHost* RenderViewHostImpl::GetProcess() {
-  return GetWidget()->GetProcess();
+  return GetAgentSchedulingGroup().GetProcess();
 }
 
 int RenderViewHostImpl::GetRoutingID() {
@@ -751,31 +714,19 @@ int RenderViewHostImpl::GetRoutingID() {
 RenderFrameHost* RenderViewHostImpl::GetMainFrame() {
   // If the RenderViewHost is active, it should always have a main frame
   // RenderFrameHost.  If it is inactive, it could've been created for a
-  // pending main frame navigation, in which case it will transition to active
-  // once that navigation commits. In this case, return the pending main frame
-  // RenderFrameHost, as that's expected by certain code paths,
-  // such as RenderViewHostImpl::SetUIProperty().  If there's no pending main
+  // speculative main frame navigation, in which case it will transition to
+  // active once that navigation commits. In this case, return the speculative
+  // main frame RenderFrameHost, as that's expected by certain code paths, such
+  // as RenderViewHostImpl::SetUIProperty().  If there's no speculative main
   // frame navigation, return nullptr.
   //
   // TODO(alexmos, creis): Migrate these code paths to use RenderFrameHost APIs
   // and remove this fallback.  See https://crbug.com/763548.
   if (is_active()) {
-    return RenderFrameHost::FromID(GetProcess()->GetID(),
-                                   main_frame_routing_id_);
+    return RenderFrameHostImpl::FromID(GetProcess()->GetID(),
+                                       main_frame_routing_id_);
   }
-  return delegate_->GetPendingMainFrame();
-}
-
-void RenderViewHostImpl::SetWebUIProperty(const std::string& name,
-                                          const std::string& value) {
-  // This is a sanity check before telling the renderer to enable the property.
-  // It could lie and send the corresponding IPC messages anyway, but we will
-  // not act on them if enabled_bindings_ doesn't agree. If we get here without
-  // WebUI bindings, kill the renderer process.
-  if (GetMainFrame()->GetEnabledBindings() & BINDINGS_POLICY_WEB_UI)
-    Send(new ViewMsg_SetWebUIProperty(GetRoutingID(), name, value));
-  else
-    ReceivedBadMessage(GetProcess(), bad_message::RVH_WEB_UI_BINDINGS_MISMATCH);
+  return frame_tree_->root()->render_manager()->speculative_frame_host();
 }
 
 void RenderViewHostImpl::RenderWidgetGotFocus() {
@@ -791,137 +742,38 @@ void RenderViewHostImpl::RenderWidgetLostFocus() {
 }
 
 void RenderViewHostImpl::SetInitialFocus(bool reverse) {
-  Send(new ViewMsg_SetInitialFocus(GetRoutingID(), reverse));
+  static_cast<RenderFrameHostImpl*>(GetMainFrame())
+      ->GetAssociatedLocalMainFrame()
+      ->SetInitialFocus(reverse);
+}
+
+void RenderViewHostImpl::AnimateDoubleTapZoom(const gfx::Point& point,
+                                              const gfx::Rect& rect) {
+  static_cast<RenderFrameHostImpl*>(GetMainFrame())
+      ->GetAssociatedLocalMainFrame()
+      ->AnimateDoubleTapZoom(point, rect);
 }
 
 void RenderViewHostImpl::RenderWidgetDidFirstVisuallyNonEmptyPaint() {
+  did_first_visually_non_empty_paint_ = true;
   delegate_->DidFirstVisuallyNonEmptyPaint(this);
 }
 
-void RenderViewHostImpl::RenderWidgetDidCommitAndDrawCompositorFrame() {
-  delegate_->DidCommitAndDrawCompositorFrame(this);
-}
-
-bool RenderViewHostImpl::SuddenTerminationAllowed() const {
-  return sudden_termination_allowed_;
+bool RenderViewHostImpl::SuddenTerminationAllowed() {
+  // If there is a JavaScript dialog up, don't bother sending the renderer the
+  // close event because it is known unresponsive, waiting for the reply from
+  // the dialog.
+  return sudden_termination_allowed_ ||
+         delegate_->IsJavaScriptDialogShowing() ||
+         static_cast<RenderFrameHostImpl*>(GetMainFrame())
+             ->BeforeUnloadTimedOut();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // RenderViewHostImpl, IPC message handlers:
 
 bool RenderViewHostImpl::OnMessageReceived(const IPC::Message& msg) {
-  // Filter out most IPC messages if this renderer is swapped out.
-  // We still want to handle certain ACKs to keep our state consistent.
-  if (is_swapped_out_) {
-    if (!SwappedOutMessages::CanHandleWhileSwappedOut(msg)) {
-      // If this is a synchronous message and we decided not to handle it,
-      // we must send an error reply, or else the renderer will be stuck
-      // and won't respond to future requests.
-      if (msg.is_sync()) {
-        IPC::Message* reply = IPC::SyncMessage::GenerateReply(&msg);
-        reply->set_reply_error();
-        Send(reply);
-      }
-      // Don't continue looking for someone to handle it.
-      return true;
-    }
-  }
-
-  // Crash reports trigerred by the IPC messages below should be associated
-  // with URL of the main frame.
-  ScopedActiveURL scoped_active_url(this);
-
-  if (delegate_->OnMessageReceived(this, msg))
-    return true;
-
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(RenderViewHostImpl, msg)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_ShowWidget, OnShowWidget)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_ShowFullscreenWidget,
-                        OnShowFullscreenWidget)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_RouteCloseEvent, OnRouteCloseEvent)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_UpdateTargetURL, OnUpdateTargetURL)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_DocumentAvailableInMainFrame,
-                        OnDocumentAvailableInMainFrame)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_DidContentsPreferredSizeChange,
-                        OnDidContentsPreferredSizeChange)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_TakeFocus, OnTakeFocus)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_ClosePage_ACK, OnClosePageACK)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_Focus, OnFocus)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-
-  return handled;
-}
-
-void RenderViewHostImpl::RenderWidgetDidInit() {
-  PostRenderViewReady();
-}
-
-void RenderViewHostImpl::RenderWidgetDidClose() {
-  // If the renderer is telling us to close, it has already run the unload
-  // events, and we can take the fast path.
-  ClosePageIgnoringUnloadEvents();
-}
-
-void RenderViewHostImpl::CreateNewWidget(int32_t widget_route_id,
-                                         mojom::WidgetPtr widget) {
-  delegate_->CreateNewWidget(GetProcess()->GetID(), widget_route_id,
-                             std::move(widget));
-}
-
-void RenderViewHostImpl::CreateNewFullscreenWidget(int32_t widget_route_id,
-                                                   mojom::WidgetPtr widget) {
-  delegate_->CreateNewFullscreenWidget(GetProcess()->GetID(), widget_route_id,
-                                       std::move(widget));
-}
-
-void RenderViewHostImpl::OnShowWidget(int widget_route_id,
-                                      const gfx::Rect& initial_rect) {
-  delegate_->ShowCreatedWidget(GetProcess()->GetID(), widget_route_id,
-                               initial_rect);
-  Send(new WidgetMsg_SetBounds_ACK(widget_route_id));
-}
-
-void RenderViewHostImpl::OnShowFullscreenWidget(int widget_route_id) {
-  delegate_->ShowCreatedFullscreenWidget(GetProcess()->GetID(),
-                                         widget_route_id);
-  Send(new WidgetMsg_SetBounds_ACK(widget_route_id));
-}
-
-void RenderViewHostImpl::OnRouteCloseEvent() {
-  // This is only used when the RenderViewHost is not active, to signal to
-  // the active RenderViewHost that JS has requested the page to close.
-  //
-  // TODO(https://crbug.com/419087): Move to RenderFrameHost or
-  // RenderFrameProxyHost.
-  //
-  // The delegate will route the close request to the active RenderViewHost.
-  delegate_->RouteCloseEvent(this);
-}
-
-void RenderViewHostImpl::OnUpdateTargetURL(const GURL& url) {
-  delegate_->UpdateTargetURL(this, url);
-
-  // Send a notification back to the renderer that we are ready to
-  // receive more target urls.
-  Send(new ViewMsg_UpdateTargetURL_ACK(GetRoutingID()));
-}
-
-void RenderViewHostImpl::OnDocumentAvailableInMainFrame(
-    bool uses_temporary_zoom_level) {
-  delegate_->DocumentAvailableInMainFrame(this);
-
-  if (!uses_temporary_zoom_level)
-    return;
-
-#if !defined(OS_ANDROID)
-  HostZoomMapImpl* host_zoom_map =
-      static_cast<HostZoomMapImpl*>(HostZoomMap::Get(GetSiteInstance()));
-  host_zoom_map->SetTemporaryZoomLevel(GetProcess()->GetID(),
-                                       GetRoutingID(),
-                                       host_zoom_map->GetDefaultZoomLevel());
-#endif  // !defined(OS_ANDROID)
+  return false;
 }
 
 void RenderViewHostImpl::OnDidContentsPreferredSizeChange(
@@ -935,7 +787,7 @@ void RenderViewHostImpl::OnTakeFocus(bool reverse) {
     view->TakeFocus(reverse);
 }
 
-void RenderViewHostImpl::OnClosePageACK() {
+void RenderViewHostImpl::OnPageClosed() {
   ClosePageIgnoringUnloadEvents();
 }
 
@@ -945,9 +797,20 @@ void RenderViewHostImpl::OnFocus() {
   delegate_->Activate();
 }
 
+void RenderViewHostImpl::BindPageBroadcast(
+    mojo::PendingAssociatedRemote<blink::mojom::PageBroadcast> page_broadcast) {
+  page_broadcast_.reset();
+  page_broadcast_.Bind(std::move(page_broadcast));
+}
+
+const mojo::AssociatedRemote<blink::mojom::PageBroadcast>&
+RenderViewHostImpl::GetAssociatedPageBroadcast() {
+  return page_broadcast_;
+}
+
 void RenderViewHostImpl::RenderWidgetDidForwardMouseEvent(
     const blink::WebMouseEvent& mouse_event) {
-  if (mouse_event.GetType() == WebInputEvent::kMouseWheel &&
+  if (mouse_event.GetType() == WebInputEvent::Type::kMouseWheel &&
       GetWidget()->IsIgnoringInputEvents()) {
     delegate_->OnIgnoredUIEvent();
   }
@@ -956,7 +819,7 @@ void RenderViewHostImpl::RenderWidgetDidForwardMouseEvent(
 bool RenderViewHostImpl::MayRenderWidgetForwardKeyboardEvent(
     const NativeWebKeyboardEvent& key_event) {
   if (GetWidget()->IsIgnoringInputEvents()) {
-    if (key_event.GetType() == WebInputEvent::kRawKeyDown)
+    if (key_event.GetType() == WebInputEvent::Type::kRawKeyDown)
       delegate_->OnIgnoredUIEvent();
     return false;
   }
@@ -967,62 +830,45 @@ bool RenderViewHostImpl::ShouldContributePriorityToProcess() {
   return is_active();
 }
 
-void RenderViewHostImpl::RequestSetBounds(const gfx::Rect& bounds) {
-  if (is_active())
-    delegate_->RequestSetBounds(bounds);
+void RenderViewHostImpl::SendWebPreferencesToRenderer() {
+  if (auto& broadcast = GetAssociatedPageBroadcast())
+    broadcast->UpdateWebPreferences(delegate_->GetOrCreateWebPreferences());
 }
 
-WebPreferences RenderViewHostImpl::GetWebkitPreferences() {
-  if (!web_preferences_.get()) {
-    OnWebkitPreferencesChanged();
+void RenderViewHostImpl::SendRendererPreferencesToRenderer(
+    const blink::RendererPreferences& preferences) {
+  if (auto& broadcast = GetAssociatedPageBroadcast()) {
+    if (!will_send_renderer_preferences_callback_for_testing_.is_null())
+      will_send_renderer_preferences_callback_for_testing_.Run(preferences);
+    broadcast->UpdateRendererPreferences(preferences);
   }
-  return *web_preferences_;
-}
-
-void RenderViewHostImpl::UpdateWebkitPreferences(const WebPreferences& prefs) {
-  web_preferences_.reset(new WebPreferences(prefs));
-  Send(new ViewMsg_UpdateWebPreferences(GetRoutingID(), prefs));
-}
-
-void RenderViewHostImpl::OnWebkitPreferencesChanged() {
-  // This is defensive code to avoid infinite loops due to code run inside
-  // UpdateWebkitPreferences() accidentally updating more preferences and thus
-  // calling back into this code. See crbug.com/398751 for one past example.
-  if (updating_web_preferences_)
-    return;
-  updating_web_preferences_ = true;
-  UpdateWebkitPreferences(ComputeWebPreferences());
-#if defined(OS_ANDROID)
-  GetWidget()->SetForceEnableZoom(web_preferences_->force_enable_zoom);
-#endif
-  updating_web_preferences_ = false;
 }
 
 void RenderViewHostImpl::OnHardwareConfigurationChanged() {
-  // OnWebkitPreferencesChanged is a no-op when this is true.
-  if (updating_web_preferences_)
-    return;
-  web_preferences_.reset();
-  OnWebkitPreferencesChanged();
+  delegate_->RecomputeWebPreferencesSlow();
 }
 
 void RenderViewHostImpl::EnablePreferredSizeMode() {
-  Send(new ViewMsg_EnablePreferredSizeChangedMode(GetRoutingID()));
+  if (is_active()) {
+    static_cast<RenderFrameHostImpl*>(GetMainFrame())
+        ->GetAssociatedLocalMainFrame()
+        ->EnablePreferredSizeChangedMode();
+  }
 }
 
 void RenderViewHostImpl::ExecutePluginActionAtLocation(
-  const gfx::Point& location, const blink::WebPluginAction& action) {
+    const gfx::Point& location,
+    blink::mojom::PluginActionType plugin_action) {
   // TODO(wjmaclean): See if this needs to be done for OOPIFs as well.
   // https://crbug.com/776807
   gfx::PointF local_location_f =
       GetWidget()->GetView()->TransformRootPointToViewCoordSpace(
           gfx::PointF(location.x(), location.y()));
   gfx::Point local_location(local_location_f.x(), local_location_f.y());
-  Send(new ViewMsg_PluginActionAt(GetRoutingID(), local_location, action));
-}
 
-void RenderViewHostImpl::NotifyMoveOrResizeStarted() {
-  Send(new ViewMsg_MoveOrResizeStarted(GetRoutingID()));
+  static_cast<RenderFrameHostImpl*>(GetMainFrame())
+      ->GetAssociatedLocalMainFrame()
+      ->PluginActionAt(local_location, plugin_action);
 }
 
 void RenderViewHostImpl::PostRenderViewReady() {
@@ -1030,7 +876,7 @@ void RenderViewHostImpl::PostRenderViewReady() {
       &RenderViewHostImpl::RenderViewReady, weak_factory_.GetWeakPtr()));
 }
 
-void RenderViewHostImpl::OnGpuSwitched() {
+void RenderViewHostImpl::OnGpuSwitched(gl::GpuPreference active_gpu_heuristic) {
   OnHardwareConfigurationChanged();
 }
 
@@ -1050,7 +896,7 @@ std::vector<viz::SurfaceId> RenderViewHostImpl::CollectSurfaceIdsForEviction() {
   if (!is_active())
     return {};
   RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(GetMainFrame());
-  if (!rfh || !rfh->IsCurrent())
+  if (!rfh || !rfh->IsActive())
     return {};
   FrameTreeNode* root = rfh->frame_tree_node();
   FrameTree* tree = root->frame_tree();
@@ -1070,8 +916,72 @@ std::vector<viz::SurfaceId> RenderViewHostImpl::CollectSurfaceIdsForEviction() {
   return ids;
 }
 
+void RenderViewHostImpl::ResetPerPageState() {
+  did_first_visually_non_empty_paint_ = false;
+  main_frame_theme_color_.reset();
+  is_document_on_load_completed_in_main_frame_ = false;
+}
+
+void RenderViewHostImpl::OnThemeColorChanged(
+    RenderFrameHostImpl* rfh,
+    const absl::optional<SkColor>& theme_color) {
+  if (GetMainFrame() != rfh)
+    return;
+  main_frame_theme_color_ = theme_color;
+  delegate_->OnThemeColorChanged(this);
+}
+
+void RenderViewHostImpl::DidChangeBackgroundColor(
+    RenderFrameHostImpl* rfh,
+    const SkColor& background_color,
+    bool color_adjust) {
+  if (GetMainFrame() != rfh)
+    return;
+
+  main_frame_background_color_ = background_color;
+  delegate_->OnBackgroundColorChanged(this);
+  if (color_adjust) {
+    // <meta name="color-scheme" content="dark"> may pass the dark canvas
+    // background before the first paint in order to avoid flashing the white
+    // background in between loading documents. If we perform a navigation
+    // within the same renderer process, we keep the content background from the
+    // previous page while rendering is blocked in the new page, but for cross
+    // process navigations we would paint the default background (typically
+    // white) while the rendering is blocked.
+    GetWidget()->GetView()->SetContentBackgroundColor(background_color);
+  }
+}
+
+void RenderViewHostImpl::SetContentsMimeType(const std::string mime_type) {
+  contents_mime_type_ = mime_type;
+}
+
+void RenderViewHostImpl::DocumentOnLoadCompletedInMainFrame() {
+  is_document_on_load_completed_in_main_frame_ = true;
+}
+
+bool RenderViewHostImpl::IsDocumentOnLoadCompletedInMainFrame() {
+  return is_document_on_load_completed_in_main_frame_;
+}
+
 bool RenderViewHostImpl::IsTestRenderViewHost() const {
   return false;
+}
+
+void RenderViewHostImpl::SetWillEnterBackForwardCacheCallbackForTesting(
+    const WillEnterBackForwardCacheCallbackForTesting& callback) {
+  will_enter_back_forward_cache_callback_for_testing_ = callback;
+}
+
+void RenderViewHostImpl::SetWillSendRendererPreferencesCallbackForTesting(
+    const WillSendRendererPreferencesCallbackForTesting& callback) {
+  will_send_renderer_preferences_callback_for_testing_ = callback;
+}
+
+void RenderViewHostImpl::WriteIntoTrace(perfetto::TracedValue context) {
+  auto dict = std::move(context).WriteDictionary();
+  dict.Add("routing_id", GetRoutingID());
+  dict.Add("process", GetProcess());
 }
 
 }  // namespace content

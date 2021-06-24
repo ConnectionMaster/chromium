@@ -53,7 +53,9 @@ enum MIDIPortType {
 // https://webaudio.github.io/web-midi-api/#MIDIPort
 
 [
-    ActiveScriptWrappable
+    ActiveScriptWrappable,
+    Exposed=Window,
+    SecureContext
 ] interface MIDIPort : EventTarget {
     readonly attribute MIDIPortConnectionState connection;
     readonly attribute DOMString id;

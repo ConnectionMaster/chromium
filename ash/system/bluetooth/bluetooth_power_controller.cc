@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "ash/public/cpp/ash_pref_names.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "base/bind.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -23,18 +23,28 @@ namespace ash {
 // initialize power, so taking 1000 ms has enough time buffer for worst cases.
 const int kBluetoothInitializationDelay = 1000;
 
-BluetoothPowerController::BluetoothPowerController() : weak_ptr_factory_(this) {
-  device::BluetoothAdapterFactory::GetAdapter(
+BluetoothPowerController::BluetoothPowerController(PrefService* local_state)
+    : local_state_(local_state) {
+  device::BluetoothAdapterFactory::Get()->GetAdapter(
       base::BindOnce(&BluetoothPowerController::InitializeOnAdapterReady,
                      weak_ptr_factory_.GetWeakPtr()));
-  Shell::Get()->AddShellObserver(this);
   Shell::Get()->session_controller()->AddObserver(this);
+
+  // AppLaunchTest.TestQuickLaunch fails under target=linux due to
+  // |local_state_| being nullptr.
+  if (local_state_) {
+    StartWatchingLocalStatePrefsChanges();
+
+    DCHECK(!Shell::Get()->session_controller()->IsActiveUserSessionStarted());
+    // Apply the local state pref since no user has logged in (still in login
+    // screen).
+    ApplyBluetoothLocalStatePref();
+  }
 }
 
 BluetoothPowerController::~BluetoothPowerController() {
   if (bluetooth_adapter_)
     bluetooth_adapter_->RemoveObserver(this);
-  Shell::Get()->RemoveShellObserver(this);
   Shell::Get()->session_controller()->RemoveObserver(this);
 }
 
@@ -42,9 +52,8 @@ void BluetoothPowerController::SetBluetoothEnabled(bool enabled) {
   if (active_user_pref_service_) {
     active_user_pref_service_->SetBoolean(prefs::kUserBluetoothAdapterEnabled,
                                           enabled);
-  } else if (local_state_pref_service_) {
-    local_state_pref_service_->SetBoolean(prefs::kSystemBluetoothAdapterEnabled,
-                                          enabled);
+  } else if (local_state_) {
+    local_state_->SetBoolean(prefs::kSystemBluetoothAdapterEnabled, enabled);
   } else {
     DLOG(ERROR)
         << "active user and local state pref service cannot both be null";
@@ -60,8 +69,7 @@ void BluetoothPowerController::RegisterLocalStatePrefs(
 // static
 void BluetoothPowerController::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
-  registry->RegisterBooleanPref(prefs::kUserBluetoothAdapterEnabled, false,
-                                PrefRegistry::PUBLIC);
+  registry->RegisterBooleanPref(prefs::kUserBluetoothAdapterEnabled, false);
 }
 
 void BluetoothPowerController::StartWatchingActiveUserPrefsChanges() {
@@ -78,13 +86,13 @@ void BluetoothPowerController::StartWatchingActiveUserPrefsChanges() {
 }
 
 void BluetoothPowerController::StartWatchingLocalStatePrefsChanges() {
-  DCHECK(local_state_pref_service_);
+  DCHECK(local_state_);
 
   local_state_pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
-  local_state_pref_change_registrar_->Init(local_state_pref_service_);
+  local_state_pref_change_registrar_->Init(local_state_);
   local_state_pref_change_registrar_->Add(
       prefs::kSystemBluetoothAdapterEnabled,
-      base::Bind(
+      base::BindRepeating(
           &BluetoothPowerController::OnBluetoothPowerLocalStatePrefChanged,
           base::Unretained(this)));
 }
@@ -101,10 +109,10 @@ void BluetoothPowerController::OnBluetoothPowerActiveUserPrefChanged() {
 }
 
 void BluetoothPowerController::OnBluetoothPowerLocalStatePrefChanged() {
-  DCHECK(local_state_pref_service_);
+  DCHECK(local_state_);
   BLUETOOTH_LOG(EVENT) << "Local state bluetooth power pref changed";
-  SetBluetoothPower(local_state_pref_service_->GetBoolean(
-      prefs::kSystemBluetoothAdapterEnabled));
+  SetBluetoothPower(
+      local_state_->GetBoolean(prefs::kSystemBluetoothAdapterEnabled));
 }
 
 void BluetoothPowerController::SetPrimaryUserBluetoothPowerSetting(
@@ -149,24 +157,6 @@ void BluetoothPowerController::OnActiveUserPrefServiceChanged(
   }
 }
 
-void BluetoothPowerController::OnLocalStatePrefServiceInitialized(
-    PrefService* pref_service) {
-  // AppLaunchTest.TestQuickLaunch fails under target=linux due to
-  // pref_service being nullptr.
-  if (!pref_service)
-    return;
-
-  local_state_pref_service_ = pref_service;
-
-  StartWatchingLocalStatePrefsChanges();
-
-  if (!Shell::Get()->session_controller()->IsActiveUserSessionStarted()) {
-    // Apply the local state pref only if no user has logged in (still in login
-    // screen).
-    ApplyBluetoothLocalStatePref();
-  }
-}
-
 void BluetoothPowerController::AdapterPresentChanged(
     device::BluetoothAdapter* adapter,
     bool present) {
@@ -190,7 +180,7 @@ void BluetoothPowerController::AdapterPresentChanged(
 }
 
 void BluetoothPowerController::ApplyBluetoothPrimaryUserPref() {
-  base::Optional<user_manager::UserType> user_type =
+  absl::optional<user_manager::UserType> user_type =
       Shell::Get()->session_controller()->GetUserType();
   if (!user_type || !ShouldApplyUserBluetoothSetting(*user_type)) {
     // Do not apply bluetooth setting if user is not of the allowed types.
@@ -221,15 +211,14 @@ void BluetoothPowerController::ApplyBluetoothPrimaryUserPref() {
 }
 
 void BluetoothPowerController::ApplyBluetoothLocalStatePref() {
-  PrefService* prefs = local_state_pref_service_;
-
-  if (prefs->FindPreference(prefs::kSystemBluetoothAdapterEnabled)
+  if (local_state_->FindPreference(prefs::kSystemBluetoothAdapterEnabled)
           ->IsDefaultValue()) {
     // If the device has not had the local state bluetooth pref, set the pref
     // according to whatever the current bluetooth power is.
-    SavePrefValue(prefs, prefs::kSystemBluetoothAdapterEnabled);
+    SavePrefValue(local_state_, prefs::kSystemBluetoothAdapterEnabled);
   } else {
-    bool enabled = prefs->GetBoolean(prefs::kSystemBluetoothAdapterEnabled);
+    bool enabled =
+        local_state_->GetBoolean(prefs::kSystemBluetoothAdapterEnabled);
     BLUETOOTH_LOG(EVENT) << "Applying local state pref bluetooth power: "
                          << enabled;
     SetBluetoothPower(enabled);
@@ -255,12 +244,10 @@ void BluetoothPowerController::SetBluetoothPowerOnAdapterReady() {
   pending_bluetooth_power_target_.reset();
   // Always run the next pending task after SetPowered completes regardless
   // the error.
-  bluetooth_adapter_->SetPowered(
-      enabled,
-      base::Bind(&BluetoothPowerController::RunNextPendingBluetoothTask,
-                 weak_ptr_factory_.GetWeakPtr()),
-      base::Bind(&BluetoothPowerController::RunNextPendingBluetoothTask,
-                 weak_ptr_factory_.GetWeakPtr()));
+  auto run_next_task = base::BindRepeating(
+      &BluetoothPowerController::RunNextPendingBluetoothTask,
+      weak_ptr_factory_.GetWeakPtr());
+  bluetooth_adapter_->SetPowered(enabled, run_next_task, run_next_task);
 }
 
 void BluetoothPowerController::RunBluetoothTaskWhenAdapterReady(
@@ -307,7 +294,7 @@ bool BluetoothPowerController::ShouldApplyUserBluetoothSetting(
     user_manager::UserType user_type) const {
   return user_type == user_manager::USER_TYPE_REGULAR ||
          user_type == user_manager::USER_TYPE_CHILD ||
-         user_type == user_manager::USER_TYPE_SUPERVISED ||
+         user_type == user_manager::USER_TYPE_SUPERVISED_DEPRECATED ||
          user_type == user_manager::USER_TYPE_ACTIVE_DIRECTORY;
 }
 

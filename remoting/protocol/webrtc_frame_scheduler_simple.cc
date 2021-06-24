@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/bind.h"
+#include "base/numerics/ranges.h"
 #include "base/time/default_tick_clock.h"
 #include "remoting/base/constants.h"
 #include "remoting/protocol/frame_stats.h"
@@ -26,7 +27,7 @@ constexpr base::TimeDelta kTargetFrameInterval =
     base::TimeDelta::FromMilliseconds(1000 / kTargetFrameRate);
 
 // Target quantizer at which stop the encoding top-off.
-const int kTargetQuantizerForVp8TopOff = 30;
+const int kTargetQuantizerForTopOff = 10;
 
 // Maximum quantizer at which to encode frames. Lowering this value will
 // improve image quality (in cases of low-bandwidth or large frames) at the
@@ -46,7 +47,7 @@ const int64_t kPixelsPerMegapixel = 1000000;
 const int kBigFrameThresholdPixels = 300000;
 
 // Estimated size (in bytes per megapixel) of encoded frame at target quantizer
-// value (see kTargetQuantizerForVp8TopOff). Compression ratio varies depending
+// value (see kTargetQuantizerForTopOff). Compression ratio varies depending
 // on the image, so this is just a rough estimate. It's used to predict when
 // encoded "big" frame may be too large to be delivered to the client quickly.
 const int kEstimatedBytesPerMegapixel = 100000;
@@ -58,6 +59,12 @@ const int kEstimatedBytesPerMegapixel = 100000;
 // processing and rendering lots of identical frames.
 constexpr base::TimeDelta kKeepAliveInterval =
     base::TimeDelta::FromMilliseconds(2000);
+
+// Baseline bandwidth to use for scheduling captures. This is only used
+// until the next OnTargetBitrateChanged() notification, typically after
+// 2 or 3 capture/encode cycles. Any realistic value should work OK - the
+// chosen value is the current upper limit for relay connections.
+constexpr int kBaselineBandwidthKbps = 8000;
 
 int64_t GetRegionArea(const webrtc::DesktopRegion& region) {
   int64_t result = 0;
@@ -73,28 +80,33 @@ int64_t GetRegionArea(const webrtc::DesktopRegion& region) {
 WebrtcFrameSchedulerSimple::WebrtcFrameSchedulerSimple(
     const SessionOptions& options)
     : tick_clock_(base::DefaultTickClock::GetInstance()),
-      pacing_bucket_(LeakyBucket::kUnlimitedDepth, 0),
+      pacing_bucket_(LeakyBucket::kUnlimitedDepth,
+                     kBaselineBandwidthKbps * 1000 / 8),
       updated_region_area_(kStatsWindow),
-      bandwidth_estimator_(new WebrtcBandwidthEstimator()),
-      weak_factory_(this) {}
+      bandwidth_estimator_(new WebrtcBandwidthEstimator()) {
+  // Set up bandwidth-estimators with an initial rate so that captures can be
+  // scheduled when the encoder is ready. With the standard encoding pipeline
+  // (has_internal_source == false), WebRTC does not create the encoder until
+  // after the first frame is captured and sent to the VideoTrack's output
+  // sink. Bandwidth updates cannot be received until after this occurs.
+  bandwidth_estimator_->OnBitrateEstimation(kBaselineBandwidthKbps);
+  processing_time_estimator_.SetBandwidthKbps(kBaselineBandwidthKbps);
+}
 
 WebrtcFrameSchedulerSimple::~WebrtcFrameSchedulerSimple() {
   DCHECK(thread_checker_.CalledOnValidThread());
 }
 
-void WebrtcFrameSchedulerSimple::OnKeyFrameRequested() {
+void WebrtcFrameSchedulerSimple::OnEncoderReady() {
   DCHECK(thread_checker_.CalledOnValidThread());
   encoder_ready_ = true;
-  key_frame_request_ = true;
   ScheduleNextFrame();
 }
 
-void WebrtcFrameSchedulerSimple::OnChannelParameters(int packet_loss,
-                                                     base::TimeDelta rtt) {
+void WebrtcFrameSchedulerSimple::OnKeyFrameRequested() {
   DCHECK(thread_checker_.CalledOnValidThread());
-
-  bandwidth_estimator_->UpdateRtt(rtt);
-  rtt_estimate_ = rtt;
+  key_frame_request_ = true;
+  ScheduleNextFrame();
 }
 
 void WebrtcFrameSchedulerSimple::OnTargetBitrateChanged(int bandwidth_kbps) {
@@ -108,13 +120,23 @@ void WebrtcFrameSchedulerSimple::OnTargetBitrateChanged(int bandwidth_kbps) {
   ScheduleNextFrame();
 }
 
+void WebrtcFrameSchedulerSimple::OnRttUpdate(base::TimeDelta rtt) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  rtt_estimate_ = rtt;
+}
+
+void WebrtcFrameSchedulerSimple::OnTopOffActive(bool active) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  top_off_is_active_ = active;
+  if (active) {
+    ScheduleNextFrame();
+  }
+}
+
 void WebrtcFrameSchedulerSimple::Start(
-    WebrtcDummyVideoEncoderFactory* video_encoder_factory,
-    const base::Closure& capture_callback) {
+    const base::RepeatingClosure& capture_callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
   capture_callback_ = capture_callback;
-  video_encoder_factory->SetVideoChannelStateObserver(
-      weak_factory_.GetWeakPtr());
 }
 
 void WebrtcFrameSchedulerSimple::Pause(bool pause) {
@@ -132,6 +154,8 @@ bool WebrtcFrameSchedulerSimple::OnFrameCaptured(
     const webrtc::DesktopFrame* frame,
     WebrtcVideoEncoder::FrameParams* params_out) {
   DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK(frame_pending_);
+  frame_pending_ = false;
 
   base::TimeTicks now = tick_clock_->NowTicks();
 
@@ -212,19 +236,15 @@ bool WebrtcFrameSchedulerSimple::OnFrameCaptured(
 }
 
 void WebrtcFrameSchedulerSimple::OnFrameEncoded(
-    const WebrtcVideoEncoder::EncodedFrame* encoded_frame,
-    HostFrameStats* frame_stats) {
+    WebrtcVideoEncoder::EncodeResult encode_result,
+    WebrtcVideoEncoder::EncodedFrame* encoded_frame) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(frame_pending_);
-  frame_pending_ = false;
 
   base::TimeTicks now = tick_clock_->NowTicks();
 
-  if (frame_stats) {
-    // Calculate |send_pending_delay| before refilling |pacing_bucket_|.
-    frame_stats->send_pending_delay =
-        std::max(base::TimeDelta(), pacing_bucket_.GetEmptyTime() - now);
-  }
+  // Calculate |send_pending_delay_| before refilling |pacing_bucket_|.
+  send_pending_delay_ =
+      std::max(base::TimeDelta(), pacing_bucket_.GetEmptyTime() - now);
 
   // TODO(zijiehe): |encoded_frame|->data.empty() is unreasonable, we should try
   // to get rid of it in WebrtcVideoEncoder layer.
@@ -236,19 +256,24 @@ void WebrtcFrameSchedulerSimple::OnFrameEncoded(
     processing_time_estimator_.FinishFrame(*encoded_frame);
 
     // Top-off until the target quantizer value is reached.
-    top_off_is_active_ =
-        encoded_frame->quantizer > kTargetQuantizerForVp8TopOff;
+    top_off_is_active_ = encoded_frame->quantizer > kTargetQuantizerForTopOff;
   }
 
   ScheduleNextFrame();
 
-  if (frame_stats) {
-    frame_stats->rtt_estimate = rtt_estimate_;
-    frame_stats->bandwidth_estimate_kbps =
-        bandwidth_estimator_->GetBitrateKbps();
-  }
-
   bandwidth_estimator_->OnSendingFrame(*encoded_frame);
+}
+
+void WebrtcFrameSchedulerSimple::OnEncodedFrameSent(
+    webrtc::EncodedImageCallback::Result result,
+    const WebrtcVideoEncoder::EncodedFrame& frame) {}
+
+void WebrtcFrameSchedulerSimple::GetSchedulerStats(
+    HostFrameStats& frame_stats_out) const {
+  frame_stats_out.send_pending_delay = send_pending_delay_;
+  frame_stats_out.rtt_estimate = rtt_estimate_;
+  frame_stats_out.bandwidth_estimate_kbps =
+      bandwidth_estimator_->GetBitrateKbps();
 }
 
 void WebrtcFrameSchedulerSimple::SetTickClockForTest(
@@ -275,15 +300,25 @@ void WebrtcFrameSchedulerSimple::ScheduleNextFrame() {
 
     // Ensure that the capture rate is capped by kTargetFrameInterval, to avoid
     // excessive CPU usage by the capturer.
-    target_capture_time = std::max(
-        target_capture_time, last_capture_started_time_ + kTargetFrameInterval);
+    // Also ensure that the video does not freeze for excessively long periods.
+    // This protects against, for example, bugs in the b/w estimator or the
+    // LeakyBucket implementation which may result in unbounded wait times.
+    // If the network is such that it really takes > 2 or 3 seconds to send one
+    // video frame, then this upper-bound cap could result in packet-loss,
+    // triggering PLI (key-frame request). But the session would be already
+    // unusable under such network conditions. And the client would trigger PLI
+    // anyway if it doesn't receive any video for > 3 seconds.
+    target_capture_time = base::ClampToRange(
+        target_capture_time, last_capture_started_time_ + kTargetFrameInterval,
+        last_capture_started_time_ + kKeepAliveInterval);
   }
 
   target_capture_time = std::max(target_capture_time, now);
 
-  capture_timer_.Start(FROM_HERE, target_capture_time - now,
-                       base::Bind(&WebrtcFrameSchedulerSimple::CaptureNextFrame,
-                                  base::Unretained(this)));
+  capture_timer_.Start(
+      FROM_HERE, target_capture_time - now,
+      base::BindOnce(&WebrtcFrameSchedulerSimple::CaptureNextFrame,
+                     base::Unretained(this)));
 }
 
 void WebrtcFrameSchedulerSimple::CaptureNextFrame() {

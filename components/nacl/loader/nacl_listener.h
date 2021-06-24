@@ -14,12 +14,13 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/shared_memory.h"
+#include "base/memory/shared_memory_mapping.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
 #include "components/nacl/common/nacl_types.h"
+#include "components/nacl/loader/nacl_ipc_adapter.h"
 #include "components/nacl/loader/nacl_trusted_listener.h"
 #include "ipc/ipc_listener.h"
 
@@ -39,7 +40,7 @@ class NaClListener : public IPC::Listener {
 
   bool Send(IPC::Message* msg);
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   void set_prereserved_sandbox_size(size_t prereserved_sandbox_size) {
     prereserved_sandbox_size_ = prereserved_sandbox_size;
   }
@@ -50,36 +51,36 @@ class NaClListener : public IPC::Listener {
   }
 #endif
 
-  void* crash_info_shmem_memory() const { return crash_info_shmem_->memory(); }
+  void* crash_info_shmem_memory() const {
+    return crash_info_shmem_mapping_.memory();
+  }
 
   NaClTrustedListener* trusted_listener() const {
     return trusted_listener_.get();
   }
 
-  typedef base::Callback<void(IPC::PlatformFileForTransit, base::FilePath)>
-      ResolveFileTokenCallback;
   void ResolveFileToken(uint64_t token_lo,
                         uint64_t token_hi,
-                        ResolveFileTokenCallback cb);
+                        NaClIPCAdapter::ResolveFileTokenReplyCallback cb);
   void OnFileTokenResolved(uint64_t token_lo,
                            uint64_t token_hi,
                            IPC::PlatformFileForTransit ipc_fd,
                            base::FilePath file_path);
 
  private:
-  bool OnMessageReceived(const IPC::Message& msg) override;
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  static int MakeSharedMemorySegment(size_t length, int executable);
+#endif
 
-  typedef base::Callback<void(const IPC::Message&,
-                              IPC::PlatformFileForTransit,
-                              base::FilePath)> OpenResourceReplyCallback;
+  bool OnMessageReceived(const IPC::Message& msg) override;
 
   bool OnOpenResource(const IPC::Message& msg,
                       const std::string& key,
-                      OpenResourceReplyCallback cb);
+                      NaClIPCAdapter::OpenResourceReplyCallback cb);
 
   void OnAddPrefetchedResource(
       const nacl::NaClResourcePrefetchResult& prefetched_resource_file);
-  void OnStart(const nacl::NaClStartParams& params);
+  void OnStart(nacl::NaClStartParams params);
 
   // A channel back to the browser.
   std::unique_ptr<IPC::SyncChannel> channel_;
@@ -90,7 +91,7 @@ class NaClListener : public IPC::Listener {
   base::WaitableEvent shutdown_event_;
   base::Thread io_thread_;
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   size_t prereserved_sandbox_size_;
 #endif
 #if defined(OS_POSIX)
@@ -102,11 +103,11 @@ class NaClListener : public IPC::Listener {
   int number_of_cores_;
 #endif
 
-  std::unique_ptr<base::SharedMemory> crash_info_shmem_;
+  base::WritableSharedMemoryMapping crash_info_shmem_mapping_;
 
   std::unique_ptr<NaClTrustedListener> trusted_listener_;
 
-  ResolveFileTokenCallback resolved_cb_;
+  NaClIPCAdapter::ResolveFileTokenReplyCallback resolved_cb_;
 
   // Used to identify what thread we're on.
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;

@@ -36,31 +36,18 @@ Status StubChrome::GetWebViewById(const std::string& id, WebView** web_view) {
   return Status(kOk);
 }
 
-Status StubChrome::GetWindowSize(const std::string& id,
-                                 int* width,
-                                 int* height) {
+Status StubChrome::NewWindow(const std::string& target_id,
+                             WindowType type,
+                             std::string* window_handle) {
   return Status(kOk);
 }
 
-Status StubChrome::SetWindowSize(const std::string& id,
-                                 int width,
-                                 int height) {
+Status StubChrome::GetWindowRect(const std::string& id, WindowRect* rect) {
   return Status(kOk);
 }
 
 Status StubChrome::SetWindowRect(const std::string& target_id,
                                  const base::DictionaryValue& params) {
-  return Status(kOk);
-}
-
-Status StubChrome::GetWindowPosition(const std::string& target_id,
-                                     int* x,
-                                     int* y) {
-  return Status(kOk);
-}
-
-Status StubChrome::SetWindowPosition(const std::string& target_id,
-                                     int x, int y) {
   return Status(kOk);
 }
 
@@ -85,6 +72,14 @@ Status StubChrome::ActivateWebView(const std::string& id) {
 }
 
 Status StubChrome::SetAcceptInsecureCerts() {
+  return Status(kOk);
+}
+
+Status StubChrome::SetPermission(
+    std::unique_ptr<base::DictionaryValue> permission_descriptor,
+    Chrome::PermissionState desired_state,
+    bool one_realm,
+    WebView* current_view) {
   return Status(kOk);
 }
 

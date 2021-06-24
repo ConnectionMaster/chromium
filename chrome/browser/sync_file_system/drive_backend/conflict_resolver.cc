@@ -9,9 +9,10 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
 #include "base/format_macros.h"
 #include "base/location.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/sync_file_system/drive_backend/drive_backend_util.h"
 #include "chrome/browser/sync_file_system/drive_backend/metadata_database.h"
@@ -29,8 +30,7 @@ namespace sync_file_system {
 namespace drive_backend {
 
 ConflictResolver::ConflictResolver(SyncEngineContext* sync_context)
-    : sync_context_(sync_context),
-      weak_ptr_factory_(this) {}
+    : sync_context_(sync_context) {}
 
 ConflictResolver::~ConflictResolver() {}
 
@@ -41,8 +41,8 @@ void ConflictResolver::RunPreflight(std::unique_ptr<SyncTaskToken> token) {
   task_blocker->exclusive = true;
   SyncTaskManager::UpdateTaskBlocker(
       std::move(token), std::move(task_blocker),
-      base::Bind(&ConflictResolver::RunExclusive,
-                 weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(&ConflictResolver::RunExclusive,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ConflictResolver::RunExclusive(std::unique_ptr<SyncTaskToken> token) {
@@ -141,9 +141,8 @@ void ConflictResolver::DetachFromNonPrimaryParents(
 
   drive_service()->RemoveResourceFromDirectory(
       parent_folder_id, target_file_id_,
-      base::Bind(&ConflictResolver::DidDetachFromParent,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 base::Passed(&token)));
+      base::BindOnce(&ConflictResolver::DidDetachFromParent,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void ConflictResolver::DidDetachFromParent(
@@ -244,9 +243,9 @@ void ConflictResolver::RemoveNonPrimaryFiles(
   // the folder identified by |target_file_id_|.
   drive_service()->DeleteResource(
       file_id, etag,
-      base::Bind(&ConflictResolver::DidRemoveFile,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 base::Passed(&token), file_id));
+      base::BindOnce(&ConflictResolver::DidRemoveFile,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token),
+                     file_id));
 }
 
 void ConflictResolver::DidRemoveFile(std::unique_ptr<SyncTaskToken> token,
@@ -284,10 +283,9 @@ void ConflictResolver::UpdateFileMetadata(
     const std::string& file_id,
     std::unique_ptr<SyncTaskToken> token) {
   drive_service()->GetFileResource(
-      file_id,
-      base::Bind(&ConflictResolver::DidGetRemoteMetadata,
-                 weak_ptr_factory_.GetWeakPtr(), file_id,
-                 base::Passed(&token)));
+      file_id, base::BindOnce(&ConflictResolver::DidGetRemoteMetadata,
+                              weak_ptr_factory_.GetWeakPtr(), file_id,
+                              std::move(token)));
 }
 
 void ConflictResolver::DidGetRemoteMetadata(

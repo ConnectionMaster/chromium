@@ -8,17 +8,17 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/shutdown_reason.h"
+#include "ash/wallpaper/wallpaper_constants.h"
 #include "ash/wm/lock_state_observer.h"
 #include "ash/wm/session_state_animator.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/optional.h"
-#include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/timer/timer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/aura/window_tree_host_observer.h"
 
 namespace ash {
@@ -29,17 +29,13 @@ enum class ShutdownReason;
 // Displays onscreen animations and locks or suspends the system in response to
 // the power button being pressed or released.
 // Lock workflow:
-// Entry points:
+// Entry point:
 //  * StartLockAnimation (bool shutdown after lock) - starts lock that can be
 //    cancelled.
-//  * StartLockAnimationAndLockImmediately (bool shutdown after lock) - starts
-//    uninterruptible lock animation.
-// This leads to call of either StartImmediatePreLockAnimation or
-// StartCancellablePreLockAnimation. Once they complete
-// PreLockAnimationFinished is called, and system lock is requested.
-// Once system locks and lock UI is created, OnLockStateChanged is called, and
-// StartPostLockAnimation is called. In PostLockAnimationFinished two
-// things happen : EVENT_LOCK_ANIMATION_FINISHED notification is sent (it
+// Once it completes, PreLockAnimationFinished is called, and system lock is
+// requested. Once system locks and lock UI is created, OnLockStateChanged is
+// called, and StartPostLockAnimation is called. In PostLockAnimationFinished
+// two things happen : EVENT_LOCK_ANIMATION_FINISHED notification is sent (it
 // triggers third part of animation within lock UI), and check for continuing to
 // shutdown is made.
 //
@@ -62,20 +58,11 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
   void AddObserver(LockStateObserver* observer);
   void RemoveObserver(LockStateObserver* observer);
 
-  // Starts locking (with slow animation) that can be cancelled.
+  // Starts locking (with slow pre-lock animation) that can be cancelled.
   void StartLockAnimation();
-
-  // Starts locking (with slow animation) that can be cancelled.
-  // After locking and |kLockToShutdownTimeoutMs| StartShutdownAnimation()
-  // will be called unless CancelShutdownAnimation() is called.
-  // |shutdown_reason| gives the reason for shutdown.
-  void StartLockThenShutdownAnimation(ShutdownReason shutdown_reason);
 
   // Starts shutting down (with slow animation) that can be cancelled.
   void StartShutdownAnimation(ShutdownReason reason);
-
-  // Starts usual lock animation, but locks immediately.
-  void StartLockAnimationAndLockImmediately();
 
   // Starts locking without slow animation.
   void LockWithoutAnimation();
@@ -87,9 +74,6 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
   // Returns true if we are shutting down.
   bool ShutdownRequested();
 
-  // Returns true if we are within cancellable lock timeframe.
-  bool CanCancelLockAnimation();
-
   // Cancels locking and reverts lock animation.
   void CancelLockAnimation();
 
@@ -98,9 +82,6 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
 
   // Cancels shutting down and reverts shutdown animation.
   void CancelShutdownAnimation();
-
-  // Called when Chrome gets a request to display the lock screen.
-  void OnStartingLock();
 
   // Displays the shutdown animation and requests a system shutdown or system
   // restart depending on the the state of the |RebootOnShutdown| device policy.
@@ -125,6 +106,7 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
   void set_animator_for_test(SessionStateAnimator* animator) {
     animator_.reset(animator);
   }
+  bool animating_lock_for_test() const { return animating_lock_; }
 
  private:
   friend class LockStateControllerTestApi;
@@ -135,12 +117,6 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
 
   // Reverts the pre-lock animation, reports the error.
   void OnLockFailTimeout();
-
-  // Starts timer for gap between lock and shutdown.
-  void StartLockToShutdownTimer();
-
-  // Calls StartShutdownAnimation().
-  void OnLockToShutdownTimeout();
 
   // Starts timer for undoable shutdown animation.
   void StartPreShutdownAnimationTimer();
@@ -156,29 +132,18 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
   // Request that the machine be shut down.
   void OnRealPowerTimeout();
 
-  // Starts shutdown animation that can be cancelled and starts pre-shutdown
-  // timer.
-  void StartCancellableShutdownAnimation();
-
-  // If |request_lock_on_completion| is true, a lock request will be sent
-  // after the pre-lock animation completes.  (The pre-lock animation is
-  // also displayed in response to already-in-progress lock requests; in
-  // these cases an additional lock request is undesirable.)
-  void StartImmediatePreLockAnimation(bool request_lock_on_completion);
-  void StartCancellablePreLockAnimation();
   void PreLockAnimation(SessionStateAnimator::AnimationSpeed speed,
                         bool request_lock_on_completion);
-  void CancelPreLockAnimation();
   void StartPostLockAnimation();
   // This method calls |callback| when animation completes.
   void StartUnlockAnimationBeforeUIDestroyed(base::OnceClosure callback);
   void StartUnlockAnimationAfterUIDestroyed();
 
   // These methods are called when corresponding animation completes.
-  void LockAnimationCancelled();
-  void PreLockAnimationFinished(bool request_lock);
-  void PostLockAnimationFinished();
-  void UnlockAnimationAfterUIDestroyedFinished();
+  void LockAnimationCancelled(bool aborted);
+  void PreLockAnimationFinished(bool request_lock, bool aborted);
+  void PostLockAnimationFinished(bool aborted);
+  void UnlockAnimationAfterUIDestroyedFinished(bool aborted);
 
   // Stores properties of UI that have to be temporarily modified while locking.
   void StoreUnlockedProperties();
@@ -186,12 +151,12 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
 
   // Fades in wallpaper layer with |speed| if it was hidden in unlocked state.
   void AnimateWallpaperAppearanceIfNecessary(
-      ash::SessionStateAnimator::AnimationSpeed speed,
+      SessionStateAnimator::AnimationSpeed speed,
       SessionStateAnimator::AnimationSequence* animation_sequence);
 
   // Fades out wallpaper layer with |speed| if it was hidden in unlocked state.
   void AnimateWallpaperHidingIfNecessary(
-      ash::SessionStateAnimator::AnimationSpeed speed,
+      SessionStateAnimator::AnimationSpeed speed,
       SessionStateAnimator::AnimationSequence* animation_sequence);
 
   // Notifies observers.
@@ -206,7 +171,7 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
   bool shutting_down_ = false;
 
   // The reason (e.g. user action) for a pending shutdown.
-  base::Optional<ShutdownReason> shutdown_reason_;
+  absl::optional<ShutdownReason> shutdown_reason_;
 
   // Indicates whether controller should proceed to (cancellable) shutdown after
   // locking.
@@ -214,9 +179,6 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
 
   // Indicates that controller displays lock animation.
   bool animating_lock_ = false;
-
-  // Indicates that lock animation can be undone.
-  bool can_cancel_lock_animation_ = false;
 
   // Indicates whether post lock animation should be immediate.
   bool post_lock_immediate_animation_ = false;
@@ -233,11 +195,6 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
   // assume that our request got dropped.
   base::OneShotTimer lock_fail_timer_;
 
-  // Started when the screen is locked while the power button is held.  Adds a
-  // delay between the appearance of the lock screen and the beginning of the
-  // pre-shutdown animation.
-  base::OneShotTimer lock_to_shutdown_timer_;
-
   // Started when we begin displaying the pre-shutdown animation.  When it
   // fires, we start the shutdown animation and get ready to request shutdown.
   base::OneShotTimer pre_shutdown_timer_;
@@ -251,9 +208,13 @@ class ASH_EXPORT LockStateController : public aura::WindowTreeHostObserver,
 
   ScopedSessionObserver scoped_session_observer_;
 
+  // The wallpaper blur before entering lock state. Used to restore the
+  // wallpaper blur after exiting lock state.
+  float saved_blur_;
+
   base::ObserverList<LockStateObserver>::Unchecked observers_;
 
-  base::WeakPtrFactory<LockStateController> weak_ptr_factory_;
+  base::WeakPtrFactory<LockStateController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LockStateController);
 };

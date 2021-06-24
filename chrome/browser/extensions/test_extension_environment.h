@@ -11,6 +11,7 @@
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "extensions/common/extension.h"
 
 #if defined(OS_WIN)
@@ -24,7 +25,7 @@ class Value;
 }
 
 namespace content {
-class TestBrowserThreadBundle;
+class BrowserTaskEnvironment;
 class WebContents;
 }
 
@@ -45,7 +46,7 @@ class TestExtensionEnvironment {
       TestingProfile* profile);
 
   enum class Type {
-    // A TestExtensionEnvironment which will provide a TestBrowserThreadBundle
+    // A TestExtensionEnvironment which will provide a BrowserTaskEnvironment
     // in its scope.
     kWithTaskEnvironment,
     // A TestExtensionEnvironment which will run on top of the existing task
@@ -97,11 +98,11 @@ class TestExtensionEnvironment {
 
   void Init();
 
-  // If |thread_bundle_| is needed, then it needs to constructed before
+  // If |task_environment_| is needed, then it needs to constructed before
   // |profile_| and destroyed after |profile_|.
-  const std::unique_ptr<content::TestBrowserThreadBundle> thread_bundle_;
+  const std::unique_ptr<content::BrowserTaskEnvironment> task_environment_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   const std::unique_ptr<ChromeOSEnv> chromeos_env_;
 #endif
 

@@ -11,9 +11,6 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/observer_list.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -36,8 +33,7 @@ class ExtensionHostDelegate;
 // TODO(atwilson): Unify this with background pages; http://crbug.com/77790
 class BackgroundContents : public extensions::DeferredStartRenderHost,
                            public content::WebContentsDelegate,
-                           public content::WebContentsObserver,
-                           public content::NotificationObserver {
+                           public content::WebContentsObserver {
  public:
   class Delegate {
    public:
@@ -47,9 +43,17 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
     // set to true if the popup gets blocked, and left unchanged otherwise.
     virtual void AddWebContents(
         std::unique_ptr<content::WebContents> new_contents,
+        const GURL& target_url,
         WindowOpenDisposition disposition,
         const gfx::Rect& initial_rect,
         bool* was_blocked) = 0;
+
+    // Informs the delegate of lifetime events.
+    virtual void OnBackgroundContentsNavigated(
+        BackgroundContents* contents) = 0;
+    virtual void OnBackgroundContentsTerminated(
+        BackgroundContents* contents) = 0;
+    virtual void OnBackgroundContentsClosed(BackgroundContents* contents) = 0;
 
    protected:
     virtual ~Delegate() {}
@@ -58,19 +62,18 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
   BackgroundContents(
       scoped_refptr<content::SiteInstance> site_instance,
       content::RenderFrameHost* opener,
-      int32_t routing_id,
-      int32_t main_frame_routing_id,
-      int32_t main_frame_widget_routing_id,
+      bool is_new_browsing_instance,
       Delegate* delegate,
-      const std::string& partition_id,
+      const content::StoragePartitionId& partition_id,
       content::SessionStorageNamespace* session_storage_namespace);
   ~BackgroundContents() override;
 
   content::WebContents* web_contents() const { return web_contents_.get(); }
   virtual const GURL& GetURL() const;
 
-  // Adds this BackgroundContents to the queue of RenderViews to create.
-  void CreateRenderViewSoon(const GURL& url);
+  // Adds this BackgroundContents to the queue of renderer main frames to create
+  // and navigate.
+  void CreateRendererSoon(const GURL& url);
 
   // content::WebContentsDelegate implementation:
   void CloseContents(content::WebContents* source) override;
@@ -78,21 +81,15 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
   void DidNavigateMainFramePostCommit(content::WebContents* tab) override;
   void AddNewContents(content::WebContents* source,
                       std::unique_ptr<content::WebContents> new_contents,
+                      const GURL& target_url,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture,
                       bool* was_blocked) override;
-  bool IsNeverVisible(content::WebContents* web_contents) override;
+  bool IsNeverComposited(content::WebContents* web_contents) override;
 
   // content::WebContentsObserver implementation:
   void RenderProcessGone(base::TerminationStatus status) override;
-  void DidStartLoading() override;
-  void DidStopLoading() override;
-
-  // content::NotificationObserver
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
 
  protected:
   // Exposed for testing.
@@ -100,11 +97,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
 
  private:
   // extensions::DeferredStartRenderHost implementation:
-  void CreateRenderViewNow() override;
-  void AddDeferredStartRenderHostObserver(
-      extensions::DeferredStartRenderHostObserver* observer) override;
-  void RemoveDeferredStartRenderHostObserver(
-      extensions::DeferredStartRenderHostObserver* observer) override;
+  void CreateRendererNow() override;
 
   // The delegate for this BackgroundContents.
   Delegate* delegate_;
@@ -114,9 +107,6 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
 
   Profile* profile_;
   std::unique_ptr<content::WebContents> web_contents_;
-  content::NotificationRegistrar registrar_;
-  base::ObserverList<extensions::DeferredStartRenderHostObserver>::Unchecked
-      deferred_start_render_host_observer_list_;
 
   // The initial URL to load.
   GURL initial_url_;

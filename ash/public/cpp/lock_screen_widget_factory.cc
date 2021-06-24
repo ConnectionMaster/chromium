@@ -4,57 +4,30 @@
 
 #include "ash/public/cpp/lock_screen_widget_factory.h"
 
-#include "ash/public/cpp/shell_window_ids.h"
-#include "mojo/public/cpp/bindings/type_converter.h"
-#include "services/ws/public/cpp/property_type_converters.h"
-#include "services/ws/public/mojom/window_manager.mojom.h"
-#include "ui/aura/mus/property_converter.h"
 #include "ui/aura/window.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 
 namespace ash {
-namespace {
 
-class LockScreenWidgetDelegate : public views::WidgetDelegate {
- public:
-  explicit LockScreenWidgetDelegate(views::Widget* widget) : widget_(widget) {
-    DCHECK(widget_);
-  }
-  ~LockScreenWidgetDelegate() override = default;
-
-  // views::WidgetDelegate:
-  views::View* GetInitiallyFocusedView() override {
-    return widget_->GetContentsView();
-  }
-  views::Widget* GetWidget() override { return widget_; }
-  const views::Widget* GetWidget() const override { return widget_; }
-  void DeleteDelegate() override { delete this; }
-
- private:
-  views::Widget* widget_;
-
-  DISALLOW_COPY_AND_ASSIGN(LockScreenWidgetDelegate);
-};
-
-}  // namespace
-
-std::unique_ptr<views::Widget> CreateLockScreenWidget(aura::Window* parent) {
+std::unique_ptr<views::Widget> CreateLockScreenWidget(
+    aura::Window* parent,
+    std::unique_ptr<views::View> contents_view) {
   std::unique_ptr<views::Widget> widget = std::make_unique<views::Widget>();
   views::Widget::InitParams params(
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-  // Owned by Widget.
-  params.delegate = new LockScreenWidgetDelegate(widget.get());
+
+  params.delegate = new views::WidgetDelegate();
+  params.delegate->SetOwnedByWidget(true);
+  params.delegate->SetContentsView(std::move(contents_view));
+  params.delegate->SetInitiallyFocusedView(params.delegate->GetContentsView());
+
   params.show_state = ui::SHOW_STATE_FULLSCREEN;
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.parent = parent;
-  if (!parent) {
-    params.mus_properties[ws::mojom::WindowManager::kContainerId_InitProperty] =
-        mojo::ConvertTo<std::vector<uint8_t>>(
-            static_cast<int32_t>(ash::kShellWindowId_OverlayContainer));
-  }
-  widget->Init(params);
+  params.name = "LockScreenWidget";
+  widget->Init(std::move(params));
   widget->SetVisibilityAnimationTransition(views::Widget::ANIMATE_NONE);
   return widget;
 }

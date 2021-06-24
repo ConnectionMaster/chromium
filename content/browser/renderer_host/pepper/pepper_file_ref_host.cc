@@ -4,6 +4,7 @@
 
 #include "content/browser/renderer_host/pepper/pepper_file_ref_host.h"
 
+#include <memory>
 #include <string>
 
 #include "content/browser/renderer_host/pepper/pepper_external_file_ref_backend.h"
@@ -17,7 +18,7 @@
 #include "ppapi/host/ppapi_host.h"
 #include "ppapi/proxy/ppapi_messages.h"
 #include "ppapi/shared_impl/file_ref_util.h"
-#include "storage/browser/fileapi/file_permission_policy.h"
+#include "storage/browser/file_system/file_permission_policy.h"
 
 using ppapi::host::ResourceHost;
 
@@ -74,10 +75,9 @@ PepperFileRefHost::PepperFileRefHost(BrowserPpapiHost* host,
     return;
   }
 
-  backend_.reset(new PepperInternalFileRefBackend(host->GetPpapiHost(),
-                                                  render_process_id,
-                                                  file_system_host->AsWeakPtr(),
-                                                  path));
+  backend_ = std::make_unique<PepperInternalFileRefBackend>(
+      host->GetPpapiHost(), render_process_id, file_system_host->AsWeakPtr(),
+      path);
 }
 
 PepperFileRefHost::PepperFileRefHost(BrowserPpapiHost* host,
@@ -97,8 +97,8 @@ PepperFileRefHost::PepperFileRefHost(BrowserPpapiHost* host,
     return;
   }
 
-  backend_.reset(new PepperExternalFileRefBackend(
-      host->GetPpapiHost(), render_process_id, external_path));
+  backend_ = std::make_unique<PepperExternalFileRefBackend>(
+      host->GetPpapiHost(), render_process_id, external_path);
 }
 
 PepperFileRefHost::~PepperFileRefHost() {}

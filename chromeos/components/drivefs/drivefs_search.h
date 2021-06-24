@@ -14,6 +14,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/clock.h"
 #include "chromeos/components/drivefs/mojom/drivefs.mojom.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace network {
 class NetworkConnectionTracker;
@@ -37,18 +39,18 @@ class COMPONENT_EXPORT(DRIVEFS) DriveFsSearch {
 
  private:
   void OnSearchDriveFs(
-      drivefs::mojom::SearchQueryPtr search,
+      mojo::Remote<drivefs::mojom::SearchQuery> search,
       drivefs::mojom::QueryParametersPtr query,
       mojom::SearchQuery::GetNextPageCallback callback,
       drive::FileError error,
-      base::Optional<std::vector<drivefs::mojom::QueryItemPtr>> items);
+      absl::optional<std::vector<drivefs::mojom::QueryItemPtr>> items);
 
   mojom::DriveFs* const drivefs_;
   network::NetworkConnectionTracker* const network_connection_tracker_;
   const base::Clock* const clock_;
   base::Time last_shared_with_me_response_;
 
-  base::WeakPtrFactory<DriveFsSearch> weak_ptr_factory_;
+  base::WeakPtrFactory<DriveFsSearch> weak_ptr_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(DriveFsSearch);
 };
 

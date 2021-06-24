@@ -11,12 +11,16 @@
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace network {
-struct ResourceResponseHead;
 class SimpleURLLoader;
 class SharedURLLoaderFactory;
+}
+
+namespace net {
+class HttpRequestHeaders;
 }
 
 // Base class for all classes that implement a flow to call OAuth2 enabled APIs,
@@ -39,6 +43,7 @@ class OAuth2ApiCallFlow {
 
   // Methods to help create the API request.
   virtual GURL CreateApiCallUrl() = 0;
+  virtual net::HttpRequestHeaders CreateApiCallHeaders();
   virtual std::string CreateApiCallBody() = 0;
   virtual std::string CreateApiCallBodyContentType();
 
@@ -46,16 +51,26 @@ class OAuth2ApiCallFlow {
   // with the request.
   virtual std::string GetRequestTypeForBody(const std::string& body);
 
+  // Called when the API call ends without network error to check whether the
+  // request succeeded, to decide which of the following 2 process functions to
+  // call. Should be overriden by subclasses if the expected success response
+  // code is not 200 or 204.
+  virtual bool IsExpectedSuccessCode(int code) const;
+
   // Sub-classes can expose an appropriate observer interface by implementing
   // these template methods.
-  // Called when the API call finished successfully. |body| may be null.
-  virtual void ProcessApiCallSuccess(const network::ResourceResponseHead* head,
-                                     std::unique_ptr<std::string> body) = 0;
+  // Called when there is no network error and IsExpectedSuccessCode() returns
+  // true. |body| may be null.
+  virtual void ProcessApiCallSuccess(
+      const network::mojom::URLResponseHead* head,
+      std::unique_ptr<std::string> body) = 0;
 
-  // Called when the API call failed. |head| or |body| might be null.
-  virtual void ProcessApiCallFailure(int net_error,
-                                     const network::ResourceResponseHead* head,
-                                     std::unique_ptr<std::string> body) = 0;
+  // Called when there is a network error or IsExpectedSuccessCode() returns
+  // false. |head| or |body| might be null.
+  virtual void ProcessApiCallFailure(
+      int net_error,
+      const network::mojom::URLResponseHead* head,
+      std::unique_ptr<std::string> body) = 0;
 
   virtual net::PartialNetworkTrafficAnnotationTag
   GetNetworkTrafficAnnotationTag() = 0;

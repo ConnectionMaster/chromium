@@ -10,8 +10,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "remoting/host/security_key/security_key_message.h"
 #include "remoting/host/setup/test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -61,7 +61,8 @@ class SecurityKeyMessageReaderImplTest : public testing::Test {
   std::vector<std::unique_ptr<SecurityKeyMessage>> messages_received_;
 
  private:
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
   std::unique_ptr<base::RunLoop> run_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(SecurityKeyMessageReaderImplTest);
@@ -74,26 +75,27 @@ SecurityKeyMessageReaderImplTest::~SecurityKeyMessageReaderImplTest() = default;
 
 void SecurityKeyMessageReaderImplTest::SetUp() {
   ASSERT_TRUE(MakePipe(&read_file_, &write_file_));
-  reader_.reset(new SecurityKeyMessageReaderImpl(std::move(read_file_)));
+  reader_ =
+      std::make_unique<SecurityKeyMessageReaderImpl>(std::move(read_file_));
 
   // base::Unretained is safe since no further tasks can run after
   // RunLoop::Run() returns.
   reader_->Start(
-      base::Bind(&SecurityKeyMessageReaderImplTest::OnMessage,
-                 base::Unretained(this)),
-      base::Bind(&SecurityKeyMessageReaderImplTest::OperationComplete,
-                 base::Unretained(this)));
+      base::BindRepeating(&SecurityKeyMessageReaderImplTest::OnMessage,
+                          base::Unretained(this)),
+      base::BindOnce(&SecurityKeyMessageReaderImplTest::OperationComplete,
+                     base::Unretained(this)));
 }
 
 void SecurityKeyMessageReaderImplTest::RunLoop() {
   run_loop_->Run();
-  run_loop_.reset(new base::RunLoop());
+  run_loop_ = std::make_unique<base::RunLoop>();
 }
 
 void SecurityKeyMessageReaderImplTest::CloseWriteFileAndRunLoop() {
   write_file_.Close();
   run_loop_->Run();
-  run_loop_.reset(new base::RunLoop());
+  run_loop_ = std::make_unique<base::RunLoop>();
 }
 
 void SecurityKeyMessageReaderImplTest::OnMessage(

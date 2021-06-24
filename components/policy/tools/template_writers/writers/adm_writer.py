@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -7,7 +7,7 @@ from writers import gpo_editor_writer
 import re
 
 NEWLINE = '\r\n'
-POLICY_LIST_URL = '''https://www.chromium.org/administrators/policy-list-3'''
+POLICY_LIST_URL = '''https://cloud.google.com/docs/chrome-enterprise/policies/?policy='''
 
 
 def GetWriter(config):
@@ -15,7 +15,7 @@ def GetWriter(config):
   See the constructor of TemplateWriter for description of
   arguments.
   '''
-  return AdmWriter(['win'], config)
+  return AdmWriter(['win', 'win7'], config)
 
 
 class IndentedStringBuilder:
@@ -93,9 +93,11 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
       line = '%s="%s"' % (name, value)
       self.strings.AddLine(line)
 
-  def _WriteSupported(self, builder):
+  def _WriteSupported(self, builder, is_win7_only):
     builder.AddLine('#if version >= 4', 1)
-    builder.AddLine('SUPPORTED !!SUPPORTED_WIN7')
+    key = 'win_supported_os_win7' if is_win7_only else 'win_supported_os'
+    supported_on_text = self.config[key]
+    builder.AddLine('SUPPORTED !!' + supported_on_text)
     builder.AddLine('#endif', -1)
 
   def _WritePart(self, policy, key_name, builder):
@@ -122,15 +124,15 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
       builder.AddLine('VALUENAME "%s"' % policy['name'])
     if policy['type'] == 'int':
       # The default max for NUMERIC values is 9999 which is too small for us.
-      max = '2000000000'
-      min = '0'
+      max = 2000000000
+      min = 0
       if self.PolicyHasRestrictions(policy):
         schema = policy['schema']
         if 'minimum' in schema:
           min = schema['minimum']
         if 'maximum' in schema:
           max = schema['maximum']
-      builder.AddLine('MIN ' + str(min) + ' MAX ' + max)
+      builder.AddLine('MIN %d MAX %d' % (min, max))
     if policy['type'] in ('string', 'dict', 'external'):
       # The default max for EDITTEXT values is 1023, which is too small for
       # big JSON blobs and other string policies.
@@ -142,7 +144,8 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
           value_text = 'NUMERIC ' + str(item['value'])
         else:
           value_text = '"' + item['value'] + '"'
-        string_id = self._Escape(item['name'] + '_DropDown')
+        string_id = self._Escape(policy['name'] + '_' + item['name'] +
+                                 '_DropDown')
         builder.AddLine('NAME !!%s VALUE %s' % (string_id, value_text))
         self._AddGuiString(string_id, item['caption'])
       builder.AddLine('END ITEMLIST', -1)
@@ -158,7 +161,7 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
     policy_name = self._Escape(policy['name'] + '_Policy')
     self._AddGuiString(policy_name, policy['caption'])
     builder.AddLine('POLICY !!%s' % policy_name, 1)
-    self._WriteSupported(builder)
+    self._WriteSupported(builder, self.IsPolicyOnWin7Only(policy))
     policy_explain_name = self._Escape(policy['name'] + '_Explain')
     policy_explain = self._GetPolicyExplanation(policy)
     self._AddGuiString(policy_explain_name, policy_explain)
@@ -179,21 +182,18 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
     Includes a link to the relevant documentation on chromium.org.
     '''
     policy_desc = policy.get('desc')
-    reference_url = POLICY_LIST_URL + '#' + policy['name']
-    reference_link_text = self._GetLocalizedMessage('reference_link')
+    reference_url = POLICY_LIST_URL + policy['name']
+    reference_link_text = self.GetLocalizedMessage('reference_link')
     reference_link_text = reference_link_text.replace('$6', reference_url)
 
     if policy_desc is not None:
       policy_desc += '\n\n'
-      if not policy.get('deprecated', False):
+      if (not policy.get('deprecated', False) and
+          not self._IsRemovedPolicy(policy)):
         policy_desc += reference_link_text
       return policy_desc
     else:
       return reference_link_text
-
-  def _GetLocalizedMessage(self, msg_id):
-    '''Returns the localized message of the given message ID.'''
-    return self.messages['doc_' + msg_id]['text']
 
   def WriteComment(self, comment):
     self.lines.AddLine('; ' + comment)
@@ -253,6 +253,8 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
       self.WriteComment(self.config['build'] + ' version: ' + \
           self._GetChromiumVersionString())
     self._AddGuiString(self.config['win_supported_os'],
+                       self.messages['win_supported_all']['text'])
+    self._AddGuiString(self.config['win_supported_os_win7'],
                        self.messages['win_supported_win7']['text'])
     categories = self.winconfig['mandatory_category_path'] + \
                  self.winconfig['recommended_category_path']
@@ -302,7 +304,7 @@ class AdmWriter(gpo_editor_writer.GpoEditorWriter):
     # String buffer for building the recommended policies of the ADM file.
     self.recommended_policies = IndentedStringBuilder()
     # Shortcut to platform-specific ADMX/ADM specific configuration.
-    assert len(self.platforms) == 1
+    assert len(self.platforms) == 2
     self.winconfig = self.config['win_config'][self.platforms[0]]
 
   def GetTemplateText(self):

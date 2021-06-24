@@ -8,8 +8,19 @@
  * linear UI range to a range of real values.  When |value| does not map exactly
  * to a tick mark, it interpolates to the nearest tick.
  */
+import '../settings_vars_css.js';
+
+import {SliderTick} from '//resources/cr_elements/cr_slider/cr_slider.js';
+import {CrPolicyPrefBehavior} from '//resources/cr_elements/policy/cr_policy_pref_behavior.m.js';
+import {assert} from '//resources/js/assert.m.js';
+import {html, Polymer} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+
 Polymer({
   is: 'settings-slider',
+
+  _template: html`{__html_template__}`,
 
   behaviors: [CrPolicyPrefBehavior],
 
@@ -19,7 +30,7 @@ Polymer({
 
     /**
      * Values corresponding to each tick.
-     * @type {!Array<cr_slider.SliderTick>|!Array<number>}
+     * @type {!Array<SliderTick>|!Array<number>}
      */
     ticks: {
       type: Array,
@@ -39,6 +50,8 @@ Polymer({
     min: Number,
 
     max: Number,
+
+    labelAria: String,
 
     labelMin: String,
 
@@ -67,16 +80,21 @@ Polymer({
     'valueChanged_(pref.*, ticks.*, loaded_)',
   ],
 
-  attached: function() {
+  attached() {
     this.loaded_ = true;
   },
 
+  /** @override */
+  focus() {
+    this.$.slider.focus();
+  },
+
   /**
-   * @param {number|cr_slider.SliderTick} tick
+   * @param {number|SliderTick} tick
    * @return {number|undefined}
    */
-  getTickValue_: function(tick) {
-    return typeof tick == 'object' ? tick.value : tick;
+  getTickValue_(tick) {
+    return typeof tick === 'object' ? tick.value : tick;
   },
 
   /**
@@ -84,7 +102,7 @@ Polymer({
    * @return {number|undefined}
    * @private
    */
-  getTickValueAtIndex_: function(index) {
+  getTickValueAtIndex_(index) {
     return this.getTickValue_(this.ticks[index]);
   },
 
@@ -93,7 +111,7 @@ Polymer({
    * position after a user action.
    * @private
    */
-  onSliderChanged_: function() {
+  onSliderChanged_() {
     if (!this.loaded_) {
       return;
     }
@@ -115,7 +133,7 @@ Polymer({
   },
 
   /** @private */
-  computeDisableSlider_: function() {
+  computeDisableSlider_() {
     return this.disabled || this.isPrefEnforced();
   },
 
@@ -125,14 +143,15 @@ Polymer({
    * position.
    * @private
    */
-  valueChanged_: function() {
-    if (this.pref == undefined || !this.loaded_) {
+  valueChanged_() {
+    if (this.pref === undefined || !this.loaded_ || this.$.slider.dragging ||
+        this.$.slider.updatingFromKey) {
       return;
     }
 
     // First update the slider settings if |ticks| was set.
     const numTicks = this.ticks.length;
-    if (numTicks == 1) {
+    if (numTicks === 1) {
       this.$.slider.disabled = true;
       return;
     }
@@ -140,36 +159,16 @@ Polymer({
     const prefValue = /** @type {number} */ (this.pref.value);
 
     // The preference and slider values are continuous when |ticks| is empty.
-    if (numTicks == 0) {
-      // This method is handling a preference value change. If the slider is,
-      // in a dragging state, that change is discarded and the the preference
-      // value is updated based on the slider value.
-      if (this.$.slider.dragging) {
-        const prefValueFromSlider = this.$.slider.value / this.scale;
-        if (this.updateValueInstantly && prefValue != prefValueFromSlider) {
-          this.set('pref.value', prefValueFromSlider);
-        }
-      } else {
-        // When not dragging, simply update the slider value.
-        this.$.slider.value = prefValue * this.scale;
-      }
+    if (numTicks === 0) {
+      this.$.slider.value = prefValue * this.scale;
       return;
     }
 
-    assert(this.scale == 1);
+    assert(this.scale === 1);
     // Limit the number of ticks to 10 to keep the slider from looking too busy.
     const MAX_TICKS = 10;
     this.$.slider.markerCount =
         (this.showMarkers || numTicks <= MAX_TICKS) ? numTicks : 0;
-
-    if (this.$.slider.dragging) {
-      const tickValue = this.getTickValueAtIndex_(this.$.slider.value);
-      if (this.updateValueInstantly && this.pref.value != tickValue) {
-        this.set('pref.value', tickValue);
-      }
-
-      return;
-    }
 
     // Convert from the public |value| to the slider index (where the knob
     // should be positioned on the slider).
@@ -179,13 +178,22 @@ Polymer({
                 (acc, diff, index) => diff < acc.diff ? {index, diff} : acc,
                 {index: -1, diff: Number.MAX_VALUE})
             .index;
-    assert(index != -1);
-    if (this.$.slider.value != index) {
+    assert(index !== -1);
+    if (this.$.slider.value !== index) {
       this.$.slider.value = index;
     }
     const tickValue = this.getTickValueAtIndex_(index);
-    if (this.pref.value != tickValue) {
+    if (this.pref.value !== tickValue) {
       this.set('pref.value', tickValue);
     }
+  },
+
+  /**
+   * @return {string}
+   * @private
+   */
+  getRoleDescription_() {
+    return loadTimeData.getStringF(
+        'settingsSliderRoleDescription', this.labelMin, this.labelMax);
   },
 });

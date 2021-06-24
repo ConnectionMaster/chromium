@@ -7,7 +7,7 @@
 
 #include "base/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -16,7 +16,8 @@ class DestructionObserver;
 // DestructionObservable is a base class for testing that lets you set
 // expectations on its lifetime without keeping a reference to it. Each
 // observable can create a single DestructionObserver pointing to it.
-struct DestructionObservable {
+class DestructionObservable {
+ public:
   DestructionObservable();
   virtual ~DestructionObservable();
   std::unique_ptr<DestructionObserver> CreateDestructionObserver();
@@ -43,6 +44,9 @@ class DestructionObserver {
   // expectation.
   void DoNotAllowDestruction();
 
+  // Return if the object has been destroyed.
+  bool destructed() const { return destructed_; }
+
  private:
   void VerifyExpectations();
   void OnObservableDestructed();
@@ -51,9 +55,9 @@ class DestructionObserver {
   bool destructed_;
 
   // Whether to expect destruction. Unset if there is no expectation.
-  base::Optional<bool> expect_destruction_;
+  absl::optional<bool> expect_destruction_;
 
-  base::WeakPtrFactory<DestructionObserver> weak_factory_;
+  base::WeakPtrFactory<DestructionObserver> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(DestructionObserver);
 };
 

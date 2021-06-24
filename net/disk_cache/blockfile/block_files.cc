@@ -4,9 +4,10 @@
 
 #include "net/disk_cache/blockfile/block_files.h"
 
+#include <atomic>
 #include <limits>
+#include <memory>
 
-#include "base/atomicops.h"
 #include "base/files/file_path.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
@@ -15,7 +16,6 @@
 #include "base/time/time.h"
 #include "net/disk_cache/blockfile/file_lock.h"
 #include "net/disk_cache/blockfile/stress_support.h"
-#include "net/disk_cache/blockfile/trace.h"
 #include "net/disk_cache/cache_util.h"
 
 using base::TimeTicks;
@@ -91,7 +91,7 @@ bool BlockHeader::CreateMapBlock(int size, int* index) {
       // the order of memory accesses between num_entries and allocation_map, we
       // can assert that even if we crash here, num_entries will never be less
       // than the actual number of used blocks.
-      base::subtle::MemoryBarrier();
+      std::atomic_thread_fence(std::memory_order_seq_cst);
       header_->allocation_map[current] |= to_add;
 
       header_->hints[target - 1] = current;
@@ -144,7 +144,7 @@ void BlockHeader::DeleteMapBlock(int index, int size) {
     header_->empty[new_type - 1]++;
     STRESS_DCHECK(header_->empty[bits_at_end - 1] >= 0);
   }
-  base::subtle::MemoryBarrier();
+  std::atomic_thread_fence(std::memory_order_seq_cst);
   header_->num_entries--;
   STRESS_DCHECK(header_->num_entries >= 0);
   LOCAL_HISTOGRAM_TIMES("DiskCache.DeleteBlock", TimeTicks::Now() - start);
@@ -274,7 +274,7 @@ bool BlockFiles::Init(bool create_files) {
   if (init_)
     return false;
 
-  thread_checker_.reset(new base::ThreadChecker);
+  thread_checker_ = std::make_unique<base::ThreadChecker>();
 
   block_files_.resize(kFirstAdditionalBlockFile);
   for (int16_t i = 0; i < kFirstAdditionalBlockFile; i++) {
@@ -339,7 +339,6 @@ bool BlockFiles::CreateBlock(FileType block_type, int block_count,
 
   Addr address(block_type, block_count, file_header.FileId(), index);
   block_address->set_value(address.value());
-  Trace("CreateBlock 0x%x", address.value());
   return true;
 }
 
@@ -355,8 +354,6 @@ void BlockFiles::DeleteBlock(Addr address, bool deep) {
   MappedFile* file = GetFile(address);
   if (!file)
     return;
-
-  Trace("DeleteBlock 0x%x", address.value());
 
   size_t size = address.BlockSize() * address.num_blocks();
   size_t offset = address.start_block() * address.BlockSize() +
@@ -385,24 +382,6 @@ void BlockFiles::CloseFiles() {
   }
   init_ = false;
   block_files_.clear();
-}
-
-void BlockFiles::ReportStats() {
-  DCHECK(thread_checker_->CalledOnValidThread());
-  int used_blocks[kFirstAdditionalBlockFile];
-  int load[kFirstAdditionalBlockFile];
-  for (int i = 0; i < kFirstAdditionalBlockFile; i++) {
-    GetFileStats(i, &used_blocks[i], &load[i]);
-  }
-  UMA_HISTOGRAM_COUNTS_1M("DiskCache.Blocks_0", used_blocks[0]);
-  UMA_HISTOGRAM_COUNTS_1M("DiskCache.Blocks_1", used_blocks[1]);
-  UMA_HISTOGRAM_COUNTS_1M("DiskCache.Blocks_2", used_blocks[2]);
-  UMA_HISTOGRAM_COUNTS_1M("DiskCache.Blocks_3", used_blocks[3]);
-
-  UMA_HISTOGRAM_ENUMERATION("DiskCache.BlockLoad_0", load[0], 101);
-  UMA_HISTOGRAM_ENUMERATION("DiskCache.BlockLoad_1", load[1], 101);
-  UMA_HISTOGRAM_ENUMERATION("DiskCache.BlockLoad_2", load[2], 101);
-  UMA_HISTOGRAM_ENUMERATION("DiskCache.BlockLoad_3", load[3], 101);
 }
 
 bool BlockFiles::IsValid(Addr address) {
@@ -679,37 +658,6 @@ bool BlockFiles::FixBlockFileHeader(MappedFile* file) {
 
   header->updating = 0;
   return true;
-}
-
-// We are interested in the total number of blocks used by this file type, and
-// the max number of blocks that we can store (reported as the percentage of
-// used blocks). In order to find out the number of used blocks, we have to
-// substract the empty blocks from the total blocks for each file in the chain.
-void BlockFiles::GetFileStats(int index, int* used_count, int* load) {
-  int max_blocks = 0;
-  *used_count = 0;
-  *load = 0;
-  for (;;) {
-    if (!block_files_[index] && !OpenBlockFile(index))
-      return;
-
-    BlockFileHeader* header =
-        reinterpret_cast<BlockFileHeader*>(block_files_[index]->buffer());
-
-    max_blocks += header->max_entries;
-    int used = header->max_entries;
-    for (int i = 0; i < kMaxNumBlocks; i++) {
-      used -= header->empty[i] * (i + 1);
-      DCHECK_GE(used, 0);
-    }
-    *used_count += used;
-
-    if (!header->next_file)
-      break;
-    index = header->next_file;
-  }
-  if (max_blocks)
-    *load = *used_count * 100 / max_blocks;
 }
 
 base::FilePath BlockFiles::Name(int index) {

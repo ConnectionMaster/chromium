@@ -20,6 +20,7 @@
 #include "third_party/blink/renderer/core/layout/svg/svg_text_layout_engine.h"
 
 #include "base/auto_reset.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_api_shim.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_svg_text_path.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_inline_text.h"
@@ -28,9 +29,11 @@
 #include "third_party/blink/renderer/core/layout/svg/svg_text_chunk_builder.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_text_layout_engine_baseline.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_text_layout_engine_spacing.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length_context.h"
 #include "third_party/blink/renderer/core/svg/svg_text_content_element.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
@@ -43,6 +46,7 @@ SVGTextLayoutEngine::SVGTextLayoutEngine(
       is_vertical_text_(false),
       in_path_layout_(false),
       text_length_spacing_in_effect_(false),
+      last_text_box_was_in_text_path_(false),
       text_path_(nullptr),
       text_path_current_offset_(0),
       text_path_displacement_(0),
@@ -76,6 +80,10 @@ bool SVGTextLayoutEngine::SetCurrentTextPosition(const SVGCharacterData& data) {
       if (has_x)
         text_path_current_offset_ = data.x + text_path_start_offset_;
     }
+  } else if ((!has_x || !has_y) && last_text_box_was_in_text_path_) {
+    UseCounter::Count(descendant_text_nodes_[0]->GetDocument(),
+                      WebFeature::kSVGTextHangingFromPath);
+    last_text_box_was_in_text_path_ = false;
   }
   return has_x || has_y;
 }
@@ -178,19 +186,14 @@ void SVGTextLayoutEngine::BeginTextPathLayout(SVGInlineFlowBox* flow_box) {
   text_path_chunk_layout_builder.ProcessTextChunks(
       line_layout.line_layout_boxes_);
 
-  text_path_start_offset_ +=
-      text_path_chunk_layout_builder.TotalTextAnchorShift();
-  text_path_current_offset_ = text_path_start_offset_;
-
-  // Eventually handle textLength adjustments.
+  // Handle 'textLength' adjustments.
   SVGLengthAdjustType length_adjust = kSVGLengthAdjustUnknown;
   float desired_text_length = 0;
 
   if (SVGTextContentElement* text_content_element =
           SVGTextContentElement::ElementFromLineLayoutItem(text_path)) {
     SVGLengthContext length_context(text_content_element);
-    length_adjust =
-        text_content_element->lengthAdjust()->CurrentValue()->EnumValue();
+    length_adjust = text_content_element->lengthAdjust()->CurrentEnumValue();
     if (text_content_element->TextLengthIsSpecifiedByUser())
       desired_text_length =
           text_content_element->textLength()->CurrentValue()->Value(
@@ -199,20 +202,26 @@ void SVGTextLayoutEngine::BeginTextPathLayout(SVGInlineFlowBox* flow_box) {
       desired_text_length = 0;
   }
 
-  if (!desired_text_length)
-    return;
-
-  float total_length = text_path_chunk_layout_builder.TotalLength();
-  if (length_adjust == kSVGLengthAdjustSpacing) {
-    text_path_spacing_ = 0;
-    if (text_path_chunk_layout_builder.TotalCharacters() > 1) {
-      text_path_spacing_ = desired_text_length - total_length;
-      text_path_spacing_ /=
-          text_path_chunk_layout_builder.TotalCharacters() - 1;
+  float text_path_content_length = text_path_chunk_layout_builder.TotalLength();
+  if (desired_text_length) {
+    if (length_adjust == kSVGLengthAdjustSpacing) {
+      text_path_spacing_ = 0;
+      if (text_path_chunk_layout_builder.TotalCharacters() > 1) {
+        text_path_spacing_ = desired_text_length - text_path_content_length;
+        text_path_spacing_ /=
+            text_path_chunk_layout_builder.TotalCharacters() - 1;
+      }
+    } else {
+      text_path_scaling_ = desired_text_length / text_path_content_length;
     }
-  } else {
-    text_path_scaling_ = desired_text_length / total_length;
+    text_path_content_length = desired_text_length;
   }
+
+  // Perform text-anchor adjustment.
+  float text_anchor_shift =
+      CalculateTextAnchorShift(text_path.StyleRef(), text_path_content_length);
+  text_path_start_offset_ += text_anchor_shift;
+  text_path_current_offset_ = text_path_start_offset_;
 }
 
 void SVGTextLayoutEngine::EndTextPathLayout() {
@@ -250,7 +259,7 @@ static bool DefinesTextLengthWithSpacing(const InlineFlowBox* start) {
       SVGTextContentElement::ElementFromLineLayoutItem(
           start->GetLineLayoutItem());
   return text_content_element &&
-         text_content_element->lengthAdjust()->CurrentValue()->EnumValue() ==
+         text_content_element->lengthAdjust()->CurrentEnumValue() ==
              kSVGLengthAdjustSpacing &&
          text_content_element->TextLengthIsSpecifiedByUser();
 }
@@ -260,20 +269,22 @@ void SVGTextLayoutEngine::LayoutCharactersInTextBoxes(InlineFlowBox* start) {
       text_length_spacing_in_effect_ || DefinesTextLengthWithSpacing(start);
   base::AutoReset<bool> text_length_spacing_scope(
       &text_length_spacing_in_effect_, text_length_spacing_in_effect);
+  last_text_box_was_in_text_path_ = false;
 
   for (InlineBox* child = start->FirstChild(); child;
        child = child->NextOnLine()) {
-    if (child->IsSVGInlineTextBox()) {
+    if (auto* svg_inline_text_box = DynamicTo<SVGInlineTextBox>(child)) {
       DCHECK(child->GetLineLayoutItem().IsSVGInlineText());
-      LayoutInlineTextBox(ToSVGInlineTextBox(child));
+      LayoutInlineTextBox(svg_inline_text_box);
+      last_text_box_was_in_text_path_ = false;
     } else {
       // Skip generated content.
       Node* node = child->GetLineLayoutItem().GetNode();
       if (!node)
         continue;
 
-      SVGInlineFlowBox* flow_box = ToSVGInlineFlowBox(child);
-      bool is_text_path = IsSVGTextPathElement(*node);
+      auto* flow_box = To<SVGInlineFlowBox>(child);
+      bool is_text_path = IsA<SVGTextPathElement>(*node);
       if (is_text_path)
         BeginTextPathLayout(flow_box);
 
@@ -281,6 +292,7 @@ void SVGTextLayoutEngine::LayoutCharactersInTextBoxes(InlineFlowBox* start) {
 
       if (is_text_path)
         EndTextPathLayout();
+      last_text_box_was_in_text_path_ = is_text_path;
     }
   }
 }
@@ -369,7 +381,8 @@ void SVGTextLayoutEngine::LayoutTextOnLineOrPath(
   const Font& font = style.GetFont();
 
   SVGTextLayoutEngineSpacing spacing_layout(font, style.EffectiveZoom());
-  SVGTextLayoutEngineBaseline baseline_layout(font, style.EffectiveZoom());
+  SVGTextLayoutEngineBaseline baseline_layout(text_line_layout.ScaledFont(),
+                                              text_line_layout.ScalingFactor());
 
   bool did_start_text_fragment = false;
   bool apply_spacing_to_next_character = false;
@@ -438,8 +451,7 @@ void SVGTextLayoutEngine::LayoutTextOnLineOrPath(
     float spacing = spacing_layout.CalculateCSSSpacing(current_character);
 
     FloatPoint text_path_shift;
-    float angle = 0;
-    FloatPoint position;
+    PointAndTangent position;
     if (in_path_layout_) {
       float scaled_glyph_advance = glyph_advance * text_path_scaling_;
       // Setup translations that move to the glyph midpoint.
@@ -457,7 +469,7 @@ void SVGTextLayoutEngine::LayoutTextOnLineOrPath(
                                    spacing * text_path_scaling_;
 
       PathPositionMapper::PositionType position_type =
-          text_path_->PointAndNormalAtLength(text_path_offset, position, angle);
+          text_path_->PointAndNormalAtLength(text_path_offset, position);
 
       // Skip character, if we're before the path.
       if (position_type == PathPositionMapper::kBeforePath) {
@@ -470,24 +482,26 @@ void SVGTextLayoutEngine::LayoutTextOnLineOrPath(
       if (position_type == PathPositionMapper::kAfterPath)
         break;
 
-      text_position_ = position;
+      text_position_ = position.point;
 
       // For vertical text on path, the actual angle has to be rotated 90
       // degrees anti-clockwise, not the orientation angle!
       if (is_vertical_text_)
-        angle -= 90;
+        position.tangent_in_degrees -= 90;
     } else {
-      position = text_position_;
-      position += baseline_shift;
+      position.point = text_position_;
+      position.point += baseline_shift;
     }
 
     if (data.HasRotate())
-      angle += data.rotate;
+      position.tangent_in_degrees += data.rotate;
 
     // Determine whether we have to start a new fragment.
     bool should_start_new_fragment =
-        needs_fragment_per_glyph || has_relative_position || angle ||
-        angle != last_angle || apply_spacing_to_next_character;
+        needs_fragment_per_glyph || has_relative_position ||
+        position.tangent_in_degrees ||
+        position.tangent_in_degrees != last_angle ||
+        apply_spacing_to_next_character;
 
     // If we already started a fragment, close it now.
     if (did_start_text_fragment && should_start_new_fragment) {
@@ -505,16 +519,17 @@ void SVGTextLayoutEngine::LayoutTextOnLineOrPath(
           visual_metrics_iterator_.CharacterOffset();
       current_text_fragment_.metrics_list_offset =
           visual_metrics_iterator_.MetricsListOffset();
-      current_text_fragment_.x = position.X();
-      current_text_fragment_.y = position.Y();
+      current_text_fragment_.x = position.point.X();
+      current_text_fragment_.y = position.point.Y();
 
       // Build fragment transformation.
-      if (angle)
-        current_text_fragment_.transform.Rotate(angle);
+      if (position.tangent_in_degrees)
+        current_text_fragment_.transform.Rotate(position.tangent_in_degrees);
 
-      if (text_path_shift.X() || text_path_shift.Y())
+      if (text_path_shift.X() || text_path_shift.Y()) {
         current_text_fragment_.transform.Translate(text_path_shift.X(),
                                                    text_path_shift.Y());
+      }
 
       // For vertical text, always rotate by 90 degrees regardless of
       // fontOrientation.
@@ -540,7 +555,7 @@ void SVGTextLayoutEngine::LayoutTextOnLineOrPath(
 
     AdvanceToNextLogicalCharacter(logical_metrics);
     visual_metrics_iterator_.Next();
-    last_angle = angle;
+    last_angle = position.tangent_in_degrees;
   }
 
   if (!did_start_text_fragment)

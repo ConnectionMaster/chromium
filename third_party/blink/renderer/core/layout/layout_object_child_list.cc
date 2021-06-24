@@ -27,52 +27,59 @@
 #include "third_party/blink/renderer/core/layout/layout_object_child_list.h"
 
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
+#include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_counter.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/layout/ng/inline/ng_fragment_items.h"
 #include "third_party/blink/renderer/core/paint/object_paint_invalidator.h"
 
 namespace blink {
 
 namespace {
 
-// Invalidate InineItems() in LayoutNGText.
+// Invalidate LayoutNG properties for insertion.
 //
 // They need to be invalidated when moving across inline formatting context
 // (i.e., to a different LayoutBlockFlow.)
 void InvalidateInlineItems(LayoutObject* object) {
-  if (object->IsInLayoutNGInlineFormattingContext())
-    object->SetFirstInlineFragment(nullptr);
-  if (object->IsText()) {
-    ToLayoutText(object)->InvalidateInlineItems();
-  } else if (object->IsLayoutInline()) {
-    // When moving without |notify_layout_object|, only top-level objects are
-    // moved. Ensure to invalidate all LayoutNGText in this inline formatting
-    // context.
-    for (LayoutObject* curr = object->SlowFirstChild(); curr;
-         curr = curr->NextSibling())
-      InvalidateInlineItems(curr);
+  DCHECK(object->IsInLayoutNGInlineFormattingContext());
+
+  if (auto* layout_text = DynamicTo<LayoutText>(object)) {
+    layout_text->InvalidateInlineItems();
+  } else if (auto* layout_inline = DynamicTo<LayoutInline>(object)) {
+    // In some cases, only top-level objects are moved, when |SplitFlow()| moves
+    // subtree, or when moving without |notify_layout_object|. Ensure to
+    // invalidate all descendants in this inline formatting context.
+    for (LayoutObject* child = layout_inline->FirstChild(); child;
+         child = child->NextSibling()) {
+      if (child->IsInLayoutNGInlineFormattingContext())
+        InvalidateInlineItems(child);
+    }
   }
+
+  // This LayoutObject is not technically destroyed, but further access should
+  // be prohibited when moved to different parent as if it were destroyed.
+  if (object->FirstInlineFragmentItemIndex()) {
+    if (auto* text = DynamicTo<LayoutText>(object))
+      text->DetachAbstractInlineTextBoxesIfNeeded();
+    NGFragmentItems::LayoutObjectWillBeMoved(*object);
+  }
+  object->SetIsInLayoutNGInlineFormattingContext(false);
 }
 
 }  // namespace
 
 void LayoutObjectChildList::DestroyLeftoverChildren() {
-  while (FirstChild()) {
-    // List markers are owned by their enclosing list and so don't get destroyed
-    // by this container.
-    if (FirstChild()->IsListMarkerIncludingNG()) {
-      FirstChild()->Remove();
-      continue;
-    }
-
-    // Destroy any anonymous children remaining in the layout tree, as well as
-    // implicit (shadow) DOM elements like those used in the engine-based text
-    // fields.
-    if (FirstChild()->GetNode())
-      FirstChild()->GetNode()->SetLayoutObject(nullptr);
-    FirstChild()->Destroy();
+  // Destroy any anonymous children remaining in the layout tree, as well as
+  // implicit (shadow) DOM elements like those used in the engine-based text
+  // fields.
+  while (LayoutObject* child = FirstChild()) {
+    if (Node* child_node = child->GetNode())
+      child_node->SetLayoutObject(nullptr);
+    child->Destroy();
   }
 }
 
@@ -84,7 +91,7 @@ LayoutObject* LayoutObjectChildList::RemoveChildNode(
   DCHECK_EQ(this, owner->VirtualChildren());
 
   if (old_child->IsFloatingOrOutOfFlowPositioned())
-    ToLayoutBox(old_child)->RemoveFloatingOrPositionedChildFromBlockLists();
+    To<LayoutBox>(old_child)->RemoveFloatingOrPositionedChildFromBlockLists();
 
   if (!owner->DocumentBeingDestroyed()) {
     // So that we'll get the appropriate dirty bit set (either that a normal
@@ -92,7 +99,7 @@ LayoutObject* LayoutObjectChildList::RemoveChildNode(
     // issue paint invalidations, so that the area exposed when the child
     // disappears gets paint invalidated properly.
     if (notify_layout_object && old_child->EverHadLayout()) {
-      old_child->SetNeedsLayoutAndPrefWidthsRecalc(
+      old_child->SetNeedsLayoutAndIntrinsicWidthsRecalc(
           layout_invalidation_reason::kRemovedFromLayout);
       if (old_child->IsOutOfFlowPositioned() &&
           RuntimeEnabledFeatures::LayoutNGEnabled())
@@ -103,7 +110,7 @@ LayoutObject* LayoutObjectChildList::RemoveChildNode(
 
   // If we have a line box wrapper, delete it.
   if (old_child->IsBox())
-    ToLayoutBox(old_child)->DeleteLineBoxWrapper();
+    To<LayoutBox>(old_child)->DeleteLineBoxWrapper();
 
   if (!owner->DocumentBeingDestroyed()) {
     owner->NotifyOfSubtreeChange();
@@ -112,8 +119,13 @@ LayoutObject* LayoutObjectChildList::RemoveChildNode(
       LayoutCounter::LayoutObjectSubtreeWillBeDetached(old_child);
       old_child->WillBeRemovedFromTree();
     } else if (old_child->IsBox() &&
-               ToLayoutBox(old_child)->IsOrthogonalWritingModeRoot()) {
-      ToLayoutBox(old_child)->UnmarkOrthogonalWritingModeRoot();
+               To<LayoutBox>(old_child)->IsOrthogonalWritingModeRoot()) {
+      To<LayoutBox>(old_child)->UnmarkOrthogonalWritingModeRoot();
+    }
+
+    if (old_child->IsInLayoutNGInlineFormattingContext()) {
+      owner->SetChildNeedsCollectInlines();
+      InvalidateInlineItems(old_child);
     }
   }
 
@@ -169,6 +181,11 @@ void LayoutObjectChildList::InsertChildNode(LayoutObject* owner,
     return;
   }
 
+  if (!owner->DocumentBeingDestroyed() &&
+      new_child->IsInLayoutNGInlineFormattingContext()) {
+    InvalidateInlineItems(new_child);
+  }
+
   new_child->SetParent(owner);
 
   if (FirstChild() == before_child)
@@ -189,14 +206,21 @@ void LayoutObjectChildList::InsertChildNode(LayoutObject* owner,
   }
 
   if (!owner->DocumentBeingDestroyed()) {
+    // Run LayoutNG invalidations outside of |InsertedIntoTree| because it needs
+    // to run regardless of |notify_layout_object|. |notify_layout_object| is an
+    // optimization to skip notifications when moving within the same tree.
+    if (new_child->IsInLayoutNGInlineFormattingContext()) {
+      InvalidateInlineItems(new_child);
+    }
+
     if (notify_layout_object) {
       new_child->InsertedIntoTree();
       LayoutCounter::LayoutObjectSubtreeAttached(new_child);
-    } else if (RuntimeEnabledFeatures::LayoutNGEnabled()) {
-      // |notify_layout_object| is an optimization to skip notifications when
-      // moving within the same tree. Inline items need to be invalidated even
-      // when moving.
-      InvalidateInlineItems(new_child);
+    }
+
+    if (owner->IsInLayoutNGInlineFormattingContext() ||
+        (owner->EverHadLayout() && owner->ChildrenInline())) {
+      owner->SetChildNeedsCollectInlines();
     }
   }
 
@@ -210,18 +234,19 @@ void LayoutObjectChildList::InsertChildNode(LayoutObject* owner,
   if (new_child->WasNotifiedOfSubtreeChange())
     owner->NotifyAncestorsOfSubtreeChange();
 
-  if (owner->ForceLegacyLayout()) {
-    new_child->SetForceLegacyLayout();
-    // TODO(crbug.com/943574): This would be a great place to DCHECK that the
-    // child isn't an NG object, but there are unfortunately cases where this
-    // actually happens.
+  if (UNLIKELY(!new_child->IsLayoutNGObject())) {
+    if (owner->ForceLegacyLayout()) {
+      new_child->SetForceLegacyLayout();
+    } else if (const auto* element = DynamicTo<Element>(new_child->GetNode())) {
+      if (element->ShouldForceLegacyLayout())
+        new_child->SetForceLegacyLayout();
+    }
   }
 
-  // Clear NeedsCollectInlines to ensure the marking doesn't stop on
-  // |new_child|.
-  new_child->ClearNeedsCollectInlines();
+  // Mark the ancestor chain for paint invalidation checking.
+  owner->SetShouldCheckForPaintInvalidation();
 
-  new_child->SetNeedsLayoutAndPrefWidthsRecalc(
+  new_child->SetNeedsLayoutAndIntrinsicWidthsRecalc(
       layout_invalidation_reason::kAddedToLayout);
   if (new_child->IsOutOfFlowPositioned() &&
       RuntimeEnabledFeatures::LayoutNGEnabled())
@@ -235,8 +260,6 @@ void LayoutObjectChildList::InsertChildNode(LayoutObject* owner,
   if (!owner->NormalChildNeedsLayout()) {
     owner->SetChildNeedsLayout();  // We may supply the static position for an
                                    // absolute positioned child.
-  } else {
-    owner->MarkContainerNeedsCollectInlines();
   }
 
   if (!owner->DocumentBeingDestroyed())
@@ -249,8 +272,11 @@ void LayoutObjectChildList::InsertChildNode(LayoutObject* owner,
 void LayoutObjectChildList::InvalidatePaintOnRemoval(LayoutObject& old_child) {
   if (!old_child.IsRooted())
     return;
-  if (old_child.IsBody() && old_child.View())
+  if (old_child.View() &&
+      (old_child.IsBody() || old_child.IsDocumentElement())) {
     old_child.View()->SetShouldDoFullPaintInvalidation();
+    old_child.View()->SetBackgroundNeedsFullPaintInvalidation();
+  }
   ObjectPaintInvalidator paint_invalidator(old_child);
   paint_invalidator.SlowSetPaintingLayerNeedsRepaint();
 }

@@ -20,7 +20,7 @@
 
 #include "third_party/blink/renderer/core/svg/svg_transform.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/platform/geometry/float_size.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -217,23 +217,24 @@ String SVGTransform::ValueAsString() const {
   return builder.ToString();
 }
 
-void SVGTransform::Add(SVGPropertyBase*, SVGElement*) {
+void SVGTransform::Add(const SVGPropertyBase*, const SVGElement*) {
   // SVGTransform is not animated by itself.
   NOTREACHED();
 }
 
-void SVGTransform::CalculateAnimatedValue(SVGAnimationElement*,
+void SVGTransform::CalculateAnimatedValue(const SMILAnimationEffectParameters&,
                                           float,
                                           unsigned,
-                                          SVGPropertyBase*,
-                                          SVGPropertyBase*,
-                                          SVGPropertyBase*,
-                                          SVGElement*) {
+                                          const SVGPropertyBase*,
+                                          const SVGPropertyBase*,
+                                          const SVGPropertyBase*,
+                                          const SVGElement*) {
   // SVGTransform is not animated by itself.
   NOTREACHED();
 }
 
-float SVGTransform::CalculateDistance(SVGPropertyBase*, SVGElement*) {
+float SVGTransform::CalculateDistance(const SVGPropertyBase*,
+                                      const SVGElement*) const {
   // SVGTransform is not animated by itself.
   NOTREACHED();
 

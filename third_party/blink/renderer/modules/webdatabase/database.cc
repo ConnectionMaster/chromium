@@ -26,15 +26,15 @@
 #include "third_party/blink/renderer/modules/webdatabase/database.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/synchronization/waitable_event.h"
 #include "base/thread_annotations.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
-#include "third_party/blink/public/platform/web_database_observer.h"
-#include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
+#include "third_party/blink/renderer/core/probe/async_task_id.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/modules/webdatabase/change_version_data.h"
 #include "third_party/blink/renderer/modules/webdatabase/change_version_wrapper.h"
@@ -51,9 +51,13 @@
 #include "third_party/blink/renderer/modules/webdatabase/sqlite/sqlite_statement.h"
 #include "third_party/blink/renderer/modules/webdatabase/sqlite/sqlite_transaction.h"
 #include "third_party/blink/renderer/modules/webdatabase/storage_log.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
+#include "third_party/blink/renderer/modules/webdatabase/web_database_host.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/scheduler/public/frame_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/scheduler/public/scheduling_policy.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 // Registering "opened" databases with the DatabaseTracker
 // =======================================================
@@ -219,19 +223,23 @@ static bool SetTextValueInDatabase(SQLiteDatabase& db,
 Database::Database(DatabaseContext* database_context,
                    const String& name,
                    const String& expected_version,
-                   const String& display_name,
-                   uint32_t estimated_size)
+                   const String& display_name)
     : database_context_(database_context),
       name_(name.IsolatedCopy()),
       expected_version_(expected_version.IsolatedCopy()),
       display_name_(display_name.IsolatedCopy()),
-      estimated_size_(estimated_size),
       guid_(0),
       opened_(false),
       new_(false),
       database_authorizer_(kInfoTableName),
       transaction_in_progress_(false),
-      is_transaction_queue_enabled_(true) {
+      is_transaction_queue_enabled_(true),
+      feature_handle_for_scheduler_(
+          database_context->GetExecutionContext()
+              ->GetScheduler()
+              ->RegisterFeature(
+                  SchedulingPolicy::Feature::kWebDatabase,
+                  {SchedulingPolicy::DisableBackForwardCache()})) {
   DCHECK(IsMainThread());
   context_thread_security_origin_ =
       database_context_->GetSecurityOrigin()->IsolatedCopy();
@@ -269,7 +277,7 @@ Database::~Database() {
   DCHECK(!Opened());
 }
 
-void Database::Trace(blink::Visitor* visitor) {
+void Database::Trace(Visitor* visitor) const {
   visitor->Trace(database_context_);
   ScriptWrappable::Trace(visitor);
 }
@@ -292,16 +300,15 @@ bool Database::OpenAndVerifyVersion(bool set_version_in_new_database,
     if (success && IsNew()) {
       STORAGE_DVLOG(1)
           << "Scheduling DatabaseCreationCallbackTask for database " << this;
-      auto* v8persistent_callback =
-          ToV8PersistentCallbackFunction(creation_callback);
+      auto task_id = std::make_unique<probe::AsyncTaskId>();
       probe::AsyncTaskScheduled(GetExecutionContext(), "openDatabase",
-                                v8persistent_callback);
+                                task_id.get());
       GetExecutionContext()
           ->GetTaskRunner(TaskType::kDatabaseAccess)
           ->PostTask(
               FROM_HERE,
               WTF::Bind(&Database::RunCreationCallback, WrapPersistent(this),
-                        WrapPersistent(v8persistent_callback)));
+                        WrapPersistent(creation_callback), std::move(task_id)));
     }
   }
 
@@ -309,8 +316,9 @@ bool Database::OpenAndVerifyVersion(bool set_version_in_new_database,
 }
 
 void Database::RunCreationCallback(
-    V8PersistentCallbackFunction<V8DatabaseCallback>* creation_callback) {
-  probe::AsyncTask async_task(GetExecutionContext(), creation_callback);
+    V8DatabaseCallback* creation_callback,
+    std::unique_ptr<probe::AsyncTaskId> task_id) {
+  probe::AsyncTask async_task(GetExecutionContext(), task_id.get());
   creation_callback->InvokeAndReportException(nullptr, this);
 }
 
@@ -613,10 +621,6 @@ String Database::DisplayName() const {
   return display_name_.IsolatedCopy();
 }
 
-uint32_t Database::EstimatedSize() const {
-  return estimated_size_;
-}
-
 String Database::FileName() const {
   // Return a deep copy for ref counting thread safety
   return filename_.IsolatedCopy();
@@ -741,17 +745,14 @@ void Database::IncrementalVacuumIfNeeded() {
 }
 
 void Database::ReportSqliteError(int sqlite_error_code) {
-  if (Platform::Current()->DatabaseObserver()) {
-    Platform::Current()->DatabaseObserver()->ReportSqliteError(
-        WebSecurityOrigin(GetSecurityOrigin()), StringIdentifier(),
-        sqlite_error_code);
-  }
+  WebDatabaseHost::GetInstance().ReportSqliteError(
+      *GetSecurityOrigin(), StringIdentifier(), sqlite_error_code);
 }
 
 void Database::LogErrorMessage(const String& message) {
-  GetExecutionContext()->AddConsoleMessage(
-      ConsoleMessage::Create(mojom::ConsoleMessageSource::kStorage,
-                             mojom::ConsoleMessageLevel::kError, message));
+  GetExecutionContext()->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+      mojom::ConsoleMessageSource::kStorage, mojom::ConsoleMessageLevel::kError,
+      message));
 }
 
 ExecutionContext* Database::GetExecutionContext() const {
@@ -843,7 +844,7 @@ void Database::RunTransaction(
       GetDatabaseTaskRunner()->PostTask(
           FROM_HERE, WTF::Bind(&CallTransactionErrorCallback,
                                WrapPersistent(transaction_error_callback),
-                               WTF::Passed(std::move(error))));
+                               std::move(error)));
     }
   }
 }
@@ -851,9 +852,10 @@ void Database::RunTransaction(
 void Database::ScheduleTransactionCallback(SQLTransaction* transaction) {
   // The task is constructed in a database thread, and destructed in the
   // context thread.
-  PostCrossThreadTask(*GetDatabaseTaskRunner(), FROM_HERE,
-                      CrossThreadBind(&SQLTransaction::PerformPendingCallback,
-                                      WrapCrossThreadPersistent(transaction)));
+  PostCrossThreadTask(
+      *GetDatabaseTaskRunner(), FROM_HERE,
+      CrossThreadBindOnce(&SQLTransaction::PerformPendingCallback,
+                          WrapCrossThreadPersistent(transaction)));
 }
 
 Vector<String> Database::PerformGetTableNames() {

@@ -2,10 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "ios/web/public/web_state/web_state_delegate_bridge.h"
+#import "ios/web/public/web_state_delegate_bridge.h"
 
-#include "base/logging.h"
-#import "ios/web/public/web_state/context_menu_params.h"
+#import "ios/web/public/ui/context_menu_params.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -83,22 +82,22 @@ void WebStateDelegateBridge::OnAuthRequired(
     WebState* source,
     NSURLProtectionSpace* protection_space,
     NSURLCredential* proposed_credential,
-    const AuthCallback& callback) {
-  AuthCallback local_callback(callback);
+    AuthCallback callback) {
   if ([delegate_
           respondsToSelector:@selector(webState:
                                  didRequestHTTPAuthForProtectionSpace:
                                                    proposedCredential:
                                                     completionHandler:)]) {
+    __block AuthCallback local_callback = std::move(callback);
     [delegate_ webState:source
         didRequestHTTPAuthForProtectionSpace:protection_space
                           proposedCredential:proposed_credential
                            completionHandler:^(NSString* username,
                                                NSString* password) {
-                             local_callback.Run(username, password);
+                             std::move(local_callback).Run(username, password);
                            }];
   } else {
-    local_callback.Run(nil, nil);
+    std::move(callback).Run(nil, nil);
   }
 }
 
@@ -130,6 +129,72 @@ void WebStateDelegateBridge::CommitPreviewingViewController(
     [delegate_ webState:source
         commitPreviewingViewController:previewing_view_controller];
   }
+}
+
+UIView* WebStateDelegateBridge::GetWebViewContainer(WebState* source) {
+  if ([delegate_ respondsToSelector:@selector(webViewContainerForWebState:)]) {
+    return [delegate_ webViewContainerForWebState:source];
+  }
+  return nil;
+}
+
+void WebStateDelegateBridge::ContextMenuConfiguration(
+    WebState* source,
+    const ContextMenuParams& params,
+    UIContextMenuContentPreviewProvider preview_provider,
+    void (^completion_handler)(UIContextMenuConfiguration*))
+    API_AVAILABLE(ios(13.0)) {
+  if ([delegate_ respondsToSelector:@selector
+                 (webState:
+                     contextMenuConfigurationForParams:previewProvider
+                                                      :completionHandler:)]) {
+    [delegate_ webState:source
+        contextMenuConfigurationForParams:params
+                          previewProvider:preview_provider
+                        completionHandler:completion_handler];
+  } else {
+    completion_handler(nil);
+  }
+}
+
+void WebStateDelegateBridge::ContextMenuDidEnd(WebState* source,
+                                               const GURL& link_url)
+    API_AVAILABLE(ios(13.0)) {
+  if ([delegate_ respondsToSelector:@selector(webState:
+                                        contextMenuDidEndForLinkWithURL:)]) {
+    [delegate_ webState:source contextMenuDidEndForLinkWithURL:link_url];
+  }
+}
+
+void WebStateDelegateBridge::ContextMenuWillCommitWithAnimator(
+    WebState* source,
+    const GURL& link_url,
+    id<UIContextMenuInteractionCommitAnimating> animator)
+    API_AVAILABLE(ios(13.0)) {
+  if ([delegate_ respondsToSelector:@selector
+                 (webState:
+                     contextMenuForLinkWithURL:willCommitWithAnimator:)]) {
+    [delegate_ webState:source
+        contextMenuForLinkWithURL:link_url
+           willCommitWithAnimator:animator];
+  }
+}
+
+void WebStateDelegateBridge::ContextMenuWillPresent(WebState* source,
+                                                    const GURL& link_url)
+    API_AVAILABLE(ios(13.0)) {
+  if ([delegate_ respondsToSelector:@selector
+                 (webState:contextMenuWillPresentForLinkWithURL:)]) {
+    [delegate_ webState:source contextMenuWillPresentForLinkWithURL:link_url];
+  }
+}
+
+id<CRWResponderInputView> WebStateDelegateBridge::GetResponderInputView(
+    WebState* source) {
+  if ([delegate_ respondsToSelector:@selector(webStateInputViewProvider:)]) {
+    return [delegate_ webStateInputViewProvider:source];
+  }
+  return nil;
 }
 
 }  // web

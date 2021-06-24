@@ -6,7 +6,6 @@
 #define CONTENT_BROWSER_SSL_SSL_MANAGER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -14,7 +13,6 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/global_request_id.h"
 #include "content/public/browser/ssl_status.h"
-#include "content/public/common/resource_type.h"
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
 #include "url/gurl.h"
@@ -42,26 +40,17 @@ class CONTENT_EXPORT SSLManager {
   // Entry point for SSLCertificateErrors.  This function begins the process
   // of resolving a certificate error during an SSL connection.  SSLManager
   // will adjust the security UI and either call |CancelSSLRequest| or
-  // |ContinueSSLRequest| of |delegate|.
+  // |ContinueSSLRequest| of |delegate|. |is_main_frame_request| is true only
+  // when the request is for a navigation in the main frame.
   //
   // This can be called on the UI or IO thread. It will call |delegate| on the
   // same thread.
   static void OnSSLCertificateError(
       const base::WeakPtr<SSLErrorHandler::Delegate>& delegate,
-      ResourceType resource_type,
+      bool is_main_frame_request,
       const GURL& url,
-      const base::Callback<WebContents*(void)>& web_contents_getter,
-      const net::SSLInfo& ssl_info,
-      bool fatal);
-
-  // Same as the above, and only works for subresources. Prefer using
-  // OnSSLCertificateError whenever possible (ie when you have access to the
-  // WebContents).
-  static void OnSSLCertificateSubresourceError(
-      const base::WeakPtr<SSLErrorHandler::Delegate>& delegate,
-      const GURL& url,
-      int render_process_id,
-      int render_frame_id,
+      WebContents* web_contents,
+      int net_error,
       const net::SSLInfo& ssl_info,
       bool fatal);
 
@@ -81,6 +70,7 @@ class CONTENT_EXPORT SSLManager {
   // appropriately. If the result could change the visible SSL state,
   // they notify the WebContents of the change via
   // DidChangeVisibleSecurityState();
+  // These methods are not called for resource preloads.
   void DidDisplayMixedContent();
   void DidContainInsecureFormAction();
   void DidDisplayContentWithCertErrors();
@@ -92,11 +82,7 @@ class CONTENT_EXPORT SSLManager {
 
  private:
   // Helper method for handling certificate errors.
-  //
-  // |expired_previous_decision| indicates whether a user decision had been
-  // previously made but the decision has expired.
-  void OnCertErrorInternal(std::unique_ptr<SSLErrorHandler> handler,
-                           bool expired_previous_decision);
+  void OnCertErrorInternal(std::unique_ptr<SSLErrorHandler> handler);
 
   // Updates the NavigationEntry's |content_status| flags according to state in
   // |ssl_host_state_delegate|. |add_content_status_flags| and

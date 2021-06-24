@@ -7,6 +7,7 @@
 #include "build/build_config.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -27,21 +28,21 @@ class InteractionMediaQueriesDynamicTest : public ContentBrowserTest {
 }  //  namespace
 
 // Disable test on Android ASAN bot: crbug.com/807420
-#if defined(OS_WIN) || defined(OS_LINUX) || \
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
     (defined(OS_ANDROID) && !defined(ADDRESS_SANITIZER))
 IN_PROC_BROWSER_TEST_F(InteractionMediaQueriesDynamicTest,
                        PointerMediaQueriesDynamic) {
   RenderViewHostImpl* rvhi = static_cast<RenderViewHostImpl*>(
-      shell()->web_contents()->GetRenderViewHost());
+      shell()->web_contents()->GetMainFrame()->GetRenderViewHost());
 
   ui::SetAvailablePointerAndHoverTypesForTesting(ui::POINTER_TYPE_NONE,
                                                  ui::HOVER_TYPE_NONE);
   rvhi->OnHardwareConfigurationChanged();
 
   GURL test_url = GetTestUrl("", "interaction-mq-dynamic.html");
-  const base::string16 kSuccessTitle(base::ASCIIToUTF16("SUCCESS"));
+  const std::u16string kSuccessTitle(u"SUCCESS");
   TitleWatcher title_watcher(shell()->web_contents(), kSuccessTitle);
-  NavigateToURL(shell(), test_url);
+  EXPECT_TRUE(NavigateToURL(shell(), test_url));
 
   ui::SetAvailablePointerAndHoverTypesForTesting(ui::POINTER_TYPE_COARSE,
                                                  ui::HOVER_TYPE_HOVER);

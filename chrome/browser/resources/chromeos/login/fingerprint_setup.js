@@ -7,6 +7,10 @@
  * Enrollment screen.
  */
 
+'use strict';
+
+(function() {
+
 /**
  * These values must be kept in sync with the values in
  * third_party/cros_system_api/dbus/service_constants.h.
@@ -22,10 +26,31 @@ var FingerprintResultType = {
   IMMOBILE: 6,
 };
 
-Polymer({
-  is: 'fingerprint-setup',
+/**
+ * UI mode for the dialog.
+ * @enum {string}
+ */
+const UIState = {
+  START: 'start',
+  PROGRESS: 'progress',
+};
 
-  behaviors: [I18nBehavior, OobeDialogHostBehavior],
+Polymer({
+  is: 'fingerprint-setup-element',
+
+  behaviors: [
+    OobeI18nBehavior,
+    OobeDialogHostBehavior,
+    LoginScreenBehavior,
+    MultiStepBehavior,
+  ],
+
+  EXTERNAL_API: [
+    'onEnrollScanDone',
+    'enableAddAnotherFinger',
+  ],
+
+  UI_STEPS: UIState,
 
   properties: {
     /**
@@ -38,6 +63,16 @@ Polymer({
       type: Number,
       value: 0,
       observer: 'onProgressChanged_',
+    },
+
+    /**
+     * Is current finger enrollment complete?
+     * @type {boolean}
+     */
+    complete_: {
+      type: Boolean,
+      value: false,
+      computed: 'enrollIsComplete_(percentComplete_)',
     },
 
     /**
@@ -58,26 +93,42 @@ Polymer({
       type: Number,
       value: FingerprintResultType.SUCCESS,
     },
+
+    /**
+     * True if lottie animation file should be used instead of an illustration.
+     * @type {boolean}
+     * @private
+     */
+    shouldUseLottieAnimation_: {
+      type: Boolean,
+      value() {
+        return loadTimeData.getBoolean('useLottieAnimationForFingerprint');
+      },
+      readOnly: true,
+    }
   },
 
-  /*
-   * Overridden from OobeDialogHostBehavior.
-   * @override
-   */
-  onBeforeShow: function() {
-    this.behaviors.forEach((behavior) => {
-      if (behavior.onBeforeShow)
-        behavior.onBeforeShow.call(this);
+  ready() {
+    this.initializeLoginScreen('FingerprintSetupScreen', {
+      resetAllowed: false,
     });
-
-    this.showScreen_('setupFingerprint');
-    chrome.send('startEnroll');
   },
 
-  focus: function() {
-    let activeScreen = this.getActiveScreen_();
-    if (activeScreen)
-      activeScreen.focus();
+  /** Initial UI State for screen */
+  getOobeUIInitialState() {
+    return OOBE_UI_STATE.ONBOARDING;
+  },
+
+  defaultUIStep() {
+    return UIState.START;
+  },
+
+  onBeforeShow() {
+    this.setAnimationState_(true);
+  },
+
+  onBeforeHide() {
+    this.setAnimationState_(false);
   },
 
   /**
@@ -86,57 +137,19 @@ Polymer({
    * @param {boolean} isComplete Whether fingerprint enrollment is complete.
    * @param {number} percentComplete Percentage of completion of the enrollment.
    */
-  onEnrollScanDone: function(scanResult, isComplete, percentComplete) {
-    // First tap on the sensor to start fingerprint enrollment.
-    if (this.getActiveScreen_() === this.$.placeFinger ||
-        this.getActiveScreen_() === this.$.setupFingerprint) {
-      this.showScreen_('startFingerprintEnroll');
-    }
+  onEnrollScanDone(scanResult, isComplete, percentComplete) {
+    this.setUIStep(UIState.PROGRESS);
 
     this.percentComplete_ = percentComplete;
     this.scanResult_ = scanResult;
   },
 
   /**
-   * Hides all screens to help switching from one screen to another.
-   * @private
+   * Enable/disable add another finger.
+   * @param {boolean} enable True if add another fingerprint is enabled.
    */
-  hideAllScreens_: function() {
-    var screens = Polymer.dom(this.root).querySelectorAll('oobe-dialog');
-    for (let screen of screens)
-      screen.hidden = true;
-  },
-
-  /**
-   * Returns active screen or null if none.
-   * @private
-   */
-  getActiveScreen_: function() {
-    var screens = Polymer.dom(this.root).querySelectorAll('oobe-dialog');
-    for (let screen of screens) {
-      if (!screen.hidden)
-        return screen;
-    }
-    return null;
-  },
-
-  /**
-   * Shows given screen.
-   * @param id String Screen ID.
-   * @private
-   */
-  showScreen_: function(id) {
-    this.hideAllScreens_();
-
-    var screen = this.$[id];
-    assert(screen);
-    screen.hidden = false;
-    screen.show();
-    screen.focus();
-
-    // Reset enrollment progress when enrollment screen is shown.
-    if (id === 'startFingerprintEnroll')
-      this.percentComplete_ = 0;
+  enableAddAnotherFinger(enable) {
+    this.canAddFinger = enable;
   },
 
   /**
@@ -144,43 +157,55 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  isAnotherButtonVisible_: function(percentComplete, canAddFinger) {
+  isAnotherButtonVisible_(percentComplete, canAddFinger) {
     return percentComplete >= 100 && canAddFinger;
   },
 
   /**
-   * This is 'on-tap' event handler for 'Skip' and 'Do it later' button.
+   * This is 'on-tap' event handler for 'Skip' button for 'START' step.
    * @private
    */
-  onFingerprintSetupSkipped_: function(e) {
-    chrome.send(
-        'login.FingerprintSetupScreen.userActed', ['fingerprint-setup-done']);
+  onSkipOnStart_(e) {
+    this.userActed('setup-skipped-on-start');
   },
 
   /**
-   * This is 'on-tap' event handler for 'showSensorLocationButton' button.
+   * This is 'on-tap' event handler for 'Skip' button for 'PROGRESS' step.
    * @private
    */
-  onContinueToSensorLocationScreen_: function(e) {
-    this.showScreen_('placeFinger');
+  onSkipInProgress_(e) {
+    this.userActed('setup-skipped-in-flow');
+  },
+
+  /**
+   * Enable/disable lottie animation.
+   * @param {boolean} playing True if animation should be playing.
+   */
+  setAnimationState_(playing) {
+    if (this.shouldUseLottieAnimation_) {
+      const lottieElement = /** @type{CrLottieElement} */ (
+          this.$.setupFingerprint.querySelector('#scannerLocationLottie'));
+      lottieElement.setPlay(playing);
+      /** @type {!CrFingerprintProgressArcElement} */ (this.$.arc)
+          .setPlay(playing);
+    }
   },
 
   /**
    * This is 'on-tap' event handler for 'Done' button.
    * @private
    */
-  onFingerprintSetupDone_: function(e) {
-    chrome.send(
-        'login.FingerprintSetupScreen.userActed', ['fingerprint-setup-done']);
+  onDone_(e) {
+    this.userActed('setup-done');
   },
 
   /**
    * This is 'on-tap' event handler for 'Add another' button.
    * @private
    */
-  onFingerprintAddAnother_: function(e) {
+  onAddAnother_(e) {
     this.percentComplete_ = 0;
-    chrome.send('startEnroll');
+    this.userActed('add-another-finger');
   },
 
   /**
@@ -188,8 +213,8 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  enrollInProgress_: function() {
-    return this.percentComplete_ < 100;
+  enrollIsComplete_(percent) {
+    return percent >= 100;
   },
 
   /**
@@ -197,7 +222,7 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  isProblemImmobile_: function(scan_result) {
+  isProblemImmobile_(scan_result) {
     return scan_result === FingerprintResultType.IMMOBILE;
   },
 
@@ -206,7 +231,7 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  isProblemOther_: function(scan_result) {
+  isProblemOther_(scan_result) {
     return scan_result != FingerprintResultType.SUCCESS &&
         scan_result != FingerprintResultType.IMMOBILE;
   },
@@ -215,7 +240,7 @@ Polymer({
    * Observer for percentComplete_.
    * @private
    */
-  onProgressChanged_: function(newValue, oldValue) {
+  onProgressChanged_(newValue, oldValue) {
     // Start a new enrollment, so reset all enrollment related states.
     if (newValue === 0) {
       /** @type {!CrFingerprintProgressArcElement} */ (this.$.arc).reset();
@@ -227,3 +252,4 @@ Polymer({
         .setProgress(oldValue, newValue, newValue === 100);
   },
 });
+})();

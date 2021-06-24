@@ -4,6 +4,9 @@
 
 #include "ui/views/examples/button_example.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/geometry/insets.h"
@@ -12,17 +15,24 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/examples/examples_window.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/box_layout_view.h"
+#include "ui/views/layout/fill_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/resources/grit/views_resources.h"
+#include "ui/views/style/platform_style.h"
 #include "ui/views/view.h"
+#include "ui/views/view_utils.h"
 
 using base::ASCIIToUTF16;
 
 namespace {
-const char kLabelButton[] = "Label Button";
-const char kLongText[] = "Start of Really Really Really Really Really Really "
-                         "Really Really Really Really Really Really Really "
-                         "Really Really Really Really Really Long Button Text";
+const char16_t kLabelButton[] = u"Label Button";
+const char16_t kLongText[] =
+    u"Start of Really Really Really Really Really Really "
+    u"Really Really Really Really Really Really Really "
+    u"Really Really Really Really Really Long Button Text";
 }  // namespace
 
 namespace views {
@@ -36,46 +46,59 @@ ButtonExample::ButtonExample() : ExampleBase("Button") {
 ButtonExample::~ButtonExample() = default;
 
 void ButtonExample::CreateExampleView(View* container) {
-  container->SetBackground(CreateSolidBackground(SK_ColorWHITE));
-  auto layout =
-      std::make_unique<BoxLayout>(BoxLayout::kVertical, gfx::Insets(10), 10);
-  layout->set_cross_axis_alignment(BoxLayout::CROSS_AXIS_ALIGNMENT_CENTER);
-  container->SetLayoutManager(std::move(layout));
-
-  label_button_ = new LabelButton(this, ASCIIToUTF16(kLabelButton));
-  label_button_->SetFocusForPlatform();
-  label_button_->set_request_focus_on_press(true);
-  container->AddChildView(label_button_);
-
-  styled_button_ = new LabelButton(this, ASCIIToUTF16("Styled Button"));
-  styled_button_->SetStyleDeprecated(Button::STYLE_BUTTON);
-  container->AddChildView(styled_button_);
-
-  disabled_button_ = new LabelButton(this, ASCIIToUTF16("Disabled Button"));
-  disabled_button_->SetStyleDeprecated(Button::STYLE_BUTTON);
-  disabled_button_->SetState(Button::STATE_DISABLED);
-  container->AddChildView(disabled_button_);
-
-  md_button_ =
-      MdTextButton::Create(this, base::ASCIIToUTF16("Material design"));
-  container->AddChildView(md_button_);
-
-  md_default_button_ =
-      MdTextButton::Create(this, base::ASCIIToUTF16("Default"));
-  md_default_button_->SetIsDefault(true);
-  container->AddChildView(md_default_button_);
-
+  container->SetLayoutManager(std::make_unique<FillLayout>());
   ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-  image_button_ = new ImageButton(this);
-  image_button_->SetFocusForPlatform();
-  image_button_->set_request_focus_on_press(true);
+
+  auto start_throbber_cb = [](MdTextButton* button) {
+    button->StartThrobbing(5);
+  };
+  auto view =
+      Builder<BoxLayoutView>()
+          .SetOrientation(BoxLayout::Orientation::kVertical)
+          .SetInsideBorderInsets(gfx::Insets(10))
+          .SetBetweenChildSpacing(10)
+          .SetCrossAxisAlignment(BoxLayout::CrossAxisAlignment::kCenter)
+          .SetBackground(CreateSolidBackground(SK_ColorWHITE))
+          .AddChildren({Builder<LabelButton>()
+                            .CopyAddressTo(&label_button_)
+                            .SetText(kLabelButton)
+                            .SetRequestFocusOnPress(true)
+                            .SetCallback(base::BindRepeating(
+                                &ButtonExample::LabelButtonPressed,
+                                base::Unretained(this), label_button_)),
+                        Builder<MdTextButton>()
+                            .CopyAddressTo(&md_button_)
+                            .SetText(u"Material Design")
+                            .SetCallback(base::BindRepeating(start_throbber_cb,
+                                                             md_button_)),
+                        Builder<MdTextButton>()
+                            .CopyAddressTo(&md_disabled_button_)
+                            .SetText(u"Material Design Disabled Button")
+                            .SetState(Button::STATE_DISABLED)
+                            .SetCallback(base::BindRepeating(
+                                start_throbber_cb, md_disabled_button_)),
+                        Builder<MdTextButton>()
+                            .CopyAddressTo(&md_default_button_)
+                            .SetText(u"Default")
+                            .SetIsDefault(true)
+                            .SetCallback(base::BindRepeating(
+                                start_throbber_cb, md_default_button_)),
+                        Builder<ImageButton>()
+                            .CopyAddressTo(&image_button_)
+                            .SetRequestFocusOnPress(true)
+                            .SetCallback(base::BindRepeating(
+                                &ButtonExample::ImageButtonPressed,
+                                base::Unretained(this)))})
+          .Build();
+
   image_button_->SetImage(ImageButton::STATE_NORMAL,
                           rb.GetImageNamed(IDR_CLOSE).ToImageSkia());
   image_button_->SetImage(ImageButton::STATE_HOVERED,
                           rb.GetImageNamed(IDR_CLOSE_H).ToImageSkia());
   image_button_->SetImage(ImageButton::STATE_PRESSED,
                           rb.GetImageNamed(IDR_CLOSE_P).ToImageSkia());
-  container->AddChildView(image_button_);
+
+  container->AddChildView(std::move(view));
 }
 
 void ButtonExample::LabelButtonPressed(LabelButton* label_button,
@@ -83,16 +106,16 @@ void ButtonExample::LabelButtonPressed(LabelButton* label_button,
   PrintStatus("Label Button Pressed! count: %d", ++count_);
   if (event.IsControlDown()) {
     if (event.IsShiftDown()) {
-      label_button->SetText(ASCIIToUTF16(
+      label_button->SetText(
           label_button->GetText().empty()
               ? kLongText
-              : label_button->GetText().length() > 50 ? kLabelButton : ""));
+              : label_button->GetText().length() > 50 ? kLabelButton : u"");
     } else if (event.IsAltDown()) {
-      label_button->SetImage(
+      label_button->SetImageModel(
           Button::STATE_NORMAL,
           label_button->GetImage(Button::STATE_NORMAL).isNull()
-              ? *icon_
-              : gfx::ImageSkia());
+              ? ui::ImageModel::FromImageSkia(*icon_)
+              : ui::ImageModel());
     } else {
       static int alignment = 0;
       label_button->SetHorizontalAlignment(
@@ -101,30 +124,20 @@ void ButtonExample::LabelButtonPressed(LabelButton* label_button,
   } else if (event.IsShiftDown()) {
     if (event.IsAltDown()) {
       // Toggle focusability.
-      label_button_->IsAccessibilityFocusable()
-          ? label_button_->SetFocusBehavior(View::FocusBehavior::NEVER)
-          : label_button_->SetFocusForPlatform();
-    } else {
-      label_button->SetStyleDeprecated(static_cast<Button::ButtonStyle>(
-          (label_button->style() + 1) % Button::STYLE_COUNT));
+      label_button->IsAccessibilityFocusable()
+          ? label_button->SetFocusBehavior(View::FocusBehavior::NEVER)
+          : label_button->SetFocusBehavior(
+                PlatformStyle::kDefaultFocusBehavior);
     }
   } else if (event.IsAltDown()) {
-    label_button->SetIsDefault(!label_button->is_default());
+    label_button->SetIsDefault(!label_button->GetIsDefault());
   }
   example_view()->GetLayoutManager()->Layout(example_view());
+  PrintViewHierarchy(example_view());
 }
 
-void ButtonExample::ButtonPressed(Button* sender, const ui::Event& event) {
-  if (sender == label_button_)
-    LabelButtonPressed(label_button_, event);
-  else if (sender == styled_button_)
-    LabelButtonPressed(styled_button_, event);
-  else if (sender == disabled_button_)
-    LabelButtonPressed(disabled_button_, event);
-  else if (sender == md_button_ || sender == md_default_button_)
-    static_cast<Button*>(sender)->StartThrobbing(5);
-  else
-    PrintStatus("Image Button Pressed! count: %d", ++count_);
+void ButtonExample::ImageButtonPressed() {
+  PrintStatus("Image Button Pressed! count: %d", ++count_);
 }
 
 }  // namespace examples

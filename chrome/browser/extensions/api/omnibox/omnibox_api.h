@@ -10,14 +10,14 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
-#include "base/strings/string16.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/extensions/extension_icon_manager.h"
 #include "chrome/common/extensions/api/omnibox.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/search_engines/template_url_service.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/browser/extension_function.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "ui/base/window_open_disposition.h"
 
@@ -35,7 +35,6 @@ class Image;
 }
 
 namespace extensions {
-class ExtensionRegistry;
 
 // Event router class for events related to the omnibox API.
 class ExtensionOmniboxEventRouter {
@@ -74,7 +73,7 @@ class ExtensionOmniboxEventRouter {
   DISALLOW_COPY_AND_ASSIGN(ExtensionOmniboxEventRouter);
 };
 
-class OmniboxSendSuggestionsFunction : public UIThreadExtensionFunction {
+class OmniboxSendSuggestionsFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("omnibox.sendSuggestions", OMNIBOX_SENDSUGGESTIONS)
 
@@ -133,13 +132,13 @@ class OmniboxAPI : public BrowserContextKeyedAPI,
   PendingExtensions pending_extensions_;
 
   // Listen to extension load, unloaded notifications.
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   // Keeps track of favicon-sized omnibox icons for extensions.
   ExtensionIconManager omnibox_icon_manager_;
 
-  std::unique_ptr<TemplateURLService::Subscription> template_url_sub_;
+  base::CallbackListSubscription template_url_subscription_;
 
   DISALLOW_COPY_AND_ASSIGN(OmniboxAPI);
 };
@@ -147,7 +146,7 @@ class OmniboxAPI : public BrowserContextKeyedAPI,
 template <>
 void BrowserContextKeyedAPIFactory<OmniboxAPI>::DeclareFactoryDependencies();
 
-class OmniboxSetDefaultSuggestionFunction : public UIThreadExtensionFunction {
+class OmniboxSetDefaultSuggestionFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("omnibox.setDefaultSuggestion",
                              OMNIBOX_SETDEFAULTSUGGESTION)
@@ -164,7 +163,7 @@ class OmniboxSetDefaultSuggestionFunction : public UIThreadExtensionFunction {
 void ApplyDefaultSuggestionForExtensionKeyword(
     Profile* profile,
     const TemplateURL* keyword,
-    const base::string16& remaining_input,
+    const std::u16string& remaining_input,
     AutocompleteMatch* match);
 
 // This function converts style information populated by the JSON schema

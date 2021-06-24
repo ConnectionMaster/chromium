@@ -7,18 +7,47 @@
 
 #include "base/macros.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/login/screens/recommend_apps_screen_view.h"
 #include "chrome/browser/ui/webui/chromeos/login/base_screen_handler.h"
 #include "components/prefs/pref_service.h"
 
+namespace ash {
+class RecommendAppsScreen;
+}
+
 namespace chromeos {
 
-class RecommendAppsScreen;
+// Interface for dependency injection between RecommendAppsScreen and its
+// WebUI representation.
+class RecommendAppsScreenView {
+ public:
+  constexpr static StaticOobeScreenId kScreenId{"recommend-apps"};
+
+  virtual ~RecommendAppsScreenView() = default;
+
+  // Sets screen this view belongs to.
+  virtual void Bind(ash::RecommendAppsScreen* screen) = 0;
+
+  // Shows the contents of the screen.
+  virtual void Show() = 0;
+
+  // Hides the contents of the screen.
+  virtual void Hide() = 0;
+
+  // Called when the download of the recommend app list is successful. Shows the
+  // downloaded `app_list` to the user.
+  virtual void OnLoadSuccess(const base::Value& app_list) = 0;
+
+  // Called when parsing the recommend app list response fails. Should skip this
+  // screen.
+  virtual void OnParseResponseError() = 0;
+};
 
 // The sole implementation of the RecommendAppsScreenView, using WebUI.
 class RecommendAppsScreenHandler : public BaseScreenHandler,
                                    public RecommendAppsScreenView {
  public:
+  using TView = RecommendAppsScreenView;
+
   explicit RecommendAppsScreenHandler(JSCallsContainer* js_calls_container);
   ~RecommendAppsScreenHandler() override;
 
@@ -28,21 +57,16 @@ class RecommendAppsScreenHandler : public BaseScreenHandler,
   void RegisterMessages() override;
 
   // RecommendAppsScreenView:
-  void AddObserver(RecommendAppsScreenViewObserver* observer) override;
-  void RemoveObserver(RecommendAppsScreenViewObserver* observer) override;
-  void Bind(RecommendAppsScreen* screen) override;
+  void Bind(ash::RecommendAppsScreen* screen) override;
   void Show() override;
   void Hide() override;
-
- private:
-  // BaseScreenHandler:
-  void Initialize() override;
-
-  // RecommendAppsScreenView:
-  void OnLoadError() override;
   void OnLoadSuccess(const base::Value& app_list) override;
   void OnParseResponseError() override;
 
+  // BaseScreenHandler:
+  void Initialize() override;
+
+ private:
   void OnUserSkip();
 
   // Call the JS function to load the list of apps in the WebView.
@@ -52,18 +76,25 @@ class RecommendAppsScreenHandler : public BaseScreenHandler,
   void HandleRetry();
   void HandleInstall(const base::ListValue* args);
 
-  RecommendAppsScreen* screen_ = nullptr;
+  ash::RecommendAppsScreen* screen_ = nullptr;
 
   PrefService* pref_service_;
 
-  base::ObserverList<RecommendAppsScreenViewObserver, true>::Unchecked
-      observer_list_;
-
   int recommended_app_count_ = 0;
+
+  // If true, Initialize() will call Show().
+  bool show_on_init_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(RecommendAppsScreenHandler);
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::RecommendAppsScreenHandler;
+using ::chromeos::RecommendAppsScreenView;
+}
 
 #endif  // CHROME_BROWSER_UI_WEBUI_CHROMEOS_LOGIN_RECOMMEND_APPS_SCREEN_HANDLER_H_

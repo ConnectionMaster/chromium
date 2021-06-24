@@ -116,7 +116,7 @@ TODO(awong): Write about options to script and the flame graph.
 
 ### Instructions
   1. Get 2 or more [symbolized heap dump](#heap-dumps)
-  3. Run resulting traces through [`diff_heap_profiler.py`](https://chromium.googlesource.com/catapult/+/master/experimental/tracing/bin/diff_heap_profiler.py) to show a list of new allocations.
+  3. Run resulting traces through [`diff_heap_profiler.py`](https://chromium.googlesource.com/catapult/+/main/experimental/tracing/bin/diff_heap_profiler.py) to show a list of new allocations.
 
 -----------
 ## <a name="heap-dumps"></a>Heap Dumps
@@ -147,7 +147,7 @@ looking similar due to the nature of DOM node allocation.
 ### Instructions
 #### <a name="configure-oophp"></a>Configuration and setup
   1. [Android Only] For native stack traces, a custom build with
-     `enable_framepoitners=true` is required.
+     `enable_framepointers=true` is required.
   2. Configure OOPHP settings in about://flags. (See table below)
   3. Restart browser with new settings if necessary.
   4. Verify target processes are being profiled in chrome://memory-internals.

@@ -14,11 +14,10 @@
 
 #include "snapshot/mac/module_snapshot_mac.h"
 
-#include <mach/mach.h>
 #include <mach-o/loader.h>
+#include <mach/mach.h>
 
 #include "base/files/file_path.h"
-#include "base/strings/stringprintf.h"
 #include "snapshot/mac/mach_o_image_annotations_reader.h"
 #include "snapshot/mac/mach_o_image_reader.h"
 #include "util/misc/tri_state.h"
@@ -34,11 +33,9 @@ ModuleSnapshotMac::ModuleSnapshotMac()
       timestamp_(0),
       mach_o_image_reader_(nullptr),
       process_reader_(nullptr),
-      initialized_() {
-}
+      initialized_() {}
 
-ModuleSnapshotMac::~ModuleSnapshotMac() {
-}
+ModuleSnapshotMac::~ModuleSnapshotMac() {}
 
 bool ModuleSnapshotMac::Initialize(
     ProcessReaderMac* process_reader,
@@ -168,6 +165,11 @@ void ModuleSnapshotMac::UUIDAndAge(crashpad::UUID* uuid, uint32_t* age) const {
 std::string ModuleSnapshotMac::DebugFileName() const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
   return base::FilePath(Name()).BaseName().value();
+}
+
+std::vector<uint8_t> ModuleSnapshotMac::BuildID() const {
+  INITIALIZATION_STATE_DCHECK_VALID(initialized_);
+  return std::vector<uint8_t>();
 }
 
 std::vector<std::string> ModuleSnapshotMac::AnnotationsVector() const {

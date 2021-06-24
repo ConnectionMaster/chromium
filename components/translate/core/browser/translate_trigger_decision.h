@@ -33,6 +33,12 @@ struct TranslateTriggerDecision {
   void PreventShowingPredefinedLanguageTranslateUI();
   bool can_show_predefined_language_translate_ui() const;
 
+  void SetIsInLanguageBlocklist() { is_in_language_blocklist_ = true; }
+  bool is_in_language_blocklist() const { return is_in_language_blocklist_; }
+
+  void SetIsInSiteBlocklist() { is_in_site_blocklist_ = true; }
+  bool is_in_site_blocklist() const { return is_in_site_blocklist_; }
+
   void SuppressFromRanker();
   bool should_suppress_from_ranker() const;
   bool IsTriggeringPossible() const;
@@ -42,7 +48,7 @@ struct TranslateTriggerDecision {
   // Returns true iff:
   // 1. Showing the UI is disallowed (otherwise it would be chosen over showing
   //    the UI).
-  // 2. It's possible to show the UI (language/site not blacklisted, connected
+  // 2. It's possible to show the UI (language/site not blocklisted, connected
   //    to the internet, etc)
   // 3. Ranker isn't requesting that the UI be suppressed.
   bool ShouldShowUI() const;
@@ -56,7 +62,7 @@ struct TranslateTriggerDecision {
 
  private:
   // These fields are private because they should only be set one way. Filters
-  // "blacklist" outcomes, so for example once |can_show_ui_| is set to false,
+  // "blocklist" outcomes, so for example once |can_show_ui_| is set to false,
   // it shouldn't be reset to true.
   bool can_auto_translate_ = true;
   bool can_show_ui_ = true;
@@ -69,6 +75,9 @@ struct TranslateTriggerDecision {
   bool can_show_predefined_language_translate_ui_ = true;
 
   bool should_suppress_from_ranker_ = false;
+
+  bool is_in_language_blocklist_ = false;
+  bool is_in_site_blocklist_ = false;
 };
 
 }  // namespace translate

@@ -1,42 +1,77 @@
 {
   "layers": [
     {
-      "name": "LayoutView #document",
-      "bounds": [800, 600],
-      "drawsContent": false,
-      "backgroundColor": "#FFFFFF"
-    },
-    {
-      "name": "Scrolling Layer",
-      "bounds": [800, 600],
-      "drawsContent": false
-    },
-    {
       "name": "Scrolling Contents Layer",
       "bounds": [800, 600],
       "contentsOpaque": true,
       "backgroundColor": "#FFFFFF",
-      "paintInvalidations": [
-        {
-          "object": "LayoutTextControl TEXTAREA id='editor'",
-          "rect": [5, 5, 167, 44],
-          "reason": "chunk appeared"
-        },
-        {
-          "object": "LayoutTextControl TEXTAREA id='editor'",
-          "rect": [5, 5, 167, 44],
-          "reason": "chunk appeared"
-        },
-        {
-          "object": "LayoutBlockFlow HTML",
-          "rect": [8, 8, 161, 38],
-          "reason": "chunk disappeared"
-        },
-        {
-          "object": "LayoutTextControl TEXTAREA id='editor'",
-          "rect": [9, 11, 159, 16],
-          "reason": "chunk appeared"
-        }
+      "invalidations": [
+        [8, 8, 181, 36]
+      ]
+    },
+    {
+      "name": "LayoutNGTextControlMultiLine TEXTAREA id='editor'",
+      "position": [-2, -2],
+      "bounds": [185, 40],
+      "backgroundColor": "#FFFFFF",
+      "invalidations": [
+        [0, 0, 185, 40]
+      ],
+      "transform": 1
+    },
+    {
+      "name": "ContentsLayer for Horizontal Scrollbar Layer",
+      "position": [1, 20],
+      "bounds": [164, 15],
+      "transform": 1
+    },
+    {
+      "name": "Scroll Corner Layer",
+      "position": [165, 20],
+      "bounds": [15, 15],
+      "invalidations": [
+        [0, 0, 15, 15]
+      ],
+      "transform": 1
+    },
+    {
+      "name": "Scrolling Contents Layer",
+      "position": [1, 1],
+      "bounds": [470, 19],
+      "backgroundColor": "#FFFFFF",
+      "invalidations": [
+        [0, 0, 470, 19]
+      ],
+      "transform": 2
+    },
+    {
+      "name": "Decoration Layer",
+      "position": [-2, -2],
+      "bounds": [185, 40],
+      "invalidations": [
+        [0, 0, 185, 40]
+      ],
+      "transform": 1
+    }
+  ],
+  "transforms": [
+    {
+      "id": 1,
+      "transform": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [8, 8, 0, 1]
+      ]
+    },
+    {
+      "id": 2,
+      "parent": 1,
+      "transform": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [-291, 0, 0, 1]
       ]
     }
   ]

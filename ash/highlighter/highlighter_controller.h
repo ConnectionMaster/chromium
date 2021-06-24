@@ -8,20 +8,22 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/components/fast_ink/fast_ink_pointer_controller.h"
-#include "ash/public/interfaces/highlighter_controller.mojom.h"
+#include "ash/fast_ink/fast_ink_pointer_controller.h"
 #include "base/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "ui/views/widget/unique_widget_ptr.h"
 
 namespace base {
 class OneShotTimer;
 }
 
+namespace gfx {
+class Rect;
+}
+
 namespace ash {
 
-class HighlighterResultView;
 class HighlighterView;
 
 // Highlighter enabled state that is notified to observers.
@@ -42,8 +44,7 @@ enum class HighlighterEnabledState {
 // Enables/disables highlighter as well as receives points
 // and passes them off to be rendered.
 class ASH_EXPORT HighlighterController
-    : public fast_ink::FastInkPointerController,
-      public mojom::HighlighterController {
+    : public fast_ink::FastInkPointerController {
  public:
   // Interface for classes that wish to be notified with highlighter status.
   class Observer {
@@ -79,12 +80,6 @@ class ASH_EXPORT HighlighterController
   // calling this method is a no-op.
   void AbortSession();
 
-  void BindRequest(mojom::HighlighterControllerRequest request);
-
-  // mojom::HighlighterController:
-  void SetClient(mojom::HighlighterControllerClientPtr client) override;
-  void ExitHighlighterMode() override;
-
  private:
   friend class HighlighterControllerTestApi;
 
@@ -95,38 +90,37 @@ class ASH_EXPORT HighlighterController
                          aura::Window* root_window) override;
   void UpdatePointerView(ui::TouchEvent* event) override;
   void DestroyPointerView() override;
-  bool CanStartNewGesture(ui::TouchEvent* event) override;
+  bool CanStartNewGesture(ui::LocatedEvent* event) override;
 
   // Performs gesture recognition, initiates appropriate visual effects,
   // notifies the observer if necessary.
   void RecognizeGesture();
 
-  // Destroys |highlighter_view_|, if it exists.
+  // Destroys |highlighter_view_widget_|, if it exists.
   void DestroyHighlighterView();
 
-  // Destroys |result_view_|, if it exists.
+  // Destroys |result_view_widget_|, if it exists.
   void DestroyResultView();
-
-  // Called when the mojo connection with the client is closed.
-  void OnClientConnectionLost();
 
   // Calls and clears the mode exit callback, if it is set.
   void CallExitCallback();
 
-  void FlushMojoForTesting();
+  // Returns the Widget contents view of the highlighter widget as
+  // HighlighterView*.
+  HighlighterView* GetHighlighterView();
 
   // Caches the highlighter enabled state.
   HighlighterEnabledState enabled_state_ =
       HighlighterEnabledState::kDisabledByUser;
 
-  // |highlighter_view_| will only hold an instance when the highlighter is
-  // enabled and activated (pressed or dragged) and until the fade out
+  // |highlighter_view_widget_| will only hold an instance when the highlighter
+  // is enabled and activated (pressed or dragged) and until the fade out
   // animation is done.
-  std::unique_ptr<HighlighterView> highlighter_view_;
+  views::UniqueWidgetPtr highlighter_view_widget_;
 
-  // |result_view_| will only hold an instance when the selection result
+  // |result_view_widget_| will only hold an instance when the selection result
   // animation is in progress.
-  std::unique_ptr<HighlighterResultView> result_view_;
+  views::UniqueWidgetPtr result_view_widget_;
 
   // Time of the session start (e.g. when the controller was enabled).
   base::TimeTicks session_start_;
@@ -151,15 +145,9 @@ class ASH_EXPORT HighlighterController
   // If true, the mode is not exited until a valid selection is made.
   bool require_success_ = true;
 
-  // Binding for mojom::HighlighterController interface.
-  mojo::Binding<ash::mojom::HighlighterController> binding_;
-
-  // Interface to highlighter controller client (chrome).
-  mojom::HighlighterControllerClientPtr client_;
-
   base::ObserverList<Observer>::Unchecked observers_;
 
-  base::WeakPtrFactory<HighlighterController> weak_factory_;
+  base::WeakPtrFactory<HighlighterController> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HighlighterController);
 };

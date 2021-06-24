@@ -3,31 +3,70 @@
 // found in the LICENSE file.
 
 #include "ash/login/ui/login_auth_user_view.h"
+
+#include "ash/constants/ash_features.h"
 #include "ash/login/mock_login_screen_client.h"
 #include "ash/login/ui/login_password_view.h"
+#include "ash/login/ui/login_pin_input_view.h"
 #include "ash/login/ui/login_pin_view.h"
 #include "ash/login/ui/login_test_base.h"
 #include "ash/login/ui/login_test_utils.h"
 #include "ash/login/ui/login_user_view.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/feature_list.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/events/event.h"
+#include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_test_api.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/test/button_test_api.h"
 #include "ui/views/widget/widget.h"
 
 using testing::_;
 
 namespace ash {
-
 namespace {
 
-class LoginAuthUserViewUnittest : public LoginTestBase {
+// Input field mode to element visibility mapping.
+struct InputFieldVisibility {
+  bool password;
+  bool pin_input;
+  bool toggle;
+};
+const std::map<LoginAuthUserView::InputFieldMode, InputFieldVisibility>
+    expected_visibilities = {
+        {LoginAuthUserView::InputFieldMode::NONE,
+         {/*pwd*/ false, /*pin_input*/ false, /*toggle*/ false}},
+        {LoginAuthUserView::InputFieldMode::PASSWORD_ONLY,
+         {/*pwd*/ true, /*pin_input*/ false, /*toggle*/ false}},
+        {LoginAuthUserView::InputFieldMode::PIN_AND_PASSWORD,
+         {/*pwd*/ true, /*pin_input*/ false, /*toggle*/ false}},
+        {LoginAuthUserView::InputFieldMode::PIN_WITH_TOGGLE,
+         {/*pwd*/ false, /*pin_input*/ true, /*toggle*/ true}},
+        {LoginAuthUserView::InputFieldMode::PWD_WITH_TOGGLE,
+         {/*pwd*/ true, /*pin_input*/ false, /*toggle*/ true}},
+};
+
+}  // namespace
+
+class LoginAuthUserViewUnittest : public LoginTestBase,
+                                  /*autosubmit_feature*/
+                                  public ::testing::WithParamInterface<bool> {
+ public:
+  static std::string ParamInfoToString(
+      testing::TestParamInfo<LoginAuthUserViewUnittest::ParamType> info) {
+    return base::StrCat(
+        {info.param ? "AutosubmitEnabled" : "AutosubmitDisabled"});
+  }
+
  protected:
   LoginAuthUserViewUnittest() = default;
   ~LoginAuthUserViewUnittest() override = default;
@@ -35,13 +74,14 @@ class LoginAuthUserViewUnittest : public LoginTestBase {
   // LoginTestBase:
   void SetUp() override {
     LoginTestBase::SetUp();
-
+    SetUpFeatures();
     user_ = CreateUser("user@domain.com");
 
     LoginAuthUserView::Callbacks auth_callbacks;
     auth_callbacks.on_auth = base::DoNothing();
     auth_callbacks.on_easy_unlock_icon_hovered = base::DoNothing();
-    auth_callbacks.on_easy_unlock_icon_tapped = base::DoNothing();
+    auth_callbacks.on_easy_unlock_icon_tapped =
+        views::Button::PressedCallback();
     auth_callbacks.on_tap = base::DoNothing();
     auth_callbacks.on_remove_warning_shown = base::DoNothing();
     auth_callbacks.on_remove = base::DoNothing();
@@ -49,18 +89,60 @@ class LoginAuthUserViewUnittest : public LoginTestBase {
 
     // We proxy |view_| inside of |container_| so we can control layout.
     container_ = new views::View();
-    container_->SetLayoutManager(
-        std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+    container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical));
     container_->AddChildView(view_);
     SetWidget(CreateWidgetWithContent(container_));
   }
 
-  void SetAuthMethods(uint32_t auth_methods) {
-    bool can_use_pin = (auth_methods & LoginAuthUserView::AUTH_PIN) != 0;
-    view_->SetAuthMethods(auth_methods, can_use_pin);
+  void SetUpFeatures() {
+    autosubmit_feature_enabled_ = GetParam();
+    if (autosubmit_feature_enabled_) {
+      feature_list_.InitWithFeatures(
+          {chromeos::features::kQuickUnlockPinAutosubmit}, {});
+    } else {
+      feature_list_.InitWithFeatures(
+          {}, {chromeos::features::kQuickUnlockPinAutosubmit});
+    }
   }
 
-  mojom::LoginUserInfoPtr user_;
+  void SetAuthMethods(uint32_t auth_methods,
+                      bool show_pinpad_for_pw = false,
+                      bool virtual_keyboard_visible = false,
+                      size_t autosubmit_pin_length = 0) {
+    LoginAuthUserView::AuthMethodsMetadata auth_metadata;
+    auth_metadata.show_pinpad_for_pw = show_pinpad_for_pw;
+    auth_metadata.virtual_keyboard_visible = virtual_keyboard_visible;
+    auth_metadata.autosubmit_pin_length = autosubmit_pin_length;
+    view_->CaptureStateForAnimationPreLayout();
+    view_->SetAuthMethods(auth_methods, auth_metadata);
+    view_->ApplyAnimationPostLayout(true);
+  }
+
+  // Enables password and pin with the given length.
+  void SetAuthPin(int autosubmit_length) {
+    auto auth = LoginAuthUserView::AUTH_PASSWORD | LoginAuthUserView::AUTH_PIN;
+    SetAuthMethods(/*auth_methods*/ auth,
+                   /*show_pinpad_for_pw*/ false,
+                   /*virtual_keyboard_visible*/ false,
+                   /*autosubmit_pin_length*/ autosubmit_length);
+  }
+
+  // Expects the given input field mode and the corresponding visibility.
+  void ExpectModeVisibility(LoginAuthUserView::InputFieldMode mode) {
+    EXPECT_EQ(view_->input_field_mode(), mode);
+    InputFieldVisibility visibility = expected_visibilities.at(mode);
+    LoginAuthUserView::TestApi test(view_);
+    EXPECT_EQ(test.password_view()->GetVisible(), visibility.password);
+    EXPECT_EQ(test.pin_input_view()->GetVisible(), visibility.pin_input);
+    EXPECT_EQ(test.pin_password_toggle()->GetVisible(), visibility.toggle);
+  }
+
+  // Initialized by test parameter in `SetUpFeatures`
+  bool autosubmit_feature_enabled_ = false;
+
+  base::test::ScopedFeatureList feature_list_;
+  LoginUserInfo user_;
   views::View* container_ = nullptr;   // Owned by test widget view hierarchy.
   LoginAuthUserView* view_ = nullptr;  // Owned by test widget view hierarchy.
 
@@ -68,19 +150,18 @@ class LoginAuthUserViewUnittest : public LoginTestBase {
   DISALLOW_COPY_AND_ASSIGN(LoginAuthUserViewUnittest);
 };
 
-}  // namespace
-
 // Verifies showing the PIN keyboard makes the user view grow.
-TEST_F(LoginAuthUserViewUnittest, ShowingPinExpandsView) {
+TEST_P(LoginAuthUserViewUnittest, ShowingPinExpandsView) {
   gfx::Size start_size = view_->size();
-  SetAuthMethods(LoginAuthUserView::AUTH_PIN);
+  SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD |
+                 LoginAuthUserView::AUTH_PIN);
   container_->Layout();
   gfx::Size expanded_size = view_->size();
   EXPECT_GT(expanded_size.height(), start_size.height());
 }
 
 // Verifies that an auth user that shows a password is opaque.
-TEST_F(LoginAuthUserViewUnittest, ShowingPasswordForcesOpaque) {
+TEST_P(LoginAuthUserViewUnittest, ShowingPasswordForcesOpaque) {
   LoginAuthUserView::TestApi auth_test(view_);
   LoginUserView::TestApi user_test(auth_test.user_view());
 
@@ -103,20 +184,20 @@ TEST_F(LoginAuthUserViewUnittest, ShowingPasswordForcesOpaque) {
 
 // Verifies that pressing return with an empty password field when tap-to-unlock
 // is enabled attempts unlock.
-TEST_F(LoginAuthUserViewUnittest, PressReturnWithTapToUnlockEnabled) {
-  std::unique_ptr<MockLoginScreenClient> client = BindMockLoginScreenClient();
+TEST_P(LoginAuthUserViewUnittest, PressReturnWithTapToUnlockEnabled) {
+  auto client = std::make_unique<MockLoginScreenClient>();
 
   ui::test::EventGenerator* generator = GetEventGenerator();
 
-  LoginAuthUserView::TestApi test_auth_user_view(view_);
-  LoginPasswordView* password_view(test_auth_user_view.password_view());
-  LoginUserView* user_view(test_auth_user_view.user_view());
+  LoginAuthUserView::TestApi auth_test(view_);
+  LoginPasswordView* password_view(auth_test.password_view());
+  LoginUserView* user_view(auth_test.user_view());
 
   SetUserCount(1);
 
   EXPECT_CALL(*client,
               AuthenticateUserWithEasyUnlock(
-                  user_view->current_user()->basic_user_info->account_id));
+                  user_view->current_user().basic_user_info.account_id));
   SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD |
                  LoginAuthUserView::AUTH_TAP);
   password_view->Clear();
@@ -125,97 +206,309 @@ TEST_F(LoginAuthUserViewUnittest, PressReturnWithTapToUnlockEnabled) {
   base::RunLoop().RunUntilIdle();
 }
 
-TEST_F(LoginAuthUserViewUnittest, OnlineSignInMessage) {
-  std::unique_ptr<MockLoginScreenClient> client = BindMockLoginScreenClient();
-  LoginAuthUserView::TestApi test_auth_user_view(view_);
-  views::Button* online_sign_in_message(
-      test_auth_user_view.online_sign_in_message());
-  LoginPasswordView* password_view(test_auth_user_view.password_view());
-  LoginPinView* pin_view(test_auth_user_view.pin_view());
-  LoginUserView* user_view(test_auth_user_view.user_view());
+// Verifies that pressing return on the pin input field when tap-to-unlock
+// is enabled attempts unlock.
+TEST_P(LoginAuthUserViewUnittest, PressReturnOnPinWithTapToUnlockEnabled) {
+  auto client = std::make_unique<MockLoginScreenClient>();
+
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  LoginAuthUserView::TestApi auth_test(view_);
+  LoginUserView* user_view(auth_test.user_view());
+  LoginPinInputView* pin_input(auth_test.pin_input_view());
+
+  SetUserCount(1);
+
+  // One call using focus, and one direct call to the view.
+  EXPECT_CALL(*client,
+              AuthenticateUserWithEasyUnlock(
+                  user_view->current_user().basic_user_info.account_id))
+      .Times(2);
+  SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD |
+                     LoginAuthUserView::AUTH_PIN | LoginAuthUserView::AUTH_TAP,
+                 /*show_pinpad_for_pw=*/false,
+                 /*virtual_keyboard_visible=*/false,
+                 /*autosubmit_pin_length=*/6);
+
+  // Call through correct focus.
+  pin_input->RequestFocus();
+  generator->PressKey(ui::KeyboardCode::VKEY_RETURN, ui::EF_NONE);
+
+  // Call the view directly as well.
+  pin_input->OnKeyPressed(ui::KeyEvent(
+      ui::ET_KEY_PRESSED, ui::KeyboardCode::VKEY_RETURN, ui::EF_NONE));
+  base::RunLoop().RunUntilIdle();
+}
+
+TEST_P(LoginAuthUserViewUnittest, OnlineSignInMessage) {
+  auto client = std::make_unique<MockLoginScreenClient>();
+  LoginAuthUserView::TestApi auth_test(view_);
+  views::Button* online_sign_in_message(auth_test.online_sign_in_message());
+  LoginUserView* user_view(auth_test.user_view());
 
   // When auth method is |AUTH_ONLINE_SIGN_IN|, the online sign-in message is
   // visible. The password field and PIN keyboard are invisible.
   SetAuthMethods(LoginAuthUserView::AUTH_ONLINE_SIGN_IN);
-  EXPECT_TRUE(online_sign_in_message->visible());
-  EXPECT_FALSE(password_view->visible());
-  EXPECT_FALSE(pin_view->visible());
+  EXPECT_TRUE(online_sign_in_message->GetVisible());
+  ExpectModeVisibility(LoginAuthUserView::InputFieldMode::NONE);
 
   // Clicking the message triggers |ShowGaiaSignin|.
-  EXPECT_CALL(*client,
-              ShowGaiaSignin(
-                  true /*can_close*/,
-                  base::Optional<AccountId>(
-                      user_view->current_user()->basic_user_info->account_id)));
+  EXPECT_CALL(
+      *client,
+      ShowGaiaSignin(user_view->current_user().basic_user_info.account_id));
   const ui::MouseEvent event(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
                              ui::EventTimeForNow(), 0, 0);
-  view_->ButtonPressed(online_sign_in_message, event);
+  views::test::ButtonTestApi(online_sign_in_message).NotifyClick(event);
   base::RunLoop().RunUntilIdle();
 
   // The online sign-in message is invisible for all other auth methods.
   SetAuthMethods(LoginAuthUserView::AUTH_NONE);
-  EXPECT_FALSE(online_sign_in_message->visible());
+  EXPECT_FALSE(online_sign_in_message->GetVisible());
   SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD);
-  EXPECT_FALSE(online_sign_in_message->visible());
+  EXPECT_FALSE(online_sign_in_message->GetVisible());
   SetAuthMethods(LoginAuthUserView::AUTH_PIN);
-  EXPECT_FALSE(online_sign_in_message->visible());
+  EXPECT_FALSE(online_sign_in_message->GetVisible());
   SetAuthMethods(LoginAuthUserView::AUTH_TAP);
-  EXPECT_FALSE(online_sign_in_message->visible());
+  EXPECT_FALSE(online_sign_in_message->GetVisible());
 }
 
 // Verifies that password is cleared after AUTH_PASSWORD is disabled.
-TEST_F(LoginAuthUserViewUnittest,
+TEST_P(LoginAuthUserViewUnittest,
        PasswordClearedAfterAnimationIfPasswordDisabled) {
   LoginPasswordView::TestApi password_test(view_->password_view());
   auto has_password = [&]() {
-    return !password_test.textfield()->text().empty();
+    return !password_test.textfield()->GetText().empty();
   };
 
   // Set a password.
   SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD);
-  password_test.textfield()->SetText(base::ASCIIToUTF16("Hello"));
+  password_test.textfield()->SetText(u"Hello");
 
   // Enable some other auth method (PIN), password is not cleared.
-  view_->CaptureStateForAnimationPreLayout();
+  EXPECT_TRUE(has_password());
   SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD |
                  LoginAuthUserView::AUTH_PIN);
   EXPECT_TRUE(has_password());
-  view_->ApplyAnimationPostLayout();
-  EXPECT_TRUE(has_password());
 
   // Disable password, password is cleared.
-  view_->CaptureStateForAnimationPreLayout();
-  SetAuthMethods(LoginAuthUserView::AUTH_NONE);
   EXPECT_TRUE(has_password());
-  view_->ApplyAnimationPostLayout();
+  SetAuthMethods(LoginAuthUserView::AUTH_NONE);
   EXPECT_FALSE(has_password());
 }
 
-TEST_F(LoginAuthUserViewUnittest, AttemptsUnlockOnLidOpen) {
-  LoginAuthUserView::TestApi test_auth_user_view(view_);
-  std::unique_ptr<MockLoginScreenClient> client = BindMockLoginScreenClient();
+TEST_P(LoginAuthUserViewUnittest, PasswordFieldChangeOnUpdateUser) {
+  LoginAuthUserView::TestApi auth_test(view_);
+  LoginPasswordView::TestApi password_test(auth_test.password_view());
 
-  SetAuthMethods(LoginAuthUserView::AUTH_EXTERNAL_BINARY);
+  const std::u16string password = u"abc1";
+  password_test.textfield()->SetText(password);
+  view_->UpdateForUser(user_);
+  EXPECT_EQ(password_test.textfield()->GetText(), password);
 
-  client->set_authenticate_user_callback_result(false);
+  auto another_user = CreateUser("user2@domain.com");
+  view_->UpdateForUser(another_user);
+  EXPECT_TRUE(password_test.textfield()->GetText().empty());
 
-  EXPECT_CALL(*client, AuthenticateUserWithExternalBinary_(
-                           test_auth_user_view.user_view()
-                               ->current_user()
-                               ->basic_user_info->account_id,
-                           _));
-  power_manager_client()->SetLidState(
-      chromeos::PowerManagerClient::LidState::OPEN, base::TimeTicks::Now());
+  password_test.textfield()->SetTextInputType(ui::TEXT_INPUT_TYPE_NULL);
+  EXPECT_EQ(password_test.textfield()->GetTextInputType(),
+            ui::TEXT_INPUT_TYPE_NULL);
 
-  base::RunLoop().RunUntilIdle();
-
-  LoginPasswordView::TestApi password_test(test_auth_user_view.password_view());
-  EXPECT_FALSE(password_test.textfield()->read_only());
-  EXPECT_TRUE(test_auth_user_view.external_binary_auth_button()->state() ==
-              views::Button::STATE_NORMAL);
-  EXPECT_TRUE(
-      test_auth_user_view.external_binary_enrollment_button()->state() ==
-      views::Button::STATE_NORMAL);
+  // Updating user should make the textfield as a password again.
+  view_->UpdateForUser(user_);
+  EXPECT_EQ(password_test.textfield()->GetTextInputType(),
+            ui::TEXT_INPUT_TYPE_PASSWORD);
 }
+
+// Tests that the appropriate InputFieldMode is used based on the exposed
+// length of the user's PIN. An exposed PIN length of zero (0) means that
+// auto submit is not being used.
+TEST_P(LoginAuthUserViewUnittest, CorrectFieldModeForExposedPinLength) {
+  SetUserCount(1);
+
+  for (int pin_length = 0; pin_length <= 64; pin_length++) {
+    SetAuthPin(/*autosubmit_length*/ pin_length);
+
+    if (LoginPinInputView::IsAutosubmitSupported(pin_length)) {
+      ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PIN_WITH_TOGGLE);
+    } else {
+      ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PIN_AND_PASSWORD);
+    }
+  }
+}
+
+// Tests the correctness of InputFieldMode::NONE
+TEST_P(LoginAuthUserViewUnittest, ModesWithoutInputFields) {
+  LoginAuthUserView::TestApi auth_test(view_);
+  LoginAuthUserView::AuthMethods methods_without_input[] = {
+      LoginAuthUserView::AUTH_CHALLENGE_RESPONSE,
+      LoginAuthUserView::AUTH_DISABLED, LoginAuthUserView::AUTH_NONE,
+      LoginAuthUserView::AUTH_ONLINE_SIGN_IN};
+
+  for (auto method : methods_without_input) {
+    SetAuthMethods(method);
+    ExpectModeVisibility(LoginAuthUserView::InputFieldMode::NONE);
+  }
+}
+
+// Tests the correctness of InputFieldMode::PASSWORD_ONLY. With only the
+// password field present and no PIN, the authentication call must
+// have 'authenticated_by_pin' as false.
+TEST_P(LoginAuthUserViewUnittest, PasswordOnlyFieldMode) {
+  LoginAuthUserView::TestApi auth_test(view_);
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  auto client = std::make_unique<MockLoginScreenClient>();
+  LoginUserView* user_view(auth_test.user_view());
+  LoginPasswordView::TestApi password_test(view_->password_view());
+
+  // Only password, no PIN.
+  SetUserCount(1);
+  SetAuthMethods(LoginAuthUserView::AUTH_PASSWORD);
+  ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PASSWORD_ONLY);
+
+  password_test.textfield()->SetText(u"test_password");
+
+  EXPECT_CALL(*client, AuthenticateUserWithPasswordOrPin_(
+                           user_view->current_user().basic_user_info.account_id,
+                           /*password=*/"test_password",
+                           /*authenticated_by_pin=*/false,
+                           /*callback=*/_));
+
+  generator->PressKey(ui::KeyboardCode::VKEY_RETURN, 0);
+  base::RunLoop().RunUntilIdle();
+}
+
+/**
+ * Tests the correctness of InputFieldMode::PIN_AND_PASSWORD by ensuring the
+ * following:
+ * - Clicking on the pin pad inserts digits into the field
+ * - Digits are correctly ignored when the field is set to read-only
+ * - Submitting the credentials results in the correct auth call
+ */
+TEST_P(LoginAuthUserViewUnittest, PinAndPasswordFieldModeCorrectness) {
+  LoginAuthUserView::TestApi auth_test(view_);
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  auto client = std::make_unique<MockLoginScreenClient>();
+  LoginUserView* user_view(auth_test.user_view());
+  LoginPinView::TestApi pin_pad_api{auth_test.pin_view()};
+
+  // PIN length not exposed and thus no auto submit.
+  SetUserCount(1);
+  SetAuthPin(/*autosubmit_length*/ 0);
+  ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PIN_AND_PASSWORD);
+
+  // Typing '123456789'.
+  pin_pad_api.ClickOnDigit(1);
+  pin_pad_api.ClickOnDigit(2);
+  pin_pad_api.ClickOnDigit(3);
+  // '456' must be ignored.
+  auth_test.password_view()->SetReadOnly(true);
+  pin_pad_api.ClickOnDigit(4);
+  pin_pad_api.ClickOnDigit(5);
+  pin_pad_api.ClickOnDigit(6);
+  auth_test.password_view()->SetReadOnly(false);
+  pin_pad_api.ClickOnDigit(7);
+  pin_pad_api.ClickOnDigit(8);
+  pin_pad_api.ClickOnDigit(9);
+
+  EXPECT_CALL(*client, AuthenticateUserWithPasswordOrPin_(
+                           user_view->current_user().basic_user_info.account_id,
+                           /*password=*/"123789",
+                           /*authenticated_by_pin=*/true,
+                           /*callback=*/_));
+
+  generator->PressKey(ui::KeyboardCode::VKEY_RETURN, 0);
+  base::RunLoop().RunUntilIdle();
+}
+
+/**
+ * Tests the correctness of InputFieldMode::PIN_WITH_TOGGLE - the default
+ * input mode when using a PIN with auto submit enabled, by ensuring the
+ * following:
+ * - Clicking on the pin pad inserts digits into the field
+ * - Digits are correctly ignored when the field is set to read-only
+ * - Submitting the last digit triggers the correct auth call
+ */
+TEST_P(LoginAuthUserViewUnittest, PinWithToggleFieldModeCorrectness) {
+  if (!autosubmit_feature_enabled_)
+    return;
+
+  LoginAuthUserView::TestApi auth_test(view_);
+  auto client = std::make_unique<MockLoginScreenClient>();
+  LoginUserView* user_view(auth_test.user_view());
+  LoginPinInputView::TestApi pin_input_test{auth_test.pin_input_view()};
+  LoginPinView::TestApi pin_pad_api{auth_test.pin_view()};
+
+  // Set up PIN with auto submit.
+  SetUserCount(1);
+  SetAuthPin(/*autosubmit_length*/ 6);
+  ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PIN_WITH_TOGGLE);
+
+  const auto pin = std::string("123456");
+  EXPECT_CALL(*client, AuthenticateUserWithPasswordOrPin_(
+                           user_view->current_user().basic_user_info.account_id,
+                           /*password=*/pin,
+                           /*authenticated_by_pin=*/true,
+                           /*callback=*/_));
+
+  // Inserting `1230456`.
+  pin_pad_api.ClickOnDigit(1);
+  pin_pad_api.ClickOnDigit(2);
+  pin_pad_api.ClickOnDigit(3);
+  // `0` must be ignored when the field is read only.
+  auth_test.pin_input_view()->SetReadOnly(true);
+  pin_pad_api.ClickOnDigit(0);
+  auth_test.pin_input_view()->SetReadOnly(false);
+  pin_pad_api.ClickOnDigit(4);
+  pin_pad_api.ClickOnDigit(5);
+  pin_pad_api.ClickOnDigit(6);
+
+  ASSERT_TRUE(pin_input_test.GetCode().has_value());
+  EXPECT_EQ(pin_input_test.GetCode().value(), pin);
+  base::RunLoop().RunUntilIdle();
+}
+
+/**
+ * Tests the correctness of InputFieldMode::PWD_WITH_TOGGLE. This is the
+ * mode that shows just the password field with the option to switch to PIN.
+ * It is only available when the user has auto submit enabled.
+ */
+TEST_P(LoginAuthUserViewUnittest, PwdWithToggleFieldModeCorrectness) {
+  if (!autosubmit_feature_enabled_)
+    return;
+
+  LoginAuthUserView::TestApi auth_test(view_);
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  auto client = std::make_unique<MockLoginScreenClient>();
+  LoginUserView* user_view(auth_test.user_view());
+  LoginPasswordView::TestApi password_test(view_->password_view());
+
+  // Set up PIN with auto submit and click on the toggle to switch to password.
+  SetUserCount(1);
+  SetAuthPin(/*autosubmit_length*/ 6);
+  ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PIN_WITH_TOGGLE);
+  const ui::MouseEvent event(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
+                             ui::EventTimeForNow(), 0, 0);
+  views::test::ButtonTestApi(auth_test.pin_password_toggle())
+      .NotifyClick(event);
+  base::RunLoop().RunUntilIdle();
+  ExpectModeVisibility(LoginAuthUserView::InputFieldMode::PWD_WITH_TOGGLE);
+
+  // Insert a password consisting of numbers only and expect it to be treated
+  // as a password, not a PIN. This means 'authenticated_by_pin' must be false.
+  password_test.textfield()->SetText(u"12345678");
+
+  EXPECT_CALL(*client, AuthenticateUserWithPasswordOrPin_(
+                           user_view->current_user().basic_user_info.account_id,
+                           /*password=*/"12345678",
+                           /*authenticated_by_pin=*/false,
+                           /*callback=*/_));
+
+  generator->PressKey(ui::KeyboardCode::VKEY_RETURN, 0);
+  base::RunLoop().RunUntilIdle();
+}
+
+INSTANTIATE_TEST_SUITE_P(LoginAuthUserViewTests,
+                         LoginAuthUserViewUnittest,
+                         testing::Bool(),  // PIN autosubmit feature
+                         LoginAuthUserViewUnittest::ParamInfoToString);
 
 }  // namespace ash

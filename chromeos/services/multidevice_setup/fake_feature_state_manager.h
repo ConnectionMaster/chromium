@@ -5,7 +5,6 @@
 #ifndef CHROMEOS_SERVICES_MULTIDEVICE_SETUP_FAKE_FEATURE_STATE_MANAGER_H_
 #define CHROMEOS_SERVICES_MULTIDEVICE_SETUP_FAKE_FEATURE_STATE_MANAGER_H_
 
-#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "chromeos/services/multidevice_setup/feature_state_manager.h"
 #include "chromeos/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
@@ -21,6 +20,7 @@ class FakeFeatureStateManager : public FeatureStateManager {
   FakeFeatureStateManager();
   ~FakeFeatureStateManager() override;
 
+  mojom::FeatureState GetFeatureState(mojom::Feature feature);
   void SetFeatureState(mojom::Feature feature, mojom::FeatureState state);
   void SetFeatureStates(const FeatureStatesMap& feature_states_map);
 

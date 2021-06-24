@@ -5,11 +5,9 @@
 #include "third_party/blink/renderer/platform/scheduler/test/fake_task_runner.h"
 
 #include <algorithm>
-#include <deque>
 #include <utility>
 
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
@@ -20,13 +18,15 @@ namespace scheduler {
 class FakeTaskRunner::Data : public WTF::ThreadSafeRefCounted<Data> {
  public:
   Data() = default;
+  Data(const Data&) = delete;
+  Data& operator=(const Data&) = delete;
 
   void PostDelayedTask(base::OnceClosure task, base::TimeDelta delay) {
     task_queue_.emplace_back(std::move(task), time_ + delay);
   }
 
   using PendingTask = FakeTaskRunner::PendingTask;
-  std::deque<PendingTask>::iterator FindRunnableTask() {
+  Deque<PendingTask>::iterator FindRunnableTask() {
     // TODO(tkent): This should return an item which has the minimum |second|.
     return std::find_if(
         task_queue_.begin(), task_queue_.end(),
@@ -34,14 +34,13 @@ class FakeTaskRunner::Data : public WTF::ThreadSafeRefCounted<Data> {
   }
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-  std::deque<PendingTask> task_queue_;
+  Deque<PendingTask> task_queue_;
   base::TimeTicks time_;
 
  private:
   ~Data() = default;
 
   friend ThreadSafeRefCounted<Data>;
-  DISALLOW_COPY_AND_ASSIGN(Data);
 };
 
 FakeTaskRunner::FakeTaskRunner() : data_(base::AdoptRef(new Data)) {}
@@ -79,7 +78,7 @@ void FakeTaskRunner::AdvanceTimeAndRun(base::TimeDelta delta) {
   }
 }
 
-std::deque<std::pair<base::OnceClosure, base::TimeTicks>>
+Deque<std::pair<base::OnceClosure, base::TimeTicks>>
 FakeTaskRunner::TakePendingTasksForTesting() {
   return std::move(data_->task_queue_);
 }

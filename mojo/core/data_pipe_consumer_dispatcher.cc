@@ -49,24 +49,24 @@ static_assert(sizeof(SerializedState) % 8 == 0,
 
 }  // namespace
 
-// A SlotObserver which forwards to a DataPipeConsumerDispatcher. This owns a
+// A PortObserver which forwards to a DataPipeConsumerDispatcher. This owns a
 // reference to the dispatcher to ensure it lives as long as the observed port.
-class DataPipeConsumerDispatcher::SlotObserverThunk
-    : public NodeController::SlotObserver {
+class DataPipeConsumerDispatcher::PortObserverThunk
+    : public NodeController::PortObserver {
  public:
-  explicit SlotObserverThunk(
+  explicit PortObserverThunk(
       scoped_refptr<DataPipeConsumerDispatcher> dispatcher)
       : dispatcher_(dispatcher) {}
 
  private:
-  ~SlotObserverThunk() override {}
+  ~PortObserverThunk() override = default;
 
-  // NodeController::SlotObserver:
-  void OnSlotStatusChanged() override { dispatcher_->OnPortStatusChanged(); }
+  // NodeController::PortObserver:
+  void OnPortStatusChanged() override { dispatcher_->OnPortStatusChanged(); }
 
   scoped_refptr<DataPipeConsumerDispatcher> dispatcher_;
 
-  DISALLOW_COPY_AND_ASSIGN(SlotObserverThunk);
+  DISALLOW_COPY_AND_ASSIGN(PortObserverThunk);
 };
 
 // static
@@ -298,7 +298,7 @@ void DataPipeConsumerDispatcher::StartSerialize(uint32_t* num_bytes,
 
 bool DataPipeConsumerDispatcher::EndSerialize(
     void* destination,
-    ports::UserMessageEvent::PortAttachment* ports,
+    ports::PortName* ports,
     PlatformHandle* platform_handles) {
   SerializedState* state = static_cast<SerializedState*>(destination);
   memcpy(&state->options, &options_, sizeof(MojoCreateDataPipeOptions));
@@ -318,8 +318,7 @@ bool DataPipeConsumerDispatcher::EndSerialize(
   state->buffer_guid_high = guid.GetHighForSerialization();
   state->buffer_guid_low = guid.GetLowForSerialization();
 
-  ports[0].name = control_port_.name();
-  ports[0].slot_id = ports::kDefaultSlotId;
+  ports[0] = control_port_.name();
 
   PlatformHandle handle;
   PlatformHandle ignored_handle;
@@ -341,8 +340,7 @@ bool DataPipeConsumerDispatcher::BeginTransit() {
 }
 
 void DataPipeConsumerDispatcher::CompleteTransitAndClose() {
-  node_controller_->SetSlotObserver(
-      ports::SlotRef(control_port_, ports::kDefaultSlotId), nullptr);
+  node_controller_->SetPortObserver(control_port_, nullptr);
 
   base::AutoLock lock(lock_);
   DCHECK(in_transit_);
@@ -360,13 +358,12 @@ void DataPipeConsumerDispatcher::CancelTransit() {
 
 // static
 scoped_refptr<DataPipeConsumerDispatcher>
-DataPipeConsumerDispatcher::Deserialize(
-    const void* data,
-    size_t num_bytes,
-    const ports::UserMessageEvent::PortAttachment* ports,
-    size_t num_ports,
-    PlatformHandle* handles,
-    size_t num_handles) {
+DataPipeConsumerDispatcher::Deserialize(const void* data,
+                                        size_t num_bytes,
+                                        const ports::PortName* ports,
+                                        size_t num_ports,
+                                        PlatformHandle* handles,
+                                        size_t num_handles) {
   if (num_ports != 1 || num_handles != 1 ||
       num_bytes != sizeof(SerializedState)) {
     return nullptr;
@@ -382,10 +379,8 @@ DataPipeConsumerDispatcher::Deserialize(
 
   NodeController* node_controller = Core::Get()->GetNodeController();
   ports::PortRef port;
-  if (node_controller->node()->GetPort(ports[0].name, &port) != ports::OK ||
-      ports[0].slot_id != ports::kDefaultSlotId) {
+  if (node_controller->node()->GetPort(ports[0], &port) != ports::OK)
     return nullptr;
-  }
 
   auto region_handle = CreateSharedMemoryRegionHandleFromPlatformHandles(
       std::move(handles[0]), PlatformHandle());
@@ -457,9 +452,8 @@ bool DataPipeConsumerDispatcher::InitializeNoLock() {
   }
 
   base::AutoUnlock unlock(lock_);
-  node_controller_->SetSlotObserver(
-      ports::SlotRef(control_port_, ports::kDefaultSlotId),
-      base::MakeRefCounted<SlotObserverThunk>(this));
+  node_controller_->SetPortObserver(
+      control_port_, base::MakeRefCounted<PortObserverThunk>(this));
 
   return true;
 }
@@ -556,8 +550,8 @@ void DataPipeConsumerDispatcher::UpdateSignalsStateNoLock() {
   } else if (rv == ports::OK && port_status.has_messages && !in_transit_) {
     std::unique_ptr<ports::UserMessageEvent> message_event;
     do {
-      int rv = node_controller_->node()->GetMessage(control_port_,
-                                                    &message_event, nullptr);
+      rv = node_controller_->node()->GetMessage(control_port_, &message_event,
+                                                nullptr);
       if (rv != ports::OK)
         peer_closed_ = true;
       if (message_event) {

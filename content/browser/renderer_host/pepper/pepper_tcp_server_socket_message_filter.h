@@ -14,20 +14,24 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/common/content_export.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/base/ip_endpoint.h"
 #include "ppapi/c/pp_instance.h"
 #include "ppapi/c/private/ppb_net_address_private.h"
 #include "ppapi/host/resource_message_filter.h"
 #include "services/network/public/mojom/tcp_socket.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chromeos/network/firewall_hole.h"
 #include "content/public/browser/browser_thread.h"
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 namespace network {
 namespace mojom {
@@ -77,7 +81,7 @@ class CONTENT_EXPORT PepperTCPServerSocketMessageFilter
 
   // ppapi::host::ResourceMessageFilter overrides.
   void OnFilterDestroyed() override;
-  scoped_refptr<base::TaskRunner> OverrideTaskRunnerForMessage(
+  scoped_refptr<base::SequencedTaskRunner> OverrideTaskRunnerForMessage(
       const IPC::Message& message) override;
   int32_t OnResourceMessageReceived(
       const IPC::Message& msg,
@@ -94,19 +98,21 @@ class CONTENT_EXPORT PepperTCPServerSocketMessageFilter
 
   void OnListenCompleted(const ppapi::host::ReplyMessageContext& context,
                          int net_result,
-                         const base::Optional<net::IPEndPoint>& local_addr);
+                         const absl::optional<net::IPEndPoint>& local_addr);
   void OnAcceptCompleted(
       const ppapi::host::ReplyMessageContext& context,
-      network::mojom::SocketObserverRequest socket_observer_request,
+      mojo::PendingReceiver<network::mojom::SocketObserver>
+          socket_observer_receiver,
       int net_result,
-      const base::Optional<net::IPEndPoint>& remote_addr,
-      network::mojom::TCPConnectedSocketPtr connected_socket,
+      const absl::optional<net::IPEndPoint>& remote_addr,
+      mojo::PendingRemote<network::mojom::TCPConnectedSocket> connected_socket,
       mojo::ScopedDataPipeConsumerHandle receive_stream,
       mojo::ScopedDataPipeProducerHandle send_stream);
-  void OnAcceptCompletedOnIOThread(
+  void OnAcceptCompletedOnProcessThread(
       const ppapi::host::ReplyMessageContext& context,
-      network::mojom::TCPConnectedSocketPtrInfo connected_socket,
-      network::mojom::SocketObserverRequest socket_observer_request,
+      mojo::PendingRemote<network::mojom::TCPConnectedSocket> connected_socket,
+      mojo::PendingReceiver<network::mojom::SocketObserver>
+          socket_observer_receiver,
       mojo::ScopedDataPipeConsumerHandle receive_stream,
       mojo::ScopedDataPipeProducerHandle send_stream,
       PP_NetAddress_Private pp_local_addr,
@@ -129,14 +135,16 @@ class CONTENT_EXPORT PepperTCPServerSocketMessageFilter
   void SendAcceptError(const ppapi::host::ReplyMessageContext& context,
                        int32_t pp_result);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   void OpenFirewallHole(const ppapi::host::ReplyMessageContext& context,
                         const net::IPEndPoint& local_addr);
   void OnFirewallHoleOpened(const ppapi::host::ReplyMessageContext& context,
                             std::unique_ptr<chromeos::FirewallHole> hole);
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   // Following fields are initialized and used only on the IO thread.
+  // Non-owning ptr.
+  BrowserPpapiHostImpl* host_;
   // Non-owning ptr.
   ppapi::host::PpapiHost* ppapi_host_;
   // Non-owning ptr.
@@ -144,15 +152,15 @@ class CONTENT_EXPORT PepperTCPServerSocketMessageFilter
   PP_Instance instance_;
 
   State state_;
-  network::mojom::TCPServerSocketPtr socket_;
+  mojo::Remote<network::mojom::TCPServerSocket> socket_;
 
   PP_NetAddress_Private bound_addr_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<chromeos::FirewallHole,
                   content::BrowserThread::DeleteOnUIThread>
       firewall_hole_;
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   // Following fields are initialized on the IO thread but used only
   // on the UI thread.
@@ -166,7 +174,8 @@ class CONTENT_EXPORT PepperTCPServerSocketMessageFilter
 
   // Vends weak pointers on the UI thread, for callbacks passed through Mojo
   // pipes not owned by |this|. All weak pointers released in Close().
-  base::WeakPtrFactory<PepperTCPServerSocketMessageFilter> weak_ptr_factory_;
+  base::WeakPtrFactory<PepperTCPServerSocketMessageFilter> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(PepperTCPServerSocketMessageFilter);
 };

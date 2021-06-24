@@ -7,7 +7,8 @@
 #include <set>
 #include <unordered_map>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "build/build_config.h"
 #include "net/base/ip_address.h"
 #include "net/dns/public/dns_protocol.h"
@@ -28,21 +29,17 @@ IPEndPoint GetMdnsIPEndPoint(const char* address) {
 
 namespace dns_util {
 
-bool IsValidDoHTemplate(const string& server_template,
-                        const string& server_method) {
+bool IsValidDohTemplate(base::StringPiece server_template,
+                        std::string* server_method) {
   std::string url_string;
   std::string test_query = "this_is_a_test_query";
   std::unordered_map<std::string, std::string> template_params(
       {{"dns", test_query}});
   std::set<std::string> vars_found;
-  bool valid_template = uri_template::Expand(server_template, template_params,
-                                             &url_string, &vars_found);
+  bool valid_template = uri_template::Expand(
+      std::string(server_template), template_params, &url_string, &vars_found);
   if (!valid_template) {
     // The URI template is malformed.
-    return false;
-  }
-  if (server_method != "POST" && vars_found.find("dns") == vars_found.end()) {
-    // GET requests require the template to have a dns variable.
     return false;
   }
   GURL url(url_string);
@@ -53,6 +50,11 @@ bool IsValidDoHTemplate(const string& server_template,
   if (url.host().find(test_query) != std::string::npos) {
     // The dns variable may not be part of the hostname.
     return false;
+  }
+  // If the template contains a dns variable, use GET, otherwise use POST.
+  if (server_method) {
+    *server_method =
+        (vars_found.find("dns") == vars_found.end()) ? "POST" : "GET";
   }
   return true;
 }
@@ -75,7 +77,7 @@ IPEndPoint GetMdnsReceiveEndPoint(AddressFamily address_family) {
 // CrOS as described in crbug.com/931916, and the following is a temporary
 // mitigation to reconcile the two issues. Remove this after closing
 // crbug.com/899310.
-#if defined(OS_WIN) || defined(OS_FUCHSIA) || defined(OS_MACOSX)
+#if defined(OS_WIN) || defined(OS_FUCHSIA) || defined(OS_APPLE)
   // With Windows, binding to a mulitcast group address is not allowed.
   // Multicast messages will be received appropriate to the multicast groups the
   // socket has joined. Sockets intending to receive multicast messages should
@@ -91,12 +93,12 @@ IPEndPoint GetMdnsReceiveEndPoint(AddressFamily address_family) {
       NOTREACHED();
       return IPEndPoint();
   }
-#else   // !(defined(OS_WIN) || defined(OS_FUCHSIA)) || defined(OS_MACOSX)
+#else   // !(defined(OS_WIN) || defined(OS_FUCHSIA)) || defined(OS_APPLE)
   // With POSIX, any socket can receive messages for multicast groups joined by
   // any socket on the system. Sockets intending to receive messages for a
   // specific multicast group should bind to that group address.
   return GetMdnsGroupEndPoint(address_family);
-#endif  // !(defined(OS_WIN) || defined(OS_FUCHSIA)) || defined(OS_MACOSX)
+#endif  // !(defined(OS_WIN) || defined(OS_FUCHSIA)) || defined(OS_APPLE)
 }
 
 }  // namespace dns_util

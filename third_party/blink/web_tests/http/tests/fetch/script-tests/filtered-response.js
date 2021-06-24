@@ -5,6 +5,7 @@ if (self.importScripts) {
 
 // Spec: https://fetch.spec.whatwg.org/#concept-filtered-response
 
+var {OTHER_ORIGIN} = get_fetch_test_options();
 var base_url = '../resources/filtered-response.php';
 var other_url = OTHER_ORIGIN + '/fetch/resources/filtered-response.php';
 
@@ -31,6 +32,7 @@ function check_headers(headers,
 var headers_common = [
   ['cAche-cOntrol', 'private, no-store, no-cache, must-revalidate'],
   ['cOntent-lAnguage', 'test-content-language'],
+  ['cOntent-lEngth', '8'],  // size of response body "Success."
   ['cOntent-tYpe', 'test-content-type'],
   ['eXpires', 'test-expires'],
   ['lAst-mOdified', 'test-last-modified'],

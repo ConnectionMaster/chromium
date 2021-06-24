@@ -9,18 +9,12 @@
 
 #include "base/ios/block_types.h"
 #include "base/macros.h"
-#include "ios/web/public/web_state/web_state_observer.h"
-#import "ios/web/public/web_state/web_state_user_data.h"
+#include "ios/web/public/web_state_observer.h"
+#import "ios/web/public/web_state_user_data.h"
 
 @class FindInPageController;
 @class FindInPageModel;
-
-typedef void (^FindInPageCompletionBlock)(FindInPageModel*);
-
-// Names for Find In Page UMA actions (Find, FindNext, FindPrevious).
-extern const char kFindActionName[];
-extern const char kFindNextActionName[];
-extern const char kFindPreviousActionName[];
+@protocol FindInPageResponseDelegate;
 
 // Adds support for the "Find in page" feature.
 class FindTabHelper : public web::WebStateObserver,
@@ -33,21 +27,23 @@ class FindTabHelper : public web::WebStateObserver,
     REVERSE,
   };
 
+  // Sets the FindInPageResponseDelegate delegate to send responses to
+  // StartFinding(), ContinueFinding(), and StopFinding().
+  void SetResponseDelegate(id<FindInPageResponseDelegate> response_delegate);
+
   // Starts an asynchronous Find operation that will call the given completion
   // handler with results.  Highlights matches on the current page.  Always
   // searches in the FORWARD direction.
-  void StartFinding(NSString* search_string,
-                    FindInPageCompletionBlock completion);
+  void StartFinding(NSString* search_string);
 
   // Runs an asynchronous Find operation that will call the given completion
   // handler with results.  Highlights matches on the current page.  Uses the
   // previously remembered search string and searches in the given |direction|.
-  void ContinueFinding(FindDirection direction,
-                       FindInPageCompletionBlock completion);
+  void ContinueFinding(FindDirection direction);
 
   // Stops any running find operations and runs the given completion block.
   // Removes any highlighting from the current page.
-  void StopFinding(ProceduralBlock completion);
+  void StopFinding();
 
   // Returns the FindInPageModel that contains the latest find results.
   FindInPageModel* GetFindResult() const;
@@ -77,9 +73,9 @@ class FindTabHelper : public web::WebStateObserver,
   FindTabHelper(web::WebState* web_state);
 
   // web::WebStateObserver.
+  void WebStateDestroyed(web::WebState* web_state) override;
   void DidFinishNavigation(web::WebState* web_state,
                            web::NavigationContext* navigation_context) override;
-  void WebStateDestroyed(web::WebState* web_state) override;
 
   // The ObjC find in page controller.
   FindInPageController* controller_;

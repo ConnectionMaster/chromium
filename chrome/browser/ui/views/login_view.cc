@@ -11,6 +11,7 @@
 #include "chrome/browser/ui/views/textfield_layout.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
@@ -23,15 +24,15 @@ constexpr int kFieldsColumnSetId = 1;
 
 // Adds a row to |layout| and puts a Label in it.
 void AddHeaderLabel(views::GridLayout* layout,
-                    const base::string16& text,
+                    const std::u16string& text,
                     int text_style) {
-  views::Label* label =
-      new views::Label(text, views::style::CONTEXT_LABEL, text_style);
+  auto label = std::make_unique<views::Label>(text, views::style::CONTEXT_LABEL,
+                                              text_style);
   label->SetMultiLine(true);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetAllowCharacterBreak(true);
   layout->StartRow(views::GridLayout::kFixedSize, kHeaderColumnSetId);
-  layout->AddView(label);
+  layout->AddView(std::move(label));
 }
 
 }  // namespace
@@ -39,26 +40,27 @@ void AddHeaderLabel(views::GridLayout* layout,
 ///////////////////////////////////////////////////////////////////////////////
 // LoginView, public:
 
-LoginView::LoginView(const base::string16& authority,
-                     const base::string16& explanation,
+LoginView::LoginView(const std::u16string& authority,
+                     const std::u16string& explanation,
                      LoginHandler::LoginModelData* login_model_data)
-    : login_model_(login_model_data ? login_model_data->model : nullptr) {
+    : http_auth_manager_(login_model_data ? login_model_data->model : nullptr) {
   // TODO(tapted): When Harmony is default, this should be removed and left up
   // to textfield_layout.h to decide.
   constexpr int kMessageWidth = 320;
   ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
-  SetBorder(views::CreateEmptyBorder(
-      provider->GetDialogInsetsForContentType(views::TEXT, views::CONTROL)));
+  SetBorder(views::CreateEmptyBorder(provider->GetDialogInsetsForContentType(
+      views::DialogContentType::kText, views::DialogContentType::kControl)));
 
   // Initialize the Grid Layout Manager used for this dialog box.
   views::GridLayout* layout =
-      SetLayoutManager(std::make_unique<views::GridLayout>(this));
+      SetLayoutManager(std::make_unique<views::GridLayout>());
   views::ColumnSet* column_set = layout->AddColumnSet(kHeaderColumnSetId);
   column_set->AddColumn(views::GridLayout::FILL, views::GridLayout::FILL, 1.0,
-                        views::GridLayout::FIXED, kMessageWidth, 0);
+                        views::GridLayout::ColumnSize::kFixed, kMessageWidth,
+                        0);
   AddHeaderLabel(layout, authority, views::style::STYLE_PRIMARY);
   if (!explanation.empty())
-    AddHeaderLabel(layout, explanation, STYLE_SECONDARY);
+    AddHeaderLabel(layout, explanation, views::style::STYLE_SECONDARY);
   layout->AddPaddingRow(
       views::GridLayout::kFixedSize,
       provider->GetDistanceMetric(DISTANCE_UNRELATED_CONTROL_VERTICAL_LARGE));
@@ -72,23 +74,23 @@ LoginView::LoginView(const base::string16& authority,
       kFieldsColumnSetId);
   password_field_->SetTextInputType(ui::TEXT_INPUT_TYPE_PASSWORD);
 
-  if (login_model_data) {
-    login_model_->AddObserverAndDeliverCredentials(this,
-                                                   login_model_data->form);
+  if (http_auth_manager_) {
+    http_auth_manager_->SetObserverAndDeliverCredentials(
+        this, login_model_data->form);
   }
 }
 
 LoginView::~LoginView() {
-  if (login_model_)
-    login_model_->RemoveObserver(this);
+  if (http_auth_manager_)
+    http_auth_manager_->DetachObserver(this);
 }
 
-const base::string16& LoginView::GetUsername() const {
-  return username_field_->text();
+const std::u16string& LoginView::GetUsername() const {
+  return username_field_->GetText();
 }
 
-const base::string16& LoginView::GetPassword() const {
-  return password_field_->text();
+const std::u16string& LoginView::GetPassword() const {
+  return password_field_->GetText();
 }
 
 views::View* LoginView::GetInitiallyFocusedView() {
@@ -96,12 +98,11 @@ views::View* LoginView::GetInitiallyFocusedView() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// LoginView, views::View, password_manager::LoginModelObserver overrides:
+// LoginView, views::View, password_manager::HttpAuthObserver overrides:
 
-void LoginView::OnAutofillDataAvailableInternal(
-    const base::string16& username,
-    const base::string16& password) {
-  if (username_field_->text().empty()) {
+void LoginView::OnAutofillDataAvailable(const std::u16string& username,
+                                        const std::u16string& password) {
+  if (username_field_->GetText().empty()) {
     username_field_->SetText(username);
     password_field_->SetText(password);
     username_field_->SelectAll(true);
@@ -109,11 +110,10 @@ void LoginView::OnAutofillDataAvailableInternal(
 }
 
 void LoginView::OnLoginModelDestroying() {
-  login_model_->RemoveObserver(this);
-  login_model_ = NULL;
+  http_auth_manager_ = nullptr;
 }
 
-const char* LoginView::GetClassName() const {
-  return "LoginView";
-}
-
+BEGIN_METADATA(LoginView, views::View)
+ADD_READONLY_PROPERTY_METADATA(std::u16string, Username)
+ADD_READONLY_PROPERTY_METADATA(std::u16string, Password)
+END_METADATA

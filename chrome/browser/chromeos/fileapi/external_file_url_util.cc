@@ -9,8 +9,8 @@
 
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/chromeos/file_manager/app_id.h"
-#include "chrome/browser/chromeos/file_manager/fileapi_util.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/browser_context.h"
@@ -18,17 +18,18 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/url_constants.h"
 #include "net/base/escape.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_context.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 using content::BrowserThread;
 
 namespace chromeos {
 
 bool IsExternalFileURLType(storage::FileSystemType type, bool force) {
-  return type == storage::kFileSystemTypeDrive ||
-         type == storage::kFileSystemTypeDeviceMediaAsFileStorage ||
+  return type == storage::kFileSystemTypeDeviceMediaAsFileStorage ||
          type == storage::kFileSystemTypeProvided ||
-         type == storage::kFileSystemTypeArcContent || force;
+         type == storage::kFileSystemTypeArcContent ||
+         type == storage::kFileSystemTypeArcDocumentsProvider || force;
 }
 
 GURL FileSystemURLToExternalFileURL(
@@ -45,9 +46,8 @@ GURL FileSystemURLToExternalFileURL(
 base::FilePath ExternalFileURLToVirtualPath(const GURL& url) {
   if (!url.is_valid() || url.scheme() != content::kExternalFileScheme)
     return base::FilePath();
-  std::string path_string;
-  net::UnescapeBinaryURLComponent(url.path(), &path_string);
-  return base::FilePath::FromUTF8Unsafe(path_string);
+  return base::FilePath::FromUTF8Unsafe(
+      net::UnescapeBinaryURLComponent(url.path_piece()));
 }
 
 GURL VirtualPathToExternalFileURL(const base::FilePath& virtual_path) {
@@ -63,17 +63,14 @@ GURL CreateExternalFileURLFromPath(Profile* profile,
 
   GURL raw_file_system_url;
   if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
-          profile,
-          path,
-          file_manager::kFileManagerAppId,
+          profile, path, file_manager::util::GetFileManagerURL(),
           &raw_file_system_url)) {
     return GURL();
   }
 
   const storage::FileSystemURL file_system_url =
-      file_manager::util::GetFileSystemContextForExtensionId(
-          profile, file_manager::kFileManagerAppId)
-          ->CrackURL(raw_file_system_url);
+      file_manager::util::GetFileManagerFileSystemContext(profile)->CrackURL(
+          raw_file_system_url);
   if (!file_system_url.is_valid())
     return GURL();
 

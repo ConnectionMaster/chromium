@@ -5,8 +5,6 @@
 #ifndef REMOTING_HOST_DESKTOP_ENVIRONMENT_OPTIONS_H_
 #define REMOTING_HOST_DESKTOP_ENVIRONMENT_OPTIONS_H_
 
-#include <memory>
-
 #include "base/memory/weak_ptr.h"
 #include "remoting/base/session_options.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_options.h"
@@ -36,6 +34,12 @@ class DesktopEnvironmentOptions final {
   bool enable_user_interface() const;
   void set_enable_user_interface(bool enabled);
 
+  bool enable_notifications() const;
+  void set_enable_notifications(bool enabled);
+
+  bool terminate_upon_input() const;
+  void set_terminate_upon_input(bool enabled);
+
   bool enable_file_transfer() const;
   void set_enable_file_transfer(bool enabled);
 
@@ -55,6 +59,12 @@ class DesktopEnvironmentOptions final {
 
   // True if a user-interactive window is showing up in it2me scenario.
   bool enable_user_interface_ = true;
+
+  // True if a notification should be shown when a remote user is connected.
+  bool enable_notifications_ = true;
+
+  // True if the session should be terminated when local input is detected.
+  bool terminate_upon_input_ = false;
 
   // True if this host has file transfer enabled.
   bool enable_file_transfer_ = false;

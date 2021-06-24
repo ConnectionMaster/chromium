@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -27,13 +27,14 @@ class CORE_EXPORT SerializedScriptValueFactory {
   friend class SerializedScriptValue;
   friend class UnpackedSerializedScriptValue;
 
-  // Following 2 methods are expected to be called by SerializedScriptValue.
+  // Following methods are expected to be called by SerializedScriptValue.
+  // |object_index| is for use in exception messages.
+  virtual bool ExtractTransferable(v8::Isolate*,
+                                   v8::Local<v8::Value>,
+                                   wtf_size_t object_index,
+                                   Transferables&,
+                                   ExceptionState&);
 
-  // If a serialization error occurs (e.g., cyclic input value) this
-  // function returns an empty representation, schedules a V8 exception to
-  // be thrown using v8::ThrowException(), and sets |didThrow|. In this case
-  // the caller must not invoke any V8 operations until control returns to
-  // V8. When serialization is successful, |didThrow| is false.
   virtual scoped_refptr<SerializedScriptValue> Create(
       v8::Isolate*,
       v8::Local<v8::Value>,

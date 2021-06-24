@@ -8,7 +8,8 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "sandbox/win/src/ipc_tags.h"
 #include "sandbox/win/src/policy_engine_opcodes.h"
 #include "sandbox/win/src/policy_params.h"
@@ -121,15 +122,15 @@ namespace sandbox {
 bool RegistryPolicy::GenerateRules(const wchar_t* name,
                                    TargetPolicy::Semantics semantics,
                                    LowLevelPolicy* policy) {
-  base::string16 resovled_name(name);
-  if (resovled_name.empty()) {
+  std::wstring resolved_name(name);
+  if (resolved_name.empty()) {
     return false;
   }
 
-  if (!ResolveRegistryName(resovled_name, &resovled_name))
+  if (!ResolveRegistryName(resolved_name, &resolved_name))
     return false;
 
-  name = resovled_name.c_str();
+  name = resolved_name.c_str();
 
   EvalResult result = ASK_BROKER;
 
@@ -156,12 +157,12 @@ bool RegistryPolicy::GenerateRules(const wchar_t* name,
   }
 
   if (!create.AddStringMatch(IF, OpenKey::NAME, name, CASE_INSENSITIVE) ||
-      !policy->AddRule(IPC_NTCREATEKEY_TAG, &create)) {
+      !policy->AddRule(IpcTag::NTCREATEKEY, &create)) {
     return false;
   }
 
   if (!open.AddStringMatch(IF, OpenKey::NAME, name, CASE_INSENSITIVE) ||
-      !policy->AddRule(IPC_NTOPENKEY_TAG, &open)) {
+      !policy->AddRule(IpcTag::NTOPENKEY, &open)) {
     return false;
   }
 
@@ -170,7 +171,7 @@ bool RegistryPolicy::GenerateRules(const wchar_t* name,
 
 bool RegistryPolicy::CreateKeyAction(EvalResult eval_result,
                                      const ClientInfo& client_info,
-                                     const base::string16& key,
+                                     const std::wstring& key,
                                      uint32_t attributes,
                                      HANDLE root_directory,
                                      uint32_t desired_access,
@@ -204,7 +205,7 @@ bool RegistryPolicy::CreateKeyAction(EvalResult eval_result,
 
 bool RegistryPolicy::OpenKeyAction(EvalResult eval_result,
                                    const ClientInfo& client_info,
-                                   const base::string16& key,
+                                   const std::wstring& key,
                                    uint32_t attributes,
                                    HANDLE root_directory,
                                    uint32_t desired_access,

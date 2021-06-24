@@ -24,19 +24,21 @@
 
 #include "third_party/blink/renderer/core/html/text_document.h"
 
-#include "third_party/blink/renderer/core/frame/use_counter.h"
 #include "third_party/blink/renderer/core/html/parser/text_document_parser.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
 TextDocument::TextDocument(const DocumentInit& initializer)
     : HTMLDocument(initializer) {
-  SetCompatibilityMode(kQuirksMode);
+  SetCompatibilityMode(kNoQuirksMode);
   LockCompatibilityMode();
 }
 
 DocumentParser* TextDocument::CreateParser() {
-  return TextDocumentParser::Create(*this, GetParserSynchronizationPolicy());
+  return MakeGarbageCollected<TextDocumentParser>(
+      *this, GetParserSynchronizationPolicy());
 }
 
 }  // namespace blink

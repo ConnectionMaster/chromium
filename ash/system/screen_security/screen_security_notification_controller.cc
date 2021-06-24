@@ -40,7 +40,7 @@ ScreenSecurityNotificationController::~ScreenSecurityNotificationController() {
 }
 
 void ScreenSecurityNotificationController::CreateNotification(
-    const base::string16& message,
+    const std::u16string& message,
     bool is_capture) {
   message_center::RichNotificationData data;
   data.buttons.push_back(message_center::ButtonInfo(l10n_util::GetStringUTF16(
@@ -58,7 +58,7 @@ void ScreenSecurityNotificationController::CreateNotification(
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(
               [](base::WeakPtr<ScreenSecurityNotificationController> controller,
-                 bool is_capture, base::Optional<int> button_index) {
+                 bool is_capture, absl::optional<int> button_index) {
                 if (!button_index)
                   return;
 
@@ -80,17 +80,16 @@ void ScreenSecurityNotificationController::CreateNotification(
               },
               weak_ptr_factory_.GetWeakPtr(), is_capture));
 
-  std::unique_ptr<Notification> notification = ash::CreateSystemNotification(
+  std::unique_ptr<Notification> notification = CreateSystemNotification(
       message_center::NOTIFICATION_TYPE_SIMPLE,
       is_capture ? kScreenCaptureNotificationId : kScreenShareNotificationId,
       l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_SCREEN_SHARE_TITLE),
-      message, base::string16() /* display_source */, GURL(),
+      message, std::u16string() /* display_source */, GURL(),
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT,
           is_capture ? kNotifierScreenCapture : kNotifierScreenShare),
       data, std::move(delegate), kNotificationScreenshareIcon,
       message_center::SystemNotificationWarningLevel::NORMAL);
-  notification->SetSystemPriority();
   notification->set_pinned(true);
   message_center::MessageCenter::Get()->AddNotification(
       std::move(notification));
@@ -118,11 +117,11 @@ void ScreenSecurityNotificationController::ChangeSource() {
 }
 
 void ScreenSecurityNotificationController::OnScreenCaptureStart(
-    base::RepeatingClosure stop_callback,
-    base::RepeatingClosure source_callback,
-    const base::string16& screen_capture_status) {
-  capture_stop_callbacks_.emplace_back(std::move(stop_callback));
-  change_source_callback_ = std::move(source_callback);
+    const base::RepeatingClosure& stop_callback,
+    const base::RepeatingClosure& source_callback,
+    const std::u16string& screen_capture_status) {
+  capture_stop_callbacks_.push_back(stop_callback);
+  change_source_callback_ = source_callback;
 
   // We do not want to show the screen capture notification and the chromecast
   // casting tray notification at the same time.
@@ -142,11 +141,11 @@ void ScreenSecurityNotificationController::OnScreenCaptureStop() {
 }
 
 void ScreenSecurityNotificationController::OnScreenShareStart(
-    const base::Closure& stop_callback,
-    const base::string16& helper_name) {
+    const base::RepeatingClosure& stop_callback,
+    const std::u16string& helper_name) {
   share_stop_callbacks_.emplace_back(std::move(stop_callback));
 
-  base::string16 help_label_text;
+  std::u16string help_label_text;
   if (!helper_name.empty()) {
     help_label_text = l10n_util::GetStringFUTF16(
         IDS_ASH_STATUS_TRAY_SCREEN_SHARE_BEING_HELPED_NAME, helper_name);

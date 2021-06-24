@@ -5,34 +5,33 @@
 #ifndef COMPONENTS_AUTOFILL_ASSISTANT_BROWSER_ACTIONS_SET_ATTRIBUTE_ACTION_H_
 #define COMPONENTS_AUTOFILL_ASSISTANT_BROWSER_ACTIONS_SET_ATTRIBUTE_ACTION_H_
 
-#include <string>
-#include <vector>
-
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "components/autofill_assistant/browser/actions/action.h"
+#include "components/autofill_assistant/browser/actions/action_delegate.h"
+#include "components/autofill_assistant/browser/client_status.h"
+#include "components/autofill_assistant/browser/web/element_finder.h"
 
 namespace autofill_assistant {
 
 // An action to set the attribute of an element.
 class SetAttributeAction : public Action {
  public:
-  explicit SetAttributeAction(const ActionProto& proto);
+  explicit SetAttributeAction(ActionDelegate* delegate,
+                              const ActionProto& proto);
   ~SetAttributeAction() override;
 
  private:
   // Overrides Action:
-  void InternalProcessAction(ActionDelegate* delegate,
-                             ProcessActionCallback callback) override;
+  void InternalProcessAction(ProcessActionCallback callback) override;
 
-  void OnWaitForElement(ActionDelegate* delegate,
-                        ProcessActionCallback callback,
+  void OnWaitForElement(ProcessActionCallback callback,
                         const Selector& selector,
-                        bool element_found);
+                        const ClientStatus& element_status);
   void OnSetAttribute(ProcessActionCallback callback,
                       const ClientStatus& status);
 
-  base::WeakPtrFactory<SetAttributeAction> weak_ptr_factory_;
+  base::WeakPtrFactory<SetAttributeAction> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SetAttributeAction);
 };

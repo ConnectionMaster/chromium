@@ -31,9 +31,10 @@
 
 #include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
 
-#include "third_party/blink/public/platform/web_media_stream.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream.h"
+#include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
-#include "third_party/blink/renderer/platform/uuid.h"
+#include "third_party/blink/renderer/platform/wtf/uuid.h"
 
 namespace blink {
 
@@ -63,7 +64,7 @@ void MediaStreamDescriptor::AddComponent(MediaStreamComponent* component) {
   // Iterate over a copy of |observers_| to avoid re-entrancy issues.
   Vector<WebMediaStreamObserver*> observers = observers_;
   for (auto*& observer : observers)
-    observer->TrackAdded(component);
+    observer->TrackAdded(WebString(component->Id()));
 }
 
 void MediaStreamDescriptor::RemoveComponent(MediaStreamComponent* component) {
@@ -84,21 +85,27 @@ void MediaStreamDescriptor::RemoveComponent(MediaStreamComponent* component) {
   // Iterate over a copy of |observers_| to avoid re-entrancy issues.
   Vector<WebMediaStreamObserver*> observers = observers_;
   for (auto*& observer : observers)
-    observer->TrackRemoved(component);
+    observer->TrackRemoved(WebString(component->Id()));
 }
 
 void MediaStreamDescriptor::AddRemoteTrack(MediaStreamComponent* component) {
-  if (client_)
-    client_->AddTrackByComponentAndFireEvents(component);
-  else
+  if (client_) {
+    client_->AddTrackByComponentAndFireEvents(
+        component,
+        MediaStreamDescriptorClient::DispatchEventTiming::kScheduled);
+  } else {
     AddComponent(component);
+  }
 }
 
 void MediaStreamDescriptor::RemoveRemoteTrack(MediaStreamComponent* component) {
-  if (client_)
-    client_->RemoveTrackByComponentAndFireEvents(component);
-  else
+  if (client_) {
+    client_->RemoveTrackByComponentAndFireEvents(
+        component,
+        MediaStreamDescriptorClient::DispatchEventTiming::kScheduled);
+  } else {
     RemoveComponent(component);
+  }
 }
 
 void MediaStreamDescriptor::SetActive(bool active) {
@@ -126,7 +133,7 @@ void MediaStreamDescriptor::RemoveObserver(WebMediaStreamObserver* observer) {
 MediaStreamDescriptor::MediaStreamDescriptor(
     const MediaStreamSourceVector& audio_sources,
     const MediaStreamSourceVector& video_sources)
-    : MediaStreamDescriptor(CreateCanonicalUUIDString(),
+    : MediaStreamDescriptor(WTF::CreateCanonicalUUIDString(),
                             audio_sources,
                             video_sources) {}
 
@@ -150,7 +157,7 @@ MediaStreamDescriptor::MediaStreamDescriptor(
 MediaStreamDescriptor::MediaStreamDescriptor(
     const MediaStreamComponentVector& audio_components,
     const MediaStreamComponentVector& video_components)
-    : MediaStreamDescriptor(CreateCanonicalUUIDString(),
+    : MediaStreamDescriptor(WTF::CreateCanonicalUUIDString(),
                             audio_components,
                             video_components) {}
 
@@ -170,7 +177,7 @@ MediaStreamDescriptor::MediaStreamDescriptor(
     video_components_.push_back((*iter));
 }
 
-void MediaStreamDescriptor::Trace(blink::Visitor* visitor) {
+void MediaStreamDescriptor::Trace(Visitor* visitor) const {
   visitor->Trace(audio_components_);
   visitor->Trace(video_components_);
   visitor->Trace(client_);

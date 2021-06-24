@@ -11,7 +11,6 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
 #include "media/base/media_export.h"
 #include "media/filters/ffmpeg_demuxer.h"
 
@@ -75,7 +74,7 @@ class MEDIA_EXPORT VideoFrameExtractor {
 
   VideoFrameCallback video_frame_callback_;
 
-  base::WeakPtrFactory<VideoFrameExtractor> weak_factory_;
+  base::WeakPtrFactory<VideoFrameExtractor> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(VideoFrameExtractor);
 };

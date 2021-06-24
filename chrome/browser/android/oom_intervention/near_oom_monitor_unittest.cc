@@ -5,8 +5,8 @@
 #include "chrome/browser/android/oom_intervention/near_oom_monitor.h"
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/sequenced_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -56,11 +56,11 @@ class TestNearOomObserver {
  public:
   explicit TestNearOomObserver(NearOomMonitor* monitor) {
     DCHECK(monitor);
-    subscription_ = monitor->RegisterCallback(base::Bind(
+    subscription_ = monitor->RegisterCallback(base::BindRepeating(
         &TestNearOomObserver::OnNearOomDetected, base::Unretained(this)));
   }
 
-  void Unsubscribe() { subscription_.reset(); }
+  void Unsubscribe() { subscription_ = {}; }
 
   bool is_detected() const { return is_detected_; }
 
@@ -68,7 +68,7 @@ class TestNearOomObserver {
   void OnNearOomDetected() { is_detected_ = true; }
 
   bool is_detected_ = false;
-  std::unique_ptr<NearOomMonitor::Subscription> subscription_;
+  base::CallbackListSubscription subscription_;
 
   DISALLOW_COPY_AND_ASSIGN(TestNearOomObserver);
 };
@@ -82,7 +82,7 @@ class NearOomMonitorTest : public testing::Test {
 
  protected:
   scoped_refptr<base::TestMockTimeTaskRunner> task_runner_;
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<MockNearOomMonitor> monitor_;
 };
 

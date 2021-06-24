@@ -12,14 +12,20 @@
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
+#include "components/safe_browsing/buildflags.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "net/base/directory_lister.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
+
+#if BUILDFLAG(FULL_SAFE_BROWSING)
+#include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate.h"
+#endif
 
 class Profile;
 
@@ -50,13 +56,13 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   // Show the file chooser dialog.
   static void RunFileChooser(
       content::RenderFrameHost* render_frame_host,
-      std::unique_ptr<content::FileSelectListener> listener,
+      scoped_refptr<content::FileSelectListener> listener,
       const blink::mojom::FileChooserParams& params);
 
   // Enumerates all the files in directory.
   static void EnumerateDirectory(
       content::WebContents* tab,
-      std::unique_ptr<content::FileSelectListener> listener,
+      scoped_refptr<content::FileSelectListener> listener,
       const base::FilePath& path);
 
  private:
@@ -70,16 +76,28 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, ZipPackage);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, GetSanitizedFileName);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, LastSelectedDirectory);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
+                           ContentAnalysisCompletionCallback_NoFiles);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
+                           ContentAnalysisCompletionCallback_OneOKFile);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
+                           ContentAnalysisCompletionCallback_TwoOKFiles);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
+                           ContentAnalysisCompletionCallback_TwoBadFiles);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
+                           ContentAnalysisCompletionCallback_OKBadFiles);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, GetFileTypesFromAcceptType);
+
   explicit FileSelectHelper(Profile* profile);
   ~FileSelectHelper() override;
 
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      std::unique_ptr<content::FileSelectListener> listener,
+                      scoped_refptr<content::FileSelectListener> listener,
                       blink::mojom::FileChooserParamsPtr params);
   void GetFileTypesInThreadPool(blink::mojom::FileChooserParamsPtr params);
   void GetSanitizedFilenameOnUIThread(
       blink::mojom::FileChooserParamsPtr params);
-#if defined(FULL_SAFE_BROWSING)
+#if BUILDFLAG(FULL_SAFE_BROWSING)
   void CheckDownloadRequestWithSafeBrowsing(
       const base::FilePath& default_path,
       blink::mojom::FileChooserParamsPtr params);
@@ -120,7 +138,7 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
 
   void EnumerateDirectoryImpl(
       content::WebContents* tab,
-      std::unique_ptr<content::FileSelectListener> listener,
+      scoped_refptr<content::FileSelectListener> listener,
       const base::FilePath& path);
 
   // Kicks off a new directory enumeration.
@@ -139,7 +157,7 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   // callback is received from the enumeration code.
   void EnumerateDirectoryEnd();
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // Must be called from a MayBlock() task. Each selected file that is a package
   // will be zipped, and the zip will be passed to the render view host in place
   // of the package.
@@ -155,17 +173,56 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   // temporary destination, if the zip was successful. Otherwise returns an
   // empty path.
   static base::FilePath ZipPackage(const base::FilePath& path);
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
-  // Utility method that passes |files| to the FileSelectListener, and ends the
-  // file chooser.
-  // TODO(tkent): Remove 'RenderFrameHost' from the name.
-  void NotifyRenderFrameHostAndEnd(
+  // This function is the start of a call chain that may or may not be async
+  // depending on the platform and features enabled.  The call to this method
+  // is made after the user has chosen the file(s) in the UI in order to
+  // process and filter the list before returning the final result to the
+  // caller.  The call chain is as follows:
+  //
+  // ConvertToFileChooserFileInfoList: converts a vector of SelectedFileInfo
+  // into a vector of FileChooserFileInfoPtr and then calls
+  // PerformContentAnalysisIfNeeded().  On chromeos, the conversion is
+  // performed asynchronously.
+  //
+  // PerformContentAnalysisIfNeeded: if the deep scanning feature is
+  // enabled and it is determined by enterprise policy that scans are required,
+  // starts the scans and sets ContentAnalysisCompletionCallback() as the async
+  // callback.  If deep scanning is not enabled or is not supported on the
+  // platform, this function calls NotifyListenerAndEnd() directly.
+  //
+  // ContentAnalysisCompletionCallback: processes the results of the deep scan.
+  // Any files that did not pass the scan are removed from the list.  Ends by
+  // calling NotifyListenerAndEnd().
+  //
+  // NotifyListenerAndEnd: Informs the listener of the final list of files to
+  // use and performs any required cleanup.
+  //
+  // Because the state of the web contents may change at each asynchronous
+  // step, calls are make to AbortIfWebContentsDestroyed() to check if, for
+  // example, the tab has been closed or the contents navigated.  In these
+  // cases the file selection is aborted and the state cleaned up.
+  void ConvertToFileChooserFileInfoList(
       const std::vector<ui::SelectedFileInfo>& files);
 
-  // Sends the result to the FileSelectListener, and call |RunFileChooserEnd|.
-  // TODO(tkent): Remove 'RenderFrameHost' from the name.
-  void NotifyRenderFrameHostAndEndAfterConversion(
+  // Checks to see if scans are required for the specified files.
+  void PerformContentAnalysisIfNeeded(
+      std::vector<blink::mojom::FileChooserFileInfoPtr> list);
+
+#if BUILDFLAG(FULL_SAFE_BROWSING)
+  // Callback used to receive the results of a content analysis scan.
+  void ContentAnalysisCompletionCallback(
+      std::vector<blink::mojom::FileChooserFileInfoPtr> list,
+      const enterprise_connectors::ContentAnalysisDelegate::Data& data,
+      const enterprise_connectors::ContentAnalysisDelegate::Result& result);
+#endif
+
+  // Finish the PerformContentAnalysisIfNeeded() handling after the
+  // deep scanning checks have been performed.  Deep scanning may change the
+  // list of files chosen by the user, so the list of files passed here may be
+  // a subset of of the files passed to PerformContentAnalysisIfNeeded().
+  void NotifyListenerAndEnd(
       std::vector<blink::mojom::FileChooserFileInfoPtr> list);
 
   // Schedules the deletion of the files in |temporary_files_| and clears the
@@ -179,13 +236,18 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   // if the file chooser operation shouldn't proceed.
   bool AbortIfWebContentsDestroyed();
 
+  void SetFileSelectListenerForTesting(
+      scoped_refptr<content::FileSelectListener> listener);
+
+  void DontAbortOnMissingWebContentsForTesting();
+
   // Helper method to get allowed extensions for select file dialog from
   // the specified accept types as defined in the spec:
   //   http://whatwg.org/html/number-state.html#attr-input-accept
   // |accept_types| contains only valid lowercased MIME types or file extensions
   // beginning with a period (.).
   static std::unique_ptr<ui::SelectFileDialog::FileTypeInfo>
-  GetFileTypesFromAcceptType(const std::vector<base::string16>& accept_types);
+  GetFileTypesFromAcceptType(const std::vector<std::u16string>& accept_types);
 
   // Check the accept type is valid. It is expected to be all lower case with
   // no whitespace.
@@ -216,7 +278,7 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   content::WebContents* web_contents_;
 
   // |listener_| receives the result of the FileSelectHelper.
-  std::unique_ptr<content::FileSelectListener> listener_;
+  scoped_refptr<content::FileSelectListener> listener_;
 
   // Dialog box used for choosing files to upload from file form fields.
   scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
@@ -239,12 +301,16 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   struct ActiveDirectoryEnumeration;
   std::unique_ptr<ActiveDirectoryEnumeration> directory_enumeration_;
 
-  ScopedObserver<content::RenderWidgetHost, content::RenderWidgetHostObserver>
-      observer_;
+  base::ScopedObservation<content::RenderWidgetHost,
+                          content::RenderWidgetHostObserver>
+      observation_{this};
 
   // Temporary files only used on OSX. This class is responsible for deleting
   // these files when they are no longer needed.
   std::vector<base::FilePath> temporary_files_;
+
+  // Set to false in unit tests since there is no WebContents.
+  bool abort_on_missing_web_contents_in_tests_ = true;
 
   DISALLOW_COPY_AND_ASSIGN(FileSelectHelper);
 };

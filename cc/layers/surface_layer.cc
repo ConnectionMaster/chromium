@@ -74,19 +74,13 @@ void SurfaceLayer::SetOldestAcceptableFallback(
          !surface_range_.start()->IsNewerThan(surface_id));
   if (surface_range_.start() == surface_id)
     return;
-  TRACE_EVENT_WITH_FLOW2(
-      TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
-      "LocalSurfaceId.Submission.Flow",
-      TRACE_ID_GLOBAL(surface_id.local_surface_id().submission_trace_id()),
-      TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT, "step",
-      "SetOldestAcceptableFallback", "surface_id", surface_id.ToString());
 
   if (layer_tree_host() && surface_range_.IsValid())
     layer_tree_host()->RemoveSurfaceRange(surface_range_);
 
   surface_range_ = viz::SurfaceRange(
-      surface_id.is_valid() ? base::Optional<viz::SurfaceId>(surface_id)
-                            : base::nullopt,
+      surface_id.is_valid() ? absl::optional<viz::SurfaceId>(surface_id)
+                            : absl::nullopt,
       surface_range_.end());
 
   if (layer_tree_host() && surface_range_.IsValid())
@@ -119,15 +113,19 @@ void SurfaceLayer::SetHasPointerEventsNone(bool has_pointer_events_none) {
   SetNeedsCommit();
 }
 
+void SurfaceLayer::SetIsReflection(bool is_reflection) {
+  is_reflection_ = true;
+}
+
 void SurfaceLayer::SetMayContainVideo(bool may_contain_video) {
   may_contain_video_ = may_contain_video;
+  SetNeedsCommit();
 }
 
 std::unique_ptr<LayerImpl> SurfaceLayer::CreateLayerImpl(
     LayerTreeImpl* tree_impl) {
   auto layer_impl = SurfaceLayerImpl::Create(tree_impl, id(),
                                              update_submission_state_callback_);
-  layer_impl->set_may_contain_video(may_contain_video_);
   return layer_impl;
 }
 
@@ -156,9 +154,11 @@ void SurfaceLayer::PushPropertiesTo(LayerImpl* layer) {
   // Unless the client explicitly calls SetSurfaceId again after this
   // commit, don't block on |surface_range_| again.
   deadline_in_frames_ = 0u;
+  layer_impl->SetIsReflection(is_reflection_);
   layer_impl->SetStretchContentToFillBounds(stretch_content_to_fill_bounds_);
   layer_impl->SetSurfaceHitTestable(surface_hit_testable_);
   layer_impl->SetHasPointerEventsNone(has_pointer_events_none_);
+  layer_impl->set_may_contain_video(may_contain_video_);
 }
 
 }  // namespace cc

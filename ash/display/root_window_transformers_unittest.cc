@@ -6,21 +6,22 @@
 
 #include <memory>
 
+#include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/display/display_util.h"
 #include "ash/display/mirror_window_test_api.h"
 #include "ash/host/root_window_transformer.h"
-#include "ash/magnifier/magnification_controller.h"
 #include "ash/screen_util.h"
 #include "ash/shelf/shelf_widget.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/cursor_manager_test_api.h"
+#include "base/command_line.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/test/scoped_feature_list.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/display.h"
@@ -39,7 +40,7 @@
 namespace ash {
 namespace {
 
-const char kWallpaperView[] = "WallpaperView";
+const char kWallpaperView[] = "WallpaperViewWidget";
 
 class TestEventHandler : public ui::EventHandler {
  public:
@@ -143,17 +144,37 @@ class RootWindowTransformersTest : public AshTestBase {
   DISALLOW_COPY_AND_ASSIGN(RootWindowTransformersTest);
 };
 
+class UnfiedRootWindowTransformersTest : public RootWindowTransformersTest {
+ public:
+  UnfiedRootWindowTransformersTest() = default;
+  ~UnfiedRootWindowTransformersTest() override = default;
+
+  // RootWindowTransformersTest:
+  void SetUp() override {
+    // kEnableUnifiedDesktop switch needs to be added before DisplayManager
+    // creation. Hence before calling SetUp.
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        switches::kEnableUnifiedDesktop);
+
+    RootWindowTransformersTest::SetUp();
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(UnfiedRootWindowTransformersTest);
+};
+
 }  // namespace
 
 TEST_F(RootWindowTransformersTest, RotateAndMagnify) {
-  MagnificationController* magnifier = Shell::Get()->magnification_controller();
+  FullscreenMagnifierController* magnifier =
+      Shell::Get()->fullscreen_magnifier_controller();
 
   TestEventHandler event_handler;
   Shell::Get()->AddPreTargetHandler(&event_handler);
 
   UpdateDisplay("120x200,300x400*2");
+  display::test::DisplayManagerTestApi display_manager_test(display_manager());
   display::Display display1 = display::Screen::GetScreen()->GetPrimaryDisplay();
-  int64_t display2_id = display_manager()->GetSecondaryDisplay().id();
+  int64_t display2_id = display_manager_test.GetSecondaryDisplay().id();
 
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   ui::test::EventGenerator generator1(root_windows[0]);
@@ -164,11 +185,11 @@ TEST_F(RootWindowTransformersTest, RotateAndMagnify) {
   EXPECT_EQ("120x200", root_windows[0]->bounds().size().ToString());
   EXPECT_EQ("150x200", root_windows[1]->bounds().size().ToString());
   EXPECT_EQ("120,0 150x200",
-            display_manager()->GetSecondaryDisplay().bounds().ToString());
+            display_manager_test.GetSecondaryDisplay().bounds().ToString());
   generator1.MoveMouseToInHost(40, 80);
   EXPECT_EQ("50,90", event_handler.GetLocationAndReset());
   EXPECT_EQ("50,90",
-            Shell::Get()->aura_env()->last_mouse_location().ToString());
+            aura::Env::GetInstance()->last_mouse_location().ToString());
   EXPECT_EQ(display::Display::ROTATE_0,
             GetActiveDisplayRotation(display1.id()));
   EXPECT_EQ(display::Display::ROTATE_0, GetActiveDisplayRotation(display2_id));
@@ -185,11 +206,11 @@ TEST_F(RootWindowTransformersTest, RotateAndMagnify) {
   EXPECT_EQ("200x120", root_windows[0]->bounds().size().ToString());
   EXPECT_EQ("150x200", root_windows[1]->bounds().size().ToString());
   EXPECT_EQ("200,0 150x200",
-            display_manager()->GetSecondaryDisplay().bounds().ToString());
+            display_manager_test.GetSecondaryDisplay().bounds().ToString());
   generator1.MoveMouseToInHost(39, 120);
   EXPECT_EQ("110,70", event_handler.GetLocationAndReset());
   EXPECT_EQ("110,70",
-            Shell::Get()->aura_env()->last_mouse_location().ToString());
+            aura::Env::GetInstance()->last_mouse_location().ToString());
   EXPECT_EQ(display::Display::ROTATE_90,
             GetActiveDisplayRotation(display1.id()));
   EXPECT_EQ(display::Display::ROTATE_0, GetActiveDisplayRotation(display2_id));
@@ -199,7 +220,7 @@ TEST_F(RootWindowTransformersTest, RotateAndMagnify) {
       display::test::CreateDisplayLayout(
           display_manager(), display::DisplayPlacement::BOTTOM, 50));
   EXPECT_EQ("50,120 150x200",
-            display_manager()->GetSecondaryDisplay().bounds().ToString());
+            display_manager_test.GetSecondaryDisplay().bounds().ToString());
 
   display_manager()->SetDisplayRotation(
       display2_id, display::Display::ROTATE_270,
@@ -211,11 +232,11 @@ TEST_F(RootWindowTransformersTest, RotateAndMagnify) {
   EXPECT_EQ("200x120", root_windows[0]->bounds().size().ToString());
   EXPECT_EQ("200x150", root_windows[1]->bounds().size().ToString());
   EXPECT_EQ("50,120 200x150",
-            display_manager()->GetSecondaryDisplay().bounds().ToString());
+            display_manager_test.GetSecondaryDisplay().bounds().ToString());
   generator2.MoveMouseToInHost(172, 219);
   EXPECT_EQ("95,80", event_handler.GetLocationAndReset());
   EXPECT_EQ("145,200",
-            Shell::Get()->aura_env()->last_mouse_location().ToString());
+            aura::Env::GetInstance()->last_mouse_location().ToString());
   EXPECT_EQ(display::Display::ROTATE_90,
             GetActiveDisplayRotation(display1.id()));
   EXPECT_EQ(display::Display::ROTATE_270,
@@ -231,9 +252,9 @@ TEST_F(RootWindowTransformersTest, RotateAndMagnify) {
   magnifier->SetEnabled(true);
   EXPECT_EQ("120x200", root_windows[0]->bounds().size().ToString());
   EXPECT_EQ("200x150", root_windows[1]->bounds().size().ToString());
-  // Dislay must share at least 100, so the x's offset becomes 20.
+  // Display must share at least 100, so the x's offset becomes 20.
   EXPECT_EQ("20,200 200x150",
-            display_manager()->GetSecondaryDisplay().bounds().ToString());
+            display_manager_test.GetSecondaryDisplay().bounds().ToString());
   generator1.MoveMouseToInHost(39, 59);
   EXPECT_EQ("70,120", event_handler.GetLocationAndReset());
   EXPECT_EQ(display::Display::ROTATE_180,
@@ -254,9 +275,11 @@ TEST_F(RootWindowTransformersTest, ScaleAndMagnify) {
   display::Display display1 = display::Screen::GetScreen()->GetPrimaryDisplay();
   display::test::ScopedSetInternalDisplayId set_internal(display_manager(),
                                                          display1.id());
-  display::Display display2 = display_manager()->GetSecondaryDisplay();
+  display::test::DisplayManagerTestApi display_manager_test(display_manager());
+  display::Display display2 = display_manager_test.GetSecondaryDisplay();
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
-  MagnificationController* magnifier = Shell::Get()->magnification_controller();
+  FullscreenMagnifierController* magnifier =
+      Shell::Get()->fullscreen_magnifier_controller();
 
   magnifier->SetEnabled(true);
   EXPECT_EQ(2.0f, magnifier->GetScale());
@@ -274,7 +297,7 @@ TEST_F(RootWindowTransformersTest, ScaleAndMagnify) {
 
   display_manager()->UpdateZoomFactor(display1.id(), 1.f / 1.2f);
   display1 = display::Screen::GetScreen()->GetPrimaryDisplay();
-  display2 = display_manager()->GetSecondaryDisplay();
+  display2 = display_manager_test.GetSecondaryDisplay();
   magnifier->SetEnabled(true);
   EXPECT_EQ(2.0f, magnifier->GetScale());
   EXPECT_EQ("0,0 450x300", display1.bounds().ToString());
@@ -287,63 +310,6 @@ TEST_F(RootWindowTransformersTest, ScaleAndMagnify) {
   Shell::Get()->RemovePreTargetHandler(&event_handler);
 }
 
-// Make sure the origin of rotated root layer is aligned with pixels
-// on 2.25 scale factor device so that HW overlay kicks in.
-// https://crbug.com/869090.
-TEST_F(RootWindowTransformersTest, OriginAlignmentWithFractionalScale) {
-  auto* host_window = Shell::GetPrimaryRootWindow()->GetHost()->window();
-  EXPECT_EQ(Shell::GetPrimaryRootWindow(), host_window);
-
-  float device_scale_factor = 2.25f;
-  gfx::Transform scale_transform;
-  scale_transform.matrix().set3x3(device_scale_factor, 0, 0, 0,
-                                  device_scale_factor, 0, 0, 0, 1);
-  gfx::Transform invert_transform;
-  invert_transform.matrix().set3x3(1.0f / device_scale_factor, 0, 0, 0,
-                                   1.0f / device_scale_factor, 0, 0, 0, 1);
-
-  {
-    // Rotate 90 degree to right.
-    UpdateDisplay("3000x2000*2.25/r");
-
-    // The size of the scaled layer.
-    gfx::RectF tmp(1998, 2999);
-    // Creates a transform that can be applied to already scaled layer.
-    gfx::Transform transform(invert_transform);
-    transform.ConcatTransform(host_window->layer()->transform());
-    transform.ConcatTransform(scale_transform);
-    transform.TransformRect(&tmp);
-    EXPECT_EQ(gfx::SizeF(2999, 1998), tmp.size());
-    EXPECT_TRUE(gfx::IsNearestRectWithinDistance(tmp, 0.01f));
-  }
-
-  {
-    // Upside Down.
-    UpdateDisplay("3000x2000*2.25/u");
-
-    gfx::RectF tmp(2999, 1998);
-    gfx::Transform transform(invert_transform);
-    transform.ConcatTransform(host_window->layer()->transform());
-    transform.ConcatTransform(scale_transform);
-    transform.TransformRect(&tmp);
-    EXPECT_EQ(gfx::SizeF(2999, 1998), tmp.size());
-    EXPECT_TRUE(gfx::IsNearestRectWithinDistance(tmp, 0.01f));
-  }
-
-  {
-    // Rotate 90 degree to left.
-    UpdateDisplay("3000x2000*2.25/l");
-
-    gfx::RectF tmp(1998, 2999);
-    gfx::Transform transform(invert_transform);
-    transform.ConcatTransform(host_window->layer()->transform());
-    transform.ConcatTransform(scale_transform);
-    transform.TransformRect(&tmp);
-    EXPECT_EQ(gfx::SizeF(2999, 1998), tmp.size());
-    EXPECT_TRUE(gfx::IsNearestRectWithinDistance(tmp, 0.01f));
-  }
-}
-
 TEST_F(RootWindowTransformersTest, TouchScaleAndMagnify) {
   TestEventHandler event_handler;
   Shell::Get()->AddPreTargetHandler(&event_handler);
@@ -353,7 +319,8 @@ TEST_F(RootWindowTransformersTest, TouchScaleAndMagnify) {
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   aura::Window* root_window = root_windows[0];
   ui::test::EventGenerator generator(root_window);
-  MagnificationController* magnifier = Shell::Get()->magnification_controller();
+  FullscreenMagnifierController* magnifier =
+      Shell::Get()->fullscreen_magnifier_controller();
 
   magnifier->SetEnabled(true);
   EXPECT_FLOAT_EQ(2.0f, magnifier->GetScale());
@@ -382,7 +349,8 @@ TEST_F(RootWindowTransformersTest, TouchScaleAndMagnify) {
 TEST_F(RootWindowTransformersTest, ConvertHostToRootCoords) {
   TestEventHandler event_handler;
   Shell::Get()->AddPreTargetHandler(&event_handler);
-  MagnificationController* magnifier = Shell::Get()->magnification_controller();
+  FullscreenMagnifierController* magnifier =
+      Shell::Get()->fullscreen_magnifier_controller();
 
   // Test 1
   UpdateDisplay("600x400*2/r@0.8");
@@ -467,7 +435,7 @@ TEST_F(RootWindowTransformersTest, ConvertHostToRootCoords) {
 TEST_F(RootWindowTransformersTest, LetterBoxPillarBox) {
   MirrorWindowTestApi test_api;
   UpdateDisplay("400x200,500x500");
-  display_manager()->SetMirrorMode(display::MirrorMode::kNormal, base::nullopt);
+  display_manager()->SetMirrorMode(display::MirrorMode::kNormal, absl::nullopt);
   std::unique_ptr<RootWindowTransformer> transformer(
       CreateCurrentRootWindowTransformerForMirroring());
   // Y margin must be margin is (500 - 500/400 * 200) / 2 = 125.
@@ -477,6 +445,43 @@ TEST_F(RootWindowTransformersTest, LetterBoxPillarBox) {
   // The aspect ratio is flipped, so X margin is now 125.
   transformer = CreateCurrentRootWindowTransformerForMirroring();
   EXPECT_EQ("125,0,125,0", transformer->GetHostInsets().ToString());
+}
+
+TEST_F(RootWindowTransformersTest, MirrorWithRotation) {
+  MirrorWindowTestApi test_api;
+  UpdateDisplay("400x200,500x500");
+  display_manager()->SetMirrorMode(display::MirrorMode::kNormal, absl::nullopt);
+
+  for (auto rotation :
+       {display::Display::ROTATE_0, display::Display::ROTATE_90,
+        display::Display::ROTATE_180, display::Display::ROTATE_270}) {
+    SCOPED_TRACE(::testing::Message() << "Rotation: " << rotation);
+    display_manager()->SetDisplayRotation(
+        display::Screen::GetScreen()->GetPrimaryDisplay().id(), rotation,
+        display::Display::RotationSource::ACTIVE);
+    std::unique_ptr<RootWindowTransformer> transformer(
+        CreateCurrentRootWindowTransformerForMirroring());
+
+    const bool need_transpose = rotation == display::Display::ROTATE_90 ||
+                                rotation == display::Display::ROTATE_270;
+
+    // Y margin is (500 - 500/400 * 200) / 2 = 125 for no rotation. Transposed
+    // on 90/270 degree.
+    gfx::Insets expected_insets(0, 125);
+    if (need_transpose)
+      expected_insets = gfx::Insets(125, 0);
+    EXPECT_EQ(expected_insets, transformer->GetHostInsets());
+
+    // Expected rect in mirror of the source root, with y margin applied for no
+    // rotation. Transposed on 90/270 degree.
+    gfx::RectF expected_rect(0, 125, 500, 250);
+    if (need_transpose)
+      expected_rect.Transpose();
+
+    gfx::RectF rect(transformer->GetRootWindowBounds(gfx::Size()));
+    transformer->GetTransform().TransformRect(&rect);
+    EXPECT_EQ(expected_rect, rect);
+  }
 }
 
 TEST_F(RootWindowTransformersTest, ShouldSetWindowSize) {
@@ -566,6 +571,28 @@ TEST_F(RootWindowTransformersTest, ShouldSetWindowSizeDuringOpacityAnimation) {
   // animation, even there is an opacity animation.
   UpdateDisplay("800x600/r");
   EXPECT_EQ(root_window->GetTargetBounds(), gfx::Rect(0, 0, 600, 800));
+}
+
+TEST_F(UnfiedRootWindowTransformersTest, HostBoundsAndTransform) {
+  UpdateDisplay("800x600,800x600");
+  // Has only one logical root window.
+  EXPECT_EQ(1u, Shell::GetAllRootWindows().size());
+
+  MirrorWindowTestApi test_api;
+  std::vector<aura::WindowTreeHost*> hosts = test_api.GetHosts();
+  // Have 2 WindowTreeHosts, one per display.
+  ASSERT_EQ(2u, hosts.size());
+
+  EXPECT_EQ(gfx::Rect(0, 0, 800, 600), hosts[0]->window()->GetBoundsInScreen());
+  gfx::Point viewport_0_origin(0, 0);
+  hosts[0]->window()->transform().TransformPointReverse(&viewport_0_origin);
+  EXPECT_EQ(gfx::Point(0, 0), viewport_0_origin);
+
+  EXPECT_EQ(gfx::Rect(800, 0, 800, 600),
+            hosts[1]->window()->GetBoundsInScreen());
+  gfx::Point viewport_1_origin(0, 0);
+  hosts[1]->window()->transform().TransformPointReverse(&viewport_1_origin);
+  EXPECT_EQ(gfx::Point(800, 0), viewport_1_origin);
 }
 
 }  // namespace ash

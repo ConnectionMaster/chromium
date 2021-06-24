@@ -43,6 +43,12 @@ class FakeSpeechRecognitionManager : public SpeechRecognitionManager,
   }
 
   void WaitForRecognitionStarted();
+  void WaitForRecognitionEnded();
+
+  // |end_recognition| means recognition will be ended and session state cleared
+  // after sending the fake response.
+  void SendFakeResponse(bool end_recognition,
+                        base::OnceClosure on_fake_response_sent);
 
   void SetFakeResult(const std::string& result);
 
@@ -54,9 +60,8 @@ class FakeSpeechRecognitionManager : public SpeechRecognitionManager,
   void AbortAllSessionsForRenderFrame(int render_process_id,
                                       int render_frame_id) override;
   const SpeechRecognitionSessionConfig& GetSessionConfig(
-      int session_id) const override;
-  SpeechRecognitionSessionContext GetSessionContext(
-      int session_id) const override;
+      int session_id) override;
+  SpeechRecognitionSessionContext GetSessionContext(int session_id) override;
 
   // SpeechRecognitionEventListener implementation.
   void OnRecognitionStart(int session_id) override {}
@@ -80,7 +85,10 @@ class FakeSpeechRecognitionManager : public SpeechRecognitionManager,
   void SetDelegate(SpeechRecognitionManagerDelegate* delegate);
 
  private:
-  void SetFakeRecognitionResult();
+  void OnRecognitionStarted();
+  void OnRecognitionEnded();
+  void OnFakeResponseSent();
+  void SetFakeRecognitionResult(bool end_recognition);
 
   int session_id_;
   SpeechRecognitionEventListener* listener_;
@@ -88,10 +96,13 @@ class FakeSpeechRecognitionManager : public SpeechRecognitionManager,
   SpeechRecognitionSessionContext session_ctx_;
   std::string fake_result_;
   std::string grammar_;
-  bool did_cancel_all_;
-  bool should_send_fake_response_;
-  base::Closure recognition_started_closure_;
-  SpeechRecognitionManagerDelegate* delegate_;  // Not owned.
+  bool did_cancel_all_ = false;
+  bool should_send_fake_response_ = true;
+  bool has_sent_result_ = false;
+  base::OnceClosure recognition_started_closure_;
+  base::OnceClosure recognition_ended_closure_;
+  base::OnceClosure on_fake_response_sent_closure_;
+  SpeechRecognitionManagerDelegate* delegate_ = nullptr;  // Not owned.
 
   DISALLOW_COPY_AND_ASSIGN(FakeSpeechRecognitionManager);
 };

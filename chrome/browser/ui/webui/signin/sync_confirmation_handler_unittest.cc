@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/scoped_observer.h"
+#include "base/callback_helpers.h"
+#include "base/scoped_observation.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/values.h"
@@ -29,9 +29,8 @@
 #include "chrome/test/base/dialog_test_browser_window.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/consent_auditor/fake_consent_auditor.h"
-#include "components/signin/core/browser/avatar_icon_util.h"
-#include "components/unified_consent/scoped_unified_consent.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "components/signin/public/base/avatar_icon_util.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_ui.h"
 
 const int kExpectedProfileImageSize = 128;
@@ -46,9 +45,9 @@ class TestingSyncConfirmationHandler : public SyncConfirmationHandler {
       Browser* browser,
       content::WebUI* web_ui,
       std::unordered_map<std::string, int> string_to_grd_id_map)
-      : SyncConfirmationHandler(browser,
+      : SyncConfirmationHandler(browser->profile(),
                                 string_to_grd_id_map,
-                                consent_auditor::Feature::CHROME_SYNC) {
+                                browser) {
     set_web_ui(web_ui);
   }
 
@@ -57,7 +56,6 @@ class TestingSyncConfirmationHandler : public SyncConfirmationHandler {
   using SyncConfirmationHandler::HandleInitializedWithSize;
   using SyncConfirmationHandler::HandleGoToSettings;
   using SyncConfirmationHandler::RecordConsent;
-  using SyncConfirmationHandler::SetUserImageURL;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(TestingSyncConfirmationHandler);
@@ -73,11 +71,10 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
   static const char kConsentText5[];
 
   SyncConfirmationHandlerTest()
-      : did_user_explicitly_interact(false),
+      : did_user_explicitly_interact_(false),
         on_sync_confirmation_ui_closed_called_(false),
-        sync_confirmation_ui_closed_result_(LoginUIService::ABORT_SIGNIN),
-        web_ui_(new content::TestWebUI),
-        login_ui_service_observer_(this) {}
+        sync_confirmation_ui_closed_result_(LoginUIService::ABORT_SYNC),
+        web_ui_(new content::TestWebUI) {}
 
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
@@ -88,25 +85,25 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
     auto handler = std::make_unique<TestingSyncConfirmationHandler>(
         browser(), web_ui(), GetStringToGrdIdMap());
     handler_ = handler.get();
-    sync_confirmation_ui_.reset(new SyncConfirmationUI(web_ui()));
+    sync_confirmation_ui_ = std::make_unique<SyncConfirmationUI>(web_ui());
     web_ui()->AddMessageHandler(std::move(handler));
 
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
-    account_info_ =
-        identity_test_env()->MakePrimaryAccountAvailable("foo@example.com");
-    login_ui_service_observer_.Add(
+    account_info_ = identity_test_env()->MakePrimaryAccountAvailable(
+        "foo@example.com", signin::ConsentLevel::kSync);
+    login_ui_service_observation_.Observe(
         LoginUIServiceFactory::GetForProfile(profile()));
   }
 
   void TearDown() override {
-    login_ui_service_observer_.RemoveAll();
+    login_ui_service_observation_.Reset();
     sync_confirmation_ui_.reset();
     web_ui_.reset();
     identity_test_env_adaptor_.reset();
     BrowserWithTestWindowTest::TearDown();
 
-    EXPECT_EQ(did_user_explicitly_interact ? 0 : 1,
+    EXPECT_EQ(did_user_explicitly_interact_ ? 0 : 1,
               user_action_tester()->GetActionCount("Signin_Abort_Signin"));
   }
 
@@ -125,12 +122,12 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
         ConsentAuditorFactory::GetForProfile(profile()));
   }
 
-  identity::IdentityTestEnvironment* identity_test_env() {
+  signin::IdentityTestEnvironment* identity_test_env() {
     return identity_test_env_adaptor_->identity_test_env();
   }
 
-  BrowserWindow* CreateBrowserWindow() override {
-    return new DialogTestBrowserWindow;
+  std::unique_ptr<BrowserWindow> CreateBrowserWindow() override {
+    return std::make_unique<DialogTestBrowserWindow>();
   }
 
   TestingProfile::TestingFactories GetTestingFactories() override {
@@ -160,35 +157,36 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
     sync_confirmation_ui_closed_result_ = result;
   }
 
-  void ExpectAccountImageChanged(
-      const content::TestWebUI::CallData& call_data) {
+  void ExpectAccountInfoChanged(const content::TestWebUI::CallData& call_data) {
     EXPECT_EQ("cr.webUIListenerCallback", call_data.function_name());
     std::string event;
     ASSERT_TRUE(call_data.arg1()->GetAsString(&event));
-    EXPECT_EQ("account-image-changed", event);
+    EXPECT_EQ("account-info-changed", event);
 
-    identity::IdentityManager* identity_manager =
+    signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(profile());
-    base::Optional<AccountInfo> primary_account =
-        identity_manager->FindExtendedAccountInfoForAccount(
-            identity_manager->GetPrimaryAccountInfo());
+    AccountInfo primary_account = identity_manager->FindExtendedAccountInfo(
+        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync));
+    EXPECT_FALSE(primary_account.IsEmpty());
 
-    std::string original_picture_url =
-        primary_account ? primary_account->picture_url : std::string();
+    std::string gaia_picture_url = primary_account.picture_url;
     std::string expected_picture_url =
-        original_picture_url.empty()
-            ? profiles::GetPlaceholderAvatarIconUrl()
-            : signin::GetAvatarImageURLWithOptions(GURL(original_picture_url),
-                                                   kExpectedProfileImageSize,
-                                                   false /* no_silhouette */)
-                  .spec();
+        signin::GetAvatarImageURLWithOptions(GURL(gaia_picture_url),
+                                             kExpectedProfileImageSize,
+                                             false /* no_silhouette */)
+            .spec();
     std::string passed_picture_url;
-    ASSERT_TRUE(call_data.arg2()->GetAsString(&passed_picture_url));
-    EXPECT_EQ(expected_picture_url, passed_picture_url);
+    const base::Value* src = call_data.arg2()->FindKey("src");
+    EXPECT_NE(src, nullptr);
+    EXPECT_EQ(expected_picture_url, src->GetString());
+    const base::Value* show_enterprise_badge =
+        call_data.arg2()->FindKey("showEnterpriseBadge");
+    EXPECT_NE(show_enterprise_badge, nullptr);
+    EXPECT_EQ(primary_account.IsManaged(), show_enterprise_badge->GetBool());
   }
 
  protected:
-  bool did_user_explicitly_interact;
+  bool did_user_explicitly_interact_;
   bool on_sync_confirmation_ui_closed_called_;
   LoginUIService::SyncConfirmationUIClosedResult
       sync_confirmation_ui_closed_result_;
@@ -201,26 +199,13 @@ class SyncConfirmationHandlerTest : public BrowserWithTestWindowTest,
   TestingSyncConfirmationHandler* handler_;  // Not owned.
   base::UserActionTester user_action_tester_;
   std::unordered_map<std::string, int> string_to_grd_id_map_;
-  ScopedObserver<LoginUIService, LoginUIService::Observer>
-      login_ui_service_observer_;
+  base::ScopedObservation<LoginUIService, LoginUIService::Observer>
+      login_ui_service_observation_{this};
   base::HistogramTester histogram_tester_;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_env_adaptor_;
 
   DISALLOW_COPY_AND_ASSIGN(SyncConfirmationHandlerTest);
-};
-
-class SyncConfirmationHandlerTest_UnifiedConsentEnabled
-    : public SyncConfirmationHandlerTest {
- public:
-  SyncConfirmationHandlerTest_UnifiedConsentEnabled()
-      : scoped_unified_consent_(
-            unified_consent::UnifiedConsentFeatureState::kEnabled) {}
-
- private:
-  unified_consent::ScopedUnifiedConsent scoped_unified_consent_;
-
-  DISALLOW_COPY_AND_ASSIGN(SyncConfirmationHandlerTest_UnifiedConsentEnabled);
 };
 
 const char SyncConfirmationHandlerTest::kConsentText1[] = "consentText1";
@@ -229,44 +214,7 @@ const char SyncConfirmationHandlerTest::kConsentText3[] = "consentText3";
 const char SyncConfirmationHandlerTest::kConsentText4[] = "consentText4";
 const char SyncConfirmationHandlerTest::kConsentText5[] = "consentText5";
 
-TEST_F(SyncConfirmationHandlerTest, TestSetImageIfPrimaryAccountReady) {
-  identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
-      account_info_.account_id, account_info_.email, account_info_.gaia, "",
-      "full_name", "given_name", "locale",
-      "http://picture.example.com/picture.jpg");
-
-  base::ListValue args;
-  args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
-  handler()->HandleInitializedWithSize(&args);
-  EXPECT_EQ(2U, web_ui()->call_data().size());
-
-  // When the primary account is ready, setUserImageURL happens before
-  // clearFocus since the image URL is known before showing the dialog.
-  EXPECT_EQ("sync.confirmation.setUserImageURL",
-            web_ui()->call_data()[0]->function_name());
-  EXPECT_TRUE(web_ui()->call_data()[0]->arg1()->is_string());
-  std::string passed_picture_url;
-  EXPECT_TRUE(
-      web_ui()->call_data()[0]->arg1()->GetAsString(&passed_picture_url));
-
-  EXPECT_EQ("sync.confirmation.clearFocus",
-            web_ui()->call_data()[1]->function_name());
-
-  identity::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile());
-  base::Optional<AccountInfo> primary_account_info =
-      identity_manager->FindExtendedAccountInfoForAccount(
-          identity_manager->GetPrimaryAccountInfo());
-  std::string original_picture_url =
-      primary_account_info ? primary_account_info->picture_url : std::string();
-  GURL picture_url_with_size = signin::GetAvatarImageURLWithOptions(
-      GURL(original_picture_url), kExpectedProfileImageSize,
-      false /* no_silhouette */);
-  EXPECT_EQ(picture_url_with_size.spec(), passed_picture_url);
-}
-
-TEST_F(SyncConfirmationHandlerTest_UnifiedConsentEnabled,
-       TestSetImageIfPrimaryAccountReady) {
+TEST_F(SyncConfirmationHandlerTest, TestSetAccountInfoIfPrimaryAccountReady) {
   identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
       account_info_.account_id, account_info_.email, account_info_.gaia, "",
       "full_name", "given_name", "locale",
@@ -276,85 +224,34 @@ TEST_F(SyncConfirmationHandlerTest_UnifiedConsentEnabled,
   args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
   handler()->HandleInitializedWithSize(&args);
 
-  ExpectAccountImageChanged(*web_ui()->call_data()[0]);
-  EXPECT_EQ("sync.confirmation.clearFocus",
-            web_ui()->call_data()[1]->function_name());
-}
-
-TEST_F(SyncConfirmationHandlerTest, TestSetImageIfPrimaryAccountReadyLater) {
-  base::ListValue args;
-  args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
-  handler()->HandleInitializedWithSize(&args);
-  EXPECT_EQ(2U, web_ui()->call_data().size());
-
-  identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
-      account_info_.account_id, account_info_.email, account_info_.gaia, "",
-      "full_name", "given_name", "locale",
-      "http://picture.example.com/picture.jpg");
-
-  EXPECT_EQ(3U, web_ui()->call_data().size());
-
-  // When the primary account isn't yet ready when the dialog is shown,
-  // setUserImageURL is called with the default placeholder image.
-  EXPECT_EQ("sync.confirmation.setUserImageURL",
-            web_ui()->call_data()[0]->function_name());
-  EXPECT_TRUE(web_ui()->call_data()[0]->arg1()->is_string());
-  std::string passed_picture_url;
-  EXPECT_TRUE(
-      web_ui()->call_data()[0]->arg1()->GetAsString(&passed_picture_url));
-  EXPECT_EQ(profiles::GetPlaceholderAvatarIconUrl(), passed_picture_url);
-
-  // When the primary account isn't yet ready when the dialog is shown,
-  // clearFocus is called before the second call to setUserImageURL.
-  EXPECT_EQ("sync.confirmation.clearFocus",
-            web_ui()->call_data()[1]->function_name());
-
-  EXPECT_EQ("sync.confirmation.setUserImageURL",
-            web_ui()->call_data()[2]->function_name());
-  EXPECT_TRUE(web_ui()->call_data()[2]->arg1()->is_string());
-  EXPECT_TRUE(
-      web_ui()->call_data()[2]->arg1()->GetAsString(&passed_picture_url));
-
-  identity::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile());
-  base::Optional<AccountInfo> primary_account_info =
-      identity_manager->FindExtendedAccountInfoForAccount(
-          identity_manager->GetPrimaryAccountInfo());
-
-  std::string original_picture_url =
-      primary_account_info ? primary_account_info->picture_url : std::string();
-  GURL picture_url_with_size = signin::GetAvatarImageURLWithOptions(
-      GURL(original_picture_url), kExpectedProfileImageSize,
-      false /* no_silhouette */);
-  EXPECT_EQ(picture_url_with_size.spec(), passed_picture_url);
-}
-
-TEST_F(SyncConfirmationHandlerTest_UnifiedConsentEnabled,
-       TestSetImageIfPrimaryAccountReadyLater) {
-  base::ListValue args;
-  args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
-  handler()->HandleInitializedWithSize(&args);
-
-  EXPECT_EQ(2U, web_ui()->call_data().size());
-  ExpectAccountImageChanged(*web_ui()->call_data()[0]);
-  EXPECT_EQ("sync.confirmation.clearFocus",
-            web_ui()->call_data()[1]->function_name());
-
-  identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
-      account_info_.account_id, account_info_.email, account_info_.gaia, "",
-      "full_name", "given_name", "locale",
-      "http://picture.example.com/picture.jpg");
-
-  EXPECT_EQ(3U, web_ui()->call_data().size());
-  ExpectAccountImageChanged(*web_ui()->call_data()[2]);
+  ASSERT_EQ(1U, web_ui()->call_data().size());
+  ExpectAccountInfoChanged(*web_ui()->call_data()[0]);
 }
 
 TEST_F(SyncConfirmationHandlerTest,
-       TestSetImageIgnoredIfSecondaryAccountUpdated) {
+       TestSetAccountInfoIfPrimaryAccountReadyLater) {
   base::ListValue args;
   args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
   handler()->HandleInitializedWithSize(&args);
-  EXPECT_EQ(2U, web_ui()->call_data().size());
+
+  // No callback called when there's no account image available.
+  ASSERT_EQ(0U, web_ui()->call_data().size());
+
+  identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
+      account_info_.account_id, account_info_.email, account_info_.gaia, "",
+      "full_name", "given_name", "locale",
+      "http://picture.example.com/picture.jpg");
+
+  ASSERT_EQ(1U, web_ui()->call_data().size());
+  ExpectAccountInfoChanged(*web_ui()->call_data()[0]);
+}
+
+TEST_F(SyncConfirmationHandlerTest,
+       TestSetAccountInfoIgnoredIfSecondaryAccountUpdated) {
+  base::ListValue args;
+  args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
+  handler()->HandleInitializedWithSize(&args);
+  EXPECT_EQ(0U, web_ui()->call_data().size());
 
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable("bar@example.com");
@@ -365,7 +262,7 @@ TEST_F(SyncConfirmationHandlerTest,
 
   // Updating the account info of a secondary account should not update the
   // image of the sync confirmation dialog.
-  EXPECT_EQ(2U, web_ui()->call_data().size());
+  EXPECT_EQ(0U, web_ui()->call_data().size());
 
   identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
       account_info_.account_id, account_info_.email, account_info_.gaia, "",
@@ -374,17 +271,30 @@ TEST_F(SyncConfirmationHandlerTest,
 
   // Updating the account info of the primary account should update the
   // image of the sync confirmation dialog.
-  EXPECT_EQ(3U, web_ui()->call_data().size());
-  EXPECT_EQ("sync.confirmation.setUserImageURL",
-            web_ui()->call_data()[2]->function_name());
+  ASSERT_EQ(1U, web_ui()->call_data().size());
+  ExpectAccountInfoChanged(*web_ui()->call_data()[0]);
+}
+
+TEST_F(SyncConfirmationHandlerTest, TestSetAccountInfoManaged) {
+  identity_test_env()->SimulateSuccessfulFetchOfAccountInfo(
+      account_info_.account_id, account_info_.email, account_info_.gaia,
+      "google.com", "full_name", "given_name", "locale",
+      "http://picture.example.com/picture.jpg");
+
+  base::ListValue args;
+  args.Set(0, std::make_unique<base::Value>(kDefaultDialogHeight));
+  handler()->HandleInitializedWithSize(&args);
+
+  ASSERT_EQ(1U, web_ui()->call_data().size());
+  ExpectAccountInfoChanged(*web_ui()->call_data()[0]);
 }
 
 TEST_F(SyncConfirmationHandlerTest, TestHandleUndo) {
   handler()->HandleUndo(nullptr);
-  did_user_explicitly_interact = true;
+  did_user_explicitly_interact_ = true;
 
   EXPECT_TRUE(on_sync_confirmation_ui_closed_called_);
-  EXPECT_EQ(LoginUIService::ABORT_SIGNIN, sync_confirmation_ui_closed_result_);
+  EXPECT_EQ(LoginUIService::ABORT_SYNC, sync_confirmation_ui_closed_result_);
   EXPECT_EQ(1, user_action_tester()->GetActionCount("Signin_Undo_Signin"));
   EXPECT_EQ(0, user_action_tester()->GetActionCount(
       "Signin_Signin_WithDefaultSyncSettings"));
@@ -395,11 +305,11 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleUndo) {
 TEST_F(SyncConfirmationHandlerTest, TestHandleConfirm) {
   // The consent description consists of strings 1, 2, and 4.
   base::ListValue consent_description;
-  consent_description.GetList().push_back(
+  consent_description.Append(
       base::Value(SyncConfirmationHandlerTest::kConsentText1));
-  consent_description.GetList().push_back(
+  consent_description.Append(
       base::Value(SyncConfirmationHandlerTest::kConsentText2));
-  consent_description.GetList().push_back(
+  consent_description.Append(
       base::Value(SyncConfirmationHandlerTest::kConsentText4));
 
   // The consent confirmation contains string 5.
@@ -407,11 +317,11 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirm) {
 
   // These are passed as parameters to HandleConfirm().
   base::ListValue args;
-  args.GetList().push_back(std::move(consent_description));
-  args.GetList().push_back(std::move(consent_confirmation));
+  args.Append(std::move(consent_description));
+  args.Append(std::move(consent_confirmation));
 
   handler()->HandleConfirm(&args);
-  did_user_explicitly_interact = true;
+  did_user_explicitly_interact_ = true;
 
   EXPECT_TRUE(on_sync_confirmation_ui_closed_called_);
   EXPECT_EQ(LoginUIService::SYNC_WITH_DEFAULT_SETTINGS,
@@ -436,11 +346,11 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirm) {
 TEST_F(SyncConfirmationHandlerTest, TestHandleConfirmWithAdvancedSyncSettings) {
   // The consent description consists of strings 2, 3, and 5.
   base::ListValue consent_description;
-  consent_description.GetList().push_back(
+  consent_description.Append(
       base::Value(SyncConfirmationHandlerTest::kConsentText2));
-  consent_description.GetList().push_back(
+  consent_description.Append(
       base::Value(SyncConfirmationHandlerTest::kConsentText3));
-  consent_description.GetList().push_back(
+  consent_description.Append(
       base::Value(SyncConfirmationHandlerTest::kConsentText5));
 
   // The consent confirmation contains string 2.
@@ -448,11 +358,11 @@ TEST_F(SyncConfirmationHandlerTest, TestHandleConfirmWithAdvancedSyncSettings) {
 
   // These are passed as parameters to HandleGoToSettings().
   base::ListValue args;
-  args.GetList().push_back(std::move(consent_description));
-  args.GetList().push_back(std::move(consent_confirmation));
+  args.Append(std::move(consent_description));
+  args.Append(std::move(consent_confirmation));
 
   handler()->HandleGoToSettings(&args);
-  did_user_explicitly_interact = true;
+  did_user_explicitly_interact_ = true;
 
   EXPECT_TRUE(on_sync_confirmation_ui_closed_called_);
   EXPECT_EQ(LoginUIService::CONFIGURE_SYNC_FIRST,

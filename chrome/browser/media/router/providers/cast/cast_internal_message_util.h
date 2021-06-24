@@ -8,19 +8,42 @@
 #include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/values.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/presentation/presentation.mojom.h"
-
-namespace cast_channel {
-class CastMessage;
-}
+#include "third_party/openscreen/src/cast/common/channel/proto/cast_channel.pb.h"
 
 namespace media_router {
 
+using cast::channel::CastMessage;
+
 class MediaSinkInternal;
+
+// Values in the "supportedMediaCommands" list in media status messages
+// sent to the Cast sender SDK.
+constexpr char kMediaCommandPause[] = "pause";
+constexpr char kMediaCommandSeek[] = "seek";
+constexpr char kMediaCommandStreamVolume[] = "stream_volume";
+constexpr char kMediaCommandStreamMute[] = "stream_mute";
+constexpr char kMediaCommandQueueNext[] = "queue_next";
+constexpr char kMediaCommandQueuePrev[] = "queue_prev";
+
+// Values in the "supportedMediaCommands" bit array in media status messages
+// received from Cast receivers. They are converted to string values by
+// SupportedMediaCommandsToListValue().
+enum class MediaCommand {
+  kPause = 1 << 0,
+  kSeek = 1 << 1,
+  kStreamVolume = 1 << 2,
+  kStreamMute = 1 << 3,
+  // 1 << 4 and 1 << 5 are not in use.
+  kQueueNext = 1 << 6,
+  kQueuePrev = 1 << 7,
+};
 
 // Represents a message sent or received by the Cast SDK via a
 // PresentationConnection.
-struct CastInternalMessage {
+class CastInternalMessage {
+ public:
   // TODO(crbug.com/809249): Add other types of messages.
   enum class Type {
     kClientConnect,   // Initial message sent by SDK client to connect to MRP.
@@ -34,8 +57,27 @@ struct CastInternalMessage {
                       // session.
     kUpdateSession,   // Message sent by MRP to inform SDK client of updated
                       // session.
-    kOther            // All other types of messages which are not considered
-                      // part of communication with Cast SDK.
+    kError,
+    kOther,  // All other types of messages which are not considered
+             // part of communication with Cast SDK.
+    kMaxValue = kOther,
+  };
+
+  // Errors that may be returned by the SDK.
+  enum class ErrorCode {
+    kInternalError,           // Internal error.  (Not specified by Cast API.)
+    kCancel,                  // The operation was canceled by the user.
+    kTimeout,                 // The operation timed out.
+    kApiNotInitialized,       // The API is not initialized.
+    kInvalidParameter,        // The parameters to the operation were not valid.
+    kExtensionNotCompatible,  // The API script is not compatible with
+                              // this Cast implementation.
+    kReceiverUnavailable,     // No receiver was compatible with the session
+                              // request.
+    kSessionError,  // A session could not be created, or a session was invalid.
+    kChannelError,  // A channel to the receiver is not available.
+    kLoadMediaFailed,  // Load media failed.
+    kMaxValue = kLoadMediaFailed,
   };
 
   // Returns a CastInternalMessage for |message|, or nullptr is |message| is not
@@ -44,12 +86,12 @@ struct CastInternalMessage {
 
   ~CastInternalMessage();
 
-  const Type type;
-  const std::string client_id;
-  const base::Optional<int> sequence_number;
+  Type type() const { return type_; }
+  const std::string& client_id() const { return client_id_; }
+  absl::optional<int> sequence_number() const { return sequence_number_; }
 
   bool has_session_id() const {
-    return type == Type::kAppMessage || type == Type::kV2Message;
+    return type_ == Type::kAppMessage || type_ == Type::kV2Message;
   }
 
   const std::string& session_id() const {
@@ -58,32 +100,36 @@ struct CastInternalMessage {
   }
 
   const std::string& app_message_namespace() const {
-    DCHECK(type == Type::kAppMessage);
+    DCHECK(type_ == Type::kAppMessage);
     return namespace_or_v2_type_;
   }
 
   const std::string& v2_message_type() const {
-    DCHECK(type == Type::kV2Message);
+    DCHECK(type_ == Type::kV2Message);
     return namespace_or_v2_type_;
   }
 
   const base::Value& app_message_body() const {
-    DCHECK(type == Type::kAppMessage);
+    DCHECK(type_ == Type::kAppMessage);
     return message_body_;
   }
 
   const base::Value& v2_message_body() const {
-    DCHECK(type == Type::kV2Message);
+    DCHECK(type_ == Type::kV2Message);
     return message_body_;
   }
 
  private:
   CastInternalMessage(Type type,
                       const std::string& client_id,
-                      base::Optional<int> sequence_number,
+                      absl::optional<int> sequence_number,
                       const std::string& session_id,
                       const std::string& namespace_or_v2_type_,
                       base::Value message_body);
+
+  const Type type_;
+  const std::string client_id_;
+  const absl::optional<int> sequence_number_;
 
   // Set if |type| is |kAppMessage| or |kV2Message|.
   const std::string session_id_;
@@ -179,19 +225,23 @@ blink::mojom::PresentationConnectionMessagePtr CreateAppMessageAck(
 blink::mojom::PresentationConnectionMessagePtr CreateAppMessage(
     const std::string& session_id,
     const std::string& client_id,
-    const cast_channel::CastMessage& cast_message);
+    const CastMessage& cast_message);
 blink::mojom::PresentationConnectionMessagePtr CreateV2Message(
     const std::string& client_id,
     const base::Value& payload,
-    base::Optional<int> sequence_number);
+    absl::optional<int> sequence_number);
+blink::mojom::PresentationConnectionMessagePtr CreateErrorMessage(
+    const std::string& client_id,
+    base::Value error,
+    absl::optional<int> sequence_number);
 blink::mojom::PresentationConnectionMessagePtr CreateLeaveSessionAckMessage(
     const std::string& client_id,
-    base::Optional<int> sequence_number);
+    absl::optional<int> sequence_number);
 blink::mojom::PresentationConnectionMessagePtr CreateLeaveSessionAckMessage(
     const std::string& client_id,
-    base::Optional<int> sequence_number);
+    absl::optional<int> sequence_number);
 
-base::Value SupportedMediaRequestsToListValue(int media_requests);
+base::Value SupportedMediaCommandsToListValue(int media_commands);
 
 }  // namespace media_router
 

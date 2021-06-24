@@ -9,26 +9,24 @@
 #include <string>
 #include <vector>
 
-#include "base/strings/string16.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/string_piece.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 #include "ui/base/layout.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_util.h"
 
 namespace base {
+class FilePath;
 class RefCountedMemory;
-class DictionaryValue;
+class SequencedTaskRunner;
 }
 
 namespace blink {
 class OriginTrialPolicy;
-}
-
-namespace IPC {
-class Message;
 }
 
 namespace gfx {
@@ -44,6 +42,10 @@ struct CdmHostFilePath;
 class MediaDrmBridgeClient;
 }
 
+namespace mojo {
+class BinderMap;
+}
+
 namespace content {
 
 class ContentBrowserClient;
@@ -51,11 +53,10 @@ class ContentClient;
 class ContentGpuClient;
 class ContentRendererClient;
 class ContentUtilityClient;
-class ServiceManagerConnection;
 struct CdmInfo;
 struct PepperPluginInfo;
 
-// Setter and getter for the client.  The client should be set early, before any
+// Setter and getter for the client. The client should be set early, before any
 // content code is called.
 CONTENT_EXPORT void SetContentClient(ContentClient* client);
 
@@ -147,46 +148,37 @@ class CONTENT_EXPORT ContentClient {
 
   virtual void AddAdditionalSchemes(Schemes* schemes) {}
 
-  // Returns whether the given message should be sent in a swapped out renderer.
-  virtual bool CanSendWhileSwappedOut(const IPC::Message* message);
-
   // Returns a string resource given its id.
-  virtual base::string16 GetLocalizedString(int message_id) const;
+  virtual std::u16string GetLocalizedString(int message_id);
 
   // Returns a string resource given its id and replace $1 with the given
   // replacement.
-  virtual base::string16 GetLocalizedString(
-      int message_id,
-      const base::string16& replacement) const;
+  virtual std::u16string GetLocalizedString(int message_id,
+                                            const std::u16string& replacement);
 
   // Return the contents of a resource in a StringPiece given the resource id.
-  virtual base::StringPiece GetDataResource(
-      int resource_id,
-      ui::ScaleFactor scale_factor) const;
+  virtual base::StringPiece GetDataResource(int resource_id,
+                                            ui::ScaleFactor scale_factor);
 
   // Returns the raw bytes of a scale independent data resource.
-  virtual base::RefCountedMemory* GetDataResourceBytes(
-      int resource_id) const;
+  virtual base::RefCountedMemory* GetDataResourceBytes(int resource_id);
 
   // Returns a native image given its id.
-  virtual gfx::Image& GetNativeImageNamed(int resource_id) const;
+  virtual gfx::Image& GetNativeImageNamed(int resource_id);
+
+#if defined(OS_MAC)
+  // Gets the path for an embedder-specific helper child process. The
+  // |child_flags| is a value greater than
+  // ChildProcessHost::CHILD_EMBEDDER_FIRST. The |helpers_path| is the location
+  // of the known //content Mac helpers in the framework bundle.
+  virtual base::FilePath GetChildProcessPath(
+      int child_flags,
+      const base::FilePath& helpers_path);
+#endif  // defined(OS_MAC)
 
   // Called by content::GetProcessTypeNameInEnglish for process types that it
   // doesn't know about because they're from the embedder.
   virtual std::string GetProcessTypeNameInEnglish(int type);
-
-  // Called once during initialization of NetworkService to provide constants
-  // to NetLog.  (Though it may be called multiples times if NetworkService
-  // crashes and needs to be reinitialized).  The return value is merged with
-  // |GetNetConstants()| and passed to FileNetLogObserver - see documentation
-  // of |FileNetLogObserver::CreateBounded()| for more information.  The
-  // convention is to put new constants under a subdict at the key "clientInfo".
-  virtual base::DictionaryValue GetNetLogConstants() const;
-
-  // Returns whether or not V8 script extensions should be allowed for a
-  // service worker.
-  virtual bool AllowScriptExtensionForServiceWorker(
-      const url::Origin& script_origin);
 
   // Returns the origin trial policy, or nullptr if origin trials are not
   // supported by the embedder.
@@ -202,7 +194,12 @@ class CONTENT_EXPORT ContentClient {
   virtual media::MediaDrmBridgeClient* GetMediaDrmBridgeClient();
 #endif  // OS_ANDROID
 
-  virtual void OnServiceManagerConnected(ServiceManagerConnection* connection);
+  // Allows the embedder to handle incoming interface binding requests from
+  // the browser process to any type of child process. This is called once
+  // in each child process during that process's initialization.
+  virtual void ExposeInterfacesToBrowser(
+      scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+      mojo::BinderMap* binders);
 
  private:
   friend class ContentClientInitializer;  // To set these pointers.

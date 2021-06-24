@@ -9,9 +9,9 @@ assert(is_chromeos, "Non-Chrome-OS builds must not depend on //chromeos")
 component("settings") {
   defines = [ "IS_CHROMEOS_SETTINGS_IMPL" ]
   deps = [
+    "//ash/constants",
     "//base",
     "//base:i18n",
-    "//chromeos/constants",
     "//chromeos/login/login_state",
     "//third_party/icu",
   ]
@@ -40,7 +40,5 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//third_party/icu",
   ]
-  sources = [
-    "timezone_settings_unittest.cc",
-  ]
+  sources = [ "timezone_settings_unittest.cc" ]
 }

@@ -7,8 +7,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "ui/gfx/geometry/point.h"
-#include "ui/native_theme/native_theme.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/scrollbar/scroll_bar.h"
 #include "ui/views/view.h"
@@ -20,36 +19,28 @@ class Canvas;
 namespace views {
 
 // Views implementation for the scrollbar.
-class VIEWS_EXPORT ScrollBarViews : public ScrollBar, public ButtonListener {
+class VIEWS_EXPORT ScrollBarViews : public ScrollBar {
  public:
-  static const char kViewClassName[];
+  METADATA_HEADER(ScrollBarViews);
 
   // Creates new scrollbar, either horizontal or vertical.
-  explicit ScrollBarViews(bool horizontal);
+  explicit ScrollBarViews(bool horizontal = true);
   ~ScrollBarViews() override;
 
   static int GetVerticalScrollBarWidth(const ui::NativeTheme* theme);
 
  protected:
   // View overrides:
-  void Layout() override;
   void OnPaint(gfx::Canvas* canvas) override;
-  gfx::Size CalculatePreferredSize() const override;
-  const char* GetClassName() const override;
 
   // ScrollBar overrides:
   int GetThickness() const override;
-
-  // BaseButton::ButtonListener overrides:
-  void ButtonPressed(Button* sender, const ui::Event& event) override;
 
   // Returns the area for the track. This is the area of the scrollbar minus
   // the size of the arrow buttons.
   gfx::Rect GetTrackBounds() const override;
 
  private:
-  static int GetHorizontalScrollBarHeight(const ui::NativeTheme* theme);
-
   // The scroll bar buttons (Up/Down, Left/Right).
   Button* prev_button_;
   Button* next_button_;

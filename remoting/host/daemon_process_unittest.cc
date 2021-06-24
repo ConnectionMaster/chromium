@@ -6,16 +6,18 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "ipc/ipc_channel_handle.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_macros.h"
@@ -23,7 +25,6 @@
 #include "remoting/host/chromoting_messages.h"
 #include "remoting/host/desktop_session.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "testing/gmock_mutant.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::_;
@@ -59,10 +60,9 @@ class FakeDesktopSession : public DesktopSession {
 
 class MockDaemonProcess : public DaemonProcess {
  public:
-  MockDaemonProcess(
-      scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
-      scoped_refptr<AutoThreadTaskRunner> io_task_runner,
-      const base::Closure& stopped_callback);
+  MockDaemonProcess(scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
+                    scoped_refptr<AutoThreadTaskRunner> io_task_runner,
+                    base::OnceClosure stopped_callback);
   ~MockDaemonProcess() override;
 
   std::unique_ptr<DesktopSession> DoCreateDesktopSession(
@@ -96,9 +96,10 @@ FakeDesktopSession::~FakeDesktopSession() = default;
 MockDaemonProcess::MockDaemonProcess(
     scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
     scoped_refptr<AutoThreadTaskRunner> io_task_runner,
-    const base::Closure& stopped_callback)
-    : DaemonProcess(caller_task_runner, io_task_runner, stopped_callback) {
-}
+    base::OnceClosure stopped_callback)
+    : DaemonProcess(caller_task_runner,
+                    io_task_runner,
+                    std::move(stopped_callback)) {}
 
 MockDaemonProcess::~MockDaemonProcess() = default;
 
@@ -151,7 +152,8 @@ class DaemonProcessTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
 
   std::unique_ptr<MockDaemonProcess> daemon_process_;
   int terminal_id_;
@@ -164,13 +166,13 @@ DaemonProcessTest::~DaemonProcessTest() = default;
 
 void DaemonProcessTest::SetUp() {
   scoped_refptr<AutoThreadTaskRunner> task_runner = new AutoThreadTaskRunner(
-      message_loop_.task_runner(),
-      base::Bind(&DaemonProcessTest::QuitMessageLoop,
-                 base::Unretained(this)));
-  daemon_process_.reset(
-      new MockDaemonProcess(task_runner, task_runner,
-                            base::Bind(&DaemonProcessTest::DeleteDaemonProcess,
-                                       base::Unretained(this))));
+      task_environment_.GetMainThreadTaskRunner(),
+      base::BindOnce(&DaemonProcessTest::QuitMessageLoop,
+                     base::Unretained(this)));
+  daemon_process_ = std::make_unique<MockDaemonProcess>(
+      task_runner, task_runner,
+      base::BindOnce(&DaemonProcessTest::DeleteDaemonProcess,
+                     base::Unretained(this)));
 
   // Set up daemon process mocks.
   EXPECT_CALL(*daemon_process_, DoCreateDesktopSessionPtr(_))
@@ -210,7 +212,7 @@ void DaemonProcessTest::DeleteDaemonProcess() {
 }
 
 void DaemonProcessTest::QuitMessageLoop() {
-  message_loop_.task_runner()->PostTask(
+  task_environment_.GetMainThreadTaskRunner()->PostTask(
       FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
 }
 
@@ -392,7 +394,7 @@ TEST_F(DaemonProcessTest, StopProcessStatsReportWhenTheWorkerProcessDied) {
           }));
   static_cast<WorkerProcessIpcDelegate*>(daemon_process_.get())
       ->OnWorkerProcessStopped();
-  message_loop_.task_runner()->PostDelayedTask(
+  task_environment_.GetMainThreadTaskRunner()->PostDelayedTask(
       FROM_HERE, run_loop.QuitClosure(), base::TimeDelta::FromMilliseconds(10));
   run_loop.Run();
 }

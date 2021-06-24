@@ -2,7 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-class TaskController {
+// clang-format off
+// #import {FileTransferController} from './file_transfer_controller.m.js';
+// #import {ProgressCenter} from '../../externs/background/progress_center.js';
+// #import {Crostini} from '../../externs/background/crostini.js';
+// #import {NamingController} from './naming_controller.m.js';
+// #import {MetadataUpdateController} from './metadata_update_controller.m.js';
+// #import {DirectoryModel} from './directory_model.m.js';
+// #import {MetadataModel} from './metadata/metadata_model.js';
+// #import {FileManagerUI} from './ui/file_manager_ui.js';
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// #import {DialogType} from './dialog_type.m.js';
+// #import {strf, util, str} from '../../common/js/util.m.js';
+// #import {FileTasks} from './file_tasks.m.js';
+// #import {FileSelectionHandler, FileSelection} from './file_selection.m.js';
+// #import {Command} from 'chrome://resources/js/cr/ui/command.m.js';
+// #import {assert, assertInstanceof, assertNotReached} from 'chrome://resources/js/assert.m.js';
+// #import {TaskHistory} from './task_history.m.js';
+// #import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+// clang-format on
+
+/* #export */ class TaskController {
   /**
    * @param {DialogType} dialogType
    * @param {!VolumeManager} volumeManager
@@ -13,10 +33,12 @@ class TaskController {
    * @param {!MetadataUpdateController} metadataUpdateController
    * @param {!NamingController} namingController
    * @param {!Crostini} crostini
+   * @param {!ProgressCenter} progressCenter
    */
   constructor(
       dialogType, volumeManager, ui, metadataModel, directoryModel,
-      selectionHandler, metadataUpdateController, namingController, crostini) {
+      selectionHandler, metadataUpdateController, namingController, crostini,
+      progressCenter) {
     /**
      * @private {DialogType}
      * @const
@@ -34,6 +56,9 @@ class TaskController {
      * @const
      */
     this.ui_ = ui;
+
+    /** @private {?FileTransferController} */
+    this.fileTransferController_;
 
     /**
      * @private {!MetadataModel}
@@ -72,6 +97,13 @@ class TaskController {
      * @private
      */
     this.crostini_ = crostini;
+
+    /**
+     * @type {!ProgressCenter}
+     * @const
+     * @private
+     */
+    this.progressCenter_ = progressCenter;
 
     /**
      * @type {!TaskHistory}
@@ -161,6 +193,13 @@ class TaskController {
         TaskHistory.EventType.UPDATE, this.updateTasks_.bind(this));
     chrome.fileManagerPrivate.onAppsUpdated.addListener(
         this.updateTasks_.bind(this));
+  }
+
+  /**
+   * @param {?FileTransferController} fileTransferController
+   */
+  setFileTransferController(fileTransferController) {
+    this.fileTransferController_ = fileTransferController;
   }
 
   /**
@@ -270,10 +309,20 @@ class TaskController {
     this.getFileTasks()
         .then(tasks => {
           const task = {
-            taskId: /** @type {string} */ (
-                this.ui_.fileContextMenu.defaultTaskMenuItem.taskId),
-            title: /** @type {string} */ (
-                this.ui_.fileContextMenu.defaultTaskMenuItem.label),
+            taskId: /** @type {string} */ (this.ui_.defaultTaskMenuItem.taskId),
+            title: /** @type {string} */ (this.ui_.defaultTaskMenuItem.label),
+            get iconUrl() {
+              assert(false);
+              return '';
+            },
+            get isDefault() {
+              assert(false);
+              return false;
+            },
+            get isGenericFileHandler() {
+              assert(false);
+              return false;
+            },
           };
           tasks.execute(task);
         })
@@ -379,8 +428,9 @@ class TaskController {
       return FileTasks
           .create(
               this.volumeManager_, this.metadataModel_, this.directoryModel_,
-              this.ui_, selection.entries, assert(selection.mimeTypes),
-              this.taskHistory_, this.namingController_, this.crostini_)
+              this.ui_, this.fileTransferController_, selection.entries,
+              assert(selection.mimeTypes), this.taskHistory_,
+              this.namingController_, this.crostini_, this.progressCenter_)
           .then(tasks => {
             if (this.selectionHandler_.selection !== selection) {
               if (util.isSameEntries(this.tasksEntries_, selection.entries)) {
@@ -439,27 +489,30 @@ class TaskController {
   updateContextMenuTaskItems_(openTasks, nonOpenTasks) {
     const defaultTask = FileTasks.getDefaultTask(openTasks, this.taskHistory_);
     if (defaultTask) {
+      this.ui_.defaultTaskMenuItem.removeAttribute('file-type-icon');
       if (defaultTask.iconType) {
-        this.ui_.fileContextMenu.defaultTaskMenuItem.style.backgroundImage = '';
-        this.ui_.fileContextMenu.defaultTaskMenuItem.setAttribute(
+        this.ui_.defaultTaskMenuItem.style.backgroundImage = '';
+        this.ui_.defaultTaskMenuItem.setAttribute(
             'file-type-icon', defaultTask.iconType);
+        this.ui_.defaultTaskMenuItem.style.marginInlineEnd = '28px';
       } else if (defaultTask.iconUrl) {
-        this.ui_.fileContextMenu.defaultTaskMenuItem.style.backgroundImage =
+        this.ui_.defaultTaskMenuItem.style.backgroundImage =
             'url(' + defaultTask.iconUrl + ')';
+        this.ui_.defaultTaskMenuItem.style.marginInlineEnd = '28px';
       } else {
-        this.ui_.fileContextMenu.defaultTaskMenuItem.style.backgroundImage = '';
+        this.ui_.defaultTaskMenuItem.style.backgroundImage = '';
+        this.ui_.defaultTaskMenuItem.style.marginInlineEnd = '';
       }
 
       if (defaultTask.taskId === FileTasks.ZIP_ARCHIVER_UNZIP_TASK_ID) {
-        this.ui_.fileContextMenu.defaultTaskMenuItem.label = str('TASK_OPEN');
+        this.ui_.defaultTaskMenuItem.label = str('TASK_OPEN');
       } else {
-        this.ui_.fileContextMenu.defaultTaskMenuItem.label =
+        this.ui_.defaultTaskMenuItem.label =
             defaultTask.label || defaultTask.title;
       }
 
-      this.ui_.fileContextMenu.defaultTaskMenuItem.disabled =
-          !!defaultTask.disabled;
-      this.ui_.fileContextMenu.defaultTaskMenuItem.taskId = defaultTask.taskId;
+      this.ui_.defaultTaskMenuItem.disabled = !!defaultTask.disabled;
+      this.ui_.defaultTaskMenuItem.taskId = defaultTask.taskId;
     }
 
     this.canExecuteDefaultTask_ = defaultTask != null;
@@ -471,23 +524,32 @@ class TaskController {
     this.canExecuteMoreActions_ = nonOpenTasks.length >= 1;
     this.moreActionsCommand_.canExecuteChange(this.ui_.listContainer.element);
 
-    this.ui_.fileContextMenu.tasksSeparator.hidden =
+    this.ui_.tasksSeparator.hidden =
         openTasks.length === 0 && nonOpenTasks.length == 0;
+  }
+
+  /**
+   * Return the tasks for the FileEntry |entry|.
+   *
+   * @param {FileEntry} entry
+   * @return {!Promise<!FileTasks>}
+   */
+  getEntryFileTasks(entry) {
+    return this.metadataModel_.get([entry], ['contentMimeType']).then(props => {
+      return FileTasks.create(
+          this.volumeManager_, this.metadataModel_, this.directoryModel_,
+          this.ui_, this.fileTransferController_, [entry],
+          [props[0].contentMimeType || null], this.taskHistory_,
+          this.namingController_, this.crostini_, this.progressCenter_);
+    });
   }
 
   /**
    * @param {FileEntry} entry
    */
   executeEntryTask(entry) {
-    this.metadataModel_.get([entry], ['contentMimeType']).then(props => {
-      FileTasks
-          .create(
-              this.volumeManager_, this.metadataModel_, this.directoryModel_,
-              this.ui_, [entry], [props[0].contentMimeType || null],
-              this.taskHistory_, this.namingController_, this.crostini_)
-          .then(tasks => {
-            tasks.executeDefault();
-          });
+    this.getEntryFileTasks(entry).then(tasks => {
+      tasks.executeDefault();
     });
   }
 }

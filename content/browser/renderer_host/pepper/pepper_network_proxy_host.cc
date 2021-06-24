@@ -5,7 +5,6 @@
 #include "content/browser/renderer_host/pepper/pepper_network_proxy_host.h"
 
 #include "base/bind.h"
-#include "base/task/post_task.h"
 #include "content/browser/renderer_host/pepper/browser_ppapi_host_impl.h"
 #include "content/browser/renderer_host/pepper/pepper_proxy_lookup_helper.h"
 #include "content/browser/renderer_host/pepper/pepper_socket_utils.h"
@@ -17,6 +16,8 @@
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/socket_permission_request.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "net/base/network_isolation_key.h"
 #include "net/proxy_resolution/proxy_info.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/host/dispatch_host_message.h"
@@ -33,18 +34,20 @@ bool LookUpProxyForURLCallback(
     int render_process_host_id,
     int render_frame_host_id,
     const GURL& url,
-    network::mojom::ProxyLookupClientPtr proxy_lookup_client) {
+    mojo::PendingRemote<network::mojom::ProxyLookupClient>
+        proxy_lookup_client) {
   RenderFrameHost* render_frame_host =
       RenderFrameHost::FromID(render_process_host_id, render_frame_host_id);
   if (!render_frame_host)
     return false;
 
   SiteInstance* site_instance = render_frame_host->GetSiteInstance();
-  StoragePartition* storage_partition = BrowserContext::GetStoragePartition(
-      site_instance->GetBrowserContext(), site_instance);
+  StoragePartition* storage_partition =
+      site_instance->GetBrowserContext()->GetStoragePartition(site_instance);
 
   storage_partition->GetNetworkContext()->LookUpProxyForURL(
-      url, std::move(proxy_lookup_client));
+      url, render_frame_host->GetNetworkIsolationKey(),
+      std::move(proxy_lookup_client));
   return true;
 }
 
@@ -57,12 +60,11 @@ PepperNetworkProxyHost::PepperNetworkProxyHost(BrowserPpapiHostImpl* host,
       render_process_id_(0),
       render_frame_id_(0),
       is_allowed_(false),
-      waiting_for_ui_thread_data_(true),
-      weak_factory_(this) {
+      waiting_for_ui_thread_data_(true) {
   host->GetRenderFrameIDsForInstance(instance, &render_process_id_,
                                      &render_frame_id_);
-  base::PostTaskWithTraitsAndReplyWithResult(
-      FROM_HERE, {BrowserThread::UI},
+  GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
+      FROM_HERE,
       base::BindOnce(&GetUIThreadDataOnUIThread, render_process_id_,
                      render_frame_id_, host->external_plugin()),
       base::BindOnce(&PepperNetworkProxyHost::DidGetUIThreadData,
@@ -159,7 +161,7 @@ void PepperNetworkProxyHost::TryToSendUnsentRequests() {
 void PepperNetworkProxyHost::OnResolveProxyCompleted(
     ppapi::host::ReplyMessageContext context,
     PepperProxyLookupHelper* pending_request,
-    base::Optional<net::ProxyInfo> proxy_info) {
+    absl::optional<net::ProxyInfo> proxy_info) {
   auto it = pending_requests_.find(pending_request);
   DCHECK(it != pending_requests_.end());
   pending_requests_.erase(it);

@@ -9,30 +9,24 @@
 #include <string>
 #include <vector>
 
+#include "base/logging.h"
+#include "chrome/browser/ash/settings/cros_settings.h"
 #include "chrome/browser/chromeos/printing/bulk_printers_calculator.h"
 #include "chrome/browser/chromeos/printing/bulk_printers_calculator_factory.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/policy/profile_policy_connector_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
 
 namespace chromeos {
 
 namespace {
 
-// It stores the number of bindings (instances of this class) connected to each
-// BulkPrintersCalculator object. It allows us to make sure, that every
-// BulkPrintersCalculator object is not binded more that once.
-std::map<BulkPrintersCalculator*, unsigned>& BindingsCount() {
-  static base::NoDestructor<std::map<BulkPrintersCalculator*, unsigned>>
-      bindings_count;
-  return *bindings_count;
-}
-
 BulkPrintersCalculator::AccessMode ConvertToAccessMode(int mode_val) {
-  if (mode_val >= BulkPrintersCalculator::BLACKLIST_ONLY &&
+  if (mode_val >= BulkPrintersCalculator::BLOCKLIST_ONLY &&
       mode_val <= BulkPrintersCalculator::ALL_ACCESS) {
     return static_cast<BulkPrintersCalculator::AccessMode>(mode_val);
   }
@@ -43,153 +37,178 @@ BulkPrintersCalculator::AccessMode ConvertToAccessMode(int mode_val) {
 
 std::vector<std::string> ConvertToVector(const base::ListValue* list) {
   std::vector<std::string> string_list;
-  if (list) {
-    for (const base::Value& value : *list) {
-      if (value.is_string()) {
-        string_list.push_back(value.GetString());
-      }
+  if (!list) {
+    return string_list;
+  }
+
+  for (const base::Value& value : list->GetList()) {
+    if (value.is_string()) {
+      string_list.push_back(value.GetString());
     }
   }
   return string_list;
 }
 
-class CalculatorsPoliciesBinderImpl : public CalculatorsPoliciesBinder {
+class PrefBinder : public CalculatorsPoliciesBinder {
  public:
-  CalculatorsPoliciesBinderImpl(CrosSettings* settings, Profile* profile)
-      : settings_(settings), profile_(profile) {
-    pref_change_registrar_.Init(profile->GetPrefs());
-    // Bind device policies to corresponding instance of BulkPrintersCalculator.
-    device_printers_ = BulkPrintersCalculatorFactory::Get()->GetForDevice();
-    if (device_printers_ && ++(BindingsCount()[device_printers_.get()]) == 1) {
-      BindSettings(kDeviceNativePrintersAccessMode,
-                   &CalculatorsPoliciesBinderImpl::UpdateDeviceAccessMode);
-      BindSettings(kDeviceNativePrintersBlacklist,
-                   &CalculatorsPoliciesBinderImpl::UpdateDeviceBlacklist);
-      BindSettings(kDeviceNativePrintersWhitelist,
-                   &CalculatorsPoliciesBinderImpl::UpdateDeviceWhitelist);
-    }
-    // Bind user policies to corresponding instance of BulkPrintersCalculator.
-    user_printers_ =
-        BulkPrintersCalculatorFactory::Get()->GetForProfile(profile);
-    if (user_printers_ && ++(BindingsCount()[user_printers_.get()]) == 1) {
-      BindPref(prefs::kRecommendedNativePrintersAccessMode,
-               &CalculatorsPoliciesBinderImpl::UpdateUserAccessMode);
-      BindPref(prefs::kRecommendedNativePrintersBlacklist,
-               &CalculatorsPoliciesBinderImpl::UpdateUserBlacklist);
-      BindPref(prefs::kRecommendedNativePrintersWhitelist,
-               &CalculatorsPoliciesBinderImpl::UpdateUserWhitelist);
-    }
+  PrefBinder(PrefService* pref_service,
+             base::WeakPtr<BulkPrintersCalculator> calculator)
+      : CalculatorsPoliciesBinder(prefs::kRecommendedPrintersAccessMode,
+                                  prefs::kRecommendedPrintersBlocklist,
+                                  prefs::kRecommendedPrintersAllowlist,
+                                  calculator),
+        prefs_(pref_service) {
+    pref_change_registrar_.Init(prefs_);
   }
 
-  ~CalculatorsPoliciesBinderImpl() override {
-    // We have to decrease counters in bindings_count.
-    if (device_printers_ && --(BindingsCount()[device_printers_.get()]) == 0) {
-      BindingsCount().erase(device_printers_.get());
-    }
-    if (user_printers_ && --(BindingsCount()[user_printers_.get()]) == 0) {
-      BindingsCount().erase(user_printers_.get());
-    }
+ protected:
+  void Bind(const char* policy_name, base::RepeatingClosure closure) override {
+    DVLOG(1) << "Binding " << policy_name;
+    pref_change_registrar_.Add(policy_name, closure);
+  }
+
+  int GetAccessMode(const char* name) const override {
+    return prefs_->GetInteger(name);
+  }
+
+  std::vector<std::string> GetStringList(const char* name) const override {
+    return ConvertToVector(prefs_->GetList(name));
   }
 
  private:
-  // Methods propagating values from policies to BulkPrintersCalculator.
-  void UpdateDeviceAccessMode() {
+  PrefService* prefs_;
+  PrefChangeRegistrar pref_change_registrar_;
+};
+
+class SettingsBinder : public CalculatorsPoliciesBinder {
+ public:
+  SettingsBinder(CrosSettings* settings,
+                 base::WeakPtr<BulkPrintersCalculator> calculator)
+      : CalculatorsPoliciesBinder(kDevicePrintersAccessMode,
+                                  kDevicePrintersBlocklist,
+                                  kDevicePrintersAllowlist,
+                                  calculator),
+        settings_(settings) {}
+
+ protected:
+  void Bind(const char* policy_name, base::RepeatingClosure closure) override {
+    DVLOG(1) << "Bind device setting: " << policy_name;
+    subscriptions_.push_back(
+        settings_->AddSettingsObserver(policy_name, closure));
+  }
+
+  int GetAccessMode(const char* name) const override {
     int mode_val;
-    if (!settings_->GetInteger(kDeviceNativePrintersAccessMode, &mode_val)) {
+    if (!settings_->GetInteger(name, &mode_val)) {
       mode_val = BulkPrintersCalculator::AccessMode::UNSET;
     }
-    device_printers_->SetAccessMode(ConvertToAccessMode(mode_val));
+    DVLOG(1) << "Device access mode: " << mode_val;
+    return mode_val;
   }
 
-  void UpdateDeviceBlacklist() {
-    device_printers_->SetBlacklist(
-        FromSettings(kDeviceNativePrintersBlacklist));
-  }
-
-  void UpdateDeviceWhitelist() {
-    device_printers_->SetWhitelist(
-        FromSettings(kDeviceNativePrintersWhitelist));
-  }
-
-  void UpdateUserAccessMode() {
-    user_printers_->SetAccessMode(
-        ConvertToAccessMode(profile_->GetPrefs()->GetInteger(
-            prefs::kRecommendedNativePrintersAccessMode)));
-  }
-
-  void UpdateUserBlacklist() {
-    user_printers_->SetBlacklist(
-        FromPrefs(prefs::kRecommendedNativePrintersBlacklist));
-  }
-
-  void UpdateUserWhitelist() {
-    user_printers_->SetWhitelist(
-        FromPrefs(prefs::kRecommendedNativePrintersWhitelist));
-  }
-
-  typedef void (CalculatorsPoliciesBinderImpl::*SimpleMethod)();
-
-  // Binds given device policy to given method and calls this method once.
-  void BindPref(const char* policy_name, SimpleMethod method_to_call) {
-    pref_change_registrar_.Add(
-        policy_name,
-        base::BindRepeating(method_to_call, base::Unretained(this)));
-    (this->*method_to_call)();
-  }
-
-  // Binds given user policy to given method and calls this method once.
-  void BindSettings(const char* policy_name, SimpleMethod method_to_call) {
-    subscriptions_.push_back(settings_->AddSettingsObserver(
-        policy_name,
-        base::BindRepeating(method_to_call, base::Unretained(this))));
-    (this->*method_to_call)();
-  }
-
-  // Extracts the list of strings named |policy_name| from device policies.
-  std::vector<std::string> FromSettings(const std::string& policy_name) {
+  std::vector<std::string> GetStringList(const char* name) const override {
     const base::ListValue* list;
-    if (!settings_->GetList(policy_name, &list)) {
+    if (!settings_->GetList(name, &list)) {
       list = nullptr;
     }
     return ConvertToVector(list);
   }
 
-  // Extracts the list of strings named |policy_name| from user policies.
-  std::vector<std::string> FromPrefs(const std::string& policy_name) {
-    return ConvertToVector(profile_->GetPrefs()->GetList(policy_name));
-  }
-
-  // Device and user bulk printers. Unowned.
-  base::WeakPtr<BulkPrintersCalculator> device_printers_;
-  base::WeakPtr<BulkPrintersCalculator> user_printers_;
-
-  // Device and profile (user) settings.
+ private:
   CrosSettings* settings_;
-  std::list<std::unique_ptr<CrosSettings::ObserverSubscription>> subscriptions_;
-  Profile* profile_;
-  PrefChangeRegistrar pref_change_registrar_;
-
-  SEQUENCE_CHECKER(sequence_checker_);
-  DISALLOW_COPY_AND_ASSIGN(CalculatorsPoliciesBinderImpl);
+  std::list<base::CallbackListSubscription> subscriptions_;
 };
 
 }  // namespace
 
 // static
 void CalculatorsPoliciesBinder::RegisterProfilePrefs(
-    user_prefs::PrefRegistrySyncable* registry) {
+    PrefRegistrySimple* registry) {
   // Default value for access mode is AllAccess.
-  registry->RegisterIntegerPref(prefs::kRecommendedNativePrintersAccessMode,
+  registry->RegisterIntegerPref(prefs::kRecommendedPrintersAccessMode,
                                 BulkPrintersCalculator::ALL_ACCESS);
-  registry->RegisterListPref(prefs::kRecommendedNativePrintersBlacklist);
-  registry->RegisterListPref(prefs::kRecommendedNativePrintersWhitelist);
+  registry->RegisterListPref(prefs::kRecommendedPrintersBlocklist);
+  registry->RegisterListPref(prefs::kRecommendedPrintersAllowlist);
 }
 
 // static
-std::unique_ptr<CalculatorsPoliciesBinder> CalculatorsPoliciesBinder::Create(
+std::unique_ptr<CalculatorsPoliciesBinder>
+CalculatorsPoliciesBinder::DeviceBinder(
     CrosSettings* settings,
-    Profile* profile) {
-  return std::make_unique<CalculatorsPoliciesBinderImpl>(settings, profile);
+    base::WeakPtr<BulkPrintersCalculator> calculator) {
+  auto binder = std::make_unique<SettingsBinder>(settings, calculator);
+  binder->Init();
+  return binder;
+}
+
+// static
+std::unique_ptr<CalculatorsPoliciesBinder>
+CalculatorsPoliciesBinder::UserBinder(
+    PrefService* prefs,
+    base::WeakPtr<BulkPrintersCalculator> calculator) {
+  auto binder = std::make_unique<PrefBinder>(prefs, calculator);
+  binder->Init();
+  return binder;
+}
+
+CalculatorsPoliciesBinder::CalculatorsPoliciesBinder(
+    const char* access_mode_name,
+    const char* blocklist_name,
+    const char* allowlist_name,
+    base::WeakPtr<BulkPrintersCalculator> calculator)
+    : access_mode_name_(access_mode_name),
+      blocklist_name_(blocklist_name),
+      allowlist_name_(allowlist_name),
+      calculator_(calculator) {
+  DCHECK(access_mode_name);
+  DCHECK(blocklist_name);
+  DCHECK(allowlist_name);
+  DCHECK(calculator);
+}
+
+CalculatorsPoliciesBinder::~CalculatorsPoliciesBinder() = default;
+
+base::WeakPtr<CalculatorsPoliciesBinder>
+CalculatorsPoliciesBinder::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
+void CalculatorsPoliciesBinder::Init() {
+  // Register for future updates.
+  Bind(access_mode_name_,
+       base::BindRepeating(&CalculatorsPoliciesBinder::UpdateAccessMode,
+                           GetWeakPtr()));
+  Bind(blocklist_name_,
+       base::BindRepeating(&CalculatorsPoliciesBinder::UpdateBlocklist,
+                           GetWeakPtr()));
+  Bind(allowlist_name_,
+       base::BindRepeating(&CalculatorsPoliciesBinder::UpdateAllowlist,
+                           GetWeakPtr()));
+
+  // Retrieve initial values for all policy fields.
+  UpdateAccessMode();
+  UpdateBlocklist();
+  UpdateAllowlist();
+}
+
+void CalculatorsPoliciesBinder::UpdateAccessMode() {
+  DVLOG(1) << "Update access mode";
+  if (calculator_) {
+    calculator_->SetAccessMode(
+        ConvertToAccessMode(GetAccessMode(access_mode_name_)));
+  }
+}
+
+void CalculatorsPoliciesBinder::UpdateAllowlist() {
+  if (calculator_) {
+    calculator_->SetAllowlist(GetStringList(allowlist_name_));
+  }
+}
+
+void CalculatorsPoliciesBinder::UpdateBlocklist() {
+  if (calculator_) {
+    calculator_->SetBlocklist(GetStringList(blocklist_name_));
+  }
 }
 
 }  // namespace chromeos

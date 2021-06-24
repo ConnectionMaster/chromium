@@ -48,9 +48,7 @@ source_set("cronet_native_impl") {
 
   configs += [ ":cronet_native_include_config" ]
   public_configs = [ ":cronet_native_include_config" ]
-  public_deps = [
-    ":cronet_native_headers",
-  ]
+  public_deps = [ ":cronet_native_headers" ]
 
   sources = [
     "buffer.cc",
@@ -89,6 +87,7 @@ source_set("cronet_native_unittests") {
   configs += [ ":cronet_native_include_config" ]
 
   sources = [
+    "engine_unittest.cc",
     "native_metrics_util_test.cc",
     "runnables_unittest.cc",
 

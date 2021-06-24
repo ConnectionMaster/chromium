@@ -5,12 +5,10 @@
 #ifndef MEDIA_AUDIO_AUDIO_SOURCE_PARAMETERS_H_
 #define MEDIA_AUDIO_AUDIO_SOURCE_PARAMETERS_H_
 
-#include <string>
-
-#include "base/optional.h"
 #include "base/unguessable_token.h"
 #include "media/base/audio_processing.h"
 #include "media/base/media_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -20,11 +18,11 @@ namespace media {
 // input device will be selected. This is the state when default constructed.
 struct MEDIA_EXPORT AudioSourceParameters final {
   AudioSourceParameters();
-  explicit AudioSourceParameters(int session_id);
+  explicit AudioSourceParameters(const base::UnguessableToken& session_id);
   AudioSourceParameters(const AudioSourceParameters& params);
   ~AudioSourceParameters();
 
-  int session_id = 0;
+  base::UnguessableToken session_id;
 
   struct MEDIA_EXPORT ProcessingConfig {
     ProcessingConfig(base::UnguessableToken id,
@@ -33,7 +31,7 @@ struct MEDIA_EXPORT AudioSourceParameters final {
     AudioProcessingSettings settings;
   };
 
-  base::Optional<ProcessingConfig> processing;
+  absl::optional<ProcessingConfig> processing;
 };
 
 }  // namespace media

@@ -4,7 +4,7 @@
 
 #import "ios/chrome/browser/ui/settings/utils/content_setting_backed_boolean.h"
 
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "components/content_settings/core/browser/content_settings_details.h"
 #include "components/content_settings/core/browser/content_settings_observer.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
@@ -32,8 +32,9 @@
 
 namespace {
 
-typedef ScopedObserver<HostContentSettingsMap, content_settings::Observer>
-    ContentSettingsObserver;
+typedef base::ScopedObservation<HostContentSettingsMap,
+                                content_settings::Observer>
+    ContentSettingsObseration;
 
 class ContentSettingsObserverBridge : public content_settings::Observer {
  public:
@@ -43,8 +44,7 @@ class ContentSettingsObserverBridge : public content_settings::Observer {
   // content_settings::Observer implementation.
   void OnContentSettingChanged(const ContentSettingsPattern& primary_pattern,
                                const ContentSettingsPattern& secondary_pattern,
-                               ContentSettingsType content_type,
-                               const std::string& resource_identifier) override;
+                               ContentSettingsType content_type) override;
 
  private:
   ContentSettingBackedBoolean* setting_;  // weak
@@ -59,20 +59,19 @@ ContentSettingsObserverBridge::~ContentSettingsObserverBridge() {}
 void ContentSettingsObserverBridge::OnContentSettingChanged(
     const ContentSettingsPattern& primary_pattern,
     const ContentSettingsPattern& secondary_pattern,
-    ContentSettingsType content_type,
-    const std::string& resource_identifier) {
+    ContentSettingsType content_type) {
   // Ignore when it's the ContentSettingBackedBoolean that is changing the
   // content setting.
   if (setting_.isModifyingContentSetting) {
     return;
   }
   const ContentSettingsDetails settings_details(
-      primary_pattern, secondary_pattern, content_type, resource_identifier);
+      primary_pattern, secondary_pattern, content_type);
   ContentSettingsType settingID = settings_details.type();
   // Unfortunately, because the ContentSettingsPolicyProvider doesn't publish
   // the specific content setting on policy updates, we must refresh on every
-  // CONTENT_SETTINGS_TYPE_DEFAULT notification.
-  if (settingID != CONTENT_SETTINGS_TYPE_DEFAULT &&
+  // ContentSettingsType::DEFAULT notification.
+  if (settingID != ContentSettingsType::DEFAULT &&
       settingID != setting_.settingID) {
     return;
   }
@@ -83,37 +82,37 @@ void ContentSettingsObserverBridge::OnContentSettingChanged(
 }  // namespace
 
 @implementation ContentSettingBackedBoolean {
-  ContentSettingsType settingID_;
-  scoped_refptr<HostContentSettingsMap> settingsMap_;
-  std::unique_ptr<ContentSettingsObserverBridge> adaptor_;
-  std::unique_ptr<ContentSettingsObserver> content_settings_observer_;
+  ContentSettingsType _settingID;
+  scoped_refptr<HostContentSettingsMap> _settingsMap;
+  std::unique_ptr<ContentSettingsObserverBridge> _adaptor;
+  std::unique_ptr<ContentSettingsObseration> _content_settings_observer;
 }
 
-@synthesize settingID = settingID_;
-@synthesize observer = observer_;
-@synthesize inverted = inverted_;
-@synthesize isModifyingContentSetting = isModifyingContentSetting_;
+@synthesize settingID = _settingID;
+@synthesize observer = _observer;
+@synthesize inverted = _inverted;
+@synthesize isModifyingContentSetting = _isModifyingContentSetting;
 
 - (id)initWithHostContentSettingsMap:(HostContentSettingsMap*)settingsMap
                            settingID:(ContentSettingsType)settingID
                             inverted:(BOOL)inverted {
   self = [super init];
   if (self) {
-    settingID_ = settingID;
-    settingsMap_ = settingsMap;
-    inverted_ = inverted;
+    _settingID = settingID;
+    _settingsMap = settingsMap;
+    _inverted = inverted;
     // Listen for changes to the content setting.
-    adaptor_.reset(new ContentSettingsObserverBridge(self));
-    content_settings_observer_.reset(
-        new ContentSettingsObserver(adaptor_.get()));
-    content_settings_observer_->Add(settingsMap);
+    _adaptor.reset(new ContentSettingsObserverBridge(self));
+    _content_settings_observer.reset(
+        new ContentSettingsObseration(_adaptor.get()));
+    _content_settings_observer->Observe(settingsMap);
   }
   return self;
 }
 
 - (BOOL)value {
   ContentSetting setting =
-      settingsMap_->GetDefaultContentSetting(settingID_, NULL);
+      _settingsMap->GetDefaultContentSetting(_settingID, NULL);
   return self.inverted ^ (setting == CONTENT_SETTING_ALLOW);
 }
 
@@ -121,7 +120,7 @@ void ContentSettingsObserverBridge::OnContentSettingChanged(
   ContentSetting setting =
       (self.inverted ^ value) ? CONTENT_SETTING_ALLOW : CONTENT_SETTING_BLOCK;
   self.isModifyingContentSetting = YES;
-  settingsMap_->SetDefaultContentSetting(settingID_, setting);
+  _settingsMap->SetDefaultContentSetting(_settingID, setting);
   self.isModifyingContentSetting = NO;
 }
 

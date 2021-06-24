@@ -31,14 +31,11 @@ class AshWindowTreeHostUnified : public AshWindowTreeHostPlatform,
   void RegisterMirroringHost(AshWindowTreeHost* mirroring_ash_host) override;
 
   // aura::WindowTreeHost:
-  void SetBoundsInPixels(const gfx::Rect& bounds,
-                         const viz::LocalSurfaceIdAllocation&
-                             local_surface_id_allocation) override;
   void SetCursorNative(gfx::NativeCursor cursor) override;
   void OnCursorVisibilityChangedNative(bool show) override;
 
   // ui::PlatformWindow:
-  void OnBoundsChanged(const gfx::Rect& bounds) override;
+  void OnBoundsChanged(const BoundsChange& bounds) override;
 
   // aura::WindowObserver:
   void OnWindowDestroying(aura::Window* window) override;

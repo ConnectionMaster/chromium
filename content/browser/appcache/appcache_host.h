@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/callback.h"
@@ -19,13 +20,18 @@
 #include "content/browser/appcache/appcache_group.h"
 #include "content/browser/appcache/appcache_service_impl.h"
 #include "content/browser/appcache/appcache_storage.h"
+#include "content/browser/child_process_security_policy_impl.h"
 #include "content/common/appcache_interfaces.h"
 #include "content/common/content_export.h"
 #include "content/public/common/child_process_host.h"
-#include "content/public/common/resource_type.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/appcache/appcache.mojom.h"
-#include "third_party/blink/public/mojom/appcache/appcache_info.mojom.h"
+#include "third_party/blink/public/mojom/appcache/appcache_info.mojom-forward.h"
+#include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -59,25 +65,36 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
                                     public AppCacheGroup::UpdateObserver,
                                     public AppCacheServiceImpl::Observer {
  public:
+  using SecurityPolicyHandle = ChildProcessSecurityPolicyImpl::Handle;
+
   class CONTENT_EXPORT Observer {
    public:
+    Observer(const Observer&) = delete;
+    Observer& operator=(const Observer&) = delete;
+
     // Called just after the cache selection algorithm completes.
     virtual void OnCacheSelectionComplete(AppCacheHost* host) = 0;
 
     // Called just prior to the instance being deleted.
     virtual void OnDestructionImminent(AppCacheHost* host) = 0;
 
-    virtual ~Observer() {}
+   protected:
+    // The constructor and destructor exist to facilitate subclassing, and
+    // should not be called directly.
+    Observer() noexcept = default;
+    virtual ~Observer() = default;
   };
 
-  AppCacheHost(int host_id,
-               int process_id,
-               int render_frame_id,
-               blink::mojom::AppCacheFrontendPtr frontend,
-               AppCacheServiceImpl* service);
+  AppCacheHost(
+      const base::UnguessableToken& host_id,
+      int process_id,
+      int render_frame_id,
+      SecurityPolicyHandle security_policy_handle,
+      mojo::PendingRemote<blink::mojom::AppCacheFrontend> frontend_remote,
+      AppCacheServiceImpl* service);
   ~AppCacheHost() override;
 
-  void BindRequest(blink::mojom::AppCacheHostRequest request);
+  void BindReceiver(mojo::PendingReceiver<blink::mojom::AppCacheHost> receiver);
 
   // Adds/removes an observer, the AppCacheHost does not take
   // ownership of the observer.
@@ -90,13 +107,14 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   void SelectCache(const GURL& document_url,
                    const int64_t cache_document_was_loaded_from,
                    const GURL& manifest_url) override;
-  void SelectCacheForSharedWorker(int64_t appcache_id) override;
+  void SelectCacheForWorker(int64_t appcache_id) override;
   void MarkAsForeignEntry(const GURL& document_url,
                           int64_t cache_document_was_loaded_from) override;
   void GetStatus(GetStatusCallback callback) override;
   void StartUpdate(StartUpdateCallback callback) override;
   void SwapCache(SwapCacheCallback callback) override;
-  void SetSpawningHostId(int spawning_host_id) override;
+  void SetSpawningHostId(
+      const base::UnguessableToken& spawning_host_id) override;
   void GetResourceList(GetResourceListCallback callback) override;
 
   // May return NULL if the spawning host context has been closed, or if a
@@ -112,8 +130,9 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   // May return NULL if the request isn't subject to retrieval from an appache.
   std::unique_ptr<AppCacheRequestHandler> CreateRequestHandler(
       std::unique_ptr<AppCacheRequest> request,
-      ResourceType resource_type,
-      bool should_reset_appcache);
+      network::mojom::RequestDestination request_destination,
+      bool should_reset_appcache,
+      int frame_tree_node_id);
 
   // Support for devtools inspecting appcache resources.
   void GetResourceListSync(
@@ -158,15 +177,20 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   // with which pending master entries.
   const GURL& pending_master_entry_url() const { return new_master_entry_url_; }
 
-  int host_id() const { return host_id_; }
+  const base::UnguessableToken& host_id() const { return host_id_; }
 
   int process_id() const {
     DCHECK_NE(process_id_, ChildProcessHost::kInvalidUniqueID);
     return process_id_;
   }
+
+  SecurityPolicyHandle* security_policy_handle() {
+    return &security_policy_handle_;
+  }
+
   // SetProcessId may only be called once, and only if kInvalidUniqueID was
   // passed to the AppCacheHost's constructor (e.g. in a scenario where
-  // NavigationHandleImpl needs to delay specifying the |process_id| until
+  // NavigationRequest needs to delay specifying the |process_id| until
   // ReadyToCommit time).
   void SetProcessId(int process_id);
 
@@ -174,14 +198,14 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   AppCacheStorage* storage() const { return storage_; }
   blink::mojom::AppCacheFrontend* frontend() const { return frontend_; }
 
-  // PlzNavigate:
   // The AppCacheHost instance is created with a null AppCacheFrontend
   // pointer when the navigation starts. We need to switch it to the
   // actual frontend when the navigation commits.
-  void set_frontend(blink::mojom::AppCacheFrontendPtr frontend,
-                    int render_frame_id) {
-    frontend_ptr_ = std::move(frontend);
-    frontend_ = frontend_ptr_.get();
+  void set_frontend(
+      mojo::PendingRemote<blink::mojom::AppCacheFrontend> frontend_remote,
+      int render_frame_id) {
+    frontend_remote_.Bind(std::move(frontend_remote));
+    frontend_ = frontend_remote_.get();
     render_frame_id_ = render_frame_id;
   }
 
@@ -200,10 +224,21 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
            !pending_selected_manifest_url_.is_empty();
   }
 
-  const GURL& first_party_url() const { return first_party_url_; }
-  void SetFirstPartyUrlForTesting(const GURL& url) {
-    first_party_url_ = url;
-    first_party_url_initialized_ = true;
+  const net::SiteForCookies& site_for_cookies() const {
+    return site_for_cookies_;
+  }
+  void SetSiteForCookiesForTesting(
+      const net::SiteForCookies& site_for_cookies) {
+    site_for_cookies_ = site_for_cookies;
+    site_for_cookies_initialized_ = true;
+  }
+
+  const absl::optional<url::Origin>& top_frame_origin() const {
+    return top_frame_origin_;
+  }
+
+  void set_origin_for_url_loader_factory(const url::Origin& origin) {
+    origin_for_url_loader_factory_ = origin;
   }
 
   // Returns a weak pointer reference to the host.
@@ -220,6 +255,8 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
       AppCacheSubresourceURLFactory* subresource_factory);
 
   void OnContentBlocked(const GURL& manifest_url);
+
+  bool IsOriginTrialRequiredForAppCache();
 
  private:
   friend class content::AppCacheStorageImplTest;
@@ -253,37 +290,31 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   // AppCacheGroup::UpdateObserver methods.
   void OnUpdateComplete(AppCacheGroup* group) override;
 
-  // Returns true if this host is for a dedicated worker context.
-  bool is_for_dedicated_worker() const {
-    return parent_host_id_ != blink::mojom::kAppCacheNoHostId;
-  }
-
   void OnAppCacheAccessed(const GURL& manifest_url, bool blocked);
 
-  // Returns the parent context's host instance. This is only valid
-  // to call when this instance is_for_dedicated_worker.
-  AppCacheHost* GetParentAppCacheHost() const;
-
   // Identifies the corresponding appcache host in the child process.
-  int host_id_;
+  const base::UnguessableToken host_id_;
 
   // Identifies the renderer process associated with the AppCacheHost.  Used for
-  // security checks via ChildProcessSecurityPolicyImpl::CanAccessDataForOrigin.
+  // selecting the appropriate AppCacheBackend and creating
+  // |security_policy_handle_|.
   int process_id_;
+
+  // Security policy handle for the renderer process associated with this
+  // AppCacheHost.  Used for performing CanAccessDataForOrigin() security
+  // checks.
+  //
+  // Using this handle allows these checks to work even after the corresponding
+  // RenderProcessHost has been destroyed, in the case where there are still
+  // in-flight appcache requests that need to be processed. See
+  // https://crbug.com/943887.
+  SecurityPolicyHandle security_policy_handle_;
 
   // Information about the host that created this one; the manifest
   // preferred by our creator influences which cache our main resource
   // should be loaded from.
-  int spawning_host_id_;
+  base::UnguessableToken spawning_host_id_;
   GURL preferred_manifest_url_;
-
-  // Hosts for dedicated workers are special cased to shunt
-  // request handling off to the dedicated worker's parent.
-  // The scriptable api is not accessible in dedicated workers
-  // so the other aspects of this class are not relevant for
-  // these special case instances.
-  int parent_host_id_;
-  int parent_process_id_;
 
   // Defined prior to refs to AppCaches and Groups because destruction
   // order matters, the disabled_storage_reference_ must outlive those
@@ -336,7 +367,7 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   GURL new_master_entry_url_;
 
   // The frontend to deliver notifications to the child process.
-  blink::mojom::AppCacheFrontendPtr frontend_ptr_;
+  mojo::Remote<blink::mojom::AppCacheFrontend> frontend_remote_;
   blink::mojom::AppCacheFrontend* frontend_;
   int render_frame_id_;
 
@@ -383,9 +414,16 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   // Used to inform the QuotaManager of what origins are currently in use.
   url::Origin origin_in_use_;
 
-  // First party url to be used in policy checks.
-  GURL first_party_url_;
-  bool first_party_url_initialized_ = false;
+  // The origin used when calling
+  // ContentBrowserClient::WillCreateURLLoaderFactory().
+  url::Origin origin_for_url_loader_factory_;
+
+  // To be used in policy checks.
+  net::SiteForCookies site_for_cookies_;
+  bool site_for_cookies_initialized_ = false;
+  absl::optional<url::Origin> top_frame_origin_;
+
+  bool is_origin_trial_required_ = false;
 
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheGroupTest, CleanupUnusedGroup);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheGroupTest, QueueUpdate);
@@ -397,9 +435,9 @@ class CONTENT_EXPORT AppCacheHost : public blink::mojom::AppCacheHost,
   // In the network service world points to the subresource URLLoaderFactory.
   base::WeakPtr<AppCacheSubresourceURLFactory> subresource_url_factory_;
 
-  mojo::Binding<blink::mojom::AppCacheHost> binding_;
+  mojo::Receiver<blink::mojom::AppCacheHost> receiver_{this};
 
-  base::WeakPtrFactory<AppCacheHost> weak_factory_;
+  base::WeakPtrFactory<AppCacheHost> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AppCacheHost);
 };

@@ -4,9 +4,9 @@
 
 #include "ios/chrome/browser/bookmarks/bookmarks_utils.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/containers/contains.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/prefs/pref_service.h"
 #include "ios/chrome/browser/bookmarks/bookmark_model_factory.h"
@@ -16,13 +16,7 @@
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
 
-void RecordBookmarkLaunch(BookmarkLaunchLocation launch_location) {
-  DCHECK(launch_location < BOOKMARK_LAUNCH_LOCATION_COUNT);
-  UMA_HISTOGRAM_ENUMERATION("Stars.LaunchLocation", launch_location,
-                            BOOKMARK_LAUNCH_LOCATION_COUNT);
-}
-
-bool RemoveAllUserBookmarksIOS(ios::ChromeBrowserState* browser_state) {
+bool RemoveAllUserBookmarksIOS(ChromeBrowserState* browser_state) {
   BookmarkModel* bookmark_model =
       ios::BookmarkModelFactory::GetForBrowserState(browser_state);
 
@@ -31,11 +25,10 @@ bool RemoveAllUserBookmarksIOS(ios::ChromeBrowserState* browser_state) {
 
   bookmark_model->RemoveAllUserBookmarks();
 
-  for (int i = 0; i < bookmark_model->root_node()->child_count(); ++i) {
-    if (!bookmark_model->client()->CanBeEditedByUser(
-            bookmark_model->root_node()->GetChild(i)))
+  for (const auto& child : bookmark_model->root_node()->children()) {
+    if (!bookmark_model->client()->CanBeEditedByUser(child.get()))
       continue;
-    if (!bookmark_model->root_node()->GetChild(i)->empty())
+    if (!child->children().empty())
       return false;
   }
 
@@ -60,11 +53,9 @@ std::vector<const BookmarkNode*> RootLevelFolders(BookmarkModel* model) {
   std::vector<const BookmarkNode*> primary_permanent_nodes =
       PrimaryPermanentNodes(model);
   for (const BookmarkNode* parent : primary_permanent_nodes) {
-    int child_count = parent->child_count();
-    for (int i = 0; i < child_count; ++i) {
-      const BookmarkNode* node = parent->GetChild(i);
-      if (node->is_folder() && node->IsVisible())
-        root_level_folders.push_back(node);
+    for (const auto& child : parent->children()) {
+      if (child->is_folder() && child->IsVisible())
+        root_level_folders.push_back(child.get());
     }
   }
   return root_level_folders;
@@ -72,7 +63,7 @@ std::vector<const BookmarkNode*> RootLevelFolders(BookmarkModel* model) {
 
 bool IsPrimaryPermanentNode(const BookmarkNode* node, BookmarkModel* model) {
   std::vector<const BookmarkNode*> primary_nodes(PrimaryPermanentNodes(model));
-  return base::ContainsValue(primary_nodes, node);
+  return base::Contains(primary_nodes, node);
 }
 
 const BookmarkNode* RootLevelFolderForNode(const BookmarkNode* node,
@@ -84,7 +75,7 @@ const BookmarkNode* RootLevelFolderForNode(const BookmarkNode* node,
 
   const std::vector<const BookmarkNode*> root_folders(RootLevelFolders(model));
   const BookmarkNode* top = node;
-  while (top && !base::ContainsValue(root_folders, top)) {
+  while (top && !base::Contains(root_folders, top)) {
     top = top->parent();
   }
   return top;

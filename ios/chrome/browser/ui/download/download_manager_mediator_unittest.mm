@@ -10,10 +10,10 @@
 #include "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #include "ios/chrome/browser/download/download_directory_util.h"
-#import "ios/chrome/browser/download/google_drive_app_util.h"
+#import "ios/chrome/browser/download/external_app_util.h"
 #import "ios/chrome/test/fakes/fake_download_manager_consumer.h"
 #import "ios/web/public/test/fakes/fake_download_task.h"
-#include "ios/web/public/test/test_web_thread_bundle.h"
+#include "ios/web/public/test/web_task_environment.h"
 #include "net/base/net_errors.h"
 #include "net/url_request/url_fetcher_response_writer.h"
 #include "testing/gtest_mac.h"
@@ -55,7 +55,7 @@ class DownloadManagerMediatorTest : public PlatformTest {
   id application_;
 
  private:
-  web::TestWebThreadBundle thread_bundle_;
+  web::WebTaskEnvironment task_environment_;
   web::FakeDownloadTask task_;
 };
 
@@ -70,8 +70,9 @@ TEST_F(DownloadManagerMediatorTest, DestoryTaskAfterStart) {
 }
 
 // Tests starting the download. Verifies that download task is started and its
-// file writer is configured to write into download directory.
-TEST_F(DownloadManagerMediatorTest, Start) {
+// file writer is configured to write into Chrome's temporary download
+// directory.
+TEST_F(DownloadManagerMediatorTest, StartTempDownload) {
   task()->SetSuggestedFilename(
       base::SysNSStringToUTF16(kTestSuggestedFileName));
   mediator_.SetDownloadTask(task());
@@ -87,12 +88,47 @@ TEST_F(DownloadManagerMediatorTest, Start) {
         return task()->GetState() == web::DownloadTask::State::kInProgress;
       }));
 
+  task()->SetDone(true);
+  EXPECT_EQ(kDownloadManagerStateSucceeded, consumer_.state);
   // Download file should be located in download directory.
-  base::FilePath file =
-      task()->GetResponseWriter()->AsFileWriter()->file_path();
+  base::FilePath file = mediator_.GetDownloadPath();
   base::FilePath download_dir;
-  ASSERT_TRUE(GetDownloadsDirectory(&download_dir));
+  ASSERT_TRUE(GetTempDownloadsDirectory(&download_dir));
   EXPECT_TRUE(download_dir.IsParent(file));
+}
+
+// Tests starting the download. Verifies that download task is started and its
+// file writer is configured to write into Chrome's Documents download
+// directory.
+TEST_F(DownloadManagerMediatorTest, StartDownload) {
+  task()->SetSuggestedFilename(
+      base::SysNSStringToUTF16(kTestSuggestedFileName));
+  mediator_.SetDownloadTask(task());
+  mediator_.SetConsumer(consumer_);
+  mediator_.StartDowloading();
+
+  // Starting download is async for task and sync for consumer.
+  EXPECT_EQ(kDownloadManagerStateInProgress, consumer_.state);
+  EXPECT_FALSE(consumer_.installDriveButtonVisible);
+  ASSERT_TRUE(
+      WaitUntilConditionOrTimeout(base::test::ios::kWaitForDownloadTimeout, ^{
+        base::RunLoop().RunUntilIdle();
+        return task()->GetState() == web::DownloadTask::State::kInProgress;
+      }));
+
+  task()->SetDone(true);
+  EXPECT_EQ(kDownloadManagerStateSucceeded, consumer_.state);
+  // Download file should be located in download directory.
+  base::FilePath download_dir;
+  GetDownloadsDirectory(&download_dir);
+  ASSERT_TRUE(
+      WaitUntilConditionOrTimeout(base::test::ios::kWaitForDownloadTimeout, ^{
+        base::RunLoop().RunUntilIdle();
+        return download_dir.IsParent(mediator_.GetDownloadPath());
+      }));
+
+  // Updates the consumer once the file has been moved.
+  mediator_.SetDownloadTask(task());
 }
 
 // Tests starting and failing the download. Simulates download failure from
@@ -116,9 +152,21 @@ TEST_F(DownloadManagerMediatorTest, StartFailure) {
 TEST_F(DownloadManagerMediatorTest, ConsumerInstantUpdate) {
   OCMStub([application_ canOpenURL:GetGoogleDriveAppUrl()]).andReturn(YES);
 
-  task()->SetDone(true);
   task()->SetSuggestedFilename(
       base::SysNSStringToUTF16(kTestSuggestedFileName));
+  mediator_.SetDownloadTask(task());
+  mediator_.SetConsumer(consumer_);
+  mediator_.StartDowloading();
+
+  // Starting download is async for task and sync for consumer.
+  EXPECT_EQ(kDownloadManagerStateInProgress, consumer_.state);
+  ASSERT_TRUE(
+      WaitUntilConditionOrTimeout(base::test::ios::kWaitForDownloadTimeout, ^{
+        base::RunLoop().RunUntilIdle();
+        return task()->GetState() == web::DownloadTask::State::kInProgress;
+      }));
+
+  task()->SetDone(true);
   task()->SetTotalBytes(kTestTotalBytes);
   task()->SetReceivedBytes(kTestReceivedBytes);
   task()->SetPercentComplete(80);
@@ -151,8 +199,19 @@ TEST_F(DownloadManagerMediatorTest, ConsumerFailedStateUpdate) {
 TEST_F(DownloadManagerMediatorTest, ConsumerSuceededStateUpdate) {
   OCMStub([application_ canOpenURL:GetGoogleDriveAppUrl()]).andReturn(YES);
 
+  task()->SetSuggestedFilename(
+      base::SysNSStringToUTF16(kTestSuggestedFileName));
   mediator_.SetDownloadTask(task());
   mediator_.SetConsumer(consumer_);
+  mediator_.StartDowloading();
+
+  // Starting download is async for task and sync for consumer.
+  EXPECT_EQ(kDownloadManagerStateInProgress, consumer_.state);
+  ASSERT_TRUE(
+      WaitUntilConditionOrTimeout(base::test::ios::kWaitForDownloadTimeout, ^{
+        base::RunLoop().RunUntilIdle();
+        return task()->GetState() == web::DownloadTask::State::kInProgress;
+      }));
 
   task()->SetDone(true);
   EXPECT_EQ(kDownloadManagerStateSucceeded, consumer_.state);
@@ -165,8 +224,19 @@ TEST_F(DownloadManagerMediatorTest,
        ConsumerSuceededStateUpdateWithoutDriveAppInstalled) {
   OCMStub([application_ canOpenURL:GetGoogleDriveAppUrl()]).andReturn(NO);
 
+  task()->SetSuggestedFilename(
+      base::SysNSStringToUTF16(kTestSuggestedFileName));
   mediator_.SetDownloadTask(task());
   mediator_.SetConsumer(consumer_);
+  mediator_.StartDowloading();
+
+  // Starting download is async for task and sync for consumer.
+  EXPECT_EQ(kDownloadManagerStateInProgress, consumer_.state);
+  ASSERT_TRUE(
+      WaitUntilConditionOrTimeout(base::test::ios::kWaitForDownloadTimeout, ^{
+        base::RunLoop().RunUntilIdle();
+        return task()->GetState() == web::DownloadTask::State::kInProgress;
+      }));
 
   task()->SetDone(true);
   EXPECT_EQ(kDownloadManagerStateSucceeded, consumer_.state);

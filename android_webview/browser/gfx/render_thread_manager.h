@@ -10,19 +10,20 @@
 #include "android_webview/browser/gfx/compositor_frame_consumer.h"
 #include "android_webview/browser/gfx/hardware_renderer.h"
 #include "android_webview/browser/gfx/parent_compositor_draw_constraints.h"
-#include "base/logging.h"
+#include "android_webview/browser/gfx/root_frame_sink.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/lock.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
 #include "ui/gfx/geometry/vector2d.h"
 
 namespace android_webview {
 
+class AwVulkanContextProvider;
 class ChildFrame;
 class CompositorFrameProducer;
-class HardwareRenderer;
-struct CompositorID;
 
 // This class is used to pass data between UI thread and RenderThread.
 class RenderThreadManager : public CompositorFrameConsumer {
@@ -33,14 +34,15 @@ class RenderThreadManager : public CompositorFrameConsumer {
 
   // CompositorFrameConsumer methods.
   void SetCompositorFrameProducer(
-      CompositorFrameProducer* compositor_frame_producer) override;
+      CompositorFrameProducer* compositor_frame_producer,
+      RootFrameSinkGetter root_frame_sink_getter) override;
   void SetScrollOffsetOnUI(gfx::Vector2d scroll_offset) override;
   std::unique_ptr<ChildFrame> SetFrameOnUI(
       std::unique_ptr<ChildFrame> frame) override;
-  void TakeParentDrawDataOnUI(
-      ParentCompositorDrawConstraints* constraints,
-      CompositorID* compositor_id,
-      viz::PresentationFeedbackMap* presentation_feedbacks) override;
+  void TakeParentDrawDataOnUI(ParentCompositorDrawConstraints* constraints,
+                              viz::FrameSinkId* frame_sink_id,
+                              viz::FrameTimingDetailsMap* timing_details,
+                              uint32_t* frame_token) override;
   ChildFrameQueue PassUncommittedFrameOnUI() override;
 
   void RemoveFromCompositorFrameProducerOnUI();
@@ -50,17 +52,21 @@ class RenderThreadManager : public CompositorFrameConsumer {
   ChildFrameQueue PassFramesOnRT();
   void PostParentDrawDataToChildCompositorOnRT(
       const ParentCompositorDrawConstraints& parent_draw_constraints,
-      const CompositorID& compositor_id,
-      viz::PresentationFeedbackMap presentation_feedbacks);
-  void InsertReturnedResourcesOnRT(
-      const std::vector<viz::ReturnedResource>& resources,
-      const CompositorID& compositor_id,
-      uint32_t layer_tree_frame_sink_id);
+      const viz::FrameSinkId& frame_sink_id,
+      viz::FrameTimingDetailsMap timing_details,
+      uint32_t frame_token);
+  void InsertReturnedResourcesOnRT(std::vector<viz::ReturnedResource> resources,
+                                   const viz::FrameSinkId& frame_sink_id,
+                                   uint32_t layer_tree_frame_sink_id);
 
   void CommitFrameOnRT();
+  void SetVulkanContextProviderOnRT(AwVulkanContextProvider* context_provider);
   void UpdateViewTreeForceDarkStateOnRT(bool view_tree_force_dark_state);
-  void DrawOnRT(bool save_restore, HardwareRendererDrawParams* params);
+  void DrawOnRT(bool save_restore,
+                const HardwareRendererDrawParams& params,
+                const OverlaysParams& overlays_params);
   void DestroyHardwareRendererOnRT(bool save_restore);
+  void RemoveOverlaysOnRT(OverlaysParams::MergeTransactionFn merge_transaction);
 
   // May be created on either thread.
   class InsideHardwareReleaseReset {
@@ -106,17 +112,20 @@ class RenderThreadManager : public CompositorFrameConsumer {
   // Accessed by RT thread.
   std::unique_ptr<HardwareRenderer> hardware_renderer_;
   bool view_tree_force_dark_state_ = false;
+  AwVulkanContextProvider* vulkan_context_provider_ = nullptr;
 
   // Accessed by both UI and RT thread.
   mutable base::Lock lock_;
+  RootFrameSinkGetter root_frame_sink_getter_;
   gfx::Vector2d scroll_offset_;
   ChildFrameQueue child_frames_;
   bool mark_hardware_release_;
   ParentCompositorDrawConstraints parent_draw_constraints_;
-  CompositorID compositor_id_for_presentation_feedbacks_;
-  viz::PresentationFeedbackMap presentation_feedbacks_;
+  viz::FrameSinkId frame_sink_id_for_presentation_feedbacks_;
+  viz::FrameTimingDetailsMap timing_details_;
+  uint32_t presented_frame_token_ = 0u;
 
-  base::WeakPtrFactory<RenderThreadManager> weak_factory_on_ui_thread_;
+  base::WeakPtrFactory<RenderThreadManager> weak_factory_on_ui_thread_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RenderThreadManager);
 };

@@ -62,6 +62,7 @@ class SANDBOX_EXPORT SyscallSets {
   static bool IsKernelModule(int sysno);
   static bool IsGlobalFSViewChange(int sysno);
   static bool IsFsControl(int sysno);
+  static bool IsSendfile(int sysno);
   static bool IsNuma(int sysno);
   static bool IsMessageQueue(int sysno);
   static bool IsGlobalProcessEnvironment(int sysno);
@@ -75,7 +76,8 @@ class SANDBOX_EXPORT SyscallSets {
     (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_64_BITS))
   static bool IsSystemVSemaphores(int sysno);
 #endif
-#if defined(__x86_64__) || defined(__arm__) || defined(__aarch64__) || \
+#if defined(__i386__) || defined(__x86_64__) || defined(__arm__) || \
+    defined(__aarch64__) ||                                         \
     (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_64_BITS))
   // These give a lot of ambient authority and bypass the setuid sandbox.
   static bool IsSystemVSharedMemory(int sysno);
@@ -98,6 +100,7 @@ class SANDBOX_EXPORT SyscallSets {
   static bool IsFaNotify(int sysno);
   static bool IsTimer(int sysno);
   static bool IsAdvancedTimer(int sysno);
+  static bool IsClockApi(int sysno);
   static bool IsExtendedAttributes(int sysno);
   static bool IsMisc(int sysno);
 #if defined(__arm__)

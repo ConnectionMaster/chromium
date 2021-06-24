@@ -10,8 +10,6 @@ namespace translate {
 
 namespace testing {
 
-const std::string kHtmlMimeType = "text/html";
-
 MockTranslateDriver::MockTranslateDriver()
     : is_incognito_(false),
       on_is_page_translated_changed_called_(false),
@@ -49,7 +47,7 @@ bool MockTranslateDriver::IsIncognito() {
 }
 
 const std::string& MockTranslateDriver::GetContentsMimeType() {
-  return kHtmlMimeType;
+  return page_mime_type_;
 }
 
 const GURL&  MockTranslateDriver::GetLastCommittedURL() {
@@ -64,12 +62,21 @@ ukm::SourceId MockTranslateDriver::GetUkmSourceId() {
   return ukm::kInvalidSourceId;
 }
 
+LanguageState& MockTranslateDriver::GetLanguageState() {
+  return language_state_;
+}
+
 bool MockTranslateDriver::HasCurrentPage() {
   return true;
 }
 
 void MockTranslateDriver::SetLastCommittedURL(const GURL& url) {
   last_committed_url_ = url;
+}
+
+void MockTranslateDriver::SetPageMimeType(
+    const std::string& mime_type) {
+  page_mime_type_ = mime_type;
 }
 
 }  // namespace testing

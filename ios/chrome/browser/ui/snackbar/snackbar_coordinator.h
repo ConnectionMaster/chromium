@@ -7,19 +7,21 @@
 
 #import <Foundation/Foundation.h>
 
-@class CommandDispatcher;
+#import "ios/chrome/browser/ui/coordinators/chrome_coordinator.h"
+#import "ios/chrome/browser/ui/snackbar/snackbar_coordinator_delegate.h"
 
-// Coodinator that handles commands to show snackbars.
-@interface SnackbarCoordinator : NSObject
+// Coordinator that handles commands to show snackbars.
+@interface SnackbarCoordinator : ChromeCoordinator
 
-// The dispatcher used to register commands.
-@property(nonatomic, weak) CommandDispatcher* dispatcher;
+// Initializer for a coordinator for |request|.
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser
+                                  delegate:
+                                      (id<SnackbarCoordinatorDelegate>)delegate
+    NS_DESIGNATED_INITIALIZER;
 
-// Starts the coordinator.
-- (void)start;
-
-// Stops the coordinator.
-- (void)stop;
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser NS_UNAVAILABLE;
 
 @end
 

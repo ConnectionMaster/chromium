@@ -1,5 +1,3 @@
-namespace third_party_unrar {
-
 // Buffer size for all volumes involved.
 static const size_t TotalBufferSize=0x4000000;
 
@@ -38,7 +36,7 @@ THREAD_PROC(RSDecodeThread)
 }
 #endif
 
-RecVolumes3::RecVolumes3(bool TestOnly)
+RecVolumes3::RecVolumes3(RAROptions *Cmd,bool TestOnly)
 {
   memset(SrcFile,0,sizeof(SrcFile));
   if (TestOnly)
@@ -52,7 +50,7 @@ RecVolumes3::RecVolumes3(bool TestOnly)
     Buf.Alloc(TotalBufferSize);
     memset(SrcFile,0,sizeof(SrcFile));
 #ifdef RAR_SMP
-    RSThreadPool=CreateThreadPool();
+    RSThreadPool=new ThreadPool(Cmd->Threads);
 #endif
   }
 }
@@ -63,7 +61,7 @@ RecVolumes3::~RecVolumes3()
   for (size_t I=0;I<ASIZE(SrcFile);I++)
     delete SrcFile[I];
 #ifdef RAR_SMP
-  DestroyThreadPool(RSThreadPool);
+  delete RSThreadPool;
 #endif
 }
 
@@ -91,16 +89,12 @@ static bool IsNewStyleRev(const wchar *Name)
   if (Ext==NULL)
     return true;
   int DigitGroup=0;
-  for (Ext--;Ext>Name;Ext--) {
-    if (!IsDigit(*Ext)) {
-      if (*Ext=='_' && IsDigit(*(Ext-1))) {
+  for (Ext--;Ext>Name;Ext--)
+    if (!IsDigit(*Ext))
+      if (*Ext=='_' && IsDigit(*(Ext-1)))
         DigitGroup++;
-      }
-      else {
+      else
         break;
-      }
-    }
-  }
   return DigitGroup<2;
 }
 
@@ -117,7 +111,7 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
     NewStyle=IsNewStyleRev(ArcName);
     while (Ext>ArcName+1 && (IsDigit(*(Ext-1)) || *(Ext-1)=='_'))
       Ext--;
-    wcscpy(Ext,L"*.*");
+    wcsncpyz(Ext,L"*.*",ASIZE(ArcName)-(Ext-ArcName));
     
     FindFile Find;
     Find.SetMask(ArcName);
@@ -234,14 +228,14 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
     }
     if (P[1]+P[2]>255)
       continue;
-    if ((RecVolNumber!=0 && RecVolNumber!=P[1]) || (FileNumber!=0 && FileNumber!=P[2]))
+    if (RecVolNumber!=0 && RecVolNumber!=P[1] || FileNumber!=0 && FileNumber!=P[2])
     {
       uiMsg(UIERROR_RECVOLDIFFSETS,CurName,PrevName);
       return false;
     }
     RecVolNumber=P[1];
     FileNumber=P[2];
-    wcscpy(PrevName,CurName);
+    wcsncpyz(PrevName,CurName,ASIZE(PrevName));
     File *NewFile=new File;
     NewFile->TOpen(CurName);
     SrcFile[FileNumber+P[0]-1]=NewFile;
@@ -253,7 +247,7 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
   if (!Silent || FoundRecVolumes!=0)
     uiMsg(UIMSG_RECVOLFOUND,FoundRecVolumes);
   if (FoundRecVolumes==0)
-    return(false);
+    return false;
 
   bool WriteFlags[256];
   memset(WriteFlags,0,sizeof(WriteFlags));
@@ -296,8 +290,8 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
       {
         NewFile->Close();
         wchar NewName[NM];
-        wcscpy(NewName,ArcName);
-        wcscat(NewName,L".bad");
+        wcsncpyz(NewName,ArcName,ASIZE(NewName));
+        wcsncatz(NewName,L".bad",ASIZE(NewName));
 
         uiMsg(UIMSG_BADARCHIVE,ArcName);
         uiMsg(UIMSG_RENAMING,ArcName,NewName);
@@ -328,7 +322,7 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
       MissingVolumes++;
 
       if (CurArcNum==FileNumber-1)
-        wcscpy(LastVolName,ArcName);
+        wcsncpyz(LastVolName,ArcName,ASIZE(LastVolName));
 
       uiMsg(UIMSG_MISSINGVOL,ArcName);
       uiMsg(UIEVENT_NEWARCHIVE,ArcName);
@@ -369,11 +363,10 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
 
 #ifdef RAR_SMP
   uint ThreadNumber=Cmd->Threads;
-  RSEncode rse[MaxPoolThreads];
 #else
   uint ThreadNumber=1;
-  RSEncode rse[1];
 #endif
+  RSEncode *rse=new RSEncode[ThreadNumber];
   for (uint I=0;I<ThreadNumber;I++)
     rse[I].Init(RecVolNumber);
 
@@ -444,6 +437,8 @@ bool RecVolumes3::Restore(RAROptions *Cmd,const wchar *Name,bool Silent)
       if (WriteFlags[I])
         SrcFile[I]->Write(&Buf[I*RecBufferSize],MaxRead);
   }
+  delete[] rse;
+
   for (int I=0;I<RecVolNumber+FileNumber;I++)
     if (SrcFile[I]!=NULL)
     {
@@ -547,5 +542,3 @@ void RecVolumes3::Test(RAROptions *Cmd,const wchar *Name)
     NextVolumeName(VolName,ASIZE(VolName),false);
   }
 }
-
-}  // namespace third_party_unrar

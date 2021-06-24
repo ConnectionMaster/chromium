@@ -7,13 +7,20 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_widget_types.h"
 
 #if defined(OS_FUCHSIA)
 #include <fuchsia/ui/views/cpp/fidl.h>
+#include <lib/ui/scenic/cpp/view_ref_pair.h>
 #endif
+
+namespace gfx {
+class ImageSkia;
+}
 
 namespace ui {
 
@@ -22,6 +29,8 @@ enum class PlatformWindowType {
   kPopup,
   kMenu,
   kTooltip,
+  kDrag,
+  kBubble,
 };
 
 enum class PlatformWindowOpacity {
@@ -30,13 +39,27 @@ enum class PlatformWindowOpacity {
   kTranslucentWindow,
 };
 
+enum class PlatformWindowShadowType {
+  kDefault,
+  kNone,
+  kDrop,
+};
+
+class WorkspaceExtensionDelegate;
+
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+class X11ExtensionDelegate;
+#endif
+
 // Initial properties which are passed to PlatformWindow to be initialized
 // with a desired set of properties.
-struct PlatformWindowInitProperties {
+struct COMPONENT_EXPORT(PLATFORM_WINDOW) PlatformWindowInitProperties {
   PlatformWindowInitProperties();
 
   // Initializes properties with the specified |bounds|.
-  explicit PlatformWindowInitProperties(const gfx::Rect& bounds);
+  explicit PlatformWindowInitProperties(
+      const gfx::Rect& bounds,
+      bool enable_compositing_based_throttling = false);
 
   PlatformWindowInitProperties(PlatformWindowInitProperties&& props);
 
@@ -55,7 +78,37 @@ struct PlatformWindowInitProperties {
 
 #if defined(OS_FUCHSIA)
   fuchsia::ui::views::ViewToken view_token;
+  scenic::ViewRefPair view_ref_pair;
+  static bool allow_null_view_token_for_test;
 #endif
+
+  bool activatable = true;
+  bool force_show_in_taskbar;
+  bool keep_on_top = false;
+  bool visible_on_all_workspaces = false;
+  bool remove_standard_frame = false;
+  std::string workspace;
+
+  WorkspaceExtensionDelegate* workspace_extension_delegate = nullptr;
+
+  PlatformWindowShadowType shadow_type = PlatformWindowShadowType::kDefault;
+
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  bool prefer_dark_theme = false;
+  gfx::ImageSkia* icon = nullptr;
+  absl::optional<int> background_color;
+
+  // Specifies the res_name and res_class fields,
+  // respectively, of the WM_CLASS window property. Controls window grouping
+  // and desktop file matching in Linux window managers.
+  std::string wm_role_name;
+  std::string wm_class_name;
+  std::string wm_class_class;
+
+  X11ExtensionDelegate* x11_extension_delegate = nullptr;
+#endif
+
+  bool enable_compositing_based_throttling = false;
 };
 
 }  // namespace ui

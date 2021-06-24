@@ -6,6 +6,8 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/notreached.h"
+#include "components/download/public/common/download_danger_type.h"
 #include "net/http/http_response_headers.h"
 
 namespace content {
@@ -151,6 +153,10 @@ void FakeDownloadItem::SetOriginalUrl(const GURL& url) {
   original_url_ = url;
 }
 
+void FakeDownloadItem::SetTabUrl(const GURL& url) {
+  tab_url_ = url;
+}
+
 const GURL& FakeDownloadItem::GetOriginalUrl() const {
   return original_url_;
 }
@@ -196,6 +202,11 @@ FakeDownloadItem::GetDownloadCreationType() const {
   return download::DownloadItem::DownloadCreationType::TYPE_ACTIVE_DOWNLOAD;
 }
 
+const absl::optional<download::DownloadSchedule>&
+FakeDownloadItem::GetDownloadSchedule() const {
+  return download_schedule_;
+}
+
 void FakeDownloadItem::SetIsDone(bool is_done) {
   is_done_ = is_done;
 }
@@ -225,16 +236,31 @@ const std::string& FakeDownloadItem::GetLastModifiedTime() const {
   return last_modified_time_;
 }
 
+void FakeDownloadItem::SetPercentComplete(int percent_complete) {
+  percent_complete_ = percent_complete;
+}
+
+int FakeDownloadItem::PercentComplete() const {
+  return percent_complete_;
+}
+
+void FakeDownloadItem::SetDummyFilePath(const base::FilePath& file_path) {
+  dummy_file_path = file_path;
+}
+
 // The methods below are not supported and are not expected to be called.
 void FakeDownloadItem::ValidateDangerousDownload() {
   NOTREACHED();
 }
 
-void FakeDownloadItem::StealDangerousDownload(
-    bool delete_file_afterward,
-    const AcquireFileCallback& callback) {
+void FakeDownloadItem::ValidateMixedContentDownload() {
   NOTREACHED();
-  callback.Run(base::FilePath());
+}
+
+void FakeDownloadItem::StealDangerousDownload(bool delete_file_afterward,
+                                              AcquireFileCallback callback) {
+  NOTREACHED();
+  std::move(callback).Run(base::FilePath());
 }
 
 void FakeDownloadItem::Pause() {
@@ -263,6 +289,16 @@ void FakeDownloadItem::ShowDownloadInShell() {
 
 void FakeDownloadItem::Rename(const base::FilePath& name,
                               RenameDownloadCallback callback) {
+  NOTREACHED();
+}
+
+void FakeDownloadItem::OnAsyncScanningCompleted(
+    download::DownloadDangerType danger_type) {
+  NOTREACHED();
+}
+
+void FakeDownloadItem::OnDownloadScheduleChanged(
+    absl::optional<download::DownloadSchedule> schedule) {
   NOTREACHED();
 }
 
@@ -306,13 +342,18 @@ const GURL& FakeDownloadItem::GetSiteUrl() const {
 }
 
 const GURL& FakeDownloadItem::GetTabUrl() const {
-  NOTREACHED();
-  return dummy_url;
+  return tab_url_;
 }
 
 const GURL& FakeDownloadItem::GetTabReferrerUrl() const {
   NOTREACHED();
   return dummy_url;
+}
+
+const absl::optional<url::Origin>& FakeDownloadItem::GetRequestInitiator()
+    const {
+  NOTREACHED();
+  return dummy_origin;
 }
 
 std::string FakeDownloadItem::GetSuggestedFilename() const {
@@ -350,6 +391,10 @@ bool FakeDownloadItem::IsSavePackageDownload() const {
   return false;
 }
 
+download::DownloadSource FakeDownloadItem::GetDownloadSource() const {
+  return download::DownloadSource::UNKNOWN;
+}
+
 const base::FilePath& FakeDownloadItem::GetFullPath() const {
   return dummy_file_path;
 }
@@ -379,16 +424,29 @@ const std::string& FakeDownloadItem::GetHash() const {
   return hash_;
 }
 
-void FakeDownloadItem::DeleteFile(const base::Callback<void(bool)>& callback) {
+void FakeDownloadItem::DeleteFile(base::OnceCallback<void(bool)> callback) {
   NOTREACHED();
-  callback.Run(false);
 }
 
 download::DownloadFile* FakeDownloadItem::GetDownloadFile() {
   return nullptr;
 }
 
+download::DownloadItemRenameHandler* FakeDownloadItem::GetRenameHandler() {
+  return nullptr;
+}
+
+const download::DownloadItemRerouteInfo& FakeDownloadItem::GetRerouteInfo()
+    const {
+  return reroute_info_;
+}
+
 bool FakeDownloadItem::IsDangerous() const {
+  NOTREACHED();
+  return false;
+}
+
+bool FakeDownloadItem::IsMixedContent() const {
   NOTREACHED();
   return false;
 }
@@ -398,17 +456,18 @@ download::DownloadDangerType FakeDownloadItem::GetDangerType() const {
   return download::DownloadDangerType();
 }
 
+download::DownloadItem::MixedContentStatus
+FakeDownloadItem::GetMixedContentStatus() const {
+  NOTREACHED();
+  return download::DownloadItem::MixedContentStatus();
+}
+
 bool FakeDownloadItem::TimeRemaining(base::TimeDelta* remaining) const {
   NOTREACHED();
   return false;
 }
 
 int64_t FakeDownloadItem::CurrentSpeed() const {
-  NOTREACHED();
-  return 1;
-}
-
-int FakeDownloadItem::PercentComplete() const {
   NOTREACHED();
   return 1;
 }
@@ -440,6 +499,11 @@ bool FakeDownloadItem::CanOpenDownload() {
 }
 
 bool FakeDownloadItem::ShouldOpenFileBasedOnExtension() {
+  NOTREACHED();
+  return true;
+}
+
+bool FakeDownloadItem::ShouldOpenFileByPolicyBasedOnExtension() {
   NOTREACHED();
   return true;
 }

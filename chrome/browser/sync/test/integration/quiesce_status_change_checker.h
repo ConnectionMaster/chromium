@@ -6,16 +6,14 @@
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_QUIESCE_STATUS_CHANGE_CHECKER_H_
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/time/time.h"
 #include "chrome/browser/sync/test/integration/multi_client_status_change_checker.h"
 
 namespace syncer {
-class ProfileSyncService;
+class SyncServiceImpl;
 }  // namespace syncer
 
 // Waits until all provided clients have finished committing any unsynced items
@@ -27,12 +25,11 @@ class ProfileSyncService;
 class QuiesceStatusChangeChecker : public MultiClientStatusChangeChecker {
  public:
   explicit QuiesceStatusChangeChecker(
-      std::vector<syncer::ProfileSyncService*> services);
+      std::vector<syncer::SyncServiceImpl*> services);
   ~QuiesceStatusChangeChecker() override;
 
   // Implementation of StatusChangeChecker.
-  bool IsExitConditionSatisfied() override;
-  std::string GetDebugMessage() const override;
+  bool IsExitConditionSatisfied(std::ostream* os) override;
 
  private:
   class NestedUpdatedProgressMarkerChecker;

@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef DEVICE_GAMEPAD_ABSTRACT_HAPTIC_GAMEPAD_
-#define DEVICE_GAMEPAD_ABSTRACT_HAPTIC_GAMEPAD_
+#ifndef DEVICE_GAMEPAD_ABSTRACT_HAPTIC_GAMEPAD_H_
+#define DEVICE_GAMEPAD_ABSTRACT_HAPTIC_GAMEPAD_H_
 
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequenced_task_runner.h"
 #include "base/threading/thread_checker.h"
-#include "base/time/time.h"
 #include "device/gamepad/gamepad_export.h"
 #include "device/gamepad/public/mojom/gamepad.mojom.h"
 
@@ -49,8 +48,11 @@ class DEVICE_GAMEPAD_EXPORT AbstractHapticGamepad {
       scoped_refptr<base::SequencedTaskRunner> callback_runner);
 
   // Stop vibration effects, run callbacks, and release held resources. Must be
-  // called before the device is destroyed.
+  // called exactly once before the device is destroyed.
   void Shutdown();
+
+  // Returns true if Shutdown() has been called.
+  bool IsShuttingDown() { return is_shutting_down_; }
 
   // Set the vibration magnitude for the strong and weak vibration actuators.
   virtual void SetVibration(double strong_magnitude, double weak_magnitude) = 0;
@@ -61,6 +63,8 @@ class DEVICE_GAMEPAD_EXPORT AbstractHapticGamepad {
   // The maximum effect duration supported by this device. Long-running effects
   // must be divided into effects of this duration or less.
   virtual double GetMaxEffectDurationMillis();
+
+  virtual base::WeakPtr<AbstractHapticGamepad> GetWeakPtr() = 0;
 
  private:
   // Override to perform additional shutdown actions after vibration effects
@@ -78,15 +82,15 @@ class DEVICE_GAMEPAD_EXPORT AbstractHapticGamepad {
                       double weak_magnitude);
   void FinishEffect(int sequence_id);
 
-  bool is_shut_down_;
-  int sequence_id_;
+  bool is_shutting_down_ = false;
+  bool is_shut_down_ = false;
+  int sequence_id_ = 0;
   mojom::GamepadHapticsManager::PlayVibrationEffectOnceCallback
       playing_effect_callback_;
   scoped_refptr<base::SequencedTaskRunner> callback_runner_;
   THREAD_CHECKER(thread_checker_);
-  base::WeakPtrFactory<AbstractHapticGamepad> weak_factory_;
 };
 
 }  // namespace device
 
-#endif  // DEVICE_GAMEPAD_ABSTRACT_HAPTIC_GAMEPAD_
+#endif  // DEVICE_GAMEPAD_ABSTRACT_HAPTIC_GAMEPAD_H_

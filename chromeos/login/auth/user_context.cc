@@ -40,7 +40,8 @@ bool UserContext::operator==(const UserContext& context) const {
          context.is_using_oauth_ == is_using_oauth_ &&
          context.auth_flow_ == auth_flow_ && context.user_type_ == user_type_ &&
          context.public_session_locale_ == public_session_locale_ &&
-         context.public_session_input_method_ == public_session_input_method_;
+         context.public_session_input_method_ == public_session_input_method_ &&
+         context.login_input_method_used_ == login_input_method_used_;
 }
 
 bool UserContext::operator!=(const UserContext& context) const {
@@ -113,6 +114,10 @@ UserContext::AuthFlow UserContext::GetAuthFlow() const {
   return auth_flow_;
 }
 
+bool UserContext::IsUsingSamlPrincipalsApi() const {
+  return is_using_saml_principals_api_;
+}
+
 user_manager::UserType UserContext::GetUserType() const {
   return user_type_;
 }
@@ -133,9 +138,27 @@ const std::string& UserContext::GetGAPSCookie() const {
   return gaps_cookie_;
 }
 
-const base::Optional<password_manager::PasswordHashData>&
+const absl::optional<password_manager::PasswordHashData>&
 UserContext::GetSyncPasswordData() const {
   return sync_password_data_;
+}
+
+const absl::optional<SamlPasswordAttributes>&
+UserContext::GetSamlPasswordAttributes() const {
+  return saml_password_attributes_;
+}
+
+const absl::optional<SyncTrustedVaultKeys>&
+UserContext::GetSyncTrustedVaultKeys() const {
+  return sync_trusted_vault_keys_;
+}
+
+bool UserContext::IsLockableManagedGuestSession() const {
+  return !managed_guest_session_launch_extension_id_.empty();
+}
+
+std::string UserContext::GetManagedGuestSessionLaunchExtensionId() const {
+  return managed_guest_session_launch_extension_id_;
 }
 
 bool UserContext::HasCredentials() const {
@@ -191,6 +214,11 @@ void UserContext::SetAuthFlow(AuthFlow auth_flow) {
   auth_flow_ = auth_flow;
 }
 
+void UserContext::SetIsUsingSamlPrincipalsApi(
+    bool is_using_saml_principals_api) {
+  is_using_saml_principals_api_ = is_using_saml_principals_api;
+}
+
 void UserContext::SetPublicSessionLocale(const std::string& locale) {
   public_session_locale_ = locale;
 }
@@ -212,9 +240,34 @@ void UserContext::SetSyncPasswordData(
   sync_password_data_ = {sync_password_data};
 }
 
+void UserContext::SetSamlPasswordAttributes(
+    const SamlPasswordAttributes& saml_password_attributes) {
+  saml_password_attributes_ = saml_password_attributes;
+}
+
+void UserContext::SetSyncTrustedVaultKeys(
+    const SyncTrustedVaultKeys& sync_trusted_vault_keys) {
+  sync_trusted_vault_keys_ = sync_trusted_vault_keys;
+}
+
 void UserContext::SetIsUnderAdvancedProtection(
     bool is_under_advanced_protection) {
   is_under_advanced_protection_ = is_under_advanced_protection;
+}
+
+void UserContext::SetManagedGuestSessionLaunchExtensionId(
+    const std::string& managed_guest_session_launch_extension_id) {
+  managed_guest_session_launch_extension_id_ =
+      managed_guest_session_launch_extension_id;
+}
+
+void UserContext::SetLoginInputMethodUsed(const std::string& input_method_id) {
+  DCHECK(login_input_method_used_.empty());
+  login_input_method_used_ = input_method_id;
+}
+
+const std::string& UserContext::GetLoginInputMethodUsed() const {
+  return login_input_method_used_;
 }
 
 void UserContext::ClearSecrets() {
@@ -222,6 +275,7 @@ void UserContext::ClearSecrets() {
   password_key_.ClearSecret();
   auth_code_.clear();
   refresh_token_.clear();
+  sync_trusted_vault_keys_.reset();
 }
 
 }  // namespace chromeos

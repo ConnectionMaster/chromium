@@ -15,17 +15,22 @@ namespace ash {
 // frequently used features e.g. lock screen, settings, and shutdown.
 class TopShortcutButton : public views::ImageButton {
  public:
-  TopShortcutButton(views::ButtonListener* listener,
+  TopShortcutButton(PressedCallback callback,
                     const gfx::VectorIcon& icon,
                     int accessible_name_id);
-  TopShortcutButton(views::ButtonListener* listener, int accessible_name_id);
   ~TopShortcutButton() override;
+
+  // views::View:
+  gfx::Size CalculatePreferredSize() const override;
 
   // views::ImageButton:
   void PaintButtonContents(gfx::Canvas* canvas) override;
-  std::unique_ptr<views::InkDrop> CreateInkDrop() override;
+  const char* GetClassName() const override;
+  void OnThemeChanged() override;
 
  private:
+  const gfx::VectorIcon& icon_;
+
   DISALLOW_COPY_AND_ASSIGN(TopShortcutButton);
 };
 

@@ -9,7 +9,6 @@
 
 #include <map>
 #include <memory>
-#include <string>
 
 #include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
@@ -19,8 +18,8 @@
 #include "base/synchronization/lock.h"
 #include "chrome/browser/sync_file_system/file_change.h"
 #include "chrome/browser/sync_file_system/sync_status_code.h"
-#include "storage/browser/fileapi/file_observers.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_observers.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 namespace base {
 class SequencedTaskRunner;

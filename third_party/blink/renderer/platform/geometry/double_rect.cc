@@ -24,7 +24,9 @@ IntRect EnclosingIntRect(const DoubleRect& rect) {
   IntPoint location = FlooredIntPoint(rect.MinXMinYCorner());
   IntPoint max_point = CeiledIntPoint(rect.MaxXMaxYCorner());
 
-  return IntRect(location, max_point - location);
+  return IntRect(location,
+                 IntSize(base::ClampSub(max_point.X(), location.X()),
+                         base::ClampSub(max_point.Y(), location.Y())));
 }
 
 IntRect EnclosedIntRect(const DoubleRect& rect) {
@@ -52,8 +54,8 @@ std::ostream& operator<<(std::ostream& ostream, const DoubleRect& rect) {
 }
 
 String DoubleRect::ToString() const {
-  return String::Format("%s %s", Location().ToString().Ascii().data(),
-                        Size().ToString().Ascii().data());
+  return String::Format("%s %s", Location().ToString().Ascii().c_str(),
+                        Size().ToString().Ascii().c_str());
 }
 
 }  // namespace blink

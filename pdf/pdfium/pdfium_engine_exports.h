@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "pdf/pdf_engine.h"
 
 namespace chrome_pdf {
@@ -16,9 +17,15 @@ namespace chrome_pdf {
 class PDFiumEngineExports : public PDFEngineExports {
  public:
   PDFiumEngineExports();
+  PDFiumEngineExports(const PDFiumEngineExports&) = delete;
+  PDFiumEngineExports& operator=(const PDFiumEngineExports&) = delete;
   ~PDFiumEngineExports() override;
 
 // PDFEngineExports:
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  std::vector<uint8_t> CreateFlattenedPdf(
+      base::span<const uint8_t> input_buffer) override;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 #if defined(OS_WIN)
   bool RenderPDFPageToDC(base::span<const uint8_t> pdf_buffer,
                          int page_number,
@@ -46,14 +53,14 @@ class PDFiumEngineExports : public PDFEngineExports {
       const gfx::Rect& printable_area) override;
   bool GetPDFDocInfo(base::span<const uint8_t> pdf_buffer,
                      int* page_count,
-                     double* max_page_width) override;
-  bool GetPDFPageSizeByIndex(base::span<const uint8_t> pdf_buffer,
-                             int page_number,
-                             double* width,
-                             double* height) override;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(PDFiumEngineExports);
+                     float* max_page_width) override;
+  absl::optional<bool> IsPDFDocTagged(
+      base::span<const uint8_t> pdf_buffer) override;
+  base::Value GetPDFStructTreeForPage(base::span<const uint8_t> pdf_buffer,
+                                      int page_index) override;
+  absl::optional<gfx::SizeF> GetPDFPageSizeByIndex(
+      base::span<const uint8_t> pdf_buffer,
+      int page_number) override;
 };
 
 }  // namespace chrome_pdf

@@ -24,22 +24,32 @@
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/html/html_progress_element.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
-LayoutProgress::LayoutProgress(HTMLProgressElement* element)
+namespace {
+
+constexpr base::TimeDelta kAnimationInterval =
+    base::TimeDelta::FromMilliseconds(125);
+constexpr base::TimeDelta kAnimationDuration = kAnimationInterval * 20;
+
+}  // namespace
+
+LayoutProgress::LayoutProgress(Element* element)
     : LayoutBlockFlow(element),
       position_(HTMLProgressElement::kInvalidPosition),
       animating_(false),
       animation_timer_(
           element->GetDocument().GetTaskRunner(TaskType::kInternalDefault),
           this,
-          &LayoutProgress::AnimationTimerFired) {}
+          &LayoutProgress::AnimationTimerFired) {
+  DCHECK(IsA<HTMLProgressElement>(element));
+}
 
 LayoutProgress::~LayoutProgress() = default;
 
 void LayoutProgress::WillBeDestroyed() {
+  NOT_DESTROYED();
   if (animating_) {
     animation_timer_.Stop();
     animating_ = false;
@@ -48,6 +58,7 @@ void LayoutProgress::WillBeDestroyed() {
 }
 
 void LayoutProgress::UpdateFromElement() {
+  NOT_DESTROYED();
   HTMLProgressElement* element = ProgressElement();
   if (position_ == element->position())
     return;
@@ -59,54 +70,55 @@ void LayoutProgress::UpdateFromElement() {
 }
 
 double LayoutProgress::AnimationProgress() const {
+  NOT_DESTROYED();
   if (!animating_)
     return 0;
-  TimeDelta elapsed = CurrentTimeTicks() - animation_start_time_;
-  return (elapsed % animation_duration_).InSecondsF() /
-         animation_duration_.InSecondsF();
+  const base::TimeDelta elapsed =
+      base::TimeTicks::Now() - animation_start_time_;
+  return (elapsed % kAnimationDuration) / kAnimationDuration;
 }
 
 bool LayoutProgress::IsDeterminate() const {
+  NOT_DESTROYED();
   return (HTMLProgressElement::kIndeterminatePosition != GetPosition() &&
           HTMLProgressElement::kInvalidPosition != GetPosition());
 }
 
 bool LayoutProgress::IsAnimationTimerActive() const {
+  NOT_DESTROYED();
   return animation_timer_.IsActive();
 }
 
 bool LayoutProgress::IsAnimating() const {
+  NOT_DESTROYED();
   return animating_;
 }
 
 void LayoutProgress::AnimationTimerFired(TimerBase*) {
+  NOT_DESTROYED();
   SetShouldDoFullPaintInvalidation();
   if (!animation_timer_.IsActive() && animating_)
-    animation_timer_.StartOneShot(animation_repeat_interval_, FROM_HERE);
+    animation_timer_.StartOneShot(kAnimationInterval, FROM_HERE);
 }
 
 void LayoutProgress::UpdateAnimationState() {
-  animation_duration_ =
-      LayoutTheme::GetTheme().AnimationDurationForProgressBar();
-  animation_repeat_interval_ =
-      LayoutTheme::GetTheme().AnimationRepeatIntervalForProgressBar();
-
-  bool animating = !IsDeterminate() && StyleRef().HasAppearance() &&
-                   animation_duration_ > TimeDelta();
+  NOT_DESTROYED();
+  bool animating = !IsDeterminate() && StyleRef().HasEffectiveAppearance();
   if (animating == animating_)
     return;
 
   animating_ = animating;
   if (animating_) {
-    animation_start_time_ = CurrentTimeTicks();
-    animation_timer_.StartOneShot(animation_repeat_interval_, FROM_HERE);
+    animation_start_time_ = base::TimeTicks::Now();
+    animation_timer_.StartOneShot(kAnimationInterval, FROM_HERE);
   } else {
     animation_timer_.Stop();
   }
 }
 
 HTMLProgressElement* LayoutProgress::ProgressElement() const {
-  return ToHTMLProgressElement(GetNode());
+  NOT_DESTROYED();
+  return To<HTMLProgressElement>(GetNode());
 }
 
 }  // namespace blink

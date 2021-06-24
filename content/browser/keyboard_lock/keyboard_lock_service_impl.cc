@@ -9,16 +9,16 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check.h"
 #include "base/containers/flat_set.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/optional.h"
-#include "content/browser/frame_host/render_frame_host_impl.h"
 #include "content/browser/keyboard_lock/keyboard_lock_metrics.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/common/content_features.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
@@ -39,8 +39,8 @@ void LogKeyboardLockMethodCalled(KeyboardLockMethods method) {
 
 KeyboardLockServiceImpl::KeyboardLockServiceImpl(
     RenderFrameHost* render_frame_host,
-    blink::mojom::KeyboardLockServiceRequest request)
-    : FrameServiceBase(render_frame_host, std::move(request)),
+    mojo::PendingReceiver<blink::mojom::KeyboardLockService> receiver)
+    : DocumentServiceBase(render_frame_host, std::move(receiver)),
       render_frame_host_(static_cast<RenderFrameHostImpl*>(render_frame_host)) {
   DCHECK(render_frame_host_);
 }
@@ -48,12 +48,12 @@ KeyboardLockServiceImpl::KeyboardLockServiceImpl(
 // static
 void KeyboardLockServiceImpl::CreateMojoService(
     RenderFrameHost* render_frame_host,
-    blink::mojom::KeyboardLockServiceRequest request) {
+    mojo::PendingReceiver<blink::mojom::KeyboardLockService> receiver) {
   DCHECK(render_frame_host);
 
   // The object is bound to the lifetime of |render_frame_host| and the mojo
-  // connection. See FrameServiceBase for details.
-  new KeyboardLockServiceImpl(render_frame_host, std::move(request));
+  // connection. See DocumentServiceBase for details.
+  new KeyboardLockServiceImpl(render_frame_host, std::move(receiver));
 }
 
 void KeyboardLockServiceImpl::RequestKeyboardLock(
@@ -64,7 +64,7 @@ void KeyboardLockServiceImpl::RequestKeyboardLock(
   else
     LogKeyboardLockMethodCalled(KeyboardLockMethods::kRequestSomeKeys);
 
-  if (!render_frame_host_->IsCurrent()) {
+  if (!render_frame_host_->IsActive()) {
     std::move(callback).Run(KeyboardLockRequestResult::kFrameDetachedError);
     return;
   }
@@ -99,13 +99,16 @@ void KeyboardLockServiceImpl::RequestKeyboardLock(
     return;
   }
 
-  base::Optional<base::flat_set<ui::DomCode>> dom_code_set;
+  absl::optional<base::flat_set<ui::DomCode>> dom_code_set;
   if (!dom_codes.empty())
     dom_code_set = std::move(dom_codes);
 
   if (render_frame_host_->GetRenderWidgetHost()->RequestKeyboardLock(
           std::move(dom_code_set))) {
     std::move(callback).Run(KeyboardLockRequestResult::kSuccess);
+    static_cast<RenderFrameHostImpl*>(render_frame_host_)
+        ->OnSchedulerTrackedFeatureUsed(
+            blink::scheduler::WebSchedulerTrackedFeature::kKeyboardLock);
   } else {
     std::move(callback).Run(KeyboardLockRequestResult::kRequestFailedError);
   }

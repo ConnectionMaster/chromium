@@ -15,17 +15,15 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "content/browser/android/text_suggestion_host_android.h"
-#include "content/browser/frame_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
-#include "content/common/frame_messages.h"
-#include "content/common/view_messages.h"
+#include "content/public/android/content_jni_headers/ImeAdapterImpl_jni.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/native_web_keyboard_event.h"
 #include "content/public/browser/web_contents.h"
-#include "jni/ImeAdapterImpl_jni.h"
-#include "third_party/blink/public/platform/web_input_event.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/platform/web_text_input_type.h"
 #include "ui/base/ime/ime_text_span.h"
 
@@ -87,6 +85,7 @@ void JNI_ImeAdapterImpl_AppendBackgroundColorSpan(JNIEnv*,
   ime_text_spans->push_back(ui::ImeTextSpan(
       ui::ImeTextSpan::Type::kComposition, static_cast<unsigned>(start),
       static_cast<unsigned>(end), ui::ImeTextSpan::Thickness::kNone,
+      ui::ImeTextSpan::UnderlineStyle::kNone,
       static_cast<unsigned>(background_color), SK_ColorTRANSPARENT,
       std::vector<std::string>()));
 }
@@ -116,7 +115,8 @@ void JNI_ImeAdapterImpl_AppendSuggestionSpan(
   AppendJavaStringArrayToStringVector(env, suggestions, &suggestions_vec);
   ui::ImeTextSpan ime_text_span = ui::ImeTextSpan(
       type, static_cast<unsigned>(start), static_cast<unsigned>(end),
-      ui::ImeTextSpan::Thickness::kThick, SK_ColorTRANSPARENT,
+      ui::ImeTextSpan::Thickness::kThick,
+      ui::ImeTextSpan::UnderlineStyle::kSolid, SK_ColorTRANSPARENT,
       static_cast<unsigned>(suggestion_highlight_color), suggestions_vec);
   ime_text_span.remove_on_finish_composing = remove_on_finish_composing;
   ime_text_span.underline_color = static_cast<unsigned>(underline_color);
@@ -136,7 +136,8 @@ void JNI_ImeAdapterImpl_AppendUnderlineSpan(JNIEnv*,
   ime_text_spans->push_back(ui::ImeTextSpan(
       ui::ImeTextSpan::Type::kComposition, static_cast<unsigned>(start),
       static_cast<unsigned>(end), ui::ImeTextSpan::Thickness::kThin,
-      SK_ColorTRANSPARENT, SK_ColorTRANSPARENT, std::vector<std::string>()));
+      ui::ImeTextSpan::UnderlineStyle::kSolid, SK_ColorTRANSPARENT,
+      SK_ColorTRANSPARENT, std::vector<std::string>()));
 }
 
 ImeAdapterAndroid::ImeAdapterAndroid(JNIEnv* env,
@@ -174,27 +175,24 @@ void ImeAdapterAndroid::UpdateRenderProcessConnection(
   rwhva_ = new_rwhva;
 }
 
-void ImeAdapterAndroid::UpdateState(const TextInputState& state) {
+void ImeAdapterAndroid::UpdateState(const ui::mojom::TextInputState& state) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_ime_adapter_.get(env);
   if (obj.is_null())
     return;
 
   ScopedJavaLocalRef<jstring> jstring_text =
-      ConvertUTF16ToJavaString(env, state.value);
+      ConvertUTF16ToJavaString(env, state.value.value_or(std::u16string()));
   Java_ImeAdapterImpl_updateState(
       env, obj, static_cast<int>(state.type), state.flags, state.mode,
-      state.show_ime_if_needed, jstring_text, state.selection_start,
-      state.selection_end, state.composition_start, state.composition_end,
-      state.reply_to_request);
-}
-
-void ImeAdapterAndroid::UpdateAfterViewSizeChanged() {
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> obj = java_ime_adapter_.get(env);
-  if (obj.is_null())
-    return;
-  Java_ImeAdapterImpl_updateAfterViewSizeChanged(env, obj);
+      static_cast<int>(state.action), state.show_ime_if_needed,
+      state.always_hide_ime, jstring_text, state.selection.start(),
+      state.selection.end(),
+      state.composition ? state.composition.value().start() : -1,
+      state.composition ? state.composition.value().end() : -1,
+      state.reply_to_request,
+      static_cast<int>(state.last_vk_visibility_request),
+      static_cast<int>(state.vk_policy), ShouldVirtualKeyboardOverlayContent());
 }
 
 void ImeAdapterAndroid::UpdateOnTouchDown() {
@@ -220,16 +218,34 @@ void ImeAdapterAndroid::UpdateFrameInfo(
       selection_start.type() == gfx::SelectionBound::CENTER;
   const jboolean is_insertion_marker_visible = selection_start.visible();
   const jfloat insertion_marker_horizontal =
-      has_insertion_marker ? selection_start.edge_top().x() : 0.0f;
+      has_insertion_marker ? selection_start.edge_start().x() : 0.0f;
   const jfloat insertion_marker_top =
-      has_insertion_marker ? selection_start.edge_top().y() : 0.0f;
+      has_insertion_marker ? selection_start.edge_start().y() : 0.0f;
   const jfloat insertion_marker_bottom =
-      has_insertion_marker ? selection_start.edge_bottom().y() : 0.0f;
+      has_insertion_marker ? selection_start.edge_end().y() : 0.0f;
 
   Java_ImeAdapterImpl_updateFrameInfo(
       env, obj, dip_scale, content_offset_ypix, has_insertion_marker,
       is_insertion_marker_visible, insertion_marker_horizontal,
       insertion_marker_top, insertion_marker_bottom);
+}
+
+void ImeAdapterAndroid::OnRenderFrameMetadataChangedAfterActivation(
+    const gfx::SizeF& new_viewport_size) {
+  if (old_viewport_size_ == new_viewport_size)
+    return;
+
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = java_ime_adapter_.get(env);
+  if (obj.is_null())
+    return;
+
+  const jboolean surface_height_reduced =
+      new_viewport_size.width() == old_viewport_size_.width() &&
+      new_viewport_size.height() < old_viewport_size_.height();
+  old_viewport_size_ = new_viewport_size;
+  Java_ImeAdapterImpl_onResizeScrollableViewport(env, obj,
+                                                 surface_height_reduced);
 }
 
 bool ImeAdapterAndroid::SendKeyEvent(
@@ -261,17 +277,18 @@ void ImeAdapterAndroid::SetComposingText(JNIEnv* env,
   if (!rwhi)
     return;
 
-  base::string16 text16 = ConvertJavaStringToUTF16(env, text_str);
+  std::u16string text16 = ConvertJavaStringToUTF16(env, text_str);
 
   std::vector<ui::ImeTextSpan> ime_text_spans =
       GetImeTextSpansFromJava(env, obj, text, text16);
 
   // Default to plain underline if we didn't find any span that we care about.
   if (ime_text_spans.empty()) {
-    ime_text_spans.push_back(
-        ui::ImeTextSpan(ui::ImeTextSpan::Type::kComposition, 0, text16.length(),
-                        ui::ImeTextSpan::Thickness::kThin, SK_ColorTRANSPARENT,
-                        SK_ColorTRANSPARENT, std::vector<std::string>()));
+    ime_text_spans.push_back(ui::ImeTextSpan(
+        ui::ImeTextSpan::Type::kComposition, 0, text16.length(),
+        ui::ImeTextSpan::Thickness::kThin,
+        ui::ImeTextSpan::UnderlineStyle::kSolid, SK_ColorTRANSPARENT,
+        SK_ColorTRANSPARENT, std::vector<std::string>()));
   }
 
   // relative_cursor_pos is as described in the Android API for
@@ -293,7 +310,7 @@ void ImeAdapterAndroid::CommitText(JNIEnv* env,
   if (!rwhi)
     return;
 
-  base::string16 text16 = ConvertJavaStringToUTF16(env, text_str);
+  std::u16string text16 = ConvertJavaStringToUTF16(env, text_str);
 
   std::vector<ui::ImeTextSpan> ime_text_spans =
       GetImeTextSpansFromJava(env, obj, text, text16);
@@ -342,8 +359,8 @@ void ImeAdapterAndroid::AdvanceFocusInForm(JNIEnv* env,
   if (!rfh)
     return;
 
-  rfh->Send(new FrameMsg_AdvanceFocusInForm(
-      rfh->GetRoutingID(), static_cast<blink::WebFocusType>(focus_type)));
+  rfh->GetAssociatedLocalFrame()->AdvanceFocusInForm(
+      static_cast<blink::mojom::FocusType>(focus_type));
 }
 
 void ImeAdapterAndroid::SetEditableSelectionOffsets(
@@ -351,12 +368,11 @@ void ImeAdapterAndroid::SetEditableSelectionOffsets(
     const JavaParamRef<jobject>&,
     int start,
     int end) {
-  RenderFrameHostImpl* rfh =
-      static_cast<RenderFrameHostImpl*>(GetFocusedFrame());
-  if (!rfh)
+  auto* input_handler = GetFocusedFrameWidgetInputHandler();
+  if (!input_handler)
     return;
 
-  rfh->GetFrameInputHandler()->SetEditableSelectionOffsets(start, end);
+  input_handler->SetEditableSelectionOffsets(start, end);
 }
 
 void ImeAdapterAndroid::SetCharacterBounds(
@@ -386,29 +402,28 @@ void ImeAdapterAndroid::SetComposingRegion(JNIEnv*,
                                            const JavaParamRef<jobject>&,
                                            int start,
                                            int end) {
-  RenderFrameHostImpl* rfh =
-      static_cast<RenderFrameHostImpl*>(GetFocusedFrame());
-  if (!rfh)
+  auto* input_handler = GetFocusedFrameWidgetInputHandler();
+  if (!input_handler)
     return;
 
   std::vector<ui::ImeTextSpan> ime_text_spans;
-  ime_text_spans.push_back(
-      ui::ImeTextSpan(ui::ImeTextSpan::Type::kComposition, 0, end - start,
-                      ui::ImeTextSpan::Thickness::kThin, SK_ColorTRANSPARENT,
-                      SK_ColorTRANSPARENT, std::vector<std::string>()));
+  ime_text_spans.push_back(ui::ImeTextSpan(
+      ui::ImeTextSpan::Type::kComposition, 0, end - start,
+      ui::ImeTextSpan::Thickness::kThin,
+      ui::ImeTextSpan::UnderlineStyle::kSolid, SK_ColorTRANSPARENT,
+      SK_ColorTRANSPARENT, std::vector<std::string>()));
 
-  rfh->GetFrameInputHandler()->SetCompositionFromExistingText(start, end,
-                                                              ime_text_spans);
+  input_handler->SetCompositionFromExistingText(start, end, ime_text_spans);
 }
 
 void ImeAdapterAndroid::DeleteSurroundingText(JNIEnv*,
                                               const JavaParamRef<jobject>&,
                                               int before,
                                               int after) {
-  RenderFrameHostImpl* rfh =
-      static_cast<RenderFrameHostImpl*>(GetFocusedFrame());
-  if (rfh)
-    rfh->GetFrameInputHandler()->DeleteSurroundingText(before, after);
+  auto* input_handler = GetFocusedFrameWidgetInputHandler();
+  if (!input_handler)
+    return;
+  input_handler->DeleteSurroundingText(before, after);
 }
 
 void ImeAdapterAndroid::DeleteSurroundingTextInCodePoints(
@@ -416,12 +431,10 @@ void ImeAdapterAndroid::DeleteSurroundingTextInCodePoints(
     const JavaParamRef<jobject>&,
     int before,
     int after) {
-  RenderFrameHostImpl* rfh =
-      static_cast<RenderFrameHostImpl*>(GetFocusedFrame());
-  if (rfh) {
-    rfh->GetFrameInputHandler()->DeleteSurroundingTextInCodePoints(before,
-                                                                   after);
-  }
+  auto* input_handler = GetFocusedFrameWidgetInputHandler();
+  if (!input_handler)
+    return;
+  input_handler->DeleteSurroundingTextInCodePoints(before, after);
 }
 
 bool ImeAdapterAndroid::RequestTextInputStateUpdate(
@@ -469,11 +482,25 @@ RenderFrameHost* ImeAdapterAndroid::GetFocusedFrame() {
   return nullptr;
 }
 
+blink::mojom::FrameWidgetInputHandler*
+ImeAdapterAndroid::GetFocusedFrameWidgetInputHandler() {
+  RenderWidgetHostImpl* rwhi = GetFocusedWidget();
+  if (!rwhi)
+    return nullptr;
+  return rwhi->GetFrameWidgetInputHandler();
+}
+
+bool ImeAdapterAndroid::ShouldVirtualKeyboardOverlayContent() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+
+  return rwhva_ && rwhva_->ShouldVirtualKeyboardOverlayContent();
+}
+
 std::vector<ui::ImeTextSpan> ImeAdapterAndroid::GetImeTextSpansFromJava(
     JNIEnv* env,
     const base::android::JavaParamRef<jobject>& obj,
     const base::android::JavaParamRef<jobject>& text,
-    const base::string16& text16) {
+    const std::u16string& text16) {
   std::vector<ui::ImeTextSpan> ime_text_spans;
   // Iterate over spans in |text|, dispatch those that we care about (e.g.,
   // BackgroundColorSpan) to a matching callback (e.g.,

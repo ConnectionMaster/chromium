@@ -4,8 +4,8 @@
 
 #include "remoting/client/audio/audio_player_android.h"
 
+#include "base/cxx17_backports.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "build/build_config.h"
 
 namespace remoting {
@@ -19,7 +19,7 @@ const int kChannelMask = SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT;
 
 // TODO(nicholss): Update legacy audio player to use new audio buffer code.
 
-AudioPlayerAndroid::AudioPlayerAndroid() : weak_factory_(this) {
+AudioPlayerAndroid::AudioPlayerAndroid() {
   if (slCreateEngine(&engine_object_, 0, nullptr, 0, nullptr, nullptr) !=
           SL_RESULT_SUCCESS ||
       (*engine_object_)->Realize(engine_object_, SL_BOOLEAN_FALSE) !=

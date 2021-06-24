@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_usvstring_usvstringsequencesequence_usvstringusvstringrecord.h"
 #include "third_party/blink/renderer/core/url/dom_url.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/network/form_data_encoder.h"
@@ -36,7 +37,7 @@ class URLSearchParamsIterationSource final
     return true;
   }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(params_);
     PairIterable<String, String>::IterationSource::Trace(visitor);
   }
@@ -48,30 +49,30 @@ class URLSearchParamsIterationSource final
 
 bool CompareParams(const std::pair<String, String>& a,
                    const std::pair<String, String>& b) {
-  return WTF::CodePointCompareLessThan(a.first, b.first);
+  return WTF::CodeUnitCompareLessThan(a.first, b.first);
 }
 
 }  // namespace
 
-URLSearchParams* URLSearchParams::Create(const URLSearchParamsInit& init,
+URLSearchParams* URLSearchParams::Create(const URLSearchParamsInit* init,
                                          ExceptionState& exception_state) {
-  if (init.IsUSVString()) {
-    const String& query_string = init.GetAsUSVString();
-    if (query_string.StartsWith('?'))
-      return MakeGarbageCollected<URLSearchParams>(query_string.Substring(1));
-    return MakeGarbageCollected<URLSearchParams>(query_string);
+  DCHECK(init);
+  switch (init->GetContentType()) {
+    case URLSearchParamsInit::ContentType::kUSVString: {
+      const String& query_string = init->GetAsUSVString();
+      if (query_string.StartsWith('?'))
+        return MakeGarbageCollected<URLSearchParams>(query_string.Substring(1));
+      return MakeGarbageCollected<URLSearchParams>(query_string);
+    }
+    case URLSearchParamsInit::ContentType::kUSVStringSequenceSequence:
+      return URLSearchParams::Create(init->GetAsUSVStringSequenceSequence(),
+                                     exception_state);
+    case URLSearchParamsInit::ContentType::kUSVStringUSVStringRecord:
+      return URLSearchParams::Create(init->GetAsUSVStringUSVStringRecord(),
+                                     exception_state);
   }
-  if (init.IsUSVStringUSVStringRecord()) {
-    return URLSearchParams::Create(init.GetAsUSVStringUSVStringRecord(),
-                                   exception_state);
-  }
-  if (init.IsUSVStringSequenceSequence()) {
-    return URLSearchParams::Create(init.GetAsUSVStringSequenceSequence(),
-                                   exception_state);
-  }
-
-  DCHECK(init.IsNull());
-  return MakeGarbageCollected<URLSearchParams>(String());
+  NOTREACHED();
+  return nullptr;
 }
 
 URLSearchParams* URLSearchParams::Create(const Vector<Vector<String>>& init,
@@ -111,7 +112,7 @@ URLSearchParams* URLSearchParams::Create(
 
 URLSearchParams::~URLSearchParams() = default;
 
-void URLSearchParams::Trace(blink::Visitor* visitor) {
+void URLSearchParams::Trace(Visitor* visitor) const {
   visitor->Trace(url_object_);
   ScriptWrappable::Trace(visitor);
 }
@@ -133,8 +134,10 @@ void URLSearchParams::RunUpdateSteps() {
 }
 
 static String DecodeString(String input) {
+  // |DecodeURLMode::kUTF8| is used because "UTF-8 decode without BOM" should
+  // be performed (see https://url.spec.whatwg.org/#concept-urlencoded-parser).
   return DecodeURLEscapeSequences(input.Replace('+', ' '),
-                                  DecodeURLMode::kUTF8OrIsomorphic);
+                                  DecodeURLMode::kUTF8);
 }
 
 void URLSearchParams::SetInputWithoutUpdate(const String& query_string) {

@@ -7,7 +7,6 @@
 
 #import <UIKit/UIKit.h>
 
-#include <vector>
 
 // States in which the infobar can be.
 typedef NS_ENUM(NSInteger, TranslateInfobarViewState) {
@@ -15,12 +14,6 @@ typedef NS_ENUM(NSInteger, TranslateInfobarViewState) {
   TranslateInfobarViewStateTranslating,
   TranslateInfobarViewStateAfterTranslate,
 };
-
-// Height of the infobar.
-extern const CGFloat kInfobarHeight;
-
-// The a11y identifier for the translate infobar view.
-extern NSString* const kTranslateInfobarViewId;
 
 @protocol TranslateInfobarViewDelegate;
 

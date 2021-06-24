@@ -2,13 +2,7 @@
 # layout files, such as add duplicated assets, or introducing new colors when
 # we don't want them.
 set noparent
+file://ui/android/java/res/LAYOUT_OWNERS
 
-dtrainor@chromium.org
-huayinz@chromium.org
-mdjones@chromium.org
-tedchoc@chromium.org
-twellington@chromium.org
-yusufo@chromium.org
-
-# COMPONENT: UI>Browser>Mobile
-# OS: Android
+per-file *color*.xml=lazzzis@google.com
+per-file *style*.xml=lazzzis@google.com

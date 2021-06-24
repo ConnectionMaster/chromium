@@ -6,7 +6,6 @@
 #define COMPONENTS_SEND_TAB_TO_SELF_SEND_TAB_TO_SELF_SYNC_SERVICE_H_
 
 #include <memory>
-#include <string>
 
 #include "base/memory/weak_ptr.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -18,10 +17,12 @@ class HistoryService;
 }  // namespace history
 
 namespace syncer {
+class DeviceInfoTracker;
 class ModelTypeControllerDelegate;
 }  // namespace syncer
 
 namespace send_tab_to_self {
+class FakeSendTabToSelfModel;
 class SendTabToSelfBridge;
 class SendTabToSelfModel;
 
@@ -31,12 +32,12 @@ class SendTabToSelfSyncService : public KeyedService {
   SendTabToSelfSyncService(
       version_info::Channel channel,
       syncer::OnceModelTypeStoreFactory create_store_callback,
-      history::HistoryService* history_service);
+      history::HistoryService* history_service,
+      syncer::DeviceInfoTracker* device_info_tracker);
   ~SendTabToSelfSyncService() override;
 
   virtual SendTabToSelfModel* GetSendTabToSelfModel();
 
-  // For ProfileSyncService to initialize the controller.
   virtual base::WeakPtr<syncer::ModelTypeControllerDelegate>
   GetControllerDelegate();
 
@@ -46,6 +47,7 @@ class SendTabToSelfSyncService : public KeyedService {
 
  private:
   std::unique_ptr<SendTabToSelfBridge> bridge_;
+  std::unique_ptr<FakeSendTabToSelfModel> fake_model_;
 
   DISALLOW_COPY_AND_ASSIGN(SendTabToSelfSyncService);
 };

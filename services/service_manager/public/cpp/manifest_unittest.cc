@@ -9,7 +9,6 @@
 
 #include "base/files/file_path.h"
 #include "base/no_destructor.h"
-#include "base/stl_util.h"
 #include "services/service_manager/public/cpp/manifest_builder.h"
 #include "services/service_manager/public/mojom/connector.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -51,9 +50,9 @@ Manifest CreateTestManifest() {
                   .CanConnectToInstancesInAnyGroup(true)
                   .CanRegisterOtherServiceInstances(false)
                   .Build())
-          .ExposeCapability(
-              "capability_1",
-              Manifest::InterfaceList<mojom::Connector, mojom::PIDReceiver>())
+          .ExposeCapability("capability_1",
+                            Manifest::InterfaceList<mojom::Connector,
+                                                    mojom::ProcessMetadata>())
           .ExposeCapability("capability_2",
                             Manifest::InterfaceList<mojom::Connector>())
           .RequireCapability("service_42", "computation")
@@ -87,8 +86,9 @@ TEST(ManifestTest, BasicBuilder) {
             manifest.options.instance_sharing_policy);
 
   EXPECT_EQ(2u, manifest.exposed_capabilities.size());
-  EXPECT_THAT(manifest.exposed_capabilities["capability_1"],
-              ElementsAre(mojom::Connector::Name_, mojom::PIDReceiver::Name_));
+  EXPECT_THAT(
+      manifest.exposed_capabilities["capability_1"],
+      ElementsAre(mojom::Connector::Name_, mojom::ProcessMetadata::Name_));
   EXPECT_THAT(manifest.exposed_capabilities["capability_2"],
               ElementsAre(mojom::Connector::Name_));
 

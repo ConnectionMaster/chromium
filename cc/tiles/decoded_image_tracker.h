@@ -38,6 +38,7 @@ class CC_EXPORT DecodedImageTracker {
   // completion. The callback takes a bool indicating whether the decode was
   // successful or not.
   void QueueImageDecode(const PaintImage& image,
+                        const gfx::ColorSpace& target_color_space,
                         base::OnceCallback<void(bool)> callback);
 
   // Unlock all locked images - used to respond to memory pressure or
@@ -92,7 +93,7 @@ class CC_EXPORT DecodedImageTracker {
   // Defaults to base::TimeTicks::Now(), but overrideable for testing.
   const base::TickClock* tick_clock_;
 
-  base::WeakPtrFactory<DecodedImageTracker> weak_ptr_factory_;
+  base::WeakPtrFactory<DecodedImageTracker> weak_ptr_factory_{this};
 };
 
 }  // namespace cc

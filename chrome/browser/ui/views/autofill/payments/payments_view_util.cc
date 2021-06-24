@@ -4,13 +4,16 @@
 
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 
-#include <memory>
-
+#include "base/bind.h"
+#include "base/ranges/algorithm.h"
+#include "build/branding_buildflags.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
@@ -33,7 +36,7 @@ namespace autofill {
 namespace {
 
 // Dimensions of the Google Pay logo.
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 constexpr int kGooglePayLogoWidth = 40;
 #endif
 constexpr int kGooglePayLogoHeight = 16;
@@ -42,61 +45,74 @@ constexpr int kGooglePayLogoSeparatorHeight = 12;
 
 constexpr SkColor kTitleSeparatorColor = SkColorSetRGB(0x9E, 0x9E, 0x9E);
 
+class PayIconView : public views::ImageView {
+ public:
+  METADATA_HEADER(PayIconView);
+
+  // views::ImageView:
+  void OnThemeChanged() override {
+    ImageView::OnThemeChanged();
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+    // kGooglePayLogoIcon is square, and CreateTiledImage() will clip it whereas
+    // setting the icon size would rescale it incorrectly.
+    gfx::ImageSkia image = gfx::ImageSkiaOperations::CreateTiledImage(
+        gfx::CreateVectorIcon(kGooglePayLogoIcon,
+                              GetNativeTheme()->ShouldUseDarkColors()
+                                  ? gfx::kGoogleGrey200
+                                  : gfx::kGoogleGrey700),
+        /*x=*/0, /*y=*/0, kGooglePayLogoWidth, kGooglePayLogoHeight);
+#else
+    gfx::ImageSkia image =
+        gfx::CreateVectorIcon(kCreditCardIcon, kGooglePayLogoHeight,
+                              GetNativeTheme()->GetSystemColor(
+                                  ui::NativeTheme::kColorId_DefaultIconColor));
+#endif
+    SetImage(image);
+  }
+};
+
+BEGIN_METADATA(PayIconView, views::ImageView)
+END_METADATA
+
 }  // namespace
 
 TitleWithIconAndSeparatorView::TitleWithIconAndSeparatorView(
-    const base::string16& window_title) {
+    const std::u16string& window_title) {
   views::GridLayout* layout =
-      SetLayoutManager(std::make_unique<views::GridLayout>(this));
+      SetLayoutManager(std::make_unique<views::GridLayout>());
   views::ColumnSet* columns = layout->AddColumnSet(0);
 
+  using ColumnSize = views::GridLayout::ColumnSize;
   // Add columns for the Google Pay icon, the separator, and the title label.
   columns->AddColumn(views::GridLayout::LEADING, views::GridLayout::LEADING,
-                     views::GridLayout::kFixedSize, views::GridLayout::USE_PREF,
+                     views::GridLayout::kFixedSize, ColumnSize::kUsePreferred,
                      0, 0);
   columns->AddColumn(views::GridLayout::LEADING, views::GridLayout::LEADING,
-                     views::GridLayout::kFixedSize, views::GridLayout::USE_PREF,
+                     views::GridLayout::kFixedSize, ColumnSize::kUsePreferred,
                      0, 0);
   columns->AddColumn(views::GridLayout::FILL, views::GridLayout::LEADING, 1.f,
-                     views::GridLayout::USE_PREF, 0, 0);
+                     ColumnSize::kUsePreferred, 0, 0);
 
   layout->StartRow(views::GridLayout::kFixedSize, 0);
 
-  auto* icon_view = new views::ImageView();
-#if defined(GOOGLE_CHROME_BUILD)
-  // kGooglePayLogoIcon is square, and CreateTiledImage() will clip it whereas
-  // setting the icon size would rescale it incorrectly.
-  gfx::ImageSkia image = gfx::ImageSkiaOperations::CreateTiledImage(
-      gfx::CreateVectorIcon(kGooglePayLogoIcon,
-                            GetNativeTheme()->SystemDarkModeEnabled()
-                                ? gfx::kGoogleGrey200
-                                : gfx::kGoogleGrey700),
-      /*x=*/0, /*y=*/0, kGooglePayLogoWidth, kGooglePayLogoHeight);
-#else
-  gfx::ImageSkia image =
-      gfx::CreateVectorIcon(kCreditCardIcon, kGooglePayLogoHeight,
-                            GetNativeTheme()->GetSystemColor(
-                                ui::NativeTheme::kColorId_DefaultIconColor));
-#endif
-  icon_view->SetImage(image);
-  layout->AddView(icon_view);
+  auto* icon_view_ptr = layout->AddView(std::make_unique<PayIconView>());
 
-  auto* separator = new views::Separator();
+  auto separator = std::make_unique<views::Separator>();
   separator->SetColor(kTitleSeparatorColor);
   separator->SetPreferredHeight(kGooglePayLogoSeparatorHeight);
-  layout->AddView(separator);
+  auto* separator_ptr = layout->AddView(std::move(separator));
 
-  auto* title_label =
-      new views::Label(window_title, views::style::CONTEXT_DIALOG_TITLE);
+  auto title_label = std::make_unique<views::Label>(
+      window_title, views::style::CONTEXT_DIALOG_TITLE);
   title_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   title_label->SetMultiLine(true);
-  layout->AddView(title_label);
+  auto* title_label_ptr = layout->AddView(std::move(title_label));
 
   // Add vertical padding to the icon and the separator so they are aligned with
   // the first line of title label. This needs to be done after we create the
   // title label, so that we can use its preferred size.
-  const int title_label_height = title_label->GetPreferredSize().height();
-  icon_view->SetBorder(views::CreateEmptyBorder(
+  const int title_label_height = title_label_ptr->GetPreferredSize().height();
+  icon_view_ptr->SetBorder(views::CreateEmptyBorder(
       /*top=*/(title_label_height - kGooglePayLogoHeight) / 2,
       /*left=*/0, /*bottom=*/0, /*right=*/0));
   // TODO(crbug.com/873140): DISTANCE_RELATED_BUTTON_HORIZONTAL isn't the right
@@ -105,7 +121,7 @@ TitleWithIconAndSeparatorView::TitleWithIconAndSeparatorView(
   const int separator_horizontal_padding =
       ChromeLayoutProvider::Get()->GetDistanceMetric(
           views::DISTANCE_RELATED_BUTTON_HORIZONTAL);
-  separator->SetBorder(views::CreateEmptyBorder(
+  separator_ptr->SetBorder(views::CreateEmptyBorder(
       /*top=*/(title_label_height - kGooglePayLogoSeparatorHeight) / 2,
       /*left=*/separator_horizontal_padding, /*bottom=*/0,
       /*right=*/separator_horizontal_padding));
@@ -120,9 +136,12 @@ gfx::Size TitleWithIconAndSeparatorView::GetMinimumSize() const {
   return gfx::Size(0, 0);
 }
 
-views::Textfield* CreateCvcTextfield() {
-  views::Textfield* textfield = new views::Textfield();
-  textfield->set_placeholder_text(
+BEGIN_METADATA(TitleWithIconAndSeparatorView, views::View)
+END_METADATA
+
+std::unique_ptr<views::Textfield> CreateCvcTextfield() {
+  auto textfield = std::make_unique<views::Textfield>();
+  textfield->SetPlaceholderText(
       l10n_util::GetStringUTF16(IDS_AUTOFILL_DIALOG_PLACEHOLDER_CVC));
   textfield->SetDefaultWidthInChars(8);
   textfield->SetTextInputType(ui::TextInputType::TEXT_INPUT_TYPE_NUMBER);
@@ -130,50 +149,43 @@ views::Textfield* CreateCvcTextfield() {
 }
 
 LegalMessageView::LegalMessageView(const LegalMessageLines& legal_message_lines,
-                                   views::StyledLabelListener* listener)
-    : legal_message_lines_(legal_message_lines) {
-  SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+                                   LinkClickedCallback callback) {
+  SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical));
   for (const LegalMessageLine& line : legal_message_lines) {
-    AddChildView(CreateLegalMessageLineLabel(line, listener).release());
-  }
-}
-
-LegalMessageView::~LegalMessageView() {}
-
-std::unique_ptr<views::StyledLabel>
-LegalMessageView::CreateLegalMessageLineLabel(
-    const LegalMessageLine& line,
-    views::StyledLabelListener* listener) {
-  std::unique_ptr<views::StyledLabel> label =
-      std::make_unique<views::StyledLabel>(line.text(), listener);
-  label->SetTextContext(CONTEXT_BODY_TEXT_LARGE);
-  label->SetDefaultTextStyle(ChromeTextStyle::STYLE_SECONDARY);
-  for (const LegalMessageLine::Link& link : line.links()) {
-    label->AddStyleRange(link.range,
-                         views::StyledLabel::RangeStyleInfo::CreateForLink());
-  }
-  return label;
-}
-
-const GURL LegalMessageView::GetUrlForLink(views::StyledLabel* label,
-                                           const gfx::Range& range) {
-  // Index of |label| within its parent's view hierarchy is the same as the
-  // legal message line index. DCHECK this assumption to guard against future
-  // layout changes.
-  DCHECK_EQ(static_cast<size_t>(label->parent()->child_count()),
-            legal_message_lines_.size());
-
-  const std::vector<LegalMessageLine::Link>& links =
-      legal_message_lines_[label->parent()->GetIndexOf(label)].links();
-  for (const LegalMessageLine::Link& link : links) {
-    if (link.range == range) {
-      return link.url;
+    views::StyledLabel* label =
+        AddChildView(std::make_unique<views::StyledLabel>());
+    label->SetText(line.text());
+    label->SetTextContext(views::style::CONTEXT_DIALOG_BODY_TEXT);
+    label->SetDefaultTextStyle(views::style::STYLE_SECONDARY);
+    for (const LegalMessageLine::Link& link : line.links()) {
+      label->AddStyleRange(link.range,
+                           views::StyledLabel::RangeStyleInfo::CreateForLink(
+                               base::BindRepeating(callback, link.url)));
     }
   }
-  // |range| was not found.
-  NOTREACHED();
-  return GURL();
+}
+
+LegalMessageView::~LegalMessageView() = default;
+
+BEGIN_METADATA(LegalMessageView, views::View)
+END_METADATA
+
+PaymentsBubbleClosedReason GetPaymentsBubbleClosedReasonFromWidgetClosedReason(
+    views::Widget::ClosedReason reason) {
+  switch (reason) {
+    case views::Widget::ClosedReason::kUnspecified:
+      return PaymentsBubbleClosedReason::kNotInteracted;
+    case views::Widget::ClosedReason::kEscKeyPressed:
+    case views::Widget::ClosedReason::kCloseButtonClicked:
+      return PaymentsBubbleClosedReason::kClosed;
+    case views::Widget::ClosedReason::kLostFocus:
+      return PaymentsBubbleClosedReason::kLostFocus;
+    case views::Widget::ClosedReason::kAcceptButtonClicked:
+      return PaymentsBubbleClosedReason::kAccepted;
+    case views::Widget::ClosedReason::kCancelButtonClicked:
+      return PaymentsBubbleClosedReason::kCancelled;
+  }
 }
 
 }  // namespace autofill

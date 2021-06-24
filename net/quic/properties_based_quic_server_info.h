@@ -5,11 +5,9 @@
 #ifndef NET_QUIC_PROPERTIES_BASED_QUIC_SERVER_INFO_H_
 #define NET_QUIC_PROPERTIES_BASED_QUIC_SERVER_INFO_H_
 
-#include <string>
-#include <vector>
-
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "net/base/network_isolation_key.h"
 #include "net/quic/quic_server_info.h"
 #include "net/third_party/quiche/src/quic/platform/api/quic_export.h"
 
@@ -23,8 +21,10 @@ class HttpServerProperties;
 class QUIC_EXPORT_PRIVATE PropertiesBasedQuicServerInfo
     : public QuicServerInfo {
  public:
-  PropertiesBasedQuicServerInfo(const quic::QuicServerId& server_id,
-                                HttpServerProperties* http_server_properties);
+  PropertiesBasedQuicServerInfo(
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key,
+      HttpServerProperties* http_server_properties);
   ~PropertiesBasedQuicServerInfo() override;
 
   // QuicServerInfo implementation.
@@ -33,7 +33,8 @@ class QUIC_EXPORT_PRIVATE PropertiesBasedQuicServerInfo
   size_t EstimateMemoryUsage() const override;
 
  private:
-  HttpServerProperties* http_server_properties_;
+  const NetworkIsolationKey network_isolation_key_;
+  HttpServerProperties* const http_server_properties_;
 
   DISALLOW_COPY_AND_ASSIGN(PropertiesBasedQuicServerInfo);
 };

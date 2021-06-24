@@ -2,48 +2,80 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/chromeos/printing/printer_info.h"
-
 #include <algorithm>
 #include <array>
 #include <string>
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/strings/string_piece.h"
-#include "base/strings/string_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/version.h"
+#include "chrome/browser/chromeos/printing/printer_info.h"
 #include "printing/backend/cups_jobs.h"
+#include "printing/printer_status.h"
 
 namespace {
 
 const char kPdfMimeType[] = "application/pdf";
 const char kPwgRasterMimeType[] = "image/pwg-raster";
 
-// List of known multi-word printer manufacturers to help with make-and-model
-// string parsing.  Keep in UPPER CASE as that's how matches are performed.
-const std::array<const char* const, 4> kMultiWordManufacturers{
-    {"FUJI XEROX", "KODAK FUNAI", "KONICA MINOLTA", "TEXAS INSTRUMENTS"}};
+// Wraps several printing data structures so that we can use
+// PostTaskAndReplyWithResult().
+struct QueryResult {
+  printing::PrinterQueryResult result;
+  printing::PrinterInfo printer_info;
+  printing::PrinterStatus printer_status;
+};
 
-// Returns the length of the portion of |make_and_model| representing the
-// manufacturer.  This is either a value from kMultiWordManufacaturers or the
-// first token.  If there is only one token or less, we assume that it does not
-// represent the manufacturer and return 0.
-size_t ManufacturerLength(base::StringPiece make_and_model) {
-  // TODO(crbug.com/729245): Update when better data is available.
-  for (base::StringPiece multi_word_manufacturer : kMultiWordManufacturers) {
-    if (base::StartsWith(make_and_model, multi_word_manufacturer,
-                         base::CompareCase::INSENSITIVE_ASCII)) {
-      return multi_word_manufacturer.size();
-    }
+// Enums for Printing.CUPS.HighestIppVersion.  Do not delete entries.  Keep
+// synced with enums.xml.  Represents IPP versions 1.0, 1.1, 2.0, 2.1, and 2.2.
+// Error is used if the version was unparsable.  OutOfRange is used for values
+// that are not currently mapped.
+enum class IppVersion {
+  kError,
+  kUnknown,
+  k10,
+  k11,
+  k20,
+  k21,
+  k22,
+  kMaxValue = k22
+};
+
+using MajorMinor = std::pair<uint32_t, uint32_t>;
+using VersionEntry = std::pair<MajorMinor, IppVersion>;
+
+IppVersion ToIppVersion(const base::Version& version) {
+  constexpr std::array<VersionEntry, 5> kVersions = {
+      VersionEntry(MajorMinor((uint32_t)1, (uint32_t)0), IppVersion::k10),
+      VersionEntry(MajorMinor((uint32_t)1, (uint32_t)1), IppVersion::k11),
+      VersionEntry(MajorMinor((uint32_t)2, (uint32_t)0), IppVersion::k20),
+      VersionEntry(MajorMinor((uint32_t)2, (uint32_t)1), IppVersion::k21),
+      VersionEntry(MajorMinor((uint32_t)2, (uint32_t)2), IppVersion::k22)};
+
+  if (!version.IsValid()) {
+    return IppVersion::kError;
   }
 
-  // The position of the first space is equal to the length of the first token.
-  size_t first_space = make_and_model.find(" ");
-  return first_space != base::StringPiece::npos ? first_space : 0;
+  const auto& components = version.components();
+  if (components.size() != 2) {
+    return IppVersion::kError;
+  }
+
+  const auto target = MajorMinor(components[0], components[1]);
+  const VersionEntry* iter = std::find_if(
+      kVersions.cbegin(), kVersions.cend(),
+      [target](const VersionEntry& entry) { return entry.first == target; });
+
+  if (iter == kVersions.end()) {
+    return IppVersion::kUnknown;
+  }
+
+  return iter->second;
 }
 
 // Returns true if any of the |ipp_versions| are greater than or equal to 2.0.
@@ -78,45 +110,45 @@ bool IsAutoconf(const ::printing::PrinterInfo& info) {
 
 // Dispatches an IPP request to |host| to retrieve printer information.  Returns
 // a nullptr if the request fails.
-std::unique_ptr<::printing::PrinterInfo> QueryPrinterImpl(
-    const std::string& host,
-    const int port,
-    const std::string& path,
-    bool encrypted) {
-  auto info = std::make_unique<::printing::PrinterInfo>();
-  if (!::printing::GetPrinterInfo(host, port, path, encrypted, info.get())) {
+QueryResult QueryPrinterImpl(const std::string& host,
+                             const int port,
+                             const std::string& path,
+                             bool encrypted) {
+  QueryResult result;
+  result.result =
+      ::printing::GetPrinterInfo(host, port, path, encrypted,
+                                 &result.printer_info, &result.printer_status);
+  if (result.result != ::printing::PrinterQueryResult::kSuccess) {
     LOG(ERROR) << "Could not retrieve printer info";
-    return nullptr;
   }
 
-  return info;
+  return result;
 }
 
 // Handles the request for |info|.  Parses make and model information before
 // calling |callback|.
-void OnPrinterQueried(const chromeos::PrinterInfoCallback& callback,
-                      std::unique_ptr<::printing::PrinterInfo> info) {
-  if (!info) {
+void OnPrinterQueried(chromeos::PrinterInfoCallback callback,
+                      const QueryResult& query_result) {
+  const ::printing::PrinterQueryResult& result = query_result.result;
+  const ::printing::PrinterInfo& printer_info = query_result.printer_info;
+  const ::printing::PrinterStatus& printer_status = query_result.printer_status;
+  if (result != ::printing::PrinterQueryResult::kSuccess) {
     VLOG(1) << "Could not reach printer";
-    callback.Run(false, std::string(), std::string(), std::string(), {}, false);
+    std::move(callback).Run(result, ::printing::PrinterStatus(), std::string(),
+                            {}, false);
     return;
   }
 
-  base::StringPiece make_and_model(info->make_and_model);
-  base::StringPiece make;
-  base::StringPiece model;
+  DCHECK(!printer_info.ipp_versions.empty())
+      << "Properly queried PrinterInfo always has at least one version";
+  base::UmaHistogramEnumeration(
+      "Printing.CUPS.HighestIppVersion",
+      ToIppVersion(*std::max_element(printer_info.ipp_versions.begin(),
+                                     printer_info.ipp_versions.end())));
 
-  size_t split = ManufacturerLength(make_and_model);
-  if (split != 0) {
-    make = make_and_model.substr(0, split);
-    model = make_and_model.substr(split + 1);
-  } else {
-    // If there's only one word or an empty string, use it.
-    model = make_and_model;
-  }
-
-  callback.Run(true, make.as_string(), model.as_string(), info->make_and_model,
-               info->document_formats, IsAutoconf(*info));
+  std::move(callback).Run(result, printer_status, printer_info.make_and_model,
+                          printer_info.document_formats,
+                          IsAutoconf(printer_info));
 }
 
 }  // namespace
@@ -127,17 +159,16 @@ void QueryIppPrinter(const std::string& host,
                      const int port,
                      const std::string& path,
                      bool encrypted,
-                     const PrinterInfoCallback& callback) {
+                     PrinterInfoCallback callback) {
   DCHECK(!host.empty());
 
   // QueryPrinterImpl could block on a network call for a noticable amount of
   // time (100s of ms). Also the user is waiting on this result.  Thus, run at
   // USER_VISIBLE with MayBlock.
-  base::PostTaskWithTraitsAndReplyWithResult(
-      FROM_HERE,
-      base::TaskTraits(base::TaskPriority::USER_VISIBLE, base::MayBlock()),
-      base::Bind(&QueryPrinterImpl, host, port, path, encrypted),
-      base::Bind(&OnPrinterQueried, callback));
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::TaskPriority::USER_VISIBLE, base::MayBlock()},
+      base::BindOnce(&QueryPrinterImpl, host, port, path, encrypted),
+      base::BindOnce(&OnPrinterQueried, std::move(callback)));
 }
 
 }  // namespace chromeos

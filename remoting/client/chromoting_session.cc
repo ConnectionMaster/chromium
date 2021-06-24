@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -19,7 +20,6 @@
 #include "base/timer/timer.h"
 #include "jingle/glue/thread_wrapper.h"
 #include "net/socket/client_socket_factory.h"
-#include "remoting/base/chromium_url_request.h"
 #include "remoting/base/chromoting_event.h"
 #include "remoting/base/service_urls.h"
 #include "remoting/client/audio/audio_player.h"
@@ -35,6 +35,8 @@
 #include "remoting/protocol/performance_tracker.h"
 #include "remoting/protocol/transport_context.h"
 #include "remoting/protocol/video_renderer.h"
+#include "remoting/signaling/ftl_client_uuid_device_id_provider.h"
+#include "remoting/signaling/ftl_signal_strategy.h"
 #include "remoting/signaling/server_log_entry.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
@@ -42,10 +44,6 @@
 namespace remoting {
 
 namespace {
-
-const char* const kXmppServer = "talk.google.com";
-const int kXmppPort = 5222;
-const bool kXmppUseTls = true;
 
 // Default DPI to assume for old clients that use notifyClientResolution.
 const int kDefaultDPI = 96;
@@ -55,6 +53,11 @@ const int kMinDimension = 640;
 
 // Interval at which to log performance statistics, if enabled.
 constexpr base::TimeDelta kPerfStatsInterval = base::TimeDelta::FromMinutes(1);
+
+// Delay to destroy the signal strategy, so that the session-terminate event can
+// still be sent out.
+constexpr base::TimeDelta kDestroySignalingDelay =
+    base::TimeDelta::FromSeconds(2);
 
 bool IsClientResolutionValid(int dips_width, int dips_height) {
   // This prevents sending resolution on a portrait mode small phone screen
@@ -92,7 +95,8 @@ struct SessionContext {
 }  // namespace
 
 class ChromotingSession::Core : public ClientUserInterface,
-                                public protocol::ClipboardStub {
+                                public protocol::ClipboardStub,
+                                public protocol::KeyboardLayoutStub {
  public:
   Core(ChromotingClientRuntime* runtime,
        std::unique_ptr<ClientTelemetryLogger> logger,
@@ -131,9 +135,13 @@ class ChromotingSession::Core : public ClientUserInterface,
                       const webrtc::DesktopVector& dpi) override;
   protocol::ClipboardStub* GetClipboardStub() override;
   protocol::CursorShapeStub* GetCursorShapeStub() override;
+  protocol::KeyboardLayoutStub* GetKeyboardLayoutStub() override;
 
-  // CursorShapeStub implementation.
+  // ClipboardStub implementation.
   void InjectClipboardEvent(const protocol::ClipboardEvent& event) override;
+
+  // KeyboardLayoutStub implementation.
+  void SetKeyboardLayout(const protocol::KeyboardLayout& layout) override;
 
   base::WeakPtr<Core> GetWeakPtr();
 
@@ -182,7 +190,7 @@ class ChromotingSession::Core : public ClientUserInterface,
   std::unique_ptr<protocol::PerformanceTracker> perf_tracker_;
 
   // |signaling_| must outlive |client_|.
-  std::unique_ptr<XmppSignalStrategy> signaling_;
+  std::unique_ptr<SignalStrategy> signaling_;
   std::unique_ptr<OAuthTokenGetter> token_getter_;
   std::unique_ptr<ChromotingClient> client_;
 
@@ -200,7 +208,7 @@ class ChromotingSession::Core : public ClientUserInterface,
   // |weak_ptr_| in GetWeakPtr() so that its copies are still invalidated once
   // InvalidateWeakPtrs() is called.
   base::WeakPtr<Core> weak_ptr_;
-  base::WeakPtrFactory<Core> weak_factory_;
+  base::WeakPtrFactory<Core> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(Core);
 };
 
@@ -209,8 +217,7 @@ ChromotingSession::Core::Core(ChromotingClientRuntime* runtime,
                               std::unique_ptr<SessionContext> session_context)
     : runtime_(runtime),
       logger_(std::move(logger)),
-      session_context_(std::move(session_context)),
-      weak_factory_(this) {
+      session_context_(std::move(session_context)) {
   DCHECK(ui_task_runner()->BelongsToCurrentThread());
   DCHECK(runtime_);
   DCHECK(logger_);
@@ -345,6 +352,9 @@ void ChromotingSession::Core::Disconnect() {
                                    ChromotingEvent::ConnectionError::NONE);
     session_state_ = protocol::ConnectionToHost::CLOSED;
 
+    // Make sure we send a session-terminate to the host.
+    client_->Close();
+
     Invalidate();
   }
 }
@@ -440,8 +450,17 @@ protocol::CursorShapeStub* ChromotingSession::Core::GetCursorShapeStub() {
   return session_context_->cursor_shape_stub.get();
 }
 
+protocol::KeyboardLayoutStub* ChromotingSession::Core::GetKeyboardLayoutStub() {
+  return this;
+}
+
 void ChromotingSession::Core::InjectClipboardEvent(
     const protocol::ClipboardEvent& event) {
+  NOTIMPLEMENTED();
+}
+
+void ChromotingSession::Core::SetKeyboardLayout(
+    const protocol::KeyboardLayout& layout) {
   NOTIMPLEMENTED();
 }
 
@@ -450,26 +469,51 @@ base::WeakPtr<ChromotingSession::Core> ChromotingSession::Core::GetWeakPtr() {
 }
 
 void ChromotingSession::Core::Invalidate() {
+  DCHECK(network_task_runner()->BelongsToCurrentThread());
+
   // Prevent all pending and future calls from ChromotingSession.
   weak_factory_.InvalidateWeakPtrs();
 
   client_.reset();
   token_getter_.reset();
-  signaling_.reset();
   perf_tracker_.reset();
   client_context_.reset();
   session_context_.reset();
+
+  // Dirty hack to make sure session-terminate message is sent before
+  // |signaling_| gets deleted. W/o the message being sent, the other side will
+  // believe an error has occurred.
+  if (signaling_) {
+    signaling_->Disconnect();
+    network_task_runner()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](std::unique_ptr<SignalStrategy> signaling) {
+              signaling.reset();
+            },
+            std::move(signaling_)),
+        kDestroySignalingDelay);
+  }
 }
 
 void ChromotingSession::Core::ConnectOnNetworkThread() {
   DCHECK(network_task_runner()->BelongsToCurrentThread());
 
+  if (session_context_->info.host_ftl_id.empty()) {
+    // Simulate a CONNECTING state to make sure it doesn't skew telemetry.
+    OnConnectionState(protocol::ConnectionToHost::State::CONNECTING,
+                      protocol::OK);
+    OnConnectionState(protocol::ConnectionToHost::State::FAILED,
+                      protocol::INCOMPATIBLE_PROTOCOL);
+    return;
+  }
+
   jingle_glue::JingleThreadWrapper::EnsureForCurrentMessageLoop();
 
-  client_context_.reset(new ClientContext(network_task_runner()));
+  client_context_ = std::make_unique<ClientContext>(network_task_runner());
   client_context_->Start();
 
-  perf_tracker_.reset(new protocol::PerformanceTracker());
+  perf_tracker_ = std::make_unique<protocol::PerformanceTracker>();
 
   session_context_->video_renderer->Initialize(*client_context_,
                                                perf_tracker_.get());
@@ -480,35 +524,24 @@ void ChromotingSession::Core::ConnectOnNetworkThread() {
 
   // TODO(yuweih): Ideally we should make ChromotingClient and all its
   // sub-components (e.g. ConnectionToHost) take raw pointer instead of WeakPtr.
-  client_.reset(new ChromotingClient(
+  client_ = std::make_unique<ChromotingClient>(
       client_context_.get(), this, session_context_->video_renderer.get(),
-      session_context_->audio_player_weak_factory->GetWeakPtr()));
+      session_context_->audio_player_weak_factory->GetWeakPtr());
 
-  XmppSignalStrategy::XmppServerConfig xmpp_config;
-  xmpp_config.host = kXmppServer;
-  xmpp_config.port = kXmppPort;
-  xmpp_config.use_tls = kXmppUseTls;
-  xmpp_config.username = session_context_->info.username;
-  xmpp_config.auth_token = session_context_->info.auth_token;
-
-  signaling_.reset(
-      new XmppSignalStrategy(net::ClientSocketFactory::GetDefaultFactory(),
-                             runtime_->url_requester(), xmpp_config));
-  logger_->SetSignalStrategyType(ChromotingEvent::SignalStrategyType::XMPP);
+  signaling_ = std::make_unique<FtlSignalStrategy>(
+      runtime_->CreateOAuthTokenGetter(), runtime_->url_loader_factory(),
+      std::make_unique<FtlClientUuidDeviceIdProvider>());
+  logger_->SetSignalStrategyType(ChromotingEvent::SignalStrategyType::FTL);
 
   token_getter_ = runtime_->CreateOAuthTokenGetter();
 
   scoped_refptr<protocol::TransportContext> transport_context =
       new protocol::TransportContext(
-          signaling_.get(),
           std::make_unique<protocol::ChromiumPortAllocatorFactory>(),
-          std::make_unique<ChromiumUrlRequestFactory>(
-              runtime_->url_loader_factory()),
+          runtime_->url_loader_factory(),
           protocol::NetworkSettings(
               protocol::NetworkSettings::NAT_TRAVERSAL_FULL),
           protocol::TransportRole::CLIENT);
-  transport_context->set_ice_config_url(
-      ServiceUrls::GetInstance()->ice_config_url(), token_getter_.get());
 
 #if defined(ENABLE_WEBRTC_REMOTING_CLIENT)
   if (session_context_->info.flags.find("useWebrtc") != std::string::npos) {
@@ -536,7 +569,7 @@ void ChromotingSession::Core::ConnectOnNetworkThread() {
       base::BindRepeating(&Core::FetchSecret, GetWeakPtr());
 
   client_->Start(signaling_.get(), client_auth_config, transport_context,
-                 session_context_->info.host_jid,
+                 session_context_->info.host_ftl_id,
                  session_context_->info.capabilities);
 }
 

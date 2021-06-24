@@ -4,39 +4,28 @@
 
 #include "third_party/blink/renderer/core/css/local_font_face_source.h"
 
+#include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/css/css_custom_font_data.h"
 #include "third_party/blink/renderer/core/css/css_font_face.h"
+#include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
 #include "third_party/blink/renderer/platform/fonts/font_global_context.h"
 #include "third_party/blink/renderer/platform/fonts/font_selector.h"
 #include "third_party/blink/renderer/platform/fonts/font_unique_name_lookup.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
-#include "third_party/blink/renderer/platform/histogram.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
-
-namespace {
-
-void NotifyFontUniqueNameLookupReadyWeakPtr(
-    base::WeakPtr<LocalFontFaceSource> local_font_face_source) {
-  if (local_font_face_source)
-    local_font_face_source->NotifyFontUniqueNameLookupReady();
-}
-
-}  // namespace
 
 LocalFontFaceSource::LocalFontFaceSource(CSSFontFace* css_font_face,
                                          FontSelector* font_selector,
                                          const String& font_name)
     : face_(css_font_face),
       font_selector_(font_selector),
-      font_name_(font_name),
-      weak_factory_(this) {
-  was_resolved_ = IsLocalNonBlocking();
-}
+      font_name_(font_name) {}
 
 LocalFontFaceSource::~LocalFontFaceSource() {}
 
@@ -50,8 +39,16 @@ bool LocalFontFaceSource::IsLocalNonBlocking() const {
 
 bool LocalFontFaceSource::IsLocalFontAvailable(
     const FontDescription& font_description) const {
-  return FontCache::GetFontCache()->IsPlatformFontUniqueNameMatchAvailable(
-      font_description, font_name_);
+  // TODO(crbug.com/1027158): Remove metrics code after metrics collected.
+  // TODO(crbug.com/1025945): Properly handle Windows prior to 10 and Android.
+  bool font_available =
+      FontCache::GetFontCache()->IsPlatformFontUniqueNameMatchAvailable(
+          font_description, font_name_);
+  if (font_available)
+    font_selector_->ReportSuccessfulLocalFontMatch(font_name_);
+  else
+    font_selector_->ReportFailedLocalFontMatch(font_name_);
+  return font_available;
 }
 
 scoped_refptr<SimpleFontData>
@@ -73,14 +70,26 @@ LocalFontFaceSource::CreateLoadingFallbackFontData(
 scoped_refptr<SimpleFontData> LocalFontFaceSource::CreateFontData(
     const FontDescription& font_description,
     const FontSelectionCapabilities&) {
-  if (!IsValid())
+  if (!IsValid()) {
+    ReportFontLookup(font_description, nullptr);
+    return nullptr;
+  }
+
+  bool local_fonts_enabled = true;
+  probe::LocalFontsEnabled(font_selector_->GetExecutionContext(),
+                           &local_fonts_enabled);
+
+  if (!local_fonts_enabled)
     return nullptr;
 
   if (IsValid() && IsLoading()) {
-    return CreateLoadingFallbackFontData(font_description);
+    scoped_refptr<SimpleFontData> fallback_font_data =
+        CreateLoadingFallbackFontData(font_description);
+    ReportFontLookup(font_description, fallback_font_data.get(),
+                     true /* is_loading_fallback */);
+    return fallback_font_data;
   }
 
-  DCHECK(was_resolved_);
   // FIXME(drott) crbug.com/627143: We still have the issue of matching
   // family name instead of postscript name for local fonts. However, we
   // should definitely not try to take into account the full requested
@@ -103,6 +112,7 @@ scoped_refptr<SimpleFontData> LocalFontFaceSource::CreateFontData(
           unstyled_description, font_name_,
           AlternateFontName::kLocalUniqueFace);
   histograms_.Record(font_data.get());
+  ReportFontLookup(unstyled_description, font_data.get());
   return font_data;
 }
 
@@ -114,22 +124,18 @@ void LocalFontFaceSource::BeginLoadIfNeeded() {
       FontGlobalContext::Get()->GetFontUniqueNameLookup();
   DCHECK(unique_name_lookup);
   unique_name_lookup->PrepareFontUniqueNameLookup(
-      WTF::Bind(&NotifyFontUniqueNameLookupReadyWeakPtr, GetWeakPtr()));
+      WTF::Bind(&LocalFontFaceSource::NotifyFontUniqueNameLookupReady,
+                WrapWeakPersistent(this)));
   face_->DidBeginLoad();
 }
 
 void LocalFontFaceSource::NotifyFontUniqueNameLookupReady() {
-  was_resolved_ = IsLocalFontAvailable(FontDescription());
-
   PruneTable();
 
   if (face_->FontLoaded(this)) {
-    font_selector_->FontFaceInvalidated();
+    font_selector_->FontFaceInvalidated(
+        FontInvalidationReason::kGeneralInvalidation);
   }
-}
-
-base::WeakPtr<LocalFontFaceSource> LocalFontFaceSource::GetWeakPtr() {
-  return weak_factory_.GetWeakPtr();
 }
 
 bool LocalFontFaceSource::IsLoaded() const {
@@ -141,22 +147,28 @@ bool LocalFontFaceSource::IsLoading() const {
 }
 
 bool LocalFontFaceSource::IsValid() const {
-  return IsLoading() || was_resolved_;
+  return IsLoading() || IsLocalFontAvailable(FontDescription());
 }
 
 void LocalFontFaceSource::LocalFontHistograms::Record(bool load_success) {
   if (reported_)
     return;
   reported_ = true;
-  DEFINE_STATIC_LOCAL(EnumerationHistogram, local_font_used_histogram,
-                      ("WebFont.LocalFontUsed", 2));
-  local_font_used_histogram.Count(load_success ? 1 : 0);
+  base::UmaHistogramBoolean("WebFont.LocalFontUsed", load_success);
 }
 
-void LocalFontFaceSource::Trace(blink::Visitor* visitor) {
+void LocalFontFaceSource::Trace(Visitor* visitor) const {
   visitor->Trace(face_);
   visitor->Trace(font_selector_);
   CSSFontFaceSource::Trace(visitor);
+}
+
+void LocalFontFaceSource::ReportFontLookup(
+    const FontDescription& font_description,
+    SimpleFontData* font_data,
+    bool is_loading_fallback) {
+  font_selector_->ReportFontLookupByUniqueNameOnly(
+      font_name_, font_description, font_data, is_loading_fallback);
 }
 
 }  // namespace blink

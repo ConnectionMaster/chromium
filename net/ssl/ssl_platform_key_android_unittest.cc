@@ -13,12 +13,12 @@
 #include "base/files/file_util.h"
 #include "net/android/keystore.h"
 #include "net/cert/x509_certificate.h"
+#include "net/net_test_jni_headers/AndroidKeyStoreTestUtil_jni.h"
 #include "net/ssl/ssl_private_key.h"
 #include "net/ssl/ssl_private_key_test_util.h"
 #include "net/test/cert_test_util.h"
-#include "net/test/jni/AndroidKeyStoreTestUtil_jni.h"
 #include "net/test/test_data_directory.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
 
@@ -75,7 +75,7 @@ std::string TestKeyToString(const testing::TestParamInfo<TestKey>& params) {
 }  // namespace
 
 class SSLPlatformKeyAndroidTest : public testing::TestWithParam<TestKey>,
-                                  public WithScopedTaskEnvironment {};
+                                  public WithTaskEnvironment {};
 
 TEST_P(SSLPlatformKeyAndroidTest, Matches) {
   const TestKey& test_key = GetParam();
@@ -100,7 +100,7 @@ TEST_P(SSLPlatformKeyAndroidTest, Matches) {
   TestSSLPrivateKeyMatches(key.get(), key_bytes);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          SSLPlatformKeyAndroidTest,
                          testing::ValuesIn(kTestKeys),
                          TestKeyToString);

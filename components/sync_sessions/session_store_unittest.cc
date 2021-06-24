@@ -9,17 +9,17 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/cancelable_callback.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/sync/base/get_session_name.h"
 #include "components/sync/base/hash_util.h"
-#include "components/sync/model/model_type_store_test_util.h"
 #include "components/sync/protocol/session_specifics.pb.h"
-#include "components/sync/test/test_matchers.h"
+#include "components/sync/test/model/model_type_store_test_util.h"
+#include "components/sync/test/model/test_matchers.h"
+#include "components/sync_device_info/local_device_info_util.h"
 #include "components/sync_sessions/mock_sync_sessions_client.h"
 #include "components/sync_sessions/session_sync_prefs.h"
 #include "components/sync_sessions/test_matchers.h"
@@ -51,21 +51,23 @@ using testing::Return;
 using testing::UnorderedElementsAre;
 using testing::_;
 
-const char kCacheGuid[] = "SomeCacheGuid";
+const char kLocalCacheGuid[] = "SomeCacheGuid";
 
 // A mock callback that a) can be used as mock to verify call expectations and
 // b) conveniently exposes the last instantiated session store.
 class MockOpenCallback {
  public:
-  MOCK_METHOD3(Run,
-               void(const base::Optional<syncer::ModelError>& error,
-                    SessionStore* store,
-                    MetadataBatch* metadata_batch));
+  MOCK_METHOD(void,
+              Run,
+              (const absl::optional<syncer::ModelError>& error,
+               SessionStore* store,
+               MetadataBatch* metadata_batch),
+              ());
 
   SessionStore::OpenCallback Get() {
     return base::BindOnce(
         [](MockOpenCallback* callback,
-           const base::Optional<syncer::ModelError>& error,
+           const absl::optional<syncer::ModelError>& error,
            std::unique_ptr<SessionStore> store,
            std::unique_ptr<MetadataBatch> metadata_batch) {
           // Store a copy of the pointer for GetResult().
@@ -115,7 +117,7 @@ std::unique_ptr<MetadataBatch> ReadAllPersistedMetadataFrom(
   base::RunLoop loop;
   store->ReadAllMetadata(base::BindOnce(
       [](std::unique_ptr<MetadataBatch>* output_batch, base::RunLoop* loop,
-         const base::Optional<syncer::ModelError>& error,
+         const absl::optional<syncer::ModelError>& error,
          std::unique_ptr<MetadataBatch> input_batch) {
         EXPECT_FALSE(error) << error->ToString();
         EXPECT_THAT(input_batch, NotNull());
@@ -133,7 +135,7 @@ std::map<std::string, SessionSpecifics> ReadAllPersistedDataFrom(
   base::RunLoop loop;
   store->ReadAllData(base::BindOnce(
       [](std::unique_ptr<ModelTypeStore::RecordList>* output_records,
-         base::RunLoop* loop, const base::Optional<syncer::ModelError>& error,
+         base::RunLoop* loop, const absl::optional<syncer::ModelError>& error,
          std::unique_ptr<ModelTypeStore::RecordList> input_records) {
         EXPECT_FALSE(error) << error->ToString();
         EXPECT_THAT(input_records, NotNull());
@@ -175,75 +177,73 @@ class SessionStoreOpenTest : public ::testing::Test {
 
   ~SessionStoreOpenTest() override {}
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   TestingPrefServiceSimple pref_service_;
   SessionSyncPrefs session_sync_prefs_;
   std::unique_ptr<MockSyncSessionsClient> mock_sync_sessions_client_;
-  testing::NiceMock<
-      base::MockCallback<SessionStore::RestoredForeignTabCallback>>
-      mock_restored_foreign_tab_callback_;
   std::unique_ptr<ModelTypeStore> underlying_store_;
 };
 
 TEST_F(SessionStoreOpenTest, ShouldCreateStore) {
-  ASSERT_THAT(session_sync_prefs_.GetSyncSessionsGUID(), IsEmpty());
+  ASSERT_THAT(session_sync_prefs_.GetLegacySyncSessionsGUID(), IsEmpty());
 
   MockOpenCallback completion;
   EXPECT_CALL(completion, Run(NoModelError(), /*store=*/NotNull(),
                               MetadataBatchContains(_, IsEmpty())));
-  SessionStore::Open(kCacheGuid, mock_restored_foreign_tab_callback_.Get(),
-                     mock_sync_sessions_client_.get(), completion.Get());
+  SessionStore::Open(kLocalCacheGuid, mock_sync_sessions_client_.get(),
+                     completion.Get());
   completion.Wait();
   ASSERT_THAT(completion.GetResult(), NotNull());
   EXPECT_THAT(completion.GetResult()->local_session_info().client_name,
-              Eq(syncer::GetSessionNameBlocking()));
-  EXPECT_THAT(session_sync_prefs_.GetSyncSessionsGUID(),
-              Eq(std::string("session_sync") + kCacheGuid));
+              Eq(syncer::GetPersonalizableDeviceNameBlocking()));
+  EXPECT_THAT(completion.GetResult()->local_session_info().session_tag,
+              Eq(kLocalCacheGuid));
+  EXPECT_THAT(session_sync_prefs_.GetLegacySyncSessionsGUID(), IsEmpty());
 }
 
-TEST_F(SessionStoreOpenTest, ShouldReadSessionsGuidFromPrefs) {
-  const std::string kCachedGuid = "cachedguid1";
-  session_sync_prefs_.SetSyncSessionsGUID(kCachedGuid);
+TEST_F(SessionStoreOpenTest, ShouldReadLegacySessionsGuidFromPrefs) {
+  const std::string kLegacySyncSessionsGUID = "sessiontag1";
+  session_sync_prefs_.SetLegacySyncSessionsGUIDForTesting(
+      kLegacySyncSessionsGUID);
 
   NiceMock<MockOpenCallback> completion;
-  SessionStore::Open(kCacheGuid, mock_restored_foreign_tab_callback_.Get(),
-                     mock_sync_sessions_client_.get(), completion.Get());
+  SessionStore::Open(kLocalCacheGuid, mock_sync_sessions_client_.get(),
+                     completion.Get());
   completion.Wait();
   ASSERT_THAT(completion.GetResult(), NotNull());
   EXPECT_THAT(completion.GetResult()->local_session_info().session_tag,
-              Eq(kCachedGuid));
-  EXPECT_THAT(session_sync_prefs_.GetSyncSessionsGUID(), Eq(kCachedGuid));
+              Eq(kLegacySyncSessionsGUID));
+  EXPECT_THAT(session_sync_prefs_.GetLegacySyncSessionsGUID(),
+              Eq(kLegacySyncSessionsGUID));
 }
 
 TEST_F(SessionStoreOpenTest, ShouldNotUseClientIfCancelled) {
   // Mimics a caller that uses a weak pointer.
   class Caller {
    public:
-    explicit Caller(SessionStore::OpenCallback cb)
-        : cb_(std::move(cb)), weak_ptr_factory_(this) {}
+    explicit Caller(SessionStore::OpenCallback cb) : cb_(std::move(cb)) {}
 
     SessionStore::OpenCallback GetCancelableCallback() {
       return base::BindOnce(&Caller::Completed, weak_ptr_factory_.GetWeakPtr());
     }
 
    private:
-    void Completed(const base::Optional<syncer::ModelError>& error,
+    void Completed(const absl::optional<syncer::ModelError>& error,
                    std::unique_ptr<SessionStore> store,
                    std::unique_ptr<syncer::MetadataBatch> metadata_batch) {
       std::move(cb_).Run(error, std::move(store), std::move(metadata_batch));
     }
 
     SessionStore::OpenCallback cb_;
-    base::WeakPtrFactory<Caller> weak_ptr_factory_;
+    base::WeakPtrFactory<Caller> weak_ptr_factory_{this};
   };
 
   NiceMock<MockOpenCallback> mock_completion;
   auto caller = std::make_unique<Caller>(mock_completion.Get());
 
-  EXPECT_CALL(mock_completion, Run(_, _, _)).Times(0);
+  EXPECT_CALL(mock_completion, Run).Times(0);
 
-  SessionStore::Open(kCacheGuid, mock_restored_foreign_tab_callback_.Get(),
-                     mock_sync_sessions_client_.get(),
+  SessionStore::Open(kLocalCacheGuid, mock_sync_sessions_client_.get(),
                      caller->GetCancelableCallback());
 
   // The client gets destroyed before callback completion.
@@ -257,17 +257,14 @@ TEST_F(SessionStoreOpenTest, ShouldNotUseClientIfCancelled) {
 // Test fixture that creates an initial session store.
 class SessionStoreTest : public SessionStoreOpenTest {
  protected:
-  const std::string kLocalSessionTag = "localsessiontag";
-
   SessionStoreTest() {
-    session_sync_prefs_.SetSyncSessionsGUID(kLocalSessionTag);
     session_store_ = CreateSessionStore();
   }
 
   std::unique_ptr<SessionStore> CreateSessionStore() {
     NiceMock<MockOpenCallback> completion;
-    SessionStore::Open(kCacheGuid, mock_restored_foreign_tab_callback_.Get(),
-                       mock_sync_sessions_client_.get(), completion.Get());
+    SessionStore::Open(kLocalCacheGuid, mock_sync_sessions_client_.get(),
+                       completion.Get());
     completion.Wait();
     EXPECT_THAT(completion.GetResult(), NotNull());
     return completion.StealResult();
@@ -279,21 +276,31 @@ class SessionStoreTest : public SessionStoreOpenTest {
   std::unique_ptr<SessionStore> session_store_;
 };
 
+TEST_F(SessionStoreTest, ShouldClearLegacySessionsGuidFromPrefs) {
+  const std::string kLegacySyncSessionsGUID = "sessiontag1";
+  session_sync_prefs_.SetLegacySyncSessionsGUIDForTesting(
+      kLegacySyncSessionsGUID);
+  ASSERT_THAT(session_sync_prefs_.GetLegacySyncSessionsGUID(),
+              Eq(kLegacySyncSessionsGUID));
+  session_store()->DeleteAllDataAndMetadata();
+  EXPECT_THAT(session_sync_prefs_.GetLegacySyncSessionsGUID(), IsEmpty());
+}
+
 TEST_F(SessionStoreTest, ShouldCreateLocalSession) {
   const std::string header_storage_key =
-      SessionStore::GetHeaderStorageKey(kLocalSessionTag);
+      SessionStore::GetHeaderStorageKey(kLocalCacheGuid);
 
   EXPECT_THAT(BatchToEntityDataMap(session_store()->GetAllSessionData()),
               ElementsAre(Pair(header_storage_key,
                                EntityDataHasSpecifics(MatchesHeader(
-                                   kLocalSessionTag, /*window_ids=*/{},
+                                   kLocalCacheGuid, /*window_ids=*/{},
                                    /*tab_ids=*/{})))));
   // Verify that GetSessionDataForKeys() returns the header entity.
   EXPECT_THAT(BatchToEntityDataMap(
                   session_store()->GetSessionDataForKeys({header_storage_key})),
               ElementsAre(Pair(header_storage_key,
                                EntityDataHasSpecifics(MatchesHeader(
-                                   kLocalSessionTag, /*window_ids=*/{},
+                                   kLocalCacheGuid, /*window_ids=*/{},
                                    /*tab_ids=*/{})))));
 
   // Verify the underlying storage does NOT contain the data.
@@ -335,8 +342,8 @@ TEST_F(SessionStoreTest, ShouldWriteAndRestoreMetadata) {
                               MetadataBatchContains(
                                   HasEncryptionKeyName(kEncryptionKeyName1),
                                   ElementsAre(Pair(kStorageKey1, _)))));
-  SessionStore::Open(kCacheGuid, mock_restored_foreign_tab_callback_.Get(),
-                     mock_sync_sessions_client_.get(), completion.Get());
+  SessionStore::Open(kLocalCacheGuid, mock_sync_sessions_client_.get(),
+                     completion.Get());
   completion.Wait();
   EXPECT_THAT(completion.GetResult(), NotNull());
   EXPECT_NE(session_store(), completion.GetResult());
@@ -349,8 +356,6 @@ TEST_F(SessionStoreTest, ShouldUpdateTrackerWithForeignData) {
   const int kTabId2 = 8;
   const int kTabNodeId1 = 2;
   const int kTabNodeId2 = 3;
-
-  EXPECT_CALL(mock_restored_foreign_tab_callback_, Run(_, _)).Times(0);
 
   ASSERT_THAT(session_store()->tracker()->LookupAllForeignSessions(
                   SyncedSessionTracker::RAW),
@@ -423,10 +428,8 @@ TEST_F(SessionStoreTest, ShouldWriteAndRestoreForeignData) {
   const int kTabId1 = 7;
   const int kTabNodeId1 = 2;
 
-  EXPECT_CALL(mock_restored_foreign_tab_callback_, Run(_, _)).Times(0);
-
   const std::string local_header_storage_key =
-      SessionStore::GetHeaderStorageKey(kLocalSessionTag);
+      SessionStore::GetHeaderStorageKey(kLocalCacheGuid);
 
   ASSERT_THAT(session_store()->tracker()->LookupAllForeignSessions(
                   SyncedSessionTracker::RAW),
@@ -490,11 +493,6 @@ TEST_F(SessionStoreTest, ShouldWriteAndRestoreForeignData) {
       ElementsAre(MatchesSyncedSession(
           kForeignSessionTag, {{kWindowId, std::vector<int>{kTabId1}}})));
 
-  // Creation of a second session store should trigger a callback for the
-  // restored tab.
-  EXPECT_CALL(mock_restored_foreign_tab_callback_,
-              Run(testing::Property(&sync_pb::SessionTab::tab_id, kTabId1), _));
-
   // Create second session store to verify that the persisted state is restored,
   // by mimicing a Chrome restart and using |underlying_store_| (in-memory) as a
   // replacement for on-disk persistence.
@@ -540,10 +538,8 @@ TEST_F(SessionStoreTest, ShouldDeleteForeignData) {
   const int kTabNodeId1 = 1;
   const int kTabNodeId2 = 2;
 
-  EXPECT_CALL(mock_restored_foreign_tab_callback_, Run(_, _)).Times(0);
-
   const std::string local_header_storage_key =
-      SessionStore::GetHeaderStorageKey(kLocalSessionTag);
+      SessionStore::GetHeaderStorageKey(kLocalCacheGuid);
 
   // Local session is automatically created.
   ASSERT_THAT(BatchToEntityDataMap(session_store()->GetAllSessionData()),
@@ -673,7 +669,7 @@ TEST_F(SessionStoreTest, ShouldReturnForeignUnmappedTabs) {
   const int kTabNodeId1 = 2;
 
   const std::string local_header_storage_key =
-      SessionStore::GetHeaderStorageKey(kLocalSessionTag);
+      SessionStore::GetHeaderStorageKey(kLocalCacheGuid);
   const std::string foreign_header_storage_key =
       SessionStore::GetHeaderStorageKey(kForeignSessionTag);
   const std::string foreign_tab_storage_key =
@@ -718,7 +714,7 @@ TEST_F(SessionStoreTest, ShouldIgnoreForeignOrphanTabs) {
   const int kTabNodeId2 = 3;
 
   const std::string local_header_storage_key =
-      SessionStore::GetHeaderStorageKey(kLocalSessionTag);
+      SessionStore::GetHeaderStorageKey(kLocalCacheGuid);
   const std::string foreign_header_storage_key =
       SessionStore::GetHeaderStorageKey(kForeignSessionTag);
   const std::string foreign_tab_storage_key2 =

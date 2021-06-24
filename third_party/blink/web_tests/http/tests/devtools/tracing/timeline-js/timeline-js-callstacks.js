@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Test JS callstacks in timeline.\n`);
-  await TestRunner.loadModule('performance_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
   await TestRunner.showPanel('timeline');
 
   var sessionId = '6.23';
@@ -498,11 +498,8 @@
     }
   ];
 
-  var model = PerformanceTestRunner.createPerformanceModelWithEvents(rawTraceEvents);
-  var events = TimelineModel.TimelineJSProfileProcessor.generateJSFrameEvents(PerformanceTestRunner.mainTrackEvents());
-  events =
-      events.mergeOrdered(PerformanceTestRunner.mainTrackEvents(), SDK.TracingModel.Event.orderedCompareStartTime);
-  events
+  PerformanceTestRunner.createPerformanceModelWithEvents(rawTraceEvents);
+  PerformanceTestRunner.mainTrackEvents()
       .filter(function(e) {
         return e.duration;
       })

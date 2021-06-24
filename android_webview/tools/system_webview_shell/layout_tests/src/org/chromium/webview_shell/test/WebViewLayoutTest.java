@@ -4,11 +4,10 @@
 
 package org.chromium.webview_shell.test;
 
-import android.content.Intent;
 import android.os.Bundle;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.MediumTest;
-import android.support.test.rule.ActivityTestRule;
+
+import androidx.test.filters.MediumTest;
 
 import junit.framework.ComparisonFailure;
 
@@ -20,9 +19,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.Log;
+import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.webview_shell.WebViewLayoutTestActivity;
@@ -79,12 +78,13 @@ public class WebViewLayoutTest {
     private boolean mRebaseLine;
 
     @Rule
-    public ActivityTestRule<WebViewLayoutTestActivity> mActivityTestRule =
-            new ActivityTestRule<>(WebViewLayoutTestActivity.class, false, false);
+    public BaseActivityTestRule<WebViewLayoutTestActivity> mActivityTestRule =
+            new BaseActivityTestRule<>(WebViewLayoutTestActivity.class);
 
     @Before
-    public void setUp() throws Exception {
-        mTestActivity = mActivityTestRule.launchActivity(new Intent());
+    public void setUp() {
+        mActivityTestRule.launchActivity(null);
+        mTestActivity = mActivityTestRule.getActivity();
         Bundle arguments = InstrumentationRegistry.getArguments();
         if (arguments != null) {
             String modeArgument = arguments.getString("mode");
@@ -93,7 +93,7 @@ public class WebViewLayoutTest {
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         mTestActivity.finish();
     }
 
@@ -243,7 +243,6 @@ public class WebViewLayoutTest {
         }
     }
 
-    @DisabledTest(message = "crbug.com/929129")
     @Test
     @MediumTest
     public void testRequestMIDIAccess() throws Exception {
@@ -303,17 +302,17 @@ public class WebViewLayoutTest {
     }
 
     /*
-    currently failing on aosp bots, see crbug.com/607350
+    TODO(aluo): Investigate why this is failing on google devices too and not
+    just aosp per crbug.com/607350
     */
     @Test
     @MediumTest
-    @DisableIf.Build(product_name_includes = "aosp")
+    @DisabledTest(message = "crbug.com/607350")
     public void testEMEPermission() throws Exception {
         mTestActivity.setGrantPermission(true);
         runWebViewLayoutTest("blink-apis/eme/eme.html", "blink-apis/eme/eme-expected.txt");
         mTestActivity.setGrantPermission(false);
     }
-
 
     // test helper methods
 

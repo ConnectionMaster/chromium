@@ -32,18 +32,15 @@
 
 #include <limits>
 #include <memory>
-#include <utility>
-#include <vector>
+#include <string>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/web_data.h"
-#include "third_party/blink/public/platform/web_size.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image_metrics.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_animation.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder_test_helpers.h"
-#include "third_party/blink/renderer/platform/shared_buffer.h"
-#include "third_party/blink/renderer/platform/testing/histogram_tester.h"
-#include "third_party/blink/renderer/platform/wtf/typed_arrays/array_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 
 namespace blink {
 
@@ -61,12 +58,9 @@ std::unique_ptr<ImageDecoder> CreateJPEGDecoder() {
   return CreateJPEGDecoder(ImageDecoder::kNoDecodedImageByteLimit);
 }
 
-}  // anonymous namespace
-
 void Downsample(size_t max_decoded_bytes,
-                unsigned* output_width,
-                unsigned* output_height,
-                const char* image_file_path) {
+                const char* image_file_path,
+                const IntSize& expected_size) {
   scoped_refptr<SharedBuffer> data = ReadFile(image_file_path);
   ASSERT_TRUE(data);
 
@@ -75,75 +69,68 @@ void Downsample(size_t max_decoded_bytes,
 
   ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
   ASSERT_TRUE(frame);
-  *output_width = frame->Bitmap().width();
-  *output_height = frame->Bitmap().height();
-  EXPECT_EQ(IntSize(*output_width, *output_height), decoder->DecodedSize());
+  EXPECT_EQ(expected_size.Width(), frame->Bitmap().width());
+  EXPECT_EQ(expected_size.Height(), frame->Bitmap().height());
+  EXPECT_EQ(expected_size, decoder->DecodedSize());
 }
 
 void ReadYUV(size_t max_decoded_bytes,
-             unsigned* output_y_width,
-             unsigned* output_y_height,
-             unsigned* output_uv_width,
-             unsigned* output_uv_height,
-             const char* image_file_path) {
+             const char* image_file_path,
+             const IntSize& expected_y_size,
+             const IntSize& expected_uv_size,
+             const bool expect_decoding_failure = false) {
   scoped_refptr<SharedBuffer> data = ReadFile(image_file_path);
   ASSERT_TRUE(data);
 
   std::unique_ptr<JPEGImageDecoder> decoder =
       CreateJPEGDecoder(max_decoded_bytes);
   decoder->SetData(data.get(), true);
-  decoder->SetDecodeToYuvForTesting(true);
 
-  // Setting a dummy ImagePlanes object signals to the decoder that we want to
-  // do YUV decoding.
-  std::unique_ptr<ImagePlanes> dummy_image_planes =
-      std::make_unique<ImagePlanes>();
-  decoder->SetImagePlanes(std::move(dummy_image_planes));
-
-  bool size_is_available = decoder->IsSizeAvailable();
-  ASSERT_TRUE(size_is_available);
+  ASSERT_TRUE(decoder->IsSizeAvailable());
+  ASSERT_TRUE(decoder->CanDecodeToYUV());
 
   IntSize size = decoder->DecodedSize();
-  IntSize y_size = decoder->DecodedYUVSize(0);
-  IntSize u_size = decoder->DecodedYUVSize(1);
-  IntSize v_size = decoder->DecodedYUVSize(2);
 
-  ASSERT_TRUE(size.Width() == y_size.Width());
-  ASSERT_TRUE(size.Height() == y_size.Height());
-  ASSERT_TRUE(u_size.Width() == v_size.Width());
-  ASSERT_TRUE(u_size.Height() == v_size.Height());
+  IntSize y_size = decoder->DecodedYUVSize(cc::YUVIndex::kY);
+  IntSize u_size = decoder->DecodedYUVSize(cc::YUVIndex::kU);
+  IntSize v_size = decoder->DecodedYUVSize(cc::YUVIndex::kV);
 
-  *output_y_width = y_size.Width();
-  *output_y_height = y_size.Height();
-  *output_uv_width = u_size.Width();
-  *output_uv_height = u_size.Height();
+  EXPECT_EQ(size, y_size);
+  EXPECT_EQ(u_size, v_size);
+
+  EXPECT_EQ(expected_y_size, y_size);
+  EXPECT_EQ(expected_uv_size, u_size);
 
   size_t row_bytes[3];
-  row_bytes[0] = decoder->DecodedYUVWidthBytes(0);
-  row_bytes[1] = decoder->DecodedYUVWidthBytes(1);
-  row_bytes[2] = decoder->DecodedYUVWidthBytes(2);
+  row_bytes[0] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kY);
+  row_bytes[1] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kU);
+  row_bytes[2] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kV);
 
-  scoped_refptr<ArrayBuffer> buffer(ArrayBuffer::Create(
-      row_bytes[0] * y_size.Height() + row_bytes[1] * u_size.Height() +
-          row_bytes[2] * v_size.Height(),
-      1));
+  size_t planes_data_size = row_bytes[0] * y_size.Height() +
+                            row_bytes[1] * u_size.Height() +
+                            row_bytes[2] * v_size.Height();
+  auto planes_data = std::make_unique<char[]>(planes_data_size);
+
   void* planes[3];
-  planes[0] = buffer->Data();
-  planes[1] = ((char*)planes[0]) + row_bytes[0] * y_size.Height();
-  planes[2] = ((char*)planes[1]) + row_bytes[1] * u_size.Height();
+  planes[0] = planes_data.get();
+  planes[1] = static_cast<char*>(planes[0]) + row_bytes[0] * y_size.Height();
+  planes[2] = static_cast<char*>(planes[1]) + row_bytes[1] * u_size.Height();
 
-  std::unique_ptr<ImagePlanes> image_planes =
-      std::make_unique<ImagePlanes>(planes, row_bytes);
-  decoder->SetImagePlanes(std::move(image_planes));
+  decoder->SetImagePlanes(
+      std::make_unique<ImagePlanes>(planes, row_bytes, kGray_8_SkColorType));
 
   decoder->DecodeToYUV();
-  ASSERT_TRUE(!decoder->Failed());
+
+  EXPECT_EQ(expect_decoding_failure, decoder->Failed());
+  EXPECT_TRUE(decoder->HasDisplayableYUVData());
 }
+
+}  // anonymous namespace
 
 // Tests failure on a too big image.
 TEST(JPEGImageDecoderTest, tooBig) {
   std::unique_ptr<ImageDecoder> decoder = CreateJPEGDecoder(100);
-  EXPECT_FALSE(decoder->SetSize(10000, 10000));
+  EXPECT_FALSE(decoder->SetSize(10000u, 10000u));
   EXPECT_TRUE(decoder->Failed());
 }
 
@@ -151,114 +138,78 @@ TEST(JPEGImageDecoderTest, tooBig) {
 // multiples of 8, to ensure we compute the correct DecodedSize and pass correct
 // parameters to libjpeg to output the image with the expected size.
 TEST(JPEGImageDecoderTest, downsampleImageSizeMultipleOf8) {
-  const char* jpeg_file = "/images/resources/lenna.jpg";  // 256x256
-  unsigned output_width, output_height;
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";  // 256x256
 
   // 1/8 downsample.
-  Downsample(40 * 40 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(32u, output_width);
-  EXPECT_EQ(32u, output_height);
+  Downsample(40 * 40 * 4, jpeg_file, IntSize(32, 32));
 
   // 2/8 downsample.
-  Downsample(70 * 70 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(64u, output_width);
-  EXPECT_EQ(64u, output_height);
+  Downsample(70 * 70 * 4, jpeg_file, IntSize(64, 64));
 
   // 3/8 downsample.
-  Downsample(100 * 100 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(96u, output_width);
-  EXPECT_EQ(96u, output_height);
+  Downsample(100 * 100 * 4, jpeg_file, IntSize(96, 96));
 
   // 4/8 downsample.
-  Downsample(130 * 130 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(128u, output_width);
-  EXPECT_EQ(128u, output_height);
+  Downsample(130 * 130 * 4, jpeg_file, IntSize(128, 128));
 
   // 5/8 downsample.
-  Downsample(170 * 170 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(160u, output_width);
-  EXPECT_EQ(160u, output_height);
+  Downsample(170 * 170 * 4, jpeg_file, IntSize(160, 160));
 
   // 6/8 downsample.
-  Downsample(200 * 200 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(192u, output_width);
-  EXPECT_EQ(192u, output_height);
+  Downsample(200 * 200 * 4, jpeg_file, IntSize(192, 192));
 
   // 7/8 downsample.
-  Downsample(230 * 230 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(224u, output_width);
-  EXPECT_EQ(224u, output_height);
+  Downsample(230 * 230 * 4, jpeg_file, IntSize(224, 224));
 }
 
 // Tests that JPEG decoder can downsample image whose width and height are not
 // multiple of 8. Ensures that we round using the same algorithm as libjpeg.
 TEST(JPEGImageDecoderTest, downsampleImageSizeNotMultipleOf8) {
   const char* jpeg_file = "/images/resources/icc-v2-gbr.jpg";  // 275x207
-  unsigned output_width, output_height;
 
   // 1/8 downsample.
-  Downsample(40 * 40 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(35u, output_width);
-  EXPECT_EQ(26u, output_height);
+  Downsample(40 * 40 * 4, jpeg_file, IntSize(35, 26));
 
   // 2/8 downsample.
-  Downsample(70 * 70 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(69u, output_width);
-  EXPECT_EQ(52u, output_height);
+  Downsample(70 * 70 * 4, jpeg_file, IntSize(69, 52));
 
   // 3/8 downsample.
-  Downsample(100 * 100 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(104u, output_width);
-  EXPECT_EQ(78u, output_height);
+  Downsample(100 * 100 * 4, jpeg_file, IntSize(104, 78));
 
   // 4/8 downsample.
-  Downsample(130 * 130 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(138u, output_width);
-  EXPECT_EQ(104u, output_height);
+  Downsample(130 * 130 * 4, jpeg_file, IntSize(138, 104));
 
   // 5/8 downsample.
-  Downsample(170 * 170 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(172u, output_width);
-  EXPECT_EQ(130u, output_height);
+  Downsample(170 * 170 * 4, jpeg_file, IntSize(172, 130));
 
   // 6/8 downsample.
-  Downsample(200 * 200 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(207u, output_width);
-  EXPECT_EQ(156u, output_height);
+  Downsample(200 * 200 * 4, jpeg_file, IntSize(207, 156));
 
   // 7/8 downsample.
-  Downsample(230 * 230 * 4, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(241u, output_width);
-  EXPECT_EQ(182u, output_height);
+  Downsample(230 * 230 * 4, jpeg_file, IntSize(241, 182));
 }
 
 // Tests that upsampling is not allowed.
 TEST(JPEGImageDecoderTest, upsample) {
-  const char* jpeg_file = "/images/resources/lenna.jpg";  // 256x256
-  unsigned output_width, output_height;
-  Downsample(kLargeEnoughSize, &output_width, &output_height, jpeg_file);
-  EXPECT_EQ(256u, output_width);
-  EXPECT_EQ(256u, output_height);
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";  // 256x256
+  Downsample(kLargeEnoughSize, jpeg_file, IntSize(256, 256));
 }
 
 TEST(JPEGImageDecoderTest, yuv) {
-  const char* jpeg_file = "/images/resources/lenna.jpg";  // 256x256, YUV 4:2:0
-  unsigned output_y_width, output_y_height, output_uv_width, output_uv_height;
-  ReadYUV(kLargeEnoughSize, &output_y_width, &output_y_height, &output_uv_width,
-          &output_uv_height, jpeg_file);
-  EXPECT_EQ(256u, output_y_width);
-  EXPECT_EQ(256u, output_y_height);
-  EXPECT_EQ(128u, output_uv_width);
-  EXPECT_EQ(128u, output_uv_height);
+  // This image is 256x256 with YUV 4:2:0
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";
+  ReadYUV(kLargeEnoughSize, jpeg_file, IntSize(256, 256), IntSize(128, 128));
+
+  // Each plane is in its own scan.
+  const char* jpeg_file_non_interleaved =
+      "/images/resources/cs-uma-ycbcr-420-non-interleaved.jpg";  // 64x64
+  ReadYUV(kLargeEnoughSize, jpeg_file_non_interleaved, IntSize(64, 64),
+          IntSize(32, 32));
 
   const char* jpeg_file_image_size_not_multiple_of8 =
       "/images/resources/cropped_mandrill.jpg";  // 439x154
-  ReadYUV(kLargeEnoughSize, &output_y_width, &output_y_height, &output_uv_width,
-          &output_uv_height, jpeg_file_image_size_not_multiple_of8);
-  EXPECT_EQ(439u, output_y_width);
-  EXPECT_EQ(154u, output_y_height);
-  EXPECT_EQ(220u, output_uv_width);
-  EXPECT_EQ(77u, output_uv_height);
+  ReadYUV(kLargeEnoughSize, jpeg_file_image_size_not_multiple_of8,
+          IntSize(439, 154), IntSize(220, 77));
 
   // Make sure we revert to RGBA decoding when we're about to downscale,
   // which can occur on memory-constrained android devices.
@@ -267,12 +218,17 @@ TEST(JPEGImageDecoderTest, yuv) {
 
   std::unique_ptr<JPEGImageDecoder> decoder = CreateJPEGDecoder(230 * 230 * 4);
   decoder->SetData(data.get(), true);
-  decoder->SetDecodeToYuvForTesting(true);
 
-  std::unique_ptr<ImagePlanes> image_planes = std::make_unique<ImagePlanes>();
-  decoder->SetImagePlanes(std::move(image_planes));
   ASSERT_TRUE(decoder->IsSizeAvailable());
   ASSERT_FALSE(decoder->CanDecodeToYUV());
+}
+
+// Tests that a progressive image missing an EOI marker causes a YUV decoding
+// failure but also results in displayable YUV data.
+TEST(JPEGImageDecoderTest, missingEoi) {
+  const char* jpeg_file = "/images/resources/missing-eoi.jpg";  // 1599x899
+  ReadYUV((1599 * 899 * 4), jpeg_file, IntSize(1599, 899), IntSize(800, 450),
+          /*expect_decoding_failure=*/true);
 }
 
 TEST(JPEGImageDecoderTest,
@@ -299,7 +255,7 @@ TEST(JPEGImageDecoderTest, byteByByteRGBJPEGWithAdobeMarkers) {
 // size (when JPEGImageDecoder stops while it may still have input data to
 // read) and a call to do a full decode.
 TEST(JPEGImageDecoderTest, mergeBuffer) {
-  const char* jpeg_file = "/images/resources/lenna.jpg";
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";
   TestMergeBuffer(&CreateJPEGDecoder, jpeg_file);
 }
 
@@ -318,7 +274,7 @@ TEST(JPEGImageDecoderTest, manyProgressiveScans) {
 }
 
 TEST(JPEGImageDecoderTest, SupportedSizesSquare) {
-  const char* jpeg_file = "/images/resources/lenna.jpg";  // 256x256
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";  // 256x256
   scoped_refptr<SharedBuffer> data = ReadFile(jpeg_file);
   ASSERT_TRUE(data);
 
@@ -327,7 +283,7 @@ TEST(JPEGImageDecoderTest, SupportedSizesSquare) {
   decoder->SetData(data.get(), true);
   // This will decode the size and needs to be called to avoid DCHECKs
   ASSERT_TRUE(decoder->IsSizeAvailable());
-  std::vector<SkISize> expected_sizes = {
+  Vector<SkISize> expected_sizes = {
       SkISize::Make(32, 32),   SkISize::Make(64, 64),   SkISize::Make(96, 96),
       SkISize::Make(128, 128), SkISize::Make(160, 160), SkISize::Make(192, 192),
       SkISize::Make(224, 224), SkISize::Make(256, 256)};
@@ -355,7 +311,7 @@ TEST(JPEGImageDecoderTest, SupportedSizesRectangle) {
   decoder->SetData(data.get(), true);
   // This will decode the size and needs to be called to avoid DCHECKs
   ASSERT_TRUE(decoder->IsSizeAvailable());
-  std::vector<SkISize> expected_sizes = {
+  Vector<SkISize> expected_sizes = {
       SkISize::Make(34, 25),   SkISize::Make(68, 50),   SkISize::Make(102, 75),
       SkISize::Make(136, 100), SkISize::Make(170, 125), SkISize::Make(204, 150),
       SkISize::Make(238, 175), SkISize::Make(272, 200)};
@@ -387,7 +343,7 @@ TEST(JPEGImageDecoderTest,
   decoder->SetData(data.get(), true);
   // This will decode the size and needs to be called to avoid DCHECKs
   ASSERT_TRUE(decoder->IsSizeAvailable());
-  std::vector<SkISize> expected_sizes = {
+  Vector<SkISize> expected_sizes = {
       SkISize::Make(35, 26),   SkISize::Make(69, 52),   SkISize::Make(104, 78),
       SkISize::Make(138, 104), SkISize::Make(172, 130), SkISize::Make(207, 156),
       SkISize::Make(241, 182)};
@@ -435,7 +391,7 @@ TEST(JPEGImageDecoderTest, SupportedSizesRectangleNotMultipleOfMCU) {
 }
 
 TEST(JPEGImageDecoderTest, SupportedSizesTruncatedIfMemoryBound) {
-  const char* jpeg_file = "/images/resources/lenna.jpg";  // 256x256
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";  // 256x256
   scoped_refptr<SharedBuffer> data = ReadFile(jpeg_file);
   ASSERT_TRUE(data);
 
@@ -444,7 +400,7 @@ TEST(JPEGImageDecoderTest, SupportedSizesTruncatedIfMemoryBound) {
   decoder->SetData(data.get(), true);
   // This will decode the size and needs to be called to avoid DCHECKs
   ASSERT_TRUE(decoder->IsSizeAvailable());
-  std::vector<SkISize> expected_sizes = {
+  Vector<SkISize> expected_sizes = {
       SkISize::Make(32, 32), SkISize::Make(64, 64), SkISize::Make(96, 96),
       SkISize::Make(128, 128)};
   auto sizes = decoder->GetSupportedDecodeSizes();
@@ -457,19 +413,26 @@ TEST(JPEGImageDecoderTest, SupportedSizesTruncatedIfMemoryBound) {
   }
 }
 
-struct ColorSpaceUMATestParam {
+struct ColorSpaceTestParam {
   std::string file;
-  bool expected_success;
+  bool expected_success = false;
   BitmapImageMetrics::JpegColorSpace expected_color_space;
+  bool expect_yuv_decoding = false;
+  IntSize expected_uv_size;
 };
 
-class ColorSpaceUMATest
-    : public ::testing::TestWithParam<ColorSpaceUMATestParam> {};
+void PrintTo(const ColorSpaceTestParam& param, std::ostream* os) {
+  *os << "{\"" << param.file << "\", " << param.expected_success << ","
+      << static_cast<int>(param.expected_color_space) << ","
+      << param.expected_uv_size << "," << param.expect_yuv_decoding << "}";
+}
+
+class ColorSpaceTest : public ::testing::TestWithParam<ColorSpaceTestParam> {};
 
 // Tests that the JPEG color space/subsampling is recorded correctly as a UMA
 // for a variety of images. When the decode fails, no UMA should be recorded.
-TEST_P(ColorSpaceUMATest, CorrectColorSpaceRecorded) {
-  HistogramTester histogram_tester;
+TEST_P(ColorSpaceTest, CorrectColorSpaceUMARecorded) {
+  base::HistogramTester histogram_tester;
   scoped_refptr<SharedBuffer> data =
       ReadFile(("/images/resources/" + GetParam().file).c_str());
   ASSERT_TRUE(data);
@@ -490,11 +453,53 @@ TEST_P(ColorSpaceUMATest, CorrectColorSpaceRecorded) {
   }
 }
 
-const ColorSpaceUMATest::ParamType kColorSpaceUMATestParams[] = {
+// Tests YUV decoding path with different color encodings (and chroma
+// subsamplings if applicable).
+TEST_P(ColorSpaceTest, YuvDecode) {
+  // Test only successful decoding
+  if (!GetParam().expected_success)
+    return;
+
+  if (GetParam().expect_yuv_decoding) {
+    const auto jpeg_file = ("/images/resources/" + GetParam().file);
+    ReadYUV(kLargeEnoughSize, jpeg_file.c_str(), IntSize(64, 64),
+            GetParam().expected_uv_size,
+            /*expect_decoding_failure=*/false);
+  }
+}
+
+// Tests RGB decoding path with different color encodings (and chroma
+// subsamplings if applicable).
+TEST_P(ColorSpaceTest, RgbDecode) {
+  // Test only successful decoding
+  if (!GetParam().expected_success)
+    return;
+
+  if (!GetParam().expect_yuv_decoding) {
+    const auto jpeg_file = ("/images/resources/" + GetParam().file);
+    scoped_refptr<SharedBuffer> data = ReadFile(jpeg_file.c_str());
+    ASSERT_TRUE(data);
+
+    std::unique_ptr<ImageDecoder> decoder = CreateJPEGDecoder(kLargeEnoughSize);
+    decoder->SetData(data.get(), true);
+
+    IntSize size = decoder->DecodedSize();
+    EXPECT_EQ(IntSize(64, 64), size);
+    ASSERT_FALSE(decoder->CanDecodeToYUV());
+
+    const ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+    ASSERT_TRUE(frame);
+    EXPECT_EQ(frame->GetStatus(), ImageFrame::kFrameComplete);
+    EXPECT_FALSE(decoder->Failed());
+    return;
+  }
+}
+
+const ColorSpaceTest::ParamType kColorSpaceTestParams[] = {
     {"cs-uma-grayscale.jpg", true,
      BitmapImageMetrics::JpegColorSpace::kGrayscale},
     {"cs-uma-rgb.jpg", true, BitmapImageMetrics::JpegColorSpace::kRGB},
-    // Each component is in a separate plane. Should not make a difference.
+    // Each component is in a separate scan. Should not make a difference.
     {"cs-uma-rgb-non-interleaved.jpg", true,
      BitmapImageMetrics::JpegColorSpace::kRGB},
     {"cs-uma-cmyk.jpg", true, BitmapImageMetrics::JpegColorSpace::kCMYK},
@@ -511,36 +516,87 @@ const ColorSpaceUMATest::ParamType kColorSpaceUMATestParams[] = {
     {"cs-uma-cmyk-unknown-transform.jpg", true,
      BitmapImageMetrics::JpegColorSpace::kYCCK},
     {"cs-uma-ycbcr-410.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr410},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr410, false},
     {"cs-uma-ycbcr-411.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr411},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr411, false},
     {"cs-uma-ycbcr-420.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr420},
-    // Each component is in a separate plane. Should not make a difference.
+     BitmapImageMetrics::JpegColorSpace::kYCbCr420, true, IntSize(32, 32)},
+    // Each component is in a separate scan. Should not make a difference.
     {"cs-uma-ycbcr-420-non-interleaved.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr420},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr420, true, IntSize(32, 32)},
     // 3 components/both JFIF and Adobe markers, so we expect libjpeg_turbo to
     // guess YCbCr.
     {"cs-uma-ycbcr-420-both-jfif-adobe.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr420},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr420, true, IntSize(32, 32)},
     {"cs-uma-ycbcr-422.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr422},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr422, true, IntSize(32, 64)},
     {"cs-uma-ycbcr-440.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr440},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr440, false},
     {"cs-uma-ycbcr-444.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr444},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr444, true, IntSize(64, 64)},
     // Contains RGB data but uses a bad Adobe color transform, so libjpeg_turbo
     // will guess YCbCr.
     {"cs-uma-rgb-unknown-transform.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCr444},
+     BitmapImageMetrics::JpegColorSpace::kYCbCr444, true, IntSize(64, 64)},
     {"cs-uma-ycbcr-other.jpg", true,
-     BitmapImageMetrics::JpegColorSpace::kYCbCrOther},
+     BitmapImageMetrics::JpegColorSpace::kYCbCrOther, false},
     // Contains only 2 components. We expect the decode to fail and not produce
     // any samples.
     {"cs-uma-two-channels-jfif-marker.jpg", false}};
 
 INSTANTIATE_TEST_SUITE_P(JPEGImageDecoderTest,
-                         ColorSpaceUMATest,
-                         ::testing::ValuesIn(kColorSpaceUMATestParams));
+                         ColorSpaceTest,
+                         ::testing::ValuesIn(kColorSpaceTestParams));
+
+TEST(JPEGImageDecoderTest, PartialDataWithoutSize) {
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";
+  scoped_refptr<SharedBuffer> full_data = ReadFile(jpeg_file);
+  ASSERT_TRUE(full_data);
+
+  constexpr size_t kDataLengthWithoutSize = 4;
+  ASSERT_LT(kDataLengthWithoutSize, full_data->size());
+  scoped_refptr<SharedBuffer> partial_data =
+      SharedBuffer::Create(full_data->Data(), kDataLengthWithoutSize);
+
+  std::unique_ptr<ImageDecoder> decoder = CreateJPEGDecoder();
+  decoder->SetData(partial_data.get(), false);
+  EXPECT_FALSE(decoder->IsSizeAvailable());
+  EXPECT_FALSE(decoder->Failed());
+  decoder->SetData(full_data.get(), true);
+  EXPECT_TRUE(decoder->IsSizeAvailable());
+  EXPECT_FALSE(decoder->Failed());
+}
+
+TEST(JPEGImageDecoderTest, PartialRgbDecodeBlocksYuvDecoding) {
+  const char* jpeg_file = "/images/resources/non-interleaved_progressive.jpg";
+  scoped_refptr<SharedBuffer> full_data = ReadFile(jpeg_file);
+  ASSERT_TRUE(full_data);
+
+  {
+    auto yuv_decoder = CreateJPEGDecoder();
+    yuv_decoder->SetData(full_data.get(), true);
+    EXPECT_TRUE(yuv_decoder->IsSizeAvailable());
+    EXPECT_FALSE(yuv_decoder->Failed());
+    EXPECT_TRUE(yuv_decoder->CanDecodeToYUV());
+  }
+
+  const size_t kJustEnoughDataToStartHeaderParsing =
+      (full_data->size() + 1) / 2;
+  auto partial_data = SharedBuffer::Create(full_data->Data(),
+                                           kJustEnoughDataToStartHeaderParsing);
+  ASSERT_TRUE(partial_data);
+
+  auto decoder = CreateJPEGDecoder();
+  decoder->SetData(partial_data.get(), false);
+  EXPECT_TRUE(decoder->IsSizeAvailable());
+  EXPECT_FALSE(decoder->Failed());
+  EXPECT_FALSE(decoder->CanDecodeToYUV());
+
+  const ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  EXPECT_NE(frame->GetStatus(), ImageFrame::kFrameComplete);
+  decoder->SetData(full_data.get(), true);
+  EXPECT_FALSE(decoder->CanDecodeToYUV());
+}
 
 }  // namespace blink

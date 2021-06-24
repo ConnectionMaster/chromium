@@ -4,141 +4,269 @@
 
 #include "components/viz/common/features.h"
 
+#include <string>
+
 #include "base/command_line.h"
-#include "base/metrics/field_trial_params.h"
-#include "build/build_config.h"
+#include "base/feature_list.h"
+#include "base/system/sys_info.h"
+#include "build/chromeos_buildflags.h"
+#include "components/viz/common/delegated_ink_prediction_configuration.h"
 #include "components/viz/common/switches.h"
+#include "components/viz/common/viz_utils.h"
+#include "gpu/config/gpu_finch_features.h"
+#include "gpu/config/gpu_switches.h"
+#include "media/media_buildflags.h"
 
 #if defined(OS_ANDROID)
-#include "gpu/config/gpu_finch_features.h"  // nogncheck
+#include "base/android/build_info.h"
 #endif
 
 namespace features {
 
-constexpr char kProvider[] = "provider";
-constexpr char kDrawQuad[] = "draw_quad";
-constexpr char kSurfaceLayer[] = "surface_layer";
+// Enables the use of CPU scheduling APIs on Android.
+const base::Feature kAdpf{"Adpf", base::FEATURE_DISABLED_BY_DEFAULT};
 
-#if defined(USE_AURA) || defined(OS_MACOSX)
-const base::Feature kEnableSurfaceSynchronization{
-    "SurfaceSynchronization", base::FEATURE_ENABLED_BY_DEFAULT};
+const base::Feature kEnableOverlayPrioritization {
+  "EnableOverlayPrioritization",
+#if BUILDFLAG(USE_CHROMEOS_PROTECTED_MEDIA)
+      base::FEATURE_ENABLED_BY_DEFAULT
 #else
-const base::Feature kEnableSurfaceSynchronization{
-    "SurfaceSynchronization", base::FEATURE_DISABLED_BY_DEFAULT};
+      base::FEATURE_DISABLED_BY_DEFAULT
 #endif
+};
 
-// Enables running the display compositor as part of the viz service in the GPU
-// process. This is also referred to as out-of-process display compositor
-// (OOP-D).
-// TODO(dnicoara): Look at enabling Chromecast support when ChromeOS support is
-// ready.
-#if defined(OS_CHROMEOS) || defined(IS_CHROMECAST)
-const base::Feature kVizDisplayCompositor{"VizDisplayCompositor",
+const base::Feature kDelegatedCompositing{"DelegatedCompositing",
                                           base::FEATURE_DISABLED_BY_DEFAULT};
-#else
-const base::Feature kVizDisplayCompositor{"VizDisplayCompositor",
-                                          base::FEATURE_ENABLED_BY_DEFAULT};
-#endif
 
-// Enables running the Viz-assisted hit-test logic. We still need to keep the
-// VizHitTestDrawQuad and VizHitTestSurfaceLayer features for finch launch.
-const base::Feature kEnableVizHitTestDrawQuad{"VizHitTestDrawQuad",
-                                              base::FEATURE_ENABLED_BY_DEFAULT};
-
-const base::Feature kEnableVizHitTestSurfaceLayer{
-    "VizHitTestSurfaceLayer", base::FEATURE_DISABLED_BY_DEFAULT};
-
-const base::Feature kEnableVizHitTest{"VizHitTest",
-                                      base::FEATURE_ENABLED_BY_DEFAULT};
+const base::Feature kSimpleFrameRateThrottling{
+    "SimpleFrameRateThrottling", base::FEATURE_DISABLED_BY_DEFAULT};
 
 // Use the SkiaRenderer.
-const base::Feature kUseSkiaRenderer{"UseSkiaRenderer",
-                                     base::FEATURE_DISABLED_BY_DEFAULT};
+const base::Feature kUseSkiaRenderer {
+  "UseSkiaRenderer",
+#if defined(OS_WIN) || defined(OS_ANDROID) || BUILDFLAG(IS_CHROMEOS_LACROS) || \
+    defined(OS_LINUX)
+      base::FEATURE_ENABLED_BY_DEFAULT
+#elif defined(OS_MAC)
+      base::FEATURE_ENABLED_BY_DEFAULT
+#else
+      base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+};
 
-// Use the SkiaRenderer without DDL.
-const base::Feature kUseSkiaRendererNonDDL{"UseSkiaRendererNonDDL",
+// Kill-switch to disable de-jelly, even if flags/properties indicate it should
+// be enabled.
+const base::Feature kDisableDeJelly{"DisableDeJelly",
+                                    base::FEATURE_DISABLED_BY_DEFAULT};
+
+// On platform and configuration where viz controls the allocation of frame
+// buffers (ie SkiaOutputDeviceBufferQueue is used), allocate and release frame
+// buffers on demand.
+const base::Feature kDynamicBufferQueueAllocation{
+    "DynamicBufferQueueAllocation", base::FEATURE_DISABLED_BY_DEFAULT};
+
+#if defined(OS_ANDROID)
+// When wide color gamut content from the web is encountered, promote our
+// display to wide color gamut if supported.
+const base::Feature kDynamicColorGamut{"DynamicColorGamut",
+                                       base::FEATURE_DISABLED_BY_DEFAULT};
+#endif
+
+// Uses glClear to composite solid color quads whenever possible.
+const base::Feature kFastSolidColorDraw{"FastSolidColorDraw",
+                                        base::FEATURE_DISABLED_BY_DEFAULT};
+
+// Submit CompositorFrame from SynchronousLayerTreeFrameSink directly to viz in
+// WebView.
+const base::Feature kVizFrameSubmissionForWebView{
+    "VizFrameSubmissionForWebView", base::FEATURE_DISABLED_BY_DEFAULT};
+
+const base::Feature kUsePreferredIntervalForVideo{
+  "UsePreferredIntervalForVideo",
+#if defined(OS_ANDROID)
+      base::FEATURE_DISABLED_BY_DEFAULT
+#else
+      base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+};
+
+// Whether we should use the real buffers corresponding to overlay candidates in
+// order to do a pageflip test rather than allocating test buffers.
+const base::Feature kUseRealBuffersForPageFlipTest{
+    "UseRealBuffersForPageFlipTest", base::FEATURE_ENABLED_BY_DEFAULT};
+
+#if defined(OS_FUCHSIA)
+// Enables SkiaOutputDeviceBufferQueue instead of Vulkan swapchain on Fuchsia.
+const base::Feature kUseSkiaOutputDeviceBufferQueue{
+    "UseSkiaOutputDeviceBufferQueue", base::FEATURE_ENABLED_BY_DEFAULT};
+#endif
+
+// Whether we should log extra debug information to webrtc native log.
+const base::Feature kWebRtcLogCapturePipeline{
+    "WebRtcLogCapturePipeline", base::FEATURE_DISABLED_BY_DEFAULT};
+
+#if defined(OS_WIN)
+// Enables swap chains to call SetPresentDuration to request DWM/OS to reduce
+// vsync.
+const base::Feature kUseSetPresentDuration{"UseSetPresentDuration",
+                                           base::FEATURE_DISABLED_BY_DEFAULT};
+#endif  // OS_WIN
+
+#if defined(USE_X11)
+// Uses X11 Present Extensions instead of the Vulkan swapchain for presenting.
+const base::Feature kUseX11Present{"UseX11Present",
+                                   base::FEATURE_DISABLED_BY_DEFAULT};
+#endif
+
+// Enables platform supported delegated ink trails instead of Skia backed
+// delegated ink trails.
+const base::Feature kUsePlatformDelegatedInk{"UsePlatformDelegatedInk",
+                                             base::FEATURE_ENABLED_BY_DEFAULT};
+
+// Used to debug Android WebView Vulkan composite. Composite to an intermediate
+// buffer and draw the intermediate buffer to the secondary command buffer.
+const base::Feature kWebViewVulkanIntermediateBuffer{
+    "WebViewVulkanIntermediateBuffer", base::FEATURE_DISABLED_BY_DEFAULT};
+
+#if defined(OS_ANDROID)
+// Hardcoded as disabled for WebView to have a different default for
+// UseSurfaceLayerForVideo from chrome.
+const base::Feature kUseSurfaceLayerForVideoDefault{
+    "UseSurfaceLayerForVideoDefault", base::FEATURE_ENABLED_BY_DEFAULT};
+#endif
+
+// Used by CC to throttle frame production of older surfaces. Used by the
+// Browser to batch SurfaceSync calls sent to the Renderer for properties can
+// change in close proximity to each other.
+const base::Feature kSurfaceSyncThrottling{"SurfaceSyncThrottling",
                                            base::FEATURE_DISABLED_BY_DEFAULT};
 
-// Use the SkiaRenderer to record SkPicture.
-const base::Feature kRecordSkPicture{"RecordSkPicture",
-                                     base::FEATURE_DISABLED_BY_DEFAULT};
-
-bool IsSurfaceSynchronizationEnabled() {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  return IsVizDisplayCompositorEnabled() ||
-         base::FeatureList::IsEnabled(kEnableSurfaceSynchronization) ||
-         command_line->HasSwitch(switches::kEnableSurfaceSynchronization);
+bool IsAdpfEnabled() {
+  // TODO(crbug.com/1157620): Limit this to correct android version.
+  return base::FeatureList::IsEnabled(kAdpf);
 }
 
-bool IsVizDisplayCompositorEnabled() {
-#if defined(OS_ANDROID)
-  if (features::IsAndroidSurfaceControlEnabled())
-    return true;
-#endif
-  return base::FeatureList::IsEnabled(kVizDisplayCompositor);
+bool IsOverlayPrioritizationEnabled() {
+  return base::FeatureList::IsEnabled(kEnableOverlayPrioritization);
 }
 
-bool IsVizHitTestingDebugEnabled() {
-  return features::IsVizHitTestingEnabled() &&
-         base::CommandLine::ForCurrentProcess()->HasSwitch(
-             switches::kEnableVizHitTestDebug);
+bool IsDelegatedCompositingEnabled() {
+  return base::FeatureList::IsEnabled(kDelegatedCompositing);
 }
 
-// VizHitTest is considered enabled when any of its variant is turned on, or
-// when VizDisplayCompositor is turned on.
-bool IsVizHitTestingEnabled() {
-  return base::FeatureList::IsEnabled(features::kEnableVizHitTest) ||
-         base::FeatureList::IsEnabled(kVizDisplayCompositor);
+// If a synchronous IPC should used when destroying windows. This exists to test
+// the impact of removing the sync IPC.
+bool IsSyncWindowDestructionEnabled() {
+  static constexpr base::Feature kSyncWindowDestruction{
+      "SyncWindowDestruction", base::FEATURE_ENABLED_BY_DEFAULT};
+
+  return base::FeatureList::IsEnabled(kSyncWindowDestruction);
 }
 
-// VizHitTestDrawQuad is enabled when this feature is explicitly enabled on
-// chrome://flags, or when VizHitTest is enabled but VizHitTestSurfaceLayer is
-// turned off.
-bool IsVizHitTestingDrawQuadEnabled() {
-  return GetFieldTrialParamValueByFeature(features::kEnableVizHitTest,
-                                          kProvider) == kDrawQuad ||
-         (IsVizHitTestingEnabled() && !IsVizHitTestingSurfaceLayerEnabled());
-}
-
-// VizHitTestSurfaceLayer is enabled when this feature is explicitly enabled on
-// chrome://flags, or when it is enabled by finch and chrome://flags does not
-// conflict.
-bool IsVizHitTestingSurfaceLayerEnabled() {
-  return GetFieldTrialParamValueByFeature(features::kEnableVizHitTest,
-                                          kProvider) == kSurfaceLayer ||
-         (IsVizHitTestingEnabled() &&
-          GetFieldTrialParamValueByFeature(features::kEnableVizHitTest,
-                                           kProvider) != kDrawQuad &&
-          base::FeatureList::IsEnabled(kEnableVizHitTestSurfaceLayer));
+bool IsSimpleFrameRateThrottlingEnabled() {
+  return base::FeatureList::IsEnabled(kSimpleFrameRateThrottling);
 }
 
 bool IsUsingSkiaRenderer() {
-  // We require OOP-D everywhere but WebView.
-  bool enabled = base::FeatureList::IsEnabled(kUseSkiaRenderer);
-#if !defined(OS_ANDROID)
-  if (enabled && !IsVizDisplayCompositorEnabled()) {
-    DLOG(ERROR) << "UseSkiaRenderer requires VizDisplayCompositor.";
+#if defined(OS_ANDROID)
+  // We don't support KitKat. Check for it before looking at the feature flag
+  // so that KitKat doesn't show up in Control or Enabled experiment group.
+  if (base::android::BuildInfo::GetInstance()->sdk_int() <=
+      base::android::SDK_VERSION_KITKAT)
     return false;
-  }
-#endif  // !defined(OS_ANDROID)
-  return enabled;
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // TODO(https://crbug.com/1145180): SkiaRenderer isn't supported on Chrome
+  // OS boards that still use the legacy video decoder.
+  auto* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(
+          switches::kPlatformDisallowsChromeOSDirectVideoDecoder))
+    return false;
+#endif
+
+  return base::FeatureList::IsEnabled(kUseSkiaRenderer) ||
+         features::IsUsingVulkan();
 }
 
-bool IsUsingSkiaRendererNonDDL() {
-  // We require OOP-D everywhere but WebView.
-  bool enabled = base::FeatureList::IsEnabled(kUseSkiaRendererNonDDL);
-#if !defined(OS_ANDROID)
-  if (enabled && !IsVizDisplayCompositorEnabled()) {
-    DLOG(ERROR) << "UseSkiaRendererNonDDL requires VizDisplayCompositor.";
+#if defined(OS_ANDROID)
+bool IsDynamicColorGamutEnabled() {
+  if (viz::AlwaysUseWideColorGamut())
     return false;
-  }
-#endif  // !defined(OS_ANDROID)
-  return enabled;
+  auto* build_info = base::android::BuildInfo::GetInstance();
+  if (build_info->sdk_int() < base::android::SDK_VERSION_Q)
+    return false;
+  return base::FeatureList::IsEnabled(kDynamicColorGamut);
+}
+#endif
+
+bool IsUsingFastPathForSolidColorQuad() {
+  return base::FeatureList::IsEnabled(kFastSolidColorDraw);
 }
 
-bool IsRecordingSkPicture() {
-  return IsUsingSkiaRenderer() &&
-         base::FeatureList::IsEnabled(kRecordSkPicture);
+bool IsUsingVizFrameSubmissionForWebView() {
+  return base::FeatureList::IsEnabled(kVizFrameSubmissionForWebView);
+}
+
+bool IsUsingPreferredIntervalForVideo() {
+  return base::FeatureList::IsEnabled(kUsePreferredIntervalForVideo);
+}
+
+bool IsVizHitTestingDebugEnabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kEnableVizHitTestDebug);
+}
+
+bool ShouldUseRealBuffersForPageFlipTest() {
+  return base::FeatureList::IsEnabled(kUseRealBuffersForPageFlipTest);
+}
+
+bool ShouldWebRtcLogCapturePipeline() {
+  return base::FeatureList::IsEnabled(kWebRtcLogCapturePipeline);
+}
+
+#if defined(OS_WIN)
+bool ShouldUseSetPresentDuration() {
+  return base::FeatureList::IsEnabled(kUseSetPresentDuration);
+}
+#endif  // OS_WIN
+
+absl::optional<int> ShouldDrawPredictedInkPoints() {
+  auto* command_line = base::CommandLine::ForCurrentProcess();
+  if (!command_line->HasSwitch(switches::kDrawPredictedInkPoint))
+    return absl::nullopt;
+
+  std::string predicted_points =
+      command_line->GetSwitchValueASCII(switches::kDrawPredictedInkPoint);
+  if (predicted_points == switches::kDraw1Point12Ms)
+    return viz::PredictionConfig::k1Point12Ms;
+  else if (predicted_points == switches::kDraw2Points6Ms)
+    return viz::PredictionConfig::k2Points6Ms;
+  else if (predicted_points == switches::kDraw1Point6Ms)
+    return viz::PredictionConfig::k1Point6Ms;
+  else if (predicted_points == switches::kDraw2Points3Ms)
+    return viz::PredictionConfig::k2Points3Ms;
+
+  NOTREACHED();
+  return absl::nullopt;
+}
+
+bool ShouldUsePlatformDelegatedInk() {
+  return base::FeatureList::IsEnabled(kUsePlatformDelegatedInk);
+}
+
+#if defined(OS_ANDROID)
+bool UseSurfaceLayerForVideo() {
+  // Allow enabling UseSurfaceLayerForVideo if webview is using surface control.
+  if (::features::IsAndroidSurfaceControlEnabled()) {
+    return true;
+  }
+  return base::FeatureList::IsEnabled(kUseSurfaceLayerForVideoDefault);
+}
+#endif
+
+bool IsSurfaceSyncThrottling() {
+  return base::FeatureList::IsEnabled(kSurfaceSyncThrottling);
 }
 
 }  // namespace features

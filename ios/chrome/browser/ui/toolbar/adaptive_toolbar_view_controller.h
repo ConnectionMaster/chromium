@@ -12,6 +12,7 @@
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_type.h"
 #import "ios/chrome/browser/ui/toolbar/toolbar_consumer.h"
 
+@class AdaptiveToolbarViewController;
 @protocol ApplicationCommands;
 @protocol BrowserCommands;
 @protocol PopupMenuLongPressDelegate;
@@ -26,9 +27,7 @@
 // dismissed on such events. For example, the tools menu is closed upon
 // rotation.
 @interface AdaptiveToolbarViewController
-    : UIViewController<PopupMenuUIUpdating,
-                       ToolbarConsumer,
-                       NewTabPageControllerDelegate>
+    : UIViewController <PopupMenuUIUpdating, ToolbarConsumer>
 
 // Button factory.
 @property(nonatomic, strong) ToolbarButtonFactory* buttonFactory;
@@ -45,6 +44,8 @@
 - (void)updateForSideSwipeSnapshotOnNTP:(BOOL)onNTP;
 // Resets the view after taking a snapshot for a side swipe.
 - (void)resetAfterSideSwipeSnapshot;
+// Sets the toolbar location bar alpha and vertical offset based on |progress|.
+- (void)setScrollProgressForTabletOmnibox:(CGFloat)progress;
 
 @end
 

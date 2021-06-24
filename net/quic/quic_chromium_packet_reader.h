@@ -31,7 +31,9 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
   class NET_EXPORT_PRIVATE Visitor {
    public:
     virtual ~Visitor() {}
-    virtual void OnReadError(int result,
+    // Called when the read operation failed. The visitor returns
+    // whether the reader should keep reading.
+    virtual bool OnReadError(int result,
                              const DatagramClientSocket* socket) = 0;
     virtual bool OnPacket(const quic::QuicReceivedPacket& packet,
                           const quic::QuicSocketAddress& local_address,
@@ -39,7 +41,7 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
   };
 
   QuicChromiumPacketReader(DatagramClientSocket* socket,
-                           quic::QuicClock* clock,
+                           const quic::QuicClock* clock,
                            Visitor* visitor,
                            int yield_after_packets,
                            quic::QuicTime::Delta yield_after_duration,
@@ -60,17 +62,18 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
   bool ProcessReadResult(int result);
 
   DatagramClientSocket* socket_;
+
   Visitor* visitor_;
   bool read_pending_;
   int num_packets_read_;
-  quic::QuicClock* clock_;  // Owned by QuicStreamFactory
+  const quic::QuicClock* clock_;  // Not owned.
   int yield_after_packets_;
   quic::QuicTime::Delta yield_after_duration_;
   quic::QuicTime yield_after_;
   scoped_refptr<IOBufferWithSize> read_buffer_;
   NetLogWithSource net_log_;
 
-  base::WeakPtrFactory<QuicChromiumPacketReader> weak_factory_;
+  base::WeakPtrFactory<QuicChromiumPacketReader> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(QuicChromiumPacketReader);
 };

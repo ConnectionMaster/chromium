@@ -7,12 +7,11 @@
 #include <limits>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/values.h"
-#include "content/public/browser/resource_request_info.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/api/declarative/deduping_factory.h"
 #include "extensions/browser/api/declarative_webrequest/request_stage.h"
@@ -20,17 +19,16 @@
 #include "extensions/browser/api/declarative_webrequest/webrequest_constants.h"
 #include "extensions/browser/api/web_request/web_request_api_constants.h"
 #include "extensions/browser/api/web_request/web_request_api_helpers.h"
+#include "extensions/browser/api/web_request/web_request_info.h"
 #include "extensions/browser/api/web_request/web_request_permissions.h"
 #include "extensions/browser/extension_navigation_ui_data.h"
 #include "extensions/browser/guest_view/web_view/web_view_renderer_state.h"
-#include "extensions/browser/info_map.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/http/http_util.h"
 #include "third_party/re2/src/re2/re2.h"
 
-using content::ResourceRequestInfo;
 using extension_web_request_api_helpers::EventResponseDelta;
 
 namespace extensions {
@@ -118,7 +116,7 @@ scoped_refptr<const WebRequestAction> CallConstructorFactoryMethod(
     const base::Value* value,
     std::string* error,
     bool* bad_message) {
-  return scoped_refptr<const WebRequestAction>(new T);
+  return base::MakeRefCounted<T>();
 }
 
 scoped_refptr<const WebRequestAction> CreateRedirectRequestAction(
@@ -469,14 +467,14 @@ bool WebRequestAction::Equals(const WebRequestAction* other) const {
 
 bool WebRequestAction::HasPermission(ApplyInfo* apply_info,
                                      const std::string& extension_id) const {
-  const InfoMap* extension_info_map = apply_info->extension_info_map;
+  PermissionHelper* permission_helper = apply_info->permission_helper;
   const WebRequestInfo* request = apply_info->request_data.request;
-  if (WebRequestPermissions::HideRequest(extension_info_map, *request))
+  if (WebRequestPermissions::HideRequest(permission_helper, *request))
     return false;
 
-  // In unit tests we don't have an extension_info_map object here and skip host
+  // In unit tests we don't have a permission_helper object here and skip host
   // permission checks.
-  if (!extension_info_map)
+  if (!permission_helper)
     return true;
 
   // The embedder can always access all hosts from within a <webview>.
@@ -498,10 +496,10 @@ bool WebRequestAction::HasPermission(ApplyInfo* apply_info,
   }
   // TODO(devlin): Pass in the real tab id here.
   return WebRequestPermissions::CanExtensionAccessURL(
-             extension_info_map, extension_id, request->url, -1,
+             permission_helper, extension_id, request->url, -1,
              apply_info->crosses_incognito, permission_check,
-             request->initiator,
-             request->type) == PermissionsData::PageAccess::kAllowed;
+             request->initiator, request->web_request_type) ==
+         PermissionsData::PageAccess::kAllowed;
 }
 
 // static
@@ -532,7 +530,7 @@ void WebRequestAction::Apply(const std::string& extension_id,
   if (!HasPermission(apply_info, extension_id))
     return;
   if (stages() & apply_info->request_data.stage) {
-    base::Optional<EventResponseDelta> delta = CreateDelta(
+    absl::optional<EventResponseDelta> delta = CreateDelta(
         apply_info->request_data, extension_id, extension_install_time);
     if (delta.has_value())
       apply_info->deltas->push_back(std::move(delta.value()));
@@ -571,7 +569,7 @@ std::string WebRequestCancelAction::GetName() const {
   return keys::kCancelRequestType;
 }
 
-base::Optional<EventResponseDelta> WebRequestCancelAction::CreateDelta(
+absl::optional<EventResponseDelta> WebRequestCancelAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
     const base::Time& extension_install_time) const {
@@ -604,13 +602,13 @@ std::string WebRequestRedirectAction::GetName() const {
   return keys::kRedirectRequestType;
 }
 
-base::Optional<EventResponseDelta> WebRequestRedirectAction::CreateDelta(
+absl::optional<EventResponseDelta> WebRequestRedirectAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
     const base::Time& extension_install_time) const {
   CHECK(request_data.stage & stages());
   if (request_data.request->url == redirect_url_)
-    return base::nullopt;
+    return absl::nullopt;
   EventResponseDelta result(extension_id, extension_install_time);
   result.new_url = redirect_url_;
   return result;
@@ -634,7 +632,7 @@ std::string WebRequestRedirectToTransparentImageAction::GetName() const {
   return keys::kRedirectToTransparentImageType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestRedirectToTransparentImageAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
@@ -663,7 +661,7 @@ std::string WebRequestRedirectToEmptyDocumentAction::GetName() const {
   return keys::kRedirectToEmptyDocumentType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestRedirectToEmptyDocumentAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
@@ -757,7 +755,7 @@ std::string WebRequestRedirectByRegExAction::GetName() const {
   return keys::kRedirectByRegExType;
 }
 
-base::Optional<EventResponseDelta> WebRequestRedirectByRegExAction::CreateDelta(
+absl::optional<EventResponseDelta> WebRequestRedirectByRegExAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
     const base::Time& extension_install_time) const {
@@ -768,7 +766,7 @@ base::Optional<EventResponseDelta> WebRequestRedirectByRegExAction::CreateDelta(
   std::string new_url = old_url;
   if (!RE2::Replace(&new_url, *from_pattern_, to_pattern_) ||
       new_url == old_url) {
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   EventResponseDelta result(extension_id, extension_install_time);
@@ -805,7 +803,7 @@ std::string WebRequestSetRequestHeaderAction::GetName() const {
   return keys::kSetRequestHeaderType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestSetRequestHeaderAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
@@ -843,7 +841,7 @@ std::string WebRequestRemoveRequestHeaderAction::GetName() const {
   return keys::kRemoveRequestHeaderType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestRemoveRequestHeaderAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
@@ -883,7 +881,7 @@ std::string WebRequestAddResponseHeaderAction::GetName() const {
   return keys::kAddResponseHeaderType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestAddResponseHeaderAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
@@ -892,11 +890,11 @@ WebRequestAddResponseHeaderAction::CreateDelta(
   const net::HttpResponseHeaders* headers =
       request_data.original_response_headers;
   if (!headers)
-    return base::nullopt;
+    return absl::nullopt;
 
   // Don't generate the header if it exists already.
   if (headers->HasHeaderValue(name_, value_))
-    return base::nullopt;
+    return absl::nullopt;
 
   EventResponseDelta result(extension_id, extension_install_time);
   result.added_response_headers.push_back(make_pair(name_, value_));
@@ -935,7 +933,7 @@ std::string WebRequestRemoveResponseHeaderAction::GetName() const {
   return keys::kRemoveResponseHeaderType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestRemoveResponseHeaderAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
@@ -944,7 +942,7 @@ WebRequestRemoveResponseHeaderAction::CreateDelta(
   const net::HttpResponseHeaders* headers =
       request_data.original_response_headers;
   if (!headers)
-    return base::nullopt;
+    return absl::nullopt;
 
   EventResponseDelta result(extension_id, extension_install_time);
   size_t iter = 0;
@@ -986,12 +984,12 @@ std::string WebRequestIgnoreRulesAction::GetName() const {
   return keys::kIgnoreRulesType;
 }
 
-base::Optional<EventResponseDelta> WebRequestIgnoreRulesAction::CreateDelta(
+absl::optional<EventResponseDelta> WebRequestIgnoreRulesAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
     const base::Time& extension_install_time) const {
   CHECK(request_data.stage & stages());
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 //
@@ -1031,7 +1029,7 @@ std::string WebRequestRequestCookieAction::GetName() const {
   return "";
 }
 
-base::Optional<EventResponseDelta> WebRequestRequestCookieAction::CreateDelta(
+absl::optional<EventResponseDelta> WebRequestRequestCookieAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
     const base::Time& extension_install_time) const {
@@ -1079,7 +1077,7 @@ std::string WebRequestResponseCookieAction::GetName() const {
   return "";
 }
 
-base::Optional<EventResponseDelta> WebRequestResponseCookieAction::CreateDelta(
+absl::optional<EventResponseDelta> WebRequestResponseCookieAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,
     const base::Time& extension_install_time) const {
@@ -1119,7 +1117,7 @@ std::string WebRequestSendMessageToExtensionAction::GetName() const {
   return keys::kSendMessageToExtensionType;
 }
 
-base::Optional<EventResponseDelta>
+absl::optional<EventResponseDelta>
 WebRequestSendMessageToExtensionAction::CreateDelta(
     const WebRequestData& request_data,
     const std::string& extension_id,

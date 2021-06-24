@@ -5,10 +5,9 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_GLOW_HOVER_CONTROLLER_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_GLOW_HOVER_CONTROLLER_H_
 
-#include "base/macros.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
-#include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/animation/slide_animation.h"
+#include "ui/views/animation/animation_delegate_views.h"
 
 namespace gfx {
 class Point;
@@ -26,9 +25,11 @@ class View;
 //   OnPaint()        -> if ShouldDraw() returns true invoke Draw().
 // Internally GlowHoverController uses an animation to animate the glow and
 // invokes SchedulePaint() back on the View as necessary.
-class GlowHoverController : public gfx::AnimationDelegate {
+class GlowHoverController : public views::AnimationDelegateViews {
  public:
   explicit GlowHoverController(views::View* view);
+  GlowHoverController(const GlowHoverController&) = delete;
+  GlowHoverController& operator=(const GlowHoverController&) = delete;
   ~GlowHoverController() override;
 
   // Sets the AnimationContainer used by the animation.
@@ -58,7 +59,7 @@ class GlowHoverController : public gfx::AnimationDelegate {
   // invoking Draw() if creating |mask_image| is expensive.
   bool ShouldDraw() const;
 
-  // gfx::AnimationDelegate overrides:
+  // views::AnimationDelegateViews overrides:
   void AnimationEnded(const gfx::Animation* animation) override;
   void AnimationProgressed(const gfx::Animation* animation) override;
 
@@ -73,8 +74,6 @@ class GlowHoverController : public gfx::AnimationDelegate {
   gfx::Point location_;
   double opacity_scale_;
   double subtle_opacity_scale_;
-
-  DISALLOW_COPY_AND_ASSIGN(GlowHoverController);
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_GLOW_HOVER_CONTROLLER_H_

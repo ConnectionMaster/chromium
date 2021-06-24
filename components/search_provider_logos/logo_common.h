@@ -13,8 +13,8 @@
 #include "base/callback.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/optional.h"
 #include "base/time/time.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "url/gurl.h"
 
@@ -62,19 +62,38 @@ struct LogoMetadata {
   // ANIMATED: The mime type of the CTA image.
   std::string mime_type;
 
+  // SIMPLE: The mime type of the dark logo image. May be empty.
+  // ANIMATED: The mime type of the dark CTA image. May be empty.
+  std::string dark_mime_type;
+
+  // SIMPLE, ANIMATED: The background color to use in dark mode.
+  // INTERACTIVE: not used.
+  std::string dark_background_color;
+
   // ANIMATED: The URL for an animated image to display when the call to action
   // logo is clicked. If |animated_url| is not empty, |encoded_image| refers to
   // a call to action image.
   // SIMPLE, INTERACTIVE: not used.
   GURL animated_url;
+  GURL dark_animated_url;
+
   // The URL to ping when the CTA image is clicked. May be empty.
   GURL cta_log_url;
+  GURL dark_cta_log_url;
   // The URL to ping when the main image is clicked (i.e. the animated image if
   // there is one, or the only image otherwise). May be empty.
   GURL log_url;
+  GURL dark_log_url;
 
   // The URL used for sharing doodles.
   GURL short_link;
+
+  // SIMPLE, ANIMATED: original dimensions of the image.
+  // INTERACTIVE: not used.
+  int width_px = 0;
+  int height_px = 0;
+  int dark_width_px = 0;
+  int dark_height_px = 0;
 
   // SIMPLE, ANIMATED: ignored
   // INTERACTIVE: appropriate dimensions for the iframe.
@@ -99,18 +118,23 @@ struct LogoMetadata {
 
   // Share button x position
   int share_button_x = -1;
+  int dark_share_button_x = -1;
 
   // Share button y position
   int share_button_y = -1;
+  int dark_share_button_y = -1;
 
   // Share button opacity
   double share_button_opacity = 0;
+  double dark_share_button_opacity = 0;
 
   // Share button icon image, uses Data URI format.
   std::string share_button_icon;
+  std::string dark_share_button_icon;
 
   // Share button background color, uses hex format.
   std::string share_button_bg;
+  std::string dark_share_button_bg;
 };
 
 enum class LogoCallbackReason {
@@ -147,24 +171,28 @@ struct EncodedLogo {
 
   // The jpeg- or png-encoded image.
   scoped_refptr<base::RefCountedString> encoded_image;
+  // The jpeg- or png-encoded dark image. May be null.
+  scoped_refptr<base::RefCountedString> dark_encoded_image;
   // Metadata about the logo.
   LogoMetadata metadata;
 };
 using EncodedLogoCallback =
     base::OnceCallback<void(LogoCallbackReason type,
-                            const base::Optional<EncodedLogo>& logo)>;
+                            const absl::optional<EncodedLogo>& logo)>;
 
 struct Logo {
   Logo();
   ~Logo();
 
-  // The logo image.
+  // The light mode logo image.
   SkBitmap image;
+  // The dark mode logo image.
+  SkBitmap dark_image;
   // Metadata about the logo.
   LogoMetadata metadata;
 };
 using LogoCallback = base::OnceCallback<void(LogoCallbackReason type,
-                                             const base::Optional<Logo>& logo)>;
+                                             const absl::optional<Logo>& logo)>;
 
 struct LogoCallbacks {
   EncodedLogoCallback on_cached_encoded_logo_available;
@@ -180,7 +208,7 @@ struct LogoCallbacks {
 
 // Parses the response from the server and returns it as an EncodedLogo. Returns
 // null if the response is invalid.
-using ParseLogoResponse = base::Callback<std::unique_ptr<EncodedLogo>(
+using ParseLogoResponse = base::RepeatingCallback<std::unique_ptr<EncodedLogo>(
     std::unique_ptr<std::string> response,
     base::Time response_time,
     bool* parsing_failed)>;
@@ -188,7 +216,8 @@ using ParseLogoResponse = base::Callback<std::unique_ptr<EncodedLogo>(
 // Encodes the fingerprint of the cached logo in the logo URL. This enables the
 // server to verify whether the cached logo is up to date.
 using AppendQueryparamsToLogoURL =
-    base::Callback<GURL(const GURL& logo_url, const std::string& fingerprint)>;
+    base::RepeatingCallback<GURL(const GURL& logo_url,
+                                 const std::string& fingerprint)>;
 
 }  // namespace search_provider_logos
 

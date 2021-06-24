@@ -40,9 +40,9 @@ const char* GetNameForDispatcherType(Dispatcher::Type type) {
 
 }  // namespace
 
-HandleTable::HandleTable() {}
+HandleTable::HandleTable() = default;
 
-HandleTable::~HandleTable() {}
+HandleTable::~HandleTable() = default;
 
 base::Lock& HandleTable::GetLock() {
   return lock_;
@@ -103,8 +103,7 @@ MojoResult HandleTable::GetAndRemoveDispatcher(
   if (it->second.busy)
     return MOJO_RESULT_BUSY;
 
-  if (dispatcher)
-    *dispatcher = std::move(it->second.dispatcher);
+  *dispatcher = std::move(it->second.dispatcher);
   handles_.erase(it);
   return MOJO_RESULT_OK;
 }
@@ -192,14 +191,14 @@ bool HandleTable::OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
   return true;
 }
 
-HandleTable::Entry::Entry() {}
+HandleTable::Entry::Entry() = default;
 
 HandleTable::Entry::Entry(scoped_refptr<Dispatcher> dispatcher)
     : dispatcher(std::move(dispatcher)) {}
 
 HandleTable::Entry::Entry(const Entry& other) = default;
 
-HandleTable::Entry::~Entry() {}
+HandleTable::Entry::~Entry() = default;
 
 }  // namespace core
 }  // namespace mojo

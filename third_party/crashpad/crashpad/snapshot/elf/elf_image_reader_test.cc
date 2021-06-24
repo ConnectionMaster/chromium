@@ -18,7 +18,6 @@
 #include <link.h>
 #include <unistd.h>
 
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "gtest/gtest.h"
 #include "test/multiprocess_exec.h"
@@ -36,7 +35,7 @@
 
 #include "base/fuchsia/fuchsia_logging.h"
 
-#elif defined(OS_LINUX) || defined(OS_ANDROID)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_ANDROID)
 
 #include "test/linux/fake_ptrace_connection.h"
 #include "util/linux/auxiliary_vector.h"
@@ -85,7 +84,7 @@ void LocateExecutable(const ProcessType& process,
   *elf_address = base;
 }
 
-#elif defined(OS_LINUX) || defined(OS_ANDROID)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_ANDROID)
 
 void LocateExecutable(PtraceConnection* connection,
                       ProcessMemory* memory,
@@ -134,7 +133,7 @@ void ReadThisExecutableInTarget(ProcessType process,
   ASSERT_TRUE(range.Initialize(&memory, am_64_bit));
 
   VMAddress elf_address;
-#if defined(OS_LINUX) || defined(OS_ANDROID)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_ANDROID)
   FakePtraceConnection connection;
   ASSERT_TRUE(connection.Initialize(process));
   LocateExecutable(&connection, &memory, &elf_address);
@@ -155,7 +154,7 @@ void ReadThisExecutableInTarget(ProcessType process,
   ElfImageReader::NoteReader::NoteType note_type;
   VMAddress desc_addr;
 
-  std::unique_ptr<ElfImageReader::NoteReader> notes = reader.Notes(-1);
+  std::unique_ptr<ElfImageReader::NoteReader> notes = reader.Notes(10000);
   while ((result = notes->NextNote(
               &note_name, &note_type, &note_desc, &desc_addr)) ==
          ElfImageReader::NoteReader::Result::kSuccess) {
@@ -169,7 +168,7 @@ void ReadThisExecutableInTarget(ProcessType process,
   // Find the note defined in elf_image_reader_test_note.S.
   constexpr uint32_t kCrashpadNoteDesc = 42;
   notes = reader.NotesWithNameAndType(
-      CRASHPAD_ELF_NOTE_NAME, CRASHPAD_ELF_NOTE_TYPE_SNAPSHOT_TEST, -1);
+      CRASHPAD_ELF_NOTE_NAME, CRASHPAD_ELF_NOTE_TYPE_SNAPSHOT_TEST, 10000);
   ASSERT_EQ(notes->NextNote(&note_name, &note_type, &note_desc, &desc_addr),
             ElfImageReader::NoteReader::Result::kSuccess);
   EXPECT_EQ(note_name, CRASHPAD_ELF_NOTE_NAME);

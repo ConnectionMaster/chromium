@@ -4,11 +4,14 @@
 
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view_base.h"
 
-#include "base/strings/string16.h"
+#include <string>
+
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
+#include "components/page_info/page_info_ui.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/buildflags.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
@@ -32,7 +35,8 @@ PageInfoBubbleViewBase::GetShownBubbleType() {
 }
 
 // static
-views::BubbleDialogDelegateView* PageInfoBubbleViewBase::GetPageInfoBubble() {
+views::BubbleDialogDelegateView*
+PageInfoBubbleViewBase::GetPageInfoBubbleForTesting() {
   return g_page_info_bubble;
 }
 
@@ -47,21 +51,12 @@ PageInfoBubbleViewBase::PageInfoBubbleViewBase(
   g_shown_bubble_type = type;
   g_page_info_bubble = this;
 
+  SetButtons(ui::DIALOG_BUTTON_NONE);
+  SetShowCloseButton(true);
+
   set_parent_window(parent_window);
   if (!anchor_view)
     SetAnchorRect(anchor_rect);
-}
-
-int PageInfoBubbleViewBase::GetDialogButtons() const {
-  return ui::DIALOG_BUTTON_NONE;
-}
-
-base::string16 PageInfoBubbleViewBase::GetWindowTitle() const {
-  return window_title_;
-}
-
-bool PageInfoBubbleViewBase::ShouldShowCloseButton() const {
-  return true;
 }
 
 void PageInfoBubbleViewBase::OnWidgetDestroying(views::Widget* widget) {
@@ -88,3 +83,11 @@ void PageInfoBubbleViewBase::DidStartNavigation(
   if (handle->IsInMainFrame())
     GetWidget()->Close();
 }
+
+void PageInfoBubbleViewBase::DidChangeVisibleSecurityState() {
+  // Subclasses may update instead, but this the only safe general option.
+  GetWidget()->Close();
+}
+
+BEGIN_METADATA(PageInfoBubbleViewBase, views::BubbleDialogDelegateView)
+END_METADATA

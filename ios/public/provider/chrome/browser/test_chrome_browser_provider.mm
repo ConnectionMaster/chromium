@@ -6,17 +6,18 @@
 
 #import <UIKit/UIKit.h>
 
-#include "base/logging.h"
-#include "ios/public/provider/chrome/browser/distribution/test_app_distribution_provider.h"
+#include "base/check.h"
+#import "ios/public/provider/chrome/browser/discover_feed/discover_feed_provider.h"
+#include "ios/public/provider/chrome/browser/distribution/app_distribution_provider.h"
 #include "ios/public/provider/chrome/browser/images/test_branded_image_provider.h"
 #include "ios/public/provider/chrome/browser/mailto/test_mailto_handler_provider.h"
 #include "ios/public/provider/chrome/browser/omaha/test_omaha_service_provider.h"
 #include "ios/public/provider/chrome/browser/signin/fake_chrome_identity_service.h"
+#include "ios/public/provider/chrome/browser/signin/signin_error_provider.h"
 #include "ios/public/provider/chrome/browser/signin/test_signin_resources_provider.h"
 #import "ios/public/provider/chrome/browser/spotlight/test_spotlight_provider.h"
+#import "ios/public/provider/chrome/browser/test_text_zoom_provider.h"
 #import "ios/public/provider/chrome/browser/ui/fullscreen_provider.h"
-#import "ios/public/provider/chrome/browser/ui/test_styled_text_field.h"
-#import "ios/public/provider/chrome/browser/user/test_special_user_provider.h"
 #import "ios/public/provider/chrome/browser/user_feedback/test_user_feedback_provider.h"
 #import "ios/public/provider/chrome/browser/voice/test_voice_search_provider.h"
 #import "ios/public/provider/chrome/browser/voice/voice_search_language.h"
@@ -28,18 +29,19 @@
 namespace ios {
 
 TestChromeBrowserProvider::TestChromeBrowserProvider()
-    : app_distribution_provider_(
-          std::make_unique<TestAppDistributionProvider>()),
+    : app_distribution_provider_(std::make_unique<AppDistributionProvider>()),
       branded_image_provider_(std::make_unique<TestBrandedImageProvider>()),
       omaha_service_provider_(std::make_unique<TestOmahaServiceProvider>()),
+      signin_error_provider_(std::make_unique<SigninErrorProvider>()),
       signin_resources_provider_(
           std::make_unique<TestSigninResourcesProvider>()),
       voice_search_provider_(std::make_unique<TestVoiceSearchProvider>()),
       user_feedback_provider_(std::make_unique<TestUserFeedbackProvider>()),
-      special_user_provider_(std::make_unique<TestSpecialUserProvider>()),
       spotlight_provider_(std::make_unique<TestSpotlightProvider>()),
       mailto_handler_provider_(std::make_unique<TestMailtoHandlerProvider>()),
-      fullscreen_provider_(std::make_unique<FullscreenProvider>()) {}
+      fullscreen_provider_(std::make_unique<FullscreenProvider>()),
+      discover_feed_provider_(std::make_unique<DiscoverFeedProvider>()),
+      text_zoom_provider_(std::make_unique<TestTextZoomProvider>()) {}
 
 TestChromeBrowserProvider::~TestChromeBrowserProvider() {}
 
@@ -60,6 +62,10 @@ void TestChromeBrowserProvider::SetChromeIdentityServiceForTesting(
   chrome_identity_service_.swap(service);
 }
 
+SigninErrorProvider* TestChromeBrowserProvider::GetSigninErrorProvider() {
+  return signin_error_provider_.get();
+}
+
 ChromeIdentityService* TestChromeBrowserProvider::GetChromeIdentityService() {
   if (!chrome_identity_service_) {
     chrome_identity_service_.reset(new FakeChromeIdentityService());
@@ -67,9 +73,8 @@ ChromeIdentityService* TestChromeBrowserProvider::GetChromeIdentityService() {
   return chrome_identity_service_.get();
 }
 
-UITextField<TextFieldStyling>* TestChromeBrowserProvider::CreateStyledTextField(
-    CGRect frame) const {
-  return [[TestStyledTextField alloc] initWithFrame:frame];
+UITextField* TestChromeBrowserProvider::CreateStyledTextField() const {
+  return [[UITextField alloc] initWithFrame:CGRectZero];
 }
 
 VoiceSearchProvider* TestChromeBrowserProvider::GetVoiceSearchProvider() const {
@@ -91,10 +96,6 @@ UserFeedbackProvider* TestChromeBrowserProvider::GetUserFeedbackProvider()
   return user_feedback_provider_.get();
 }
 
-SpecialUserProvider* TestChromeBrowserProvider::GetSpecialUserProvider() const {
-  return special_user_provider_.get();
-}
-
 SpotlightProvider* TestChromeBrowserProvider::GetSpotlightProvider() const {
   return spotlight_provider_.get();
 }
@@ -111,6 +112,15 @@ BrandedImageProvider* TestChromeBrowserProvider::GetBrandedImageProvider()
 MailtoHandlerProvider* TestChromeBrowserProvider::GetMailtoHandlerProvider()
     const {
   return mailto_handler_provider_.get();
+}
+
+DiscoverFeedProvider* TestChromeBrowserProvider::GetDiscoverFeedProvider()
+    const {
+  return discover_feed_provider_.get();
+}
+
+TextZoomProvider* TestChromeBrowserProvider::GetTextZoomProvider() const {
+  return text_zoom_provider_.get();
 }
 
 }  // namespace ios

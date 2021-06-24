@@ -1,4 +1,5 @@
-'use strict';
+import {AuthenticatorAttachment, AuthenticatorTransport} from '/gen/third_party/blink/public/mojom/webauthn/authenticator.mojom.m.js';
+import {ClientToAuthenticatorProtocol, VirtualAuthenticatorManager} from '/gen/third_party/blink/public/mojom/webauthn/virtual_authenticator.mojom.m.js';
 
 class VirtualAuthenticator {
   constructor(virtualAuthenticator) {
@@ -6,8 +7,8 @@ class VirtualAuthenticator {
   }
 
   async uniqueId() {
-    let getUniqueIdResponse = await this.virtualAuthenticator_.getUniqueId();
-    return getUniqueIdResponse.id;
+    const {id} = await this.virtualAuthenticator_.getUniqueId();
+    return id;
   }
 
   // Alias for uniqueId().
@@ -16,29 +17,39 @@ class VirtualAuthenticator {
   }
 
   async registeredKeys() {
-    let getRegistrationsResponse = await this.virtualAuthenticator_.getRegistrations();
-    return getRegistrationsResponse.keys;
+    const {keys} = await this.virtualAuthenticator_.getRegistrations();
+    return keys;
   }
 
   async generateAndRegisterKey(keyHandle, rpId) {
     let ecKey = await window.crypto.subtle.generateKey(
         { name: "ECDSA", namedCurve: "P-256" }, true /* extractable */, ["sign", "verify"]);
     let privateKeyPkcs8 = await window.crypto.subtle.exportKey("pkcs8", ecKey.privateKey);
-    let applicationParameter = await window.crypto.subtle.digest(
-        { name: "SHA-256" }, new TextEncoder("utf-8").encode(rpId));
     let registration = {
       privateKey: new Uint8Array(privateKeyPkcs8),
       keyHandle: keyHandle,
-      applicationParameter: new Uint8Array(applicationParameter),
+      rpId,
       counter: 1,
     };
-    let addRegistrationResponse = await this.virtualAuthenticator_.addRegistration(registration);
-    return addRegistrationResponse.added;
+    const {added} =
+        await this.virtualAuthenticator_.addRegistration(registration);
+    return added;
   }
 
   async clearRegisteredKeys() {
-    let clearRegistrationsResponse = await this.virtualAuthenticator_.clearRegistrations();
-    return clearRegistrationsResponse.keys;
+    const {keys} = await this.virtualAuthenticator_.clearRegistrations();
+    return keys;
+  }
+
+  async setLargeBlob(keyHandle, blob) {
+    const {set} =
+        await this.virtualAuthenticator_.setLargeBlob(keyHandle, blob);
+    return set;
+  }
+
+  async getLargeBlob(keyHandle) {
+    const {blob} = await this.virtualAuthenticator_.getLargeBlob(keyHandle);
+    return blob;
   }
 
   async setUserPresence(present) {
@@ -46,48 +57,46 @@ class VirtualAuthenticator {
   }
 
   async userPresence() {
-    let getUserPresenceResponse = await this.virtualAuthenticator_.getUserPresence();
-    return getUserPresenceResponse.present;
+    const {present} = await this.virtualAuthenticator_.getUserPresence();
+    return present;
   }
-};
+}
 
-class VirtualAuthenticatorManager {
+export class TestAuthenticatorManager {
   constructor() {
-    const docBrokerProxy = new blink.mojom.DocumentInterfaceBrokerProxy(
-      Mojo.getDocumentInterfaceBrokerHandle());
-    this.virtualAuthenticatorManager_ = new blink.test.mojom.VirtualAuthenticatorManagerProxy;
-    docBrokerProxy.getVirtualAuthenticatorManager(
-      this.virtualAuthenticatorManager_.$.createRequest());
+    this.virtualAuthenticatorManager_ = VirtualAuthenticatorManager.getRemote();
   }
 
-  async createAuthenticator() {
-    let createAuthenticatorResponse = await this.virtualAuthenticatorManager_.createAuthenticator({
-      protocol: blink.test.mojom.ClientToAuthenticatorProtocol.U2F,
-      transport: blink.mojom.AuthenticatorTransport.USB,
-      attachment: blink.mojom.AuthenticatorAttachment.CROSS_PLATFORM,
-      hasResidentKey: false,
-      hasUserVerification: false,
-    });
-    return new VirtualAuthenticator(createAuthenticatorResponse.authenticator);
+  async createAuthenticator(options = {}) {
+    options = Object.assign(
+        {
+          protocol: ClientToAuthenticatorProtocol.CTAP2,
+          ctap2Version: ClientToAuthenticatorProtocol.CTAP2_0,
+          transport: AuthenticatorTransport.USB,
+          attachment: AuthenticatorAttachment.CROSS_PLATFORM,
+          hasResidentKey: true,
+          hasUserVerification: true,
+          hasLargeBlob: false,
+        },
+        options);
+    const {authenticator} =
+        await this.virtualAuthenticatorManager_.createAuthenticator(options);
+    return new VirtualAuthenticator(authenticator);
   }
 
   async authenticators() {
-    let getAuthenticatorsResponse = await this.virtualAuthenticatorManager_.getAuthenticators();
-    let authenticators = [];
-    for (let mojo_authenticator of getAuthenticatorsResponse.authenticators) {
-      authenticators.push(new VirtualAuthenticator(mojo_authenticator));
-    }
-    return authenticators;
+    const {authenticators} =
+        await this.virtualAuthenticatorManager_.getAuthenticators();
+    return authenticators.map(a => new VirtualAuthenticator(a));
   }
 
   async removeAuthenticator(id) {
-    let removeAuthenticatorResponse = await this.virtualAuthenticatorManager_.removeAuthenticator(id);
-    return removeAuthenticatorResponse.removed;
+    const {removed} =
+        await this.virtualAuthenticatorManager_.removeAuthenticator(id);
+    return removed;
   }
 
   async clearAuthenticators(id) {
     return this.virtualAuthenticatorManager_.clearAuthenticators();
   }
-};
-
-navigator.credentials.test = new VirtualAuthenticatorManager();
+}

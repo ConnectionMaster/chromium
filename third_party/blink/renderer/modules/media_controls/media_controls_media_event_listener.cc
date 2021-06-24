@@ -62,7 +62,7 @@ void MediaControlsMediaEventListener::Attach() {
       media_controls_->GetDocument()
           .GetSettings()
           ->GetPictureInPictureEnabled() &&
-      GetMediaElement().IsHTMLVideoElement()) {
+      IsA<HTMLVideoElement>(GetMediaElement())) {
     GetMediaElement().addEventListener(event_type_names::kEnterpictureinpicture,
                                        this, false);
     GetMediaElement().addEventListener(event_type_names::kLeavepictureinpicture,
@@ -76,16 +76,9 @@ void MediaControlsMediaEventListener::Attach() {
   text_tracks->addEventListener(event_type_names::kRemovetrack, this, false);
 
   // Keypress events.
-  if (MediaControlsImpl::IsModern()) {
-    if (media_controls_->ButtonPanelElement()) {
-      media_controls_->ButtonPanelElement()->addEventListener(
-          event_type_names::kKeypress, this, false);
-    }
-  } else {
-    if (media_controls_->PanelElement()) {
-      media_controls_->PanelElement()->addEventListener(
-          event_type_names::kKeypress, this, false);
-    }
+  if (media_controls_->ButtonPanelElement()) {
+    media_controls_->ButtonPanelElement()->addEventListener(
+        event_type_names::kKeypress, this, false);
   }
 
   RemotePlayback& remote = RemotePlayback::From(GetMediaElement());
@@ -97,7 +90,7 @@ void MediaControlsMediaEventListener::Attach() {
   // https://crbug.com/713275.
   if (!remote_playback_availability_callback_id_.has_value()) {
     remote_playback_availability_callback_id_ =
-        base::make_optional(remote.WatchAvailabilityInternal(
+        absl::make_optional(remote.WatchAvailabilityInternal(
             MakeGarbageCollected<AvailabilityCallbackWrapper>(
                 WTF::BindRepeating(&MediaControlsMediaEventListener::
                                        OnRemotePlaybackAvailabilityChanged,
@@ -116,16 +109,9 @@ void MediaControlsMediaEventListener::Detach() {
   text_tracks->removeEventListener(event_type_names::kChange, this, false);
   text_tracks->removeEventListener(event_type_names::kRemovetrack, this, false);
 
-  if (MediaControlsImpl::IsModern()) {
-    if (media_controls_->ButtonPanelElement()) {
-      media_controls_->ButtonPanelElement()->removeEventListener(
-          event_type_names::kKeypress, this, false);
-    }
-  } else {
-    if (media_controls_->PanelElement()) {
-      media_controls_->PanelElement()->removeEventListener(
-          event_type_names::kKeypress, this, false);
-    }
+  if (media_controls_->ButtonPanelElement()) {
+    media_controls_->ButtonPanelElement()->removeEventListener(
+        event_type_names::kKeypress, this, false);
   }
 
   RemotePlayback& remote = RemotePlayback::From(GetMediaElement());
@@ -238,16 +224,9 @@ void MediaControlsMediaEventListener::Invoke(
 
   // Keypress events.
   if (event->type() == event_type_names::kKeypress) {
-    if (MediaControlsImpl::IsModern()) {
-      if (event->currentTarget() == media_controls_->ButtonPanelElement()) {
-        media_controls_->OnPanelKeypress();
-        return;
-      }
-    } else {
-      if (event->currentTarget() == media_controls_->PanelElement()) {
-        media_controls_->OnPanelKeypress();
-        return;
-      }
+    if (event->currentTarget() == media_controls_->ButtonPanelElement()) {
+      media_controls_->OnPanelKeypress();
+      return;
     }
   }
 
@@ -273,7 +252,7 @@ void MediaControlsMediaEventListener::OnRemotePlaybackAvailabilityChanged() {
   media_controls_->RefreshCastButtonVisibility();
 }
 
-void MediaControlsMediaEventListener::Trace(blink::Visitor* visitor) {
+void MediaControlsMediaEventListener::Trace(Visitor* visitor) const {
   NativeEventListener::Trace(visitor);
   visitor->Trace(media_controls_);
 }

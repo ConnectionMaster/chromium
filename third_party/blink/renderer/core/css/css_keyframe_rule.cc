@@ -28,7 +28,9 @@
 #include "third_party/blink/renderer/core/css/css_keyframes_rule.h"
 #include "third_party/blink/renderer/core/css/css_style_sheet.h"
 #include "third_party/blink/renderer/core/css/keyframe_style_rule_css_style_declaration.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
@@ -42,7 +44,7 @@ CSSKeyframeRule::~CSSKeyframeRule() = default;
 
 void CSSKeyframeRule::setKeyText(const String& key_text,
                                  ExceptionState& exception_state) {
-  CSSStyleSheet::RuleMutationScope(this);
+  CSSStyleSheet::RuleMutationScope rule_mutation_scope(this);
 
   if (!keyframe_->SetKeyText(key_text))
     exception_state.ThrowDOMException(
@@ -54,9 +56,11 @@ void CSSKeyframeRule::setKeyText(const String& key_text,
 }
 
 CSSStyleDeclaration* CSSKeyframeRule::style() const {
-  if (!properties_cssom_wrapper_)
-    properties_cssom_wrapper_ = KeyframeStyleRuleCSSStyleDeclaration::Create(
-        keyframe_->MutableProperties(), const_cast<CSSKeyframeRule*>(this));
+  if (!properties_cssom_wrapper_) {
+    properties_cssom_wrapper_ =
+        MakeGarbageCollected<KeyframeStyleRuleCSSStyleDeclaration>(
+            keyframe_->MutableProperties(), const_cast<CSSKeyframeRule*>(this));
+  }
   return properties_cssom_wrapper_.Get();
 }
 
@@ -65,7 +69,7 @@ void CSSKeyframeRule::Reattach(StyleRuleBase*) {
   NOTREACHED();
 }
 
-void CSSKeyframeRule::Trace(blink::Visitor* visitor) {
+void CSSKeyframeRule::Trace(Visitor* visitor) const {
   visitor->Trace(keyframe_);
   visitor->Trace(properties_cssom_wrapper_);
   CSSRule::Trace(visitor);

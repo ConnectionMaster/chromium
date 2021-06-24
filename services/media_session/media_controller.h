@@ -10,20 +10,18 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
-#include "base/optional.h"
 #include "base/sequence_checker.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
-#include "mojo/public/cpp/bindings/interface_ptr_set.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote_set.h"
 #include "services/media_session/public/cpp/media_metadata.h"
 #include "services/media_session/public/mojom/media_controller.mojom.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
-
-namespace base {
-class UnguessableToken;
-}  // namespace base
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media_session {
+
+class AudioFocusRequest;
 
 // MediaController provides a control surface over Mojo for controlling a
 // specific MediaSession. If |session_| is nullptr then all commands will be
@@ -40,31 +38,43 @@ class MediaController : public mojom::MediaController,
   void Resume() override;
   void Stop() override;
   void ToggleSuspendResume() override;
-  void AddObserver(mojom::MediaControllerObserverPtr observer) override;
+  void AddObserver(
+      mojo::PendingRemote<mojom::MediaControllerObserver> observer) override;
   void PreviousTrack() override;
   void NextTrack() override;
   void Seek(base::TimeDelta seek_time) override;
   void ObserveImages(mojom::MediaSessionImageType type,
                      int minimum_size_px,
                      int desired_size_px,
-                     mojom::MediaControllerImageObserverPtr observer) override;
+                     mojo::PendingRemote<mojom::MediaControllerImageObserver>
+                         observer) override;
+  void SeekTo(base::TimeDelta seek_time) override;
+  void ScrubTo(base::TimeDelta seek_time) override;
+  void EnterPictureInPicture() override;
+  void ExitPictureInPicture() override;
+  void SetAudioSinkId(const absl::optional<std::string>& id) override;
+  void ToggleMicrophone() override;
+  void ToggleCamera() override;
+  void HangUp() override;
+  void Raise() override;
 
   // mojom::MediaSessionObserver overrides.
   void MediaSessionInfoChanged(
       mojom::MediaSessionInfoPtr session_info) override;
   void MediaSessionMetadataChanged(
-      const base::Optional<MediaMetadata>&) override;
+      const absl::optional<MediaMetadata>&) override;
   void MediaSessionActionsChanged(
       const std::vector<mojom::MediaSessionAction>& action) override;
   void MediaSessionImagesChanged(
       const base::flat_map<mojom::MediaSessionImageType,
                            std::vector<MediaImage>>& images) override;
+  void MediaSessionPositionChanged(
+      const absl::optional<media_session::MediaPosition>& position) override;
 
-  void SetMediaSession(mojom::MediaSession* session,
-                       const base::UnguessableToken& request_id);
+  void SetMediaSession(AudioFocusRequest* session);
   void ClearMediaSession();
 
-  void BindToInterface(mojom::MediaControllerRequest request);
+  void BindToInterface(mojo::PendingReceiver<mojom::MediaController> receiver);
   void FlushForTesting();
 
  private:
@@ -78,36 +88,35 @@ class MediaController : public mojom::MediaController,
   void Reset();
 
   // Holds mojo bindings for mojom::MediaController.
-  mojo::BindingSet<mojom::MediaController> bindings_;
+  mojo::ReceiverSet<mojom::MediaController> receivers_;
 
   // The current info for the |session_|.
   mojom::MediaSessionInfoPtr session_info_;
 
   // The current metadata for |session_|.
-  base::Optional<MediaMetadata> session_metadata_;
+  absl::optional<MediaMetadata> session_metadata_;
 
   // The current actions for |session_|.
   std::vector<mojom::MediaSessionAction> session_actions_;
+
+  // The current position for |session_|.
+  absl::optional<MediaPosition> session_position_;
 
   // The current images for |session_|.
   base::flat_map<mojom::MediaSessionImageType, std::vector<MediaImage>>
       session_images_;
 
-  // Raw pointer to the local proxy. This is used for sending control events to
-  // the underlying MediaSession.
-  mojom::MediaSession* session_ = nullptr;
+  // Raw pointer to the media session we are controlling.
+  AudioFocusRequest* session_ = nullptr;
 
   // Observers that are observing |this|.
-  mojo::InterfacePtrSet<mojom::MediaControllerObserver> observers_;
+  mojo::RemoteSet<mojom::MediaControllerObserver> observers_;
 
   // Binding for |this| to act as an observer to |session_|.
-  mojo::Binding<mojom::MediaSessionObserver> session_binding_{this};
+  mojo::Receiver<mojom::MediaSessionObserver> session_receiver_{this};
 
   // Manages individual image observers.
   std::vector<std::unique_ptr<ImageObserverHolder>> image_observers_;
-
-  // The request id for the bound media session.
-  base::Optional<base::UnguessableToken> request_id_;
 
   // Protects |session_| as it is not thread safe.
   SEQUENCE_CHECKER(sequence_checker_);

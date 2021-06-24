@@ -8,10 +8,6 @@ import("//remoting/build/config/remoting_build.gni")
 
 source_set("facade") {
   sources = [
-    "host_info.cc",
-    "host_info.h",
-    "host_list_fetcher.cc",
-    "host_list_fetcher.h",
     "host_list_service.h",
     "host_list_service.mm",
     "ios_client_runtime_delegate.h",
@@ -33,17 +29,16 @@ source_set("facade") {
     "//remoting/ios/domain",
     "//remoting/ios/persistence",
     "//remoting/resources",
+    "//remoting/signaling",
+    "//services/network/public/cpp",
     "//ui/base",
   ]
 
-  configs += [ "//build/config/compiler:enable_arc" ]
-}
+  frameworks = [ "CoreFoundation.framework" ]
 
-source_set("test_support") {
-  testonly = true
-  sources = [
-    "fake_host_list_fetcher.cc",
-    "fake_host_list_fetcher.h",
+  public_deps = [
+    "//remoting/base",
+    "//remoting/proto/remoting/v1:directory_proto",
   ]
 
   configs += [ "//build/config/compiler:enable_arc" ]
@@ -51,15 +46,16 @@ source_set("test_support") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "host_list_service_unittest.mm",
-  ]
+  sources = [ "host_list_service_unittest.mm" ]
   deps = [
     ":facade",
-    ":test_support",
+    "//base/test:test_support",
+    "//remoting/base:test_support",
+    "//services/network/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/ocmock",
+    "//ui/base",
   ]
 
   configs += [ "//build/config/compiler:enable_arc" ]

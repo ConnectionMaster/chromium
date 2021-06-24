@@ -16,6 +16,7 @@
 class GURL;
 
 namespace blink {
+enum class ProtocolHandlerSecurityLevel;
 class WebElement;
 class WebFrame;
 class WebLocalFrame;
@@ -24,7 +25,6 @@ class WebURL;
 }
 
 namespace content {
-class BrowserPluginDelegate;
 class RenderFrame;
 struct WebPluginInfo;
 }
@@ -36,8 +36,16 @@ class RendererPermissionsPolicyDelegate;
 class ResourceRequestPolicy;
 }
 
+namespace net {
+class SiteForCookies;
+}
+
 namespace url {
 class Origin;
+}
+
+namespace ukm {
+class MojoUkmRecorder;
 }
 
 namespace v8 {
@@ -64,6 +72,10 @@ class ChromeExtensionsRendererClient
   void OnExtensionUnloaded(
       const extensions::ExtensionId& extension_id) override;
 
+  bool ExtensionAPIEnabledForServiceWorkerScript(
+      const GURL& scope,
+      const GURL& script_url) const override;
+
   // See ChromeContentRendererClient methods with the same names.
   void RenderThreadStarted();
   void RenderFrameCreated(content::RenderFrame* render_frame,
@@ -71,12 +83,13 @@ class ChromeExtensionsRendererClient
   bool OverrideCreatePlugin(content::RenderFrame* render_frame,
                             const blink::WebPluginParams& params);
   bool AllowPopup();
+  blink::ProtocolHandlerSecurityLevel GetProtocolHandlerSecurityLevel();
   void WillSendRequest(blink::WebLocalFrame* frame,
                        ui::PageTransition transition_type,
                        const blink::WebURL& url,
+                       const net::SiteForCookies& site_for_cookies,
                        const url::Origin* initiator_origin,
-                       GURL* new_url,
-                       bool* attach_same_site_cookies);
+                       GURL* new_url);
   v8::Local<v8::Object> GetScriptableObject(
       const blink::WebElement& plugin_element,
       v8::Isolate* isolate);
@@ -84,15 +97,8 @@ class ChromeExtensionsRendererClient
       std::unique_ptr<extensions::Dispatcher> extension_dispatcher);
   extensions::Dispatcher* GetExtensionDispatcherForTest();
 
-  static bool ShouldFork(blink::WebLocalFrame* frame,
-                         const GURL& url,
-                         bool is_initial_navigation,
-                         bool is_server_redirect);
-  static content::BrowserPluginDelegate* CreateBrowserPluginDelegate(
-      content::RenderFrame* render_frame,
-      const content::WebPluginInfo& info,
-      const std::string& mime_type,
-      const GURL& original_url);
+  static void DidBlockMimeHandlerViewForDisallowedPlugin(
+      const blink::WebElement& plugin_element);
   static bool MaybeCreateMimeHandlerView(
       const blink::WebElement& plugin_element,
       const GURL& resource_url,
@@ -110,6 +116,7 @@ class ChromeExtensionsRendererClient
   }
 
  private:
+  std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder_;
   std::unique_ptr<extensions::Dispatcher> extension_dispatcher_;
   std::unique_ptr<extensions::RendererPermissionsPolicyDelegate>
       permissions_policy_delegate_;

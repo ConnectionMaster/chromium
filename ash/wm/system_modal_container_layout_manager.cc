@@ -7,16 +7,17 @@
 #include <cmath>
 #include <memory>
 
+#include "ash/keyboard/ui/keyboard_ui_controller.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/root_window_controller.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/wm/window_dimmer.h"
 #include "ash/wm/window_util.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
-#include "ui/keyboard/keyboard_controller.h"
+#include "ui/wm/core/coordinate_conversion.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
@@ -45,10 +46,13 @@ bool HasTransientAncestor(const aura::Window* window,
 
 SystemModalContainerLayoutManager::SystemModalContainerLayoutManager(
     aura::Window* container)
-    : container_(container) {}
+    : container_(container) {
+  Shelf* shelf = RootWindowController::ForWindow(container_)->shelf();
+  shelf_observation_.Observe(shelf);
+}
 
 SystemModalContainerLayoutManager::~SystemModalContainerLayoutManager() {
-  auto* keyboard_controller = keyboard::KeyboardController::Get();
+  auto* keyboard_controller = keyboard::KeyboardUIController::Get();
   if (keyboard_controller->HasObserver(this))
     keyboard_controller->RemoveObserver(this);
 }
@@ -63,7 +67,7 @@ void SystemModalContainerLayoutManager::OnChildWindowVisibilityChanged(
     return;
 
   if (window->IsVisible()) {
-    DCHECK(!base::ContainsValue(modal_windows_, window));
+    DCHECK(!base::Contains(modal_windows_, window));
     AddModalWindow(window);
   } else {
     if (RemoveModalWindow(window))
@@ -77,9 +81,9 @@ void SystemModalContainerLayoutManager::OnWindowResized() {
 
 void SystemModalContainerLayoutManager::OnWindowAddedToLayout(
     aura::Window* child) {
-  DCHECK(child->type() == aura::client::WINDOW_TYPE_NORMAL ||
-         child->type() == aura::client::WINDOW_TYPE_POPUP);
-  DCHECK(container_->id() != kShellWindowId_LockSystemModalContainer ||
+  DCHECK(child->GetType() == aura::client::WINDOW_TYPE_NORMAL ||
+         child->GetType() == aura::client::WINDOW_TYPE_POPUP);
+  DCHECK(container_->GetId() != kShellWindowId_LockSystemModalContainer ||
          Shell::Get()->session_controller()->IsUserSessionBlocked());
   // Since this is for SystemModal, there is no good reason to add windows
   // other than MODAL_TYPE_NONE or MODAL_TYPE_SYSTEM. DCHECK to avoid simple
@@ -103,7 +107,7 @@ void SystemModalContainerLayoutManager::OnWillRemoveWindowFromLayout(
 void SystemModalContainerLayoutManager::SetChildBounds(
     aura::Window* child,
     const gfx::Rect& requested_bounds) {
-  WmSnapToPixelLayoutManager::SetChildBounds(child, requested_bounds);
+  WmDefaultLayoutManager::SetChildBounds(child, requested_bounds);
   if (IsBoundsCentered(requested_bounds))
     windows_to_center_.insert(child);
   else
@@ -121,7 +125,7 @@ void SystemModalContainerLayoutManager::OnWindowPropertyChanged(
     return;
 
   if (window->GetProperty(aura::client::kModalKey) == ui::MODAL_TYPE_SYSTEM) {
-    if (base::ContainsValue(modal_windows_, window))
+    if (base::Contains(modal_windows_, window))
       return;
     AddModalWindow(window);
   } else {
@@ -131,11 +135,11 @@ void SystemModalContainerLayoutManager::OnWindowPropertyChanged(
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// SystemModalContainerLayoutManager, Keyboard::KeybaordControllerObserver
+// SystemModalContainerLayoutManager, Keyboard::KeyboardControllerObserver
 // implementation:
 
-void SystemModalContainerLayoutManager::
-    OnKeyboardWorkspaceOccludedBoundsChanged(const gfx::Rect& new_bounds) {
+void SystemModalContainerLayoutManager::OnKeyboardOccludedBoundsChanged(
+    const gfx::Rect& new_bounds_in_screen) {
   PositionDialogsAfterWorkAreaResize();
 }
 
@@ -160,8 +164,8 @@ void SystemModalContainerLayoutManager::CreateModalBackground() {
     window_dimmer_->window()->SetName(
         "SystemModalContainerLayoutManager.ModalBackground");
     // The keyboard isn't always enabled.
-    if (keyboard::KeyboardController::Get()->IsEnabled())
-      keyboard::KeyboardController::Get()->AddObserver(this);
+    if (keyboard::KeyboardUIController::Get()->IsEnabled())
+      keyboard::KeyboardUIController::Get()->AddObserver(this);
   }
   window_dimmer_->window()->Show();
 }
@@ -170,7 +174,7 @@ void SystemModalContainerLayoutManager::DestroyModalBackground() {
   if (!window_dimmer_)
     return;
 
-  auto* keyboard_controller = keyboard::KeyboardController::Get();
+  auto* keyboard_controller = keyboard::KeyboardUIController::Get();
   if (keyboard_controller->HasObserver(this))
     keyboard_controller->RemoveObserver(this);
   window_dimmer_.reset();
@@ -179,7 +183,7 @@ void SystemModalContainerLayoutManager::DestroyModalBackground() {
 // static
 bool SystemModalContainerLayoutManager::IsModalBackground(
     aura::Window* window) {
-  int id = window->parent()->id();
+  int id = window->parent()->GetId();
   if (id != kShellWindowId_SystemModalContainer &&
       id != kShellWindowId_LockSystemModalContainer)
     return false;
@@ -190,17 +194,26 @@ bool SystemModalContainerLayoutManager::IsModalBackground(
          layout_manager->window_dimmer_->window() == window;
 }
 
+// This is invoked when the work area changes.
+//  * SystemModalContainerLayoutManager windows depend on
+//    changes to the accessibility panel insets, which are
+//    stored and handled globally via ShelfLayoutManager.
+void SystemModalContainerLayoutManager::WillChangeVisibilityState(
+    ShelfVisibilityState new_state) {
+  PositionDialogsAfterWorkAreaResize();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // SystemModalContainerLayoutManager, private:
 
 void SystemModalContainerLayoutManager::AddModalWindow(aura::Window* window) {
   if (modal_windows_.empty()) {
-    aura::Window* capture_window = wm::GetCaptureWindow();
+    aura::Window* capture_window = window_util::GetCaptureWindow();
     if (capture_window)
       capture_window->ReleaseCapture();
   }
   DCHECK(window->IsVisible());
-  DCHECK(!base::ContainsValue(modal_windows_, window));
+  DCHECK(!base::Contains(modal_windows_, window));
 
   modal_windows_.push_back(window);
   // Create the modal background on all displays for |window|.
@@ -255,10 +268,23 @@ gfx::Rect SystemModalContainerLayoutManager::GetUsableDialogArea() const {
   // windows. This way we avoid flashing lines upon resize animation and if the
   // keyboard will not fill left to right, the background is still covered.
   gfx::Rect valid_bounds = container_->bounds();
-  keyboard::KeyboardController* keyboard_controller =
-      keyboard::KeyboardController::Get();
+  const auto& display =
+      display::Screen::GetScreen()->GetDisplayNearestWindow(container_);
+  gfx::Rect work_area = display.work_area();
+  // Convert work area in screen global coordinates to root local coordinates.
+  wm::ConvertRectFromScreen(container_->GetRootWindow(), &work_area);
+
+  // Similarly to NativeWidgetAura::CenterWindow, when centering window,
+  // we take the intersection of the host and the container bounds.
+  // The existing tests, SystemModalContainerLayoutManagerTest.KeepVisible and
+  // KeepCentered, include the cases that container bounds are resizable.
+  valid_bounds.Intersect(work_area);
+
+  keyboard::KeyboardUIController* keyboard_controller =
+      keyboard::KeyboardUIController::Get();
   if (keyboard_controller->IsEnabled()) {
-    gfx::Rect bounds = keyboard_controller->GetWorkspaceOccludedBounds();
+    gfx::Rect bounds =
+        keyboard_controller->GetWorkspaceOccludedBoundsInScreen();
     valid_bounds.set_height(
         std::max(0, valid_bounds.height() - bounds.height()));
   }
@@ -278,7 +304,7 @@ gfx::Rect SystemModalContainerLayoutManager::GetCenteredAndOrFittedBounds(
     target_bounds = window->bounds();
     target_bounds.AdjustToFit(usable_area);
   }
-  if (usable_area != container_->bounds()) {
+  if (keyboard::KeyboardUIController::Get()->IsEnabled()) {
     // Don't clamp the dialog for the keyboard. Keep the size as it is but make
     // sure that the top remains visible.
     // TODO(skuhne): M37 should add over scroll functionality to address this.

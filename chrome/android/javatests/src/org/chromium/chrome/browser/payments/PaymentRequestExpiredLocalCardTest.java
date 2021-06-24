@@ -6,7 +6,7 @@ package org.chromium.chrome.browser.payments;
 
 import static org.chromium.chrome.browser.payments.PaymentRequestTestRule.FIRST_BILLING_ADDRESS;
 
-import android.support.test.filters.MediumTest;
+import androidx.test.filters.MediumTest;
 
 import org.junit.Assert;
 import org.junit.ClassRule;
@@ -16,19 +16,18 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.FlakyTest;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.autofill.AutofillTestHelper;
-import org.chromium.chrome.browser.autofill.CardType;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.AutofillProfile;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.payments.PaymentRequestTestRule.MainActivityStartCallback;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ui.DisableAnimationsTestRule;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
+import org.chromium.ui.test.util.DisableAnimationsTestRule;
 
 import java.util.Calendar;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -49,17 +48,16 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
     String mCreditCardId;
 
     @Override
-    public void onMainActivityStarted()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void onMainActivityStarted() throws TimeoutException {
         mHelper = new AutofillTestHelper();
         // The user has a shipping address on disk.
         String billingAddressId = mHelper.setProfile(new AutofillProfile("", "https://example.com",
-                true, "Jon Doe", "Google", "340 Main St", "CA", "Los Angeles", "", "90291", "",
-                "US", "555-555-5555", "", "en-US"));
+                true, "" /* honorific prefix */, "Jon Doe", "Google", "340 Main St", "CA",
+                "Los Angeles", "", "90291", "", "US", "555-555-5555", "", "en-US"));
         // Create an expired credit card
         mCreditCardId = mHelper.setCreditCard(new CreditCard("", "https://example.com", true, true,
-                "Jon Doe", "4111111111111111", "1111", "1", "2016", "visa", R.drawable.visa_card,
-                CardType.UNKNOWN, billingAddressId, "" /* serverId */));
+                "Jon Doe", "4111111111111111", "1111", "1", "2016", "amex", R.drawable.amex_card,
+                billingAddressId, "" /* serverId */));
     }
 
     /**
@@ -69,9 +67,9 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
      */
     @Test
     @MediumTest
+    @FlakyTest(message = "crbug.com/1182234")
     @Feature({"Payments"})
-    public void testPayWithExpiredCard_ValidExpiration()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void testPayWithExpiredCard_ValidExpiration() throws TimeoutException {
         mRule.triggerUIAndWait(mRule.getReadyToPay());
         mRule.clickAndWait(R.id.button_primary, mRule.getReadyForUnmaskInput());
         mRule.setTextInExpiredCardUnmaskDialogAndWait(
@@ -90,9 +88,9 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
      */
     @Test
     @MediumTest
+    @FlakyTest(message = "crbug.com/1182234")
     @Feature({"Payments"})
-    public void testPayWithExpiredCard_NewExpirationSaved()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void testPayWithExpiredCard_NewExpirationSaved() throws TimeoutException {
         mRule.triggerUIAndWait(mRule.getReadyToPay());
         mRule.clickAndWait(R.id.button_primary, mRule.getReadyForUnmaskInput());
         mRule.setTextInExpiredCardUnmaskDialogAndWait(
@@ -112,9 +110,9 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
      */
     @Test
     @MediumTest
+    @FlakyTest(message = "crbug.com/1182234")
     @Feature({"Payments"})
-    public void testCannotAddExpiredCard()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void testCannotAddExpiredCard() throws TimeoutException {
         // If the current date is in January skip this test. It is not possible to select an expired
         // date in the card editor in January.
         Calendar now = Calendar.getInstance();
@@ -147,9 +145,9 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
      */
     @Test
     @MediumTest
+    @FlakyTest(message = "crbug.com/1182234")
     @Feature({"Payments"})
-    public void testPromptErrorMessages()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void testPromptErrorMessages() throws TimeoutException {
         // Click pay to get to the card unmask prompt.
         mRule.triggerUIAndWait(mRule.getReadyToPay());
         mRule.clickAndWait(R.id.button_primary, mRule.getReadyForUnmaskInput());
@@ -207,8 +205,8 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
     @MediumTest
     @Feature({"Payments"})
     @Test
-    public void testSoftwareKeyboardSubmitInCvcNumberField()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    @FlakyTest(message = "crbug.com/1182234")
+    public void testSoftwareKeyboardSubmitInCvcNumberField() throws TimeoutException {
         mRule.triggerUIAndWait(mRule.getReadyToPay());
         mRule.clickAndWait(R.id.button_primary, mRule.getReadyForUnmaskInput());
 
@@ -218,5 +216,21 @@ public class PaymentRequestExpiredLocalCardTest implements MainActivityStartCall
                 new String[] {"10", "26", "123"}, mRule.getReadyToUnmask());
 
         mRule.hitSoftwareKeyboardSubmitButtonAndWait(R.id.card_unmask_input, mRule.getDismissed());
+    }
+
+    /**
+     * Tests that hitting "submit" on the software keyboard in the CVC number field with no CVC set
+     * will not submit the CVC unmask dialog.
+     */
+    @MediumTest
+    @Feature({"Payments"})
+    @Test
+    @FlakyTest(message = "crbug.com/1182234")
+    public void testNoSoftwareKeyboardSubmitInCvcNumberFieldIfInvalid() throws TimeoutException {
+        mRule.triggerUIAndWait(mRule.getReadyToPay());
+        mRule.clickAndWait(R.id.button_primary, mRule.getReadyForUnmaskInput());
+
+        mRule.hitSoftwareKeyboardSubmitButtonAndWait(
+                R.id.card_unmask_input, mRule.getSubmitRejected());
     }
 }

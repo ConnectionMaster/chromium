@@ -22,6 +22,7 @@
 #include "base/time/tick_clock.h"
 #include "media/base/audio_converter.h"
 #include "media/base/audio_parameters.h"
+#include "media/base/media_util.h"
 #include "media/cast/cast_config.h"
 #include "media/filters/audio_renderer_algorithm.h"
 #include "media/filters/ffmpeg_demuxer.h"
@@ -49,7 +50,7 @@ class AudioFrameInput;
 class VideoFrameInput;
 class TestAudioBusFactory;
 
-class FakeMediaSource : public media::AudioConverter::InputCallback {
+class FakeMediaSource final : public media::AudioConverter::InputCallback {
  public:
   // |task_runner| is to schedule decoding tasks.
   // |clock| is used by this source but is not owned.
@@ -161,6 +162,7 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   std::unique_ptr<media::AudioFifo> audio_fifo_;
   std::unique_ptr<media::AudioBus> audio_fifo_input_bus_;
   media::AudioRendererAlgorithm audio_algo_;
+  media::NullMediaLog media_log_;
 
   // Track the timestamp of audio sent to the receiver.
   std::unique_ptr<media::AudioTimestampHelper> audio_sent_ts_;
@@ -174,7 +176,7 @@ class FakeMediaSource : public media::AudioConverter::InputCallback {
   base::queue<AudioBus*> audio_bus_queue_;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
-  base::WeakPtrFactory<FakeMediaSource> weak_factory_;
+  base::WeakPtrFactory<FakeMediaSource> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeMediaSource);
 };

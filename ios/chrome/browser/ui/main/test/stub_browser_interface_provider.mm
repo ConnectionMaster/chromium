@@ -22,11 +22,10 @@
   return self;
 }
 
-- (void)haltAllTabs {
-  // no-op
+#pragma mark - BrowserInterfaceProvider
+
+- (BOOL)hasIncognitoInterface {
+  return _incognitoInterface;
 }
 
-- (void)cleanDeviceSharingManager {
-  // no-op
-}
 @end

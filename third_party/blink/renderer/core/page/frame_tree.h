@@ -20,7 +20,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAGE_FRAME_TREE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAGE_FRAME_TREE_H_
 
-#include "base/macros.h"
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -28,12 +28,16 @@
 namespace blink {
 
 class Frame;
+struct FrameLoadRequest;
+class KURL;
 
 class CORE_EXPORT FrameTree final {
   DISALLOW_NEW();
 
  public:
   explicit FrameTree(Frame* this_frame);
+  FrameTree(const FrameTree&) = delete;
+  FrameTree& operator=(const FrameTree&) = delete;
   ~FrameTree();
 
   const AtomicString& GetName() const;
@@ -45,6 +49,10 @@ class CORE_EXPORT FrameTree final {
     // Kicks-off propagation of name changes to other renderers.
     kReplicate,
   };
+
+  // TODO(shuuran): remove this once we have gathered the data
+  void CrossSiteCrossBrowsingContextGroupSetNulledName();
+
   void SetName(const AtomicString&, ReplicationPolicy = kDoNotReplicate);
 
   // TODO(andypaicu): remove this once we have gathered the data
@@ -58,7 +66,21 @@ class CORE_EXPORT FrameTree final {
   bool IsDescendantOf(const Frame* ancestor) const;
   Frame* TraverseNext(const Frame* stay_within = nullptr) const;
 
-  Frame* Find(const AtomicString& name) const;
+  // For plugins and tests only.
+  Frame* FindFrameByName(const AtomicString& name) const;
+
+  // https://html.spec.whatwg.org/#the-rules-for-choosing-a-browsing-context-given-a-browsing-context-name
+  struct FindResult {
+    STACK_ALLOCATED();
+
+   public:
+    FindResult(Frame* f, bool is_new) : frame(f), new_window(is_new) {}
+    Frame* frame;
+    bool new_window;
+  };
+  FindResult FindOrCreateFrameForNavigation(FrameLoadRequest&,
+                                            const AtomicString& name) const;
+
   unsigned ChildCount() const;
 
   Frame* ScopedChild(unsigned index) const;
@@ -71,9 +93,12 @@ class CORE_EXPORT FrameTree final {
   unsigned ScopedChildCount() const;
   void InvalidateScopedChildCount();
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
+  Frame* FindFrameForNavigationInternal(const AtomicString& name,
+                                        const KURL&) const;
+
   Member<Frame> this_frame_;
 
   AtomicString name_;  // The actual frame name (may be empty).
@@ -83,13 +108,14 @@ class CORE_EXPORT FrameTree final {
   // TODO(andypaicu): remove this once we have gathered the data
   bool experimental_set_nulled_name_;
 
-  DISALLOW_COPY_AND_ASSIGN(FrameTree);
+  // TODO(shuuran): remove this once we have gathered the data
+  bool cross_site_cross_browsing_context_group_set_nulled_name_;
 };
 
 }  // namespace blink
 
-#ifndef NDEBUG
-// Outside the WebCore namespace for ease of invocation from gdb.
+#if DCHECK_IS_ON()
+// Outside the blink namespace for ease of invocation from gdb.
 void showFrameTree(const blink::Frame*);
 #endif
 

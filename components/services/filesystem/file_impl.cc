@@ -12,14 +12,15 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_op.h"
+#include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_file.h"
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "components/services/filesystem/lock_table.h"
 #include "components/services/filesystem/shared_temp_dir.h"
 #include "components/services/filesystem/util.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 
 static_assert(sizeof(off_t) <= sizeof(int64_t), "off_t too big");
 static_assert(sizeof(size_t) >= sizeof(uint32_t), "size_t too small");
@@ -66,7 +67,7 @@ bool FileImpl::IsValid() const {
 
 #if !defined(OS_FUCHSIA)
 base::File::Error FileImpl::RawLockFile() {
-  return file_.Lock();
+  return file_.Lock(base::File::LockMode::kExclusive);
 }
 
 base::File::Error FileImpl::RawUnlockFile() {
@@ -91,28 +92,28 @@ void FileImpl::Read(uint32_t num_bytes_to_read,
                     mojom::Whence whence,
                     ReadCallback callback) {
   if (!file_.IsValid()) {
-    std::move(callback).Run(GetError(file_), base::nullopt);
+    std::move(callback).Run(GetError(file_), absl::nullopt);
     return;
   }
   if (num_bytes_to_read > kMaxReadSize) {
     std::move(callback).Run(base::File::Error::FILE_ERROR_INVALID_OPERATION,
-                            base::nullopt);
+                            absl::nullopt);
     return;
   }
   base::File::Error error = IsOffsetValid(offset);
   if (error != base::File::Error::FILE_OK) {
-    std::move(callback).Run(error, base::nullopt);
+    std::move(callback).Run(error, absl::nullopt);
     return;
   }
   error = IsWhenceValid(whence);
   if (error != base::File::Error::FILE_OK) {
-    std::move(callback).Run(error, base::nullopt);
+    std::move(callback).Run(error, absl::nullopt);
     return;
   }
 
   if (file_.Seek(static_cast<base::File::Whence>(whence), offset) == -1) {
     std::move(callback).Run(base::File::Error::FILE_ERROR_FAILED,
-                            base::nullopt);
+                            absl::nullopt);
     return;
   }
 
@@ -121,7 +122,7 @@ void FileImpl::Read(uint32_t num_bytes_to_read,
       reinterpret_cast<char*>(&bytes_read.front()), num_bytes_to_read);
   if (num_bytes_read < 0) {
     std::move(callback).Run(base::File::Error::FILE_ERROR_FAILED,
-                            base::nullopt);
+                            absl::nullopt);
     return;
   }
 
@@ -292,7 +293,8 @@ void FileImpl::Touch(mojom::TimespecOrNowPtr atime,
   std::move(callback).Run(base::File::Error::FILE_OK);
 }
 
-void FileImpl::Dup(mojom::FileRequest file, DupCallback callback) {
+void FileImpl::Dup(mojo::PendingReceiver<mojom::File> receiver,
+                   DupCallback callback) {
   if (!file_.IsValid()) {
     std::move(callback).Run(GetError(file_));
     return;
@@ -304,11 +306,11 @@ void FileImpl::Dup(mojom::FileRequest file, DupCallback callback) {
     return;
   }
 
-  if (file.is_pending()) {
-    mojo::MakeStrongBinding(
+  if (receiver) {
+    mojo::MakeSelfOwnedReceiver(
         std::make_unique<FileImpl>(path_, std::move(new_file), temp_dir_,
                                    lock_table_),
-        std::move(file));
+        std::move(receiver));
   }
   std::move(callback).Run(base::File::Error::FILE_OK);
 }

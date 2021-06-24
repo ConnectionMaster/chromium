@@ -1,66 +1,59 @@
 <!doctype html>
-<html dir="ltr" lang="en"
-    <if expr="not is_ios and not is_android">$i18n{dark}</if>>
+<html dir="$i18n{textdirection}" lang="$i18n{language}">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
 <if expr="not is_ios">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="chrome://resources/css/text_defaults_md.css">
 </if>
+<title>$i18n{title}</title>
 
 <link rel="stylesheet" href="flags.css">
 
 <if expr="is_ios">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1, maximum-scale=1">
   <link rel="stylesheet" href="chrome://resources/css/text_defaults.css">
-  <!-- TODO(crbug.com/487000): Remove this once injected by web. -->
-  <script src="chrome://resources/js/ios/web_ui.js"></script>
 </if>
 
-<script src="chrome://resources/js/cr.js"></script>
-<script src="chrome://resources/js/cr/ui/focus_outline_manager.js"></script>
-<script src="chrome://resources/js/util.js"></script>
 </head>
 <body>
 <div id="header">
   <div class="flex-container">
     <div class="flex">
       <div class="search-container">
-        <input type="text" id="search" placeholder="Search flags" tabindex="1"
-            autocomplete="off" spellcheck="false">
-        <input type="button" class="clear-search" title="Clear search"
+        <input type="text" id="search"
+               aria-label="$i18n{search-label}"
+               placeholder="$i18n{search-placeholder}" tabindex="1"
+               autocomplete="off" spellcheck="false">
+        <input type="button" class="clear-search" title="$i18n{clear-search}"
             tabindex="2">
       </div>
     </div>
     <div class="flex">
       <button id="experiment-reset-all" type="button" tabindex="3">
-        Reset all to default
+          $i18n{reset}
       </button>
     </div>
   </div>
+  <div class="screen-reader-only" id="screen-reader-status-message" role="status"></div>
 </div>
 <div id="body-container" style="visibility:hidden">
   <div id="flagsTemplate">
     <div class="flex-container">
-      <div class="flex"><h1 class="section-header-title">Experiments</h1></div>
+      <div class="flex"><h1 class="section-header-title">$i18n{heading}</h1></div>
       <span id="version" class="flex">$i18n{version}</span>
     </div>
     <div class="blurb-container">
-      <span class="blurb-warning">
-         Warning: Experimental features ahead!
-      </span>
-      <span>
-        By enabling these features, you could lose browser data or
-        compromise your security or privacy. Enabled features apply to all
-        users of this browser.
-      </span>
+      <span class="blurb-warning">$i18n{page-warning}</span>
+      <span>$i18n{page-warning-explanation}</span>
 <if expr="chromeos">
-      <p id="owner-warning">
-        <span>Flags that apply system-wide can only be set by the owner: $i18n{ownerEmail}</span>
-      </p>
+      <p id="owner-warning">$i18n{owner-warning}</p>
 </if>
     </div>
     <p id="promos" hidden>
+      <!-- Those strings are not localized because they only appear in
+           chrome://flags, which is not localized. -->
       <span id="channel-promo-beta" hidden>
         Interested in cool new Chrome features? Try our
         <a href="https://chrome.com/beta">beta channel</a>.
@@ -70,12 +63,12 @@
         <a href="https://chrome.com/dev">dev channel</a>
       </span>
     </p>
-    <ul class="tabs" role="tablist">
+    <ul class="tabs" role="tablist" aria-owns="tab-available tab-unavailable">
       <li class="selected">
         <a href="#tab-content-available" id="tab-available" class="tab" role="tab"
             aria-selected="true"
             aria-controls="panel1"
-            tabindex="4">Available</a>
+            tabindex="4">$i18n{available}</a>
         <div id="tab-content-available" class="tab-content"
             role="tabpanel" aria-labelledby="tab-available" aria-hidden="false">
         </div>
@@ -89,15 +82,17 @@
                     : 'experiment-switched flex-container'">
               <div class="flex">
                 <h3 class="experiment-name" jscontent="name"
-                    jsvalues="title: is_default ? '' : 'Experiment enabled'"></h3>
+                    jsvalues="title: is_default ? '' : '$i18n{experiment-enabled}';
+                        id:internal_name + '_name'" tabindex="-1"></h3>
                 <p>
-                  <span jsvalues=".innerHTML:description"></span> –
+                  <span jsvalues=".textContent:description"></span> –
                   <span class="platforms" jscontent="supported_platforms.join(', ')"></span>
                 </p>
                 <div jsdisplay="origin_list_value!==null">
                   <textarea class="experiment-origin-list-value"
-                      jsvalues=".internal_name:internal_name; .value:origin_list_value"
-                      tabindex="7"></textarea>
+                      jsvalues=".internal_name:internal_name; .value:origin_list_value;
+                          aria-labelledby:internal_name + '_name'"
+                      tabindex="6"></textarea>
                 </div>
                 <a class="permalink" jsvalues="href: '#' + internal_name"
                     jscontent="'#' + internal_name" tabindex="6"></a>
@@ -105,7 +100,8 @@
               <div class="flex experiment-actions">
                 <div jsdisplay="options && options.length > 0">
                   <select class="experiment-select" tabindex="6"
-                      jsvalues=".internal_name:internal_name;.disabled:!enabled;">
+                      jsvalues=".internal_name:internal_name;.disabled:!enabled;
+                          aria-labelledby:internal_name + '_name'">
                     <option jsvalues=".selected:selected;"
                         jsselect="options"
                         jscontent="description">
@@ -114,12 +110,12 @@
                 </div>
                 <select class="experiment-enable-disable" tabindex="6"
                     jsdisplay="enabled !== undefined"
-                    jsvalues=".internal_name:internal_name;">
+                    jsvalues=".internal_name:internal_name;
+                        aria-labelledby:internal_name + '_name'">
                   <option jsvalues=".selected:!enabled; data-default: enabled ? 1 : 0"
-                      value="disabled">Disabled</option>
+                      value="disabled">$i18n{disabled}</option>
                   <option jsvalues=".selected:enabled; data-default: !enabled ? 1 : 0"
-                      value="enabled">Enabled</option>
-                  </option>
+                      value="enabled">$i18n{enabled}</option>
                 </select>
               </div>
             </div>
@@ -133,15 +129,17 @@
                     : 'experiment-switched flex-container'">
               <div class="flex">
                 <h3 class="experiment-name" jscontent="name"
-                    jsvalues="title: is_default ? '' : 'Experiment enabled'"></h3>
+                    jsvalues="title: is_default ? '' : '$i18n{experiment-enabled}';
+                        id:internal_name + '_name'" tabindex="-1"></h3>
                 <p>
-                  <span jsvalues=".innerHTML:description"></span> –
+                  <span jsvalues=".textContent:description"></span> –
                   <span class="platforms" jscontent="supported_platforms.join(', ')"></span>
                 </p>
                 <div jsdisplay="origin_list_value!==null">
                   <textarea class="experiment-origin-list-value"
-                      jsvalues=".internal_name:internal_name; .value:origin_list_value"
-                      tabindex="7"></textarea>
+                      jsvalues=".internal_name:internal_name; .value:origin_list_value;
+                          aria-labelledby:internal_name + '_name'"
+                      tabindex="6"></textarea>
                 </div>
                 <a class="permalink" jsvalues="href: '#' + internal_name"
                     jscontent="'#' + internal_name" tabindex="6"></a>
@@ -149,7 +147,8 @@
               <div class="flex experiment-actions">
                 <div jsdisplay="options && options.length > 0">
                   <select class="experiment-select" tabindex="6"
-                      jsvalues=".internal_name:internal_name;.disabled:!enabled">
+                      jsvalues=".internal_name:internal_name;.disabled:!enabled;
+                          aria-labelledby:internal_name + '_name'">
                     <option jsvalues=".selected:selected;"
                         jsselect="options"
                         jscontent="description">
@@ -159,16 +158,17 @@
                 <!-- Represent enabled / disabled options in a drop down -->
                 <select class="experiment-enable-disable" tabindex="6"
                     jsdisplay="enabled !== undefined"
-                    jsvalues=".internal_name:internal_name;">
+                    jsvalues=".internal_name:internal_name;
+                        aria-labelledby:internal_name + '_name'">
                   <option jsvalues=".selected:!enabled; data-default:!enabled ? 1 : 0"
-                      value="disabled">Disabled</option>
+                      value="disabled">$i18n{disabled}</option>
                   <option jsvalues=".selected:enabled; data-default: enabled ? 1 : 0"
-                      value="enabled">Enabled</option>
+                      value="enabled">$i18n{enabled}</option>
                 </select>
               </div>
             </div>
           </div>
-          <div class="no-match hidden">No matching experiments</div>
+          <div class="no-match hidden" role="alert">$i18n{no-results}</div>
         </div>
       </li>
 <!-- Unsupported experiments are not shown on iOS -->
@@ -176,7 +176,7 @@
       <li>
         <a href="#tab-content-unavailable" id="tab-unavailable" class="tab" role="tab"
            aria-selected="false" aria-controls="panel2"
-           tabindex="5">Unavailable</a>
+           tabindex="5">$i18n{unavailable}</a>
         <div id="tab-content-unavailable" class="tab-content"
             role="tabpanel" aria-labelledby="tab-unavailable" aria-hidden="false">
           <div class="experiment"
@@ -186,21 +186,22 @@
                 jsvalues="class: is_default ? 'experiment-default flex-container'
                     : 'experiment-switched flex-container'">
               <div class="flex">
-                <h3 class="experiment-name"
-                    jscontent="name">Name</h3>
+                <h3 class="experiment-name" jscontent="name"
+                  jsvalues="id:internal_name + '_name'" tabindex="-1">
+                </h3>
                 <p>
-                  <span jsvalues=".innerHTML:description"></span>
+                  <span jsvalues=".textContent:description"></span>
                   <span class="platforms" jscontent="supported_platforms.join(', ')"></span>
                 </p>
                 <a class="permalink"
                     jsvalues="href: '#' + internal_name"
                     jscontent="'#' + internal_name" tabindex="8"></a>
               </div>
-              <div class="flex experiment-actions">Not available on your platform.</div>
+              <div class="flex experiment-actions">$i18n{not-available-platform}</div>
             </div>
           </div>
-          <div class="no-match hidden">
-            No matching experiments
+          <div class="no-match hidden" role="alert">
+            $i18n{no-results}
           </div>
         </div>
       </li>
@@ -211,13 +212,8 @@
         <div class="flex restart-notice" jstcache="0">$i18n{flagsRestartNotice}</div>
         <div class="flex">
 <if expr="not is_ios">
-          <button id="experiment-restart-button" class="primary" tabindex="9">
-<if expr="not chromeos">
-          Relaunch Now
-</if>
-<if expr="chromeos">
-          Restart Now
-</if>
+          <button id="experiment-restart-button" class="primary" tabindex="-1">
+            $i18n{relaunch}
           </button>
 </if>
         </div>
@@ -225,7 +221,6 @@
     </div>
   </div>
 </div>
-<script src="chrome://flags/flags.js"></script>
-<script src="chrome://resources/js/jstemplate_compiled.js"></script>
+<script type="module" src="flags.js"></script>
 </body>
 </html>

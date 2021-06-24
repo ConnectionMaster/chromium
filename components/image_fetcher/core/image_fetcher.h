@@ -10,16 +10,17 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/optional.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
+#include "base/time/time.h"
 #include "components/image_fetcher/core/image_fetcher_types.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 
 namespace image_fetcher {
 
 class ImageDecoder;
+class ReducedModeImageFetcher;
 
 // Encapsulates image fetching customization options.
 // (required)
@@ -32,9 +33,13 @@ class ImageDecoder;
 //   that's closest to the given size (only useful for .icos). Does NOT resize
 //   the downloaded image to the given dimensions.
 class ImageFetcherParams {
-  // Only allow the bridge to access the private function set_skip_transcoding
+  // Allows the bridge to access the private function set_skip_transcoding
   // used for gif download.
   friend class ImageFetcherBridge;
+  // Allows ReducedModeImageFetcher to access the private
+  // function set_skip_transcoding and set_allow_needs_transcoding_file because
+  // it ignores the ImageFetcherCallback.
+  friend class ReducedModeImageFetcher;
 
  public:
   // Sets the UMA client name to report feature-specific metrics. Make sure
@@ -51,11 +56,11 @@ class ImageFetcherParams {
     return network_traffic_annotation_tag_;
   }
 
-  void set_max_download_size(base::Optional<int64_t> max_download_bytes) {
+  void set_max_download_size(absl::optional<int64_t> max_download_bytes) {
     max_download_bytes_ = max_download_bytes;
   }
 
-  base::Optional<int64_t> max_download_size() const {
+  absl::optional<int64_t> max_download_size() const {
     return max_download_bytes_;
   }
 
@@ -69,15 +74,28 @@ class ImageFetcherParams {
 
   bool skip_transcoding() const { return skip_transcoding_; }
 
+  bool allow_needs_transcoding_file() const {
+    return allow_needs_transcoding_file_;
+  }
+
   // Only to be used in unittests.
   void set_skip_transcoding_for_testing(bool skip_transcoding) {
     skip_transcoding_ = skip_transcoding;
   }
 
-  bool skip_disk_cache_read() { return skip_disk_cache_read_; }
+  bool skip_disk_cache_read() const { return skip_disk_cache_read_; }
 
   void set_skip_disk_cache_read(bool skip_disk_cache_read) {
     skip_disk_cache_read_ = skip_disk_cache_read;
+  }
+
+  const absl::optional<base::TimeDelta>& expiration_interval() const {
+    return expiration_interval_;
+  }
+
+  void set_hold_for_expiration_interval(
+      const base::TimeDelta& expiration_interval) {
+    expiration_interval_ = expiration_interval;
   }
 
  private:
@@ -85,9 +103,17 @@ class ImageFetcherParams {
     skip_transcoding_ = skip_transcoding;
   }
 
+  void set_allow_needs_transcoding_file(bool allow_needs_transcoding_file) {
+    allow_needs_transcoding_file_ = allow_needs_transcoding_file;
+  }
+
   const net::NetworkTrafficAnnotationTag network_traffic_annotation_tag_;
 
-  base::Optional<int64_t> max_download_bytes_;
+  absl::optional<int64_t> max_download_bytes_;
+  // Only used in rare cases to keep the cache file on disk for certain period
+  // of time. Image files will stay in cache at least for |expiration_interval_|
+  // after last use.
+  absl::optional<base::TimeDelta> expiration_interval_;
   gfx::Size desired_frame_size_;
   std::string uma_client_name_;
   // When true, the image fetcher will skip transcoding whenever possible. Only
@@ -98,6 +124,9 @@ class ImageFetcherParams {
   // True if the disk cache should be skipped because it was already checked in
   // java.
   bool skip_disk_cache_read_;
+  // True if allowing images that need transcoding to be stored with a prefix in
+  // file names.
+  bool allow_needs_transcoding_file_;
 };
 
 // A class used to fetch server images. It can be called from any thread and the

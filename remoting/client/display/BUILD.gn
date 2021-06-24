@@ -30,13 +30,14 @@ source_set("display") {
     "sys_opengl.h",
   ]
 
-  public_deps = [
-    "//remoting/proto",
-  ]
+  public_deps = [ "//remoting/proto" ]
   deps = [
+    "//base",
+    "//remoting/base",
+    "//remoting/client/ui:ui_manipulation",
     "//third_party/libyuv",
     "//third_party/protobuf:protobuf_lite",
-    "//third_party/webrtc/rtc_base:rtc_base_approved",
+    "//third_party/webrtc_overrides:webrtc_component",
   ]
 
   public_configs = [ "//third_party/khronos:khronos_headers" ]
@@ -45,19 +46,22 @@ source_set("display") {
     libs = [ "GLESv2" ]
   }
 
-  if (is_linux) {
+  if (is_linux || is_chromeos) {
     libs = [ "GL" ]
   }
 
   if (is_mac) {
-    libs = [ "OpenGL.framework" ]
+    frameworks = [ "OpenGL.framework" ]
   }
 
   if (is_ios) {
-    libs = [
+    frameworks = [
       "GLKit.framework",
       "OpenGLES.framework",
     ]
+
+    # TODO(crbug.com/875022) fix for OpenGLES deprecation.
+    defines = [ "GLES_SILENCE_DEPRECATION" ]
   }
 
   if (is_win) {
@@ -88,10 +92,12 @@ if (is_win) {
 
     deps = [
       ":display",
+      "//base",
+      "//base/test:test_support",
       "//remoting/proto",
       "//testing/gmock",
       "//testing/gtest",
-      "//third_party/webrtc/rtc_base:rtc_base_approved",
+      "//third_party/webrtc_overrides:webrtc_component",
     ]
   }
 }

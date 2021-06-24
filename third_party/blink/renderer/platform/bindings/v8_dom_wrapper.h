@@ -53,9 +53,8 @@ class V8DOMWrapper {
   STATIC_ONLY(V8DOMWrapper);
 
  public:
-  PLATFORM_EXPORT static v8::Local<v8::Object> CreateWrapper(
-      v8::Isolate*,
-      v8::Local<v8::Object> creation_context,
+  PLATFORM_EXPORT static v8::MaybeLocal<v8::Object> CreateWrapper(
+      ScriptState*,
       const WrapperTypeInfo*);
   PLATFORM_EXPORT static bool IsWrapper(v8::Isolate*, v8::Local<v8::Value>);
 
@@ -116,7 +115,7 @@ inline void V8DOMWrapper::SetNativeInfoInternal(
   // The following write barrier is necessary as V8 might not see the newly
   // created object during garbage collection, e.g., when the object is black
   // allocated.
-  UnifiedHeapMarkingVisitor::WriteBarrier(isolate, wrapper_type_info,
+  UnifiedHeapMarkingVisitor::WriteBarrier(isolate, wrapper, wrapper_type_info,
                                           wrappable);
 }
 
@@ -136,7 +135,6 @@ inline v8::Local<v8::Object> V8DOMWrapper::AssociateObjectWithWrapper(
   RUNTIME_CALL_TIMER_SCOPE(
       isolate, RuntimeCallStats::CounterId::kAssociateObjectWithWrapper);
   if (DOMDataStore::SetWrapper(isolate, impl, wrapper_type_info, wrapper)) {
-    WrapperTypeInfo::WrapperCreated();
     SetNativeInfo(isolate, wrapper, wrapper_type_info, impl);
     DCHECK(HasInternalFieldsSet(wrapper));
   }
@@ -151,7 +149,6 @@ inline void V8DOMWrapper::AssociateObjectWithWrapper(
     v8::Local<v8::Object> wrapper) {
   RUNTIME_CALL_TIMER_SCOPE(
       isolate, RuntimeCallStats::CounterId::kAssociateObjectWithWrapper);
-  WrapperTypeInfo::WrapperCreated();
   SetNativeInfo(isolate, wrapper, wrapper_type_info, impl);
   DCHECK(HasInternalFieldsSet(wrapper));
   SECURITY_CHECK(ToCustomWrappable(wrapper) == impl);
@@ -161,20 +158,13 @@ class V8WrapperInstantiationScope {
   STACK_ALLOCATED();
 
  public:
-  V8WrapperInstantiationScope(v8::Local<v8::Object> creation_context,
-                              v8::Isolate* isolate,
+  // This is an overload of constructor for CreateWrapperV2.
+  V8WrapperInstantiationScope(ScriptState* script_state,
                               const WrapperTypeInfo* type)
-      : did_enter_context_(false),
-        context_(isolate->GetCurrentContext()),
-        try_catch_(isolate),
-        type_(type),
-        access_check_failed_(false) {
-    // creationContext should not be empty. Because if we have an
-    // empty creationContext, we will end up creating
-    // a new object in the context currently entered. This is wrong.
-    CHECK(!creation_context.IsEmpty());
-    v8::Local<v8::Context> context_for_wrapper =
-        creation_context->CreationContext();
+      : context_(script_state->GetIsolate()->GetCurrentContext()),
+        try_catch_(script_state->GetIsolate()),
+        type_(type) {
+    v8::Local<v8::Context> context_for_wrapper = script_state->GetContext();
 
     // For performance, we enter the context only if the currently running
     // context is different from the context that we are about to enter.
@@ -182,7 +172,8 @@ class V8WrapperInstantiationScope {
       return;
 
     if (!BindingSecurityForPlatform::ShouldAllowWrapperCreationOrThrowException(
-            isolate->GetCurrentContext(), context_for_wrapper, type_)) {
+            script_state->GetIsolate()->GetCurrentContext(),
+            context_for_wrapper, type_)) {
       DCHECK(try_catch_.HasCaught());
       try_catch_.ReThrow();
       access_check_failed_ = true;
@@ -220,11 +211,11 @@ class V8WrapperInstantiationScope {
   bool AccessCheckFailed() const { return access_check_failed_; }
 
  private:
-  bool did_enter_context_;
+  bool did_enter_context_ = false;
   v8::Local<v8::Context> context_;
   v8::TryCatch try_catch_;
   const WrapperTypeInfo* type_;
-  bool access_check_failed_;
+  bool access_check_failed_ = false;
 };
 
 }  // namespace blink

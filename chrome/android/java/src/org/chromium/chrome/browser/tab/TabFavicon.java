@@ -9,8 +9,10 @@ import android.graphics.Bitmap;
 
 import org.chromium.base.ObserverList.RewindableIterator;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.chrome.R;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.url.GURL;
 
 /**
  * Fetches a favicon for active WebContents in a Tab.
@@ -18,7 +20,7 @@ import org.chromium.content_public.browser.WebContents;
 public class TabFavicon extends TabWebContentsUserData {
     private static final Class<TabFavicon> USER_DATA_KEY = TabFavicon.class;
 
-    private final Tab mTab;
+    private final TabImpl mTab;
     private final long mNativeTabFavicon;
 
     /**
@@ -30,7 +32,7 @@ public class TabFavicon extends TabWebContentsUserData {
     private Bitmap mFavicon;
     private int mFaviconWidth;
     private int mFaviconHeight;
-    private String mFaviconUrl;
+    private GURL mFaviconUrl;
 
     static TabFavicon from(Tab tab) {
         TabFavicon favicon = get(tab);
@@ -56,25 +58,25 @@ public class TabFavicon extends TabWebContentsUserData {
 
     private TabFavicon(Tab tab) {
         super(tab);
-        Resources resources = tab.getThemedApplicationContext().getResources();
+        mTab = (TabImpl) tab;
+        Resources resources = mTab.getThemedApplicationContext().getResources();
         mIdealFaviconSize = resources.getDimensionPixelSize(R.dimen.default_favicon_size);
-        mTab = tab;
-        mNativeTabFavicon = nativeInit();
+        mNativeTabFavicon = TabFaviconJni.get().init(TabFavicon.this);
     }
 
     @Override
     public void initWebContents(WebContents webContents) {
-        nativeSetWebContents(mNativeTabFavicon, webContents);
+        TabFaviconJni.get().setWebContents(mNativeTabFavicon, TabFavicon.this, webContents);
     }
 
     @Override
     public void cleanupWebContents(WebContents webContents) {
-        nativeResetWebContents(mNativeTabFavicon);
+        TabFaviconJni.get().resetWebContents(mNativeTabFavicon, TabFavicon.this);
     }
 
     @Override
     public void destroyInternal() {
-        nativeOnDestroyed(mNativeTabFavicon);
+        TabFaviconJni.get().onDestroyed(mNativeTabFavicon, TabFavicon.this);
     }
 
     /**
@@ -90,7 +92,7 @@ public class TabFavicon extends TabWebContentsUserData {
             return mFavicon;
         }
 
-        return nativeGetFavicon(mNativeTabFavicon);
+        return TabFaviconJni.get().getFavicon(mNativeTabFavicon, TabFavicon.this);
     }
 
     /**
@@ -120,7 +122,7 @@ public class TabFavicon extends TabWebContentsUserData {
     @CalledByNative
     private void onFaviconAvailable(Bitmap icon) {
         if (icon == null) return;
-        String url = mTab.getUrl();
+        GURL url = mTab.getUrl();
         boolean pageUrlChanged = !url.equals(mFaviconUrl);
         // This method will be called multiple times if the page has more than one favicon.
         // We are trying to use the |mIdealFaviconSize|x|mIdealFaviconSize| DP icon here, or the
@@ -137,9 +139,12 @@ public class TabFavicon extends TabWebContentsUserData {
         while (observers.hasNext()) observers.next().onFaviconUpdated(mTab, icon);
     }
 
-    private native long nativeInit();
-    private native void nativeOnDestroyed(long nativeTabFavicon);
-    private native void nativeSetWebContents(long nativeTabFavicon, WebContents webContents);
-    private native void nativeResetWebContents(long nativeTabFavicon);
-    private native Bitmap nativeGetFavicon(long nativeTabFavicon);
+    @NativeMethods
+    interface Natives {
+        long init(TabFavicon caller);
+        void onDestroyed(long nativeTabFavicon, TabFavicon caller);
+        void setWebContents(long nativeTabFavicon, TabFavicon caller, WebContents webContents);
+        void resetWebContents(long nativeTabFavicon, TabFavicon caller);
+        Bitmap getFavicon(long nativeTabFavicon, TabFavicon caller);
+    }
 }

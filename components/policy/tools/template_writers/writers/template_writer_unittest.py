@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -130,12 +130,16 @@ IGNORE_GROUPS_SORTED_POLICY_DEFS = [
 class TemplateWriterUnittests(unittest.TestCase):
   '''Unit tests for templater_writer.py.'''
 
-  def _IsPolicySupported(self, platform, version, policy):
-    tw = template_writer.TemplateWriter([platform], {'major_version': version})
+  def _IsPolicySupported(self,
+                         platform,
+                         version,
+                         policy,
+                         writer=template_writer.TemplateWriter):
+    tw = writer([platform], {'major_version': version})
     if platform != '*':
       self.assertEqual(
           tw.IsPolicySupported(policy),
-          tw.IsPolicySupportedOnPlatform(policy, platform))
+          tw.IsPolicyOrItemSupportedOnPlatform(policy, platform))
     return tw.IsPolicySupported(policy)
 
   def testSortingGroupsFirst(self):
@@ -152,12 +156,60 @@ class TemplateWriterUnittests(unittest.TestCase):
     tw = template_writer.TemplateWriter(None, None)
     self.assertFalse(tw.IsPolicySupported({'future': True}))
     self.assertFalse(tw.IsPolicySupported({'deprecated': True}))
+    self.assertFalse(tw.IsPolicySupported({'features': {'cloud_only': True}}))
+    self.assertFalse(tw.IsPolicySupported({'features': {
+        'internal_only': True
+    }}))
+
+  def testFuturePoliciesSupport(self):
+    class FutureWriter(template_writer.TemplateWriter):
+      def IsFuturePolicySupported(self, policy):
+        return True
+
+    expected_request_for_all_platforms = [[False, True, True],
+                                          [True, True, True]]
+    expected_request_for_all_win = [[False, False, True], [True, True, True]]
+    for i, writer in enumerate([template_writer.TemplateWriter, FutureWriter]):
+      for j, policy in enumerate([{
+          'supported_on': [],
+          'future_on': [{
+              'product': 'chrome',
+              'platform': 'win'
+          }, {
+              'product': 'chrome',
+              'platform': 'mac'
+          }]
+      }, {
+          'supported_on': [{
+              'product': 'chrome',
+              'platform': 'mac'
+          }],
+          'future_on': [{
+              'product': 'chrome',
+              'platform': 'win'
+          }]
+      }, {
+          'supported_on': [{
+              'product': 'chrome',
+              'platform': 'win'
+          }, {
+              'product': 'chrome',
+              'platform': 'mac'
+          }],
+          'future_on': []
+      }]):
+        self.assertEqual(expected_request_for_all_platforms[i][j],
+                         self._IsPolicySupported('*', None, policy, writer))
+        self.assertEqual(
+            expected_request_for_all_win[i][j],
+            self._IsPolicySupported('win', None, policy, writer),
+        )
 
   def testPoliciesIsSupportedOnCertainVersion(self):
     platform = 'win'
     policy = {
         'supported_on': [{
-            'platforms': ['win'],
+            'platform': 'win',
             'since_version': '11',
             'until_version': '12'
         }]
@@ -169,7 +221,7 @@ class TemplateWriterUnittests(unittest.TestCase):
 
     policy = {
         'supported_on': [{
-            'platforms': ['win'],
+            'platform': 'win',
             'since_version': '11',
             'until_version': ''
         }]
@@ -182,11 +234,11 @@ class TemplateWriterUnittests(unittest.TestCase):
   def testPoliciesIsSupportedOnMulitplePlatform(self):
     policy = {
         'supported_on': [{
-            'platforms': ['win'],
+            'platform': 'win',
             'since_version': '12',
             'until_version': ''
         }, {
-            'platforms': ['mac'],
+            'platform': 'mac',
             'since_version': '11',
             'until_version': ''
         }]
@@ -195,6 +247,41 @@ class TemplateWriterUnittests(unittest.TestCase):
     self.assertTrue(self._IsPolicySupported('mac', 11, policy))
     self.assertTrue(self._IsPolicySupported('*', 11, policy))
     self.assertFalse(self._IsPolicySupported('*', 10, policy))
+
+  def testHasExpandedPolicyDescriptionForUrlSchema(self):
+    policy = {'url_schema': 'https://example.com/details', 'type': 'list'}
+    tw = template_writer.TemplateWriter(None, None)
+    self.assertTrue(tw.HasExpandedPolicyDescription(policy))
+
+  def testHasExpandedPolicyDescriptionForJSONPolicies(self):
+    policy = {'name': 'PolicyName', 'type': 'dict'}
+    tw = template_writer.TemplateWriter(None, None)
+    self.assertTrue(tw.HasExpandedPolicyDescription(policy))
+
+  def testGetExpandedPolicyDescriptionForUrlSchema(self):
+    policy = {'type': 'integer', 'url_schema': 'https://example.com/details'}
+    tw = template_writer.TemplateWriter(None, None)
+    tw.messages = {
+        'doc_schema_description_link': {
+            'text': '''See $6'''
+        },
+    }
+    expanded_description = tw.GetExpandedPolicyDescription(policy)
+    self.assertEqual(expanded_description, 'See https://example.com/details')
+
+  def testGetExpandedPolicyDescriptionForJSONPolicies(self):
+    policy = {'name': 'PolicyName', 'type': 'dict'}
+    tw = template_writer.TemplateWriter(None, None)
+    tw.messages = {
+        'doc_schema_description_link': {
+            'text': '''See $6'''
+        },
+    }
+    expanded_description = tw.GetExpandedPolicyDescription(policy)
+    self.assertEqual(
+        expanded_description,
+        'See https://cloud.google.com/docs/chrome-enterprise/policies/?policy=PolicyName'
+    )
 
 
 if __name__ == '__main__':

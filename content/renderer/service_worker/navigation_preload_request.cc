@@ -6,57 +6,60 @@
 
 #include <utility>
 
-#include "content/renderer/loader/web_url_loader_impl.h"
 #include "content/renderer/service_worker/service_worker_context_client.h"
 #include "net/http/http_response_headers.h"
+#include "services/network/public/mojom/early_hints.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_error_type.mojom.h"
-#include "third_party/blink/public/platform/modules/service_worker/web_service_worker_error.h"
+#include "third_party/blink/public/platform/web_url_loader.h"
 
 namespace content {
 
 NavigationPreloadRequest::NavigationPreloadRequest(
-    base::WeakPtr<ServiceWorkerContextClient> owner,
+    ServiceWorkerContextClient* owner,
     int fetch_event_id,
     const GURL& url,
     blink::mojom::FetchEventPreloadHandlePtr preload_handle)
-    : owner_(std::move(owner)),
+    : owner_(owner),
       fetch_event_id_(fetch_event_id),
       url_(url),
       url_loader_(std::move(preload_handle->url_loader)),
-      binding_(this, std::move(preload_handle->url_loader_client_request)) {}
+      receiver_(this, std::move(preload_handle->url_loader_client_receiver)) {}
 
 NavigationPreloadRequest::~NavigationPreloadRequest() = default;
 
+void NavigationPreloadRequest::OnReceiveEarlyHints(
+    network::mojom::EarlyHintsPtr early_hints) {}
+
 void NavigationPreloadRequest::OnReceiveResponse(
-    const network::ResourceResponseHead& response_head) {
+    network::mojom::URLResponseHeadPtr response_head) {
   DCHECK(!response_);
   response_ = std::make_unique<blink::WebURLResponse>();
   // TODO(horo): Set report_security_info to true when DevTools is attached.
   const bool report_security_info = false;
-  WebURLLoaderImpl::PopulateURLResponse(url_, response_head, response_.get(),
-                                        report_security_info,
-                                        -1 /* request_id */);
+  blink::WebURLLoader::PopulateURLResponse(
+      url_, *response_head, response_.get(), report_security_info,
+      -1 /* request_id */);
   MaybeReportResponseToOwner();
 }
 
 void NavigationPreloadRequest::OnReceiveRedirect(
     const net::RedirectInfo& redirect_info,
-    const network::ResourceResponseHead& response_head) {
+    network::mojom::URLResponseHeadPtr response_head) {
   DCHECK(!response_);
   DCHECK(net::HttpResponseHeaders::IsRedirectResponseCode(
-      response_head.headers->response_code()));
+      response_head->headers->response_code()));
 
-  DCHECK(owner_);
   response_ = std::make_unique<blink::WebURLResponse>();
-  WebURLLoaderImpl::PopulateURLResponse(url_, response_head, response_.get(),
-                                        false /* report_security_info */,
-                                        -1 /* request_id */);
+  blink::WebURLLoader::PopulateURLResponse(
+      url_, *response_head, response_.get(), false /* report_security_info */,
+      -1 /* request_id */);
   owner_->OnNavigationPreloadResponse(fetch_event_id_, std::move(response_),
                                       mojo::ScopedDataPipeConsumerHandle());
   // This will delete |this|.
   owner_->OnNavigationPreloadComplete(
-      fetch_event_id_, response_head.response_start,
-      response_head.encoded_data_length, 0 /* encoded_body_length */,
+      fetch_event_id_, response_head->response_start,
+      response_head->encoded_data_length, 0 /* encoded_body_length */,
       0 /* decoded_body_length */);
 }
 
@@ -68,7 +71,7 @@ void NavigationPreloadRequest::OnUploadProgress(
 }
 
 void NavigationPreloadRequest::OnReceiveCachedMetadata(
-    const std::vector<uint8_t>& data) {}
+    mojo_base::BigBuffer data) {}
 
 void NavigationPreloadRequest::OnTransferSizeUpdated(
     int32_t transfer_size_diff) {}
@@ -84,29 +87,28 @@ void NavigationPreloadRequest::OnComplete(
     const network::URLLoaderCompletionStatus& status) {
   if (status.error_code != net::OK) {
     std::string message;
-    std::string unsanitized_message;
+    blink::WebServiceWorkerError::Mode error_mode =
+        blink::WebServiceWorkerError::Mode::kNone;
     if (status.error_code == net::ERR_ABORTED) {
       message =
           "The service worker navigation preload request was cancelled "
           "before 'preloadResponse' settled. If you intend to use "
           "'preloadResponse', use waitUntil() or respondWith() to wait for "
           "the promise to settle.";
+      error_mode = blink::WebServiceWorkerError::Mode::kShownInConsole;
     } else {
       message =
-          "The service worker navigation preload request failed with a "
-          "network error.";
-      unsanitized_message =
-          "The service worker navigation preload request failed with network "
-          "error: " +
-          net::ErrorToString(status.error_code) + ".";
+          "The service worker navigation preload request failed due to a "
+          "network error. This may have been an actual network error, or "
+          "caused by the browser simulating offline to see if the page works "
+          "offline: see https://w3c.github.io/manifest/#installability-signals";
     }
 
     // This will delete |this|.
-    ReportErrorToOwner(message, unsanitized_message);
+    ReportErrorToOwner(message, error_mode);
     return;
   }
 
-  DCHECK(owner_);
   if (response_) {
     // When the response body from the server is empty, OnComplete() is called
     // without OnStartLoadingResponseBody().
@@ -123,21 +125,18 @@ void NavigationPreloadRequest::OnComplete(
 void NavigationPreloadRequest::MaybeReportResponseToOwner() {
   if (!response_ || !body_.is_valid())
     return;
-  DCHECK(owner_);
   owner_->OnNavigationPreloadResponse(fetch_event_id_, std::move(response_),
                                       std::move(body_));
 }
 
 void NavigationPreloadRequest::ReportErrorToOwner(
     const std::string& message,
-    const std::string& unsanitized_message) {
-  DCHECK(owner_);
+    blink::WebServiceWorkerError::Mode error_mode) {
   // This will delete |this|.
   owner_->OnNavigationPreloadError(
       fetch_event_id_, std::make_unique<blink::WebServiceWorkerError>(
                            blink::mojom::ServiceWorkerErrorType::kNetwork,
-                           blink::WebString::FromUTF8(message),
-                           blink::WebString::FromUTF8(unsanitized_message)));
+                           blink::WebString::FromUTF8(message), error_mode));
 }
 
 }  // namespace content

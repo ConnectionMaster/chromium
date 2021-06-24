@@ -7,18 +7,19 @@
 
 #include <memory>
 
-#include "base/macros.h"
-#include "base/scoped_observer.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/omnibox_theme.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/animation/ink_drop_host_view.h"
 #include "ui/views/controls/image_view.h"
 
 class CommandUpdater;
+class OmniboxView;
+class PageActionIconLoadingIndicatorView;
 
 namespace content {
 class WebContents;
@@ -29,41 +30,63 @@ struct VectorIcon;
 }
 
 namespace views {
-class BubbleDialogDelegateView;
+class BubbleDialogDelegate;
 }
 
 // Represents an inbuilt (as opposed to an extension) page action icon that
 // shows a bubble when clicked.
 class PageActionIconView : public IconLabelBubbleView {
  public:
+  METADATA_HEADER(PageActionIconView);
+
   class Delegate {
    public:
-    // Gets the color to use for the ink highlight.
-    virtual SkColor GetPageActionInkDropColor() const = 0;
+    // Gets the opacity to use for the ink highlight.
+    virtual float GetPageActionInkDropVisibleOpacity() const;
 
     virtual content::WebContents* GetWebContentsForPageActionIconView() = 0;
 
-    // Delegate should override and return true when the user is editing the
-    // location bar contents.
-    virtual bool IsLocationBarUserInputInProgress() const;
+    virtual int GetPageActionIconSize() const;
+
+    // Returns the size of the insets in which the icon should draw its inkdrop.
+    virtual gfx::Insets GetPageActionIconInsets(
+        const PageActionIconView* icon_view) const;
+
+    // Delegate should return true if the page action icons should be hidden.
+    virtual bool ShouldHidePageActionIcons() const;
+
+    virtual const OmniboxView* GetOmniboxView() const;
   };
+
+  PageActionIconView(const PageActionIconView&) = delete;
+  PageActionIconView& operator=(const PageActionIconView&) = delete;
+  ~PageActionIconView() override;
 
   // Updates the color of the icon, this must be set before the icon is drawn.
   void SetIconColor(SkColor icon_color);
+  SkColor GetIconColor() const;
 
-  void set_icon_size(int size) { icon_size_ = size; }
+  // Sets the active state of the icon. An active icon will be displayed in a
+  // "call to action" color.
+  void SetActive(bool active);
+  bool GetActive() const;
+
+  // Hide the icon on user input in progress and invokes UpdateImpl().
+  void Update();
 
   // Returns the bubble instance for the icon.
-  virtual views::BubbleDialogDelegateView* GetBubble() const = 0;
-
-  // Updates the icon state and associated bubble when the WebContents changes.
-  // Returns true if there was a change.
-  virtual bool Update();
+  virtual views::BubbleDialogDelegate* GetBubble() const = 0;
 
   // Retrieve the text to be used for a tooltip or accessible name.
-  virtual base::string16 GetTextForTooltipAndAccessibleName() const = 0;
+  virtual std::u16string GetTextForTooltipAndAccessibleName() const = 0;
 
   SkColor GetLabelColorForTesting() const;
+
+  void ExecuteForTesting();
+
+  PageActionIconLoadingIndicatorView* loading_indicator_for_testing() {
+    return loading_indicator_;
+  }
 
  protected:
   enum ExecuteSource {
@@ -74,9 +97,9 @@ class PageActionIconView : public IconLabelBubbleView {
 
   PageActionIconView(CommandUpdater* command_updater,
                      int command_id,
+                     IconLabelBubbleView::Delegate* parent_delegate,
                      Delegate* delegate,
                      const gfx::FontList& = gfx::FontList());
-  ~PageActionIconView() override;
 
   // Returns true if a related bubble is showing.
   bool IsBubbleShowing() const override;
@@ -86,7 +109,7 @@ class PageActionIconView : public IconLabelBubbleView {
   bool SetCommandEnabled(bool enabled) const;
 
   // Sets the tooltip text.
-  void SetTooltipText(const base::string16& tooltip);
+  void SetTooltipText(const std::u16string& tooltip);
 
   // Invoked prior to executing the command.
   virtual void OnExecuting(ExecuteSource execute_source) = 0;
@@ -95,22 +118,15 @@ class PageActionIconView : public IconLabelBubbleView {
   virtual void OnPressed(bool activated) {}
 
   // views::IconLabelBubbleView:
-  SkColor GetTextColor() const override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
-  base::string16 GetTooltipText(const gfx::Point& p) const override;
-  bool OnMousePressed(const ui::MouseEvent& event) override;
-  void OnMouseReleased(const ui::MouseEvent& event) override;
-  bool OnKeyPressed(const ui::KeyEvent& event) override;
-  bool OnKeyReleased(const ui::KeyEvent& event) override;
+  std::u16string GetTooltipText(const gfx::Point& p) const override;
   void ViewHierarchyChanged(
       const views::ViewHierarchyChangedDetails& details) override;
-  void OnNativeThemeChanged(const ui::NativeTheme* theme) override;
   void OnThemeChanged() override;
-  SkColor GetInkDropBaseColor() const override;
   bool ShouldShowSeparator() const final;
-
-  // ui::EventHandler:
-  void OnGestureEvent(ui::GestureEvent* event) override;
+  void NotifyClick(const ui::Event& event) override;
+  bool IsTriggerableEvent(const ui::Event& event) override;
+  bool ShouldUpdateInkDropOnClickCanceled() const override;
 
  protected:
   // Calls OnExecuting and runs |command_id_| with a valid |command_updater_|.
@@ -123,28 +139,32 @@ class PageActionIconView : public IconLabelBubbleView {
   virtual const gfx::VectorIcon& GetVectorIconBadge() const;
 
   // IconLabelBubbleView:
-  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void OnTouchUiChanged() override;
-  void UpdateBorder() override;
 
   // Updates the icon image after some state has changed.
   virtual void UpdateIconImage();
 
-  // Sets the active state of the icon. An active icon will be displayed in a
-  // "call to action" color.
-  void SetActiveInternal(bool active);
+  // Creates and updates the loading indicator.
+  // TODO(crbug.com/964127): Ideally this should be lazily initialized in
+  // SetIsLoading(), but local card migration icon has a weird behavior that
+  // doing so will cause the indicator being invisible. Investigate and fix.
+  void InstallLoadingIndicator();
+
+  // Set if the page action icon is in the loading state.
+  void SetIsLoading(bool is_loading);
 
   // Returns the associated web contents from the delegate.
   content::WebContents* GetWebContents() const;
 
-  bool active() const { return active_; }
-
   // Delegate accessor for subclasses.
   Delegate* delegate() const { return delegate_; }
 
+  // Update the icon and sets visibility appropriate for the associated model
+  // state.
+  virtual void UpdateImpl() = 0;
+
  private:
-  // The size of the icon image (excluding the ink drop).
-  int icon_size_ = GetLayoutConstant(LOCATION_BAR_ICON_SIZE);
+  void UpdateBorder();
 
   // What color to paint the icon with.
   SkColor icon_color_ = gfx::kPlaceholderColor;
@@ -163,12 +183,8 @@ class PageActionIconView : public IconLabelBubbleView {
   // the web page.
   bool active_ = false;
 
-  // This is used to check if the bookmark bubble was showing during the mouse
-  // pressed event. If this is true then the mouse released event is ignored to
-  // prevent the bubble from reshowing.
-  bool suppress_mouse_released_action_ = false;
-
-  DISALLOW_COPY_AND_ASSIGN(PageActionIconView);
+  // The loading indicator, showing a throbber animation on top of the icon.
+  PageActionIconLoadingIndicatorView* loading_indicator_ = nullptr;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_PAGE_ACTION_ICON_VIEW_H_

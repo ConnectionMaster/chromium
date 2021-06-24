@@ -9,9 +9,9 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
+#include "base/test/task_environment.h"
 #include "media/base/decoder_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -26,12 +26,14 @@ class MojoDataPipeReadWrite {
  public:
   MojoDataPipeReadWrite(
       uint32_t data_pipe_capacity_bytes = kDefaultDataPipeCapacityBytes) {
-    mojo::DataPipe data_pipe(data_pipe_capacity_bytes);
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    CHECK_EQ(mojo::CreateDataPipe(data_pipe_capacity_bytes, producer_handle,
+                                  consumer_handle),
+             MOJO_RESULT_OK);
 
-    writer_ = std::make_unique<MojoDataPipeWriter>(
-        std::move(data_pipe.producer_handle));
-    reader_ = std::make_unique<MojoDataPipeReader>(
-        std::move(data_pipe.consumer_handle));
+    writer_ = std::make_unique<MojoDataPipeWriter>(std::move(producer_handle));
+    reader_ = std::make_unique<MojoDataPipeReader>(std::move(consumer_handle));
   }
 
   void WriteAndRead(const uint8_t* buffer,
@@ -67,7 +69,7 @@ class MojoDataPipeReadWrite {
 }  // namespace
 
 TEST(MojoDataPipeReadWriteTest, Normal) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   std::string kData = "hello, world";
   MojoDataPipeReadWrite pipe_read_write_;
   pipe_read_write_.WriteAndRead(reinterpret_cast<const uint8_t*>(kData.data()),
@@ -75,7 +77,7 @@ TEST(MojoDataPipeReadWriteTest, Normal) {
 }
 
 TEST(MojoDataPipeReadWriteTest, SequentialReading) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   std::string kData1 = "hello, world";
   std::string kData2 = "Bye!";
   MojoDataPipeReadWrite pipe_read_write_;
@@ -86,7 +88,7 @@ TEST(MojoDataPipeReadWriteTest, SequentialReading) {
 }
 
 TEST(MojoDataPipeReadWriteTest, LongerThanCapacity) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   std::string kData = "hello, world, hello, world, hello, world";
   MojoDataPipeReadWrite pipe_read_write_(10);
   pipe_read_write_.WriteAndRead(reinterpret_cast<const uint8_t*>(kData.data()),
@@ -94,7 +96,7 @@ TEST(MojoDataPipeReadWriteTest, LongerThanCapacity) {
 }
 
 TEST(MojoDataPipeReadWriteTest, DiscardDataInPipe) {
-  base::MessageLoop message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment;
   std::string kData1 = "to be discarded";
   std::string kData2 = "hello, world, hello, world, hello, world";
   MojoDataPipeReadWrite pipe_read_write_(10);

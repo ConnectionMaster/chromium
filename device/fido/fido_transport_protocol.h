@@ -5,23 +5,25 @@
 #ifndef DEVICE_FIDO_FIDO_TRANSPORT_PROTOCOL_H_
 #define DEVICE_FIDO_FIDO_TRANSPORT_PROTOCOL_H_
 
-#include <string>
-
 #include "base/component_export.h"
-#include "base/containers/flat_set.h"
-#include "base/optional.h"
 #include "base/strings/string_piece.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device {
 
 // This enum represents the transport protocols over which Fido WebAuthN API is
 // currently supported.
+// This enum is used for UMA histograms and the values should not be
+// reassigned. New transports added should be reflected in the
+// WebAuthenticationFidoTransport enum.
 enum class FidoTransportProtocol : uint8_t {
-  kUsbHumanInterfaceDevice,
-  kNearFieldCommunication,
-  kBluetoothLowEnergy,
-  kCloudAssistedBluetoothLowEnergy,
-  kInternal,
+  kUsbHumanInterfaceDevice = 0,
+  kNearFieldCommunication = 1,
+  kBluetoothLowEnergy = 2,
+  kCloudAssistedBluetoothLowEnergy = 3,
+  kInternal = 4,
+  kAndroidAccessory = 5,
+  kMaxValue = kAndroidAccessory,
 };
 
 // String representation of above FidoTransportProtocol enum.
@@ -32,14 +34,11 @@ extern const char kCloudAssistedBluetoothLowEnergy[];
 extern const char kInternal[];
 
 COMPONENT_EXPORT(DEVICE_FIDO)
-base::flat_set<FidoTransportProtocol> GetAllTransportProtocols();
-
-COMPONENT_EXPORT(DEVICE_FIDO)
-base::Optional<FidoTransportProtocol> ConvertToFidoTransportProtocol(
+absl::optional<FidoTransportProtocol> ConvertToFidoTransportProtocol(
     base::StringPiece protocol);
 
 COMPONENT_EXPORT(DEVICE_FIDO)
-std::string ToString(FidoTransportProtocol protocol);
+base::StringPiece ToString(FidoTransportProtocol protocol);
 
 }  // namespace device
 

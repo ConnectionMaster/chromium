@@ -16,14 +16,12 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
 #include "base/containers/span.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
 #include "net/base/address_list.h"
 #include "net/base/completion_once_callback.h"
@@ -45,8 +43,8 @@
 #include "net/socket/transport_client_socket_pool.h"
 #include "net/ssl/ssl_config_service.h"
 #include "net/ssl/ssl_info.h"
-#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class RunLoop;
@@ -56,6 +54,8 @@ namespace net {
 
 struct CommonConnectJobParams;
 class NetLog;
+struct NetworkTrafficAnnotationTag;
+class X509Certificate;
 
 const NetworkChangeNotifier::NetworkHandle kDefaultNetworkForTests = 1;
 const NetworkChangeNotifier::NetworkHandle kNewNetworkForTests = 2;
@@ -354,6 +354,15 @@ class AsyncSocket {
   virtual void OnDataProviderDestroyed() = 0;
 };
 
+class SocketDataPrinter {
+ public:
+  ~SocketDataPrinter() = default;
+
+  // Prints the write in |data| using some sort of protocol-specific
+  // format.
+  virtual std::string PrintWrite(const std::string& data) = 0;
+};
+
 // StaticSocketDataHelper manages a list of reads and writes.
 class StaticSocketDataHelper {
  public:
@@ -376,7 +385,7 @@ class StaticSocketDataHelper {
   // Returns true if |data| is valid data for the next write. In order
   // to support short writes, the next write may be longer than |data|
   // in which case this method will still return true.
-  bool VerifyWriteData(const std::string& data);
+  bool VerifyWriteData(const std::string& data, SocketDataPrinter* printer);
 
   size_t read_index() const { return read_index_; }
   size_t write_index() const { return write_index_; }
@@ -423,11 +432,14 @@ class StaticSocketDataProvider : public SocketDataProvider {
   size_t read_count() const { return helper_.read_count(); }
   size_t write_count() const { return helper_.write_count(); }
 
+  void set_printer(SocketDataPrinter* printer) { printer_ = printer; }
+
  private:
   // From SocketDataProvider:
   void Reset() override;
 
   StaticSocketDataHelper helper_;
+  SocketDataPrinter* printer_ = nullptr;
   bool paused_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(StaticSocketDataProvider);
@@ -462,12 +474,22 @@ struct SSLSocketDataProvider {
 
   // Result for Connect().
   MockConnect connect;
+  // Callback to run when Connect() is called. This is called at most once per
+  // socket but is repeating because SSLSocketDataProvider is copyable.
+  base::RepeatingClosure connect_callback;
 
-  // Result for Confirm().
+  // Result for ConfirmHandshake().
   MockConfirm confirm;
+  // Callback to run when ConfirmHandshake() is called. This is called at most
+  // once per socket but is repeating because SSLSocketDataProvider is
+  // copyable.
+  base::RepeatingClosure confirm_callback;
 
   // Result for GetNegotiatedProtocol().
   NextProto next_proto;
+
+  // Result for GetPeerApplicationSettings().
+  absl::optional<std::string> peer_application_settings;
 
   // Result for GetSSLInfo().
   SSLInfo ssl_info;
@@ -475,10 +497,15 @@ struct SSLSocketDataProvider {
   // Result for GetSSLCertRequestInfo().
   SSLCertRequestInfo* cert_request_info;
 
-  base::Optional<NextProtoVector> next_protos_expected_in_ssl_config;
+  absl::optional<NextProtoVector> next_protos_expected_in_ssl_config;
 
   uint16_t expected_ssl_version_min;
   uint16_t expected_ssl_version_max;
+  absl::optional<bool> expected_send_client_cert;
+  scoped_refptr<X509Certificate> expected_client_cert;
+  absl::optional<HostPortPair> expected_host_and_port;
+  absl::optional<NetworkIsolationKey> expected_network_isolation_key;
+  absl::optional<bool> expected_disable_legacy_crypto;
 
   bool is_connect_data_consumed = false;
   bool is_confirm_data_consumed = false;
@@ -523,7 +550,7 @@ class SequencedSocketData : public SocketDataProvider {
   // should use a SYNCHRONOUS event with a return value of ERR_IO_PENDING
   // instead.
   bool IsPaused() const;
-  // Resumes events once |this| is in the paused state.  The next even will
+  // Resumes events once |this| is in the paused state.  The next event will
   // occur synchronously with the call if it can.
   void Resume();
   void RunUntilPaused();
@@ -538,11 +565,13 @@ class SequencedSocketData : public SocketDataProvider {
     busy_before_sync_reads_ = busy_before_sync_reads;
   }
 
+  void set_printer(SocketDataPrinter* printer) { printer_ = printer; }
+
  private:
   // Defines the state for the read or write path.
   enum IoState {
     IDLE,        // No async operation is in progress.
-    PENDING,     // An async operation in waiting for another opteration to
+    PENDING,     // An async operation in waiting for another operation to
                  // complete.
     COMPLETING,  // A task has been posted to complete an async operation.
     PAUSED,      // IO is paused until Resume() is called.
@@ -558,6 +587,7 @@ class SequencedSocketData : public SocketDataProvider {
   void MaybePostWriteCompleteTask();
 
   StaticSocketDataHelper helper_;
+  SocketDataPrinter* printer_ = nullptr;
   int sequence_number_;
   IoState read_state_;
   IoState write_state_;
@@ -567,7 +597,7 @@ class SequencedSocketData : public SocketDataProvider {
   // Used by RunUntilPaused.  NULL at all other times.
   std::unique_ptr<base::RunLoop> run_until_paused_run_loop_;
 
-  base::WeakPtrFactory<SequencedSocketData> weak_factory_;
+  base::WeakPtrFactory<SequencedSocketData> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SequencedSocketData);
 };
@@ -582,6 +612,16 @@ class SocketDataProviderArray {
 
   T* GetNext() {
     DCHECK_LT(next_index_, data_providers_.size());
+    return data_providers_[next_index_++];
+  }
+
+  // Like GetNext(), but returns nullptr when the end of the array is reached,
+  // instead of DCHECKing. GetNext() should generally be preferred, unless
+  // having no remaining elements is expected in some cases and is handled
+  // safely.
+  T* GetNextWithoutAsserting() {
+    if (next_index_ == data_providers_.size())
+      return nullptr;
     return data_providers_[next_index_++];
   }
 
@@ -609,16 +649,25 @@ class MockSSLClientSocket;
 class MockProxyClientSocket;
 
 // ClientSocketFactory which contains arrays of sockets of each type.
-// You should first fill the arrays using AddMock{SSL,}Socket. When the factory
-// is asked to create a socket, it takes next entry from appropriate array.
-// You can use ResetNextMockIndexes to reset that next entry index for all mock
-// socket types.
+// You should first fill the arrays using Add{SSL,ProxyClient,}SocketDataProvider(). When the
+// factory is asked to create a socket, it takes next entry from appropriate array. You can use
+// ResetNextMockIndexes to reset that next entry index for all mock socket types.
 class MockClientSocketFactory : public ClientSocketFactory {
  public:
   MockClientSocketFactory();
   ~MockClientSocketFactory() override;
 
+  // Adds a SocketDataProvider that can be used to served either TCP or UDP
+  // connection requests. Sockets are returned in FIFO order.
   void AddSocketDataProvider(SocketDataProvider* socket);
+
+  // Like AddSocketDataProvider(), except sockets will only be used to service
+  // TCP connection requests. Sockets added with this method are used first,
+  // before sockets added with AddSocketDataProvider(). Particularly useful for
+  // QUIC tests with multiple sockets, where TCP connections may or may not be
+  // made, and have no guaranteed order, relative to UDP connections.
+  void AddTcpSocketDataProvider(SocketDataProvider* socket);
+
   void AddSSLSocketDataProvider(SSLSocketDataProvider* socket);
   void AddProxyClientSocketDataProvider(ProxyClientSocketDataProvider* socket);
   void ResetNextMockIndexes();
@@ -642,13 +691,14 @@ class MockClientSocketFactory : public ClientSocketFactory {
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+      NetworkQualityEstimator* network_quality_estimator,
       NetLog* net_log,
       const NetLogSource& source) override;
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
+      SSLClientContext* context,
       std::unique_ptr<StreamSocket> stream_socket,
       const HostPortPair& host_and_port,
-      const SSLConfig& ssl_config,
-      const SSLClientSocketContext& context) override;
+      const SSLConfig& ssl_config) override;
   std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
       std::unique_ptr<StreamSocket> stream_socket,
       const std::string& user_agent,
@@ -659,7 +709,6 @@ class MockClientSocketFactory : public ClientSocketFactory {
       bool using_spdy,
       NextProto negotiated_protocol,
       ProxyDelegate* proxy_delegate,
-      bool is_https_proxy,
       const NetworkTrafficAnnotationTag& traffic_annotation) override;
   const std::vector<uint16_t>& udp_client_socket_ports() const {
     return udp_client_socket_ports_;
@@ -667,6 +716,7 @@ class MockClientSocketFactory : public ClientSocketFactory {
 
  private:
   SocketDataProviderArray<SocketDataProvider> mock_data_;
+  SocketDataProviderArray<SocketDataProvider> mock_tcp_data_;
   SocketDataProviderArray<SSLSocketDataProvider> mock_ssl_data_;
   SocketDataProviderArray<ProxyClientSocketDataProvider> mock_proxy_data_;
   std::vector<uint16_t> udp_client_socket_ports_;
@@ -732,7 +782,7 @@ class MockClientSocket : public TransportClientSocket {
   NetLogWithSource net_log_;
 
  private:
-  base::WeakPtrFactory<MockClientSocket> weak_factory_;
+  base::WeakPtrFactory<MockClientSocket> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MockClientSocket);
 };
@@ -893,7 +943,7 @@ class MockProxyClientSocket : public AsyncSocket, public ProxyClientSocket {
   ProxyClientSocketDataProvider* data_;
   scoped_refptr<HttpAuthController> auth_controller_;
 
-  base::WeakPtrFactory<MockProxyClientSocket> weak_factory_;
+  base::WeakPtrFactory<MockProxyClientSocket> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MockProxyClientSocket);
 };
@@ -930,6 +980,7 @@ class MockSSLClientSocket : public AsyncSocket, public SSLClientSocket {
   int GetLocalAddress(IPEndPoint* address) const override;
   bool WasAlpnNegotiated() const override;
   NextProto GetNegotiatedProtocol() const override;
+  absl::optional<base::StringPiece> GetPeerApplicationSettings() const override;
   bool GetSSLInfo(SSLInfo* ssl_info) override;
   void GetSSLCertRequestInfo(
       SSLCertRequestInfo* cert_request_info) const override;
@@ -969,20 +1020,22 @@ class MockSSLClientSocket : public AsyncSocket, public SSLClientSocket {
   void RunConfirmHandshakeCallback(CompletionOnceCallback callback, int result);
 
   bool connected_ = false;
+  bool in_confirm_handshake_ = false;
   NetLogWithSource net_log_;
   std::unique_ptr<StreamSocket> stream_socket_;
   SSLSocketDataProvider* data_;
   // Address of the "remote" peer we're connected to.
   IPEndPoint peer_addr_;
 
-  base::WeakPtrFactory<MockSSLClientSocket> weak_factory_;
+  base::WeakPtrFactory<MockSSLClientSocket> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MockSSLClientSocket);
 };
 
 class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
  public:
-  MockUDPClientSocket(SocketDataProvider* data, net::NetLog* net_log);
+  MockUDPClientSocket(SocketDataProvider* data = nullptr,
+                      net::NetLog* net_log = nullptr);
   ~MockUDPClientSocket() override;
 
   // Socket implementation.
@@ -1039,6 +1092,8 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
 
   void set_source_port(uint16_t port) { source_port_ = port; }
   uint16_t source_port() const { return source_port_; }
+  void set_source_host(IPAddress addr) { source_host_ = addr; }
+  IPAddress source_host() const { return source_host_; }
 
   // Returns last tag applied to socket.
   SocketTag tag() const { return tag_; }
@@ -1060,6 +1115,7 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
   int read_offset_;
   MockRead read_data_;
   bool need_read_data_;
+  IPAddress source_host_;
   uint16_t source_port_;  // Ephemeral source port.
 
   // Address of the "remote" peer we're connected to.
@@ -1082,7 +1138,7 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
   bool data_transferred_ = false;
   bool tagged_before_data_transferred_ = true;
 
-  base::WeakPtrFactory<MockUDPClientSocket> weak_factory_;
+  base::WeakPtrFactory<MockUDPClientSocket> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MockUDPClientSocket);
 };
@@ -1137,9 +1193,9 @@ class ClientSocketPoolTest {
         new TestSocketRequest(&request_order_, &completion_count_));
     requests_.push_back(base::WrapUnique(request));
     int rv = request->handle()->Init(
-        group_id, socket_params, priority, SocketTag(), respect_limits,
-        request->callback(), ClientSocketPool::ProxyAuthCallback(), socket_pool,
-        NetLogWithSource());
+        group_id, socket_params, absl::nullopt /* proxy_annotation_tag */,
+        priority, SocketTag(), respect_limits, request->callback(),
+        ClientSocketPool::ProxyAuthCallback(), socket_pool, NetLogWithSource());
     if (rv != ERR_IO_PENDING)
       request_order_.push_back(request);
     return rv;
@@ -1235,20 +1291,23 @@ class MockTransportClientSocketPool : public TransportClientSocketPool {
   int cancel_count() const { return cancel_count_; }
 
   // TransportClientSocketPool implementation.
-  int RequestSocket(const GroupId& group_id,
-                    scoped_refptr<ClientSocketPool::SocketParams> socket_params,
-                    RequestPriority priority,
-                    const SocketTag& socket_tag,
-                    RespectLimits respect_limits,
-                    ClientSocketHandle* handle,
-                    CompletionOnceCallback callback,
-                    const ProxyAuthCallback& on_auth_callback,
-                    const NetLogWithSource& net_log) override;
+  int RequestSocket(
+      const GroupId& group_id,
+      scoped_refptr<ClientSocketPool::SocketParams> socket_params,
+      const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
+      RequestPriority priority,
+      const SocketTag& socket_tag,
+      RespectLimits respect_limits,
+      ClientSocketHandle* handle,
+      CompletionOnceCallback callback,
+      const ProxyAuthCallback& on_auth_callback,
+      const NetLogWithSource& net_log) override;
   void SetPriority(const GroupId& group_id,
                    ClientSocketHandle* handle,
                    RequestPriority priority) override;
   void CancelRequest(const GroupId& group_id,
-                     ClientSocketHandle* handle) override;
+                     ClientSocketHandle* handle,
+                     bool cancel_connect_job) override;
   void ReleaseSocket(const GroupId& group_id,
                      std::unique_ptr<StreamSocket> socket,
                      int64_t generation) override;
@@ -1352,6 +1411,7 @@ class MockTaggingClientSocketFactory : public MockClientSocketFactory {
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+      NetworkQualityEstimator* network_quality_estimator,
       NetLog* net_log,
       const NetLogSource& source) override;
 

@@ -7,15 +7,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <fuzzer/FuzzedDataProvider.h>
+
 #include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/test/fuzzed_data_provider.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
@@ -32,8 +33,8 @@
 // |data| is used to create a FuzzedSocket.
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   net::TestCompletionCallback callback;
-  net::BoundTestNetLog bound_test_net_log;
-  base::FuzzedDataProvider data_provider(data, size);
+  net::RecordingBoundTestNetLog bound_test_net_log;
+  FuzzedDataProvider data_provider(data, size);
   net::FuzzedSocket fuzzed_socket(&data_provider,
                                   bound_test_net_log.bound().net_log());
   CHECK_EQ(net::OK, fuzzed_socket.Connect(callback.callback()));

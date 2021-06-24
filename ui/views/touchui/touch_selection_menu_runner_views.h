@@ -5,7 +5,6 @@
 #ifndef UI_VIEWS_TOUCHUI_TOUCH_SELECTION_MENU_RUNNER_VIEWS_H_
 #define UI_VIEWS_TOUCHUI_TOUCH_SELECTION_MENU_RUNNER_VIEWS_H_
 
-#include <memory>
 
 #include "base/macros.h"
 #include "ui/touch_selection/touch_selection_menu_runner.h"
@@ -28,8 +27,8 @@ class VIEWS_EXPORT TouchSelectionMenuRunnerViews
     ~TestApi();
 
     gfx::Rect GetAnchorRect() const;
-    LabelButton* GetFirstButton() const;
-    Widget* GetWidget() const;
+    LabelButton* GetFirstButton();
+    Widget* GetWidget();
 
    private:
     TouchSelectionMenuRunnerViews* menu_runner_;

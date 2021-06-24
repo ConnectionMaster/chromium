@@ -7,19 +7,20 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/ui/material_components/app_bar_view_controller_presenting.h"
 #import "ios/chrome/browser/ui/settings/settings_root_view_controlling.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_controller.h"
-
-extern NSString* const kSettingsToolbarDeleteButtonId;
 
 // SettingsRootTableViewController is a base class for integrating UITableViews
 // into the Settings UI.  It handles the configuration and display of the MDC
 // AppBar.
 @interface SettingsRootTableViewController
     : ChromeTableViewController <SettingsRootViewControlling,
-                                 TableViewLinkHeaderFooterItemDelegate>
+                                 TableViewLinkHeaderFooterItemDelegate,
+                                 UIAdaptivePresentationControllerDelegate>
+
+// Delete button for the toolbar.
+@property(nonatomic, strong, readonly) UIBarButtonItem* deleteButton;
 
 // Whether this table view controller should hide the "Done" button (the right
 // navigation bar button). Default is NO.
@@ -42,6 +43,9 @@ extern NSString* const kSettingsToolbarDeleteButtonId;
 // following methods to customize the behavior.
 @interface SettingsRootTableViewController (Subclassing)
 
+// Returns YES. Subclasses should overload this if a toolbar is required.
+- (BOOL)shouldHideToolbar;
+
 // Returns NO.  Subclasses should overload this if an edit button is required.
 - (BOOL)shouldShowEditButton;
 
@@ -56,6 +60,10 @@ extern NSString* const kSettingsToolbarDeleteButtonId;
 // Note that this method calls -[self setEditing:] in order to change the
 // editing mode of this controller.
 - (void)editButtonPressed;
+
+// Returns NO. Subclasses should overload this if the cancel button should be
+// shown during editing.
+- (BOOL)showCancelDuringEditing;
 
 // Called when this ViewController toolbar's delete item has been tapped.
 // |indexPaths| is the index paths of the currently selected item to be deleted.

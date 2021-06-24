@@ -42,10 +42,15 @@ BLINK_EXPORT void SetCaretBlinkInterval(base::TimeDelta);
 
 BLINK_EXPORT void SetFocusRingColor(SkColor);
 
-BLINK_EXPORT void SetMinimumStrokeWidthForFocusRing(float);
+BLINK_EXPORT void SetSelectionColors(unsigned active_background_color,
+                                     unsigned active_foreground_color,
+                                     unsigned inactive_background_color,
+                                     unsigned inactive_foreground_color);
 
-BLINK_EXPORT void SetIsFocusRingOutset(bool);
+BLINK_EXPORT void SystemColorsChanged();
+
+BLINK_EXPORT void ColorSchemeChanged();
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_RENDER_THEME_H_

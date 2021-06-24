@@ -52,7 +52,7 @@ class PPAPIDownloadRequest {
     REQUEST_DESTROYED,
     UNSUPPORTED_FILE_TYPE,
     TIMEDOUT,
-    WHITELIST_HIT,
+    ALLOWLIST_HIT,
     REQUEST_MALFORMED,
     FETCH_FAILED,
     RESPONSE_MALFORMED,
@@ -66,7 +66,7 @@ class PPAPIDownloadRequest {
       const base::FilePath& default_file_path,
       const std::vector<base::FilePath::StringType>& alternate_extensions,
       Profile* profile,
-      const CheckDownloadCallback& callback,
+      CheckDownloadCallback callback,
       DownloadProtectionService* service,
       scoped_refptr<SafeBrowsingDatabaseManager> database_manager);
 
@@ -94,13 +94,13 @@ class PPAPIDownloadRequest {
 
   friend class DownloadProtectionService;
 
-  // Whitelist checking needs to the done on the IO thread.
-  static void CheckWhitelistsOnIOThread(
+  // Allowlist checking needs to the done on the IO thread.
+  static void CheckAllowlistsOnIOThread(
       const GURL& requestor_url,
       scoped_refptr<SafeBrowsingDatabaseManager> database_manager,
       base::WeakPtr<PPAPIDownloadRequest> download_request);
 
-  void WhitelistCheckComplete(bool was_on_whitelist);
+  void AllowlistCheckComplete(bool was_on_allowlist);
 
   void SendRequest();
 
@@ -134,7 +134,7 @@ class PPAPIDownloadRequest {
   const GURL initiating_main_frame_url_;
 
   // Tab id that associated with the PPAPI plugin, computed by
-  // SessionTabHelper::IdForTab().
+  // sessions::SessionTabHelper::IdForTab().
   SessionID tab_id_;
 
   // If the user interacted with this PPAPI plugin to trigger the download.
@@ -164,8 +164,13 @@ class PPAPIDownloadRequest {
   const base::FilePath supported_path_;
 
   bool is_extended_reporting_;
+  bool is_enhanced_protection_;
 
-  base::WeakPtrFactory<PPAPIDownloadRequest> weakptr_factory_;
+  Profile* profile_;
+
+  content::WebContents* web_contents_;
+
+  base::WeakPtrFactory<PPAPIDownloadRequest> weakptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PPAPIDownloadRequest);
 };

@@ -2,16 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_HANDLE_CLOSER_H_
-#define SANDBOX_SRC_HANDLE_CLOSER_H_
+#ifndef SANDBOX_WIN_SRC_HANDLE_CLOSER_H_
+#define SANDBOX_WIN_SRC_HANDLE_CLOSER_H_
 
 #include <stddef.h>
 
 #include <map>
 #include <set>
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "sandbox/win/src/interception.h"
 #include "sandbox/win/src/sandbox_types.h"
 #include "sandbox/win/src/target_process.h"
@@ -21,14 +22,14 @@ namespace sandbox {
 // This is a map of handle-types to names that we need to close in the
 // target process. A null set means we need to close all handles of the
 // given type.
-typedef std::map<const base::string16, std::set<base::string16>> HandleMap;
+typedef std::map<const std::wstring, std::set<std::wstring>> HandleMap;
 
 // Type and set of corresponding handle names to close.
 struct HandleListEntry {
   size_t record_bytes;     // Rounded to sizeof(size_t) bytes.
   size_t offset_to_names;  // Nul terminated strings of name_count names.
   size_t name_count;
-  base::char16 handle_type[1];
+  wchar_t handle_type[1];
 };
 
 // Global parameters and a pointer to the list of entries.
@@ -49,13 +50,15 @@ class HandleCloser {
   // Adds a handle that will be closed in the target process after lockdown.
   // A nullptr value for handle_name indicates all handles of the specified
   // type. An empty string for handle_name indicates the handle is unnamed.
-  ResultCode AddHandle(const base::char16* handle_type,
-                       const base::char16* handle_name);
+  ResultCode AddHandle(const wchar_t* handle_type, const wchar_t* handle_name);
 
   // Serializes and copies the closer table into the target process.
-  bool InitializeTargetHandles(TargetProcess* target);
+  bool InitializeTargetHandles(TargetProcess& target);
 
  private:
+  // Allow PolicyInfo to snapshot HandleCloser for diagnostics.
+  friend class PolicyDiagnostic;
+
   // Calculates the memory needed to copy the serialized handles list (rounded
   // to the nearest machine-word size).
   size_t GetBufferSize();
@@ -69,8 +72,8 @@ class HandleCloser {
 };
 
 // Returns the object manager's name associated with a handle
-bool GetHandleName(HANDLE handle, base::string16* handle_name);
+bool GetHandleName(HANDLE handle, std::wstring* handle_name);
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_HANDLE_CLOSER_H_
+#endif  // SANDBOX_WIN_SRC_HANDLE_CLOSER_H_

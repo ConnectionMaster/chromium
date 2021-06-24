@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/string_or_array_buffer_or_array_buffer_view.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -44,7 +44,7 @@ NotShared<TestArrayBufferView> StringOrArrayBufferOrArrayBufferView::GetAsArrayB
 
 void StringOrArrayBufferOrArrayBufferView::SetArrayBufferView(NotShared<TestArrayBufferView> value) {
   DCHECK(IsNull());
-  array_buffer_view_ = Member<TestArrayBufferView>(value.View());
+  array_buffer_view_ = value;
   type_ = SpecificType::kArrayBufferView;
 }
 
@@ -75,7 +75,7 @@ StringOrArrayBufferOrArrayBufferView::StringOrArrayBufferOrArrayBufferView(const
 StringOrArrayBufferOrArrayBufferView::~StringOrArrayBufferOrArrayBufferView() = default;
 StringOrArrayBufferOrArrayBufferView& StringOrArrayBufferOrArrayBufferView::operator=(const StringOrArrayBufferOrArrayBufferView&) = default;
 
-void StringOrArrayBufferOrArrayBufferView::Trace(blink::Visitor* visitor) {
+void StringOrArrayBufferOrArrayBufferView::Trace(Visitor* visitor) const {
   visitor->Trace(array_buffer_);
   visitor->Trace(array_buffer_view_);
 }
@@ -107,7 +107,7 @@ void V8StringOrArrayBufferOrArrayBufferView::ToImpl(
   }
 
   {
-    V8StringResource<> cpp_value = v8_value;
+    V8StringResource<> cpp_value{ v8_value };
     if (!cpp_value.Prepare(exception_state))
       return;
     impl.SetString(cpp_value);
@@ -139,3 +139,4 @@ StringOrArrayBufferOrArrayBufferView NativeValueTraits<StringOrArrayBufferOrArra
 }
 
 }  // namespace blink
+

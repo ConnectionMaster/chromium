@@ -29,6 +29,10 @@
       if (toElement)
         toElement.classList.add('selected');
     }
+
+    updateSelectedItemARIA(fromElement, toElement) {
+      return false;
+    }
   }
 
   var delegate = new Delegate();
@@ -118,7 +122,7 @@
   dumpList();
 
   TestRunner.addResult('Resizing');
-  list.element.style.height = '84px';
+  list.element.style.height = '83px';
   list.viewportResized();
   dumpList();
 

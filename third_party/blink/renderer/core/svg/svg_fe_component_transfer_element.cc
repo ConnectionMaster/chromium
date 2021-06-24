@@ -22,6 +22,7 @@
 
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/svg/graphics/filters/svg_filter_builder.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_string.h"
 #include "third_party/blink/renderer/core/svg/svg_fe_func_a_element.h"
 #include "third_party/blink/renderer/core/svg/svg_fe_func_b_element.h"
 #include "third_party/blink/renderer/core/svg/svg_fe_func_g_element.h"
@@ -32,30 +33,27 @@
 
 namespace blink {
 
-inline SVGFEComponentTransferElement::SVGFEComponentTransferElement(
-    Document& document)
+SVGFEComponentTransferElement::SVGFEComponentTransferElement(Document& document)
     : SVGFilterPrimitiveStandardAttributes(svg_names::kFEComponentTransferTag,
                                            document),
       in1_(MakeGarbageCollected<SVGAnimatedString>(this, svg_names::kInAttr)) {
   AddToPropertyMap(in1_);
 }
 
-void SVGFEComponentTransferElement::Trace(blink::Visitor* visitor) {
+void SVGFEComponentTransferElement::Trace(Visitor* visitor) const {
   visitor->Trace(in1_);
   SVGFilterPrimitiveStandardAttributes::Trace(visitor);
 }
 
-DEFINE_NODE_FACTORY(SVGFEComponentTransferElement)
-
 void SVGFEComponentTransferElement::SvgAttributeChanged(
-    const QualifiedName& attr_name) {
-  if (attr_name == svg_names::kInAttr) {
+    const SvgAttributeChangedParams& params) {
+  if (params.name == svg_names::kInAttr) {
     SVGElement::InvalidationGuard invalidation_guard(this);
     Invalidate();
     return;
   }
 
-  SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(attr_name);
+  SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(params);
 }
 
 FilterEffect* SVGFEComponentTransferElement::Build(
@@ -72,13 +70,13 @@ FilterEffect* SVGFEComponentTransferElement::Build(
 
   for (SVGElement* element = Traversal<SVGElement>::FirstChild(*this); element;
        element = Traversal<SVGElement>::NextSibling(*element)) {
-    if (auto* func_r = ToSVGFEFuncRElementOrNull(*element))
+    if (auto* func_r = DynamicTo<SVGFEFuncRElement>(*element))
       red = func_r->TransferFunction();
-    else if (auto* func_g = ToSVGFEFuncGElementOrNull(*element))
+    else if (auto* func_g = DynamicTo<SVGFEFuncGElement>(*element))
       green = func_g->TransferFunction();
-    else if (auto* func_b = ToSVGFEFuncBElementOrNull(*element))
+    else if (auto* func_b = DynamicTo<SVGFEFuncBElement>(*element))
       blue = func_b->TransferFunction();
-    else if (auto* func_a = ToSVGFEFuncAElementOrNull(*element))
+    else if (auto* func_a = DynamicTo<SVGFEFuncAElement>(*element))
       alpha = func_a->TransferFunction();
   }
 

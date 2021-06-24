@@ -14,6 +14,10 @@ namespace chromeos {
 
 namespace multidevice {
 
+namespace {
+const char kFakeBluetoothPublicAddress[] = "01:23:45:67:89:AB";
+}  // namespace
+
 class RemoteDeviceRefTest : public testing::Test {
  protected:
   RemoteDeviceRefTest() = default;
@@ -30,10 +34,11 @@ class RemoteDeviceRefTest : public testing::Test {
     std::vector<BeaconSeed> beacon_seeds({BeaconSeed(), BeaconSeed()});
 
     remote_device_ = std::make_shared<RemoteDevice>(
-        "user_id", "name", "pii_free_name", "public_key",
+        "user_email", "instance_id", "name", "pii_free_name", "public_key",
         "persistent_symmetric_key", 42000 /* last_update_time_millis */,
         software_feature_to_state_map /* software_features */,
-        beacon_seeds /* beacon_seeds */);
+        beacon_seeds /* beacon_seeds */,
+        kFakeBluetoothPublicAddress /* bluetooth_public_address */);
   }
 
   std::shared_ptr<RemoteDevice> remote_device_;
@@ -44,7 +49,8 @@ class RemoteDeviceRefTest : public testing::Test {
 TEST_F(RemoteDeviceRefTest, TestFields) {
   RemoteDeviceRef remote_device_ref(remote_device_);
 
-  EXPECT_EQ(remote_device_->user_id, remote_device_ref.user_id());
+  EXPECT_EQ(remote_device_->user_email, remote_device_ref.user_email());
+  EXPECT_EQ(remote_device_->instance_id, remote_device_ref.instance_id());
   EXPECT_EQ(remote_device_->name, remote_device_ref.name());
   EXPECT_EQ(remote_device_->pii_free_name, remote_device_ref.pii_free_name());
   EXPECT_EQ(remote_device_->public_key, remote_device_ref.public_key());
@@ -53,6 +59,8 @@ TEST_F(RemoteDeviceRefTest, TestFields) {
   EXPECT_EQ(remote_device_->last_update_time_millis,
             remote_device_ref.last_update_time_millis());
   EXPECT_EQ(&remote_device_->beacon_seeds, &remote_device_ref.beacon_seeds());
+  EXPECT_EQ(kFakeBluetoothPublicAddress,
+            remote_device_ref.bluetooth_public_address());
 
   EXPECT_EQ(SoftwareFeatureState::kNotSupported,
             remote_device_ref.GetSoftwareFeatureState(

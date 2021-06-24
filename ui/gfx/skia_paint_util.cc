@@ -10,6 +10,7 @@
 #include "third_party/skia/include/effects/SkGradientShader.h"
 #include "third_party/skia/include/effects/SkLayerDrawLooper.h"
 #include "ui/gfx/image/image_skia_rep.h"
+#include "ui/gfx/skia_util.h"
 #include "ui/gfx/switches.h"
 
 namespace gfx {
@@ -43,11 +44,9 @@ sk_sp<cc::PaintShader> CreateImageRepShaderForScale(
   // TODO(malaykeshav): The check for has_paint_image was only added here to
   // prevent generating a paint record in tests. Tests need an instance of
   // base::DiscardableMemoryAllocator to generate the PaintRecord. However most
-  // test suites dont have this set. Ensure that the check is removed before
-  // enabling the |kUsePaintRecordForImageSkia| feature by default.
+  // test suites don't have this set.
   // https://crbug.com/891469
-  if (base::FeatureList::IsEnabled(features::kUsePaintRecordForImageSkia) &&
-      !image_rep.has_paint_image()) {
+  if (!image_rep.has_paint_image()) {
     return cc::PaintShader::MakePaintRecord(
         image_rep.GetPaintRecord(),
         SkRect::MakeIWH(image_rep.pixel_width(), image_rep.pixel_height()),
@@ -58,14 +57,13 @@ sk_sp<cc::PaintShader> CreateImageRepShaderForScale(
   }
 }
 
-sk_sp<cc::PaintShader> CreateGradientShader(int start_point,
-                                            int end_point,
+sk_sp<cc::PaintShader> CreateGradientShader(const gfx::Point& start_point,
+                                            const gfx::Point& end_point,
                                             SkColor start_color,
                                             SkColor end_color) {
   SkColor grad_colors[2] = {start_color, end_color};
-  SkPoint grad_points[2];
-  grad_points[0].iset(0, start_point);
-  grad_points[1].iset(0, end_point);
+  SkPoint grad_points[2] = {gfx::PointToSkPoint(start_point),
+                            gfx::PointToSkPoint(end_point)};
 
   return cc::PaintShader::MakeLinearGradient(grad_points, grad_colors, nullptr,
                                              2, SkTileMode::kClamp);

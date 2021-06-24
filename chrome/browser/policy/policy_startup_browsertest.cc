@@ -15,6 +15,7 @@
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_constants.h"
+#include "content/public/test/browser_test.h"
 
 class PolicyMakeDefaultBrowserTest : public InProcessBrowserTest {
  protected:
@@ -25,22 +26,23 @@ class PolicyMakeDefaultBrowserTest : public InProcessBrowserTest {
   void SetUpInProcessBrowserTestFixture() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         switches::kMakeDefaultBrowser);
-    EXPECT_CALL(provider_, IsInitializationComplete(testing::_))
-               .WillRepeatedly(testing::Return(true));
+    ON_CALL(provider_, IsInitializationComplete(testing::_))
+        .WillByDefault(testing::Return(true));
+    ON_CALL(provider_, IsFirstPolicyLoadComplete(testing::_))
+        .WillByDefault(testing::Return(true));
 
     policy::BrowserPolicyConnector::SetPolicyProviderForTesting(&provider_);
 
     policy::PolicyMap values;
     values.Set(policy::key::kDefaultBrowserSettingEnabled,
                policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
-               policy::POLICY_SOURCE_CLOUD,
-               std::make_unique<base::Value>(false), nullptr);
+               policy::POLICY_SOURCE_CLOUD, base::Value(false), nullptr);
     provider_.UpdateChromePolicy(values);
   }
 
  private:
-   policy::MockConfigurationPolicyProvider provider_;
-   DISALLOW_COPY_AND_ASSIGN(PolicyMakeDefaultBrowserTest);
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> provider_;
+  DISALLOW_COPY_AND_ASSIGN(PolicyMakeDefaultBrowserTest);
 };
 
 IN_PROC_BROWSER_TEST_F(PolicyMakeDefaultBrowserTest, MakeDefaultDisabled) {

@@ -5,10 +5,10 @@
 #ifndef UI_BASE_MODELS_TREE_MODEL_H_
 #define UI_BASE_MODELS_TREE_MODEL_H_
 
+#include <string>
 #include <vector>
 
-#include "base/strings/string16.h"
-#include "ui/base/ui_base_export.h"
+#include "base/component_export.h"
 
 namespace gfx {
 class ImageSkia;
@@ -27,26 +27,26 @@ class TreeModel;
 class TreeModelNode {
  public:
   // Returns the title for the node.
-  virtual const base::string16& GetTitle() const = 0;
+  virtual const std::u16string& GetTitle() const = 0;
 
  protected:
   virtual ~TreeModelNode() {}
 };
 
 // Observer for the TreeModel. Notified of significant events to the model.
-class UI_BASE_EXPORT TreeModelObserver {
+class COMPONENT_EXPORT(UI_BASE) TreeModelObserver {
  public:
   // Notification that nodes were added to the specified parent.
   virtual void TreeNodesAdded(TreeModel* model,
                               TreeModelNode* parent,
-                              int start,
-                              int count) = 0;
+                              size_t start,
+                              size_t count) = 0;
 
   // Notification that nodes were removed from the specified parent.
   virtual void TreeNodesRemoved(TreeModel* model,
                                 TreeModelNode* parent,
-                                int start,
-                                int count) = 0;
+                                size_t start,
+                                size_t count) = 0;
 
   // Notification that the contents of a node has changed.
   virtual void TreeNodeChanged(TreeModel* model, TreeModelNode* node) = 0;
@@ -61,23 +61,22 @@ class UI_BASE_EXPORT TreeModelObserver {
 // of bookkeeping for the tree to be implemented. Generally you will want to
 // use TreeNodeModel which provides a standard implementation for basic
 // hierarchy and observer notification. See tree_node_model.h.
-class UI_BASE_EXPORT TreeModel {
+class COMPONENT_EXPORT(UI_BASE) TreeModel {
  public:
+  using Nodes = std::vector<TreeModelNode*>;
+
   // Returns the root of the tree. This may or may not be shown in the tree,
   // see SetRootShown for details.
   virtual TreeModelNode* GetRoot() = 0;
 
-  // Returns the number of children in |parent|.
-  virtual int GetChildCount(TreeModelNode* parent) = 0;
-
-  // Returns the child node of |parent| at |index|.
-  virtual TreeModelNode* GetChild(TreeModelNode* parent, int index) = 0;
+  // Returns the children of |parent|.
+  virtual Nodes GetChildren(const TreeModelNode* parent) const = 0;
 
   // Returns the index of |child| in |parent|.
-  virtual int GetIndexOf(TreeModelNode* parent, TreeModelNode* child) = 0;
+  virtual int GetIndexOf(TreeModelNode* parent, TreeModelNode* child) const = 0;
 
   // Returns the parent of |node|, or NULL if |node| is the root.
-  virtual TreeModelNode* GetParent(TreeModelNode* node) = 0;
+  virtual TreeModelNode* GetParent(TreeModelNode* node) const = 0;
 
   // Adds an observer of the model.
   virtual void AddObserver(TreeModelObserver* observer) = 0;
@@ -87,7 +86,7 @@ class UI_BASE_EXPORT TreeModel {
 
   // Sets the title of |node|.
   // This is only invoked if the node is editable and the user edits a node.
-  virtual void SetTitle(TreeModelNode* node, const base::string16& title);
+  virtual void SetTitle(TreeModelNode* node, const std::u16string& title);
 
   // Returns the set of icons for the nodes in the tree. You only need override
   // this if you don't want to use the default folder icons.

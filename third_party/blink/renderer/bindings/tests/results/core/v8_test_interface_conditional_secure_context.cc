@@ -88,7 +88,7 @@ static void SecureContextAttributeAttributeSetter(
   ExceptionState exception_state(isolate, ExceptionState::kSetterContext, "TestInterfaceConditionalSecureContext", "secureContextAttribute");
 
   // Prepare the value to be set.
-  bool cpp_value = NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state);
+  bool cpp_value{ NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state) };
   if (exception_state.HadException())
     return;
 
@@ -116,7 +116,7 @@ static void SecureContextRuntimeEnabledAttributeAttributeSetter(
   ExceptionState exception_state(isolate, ExceptionState::kSetterContext, "TestInterfaceConditionalSecureContext", "secureContextRuntimeEnabledAttribute");
 
   // Prepare the value to be set.
-  bool cpp_value = NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state);
+  bool cpp_value{ NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state) };
   if (exception_state.HadException())
     return;
 
@@ -144,7 +144,7 @@ static void SecureContextWindowExposedAttributeAttributeSetter(
   ExceptionState exception_state(isolate, ExceptionState::kSetterContext, "TestInterfaceConditionalSecureContext", "secureContextWindowExposedAttribute");
 
   // Prepare the value to be set.
-  bool cpp_value = NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state);
+  bool cpp_value{ NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state) };
   if (exception_state.HadException())
     return;
 
@@ -172,7 +172,7 @@ static void SecureContextWorkerExposedAttributeAttributeSetter(
   ExceptionState exception_state(isolate, ExceptionState::kSetterContext, "TestInterfaceConditionalSecureContext", "secureContextWorkerExposedAttribute");
 
   // Prepare the value to be set.
-  bool cpp_value = NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state);
+  bool cpp_value{ NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state) };
   if (exception_state.HadException())
     return;
 
@@ -200,7 +200,7 @@ static void SecureContextWindowExposedRuntimeEnabledAttributeAttributeSetter(
   ExceptionState exception_state(isolate, ExceptionState::kSetterContext, "TestInterfaceConditionalSecureContext", "secureContextWindowExposedRuntimeEnabledAttribute");
 
   // Prepare the value to be set.
-  bool cpp_value = NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state);
+  bool cpp_value{ NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state) };
   if (exception_state.HadException())
     return;
 
@@ -228,7 +228,7 @@ static void SecureContextWorkerExposedRuntimeEnabledAttributeAttributeSetter(
   ExceptionState exception_state(isolate, ExceptionState::kSetterContext, "TestInterfaceConditionalSecureContext", "secureContextWorkerExposedRuntimeEnabledAttribute");
 
   // Prepare the value to be set.
-  bool cpp_value = NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state);
+  bool cpp_value{ NativeValueTraits<IDLBoolean>::NativeValue(info.GetIsolate(), v8_value, exception_state) };
   if (exception_state.HadException())
     return;
 
@@ -364,36 +364,42 @@ void V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedRuntimeE
 }
 
 void V8TestInterfaceConditionalSecureContext::SecureContextMethodMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  BLINK_BINDINGS_TRACE_EVENT("TestInterfaceConditionalSecureContext.secureContextMethod");
   RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "Blink_TestInterfaceConditionalSecureContext_secureContextMethod");
 
   test_interface_conditional_secure_context_v8_internal::SecureContextMethodMethod(info);
 }
 
 void V8TestInterfaceConditionalSecureContext::SecureContextRuntimeEnabledMethodMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  BLINK_BINDINGS_TRACE_EVENT("TestInterfaceConditionalSecureContext.secureContextRuntimeEnabledMethod");
   RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "Blink_TestInterfaceConditionalSecureContext_secureContextRuntimeEnabledMethod");
 
   test_interface_conditional_secure_context_v8_internal::SecureContextRuntimeEnabledMethodMethod(info);
 }
 
 void V8TestInterfaceConditionalSecureContext::SecureContextWindowExposedMethodMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  BLINK_BINDINGS_TRACE_EVENT("TestInterfaceConditionalSecureContext.secureContextWindowExposedMethod");
   RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "Blink_TestInterfaceConditionalSecureContext_secureContextWindowExposedMethod");
 
   test_interface_conditional_secure_context_v8_internal::SecureContextWindowExposedMethodMethod(info);
 }
 
 void V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedMethodMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  BLINK_BINDINGS_TRACE_EVENT("TestInterfaceConditionalSecureContext.secureContextWorkerExposedMethod");
   RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "Blink_TestInterfaceConditionalSecureContext_secureContextWorkerExposedMethod");
 
   test_interface_conditional_secure_context_v8_internal::SecureContextWorkerExposedMethodMethod(info);
 }
 
 void V8TestInterfaceConditionalSecureContext::SecureContextWindowExposedRuntimeEnabledMethodMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  BLINK_BINDINGS_TRACE_EVENT("TestInterfaceConditionalSecureContext.secureContextWindowExposedRuntimeEnabledMethod");
   RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "Blink_TestInterfaceConditionalSecureContext_secureContextWindowExposedRuntimeEnabledMethod");
 
   test_interface_conditional_secure_context_v8_internal::SecureContextWindowExposedRuntimeEnabledMethodMethod(info);
 }
 
 void V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedRuntimeEnabledMethodMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  BLINK_BINDINGS_TRACE_EVENT("TestInterfaceConditionalSecureContext.secureContextWorkerExposedRuntimeEnabledMethod");
   RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "Blink_TestInterfaceConditionalSecureContext_secureContextWorkerExposedRuntimeEnabledMethod");
 
   test_interface_conditional_secure_context_v8_internal::SecureContextWorkerExposedRuntimeEnabledMethodMethod(info);
@@ -459,16 +465,6 @@ TestInterfaceConditionalSecureContext* V8TestInterfaceConditionalSecureContext::
   return HasInstance(value, isolate) ? ToImpl(v8::Local<v8::Object>::Cast(value)) : nullptr;
 }
 
-TestInterfaceConditionalSecureContext* NativeValueTraits<TestInterfaceConditionalSecureContext>::NativeValue(
-    v8::Isolate* isolate, v8::Local<v8::Value> value, ExceptionState& exception_state) {
-  TestInterfaceConditionalSecureContext* native_value = V8TestInterfaceConditionalSecureContext::ToImplWithTypeCheck(isolate, value);
-  if (!native_value) {
-    exception_state.ThrowTypeError(ExceptionMessages::FailedToConvertJSValue(
-        "TestInterfaceConditionalSecureContext"));
-  }
-  return native_value;
-}
-
 void V8TestInterfaceConditionalSecureContext::InstallConditionalFeatures(
     v8::Local<v8::Context> context,
     const DOMWrapperWorld& world,
@@ -488,63 +484,9 @@ void V8TestInterfaceConditionalSecureContext::InstallConditionalFeatures(
   bool is_secure_context = (execution_context && execution_context->IsSecureContext());
 
   if (!prototype_object.IsEmpty() || !interface_object.IsEmpty()) {
-    if (is_secure_context || !RuntimeEnabledFeatures::SecureContextnessFeatureEnabled()) {
-      static const V8DOMConfiguration::AccessorConfiguration accessor_configurations[] = {
-          { "secureContextAttribute", V8TestInterfaceConditionalSecureContext::SecureContextAttributeAttributeGetterCallback, V8TestInterfaceConditionalSecureContext::SecureContextAttributeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-      };
-      V8DOMConfiguration::InstallAccessors(
-          isolate, world, instance_object, prototype_object, interface_object,
-          signature, accessor_configurations,
-          base::size(accessor_configurations));
-      if (RuntimeEnabledFeatures::SecureFeatureEnabled()) {
-        static const V8DOMConfiguration::AccessorConfiguration accessor_configurations[] = {
-            { "secureContextRuntimeEnabledAttribute", V8TestInterfaceConditionalSecureContext::SecureContextRuntimeEnabledAttributeAttributeGetterCallback, V8TestInterfaceConditionalSecureContext::SecureContextRuntimeEnabledAttributeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-        };
-        V8DOMConfiguration::InstallAccessors(
-            isolate, world, instance_object, prototype_object, interface_object,
-            signature, accessor_configurations,
-            base::size(accessor_configurations));
-      }
-    }
-    if (execution_context && (execution_context->IsDocument())) {
-      if (is_secure_context || !RuntimeEnabledFeatures::SecureContextnessFeatureEnabled()) {
-        static const V8DOMConfiguration::AccessorConfiguration accessor_configurations[] = {
-            { "secureContextWindowExposedAttribute", V8TestInterfaceConditionalSecureContext::SecureContextWindowExposedAttributeAttributeGetterCallback, V8TestInterfaceConditionalSecureContext::SecureContextWindowExposedAttributeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-        };
-        V8DOMConfiguration::InstallAccessors(
-            isolate, world, instance_object, prototype_object, interface_object,
-            signature, accessor_configurations,
-            base::size(accessor_configurations));
-        if (RuntimeEnabledFeatures::SecureFeatureEnabled()) {
-          static const V8DOMConfiguration::AccessorConfiguration accessor_configurations[] = {
-              { "secureContextWindowExposedRuntimeEnabledAttribute", V8TestInterfaceConditionalSecureContext::SecureContextWindowExposedRuntimeEnabledAttributeAttributeGetterCallback, V8TestInterfaceConditionalSecureContext::SecureContextWindowExposedRuntimeEnabledAttributeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-          };
-          V8DOMConfiguration::InstallAccessors(
-              isolate, world, instance_object, prototype_object, interface_object,
-              signature, accessor_configurations,
-              base::size(accessor_configurations));
-        }
-      }
+    if (execution_context && (execution_context->IsWindow())) {
     }
     if (execution_context && (execution_context->IsWorkerGlobalScope())) {
-      if (is_secure_context || !RuntimeEnabledFeatures::SecureContextnessFeatureEnabled()) {
-        static const V8DOMConfiguration::AccessorConfiguration accessor_configurations[] = {
-            { "secureContextWorkerExposedAttribute", V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedAttributeAttributeGetterCallback, V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedAttributeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-        };
-        V8DOMConfiguration::InstallAccessors(
-            isolate, world, instance_object, prototype_object, interface_object,
-            signature, accessor_configurations,
-            base::size(accessor_configurations));
-        if (RuntimeEnabledFeatures::SecureFeatureEnabled()) {
-          static const V8DOMConfiguration::AccessorConfiguration accessor_configurations[] = {
-              { "secureContextWorkerExposedRuntimeEnabledAttribute", V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedRuntimeEnabledAttributeAttributeGetterCallback, V8TestInterfaceConditionalSecureContext::SecureContextWorkerExposedRuntimeEnabledAttributeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-          };
-          V8DOMConfiguration::InstallAccessors(
-              isolate, world, instance_object, prototype_object, interface_object,
-              signature, accessor_configurations,
-              base::size(accessor_configurations));
-        }
-      }
     }
     if (is_secure_context || !RuntimeEnabledFeatures::SecureContextnessFeatureEnabled()) {
       {
@@ -575,7 +517,7 @@ void V8TestInterfaceConditionalSecureContext::InstallConditionalFeatures(
       }
     }
     if (is_secure_context || !RuntimeEnabledFeatures::SecureContextnessFeatureEnabled()) {
-      if (execution_context && (execution_context->IsDocument())) {
+      if (execution_context && (execution_context->IsWindow())) {
         {
           // Install secureContextWindowExposedMethod configuration
           const V8DOMConfiguration::MethodConfiguration kConfigurations[] = {
@@ -605,7 +547,7 @@ void V8TestInterfaceConditionalSecureContext::InstallConditionalFeatures(
       }
     }
     if (is_secure_context || !RuntimeEnabledFeatures::SecureContextnessFeatureEnabled()) {
-      if (execution_context && (execution_context->IsDocument())) {
+      if (execution_context && (execution_context->IsWindow())) {
         if (RuntimeEnabledFeatures::SecureFeatureEnabled()) {
           {
             // Install secureContextWindowExposedRuntimeEnabledMethod configuration

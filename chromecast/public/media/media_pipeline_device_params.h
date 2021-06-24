@@ -90,8 +90,10 @@ struct MediaPipelineDeviceParams {
   // some backends.
   TaskRunner* const task_runner;
 
-  // connector allows the backend to bind to services through ServiceManager.
-  service_manager::Connector* connector;
+  // This field is deprecated.
+  //
+  // TODO(yucliu): Remove this field.
+  service_manager::Connector* const connector;
 
   // Identifies the content type for volume control.
   const AudioContentType content_type;
@@ -173,4 +175,4 @@ inline std::ostream& operator<<(std::ostream& os, AudioChannel audio_channel) {
 }  // namespace media
 }  // namespace chromecast
 
-#endif  // CHROMECAST_MEDIA_CMA_BACKEND_MEDIA_PIPELINE_DEVICE_PARAMS_H_
+#endif  // CHROMECAST_PUBLIC_MEDIA_MEDIA_PIPELINE_DEVICE_PARAMS_H_

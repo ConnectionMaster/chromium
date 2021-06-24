@@ -27,14 +27,10 @@ namespace blink {
 
 class HTMLBDIElement final : public HTMLElement {
  public:
-  DECLARE_NODE_FACTORY(HTMLBDIElement);
-
   inline explicit HTMLBDIElement(Document& document)
       : HTMLElement(html_names::kBdiTag, document) {}
 };
 
-DEFINE_NODE_FACTORY(HTMLBDIElement)
-
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_BDI_ELEMENT_H_

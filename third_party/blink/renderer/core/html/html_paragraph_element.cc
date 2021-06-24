@@ -28,26 +28,22 @@
 
 namespace blink {
 
-using namespace html_names;
-
-inline HTMLParagraphElement::HTMLParagraphElement(Document& document)
-    : HTMLElement(kPTag, document) {}
-
-DEFINE_NODE_FACTORY(HTMLParagraphElement)
+HTMLParagraphElement::HTMLParagraphElement(Document& document)
+    : HTMLElement(html_names::kPTag, document) {}
 
 void HTMLParagraphElement::CollectStyleForPresentationAttribute(
     const QualifiedName& name,
     const AtomicString& value,
     MutableCSSPropertyValueSet* style) {
-  if (name == kAlignAttr) {
-    if (DeprecatedEqualIgnoringCase(value, "middle") ||
-        DeprecatedEqualIgnoringCase(value, "center")) {
+  if (name == html_names::kAlignAttr) {
+    if (EqualIgnoringASCIICase(value, "middle") ||
+        EqualIgnoringASCIICase(value, "center")) {
       AddPropertyToPresentationAttributeStyle(style, CSSPropertyID::kTextAlign,
                                               CSSValueID::kWebkitCenter);
-    } else if (DeprecatedEqualIgnoringCase(value, "left")) {
+    } else if (EqualIgnoringASCIICase(value, "left")) {
       AddPropertyToPresentationAttributeStyle(style, CSSPropertyID::kTextAlign,
                                               CSSValueID::kWebkitLeft);
-    } else if (DeprecatedEqualIgnoringCase(value, "right")) {
+    } else if (EqualIgnoringASCIICase(value, "right")) {
       AddPropertyToPresentationAttributeStyle(style, CSSPropertyID::kTextAlign,
                                               CSSValueID::kWebkitRight);
     } else {

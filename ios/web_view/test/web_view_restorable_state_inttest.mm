@@ -5,6 +5,7 @@
 #import <ChromeWebView/ChromeWebView.h>
 
 #import "base/test/ios/wait_util.h"
+#import "ios/web/common/uikit_ui_util.h"
 #import "ios/web_view/test/web_view_inttest_base.h"
 #import "ios/web_view/test/web_view_test_util.h"
 #include "testing/gtest_mac.h"
@@ -39,6 +40,12 @@ TEST_F(WebViewRestorableStateTest, EncodeDecode) {
   // Create second web view and restore its state from the first web view.
   CWVWebView* restored_web_view = test::CreateWebView();
   test::CopyWebViewState(web_view_, restored_web_view);
+  // The WKWebView must be present in the view hierarchy in order to prevent
+  // WebKit optimizations which may pause internal parts of the web view
+  // without notice. Work around this by adding the view directly.
+  // TODO(crbug.com/944077): Remove this workaround once fixed in ios/web_view.
+  UIViewController* view_controller = [GetAnyKeyWindow() rootViewController];
+  [view_controller.view addSubview:restored_web_view];
 
   // Wait for restore to finish.
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^bool {

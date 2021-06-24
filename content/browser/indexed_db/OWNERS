@@ -1,7 +1,9 @@
-dmurph@chromium.org
-cmp@chromium.org
-jsbell@chromium.org
-pwnall@chromium.org
+# Primary
+enne@chromium.org
 
-# TEAM: storage-dev@chromium.org
-# COMPONENT: Blink>Storage>IndexedDB
+# Secondary
+cmp@chromium.org
+dmurph@chromium.org
+jsbell@chromium.org
+mek@chromium.org
+pwnall@chromium.org

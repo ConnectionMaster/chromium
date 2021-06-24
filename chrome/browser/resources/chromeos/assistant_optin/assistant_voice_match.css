@@ -2,62 +2,18 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file. */
 
-.content {
-  padding-inline-end: 8px;
+#voice-match-animation {
+  height: 170px;
 }
 
-#title-recording,
-#title-completed {
-  padding-bottom: 36px;
+#ready-img {
+  height: 260px;
 }
 
-#no-dsp-message {
-  padding-top: 16px;
-}
-
-#footer-text {
-  color: #757575;
-}
-
-#voice-match-video {
-  padding-top: 100px;
-  text-align: center;
-}
-
-#already-setup-video-container {
-  text-align: center;
-}
-
-#already-setup-video {
-  height: 450px;
-}
-
-#already-setup-img {
-  display: block;
-  margin: auto;
-  padding-top: 80px;
-}
-
-#intro-container,
-#recording-container,
-#already-setup-container {
-  display: none;
-  height: 460px;
-}
-
-.intro #intro-container,
-.already-setup #already-setup-container {
-  display: block;
-}
-
-.recording #title-completed,
-.completed #title-recording {
-  display: none;
-}
-
-.recording #recording-container,
-.completed #recording-container {
-  display: table;
+@media screen and (max-height: 736px) {
+  #voice-match-animation {
+    height: 150px;
+  }
 }
 
 #loading-animation {
@@ -70,16 +26,21 @@
   width: 100px;
 }
 
-#footer-text {
-  display: table-footer-group;
+:host-context([orientation=horizontal]) #voice-match-animation {
+  padding-top: 16px;
 }
 
-.intro #skip-button,
-.intro #agree-button,
-.recording #later-button {
-  display: block;
+#message-vertical-mode {
+  padding-top: 40px;
 }
 
-oobe-text-button {
+:host-context(html:not([new-layout])) #message-vertical-mode,
+:host-context([orientation=vertical]) #message-horizontal-mode,
+:host-context([orientation=horizontal]) #message-vertical-mode {
   display: none;
+}
+
+:host-context([orientation=vertical])
+    #voiceMatchIntroDialog div[slot='content'] {
+  justify-content: flex-start;
 }

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # Copyright (c) 2017 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -43,11 +43,14 @@ net_unittest_bundle_data_globs = [
     "data/cert_issuer_source_aia_unittest/*.pem",
     "data/cert_issuer_source_static_unittest/*.pem",
     "data/certificate_policies_unittest/*.pem",
+    "data/crl_unittest/*.pem",
     "data/embedded_test_server/*",
     "data/filter_unittests/*",
     "data/name_constraints_unittest/*.pem",
     "data/ocsp_unittest/*.pem",
     "data/ov_name_constraints/*.pem",
+    "data/path_builder_unittest/**/*.pem",
+    "data/parse_certificate_unittest/**/*.pem",
     "data/parse_certificate_unittest/*.pem",
     "data/parse_certificate_unittest/*.pk8",
     "data/test.html",

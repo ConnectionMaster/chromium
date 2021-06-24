@@ -10,7 +10,7 @@
 #include <sstream>
 
 #include "base/big_endian.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -26,9 +26,8 @@
 #include "components/history/core/browser/history_database.h"
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/sync/syncable/read_node.h"
-#include "components/sync/syncable/read_transaction.h"
-#include "components/sync/syncable/user_share.h"
+#include "components/sync/model/metadata_batch.h"
+#include "components/sync/protocol/entity_metadata.pb.h"
 
 using sync_datatype_helper::test;
 
@@ -188,6 +187,30 @@ class GetTypedUrlsMetadataTask : public history::HistoryDBTask {
   base::WaitableEvent* wait_event_;
 };
 
+class WriteTypedUrlsMetadataTask : public history::HistoryDBTask {
+ public:
+  WriteTypedUrlsMetadataTask(const std::string& storage_key,
+                             const sync_pb::EntityMetadata& metadata,
+                             base::WaitableEvent* event)
+      : storage_key_(storage_key), metadata_(metadata), wait_event_(event) {}
+  ~WriteTypedUrlsMetadataTask() override = default;
+
+  bool RunOnDBThread(history::HistoryBackend* backend,
+                     history::HistoryDatabase* db) override {
+    // Write the metadata to the DB.
+    db->UpdateSyncMetadata(syncer::TYPED_URLS, storage_key_, metadata_);
+    wait_event_->Signal();
+    return true;
+  }
+
+  void DoneRunOnMainThread() override {}
+
+ private:
+  const std::string storage_key_;
+  const sync_pb::EntityMetadata metadata_;
+  base::WaitableEvent* wait_event_;
+};
+
 // Creates a URLRow in the specified HistoryService with the passed transition
 // type.
 void AddToHistory(history::HistoryService* service,
@@ -195,11 +218,10 @@ void AddToHistory(history::HistoryService* service,
                   ui::PageTransition transition,
                   history::VisitSource source,
                   const base::Time& timestamp) {
-  service->AddPage(url, timestamp,
-                   nullptr,  // scope
-                   1234,     // nav_entry_id
-                   GURL(),   // referrer
-                   history::RedirectList(), transition, source, false);
+  service->AddPage(url, timestamp, /*scope=*/nullptr, /*nav_entry_id=*/1234,
+                   /*referrer=*/GURL(), history::RedirectList(), transition,
+                   source, /*did_replace_entry=*/false,
+                   /*floc_allowed=*/false);
 }
 
 history::URLRows GetTypedUrlsFromHistoryService(
@@ -275,6 +297,21 @@ void GetMetadataBatchFromHistoryService(history::HistoryService* service,
   wait_event.Wait();
 }
 
+void WriteMetadataToHistoryService(history::HistoryService* service,
+                                   const std::string& storage_key,
+                                   const sync_pb::EntityMetadata& metadata) {
+  base::CancelableTaskTracker tracker;
+  base::WaitableEvent wait_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  service->ScheduleDBTask(FROM_HERE,
+                          std::make_unique<WriteTypedUrlsMetadataTask>(
+                              storage_key, metadata, &wait_event),
+                          &tracker);
+  wait_event.Wait();
+}
+
 history::HistoryService* GetHistoryServiceFromClient(int index) {
   return HistoryServiceFactory::GetForProfileWithoutCreating(
       test()->GetProfile(index));
@@ -315,6 +352,13 @@ void RemoveVisitsFromClient(int index, const history::VisitVector& visits) {
   RemoveVisitsFromHistoryService(service, visits);
 }
 
+void WriteMetadataToClient(int index,
+                           const std::string& storage_key,
+                           const sync_pb::EntityMetadata& metadata) {
+  history::HistoryService* service = GetHistoryServiceFromClient(index);
+  WriteMetadataToHistoryService(service, storage_key, metadata);
+}
+
 base::Time GetTimestamp() {
   // The history subsystem doesn't like identical timestamps for page visits,
   // and it will massage the visit timestamps if we try to use identical
@@ -345,7 +389,7 @@ void AddUrlToHistoryWithTimestamp(int index,
                                   const base::Time& timestamp) {
   AddToHistory(GetHistoryServiceFromClient(index), url, transition, source,
                timestamp);
-  if (test()->use_verifier())
+  if (test()->UseVerifier())
     AddToHistory(HistoryServiceFactory::GetForProfile(
                      test()->verifier(), ServiceAccessType::IMPLICIT_ACCESS),
                  url, transition, source, timestamp);
@@ -360,7 +404,7 @@ void ExpireHistoryBefore(int index, base::Time end_time) {
   base::CancelableTaskTracker task_tracker;
   GetHistoryServiceFromClient(index)->ExpireHistoryBeforeForTesting(
       end_time, base::DoNothing(), &task_tracker);
-  if (test()->use_verifier()) {
+  if (test()->UseVerifier()) {
     HistoryServiceFactory::GetForProfile(test()->verifier(),
                                          ServiceAccessType::IMPLICIT_ACCESS)
         ->ExpireHistoryBeforeForTesting(end_time, base::DoNothing(),
@@ -376,7 +420,7 @@ void ExpireHistoryBetween(int index,
   GetHistoryServiceFromClient(index)->ExpireHistoryBetween(
       {}, begin_time, end_time, /*user_initiated*/ true, base::DoNothing(),
       &task_tracker);
-  if (test()->use_verifier()) {
+  if (test()->UseVerifier()) {
     HistoryServiceFactory::GetForProfile(test()->verifier(),
                                          ServiceAccessType::IMPLICIT_ACCESS)
         ->ExpireHistoryBetween({}, begin_time, end_time,
@@ -387,26 +431,29 @@ void ExpireHistoryBetween(int index,
 }
 
 void DeleteUrlFromHistory(int index, const GURL& url) {
-  GetHistoryServiceFromClient(index)->DeleteURL(url);
-  if (test()->use_verifier())
-    HistoryServiceFactory::GetForProfile(
-        test()->verifier(), ServiceAccessType::IMPLICIT_ACCESS)->DeleteURL(url);
+  GetHistoryServiceFromClient(index)->DeleteURLs({url});
+
+  if (test()->UseVerifier())
+    HistoryServiceFactory::GetForProfile(test()->verifier(),
+                                         ServiceAccessType::IMPLICIT_ACCESS)
+        ->DeleteURLs({url});
+
   WaitForHistoryDBThread(index);
 }
 
 void DeleteUrlsFromHistory(int index, const std::vector<GURL>& urls) {
-  GetHistoryServiceFromClient(index)->DeleteURLsForTest(urls);
-  if (test()->use_verifier())
+  GetHistoryServiceFromClient(index)->DeleteURLs(urls);
+  if (test()->UseVerifier())
     HistoryServiceFactory::GetForProfile(test()->verifier(),
                                          ServiceAccessType::IMPLICIT_ACCESS)
-        ->DeleteURLsForTest(urls);
+        ->DeleteURLs(urls);
   WaitForHistoryDBThread(index);
 }
 
 void SetPageTitle(int index, const GURL& url, const std::string& title) {
   HistoryServiceFactory::GetForProfileWithoutCreating(test()->GetProfile(index))
       ->SetPageTitle(url, base::UTF8ToUTF16(title));
-  if (test()->use_verifier())
+  if (test()->UseVerifier())
     HistoryServiceFactory::GetForProfile(test()->verifier(),
                                          ServiceAccessType::IMPLICIT_ACCESS)
         ->SetPageTitle(url, base::UTF8ToUTF16(title));
@@ -491,7 +538,7 @@ bool CheckURLRowsAreEqualForTypedURLs(const history::URLRow& left,
 
 bool CheckAllProfilesHaveSameTypedURLs() {
   history::URLRows golden_urls;
-  if (test()->use_verifier()) {
+  if (test()->UseVerifier()) {
     history::HistoryService* verifier_service =
         HistoryServiceFactory::GetForProfile(
             test()->verifier(), ServiceAccessType::IMPLICIT_ACCESS);
@@ -503,8 +550,8 @@ bool CheckAllProfilesHaveSameTypedURLs() {
     history::URLRows urls = GetTypedUrlsFromClient(i);
     if (!CheckURLRowVectorsAreEqualForTypedURLs(golden_urls, urls)) {
       DVLOG(1) << "Found no match in typed URLs between two profiles";
-      DVLOG(1) << PrintUrlRows(
-          golden_urls, test()->use_verifier() ? "verifier" : "client 0");
+      DVLOG(1) << PrintUrlRows(golden_urls,
+                               test()->UseVerifier() ? "verifier" : "client 0");
       DVLOG(1) << PrintUrlRows(urls, base::StringPrintf("client %i", i));
       return false;
     }
@@ -550,18 +597,25 @@ bool CheckSyncHasMetadataForURLID(int index, history::URLID url_id) {
   return false;
 }
 
+syncer::MetadataBatch GetAllSyncMetadata(int index) {
+  history::URLRow row;
+  history::HistoryService* service = GetHistoryServiceFromClient(index);
+
+  syncer::MetadataBatch batch;
+  GetMetadataBatchFromHistoryService(service, &batch);
+  return batch;
+}
+
 }  // namespace typed_urls_helper
 
 ProfilesHaveSameTypedURLsChecker::ProfilesHaveSameTypedURLsChecker()
     : MultiClientStatusChangeChecker(
           sync_datatype_helper::test()->GetSyncServices()) {}
 
-bool ProfilesHaveSameTypedURLsChecker::IsExitConditionSatisfied() {
+bool ProfilesHaveSameTypedURLsChecker::IsExitConditionSatisfied(
+    std::ostream* os) {
+  *os << "Waiting for matching typed urls profiles";
   return typed_urls_helper::CheckAllProfilesHaveSameTypedURLs();
-}
-
-std::string ProfilesHaveSameTypedURLsChecker::GetDebugMessage() const {
-  return "Waiting for matching typed urls profiles";
 }
 
 TypedURLChecker::TypedURLChecker(int index, const std::string& url)
@@ -572,7 +626,9 @@ TypedURLChecker::TypedURLChecker(int index, const std::string& url)
 
 TypedURLChecker::~TypedURLChecker() {}
 
-bool TypedURLChecker::IsExitConditionSatisfied() {
+bool TypedURLChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for data for url '" << url_ << "' to be populated.";
+
   history::URLRows rows = typed_urls_helper::GetTypedUrlsFromClient(index_);
 
   for (auto row : rows) {
@@ -580,8 +636,4 @@ bool TypedURLChecker::IsExitConditionSatisfied() {
       return true;
   }
   return false;
-}
-
-std::string TypedURLChecker::GetDebugMessage() const {
-  return "Waiting for data for url '" + url_ + "' to be populated.";
 }

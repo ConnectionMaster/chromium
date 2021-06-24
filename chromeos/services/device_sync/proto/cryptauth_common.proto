@@ -72,6 +72,10 @@ message PolicyReference {
 }
 
 // The client-specific metadata contained in SyncKeysRequest.
+//
+// Note: This message is encoded as query parameters for some requests. If any
+// field or subfield of this proto changes, update the files
+// cryptauth_proto_to_query_parameters_util.{h,cc}.
 message ClientMetadata {
   // The counter for how many times the request has been retried.
   int64 retry_count = 1;
@@ -83,7 +87,7 @@ message ClientMetadata {
 
     // First run of the software package invoking this call.
     INITIALIZATION = 1;
-    // Ordinary periodic actions (e.g., monthly master key rotation).
+    // Ordinary periodic actions (e.g., monthly key rotation).
     PERIODIC = 2;
     // Slow-cycle periodic action (e.g., yearly keypair rotation).
     SLOW_PERIODIC = 3;

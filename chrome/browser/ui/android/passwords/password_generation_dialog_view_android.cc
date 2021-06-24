@@ -4,16 +4,23 @@
 
 #include "chrome/browser/ui/android/passwords/password_generation_dialog_view_android.h"
 
+#include <string>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
-#include "base/strings/string16.h"
-#include "chrome/browser/password_manager/password_generation_controller_impl.h"
+#include "base/memory/weak_ptr.h"
+#include "chrome/android/chrome_jni_headers/PasswordGenerationDialogBridge_jni.h"
+#include "chrome/browser/password_manager/android/password_generation_controller.h"
+#include "chrome/browser/password_manager/android/password_generation_controller_impl.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/password_manager/core/browser/password_manager_driver.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/strings/grit/components_strings.h"
-#include "jni/PasswordGenerationDialogBridge_jni.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
+
+using password_manager::metrics_util::GenerationDialogChoice;
 
 PasswordGenerationDialogViewAndroid::PasswordGenerationDialogViewAndroid(
     PasswordGenerationController* controller)
@@ -23,7 +30,7 @@ PasswordGenerationDialogViewAndroid::PasswordGenerationDialogViewAndroid(
   DCHECK(window_android);
   java_object_.Reset(Java_PasswordGenerationDialogBridge_create(
       base::android::AttachCurrentThread(), window_android->GetJavaObject(),
-      reinterpret_cast<long>(this)));
+      reinterpret_cast<intptr_t>(this)));
 }
 
 PasswordGenerationDialogViewAndroid::~PasswordGenerationDialogViewAndroid() {
@@ -32,10 +39,15 @@ PasswordGenerationDialogViewAndroid::~PasswordGenerationDialogViewAndroid() {
       base::android::AttachCurrentThread(), java_object_);
 }
 
-void PasswordGenerationDialogViewAndroid::Show(base::string16& password) {
+void PasswordGenerationDialogViewAndroid::Show(
+    std::u16string& password,
+    base::WeakPtr<password_manager::PasswordManagerDriver> target_frame_driver,
+    autofill::password_generation::PasswordGenerationType type) {
+  generation_type_ = type;
+  target_frame_driver_ = std::move(target_frame_driver);
   JNIEnv* env = base::android::AttachCurrentThread();
 
-  base::string16 explanation_text =
+  std::u16string explanation_text =
       l10n_util::GetStringUTF16(IDS_PASSWORD_GENERATION_PROMPT);
 
   Java_PasswordGenerationDialogBridge_showDialog(
@@ -48,13 +60,14 @@ void PasswordGenerationDialogViewAndroid::PasswordAccepted(
     const base::android::JavaParamRef<jobject>& obj,
     const base::android::JavaParamRef<jstring>& password) {
   controller_->GeneratedPasswordAccepted(
-      base::android::ConvertJavaStringToUTF16(env, password));
+      base::android::ConvertJavaStringToUTF16(env, password),
+      std::move(target_frame_driver_), generation_type_);
 }
 
 void PasswordGenerationDialogViewAndroid::PasswordRejected(
     JNIEnv* env,
     const base::android::JavaParamRef<jobject>& obj) {
-  controller_->GeneratedPasswordRejected();
+  controller_->GeneratedPasswordRejected(generation_type_);
 }
 
 // static

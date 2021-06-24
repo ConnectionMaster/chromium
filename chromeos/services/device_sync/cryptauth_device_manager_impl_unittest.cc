@@ -10,11 +10,13 @@
 #include <utility>
 
 #include "base/base64url.h"
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_clock.h"
 #include "chromeos/components/multidevice/software_feature_state.h"
@@ -161,16 +163,16 @@ void ExpectSyncedDevicesAreEqual(
               device.supported_software_features_size());
     for (const auto& software_feature :
          expected_device.supported_software_features()) {
-      EXPECT_TRUE(base::ContainsValue(device.supported_software_features(),
-                                      software_feature));
+      EXPECT_TRUE(base::Contains(device.supported_software_features(),
+                                 software_feature));
     }
 
     EXPECT_EQ(expected_device.enabled_software_features_size(),
               device.enabled_software_features_size());
     for (const auto& software_feature :
          expected_device.enabled_software_features()) {
-      EXPECT_TRUE(base::ContainsValue(device.enabled_software_features(),
-                                      software_feature));
+      EXPECT_TRUE(
+          base::Contains(device.enabled_software_features(), software_feature));
     }
   }
 }
@@ -340,13 +342,12 @@ void ExpectSyncedDevicesAndPrefAreEqual(
       std::vector<cryptauth::SoftwareFeature> enabled_software_features;
 
       for (const auto& it : software_features_from_prefs->DictItems()) {
-        int software_feature_state;
-        ASSERT_TRUE(it.second.GetAsInteger(&software_feature_state));
+        ASSERT_TRUE(it.second.is_int());
 
         cryptauth::SoftwareFeature software_feature =
             SoftwareFeatureStringToEnum(it.first);
         switch (static_cast<multidevice::SoftwareFeatureState>(
-            software_feature_state)) {
+            it.second.GetInt())) {
           case multidevice::SoftwareFeatureState::kEnabled:
             enabled_software_features.push_back(software_feature);
             FALLTHROUGH;
@@ -366,13 +367,13 @@ void ExpectSyncedDevicesAndPrefAreEqual(
           enabled_software_features.size());
       for (auto supported_software_feature :
            expected_device.supported_software_features()) {
-        EXPECT_TRUE(base::ContainsValue(
+        EXPECT_TRUE(base::Contains(
             supported_software_features,
             SoftwareFeatureStringToEnum(supported_software_feature)));
       }
       for (auto enabled_software_feature :
            expected_device.enabled_software_features()) {
-        EXPECT_TRUE(base::ContainsValue(
+        EXPECT_TRUE(base::Contains(
             enabled_software_features,
             SoftwareFeatureStringToEnum(enabled_software_feature)));
       }
@@ -533,8 +534,8 @@ class DeviceSyncCryptAuthDeviceManagerImplTest
       update.Get()->Append(std::move(device_dictionary));
     }
 
-    device_manager_.reset(new TestCryptAuthDeviceManager(
-        &clock_, client_factory_.get(), &gcm_manager_, &pref_service_));
+    device_manager_ = std::make_unique<TestCryptAuthDeviceManager>(
+        &clock_, client_factory_.get(), &gcm_manager_, &pref_service_);
     device_manager_->AddObserver(this);
 
     get_my_devices_response_.add_devices()->CopyFrom(devices_in_response_[0]);
@@ -587,10 +588,10 @@ class DeviceSyncCryptAuthDeviceManagerImplTest
 
   // MockCryptAuthClientFactory::Observer:
   void OnCryptAuthClientCreated(MockCryptAuthClient* client) override {
-    EXPECT_CALL(*client, GetMyDevices(_, _, _, _))
+    EXPECT_CALL(*client, GetMyDevices_(_, _, _, _))
         .WillOnce(DoAll(SaveArg<0>(&get_my_devices_request_),
-                        SaveArg<1>(&success_callback_),
-                        SaveArg<2>(&error_callback_)));
+                        MoveArg<1>(&success_callback_),
+                        MoveArg<2>(&error_callback_)));
   }
 
   MockSyncScheduler* sync_scheduler() {
@@ -721,8 +722,8 @@ TEST_F(
   ListPrefUpdate update(&pref_service_, prefs::kCryptAuthDeviceSyncUnlockKeys);
   update.Get()->Append(std::move(device_dictionary));
 
-  device_manager_.reset(new TestCryptAuthDeviceManager(
-      &clock_, client_factory_.get(), &gcm_manager_, &pref_service_));
+  device_manager_ = std::make_unique<TestCryptAuthDeviceManager>(
+      &clock_, client_factory_.get(), &gcm_manager_, &pref_service_);
   device_manager_->Start();
 
   // Ensure that the deprecated booleans are not exposed in the final
@@ -735,18 +736,18 @@ TEST_F(
 
   EXPECT_EQ(2, synced_devices[0].supported_software_features().size());
   EXPECT_TRUE(
-      base::ContainsValue(synced_devices[0].supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_devices[0].supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_devices[0].supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_devices[0].supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
   EXPECT_EQ(1, synced_devices[0].enabled_software_features().size());
   EXPECT_TRUE(
-      base::ContainsValue(synced_devices[0].enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_devices[0].enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
 }
 
 TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncSucceedsForFirstTime) {
@@ -761,7 +762,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncSucceedsForFirstTime) {
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
 
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
   EXPECT_EQ(clock_.Now(), device_manager_->GetLastSyncTime());
 
   ExpectSyncedDevicesAndPrefAreEqual(
@@ -780,7 +781,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, ForceSync) {
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
   EXPECT_EQ(clock_.Now(), device_manager_->GetLastSyncTime());
 
   ExpectSyncedDevicesAndPrefAreEqual(
@@ -802,7 +803,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, ForceSyncFailsThenSucceeds) {
               OnSyncFinishedProxy(
                   CryptAuthDeviceManager::SyncResult::FAILURE,
                   CryptAuthDeviceManager::DeviceChangeResult::UNCHANGED));
-  error_callback_.Run(NetworkRequestError::kEndpointNotFound);
+  std::move(error_callback_).Run(NetworkRequestError::kEndpointNotFound);
   EXPECT_EQ(old_sync_time, device_manager_->GetLastSyncTime());
   EXPECT_TRUE(pref_service_.GetBoolean(
       prefs::kCryptAuthDeviceSyncIsRecoveringFromFailure));
@@ -817,7 +818,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, ForceSyncFailsThenSucceeds) {
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
   EXPECT_EQ(clock_.Now(), device_manager_->GetLastSyncTime());
 
   ExpectSyncedDevicesAndPrefAreEqual(
@@ -844,7 +845,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
               OnSyncFinishedProxy(
                   CryptAuthDeviceManager::SyncResult::FAILURE,
                   CryptAuthDeviceManager::DeviceChangeResult::UNCHANGED));
-  error_callback_.Run(NetworkRequestError::kAuthenticationError);
+  std::move(error_callback_).Run(NetworkRequestError::kAuthenticationError);
   EXPECT_EQ(old_sync_time, device_manager_->GetLastSyncTime());
   EXPECT_TRUE(pref_service_.GetBoolean(
       prefs::kCryptAuthDeviceSyncIsRecoveringFromFailure));
@@ -857,7 +858,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
   EXPECT_EQ(clock_.Now(), device_manager_->GetLastSyncTime());
 
   ExpectSyncedDevicesAndPrefAreEqual(
@@ -890,7 +891,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncSameDevice) {
   synced_device.set_unlockable(kStoredUnlockable);
   cryptauth::GetMyDevicesResponse get_my_devices_response;
   get_my_devices_response.add_devices()->CopyFrom(synced_device);
-  success_callback_.Run(get_my_devices_response);
+  std::move(success_callback_).Run(get_my_devices_response);
 
   // Check that devices are still the same after sync.
   ExpectSyncedDevicesAndPrefAreEqual(
@@ -908,7 +909,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncEmptyDeviceList) {
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(empty_response);
+  std::move(success_callback_).Run(empty_response);
 
   ExpectSyncedDevicesAndPrefAreEqual(
       std::vector<cryptauth::ExternalDeviceInfo>(),
@@ -944,7 +945,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncThreeDevices) {
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(response);
+  std::move(success_callback_).Run(response);
 
   ExpectSyncedDevicesAndPrefAreEqual(
       expected_devices, device_manager_->GetSyncedDevices(), pref_service_);
@@ -954,14 +955,15 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncOnGCMPushMessage) {
   device_manager_->Start();
 
   EXPECT_CALL(*sync_scheduler(), ForceSync());
-  gcm_manager_.PushResyncMessage();
+  gcm_manager_.PushResyncMessage(absl::nullopt /* session_id */,
+                                 absl::nullopt /* feature_type */);
 
   FireSchedulerForSync(cryptauth::INVOCATION_REASON_SERVER_INITIATED);
 
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
 
   ExpectSyncedDevicesAndPrefAreEqual(
       devices_in_response_, device_manager_->GetSyncedDevices(), pref_service_);
@@ -971,14 +973,15 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SyncDeviceWithNoContents) {
   device_manager_->Start();
 
   EXPECT_CALL(*sync_scheduler(), ForceSync());
-  gcm_manager_.PushResyncMessage();
+  gcm_manager_.PushResyncMessage(absl::nullopt /* session_id */,
+                                 absl::nullopt /* feature_type */);
 
   FireSchedulerForSync(cryptauth::INVOCATION_REASON_SERVER_INITIATED);
 
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
 
   ExpectSyncedDevicesAndPrefAreEqual(
       devices_in_response_, device_manager_->GetSyncedDevices(), pref_service_);
@@ -1049,7 +1052,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   cryptauth::GetMyDevicesResponse response;
   response.add_devices()->CopyFrom(device_with_only_public_key);
   response.add_devices()->CopyFrom(device_with_all_fields);
-  success_callback_.Run(response);
+  std::move(success_callback_).Run(response);
 
   ExpectSyncedDevicesAndPrefAreEqual(
       expected_devices, device_manager_->GetSyncedDevices(), pref_service_);
@@ -1063,7 +1066,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest, SubsetsOfSyncedDevices) {
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
 
   // All synced devices.
   ExpectSyncedDevicesAndPrefAreEqual(
@@ -1098,7 +1101,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
 
   cryptauth::ExternalDeviceInfo synced_device =
       device_manager_->GetSyncedDevices()[2];
@@ -1107,21 +1110,21 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_FALSE(synced_device.mobile_hotspot_supported());
 
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_device.supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_device.enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_device.supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
   EXPECT_FALSE(
-      base::ContainsValue(synced_device.enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_device.enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
 }
 
 TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
@@ -1149,7 +1152,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
 
   cryptauth::ExternalDeviceInfo synced_device =
       device_manager_->GetSyncedDevices()[2];
@@ -1158,21 +1161,21 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_FALSE(synced_device.mobile_hotspot_supported());
 
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_device.supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_device.enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_device.supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
   EXPECT_FALSE(
-      base::ContainsValue(synced_device.enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_device.enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
 }
 
 // Regression test for crbug.com/888031.
@@ -1200,7 +1203,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(get_my_devices_response_);
+  std::move(success_callback_).Run(get_my_devices_response_);
 
   cryptauth::ExternalDeviceInfo synced_device =
       device_manager_->GetSyncedDevices()[2];
@@ -1208,21 +1211,21 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   // CryptAuthDeviceManager should recognize that the SoftwareFeature prefs had
   // been stored as refs, and convert them to their full string representations.
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_device.supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
+      base::Contains(synced_device.enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::EASY_UNLOCK_HOST)));
   EXPECT_TRUE(
-      base::ContainsValue(synced_device.supported_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_device.supported_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
   EXPECT_FALSE(
-      base::ContainsValue(synced_device.enabled_software_features(),
-                          SoftwareFeatureEnumToString(
-                              cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
+      base::Contains(synced_device.enabled_software_features(),
+                     SoftwareFeatureEnumToString(
+                         cryptauth::SoftwareFeature::MAGIC_TETHER_HOST)));
 }
 
 TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
@@ -1265,7 +1268,7 @@ TEST_F(DeviceSyncCryptAuthDeviceManagerImplTest,
   EXPECT_CALL(*this, OnSyncFinishedProxy(
                          CryptAuthDeviceManager::SyncResult::SUCCESS,
                          CryptAuthDeviceManager::DeviceChangeResult::CHANGED));
-  success_callback_.Run(response);
+  std::move(success_callback_).Run(response);
 
   histogram_tester.ExpectTotalCount(
       "CryptAuth.DeviceSyncSoftwareFeaturesResult", 4);

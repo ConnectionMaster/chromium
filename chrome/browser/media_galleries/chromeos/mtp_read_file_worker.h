@@ -30,9 +30,8 @@ class MTPReadFileWorker {
   //
   // |request_info| specifies the snapshot file request params.
   // |snapshot_file_info| specifies the metadata of the snapshot file.
-  void WriteDataIntoSnapshotFile(
-      const SnapshotRequestInfo& request_info,
-      const base::File::Info& snapshot_file_info);
+  void WriteDataIntoSnapshotFile(SnapshotRequestInfo request_info,
+                                 const base::File::Info& snapshot_file_info);
 
  private:
   // Called when WriteDataIntoSnapshotFile() completes.
@@ -80,7 +79,7 @@ class MTPReadFileWorker {
   const std::string device_handle_;
 
   // For callbacks that may run after destruction.
-  base::WeakPtrFactory<MTPReadFileWorker> weak_ptr_factory_;
+  base::WeakPtrFactory<MTPReadFileWorker> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MTPReadFileWorker);
 };

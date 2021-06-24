@@ -8,9 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/logging.h"
 #include "base/numerics/checked_math.h"
-#include "base/stl_util.h"
 #include "base/sys_byteorder.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/timestamp_constants.h"
@@ -74,7 +74,7 @@ WebMClusterParser::WebMClusterParser(
 WebMClusterParser::~WebMClusterParser() = default;
 
 void WebMClusterParser::Reset() {
-  last_block_timecode_ = -1;
+  last_block_timecode_.reset();
   cluster_timecode_ = -1;
   cluster_start_time_ = kNoTimestamp;
   cluster_ended_ = false;
@@ -117,7 +117,7 @@ int WebMClusterParser::Parse(const uint8_t* buf, int size) {
     // call.
     parser_.Reset();
 
-    last_block_timecode_ = -1;
+    last_block_timecode_.reset();
     cluster_timecode_ = -1;
   }
 
@@ -422,8 +422,11 @@ bool WebMClusterParser::OnBinary(int id, const uint8_t* data, int size) {
 
       // Read in the big-endian integer.
       discard_padding_ = static_cast<int8_t>(data[0]);
-      for (int i = 1; i < size; ++i)
-        discard_padding_ = (discard_padding_ << 8) | data[i];
+      for (int i = 1; i < size; ++i) {
+        // Multiplying instead of shifting, since the padding may be negative,
+        // and shifting a negative value is undefined.
+        discard_padding_ = (discard_padding_ * 256) | data[i];
+      }
 
       return true;
     }
@@ -455,15 +458,7 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
     return false;
   }
 
-  // TODO(acolwell): Should relative negative timecode offsets be rejected?  Or
-  // only when the absolute timecode is negative?  See http://crbug.com/271794
-  if (timecode < 0) {
-    MEDIA_LOG(ERROR, media_log_) << "Got a block with negative timecode offset "
-                                 << timecode;
-    return false;
-  }
-
-  if (last_block_timecode_ != -1 && timecode < last_block_timecode_) {
+  if (last_block_timecode_.has_value() && timecode < *last_block_timecode_) {
     MEDIA_LOG(ERROR, media_log_)
         << "Got a block with a timecode before the previous block.";
     return false;
@@ -611,6 +606,8 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
     buffer->set_duration(track->default_duration());
   }
 
+  // TODO(wolenetz): Is this correct for negative |discard_padding|? See
+  // https://crbug.com/969195.
   if (discard_padding != 0) {
     buffer->set_discard_padding(std::make_pair(
         base::TimeDelta(),
@@ -648,8 +645,7 @@ DecodeTimestamp WebMClusterParser::Track::GetReadyUpperBound() {
 void WebMClusterParser::Track::ExtractReadyBuffers(
     const DecodeTimestamp before_timestamp) {
   DCHECK(ready_buffers_.empty());
-  DCHECK(DecodeTimestamp() <= before_timestamp);
-  DCHECK(kNoDecodeTimestamp() != before_timestamp);
+  DCHECK(kNoDecodeTimestamp() < before_timestamp);
 
   if (buffers_.empty())
     return;
@@ -748,7 +744,7 @@ void WebMClusterParser::Track::ClearReadyBuffers() {
 void WebMClusterParser::Track::Reset() {
   ClearReadyBuffers();
   buffers_.clear();
-  last_added_buffer_missing_duration_ = NULL;
+  last_added_buffer_missing_duration_.reset();
 }
 
 bool WebMClusterParser::Track::QueueBuffer(
@@ -758,9 +754,8 @@ bool WebMClusterParser::Track::QueueBuffer(
   // WebMClusterParser::OnBlock() gives MEDIA_LOG and parse error on decreasing
   // block timecode detection within a cluster. Therefore, we should not see
   // those here.
-  DecodeTimestamp previous_buffers_timestamp = buffers_.empty() ?
-      DecodeTimestamp() : buffers_.back()->GetDecodeTimestamp();
-  CHECK(previous_buffers_timestamp <= buffer->GetDecodeTimestamp());
+  CHECK(buffers_.empty() ||
+        buffers_.back()->GetDecodeTimestamp() <= buffer->GetDecodeTimestamp());
 
   base::TimeDelta duration = buffer->duration();
   if (duration < base::TimeDelta() || duration == kNoTimestamp) {
@@ -845,8 +840,7 @@ void WebMClusterParser::UpdateReadyBuffers() {
   } else {
     ready_buffer_upper_bound_ = std::min(audio_.GetReadyUpperBound(),
                                          video_.GetReadyUpperBound());
-    DCHECK(DecodeTimestamp() <= ready_buffer_upper_bound_);
-    DCHECK(kNoDecodeTimestamp() != ready_buffer_upper_bound_);
+    DCHECK(kNoDecodeTimestamp() < ready_buffer_upper_bound_);
   }
 
   // Prepare each track's ready buffers for retrieval.

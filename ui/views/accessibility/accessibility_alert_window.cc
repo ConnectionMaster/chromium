@@ -5,8 +5,7 @@
 #include "ui/views/accessibility/accessibility_alert_window.h"
 
 #include "base/strings/utf_string_conversions.h"
-#include "ui/accessibility/platform/aura_window_properties.h"
-#include "ui/aura/env.h"
+#include "ui/accessibility/aura/aura_window_properties.h"
 #include "ui/aura/window.h"
 #include "ui/compositor/layer_type.h"
 #include "ui/views/accessibility/ax_aura_obj_cache.h"
@@ -19,21 +18,18 @@ AccessibilityAlertWindow::AccessibilityAlertWindow(aura::Window* parent,
     : cache_(cache) {
   CHECK(parent);
   alert_window_ = std::make_unique<aura::Window>(
-      nullptr, aura::client::WINDOW_TYPE_UNKNOWN, parent->env());
+      nullptr, aura::client::WINDOW_TYPE_UNKNOWN);
   alert_window_->set_owned_by_parent(false);
   alert_window_->Init(ui::LayerType::LAYER_NOT_DRAWN);
   alert_window_->SetProperty(ui::kAXRoleOverride, ax::mojom::Role::kAlert);
   parent->AddChild(alert_window_.get());
-  alert_window_->env()->AddObserver(this);
+  observation_.Observe(aura::Env::GetInstance());
 }
 
-AccessibilityAlertWindow::~AccessibilityAlertWindow() {
-  if (alert_window_.get())
-    alert_window_->env()->RemoveObserver(this);
-}
+AccessibilityAlertWindow::~AccessibilityAlertWindow() = default;
 
 void AccessibilityAlertWindow::HandleAlert(const std::string& alert_string) {
-  if (!alert_window_->parent())
+  if (!alert_window_ || !alert_window_->parent())
     return;
 
   alert_window_->SetTitle(base::UTF8ToUTF16(alert_string));
@@ -41,9 +37,8 @@ void AccessibilityAlertWindow::HandleAlert(const std::string& alert_string) {
                     ax::mojom::Event::kAlert);
 }
 
-void AccessibilityAlertWindow::OnWindowInitialized(aura::Window* window) {}
-
 void AccessibilityAlertWindow::OnWillDestroyEnv() {
+  observation_.Reset();
   alert_window_.reset();
 }
 

@@ -8,8 +8,8 @@
 #include "components/browsing_data/core/pref_names.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/web/public/browser_state.h"
-#include "ios/web/public/web_task_traits.h"
-#include "ios/web/public/web_thread.h"
+#include "ios/web/public/thread/web_task_traits.h"
+#include "ios/web/public/thread/web_thread.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/disk_cache.h"
@@ -32,10 +32,9 @@ class IOThreadCacheCounter {
         backend_(nullptr) {}
 
   void Count() {
-    base::PostTaskWithTraits(
-        FROM_HERE, {web::WebThread::IO},
-        base::BindRepeating(&IOThreadCacheCounter::CountInternal,
-                            base::Unretained(this), net::OK));
+    base::PostTask(FROM_HERE, {web::WebThread::IO},
+                   base::BindRepeating(&IOThreadCacheCounter::CountInternal,
+                                       base::Unretained(this), net::OK));
   }
 
  private:
@@ -43,13 +42,12 @@ class IOThreadCacheCounter {
     STEP_GET_BACKEND,  // Get the disk_cache::Backend instance.
     STEP_COUNT,        // Run CalculateSizeOfAllEntries() on it.
     STEP_CALLBACK,     // Respond on the UI thread.
-    STEP_DONE          // Calculation completed.
   };
 
   void CountInternal(int64_t rv) {
     DCHECK_CURRENTLY_ON(web::WebThread::IO);
 
-    while (rv != net::ERR_IO_PENDING && next_step_ != STEP_DONE) {
+    while (rv != net::ERR_IO_PENDING) {
       // In case of an error, skip to the last step.
       if (rv < 0)
         next_step_ = STEP_CALLBACK;
@@ -83,19 +81,17 @@ class IOThreadCacheCounter {
         }
 
         case STEP_CALLBACK: {
-          next_step_ = STEP_DONE;
           result_ = rv;
 
-          base::PostTaskWithTraits(
+          base::PostTask(
               FROM_HERE, {web::WebThread::UI},
               base::BindOnce(&IOThreadCacheCounter::OnCountingFinished,
                              base::Unretained(this)));
 
-          break;
-        }
-
-        case STEP_DONE: {
-          NOTREACHED();
+          // Return instead of break.
+          // The task above deletes this object; app would crash if this object
+          // is deleted before reentrance of the loop.
+          return;
         }
       }
     }
@@ -116,7 +112,7 @@ class IOThreadCacheCounter {
 
 }  // namespace
 
-CacheCounter::CacheCounter(ios::ChromeBrowserState* browser_state)
+CacheCounter::CacheCounter(ChromeBrowserState* browser_state)
     : browser_state_(browser_state), weak_ptr_factory_(this) {}
 
 CacheCounter::~CacheCounter() = default;

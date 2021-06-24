@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Verifies that sequence of setting selector and disabling property works.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
       <style>
@@ -31,11 +31,11 @@
     function testDisableProperty(next) {
       var treeItem = ElementsTestRunner.getMatchedStylePropertyTreeItem('color');
       ElementsTestRunner.waitForStyleApplied(onPropertyDisabled);
-      treeItem._toggleEnabled({target: {checked: false}, consume: function() {}});
+      treeItem._toggleDisabled(true);
 
-      function onPropertyDisabled() {
+      async function onPropertyDisabled() {
         TestRunner.addResult('\n\n#### AFTER PROPERTY DISABLED ####\n\n');
-        ElementsTestRunner.dumpSelectedElementStyles(true, false, true);
+        await ElementsTestRunner.dumpSelectedElementStyles(true, false, true);
         next();
       }
     }

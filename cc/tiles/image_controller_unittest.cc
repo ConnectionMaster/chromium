@@ -4,11 +4,11 @@
 
 #include "cc/tiles/image_controller.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/optional.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/sequenced_task_runner_handle.h"
@@ -19,6 +19,7 @@
 #include "cc/test/test_paint_worklet_input.h"
 #include "cc/tiles/image_decode_cache.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace cc {
 namespace {
@@ -107,11 +108,16 @@ class TestableCache : public StubDecodeCache {
     if (image.paint_image() &&
         image.paint_image().width() * image.paint_image().height() >=
             1000 * 1000) {
-      return TaskResult(false);
+      return TaskResult(/*need_unref=*/false, /*is_at_raster_decode=*/true,
+                        /*can_do_hardware_accelerated_decode=*/false);
     }
 
     ++number_of_refs_;
-    return TaskResult(task_to_use_);
+    if (task_to_use_)
+      return TaskResult(task_to_use_,
+                        /*can_do_hardware_accelerated_decode=*/false);
+    return TaskResult(/*need_unref=*/true, /*is_at_raster_decode=*/false,
+                      /*can_do_hardware_accelerated_decode=*/false);
   }
   TaskResult GetOutOfRasterDecodeTaskForImageAndRef(
       const DrawImage& image) override {
@@ -158,7 +164,9 @@ class DecodeClient {
 // A dummy task that does nothing.
 class SimpleTask : public TileTask {
  public:
-  SimpleTask() : TileTask(true /* supports_concurrent_execution */) {
+  SimpleTask()
+      : TileTask(TileTask::SupportsConcurrentExecution::kYes,
+                 TileTask::SupportsBackgroundThreadPriority::kYes) {
     EXPECT_TRUE(thread_checker_.CalledOnValidThread());
   }
   SimpleTask(const SimpleTask&) = delete;
@@ -186,7 +194,9 @@ class SimpleTask : public TileTask {
 class BlockingTask : public TileTask {
  public:
   BlockingTask()
-      : TileTask(true /* supports_concurrent_execution */), run_cv_(&lock_) {
+      : TileTask(TileTask::SupportsConcurrentExecution::kYes,
+                 TileTask::SupportsBackgroundThreadPriority::kYes),
+        run_cv_(&lock_) {
     EXPECT_TRUE(thread_checker_.CalledOnValidThread());
   }
   BlockingTask(const BlockingTask&) = delete;
@@ -197,7 +207,7 @@ class BlockingTask : public TileTask {
     EXPECT_FALSE(HasCompleted());
     EXPECT_FALSE(thread_checker_.CalledOnValidThread());
     base::AutoLock hold(lock_);
-    if (!can_run_)
+    while (!can_run_)
       run_cv_.Wait();
     has_run_ = true;
   }
@@ -230,31 +240,30 @@ class BlockingTask : public TileTask {
 int kDefaultTimeoutSeconds = 10;
 
 DrawImage CreateDiscardableDrawImage(gfx::Size size) {
-  return DrawImage(CreateDiscardablePaintImage(size),
+  return DrawImage(CreateDiscardablePaintImage(size), false,
                    SkIRect::MakeWH(size.width(), size.height()),
-                   kNone_SkFilterQuality, SkMatrix::I(),
-                   PaintImage::kDefaultFrameIndex);
+                   kNone_SkFilterQuality, SkM44(),
+                   PaintImage::kDefaultFrameIndex, gfx::ColorSpace());
 }
 
 DrawImage CreateBitmapDrawImage(gfx::Size size) {
-  return DrawImage(
-      CreateBitmapImage(size), SkIRect::MakeWH(size.width(), size.height()),
-      kNone_SkFilterQuality, SkMatrix::I(), PaintImage::kDefaultFrameIndex);
+  return DrawImage(CreateBitmapImage(size), false,
+                   SkIRect::MakeWH(size.width(), size.height()),
+                   kNone_SkFilterQuality, SkM44(),
+                   PaintImage::kDefaultFrameIndex);
 }
 
 class ImageControllerTest : public testing::Test {
  public:
-  ImageControllerTest()
-      : task_runner_(base::SequencedTaskRunnerHandle::Get()),
-        weak_ptr_factory_(this) {
+  ImageControllerTest() : task_runner_(base::SequencedTaskRunnerHandle::Get()) {
     image_ = CreateDiscardableDrawImage(gfx::Size(1, 1));
   }
   ~ImageControllerTest() override = default;
 
   void SetUp() override {
     worker_task_runner_ = base::MakeRefCounted<WorkerTaskRunner>();
-    controller_.reset(
-        new ImageController(task_runner_.get(), worker_task_runner_));
+    controller_ = std::make_unique<ImageController>(task_runner_.get(),
+                                                    worker_task_runner_);
     cache_ = TestableCache();
     controller_->SetImageDecodeCache(&cache_);
   }
@@ -314,30 +323,8 @@ class ImageControllerTest : public testing::Test {
   std::unique_ptr<ImageController> controller_;
   DrawImage image_;
 
-  base::WeakPtrFactory<ImageControllerTest> weak_ptr_factory_;
+  base::WeakPtrFactory<ImageControllerTest> weak_ptr_factory_{this};
 };
-
-// Test that GetTasksForImagesAndRef does not generate task for PaintWorklet
-// images.
-TEST_F(ImageControllerTest, GetTasksForImagesAndRefForPaintWorkletImages) {
-  std::vector<DrawImage> images(1);
-  ImageDecodeCache::TracingInfo tracing_info;
-
-  PaintImage paint_image = CreatePaintImage(100, 100);
-  DrawImage draw_image(
-      paint_image, SkIRect::MakeWH(paint_image.width(), paint_image.height()),
-      kNone_SkFilterQuality, CreateMatrix(SkSize::Make(1.f, 1.f), true),
-      PaintImage::kDefaultFrameIndex);
-  images[0] = draw_image;
-
-  ASSERT_EQ(1u, images.size());
-
-  std::vector<scoped_refptr<TileTask>> tasks;
-  bool has_at_raster_images = false;
-  controller()->ConvertDataImagesToTasks(&images, &tasks, &has_at_raster_images,
-                                         tracing_info);
-  EXPECT_EQ(tasks.size(), 0u);
-}
 
 TEST_F(ImageControllerTest, NullControllerUnrefsImages) {
   std::vector<DrawImage> images(10);

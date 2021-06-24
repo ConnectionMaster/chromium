@@ -1,5 +1,3 @@
-namespace third_party_unrar {
-
 static void SetACLPrivileges();
 
 static bool ReadSacl=false;
@@ -69,7 +67,7 @@ void ExtractACL20(Archive &Arc,const wchar *FileName)
 void ExtractACL(Archive &Arc,const wchar *FileName)
 {
   Array<byte> SubData;
-  if (!Arc.ReadSubData(&SubData,NULL))
+  if (!Arc.ReadSubData(&SubData,NULL,false))
     return;
 
   SetACLPrivileges();
@@ -135,5 +133,3 @@ bool SetPrivilege(LPCTSTR PrivName)
 
   return Success;
 }
-
-}  // namespace third_party_unrar

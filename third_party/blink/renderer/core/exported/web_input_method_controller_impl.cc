@@ -4,17 +4,16 @@
 
 #include "third_party/blink/renderer/core/exported/web_input_method_controller_impl.h"
 
-#include "third_party/blink/public/platform/web_rect.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/platform/web_vector.h"
 #include "third_party/blink/public/web/web_plugin.h"
 #include "third_party/blink/public/web/web_range.h"
 #include "third_party/blink/renderer/core/dom/document.h"
-#include "third_party/blink/renderer/core/dom/user_gesture_indicator.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/editor.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
+#include "third_party/blink/renderer/core/editing/ime/edit_context.h"
 #include "third_party/blink/renderer/core/editing/ime/ime_text_span_vector_builder.h"
 #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
 #include "third_party/blink/renderer/core/editing/plain_text_range.h"
@@ -33,16 +32,37 @@ WebInputMethodControllerImpl::WebInputMethodControllerImpl(
 
 WebInputMethodControllerImpl::~WebInputMethodControllerImpl() = default;
 
-void WebInputMethodControllerImpl::Trace(blink::Visitor* visitor) {
+void WebInputMethodControllerImpl::Trace(Visitor* visitor) const {
   visitor->Trace(web_frame_);
+}
+
+bool WebInputMethodControllerImpl::IsEditContextActive() const {
+  return GetInputMethodController().GetActiveEditContext();
+}
+
+ui::mojom::VirtualKeyboardVisibilityRequest
+WebInputMethodControllerImpl::GetLastVirtualKeyboardVisibilityRequest() const {
+  return GetInputMethodController().GetLastVirtualKeyboardVisibilityRequest();
+}
+
+void WebInputMethodControllerImpl::SetVirtualKeyboardVisibilityRequest(
+    ui::mojom::VirtualKeyboardVisibilityRequest vk_visibility_request) {
+  GetInputMethodController().SetVirtualKeyboardVisibilityRequest(
+      vk_visibility_request);
 }
 
 bool WebInputMethodControllerImpl::SetComposition(
     const WebString& text,
-    const WebVector<WebImeTextSpan>& ime_text_spans,
+    const WebVector<ui::ImeTextSpan>& ime_text_spans,
     const WebRange& replacement_range,
     int selection_start,
     int selection_end) {
+  if (IsEditContextActive()) {
+    return GetInputMethodController().GetActiveEditContext()->SetComposition(
+        text, ime_text_spans, replacement_range, selection_start,
+        selection_end);
+  }
+
   if (WebPlugin* plugin = FocusedPluginIfInputMethodSupported()) {
     return plugin->SetComposition(text, ime_text_spans, replacement_range,
                                   selection_start, selection_end);
@@ -74,9 +94,8 @@ bool WebInputMethodControllerImpl::SetComposition(
       return false;
   }
 
-  std::unique_ptr<UserGestureIndicator> gesture_indicator =
-      LocalFrame::NotifyUserActivation(GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
 
   GetInputMethodController().SetComposition(
       String(text), ImeTextSpanVectorBuilder::Build(ime_text_spans),
@@ -95,12 +114,18 @@ bool WebInputMethodControllerImpl::FinishComposingText(
   // in WebViewImpl::focusedLocalFrameInWidget(), we will reach here with
   // |web_frame_| not focused on page.
 
+  if (IsEditContextActive()) {
+    return GetInputMethodController()
+        .GetActiveEditContext()
+        ->FinishComposingText(selection_behavior);
+  }
+
   if (WebPlugin* plugin = FocusedPluginIfInputMethodSupported())
     return plugin->FinishComposingText(selection_behavior);
 
   // TODO(editing-dev): The use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
-  GetFrame()->GetDocument()->UpdateStyleAndLayout();
+  GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kInput);
 
   return GetInputMethodController().FinishComposingText(
       selection_behavior == WebInputMethodController::kKeepSelection
@@ -110,28 +135,31 @@ bool WebInputMethodControllerImpl::FinishComposingText(
 
 bool WebInputMethodControllerImpl::CommitText(
     const WebString& text,
-    const WebVector<WebImeTextSpan>& ime_text_spans,
+    const WebVector<ui::ImeTextSpan>& ime_text_spans,
     const WebRange& replacement_range,
     int relative_caret_position) {
-  std::unique_ptr<UserGestureIndicator> gesture_indicator =
-      LocalFrame::NotifyUserActivation(GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
+
+  if (IsEditContextActive()) {
+    return GetInputMethodController().GetActiveEditContext()->CommitText(
+        text, ime_text_spans, replacement_range, relative_caret_position);
+  }
 
   if (WebPlugin* plugin = FocusedPluginIfInputMethodSupported()) {
     return plugin->CommitText(text, ime_text_spans, replacement_range,
                               relative_caret_position);
   }
 
-  // Select the range to be replaced with the composition later.
-  if (!replacement_range.IsNull()) {
-    web_frame_->SelectRange(replacement_range,
-                            WebLocalFrame::kHideSelectionHandle,
-                            blink::mojom::SelectionMenuBehavior::kHide);
-  }
-
   // TODO(editing-dev): The use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
-  GetFrame()->GetDocument()->UpdateStyleAndLayout();
+  GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kInput);
+
+  if (!replacement_range.IsNull()) {
+    return GetInputMethodController().ReplaceText(
+        text, PlainTextRange(replacement_range.StartOffset(),
+                             replacement_range.EndOffset()));
+  }
 
   return GetInputMethodController().CommitText(
       text, ImeTextSpanVectorBuilder::Build(ime_text_spans),
@@ -139,6 +167,9 @@ bool WebInputMethodControllerImpl::CommitText(
 }
 
 WebTextInputInfo WebInputMethodControllerImpl::TextInputInfo() {
+  if (IsEditContextActive())
+    return GetInputMethodController().GetActiveEditContext()->TextInputInfo();
+
   return GetFrame()->GetInputMethodController().TextInputInfo();
 }
 
@@ -149,10 +180,34 @@ int WebInputMethodControllerImpl::ComputeWebTextInputNextPreviousFlags() {
 }
 
 WebTextInputType WebInputMethodControllerImpl::TextInputType() {
+  if (IsEditContextActive())
+    return GetInputMethodController().GetActiveEditContext()->TextInputType();
+
   return GetFrame()->GetInputMethodController().TextInputType();
 }
 
+void WebInputMethodControllerImpl::GetLayoutBounds(
+    gfx::Rect* control_bounds,
+    gfx::Rect* selection_bounds) {
+  GetInputMethodController().GetLayoutBounds(control_bounds, selection_bounds);
+}
+
+bool WebInputMethodControllerImpl::IsVirtualKeyboardPolicyManual() const {
+  if (IsEditContextActive()) {
+    return GetInputMethodController()
+        .GetActiveEditContext()
+        ->IsVirtualKeyboardPolicyManual();
+  }
+  return false;  // Default should always be automatic.
+}
+
 WebRange WebInputMethodControllerImpl::CompositionRange() {
+  if (IsEditContextActive()) {
+    return GetInputMethodController()
+        .GetActiveEditContext()
+        ->CompositionRange();
+  }
+
   EphemeralRange range =
       GetFrame()->GetInputMethodController().CompositionEphemeralRange();
 
@@ -162,27 +217,30 @@ WebRange WebInputMethodControllerImpl::CompositionRange() {
   Element* editable =
       GetFrame()->Selection().RootEditableElementOrDocumentElement();
 
-  editable->GetDocument().UpdateStyleAndLayout();
+  editable->GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kInput);
 
   return PlainTextRange::Create(*editable, range);
 }
 
 bool WebInputMethodControllerImpl::GetCompositionCharacterBounds(
-    WebVector<WebRect>& bounds) {
+    WebVector<gfx::Rect>& bounds) {
+  if (IsEditContextActive())
+    return false;
+
   WebRange range = CompositionRange();
   if (range.IsEmpty())
     return false;
 
   size_t character_count = range.length();
   size_t offset = range.StartOffset();
-  WebVector<WebRect> result(character_count);
-  WebRect webrect;
+  WebVector<gfx::Rect> result(character_count);
+  gfx::Rect rect;
   for (size_t i = 0; i < character_count; ++i) {
-    if (!web_frame_->FirstRectForCharacterRange(offset + i, 1, webrect)) {
+    if (!web_frame_->FirstRectForCharacterRange(offset + i, 1, rect)) {
       DLOG(ERROR) << "Could not retrieve character rectangle at " << i;
       return false;
     }
-    result[i] = webrect;
+    result[i] = rect;
   }
 
   bounds.Swap(result);
@@ -190,9 +248,15 @@ bool WebInputMethodControllerImpl::GetCompositionCharacterBounds(
 }
 
 WebRange WebInputMethodControllerImpl::GetSelectionOffsets() const {
+  if (IsEditContextActive()) {
+    return GetInputMethodController()
+        .GetActiveEditContext()
+        ->GetSelectionOffsets();
+  }
+
   // TODO(editing-dev): The use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
-  GetFrame()->GetDocument()->UpdateStyleAndLayout();
+  GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kInput);
 
   return GetFrame()->GetInputMethodController().GetSelectionOffsets();
 }

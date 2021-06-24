@@ -5,6 +5,8 @@
 #ifndef DEVICE_BASE_SYNCHRONIZATION_ONE_WRITER_SEQLOCK_H_
 #define DEVICE_BASE_SYNCHRONIZATION_ONE_WRITER_SEQLOCK_H_
 
+#include <atomic>
+
 #include "base/atomicops.h"
 #include "base/macros.h"
 #include "base/threading/platform_thread.h"
@@ -28,16 +30,30 @@ namespace device {
 // garbage, or indices could be out of range. Probably the only suitable thing
 // to do during the read loop is to make a copy of the data, and operate on it
 // only after the read was found to be consistent.
+//
+// Accesses to data protected by this SeqLock is recommended to be atomic.
+// See:
+//   https://www.hpl.hp.com/techreports/2012/HPL-2012-68.pdf
+//   http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1478r1.html
 class OneWriterSeqLock {
  public:
   OneWriterSeqLock();
-  base::subtle::Atomic32 ReadBegin() const;
-  bool ReadRetry(base::subtle::Atomic32 version) const;
+  // Copies data from src into dest using atomic stores. This should be used by
+  // writer of SeqLock. Data must be 4-byte aligned.
+  static void AtomicWriterMemcpy(void* dest, const void* src, size_t size);
+  // Copies data from src into dest using atomic loads. This should be used by
+  // readers of SeqLock. Data must be 4-byte aligned.
+  static void AtomicReaderMemcpy(void* dest, const void* src, size_t size);
+  // ReadBegin returns |sequence_| when it is even, or when it has retried
+  // |max_retries| times. Omitting |max_retries| results in ReadBegin not
+  // returning until |sequence_| is even.
+  int32_t ReadBegin(uint32_t max_retries = UINT32_MAX) const;
+  bool ReadRetry(int32_t version) const;
   void WriteBegin();
   void WriteEnd();
 
  private:
-  base::subtle::Atomic32 sequence_;
+  std::atomic<int32_t> sequence_;
   DISALLOW_COPY_AND_ASSIGN(OneWriterSeqLock);
 };
 

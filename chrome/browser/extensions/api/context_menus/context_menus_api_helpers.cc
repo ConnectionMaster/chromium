@@ -21,9 +21,11 @@ const char kDuplicateIDError[] =
 const char kGeneratedIdKey[] = "generatedId";
 const char kLauncherNotAllowedError[] =
     "Only packaged apps are allowed to use 'launcher' context";
-const char kOnclickDisallowedError[] = "Extensions using event pages cannot "
-    "pass an onclick parameter to chrome.contextMenus.create. Instead, use "
-    "the chrome.contextMenus.onClicked event.";
+const char kOnclickDisallowedError[] =
+    "Extensions using event pages or "
+    "Service Workers cannot pass an onclick parameter to "
+    "chrome.contextMenus.create. Instead, use the "
+    "chrome.contextMenus.onClicked event.";
 const char kParentsMustBeNormalError[] =
     "Parent items must have type \"normal\"";
 const char kTitleNeededError[] =
@@ -96,6 +98,10 @@ MenuItem::ContextList GetContexts(const std::vector<
       case extensions::api::context_menus::CONTEXT_TYPE_PAGE_ACTION:
         // Not available for <webview>.
         contexts.Add(extensions::MenuItem::PAGE_ACTION);
+        break;
+      case extensions::api::context_menus::CONTEXT_TYPE_ACTION:
+        // Not available for <webview>.
+        contexts.Add(extensions::MenuItem::ACTION);
         break;
       case extensions::api::context_menus::CONTEXT_TYPE_NONE:
         NOTREACHED();

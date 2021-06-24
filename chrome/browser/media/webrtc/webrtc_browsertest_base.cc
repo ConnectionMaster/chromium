@@ -21,13 +21,14 @@
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_common.h"
-#include "chrome/browser/permissions/permission_request_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/permissions/permission_request_manager.h"
+#include "components/permissions/test/permission_request_observer.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/extension_registry.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -102,42 +103,6 @@ bool JavascriptErrorDetectingLogHandler(int severity,
   return false;
 }
 
-// PermissionRequestObserver ---------------------------------------------------
-
-// Used to observe the creation of permission prompt without responding.
-class PermissionRequestObserver : public PermissionRequestManager::Observer {
- public:
-  explicit PermissionRequestObserver(content::WebContents* web_contents)
-      : request_manager_(
-            PermissionRequestManager::FromWebContents(web_contents)),
-        request_shown_(false),
-        message_loop_runner_(new content::MessageLoopRunner) {
-    request_manager_->AddObserver(this);
-  }
-  ~PermissionRequestObserver() override {
-    // Safe to remove twice if it happens.
-    request_manager_->RemoveObserver(this);
-  }
-
-  void Wait() { message_loop_runner_->Run(); }
-
-  bool request_shown() const { return request_shown_; }
-
- private:
-  // PermissionRequestManager::Observer
-  void OnBubbleAdded() override {
-    request_shown_ = true;
-    request_manager_->RemoveObserver(this);
-    message_loop_runner_->Quit();
-  }
-
-  PermissionRequestManager* request_manager_;
-  bool request_shown_;
-  scoped_refptr<content::MessageLoopRunner> message_loop_runner_;
-
-  DISALLOW_COPY_AND_ASSIGN(PermissionRequestObserver);
-};
-
 std::vector<std::string> JsonArrayToVectorOfStrings(
     const std::string& json_array) {
   std::unique_ptr<base::Value> value =
@@ -168,7 +133,6 @@ WebRtcTestBase::WebRtcTestBase(): detect_errors_in_javascript_(false) {
   hit_javascript_errors_.Get() = false;
 
   EnablePixelOutput();
-  EnableAudioOutput();
 }
 
 WebRtcTestBase::~WebRtcTestBase() {
@@ -189,11 +153,12 @@ bool WebRtcTestBase::GetUserMediaWithSpecificConstraintsAndAccept(
     content::WebContents* tab_contents,
     const std::string& constraints) const {
   std::string result;
-  PermissionRequestManager::FromWebContents(tab_contents)
-      ->set_auto_response_for_test(PermissionRequestManager::ACCEPT_ALL);
-  PermissionRequestObserver permissionRequestObserver(tab_contents);
+  permissions::PermissionRequestManager::FromWebContents(tab_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
+  permissions::PermissionRequestObserver observer(tab_contents);
   GetUserMedia(tab_contents, constraints);
-  EXPECT_TRUE(permissionRequestObserver.request_shown());
+  EXPECT_TRUE(observer.request_shown());
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents->GetMainFrame(), "obtainGetUserMediaResult();", &result));
   return kOkGotStream == result;
@@ -203,8 +168,9 @@ bool WebRtcTestBase::GetUserMediaWithSpecificConstraintsAndAcceptIfPrompted(
     content::WebContents* tab_contents,
     const std::string& constraints) const {
   std::string result;
-  PermissionRequestManager::FromWebContents(tab_contents)
-      ->set_auto_response_for_test(PermissionRequestManager::ACCEPT_ALL);
+  permissions::PermissionRequestManager::FromWebContents(tab_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
   GetUserMedia(tab_contents, constraints);
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents->GetMainFrame(), "obtainGetUserMediaResult();", &result));
@@ -220,11 +186,12 @@ void WebRtcTestBase::GetUserMediaWithSpecificConstraintsAndDeny(
     content::WebContents* tab_contents,
     const std::string& constraints) const {
   std::string result;
-  PermissionRequestManager::FromWebContents(tab_contents)
-      ->set_auto_response_for_test(PermissionRequestManager::DENY_ALL);
-  PermissionRequestObserver permissionRequestObserver(tab_contents);
+  permissions::PermissionRequestManager::FromWebContents(tab_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::DENY_ALL);
+  permissions::PermissionRequestObserver observer(tab_contents);
   GetUserMedia(tab_contents, constraints);
-  EXPECT_TRUE(permissionRequestObserver.request_shown());
+  EXPECT_TRUE(observer.request_shown());
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents->GetMainFrame(), "obtainGetUserMediaResult();", &result));
   EXPECT_EQ(kFailedWithNotAllowedError, result);
@@ -233,11 +200,12 @@ void WebRtcTestBase::GetUserMediaWithSpecificConstraintsAndDeny(
 void WebRtcTestBase::GetUserMediaAndDismiss(
     content::WebContents* tab_contents) const {
   std::string result;
-  PermissionRequestManager::FromWebContents(tab_contents)
-      ->set_auto_response_for_test(PermissionRequestManager::DISMISS);
-  PermissionRequestObserver permissionRequestObserver(tab_contents);
+  permissions::PermissionRequestManager::FromWebContents(tab_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::DISMISS);
+  permissions::PermissionRequestObserver observer(tab_contents);
   GetUserMedia(tab_contents, kAudioVideoCallConstraints);
-  EXPECT_TRUE(permissionRequestObserver.request_shown());
+  EXPECT_TRUE(observer.request_shown());
   // A dismiss should be treated like a deny.
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents->GetMainFrame(), "obtainGetUserMediaResult();", &result));
@@ -255,11 +223,12 @@ void WebRtcTestBase::GetUserMediaAndExpectAutoAcceptWithoutPrompt(
   // we set an auto-response to avoid leaving the prompt hanging. The choice of
   // DENY_ALL makes sure that the response to the prompt doesn't accidentally
   // result in a newly granted media stream permission.
-  PermissionRequestManager::FromWebContents(tab_contents)
-      ->set_auto_response_for_test(PermissionRequestManager::DENY_ALL);
-  PermissionRequestObserver permissionRequestObserver(tab_contents);
+  permissions::PermissionRequestManager::FromWebContents(tab_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::DENY_ALL);
+  permissions::PermissionRequestObserver observer(tab_contents);
   GetUserMedia(tab_contents, kAudioVideoCallConstraints);
-  EXPECT_FALSE(permissionRequestObserver.request_shown());
+  EXPECT_FALSE(observer.request_shown());
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents->GetMainFrame(), "obtainGetUserMediaResult();", &result));
   EXPECT_EQ(kOkGotStream, result);
@@ -276,11 +245,12 @@ void WebRtcTestBase::GetUserMediaAndExpectAutoDenyWithoutPrompt(
   // we set an auto-response to avoid leaving the prompt hanging. The choice of
   // ACCEPT_ALL makes sure that the response to the prompt doesn't accidentally
   // result in a newly granted media stream permission.
-  PermissionRequestManager::FromWebContents(tab_contents)
-      ->set_auto_response_for_test(PermissionRequestManager::ACCEPT_ALL);
-  PermissionRequestObserver permissionRequestObserver(tab_contents);
+  permissions::PermissionRequestManager::FromWebContents(tab_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
+  permissions::PermissionRequestObserver observer(tab_contents);
   GetUserMedia(tab_contents, kAudioVideoCallConstraints);
-  EXPECT_FALSE(permissionRequestObserver.request_shown());
+  EXPECT_FALSE(observer.request_shown());
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents->GetMainFrame(), "obtainGetUserMediaResult();", &result));
   EXPECT_EQ(kFailedWithNotAllowedError, result);
@@ -306,14 +276,15 @@ content::WebContents*
 WebRtcTestBase::OpenPageAndGetUserMediaInNewTabWithConstraints(
     const GURL& url,
     const std::string& constraints) const {
-  chrome::AddTabAt(browser(), GURL(), -1, true);
+  chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), -1, true);
   ui_test_utils::NavigateToURL(browser(), url);
   content::WebContents* new_tab =
       browser()->tab_strip_model()->GetActiveWebContents();
   // Accept if necessary, but don't expect a prompt (because auto-accept is also
   // okay).
-  PermissionRequestManager::FromWebContents(new_tab)
-      ->set_auto_response_for_test(PermissionRequestManager::ACCEPT_ALL);
+  permissions::PermissionRequestManager::FromWebContents(new_tab)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
   GetUserMedia(new_tab, constraints);
   std::string result;
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
@@ -330,15 +301,16 @@ content::WebContents* WebRtcTestBase::OpenTestPageAndGetUserMediaInNewTab(
 
 content::WebContents* WebRtcTestBase::OpenTestPageInNewTab(
     const std::string& test_page) const {
-  chrome::AddTabAt(browser(), GURL(), -1, true);
+  chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), -1, true);
   GURL url = embedded_test_server()->GetURL(test_page);
   ui_test_utils::NavigateToURL(browser(), url);
   content::WebContents* new_tab =
       browser()->tab_strip_model()->GetActiveWebContents();
   // Accept if necessary, but don't expect a prompt (because auto-accept is also
   // okay).
-  PermissionRequestManager::FromWebContents(new_tab)
-      ->set_auto_response_for_test(PermissionRequestManager::ACCEPT_ALL);
+  permissions::PermissionRequestManager::FromWebContents(new_tab)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
   return new_tab;
 }
 
@@ -357,6 +329,10 @@ std::string WebRtcTestBase::ExecuteJavascript(
   EXPECT_TRUE(content::ExecuteScriptAndExtractString(
       tab_contents, javascript, &result));
   return result;
+}
+
+void WebRtcTestBase::ChangeToLegacyGetStats(content::WebContents* tab) const {
+  content::ExecuteScriptAsync(tab, "changeToLegacyGetStats()");
 }
 
 void WebRtcTestBase::SetupPeerconnectionWithLocalStream(
@@ -497,6 +473,14 @@ bool WebRtcTestBase::WaitForVideoToPlay(
   return is_video_playing;
 }
 
+bool WebRtcTestBase::WaitForVideoToStop(
+    content::WebContents* tab_contents) const {
+  bool is_video_stopped =
+      test::PollingWaitUntil("isVideoStopped()", "video-stopped", tab_contents);
+  EXPECT_TRUE(is_video_stopped);
+  return is_video_stopped;
+}
+
 std::string WebRtcTestBase::GetStreamSize(
     content::WebContents* tab_contents,
     const std::string& video_element) const {
@@ -509,7 +493,7 @@ std::string WebRtcTestBase::GetStreamSize(
 
 bool WebRtcTestBase::OnWin8OrHigher() const {
 #if defined(OS_WIN)
-  return base::win::GetVersion() >= base::win::VERSION_WIN8;
+  return base::win::GetVersion() >= base::win::Version::WIN8;
 #else
   return false;
 #endif
@@ -625,8 +609,8 @@ std::string WebRtcTestBase::GetDesktopMediaStream(content::WebContents* tab) {
   return ExecuteJavascript("openDesktopMediaStream()", tab);
 }
 
-base::Optional<std::string> WebRtcTestBase::LoadDesktopCaptureExtension() {
-  base::Optional<std::string> extension_id;
+absl::optional<std::string> WebRtcTestBase::LoadDesktopCaptureExtension() {
+  absl::optional<std::string> extension_id;
   if (!desktop_capture_extension_.get()) {
     extensions::ChromeTestExtensionLoader loader(browser()->profile());
     base::FilePath extension_path;

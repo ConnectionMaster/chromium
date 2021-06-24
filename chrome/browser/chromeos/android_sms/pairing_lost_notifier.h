@@ -46,7 +46,7 @@ class PairingLostNotifier
 
   void ShowPairingLostNotification();
   void ClosePairingLostNotificationIfVisible();
-  void OnPairingLostNotificationClick(base::Optional<int> button_index);
+  void OnPairingLostNotificationClick(absl::optional<int> button_index);
 
   Profile* profile_;
   multidevice_setup::MultiDeviceSetupClient* multidevice_setup_client_;
@@ -54,7 +54,7 @@ class PairingLostNotifier
   multidevice_setup::AndroidSmsAppHelperDelegate*
       android_sms_app_helper_delegate_;
 
-  base::WeakPtrFactory<PairingLostNotifier> weak_ptr_factory_;
+  base::WeakPtrFactory<PairingLostNotifier> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PairingLostNotifier);
 };

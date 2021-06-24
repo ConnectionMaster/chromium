@@ -10,9 +10,8 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "ppapi/c/pp_bool.h"
 #include "ppapi/c/pp_var.h"
@@ -52,7 +51,8 @@ class RawVarDataTest : public testing::Test {
   }
 
  private:
-  base::MessageLoop message_loop_;  // Required to receive callbacks.
+  base::test::SingleThreadTaskEnvironment
+      task_environment_;  // Required to receive callbacks.
   TestGlobals globals_;
 };
 
@@ -63,7 +63,7 @@ bool WriteAndRead(const PP_Var& var, PP_Var* result) {
   if (!expected_data)
     return false;
   IPC::Message m;
-  expected_data->Write(&m, base::Bind(&DefaultHandleWriter));
+  expected_data->Write(&m, base::BindRepeating(&DefaultHandleWriter));
   base::PickleIterator iter(m);
   std::unique_ptr<RawVarDataGraph> actual_data(
       RawVarDataGraph::Read(&m, &iter));

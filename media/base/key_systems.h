@@ -28,6 +28,9 @@ class MEDIA_EXPORT KeySystems {
  public:
   static KeySystems* GetInstance();
 
+  // Refreshes the list of available key systems if it may be out of date.
+  virtual void UpdateIfNeeded() = 0;
+
   // Returns whether |key_system| is a supported key system.
   virtual bool IsSupportedKeySystem(const std::string& key_system) const = 0;
 
@@ -42,7 +45,7 @@ class MEDIA_EXPORT KeySystems {
   // Returns the configuration rule for supporting |encryption_scheme|.
   virtual EmeConfigRule GetEncryptionSchemeConfigRule(
       const std::string& key_system,
-      EncryptionMode encryption_scheme) const = 0;
+      EncryptionScheme encryption_scheme) const = 0;
 
   // Returns the configuration rule for supporting a container and a list of
   // codecs.
@@ -53,18 +56,21 @@ class MEDIA_EXPORT KeySystems {
       const std::vector<std::string>& codecs) const = 0;
 
   // Returns the configuration rule for supporting a robustness requirement.
+  // If `hw_secure_requirement` is true, then the key system already has a HW
+  // secure requirement, if false then it already has a requirement to disallow
+  // HW secure; if null then there is no HW secure requirement to apply. This
+  // does not imply that `requested_robustness` should be ignored, both rules
+  // must be applied.
+  // TODO(crbug.com/1204284): Refactor this and remove the
+  // `hw_secure_requirement` argument.
   virtual EmeConfigRule GetRobustnessConfigRule(
       const std::string& key_system,
       EmeMediaType media_type,
-      const std::string& requested_robustness) const = 0;
+      const std::string& requested_robustness,
+      const bool* hw_secure_requirement) const = 0;
 
   // Returns the support |key_system| provides for persistent-license sessions.
   virtual EmeSessionTypeSupport GetPersistentLicenseSessionSupport(
-      const std::string& key_system) const = 0;
-
-  // Returns the support |key_system| provides for persistent-usage-record
-  // sessions.
-  virtual EmeSessionTypeSupport GetPersistentUsageRecordSessionSupport(
       const std::string& key_system) const = 0;
 
   // Returns the support |key_system| provides for persistent state.

@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that editing is canceled properly after incremental editing.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
       <div id="inspected" style="color: red">Text</div>
@@ -20,8 +20,8 @@
       ElementsTestRunner.selectNodeAndWaitForStyles('inspected', next);
     },
 
-    function testFreeFlowEdit(next) {
-      ElementsTestRunner.dumpSelectedElementStyles(true);
+    async function testFreeFlowEdit(next) {
+      await ElementsTestRunner.dumpSelectedElementStyles(true);
       treeElement = ElementsTestRunner.getElementStylePropertyTreeItem('color');
       treeOutline = treeElement.treeOutline;
 
@@ -29,10 +29,10 @@
       treeElement.nameElement.textContent = 'color';
       treeElement.nameElement.dispatchEvent(TestRunner.createKeyEvent('Enter'));
 
-    // Update incrementally, do not commit.
+      // Update incrementally, do not commit.
       treeElement.valueElement.textContent = 'rgb(/*';
-      ElementsTestRunner.waitForStyleApplied(next);
-      treeElement.kickFreeFlowStyleEditForTest();
+      await treeElement.kickFreeFlowStyleEditForTest();
+      next();
     },
 
     function testCommitEditing(next) {
@@ -70,9 +70,9 @@
       ElementsTestRunner.selectNodeAndWaitForStyles('inspected', next);
     },
 
-    function dumpStyles(next) {
+    async function dumpStyles(next) {
       TestRunner.addResult('After append:');
-      ElementsTestRunner.dumpSelectedElementStyles(true);
+      await ElementsTestRunner.dumpSelectedElementStyles(true);
       next();
     }
   ]);

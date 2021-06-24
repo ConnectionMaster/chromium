@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "ash/ash_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace aura {
@@ -20,6 +21,7 @@ namespace ash {
 // window placement in multi-displays scenario.
 struct ASH_EXPORT PersistentWindowInfo {
   explicit PersistentWindowInfo(aura::Window* window);
+  PersistentWindowInfo(const PersistentWindowInfo& other);
   ~PersistentWindowInfo();
 
   // Persistent window bounds in screen coordinates.
@@ -30,6 +32,9 @@ struct ASH_EXPORT PersistentWindowInfo {
 
   // Indicates last display bounds for |display_id| in screen coordinates.
   gfx::Rect display_bounds_in_screen;
+
+  // Stores the restore bounds in screen coordinates if they exist.
+  absl::optional<gfx::Rect> restore_bounds_in_screen;
 };
 
 }  // namespace ash

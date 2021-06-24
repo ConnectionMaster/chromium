@@ -9,9 +9,9 @@
 #include "ash/system/status_area_widget_test_helper.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/window_factory.h"
+#include "ash/test/test_widget_builder.h"
+#include "ash/test/test_window_builder.h"
 #include "ash/wm/desks/desks_util.h"
-#include "ash/wm/root_window_finder.h"
 #include "ash/wm/window_properties.h"
 #include "ash/wm/window_util.h"
 #include "base/run_loop.h"
@@ -24,6 +24,7 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/display/display.h"
 #include "ui/display/display_layout.h"
 #include "ui/display/manager/display_manager.h"
@@ -46,18 +47,6 @@ void SetSecondaryDisplayLayout(display::DisplayPlacement::Position position) {
   Shell::Get()->display_manager()->SetLayoutForCurrentDisplays(
       std::move(layout));
 }
-
-class ModalWidgetDelegate : public views::WidgetDelegateView {
- public:
-  ModalWidgetDelegate() = default;
-  ~ModalWidgetDelegate() override = default;
-
-  // Overridden from views::WidgetDelegate:
-  ui::ModalType GetModalType() const override { return ui::MODAL_TYPE_SYSTEM; }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ModalWidgetDelegate);
-};
 
 // An event handler which moves the target window to the secondary root window
 // at pre-handle phase of a mouse release event.
@@ -151,15 +140,11 @@ class ExtendedDesktopTest : public AshTestBase {
     Shell::Get()->cursor_manager()->ShowCursor();
   }
 
-  // TODO(jamescook): Switch to AshTestBase::CreateTestWidget().
   views::Widget* CreateTestWidget(const gfx::Rect& bounds) {
-    views::Widget::InitParams params(views::Widget::InitParams::TYPE_WINDOW);
-    params.bounds = bounds;
-    views::Widget* widget = new views::Widget;
-    params.context = CurrentContext();
-    widget->Init(params);
-    widget->Show();
-    return widget;
+    return TestWidgetBuilder()
+        .SetBounds(bounds)
+        .SetContext(GetContext())
+        .BuildOwnedByNativeWidget();
   }
 
  protected:
@@ -234,9 +219,10 @@ TEST_F(ExtendedDesktopTest, SystemModal) {
   EXPECT_EQ(root_windows[0], Shell::GetRootWindowForNewWindows());
 
   // Open system modal. Make sure it's on 2nd root window and active.
-  views::Widget* modal_widget = views::Widget::CreateWindowWithContextAndBounds(
-      new ModalWidgetDelegate(), CurrentContext(),
-      gfx::Rect(1200, 100, 100, 100));
+  auto delegate = std::make_unique<views::WidgetDelegateView>();
+  delegate->SetModalType(ui::MODAL_TYPE_SYSTEM);
+  views::Widget* modal_widget = views::Widget::CreateWindowWithContext(
+      delegate.release(), GetContext(), gfx::Rect(1200, 100, 100, 100));
   modal_widget->Show();
   EXPECT_TRUE(wm::IsActiveWindow(modal_widget->GetNativeView()));
   EXPECT_EQ(root_windows[1], modal_widget->GetNativeView()->GetRootWindow());
@@ -263,11 +249,11 @@ TEST_F(ExtendedDesktopTest, TestCursor) {
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   aura::WindowTreeHost* host0 = root_windows[0]->GetHost();
   aura::WindowTreeHost* host1 = root_windows[1]->GetHost();
-  EXPECT_EQ(ui::CursorType::kPointer, host0->last_cursor().native_type());
-  EXPECT_EQ(ui::CursorType::kNull, host1->last_cursor().native_type());
-  Shell::Get()->cursor_manager()->SetCursor(ui::CursorType::kCopy);
-  EXPECT_EQ(ui::CursorType::kCopy, host0->last_cursor().native_type());
-  EXPECT_EQ(ui::CursorType::kCopy, host1->last_cursor().native_type());
+  EXPECT_EQ(ui::mojom::CursorType::kPointer, host0->last_cursor().type());
+  EXPECT_EQ(ui::mojom::CursorType::kNull, host1->last_cursor().type());
+  Shell::Get()->cursor_manager()->SetCursor(ui::mojom::CursorType::kCopy);
+  EXPECT_EQ(ui::mojom::CursorType::kCopy, host0->last_cursor().type());
+  EXPECT_EQ(ui::mojom::CursorType::kCopy, host1->last_cursor().type());
 }
 
 TEST_F(ExtendedDesktopTest, TestCursorLocation) {
@@ -298,17 +284,18 @@ TEST_F(ExtendedDesktopTest, GetRootWindowAt) {
   SetSecondaryDisplayLayout(display::DisplayPlacement::LEFT);
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
 
-  EXPECT_EQ(root_windows[1], wm::GetRootWindowAt(gfx::Point(-400, 100)));
-  EXPECT_EQ(root_windows[1], wm::GetRootWindowAt(gfx::Point(-1, 100)));
-  EXPECT_EQ(root_windows[0], wm::GetRootWindowAt(gfx::Point(0, 300)));
-  EXPECT_EQ(root_windows[0], wm::GetRootWindowAt(gfx::Point(700, 300)));
+  using window_util::GetRootWindowAt;
+  EXPECT_EQ(root_windows[1], GetRootWindowAt(gfx::Point(-400, 100)));
+  EXPECT_EQ(root_windows[1], GetRootWindowAt(gfx::Point(-1, 100)));
+  EXPECT_EQ(root_windows[0], GetRootWindowAt(gfx::Point(0, 300)));
+  EXPECT_EQ(root_windows[0], GetRootWindowAt(gfx::Point(700, 300)));
 
   // Zero origin.
-  EXPECT_EQ(root_windows[0], wm::GetRootWindowAt(gfx::Point(0, 0)));
+  EXPECT_EQ(root_windows[0], GetRootWindowAt(gfx::Point(0, 0)));
 
   // Out of range point should return the nearest root window
-  EXPECT_EQ(root_windows[1], wm::GetRootWindowAt(gfx::Point(-600, 0)));
-  EXPECT_EQ(root_windows[0], wm::GetRootWindowAt(gfx::Point(701, 100)));
+  EXPECT_EQ(root_windows[1], GetRootWindowAt(gfx::Point(-600, 0)));
+  EXPECT_EQ(root_windows[0], GetRootWindowAt(gfx::Point(701, 100)));
 }
 
 TEST_F(ExtendedDesktopTest, GetRootWindowMatching) {
@@ -318,38 +305,35 @@ TEST_F(ExtendedDesktopTest, GetRootWindowMatching) {
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
 
   // Containing rect.
+  using window_util::GetRootWindowMatching;
   EXPECT_EQ(root_windows[1],
-            wm::GetRootWindowMatching(gfx::Rect(-300, 10, 50, 50)));
-  EXPECT_EQ(root_windows[0],
-            wm::GetRootWindowMatching(gfx::Rect(100, 10, 50, 50)));
+            GetRootWindowMatching(gfx::Rect(-300, 10, 50, 50)));
+  EXPECT_EQ(root_windows[0], GetRootWindowMatching(gfx::Rect(100, 10, 50, 50)));
 
   // Intersecting rect.
   EXPECT_EQ(root_windows[1],
-            wm::GetRootWindowMatching(gfx::Rect(-200, 0, 300, 300)));
+            GetRootWindowMatching(gfx::Rect(-200, 0, 300, 300)));
   EXPECT_EQ(root_windows[0],
-            wm::GetRootWindowMatching(gfx::Rect(-100, 0, 300, 300)));
+            GetRootWindowMatching(gfx::Rect(-100, 0, 300, 300)));
 
   // Zero origin.
-  EXPECT_EQ(root_windows[0], wm::GetRootWindowMatching(gfx::Rect(0, 0, 0, 0)));
-  EXPECT_EQ(root_windows[0], wm::GetRootWindowMatching(gfx::Rect(0, 0, 1, 1)));
+  EXPECT_EQ(root_windows[0], GetRootWindowMatching(gfx::Rect(0, 0, 0, 0)));
+  EXPECT_EQ(root_windows[0], GetRootWindowMatching(gfx::Rect(0, 0, 1, 1)));
 
   // Empty rect.
-  EXPECT_EQ(root_windows[1],
-            wm::GetRootWindowMatching(gfx::Rect(-400, 100, 0, 0)));
-  EXPECT_EQ(root_windows[0],
-            wm::GetRootWindowMatching(gfx::Rect(100, 100, 0, 0)));
+  EXPECT_EQ(root_windows[1], GetRootWindowMatching(gfx::Rect(-400, 100, 0, 0)));
+  EXPECT_EQ(root_windows[0], GetRootWindowMatching(gfx::Rect(100, 100, 0, 0)));
 
   // Out of range rect should return the primary root window.
   EXPECT_EQ(root_windows[0],
-            wm::GetRootWindowMatching(gfx::Rect(-600, -300, 50, 50)));
-  EXPECT_EQ(root_windows[0],
-            wm::GetRootWindowMatching(gfx::Rect(0, 1000, 50, 50)));
+            GetRootWindowMatching(gfx::Rect(-600, -300, 50, 50)));
+  EXPECT_EQ(root_windows[0], GetRootWindowMatching(gfx::Rect(0, 1000, 50, 50)));
 }
 
 TEST_F(ExtendedDesktopTest, Capture) {
   // This test deals with input events but not visuals so don't throttle input
   // on visuals.
-  Shell::Get()->aura_env()->set_throttle_input_on_resize_for_testing(false);
+  aura::Env::GetInstance()->set_throttle_input_on_resize_for_testing(false);
 
   UpdateDisplay("1000x600,600x400");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
@@ -603,22 +587,28 @@ TEST_F(ExtendedDesktopTest, MoveWindowWithTransient) {
       CreateTestWindowInShellWithBounds(gfx::Rect(10, 10, 100, 100));
   wm::ActivateWindow(w1);
   // |w1_t1| is a transient child window of |w1|.
-  std::unique_ptr<aura::Window> w1_t1 = CreateChildWindow(
-      w1, gfx::Rect(50, 50, 50, 50), desks_util::GetActiveDeskContainerId());
+  std::unique_ptr<aura::Window> w1_t1 =
+      ChildTestWindowBuilder(w1, gfx::Rect(50, 50, 50, 50),
+                             desks_util::GetActiveDeskContainerId())
+          .Build();
   ::wm::AddTransientChild(w1, w1_t1.get());
   // |w1_t11| is a transient child window of transient child window |w1_t1|.
   std::unique_ptr<aura::Window> w1_t11 =
-      CreateChildWindow(w1_t1.get(), gfx::Rect(2, 7, 35, 35),
-                        desks_util::GetActiveDeskContainerId());
+      ChildTestWindowBuilder(w1_t1.get(), gfx::Rect(2, 7, 35, 35),
+                             desks_util::GetActiveDeskContainerId())
+          .Build();
   ::wm::AddTransientChild(w1_t1.get(), w1_t11.get());
 
   // |w11| is a non-transient child window of |w1|.
-  std::unique_ptr<aura::Window> w11 = CreateChildWindow(
-      w1, gfx::Rect(10, 10, 40, 40), desks_util::GetActiveDeskContainerId());
+  std::unique_ptr<aura::Window> w11 =
+      ChildTestWindowBuilder(w1, gfx::Rect(10, 10, 40, 40),
+                             desks_util::GetActiveDeskContainerId())
+          .Build();
   // |w11_t1| is a transient child window of |w11|.
   std::unique_ptr<aura::Window> w11_t1 =
-      CreateChildWindow(w11.get(), gfx::Rect(30, 10, 80, 80),
-                        desks_util::GetActiveDeskContainerId());
+      ChildTestWindowBuilder(w11.get(), gfx::Rect(30, 10, 80, 80),
+                             desks_util::GetActiveDeskContainerId())
+          .Build();
   ::wm::AddTransientChild(w11.get(), w11_t1.get());
 
   EXPECT_EQ(root_windows[0], w1->GetRootWindow());
@@ -658,7 +648,7 @@ TEST_F(ExtendedDesktopTest, PostMoveParentTransientChild) {
   wm::ActivateWindow(window);
   // Create a transient child window of |window| without parenting to |window|
   // yet.
-  std::unique_ptr<aura::Window> child = window_factory::NewWindow();
+  std::unique_ptr<aura::Window> child = std::make_unique<aura::Window>(nullptr);
   child->SetType(aura::client::WINDOW_TYPE_NORMAL);
   child->Init(ui::LAYER_TEXTURED);
   child->SetBounds(gfx::Rect(50, 50, 50, 50));
@@ -791,8 +781,9 @@ TEST_F(ExtendedDesktopTest, StayInSameRootWindow) {
   w1->SetBounds(gfx::Rect(10, 10, 50, 50));
   EXPECT_EQ(root_windows[0], w1->GetNativeView()->GetRootWindow());
 
-  // a window in SettingsBubbleContainer and StatusContainer should
-  // not move to another root window regardles of the bounds specified.
+  // a window in SettingsBubbleContainer, ShelfControlContainer and
+  // OverviewFocusContainer should not move to another root window
+  // regardless of the bounds specified.
   aura::Window* settings_bubble_container =
       Shell::GetPrimaryRootWindowController()->GetContainer(
           kShellWindowId_SettingBubbleContainer);
@@ -803,7 +794,7 @@ TEST_F(ExtendedDesktopTest, StayInSameRootWindow) {
 
   aura::Window* status_container =
       Shell::GetPrimaryRootWindowController()->GetContainer(
-          kShellWindowId_StatusContainer);
+          kShellWindowId_ShelfContainer);
   window = aura::test::CreateTestWindowWithId(100, status_container);
   window->SetBoundsInScreen(gfx::Rect(150, 10, 50, 50), GetSecondaryDisplay());
   EXPECT_EQ(root_windows[0], window->GetRootWindow());
@@ -828,8 +819,8 @@ TEST_F(ExtendedDesktopTest, KeyEventsOnLockScreen) {
   views::Textfield* textfield = new views::Textfield;
   lock_widget->client_view()->AddChildView(textfield);
 
-  ash::Shell::GetContainer(Shell::GetPrimaryRootWindow(),
-                           ash::kShellWindowId_LockScreenContainer)
+  Shell::GetContainer(Shell::GetPrimaryRootWindow(),
+                      kShellWindowId_LockScreenContainer)
       ->AddChild(lock_widget->GetNativeView());
   lock_widget->Show();
   textfield->RequestFocus();
@@ -845,13 +836,13 @@ TEST_F(ExtendedDesktopTest, KeyEventsOnLockScreen) {
   event_generator->PressKey(ui::VKEY_A, 0);
   event_generator->ReleaseKey(ui::VKEY_A, 0);
   EXPECT_EQ(lock_widget->GetNativeView(), focus_client->GetFocusedWindow());
-  EXPECT_EQ("a", base::UTF16ToASCII(textfield->text()));
+  EXPECT_EQ("a", base::UTF16ToASCII(textfield->GetText()));
 
   event_generator->set_current_target(root_windows[1]);
   event_generator->PressKey(ui::VKEY_B, 0);
   event_generator->ReleaseKey(ui::VKEY_B, 0);
   EXPECT_EQ(lock_widget->GetNativeView(), focus_client->GetFocusedWindow());
-  EXPECT_EQ("ab", base::UTF16ToASCII(textfield->text()));
+  EXPECT_EQ("ab", base::UTF16ToASCII(textfield->GetText()));
 
   // Deleting 2nd display. The lock window still should get the events.
   UpdateDisplay("100x100");
@@ -859,7 +850,7 @@ TEST_F(ExtendedDesktopTest, KeyEventsOnLockScreen) {
   event_generator->PressKey(ui::VKEY_C, 0);
   event_generator->ReleaseKey(ui::VKEY_C, 0);
   EXPECT_EQ(lock_widget->GetNativeView(), focus_client->GetFocusedWindow());
-  EXPECT_EQ("abc", base::UTF16ToASCII(textfield->text()));
+  EXPECT_EQ("abc", base::UTF16ToASCII(textfield->GetText()));
 
   // Creating 2nd display again, and lock window still should get events
   // on both root windows.
@@ -869,13 +860,13 @@ TEST_F(ExtendedDesktopTest, KeyEventsOnLockScreen) {
   event_generator->PressKey(ui::VKEY_D, 0);
   event_generator->ReleaseKey(ui::VKEY_D, 0);
   EXPECT_EQ(lock_widget->GetNativeView(), focus_client->GetFocusedWindow());
-  EXPECT_EQ("abcd", base::UTF16ToASCII(textfield->text()));
+  EXPECT_EQ("abcd", base::UTF16ToASCII(textfield->GetText()));
 
   event_generator->set_current_target(root_windows[1]);
   event_generator->PressKey(ui::VKEY_E, 0);
   event_generator->ReleaseKey(ui::VKEY_E, 0);
   EXPECT_EQ(lock_widget->GetNativeView(), focus_client->GetFocusedWindow());
-  EXPECT_EQ("abcde", base::UTF16ToASCII(textfield->text()));
+  EXPECT_EQ("abcde", base::UTF16ToASCII(textfield->GetText()));
 }
 
 // Verifies that clicking in the primary display and dragging to the secondary
@@ -884,7 +875,7 @@ TEST_F(ExtendedDesktopTest, KeyEventsOnLockScreen) {
 TEST_F(ExtendedDesktopTest, PassiveGrab) {
   // This test deals with input events but not visuals so don't throttle input
   // on visuals.
-  Shell::Get()->aura_env()->set_throttle_input_on_resize_for_testing(false);
+  aura::Env::GetInstance()->set_throttle_input_on_resize_for_testing(false);
   EventLocationRecordingEventHandler event_handler;
   Shell::Get()->AddPreTargetHandler(&event_handler);
 

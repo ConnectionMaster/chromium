@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
@@ -14,9 +16,8 @@
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "build/build_config.h"
-#include "components/history/core/browser/default_top_sites_provider.h"
 #include "components/history/core/browser/history_client.h"
 #include "components/history/core/browser/history_constants.h"
 #include "components/history/core/browser/history_database_params.h"
@@ -24,7 +25,6 @@
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/top_sites.h"
-#include "components/history/core/browser/top_sites_cache.h"
 #include "components/history/core/browser/top_sites_observer.h"
 #include "components/history/core/browser/visit_delegate.h"
 #include "components/history/core/test/history_service_test_util.h"
@@ -47,7 +47,7 @@ const char kApplicationScheme[] = "application";
 const char kPrepopulatedPageURL[] =
     "http://www.google.com/int/chrome/welcome.html";
 
-// Returns whether |url| can be added to history.
+// Returns whether `url` can be added to history.
 bool MockCanAddURLToHistory(const GURL& url) {
   return url.is_valid() && !url.SchemeIs(kApplicationScheme);
 }
@@ -57,17 +57,16 @@ bool MockCanAddURLToHistory(const GURL& url) {
 // TopSites is queried before it finishes loading.
 class TopSitesQuerier {
  public:
-  TopSitesQuerier()
-      : number_of_callbacks_(0), waiting_(false), weak_ptr_factory_(this) {}
+  TopSitesQuerier() : number_of_callbacks_(0), waiting_(false) {}
 
-  // Queries top sites. If |wait| is true a nested run loop is run until the
+  // Queries top sites. If `wait` is true a nested run loop is run until the
   // callback is notified.
   void QueryTopSites(TopSitesImpl* top_sites, bool wait) {
     int start_number_of_callbacks = number_of_callbacks_;
     base::RunLoop run_loop;
     top_sites->GetMostVisitedURLs(
-        base::Bind(&TopSitesQuerier::OnTopSitesAvailable,
-                   weak_ptr_factory_.GetWeakPtr(), &run_loop));
+        base::BindOnce(&TopSitesQuerier::OnTopSitesAvailable,
+                       weak_ptr_factory_.GetWeakPtr(), &run_loop));
     if (wait && start_number_of_callbacks == number_of_callbacks_) {
       waiting_ = true;
       run_loop.Run();
@@ -96,7 +95,7 @@ class TopSitesQuerier {
   MostVisitedURLList urls_;
   int number_of_callbacks_;
   bool waiting_;
-  base::WeakPtrFactory<TopSitesQuerier> weak_ptr_factory_;
+  base::WeakPtrFactory<TopSitesQuerier> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TopSitesQuerier);
 };
@@ -109,10 +108,10 @@ class TopSitesImplTest : public HistoryUnitTestBase {
 
   void SetUp() override {
     ASSERT_TRUE(scoped_temp_dir_.CreateUniqueTempDir());
-    pref_service_.reset(new TestingPrefServiceSimple);
+    pref_service_ = std::make_unique<TestingPrefServiceSimple>();
     TopSitesImpl::RegisterPrefs(pref_service_->registry());
-    history_service_.reset(
-        new HistoryService(nullptr, std::unique_ptr<VisitDelegate>()));
+    history_service_ = std::make_unique<HistoryService>(
+        nullptr, std::unique_ptr<VisitDelegate>());
     ASSERT_TRUE(history_service_->Init(
         TestHistoryDatabaseParamsForPath(scoped_temp_dir_.GetPath())));
     ResetTopSites();
@@ -150,7 +149,7 @@ class TopSitesImplTest : public HistoryUnitTestBase {
   }
 
   // Returns true if the TopSitesQuerier contains the prepopulate data starting
-  // at |start_index|.
+  // at `start_index`.
   void ContainsPrepopulatePages(const TopSitesQuerier& querier,
                                 size_t start_index) {
     PrepopulatedPageList prepopulate_pages = GetPrepopulatedPages();
@@ -163,38 +162,21 @@ class TopSitesImplTest : public HistoryUnitTestBase {
   }
 
   // Adds a page to history.
-  void AddPageToHistory(const GURL& url) {
-    RedirectList redirects;
-    redirects.push_back(url);
-    history_service()->AddPage(
-        url, base::Time::Now(), reinterpret_cast<ContextID>(1), 0, GURL(),
-        redirects, ui::PAGE_TRANSITION_TYPED, history::SOURCE_BROWSED, false);
-  }
-
-  // Adds a page to history.
-  void AddPageToHistory(const GURL& url, const base::string16& title) {
-    RedirectList redirects;
-    redirects.push_back(url);
-    history_service()->AddPage(
-        url, base::Time::Now(), reinterpret_cast<ContextID>(1), 0, GURL(),
-        redirects, ui::PAGE_TRANSITION_TYPED, history::SOURCE_BROWSED, false);
-    history_service()->SetPageTitle(url, title);
-  }
-
-  // Adds a page to history.
   void AddPageToHistory(const GURL& url,
-                        const base::string16& title,
-                        const history::RedirectList& redirects,
-                        base::Time time) {
-    history_service()->AddPage(
-        url, time, reinterpret_cast<ContextID>(1), 0, GURL(),
-        redirects, ui::PAGE_TRANSITION_TYPED, history::SOURCE_BROWSED,
-        false);
-    history_service()->SetPageTitle(url, title);
+                        const std::u16string& title = std::u16string(),
+                        base::Time time = base::Time::Now(),
+                        RedirectList redirects = RedirectList()) {
+    if (redirects.empty())
+      redirects.emplace_back(url);
+    history_service()->AddPage(url, time, reinterpret_cast<ContextID>(1), 0,
+                               GURL(), redirects, ui::PAGE_TRANSITION_TYPED,
+                               history::SOURCE_BROWSED, false, false);
+    if (!title.empty())
+      history_service()->SetPageTitle(url, title);
   }
 
   // Delets a url.
-  void DeleteURL(const GURL& url) { history_service()->DeleteURL(url); }
+  void DeleteURL(const GURL& url) { history_service()->DeleteURLs({url}); }
 
   // Recreates top sites. This forces top sites to reread from the db.
   void RecreateTopSitesAndBlock() {
@@ -205,12 +187,8 @@ class TopSitesImplTest : public HistoryUnitTestBase {
 
   // Wrappers that allow private TopSites functions to be called from the
   // individual tests without making them all be friends.
-  GURL GetCanonicalURL(const GURL& url) {
-    return top_sites()->cache_->GetCanonicalURL(url);
-  }
-
   void SetTopSites(const MostVisitedURLList& new_top_sites) {
-    top_sites()->SetTopSites(new_top_sites,
+    top_sites()->SetTopSites(MostVisitedURLList(new_top_sites),
                              TopSitesImpl::CALL_LOCATION_FROM_OTHER_PLACES);
   }
 
@@ -224,8 +202,7 @@ class TopSitesImplTest : public HistoryUnitTestBase {
 
   void EmptyThreadSafeCache() {
     base::AutoLock lock(top_sites()->lock_);
-    MostVisitedURLList empty;
-    top_sites()->thread_safe_cache_->SetTopSites(empty);
+    top_sites()->thread_safe_cache_.clear();
   }
 
   void ResetTopSites() {
@@ -237,11 +214,10 @@ class TopSitesImplTest : public HistoryUnitTestBase {
     DCHECK(!top_sites_impl_);
     PrepopulatedPageList prepopulated_pages;
     prepopulated_pages.push_back(
-        PrepopulatedPage(GURL(kPrepopulatedPageURL), base::string16(), -1, 0));
+        PrepopulatedPage(GURL(kPrepopulatedPageURL), std::u16string(), -1, 0));
     top_sites_impl_ = new TopSitesImpl(
-        pref_service_.get(), history_service_.get(),
-        std::make_unique<DefaultTopSitesProvider>(history_service_.get()),
-        prepopulated_pages, base::Bind(MockCanAddURLToHistory));
+        pref_service_.get(), history_service_.get(), prepopulated_pages,
+        base::BindRepeating(MockCanAddURLToHistory));
     top_sites_impl_->Init(scoped_temp_dir_.GetPath().Append(kTopSitesFilename));
   }
 
@@ -250,7 +226,7 @@ class TopSitesImplTest : public HistoryUnitTestBase {
       top_sites_impl_->ShutdownOnUIThread();
       top_sites_impl_ = nullptr;
 
-      scoped_task_environment_.RunUntilIdle();
+      task_environment_.RunUntilIdle();
     }
   }
 
@@ -261,7 +237,7 @@ class TopSitesImplTest : public HistoryUnitTestBase {
   }
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   base::ScopedTempDir scoped_temp_dir_;
 
@@ -277,70 +253,6 @@ class TopSitesImplTest : public HistoryUnitTestBase {
 
   DISALLOW_COPY_AND_ASSIGN(TopSitesImplTest);
 };  // Class TopSitesImplTest
-
-// Helper function for appending a URL to a vector of "most visited" URLs,
-// using the default values for everything but the URL.
-void AppendMostVisitedURL(const GURL& url, std::vector<MostVisitedURL>* list) {
-  MostVisitedURL mv;
-  mv.url = url;
-  mv.redirects.push_back(url);
-  list->push_back(mv);
-}
-
-// Same as AppendMostVisitedURL except that it adds a redirect from the first
-// URL to the second.
-void AppendMostVisitedURLWithRedirect(const GURL& redirect_source,
-                                      const GURL& redirect_dest,
-                                      std::vector<MostVisitedURL>* list) {
-  MostVisitedURL mv;
-  mv.url = redirect_dest;
-  mv.redirects.push_back(redirect_source);
-  mv.redirects.push_back(redirect_dest);
-  list->push_back(mv);
-}
-
-// Helper function for appending a URL to a vector of "most visited" URLs,
-// using the default values for everything but the URL and the title.
-void AppendMostVisitedURLwithTitle(const GURL& url,
-                                   const base::string16& title,
-                                   std::vector<MostVisitedURL>* list) {
-  MostVisitedURL mv;
-  mv.url = url;
-  mv.title = title;
-  mv.redirects.push_back(url);
-  list->push_back(mv);
-}
-
-// Tests GetCanonicalURL.
-TEST_F(TopSitesImplTest, GetCanonicalURL) {
-  // Have two chains:
-  //   google.com -> www.google.com
-  //   news.google.com (no redirects)
-  GURL news("http://news.google.com/");
-  GURL source("http://google.com/");
-  GURL dest("http://www.google.com/");
-
-  std::vector<MostVisitedURL> most_visited;
-  AppendMostVisitedURLWithRedirect(source, dest, &most_visited);
-  AppendMostVisitedURL(news, &most_visited);
-  SetTopSites(most_visited);
-
-  // Random URLs not in the database are returned unchanged.
-  GURL result = GetCanonicalURL(GURL("http://fark.com/"));
-  EXPECT_EQ(GURL("http://fark.com/"), result);
-
-  // Easy case, there are no redirects and the exact URL is stored.
-  result = GetCanonicalURL(news);
-  EXPECT_EQ(news, result);
-
-  // The URL in question is the source URL in a redirect list.
-  result = GetCanonicalURL(source);
-  EXPECT_EQ(dest, result);
-
-  // The URL in question is the destination of a redirect.
-  result = GetCanonicalURL(dest);
-  EXPECT_EQ(dest, result);
-}
 
 class MockTopSitesObserver : public TopSitesObserver {
  public:
@@ -366,15 +278,15 @@ class MockTopSitesObserver : public TopSitesObserver {
 TEST_F(TopSitesImplTest, DoTitlesDiffer) {
   GURL url_1("http://url1/");
   GURL url_2("http://url2/");
-  base::string16 title_1(base::ASCIIToUTF16("title1"));
-  base::string16 title_2(base::ASCIIToUTF16("title2"));
+  std::u16string title_1(u"title1");
+  std::u16string title_2(u"title2");
 
   MockTopSitesObserver observer;
   top_sites()->AddObserver(&observer);
 
   // TopSites has a new list of sites and should notify its observers.
   std::vector<MostVisitedURL> list_1;
-  AppendMostVisitedURLwithTitle(url_1, title_1, &list_1);
+  list_1.emplace_back(url_1, title_1);
   SetTopSites(list_1);
   EXPECT_TRUE(observer.is_notified());
   observer.ResetIsNotifiedState();
@@ -383,8 +295,8 @@ TEST_F(TopSitesImplTest, DoTitlesDiffer) {
   // list_1 and list_2 have different sizes. TopSites should notify its
   // observers.
   std::vector<MostVisitedURL> list_2;
-  AppendMostVisitedURLwithTitle(url_1, title_1, &list_2);
-  AppendMostVisitedURLwithTitle(url_2, title_2, &list_2);
+  list_2.emplace_back(url_1, title_1);
+  list_2.emplace_back(url_2, title_2);
   SetTopSites(list_2);
   EXPECT_TRUE(observer.is_notified());
   observer.ResetIsNotifiedState();
@@ -392,14 +304,14 @@ TEST_F(TopSitesImplTest, DoTitlesDiffer) {
 
   // list_1 and list_2 are exactly the same now. TopSites should not notify its
   // observers.
-  AppendMostVisitedURLwithTitle(url_2, title_2, &list_1);
+  list_1.emplace_back(url_2, title_2);
   SetTopSites(list_1);
   EXPECT_FALSE(observer.is_notified());
 
-  // Change |url_2|'s title to |title_1| in list_2. The two lists are different
+  // Change `url_2`'s title to `title_1` in list_2. The two lists are different
   // in titles now. TopSites should notify its observers.
   list_2.pop_back();
-  AppendMostVisitedURLwithTitle(url_2, title_1, &list_2);
+  list_2.emplace_back(url_2, title_1);
   SetTopSites(list_2);
   EXPECT_TRUE(observer.is_notified());
 
@@ -415,15 +327,15 @@ TEST_F(TopSitesImplTest, DiffMostVisited) {
   GURL gets_moved_1("http://getsmoved1/");
 
   std::vector<MostVisitedURL> old_list;
-  AppendMostVisitedURL(stays_the_same, &old_list);  // 0  (unchanged)
-  AppendMostVisitedURL(gets_deleted_1, &old_list);  // 1  (deleted)
-  AppendMostVisitedURL(gets_moved_1, &old_list);    // 2  (moved to 3)
+  old_list.emplace_back(stays_the_same, std::u16string());  // 0  (unchanged)
+  old_list.emplace_back(gets_deleted_1, std::u16string());  // 1  (deleted)
+  old_list.emplace_back(gets_moved_1, std::u16string());    // 2  (moved to 3)
 
   std::vector<MostVisitedURL> new_list;
-  AppendMostVisitedURL(stays_the_same, &new_list);  // 0  (unchanged)
-  AppendMostVisitedURL(gets_added_1, &new_list);    // 1  (added)
-  AppendMostVisitedURL(gets_added_2, &new_list);    // 2  (added)
-  AppendMostVisitedURL(gets_moved_1, &new_list);    // 3  (moved from 2)
+  new_list.emplace_back(stays_the_same, std::u16string());  // 0  (unchanged)
+  new_list.emplace_back(gets_added_1, std::u16string());    // 1  (added)
+  new_list.emplace_back(gets_added_2, std::u16string());    // 2  (added)
+  new_list.emplace_back(gets_moved_1, std::u16string());    // 3  (moved from 2)
 
   history::TopSitesDelta delta;
   TopSitesImpl::DiffMostVisited(old_list, new_list, &delta);
@@ -471,9 +383,8 @@ TEST_F(TopSitesImplTest, GetMostVisitedWithRedirect) {
   GURL www("https://www.cnn.com/");
   GURL edition("https://edition.cnn.com/");
 
-  AddPageToHistory(edition, base::ASCIIToUTF16("CNN"),
-                   history::RedirectList{bare, www, edition},
-                   base::Time::Now());
+  AddPageToHistory(edition, u"CNN", base::Time::Now(),
+                   history::RedirectList{bare, www, edition});
   AddPageToHistory(edition);
 
   StartQueryForMostVisited();
@@ -505,11 +416,11 @@ TEST_F(TopSitesImplTest, GetMostVisitedWithRedirect) {
 TEST_F(TopSitesImplTest, SaveToDB) {
   MostVisitedURL url;
   GURL asdf_url("http://asdf.com");
-  base::string16 asdf_title(base::ASCIIToUTF16("ASDF"));
+  std::u16string asdf_title(u"ASDF");
   GURL google_url("http://google.com");
-  base::string16 google_title(base::ASCIIToUTF16("Google"));
+  std::u16string google_title(u"Google");
   GURL news_url("http://news.google.com");
-  base::string16 news_title(base::ASCIIToUTF16("Google News"));
+  std::u16string news_title(u"Google News");
 
   // Add asdf_url to history.
   AddPageToHistory(asdf_url, asdf_title);
@@ -532,7 +443,6 @@ TEST_F(TopSitesImplTest, SaveToDB) {
   MostVisitedURL url2;
   url2.url = google_url;
   url2.title = google_title;
-  url2.redirects.push_back(url2.url);
 
   AddPageToHistory(url2.url, url2.title);
 
@@ -555,20 +465,19 @@ TEST_F(TopSitesImplTest, SaveToDB) {
 TEST_F(TopSitesImplTest, RealDatabase) {
   MostVisitedURL url;
   GURL asdf_url("http://asdf.com");
-  base::string16 asdf_title(base::ASCIIToUTF16("ASDF"));
+  std::u16string asdf_title(u"ASDF");
   GURL google1_url("http://google.com");
   GURL google2_url("http://google.com/redirect");
   GURL google3_url("http://www.google.com");
-  base::string16 google_title(base::ASCIIToUTF16("Google"));
+  std::u16string google_title(u"Google");
   GURL news_url("http://news.google.com");
-  base::string16 news_title(base::ASCIIToUTF16("Google News"));
+  std::u16string news_title(u"Google News");
 
   url.url = asdf_url;
   url.title = asdf_title;
-  url.redirects.push_back(url.url);
 
   base::Time add_time(base::Time::Now());
-  AddPageToHistory(url.url, url.title, url.redirects, add_time);
+  AddPageToHistory(url.url, url.title, add_time);
 
   RefreshTopSitesAndRecreate();
 
@@ -585,15 +494,16 @@ TEST_F(TopSitesImplTest, RealDatabase) {
   MostVisitedURL url2;
   url2.url = google3_url;
   url2.title = google_title;
-  url2.redirects.push_back(google1_url);
-  url2.redirects.push_back(google2_url);
-  url2.redirects.push_back(google3_url);
+  history::RedirectList url2_redirects;
+  url2_redirects.push_back(google1_url);
+  url2_redirects.push_back(google2_url);
+  url2_redirects.push_back(google3_url);
 
-  AddPageToHistory(google3_url, url2.title, url2.redirects,
-                   add_time - base::TimeDelta::FromMinutes(1));
+  AddPageToHistory(google3_url, url2.title,
+                   add_time - base::TimeDelta::FromMinutes(1), url2_redirects);
   // Add google twice so that it becomes the first visited site.
-  AddPageToHistory(google3_url, url2.title, url2.redirects,
-                   add_time - base::TimeDelta::FromMinutes(2));
+  AddPageToHistory(google3_url, url2.title,
+                   add_time - base::TimeDelta::FromMinutes(2), url2_redirects);
 
   RefreshTopSitesAndRecreate();
 
@@ -605,7 +515,6 @@ TEST_F(TopSitesImplTest, RealDatabase) {
     ASSERT_EQ(2u + GetPrepopulatedPages().size(), querier.urls().size());
     EXPECT_EQ(google1_url, querier.urls()[0].url);
     EXPECT_EQ(google_title, querier.urls()[0].title);
-    ASSERT_EQ(3u, querier.urls()[0].redirects.size());
 
     EXPECT_EQ(asdf_url, querier.urls()[1].url);
     EXPECT_EQ(asdf_title, querier.urls()[1].title);
@@ -617,9 +526,9 @@ TEST_F(TopSitesImplTest, DeleteNotifications) {
   GURL google1_url("http://google.com");
   GURL google2_url("http://google.com/redirect");
   GURL google3_url("http://www.google.com");
-  base::string16 google_title(base::ASCIIToUTF16("Google"));
+  std::u16string google_title(u"Google");
   GURL news_url("http://news.google.com");
-  base::string16 news_title(base::ASCIIToUTF16("Google News"));
+  std::u16string news_title(u"Google News");
 
   AddPageToHistory(google1_url, google_title);
   AddPageToHistory(news_url, news_title);
@@ -636,6 +545,9 @@ TEST_F(TopSitesImplTest, DeleteNotifications) {
   DeleteURL(news_url);
 
   // Wait for history to process the deletion.
+  WaitForHistory();
+  // The deletion called back to TopSitesImpl (on the main thread), which
+  // triggers a history query. Wait for that to complete.
   WaitForHistory();
 
   {
@@ -662,6 +574,9 @@ TEST_F(TopSitesImplTest, DeleteNotifications) {
   DeleteURL(google1_url);
 
   // Wait for history to process the deletion.
+  WaitForHistory();
+  // The deletion called back to TopSitesImpl (on the main thread), which
+  // triggers a history query. Wait for that to complete.
   WaitForHistory();
 
   {
@@ -721,10 +636,8 @@ TEST_F(TopSitesImplTest, NotifyCallbacksWhenLoaded) {
   MostVisitedURLList pages;
   MostVisitedURL url;
   url.url = GURL("http://1.com/");
-  url.redirects.push_back(url.url);
   pages.push_back(url);
   url.url = GURL("http://2.com/");
-  url.redirects.push_back(url.url);
   pages.push_back(url);
   SetTopSites(pages);
 
@@ -754,7 +667,6 @@ TEST_F(TopSitesImplTest, NotifyCallbacksWhenLoaded) {
 
   // Reset the top sites again, this time don't reload.
   url.url = GURL("http://3.com/");
-  url.redirects.push_back(url.url);
   pages.push_back(url);
   SetTopSites(pages);
 
@@ -802,36 +714,33 @@ TEST_F(TopSitesImplTest, CancelingRequestsForTopSites) {
   EXPECT_EQ(0, querier2.number_of_callbacks());
 }
 
-// Tests variations of blacklisting without testing prepopulated page
-// blacklisting.
-TEST_F(TopSitesImplTest, BlacklistingWithoutPrepopulated) {
+// Tests variations of blocked urls.
+TEST_F(TopSitesImplTest, BlockedUrlsWithoutPrepopulated) {
   MostVisitedURLList pages;
   MostVisitedURL url, url1;
   url.url = GURL("http://bbc.com/");
-  url.redirects.push_back(url.url);
   pages.push_back(url);
   url1.url = GURL("http://google.com/");
-  url1.redirects.push_back(url1.url);
   pages.push_back(url1);
 
   SetTopSites(pages);
-  EXPECT_FALSE(top_sites()->IsBlacklisted(GURL("http://bbc.com/")));
+  EXPECT_FALSE(top_sites()->IsBlocked(GURL("http://bbc.com/")));
 
-  // Blacklist google.com.
-  top_sites()->AddBlacklistedURL(GURL("http://google.com/"));
+  // Block google.com.
+  top_sites()->AddBlockedUrl(GURL("http://google.com/"));
 
-  EXPECT_TRUE(top_sites()->HasBlacklistedItems());
-  EXPECT_TRUE(top_sites()->IsBlacklisted(GURL("http://google.com/")));
-  EXPECT_FALSE(top_sites()->IsBlacklisted(GURL("http://bbc.com/")));
+  EXPECT_TRUE(top_sites()->HasBlockedUrls());
+  EXPECT_TRUE(top_sites()->IsBlocked(GURL("http://google.com/")));
+  EXPECT_FALSE(top_sites()->IsBlocked(GURL("http://bbc.com/")));
 
-  // Make sure the blacklisted site isn't returned in the results.
+  // Make sure the blocked site isn't returned in the results.
   {
     TopSitesQuerier q;
     q.QueryTopSites(top_sites(), true);
     EXPECT_EQ("http://bbc.com/", q.urls()[0].url.spec());
   }
 
-  // Recreate top sites and make sure blacklisted url was correctly read.
+  // Recreate top sites and make sure the blocked url was correctly read.
   RecreateTopSitesAndBlock();
   {
     TopSitesQuerier q;
@@ -839,10 +748,10 @@ TEST_F(TopSitesImplTest, BlacklistingWithoutPrepopulated) {
     EXPECT_EQ("http://bbc.com/", q.urls()[0].url.spec());
   }
 
-  // Mark google as no longer blacklisted.
-  top_sites()->RemoveBlacklistedURL(GURL("http://google.com/"));
-  EXPECT_FALSE(top_sites()->HasBlacklistedItems());
-  EXPECT_FALSE(top_sites()->IsBlacklisted(GURL("http://google.com/")));
+  // Mark google as no longer blocked.
+  top_sites()->RemoveBlockedUrl(GURL("http://google.com/"));
+  EXPECT_FALSE(top_sites()->HasBlockedUrls());
+  EXPECT_FALSE(top_sites()->IsBlocked(GURL("http://google.com/")));
 
   // Make sure google is returned now.
   {
@@ -852,9 +761,9 @@ TEST_F(TopSitesImplTest, BlacklistingWithoutPrepopulated) {
     EXPECT_EQ("http://google.com/", q.urls()[1].url.spec());
   }
 
-  // Remove all blacklisted sites.
-  top_sites()->ClearBlacklistedURLs();
-  EXPECT_FALSE(top_sites()->HasBlacklistedItems());
+  // Remove all blocked urls.
+  top_sites()->ClearBlockedUrls();
+  EXPECT_FALSE(top_sites()->HasBlockedUrls());
 
   {
     TopSitesQuerier q;
@@ -865,34 +774,30 @@ TEST_F(TopSitesImplTest, BlacklistingWithoutPrepopulated) {
   }
 }
 
-// Tests variations of blacklisting including blacklisting prepopulated pages.
-// This test is disable for Android because Android does not have any
-// prepopulated pages.
-TEST_F(TopSitesImplTest, BlacklistingWithPrepopulated) {
+// Tests variations of blocking including blocking prepopulated pages.
+TEST_F(TopSitesImplTest, BlockingPrepopulated) {
   MostVisitedURLList pages;
   MostVisitedURL url, url1;
   url.url = GURL("http://bbc.com/");
-  url.redirects.push_back(url.url);
   pages.push_back(url);
   url1.url = GURL("http://google.com/");
-  url1.redirects.push_back(url1.url);
   pages.push_back(url1);
 
   SetTopSites(pages);
-  EXPECT_FALSE(top_sites()->IsBlacklisted(GURL("http://bbc.com/")));
+  EXPECT_FALSE(top_sites()->IsBlocked(GURL("http://bbc.com/")));
 
-  // Blacklist google.com.
-  top_sites()->AddBlacklistedURL(GURL("http://google.com/"));
+  // Block google.com.
+  top_sites()->AddBlockedUrl(GURL("http://google.com/"));
 
   DCHECK_GE(GetPrepopulatedPages().size(), 1u);
   GURL prepopulate_url = GetPrepopulatedPages()[0].most_visited.url;
 
-  EXPECT_TRUE(top_sites()->HasBlacklistedItems());
-  EXPECT_TRUE(top_sites()->IsBlacklisted(GURL("http://google.com/")));
-  EXPECT_FALSE(top_sites()->IsBlacklisted(GURL("http://bbc.com/")));
-  EXPECT_FALSE(top_sites()->IsBlacklisted(prepopulate_url));
+  EXPECT_TRUE(top_sites()->HasBlockedUrls());
+  EXPECT_TRUE(top_sites()->IsBlocked(GURL("http://google.com/")));
+  EXPECT_FALSE(top_sites()->IsBlocked(GURL("http://bbc.com/")));
+  EXPECT_FALSE(top_sites()->IsBlocked(prepopulate_url));
 
-  // Make sure the blacklisted site isn't returned in the results.
+  // Make sure the blocked site isn't returned in the results.
   {
     TopSitesQuerier q;
     q.QueryTopSites(top_sites(), true);
@@ -901,7 +806,7 @@ TEST_F(TopSitesImplTest, BlacklistingWithPrepopulated) {
     ASSERT_NO_FATAL_FAILURE(ContainsPrepopulatePages(q, 1));
   }
 
-  // Recreate top sites and make sure blacklisted url was correctly read.
+  // Recreate top sites and make sure blocked url was correctly read.
   RecreateTopSitesAndBlock();
   {
     TopSitesQuerier q;
@@ -911,11 +816,11 @@ TEST_F(TopSitesImplTest, BlacklistingWithPrepopulated) {
     ASSERT_NO_FATAL_FAILURE(ContainsPrepopulatePages(q, 1));
   }
 
-  // Blacklist one of the prepopulate urls.
-  top_sites()->AddBlacklistedURL(prepopulate_url);
-  EXPECT_TRUE(top_sites()->HasBlacklistedItems());
+  // Block one of the prepopulate urls.
+  top_sites()->AddBlockedUrl(prepopulate_url);
+  EXPECT_TRUE(top_sites()->HasBlockedUrls());
 
-  // Make sure the blacklisted prepopulate url isn't returned.
+  // Make sure the blocked prepopulate url isn't returned.
   {
     TopSitesQuerier q;
     q.QueryTopSites(top_sites(), true);
@@ -925,10 +830,10 @@ TEST_F(TopSitesImplTest, BlacklistingWithPrepopulated) {
       EXPECT_NE(prepopulate_url.spec(), q.urls()[i].url.spec());
   }
 
-  // Mark google as no longer blacklisted.
-  top_sites()->RemoveBlacklistedURL(GURL("http://google.com/"));
-  EXPECT_TRUE(top_sites()->HasBlacklistedItems());
-  EXPECT_FALSE(top_sites()->IsBlacklisted(GURL("http://google.com/")));
+  // Mark google as no longer blocked.
+  top_sites()->RemoveBlockedUrl(GURL("http://google.com/"));
+  EXPECT_TRUE(top_sites()->HasBlockedUrls());
+  EXPECT_FALSE(top_sites()->IsBlocked(GURL("http://google.com/")));
 
   // Make sure google is returned now.
   {
@@ -937,7 +842,7 @@ TEST_F(TopSitesImplTest, BlacklistingWithPrepopulated) {
     ASSERT_EQ(2u + GetPrepopulatedPages().size() - 1, q.urls().size());
     EXPECT_EQ("http://bbc.com/", q.urls()[0].url.spec());
     EXPECT_EQ("http://google.com/", q.urls()[1].url.spec());
-    // Android has only one prepopulated page which has been blacklisted, so
+    // Android has only one prepopulated page which has been blocked, so
     // only 2 urls are returned.
     if (q.urls().size() > 2)
       EXPECT_NE(prepopulate_url.spec(), q.urls()[2].url.spec());
@@ -945,9 +850,9 @@ TEST_F(TopSitesImplTest, BlacklistingWithPrepopulated) {
       EXPECT_EQ(1u, GetPrepopulatedPages().size());
   }
 
-  // Remove all blacklisted sites.
-  top_sites()->ClearBlacklistedURLs();
-  EXPECT_FALSE(top_sites()->HasBlacklistedItems());
+  // Remove all blocked urls.
+  top_sites()->ClearBlockedUrls();
+  EXPECT_FALSE(top_sites()->HasBlockedUrls());
 
   {
     TopSitesQuerier q;

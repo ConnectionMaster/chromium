@@ -8,17 +8,15 @@
 #include <list>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "base/callback.h"
-#include "base/optional.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/common/web_preferences.h"
 #include "headless/public/headless_export.h"
 #include "headless/public/headless_web_contents.h"
 #include "net/proxy_resolution/proxy_resolution_service.h"
-#include "net/url_request/url_request_job_factory.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
 
 namespace base {
 class FilePath;
@@ -30,9 +28,7 @@ class HeadlessBrowserContextOptions;
 
 // Imported into headless namespace for
 // Builder::SetOverrideWebPreferencesCallback().
-using content::WebPreferences;
-
-using content::ProtocolHandlerMap;
+using blink::web_pref::WebPreferences;
 
 // Represents an isolated session with a unique cache, cookies, and other
 // profile/session related data.
@@ -62,7 +58,7 @@ class HEADLESS_EXPORT HeadlessBrowserContext {
   virtual void Close() = 0;
 
   // GUID for this browser context.
-  virtual const std::string& Id() const = 0;
+  virtual const std::string& Id() = 0;
 
   // TODO(skyostil): Allow saving and restoring contexts (crbug.com/617931).
 
@@ -77,10 +73,6 @@ class HEADLESS_EXPORT HeadlessBrowserContext::Builder {
  public:
   Builder(Builder&&);
   ~Builder();
-
-  // Set custom network protocol handlers. These can be used to override URL
-  // fetching for different network schemes.
-  Builder& SetProtocolHandlers(ProtocolHandlerMap protocol_handlers);
 
   // By default if you add mojo bindings, http and https are disabled because
   // its almost certinly unsafe for arbitary sites on the internet to have

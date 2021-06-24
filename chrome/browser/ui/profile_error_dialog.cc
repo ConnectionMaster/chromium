@@ -9,6 +9,7 @@
 #include "base/callback.h"
 #include "base/command_line.h"
 #include "base/metrics/histogram_macros.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/simple_message_box.h"
@@ -17,7 +18,7 @@
 
 namespace {
 
-#if !defined(OS_ANDROID)
+#if !defined(OS_ANDROID) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 constexpr char kProfileErrorFeedbackCategory[] = "FEEDBACK_PROFILE_ERROR";
 
 bool g_is_showing_profile_error_dialog = false;
@@ -37,7 +38,7 @@ void OnProfileErrorDialogDismissed(const std::string& diagnostics,
                            std::string() /* description_placeholder_text */,
                            kProfileErrorFeedbackCategory, diagnostics);
 }
-#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_ANDROID) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 }  // namespace
 
@@ -46,14 +47,13 @@ void ShowProfileErrorDialog(ProfileErrorType type,
                             const std::string& diagnostics) {
 #if defined(OS_ANDROID)
   NOTIMPLEMENTED();
-#else
-  UMA_HISTOGRAM_ENUMERATION("Profile.ProfileError", static_cast<int>(type),
-                            static_cast<int>(ProfileErrorType::END));
+#else  // defined(OS_ANDROID)
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kNoErrorDialogs)) {
     return;
   }
 
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   if (g_is_showing_profile_error_dialog)
     return;
 
@@ -62,6 +62,12 @@ void ShowProfileErrorDialog(ProfileErrorType type,
       nullptr, l10n_util::GetStringUTF16(IDS_PROFILE_ERROR_DIALOG_TITLE),
       l10n_util::GetStringUTF16(message_id),
       l10n_util::GetStringUTF16(IDS_PROFILE_ERROR_DIALOG_CHECKBOX),
-      base::Bind(&OnProfileErrorDialogDismissed, diagnostics));
-#endif
+      base::BindOnce(&OnProfileErrorDialogDismissed, diagnostics));
+#else   // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  chrome::ShowWarningMessageBox(
+      nullptr, l10n_util::GetStringUTF16(IDS_PROFILE_ERROR_DIALOG_TITLE),
+      l10n_util::GetStringUTF16(message_id));
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+
+#endif  // !defined(OS_ANDROID)
 }

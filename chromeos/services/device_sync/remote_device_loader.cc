@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <utility>
 
-#include "base/base64url.h"
 #include "base/bind.h"
 #include "base/memory/ptr_util.h"
 #include "chromeos/components/multidevice/logging/logging.h"
@@ -58,57 +57,48 @@ RemoteDeviceLoader::Factory* RemoteDeviceLoader::Factory::factory_instance_ =
     nullptr;
 
 // static
-std::unique_ptr<RemoteDeviceLoader> RemoteDeviceLoader::Factory::NewInstance(
+std::unique_ptr<RemoteDeviceLoader> RemoteDeviceLoader::Factory::Create(
     const std::vector<cryptauth::ExternalDeviceInfo>& device_info_list,
-    const std::string& user_id,
+    const std::string& user_email,
     const std::string& user_private_key,
     std::unique_ptr<multidevice::SecureMessageDelegate>
         secure_message_delegate) {
-  if (!factory_instance_) {
-    factory_instance_ = new Factory();
+  if (factory_instance_) {
+    return factory_instance_->CreateInstance(
+        device_info_list, user_email, user_private_key,
+        std::move(secure_message_delegate));
   }
-  return factory_instance_->BuildInstance(device_info_list, user_id,
-                                          user_private_key,
-                                          std::move(secure_message_delegate));
+
+  return base::WrapUnique(
+      new RemoteDeviceLoader(device_info_list, user_email, user_private_key,
+                             std::move(secure_message_delegate)));
 }
 
 // static
-void RemoteDeviceLoader::Factory::SetInstanceForTesting(Factory* factory) {
+void RemoteDeviceLoader::Factory::SetFactoryForTesting(Factory* factory) {
   factory_instance_ = factory;
-}
-
-std::unique_ptr<RemoteDeviceLoader> RemoteDeviceLoader::Factory::BuildInstance(
-    const std::vector<cryptauth::ExternalDeviceInfo>& device_info_list,
-    const std::string& user_id,
-    const std::string& user_private_key,
-    std::unique_ptr<multidevice::SecureMessageDelegate>
-        secure_message_delegate) {
-  return base::WrapUnique(
-      new RemoteDeviceLoader(device_info_list, user_id, user_private_key,
-                             std::move(secure_message_delegate)));
 }
 
 RemoteDeviceLoader::RemoteDeviceLoader(
     const std::vector<cryptauth::ExternalDeviceInfo>& device_info_list,
-    const std::string& user_id,
+    const std::string& user_email,
     const std::string& user_private_key,
     std::unique_ptr<multidevice::SecureMessageDelegate> secure_message_delegate)
     : remaining_devices_(device_info_list),
-      user_id_(user_id),
+      user_email_(user_email),
       user_private_key_(user_private_key),
-      secure_message_delegate_(std::move(secure_message_delegate)),
-      weak_ptr_factory_(this) {}
+      secure_message_delegate_(std::move(secure_message_delegate)) {}
 
 RemoteDeviceLoader::~RemoteDeviceLoader() {}
 
-void RemoteDeviceLoader::Load(const RemoteDeviceCallback& callback) {
+void RemoteDeviceLoader::Load(RemoteDeviceCallback callback) {
   DCHECK(callback_.is_null());
-  callback_ = callback;
+  callback_ = std::move(callback);
   PA_LOG(VERBOSE) << "Loading " << remaining_devices_.size()
                   << " remote devices";
 
   if (remaining_devices_.empty()) {
-    callback_.Run(remote_devices_);
+    std::move(callback_).Run(remote_devices_);
     return;
   }
 
@@ -118,8 +108,8 @@ void RemoteDeviceLoader::Load(const RemoteDeviceCallback& callback) {
   for (const auto& device : all_devices_to_convert) {
     secure_message_delegate_->DeriveKey(
         user_private_key_, device.public_key(),
-        base::Bind(&RemoteDeviceLoader::OnPSKDerived,
-                   weak_ptr_factory_.GetWeakPtr(), device));
+        base::BindOnce(&RemoteDeviceLoader::OnPSKDerived,
+                       weak_ptr_factory_.GetWeakPtr(), device));
   }
 }
 
@@ -142,17 +132,21 @@ void RemoteDeviceLoader::OnPSKDerived(
         multidevice::FromCryptAuthSeed(cryptauth_beacon_seed));
   }
 
+  // Because RemoteDeviceLoader does not handle devices using v2 DeviceSync, no
+  // Instance ID is present.
   multidevice::RemoteDevice remote_device(
-      user_id_, device.friendly_device_name(), device.no_pii_device_name(),
+      user_email_, std::string() /* instance_id */,
+      device.friendly_device_name(), device.no_pii_device_name(),
       device.public_key(), psk, device.last_update_time_millis(),
-      GetSoftwareFeatureToStateMap(device), multidevice_beacon_seeds);
+      GetSoftwareFeatureToStateMap(device), multidevice_beacon_seeds,
+      device.bluetooth_address());
 
   remote_devices_.push_back(remote_device);
 
   if (remaining_devices_.empty()) {
     PA_LOG(VERBOSE) << "Derived keys for " << remote_devices_.size()
                     << " devices.";
-    callback_.Run(remote_devices_);
+    std::move(callback_).Run(remote_devices_);
   }
 }
 

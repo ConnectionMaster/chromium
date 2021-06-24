@@ -35,6 +35,7 @@ class AXObjectCacheImpl;
 class AXMenuListOption;
 class HTMLElement;
 
+// AXMenuListPopup is the only kind of AXMockObject used in Blink accessibility.
 class AXMenuListPopup final : public AXMockObject {
  public:
   explicit AXMenuListPopup(AXObjectCacheImpl&);
@@ -46,21 +47,18 @@ class AXMenuListPopup final : public AXMockObject {
   void DidShow();
   void DidHide();
   AXObject* ActiveDescendant() final;
-  void UpdateChildrenIfNecessary() override;
 
  private:
   bool IsMenuListPopup() const override { return true; }
 
-  ax::mojom::Role RoleValue() const override {
-    return ax::mojom::Role::kMenuListPopup;
-  }
+  ax::mojom::blink::Role NativeRoleIgnoringAria() const override;
 
   bool IsVisible() const override;
   bool OnNativeClickAction() override;
   void AddChildren() override;
   bool ComputeAccessibilityIsIgnored(IgnoredReasons* = nullptr) const override;
 
-  AXMenuListOption* MenuListOptionAXObject(HTMLElement*) const;
+  AXMenuListOption* MenuListOptionAXObject(HTMLElement*);
   int GetSelectedIndex() const;
 
   // Note that this may be -1 if nothing is selected.
@@ -69,7 +67,12 @@ class AXMenuListPopup final : public AXMockObject {
   DISALLOW_COPY_AND_ASSIGN(AXMenuListPopup);
 };
 
-DEFINE_AX_OBJECT_TYPE_CASTS(AXMenuListPopup, IsMenuListPopup());
+template <>
+struct DowncastTraits<AXMenuListPopup> {
+  static bool AllowFrom(const AXObject& object) {
+    return object.IsMenuListPopup();
+  }
+};
 
 }  // namespace blink
 

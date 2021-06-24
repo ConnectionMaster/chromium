@@ -4,23 +4,26 @@
 
 #include "chrome/browser/extensions/extension_context_menu_model.h"
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/extensions/chrome_extension_browser_constants.h"
 #include "chrome/browser/extensions/context_menu_matcher.h"
-#include "chrome/browser/extensions/extension_action.h"
-#include "chrome/browser/extensions/extension_action_manager.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
+#include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/menu_manager.h"
 #include "chrome/browser/extensions/scripting_permissions_modifier.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/chrome_pages.h"
@@ -32,10 +35,13 @@
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/content/session_tab_helper.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/context_menu_params.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/management_policy.h"
@@ -44,6 +50,7 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/manifest_url_handlers.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/models/menu_separator_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/color_palette.h"
@@ -55,9 +62,9 @@ namespace extensions {
 namespace {
 
 // Returns true if the given |item| is of the given |type|.
-bool MenuItemMatchesAction(ExtensionContextMenuModel::ActionType type,
+bool MenuItemMatchesAction(const absl::optional<ActionInfo::Type> action_type,
                            const MenuItem* item) {
-  if (type == ExtensionContextMenuModel::NO_ACTION)
+  if (!action_type)
     return false;
 
   const MenuItem::ContextList& contexts = item->contexts();
@@ -65,13 +72,26 @@ bool MenuItemMatchesAction(ExtensionContextMenuModel::ActionType type,
   if (contexts.Contains(MenuItem::ALL))
     return true;
   if (contexts.Contains(MenuItem::PAGE_ACTION) &&
-      (type == ExtensionContextMenuModel::PAGE_ACTION))
+      (*action_type == ActionInfo::TYPE_PAGE)) {
     return true;
+  }
   if (contexts.Contains(MenuItem::BROWSER_ACTION) &&
-      (type == ExtensionContextMenuModel::BROWSER_ACTION))
+      (*action_type == ActionInfo::TYPE_BROWSER)) {
     return true;
+  }
+  if (contexts.Contains(MenuItem::ACTION) &&
+      (*action_type == ActionInfo::TYPE_ACTION)) {
+    return true;
+  }
 
   return false;
+}
+
+// Returns true if the given |extension| is required to remain pinned/visible in
+// the toolbar by policy.
+bool IsExtensionForcePinned(const Extension& extension, Profile* profile) {
+  auto* management = ExtensionManagementFactory::GetForBrowserContext(profile);
+  return base::Contains(management->GetForcePinnedList(), extension.id());
 }
 
 // Returns the id for the visibility command for the given |extension|.
@@ -79,23 +99,11 @@ int GetVisibilityStringId(
     Profile* profile,
     const Extension* extension,
     ExtensionContextMenuModel::ButtonVisibility button_visibility) {
-  DCHECK(profile);
-  int string_id = -1;
-  // We display "show" or "hide" based on the icon's visibility, and can have
-  // "transitively shown" buttons that are shown only while the button has a
-  // popup or menu visible.
-  switch (button_visibility) {
-    case (ExtensionContextMenuModel::VISIBLE):
-      string_id = IDS_EXTENSIONS_HIDE_BUTTON_IN_MENU;
-      break;
-    case (ExtensionContextMenuModel::TRANSITIVELY_VISIBLE):
-      string_id = IDS_EXTENSIONS_KEEP_BUTTON_IN_TOOLBAR;
-      break;
-    case (ExtensionContextMenuModel::OVERFLOWED):
-      string_id = IDS_EXTENSIONS_SHOW_BUTTON_IN_TOOLBAR;
-      break;
-  }
-  return string_id;
+  if (IsExtensionForcePinned(*extension, profile))
+    return IDS_EXTENSIONS_PINNED_BY_ADMIN;
+  if (button_visibility == ExtensionContextMenuModel::PINNED)
+    return IDS_EXTENSIONS_UNPIN_FROM_TOOLBAR;
+  return IDS_EXTENSIONS_PIN_TO_TOOLBAR;
 }
 
 // Returns true if the given |extension| is required to remain installed by
@@ -145,7 +153,7 @@ ExtensionContextMenuModel::ContextMenuAction CommandIdToContextMenuAction(
 
 // A stub for the uninstall dialog.
 // TODO(devlin): Ideally, we would just have the uninstall dialog take a
-// base::Callback, but that's a bunch of churn.
+// base::OnceCallback, but that's a bunch of churn.
 class UninstallDialogHelper : public ExtensionUninstallDialog::Delegate {
  public:
   // Kicks off the asynchronous process to confirm and uninstall the given
@@ -170,7 +178,7 @@ class UninstallDialogHelper : public ExtensionUninstallDialog::Delegate {
 
   // ExtensionUninstallDialog::Delegate:
   void OnExtensionUninstallDialogClosed(bool did_start_uninstall,
-                                        const base::string16& error) override {
+                                        const std::u16string& error) override {
     delete this;
   }
 
@@ -185,15 +193,16 @@ ExtensionContextMenuModel::ExtensionContextMenuModel(
     const Extension* extension,
     Browser* browser,
     ButtonVisibility button_visibility,
-    PopupDelegate* delegate)
+    PopupDelegate* delegate,
+    bool can_show_icon_in_toolbar)
     : SimpleMenuModel(this),
       extension_id_(extension->id()),
       is_component_(Manifest::IsComponentLocation(extension->location())),
       browser_(browser),
       profile_(browser->profile()),
       delegate_(delegate),
-      action_type_(NO_ACTION),
-      button_visibility_(button_visibility) {
+      button_visibility_(button_visibility),
+      can_show_icon_in_toolbar_(can_show_icon_in_toolbar) {
   InitMenu(extension, button_visibility);
 }
 
@@ -224,7 +233,12 @@ bool ExtensionContextMenuModel::IsCommandIdVisible(int command_id) const {
     return extension_items_->IsCommandIdVisible(command_id);
   }
 
-  // Standard menu items are always visible.
+  // The command is hidden in app windows because they don't
+  // support showing extensions in the app window frame.
+  if (command_id == TOGGLE_VISIBILITY)
+    return can_show_icon_in_toolbar_;
+
+  // Standard menu items are visible.
   return true;
 }
 
@@ -250,7 +264,7 @@ bool ExtensionContextMenuModel::IsCommandIdEnabled(int command_id) const {
       content::WebContents* web_contents = GetActiveWebContents();
       return web_contents && extension_action_ &&
              extension_action_->HasPopup(
-                 SessionTabHelper::IdForTab(web_contents).id());
+                 sessions::SessionTabHelper::IdForTab(web_contents).id());
     }
     case UNINSTALL:
       return !IsExtensionRequiredByPolicy(extension, profile_);
@@ -271,8 +285,12 @@ bool ExtensionContextMenuModel::IsCommandIdEnabled(int command_id) const {
       const GURL& url = web_contents->GetLastCommittedURL();
       return IsPageAccessCommandEnabled(*extension, url, command_id);
     }
-    // The following, if they are present, are always enabled.
+    // Extension pinning/unpinning is not available for Incognito as this leaves
+    // a trace of user activity.
     case TOGGLE_VISIBILITY:
+      return !browser_->profile()->IsOffTheRecord() &&
+             !IsExtensionForcePinned(*extension, profile_);
+    // Manage extensions is always enabled.
     case MANAGE_EXTENSIONS:
       return true;
     default:
@@ -311,7 +329,7 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       ExtensionTabUtil::OpenOptionsPage(extension, browser_);
       break;
     case TOGGLE_VISIBILITY: {
-      bool currently_visible = button_visibility_ == VISIBLE;
+      bool currently_visible = button_visibility_ == PINNED;
       ToolbarActionsModel::Get(browser_->profile())
           ->SetActionVisibility(extension->id(), !currently_visible);
       break;
@@ -348,7 +366,7 @@ void ExtensionContextMenuModel::MenuClosed(ui::SimpleMenuModel* menu) {
   if (action_taken_) {
     ContextMenuAction action = *action_taken_;
     UMA_HISTOGRAM_ENUMERATION("Extensions.ContextMenuAction", action);
-    action_taken_ = base::nullopt;
+    action_taken_ = absl::nullopt;
   }
 }
 
@@ -358,16 +376,15 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
                                          ButtonVisibility button_visibility) {
   DCHECK(extension);
 
+  absl::optional<ActionInfo::Type> action_type;
   extension_action_ =
       ExtensionActionManager::Get(profile_)->GetExtensionAction(*extension);
-  if (extension_action_) {
-    action_type_ = extension_action_->action_type() == ActionInfo::TYPE_PAGE
-                       ? PAGE_ACTION
-                       : BROWSER_ACTION;
-  }
+  if (extension_action_)
+    action_type = extension_action_->action_type();
 
-  extension_items_.reset(new ContextMenuMatcher(
-      profile_, this, this, base::Bind(MenuItemMatchesAction, action_type_)));
+  extension_items_ = std::make_unique<ContextMenuMatcher>(
+      profile_, this, this,
+      base::BindRepeating(MenuItemMatchesAction, action_type));
 
   std::string extension_name = extension->name();
   // Ampersands need to be escaped to avoid being treated like
@@ -390,9 +407,10 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
     AddItem(UNINSTALL, l10n_util::GetStringUTF16(message_id));
     if (is_required_by_policy) {
       int uninstall_index = GetIndexOfCommandId(UNINSTALL);
+      // TODO (kylixrd): Investigate the usage of the hard-coded color.
       SetIcon(uninstall_index,
-              gfx::Image(gfx::CreateVectorIcon(vector_icons::kBusinessIcon, 16,
-                                               gfx::kChromeIconGrey)));
+              ui::ImageModel::FromVectorIcon(vector_icons::kBusinessIcon,
+                                             gfx::kChromeIconGrey, 16));
     }
   }
 
@@ -402,17 +420,21 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
       GetVisibilityStringId(profile_, extension, button_visibility);
   DCHECK_NE(-1, visibility_string_id);
   AddItemWithStringId(TOGGLE_VISIBILITY, visibility_string_id);
+  if (IsExtensionForcePinned(*extension, profile_)) {
+    int toggle_visibility_index = GetIndexOfCommandId(TOGGLE_VISIBILITY);
+    SetIcon(toggle_visibility_index,
+            ui::ImageModel::FromVectorIcon(vector_icons::kBusinessIcon,
+                                           gfx::kChromeIconGrey, 16));
+  }
 
   if (!is_component_) {
     AddSeparator(ui::NORMAL_SEPARATOR);
     AddItemWithStringId(MANAGE_EXTENSIONS, IDS_MANAGE_EXTENSION);
   }
 
-  const ActionInfo* action_info = ActionInfo::GetPageActionInfo(extension);
-  if (!action_info)
-    action_info = ActionInfo::GetBrowserActionInfo(extension);
-  if (profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode) &&
-      delegate_ && !is_component_ && action_info && !action_info->synthesized) {
+  const ActionInfo* action_info = ActionInfo::GetExtensionActionInfo(extension);
+  if (delegate_ && !is_component_ && action_info && !action_info->synthesized &&
+      profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode)) {
     AddSeparator(ui::NORMAL_SEPARATOR);
     AddItemWithStringId(INSPECT_POPUP, IDS_EXTENSION_ACTION_INSPECT_POPUP);
   }
@@ -433,7 +455,7 @@ void ExtensionContextMenuModel::AppendExtensionItems() {
 
   int index = 0;
   extension_items_->AppendExtensionItems(MenuItem::ExtensionKey(extension_id_),
-                                         base::string16(), &index,
+                                         std::u16string(), &index,
                                          true);  // is_action_menu
 }
 
@@ -471,7 +493,7 @@ bool ExtensionContextMenuModel::IsPageAccessCommandEnabled(
   // commands should be shown.
   DCHECK(site_access.has_site_access || site_access.withheld_site_access ||
          extension.permissions_data()->HasAPIPermission(
-             APIPermission::kActiveTab));
+             mojom::APIPermissionID::kActiveTab));
 
   switch (command_id) {
     case PAGE_ACCESS_SUBMENU:
@@ -511,7 +533,7 @@ void ExtensionContextMenuModel::CreatePageAccessSubmenu(
       modifier.GetSiteAccess(url);
 
   bool has_active_tab = extension->permissions_data()->HasAPIPermission(
-      APIPermission::kActiveTab);
+      mojom::APIPermissionID::kActiveTab);
   bool wants_site_access =
       site_access.has_site_access || site_access.withheld_site_access;
   if (!wants_site_access && !has_active_tab) {
@@ -532,9 +554,8 @@ void ExtensionContextMenuModel::CreatePageAccessSubmenu(
       PAGE_ACCESS_RUN_ON_SITE,
       l10n_util::GetStringFUTF16(
           IDS_EXTENSIONS_CONTEXT_MENU_PAGE_ACCESS_RUN_ON_SITE,
-          url_formatter::StripWWW(base::UTF8ToUTF16(
-              url::Origin::Create(web_contents->GetLastCommittedURL())
-                  .host()))),
+          url_formatter::IDNToUnicode(url_formatter::StripWWW(
+              web_contents->GetLastCommittedURL().host()))),
       kRadioGroup);
   page_access_submenu_->AddRadioItemWithStringId(
       PAGE_ACCESS_RUN_ON_ALL_SITES,
@@ -557,6 +578,8 @@ void ExtensionContextMenuModel::HandlePageAccessCommand(
   content::WebContents* web_contents = GetActiveWebContents();
   if (!web_contents)
     return;
+
+  LogPageAccessAction(command_id);
 
   if (command_id == PAGE_ACCESS_LEARN_MORE) {
     content::OpenURLParams params(
@@ -590,6 +613,30 @@ void ExtensionContextMenuModel::HandlePageAccessCommand(
     runner->HandlePageAccessModified(extension,
                                      convert_page_access(current_access),
                                      convert_page_access(command_id));
+}
+
+void ExtensionContextMenuModel::LogPageAccessAction(int command_id) const {
+  switch (command_id) {
+    case PAGE_ACCESS_LEARN_MORE:
+      base::RecordAction(base::UserMetricsAction(
+          "Extensions.ContextMenu.Hosts.LearnMoreClicked"));
+      break;
+    case PAGE_ACCESS_RUN_ON_CLICK:
+      base::RecordAction(base::UserMetricsAction(
+          "Extensions.ContextMenu.Hosts.OnClickClicked"));
+      break;
+    case PAGE_ACCESS_RUN_ON_SITE:
+      base::RecordAction(base::UserMetricsAction(
+          "Extensions.ContextMenu.Hosts.OnSiteClicked"));
+      break;
+    case PAGE_ACCESS_RUN_ON_ALL_SITES:
+      base::RecordAction(base::UserMetricsAction(
+          "Extensions.ContextMenu.Hosts.OnAllSitesClicked"));
+      break;
+    default:
+      NOTREACHED() << "Unknown option: " << command_id;
+      break;
+  }
 }
 
 content::WebContents* ExtensionContextMenuModel::GetActiveWebContents() const {

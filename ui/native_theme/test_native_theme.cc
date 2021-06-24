@@ -6,12 +6,8 @@
 
 namespace ui {
 
-TestNativeTheme::TestNativeTheme() {}
-TestNativeTheme::~TestNativeTheme() {}
-
-SkColor TestNativeTheme::GetSystemColor(ColorId color_id) const {
-  return SK_ColorRED;
-}
+TestNativeTheme::TestNativeTheme() : NativeTheme(false) {}
+TestNativeTheme::~TestNativeTheme() = default;
 
 gfx::Size TestNativeTheme::GetPartSize(Part part,
                                        State state,
@@ -23,7 +19,10 @@ void TestNativeTheme::Paint(cc::PaintCanvas* canvas,
                             Part part,
                             State state,
                             const gfx::Rect& rect,
-                            const ExtraParams& extra) const {}
+                            const ExtraParams& extra,
+                            ColorScheme color_scheme,
+                            const absl::optional<SkColor>& accent_color) const {
+}
 
 bool TestNativeTheme::SupportsNinePatch(Part part) const {
   return false;
@@ -37,12 +36,37 @@ gfx::Rect TestNativeTheme::GetNinePatchAperture(Part part) const {
   return gfx::Rect();
 }
 
-bool TestNativeTheme::UsesHighContrastColors() const {
-  return false;
+bool TestNativeTheme::UserHasContrastPreference() const {
+  return contrast_preference_;
 }
 
-bool TestNativeTheme::SystemDarkModeEnabled() const {
+bool TestNativeTheme::ShouldUseDarkColors() const {
   return dark_mode_;
+}
+
+NativeTheme::PreferredColorScheme TestNativeTheme::GetPreferredColorScheme()
+    const {
+  return CalculatePreferredColorScheme();
+}
+
+NativeTheme::ColorScheme TestNativeTheme::GetDefaultSystemColorScheme() const {
+  if (is_platform_high_contrast_)
+    return ColorScheme::kPlatformHighContrast;
+  return NativeTheme::GetDefaultSystemColorScheme();
+}
+
+void TestNativeTheme::AddColorSchemeNativeThemeObserver(
+    NativeTheme* theme_to_update) {
+  color_scheme_observer_ =
+      std::make_unique<ui::NativeTheme::ColorSchemeNativeThemeObserver>(
+          theme_to_update);
+  AddObserver(color_scheme_observer_.get());
+}
+
+SkColor TestNativeTheme::GetSystemColorDeprecated(ColorId color_id,
+                                                  ColorScheme color_scheme,
+                                                  bool apply_processing) const {
+  return SK_ColorRED;
 }
 
 }  // namespace ui

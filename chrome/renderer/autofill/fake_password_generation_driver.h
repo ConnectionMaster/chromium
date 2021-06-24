@@ -8,13 +8,13 @@
 #include <string>
 #include <vector>
 
-#include "base/optional.h"
-#include "base/strings/string16.h"
-#include "components/autofill/content/common/autofill_driver.mojom.h"
-#include "components/autofill/core/common/password_form.h"
+#include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
 #include "components/autofill/core/common/password_generation_util.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
+#include "components/autofill/core/common/unique_ids.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class FakePasswordGenerationDriver
     : public autofill::mojom::PasswordGenerationDriver {
@@ -23,30 +23,33 @@ class FakePasswordGenerationDriver
 
   ~FakePasswordGenerationDriver() override;
 
-  void BindRequest(
-      autofill::mojom::PasswordGenerationDriverAssociatedRequest request);
+  void BindReceiver(
+      mojo::PendingAssociatedReceiver<autofill::mojom::PasswordGenerationDriver>
+          receiver);
 
   void Flush();
 
   // autofill::mojom::PasswordGenerationDriver:
-  MOCK_METHOD1(GenerationAvailableForForm,
-               void(const autofill::PasswordForm& password_form));
   MOCK_METHOD1(
       AutomaticGenerationAvailable,
       void(const autofill::password_generation::PasswordGenerationUIData&));
-  MOCK_METHOD2(ShowPasswordEditingPopup,
-               void(const gfx::RectF& bounds,
-                    const autofill::PasswordForm& form));
+  MOCK_METHOD4(ShowPasswordEditingPopup,
+               void(const gfx::RectF&,
+                    const autofill::FormData&,
+                    autofill::FieldRendererId,
+                    const std::u16string&));
   MOCK_METHOD0(PasswordGenerationRejectedByTyping, void());
-  MOCK_METHOD1(PresaveGeneratedPassword,
-               void(const autofill::PasswordForm& password_form));
+  MOCK_METHOD2(PresaveGeneratedPassword,
+               void(const autofill::FormData& form_data,
+                    const std::u16string& generated_password));
   MOCK_METHOD1(PasswordNoLongerGenerated,
-               void(const autofill::PasswordForm& password_form));
+               void(const autofill::FormData& form_data));
   MOCK_METHOD0(FrameWasScrolled, void());
   MOCK_METHOD0(GenerationElementLostFocus, void());
 
  private:
-  mojo::AssociatedBinding<autofill::mojom::PasswordGenerationDriver> binding_;
+  mojo::AssociatedReceiver<autofill::mojom::PasswordGenerationDriver> receiver_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(FakePasswordGenerationDriver);
 };

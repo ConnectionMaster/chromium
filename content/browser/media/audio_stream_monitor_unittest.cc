@@ -9,16 +9,21 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "build/chromeos_buildflags.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/test_renderer_host.h"
-#include "media/audio/audio_power_monitor.h"
+#include "media/base/audio_power_monitor.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "chromeos/lacros/lacros_test_helper.h"
+#endif
 
 using ::testing::InvokeWithoutArgs;
 
@@ -52,7 +57,7 @@ class AudioStreamMonitorTest : public RenderViewHostTestHarness {
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
 
-    WebContentsImpl* web_contents = reinterpret_cast<WebContentsImpl*>(
+    WebContentsImpl* web_contents = static_cast<WebContentsImpl*>(
         RenderViewHostTestHarness::web_contents());
     web_contents->SetDelegate(&mock_web_contents_delegate_);
 
@@ -99,12 +104,11 @@ class AudioStreamMonitorTest : public RenderViewHostTestHarness {
     EXPECT_CALL(
         mock_web_contents_delegate_,
         NavigationStateChanged(RenderViewHostTestHarness::web_contents(),
-                               INVALIDATE_TYPE_TAB))
+                               INVALIDATE_TYPE_AUDIO))
         .WillOnce(InvokeWithoutArgs(
-            this,
-            new_recently_audible
-                ? &AudioStreamMonitorTest::ExpectWasRecentlyAudible
-                : &AudioStreamMonitorTest::ExpectNotRecentlyAudible))
+            this, new_recently_audible
+                      ? &AudioStreamMonitorTest::ExpectWasRecentlyAudible
+                      : &AudioStreamMonitorTest::ExpectNotRecentlyAudible))
         .RetiresOnSaturation();
   }
 
@@ -112,12 +116,11 @@ class AudioStreamMonitorTest : public RenderViewHostTestHarness {
     EXPECT_CALL(
         mock_web_contents_delegate_,
         NavigationStateChanged(RenderViewHostTestHarness::web_contents(),
-                               INVALIDATE_TYPE_TAB))
+                               INVALIDATE_TYPE_AUDIO))
         .WillOnce(InvokeWithoutArgs(
-            this,
-            new_audible
-                ? &AudioStreamMonitorTest::ExpectIsCurrentlyAudible
-                : &AudioStreamMonitorTest::ExpectNotCurrentlyAudible))
+            this, new_audible
+                      ? &AudioStreamMonitorTest::ExpectIsCurrentlyAudible
+                      : &AudioStreamMonitorTest::ExpectNotCurrentlyAudible))
         .RetiresOnSaturation();
   }
 
@@ -168,6 +171,11 @@ class AudioStreamMonitorTest : public RenderViewHostTestHarness {
   void ExpectNotRecentlyAudible() const {
     EXPECT_FALSE(monitor_->WasRecentlyAudible());
   }
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // Instantiate LacrosService for WakeLock support.
+  chromeos::ScopedLacrosServiceTestHelper scoped_lacros_service_test_helper_;
+#endif
 
   MockWebContentsDelegate mock_web_contents_delegate_;
   base::SimpleTestTickClock clock_;

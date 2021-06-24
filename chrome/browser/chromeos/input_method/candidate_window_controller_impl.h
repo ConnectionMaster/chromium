@@ -10,9 +10,9 @@
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "chrome/browser/chromeos/input_method/candidate_window_controller.h"
-#include "ui/base/ime/ime_candidate_window_handler_interface.h"
+#include "chrome/browser/chromeos/input_method/ui/candidate_window_view.h"
+#include "ui/base/ime/chromeos/ime_candidate_window_handler_interface.h"
 #include "ui/base/ime/infolist_entry.h"
-#include "ui/chromeos/ime/candidate_window_view.h"
 #include "ui/views/widget/widget_observer.h"
 
 namespace ui {
@@ -65,7 +65,7 @@ class CandidateWindowControllerImpl
   gfx::Rect GetCursorBounds() const override;
   void UpdateLookupTable(const ui::CandidateWindow& candidate_window,
                          bool visible) override;
-  void UpdatePreeditText(const base::string16& text,
+  void UpdatePreeditText(const std::u16string& text,
                          unsigned int cursor,
                          bool visible) override;
   void FocusStateChanged(bool is_focused) override;

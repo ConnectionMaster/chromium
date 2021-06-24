@@ -27,11 +27,10 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_SHAPING_CACHING_WORD_SHAPE_ITERATOR_H_
 
 #include "third_party/blink/renderer/platform/fonts/font.h"
-#include "third_party/blink/renderer/platform/fonts/shaping/caching_word_shape_iterator.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_cache.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_spacing.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 
 namespace blink {
@@ -60,6 +59,8 @@ class PLATFORM_EXPORT CachingWordShapeIterator final {
     if (!run.SpacingDisabled())
       spacing_.SetSpacingAndExpansion(font->GetFontDescription());
   }
+  CachingWordShapeIterator(const CachingWordShapeIterator&) = delete;
+  CachingWordShapeIterator& operator=(const CachingWordShapeIterator&) = delete;
 
   bool Next(scoped_refptr<const ShapeResult>* word_result) {
     if (UNLIKELY(text_run_.AllowTabs()))
@@ -77,17 +78,11 @@ class PLATFORM_EXPORT CachingWordShapeIterator final {
   }
 
  private:
-  scoped_refptr<const ShapeResult> ShapeWordWithoutSpacing(const TextRun&,
-                                                    const Font*);
+  scoped_refptr<const ShapeResult>
+  ShapeWordWithoutSpacing(const TextRun&, const Font*);
 
-  scoped_refptr<const ShapeResult> ShapeWord(const TextRun& word_run,
-                                      const Font* font) {
-    if (LIKELY(!spacing_.HasSpacing()))
-      return ShapeWordWithoutSpacing(word_run, font);
-
-    scoped_refptr<const ShapeResult> result = ShapeWordWithoutSpacing(word_run, font);
-    return result->ApplySpacingToCopy(spacing_, word_run);
-  }
+  scoped_refptr<const ShapeResult> ShapeWord(const TextRun&,
+                                             const Font*);
 
   bool NextWord(scoped_refptr<const ShapeResult>* word_result) {
     return ShapeToEndIndex(word_result, NextWordEndIndex());
@@ -131,10 +126,10 @@ class PLATFORM_EXPORT CachingWordShapeIterator final {
     bool has_any_script = !Character::IsCommonOrInheritedScript(ch);
     for (unsigned next_end = end; end < length; end = next_end) {
       ch = text_run_.CodepointAtAndNext(next_end);
-      // ZWJ and modifier check in order not to split those Emoji sequences.
+      // Modifier check in order not to split Emoji sequences.
       if (U_GET_GC_MASK(ch) & (U_GC_M_MASK | U_GC_LM_MASK | U_GC_SK_MASK) ||
-          ch == kZeroWidthJoinerCharacter || Character::IsModifier(ch) ||
-          Character::IsEmojiTagSequence(ch) || ch == kCancelTag)
+          ch == kZeroWidthJoinerCharacter || Character::IsEmojiComponent(ch) ||
+          Character::IsExtendedPictographic(ch))
         continue;
       // Avoid delimiting COMMON/INHERITED alone, which makes harder to
       // identify the script.
@@ -151,7 +146,8 @@ class PLATFORM_EXPORT CachingWordShapeIterator final {
     return length;
   }
 
-  bool ShapeToEndIndex(scoped_refptr<const ShapeResult>* result, unsigned end_index) {
+  bool ShapeToEndIndex(scoped_refptr<const ShapeResult>* result,
+                       unsigned end_index) {
     if (!end_index || end_index <= start_index_)
       return false;
 
@@ -210,8 +206,6 @@ class PLATFORM_EXPORT CachingWordShapeIterator final {
   float width_so_far_;  // Used only when allowTabs()
   unsigned start_index_ : 31;
   unsigned shape_by_word_ : 1;
-
-  DISALLOW_COPY_AND_ASSIGN(CachingWordShapeIterator);
 };
 
 }  // namespace blink

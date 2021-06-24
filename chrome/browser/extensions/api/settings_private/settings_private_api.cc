@@ -10,16 +10,11 @@
 #include "base/values.h"
 #include "chrome/browser/extensions/api/settings_private/settings_private_delegate.h"
 #include "chrome/browser/extensions/api/settings_private/settings_private_delegate_factory.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #include "chrome/common/extensions/api/settings_private.h"
 #include "content/public/common/page_zoom.h"
 #include "extensions/browser/extension_function_registry.h"
-
-namespace {
-  const char kDelegateIsNull[] = "delegate is null";
-}
 
 namespace extensions {
 
@@ -37,17 +32,16 @@ ExtensionFunction::ResponseAction SettingsPrivateSetPrefFunction::Run() {
 
   SettingsPrivateDelegate* delegate =
       SettingsPrivateDelegateFactory::GetForBrowserContext(browser_context());
-  if (delegate == nullptr)
-    return RespondNow(Error(kDelegateIsNull));
+  DCHECK(delegate);
 
   settings_private::SetPrefResult result =
       delegate->SetPref(parameters->name, parameters->value.get());
   switch (result) {
     case settings_private::SetPrefResult::SUCCESS:
-      return RespondNow(OneArgument(std::make_unique<base::Value>(true)));
+      return RespondNow(OneArgument(base::Value(true)));
     case settings_private::SetPrefResult::PREF_NOT_MODIFIABLE:
       // Not an error, but return false to indicate setting the pref failed.
-      return RespondNow(OneArgument(std::make_unique<base::Value>(false)));
+      return RespondNow(OneArgument(base::Value(false)));
     case settings_private::SetPrefResult::PREF_NOT_FOUND:
       return RespondNow(Error("Pref not found: *", parameters->name));
     case settings_private::SetPrefResult::PREF_TYPE_MISMATCH:
@@ -58,7 +52,7 @@ ExtensionFunction::ResponseAction SettingsPrivateSetPrefFunction::Run() {
                               parameters->name));
   }
   NOTREACHED();
-  return RespondNow(OneArgument(std::make_unique<base::Value>(false)));
+  return RespondNow(OneArgument(base::Value(false)));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -71,11 +65,9 @@ SettingsPrivateGetAllPrefsFunction::~SettingsPrivateGetAllPrefsFunction() {
 ExtensionFunction::ResponseAction SettingsPrivateGetAllPrefsFunction::Run() {
   SettingsPrivateDelegate* delegate =
       SettingsPrivateDelegateFactory::GetForBrowserContext(browser_context());
-
-  if (delegate == nullptr)
-    return RespondNow(Error(kDelegateIsNull));
-  else
-    return RespondNow(OneArgument(delegate->GetAllPrefs()));
+  DCHECK(delegate);
+  return RespondNow(
+      OneArgument(base::Value::FromUniquePtrValue(delegate->GetAllPrefs())));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -92,14 +84,14 @@ ExtensionFunction::ResponseAction SettingsPrivateGetPrefFunction::Run() {
 
   SettingsPrivateDelegate* delegate =
       SettingsPrivateDelegateFactory::GetForBrowserContext(browser_context());
-  if (delegate == nullptr)
-    return RespondNow(Error(kDelegateIsNull));
+  DCHECK(delegate);
 
   std::unique_ptr<base::Value> value = delegate->GetPref(parameters->name);
   if (value->is_none())
     return RespondNow(Error("Pref * does not exist", parameters->name));
   else
-    return RespondNow(OneArgument(std::move(value)));
+    return RespondNow(
+        OneArgument(base::Value::FromUniquePtrValue(std::move(value))));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -114,11 +106,9 @@ ExtensionFunction::ResponseAction
     SettingsPrivateGetDefaultZoomFunction::Run() {
   SettingsPrivateDelegate* delegate =
       SettingsPrivateDelegateFactory::GetForBrowserContext(browser_context());
-
-  if (delegate == nullptr)
-    return RespondNow(Error(kDelegateIsNull));
-  else
-    return RespondNow(OneArgument(delegate->GetDefaultZoom()));
+  DCHECK(delegate);
+  return RespondNow(
+      OneArgument(base::Value::FromUniquePtrValue(delegate->GetDefaultZoom())));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -137,11 +127,9 @@ ExtensionFunction::ResponseAction
 
   SettingsPrivateDelegate* delegate =
       SettingsPrivateDelegateFactory::GetForBrowserContext(browser_context());
-  if (delegate == nullptr)
-    return RespondNow(Error(kDelegateIsNull));
-
+  DCHECK(delegate);
   delegate->SetDefaultZoom(parameters->zoom);
-  return RespondNow(OneArgument(std::make_unique<base::Value>(true)));
+  return RespondNow(OneArgument(base::Value(true)));
 }
 
 }  // namespace extensions

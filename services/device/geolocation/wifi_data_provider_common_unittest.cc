@@ -6,12 +6,12 @@
 
 #include <memory>
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "services/device/geolocation/wifi_data_provider_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -87,8 +87,8 @@ class WifiDataProviderCommonWithMock : public WifiDataProviderCommon {
 class GeolocationWifiDataProviderCommonTest : public testing::Test {
  public:
   GeolocationWifiDataProviderCommonTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::UI),
+      : task_environment_(
+            base::test::SingleThreadTaskEnvironment::MainThreadType::UI),
         wifi_data_callback_(base::DoNothing()) {}
 
   void TearDownProvider() {
@@ -128,7 +128,7 @@ class GeolocationWifiDataProviderCommonTest : public testing::Test {
   }
 
  protected:
-  const base::test::ScopedTaskEnvironment scoped_task_environment_;
+  const base::test::SingleThreadTaskEnvironment task_environment_;
   WifiDataProviderManager::WifiDataUpdateCallback wifi_data_callback_;
   scoped_refptr<WifiDataProviderCommonWithMock> provider_;
 
@@ -203,10 +203,10 @@ TEST_F(GeolocationWifiDataProviderCommonTest, DoScanWithResults) {
   EXPECT_CALL(*polling_policy_, PollingInterval()).Times(AtLeast(1));
   AccessPointData single_access_point;
   single_access_point.channel = 2;
-  single_access_point.mac_address = 3;
+  single_access_point.mac_address = u"00:11:22:33:44:55";
   single_access_point.radio_signal_strength = 4;
   single_access_point.signal_to_noise = 5;
-  single_access_point.ssid = base::ASCIIToUTF16("foossid");
+  single_access_point.ssid = u"foossid";
 
   WifiData::AccessPointDataSet data_out({single_access_point});
 

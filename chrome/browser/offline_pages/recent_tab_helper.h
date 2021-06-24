@@ -52,8 +52,10 @@ class RecentTabHelper
   // content::WebContentsObserver
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
-  void DocumentAvailableInMainFrame() override;
-  void DocumentOnLoadCompletedInMainFrame() override;
+  void DocumentAvailableInMainFrame(
+      content::RenderFrameHost* render_frame_host) override;
+  void DocumentOnLoadCompletedInMainFrame(
+      content::RenderFrameHost* render_frame_host) override;
   void WebContentsDestroyed() override;
   void OnVisibilityChanged(content::Visibility visibility) override;
 
@@ -180,7 +182,7 @@ class RecentTabHelper
   // process of being closed.
   bool tab_is_closing_ = false;
 
-  base::WeakPtrFactory<RecentTabHelper> weak_ptr_factory_;
+  base::WeakPtrFactory<RecentTabHelper> weak_ptr_factory_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

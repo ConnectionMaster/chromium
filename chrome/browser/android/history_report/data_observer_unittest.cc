@@ -14,7 +14,7 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/test_bookmark_client.h"
 #include "components/history/core/browser/history_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "media/base/test_helpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -69,21 +69,26 @@ class DataObserverTest : public testing::Test {
     bookmark_model_ = TestBookmarkClient::CreateModel();
     history_service_ = std::make_unique<HistoryService>();
     data_observer_ = std::make_unique<DataObserver>(
-        base::Bind(&MockRun), base::Bind(&MockRun), base::Bind(&MockRun),
-        delta_file_service_.get(), usage_report_service_.get(),
-        bookmark_model_.get(), history_service_.get());
+        base::BindRepeating(&MockRun), base::BindRepeating(&MockRun),
+        base::BindRepeating(&MockRun), delta_file_service_.get(),
+        usage_report_service_.get(), bookmark_model_.get(),
+        history_service_.get());
   }
 
   void TearDown() override {
     delta_file_service_.reset();
     usage_report_service_.reset();
     bookmark_model_.reset();
+    // As this code does not call HistoryService::Init(), HistoryService
+    // doesn't call HistoryServiceBeingDeleted().
+    data_observer_->HistoryServiceBeingDeleted(history_service_.get());
     history_service_.reset();
     data_observer_.reset();
   }
 
  protected:
-  content::TestBrowserThreadBundle thread_bundle_;  // To set up BrowserThreads.
+  content::BrowserTaskEnvironment
+      task_environment_;  // To set up BrowserThreads.
 
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<MockDeltaFileService> delta_file_service_;

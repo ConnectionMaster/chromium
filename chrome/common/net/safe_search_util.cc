@@ -8,8 +8,9 @@
 #include <utility>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
@@ -17,7 +18,6 @@
 #include "components/google/core/common/google_util.h"
 #include "net/cookies/cookie_util.h"
 #include "net/http/http_request_headers.h"
-#include "net/url_request/url_request.h"
 #include "url/gurl.h"
 
 namespace {

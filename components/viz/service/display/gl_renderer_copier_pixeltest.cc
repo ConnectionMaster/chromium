@@ -15,9 +15,9 @@
 #include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/test/test_switches.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
-#include "cc/base/switches.h"
 #include "cc/test/pixel_test.h"
 #include "cc/test/pixel_test_utils.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
@@ -63,7 +63,7 @@ class GLRendererCopierPixelTest
           std::tuple<GLenum, bool, CopyOutputResult::Format, bool, bool>> {
  public:
   void SetUp() override {
-    SetUpGLWithoutRenderer(false /* flipped_output_surface */);
+    SetUpGLWithoutRenderer(gfx::SurfaceOrigin::kBottomLeft);
 
     texture_deleter_ =
         std::make_unique<TextureDeleter>(base::ThreadTaskRunnerHandle::Get());
@@ -291,17 +291,21 @@ TEST_P(GLRendererCopierPixelTest, ExecutesCopyRequest) {
     ASSERT_EQ(kRequestArea, result->rect());
 
   // Examine the image in the |result|, and compare it to the baseline PNG file.
-  const SkBitmap actual =
-      (result_format_ == CopyOutputResult::Format::RGBA_BITMAP)
-          ? result->AsSkBitmap()
-          : ReadbackToSkBitmap(result->GetTextureResult()->mailbox,
-                               result->GetTextureResult()->sync_token,
-                               result->size());
+  absl::optional<CopyOutputResult::ScopedSkBitmap> scoped_bitmap;
+  SkBitmap actual;
+  if (result_format_ == CopyOutputResult::Format::RGBA_BITMAP) {
+    scoped_bitmap = result->ScopedAccessSkBitmap();
+    actual = scoped_bitmap->bitmap();
+  } else {
+    actual = ReadbackToSkBitmap(result->GetTextureResult()->mailbox,
+                                result->GetTextureResult()->sync_token,
+                                result->size());
+  }
   const auto png_file_path = GetTestFilePath(
       scale_by_half_ ? FILE_PATH_LITERAL("half_of_one_of_16_color_rects.png")
                      : FILE_PATH_LITERAL("one_of_16_color_rects.png"));
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          cc::switches::kCCRebaselinePixeltests))
+          switches::kRebaselinePixelTests))
     EXPECT_TRUE(cc::WritePNGFile(actual, png_file_path, false));
   if (!cc::MatchesPNGFile(actual, png_file_path, PIXEL_COMPARATOR())) {
     LOG(ERROR) << "Entire source: " << cc::GetPNGDataUrl(source_bitmap_);
@@ -315,7 +319,7 @@ TEST_P(GLRendererCopierPixelTest, ExecutesCopyRequest) {
 // GLRendererCopier will encounter, which will cause it to follow different
 // workflows.
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     GLRendererCopierPixelTest,
     testing::Combine(
         // Source framebuffer GL format.

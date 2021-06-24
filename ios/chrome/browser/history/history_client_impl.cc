@@ -6,8 +6,9 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/model_loader.h"
 #include "components/history/core/browser/history_service.h"
 #include "ios/chrome/browser/history/history_backend_client_impl.h"
 #include "ios/chrome/browser/history/history_utils.h"
@@ -34,17 +35,17 @@ void HistoryClientImpl::OnHistoryServiceCreated(
     history::HistoryService* history_service) {
   if (bookmark_model_) {
     on_bookmarks_removed_ =
-        base::Bind(&history::HistoryService::URLsNoLongerBookmarked,
-                   base::Unretained(history_service));
+        base::BindRepeating(&history::HistoryService::URLsNoLongerBookmarked,
+                            base::Unretained(history_service));
     favicons_changed_subscription_ =
         history_service->AddFaviconsChangedCallback(
-            base::Bind(&bookmarks::BookmarkModel::OnFaviconsChanged,
-                       base::Unretained(bookmark_model_)));
+            base::BindRepeating(&bookmarks::BookmarkModel::OnFaviconsChanged,
+                                base::Unretained(bookmark_model_)));
   }
 }
 
 void HistoryClientImpl::Shutdown() {
-  favicons_changed_subscription_.reset();
+  favicons_changed_subscription_ = {};
   StopObservingBookmarkModel();
 }
 
@@ -73,7 +74,7 @@ void HistoryClientImpl::BookmarkModelBeingDeleted(
 void HistoryClientImpl::BookmarkNodeRemoved(
     bookmarks::BookmarkModel* model,
     const bookmarks::BookmarkNode* parent,
-    int old_index,
+    size_t old_index,
     const bookmarks::BookmarkNode* node,
     const std::set<GURL>& no_longer_bookmarked) {
   if (on_bookmarks_removed_)

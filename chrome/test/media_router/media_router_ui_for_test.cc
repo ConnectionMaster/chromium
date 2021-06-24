@@ -5,18 +5,22 @@
 #include "chrome/test/media_router/media_router_ui_for_test.h"
 
 #include "base/bind.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/media/router/media_router_factory.h"
-#include "chrome/browser/media/router/media_routes_observer.h"
 #include "chrome/browser/ui/media_router/media_router_file_dialog.h"
+#include "chrome/browser/ui/media_router/media_router_ui.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_sink_button.h"
 #include "chrome/browser/ui/views/media_router/cast_dialog_view.h"
 #include "chrome/browser/ui/views/media_router/media_router_dialog_controller_views.h"
+#include "components/media_router/browser/media_router_factory.h"
+#include "components/media_router/browser/media_routes_observer.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
+#include "ui/views/test/button_test_api.h"
 
 namespace media_router {
 
@@ -107,7 +111,8 @@ void MediaRouterUiForTest::TearDown() {
 }
 
 void MediaRouterUiForTest::ShowDialog() {
-  dialog_controller_->ShowMediaRouterDialog();
+  dialog_controller_->ShowMediaRouterDialog(
+      MediaRouterDialogOpenOrigin::TOOLBAR);
   base::RunLoop().RunUntilIdle();
 }
 
@@ -125,8 +130,8 @@ void MediaRouterUiForTest::ChooseSourceType(
   CastDialogView* dialog_view = CastDialogView::GetInstance();
   CHECK(dialog_view);
 
-  dialog_view->ButtonPressed(dialog_view->sources_button_for_test(),
-                             CreateMousePressedEvent());
+  views::test::ButtonTestApi(dialog_view->sources_button_for_test())
+      .NotifyClick(CreateMousePressedEvent());
   int source_index;
   switch (source_type) {
     case CastDialogView::kTab:
@@ -150,7 +155,7 @@ CastDialogView::SourceType MediaRouterUiForTest::GetChosenSourceType() const {
 
 void MediaRouterUiForTest::StartCasting(const std::string& sink_name) {
   CastDialogSinkButton* sink_button = GetSinkButton(sink_name);
-  CHECK(sink_button->enabled());
+  CHECK(sink_button->GetEnabled());
   sink_button->OnMousePressed(CreateMousePressedEvent());
   sink_button->OnMouseReleased(CreateMouseReleasedEvent());
   base::RunLoop().RunUntilIdle();
@@ -263,10 +268,9 @@ void MediaRouterUiForTest::SetLocalFileSelectionIssue(const IssueInfo& issue) {
 
 MediaRouterUiForTest::MediaRouterUiForTest(content::WebContents* web_contents)
     : web_contents_(web_contents),
-      dialog_controller_(
-          MediaRouterDialogControllerViews::GetOrCreateForWebContents(
-              web_contents)),
-      weak_factory_(this) {
+      dialog_controller_(static_cast<MediaRouterDialogControllerViews*>(
+          MediaRouterDialogController::GetOrCreateForWebContents(
+              web_contents))) {
   dialog_controller_->SetDialogCreationCallbackForTesting(base::BindRepeating(
       &MediaRouterUiForTest::OnDialogCreated, weak_factory_.GetWeakPtr()));
 }
@@ -290,7 +294,7 @@ void MediaRouterUiForTest::OnDialogModelUpdated(CastDialogView* dialog_view) {
                                     base::UTF8ToUTF16(*watch_sink_name_) &&
                                 sink_button->sink().state ==
                                     UIMediaSinkState::AVAILABLE &&
-                                sink_button->enabled();
+                                sink_button->GetEnabled();
                        case WatchType::kAnyIssue:
                          return sink_button->sink().issue.has_value();
                        case WatchType::kAnyRoute:
@@ -351,7 +355,7 @@ CastDialogSinkButton* MediaRouterUiForTest::GetSinkButton(
 
 void MediaRouterUiForTest::ObserveDialog(
     WatchType watch_type,
-    base::Optional<std::string> sink_name) {
+    absl::optional<std::string> sink_name) {
   CHECK(!watch_sink_name_);
   CHECK(!watch_callback_);
   CHECK_EQ(watch_type_, WatchType::kNone);

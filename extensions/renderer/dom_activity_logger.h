@@ -35,8 +35,7 @@ class DOMActivityLogger: public blink::WebDOMActivityLogger {
   // Check (using the WebKit API) if there is no logger attached to the world
   // corresponding to world_id, and if so, construct a new logger and attach it.
   // world_id = 0 indicates the main world.
-  static void AttachToWorld(int world_id,
-                            const std::string& extension_id);
+  static void AttachToWorld(int32_t world_id, const std::string& extension_id);
 
  private:
   // blink::WebDOMActivityLogger implementation.
@@ -71,7 +70,7 @@ class DOMActivityLogger: public blink::WebDOMActivityLogger {
   // Helper function to actually send the message across IPC.
   void SendDomActionMessage(const std::string& api_call,
                             const GURL& url,
-                            const base::string16& url_title,
+                            const std::u16string& url_title,
                             DomActionType::Type call_type,
                             std::unique_ptr<base::ListValue> args);
 
@@ -84,4 +83,3 @@ class DOMActivityLogger: public blink::WebDOMActivityLogger {
 }  // namespace extensions
 
 #endif  // EXTENSIONS_RENDERER_DOM_ACTIVITY_LOGGER_H_
-

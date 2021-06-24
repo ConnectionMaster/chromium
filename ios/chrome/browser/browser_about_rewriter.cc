@@ -6,12 +6,13 @@
 
 #include <string>
 
+#include "base/check.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
 #include "base/stl_util.h"
 #include "components/url_formatter/url_fixer.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
 #include "ios/chrome/browser/ui/ui_feature_flags.h"
+#include "ios/components/webui/web_ui_url_constants.h"
 #include "url/url_constants.h"
 
 namespace {
@@ -36,22 +37,22 @@ bool WillHandleWebBrowserAboutURL(GURL* url, web::BrowserState* browser_state) {
   *url = url_formatter::FixupURL(url->possibly_invalid_spec(), std::string());
 
   // Check that about: URLs are fixed up to chrome: by url_formatter::FixupURL.
-  DCHECK((*url == url::kAboutBlankURL) || !url->SchemeIs(url::kAboutScheme));
+  // 'about:blank' is special-cased in various places in the code so it
+  // shouldn't be transformed.
+  DCHECK(!url->SchemeIs(url::kAboutScheme) ||
+         (url->path() == url::kAboutBlankPath));
 
   // url_formatter::FixupURL translates about:foo into chrome://foo/.
   if (!url->SchemeIs(kChromeUIScheme))
     return false;
 
-  if (base::FeatureList::IsEnabled(kBrowserContainerContainsNTP)) {
-    // Translate chrome://newtab back into about://newtab when
-    // kBrowserContainerContainsNTP is enabled so the WebState shows a blank
-    // page under the NTP.
-    if (url->GetOrigin() == kChromeUINewTabURL) {
-      GURL::Replacements replacements;
-      replacements.SetSchemeStr(url::kAboutScheme);
-      *url = url->ReplaceComponents(replacements);
-      return *url != original_url;
-    }
+  // Translate chrome://newtab back into about://newtab so the WebState shows a
+  // blank page under the NTP.
+  if (url->GetOrigin() == kChromeUINewTabURL) {
+    GURL::Replacements replacements;
+    replacements.SetSchemeStr(url::kAboutScheme);
+    *url = url->ReplaceComponents(replacements);
+    return *url != original_url;
   }
 
   std::string host(url->host());

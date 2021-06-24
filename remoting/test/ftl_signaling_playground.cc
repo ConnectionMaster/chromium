@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/guid.h"
@@ -20,10 +20,11 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/task/post_task.h"
+#include "base/time/time.h"
 #include "jingle/glue/thread_wrapper.h"
-#include "remoting/base/chromium_url_request.h"
 #include "remoting/base/logging.h"
 #include "remoting/base/oauth_token_getter_impl.h"
+#include "remoting/base/oauth_token_getter_proxy.h"
 #include "remoting/base/rsa_key_pair.h"
 #include "remoting/base/service_urls.h"
 #include "remoting/base/url_request_context_getter.h"
@@ -36,10 +37,7 @@
 #include "remoting/protocol/pairing_registry.h"
 #include "remoting/protocol/transport.h"
 #include "remoting/protocol/transport_context.h"
-#include "remoting/signaling/ftl_grpc_context.h"
-#include "remoting/signaling/ftl_services.grpc.pb.h"
 #include "remoting/signaling/ftl_signal_strategy.h"
-#include "remoting/signaling/grpc_support/grpc_async_unary_request.h"
 #include "remoting/test/cli_util.h"
 #include "remoting/test/test_device_id_provider.h"
 #include "remoting/test/test_oauth_token_getter.h"
@@ -53,9 +51,14 @@ namespace {
 
 constexpr char kSwitchNameHelp[] = "help";
 constexpr char kSwitchNameUsername[] = "username";
+constexpr char kSwitchNameHostOwner[] = "host-owner";
 constexpr char kSwitchNameStoragePath[] = "storage-path";
 constexpr char kSwitchNamePin[] = "pin";
 constexpr char kSwitchNameHostId[] = "host-id";
+constexpr char kSwitchNameUseChromotocol[] = "use-chromotocol";
+
+// Delay to allow sending session-terminate before tearing down.
+constexpr base::TimeDelta kTearDownDelay = base::TimeDelta::FromSeconds(2);
 
 const char* SignalStrategyErrorToString(SignalStrategy::Error error) {
   switch (error) {
@@ -71,45 +74,6 @@ const char* SignalStrategyErrorToString(SignalStrategy::Error error) {
   return "";
 }
 
-class FakeTransportEventHandler final
-    : public protocol::WebrtcTransport::EventHandler {
- public:
-  explicit FakeTransportEventHandler(base::OnceClosure on_closed) {
-    on_closed_ = std::move(on_closed);
-  }
-
-  ~FakeTransportEventHandler() override = default;
-
-  // protocol::WebrtcTransport::EventHandler interface.
-  void OnWebrtcTransportConnecting() override {
-    HOST_LOG << "Webrtc transport is connecting...";
-  }
-
-  void OnWebrtcTransportConnected() override {
-    HOST_LOG << "Webrtc transport is connected!!!";
-    std::move(on_closed_).Run();
-  }
-
-  void OnWebrtcTransportError(protocol::ErrorCode error) override {
-    LOG(ERROR) << "Webrtc transport error: " << error;
-    std::move(on_closed_).Run();
-  }
-
-  void OnWebrtcTransportIncomingDataChannel(
-      const std::string& name,
-      std::unique_ptr<protocol::MessagePipe> pipe) override {}
-
-  void OnWebrtcTransportMediaStreamAdded(
-      scoped_refptr<webrtc::MediaStreamInterface> stream) override {}
-
-  void OnWebrtcTransportMediaStreamRemoved(
-      scoped_refptr<webrtc::MediaStreamInterface> stream) override {}
-
- private:
-  base::OnceClosure on_closed_;
-  DISALLOW_COPY_AND_ASSIGN(FakeTransportEventHandler);
-};
-
 }  // namespace
 
 FtlSignalingPlayground::FtlSignalingPlayground() = default;
@@ -123,7 +87,8 @@ bool FtlSignalingPlayground::ShouldPrintHelp() {
 void FtlSignalingPlayground::PrintHelp() {
   printf(
       "Usage: %s [--auth-code=<auth-code>] [--host-id=<host-id>] [--pin=<pin>] "
-      "[--storage-path=<storage-path>] [--username=<example@gmail.com>]\n",
+      "[--storage-path=<storage-path>] [--username=<example@gmail.com>] "
+      "[--host-owner=<example@gmail.com>] [--use-chromotocol]\n",
       base::CommandLine::ForCurrentProcess()
           ->GetProgram()
           .MaybeAsASCII()
@@ -184,9 +149,15 @@ void FtlSignalingPlayground::AcceptIncoming(base::OnceClosure on_done) {
 
   auto key_pair = RsaKeyPair::Generate();
   std::string cert = key_pair->GenerateCertificate();
+
+  std::string user_email = storage_->FetchUserEmail();
+  std::string host_owner = cmd->HasSwitch(kSwitchNameHostOwner)
+                               ? cmd->GetSwitchValueASCII(kSwitchNameHostOwner)
+                               : user_email;
+  HOST_LOG << "Using host owner: " << host_owner;
   auto factory = protocol::Me2MeHostAuthenticatorFactory::CreateWithPin(
-      /* use_service_account */ false, storage_->FetchUserEmail(), cert,
-      key_pair, /* domain_list */ {}, pin_hash, /* pairing_registry */ {});
+      host_owner, cert, key_pair,
+      /* domain_list */ {}, pin_hash, /* pairing_registry */ {});
   session_manager_->set_authenticator_factory(std::move(factory));
   HOST_LOG << "Waiting for incoming session...";
   session_manager_->AcceptIncoming(base::BindRepeating(
@@ -198,7 +169,7 @@ void FtlSignalingPlayground::OnIncomingSession(
     protocol::SessionManager::IncomingSessionResponse* response) {
   HOST_LOG << "Received incoming session!\n";
   RegisterSession(base::WrapUnique(owned_session),
-                  protocol::TransportRole::CLIENT);
+                  protocol::TransportRole::SERVER);
   *response = protocol::SessionManager::ACCEPT;
 }
 
@@ -226,7 +197,7 @@ void FtlSignalingPlayground::OnClientSignalingConnected() {
       std::make_unique<protocol::NegotiatingClientAuthenticator>(
           signal_strategy_->GetLocalAddress().id(), host_jid,
           client_auth_config));
-  RegisterSession(std::move(session), protocol::TransportRole::SERVER);
+  RegisterSession(std::move(session), protocol::TransportRole::CLIENT);
 }
 
 void FtlSignalingPlayground::FetchSecret(
@@ -240,14 +211,17 @@ void FtlSignalingPlayground::FetchSecret(
 
 void FtlSignalingPlayground::SetUpSignaling() {
   signal_strategy_ = std::make_unique<FtlSignalStrategy>(
-      token_getter_.get(),
+      std::make_unique<OAuthTokenGetterProxy>(token_getter_->GetWeakPtr()),
+      url_loader_factory_owner_->GetURLLoaderFactory(),
       std::make_unique<test::TestDeviceIdProvider>(storage_.get()));
   signal_strategy_->AddListener(this);
 
   session_manager_ =
       std::make_unique<protocol::JingleSessionManager>(signal_strategy_.get());
   auto protocol_config = protocol::CandidateSessionConfig::CreateDefault();
-  protocol_config->set_webrtc_supported(true);
+  bool use_chromotocol = base::CommandLine::ForCurrentProcess()->HasSwitch(
+      kSwitchNameUseChromotocol);
+  protocol_config->set_webrtc_supported(!use_chromotocol);
   session_manager_->set_protocol_config(std::move(protocol_config));
 
   signal_strategy_->Connect();
@@ -256,8 +230,8 @@ void FtlSignalingPlayground::SetUpSignaling() {
 void FtlSignalingPlayground::TearDownSignaling() {
   on_signaling_connected_callback_.Reset();
   session_.reset();
-  transport_.reset();
-  transport_event_handler_.reset();
+  webrtc_connection_.reset();
+  ice_connection_.reset();
   signal_strategy_->RemoveListener(this);
   session_manager_.reset();
   signal_strategy_.reset();
@@ -267,26 +241,32 @@ void FtlSignalingPlayground::RegisterSession(
     std::unique_ptr<protocol::Session> session,
     protocol::TransportRole transport_role) {
   session_ = std::move(session);
+  transport_role_ = transport_role;
+  std::unique_ptr<protocol::SessionManager> session_manager(
+      new protocol::JingleSessionManager(signal_strategy_.get()));
+  session_->SetEventHandler(this);
+}
+
+void FtlSignalingPlayground::InitializeTransport() {
   protocol::NetworkSettings network_settings(
       protocol::NetworkSettings::NAT_TRAVERSAL_FULL);
   auto transport_context = base::MakeRefCounted<protocol::TransportContext>(
-      signal_strategy_.get(),
       std::make_unique<protocol::ChromiumPortAllocatorFactory>(),
-      std::make_unique<ChromiumUrlRequestFactory>(
-          url_loader_factory_owner_->GetURLLoaderFactory()),
-      network_settings, transport_role);
-  transport_context->set_ice_config_url(
-      ServiceUrls::GetInstance()->ice_config_url(), token_getter_.get());
-  std::unique_ptr<protocol::SessionManager> session_manager(
-      new protocol::JingleSessionManager(signal_strategy_.get()));
-  transport_event_handler_ = std::make_unique<FakeTransportEventHandler>(
+      url_loader_factory_owner_->GetURLLoaderFactory(), network_settings,
+      transport_role_);
+  auto close_callback =
       base::BindOnce(&FtlSignalingPlayground::AsyncTearDownAndRunCallback,
-                     base::Unretained(this)));
-  transport_ = std::make_unique<protocol::WebrtcTransport>(
-      jingle_glue::JingleThreadWrapper::current(), transport_context,
-      transport_event_handler_.get());
-  session_->SetEventHandler(this);
-  session_->SetTransport(transport_.get());
+                     base::Unretained(this));
+  if (session_->config().protocol() ==
+      protocol::SessionConfig::Protocol::WEBRTC) {
+    webrtc_connection_ = std::make_unique<test::FakeWebrtcConnection>(
+        transport_context, std::move(close_callback));
+    session_->SetTransport(webrtc_connection_->transport());
+  } else {
+    ice_connection_ = std::make_unique<test::FakeIceConnection>(
+        transport_context, std::move(close_callback));
+    session_->SetTransport(ice_connection_->transport());
+  }
 }
 
 void FtlSignalingPlayground::OnSignalStrategyStateChange(
@@ -298,7 +278,7 @@ void FtlSignalingPlayground::OnSignalStrategyStateChange(
 
   if (state == SignalStrategy::CONNECTED) {
     HOST_LOG << "Signaling connected. New JID: "
-             << signal_strategy_->GetLocalAddress().jid();
+             << signal_strategy_->GetLocalAddress().id();
     if (on_signaling_connected_callback_) {
       std::move(on_signaling_connected_callback_).Run();
     }
@@ -340,12 +320,17 @@ void FtlSignalingPlayground::OnSessionStateChange(
     case protocol::Session::INITIALIZING:
     case protocol::Session::CONNECTING:
     case protocol::Session::ACCEPTING:
-    case protocol::Session::ACCEPTED:
     case protocol::Session::AUTHENTICATING:
       // Don't care about these events.
       return;
+    case protocol::Session::ACCEPTED:
+      InitializeTransport();
+      return;
     case protocol::Session::AUTHENTICATED:
       HOST_LOG << "Session is successfully authenticated!!!";
+      if (ice_connection_) {
+        ice_connection_->OnAuthenticated();
+      }
       return;
 
     case protocol::Session::CLOSED:
@@ -354,11 +339,12 @@ void FtlSignalingPlayground::OnSessionStateChange(
       break;
   }
 
-  TearDownAndRunCallback();
+  AsyncTearDownAndRunCallback();
 }
 
 void FtlSignalingPlayground::AsyncTearDownAndRunCallback() {
-  tear_down_timer_.Start(FROM_HERE, base::TimeDelta(), this,
+  HOST_LOG << "Tearing down in " << kTearDownDelay;
+  tear_down_timer_.Start(FROM_HERE, kTearDownDelay, this,
                          &FtlSignalingPlayground::TearDownAndRunCallback);
 }
 

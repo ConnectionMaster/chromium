@@ -5,6 +5,7 @@
 #include "ui/compositor/test/test_layer_animation_delegate.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/compositor/layer.h"
 
 namespace ui {
@@ -49,7 +50,8 @@ void TestLayerAnimationDelegate::ExpectLastPropertyChangeReason(
   last_property_change_reason_is_set_ = false;
 }
 
-void TestLayerAnimationDelegate::SetFrameNumber(int frame_number) {
+void TestLayerAnimationDelegate::SetFrameNumber(
+    absl::optional<int> frame_number) {
   frame_number_ = frame_number;
 }
 
@@ -109,6 +111,22 @@ void TestLayerAnimationDelegate::SetColorFromAnimation(
   last_property_change_reason_is_set_ = true;
 }
 
+void TestLayerAnimationDelegate::SetClipRectFromAnimation(
+    const gfx::Rect& clip_rect,
+    PropertyChangeReason reason) {
+  clip_rect_ = clip_rect;
+  last_property_change_reason_ = reason;
+  last_property_change_reason_is_set_ = true;
+}
+
+void TestLayerAnimationDelegate::SetRoundedCornersFromAnimation(
+    const gfx::RoundedCornersF& rounded_corners,
+    PropertyChangeReason reason) {
+  rounded_corners_ = rounded_corners;
+  last_property_change_reason_ = reason;
+  last_property_change_reason_is_set_ = true;
+}
+
 void TestLayerAnimationDelegate::ScheduleDrawForAnimation() {
 }
 
@@ -140,6 +158,15 @@ SkColor TestLayerAnimationDelegate::GetColorForAnimation() const {
   return color_;
 }
 
+gfx::Rect TestLayerAnimationDelegate::GetClipRectForAnimation() const {
+  return clip_rect_;
+}
+
+gfx::RoundedCornersF TestLayerAnimationDelegate::GetRoundedCornersForAnimation()
+    const {
+  return rounded_corners_;
+}
+
 float TestLayerAnimationDelegate::GetDeviceScaleFactor() const {
   return 1.0f;
 }
@@ -162,7 +189,7 @@ TestLayerAnimationDelegate::GetThreadedAnimationDelegate() {
   return &threaded_delegate_;
 }
 
-int TestLayerAnimationDelegate::GetFrameNumber() const {
+absl::optional<int> TestLayerAnimationDelegate::GetFrameNumber() const {
   return frame_number_;
 }
 

@@ -4,20 +4,23 @@
 
 #import "ios/chrome/browser/ui/toolbar/primary_toolbar_view.h"
 
+#include "base/check.h"
 #import "base/ios/ios_util.h"
-#include "base/logging.h"
+#import "ios/chrome/browser/ui/thumb_strip/thumb_strip_feature.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_button.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_button_factory.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_configuration.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_tab_grid_button.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_tools_menu_button.h"
-#import "ios/chrome/browser/ui/toolbar/public/features.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_constants.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_utils.h"
 #import "ios/chrome/browser/ui/toolbar/toolbar_progress_bar.h"
+#include "ios/chrome/browser/ui/ui_feature_flags.h"
 #import "ios/chrome/browser/ui/util/dynamic_type_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#include "ui/gfx/ios/uikit_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -30,17 +33,10 @@
 // ContentView of the vibrancy effect if there is one, self otherwise.
 @property(nonatomic, strong) UIView* contentView;
 
-// The blur visual effect view, redefined as readwrite.
-@property(nonatomic, strong, readwrite) UIView* blur;
-
 // Container for the location bar, redefined as readwrite.
 @property(nonatomic, strong, readwrite) UIView* locationBarContainer;
 // The height of the container for the location bar, redefined as readwrite.
 @property(nonatomic, strong, readwrite) NSLayoutConstraint* locationBarHeight;
-// The layout guide used to give extra padding at the bottom for the location
-// bar. This padding is considered as "extra" as it is added to the one defined
-// in |locationBarBottomConstraint|.
-@property(nonatomic, strong) UILayoutGuide* extraPaddingGuide;
 
 // StackView containing the leading buttons (relative to the location bar). It
 // should only contain ToolbarButtons. Redefined as readwrite.
@@ -55,6 +51,9 @@
 
 // Progress bar displayed below the toolbar, redefined as readwrite.
 @property(nonatomic, strong, readwrite) ToolbarProgressBar* progressBar;
+
+// Separator below the toolbar, redefined as readwrite.
+@property(nonatomic, strong, readwrite) UIView* separator;
 
 #pragma mark** Buttons in the leading stack view. **
 // Button to navigate back, redefined as readwrite.
@@ -97,9 +96,7 @@
 @synthesize locationBarView = _locationBarView;
 @synthesize fakeOmniboxTarget = _fakeOmniboxTarget;
 @synthesize locationBarBottomConstraint = _locationBarBottomConstraint;
-@synthesize locationBarExtraBottomPadding = _locationBarExtraBottomPadding;
 @synthesize locationBarHeight = _locationBarHeight;
-@synthesize extraPaddingGuide = _extraPaddingGuide;
 @synthesize buttonFactory = _buttonFactory;
 @synthesize allButtons = _allButtons;
 @synthesize progressBar = _progressBar;
@@ -121,7 +118,6 @@
 @synthesize expandedConstraints = _expandedConstraints;
 @synthesize contractedConstraints = _contractedConstraints;
 @synthesize contractedNoMarginConstraints = _contractedNoMarginConstraints;
-@synthesize blur = _blur;
 @synthesize contentView = _contentView;
 
 #pragma mark - Public
@@ -143,13 +139,14 @@
 
   self.translatesAutoresizingMaskIntoConstraints = NO;
 
-  [self setUpBlurredBackground];
+  [self setUpToolbarBackground];
   [self setUpLeadingStackView];
   [self setUpTrailingStackView];
   [self setUpCancelButton];
   [self setUpLocationBar];
   [self setUpProgressBar];
   [self setUpCollapsedToolbarButton];
+  [self setUpSeparator];
 
   [self setUpConstraints];
 }
@@ -166,6 +163,11 @@
   self.fakeOmniboxTarget = nil;
 }
 
+- (void)setTopCornersRounded:(BOOL)rounded {
+  _topCornersRounded = rounded;
+  self.layer.cornerRadius = rounded ? kTopCornerRadius : 0;
+}
+
 #pragma mark - UIView
 
 - (CGSize)intrinsicContentSize {
@@ -174,46 +176,33 @@
       ToolbarExpandedHeight(self.traitCollection.preferredContentSizeCategory));
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (IsRegularXRegularSizeClass(self)) {
-    self.backgroundColor =
-        self.buttonFactory.toolbarConfiguration.backgroundColor;
-    self.blur.alpha = 0;
-  } else {
-    self.backgroundColor = [UIColor clearColor];
-    self.blur.alpha = 1;
-  }
+- (void)willMoveToWindow:(UIWindow*)newWindow {
+  [super willMoveToWindow:newWindow];
+  [NamedGuide guideWithName:kPrimaryToolbarGuide view:self].constrainedView =
+      nil;
+  [NamedGuide guideWithName:kPrimaryToolbarLocationViewGuide view:self]
+      .constrainedView = nil;
+}
+
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  [NamedGuide guideWithName:kPrimaryToolbarGuide view:self].constrainedView =
+      self;
+  [NamedGuide guideWithName:kPrimaryToolbarLocationViewGuide view:self]
+      .constrainedView = self.locationBarContainer;
 }
 
 #pragma mark - Setup
 
-// Sets the blur effect on the toolbar background.
-- (void)setUpBlurredBackground {
-  UIBlurEffect* blurEffect = self.buttonFactory.toolbarConfiguration.blurEffect;
-  if (blurEffect) {
-    self.blur = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
-  } else {
-    self.blur = [[UIView alloc] init];
+// Sets up the toolbar background.
+- (void)setUpToolbarBackground {
+  self.backgroundColor =
+      self.buttonFactory.toolbarConfiguration.backgroundColor;
+  if (base::FeatureList::IsEnabled(kExpandedTabStrip)) {
+    self.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
   }
-  self.blur.backgroundColor =
-      self.buttonFactory.toolbarConfiguration.blurBackgroundColor;
-  [self addSubview:self.blur];
 
   self.contentView = self;
-
-  if (UIVisualEffect* vibrancy = [self.buttonFactory.toolbarConfiguration
-          vibrancyEffectForBlurEffect:blurEffect]) {
-    UIVisualEffectView* vibrancyView =
-        [[UIVisualEffectView alloc] initWithEffect:vibrancy];
-    self.contentView = vibrancyView.contentView;
-    [self addSubview:vibrancyView];
-    vibrancyView.translatesAutoresizingMaskIntoConstraints = NO;
-    AddSameConstraints(self, vibrancyView);
-  }
-
-  self.blur.translatesAutoresizingMaskIntoConstraints = NO;
-  AddSameConstraints(self.blur, self);
 }
 
 // Sets the cancel button to stop editing the location bar.
@@ -236,14 +225,6 @@
 
   // The location bar shouldn't have vibrancy.
   [self addSubview:self.locationBarContainer];
-
-  // Add layout guide to add extra padding for the location bar if needed.
-  self.extraPaddingGuide = [[UILayoutGuide alloc] init];
-  [self addLayoutGuide:self.extraPaddingGuide];
-
-  if (self.locationBarView) {
-    [self.locationBarContainer addSubview:self.locationBarView];
-  }
 }
 
 // Sets the leading stack view.
@@ -275,10 +256,9 @@
   self.tabGridButton = [self.buttonFactory tabGridButton];
   self.toolsMenuButton = [self.buttonFactory toolsMenuButton];
 
-  self.trailingStackViewButtons = @[
-    self.bookmarkButton, self.shareButton, self.tabGridButton,
-    self.toolsMenuButton
-  ];
+  self.trailingStackViewButtons =
+      @[ self.shareButton, self.tabGridButton, self.toolsMenuButton ];
+
   self.trailingStackView = [[UIStackView alloc]
       initWithArrangedSubviews:self.trailingStackViewButtons];
   self.trailingStackView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -306,6 +286,14 @@
   [self addSubview:self.collapsedToolbarButton];
 }
 
+// Sets the separator up.
+- (void)setUpSeparator {
+  self.separator = [[UIView alloc] init];
+  self.separator.backgroundColor = [UIColor colorNamed:kToolbarShadowColor];
+  self.separator.translatesAutoresizingMaskIntoConstraints = NO;
+  [self addSubview:self.separator];
+}
+
 // Sets the constraints up.
 - (void)setUpConstraints {
   id<LayoutGuideProvider> safeArea = self.safeAreaLayoutGuide;
@@ -313,7 +301,17 @@
   self.contractedConstraints = [NSMutableArray array];
   self.contractedNoMarginConstraints = [NSMutableArray array];
 
-  // Leading StackView constraints
+  // Separator constraints.
+  [NSLayoutConstraint activateConstraints:@[
+    [self.separator.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+    [self.separator.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    [self.separator.topAnchor constraintEqualToAnchor:self.bottomAnchor],
+    [self.separator.heightAnchor
+        constraintEqualToConstant:ui::AlignValueToUpperPixel(
+                                      kToolbarSeparatorHeight)],
+  ]];
+
+  // Leading StackView constraints.
   [NSLayoutConstraint activateConstraints:@[
     [self.leadingStackView.leadingAnchor
         constraintEqualToAnchor:safeArea.leadingAnchor
@@ -328,16 +326,11 @@
   self.locationBarHeight =
       [self.locationBarContainer.heightAnchor constraintEqualToConstant:0];
   self.locationBarBottomConstraint = [self.locationBarContainer.bottomAnchor
-      constraintEqualToAnchor:self.extraPaddingGuide.topAnchor];
-  self.locationBarExtraBottomPadding =
-      [self.extraPaddingGuide.heightAnchor constraintEqualToConstant:0];
+      constraintEqualToAnchor:self.bottomAnchor];
 
   [NSLayoutConstraint activateConstraints:@[
     self.locationBarBottomConstraint,
     self.locationBarHeight,
-    self.locationBarExtraBottomPadding,
-    [self.extraPaddingGuide.bottomAnchor
-        constraintEqualToAnchor:self.bottomAnchor],
   ]];
   [self.contractedConstraints addObjectsFromArray:@[
     [self.locationBarContainer.trailingAnchor
@@ -445,7 +438,7 @@
 
 #pragma mark - AdaptiveToolbarView
 
-- (ToolbarButton*)omniboxButton {
+- (ToolbarButton*)openNewTabButton {
   return nil;
 }
 

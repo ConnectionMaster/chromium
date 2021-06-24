@@ -20,14 +20,21 @@ class DaemonControllerDelegateLinux : public DaemonController::Delegate {
   // DaemonController::Delegate interface.
   DaemonController::State GetState() override;
   std::unique_ptr<base::DictionaryValue> GetConfig() override;
-  void SetConfigAndStart(
-      std::unique_ptr<base::DictionaryValue> config,
-      bool consent,
-      const DaemonController::CompletionCallback& done) override;
+  void CheckPermission(bool it2me, DaemonController::BoolCallback) override;
+  void SetConfigAndStart(std::unique_ptr<base::DictionaryValue> config,
+                         bool consent,
+                         DaemonController::CompletionCallback done) override;
   void UpdateConfig(std::unique_ptr<base::DictionaryValue> config,
-                    const DaemonController::CompletionCallback& done) override;
-  void Stop(const DaemonController::CompletionCallback& done) override;
+                    DaemonController::CompletionCallback done) override;
+  void Stop(DaemonController::CompletionCallback done) override;
   DaemonController::UsageStatsConsent GetUsageStatsConsent() override;
+
+  // If |start_host| is true (the default), then SetConfigAndStart includes
+  // the final step of starting the host (this step requires root, and hence
+  // some interactive method of elevating). If |start_host| is false, then
+  // SetConfigAndStart only sets the config, and it is up to the caller to
+  // start the host if needed.
+  static void set_start_host_after_setup(bool start_host);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(DaemonControllerDelegateLinux);

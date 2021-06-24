@@ -11,14 +11,13 @@ namespace blink {
 
 class GPUSamplerDescriptor;
 
-class GPUSampler : public DawnObject<DawnSampler> {
+class GPUSampler : public DawnObject<WGPUSampler> {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
   static GPUSampler* Create(GPUDevice* device,
                             const GPUSamplerDescriptor* webgpu_desc);
-  explicit GPUSampler(GPUDevice* device, DawnSampler sampler);
-  ~GPUSampler() override;
+  explicit GPUSampler(GPUDevice* device, WGPUSampler sampler);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GPUSampler);

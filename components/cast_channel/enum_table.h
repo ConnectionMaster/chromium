@@ -6,11 +6,14 @@
 #define COMPONENTS_CAST_CHANNEL_ENUM_TABLE_H_
 
 #include <cstdint>
+#include <cstring>
 
-#include "base/logging.h"
-#include "base/optional.h"
+#include "base/check_op.h"
+#include "base/macros.h"
+#include "base/notreached.h"
 #include "base/strings/string_piece.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 // TODO(jrw): Move this file to a more appropriate directory.
 //
@@ -25,17 +28,18 @@
 // a table of enum values and their corresponding strings:
 //
 //     // In .h file:
-//     enum class MyEnum { kFoo, kBar, ..., kOther };
+//     enum class MyEnum { kFoo, kBar, ..., kOther, kMaxValue = kOther };
 //
 //     // In .cc file:
 //
 //     template <>
 //     constexpr EnumTable<MyEnum> EnumTable<MyEnum>::instance({
-//       {MyEnum::kFoo, "FOO"},
-//       {MyEnum::kBar, "BAR"},
-//       ...
-//       // No entry for kOther because it has no string representation.
-//     });
+//         {MyEnum::kFoo, "FOO"},
+//         {MyEnum::kBar, "BAR"},
+//         ...
+//         {MyEnum::kOther},  // Not all values need strings.
+//       },
+//       MyEnum::kMaxValue);  // Needed to detect missing table entries.
 //
 // The functions EnumToString() and StringToEnum() are used to look up values
 // in the table.  In some cases, it may be useful to wrap these functions for
@@ -63,6 +67,40 @@
 //
 // The syntax is a little awkward, but it saves you from having to duplicate
 // string literals or define each enum string as a named constant.
+//
+//
+// Consecutive Enum Tables
+// -----------------------
+//
+// When using an EnumTable, it's generally best for the following conditions
+// to be true:
+//
+// - The enum is defined with "enum class" syntax.
+//
+// - The members have the default values assigned by the compiler.
+//
+// - There is an extra member named kMaxValue which is set equal to the highest
+//   ordinary value.  (The Chromium style checker will verify that kMaxValue
+//   really is the maximum value.)
+//
+// - The values in the EnumTable constructor appear in sorted order.
+//
+// - Every member of the enum (other than kMaxValue) is included in the table.
+//
+// When these conditions are met, the enum's |kMaxValue| member should be passed
+// as the second argument of the EnumTable.  This will create a table where enum
+// values can be converted to strings in constant time.  It will also reliably
+// detect an incomplete enum table during startup of a debug build.
+//
+//
+// Non-Consecutive Enum Tables
+// ---------------------------
+//
+// When the conditions in the previous section cannot be satisfied, the second
+// argument of the EnumTable constructor should be the special constant
+// |NonConsecutiveEnumTable|.  Doing so has some unfortunate side-effects: there
+// is no automatic way to detect when an enum value is missing from the table,
+// and looking up a non-constant enum value requires a linear search.
 //
 //
 // Why use an EnumTable?
@@ -146,6 +184,7 @@ class
 #endif
         GenericEnumTableEntry {
  public:
+  inline constexpr GenericEnumTableEntry(int32_t value);
   inline constexpr GenericEnumTableEntry(int32_t value, base::StringPiece str);
 
  private:
@@ -153,10 +192,15 @@ class
       const GenericEnumTableEntry data[],
       std::size_t size,
       base::StringPiece str);
-  static base::Optional<base::StringPiece>
+  static absl::optional<base::StringPiece>
   FindByValue(const GenericEnumTableEntry data[], std::size_t size, int value);
 
-  constexpr base::StringPiece str() const { return {chars, length}; }
+  constexpr base::StringPiece str() const {
+    DCHECK(has_str());
+    return {chars, length};
+  }
+
+  constexpr bool has_str() const { return chars != nullptr; }
 
   // Instead of storing a base::StringPiece, it's broken apart and stored as a
   // pointer and an unsigned int (rather than a std::size_t) so that table
@@ -171,9 +215,13 @@ class
   DISALLOW_COPY_AND_ASSIGN(GenericEnumTableEntry);
 };
 
-// Yes, this really needs to be inlined.  Even though it looks "complex" to the
-// style checker, everything is executed at compile time, so an EnumTable
-// instance can be fully initialized without executing any code.
+// Yes, these constructors really needs to be inlined.  Even though they look
+// "complex" to the style checker, everything is executed at compile time, so an
+// EnumTable instance can be fully initialized without executing any code.
+
+inline constexpr GenericEnumTableEntry::GenericEnumTableEntry(int32_t value)
+    : chars(nullptr), length(UINT32_MAX), value(value) {}
+
 inline constexpr GenericEnumTableEntry::GenericEnumTableEntry(
     int32_t value,
     base::StringPiece str)
@@ -181,8 +229,8 @@ inline constexpr GenericEnumTableEntry::GenericEnumTableEntry(
       length(static_cast<uint32_t>(str.length())),
       value(value) {}
 
-struct UnsortedEnumTable_t {};
-constexpr UnsortedEnumTable_t UnsortedEnumTable;
+struct NonConsecutiveEnumTable_t {};
+constexpr NonConsecutiveEnumTable_t NonConsecutiveEnumTable;
 
 // A table for associating enum values with string literals.  This class is
 // designed for use as an initialized global variable, so it has a trivial
@@ -190,11 +238,16 @@ constexpr UnsortedEnumTable_t UnsortedEnumTable;
 template <typename E>
 class EnumTable {
  public:
-  // DO NOT add any members to this class, or it will break the
+  // DO NOT add any data members to this class, or it will break the
   // reinterpret_casts below.  If necessary, add new members to
   // GenericEnumTableEntry instead.
   class Entry : public GenericEnumTableEntry {
    public:
+    // Constructor for placeholder entries with no string value.
+    constexpr Entry(E value)
+        : GenericEnumTableEntry(static_cast<int32_t>(value)) {}
+
+    // Constructor for regular entries.
     constexpr Entry(E value, base::StringPiece str)
         : GenericEnumTableEntry(static_cast<int32_t>(value), str) {}
 
@@ -209,7 +262,14 @@ class EnumTable {
   // Creates an EnumTable where data[i].value == i for all i.  When a table is
   // created with this constructor, the GetString() method is a simple array
   // lookup that runs in constant time.
-  constexpr EnumTable(std::initializer_list<Entry> data)
+  //
+  // If |max_value| is specified, all enum values in |data| must be less than or
+  // equal to |max_value|.  This feature is intended to help catch errors cause
+  // by a new value being added to an enum without the new value being added to
+  // the corresponding table.  For best results, use an enum class and create a
+  // constant named kMaxValue.  For more details, see
+  // https://www.chromium.org/developers/coding-style/chromium-style-checker-errors#TOC-Enumerator-max-values
+  constexpr EnumTable(std::initializer_list<Entry> data, E max_value)
       : EnumTable(data, true) {
 #ifndef NDEBUG
     // NOTE(jrw): This is compiled out when NDEBUG is defined, even if DCHECKS
@@ -217,34 +277,40 @@ class EnumTable {
     // this is that if DCHECKs are enabled, global EnumTable instances will have
     // a nontrivial constructor, which is flagged as a style violation by the
     // linux-rel trybot.
-    auto found = FindUnsortedEntry(data);
+    auto found = FindNonConsecutiveEntry(data);
     DCHECK(!found) << "Entries' numerical values must be consecutive "
-                   << "integers starting at 0; found problem at index "
+                   << "integers starting from 0; found problem at index "
                    << *found;
+
+    const auto int_max_value = static_cast<int32_t>(max_value);
+    DCHECK(data.end()[-1].value == int_max_value)
+        << "Missing entry for enum value " << int_max_value;
 #endif  // NDEBUG
   }
 
   // Creates an EnumTable where data[i].value != i for some values of i.  When
   // a table is created with this constructor, the GetString() method must
   // perform a linear search to find the correct string.
-  constexpr EnumTable(std::initializer_list<Entry> data, UnsortedEnumTable_t)
+  constexpr EnumTable(std::initializer_list<Entry> data,
+                      NonConsecutiveEnumTable_t)
       : EnumTable(data, false) {
 #ifndef NDEBUG
-    DCHECK(FindUnsortedEntry(data))
+    DCHECK(FindNonConsecutiveEntry(data))
         << "Don't use this constructor for sorted entries.";
 #endif  // NDEBUG
   }
 
   // Gets the string associated with the given enum value.  When the argument
   // is a constant, prefer the zero-argument form below.
-  inline base::Optional<base::StringPiece> GetString(E value) const {
+  inline absl::optional<base::StringPiece> GetString(E value) const {
     if (is_sorted_) {
       const std::size_t index = static_cast<std::size_t>(value);
       if (ANALYZER_ASSUME_TRUE(index < data_.size())) {
         const auto& entry = data_.begin()[index];
-        return entry.str();
+        if (ANALYZER_ASSUME_TRUE(entry.has_str()))
+          return entry.str();
       }
-      return {};
+      return absl::nullopt;
     }
     return GenericEnumTableEntry::FindByValue(
         reinterpret_cast<const GenericEnumTableEntry*>(data_.begin()),
@@ -262,7 +328,7 @@ class EnumTable {
   template <E Value>
   constexpr base::StringPiece GetString() const {
     for (const auto& entry : data_) {
-      if (entry.value == static_cast<int32_t>(Value))
+      if (entry.value == static_cast<int32_t>(Value) && entry.has_str())
         return entry.str();
     }
 
@@ -274,18 +340,18 @@ class EnumTable {
   // GetString(), this method is not defined as a constexpr, because it should
   // never be called with a literal string; it's simpler to just refer to the
   // enum value directly.
-  base::Optional<E> GetEnum(base::StringPiece str) const {
+  absl::optional<E> GetEnum(base::StringPiece str) const {
     auto* entry = GenericEnumTableEntry::FindByString(
         reinterpret_cast<const GenericEnumTableEntry*>(data_.begin()),
         data_.size(), str);
-    return entry ? static_cast<E>(entry->value) : base::Optional<E>();
+    return entry ? static_cast<E>(entry->value) : absl::optional<E>();
   }
 
   // The default instance of this class.  There should normally only be one
   // instance of this class for a given enum type.  Users of this class are
   // responsible for providing a suitable definition for each enum type if the
   // EnumToString() or StringToEnum() functions are used.
-  static const EnumTable<E> instance;
+  static const EnumTable& GetInstance();
 
  private:
 #ifdef ARCH_CPU_64_BITS
@@ -308,7 +374,7 @@ class EnumTable {
         const Entry& ej = data.begin()[j];
         DCHECK(ei.value != ej.value)
             << "Found duplicate enum values at indices " << i << " and " << j;
-        DCHECK(ei.str() != ej.str())
+        DCHECK(!(ei.has_str() && ej.has_str() && ei.str() == ej.str()))
             << "Found duplicate strings at indices " << i << " and " << j;
       }
     }
@@ -317,11 +383,11 @@ class EnumTable {
 
 #ifndef NDEBUG
   // Finds and returns the first i for which data[i].value != i;
-  constexpr static base::Optional<std::size_t> FindUnsortedEntry(
+  constexpr static absl::optional<std::size_t> FindNonConsecutiveEntry(
       std::initializer_list<Entry> data) {
-    std::size_t counter = 0;
+    int32_t counter = 0;
     for (const auto& entry : data) {
-      if (static_cast<std::size_t>(entry.value) != counter) {
+      if (entry.value != counter) {
         return counter;
       }
       ++counter;
@@ -336,31 +402,32 @@ class EnumTable {
 // Converts an enum value to a string using the default table
 // (EnumTable<E>::instance) for the given enum type.
 template <typename E>
-inline base::Optional<base::StringPiece> EnumToString(E value) {
-  return EnumTable<E>::instance.GetString(value);
+inline absl::optional<base::StringPiece> EnumToString(E value) {
+  return EnumTable<E>::GetInstance().GetString(value);
 }
 
 // Converts a literal enum value to a string at compile time using the default
-// table (EnumTable<E>::instance) for the given enum type.
+// table (EnumTable<E>::GetInstance()) for the given enum type.
 //
 // TODO(jrw): Once C++17 features are allowed, change this function to have only
 // one template parameter:
 //
 //   template <auto Value>
 //   inline base::StringPiece EnumToString() {
-//     return EnumTable<decltype(Value)>::instance.template GetString<Value>();
+//     return EnumTable<decltype(Value)
+//         >::GetInstance().template GetString<Value>();
 //   }
 //
 template <typename E, E Value>
 inline base::StringPiece EnumToString() {
-  return EnumTable<E>::instance.template GetString<Value>();
+  return EnumTable<E>::GetInstance().template GetString<Value>();
 }
 
 // Converts a string to an enum value using the default table
 // (EnumTable<E>::instance) for the given enum type.
 template <typename E>
-inline base::Optional<E> StringToEnum(base::StringPiece str) {
-  return EnumTable<E>::instance.GetEnum(str);
+inline absl::optional<E> StringToEnum(base::StringPiece str) {
+  return EnumTable<E>::GetInstance().GetEnum(str);
 }
 
 }  // namespace cast_util

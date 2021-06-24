@@ -6,13 +6,12 @@
 #define DEVICE_BLUETOOTH_BLUETOOTH_LOCAL_GATT_DESCRIPTOR_H_
 
 #include <stdint.h>
-#include <vector>
 
 #include "base/macros.h"
 #include "device/bluetooth/bluetooth_export.h"
 #include "device/bluetooth/bluetooth_gatt_descriptor.h"
 #include "device/bluetooth/bluetooth_local_gatt_characteristic.h"
-#include "device/bluetooth/bluetooth_uuid.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 
 namespace device {
 

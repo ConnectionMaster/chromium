@@ -22,14 +22,14 @@ TestNavigationURLLoaderFactory::~TestNavigationURLLoaderFactory() {
 
 std::unique_ptr<NavigationURLLoader>
 TestNavigationURLLoaderFactory::CreateLoader(
-    ResourceContext* resource_context,
     StoragePartition* storage_partition,
     std::unique_ptr<NavigationRequestInfo> request_info,
     std::unique_ptr<NavigationUIData> navigation_ui_data,
-    ServiceWorkerNavigationHandle* service_worker_handle,
-    NavigationURLLoaderDelegate* delegate) {
-  return std::unique_ptr<NavigationURLLoader>(
-      new TestNavigationURLLoader(std::move(request_info), delegate));
+    ServiceWorkerMainResourceHandle* service_worker_handle,
+    NavigationURLLoaderDelegate* delegate,
+    NavigationURLLoader::LoaderType loader_type) {
+  return std::unique_ptr<NavigationURLLoader>(new TestNavigationURLLoader(
+      std::move(request_info), delegate, loader_type));
 }
 
 }  // namespace content

@@ -7,15 +7,15 @@
 
 #include <stdint.h>
 
-#include "base/macros.h"
-#include "ui/accessibility/ax_enums.mojom.h"
+#include <string>
+#include <vector>
+
+#include "base/scoped_observation.h"
+#include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/platform/ax_unique_id.h"
+#include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
 #include "ui/views/accessibility/ax_aura_obj_wrapper.h"
-
-namespace aura {
-class Window;
-}  // namespace aura
 
 namespace views {
 class AXAuraObjCache;
@@ -26,14 +26,17 @@ class AXWindowObjWrapper : public AXAuraObjWrapper,
  public:
   // |aura_obj_cache| and |window| must outlive this object.
   AXWindowObjWrapper(AXAuraObjCache* aura_obj_cache, aura::Window* window);
+  AXWindowObjWrapper(const AXWindowObjWrapper&) = delete;
+  AXWindowObjWrapper& operator=(const AXWindowObjWrapper&) = delete;
   ~AXWindowObjWrapper() override;
 
   // AXAuraObjWrapper overrides.
-  bool IsIgnored() override;
+  bool HandleAccessibleAction(const ui::AXActionData& action) override;
   AXAuraObjWrapper* GetParent() override;
   void GetChildren(std::vector<AXAuraObjWrapper*>* out_children) override;
   void Serialize(ui::AXNodeData* out_node_data) override;
-  int32_t GetUniqueId() const final;
+  ui::AXNodeID GetUniqueId() const final;
+  std::string ToString() const override;
 
   // WindowObserver overrides.
   void OnWindowDestroyed(aura::Window* window) override;
@@ -52,17 +55,22 @@ class AXWindowObjWrapper : public AXAuraObjWrapper,
   void OnWindowTitleChanged(aura::Window* window) override;
 
  private:
-  // Fires an event on a window, taking into account its associated widget and
-  // that widget's root view.
-  void FireEvent(aura::Window* window, ax::mojom::Event event_type);
+  // Fires an accessibility event.
+  void FireEvent(ax::mojom::Event event_type);
 
-  aura::Window* window_;
+  aura::Window* const window_;
 
-  bool is_root_window_;
+  const bool is_root_window_;
 
   const ui::AXUniqueId unique_id_;
 
-  DISALLOW_COPY_AND_ASSIGN(AXWindowObjWrapper);
+  // Whether OnWindowDestroying has happened for |window_|. Used to suppress
+  // further events from |window| after OnWindowDestroying. Otherwise, dangling
+  // pointer could be left in |aura_obj_cache_|. See https://crbug.com/1091545
+  bool window_destroying_ = false;
+
+  base::ScopedObservation<aura::Window, aura::WindowObserver> observation_{
+      this};
 };
 
 }  // namespace views

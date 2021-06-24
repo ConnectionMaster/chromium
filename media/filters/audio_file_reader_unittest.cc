@@ -7,7 +7,6 @@
 #include <memory>
 
 #include "base/hash/md5.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "media/base/audio_bus.h"
@@ -28,9 +27,9 @@ class AudioFileReaderTest : public testing::Test {
 
   void Initialize(const char* filename) {
     data_ = ReadTestDataFile(filename);
-    protocol_.reset(
-        new InMemoryUrlProtocol(data_->data(), data_->data_size(), false));
-    reader_.reset(new AudioFileReader(protocol_.get()));
+    protocol_ = std::make_unique<InMemoryUrlProtocol>(
+        data_->data(), data_->data_size(), false);
+    reader_ = std::make_unique<AudioFileReader>(protocol_.get());
   }
 
   // Reads and the entire file provided to Initialize().
@@ -214,7 +213,7 @@ TEST_F(AudioFileReaderTest, AAC_SinglePacket) {
 
 TEST_F(AudioFileReaderTest, AAC_ADTS) {
   RunTest("sfx.adts", "1.80,1.66,2.31,3.26,4.46,3.36,", 1, 44100,
-          base::TimeDelta::FromMicroseconds(2825180), 124591, 13312);
+          base::TimeDelta::FromMicroseconds(384733), 16967, 13312);
 }
 
 TEST_F(AudioFileReaderTest, MidStreamConfigChangesFail) {

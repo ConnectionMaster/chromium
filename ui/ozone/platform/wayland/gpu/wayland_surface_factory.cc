@@ -11,15 +11,22 @@
 #include "ui/ozone/common/egl_util.h"
 #include "ui/ozone/common/gl_ozone_egl.h"
 #include "ui/ozone/platform/wayland/common/wayland_object.h"
+#include "ui/ozone/platform/wayland/gpu/gl_surface_egl_readback_wayland.h"
 #include "ui/ozone/platform/wayland/gpu/gl_surface_wayland.h"
+#include "ui/ozone/platform/wayland/gpu/wayland_buffer_manager_gpu.h"
 #include "ui/ozone/platform/wayland/gpu/wayland_canvas_surface.h"
-#include "ui/ozone/platform/wayland/gpu/wayland_connection_proxy.h"
+#include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
+#include "ui/ozone/platform/wayland/host/wayland_window_manager.h"
 
 #if defined(WAYLAND_GBM)
 #include "ui/ozone/platform/wayland/gpu/gbm_pixmap_wayland.h"
 #include "ui/ozone/platform/wayland/gpu/gbm_surfaceless_wayland.h"
 #include "ui/ozone/public/ozone_platform.h"
+#endif
+
+#if BUILDFLAG(ENABLE_VULKAN)
+#include "ui/ozone/platform/wayland/gpu/vulkan_implementation_wayland.h"
 #endif
 
 namespace ui {
@@ -28,9 +35,9 @@ namespace {
 
 class GLOzoneEGLWayland : public GLOzoneEGL {
  public:
-  GLOzoneEGLWayland(WaylandConnectionProxy* connection,
-                    WaylandSurfaceFactory* factory)
-      : connection_(connection), factory_(factory) {}
+  GLOzoneEGLWayland(WaylandConnection* connection,
+                    WaylandBufferManagerGpu* buffer_manager)
+      : connection_(connection), buffer_manager_(buffer_manager) {}
   ~GLOzoneEGLWayland() override {}
 
   scoped_refptr<gl::GLSurface> CreateViewGLSurface(
@@ -43,12 +50,12 @@ class GLOzoneEGLWayland : public GLOzoneEGL {
       const gfx::Size& size) override;
 
  protected:
-  intptr_t GetNativeDisplay() override;
-  bool LoadGLES2Bindings(gl::GLImplementation impl) override;
+  gl::EGLDisplayPlatform GetNativeDisplay() override;
+  bool LoadGLES2Bindings(const gl::GLImplementationParts& impl) override;
 
  private:
-  WaylandConnectionProxy* const connection_;
-  WaylandSurfaceFactory* const factory_;
+  WaylandConnection* const connection_;
+  WaylandBufferManagerGpu* const buffer_manager_;
 
   DISALLOW_COPY_AND_ASSIGN(GLOzoneEGLWayland);
 };
@@ -56,11 +63,12 @@ class GLOzoneEGLWayland : public GLOzoneEGL {
 scoped_refptr<gl::GLSurface> GLOzoneEGLWayland::CreateViewGLSurface(
     gfx::AcceleratedWidget widget) {
   // Only EGLGLES2 is supported with surfaceless view gl.
-  if (gl::GetGLImplementation() != gl::kGLImplementationEGLGLES2)
+  if ((gl::GetGLImplementation() != gl::kGLImplementationEGLGLES2) ||
+      !connection_)
     return nullptr;
 
-  DCHECK(connection_);
-  WaylandWindow* window = connection_->GetWindow(widget);
+  WaylandWindow* window =
+      connection_->wayland_window_manager()->GetWindow(widget);
   if (!window)
     return nullptr;
 
@@ -69,26 +77,27 @@ scoped_refptr<gl::GLSurface> GLOzoneEGLWayland::CreateViewGLSurface(
   auto egl_window = CreateWaylandEglWindow(window);
   if (!egl_window)
     return nullptr;
-  return gl::InitializeGLSurface(new GLSurfaceWayland(std::move(egl_window)));
+  return gl::InitializeGLSurface(
+      new GLSurfaceWayland(std::move(egl_window), window));
 }
 
 scoped_refptr<gl::GLSurface> GLOzoneEGLWayland::CreateSurfacelessViewGLSurface(
     gfx::AcceleratedWidget window) {
-  DCHECK(factory_);
-
-  // Only EGLGLES2 is supported with surfaceless view gl.
-  if (gl::GetGLImplementation() != gl::kGLImplementationEGLGLES2)
-    return nullptr;
-
+  if (gl::IsSoftwareGLImplementation(gl::GetGLImplementationParts())) {
+    return gl::InitializeGLSurface(
+        base::MakeRefCounted<GLSurfaceEglReadbackWayland>(window,
+                                                          buffer_manager_));
+  } else {
 #if defined(WAYLAND_GBM)
   // If there is a gbm device available, use surfaceless gl surface.
-  if (!connection_->gbm_device())
+  if (!buffer_manager_->gbm_device())
     return nullptr;
   return gl::InitializeGLSurface(
-      new GbmSurfacelessWayland(factory_, connection_, window));
+      new GbmSurfacelessWayland(buffer_manager_, window));
 #else
   return nullptr;
 #endif
+  }
 }
 
 scoped_refptr<gl::GLSurface> GLOzoneEGLWayland::CreateOffscreenGLSurface(
@@ -101,11 +110,15 @@ scoped_refptr<gl::GLSurface> GLOzoneEGLWayland::CreateOffscreenGLSurface(
   }
 }
 
-intptr_t GLOzoneEGLWayland::GetNativeDisplay() {
-  return connection_->Display();
+gl::EGLDisplayPlatform GLOzoneEGLWayland::GetNativeDisplay() {
+  if (connection_)
+    return gl::EGLDisplayPlatform(
+        reinterpret_cast<EGLNativeDisplayType>(connection_->display()));
+  return gl::EGLDisplayPlatform(EGL_DEFAULT_DISPLAY);
 }
 
-bool GLOzoneEGLWayland::LoadGLES2Bindings(gl::GLImplementation impl) {
+bool GLOzoneEGLWayland::LoadGLES2Bindings(
+    const gl::GLImplementationParts& impl) {
   // TODO: It may not be necessary to set this environment variable when using
   // swiftshader.
   setenv("EGL_PLATFORM", "wayland", 0);
@@ -114,39 +127,19 @@ bool GLOzoneEGLWayland::LoadGLES2Bindings(gl::GLImplementation impl) {
 
 }  // namespace
 
-WaylandSurfaceFactory::WaylandSurfaceFactory() {}
-
-WaylandSurfaceFactory::~WaylandSurfaceFactory() {}
-
-void WaylandSurfaceFactory::SetProxy(WaylandConnectionProxy* proxy) {
-  DCHECK(!connection_ && proxy);
-  connection_ = proxy;
-
-  egl_implementation_ = std::make_unique<GLOzoneEGLWayland>(connection_, this);
+WaylandSurfaceFactory::WaylandSurfaceFactory(
+    WaylandConnection* connection,
+    WaylandBufferManagerGpu* buffer_manager)
+    : connection_(connection), buffer_manager_(buffer_manager) {
+  egl_implementation_ =
+      std::make_unique<GLOzoneEGLWayland>(connection_, buffer_manager_);
 }
 
-void WaylandSurfaceFactory::RegisterSurface(gfx::AcceleratedWidget widget,
-                                            GbmSurfacelessWayland* surface) {
-  widget_to_surface_map_.insert(std::make_pair(widget, surface));
-}
-
-void WaylandSurfaceFactory::UnregisterSurface(gfx::AcceleratedWidget widget) {
-  widget_to_surface_map_.erase(widget);
-}
-
-GbmSurfacelessWayland* WaylandSurfaceFactory::GetSurface(
-    gfx::AcceleratedWidget widget) const {
-  GbmSurfacelessWayland* surface = nullptr;
-  auto it = widget_to_surface_map_.find(widget);
-  if (it != widget_to_surface_map_.end())
-    surface = it->second;
-  return surface;
-}
-
+WaylandSurfaceFactory::~WaylandSurfaceFactory() = default;
 
 std::unique_ptr<SurfaceOzoneCanvas>
 WaylandSurfaceFactory::CreateCanvasForWidget(gfx::AcceleratedWidget widget) {
-  return std::make_unique<WaylandCanvasSurface>(connection_, widget);
+  return std::make_unique<WaylandCanvasSurface>(buffer_manager_, widget);
 }
 
 std::vector<gl::GLImplementation>
@@ -160,8 +153,8 @@ WaylandSurfaceFactory::GetAllowedGLImplementations() {
 }
 
 GLOzone* WaylandSurfaceFactory::GetGLOzone(
-    gl::GLImplementation implementation) {
-  switch (implementation) {
+    const gl::GLImplementationParts& implementation) {
+  switch (implementation.gl) {
     case gl::kGLImplementationEGLGLES2:
     case gl::kGLImplementationSwiftShaderGL:
       return egl_implementation_.get();
@@ -170,20 +163,48 @@ GLOzone* WaylandSurfaceFactory::GetGLOzone(
   }
 }
 
+#if BUILDFLAG(ENABLE_VULKAN)
+std::unique_ptr<gpu::VulkanImplementation>
+WaylandSurfaceFactory::CreateVulkanImplementation(bool use_swiftshader,
+                                                  bool allow_protected_memory) {
+  return std::make_unique<VulkanImplementationWayland>(use_swiftshader);
+}
+#endif
+
 scoped_refptr<gfx::NativePixmap> WaylandSurfaceFactory::CreateNativePixmap(
     gfx::AcceleratedWidget widget,
+    VkDevice vk_device,
     gfx::Size size,
     gfx::BufferFormat format,
-    gfx::BufferUsage usage) {
+    gfx::BufferUsage usage,
+    absl::optional<gfx::Size> framebuffer_size) {
+  if (framebuffer_size &&
+      !gfx::Rect(size).Contains(gfx::Rect(*framebuffer_size))) {
+    return nullptr;
+  }
 #if defined(WAYLAND_GBM)
   scoped_refptr<GbmPixmapWayland> pixmap =
-      base::MakeRefCounted<GbmPixmapWayland>(this, connection_, widget);
-  if (!pixmap->InitializeBuffer(size, format, usage))
+      base::MakeRefCounted<GbmPixmapWayland>(buffer_manager_);
+
+  if (!pixmap->InitializeBuffer(widget, size, format, usage, framebuffer_size))
     return nullptr;
   return pixmap;
 #else
   return nullptr;
 #endif
+}
+
+void WaylandSurfaceFactory::CreateNativePixmapAsync(
+    gfx::AcceleratedWidget widget,
+    VkDevice vk_device,
+    gfx::Size size,
+    gfx::BufferFormat format,
+    gfx::BufferUsage usage,
+    NativePixmapCallback callback) {
+  // CreateNativePixmap is non-blocking operation. Thus, it is safe to call it
+  // and return the result with the provided callback.
+  std::move(callback).Run(
+      CreateNativePixmap(widget, vk_device, size, format, usage));
 }
 
 scoped_refptr<gfx::NativePixmap>

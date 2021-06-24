@@ -9,8 +9,8 @@ import static org.chromium.android_webview.test.AwActivityTestRule.WAIT_TIMEOUT_
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
-import android.view.View;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -149,7 +149,7 @@ public class AndroidScrollIntegrationTest {
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         if (mWebServer != null) {
             mWebServer.shutdown();
         }
@@ -197,8 +197,10 @@ public class AndroidScrollIntegrationTest {
         return CommonResources.makeHtmlPageFrom(TEST_PAGE_COMMON_HEADERS, content);
     }
 
-    private void scrollToOnMainSync(final View view, final int xPix, final int yPix) {
+    private void scrollToOnMainSync(final AwTestContainerView view, final int xPix, final int yPix)
+            throws Throwable {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> view.scrollTo(xPix, yPix));
+        mActivityTestRule.waitForVisualStateCallback(view.getAwContents());
     }
 
     private void setMaxScrollOnMainSync(final ScrollTestContainerView testContainerView,
@@ -257,8 +259,7 @@ public class AndroidScrollIntegrationTest {
     }
 
     private void assertScrollInJs(final AwContents awContents,
-            final TestAwContentsClient contentsClient, final double xCss, final double yCss)
-            throws Exception {
+            final TestAwContentsClient contentsClient, final double xCss, final double yCss) {
         AwActivityTestRule.pollInstrumentationThread(() -> {
             String x = mActivityTestRule.executeJavaScriptAndWaitForResult(
                     awContents, contentsClient, "window.scrollX");
@@ -272,8 +273,8 @@ public class AndroidScrollIntegrationTest {
         });
     }
 
-    private void assertScrolledToBottomInJs(final AwContents awContents,
-            final TestAwContentsClient contentsClient) throws Exception {
+    private void assertScrolledToBottomInJs(
+            final AwContents awContents, final TestAwContentsClient contentsClient) {
         final String isBottomScript = "window.scrollY == "
                 + "(window.document.documentElement.scrollHeight - window.innerHeight)";
         AwActivityTestRule.pollInstrumentationThread(() -> {
@@ -448,14 +449,8 @@ public class AndroidScrollIntegrationTest {
     }
 
     @Test
-    /**
-     * @SmallTest
-     * @Feature({"AndroidWebView"})
-     * @RetryOnFailure
-     * BUG=813837
-     */
-    // Originally flaked only in multi-process mode (http://crbug.com/616505)
-    @DisabledTest
+    @SmallTest
+    @Feature({"AndroidWebView"})
     public void testTouchScrollCanBeAlteredByUi() throws Throwable {
         final TestAwContentsClient contentsClient = new TestAwContentsClient();
         final ScrollTestContainerView testContainerView =
@@ -572,6 +567,7 @@ public class AndroidScrollIntegrationTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
+    @DisabledTest(message = "https://crbug.com/1147838")
     public void testFlingScroll() throws Throwable {
         final TestAwContentsClient contentsClient = new TestAwContentsClient();
         final ScrollTestContainerView testContainerView =
@@ -599,12 +595,9 @@ public class AndroidScrollIntegrationTest {
     }
 
     @Test
-    /**
-     * @SmallTest
-     * @Feature({"AndroidWebView"})
-     * BUG=813837
-     */
-    @DisabledTest
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @DisabledTest(message = "https://crbug.com/813837")
     public void testFlingScrollOnPopup() throws Throwable {
         final TestAwContentsClient parentContentsClient = new TestAwContentsClient();
         final ScrollTestContainerView parentContainerView =

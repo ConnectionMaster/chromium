@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/python.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/toolchain/goma.gni")
 
@@ -11,21 +12,14 @@ declare_args() {
 }
 
 group("deps") {
-  if (use_prebuilt_instrumented_libraries) {
+  if (use_locally_built_instrumented_libraries) {
+    deps = [ ":locally_built" ]
+  } else if (use_prebuilt_instrumented_libraries) {
     assert(prebuilt_instrumented_libraries_available,
            "Prebuilt instrumented libraries are only available when " +
                "is_msan = true and msan_track_origins = {0, 2}")
-    deps = [
-      ":prebuilt",
-    ]
-    data_deps = [
-      ":prebuilt",
-    ]
-  }
-  if (use_locally_built_instrumented_libraries) {
-    deps = [
-      ":locally_built",
-    ]
+    deps = [ ":prebuilt" ]
+    data_deps = [ ":prebuilt" ]
   }
 }
 
@@ -41,12 +35,8 @@ if (prebuilt_instrumented_libraries_available) {
   group("prebuilt") {
     visibility = [ ":deps" ]
 
-    deps = [
-      ":extract_prebuilt_instrumented_libraries",
-    ]
-    data_deps = [
-      ":extract_prebuilt_instrumented_libraries",
-    ]
+    deps = [ ":extract_prebuilt_instrumented_libraries" ]
+    data_deps = [ ":extract_prebuilt_instrumented_libraries" ]
   }
 
   if (is_msan) {
@@ -69,12 +59,8 @@ if (prebuilt_instrumented_libraries_available) {
                   root_build_dir),
       rebase_path(target_out_dir, root_out_dir),
     ]
-    outputs = [
-      "$target_out_dir/$archive_prefix.txt",
-    ]
-    data = [
-      "$root_out_dir/instrumented_libraries_prebuilt/",
-    ]
+    outputs = [ "$target_out_dir/$archive_prefix.txt" ]
+    data = [ "$root_out_dir/instrumented_libraries_prebuilt/" ]
   }
 
   config("prebuilt_ldflags") {
@@ -105,9 +91,11 @@ if (use_locally_built_instrumented_libraries) {
       ":libasound2",
       ":libatk-bridge2.0-0",
       ":libatspi2.0-0",
+      ":libavahi-client3",
       ":libcairo2",
       ":libcap2",
       ":libcredentialkit_pkcs11",
+      ":libcurl3-gnutls",
       ":libdbus-1-3",
       ":libdbus-glib-1-2",
       ":libdbusmenu",
@@ -121,17 +109,24 @@ if (use_locally_built_instrumented_libraries) {
       ":libgnome-keyring0",
       ":libgpg-error0",
       ":libgtk-3-0",
+      ":libidn11",
       ":libido3-0.1-0",
       ":libindicator3-7",
+      ":libjasper1",
+      ":libjpeg-turbo8",
+      ":libldap-2.4-2",
       ":libnspr4",
       ":libp11-kit0",
       ":libpci3",
       ":libpcre3",
       ":libpixman-1-0",
+      ":librtmp0",
+      ":libsasl2-2",
       ":libsecret",
       ":libtasn1-6",
       ":libunity9",
       ":libva1",
+      ":libwayland-client0",
       ":libx11-6",
       ":libxau6",
       ":libxcb1",
@@ -143,6 +138,7 @@ if (use_locally_built_instrumented_libraries) {
       ":libxfixes3",
       ":libxi6",
       ":libxinerama1",
+      ":libxkbcommon0",
       ":libxrandr2",
       ":libxrender1",
       ":libxss1",
@@ -155,16 +151,17 @@ if (use_locally_built_instrumented_libraries) {
     ]
     if (is_msan) {
       deps += [
+        ":libcgmanager0",
         ":libcups2",
         ":libgnutls26",
+        ":libnih-dbus1",
+        ":libnih1",
       ]
     }
     if (!is_tsan) {
       deps += [ ":libpng12-0" ]
     }
-    data = [
-      "${root_out_dir}/instrumented_libraries/${sanitizer_type}/lib",
-    ]
+    data = [ "${root_out_dir}/instrumented_libraries/${sanitizer_type}/lib" ]
   }
 
   config("locally_built_ldflags") {
@@ -198,7 +195,7 @@ if (use_locally_built_instrumented_libraries) {
         "-gline-tables-only",
         "-fPIC",
         "-w",
-        "-U_FORITFY_SOURCE",
+        "-U_FORTIFY_SOURCE",
         "-fno-omit-frame-pointer",
       ]
       package_ldflags = []
@@ -238,9 +235,7 @@ if (use_locally_built_instrumented_libraries) {
         "--ldflags=${package_ldflags}",
         "--sanitizer=${sanitizer_type}",
       ]
-      outputs = [
-        "${root_out_dir}/instrumented_libraries/${sanitizer_type}/${target_name}.txt",
-      ]
+      outputs = [ "${root_out_dir}/instrumented_libraries/${sanitizer_type}/${target_name}.txt" ]
       inputs = []
       if (defined(invoker.pre_build)) {
         inputs += [ invoker.pre_build ]
@@ -360,6 +355,22 @@ if (use_locally_built_instrumented_libraries) {
     ]
   }
 
+  instrumented_library("libavahi-client3") {
+    extra_configure_flags = [
+      "--disable-static",
+      "--disable-introspection",
+      "--disable-gtk3",
+
+      # From debian/rules.
+      "--enable-compat-libdns_sd",
+      "--disable-mono",
+      "--disable-monodoc",
+      "--disable-qt3",
+      "--with-systemdsystemunitdir=/lib/systemd/system",
+    ]
+    patch = "patches/libavahi-client3.diff"
+  }
+
   instrumented_library("libcairo2") {
     extra_configure_flags = [
       "--disable-gtk-doc",
@@ -370,6 +381,13 @@ if (use_locally_built_instrumented_libraries) {
   instrumented_library("libcap2") {
     extra_configure_flags = [ "--disable-static" ]
     build_method = "custom_libcap"
+  }
+
+  instrumented_library("libcgmanager0") {
+    extra_configure_flags = [ "--disable-static" ]
+
+    # Required on Trusty due to autoconf version mismatch.
+    pre_build = "scripts/pre-build/autoreconf.sh"
   }
 
   instrumented_library("libcredentialkit_pkcs11") {
@@ -405,6 +423,11 @@ if (use_locally_built_instrumented_libraries) {
       "--enable-libusb",
     ]
     pre_build = "scripts/pre-build/libcups2.sh"
+  }
+
+  instrumented_library("libcurl3-gnutls") {
+    build_method = "custom_libcurl"
+    patch = "patches/libcurl3-gnutls.diff"
   }
 
   instrumented_library("libdbus-1-3") {
@@ -584,6 +607,12 @@ if (use_locally_built_instrumented_libraries) {
     pre_build = "scripts/pre-build/autogen.sh"
   }
 
+  instrumented_library("libidn11") {
+    package_ldflags = [ "-Wl,-z,undefs" ]
+    build_method = "debian"
+    pre_build = "scripts/pre-build/libidn.sh"
+  }
+
   instrumented_library("libindicator3-7") {
     extra_configure_flags = [
       "--disable-static",
@@ -592,6 +621,60 @@ if (use_locally_built_instrumented_libraries) {
       "--disable-introspection",
     ]
     pre_build = "scripts/pre-build/autogen.sh"
+  }
+
+  instrumented_library("libjasper1") {
+    extra_configure_flags = [
+      "--disable-static",
+
+      # From debian/rules.
+      "--enable-shared=yes",
+    ]
+  }
+
+  instrumented_library("libjpeg-turbo8") {
+    extra_configure_flags = [
+      "--disable-static",
+
+      # From debian/rules.
+      "--with-jpeg8",
+    ]
+  }
+
+  instrumented_library("libldap-2.4-2") {
+    extra_configure_flags = [
+      "--disable-slapd",
+
+      # From debian/rules.
+      "--enable-debug",
+      "--enable-dynamic",
+      "--enable-syslog",
+      "--enable-proctitle",
+      "--enable-ipv6",
+      "--enable-local",
+      "--with-subdir=ldap",
+      "--with-cyrus-sasl",
+      "--with-threads",
+      "--with-gssapi",
+      "--with-tls=gnutls",
+      "--with-odbc=unixodbc",
+    ]
+  }
+
+  instrumented_library("libnih1") {
+    extra_configure_flags = [ "--disable-static" ]
+
+    pre_build = "scripts/pre-build/libnih1.sh"
+
+    patch = "patches/libnih1.diff"
+  }
+
+  instrumented_library("libnih-dbus1") {
+    extra_configure_flags = [ "--disable-static" ]
+
+    pre_build = "scripts/pre-build/libnih1.sh"
+
+    patch = "patches/libnih1.diff"
   }
 
   instrumented_library("libnspr4") {
@@ -610,6 +693,18 @@ if (use_locally_built_instrumented_libraries) {
 
     # Required on Trusty due to autoconf version mismatch.
     pre_build = "scripts/pre-build/autoreconf.sh"
+
+    # libp11-kit has an atfork handler, reinitiailize_after_fork(), which causes
+    # deadlocks when used in combination with msan. msan's __fork_interceptor()
+    # will acquire msan locks prior to the fork. reinitialize_after_fork() will
+    # attempt to allocate memory, triggering __malloc_interceptor() which then
+    # blocks forever on msan's locks.
+    #
+    # This patch merges libp11-kit's rev
+    # 16e25b2890927108ec15297aabb1d86a49792741.
+    # which updated the atfork handler to be async-signal-safe.
+    # https://bugs.freedesktop.org/show_bug.cgi?id=84567
+    patch = "patches/libp11-kit0.diff"
   }
 
   instrumented_library("libpci3") {
@@ -623,6 +718,7 @@ if (use_locally_built_instrumented_libraries) {
       "--enable-unicode-properties",
       "--disable-static",
     ]
+    pre_build = "scripts/pre-build/dh_autoreconf.sh"
   }
 
   instrumented_library("libpixman-1-0") {
@@ -641,6 +737,16 @@ if (use_locally_built_instrumented_libraries) {
 
   instrumented_library("libpng12-0") {
     extra_configure_flags = [ "--disable-static" ]
+  }
+
+  instrumented_library("librtmp0") {
+    build_method = "debian"
+  }
+
+  instrumented_library("libsasl2-2") {
+    build_method = "debian"
+    pre_build = "scripts/pre-build/libsasl2-2.sh"
+    package_cflags = [ "-Wno-return-type" ]
   }
 
   instrumented_library("libsecret") {
@@ -683,6 +789,14 @@ if (use_locally_built_instrumented_libraries) {
     # http://cgit.freedesktop.org/libva/diff/va/va.c?h=staging&id=d4988142a3f2256e38c5c5cdcdfc1b4f5f3c1ea9
     patch = "patches/libva1.diff"
     pre_build = "scripts/pre-build/libva1.sh"
+  }
+
+  instrumented_library("libwayland-client0") {
+    extra_configure_flags = [
+      "--disable-static",
+      "--disable-scanner",
+      "--disable-documentation",
+    ]
   }
 
   instrumented_library("libx11-6") {
@@ -750,6 +864,12 @@ if (use_locally_built_instrumented_libraries) {
     extra_configure_flags = [ "--disable-static" ]
   }
 
+  instrumented_library("libxkbcommon0") {
+    package_ldflags = [ "-Wl,-z,undefs" ]
+    build_method = "debian"
+    pre_build = "scripts/pre-build/xkbcommon.sh"
+  }
+
   instrumented_library("libxrandr2") {
     extra_configure_flags = [ "--disable-static" ]
   }
@@ -771,9 +891,7 @@ if (use_locally_built_instrumented_libraries) {
 
   instrumented_library("nss") {
     # TODO(eugenis): get rid of this dependency
-    deps = [
-      ":libnspr4",
-    ]
+    deps = [ ":libnspr4" ]
     patch = "patches/nss.diff"
     build_method = "custom_nss"
   }

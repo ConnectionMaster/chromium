@@ -6,9 +6,14 @@
 #define COMPONENTS_SYNC_BASE_SYNC_BASE_SWITCHES_H_
 
 #include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
 
 namespace switches {
 
+extern const char kSyncServiceURL[];
+extern const char kTrustedVaultServiceURL[];
+
+extern const base::Feature kSyncNigoriRemoveMetadataOnCacheGuidMismatch;
 extern const base::Feature kSyncForceDisableScryptForCustomPassphrase;
 extern const base::Feature kSyncE2ELatencyMeasurement;
 

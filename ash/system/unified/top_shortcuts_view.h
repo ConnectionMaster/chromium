@@ -7,8 +7,14 @@
 
 #include "ash/accessibility/accessibility_observer.h"
 #include "ash/ash_export.h"
-#include "ui/views/controls/button/button.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "ui/views/view.h"
+
+class PrefRegistrySimple;
+
+namespace views {
+class Button;
+}
 
 namespace ash {
 
@@ -29,6 +35,7 @@ class TopShortcutButtonContainer : public views::View {
   // views::View:
   void Layout() override;
   gfx::Size CalculatePreferredSize() const override;
+  const char* GetClassName() const override;
 
   void AddUserAvatarButton(views::View* user_avatar_button);
   // Add the sign-out button, which can be resized upon layout.
@@ -42,26 +49,23 @@ class TopShortcutButtonContainer : public views::View {
 };
 
 // Top shortcuts view shown on the top of UnifiedSystemTrayView.
-class ASH_EXPORT TopShortcutsView : public views::View,
-                                    public views::ButtonListener,
-                                    public AccessibilityObserver {
+class ASH_EXPORT TopShortcutsView : public views::View {
  public:
   explicit TopShortcutsView(UnifiedSystemTrayController* controller);
-  ~TopShortcutsView() override;
+
+  static void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 
   // Change the expanded state. CollapseButton icon will rotate.
   void SetExpandedAmount(double expanded_amount);
 
-  // views::ButtonListener:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
-
-  // AccessibilityObserver:
-  void OnAccessibilityStatusChanged() override;
+  // views::View
+  const char* GetClassName() const override;
 
  private:
   friend class TopShortcutsViewTest;
 
-  UnifiedSystemTrayController* controller_;
+  // Disables/Enables the |settings_button_| based on kSettingsIconEnabled pref.
+  void UpdateSettingsButtonState();
 
   // Owned by views hierarchy.
   views::Button* user_avatar_button_ = nullptr;
@@ -71,6 +75,8 @@ class ASH_EXPORT TopShortcutsView : public views::View,
   TopShortcutButton* settings_button_ = nullptr;
   TopShortcutButton* power_button_ = nullptr;
   CollapseButton* collapse_button_ = nullptr;
+
+  PrefChangeRegistrar local_state_pref_change_registrar_;
 
   DISALLOW_COPY_AND_ASSIGN(TopShortcutsView);
 };

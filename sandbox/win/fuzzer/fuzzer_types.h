@@ -2,10 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_FUZZER_TYPES_H_
-#define SANDBOX_FUZZER_TYPES_H_
+#ifndef SANDBOX_WIN_FUZZER_FUZZER_TYPES_H_
+#define SANDBOX_WIN_FUZZER_FUZZER_TYPES_H_
 
 #include <stdint.h>
+#include <string.h>
 
 // This file defines Windows types for the sandbox_ipc_fuzzer target when
 // compiled on Linux.
@@ -35,4 +36,12 @@ typedef void PROCESS_INFORMATION;
 // __stdcall is used in one place. TODO(wfh): replace with WINAPI.
 #define __stdcall
 
-#endif  // SANDBOX_FUZZER_TYPES_H_
+namespace sandbox {
+
+struct NtExports {
+  using memcpyFunction = decltype(&memcpy);
+  memcpyFunction memcpy;
+};
+
+}  // namespace sandbox
+#endif  // SANDBOX_WIN_FUZZER_FUZZER_TYPES_H_

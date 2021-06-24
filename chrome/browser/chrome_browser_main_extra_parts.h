@@ -5,10 +5,6 @@
 #ifndef CHROME_BROWSER_CHROME_BROWSER_MAIN_EXTRA_PARTS_H_
 #define CHROME_BROWSER_CHROME_BROWSER_MAIN_EXTRA_PARTS_H_
 
-namespace content {
-class ServiceManagerConnection;
-}
-
 // Interface class for Parts owned by ChromeBrowserMainParts.
 // The default implementation for all methods is empty.
 
@@ -32,14 +28,13 @@ class ChromeBrowserMainExtraParts {
   // ToolkitInitialized methods.
   virtual void ToolkitInitialized() {}
 
-  // MainMessageLoopStart methods.
-  virtual void PreMainMessageLoopStart() {}
-  virtual void PostMainMessageLoopStart() {}
+  // CreateMainMessageLoop methods.
+  virtual void PreCreateMainMessageLoop() {}
+  virtual void PostCreateMainMessageLoop() {}
 
   // MainMessageLoopRun methods.
   virtual void PreCreateThreads() {}
-  virtual void ServiceManagerConnectionStarted(
-      content::ServiceManagerConnection* connection) {}
+  virtual void PostCreateThreads() {}
   virtual void PreProfileInit() {}
   virtual void PostProfileInit() {}
   virtual void PreBrowserStart() {}

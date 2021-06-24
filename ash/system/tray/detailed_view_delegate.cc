@@ -6,16 +6,16 @@
 
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "ash/style/ash_color_provider.h"
 #include "ash/system/tray/hover_highlight_view.h"
 #include "ash/system/tray/tray_constants.h"
-#include "ash/system/tray/tray_popup_item_style.h"
 #include "ash/system/tray/tray_popup_utils.h"
-#include "ash/system/unified/collapse_button.h"
 #include "ash/system/unified/top_shortcut_button.h"
 #include "ash/system/unified/unified_system_tray_controller.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/label.h"
@@ -24,6 +24,8 @@
 
 namespace ash {
 
+using ContentLayerType = AshColorProvider::ContentLayerType;
+
 namespace {
 
 void ConfigureTitleTriView(TriView* tri_view, TriView::Container container) {
@@ -31,24 +33,28 @@ void ConfigureTitleTriView(TriView* tri_view, TriView::Container container) {
 
   switch (container) {
     case TriView::Container::START:
-      FALLTHROUGH;
-    case TriView::Container::END:
-      layout = std::make_unique<views::BoxLayout>(views::BoxLayout::kHorizontal,
-                                                  gfx::Insets(),
-                                                  kUnifiedTopShortcutSpacing);
+    case TriView::Container::END: {
+      const int left_padding = container == TriView::Container::START
+                                   ? kUnifiedBackButtonLeftPadding
+                                   : 0;
+      layout = std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal,
+          gfx::Insets(0, left_padding, 0, 0), kUnifiedTopShortcutSpacing);
       layout->set_main_axis_alignment(
-          views::BoxLayout::MAIN_AXIS_ALIGNMENT_CENTER);
+          views::BoxLayout::MainAxisAlignment::kCenter);
       layout->set_cross_axis_alignment(
-          views::BoxLayout::CROSS_AXIS_ALIGNMENT_CENTER);
+          views::BoxLayout::CrossAxisAlignment::kCenter);
       break;
+    }
     case TriView::Container::CENTER:
       tri_view->SetFlexForContainer(TriView::Container::CENTER, 1.f);
 
-      layout = std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical);
+      layout = std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical);
       layout->set_main_axis_alignment(
-          views::BoxLayout::MAIN_AXIS_ALIGNMENT_CENTER);
+          views::BoxLayout::MainAxisAlignment::kCenter);
       layout->set_cross_axis_alignment(
-          views::BoxLayout::CROSS_AXIS_ALIGNMENT_STRETCH);
+          views::BoxLayout::CrossAxisAlignment::kStretch);
       break;
   }
 
@@ -57,38 +63,24 @@ void ConfigureTitleTriView(TriView* tri_view, TriView::Container container) {
                        gfx::Size(0, kUnifiedDetailedViewTitleRowHeight));
 }
 
-class BackButton : public CustomShapeButton {
+class BackButton : public TopShortcutButton {
  public:
-  BackButton(views::ButtonListener* listener) : CustomShapeButton(listener) {
-    gfx::ImageSkia image =
-        gfx::CreateVectorIcon(kUnifiedMenuArrowBackIcon, kUnifiedMenuIconColor);
-    SetImage(views::Button::STATE_NORMAL, image);
-    SetImageAlignment(HorizontalAlignment::ALIGN_RIGHT,
-                      VerticalAlignment::ALIGN_MIDDLE);
-    SetTooltipText(
-        l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_PREVIOUS_MENU));
-    SetBorder(views::CreateEmptyBorder(
-        gfx::Insets((kTrayItemSize - image.width()) / 2)));
-  }
-
+  BackButton(views::Button::PressedCallback callback)
+      : TopShortcutButton(std::move(callback),
+                          kUnifiedMenuExpandIcon,
+                          IDS_ASH_STATUS_TRAY_PREVIOUS_MENU) {}
+  BackButton(const BackButton&) = delete;
+  BackButton& operator=(const BackButton&) = delete;
   ~BackButton() override = default;
 
-  // CustomShapeButton:
-  gfx::Size CalculatePreferredSize() const override {
-    return gfx::Size(kTrayItemSize * 3 / 2, kTrayItemSize);
+  // Use the same icon as CollapseButton with rotation.
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    gfx::ScopedCanvas scoped(canvas);
+    canvas->Translate(gfx::Vector2d(size().width() / 2, size().height() / 2));
+    canvas->sk_canvas()->rotate(-90);
+    gfx::ImageSkia image = GetImageToPaint();
+    canvas->DrawImageInt(image, -image.width() / 2, -image.height() / 2);
   }
-
-  SkPath CreateCustomShapePath(const gfx::Rect& bounds) const override {
-    SkPath path;
-    SkScalar bottom_radius = SkIntToScalar(kTrayItemSize / 2);
-    SkScalar radii[8] = {
-        0, 0, bottom_radius, bottom_radius, bottom_radius, bottom_radius, 0, 0};
-    path.addRoundRect(gfx::RectToSkRect(bounds), radii);
-    return path;
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(BackButton);
 };
 
 }  // namespace
@@ -107,9 +99,12 @@ void DetailedViewDelegate::CloseBubble() {
   tray_controller_->CloseBubble();
 }
 
-SkColor DetailedViewDelegate::GetBackgroundColor(
-    ui::NativeTheme* native_theme) {
-  return SK_ColorTRANSPARENT;
+absl::optional<SkColor> DetailedViewDelegate::GetBackgroundColor() {
+  return absl::nullopt;
+}
+
+gfx::Insets DetailedViewDelegate::GetInsetsForDetailedView() const {
+  return kUnifiedDetailedViewPadding;
 }
 
 bool DetailedViewDelegate::IsOverflowIndicatorEnabled() const {
@@ -123,13 +118,13 @@ TriView* DetailedViewDelegate::CreateTitleRow(int string_id) {
   ConfigureTitleTriView(tri_view, TriView::Container::CENTER);
   ConfigureTitleTriView(tri_view, TriView::Container::END);
 
-  auto* label = TrayPopupUtils::CreateDefaultLabel();
-  label->SetText(l10n_util::GetStringUTF16(string_id));
-  TrayPopupItemStyle style(TrayPopupItemStyle::FontStyle::TITLE,
-                           true /* use_unified_theme */);
-  style.SetupLabel(label);
-  tri_view->AddView(TriView::Container::CENTER, label);
-
+  title_label_ = TrayPopupUtils::CreateDefaultLabel();
+  title_label_->SetText(l10n_util::GetStringUTF16(string_id));
+  title_label_->SetEnabledColor(AshColorProvider::Get()->GetContentLayerColor(
+      AshColorProvider::ContentLayerType::kTextColorPrimary));
+  TrayPopupUtils::SetLabelFontList(title_label_,
+                                   TrayPopupUtils::FontStyle::kTitle);
+  tri_view->AddView(TriView::Container::CENTER, title_label_);
   tri_view->SetContainerVisible(TriView::Container::END, false);
   tri_view->SetBorder(
       views::CreateEmptyBorder(kUnifiedDetailedViewTitlePadding));
@@ -138,19 +133,22 @@ TriView* DetailedViewDelegate::CreateTitleRow(int string_id) {
 }
 
 views::View* DetailedViewDelegate::CreateTitleSeparator() {
-  views::Separator* separator = new views::Separator();
-  separator->SetColor(kUnifiedMenuSeparatorColor);
-  separator->SetBorder(views::CreateEmptyBorder(
+  title_separator_ = new views::Separator();
+  title_separator_->SetColor(AshColorProvider::Get()->GetContentLayerColor(
+      ContentLayerType::kSeparatorColor));
+  title_separator_->SetBorder(views::CreateEmptyBorder(
       kTitleRowProgressBarHeight - views::Separator::kThickness, 0, 0, 0));
-  return separator;
+  return title_separator_;
 }
 
 void DetailedViewDelegate::ShowStickyHeaderSeparator(views::View* view,
                                                      bool show_separator) {
   if (show_separator) {
     view->SetBorder(views::CreatePaddedBorder(
-        views::CreateSolidSidedBorder(0, 0, kTraySeparatorWidth, 0,
-                                      kUnifiedMenuSeparatorColor),
+        views::CreateSolidSidedBorder(
+            0, 0, kTraySeparatorWidth, 0,
+            AshColorProvider::Get()->GetContentLayerColor(
+                ContentLayerType::kSeparatorColor)),
         gfx::Insets(kMenuSeparatorVerticalPadding, 0,
                     kMenuSeparatorVerticalPadding - kTraySeparatorWidth, 0)));
   } else {
@@ -162,7 +160,8 @@ void DetailedViewDelegate::ShowStickyHeaderSeparator(views::View* view,
 
 views::Separator* DetailedViewDelegate::CreateListSubHeaderSeparator() {
   views::Separator* separator = new views::Separator();
-  separator->SetColor(kUnifiedMenuSeparatorColor);
+  separator->SetColor(AshColorProvider::Get()->GetContentLayerColor(
+      ContentLayerType::kSeparatorColor));
   separator->SetBorder(views::CreateEmptyBorder(
       kMenuSeparatorVerticalPadding - views::Separator::kThickness, 0, 0, 0));
   return separator;
@@ -171,47 +170,62 @@ views::Separator* DetailedViewDelegate::CreateListSubHeaderSeparator() {
 HoverHighlightView* DetailedViewDelegate::CreateScrollListItem(
     ViewClickListener* listener,
     const gfx::VectorIcon& icon,
-    const base::string16& text) {
-  HoverHighlightView* item =
-      new HoverHighlightView(listener, true /* use_unified_theme */);
+    const std::u16string& text) {
+  HoverHighlightView* item = new HoverHighlightView(listener);
   if (icon.is_empty())
     item->AddLabelRow(text);
   else
-    item->AddIconAndLabel(gfx::CreateVectorIcon(icon, kUnifiedMenuIconColor),
-                          text);
+    item->AddIconAndLabel(
+        gfx::CreateVectorIcon(icon,
+                              AshColorProvider::Get()->GetContentLayerColor(
+                                  ContentLayerType::kIconColorPrimary)),
+        text);
   return item;
 }
 
 views::Button* DetailedViewDelegate::CreateBackButton(
-    views::ButtonListener* listener) {
-  return new BackButton(listener);
+    views::Button::PressedCallback callback) {
+  return new BackButton(std::move(callback));
 }
 
 views::Button* DetailedViewDelegate::CreateInfoButton(
-    views::ButtonListener* listener,
+    views::Button::PressedCallback callback,
     int info_accessible_name_id) {
-  return new TopShortcutButton(listener, kUnifiedMenuInfoIcon,
+  return new TopShortcutButton(std::move(callback), kUnifiedMenuInfoIcon,
                                info_accessible_name_id);
 }
 
 views::Button* DetailedViewDelegate::CreateSettingsButton(
-    views::ButtonListener* listener,
+    views::Button::PressedCallback callback,
     int setting_accessible_name_id) {
-  auto* button = new TopShortcutButton(listener, kUnifiedMenuSettingsIcon,
-                                       setting_accessible_name_id);
+  auto* button =
+      new TopShortcutButton(std::move(callback), kUnifiedMenuSettingsIcon,
+                            setting_accessible_name_id);
   if (!TrayPopupUtils::CanOpenWebUISettings())
     button->SetEnabled(false);
   return button;
 }
 
 views::Button* DetailedViewDelegate::CreateHelpButton(
-    views::ButtonListener* listener) {
-  auto* button = new TopShortcutButton(listener, vector_icons::kHelpOutlineIcon,
-                                       IDS_ASH_STATUS_TRAY_HELP);
+    views::Button::PressedCallback callback) {
+  auto* button =
+      new TopShortcutButton(std::move(callback), vector_icons::kHelpOutlineIcon,
+                            IDS_ASH_STATUS_TRAY_HELP);
   // Help opens a web page, so treat it like Web UI settings.
   if (!TrayPopupUtils::CanOpenWebUISettings())
     button->SetEnabled(false);
   return button;
+}
+
+void DetailedViewDelegate::UpdateColors() {
+  if (title_label_) {
+    title_label_->SetEnabledColor(AshColorProvider::Get()->GetContentLayerColor(
+        AshColorProvider::ContentLayerType::kTextColorPrimary));
+  }
+  if (title_separator_) {
+    title_separator_->SetColor(AshColorProvider::Get()->GetContentLayerColor(
+        ContentLayerType::kSeparatorColor));
+  }
 }
 
 }  // namespace ash

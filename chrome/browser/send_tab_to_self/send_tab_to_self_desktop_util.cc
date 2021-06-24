@@ -12,66 +12,89 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/send_tab_to_self/desktop_notification_handler.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_bubble_controller.h"
+#include "components/send_tab_to_self/features.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
+#include "components/send_tab_to_self/target_device_info.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/base/resource/resource_bundle.h"
-#include "ui/native_theme/native_theme.h"
-#include "ui/resources/grit/ui_resources.h"
 #include "url/gurl.h"
 
 namespace send_tab_to_self {
 
-void CreateNewEntry(content::WebContents* tab, const GURL& link_url) {
+void CreateNewEntry(content::WebContents* tab,
+                    const std::string& target_device_name,
+                    const std::string& target_device_guid,
+                    const GURL& link_url) {
+  DCHECK(tab);
+
+  GURL shared_url = link_url;
+  std::string title;
+  base::Time navigation_time = base::Time();
+
   content::NavigationEntry* navigation_entry =
       tab->GetController().GetLastCommittedEntry();
-  Profile* profile = Profile::FromBrowserContext(tab->GetBrowserContext());
-  GURL url = navigation_entry->GetURL();
-  std::string title = base::UTF16ToUTF8(navigation_entry->GetTitle());
-  base::Time navigation_time = navigation_entry->GetTimestamp();
 
-  // TODO(crbug/946804) Add target device.
-  std::string target_device;
+  // This should either be a valid link share or a valid tab share.
+  DCHECK(link_url.is_valid() || navigation_entry);
+
+  if (!link_url.is_valid()) {
+    // This is not link share, get the values from the last navigation entry.
+    shared_url = navigation_entry->GetURL();
+    title = base::UTF16ToUTF8(navigation_entry->GetTitle());
+    navigation_time = navigation_entry->GetTimestamp();
+  }
+
+  Profile* profile = Profile::FromBrowserContext(tab->GetBrowserContext());
+  DCHECK(profile);
   SendTabToSelfModel* model =
       SendTabToSelfSyncServiceFactory::GetForProfile(profile)
           ->GetSendTabToSelfModel();
+  DCHECK(model);
 
-  UMA_HISTOGRAM_BOOLEAN("SendTabToSelf.Sync.ModelLoadedInTime",
-                        model->IsReady());
   if (!model->IsReady()) {
-    DesktopNotificationHandler(profile).DisplayFailureMessage(url);
+    DesktopNotificationHandler(profile).DisplayFailureMessage(shared_url);
     return;
   }
 
-  const SendTabToSelfEntry* entry;
-  if (link_url.is_valid()) {
-    // When share a link.
-    entry = model->AddEntry(link_url, "", base::Time(), target_device);
-  } else {
-    // When share a tab.
-    entry = model->AddEntry(url, title, navigation_time, target_device);
-  }
-  if (entry) {
-    DesktopNotificationHandler(profile).DisplaySendingConfirmation(*entry);
-  } else {
-    DesktopNotificationHandler(profile).DisplayFailureMessage(url);
-  }
+  model->AddEntry(shared_url, title, navigation_time, target_device_guid);
+
+  SendTabToSelfBubbleController* controller = send_tab_to_self::
+      SendTabToSelfBubbleController::CreateOrGetFromWebContents(tab);
+  controller->ShowConfirmationMessage();
 }
 
-gfx::ImageSkia* GetImageSkia() {
-  const ui::NativeTheme* native_theme =
-      ui::NativeTheme::GetInstanceForNativeUi();
-  bool is_dark = native_theme && native_theme->SystemDarkModeEnabled();
-  int resource_id = is_dark ? IDR_SEND_TAB_TO_SELF_ICON_DARK
-                            : IDR_SEND_TAB_TO_SELF_ICON_LIGHT;
-  return ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(resource_id);
+void ShareToSingleTarget(content::WebContents* tab, const GURL& link_url) {
+  Profile* profile = Profile::FromBrowserContext(tab->GetBrowserContext());
+  DCHECK_EQ(GetValidDeviceCount(profile), 1u);
+  const std::vector<TargetDeviceInfo>& devices =
+      SendTabToSelfSyncServiceFactory::GetForProfile(profile)
+          ->GetSendTabToSelfModel()
+          ->GetTargetDeviceInfoSortedList();
+  CreateNewEntry(tab, devices.begin()->device_name, devices.begin()->cache_guid,
+                 link_url);
 }
 
-void RecordSendTabToSelfClickResult(std::string context_menu,
-                                    SendTabToSelfClickResult state) {
-  base::UmaHistogramEnumeration(
-      "SendTabToSelf." + context_menu + ".ClickResult", state);
+size_t GetValidDeviceCount(Profile* profile) {
+  SendTabToSelfSyncService* service =
+      SendTabToSelfSyncServiceFactory::GetForProfile(profile);
+  DCHECK(service);
+  SendTabToSelfModel* model = service->GetSendTabToSelfModel();
+  DCHECK(model);
+  const std::vector<TargetDeviceInfo>& devices =
+      model->GetTargetDeviceInfoSortedList();
+  return devices.size();
+}
+
+std::u16string GetSingleTargetDeviceName(Profile* profile) {
+  DCHECK_EQ(GetValidDeviceCount(profile), 1u);
+  return base::UTF8ToUTF16(
+      SendTabToSelfSyncServiceFactory::GetForProfile(profile)
+          ->GetSendTabToSelfModel()
+          ->GetTargetDeviceInfoSortedList()
+          .begin()
+          ->device_name);
 }
 
 }  // namespace send_tab_to_self

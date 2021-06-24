@@ -5,11 +5,12 @@
 #include "build/build_config.h"
 #include "ipc/ipc_channel.h"
 #include "ipc/ipc_channel_mojo.h"
+#include "mojo/public/cpp/bindings/lib/message_quota_checker.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 
 namespace IPC {
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 namespace {
 int g_global_pid = 0;
@@ -25,7 +26,7 @@ int Channel::GetGlobalPid() {
   return g_global_pid;
 }
 
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 // static
 std::unique_ptr<Channel> Channel::CreateClient(
@@ -39,7 +40,8 @@ std::unique_ptr<Channel> Channel::CreateClient(
   return ChannelMojo::Create(
       mojo::ScopedMessagePipeHandle(channel_handle.mojo_handle),
       Channel::MODE_CLIENT, listener, ipc_task_runner,
-      base::ThreadTaskRunnerHandle::Get());
+      base::ThreadTaskRunnerHandle::Get(),
+      mojo::internal::MessageQuotaChecker::MaybeCreate());
 #endif
 }
 
@@ -55,7 +57,8 @@ std::unique_ptr<Channel> Channel::CreateServer(
   return ChannelMojo::Create(
       mojo::ScopedMessagePipeHandle(channel_handle.mojo_handle),
       Channel::MODE_SERVER, listener, ipc_task_runner,
-      base::ThreadTaskRunnerHandle::Get());
+      base::ThreadTaskRunnerHandle::Get(),
+      mojo::internal::MessageQuotaChecker::MaybeCreate());
 #endif
 }
 

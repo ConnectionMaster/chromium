@@ -85,6 +85,7 @@ class CORE_EXPORT TypingCommand final : public CompositeEditCommand {
   static bool InsertParagraphSeparator(Document&);
   static bool InsertParagraphSeparatorInQuotedContent(Document&);
   static void CloseTyping(LocalFrame*);
+  static void CloseTypingIfNeeded(LocalFrame*);
 
   static TypingCommand* LastTypingCommandIfStillOpenForTyping(LocalFrame*);
   static void UpdateSelectionIfDifferentFromCurrentSelection(TypingCommand*,
@@ -92,10 +93,10 @@ class CORE_EXPORT TypingCommand final : public CompositeEditCommand {
 
   TypingCommand(Document&,
                 CommandType,
-                const String& text,
-                Options,
-                TextGranularity,
-                TextCompositionType);
+                const String& text = "",
+                Options options = 0,
+                TextGranularity granularity = TextGranularity::kCharacter,
+                TextCompositionType = kTextCompositionNone);
 
   void InsertTextRunWithoutNewlines(const String& text,
                                     EditingState*);
@@ -121,26 +122,6 @@ class CORE_EXPORT TypingCommand final : public CompositeEditCommand {
   String TextDataForInputEvent() const final;
 
  private:
-  static TypingCommand* Create(
-      Document& document,
-      CommandType command,
-      const String& text = "",
-      Options options = 0,
-      TextGranularity granularity = TextGranularity::kCharacter) {
-    return MakeGarbageCollected<TypingCommand>(
-        document, command, text, options, granularity, kTextCompositionNone);
-  }
-
-  static TypingCommand* Create(Document& document,
-                               CommandType command,
-                               const String& text,
-                               Options options,
-                               TextCompositionType composition_type) {
-    return MakeGarbageCollected<TypingCommand>(document, command, text, options,
-                                               TextGranularity::kCharacter,
-                                               composition_type);
-  }
-
   void SetSmartDelete(bool smart_delete) { smart_delete_ = smart_delete; }
   bool IsOpenForMoreTyping() const { return open_for_more_typing_; }
   void CloseTyping() { open_for_more_typing_ = false; }
@@ -165,15 +146,15 @@ class CORE_EXPORT TypingCommand final : public CompositeEditCommand {
   bool IsIncrementalInsertion() const { return is_incremental_insertion_; }
 
   void DeleteKeyPressedInternal(
-      const VisibleSelection& selection_to_delete,
+      const SelectionForUndoStep& selection_to_delete,
       const SelectionForUndoStep& selection_after_undo,
       bool kill_ring,
       EditingState*);
 
-  void DeleteSelectionIfRange(const VisibleSelection&, EditingState*);
+  void DeleteSelectionIfRange(const SelectionForUndoStep&, EditingState*);
 
   void ForwardDeleteKeyPressedInternal(
-      const VisibleSelection& selection_to_delete,
+      const SelectionForUndoStep& selection_to_delete,
       const SelectionForUndoStep& selection_after_undo,
       bool kill_ring,
       EditingState*);

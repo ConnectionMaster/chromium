@@ -5,10 +5,6 @@
 #ifndef CONTENT_BROWSER_MEDIA_AUDIO_STREAM_MONITOR_H_
 #define CONTENT_BROWSER_MEDIA_AUDIO_STREAM_MONITOR_H_
 
-#include <map>
-#include <utility>
-
-#include "base/callback_forward.h"
 #include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
@@ -18,7 +14,6 @@
 #include "build/build_config.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "media/audio/audio_output_controller.h"
 
 namespace base {
 class TickClock;

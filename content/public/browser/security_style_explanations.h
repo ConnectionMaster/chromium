@@ -10,7 +10,7 @@
 
 #include "content/common/content_export.h"
 #include "content/public/browser/security_style_explanation.h"
-#include "third_party/blink/public/platform/web_security_style.h"
+#include "third_party/blink/public/common/security/security_style.h"
 
 namespace content {
 
@@ -57,4 +57,4 @@ struct CONTENT_EXPORT SecurityStyleExplanations {
 
 }  // namespace content
 
-#endif  // CONTENT_PUBLIC_BROWSER_SECURITY_STYLE_EXPLANATION_H_
+#endif  // CONTENT_PUBLIC_BROWSER_SECURITY_STYLE_EXPLANATIONS_H_

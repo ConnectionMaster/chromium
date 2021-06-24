@@ -7,17 +7,17 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/time/time.h"
 #include "cc/layers/deadline_policy.h"
 #include "components/viz/client/frame_evictor.h"
+#include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
-#include "components/viz/common/presentation_feedback_map.h"
+#include "components/viz/common/frame_timing_details_map.h"
 #include "components/viz/common/resources/returned_resource.h"
 #include "components/viz/common/surfaces/surface_info.h"
 #include "components/viz/host/host_frame_sink_client.h"
-#include "components/viz/service/frame_sinks/compositor_frame_sink_support.h"
-#include "services/viz/public/interfaces/compositing/compositor_frame_sink.mojom.h"
 #include "ui/android/ui_android_export.h"
-#include "ui/compositor/compositor_lock.h"
 
 namespace cc {
 class SurfaceLayer;
@@ -25,7 +25,6 @@ enum class SurfaceDrawStatus;
 }  // namespace cc
 
 namespace viz {
-class CompositorFrame;
 class HostFrameSinkManager;
 }  // namespace viz
 
@@ -34,34 +33,29 @@ class ViewAndroid;
 class WindowAndroidCompositor;
 
 class UI_ANDROID_EXPORT DelegatedFrameHostAndroid
-    : public viz::mojom::CompositorFrameSinkClient,
-      public viz::ExternalBeginFrameSourceClient,
-      public viz::HostFrameSinkClient,
-      public ui::CompositorLockClient,
+    : public viz::HostFrameSinkClient,
       public viz::FrameEvictorClient {
  public:
   class Client {
    public:
     virtual ~Client() {}
-    virtual void SetBeginFrameSource(
-        viz::BeginFrameSource* begin_frame_source) = 0;
-    virtual void DidPresentCompositorFrames(
-        const viz::PresentationFeedbackMap& feedbacks) = 0;
-    virtual void DidReceiveCompositorFrameAck(
-        const std::vector<viz::ReturnedResource>& resources) = 0;
-    virtual void ReclaimResources(
-        const std::vector<viz::ReturnedResource>& resources) = 0;
-    virtual void OnFrameTokenChanged(uint32_t frame_token) = 0;
+    virtual void OnFrameTokenChanged(uint32_t frame_token,
+                                     base::TimeTicks activation_time) = 0;
     virtual void WasEvicted() = 0;
+    virtual void OnSurfaceIdChanged() = 0;
   };
 
   DelegatedFrameHostAndroid(ViewAndroid* view,
                             viz::HostFrameSinkManager* host_frame_sink_manager,
                             Client* client,
-                            const viz::FrameSinkId& frame_sink_id,
-                            bool enable_surface_synchronization);
+                            const viz::FrameSinkId& frame_sink_id);
 
   ~DelegatedFrameHostAndroid() override;
+
+  static int64_t TimeDeltaToFrames(base::TimeDelta delta) {
+    return base::ClampRound<int64_t>(delta /
+                                     viz::BeginFrameArgs::DefaultInterval());
+  }
 
   // Wait up to 5 seconds for the first frame to be produced. Having Android
   // display a placeholder for a longer period of time is preferable to drawing
@@ -69,28 +63,21 @@ class UI_ANDROID_EXPORT DelegatedFrameHostAndroid
   static constexpr base::TimeDelta FirstFrameTimeout() {
     return base::TimeDelta::FromSeconds(5);
   }
-  static constexpr int64_t FirstFrameTimeoutFrames() {
-    return FirstFrameTimeout() / viz::BeginFrameArgs::DefaultInterval();
+  static int64_t FirstFrameTimeoutFrames() {
+    return TimeDeltaToFrames(FirstFrameTimeout());
   }
 
-  // Wait up to 1 second for a frame of the correct size to be produced. Android
-  // OS will only wait 4 seconds, so we limit this to 1 second to make sure we
-  // have always produced a frame before the OS stops waiting.
+  // Wait up to 175 milliseconds for a frame of the correct size to be produced.
+  // Android OS will only wait 200 milliseconds, so we limit this to make sure
+  // that Viz is able to produce the latest frame from the Browser before the OS
+  // stops waiting. Otherwise a rotated version of the previous frame will be
+  // displayed with a large black region where there is no content yet.
   static constexpr base::TimeDelta ResizeTimeout() {
-    return base::TimeDelta::FromSeconds(1);
+    return base::TimeDelta::FromMilliseconds(175);
   }
-  static constexpr int64_t ResizeTimeoutFrames() {
-    return ResizeTimeout() / viz::BeginFrameArgs::DefaultInterval();
+  static int64_t ResizeTimeoutFrames() {
+    return TimeDeltaToFrames(ResizeTimeout());
   }
-
-  void SubmitCompositorFrame(
-      const viz::LocalSurfaceId& local_surface_id,
-      viz::CompositorFrame frame,
-      base::Optional<viz::HitTestRegionList> hit_test_region_list);
-  void DidNotProduceFrame(const viz::BeginFrameAck& ack);
-
-  // FrameEvictorClient implementation.
-  void EvictDelegatedFrame() override;
 
   // Advances the fallback surface to the first surface after navigation. This
   // ensures that stale surfaces are not presented to the user for an indefinite
@@ -123,14 +110,12 @@ class UI_ANDROID_EXPORT DelegatedFrameHostAndroid
   bool HasSavedFrame() const;
   void WasHidden();
   void WasShown(const viz::LocalSurfaceId& local_surface_id,
-                const gfx::Size& size_in_pixels);
+                const gfx::Size& size_in_pixels,
+                bool is_fullscreen);
   void EmbedSurface(const viz::LocalSurfaceId& new_local_surface_id,
                     const gfx::Size& new_size_in_pixels,
-                    cc::DeadlinePolicy deadline_policy);
-
-  // Called when we begin a resize operation. Takes the compositor lock until we
-  // receive a frame of the expected size.
-  void PixelSizeWillChange(const gfx::Size& pixel_size);
+                    cc::DeadlinePolicy deadline_policy,
+                    bool is_fullscreen);
 
   // Returns the ID for the current Surface. Returns an invalid ID if no
   // surface exists (!HasDelegatedContent()).
@@ -141,32 +126,31 @@ class UI_ANDROID_EXPORT DelegatedFrameHostAndroid
 
   void TakeFallbackContentFrom(DelegatedFrameHostAndroid* other);
 
+  // Called when navigation has completed, and this DelegatedFrameHost is
+  // visible. A new Surface will have been embedded at this point. If navigation
+  // is done while hidden, this will be called upon becoming visible.
   void DidNavigate();
+  // Navigation to a different page than the current one has begun. This is
+  // called regardless of the visibility of the page. Caches the current
+  // LocalSurfaceId information so that old content can be evicted if
+  // navigation fails to complete.
+  void OnNavigateToNewPage();
+
+  void SetTopControlsVisibleHeight(float height);
 
  private:
-  // viz::mojom::CompositorFrameSinkClient implementation.
-  void DidReceiveCompositorFrameAck(
-      const std::vector<viz::ReturnedResource>& resources) override;
-  void OnBeginFrame(const viz::BeginFrameArgs& args,
-                    const viz::PresentationFeedbackMap& feedbacks) override;
-  void ReclaimResources(
-      const std::vector<viz::ReturnedResource>& resources) override;
-  void OnBeginFramePausedChanged(bool paused) override;
-
-  // viz::ExternalBeginFrameSourceClient implementation.
-  void OnNeedsBeginFrames(bool needs_begin_frames) override;
+  // FrameEvictorClient implementation.
+  void EvictDelegatedFrame() override;
 
   // viz::HostFrameSinkClient implementation.
   void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
-  void OnFrameTokenChanged(uint32_t frame_token) override;
-
-  // ui::CompositorLockClient implementation.
-  void CompositorLockTimedOut() override;
-
-  void CreateCompositorFrameSinkSupport();
+  void OnFrameTokenChanged(uint32_t frame_token,
+                           base::TimeTicks activation_time) override;
 
   void ProcessCopyOutputRequest(
       std::unique_ptr<viz::CopyOutputRequest> request);
+
+  void SetLocalSurfaceId(const viz::LocalSurfaceId& local_surface_id);
 
   const viz::FrameSinkId frame_sink_id_;
 
@@ -176,32 +160,17 @@ class UI_ANDROID_EXPORT DelegatedFrameHostAndroid
   WindowAndroidCompositor* registered_parent_compositor_ = nullptr;
   Client* client_;
 
-  std::unique_ptr<viz::CompositorFrameSinkSupport> support_;
-  viz::ExternalBeginFrameSource begin_frame_source_;
-
-  bool has_transparent_background_ = false;
+  float top_controls_visible_height_ = 0.f;
 
   scoped_refptr<cc::SurfaceLayer> content_layer_;
-
-  const bool enable_surface_synchronization_;
-  const bool enable_viz_;
-
-  // The size we are resizing to. Once we receive a frame of this size we can
-  // release any resize compositor lock.
-  gfx::Size expected_pixel_size_;
-
-  // A lock that is held from the point at which we attach to the compositor to
-  // the point at which we submit our first frame to the compositor. This
-  // ensures that the compositor doesn't swap without a frame available.
-  std::unique_ptr<ui::CompositorLock> compositor_attach_until_frame_lock_;
-
-  // A lock that is held from the point we begin resizing this frame to the
-  // point at which we receive a frame of the correct size.
-  std::unique_ptr<ui::CompositorLock> compositor_pending_resize_lock_;
 
   // Whether we've received a frame from the renderer since navigating.
   // Only used when surface synchronization is on.
   viz::LocalSurfaceId first_local_surface_id_after_navigation_;
+  // While navigating we have no active |local_surface_id_|. Track the one from
+  // before a navigation, because if the navigation fails to complete, we will
+  // need to evict its surface.
+  viz::LocalSurfaceId pre_navigation_local_surface_id_;
 
   // The LocalSurfaceId of the currently embedded surface. If surface sync is
   // on, this surface is not necessarily active.

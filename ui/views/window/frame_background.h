@@ -14,6 +14,10 @@ namespace gfx {
 class Canvas;
 }
 
+namespace ui {
+class NativeTheme;
+}
+
 namespace views {
 
 class View;
@@ -35,9 +39,6 @@ class VIEWS_EXPORT FrameBackground {
 
   // Sets whether the frame to be drawn should have focus.
   void set_is_active(bool is_active) { is_active_ = is_active; }
-
-  // Sets whether the frame to be drawn is in incognito mode.
-  void set_incognito(bool incognito) { incognito_ = incognito; }
 
   // Sets the theme image for the top of the window.  May be null (empty).
   // Memory is owned by the caller.
@@ -83,14 +84,23 @@ class VIEWS_EXPORT FrameBackground {
   // window edges.
   void PaintMaximized(gfx::Canvas* canvas, const View* view) const;
 
- private:
-  // Fills the frame side and bottom borders with the frame color.
-  void FillFrameBorders(gfx::Canvas* canvas, const View* view) const;
+  void PaintMaximized(gfx::Canvas* canvas,
+                      const ui::NativeTheme* native_theme,
+                      int x,
+                      int y,
+                      int width) const;
 
+  // Fills the frame side and bottom borders with the frame color.
+  void FillFrameBorders(gfx::Canvas* canvas,
+                        const View* view,
+                        int left_edge_width,
+                        int right_edge_width,
+                        int bottom_edge_height) const;
+
+ private:
   SkColor frame_color_ = 0;
   bool use_custom_frame_ = true;
   bool is_active_ = true;
-  bool incognito_ = false;
   gfx::ImageSkia theme_image_;
   int theme_image_y_inset_ = 0;
   gfx::ImageSkia theme_overlay_image_;

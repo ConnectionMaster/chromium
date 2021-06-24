@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "chromeos/dbus/cec_service_client.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "extensions/common/api/cec_private.h"
@@ -58,7 +58,7 @@ CecPrivateFunction::~CecPrivateFunction() = default;
 
 // Only allow calls from kiosk mode extensions.
 bool CecPrivateFunction::PreRunValidation(std::string* error) {
-  if (!UIThreadExtensionFunction::PreRunValidation(error))
+  if (!ExtensionFunction::PreRunValidation(error))
     return false;
 
   if (KioskModeInfo::IsKioskEnabled(extension()))

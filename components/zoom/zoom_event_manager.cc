@@ -25,7 +25,7 @@ ZoomEventManager* ZoomEventManager::GetForBrowserContext(
       context->GetUserData(kBrowserZoomEventManager));
 }
 
-ZoomEventManager::ZoomEventManager() : weak_ptr_factory_(this) {}
+ZoomEventManager::ZoomEventManager() {}
 
 ZoomEventManager::~ZoomEventManager() {}
 
@@ -34,10 +34,9 @@ void ZoomEventManager::OnZoomLevelChanged(
   zoom_level_changed_callbacks_.Notify(change);
 }
 
-std::unique_ptr<content::HostZoomMap::Subscription>
-ZoomEventManager::AddZoomLevelChangedCallback(
-    const content::HostZoomMap::ZoomLevelChangedCallback& callback) {
-  return zoom_level_changed_callbacks_.Add(callback);
+base::CallbackListSubscription ZoomEventManager::AddZoomLevelChangedCallback(
+    content::HostZoomMap::ZoomLevelChangedCallback callback) {
+  return zoom_level_changed_callbacks_.Add(std::move(callback));
 }
 
 void ZoomEventManager::OnDefaultZoomLevelChanged() {

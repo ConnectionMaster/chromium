@@ -9,19 +9,23 @@
 #include <string>
 
 #include "media/audio/audio_input_device.h"
-#include "services/audio/public/mojom/stream_factory.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "media/mojo/mojom/audio_stream_factory.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace audio {
 
-scoped_refptr<media::AudioCapturerSource> CreateInputDevice(
-    std::unique_ptr<service_manager::Connector> connector,
-    const std::string& device_id);
+using DeadStreamDetection = media::AudioInputDevice::DeadStreamDetection;
 
 scoped_refptr<media::AudioCapturerSource> CreateInputDevice(
-    std::unique_ptr<service_manager::Connector> connector,
+    mojo::PendingRemote<media::mojom::AudioStreamFactory> stream_factory,
     const std::string& device_id,
-    media::mojom::AudioLogPtr);
+    DeadStreamDetection detect_dead_stream);
+
+scoped_refptr<media::AudioCapturerSource> CreateInputDevice(
+    mojo::PendingRemote<media::mojom::AudioStreamFactory> stream_factory,
+    const std::string& device_id,
+    DeadStreamDetection detect_dead_stream,
+    mojo::PendingRemote<media::mojom::AudioLog>);
 
 }  // namespace audio
 

@@ -99,6 +99,12 @@ typedef uint32_t MojoCreateMessageFlags;
 // No flags. Default behavior.
 #define MOJO_CREATE_MESSAGE_FLAG_NONE ((uint32_t)0)
 
+// Do not enforce size restrictions on this message, allowing its serialized
+// payload to grow arbitrarily large. If this flag is NOT specified, Mojo will
+// throw an assertion failure at serialization time when the message exceeds a
+// globally configured maximum size.
+#define MOJO_CREATE_MESSAGE_FLAG_UNLIMITED_SIZE ((uint32_t)1)
+
 // Options passed to |MojoCreateMessage()|.
 struct MOJO_ALIGNAS(8) MojoCreateMessageOptions {
   // The size of this structure, used for versioning.
@@ -138,60 +144,15 @@ typedef uint32_t MojoAppendMessageDataFlags;
 #define MOJO_APPEND_MESSAGE_DATA_FLAG_COMMIT_SIZE \
   ((MojoAppendMessageDataFlags)1)
 
-// Options passed to |MojoAppendMessageData()|. Version 0.
-struct MOJO_ALIGNAS(8) MojoAppendMessageDataOptionsV0 {
-  // The size of this structure, used for versioning.
-  uint32_t struct_size;
-
-  // See |MojoAppendMessageDataFlags|.
-  MojoAppendMessageDataFlags flags;
-};
-MOJO_STATIC_ASSERT(sizeof(struct MojoAppendMessageDataOptionsV0) == 8,
-                   "MojoAppendMessageDataOptionsV0 has wrong size");
-
-// Per-handle flags passed to |MojoAppendMessageData()| via
-// |MojoAppendMessageDataHandleOptions|.
-typedef uint32_t MojoAppendMessageDataHandleFlags;
-
-// No flags. Default behavior.
-#define MOJO_APPEND_MESSAGE_DATA_HANDLE_FLAG_NONE ((uint32_t)0)
-
-// If set, this causes the handle and its peer to be spliced into the sending
-// pipe upon transmission of the this message. The attached handle must be a
-// message pipe handle and its peer must remain local to the message sender.
-#define MOJO_APPEND_MESSAGE_DATA_HANDLE_FLAG_SPLICE \
-  ((MojoAppendMessageDataHandleFlags)1)
-
-// Per-handle options optionally passed to |MojoAppendMessageData()| via
-// MojoAppendMessageDataOptions.
-struct MOJO_ALIGNAS(8) MojoAppendMessageDataHandleOptions {
-  // The size of this structure, used for versioning.
-  uint32_t struct_size;
-
-  // Flags indicating how the handle should be attached.
-  MojoAppendMessageDataHandleFlags flags;
-};
-MOJO_STATIC_ASSERT(sizeof(struct MojoAppendMessageDataHandleOptions) == 8,
-                   "MojoAppendMessageDataHandleOptions has wrong size");
-
-// Options passed to |MojoAppendMessageData()|. Version 1 (current). The first
-// |sizeof(MojoAppendMessageDataOptionsV0)| bytes must have identical memory
-// layout to MojoAppendMessageDataOptionsV0.
+// Options passed to |MojoAppendMessageData()|.
 struct MOJO_ALIGNAS(8) MojoAppendMessageDataOptions {
   // The size of this structure, used for versioning.
   uint32_t struct_size;
 
   // See |MojoAppendMessageDataFlags|.
   MojoAppendMessageDataFlags flags;
-
-  // An array of per-handle options to specify individual handle attachment
-  // behavior. If non-null, must point to the same number of elements as the
-  // array of handles passed to |MojoAppendMessageData()|. May be null, implying
-  // default behavior for all appended handles.
-  MOJO_POINTER_FIELD(const struct MojoAppendMessageDataHandleOptions*,
-                     handle_options);
 };
-MOJO_STATIC_ASSERT(sizeof(struct MojoAppendMessageDataOptions) == 16,
+MOJO_STATIC_ASSERT(sizeof(struct MojoAppendMessageDataOptions) == 8,
                    "MojoAppendMessageDataOptions has wrong size");
 
 // Flags passed to |MojoGetMessageData()| via |MojoGetMessageDataOptions|.

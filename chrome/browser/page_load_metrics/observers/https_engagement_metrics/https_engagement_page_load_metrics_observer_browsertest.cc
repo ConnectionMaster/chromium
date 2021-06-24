@@ -4,6 +4,8 @@
 
 #include "chrome/browser/page_load_metrics/observers/https_engagement_metrics/https_engagement_page_load_metrics_observer.h"
 
+#include <memory>
+
 #include "base/macros.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/threading/platform_thread.h"
@@ -16,6 +18,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/metrics/metrics_service.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "net/ssl/client_cert_store.h"
 #include "net/ssl/ssl_server_config.h"
@@ -29,8 +32,8 @@ class HttpsEngagementPageLoadMetricsBrowserTest : public InProcessBrowserTest {
   ~HttpsEngagementPageLoadMetricsBrowserTest() override {}
 
   void StartHttpsServer(bool cert_error) {
-    https_test_server_.reset(
-        new net::EmbeddedTestServer(net::EmbeddedTestServer::TYPE_HTTPS));
+    https_test_server_ = std::make_unique<net::EmbeddedTestServer>(
+        net::EmbeddedTestServer::TYPE_HTTPS);
     https_test_server_->SetSSLConfig(cert_error
                                          ? net::EmbeddedTestServer::CERT_EXPIRED
                                          : net::EmbeddedTestServer::CERT_OK);
@@ -39,8 +42,8 @@ class HttpsEngagementPageLoadMetricsBrowserTest : public InProcessBrowserTest {
   }
 
   void StartHttpServer() {
-    http_test_server_.reset(
-        new net::EmbeddedTestServer(net::EmbeddedTestServer::TYPE_HTTP));
+    http_test_server_ = std::make_unique<net::EmbeddedTestServer>(
+        net::EmbeddedTestServer::TYPE_HTTP);
     http_test_server_->ServeFilesFromSourceDirectory(GetChromeTestDataDir());
     ASSERT_TRUE(http_test_server_->Start());
   }
@@ -81,7 +84,7 @@ class HttpsEngagementPageLoadMetricsBrowserTest : public InProcessBrowserTest {
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), GURL(chrome::kChromeUIVersionURL),
         WindowOpenDisposition::NEW_FOREGROUND_TAB,
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     base::TimeDelta upper_bound_delta = base::TimeTicks::Now() - start;
 
     // Make sure the correct tab is in the foreground.
@@ -104,7 +107,7 @@ class HttpsEngagementPageLoadMetricsBrowserTest : public InProcessBrowserTest {
     ui_test_utils::NavigateToURL(browser(), GURL(chrome::kChromeUIVersionURL));
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::NEW_BACKGROUND_TAB,
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
     // Make sure the correct tab is in the foreground.
     TabStripModel* tab_strip_model = browser()->tab_strip_model();
@@ -125,7 +128,7 @@ class HttpsEngagementPageLoadMetricsBrowserTest : public InProcessBrowserTest {
     ui_test_utils::NavigateToURL(browser(), GURL(chrome::kChromeUIVersionURL));
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::NEW_BACKGROUND_TAB,
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
     // Make sure the correct tab is in the foreground.
     TabStripModel* tab_strip_model = browser()->tab_strip_model();
@@ -463,8 +466,15 @@ IN_PROC_BROWSER_TEST_F(HttpsEngagementPageLoadMetricsBrowserTest,
   EXPECT_EQ(0, ratio_bucket);
 }
 
+
+// Flaky on linux-chromeos-rel. crbug/1215539
+#if defined(NDEBUG) && defined(OS_CHROMEOS)
+#define MAYBE_AlwaysInBackground DISABLED_AlwaysInBackground
+#else
+#define MAYBE_AlwaysInBackground AlwaysInBackground
+#endif
 IN_PROC_BROWSER_TEST_F(HttpsEngagementPageLoadMetricsBrowserTest,
-                       AlwaysInBackground) {
+                       MAYBE_AlwaysInBackground) {
   StartHttpsServer(false);
   StartHttpServer();
   NavigateInBackgroundAndClose(https_test_server_->GetURL("/simple.html"));

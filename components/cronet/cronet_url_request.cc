@@ -13,6 +13,7 @@
 #include "base/logging.h"
 #include "build/build_config.h"
 #include "components/cronet/cronet_url_request_context.h"
+#include "net/base/idempotency.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_states.h"
 #include "net/base/net_errors.h"
@@ -24,6 +25,7 @@
 #include "net/http/http_util.h"
 #include "net/ssl/ssl_info.h"
 #include "net/third_party/quiche/src/quic/core/quic_packets.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request_context.h"
 
@@ -61,7 +63,8 @@ CronetURLRequest::CronetURLRequest(CronetURLRequestContext* context,
                                    bool traffic_stats_tag_set,
                                    int32_t traffic_stats_tag,
                                    bool traffic_stats_uid_set,
-                                   int32_t traffic_stats_uid)
+                                   int32_t traffic_stats_uid,
+                                   net::Idempotency idempotency)
     : context_(context),
       network_tasks_(std::move(callback),
                      url,
@@ -73,7 +76,8 @@ CronetURLRequest::CronetURLRequest(CronetURLRequestContext* context,
                      traffic_stats_tag_set,
                      traffic_stats_tag,
                      traffic_stats_uid_set,
-                     traffic_stats_uid),
+                     traffic_stats_uid,
+                     idempotency),
       initial_method_("GET"),
       initial_request_headers_(std::make_unique<net::HttpRequestHeaders>()) {
   DCHECK(!context_->IsOnNetworkThread());
@@ -173,7 +177,8 @@ CronetURLRequest::NetworkTasks::NetworkTasks(std::unique_ptr<Callback> callback,
                                              bool traffic_stats_tag_set,
                                              int32_t traffic_stats_tag,
                                              bool traffic_stats_uid_set,
-                                             int32_t traffic_stats_uid)
+                                             int32_t traffic_stats_uid,
+                                             net::Idempotency idempotency)
     : callback_(std::move(callback)),
       initial_url_(url),
       initial_priority_(priority),
@@ -185,7 +190,8 @@ CronetURLRequest::NetworkTasks::NetworkTasks(std::unique_ptr<Callback> callback,
       traffic_stats_tag_set_(traffic_stats_tag_set),
       traffic_stats_tag_(traffic_stats_tag),
       traffic_stats_uid_set_(traffic_stats_uid_set),
-      traffic_stats_uid_(traffic_stats_uid) {
+      traffic_stats_uid_(traffic_stats_uid),
+      idempotency_(idempotency) {
   DETACH_FROM_THREAD(network_thread_checker_);
 }
 
@@ -218,10 +224,10 @@ void CronetURLRequest::NetworkTasks::OnCertificateRequested(
 
 void CronetURLRequest::NetworkTasks::OnSSLCertificateError(
     net::URLRequest* request,
+    int net_error,
     const net::SSLInfo& ssl_info,
     bool fatal) {
   DCHECK_CALLED_ON_VALID_THREAD(network_thread_checker_);
-  int net_error = net::MapCertStatusToNetError(ssl_info.cert_status);
   ReportError(request, net_error);
   request->Cancel();
 }
@@ -277,11 +283,16 @@ void CronetURLRequest::NetworkTasks::Start(
           << initial_url_.possibly_invalid_spec().c_str()
           << " priority: " << RequestPriorityToString(initial_priority_);
   url_request_ = context->GetURLRequestContext()->CreateRequest(
-      initial_url_, net::DEFAULT_PRIORITY, this);
+      initial_url_, net::DEFAULT_PRIORITY, this, MISSING_TRAFFIC_ANNOTATION);
   url_request_->SetLoadFlags(initial_load_flags_);
   url_request_->set_method(method);
   url_request_->SetExtraRequestHeaders(*request_headers);
   url_request_->SetPriority(initial_priority_);
+  url_request_->SetIdempotency(idempotency_);
+  std::string referer;
+  if (request_headers->GetHeader(net::HttpRequestHeaders::kReferer, &referer)) {
+    url_request_->SetReferrer(referer);
+  }
   if (upload)
     url_request_->set_upload(std::move(upload));
   if (traffic_stats_tag_set_ || traffic_stats_uid_set_) {
@@ -313,8 +324,8 @@ void CronetURLRequest::NetworkTasks::GetStatus(
 void CronetURLRequest::NetworkTasks::FollowDeferredRedirect() {
   DCHECK_CALLED_ON_VALID_THREAD(network_thread_checker_);
   url_request_->FollowDeferredRedirect(
-      base::nullopt /* removed_request_headers */,
-      base::nullopt /* modified_request_headers */);
+      absl::nullopt /* removed_request_headers */,
+      absl::nullopt /* modified_request_headers */);
 }
 
 void CronetURLRequest::NetworkTasks::ReadData(

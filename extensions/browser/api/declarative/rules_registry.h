@@ -13,7 +13,6 @@
 #include <string>
 #include <vector>
 
-#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -299,7 +298,7 @@ class RulesRegistry : public base::RefCountedThreadSafe<RulesRegistry> {
   // instance.
   base::WeakPtr<RulesCacheDelegate> cache_delegate_;
 
-  base::WeakPtrFactory<RulesRegistry> weak_ptr_factory_;
+  base::WeakPtrFactory<RulesRegistry> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RulesRegistry);
 };

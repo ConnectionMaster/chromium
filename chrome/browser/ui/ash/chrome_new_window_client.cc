@@ -5,25 +5,40 @@
 #include "chrome/browser/ui/ash/chrome_new_window_client.h"
 
 #include <utility>
+#include <vector>
 
-#include "ash/public/cpp/ash_features.h"
-#include "ash/public/interfaces/constants.mojom.h"
+#include "apps/launcher.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/app_list/internal_app_id_constants.h"
+#include "ash/public/cpp/keyboard_shortcut_viewer.h"
+#include "ash/public/cpp/shelf_model.h"
+#include "ash/public/cpp/shelf_types.h"
+#include "base/feature_list.h"
+#include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/timer/elapsed_timer.h"
-#include "chrome/browser/chromeos/arc/arc_web_contents_data.h"
-#include "chrome/browser/chromeos/arc/fileapi/arc_content_file_system_url_util.h"
+#include "chrome/browser/apps/app_service/app_service_metrics.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/app_service/intent_util.h"
+#include "chrome/browser/apps/app_service/launch_utils.h"
+#include "chrome/browser/ash/apps/apk_web_app_service.h"
+#include "chrome/browser/ash/apps/metrics/intent_handling_metrics.h"
+#include "chrome/browser/ash/arc/arc_util.h"
+#include "chrome/browser/ash/arc/arc_web_contents_data.h"
+#include "chrome/browser/ash/arc/fileapi/arc_content_file_system_url_util.h"
+#include "chrome/browser/ash/arc/intent_helper/custom_tab_session_impl.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/web_applications/chrome_camera_app_ui_delegate.h"
 #include "chrome/browser/chromeos/file_manager/app_id.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "chrome/browser/extensions/api/terminal/terminal_extension_helper.h"
-#include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/chromeos/file_manager/path_util.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
-#include "chrome/browser/tab_contents/tab_util.h"
-#include "chrome/browser/ui/ash/ksv/keyboard_shortcut_viewer_util.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
+#include "chrome/browser/ui/ash/shelf/app_window_base.h"
+#include "chrome/browser/ui/ash/shelf/app_window_shelf_item_controller.h"
+#include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_finder.h"
@@ -32,34 +47,181 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
-#include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
+#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/web_applications/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
+#include "chrome/browser/ui/webui/settings/chromeos/constants/routes.mojom.h"
+#include "chrome/browser/web_applications/components/app_registrar.h"
+#include "chrome/browser/web_applications/components/web_app_helpers.h"
+#include "chrome/browser/web_applications/components/web_app_id.h"
+#include "chrome/browser/web_applications/components/web_app_provider_base.h"
+#include "chrome/browser/web_applications/system_web_apps/system_web_app_manager.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
+#include "components/arc/arc_util.h"
 #include "components/arc/intent_helper/arc_intent_helper_bridge.h"
+#include "components/arc/intent_helper/custom_tab.h"
+#include "components/arc/mojom/intent_helper.mojom.h"
+#include "components/services/app_service/public/cpp/intent_util.h"
+#include "components/services/app_service/public/cpp/types_util.h"
+#include "components/services/app_service/public/mojom/types.mojom.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/sessions/core/tab_restore_service_observer.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
-#include "components/version_info/version_info.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/service_manager_connection.h"
-#include "content/public/common/user_agent.h"
-#include "content/public/common/was_activated_option.h"
-#include "extensions/browser/extension_system.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "third_party/blink/public/mojom/navigation/was_activated_option.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
-#include "ui/views/mus/remote_view/remote_view_provider.h"
 #include "url/url_constants.h"
+
+using arc::mojom::ChromePage;
 
 namespace {
 
-ChromeNewWindowClient* g_chrome_new_window_client_instance = nullptr;
+constexpr std::pair<arc::mojom::ChromePage, const char*> kOSSettingsMapping[] =
+    {{ChromePage::ACCOUNTS,
+      chromeos::settings::mojom::kManageOtherPeopleSubpagePath},
+     {ChromePage::ACCOUNTMANAGER,
+      chromeos::settings::mojom::kMyAccountsSubpagePath},
+     {ChromePage::AMBIENTMODE,
+      chromeos::settings::mojom::kAmbientModeSubpagePath},
+     {ChromePage::ANDROIDAPPSDETAILS,
+      chromeos::settings::mojom::kGooglePlayStoreSubpagePath},
+     {ChromePage::ANDROIDAPPSDETAILSINBROWSERSETTINGS,
+      chromeos::settings::mojom::kGooglePlayStoreSubpagePath},
+     {ChromePage::APPMANAGEMENT,
+      chromeos::settings::mojom::kAppManagementSubpagePath},
+     {ChromePage::APPMANAGEMENTDETAILS,
+      chromeos::settings::mojom::kAppDetailsSubpagePath},
+     {ChromePage::ASSISTANT, chromeos::settings::mojom::kAssistantSubpagePath},
+     {ChromePage::BLUETOOTH,
+      chromeos::settings::mojom::kBluetoothDevicesSubpagePath},
+     {ChromePage::BLUETOOTHDEVICES,
+      chromeos::settings::mojom::kBluetoothDevicesSubpagePath},
+     {ChromePage::CELLULAR,
+      chromeos::settings::mojom::kMobileDataNetworksSubpagePath},
+     {ChromePage::CHANGEPICTURE,
+      chromeos::settings::mojom::kChangePictureSubpagePath},
+     {ChromePage::CONNECTEDDEVICES,
+      chromeos::settings::mojom::kMultiDeviceFeaturesSubpagePath},
+     {ChromePage::CROSTINISHAREDPATHS,
+      chromeos::settings::mojom::kCrostiniManageSharedFoldersSubpagePath},
+     {ChromePage::CROSTINISHAREDUSBDEVICES,
+      chromeos::settings::mojom::kCrostiniUsbPreferencesSubpagePath},
+     {ChromePage::CROSTINIEXPORTIMPORT,
+      chromeos::settings::mojom::kCrostiniBackupAndRestoreSubpagePath},
+     {ChromePage::CUPSPRINTERS,
+      chromeos::settings::mojom::kPrintingDetailsSubpagePath},
+     {ChromePage::DATETIME, chromeos::settings::mojom::kDateAndTimeSectionPath},
+     {ChromePage::DISPLAY, chromeos::settings::mojom::kDisplaySubpagePath},
+     {ChromePage::ETHERNET,
+      chromeos::settings::mojom::kEthernetDetailsSubpagePath},
+     {ChromePage::EXTERNALSTORAGE,
+      chromeos::settings::mojom::kExternalStorageSubpagePath},
+     {ChromePage::HELP, chromeos::settings::mojom::kAboutChromeOsSectionPath},
+     {ChromePage::INTERNET, chromeos::settings::mojom::kNetworkSectionPath},
+     {ChromePage::KEYBOARDOVERLAY,
+      chromeos::settings::mojom::kKeyboardSubpagePath},
+     {ChromePage::KNOWNNETWORKS,
+      chromeos::settings::mojom::kKnownNetworksSubpagePath},
+     {ChromePage::OSLANGUAGES,
+      chromeos::settings::mojom::kLanguagesAndInputSectionPath},
+     {ChromePage::OSLANGUAGESEDITDICTIONARY,
+      chromeos::settings::mojom::kEditDictionarySubpagePath},
+     {ChromePage::OSLANGUAGESINPUT,
+      chromeos::settings::mojom::kInputSubpagePath},
+     {ChromePage::OSLANGUAGESLANGUAGES,
+      chromeos::settings::mojom::kLanguagesSubpagePath},
+     {ChromePage::OSLANGUAGESSMARTINPUTS,
+      chromeos::settings::mojom::kSmartInputsSubpagePath},
+     {ChromePage::LOCKSCREEN,
+      chromeos::settings::mojom::kSecurityAndSignInSubpagePath},
+     {ChromePage::MAIN, ""},
+     {ChromePage::MANAGEACCESSIBILITY,
+      chromeos::settings::mojom::kManageAccessibilitySubpagePath},
+     {ChromePage::MANAGEACCESSIBILITYTTS,
+      chromeos::settings::mojom::kTextToSpeechSubpagePath},
+     {ChromePage::MULTIDEVICE,
+      chromeos::settings::mojom::kMultiDeviceSectionPath},
+     {ChromePage::NETWORKSTYPEVPN,
+      chromeos::settings::mojom::kVpnDetailsSubpagePath},
+     {ChromePage::PLUGINVMSHAREDPATHS,
+      chromeos::settings::mojom::kPluginVmSharedPathsSubpagePath},
+     {ChromePage::OSACCESSIBILITY,
+      chromeos::settings::mojom::kAccessibilitySectionPath},
+     {ChromePage::OSPEOPLE, chromeos::settings::mojom::kPeopleSectionPath},
+     {ChromePage::OSPRINTING, chromeos::settings::mojom::kPrintingSectionPath},
+     {ChromePage::OSPRIVACY,
+      chromeos::settings::mojom::kPrivacyAndSecuritySectionPath},
+     {ChromePage::OSRESET, chromeos::settings::mojom::kResetSectionPath},
+     {ChromePage::OSSEARCH,
+      chromeos::settings::mojom::kSearchAndAssistantSectionPath},
+     {ChromePage::POINTEROVERLAY,
+      chromeos::settings::mojom::kPointersSubpagePath},
+     {ChromePage::POWER, chromeos::settings::mojom::kPowerSubpagePath},
+     {ChromePage::SEARCHSUBPAGE, chromeos::settings::mojom::kSearchSubpagePath},
+     {ChromePage::SMARTLOCKSETTINGS,
+      chromeos::settings::mojom::kSmartLockSubpagePath},
+     {ChromePage::STORAGE, chromeos::settings::mojom::kStorageSubpagePath},
+     {ChromePage::STYLUS, chromeos::settings::mojom::kStylusSubpagePath},
+     {ChromePage::SWITCHACCESS,
+      chromeos::settings::mojom::kSwitchAccessOptionsSubpagePath},
+     {ChromePage::TETHERSETTINGS,
+      chromeos::settings::mojom::kMobileDataNetworksSubpagePath},
+     {ChromePage::WIFI, chromeos::settings::mojom::kWifiNetworksSubpagePath},
+     {ChromePage::KERBEROS, chromeos::settings::mojom::kKerberosSectionPath},
+     {ChromePage::KERBEROSACCOUNTSV2,
+      chromeos::settings::mojom::kKerberosAccountsV2SubpagePath}};
+
+constexpr std::pair<arc::mojom::ChromePage, const char*>
+    kBrowserSettingsMapping[] = {
+        {ChromePage::ACCESSIBILITY, chrome::kAccessibilitySubPage},
+        {ChromePage::APPEARANCE, chrome::kAppearanceSubPage},
+        {ChromePage::AUTOFILL, chrome::kAutofillSubPage},
+        {ChromePage::CLEARBROWSERDATA, chrome::kClearBrowserDataSubPage},
+        {ChromePage::CLOUDPRINTERS, chrome::kCloudPrintersSubPage},
+        {ChromePage::DOWNLOADS, chrome::kDownloadsSubPage},
+        {ChromePage::ONSTARTUP, chrome::kOnStartupSubPage},
+        {ChromePage::PASSWORDS, chrome::kPasswordManagerSubPage},
+        {ChromePage::PRIVACY, chrome::kPrivacySubPage},
+        {ChromePage::RESET, chrome::kResetSubPage},
+        {ChromePage::PRINTING, chrome::kPrintingSettingsSubPage},
+        {ChromePage::SEARCH, chrome::kSearchSubPage},
+        {ChromePage::SYNCSETUP, chrome::kSyncSetupSubPage},
+        {ChromePage::LANGUAGES, chrome::kLanguagesSubPage},
+};
+
+constexpr std::pair<arc::mojom::ChromePage, const char*> kAboutPagesMapping[] =
+    {{ChromePage::ABOUTBLANK, url::kAboutBlankURL},
+     {ChromePage::ABOUTDOWNLOADS, "chrome://downloads/"},
+     {ChromePage::ABOUTHISTORY, "chrome://history/"}};
+
+constexpr arc::mojom::ChromePage kDeprecatedPages[] = {
+    ChromePage::DEPRECATED_CROSTINIDISKRESIZE,
+    ChromePage::DEPRECATED_DOWNLOADEDCONTENT,
+    ChromePage::DEPRECATED_KERBEROSACCOUNTS,
+    ChromePage::DEPRECATED_OSLANGUAGESDETAILS,
+    ChromePage::DEPRECATED_OSLANGUAGESINPUTMETHODS,
+    ChromePage::DEPRECATED_PLUGINVMDETAILS,
+};
+
+// mojom::ChromePage::LAST returns the amount of valid entries - 1.
+static_assert(base::size(kOSSettingsMapping) +
+                      base::size(kBrowserSettingsMapping) +
+                      base::size(kAboutPagesMapping) +
+                      base::size(kDeprecatedPages) ==
+                  static_cast<size_t>(arc::mojom::ChromePage::LAST) + 1,
+              "ChromePage mapping is out of sync");
 
 void RestoreTabUsingProfile(Profile* profile) {
   sessions::TabRestoreService* service =
@@ -69,7 +231,7 @@ void RestoreTabUsingProfile(Profile* profile) {
 
 bool IsIncognitoAllowed() {
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  return profile && profile->GetProfileType() != Profile::GUEST_PROFILE &&
+  return profile && !profile->IsGuestSession() &&
          IncognitoModePrefs::GetAvailability(profile->GetPrefs()) !=
              IncognitoModePrefs::DISABLED;
 }
@@ -85,149 +247,77 @@ GURL ConvertArcUrlToExternalFileUrlIfNeeded(const GURL& url) {
   return url;
 }
 
-// Implementation of CustomTabSession interface.
-class CustomTabSessionImpl : public arc::mojom::CustomTabSession {
- public:
-  static arc::mojom::CustomTabSessionPtr Create(
-      Profile* profile,
-      const GURL& url,
-      ash::mojom::ArcCustomTabViewPtr view) {
-    // This object will be deleted when the mojo connection is closed.
-    auto* tab = new CustomTabSessionImpl(profile, url, std::move(view));
-    arc::mojom::CustomTabSessionPtr ptr;
-    tab->Bind(&ptr);
-    return ptr;
+// Returns URL path and query without the "/" prefix. For example, for the URL
+// "chrome://settings/networks/?type=WiFi" returns "networks/?type=WiFi".
+std::string GetPathAndQuery(const GURL& url) {
+  std::string result = url.path();
+  if (!result.empty() && result[0] == '/')
+    result.erase(0, 1);
+  if (url.has_query()) {
+    result += '?';
+    result += url.query();
   }
+  return result;
+}
 
-  // arc::mojom::CustomTabSession override:
-  void OnOpenInChromeClicked() override { forwarded_to_normal_tab_ = true; }
+// Remove directory components from |file_name|. E.g.,
+// StripPathComponents("../directory/file.jpg") returns "file.jpg".
+std::string StripPathComponents(const std::string& file_name) {
+  return base::FilePath(file_name).BaseName().AsUTF8Unsafe();
+}
 
- private:
-  CustomTabSessionImpl(Profile* profile,
-                       const GURL& url,
-                       ash::mojom::ArcCustomTabViewPtr view)
-      : binding_(this),
-        view_(std::move(view)),
-        web_contents_(CreateWebContents(profile, url)),
-        weak_ptr_factory_(this) {
-    aura::Window* window = web_contents_->GetNativeView();
-    remote_view_provider_ = std::make_unique<views::RemoteViewProvider>(window);
-    remote_view_provider_->GetEmbedToken(base::BindOnce(
-        &CustomTabSessionImpl::OnEmbedToken, weak_ptr_factory_.GetWeakPtr()));
-    window->Show();
-  }
+apps::mojom::IntentPtr ConvertLaunchIntent(
+    const arc::mojom::LaunchIntentPtr& launch_intent) {
+  apps::mojom::IntentPtr intent = apps::mojom::Intent::New();
 
-  ~CustomTabSessionImpl() override {
-    // Keep in sync with ArcCustomTabsSessionEndReason in
-    // //tools/metrics/histograms/enums.xml.
-    enum class SessionEndReason {
-      CLOSED = 0,
-      FORWARDED_TO_NORMAL_TAB = 1,
-      kMaxValue = FORWARDED_TO_NORMAL_TAB,
-    } session_end_reason = forwarded_to_normal_tab_
-                               ? SessionEndReason::FORWARDED_TO_NORMAL_TAB
-                               : SessionEndReason::CLOSED;
-    UMA_HISTOGRAM_ENUMERATION("Arc.CustomTabs.SessionEndReason",
-                              session_end_reason);
-    auto elapsed = lifetime_timer_.Elapsed();
-    UMA_HISTOGRAM_MEDIUM_TIMES("Arc.CustomTabs.SessionLifetime.All", elapsed);
-    switch (session_end_reason) {
-      case SessionEndReason::CLOSED:
-        UMA_HISTOGRAM_MEDIUM_TIMES("Arc.CustomTabs.SessionLifetime.Closed",
-                                   elapsed);
-        break;
-      case SessionEndReason::FORWARDED_TO_NORMAL_TAB:
-        UMA_HISTOGRAM_MEDIUM_TIMES(
-            "Arc.CustomTabs.SessionLifetime.ForwardedToNormalTab", elapsed);
-        break;
+  const char* action =
+      apps_util::ConvertArcToAppServiceIntentAction(launch_intent->action);
+  if (action)
+    intent->action = action;
+
+  intent->url = launch_intent->data;
+  intent->mime_type = launch_intent->type;
+  intent->share_title = launch_intent->extra_subject;
+  intent->share_text = launch_intent->extra_text;
+
+  if (launch_intent->files.has_value() && launch_intent->files->size() > 0) {
+    intent->files = std::vector<apps::mojom::IntentFilePtr>();
+    for (const auto& file_info : *launch_intent->files) {
+      auto file = apps::mojom::IntentFile::New();
+
+      file->url = arc::ArcUrlToExternalFileUrl(file_info->content_uri);
+      file->mime_type = file_info->type;
+      file->file_name = StripPathComponents(file_info->name);
+      file->file_size = file_info->size;
+      intent->files->push_back(std::move(file));
     }
   }
 
-  void Bind(arc::mojom::CustomTabSessionPtr* ptr) {
-    binding_.Bind(mojo::MakeRequest(ptr));
-    binding_.set_connection_error_handler(base::BindOnce(
-        &CustomTabSessionImpl::Close, weak_ptr_factory_.GetWeakPtr()));
-  }
-
-  // Deletes this object when the mojo connection is closed.
-  void Close() { delete this; }
-
-  std::unique_ptr<content::WebContents> CreateWebContents(Profile* profile,
-                                                          const GURL& url) {
-    scoped_refptr<content::SiteInstance> site_instance =
-        tab_util::GetSiteInstanceForNewTab(profile, url);
-    content::WebContents::CreateParams create_params(profile, site_instance);
-    std::unique_ptr<content::WebContents> web_contents =
-        content::WebContents::Create(create_params);
-
-    // Use the same version number as browser_commands.cc
-    // TODO(hashimoto): Get the actual Android version from the container.
-    constexpr char kOsOverrideForTabletSite[] = "Linux; Android 4.0.3";
-    // Override the user agent to request mobile version web sites.
-    const std::string product =
-        version_info::GetProductNameAndVersionForUserAgent();
-    const std::string user_agent = content::BuildUserAgentFromOSAndProduct(
-        kOsOverrideForTabletSite, product);
-    web_contents->SetUserAgentOverride(user_agent,
-                                       false /* override_in_new_tabs */);
-
-    content::NavigationController::LoadURLParams load_url_params(url);
-    load_url_params.source_site_instance = site_instance;
-    load_url_params.override_user_agent =
-        content::NavigationController::UA_OVERRIDE_TRUE;
-    web_contents->GetController().LoadURLWithParams(load_url_params);
-
-    // Add a flag to remember this tab originated in the ARC context.
-    web_contents->SetUserData(&arc::ArcWebContentsData::kArcTransitionFlag,
-                              std::make_unique<arc::ArcWebContentsData>());
-    return web_contents;
-  }
-
-  void OnEmbedToken(const base::UnguessableToken& token) {
-    view_->EmbedUsingToken(token);
-  }
-
-  mojo::Binding<arc::mojom::CustomTabSession> binding_;
-  ash::mojom::ArcCustomTabViewPtr view_;
-  std::unique_ptr<content::WebContents> web_contents_;
-  std::unique_ptr<views::RemoteViewProvider> remote_view_provider_;
-  base::ElapsedTimer lifetime_timer_;
-  bool forwarded_to_normal_tab_ = false;
-  base::WeakPtrFactory<CustomTabSessionImpl> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(CustomTabSessionImpl);
-};
+  return intent;
+}
 
 }  // namespace
 
-ChromeNewWindowClient::ChromeNewWindowClient() : binding_(this) {
+ChromeNewWindowClient::ChromeNewWindowClient()
+    : os_settings_pages_(std::cbegin(kOSSettingsMapping),
+                         std::cend(kOSSettingsMapping)),
+      browser_settings_pages_(std::cbegin(kBrowserSettingsMapping),
+                              std::cend(kBrowserSettingsMapping)),
+      about_pages_(std::cbegin(kAboutPagesMapping),
+                   std::cend(kAboutPagesMapping)) {
   arc::ArcIntentHelperBridge::SetOpenUrlDelegate(this);
-
-  service_manager::Connector* connector =
-      content::ServiceManagerConnection::GetForProcess()->GetConnector();
-  connector->BindInterface(ash::mojom::kServiceName, &new_window_controller_);
-  connector->BindInterface(ash::mojom::kServiceName,
-                           &arc_custom_tab_controller_);
-
-  // Register this object as the client interface implementation.
-  ash::mojom::NewWindowClientAssociatedPtrInfo ptr_info;
-  binding_.Bind(mojo::MakeRequest(&ptr_info));
-  new_window_controller_->SetClient(std::move(ptr_info));
-
-  DCHECK(!g_chrome_new_window_client_instance);
-  g_chrome_new_window_client_instance = this;
+  arc::ArcIntentHelperBridge::SetControlCameraAppDelegate(this);
 }
 
 ChromeNewWindowClient::~ChromeNewWindowClient() {
-  DCHECK_EQ(g_chrome_new_window_client_instance, this);
-  g_chrome_new_window_client_instance = nullptr;
-
+  arc::ArcIntentHelperBridge::SetControlCameraAppDelegate(nullptr);
   arc::ArcIntentHelperBridge::SetOpenUrlDelegate(nullptr);
 }
 
 // static
 ChromeNewWindowClient* ChromeNewWindowClient::Get() {
-  return g_chrome_new_window_client_instance;
+  return static_cast<ChromeNewWindowClient*>(
+      ash::NewWindowDelegate::GetInstance());
 }
 
 // TabRestoreHelper is used to restore a tab. In particular when the user
@@ -275,7 +365,7 @@ class ChromeNewWindowClient::TabRestoreHelper
 
 void ChromeNewWindowClient::NewTab() {
   Browser* browser = chrome::FindBrowserWithActiveWindow();
-  if (browser && browser->is_type_tabbed()) {
+  if (browser && browser->is_type_normal()) {
     chrome::NewTab(browser);
     return;
   }
@@ -304,41 +394,109 @@ void ChromeNewWindowClient::NewWindow(bool is_incognito) {
   Profile* profile = (browser && browser->profile())
                          ? browser->profile()->GetOriginalProfile()
                          : ProfileManager::GetActiveUserProfile();
-  chrome::NewEmptyWindow(is_incognito ? profile->GetOffTheRecordProfile()
-                                      : profile);
+  chrome::NewEmptyWindow(
+      is_incognito ? profile->GetPrimaryOTRProfile(/*create_if_needed=*/true)
+                   : profile);
+}
+
+void ChromeNewWindowClient::OpenCalculator() {
+  Profile* const profile = ProfileManager::GetActiveUserProfile();
+  const extensions::ExtensionRegistry* registry =
+      extensions::ExtensionRegistry::Get(profile);
+  if (!registry)
+    return;
+
+  const extensions::Extension* extension =
+      registry->GetInstalledExtension(extension_misc::kCalculatorAppId);
+  if (!extension)
+    return;
+
+  auto url = GURL(extensions::Extension::GetBaseURLFromExtensionId(
+                      extension_misc::kCalculatorAppId)
+                      .spec());
+  apps::LaunchPlatformAppWithUrl(profile, extension,
+                                 /*handler_id=*/std::string(), url,
+                                 /*referrer_url=*/GURL());
+
+  apps::RecordAppLaunch(extension_misc::kCalculatorAppId,
+                        apps::mojom::LaunchSource::kFromKeyboard);
 }
 
 void ChromeNewWindowClient::OpenFileManager() {
-  using file_manager::kFileManagerAppId;
   Profile* const profile = ProfileManager::GetActiveUserProfile();
-  const extensions::ExtensionService* const service =
-      extensions::ExtensionSystem::Get(profile)->extension_service();
-  if (!service || !extensions::util::IsAppLaunchableWithoutEnabling(
-                      kFileManagerAppId, profile)) {
-    return;
-  }
+  apps::AppServiceProxyChromeOs* proxy =
+      apps::AppServiceProxyFactory::GetForProfile(profile);
+  DCHECK(proxy);
 
-  const extensions::Extension* const extension =
-      service->GetInstalledExtension(kFileManagerAppId);
-  OpenApplication(CreateAppLaunchParamsUserContainer(
-      profile, extension, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      extensions::SOURCE_KEYBOARD));
+  auto launch_files_app = [proxy](const apps::AppUpdate& update) {
+    if (update.Readiness() != apps::mojom::Readiness::kReady) {
+      LOG(WARNING)
+          << "Couldn't launch Files app because it isn't ready, readiness: "
+          << update.Readiness();
+      return;
+    }
+
+    proxy->Launch(
+        update.AppId(),
+        apps::GetEventFlags(apps::mojom::LaunchContainer::kLaunchContainerNone,
+                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            /*preferred_containner=*/true),
+        apps::mojom::LaunchSource::kFromKeyboard);
+  };
+
+  bool result = proxy->AppRegistryCache().ForOneApp(
+      file_manager::kFileManagerAppId, std::move(launch_files_app));
+  DCHECK(result);
+}
+
+void ChromeNewWindowClient::OpenDownloadsFolder() {
+  Profile* const profile = ProfileManager::GetActiveUserProfile();
+  apps::AppServiceProxyChromeOs* proxy =
+      apps::AppServiceProxyFactory::GetForProfile(profile);
+  auto downloads_path =
+      file_manager::util::GetDownloadsFolderForProfile(profile);
+  DCHECK(proxy);
+
+  auto launch_files_app = [proxy,
+                           downloads_path](const apps::AppUpdate& update) {
+    if (update.Readiness() != apps::mojom::Readiness::kReady) {
+      LOG(WARNING)
+          << "Couldn't launch Files app because it isn't ready, readiness: "
+          << update.Readiness();
+      return;
+    }
+
+    apps::mojom::FilePathsPtr launch_files = apps::mojom::FilePaths::New();
+    launch_files->file_paths.push_back(downloads_path);
+
+    proxy->LaunchAppWithFiles(
+        update.AppId(), apps::mojom::LaunchContainer::kLaunchContainerNone,
+        apps::GetEventFlags(apps::mojom::LaunchContainer::kLaunchContainerNone,
+                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            /*preferred_containner=*/true),
+        apps::mojom::LaunchSource::kFromKeyboard, std::move(launch_files));
+  };
+
+  bool result = proxy->AppRegistryCache().ForOneApp(
+      file_manager::kFileManagerAppId, launch_files_app);
+  DCHECK(result);
 }
 
 void ChromeNewWindowClient::OpenCrosh() {
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  GURL crosh_url =
-      extensions::TerminalExtensionHelper::GetCroshExtensionURL(profile);
-  if (!crosh_url.is_valid())
-    return;
-  chrome::ScopedTabbedBrowserDisplayer displayer(profile);
-  Browser* browser = displayer.browser();
-  content::WebContents* page = browser->OpenURL(content::OpenURLParams(
-      crosh_url, content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PAGE_TRANSITION_GENERATED, false));
-  browser->window()->Show();
-  browser->window()->Activate();
-  page->Focus();
+  if (base::FeatureList::IsEnabled(chromeos::features::kCroshSWA)) {
+    web_app::LaunchSystemWebAppAsync(profile, web_app::SystemAppType::CROSH);
+  } else {
+    chrome::ScopedTabbedBrowserDisplayer displayer(profile);
+    Browser* browser = displayer.browser();
+    content::WebContents* page = browser->OpenURL(content::OpenURLParams(
+        GURL(chrome::kChromeUIUntrustedCroshURL), content::Referrer(),
+        WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        ui::PAGE_TRANSITION_GENERATED, false));
+    browser->window()->Show();
+    browser->window()->Activate();
+    page->Focus();
+  }
 }
 
 void ChromeNewWindowClient::OpenGetHelp() {
@@ -366,17 +524,23 @@ void ChromeNewWindowClient::RestoreTab() {
   if (service->IsLoaded()) {
     RestoreTabUsingProfile(profile);
   } else {
-    tab_restore_helper_.reset(new TabRestoreHelper(this, profile, service));
+    tab_restore_helper_ =
+        std::make_unique<TabRestoreHelper>(this, profile, service);
     service->LoadTabsFromLastSession();
   }
 }
 
 void ChromeNewWindowClient::ShowKeyboardShortcutViewer() {
-  keyboard_shortcut_viewer_util::ToggleKeyboardShortcutViewer();
+  ash::ToggleKeyboardShortcutViewer();
 }
 
 void ChromeNewWindowClient::ShowTaskManager() {
   chrome::OpenTaskManager(nullptr);
+}
+
+void ChromeNewWindowClient::OpenDiagnostics() {
+  if (base::FeatureList::IsEnabled(chromeos::features::kDiagnosticsApp))
+    chrome::ShowDiagnosticsApp(ProfileManager::GetActiveUserProfile());
 }
 
 void ChromeNewWindowClient::OpenFeedbackPage(bool from_assistant) {
@@ -399,6 +563,9 @@ void ChromeNewWindowClient::OpenUrlFromArc(const GURL& url) {
   // Add a flag to remember this tab originated in the ARC context.
   tab->SetUserData(&arc::ArcWebContentsData::kArcTransitionFlag,
                    std::make_unique<arc::ArcWebContentsData>());
+
+  apps::IntentHandlingMetrics::RecordOpenBrowserMetrics(
+      apps::IntentHandlingMetrics::AppType::kArc);
 }
 
 void ChromeNewWindowClient::OpenWebAppFromArc(const GURL& url) {
@@ -418,71 +585,117 @@ void ChromeNewWindowClient::OpenWebAppFromArc(const GURL& url) {
   if (!profile)
     return;
 
-  const extensions::Extension* extension =
-      extensions::util::GetInstalledPwaForUrl(
-          profile, url, extensions::LAUNCH_CONTAINER_WINDOW);
-  if (!extension) {
+  absl::optional<web_app::AppId> app_id =
+      web_app::FindInstalledAppWithUrlInScope(profile, url,
+                                              /*window_only=*/true);
+
+  if (!app_id) {
     OpenUrlFromArc(url);
     return;
   }
 
-  AppLaunchParams params = CreateAppLaunchParamsUserContainer(
-      profile, extension, WindowOpenDisposition::NEW_WINDOW,
-      extensions::SOURCE_ARC);
-  params.override_url = url;
-  content::WebContents* tab = OpenApplication(params);
-  if (!tab)
+  int event_flags = apps::GetEventFlags(
+      apps::mojom::LaunchContainer::kLaunchContainerWindow,
+      WindowOpenDisposition::NEW_WINDOW, /*prefer_container=*/false);
+  if (web_app::WebAppProviderBase::GetProviderBase(profile)
+          ->registrar()
+          .GetAppEffectiveDisplayMode(*app_id) ==
+      blink::mojom::DisplayMode::kBrowser) {
+    event_flags = apps::GetEventFlags(
+        apps::mojom::LaunchContainer::kLaunchContainerTab,
+        WindowOpenDisposition::NEW_FOREGROUND_TAB, /*prefer_container=*/false);
+  }
+
+  apps::AppServiceProxyChromeOs* proxy =
+      apps::AppServiceProxyFactory::GetForProfile(profile);
+  proxy->LaunchAppWithUrl(*app_id, event_flags, url,
+                          apps::mojom::LaunchSource::kFromArc);
+
+  ash::ApkWebAppService* apk_web_app_service =
+      ash::ApkWebAppService::Get(profile);
+  if (!apk_web_app_service ||
+      !apk_web_app_service->IsWebAppInstalledFromArc(app_id.value())) {
+    return;
+  }
+
+  ArcAppListPrefs* prefs = ArcAppListPrefs::Get(profile);
+  if (!prefs)
     return;
 
-  // Add a flag to remember this tab originated in the ARC context.
-  tab->SetUserData(&arc::ArcWebContentsData::kArcTransitionFlag,
-                   std::make_unique<arc::ArcWebContentsData>());
+  absl::optional<std::string> package_name =
+      apk_web_app_service->GetPackageNameForWebApp(app_id.value());
+  if (!package_name.has_value())
+    return;
+
+  for (const auto& app_id : prefs->GetAppsForPackage(package_name.value())) {
+    proxy->StopApp(app_id);
+  }
 }
 
 void ChromeNewWindowClient::OpenArcCustomTab(
     const GURL& url,
     int32_t task_id,
-    int32_t surface_id,
-    int32_t top_margin,
     arc::mojom::IntentHelperHost::OnOpenCustomTabCallback callback) {
   GURL url_to_open = ConvertArcUrlToExternalFileUrlIfNeeded(url);
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  arc_custom_tab_controller_->CreateView(
-      task_id, surface_id, top_margin,
-      base::BindOnce(
-          [](Profile* profile, const GURL& url,
-             arc::mojom::IntentHelperHost::OnOpenCustomTabCallback callback,
-             ash::mojom::ArcCustomTabViewPtr view) {
-            if (!view) {
-              std::move(callback).Run(nullptr);
-              return;
-            }
-            std::move(callback).Run(
-                CustomTabSessionImpl::Create(profile, url, std::move(view)));
-          },
-          profile, url_to_open, std::move(callback)));
+
+  aura::Window* arc_window = arc::GetArcWindow(task_id);
+  if (!arc_window) {
+    std::move(callback).Run(mojo::NullRemote());
+    return;
+  }
+
+  auto custom_tab = std::make_unique<arc::CustomTab>(arc_window);
+  auto web_contents = arc::CreateArcCustomTabWebContents(profile, url);
+
+  // |custom_tab_browser| will be destroyed when its tab strip becomes empty,
+  // either due to the user opening the custom tab page in a tabbed browser or
+  // because of the CustomTabSessionImpl object getting destroyed.
+  Browser::CreateParams params(Browser::TYPE_CUSTOM_TAB, profile,
+                               /* user_gesture= */ true);
+  params.omit_from_session_restore = true;
+  auto* custom_tab_browser = Browser::Create(params);
+
+  custom_tab_browser->tab_strip_model()->AppendWebContents(
+      std::move(web_contents), /* foreground= */ true);
+
+  // TODO(crbug.com/955171): Remove this temporary conversion to InterfacePtr
+  // once OnOpenCustomTab from //components/arc/mojom/intent_helper.mojom could
+  // take pending_remote directly. Refer to crrev.com/c/1868870.
+  auto custom_tab_remote(
+      CustomTabSessionImpl::Create(std::move(custom_tab), custom_tab_browser));
+  std::move(callback).Run(std::move(custom_tab_remote));
 }
 
 content::WebContents* ChromeNewWindowClient::OpenUrlImpl(
     const GURL& url,
     bool from_user_interaction) {
-  // If the url is for system settings, show the settings in a window instead of
-  // a browser tab.
-  if (url.GetContent() == "settings" &&
-      (url.SchemeIs(url::kAboutScheme) ||
+  Profile* profile = ProfileManager::GetActiveUserProfile();
+  if ((url.SchemeIs(url::kAboutScheme) ||
        url.SchemeIs(content::kChromeUIScheme))) {
-    chrome::ShowSettingsSubPageForProfile(
-        ProfileManager::GetActiveUserProfile(), /*sub_page=*/std::string());
-    return nullptr;
+    // Show browser settings (e.g. chrome://settings). This may open in a window
+    // or a tab depending on feature SplitSettings.
+    if (url.host() == chrome::kChromeUISettingsHost) {
+      std::string sub_page = GetPathAndQuery(url);
+      chrome::ShowSettingsSubPageForProfile(profile, sub_page);
+      return nullptr;
+    }
+    // OS settings are shown in a window.
+    if (url.host() == chrome::kChromeUIOSSettingsHost) {
+      std::string sub_page = GetPathAndQuery(url);
+      chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(profile,
+                                                                   sub_page);
+      return nullptr;
+    }
   }
 
   NavigateParams navigate_params(
-      ProfileManager::GetActiveUserProfile(), url,
+      profile, url,
       ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
                                 ui::PAGE_TRANSITION_FROM_API));
 
   if (from_user_interaction)
-    navigate_params.was_activated = content::WasActivatedOption::kYes;
+    navigate_params.was_activated = blink::mojom::WasActivatedOption::kYes;
 
   Navigate(&navigate_params);
 
@@ -493,4 +706,136 @@ content::WebContents* ChromeNewWindowClient::OpenUrlImpl(
         navigate_params.browser->window()->GetNativeWindow());
   }
   return navigate_params.navigated_or_inserted_contents;
+}
+
+void ChromeNewWindowClient::OpenChromePageFromArc(ChromePage page) {
+  auto it = os_settings_pages_.find(page);
+  if (it != os_settings_pages_.end()) {
+    Profile* profile = ProfileManager::GetActiveUserProfile();
+    chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(profile,
+                                                                 it->second);
+    return;
+  }
+
+  it = browser_settings_pages_.find(page);
+  if (it != browser_settings_pages_.end()) {
+    OpenUrlFromArc(GURL(chrome::kChromeUISettingsURL).Resolve(it->second));
+    return;
+  }
+
+  it = about_pages_.find(page);
+  if (it != about_pages_.end()) {
+    OpenUrlFromArc(GURL(it->second));
+    return;
+  }
+
+  NOTREACHED();
+}
+
+void ChromeNewWindowClient::OpenAppWithIntent(
+    const GURL& start_url,
+    arc::mojom::LaunchIntentPtr arc_intent) {
+  DCHECK(start_url.is_valid());
+  DCHECK(start_url.SchemeIs(url::kHttpsScheme));
+
+  // Fetch the profile associated with ARC. This method should only be called
+  // for a |url| which was installed via ARC, and so we want the web app that is
+  // opened through here to be installed in the profile associated with ARC.
+  const auto* user = user_manager::UserManager::Get()->GetPrimaryUser();
+  DCHECK(user);
+
+  // |profile| may be null if sign-in has happened but the profile isn't loaded
+  // yet.
+  Profile* profile = chromeos::ProfileHelper::Get()->GetProfileByUser(user);
+  if (!profile)
+    return;
+
+  web_app::AppId app_id = web_app::GenerateAppIdFromURL(start_url);
+
+  bool app_installed = false;
+  auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile);
+  proxy->AppRegistryCache().ForOneApp(
+      app_id, [&app_installed](const apps::AppUpdate& update) {
+        app_installed = apps_util::IsInstalled(update.Readiness());
+      });
+
+  if (!app_installed) {
+    if (arc_intent->data)
+      OpenUrlFromArc(*arc_intent->data);
+    return;
+  }
+
+  apps::mojom::IntentPtr intent = ConvertLaunchIntent(arc_intent);
+
+  auto launch_container = apps::mojom::LaunchContainer::kLaunchContainerWindow;
+  auto disposition = WindowOpenDisposition::NEW_WINDOW;
+  proxy->AppRegistryCache().ForOneApp(
+      app_id, [&launch_container, &disposition](const apps::AppUpdate& update) {
+        if (update.WindowMode() == apps::mojom::WindowMode::kBrowser) {
+          launch_container = apps::mojom::LaunchContainer::kLaunchContainerTab;
+          disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+        }
+      });
+
+  int event_flags = apps::GetEventFlags(launch_container, disposition,
+                                        /*prefer_container=*/false);
+
+  proxy->LaunchAppWithIntent(app_id, event_flags, std::move(intent),
+                             apps::mojom::LaunchSource::kFromArc);
+}
+
+void ChromeNewWindowClient::LaunchCameraApp(const std::string& queries,
+                                            int32_t task_id) {
+  apps::RecordAppLaunch(extension_misc::kCameraAppId,
+                        apps::mojom::LaunchSource::kFromArc);
+
+  Profile* const profile = ProfileManager::GetActiveUserProfile();
+  auto* provider = web_app::WebAppProvider::GetForSystemWebApps(profile);
+  if (provider && provider->system_web_app_manager().IsAppEnabled(
+                      web_app::SystemAppType::CAMERA)) {
+    ChromeCameraAppUIDelegate::CameraAppDialog::ShowIntent(
+        queries, arc::GetArcWindow(task_id));
+    return;
+  }
+
+  const extensions::ExtensionRegistry* registry =
+      extensions::ExtensionRegistry::Get(profile);
+  const extensions::Extension* extension =
+      registry->GetInstalledExtension(extension_misc::kCameraAppId);
+
+  auto url = GURL(extensions::Extension::GetBaseURLFromExtensionId(
+                      extension_misc::kCameraAppId)
+                      .spec() +
+                  queries);
+
+  apps::LaunchPlatformAppWithUrl(profile, extension,
+                                 /*handler_id=*/std::string(), url,
+                                 /*referrer_url=*/GURL());
+}
+
+void ChromeNewWindowClient::CloseCameraApp() {
+  const ash::ShelfID shelf_id(extension_misc::kCameraAppId);
+  AppWindowShelfItemController* const app_controller =
+      ChromeShelfController::instance()
+          ->shelf_model()
+          ->GetAppWindowShelfItemController(shelf_id);
+  if (!app_controller)
+    return;
+
+  DCHECK_LE(app_controller->window_count(), 1lu);
+  if (app_controller->window_count() > 0)
+    app_controller->windows().front()->Close();
+}
+
+bool ChromeNewWindowClient::IsCameraAppEnabled() {
+  Profile* const profile = ProfileManager::GetActiveUserProfile();
+
+  if (extensions::ExtensionRegistry::Get(profile)->enabled_extensions().GetByID(
+          extension_misc::kCameraAppId) != nullptr)
+    return true;
+
+  auto* provider = web_app::WebAppProvider::GetForSystemWebApps(profile);
+
+  return provider && provider->system_web_app_manager().IsAppEnabled(
+                         web_app::SystemAppType::CAMERA);
 }

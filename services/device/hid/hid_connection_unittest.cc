@@ -14,14 +14,15 @@
 #include "base/callback.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_io_thread.h"
-#include "device/test/usb_test_gadget.h"
-#include "device/usb/usb_device.h"
 #include "services/device/hid/hid_service.h"
 #include "services/device/public/mojom/hid.mojom.h"
+#include "services/device/test/usb_test_gadget.h"
+#include "services/device/usb/usb_device.h"
+#include "services/device/usb/usb_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace device {
@@ -37,8 +38,8 @@ namespace {
 //
 class DeviceCatcher : HidService::Observer {
  public:
-  DeviceCatcher(HidService* hid_service, const base::string16& serial_number)
-      : serial_number_(base::UTF16ToUTF8(serial_number)), observer_(this) {
+  DeviceCatcher(HidService* hid_service, const std::u16string& serial_number)
+      : serial_number_(base::UTF16ToUTF8(serial_number)) {
     hid_service->GetDevices(
         base::BindOnce(&DeviceCatcher::OnEnumerationComplete,
                        base::Unretained(this), hid_service));
@@ -46,7 +47,7 @@ class DeviceCatcher : HidService::Observer {
 
   const std::string& WaitForDevice() {
     run_loop_.Run();
-    observer_.RemoveAll();
+    observation_.Reset();
     return device_guid_;
   }
 
@@ -60,7 +61,7 @@ class DeviceCatcher : HidService::Observer {
         break;
       }
     }
-    observer_.Add(hid_service);
+    observation_.Observe(hid_service);
   }
 
   void OnDeviceAdded(mojom::HidDeviceInfoPtr device_info) override {
@@ -71,7 +72,7 @@ class DeviceCatcher : HidService::Observer {
   }
 
   std::string serial_number_;
-  ScopedObserver<HidService, HidService::Observer> observer_;
+  base::ScopedObservation<HidService, HidService::Observer> observation_{this};
   base::RunLoop run_loop_;
   std::string device_guid_;
 };
@@ -92,8 +93,8 @@ class TestConnectCallback {
   }
 
   HidService::ConnectCallback GetCallback() {
-    return base::Bind(&TestConnectCallback::SetConnection,
-                      base::Unretained(this));
+    return base::BindOnce(&TestConnectCallback::SetConnection,
+                          base::Unretained(this));
   }
 
  private:
@@ -148,19 +149,20 @@ class TestIoCallback {
 class HidConnectionTest : public testing::Test {
  public:
   HidConnectionTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::UI),
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::UI),
         io_thread_(base::TestIOThread::kAutoStart) {}
 
  protected:
   void SetUp() override {
-    if (!UsbTestGadget::IsTestEnabled())
+    if (!UsbTestGadget::IsTestEnabled() || !usb_service_)
       return;
 
     service_ = HidService::Create();
     ASSERT_TRUE(service_);
 
-    test_gadget_ = UsbTestGadget::Claim(io_thread_.task_runner());
+    usb_service_ = UsbService::Create();
+    test_gadget_ =
+        UsbTestGadget::Claim(usb_service_.get(), io_thread_.task_runner());
     ASSERT_TRUE(test_gadget_);
     ASSERT_TRUE(test_gadget_->SetType(UsbTestGadget::HID_ECHO));
 
@@ -170,10 +172,11 @@ class HidConnectionTest : public testing::Test {
     ASSERT_FALSE(device_guid_.empty());
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::TestIOThread io_thread_;
   std::unique_ptr<HidService> service_;
   std::unique_ptr<UsbTestGadget> test_gadget_;
+  std::unique_ptr<UsbService> usb_service_;
   std::string device_guid_;
 };
 
@@ -182,7 +185,8 @@ TEST_F(HidConnectionTest, ReadWrite) {
     return;
 
   TestConnectCallback connect_callback;
-  service_->Connect(device_guid_, connect_callback.GetCallback());
+  service_->Connect(device_guid_, /*allow_protected_reports=*/false,
+                    connect_callback.GetCallback());
   scoped_refptr<HidConnection> conn = connect_callback.WaitForConnection();
   ASSERT_TRUE(conn.get());
 

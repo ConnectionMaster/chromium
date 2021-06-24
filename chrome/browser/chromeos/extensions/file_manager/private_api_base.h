@@ -8,11 +8,12 @@
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_FILE_MANAGER_PRIVATE_API_BASE_H_
 
 #include "base/time/time.h"
+#include "chrome/browser/chromeos/extensions/file_manager/files_extension_function.h"
 #include "extensions/browser/extension_function.h"
 
 namespace extensions {
 
-// This class adds a logging feature to UIThreadExtensionFunction. Logging is
+// This class adds a logging feature to ExtensionFunction. Logging is
 // done when sending the response to JavaScript, using drive::util::Log().
 // API functions of fileManagerPrivate should inherit this class.
 //
@@ -20,14 +21,14 @@ namespace extensions {
 // set_log_on_completion(true) to enable it, if they want. However, even if
 // the logging is turned off, a warning is emitted when a function call is
 // very slow. See the implementation of OnResponded() for details.
-class LoggedUIThreadExtensionFunction : public UIThreadExtensionFunction {
+class LoggedExtensionFunction : public FilesExtensionFunction {
  public:
-  LoggedUIThreadExtensionFunction();
+  LoggedExtensionFunction();
 
  protected:
-  ~LoggedUIThreadExtensionFunction() override;
+  ~LoggedExtensionFunction() override;
 
-  // UIThreadExtensionFunction overrides.
+  // ExtensionFunction overrides.
   void OnResponded() override;
 
   void SetWarningThresholds(base::TimeDelta slow_threshold,

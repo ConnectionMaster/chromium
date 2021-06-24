@@ -10,9 +10,11 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -36,8 +38,6 @@ namespace chromeos {
 
 namespace {
 
-// Allow parsed command line option 'tdls_busy' to set the fake busy count.
-int s_tdls_busy_count = 0;
 int s_extra_wifi_networks = 0;
 
 // For testing dynamic WEP networks (uses wifi2).
@@ -48,7 +48,7 @@ bool s_dynamic_wep = false;
 struct ValueEquals {
   explicit ValueEquals(const base::Value* first) : first_(first) {}
   bool operator()(const base::Value* second) const {
-    return first_->Equals(second);
+    return *first_ == *second;
   }
   const base::Value* first_;
 };
@@ -65,9 +65,32 @@ int GetIntValue(const base::Value& dict, const char* key) {
   return value ? value->GetInt() : 0;
 }
 
+bool GetString(const base::Value& dict, const char* key, std::string* result) {
+  // Note: FindPath uses path expansion which is currently required for the
+  // fake shill implementations.
+  const base::Value* v = dict.FindPathOfType(key, base::Value::Type::STRING);
+  if (!v)
+    return false;
+  return v->GetAsString(result);
+}
+
 std::string GetStringValue(const base::Value& dict, const char* key) {
   const base::Value* value = dict.FindKeyOfType(key, base::Value::Type::STRING);
   return value ? value->GetString() : std::string();
+}
+
+// Returns whether added.
+bool AppendIfNotPresent(base::ListValue* list, base::Value value) {
+  if (base::Contains(list->GetList(), value))
+    return false;
+  list->Append(std::move(value));
+  return true;
+}
+
+bool IsPortalledState(const std::string& state) {
+  return state == shill::kStatePortal || state == shill::kStateNoConnectivity ||
+         state == shill::kStateRedirectFound ||
+         state == shill::kStatePortalSuspected;
 }
 
 int GetStateOrder(const base::Value& dict) {
@@ -76,7 +99,7 @@ int GetStateOrder(const base::Value& dict) {
     return 1;
   if (state == shill::kStateReady)
     return 2;
-  if (state == shill::kStatePortal)
+  if (IsPortalledState(state))
     return 3;
   if (state == shill::kStateAssociation || state == shill::kStateConfiguration)
     return 4;
@@ -96,11 +119,9 @@ int GetTechnologyOrder(const base::Value& dict) {
     return 1;
   if (technology == shill::kTypeWifi)
     return 2;
-  if (technology == shill::kTypeWimax)
-    return 3;
   if (technology == shill::kTypeCellular)
-    return 4;
-  return 5;
+    return 3;
+  return 4;
 }
 
 int GetSecurityOrder(const base::Value& dict) {
@@ -180,13 +201,14 @@ void LogErrorCallback(const std::string& error_name,
 }
 
 bool IsConnectedState(const std::string& state) {
-  return state == shill::kStateOnline || state == shill::kStatePortal ||
+  return state == shill::kStateOnline || IsPortalledState(state) ||
          state == shill::kStateReady;
 }
 
 void UpdatePortaledWifiState(const std::string& service_path) {
   ShillServiceClient::Get()->GetTestInterface()->SetServiceProperty(
-      service_path, shill::kStateProperty, base::Value(shill::kStatePortal));
+      service_path, shill::kStateProperty,
+      base::Value(shill::kStateNoConnectivity));
 }
 
 bool IsCellularTechnology(const std::string& type) {
@@ -224,10 +246,7 @@ const char kRoamingRequired[] = "required";
 const char FakeShillManagerClient::kFakeEthernetNetworkGuid[] = "eth1_guid";
 
 FakeShillManagerClient::FakeShillManagerClient()
-    : interactive_delay_(0),
-      cellular_carrier_(shill::kCarrierSprint),
-      cellular_technology_(shill::kNetworkTechnologyGsm),
-      weak_ptr_factory_(this) {
+    : cellular_technology_(shill::kNetworkTechnologyGsm) {
   ParseCommandLineSwitch();
 }
 
@@ -246,33 +265,35 @@ void FakeShillManagerClient::RemovePropertyChangedObserver(
 }
 
 void FakeShillManagerClient::GetProperties(
-    const DictionaryValueCallback& callback) {
+    DBusMethodCallback<base::Value> callback) {
   VLOG(1) << "Manager.GetProperties";
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(&FakeShillManagerClient::PassStubProperties,
-                                weak_ptr_factory_.GetWeakPtr(), callback));
+      FROM_HERE,
+      base::BindOnce(&FakeShillManagerClient::PassStubProperties,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void FakeShillManagerClient::GetNetworksForGeolocation(
-    const DictionaryValueCallback& callback) {
+    DBusMethodCallback<base::Value> callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(&FakeShillManagerClient::PassStubGeoNetworks,
-                                weak_ptr_factory_.GetWeakPtr(), callback));
+      FROM_HERE,
+      base::BindOnce(&FakeShillManagerClient::PassStubGeoNetworks,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void FakeShillManagerClient::SetProperty(const std::string& name,
                                          const base::Value& value,
-                                         const base::Closure& callback,
-                                         const ErrorCallback& error_callback) {
+                                         base::OnceClosure callback,
+                                         ErrorCallback error_callback) {
   VLOG(2) << "SetProperty: " << name;
   stub_properties_.SetKey(name, value.Clone());
   CallNotifyObserversPropertyChanged(name);
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
+  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, std::move(callback));
 }
 
 void FakeShillManagerClient::RequestScan(const std::string& type,
-                                         const base::Closure& callback,
-                                         const ErrorCallback& error_callback) {
+                                         base::OnceClosure callback,
+                                         ErrorCallback error_callback) {
   VLOG(1) << "RequestScan: " << type;
   // For Stub purposes, default to a Wifi scan.
   std::string device_type = type.empty() ? shill::kTypeWifi : type;
@@ -286,144 +307,175 @@ void FakeShillManagerClient::RequestScan(const std::string& type,
     if (device_type == shill::kTypeCellular)
       device_client->AddCellularFoundNetwork(device_path);
   }
+  // Trigger |callback| immediately to indicate that the scan started.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, std::move(callback));
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&FakeShillManagerClient::ScanCompleted,
-                     weak_ptr_factory_.GetWeakPtr(), device_path, callback),
-      base::TimeDelta::FromSeconds(interactive_delay_));
+                     weak_ptr_factory_.GetWeakPtr(), device_path),
+      interactive_delay_);
 }
 
-void FakeShillManagerClient::EnableTechnology(
-    const std::string& type,
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
-  base::ListValue* enabled_list = nullptr;
-  if (!stub_properties_.GetListWithoutPathExpansion(
-          shill::kAvailableTechnologiesProperty, &enabled_list)) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
+void FakeShillManagerClient::EnableTechnology(const std::string& type,
+                                              base::OnceClosure callback,
+                                              ErrorCallback error_callback) {
+  base::Value* enabled_list =
+      stub_properties_.FindListKey(shill::kAvailableTechnologiesProperty);
+  if (!enabled_list) {
+    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                  std::move(callback));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::BindOnce(error_callback, "StubError", "Property not found"));
+        FROM_HERE, base::BindOnce(std::move(error_callback), "StubError",
+                                  "Property not found"));
     return;
   }
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&FakeShillManagerClient::SetTechnologyEnabled,
-                     weak_ptr_factory_.GetWeakPtr(), type, callback, true),
-      base::TimeDelta::FromSeconds(interactive_delay_));
+                     weak_ptr_factory_.GetWeakPtr(), type, std::move(callback),
+                     true),
+      interactive_delay_);
 }
 
-void FakeShillManagerClient::DisableTechnology(
-    const std::string& type,
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
-  base::ListValue* enabled_list = nullptr;
-  if (!stub_properties_.GetListWithoutPathExpansion(
-          shill::kAvailableTechnologiesProperty, &enabled_list)) {
+void FakeShillManagerClient::DisableTechnology(const std::string& type,
+                                               base::OnceClosure callback,
+                                               ErrorCallback error_callback) {
+  base::Value* enabled_list =
+      stub_properties_.FindListKey(shill::kAvailableTechnologiesProperty);
+  if (!enabled_list) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::BindOnce(error_callback, "StubError", "Property not found"));
+        FROM_HERE, base::BindOnce(std::move(error_callback), "StubError",
+                                  "Property not found"));
     return;
   }
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&FakeShillManagerClient::SetTechnologyEnabled,
-                     weak_ptr_factory_.GetWeakPtr(), type, callback, false),
-      base::TimeDelta::FromSeconds(interactive_delay_));
+                     weak_ptr_factory_.GetWeakPtr(), type, std::move(callback),
+                     false),
+      interactive_delay_);
 }
 
-void FakeShillManagerClient::ConfigureService(
-    const base::DictionaryValue& properties,
-    const ObjectPathCallback& callback,
-    const ErrorCallback& error_callback) {
+void FakeShillManagerClient::ConfigureService(const base::Value& properties,
+                                              ObjectPathCallback callback,
+                                              ErrorCallback error_callback) {
+  switch (simulate_configuration_result_) {
+    case FakeShillSimulatedResult::kSuccess:
+      break;
+    case FakeShillSimulatedResult::kFailure:
+      base::ThreadTaskRunnerHandle::Get()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(error_callback), "Error",
+                                    "Simulated failure"));
+      return;
+    case FakeShillSimulatedResult::kTimeout:
+      // No callbacks get executed and the caller should eventually timeout.
+      return;
+  }
+
   ShillServiceClient::TestInterface* service_client =
       ShillServiceClient::Get()->GetTestInterface();
 
   std::string guid;
   std::string type;
-  if (!properties.GetString(shill::kGuidProperty, &guid) ||
-      !properties.GetString(shill::kTypeProperty, &type)) {
+  std::string name;
+  if (!GetString(properties, shill::kGuidProperty, &guid) ||
+      !GetString(properties, shill::kTypeProperty, &type)) {
     LOG(ERROR) << "ConfigureService requires GUID and Type to be defined";
     // If the properties aren't filled out completely, then just return an empty
     // object path.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(callback, dbus::ObjectPath()));
+        FROM_HERE, base::BindOnce(std::move(callback), dbus::ObjectPath()));
     return;
   }
 
-  // For the purposes of this stub, we're going to assume that the GUID property
-  // is set to the service path because we don't want to re-implement Shill's
-  // property matching magic here.
-  std::string service_path = guid;
+  if (type == shill::kTypeWifi) {
+    GetString(properties, shill::kSSIDProperty, &name);
+
+    if (name.empty()) {
+      std::string hex_name;
+      GetString(properties, shill::kWifiHexSsid, &hex_name);
+      if (!hex_name.empty()) {
+        std::vector<uint8_t> bytes;
+        if (base::HexStringToBytes(hex_name, &bytes)) {
+          name.assign(reinterpret_cast<const char*>(&bytes[0]), bytes.size());
+        }
+      }
+    }
+  }
+  if (name.empty())
+    GetString(properties, shill::kNameProperty, &name);
+  if (name.empty())
+    name = guid;
 
   std::string ipconfig_path;
-  properties.GetString(shill::kIPConfigProperty, &ipconfig_path);
+  GetString(properties, shill::kIPConfigProperty, &ipconfig_path);
 
-  // Merge the new properties with existing properties, if any.
-  const base::DictionaryValue* existing_properties =
-      service_client->GetServiceProperties(service_path);
-  if (!existing_properties) {
-    // Add a new service to the service client stub because none exists, yet.
-    // This calls AddManagerService.
+  std::string service_path = service_client->FindServiceMatchingGUID(guid);
+  if (service_path.empty())
+    service_path = service_client->FindSimilarService(properties);
+  if (service_path.empty()) {
+    // In the stub, service paths don't have to be DBus paths, so build
+    // something out of the GUID as service path.
+    // Don't use the GUID itself, so tests are forced to distinguish between
+    // service paths and GUIDs instead of assuming that service path == GUID.
+    service_path = "service_path_for_" + guid;
     service_client->AddServiceWithIPConfig(
-        service_path, guid /* guid */, guid /* name */, type, shill::kStateIdle,
+        service_path, guid /* guid */, name /* name */, type, shill::kStateIdle,
         ipconfig_path, true /* visible */);
-    existing_properties = service_client->GetServiceProperties(service_path);
   }
 
-  std::unique_ptr<base::DictionaryValue> merged_properties(
-      existing_properties->DeepCopy());
-  merged_properties->MergeDictionary(&properties);
+  // Merge the new properties with existing properties.
+  base::Value merged_properties =
+      service_client->GetServiceProperties(service_path)->Clone();
+  merged_properties.MergeDictionary(&properties);
 
   // Now set all the properties.
-  for (base::DictionaryValue::Iterator iter(*merged_properties);
-       !iter.IsAtEnd(); iter.Advance()) {
-    service_client->SetServiceProperty(service_path, iter.key(), iter.value());
-  }
+  for (auto iter : merged_properties.DictItems())
+    service_client->SetServiceProperty(service_path, iter.first, iter.second);
 
   // If the Profile property is set, add it to ProfileClient.
-  std::string profile_path;
-  merged_properties->GetStringWithoutPathExpansion(shill::kProfileProperty,
-                                                   &profile_path);
-  if (!profile_path.empty()) {
+  const std::string* profile_path =
+      merged_properties.FindStringKey(shill::kProfileProperty);
+  if (profile_path) {
     auto* profile_client = ShillProfileClient::Get()->GetTestInterface();
-    if (!profile_client->UpdateService(profile_path, service_path))
-      profile_client->AddService(profile_path, service_path);
+    if (!profile_client->UpdateService(*profile_path, service_path))
+      profile_client->AddService(*profile_path, service_path);
   }
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, dbus::ObjectPath(service_path)));
+      FROM_HERE,
+      base::BindOnce(std::move(callback), dbus::ObjectPath(service_path)));
 }
 
 void FakeShillManagerClient::ConfigureServiceForProfile(
     const dbus::ObjectPath& profile_path,
-    const base::DictionaryValue& properties,
-    const ObjectPathCallback& callback,
-    const ErrorCallback& error_callback) {
+    const base::Value& properties,
+    ObjectPathCallback callback,
+    ErrorCallback error_callback) {
   std::string profile_property;
-  properties.GetStringWithoutPathExpansion(shill::kProfileProperty,
-                                           &profile_property);
+  GetString(properties, shill::kProfileProperty, &profile_property);
   CHECK(profile_property == profile_path.value());
-  ConfigureService(properties, callback, error_callback);
+  ConfigureService(properties, std::move(callback), std::move(error_callback));
 }
 
-void FakeShillManagerClient::GetService(const base::DictionaryValue& properties,
-                                        const ObjectPathCallback& callback,
-                                        const ErrorCallback& error_callback) {
+void FakeShillManagerClient::GetService(const base::Value& properties,
+                                        ObjectPathCallback callback,
+                                        ErrorCallback error_callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, dbus::ObjectPath()));
+      FROM_HERE, base::BindOnce(std::move(callback), dbus::ObjectPath()));
 }
 
 void FakeShillManagerClient::ConnectToBestServices(
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    base::OnceClosure callback,
+    ErrorCallback error_callback) {
   if (best_service_.empty()) {
     VLOG(1) << "No 'best' service set.";
     return;
   }
 
-  ShillServiceClient::Get()->Connect(dbus::ObjectPath(best_service_), callback,
-                                     error_callback);
+  ShillServiceClient::Get()->Connect(dbus::ObjectPath(best_service_),
+                                     std::move(callback),
+                                     std::move(error_callback));
 }
 
 ShillManagerClient::TestInterface* FakeShillManagerClient::GetTestInterface() {
@@ -433,8 +485,8 @@ ShillManagerClient::TestInterface* FakeShillManagerClient::GetTestInterface() {
 // ShillManagerClient::TestInterface overrides.
 
 void FakeShillManagerClient::AddDevice(const std::string& device_path) {
-  if (GetListProperty(shill::kDevicesProperty)
-          ->AppendIfNotPresent(std::make_unique<base::Value>(device_path))) {
+  if (AppendIfNotPresent(GetListProperty(shill::kDevicesProperty),
+                         base::Value(device_path))) {
     CallNotifyObserversPropertyChanged(shill::kDevicesProperty);
   }
 }
@@ -442,7 +494,7 @@ void FakeShillManagerClient::AddDevice(const std::string& device_path) {
 void FakeShillManagerClient::RemoveDevice(const std::string& device_path) {
   base::Value device_path_value(device_path);
   if (GetListProperty(shill::kDevicesProperty)
-          ->Remove(device_path_value, nullptr)) {
+          ->EraseListValue(device_path_value)) {
     CallNotifyObserversPropertyChanged(shill::kDevicesProperty);
   }
 }
@@ -454,13 +506,13 @@ void FakeShillManagerClient::ClearDevices() {
 
 void FakeShillManagerClient::AddTechnology(const std::string& type,
                                            bool enabled) {
-  if (GetListProperty(shill::kAvailableTechnologiesProperty)
-          ->AppendIfNotPresent(std::make_unique<base::Value>(type))) {
+  if (AppendIfNotPresent(GetListProperty(shill::kAvailableTechnologiesProperty),
+                         base::Value(type))) {
     CallNotifyObserversPropertyChanged(shill::kAvailableTechnologiesProperty);
   }
   if (enabled &&
-      GetListProperty(shill::kEnabledTechnologiesProperty)
-          ->AppendIfNotPresent(std::make_unique<base::Value>(type))) {
+      AppendIfNotPresent(GetListProperty(shill::kEnabledTechnologiesProperty),
+                         base::Value(type))) {
     CallNotifyObserversPropertyChanged(shill::kEnabledTechnologiesProperty);
   }
 }
@@ -468,11 +520,11 @@ void FakeShillManagerClient::AddTechnology(const std::string& type,
 void FakeShillManagerClient::RemoveTechnology(const std::string& type) {
   base::Value type_value(type);
   if (GetListProperty(shill::kAvailableTechnologiesProperty)
-          ->Remove(type_value, nullptr)) {
+          ->EraseListValue(type_value)) {
     CallNotifyObserversPropertyChanged(shill::kAvailableTechnologiesProperty);
   }
   if (GetListProperty(shill::kEnabledTechnologiesProperty)
-          ->Remove(type_value, nullptr)) {
+          ->EraseListValue(type_value)) {
     CallNotifyObserversPropertyChanged(shill::kEnabledTechnologiesProperty);
   }
 }
@@ -480,54 +532,81 @@ void FakeShillManagerClient::RemoveTechnology(const std::string& type) {
 void FakeShillManagerClient::SetTechnologyInitializing(const std::string& type,
                                                        bool initializing) {
   if (initializing) {
-    if (GetListProperty(shill::kUninitializedTechnologiesProperty)
-            ->AppendIfNotPresent(std::make_unique<base::Value>(type))) {
+    if (AppendIfNotPresent(
+            GetListProperty(shill::kUninitializedTechnologiesProperty),
+            base::Value(type))) {
       CallNotifyObserversPropertyChanged(
           shill::kUninitializedTechnologiesProperty);
     }
   } else {
     if (GetListProperty(shill::kUninitializedTechnologiesProperty)
-            ->Remove(base::Value(type), nullptr)) {
+            ->EraseListValue(base::Value(type))) {
       CallNotifyObserversPropertyChanged(
           shill::kUninitializedTechnologiesProperty);
     }
   }
 }
 
-void FakeShillManagerClient::AddGeoNetwork(
-    const std::string& technology,
-    const base::DictionaryValue& network) {
+void FakeShillManagerClient::SetTechnologyProhibited(const std::string& type,
+                                                     bool prohibited) {
+  std::string prohibited_technologies =
+      GetStringValue(stub_properties_, shill::kProhibitedTechnologiesProperty);
+  std::vector<std::string> prohibited_list =
+      base::SplitString(prohibited_technologies, ",", base::TRIM_WHITESPACE,
+                        base::SPLIT_WANT_NONEMPTY);
+  std::set<std::string> prohibited_set(prohibited_list.begin(),
+                                       prohibited_list.end());
+  if (prohibited) {
+    auto iter = prohibited_set.find(type);
+    if (iter != prohibited_set.end())
+      return;
+    prohibited_set.insert(type);
+  } else {
+    auto iter = prohibited_set.find(type);
+    if (iter == prohibited_set.end())
+      return;
+    prohibited_set.erase(iter);
+  }
+  prohibited_list =
+      std::vector<std::string>(prohibited_set.begin(), prohibited_set.end());
+  prohibited_technologies = base::JoinString(prohibited_list, ",");
+  stub_properties_.SetStringKey(shill::kProhibitedTechnologiesProperty,
+                                prohibited_technologies);
+  CallNotifyObserversPropertyChanged(shill::kProhibitedTechnologiesProperty);
+}
+
+void FakeShillManagerClient::AddGeoNetwork(const std::string& technology,
+                                           const base::Value& network) {
   base::Value* list_value =
       stub_geo_networks_.FindKeyOfType(technology, base::Value::Type::LIST);
   if (!list_value) {
     list_value = stub_geo_networks_.SetKey(
         technology, base::Value(base::Value::Type::LIST));
   }
-  list_value->GetList().push_back(network.Clone());
+  list_value->Append(network.Clone());
 }
 
 void FakeShillManagerClient::AddProfile(const std::string& profile_path) {
   const char* key = shill::kProfilesProperty;
-  if (GetListProperty(key)->AppendIfNotPresent(
-          std::make_unique<base::Value>(profile_path))) {
+  if (AppendIfNotPresent(GetListProperty(key), base::Value(profile_path))) {
     CallNotifyObserversPropertyChanged(key);
   }
 }
 
 void FakeShillManagerClient::ClearProperties() {
-  stub_properties_.Clear();
+  stub_properties_ = base::Value(base::Value::Type::DICTIONARY);
 }
 
 void FakeShillManagerClient::SetManagerProperty(const std::string& key,
                                                 const base::Value& value) {
-  SetProperty(key, value, base::DoNothing(), base::Bind(&LogErrorCallback));
+  SetProperty(key, value, base::DoNothing(), base::BindOnce(&LogErrorCallback));
 }
 
 void FakeShillManagerClient::AddManagerService(const std::string& service_path,
                                                bool notify_observers) {
   VLOG(2) << "AddManagerService: " << service_path;
-  GetListProperty(shill::kServiceCompleteListProperty)
-      ->AppendIfNotPresent(std::make_unique<base::Value>(service_path));
+  AppendIfNotPresent(GetListProperty(shill::kServiceCompleteListProperty),
+                     base::Value(service_path));
   SortManagerServices(false);
   if (notify_observers)
     CallNotifyObserversPropertyChanged(shill::kServiceCompleteListProperty);
@@ -538,7 +617,7 @@ void FakeShillManagerClient::RemoveManagerService(
   VLOG(2) << "RemoveManagerService: " << service_path;
   base::Value service_path_value(service_path);
   GetListProperty(shill::kServiceCompleteListProperty)
-      ->Remove(service_path_value, nullptr);
+      ->EraseListValue(service_path_value);
   CallNotifyObserversPropertyChanged(shill::kServiceCompleteListProperty);
 }
 
@@ -563,12 +642,18 @@ void FakeShillManagerClient::SortManagerServices(bool notify) {
   VLOG(1) << "SortManagerServices";
 
   // ServiceCompleteList contains string path values for each service.
-  base::Value* complete_path_list = stub_properties_.FindKeyOfType(
-      shill::kServiceCompleteListProperty, base::Value::Type::LIST);
+  base::Value* complete_path_list =
+      stub_properties_.FindListKey(shill::kServiceCompleteListProperty);
   if (!complete_path_list || complete_path_list->GetList().empty())
     return;
-
   base::Value prev_complete_path_list = complete_path_list->Clone();
+
+  base::Value* visible_services =
+      stub_properties_.FindListKey(shill::kServicesProperty);
+  if (!visible_services) {
+    visible_services = stub_properties_.SetKey(
+        shill::kServicesProperty, base::Value(base::Value::Type::LIST));
+  }
 
   // Networks for disabled services get appended to the end without sorting.
   std::vector<std::string> disabled_path_list;
@@ -596,19 +681,26 @@ void FakeShillManagerClient::SortManagerServices(bool notify) {
     complete_dict_list.emplace_back(std::move(properties_copy));
   }
 
+  if (complete_dict_list.empty())
+    return;
+
   // Sort the service list using the same logic as Shill's Service::Compare.
   std::sort(complete_dict_list.begin(), complete_dict_list.end(),
             CompareNetworks);
 
-  // Rebuild |complete_path_list| with the new sort order.
-  complete_path_list->GetList().clear();
+  // Rebuild |complete_path_list| and |visible_services| with the new sort
+  // order.
+  complete_path_list->ClearList();
+  visible_services->ClearList();
   for (const base::Value& dict : complete_dict_list) {
     std::string service_path = GetStringValue(dict, kPathKey);
-    complete_path_list->GetList().push_back(base::Value(service_path));
+    complete_path_list->Append(base::Value(service_path));
+    if (dict.FindBoolKey(shill::kVisibleProperty).value_or(false))
+      visible_services->Append(base::Value(service_path));
   }
   // Append disabled networks to the end of the complete path list.
   for (const std::string& path : disabled_path_list)
-    complete_path_list->GetList().push_back(base::Value(path));
+    complete_path_list->Append(base::Value(path));
 
   // Notify observers if the order changed.
   if (notify && *complete_path_list != prev_complete_path_list)
@@ -629,8 +721,12 @@ void FakeShillManagerClient::SortManagerServices(bool notify) {
   }
 }
 
-int FakeShillManagerClient::GetInteractiveDelay() const {
+base::TimeDelta FakeShillManagerClient::GetInteractiveDelay() const {
   return interactive_delay_;
+}
+
+void FakeShillManagerClient::SetInteractiveDelay(base::TimeDelta delay) {
+  interactive_delay_ = delay;
 }
 
 void FakeShillManagerClient::SetBestServiceToConnect(
@@ -645,16 +741,21 @@ FakeShillManagerClient::GetNetworkThrottlingStatus() {
 
 void FakeShillManagerClient::SetNetworkThrottlingStatus(
     const NetworkThrottlingStatus& status,
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    base::OnceClosure callback,
+    ErrorCallback error_callback) {
   network_throttling_status_ = status;
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
+  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, std::move(callback));
 }
 
 bool FakeShillManagerClient::GetFastTransitionStatus() {
   base::Value* fast_transition_status = stub_properties_.FindKey(
       base::StringPiece(shill::kWifiGlobalFTEnabledProperty));
   return fast_transition_status && fast_transition_status->GetBool();
+}
+
+void FakeShillManagerClient::SetSimulateConfigurationResult(
+    FakeShillSimulatedResult configuration_result) {
+  simulate_configuration_result_ = configuration_result;
 }
 
 void FakeShillManagerClient::SetupDefaultEnvironment() {
@@ -682,7 +783,7 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
   const bool add_to_visible = true;
 
   // IPConfigs
-  base::DictionaryValue ipconfig_v4_dictionary;
+  base::Value ipconfig_v4_dictionary(base::Value::Type::DICTIONARY);
   ipconfig_v4_dictionary.SetKey(shill::kAddressProperty,
                                 base::Value("100.0.0.1"));
   ipconfig_v4_dictionary.SetKey(shill::kGatewayProperty,
@@ -693,7 +794,7 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
   ipconfig_v4_dictionary.SetKey(shill::kWebProxyAutoDiscoveryUrlProperty,
                                 base::Value("http://wpad.com/wpad.dat"));
   ip_configs->AddIPConfig("ipconfig_v4_path", ipconfig_v4_dictionary);
-  base::DictionaryValue ipconfig_v6_dictionary;
+  base::Value ipconfig_v6_dictionary(base::Value::Type::DICTIONARY);
   ipconfig_v6_dictionary.SetKey(shill::kAddressProperty,
                                 base::Value("0:0:0:0:100:0:0:1"));
   ipconfig_v6_dictionary.SetKey(shill::kMethodProperty,
@@ -724,15 +825,10 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
   }
 
   // Wifi
-  if (s_tdls_busy_count != 0) {
-    ShillDeviceClient::Get()->GetTestInterface()->SetTDLSBusyCount(
-        s_tdls_busy_count);
-  }
-
   state = GetInitialStateForType(shill::kTypeWifi, &enabled);
   if (state != kTechnologyUnavailable) {
     bool portaled = false;
-    if (state == shill::kStatePortal) {
+    if (IsPortalledState(state)) {
       portaled = true;
       state = shill::kStateIdle;
     }
@@ -797,7 +893,7 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
                                    base::Value(shill::kSecurityNone));
       services->SetConnectBehavior(
           kPortaledWifiPath,
-          base::Bind(&UpdatePortaledWifiState, kPortaledWifiPath));
+          base::BindRepeating(&UpdatePortaledWifiState, kPortaledWifiPath));
       services->SetServiceProperty(
           kPortaledWifiPath, shill::kConnectableProperty, base::Value(true));
       profiles->AddService(shared_profile, kPortaledWifiPath);
@@ -811,24 +907,6 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
       services->AddService(path, guid, name, shill::kTypeWifi,
                            shill::kStateIdle, add_to_visible);
     }
-  }
-
-  // Wimax
-  const std::string kWimaxPath = "/service/wimax1";
-  state = GetInitialStateForType(shill::kTypeWimax, &enabled);
-  if (state != kTechnologyUnavailable) {
-    AddTechnology(shill::kTypeWimax, enabled);
-    devices->AddDevice("/device/wimax1", shill::kTypeWimax,
-                       "stub_wimax_device1");
-
-    services->AddService(kWimaxPath, "wimax1_guid", "wimax1" /* name */,
-                         shill::kTypeWimax, state, add_to_visible);
-    services->SetServiceProperty(kWimaxPath, shill::kConnectableProperty,
-                                 base::Value(true));
-    base::Value strength_value(80);
-    services->SetServiceProperty(kWimaxPath, shill::kSignalStrengthProperty,
-                                 strength_value);
-    profiles->AddService(shared_profile, kWimaxPath);
   }
 
   // Cellular
@@ -845,13 +923,6 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
     AddTechnology(shill::kTypeCellular, enabled);
     devices->AddDevice("/device/cellular1", shill::kTypeCellular,
                        "stub_cellular_device1");
-    SetInitialDeviceProperty("/device/cellular1", shill::kCarrierProperty,
-                             base::Value(cellular_carrier_));
-    base::ListValue carrier_list;
-    carrier_list.AppendString(cellular_carrier_);
-    carrier_list.AppendString(shill::kCarrierGenericUMTS);
-    SetInitialDeviceProperty("/device/cellular1",
-                             shill::kSupportedCarriersProperty, carrier_list);
     if (roaming_state_ == kRoamingRequired) {
       SetInitialDeviceProperty("/device/cellular1",
                                shill::kProviderRequiresRoamingProperty,
@@ -915,7 +986,7 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
                                    shill::kRoamingStateProperty,
                                    base::Value(shill_roaming_state));
 
-      base::DictionaryValue apn;
+      base::Value apn(base::Value::Type::DICTIONARY);
       apn.SetKey(shill::kApnProperty, base::Value("testapn"));
       apn.SetKey(shill::kApnNameProperty, base::Value("Test APN"));
       apn.SetKey(shill::kApnLocalizedNameProperty,
@@ -923,15 +994,15 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
       apn.SetKey(shill::kApnUsernameProperty, base::Value("User1"));
       apn.SetKey(shill::kApnPasswordProperty, base::Value("password"));
       apn.SetKey(shill::kApnAuthenticationProperty, base::Value("chap"));
-      base::DictionaryValue apn2;
+      base::Value apn2(base::Value::Type::DICTIONARY);
       apn2.SetKey(shill::kApnProperty, base::Value("testapn2"));
       services->SetServiceProperty(kCellularServicePath,
                                    shill::kCellularApnProperty, apn);
       services->SetServiceProperty(kCellularServicePath,
                                    shill::kCellularLastGoodApnProperty, apn);
       base::ListValue apn_list;
-      apn_list.Append(apn.CreateDeepCopy());
-      apn_list.Append(apn2.CreateDeepCopy());
+      apn_list.Append(std::move(apn));
+      apn_list.Append(std::move(apn2));
       SetInitialDeviceProperty("/device/cellular1",
                                shill::kCellularApnListProperty, apn_list);
 
@@ -946,10 +1017,10 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
     // Shill, "Provider.Type", etc keys are used, but when reading the values
     // "Provider" . "Type", etc keys are used. Here we are setting the values
     // that will be read (by the UI, tests, etc).
-    base::DictionaryValue provider_properties_openvpn;
-    provider_properties_openvpn.SetString(shill::kTypeProperty,
-                                          shill::kProviderOpenVpn);
-    provider_properties_openvpn.SetString(shill::kHostProperty, "vpn_host");
+    base::Value provider_properties_openvpn(base::Value::Type::DICTIONARY);
+    provider_properties_openvpn.SetStringKey(shill::kTypeProperty,
+                                             shill::kProviderOpenVpn);
+    provider_properties_openvpn.SetStringKey(shill::kHostProperty, "vpn_host");
 
     services->AddService("/service/vpn1", "vpn1_guid", "vpn1" /* name */,
                          shill::kTypeVPN, state, add_to_visible);
@@ -957,10 +1028,10 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
                                  provider_properties_openvpn);
     profiles->AddService(shared_profile, "/service/vpn1");
 
-    base::DictionaryValue provider_properties_l2tp;
-    provider_properties_l2tp.SetString(shill::kTypeProperty,
-                                       shill::kProviderL2tpIpsec);
-    provider_properties_l2tp.SetString(shill::kHostProperty, "vpn_host2");
+    base::Value provider_properties_l2tp(base::Value::Type::DICTIONARY);
+    provider_properties_l2tp.SetStringKey(shill::kTypeProperty,
+                                          shill::kProviderL2tpIpsec);
+    provider_properties_l2tp.SetStringKey(shill::kHostProperty, "vpn_host2");
 
     services->AddService("/service/vpn2", "vpn2_guid", "vpn2" /* name */,
                          shill::kTypeVPN, shill::kStateIdle, add_to_visible);
@@ -969,16 +1040,13 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
   }
 
   // Additional device states
-  for (DevicePropertyMap::iterator iter1 = shill_device_property_map_.begin();
-       iter1 != shill_device_property_map_.end(); ++iter1) {
-    std::string device_type = iter1->first;
+  for (const auto& iter1 : shill_device_property_map_) {
+    std::string device_type = iter1.first;
     std::string device_path = devices->GetDevicePathForType(device_type);
-    for (ShillPropertyMap::iterator iter2 = iter1->second.begin();
-         iter2 != iter1->second.end(); ++iter2) {
-      SetInitialDeviceProperty(device_path, iter2->first, *(iter2->second));
-      delete iter2->second;
-    }
+    for (const auto& iter2 : iter1.second)
+      SetInitialDeviceProperty(device_path, iter2.first, iter2.second);
   }
+  shill_device_property_map_.clear();
 
   SortManagerServices(true);
 }
@@ -986,25 +1054,23 @@ void FakeShillManagerClient::SetupDefaultEnvironment() {
 // Private methods
 
 void FakeShillManagerClient::PassStubProperties(
-    const DictionaryValueCallback& callback) const {
-  std::unique_ptr<base::DictionaryValue> stub_properties(
-      stub_properties_.DeepCopy());
-  stub_properties->SetWithoutPathExpansion(
-      shill::kServiceCompleteListProperty,
-      GetEnabledServiceList(shill::kServiceCompleteListProperty));
-  callback.Run(DBUS_METHOD_CALL_SUCCESS, *stub_properties);
+    DBusMethodCallback<base::Value> callback) const {
+  base::Value stub_properties = stub_properties_.Clone();
+  stub_properties.SetKey(shill::kServiceCompleteListProperty,
+                         GetEnabledServiceList());
+  std::move(callback).Run(std::move(stub_properties));
 }
 
 void FakeShillManagerClient::PassStubGeoNetworks(
-    const DictionaryValueCallback& callback) const {
-  callback.Run(DBUS_METHOD_CALL_SUCCESS, stub_geo_networks_);
+    DBusMethodCallback<base::Value> callback) const {
+  std::move(callback).Run(stub_geo_networks_.Clone());
 }
 
 void FakeShillManagerClient::CallNotifyObserversPropertyChanged(
     const std::string& property) {
   // Avoid unnecessary delayed task if we have no observers (e.g. during
   // initial setup).
-  if (!observer_list_.might_have_observers())
+  if (observer_list_.empty())
     return;
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
@@ -1015,15 +1081,15 @@ void FakeShillManagerClient::CallNotifyObserversPropertyChanged(
 void FakeShillManagerClient::NotifyObserversPropertyChanged(
     const std::string& property) {
   VLOG(1) << "NotifyObserversPropertyChanged: " << property;
-  base::Value* value = nullptr;
-  if (!stub_properties_.GetWithoutPathExpansion(property, &value)) {
+  base::Value* value = stub_properties_.FindKey(property);
+  if (!value) {
     LOG(ERROR) << "Notify for unknown property: " << property;
     return;
   }
   if (property == shill::kServiceCompleteListProperty) {
-    std::unique_ptr<base::ListValue> services(GetEnabledServiceList(property));
+    base::Value services = GetEnabledServiceList();
     for (auto& observer : observer_list_)
-      observer.OnPropertyChanged(property, *(services.get()));
+      observer.OnPropertyChanged(property, services);
     return;
   }
   for (auto& observer : observer_list_)
@@ -1046,69 +1112,67 @@ bool FakeShillManagerClient::TechnologyEnabled(const std::string& type) const {
     return true;  // VPN is always "enabled" since there is no associated device
   if (type == shill::kTypeEthernetEap)
     return true;
-  bool enabled = false;
-  const base::ListValue* technologies;
-  if (stub_properties_.GetListWithoutPathExpansion(
-          shill::kEnabledTechnologiesProperty, &technologies)) {
-    base::Value type_value(type);
-    if (technologies->Find(type_value) != technologies->end())
-      enabled = true;
-  }
-  return enabled;
+  const base::Value* technologies =
+      stub_properties_.FindListKey(shill::kEnabledTechnologiesProperty);
+  if (technologies)
+    return base::Contains(technologies->GetList(), base::Value(type));
+  return false;
 }
 
 void FakeShillManagerClient::SetTechnologyEnabled(const std::string& type,
-                                                  const base::Closure& callback,
+                                                  base::OnceClosure callback,
                                                   bool enabled) {
   base::ListValue* enabled_list =
       GetListProperty(shill::kEnabledTechnologiesProperty);
   if (enabled)
-    enabled_list->AppendIfNotPresent(std::make_unique<base::Value>(type));
+    AppendIfNotPresent(enabled_list, base::Value(type));
   else
-    enabled_list->Remove(base::Value(type), nullptr);
+    enabled_list->EraseListValue(base::Value(type));
   CallNotifyObserversPropertyChanged(shill::kEnabledTechnologiesProperty);
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
+  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, std::move(callback));
   // May affect available services.
   SortManagerServices(true);
 }
 
-std::unique_ptr<base::ListValue> FakeShillManagerClient::GetEnabledServiceList(
-    const std::string& property) const {
-  auto new_service_list = std::make_unique<base::ListValue>();
-  const base::ListValue* service_list;
-  if (stub_properties_.GetListWithoutPathExpansion(property, &service_list)) {
+base::Value FakeShillManagerClient::GetEnabledServiceList() const {
+  base::Value new_service_list(base::Value::Type::LIST);
+  const base::Value* service_list =
+      stub_properties_.FindListKey(shill::kServiceCompleteListProperty);
+  if (service_list) {
     ShillServiceClient::TestInterface* service_client =
         ShillServiceClient::Get()->GetTestInterface();
-    for (base::ListValue::const_iterator iter = service_list->begin();
-         iter != service_list->end(); ++iter) {
-      std::string service_path;
-      if (!iter->GetAsString(&service_path))
-        continue;
-      const base::DictionaryValue* properties =
+    for (const base::Value& v : service_list->GetList()) {
+      std::string service_path = v.GetString();
+      const base::Value* properties =
           service_client->GetServiceProperties(service_path);
       if (!properties) {
         LOG(ERROR) << "Properties not found for service: " << service_path;
         continue;
       }
-      std::string type;
-      properties->GetString(shill::kTypeProperty, &type);
-      if (TechnologyEnabled(type))
-        new_service_list->Append(iter->CreateDeepCopy());
+      const std::string* type = properties->FindStringKey(shill::kTypeProperty);
+      if (type && TechnologyEnabled(*type))
+        new_service_list.Append(v.Clone());
     }
   }
   return new_service_list;
 }
 
-void FakeShillManagerClient::ScanCompleted(const std::string& device_path,
-                                           const base::Closure& callback) {
+void FakeShillManagerClient::ClearProfiles() {
+  if (GetListProperty(shill::kProfilesProperty)->empty()) {
+    return;
+  }
+  GetListProperty(shill::kProfilesProperty)->ClearList();
+  CallNotifyObserversPropertyChanged(shill::kProfilesProperty);
+}
+
+void FakeShillManagerClient::ScanCompleted(const std::string& device_path) {
+  VLOG(1) << "ScanCompleted: " << device_path;
   if (!device_path.empty()) {
     ShillDeviceClient::Get()->GetTestInterface()->SetDeviceProperty(
         device_path, shill::kScanningProperty, base::Value(false),
         /*notify_changed=*/true);
   }
-  VLOG(1) << "ScanCompleted";
   CallNotifyObserversPropertyChanged(shill::kServiceCompleteListProperty);
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
 }
 
 void FakeShillManagerClient::ParseCommandLineSwitch() {
@@ -1144,43 +1208,34 @@ bool FakeShillManagerClient::ParseOption(const std::string& arg0,
     int seconds = 3;
     if (!arg1.empty())
       base::StringToInt(arg1, &seconds);
-    interactive_delay_ = seconds;
+    interactive_delay_ = base::TimeDelta::FromSeconds(seconds);
     return true;
   } else if (arg0 == "sim_lock") {
     bool locked = (arg1 == "1");
-    base::DictionaryValue* simlock_dict = new base::DictionaryValue;
-    simlock_dict->SetBoolean(shill::kSIMLockEnabledProperty, true);
+    base::Value simlock_dict(base::Value::Type::DICTIONARY);
+    simlock_dict.SetBoolKey(shill::kSIMLockEnabledProperty, true);
     std::string lock_type = locked ? shill::kSIMLockPin : "";
-    simlock_dict->SetString(shill::kSIMLockTypeProperty, lock_type);
+    simlock_dict.SetStringKey(shill::kSIMLockTypeProperty, lock_type);
     if (locked) {
-      simlock_dict->SetInteger(shill::kSIMLockRetriesLeftProperty,
-                               FakeShillDeviceClient::kSimPinRetryCount);
+      simlock_dict.SetIntKey(shill::kSIMLockRetriesLeftProperty,
+                             FakeShillDeviceClient::kSimPinRetryCount);
     }
     shill_device_property_map_[shill::kTypeCellular]
-                              [shill::kSIMPresentProperty] =
-                                  new base::Value(true);
+                              [shill::kSIMPresentProperty] = base::Value(true);
     shill_device_property_map_[shill::kTypeCellular]
-                              [shill::kSIMLockStatusProperty] = simlock_dict;
+                              [shill::kSIMLockStatusProperty] =
+                                  std::move(simlock_dict);
     shill_device_property_map_[shill::kTypeCellular]
                               [shill::kTechnologyFamilyProperty] =
-                                  new base::Value(shill::kNetworkTechnologyGsm);
+                                  base::Value(shill::kNetworkTechnologyGsm);
     return true;
   } else if (arg0 == "sim_present") {
     bool present = (arg1 == "1");
-    base::Value* sim_present = new base::Value(present);
     shill_device_property_map_[shill::kTypeCellular]
-                              [shill::kSIMPresentProperty] = sim_present;
+                              [shill::kSIMPresentProperty] =
+                                  base::Value(present);
     if (!present)
       shill_initial_state_map_[shill::kTypeCellular] = kNetworkDisabled;
-    return true;
-  } else if (arg0 == "tdls_busy") {
-    if (!arg1.empty())
-      base::StringToInt(arg1, &s_tdls_busy_count);
-    else
-      s_tdls_busy_count = 1;
-    return true;
-  } else if (arg0 == "carrier") {
-    cellular_carrier_ = arg1;
     return true;
   } else if (arg0 == "olp") {
     cellular_olp_ = arg1;
@@ -1227,7 +1282,7 @@ bool FakeShillManagerClient::SetInitialNetworkState(
     state = kTechnologyInitializing;
   } else if (state_arg == "portal") {
     // Technology is enabled, a service is connected and in Portal state.
-    state = shill::kStatePortal;
+    state = shill::kStateNoConnectivity;
   } else if (state_arg == "active" || state_arg == "activated") {
     // Technology is enabled, a service is connected and Activated.
     state = kNetworkActivated;
@@ -1256,8 +1311,7 @@ bool FakeShillManagerClient::SetInitialNetworkState(
     type_arg = shill::kTypeEthernet;
 
   if (type_arg != shill::kTypeEthernet && type_arg != shill::kTypeWifi &&
-      type_arg != shill::kTypeCellular && type_arg != shill::kTypeWimax &&
-      type_arg != shill::kTypeVPN) {
+      type_arg != shill::kTypeCellular && type_arg != shill::kTypeVPN) {
     LOG(WARNING) << "Unrecognized Shill network type: " << type_arg;
     return false;
   }
@@ -1288,7 +1342,7 @@ std::string FakeShillManagerClient::GetInitialStateForType(
       *enabled = true;
       result = state;
     }
-    if ((state == shill::kStatePortal && type != shill::kTypeWifi) ||
+    if ((IsPortalledState(state) && type != shill::kTypeWifi) ||
         (state == kNetworkActivated && type != shill::kTypeCellular)) {
       LOG(WARNING) << "Invalid state: " << state << " for " << type;
       result = shill::kStateIdle;

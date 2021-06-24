@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/startup/automation_infobar_delegate.h"
 
+#include <memory>
+#include <utility>
+
 #include "chrome/browser/devtools/global_confirm_info_bar.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/grit/generated_resources.h"
@@ -17,10 +20,6 @@ void AutomationInfoBarDelegate::Create() {
   GlobalConfirmInfoBar::Show(std::move(delegate));
 }
 
-AutomationInfoBarDelegate::AutomationInfoBarDelegate() {}
-
-AutomationInfoBarDelegate::~AutomationInfoBarDelegate() {}
-
 infobars::InfoBarDelegate::InfoBarIdentifier
 AutomationInfoBarDelegate::GetIdentifier() const {
   return AUTOMATION_INFOBAR_DELEGATE;
@@ -31,7 +30,15 @@ bool AutomationInfoBarDelegate::ShouldExpire(
   return false;
 }
 
-base::string16 AutomationInfoBarDelegate::GetMessageText() const {
+bool AutomationInfoBarDelegate::ShouldAnimate() const {
+  // Animating the infobar also animates the content area size which can trigger
+  // a flood of page layout, compositing, texture reallocations, etc.  Since
+  // this infobar is primarily used for automated testing do not animate the
+  // infobar to reduce noise in tests.
+  return false;
+}
+
+std::u16string AutomationInfoBarDelegate::GetMessageText() const {
   return l10n_util::GetStringUTF16(IDS_CONTROLLED_BY_AUTOMATION);
 }
 

@@ -6,24 +6,49 @@
 #define COMPONENTS_SYNC_BASE_PASSPHRASE_ENUMS_H_
 
 #include "components/sync/protocol/nigori_specifics.pb.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace syncer {
 
 // The different states for the encryption passphrase. These control if and how
 // the user should be prompted for a decryption passphrase.
 // Do not re-order or delete these entries; they are used in a UMA histogram.
-// Please edit SyncPassphraseType in histograms.xml if a value is added.
+// Please edit SyncPassphraseType in enums.xml if a value is added.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.sync
 enum class PassphraseType {
-  IMPLICIT_PASSPHRASE = 0,         // GAIA-based passphrase (deprecated).
-  KEYSTORE_PASSPHRASE = 1,         // Keystore passphrase.
-  FROZEN_IMPLICIT_PASSPHRASE = 2,  // Frozen GAIA passphrase.
-  CUSTOM_PASSPHRASE = 3,           // User-provided passphrase.
-  PASSPHRASE_TYPE_SIZE,            // The size of this enum; keep last.
+  // GAIA-based passphrase (deprecated).
+  // TODO(crbug.com/1201684): Some codepaths use this value as a synonym for
+  // an unknown passphrase type. Rename to reflect this or use absl::optional<>.
+  kImplicitPassphrase = 0,
+  // Keystore passphrase.
+  kKeystorePassphrase = 1,
+  // Frozen GAIA passphrase.
+  kFrozenImplicitPassphrase = 2,
+  // User-provided passphrase.
+  kCustomPassphrase = 3,
+  // Trusted-vault passphrase.
+  kTrustedVaultPassphrase = 4,
+  // Alias used by UMA macros to deduce the correct boundary value.
+  kMaxValue = kTrustedVaultPassphrase
 };
 
 bool IsExplicitPassphrase(PassphraseType type);
-PassphraseType ProtoPassphraseTypeToEnum(
-    sync_pb::NigoriSpecifics::PassphraseType type);
+
+// Function meant to convert |NigoriSpecifics.passphrase_type| into enum.
+// All unknown values are returned as UNKNOWN, which mainly represents future
+// values of the enum that are not currently supported. Note however that if the
+// field is not populated, it defaults to IMPLICIT_PASSPHRASE for backwards
+// compatibility reasons.
+sync_pb::NigoriSpecifics::PassphraseType ProtoPassphraseInt32ToProtoEnum(
+    ::google::protobuf::int32 type);
+
+// Returns absl::nullopt if |type| represents an unknown value, likely coming
+// from a future version of the browser. Note however that if the field is not
+// populated, it defaults to IMPLICIT_PASSPHRASE for backwards compatibility
+// reasons.
+absl::optional<PassphraseType> ProtoPassphraseInt32ToEnum(
+    ::google::protobuf::int32 type);
+
 sync_pb::NigoriSpecifics::PassphraseType EnumPassphraseTypeToProto(
     PassphraseType type);
 

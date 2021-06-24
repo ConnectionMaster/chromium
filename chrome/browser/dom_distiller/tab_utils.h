@@ -15,7 +15,7 @@ class WebContents;
 void DistillCurrentPageAndView(content::WebContents* old_web_contents);
 
 // Starts distillation in the |source_web_contents|. The viewer needs to be
-// created separatly.
+// created separately.
 void DistillCurrentPage(content::WebContents* source_web_contents);
 
 // Starts distillation in the |source_web_contents| while navigating the
@@ -23,5 +23,10 @@ void DistillCurrentPage(content::WebContents* source_web_contents);
 // ownership of any WebContents.
 void DistillAndView(content::WebContents* source_web_contents,
                     content::WebContents* destination_web_contents);
+
+// Navigates back to the original page from which this page was distilled.
+// |distilled_web_contents| must not be null and must point to an already
+// distilled page. This method does not take ownership of the web contents.
+void ReturnToOriginalPage(content::WebContents* distilled_web_contents);
 
 #endif  // CHROME_BROWSER_DOM_DISTILLER_TAB_UTILS_H_

@@ -2,21 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.exportPath('settings');
+// clang-format off
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+import {PromiseResolver} from 'chrome://resources/js/promise_resolver.m.js';
+import {createEmptySearchBubble, findAndRemoveHighlights, highlight, removeHighlights, stripDiacritics} from 'chrome://resources/js/search_highlight_utils.js';
+import {findAncestor} from 'chrome://resources/js/util.m.js';
+import {DomIf} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+// clang-format on
 
-/**
- * A data structure used by callers to combine the results of multiple search
- * requests.
- *
- * @typedef {{
- *   canceled: Boolean,
- *   didFindMatches: Boolean,
- *   wasClearSearch: Boolean,
- * }}
- */
-settings.SearchResult;
+  /**
+   * A data structure used by callers to combine the results of multiple search
+   * requests.
+   *
+   * @typedef {{
+   *   canceled: Boolean,
+   *   didFindMatches: Boolean,
+   *   wasClearSearch: Boolean,
+   * }}
+   */
+  export let SearchResult;
 
-cr.define('settings', function() {
   /**
    * A CSS attribute indicating that a node should be ignored during searching.
    * @type {string}
@@ -52,16 +58,14 @@ cr.define('settings', function() {
    * ensures that <settings-section> instances become visible if any matches
    * occurred under their subtree.
    *
-   * @param {!settings.SearchRequest} request
+   * @param {!SearchRequest} request
    * @param {!Node} root The root of the sub-tree to be searched
+   * @return {boolean} Whether or not matches were found.
    * @private
    */
   function findAndHighlightMatches_(request, root) {
     let foundMatches = false;
     const highlights = [];
-    const bubbles = [];
-
-    const domIfTag = Polymer.DomIf ? 'DOM-IF' : 'TEMPLATE';
 
     function doSearch(node) {
       // NOTE: For subpage wrappers <template route-path="..."> when |no-search|
@@ -73,8 +77,7 @@ cr.define('settings', function() {
       //
       // The latter throws an error during the automatic Polymer 2 conversion to
       // <dom-if><template...></dom-if> syntax.
-      // TODO(dpapad):Clean this up once Polymer 2 migration has finished.
-      if (node.nodeName == domIfTag && node.hasAttribute('route-path') &&
+      if (node.nodeName === 'DOM-IF' && node.hasAttribute('route-path') &&
           !node.if && !node['noSearch'] &&
           !node.hasAttribute(SKIP_SEARCH_CSS_ATTRIBUTE)) {
         request.queue_.addRenderTask(new RenderTask(request, node));
@@ -88,34 +91,52 @@ cr.define('settings', function() {
       if (node instanceof HTMLElement) {
         const element = /** @type {HTMLElement} */ (node);
         if (element.hasAttribute(SKIP_SEARCH_CSS_ATTRIBUTE) ||
-            element.hasAttribute('hidden') || element.style.display == 'none') {
+            element.hasAttribute('hidden') ||
+            element.style.display === 'none') {
           return;
         }
       }
 
-      if (node.nodeType == Node.TEXT_NODE) {
-        const textContent = node.nodeValue.trim();
-        if (textContent.length == 0) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const textContent = node.nodeValue;
+        if (textContent.trim().length === 0) {
           return;
         }
 
-        if (request.regExp.test(textContent)) {
-          foundMatches = true;
-          const bubble = revealParentSection_(node, request.rawQuery_);
-          if (bubble) {
-            bubbles.push(bubble);
-          }
+        const strippedText =
+            stripDiacritics(textContent);
+        const ranges = [];
+        for (let match; match = request.regExp.exec(strippedText);) {
+          ranges.push({start: match.index, length: match[0].length});
+        }
 
-          // Don't highlight <select> nodes, yellow rectangles can't be
-          // displayed within an <option>.
-          // TODO(dpapad): highlight <select> controls with a search bubble
-          // instead.
-          if (node.parentNode.nodeName != 'OPTION') {
+        if (ranges.length > 0) {
+          foundMatches = true;
+          revealParentSection_(
+              node, /*numResults=*/ ranges.length, request.bubbles);
+
+          if (node.parentNode.nodeName === 'OPTION') {
+            const select = node.parentNode.parentNode;
+            assert(select.nodeName === 'SELECT');
+
+            // TODO(crbug.com/355446): support showing bubbles inside subpages.
+            // Currently, they're incorrectly positioned and there's no great
+            // signal at which to know when to reposition them (because every
+            // page asynchronously loads/renders things differently).
+            const isSubpage = n => n.nodeName === 'SETTINGS-SUBPAGE';
+            if (findAncestor(select, isSubpage, true)) {
+              return;
+            }
+
+            showBubble_(
+                select, /*numResults=*/ ranges.length, request.bubbles,
+                /*horizontallyCenter=*/ true);
+          } else {
             request.addTextObserver(node);
-            highlights.push(cr.search_highlight_utils.highlight(
-                node, textContent.split(request.regExp)));
+            highlights.push(highlight(node, ranges));
           }
         }
+
         // Returning early since TEXT_NODE nodes never have children.
         return;
       }
@@ -136,27 +157,31 @@ cr.define('settings', function() {
     }
 
     doSearch(root);
-    request.addHighlightsAndBubbles(highlights, bubbles);
+    request.addHighlights(highlights);
     return foundMatches;
   }
 
   /**
    * Finds and makes visible the <settings-section> parent of |node|.
    * @param {!Node} node
-   * @param {string} rawQuery
-   * @return {?Node} The search bubble created while revealing the section, if
-   *     any.
+   * @param {number} numResults
+   * @param {!Map<!Node, number>} bubbles A map of bubbles created so far.
    * @private
    */
-  function revealParentSection_(node, rawQuery) {
+  function revealParentSection_(node, numResults, bubbles) {
     let associatedControl = null;
+
     // Find corresponding SETTINGS-SECTION parent and make it visible.
     let parent = node;
-    while (parent && parent.nodeName !== 'SETTINGS-SECTION') {
-      parent = parent.nodeType == Node.DOCUMENT_FRAGMENT_NODE ?
+    while (parent.nodeName !== 'SETTINGS-SECTION') {
+      parent = parent.nodeType === Node.DOCUMENT_FRAGMENT_NODE ?
           parent.host :
           parent.parentNode;
-      if (parent.nodeName == 'SETTINGS-SUBPAGE') {
+      if (!parent) {
+        // |node| wasn't inside a SETTINGS-SECTION.
+        return;
+      }
+      if (parent.nodeName === 'SETTINGS-SUBPAGE') {
         // TODO(dpapad): Cast to SettingsSubpageElement here.
         associatedControl = assert(
             parent.associatedControl,
@@ -164,27 +189,41 @@ cr.define('settings', function() {
                 parent.pageTitle + ', but was not found.');
       }
     }
-    if (parent) {
-      parent.hiddenBySearch = false;
-    }
+    parent.hiddenBySearch = false;
 
     // Need to add the search bubble after the parent SETTINGS-SECTION has
     // become visible, otherwise |offsetWidth| returns zero.
     if (associatedControl) {
-      return cr.search_highlight_utils.highlightControlWithBubble(
-          associatedControl, rawQuery);
+      showBubble_(
+          associatedControl, numResults, bubbles,
+          /* horizontallyCenter= */ false);
     }
-    return null;
+  }
+
+  /**
+   * @param {!Node} control
+   * @param {number} numResults
+   * @param {!Map<!Node, number>} bubbles
+   * @param {boolean} horizontallyCenter
+   */
+  function showBubble_(control, numResults, bubbles, horizontallyCenter) {
+    const bubble = createEmptySearchBubble(
+        control, horizontallyCenter);
+    const numHits = numResults + (bubbles.get(bubble) || 0);
+    bubbles.set(bubble, numHits);
+    const msgName =
+        numHits === 1 ? 'searchResultBubbleText' : 'searchResultsBubbleText';
+    bubble.firstChild.textContent = loadTimeData.getStringF(msgName, numHits);
   }
 
   /** @abstract */
   class Task {
     /**
-     * @param {!settings.SearchRequest} request
+     * @param {!SearchRequest} request
      * @param {!Node} node
      */
     constructor(request, node) {
-      /** @protected {!settings.SearchRequest} */
+      /** @protected {!SearchRequest} */
       this.request = request;
 
       /** @protected {!Node} */
@@ -205,7 +244,7 @@ cr.define('settings', function() {
      * SearchAndHighlightTask is posted for the newly rendered subtree, once
      * rendering is done.
      *
-     * @param {!settings.SearchRequest} request
+     * @param {!SearchRequest} request
      * @param {!Node} node
      */
     constructor(request, node) {
@@ -216,9 +255,15 @@ cr.define('settings', function() {
     exec() {
       const routePath = this.node.getAttribute('route-path');
 
-      const content = Polymer.DomIf ?
-          Polymer.DomIf._contentForTemplate(this.node.firstElementChild) :
-          /** @type {{_content: DocumentFragment}} */ (this.node)._content;
+      const content =
+          /**
+            @type {!{_contentForTemplate:
+                function(!HTMLTemplateElement):!HTMLElement}}
+          */
+          (DomIf)
+              ._contentForTemplate(
+                  /** @type {!HTMLTemplateElement} */ (
+                      this.node.firstElementChild));
       const subpageTemplate = content.querySelector('settings-subpage');
       subpageTemplate.setAttribute('route-path', routePath);
       assert(!this.node.if);
@@ -241,7 +286,7 @@ cr.define('settings', function() {
 
   class SearchAndHighlightTask extends Task {
     /**
-     * @param {!settings.SearchRequest} request
+     * @param {!SearchRequest} request
      * @param {!Node} node
      */
     constructor(request, node) {
@@ -258,7 +303,7 @@ cr.define('settings', function() {
 
   class TopLevelSearchTask extends Task {
     /**
-     * @param {!settings.SearchRequest} request
+     * @param {!SearchRequest} request
      * @param {!Node} page
      */
     constructor(request, page) {
@@ -291,9 +336,9 @@ cr.define('settings', function() {
   }
 
   class TaskQueue {
-    /** @param {!settings.SearchRequest} request */
+    /** @param {!SearchRequest} request */
     constructor(request) {
-      /** @private {!settings.SearchRequest} */
+      /** @private {!SearchRequest} */
       this.request_ = request;
 
       /**
@@ -385,7 +430,7 @@ cr.define('settings', function() {
     }
   }
 
-  class SearchRequest {
+  export class SearchRequest {
     /**
      * @param {string} rawQuery
      * @param {!Element} root
@@ -424,17 +469,13 @@ cr.define('settings', function() {
       /** @private {!Array<!Node>} */
       this.highlights_ = [];
 
-      /** @private {!Array<!Node>} */
-      this.bubbles_ = [];
+      /** @type {!Map<!Node, number>} */
+      this.bubbles = new Map;
     }
 
-    /**
-     * @param {!Array<!Node>} highlights The highlight wrappers to add
-     * @param {!Array<!Node>} bubbles The search bubbles to add.
-     */
-    addHighlightsAndBubbles(highlights, bubbles) {
+    /** @param {!Array<!Node>} highlights The highlight wrappers to add */
+    addHighlights(highlights) {
       this.highlights_.push(...highlights);
-      this.bubbles_.push(...bubbles);
     }
 
     removeAllTextObservers() {
@@ -445,12 +486,10 @@ cr.define('settings', function() {
     }
 
     removeAllHighlightsAndBubbles() {
-      cr.search_highlight_utils.removeHighlights(this.highlights_);
-      for (const bubble of this.bubbles_) {
-        bubble.remove();
-      }
+      removeHighlights(this.highlights_);
+      this.bubbles.forEach((count, bubble) => bubble.remove());
       this.highlights_ = [];
-      this.bubbles_ = [];
+      this.bubbles.clear();
     }
 
     /** @param {!Node} textNode */
@@ -459,10 +498,10 @@ cr.define('settings', function() {
       const observer = new MutationObserver(mutations => {
         const oldValue = mutations[0].oldValue.trim();
         const newValue = textNode.nodeValue.trim();
-        if (oldValue != newValue) {
+        if (oldValue !== newValue) {
           observer.disconnect();
           this.textObservers_.delete(observer);
-          cr.search_highlight_utils.findAndRemoveHighlights(originalParentNode);
+          findAndRemoveHighlights(originalParentNode);
         }
       });
       observer.observe(
@@ -484,14 +523,14 @@ cr.define('settings', function() {
      */
     generateRegExp_() {
       let regExp = null;
-
       // Generate search text by escaping any characters that would be
       // problematic for regular expressions.
-      const searchText = this.rawQuery_.trim().replace(SANITIZE_REGEX, '\\$&');
-      if (searchText.length > 0) {
-        regExp = new RegExp(`(${searchText})`, 'i');
+      const strippedQuery =
+          stripDiacritics(this.rawQuery_.trim());
+      const sanitizedQuery = strippedQuery.replace(SANITIZE_REGEX, '\\$&');
+      if (sanitizedQuery.length > 0) {
+        regExp = new RegExp(`(${sanitizedQuery})`, 'ig');
       }
-
       return regExp;
     }
 
@@ -501,7 +540,7 @@ cr.define('settings', function() {
      *     query.
      */
     isSame(rawQuery) {
-      return this.rawQuery_ == rawQuery;
+      return this.rawQuery_ === rawQuery;
     }
 
     /**
@@ -526,7 +565,7 @@ cr.define('settings', function() {
     /**
      * @param {string} text The text to search for.
      * @param {!Element} page
-     * @return {!Promise<!settings.SearchRequest>} A signal indicating that
+     * @return {!Promise<!SearchRequest>} A signal indicating that
      *     searching finished.
      */
     search(text, page) {}
@@ -535,10 +574,10 @@ cr.define('settings', function() {
   /** @implements {SearchManager} */
   class SearchManagerImpl {
     constructor() {
-      /** @private {!Set<!settings.SearchRequest>} */
+      /** @private {!Set<!SearchRequest>} */
       this.activeRequests_ = new Set();
 
-      /** @private {!Set<!settings.SearchRequest>} */
+      /** @private {!Set<!SearchRequest>} */
       this.completedRequests_ = new Set();
 
       /** @private {?string} */
@@ -549,7 +588,7 @@ cr.define('settings', function() {
     search(text, page) {
       // Cancel any pending requests if a request with different text is
       // submitted.
-      if (text != this.lastSearchedText_) {
+      if (text !== this.lastSearchedText_) {
         this.activeRequests_.forEach(function(request) {
           request.removeAllTextObservers();
           request.removeAllHighlightsAndBubbles();
@@ -580,7 +619,7 @@ cr.define('settings', function() {
   let instance = null;
 
   /** @return {!SearchManager} */
-  function getSearchManager() {
+  export function getSearchManager() {
     if (instance === null) {
       instance = new SearchManagerImpl();
     }
@@ -591,13 +630,7 @@ cr.define('settings', function() {
    * Sets the SearchManager singleton instance, useful for testing.
    * @param {!SearchManager} searchManager
    */
-  function setSearchManagerForTesting(searchManager) {
+  export function setSearchManagerForTesting(searchManager) {
     instance = searchManager;
   }
 
-  return {
-    getSearchManager: getSearchManager,
-    setSearchManagerForTesting: setSearchManagerForTesting,
-    SearchRequest: SearchRequest,
-  };
-});

@@ -9,8 +9,10 @@
 #include <string>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 @class ChromeIdentity;
 @protocol ChromeIdentityBrowserOpener;
@@ -22,13 +24,15 @@
 @class NSError;
 @class NSString;
 @class NSURL;
+class PrefService;
 @class UIApplication;
 @class UIImage;
 @class UINavigationController;
+@class UIScene;
+@class UIViewController;
 
 namespace ios {
 
-class ChromeBrowserState;
 class ChromeIdentityService;
 
 // Callback passed to method |GetAccessTokenForScopes()| that returns the
@@ -45,6 +49,12 @@ typedef void (^ForgetIdentityCallback)(NSError* error);
 typedef void (^GetAvatarCallback)(UIImage* avatar);
 
 // Callback passed to method |GetHostedDomainForIdentity()|.
+// |hosted_domain|:
+//   + nil, if error.
+//   + an empty string, if this is a consumer account (e.g. foo@gmail.com).
+//   + non-empty string, if the hosted domain was fetched and this account
+//     has a hosted domain.
+// |error|: Error if failed to fetch the identity profile.
 typedef void (^GetHostedDomainCallback)(NSString* hosted_domain,
                                         NSError* error);
 
@@ -52,9 +62,19 @@ typedef void (^GetHostedDomainCallback)(NSString* hosted_domain,
 // the device is blocked.
 typedef void (^MDMStatusCallback)(bool is_blocked);
 
+// Callback to dismiss ASM view. No-op, if this block is more than once.
+// |animated| the view will be dismissed with animation if the value is YES.
+typedef void (^DismissASMViewControllerBlock)(BOOL animated);
+
 // Opaque type representing the MDM (Mobile Device Management) status of the
 // device. Checking for equality is guaranteed to be valid.
 typedef int MDMDeviceStatus;
+
+// Value returned by IdentityIteratorCallback.
+enum IdentityIteratorCallbackResult {
+  kIdentityIteratorContinueIteration,
+  kIdentityIteratorInterruptIteration,
+};
 
 // ChromeIdentityService abstracts the signin flow on iOS.
 class ChromeIdentityService {
@@ -66,7 +86,10 @@ class ChromeIdentityService {
     virtual ~Observer() {}
 
     // Handles identity list changed events.
-    virtual void OnIdentityListChanged() {}
+    // |keychainReload| is true if the identity list is updated by reloading the
+    // keychain. This means that a first party Google app had added or removed
+    // identities.
+    virtual void OnIdentityListChanged(bool keychainReload) {}
 
     // Handles access token refresh failed events.
     // |identity| is the the identity for which the access token refresh failed.
@@ -86,64 +109,84 @@ class ChromeIdentityService {
     DISALLOW_COPY_AND_ASSIGN(Observer);
   };
 
+  // Callback invoked for each ChromeIdentity when iterating over them with
+  // `IterateOverIdentities()`.
+  using IdentityIteratorCallback =
+      base::RepeatingCallback<IdentityIteratorCallbackResult(ChromeIdentity*)>;
+
   ChromeIdentityService();
   virtual ~ChromeIdentityService();
 
   // Handles open URL authentication callback. Returns whether the URL was
   // actually handled. This should be called within
-  // UIApplicationDelegate application:openURL:options:.
+  // -[<UIApplicationDelegate> application:openURL:options:].
   virtual bool HandleApplicationOpenURL(UIApplication* application,
                                         NSURL* url,
                                         NSDictionary* options);
 
+  // Handles open URL authentication callback. Returns whether the URL was
+  // actually handled. This should be called within
+  // -[<UISceneDelegate> application:openURLContexts:].
+  virtual bool HandleSessionOpenURLContexts(UIScene* scene, NSSet* url_contexts)
+      API_AVAILABLE(ios(13.0));
+
+  // Discards scene session data.This should be called within
+  // -[<UIApplicationDelegate> application:didDiscardSceneSessions:].
+  virtual void ApplicationDidDiscardSceneSessions(NSSet* scene_sessions)
+      API_AVAILABLE(ios(13.0));
+
   // Dismisses all the dialogs created by the abstracted flows.
   virtual void DismissDialogs();
 
-  // Returns a new account details controller to present. A cancel button is
-  // present as leading navigation item.
-  virtual UINavigationController* CreateAccountDetailsController(
+  // Presents a new Account Details view.
+  // |identity| the identity used to present the view.
+  // |view_controller| the view to present the details view.
+  // |animated| the view is presented with animation if YES.
+  // Returns a block to dismiss the presented view. This block can be ignored if
+  // not needed.
+  virtual ios::DismissASMViewControllerBlock PresentAccountDetailsController(
       ChromeIdentity* identity,
-      id<ChromeIdentityBrowserOpener> browser_opener);
+      UIViewController* view_controller,
+      BOOL animated);
 
-  // Returns a new Web and App Setting Details controller to present.
-  virtual UINavigationController* CreateWebAndAppSettingDetailsController(
-      ChromeIdentity* identity,
-      id<ChromeIdentityBrowserOpener> browser_opener);
+  // Presents a new Web and App Setting Details view.
+  // |identity| the identity used to present the view.
+  // |view_controller| the view to present the setting details.
+  // |animated| the view is presented with animation if YES.
+  // Returns a block to dismiss the presented view. This block can be ignored if
+  // not needed.
+  virtual DismissASMViewControllerBlock
+  PresentWebAndAppSettingDetailsController(ChromeIdentity* identity,
+                                           UIViewController* view_controller,
+                                           BOOL animated);
 
   // Returns a new ChromeIdentityInteractionManager with |delegate| as its
   // delegate.
   virtual ChromeIdentityInteractionManager*
   CreateChromeIdentityInteractionManager(
-      ios::ChromeBrowserState* browser_state,
       id<ChromeIdentityInteractionManagerDelegate> delegate) const;
+
+  // Iterates over all known ChromeIdentities, sorted by the ordering used
+  // in account manager, which is typically based on the keychain ordering
+  // of accounts.
+  virtual void IterateOverIdentities(IdentityIteratorCallback callback);
 
   // Returns YES if |identity| is valid and if the service has it in its list of
   // identitites.
-  virtual bool IsValidIdentity(ChromeIdentity* identity) const;
-
-  // Returns the chrome identity having the email equal to |email| or |nil| if
-  // no matching identity is found.
-  virtual ChromeIdentity* GetIdentityWithEmail(const std::string& email) const;
+  virtual bool IsValidIdentity(ChromeIdentity* identity);
 
   // Returns the chrome identity having the gaia ID equal to |gaia_id| or |nil|
   // if no matching identity is found.
-  virtual ChromeIdentity* GetIdentityWithGaiaID(
-      const std::string& gaia_id) const;
-
-  // Returns the canonicalized emails for all identities.
-  virtual std::vector<std::string> GetCanonicalizeEmailsForAllIdentities()
-      const;
+  virtual ChromeIdentity* GetIdentityWithGaiaID(const std::string& gaia_id);
 
   // Returns true if there is at least one identity.
-  virtual bool HasIdentities() const;
-
-  // Returns all ChromeIdentity objects in an array.
-  virtual NSArray* GetAllIdentities() const;
+  virtual bool HasIdentities();
 
   // Returns all ChromeIdentity objects sorted by the ordering used in the
   // account manager, which is typically based on the keychain ordering of
-  // accounts.
-  virtual NSArray* GetAllIdentitiesSortedForDisplay() const;
+  // accounts. It uses PrefService to filter ChromeIdentities according to
+  // enterprise policies.
+  virtual NSArray* GetAllIdentities(PrefService* pref_service);
 
   // Forgets the given identity on the device. This method logs the user out.
   // It is asynchronous because it needs to contact the server to revoke the
@@ -167,7 +210,7 @@ class ChromeIdentityService {
 
   // Fetches the profile avatar, from the cache or the network.
   // For high resolution iPads, returns large images (200 x 200) to avoid
-  // pixelization. Calls back on the main thread.
+  // pixelization. Calls back on the main thread. |callback| may be nil.
   virtual void GetAvatarForIdentity(ChromeIdentity* identity,
                                     GetAvatarCallback callback);
 
@@ -180,7 +223,22 @@ class ChromeIdentityService {
   virtual void GetHostedDomainForIdentity(ChromeIdentity* identity,
                                           GetHostedDomainCallback callback);
 
-  // Retuns the MDM device status associated with |user_info|.
+  // Returns the identity hosted domain, for the cache only. This method
+  // returns:
+  //   + nil, if the hosted domain value was yet not fetched from the server.
+  //   + an empty string, if this is a consumer account (e.g. foo@gmail.com).
+  //   + non-empty string, if the hosted domain was fetched and this account
+  //     has a hosted domain.
+  virtual NSString* GetCachedHostedDomainForIdentity(ChromeIdentity* identity);
+
+  // Returns the cached value of the account capability that determines whether
+  // Chrome should offer extended sync promos to |identity|.
+  // This value will have a refresh period of 24 hours, meaning that at
+  // retrieval it may be stale. If the value is not populated, as in a fresh
+  // install, this method returns false.
+  virtual bool CanOfferExtendedSyncPromos(ChromeIdentity* identity);
+
+  // Returns the MDM device status associated with |user_info|.
   virtual MDMDeviceStatus GetMDMDeviceStatus(NSDictionary* user_info);
 
   // Handles a potential MDM (Mobile Device Management) notification. Returns
@@ -205,7 +263,10 @@ class ChromeIdentityService {
 
  protected:
   // Fires |OnIdentityListChanged| on all observers.
-  void FireIdentityListChanged();
+  // |keychainReload| is true if the identity list is updated by reloading the
+  // keychain. This means that a first party Google app had added or removed
+  // identities.
+  void FireIdentityListChanged(bool keychainReload);
 
   // Fires |OnAccessTokenRefreshFailed| on all observers, with the corresponding
   // identity and user info.

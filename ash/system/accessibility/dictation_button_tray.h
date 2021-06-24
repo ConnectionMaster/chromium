@@ -5,10 +5,10 @@
 #ifndef ASH_SYSTEM_ACCESSIBILITY_DICTATION_BUTTON_TRAY_H_
 #define ASH_SYSTEM_ACCESSIBILITY_DICTATION_BUTTON_TRAY_H_
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/accessibility/accessibility_observer.h"
 #include "ash/ash_export.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/shell_observer.h"
 #include "ash/system/tray/tray_background_view.h"
 #include "base/macros.h"
@@ -26,7 +26,8 @@ namespace ash {
 // provide any bubble view windows.
 class ASH_EXPORT DictationButtonTray : public TrayBackgroundView,
                                        public ShellObserver,
-                                       public AccessibilityObserver {
+                                       public AccessibilityObserver,
+                                       public SessionObserver {
  public:
   explicit DictationButtonTray(Shelf* shelf);
   ~DictationButtonTray() override;
@@ -41,10 +42,18 @@ class ASH_EXPORT DictationButtonTray : public TrayBackgroundView,
   // AccessibilityObserver:
   void OnAccessibilityStatusChanged() override;
 
+  // SessionObserver:
+  void OnSessionStateChanged(session_manager::SessionState state) override;
+
   // TrayBackgroundView:
+  void Initialize() override;
   void ClickedOutsideBubble() override;
-  base::string16 GetAccessibleNameForTray() override;
+  std::u16string GetAccessibleNameForTray() override;
+  void HandleLocaleChange() override;
   void HideBubbleWithView(const TrayBubbleView* bubble_view) override;
+
+  // views::View:
+  const char* GetClassName() const override;
 
  private:
   friend class DictationButtonTrayTest;
@@ -60,9 +69,6 @@ class ASH_EXPORT DictationButtonTray : public TrayBackgroundView,
 
   // Actively looks up dictation status and calls UpdateIcon.
   void CheckDictationStatusAndUpdateIcon();
-
-  gfx::ImageSkia on_image_;
-  gfx::ImageSkia off_image_;
 
   // Weak pointer, will be parented by TrayContainer for its lifetime.
   views::ImageView* icon_;

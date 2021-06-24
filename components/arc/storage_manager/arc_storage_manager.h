@@ -5,11 +5,9 @@
 #ifndef COMPONENTS_ARC_STORAGE_MANAGER_ARC_STORAGE_MANAGER_H_
 #define COMPONENTS_ARC_STORAGE_MANAGER_ARC_STORAGE_MANAGER_H_
 
-#include <memory>
-
 #include "base/callback.h"
 #include "base/macros.h"
-#include "components/arc/common/storage_manager.mojom.h"
+#include "components/arc/mojom/storage_manager.mojom.h"
 #include "components/keyed_service/core/keyed_service.h"
 
 namespace content {
@@ -27,6 +25,8 @@ class ArcStorageManager : public KeyedService {
   // or nullptr if the browser |context| is not allowed to use ARC.
   static ArcStorageManager* GetForBrowserContext(
       content::BrowserContext* context);
+  static ArcStorageManager* GetForBrowserContextForTesting(
+      content::BrowserContext* context);
 
   ArcStorageManager(content::BrowserContext* context,
                     ArcBridgeService* bridge_service);
@@ -42,7 +42,7 @@ class ArcStorageManager : public KeyedService {
   bool GetApplicationsSize(GetApplicationsSizeCallback callback);
 
   // Deletes all applications' cache files.
-  bool DeleteApplicationsCache(const base::Callback<void()>& callback);
+  bool DeleteApplicationsCache(base::OnceCallback<void()> callback);
 
  private:
   ArcBridgeService* const arc_bridge_service_;

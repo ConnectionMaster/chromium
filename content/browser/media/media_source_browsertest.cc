@@ -5,7 +5,9 @@
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "content/browser/media/media_browsertest.h"
+#include "content/public/test/browser_test.h"
 #include "media/base/media_switches.h"
+#include "media/base/supported_types.h"
 #include "media/base/test_data_util.h"
 #include "media/media_buildflags.h"
 
@@ -24,7 +26,7 @@ class MediaSourceTest : public MediaBrowserTest {
     query_params.emplace_back("mediaFile", media_file);
     query_params.emplace_back("mediaType", media_type);
     RunMediaTestPage("media_source_player.html", query_params, expectation,
-                     false);
+                     true);
   }
 
   void TestSimplePlayback(const std::string& media_file,
@@ -72,6 +74,20 @@ IN_PROC_BROWSER_TEST_F(MediaSourceTest, Playback_AudioOnly_WebM) {
   TestSimplePlayback("bear-320x240-audio-only.webm", media::kEnded);
 }
 
+IN_PROC_BROWSER_TEST_F(MediaSourceTest, Playback_AudioOnly_MP3) {
+  TestSimplePlayback("sfx.mp3", media::kEnded);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    MediaSourceTest,
+    Playback_AudioOnly_MP3_With_Codecs_Parameter_Should_Fail) {
+  // We override the correct media type for this file with one which erroneously
+  // includes a codecs parameter that is valid for progressive but invalid for
+  // MSE type support.
+  DCHECK_EQ(media::GetMimeTypeForFile("sfx.mp3"), "audio/mpeg");
+  TestSimplePlayback("sfx.mp3", "audio/mpeg; codecs=\"mp3\"", media::kFailed);
+}
+
 // Test the case where test file and mime type mismatch.
 IN_PROC_BROWSER_TEST_F(MediaSourceTest, Playback_Type_Error) {
   const char kWebMAudioOnly[] = "audio/webm; codecs=\"vorbis\"";
@@ -105,6 +121,13 @@ IN_PROC_BROWSER_TEST_F(MediaSourceTest, Playback_Video_WEBM_Audio_MP4) {
 
 IN_PROC_BROWSER_TEST_F(MediaSourceTest, Playback_AudioOnly_FLAC_MP4) {
   TestSimplePlayback("bear-flac_frag.mp4", media::kEnded);
+}
+
+IN_PROC_BROWSER_TEST_F(MediaSourceTest, Playback_AudioOnly_XHE_AAC_MP4) {
+  if (media::IsSupportedAudioType(
+          {media::kCodecAAC, media::AudioCodecProfile::kXHE_AAC})) {
+    TestSimplePlayback("noise-xhe-aac.mp4", media::kEnded);
+  }
 }
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)

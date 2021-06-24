@@ -4,6 +4,7 @@
 
 #include "remoting/protocol/ssl_hmac_channel_authenticator.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/base64.h"
@@ -11,8 +12,8 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "base/timer/timer.h"
 #include "crypto/rsa_private_key.h"
@@ -76,19 +77,20 @@ class SslHmacChannelAuthenticatorTest : public testing::Test {
   }
 
   void RunChannelAuth(int expected_client_error, int expected_host_error) {
-    client_fake_socket_.reset(new FakeStreamSocket());
-    host_fake_socket_.reset(new FakeStreamSocket());
+    client_fake_socket_ = std::make_unique<FakeStreamSocket>();
+    host_fake_socket_ = std::make_unique<FakeStreamSocket>();
     client_fake_socket_->PairWith(host_fake_socket_.get());
 
     client_auth_->SecureAndAuthenticate(
         std::move(client_fake_socket_),
-        base::Bind(&SslHmacChannelAuthenticatorTest::OnClientConnected,
-                   base::Unretained(this)));
+        base::BindOnce(&SslHmacChannelAuthenticatorTest::OnClientConnected,
+                       base::Unretained(this)));
 
     host_auth_->SecureAndAuthenticate(
         std::move(host_fake_socket_),
-        base::Bind(&SslHmacChannelAuthenticatorTest::OnHostConnected,
-                   base::Unretained(this), std::string("ref argument value")));
+        base::BindOnce(&SslHmacChannelAuthenticatorTest::OnHostConnected,
+                       base::Unretained(this),
+                       std::string("ref argument value")));
 
     // Expect two callbacks to be called - the client callback and the host
     // callback.
@@ -136,7 +138,7 @@ class SslHmacChannelAuthenticatorTest : public testing::Test {
     client_socket_ = std::move(socket);
   }
 
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   scoped_refptr<RsaKeyPair> key_pair_;
   std::string host_cert_;
@@ -167,8 +169,9 @@ TEST_F(SslHmacChannelAuthenticatorTest, SuccessfulAuth) {
   StreamConnectionTester tester(host_socket_.get(), client_socket_.get(),
                                 100, 2);
 
-  tester.Start();
-  base::RunLoop().Run();
+  base::RunLoop run_loop;
+  tester.Start(run_loop.QuitClosure());
+  run_loop.Run();
   tester.CheckResults();
 }
 

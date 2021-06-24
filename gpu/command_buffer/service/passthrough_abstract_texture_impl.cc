@@ -70,10 +70,19 @@ void PassthroughAbstractTextureImpl::BindImage(gl::GLImage* image,
   texture_passthrough_->SetLevelImage(target, level, image);
 }
 
-void PassthroughAbstractTextureImpl::BindStreamTextureImage(
-    GLStreamTextureImage* image,
-    GLuint service_id) {
-  NOTREACHED();
+void PassthroughAbstractTextureImpl::BindStreamTextureImage(gl::GLImage* image,
+                                                            GLuint service_id) {
+  DCHECK(image);
+  DCHECK(!decoder_managed_image_);
+
+  if (!texture_passthrough_)
+    return;
+
+  const GLuint target = texture_passthrough_->target();
+  const GLint level = 0;
+
+  texture_passthrough_->set_is_bind_pending(true);
+  texture_passthrough_->SetStreamLevelImage(target, level, image, service_id);
 }
 
 gl::GLImage* PassthroughAbstractTextureImpl::GetImage() const {
@@ -91,6 +100,10 @@ void PassthroughAbstractTextureImpl::SetCleared() {
 
 void PassthroughAbstractTextureImpl::SetCleanupCallback(CleanupCallback cb) {
   cleanup_cb_ = std::move(cb);
+}
+
+void PassthroughAbstractTextureImpl::NotifyOnContextLost() {
+  NOTIMPLEMENTED();
 }
 
 scoped_refptr<TexturePassthrough>

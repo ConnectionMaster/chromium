@@ -7,7 +7,8 @@
 #include <vector>
 
 #include "base/allocator/partition_allocator/page_allocator.h"
-#include "base/logging.h"
+#include "base/allocator/partition_allocator/random.h"
+#include "base/check_op.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -23,12 +24,12 @@ namespace base {
 namespace {
 
 uintptr_t GetMask() {
-  uintptr_t mask = internal::kASLRMask;
+  uintptr_t mask = internal::ASLRMask();
 #if defined(ARCH_CPU_64_BITS)
-// Sanitizers use their own kASLRMask constant.
+// Sanitizers use their own ASLR mask constant.
 #if defined(OS_WIN) && !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
   if (!IsWindows8Point1OrGreater()) {
-    mask = internal::kASLRMaskBefore8_10;
+    mask = internal::ASLRMaskBefore8_10();
   }
 #endif  // defined(OS_WIN) && !defined(MEMORY_TOOL_REPLACES_ALLOCATOR))
 #elif defined(ARCH_CPU_32_BITS)
@@ -51,13 +52,13 @@ uintptr_t GetAddressBits() {
 }
 
 uintptr_t GetRandomBits() {
-  return GetAddressBits() - internal::kASLROffset;
+  return GetAddressBits() - internal::ASLROffset();
 }
 
 }  // namespace
 
 // Configurations without ASLR are tested here.
-TEST(AddressSpaceRandomizationTest, DisabledASLR) {
+TEST(PartitionAllocAddressSpaceRandomizationTest, DisabledASLR) {
   uintptr_t mask = GetMask();
   if (!mask) {
 #if defined(OS_WIN) && defined(ARCH_CPU_32_BITS)
@@ -70,24 +71,24 @@ TEST(AddressSpaceRandomizationTest, DisabledASLR) {
   }
 }
 
-TEST(AddressSpaceRandomizationTest, Alignment) {
+TEST(PartitionAllocAddressSpaceRandomizationTest, Alignment) {
   uintptr_t mask = GetMask();
   if (!mask)
     return;
 
   for (size_t i = 0; i < kSamples; ++i) {
     uintptr_t address = GetAddressBits();
-    EXPECT_EQ(0ULL, (address & kPageAllocationGranularityOffsetMask));
+    EXPECT_EQ(0ULL, (address & PageAllocationGranularityOffsetMask()));
   }
 }
 
-TEST(AddressSpaceRandomizationTest, Range) {
+TEST(PartitionAllocAddressSpaceRandomizationTest, Range) {
   uintptr_t mask = GetMask();
   if (!mask)
     return;
 
-  uintptr_t min = internal::kASLROffset;
-  uintptr_t max = internal::kASLROffset + internal::kASLRMask;
+  uintptr_t min = internal::ASLROffset();
+  uintptr_t max = internal::ASLROffset() + internal::ASLRMask();
   for (size_t i = 0; i < kSamples; ++i) {
     uintptr_t address = GetAddressBits();
     EXPECT_LE(min, address);
@@ -95,13 +96,13 @@ TEST(AddressSpaceRandomizationTest, Range) {
   }
 }
 
-TEST(AddressSpaceRandomizationTest, Predictable) {
+TEST(PartitionAllocAddressSpaceRandomizationTest, Predictable) {
   uintptr_t mask = GetMask();
   if (!mask)
     return;
 
-  const uintptr_t kInitialSeed = 0xfeed5eedULL;
-  base::SetRandomPageBaseSeed(kInitialSeed);
+  const uint64_t kInitialSeed = 0xfeed5eedULL;
+  base::SetMmapSeedForTesting(kInitialSeed);
 
   std::vector<uintptr_t> sequence;
   for (size_t i = 0; i < kSamples; ++i) {
@@ -109,7 +110,7 @@ TEST(AddressSpaceRandomizationTest, Predictable) {
     sequence.push_back(address);
   }
 
-  base::SetRandomPageBaseSeed(kInitialSeed);
+  base::SetMmapSeedForTesting(kInitialSeed);
 
   for (size_t i = 0; i < kSamples; ++i) {
     uintptr_t address = reinterpret_cast<uintptr_t>(base::GetRandomPageBase());
@@ -180,9 +181,10 @@ void RandomBitCorrelation(int random_bit) {
       // Chi squared analysis for k = 2 (2, states: same/not-same) and one
       // degree of freedom (k - 1).
       double chi_squared = ChiSquared(m, kRepeats);
-      // For 1 degree of freedom this corresponds to 1 in a million.  We are
-      // running ~8000 tests, so that would be surprising.
-      CHECK_GE(24, chi_squared);
+      // For k=2 probability of Chi^2 < 35 is p=3.338e-9. This condition is
+      // tested ~19000 times, so probability of it failing randomly per one
+      // base_unittests run is (1 - (1 - p) ^ 19000) ~= 6e-5.
+      CHECK_LE(chi_squared, 35.0);
       // If the predictor bit is a fixed 0 or 1 then it makes no sense to
       // repeat the test with a different age.
       if (predictor_bit < 0)
@@ -191,13 +193,11 @@ void RandomBitCorrelation(int random_bit) {
   }
 }
 
-// TODO(crbug.com/811881): These are flaky on Fuchsia
-#if !defined(OS_FUCHSIA)
-
 // Tests are fairly slow, so give each random bit its own test.
-#define TEST_RANDOM_BIT(BIT)                                        \
-  TEST(AddressSpaceRandomizationTest, RandomBitCorrelations##BIT) { \
-    RandomBitCorrelation(BIT);                                      \
+#define TEST_RANDOM_BIT(BIT)                        \
+  TEST(PartitionAllocAddressSpaceRandomizationTest, \
+       RandomBitCorrelations##BIT) {                \
+    RandomBitCorrelation(BIT);                      \
   }
 
 // The first 12 bits on all platforms are always 0.
@@ -241,8 +241,6 @@ TEST_RANDOM_BIT(47)
 TEST_RANDOM_BIT(48)
 // No platforms have more than 48 address bits.
 #endif  // defined(ARCH_CPU_64_BITS)
-
-#endif  // defined(OS_FUCHSIA)
 
 #undef TEST_RANDOM_BIT
 

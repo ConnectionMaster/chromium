@@ -5,7 +5,8 @@
 #include "chromecast/device/bluetooth/le/remote_device_impl.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/logging.h"
 #include "chromecast/base/bind_to_task_runner.h"
 #include "chromecast/device/bluetooth/bluetooth_util.h"
 #include "chromecast/device/bluetooth/le/gatt_client_manager_impl.h"
@@ -68,22 +69,21 @@ RemoteDeviceImpl::RemoteDeviceImpl(
 
 RemoteDeviceImpl::~RemoteDeviceImpl() = default;
 
-void RemoteDeviceImpl::Connect(StatusCallback cb) {
+void RemoteDeviceImpl::Connect(ConnectCallback cb) {
   MAKE_SURE_IO_THREAD(Connect, BindToCurrentSequence(std::move(cb)));
   LOG(INFO) << "Connect(" << util::AddrLastByteString(addr_) << ")";
 
   if (!gatt_client_manager_) {
     LOG(ERROR) << __func__ << " failed: Destroyed";
-    EXEC_CB_AND_RET(cb, false);
+    EXEC_CB_AND_RET(cb, ConnectStatus::kGattClientManagerDestroyed);
   }
 
-  if (connect_pending_) {
+  if (connect_cb_) {
     LOG(ERROR) << __func__ << " failed: Connection pending";
-    EXEC_CB_AND_RET(cb, false);
+    EXEC_CB_AND_RET(cb, ConnectStatus::kConnectPending);
   }
 
   gatt_client_manager_->NotifyConnect(addr_);
-  connect_pending_ = true;
   connect_cb_ = std::move(cb);
   gatt_client_manager_->EnqueueConnectRequest(addr_, true);
 }
@@ -94,11 +94,6 @@ void RemoteDeviceImpl::Disconnect(StatusCallback cb) {
 
   if (!gatt_client_manager_) {
     LOG(ERROR) << __func__ << " failed: Destroyed";
-    EXEC_CB_AND_RET(cb, false);
-  }
-
-  if (!connected_) {
-    LOG(ERROR) << "Not connected";
     EXEC_CB_AND_RET(cb, false);
   }
 
@@ -220,7 +215,7 @@ void RemoteDeviceImpl::ConnectionParameterUpdate(int min_interval,
 }
 
 bool RemoteDeviceImpl::IsConnected() {
-  return connected_;
+  return connected_ && !disconnect_pending_;
 }
 
 bool RemoteDeviceImpl::IsBonded() {
@@ -523,11 +518,9 @@ void RemoteDeviceImpl::OnReadRemoteRssiComplete(bool status, int rssi) {
 
 void RemoteDeviceImpl::ConnectComplete(bool success) {
   DCHECK(io_task_runner_->BelongsToCurrentThread());
-  if (connect_pending_) {
-    connect_pending_ = false;
-    if (connect_cb_) {
-      std::move(connect_cb_).Run(success);
-    }
+  if (connect_cb_) {
+    std::move(connect_cb_)
+        .Run(success ? ConnectStatus::kSuccess : ConnectStatus::kFailure);
   }
 }
 
@@ -545,7 +538,10 @@ void RemoteDeviceImpl::EnqueueOperation(const std::string& name,
 
 void RemoteDeviceImpl::NotifyQueueOperationComplete() {
   DCHECK(io_task_runner_->BelongsToCurrentThread());
-  DCHECK(!command_queue_.empty());
+  if (command_queue_.empty()) {
+    LOG(ERROR) << "Command queue is empty, device might be disconnected";
+    return;
+  }
   command_queue_.pop_front();
   command_timeout_timer_.Stop();
 
@@ -557,7 +553,10 @@ void RemoteDeviceImpl::NotifyQueueOperationComplete() {
 
 void RemoteDeviceImpl::RunNextOperation() {
   DCHECK(io_task_runner_->BelongsToCurrentThread());
-  DCHECK(!command_queue_.empty());
+  if (command_queue_.empty()) {
+    LOG(ERROR) << "Command queue is empty, device might be disconnected";
+    return;
+  }
   auto& front = command_queue_.front();
   command_timeout_timer_.Start(
       FROM_HERE, kCommandTimeout,

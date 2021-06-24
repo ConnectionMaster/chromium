@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROMECAST_MEDIA_CMA_BASE_VIDEO_PIPELINE_IMPL_H_
-#define CHROMECAST_MEDIA_CMA_BASE_VIDEO_PIPELINE_IMPL_H_
+#ifndef CHROMECAST_MEDIA_CMA_PIPELINE_VIDEO_PIPELINE_IMPL_H_
+#define CHROMECAST_MEDIA_CMA_PIPELINE_VIDEO_PIPELINE_IMPL_H_
 
 #include <memory>
 #include <vector>
 
 #include "base/macros.h"
-#include "chromecast/media/cma/backend/cma_backend.h"
+#include "chromecast/media/api/cma_backend.h"
 #include "chromecast/media/cma/pipeline/av_pipeline_impl.h"
 #include "chromecast/media/cma/pipeline/video_pipeline_client.h"
 #include "chromecast/public/media/stream_id.h"
@@ -28,7 +28,7 @@ class CodedFrameProvider;
 class VideoPipelineImpl : public AvPipelineImpl {
  public:
   VideoPipelineImpl(CmaBackend::VideoDecoder* decoder,
-                    const VideoPipelineClient& client);
+                    VideoPipelineClient client);
   ~VideoPipelineImpl() override;
 
   ::media::PipelineStatus Initialize(
@@ -57,4 +57,4 @@ class VideoPipelineImpl : public AvPipelineImpl {
 }  // namespace media
 }  // namespace chromecast
 
-#endif  // CHROMECAST_MEDIA_CMA_BASE_VIDEO_PIPELINE_IMPL_H_
+#endif  // CHROMECAST_MEDIA_CMA_PIPELINE_VIDEO_PIPELINE_IMPL_H_

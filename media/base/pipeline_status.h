@@ -6,12 +6,16 @@
 #define MEDIA_BASE_PIPELINE_STATUS_H_
 
 #include <stdint.h>
+#include <iosfwd>
 #include <string>
 
 #include "base/callback.h"
 #include "base/time/time.h"
+#include "media/base/decoder.h"
 #include "media/base/media_export.h"
+#include "media/base/status.h"
 #include "media/base/timestamp_constants.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -54,11 +58,69 @@ enum PipelineStatus {
   // not exactly an 'error' per say.
   DEMUXER_ERROR_DETECTED_HLS = 22,
 
+  // Used when hardware context is reset (e.g. OS sleep/resume), where we should
+  // recreate the Renderer instead of failing the playback. See
+  // https://crbug.com/1208618
+  PIPELINE_ERROR_HARDWARE_CONTEXT_RESET = 23,
+
   // Must be equal to the largest value ever logged.
-  PIPELINE_STATUS_MAX = DEMUXER_ERROR_DETECTED_HLS,
+  PIPELINE_STATUS_MAX = PIPELINE_ERROR_HARDWARE_CONTEXT_RESET,
 };
 
-typedef base::Callback<void(PipelineStatus)> PipelineStatusCB;
+MEDIA_EXPORT absl::optional<PipelineStatus> StatusCodeToPipelineStatus(
+    StatusCode status);
+MEDIA_EXPORT StatusCode PipelineStatusToStatusCode(PipelineStatus status);
+
+// Returns a string version of the status, unique to each PipelineStatus, and
+// not including any ':'. This makes it suitable for usage in
+// MediaError.message as the UA-specific-error-code.
+MEDIA_EXPORT std::string PipelineStatusToString(PipelineStatus status);
+
+MEDIA_EXPORT std::ostream& operator<<(std::ostream& out, PipelineStatus status);
+
+// TODO(crbug.com/1007799): Delete PipelineStatusCB once all callbacks are
+//                          converted to PipelineStatusCallback.
+using PipelineStatusCB = base::RepeatingCallback<void(PipelineStatus)>;
+using PipelineStatusCallback = base::OnceCallback<void(PipelineStatus)>;
+
+template <typename DecoderTypeId>
+struct PipelineDecoderInfo {
+  bool is_platform_decoder = false;
+  bool has_decrypting_demuxer_stream = false;
+  DecoderTypeId decoder_type = DecoderTypeId::kUnknown;
+};
+
+using AudioDecoderInfo = PipelineDecoderInfo<AudioDecoderType>;
+using VideoDecoderInfo = PipelineDecoderInfo<VideoDecoderType>;
+
+template <typename DecoderTypeId>
+MEDIA_EXPORT inline bool operator==(
+    const PipelineDecoderInfo<DecoderTypeId>& first,
+    const PipelineDecoderInfo<DecoderTypeId>& second) {
+  return first.decoder_type == second.decoder_type &&
+         first.is_platform_decoder == second.is_platform_decoder &&
+         first.has_decrypting_demuxer_stream ==
+             second.has_decrypting_demuxer_stream;
+}
+
+template <typename DecoderTypeId>
+MEDIA_EXPORT inline bool operator!=(
+    const PipelineDecoderInfo<DecoderTypeId>& first,
+    const PipelineDecoderInfo<DecoderTypeId>& second) {
+  return !(first == second);
+}
+
+template <typename DecoderTypeId>
+MEDIA_EXPORT inline std::ostream& operator<<(
+    std::ostream& out,
+    const PipelineDecoderInfo<DecoderTypeId>& info) {
+  // TODO(IN THIS CL DON'T FORGET) make a converter to print name.
+  return out << "{decoder_type:" << static_cast<int64_t>(info.decoder_type)
+             << ","
+             << "is_platform_decoder:" << info.is_platform_decoder << ","
+             << "has_decrypting_demuxer_stream:"
+             << info.has_decrypting_demuxer_stream << "}";
+}
 
 struct MEDIA_EXPORT PipelineStatistics {
   PipelineStatistics();
@@ -79,11 +141,10 @@ struct MEDIA_EXPORT PipelineStatistics {
   // NOTE: frame duration should reflect changes to playback rate.
   base::TimeDelta video_frame_duration_average = kNoTimestamp;
 
-  // Name of the audio or video decoder (if present). Note: Keep these fields at
-  // the end of the structure, if you move them you need to also update the test
-  // ProtoUtilsTest::PipelineStatisticsConversion.
-  std::string video_decoder_name;
-  std::string audio_decoder_name;
+  // Note: Keep these fields at the end of the structure, if you move them you
+  // need to also update the test ProtoUtilsTest::PipelineStatisticsConversion.
+  AudioDecoderInfo audio_decoder_info;
+  VideoDecoderInfo video_decoder_info;
 
   // NOTE: always update operator== implementation in pipeline_status.cc when
   // adding a field to this struct. Leave this comment at the end.

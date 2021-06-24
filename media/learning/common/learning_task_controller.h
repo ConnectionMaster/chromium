@@ -11,6 +11,9 @@
 #include "base/unguessable_token.h"
 #include "media/learning/common/labelled_example.h"
 #include "media/learning/common/learning_task.h"
+#include "media/learning/common/target_histogram.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 namespace learning {
@@ -21,13 +24,17 @@ namespace learning {
 // SourceId, which most callers don't care about.
 struct ObservationCompletion {
   ObservationCompletion() = default;
-  /* implicit */ ObservationCompletion(const TargetValue& target)
-      : target_value(target) {}
-  ObservationCompletion(const TargetValue& target, WeightType w)
+  /* implicit */ ObservationCompletion(const TargetValue& target,
+                                       WeightType w = 1.)
       : target_value(target), weight(w) {}
 
   TargetValue target_value;
-  WeightType weight = 1u;
+  WeightType weight;
+
+  // Mostly for gmock matchers.
+  bool operator==(const ObservationCompletion& rhs) const {
+    return target_value == rhs.target_value && weight == rhs.weight;
+  }
 };
 
 // Client for a single learning task.  Intended to be the primary API for client
@@ -38,6 +45,9 @@ struct ObservationCompletion {
 // observed to do that.
 class COMPONENT_EXPORT(LEARNING_COMMON) LearningTaskController {
  public:
+  using PredictionCB = base::OnceCallback<void(
+      const absl::optional<TargetHistogram>& predicted)>;
+
   LearningTaskController() = default;
   virtual ~LearningTaskController() = default;
 
@@ -47,14 +57,19 @@ class COMPONENT_EXPORT(LEARNING_COMMON) LearningTaskController {
   // features into an example for training a model, then call
   // CompleteObservation with the same id and an ObservationCompletion.
   // Otherwise, call CancelObservation with |id|.  It's also okay to destroy the
-  // controller with outstanding observations; these will be cancelled.
+  // controller with outstanding observations; these will be cancelled if no
+  // |default_target| was specified, or completed with |default_target|.
+  //
   // TODO(liberato): This should optionally take a callback to receive a
   // prediction for the FeatureVector.
   // TODO(liberato): See if this ends up generating smaller code with pass-by-
   // value or with |FeatureVector&&|, once we have callers that can actually
   // benefit from it.
-  virtual void BeginObservation(base::UnguessableToken id,
-                                const FeatureVector& features) = 0;
+  virtual void BeginObservation(
+      base::UnguessableToken id,
+      const FeatureVector& features,
+      const absl::optional<TargetValue>& default_target = absl::nullopt,
+      const absl::optional<ukm::SourceId>& source_id = absl::nullopt) = 0;
 
   // Complete an observation by sending a completion.
   virtual void CompleteObservation(base::UnguessableToken id,
@@ -62,6 +77,24 @@ class COMPONENT_EXPORT(LEARNING_COMMON) LearningTaskController {
 
   // Notify the LearningTaskController that no completion will be sent.
   virtual void CancelObservation(base::UnguessableToken id) = 0;
+
+  // Update the default target value for |id|.  This can change a previously
+  // specified default value to something else, add one where one wasn't
+  // specified before, or un-set it.  In the last case, the observation will be
+  // cancelled rather than completed if |this| is destroyed, just as if no
+  // default value was given.
+  virtual void UpdateDefaultTarget(
+      base::UnguessableToken id,
+      const absl::optional<TargetValue>& default_target) = 0;
+
+  // Returns the LearningTask associated with |this|.
+  virtual const LearningTask& GetLearningTask() = 0;
+
+  // Asynchronously predicts distribution for given |features|. |callback| will
+  // receive a absl::nullopt prediction when model is not available. |callback|
+  // may be called immediately without posting.
+  virtual void PredictDistribution(const FeatureVector& features,
+                                   PredictionCB callback) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(LearningTaskController);

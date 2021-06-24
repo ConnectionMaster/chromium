@@ -2,10 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {MetadataModel} from './metadata/metadata_model.js';
+// #import {ListContainer} from './ui/list_container.js';
+// #import {FileOperationManager} from '../../externs/background/file_operation_manager.js';
+// #import {DirectoryModel} from './directory_model.m.js';
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// #import {AllowedPaths} from '../../common/js/volume_manager_types.m.js';
+// #import {util} from '../../common/js/util.m.js';
+// #import {constants} from './constants.m.js';
+// #import {FileType} from '../../common/js/file_type.js';
+// #import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+// #import {dispatchSimpleEvent} from 'chrome://resources/js/cr.m.js';
+// #import {assert} from 'chrome://resources/js/assert.m.js';
+// clang-format on
+
 /**
  * The current selection object.
  */
-class FileSelection {
+/* #export */ class FileSelection {
   /**
    * @param {!Array<number>} indexes
    * @param {!Array<Entry>} entries
@@ -131,7 +146,7 @@ class FileSelection {
 /**
  * This object encapsulates everything related to current selection.
  */
-class FileSelectionHandler extends cr.EventTarget {
+/* #export */ class FileSelectionHandler extends cr.EventTarget {
   /**
    * @param {!DirectoryModel} directoryModel
    * @param {!FileOperationManager} fileOperationManager
@@ -180,9 +195,11 @@ class FileSelectionHandler extends cr.EventTarget {
     this.selectionUpdateTimer_ = 0;
 
     /**
+     * The time, in ms since the epoch, when it is OK to post next throttled
+     * selection event. Can be directly compared with Date.now().
      * @private {number}
      */
-    this.lastFileSelectionTime_ = Date.now();
+    this.nextThrottledEventTime_ = 0;
 
     /**
      * @private {AllowedPaths}
@@ -220,7 +237,7 @@ class FileSelectionHandler extends cr.EventTarget {
     let updateDelay = FileSelectionHandler.UPDATE_DELAY;
     const now = Date.now();
 
-    if (now > (this.lastFileSelectionTime_ || 0) + updateDelay &&
+    if (now >= this.nextThrottledEventTime_ &&
         indexes.length <
             FileSelectionHandler.NUMBER_OF_ITEMS_HEAVY_TO_COMPUTE) {
       // The previous selection change happened a while ago and there is few
@@ -228,14 +245,11 @@ class FileSelectionHandler extends cr.EventTarget {
       // delay.
       updateDelay = 0;
     }
-    this.lastFileSelectionTime_ = now;
 
     const selection = this.selection;
     this.selectionUpdateTimer_ = setTimeout(() => {
       this.selectionUpdateTimer_ = null;
-      if (this.selection === selection) {
-        this.updateFileSelectionAsync_(selection);
-      }
+      this.updateFileSelectionAsync_(selection);
     }, updateDelay);
 
     cr.dispatchSimpleEvent(this, FileSelectionHandler.EventType.CHANGE);
@@ -258,6 +272,8 @@ class FileSelectionHandler extends cr.EventTarget {
         return;
       }
 
+      this.nextThrottledEventTime_ =
+          Date.now() + FileSelectionHandler.UPDATE_DELAY;
       cr.dispatchSimpleEvent(
           this, FileSelectionHandler.EventType.CHANGE_THROTTLED);
     });
@@ -285,7 +301,7 @@ class FileSelectionHandler extends cr.EventTarget {
    */
   isOfflineWithUncachedFilesSelected_() {
     return this.volumeManager_.getDriveConnectionState().type ===
-        VolumeManagerCommon.DriveConnectionType.OFFLINE &&
+        chrome.fileManagerPrivate.DriveConnectionStateType.OFFLINE &&
         this.selection.anyFilesNotInCache;
   }
 

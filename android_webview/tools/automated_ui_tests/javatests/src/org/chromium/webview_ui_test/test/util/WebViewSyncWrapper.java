@@ -118,7 +118,7 @@ public class WebViewSyncWrapper {
     }
 
     public void loadDataSync(final String data, final String mimeType, final String encoding,
-            boolean confirmByJavaScript) throws InterruptedException {
+            boolean confirmByJavaScript) {
         mErrorMessageList.clear();
         int currentPageCount = mPageCallback.getCallCount();
         int currentJsCount = mJsCallback.getCallCount();
@@ -138,14 +138,14 @@ public class WebViewSyncWrapper {
         }
     }
 
-    public void loadFileSync(final String html, boolean confirmByJavaScript)
-            throws InterruptedException {
+    public void loadFileSync(final String html, boolean confirmByJavaScript) {
         mErrorMessageList.clear();
         int currentPageCount = mPageCallback.getCallCount();
         int currentJsCount = mJsCallback.getCallCount();
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                mWebView.getSettings().setAllowFileAccess(true);
                 mWebView.loadUrl(FILE_URL_BASE + html);
             }
         });
@@ -159,8 +159,7 @@ public class WebViewSyncWrapper {
         }
     }
 
-    public void loadJavaScriptSync(String js, boolean appendJavaScriptConfirmation)
-            throws InterruptedException {
+    public void loadJavaScriptSync(String js, boolean appendJavaScriptConfirmation) {
         mErrorMessageList.clear();
         int currentJsCount = mJsCallback.getCallCount();
         final String jsWithCallback;

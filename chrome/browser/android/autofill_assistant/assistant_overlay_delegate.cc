@@ -4,8 +4,8 @@
 
 #include "chrome/browser/android/autofill_assistant/assistant_overlay_delegate.h"
 
+#include "chrome/android/features/autofill_assistant/jni_headers/AssistantOverlayDelegate_jni.h"
 #include "chrome/browser/android/autofill_assistant/ui_controller_android.h"
-#include "jni/AssistantOverlayDelegate_jni.h"
 
 using base::android::AttachCurrentThread;
 
@@ -27,12 +27,6 @@ void AssistantOverlayDelegate::OnUnexpectedTaps(
     JNIEnv* env,
     const base::android::JavaParamRef<jobject>& jcaller) {
   ui_controller_->OnUnexpectedTaps();
-}
-
-void AssistantOverlayDelegate::UpdateTouchableArea(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& jcaller) {
-  ui_controller_->UpdateTouchableArea();
 }
 
 void AssistantOverlayDelegate::OnUserInteractionInsideTouchableArea(

@@ -6,8 +6,10 @@
 
 #include <algorithm>
 
+#include "base/containers/contains.h"
 #include "base/debug/alias.h"
-#include "base/memory/shared_memory.h"
+#include "base/logging.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/stl_util.h"
 #include "components/viz/common/resources/resource_sizes.h"
 
@@ -44,12 +46,12 @@ void OutputDeviceBacking::ClientResized() {
   if (GetMaxViewportBytes() == created_shm_bytes_)
     return;
 
-  // Otherwise we need to allocate a new SharedMemory segment and clients
+  // Otherwise we need to allocate a new shared memory region and clients
   // should re-request it.
   for (auto* client : clients_)
     client->ReleaseCanvas();
 
-  shm_.reset();
+  region_ = {};
   created_shm_bytes_ = 0;
 }
 
@@ -58,12 +60,12 @@ void OutputDeviceBacking::RegisterClient(Client* client) {
 }
 
 void OutputDeviceBacking::UnregisterClient(Client* client) {
-  DCHECK(base::ContainsValue(clients_, client));
+  DCHECK(base::Contains(clients_, client));
   base::Erase(clients_, client);
   ClientResized();
 }
 
-base::SharedMemory* OutputDeviceBacking::GetSharedMemory(
+base::UnsafeSharedMemoryRegion* OutputDeviceBacking::GetSharedMemoryRegion(
     const gfx::Size& viewport_size) {
   // If |viewport_size| is empty or too big don't try to allocate SharedMemory.
   size_t viewport_bytes;
@@ -71,20 +73,24 @@ base::SharedMemory* OutputDeviceBacking::GetSharedMemory(
     return nullptr;
 
   // Allocate a new SharedMemory segment that can fit the largest viewport.
-  if (!shm_) {
+  if (!region_.IsValid()) {
     size_t max_viewport_bytes = GetMaxViewportBytes();
     DCHECK_LE(viewport_bytes, max_viewport_bytes);
 
-    shm_ = std::make_unique<base::SharedMemory>();
     base::debug::Alias(&max_viewport_bytes);
-    CHECK(shm_->CreateAnonymous(max_viewport_bytes));
+    region_ = base::UnsafeSharedMemoryRegion::Create(max_viewport_bytes);
+    if (!region_.IsValid()) {
+      LOG(ERROR) << "Shared memory region create failed on "
+                 << max_viewport_bytes << " bytes";
+      return nullptr;
+    }
     created_shm_bytes_ = max_viewport_bytes;
   } else {
     // Clients must call Resize() for new |viewport_size|.
     DCHECK_LE(viewport_bytes, created_shm_bytes_);
   }
 
-  return shm_.get();
+  return &region_;
 }
 
 size_t OutputDeviceBacking::GetMaxViewportBytes() {

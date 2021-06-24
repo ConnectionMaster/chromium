@@ -4,44 +4,56 @@
 
 #include "components/gcm_driver/crypto/gcm_encryption_provider.h"
 
+#include <memory>
 #include <vector>
 
 #include "base/base64.h"
+#include "base/big_endian.h"
 #include "base/bind.h"
 #include "base/logging.h"
-#include "components/gcm_driver/common/gcm_messages.h"
+#include "base/strings/strcat.h"
+#include "components/gcm_driver/common/gcm_message.h"
 #include "components/gcm_driver/crypto/encryption_header_parsers.h"
 #include "components/gcm_driver/crypto/gcm_decryption_result.h"
+#include "components/gcm_driver/crypto/gcm_encryption_result.h"
 #include "components/gcm_driver/crypto/gcm_key_store.h"
 #include "components/gcm_driver/crypto/gcm_message_cryptographer.h"
 #include "components/gcm_driver/crypto/message_payload_parser.h"
 #include "components/gcm_driver/crypto/p256_key_util.h"
 #include "components/gcm_driver/crypto/proto/gcm_encryption_data.pb.h"
 #include "crypto/ec_private_key.h"
+#include "crypto/random.h"
 
 namespace gcm {
 
 namespace {
 
 const char kEncryptionProperty[] = "encryption";
-const char kContentEncodingProperty[] = "content-encoding";
 const char kCryptoKeyProperty[] = "crypto-key";
-
-// Content coding name defined by ietf-httpbis-encryption-encoding.
-const char kContentCodingAes128Gcm[] = "aes128gcm";
+const char kInternalRawData[] = "_googRawData";
 
 // Directory in the GCM Store in which the encryption database will be stored.
 const base::FilePath::CharType kEncryptionDirectoryName[] =
     FILE_PATH_LITERAL("Encryption");
 
+IncomingMessage CreateMessageWithId(const std::string& message_id) {
+  IncomingMessage message;
+  message.message_id = message_id;
+  return message;
+}
+
 }  // namespace
 
-GCMEncryptionProvider::GCMEncryptionProvider()
-    : weak_ptr_factory_(this) {
-}
+GCMEncryptionProvider::GCMEncryptionProvider() {}
 
-GCMEncryptionProvider::~GCMEncryptionProvider() {
-}
+GCMEncryptionProvider::~GCMEncryptionProvider() = default;
+
+// static
+const char GCMEncryptionProvider::kContentEncodingProperty[] =
+    "content-encoding";
+
+// static
+const char GCMEncryptionProvider::kContentCodingAes128Gcm[] = "aes128gcm";
 
 void GCMEncryptionProvider::Init(
     const base::FilePath& store_path,
@@ -55,8 +67,8 @@ void GCMEncryptionProvider::Init(
   if (!store_path.empty())
     encryption_store_path = store_path.Append(kEncryptionDirectoryName);
 
-  key_store_.reset(
-      new GCMKeyStore(encryption_store_path, blocking_task_runner));
+  key_store_ = std::make_unique<GCMKeyStore>(encryption_store_path,
+                                             blocking_task_runner);
 }
 
 void GCMEncryptionProvider::GetEncryptionInfo(
@@ -95,13 +107,13 @@ void GCMEncryptionProvider::DidGetEncryptionInfo(
 void GCMEncryptionProvider::RemoveEncryptionInfo(
     const std::string& app_id,
     const std::string& authorized_entity,
-    const base::Closure& callback) {
+    base::OnceClosure callback) {
   DCHECK(key_store_);
-  key_store_->RemoveKeys(app_id, authorized_entity, callback);
+  key_store_->RemoveKeys(app_id, authorized_entity, std::move(callback));
 }
 
-bool GCMEncryptionProvider::IsEncryptedMessage(const IncomingMessage& message)
-    const {
+bool GCMEncryptionProvider::IsEncryptedMessage(
+    const IncomingMessage& message) const {
   // Messages that explicitly specify their content coding to be "aes128gcm"
   // indicate that they use draft-ietf-webpush-encryption-08.
   auto content_encoding_iter = message.data.find(kContentEncodingProperty);
@@ -119,13 +131,12 @@ bool GCMEncryptionProvider::IsEncryptedMessage(const IncomingMessage& message)
   return message.raw_data.size() > 0;
 }
 
-void GCMEncryptionProvider::DecryptMessage(
-    const std::string& app_id,
-    const IncomingMessage& message,
-    const MessageCallback& callback) {
+void GCMEncryptionProvider::DecryptMessage(const std::string& app_id,
+                                           const IncomingMessage& message,
+                                           DecryptMessageCallback callback) {
   DCHECK(key_store_);
   if (!IsEncryptedMessage(message)) {
-    callback.Run(GCMDecryptionResult::UNENCRYPTED, message);
+    std::move(callback).Run(GCMDecryptionResult::UNENCRYPTED, message);
     return;
   }
 
@@ -139,19 +150,27 @@ void GCMEncryptionProvider::DecryptMessage(
     // The message follows encryption per draft-ietf-webpush-encryption-08. Use
     // the binary header of the message to derive the values.
 
-    MessagePayloadParser parser(message.raw_data);
-    if (!parser.IsValid()) {
-      DLOG(ERROR) << "Unable to parse the message's binary header";
-      callback.Run(parser.GetFailureReason(), IncomingMessage());
-      return;
+    auto parser = std::make_unique<MessagePayloadParser>(message.raw_data);
+    if (!parser->IsValid()) {
+      // Attempt to parse base64 encoded internal raw data.
+      auto raw_data_iter = message.data.find(kInternalRawData);
+      std::string raw_data;
+      if (raw_data_iter == message.data.end() ||
+          !base::Base64Decode(raw_data_iter->second, &raw_data) ||
+          !(parser = std::make_unique<MessagePayloadParser>(raw_data))
+               ->IsValid()) {
+        DLOG(ERROR) << "Unable to parse the message's binary header";
+        std::move(callback).Run(parser->GetFailureReason(),
+                                CreateMessageWithId(message.message_id));
+        return;
+      }
     }
 
-    salt = parser.salt();
-    public_key = parser.public_key();
-    record_size = parser.record_size();
-    ciphertext = parser.ciphertext();
+    salt = parser->salt();
+    public_key = parser->public_key();
+    record_size = parser->record_size();
+    ciphertext = parser->ciphertext();
     version = GCMMessageCryptographer::Version::DRAFT_08;
-
   } else {
     // The message follows encryption per draft-ietf-webpush-encryption-03. Use
     // the Encryption and Crypto-Key header values to derive the values.
@@ -166,16 +185,16 @@ void GCMEncryptionProvider::DecryptMessage(
         encryption_header->second.begin(), encryption_header->second.end());
     if (!encryption_header_iterator.GetNext()) {
       DLOG(ERROR) << "Unable to parse the value of the Encryption header";
-      callback.Run(GCMDecryptionResult::INVALID_ENCRYPTION_HEADER,
-                   IncomingMessage());
+      std::move(callback).Run(GCMDecryptionResult::INVALID_ENCRYPTION_HEADER,
+                              CreateMessageWithId(message.message_id));
       return;
     }
 
     if (encryption_header_iterator.salt().size() !=
         GCMMessageCryptographer::kSaltSize) {
       DLOG(ERROR) << "Invalid values supplied in the Encryption header";
-      callback.Run(GCMDecryptionResult::INVALID_ENCRYPTION_HEADER,
-                   IncomingMessage());
+      std::move(callback).Run(GCMDecryptionResult::INVALID_ENCRYPTION_HEADER,
+                              CreateMessageWithId(message.message_id));
       return;
     }
 
@@ -186,8 +205,8 @@ void GCMEncryptionProvider::DecryptMessage(
         crypto_key_header->second.begin(), crypto_key_header->second.end());
     if (!crypto_key_header_iterator.GetNext()) {
       DLOG(ERROR) << "Unable to parse the value of the Crypto-Key header";
-      callback.Run(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
-                   IncomingMessage());
+      std::move(callback).Run(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
+                              CreateMessageWithId(message.message_id));
       return;
     }
 
@@ -215,8 +234,8 @@ void GCMEncryptionProvider::DecryptMessage(
 
     if (!valid_crypto_key_header) {
       DLOG(ERROR) << "Invalid values supplied in the Crypto-Key header";
-      callback.Run(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
-                   IncomingMessage());
+      std::move(callback).Run(GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER,
+                              CreateMessageWithId(message.message_id));
       return;
     }
 
@@ -230,9 +249,25 @@ void GCMEncryptionProvider::DecryptMessage(
       app_id, message.sender_id /* authorized_entity */,
       true /* fallback_to_empty_authorized_entity */,
       base::BindOnce(&GCMEncryptionProvider::DecryptMessageWithKey,
-                     weak_ptr_factory_.GetWeakPtr(), message.collapse_key,
-                     message.sender_id, std::move(salt), std::move(public_key),
-                     record_size, std::move(ciphertext), version, callback));
+                     weak_ptr_factory_.GetWeakPtr(), message.message_id,
+                     message.collapse_key, message.sender_id, std::move(salt),
+                     std::move(public_key), record_size, std::move(ciphertext),
+                     version, std::move(callback)));
+}  // namespace gcm
+
+void GCMEncryptionProvider::EncryptMessage(const std::string& app_id,
+                                           const std::string& authorized_entity,
+                                           const std::string& p256dh,
+                                           const std::string& auth_secret,
+                                           const std::string& message,
+                                           EncryptMessageCallback callback) {
+  DCHECK(key_store_);
+  key_store_->GetKeys(
+      app_id, authorized_entity,
+      false /* fallback_to_empty_authorized_entity */,
+      base::BindOnce(&GCMEncryptionProvider::EncryptMessageWithKey,
+                     weak_ptr_factory_.GetWeakPtr(), app_id, authorized_entity,
+                     p256dh, auth_secret, message, std::move(callback)));
 }
 
 void GCMEncryptionProvider::DidCreateEncryptionInfo(
@@ -252,6 +287,7 @@ void GCMEncryptionProvider::DidCreateEncryptionInfo(
 }
 
 void GCMEncryptionProvider::DecryptMessageWithKey(
+    const std::string& message_id,
     const std::string& collapse_key,
     const std::string& sender_id,
     const std::string& salt,
@@ -259,20 +295,21 @@ void GCMEncryptionProvider::DecryptMessageWithKey(
     uint32_t record_size,
     const std::string& ciphertext,
     GCMMessageCryptographer::Version version,
-    const MessageCallback& callback,
+    DecryptMessageCallback callback,
     std::unique_ptr<crypto::ECPrivateKey> key,
     const std::string& auth_secret) {
   if (!key) {
     DLOG(ERROR) << "Unable to retrieve the keys for the incoming message.";
-    callback.Run(GCMDecryptionResult::NO_KEYS, IncomingMessage());
+    std::move(callback).Run(GCMDecryptionResult::NO_KEYS,
+                            CreateMessageWithId(message_id));
     return;
   }
-
 
   std::string shared_secret;
   if (!ComputeSharedP256Secret(*key, public_key, &shared_secret)) {
     DLOG(ERROR) << "Unable to calculate the shared secret.";
-    callback.Run(GCMDecryptionResult::INVALID_SHARED_SECRET, IncomingMessage());
+    std::move(callback).Run(GCMDecryptionResult::INVALID_SHARED_SECRET,
+                            CreateMessageWithId(message_id));
     return;
   }
 
@@ -287,11 +324,13 @@ void GCMEncryptionProvider::DecryptMessageWithKey(
                              auth_secret, salt, ciphertext, record_size,
                              &plaintext)) {
     DLOG(ERROR) << "Unable to decrypt the incoming data.";
-    callback.Run(GCMDecryptionResult::INVALID_PAYLOAD, IncomingMessage());
+    std::move(callback).Run(GCMDecryptionResult::INVALID_PAYLOAD,
+                            CreateMessageWithId(message_id));
     return;
   }
 
   IncomingMessage decrypted_message;
+  decrypted_message.message_id = message_id;
   decrypted_message.collapse_key = collapse_key;
   decrypted_message.sender_id = sender_id;
   decrypted_message.raw_data.swap(plaintext);
@@ -301,10 +340,74 @@ void GCMEncryptionProvider::DecryptMessageWithKey(
   // to make sure that we don't end up in an infinite decryption loop.
   DCHECK_EQ(0u, decrypted_message.data.size());
 
-  callback.Run(version == GCMMessageCryptographer::Version::DRAFT_03
-                   ? GCMDecryptionResult::DECRYPTED_DRAFT_03
-                   : GCMDecryptionResult::DECRYPTED_DRAFT_08,
-               decrypted_message);
+  std::move(callback).Run(version == GCMMessageCryptographer::Version::DRAFT_03
+                              ? GCMDecryptionResult::DECRYPTED_DRAFT_03
+                              : GCMDecryptionResult::DECRYPTED_DRAFT_08,
+                          std::move(decrypted_message));
+}
+
+void GCMEncryptionProvider::EncryptMessageWithKey(
+    const std::string& app_id,
+    const std::string& authorized_entity,
+    const std::string& p256dh,
+    const std::string& auth_secret,
+    const std::string& message,
+    EncryptMessageCallback callback,
+    std::unique_ptr<crypto::ECPrivateKey> key,
+    const std::string& sender_auth_secret) {
+  if (!key) {
+    DLOG(ERROR) << "Unable to retrieve the keys for the outgoing message.";
+    std::move(callback).Run(GCMEncryptionResult::NO_KEYS, std::string());
+    return;
+  }
+
+  // Creates a cryptographically secure salt of |salt_size| octets in size,
+  // and calculate the shared secret for the message.
+  std::string salt;
+  crypto::RandBytes(base::WriteInto(&salt, 16 + 1), 16);
+
+  std::string shared_secret;
+  if (!ComputeSharedP256Secret(*key, p256dh, &shared_secret)) {
+    DLOG(ERROR) << "Unable to calculate the shared secret.";
+    std::move(callback).Run(GCMEncryptionResult::INVALID_SHARED_SECRET,
+                            std::string());
+    return;
+  }
+
+  size_t record_size;
+  std::string ciphertext;
+
+  GCMMessageCryptographer cryptographer(
+      GCMMessageCryptographer::Version::DRAFT_08);
+
+  std::string sender_public_key;
+  bool success = GetRawPublicKey(*key, &sender_public_key);
+  DCHECK(success);
+  if (!cryptographer.Encrypt(p256dh, sender_public_key, shared_secret,
+                             auth_secret, salt, message, &record_size,
+                             &ciphertext)) {
+    DLOG(ERROR) << "Unable to encrypt the incoming data.";
+    std::move(callback).Run(GCMEncryptionResult::ENCRYPTION_FAILED,
+                            std::string());
+    return;
+  }
+
+  // Construct encryption header.
+  uint32_t rs = record_size;
+  char rs_buf[sizeof(rs)];
+  base::WriteBigEndian(rs_buf, rs);
+  std::string rs_str(std::begin(rs_buf), std::end(rs_buf));
+
+  uint8_t key_length = sender_public_key.size();
+  char key_length_buf[sizeof(key_length)];
+  base::WriteBigEndian(key_length_buf, key_length);
+  std::string key_length_str(std::begin(key_length_buf),
+                             std::end(key_length_buf));
+
+  std::string payload = base::StrCat(
+      {salt, rs_str, key_length_str, sender_public_key, ciphertext});
+  std::move(callback).Run(GCMEncryptionResult::ENCRYPTED_DRAFT_08,
+                          std::move(payload));
 }
 
 }  // namespace gcm

@@ -32,7 +32,7 @@ class DOMAIN_RELIABILITY_EXPORT DomainReliabilityDispatcher {
   // now. The task will be run at most |max_delay| from now; once |min_delay|
   // has passed, any call to |RunEligibleTasks| will run the task earlier than
   // that.
-  void ScheduleTask(const base::Closure& task,
+  void ScheduleTask(base::OnceClosure task,
                     base::TimeDelta min_delay,
                     base::TimeDelta max_delay);
 
@@ -67,4 +67,4 @@ class DOMAIN_RELIABILITY_EXPORT DomainReliabilityDispatcher {
 
 }  // namespace domain_reliability
 
-#endif
+#endif  // COMPONENTS_DOMAIN_RELIABILITY_DISPATCHER_H_

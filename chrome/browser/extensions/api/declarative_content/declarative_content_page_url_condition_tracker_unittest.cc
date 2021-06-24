@@ -7,9 +7,9 @@
 #include <set>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/stl_util.h"
 #include "base/test/values_test_util.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
 #include "chrome/browser/extensions/api/declarative_content/declarative_content_condition_tracker_test.h"
@@ -38,7 +38,7 @@ class DeclarativeContentPageUrlConditionTrackerTest
 
     // ContentPredicateEvaluator::Delegate:
     void RequestEvaluation(content::WebContents* contents) override {
-      EXPECT_FALSE(base::ContainsKey(evaluation_requests_, contents));
+      EXPECT_FALSE(base::Contains(evaluation_requests_, contents));
       evaluation_requests_.insert(contents);
     }
 

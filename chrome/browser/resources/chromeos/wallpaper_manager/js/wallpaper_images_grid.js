@@ -74,7 +74,7 @@ cr.define('wallpapers', function() {
     callback_: null,
 
     /** @override */
-    decorate: function() {
+    decorate() {
       GridItem.prototype.decorate.call(this);
       // Removes garbage created by GridItem.
       this.innerText = '';
@@ -84,16 +84,6 @@ cr.define('wallpapers', function() {
         return;
       }
 
-      if (this.thumbnail_) {
-        this.appendChild(this.thumbnail_);
-        this.callback_(this.dataModelId_, this.dataItem.wallpaperId);
-        return;
-      }
-
-      var imageEl = cr.doc.createElement('img');
-      // Do not show the image until |cropImageToFitGrid_| is done.
-      imageEl.style.visibility = 'hidden';
-      imageEl.setAttribute('aria-hidden', 'true');
       this.setAttribute('aria-label', this.dataItem.ariaLabel);
       this.tabIndex = 0;
       this.addEventListener('keypress', e => {
@@ -103,6 +93,17 @@ cr.define('wallpapers', function() {
       this.addEventListener('mousedown', e => {
         e.preventDefault();
       });
+
+      if (this.thumbnail_) {
+        this.appendChild(this.thumbnail_);
+        this.callback_(this.dataModelId_, this.dataItem.wallpaperId);
+        return;
+      }
+
+      var imageEl = document.createElement('img');
+      // Do not show the image until |cropImageToFitGrid_| is done.
+      imageEl.style.visibility = 'hidden';
+      imageEl.setAttribute('aria-hidden', 'true');
 
       imageEl.classList.add('thumbnail');
       cr.defineProperty(imageEl, 'offline', cr.PropertyKind.BOOL_ATTR);
@@ -235,21 +236,21 @@ cr.define('wallpapers', function() {
     __proto__: GridSelectionController.prototype,
 
     /** @override */
-    getIndexBefore: function(index) {
+    getIndexBefore(index) {
       var result =
           GridSelectionController.prototype.getIndexBefore.call(this, index);
       return result == -1 ? this.getLastIndex() : result;
     },
 
     /** @override */
-    getIndexAfter: function(index) {
+    getIndexAfter(index) {
       var result =
           GridSelectionController.prototype.getIndexAfter.call(this, index);
       return result == -1 ? this.getFirstIndex() : result;
     },
 
     /** @override */
-    handleKeyDown: function(e) {
+    handleKeyDown(e) {
       if (e.key == 'Enter')
         cr.dispatchSimpleEvent(this.grid_, 'activate');
       else
@@ -391,6 +392,7 @@ cr.define('wallpapers', function() {
         }
       }
 
+      // eslint-disable-next-line no-restricted-properties
       var parentSetter = cr.ui.Grid.prototype.__lookupSetter__('dataModel');
       parentSetter.call(this, dataModel);
     },
@@ -400,7 +402,7 @@ cr.define('wallpapers', function() {
     },
 
     /** @override */
-    createSelectionController: function(sm) {
+    createSelectionController(sm) {
       return new WallpaperThumbnailsGridSelectionController(sm, this);
     },
 
@@ -410,7 +412,7 @@ cr.define('wallpapers', function() {
      * @param {object} image The wallpaper image.
      * @private
      */
-    cropImageToFitGrid_: function(image) {
+    cropImageToFitGrid_(image) {
       var newHeight;
       var newWidth;
       if (image.offsetWidth == 0 || image.offsetHeight == 0) {
@@ -459,7 +461,7 @@ cr.define('wallpapers', function() {
      * @param {object} opt_thumbnail The thumbnail image that associated with
      *     the opt_wallpaperId.
      */
-    pendingItemComplete: function(dataModelId, opt_wallpaperId, opt_thumbnail) {
+    pendingItemComplete(dataModelId, opt_wallpaperId, opt_thumbnail) {
       if (dataModelId != this.dataModelId_)
         return;
       --this.pendingItems_;
@@ -518,12 +520,12 @@ cr.define('wallpapers', function() {
     },
 
     /** @override */
-    decorate: function() {
+    decorate() {
       Grid.prototype.decorate.call(this);
       // checkmark_ needs to be initialized before set data model. Otherwise, we
       // may try to access checkmark before initialization in
       // updateActiveThumb_().
-      this.checkmark_ = cr.doc.createElement('div');
+      this.checkmark_ = document.createElement('div');
       this.checkmark_.classList.add('check');
       this.checkmark_.setAttribute(
           'aria-label', loadTimeData.getString('setSuccessfullyMessage'));
@@ -593,7 +595,7 @@ cr.define('wallpapers', function() {
      * if any. Note if wallpaper was not set successfully, checkmark should not
      * show on that thumbnail.
      */
-    updateActiveThumb_: function() {
+    updateActiveThumb_() {
       var selectedGridItem = this.getListItem(this.activeItem_);
 
       // Clears previous checkmark.
@@ -618,7 +620,7 @@ cr.define('wallpapers', function() {
      * @param {Object} image The thumbnail image.
      * @private
      */
-    cacheDailyRefreshThumbnailImages_: function(image) {
+    cacheDailyRefreshThumbnailImages_(image) {
       // Decide heuristically if the image should be cached. There's no need to
       // cache everything if the list already contains the number of images
       // needed.
@@ -634,7 +636,7 @@ cr.define('wallpapers', function() {
      * @param {Object} slideShowImage The image to be used in the slideshow.
      * @private
      */
-    addImageToDailyRefreshItem_: function(slideShowImage) {
+    addImageToDailyRefreshItem_(slideShowImage) {
       this.dailyRefreshItem.classList.add('daily-refresh-item');
 
       // Add the daily refresh label and toggle.
@@ -659,7 +661,7 @@ cr.define('wallpapers', function() {
      * @param {number} index The index of the image to be shown.
      * @private
      */
-    showNextImage_: function(index) {
+    showNextImage_(index) {
       var images = this.dailyRefreshImages;
       if (images.length <= index)
         return;
@@ -675,7 +677,7 @@ cr.define('wallpapers', function() {
      * Highlights the wallpapers that are available offline by greying out all
      * the other wallpapers.
      */
-    highlightOfflineWallpapers: function() {
+    highlightOfflineWallpapers() {
       if (!this.classList.contains('image-picker-offline'))
         return;
 
@@ -703,7 +705,7 @@ cr.define('wallpapers', function() {
     /**
      * Redraws the viewport.
      */
-    redraw: function() {
+    redraw() {
       Grid.prototype.redraw.call(this);
       // The active thumbnail maybe deleted in the above redraw(). Sets it again
       // to make sure checkmark shows correctly.
@@ -712,12 +714,16 @@ cr.define('wallpapers', function() {
         var scrollUp =
             this.cachedScrollTop_ && this.cachedScrollTop_ > this.scrollTop;
         for (var i = 0; i < this.dataModel.length; ++i) {
-          if (this.getListItemByIndex(i)) {
-            this.getListItemByIndex(i).classList.toggle(
+          const listItem = this.getListItemByIndex(i);
+          if (listItem) {
+            listItem.classList.toggle(
                 'first-row',
                 i < this.columns &&
                     (this.firstIndex_ == 0 || i != this.firstIndex_ ||
                      scrollUp));
+            listItem.tabIndex = 0;
+            listItem.setAttribute(
+                'aria-label', this.dataModel.item(i).ariaLabel);
           }
         }
       }

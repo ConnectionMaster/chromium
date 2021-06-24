@@ -15,9 +15,9 @@
 #include "chrome/common/chrome_paths.h"
 #include "content/public/browser/plugin_service.h"
 #include "content/public/common/pepper_plugin_info.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/mime_types_handler.h"
+#include "net/base/mime_util.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
 
@@ -30,9 +30,8 @@ using content::PluginService;
 namespace extensions {
 
 PluginManager::PluginManager(content::BrowserContext* context)
-    : profile_(Profile::FromBrowserContext(context)),
-      extension_registry_observer_(this) {
-  extension_registry_observer_.Add(ExtensionRegistry::Get(profile_));
+    : profile_(Profile::FromBrowserContext(context)) {
+  extension_registry_observation_.Observe(ExtensionRegistry::Get(profile_));
 }
 
 PluginManager::~PluginManager() {
@@ -167,7 +166,7 @@ void PluginManager::UpdatePluginListWithNaClModules() {
         content::WebPluginMimeType mime_type_info;
         mime_type_info.mime_type = iter->mime_type;
         mime_type_info.additional_params.emplace_back(
-            base::UTF8ToUTF16("nacl"), base::UTF8ToUTF16(iter->url.spec()));
+            u"nacl", base::UTF8ToUTF16(iter->url.spec()));
         info.mime_types.emplace_back(std::move(mime_type_info));
       }
 

@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/long_or_boolean.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -57,7 +57,7 @@ LongOrBoolean::LongOrBoolean(const LongOrBoolean&) = default;
 LongOrBoolean::~LongOrBoolean() = default;
 LongOrBoolean& LongOrBoolean::operator=(const LongOrBoolean&) = default;
 
-void LongOrBoolean::Trace(blink::Visitor* visitor) {
+void LongOrBoolean::Trace(Visitor* visitor) const {
 }
 
 void V8LongOrBoolean::ToImpl(
@@ -78,7 +78,7 @@ void V8LongOrBoolean::ToImpl(
   }
 
   if (v8_value->IsNumber()) {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -86,7 +86,7 @@ void V8LongOrBoolean::ToImpl(
   }
 
   {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -116,3 +116,4 @@ LongOrBoolean NativeValueTraits<LongOrBoolean>::NativeValue(
 }
 
 }  // namespace blink
+

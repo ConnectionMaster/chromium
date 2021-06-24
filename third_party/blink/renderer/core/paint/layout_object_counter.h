@@ -5,7 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_LAYOUT_OBJECT_COUNTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_LAYOUT_OBJECT_COUNTER_H_
 
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -25,4 +25,4 @@ class LayoutObjectCounter {
 
 }  // namespace blink
 
-#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_FIRST_MEANINGFUL_PAINT_DETECTOR_H_
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_LAYOUT_OBJECT_COUNTER_H_

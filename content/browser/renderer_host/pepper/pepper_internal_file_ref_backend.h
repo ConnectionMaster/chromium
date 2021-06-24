@@ -15,9 +15,9 @@
 #include "ppapi/c/pp_resource.h"
 #include "ppapi/c/pp_time.h"
 #include "ppapi/host/ppapi_host.h"
-#include "storage/browser/fileapi/file_system_context.h"
-#include "storage/browser/fileapi/file_system_operation.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_context.h"
+#include "storage/browser/file_system/file_system_operation.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 namespace content {
 
@@ -60,6 +60,26 @@ class PepperInternalFileRefBackend : public PepperFileRefBackend {
                  const IPC::Message& msg,
                  base::File::Error error);
 
+  // Helper methods called on IO thread when the PpapiHost runs on the UI
+  // thread.
+  static void DidFinishOnIOThread(
+      base::WeakPtr<PepperInternalFileRefBackend> weak_ptr,
+      ppapi::host::ReplyMessageContext reply_context,
+      const IPC::Message& msg,
+      base::File::Error error);
+  static void ReadDirectoryCompleteOnIOThread(
+      base::WeakPtr<PepperInternalFileRefBackend> weak_ptr,
+      ppapi::host::ReplyMessageContext reply_context,
+      storage::FileSystemOperation::FileEntryList* accumulated_file_list,
+      base::File::Error error,
+      storage::FileSystemOperation::FileEntryList file_list,
+      bool has_more);
+  static void GetMetadataCompleteOnIOThread(
+      base::WeakPtr<PepperInternalFileRefBackend> weak_ptr,
+      ppapi::host::ReplyMessageContext reply_context,
+      base::File::Error result,
+      const base::File::Info& file_info);
+
   // Operation specific callbacks.
   void GetMetadataComplete(ppapi::host::ReplyMessageContext reply_context,
                            base::File::Error error,
@@ -81,7 +101,7 @@ class PepperInternalFileRefBackend : public PepperFileRefBackend {
 
   mutable storage::FileSystemURL fs_url_;
 
-  base::WeakPtrFactory<PepperInternalFileRefBackend> weak_factory_;
+  base::WeakPtrFactory<PepperInternalFileRefBackend> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PepperInternalFileRefBackend);
 };

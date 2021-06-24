@@ -19,7 +19,9 @@ class FakeKeyStorageLinux : public KeyStorageLinux {
 
  protected:
   bool Init() override { return true; }
-  std::string GetKeyImpl() override { return std::string("1234"); }
+  absl::optional<std::string> GetKeyImpl() override {
+    return std::string("1234");
+  }
 
   base::SequencedTaskRunner* GetTaskRunner() override { return task_runner_; }
 

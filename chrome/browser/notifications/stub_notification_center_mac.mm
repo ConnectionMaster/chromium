@@ -4,17 +4,19 @@
 
 #import "chrome/browser/notifications/stub_notification_center_mac.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/mac/scoped_nsobject.h"
-#include "chrome/browser/ui/cocoa/notifications/notification_constants_mac.h"
+#include "chrome/services/mac_notifications/public/cpp/notification_constants_mac.h"
 
 @implementation StubNotificationCenter {
-  base::scoped_nsobject<NSMutableArray> banners_;
+  base::scoped_nsobject<NSMutableArray> _banners;
+  id<NSUserNotificationCenterDelegate> _delegate;
 }
 
 - (instancetype)init {
   if ((self = [super init])) {
-    banners_.reset([[NSMutableArray alloc] init]);
+    _banners.reset([[NSMutableArray alloc] init]);
+    _delegate = nil;
   }
   return self;
 }
@@ -29,40 +31,50 @@
 }
 
 - (void)deliverNotification:(NSUserNotification*)notification {
-  [banners_ addObject:notification];
+  [_banners addObject:notification];
 }
 
 - (NSArray*)deliveredNotifications {
-  return [[banners_ copy] autorelease];
+  return [[_banners copy] autorelease];
 }
 
 - (void)removeDeliveredNotification:(NSUserNotification*)notification {
-  NSString* notificationId = [notification.userInfo
-      objectForKey:notification_constants::kNotificationId];
-  NSString* profileId = [notification.userInfo
-      objectForKey:notification_constants::kNotificationProfileId];
+  NSString* notificationId =
+      (notification.userInfo)[notification_constants::kNotificationId];
+  NSString* profileId =
+      (notification.userInfo)[notification_constants::kNotificationProfileId];
+  BOOL incognito =
+      [(notification.userInfo)[notification_constants::kNotificationIncognito]
+          boolValue];
   DCHECK(profileId);
   DCHECK(notificationId);
-  for (NSUserNotification* toast in banners_.get()) {
+  for (NSUserNotification* toast in _banners.get()) {
     NSString* toastId =
-        [toast.userInfo objectForKey:notification_constants::kNotificationId];
-    NSString* persistentProfileId = [toast.userInfo
-        objectForKey:notification_constants::kNotificationProfileId];
-    if ([toastId isEqualToString:notificationId] &&
-        [persistentProfileId isEqualToString:profileId]) {
-      [banners_ removeObject:toast];
+        (toast.userInfo)[notification_constants::kNotificationId];
+    NSString* toastProfileId =
+        (toast.userInfo)[notification_constants::kNotificationProfileId];
+    BOOL toastIncognito =
+        [(toast.userInfo)[notification_constants::kNotificationIncognito]
+            boolValue];
+    if ([notificationId isEqualToString:toastId] &&
+        [profileId isEqualToString:toastProfileId] &&
+        incognito == toastIncognito) {
+      [_banners removeObject:toast];
       break;
     }
   }
 }
 
 - (void)removeAllDeliveredNotifications {
-  [banners_ removeAllObjects];
+  [_banners removeAllObjects];
 }
 
-// Need to provide a nop implementation of setDelegate as it is
-// used during the setup of the bridge.
-- (void)setDelegate:(id<NSUserNotificationCenterDelegate>)delegate {
+- (void)setDelegate:(id<NSUserNotificationCenterDelegate> _Nullable)delegate {
+  _delegate = delegate;
+}
+
+- (id<NSUserNotificationCenterDelegate> _Nullable)delegate {
+  return _delegate;
 }
 
 @end

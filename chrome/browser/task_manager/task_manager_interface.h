@@ -11,7 +11,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/macros.h"
 #include "base/observer_list.h"
 #include "base/process/kill.h"
 #include "base/process/process_handle.h"
@@ -20,18 +19,12 @@
 #include "chrome/browser/task_manager/providers/task.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "components/sessions/core/session_id.h"
-#include "third_party/blink/public/platform/web_cache.h"
-#include "ui/gfx/image/image_skia.h"
 
 class PrefRegistrySimple;
 
 namespace content {
 class WebContents;
 }  // namespace content
-
-namespace net {
-class URLRequest;
-}  // namespace net
 
 namespace task_manager {
 
@@ -40,6 +33,9 @@ namespace task_manager {
 // enabled calculations of the usage of the various resources.
 class TaskManagerInterface {
  public:
+  TaskManagerInterface(const TaskManagerInterface&) = delete;
+  TaskManagerInterface& operator=(const TaskManagerInterface&) = delete;
+
   // Registers the task manager related prefs.
   static void RegisterPrefs(PrefRegistrySimple* registry);
 
@@ -50,15 +46,13 @@ class TaskManagerInterface {
   // create it first. Must be called on the UI thread.
   static TaskManagerInterface* GetTaskManager();
 
-  // This notification will be received on the IO thread from
-  // ChromeNetworkDelegate to update the task manager with read network usage.
-  static void OnRawBytesRead(const net::URLRequest& request,
-                             int64_t bytes_read);
-
-  // This notification will be received on the IO thread from
-  // ChromeNetworkDelegate to update the task manager with sent network usage.
-  static void OnRawBytesSent(const net::URLRequest& request,
-                             int64_t bytes_sent);
+  // Update the accumulated network stats with additional data sent/received
+  // for a route described by |process_id| and |route_id|. If the associated
+  // task cannot be found it will be attributed to the browser process task.
+  static void UpdateAccumulatedStatsNetworkForRoute(int process_id,
+                                                    int route_id,
+                                                    int64_t recv_bytes,
+                                                    int64_t sent_bytes);
 
   void AddObserver(TaskManagerObserver* observer);
   void RemoveObserver(TaskManagerObserver* observer);
@@ -132,16 +126,12 @@ class TaskManagerInterface {
   virtual bool IsTaskOnBackgroundedProcess(TaskId task_id) const = 0;
 
   // Returns the title of the task with |task_id|.
-  virtual const base::string16& GetTitle(TaskId task_id) const = 0;
-
-  // Returns the canonicalized name of the task with |task_id| that can be used
-  // to represent this task in a Rappor sample via RapporServiceImpl.
-  virtual const std::string& GetTaskNameForRappor(TaskId task_id) const = 0;
+  virtual const std::u16string& GetTitle(TaskId task_id) const = 0;
 
   // Returns the name of the profile associated with the browser context of the
   // render view host that the task with |task_id| represents (if that task
   // represents a renderer).
-  virtual base::string16 GetProfileName(TaskId task_id) const = 0;
+  virtual std::u16string GetProfileName(TaskId task_id) const = 0;
 
   // Returns the favicon of the task with |task_id|.
   virtual const gfx::ImageSkia& GetIcon(TaskId task_id) const = 0;
@@ -209,11 +199,11 @@ class TaskManagerInterface {
                            int64_t* allocated,
                            int64_t* used) const = 0;
 
-  // Gets the Webkit resource cache stats for the task with |task_id|.
+  // Gets the Blink resource cache stats for the task with |task_id|.
   // A return value of false means that task does NOT report WebCache stats.
   virtual bool GetWebCacheStats(
       TaskId task_id,
-      blink::WebCache::ResourceTypeStats* stats) const = 0;
+      blink::WebCacheResourceTypeStats* stats) const = 0;
 
   // Returns the keep-alive counter if the Task is an event page, -1 otherwise.
   virtual int GetKeepaliveCount(TaskId task_id) const = 0;
@@ -303,8 +293,6 @@ class TaskManagerInterface {
 
   // The flags containing the enabled resources types calculations.
   int64_t enabled_resources_flags_;
-
-  DISALLOW_COPY_AND_ASSIGN(TaskManagerInterface);
 };
 
 }  // namespace task_manager

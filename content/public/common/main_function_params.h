@@ -17,7 +17,7 @@
 namespace sandbox {
 struct SandboxInterfaceInfo;
 }
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
 namespace base {
 namespace mac {
 class ScopedNSAutoreleasePool;
@@ -30,7 +30,7 @@ namespace content {
 class BrowserMainParts;
 struct StartupData;
 
-using CreatedMainPartsClosure = base::Callback<void(BrowserMainParts*)>;
+using CreatedMainPartsClosure = base::OnceCallback<void(BrowserMainParts*)>;
 
 struct MainFunctionParams {
   explicit MainFunctionParams(const base::CommandLine& cl) : command_line(cl) {}
@@ -39,7 +39,7 @@ struct MainFunctionParams {
 
 #if defined(OS_WIN)
   sandbox::SandboxInterfaceInfo* sandbox_info = nullptr;
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   base::mac::ScopedNSAutoreleasePool* autorelease_pool = nullptr;
 #elif defined(OS_POSIX) && !defined(OS_ANDROID)
   bool zygote_child = false;
@@ -52,7 +52,7 @@ struct MainFunctionParams {
 
   // Used by InProcessBrowserTest. If non-null BrowserMain schedules this
   // task to run on the MessageLoop and BrowserInit is not invoked.
-  base::Closure* ui_task = nullptr;
+  base::OnceClosure* ui_task = nullptr;
 
   // Used by InProcessBrowserTest. If non-null this is Run() after
   // BrowserMainParts has been created and before PreEarlyInitialization().

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/containers/circular_deque.h"
+#include "base/feature_list.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -22,15 +23,19 @@
 #include "base/time/time.h"
 #include "content/browser/appcache/appcache.h"
 #include "content/browser/appcache/appcache_host.h"
-#include "content/browser/appcache/appcache_response.h"
 #include "content/browser/appcache/appcache_service_impl.h"
 #include "content/browser/appcache/appcache_storage.h"
+#include "content/browser/appcache/appcache_update_job_state.h"
+#include "content/browser/appcache/appcache_update_metrics_recorder.h"
 #include "content/common/appcache_interfaces.h"
 #include "content/common/content_export.h"
 #include "net/http/http_response_headers.h"
-#include "net/url_request/url_request.h"
 #include "third_party/blink/public/mojom/appcache/appcache.mojom.h"
 #include "url/gurl.h"
+
+namespace net {
+class IOBuffer;
+}
 
 namespace content {
 FORWARD_DECLARE_TEST(AppCacheGroupTest, QueueUpdate);
@@ -40,7 +45,10 @@ namespace appcache_update_job_unittest {
 class AppCacheUpdateJobTest;
 }
 
+class AppCacheResponseInfo;
 class HostNotifier;
+
+CONTENT_EXPORT extern const base::Feature kAppCacheCorruptionRecoveryFeature;
 
 // Application cache Update algorithm and state.
 class CONTENT_EXPORT AppCacheUpdateJob
@@ -71,13 +79,6 @@ class CONTENT_EXPORT AppCacheUpdateJob
   class UpdateURLLoaderRequest;
   class UpdateURLRequest;
 
-  // Master entries have multiple hosts, for example, the same page is opened
-  // in different tabs.
-  using PendingHosts = std::vector<AppCacheHost*>;
-  using PendingMasters = std::map<GURL, PendingHosts>;
-  using PendingUrlFetches = std::map<GURL, URLFetcher*>;
-  using LoadingResponses = std::map<int64_t, GURL>;
-
   static const int kRerunDelayMs = 1000;
 
   // TODO(michaeln): Rework the set of states vs update types vs stored states.
@@ -88,18 +89,6 @@ class CONTENT_EXPORT AppCacheUpdateJob
     UNKNOWN_TYPE,
     UPGRADE_ATTEMPT,
     CACHE_ATTEMPT,
-  };
-
-  enum InternalUpdateState {
-    FETCH_MANIFEST,
-    NO_UPDATE,
-    DOWNLOADING,
-
-    // Every state after this comment indicates the update is terminating.
-    REFETCH_MANIFEST,
-    CACHE_FAILURE,
-    CANCELLED,
-    COMPLETED,
   };
 
   enum StoredState {
@@ -114,7 +103,12 @@ class CONTENT_EXPORT AppCacheUpdateJob
     ~UrlToFetch();
 
     GURL url;
+
+    // If true, we attempted fetching the URL from storage. The fetch failed,
+    // because this instance indicates the URL still needs to be fetched.
     bool storage_checked;
+    // Cached entry with a matching URL. The entry is expired or uncacheable,
+    // but it can serve as the basis for a conditional HTTP request.
     scoped_refptr<AppCacheResponseInfo> existing_response_info;
   };
 
@@ -142,14 +136,23 @@ class CONTENT_EXPORT AppCacheUpdateJob
                           ResultType result,
                           const GURL& failed_resource_url);
 
-  void FetchManifest(bool is_first_fetch);
-  void HandleManifestFetchCompleted(URLFetcher* fetcher, int net_error);
-  void ContinueHandleManifestFetchCompleted(bool changed);
+  // Retrieves the cache's manifest.
+  //
+  // Called when a page referencing this job's manifest is loaded. This can
+  // result in a new cache getting created, or in an existing cache receiving a
+  // new master entry.
+  void FetchManifest();
+  void HandleManifestFetchCompleted(URLFetcher* url_fetcher, int net_error);
+  void HandleFetchedManifestChanged();
+  void HandleFetchedManifestIsUnchanged();
 
-  void HandleUrlFetchCompleted(URLFetcher* fetcher, int net_error);
-  void HandleMasterEntryFetchCompleted(URLFetcher* fetcher, int net_error);
+  void HandleResourceFetchCompleted(URLFetcher* url_fetcher, int net_error);
+  void HandleNewMasterEntryFetchCompleted(URLFetcher* url_fetcher,
+                                          int net_error);
 
-  void HandleManifestRefetchCompleted(URLFetcher* fetcher, int net_error);
+  void RefetchManifest();
+  void HandleManifestRefetchCompleted(URLFetcher* url_fetcher, int net_error);
+
   void OnManifestInfoWriteComplete(int result);
   void OnManifestDataWriteComplete(int result);
 
@@ -168,6 +171,11 @@ class CONTENT_EXPORT AppCacheUpdateJob
   // in the newest application cache.
   void CheckIfManifestChanged();
   void OnManifestDataReadComplete(int result);
+
+  // Used to read a manifest from the cache in case of a 304 Not Modified HTTP
+  // response.
+  void ReadManifestFromCacheAndContinue();
+  void OnManifestFromCacheDataReadComplete(int result);
 
   // Creates the list of files that may need to be fetched and initiates
   // fetches. Section 6.9.4 steps 12-17
@@ -212,18 +220,34 @@ class CONTENT_EXPORT AppCacheUpdateJob
   void ClearPendingMasterEntries();
   void DiscardInprogressCache();
   void DiscardDuplicateResponses();
+  bool IsFinished() const;
 
-  void LogHistogramStats(ResultType result, const GURL& failed_resource_url);
   void MadeProgress() { last_progress_time_ = base::Time::Now(); }
 
   // Deletes this object after letting the stack unwind.
   void DeleteSoon();
 
-  bool IsTerminating() { return internal_state_ >= REFETCH_MANIFEST ||
-                                stored_state_ != UNSTORED; }
+  bool IsTerminating() {
+    return internal_state_ >= AppCacheUpdateJobState::REFETCH_MANIFEST ||
+           stored_state_ != UNSTORED;
+  }
+
+  AppCache* inprogress_cache() { return inprogress_cache_.get(); }
 
   AppCacheServiceImpl* service_;
   const GURL manifest_url_;  // here for easier access
+
+  // Stores the manifest parser version for the group before an update begins.
+  int64_t cached_manifest_parser_version_;
+  // Stores the manifest parser version determined during the fetch phase.
+  int64_t fetched_manifest_parser_version_;
+
+  // Stores the manifest scope for the group before an update begins.
+  std::string cached_manifest_scope_;
+  // Stores the manifest scope determined during the fetch phase.
+  std::string fetched_manifest_scope_;
+  // Stores the manifest scope determined during the refetch phase.
+  std::string refetched_manifest_scope_;
 
   // Defined prior to refs to AppCaches and Groups because destruction
   // order matters, the disabled_storage_reference_ must outlive those
@@ -235,11 +259,14 @@ class CONTENT_EXPORT AppCacheUpdateJob
   AppCacheGroup* group_;
 
   UpdateType update_type_;
-  InternalUpdateState internal_state_;
+  AppCacheUpdateJobState internal_state_;
   base::Time last_progress_time_;
   bool doing_full_update_check_;
 
-  PendingMasters pending_master_entries_;
+  // Master entries have multiple hosts, for example, the same page is opened
+  // in different tabs.
+  std::map<GURL, std::vector<AppCacheHost*>> pending_master_entries_;
+
   size_t master_entries_completed_;
   std::set<GURL> failed_master_entries_;
 
@@ -249,24 +276,24 @@ class CONTENT_EXPORT AppCacheUpdateJob
   // are listed in the manifest may be fetched as a regular URL instead of
   // as a separate master entry fetch to optimize against duplicate fetches.
   std::set<GURL> master_entries_to_fetch_;
-  PendingUrlFetches master_entry_fetches_;
+  std::map<GURL, std::unique_ptr<URLFetcher>> master_entry_fetches_;
 
   // URLs of files to fetch along with their flags.
-  AppCache::EntryMap url_file_list_;
+  std::map<GURL, AppCacheEntry> url_file_list_;
   size_t url_fetches_completed_;
 
-  // Helper container to track which urls have not been fetched yet. URLs are
-  // removed when the fetch is initiated. Flag indicates whether an attempt
-  // to load the URL from storage has already been tried and failed.
+  // URLs that have not been fetched yet.
+  //
+  // URLs are removed from this set right as they are about to be fetched.
   base::circular_deque<UrlToFetch> urls_to_fetch_;
 
   // Helper container to track which urls are being loaded from response
   // storage.
-  LoadingResponses loading_responses_;
+  std::map<int64_t, GURL> loading_responses_;
 
   // Keep track of pending URL requests so we can cancel them if necessary.
-  URLFetcher* manifest_fetcher_;
-  PendingUrlFetches pending_url_fetches_;
+  std::unique_ptr<URLFetcher> manifest_fetcher_;
+  std::map<GURL, std::unique_ptr<URLFetcher>> pending_url_fetches_;
 
   // Temporary storage of manifest response data for parsing and comparison.
   std::string manifest_data_;
@@ -295,8 +322,16 @@ class CONTENT_EXPORT AppCacheUpdateJob
   // Whether we've stored the resulting group/cache yet.
   StoredState stored_state_;
 
+  // Used to track behavior and conditions found during update for submission
+  // to UMA.
+  AppCacheUpdateMetricsRecorder update_metrics_;
+
+  // Whether to gate the fetch/update of a manifest on the presence of
+  // an origin trial token in the manifest.
+  bool is_origin_trial_required_ = false;
+
   AppCacheStorage* storage_;
-  base::WeakPtrFactory<AppCacheUpdateJob> weak_factory_;
+  base::WeakPtrFactory<AppCacheUpdateJob> weak_factory_{this};
 
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheGroupTest, QueueUpdate);
 

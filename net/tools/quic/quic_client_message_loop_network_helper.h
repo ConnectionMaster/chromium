@@ -11,14 +11,12 @@
 #include <stddef.h>
 
 #include <memory>
-#include <string>
 
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/http/http_response_headers.h"
-#include "net/log/net_log.h"
 #include "net/quic/platform/impl/quic_chromium_clock.h"
 #include "net/quic/quic_chromium_packet_reader.h"
 #include "net/third_party/quiche/src/quic/core/http/quic_spdy_stream.h"
@@ -43,7 +41,7 @@ class QuicClientMessageLooplNetworkHelper
   ~QuicClientMessageLooplNetworkHelper() override;
 
   // QuicChromiumPacketReader::Visitor
-  void OnReadError(int result, const DatagramClientSocket* socket) override;
+  bool OnReadError(int result, const DatagramClientSocket* socket) override;
   bool OnPacket(const quic::QuicReceivedPacket& packet,
                 const quic::QuicSocketAddress& local_address,
                 const quic::QuicSocketAddress& peer_address) override;
@@ -65,9 +63,6 @@ class QuicClientMessageLooplNetworkHelper
 
   // UDP socket connected to the server.
   std::unique_ptr<UDPClientSocket> socket_;
-
-  // The log used for the sockets.
-  NetLog net_log_;
 
   std::unique_ptr<QuicChromiumPacketReader> packet_reader_;
 

@@ -25,7 +25,7 @@ import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.ViewRectProvider;
 
 /**
- * The dropdown popup window for use on KitKat+. Internally uses an AnchoredPopupWindow
+ * The dropdown popup window for use on Lollipop+. Internally uses an AnchoredPopupWindow
  * anchored to a view to display a list of options.
  */
 class DropdownPopupWindowImpl
@@ -140,12 +140,17 @@ class DropdownPopupWindowImpl
         boolean wasShowing = mAnchoredPopupWindow.isShowing();
         mAnchoredPopupWindow.setVerticalOverlapAnchor(false);
         mAnchoredPopupWindow.setHorizontalOverlapAnchor(true);
+
+        int windowWidthPx = mContext.getResources().getDisplayMetrics().widthPixels;
         int contentWidth = measureContentWidth();
-        if (mAnchorView.getWidth() < contentWidth) {
+        if (windowWidthPx < contentWidth + mHorizontalPadding) {
+            mAnchoredPopupWindow.setMaxWidth(windowWidthPx - mHorizontalPadding);
+        } else if (mAnchorView.getWidth() < contentWidth) {
             mAnchoredPopupWindow.setMaxWidth(contentWidth + mHorizontalPadding);
         } else {
             mAnchoredPopupWindow.setMaxWidth(mAnchorView.getWidth() + mHorizontalPadding);
         }
+
         mAnchoredPopupWindow.show();
         mListView.setDividerHeight(0);
         int layoutDirection = mRtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR;

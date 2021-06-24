@@ -8,13 +8,14 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/mac/scoped_nsautorelease_pool.h"
 #endif
 #if defined(OS_WIN)
 #include "base/strings/utf_string_conversions.h"
 #endif
+#include "base/message_loop/message_pump_type.h"
+#include "base/task/single_thread_task_executor.h"
 #include "ui/gl/gl_surface.h"
 
 extern "C" {
@@ -28,12 +29,12 @@ extern "C" {
 int main(int argc, char *argv[]) {
   base::AtExitManager at_exit;
   base::CommandLine::Init(argc, argv);
-  base::MessageLoopForUI message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
 
   base::CommandLine::StringVector args =
       base::CommandLine::ForCurrentProcess()->GetArgs();
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   base::mac::ScopedNSAutoreleasePool pool;
 #endif
 
@@ -43,7 +44,7 @@ int main(int argc, char *argv[]) {
 #if defined(OS_WIN)
   std::vector<std::string> argsNonWide(args.size());
   for (size_t index = 0; index < args.size(); ++index) {
-    argsNonWide[index] = base::UTF16ToASCII(args[index]);
+    argsNonWide[index] = base::WideToASCII(args[index]);
     argsArray[index+1] = argsNonWide[index].c_str();
   }
 #else

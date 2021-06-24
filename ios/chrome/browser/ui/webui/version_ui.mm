@@ -11,6 +11,7 @@
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "components/grit/components_resources.h"
+#include "components/grit/components_scaled_resources.h"
 #include "components/strings/grit/components_chromium_strings.h"
 #include "components/strings/grit/components_google_chrome_strings.h"
 #include "components/strings/grit/components_strings.h"
@@ -23,8 +24,8 @@
 #include "ios/chrome/common/channel_info.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
 #include "ios/web/public/web_client.h"
-#include "ios/web/public/web_ui_ios_data_source.h"
 #include "ios/web/public/webui/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -39,6 +40,8 @@ web::WebUIIOSDataSource* CreateVersionUIDataSource() {
 
   // Localized and data strings.
   html_source->AddLocalizedString(version_ui::kTitle, IDS_VERSION_UI_TITLE);
+  html_source->AddLocalizedString(version_ui::kLogoAltText,
+                                  IDS_SHORT_PRODUCT_LOGO_ALT_TEXT);
   html_source->AddLocalizedString(version_ui::kApplicationLabel,
                                   IDS_IOS_PRODUCT_NAME);
   html_source->AddString(version_ui::kVersion,
@@ -70,7 +73,7 @@ web::WebUIIOSDataSource* CreateVersionUIDataSource() {
                                       ? IDS_VERSION_UI_OFFICIAL
                                       : IDS_VERSION_UI_UNOFFICIAL);
   html_source->AddLocalizedString(
-      version_ui::kVersionBitSize,
+      version_ui::kVersionProcessorVariation,
       sizeof(void*) == 8 ? IDS_VERSION_UI_64BIT : IDS_VERSION_UI_32BIT);
   html_source->AddLocalizedString(version_ui::kUserAgentName,
                                   IDS_VERSION_UI_USER_AGENT);
@@ -94,20 +97,27 @@ web::WebUIIOSDataSource* CreateVersionUIDataSource() {
   html_source->AddLocalizedString(version_ui::kVariationsCmdName,
                                   IDS_VERSION_UI_VARIATIONS_CMD);
 
-  html_source->SetJsonPath("strings.js");
+  html_source->AddString(version_ui::kSanitizer, version_info::GetSanitizerList());
+
+  html_source->UseStringsJs();
   html_source->AddResourcePath(version_ui::kVersionJS, IDR_VERSION_UI_JS);
   html_source->AddResourcePath(version_ui::kAboutVersionCSS,
                                IDR_VERSION_UI_CSS);
+  html_source->AddResourcePath(version_ui::kAboutVersionMobileCSS,
+                               IDR_VERSION_UI_MOBILE_CSS);
+  html_source->AddResourcePath("images/product_logo.png", IDR_PRODUCT_LOGO);
+  html_source->AddResourcePath("images/product_logo_white.png",
+                               IDR_PRODUCT_LOGO_WHITE);
   html_source->SetDefaultResource(IDR_VERSION_UI_HTML);
-  html_source->UseGzip();
   return html_source;
 }
 
 }  // namespace
 
-VersionUI::VersionUI(web::WebUIIOS* web_ui) : web::WebUIIOSController(web_ui) {
+VersionUI::VersionUI(web::WebUIIOS* web_ui, const std::string& host)
+    : web::WebUIIOSController(web_ui, host) {
   web_ui->AddMessageHandler(std::make_unique<VersionHandler>());
-  web::WebUIIOSDataSource::Add(ios::ChromeBrowserState::FromWebUIIOS(web_ui),
+  web::WebUIIOSDataSource::Add(ChromeBrowserState::FromWebUIIOS(web_ui),
                                CreateVersionUIDataSource());
 }
 

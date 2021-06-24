@@ -43,14 +43,21 @@ void DisplayChangeNotifier::RemoveObserver(DisplayObserver* obs) {
 void DisplayChangeNotifier::NotifyDisplaysChanged(
     const std::vector<Display>& old_displays,
     const std::vector<Display>& new_displays) {
+  bool did_remove_displays = false;
   // Display present in old_displays but not in new_displays has been removed.
   auto old_it = old_displays.begin();
   for (; old_it != old_displays.end(); ++old_it) {
     if (std::find_if(new_displays.begin(), new_displays.end(),
                      DisplayComparator(*old_it)) == new_displays.end()) {
+      did_remove_displays = true;
       for (DisplayObserver& observer : observer_list_)
         observer.OnDisplayRemoved(*old_it);
     }
+  }
+
+  if (did_remove_displays) {
+    for (DisplayObserver& observer : observer_list_)
+      observer.OnDidRemoveDisplays();
   }
 
   // Display present in new_displays but not in old_displays has been added.
@@ -80,7 +87,7 @@ void DisplayChangeNotifier::NotifyDisplaysChanged(
     if (new_it->device_scale_factor() != old_it->device_scale_factor())
       metrics |= DisplayObserver::DISPLAY_METRIC_DEVICE_SCALE_FACTOR;
 
-    if (new_it->color_space() != old_it->color_space())
+    if (new_it->color_spaces() != old_it->color_spaces())
       metrics |= DisplayObserver::DISPLAY_METRIC_COLOR_SPACE;
 
     if (metrics != DisplayObserver::DISPLAY_METRIC_NONE) {
@@ -88,6 +95,12 @@ void DisplayChangeNotifier::NotifyDisplaysChanged(
         observer.OnDisplayMetricsChanged(*new_it, metrics);
     }
   }
+}
+
+void DisplayChangeNotifier::NotifyCurrentWorkspaceChanged(
+    const std::string& workspace) {
+  for (DisplayObserver& observer : observer_list_)
+    observer.OnCurrentWorkspaceChanged(workspace);
 }
 
 }  // namespace display

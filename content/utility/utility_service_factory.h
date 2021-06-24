@@ -11,10 +11,7 @@
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequenced_task_runner.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
-#include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/mojom/service.mojom.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 
 namespace content {
 
@@ -24,19 +21,10 @@ class UtilityServiceFactory {
   UtilityServiceFactory();
   ~UtilityServiceFactory();
 
-  void RunService(
-      const std::string& service_name,
-      mojo::PendingReceiver<service_manager::mojom::Service> receiver);
+  void RunService(const std::string& service_name,
+                  mojo::ScopedMessagePipeHandle service_pipe);
 
  private:
-  std::unique_ptr<service_manager::Service> CreateAudioService(
-      service_manager::mojom::ServiceRequest request);
-
-  // Allows embedders to register their interface implementations before the
-  // network or audio services are created. Used for testing.
-  std::unique_ptr<service_manager::BinderRegistry> network_registry_;
-  std::unique_ptr<service_manager::BinderRegistry> audio_registry_;
-
   DISALLOW_COPY_AND_ASSIGN(UtilityServiceFactory);
 };
 

@@ -15,7 +15,7 @@
 namespace printing {
 
 bool Image::LoadMetafile(const Metafile& metafile) {
-  // Load only the first page of |metafile|, just like Windows.
+  // Load only the first page of `metafile`, just like Windows.
   const unsigned int page_number = 1;
   gfx::Rect rect(metafile.GetPageBounds(page_number));
   if (rect.width() < 1 || rect.height() < 1)
@@ -29,20 +29,13 @@ bool Image::LoadMetafile(const Metafile& metafile) {
   data_.resize(bytes);
   base::ScopedCFTypeRef<CGColorSpaceRef> color_space(
       CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB));
-  base::ScopedCFTypeRef<CGContextRef> bitmap_context(
-      CGBitmapContextCreate(&*data_.begin(),
-                            size_.width(),
-                            size_.height(),
-                            8,
-                            row_length_,
-                            color_space,
-                            kCGImageAlphaPremultipliedLast));
+  base::ScopedCFTypeRef<CGContextRef> bitmap_context(CGBitmapContextCreate(
+      &*data_.begin(), size_.width(), size_.height(), 8, row_length_,
+      color_space, kCGImageAlphaPremultipliedLast));
   DCHECK(bitmap_context.get());
 
-  struct Metafile::MacRenderPageParams params;
-  params.shrink_to_fit = true;
-  metafile.RenderPage(page_number, bitmap_context, rect.ToCGRect(), params);
-  return true;
+  return metafile.RenderPage(page_number, bitmap_context, rect.ToCGRect(),
+                             /*autorotate=*/false, /*fit_to_page=*/true);
 }
 
 }  // namespace printing

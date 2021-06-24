@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "ash/root_window_controller.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/system/model/clock_model.h"
 #include "ash/system/model/system_tray_model.h"
@@ -17,9 +17,8 @@
 #include "ash/wm/lock_state_observer.h"
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/user_activity/user_activity_detector.h"
@@ -31,14 +30,13 @@ namespace ash {
 
 namespace {
 
-void OnSuspendDisplaysCompleted(base::OnceClosure suspend_callback,
-                                bool status) {
-  std::move(suspend_callback).Run();
+void OnSuspendDisplaysCompleted(base::UnguessableToken token, bool status) {
+  chromeos::PowerManagerClient::Get()->UnblockSuspend(token);
 }
 
 // Returns whether the screen should be locked when device is suspended.
 bool ShouldLockOnSuspend() {
-  SessionController* controller = ash::Shell::Get()->session_controller();
+  SessionControllerImpl* controller = ash::Shell::Get()->session_controller();
 
   return controller->ShouldLockScreenAutomatically() &&
          controller->CanLockScreen();
@@ -63,9 +61,7 @@ class CompositorWatcher : public ui::CompositorObserver {
   //     CompositorWatcher instance is deleted, nor from the CompositorWatcher
   //     destructor.
   explicit CompositorWatcher(base::OnceClosure callback)
-      : callback_(std::move(callback)),
-        compositor_observer_(this),
-        weak_ptr_factory_(this) {
+      : callback_(std::move(callback)), compositor_observations_(this) {
     Start();
   }
   ~CompositorWatcher() override = default;
@@ -103,13 +99,13 @@ class CompositorWatcher : public ui::CompositorObserver {
       return;
     }
 
-    compositor_observer_.Remove(compositor);
+    compositor_observations_.RemoveObservation(compositor);
     pending_compositing_.erase(compositor);
 
     RunCallbackIfAllCompositingEnded();
   }
   void OnCompositingShuttingDown(ui::Compositor* compositor) override {
-    compositor_observer_.Remove(compositor);
+    compositor_observations_.RemoveObservation(compositor);
     pending_compositing_.erase(compositor);
 
     RunCallbackIfAllCompositingEnded();
@@ -148,7 +144,7 @@ class CompositorWatcher : public ui::CompositorObserver {
 
       DCHECK(!pending_compositing_.count(compositor));
 
-      compositor_observer_.Add(compositor);
+      compositor_observations_.AddObservation(compositor);
       pending_compositing_[compositor].state =
           CompositingState::kWaitingForWallpaperAnimation;
 
@@ -204,9 +200,10 @@ class CompositorWatcher : public ui::CompositorObserver {
   // visibility set to false), so there should be no need for tracking
   // compositors that were hidden to start with.
   std::map<ui::Compositor*, CompositorInfo> pending_compositing_;
-  ScopedObserver<ui::Compositor, ui::CompositorObserver> compositor_observer_;
+  base::ScopedMultiSourceObservation<ui::Compositor, ui::CompositorObserver>
+      compositor_observations_;
 
-  base::WeakPtrFactory<CompositorWatcher> weak_ptr_factory_;
+  base::WeakPtrFactory<CompositorWatcher> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CompositorWatcher);
 };
@@ -234,7 +231,7 @@ void PowerEventObserver::OnLockAnimationsComplete() {
 
   // If suspending, run pending animations to the end immediately, as there is
   // no point in waiting for them to finish given that the device is suspending.
-  if (displays_suspended_callback_)
+  if (block_suspend_token_)
     EndPendingWallpaperAnimations();
 
   // The |compositor_watcher_| is owned by this, and the callback passed to it
@@ -249,9 +246,9 @@ void PowerEventObserver::SuspendImminent(
     power_manager::SuspendImminent::Reason reason) {
   suspend_in_progress_ = true;
 
-  displays_suspended_callback_ =
-      chromeos::PowerManagerClient::Get()->GetSuspendReadinessCallback(
-          FROM_HERE);
+  block_suspend_token_ = base::UnguessableToken::Create();
+  chromeos::PowerManagerClient::Get()->BlockSuspend(block_suspend_token_,
+                                                    "PowerEventObserver");
 
   // Stop compositing immediately if
   // * the screen lock flow has already completed
@@ -275,7 +272,7 @@ void PowerEventObserver::SuspendImminent(
   }
 }
 
-void PowerEventObserver::SuspendDone(const base::TimeDelta& sleep_duration) {
+void PowerEventObserver::SuspendDone(base::TimeDelta sleep_duration) {
   suspend_in_progress_ = false;
 
   Shell::Get()->display_configurator()->ResumeDisplays();
@@ -285,7 +282,7 @@ void PowerEventObserver::SuspendDone(const base::TimeDelta& sleep_duration) {
   // animation to complete, clear the blocker since the suspend has already
   // completed.  This prevents rendering requests from being blocked after a
   // resume if the lock screen took too long to show.
-  displays_suspended_callback_.Reset();
+  block_suspend_token_ = {};
 
   StartRootWindowCompositors();
 }
@@ -296,11 +293,10 @@ void PowerEventObserver::OnLockStateChanged(bool locked) {
 
     // The screen is now locked but the pending suspend, if any, will be blocked
     // until all the animations have completed.
-    if (displays_suspended_callback_) {
+    if (block_suspend_token_)
       VLOG(1) << "Screen locked due to suspend";
-    } else {
+    else
       VLOG(1) << "Screen locked without suspend";
-    }
   } else {
     lock_state_ = LockState::kUnlocked;
     compositor_watcher_.reset();
@@ -315,7 +311,7 @@ void PowerEventObserver::OnLockStateChanged(bool locked) {
       if (ShouldLockOnSuspend()) {
         lock_state_ = LockState::kLocking;
         Shell::Get()->lock_state_controller()->LockWithoutAnimation();
-      } else if (displays_suspended_callback_) {
+      } else if (block_suspend_token_) {
         StopCompositingAndSuspendDisplays();
       }
     }
@@ -331,7 +327,7 @@ void PowerEventObserver::StartRootWindowCompositors() {
 }
 
 void PowerEventObserver::StopCompositingAndSuspendDisplays() {
-  DCHECK(displays_suspended_callback_);
+  DCHECK(block_suspend_token_);
   DCHECK(!compositor_watcher_.get());
   for (aura::Window* window : Shell::GetAllRootWindows()) {
     ui::Compositor* compositor = window->GetHost()->compositor();
@@ -341,8 +337,8 @@ void PowerEventObserver::StopCompositingAndSuspendDisplays() {
   ui::UserActivityDetector::Get()->OnDisplayPowerChanging();
 
   Shell::Get()->display_configurator()->SuspendDisplays(
-      base::Bind(&OnSuspendDisplaysCompleted,
-                 base::Passed(&displays_suspended_callback_)));
+      base::BindOnce(&OnSuspendDisplaysCompleted, block_suspend_token_));
+  block_suspend_token_ = {};
 }
 
 void PowerEventObserver::EndPendingWallpaperAnimations() {
@@ -350,7 +346,7 @@ void PowerEventObserver::EndPendingWallpaperAnimations() {
     WallpaperWidgetController* wallpaper_widget_controller =
         RootWindowController::ForWindow(window)->wallpaper_widget_controller();
     if (wallpaper_widget_controller->IsAnimating())
-      wallpaper_widget_controller->EndPendingAnimation();
+      wallpaper_widget_controller->StopAnimating();
   }
 }
 
@@ -358,7 +354,7 @@ void PowerEventObserver::OnCompositorsReadyForSuspend() {
   compositor_watcher_.reset();
   lock_state_ = LockState::kLocked;
 
-  if (displays_suspended_callback_)
+  if (block_suspend_token_)
     StopCompositingAndSuspendDisplays();
 }
 

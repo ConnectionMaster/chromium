@@ -37,8 +37,6 @@
 
 namespace remoting {
 
-class VideoEncoder;
-
 namespace protocol {
 
 class MockAuthenticator : public Authenticator {
@@ -53,7 +51,7 @@ class MockAuthenticator : public Authenticator {
   MOCK_CONST_METHOD0(CreateChannelAuthenticatorPtr, ChannelAuthenticator*());
   MOCK_METHOD2(ProcessMessage,
                void(const jingle_xmpp::XmlElement* message,
-                    const base::Closure& resume_callback));
+                    base::OnceClosure resume_callback));
   MOCK_METHOD0(GetNextMessagePtr, jingle_xmpp::XmlElement*());
 
   std::unique_ptr<ChannelAuthenticator> CreateChannelAuthenticator()
@@ -80,8 +78,7 @@ class MockConnectionToClientEventHandler
   MOCK_METHOD0(CreateMediaStreams, void());
   MOCK_METHOD0(OnConnectionChannelsConnected, void());
   MOCK_METHOD1(OnConnectionClosed, void(ErrorCode error));
-  MOCK_METHOD1(OnCreateVideoEncoder,
-               void(std::unique_ptr<VideoEncoder>* encoder));
+  MOCK_METHOD1(OnTransportProtocolChange, void(const std::string& protocol));
   MOCK_METHOD2(OnRouteChange,
                void(const std::string& channel_name,
                     const TransportRoute& route));
@@ -131,6 +128,8 @@ class MockHostStub : public HostStub {
                void(const ClientResolution& resolution));
   MOCK_METHOD1(ControlVideo, void(const VideoControl& video_control));
   MOCK_METHOD1(ControlAudio, void(const AudioControl& audio_control));
+  MOCK_METHOD1(ControlPeerConnection,
+               void(const PeerConnectionParameters& parameters));
   MOCK_METHOD1(SetCapabilities, void(const Capabilities& capabilities));
   MOCK_METHOD1(RequestPairing, void(const PairingRequest& pairing_request));
   MOCK_METHOD1(DeliverClientMessage, void(const ExtensionMessage& message));
@@ -152,12 +151,16 @@ class MockClientStub : public ClientStub {
                void(const PairingResponse& pairing_response));
   MOCK_METHOD1(DeliverHostMessage, void(const ExtensionMessage& message));
   MOCK_METHOD1(SetVideoLayout, void(const VideoLayout& layout));
+  MOCK_METHOD1(SetTransportInfo, void(const TransportInfo& transport_info));
 
   // ClipboardStub mock implementation.
   MOCK_METHOD1(InjectClipboardEvent, void(const ClipboardEvent& event));
 
   // CursorShapeStub mock implementation.
   MOCK_METHOD1(SetCursorShape, void(const CursorShapeInfo& cursor_shape));
+
+  // KeyboardLayoutStub mock implementation.
+  MOCK_METHOD1(SetKeyboardLayout, void(const KeyboardLayout& layout));
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MockClientStub);
@@ -264,7 +267,7 @@ class SynchronousPairingRegistry : public PairingRegistry {
   // Runs tasks synchronously instead of posting them to |task_runner|.
   void PostTask(const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
                 const base::Location& from_here,
-                const base::Closure& task) override;
+                base::OnceClosure task) override;
 };
 
 }  // namespace protocol

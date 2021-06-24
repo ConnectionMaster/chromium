@@ -6,6 +6,7 @@
 #define COMPONENTS_VARIATIONS_VARIATIONS_REQUEST_SCHEDULER_H_
 
 #include "base/bind.h"
+#include "base/component_export.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/time/time.h"
@@ -16,7 +17,7 @@ class PrefService;
 namespace variations {
 
 // A helper class that makes VariationsService requests at the correct times.
-class VariationsRequestScheduler {
+class COMPONENT_EXPORT(VARIATIONS) VariationsRequestScheduler {
  public:
   virtual ~VariationsRequestScheduler();
 
@@ -35,25 +36,25 @@ class VariationsRequestScheduler {
   virtual void OnAppEnterForeground();
 
   // Factory method for this class.
-  static VariationsRequestScheduler* Create(const base::Closure& task,
+  static VariationsRequestScheduler* Create(const base::RepeatingClosure& task,
                                             PrefService* local_state);
 
  protected:
   // |task| is the closure to call when the scheduler deems ready.
-  explicit VariationsRequestScheduler(const base::Closure& task);
+  explicit VariationsRequestScheduler(const base::RepeatingClosure& task);
 
   // Returns the time interval between variations seed fetches.
   base::TimeDelta GetFetchPeriod() const;
 
   // Getter for derived classes.
-  base::Closure task() const;
+  base::RepeatingClosure task() const;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(VariationsRequestSchedulerTest,
                            ScheduleFetchShortly);
 
   // The task scheduled by this class.
-  base::Closure task_;
+  base::RepeatingClosure task_;
 
   // The timer used to repeatedly ping the server. Keep this as an instance
   // member so if VariationsRequestScheduler goes out of scope, the timer is

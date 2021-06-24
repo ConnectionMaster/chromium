@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that text prompt suggestions' casing follows that of the user input.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
     <div id="inner" style="color:initial;"></div>
@@ -51,14 +51,18 @@
       var inputCase = isUpperCase(inputText) ? Case.Upper : isLowerCase(inputText) ? Case.Lower : Case.Mixed;
 
       for (var i = 0; i < result.length; ++i) {
+        let text = result[i].text;
+        const colonIndex = text.indexOf(':');
+        if (colonIndex !== -1)
+          text = text.substring(0, colonIndex);
         switch (inputCase) {
           case Case.Upper:
-            if (!isUpperCase(result[i].text))
-              TestRunner.addResult('Error: Suggestion ' + result[i].text + ' must be in UPPERCASE.');
+            if (!isUpperCase(text))
+              TestRunner.addResult('Error: Suggestion ' + text + ' must be in UPPERCASE.');
             break;
           case Case.Lower:
-            if (!isLowerCase(result[i].text))
-              TestRunner.addResult('Error: Suggestion ' + result[i].text + ' must be in lowercase.');
+            if (!isLowerCase(text))
+              TestRunner.addResult('Error: Suggestion ' + text + ' must be in lowercase.');
             break;
         }
       }

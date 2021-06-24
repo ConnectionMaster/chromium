@@ -10,9 +10,9 @@
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "build/build_config.h"
-#include "chrome/browser/performance_monitor/system_monitor_metrics_logger.h"
 
 #if defined(OS_WIN)
 #include "chrome/browser/performance_monitor/metric_evaluator_helper_win.h"
@@ -34,28 +34,19 @@ SystemMonitor* g_system_metrics_monitor = nullptr;
 constexpr base::TimeDelta kDefaultRefreshInterval =
     base::TimeDelta::FromSeconds(2);
 
-const base::Feature kSystemMonitorMetricLogger{
-    "SystemMonitorMetricLogger", base::FEATURE_DISABLED_BY_DEFAULT};
-
 }  // namespace
 
 SystemMonitor::SystemMonitor(
     std::unique_ptr<MetricEvaluatorsHelper> metric_evaluators_helper)
-    : blocking_task_runner_(base::CreateSequencedTaskRunnerWithTraits(
+    : blocking_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(),
            base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})),
       metric_evaluators_helper_(
           metric_evaluators_helper.release(),
           base::OnTaskRunnerDeleter(blocking_task_runner_)),
-      metric_evaluators_metadata_(CreateMetricMetadataArray()),
-      weak_factory_(this) {
+      metric_evaluators_metadata_(CreateMetricMetadataArray()) {
   DCHECK(!g_system_metrics_monitor);
   g_system_metrics_monitor = this;
-
-  if (base::FeatureList::IsEnabled(kSystemMonitorMetricLogger)) {
-    // This has to be created after initializing |g_system_metrics_monitor|.
-    metrics_logger_ = std::make_unique<SystemMonitorMetricsLogger>();
-  }
 }
 
 SystemMonitor::~SystemMonitor() {
@@ -70,8 +61,33 @@ std::unique_ptr<SystemMonitor> SystemMonitor::Create() {
 }
 
 // static
+std::unique_ptr<SystemMonitor> SystemMonitor::CreateForTesting(
+    std::unique_ptr<MetricEvaluatorsHelper> helper) {
+  DCHECK(!g_system_metrics_monitor);
+  return base::WrapUnique(new SystemMonitor(std::move(helper)));
+}
+
+// static
 SystemMonitor* SystemMonitor::Get() {
   return g_system_metrics_monitor;
+}
+
+MetricRefreshFrequencies::Builder&
+MetricRefreshFrequencies::Builder::SetFreePhysMemoryMbFrequency(
+    SamplingFrequency freq) {
+  metrics_and_frequencies_.free_phys_memory_mb_frequency = freq;
+  return *this;
+}
+
+MetricRefreshFrequencies::Builder&
+MetricRefreshFrequencies::Builder::SetSystemMetricsSamplingFrequency(
+    SamplingFrequency freq) {
+  metrics_and_frequencies_.system_metrics_sampling_frequency = freq;
+  return *this;
+}
+
+MetricRefreshFrequencies MetricRefreshFrequencies::Builder::Build() {
+  return metrics_and_frequencies_;
 }
 
 SystemMonitor::SystemObserver::~SystemObserver() {
@@ -83,11 +99,6 @@ SystemMonitor::SystemObserver::~SystemObserver() {
 
 void SystemMonitor::SystemObserver::OnFreePhysicalMemoryMbSample(
     int free_phys_memory_mb) {
-  NOTREACHED();
-}
-
-void SystemMonitor::SystemObserver::OnDiskIdleTimePercent(
-    float disk_idle_time_percent) {
   NOTREACHED();
 }
 
@@ -158,9 +169,6 @@ SystemMonitor::MetricMetadataArray SystemMonitor::CreateMetricMetadataArray() {
       CREATE_METRIC_METADATA(kFreeMemoryMb, int, GetFreePhysicalMemoryMb,
                              OnFreePhysicalMemoryMbSample,
                              free_phys_memory_mb_frequency),
-      CREATE_METRIC_METADATA(kDiskIdleTimePercent, float,
-                             GetDiskIdleTimePercent, OnDiskIdleTimePercent,
-                             disk_idle_time_percent_frequency),
       CREATE_METRIC_METADATA(kSystemMetricsStruct, base::SystemMetrics,
                              GetSystemMetricsStruct, OnSystemMetricsStruct,
                              system_metrics_sampling_frequency),
@@ -192,8 +200,8 @@ void SystemMonitor::UpdateObservedMetrics() {
   } else if (!refresh_timer_.IsRunning() ||
              refresh_interval != refresh_timer_.GetCurrentDelay()) {
     refresh_timer_.Start(FROM_HERE, refresh_interval,
-                         base::BindRepeating(&SystemMonitor::RefreshCallback,
-                                             base::Unretained(this)));
+                         base::BindOnce(&SystemMonitor::RefreshCallback,
+                                        base::Unretained(this)));
   }
 }
 
@@ -205,9 +213,9 @@ void SystemMonitor::RefreshCallback() {
       base::BindOnce(&SystemMonitor::NotifyObservers,
                      weak_factory_.GetWeakPtr()));
 
-  refresh_timer_.Start(FROM_HERE, refresh_timer_.GetCurrentDelay(),
-                       base::BindRepeating(&SystemMonitor::RefreshCallback,
-                                           base::Unretained(this)));
+  refresh_timer_.Start(
+      FROM_HERE, refresh_timer_.GetCurrentDelay(),
+      base::BindOnce(&SystemMonitor::RefreshCallback, base::Unretained(this)));
 }
 
 void SystemMonitor::NotifyObservers(SystemMonitor::MetricVector metrics) {
@@ -249,7 +257,7 @@ SystemMonitor::MetricEvaluator::~MetricEvaluator() = default;
 template <typename T>
 SystemMonitor::MetricEvaluatorImpl<T>::MetricEvaluatorImpl(
     Type type,
-    base::OnceCallback<base::Optional<T>()> evaluate_function,
+    base::OnceCallback<absl::optional<T>()> evaluate_function,
     void (SystemObserver::*notify_function)(ObserverArgType))
     : MetricEvaluator(type),
       evaluate_function_(std::move(evaluate_function)),
@@ -279,7 +287,7 @@ void SystemMonitor::MetricEvaluatorImpl<T>::Evaluate() {
   value_ = std::move(evaluate_function_).Run();
 }
 
-base::Optional<base::SystemMetrics>
+absl::optional<base::SystemMetrics>
 MetricEvaluatorsHelper::GetSystemMetricsStruct() {
   return base::SystemMetrics::Sample();
 }

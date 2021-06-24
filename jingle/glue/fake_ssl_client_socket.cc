@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #include "base/bind.h"
@@ -15,7 +16,6 @@
 #include "base/stl_util.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
-#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 
 namespace jingle_glue {
 
@@ -64,6 +64,13 @@ static const uint8_t kSslServerHello[] = {
     0x00, 0x04,                                      // RSA/RC4-128/MD5
     0x00                                             // null compression
 };
+
+// TODO(crbug/1183244): This annotation is not test specific but is for test. We
+// should fix it.
+constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation(
+        "test",
+        "Traffic annotation for FakeSSLClientSocket in jingle");
 
 scoped_refptr<net::DrainableIOBuffer> NewDrainableIOBufferWithSize(int size) {
   return base::MakeRefCounted<net::DrainableIOBuffer>(
@@ -194,8 +201,8 @@ void FakeSSLClientSocket::DoHandshakeLoopWithUserConnectCallback() {
 }
 
 int FakeSSLClientSocket::DoConnect() {
-  int status = transport_socket_->Connect(
-      base::Bind(&FakeSSLClientSocket::OnConnectDone, base::Unretained(this)));
+  int status = transport_socket_->Connect(base::BindOnce(
+      &FakeSSLClientSocket::OnConnectDone, base::Unretained(this)));
   if (status != net::OK) {
     return status;
   }
@@ -224,9 +231,9 @@ void FakeSSLClientSocket::ProcessConnectDone() {
 int FakeSSLClientSocket::DoSendClientHello() {
   int status = transport_socket_->Write(
       write_buf_.get(), write_buf_->BytesRemaining(),
-      base::Bind(&FakeSSLClientSocket::OnSendClientHelloDone,
-                 base::Unretained(this)),
-      TRAFFIC_ANNOTATION_FOR_TESTS);
+      base::BindOnce(&FakeSSLClientSocket::OnSendClientHelloDone,
+                     base::Unretained(this)),
+      kTrafficAnnotation);
   if (status < net::OK) {
     return status;
   }
@@ -258,10 +265,9 @@ void FakeSSLClientSocket::ProcessSendClientHelloDone(size_t written) {
 
 int FakeSSLClientSocket::DoVerifyServerHello() {
   int status = transport_socket_->Read(
-      read_buf_.get(),
-      read_buf_->BytesRemaining(),
-      base::Bind(&FakeSSLClientSocket::OnVerifyServerHelloDone,
-                 base::Unretained(this)));
+      read_buf_.get(), read_buf_->BytesRemaining(),
+      base::BindOnce(&FakeSSLClientSocket::OnVerifyServerHelloDone,
+                     base::Unretained(this)));
   if (status < net::OK) {
     return status;
   }

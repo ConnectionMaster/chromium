@@ -10,13 +10,14 @@
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_types.h"
 
 using content::NavigationController;
 using content::WebContents;
 
 TabModalConfirmDialogDelegate::TabModalConfirmDialogDelegate(
     WebContents* web_contents)
-    : close_delegate_(NULL), closing_(false) {
+    : close_delegate_(nullptr), closing_(false) {
   NavigationController* controller = &web_contents->GetController();
   registrar_.Add(this, content::NOTIFICATION_LOAD_START,
                  content::Source<NavigationController>(controller));
@@ -25,7 +26,7 @@ TabModalConfirmDialogDelegate::TabModalConfirmDialogDelegate(
 TabModalConfirmDialogDelegate::~TabModalConfirmDialogDelegate() {
   // If we end up here, the window has been closed, so make sure we don't close
   // it again.
-  close_delegate_ = NULL;
+  close_delegate_ = nullptr;
   // Make sure everything is cleaned up.
   Cancel();
 }
@@ -76,27 +77,31 @@ void TabModalConfirmDialogDelegate::LinkClicked(
 }
 
 gfx::Image* TabModalConfirmDialogDelegate::GetIcon() {
-  return NULL;
+  return nullptr;
 }
 
-base::string16 TabModalConfirmDialogDelegate::GetAcceptButtonTitle() {
+int TabModalConfirmDialogDelegate::GetDialogButtons() const {
+  return ui::DIALOG_BUTTON_OK | ui::DIALOG_BUTTON_CANCEL;
+}
+
+std::u16string TabModalConfirmDialogDelegate::GetAcceptButtonTitle() {
   return l10n_util::GetStringUTF16(IDS_OK);
 }
 
-base::string16 TabModalConfirmDialogDelegate::GetCancelButtonTitle() {
+std::u16string TabModalConfirmDialogDelegate::GetCancelButtonTitle() {
   return l10n_util::GetStringUTF16(IDS_CANCEL);
 }
 
-base::string16 TabModalConfirmDialogDelegate::GetLinkText() const {
-  return base::string16();
+std::u16string TabModalConfirmDialogDelegate::GetLinkText() const {
+  return std::u16string();
 }
 
 const char* TabModalConfirmDialogDelegate::GetAcceptButtonIcon() {
-  return NULL;
+  return nullptr;
 }
 
 const char* TabModalConfirmDialogDelegate::GetCancelButtonIcon() {
-  return NULL;
+  return nullptr;
 }
 
 void TabModalConfirmDialogDelegate::OnAccepted() {}
@@ -111,4 +116,14 @@ void TabModalConfirmDialogDelegate::OnClosed() {}
 void TabModalConfirmDialogDelegate::CloseDialog() {
   if (close_delegate_)
     close_delegate_->CloseDialog();
+}
+
+absl::optional<int> TabModalConfirmDialogDelegate::GetDefaultDialogButton() {
+  // Use the default, don't override.
+  return absl::nullopt;
+}
+
+absl::optional<int> TabModalConfirmDialogDelegate::GetInitiallyFocusedButton() {
+  // Use the default, don't override.
+  return absl::nullopt;
 }

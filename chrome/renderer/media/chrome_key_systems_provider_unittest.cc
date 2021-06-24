@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/widevine/cdm/buildflags.h"
@@ -29,7 +29,7 @@ class TestKeySystemProperties : public media::KeySystemProperties {
   }
 
   media::EmeConfigRule GetEncryptionSchemeConfigRule(
-      media::EncryptionMode encryption_scheme) const override {
+      media::EncryptionScheme encryption_scheme) const override {
     return media::EmeConfigRule::NOT_SUPPORTED;
   }
 
@@ -39,17 +39,13 @@ class TestKeySystemProperties : public media::KeySystemProperties {
 
   media::EmeConfigRule GetRobustnessConfigRule(
       media::EmeMediaType media_type,
-      const std::string& requested_robustness) const override {
+      const std::string& requested_robustness,
+      const bool* /*hw_secure_requirement*/) const override {
     return requested_robustness.empty() ? media::EmeConfigRule::SUPPORTED
                                         : media::EmeConfigRule::NOT_SUPPORTED;
   }
 
   media::EmeSessionTypeSupport GetPersistentLicenseSessionSupport()
-      const override {
-    return media::EmeSessionTypeSupport::NOT_SUPPORTED;
-  }
-
-  media::EmeSessionTypeSupport GetPersistentUsageRecordSessionSupport()
       const override {
     return media::EmeSessionTypeSupport::NOT_SUPPORTED;
   }
@@ -105,8 +101,8 @@ TEST(ChromeKeySystemsProviderTest, IsKeySystemsUpdateNeeded) {
   std::unique_ptr<TestKeySystemsProviderDelegate> provider_delegate(
       new TestKeySystemsProviderDelegate());
   key_systems_provider.SetProviderDelegateForTesting(
-      base::Bind(&TestKeySystemsProviderDelegate::AddTestKeySystems,
-                 base::Unretained(provider_delegate.get())));
+      base::BindRepeating(&TestKeySystemsProviderDelegate::AddTestKeySystems,
+                          base::Unretained(provider_delegate.get())));
 
   // IsKeySystemsUpdateNeeded() always returns true after construction.
   EXPECT_TRUE(key_systems_provider.IsKeySystemsUpdateNeeded());

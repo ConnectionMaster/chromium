@@ -7,7 +7,6 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -16,13 +15,12 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
-#include "base/time/time.h"
 #include "headless/public/headless_browser_context.h"
 #include "headless/public/headless_devtools_channel.h"
 #include "headless/public/headless_export.h"
 #include "headless/public/headless_web_contents.h"
 #include "net/base/host_port_pair.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/font_render_params.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -152,6 +150,10 @@ struct HEADLESS_EXPORT HeadlessBrowser::Options {
   // string can be used to disable GL rendering (e.g., WebGL support).
   std::string gl_implementation;
 
+  // Choose the ANGLE implementation to use for rendering.
+  // Only relevant if the gl_implementation above is set to "angle".
+  std::string angle_implementation;
+
   // Default per-context options, can be specialized on per-context basis.
 
   std::string product_name_and_version;
@@ -159,7 +161,7 @@ struct HEADLESS_EXPORT HeadlessBrowser::Options {
   std::string user_agent;
 
   // The ProxyConfig to use. The system proxy settings are used by default.
-  std::unique_ptr<net::ProxyConfig> proxy_config = nullptr;
+  std::unique_ptr<net::ProxyConfig> proxy_config;
 
   // Default window size. This is also used to create the window tree host and
   // as initial screen size. Defaults to 800x600.
@@ -188,7 +190,7 @@ struct HEADLESS_EXPORT HeadlessBrowser::Options {
   //
   // WARNING: We cannot provide any guarantees about the stability of the
   // exposed WebPreferences API, so use with care.
-  base::RepeatingCallback<void(WebPreferences*)>
+  base::RepeatingCallback<void(blink::web_pref::WebPreferences*)>
       override_web_preferences_callback;
 
   // Set a callback that is invoked when a new child process is spawned or
@@ -238,6 +240,7 @@ class HEADLESS_EXPORT HeadlessBrowser::Options::Builder {
   Builder& SetDisableSandbox(bool disable_sandbox);
   Builder& SetEnableResourceScheduler(bool enable_resource_scheduler);
   Builder& SetGLImplementation(const std::string& gl_implementation);
+  Builder& SetANGLEImplementation(const std::string& angle_implementation);
   Builder& SetAppendCommandLineFlagsCallback(
       const Options::AppendCommandLineFlagsCallback& callback);
 #if defined(OS_WIN)
@@ -259,7 +262,7 @@ class HEADLESS_EXPORT HeadlessBrowser::Options::Builder {
   Builder& SetSitePerProcess(bool site_per_process);
   Builder& SetBlockNewWebContents(bool block_new_web_contents);
   Builder& SetOverrideWebPreferencesCallback(
-      base::RepeatingCallback<void(WebPreferences*)> callback);
+      base::RepeatingCallback<void(blink::web_pref::WebPreferences*)> callback);
   Builder& SetCrashReporterEnabled(bool enabled);
   Builder& SetCrashDumpsDir(const base::FilePath& dir);
   Builder& SetFontRenderHinting(
@@ -292,17 +295,16 @@ class HEADLESS_EXPORT HeadlessBrowser::Options::Builder {
 // }
 //
 // [1]
-// https://chromium.googlesource.com/chromium/src/+/master/docs/linux_zygote.md
-HEADLESS_EXPORT void RunChildProcessIfNeeded(int argc, const char** argv);
+// https://chromium.googlesource.com/chromium/src/+/main/docs/linux/zygote.md
+void RunChildProcessIfNeeded(int argc, const char** argv);
 #else
 // In Windows, the headless browser may need to create child processes. This is
 // done by re-executing the parent process which may have been initialized with
 // different libraries (e.g. child_dll). In this case, the embedder has to pass
 // the appropiate HINSTANCE and initalization sandbox_info to properly launch
 // the child process.
-HEADLESS_EXPORT void RunChildProcessIfNeeded(
-    HINSTANCE instance,
-    sandbox::SandboxInterfaceInfo* sandbox_info);
+void RunChildProcessIfNeeded(HINSTANCE instance,
+                             sandbox::SandboxInterfaceInfo* sandbox_info);
 #endif  // !defined(OS_WIN)
 
 // Main entry point for running the headless browser. This function constructs
@@ -311,7 +313,7 @@ HEADLESS_EXPORT void RunChildProcessIfNeeded(
 // the main loop, it will only return after HeadlessBrowser::Shutdown() is
 // called, returning the exit code for the process. It is not possible to
 // initialize the browser again after it has been torn down.
-HEADLESS_EXPORT int HeadlessBrowserMain(
+int HeadlessBrowserMain(
     HeadlessBrowser::Options options,
     base::OnceCallback<void(HeadlessBrowser*)> on_browser_start_callback);
 

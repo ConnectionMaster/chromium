@@ -47,76 +47,72 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterCast
       chromecast::bluetooth::GattClientManager* gatt_client_manager,
       chromecast::bluetooth::LeScanManager* le_scan_manager);
 
-  // BluetoothAdapter implementation:
+  // BluetoothAdapter implementation
+  // |callback| will be executed asynchronously on the calling sequence.
+  void Initialize(base::OnceClosure callback) override;
   std::string GetAddress() const override;
   std::string GetName() const override;
   void SetName(const std::string& name,
-               const base::Closure& callback,
-               const ErrorCallback& error_callback) override;
+               base::OnceClosure callback,
+               ErrorCallback error_callback) override;
   bool IsInitialized() const override;
   bool IsPresent() const override;
   bool IsPowered() const override;
   void SetPowered(bool powered,
-                  const base::Closure& callback,
-                  const ErrorCallback& error_callback) override;
+                  base::OnceClosure callback,
+                  ErrorCallback error_callback) override;
   bool IsDiscoverable() const override;
   void SetDiscoverable(bool discoverable,
-                       const base::Closure& callback,
-                       const ErrorCallback& error_callback) override;
+                       base::OnceClosure callback,
+                       ErrorCallback error_callback) override;
   bool IsDiscovering() const override;
   UUIDList GetUUIDs() const override;
-  void CreateRfcommService(
-      const BluetoothUUID& uuid,
-      const ServiceOptions& options,
-      const CreateServiceCallback& callback,
-      const CreateServiceErrorCallback& error_callback) override;
-  void CreateL2capService(
-      const BluetoothUUID& uuid,
-      const ServiceOptions& options,
-      const CreateServiceCallback& callback,
-      const CreateServiceErrorCallback& error_callback) override;
+  void CreateRfcommService(const BluetoothUUID& uuid,
+                           const ServiceOptions& options,
+                           CreateServiceCallback callback,
+                           CreateServiceErrorCallback error_callback) override;
+  void CreateL2capService(const BluetoothUUID& uuid,
+                          const ServiceOptions& options,
+                          CreateServiceCallback callback,
+                          CreateServiceErrorCallback error_callback) override;
   void RegisterAdvertisement(
       std::unique_ptr<BluetoothAdvertisement::Data> advertisement_data,
-      const CreateAdvertisementCallback& callback,
-      const AdvertisementErrorCallback& error_callback) override;
+      CreateAdvertisementCallback callback,
+      AdvertisementErrorCallback error_callback) override;
   void SetAdvertisingInterval(
       const base::TimeDelta& min,
       const base::TimeDelta& max,
-      const base::Closure& callback,
-      const AdvertisementErrorCallback& error_callback) override;
-  void ResetAdvertising(
-      const base::Closure& callback,
-      const AdvertisementErrorCallback& error_callback) override;
+      base::OnceClosure callback,
+      AdvertisementErrorCallback error_callback) override;
+  void ResetAdvertising(base::OnceClosure callback,
+                        AdvertisementErrorCallback error_callback) override;
+  void ConnectDevice(
+      const std::string& address,
+      const absl::optional<BluetoothDevice::AddressType>& address_type,
+      ConnectDeviceCallback callback,
+      ErrorCallback error_callback) override;
   BluetoothLocalGattService* GetGattService(
       const std::string& identifier) const override;
+  base::WeakPtr<BluetoothAdapter> GetWeakPtr() override;
   bool SetPoweredImpl(bool powered) override;
-  void AddDiscoverySession(
-      BluetoothDiscoveryFilter* discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) override;
-  void RemoveDiscoverySession(
-      BluetoothDiscoveryFilter* discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) override;
-  void SetDiscoveryFilter(
-      std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) override;
+  void StartScanWithFilter(
+      std::unique_ptr<device::BluetoothDiscoveryFilter> discovery_filter,
+      DiscoverySessionResultCallback callback) override;
+  void UpdateFilter(
+      std::unique_ptr<device::BluetoothDiscoveryFilter> discovery_filter,
+      DiscoverySessionResultCallback callback) override;
+  void StopScan(DiscoverySessionResultCallback callback) override;
   void RemovePairingDelegateInternal(
       BluetoothDevice::PairingDelegate* pairing_delegate) override;
 
-  // Return a WeakPtr for this class. Must be called on the sequence on which
-  // this class was created.
-  // TODO(slan): Remove this once this class talks to a dedicated Bluetooth
-  // service (b/76155468)
-  base::WeakPtr<BluetoothAdapterCast> GetWeakPtr();
+  base::WeakPtr<BluetoothAdapterCast> GetCastWeakPtr();
 
   // |factory_cb| is used to inject a factory method from ChromecastService into
   // this class. It will be invoked when Create() is called.
   // TODO(slan): Remove this once this class talks to a dedicated Bluetooth
   // service (b/76155468)
   using FactoryCb =
-      base::RepeatingCallback<base::WeakPtr<BluetoothAdapterCast>()>;
+      base::RepeatingCallback<scoped_refptr<BluetoothAdapterCast>()>;
   static void SetFactory(FactoryCb factory_cb);
 
   // Resets the factory callback for test scenarios.
@@ -124,9 +120,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterCast
 
   // Creates a BluetoothAdapterCast using the |factory_cb| set in SetFactory().
   // This method is intended to be called only by the WebBluetooth code in
-  // //device/blutooth/. |callback| will be executed asynchronously
-  // on the calling sequence.
-  static base::WeakPtr<BluetoothAdapter> Create(InitCallback callback);
+  // //device/bluetooth/.
+  static scoped_refptr<BluetoothAdapter> Create();
 
  private:
   ~BluetoothAdapterCast() override;
@@ -149,10 +144,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterCast
   // Helper method to access |devices_| as BluetoothDeviceCast*.
   BluetoothDeviceCast* GetCastDevice(const std::string& address);
 
-  // Runs |callback|. After this method returns, |this| is initialized. This
-  // must run on the same sequence on which |this| is created.
-  void InitializeAsynchronously(InitCallback callback);
-
   // Creates a BluetoothDeviceCast for |remote_device|, adds it to |devices_|,
   // and updates observers.
   void AddDevice(
@@ -167,14 +158,14 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterCast
       std::vector<chromecast::bluetooth::LeScanResult> results);
 
   struct DiscoveryParams {
-    DiscoveryParams(device::BluetoothDiscoveryFilter* filter,
-                    base::Closure success_callback,
+    DiscoveryParams(std::unique_ptr<device::BluetoothDiscoveryFilter> filter,
+                    base::OnceClosure success_callback,
                     DiscoverySessionErrorCallback error_callback);
     DiscoveryParams(DiscoveryParams&& params) noexcept;
     DiscoveryParams& operator=(DiscoveryParams&& params);
     ~DiscoveryParams();
-    device::BluetoothDiscoveryFilter* filter = nullptr;
-    base::Closure success_callback;
+    std::unique_ptr<device::BluetoothDiscoveryFilter> filter;
+    base::OnceClosure success_callback;
     DiscoverySessionErrorCallback error_callback;
   };
 

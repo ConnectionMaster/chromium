@@ -5,20 +5,22 @@
 #ifndef NET_URL_REQUEST_URL_REQUEST_INTERCEPTOR_H_
 #define NET_URL_REQUEST_URL_REQUEST_INTERCEPTOR_H_
 
+#include <memory>
+
 #include "base/macros.h"
 #include "net/base/net_export.h"
-
-class GURL;
 
 namespace net {
 
 class URLRequest;
 class URLRequestJob;
-class NetworkDelegate;
 
-// A URLRequestInterceptor is given a chance to create a URLRequestJob to
-// handle URLRequests before they're handed off to the ProtocolHandler for
+// In tests, URLRequestFilter lets URLRequestInterceptors create URLRequestJobs
+// to handle URLRequests before they're handed off to the ProtocolHandler for
 // the request's scheme.
+//
+// TODO(mmenke):  Only include this file in test targets. Also consider using
+// callbacks instead, or even removing URLRequestFilter.
 class NET_EXPORT URLRequestInterceptor {
  public:
   URLRequestInterceptor();
@@ -26,23 +28,9 @@ class NET_EXPORT URLRequestInterceptor {
 
   // Returns a URLRequestJob to handle |request|, if the interceptor wants to
   // take over the handling the request instead of the default ProtocolHandler.
-  // Otherwise, returns NULL.
-  virtual URLRequestJob* MaybeInterceptRequest(
-      URLRequest* request, NetworkDelegate* network_delegate) const = 0;
-
-  // Returns a URLRequestJob to handle |request|, if the interceptor wants to
-  // take over the handling of the request after a redirect is received,
-  // instead of using the default ProtocolHandler. Otherwise, returns NULL.
-  virtual URLRequestJob* MaybeInterceptRedirect(
-      URLRequest* request,
-      NetworkDelegate* network_delegate,
-      const GURL& location) const;
-
-  // Returns a URLRequestJob to handle |request, if the interceptor wants to
-  // take over the handling of the request after a response has started,
-  // instead of using the default ProtocolHandler. Otherwise, returns NULL.
-  virtual URLRequestJob* MaybeInterceptResponse(
-      URLRequest* request, NetworkDelegate* network_delegate) const;
+  // Otherwise, returns nullptr.
+  virtual std::unique_ptr<URLRequestJob> MaybeInterceptRequest(
+      URLRequest* request) const = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(URLRequestInterceptor);

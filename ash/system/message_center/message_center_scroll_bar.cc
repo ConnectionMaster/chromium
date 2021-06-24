@@ -4,8 +4,9 @@
 
 #include "ash/system/message_center/message_center_scroll_bar.h"
 
-#include "ash/public/cpp/ash_features.h"
+#include "ash/constants/ash_features.h"
 #include "base/metrics/histogram_macros.h"
+#include "ui/compositor/layer.h"
 
 namespace {
 
@@ -30,6 +31,7 @@ MessageCenterScrollBar::MessageCenterScrollBar(
     MessageCenterScrollBar::Observer* observer)
     : views::OverlayScrollBar(false), observer_(observer) {
   GetThumb()->layer()->SetVisible(features::IsNotificationScrollBarEnabled());
+  GetThumb()->layer()->CompleteAllAnimations();
 }
 
 bool MessageCenterScrollBar::OnKeyPressed(const ui::KeyEvent& event) {
@@ -53,6 +55,10 @@ bool MessageCenterScrollBar::OnMouseWheel(const ui::MouseWheelEvent& event) {
     observer_->OnMessageCenterScrolled();
 
   return result;
+}
+
+const char* MessageCenterScrollBar::GetClassName() const {
+  return "MessageCenterScrollBar";
 }
 
 void MessageCenterScrollBar::OnGestureEvent(ui::GestureEvent* event) {

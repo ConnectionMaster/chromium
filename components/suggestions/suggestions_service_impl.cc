@@ -18,13 +18,13 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/google/core/common/google_util.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/suggestions/blacklist_store.h"
-#include "components/suggestions/features.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
+#include "components/signin/public/identity_manager/scope_set.h"
+#include "components/suggestions/blocklist_store.h"
 #include "components/suggestions/suggestions_store.h"
-#include "components/sync/driver/sync_service.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "net/base/escape.h"
@@ -35,12 +35,7 @@
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_status.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/primary_account_access_token_fetcher.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/cpp/resource_response.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 
@@ -64,7 +59,7 @@ void LogResponseState(SuggestionsResponseState state) {
                             RESPONSE_STATE_SIZE);
 }
 
-const net::BackoffEntry::Policy kBlacklistBackoffPolicy = {
+const net::BackoffEntry::Policy kBlocklistBackoffPolicy = {
     /*num_errors_to_ignore=*/0,
     /*initial_delay_ms=*/1000,
     /*multiply_factor=*/2.0,
@@ -86,17 +81,13 @@ GURL GetGoogleBaseURL() {
 // params: The Google base URL and the device type.
 // TODO(mathp): Put this in TemplateURL.
 const char kSuggestionsURLFormat[] = "%schromesuggestions?%s";
-const char kSuggestionsBlacklistURLPrefixFormat[] =
+const char kSuggestionsBlocklistURLPrefixFormat[] =
     "%schromesuggestions/blacklist?t=%s&url=";
-const char kSuggestionsBlacklistClearURLFormat[] =
+const char kSuggestionsBlocklistClearURLFormat[] =
     "%schromesuggestions/blacklist/clear?t=%s";
 
-const char kSuggestionsBlacklistURLParam[] = "url";
+const char kSuggestionsBlocklistURLParam[] = "url";
 const char kSuggestionsDeviceParam[] = "t=%s";
-const char kSuggestionsMinParam[] = "num=%i";
-
-const char kSuggestionsMinVariationName[] = "min_suggestions";
-const int kSuggestionsMinVariationDefault = 0;
 
 #if defined(OS_ANDROID) || defined(OS_IOS)
 const char kDeviceType[] = "2";
@@ -110,40 +101,32 @@ const char kFaviconURL[] =
 // The default expiry timeout is 168 hours.
 const int64_t kDefaultExpiryUsec = 168 * base::Time::kMicrosecondsPerHour;
 
-int GetMinimumSuggestionsCount() {
-  return base::GetFieldTrialParamByFeatureAsInt(
-      kUseSuggestionsEvenIfFewFeature, kSuggestionsMinVariationName,
-      kSuggestionsMinVariationDefault);
-}
-
 }  // namespace
 
 SuggestionsServiceImpl::SuggestionsServiceImpl(
-    identity::IdentityManager* identity_manager,
+    signin::IdentityManager* identity_manager,
     syncer::SyncService* sync_service,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     std::unique_ptr<SuggestionsStore> suggestions_store,
-    std::unique_ptr<BlacklistStore> blacklist_store,
+    std::unique_ptr<BlocklistStore> blocklist_store,
     const base::TickClock* tick_clock)
     : identity_manager_(identity_manager),
       sync_service_(sync_service),
-      sync_service_observer_(this),
       history_sync_state_(syncer::UploadState::INITIALIZING),
       url_loader_factory_(url_loader_factory),
       suggestions_store_(std::move(suggestions_store)),
-      blacklist_store_(std::move(blacklist_store)),
+      blocklist_store_(std::move(blocklist_store)),
       tick_clock_(tick_clock),
-      blacklist_upload_backoff_(&kBlacklistBackoffPolicy, tick_clock_),
-      blacklist_upload_timer_(tick_clock_),
-      weak_ptr_factory_(this) {
+      blocklist_upload_backoff_(&kBlocklistBackoffPolicy, tick_clock_),
+      blocklist_upload_timer_(tick_clock_) {
   // |sync_service_| is null if switches::kDisableSync is set (tests use that).
   if (sync_service_)
-    sync_service_observer_.Add(sync_service_);
+    sync_service_observation_.Observe(sync_service_);
   // Immediately get the current sync state, so we'll flush the cache if
   // necessary.
   OnStateChanged(sync_service_);
   // This makes sure the initial delay is actually respected.
-  blacklist_upload_backoff_.InformOfRequest(/*succeeded=*/true);
+  blocklist_upload_backoff_.InformOfRequest(/*succeeded=*/true);
 }
 
 SuggestionsServiceImpl::~SuggestionsServiceImpl() = default;
@@ -157,51 +140,51 @@ bool SuggestionsServiceImpl::FetchSuggestionsData() {
   return true;
 }
 
-base::Optional<SuggestionsProfile>
+absl::optional<SuggestionsProfile>
 SuggestionsServiceImpl::GetSuggestionsDataFromCache() const {
   SuggestionsProfile suggestions;
   // In case of empty cache or error, return empty.
   if (!suggestions_store_->LoadSuggestions(&suggestions))
-    return base::nullopt;
-  blacklist_store_->FilterSuggestions(&suggestions);
+    return absl::nullopt;
+  blocklist_store_->FilterSuggestions(&suggestions);
   return suggestions;
 }
 
-std::unique_ptr<SuggestionsServiceImpl::ResponseCallbackList::Subscription>
-SuggestionsServiceImpl::AddCallback(const ResponseCallback& callback) {
+base::CallbackListSubscription SuggestionsServiceImpl::AddCallback(
+    const ResponseCallback& callback) {
   return callback_list_.Add(callback);
 }
 
-bool SuggestionsServiceImpl::BlacklistURL(const GURL& candidate_url) {
+bool SuggestionsServiceImpl::BlocklistURL(const GURL& candidate_url) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   // TODO(treib): Do we need to check |history_sync_state_| here?
 
-  if (!blacklist_store_->BlacklistUrl(candidate_url))
+  if (!blocklist_store_->BlocklistUrl(candidate_url))
     return false;
 
   callback_list_.Notify(
       GetSuggestionsDataFromCache().value_or(SuggestionsProfile()));
 
-  // Blacklist uploads are scheduled on any request completion, so only schedule
+  // Blocklist uploads are scheduled on any request completion, so only schedule
   // an upload if there is no ongoing request.
   if (!pending_request_)
-    ScheduleBlacklistUpload();
+    ScheduleBlocklistUpload();
 
   return true;
 }
 
-bool SuggestionsServiceImpl::UndoBlacklistURL(const GURL& url) {
+bool SuggestionsServiceImpl::UndoBlocklistURL(const GURL& url) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   // TODO(treib): Do we need to check |history_sync_state_| here?
 
   TimeDelta time_delta;
-  if (blacklist_store_->GetTimeUntilURLReadyForUpload(url, &time_delta) &&
+  if (blocklist_store_->GetTimeUntilURLReadyForUpload(url, &time_delta) &&
       time_delta > TimeDelta::FromSeconds(0) &&
-      blacklist_store_->RemoveUrl(url)) {
+      blocklist_store_->RemoveUrl(url)) {
     // The URL was not yet candidate for upload to the server and could be
-    // removed from the blacklist.
+    // removed from the blocklist.
     callback_list_.Notify(
         GetSuggestionsDataFromCache().value_or(SuggestionsProfile()));
     return true;
@@ -209,19 +192,19 @@ bool SuggestionsServiceImpl::UndoBlacklistURL(const GURL& url) {
   return false;
 }
 
-void SuggestionsServiceImpl::ClearBlacklist() {
+void SuggestionsServiceImpl::ClearBlocklist() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   // TODO(treib): Do we need to check |history_sync_state_| here?
 
-  blacklist_store_->ClearBlacklist();
+  blocklist_store_->ClearBlocklist();
   callback_list_.Notify(
       GetSuggestionsDataFromCache().value_or(SuggestionsProfile()));
-  IssueRequestIfNoneOngoing(BuildSuggestionsBlacklistClearURL());
+  IssueRequestIfNoneOngoing(BuildSuggestionsBlocklistClearURL());
 }
 
-base::TimeDelta SuggestionsServiceImpl::BlacklistDelayForTesting() const {
-  return blacklist_upload_backoff_.GetTimeUntilRelease();
+base::TimeDelta SuggestionsServiceImpl::BlocklistDelayForTesting() const {
+  return blocklist_upload_backoff_.GetTimeUntilRelease();
 }
 
 bool SuggestionsServiceImpl::HasPendingRequestForTesting() const {
@@ -229,22 +212,22 @@ bool SuggestionsServiceImpl::HasPendingRequestForTesting() const {
 }
 
 // static
-bool SuggestionsServiceImpl::GetBlacklistedUrl(const GURL& original_url,
-                                               GURL* blacklisted_url) {
-  bool is_blacklist_request = base::StartsWith(
-      original_url.spec(), BuildSuggestionsBlacklistURLPrefix(),
+bool SuggestionsServiceImpl::GetBlocklistedUrl(const GURL& original_url,
+                                               GURL* blocklisted_url) {
+  bool is_blocklist_request = base::StartsWith(
+      original_url.spec(), BuildSuggestionsBlocklistURLPrefix(),
       base::CompareCase::SENSITIVE);
-  if (!is_blacklist_request)
+  if (!is_blocklist_request)
     return false;
 
-  // Extract the blacklisted URL from the blacklist request.
-  std::string blacklisted;
-  if (!net::GetValueForKeyInQuery(original_url, kSuggestionsBlacklistURLParam,
-                                  &blacklisted)) {
+  // Extract the blocklisted URL from the blocklist request.
+  std::string blocklisted;
+  if (!net::GetValueForKeyInQuery(original_url, kSuggestionsBlocklistURLParam,
+                                  &blocklisted)) {
     return false;
   }
 
-  *blacklisted_url = GURL(blacklisted);
+  *blocklisted_url = GURL(blocklisted);
   return true;
 }
 
@@ -252,39 +235,32 @@ bool SuggestionsServiceImpl::GetBlacklistedUrl(const GURL& original_url,
 void SuggestionsServiceImpl::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   SuggestionsStore::RegisterProfilePrefs(registry);
-  BlacklistStore::RegisterProfilePrefs(registry);
+  BlocklistStore::RegisterProfilePrefs(registry);
 }
 
 // static
 GURL SuggestionsServiceImpl::BuildSuggestionsURL() {
-  std::string device = base::StringPrintf(kSuggestionsDeviceParam, kDeviceType);
-  std::string query = device;
-  if (base::FeatureList::IsEnabled(kUseSuggestionsEvenIfFewFeature)) {
-    std::string min_suggestions =
-        base::StringPrintf(kSuggestionsMinParam, GetMinimumSuggestionsCount());
-    query =
-        base::StringPrintf("%s&%s", device.c_str(), min_suggestions.c_str());
-  }
+  std::string query = base::StringPrintf(kSuggestionsDeviceParam, kDeviceType);
   return GURL(base::StringPrintf(
       kSuggestionsURLFormat, GetGoogleBaseURL().spec().c_str(), query.c_str()));
 }
 
 // static
-std::string SuggestionsServiceImpl::BuildSuggestionsBlacklistURLPrefix() {
-  return base::StringPrintf(kSuggestionsBlacklistURLPrefixFormat,
+std::string SuggestionsServiceImpl::BuildSuggestionsBlocklistURLPrefix() {
+  return base::StringPrintf(kSuggestionsBlocklistURLPrefixFormat,
                             GetGoogleBaseURL().spec().c_str(), kDeviceType);
 }
 
 // static
-GURL SuggestionsServiceImpl::BuildSuggestionsBlacklistURL(
+GURL SuggestionsServiceImpl::BuildSuggestionsBlocklistURL(
     const GURL& candidate_url) {
-  return GURL(BuildSuggestionsBlacklistURLPrefix() +
+  return GURL(BuildSuggestionsBlocklistURLPrefix() +
               net::EscapeQueryParamValue(candidate_url.spec(), true));
 }
 
 // static
-GURL SuggestionsServiceImpl::BuildSuggestionsBlacklistClearURL() {
-  return GURL(base::StringPrintf(kSuggestionsBlacklistClearURLFormat,
+GURL SuggestionsServiceImpl::BuildSuggestionsBlocklistClearURL() {
+  return GURL(base::StringPrintf(kSuggestionsBlocklistClearURLFormat,
                                  GetGoogleBaseURL().spec().c_str(),
                                  kDeviceType));
 }
@@ -351,7 +327,7 @@ void SuggestionsServiceImpl::SetDefaultExpiryTimestamp(
 
 void SuggestionsServiceImpl::IssueRequestIfNoneOngoing(const GURL& url) {
   // If there is an ongoing request, let it complete.
-  // This will silently swallow blacklist and clearblacklist requests if a
+  // This will silently swallow blocklist and clearblocklist requests if a
   // request happens to be ongoing.
   // TODO(treib): Queue such requests and send them after the current one
   // completes.
@@ -361,24 +337,24 @@ void SuggestionsServiceImpl::IssueRequestIfNoneOngoing(const GURL& url) {
   if (token_fetcher_)
     return;
 
-  identity::ScopeSet scopes{GaiaConstants::kChromeSyncOAuth2Scope};
-  token_fetcher_ = std::make_unique<identity::PrimaryAccountAccessTokenFetcher>(
+  signin::ScopeSet scopes{GaiaConstants::kChromeSyncOAuth2Scope};
+  token_fetcher_ = std::make_unique<signin::PrimaryAccountAccessTokenFetcher>(
       "suggestions_service", identity_manager_, scopes,
       base::BindOnce(&SuggestionsServiceImpl::AccessTokenAvailable,
                      base::Unretained(this), url),
-      identity::PrimaryAccountAccessTokenFetcher::Mode::kWaitUntilAvailable);
+      signin::PrimaryAccountAccessTokenFetcher::Mode::kWaitUntilAvailable);
 }
 
 void SuggestionsServiceImpl::AccessTokenAvailable(
     const GURL& url,
     GoogleServiceAuthError error,
-    identity::AccessTokenInfo access_token_info) {
+    signin::AccessTokenInfo access_token_info) {
   DCHECK(token_fetcher_);
   token_fetcher_.reset();
 
   if (error.state() != GoogleServiceAuthError::NONE) {
-    blacklist_upload_backoff_.InformOfRequest(/*succeeded=*/false);
-    ScheduleBlacklistUpload();
+    blocklist_upload_backoff_.InformOfRequest(/*succeeded=*/false);
+    ScheduleBlocklistUpload();
     return;
   }
 
@@ -439,9 +415,8 @@ SuggestionsServiceImpl::CreateSuggestionsRequest(
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = url;
   resource_request->method = "GET";
-  resource_request->load_flags = net::LOAD_DISABLE_CACHE |
-                                 net::LOAD_DO_NOT_SEND_COOKIES |
-                                 net::LOAD_DO_NOT_SAVE_COOKIES;
+  resource_request->load_flags = net::LOAD_DISABLE_CACHE;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   // Add Chrome experiment state to the request headers.
   // TODO: We should call AppendVariationHeaders with explicit
   // variations::SignedIn::kNo If the access_token is empty
@@ -452,9 +427,6 @@ SuggestionsServiceImpl::CreateSuggestionsRequest(
         "Authorization", base::StrCat({"Bearer ", access_token}));
   }
 
-  // TODO(https://crbug.com/808498): re-add data use measurement once
-  // SimpleURLLoader supports it.
-  // ID=data_use_measurement::DataUseUserData::SUGGESTIONS
   auto loader = network::SimpleURLLoader::Create(std::move(resource_request),
                                                  traffic_annotation);
 
@@ -483,8 +455,8 @@ void SuggestionsServiceImpl::OnURLFetchComplete(
     DVLOG(1) << "Suggestions server request failed with error: "
              << request->NetError() << ": "
              << net::ErrorToString(request->NetError());
-    blacklist_upload_backoff_.InformOfRequest(/*succeeded=*/false);
-    ScheduleBlacklistUpload();
+    blocklist_upload_backoff_.InformOfRequest(/*succeeded=*/false);
+    ScheduleBlocklistUpload();
     return;
   }
 
@@ -497,8 +469,8 @@ void SuggestionsServiceImpl::OnURLFetchComplete(
     // A non-200 response code means that server has no (longer) suggestions for
     // this user. Aggressively clear the cache.
     suggestions_store_->ClearSuggestions();
-    blacklist_upload_backoff_.InformOfRequest(/*succeeded=*/false);
-    ScheduleBlacklistUpload();
+    blocklist_upload_backoff_.InformOfRequest(/*succeeded=*/false);
+    ScheduleBlocklistUpload();
     return;
   }
 
@@ -506,11 +478,10 @@ void SuggestionsServiceImpl::OnURLFetchComplete(
       tick_clock_->NowTicks() - last_request_started_time_;
   UMA_HISTOGRAM_MEDIUM_TIMES("Suggestions.FetchSuccessLatency", latency);
 
-  // Handle a successful blacklisting.
-  GURL blacklisted_url;
-  if (GetBlacklistedUrl(original_url, &blacklisted_url))
-    blacklist_store_->RemoveUrl(blacklisted_url);
-
+  // Handle a successful blocklisting.
+  GURL blocklisted_url;
+  if (GetBlocklistedUrl(original_url, &blocklisted_url))
+    blocklist_store_->RemoveUrl(blocklisted_url);
 
   // Parse the received suggestions and update the cache, or take proper action
   // in the case of invalid response.
@@ -533,8 +504,8 @@ void SuggestionsServiceImpl::OnURLFetchComplete(
   callback_list_.Notify(
       GetSuggestionsDataFromCache().value_or(SuggestionsProfile()));
 
-  blacklist_upload_backoff_.InformOfRequest(/*succeeded=*/true);
-  ScheduleBlacklistUpload();
+  blocklist_upload_backoff_.InformOfRequest(/*succeeded=*/true);
+  ScheduleBlocklistUpload();
 }
 
 void SuggestionsServiceImpl::PopulateExtraData(
@@ -551,35 +522,35 @@ void SuggestionsServiceImpl::Shutdown() {
   // Cancel pending request.
   pending_request_.reset(nullptr);
 
-  sync_service_observer_.RemoveAll();
+  sync_service_observation_.Reset();
 }
 
-void SuggestionsServiceImpl::ScheduleBlacklistUpload() {
+void SuggestionsServiceImpl::ScheduleBlocklistUpload() {
   DCHECK(thread_checker_.CalledOnValidThread());
   TimeDelta time_delta;
-  if (blacklist_store_->GetTimeUntilReadyForUpload(&time_delta)) {
-    // Blacklist cache is not empty: schedule.
-    blacklist_upload_timer_.Start(
-        FROM_HERE, time_delta + blacklist_upload_backoff_.GetTimeUntilRelease(),
-        base::BindOnce(&SuggestionsServiceImpl::UploadOneFromBlacklist,
+  if (blocklist_store_->GetTimeUntilReadyForUpload(&time_delta)) {
+    // Blocklist cache is not empty: schedule.
+    blocklist_upload_timer_.Start(
+        FROM_HERE, time_delta + blocklist_upload_backoff_.GetTimeUntilRelease(),
+        base::BindOnce(&SuggestionsServiceImpl::UploadOneFromBlocklist,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 }
 
-void SuggestionsServiceImpl::UploadOneFromBlacklist() {
+void SuggestionsServiceImpl::UploadOneFromBlocklist() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  GURL blacklisted_url;
-  if (blacklist_store_->GetCandidateForUpload(&blacklisted_url)) {
-    // Issue a blacklisting request. Even if this request ends up not being sent
-    // because of an ongoing request, a blacklist request is later scheduled.
-    IssueRequestIfNoneOngoing(BuildSuggestionsBlacklistURL(blacklisted_url));
+  GURL blocklisted_url;
+  if (blocklist_store_->GetCandidateForUpload(&blocklisted_url)) {
+    // Issue a blocklisting request. Even if this request ends up not being sent
+    // because of an ongoing request, a blocklist request is later scheduled.
+    IssueRequestIfNoneOngoing(BuildSuggestionsBlocklistURL(blocklisted_url));
     return;
   }
 
-  // Even though there's no candidate for upload, the blacklist might not be
+  // Even though there's no candidate for upload, the blocklist might not be
   // empty.
-  ScheduleBlacklistUpload();
+  ScheduleBlocklistUpload();
 }
 
 }  // namespace suggestions

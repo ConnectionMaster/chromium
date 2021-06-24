@@ -7,34 +7,28 @@
 #include "base/format_macros.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/bindings/core/v8/scheduled_action.h"
-#include "third_party/blink/renderer/bindings/core/v8/script_event_listener.h"
 #include "third_party/blink/renderer/bindings/core/v8/source_location.h"
 #include "third_party/blink/renderer/core/core_probe_sink.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event_listener.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/frame.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/parser/html_document_parser.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
-#include "third_party/blink/renderer/platform/histogram.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
+#include "v8/include/v8-metrics.h"
 
 namespace blink {
-
-namespace {
-constexpr auto kLongTaskSubTaskThreshold = TimeDelta::FromMilliseconds(12);
-}  // namespace
-
-void PerformanceMonitor::BypassLongCompileThresholdOnceForTesting() {
-  bypass_long_compile_threshold_ = true;
-}
 
 // static
 base::TimeDelta PerformanceMonitor::Threshold(ExecutionContext* context,
                                               Violation violation) {
+  // Calling InstrumentingMonitorExcludingLongTasks wouldn't work properly if
+  // this query is for longtasks.
+  DCHECK(violation != kLongTask);
   PerformanceMonitor* monitor =
-      PerformanceMonitor::InstrumentingMonitor(context);
+      PerformanceMonitor::InstrumentingMonitorExcludingLongTasks(context);
   return monitor ? monitor->thresholds_[violation] : base::TimeDelta();
 }
 
@@ -45,8 +39,11 @@ void PerformanceMonitor::ReportGenericViolation(
     const String& text,
     base::TimeDelta time,
     std::unique_ptr<SourceLocation> location) {
+  // Calling InstrumentingMonitorExcludingLongTasks wouldn't work properly if
+  // this is a longtask violation.
+  DCHECK(violation != kLongTask);
   PerformanceMonitor* monitor =
-      PerformanceMonitor::InstrumentingMonitor(context);
+      PerformanceMonitor::InstrumentingMonitorExcludingLongTasks(context);
   if (!monitor)
     return;
   monitor->InnerReportGenericViolation(context, violation, text, time,
@@ -56,24 +53,25 @@ void PerformanceMonitor::ReportGenericViolation(
 // static
 PerformanceMonitor* PerformanceMonitor::Monitor(
     const ExecutionContext* context) {
-  const auto* document = DynamicTo<Document>(context);
-  if (!document)
+  const auto* window = DynamicTo<LocalDOMWindow>(context);
+  if (!window)
     return nullptr;
-  LocalFrame* frame = document->GetFrame();
+  LocalFrame* frame = window->GetFrame();
   if (!frame)
     return nullptr;
   return frame->GetPerformanceMonitor();
 }
 
 // static
-PerformanceMonitor* PerformanceMonitor::InstrumentingMonitor(
+PerformanceMonitor* PerformanceMonitor::InstrumentingMonitorExcludingLongTasks(
     const ExecutionContext* context) {
   PerformanceMonitor* monitor = PerformanceMonitor::Monitor(context);
   return monitor && monitor->enabled_ ? monitor : nullptr;
 }
 
-PerformanceMonitor::PerformanceMonitor(LocalFrame* local_root)
-    : local_root_(local_root) {
+PerformanceMonitor::PerformanceMonitor(LocalFrame* local_root,
+                                       v8::Isolate* isolate)
+    : local_root_(local_root), isolate_(isolate) {
   std::fill(std::begin(thresholds_), std::end(thresholds_), base::TimeDelta());
   Thread::Current()->AddTaskTimeObserver(this);
   local_root_->GetProbeSink()->AddPerformanceMonitor(this);
@@ -125,8 +123,13 @@ void PerformanceMonitor::UpdateInstrumentation() {
     }
   }
 
-  enabled_ = std::count(std::begin(thresholds_), std::end(thresholds_),
-                        base::TimeDelta()) < static_cast<int>(kAfterLast);
+  static_assert(kLongTask == 0u,
+                "kLongTask should be the first value in Violation for the "
+                "|enabled_| definition below to be correct");
+  // Since kLongTask is the first in |thresholds_|, we count from one after
+  // begin(thresholds_).
+  enabled_ = std::count(std::begin(thresholds_) + 1, std::end(thresholds_),
+                        base::TimeDelta()) < static_cast<int>(kAfterLast) - 1;
 }
 
 void PerformanceMonitor::WillExecuteScript(ExecutionContext* context) {
@@ -146,12 +149,12 @@ void PerformanceMonitor::DidExecuteScript() {
 }
 
 void PerformanceMonitor::UpdateTaskAttribution(ExecutionContext* context) {
-  // If |context| is not a document, unable to attribute a frame context.
-  auto* document = DynamicTo<Document>(context);
-  if (!document)
+  // If |context| is not a window, unable to attribute a frame context.
+  auto* window = DynamicTo<LocalDOMWindow>(context);
+  if (!window)
     return;
 
-  UpdateTaskShouldBeReported(document->GetFrame());
+  UpdateTaskShouldBeReported(window->GetFrame());
   if (!task_execution_context_)
     task_execution_context_ = context;
   else if (task_execution_context_ != context)
@@ -166,13 +169,15 @@ void PerformanceMonitor::UpdateTaskShouldBeReported(LocalFrame* frame) {
 void PerformanceMonitor::Will(const probe::RecalculateStyle& probe) {
   UpdateTaskShouldBeReported(probe.document ? probe.document->GetFrame()
                                             : nullptr);
-  if (enabled_ && !thresholds_[kLongLayout].is_zero() && script_depth_)
+  if (enabled_ && !thresholds_[kLongLayout].is_zero() && script_depth_) {
     probe.CaptureStartTime();
+  }
 }
 
 void PerformanceMonitor::Did(const probe::RecalculateStyle& probe) {
-  if (enabled_ && script_depth_ && !thresholds_[kLongLayout].is_zero())
+  if (enabled_ && script_depth_ && !thresholds_[kLongLayout].is_zero()) {
     per_task_style_and_layout_time_ += probe.Duration();
+  }
 }
 
 void PerformanceMonitor::Will(const probe::UpdateLayout& probe) {
@@ -197,22 +202,10 @@ void PerformanceMonitor::Did(const probe::UpdateLayout& probe) {
 
 void PerformanceMonitor::Will(const probe::ExecuteScript& probe) {
   WillExecuteScript(probe.context);
-
-  probe.CaptureStartTime();
 }
 
 void PerformanceMonitor::Did(const probe::ExecuteScript& probe) {
   DidExecuteScript();
-
-  if (!enabled_ || thresholds_[kLongTask].is_zero())
-    return;
-
-  if (probe.Duration() <= kLongTaskSubTaskThreshold)
-    return;
-  auto sub_task_attribution = std::make_unique<SubTaskAttribution>(
-      AtomicString("script-run"), probe.context->Url().GetString(),
-      probe.CaptureStartTime(), probe.Duration());
-  sub_task_attributions_.push_back(std::move(sub_task_attribution));
 }
 
 void PerformanceMonitor::Will(const probe::CallFunction& probe) {
@@ -239,39 +232,16 @@ void PerformanceMonitor::Did(const probe::CallFunction& probe) {
   String name = user_callback->name ? String(user_callback->name)
                                     : String(user_callback->atomic_name);
   String text = String::Format("'%s' handler took %" PRId64 "ms",
-                               name.Utf8().data(), duration.InMilliseconds());
+                               name.Utf8().c_str(), duration.InMilliseconds());
   InnerReportGenericViolation(probe.context, handler_type, text, duration,
                               SourceLocation::FromFunction(probe.function));
 }
 
 void PerformanceMonitor::Will(const probe::V8Compile& probe) {
   UpdateTaskAttribution(probe.context);
-  if (!enabled_ || thresholds_[kLongTask].is_zero())
-    return;
-
-  v8_compile_start_time_ = probe.CaptureStartTime();
 }
 
-void PerformanceMonitor::Did(const probe::V8Compile& probe) {
-  if (!enabled_ || thresholds_[kLongTask].is_zero())
-    return;
-
-  TimeDelta v8_compile_duration = probe.Duration();
-
-  if (bypass_long_compile_threshold_) {
-    bypass_long_compile_threshold_ = false;
-  } else {
-    if (v8_compile_duration <= kLongTaskSubTaskThreshold)
-      return;
-  }
-
-  auto sub_task_attribution = std::make_unique<SubTaskAttribution>(
-      AtomicString("script-compile"),
-      String::Format("%s(%d, %d)", probe.file_name.Utf8().data(), probe.line,
-                     probe.column),
-      v8_compile_start_time_, v8_compile_duration);
-  sub_task_attributions_.push_back(std::move(sub_task_attribution));
-}
+void PerformanceMonitor::Did(const probe::V8Compile& probe) {}
 
 void PerformanceMonitor::Will(const probe::UserCallback& probe) {
   ++user_callback_depth_;
@@ -295,16 +265,19 @@ void PerformanceMonitor::DocumentWriteFetchScript(Document* document) {
   if (!enabled_)
     return;
   String text = "Parser was blocked due to document.write(<script>)";
-  InnerReportGenericViolation(document, kBlockedParser, text, base::TimeDelta(),
-                              nullptr);
+  InnerReportGenericViolation(document->GetExecutionContext(), kBlockedParser,
+                              text, base::TimeDelta(), nullptr);
 }
 
 void PerformanceMonitor::WillProcessTask(base::TimeTicks start_time) {
   // Reset m_taskExecutionContext. We don't clear this in didProcessTask
   // as it is needed in ReportTaskTime which occurs after didProcessTask.
+  // Always reset variables needed for longtasks, regardless of the value of
+  // |enabled_|.
   task_execution_context_ = nullptr;
   task_has_multiple_contexts_ = false;
   task_should_be_reported_ = false;
+  v8::metrics::LongTaskStats::Reset(isolate_);
 
   if (!enabled_)
     return;
@@ -312,16 +285,36 @@ void PerformanceMonitor::WillProcessTask(base::TimeTicks start_time) {
   // Reset everything for regular and nested tasks.
   script_depth_ = 0;
   layout_depth_ = 0;
-  per_task_style_and_layout_time_ = TimeDelta();
+  per_task_style_and_layout_time_ = base::TimeDelta();
   user_callback_ = nullptr;
-  v8_compile_start_time_ = TimeTicks();
-  sub_task_attributions_.clear();
 }
 
 void PerformanceMonitor::DidProcessTask(base::TimeTicks start_time,
                                         base::TimeTicks end_time) {
-  if (!enabled_ || !task_should_be_reported_)
+  if (!task_should_be_reported_)
     return;
+
+  // Do not check the value of |enabled_| before processing longtasks.
+  // |enabled_| can be false while there are subscriptions to longtask
+  // violations.
+  if (!thresholds_[kLongTask].is_zero()) {
+    base::TimeDelta task_time = end_time - start_time;
+    if (task_time > thresholds_[kLongTask]) {
+      ClientThresholds* client_thresholds = subscriptions_.at(kLongTask);
+      for (const auto& it : *client_thresholds) {
+        if (it.value < task_time) {
+          it.key->ReportLongTask(
+              start_time, end_time,
+              task_has_multiple_contexts_ ? nullptr : task_execution_context_,
+              task_has_multiple_contexts_);
+        }
+      }
+    }
+  }
+
+  if (!enabled_)
+    return;
+
   base::TimeDelta layout_threshold = thresholds_[kLongLayout];
   base::TimeDelta layout_time = per_task_style_and_layout_time_;
   if (!layout_threshold.is_zero() && layout_time > layout_threshold) {
@@ -330,19 +323,6 @@ void PerformanceMonitor::DidProcessTask(base::TimeTicks start_time,
     for (const auto& it : *client_thresholds) {
       if (it.value < layout_time)
         it.key->ReportLongLayout(layout_time);
-    }
-  }
-
-  base::TimeDelta task_time = end_time - start_time;
-  if (!thresholds_[kLongTask].is_zero() && task_time > thresholds_[kLongTask]) {
-    ClientThresholds* client_thresholds = subscriptions_.at(kLongTask);
-    for (const auto& it : *client_thresholds) {
-      if (it.value < task_time) {
-        it.key->ReportLongTask(
-            start_time, end_time,
-            task_has_multiple_contexts_ ? nullptr : task_execution_context_,
-            task_has_multiple_contexts_, sub_task_attributions_);
-      }
     }
   }
 }
@@ -364,7 +344,7 @@ void PerformanceMonitor::InnerReportGenericViolation(
   }
 }
 
-void PerformanceMonitor::Trace(blink::Visitor* visitor) {
+void PerformanceMonitor::Trace(Visitor* visitor) const {
   visitor->Trace(local_root_);
   visitor->Trace(task_execution_context_);
   visitor->Trace(subscriptions_);

@@ -4,6 +4,7 @@
 
 #include "chrome/test/chromedriver/chrome/mobile_device.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/json/json_reader.h"
@@ -18,16 +19,15 @@ MobileDevice::~MobileDevice() {}
 
 Status FindMobileDevice(std::string device_name,
                         std::unique_ptr<MobileDevice>* mobile_device) {
-  base::JSONReader json_reader(base::JSON_ALLOW_TRAILING_COMMAS);
-  std::unique_ptr<base::Value> devices_value =
-      json_reader.ReadToValueDeprecated(kMobileDevices);
-  if (!devices_value.get())
-    return Status(kUnknownError,
-                  "could not parse mobile device list because " +
-                  json_reader.GetErrorMessage());
+  base::JSONReader::ValueWithError parsed_json =
+      base::JSONReader::ReadAndReturnValueWithError(
+          kMobileDevices, base::JSON_ALLOW_TRAILING_COMMAS);
+  if (!parsed_json.value)
+    return Status(kUnknownError, "could not parse mobile device list because " +
+                                     parsed_json.error_message);
 
   base::DictionaryValue* mobile_devices;
-  if (!devices_value->GetAsDictionary(&mobile_devices))
+  if (!parsed_json.value->GetAsDictionary(&mobile_devices))
     return Status(kUnknownError, "malformed device metrics dictionary");
 
   base::DictionaryValue* device = NULL;
@@ -65,8 +65,8 @@ Status FindMobileDevice(std::string device_name,
     return Status(kUnknownError,
                   "malformed mobile: should be a bool");
   }
-  tmp_mobile_device->device_metrics.reset(
-      new DeviceMetrics(width, height, device_scale_factor, touch, mobile));
+  tmp_mobile_device->device_metrics = std::make_unique<DeviceMetrics>(
+      width, height, device_scale_factor, touch, mobile);
 
   *mobile_device = std::move(tmp_mobile_device);
   return Status(kOk);

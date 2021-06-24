@@ -5,12 +5,12 @@
 #ifndef CONTENT_BROWSER_MEDIA_MEDIA_DEVICES_PERMISSION_CHECKER_H_
 #define CONTENT_BROWSER_MEDIA_MEDIA_DEVICES_PERMISSION_CHECKER_H_
 
-#include <memory>
-
 #include "base/callback.h"
 #include "base/macros.h"
 #include "content/browser/renderer_host/media/media_devices_manager.h"
 #include "content/common/content_export.h"
+
+using blink::mojom::MediaDeviceType;
 
 namespace content {
 
@@ -28,7 +28,7 @@ class CONTENT_EXPORT MediaDevicesPermissionChecker {
   // |render_process_id| and |render_frame_id| is allowed to access the media
   // device type |device_type|.
   // This method must be called on the UI thread.
-  bool CheckPermissionOnUIThread(blink::MediaDeviceType device_type,
+  bool CheckPermissionOnUIThread(MediaDeviceType device_type,
                                  int render_process_id,
                                  int render_frame_id) const;
 
@@ -37,7 +37,7 @@ class CONTENT_EXPORT MediaDevicesPermissionChecker {
   // device type |device_type|. The result is passed to |callback|.
   // This method can be called on any thread. |callback| is fired on the same
   // thread this method is called on.
-  void CheckPermission(blink::MediaDeviceType device_type,
+  void CheckPermission(MediaDeviceType device_type,
                        int render_process_id,
                        int render_frame_id,
                        base::OnceCallback<void(bool)> callback) const;
@@ -46,8 +46,8 @@ class CONTENT_EXPORT MediaDevicesPermissionChecker {
   // |render_process_id| and |render_frame_id| is allowed to access the media
   // device types marked with a value of true in |requested_device_types|. The
   // result is passed to |callback|. The result is indexed by
-  // blink::MediaDeviceType. Entries in the result with a value of true for
-  // requested device types indicate that the frame has permission to access
+  // blink::mojom::MediaDeviceType. Entries in the result with a value of true
+  // for requested device types indicate that the frame has permission to access
   // devices of the corresponding types. This method can be called on any
   // thread. |callback| is fired on the same thread this method is called on.
   void CheckPermissions(
@@ -56,6 +56,12 @@ class CONTENT_EXPORT MediaDevicesPermissionChecker {
       int render_frame_id,
       base::OnceCallback<void(const MediaDevicesManager::BoolDeviceTypes&)>
           callback) const;
+
+  // Returns true if the origin associated to a render frame identified by
+  // |render_process_id| and |render_frame_id| is allowed to control camera
+  // movement (pan, tilt, and zoom). Otherwise, returns false.
+  static bool HasPanTiltZoomPermissionGrantedOnUIThread(int render_process_id,
+                                                        int render_frame_id);
 
  private:
   const bool use_override_;

@@ -27,7 +27,7 @@ class EVENTS_EXPORT GestureRecognizerImplMac : public GestureRecognizer {
                                     GestureConsumer* consumer) override;
   Gestures AckTouchEvent(uint32_t unique_event_id,
                          ui::EventResult result,
-                         bool is_source_touch_event_set_non_blocking,
+                         bool is_source_touch_event_set_blocking,
                          GestureConsumer* consumer) override;
   bool CleanupStateForConsumer(GestureConsumer* consumer) override;
   GestureConsumer* GetTouchLockedTarget(const TouchEvent& event) override;
@@ -40,11 +40,18 @@ class EVENTS_EXPORT GestureRecognizerImplMac : public GestureRecognizer {
       GestureConsumer* current_consumer,
       GestureConsumer* new_consumer,
       TransferTouchesBehavior transfer_touches_behavior) override;
+  std::vector<std::unique_ptr<ui::TouchEvent>> ExtractTouches(
+      GestureConsumer* consumer) override;
+  void TransferTouches(GestureConsumer* consumer,
+                       const std::vector<std::unique_ptr<ui::TouchEvent>>&
+                           touch_events) override;
   bool GetLastTouchPointForTarget(GestureConsumer* consumer,
                                   gfx::PointF* point) override;
   bool CancelActiveTouches(GestureConsumer* consumer) override;
   void AddGestureEventHelper(GestureEventHelper* helper) override;
   void RemoveGestureEventHelper(GestureEventHelper* helper) override;
+  bool DoesConsumerHaveActiveTouch(GestureConsumer* consumer) const override;
+  void SendSynthesizedEndEvents(GestureConsumer* consumer) override;
 
   DISALLOW_COPY_AND_ASSIGN(GestureRecognizerImplMac);
 };

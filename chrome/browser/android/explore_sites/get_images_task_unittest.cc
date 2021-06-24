@@ -7,8 +7,7 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/logging.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/android/explore_sites/explore_sites_schema.h"
 #include "components/offline_pages/task/task.h"
@@ -43,6 +42,9 @@ class ExploreSitesGetImagesTaskTest : public TaskTestBase {
   }
 
   void PopulateTestingCatalog();
+  void UpdateCatalogVersions(std::string current_version,
+                             std::string downloading_version);
+  void PopulateInvalidRowsInCatalog();
 
   void ExpectEmptyImageList(EncodedImageList images) {
     EXPECT_EQ(0U, images.size());
@@ -51,6 +53,15 @@ class ExploreSitesGetImagesTaskTest : public TaskTestBase {
   EncodedImageListCallback StoreResult() {
     return base::BindLambdaForTesting(
         [&](EncodedImageList result) { last_result = std::move(result); });
+  }
+
+  void ExpectSummaryBitmapsInOrder() {
+    std::vector<std::string> ordered_bitmaps = {"bytes1", "bytes3", "bytes2"};
+    EXPECT_EQ(3U, last_result.size());
+    for (int i = 0; i < 3; i++) {
+      std::vector<uint8_t>& result = *last_result[i];
+      EXPECT_EQ(ordered_bitmaps[i], std::string(result.begin(), result.end()));
+    }
   }
 
   EncodedImageList last_result;
@@ -84,6 +95,46 @@ VALUES
 (2, "https://www.example.com/2", 4, "example_2", "bytes2"),
 (3, "https://www.example.com/3", 3, "example_3", "bytes3"),
 (4, "https://www.example.com/4", 4, "example_4", "bytes4");
+    )"));
+    return insert_sites.Run();
+  }));
+}
+
+void ExploreSitesGetImagesTaskTest::UpdateCatalogVersions(
+    std::string current_version,
+    std::string downloading_version) {
+  ExecuteSync(base::BindLambdaForTesting([&](sql::Database* db) {
+    sql::MetaTable meta_table;
+    ExploreSitesSchema::InitMetaTable(db, &meta_table);
+    meta_table.SetValue(ExploreSitesSchema::kDownloadingCatalogKey,
+                        downloading_version);
+    meta_table.SetValue(ExploreSitesSchema::kCurrentCatalogKey,
+                        current_version);
+    return true;
+  }));
+}
+
+void ExploreSitesGetImagesTaskTest::PopulateInvalidRowsInCatalog() {
+  ExecuteSync(base::BindLambdaForTesting([](sql::Database* db) {
+    sql::MetaTable meta_table;
+    ExploreSitesSchema::InitMetaTable(db, &meta_table);
+    meta_table.SetValue(ExploreSitesSchema::kDownloadingCatalogKey, "5678");
+    meta_table.DeleteKey(ExploreSitesSchema::kCurrentCatalogKey);
+    sql::Statement insert(db->GetUniqueStatement(R"(
+INSERT INTO categories
+(category_id, version_token, type, label)
+VALUES
+(1, "XXXX", 1, "bad_1"),
+(2, "XXXX", 2, "bad_2");)"));
+    if (!insert.Run())
+      return false;
+
+    sql::Statement insert_sites(db->GetUniqueStatement(R"(
+INSERT INTO sites
+(site_id, url, category_id, title, favicon)
+VALUES
+(5, "https://www.bad.com/1", 1, "bad", "bad - used unknown version"),
+(6, "https://www.bad.com/2", 2, "bad", "bad - used unknown version");
     )"));
     return insert_sites.Run();
   }));
@@ -128,7 +179,7 @@ TEST_F(ExploreSitesGetImagesTaskTest, SiteExistsAndHasFavicon) {
   EXPECT_EQ("bytes3", std::string(result3.begin(), result3.end()));
 }
 
-TEST_F(ExploreSitesGetImagesTaskTest, SitesExistAndNotBlacklisted) {
+TEST_F(ExploreSitesGetImagesTaskTest, SitesExistAndNotBlocked) {
   PopulateTestingCatalog();
   GetImagesTask task(store(), 3, 4, StoreResult());
   RunTask(&task);
@@ -140,11 +191,11 @@ TEST_F(ExploreSitesGetImagesTaskTest, SitesExistAndNotBlacklisted) {
   EXPECT_EQ("bytes3", std::string(result2.begin(), result2.end()));
 }
 
-TEST_F(ExploreSitesGetImagesTaskTest, SitesExistAndBlacklisted) {
+TEST_F(ExploreSitesGetImagesTaskTest, SitesExistAndBlocked) {
   PopulateTestingCatalog();
   ExecuteSync(base::BindLambdaForTesting([&](sql::Database* db) {
     sql::Statement insert(db->GetUniqueStatement(R"(
-INSERT INTO site_blacklist
+INSERT INTO site_blocklist
 (url, date_removed)
 VALUES
 ("https://www.example.com/1", 123);)"));
@@ -197,6 +248,37 @@ VALUES
   EXPECT_EQ(3U, last_result.size());
   std::vector<uint8_t>& result3 = *last_result[2];
   EXPECT_EQ("bytes7", std::string(result3.begin(), result3.end()));
+}
+
+TEST_F(ExploreSitesGetImagesTaskTest, SummaryImage) {
+  PopulateTestingCatalog();
+  PopulateInvalidRowsInCatalog();
+  UpdateCatalogVersions("5678", "XXXX");
+  GetImagesTask task(store(), GetImagesTask::DataType::kSummary, 3,
+                     StoreResult());
+  RunTask(&task);
+  ExpectSummaryBitmapsInOrder();
+}
+
+TEST_F(ExploreSitesGetImagesTaskTest,
+       SummaryImageUsesDownloadingCatalogIfNecessary) {
+  PopulateTestingCatalog();
+  PopulateInvalidRowsInCatalog();
+  UpdateCatalogVersions("", "5678");
+  GetImagesTask task(store(), GetImagesTask::DataType::kSummary, 3,
+                     StoreResult());
+  RunTask(&task);
+  ExpectSummaryBitmapsInOrder();
+}
+
+TEST_F(ExploreSitesGetImagesTaskTest, SummaryImageNoResultsIfNoCatalogVersion) {
+  PopulateTestingCatalog();
+  PopulateInvalidRowsInCatalog();
+  UpdateCatalogVersions("", "");
+  GetImagesTask task(store(), GetImagesTask::DataType::kSummary, 3,
+                     StoreResult());
+  RunTask(&task);
+  EXPECT_EQ(0U, last_result.size());
 }
 
 }  // namespace explore_sites

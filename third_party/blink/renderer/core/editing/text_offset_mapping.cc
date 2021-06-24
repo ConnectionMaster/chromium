@@ -40,6 +40,12 @@ bool CanBeInlineContentsContainer(const LayoutObject& layout_object) {
     return false;
   if (!block_flow->ChildrenInline() || block_flow->IsAtomicInlineLevel())
     return false;
+  if (block_flow->IsRuby()) {
+    // We should not make |LayoutRubyAsBlock| as inline contents container,
+    // because ruby base text comes after ruby text in layout tree.
+    // See ParameterizedTextOffsetMappingTest.RangeOfBlockWithRubyAsBlock
+    return false;
+  }
   if (block_flow->NonPseudoNode()) {
     // It is OK as long as |block_flow| is associated to non-pseudo |Node| even
     // if it is empty block or containing only anonymous objects.
@@ -52,6 +58,17 @@ bool CanBeInlineContentsContainer(const LayoutObject& layout_object) {
   return HasNonPsuedoNode(*block_flow);
 }
 
+Node* PreviousNodeSkippingAncestors(const Node& node) {
+  ContainerNode* parent = FlatTreeTraversal::Parent(node);
+  for (Node* runner = FlatTreeTraversal::Previous(node); runner;
+       runner = FlatTreeTraversal::Previous(*runner)) {
+    if (runner != parent)
+      return runner;
+    parent = FlatTreeTraversal::Parent(*runner);
+  }
+  return nullptr;
+}
+
 // Returns outer most nested inline formatting context.
 const LayoutBlockFlow& RootInlineContentsContainerOf(
     const LayoutBlockFlow& block_flow) {
@@ -59,9 +76,10 @@ const LayoutBlockFlow& RootInlineContentsContainerOf(
   const LayoutBlockFlow* root_block_flow = &block_flow;
   for (const LayoutBlock* runner = block_flow.ContainingBlock(); runner;
        runner = runner->ContainingBlock()) {
-    if (!runner->IsLayoutBlockFlow() || !runner->ChildrenInline())
+    auto* containing_block_flow = DynamicTo<LayoutBlockFlow>(runner);
+    if (!containing_block_flow || !runner->ChildrenInline())
       break;
-    root_block_flow = To<LayoutBlockFlow>(runner);
+    root_block_flow = containing_block_flow;
   }
   DCHECK(!root_block_flow->IsAtomicInlineLevel())
       << block_flow << ' ' << root_block_flow;
@@ -118,6 +136,7 @@ const LayoutBlockFlow* ComputeInlineContentsAsBlockFlow(
 
 TextOffsetMapping::InlineContents CreateInlineContentsFromBlockFlow(
     const LayoutBlockFlow& block_flow) {
+  DCHECK(block_flow.ChildrenInline()) << block_flow;
   const LayoutObject* first = nullptr;
   for (const LayoutObject* runner = block_flow.FirstChild(); runner;
        runner = runner->NextInPreOrder(&block_flow)) {
@@ -270,12 +289,18 @@ TextOffsetMapping::InlineContents TextOffsetMapping::FindBackwardInlineContents(
 
   auto previous_skipping_text_control = [](const Node& node) -> const Node* {
     DCHECK(!EnclosingTextControl(&node));
-    const Node* previous = FlatTreeTraversal::Previous(node);
+    const Node* previous = PreviousNodeSkippingAncestors(node);
+    if (!previous)
+      return previous;
     const TextControlElement* previous_text_control =
         EnclosingTextControl(previous);
-    if (!previous_text_control)
-      return previous;
-    return previous_text_control;
+    if (previous_text_control)
+      return previous_text_control;
+    if (ShadowRoot* root = previous->ContainingShadowRoot()) {
+      if (root->IsUserAgent())
+        return root->OwnerShadowHost();
+    }
+    return previous;
   };
 
   if (const TextControlElement* last_enclosing_text_control =
@@ -315,6 +340,10 @@ TextOffsetMapping::InlineContents TextOffsetMapping::FindForwardInlineContents(
     DCHECK(!EnclosingTextControl(&node));
     if (IsTextControl(node))
       return FlatTreeTraversal::NextSkippingChildren(node);
+    if (ShadowRoot* root = node.GetShadowRoot()) {
+      if (root->IsUserAgent())
+        return FlatTreeTraversal::NextSkippingChildren(node);
+    }
     return FlatTreeTraversal::Next(node);
   };
   DCHECK(!EnclosingTextControl(next_node));
@@ -379,12 +408,13 @@ EphemeralRangeInFlatTree TextOffsetMapping::InlineContents::GetRange() const {
   }
   const Node& first_node = *first_->NonPseudoNode();
   const Node& last_node = *last_->NonPseudoNode();
+  auto* first_text_node = DynamicTo<Text>(first_node);
+  auto* last_text_node = DynamicTo<Text>(last_node);
   return EphemeralRangeInFlatTree(
-      first_node.IsTextNode() ? PositionInFlatTree(first_node, 0)
-                              : PositionInFlatTree::BeforeNode(first_node),
-      last_node.IsTextNode()
-          ? PositionInFlatTree(last_node, ToText(last_node).length())
-          : PositionInFlatTree::AfterNode(last_node));
+      first_text_node ? PositionInFlatTree(first_node, 0)
+                      : PositionInFlatTree::BeforeNode(first_node),
+      last_text_node ? PositionInFlatTree(last_node, last_text_node->length())
+                     : PositionInFlatTree::AfterNode(last_node));
 }
 
 PositionInFlatTree

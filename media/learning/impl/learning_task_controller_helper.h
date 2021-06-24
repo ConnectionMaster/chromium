@@ -16,6 +16,8 @@
 #include "base/threading/sequence_bound.h"
 #include "media/learning/common/learning_task_controller.h"
 #include "media/learning/impl/feature_provider.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 namespace learning {
@@ -35,7 +37,8 @@ class COMPONENT_EXPORT(LEARNING_IMPL) LearningTaskControllerHelper
     : public base::SupportsWeakPtr<LearningTaskControllerHelper> {
  public:
   // Callback to add labelled examples as training data.
-  using AddExampleCB = base::RepeatingCallback<void(LabelledExample)>;
+  using AddExampleCB =
+      base::RepeatingCallback<void(LabelledExample, ukm::SourceId)>;
 
   // TODO(liberato): Consider making the FP not optional.
   LearningTaskControllerHelper(const LearningTask& task,
@@ -45,7 +48,9 @@ class COMPONENT_EXPORT(LEARNING_IMPL) LearningTaskControllerHelper
   virtual ~LearningTaskControllerHelper();
 
   // See LearningTaskController::BeginObservation.
-  void BeginObservation(base::UnguessableToken id, FeatureVector features);
+  void BeginObservation(base::UnguessableToken id,
+                        FeatureVector features,
+                        absl::optional<ukm::SourceId> source_id);
   void CompleteObservation(base::UnguessableToken id,
                            const ObservationCompletion& completion);
   void CancelObservation(base::UnguessableToken id);
@@ -61,6 +66,8 @@ class COMPONENT_EXPORT(LEARNING_IMPL) LearningTaskControllerHelper
     // Has the client added a TargetValue?
     // TODO(liberato): Should it provide a weight with the target value?
     bool target_done = false;
+
+    ukm::SourceId source_id = ukm::kInvalidSourceId;
   };
 
   // [non-repeating int] = example

@@ -26,24 +26,25 @@ class WaylandRelativePointerDelegate : public RelativePointerDelegate {
  public:
   WaylandRelativePointerDelegate(wl_resource* resource, Pointer* pointer)
       : resource_(resource), pointer_(pointer) {
-    pointer_->EnablePointerCapture(this);
+    pointer->RegisterRelativePointerDelegate(this);
   }
 
   ~WaylandRelativePointerDelegate() override {
     if (pointer_)
-      pointer_->DisablePointerCapture();
+      pointer_->UnregisterRelativePointerDelegate(this);
   }
   void OnPointerDestroying(Pointer* pointer) override { pointer_ = nullptr; }
   void OnPointerRelativeMotion(base::TimeTicks time_stamp,
-                               const gfx::PointF& relativeMotion) override {
+                               const gfx::Vector2dF& relative_motion,
+                               const gfx::Vector2dF& ordinal_motion) override {
     zwp_relative_pointer_v1_send_relative_motion(
         resource_,                                  // resource
         0,                                          // utime_hi
         TimeTicksToMilliseconds(time_stamp),        // utime_lo
-        wl_fixed_from_double(relativeMotion.x()),   // dx
-        wl_fixed_from_double(relativeMotion.y()),   // dy
-        wl_fixed_from_double(relativeMotion.x()),   // dx_unaccel
-        wl_fixed_from_double(relativeMotion.y()));  // dy_unaccel
+        wl_fixed_from_double(relative_motion.x()),  // dx
+        wl_fixed_from_double(relative_motion.y()),  // dy
+        wl_fixed_from_double(ordinal_motion.x()),   // dx_unaccel
+        wl_fixed_from_double(ordinal_motion.y()));  // dy_unaccel
   }
 
  private:

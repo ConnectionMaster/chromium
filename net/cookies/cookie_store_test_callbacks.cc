@@ -5,10 +5,10 @@
 #include "net/cookies/cookie_store_test_callbacks.h"
 
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "net/cookies/cookie_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -60,10 +60,40 @@ GetCookieListCallback::GetCookieListCallback(base::Thread* run_in_thread)
 
 GetCookieListCallback::~GetCookieListCallback() = default;
 
-void GetCookieListCallback::Run(const CookieList& cookies,
-                                const CookieStatusList& excluded_cookies) {
-  cookies_ = cookies;
+void GetCookieListCallback::Run(
+    const CookieAccessResultList& cookies,
+    const CookieAccessResultList& excluded_cookies) {
+  cookies_with_access_results_ = cookies;
+  cookies_ = cookie_util::StripAccessResults(cookies);
   excluded_cookies_ = excluded_cookies;
+  CallbackEpilogue();
+}
+
+GetAllCookiesCallback::GetAllCookiesCallback() = default;
+GetAllCookiesCallback::GetAllCookiesCallback(base::Thread* run_in_thread)
+    : CookieCallback(run_in_thread) {}
+
+GetAllCookiesCallback::~GetAllCookiesCallback() = default;
+
+void GetAllCookiesCallback::Run(const CookieList& cookies) {
+  cookies_ = cookies;
+  CallbackEpilogue();
+}
+
+GetAllCookiesWithAccessSemanticsCallback::
+    GetAllCookiesWithAccessSemanticsCallback() = default;
+GetAllCookiesWithAccessSemanticsCallback::
+    GetAllCookiesWithAccessSemanticsCallback(base::Thread* run_in_thread)
+    : CookieCallback(run_in_thread) {}
+
+GetAllCookiesWithAccessSemanticsCallback::
+    ~GetAllCookiesWithAccessSemanticsCallback() = default;
+
+void GetAllCookiesWithAccessSemanticsCallback::Run(
+    const CookieList& cookies,
+    const std::vector<CookieAccessSemantics>& access_semantics_list) {
+  cookies_ = cookies;
+  access_semantics_list_ = access_semantics_list;
   CallbackEpilogue();
 }
 

@@ -4,9 +4,10 @@
 
 #include "remoting/test/fake_network_manager.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "jingle/glue/utils.h"
@@ -15,9 +16,9 @@
 namespace remoting {
 
 FakeNetworkManager::FakeNetworkManager(const rtc::IPAddress& address)
-    : started_(false),
-      weak_factory_(this) {
-  network_.reset(new rtc::Network("fake", "Fake Network", address, 32));
+    : started_(false) {
+  network_ =
+      std::make_unique<rtc::Network>("fake", "Fake Network", address, 32);
   network_->AddIP(address);
 }
 

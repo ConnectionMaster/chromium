@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_UKM_UKM_RECORDER_IMPL_H_
 #define COMPONENTS_UKM_UKM_RECORDER_IMPL_H_
 
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -13,29 +14,32 @@
 #include <vector>
 
 #include "base/callback_forward.h"
+#include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/sequence_checker.h"
 #include "base/strings/string_piece.h"
+#include "components/ukm/ukm_entry_filter.h"
 #include "services/metrics/public/cpp/ukm_decode.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/metrics/public/mojom/ukm_interface.mojom-forward.h"
 
 namespace metrics {
 class UkmBrowserTestBase;
-class UkmEGTestHelper;
 }
 
 namespace ukm {
 class Report;
 class UkmRecorderImplTest;
 class UkmSource;
+class UkmTestHelper;
 class UkmUtilsForTest;
 
 namespace debug {
 class UkmDebugDataExtractor;
 }
 
-class UkmRecorderImpl : public UkmRecorder {
+class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
   using IsWebstoreExtensionCallback =
       base::RepeatingCallback<bool(base::StringPiece id)>;
 
@@ -66,16 +70,42 @@ class UkmRecorderImpl : public UkmRecorder {
   // Deletes stored recordings.
   void Purge();
 
+  // Deletes stored recordings related to Chrome extensions.
+  void PurgeExtensionRecordings();
+
+  // Marks a source as no longer needed to be kept alive in memory. The source
+  // with given id will be removed from in-memory recordings at the next
+  // reporting cycle.
+  void MarkSourceForDeletion(ukm::SourceId source_id) override;
+
   // Sets a callback for determining if an extension URL can be recorded.
   void SetIsWebstoreExtensionCallback(
       const IsWebstoreExtensionCallback& callback);
 
- protected:
-  // Generates a random number. This is virtual so it can be overriden by tests.
-  virtual int RandInt(int begin, int end);
+  // Sets the UkmEntryFilter that will be applied to all subsequent entries
+  // reported via AddEntry(). Does not apply the filter to any entries that are
+  // already recorded.
+  //
+  // Currently only accommodates one entry filter.
+  void SetEntryFilter(std::unique_ptr<UkmEntryFilter> entry_filter);
 
-  // Calculates sampled in/out based on a given |rate|.
-  bool IsSampledIn(int sampling_rate);
+  // Sets the sampling seed for testing purposes.
+  void SetSamplingSeedForTesting(uint32_t seed) {
+    // Normally the seed is set during object construction and remains
+    // constant in order to provide consistent results when doing an "is
+    // sampled in" query for a given source and event. A "const cast" is
+    // necessary to override that.
+    *const_cast<uint32_t*>(&sampling_seed_) = seed;
+  }
+
+ protected:
+  // Calculates sampled in/out for a specific source/event based on internal
+  // configuration. This function is guaranteed to always return the same
+  // result over the life of this object for the same config & input parameters.
+  bool IsSampledIn(int64_t source_id, uint64_t event_id);
+
+  // Like above but uses a passed |sampling_rate| instead of internal config.
+  bool IsSampledIn(int64_t source_id, uint64_t event_id, int sampling_rate);
 
   // Cache the list of whitelisted entries from the field trial parameter.
   void StoreWhitelistedEntries();
@@ -91,10 +121,17 @@ class UkmRecorderImpl : public UkmRecorder {
     return recordings_.entries;
   }
 
+  // Keep only newest |max_kept_sources| sources when the number of sources
+  // in recordings_ exceeds this threshold. Returns the age of newest truncated
+  // source in seconds.
+  int PruneOldSources(size_t max_kept_sources);
+
   // UkmRecorder:
   void AddEntry(mojom::UkmEntryPtr entry) override;
   void UpdateSourceURL(SourceId source_id, const GURL& url) override;
-  void UpdateAppURL(SourceId source_id, const GURL& url) override;
+  void UpdateAppURL(SourceId source_id,
+                    const GURL& url,
+                    const AppType app_type) override;
   void RecordNavigation(
       SourceId source_id,
       const UkmSource::NavigationData& navigation_data) override;
@@ -106,11 +143,14 @@ class UkmRecorderImpl : public UkmRecorder {
 
  private:
   friend ::metrics::UkmBrowserTestBase;
-  friend ::metrics::UkmEGTestHelper;
   friend ::ukm::debug::UkmDebugDataExtractor;
   friend ::ukm::UkmRecorderImplTest;
+  friend ::ukm::UkmTestHelper;
   friend ::ukm::UkmUtilsForTest;
-  FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, PageSamplingCondition);
+  FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, IsSampledIn);
+  FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, PurgeExtensionRecordings);
+  FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, WebApkSourceUrl);
+  FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, PaymentAppScopeUrl);
 
   struct MetricAggregate {
     uint64_t total_count = 0;
@@ -119,6 +159,7 @@ class UkmRecorderImpl : public UkmRecorder {
     uint64_t dropped_due_to_limits = 0;
     uint64_t dropped_due_to_sampling = 0;
     uint64_t dropped_due_to_whitelist = 0;
+    uint64_t dropped_due_to_filter = 0;
   };
 
   struct EventAggregate {
@@ -130,46 +171,7 @@ class UkmRecorderImpl : public UkmRecorder {
     uint64_t dropped_due_to_limits = 0;
     uint64_t dropped_due_to_sampling = 0;
     uint64_t dropped_due_to_whitelist = 0;
-  };
-
-  // Container for sampling in/out choices for events within a single page
-  // load. This is important because some events are emitted multiple times
-  // with different metric values that are expected to be grouped together.
-  // For example, Blink.UseCounter is emitted for *all* used blink features
-  // on a page so its important that this metric either be on or off for
-  // the entire page. The sampling of different events is calculated
-  // independently (i.e. it can't be assumed that because one type of event
-  // is sampled-in that another will be sample-in or sampled-out) but always
-  // remembered for the entire page.
-  class PageSampling {
-   public:
-    PageSampling();
-    ~PageSampling();
-
-    // Sets the sampled-in flag for a given |event_id|.
-    void Set(uint64_t event_id, bool sampled_in);
-
-    // Returns if there is already a flag for a given |event_id|. The value
-    // of that flag is stored in |out_sampled_in|;
-    bool Find(uint64_t event_id, bool* out_sampled_in);
-
-    // Returns if this record has been modified.
-    bool modified() const { return modified_; }
-
-    // Clears the |modified_| flag.
-    void clear_modified() { modified_ = false; }
-
-   private:
-    // Per-event boolean indicating sampled-in for this page, keyed by event_id.
-    std::map<uint64_t, bool> event_sampling_;
-
-    // Boolean indicating if this has been modified, used to clear out old
-    // entries so they don't continue to use memory. "Modified" means Set()
-    // has been called since the last time clear_modified() was called
-    // (currently at every upload of UKM data).
-    bool modified_ = false;
-
-    DISALLOW_COPY_AND_ASSIGN(PageSampling);
+    uint64_t dropped_due_to_filter = 0;
   };
 
   using MetricAggregateMap = std::map<uint64_t, MetricAggregate>;
@@ -179,8 +181,16 @@ class UkmRecorderImpl : public UkmRecorder {
 
   void RecordSource(std::unique_ptr<UkmSource> source);
 
-  // Load sampling configurations from field-trial information.
+  // Applies UkmEntryFilter if there is one registered.
+  bool ApplyEntryFilter(mojom::UkmEntry* entry);
+
+  // Loads sampling configurations from field-trial information.
   void LoadExperimentSamplingInfo();
+
+  // Loads sampling configuration from the key/value "params" of a field-trial.
+  // This is separated from the above to ease testing.
+  void LoadExperimentSamplingParams(
+      const std::map<std::string, std::string>& params);
 
   // Whether recording new data is currently allowed.
   bool recording_enabled_ = false;
@@ -194,8 +204,16 @@ class UkmRecorderImpl : public UkmRecorder {
   // Indicates if sampling has been enabled.
   bool sampling_enabled_ = true;
 
+  // A pseudo-random number used as the base for sampling choices. This
+  // allows consistent "is sampled in" results for a given source and event
+  // type throughout the life of this object.
+  const uint32_t sampling_seed_;
+
   // Callback for checking extension IDs.
   IsWebstoreExtensionCallback is_webstore_extension_callback_;
+
+  // Filter applied to AddEntry().
+  std::unique_ptr<UkmEntryFilter> entry_filter_;
 
   // Map from hashes to entry and metric names.
   ukm::builders::DecodeMap decode_map_;
@@ -204,13 +222,12 @@ class UkmRecorderImpl : public UkmRecorder {
   std::set<uint64_t> whitelisted_entry_hashes_;
 
   // Sampling configurations, loaded from a field-trial.
-  int default_sampling_rate_ = 0;
+  int default_sampling_rate_ = -1;  // -1 == not yet loaded
   base::flat_map<uint64_t, int> event_sampling_rates_;
 
-  // Result of sampling calculation per event for a source/page. This is
-  // cleared at the start of each page load and ensure that that all events
-  // within a page will be included or excluded together.
-  std::map<int64_t, PageSampling> source_event_sampling_;
+  // If an event's sampling is "slaved" to another, the hashes of the slave
+  // and the master are recorded here.
+  base::flat_map<uint64_t, uint64_t> event_sampling_master_;
 
   // Contains data from various recordings which periodically get serialized
   // and cleared by StoreRecordingsInReport() and may be Purged().
@@ -224,6 +241,10 @@ class UkmRecorderImpl : public UkmRecorder {
 
     // Data captured by AddEntry().
     std::vector<mojom::UkmEntryPtr> entries;
+
+    // Source ids that have been marked as no longer needed, to denote the
+    // subset of |sources| that can be purged after next report.
+    std::unordered_set<ukm::SourceId> obsolete_source_ids;
 
     // URLs of sources that matched a whitelist url, but were not included in
     // the report generated by the last log rotation because we haven't seen any
@@ -251,6 +272,19 @@ class UkmRecorderImpl : public UkmRecorder {
     void Reset();
   };
   Recordings recordings_;
+
+  // The maximum number of Sources we'll keep in memory before discarding any
+  // new ones being added.
+  size_t max_sources_ = 500;
+
+  // The maximum number of Sources we can keep in memory at the end of the
+  // current reporting cycle that will stay accessible in the next reporting
+  // interval.
+  size_t max_kept_sources_ = 100;
+
+  // The maximum number of Entries we'll keep in memory before discarding any
+  // new ones being added.
+  size_t max_entries_ = 5000;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

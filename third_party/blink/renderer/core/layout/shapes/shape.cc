@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/layout/shapes/raster_shape.h"
 #include "third_party/blink/renderer/core/layout/shapes/rectangle_shape.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
+#include "third_party/blink/renderer/core/typed_arrays/array_buffer/array_buffer_contents.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
 #include "third_party/blink/renderer/platform/geometry/float_rounded_rect.h"
@@ -49,8 +50,8 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_flags.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+#include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
-#include "third_party/blink/renderer/platform/wtf/typed_arrays/array_buffer_contents.h"
 #include "third_party/skia/include/core/SkSurface.h"
 
 namespace blink {
@@ -233,18 +234,36 @@ std::unique_ptr<Shape> Shape::CreateEmptyRasterShape(WritingMode writing_mode,
 
 static bool ExtractImageData(Image* image,
                              const IntSize& image_size,
-                             WTF::ArrayBufferContents& contents) {
+                             ArrayBufferContents& contents,
+                             RespectImageOrientationEnum respect_orientation) {
   if (!image)
     return false;
 
-  CanvasColorParams color_params;
-  SkImageInfo info = SkImageInfo::Make(
-      image_size.Width(), image_size.Height(), color_params.GetSkColorType(),
-      color_params.GetSkAlphaType(),
-      color_params.GetSkColorSpaceForSkSurfaces());
-  sk_sp<SkSurface> surface =
-      SkSurface::MakeRaster(info, color_params.GetSkSurfaceProps());
+  // Compute the SkImageInfo for the output.
+  SkImageInfo dst_info = SkImageInfo::Make(
+      image_size.Width(), image_size.Height(), kN32_SkColorType,
+      kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
 
+  // Populate |contents| with newly allocated and zero-initialized data, big
+  // enough for |dst_info|.
+  size_t dst_size_bytes = dst_info.computeMinByteSize();
+  {
+    if (SkImageInfo::ByteSizeOverflowed(dst_size_bytes) ||
+        dst_size_bytes > v8::TypedArray::kMaxLength) {
+      return false;
+    }
+    ArrayBufferContents result(dst_size_bytes, 1,
+                               ArrayBufferContents::kNotShared,
+                               ArrayBufferContents::kZeroInitialize);
+    if (result.DataLength() != dst_size_bytes)
+      return false;
+    result.Transfer(contents);
+  }
+
+  // Set |surface| to draw directly to |contents|.
+  const SkSurfaceProps disable_lcd_props(0, kUnknown_SkPixelGeometry);
+  sk_sp<SkSurface> surface = SkSurface::MakeRasterDirect(
+      dst_info, contents.Data(), dst_info.minRowBytes(), &disable_lcd_props);
   if (!surface)
     return false;
 
@@ -257,18 +276,14 @@ static bool ExtractImageData(Image* image,
   IntRect image_dest_rect(IntPoint(), image_size);
   SkiaPaintCanvas canvas(surface->getCanvas());
   canvas.clear(SK_ColorTRANSPARENT);
-
   image->Draw(&canvas, flags, FloatRect(image_dest_rect), image_source_rect,
-              kDoNotRespectImageOrientation,
+              SkSamplingOptions(), respect_orientation,
               Image::kDoNotClampImageToSourceRect, Image::kSyncDecode);
-
-  return StaticBitmapImage::ConvertToArrayBufferContents(
-      StaticBitmapImage::Create(surface->makeImageSnapshot()), contents,
-      image_dest_rect, color_params);
+  return true;
 }
 
 static std::unique_ptr<RasterShapeIntervals> ExtractIntervalsFromImageData(
-    WTF::ArrayBufferContents& contents,
+    ArrayBufferContents& contents,
     float threshold,
     const IntRect& image_rect,
     const IntRect& margin_rect) {
@@ -310,22 +325,21 @@ static std::unique_ptr<RasterShapeIntervals> ExtractIntervalsFromImageData(
 }
 
 static bool IsValidRasterShapeSize(const IntSize& size) {
-  static size_t max_image_size_bytes = 0;
-  if (!max_image_size_bytes) {
-    size_t size32_max_bytes =
-        0xFFFFFFFF / 4;  // Some platforms don't limit MaxDecodedImageBytes.
-    max_image_size_bytes =
-        std::min(size32_max_bytes, Platform::Current()->MaxDecodedImageBytes());
-  }
+  // Some platforms don't limit MaxDecodedImageBytes.
+  constexpr size_t size32_max_bytes = 0xFFFFFFFF / 4;
+  static const size_t max_image_size_bytes =
+      std::min(size32_max_bytes, Platform::Current()->MaxDecodedImageBytes());
   return size.Area() * 4 < max_image_size_bytes;
 }
 
-std::unique_ptr<Shape> Shape::CreateRasterShape(Image* image,
-                                                float threshold,
-                                                const LayoutRect& image_r,
-                                                const LayoutRect& margin_r,
-                                                WritingMode writing_mode,
-                                                float margin) {
+std::unique_ptr<Shape> Shape::CreateRasterShape(
+    Image* image,
+    float threshold,
+    const LayoutRect& image_r,
+    const LayoutRect& margin_r,
+    WritingMode writing_mode,
+    float margin,
+    RespectImageOrientationEnum respect_orientation) {
   IntRect image_rect = PixelSnappedIntRect(image_r);
   IntRect margin_rect = PixelSnappedIntRect(margin_r);
 
@@ -334,9 +348,11 @@ std::unique_ptr<Shape> Shape::CreateRasterShape(Image* image,
     return CreateEmptyRasterShape(writing_mode, margin);
   }
 
-  WTF::ArrayBufferContents contents;
-  if (!ExtractImageData(image, image_rect.Size(), contents))
+  ArrayBufferContents contents;
+  if (!ExtractImageData(image, image_rect.Size(), contents,
+                        respect_orientation)) {
     return CreateEmptyRasterShape(writing_mode, margin);
+  }
 
   std::unique_ptr<RasterShapeIntervals> intervals =
       ExtractIntervalsFromImageData(contents, threshold, image_rect,

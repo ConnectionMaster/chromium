@@ -4,6 +4,8 @@
 
 #include "ui/views/corewm/test/tooltip_aura_test_api.h"
 
+#include "ui/accessibility/ax_node_data.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/render_text.h"
 #include "ui/views/corewm/tooltip_aura.h"
 
@@ -13,6 +15,16 @@ namespace test {
 
 gfx::RenderText* TooltipAuraTestApi::GetRenderText() {
   return tooltip_aura_->GetRenderTextForTest();
+}
+
+void TooltipAuraTestApi::GetAccessibleNodeData(ui::AXNodeData* node_data) {
+  return tooltip_aura_->GetAccessibleNodeDataForTest(node_data);
+}
+
+gfx::Rect TooltipAuraTestApi::GetTooltipBounds(
+    const gfx::Size& tooltip_size,
+    const TooltipPosition& position) {
+  return tooltip_aura_->GetTooltipBounds(tooltip_size, position);
 }
 
 }  // namespace test

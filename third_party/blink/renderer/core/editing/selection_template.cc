@@ -7,7 +7,6 @@
 #include <ostream>  // NOLINT
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
@@ -49,7 +48,7 @@ bool SelectionTemplate<Strategy>::operator!=(
 }
 
 template <typename Strategy>
-void SelectionTemplate<Strategy>::Trace(Visitor* visitor) {
+void SelectionTemplate<Strategy>::Trace(Visitor* visitor) const {
   visitor->Trace(base_);
   visitor->Trace(extent_);
 }
@@ -120,7 +119,7 @@ bool SelectionTemplate<Strategy>::AssertValid() const {
 }
 #endif
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 template <typename Strategy>
 void SelectionTemplate<Strategy>::ShowTreeForThis() const {
   if (base_.IsNull()) {
@@ -133,11 +132,8 @@ void SelectionTemplate<Strategy>::ShowTreeForThis() const {
                    ->ToMarkedTreeString(base_.AnchorNode(), "B",
                                         extent_.AnchorNode(), "E")
                    .Utf8()
-                   .data()
-            << "base: " << base_.ToAnchorTypeAndOffsetString().Utf8().data()
-            << "\n"
-            << "extent: "
-            << extent_.ToAnchorTypeAndOffsetString().Utf8().data();
+            << "base: " << base_.ToAnchorTypeAndOffsetString().Utf8() << "\n"
+            << "extent: " << extent_.ToAnchorTypeAndOffsetString().Utf8();
 }
 #endif
 
@@ -186,15 +182,6 @@ bool SelectionTemplate<Strategy>::IsBaseFirst() const {
 template <typename Strategy>
 void SelectionTemplate<Strategy>::ResetDirectionCache() const {
   direction_ = base_ == extent_ ? Direction::kForward : Direction::kNotComputed;
-}
-
-template <typename Strategy>
-SelectionType SelectionTemplate<Strategy>::Type() const {
-  if (base_.IsNull())
-    return kNoSelection;
-  if (base_ == extent_)
-    return kCaretSelection;
-  return kRangeSelection;
 }
 
 template <typename Strategy>
@@ -285,6 +272,8 @@ SelectionTemplate<Strategy>::Builder::Extend(
   DCHECK_EQ(selection_.GetDocument(), position.GetDocument());
   DCHECK(selection_.Base().IsConnected()) << selection_.Base();
   DCHECK(selection_.AssertValid());
+  if (selection_.extent_.IsEquivalent(position))
+    return *this;
   selection_.extent_ = position;
   selection_.direction_ = Direction::kNotComputed;
   return *this;
@@ -418,16 +407,22 @@ SelectionInDOMTree ConvertToSelectionInDOMTree(
 
 SelectionInFlatTree ConvertToSelectionInFlatTree(
     const SelectionInDOMTree& selection) {
-  return SelectionInFlatTree::Builder()
-      .SetAffinity(selection.Affinity())
-      .SetBaseAndExtent(ToPositionInFlatTree(selection.Base()),
-                        ToPositionInFlatTree(selection.Extent()))
-      .Build();
+  SelectionInFlatTree::Builder builder;
+  const PositionInFlatTree& base = ToPositionInFlatTree(selection.Base());
+  const PositionInFlatTree& extent = ToPositionInFlatTree(selection.Extent());
+  if (base.IsConnected() && extent.IsConnected())
+    builder.SetBaseAndExtent(base, extent);
+  else if (base.IsConnected())
+    builder.Collapse(base);
+  else if (extent.IsConnected())
+    builder.Collapse(extent);
+  builder.SetAffinity(selection.Affinity());
+  return builder.Build();
 }
 
 template <typename Strategy>
 void SelectionTemplate<Strategy>::InvalidSelectionResetter::Trace(
-    blink::Visitor* visitor) {
+    blink::Visitor* visitor) const {
   visitor->Trace(document_);
 }
 

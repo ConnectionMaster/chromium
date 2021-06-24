@@ -32,13 +32,15 @@ static_library("service") {
     "variations_field_trial_creator.h",
     "variations_service.cc",
     "variations_service.h",
+    "variations_service_client.cc",
     "variations_service_client.h",
   ]
 
   deps = [
     ":buildflags",
     "//base",
-    "//components/data_use_measurement/core",
+    "//build:branding_buildflags",
+    "//build:chromeos_buildflags",
     "//components/encrypted_messages",
     "//components/language/core/browser",
     "//components/metrics",
@@ -73,6 +75,7 @@ source_set("unit_tests") {
     "//components/metrics:test_support",
     "//components/prefs:test_support",
     "//components/variations",
+    "//components/variations:test_support",
     "//components/variations/proto",
     "//components/web_resource:test_support",
     "//net",

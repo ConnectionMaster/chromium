@@ -6,9 +6,9 @@
 
 #include <memory>
 #include <set>
+#include <string>
 #include <utility>
 
-#include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -47,7 +47,7 @@ bool AllowSecondaryAppEnabledOnLaunch(const Extension* extension) {
 
 SecondaryKioskAppInfo::SecondaryKioskAppInfo(
     const extensions::ExtensionId& id,
-    const base::Optional<bool>& enabled_on_launch)
+    const absl::optional<bool>& enabled_on_launch)
     : id(id), enabled_on_launch(enabled_on_launch) {}
 
 SecondaryKioskAppInfo::SecondaryKioskAppInfo(
@@ -104,7 +104,7 @@ KioskModeHandler::KioskModeHandler() {
 KioskModeHandler::~KioskModeHandler() {
 }
 
-bool KioskModeHandler::Parse(Extension* extension, base::string16* error) {
+bool KioskModeHandler::Parse(Extension* extension, std::u16string* error) {
   const Manifest* manifest = extension->manifest();
   DCHECK(manifest->HasKey(keys::kKioskEnabled) ||
          manifest->HasKey(keys::kKioskOnly));
@@ -147,11 +147,10 @@ bool KioskModeHandler::Parse(Extension* extension, base::string16* error) {
       return false;
     }
 
-    const base::Value::ListStorage& list = secondary_apps_value->GetList();
     const bool allow_enabled_on_launch =
         AllowSecondaryAppEnabledOnLaunch(extension);
 
-    for (const auto& value : list) {
+    for (const auto& value : secondary_apps_value->GetList()) {
       std::unique_ptr<KioskSecondaryAppsType> app =
           KioskSecondaryAppsType::FromValue(value, error);
       if (!app) {
@@ -173,7 +172,7 @@ bool KioskModeHandler::Parse(Extension* extension, base::string16* error) {
         return false;
       }
 
-      base::Optional<bool> enabled_on_launch;
+      absl::optional<bool> enabled_on_launch;
       if (app->enabled_on_launch)
         enabled_on_launch = *app->enabled_on_launch;
 

@@ -11,6 +11,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/devtools_socket_factory.h"
+#include "content/public/common/content_client.h"
 
 namespace content {
 
@@ -28,9 +29,11 @@ void DevToolsAgentHost::StartRemoteDebuggingServer(
 }
 
 // static
-void DevToolsAgentHost::StartRemoteDebuggingPipeHandler() {
+void DevToolsAgentHost::StartRemoteDebuggingPipeHandler(
+    base::OnceClosure on_disconnect) {
   DevToolsManager* manager = DevToolsManager::GetInstance();
-  manager->SetPipeHandler(std::make_unique<DevToolsPipeHandler>());
+  manager->SetPipeHandler(
+      std::make_unique<DevToolsPipeHandler>(std::move(on_disconnect)));
 }
 
 // static
@@ -51,11 +54,10 @@ DevToolsManager* DevToolsManager::GetInstance() {
 }
 
 DevToolsManager::DevToolsManager()
-    : delegate_(GetContentClient()->browser()->GetDevToolsManagerDelegate()) {
-}
+    : delegate_(
+          GetContentClient()->browser()->CreateDevToolsManagerDelegate()) {}
 
-DevToolsManager::~DevToolsManager() {
-}
+DevToolsManager::~DevToolsManager() = default;
 
 void DevToolsManager::SetHttpHandler(
     std::unique_ptr<DevToolsHttpHandler> http_handler) {

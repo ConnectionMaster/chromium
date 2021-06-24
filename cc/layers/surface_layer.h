@@ -5,6 +5,8 @@
 #ifndef CC_LAYERS_SURFACE_LAYER_H_
 #define CC_LAYERS_SURFACE_LAYER_H_
 
+#include <memory>
+
 #include "cc/cc_export.h"
 #include "cc/layers/deadline_policy.h"
 #include "cc/layers/layer.h"
@@ -13,11 +15,22 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/size.h"
 
+namespace base {
+class WaitableEvent;
+}
+
 namespace cc {
 
 // If given true, we should submit frames, as we are unoccluded on screen.
 // If given false, we should not submit compositor frames.
-using UpdateSubmissionStateCB = base::RepeatingCallback<void(bool is_visible)>;
+// The second parameter is only used in tests to ensure that the
+// UpdateSubmissionStateCB is called synchronously relative to the calling
+// thread. That is, the calling thread will block on the given waitable event
+// when calling the callback. It is the responsibility of the callback to signal
+// the event once the state has been updated. If blocking is not required, then
+// the second parameter will be nullptr.
+using UpdateSubmissionStateCB =
+    base::RepeatingCallback<void(bool is_visible, base::WaitableEvent*)>;
 
 // A layer that renders a surface referencing the output of another compositor
 // instance or client.
@@ -44,7 +57,9 @@ class CC_EXPORT SurfaceLayer : public Layer {
 
   void SetHasPointerEventsNone(bool has_pointer_events_none);
 
-  void SetMayContainVideo(bool);
+  void SetIsReflection(bool is_reflection);
+
+  void SetMayContainVideo(bool may_contain_video);
 
   // Layer overrides.
   std::unique_ptr<LayerImpl> CreateLayerImpl(LayerTreeImpl* tree_impl) override;
@@ -53,11 +68,11 @@ class CC_EXPORT SurfaceLayer : public Layer {
 
   const viz::SurfaceId& surface_id() const { return surface_range_.end(); }
 
-  const base::Optional<viz::SurfaceId>& oldest_acceptable_fallback() const {
+  const absl::optional<viz::SurfaceId>& oldest_acceptable_fallback() const {
     return surface_range_.start();
   }
 
-  base::Optional<uint32_t> deadline_in_frames() const {
+  absl::optional<uint32_t> deadline_in_frames() const {
     return deadline_in_frames_;
   }
 
@@ -73,7 +88,7 @@ class CC_EXPORT SurfaceLayer : public Layer {
 
   bool may_contain_video_ = false;
   viz::SurfaceRange surface_range_;
-  base::Optional<uint32_t> deadline_in_frames_ = 0u;
+  absl::optional<uint32_t> deadline_in_frames_ = 0u;
 
   bool stretch_content_to_fill_bounds_ = false;
 
@@ -90,6 +105,9 @@ class CC_EXPORT SurfaceLayer : public Layer {
   // TODO(sunxd): consider renaming it to oopif_has_pointer_events_none_ for
   // disambiguation.
   bool has_pointer_events_none_ = false;
+
+  // This surface layer is reflecting the root surface of another display.
+  bool is_reflection_ = false;
 };
 
 }  // namespace cc

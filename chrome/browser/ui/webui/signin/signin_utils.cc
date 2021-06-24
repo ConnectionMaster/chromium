@@ -8,6 +8,7 @@
 
 #include "base/bind.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "content/public/browser/web_contents.h"
@@ -65,9 +66,6 @@ Browser* GetDesktopBrowser(content::WebUI* web_ui) {
 void SetInitializedModalHeight(Browser* browser,
                                content::WebUI* web_ui,
                                const base::ListValue* args) {
-#if defined(OS_CHROMEOS)
-  NOTREACHED();
-#else
   if (!browser)
     return;
 
@@ -76,6 +74,6 @@ void SetInitializedModalHeight(Browser* browser,
   DCHECK(success);
   browser->signin_view_controller()->SetModalSigninHeight(
       static_cast<int>(height));
-#endif
 }
+
 }  // namespace signin

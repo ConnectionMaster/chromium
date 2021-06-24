@@ -17,14 +17,14 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/browsing_data/browsing_data_quota_helper.h"
-#include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
+#include "third_party/blink/public/mojom/quota/quota_types.mojom-forward.h"
+
+namespace blink {
+class StorageKey;
+}
 
 namespace storage {
 class QuotaManager;
-}
-
-namespace url {
-class Origin;
 }
 
 // Implementation of BrowsingDataQuotaHelper.  Since a client of
@@ -43,14 +43,14 @@ class BrowsingDataQuotaHelperImpl : public BrowsingDataQuotaHelper {
   explicit BrowsingDataQuotaHelperImpl(storage::QuotaManager* quota_manager);
   ~BrowsingDataQuotaHelperImpl() override;
 
-  // Calls QuotaManager::GetOriginModifiedSince for each storage type.
+  // Calls QuotaManager::GetStorageKeysModifiedBetween for each storage type.
   void FetchQuotaInfoOnIOThread(FetchResultCallback callback);
 
-  // Callback function for QuotaManager::GetOriginModifiedSince.
-  void GotOrigins(PendingHosts* pending_hosts,
-                  base::OnceClosure completion,
-                  const std::set<url::Origin>& origins,
-                  blink::mojom::StorageType type);
+  // Callback function for QuotaManager::GetStorageKeysModifiedBetween.
+  void GotStorageKeys(PendingHosts* pending_hosts,
+                      base::OnceClosure completion,
+                      const std::set<blink::StorageKey>& storage_keys,
+                      blink::mojom::StorageType type);
 
   // Calls QuotaManager::GetHostUsage for each (origin, type) pair.
   void OnGetOriginsComplete(FetchResultCallback callback,
@@ -61,7 +61,8 @@ class BrowsingDataQuotaHelperImpl : public BrowsingDataQuotaHelper {
                     base::OnceClosure completion,
                     const std::string& host,
                     blink::mojom::StorageType type,
-                    int64_t usage);
+                    int64_t usage,
+                    blink::mojom::UsageBreakdownPtr usage_breakdown);
 
   // Called when all QuotaManager::GetHostUsage requests are complete.
   void OnGetHostsUsageComplete(FetchResultCallback callback,
@@ -72,7 +73,7 @@ class BrowsingDataQuotaHelperImpl : public BrowsingDataQuotaHelper {
 
   scoped_refptr<storage::QuotaManager> quota_manager_;
 
-  base::WeakPtrFactory<BrowsingDataQuotaHelperImpl> weak_factory_;
+  base::WeakPtrFactory<BrowsingDataQuotaHelperImpl> weak_factory_{this};
 
   friend class BrowsingDataQuotaHelper;
   friend class BrowsingDataQuotaHelperTest;

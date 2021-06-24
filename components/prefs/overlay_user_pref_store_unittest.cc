@@ -3,9 +3,10 @@
 // found in the LICENSE file.
 
 #include "components/prefs/overlay_user_pref_store.h"
+
 #include <memory>
 
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "components/prefs/persistent_pref_store_unittest.h"
 #include "components/prefs/pref_store_observer_mock.h"
@@ -40,7 +41,7 @@ class OverlayUserPrefStoreTest : public testing::Test {
 
   ~OverlayUserPrefStoreTest() override {}
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   scoped_refptr<TestingPrefStore> underlay_;
   scoped_refptr<OverlayUserPrefStore> overlay_;
 };
@@ -144,7 +145,7 @@ TEST_F(OverlayUserPrefStoreTest, ModifyDictionaries) {
   EXPECT_TRUE(underlay_->GetMutableValue(regular_key, &original_in_underlay));
   ASSERT_TRUE(original_in_underlay);
   ASSERT_TRUE(original_in_underlay->is_dict());
-  EXPECT_TRUE(static_cast<DictionaryValue*>(original_in_underlay)->empty());
+  EXPECT_TRUE(original_in_underlay->DictEmpty());
 
   Value* modified = nullptr;
   EXPECT_TRUE(overlay_->GetMutableValue(regular_key, &modified));
@@ -275,7 +276,7 @@ TEST_F(OverlayUserPrefStoreTest, GetValues) {
 }
 
 TEST_F(OverlayUserPrefStoreTest, CommitPendingWriteWithCallback) {
-  TestCommitPendingWriteWithCallback(overlay_.get(), &scoped_task_environment_);
+  TestCommitPendingWriteWithCallback(overlay_.get(), &task_environment_);
 }
 
 }  // namespace base

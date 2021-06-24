@@ -25,18 +25,17 @@
 
 namespace blink {
 
-inline SVGSymbolElement::SVGSymbolElement(Document& document)
+SVGSymbolElement::SVGSymbolElement(Document& document)
     : SVGElement(svg_names::kSymbolTag, document), SVGFitToViewBox(this) {}
 
-void SVGSymbolElement::Trace(blink::Visitor* visitor) {
+void SVGSymbolElement::Trace(Visitor* visitor) const {
   SVGElement::Trace(visitor);
   SVGFitToViewBox::Trace(visitor);
 }
 
-DEFINE_NODE_FACTORY(SVGSymbolElement)
-
-void SVGSymbolElement::SvgAttributeChanged(const QualifiedName& attr_name) {
-  if (SVGFitToViewBox::IsKnownAttribute(attr_name))
+void SVGSymbolElement::SvgAttributeChanged(
+    const SvgAttributeChangedParams& params) {
+  if (SVGFitToViewBox::IsKnownAttribute(params.name))
     InvalidateInstances();
 }
 

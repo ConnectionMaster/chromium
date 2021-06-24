@@ -31,7 +31,7 @@ class COMPONENT_EXPORT(CHROMEOS_SETTINGS) SystemSettingsProvider
 
   // CrosSettingsProvider implementation.
   const base::Value* Get(const std::string& path) const override;
-  TrustedStatus PrepareTrustedValues(const base::Closure& callback) override;
+  TrustedStatus PrepareTrustedValues(base::OnceClosure* callback) override;
   bool HandlesSetting(const std::string& path) const override;
 
   // TimezoneSettings::Observer implementation.
@@ -49,5 +49,10 @@ class COMPONENT_EXPORT(CHROMEOS_SETTINGS) SystemSettingsProvider
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when moved to ash.
+namespace ash {
+using ::chromeos::SystemSettingsProvider;
+}  // namespace ash
 
 #endif  // CHROMEOS_SETTINGS_SYSTEM_SETTINGS_PROVIDER_H_

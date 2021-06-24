@@ -19,6 +19,7 @@ namespace blink {
 
 class ImageBitmap;
 class ImageLayerBridge;
+class V8UnionHTMLCanvasElementOrOffscreenCanvas;
 
 class MODULES_EXPORT ImageBitmapRenderingContextBase
     : public CanvasRenderingContext {
@@ -27,20 +28,32 @@ class MODULES_EXPORT ImageBitmapRenderingContextBase
                                   const CanvasContextCreationAttributesCore&);
   ~ImageBitmapRenderingContextBase() override;
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
-  HTMLCanvasElement* canvas() {
-    DCHECK(!Host() || !Host()->IsOffscreenCanvas());
+  // TODO(juanmihd): Remove this method crbug.com/941579
+  HTMLCanvasElement* canvas() const {
+    if (Host()->IsOffscreenCanvas())
+      return nullptr;
     return static_cast<HTMLCanvasElement*>(Host());
   }
 
-  void SetIsHidden(bool) override {}
+  bool CanCreateCanvas2dResourceProvider() const;
+  V8UnionHTMLCanvasElementOrOffscreenCanvas* getHTMLOrOffscreenCanvas() const;
+
+  void SetIsInHiddenPage(bool) override {}
+  void SetIsBeingDisplayed(bool) override {}
   bool isContextLost() const override { return false; }
+  // If SetImage receives a null imagebitmap, it will Reset the internal bitmap
+  // to a black and transparent bitmap.
   void SetImage(ImageBitmap*);
-  scoped_refptr<StaticBitmapImage> GetImage(AccelerationHint) const final;
+  scoped_refptr<StaticBitmapImage> GetImage() final;
+
   void SetUV(const FloatPoint& left_top, const FloatPoint& right_bottom);
   bool IsComposited() const final { return true; }
   bool IsAccelerated() const final;
+  bool PushFrame() override;
+
+  bool IsOriginTopLeft() const override;
 
   cc::Layer* CcLayer() const final;
   // TODO(junov): handle lost contexts when content is GPU-backed
@@ -52,8 +65,16 @@ class MODULES_EXPORT ImageBitmapRenderingContextBase
 
  protected:
   Member<ImageLayerBridge> image_layer_bridge_;
+
+  // This function resets the internal image resource to a image of the same
+  // size than the original, with the same properties, but completely black.
+  // This is used to follow the standard regarding transferToBitmap
+  scoped_refptr<StaticBitmapImage> GetImageAndResetInternal();
+
+ private:
+  void ResetInternalBitmapToBlackTransparent(int width, int height);
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_IMAGEBITMAP_IMAGE_BITMAP_RENDERING_CONTEXT_BASE_H_

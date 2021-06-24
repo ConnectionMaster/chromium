@@ -7,79 +7,86 @@
 
 #include <stdint.h>
 
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "ash/public/cpp/app_list/app_list_client.h"
 #include "ash/public/cpp/shelf_types.h"
-#include "ash/public/interfaces/app_list.mojom.h"
 #include "base/callback_forward.h"
-#include "base/compiler_specific.h"
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
-#include "chrome/browser/ui/app_list/app_launch_event_logger.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/ui/app_list/app_list_controller_delegate.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/search_engines/template_url_service_observer.h"
+#include "components/session_manager/core/session_manager_observer.h"
 #include "components/user_manager/user_manager.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/display/types/display_constants.h"
 
 namespace app_list {
 class SearchController;
-class SearchResourceManager;
 }  // namespace app_list
 
 class AppListClientWithProfileTest;
+class AppListNotifierImpl;
 class AppListModelUpdater;
 class AppSyncUIStateWatcher;
 class Profile;
 
 class AppListClientImpl
-    : public ash::mojom::AppListClient,
+    : public ash::AppListClient,
       public AppListControllerDelegate,
       public user_manager::UserManager::UserSessionStateObserver,
+      public session_manager::SessionManagerObserver,
       public TemplateURLServiceObserver {
  public:
-  class MojoRecorderForTest {
-   public:
-    MojoRecorderForTest();
-    ~MojoRecorderForTest();
+  // Indicates the launcher usage state during the session started by a new user
+  // (i.e. the session completing the OOBE flow) but before any account
+  // switching. These are used in histograms, do not remove/renumber entries. If
+  // you're adding to this enum with the intention that it will be logged,
+  // update the AppListUsageStateByNewUsers enum listing in
+  // tools/metrics/histograms/enums.xml.
+  enum class AppListUsageStateByNewUsers {
+    // Launcher is used during the session started by a new user.
+    kUsed = 0,
 
-    void Record(int profile_id) { recorder_[profile_id]++; }
+    // Launcher is not used before destruction. The destruction can be triggered
+    // in the following scenarios: logging out all account, shutting down the
+    // device and system crashes.
+    kNotUsedBeforeDestruction = 1,
 
-    int Query(int profile_id) const;
+    // Launcher is not used before switching accounts.
+    kNotUsedBeforeSwitchingAccounts = 2,
 
-   private:
-    // For each pair in the map, the key is a profile id while the value is the
-    // mojo calling times associated with the particular profile.
-    std::map<int, int> recorder_;
-
-    DISALLOW_COPY_AND_ASSIGN(MojoRecorderForTest);
+    kMaxValue = kNotUsedBeforeSwitchingAccounts,
   };
 
   AppListClientImpl();
+  AppListClientImpl(const AppListClientImpl&) = delete;
+  AppListClientImpl& operator=(const AppListClientImpl&) = delete;
   ~AppListClientImpl() override;
 
   static AppListClientImpl* GetInstance();
 
-  // ash::mojom::AppListClient:
-  void StartSearch(const base::string16& trimmed_query) override;
-  void OpenSearchResult(const std::string& result_id,
+  // ash::AppListClient:
+  void OnAppListControllerDestroyed() override;
+  void StartSearch(const std::u16string& trimmed_query) override;
+  void OpenSearchResult(int profile_id,
+                        const std::string& result_id,
+                        ash::AppListSearchResultType result_type,
                         int event_flags,
-                        ash::mojom::AppListLaunchedFrom launched_from,
-                        ash::mojom::AppListLaunchType launch_type,
-                        int suggestion_index) override;
+                        ash::AppListLaunchedFrom launched_from,
+                        ash::AppListLaunchType launch_type,
+                        int suggestion_index,
+                        bool launch_as_default) override;
   void InvokeSearchResultAction(const std::string& result_id,
-                                int action_index,
-                                int event_flags) override;
+                                int action_index) override;
   void GetSearchResultContextMenuModel(
       const std::string& result_id,
       GetContextMenuModelCallback callback) override;
-  void SearchResultContextMenuItemSelected(const std::string& result_id,
-                                           int command_id,
-                                           int event_flags) override;
   void ViewClosing() override;
   void ViewShown(int64_t display_id) override;
   void ActivateItem(int profile_id,
@@ -88,62 +95,47 @@ class AppListClientImpl
   void GetContextMenuModel(int profile_id,
                            const std::string& id,
                            GetContextMenuModelCallback callback) override;
-  void ContextMenuItemSelected(int profile_id,
-                               const std::string& id,
-                               int command_id,
-                               int event_flags) override;
-  void OnAppListTargetVisibilityChanged(bool visible) override;
+  void OnAppListVisibilityWillChange(bool visible) override;
   void OnAppListVisibilityChanged(bool visible) override;
-  void OnFolderCreated(int profile_id,
-                       ash::mojom::AppListItemMetadataPtr item) override;
-  void OnFolderDeleted(int profile_id,
-                       ash::mojom::AppListItemMetadataPtr item) override;
+  void OnItemAdded(int profile_id,
+                   std::unique_ptr<ash::AppListItemMetadata> item) override;
   void OnItemUpdated(int profile_id,
-                     ash::mojom::AppListItemMetadataPtr item) override;
-  void OnPageBreakItemAdded(int profile_id,
-                            const std::string& id,
-                            const syncer::StringOrdinal& position) override;
+                     std::unique_ptr<ash::AppListItemMetadata> item) override;
+  void OnFolderDeleted(int profile_id,
+                       std::unique_ptr<ash::AppListItemMetadata> item) override;
   void OnPageBreakItemDeleted(int profile_id, const std::string& id) override;
-  void GetNavigableContentsFactory(
-      mojo::PendingReceiver<content::mojom::NavigableContentsFactory> receiver)
-      override;
   void OnSearchResultVisibilityChanged(const std::string& id,
                                        bool visible) override;
+  void OnQuickSettingsChanged(
+      const std::string& setting_name,
+      const std::map<std::string, int>& values) override;
+  void NotifySearchResultsForLogging(
+      const std::u16string& trimmed_query,
+      const ash::SearchResultIdWithPositionIndices& results,
+      int position_index) override;
+  ash::AppListNotifier* GetNotifier() override;
 
   // user_manager::UserManager::UserSessionStateObserver:
-  void ActiveUserChanged(const user_manager::User* active_user) override;
+  void ActiveUserChanged(user_manager::User* active_user) override;
 
   // AppListControllerDelegate overrides:
   void DismissView() override;
+  aura::Window* GetAppListWindow() override;
   int64_t GetAppListDisplayId() override;
-  void GetAppInfoDialogBounds(GetAppInfoDialogBoundsCallback callback) override;
   bool IsAppPinned(const std::string& app_id) override;
   bool IsAppOpen(const std::string& app_id) const override;
   void PinApp(const std::string& app_id) override;
   void UnpinApp(const std::string& app_id) override;
   Pinnable GetPinnable(const std::string& app_id) override;
-  void CreateNewWindow(Profile* profile, bool incognito) override;
+  void CreateNewWindow(bool incognito) override;
   void OpenURL(Profile* profile,
                const GURL& url,
                ui::PageTransition transition,
                WindowOpenDisposition disposition) override;
-  void ActivateApp(Profile* profile,
-                   const extensions::Extension* extension,
-                   AppListSource source,
-                   int event_flags) override;
-  void LaunchApp(Profile* profile,
-                 const extensions::Extension* extension,
-                 AppListSource source,
-                 int event_flags,
-                 int64_t display_id) override;
 
   // Associates this client with the current active user, called when this
   // client is accessed or active user is changed.
   void UpdateProfile();
-
-  // Shows the app list if it isn't already showing and switches to |state|,
-  // unless it is |INVALID_STATE| (in which case, opens on the default state).
-  void ShowAndSwitchToState(ash::AppListState state);
 
   void ShowAppList();
 
@@ -153,7 +145,7 @@ class AppListClientImpl
   bool app_list_visible() const { return app_list_visible_; }
 
   // Returns a pointer to control the app list views in ash.
-  ash::mojom::AppListController* GetAppListController() const;
+  ash::AppListController* GetAppListController() const;
 
   AppListControllerDelegate* GetControllerDelegate();
   Profile* GetCurrentAppListProfile() const;
@@ -162,15 +154,22 @@ class AppListClientImpl
 
   AppListModelUpdater* GetModelUpdaterForTest();
 
-  void SetUpMojoRecorderForTest();
-
-  int QueryMojoRecorderForTest(int profile_id);
-
-  // Flushes all pending mojo call to Ash for testing.
-  void FlushMojoForTesting();
+  // Initializes as if a new user logged in for testing.
+  void InitializeAsIfNewUserLoginForTest();
 
  private:
   FRIEND_TEST_ALL_PREFIXES(AppListClientWithProfileTest, CheckDataRace);
+
+  struct StateForNewUser {
+    // Indicates whether showing the app list has been recorded.
+    bool showing_recorded = false;
+
+    // Indicates whether any launcher action has been recorded.
+    bool action_recorded = false;
+  };
+
+  // session_manager::SessionManagerObserver:
+  void OnSessionStateChanged() override;
 
   // Overridden from TemplateURLServiceObserver:
   void OnTemplateURLServiceChanged() override;
@@ -181,7 +180,18 @@ class AppListClientImpl
   // Updates the speech webview and start page for the current |profile_|.
   void SetUpSearchUI();
 
-  ash::ShelfLaunchSource AppListSourceToLaunchSource(AppListSource source);
+  // Maybe records the metrics related to showing the app list.
+  void MaybeRecordViewShown();
+
+  // Records the browser window status + the opened search result type when
+  // the result is opened from the search box.
+  void RecordOpenedResultFromSearchBox(
+      ash::AppListSearchResultType result_type);
+
+  // Maybe records the launcher action. Launcher actions include activating an
+  // app and opening a search result from either a suggestion chip or the search
+  // box. `launched_from` indicates where the launcher action comes from.
+  void MaybeRecordLauncherAction(ash::AppListLaunchedFrom launched_from);
 
   // The current display id showing the app list.
   int64_t display_id_ = display::kInvalidDisplayId;
@@ -203,26 +213,31 @@ class AppListClientImpl
   // callbacks.
   std::map<int, AppListModelUpdater*> profile_model_mappings_;
 
-  std::unique_ptr<app_list::SearchResourceManager> search_resource_manager_;
   std::unique_ptr<app_list::SearchController> search_controller_;
   std::unique_ptr<AppSyncUIStateWatcher> app_sync_ui_state_watcher_;
 
-  std::unique_ptr<MojoRecorderForTest> mojo_recorder_for_test_;
+  base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
+      template_url_service_observation_{this};
 
-  ScopedObserver<TemplateURLService, AppListClientImpl>
-      template_url_service_observer_;
+  ash::AppListController* app_list_controller_ = nullptr;
 
-  mojo::Binding<ash::mojom::AppListClient> binding_;
-  ash::mojom::AppListControllerPtr app_list_controller_;
+  std::unique_ptr<AppListNotifierImpl> app_list_notifier_;
+
+  // Records the app list state for the session started by a new user. It
+  // gets reset when:
+  // (1) the active user changes, or
+  // (2) the user signs out all accounts. `AppListClientImpl` is destructed in
+  // this scenario.
+  absl::optional<StateForNewUser> state_for_new_user_;
+
+  // Indicates when the session of a new user becomes active. If there is no new
+  // users logged in, `new_user_session_activation_time_` is null.
+  absl::optional<base::Time> new_user_session_activation_time_;
 
   bool app_list_target_visibility_ = false;
   bool app_list_visible_ = false;
 
-  app_list::AppLaunchEventLogger app_launch_event_logger_;
-
-  base::WeakPtrFactory<AppListClientImpl> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(AppListClientImpl);
+  base::WeakPtrFactory<AppListClientImpl> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_APP_LIST_APP_LIST_CLIENT_IMPL_H_

@@ -11,11 +11,11 @@
 #include <string>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/files/file.h"
 #include "base/files/file_descriptor_watcher_posix.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chromeos/chromeos_export.h"
 
 namespace chromeos {
 
@@ -24,13 +24,12 @@ enum ProcessOutputType {
   PROCESS_OUTPUT_TYPE_EXIT
 };
 
-typedef base::Callback<void(ProcessOutputType,
-                            const std::string&,
-                            const base::Closure&)> ProcessOutputCallback;
+using ProcessOutputCallback = base::RepeatingCallback<
+    void(ProcessOutputType, const std::string&, base::OnceClosure)>;
 
 // Observes output on |out_fd| and invokes |callback| when some output is
 // detected. It assumes UTF8 output.
-class CHROMEOS_EXPORT ProcessOutputWatcher {
+class COMPONENT_EXPORT(CHROMEOS_PROCESS_PROXY) ProcessOutputWatcher {
  public:
   ProcessOutputWatcher(int out_fd, const ProcessOutputCallback& callback);
   ~ProcessOutputWatcher();
@@ -55,7 +54,7 @@ class CHROMEOS_EXPORT ProcessOutputWatcher {
   // output.
   void ReportOutput(ProcessOutputType type,
                     size_t new_bytes_count,
-                    const base::Closure& callback);
+                    base::OnceClosure callback);
 
   char read_buffer_[4096];
   // Maximum read buffer content size.
@@ -70,7 +69,7 @@ class CHROMEOS_EXPORT ProcessOutputWatcher {
   // Callback that will be invoked when some output is detected.
   ProcessOutputCallback on_read_callback_;
 
-  base::WeakPtrFactory<ProcessOutputWatcher> weak_factory_;
+  base::WeakPtrFactory<ProcessOutputWatcher> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ProcessOutputWatcher);
 };

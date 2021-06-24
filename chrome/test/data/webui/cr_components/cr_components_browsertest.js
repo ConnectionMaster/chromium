@@ -1,96 +1,96 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2019 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @fileoverview Tests for shared Polymer components. */
-
-/** @const {string} Path to source root. */
-var ROOT_PATH = '../../../../../';
+/** @fileoverview Tests for shared Polymer 3 components. */
 
 // Polymer BrowserTest fixture.
-GEN_INCLUDE(
-    [ROOT_PATH + 'chrome/test/data/webui/polymer_browser_test_base.js']);
+GEN_INCLUDE(['//chrome/test/data/webui/polymer_browser_test_base.js']);
 
-/**
- * Test fixture for shared Polymer components.
- * @constructor
- * @extends {PolymerTest}
- */
-function CrComponentsBrowserTest() {}
+GEN('#include "chrome/browser/browser_features.h"');
+GEN('#include "chrome/browser/ui/ui_features.h"');
+GEN('#include "content/public/test/browser_test.h"');
+GEN('#include "build/chromeos_buildflags.h"');
 
-CrComponentsBrowserTest.prototype = {
-  __proto__: PolymerTest.prototype,
-
-  /** @override */
-  extraLibraries: PolymerTest.getLibraries(ROOT_PATH),
-
+/** Test fixture for shared Polymer 3 components. */
+// eslint-disable-next-line no-var
+var CrComponentsV3BrowserTest = class extends PolymerTest {
   /** @override */
   get browsePreload() {
-    throw 'subclasses should override to load a WebUI page that includes it.';
-  },
+    return 'chrome://dummyurl';
+  }
 
   /** @override */
-  runAccessibilityChecks: true,
-
-  /** @override */
-  setUp: function() {
-    PolymerTest.prototype.setUp.call(this);
-    // We aren't loading the main document.
-    this.accessibilityAuditConfig.ignoreSelectors('humanLangMissing', 'html');
-  },
+  get webuiHost() {
+    return 'dummyurl';
+  }
 };
 
-/**
- * @constructor
- * @extends {CrComponentsBrowserTest}
- */
-function CrComponentsManagedFootnoteTest() {}
-
-CrComponentsManagedFootnoteTest.prototype = {
-  __proto__: CrComponentsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrComponentsManagedFootnoteV3Test =
+    class extends CrComponentsV3BrowserTest {
   /** @override */
-  browsePreload: 'chrome://downloads',
-
-  /** @override */
-  extraLibraries: CrComponentsBrowserTest.prototype.extraLibraries.concat([
-    'managed_footnote_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_components/managed_footnote_test.js';
+  }
 };
 
-TEST_F('CrComponentsManagedFootnoteTest', 'All', function() {
+TEST_F('CrComponentsManagedFootnoteV3Test', 'All', function() {
   mocha.run();
 });
 
-GEN('#if defined(OS_CHROMEOS)');
+GEN('#if defined(USE_NSS_CERTS)');
 
 /**
- * @constructor
- * @extends {CrComponentsBrowserTest}
+ * Test fixture for chrome://settings/certificates. This tests the
+ * certificate-manager component in the context of the Settings privacy page.
  */
-function CrComponentsNetworkConfigTest() {}
-
-CrComponentsNetworkConfigTest.prototype = {
-  __proto__: CrComponentsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrComponentsCertificateManagerV3Test =
+    class extends CrComponentsV3BrowserTest {
   /** @override */
-
-  browsePreload: 'chrome://internet-config-dialog',
-
-  /** @override */
-  extraLibraries: CrComponentsBrowserTest.prototype.extraLibraries.concat([
-    ROOT_PATH + 'ui/webui/resources/js/assert.js',
-    ROOT_PATH + 'ui/webui/resources/js/promise_resolver.js',
-    '../fake_chrome_event.js',
-    '../chromeos/networking_private_constants.js',
-    '../chromeos/fake_networking_private.js',
-    '../chromeos/cr_onc_strings.js',
-    'network_config_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=cr_components/certificate_manager_test.js';
+  }
 };
 
-TEST_F('CrComponentsNetworkConfigTest', 'All', function() {
+TEST_F('CrComponentsCertificateManagerV3Test', 'All', function() {
   mocha.run();
 });
 
-GEN('#endif');
+GEN('#endif  // defined(USE_NSS_CERTS)');
+
+
+GEN('#if defined(USE_NSS_CERTS) && BUILDFLAG(IS_CHROMEOS_ASH)');
+
+/**
+ * ChromeOS specific test fixture for chrome://settings/certificates, testing
+ * the certificate provisioning UI. This tests the certificate-manager component
+ * in the context of the Settings privacy page.
+ */
+// eslint-disable-next-line no-var
+var CrComponentsCertificateManagerProvisioningV3Test =
+    class extends CrComponentsCertificateManagerV3Test {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=cr_components/certificate_manager_provisioning_test.js';
+  }
+};
+
+TEST_F('CrComponentsCertificateManagerProvisioningV3Test', 'All', function() {
+  mocha.run();
+});
+
+GEN('#endif  // defined(USE_NSS_CERTS) && BUILDFLAG(IS_CHROMEOS_ASH)');
+
+// eslint-disable-next-line no-var
+var CrComponentsManagedDialogV3Test = class extends CrComponentsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_components/managed_dialog_test.js';
+  }
+};
+
+TEST_F('CrComponentsManagedDialogV3Test', 'All', function() {
+  mocha.run();
+});

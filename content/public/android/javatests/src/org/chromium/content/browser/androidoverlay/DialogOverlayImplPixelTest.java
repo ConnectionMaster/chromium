@@ -1,9 +1,7 @@
 // Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
 package org.chromium.content.browser.androidoverlay;
-
 import android.annotation.TargetApi;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -11,8 +9,9 @@ import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.Build;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.MediumTest;
 import android.view.Surface;
+
+import androidx.test.filters.MediumTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -100,7 +99,7 @@ public class DialogOverlayImplPixelTest {
     RenderCoordinatesImpl mCoordinates;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         takeScreenshotOfBackground();
         mCoordinates = mActivityTestRule.getRenderCoordinates();
     }
@@ -235,7 +234,7 @@ public class DialogOverlayImplPixelTest {
         return TestThreadUtils.runOnUiThreadBlocking(new Callable<Surface>() {
             @Override
             public Surface call() {
-                return DialogOverlayImpl.nativeLookupSurfaceForTesting((int) event.surfaceKey);
+                return DialogOverlayImplJni.get().lookupSurfaceForTesting((int) event.surfaceKey);
             }
         });
     }

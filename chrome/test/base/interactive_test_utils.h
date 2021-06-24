@@ -5,24 +5,20 @@
 #ifndef CHROME_TEST_BASE_INTERACTIVE_TEST_UTILS_H_
 #define CHROME_TEST_BASE_INTERACTIVE_TEST_UTILS_H_
 
+#include <utility>
+
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/view_ids.h"
-#include "chrome/test/base/ui_test_utils.h"
-#include "content/public/test/test_utils.h"
 #include "ui/base/test/ui_controls.h"
-#include "ui/events/event_constants.h"
+#include "ui/display/display.h"
+#include "ui/gfx/geometry/point.h"
 
 namespace display {
-class Display;
 class Screen;
 }  // namespace display
-
-namespace gfx {
-class Point;
-}
 
 #if defined(TOOLKIT_VIEWS)
 namespace views {
@@ -37,7 +33,9 @@ namespace ui_test_utils {
 class BrowserActivationWaiter : public BrowserListObserver {
  public:
   explicit BrowserActivationWaiter(const Browser* browser);
-  ~BrowserActivationWaiter() override;
+  BrowserActivationWaiter(const BrowserActivationWaiter&) = delete;
+  BrowserActivationWaiter& operator=(const BrowserActivationWaiter&) = delete;
+  ~BrowserActivationWaiter() override = default;
 
   // Runs a message loop until the |browser_| supplied to the constructor is
   // activated, or returns immediately if |browser_| has already become active.
@@ -49,10 +47,8 @@ class BrowserActivationWaiter : public BrowserListObserver {
   void OnBrowserSetLastActive(Browser* browser) override;
 
   const Browser* const browser_;
-  bool observed_;
+  bool observed_ = false;
   base::RunLoop run_loop_;
-
-  DISALLOW_COPY_AND_ASSIGN(BrowserActivationWaiter);
 };
 
 // Use in browser interactive uitests to wait until a browser is deactivated.
@@ -60,6 +56,9 @@ class BrowserActivationWaiter : public BrowserListObserver {
 class BrowserDeactivationWaiter : public BrowserListObserver {
  public:
   explicit BrowserDeactivationWaiter(const Browser* browser);
+  BrowserDeactivationWaiter(const BrowserDeactivationWaiter&) = delete;
+  BrowserDeactivationWaiter& operator=(const BrowserDeactivationWaiter&) =
+      delete;
   ~BrowserDeactivationWaiter() override;
 
   // Runs a message loop until the |browser_| supplied to the constructor is
@@ -73,10 +72,8 @@ class BrowserDeactivationWaiter : public BrowserListObserver {
   void OnBrowserNoLongerActive(Browser* browser) override;
 
   const Browser* const browser_;
-  bool observed_;
+  bool observed_ = false;
   base::RunLoop run_loop_;
-
-  DISALLOW_COPY_AND_ASSIGN(BrowserDeactivationWaiter);
 };
 
 // Brings the native window for |browser| to the foreground and waits until the
@@ -122,65 +119,12 @@ bool SendKeyPressToWindowSync(const gfx::NativeWindow window,
                               bool alt,
                               bool command) WARN_UNUSED_RESULT;
 
-// Sends a key press, blocking until both the key press and a notification from
-// |source| of type |type| are received, or until the test times out. This uses
-// ui_controls::SendKeyPress, see it for details. Returns true if the event was
-// successfully sent and both the event and notification were received.
-bool SendKeyPressAndWait(const Browser* browser,
-                         ui::KeyboardCode key,
-                         bool control,
-                         bool shift,
-                         bool alt,
-                         bool command,
-                         int type,
-                         const content::NotificationSource& source)
-                             WARN_UNUSED_RESULT;
-
 // Sends a move event blocking until received. Returns true if the event was
 // successfully received. This uses ui_controls::SendMouse***NotifyWhenDone,
 // see it for details.
 bool SendMouseMoveSync(const gfx::Point& location) WARN_UNUSED_RESULT;
 bool SendMouseEventsSync(ui_controls::MouseButton type,
                          int button_state) WARN_UNUSED_RESULT;
-
-// See SendKeyPressAndWait.  This function additionally performs a check on the
-// NotificationDetails using the provided Details<U>.
-template <class U>
-bool SendKeyPressAndWaitWithDetails(
-    const Browser* browser,
-    ui::KeyboardCode key,
-    bool control,
-    bool shift,
-    bool alt,
-    bool command,
-    int type,
-    const content::NotificationSource& source,
-    const content::Details<U>& details) WARN_UNUSED_RESULT;
-
-template <class U>
-bool SendKeyPressAndWaitWithDetails(
-    const Browser* browser,
-    ui::KeyboardCode key,
-    bool control,
-    bool shift,
-    bool alt,
-    bool command,
-    int type,
-    const content::NotificationSource& source,
-    const content::Details<U>& details) {
-  WindowedNotificationObserverWithDetails<U> observer(type, source);
-
-  if (!SendKeyPressSync(browser, key, control, shift, alt, command))
-    return false;
-
-  observer.Wait();
-
-  U my_details;
-  if (!observer.GetDetailsFor(source.map_key(), &my_details))
-    return false;
-
-  return *details.ptr() == my_details && !testing::Test::HasFatalFailure();
-}
 
 // A combination of SendMouseMove to the middle of the view followed by
 // SendMouseEvents. Only exposed for toolkit-views.
@@ -195,9 +139,14 @@ void MoveMouseToCenterAndPress(
 
 // Returns the center of |view| in screen coordinates.
 gfx::Point GetCenterInScreenCoordinates(const views::View* view);
+
+// Blocks until the given view is focused (or not focused, depending on
+// |focused|). Returns immediately if the state is already correct.
+void WaitForViewFocus(Browser* browser, ViewID vid, bool focused);
+void WaitForViewFocus(Browser* browser, views::View* view, bool focused);
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 // Send press and release events for |key_code| with selected modifiers and wait
 // until the last event arrives to our NSApp. Events will be sent as CGEvents
 // through HID event tap. |key_code| must be a virtual key code (reference can

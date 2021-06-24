@@ -4,11 +4,11 @@
 
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_button.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_configuration.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_constants.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -20,26 +20,6 @@ const CGFloat kSpotlightCornerRadius = 7;
 }  // namespace
 
 @implementation ToolbarButton
-@synthesize visibilityMask = _visibilityMask;
-@synthesize guideName = _guideName;
-@synthesize hiddenInCurrentSizeClass = _hiddenInCurrentSizeClass;
-@synthesize hiddenInCurrentState = _hiddenInCurrentState;
-@synthesize spotlighted = _spotlighted;
-@synthesize dimmed = _dimmed;
-@synthesize configuration = _configuration;
-@synthesize spotlightView = _spotlightView;
-
-+ (instancetype)toolbarButtonWithImageForNormalState:(UIImage*)normalImage
-                            imageForHighlightedState:(UIImage*)highlightedImage
-                               imageForDisabledState:(UIImage*)disabledImage {
-  ToolbarButton* button = [[self class] buttonWithType:UIButtonTypeCustom];
-  [button setImage:normalImage forState:UIControlStateNormal];
-  [button setImage:highlightedImage forState:UIControlStateHighlighted];
-  [button setImage:disabledImage forState:UIControlStateDisabled];
-  [button setImage:highlightedImage forState:UIControlStateSelected];
-  button.translatesAutoresizingMaskIntoConstraints = NO;
-  return button;
-}
 
 + (instancetype)toolbarButtonWithImage:(UIImage*)image {
   ToolbarButton* button = [[self class] buttonWithType:UIButtonTypeSystem];
@@ -81,6 +61,8 @@ const CGFloat kSpotlightCornerRadius = 7;
     self.hiddenInCurrentSizeClass = newHiddenValue;
     [self setHiddenForCurrentStateAndSizeClass];
   }
+
+  [self checkNamedGuide];
 }
 
 - (void)setHiddenInCurrentState:(BOOL)hiddenInCurrentState {
@@ -102,39 +84,40 @@ const CGFloat kSpotlightCornerRadius = 7;
   if (dimmed == _dimmed)
     return;
   _dimmed = dimmed;
-  if (!self.configuration)
+  if (!self.toolbarConfiguration)
     return;
 
   if (dimmed) {
     self.alpha = kToolbarDimmedButtonAlpha;
     if (_spotlightView) {
       self.spotlightView.backgroundColor =
-          self.configuration.dimmedButtonsSpotlightColor;
+          self.toolbarConfiguration.dimmedButtonsSpotlightColor;
     }
   } else {
     self.alpha = 1;
     if (_spotlightView) {
       self.spotlightView.backgroundColor =
-          self.configuration.buttonsSpotlightColor;
+          self.toolbarConfiguration.buttonsSpotlightColor;
     }
   }
 }
 
 - (UIControlState)state {
-  DCHECK(ControlStateSpotlighted & UIControlStateApplication);
+  DCHECK(kControlStateSpotlighted & UIControlStateApplication);
   UIControlState state = [super state];
   if (self.spotlighted)
-    state |= ControlStateSpotlighted;
+    state |= kControlStateSpotlighted;
   return state;
 }
 
-- (void)setConfiguration:(ToolbarConfiguration*)configuration {
-  _configuration = configuration;
-  if (!configuration)
+- (void)setToolbarConfiguration:(ToolbarConfiguration*)toolbarConfiguration {
+  _toolbarConfiguration = toolbarConfiguration;
+  if (!toolbarConfiguration)
     return;
 
-  self.tintColor = configuration.buttonsTintColor;
-  _spotlightView.backgroundColor = self.configuration.buttonsSpotlightColor;
+  self.tintColor = toolbarConfiguration.buttonsTintColor;
+  _spotlightView.backgroundColor =
+      self.toolbarConfiguration.buttonsSpotlightColor;
 }
 
 #pragma mark - Subclassing
@@ -145,8 +128,11 @@ const CGFloat kSpotlightCornerRadius = 7;
   spotlightView.hidden = YES;
   spotlightView.userInteractionEnabled = NO;
   spotlightView.layer.cornerRadius = kSpotlightCornerRadius;
-  spotlightView.backgroundColor = self.configuration.buttonsSpotlightColor;
-  [self addSubview:spotlightView];
+  spotlightView.backgroundColor =
+      self.toolbarConfiguration.buttonsSpotlightColor;
+  // Make sure that the spotlightView is below the image to avoid changing the
+  // color of the image.
+  [self insertSubview:spotlightView belowSubview:self.imageView];
   AddSameCenterConstraints(self, spotlightView);
   [spotlightView.widthAnchor constraintEqualToConstant:kSpotlightSize].active =
       YES;
@@ -160,13 +146,18 @@ const CGFloat kSpotlightCornerRadius = 7;
 // Checks if the button should be visible based on its hiddenInCurrentSizeClass
 // and hiddenInCurrentState properties, then updates its visibility accordingly.
 - (void)setHiddenForCurrentStateAndSizeClass {
-  BOOL previouslyHidden = self.hidden;
   self.hidden = self.hiddenInCurrentState || self.hiddenInCurrentSizeClass;
 
-  if (!self.hidden && previouslyHidden != self.hidden && self.guideName) {
-    // The button is appearing. At this point, if it has a layout guide
-    // associated, it should constraint it to itself.
-    [NamedGuide guideWithName:self.guideName view:self].constrainedView = self;
+  [self checkNamedGuide];
+}
+
+// Checks whether the named guide associated with this button, if there is one,
+// should be updated.
+- (void)checkNamedGuide {
+  if (!self.hidden && self.guideName) {
+    NamedGuide* guide = [NamedGuide guideWithName:self.guideName view:self];
+    if (guide.constrainedView != self)
+      guide.constrainedView = self;
   }
 }
 

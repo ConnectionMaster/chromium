@@ -9,7 +9,6 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "components/offline_pages/core/offline_store_utils.h"
 #include "components/offline_pages/core/prefetch/prefetch_types.h"
 #include "components/offline_pages/core/prefetch/store/prefetch_store.h"
@@ -96,9 +95,7 @@ GetArchivesAndUpdateToImportingStateSync(sql::Database* db) {
 
 ImportArchivesTask::ImportArchivesTask(PrefetchStore* prefetch_store,
                                        PrefetchImporter* prefetch_importer)
-    : prefetch_store_(prefetch_store),
-      prefetch_importer_(prefetch_importer),
-      weak_ptr_factory_(this) {}
+    : prefetch_store_(prefetch_store), prefetch_importer_(prefetch_importer) {}
 
 ImportArchivesTask::~ImportArchivesTask() {}
 

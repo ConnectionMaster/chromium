@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # Copyright 2018 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -16,6 +16,8 @@ $ tools/android/native_lib_memory/code_pages_pss.py
     --app-package com.google.android.googlequicksearchbox
     --chrome-package com.android.chrome --verbose
 """
+
+from __future__ import print_function
 
 import argparse
 import logging
@@ -37,7 +39,7 @@ def _GetPssInKb(mappings, chrome_package, verbose):
     if chrome_package in mapping.pathname and mapping.permissions == 'r-xp':
       pss += mapping.fields['Pss']
       if verbose:
-        print mapping.ToString()
+        print(mapping.ToString())
   return pss
 
 
@@ -68,7 +70,7 @@ def main():
   for process in processes:
     mappings = parse_smaps.ParseProcSmaps(device, process.pid)
     total_pss_kb += _GetPssInKb(mappings, args.chrome_package, args.verbose)
-  print 'Total PSS from code pages = %dkB' % total_pss_kb
+  print('Total PSS from code pages = %dkB' % total_pss_kb)
 
 
 if __name__ == '__main__':

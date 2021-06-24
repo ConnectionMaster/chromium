@@ -4,13 +4,15 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/task/single_thread_task_executor.h"
 #include "components/exo/wayland/clients/client_base.h"
 #include "components/exo/wayland/clients/client_helper.h"
+#include "gpu/vulkan/vulkan_function_pointers.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkSurface.h"
-#include "third_party/skia/include/gpu/GrContext.h"
+#include "third_party/skia/include/gpu/GrDirectContext.h"
 
 namespace exo {
 namespace wayland {
@@ -84,8 +86,9 @@ class ScopedVulkanRenderFrame {
         .renderArea =
             (VkRect2D){
                 .offset = {0, 0},
-                .extent = {client_->surface_size_.width(),
-                           client_->surface_size_.height()},
+                .extent =
+                    {static_cast<uint32_t>(client_->surface_size_.width()),
+                     static_cast<uint32_t>(client_->surface_size_.height())},
             },
         .clearValueCount = 1,
         .pClearValues = &clear_value,
@@ -174,7 +177,8 @@ int main(int argc, char* argv[]) {
   if (!params.FromCommandLine(*command_line))
     return 1;
 
-  base::MessageLoopForUI message_loop;
+  params.use_vulkan = true;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   exo::wayland::clients::VulkanClient client;
   client.Run(params);
   return 1;

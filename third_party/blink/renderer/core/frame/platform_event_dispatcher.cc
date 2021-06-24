@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/core/frame/platform_event_dispatcher.h"
 
 #include "base/auto_reset.h"
-#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/platform_event_controller.h"
 
 namespace blink {
@@ -13,8 +12,8 @@ namespace blink {
 PlatformEventDispatcher::PlatformEventDispatcher()
     : is_dispatching_(false), is_listening_(false) {}
 
-void PlatformEventDispatcher::AddController(
-    PlatformEventController* controller) {
+void PlatformEventDispatcher::AddController(PlatformEventController* controller,
+                                            LocalDOMWindow* window) {
   DCHECK(controller);
   // TODO: If we can avoid to register a same controller twice, we can change
   // this 'if' to ASSERT.
@@ -24,9 +23,7 @@ void PlatformEventDispatcher::AddController(
   controllers_.insert(controller);
 
   if (!is_listening_) {
-    StartListening(controller->GetDocument()
-                       ? controller->GetDocument()->GetFrame()
-                       : nullptr);
+    StartListening(window);
     is_listening_ = true;
   }
 }
@@ -64,7 +61,7 @@ void PlatformEventDispatcher::NotifyControllers() {
   }
 }
 
-void PlatformEventDispatcher::Trace(blink::Visitor* visitor) {
+void PlatformEventDispatcher::Trace(Visitor* visitor) const {
   visitor->Trace(controllers_);
 }
 

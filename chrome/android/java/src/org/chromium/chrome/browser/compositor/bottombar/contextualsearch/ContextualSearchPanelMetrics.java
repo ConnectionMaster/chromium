@@ -13,10 +13,13 @@ import org.chromium.chrome.browser.contextualsearch.ContextualSearchInteractionR
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchUma;
 import org.chromium.chrome.browser.contextualsearch.EngagementSuppression;
 import org.chromium.chrome.browser.contextualsearch.QuickActionCategory;
+import org.chromium.chrome.browser.contextualsearch.ResolvedSearchTerm;
 import org.chromium.chrome.browser.profiles.Profile;
 
 /**
- * This class is responsible for all the logging related to Contextual Search.
+ * This class is responsible for all the logging triggered by activity of the
+ * {@link ContextualSearchPanel}. Typically this consists of tracking user activity
+ * logging that to UMA when the interaction ends as the panel is dismissed.
  */
 public class ContextualSearchPanelMetrics {
     // Flags for logging.
@@ -32,6 +35,8 @@ public class ContextualSearchPanelMetrics {
     private boolean mWasActivatedByTap;
     private boolean mWasPanelOpenedBeyondPeek;
     private boolean mWasContextualCardsDataShown;
+    @ResolvedSearchTerm.CardTag
+    private int mCardTag;
     private boolean mWasQuickActionShown;
     private int mQuickActionCategory;
     private boolean mWasQuickActionClicked;
@@ -122,6 +127,7 @@ public class ContextualSearchPanelMetrics {
                 ContextualSearchUma.logContextualCardsResultsSeen(mWasSearchContentViewSeen);
                 EngagementSuppression.registerContextualCardsImpression(mWasSearchContentViewSeen);
             }
+            ContextualSearchUma.logCardTagSeen(mWasSearchContentViewSeen, mCardTag);
             if (mWasQuickActionShown) {
                 ContextualSearchUma.logQuickActionResultsSeen(mWasSearchContentViewSeen,
                         mQuickActionCategory);
@@ -149,6 +155,12 @@ public class ContextualSearchPanelMetrics {
                 ContextualSearchUma.logTapResultsSeen(mWasSearchContentViewSeen);
             }
             ContextualSearchUma.logAllResultsSeen(mWasSearchContentViewSeen);
+            if (mWasSearchContentViewSeen) {
+                // TODO(donnd): check that this does not get logged when Related Searches are
+                // shown in the Bar and a user clicks one while in peeking state.
+                // Tracking bug for RS in the Bar: https://crbug.com/1210674.
+                ContextualSearchUma.logAllSearches(/* wasRelatedSearches */ false);
+            }
 
             // Notifications to Feature Engagement.
             ContextualSearchIPH.doSearchFinishedNotifications(profile, mWasSearchContentViewSeen,
@@ -221,6 +233,7 @@ public class ContextualSearchPanelMetrics {
             mWasContextualCardsDataShown = false;
             mWasQuickActionShown = false;
             mQuickActionCategory = QuickActionCategory.NONE;
+            mCardTag = ResolvedSearchTerm.CardTag.CT_NONE;
             mWasQuickActionClicked = false;
             mWasAnyHeuristicSatisfiedOnPanelShow = false;
             mPanelTriggerTimeFromTapNs = 0;
@@ -255,8 +268,10 @@ public class ContextualSearchPanelMetrics {
      * @param wasContextualCardsDataShown Whether Contextual Cards data was shown in the Contextual
      *                                    Search Bar.
      */
-    public void setWasContextualCardsDataShown(boolean wasContextualCardsDataShown) {
+    public void setWasContextualCardsDataShown(
+            boolean wasContextualCardsDataShown, @ResolvedSearchTerm.CardTag int cardTag) {
         mWasContextualCardsDataShown = wasContextualCardsDataShown;
+        mCardTag = cardTag;
     }
 
     /**

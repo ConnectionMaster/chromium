@@ -7,7 +7,7 @@
 
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
-#include "components/arc/common/lock_screen.mojom.h"
+#include "components/arc/mojom/lock_screen.mojom.h"
 #include "components/arc/session/connection_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/session_manager/core/session_manager_observer.h"
@@ -29,6 +29,8 @@ class ArcLockScreenBridge
   // Returns singleton instance for the given BrowserContext,
   // or nullptr if the browser |context| is not allowed to use ARC.
   static ArcLockScreenBridge* GetForBrowserContext(
+      content::BrowserContext* context);
+  static ArcLockScreenBridge* GetForBrowserContextForTesting(
       content::BrowserContext* context);
 
   ArcLockScreenBridge(content::BrowserContext* context,

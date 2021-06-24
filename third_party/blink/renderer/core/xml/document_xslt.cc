@@ -11,20 +11,20 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/processing_instruction.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/xml/xsl_style_sheet.h"
 #include "third_party/blink/renderer/core/xml/xslt_processor.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
 class DOMContentLoadedListener final
     : public NativeEventListener,
       public ProcessingInstruction::DetachableEventListener {
-  USING_GARBAGE_COLLECTED_MIXIN(DOMContentLoadedListener);
-
  public:
   explicit DOMContentLoadedListener(ProcessingInstruction* pi)
       : processing_instruction_(pi) {}
@@ -33,7 +33,7 @@ class DOMContentLoadedListener final
     DCHECK(RuntimeEnabledFeatures::XSLTEnabled());
     DCHECK_EQ(event->type(), "DOMContentLoaded");
 
-    Document& document = *To<Document>(execution_context);
+    Document& document = *To<LocalDOMWindow>(execution_context)->document();
     DCHECK(!document.Parsing());
 
     // Processing instruction (XML documents only).
@@ -53,7 +53,7 @@ class DOMContentLoadedListener final
 
   EventListener* ToEventListener() override { return this; }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(processing_instruction_);
     NativeEventListener::Trace(visitor);
     ProcessingInstruction::DetachableEventListener::Trace(visitor);
@@ -67,14 +67,14 @@ class DOMContentLoadedListener final
 };
 
 DocumentXSLT::DocumentXSLT(Document& document)
-    : Supplement<Document>(document), transform_source_document_(nullptr) {}
+    : Supplement<Document>(document) {}
 
 void DocumentXSLT::ApplyXSLTransform(Document& document,
                                      ProcessingInstruction* pi) {
   DCHECK(!pi->IsLoading());
   UseCounter::Count(document, WebFeature::kXSLProcessingInstruction);
   XSLTProcessor* processor = XSLTProcessor::Create(document);
-  processor->SetXSLStyleSheet(ToXSLStyleSheet(pi->sheet()));
+  processor->SetXSLStyleSheet(To<XSLStyleSheet>(pi->sheet()));
   String result_mime_type;
   String new_source;
   String result_encoding;
@@ -95,11 +95,8 @@ void DocumentXSLT::ApplyXSLTransform(Document& document,
 
 ProcessingInstruction* DocumentXSLT::FindXSLStyleSheet(Document& document) {
   for (Node* node = document.firstChild(); node; node = node->nextSibling()) {
-    if (node->getNodeType() != Node::kProcessingInstructionNode)
-      continue;
-
-    ProcessingInstruction* pi = ToProcessingInstruction(node);
-    if (pi->IsXSL())
+    auto* pi = DynamicTo<ProcessingInstruction>(node);
+    if (pi && pi->IsXSL())
       return pi;
   }
   return nullptr;
@@ -157,17 +154,13 @@ bool DocumentXSLT::HasTransformSourceDocument(Document& document) {
   return Supplement<Document>::From<DocumentXSLT>(document);
 }
 
-DocumentXSLT& DocumentXSLT::From(Document& document) {
-  DocumentXSLT* supplement = Supplement<Document>::From<DocumentXSLT>(document);
-  if (!supplement) {
-    supplement = MakeGarbageCollected<DocumentXSLT>(document);
-    Supplement<Document>::ProvideTo(document, supplement);
-  }
-  return *supplement;
+void DocumentXSLT::SetHasTransformSource(Document& document) {
+  DCHECK(!HasTransformSourceDocument(document));
+  Supplement<Document>::ProvideTo(document,
+                                  MakeGarbageCollected<DocumentXSLT>(document));
 }
 
-void DocumentXSLT::Trace(blink::Visitor* visitor) {
-  visitor->Trace(transform_source_document_);
+void DocumentXSLT::Trace(Visitor* visitor) const {
   Supplement<Document>::Trace(visitor);
 }
 

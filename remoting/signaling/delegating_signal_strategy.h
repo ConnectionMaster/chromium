@@ -52,6 +52,8 @@ class DelegatingSignalStrategy : public SignalStrategy {
   void AddListener(Listener* listener) override;
   void RemoveListener(Listener* listener) override;
   bool SendStanza(std::unique_ptr<jingle_xmpp::XmlElement> stanza) override;
+  bool SendMessage(const SignalingAddress& destination_address,
+                   const ftl::ChromotingMessage& message) override;
   std::string GetNextId() override;
 
  private:
@@ -70,7 +72,7 @@ class DelegatingSignalStrategy : public SignalStrategy {
   IqCallback send_iq_callback_;
   base::ObserverList<Listener> listeners_;
 
-  base::WeakPtrFactory<DelegatingSignalStrategy> weak_factory_;
+  base::WeakPtrFactory<DelegatingSignalStrategy> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DelegatingSignalStrategy);
 };

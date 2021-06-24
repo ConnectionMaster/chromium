@@ -14,10 +14,10 @@
 #include "base/base64.h"
 #include "base/bind.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/chromeos/arc/fileapi/arc_file_system_operation_runner.h"
+#include "chrome/browser/ash/arc/fileapi/arc_file_system_operation_runner.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/arc/arc_features.h"
-#include "components/arc/common/bitmap.mojom.h"
+#include "components/arc/mojom/bitmap.mojom.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -86,7 +86,7 @@ class BitmapWrapper {
 DocumentsProviderRootManager::DocumentsProviderRootManager(
     Profile* profile,
     arc::ArcFileSystemOperationRunner* runner)
-    : profile_(profile), runner_(runner), weak_ptr_factory_(this) {}
+    : profile_(profile), runner_(runner) {}
 
 DocumentsProviderRootManager::~DocumentsProviderRootManager() {
   arc::ArcFileSystemBridge* bridge =
@@ -109,10 +109,6 @@ void DocumentsProviderRootManager::RemoveObserver(Observer* observer) {
 
 void DocumentsProviderRootManager::SetEnabled(bool enabled) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!base::FeatureList::IsEnabled(
-          arc::kEnableDocumentsProviderInFilesAppFeature)) {
-    return;
-  }
   if (enabled == is_enabled_)
     return;
 
@@ -171,7 +167,7 @@ void DocumentsProviderRootManager::RequestGetRoots() {
 }
 
 void DocumentsProviderRootManager::OnGetRoots(
-    base::Optional<std::vector<arc::mojom::RootPtr>> maybe_roots) {
+    absl::optional<std::vector<arc::mojom::RootPtr>> maybe_roots) {
   if (!maybe_roots.has_value())
     return;
 

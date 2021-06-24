@@ -7,6 +7,7 @@
 
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
 #include "net/log/net_log_with_source.h"
 #include "net/quic/quic_chromium_packet_reader.h"
@@ -80,11 +81,12 @@ class NET_EXPORT_PRIVATE QuicConnectivityProbingManager
   void CancelProbing(NetworkChangeNotifier::NetworkHandle network,
                      const quic::QuicSocketAddress& peer_address);
 
-  // Called when a connectivity probing packet has been received from
-  // |peer_address| on a socket with |self_address|.
-  void OnConnectivityProbingReceived(
-      const quic::QuicSocketAddress& self_address,
-      const quic::QuicSocketAddress& peer_address);
+  // Called when a new packet has been received from |peer_address| on a socket
+  // with |self_address|. |is_connectivity_probe| is true if the received
+  // packet is a connectivity probe.
+  void OnPacketReceived(const quic::QuicSocketAddress& self_address,
+                        const quic::QuicSocketAddress& peer_address,
+                        bool is_connectivity_probe);
 
   // Returns true if the manager is currently probing |peer_address| on
   // |network|.
@@ -93,6 +95,11 @@ class NET_EXPORT_PRIVATE QuicConnectivityProbingManager
     return (is_running_ && network == network_ &&
             peer_address == peer_address_);
   }
+
+  // Returns true if both |self_address| and |peer_address|
+  // match with the probing manager's socket address. Returns false otherwise.
+  bool ValidateStatelessReset(const quic::QuicSocketAddress& self_address,
+                              const quic::QuicSocketAddress& peer_address);
 
  private:
   // Cancels undergoing probing.
@@ -115,6 +122,8 @@ class NET_EXPORT_PRIVATE QuicConnectivityProbingManager
   // if |is_running_| is true.
   bool is_running_;
   NetworkChangeNotifier::NetworkHandle network_;
+  // If |is_running| is false, |peer_address_| caches the peer address of the
+  // last probing path.
   quic::QuicSocketAddress peer_address_;
 
   std::unique_ptr<DatagramClientSocket> socket_;
@@ -128,7 +137,12 @@ class NET_EXPORT_PRIVATE QuicConnectivityProbingManager
 
   base::SequencedTaskRunner* task_runner_;
 
-  base::WeakPtrFactory<QuicConnectivityProbingManager> weak_factory_;
+  // The cached local address set when probing is cancelled.
+  IPEndPoint last_self_address_;
+
+  bool stateless_reset_received_;
+
+  base::WeakPtrFactory<QuicConnectivityProbingManager> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(QuicConnectivityProbingManager);
 };
 

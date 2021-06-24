@@ -5,18 +5,21 @@
 #include "chrome/browser/offline_pages/offline_page_model_factory.h"
 
 #include <utility>
+#include <vector>
 
+#include "base/android/build_info.h"
+#include "base/android/path_utils.h"
 #include "base/files/file_path.h"
 #include "base/memory/singleton.h"
 #include "base/path_service.h"
 #include "base/sequenced_task_runner.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/time/default_clock.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/offline_pages/android/cct_origin_observer.h"
-#include "chrome/browser/offline_pages/android/offline_pages_download_manager_bridge.h"
+#include "chrome/browser/offline_pages/android/offline_page_archive_publisher_impl.h"
 #include "chrome/browser/offline_pages/download_archive_manager.h"
-#include "chrome/browser/offline_pages/fresh_offline_content_observer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/common/chrome_constants.h"
@@ -51,7 +54,7 @@ OfflinePageModel* OfflinePageModelFactory::GetForBrowserContext(
 std::unique_ptr<KeyedService> OfflinePageModelFactory::BuildServiceInstanceFor(
     SimpleFactoryKey* key) const {
   scoped_refptr<base::SequencedTaskRunner> background_task_runner =
-      base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()});
+      base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()});
 
   base::FilePath store_path =
       key->GetPath().Append(chrome::kOfflinePageMetadataDirname);
@@ -69,23 +72,21 @@ std::unique_ptr<KeyedService> OfflinePageModelFactory::BuildServiceInstanceFor(
   }
 
   ProfileKey* profile_key = ProfileKey::FromSimpleFactoryKey(key);
-  std::unique_ptr<ArchiveManager> archive_manager(new DownloadArchiveManager(
+  auto archive_manager = std::make_unique<DownloadArchiveManager>(
       temporary_archives_dir, persistent_archives_dir,
       DownloadPrefs::GetDefaultDownloadDirectory(), background_task_runner,
-      profile_key->GetPrefs()));
+      profile_key->GetPrefs());
   auto clock = std::make_unique<base::DefaultClock>();
 
-  std::unique_ptr<SystemDownloadManager> download_manager(
-      new android::OfflinePagesDownloadManagerBridge());
+  auto publisher =
+      std::make_unique<OfflinePageArchivePublisherImpl>(archive_manager.get());
 
   std::unique_ptr<OfflinePageModelTaskified> model =
       std::make_unique<OfflinePageModelTaskified>(
           std::move(metadata_store), std::move(archive_manager),
-          std::move(download_manager), background_task_runner);
+          std::move(publisher), background_task_runner);
 
   CctOriginObserver::AttachToOfflinePageModel(model.get());
-
-  FreshOfflineContentObserver::AttachToOfflinePageModel(model.get());
 
   return model;
 }

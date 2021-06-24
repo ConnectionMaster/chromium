@@ -13,7 +13,7 @@
 #include <memory>
 #include <set>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 
 //
 // A container class that provides fast containment test (like a set)
@@ -55,6 +55,11 @@ class list_set {
         std::find(list_.begin(), list_.end(), elem);
     DCHECK(it != list_.end());
     list_.erase(it);
+  }
+
+  void clear() {
+    set_.clear();
+    list_.clear();
   }
 
   size_t count(const T& elem) const {

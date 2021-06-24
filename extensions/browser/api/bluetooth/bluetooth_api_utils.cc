@@ -4,17 +4,24 @@
 
 #include "extensions/browser/api/bluetooth/bluetooth_api_utils.h"
 
+#include <memory>
+
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "device/bluetooth/bluetooth_adapter.h"
+#include "device/bluetooth/bluetooth_common.h"
 #include "device/bluetooth/bluetooth_device.h"
 #include "extensions/common/api/bluetooth.h"
 
 namespace bluetooth = extensions::api::bluetooth;
 
+using bluetooth::VendorIdSource;
 using device::BluetoothDevice;
 using device::BluetoothDeviceType;
-using bluetooth::VendorIdSource;
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+using device::BluetoothTransport;
+#endif
 
 namespace {
 
@@ -86,6 +93,28 @@ bool ConvertDeviceTypeToApi(const BluetoothDeviceType& input,
   }
 }
 
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+bool ConvertTransportToApi(const BluetoothTransport& input,
+                           bluetooth::Transport* output) {
+  switch (input) {
+    case BluetoothTransport::BLUETOOTH_TRANSPORT_INVALID:
+      *output = bluetooth::TRANSPORT_INVALID;
+      return true;
+    case BluetoothTransport::BLUETOOTH_TRANSPORT_CLASSIC:
+      *output = bluetooth::TRANSPORT_CLASSIC;
+      return true;
+    case BluetoothTransport::BLUETOOTH_TRANSPORT_LE:
+      *output = bluetooth::TRANSPORT_LE;
+      return true;
+    case BluetoothTransport::BLUETOOTH_TRANSPORT_DUAL:
+      *output = bluetooth::TRANSPORT_DUAL;
+      return true;
+    default:
+      return false;
+  }
+}
+#endif
+
 }  // namespace
 
 namespace extensions {
@@ -95,26 +124,26 @@ namespace bluetooth {
 void BluetoothDeviceToApiDevice(const device::BluetoothDevice& device,
                                 Device* out) {
   out->address = device.GetAddress();
-  out->name.reset(
-      new std::string(base::UTF16ToUTF8(device.GetNameForDisplay())));
-  out->device_class.reset(new int(device.GetBluetoothClass()));
+  out->name = std::make_unique<std::string>(
+      base::UTF16ToUTF8(device.GetNameForDisplay()));
+  out->device_class = std::make_unique<int>(device.GetBluetoothClass());
 
   // Only include the Device ID members when one exists for the device, and
   // always include all or none.
   if (ConvertVendorIDSourceToApi(device.GetVendorIDSource(),
                                  &(out->vendor_id_source)) &&
       out->vendor_id_source != VENDOR_ID_SOURCE_NONE) {
-    out->vendor_id.reset(new int(device.GetVendorID()));
-    out->product_id.reset(new int(device.GetProductID()));
-    out->device_id.reset(new int(device.GetDeviceID()));
+    out->vendor_id = std::make_unique<int>(device.GetVendorID());
+    out->product_id = std::make_unique<int>(device.GetProductID());
+    out->device_id = std::make_unique<int>(device.GetDeviceID());
   }
 
   ConvertDeviceTypeToApi(device.GetDeviceType(), &(out->type));
 
-  out->paired.reset(new bool(device.IsPaired()));
-  out->connected.reset(new bool(device.IsConnected()));
-  out->connecting.reset(new bool(device.IsConnecting()));
-  out->connectable.reset(new bool(device.IsConnectable()));
+  out->paired = std::make_unique<bool>(device.IsPaired());
+  out->connected = std::make_unique<bool>(device.IsConnected());
+  out->connecting = std::make_unique<bool>(device.IsConnecting());
+  out->connectable = std::make_unique<bool>(device.IsConnectable());
 
   std::vector<std::string>* string_uuids = new std::vector<std::string>();
   const device::BluetoothDevice::UUIDSet& uuids = device.GetUUIDs();
@@ -124,14 +153,28 @@ void BluetoothDeviceToApiDevice(const device::BluetoothDevice& device,
   out->uuids.reset(string_uuids);
 
   if (device.GetInquiryRSSI())
-    out->inquiry_rssi.reset(new int(device.GetInquiryRSSI().value()));
+    out->inquiry_rssi = std::make_unique<int>(device.GetInquiryRSSI().value());
   else
     out->inquiry_rssi.reset();
 
-  if (device.GetInquiryTxPower())
-    out->inquiry_tx_power.reset(new int(device.GetInquiryTxPower().value()));
-  else
+  if (device.GetInquiryTxPower()) {
+    out->inquiry_tx_power =
+        std::make_unique<int>(device.GetInquiryTxPower().value());
+  } else {
     out->inquiry_tx_power.reset();
+  }
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  if (device.battery_percentage())
+    out->battery_percentage =
+        std::make_unique<int>(device.battery_percentage().value());
+  else
+    out->battery_percentage.reset();
+#endif
+
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  ConvertTransportToApi(device.GetType(), &(out->transport));
+#endif
 }
 
 void PopulateAdapterState(const device::BluetoothAdapter& adapter,
@@ -143,7 +186,7 @@ void PopulateAdapterState(const device::BluetoothAdapter& adapter,
   out->address = adapter.GetAddress();
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 device::BluetoothFilterType ToBluetoothDeviceFilterType(FilterType type) {
   switch (type) {
     case FilterType::FILTER_TYPE_NONE:

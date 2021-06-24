@@ -16,12 +16,10 @@
 
 #include <sys/time.h>
 
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "gtest/gtest.h"
 #include "test/errors.h"
 #include "test/filesystem.h"
-#include "test/gtest_disabled.h"
 #include "test/scoped_temp_dir.h"
 #include "util/misc/time.h"
 
@@ -30,7 +28,7 @@ namespace test {
 namespace {
 
 bool CurrentTime(timespec* now) {
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   timeval now_tv;
   int res = gettimeofday(&now_tv, nullptr);
   if (res != 0) {
@@ -93,7 +91,7 @@ TEST(Filesystem, FileModificationTime) {
 
 TEST(Filesystem, FileModificationTime_SymbolicLinks) {
   if (!CanCreateSymbolicLinks()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   ScopedTempDir temp_dir;
@@ -224,7 +222,7 @@ TEST(Filesystem, MoveFileOrDirectory) {
 
 TEST(Filesystem, MoveFileOrDirectory_SymbolicLinks) {
   if (!CanCreateSymbolicLinks()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   ScopedTempDir temp_dir;
@@ -302,7 +300,7 @@ TEST(Filesystem, IsRegularFile) {
 
 TEST(Filesystem, IsRegularFile_SymbolicLinks) {
   if (!CanCreateSymbolicLinks()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   ScopedTempDir temp_dir;
@@ -344,7 +342,7 @@ TEST(Filesystem, IsDirectory) {
 
 TEST(Filesystem, IsDirectory_SymbolicLinks) {
   if (!CanCreateSymbolicLinks()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   ScopedTempDir temp_dir;
@@ -393,7 +391,7 @@ TEST(Filesystem, RemoveFile) {
 
 TEST(Filesystem, RemoveFile_SymbolicLinks) {
   if (!CanCreateSymbolicLinks()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   ScopedTempDir temp_dir;
@@ -450,7 +448,7 @@ TEST(Filesystem, RemoveDirectory) {
 
 TEST(Filesystem, RemoveDirectory_SymbolicLinks) {
   if (!CanCreateSymbolicLinks()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   ScopedTempDir temp_dir;

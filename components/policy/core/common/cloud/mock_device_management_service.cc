@@ -4,15 +4,16 @@
 
 #include "components/policy/core/common/cloud/mock_device_management_service.h"
 
+#include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
+#include "base/task/post_task.h"
+#include "base/test/bind.h"
 #include "components/policy/core/common/cloud/dm_auth.h"
 #include "net/base/net_errors.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-
-using testing::Action;
-
-namespace em = enterprise_management;
 
 namespace policy {
 namespace {
@@ -21,104 +22,17 @@ const char kServerUrl[] = "https://example.com/management_service";
 const char kUserAgent[] = "Chrome 1.2.3(456)";
 const char kPlatform[] = "Test|Unit|1.2.3";
 
-// Common mock request job functionality.
-class MockRequestJobBase : public DeviceManagementRequestJob {
- public:
-  MockRequestJobBase(JobType type,
-                     MockDeviceManagementService* service)
-      : DeviceManagementRequestJob(type, std::string(), std::string()),
-        service_(service) {}
-  ~MockRequestJobBase() override {}
-
- protected:
-  void Run() override {
-    service_->StartJob(ExtractParameter(dm_protocol::kParamRequest),
-                       auth_data_ ? auth_data_->gaia_token() : "",
-                       ExtractParameter(dm_protocol::kParamOAuthToken),
-                       auth_data_ ? auth_data_->dm_token() : "",
-                       auth_data_ ? auth_data_->enrollment_token() : "",
-                       ExtractParameter(dm_protocol::kParamDeviceID), request_);
-  }
-
- private:
-  // Searches for a query parameter and returns the associated value.
-  const std::string& ExtractParameter(const std::string& name) const {
-    for (auto entry(query_params_.begin()); entry != query_params_.end();
-         ++entry) {
-      if (name == entry->first)
-        return entry->second;
-    }
-
-    return base::EmptyString();
-  }
-
-  MockDeviceManagementService* service_;
-
-  DISALLOW_COPY_AND_ASSIGN(MockRequestJobBase);
-};
-
-// Synchronous mock request job that immediately completes on calling Run().
-class SyncRequestJob : public MockRequestJobBase {
- public:
-  SyncRequestJob(JobType type,
-                 MockDeviceManagementService* service,
-                 DeviceManagementStatus status,
-                 const em::DeviceManagementResponse& response)
-      : MockRequestJobBase(type, service),
-        status_(status),
-        response_(response) {}
-  ~SyncRequestJob() override {}
-
- protected:
-  void Run() override {
-    MockRequestJobBase::Run();
-    callback_.Run(status_, net::OK, response_);
-  }
-
- private:
-  DeviceManagementStatus status_;
-  em::DeviceManagementResponse response_;
-
-  DISALLOW_COPY_AND_ASSIGN(SyncRequestJob);
-};
-
-// Asynchronous job that allows the test to delay job completion.
-class AsyncRequestJob : public MockRequestJobBase,
-                        public MockDeviceManagementJob {
- public:
-  AsyncRequestJob(JobType type, MockDeviceManagementService* service)
-      : MockRequestJobBase(type, service) {}
-  ~AsyncRequestJob() override {}
-
- protected:
-  void RetryJob() override {
-    if (!retry_callback_.is_null())
-      retry_callback_.Run(this);
-    Run();
-  }
-
-  void SendResponse(DeviceManagementStatus status,
-                    const em::DeviceManagementResponse& response) override {
-    callback_.Run(status, net::OK, response);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(AsyncRequestJob);
-};
+std::string Serialize(
+    const enterprise_management::DeviceManagementResponse& response) {
+  // SerializeToString() may fail, that's OK.  Some tests explicitly use
+  // malformed responses.
+  std::string payload;
+  if (response.IsInitialized())
+    response.SerializeToString(&payload);
+  return payload;
+}
 
 }  // namespace
-
-ACTION_P3(CreateSyncMockDeviceManagementJob, service, status, response) {
-  return new SyncRequestJob(arg0, service, status, response);
-}
-
-ACTION_P2(CreateAsyncMockDeviceManagementJob, service, mock_job) {
-  AsyncRequestJob* job = new AsyncRequestJob(arg0, service);
-  *mock_job = job;
-  return job;
-}
-
-MockDeviceManagementJob::~MockDeviceManagementJob() {}
 
 MockDeviceManagementServiceConfiguration::
     MockDeviceManagementServiceConfiguration()
@@ -129,41 +43,254 @@ MockDeviceManagementServiceConfiguration::
     : server_url_(server_url) {}
 
 MockDeviceManagementServiceConfiguration::
-    ~MockDeviceManagementServiceConfiguration() {}
+    ~MockDeviceManagementServiceConfiguration() = default;
 
-std::string MockDeviceManagementServiceConfiguration::GetServerUrl() {
+std::string MockDeviceManagementServiceConfiguration::GetDMServerUrl() const {
   return server_url_;
 }
 
-std::string MockDeviceManagementServiceConfiguration::GetAgentParameter() {
+std::string MockDeviceManagementServiceConfiguration::GetAgentParameter()
+    const {
   return kUserAgent;
 }
 
-std::string MockDeviceManagementServiceConfiguration::GetPlatformParameter() {
+std::string MockDeviceManagementServiceConfiguration::GetPlatformParameter()
+    const {
   return kPlatform;
 }
 
-MockDeviceManagementService::MockDeviceManagementService()
-    : DeviceManagementService(std::unique_ptr<Configuration>(
-          new MockDeviceManagementServiceConfiguration)) {}
-
-MockDeviceManagementService::~MockDeviceManagementService() {}
-
-Action<MockDeviceManagementService::CreateJobFunction>
-    MockDeviceManagementService::SucceedJob(
-        const em::DeviceManagementResponse& response) {
-  return CreateSyncMockDeviceManagementJob(this, DM_STATUS_SUCCESS, response);
+std::string
+MockDeviceManagementServiceConfiguration::GetRealtimeReportingServerUrl()
+    const {
+  return server_url_;
 }
 
-Action<MockDeviceManagementService::CreateJobFunction>
-    MockDeviceManagementService::FailJob(DeviceManagementStatus status) {
-  const em::DeviceManagementResponse dummy_response;
-  return CreateSyncMockDeviceManagementJob(this, status, dummy_response);
+std::string
+MockDeviceManagementServiceConfiguration::GetEncryptedReportingServerUrl()
+    const {
+  return server_url_;
 }
 
-Action<MockDeviceManagementService::CreateJobFunction>
-    MockDeviceManagementService::CreateAsyncJob(MockDeviceManagementJob** job) {
-  return CreateAsyncMockDeviceManagementJob(this, job);
+std::string
+MockDeviceManagementServiceConfiguration::GetReportingConnectorServerUrl(
+    content::BrowserContext* context) const {
+  return server_url_;
+}
+
+MockJobCreationHandler::MockJobCreationHandler() = default;
+MockJobCreationHandler::~MockJobCreationHandler() = default;
+
+FakeDeviceManagementService::FakeDeviceManagementService(
+    MockJobCreationHandler* creation_handler)
+    : FakeDeviceManagementService(
+          std::make_unique<MockDeviceManagementServiceConfiguration>(),
+          creation_handler) {}
+
+FakeDeviceManagementService::FakeDeviceManagementService(
+    std::unique_ptr<Configuration> config,
+    MockJobCreationHandler* creation_handler)
+    : DeviceManagementService(std::move(config)),
+      creation_handler_(creation_handler) {
+  CHECK(creation_handler_);
+}
+
+FakeDeviceManagementService::~FakeDeviceManagementService() = default;
+
+std::unique_ptr<DeviceManagementService::Job>
+FakeDeviceManagementService::CreateJob(
+    std::unique_ptr<JobConfiguration> config) {
+  auto job_pair = CreateJobForTesting(std::move(config));
+  creation_handler_->OnJobCreation(job_pair.second);
+  return std::move(job_pair.first);
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::CaptureAuthData(DMAuth* auth_data) {
+  return [auth_data](DeviceManagementService::JobForTesting job) mutable {
+    if (job.IsActive())
+      *auth_data = job.GetConfigurationForTesting()->GetAuth().Clone();
+  };
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::CaptureJobType(
+    DeviceManagementService::JobConfiguration::JobType* job_type) {
+  return [job_type](DeviceManagementService::JobForTesting job) mutable {
+    if (job.IsActive())
+      *job_type = job.GetConfigurationForTesting()->GetType();
+  };
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::CapturePayload(std::string* payload) {
+  return [payload](DeviceManagementService::JobForTesting job) mutable {
+    if (job.IsActive())
+      *payload = job.GetConfigurationForTesting()->GetPayload();
+  };
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::CaptureQueryParams(
+    std::map<std::string, std::string>* query_params) {
+  return [query_params](DeviceManagementService::JobForTesting job) mutable {
+    if (job.IsActive())
+      *query_params = job.GetConfigurationForTesting()->GetQueryParams();
+  };
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::CaptureRequest(
+    enterprise_management::DeviceManagementRequest* request) {
+  return [request](DeviceManagementService::JobForTesting job) mutable {
+    if (job.IsActive()) {
+      const std::string payload =
+          job.GetConfigurationForTesting()->GetPayload();
+      CHECK(request->ParseFromString(payload));
+    }
+  };
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::SendJobResponseAsync(int net_error,
+                                                  int response_code,
+                                                  const std::string& response,
+                                                  const std::string& mime_type,
+                                                  bool was_fetched_via_proxy) {
+  // Note: We need to use a WeakPtr<Job> here, because some tests might destroy
+  // pending jobs, e.g. CloudPolicyClientTest, CancelUploadAppInstallReport.
+  // And base::WeakPtr cannot bind to non-void functions.
+  // Thus, we need the redirect to SendWeakJobResponseNow.
+  return [=](DeviceManagementService::JobForTesting job) {
+    this->GetTaskRunnerForTesting()->PostTask(
+        FROM_HERE, base::BindLambdaForTesting([=]() mutable {
+          if (job.IsActive()) {
+            job.SetResponseForTesting(net_error, response_code, response,
+                                      mime_type, was_fetched_via_proxy);
+          } else
+            LOG(WARNING) << "job inactive";
+        }));
+  };
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::SendJobResponseAsync(
+    int net_error,
+    int response_code,
+    const enterprise_management::DeviceManagementResponse& response,
+    const std::string& mime_type,
+    bool was_fetched_via_proxy) {
+  return SendJobResponseAsync(net_error, response_code, Serialize(response),
+                              mime_type, was_fetched_via_proxy);
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::SendJobOKAsync(const std::string& response) {
+  return SendJobResponseAsync(net::OK, DeviceManagementService::kSuccess,
+                              response);
+}
+
+FakeDeviceManagementService::JobAction
+FakeDeviceManagementService::SendJobOKAsync(
+    const enterprise_management::DeviceManagementResponse& response) {
+  return SendJobOKAsync(Serialize(response));
+}
+
+void FakeDeviceManagementService::SendJobResponseNow(
+    DeviceManagementService::JobForTesting* job,
+    int net_error,
+    int response_code,
+    const std::string& response,
+    const std::string& mime_type,
+    bool was_fetched_via_proxy) {
+  CHECK(job);
+  if (job->SetResponseForTesting(net_error, response_code, response, mime_type,
+                                 was_fetched_via_proxy) ==
+      Job::RetryMethod::NO_RETRY) {
+    job->Deactivate();
+  }
+}
+
+void FakeDeviceManagementService::SendJobResponseNow(
+    DeviceManagementService::JobForTesting* job,
+    int net_error,
+    int response_code,
+    const enterprise_management::DeviceManagementResponse& response,
+    const std::string& mime_type,
+    bool was_fetched_via_proxy) {
+  SendJobResponseNow(job, net_error, response_code, Serialize(response),
+                     mime_type, was_fetched_via_proxy);
+}
+
+void FakeDeviceManagementService::SendJobOKNow(
+    DeviceManagementService::JobForTesting* job,
+    const std::string& response) {
+  SendJobResponseNow(job, net::OK, kSuccess, response);
+}
+
+void FakeDeviceManagementService::SendJobOKNow(
+    DeviceManagementService::JobForTesting* job,
+    const enterprise_management::DeviceManagementResponse& response) {
+  SendJobOKNow(job, Serialize(response));
+}
+
+FakeJobConfiguration::FakeJobConfiguration(
+    DeviceManagementService* service,
+    JobType type,
+    const std::string& client_id,
+    bool critical,
+    DMAuth auth_data,
+    absl::optional<std::string> oauth_token,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    FakeCallback callback,
+    RetryCallback retry_callback,
+    RetryCallback should_retry_callback)
+    : DMServerJobConfiguration(service,
+                               type,
+                               client_id,
+                               critical,
+                               std::move(auth_data),
+                               oauth_token,
+                               url_loader_factory,
+                               base::DoNothing()),
+      should_retry_response_(DeviceManagementService::Job::NO_RETRY),
+      callback_(std::move(callback)),
+      retry_callback_(retry_callback),
+      should_retry_callback_(should_retry_callback) {
+  DCHECK(!callback_.is_null());
+  DCHECK(!retry_callback_.is_null());
+}
+
+FakeJobConfiguration::~FakeJobConfiguration() = default;
+
+void FakeJobConfiguration::SetRequestPayload(
+    const std::string& request_payload) {
+  request()->ParseFromString(request_payload);
+}
+
+void FakeJobConfiguration::SetShouldRetryResponse(
+    DeviceManagementService::Job::RetryMethod method) {
+  should_retry_response_ = method;
+}
+
+DeviceManagementService::Job::RetryMethod FakeJobConfiguration::ShouldRetry(
+    int response_code,
+    const std::string& response_body) {
+  should_retry_callback_.Run(response_code, response_body);
+  return should_retry_response_;
+}
+
+void FakeJobConfiguration::OnBeforeRetry(int response_code,
+                                         const std::string& response_body) {
+  retry_callback_.Run(response_code, response_body);
+}
+
+void FakeJobConfiguration::OnURLLoadComplete(DeviceManagementService::Job* job,
+                                             int net_error,
+                                             int response_code,
+                                             const std::string& response_body) {
+  DeviceManagementStatus code =
+      MapNetErrorAndResponseCodeToDMStatus(net_error, response_code);
+  std::move(callback_).Run(job, code, net_error, response_body);
 }
 
 }  // namespace policy

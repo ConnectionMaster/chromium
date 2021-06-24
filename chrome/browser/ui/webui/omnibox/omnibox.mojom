@@ -31,6 +31,7 @@ struct AutocompleteMatch {
   array<ACMatchClassification> contents_class;
   string description;
   array<ACMatchClassification> description_class;
+  bool swap_contents_and_description;
   string answer;
   string transition;
   bool allowed_to_be_default_match;
@@ -42,8 +43,8 @@ struct AutocompleteMatch {
   bool starred;
   int32 duplicates;
   bool from_previous;
+  int32 pedal_id;
   array<AutocompleteAdditionalInfo> additional_info;
-  string document_type;
 };
 
 struct AutocompleteResultsForProvider {
@@ -52,20 +53,24 @@ struct AutocompleteResultsForProvider {
 };
 
 struct OmniboxResponse {
-  bool done;
+  int32 cursor_position;
   // Time delta since the request was started, in milliseconds.
   int32 time_since_omnibox_started_ms;
+  bool done;
   // The inferred metrics::OmniboxInputType of the request represented as a
   // string.
   string type;
   string host;
   bool is_typed_host;
+  string input_text;
   array<AutocompleteMatch> combined_results;
   array<AutocompleteResultsForProvider> results_by_provider;
 };
 
 interface OmniboxPageHandler {
-  SetClientPage(OmniboxPage page);
+  // Registers the webui page.
+  SetClientPage(pending_remote<OmniboxPage> page);
+  // Prompts an autocomplete controller to process an omnibox query.
   StartOmniboxQuery(string input_string,
                     bool reset_autocomplete_controller,
                     int32 cursor_position,
@@ -77,8 +82,15 @@ interface OmniboxPageHandler {
 };
 
 interface OmniboxPage {
-  handleNewAutocompleteResponse(OmniboxResponse response,
-                                bool isPageController);
-  HandleNewAutocompleteQuery(bool isPageController);
+  // Notifies the page of an omnibox response from a autocomplete
+  // controller. |is_page_controller| indicates whether the response
+  // originates from a query initiated from the page via
+  // |StartOmniboxQuery| or from the browser omnibox.
+  HandleNewAutocompleteResponse(OmniboxResponse response,
+                                bool is_page_controller);
+  // Notifies the page a new omnibox query has begun.
+  HandleNewAutocompleteQuery(bool is_page_controller, string input_text);
+  // Asynchronously notifies the page of the image data URLs for previous
+  // omnibox responses.
   HandleAnswerImageData(string image_url, string image_data);
 };

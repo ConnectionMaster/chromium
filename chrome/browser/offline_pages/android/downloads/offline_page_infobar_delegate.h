@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_OFFLINE_PAGES_ANDROID_DOWNLOADS_OFFLINE_PAGE_INFOBAR_DELEGATE_H_
 
 #include "base/callback.h"
-#include "chrome/browser/android/download/duplicate_download_infobar_delegate.h"
+#include "chrome/browser/download/android/duplicate_download_infobar_delegate.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "url/gurl.h"
 
@@ -26,16 +26,16 @@ class OfflinePageInfoBarDelegate
     : public ::android::DuplicateDownloadInfoBarDelegate {
  public:
   // Creates an offline page infobar and a delegate and adds the infobar to the
-  // InfoBarService associated with |web_contents|. |page_name| is the name
-  // shown for this file in the infobar text.
-  static void Create(const base::Closure& confirm_continuation,
+  // infobars::ContentInfoBarManager associated with |web_contents|. |page_name|
+  // is the name shown for this file in the infobar text.
+  static void Create(base::OnceClosure confirm_continuation,
                      const GURL& page_to_download,
                      bool exists_duplicate_request,
                      content::WebContents* web_contents);
   ~OfflinePageInfoBarDelegate() override;
 
  private:
-  OfflinePageInfoBarDelegate(const base::Closure& confirm_continuation,
+  OfflinePageInfoBarDelegate(base::OnceClosure confirm_continuation,
                              const std::string& page_name,
                              const GURL& page_to_download,
                              bool duplicate_request_exists);
@@ -53,7 +53,7 @@ class OfflinePageInfoBarDelegate
   OfflinePageInfoBarDelegate* AsOfflinePageInfoBarDelegate() override;
 
   // Continuation called when the user chooses to create a new file.
-  base::Closure confirm_continuation_;
+  base::OnceClosure confirm_continuation_;
 
   std::string page_name_;
   GURL page_to_download_;

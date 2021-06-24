@@ -4,9 +4,22 @@
 
 """Tools for annotation test scripts."""
 
+from __future__ import print_function
+
+import json
 import os
 import subprocess
 import sys
+
+script_dir = os.path.dirname(os.path.realpath(__file__))
+tool_dir = os.path.abspath(os.path.join(script_dir, '../../clang/pylib'))
+sys.path.insert(0, tool_dir)
+
+#TODO(https://crbug.com/1119417): To be replaced with a commandline argument or
+# made to run in addition to the preexisting C++ auditor executable.
+PYTHON_AUDITOR = False
+
+from clang import compile_db  # type: ignore
 
 
 class NetworkTrafficAnnotationTools():
@@ -34,10 +47,15 @@ class NetworkTrafficAnnotationTools():
       'darwin': 'mac',
       'win32': 'win32',
     }[sys.platform]
-    path = os.path.join(self.this_dir, '..', 'bin', platform,
+
+    if PYTHON_AUDITOR:
+      path = os.path.join(self.this_dir, "../scripts/auditor.py")
+    else:
+      path = os.path.join(self.this_dir, '..', 'bin', platform,
                         'traffic_annotation_auditor')
-    if sys.platform == 'win32':
-      path += '.exe'
+      if sys.platform == 'win32':
+        path += '.exe'
+
     if os.path.exists(path):
       self.auditor_path = path
 
@@ -60,6 +78,28 @@ class NetworkTrafficAnnotationTools():
     """
     return all(os.path.exists(
         os.path.join(path, item)) for item in ('gen', 'build.ninja'))
+
+  def GetCompDBFiles(self, generate_compdb):
+    """Gets the list of files.
+
+    Args:
+      generate_compdb: if true, generate a new compdb and write it to
+                       compile_commands.json.
+
+    Returns:
+      A set of absolute filepaths, with all compile-able C++ files (based on the
+      compilation database).
+    """
+    if generate_compdb:
+      compile_commands = compile_db.GenerateWithNinja(self.build_path)
+      compdb_path = os.path.join(self.build_path, 'compile_commands.json')
+      with open(compdb_path, 'w') as f:
+        f.write(json.dumps(compile_commands, indent=2))
+
+    compdb = compile_db.Read(self.build_path)
+    return set(
+        os.path.abspath(os.path.join(self.build_path, e['file']))
+        for e in compdb)
 
   def GetModifiedFiles(self):
     """Gets the list of modified files from git. Returns None if any error
@@ -112,9 +152,15 @@ class NetworkTrafficAnnotationTools():
       return_code: int Auditor's exit code.
     """
 
+    if PYTHON_AUDITOR:
+      command_line = [
+        "vpython", self.auditor_path, "--build-path=" + self.build_path] + args
+    else:
+      command_line = [self.auditor_path, "--build-path=" + self.build_path] + \
+      args
+
     command = subprocess.Popen(
-        [self.auditor_path, "--build-path=" + self.build_path] + args,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        command_line, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout_text, stderr_text = command.communicate()
     return_code = command.returncode
 

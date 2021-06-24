@@ -8,8 +8,8 @@
 #include <iosfwd>
 #include <string>
 
+#include "base/numerics/safe_conversions.h"
 #include "ui/gfx/geometry/geometry_export.h"
-#include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/geometry/vector2d.h"
 
 namespace gfx {
@@ -20,8 +20,8 @@ namespace gfx {
 
 class GEOMETRY_EXPORT ScrollOffset {
  public:
-  ScrollOffset() : x_(0), y_(0) {}
-  ScrollOffset(float x, float y) : x_(x), y_(y) {}
+  constexpr ScrollOffset() : x_(0), y_(0) {}
+  constexpr ScrollOffset(float x, float y) : x_(x), y_(y) {}
   explicit ScrollOffset(const Vector2dF& v) : x_(v.x()), y_(v.y()) {}
   explicit ScrollOffset(const Vector2d& v) : x_(v.x()), y_(v.y()) {}
 
@@ -106,7 +106,7 @@ inline ScrollOffset operator-(const ScrollOffset& lhs,
 }
 
 inline Vector2d ScrollOffsetToFlooredVector2d(const ScrollOffset& v) {
-  return Vector2d(ToFlooredInt(v.x()), ToFlooredInt(v.y()));
+  return Vector2d(base::ClampFloor(v.x()), base::ClampFloor(v.y()));
 }
 
 inline Vector2dF ScrollOffsetToVector2dF(const ScrollOffset& v) {

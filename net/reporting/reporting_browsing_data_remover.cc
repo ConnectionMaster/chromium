@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "net/reporting/reporting_cache.h"
-#include "net/reporting/reporting_client.h"
 #include "net/reporting/reporting_context.h"
 #include "net/reporting/reporting_report.h"
 
@@ -16,7 +15,7 @@ namespace net {
 // static
 void ReportingBrowsingDataRemover::RemoveBrowsingData(
     ReportingCache* cache,
-    int data_type_mask,
+    uint64_t data_type_mask,
     const base::RepeatingCallback<bool(const GURL&)>& origin_filter) {
   if ((data_type_mask & DATA_TYPE_REPORTS) != 0) {
     std::vector<const ReportingReport*> all_reports;
@@ -34,23 +33,18 @@ void ReportingBrowsingDataRemover::RemoveBrowsingData(
   }
 
   if ((data_type_mask & DATA_TYPE_CLIENTS) != 0) {
-    std::vector<const ReportingClient*> all_clients;
-    cache->GetClients(&all_clients);
-
-    std::vector<const ReportingClient*> clients_to_remove;
-    for (const ReportingClient* client : all_clients) {
-      // TODO(juliatuttle): Examine client endpoint as well?
-      if (origin_filter.Run(client->origin.GetURL()))
-        clients_to_remove.push_back(client);
+    for (const url::Origin& origin : cache->GetAllOrigins()) {
+      if (origin_filter.Run(origin.GetURL()))
+        cache->RemoveClientsForOrigin(origin);
     }
-
-    cache->RemoveClients(clients_to_remove);
   }
+  cache->Flush();
 }
 
 // static
-void ReportingBrowsingDataRemover::RemoveAllBrowsingData(ReportingCache* cache,
-                                                         int data_type_mask) {
+void ReportingBrowsingDataRemover::RemoveAllBrowsingData(
+    ReportingCache* cache,
+    uint64_t data_type_mask) {
   if ((data_type_mask & DATA_TYPE_REPORTS) != 0) {
     cache->RemoveAllReports(
         ReportingReport::Outcome::ERASED_BROWSING_DATA_REMOVED);
@@ -58,6 +52,7 @@ void ReportingBrowsingDataRemover::RemoveAllBrowsingData(ReportingCache* cache,
   if ((data_type_mask & DATA_TYPE_CLIENTS) != 0) {
     cache->RemoveAllClients();
   }
+  cache->Flush();
 }
 
 }  // namespace net

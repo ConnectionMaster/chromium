@@ -9,8 +9,6 @@
 
 namespace ash {
 
-class UnifiedVolumeView;
-
 // Controller of a slider that can change audio volume.
 class UnifiedVolumeSliderController : public UnifiedSliderListener {
  public:
@@ -20,20 +18,23 @@ class UnifiedVolumeSliderController : public UnifiedSliderListener {
     virtual void OnAudioSettingsButtonClicked() = 0;
   };
 
-  explicit UnifiedVolumeSliderController(Delegate* delegate);
+  UnifiedVolumeSliderController(Delegate* delegate, bool in_bubble);
   ~UnifiedVolumeSliderController() override;
 
   // UnifiedSliderListener:
   views::View* CreateView() override;
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
   void SliderValueChanged(views::Slider* sender,
                           float value,
                           float old_value,
                           views::SliderChangeReason reason) override;
 
+  void SliderButtonPressed();
+
  private:
   Delegate* const delegate_;
-  UnifiedVolumeView* slider_ = nullptr;
+
+  // Whether the volume slider is in the bubble, as opposed to the system tray.
+  const bool in_bubble_;
 
   DISALLOW_COPY_AND_ASSIGN(UnifiedVolumeSliderController);
 };

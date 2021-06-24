@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -18,7 +19,7 @@
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_contents_factory.h"
 #include "content/public/test/web_contents_tester.h"
 #include "extensions/browser/image_loader.h"
@@ -42,31 +43,41 @@ namespace extensions {
 namespace {
 
 void VerifyPromptIconCallback(
-    const base::Closure& quit_closure,
+    base::OnceClosure quit_closure,
     const SkBitmap& expected_bitmap,
-    ExtensionInstallPromptShowParams* params,
-    const ExtensionInstallPrompt::DoneCallback& done_callback,
+    std::unique_ptr<ExtensionInstallPromptShowParams> params,
+    ExtensionInstallPrompt::DoneCallback done_callback,
     std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt) {
   EXPECT_TRUE(gfx::BitmapsAreEqual(prompt->icon().AsBitmap(), expected_bitmap));
-  quit_closure.Run();
+  std::move(quit_closure).Run();
 }
 
 void VerifyPromptPermissionsCallback(
-    const base::Closure& quit_closure,
+    base::OnceClosure quit_closure,
     size_t regular_permissions_count,
-    ExtensionInstallPromptShowParams* params,
-    const ExtensionInstallPrompt::DoneCallback& done_callback,
+    std::unique_ptr<ExtensionInstallPromptShowParams> params,
+    ExtensionInstallPrompt::DoneCallback done_callback,
     std::unique_ptr<ExtensionInstallPrompt::Prompt> install_prompt) {
   ASSERT_TRUE(install_prompt.get());
   EXPECT_EQ(regular_permissions_count, install_prompt->GetPermissionCount());
-  quit_closure.Run();
+  std::move(quit_closure).Run();
+}
+
+void VerifyPromptWithholdingUICallback(
+    base::OnceClosure quit_closure,
+    const bool should_display,
+    std::unique_ptr<ExtensionInstallPromptShowParams> params,
+    ExtensionInstallPrompt::DoneCallback done_callback,
+    std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt) {
+  EXPECT_EQ(should_display, prompt->ShouldDisplayWithholdingUI());
+  std::move(quit_closure).Run();
 }
 
 void SetImage(gfx::Image* image_out,
-              const base::Closure& quit_closure,
+              base::OnceClosure quit_closure,
               const gfx::Image& image_in) {
   *image_out = image_in;
-  quit_closure.Run();
+  std::move(quit_closure).Run();
 }
 
 class ExtensionInstallPromptUnitTest : public testing::Test {
@@ -75,9 +86,7 @@ class ExtensionInstallPromptUnitTest : public testing::Test {
   ~ExtensionInstallPromptUnitTest() override {}
 
   // testing::Test:
-  void SetUp() override {
-    profile_.reset(new TestingProfile());
-  }
+  void SetUp() override { profile_ = std::make_unique<TestingProfile>(); }
   void TearDown() override {
     profile_.reset();
   }
@@ -85,7 +94,7 @@ class ExtensionInstallPromptUnitTest : public testing::Test {
   Profile* profile() { return profile_.get(); }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionInstallPromptUnitTest);
@@ -95,7 +104,7 @@ class ExtensionInstallPromptUnitTest : public testing::Test {
 
 TEST_F(ExtensionInstallPromptUnitTest, PromptShowsPermissionWarnings) {
   APIPermissionSet api_permissions;
-  api_permissions.insert(APIPermission::kTab);
+  api_permissions.insert(extensions::mojom::APIPermissionID::kTab);
   std::unique_ptr<const PermissionSet> permission_set(
       new PermissionSet(std::move(api_permissions), ManifestPermissionSet(),
                         URLPatternSet(), URLPatternSet()));
@@ -112,13 +121,14 @@ TEST_F(ExtensionInstallPromptUnitTest, PromptShowsPermissionWarnings) {
   content::TestWebContentsFactory factory;
   ExtensionInstallPrompt prompt(factory.CreateWebContents(profile()));
   base::RunLoop run_loop;
-  prompt.ShowDialog(
-      ExtensionInstallPrompt::DoneCallback(), extension.get(), nullptr,
-      std::make_unique<ExtensionInstallPrompt::Prompt>(
-          ExtensionInstallPrompt::PERMISSIONS_PROMPT),
-      std::move(permission_set),
-      base::Bind(&VerifyPromptPermissionsCallback, run_loop.QuitClosure(),
-                 1u));  // |regular_permissions_count|.
+  prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(), extension.get(),
+                    nullptr,
+                    std::make_unique<ExtensionInstallPrompt::Prompt>(
+                        ExtensionInstallPrompt::PERMISSIONS_PROMPT),
+                    std::move(permission_set),
+                    base::BindRepeating(&VerifyPromptPermissionsCallback,
+                                        run_loop.QuitClosure(),
+                                        1u));  // |regular_permissions_count|.
   run_loop.Run();
 }
 
@@ -146,11 +156,11 @@ TEST_F(ExtensionInstallPromptUnitTest,
       new ExtensionInstallPrompt::Prompt(
           ExtensionInstallPrompt::DELEGATED_PERMISSIONS_PROMPT));
   sub_prompt->set_delegated_username("Username");
-  prompt.ShowDialog(
-      ExtensionInstallPrompt::DoneCallback(), extension.get(), nullptr,
-      std::move(sub_prompt),
-      base::Bind(&VerifyPromptPermissionsCallback, run_loop.QuitClosure(),
-                 2u));  // |regular_permissions_count|.
+  prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(), extension.get(),
+                    nullptr, std::move(sub_prompt),
+                    base::BindRepeating(&VerifyPromptPermissionsCallback,
+                                        run_loop.QuitClosure(),
+                                        2u));  // |regular_permissions_count|.
   run_loop.Run();
 }
 
@@ -184,10 +194,11 @@ TEST_F(ExtensionInstallPromptTestWithService, ExtensionInstallPromptIconsTest) {
   {
     ExtensionInstallPrompt prompt(web_contents.get());
     base::RunLoop run_loop;
-    prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(), extension,
-                      nullptr,  // Force an icon fetch.
-                      base::Bind(&VerifyPromptIconCallback,
-                                 run_loop.QuitClosure(), image.AsBitmap()));
+    prompt.ShowDialog(
+        ExtensionInstallPrompt::DoneCallback(), extension,
+        nullptr,  // Force an icon fetch.
+        base::BindRepeating(&VerifyPromptIconCallback, run_loop.QuitClosure(),
+                            image.AsBitmap()));
     run_loop.Run();
   }
 
@@ -195,13 +206,73 @@ TEST_F(ExtensionInstallPromptTestWithService, ExtensionInstallPromptIconsTest) {
     ExtensionInstallPrompt prompt(web_contents.get());
     base::RunLoop run_loop;
     gfx::ImageSkia app_icon = util::GetDefaultAppIcon();
-    prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(),
-                      extension,
-                      app_icon.bitmap(),  // Use a different icon.
-                      base::Bind(&VerifyPromptIconCallback,
-                                 run_loop.QuitClosure(), *app_icon.bitmap()));
+    prompt.ShowDialog(
+        ExtensionInstallPrompt::DoneCallback(), extension,
+        app_icon.bitmap(),  // Use a different icon.
+        base::BindRepeating(&VerifyPromptIconCallback, run_loop.QuitClosure(),
+                            *app_icon.bitmap()));
     run_loop.Run();
   }
+}
+
+class ExtensionInstallPromptTestWithholdingAllowed
+    : public ExtensionInstallPromptUnitTest {
+ public:
+  ExtensionInstallPromptTestWithholdingAllowed() {
+    scoped_feature_list_.InitAndEnableFeature(
+        extensions_features::kAllowWithholdingExtensionPermissionsOnInstall);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(ExtensionInstallPromptTestWithholdingAllowed,
+       PromptShouldShowWithholdingUI) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("test").AddPermission("<all_urls>").Build();
+  content::TestWebContentsFactory factory;
+  ExtensionInstallPrompt prompt(factory.CreateWebContents(profile()));
+  base::RunLoop run_loop;
+
+  prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(), extension.get(),
+                    nullptr,
+                    base::BindRepeating(&VerifyPromptWithholdingUICallback,
+                                        run_loop.QuitClosure(), true));
+  run_loop.Run();
+}
+
+TEST_F(ExtensionInstallPromptTestWithholdingAllowed,
+       DoesntShowForNoHostsRequested) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("no_host").AddPermission("tabs").Build();
+  content::TestWebContentsFactory factory;
+  ExtensionInstallPrompt prompt(factory.CreateWebContents(profile()));
+  base::RunLoop run_loop;
+
+  prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(), extension.get(),
+                    nullptr,
+                    base::BindRepeating(&VerifyPromptWithholdingUICallback,
+                                        run_loop.QuitClosure(), false));
+  run_loop.Run();
+}
+
+TEST_F(ExtensionInstallPromptTestWithholdingAllowed,
+       DoesntShowForWithholdingNotAllowed) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("all_hosts")
+          .AddPermission("<all_urls>")
+          .SetLocation(mojom::ManifestLocation::kExternalPolicy)
+          .Build();
+  content::TestWebContentsFactory factory;
+  ExtensionInstallPrompt prompt(factory.CreateWebContents(profile()));
+  base::RunLoop run_loop;
+
+  prompt.ShowDialog(ExtensionInstallPrompt::DoneCallback(), extension.get(),
+                    nullptr,
+                    base::BindRepeating(&VerifyPromptWithholdingUICallback,
+                                        run_loop.QuitClosure(), false));
+  run_loop.Run();
 }
 
 }  // namespace extensions

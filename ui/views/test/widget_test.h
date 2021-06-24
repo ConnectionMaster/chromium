@@ -6,9 +6,14 @@
 #define UI_VIEWS_TEST_WIDGET_TEST_H_
 
 #include <memory>
+#include <string>
+#include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/views/test/views_test_base.h"
@@ -20,10 +25,11 @@ namespace internal {
 class InputMethodDelegate;
 }
 class EventSink;
-}
+}  // namespace ui
 
 namespace views {
 
+class View;
 class Widget;
 
 namespace internal {
@@ -34,17 +40,30 @@ class RootView;
 
 namespace test {
 
+// These functions return an arbitrary view v such that:
+//
+// 1) v is a descendant of the root view of the provided widget, and
+// 2) predicate.Run(v) returned true
+//
+// They are *not* guaranteed to return first child matching the predicate for
+// any specific ordering of the children. In fact, these methods deliberately
+// randomly choose a child to return, so make sure your predicate matches
+// *only* the view you want!
+using ViewPredicate = base::RepeatingCallback<bool(const View*)>;
+View* AnyViewMatchingPredicate(Widget* widget, const ViewPredicate& predicate);
+template <typename Pred>
+View* AnyViewMatchingPredicate(Widget* widget, Pred predicate) {
+  return AnyViewMatchingPredicate(widget,
+                                  base::BindLambdaForTesting(predicate));
+}
+
+View* AnyViewWithClassName(Widget* widget, const std::string& classname);
+
 class WidgetTest : public ViewsTestBase {
  public:
-  // This class can be used as a deleter for std::unique_ptr<Widget>
-  // to call function Widget::CloseNow automatically.
-  struct WidgetCloser {
-    void operator()(Widget* widget) const;
-  };
-
-  using WidgetAutoclosePtr = std::unique_ptr<Widget, WidgetCloser>;
-
   WidgetTest();
+  explicit WidgetTest(
+      std::unique_ptr<base::test::TaskEnvironment> task_environment);
   ~WidgetTest() override;
 
   // Create Widgets with |native_widget| in InitParams set to an instance of
@@ -58,7 +77,6 @@ class WidgetTest : public ViewsTestBase {
   // still provide one.
   Widget* CreateTopLevelNativeWidget();
   Widget* CreateChildNativeWidgetWithParent(Widget* parent);
-  Widget* CreateChildNativeWidget();
 
   View* GetMousePressedHandler(internal::RootView* root_view);
 
@@ -103,6 +121,12 @@ class WidgetTest : public ViewsTestBase {
   // Returns the set of all Widgets that currently have a NativeWindow.
   static Widget::Widgets GetAllWidgets();
 
+  // Waits for system app activation events, if any, to have happened. This is
+  // necessary on macOS 10.15+, where the system will attempt to find and
+  // activate a window owned by the app shortly after app startup, if there is
+  // one. See https://crbug.com/998868 for details.
+  static void WaitForSystemAppActivation();
+
  private:
   DISALLOW_COPY_AND_ASSIGN(WidgetTest);
 };
@@ -117,6 +141,18 @@ class DesktopWidgetTest : public WidgetTest {
 
  private:
   DISALLOW_COPY_AND_ASSIGN(DesktopWidgetTest);
+};
+
+class DesktopWidgetTestInteractive : public DesktopWidgetTest {
+ public:
+  DesktopWidgetTestInteractive();
+  ~DesktopWidgetTestInteractive() override;
+
+  // DesktopWidgetTest
+  void SetUp() override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(DesktopWidgetTestInteractive);
 };
 
 // A helper WidgetDelegate for tests that require hooks into WidgetDelegate
@@ -149,12 +185,11 @@ class TestDesktopWidgetDelegate : public WidgetDelegate {
   }
   bool can_close() const { return can_close_; }
 
-  // WidgetDelegate overrides:
+  // WidgetDelegate:
   void WindowClosing() override;
   Widget* GetWidget() override;
   const Widget* GetWidget() const override;
   View* GetContentsView() override;
-  bool ShouldAdvanceFocusToTopLevelWidget() const override;
   bool OnCloseRequested(Widget::ClosedReason close_reason) override;
 
  private:
@@ -238,6 +273,7 @@ class WidgetClosingObserver : public WidgetObserver {
 class WidgetDestroyedWaiter : public WidgetObserver {
  public:
   explicit WidgetDestroyedWaiter(Widget* widget);
+  ~WidgetDestroyedWaiter() override;
 
   // Wait for the widget to be destroyed, or return immediately if it was
   // already destroyed since this object was created.
@@ -247,9 +283,33 @@ class WidgetDestroyedWaiter : public WidgetObserver {
   // views::WidgetObserver
   void OnWidgetDestroyed(Widget* widget) override;
 
+  Widget* widget_;
   base::RunLoop run_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(WidgetDestroyedWaiter);
+};
+
+// Helper class to wait for a Widget to become visible. This will add a failure
+// to the currently-running test if the widget is destroyed before becoming
+// visible.
+class WidgetVisibleWaiter : public WidgetObserver {
+ public:
+  explicit WidgetVisibleWaiter(Widget* widget);
+  WidgetVisibleWaiter(const WidgetVisibleWaiter&) = delete;
+  WidgetVisibleWaiter& operator=(const WidgetVisibleWaiter&) = delete;
+  ~WidgetVisibleWaiter() override;
+
+  // Waits for the widget to become visible.
+  void Wait();
+
+ private:
+  // WidgetObserver:
+  void OnWidgetVisibilityChanged(Widget* widget, bool visible) override;
+  void OnWidgetDestroying(Widget* widget) override;
+
+  Widget* const widget_;
+  base::RunLoop run_loop_;
+  base::ScopedObservation<Widget, WidgetObserver> widget_observation_{this};
 };
 
 }  // namespace test

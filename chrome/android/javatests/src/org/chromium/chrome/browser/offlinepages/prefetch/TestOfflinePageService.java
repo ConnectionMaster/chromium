@@ -4,18 +4,15 @@
 
 package org.chromium.chrome.browser.offlinepages.prefetch;
 
-import android.content.Context;
 import android.os.Bundle;
-import android.support.test.InstrumentationRegistry;
-import android.util.Pair;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.junit.Assert;
 
 import org.chromium.base.Log;
-import org.chromium.base.library_loader.ProcessInitException;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.components.gcm_driver.GCMDriver;
 import org.chromium.components.gcm_driver.GCMMessage;
@@ -36,7 +33,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.concurrent.TimeoutException;
 
 /**
  * A fake OfflinePageService.
@@ -230,7 +226,9 @@ public class TestOfflinePageService {
         }
         mOperations.put(operationName, request);
         if (!writeOperationResponse(operationName, request, true, output)) {
-            mIncompleteOperations.add(operationName);
+            synchronized (mIncompleteOperations) {
+                mIncompleteOperations.add(operationName);
+            }
         }
     }
 
@@ -245,32 +243,43 @@ public class TestOfflinePageService {
      * name that was completed. Returns null if no bundle needs to be sent. If more than one bundle
      * needs to be sent, the first completed bundle is sent. This can be called repeatedly until no
      * more bundles are ready.
+     *
+     * This method is typically not called on the server thread, so access to members should be
+     * synchronized.
      */
-    public String sendPushMessage() throws InterruptedException, TimeoutException {
-        if (mIncompleteOperations.isEmpty()) {
-            return null;
-        }
-        String operationName = mIncompleteOperations.remove(0);
-        final Pair<String, String> appIdAndSenderId =
-                FakeInstanceIDWithSubtype.getSubtypeAndAuthorizedEntityOfOnlyToken();
-        final String appId = appIdAndSenderId.first;
-        final String senderId = appIdAndSenderId.second;
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            Context context = InstrumentationRegistry.getInstrumentation()
-                                      .getTargetContext()
-                                      .getApplicationContext();
+    public String sendPushMessage() {
+        CriteriaHelper.pollInstrumentationThread(() -> {
+            Boolean result;
+            synchronized (mIncompleteOperations) {
+                result = !mIncompleteOperations.isEmpty();
+            }
+            return result;
+        });
 
+        String operationName;
+        synchronized (mIncompleteOperations) {
+            operationName = mIncompleteOperations.remove(0);
+        }
+        final String prefetchSubtype = "com.google.chrome.OfflinePagePrefetch";
+        // We have to wait until Chrome gets the GCM token.
+        CriteriaHelper.pollInstrumentationThread(() -> {
+            try {
+                FakeInstanceIDWithSubtype.getAuthorizedEntityForSubtype(prefetchSubtype);
+                return true;
+            } catch (IllegalStateException e) {
+                return false;
+            }
+        }, "GetGCMToken not complete", 15000, 500);
+        final String senderId =
+                FakeInstanceIDWithSubtype.getAuthorizedEntityForSubtype(prefetchSubtype);
+        TestThreadUtils.runOnUiThreadBlocking(() -> {
             Bundle extras = new Bundle();
             extras.putString("pageBundle", operationName);
-            extras.putString("subtype", appId); // is this necessary?
+            extras.putString("subtype", prefetchSubtype); // is this necessary?
 
             GCMMessage message = new GCMMessage(senderId, extras);
-            try {
-                ChromeBrowserInitializer.getInstance(context).handleSynchronousStartup();
-                GCMDriver.dispatchMessage(message);
-            } catch (ProcessInitException e) {
-                Assert.fail(e.getMessage());
-            }
+            ChromeBrowserInitializer.getInstance().handleSynchronousStartup();
+            GCMDriver.dispatchMessage(message);
         });
         return operationName;
     }

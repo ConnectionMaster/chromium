@@ -8,6 +8,7 @@ component("shill") {
   defines = [ "IS_SHILL_CLIENT_IMPL" ]
 
   deps = [
+    "//ash/constants",
     "//base",
     "//chromeos/dbus:common",
     "//chromeos/dbus/constants",
@@ -17,8 +18,6 @@ component("shill") {
   ]
 
   sources = [
-    "fake_gsm_sms_client.cc",
-    "fake_gsm_sms_client.h",
     "fake_modem_messaging_client.cc",
     "fake_modem_messaging_client.h",
     "fake_shill_device_client.cc",
@@ -31,12 +30,11 @@ component("shill") {
     "fake_shill_profile_client.h",
     "fake_shill_service_client.cc",
     "fake_shill_service_client.h",
+    "fake_shill_simulated_result.h",
     "fake_shill_third_party_vpn_driver_client.cc",
     "fake_shill_third_party_vpn_driver_client.h",
     "fake_sms_client.cc",
     "fake_sms_client.h",
-    "gsm_sms_client.cc",
-    "gsm_sms_client.h",
     "modem_messaging_client.cc",
     "modem_messaging_client.h",
     "shill_client_helper.cc",
@@ -64,10 +62,9 @@ component("shill") {
 
 source_set("test_support") {
   testonly = true
-  public_deps = [
-    ":shill",
-  ]
+  public_deps = [ ":shill" ]
   deps = [
+    "//ash/constants",
     "//base",
     "//base/test:test_support",
     "//chromeos/dbus:common",
@@ -77,7 +74,6 @@ source_set("test_support") {
   ]
 
   sources = [
-    "gsm_sms_client_unittest.cc",
     "modem_messaging_client_unittest.cc",
     "shill_client_unittest_base.cc",
     "shill_client_unittest_base.h",

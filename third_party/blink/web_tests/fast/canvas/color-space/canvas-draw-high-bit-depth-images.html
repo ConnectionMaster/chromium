@@ -41,18 +41,20 @@ function runTest(testScenario) {
     _8bitImage.onload = t_image.step_func(function() {
         _16bitImage.onload = function() {
             var refCanvas = document.createElement("canvas");
-            refCanvas.width = refCanvas.height = 2;
+            refCanvas.width = refCanvas.height = 40000;
             var refCtx = refCanvas.getContext(
                 '2d', testScenario.canvasColorParams);
             refCtx.drawImage(_8bitImage, 0, 0);
-            var refPixels = refCtx.getImageData(0, 0, 2, 2).dataUnion;
+            var refImageData = refCtx.getImageData(0, 0, 2, 2);
+            var refPixels = refImageData.data;
 
             var testCanvas = document.createElement("canvas");
-            testCanvas.width = testCanvas.height = 2;
+            testCanvas.width = testCanvas.height = 40000;
             var testCtx = testCanvas.getContext(
                 '2d', testScenario.canvasColorParams);
             testCtx.drawImage(_16bitImage, 0, 0);
-            var testPixels = testCtx.getImageData(0, 0, 2, 2).dataUnion;
+            var testImageData = testCtx.getImageData(0, 0, 2, 2);
+            var testPixels = testImageData.data;
 
             assert_array_approx_equals(refPixels, testPixels, tolerance);
 
@@ -94,9 +96,8 @@ function runAllTests() {
         // We expect the new 16 bit decoding capability to be compatible with
         // the regular 8 bits decoding code path.
         {colorSpace: 'srgb', pixelFormat: 'float16'},
-        {colorSpace: 'linear-rgb', pixelFormat: 'float16'},
         {colorSpace: 'rec2020', pixelFormat: 'float16'},
-        {colorSpace: 'p3', pixelFormat: 'float16'}
+        {colorSpace: 'display-p3', pixelFormat: 'float16'}
     ];
 
     var testScenarioSet = [];

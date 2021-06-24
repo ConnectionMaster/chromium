@@ -27,7 +27,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_CONCATENATE_H_
 
 #include <string.h>
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 #ifndef WTFString_h
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -222,4 +222,4 @@ class StringTypeAdapter<AtomicString> : public StringTypeAdapter<StringView> {
 }  // namespace WTF
 
 #include "third_party/blink/renderer/platform/wtf/text/string_operators.h"
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_CONCATENATE_H_

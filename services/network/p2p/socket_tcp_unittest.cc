@@ -7,12 +7,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
+
+#include "base/cxx17_backports.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/sys_byteorder.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "jingle/glue/fake_ssl_client_socket.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "net/base/features.h"
+#include "net/base/network_isolation_key.h"
+#include "net/dns/mock_host_resolver.h"
 #include "net/socket/socket_test_util.h"
 #include "net/socket/stream_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -34,25 +43,23 @@ class P2PSocketTcpTestBase : public testing::Test {
   explicit P2PSocketTcpTestBase(P2PSocketType type) : socket_type_(type) {}
 
   void SetUp() override {
-    mojom::P2PSocketClientPtr socket_client;
-    auto socket_client_request = mojo::MakeRequest(&socket_client);
+    mojo::PendingRemote<mojom::P2PSocketClient> socket_client;
+    mojo::PendingRemote<mojom::P2PSocket> socket;
+    auto socket_receiver = socket.InitWithNewPipeAndPassReceiver();
 
-    mojom::P2PSocketPtr socket;
-    auto socket_request = mojo::MakeRequest(&socket);
-
-    fake_client_.reset(new FakeSocketClient(std::move(socket),
-                                            std::move(socket_client_request)));
+    fake_client_ = std::make_unique<FakeSocketClient>(
+        std::move(socket), socket_client.InitWithNewPipeAndPassReceiver());
 
     EXPECT_CALL(*fake_client_.get(), SocketCreated(_, _)).Times(1);
 
     if (socket_type_ == P2P_SOCKET_TCP_CLIENT) {
       socket_impl_ = std::make_unique<P2PSocketTcp>(
           &socket_delegate_, std::move(socket_client),
-          std::move(socket_request), P2P_SOCKET_TCP_CLIENT, nullptr);
+          std::move(socket_receiver), P2P_SOCKET_TCP_CLIENT, nullptr);
     } else {
       socket_impl_ = std::make_unique<P2PSocketStunTcp>(
           &socket_delegate_, std::move(socket_client),
-          std::move(socket_request), P2P_SOCKET_STUN_TCP_CLIENT, nullptr);
+          std::move(socket_receiver), P2P_SOCKET_STUN_TCP_CLIENT, nullptr);
     }
 
     socket_ = new FakeSocket(&sent_data_);
@@ -76,7 +83,7 @@ class P2PSocketTcpTestBase : public testing::Test {
     return result;
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::string sent_data_;
   FakeSocket* socket_;  // Owned by |socket_impl_|.
   std::unique_ptr<P2PSocketTcpBase> socket_impl_;
@@ -332,6 +339,24 @@ TEST_F(P2PSocketTcpTest, SendDataWithPacketOptions) {
   base::RunLoop().RunUntilIdle();
 }
 
+// Verify that we ignore an empty frame.
+TEST_F(P2PSocketTcpTest, IgnoreEmptyFrame) {
+  std::vector<int8_t> response_packet;
+  CreateStunResponse(&response_packet);
+
+  std::string received_data;
+  received_data.append(IntToSize(response_packet.size()));
+  received_data.append(response_packet.begin(), response_packet.end());
+  socket_->AppendInputData(&received_data[0], received_data.size());
+
+  std::vector<int8_t> empty_packet;
+  received_data.resize(0);
+  received_data.append(IntToSize(empty_packet.size()));
+  received_data.append(empty_packet.begin(), empty_packet.end());
+  socket_->AppendInputData(&received_data[0], received_data.size());
+  EXPECT_CALL(*fake_client_.get(), DataReceived(_, _, _)).Times(0);
+}
+
 // Verify that we can send STUN message and that they are formatted
 // properly.
 TEST_F(P2PSocketStunTcpTest, SendStunNoAuth) {
@@ -465,16 +490,15 @@ TEST_F(P2PSocketStunTcpTest, AsyncWrites) {
 // ProxyResolvingClientSocket::Connect() won't be called twice.
 // Regression test for crbug.com/840797.
 TEST(P2PSocketTcpWithPseudoTlsTest, Basic) {
-  base::test::ScopedTaskEnvironment scoped_task_environment(
-      base::test::ScopedTaskEnvironment::MainThreadType::IO);
+  base::test::TaskEnvironment task_environment(
+      base::test::TaskEnvironment::MainThreadType::IO);
 
-  mojom::P2PSocketClientPtr socket_client;
-  auto socket_client_request = mojo::MakeRequest(&socket_client);
-  mojom::P2PSocketPtr socket;
-  auto socket_request = mojo::MakeRequest(&socket);
+  mojo::PendingRemote<mojom::P2PSocketClient> socket_client;
+  mojo::PendingRemote<mojom::P2PSocket> socket;
+  auto socket_receiver = socket.InitWithNewPipeAndPassReceiver();
 
   FakeSocketClient fake_client2(std::move(socket),
-                                std::move(socket_client_request));
+                                socket_client.InitWithNewPipeAndPassReceiver());
   EXPECT_CALL(fake_client2, SocketCreated(_, _)).Times(1);
 
   net::TestURLRequestContext context(true);
@@ -501,15 +525,106 @@ TEST(P2PSocketTcpWithPseudoTlsTest, Basic) {
 
   FakeP2PSocketDelegate socket_delegate;
   P2PSocketTcp host(&socket_delegate, std::move(socket_client),
-                    std::move(socket_request), P2P_SOCKET_SSLTCP_CLIENT,
+                    std::move(socket_receiver), P2P_SOCKET_SSLTCP_CLIENT,
                     &factory);
   P2PHostAndIPEndPoint dest;
   dest.ip_address = server_addr;
-  host.Init(net::IPEndPoint(net::IPAddress::IPv4Localhost(), 0), 0, 0, dest);
+  host.Init(net::IPEndPoint(net::IPAddress::IPv4Localhost(), 0), 0, 0, dest,
+            net::NetworkIsolationKey());
 
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(data_provider.AllReadDataConsumed());
   EXPECT_TRUE(data_provider.AllWriteDataConsumed());
+}
+
+// Test the case where P2PHostAndIPEndPoint::hostname is populated. Make sure
+// there's a DNS lookup using the right hostname and NetworkIsolationKey.
+TEST(P2PSocketTcpWithPseudoTlsTest, Hostname) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      net::features::kSplitHostCacheByNetworkIsolationKey);
+
+  const char kHostname[] = "foo.test";
+  base::test::TaskEnvironment task_environment(
+      base::test::TaskEnvironment::MainThreadType::IO);
+
+  mojo::PendingRemote<mojom::P2PSocketClient> socket_client;
+  mojo::PendingRemote<mojom::P2PSocket> socket;
+  auto socket_receiver = socket.InitWithNewPipeAndPassReceiver();
+
+  FakeSocketClient fake_client2(std::move(socket),
+                                socket_client.InitWithNewPipeAndPassReceiver());
+  EXPECT_CALL(fake_client2, SocketCreated(_, _)).Times(1);
+
+  net::TestURLRequestContext context(true);
+  net::MockClientSocketFactory mock_socket_factory;
+  context.set_client_socket_factory(&mock_socket_factory);
+  net::MockCachingHostResolver host_resolver;
+  host_resolver.rules()->AddRule(kHostname, "1.2.3.4");
+  context.set_host_resolver(&host_resolver);
+  context.Init();
+  ProxyResolvingClientSocketFactory factory(&context);
+
+  base::StringPiece ssl_client_hello =
+      jingle_glue::FakeSSLClientSocket::GetSslClientHello();
+  base::StringPiece ssl_server_hello =
+      jingle_glue::FakeSSLClientSocket::GetSslServerHello();
+  net::MockRead reads[] = {
+      net::MockRead(net::ASYNC, ssl_server_hello.data(),
+                    ssl_server_hello.size()),
+      net::MockRead(net::SYNCHRONOUS, net::ERR_IO_PENDING)};
+  net::MockWrite writes[] = {net::MockWrite(
+      net::SYNCHRONOUS, ssl_client_hello.data(), ssl_client_hello.size())};
+  net::StaticSocketDataProvider data_provider(reads, writes);
+  net::IPEndPoint server_addr(net::IPAddress::IPv4Localhost(), 1234);
+  data_provider.set_connect_data(
+      net::MockConnect(net::SYNCHRONOUS, net::OK, server_addr));
+  mock_socket_factory.AddSocketDataProvider(&data_provider);
+
+  FakeP2PSocketDelegate socket_delegate;
+  P2PSocketTcp host(&socket_delegate, std::move(socket_client),
+                    std::move(socket_receiver), P2P_SOCKET_SSLTCP_CLIENT,
+                    &factory);
+  P2PHostAndIPEndPoint dest;
+  dest.ip_address = server_addr;
+  dest.hostname = kHostname;
+  net::NetworkIsolationKey network_isolation_key =
+      net::NetworkIsolationKey::CreateTransient();
+  host.Init(net::IPEndPoint(net::IPAddress::IPv4Localhost(), 0), 0, 0, dest,
+            network_isolation_key);
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(data_provider.AllReadDataConsumed());
+  EXPECT_TRUE(data_provider.AllWriteDataConsumed());
+
+  // Check that the URL in kHostname is in the HostCache, with
+  // |network_isolation_key|.
+  const net::HostPortPair kHostPortPair = net::HostPortPair(kHostname, 0);
+  net::HostResolver::ResolveHostParameters params;
+  params.source = net::HostResolverSource::LOCAL_ONLY;
+  std::unique_ptr<net::HostResolver::ResolveHostRequest> request1 =
+      context.host_resolver()->CreateRequest(kHostPortPair,
+                                             network_isolation_key,
+                                             net::NetLogWithSource(), params);
+  net::TestCompletionCallback callback1;
+  int result = request1->Start(callback1.callback());
+  EXPECT_EQ(net::OK, callback1.GetResult(result));
+
+  // Check that the hostname is not in the DNS cache for other possible NIKs.
+  const url::Origin kDestinationOrigin =
+      url::Origin::Create(GURL(base::StringPrintf("https://%s", kHostname)));
+  const net::NetworkIsolationKey kOtherNiks[] = {
+      net::NetworkIsolationKey(),
+      net::NetworkIsolationKey(kDestinationOrigin /* top_frame_origin */,
+                               kDestinationOrigin /* frame_origin */)};
+  for (const auto& other_nik : kOtherNiks) {
+    std::unique_ptr<net::HostResolver::ResolveHostRequest> request2 =
+        context.host_resolver()->CreateRequest(kHostPortPair, other_nik,
+                                               net::NetLogWithSource(), params);
+    net::TestCompletionCallback callback2;
+    int result = request2->Start(callback2.callback());
+    EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED, callback2.GetResult(result));
+  }
 }
 
 class P2PSocketTcpWithTlsTest
@@ -525,16 +640,15 @@ INSTANTIATE_TEST_SUITE_P(
 // Tests that if a socket type satisfies IsTlsClientSocket(), TLS connection is
 // established.
 TEST_P(P2PSocketTcpWithTlsTest, Basic) {
-  base::test::ScopedTaskEnvironment scoped_task_environment(
-      base::test::ScopedTaskEnvironment::MainThreadType::IO);
+  base::test::TaskEnvironment task_environment(
+      base::test::TaskEnvironment::MainThreadType::IO);
 
-  mojom::P2PSocketClientPtr socket_client;
-  auto socket_client_request = mojo::MakeRequest(&socket_client);
-  mojom::P2PSocketPtr socket;
-  auto socket_request = mojo::MakeRequest(&socket);
+  mojo::PendingRemote<mojom::P2PSocketClient> socket_client;
+  mojo::PendingRemote<mojom::P2PSocket> socket;
+  auto socket_receiver = socket.InitWithNewPipeAndPassReceiver();
 
   FakeSocketClient fake_client2(std::move(socket),
-                                std::move(socket_client_request));
+                                socket_client.InitWithNewPipeAndPassReceiver());
   EXPECT_CALL(fake_client2, SocketCreated(_, _)).Times(1);
 
   net::TestURLRequestContext context(true);
@@ -560,16 +674,17 @@ TEST_P(P2PSocketTcpWithTlsTest, Basic) {
   std::unique_ptr<P2PSocketTcpBase> host;
   if (socket_type == P2P_SOCKET_STUN_TLS_CLIENT) {
     host = std::make_unique<P2PSocketStunTcp>(
-        &socket_delegate, std::move(socket_client), std::move(socket_request),
+        &socket_delegate, std::move(socket_client), std::move(socket_receiver),
         socket_type, &factory);
   } else {
     host = std::make_unique<P2PSocketTcp>(
-        &socket_delegate, std::move(socket_client), std::move(socket_request),
+        &socket_delegate, std::move(socket_client), std::move(socket_receiver),
         socket_type, &factory);
   }
   P2PHostAndIPEndPoint dest;
   dest.ip_address = server_addr;
-  host->Init(net::IPEndPoint(net::IPAddress::IPv4Localhost(), 0), 0, 0, dest);
+  host->Init(net::IPEndPoint(net::IPAddress::IPv4Localhost(), 0), 0, 0, dest,
+             net::NetworkIsolationKey());
 
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(data_provider.AllReadDataConsumed());

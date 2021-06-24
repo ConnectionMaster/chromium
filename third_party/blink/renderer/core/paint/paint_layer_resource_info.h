@@ -30,14 +30,12 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_PAINT_LAYER_RESOURCE_INFO_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_PAINT_LAYER_RESOURCE_INFO_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/svg/svg_resource_client.h"
 #include "third_party/blink/renderer/platform/geometry/float_rect.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 
 namespace blink {
 
-class FilterEffect;
 class PaintLayer;
 
 // PaintLayerResourceInfo holds the filter information for painting
@@ -50,12 +48,12 @@ class PaintLayer;
 // painting non-hardware accelerated filters (FilterEffect). Hardware
 // accelerated CSS filters use CompositorFilterOperations, that is backed by cc.
 class PaintLayerResourceInfo final
-    : public GarbageCollectedFinalized<PaintLayerResourceInfo>,
+    : public GarbageCollected<PaintLayerResourceInfo>,
       public SVGResourceClient {
-  USING_GARBAGE_COLLECTED_MIXIN(PaintLayerResourceInfo);
-
  public:
   explicit PaintLayerResourceInfo(PaintLayer*);
+  PaintLayerResourceInfo(const PaintLayerResourceInfo&) = delete;
+  PaintLayerResourceInfo& operator=(const PaintLayerResourceInfo&) = delete;
   ~PaintLayerResourceInfo() override;
 
   FloatRect FilterReferenceBox() const { return filter_reference_box_; }
@@ -65,14 +63,12 @@ class PaintLayerResourceInfo final
 
   void ClearLayer() { layer_ = nullptr; }
 
-  void ResourceContentChanged(InvalidationModeMask) override;
-  void ResourceElementChanged() override;
+  void ResourceContentChanged(SVGResource*) override;
 
  private:
   // |ClearLayer| must be called before *layer_ becomes invalid.
   PaintLayer* layer_;
   FloatRect filter_reference_box_;
-  DISALLOW_COPY_AND_ASSIGN(PaintLayerResourceInfo);
 };
 
 }  // namespace blink

@@ -31,6 +31,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_HTML_FORMS_RANGE_INPUT_TYPE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_FORMS_RANGE_INPUT_TYPE_H_
 
+#include "third_party/blink/renderer/core/dom/events/simulated_click_options.h"
 #include "third_party/blink/renderer/core/html/forms/input_type.h"
 #include "third_party/blink/renderer/core/html/forms/input_type_view.h"
 
@@ -40,14 +41,10 @@ class ExceptionState;
 class SliderThumbElement;
 
 class RangeInputType final : public InputType, public InputTypeView {
-  USING_GARBAGE_COLLECTED_MIXIN(RangeInputType);
-
  public:
-  static InputType* Create(HTMLInputElement&);
+  explicit RangeInputType(HTMLInputElement&);
 
-  RangeInputType(HTMLInputElement&);
-
-  void Trace(Visitor*) override;
+  void Trace(Visitor*) const override;
   using InputType::GetElement;
 
  private:
@@ -70,7 +67,7 @@ class RangeInputType final : public InputType, public InputTypeView {
   void CreateShadowSubtree() override;
   Decimal ParseToNumber(const String&, const Decimal&) const override;
   String Serialize(const Decimal&) const override;
-  void AccessKeyAction(bool send_mouse_events) override;
+  void AccessKeyAction(SimulatedClickCreationScope creation_scope) override;
   void SanitizeValueInResponseToMinOrMaxAttributeChange() override;
   void StepAttributeChanged() override;
   void WarnIfValueIsInvalid(const String&) const override;
@@ -87,6 +84,8 @@ class RangeInputType final : public InputType, public InputTypeView {
 
   // InputTypeView function:
   void UpdateView() override;
+  void ValueAttributeChanged() override;
+  bool IsDraggedSlider() const override;
 
   bool tick_mark_values_dirty_;
   Vector<Decimal> tick_mark_values_;

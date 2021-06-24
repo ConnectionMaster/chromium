@@ -11,6 +11,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/media_galleries/fileapi/av_scanning_file_validator.h"
+#include "components/download/public/common/quarantine_connection.h"
 
 class ImageDecoder;
 
@@ -24,18 +25,20 @@ class SupportedImageTypeValidator : public AVScanningFileValidator {
 
   static bool SupportsFileType(const base::FilePath& path);
 
-  void StartPreWriteValidation(const ResultCallback& result_callback) override;
+  void StartPreWriteValidation(ResultCallback result_callback) override;
 
  private:
   friend class MediaFileValidatorFactory;
 
-  explicit SupportedImageTypeValidator(const base::FilePath& file);
+  SupportedImageTypeValidator(
+      const base::FilePath& file,
+      download::QuarantineConnectionCallback quarantine_connection_callback);
 
   void OnFileOpen(std::unique_ptr<std::string> data);
 
   base::FilePath path_;
   storage::CopyOrMoveFileValidator::ResultCallback callback_;
-  base::WeakPtrFactory<SupportedImageTypeValidator> weak_factory_;
+  base::WeakPtrFactory<SupportedImageTypeValidator> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SupportedImageTypeValidator);
 };

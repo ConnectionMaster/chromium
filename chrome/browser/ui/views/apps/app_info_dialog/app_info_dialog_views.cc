@@ -9,17 +9,23 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/apps/app_info_dialog.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_dialog_container.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_footer_panel.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_header_panel.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_permissions_panel.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_summary_panel.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/web_applications/system_web_apps/system_web_app_manager.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -28,7 +34,7 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
-#include "ui/aura/window.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -39,8 +45,8 @@
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/arc/arc_util.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/arc_app_info_links_panel.h"
@@ -49,51 +55,53 @@
 namespace {
 
 // The color of the separator used inside the dialog - should match the app
-// list's app_list::kDialogSeparatorColor
+// list's ash::kDialogSeparatorColor
 constexpr SkColor kDialogSeparatorColor = SkColorSetRGB(0xD1, 0xD1, 0xD1);
-
-#if BUILDFLAG(ENABLE_APP_LIST)
-// The elevation used for dialog shadow effect.
-constexpr int kDialogShadowElevation = 24;
-#endif
+constexpr gfx::Size kDialogSize = gfx::Size(380, 490);
 
 }  // namespace
 
-bool CanShowAppInfoDialog() {
-#if defined(OS_MACOSX)
+bool CanPlatformShowAppInfoDialog() {
+#if defined(OS_MAC)
   return false;
 #else
   return true;
 #endif
 }
 
-#if BUILDFLAG(ENABLE_APP_LIST)
-void ShowAppInfoInAppList(const gfx::Rect& app_info_bounds,
-                          Profile* profile,
-                          const extensions::Extension* app) {
-  views::DialogDelegate* dialog = CreateAppListContainerForView(
-      std::make_unique<AppInfoDialog>(profile, app));
-  views::Widget* dialog_widget = new views::Widget();
-  views::Widget::InitParams params =
-      views::DialogDelegate::GetDialogWidgetInitParams(dialog, nullptr, nullptr,
-                                                       app_info_bounds);
-  params.shadow_type = views::Widget::InitParams::SHADOW_TYPE_DEFAULT;
-  params.shadow_elevation = kDialogShadowElevation;
-  dialog_widget->Init(params);
-  // The title is not shown on the dialog, but it is used for overview mode.
-  dialog_widget->GetNativeWindow()->SetTitle(base::UTF8ToUTF16(app->name()));
-  dialog_widget->Show();
-}
+bool CanShowAppInfoDialog(Profile* profile, const std::string& extension_id) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  bool is_system_web_app = web_app::WebAppProvider::Get(profile)
+                               ->system_web_app_manager()
+                               .IsSystemWebApp(extension_id);
+  if (is_system_web_app) {
+    return false;
+  }
+
+  const extensions::ExtensionRegistry* registry =
+      extensions::ExtensionRegistry::Get(profile);
+  const extensions::Extension* extension =
+      registry->GetInstalledExtension(extension_id);
+
+  if (!extension) {
+    return false;
+  }
+
+  // App Management only displays apps that are displayed in the launcher.
+  if (!extension->ShouldDisplayInAppLauncher()) {
+    return false;
+  }
 #endif
+  return CanPlatformShowAppInfoDialog();
+}
 
 void ShowAppInfoInNativeDialog(content::WebContents* web_contents,
                                Profile* profile,
                                const extensions::Extension* app,
-                               const base::Closure& close_callback) {
-  constexpr gfx::Size kDialogSize = gfx::Size(380, 490);
+                               base::OnceClosure close_callback) {
   views::DialogDelegate* dialog = CreateDialogContainerForView(
       std::make_unique<AppInfoDialog>(profile, app), kDialogSize,
-      close_callback);
+      std::move(close_callback));
   views::Widget* dialog_widget;
   if (dialog->GetModalType() == ui::MODAL_TYPE_CHILD) {
     dialog_widget =
@@ -108,8 +116,9 @@ void ShowAppInfoInNativeDialog(content::WebContents* web_contents,
 
 AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
     : profile_(profile), app_id_(app->id()) {
-  views::BoxLayout* layout = SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+  views::BoxLayout* layout =
+      SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical));
 
   const int kHorizontalSeparatorHeight = 1;
 
@@ -118,7 +127,7 @@ AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
   auto dialog_body_contents = std::make_unique<views::View>();
   const ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
   dialog_body_contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::kVertical,
+      views::BoxLayout::Orientation::kVertical,
       provider->GetInsetsMetric(views::INSETS_DIALOG_SUBSECTION),
       provider->GetDistanceMetric(views::DISTANCE_UNRELATED_CONTROL_VERTICAL)));
   dialog_body_contents->AddChildView(
@@ -126,7 +135,7 @@ AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
   dialog_body_contents->AddChildView(
       std::make_unique<AppInfoPermissionsPanel>(profile, app));
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // When Google Play Store is enabled and the Settings app is available, show
   // the "Manage supported links" link for Chrome.
   if (app->id() == extension_misc::kChromeAppId &&
@@ -187,7 +196,7 @@ void AppInfoDialog::StartObservingExtensionRegistry() {
 void AppInfoDialog::StopObservingExtensionRegistry() {
   if (extension_registry_)
     extension_registry_->RemoveObserver(this);
-  extension_registry_ = NULL;
+  extension_registry_ = nullptr;
 }
 
 void AppInfoDialog::OnExtensionUninstalled(
@@ -205,3 +214,6 @@ void AppInfoDialog::OnShutdown(extensions::ExtensionRegistry* registry) {
   StopObservingExtensionRegistry();
   Close();
 }
+
+BEGIN_METADATA(AppInfoDialog, views::View)
+END_METADATA

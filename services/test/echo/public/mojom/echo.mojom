@@ -4,13 +4,20 @@
 
 module echo.mojom;
 
-const string kServiceName = "echo";
+import "mojo/public/mojom/base/shared_memory.mojom";
 
 // Echos its input.
-interface Echo {
+interface EchoService {
   // Echos the passed-in string.
   EchoString(string input) => (string echoed_input);
 
-  // Cleanly quits.
+  // Echos the passed-in string into the provided shared memory buffer.
+  EchoStringToSharedMemory(string input,
+                           mojo_base.mojom.UnsafeSharedMemoryRegion region);
+
+  // Causes the service to disconnect itself.
   Quit();
+
+  // Forcibly crashes the service.
+  Crash();
 };

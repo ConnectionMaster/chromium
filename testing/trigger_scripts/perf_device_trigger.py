@@ -44,6 +44,8 @@ This script is normally called from the swarming recipe module in tools/build.
 
 """
 
+from __future__ import print_function
+
 import argparse
 import copy
 import json
@@ -52,11 +54,20 @@ import subprocess
 import sys
 import tempfile
 import urllib
+import logging
+import random
 
 import base_test_triggerer
 
+SRC_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
+    __file__))))
+sys.path.append(os.path.join(SRC_DIR, 'tools', 'perf'))
+
+import generate_perf_sharding
+from core import bot_platforms
+
 class Bot(object):
-  """ Eligible bots to run the task"""
+  """Eligible bots to run the task."""
   def __init__(self, bot_id, is_alive):
     self._bot_id = bot_id
     self._is_alive = is_alive
@@ -73,6 +84,8 @@ class Bot(object):
 class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
   def __init__(self, args, swarming_args):
     super(PerfDeviceTriggerer, self).__init__()
+    self._sharded_query_failed = False
+
     if not args.multiple_trigger_configs:
       # Represents the list of current dimensions requested
       # by the parent swarming job.
@@ -81,7 +94,6 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
       # Store what swarming server we need and whether or not we need
       # to send down authentication with it
       self._swarming_server = self._get_swarming_server(swarming_args)
-      self._service_account = self._get_service_account(swarming_args)
 
       # Map of all existing bots in swarming that satisfy the current
       # set of dimensions indexed by bot id.
@@ -89,6 +101,23 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
       # configurations.
       self._eligible_bots_by_ids = (
           self._query_swarming_for_eligible_bot_configs(self._dimensions))
+
+  def generate_shard_map(self, args, buildername, selected_config, verbose):
+    shard_map = None
+    num_of_shards = len(selected_config)
+    builder = bot_platforms.find_bot_platform(buildername)
+    if args.use_dynamic_shards and builder and num_of_shards:
+      if verbose:
+        print('Generating dynamic shardmap for builder: %s with %d shards'
+              % (buildername, num_of_shards))
+      shard_map = generate_perf_sharding.GenerateShardMap(
+          builder=builder,
+          num_of_shards=num_of_shards
+      )
+      for shard_index, bot_index in selected_config:
+        bot_id = self._bot_configs[bot_index]['id']
+        shard_map['extra_infos']['bot #%s' % shard_index] = bot_id
+    return shard_map
 
   def append_additional_args(self, args, shard_index):
     # Append a tag to the swarming task with the shard number
@@ -121,7 +150,32 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
       # each config represents exactly one bot in the perf swarming pool.
       for index in range(len(self.indices_to_trigger(args))):
         configs.append((index, index))
+    if args.use_dynamic_shards:
+      return self._select_config_indices_with_dynamic_sharding(verbose)
     return self._select_config_indices_with_soft_affinity(args, verbose)
+
+  def _select_config_indices_with_dynamic_sharding(self, verbose):
+    alive_bot_ids = [
+        bot_id for bot_id, b in self._eligible_bots_by_ids.iteritems()
+        if b.is_alive()
+    ]
+    trigger_count = len(alive_bot_ids)
+
+    indexes = range(trigger_count)
+    random.shuffle(indexes)
+    selected_config = [
+        (indexes[i], self._find_bot_config_index(alive_bot_ids[i]))
+        for i in range(trigger_count)
+    ]
+    selected_config.sort()
+
+    if verbose:
+      for shard_index, bot_index in selected_config:
+        print('Shard %d\n\tBot: %s' %
+              (shard_index, self._bot_configs[bot_index]['id']))
+
+    return selected_config
+
 
   def _select_config_indices_with_soft_affinity(self, args, verbose):
     trigger_count = len(self.indices_to_trigger(args))
@@ -131,7 +185,7 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
       if verbose:
         self._print_device_affinity_info({}, {},
           self._eligible_bots_by_ids, trigger_count)
-      raise ValueError('Not enough available machines exist in in swarming'
+      raise ValueError('Not enough available machines exist in swarming '
                        'pool.  Shards requested (%d) exceeds available bots '
                        '(%d).' % (
                            trigger_count, len(self._eligible_bots_by_ids)))
@@ -161,7 +215,7 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
         shard_to_bot_assignment_map[shard_index] = \
             unallocated_healthy_bots.pop()
         if verbose:
-          print 'First time shard %d has been triggered' % shard_index
+          print('First time shard %d has been triggered' % shard_index)
       elif not bot:
         shard_to_bot_assignment_map[shard_index] = unallocated_bad_bots.pop()
 
@@ -172,8 +226,9 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
         healthy_bot = unallocated_healthy_bots.pop()
         shard_to_bot_assignment_map[shard_index] = healthy_bot
         if verbose:
-          print ('Device affinity broken for bot %s, new '
-                 'mapping to bot %s' % (dead_bot.id(), healthy_bot.id()))
+          print('Device affinity broken for shard #%d. bot %s is dead, new '
+                'mapping to bot %s' % (
+                    shard_index, dead_bot.id(), healthy_bot.id()))
 
     # Now populate the indices into the bot_configs array
     selected_configs = []
@@ -190,17 +245,18 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
 
   def _print_device_affinity_info(
       self, new_map, existing_map, health_map, num_shards):
+    print()
     for shard_index in xrange(num_shards):
       existing = existing_map.get(shard_index, None)
       new = new_map.get(shard_index, None)
-      existing_id = ""
+      existing_id = ''
       if existing:
         existing_id = existing.id()
-      new_id = ""
+      new_id = ''
       if new:
         new_id = new.id()
-      print "Shard %d\n\tprevious: %s\n\tnew: %s" % (
-          shard_index, existing_id, new_id)
+      print('Shard %d\n\tprevious: %s\n\tnew: %s' % (
+          shard_index, existing_id, new_id))
 
     healthy_bots = []
     dead_bots = []
@@ -209,12 +265,16 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
         healthy_bots.append(b.id())
       else:
         dead_bots.append(b.id())
-    print "Healthy bots: %s" % healthy_bots
-    print "Dead Bots: %s" % dead_bots
+    print('Shards needed: %d' % num_shards)
+    print('Total bots (dead + healthy): %d' % (
+        len(dead_bots) + len(healthy_bots)))
+    print('Healthy bots, %d: %s' % (len(healthy_bots), healthy_bots))
+    print('Dead Bots, %d: %s' % (len(dead_bots), dead_bots))
+    print()
 
 
   def _query_swarming_for_eligible_bot_configs(self, dimensions):
-    """ Query Swarming to figure out which bots are available.
+    """Query Swarming to figure out which bots are available.
 
       Returns: a dictionary in which the keys are the bot id and
       the values are Bot object that indicate the health status
@@ -225,11 +285,16 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
       values.append(('dimensions', '%s:%s' % (key, value)))
 
     query_result = self.query_swarming(
-        'bots/list', values, True, server=self._swarming_server,
-        service_account=self._service_account)
+        'bots/list', values, True, server=self._swarming_server)
+    if 'items' not in query_result:
+      return {}
     perf_bots = {}
     for bot in query_result['items']:
-      alive = (not bot['is_dead'] and not bot['quarantined'])
+      # Device maintenance is usually quick, and we can wait for it to finish.
+      # However, if the device is too hot, it can take a long time for it to
+      # cool down, so check for 'Device temperature' in maintenance_msg.
+      alive = (not bot['is_dead'] and not bot['quarantined'] and
+               'Device temperature' not in bot.get('maintenance_msg', ''))
       perf_bots[bot['bot_id']] = Bot(bot['bot_id'], alive)
     return perf_bots
 
@@ -248,18 +313,33 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
     values = [
       ('tags', '%s:%s' % (k, v)) for k, v in self._dimensions.iteritems()
     ]
-    # Append the shard as a tag
-    values.append(('tags', '%s:%s' % ('shard', str(shard_index))))
     values.sort()
+
+    # Append the shard as a tag
+    values_with_shard = list(values)
+    values_with_shard.append(('tags', '%s:%s' % ('shard', str(shard_index))))
+    values_with_shard.sort()
+
     # TODO(eyaich): For now we are ignoring the state of the returned
     # task (ie completed, timed_out, bot_died, etc) as we are just
     # answering the question "What bot did we last trigger this shard on?"
     # Evaluate if this is the right decision going forward.
 
-    # Query for the last task that ran with these dimensions and this shard
-    query_result = self.query_swarming(
-          'tasks/list', values, True, limit='1', server=self._swarming_server,
-         service_account=self._service_account)
+    # Query for the last task that ran with these dimensions and this shard.
+    # Query with the shard param first. This will sometimes time out for queries
+    # we've never done before, so try querying without it if that happens.
+    try:
+      if not self._sharded_query_failed:
+        query_result = self.query_swarming(
+              'tasks/list', values_with_shard, True, limit='1',
+              server=self._swarming_server)
+    except Exception:
+      self._sharded_query_failed = True
+    if self._sharded_query_failed:
+      query_result = self.query_swarming(
+            'tasks/list', values, True, limit='1',
+            server=self._swarming_server)
+
     tasks = query_result.get('items')
     if tasks:
       # We queried with a limit of 1 so we could only get back
@@ -288,15 +368,21 @@ class PerfDeviceTriggerer(base_test_triggerer.BaseTestTriggerer):
         # Strip out the protocol
         return server[slashes_index:]
 
-  def _get_service_account(self, args):
-    for i in xrange(len(args) - 1):
-      if '--auth-service-account-json' in args[i]:
-        return args[i+1]
 
 def main():
+  logging.basicConfig(
+      level=logging.INFO,
+      format='(%(levelname)s) %(asctime)s pid=%(process)d'
+             '  %(module)s.%(funcName)s:%(lineno)d  %(message)s')
   # Setup args for common contract of base class
   parser = base_test_triggerer.BaseTestTriggerer.setup_parser_contract(
       argparse.ArgumentParser(description=__doc__))
+  parser.add_argument('--use-dynamic-shards',
+                      action='store_true',
+                      required=False,
+                      help='Ignore --shards and the existing shard map. Will '
+                           'generate a shard map at run time and use as much '
+                           'device as possible.')
   args, remaining = parser.parse_known_args()
 
   triggerer = PerfDeviceTriggerer(args, remaining)
@@ -304,4 +390,3 @@ def main():
 
 if __name__ == '__main__':
   sys.exit(main())
-

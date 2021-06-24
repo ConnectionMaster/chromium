@@ -5,18 +5,18 @@
 #ifndef COMPONENTS_EXO_KEYBOARD_H_
 #define COMPONENTS_EXO_KEYBOARD_H_
 
-#include <vector>
+#include <memory>
 
+#include "ash/ime/ime_controller_impl.h"
+#include "ash/public/cpp/keyboard/keyboard_controller_observer.h"
 #include "base/containers/flat_map.h"
-#include "base/containers/flat_set.h"
-#include "base/macros.h"
 #include "base/observer_list.h"
+#include "components/exo/key_state.h"
 #include "components/exo/keyboard_observer.h"
 #include "components/exo/seat_observer.h"
 #include "components/exo/surface_observer.h"
 #include "ui/events/event.h"
 #include "ui/events/event_handler.h"
-#include "ui/keyboard/keyboard_controller_observer.h"
 
 namespace ui {
 enum class DomCode;
@@ -34,12 +34,15 @@ class Surface;
 class Keyboard : public ui::EventHandler,
                  public SurfaceObserver,
                  public SeatObserver,
-                 public keyboard::KeyboardControllerObserver {
+                 public ash::KeyboardControllerObserver,
+                 public ash::ImeControllerImpl::Observer {
  public:
-  Keyboard(KeyboardDelegate* delegate, Seat* seat);
+  Keyboard(std::unique_ptr<KeyboardDelegate> delegate, Seat* seat);
+  Keyboard(const Keyboard&) = delete;
+  Keyboard& operator=(const Keyboard&) = delete;
   ~Keyboard() override;
 
-  KeyboardDelegate* delegate() const { return delegate_; }
+  KeyboardDelegate* delegate() const { return delegate_.get(); }
 
   bool HasDeviceConfigurationDelegate() const;
   void SetDeviceConfigurationDelegate(
@@ -65,8 +68,16 @@ class Keyboard : public ui::EventHandler,
   void OnSurfaceFocusing(Surface* gaining_focus) override;
   void OnSurfaceFocused(Surface* gained_focus) override;
 
-  // Overridden from keyboard::KeyboardControllerObserver
+  // Overridden from ash::KeyboardControllerObserver
   void OnKeyboardEnabledChanged(bool is_enabled) override;
+  void OnKeyRepeatSettingsChanged(
+      const ash::KeyRepeatSettings& settings) override;
+
+  // Overridden from ash::ImeControllerImpl::Observer
+  void OnCapsLockChanged(bool enabled) override;
+  void OnKeyboardLayoutNameChanged(const std::string& layout_name) override;
+
+  Surface* focused_surface_for_testing() const { return focus_; }
 
  private:
   // Change keyboard focus to |surface|.
@@ -89,7 +100,7 @@ class Keyboard : public ui::EventHandler,
 
   // The delegate instance that all events except for events about device
   // configuration are dispatched to.
-  KeyboardDelegate* const delegate_;
+  std::unique_ptr<KeyboardDelegate> delegate_;
 
   // Seat that the Keyboard recieves focus events from.
   Seat* const seat_;
@@ -107,10 +118,7 @@ class Keyboard : public ui::EventHandler,
   // Set of currently pressed keys. First value is a platform code and second
   // value is the code that was delivered to client. See Seat.h for more
   // details.
-  base::flat_map<ui::DomCode, ui::DomCode> pressed_keys_;
-
-  // Current set of modifier flags.
-  int modifier_flags_ = 0;
+  base::flat_map<ui::DomCode, KeyState> pressed_keys_;
 
   // Key state changes that are expected to be acknowledged.
   using KeyStateChange = std::pair<ui::KeyEvent, base::TimeTicks>;
@@ -125,13 +133,11 @@ class Keyboard : public ui::EventHandler,
   // True when the ARC app window is focused.
   // TODO(yhanada, https://crbug.com/847500): Remove this when we find a way to
   // fix https://crbug.com/847500 without breaking ARC++ apps.
-  bool focus_belongs_to_arc_app_ = false;
+  bool focused_on_ime_supported_surface_ = false;
 
   base::ObserverList<KeyboardObserver>::Unchecked observer_list_;
 
-  base::WeakPtrFactory<Keyboard> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(Keyboard);
+  base::WeakPtrFactory<Keyboard> weak_ptr_factory_{this};
 };
 
 }  // namespace exo

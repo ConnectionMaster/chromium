@@ -29,7 +29,11 @@ static_library("navigation_interception") {
       "navigation_params_android.cc",
       "navigation_params_android.h",
     ]
-    deps += [ ":jni_headers" ]
+    deps += [
+      ":jni_headers",
+      "//url:gurl_android",
+      "//url:origin_android",
+    ]
   }
 }
 
@@ -39,15 +43,12 @@ if (is_android) {
       "android/java/src/org/chromium/components/navigation_interception/InterceptNavigationDelegate.java",
       "android/java/src/org/chromium/components/navigation_interception/NavigationParams.java",
     ]
-    jni_package = "navigation_interception"
   }
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "intercept_navigation_throttle_unittest.cc",
-  ]
+  sources = [ "intercept_navigation_throttle_unittest.cc" ]
   deps = [
     ":navigation_interception",
     "//base",

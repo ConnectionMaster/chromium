@@ -41,7 +41,7 @@ namespace blink {
 scoped_refptr<RealtimeAudioDestinationHandler>
 RealtimeAudioDestinationHandler::Create(AudioNode& node,
                                         const WebAudioLatencyHint& latency_hint,
-                                        base::Optional<float> sample_rate) {
+                                        absl::optional<float> sample_rate) {
   return base::AdoptRef(
       new RealtimeAudioDestinationHandler(node, latency_hint, sample_rate));
 }
@@ -49,10 +49,13 @@ RealtimeAudioDestinationHandler::Create(AudioNode& node,
 RealtimeAudioDestinationHandler::RealtimeAudioDestinationHandler(
     AudioNode& node,
     const WebAudioLatencyHint& latency_hint,
-    base::Optional<float> sample_rate)
+    absl::optional<float> sample_rate)
     : AudioDestinationHandler(node),
       latency_hint_(latency_hint),
-      sample_rate_(sample_rate) {
+      sample_rate_(sample_rate),
+      allow_pulling_audio_graph_(false),
+      task_runner_(Context()->GetExecutionContext()->GetTaskRunner(
+          TaskType::kInternalMediaRealTime)) {
   // Node-specific default channel count and mixing rules.
   channel_count_ = 2;
   SetInternalChannelCountMode(kExplicit);
@@ -105,12 +108,11 @@ void RealtimeAudioDestinationHandler::SetChannelCount(
     return;
   }
 
-  uint32_t old_channel_count = this->ChannelCount();
+  uint32_t old_channel_count = ChannelCount();
   AudioHandler::SetChannelCount(channel_count, exception_state);
 
   // Stop, re-create and start the destination to apply the new channel count.
-  if (this->ChannelCount() != old_channel_count &&
-      !exception_state.HadException()) {
+  if (ChannelCount() != old_channel_count && !exception_state.HadException()) {
     StopPlatformDestination();
     CreatePlatformDestination();
     StartPlatformDestination();
@@ -165,7 +167,7 @@ void RealtimeAudioDestinationHandler::Render(
     AudioBus* destination_bus,
     uint32_t number_of_frames,
     const AudioIOPosition& output_position,
-    const AudioIOCallbackMetric& metric) {
+    const AudioCallbackMetric& metric) {
   TRACE_EVENT0("webaudio", "RealtimeAudioDestinationHandler::Render");
 
   // Denormals can seriously hurt performance of audio processing. This will
@@ -194,19 +196,27 @@ void RealtimeAudioDestinationHandler::Render(
 
   context->HandlePreRenderTasks(&output_position, &metric);
 
-  // Renders the graph by pulling all the input(s) to this node. This will in
-  // turn pull on their input(s), all the way backwards through the graph.
-  AudioBus* rendered_bus = Input(0).Pull(destination_bus, number_of_frames);
+  // Only pull on the audio graph if we have not stopped the destination.  It
+  // takes time for the destination to stop, but we want to stop pulling before
+  // the destination has actually stopped.
+  if (IsPullingAudioGraphAllowed()) {
+    // Renders the graph by pulling all the inputs to this node. This will in
+    // turn pull on their inputs, all the way backwards through the graph.
+    scoped_refptr<AudioBus> rendered_bus =
+        Input(0).Pull(destination_bus, number_of_frames);
 
-  DCHECK(rendered_bus);
-  if (!rendered_bus) {
-    // AudioNodeInput might be in the middle of destruction. Then the internal
-    // summing bus will return as nullptr. Then zero out the output.
+    DCHECK(rendered_bus);
+    if (!rendered_bus) {
+      // AudioNodeInput might be in the middle of destruction. Then the internal
+      // summing bus will return as nullptr. Then zero out the output.
+      destination_bus->Zero();
+    } else if (rendered_bus != destination_bus) {
+      // In-place processing was not possible. Copy the rendered result to the
+      // given |destination_bus| buffer.
+      destination_bus->CopyFrom(*rendered_bus);
+    }
+  } else {
     destination_bus->Zero();
-  } else if (rendered_bus != destination_bus) {
-    // In-place processing was not possible. Copy the rendererd result to the
-    // given |destination_bus| buffer.
-    destination_bus->CopyFrom(*rendered_bus);
   }
 
   // Processes "automatic" nodes that are not connected to anything. This can
@@ -221,6 +231,31 @@ void RealtimeAudioDestinationHandler::Render(
   AdvanceCurrentSampleFrame(number_of_frames);
 
   context->UpdateWorkletGlobalScopeOnRenderingThread();
+
+  SetDetectSilenceIfNecessary(
+      context->GetDeferredTaskHandler().HasAutomaticPullNodes());
+}
+
+void RealtimeAudioDestinationHandler::SetDetectSilenceIfNecessary(
+    bool has_automatic_pull_nodes) {
+  // When there is no automatic pull nodes, or the destination has an active
+  // input connection, the silence detection should be turned on.
+  bool needs_silence_detection =
+      !has_automatic_pull_nodes || Input(0).IsConnected();
+
+  // Post a cross-thread task only when the detecting condition has changed.
+  if (is_detecting_silence_ != needs_silence_detection) {
+    PostCrossThreadTask(*task_runner_, FROM_HERE,
+        CrossThreadBindOnce(&RealtimeAudioDestinationHandler::SetDetectSilence,
+                            AsWeakPtr(), needs_silence_detection));
+    is_detecting_silence_ = needs_silence_detection;
+  }
+}
+
+void RealtimeAudioDestinationHandler::SetDetectSilence(bool detect_silence) {
+  DCHECK(IsMainThread());
+
+  platform_destination_->SetDetectSilence(detect_silence);
 }
 
 uint32_t RealtimeAudioDestinationHandler::GetCallbackBufferSize() const {
@@ -238,11 +273,14 @@ int RealtimeAudioDestinationHandler::GetFramesPerBuffer() const {
 }
 
 void RealtimeAudioDestinationHandler::CreatePlatformDestination() {
-  platform_destination_ = AudioDestination::Create(*this, ChannelCount(),
-                                                   latency_hint_, sample_rate_);
+  platform_destination_ = AudioDestination::Create(
+      *this, ChannelCount(), latency_hint_, sample_rate_,
+      Context()->GetDeferredTaskHandler().RenderQuantumFrames());
 }
 
 void RealtimeAudioDestinationHandler::StartPlatformDestination() {
+  DCHECK(IsMainThread());
+
   if (platform_destination_->IsPlaying()) {
     return;
   }
@@ -254,13 +292,23 @@ void RealtimeAudioDestinationHandler::StartPlatformDestination() {
     platform_destination_->StartWithWorkletTaskRunner(
         audio_worklet->GetMessagingProxy()
             ->GetBackingWorkerThread()
-            ->GetTaskRunner(TaskType::kInternalMedia));
+            ->GetTaskRunner(TaskType::kInternalMediaRealTime));
   } else {
     platform_destination_->Start();
   }
+
+  // Allow the graph to be pulled once the destination actually starts
+  // requesting data.
+  EnablePullingAudioGraph();
 }
 
 void RealtimeAudioDestinationHandler::StopPlatformDestination() {
+  DCHECK(IsMainThread());
+
+  // Stop pulling on the graph, even if the destination is still requesting data
+  // for a while. (It may take a bit of time for the destination to stop.)
+  DisablePullingAudioGraph();
+
   if (platform_destination_->IsPlaying()) {
     platform_destination_->Stop();
   }
@@ -271,7 +319,7 @@ void RealtimeAudioDestinationHandler::StopPlatformDestination() {
 RealtimeAudioDestinationNode::RealtimeAudioDestinationNode(
     AudioContext& context,
     const WebAudioLatencyHint& latency_hint,
-    base::Optional<float> sample_rate)
+    absl::optional<float> sample_rate)
     : AudioDestinationNode(context) {
   SetHandler(RealtimeAudioDestinationHandler::Create(*this, latency_hint,
                                                      sample_rate));
@@ -280,7 +328,7 @@ RealtimeAudioDestinationNode::RealtimeAudioDestinationNode(
 RealtimeAudioDestinationNode* RealtimeAudioDestinationNode::Create(
     AudioContext* context,
     const WebAudioLatencyHint& latency_hint,
-    base::Optional<float> sample_rate) {
+    absl::optional<float> sample_rate) {
   return MakeGarbageCollected<RealtimeAudioDestinationNode>(
       *context, latency_hint, sample_rate);
 }

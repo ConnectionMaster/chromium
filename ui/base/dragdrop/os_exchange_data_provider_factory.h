@@ -7,29 +7,16 @@
 
 #include <memory>
 
-#include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/base/ui_base_export.h"
+#include "base/component_export.h"
+#include "ui/base/dragdrop/os_exchange_data_provider.h"
 
 namespace ui {
 
-// Builds OSExchangeDataProviders. We need to be able to switch providers at
-// runtime based on the configuration flags. If no factory is set,
-// CreateProvider() will default to the current operating system's default.
-class UI_BASE_EXPORT OSExchangeDataProviderFactory {
+// Builds platform specific OSExchangeDataProviders.
+class COMPONENT_EXPORT(UI_BASE) OSExchangeDataProviderFactory {
  public:
-  class Factory {
-   public:
-    virtual std::unique_ptr<OSExchangeData::Provider> BuildProvider() = 0;
-  };
-
-  // Sets the factory which builds the providers.
-  static void SetFactory(Factory* factory);
-
-  // Returns the current factory and sets the factory to null.
-  static Factory* TakeFactory();
-
-  // Creates a Provider based on the current configuration.
-  static std::unique_ptr<OSExchangeData::Provider> CreateProvider();
+  // Creates a Provider based on the current platform.
+  static std::unique_ptr<OSExchangeDataProvider> CreateProvider();
 };
 
 }  // namespace ui

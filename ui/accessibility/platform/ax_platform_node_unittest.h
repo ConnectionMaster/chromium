@@ -5,22 +5,24 @@
 #ifndef UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_UNITTEST_H_
 #define UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_UNITTEST_H_
 
-#include <memory>
-
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_data.h"
-#include "ui/accessibility/ax_tree.h"
-#include "ui/accessibility/ax_tree_manager.h"
+#include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_update.h"
+#include "ui/accessibility/test_ax_tree_manager.h"
 
 namespace ui {
 
-class AXPlatformNodeTest : public testing::Test, public AXTreeManager {
+class AXPlatformNodeTest : public ::testing::Test, public TestAXTreeManager {
  public:
   AXPlatformNodeTest();
   ~AXPlatformNodeTest() override;
+  AXPlatformNodeTest(const AXPlatformNodeTest&) = delete;
+  AXPlatformNodeTest& operator=(const AXPlatformNodeTest&) = delete;
 
+ protected:
   // Initialize given an AXTreeUpdate.
   void Init(const AXTreeUpdate& initial_state);
 
@@ -38,14 +40,6 @@ class AXPlatformNodeTest : public testing::Test, public AXTreeManager {
             const ui::AXNodeData& node11 = ui::AXNodeData(),
             const ui::AXNodeData& node12 = ui::AXNodeData());
 
-  // AXTreeManager implementation.
-  AXNode* GetNodeFromTree(ui::AXTreeID tree_id, int32_t node_id) override;
-  AXPlatformNodeDelegate* GetDelegate(AXTreeID tree_id,
-                                      int32_t node_id) override;
-
- protected:
-  AXNode* GetRootNode() { return tree_->root(); }
-
   AXTreeUpdate BuildTextField();
   AXTreeUpdate BuildTextFieldWithSelectionRange(int32_t start, int32_t stop);
   AXTreeUpdate BuildContentEditable();
@@ -58,9 +52,7 @@ class AXPlatformNodeTest : public testing::Test, public AXTreeManager {
       bool option_1_is_selected,
       bool option_2_is_selected,
       bool option_3_is_selected,
-      ax::mojom::State additional_state = ax::mojom::State::kNone);
-
-  std::unique_ptr<AXTree> tree_;
+      const std::vector<ax::mojom::State>& additional_state);
 };
 
 }  // namespace ui

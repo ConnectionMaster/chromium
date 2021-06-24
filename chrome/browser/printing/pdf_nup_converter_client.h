@@ -6,11 +6,10 @@
 #define CHROME_BROWSER_PRINTING_PDF_NUP_CONVERTER_CLIENT_H_
 
 #include <map>
-#include <memory>
 
 #include "chrome/services/printing/public/mojom/pdf_nup_converter.mojom.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 namespace printing {
 
@@ -48,19 +47,17 @@ class PdfNupConverterClient
       mojom::PdfNupConverter::Status status,
       base::ReadOnlySharedMemoryRegion region);
 
-  // Get the request or create a new one if none exists.
-  mojom::PdfNupConverterPtr& GetPdfNupConverterRequest(int cookie);
+  // Get the mojo::Remote or create a new one if none exists.
+  mojo::Remote<mojom::PdfNupConverter>& GetPdfNupConverterRemote(int cookie);
 
-  // Remove an existing request from |pdf_nup_converter_map_|.
-  void RemovePdfNupConverterRequest(int cookie);
+  // Remove an existing mojo::Remote from |pdf_nup_converter_map_|.
+  void RemovePdfNupConverterRemote(int cookie);
 
-  mojom::PdfNupConverterPtr CreatePdfNupConverterRequest();
-
-  std::unique_ptr<service_manager::Connector> connector_;
+  mojo::Remote<mojom::PdfNupConverter> CreatePdfNupConverterRemote();
 
   // Stores the mapping between document cookies and their corresponding
-  // requests.
-  std::map<int, mojom::PdfNupConverterPtr> pdf_nup_converter_map_;
+  // mojo::Remote.
+  std::map<int, mojo::Remote<mojom::PdfNupConverter>> pdf_nup_converter_map_;
 
   content::WebContents* web_contents_;
 

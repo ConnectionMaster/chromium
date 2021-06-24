@@ -8,6 +8,7 @@
 #include "content/browser/webrtc/webrtc_webcam_browsertest.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -65,6 +66,7 @@ class WebRtcImageCaptureStressBrowserTest
 
   void SetUp() override {
     ASSERT_TRUE(embedded_test_server()->InitializeAndListen());
+    embedded_test_server()->StartAcceptingConnections();
     UsingRealWebcam_WebRtcWebcamBrowserTest::SetUp();
   }
 
@@ -72,7 +74,7 @@ class WebRtcImageCaptureStressBrowserTest
   // skipped or it works as intended, or false otherwise.
   virtual bool RunImageCaptureTestCase(const std::string& command) {
     GURL url(embedded_test_server()->GetURL(kImageCaptureStressHtmlFile));
-    NavigateToURL(shell(), url);
+    EXPECT_TRUE(NavigateToURL(shell(), url));
 
     if (!IsWebcamAvailableOnSystem(shell()->web_contents())) {
       LOG(WARNING) << "No video device; skipping test...";
@@ -81,9 +83,9 @@ class WebRtcImageCaptureStressBrowserTest
 
     LookupAndLogNameAndIdOfFirstCamera();
 
-    std::string result;
-    if (!ExecuteScriptAndExtractString(shell(), command, &result))
-      return false;
+    std::string result =
+        EvalJs(shell(), command, EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+            .ExtractString();
     DLOG_IF(ERROR, result != "OK") << result;
     return result == "OK";
   }
@@ -96,7 +98,6 @@ class WebRtcImageCaptureStressBrowserTest
 
 IN_PROC_BROWSER_TEST_P(WebRtcImageCaptureStressBrowserTest,
                        MANUAL_Take10Photos) {
-  embedded_test_server()->StartAcceptingConnections();
   ASSERT_TRUE(RunImageCaptureTestCase("testTake10PhotosSucceeds()"));
 }
 
@@ -104,8 +105,8 @@ IN_PROC_BROWSER_TEST_P(WebRtcImageCaptureStressBrowserTest,
 // API has already been implemented.
 // Note, these tests must be run sequentially, since multiple parallel test runs
 // competing for a single physical webcam typically causes failures.
-#if defined(OS_LINUX) || defined(OS_MACOSX) || defined(OS_ANDROID) || \
-    defined(OS_WIN)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_MAC) || \
+    defined(OS_ANDROID) || defined(OS_WIN)
 
 const TargetVideoCaptureImplementation
     kTargetVideoCaptureImplementationsForRealWebcam[] = {

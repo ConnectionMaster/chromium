@@ -8,13 +8,13 @@
 #include "base/android/jni_android.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
-#include "chrome/browser/ui/android/infobars/infobar_android.h"
+#include "components/infobars/android/infobar_android.h"
 #include "components/infobars/core/infobar_delegate.h"
 
 class SurveyInfoBarDelegate;
 
 // An infobar that prompts the user to take a survey.
-class SurveyInfoBar : public InfoBarAndroid {
+class SurveyInfoBar : public infobars::InfoBarAndroid {
  public:
   explicit SurveyInfoBar(std::unique_ptr<SurveyInfoBarDelegate> delegate);
   ~SurveyInfoBar() override;
@@ -26,10 +26,11 @@ class SurveyInfoBar : public InfoBarAndroid {
  protected:
   infobars::InfoBarDelegate* GetDelegate();
 
-  // InfoBarAndroid overrides.
+  // infobars::InfoBarAndroid overrides.
   void ProcessButton(int action) override;
   base::android::ScopedJavaLocalRef<jobject> CreateRenderInfoBar(
-      JNIEnv* env) override;
+      JNIEnv* env,
+      const ResourceIdMapper& resource_id_mapper) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SurveyInfoBar);

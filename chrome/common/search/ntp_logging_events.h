@@ -22,43 +22,26 @@ enum NTPLoggingEventType {
   // Deleted: NTP_EXTERNAL_TILE_FALLBACK = 8,
   // Deleted: NTP_MOUSEOVER = 9
   // Deleted: NTP_TILE_LOADED = 10,
-
-  // All NTP tiles have finished loading (successfully or failing). Logged only
-  // by the single-iframe version of the NTP.
-  NTP_ALL_TILES_LOADED = 11,
-
-  // The data for all NTP tiles (title, URL, etc, but not the thumbnail image)
-  // has been received by the most visited iframe. In contrast to
-  // NTP_ALL_TILES_LOADED, this is recorded before the actual DOM elements have
-  // loaded (in particular the thumbnail images). Logged only by the
-  // single-iframe version of the NTP.
-  NTP_ALL_TILES_RECEIVED = 12,
-
-  // Activated by clicking on the fakebox icon. Logged by Voice Search.
-  NTP_VOICE_ACTION_ACTIVATE_FAKEBOX = 13,
-  // Activated by keyboard shortcut.
-  NTP_VOICE_ACTION_ACTIVATE_KEYBOARD = 14,
-  // Close the voice overlay by a user's explicit action.
-  NTP_VOICE_ACTION_CLOSE_OVERLAY = 15,
-  // Submitted voice query.
-  NTP_VOICE_ACTION_QUERY_SUBMITTED = 16,
-  // Clicked on support link in error message.
-  NTP_VOICE_ACTION_SUPPORT_LINK_CLICKED = 17,
-  // Retried by clicking Try Again link.
-  NTP_VOICE_ACTION_TRY_AGAIN_LINK = 18,
-  // Retried by clicking microphone button.
-  NTP_VOICE_ACTION_TRY_AGAIN_MIC_BUTTON = 19,
-  // Errors received from the Speech Recognition API.
-  NTP_VOICE_ERROR_NO_SPEECH = 20,
-  NTP_VOICE_ERROR_ABORTED = 21,
-  NTP_VOICE_ERROR_AUDIO_CAPTURE = 22,
-  NTP_VOICE_ERROR_NETWORK = 23,
-  NTP_VOICE_ERROR_NOT_ALLOWED = 24,
-  NTP_VOICE_ERROR_SERVICE_NOT_ALLOWED = 25,
-  NTP_VOICE_ERROR_BAD_GRAMMAR = 26,
-  NTP_VOICE_ERROR_LANGUAGE_NOT_SUPPORTED = 27,
-  NTP_VOICE_ERROR_NO_MATCH = 28,
-  NTP_VOICE_ERROR_OTHER = 29,
+  // Deleted: NTP_ALL_TILES_LOADED = 11,
+  // Deleted: NTP_ALL_TILES_RECEIVED = 12,
+  // Deleted: NTP_VOICE_ACTION_ACTIVATE_SEARCH_BOX = 13,
+  // Deleted: NTP_VOICE_ACTION_ACTIVATE_KEYBOARD = 14,
+  // Deleted: NTP_VOICE_ACTION_CLOSE_OVERLAY = 15,
+  // Deleted: NTP_VOICE_ACTION_QUERY_SUBMITTED = 16,
+  // Deleted: NTP_VOICE_ACTION_SUPPORT_LINK_CLICKED = 17,
+  // Deleted: NTP_VOICE_ACTION_TRY_AGAIN_LINK = 18,
+  // Deleted: NTP_VOICE_ACTION_TRY_AGAIN_MIC_BUTTON = 19,
+  // Deleted: NTP_VOICE_ERROR_NO_SPEECH = 20,
+  // Deleted: NTP_VOICE_ERROR_ABORTED = 21,
+  // Deleted: NTP_VOICE_ERROR_AUDIO_CAPTURE = 22,
+  // Deleted: NTP_VOICE_ERROR_NETWORK = 23,
+  // Deleted: NTP_VOICE_ERROR_NOT_ALLOWED = 24,
+  // Deleted: NTP_VOICE_ERROR_SERVICE_NOT_ALLOWED = 25,
+  // Deleted: NTP_VOICE_ERROR_BAD_GRAMMAR = 26,
+  // Deleted: NTP_VOICE_ERROR_LANGUAGE_NOT_SUPPORTED = 27,
+  // Deleted: NTP_VOICE_ERROR_NO_MATCH = 28,
+  // Deleted: NTP_VOICE_ERROR_OTHER = 29,
+  // Deleted: NTP_MODULES_SHOWN = 83,
 
   // A static Doodle was shown, coming from cache.
   NTP_STATIC_LOGO_SHOWN_FROM_CACHE = 30,
@@ -133,7 +116,67 @@ enum NTPLoggingEventType {
   // A promo link was clicked.
   NTP_MIDDLE_SLOT_PROMO_LINK_CLICKED = 61,
 
-  NTP_EVENT_TYPE_LAST = NTP_MIDDLE_SLOT_PROMO_LINK_CLICKED
+  // The shortcut type displayed (i.e. Most Visited or custom links) was
+  // changed.
+  NTP_CUSTOMIZE_SHORTCUT_TOGGLE_TYPE = 62,
+  // The visibility of shortcuts was changed.
+  NTP_CUSTOMIZE_SHORTCUT_TOGGLE_VISIBILITY = 63,
+
+  // The richer picker was opened.
+  NTP_CUSTOMIZATION_MENU_OPENED = 64,
+  // 'Cancel' was clicked in the richer picker.
+  NTP_CUSTOMIZATION_MENU_CANCEL = 65,
+  // 'Done' was clicked in the richer picker.
+  NTP_CUSTOMIZATION_MENU_DONE = 66,
+
+  // 'Upload from device' was selected in the richer picker.
+  NTP_BACKGROUND_UPLOAD_FROM_DEVICE = 67,
+  // A collection tile was selected in the richer picker.
+  NTP_BACKGROUND_OPEN_COLLECTION = 68,
+  // A image tile was selected in the richer picker.
+  NTP_BACKGROUND_SELECT_IMAGE = 69,
+  // An image was set as the NTP background.
+  NTP_BACKGROUND_IMAGE_SET = 71,
+  // The back arrow was clicked in the richer picker.
+  NTP_BACKGROUND_BACK_CLICK = 72,
+  // The 'No background' tile was selected in the richer picker.
+  NTP_BACKGROUND_DEFAULT_SELECTED = 73,
+  // 'Cancel' was clicked in the image selection dialog.
+  NTP_BACKGROUND_UPLOAD_CANCEL = 75,
+  // 'Done' was clicked in the image selection dialog.
+  NTP_BACKGROUND_UPLOAD_DONE = 76,
+  // The NTP background image was reset in the richer picker.
+  NTP_BACKGROUND_IMAGE_RESET = 77,
+
+  // The 'My shortcuts' (i.e. custom links) option was clicked in the richer
+  // picker.
+  NTP_CUSTOMIZE_SHORTCUT_CUSTOM_LINKS_CLICKED = 78,
+  // The 'Most visited sites' option was clicked in the richer picker.
+  NTP_CUSTOMIZE_SHORTCUT_MOST_VISITED_CLICKED = 79,
+  // The 'Hide shortcuts' toggle was clicked in the richer picker.
+  NTP_CUSTOMIZE_SHORTCUT_VISIBILITY_TOGGLE_CLICKED = 80,
+
+  // The 'refresh daily' toggle was licked in the richer picker.
+  NTP_BACKGROUND_REFRESH_TOGGLE_CLICKED = 81,
+  // Daily refresh was enabled by clicked 'Done' in the richer picker.
+  NTP_BACKGROUND_DAILY_REFRESH_ENABLED = 82,
+
+  // The NTP <ntp-app> element was created and ready() was called.
+  NTP_APP_RENDERED = 84,
+
+  NTP_EVENT_TYPE_LAST = NTP_APP_RENDERED
+};
+
+// The different types of events that are logged for NTP search suggestions,
+// such as number of chips shown and the index of chips that are clicked. This
+// enum is used to transfer information from the NTP javascript to the renderer
+// and is *not* used as a UMA enum histogram's logged value. These events may be
+// logged by javascript served from GWS, see
+// google3/java/com/google/gws/plugins/newtab/suggestions.js.
+enum class NTPSuggestionsLoggingEventType {
+  kShownCount = 0,
+  kIndexClicked = 1,
+  kMaxValue = kIndexClicked,
 };
 
 #endif  // CHROME_COMMON_SEARCH_NTP_LOGGING_EVENTS_H_

@@ -4,8 +4,8 @@
 
 #include "google_apis/gcm/engine/gcm_unregistration_request_handler.h"
 
+#include "base/cxx17_backports.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "google_apis/gcm/base/gcm_util.h"
 #include "net/url_request/url_fetcher.h"
 
@@ -52,19 +52,10 @@ UnregistrationRequest::Status GCMUnregistrationRequestHandler::ParseResponse(
 }
 
 void GCMUnregistrationRequestHandler::ReportUMAs(
-    UnregistrationRequest::Status status,
-    int retry_count,
-    base::TimeDelta complete_time) {
+    UnregistrationRequest::Status status) {
   UMA_HISTOGRAM_ENUMERATION("GCM.UnregistrationRequestStatus",
                             status,
                             UnregistrationRequest::UNREGISTRATION_STATUS_COUNT);
-
-  // Other UMAs are only reported when the request succeeds.
-  if (status != UnregistrationRequest::SUCCESS)
-    return;
-
-  UMA_HISTOGRAM_COUNTS_1M("GCM.UnregistrationRetryCount", retry_count);
-  UMA_HISTOGRAM_TIMES("GCM.UnregistrationCompleteTime", complete_time);
 }
 
 }  // namespace gcm

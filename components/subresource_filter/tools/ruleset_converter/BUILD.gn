@@ -4,7 +4,6 @@
 
 source_set("support") {
   sources = [
-    "//third_party/protobuf:protobuf_lite",
     "rule_stream.cc",
     "rule_stream.h",
     "ruleset_converter.cc",
@@ -13,9 +12,7 @@ source_set("support") {
     "ruleset_format.h",
   ]
 
-  public_deps = [
-    "//components/url_pattern_index/proto:url_pattern_index",
-  ]
+  public_deps = [ "//components/url_pattern_index/proto:url_pattern_index" ]
 
   deps = [
     "../rule_parser",

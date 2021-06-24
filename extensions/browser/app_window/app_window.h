@@ -28,7 +28,7 @@ class GURL;
 class SkRegion;
 
 namespace base {
-class DictionaryValue;
+class Value;
 }
 
 namespace content {
@@ -253,19 +253,18 @@ class AppWindow : public content::WebContentsDelegate,
 
   // NativeAppWindows should call this to determine what the window's title
   // is on startup and from within UpdateWindowTitle().
-  base::string16 GetTitle() const;
+  std::u16string GetTitle() const;
 
-  // |callback| will be called when the first navigation in the window is
-  // ready to commit or when the window goes away before that. |ready_to_commit|
-  // argument of the |callback| is set to true for the former case and false for
-  // the later.
-  using FirstCommitOrWindowClosedCallback =
-      base::OnceCallback<void(bool ready_to_commit)>;
-  void SetOnFirstCommitOrWindowClosedCallback(
-      FirstCommitOrWindowClosedCallback callback);
+  // |callback| will be called when the first navigation was completed or window
+  // is closed before that. |did_finish| argument of the |callback| is set to
+  // true for the former case and false for the latter.
+  using DidFinishFirstNavigationCallback =
+      base::OnceCallback<void(bool did_finish)>;
+  void AddOnDidFinishFirstNavigationCallback(
+      DidFinishFirstNavigationCallback callback);
 
-  // Called when the first navigation in the window is ready to commit.
-  void OnReadyToCommitFirstNavigation();
+  // Called when first navigation was completed.
+  void OnDidFinishFirstNavigation();
 
   // Call to notify ShellRegistry and delete the window. Subclasses should
   // invoke this method instead of using "delete this".
@@ -361,7 +360,7 @@ class AppWindow : public content::WebContentsDelegate,
 
   // Retrieve the current state of the app window as a dictionary, to pass to
   // the renderer.
-  void GetSerializedState(base::DictionaryValue* properties) const;
+  void GetSerializedState(base::Value* properties) const;
 
   // Whether the app window wants to be alpha enabled.
   bool requested_alpha_enabled() const { return requested_alpha_enabled_; }
@@ -383,6 +382,8 @@ class AppWindow : public content::WebContentsDelegate,
     app_window_contents_ = std::move(contents);
   }
 
+  bool DidFinishFirstNavigation() { return did_finish_first_navigation_; }
+
  protected:
   ~AppWindow() override;
 
@@ -394,39 +395,38 @@ class AppWindow : public content::WebContentsDelegate,
   void ActivateContents(content::WebContents* contents) override;
   void CloseContents(content::WebContents* contents) override;
   bool ShouldSuppressDialogs(content::WebContents* source) override;
-  content::ColorChooser* OpenColorChooser(
+  std::unique_ptr<content::ColorChooser> OpenColorChooser(
       content::WebContents* web_contents,
       SkColor color,
       const std::vector<blink::mojom::ColorSuggestionPtr>& suggestions)
       override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      std::unique_ptr<content::FileSelectListener> listener,
+                      scoped_refptr<content::FileSelectListener> listener,
                       const blink::mojom::FileChooserParams& params) override;
   void SetContentsBounds(content::WebContents* source,
                          const gfx::Rect& bounds) override;
   void NavigationStateChanged(content::WebContents* source,
                               content::InvalidateTypes changed_flags) override;
   void EnterFullscreenModeForTab(
-      content::WebContents* source,
-      const GURL& origin,
-      const blink::WebFullscreenOptions& options) override;
+      content::RenderFrameHost* requesting_frame,
+      const blink::mojom::FullscreenOptions& options) override;
   void ExitFullscreenModeForTab(content::WebContents* source) override;
-  bool IsFullscreenForTabOrPending(
-      const content::WebContents* source) const override;
-  blink::WebDisplayMode GetDisplayMode(
-      const content::WebContents* source) const override;
+  bool IsFullscreenForTabOrPending(const content::WebContents* source) override;
+  blink::mojom::DisplayMode GetDisplayMode(
+      const content::WebContents* source) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
       content::MediaResponseCallback callback) override;
   bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  blink::MediaStreamType type) override;
+                                  blink::mojom::MediaStreamType type) override;
   content::WebContents* OpenURLFromTab(
       content::WebContents* source,
       const content::OpenURLParams& params) override;
   void AddNewContents(content::WebContents* source,
                       std::unique_ptr<content::WebContents> new_contents,
+                      const GURL& target_url,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture,
@@ -442,19 +442,18 @@ class AppWindow : public content::WebContentsDelegate,
                           bool last_unlocked_by_target) override;
   bool PreHandleGestureEvent(content::WebContents* source,
                              const blink::WebGestureEvent& event) override;
-  std::unique_ptr<content::BluetoothChooser> RunBluetoothChooser(
-      content::RenderFrameHost* frame,
-      const content::BluetoothChooser::EventHandler& event_handler) override;
   bool TakeFocus(content::WebContents* source, bool reverse) override;
-  gfx::Size EnterPictureInPicture(content::WebContents* web_contents,
-                                  const viz::SurfaceId& surface_id,
-                                  const gfx::Size& natural_size) override;
+  content::PictureInPictureResult EnterPictureInPicture(
+      content::WebContents* web_contents,
+      const viz::SurfaceId& surface_id,
+      const gfx::Size& natural_size) override;
   void ExitPictureInPicture() override;
+  bool ShouldShowStaleContentOnEviction(content::WebContents* source) override;
 
   // content::WebContentsObserver implementation.
   bool OnMessageReceived(const IPC::Message& message,
                          content::RenderFrameHost* render_frame_host) override;
-  void RenderViewCreated(content::RenderViewHost* render_view_host) override;
+  void RenderFrameCreated(content::RenderFrameHost* frame_host) override;
 
   // ExtensionFunctionDispatcher::Delegate implementation.
   WindowController* GetExtensionWindowController() const override;
@@ -586,11 +585,15 @@ class AppWindow : public content::WebContentsDelegate,
   // race condition of loading custom app icon and app content simultaneously.
   bool window_ready_ = false;
 
-  // PlzNavigate: this is called when the first navigation is ready to commit or
-  // when the window is closed.
-  FirstCommitOrWindowClosedCallback on_first_commit_or_window_closed_callback_;
+  // These callbacks are called when the navigation is finished on both browser
+  // and renderer sides.
+  std::vector<DidFinishFirstNavigationCallback>
+      on_did_finish_first_navigation_callbacks_;
+  // Whether the first navigation was completed in both browser and renderer
+  // processes.
+  bool did_finish_first_navigation_ = false;
 
-  base::WeakPtrFactory<AppWindow> image_loader_ptr_factory_;
+  base::WeakPtrFactory<AppWindow> image_loader_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AppWindow);
 };

@@ -5,4 +5,10 @@
 // https://wicg.github.io/portals/#the-portalhost-interface
 
 [Exposed=Window, RuntimeEnabled=Portals]
-interface PortalHost : EventTarget {};
+interface PortalHost : EventTarget {
+  [RaisesException, CallWith=ScriptState, Measure] void postMessage(any message,
+                                                                    optional PostMessageOptions options = {});
+
+  attribute EventHandler onmessage;
+  attribute EventHandler onmessageerror;
+};

@@ -5,7 +5,7 @@
 #include "chrome/browser/download/download_permission_request.h"
 
 #include "chrome/grit/generated_resources.h"
-#include "content/public/browser/web_contents.h"
+#include "components/permissions/request_type.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if defined(OS_ANDROID)
@@ -13,72 +13,60 @@
 #include "components/url_formatter/elide_url.h"
 #include "url/origin.h"
 #else
-#include "chrome/app/vector_icons/vector_icons.h"
+#include "components/vector_icons/vector_icons.h"
 #endif
 
 DownloadPermissionRequest::DownloadPermissionRequest(
-    base::WeakPtr<DownloadRequestLimiter::TabDownloadState> host)
-    : host_(host) {
-  content::WebContents* web_contents = host_->web_contents();
-  DCHECK(web_contents);
-  request_origin_ = web_contents->GetURL().GetOrigin();
-}
+    base::WeakPtr<DownloadRequestLimiter::TabDownloadState> host,
+    const url::Origin& request_origin)
+    : host_(host), request_origin_(request_origin) {}
 
 DownloadPermissionRequest::~DownloadPermissionRequest() {}
 
-PermissionRequest::IconId DownloadPermissionRequest::GetIconId() const {
-#if defined(OS_ANDROID)
-  return IDR_ANDROID_INFOBAR_MULTIPLE_DOWNLOADS;
-#else
-  return kFileDownloadIcon;
-#endif
+permissions::RequestType DownloadPermissionRequest::GetRequestType() const {
+  return permissions::RequestType::kMultipleDownloads;
 }
 
 #if defined(OS_ANDROID)
-base::string16 DownloadPermissionRequest::GetMessageText() const {
+std::u16string DownloadPermissionRequest::GetMessageText() const {
   return l10n_util::GetStringFUTF16(
-      IDS_MULTI_DOWNLOAD_WARNING,
-      url_formatter::FormatOriginForSecurityDisplay(
-          url::Origin::Create(request_origin_),
-          /*scheme_display = */ url_formatter::
-              SchemeDisplay::OMIT_CRYPTOGRAPHIC));
+      IDS_MULTI_DOWNLOAD_WARNING, url_formatter::FormatOriginForSecurityDisplay(
+                                      request_origin_,
+                                      /*scheme_display = */ url_formatter::
+                                          SchemeDisplay::OMIT_CRYPTOGRAPHIC));
 }
-#endif
-
-base::string16 DownloadPermissionRequest::GetMessageTextFragment() const {
+#else
+std::u16string DownloadPermissionRequest::GetMessageTextFragment() const {
   return l10n_util::GetStringUTF16(IDS_MULTI_DOWNLOAD_PERMISSION_FRAGMENT);
 }
+#endif
 
 GURL DownloadPermissionRequest::GetOrigin() const {
-  return request_origin_;
+  return request_origin_.GetURL();
 }
 
-void DownloadPermissionRequest::PermissionGranted() {
+void DownloadPermissionRequest::PermissionGranted(bool is_one_time) {
+  DCHECK(!is_one_time);
   if (host_) {
     // This may invalidate |host_|.
-    host_->Accept();
+    host_->Accept(request_origin_);
   }
 }
 
 void DownloadPermissionRequest::PermissionDenied() {
   if (host_) {
     // This may invalidate |host_|.
-    host_->Cancel();
+    host_->Cancel(request_origin_);
   }
 }
 
 void DownloadPermissionRequest::Cancelled() {
   if (host_) {
     // This may invalidate |host_|.
-    host_->CancelOnce();
+    host_->CancelOnce(request_origin_);
   }
 }
 
 void DownloadPermissionRequest::RequestFinished() {
   delete this;
-}
-
-PermissionRequestType DownloadPermissionRequest::GetPermissionRequestType()
-    const {
-  return PermissionRequestType::DOWNLOAD;
 }

@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -32,11 +32,7 @@ AXRootObjWrapper::~AXRootObjWrapper() {
 bool AXRootObjWrapper::HasChild(views::AXAuraObjWrapper* child) {
   std::vector<views::AXAuraObjWrapper*> children;
   GetChildren(&children);
-  return base::ContainsValue(children, child);
-}
-
-bool AXRootObjWrapper::IsIgnored() {
-  return false;
+  return base::Contains(children, child);
 }
 
 views::AXAuraObjWrapper* AXRootObjWrapper::GetParent() {
@@ -50,7 +46,11 @@ void AXRootObjWrapper::GetChildren(
 
 void AXRootObjWrapper::Serialize(ui::AXNodeData* out_node_data) {
   out_node_data->id = unique_id_.Get();
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  out_node_data->role = ax::mojom::Role::kClient;
+#else
   out_node_data->role = ax::mojom::Role::kDesktop;
+#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
 
   display::Screen* screen = display::Screen::GetScreen();
   if (!screen)
@@ -71,11 +71,15 @@ void AXRootObjWrapper::Serialize(ui::AXNodeData* out_node_data) {
     out_node_data->AddState(ax::mojom::State::kVertical);
 }
 
-int32_t AXRootObjWrapper::GetUniqueId() const {
+ui::AXNodeID AXRootObjWrapper::GetUniqueId() const {
   return unique_id_.Get();
+}
+
+std::string AXRootObjWrapper::ToString() const {
+  return "root";
 }
 
 void AXRootObjWrapper::OnDisplayMetricsChanged(const display::Display& display,
                                                uint32_t changed_metrics) {
-  delegate_->OnEvent(this, ax::mojom::Event::kLocationChanged);
+  delegate_->OnEvent(this, ax::mojom::Event::kLoadComplete);
 }

@@ -7,7 +7,7 @@
 
 #include <memory>
 
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/system/power/power_status.h"
 #include "ash/system/tray/tray_item_view.h"
 #include "base/macros.h"
@@ -28,7 +28,12 @@ class PowerTrayView : public TrayItemView,
   gfx::Size CalculatePreferredSize() const override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   views::View* GetTooltipHandlerForPoint(const gfx::Point& point) override;
-  base::string16 GetTooltipText(const gfx::Point& p) const override;
+  std::u16string GetTooltipText(const gfx::Point& p) const override;
+  const char* GetClassName() const override;
+  void OnThemeChanged() override;
+
+  // TrayItemView:
+  void HandleLocaleChange() override;
 
   // PowerStatus::Observer:
   void OnPowerStatusChanged() override;
@@ -40,9 +45,9 @@ class PowerTrayView : public TrayItemView,
   void UpdateStatus();
   void UpdateImage();
 
-  base::string16 accessible_name_;
-  base::string16 tooltip_;
-  base::Optional<PowerStatus::BatteryImageInfo> info_;
+  std::u16string accessible_name_;
+  std::u16string tooltip_;
+  absl::optional<PowerStatus::BatteryImageInfo> info_;
   session_manager::SessionState icon_session_state_color_ =
       session_manager::SessionState::UNKNOWN;
   ScopedSessionObserver session_observer_{this};

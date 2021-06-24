@@ -5,18 +5,19 @@
 #include "extensions/browser/zipfile_installer.h"
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
 #include "base/task/post_task.h"
 #include "base/task_runner_util.h"
+#include "components/services/unzip/content/unzip_service.h"
 #include "components/services/unzip/public/cpp/unzip.h"
-#include "components/services/unzip/public/interfaces/unzipper.mojom.h"
+#include "components/services/unzip/public/mojom/unzipper.mojom.h"
 #include "extensions/browser/extension_file_task_runner.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/manifest.h"
 #include "extensions/strings/grit/extensions_strings.h"
-#include "services/data_decoder/public/cpp/safe_json_parser.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace extensions {
@@ -34,7 +35,7 @@ constexpr const base::FilePath::CharType* kAllowedThemeFiletypes[] = {
     FILE_PATH_LITERAL(".json"), FILE_PATH_LITERAL(".png"),
     FILE_PATH_LITERAL(".webp")};
 
-base::Optional<base::FilePath> PrepareAndGetUnzipDir(
+absl::optional<base::FilePath> PrepareAndGetUnzipDir(
     const base::FilePath& zip_file) {
   base::FilePath dir_temp;
   base::PathService::Get(base::DIR_TEMP, &dir_temp);
@@ -44,27 +45,26 @@ base::Optional<base::FilePath> PrepareAndGetUnzipDir(
 
   base::FilePath unzip_dir;
   if (!base::CreateTemporaryDirInDir(dir_temp, dir_name, &unzip_dir))
-    return base::Optional<base::FilePath>();
+    return absl::optional<base::FilePath>();
 
   return unzip_dir;
 }
 
-base::Optional<std::string> ReadFileContent(const base::FilePath& path) {
+absl::optional<std::string> ReadFileContent(const base::FilePath& path) {
   std::string content;
   return base::ReadFileToString(path, &content) ? content
-                                                : base::Optional<std::string>();
+                                                : absl::optional<std::string>();
 }
 
 }  // namespace
 
 // static
 scoped_refptr<ZipFileInstaller> ZipFileInstaller::Create(
-    service_manager::Connector* connector,
+    const scoped_refptr<base::SequencedTaskRunner>& io_task_runner,
     DoneCallback done_callback) {
-  DCHECK(connector);
   DCHECK(done_callback);
   return base::WrapRefCounted(
-      new ZipFileInstaller(connector, std::move(done_callback)));
+      new ZipFileInstaller(io_task_runner, std::move(done_callback)));
 }
 
 void ZipFileInstaller::LoadFromZipFile(const base::FilePath& zip_file) {
@@ -92,18 +92,20 @@ void ZipFileInstaller::LoadFromZipFileImpl(const base::FilePath& zip_file,
   }
 
   base::PostTaskAndReplyWithResult(
-      GetExtensionFileTaskRunner().get(), FROM_HERE,
+      io_task_runner_.get(), FROM_HERE,
       base::BindOnce(&PrepareAndGetUnzipDir, zip_file),
       base::BindOnce(&ZipFileInstaller::Unzip, this));
 }
 
-ZipFileInstaller::ZipFileInstaller(service_manager::Connector* connector,
-                                   DoneCallback done_callback)
-    : done_callback_(std::move(done_callback)), connector_(connector) {}
+ZipFileInstaller::ZipFileInstaller(
+    const scoped_refptr<base::SequencedTaskRunner>& io_task_runner,
+    DoneCallback done_callback)
+    : done_callback_(std::move(done_callback)),
+      io_task_runner_(io_task_runner) {}
 
 ZipFileInstaller::~ZipFileInstaller() = default;
 
-void ZipFileInstaller::Unzip(base::Optional<base::FilePath> unzip_dir) {
+void ZipFileInstaller::Unzip(absl::optional<base::FilePath> unzip_dir) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!unzip_dir) {
@@ -112,7 +114,7 @@ void ZipFileInstaller::Unzip(base::Optional<base::FilePath> unzip_dir) {
   }
 
   unzip::UnzipWithFilter(
-      connector_->Clone(), zip_file_, *unzip_dir,
+      unzip::LaunchUnzipper(), zip_file_, *unzip_dir,
       base::BindRepeating(&ZipFileInstaller::IsManifestFile),
       base::BindOnce(&ZipFileInstaller::ManifestUnzipped, this, *unzip_dir));
 }
@@ -125,40 +127,42 @@ void ZipFileInstaller::ManifestUnzipped(const base::FilePath& unzip_dir,
   }
 
   base::PostTaskAndReplyWithResult(
-      GetExtensionFileTaskRunner().get(), FROM_HERE,
+      io_task_runner_.get(), FROM_HERE,
       base::BindOnce(&ReadFileContent, unzip_dir.Append(kManifestFilename)),
       base::BindOnce(&ZipFileInstaller::ManifestRead, this, unzip_dir));
 }
 
 void ZipFileInstaller::ManifestRead(
     const base::FilePath& unzip_dir,
-    base::Optional<std::string> manifest_content) {
+    absl::optional<std::string> manifest_content) {
   if (!manifest_content) {
     ReportFailure(std::string(kExtensionHandlerFileUnzipError));
     return;
   }
 
-  data_decoder::SafeJsonParser::Parse(
-      connector_, *manifest_content,
-      base::Bind(&ZipFileInstaller::ManifestParsed, this, unzip_dir),
-      base::Bind(&ZipFileInstaller::ManifestParsingFailed, this));
-}
-
-void ZipFileInstaller::ManifestParsingFailed(const std::string& error) {
-  ReportFailure(std::string(kExtensionHandlerFileUnzipError));
+  data_decoder::DataDecoder::ParseJsonIsolated(
+      *manifest_content,
+      base::BindOnce(&ZipFileInstaller::ManifestParsed, this, unzip_dir));
 }
 
 void ZipFileInstaller::ManifestParsed(
     const base::FilePath& unzip_dir,
-    std::unique_ptr<base::Value> manifest_value) {
+    data_decoder::DataDecoder::ValueOrError result) {
+  if (!result.value) {
+    ReportFailure(std::string(kExtensionHandlerFileUnzipError));
+    return;
+  }
+
   std::unique_ptr<base::DictionaryValue> manifest_dictionary =
-      base::DictionaryValue::From(std::move(manifest_value));
+      base::DictionaryValue::From(
+          base::Value::ToUniquePtrValue(std::move(*result.value)));
   if (!manifest_dictionary) {
     ReportFailure(std::string(kExtensionHandlerFileUnzipError));
     return;
   }
 
-  Manifest manifest(Manifest::INTERNAL, std::move(manifest_dictionary));
+  Manifest::Type manifest_type =
+      Manifest::GetTypeFromManifestValue(*manifest_dictionary);
 
   unzip::UnzipFilterCallback filter = base::BindRepeating(
       [](bool is_theme, const base::FilePath& file_path) -> bool {
@@ -167,12 +171,12 @@ void ZipFileInstaller::ManifestParsed(
         return ZipFileInstaller::ShouldExtractFile(is_theme, file_path) &&
                !ZipFileInstaller::IsManifestFile(file_path);
       },
-      manifest.is_theme());
+      manifest_type == Manifest::TYPE_THEME);
 
   // TODO(crbug.com/645263): This silently ignores blocked file types.
   //                         Add install warnings.
   unzip::UnzipWithFilter(
-      connector_->Clone(), zip_file_, unzip_dir, filter,
+      unzip::LaunchUnzipper(), zip_file_, unzip_dir, filter,
       base::BindOnce(&ZipFileInstaller::UnzipDone, this, unzip_dir));
 }
 
@@ -203,7 +207,7 @@ bool ZipFileInstaller::ShouldExtractFile(bool is_theme,
     // Allow filenames with no extension.
     if (extension.empty())
       return true;
-    return base::ContainsValue(kAllowedThemeFiletypes, extension);
+    return base::Contains(kAllowedThemeFiletypes, extension);
   }
   return !base::FilePath::CompareEqualIgnoreCase(file_path.FinalExtension(),
                                                  FILE_PATH_LITERAL(".exe"));

@@ -26,13 +26,13 @@ class TopRealWorldDesktopPage(rendering_story.RenderingStory):
         extra_browser_args=extra_browser_args)
 
   def RunPageInteractions(self, action_runner):
-      action_runner.Wait(1)
-      with action_runner.CreateGestureInteraction('ScrollAction'):
-        action_runner.ScrollPage()
-        if self.story_set.scroll_forever:
-          while True:
-            action_runner.ScrollPage(direction='up')
-            action_runner.ScrollPage(direction='down')
+    action_runner.Wait(1)
+    with action_runner.CreateGestureInteraction('ScrollAction'):
+      action_runner.ScrollPage()
+      if self.story_set.scroll_forever:
+        while True:
+          action_runner.ScrollPage(direction='up')
+          action_runner.ScrollPage(direction='down')
 
 
 class GoogleWebSearch2018Page(TopRealWorldDesktopPage):
@@ -40,8 +40,6 @@ class GoogleWebSearch2018Page(TopRealWorldDesktopPage):
   BASE_NAME = 'google_web_search'
   YEAR = '2018'
   URL = 'https://www.google.com/#hl=en&q=barack+obama'
-  TAGS = TopRealWorldDesktopPage.TAGS + [
-      story_tags.REPRESENTATIVE_WIN_DESKTOP]
 
   def __init__(self,
                page_set,
@@ -153,7 +151,6 @@ class Wordpress2018Page(TopRealWorldDesktopPage):
   YEAR = '2018'
   # pylint: disable=line-too-long
   URL = 'http://en.blog.wordpress.com/2012/09/04/freshly-pressed-editors-picks-for-august-2012/'
-  TAGS = TopRealWorldDesktopPage.TAGS + [story_tags.REPRESENTATIVE_MAC_DESKTOP]
 
   def __init__(self,
                page_set,
@@ -264,7 +261,6 @@ class Pinterest2018Page(TopRealWorldDesktopPage):
   BASE_NAME = 'pinterest'
   YEAR = '2018'
   URL = 'https://www.pinterest.com/search/pins/?q=flowers&rs=typed'
-  TAGS = TopRealWorldDesktopPage.TAGS + [story_tags.REPRESENTATIVE_WIN_DESKTOP]
 
   def __init__(self,
                page_set,
@@ -301,6 +297,9 @@ class Twitch2018Page(TopRealWorldDesktopPage):
   BASE_NAME = 'twitch'
   YEAR = '2018'
   URL = 'https://www.twitch.tv'
+  TAGS = TopRealWorldDesktopPage.TAGS + [
+    story_tags.REPRESENTATIVE_MAC_DESKTOP
+  ]
 
   def __init__(self,
                page_set,
@@ -335,7 +334,8 @@ class Gmail2018SmoothPage(TopRealWorldDesktopPage):
     super(Gmail2018SmoothPage, self).RunNavigateSteps(action_runner)
     action_runner.WaitForJavaScriptCondition(
         'window.gmonkey !== undefined &&'
-        'document.getElementById("gb") !== null')
+        'document.getElementById("gb") !== null &&'
+        'document.readyState == "complete"')
 
   def RunPageInteractions(self, action_runner):
     action_runner.WaitForElement(selector='.Tm.aeJ')
@@ -470,7 +470,6 @@ class YahooSports2018Page(TopRealWorldDesktopPage):
   BASE_NAME = 'yahoo_sports'
   YEAR = '2018'
   URL = 'http://sports.yahoo.com/'
-  TAGS = TopRealWorldDesktopPage.TAGS + [story_tags.REPRESENTATIVE_WIN_DESKTOP]
 
 
 class TechCrunch2018Page(TopRealWorldDesktopPage):

@@ -4,14 +4,16 @@
 
 #include "components/download/content/factory/download_service_factory_helper.h"
 
+#include <utility>
+
 #include "base/files/file_path.h"
 #include "build/build_config.h"
 #include "components/download/content/factory/navigation_monitor_factory.h"
 #include "components/download/content/internal/download_driver_impl.h"
+#include "components/download/internal/background_service/background_download_service_impl.h"
 #include "components/download/internal/background_service/client_set.h"
 #include "components/download/internal/background_service/config.h"
 #include "components/download/internal/background_service/controller_impl.h"
-#include "components/download/internal/background_service/download_service_impl.h"
 #include "components/download/internal/background_service/download_store.h"
 #include "components/download/internal/background_service/empty_file_monitor.h"
 #include "components/download/internal/background_service/file_monitor_impl.h"
@@ -23,13 +25,13 @@
 #include "components/download/internal/background_service/scheduler/scheduler_impl.h"
 #include "components/download/public/common/simple_download_manager_coordinator.h"
 #include "components/download/public/task/empty_task_scheduler.h"
-#include "components/leveldb_proto/content/proto_database_provider_factory.h"
 #include "components/leveldb_proto/public/proto_database_provider.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if defined(OS_ANDROID)
 #include "components/download/internal/background_service/android/battery_status_listener_android.h"
 #include "components/download/network/android/network_status_listener_android.h"
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
 #include "components/download/internal/background_service/scheduler/battery_status_listener_mac.h"
 #include "components/download/network/network_status_listener_mac.h"
 #else
@@ -46,7 +48,7 @@ const base::FilePath::CharType kFilesStorageDir[] = FILE_PATH_LITERAL("Files");
 
 // Helper function to create download service with different implementation
 // details.
-DownloadService* CreateDownloadServiceInternal(
+std::unique_ptr<BackgroundDownloadService> CreateDownloadServiceInternal(
     SimpleFactoryKey* simple_factory_key,
     std::unique_ptr<DownloadClientMap> clients,
     std::unique_ptr<Configuration> config,
@@ -64,7 +66,7 @@ DownloadService* CreateDownloadServiceInternal(
   auto battery_listener = std::make_unique<BatteryStatusListenerAndroid>(
       config->battery_query_interval);
   auto network_listener = std::make_unique<NetworkStatusListenerAndroid>();
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
   auto battery_listener = std::make_unique<BatteryStatusListenerMac>();
   auto network_listener = std::make_unique<NetworkStatusListenerMac>();
 #else
@@ -89,33 +91,28 @@ DownloadService* CreateDownloadServiceInternal(
       files_storage_dir);
   logger->SetLogSource(controller.get());
 
-  return new DownloadServiceImpl(std::move(config), std::move(logger),
-                                 std::move(controller));
+  return std::make_unique<BackgroundDownloadServiceImpl>(
+      std::move(config), std::move(logger), std::move(controller));
 }
 
 // Create download service for normal profile.
-DownloadService* BuildDownloadService(
-    content::BrowserContext* browser_context,
+std::unique_ptr<BackgroundDownloadService> BuildDownloadService(
     SimpleFactoryKey* simple_factory_key,
-    PrefService* prefs,
     std::unique_ptr<DownloadClientMap> clients,
     network::NetworkConnectionTracker* network_connection_tracker,
     const base::FilePath& storage_dir,
     SimpleDownloadManagerCoordinator* download_manager_coordinator,
+    leveldb_proto::ProtoDatabaseProvider* proto_db_provider,
     const scoped_refptr<base::SequencedTaskRunner>& background_task_runner,
     std::unique_ptr<TaskScheduler> task_scheduler) {
   auto config = Configuration::CreateFromFinch();
 
   auto driver = std::make_unique<DownloadDriverImpl>(
-      content::BrowserContext::GetDownloadManager(browser_context),
       download_manager_coordinator);
 
   auto entry_db_storage_dir = storage_dir.Append(kEntryDBStorageDir);
 
-  leveldb_proto::ProtoDatabaseProvider* db_provider =
-      leveldb_proto::ProtoDatabaseProviderFactory::GetForKey(
-          simple_factory_key);
-  auto entry_db = db_provider->GetDB<protodb::Entry>(
+  auto entry_db = proto_db_provider->GetDB<protodb::Entry>(
       leveldb_proto::ProtoDbType::DOWNLOAD_STORE, entry_db_storage_dir,
       background_task_runner);
   auto store = std::make_unique<DownloadStore>(std::move(entry_db));
@@ -131,19 +128,19 @@ DownloadService* BuildDownloadService(
 }
 
 // Create download service for incognito mode without any database or file IO.
-DownloadService* BuildInMemoryDownloadService(
+std::unique_ptr<BackgroundDownloadService> BuildInMemoryDownloadService(
     SimpleFactoryKey* simple_factory_key,
     std::unique_ptr<DownloadClientMap> clients,
     network::NetworkConnectionTracker* network_connection_tracker,
     const base::FilePath& storage_dir,
-    BlobTaskProxy::BlobContextGetter blob_context_getter,
+    BlobContextGetterFactoryPtr blob_context_getter_factory,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
   auto config = Configuration::CreateFromFinch();
   auto download_factory = std::make_unique<InMemoryDownloadFactory>(
-      url_loader_factory.get(), blob_context_getter, io_task_runner);
-  auto driver =
-      std::make_unique<InMemoryDownloadDriver>(std::move(download_factory));
+      url_loader_factory.get(), io_task_runner);
+  auto driver = std::make_unique<InMemoryDownloadDriver>(
+      std::move(download_factory), std::move(blob_context_getter_factory));
   auto store = std::make_unique<NoopStore>();
   auto task_scheduler = std::make_unique<EmptyTaskScheduler>();
 

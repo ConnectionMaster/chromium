@@ -5,9 +5,14 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_COMPONENTS_WEB_APP_SHORTCUT_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_COMPONENTS_WEB_APP_SHORTCUT_H_
 
+#include <memory>
+#include <set>
+#include <string>
+
+#include "base/callback_forward.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
-#include "base/macros.h"
-#include "base/strings/string16.h"
+#include "base/sequence_checker.h"
 #include "ui/gfx/image/image_family.h"
 #include "url/gurl.h"
 
@@ -15,11 +20,17 @@ namespace base {
 class TaskRunner;
 }
 
+namespace gfx {
+class ImageSkia;
+}
+
 namespace web_app {
 
 // Represents the info required to create a shortcut for an app.
 struct ShortcutInfo {
   ShortcutInfo();
+  ShortcutInfo(const ShortcutInfo&) = delete;
+  ShortcutInfo& operator=(const ShortcutInfo&) = delete;
   ~ShortcutInfo();
 
   GURL url;
@@ -28,22 +39,26 @@ struct ShortcutInfo {
   // is still used to generate the app id (windows app id, not chrome app id).
   // TODO(loyso): Rename it to app_id.
   std::string extension_id;
-  bool is_platform_app = false;
-  bool from_bookmark = false;
-  base::string16 title;
-  base::string16 description;
-  base::FilePath extension_path;
+  std::u16string title;
+  std::u16string description;
   gfx::ImageFamily favicon;
   base::FilePath profile_path;
   std::string profile_name;
   std::string version_for_display;
+  std::set<std::string> file_handler_extensions;
+  std::set<std::string> file_handler_mime_types;
+  std::set<std::string> protocol_handlers;
+
+  // An app is multi-profile if there is a single shortcut and single app shim
+  // for all profiles. The app itself has a profile switcher that may be used
+  // to open windows for the various profiles. This is relevant only on macOS.
+  bool is_multi_profile = false;
 
  private:
-  // ShortcutInfo must not be copied; generally it is passed around via
-  // unique_ptr. Since ImageFamily has a non-thread-safe reference count in
-  // its member and is bound to UI thread, destroy ShortcutInfo instance
-  // on UI thread.
-  DISALLOW_COPY_AND_ASSIGN(ShortcutInfo);
+  // Since gfx::ImageFamily |favicon| has a non-thread-safe reference count in
+  // its member and is bound to current thread, always destroy ShortcutInfo
+  // instance on the same thread.
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
 // This specifies a folder in the system applications menu (e.g the Start Menu
@@ -66,17 +81,20 @@ enum ApplicationsMenuLocation {
 
 // Info about which locations to create app shortcuts in.
 struct ShortcutLocations {
-  ShortcutLocations();
+  bool on_desktop = false;
 
-  bool on_desktop;
-
-  ApplicationsMenuLocation applications_menu_location;
+  ApplicationsMenuLocation applications_menu_location = APP_MENU_LOCATION_NONE;
 
   // For Windows, this refers to quick launch bar prior to Win7. In Win7,
   // this means "pin to taskbar". For Mac/Linux, this could be used for
   // Mac dock or the gnome/kde application launcher. However, those are not
   // implemented yet.
-  bool in_quick_launch_bar;
+  bool in_quick_launch_bar = false;
+
+  // For Windows, this refers to the Startup folder.
+  // For Mac, this refers to the Login Items list.
+  // For Linux, this refers to the autostart folder.
+  bool in_startup = false;
 };
 
 // This encodes the cause of shortcut creation as the correct behavior in each
@@ -89,12 +107,32 @@ enum ShortcutCreationReason {
 // Compute a deterministic name based on data in the shortcut_info.
 std::string GenerateApplicationNameFromInfo(const ShortcutInfo& shortcut_info);
 
-// Gets the user data directory for given web app. The path for the directory is
-// based on |extension_id|. If |extension_id| is empty then |url| is used
-// to construct a unique ID.
-base::FilePath GetWebAppDataDirectory(const base::FilePath& profile_path,
-                                      const std::string& extension_id,
-                                      const GURL& url);
+// Returns a per-app directory for OS-specific web app data to handle OS
+// registration and unregistration. To store manifest resources, use
+// GetManifestResourcesDirectoryForApp() declared in web_app_utils.h.
+//
+// The path for the directory is based on |app_id|. If |app_id| is empty then
+// |url| is used to construct a unique ID.
+base::FilePath GetOsIntegrationResourcesDirectoryForApp(
+    const base::FilePath& profile_path,
+    const std::string& app_id,
+    const GURL& url);
+
+// Callback made when CreateShortcuts has finished trying to create the
+// platform shortcuts indicating whether or not they were successfully
+// created.
+using CreateShortcutsCallback = base::OnceCallback<void(bool shortcut_created)>;
+// Callback made when DeletePlatformShortcuts has finished trying to delete the
+// platform shortcuts indicating whether or not they were successfully
+// deleted.
+using DeleteShortcutsCallback = base::OnceCallback<void(bool shortcut_deleted)>;
+
+// Returns an array of desired icon sizes (in px) to be contained in an app OS
+// shortcut, sorted in ascending order (biggest desired icon size is last).
+base::span<const int> GetDesiredIconSizesForShortcut();
+
+// Load the standard application icon from resources.
+gfx::ImageSkia CreateDefaultApplicationIcon(int size);
 
 namespace internals {
 
@@ -104,22 +142,51 @@ namespace internals {
 // shortcut, and is also used as the UserDataDir for platform app shortcuts.
 // |shortcut_info| contains info about the shortcut to create, and
 // |creation_locations| contains information about where to create them.
+// Performs blocking IO operations.
 bool CreatePlatformShortcuts(const base::FilePath& shortcut_data_path,
                              const ShortcutLocations& creation_locations,
                              ShortcutCreationReason creation_reason,
                              const ShortcutInfo& shortcut_info);
 
+// Implemented for each platform, does the platform specific parts of checking
+// desktop and application menu to get shortcut locations.
+ShortcutLocations GetAppExistingShortCutLocationImpl(
+    const ShortcutInfo& shortcut_info);
+
+// Schedules a call to |CreatePlatformShortcuts| on the Shortcut IO thread and
+// invokes |callback| when complete. This function must be called from the UI
+// thread.
+void ScheduleCreatePlatformShortcuts(
+    const base::FilePath& shortcut_data_path,
+    const ShortcutLocations& creation_locations,
+    ShortcutCreationReason reason,
+    std::unique_ptr<ShortcutInfo> shortcut_info,
+    CreateShortcutsCallback callback);
+
+void ScheduleDeletePlatformShortcuts(
+    const base::FilePath& shortcut_data_path,
+    std::unique_ptr<ShortcutInfo> shortcut_info,
+    DeleteShortcutsCallback callback);
+
+void ScheduleDeleteMultiProfileShortcutsForApp(
+    const std::string& app_id,
+    DeleteShortcutsCallback callback);
+
 // Delete all the shortcuts we have added for this extension. This is the
 // platform specific implementation of the DeleteAllShortcuts function, and
 // is executed on the FILE thread.
-void DeletePlatformShortcuts(const base::FilePath& shortcut_data_path,
+bool DeletePlatformShortcuts(const base::FilePath& shortcut_data_path,
                              const ShortcutInfo& shortcut_info);
+
+// Delete the multi-profile (non-profile_scoped) shortcuts for the specified
+// app. This is the multi-profile complement of DeletePlatformShortcuts.
+void DeleteMultiProfileShortcutsForApp(const std::string& app_id);
 
 // Updates all the shortcuts we have added for this extension. This is the
 // platform specific implementation of the UpdateAllShortcuts function, and
 // is executed on the FILE thread.
 void UpdatePlatformShortcuts(const base::FilePath& shortcut_data_path,
-                             const base::string16& old_app_title,
+                             const std::u16string& old_app_title,
                              const ShortcutInfo& shortcut_info);
 
 // Run an IO task on a worker thread. Ownership of |shortcut_info| transfers
@@ -138,11 +205,7 @@ void PostShortcutIOTaskAndReply(
 // blocked so that an inconsistent shortcut state is not left on disk.
 scoped_refptr<base::TaskRunner> GetShortcutIOTaskRunner();
 
-// Sanitizes |name| and returns a version of it that is safe to use as an
-// on-disk file name .
-base::FilePath GetSanitizedFileName(const base::string16& name);
-
-base::FilePath GetShortcutDataDir(const web_app::ShortcutInfo& shortcut_info);
+base::FilePath GetShortcutDataDir(const ShortcutInfo& shortcut_info);
 
 // Delete all the shortcuts for an entire profile.
 // This is executed on the FILE thread.

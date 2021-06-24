@@ -6,17 +6,20 @@
 #define BASE_DEBUG_TASK_TRACE_H_
 
 #include <iosfwd>
+#include <string>
 
 #include "base/base_export.h"
 #include "base/containers/span.h"
 #include "base/debug/stack_trace.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 namespace debug {
 
-// Provides a snapshot of which places in the code posted tasks with a FROM_HERE
-// that led to the TaskTrace() constructor call.
+// Provides a snapshot of which places in the code called
+// base::TaskRunner::PostTask() that led to the TaskTrace() constructor call.
+// Analogous to base::StackTrace, but for posted tasks rather than function
+// calls.
 //
 // Example usage:
 //   TaskTrace().Print();
@@ -43,11 +46,14 @@ class BASE_EXPORT TaskTrace {
   // Outputs trace to |os|, may be called when empty() is true.
   void OutputToStream(std::ostream* os) const;
 
+  // Resolves trace to symbols and returns as string.
+  std::string ToString() const;
+
   // Returns the list of addresses in the task trace for testing.
   base::span<const void* const> AddressesForTesting() const;
 
  private:
-  base::Optional<StackTrace> stack_trace_;
+  absl::optional<StackTrace> stack_trace_;
   bool trace_overflow_ = false;
 };
 

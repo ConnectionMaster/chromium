@@ -27,9 +27,17 @@ class ImageMetadataStore {
   // While this is false, initialization may have already started.
   virtual bool IsInitialized() = 0;
 
-  // Adds or updates the image metadata for the |key|.
+  // Loads the image metadata for the |key|.
+  virtual void LoadImageMetadata(const std::string& key,
+                                 ImageMetadataCallback) = 0;
+
+  // Adds or updates the image metadata for the |key|. If metadata exists for an
+  // image and the |needs_transcoding| is still true, we don't need to update
+  // the existing metadata.
   virtual void SaveImageMetadata(const std::string& key,
-                                 const size_t data_size) = 0;
+                                 const size_t data_size,
+                                 bool needs_transcoding,
+                                 ExpirationInterval expiration_interval) = 0;
 
   // Deletes the image metadata for the |key|.
   virtual void DeleteImageMetadata(const std::string& key) = 0;
@@ -40,8 +48,9 @@ class ImageMetadataStore {
   // Returns all the keys this store has.
   virtual void GetAllKeys(KeysCallback callback) = 0;
 
-  // Returns the total size of what's in metadata, possibly incorrect.
-  virtual int GetEstimatedSize() = 0;
+  // Returns the total size of what's in metadata for a given cache option,
+  // possibly incorrect.
+  virtual int64_t GetEstimatedSize(CacheOption cache_option) = 0;
 
   // Deletes all metadata that's been cached before the boundary given as
   // |expiration_time|.

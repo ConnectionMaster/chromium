@@ -10,6 +10,8 @@
 
 #include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/box_f.h"
+#include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/insets_f.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point3_f.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -51,7 +53,8 @@ bool FloatAlmostEqual(float a, float b) {
     const char* rhs_expr,
     const AxisTransform2d& lhs,
     const AxisTransform2d& rhs) {
-  if (FloatAlmostEqual(lhs.scale(), rhs.scale()) &&
+  if (FloatAlmostEqual(lhs.scale().x(), rhs.scale().x()) &&
+      FloatAlmostEqual(lhs.scale().y(), rhs.scale().y()) &&
       FloatAlmostEqual(lhs.translation().x(), rhs.translation().x()) &&
       FloatAlmostEqual(lhs.translation().y(), rhs.translation().y())) {
     return ::testing::AssertionSuccess();
@@ -151,6 +154,14 @@ void PrintTo(const Point3F& point, ::std::ostream* os) {
 
 void PrintTo(const PointF& point, ::std::ostream* os) {
   *os << point.ToString();
+}
+
+void PrintTo(const Insets& insets, ::std::ostream* os) {
+  *os << insets.ToString();
+}
+
+void PrintTo(const InsetsF& insets, ::std::ostream* os) {
+  *os << insets.ToString();
 }
 
 void PrintTo(const QuadF& quad, ::std::ostream* os) {

@@ -1,7 +1,12 @@
 // Copyright 2014 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-'use strict';
+
+import {addEntries, ENTRIES, RootPath, sendTestMessage, TestEntryInfo} from '../test_util.js';
+import {testcase} from '../testcase.js';
+
+import {IGNORE_APP_ERRORS, isSinglePartitionFormat, openNewWindow, remoteCall, setupAndWaitUntilReady} from './background.js';
+import {BASIC_DRIVE_ENTRY_SET, BASIC_FAKE_ENTRY_SET, BASIC_LOCAL_ENTRY_SET, COMPUTERS_ENTRY_SET} from './test_data.js';
 
 /**
  * Checks if the files initially added by the C++ side are displayed, and
@@ -11,12 +16,11 @@
  * @param {Array<TestEntryInfo>} defaultEntries Default file entries.
  */
 async function fileDisplay(path, defaultEntries) {
-  const defaultList = TestEntryInfo.getExpectedRows(defaultEntries).sort();
-
   // Open Files app on the given |path| with default file entries.
   const appId = await setupAndWaitUntilReady(path);
 
   // Verify the default file list is present in |result|.
+  const defaultList = TestEntryInfo.getExpectedRows(defaultEntries).sort();
   await remoteCall.waitForFiles(appId, defaultList);
 
   // Add new file entries.
@@ -33,6 +37,52 @@ async function fileDisplay(path, defaultEntries) {
  */
 testcase.fileDisplayDownloads = () => {
   return fileDisplay(RootPath.DOWNLOADS, BASIC_LOCAL_ENTRY_SET);
+};
+
+/**
+ * Tests opening the files app navigating to a local folder. Uses
+ * platform_util::OpenItem, a call to an API distinct from the one commonly used
+ * in other tests for the same operation.
+ */
+testcase.fileDisplayLaunchOnLocalFolder = async () => {
+  // Add a file to Downloads.
+  await addEntries(['local'], [ENTRIES.photos]);
+
+  // Open Files app on the Downloads directory.
+  await sendTestMessage(
+      {name: 'launchAppOnLocalFolder', localPath: 'Downloads/photos'});
+
+  // Wait for app window to open.
+  const appId = await remoteCall.waitForWindow('files#');
+
+  // Check: The current directory is MyFiles/Downloads/photos.
+  await remoteCall.waitUntilCurrentDirectoryIsChanged(
+      appId, '/My files/Downloads/photos');
+
+  // The API used to launch the Files app does not set the IN_TEST flag to true:
+  // error when attempting to retrieve Web Store access token.
+  return IGNORE_APP_ERRORS;
+};
+
+/**
+ * Tests opening the files app navigating to the My Drive folder. Uses
+ * platform_util::OpenItem, a call to an API distinct from the one commonly used
+ * in other tests for the same operation.
+ */
+testcase.fileDisplayLaunchOnDrive = async () => {
+  // Open Files app on the Drive directory.
+  await sendTestMessage({name: 'launchAppOnDrive'});
+
+  // Wait for app window to open.
+  const appId = await remoteCall.waitForWindow('files#');
+
+  // Check: the app should be open on My Drive.
+  await remoteCall.waitForElement(
+      appId, '#directory-tree .tree-item[selected] [volume-type-icon="drive"]');
+
+  // The API used to launch the Files app does not set the IN_TEST flag to true:
+  // error when attempting to retrieve Web Store access token.
+  return IGNORE_APP_ERRORS;
 };
 
 /**
@@ -222,19 +272,92 @@ testcase.fileDisplayUsbPartition = async () => {
   chrome.test.assertEq(
       'removable', fakeUsb.attributes['volume-type-for-testing']);
 
-  // Check unpartitioned USB does not have partitions as tree children.
-  const itemEntriesQuery =
-      ['[entry-label="fake-usb"] .tree-children .tree-item'];
-  const itemEntries = await remoteCall.callRemoteTestUtil(
-      'queryAllElements', appId, itemEntriesQuery);
-  chrome.test.assertEq(1, itemEntries.length);
-  const childVolumeType = itemEntries[0].attributes['volume-type-for-testing'];
-  chrome.test.assertTrue('removable' !== childVolumeType);
+  if (await isSinglePartitionFormat(appId)) {
+    // Check unpartitioned USB has single partition as tree child.
+    const itemEntriesQuery =
+        ['[entry-label="FAKEUSB"] .tree-children .tree-item'];
+    const itemEntries = await remoteCall.callRemoteTestUtil(
+        'queryAllElements', appId, itemEntriesQuery);
+    chrome.test.assertEq(1, itemEntries.length);
+    const childVolumeType =
+        itemEntries[0].attributes['volume-type-for-testing'];
+
+    chrome.test.assertTrue('removable' == childVolumeType);
+  } else {
+    // Check unpartitioned USB does not have partitions as tree children.
+    const itemEntriesQuery =
+        ['[entry-label="fake-usb"] .tree-children .tree-item'];
+    const itemEntries = await remoteCall.callRemoteTestUtil(
+        'queryAllElements', appId, itemEntriesQuery);
+    chrome.test.assertEq(1, itemEntries.length);
+    const childVolumeType =
+        itemEntries[0].attributes['volume-type-for-testing'];
+    chrome.test.assertTrue('removable' !== childVolumeType);
+  }
 };
 
 /**
- * Tests partitions display in the file table when root removable entry
- * is selected. Checks file system type is displayed.
+ * Tests that the file system type is properly displayed in the type
+ * column. Checks that the entries can be properly sorted by type.
+ * crbug.com/973743
+ */
+testcase.fileDisplayUsbPartitionSort = async () => {
+  const removableGroup = '#directory-tree [root-type-icon="removable"]';
+
+  // Open Files app on local downloads.
+  const appId = await setupAndWaitUntilReady(RootPath.DOWNLOADS);
+
+  // Mount removable device with partitions.
+  await sendTestMessage({name: 'mountUsbWithMultiplePartitionTypes'});
+
+  // Wait and select the removable group by clicking the label.
+  await remoteCall.waitAndClickElement(appId, removableGroup);
+
+  // Wait for partitions to appear in the file table list.
+  let expectedRows = [
+    ['partition-3', '--', 'vfat'],
+    ['partition-2', '--', 'ext4'],
+    ['partition-1', '--', 'ntfs'],
+  ];
+  const options = {orderCheck: true, ignoreLastModifiedTime: true};
+  await remoteCall.waitForFiles(appId, expectedRows, options);
+
+  // Sort by type in ascending order.
+  await remoteCall.callRemoteTestUtil(
+      'fakeMouseClick', appId, ['.table-header-cell:nth-of-type(4)']);
+  const iconSortedAsc =
+      '.table-header-cell .sorted [iron-icon="files16:arrow_up_small"]';
+  await remoteCall.waitForElement(appId, iconSortedAsc);
+
+  // Check that partitions are sorted in ascending order based on the partition
+  // type.
+  expectedRows = [
+    ['partition-2', '--', 'ext4'],
+    ['partition-1', '--', 'ntfs'],
+    ['partition-3', '--', 'vfat'],
+  ];
+  await remoteCall.waitForFiles(appId, expectedRows, options);
+
+  // Sort by type in descending order.
+  await remoteCall.callRemoteTestUtil(
+      'fakeMouseClick', appId, ['.table-header-cell:nth-of-type(4)']);
+  const iconSortedDesc =
+      '.table-header-cell .sorted [iron-icon="files16:arrow_down_small"]';
+  await remoteCall.waitForElement(appId, iconSortedDesc);
+
+  // Check that partitions are sorted in descending order based on the partition
+  // type.
+  expectedRows = [
+    ['partition-3', '--', 'vfat'],
+    ['partition-1', '--', 'ntfs'],
+    ['partition-2', '--', 'ext4'],
+  ];
+  await remoteCall.waitForFiles(appId, expectedRows, options);
+};
+
+/**
+ * Tests display of partitions in file list after mounting a removable USB
+ * volume.
  */
 testcase.fileDisplayPartitionFileTable = async () => {
   const removableGroup = '#directory-tree [root-type-icon="removable"]';
@@ -259,7 +382,7 @@ testcase.fileDisplayPartitionFileTable = async () => {
 
   const partitionTwo = await remoteCall.waitForElement(
       appId, '#file-list [file-name="partition-2"] .type');
-  chrome.test.assertEq('ext4', partitionOne.text);
+  chrome.test.assertEq('ext4', partitionTwo.text);
 };
 
 /**
@@ -279,8 +402,7 @@ async function searchDownloads(searchTerm, expectedResults) {
       'fakeEvent', appId, ['#search-box cr-input', 'focus']));
 
   // Input a text.
-  await remoteCall.callRemoteTestUtil(
-      'inputText', appId, ['#search-box cr-input', searchTerm]);
+  await remoteCall.inputText(appId, '#search-box cr-input', searchTerm);
 
   // Notify the element of the input.
   chrome.test.assertTrue(!!await remoteCall.callRemoteTestUtil(
@@ -319,8 +441,7 @@ testcase.fileSearchNotFound = async () => {
       'fakeEvent', appId, ['#search-box cr-input', 'focus']));
 
   // Input a text.
-  await remoteCall.callRemoteTestUtil(
-      'inputText', appId, ['#search-box cr-input', searchTerm]);
+  await remoteCall.inputText(appId, '#search-box cr-input', searchTerm);
 
   // Notify the element of the input.
   await remoteCall.callRemoteTestUtil(
@@ -395,8 +516,13 @@ testcase.fileDisplayWithoutVolumesThenMountDownloads = async () => {
   await remoteCall.waitForElement(appId, '[volume-type-icon="downloads"]');
   const downloadsRow = ['Downloads', '--', 'Folder'];
   const crostiniRow = ['Linux files', '--', 'Folder'];
+  const trashRow = ['Trash', '--', 'Folder'];
+  const expectedRows = [downloadsRow, crostiniRow, trashRow];
+  if (await sendTestMessage({name: 'isTrashEnabled'}) !== 'true') {
+    expectedRows.pop();
+  }
   await remoteCall.waitForFiles(
-      appId, [downloadsRow, crostiniRow],
+      appId, expectedRows,
       {ignoreFileSize: true, ignoreLastModifiedTime: true});
 };
 
@@ -458,19 +584,19 @@ testcase.fileDisplayWithoutDrive = async () => {
 
   // Wait for the loading indicator blink to finish.
   await remoteCall.waitForElement(
-      appId, '#list-container paper-progress[hidden]');
+      appId, '#list-container .loading-indicator[hidden]');
 
   // Navigate to the fake Google Drive.
   await remoteCall.callRemoteTestUtil(
       'fakeMouseClick', appId, ['[root-type-icon=\'drive\']']);
   await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, '/Google Drive');
 
-  // The fake Google Drive should be empty.
+  // Check: the fake Google Drive should be empty.
   await remoteCall.waitForFiles(appId, []);
 
-  // The loading indicator should be visible and remain visible forever.
+  // Check: the loading indicator should be visible.
   await remoteCall.waitForElement(
-      appId, '#list-container paper-progress:not([hidden])');
+      appId, '#list-container .loading-indicator:not([hidden])');
 };
 
 /**
@@ -498,19 +624,11 @@ testcase.fileDisplayWithoutDriveThenDisable = async () => {
   // Wait for Files app to finish loading.
   await remoteCall.waitFor('isFileManagerLoaded', appId, true);
 
-  // We should navigate to Downloads or MyFiles.
-  // TODO(crbug.com/880130): Remove this conditional.
-  let defaultFolder = '/My files/Downloads';
-  let expectedRows = [ENTRIES.newlyAdded.getExpectedRow()];
-  if (RootPath.DOWNLOADS_PATH === '/Downloads') {
-    defaultFolder = '/My files';
-    expectedRows = [
-      ['Downloads', '--', 'Folder'],
-      ['Linux files', '--', 'Folder'],
-    ];
-  }
-
-  // Ensure MyFiles or Downloads has loaded.
+  // We should navigate to MyFiles.
+  const expectedRows = [
+    ['Downloads', '--', 'Folder'],
+    ['Linux files', '--', 'Folder'],
+  ];
   await remoteCall.waitForFiles(
       appId, expectedRows, {ignoreLastModifiedTime: true});
 
@@ -525,7 +643,7 @@ testcase.fileDisplayWithoutDriveThenDisable = async () => {
   await sendTestMessage({name: 'setDriveEnabled', enabled: false});
 
   // The current directory should change to the default (Downloads).
-  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, defaultFolder);
+  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, '/My files');
 
   // Ensure Downloads has loaded.
   await remoteCall.waitForFiles(
@@ -592,23 +710,19 @@ testcase.fileDisplayUnmountDriveWithSharedWithMeSelected = async () => {
   // Unmount drive.
   await sendTestMessage({name: 'unmountDrive'});
 
-  // We should navigate to Downloads or MyFiles.
-  // TODO(crbug.com/880130): Remove this conditional.
-  let defaultFolder = '/My files/Downloads';
-  let expectedRows = [ENTRIES.newlyAdded.getExpectedRow()];
-  if (RootPath.DOWNLOADS_PATH === '/Downloads') {
-    defaultFolder = '/My files';
-    expectedRows = [
-      ['Play files', '--', 'Folder'],
-      ['Downloads', '--', 'Folder'],
-      ['Linux files', '--', 'Folder'],
-    ];
-  }
-
-  // Ensure MyFiles or Downloads has loaded.
-  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, defaultFolder);
+  // We should navigate to MyFiles.
+  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, '/My files');
 
   // Which should contain a file.
+  const expectedRows = [
+    ['Play files', '--', 'Folder'],
+    ['Downloads', '--', 'Folder'],
+    ['Linux files', '--', 'Folder'],
+    ['Trash', '--', 'Folder'],
+  ];
+  if (await sendTestMessage({name: 'isTrashEnabled'}) !== 'true') {
+    expectedRows.pop();
+  }
   await remoteCall.waitForFiles(
       appId, expectedRows, {ignoreLastModifiedTime: true});
 };
@@ -649,10 +763,7 @@ async function unmountRemovableVolume(removableDirectory) {
   if (removableDirectory === 'partition-1' ||
       removableDirectory === 'partition-2') {
     const partitionQuery = `#file-list [file-name="${removableDirectory}"]`;
-    const partitionFiles = [
-      ENTRIES.hello.getExpectedRow(),
-      ['Folder', '--', 'Folder', Date()],
-    ];
+    const partitionFiles = TestEntryInfo.getExpectedRows(BASIC_FAKE_ENTRY_SET);
     await remoteCall.callRemoteTestUtil(
         'fakeMouseDoubleClick', appId, [partitionQuery]);
     await remoteCall.waitUntilCurrentDirectoryIsChanged(
@@ -664,23 +775,19 @@ async function unmountRemovableVolume(removableDirectory) {
   // Unmount partitioned device.
   await sendTestMessage({name: 'unmountPartitions'});
 
-  // We should navigate to Downloads or MyFiles.
-  // TODO(crbug.com/880130): Remove this conditional.
-  let defaultFolder = '/My files/Downloads';
-  let expectedRows = [ENTRIES.photos.getExpectedRow()];
-  if (RootPath.DOWNLOADS_PATH === '/Downloads') {
-    defaultFolder = '/My files';
-    expectedRows = [
-      ['Play files', '--', 'Folder'],
-      ['Downloads', '--', 'Folder'],
-      ['Linux files', '--', 'Folder'],
-    ];
-  }
-
-  // Ensure MyFiles or Downloads has loaded.
-  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, defaultFolder);
+  // We should navigate to MyFiles.
+  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, '/My files');
 
   // And contains the expected files.
+  const expectedRows = [
+    ['Play files', '--', 'Folder'],
+    ['Downloads', '--', 'Folder'],
+    ['Linux files', '--', 'Folder'],
+    ['Trash', '--', 'Folder'],
+  ];
+  if (await sendTestMessage({name: 'isTrashEnabled'}) !== 'true') {
+    expectedRows.pop();
+  }
   await remoteCall.waitForFiles(
       appId, expectedRows, {ignoreLastModifiedTime: true});
 }
@@ -717,4 +824,115 @@ testcase.fileDisplayDownloadsWithBlockedFileTaskRunner = async () => {
   await sendTestMessage({name: 'blockFileTaskRunner'});
   await fileDisplay(RootPath.DOWNLOADS, BASIC_LOCAL_ENTRY_SET);
   await sendTestMessage({name: 'unblockFileTaskRunner'});
+};
+
+/**
+ * Tests to make sure check-select mode enables when selecting one item
+ */
+testcase.fileDisplayCheckSelectWithFakeItemSelected = async () => {
+  // Open files app on Downloads containing ENTRIES.hello.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DOWNLOADS, [ENTRIES.hello], []);
+
+  // Select ENTRIES.hello.
+  chrome.test.assertTrue(
+      await remoteCall.callRemoteTestUtil('selectFile', appId, ['hello.txt']));
+
+  // Select all.
+  const ctrlA = ['#file-list', 'a', true, false, false];
+  chrome.test.assertTrue(
+      await remoteCall.callRemoteTestUtil('fakeKeyDown', appId, ctrlA));
+
+  // Make sure check-select is enabled.
+  await remoteCall.waitForElement(appId, 'body.check-select');
+};
+
+/**
+ * Tests to make sure read-only indicator is visible when the current directory
+ * is read-only.
+ */
+testcase.fileDisplayCheckReadOnlyIconOnFakeDirectory = async () => {
+  // Open Files app on Drive with the given test files.
+  const appId = await setupAndWaitUntilReady(
+      RootPath.DRIVE, [ENTRIES.newlyAdded],
+      [ENTRIES.testSharedDocument, ENTRIES.hello]);
+
+  // Navigate to Shared with me.
+  await remoteCall.callRemoteTestUtil(
+      'fakeMouseClick', appId, ['[volume-type-icon=\'drive_shared_with_me\']']);
+
+  // Wait for the navigation to complete.
+  await remoteCall.waitUntilCurrentDirectoryIsChanged(appId, '/Shared with me');
+
+  // Make sure read-only indicator on toolbar is visible.
+  await remoteCall.waitForElement(appId, '#read-only-indicator:not([hidden])');
+};
+
+/**
+ * Tests to make sure read-only indicator is NOT visible when the current
+ * is writable.
+ */
+testcase.fileDisplayCheckNoReadOnlyIconOnDownloads = async () => {
+  // Open files app on Downloads containing ENTRIES.hello.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DOWNLOADS, [ENTRIES.hello], []);
+
+  // Make sure read-only indicator on toolbar is NOT visible.
+  await remoteCall.waitForElement(appId, '#read-only-indicator[hidden]');
+};
+
+/**
+ * Tests to make sure read-only indicator is NOT visible when the current
+ * directory is the "Linux files" fake root.
+ */
+testcase.fileDisplayCheckNoReadOnlyIconOnLinuxFiles = async () => {
+  const fakeRoot = '#directory-tree [root-type-icon="crostini"]';
+
+  // Block mounts from progressing. This should cause the file manager to always
+  // show the loading bar for linux files.
+  await sendTestMessage({name: 'blockMounts'});
+
+  // Open files app on Downloads.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DOWNLOADS, [ENTRIES.hello], []);
+
+  // Linux files fake root is shown.
+  await remoteCall.waitForElement(appId, fakeRoot);
+
+  // Click on Linux files.
+  await remoteCall.callRemoteTestUtil('fakeMouseClick', appId, [fakeRoot]);
+
+  // Check: the loading indicator should be visible.
+  await remoteCall.waitForElement(
+      appId, '#list-container .loading-indicator:not([hidden])');
+
+  // Check: the toolbar read-only indicator should not be visible.
+  await remoteCall.waitForElement(appId, '#read-only-indicator[hidden]');
+};
+
+/**
+ * Tests that a failure opening one window won't block opening other windows.
+ */
+testcase.fileDisplayStartupError = async () => {
+  // Fake chrome.app.window.create to return undefined.
+  const fakeData = {
+    'chrome.app.window.create': ['static_fake', [undefined]],
+  };
+  await remoteCall.callRemoteTestUtil('backgroundFake', null, [fakeData]);
+
+  // Check: opening a Files app window should fail and return null.
+  const failedAppId = await openNewWindow(RootPath.DOWNLOADS);
+  chrome.test.assertEq(null, failedAppId);
+
+  // Remove fakes.
+  const removedCount =
+      await remoteCall.callRemoteTestUtil('removeAllBackgroundFakes', null, []);
+  chrome.test.assertEq(1, removedCount);
+
+  // Check: opening a Files app window should succeed.
+  const appId = await openNewWindow(RootPath.DOWNLOADS);
+  chrome.test.assertTrue(null !== appId);
+
+  // The failed attempt logs the error.
+  return IGNORE_APP_ERRORS;
 };

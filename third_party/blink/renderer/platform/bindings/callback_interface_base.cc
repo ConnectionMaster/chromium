@@ -32,15 +32,15 @@ CallbackInterfaceBase::CallbackInterfaceBase(
   }
 }
 
-void CallbackInterfaceBase::Trace(Visitor* visitor) {
+void CallbackInterfaceBase::Trace(Visitor* visitor) const {
   visitor->Trace(callback_object_);
   visitor->Trace(callback_relevant_script_state_);
   visitor->Trace(incumbent_script_state_);
 }
 
 ScriptState* CallbackInterfaceBase::CallbackRelevantScriptStateOrReportError(
-    const char* interface,
-    const char* operation) {
+    const char* interface_name,
+    const char* operation_name) {
   if (callback_relevant_script_state_)
     return callback_relevant_script_state_;
 
@@ -48,8 +48,9 @@ ScriptState* CallbackInterfaceBase::CallbackRelevantScriptStateOrReportError(
   ScriptState::Scope incumbent_scope(incumbent_script_state_);
   v8::TryCatch try_catch(GetIsolate());
   try_catch.SetVerbose(true);
-  ExceptionState exception_state(
-      GetIsolate(), ExceptionState::kExecutionContext, interface, operation);
+  ExceptionState exception_state(GetIsolate(),
+                                 ExceptionState::kExecutionContext,
+                                 interface_name, operation_name);
   exception_state.ThrowSecurityError(
       "An invocation of the provided callback failed due to cross origin "
       "access.");
@@ -57,32 +58,20 @@ ScriptState* CallbackInterfaceBase::CallbackRelevantScriptStateOrReportError(
 }
 
 ScriptState* CallbackInterfaceBase::CallbackRelevantScriptStateOrThrowException(
-    const char* interface,
-    const char* operation) {
+    const char* interface_name,
+    const char* operation_name) {
   if (callback_relevant_script_state_)
     return callback_relevant_script_state_;
 
   // Throw a SecurityError due to a cross origin callback object.
   ScriptState::Scope incumbent_scope(incumbent_script_state_);
-  ExceptionState exception_state(
-      GetIsolate(), ExceptionState::kExecutionContext, interface, operation);
+  ExceptionState exception_state(GetIsolate(),
+                                 ExceptionState::kExecutionContext,
+                                 interface_name, operation_name);
   exception_state.ThrowSecurityError(
       "An invocation of the provided callback failed due to cross origin "
       "access.");
   return nullptr;
-}
-
-V8PersistentCallbackInterfaceBase::V8PersistentCallbackInterfaceBase(
-    CallbackInterfaceBase* callback_interface)
-    : callback_interface_(callback_interface) {
-  v8::Isolate* isolate = callback_interface_->GetIsolate();
-  v8::HandleScope scope(isolate);
-  auto local = callback_interface_->callback_object_.NewLocal(isolate);
-  v8_object_.Reset(isolate, local);
-}
-
-void V8PersistentCallbackInterfaceBase::Trace(blink::Visitor* visitor) {
-  visitor->Trace(callback_interface_);
 }
 
 }  // namespace blink

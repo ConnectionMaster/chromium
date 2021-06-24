@@ -8,8 +8,8 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "net/base/io_buffer.h"
@@ -81,7 +81,7 @@ void QuicChromiumPacketWriter::ReusableIOBuffer::Set(const char* buffer,
   std::memcpy(data(), buffer, buf_len);
 }
 
-QuicChromiumPacketWriter::QuicChromiumPacketWriter() : weak_factory_(this) {}
+QuicChromiumPacketWriter::QuicChromiumPacketWriter() {}
 
 QuicChromiumPacketWriter::QuicChromiumPacketWriter(
     DatagramClientSocket* socket,
@@ -92,8 +92,7 @@ QuicChromiumPacketWriter::QuicChromiumPacketWriter(
           base::MakeRefCounted<ReusableIOBuffer>(quic::kMaxOutgoingPacketSize)),
       write_in_progress_(false),
       force_write_blocked_(false),
-      retry_count_(0),
-      weak_factory_(this) {
+      retry_count_(0) {
   retry_timer_.SetTaskRunner(task_runner);
   write_callback_ = base::BindRepeating(
       &QuicChromiumPacketWriter::OnWriteComplete, weak_factory_.GetWeakPtr());
@@ -244,8 +243,8 @@ bool QuicChromiumPacketWriter::MaybeRetryAfterWriteError(int rv) {
 
   retry_timer_.Start(
       FROM_HERE, base::TimeDelta::FromMilliseconds(UINT64_C(1) << retry_count_),
-      base::Bind(&QuicChromiumPacketWriter::RetryPacketAfterNoBuffers,
-                 weak_factory_.GetWeakPtr()));
+      base::BindOnce(&QuicChromiumPacketWriter::RetryPacketAfterNoBuffers,
+                     weak_factory_.GetWeakPtr()));
   retry_count_++;
   write_in_progress_ = true;
   return true;
@@ -264,10 +263,10 @@ bool QuicChromiumPacketWriter::IsBatchMode() const {
   return false;
 }
 
-char* QuicChromiumPacketWriter::GetNextWriteLocation(
+quic::QuicPacketBuffer QuicChromiumPacketWriter::GetNextWriteLocation(
     const quic::QuicIpAddress& self_address,
     const quic::QuicSocketAddress& peer_address) {
-  return nullptr;
+  return {nullptr, nullptr};
 }
 
 quic::WriteResult QuicChromiumPacketWriter::Flush() {

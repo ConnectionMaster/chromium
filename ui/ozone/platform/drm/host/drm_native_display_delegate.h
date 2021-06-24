@@ -29,14 +29,14 @@ class DrmNativeDisplayDelegate : public display::NativeDisplayDelegate {
   void RelinquishDisplayControl(
       display::DisplayControlCallback callback) override;
   void GetDisplays(display::GetDisplaysCallback callback) override;
-  void Configure(const display::DisplaySnapshot& output,
-                 const display::DisplayMode* mode,
-                 const gfx::Point& origin,
-                 display::ConfigureCallback callback) override;
+  void Configure(
+      const std::vector<display::DisplayConfigurationParams>& config_requests,
+      display::ConfigureCallback callback) override;
   void GetHDCPState(const display::DisplaySnapshot& output,
                     display::GetHDCPStateCallback callback) override;
   void SetHDCPState(const display::DisplaySnapshot& output,
                     display::HDCPState state,
+                    display::ContentProtectionMethod protection_method,
                     display::SetHDCPStateCallback callback) override;
   bool SetColorMatrix(int64_t display_id,
                       const std::vector<float>& color_matrix) override;
@@ -44,6 +44,7 @@ class DrmNativeDisplayDelegate : public display::NativeDisplayDelegate {
       int64_t display_id,
       const std::vector<display::GammaRampRGBEntry>& degamma_lut,
       const std::vector<display::GammaRampRGBEntry>& gamma_lut) override;
+  void SetPrivacyScreen(int64_t display_id, bool enabled) override;
   void AddObserver(display::NativeDisplayObserver* observer) override;
   void RemoveObserver(display::NativeDisplayObserver* observer) override;
   display::FakeDisplayController* GetFakeDisplayController() override;

@@ -28,12 +28,10 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/html/parser/preload_request.h"
 #include "third_party/blink/renderer/core/html/parser/resource_preloader.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_position.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
@@ -45,21 +43,23 @@ class CORE_EXPORT HTMLResourcePreloader
   friend class HTMLResourcePreloaderTest;
 
  public:
-  static HTMLResourcePreloader* Create(Document&);
-
   explicit HTMLResourcePreloader(Document&);
+  HTMLResourcePreloader(const HTMLResourcePreloader&) = delete;
+  HTMLResourcePreloader& operator=(const HTMLResourcePreloader&) = delete;
 
-  void Trace(Visitor*);
+  void Trace(Visitor*) const;
 
  protected:
   void Preload(std::unique_ptr<PreloadRequest>) override;
 
  private:
-  Member<Document> document_;
+  // Whether the request is allowed based on whether the doc is prefetch only
+  // and resource priority/type of |preload|.
+  bool AllowPreloadRequest(PreloadRequest* preload) const;
 
-  DISALLOW_COPY_AND_ASSIGN(HTMLResourcePreloader);
+  Member<Document> document_;
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_PARSER_HTML_RESOURCE_PRELOADER_H_

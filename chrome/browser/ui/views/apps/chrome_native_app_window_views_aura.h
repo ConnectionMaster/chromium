@@ -29,11 +29,12 @@ class ChromeNativeAppWindowViewsAura : public ChromeNativeAppWindowViews {
       const extensions::AppWindow::CreateParams& create_params,
       views::Widget::InitParams* init_params,
       views::Widget* widget) override;
-  views::NonClientFrameView* CreateNonStandardAppFrame() override;
+  std::unique_ptr<views::NonClientFrameView> CreateNonStandardAppFrame()
+      override;
 
   // ui::BaseWindow implementation.
   ui::WindowShowState GetRestoredState() const override;
-  bool IsAlwaysOnTop() const override;
+  ui::ZOrderLevel GetZOrderLevel() const override;
 
   // NativeAppWindow implementation.
   void UpdateShape(std::unique_ptr<ShapeRects> rects) override;

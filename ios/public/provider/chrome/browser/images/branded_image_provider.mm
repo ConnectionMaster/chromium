@@ -47,7 +47,22 @@ UIImage* BrandedImageProvider::GetDownloadGoogleDriveImage() {
   return nil;
 }
 
-UIImage* BrandedImageProvider::GetToolbarSearchIcon(SearchEngineIcon type,
-                                                    bool dark_version) {
-  return [UIImage imageNamed:@"toolbar_search"];
+UIImage* BrandedImageProvider::GetOmniboxAnswerIcon() {
+  return nil;
+}
+
+UIImage* BrandedImageProvider::GetStaySafePromoImage() {
+  return nil;
+}
+
+UIImage* BrandedImageProvider::GetMadeForIOSPromoImage() {
+  return nil;
+}
+
+UIImage* BrandedImageProvider::GetMadeForIPadOSPromoImage() {
+  return nil;
+}
+
+UIImage* BrandedImageProvider::GetNonModalPromoImage() {
+  return nil;
 }

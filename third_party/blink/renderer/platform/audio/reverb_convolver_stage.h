@@ -31,10 +31,9 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/platform/audio/audio_array.h"
 #include "third_party/blink/renderer/platform/audio/fft_frame.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -63,7 +62,10 @@ class PLATFORM_EXPORT ReverbConvolverStage {
                        size_t render_phase,
                        size_t render_slice_size,
                        ReverbAccumulationBuffer*,
+                       float scale,
                        bool direct_mode = false);
+  ReverbConvolverStage(const ReverbConvolverStage&) = delete;
+  ReverbConvolverStage& operator=(const ReverbConvolverStage&) = delete;
 
   // WARNING: framesToProcess must be such that it evenly divides the delay
   // buffer size (stage_offset).
@@ -96,8 +98,6 @@ class PLATFORM_EXPORT ReverbConvolverStage {
 
   bool direct_mode_;
   std::unique_ptr<DirectConvolver> direct_convolver_;
-
-  DISALLOW_COPY_AND_ASSIGN(ReverbConvolverStage);
 };
 
 }  // namespace blink

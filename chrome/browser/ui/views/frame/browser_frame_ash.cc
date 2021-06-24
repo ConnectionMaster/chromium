@@ -6,41 +6,41 @@
 
 #include <memory>
 
-// This file is only instantiated in classic ash/mus. It is never used in mash.
-// See native_browser_frame_factory_chromeos.cc switches on
-// features::IsUsingWindowService().
+#include "ash/constants/app_types.h"
 #include "ash/public/cpp/window_properties.h"
-#include "ash/public/cpp/window_state_type.h"
-#include "ash/shell.h"                     // mash-ok
-#include "ash/wm/window_properties.h"      // mash-ok
-#include "ash/wm/window_state.h"           // mash-ok
-#include "ash/wm/window_state_delegate.h"  // mash-ok
-#include "ash/wm/window_util.h"            // mash-ok
+#include "ash/shell.h"
+#include "ash/wm/window_properties.h"
+#include "ash/wm/window_state.h"
+#include "ash/wm/window_state_delegate.h"
+#include "ash/wm/window_util.h"
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chromeos/ui/base/window_state_type.h"
+#include "components/full_restore/features.h"
+#include "components/full_restore/full_restore_info.h"
+#include "components/full_restore/full_restore_utils.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/views/view.h"
 
 namespace {
 
 // BrowserWindowStateDelegate class handles a user's fullscreen
 // request (Shift+F4/F4).
-class BrowserWindowStateDelegate : public ash::wm::WindowStateDelegate {
+class BrowserWindowStateDelegate : public ash::WindowStateDelegate {
  public:
-  explicit BrowserWindowStateDelegate(Browser* browser)
-      : browser_(browser) {
+  explicit BrowserWindowStateDelegate(Browser* browser) : browser_(browser) {
     DCHECK(browser_);
   }
   ~BrowserWindowStateDelegate() override {}
 
-  // Overridden from ash::wm::WindowStateDelegate.
-  bool ToggleFullscreen(ash::wm::WindowState* window_state) override {
+  // Overridden from ash::WindowStateDelegate.
+  bool ToggleFullscreen(ash::WindowState* window_state) override {
     DCHECK(window_state->IsFullscreen() || window_state->CanMaximize());
     // Windows which cannot be maximized should not be fullscreened.
     if (!window_state->IsFullscreen() && !window_state->CanMaximize())
@@ -48,6 +48,7 @@ class BrowserWindowStateDelegate : public ash::wm::WindowStateDelegate {
     chrome::ToggleFullscreenMode(browser_);
     return true;
   }
+
  private:
   Browser* browser_;  // not owned.
 
@@ -61,9 +62,7 @@ class BrowserWindowStateDelegate : public ash::wm::WindowStateDelegate {
 
 BrowserFrameAsh::BrowserFrameAsh(BrowserFrame* browser_frame,
                                  BrowserView* browser_view)
-    : views::NativeWidgetAura(browser_frame),
-      browser_view_(browser_view) {
-  DCHECK(!features::IsUsingWindowService());
+    : views::NativeWidgetAura(browser_frame), browser_view_(browser_view) {
   GetNativeWindow()->SetName("BrowserFrameAsh");
   Browser* browser = browser_view->browser();
 
@@ -80,14 +79,16 @@ BrowserFrameAsh::~BrowserFrameAsh() {}
 
 void BrowserFrameAsh::OnWidgetInitDone() {
   Browser* browser = browser_view_->browser();
-  ash::wm::WindowState* window_state =
-      ash::wm::GetWindowState(GetNativeWindow());
+  ash::WindowState* window_state = ash::WindowState::Get(GetNativeWindow());
   window_state->SetDelegate(
       std::make_unique<BrowserWindowStateDelegate>(browser));
   // For legacy reasons v1 apps (like Secure Shell) are allowed to consume keys
   // like brightness, volume, etc. Otherwise these keys are handled by the
   // Ash window manager.
-  window_state->SetCanConsumeSystemKeys(browser->is_app());
+  window_state->SetCanConsumeSystemKeys(browser->deprecated_is_app());
+
+  full_restore::FullRestoreInfo::GetInstance()->OnWidgetInitialized(
+      GetWidget());
 }
 
 void BrowserFrameAsh::OnWindowTargetVisibilityChanged(bool visible) {
@@ -110,17 +111,37 @@ bool BrowserFrameAsh::ShouldSaveWindowPlacement() const {
 void BrowserFrameAsh::GetWindowPlacement(
     gfx::Rect* bounds,
     ui::WindowShowState* show_state) const {
-  gfx::Rect* override_bounds = GetWidget()->GetNativeWindow()->GetProperty(
-                                   ash::kRestoreBoundsOverrideKey);
+  aura::Window* window = GetWidget()->GetNativeWindow();
+  gfx::Rect* override_bounds =
+      window->GetProperty(ash::kRestoreBoundsOverrideKey);
   if (override_bounds && !override_bounds->IsEmpty()) {
     *bounds = *override_bounds;
-    *show_state =
-        ash::ToWindowShowState(GetWidget()->GetNativeWindow()->GetProperty(
-            ash::kRestoreWindowStateTypeOverrideKey));
+    *show_state = chromeos::ToWindowShowState(
+        window->GetProperty(ash::kRestoreWindowStateTypeOverrideKey));
   } else {
-    *bounds = GetWidget()->GetRestoredBounds();
-    *show_state = GetWidget()->GetNativeWindow()->GetProperty(
-                      aura::client::kShowStateKey);
+    // Snapped state is a ash only state which is normally not restored except
+    // when the full restore feature is turned on. `Widget::GetRestoreBounds()`
+    // will not return the restore bounds for a snapped window because to
+    // Widget/NativeWidgetAura the window is a normal window, so get the restore
+    // bounds directly from the ash window state.
+    bool used_window_state_restore_bounds = false;
+    if (full_restore::features::IsFullRestoreEnabled()) {
+      auto* window_state = ash::WindowState::Get(window);
+      if (window_state->IsSnapped() && window_state->HasRestoreBounds()) {
+        // Additionally, if the window is closed, and not from logging out we
+        // want to use the regular restore bounds, otherwise the next time the
+        // user opens a window it will be in a different place than closed,
+        // since session restore does not restore ash snapped state.
+        if (browser_shutdown::IsTryingToQuit() || !GetWidget()->IsClosed()) {
+          used_window_state_restore_bounds = true;
+          *bounds = window_state->GetRestoreBoundsInScreen();
+        }
+      }
+    }
+
+    if (!used_window_state_restore_bounds)
+      *bounds = GetWidget()->GetRestoredBounds();
+    *show_state = window->GetProperty(aura::client::kShowStateKey);
   }
 
   // Session restore might be unable to correctly restore other states.
@@ -145,6 +166,22 @@ views::Widget::InitParams BrowserFrameAsh::GetWidgetParams() {
   views::Widget::InitParams params;
   params.native_widget = this;
   params.context = ash::Shell::GetPrimaryRootWindow();
+
+  Browser* browser = browser_view_->browser();
+  const int32_t restore_id = browser->create_params().restore_id;
+  params.init_properties_container.SetProperty(full_restore::kWindowIdKey,
+                                               browser->session_id().id());
+  params.init_properties_container.SetProperty(
+      full_restore::kRestoreWindowIdKey, restore_id);
+
+  // This is only needed for ash. For lacros, Exo tags the associated
+  // ShellSurface as being of AppType::LACROS.
+  params.init_properties_container.SetProperty(
+      aura::client::kAppType,
+      static_cast<int>(browser->deprecated_is_app() ? ash::AppType::CHROME_APP
+                                                    : ash::AppType::BROWSER));
+
+  full_restore::ModifyWidgetParams(restore_id, &params);
   return params;
 }
 
@@ -160,12 +197,20 @@ int BrowserFrameAsh::GetMinimizeButtonOffset() const {
   return 0;
 }
 
+bool BrowserFrameAsh::ShouldRestorePreviousBrowserWidgetState() const {
+  // If there is no window info from full restore, maybe use the session
+  // restore.
+  const int32_t restore_id =
+      browser_view_->browser()->create_params().restore_id;
+  return !full_restore::HasWindowInfo(restore_id);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserFrameAsh, private:
 
 void BrowserFrameAsh::SetWindowAutoManaged() {
   // For browser window in Chrome OS, we should only enable the auto window
   // management logic for tabbed browser.
-  if (!browser_view_->browser()->is_type_popup())
+  if (browser_view_->browser()->is_type_normal())
     GetNativeWindow()->SetProperty(ash::kWindowPositionManagedTypeKey, true);
 }

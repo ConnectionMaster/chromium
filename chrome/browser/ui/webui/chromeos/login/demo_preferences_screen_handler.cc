@@ -4,12 +4,16 @@
 
 #include "chrome/browser/ui/webui/chromeos/login/demo_preferences_screen_handler.h"
 
-#include "chrome/browser/chromeos/login/oobe_screen.h"
-#include "chrome/browser/chromeos/login/screens/demo_preferences_screen.h"
+#include "chrome/browser/ash/login/oobe_screen.h"
+#include "chrome/browser/ash/login/screens/demo_preferences_screen.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/login/localized_values_builder.h"
 
 namespace chromeos {
+
+constexpr StaticOobeScreenId DemoPreferencesScreenView::kScreenId;
+
+DemoPreferencesScreenView::~DemoPreferencesScreenView() = default;
 
 DemoPreferencesScreenHandler::DemoPreferencesScreenHandler(
     JSCallsContainer* js_calls_container)
@@ -35,8 +39,7 @@ void DemoPreferencesScreenHandler::Bind(DemoPreferencesScreen* screen) {
 
 void DemoPreferencesScreenHandler::SetInputMethodId(
     const std::string& input_method) {
-  CallJS("login.DemoPreferencesScreen.setInputMethodIdFromBackend",
-         input_method);
+  CallJS("login.DemoPreferencesScreen.setSelectedKeyboard", input_method);
 }
 
 void DemoPreferencesScreenHandler::Initialize() {}
@@ -55,7 +58,8 @@ void DemoPreferencesScreenHandler::DeclareLocalizedValues(
   builder->Add("countryDropdownLabel", IDS_COUNTRY_DROPDOWN_LABEL);
 }
 
-void DemoPreferencesScreenHandler::DeclareJSCallbacks() {
+void DemoPreferencesScreenHandler::RegisterMessages() {
+  BaseScreenHandler::RegisterMessages();
   AddCallback("DemoPreferencesScreen.setLocaleId",
               &DemoPreferencesScreenHandler::HandleSetLocaleId);
   AddCallback("DemoPreferencesScreen.setInputMethodId",

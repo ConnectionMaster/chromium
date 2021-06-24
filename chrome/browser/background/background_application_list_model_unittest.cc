@@ -16,7 +16,6 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
@@ -26,6 +25,7 @@
 #include "content/public/browser/notification_types.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_system.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/common/extension.h"
@@ -42,6 +42,8 @@
 using extensions::APIPermission;
 using extensions::Extension;
 using extensions::ExtensionRegistry;
+using extensions::ExtensionSystem;
+using extensions::mojom::APIPermissionID;
 
 // For ExtensionService interface when it requires a path that is not used.
 base::FilePath bogus_file_pathname(const std::string& name) {
@@ -59,7 +61,7 @@ class BackgroundApplicationListModelTest
   // extensions::ExtensionServiceTestBase:
   void SetUp() override {
     InitializeEmptyExtensionService();
-    model_.reset(new BackgroundApplicationListModel(profile_.get()));
+    model_ = std::make_unique<BackgroundApplicationListModel>(profile_.get());
   }
 
   bool IsBackgroundApp(const Extension& app) {
@@ -70,7 +72,7 @@ class BackgroundApplicationListModelTest
   BackgroundApplicationListModel* model() const { return model_.get(); }
 
  private:
-  std::unique_ptr<BackgroundApplicationListModel> model_ = nullptr;
+  std::unique_ptr<BackgroundApplicationListModel> model_;
 };
 
 enum PushMessagingOption {
@@ -99,8 +101,8 @@ static scoped_refptr<Extension> CreateExtension(
   scoped_refptr<Extension> extension;
 
   extension = Extension::Create(bogus_file_pathname(name),
-                                extensions::Manifest::INTERNAL, manifest,
-                                Extension::NO_FLAGS, &error);
+                                extensions::mojom::ManifestLocation::kInternal,
+                                manifest, Extension::NO_FLAGS, &error);
 
   // Cannot ASSERT_* here because that attempts an illegitimate return.
   // Cannot EXPECT_NE here because that assumes non-pointers unlike EXPECT_EQ
@@ -155,8 +157,8 @@ TEST_F(BackgroundApplicationListModelTest, DISABLED_ExplicitTest) {
   // called.
   service()->Init();
   base::RunLoop().RunUntilIdle();
-  ASSERT_TRUE(service()->is_ready());
-  ASSERT_TRUE(model()->is_ready());
+  ASSERT_TRUE(ExtensionSystem::Get(profile())->is_ready());
+  ASSERT_TRUE(model()->startup_done());
 
   ASSERT_TRUE(registry()->enabled_extensions().is_empty());
   ASSERT_EQ(0U, model()->size());
@@ -223,16 +225,16 @@ TEST_F(BackgroundApplicationListModelTest, DISABLED_ExplicitTest) {
 TEST_F(BackgroundApplicationListModelTest, AddRemovePermissionsTest) {
   service()->Init();
   base::RunLoop().RunUntilIdle();
-  ASSERT_TRUE(service()->is_ready());
+  ASSERT_TRUE(ExtensionSystem::Get(profile())->is_ready());
   ASSERT_TRUE(registry()->enabled_extensions().is_empty());
   ASSERT_EQ(0U, model()->size());
 
   scoped_refptr<Extension> ext = CreateExtension("extension", false);
   ASSERT_FALSE(
-      ext->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+      ext->permissions_data()->HasAPIPermission(APIPermissionID::kBackground));
   scoped_refptr<Extension> bgapp = CreateExtension("application", true);
-  ASSERT_TRUE(
-      bgapp->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+  ASSERT_TRUE(bgapp->permissions_data()->HasAPIPermission(
+      APIPermissionID::kBackground));
   ASSERT_EQ(0U, registry()->enabled_extensions().size());
   ASSERT_EQ(0U, model()->size());
 
@@ -249,22 +251,22 @@ TEST_F(BackgroundApplicationListModelTest, AddRemovePermissionsTest) {
   // Change permissions back and forth
   AddBackgroundPermission(service(), ext.get());
   ASSERT_TRUE(
-      ext->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+      ext->permissions_data()->HasAPIPermission(APIPermissionID::kBackground));
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(2U, model()->size());
   RemoveBackgroundPermission(service(), bgapp.get());
-  ASSERT_FALSE(
-      bgapp->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+  ASSERT_FALSE(bgapp->permissions_data()->HasAPIPermission(
+      APIPermissionID::kBackground));
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
   RemoveBackgroundPermission(service(), ext.get());
   ASSERT_FALSE(
-      ext->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+      ext->permissions_data()->HasAPIPermission(APIPermissionID::kBackground));
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(0U, model()->size());
   AddBackgroundPermission(service(), bgapp.get());
-  ASSERT_TRUE(
-      bgapp->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+  ASSERT_TRUE(bgapp->permissions_data()->HasAPIPermission(
+      APIPermissionID::kBackground));
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
 }
@@ -272,11 +274,11 @@ TEST_F(BackgroundApplicationListModelTest, AddRemovePermissionsTest) {
 TEST_F(BackgroundApplicationListModelTest, ExtensionLoadAndUnload) {
   service()->Init();
   base::RunLoop().RunUntilIdle();
-  ASSERT_TRUE(service()->is_ready());
+  ASSERT_TRUE(ExtensionSystem::Get(profile())->is_ready());
   scoped_refptr<Extension> bgapp =
       CreateExtension("background_application", true);
-  ASSERT_TRUE(
-      bgapp->permissions_data()->HasAPIPermission(APIPermission::kBackground));
+  ASSERT_TRUE(bgapp->permissions_data()->HasAPIPermission(
+      APIPermissionID::kBackground));
   ASSERT_TRUE(registry()->enabled_extensions().is_empty());
   ASSERT_EQ(0U, model()->size());
 
@@ -295,33 +297,33 @@ TEST_F(BackgroundApplicationListModelTest, ExtensionLoadAndUnload) {
 }
 
 TEST_F(BackgroundApplicationListModelTest, LateExtensionSystemReady) {
-  ASSERT_FALSE(service()->is_ready());
-  ASSERT_FALSE(model()->is_ready());
+  ASSERT_FALSE(ExtensionSystem::Get(profile())->is_ready());
+  ASSERT_FALSE(model()->startup_done());
   service()->Init();
   // Model is not ready yet since ExtensionSystem::ready() is dispatched using
   // PostTask to UI Thread. and OnExtensionSystemReady is not called yet.
-  ASSERT_FALSE(model()->is_ready());
+  ASSERT_FALSE(model()->startup_done());
 
   scoped_refptr<Extension> bgapp =
       CreateExtension("background_application", true);
-  ASSERT_TRUE(
-      bgapp->permissions_data()->HasAPIPermission(APIPermission::kBackground));
-  ASSERT_TRUE(registry()->enabled_extensions().is_empty());
-  ASSERT_EQ(0U, model()->size());
+  EXPECT_TRUE(bgapp->permissions_data()->HasAPIPermission(
+      APIPermissionID::kBackground));
+  EXPECT_TRUE(registry()->enabled_extensions().is_empty());
+  EXPECT_EQ(0U, model()->size());
 
   extensions::TestExtensionRegistryObserver load_observer(registry());
   // extensions can be loaded before ExtensionSystem::ready() is dispatched.
   service()->AddExtension(bgapp.get());
   load_observer.WaitForExtensionLoaded();
-  ASSERT_EQ(1U, registry()->enabled_extensions().size());
-  // Model still has 0 item. since OnExtensionSystemReady is not called yet.
-  ASSERT_EQ(0U, model()->size());
+  EXPECT_EQ(1U, registry()->enabled_extensions().size());
+  // Model still has 0 items since OnExtensionSystemReady is not called yet.
+  EXPECT_EQ(0U, model()->size());
 
   // Wait Until OnExtensionSystemReady called.
   base::RunLoop().RunUntilIdle();
   // Make sure background model holds extensions.
-  ASSERT_TRUE(model()->is_ready());
-  ASSERT_EQ(1U, model()->size());
+  EXPECT_TRUE(model()->startup_done());
+  EXPECT_EQ(1U, model()->size());
 }
 
 typedef std::set<scoped_refptr<Extension> > ExtensionCollection;
@@ -432,7 +434,7 @@ void TogglePermission(extensions::ExtensionService* service,
 TEST_F(BackgroundApplicationListModelTest, RandomTest) {
   service()->Init();
   base::RunLoop().RunUntilIdle();
-  ASSERT_TRUE(service()->is_ready());
+  ASSERT_TRUE(ExtensionSystem::Get(profile())->is_ready());
   ASSERT_TRUE(registry()->enabled_extensions().is_empty());
   ASSERT_EQ(0U, model()->size());
 

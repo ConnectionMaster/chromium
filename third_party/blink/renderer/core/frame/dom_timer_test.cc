@@ -4,19 +4,16 @@
 
 #include "third_party/blink/renderer/core/frame/dom_timer.h"
 
-#include <vector>
-
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
-#include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
-#include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_source_code.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 
 using testing::DoubleNear;
 using testing::ElementsAreArray;
@@ -32,32 +29,39 @@ const double kThreshold = 0.006;
 
 class DOMTimerTest : public RenderingTest {
  public:
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform_;
-
   // Expected time between each iterator for setInterval(..., 1) or nested
   // setTimeout(..., 1) are 1, 1, 1, 1, 4, 4, ... as a minimum clamp of 4ms
   // is applied from the 5th iteration onwards.
-  const std::vector<Matcher<double>> kExpectedTimings = {
+  const Vector<Matcher<double>> kExpectedTimings = {
       DoubleNear(1., kThreshold), DoubleNear(1., kThreshold),
       DoubleNear(1., kThreshold), DoubleNear(1., kThreshold),
       DoubleNear(4., kThreshold), DoubleNear(4., kThreshold),
   };
 
   void SetUp() override {
-    platform_->SetAutoAdvanceNowToPendingTasks(true);
+    EnablePlatform();
+    platform()->SetAutoAdvanceNowToPendingTasks(true);
     // Advance timer manually as RenderingTest expects the time to be non-zero.
-    platform_->AdvanceClockSeconds(1.);
+    platform()->AdvanceClockSeconds(1.);
     RenderingTest::SetUp();
+    auto* window_performance =
+        DOMWindowPerformance::performance(*GetDocument().domWindow());
+    auto test_task_runner = platform()->test_task_runner();
+    auto* mock_clock = test_task_runner->GetMockClock();
+    auto* mock_tick_clock = test_task_runner->GetMockTickClock();
+    auto now_ticks = test_task_runner->NowTicks();
+    window_performance->SetClocksForTesting(mock_clock, mock_tick_clock);
+    window_performance->ResetTimeOriginForTesting(now_ticks);
     GetDocument().GetSettings()->SetScriptEnabled(true);
+    auto* loader = GetDocument().Loader();
+    loader->GetTiming().SetNavigationStart(now_ticks);
+    loader->GetTiming().SetClockForTesting(mock_clock);
+    loader->GetTiming().SetTickClockForTesting(mock_tick_clock);
   }
 
   v8::Local<v8::Value> EvalExpression(const char* expr) {
-    return GetDocument()
-        .GetFrame()
-        ->GetScriptController()
-        .ExecuteScriptInMainWorldAndReturnValue(
-            ScriptSourceCode(expr), KURL(), SanitizeScriptErrors::kSanitize);
+    return ClassicScript::CreateUnspecifiedScript(ScriptSourceCode(expr))
+        ->RunScriptAndReturnValue(GetDocument().domWindow());
   }
 
   Vector<double> ToDoubleArray(v8::Local<v8::Value> value,
@@ -74,9 +78,9 @@ class DOMTimerTest : public RenderingTest {
 
   void ExecuteScriptAndWaitUntilIdle(const char* script_text) {
     ScriptSourceCode script(script_text);
-    GetDocument().GetFrame()->GetScriptController().ExecuteScriptInMainWorld(
-        script, KURL(), SanitizeScriptErrors::kSanitize);
-    platform_->RunUntilIdle();
+    ClassicScript::CreateUnspecifiedScript(script)->RunScript(
+        GetDocument().domWindow());
+    platform()->RunUntilIdle();
   }
 };
 

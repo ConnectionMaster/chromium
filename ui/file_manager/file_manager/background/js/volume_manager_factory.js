@@ -2,41 +2,38 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {VolumeManager} from '../../externs/volume_manager.js';
+
+import {VolumeManagerImpl} from './volume_manager_impl.js';
+
+// eslint-disable-next-line no-var
 var volumeManagerFactory = (() => {
   /**
    * The singleton instance of VolumeManager. Initialized by the first
    * invocation of getInstance().
-   * @type {VolumeManager}
+   * @type {?VolumeManagerImpl}
    */
   let instance = null;
 
   /**
-   * @type {Promise}
+   * @type {?Promise<void>}
    */
-  let instancePromise = null;
+  let instanceInitialized = null;
 
   /**
    * Returns the VolumeManager instance asynchronously. If it has not been
    * created or is under initialization, it will waits for the finish of the
    * initialization.
-   * @param {function(VolumeManager)=} opt_callback Called with the
-   *     VolumeManager instance. TODO(hirono): Remove the callback and use
-   *     Promise instead.
-   * @return {Promise} Promise to be fulfilled with the volume manager.
+   * @return {!Promise<!VolumeManager>} Promise to be fulfilled with the volume
+   *     manager.
    */
-  function getInstance(opt_callback) {
-    if (!instancePromise) {
+  async function getInstance() {
+    if (!instance) {
       instance = new VolumeManagerImpl();
-      instancePromise = new Promise(fulfill => {
-        instance.initialize_(() => {
-          return fulfill(instance);
-        });
-      });
+      instanceInitialized = instance.initialize();
     }
-    if (opt_callback) {
-      instancePromise.then(opt_callback);
-    }
-    return instancePromise;
+    await instanceInitialized;
+    return instance;
   }
 
   /**
@@ -53,7 +50,7 @@ var volumeManagerFactory = (() => {
    * Revokes the singleton instance for testing.
    */
   function revokeInstanceForTesting() {
-    instancePromise = null;
+    instanceInitialized = null;
     instance = null;
   }
 
@@ -63,3 +60,5 @@ var volumeManagerFactory = (() => {
     revokeInstanceForTesting: revokeInstanceForTesting
   };
 })();
+
+export {volumeManagerFactory};

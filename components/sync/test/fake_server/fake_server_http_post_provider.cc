@@ -8,6 +8,7 @@
 
 #include "base/bind.h"
 #include "base/location.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "components/sync/test/fake_server/fake_server.h"
 #include "net/base/net_errors.h"
@@ -23,22 +24,12 @@ FakeServerHttpPostProviderFactory::FakeServerHttpPostProviderFactory(
     : fake_server_(fake_server),
       fake_server_task_runner_(fake_server_task_runner) {}
 
-FakeServerHttpPostProviderFactory::~FakeServerHttpPostProviderFactory() {}
+FakeServerHttpPostProviderFactory::~FakeServerHttpPostProviderFactory() =
+    default;
 
-void FakeServerHttpPostProviderFactory::Init(
-    const std::string& user_agent,
-    const syncer::BindToTrackerCallback& bind_to_tracker_callback) {}
-
-syncer::HttpPostProviderInterface* FakeServerHttpPostProviderFactory::Create() {
-  FakeServerHttpPostProvider* http =
-      new FakeServerHttpPostProvider(fake_server_, fake_server_task_runner_);
-  http->AddRef();
-  return http;
-}
-
-void FakeServerHttpPostProviderFactory::Destroy(
-    syncer::HttpPostProviderInterface* http) {
-  static_cast<FakeServerHttpPostProvider*>(http)->Release();
+scoped_refptr<syncer::HttpPostProviderInterface>
+FakeServerHttpPostProviderFactory::Create() {
+  return new FakeServerHttpPostProvider(fake_server_, fake_server_task_runner_);
 }
 
 FakeServerHttpPostProvider::FakeServerHttpPostProvider(
@@ -60,12 +51,10 @@ void FakeServerHttpPostProvider::SetExtraRequestHeaders(const char* headers) {
   extra_request_headers_.assign(headers);
 }
 
-void FakeServerHttpPostProvider::SetURL(const char* url, int port) {
+void FakeServerHttpPostProvider::SetURL(const GURL& url) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO(pvalenzuela): Add assertions on these values.
-  request_url_.assign(url);
-  request_port_ = port;
+  request_url_ = url;
 }
 
 void FakeServerHttpPostProvider::SetPostPayload(const char* content_type,
@@ -109,7 +98,10 @@ bool FakeServerHttpPostProvider::MakeSynchronousPost(int* net_error_code,
     return false;
   }
 
-  synchronous_post_completion_.Wait();
+  {
+    base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
+    synchronous_post_completion_.Wait();
+  }
 
   if (aborted_) {
     *net_error_code = net::ERR_ABORTED;

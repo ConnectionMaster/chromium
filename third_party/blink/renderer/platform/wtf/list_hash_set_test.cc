@@ -41,8 +41,18 @@ namespace {
 template <typename Set>
 class ListOrLinkedHashSetTest : public testing::Test {};
 
-using SetTypes =
-    testing::Types<ListHashSet<int>, ListHashSet<int, 1>, LinkedHashSet<int>>;
+// These custom traits affect only LinkedHashSet tests.
+struct CustomHashTraitsForInt : public HashTraits<int> {
+  static const bool kEmptyValueIsZero = false;
+  static int EmptyValue() { return INT_MAX; }
+
+  static void ConstructDeletedValue(int& slot, bool) { slot = INT_MIN; }
+  static bool IsDeletedValue(const int& value) { return value == INT_MIN; }
+};
+
+using SetTypes = testing::Types<ListHashSet<int>,
+                                ListHashSet<int, 1>,
+                                LinkedHashSet<int, CustomHashTraitsForInt>>;
 TYPED_TEST_SUITE(ListOrLinkedHashSetTest, SetTypes);
 
 TYPED_TEST(ListOrLinkedHashSetTest, RemoveFirst) {
@@ -229,7 +239,7 @@ TYPED_TEST(ListOrLinkedHashSetTest, Find) {
 TYPED_TEST(ListOrLinkedHashSetTest, InsertBefore) {
   using Set = TypeParam;
   bool can_modify_while_iterating =
-      !std::is_same<Set, LinkedHashSet<int>>::value;
+      !std::is_same<Set, LinkedHashSet<int, CustomHashTraitsForInt>>::value;
   Set set;
   set.insert(-1);
   set.insert(0);
@@ -271,54 +281,6 @@ TYPED_TEST(ListOrLinkedHashSetTest, InsertBefore) {
   ++it;
   EXPECT_EQ(42, *it);
   EXPECT_EQ(7u, set.size());
-}
-
-TYPED_TEST(ListOrLinkedHashSetTest, AddReturnIterator) {
-  using Set = TypeParam;
-  bool can_modify_while_iterating =
-      !std::is_same<Set, LinkedHashSet<int>>::value;
-  Set set;
-  set.insert(-1);
-  set.insert(0);
-  set.insert(1);
-  set.insert(2);
-
-  typename Set::iterator it = set.AddReturnIterator(3);
-  EXPECT_EQ(3, *it);
-  --it;
-  EXPECT_EQ(2, *it);
-  EXPECT_EQ(5u, set.size());
-  --it;
-  EXPECT_EQ(1, *it);
-  --it;
-  EXPECT_EQ(0, *it);
-  it = set.AddReturnIterator(4);
-  if (can_modify_while_iterating) {
-    set.erase(3);
-    set.erase(2);
-    set.erase(1);
-    set.erase(0);
-    set.erase(-1);
-    EXPECT_EQ(1u, set.size());
-  }
-  EXPECT_EQ(4, *it);
-  ++it;
-  EXPECT_EQ(it, set.end());
-  --it;
-  EXPECT_EQ(4, *it);
-  if (can_modify_while_iterating) {
-    set.InsertBefore(it, -1);
-    set.InsertBefore(it, 0);
-    set.InsertBefore(it, 1);
-    set.InsertBefore(it, 2);
-    set.InsertBefore(it, 3);
-  }
-  EXPECT_EQ(6u, set.size());
-  it = set.AddReturnIterator(5);
-  EXPECT_EQ(7u, set.size());
-  set.erase(it);
-  EXPECT_EQ(6u, set.size());
-  EXPECT_EQ(4, set.back());
 }
 
 TYPED_TEST(ListOrLinkedHashSetTest, Swap) {
@@ -414,6 +376,10 @@ TYPED_TEST_SUITE(ListOrLinkedHashSetRefPtrTest, RefPtrSetTypes);
 
 TYPED_TEST(ListOrLinkedHashSetRefPtrTest, WithRefPtr) {
   using Set = TypeParam;
+  int expected = 1;
+  // LinkedHashSet stores each object twice.
+  if (std::is_same<Set, LinkedHashSet<scoped_refptr<DummyRefCounted>>>::value)
+    expected = 2;
   bool is_deleted = false;
   DummyRefCounted::ref_invokes_count_ = 0;
   scoped_refptr<DummyRefCounted> ptr =
@@ -423,24 +389,24 @@ TYPED_TEST(ListOrLinkedHashSetRefPtrTest, WithRefPtr) {
   Set set;
   set.insert(ptr);
   // Referenced only once (to store a copy in the container).
-  EXPECT_EQ(1, DummyRefCounted::ref_invokes_count_);
+  EXPECT_EQ(expected, DummyRefCounted::ref_invokes_count_);
   EXPECT_EQ(ptr, set.front());
-  EXPECT_EQ(1, DummyRefCounted::ref_invokes_count_);
+  EXPECT_EQ(expected, DummyRefCounted::ref_invokes_count_);
 
   DummyRefCounted* raw_ptr = ptr.get();
 
   EXPECT_TRUE(set.Contains(ptr));
   EXPECT_TRUE(set.Contains(raw_ptr));
-  EXPECT_EQ(1, DummyRefCounted::ref_invokes_count_);
+  EXPECT_EQ(expected, DummyRefCounted::ref_invokes_count_);
 
   ptr = nullptr;
   EXPECT_FALSE(is_deleted);
-  EXPECT_EQ(1, DummyRefCounted::ref_invokes_count_);
+  EXPECT_EQ(expected, DummyRefCounted::ref_invokes_count_);
 
   set.erase(raw_ptr);
   EXPECT_TRUE(is_deleted);
 
-  EXPECT_EQ(1, DummyRefCounted::ref_invokes_count_);
+  EXPECT_EQ(expected, DummyRefCounted::ref_invokes_count_);
 }
 
 TYPED_TEST(ListOrLinkedHashSetRefPtrTest, ExerciseValuePeekInType) {
@@ -460,11 +426,10 @@ TYPED_TEST(ListOrLinkedHashSetRefPtrTest, ExerciseValuePeekInType) {
   const Set& const_set(set);
   const_set.find(ptr);
   EXPECT_TRUE(set.Contains(ptr));
-  typename Set::iterator it = set.AddReturnIterator(ptr);
+  set.insert(ptr);
   set.AppendOrMoveToLast(ptr);
   set.PrependOrMoveToFirst(ptr);
   set.InsertBefore(ptr, ptr);
-  set.InsertBefore(it, ptr);
   EXPECT_EQ(1u, set.size());
   set.insert(ptr2);
   ptr2 = nullptr;
@@ -487,6 +452,7 @@ struct Simple {
 };
 
 struct Complicated {
+  Complicated() : Complicated(0) {}
   Complicated(int value) : simple_(value) { objects_constructed_++; }
 
   Complicated(const Complicated& other) : simple_(other.simple_) {
@@ -495,9 +461,6 @@ struct Complicated {
 
   Simple simple_;
   static int objects_constructed_;
-
- private:
-  Complicated() = delete;
 };
 
 int Complicated::objects_constructed_ = 0;
@@ -518,10 +481,10 @@ struct ComplexityTranslator {
 template <typename Set>
 class ListOrLinkedHashSetTranslatorTest : public testing::Test {};
 
+// TODO(bartekn): Add LinkedHashSet once it supports custom hash function.
 using TranslatorSetTypes =
     testing::Types<ListHashSet<Complicated, 256, ComplicatedHashFunctions>,
-                   ListHashSet<Complicated, 1, ComplicatedHashFunctions>,
-                   LinkedHashSet<Complicated, ComplicatedHashFunctions>>;
+                   ListHashSet<Complicated, 1, ComplicatedHashFunctions>>;
 TYPED_TEST_SUITE(ListOrLinkedHashSetTranslatorTest, TranslatorSetTypes);
 
 TYPED_TEST(ListOrLinkedHashSetTranslatorTest, ComplexityTranslator) {
@@ -657,9 +620,9 @@ TYPED_TEST(ListOrLinkedHashSetCountCopyTest, MoveAssignmentShouldNotMakeACopy) {
 template <typename Set>
 class ListOrLinkedHashSetMoveOnlyTest : public testing::Test {};
 
+// TODO(bartekn): Add LinkedHashSet once it supports move-only type.
 using MoveOnlySetTypes = testing::Types<ListHashSet<MoveOnlyHashValue>,
-                                        ListHashSet<MoveOnlyHashValue, 1>,
-                                        LinkedHashSet<MoveOnlyHashValue>>;
+                                        ListHashSet<MoveOnlyHashValue, 1>>;
 TYPED_TEST_SUITE(ListOrLinkedHashSetMoveOnlyTest, MoveOnlySetTypes);
 
 TYPED_TEST(ListOrLinkedHashSetMoveOnlyTest, MoveOnlyValue) {
@@ -687,14 +650,6 @@ TYPED_TEST(ListOrLinkedHashSetMoveOnlyTest, MoveOnlyValue) {
   EXPECT_TRUE(iter == set.end());
 
   // ListHashSet and LinkedHashSet have several flavors of add().
-  iter = set.AddReturnIterator(MoveOnlyHashValue(2, 2));
-  EXPECT_EQ(2, iter->Value());
-  EXPECT_EQ(2, iter->Id());
-
-  iter = set.AddReturnIterator(MoveOnlyHashValue(2, 222));
-  EXPECT_EQ(2, iter->Value());
-  EXPECT_EQ(2, iter->Id());
-
   {
     AddResult add_result = set.AppendOrMoveToLast(MoveOnlyHashValue(3, 3));
     EXPECT_TRUE(add_result.is_new_entry);
@@ -730,5 +685,46 @@ TYPED_TEST(ListOrLinkedHashSetMoveOnlyTest, MoveOnlyValue) {
 }
 
 }  // anonymous namespace
+
+// A unit type which objects to its state being initialized wrong.
+struct InvalidZeroValue {
+  InvalidZeroValue() = default;
+  explicit InvalidZeroValue(WTF::HashTableDeletedValueType) : deleted_(true) {}
+  ~InvalidZeroValue() { CHECK(ok_); }
+  bool IsHashTableDeletedValue() const { return deleted_; }
+
+  bool ok_ = true;
+  bool deleted_ = false;
+};
+
+template <>
+struct HashTraits<InvalidZeroValue> : SimpleClassHashTraits<InvalidZeroValue> {
+  static const bool kEmptyValueIsZero = false;
+};
+
+template <>
+struct DefaultHash<InvalidZeroValue> {
+  struct Hash {
+    static unsigned GetHash(const InvalidZeroValue&) { return 0; }
+    static bool Equal(const InvalidZeroValue&, const InvalidZeroValue&) {
+      return true;
+    }
+  };
+};
+
+template <typename Set>
+class ListOrLinkedHashSetInvalidZeroTest : public testing::Test {};
+
+// LinkedHashSet is tested in LinkedHashSetEmptyTest.EmptyString
+using InvalidZeroValueSetTypes =
+    testing::Types<ListHashSet<InvalidZeroValue>,
+                   ListHashSet<InvalidZeroValue, 1>>;
+TYPED_TEST_SUITE(ListOrLinkedHashSetInvalidZeroTest, InvalidZeroValueSetTypes);
+
+TYPED_TEST(ListOrLinkedHashSetInvalidZeroTest, InvalidZeroValue) {
+  using Set = TypeParam;
+  Set set;
+  set.insert(InvalidZeroValue());
+}
 
 }  // namespace WTF

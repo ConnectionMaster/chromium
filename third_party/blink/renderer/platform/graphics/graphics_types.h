@@ -116,46 +116,22 @@ enum OpacityMode {
   kOpaque,
 };
 
-enum AccelerationHint {
-  kPreferAcceleration,
-  // The PreferAccelerationAfterVisibilityChange hint suggests we should switch
-  // back to acceleration in the context of the canvas becoming visible again.
-  kPreferAccelerationAfterVisibilityChange,
-  kPreferNoAcceleration,
+// Specifies whether the provider should rasterize paint commands on the CPU
+// or GPU. This is used to support software raster with GPU compositing.
+enum class RasterMode {
+  kGPU,
+  kCPU,
 };
 
-// Note: enum used directly for histogram, values must not change
-enum DisableDeferralReason {
-  kDisableDeferralReasonUnknown =
-      0,  // Should not appear in production histograms
-  kDisableDeferralReasonExpensiveOverdrawHeuristic = 1,
-  kDisableDeferralReasonUsingTextureBackedPattern = 2,
-  kDisableDeferralReasonDrawImageOfVideo = 3,
-  kDisableDeferralReasonDrawImageOfAnimated2dCanvas = 4,
-  kDisableDeferralReasonSubPixelTextAntiAliasingSupport = 5,
-  kDisableDeferralDrawImageWithTextureBackedSourceImage = 6,
-  kDisableDeferralReasonLowEndDevice = 7,
-  kDisableDeferralReasonCount,
+enum class RasterModeHint {
+  kPreferGPU,
+  kPreferCPU,
 };
 
 enum MailboxSyncMode {
   kVerifiedSyncToken,
   kUnverifiedSyncToken,
   kOrderingBarrier,
-};
-
-enum DarkModeClassification {
-  kNotClassified,
-  kApplyDarkModeFilter,
-  kDoNotApplyDarkModeFilter,
-};
-
-// TODO(junov): crbug.com/453113 Relocate ShadowMode to
-// CanvasRenderingContext2DState.h once GraphicsContext no longer uses it.
-enum ShadowMode {
-  kDrawShadowAndForeground,
-  kDrawShadowOnly,
-  kDrawForegroundOnly
 };
 
 enum AntiAliasingMode { kNotAntiAliased, kAntiAliased };
@@ -177,8 +153,6 @@ enum LineJoin {
   kRoundJoin = SkPaint::kRound_Join,
   kBevelJoin = SkPaint::kBevel_Join
 };
-
-enum HorizontalAlignment { kAlignLeft, kAlignRight, kAlignHCenter };
 
 enum TextBaseline {
   kAlphabeticTextBaseline,
@@ -211,8 +185,8 @@ enum ColorFilter {
 };
 
 enum WindRule {
-  RULE_NONZERO = SkPath::kWinding_FillType,
-  RULE_EVENODD = SkPath::kEvenOdd_FillType
+  RULE_NONZERO = static_cast<int>(SkPathFillType::kWinding),
+  RULE_EVENODD = static_cast<int>(SkPathFillType::kEvenOdd)
 };
 
 PLATFORM_EXPORT String CompositeOperatorName(CompositeOperator, BlendMode);
@@ -238,4 +212,4 @@ PLATFORM_EXPORT bool ParseTextBaseline(const String&, TextBaseline&);
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GRAPHICS_TYPES_H_

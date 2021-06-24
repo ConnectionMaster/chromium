@@ -4,16 +4,20 @@
 
 #include "chrome/browser/tracing/background_tracing_field_trial.h"
 
+#include <vector>
+
 #include "base/files/file_util.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/test/scoped_command_line.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "content/public/browser/background_tracing_config.h"
 #include "content/public/browser/background_tracing_manager.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
+#include "services/tracing/public/cpp/tracing_features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 class BackgroundTracingTest : public testing::Test {
@@ -21,11 +25,11 @@ class BackgroundTracingTest : public testing::Test {
   BackgroundTracingTest() = default;
 
   void TearDown() override {
-    content::BackgroundTracingManager::GetInstance()->AbortScenario();
+    content::BackgroundTracingManager::GetInstance()->AbortScenarioForTesting();
   }
 
  private:
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 };
 
 namespace {
@@ -33,14 +37,13 @@ namespace {
 const char kTestConfig[] = "test";
 bool g_test_config_loaded = false;
 
-const char kUploadUrl[] = "http://localhost:8080";
 const char kInvalidTracingConfig[] = "{][}";
 const char kValidTracingConfig[] = R"(
   {
     "scenario_name": "BrowserProcess",
     "configs": [
       {
-        "category": "BENCHMARK_NAVIGATION",
+        "custom_categories": "base,toplevel",
         "rule": "MONITOR_AND_DUMP_WHEN_SPECIFIC_HISTOGRAM_AND_VALUE",
         "histogram_name": "Omnibox.CharTypedToRepaintLatency.ToPaint",
         "histogram_lower_value": 1
@@ -50,15 +53,91 @@ const char kValidTracingConfig[] = R"(
   }
 )";
 
-void CheckConfig(std::string* config) {
-  if (*config == kTestConfig)
+std::string CheckConfig(const std::string& config) {
+  if (config == kTestConfig)
     g_test_config_loaded = true;
+  return config;
 }
+
+using tracing::BackgroundTracingSetupMode;
+
+struct SetupModeParams {
+  const char* enable_background_tracing = nullptr;
+  const char* trace_output_file = nullptr;
+  const char* trace_upload_url = nullptr;
+  BackgroundTracingSetupMode expected_mode_json;
+  BackgroundTracingSetupMode expected_mode_proto;
+};
 
 }  // namespace
 
+TEST_F(BackgroundTracingTest, GetBackgroundTracingSetupMode) {
+  const std::vector<const SetupModeParams> kParams = {
+      // No config file param.
+      {nullptr, nullptr, nullptr, BackgroundTracingSetupMode::kFromFieldTrial,
+       BackgroundTracingSetupMode::kFromFieldTrial},
+      // Empty config filename.
+      {"", "output_file.gz", nullptr,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine},
+      // No output location switches.
+      {"config.json", nullptr, nullptr,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine},
+      // Empty output location switches.
+      {"config.json", "", "",
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine},
+      // Both output location switches.
+      {"config.json", "output_file.gz", "http://localhost:8080",
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine},
+      // url is only valid for legacy JSON traces.
+      {"config.json", "", "http://localhost:8080",
+       BackgroundTracingSetupMode::kFromConfigFile,
+       BackgroundTracingSetupMode::kDisabledInvalidCommandLine},
+      // file is valid for both JSON and proto traces.
+      {"config.json", "output_file.gz", "",
+       BackgroundTracingSetupMode::kFromConfigFile,
+       BackgroundTracingSetupMode::kFromConfigFile},
+  };
+
+  for (bool enable_proto_traces : {true, false}) {
+    for (const SetupModeParams& params : kParams) {
+      SCOPED_TRACE(::testing::Message()
+                   << "enable_background_tracing "
+                   << params.enable_background_tracing << " trace_output_file "
+                   << params.trace_output_file << " trace_upload_url "
+                   << params.trace_upload_url << " enable_proto_traces "
+                   << enable_proto_traces);
+      base::test::ScopedFeatureList feature_list;
+      feature_list.InitWithFeatureState(features::kBackgroundTracingProtoOutput,
+                                        enable_proto_traces);
+
+      base::test::ScopedCommandLine scoped_command_line;
+      base::CommandLine* command_line =
+          scoped_command_line.GetProcessCommandLine();
+      if (params.enable_background_tracing) {
+        command_line->AppendSwitchASCII(switches::kEnableBackgroundTracing,
+                                        params.enable_background_tracing);
+      }
+      if (params.trace_output_file) {
+        command_line->AppendSwitchASCII(switches::kBackgroundTracingOutputFile,
+                                        params.trace_output_file);
+      }
+      if (params.trace_upload_url) {
+        command_line->AppendSwitchASCII(switches::kTraceUploadURL,
+                                        params.trace_upload_url);
+      }
+
+      EXPECT_EQ(tracing::GetBackgroundTracingSetupMode(),
+                enable_proto_traces ? params.expected_mode_proto
+                                    : params.expected_mode_json);
+    }
+  }
+}
+
 TEST_F(BackgroundTracingTest, SetupBackgroundTracingFieldTrial) {
-  base::FieldTrialList field_trial_list(nullptr);
   const std::string kTrialName = "BackgroundTracing";
   const std::string kExperimentName = "SlowStart";
   base::AssociateFieldTrialParams(kTrialName, kExperimentName,
@@ -72,8 +151,11 @@ TEST_F(BackgroundTracingTest, SetupBackgroundTracingFieldTrial) {
   // In case it is already set at previous test run.
   g_test_config_loaded = false;
 
-  tracing::SetConfigTextFilterForTesting(&CheckConfig);
+  content::BackgroundTracingManager::GetInstance()
+      ->SetConfigTextFilterForTesting(base::BindRepeating(&CheckConfig));
 
+  ASSERT_EQ(tracing::GetBackgroundTracingSetupMode(),
+            BackgroundTracingSetupMode::kFromFieldTrial);
   tracing::SetupBackgroundTracingFieldTrial();
   EXPECT_TRUE(g_test_config_loaded);
 }
@@ -87,9 +169,11 @@ TEST_F(BackgroundTracingTest, SetupBackgroundTracingFromConfigFileFailed) {
 
   base::test::ScopedCommandLine scoped_command_line;
   base::CommandLine* command_line = scoped_command_line.GetProcessCommandLine();
-  command_line->AppendSwitchASCII(switches::kTraceUploadURL, kUploadUrl);
+  command_line->AppendSwitchASCII(switches::kBackgroundTracingOutputFile, "");
   command_line->AppendSwitchASCII(switches::kEnableBackgroundTracing, "");
 
+  ASSERT_EQ(tracing::GetBackgroundTracingSetupMode(),
+            BackgroundTracingSetupMode::kDisabledInvalidCommandLine);
   tracing::SetupBackgroundTracingFieldTrial();
   EXPECT_FALSE(
       content::BackgroundTracingManager::GetInstance()->HasActiveScenario());
@@ -111,9 +195,13 @@ TEST_F(BackgroundTracingTest,
 
   base::test::ScopedCommandLine scoped_command_line;
   base::CommandLine* command_line = scoped_command_line.GetProcessCommandLine();
-  command_line->AppendSwitchASCII(switches::kTraceUploadURL, kUploadUrl);
+  command_line->AppendSwitchPath(
+      switches::kBackgroundTracingOutputFile,
+      temp_dir.GetPath().AppendASCII("test_trace.perfetto.gz"));
   command_line->AppendSwitchPath(switches::kEnableBackgroundTracing, file_path);
 
+  ASSERT_EQ(tracing::GetBackgroundTracingSetupMode(),
+            BackgroundTracingSetupMode::kFromConfigFile);
   tracing::SetupBackgroundTracingFieldTrial();
   EXPECT_FALSE(
       content::BackgroundTracingManager::GetInstance()->HasActiveScenario());
@@ -132,9 +220,13 @@ TEST_F(BackgroundTracingTest, SetupBackgroundTracingFromConfigFile) {
 
   base::test::ScopedCommandLine scoped_command_line;
   base::CommandLine* command_line = scoped_command_line.GetProcessCommandLine();
-  command_line->AppendSwitchASCII(switches::kTraceUploadURL, kUploadUrl);
+  command_line->AppendSwitchPath(
+      switches::kBackgroundTracingOutputFile,
+      temp_dir.GetPath().AppendASCII("test_trace.perfetto.gz"));
   command_line->AppendSwitchPath(switches::kEnableBackgroundTracing, file_path);
 
+  ASSERT_EQ(tracing::GetBackgroundTracingSetupMode(),
+            BackgroundTracingSetupMode::kFromConfigFile);
   tracing::SetupBackgroundTracingFieldTrial();
   EXPECT_TRUE(
       content::BackgroundTracingManager::GetInstance()->HasActiveScenario());

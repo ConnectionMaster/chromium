@@ -4,19 +4,25 @@
 
 #include <stddef.h>
 
+#include "base/big_endian.h"
 #include "base/guid.h"
 #include "base/i18n/number_formatting.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sync/test/integration/bookmarks_helper.h"
-#include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
+#include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/typed_urls_helper.h"
 #include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/sync/base/client_tag_hash.h"
+#include "components/sync/model/metadata_batch.h"
+#include "components/sync/protocol/entity_metadata.pb.h"
+#include "content/public/test/browser_test.h"
 
 using base::ASCIIToUTF16;
 using bookmarks::BookmarkNode;
@@ -31,13 +37,15 @@ using typed_urls_helper::CheckURLRowVectorsAreEqualForTypedURLs;
 using typed_urls_helper::DeleteUrlFromHistory;
 using typed_urls_helper::ExpireHistoryBefore;
 using typed_urls_helper::ExpireHistoryBetween;
+using typed_urls_helper::GetAllSyncMetadata;
 using typed_urls_helper::GetTypedUrlsFromClient;
 using typed_urls_helper::GetUrlFromClient;
 using typed_urls_helper::GetVisitsFromClient;
 using typed_urls_helper::RemoveVisitsFromClient;
+using typed_urls_helper::WriteMetadataToClient;
 
 namespace {
-const std::string kDummyUrl = "http://dummy-history.google.com/";
+const char kDummyUrl[] = "http://dummy-history.google.com/";
 }  // namespace
 
 class TwoClientTypedUrlsSyncTest : public SyncTest {
@@ -85,8 +93,9 @@ class TwoClientTypedUrlsSyncTest : public SyncTest {
 };
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, E2E_ENABLED(Add)) {
+  ResetSyncForPrimaryAccount();
   // Use a randomized URL to prevent test collisions.
-  const base::string16 kHistoryUrl = ASCIIToUTF16(base::StringPrintf(
+  const std::u16string kHistoryUrl = ASCIIToUTF16(base::StringPrintf(
       "http://www.add-history.google.com/%s", base::GenerateGUID().c_str()));
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
@@ -104,8 +113,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, E2E_ENABLED(Add)) {
 }
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddExpired) {
-  const base::string16 kHistoryUrl(
-      ASCIIToUTF16("http://www.add-one-history.google.com/"));
+  const std::u16string kHistoryUrl(u"http://www.add-one-history.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   // Populate one client with a URL, should sync to the other.
@@ -140,8 +148,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddExpired) {
 }
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddExpiredThenUpdate) {
-  const base::string16 kHistoryUrl(
-      ASCIIToUTF16("http://www.add-one-history.google.com/"));
+  const std::u16string kHistoryUrl(u"http://www.add-one-history.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   // Populate one client with a URL, should sync to the other.
@@ -363,8 +370,9 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddThenExpireVisitByVisit) {
 }
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, E2E_ENABLED(AddThenDelete)) {
+  ResetSyncForPrimaryAccount();
   // Use a randomized URL to prevent test collisions.
-  const base::string16 kHistoryUrl = ASCIIToUTF16(base::StringPrintf(
+  const std::u16string kHistoryUrl = ASCIIToUTF16(base::StringPrintf(
       "http://www.add-history.google.com/%s", base::GenerateGUID().c_str()));
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
@@ -390,7 +398,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, E2E_ENABLED(AddThenDelete)) {
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
                        AddMultipleVisitsThenDeleteAllTypedVisits) {
-  const base::string16 kHistoryUrl(ASCIIToUTF16("http://history1.google.com/"));
+  const std::u16string kHistoryUrl(u"http://history1.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   base::Time now = base::Time::Now();
@@ -422,13 +430,14 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
 }
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
-                       E2E_ENABLED(DisableEnableSync)) {
-  const base::string16 kUrl1(ASCIIToUTF16("http://history1.google.com/"));
-  const base::string16 kUrl2(ASCIIToUTF16("http://history2.google.com/"));
+                       DisableEnableSync) {
+  ResetSyncForPrimaryAccount();
+  const std::u16string kUrl1(u"http://history1.google.com/");
+  const std::u16string kUrl2(u"http://history2.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
-  // Disable typed url sync for one client, leave it active for the other.
-  GetClient(0)->DisableSyncForDatatype(syncer::TYPED_URLS);
+  // Disable history sync for one client, leave it active for the other.
+  GetClient(0)->DisableSyncForType(syncer::UserSelectableType::kHistory);
 
   // Add one URL to non-syncing client, add a different URL to the other,
   // wait for sync cycle to complete. No data should be exchanged.
@@ -446,15 +455,15 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
   ASSERT_EQ(1U, post_sync_urls.size());
   ASSERT_EQ(url2, post_sync_urls[0].url());
 
-  // Enable typed url sync, make both URLs are synced to each client.
-  GetClient(0)->EnableSyncForDatatype(syncer::TYPED_URLS);
+  // Enable history sync, make both URLs are synced to each client.
+  GetClient(0)->EnableSyncForType(syncer::UserSelectableType::kHistory);
 
   ASSERT_TRUE(ProfilesHaveSameTypedURLsChecker().Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddOneDeleteOther) {
-  const base::string16 kHistoryUrl(
-      ASCIIToUTF16("http://www.add-one-delete-history.google.com/"));
+  const std::u16string kHistoryUrl(
+      u"http://www.add-one-delete-history.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   // Populate one client with a URL, should sync to the other.
@@ -477,8 +486,8 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddOneDeleteOther) {
 }
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, AddOneDeleteOtherAddAgain) {
-  const base::string16 kHistoryUrl(
-      ASCIIToUTF16("http://www.add-delete-add-history.google.com/"));
+  const std::u16string kHistoryUrl(
+      u"http://www.add-delete-add-history.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   // Populate one client with a URL, should sync to the other.
@@ -550,9 +559,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
   ASSERT_TRUE(SetupClients());
   GURL new_url("http://history.com");
   base::Time timestamp = base::Time::Now();
-  // Setup both clients with the identical typed URL visit. This means we can't
-  // use the verifier in this test, because this will show up as two distinct
-  // visits in the verifier.
+
   AddUrlToHistoryWithTimestamp(0, new_url, ui::PAGE_TRANSITION_LINK,
                                history::SOURCE_BROWSED, timestamp);
   AddUrlToHistoryWithTimestamp(1, new_url, ui::PAGE_TRANSITION_LINK,
@@ -582,8 +589,8 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
 // Tests transitioning a URL from non-typed to typed when one of the clients
 // has never seen that URL before (so no merge is necessary).
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, UpdateToNonTypedURL) {
-  const base::string16 kHistoryUrl(
-      ASCIIToUTF16("http://www.add-delete-add-history.google.com/"));
+  const std::u16string kHistoryUrl(
+      u"http://www.add-delete-add-history.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   // Populate one client with a non-typed URL, should not be synced.
@@ -614,6 +621,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, UpdateToNonTypedURL) {
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
                        E2E_ENABLED(DontSyncUpdatedNonTypedURLs)) {
+  ResetSyncForPrimaryAccount();
   // Checks if a non-typed URL that has been updated (modified) doesn't get
   // synced. This is a regression test after fixing a bug where adding a
   // non-typed URL was guarded against but later modifying it was not. Since
@@ -652,9 +660,9 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
 
 IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
                        E2E_ENABLED(SyncTypedRedirects)) {
-  const base::string16 kHistoryUrl(ASCIIToUTF16("http://typed.google.com/"));
-  const base::string16 kRedirectedHistoryUrl(
-      ASCIIToUTF16("http://www.typed.google.com/"));
+  ResetSyncForPrimaryAccount();
+  const std::u16string kHistoryUrl(u"http://typed.google.com/");
+  const std::u16string kRedirectedHistoryUrl(u"http://www.typed.google.com/");
   ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
 
   // Simulate a typed address that gets redirected by the server to a different
@@ -763,4 +771,60 @@ IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, BookmarksWithTypedVisit) {
   ASSERT_EQ(1U, urls.size());
   ASSERT_EQ(bookmark_url, urls[0].url());
   ASSERT_EQ(1, GetVisitCountForFirstURL(0));
+}
+
+// Regression test for one part crbug.com/1075573. The fix for the issue was
+// general, so typed_urls is somewhat arbitrary choice (typed_urls were the most
+// affected by the issue).
+IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest,
+                       PRE_ResetWithDuplicateMetadata) {
+  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+
+  // Populate one client with a URL, should sync to the other.
+  const GURL url(kDummyUrl);
+  AddUrlToHistory(0, url);
+  EXPECT_TRUE(TypedURLChecker(1, kDummyUrl).Wait());
+  EXPECT_TRUE(CheckSyncHasURLMetadata(1, GURL(kDummyUrl)));
+
+  // Write a duplicate metadata entity. Duplicates appear on clients due to
+  // different reasons / bugs, this test is not realistic in this sense. It is
+  // just the simplest way to get to the desired state.
+  sync_pb::EntityMetadata duplicate_metadata;
+  duplicate_metadata.set_client_tag_hash(
+      syncer::ClientTagHash::FromUnhashed(syncer::TYPED_URLS, kDummyUrl)
+          .value());
+  duplicate_metadata.set_creation_time(0);
+  history::URLID arbitrary_id(5438392);
+  std::string storage_key(sizeof(arbitrary_id), 0);
+  base::WriteBigEndian<history::URLID>(&storage_key[0], arbitrary_id);
+  WriteMetadataToClient(1, storage_key, duplicate_metadata);
+}
+
+IN_PROC_BROWSER_TEST_F(TwoClientTypedUrlsSyncTest, ResetWithDuplicateMetadata) {
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+
+  // On startup, client 1 should reset its metadata and perform initial sync
+  // once again. Sync one more url across the clients to be sure client 1
+  // finishes its initial sync.
+  const std::string kFurtherURL("http://www.typed.google.com/");
+  AddUrlToHistory(0, GURL(kFurtherURL));
+  EXPECT_TRUE(TypedURLChecker(1, kFurtherURL).Wait());
+
+  // Check that client 1 has all the metadata without the duplicate.
+  syncer::MetadataBatch batch = GetAllSyncMetadata(1);
+  syncer::EntityMetadataMap metadata_map(batch.TakeAllMetadata());
+  size_t count_for_dummy = 0;
+  const syncer::ClientTagHash kClientTagHash =
+      syncer::ClientTagHash::FromUnhashed(syncer::TYPED_URLS, kDummyUrl);
+  for (const auto& kv : metadata_map) {
+    if (kv.second->client_tag_hash() == kClientTagHash.value()) {
+      ++count_for_dummy;
+    }
+  }
+  EXPECT_EQ(count_for_dummy, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Sync.ModelTypeOrphanMetadata.ModelReadyToSync",
+      /*bucket=*/ModelTypeHistogramValue(syncer::TYPED_URLS),
+      /*count=*/1);
 }

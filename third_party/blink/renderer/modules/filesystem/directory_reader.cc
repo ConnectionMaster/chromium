@@ -39,9 +39,7 @@ namespace blink {
 
 namespace {
 
-void RunEntriesCallback(
-    V8PersistentCallbackInterface<V8EntriesCallback>* callback,
-    EntryHeapVector* entries) {
+void RunEntriesCallback(V8EntriesCallback* callback, EntryHeapVector* entries) {
   callback->InvokeAndReportException(nullptr, *entries);
 }
 
@@ -53,6 +51,20 @@ DirectoryReader::DirectoryReader(DOMFileSystemBase* file_system,
 
 void DirectoryReader::readEntries(V8EntriesCallback* entries_callback,
                                   V8ErrorCallback* error_callback) {
+  if (entries_callback_) {
+    // Non-null entries_callback_ means multiple readEntries() calls are made
+    // concurrently. We don't allow doing it.
+    Filesystem()->ReportError(
+        WTF::Bind(
+            [](V8ErrorCallback* error_callback, base::File::Error error) {
+              error_callback->InvokeAndReportException(
+                  nullptr, file_error::CreateDOMException(error));
+            },
+            WrapPersistent(error_callback)),
+        base::File::FILE_ERROR_FAILED);
+    return;
+  }
+
   auto success_callback_wrapper = WTF::BindRepeating(
       [](DirectoryReader* persistent_reader, EntryHeapVector* entries) {
         persistent_reader->AddEntries(*entries);
@@ -73,29 +85,18 @@ void DirectoryReader::readEntries(V8EntriesCallback* entries_callback,
     return;
   }
 
-  if (entries_callback_) {
-    // Non-null entries_callback_ means multiple readEntries() calls are made
-    // concurrently. We don't allow doing it.
-    Filesystem()->ReportError(
-        WTF::Bind(&DirectoryReader::OnError, WrapPersistentIfNeeded(this)),
-        base::File::FILE_ERROR_FAILED);
-    return;
-  }
-
   if (!has_more_entries_ || !entries_.IsEmpty()) {
     EntryHeapVector* entries =
         MakeGarbageCollected<EntryHeapVector>(std::move(entries_));
     DOMFileSystem::ScheduleCallback(
         Filesystem()->GetExecutionContext(),
-        WTF::Bind(
-            &RunEntriesCallback,
-            WrapPersistent(ToV8PersistentCallbackInterface(entries_callback)),
-            WrapPersistent(entries)));
+        WTF::Bind(&RunEntriesCallback, WrapPersistent(entries_callback),
+                  WrapPersistent(entries)));
     return;
   }
 
-  entries_callback_ = ToV8PersistentCallbackInterface(entries_callback);
-  error_callback_ = ToV8PersistentCallbackInterface(error_callback);
+  entries_callback_ = entries_callback;
+  error_callback_ = error_callback;
 }
 
 void DirectoryReader::AddEntries(const EntryHeapVector& entries_to_add) {
@@ -117,7 +118,7 @@ void DirectoryReader::OnError(base::File::Error error) {
   }
 }
 
-void DirectoryReader::Trace(blink::Visitor* visitor) {
+void DirectoryReader::Trace(Visitor* visitor) const {
   visitor->Trace(entries_);
   visitor->Trace(entries_callback_);
   visitor->Trace(error_callback_);

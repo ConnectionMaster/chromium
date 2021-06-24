@@ -8,28 +8,28 @@
 #include <set>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
-#include "chrome/browser/browsing_data/browsing_data_cache_storage_helper.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate_factory.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/download_core_service_impl.h"
 #include "chrome/browser/offline_pages/offline_page_model_factory.h"
-#include "chrome/test/base/testing_browser_process.h"
-#include "chrome/test/base/testing_profile_manager.h"
+#include "chrome/browser/profiles/profile_key.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
+#include "components/browsing_data/content/cache_storage_helper.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/keyed_service/core/simple_factory_key.h"
 #include "components/offline_pages/core/stub_offline_page_model.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/storage_partition.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
 
@@ -52,38 +52,39 @@ std::unique_ptr<KeyedService> BuildOfflinePageModel(SimpleFactoryKey* key) {
 
 class SigninManagerAndroidTest : public ::testing::Test {
  public:
-  SigninManagerAndroidTest()
-      : profile_manager_(TestingBrowserProcess::GetGlobal()) {}
-  ~SigninManagerAndroidTest() override {}
+  SigninManagerAndroidTest() = default;
+  ~SigninManagerAndroidTest() override = default;
 
   void SetUp() override {
-    ASSERT_TRUE(profile_manager_.SetUp());
-    profile_ = profile_manager_.CreateTestingProfile("Testing Profile");
-    // TODO(crbug.com/748484): Remove requirement for this delegate in
-    // unit_tests.
-    DownloadCoreServiceFactory::GetForBrowserContext(profile_)
-        ->SetDownloadManagerDelegateForTesting(
-            std::make_unique<ChromeDownloadManagerDelegate>(profile_));
-  }
+    TestingProfile::Builder profile_builder;
+    profile_builder.AddTestingFactory(
+        BookmarkModelFactory::GetInstance(),
+        BookmarkModelFactory::GetDefaultFactory());
+    profile_ = profile_builder.Build();
 
-  TestingProfile* profile() { return profile_; }
-
-  // Adds two testing bookmarks to |profile_|.
-  bookmarks::BookmarkModel* AddTestBookmarks() {
-    profile_->CreateBookmarkModel(true);
     // Creating a BookmarkModel also a creates a StubOfflinePageModel.
     // We need to replace this with a mock that responds to deletions.
     offline_pages::OfflinePageModelFactory::GetInstance()->SetTestingFactory(
         profile_->GetProfileKey(), base::BindRepeating(&BuildOfflinePageModel));
+
+    // TODO(crbug.com/748484): Remove requirement for this delegate in
+    // unit_tests.
+    DownloadCoreServiceFactory::GetForBrowserContext(profile_.get())
+        ->SetDownloadManagerDelegateForTesting(
+            std::make_unique<ChromeDownloadManagerDelegate>(profile_.get()));
+  }
+
+  TestingProfile* profile() { return profile_.get(); }
+
+  // Adds two testing bookmarks to |profile_|.
+  bookmarks::BookmarkModel* AddTestBookmarks() {
     bookmarks::BookmarkModel* bookmark_model =
-        BookmarkModelFactory::GetForBrowserContext(profile_);
+        BookmarkModelFactory::GetForBrowserContext(profile());
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
 
-    bookmark_model->AddURL(bookmark_model->bookmark_bar_node(), 0,
-                           base::ASCIIToUTF16("Example 1"),
+    bookmark_model->AddURL(bookmark_model->bookmark_bar_node(), 0, u"Example 1",
                            GURL("https://example.org/1"));
-    bookmark_model->AddURL(bookmark_model->bookmark_bar_node(), 1,
-                           base::ASCIIToUTF16("Example 2"),
+    bookmark_model->AddURL(bookmark_model->bookmark_bar_node(), 1, u"Example 2",
                            GURL("https://example.com/2"));
 
     return bookmark_model;
@@ -98,16 +99,15 @@ class SigninManagerAndroidTest : public ::testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
-  TestingProfileManager profile_manager_;
-  TestingProfile* profile_;  // Owned by |profile_manager_|.
+  content::BrowserTaskEnvironment task_environment_;
+  std::unique_ptr<TestingProfile> profile_;
 
   DISALLOW_COPY_AND_ASSIGN(SigninManagerAndroidTest);
 };
 
 // TODO(crbug.com/929456): This test does not actually test anything; the
-// CannedBrowsingDataCacheStorageHelper isn't hooked up to observe any
-// deletions. Disabled to allow refactoring of browsing data code.
+// CannedCacheStorageHelper isn't hooked up to observe any deletions. Disabled
+// to allow refactoring of browsing data code.
 TEST_F(SigninManagerAndroidTest, DISABLED_DeleteGoogleServiceWorkerCaches) {
   struct TestCase {
     std::string worker_url;
@@ -135,9 +135,8 @@ TEST_F(SigninManagerAndroidTest, DISABLED_DeleteGoogleServiceWorkerCaches) {
   // TODO(crbug.com/929456): This helper is not attached anywhere to
   // be able to observe deletions.
   // Add service workers.
-  auto helper = base::MakeRefCounted<CannedBrowsingDataCacheStorageHelper>(
-      content::BrowserContext::GetDefaultStoragePartition(profile())
-          ->GetCacheStorageContext());
+  auto helper = base::MakeRefCounted<browsing_data::CannedCacheStorageHelper>(
+      profile()->GetDefaultStoragePartition());
 
   for (const TestCase& test_case : kTestCases)
     helper->Add(url::Origin::Create(GURL(test_case.worker_url)));
@@ -156,10 +155,9 @@ TEST_F(SigninManagerAndroidTest, DISABLED_DeleteGoogleServiceWorkerCaches) {
 
   // TODO(crbug.com/929456): If deleted, the key should not be present.
   for (const TestCase& test_case : kTestCases) {
-    EXPECT_EQ(
-        test_case.should_be_deleted,
-        base::ContainsKey(remaining_cache_storages,
-                          url::Origin::Create(GURL(test_case.worker_url))))
+    EXPECT_EQ(test_case.should_be_deleted,
+              base::Contains(remaining_cache_storages,
+                             url::Origin::Create(GURL(test_case.worker_url))))
         << test_case.worker_url << " should "
         << (test_case.should_be_deleted ? "" : "NOT ")
         << "be deleted, but it was"
@@ -170,17 +168,17 @@ TEST_F(SigninManagerAndroidTest, DISABLED_DeleteGoogleServiceWorkerCaches) {
 // Tests that wiping all data also deletes bookmarks.
 TEST_F(SigninManagerAndroidTest, DeleteBookmarksWhenWipingAllData) {
   bookmarks::BookmarkModel* bookmark_model = AddTestBookmarks();
-  ASSERT_GE(bookmark_model->bookmark_bar_node()->child_count(), 0);
+  ASSERT_GE(bookmark_model->bookmark_bar_node()->children().size(), 0u);
   WipeData(true);
-  EXPECT_EQ(0, bookmark_model->bookmark_bar_node()->child_count());
+  EXPECT_EQ(0u, bookmark_model->bookmark_bar_node()->children().size());
 }
 
 // Tests that wiping Google service worker caches does not delete bookmarks.
 TEST_F(SigninManagerAndroidTest, DontDeleteBookmarksWhenDeletingSWCaches) {
   bookmarks::BookmarkModel* bookmark_model = AddTestBookmarks();
-  int bookmarks_count = bookmark_model->bookmark_bar_node()->child_count();
-  ASSERT_GE(bookmarks_count, 0);
+  size_t num_bookmarks = bookmark_model->bookmark_bar_node()->children().size();
+  ASSERT_GE(num_bookmarks, 0u);
   WipeData(false);
-  EXPECT_EQ(bookmarks_count,
-            bookmark_model->bookmark_bar_node()->child_count());
+  EXPECT_EQ(num_bookmarks,
+            bookmark_model->bookmark_bar_node()->children().size());
 }

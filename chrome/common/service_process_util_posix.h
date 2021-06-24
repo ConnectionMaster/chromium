@@ -17,12 +17,12 @@
 #include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX)
+#if defined(OS_POSIX) && !defined(OS_MAC)
 #include "chrome/common/multi_process_lock.h"
-MultiProcessLock* TakeServiceRunningLock(bool waiting);
+std::unique_ptr<MultiProcessLock> TakeServiceRunningLock();
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/files/file_path_watcher.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "chrome/common/mac/service_management.h"
@@ -34,7 +34,7 @@ class CommandLine;
 mac::services::JobOptions GetServiceProcessJobOptions(
     base::CommandLine* cmd_line,
     bool for_auto_launch);
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 
 namespace base {
 class WaitableEvent;
@@ -51,7 +51,7 @@ class ServiceProcessTerminateMonitor
     kTerminateMessage = 0xdecea5e
   };
 
-  explicit ServiceProcessTerminateMonitor(const base::Closure& terminate_task);
+  explicit ServiceProcessTerminateMonitor(base::OnceClosure terminate_task);
   ~ServiceProcessTerminateMonitor() override;
 
   // MessagePumpForIO::FdWatcher overrides
@@ -59,7 +59,7 @@ class ServiceProcessTerminateMonitor
   void OnFileCanWriteWithoutBlocking(int fd) override;
 
  private:
-  base::Closure terminate_task_;
+  base::OnceClosure terminate_task_;
 };
 
 struct ServiceProcessState::StateData {
@@ -70,7 +70,7 @@ struct ServiceProcessState::StateData {
   // to be monitoring it.
   void SignalReady(base::WaitableEvent* signal, bool* success);
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   bool WatchExecutable();
 
   mac::services::JobCheckinInfo job_info;

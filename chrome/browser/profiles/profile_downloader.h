@@ -9,26 +9,25 @@
 #include <string>
 
 #include "base/gtest_prod_util.h"
-#include "base/macros.h"
-#include "base/scoped_observer.h"
-#include "base/strings/string16.h"
-#include "chrome/browser/image_decoder.h"
-#include "components/signin/core/browser/account_info.h"
-#include "services/identity/public/cpp/identity_manager.h"
+#include "base/scoped_observation.h"
+#include "base/sequence_checker.h"
+#include "chrome/browser/image_decoder/image_decoder.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "services/network/public/cpp/simple_url_loader.h"
-#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
-namespace identity {
+namespace signin {
 class AccessTokenFetcher;
-}
+struct AccessTokenInfo;
+}  // namespace signin
 
 class ProfileDownloaderDelegate;
 
 // Downloads user profile information. The profile picture is decoded in a
 // sandboxed process.
 class ProfileDownloader : public ImageDecoder::ImageRequest,
-                          public identity::IdentityManager::Observer {
+                          public signin::IdentityManager::Observer {
  public:
   enum PictureStatus {
     PICTURE_SUCCESS,
@@ -38,6 +37,8 @@ class ProfileDownloader : public ImageDecoder::ImageRequest,
   };
 
   explicit ProfileDownloader(ProfileDownloaderDelegate* delegate);
+  ProfileDownloader(const ProfileDownloader&) = delete;
+  ProfileDownloader& operator=(const ProfileDownloader&) = delete;
   ~ProfileDownloader() override;
 
   // Starts downloading profile information if the necessary authorization token
@@ -48,18 +49,15 @@ class ProfileDownloader : public ImageDecoder::ImageRequest,
   // Starts downloading profile information if the necessary authorization token
   // is ready. If not, subscribes to token service and starts fetching if the
   // token is available. Should not be called more than once.
-  virtual void StartForAccount(const std::string& account_id);
-
-  // On successful download this returns the hosted domain of the user.
-  virtual base::string16 GetProfileHostedDomain() const;
+  virtual void StartForAccount(const CoreAccountId& account_id);
 
   // On successful download this returns the full name of the user. For example
   // "Pat Smith".
-  virtual base::string16 GetProfileFullName() const;
+  virtual std::u16string GetProfileFullName() const;
 
   // On successful download this returns the given name of the user. For example
   // if the name is "Pat Smith", the given name is "Pat".
-  virtual base::string16 GetProfileGivenName() const;
+  virtual std::u16string GetProfileGivenName() const;
 
   // On successful download this returns G+ locale preference of the user.
   virtual std::string GetProfileLocale() const;
@@ -90,16 +88,16 @@ class ProfileDownloader : public ImageDecoder::ImageRequest,
 
   void OnURLLoaderComplete(std::unique_ptr<std::string> response_body);
 
-  // Overriden from ImageDecoder::ImageRequest:
+  // Overridden from ImageDecoder::ImageRequest:
   void OnImageDecoded(const SkBitmap& decoded_image) override;
   void OnDecodeImageFailed() override;
 
-  // Overriden from identity::IdentityManager::Observer:
+  // Overridden from signin::IdentityManager::Observer:
   void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
 
   // Callback for AccessTokenFetcher.
   void OnAccessTokenFetchComplete(GoogleServiceAuthError error,
-                                  identity::AccessTokenInfo access_token_info);
+                                  signin::AccessTokenInfo access_token_info);
 
   // Issues the first request to get user profile image.
   void StartFetchingImage();
@@ -111,20 +109,21 @@ class ProfileDownloader : public ImageDecoder::ImageRequest,
   // can be downloaded.
   void StartFetchingOAuth2AccessToken();
 
+  SEQUENCE_CHECKER(sequence_checker_);
+
   ProfileDownloaderDelegate* delegate_;
-  std::string account_id_;
+  CoreAccountId account_id_;
   std::string auth_token_;
   std::unique_ptr<network::SimpleURLLoader> simple_loader_;
-  std::unique_ptr<identity::AccessTokenFetcher> oauth2_access_token_fetcher_;
+  std::unique_ptr<signin::AccessTokenFetcher> oauth2_access_token_fetcher_;
   AccountInfo account_info_;
   SkBitmap profile_picture_;
-  PictureStatus picture_status_;
-  identity::IdentityManager* identity_manager_;
-  ScopedObserver<identity::IdentityManager, identity::IdentityManager::Observer>
-      identity_manager_observer_;
-  bool waiting_for_account_info_;
-
-  DISALLOW_COPY_AND_ASSIGN(ProfileDownloader);
+  PictureStatus picture_status_ = PICTURE_FAILED;
+  signin::IdentityManager* identity_manager_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
+  bool waiting_for_account_info_ = false;
 };
 
 #endif  // CHROME_BROWSER_PROFILES_PROFILE_DOWNLOADER_H_

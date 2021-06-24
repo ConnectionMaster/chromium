@@ -6,45 +6,42 @@
 #define FUCHSIA_ENGINE_CONTEXT_PROVIDER_IMPL_H_
 
 #include <fuchsia/web/cpp/fidl.h>
-#include <lib/fidl/cpp/binding_set.h>
-#include <memory>
+#include <lib/fidl/cpp/interface_ptr_set.h>
 
 #include "base/callback.h"
-#include "base/macros.h"
-#include "chromium/web/cpp/fidl.h"
+#include "base/values.h"
 #include "fuchsia/engine/web_engine_export.h"
-
-namespace base {
-class CommandLine;
-struct LaunchOptions;
-class Process;
-}  // namespace base
+#include "fuchsia/engine/web_instance_host/web_instance_host.h"
 
 class WEB_ENGINE_EXPORT ContextProviderImpl
-    : public fuchsia::web::ContextProvider {
+    : public fuchsia::web::ContextProvider,
+      public fuchsia::web::Debug {
  public:
-  using LaunchCallbackForTest = base::RepeatingCallback<base::Process(
-      const base::CommandLine& command,
-      const base::LaunchOptions& options)>;
-
   ContextProviderImpl();
   ~ContextProviderImpl() override;
+
+  ContextProviderImpl(const ContextProviderImpl&) = delete;
+  ContextProviderImpl& operator=(const ContextProviderImpl&) = delete;
 
   // fuchsia::web::ContextProvider implementation.
   void Create(
       fuchsia::web::CreateContextParams params,
       fidl::InterfaceRequest<fuchsia::web::Context> context_request) override;
 
-  // Sets a |launch| callback to use instead of calling LaunchProcess() to
-  // create Context processes.
-  void SetLaunchCallbackForTest(LaunchCallbackForTest launch);
+  // Sets a config to use for the test, instead of looking for the config file.
+  void set_config_for_test(base::Value config);
 
  private:
-  // Set by tests to use to launch Context child processes, e.g. to allow a
-  // fake Context process to be launched.
-  LaunchCallbackForTest launch_for_test_;
+  // fuchsia::web::Debug implementation.
+  void EnableDevTools(
+      fidl::InterfaceHandle<fuchsia::web::DevToolsListener> listener,
+      EnableDevToolsCallback callback) override;
 
-  DISALLOW_COPY_AND_ASSIGN(ContextProviderImpl);
+  // The DevToolsListeners registered via the Debug interface.
+  fidl::InterfacePtrSet<fuchsia::web::DevToolsListener> devtools_listeners_;
+
+  // Manages an isolated Environment, and the web instances hosted within it.
+  cr_fuchsia::WebInstanceHost web_instance_host_;
 };
 
 #endif  // FUCHSIA_ENGINE_CONTEXT_PROVIDER_IMPL_H_

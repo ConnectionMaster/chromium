@@ -6,6 +6,8 @@
 
 #include <windows.h>
 
+#include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace gfx {
@@ -13,7 +15,26 @@ namespace win {
 
 namespace {
 
-LOGFONT CreateLOGFONT(const base::char16* name, LONG height) {
+class SystemFontsWinTest : public testing::Test {
+ public:
+  SystemFontsWinTest() = default;
+
+ protected:
+  void SetUp() override {
+#if defined(OS_WIN)
+    // System fonts is keeping a cache of loaded system fonts. These fonts are
+    // scaled based on global callbacks configured on startup. The tests in this
+    // file are testing these callbacks and need to be sure we cleared the
+    // global state to avoid flaky tests.
+    win::ResetSystemFontsForTesting();
+#endif
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(SystemFontsWinTest);
+};
+
+LOGFONT CreateLOGFONT(const wchar_t* name, LONG height) {
   LOGFONT logfont = {};
   logfont.lfHeight = height;
   auto result = wcscpy_s(logfont.lfFaceName, name);
@@ -21,13 +42,12 @@ LOGFONT CreateLOGFONT(const base::char16* name, LONG height) {
   return logfont;
 }
 
-const base::char16 kSegoeUI[] = L"Segoe UI";
-const base::char16 kArial[] = L"Arial";
+const wchar_t kSegoeUI[] = L"Segoe UI";
+const wchar_t kArial[] = L"Arial";
 
 }  // namespace
 
-TEST(SystemFontsWinTest, AdjustFontSize) {
-  gfx::win::SetGetMinimumFontSizeCallback(nullptr);
+TEST_F(SystemFontsWinTest, AdjustFontSize) {
   EXPECT_EQ(10, gfx::win::AdjustFontSize(10, 0));
   EXPECT_EQ(-10, gfx::win::AdjustFontSize(-10, 0));
   EXPECT_EQ(8, gfx::win::AdjustFontSize(10, -2));
@@ -40,7 +60,7 @@ TEST(SystemFontsWinTest, AdjustFontSize) {
   EXPECT_EQ(0, gfx::win::AdjustFontSize(-10, -12));
 }
 
-TEST(SystemFontsWinTest, AdjustFontSize_MinimumSizeSpecified) {
+TEST_F(SystemFontsWinTest, AdjustFontSize_MinimumSizeSpecified) {
   gfx::win::SetGetMinimumFontSizeCallback([] { return 1; });
   EXPECT_EQ(10, gfx::win::AdjustFontSize(10, 0));
   EXPECT_EQ(-10, gfx::win::AdjustFontSize(-10, 0));
@@ -54,7 +74,7 @@ TEST(SystemFontsWinTest, AdjustFontSize_MinimumSizeSpecified) {
   EXPECT_EQ(-1, gfx::win::AdjustFontSize(-10, -12));
 }
 
-TEST(SystemFontsWinTest, AdjustLOGFONT_NoAdjustment) {
+TEST_F(SystemFontsWinTest, AdjustLOGFONT_NoAdjustment) {
   LOGFONT logfont = CreateLOGFONT(kSegoeUI, -12);
   FontAdjustment adjustment;
   AdjustLOGFONTForTesting(adjustment, &logfont);
@@ -62,7 +82,7 @@ TEST(SystemFontsWinTest, AdjustLOGFONT_NoAdjustment) {
   EXPECT_STREQ(kSegoeUI, logfont.lfFaceName);
 }
 
-TEST(SystemFontsWinTest, AdjustLOGFONT_ChangeFace) {
+TEST_F(SystemFontsWinTest, AdjustLOGFONT_ChangeFace) {
   LOGFONT logfont = CreateLOGFONT(kSegoeUI, -12);
   FontAdjustment adjustment{kArial, 1.0};
   AdjustLOGFONTForTesting(adjustment, &logfont);
@@ -70,7 +90,7 @@ TEST(SystemFontsWinTest, AdjustLOGFONT_ChangeFace) {
   EXPECT_STREQ(kArial, logfont.lfFaceName);
 }
 
-TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleDown) {
+TEST_F(SystemFontsWinTest, AdjustLOGFONT_ScaleDown) {
   LOGFONT logfont = CreateLOGFONT(kSegoeUI, -12);
   FontAdjustment adjustment{L"", 0.5};
   AdjustLOGFONTForTesting(adjustment, &logfont);
@@ -84,7 +104,7 @@ TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleDown) {
   EXPECT_STREQ(kSegoeUI, logfont.lfFaceName);
 }
 
-TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleDownWithRounding) {
+TEST_F(SystemFontsWinTest, AdjustLOGFONT_ScaleDownWithRounding) {
   LOGFONT logfont = CreateLOGFONT(kSegoeUI, -10);
   FontAdjustment adjustment{L"", 0.85};
   AdjustLOGFONTForTesting(adjustment, &logfont);
@@ -98,7 +118,7 @@ TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleDownWithRounding) {
   EXPECT_STREQ(kSegoeUI, logfont.lfFaceName);
 }
 
-TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleUpWithFaceChange) {
+TEST_F(SystemFontsWinTest, AdjustLOGFONT_ScaleUpWithFaceChange) {
   LOGFONT logfont = CreateLOGFONT(kSegoeUI, -12);
   FontAdjustment adjustment{kArial, 1.5};
   AdjustLOGFONTForTesting(adjustment, &logfont);
@@ -112,7 +132,7 @@ TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleUpWithFaceChange) {
   EXPECT_STREQ(kArial, logfont.lfFaceName);
 }
 
-TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleUpWithRounding) {
+TEST_F(SystemFontsWinTest, AdjustLOGFONT_ScaleUpWithRounding) {
   LOGFONT logfont = CreateLOGFONT(kSegoeUI, -10);
   FontAdjustment adjustment{L"", 1.111};
   AdjustLOGFONTForTesting(adjustment, &logfont);
@@ -124,6 +144,28 @@ TEST(SystemFontsWinTest, AdjustLOGFONT_ScaleUpWithRounding) {
   AdjustLOGFONTForTesting(adjustment, &logfont);
   EXPECT_EQ(11, logfont.lfHeight);
   EXPECT_STREQ(kSegoeUI, logfont.lfFaceName);
+}
+
+TEST_F(SystemFontsWinTest, GetFontFromLOGFONT) {
+  LOGFONT logfont = CreateLOGFONT(kSegoeUI, -10);
+  Font font = GetFontFromLOGFONTForTesting(logfont);
+  EXPECT_EQ(font.GetStyle(), Font::FontStyle::NORMAL);
+  EXPECT_EQ(font.GetWeight(), Font::Weight::NORMAL);
+}
+
+TEST_F(SystemFontsWinTest, GetFontFromLOGFONT_WithStyle) {
+  LOGFONT logfont = CreateLOGFONT(kSegoeUI, -10);
+  logfont.lfItalic = 1;
+  logfont.lfWeight = 700;
+
+  Font font = GetFontFromLOGFONTForTesting(logfont);
+  EXPECT_EQ(font.GetStyle(), Font::FontStyle::ITALIC);
+  EXPECT_EQ(font.GetWeight(), Font::Weight::BOLD);
+}
+
+TEST_F(SystemFontsWinTest, GetDefaultSystemFont) {
+  Font system_font = GetDefaultSystemFont();
+  EXPECT_EQ(base::WideToUTF8(kSegoeUI), system_font.GetFontName());
 }
 
 }  // namespace win

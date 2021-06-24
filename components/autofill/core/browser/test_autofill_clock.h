@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_TEST_AUTOFILL_CLOCK_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_TEST_AUTOFILL_CLOCK_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "base/test/simple_test_clock.h"
 
@@ -19,7 +17,7 @@ namespace autofill {
 // Handles the customization of the time in tests. Replaces the clock in
 // AutofillClock with a test version that can be manipulated from this class.
 // Automatically resets a normal clock to AutofillClock when this gets
-// destroyed,
+// destroyed.
 class TestAutofillClock {
  public:
   TestAutofillClock();

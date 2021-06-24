@@ -21,7 +21,7 @@ import java.nio.ByteBuffer;
  */
 @JNINamespace("media")
 class MediaCodecEncoder extends MediaCodecBridge {
-    private static final String TAG = "cr_MediaCodecEncoder";
+    private static final String TAG = "MediaCodecEncoder";
 
     // Output buffers mapping with MediaCodec output buffers for the possible frame-merging.
     private SparseArray<ByteBuffer> mOutputBuffers = new SparseArray<>();
@@ -48,7 +48,8 @@ class MediaCodecEncoder extends MediaCodecBridge {
     }
 
     // Save the config frame(SPS/PPS NALs) and append it to each keyframe.
-    @SuppressWarnings("deprecation")
+    // WrongConstant: MediaCodec#dequeueOutputBuffer returns the index when successful.
+    @SuppressWarnings({"deprecation", "WrongConstant"})
     @Override
     protected int dequeueOutputBufferInternal(MediaCodec.BufferInfo info, long timeoutUs) {
         int indexOrStatus = -1;

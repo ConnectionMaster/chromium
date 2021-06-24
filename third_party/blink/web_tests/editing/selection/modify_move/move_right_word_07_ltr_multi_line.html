@@ -45,7 +45,7 @@ selection_test(
   selection => selection.modify('move', 'right', 'word'),
   isMac
       ? '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>'
-      : '<div contenteditable dir="ltr">abc ghi<div></div><div></div><div></div>|opq xyz</div>',
+      : '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>',
   '7-4 ltr right word');
 
 selection_test(
@@ -53,7 +53,7 @@ selection_test(
   selection => selection.modify('move', 'right', 'word'),
   isMac
       ? '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>'
-      : '<div contenteditable dir="ltr">abc ghi<div></div><div></div><div></div>|opq xyz</div>',
+      : '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>',
   '7-5 ltr right word');
 
 selection_test(
@@ -61,14 +61,14 @@ selection_test(
   selection => selection.modify('move', 'right', 'word'),
   isMac
       ? '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>'
-      : '<div contenteditable dir="ltr">abc ghi<div></div><div></div><div></div>|opq xyz</div>',
+      : '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>',
   '7-6 ltr right word');
 
 selection_test(
   '<div contenteditable dir="ltr">abc ghi|<div></div><div></div><div></div>opq xyz</div>',
   selection => selection.modify('move', 'right', 'word'),
   isMac
-      ? '<div contenteditable dir="ltr">abc ghi<div></div><div></div><div></div>opq| xyz</div>'
+      ? '<div contenteditable dir="ltr">abc ghi<div></div><div></div><div></div>|opq xyz</div>'
       : '<div contenteditable dir="ltr">abc ghi<div></div><div></div><div></div>|opq xyz</div>',
   '7-7 ltr right word');
 

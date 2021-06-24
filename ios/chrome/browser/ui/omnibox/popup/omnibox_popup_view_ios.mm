@@ -6,7 +6,7 @@
 
 #import <QuartzCore/QuartzCore.h>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
@@ -18,13 +18,14 @@
 #include "components/open_from_clipboard/clipboard_recent_content.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #import "ios/chrome/browser/system_flags.h"
+#import "ios/chrome/browser/ui/default_promo/default_browser_utils.h"
 #import "ios/chrome/browser/ui/omnibox/omnibox_util.h"
 #import "ios/chrome/browser/ui/omnibox/popup/omnibox_popup_mediator.h"
 #include "ios/chrome/browser/ui/omnibox/popup/omnibox_popup_view_suggestions_delegate.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #include "ios/chrome/grit/ios_theme_resources.h"
-#include "ios/web/public/web_thread.h"
+#include "ios/web/public/thread/web_thread.h"
 #include "net/url_request/url_request_context_getter.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -36,7 +37,8 @@ using base::UserMetricsAction;
 OmniboxPopupViewIOS::OmniboxPopupViewIOS(
     OmniboxEditModel* edit_model,
     OmniboxPopupViewSuggestionsDelegate* delegate)
-    : model_(new OmniboxPopupModel(this, edit_model)), delegate_(delegate) {
+    : model_(new OmniboxPopupModel(this, edit_model, nullptr)),
+      delegate_(delegate) {
   DCHECK(delegate);
   DCHECK(edit_model);
 }
@@ -50,8 +52,26 @@ OmniboxPopupViewIOS::~OmniboxPopupViewIOS() {
 // option is highlighted.
 void OmniboxPopupViewIOS::UpdateEditViewIcon() {
   const AutocompleteResult& result = model_->result();
+
+  // Use default icon as a fallback
+  if (model_->selected_line() == OmniboxPopupModel::kNoMatch) {
+    delegate_->OnSelectedMatchImageChanged(/*has_match=*/false,
+                                           AutocompleteMatchType::NUM_TYPES,
+                                           absl::nullopt, GURL());
+    return;
+  }
+
   const AutocompleteMatch& match = result.match_at(model_->selected_line());
-  delegate_->OnTopmostSuggestionImageChanged(match.type);
+
+  absl::optional<SuggestionAnswer::AnswerType> optAnswerType = absl::nullopt;
+  if (match.answer && match.answer->type() > 0 &&
+      match.answer->type() <
+          SuggestionAnswer::AnswerType::ANSWER_TYPE_TOTAL_COUNT) {
+    optAnswerType =
+        static_cast<SuggestionAnswer::AnswerType>(match.answer->type());
+  }
+  delegate_->OnSelectedMatchImageChanged(/*has_match=*/true, match.type,
+                                         optAnswerType, match.destination_url);
 }
 
 void OmniboxPopupViewIOS::UpdatePopupAppearance() {
@@ -95,7 +115,7 @@ bool OmniboxPopupViewIOS::IsStarredMatch(const AutocompleteMatch& match) const {
 }
 
 void OmniboxPopupViewIOS::OnMatchHighlighted(size_t row) {
-  model_->SetSelectedLine(row, false, true);
+  model_->SetSelection(OmniboxPopupModel::Selection(row), false, true);
   if ([mediator_ isOpen]) {
     UpdateEditViewIcon();
   }
@@ -112,21 +132,29 @@ void OmniboxPopupViewIOS::OnMatchSelected(
   // make sure it stays alive until the call completes.
   AutocompleteMatch match = selectedMatch;
 
+  if (match.type == AutocompleteMatchType::CLIPBOARD_URL ||
+      match.type == AutocompleteMatchType::CLIPBOARD_TEXT) {
+    // A search using clipboard link or text is activity that should indicate a
+    // user that would be interested in setting Chrome as the default browser.
+    LogLikelyInterestedDefaultBrowserUserActivity(DefaultPromoTypeGeneral);
+  }
+
   if (match.type == AutocompleteMatchType::CLIPBOARD_URL) {
+    LogLikelyInterestedDefaultBrowserUserActivity(DefaultPromoTypeGeneral);
     base::RecordAction(UserMetricsAction("MobileOmniboxClipboardToURL"));
     UMA_HISTOGRAM_LONG_TIMES_100(
         "MobileOmnibox.PressedClipboardSuggestionAge",
         ClipboardRecentContent::GetInstance()->GetClipboardContentAge());
   }
   delegate_->OnSelectedMatchForOpening(match, disposition, GURL(),
-                                       base::string16(), row);
+                                       std::u16string(), row);
 }
 
 void OmniboxPopupViewIOS::OnMatchSelectedForAppending(
     const AutocompleteMatch& match) {
   // Make a defensive copy of |match.fill_into_edit|, as CopyToOmnibox() will
   // trigger a new round of autocomplete and modify |match|.
-  base::string16 fill_into_edit(match.fill_into_edit);
+  std::u16string fill_into_edit(match.fill_into_edit);
 
   // If the match is not a URL, append a whitespace to the end of it.
   if (AutocompleteMatch::IsSearchType(match.type)) {

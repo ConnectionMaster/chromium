@@ -7,6 +7,7 @@
 #include "chrome/browser/media_galleries/media_galleries_preferences.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/border.h"
@@ -26,11 +27,9 @@ const SkColor kDeemphasizedTextColor = SkColorSetRGB(159, 159, 159);
 MediaGalleryCheckboxView::MediaGalleryCheckboxView(
     const MediaGalleryPrefInfo& pref_info,
     int trailing_vertical_space,
-    views::ButtonListener* button_listener,
     views::ContextMenuController* menu_controller) {
-  DCHECK(button_listener != NULL);
-  SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kHorizontal));
+  SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kHorizontal));
   ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
   const gfx::Insets dialog_insets =
       provider->GetInsetsMetric(views::INSETS_DIALOG);
@@ -39,16 +38,16 @@ MediaGalleryCheckboxView::MediaGalleryCheckboxView(
   if (menu_controller)
     set_context_menu_controller(menu_controller);
 
-  checkbox_ =
-      new views::Checkbox(pref_info.GetGalleryDisplayName(), button_listener);
+  checkbox_ = AddChildView(std::make_unique<views::Checkbox>(
+      pref_info.GetGalleryDisplayName(), views::Button::PressedCallback()));
   if (menu_controller)
     checkbox_->set_context_menu_controller(menu_controller);
   checkbox_->SetElideBehavior(gfx::ELIDE_MIDDLE);
-  base::string16 tooltip_text = pref_info.GetGalleryTooltip();
+  std::u16string tooltip_text = pref_info.GetGalleryTooltip();
   checkbox_->SetTooltipText(tooltip_text);
 
-  base::string16 details = pref_info.GetGalleryAdditionalDetails();
-  secondary_text_ = new views::Label(details);
+  std::u16string details = pref_info.GetGalleryAdditionalDetails();
+  secondary_text_ = AddChildView(std::make_unique<views::Label>(details));
   if (menu_controller)
     secondary_text_->set_context_menu_controller(menu_controller);
   secondary_text_->SetVisible(details.length() > 0);
@@ -58,12 +57,9 @@ MediaGalleryCheckboxView::MediaGalleryCheckboxView(
   secondary_text_->SetBorder(views::CreateEmptyBorder(
       0, provider->GetDistanceMetric(DISTANCE_RELATED_CONTROL_HORIZONTAL_SMALL),
       0, 0));
-
-  AddChildView(checkbox_);
-  AddChildView(secondary_text_);
 }
 
-MediaGalleryCheckboxView::~MediaGalleryCheckboxView() {}
+MediaGalleryCheckboxView::~MediaGalleryCheckboxView() = default;
 
 void MediaGalleryCheckboxView::Layout() {
   views::View::Layout();
@@ -74,11 +70,10 @@ void MediaGalleryCheckboxView::Layout() {
   // up at most half of the space and the checkbox can take up whatever is left.
   int checkbox_width = checkbox_->GetPreferredSize().width();
   int secondary_text_width = secondary_text_->GetPreferredSize().width();
-  if (!secondary_text_->visible())
+  if (!secondary_text_->GetVisible())
     secondary_text_width = 0;
 
-  gfx::Rect area(GetLocalBounds());
-  area.Inset(GetInsets());
+  gfx::Rect area = GetContentsBounds();
 
   if (secondary_text_width > area.width() / 2) {
     secondary_text_width =
@@ -87,8 +82,11 @@ void MediaGalleryCheckboxView::Layout() {
   checkbox_width = area.width() - secondary_text_width;
 
   checkbox_->SetBounds(area.x(), area.y(), checkbox_width, area.height());
-  if (secondary_text_->visible()) {
+  if (secondary_text_->GetVisible()) {
     secondary_text_->SetBounds(checkbox_->x() + checkbox_width, area.y(),
                                secondary_text_width, area.height());
   }
 }
+
+BEGIN_METADATA(MediaGalleryCheckboxView, views::View)
+END_METADATA

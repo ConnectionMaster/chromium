@@ -5,7 +5,6 @@
 #ifndef ASH_SHELF_WINDOW_PREVIEW_H_
 #define ASH_SHELF_WINDOW_PREVIEW_H_
 
-#include "ui/views/controls/button/button.h"
 #include "ui/views/view.h"
 
 namespace aura {
@@ -19,16 +18,14 @@ class Label;
 
 namespace ash {
 
-namespace wm {
 class WindowPreviewView;
-}
 
 // A view used by the shelf which shows a mirror view of the the window
 // associated with the window of the shelf icon where the mouse is hovered over.
 // The view is also contains a button which closes the window if clicked. Other
 // click events will activate the window and dismiss the bubble which holds this
 // view.
-class WindowPreview : public views::View, public views::ButtonListener {
+class WindowPreview : public views::View {
  public:
   class Delegate {
    public:
@@ -54,11 +51,9 @@ class WindowPreview : public views::View, public views::ButtonListener {
   gfx::Size CalculatePreferredSize() const override;
   void Layout() override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
+  const char* GetClassName() const override;
 
-  // views::ButtonListener:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
-
-  const wm::WindowPreviewView* preview_view() const { return preview_view_; }
+  const WindowPreviewView* preview_view() const { return preview_view_; }
 
  private:
   void SetStyling(const ui::NativeTheme* theme);
@@ -66,11 +61,13 @@ class WindowPreview : public views::View, public views::ButtonListener {
   // All the preview containers have the same size.
   gfx::Size GetPreviewContainerSize() const;
 
+  void CloseButtonPressed();
+
   // Child views.
   views::ImageButton* close_button_ = nullptr;
   views::Label* title_ = nullptr;
   views::View* preview_container_view_ = nullptr;
-  wm::WindowPreviewView* preview_view_ = nullptr;
+  WindowPreviewView* preview_view_ = nullptr;
 
   // Unowned pointer to the delegate. The delegate should outlive this instance.
   Delegate* delegate_;

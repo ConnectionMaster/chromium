@@ -27,9 +27,13 @@ class TestWebContentsHandler
   void AddNewContents(content::BrowserContext* context,
                       content::WebContents* source,
                       std::unique_ptr<content::WebContents> new_contents,
+                      const GURL& target_url,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture) override;
+  void RunFileChooser(content::RenderFrameHost* render_frame_host,
+                      scoped_refptr<content::FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params) override;
 
   DISALLOW_COPY_AND_ASSIGN(TestWebContentsHandler);
 };

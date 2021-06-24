@@ -16,7 +16,7 @@ class ShellURLRequestContextGetter;
 
 // Shell-specific implementation of BrowserState.  Can only be called from the
 // UI thread.
-class ShellBrowserState : public BrowserState {
+class ShellBrowserState final : public BrowserState {
  public:
   ShellBrowserState();
   ~ShellBrowserState() override;
@@ -25,9 +25,6 @@ class ShellBrowserState : public BrowserState {
   bool IsOffTheRecord() const override;
   base::FilePath GetStatePath() const override;
   net::URLRequestContextGetter* GetRequestContext() override;
-  std::unique_ptr<service_manager::Service> HandleServiceRequest(
-      const std::string& service_name,
-      service_manager::mojom::ServiceRequest request) override;
 
  private:
   base::FilePath path_;

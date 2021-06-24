@@ -11,11 +11,14 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "ui/display/util/display_util_export.h"
+#include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/hdr_static_metadata.h"
 
 namespace display {
 
@@ -37,7 +40,17 @@ class DISPLAY_UTIL_EXPORT EdidParser {
   double gamma() const { return gamma_; }
   int32_t bits_per_channel() const { return bits_per_channel_; }
   const SkColorSpacePrimaries& primaries() const { return primaries_; }
-
+  const base::flat_set<gfx::ColorSpace::PrimaryID>&
+  supported_color_primary_ids() const {
+    return supported_color_primary_ids_;
+  }
+  const base::flat_set<gfx::ColorSpace::TransferID>&
+  supported_color_transfer_ids() const {
+    return supported_color_transfer_ids_;
+  }
+  const absl::optional<gfx::HDRStaticMetadata>& hdr_static_metadata() const {
+    return hdr_static_metadata_;
+  }
   // Returns a 32-bit identifier for this display |manufacturer_id_| and
   // |product_id_|.
   uint32_t GetProductCode() const;
@@ -67,10 +80,14 @@ class DISPLAY_UTIL_EXPORT EdidParser {
   // Active pixel size from the first detailed timing descriptor in the EDID.
   gfx::Size active_pixel_size_;
   int32_t year_of_manufacture_;
-  base::Optional<bool> overscan_flag_;
+  absl::optional<bool> overscan_flag_;
   double gamma_;
   int bits_per_channel_;
   SkColorSpacePrimaries primaries_;
+
+  base::flat_set<gfx::ColorSpace::PrimaryID> supported_color_primary_ids_;
+  base::flat_set<gfx::ColorSpace::TransferID> supported_color_transfer_ids_;
+  absl::optional<gfx::HDRStaticMetadata> hdr_static_metadata_;
 
   DISALLOW_COPY_AND_ASSIGN(EdidParser);
 };

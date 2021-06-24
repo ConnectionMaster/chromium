@@ -8,14 +8,14 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "chromecast/media/api/decoder_buffer_base.h"
 #include "chromecast/media/cma/base/balanced_media_task_runner_factory.h"
-#include "chromecast/media/cma/base/decoder_buffer_base.h"
 #include "chromecast/media/cma/base/demuxer_stream_adapter.h"
 #include "chromecast/media/cma/base/demuxer_stream_for_test.h"
 #include "chromecast/public/media/cast_decoder_buffer.h"
@@ -101,14 +101,14 @@ void MultiDemuxerStreamAdaptersTest::Start() {
   // read each stream
   for (const auto& code_frame_provider : coded_frame_providers_) {
     auto read_cb =
-        base::Bind(&MultiDemuxerStreamAdaptersTest::OnNewFrame,
-                   base::Unretained(this), code_frame_provider.get());
+        base::BindOnce(&MultiDemuxerStreamAdaptersTest::OnNewFrame,
+                       base::Unretained(this), code_frame_provider.get());
 
-    base::Closure task =
-        base::Bind(&CodedFrameProvider::Read,
-                   base::Unretained(code_frame_provider.get()), read_cb);
+    base::OnceClosure task = base::BindOnce(
+        &CodedFrameProvider::Read, base::Unretained(code_frame_provider.get()),
+        std::move(read_cb));
 
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, task);
+    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, std::move(task));
   }
 }
 
@@ -129,10 +129,9 @@ void MultiDemuxerStreamAdaptersTest::OnNewFrame(
   }
 
   frame_received_count_++;
-  auto read_cb = base::Bind(&MultiDemuxerStreamAdaptersTest::OnNewFrame,
-                            base::Unretained(this),
-                            frame_provider);
-  frame_provider->Read(read_cb);
+  auto read_cb = base::BindOnce(&MultiDemuxerStreamAdaptersTest::OnNewFrame,
+                                base::Unretained(this), frame_provider);
+  frame_provider->Read(std::move(read_cb));
 }
 
 void MultiDemuxerStreamAdaptersTest::OnEos() {
@@ -160,8 +159,8 @@ TEST_F(MultiDemuxerStreamAdaptersTest, EarlyEos) {
 
   total_expected_frames_ = frame_count_short + frame_count_long;
 
-  std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
-  message_loop->task_runner()->PostTask(
+  base::test::SingleThreadTaskEnvironment task_environment;
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE, base::BindOnce(&MultiDemuxerStreamAdaptersTest::Start,
                                 base::Unretained(this)));
   base::RunLoop().Run();

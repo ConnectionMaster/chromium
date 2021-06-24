@@ -7,46 +7,53 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
+#include "components/services/storage/public/cpp/origin_quota_client.h"
+#include "components/services/storage/public/mojom/cache_storage_control.mojom.h"
 #include "content/common/content_export.h"
-#include "storage/browser/quota/quota_client.h"
+#include "storage/browser/quota/quota_client_type.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 #include "url/origin.h"
 
 namespace content {
 
 class CacheStorageManager;
-enum class CacheStorageOwner;
 
-// CacheStorageQuotaClient is owned by the QuotaManager. There is one per
-// CacheStorageManager, and therefore one per
-// ServiceWorkerContextCore.
-class CONTENT_EXPORT CacheStorageQuotaClient : public storage::QuotaClient {
+// CacheStorageQuotaClient is a self-owned receiver created by
+// CacheStorageContextImpl.  The remote end is owned by QuotaManagerProxy.
+// There is one CacheStorageQuotaClient per CacheStorageManager /
+// CacheStorageOwner tuple.  Created and accessed on the cache storage task
+// runner.
+class CONTENT_EXPORT CacheStorageQuotaClient
+    : public storage::OriginQuotaClient {
  public:
-  CacheStorageQuotaClient(base::WeakPtr<CacheStorageManager> cache_manager,
-                          CacheStorageOwner owner);
+  CacheStorageQuotaClient(scoped_refptr<CacheStorageManager> cache_manager,
+                          storage::mojom::CacheStorageOwner owner);
   ~CacheStorageQuotaClient() override;
 
-  // QuotaClient overrides
-  ID id() const override;
-  void OnQuotaManagerDestroyed() override;
+  // storage::OriginQuotaClient method overrides.
   void GetOriginUsage(const url::Origin& origin,
                       blink::mojom::StorageType type,
-                      GetUsageCallback callback) override;
+                      GetOriginUsageCallback callback) override;
   void GetOriginsForType(blink::mojom::StorageType type,
-                         GetOriginsCallback callback) override;
+                         GetOriginsForTypeCallback callback) override;
   void GetOriginsForHost(blink::mojom::StorageType type,
                          const std::string& host,
-                         GetOriginsCallback callback) override;
+                         GetOriginsForHostCallback callback) override;
   void DeleteOriginData(const url::Origin& origin,
                         blink::mojom::StorageType type,
-                        DeletionCallback callback) override;
-  bool DoesSupport(blink::mojom::StorageType type) const override;
+                        DeleteOriginDataCallback callback) override;
+  void PerformStorageCleanup(blink::mojom::StorageType type,
+                             PerformStorageCleanupCallback callback) override;
 
-  static ID GetIDFromOwner(CacheStorageOwner owner);
+  static storage::QuotaClientType GetClientTypeFromOwner(
+      storage::mojom::CacheStorageOwner owner);
 
  private:
-  base::WeakPtr<CacheStorageManager> cache_manager_;
-  CacheStorageOwner owner_;
+  const scoped_refptr<CacheStorageManager> cache_manager_;
+  const storage::mojom::CacheStorageOwner owner_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(CacheStorageQuotaClient);
 };

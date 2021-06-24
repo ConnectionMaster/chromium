@@ -59,14 +59,13 @@ SyncEngineInitializer::SyncEngineInitializer(
       env_override_(env_override),
       database_path_(database_path),
       find_sync_root_retry_count_(0),
-      largest_change_id_(0),
-      weak_ptr_factory_(this) {
+      largest_change_id_(0) {
   DCHECK(sync_context);
 }
 
 SyncEngineInitializer::~SyncEngineInitializer() {
   if (!cancel_callback_.is_null())
-    cancel_callback_.Run();
+    std::move(cancel_callback_).Run();
 }
 
 void SyncEngineInitializer::RunPreflight(std::unique_ptr<SyncTaskToken> token) {
@@ -115,15 +114,15 @@ void SyncEngineInitializer::GetAboutResource(
     std::unique_ptr<SyncTaskToken> token) {
   set_used_network(true);
   sync_context_->GetDriveService()->GetAboutResource(
-      base::Bind(&SyncEngineInitializer::DidGetAboutResource,
-                 weak_ptr_factory_.GetWeakPtr(), base::Passed(&token)));
+      base::BindOnce(&SyncEngineInitializer::DidGetAboutResource,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void SyncEngineInitializer::DidGetAboutResource(
     std::unique_ptr<SyncTaskToken> token,
     google_apis::DriveApiErrorCode error,
     std::unique_ptr<google_apis::AboutResource> about_resource) {
-  cancel_callback_.Reset();
+  std::move(cancel_callback_).Reset();
 
   SyncStatusCode status = DriveApiErrorCodeToSyncStatusCode(error);
   if (status != SYNC_STATUS_OK) {
@@ -153,16 +152,15 @@ void SyncEngineInitializer::FindSyncRoot(std::unique_ptr<SyncTaskToken> token) {
   cancel_callback_ = sync_context_->GetDriveService()->SearchByTitle(
       kSyncRootFolderTitle,
       std::string(),  // parent_folder_id
-      base::Bind(&SyncEngineInitializer::DidFindSyncRoot,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 base::Passed(&token)));
+      base::BindOnce(&SyncEngineInitializer::DidFindSyncRoot,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void SyncEngineInitializer::DidFindSyncRoot(
     std::unique_ptr<SyncTaskToken> token,
     google_apis::DriveApiErrorCode error,
     std::unique_ptr<google_apis::FileList> file_list) {
-  cancel_callback_.Reset();
+  std::move(cancel_callback_).Reset();
 
   SyncStatusCode status = DriveApiErrorCodeToSyncStatusCode(error);
   if (status != SYNC_STATUS_OK) {
@@ -206,9 +204,8 @@ void SyncEngineInitializer::DidFindSyncRoot(
   if (!file_list->next_link().is_empty()) {
     cancel_callback_ = sync_context_->GetDriveService()->GetRemainingFileList(
         file_list->next_link(),
-        base::Bind(&SyncEngineInitializer::DidFindSyncRoot,
-                   weak_ptr_factory_.GetWeakPtr(),
-                   base::Passed(&token)));
+        base::BindOnce(&SyncEngineInitializer::DidFindSyncRoot,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(token)));
     return;
   }
 
@@ -233,8 +230,8 @@ void SyncEngineInitializer::CreateSyncRoot(
   options.visibility = google_apis::drive::FILE_VISIBILITY_PRIVATE;
   cancel_callback_ = sync_context_->GetDriveService()->AddNewDirectory(
       root_folder_id_, kSyncRootFolderTitle, options,
-      base::Bind(&SyncEngineInitializer::DidCreateSyncRoot,
-                 weak_ptr_factory_.GetWeakPtr(), base::Passed(&token)));
+      base::BindOnce(&SyncEngineInitializer::DidCreateSyncRoot,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void SyncEngineInitializer::DidCreateSyncRoot(
@@ -242,7 +239,7 @@ void SyncEngineInitializer::DidCreateSyncRoot(
     google_apis::DriveApiErrorCode error,
     std::unique_ptr<google_apis::FileResource> entry) {
   DCHECK(!sync_root_folder_);
-  cancel_callback_.Reset();
+  std::move(cancel_callback_).Reset();
 
   SyncStatusCode status = DriveApiErrorCodeToSyncStatusCode(error);
   if (status != SYNC_STATUS_OK) {
@@ -261,17 +258,15 @@ void SyncEngineInitializer::DetachSyncRoot(
   set_used_network(true);
   cancel_callback_ =
       sync_context_->GetDriveService()->RemoveResourceFromDirectory(
-          root_folder_id_,
-          sync_root_folder_->file_id(),
-          base::Bind(&SyncEngineInitializer::DidDetachSyncRoot,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     base::Passed(&token)));
+          root_folder_id_, sync_root_folder_->file_id(),
+          base::BindOnce(&SyncEngineInitializer::DidDetachSyncRoot,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void SyncEngineInitializer::DidDetachSyncRoot(
     std::unique_ptr<SyncTaskToken> token,
     google_apis::DriveApiErrorCode error) {
-  cancel_callback_.Reset();
+  std::move(cancel_callback_).Reset();
 
   SyncStatusCode status = DriveApiErrorCodeToSyncStatusCode(error);
   if (status != SYNC_STATUS_OK) {
@@ -288,19 +283,17 @@ void SyncEngineInitializer::ListAppRootFolders(
     std::unique_ptr<SyncTaskToken> token) {
   DCHECK(sync_root_folder_);
   set_used_network(true);
-  cancel_callback_ =
-      sync_context_->GetDriveService()->GetFileListInDirectory(
-          sync_root_folder_->file_id(),
-          base::Bind(&SyncEngineInitializer::DidListAppRootFolders,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     base::Passed(&token)));
+  cancel_callback_ = sync_context_->GetDriveService()->GetFileListInDirectory(
+      sync_root_folder_->file_id(),
+      base::BindOnce(&SyncEngineInitializer::DidListAppRootFolders,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void SyncEngineInitializer::DidListAppRootFolders(
     std::unique_ptr<SyncTaskToken> token,
     google_apis::DriveApiErrorCode error,
     std::unique_ptr<google_apis::FileList> file_list) {
-  cancel_callback_.Reset();
+  std::move(cancel_callback_).Reset();
 
   SyncStatusCode status = DriveApiErrorCodeToSyncStatusCode(error);
   if (status != SYNC_STATUS_OK) {
@@ -327,11 +320,10 @@ void SyncEngineInitializer::DidListAppRootFolders(
 
   set_used_network(true);
   if (!file_list->next_link().is_empty()) {
-    cancel_callback_ =
-        sync_context_->GetDriveService()->GetRemainingFileList(
-            file_list->next_link(),
-            base::Bind(&SyncEngineInitializer::DidListAppRootFolders,
-                       weak_ptr_factory_.GetWeakPtr(), base::Passed(&token)));
+    cancel_callback_ = sync_context_->GetDriveService()->GetRemainingFileList(
+        file_list->next_link(),
+        base::BindOnce(&SyncEngineInitializer::DidListAppRootFolders,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(token)));
     return;
   }
 

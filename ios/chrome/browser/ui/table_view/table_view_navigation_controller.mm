@@ -7,6 +7,8 @@
 #include "base/mac/foundation_util.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_controller.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_styler.h"
+#include "ios/chrome/browser/ui/ui_feature_flags.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -30,20 +32,23 @@
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  UIVisualEffectView* visualEffectView = [[UIVisualEffectView alloc]
-      initWithEffect:[UIBlurEffect
-                         effectWithStyle:UIBlurEffectStyleExtraLight]];
-
-  self.navigationBar.translucent = YES;
-  self.navigationController.navigationBar.backgroundColor =
-      [UIColor clearColor];
-  [self.navigationController.navigationBar addSubview:visualEffectView];
+  self.navigationBar.translucent = NO;
   self.navigationBar.prefersLargeTitles = YES;
+  self.toolbar.translucent = NO;
 
-  [self.toolbar setShadowImage:[UIImage new]
-            forToolbarPosition:UIBarPositionAny];
-  self.toolbar.translucent = YES;
-  [self.toolbar addSubview:visualEffectView];
+  if (base::FeatureList::IsEnabled(kSettingsRefresh)) {
+    self.navigationBar.barTintColor =
+        [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
+    self.toolbar.barTintColor =
+        [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
+    self.view.backgroundColor =
+        [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
+  } else {
+    self.navigationBar.barTintColor =
+        [UIColor colorNamed:kPrimaryBackgroundColor];
+    self.toolbar.barTintColor = [UIColor colorNamed:kPrimaryBackgroundColor];
+    self.view.backgroundColor = [UIColor colorNamed:kPrimaryBackgroundColor];
+  }
 }
 
 @end

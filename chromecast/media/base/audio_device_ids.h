@@ -15,6 +15,8 @@ extern const char kPlatformAudioDeviceId[];
 
 extern const char kAlarmAudioDeviceId[];
 
+extern const char kNoDelayDeviceId[];
+
 // TODO(kmackay|bshaya) Remove this, just use
 // ::media::AudioDeviceDescription::kCommunicationsDeviceId.
 extern const char kTtsAudioDeviceId[];
@@ -22,6 +24,10 @@ extern const char kTtsAudioDeviceId[];
 // Local-only audio (don't send over multiroom) that should not be affected by
 // post-processors.
 extern const char kBypassAudioDeviceId[];
+
+extern const char kDefaultDeviceId[];
+
+extern const char kLowLatencyDeviceId[];
 
 }  // namespace media
 }  // namespace chromecast

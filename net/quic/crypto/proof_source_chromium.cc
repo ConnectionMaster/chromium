@@ -33,7 +33,8 @@ bool ProofSourceChromium::Initialize(const base::FilePath& cert_path,
 
   CertificateList certs_in_file =
       X509Certificate::CreateCertificateListFromBytes(
-          cert_data.data(), cert_data.size(), X509Certificate::FORMAT_AUTO);
+          base::as_bytes(base::make_span(cert_data)),
+          X509Certificate::FORMAT_AUTO);
 
   if (certs_in_file.empty()) {
     DLOG(FATAL) << "No certificates.";
@@ -78,7 +79,7 @@ bool ProofSourceChromium::GetProofInner(
     const string& hostname,
     const string& server_config,
     quic::QuicTransportVersion quic_version,
-    quic::QuicStringPiece chlo_hash,
+    absl::string_view chlo_hash,
     quic::QuicReferenceCountedPointer<quic::ProofSource::Chain>* out_chain,
     quic::QuicCryptoProof* proof) {
   DCHECK(proof != nullptr);
@@ -130,10 +131,11 @@ bool ProofSourceChromium::GetProofInner(
 }
 
 void ProofSourceChromium::GetProof(const quic::QuicSocketAddress& server_addr,
+                                   const quic::QuicSocketAddress& client_addr,
                                    const std::string& hostname,
                                    const std::string& server_config,
                                    quic::QuicTransportVersion quic_version,
-                                   quic::QuicStringPiece chlo_hash,
+                                   absl::string_view chlo_hash,
                                    std::unique_ptr<Callback> callback) {
   // As a transitional implementation, just call the synchronous version of
   // GetProof, then invoke the callback with the results and destroy it.
@@ -149,15 +151,17 @@ void ProofSourceChromium::GetProof(const quic::QuicSocketAddress& server_addr,
 
 quic::QuicReferenceCountedPointer<quic::ProofSource::Chain>
 ProofSourceChromium::GetCertChain(const quic::QuicSocketAddress& server_address,
+                                  const quic::QuicSocketAddress& client_address,
                                   const std::string& hostname) {
   return chain_;
 }
 
 void ProofSourceChromium::ComputeTlsSignature(
     const quic::QuicSocketAddress& server_address,
+    const quic::QuicSocketAddress& client_address,
     const std::string& hostname,
     uint16_t signature_algorithm,
-    quic::QuicStringPiece in,
+    absl::string_view in,
     std::unique_ptr<SignatureCallback> callback) {
   crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
   bssl::ScopedEVP_MD_CTX sign_context;
@@ -173,19 +177,28 @@ void ProofSourceChromium::ComputeTlsSignature(
                             reinterpret_cast<const uint8_t*>(in.data()),
                             in.size()) ||
       !EVP_DigestSignFinal(sign_context.get(), nullptr, &siglen)) {
-    callback->Run(false, sig);
+    callback->Run(false, sig, nullptr);
     return;
   }
   sig.resize(siglen);
   if (!EVP_DigestSignFinal(
           sign_context.get(),
           reinterpret_cast<uint8_t*>(const_cast<char*>(sig.data())), &siglen)) {
-    callback->Run(false, sig);
+    callback->Run(false, sig, nullptr);
     return;
   }
   sig.resize(siglen);
 
-  callback->Run(true, sig);
+  callback->Run(true, sig, nullptr);
+}
+
+quic::ProofSource::TicketCrypter* ProofSourceChromium::GetTicketCrypter() {
+  return ticket_crypter_.get();
+}
+
+void ProofSourceChromium::SetTicketCrypter(
+    std::unique_ptr<quic::ProofSource::TicketCrypter> ticket_crypter) {
+  ticket_crypter_ = std::move(ticket_crypter);
 }
 
 }  // namespace net

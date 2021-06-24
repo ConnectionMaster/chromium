@@ -6,17 +6,17 @@
 
 SessionHierarchyMatchChecker::SessionHierarchyMatchChecker(
     const fake_server::SessionsHierarchy& sessions_hierarchy,
-    syncer::ProfileSyncService* service,
+    syncer::SyncServiceImpl* service,
     fake_server::FakeServer* fake_server)
     : SingleClientStatusChangeChecker(service),
       sessions_hierarchy_(sessions_hierarchy),
       verifier_(fake_server) {}
 
-bool SessionHierarchyMatchChecker::IsExitConditionSatisfied() {
-  return verifier_.VerifySessions(sessions_hierarchy_);
-}
-
-std::string SessionHierarchyMatchChecker::GetDebugMessage() const {
-  return "Waiting for matching sessions hierarchy to be reflected in fake "
-         "server";
+bool SessionHierarchyMatchChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for matching sessions hierarchy to be reflected in fake "
+         "server. ";
+  testing::AssertionResult result =
+      verifier_.VerifySessions(sessions_hierarchy_);
+  *os << result.message();
+  return result;
 }

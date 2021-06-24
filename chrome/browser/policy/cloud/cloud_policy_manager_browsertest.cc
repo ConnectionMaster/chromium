@@ -6,8 +6,9 @@
 
 #include "base/command_line.h"
 #include "base/run_loop.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,6 +22,7 @@
 #include "components/policy/core/common/policy_test_utils.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_test.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -29,16 +31,14 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/policy/user_cloud_policy_manager_chromeos.h"
-#include "chrome/browser/chromeos/policy/user_policy_manager_factory_chromeos.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/chromeos/policy/core/user_cloud_policy_manager_chromeos.h"
 #else
 #include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/browser/policy/cloud/user_cloud_policy_manager_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/identity_test_utils.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
 #endif
 
 using content::BrowserThread;
@@ -78,7 +78,7 @@ void RespondWithBadResponse(const network::ResourceRequest& request,
                             network::TestURLLoaderFactory* factory) {
   network::URLLoaderCompletionStatus status;
   factory->AddResponse(
-      request.url, network::ResourceResponseHead(), std::string(),
+      request.url, network::mojom::URLResponseHead::New(), std::string(),
       network::URLLoaderCompletionStatus(net::ERR_NETWORK_CHANGED));
 }
 
@@ -133,11 +133,10 @@ void RespondToRegisterWithSuccess(em::DeviceRegisterRequest::Type expected_type,
 
   status.decoded_body_length = content.size();
 
-  network::ResourceResponseHead head =
-      network::CreateResourceResponseHead(net::HTTP_OK);
-  head.mime_type = "application/protobuf";
+  auto head = network::CreateURLResponseHead(net::HTTP_OK);
+  head->mime_type = "application/protobuf";
 
-  factory->AddResponse(request.url, head, content, status);
+  factory->AddResponse(request.url, std::move(head), content, status);
 }
 
 }  // namespace
@@ -153,6 +152,7 @@ class CloudPolicyManagerTest : public InProcessBrowserTest {
     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
     command_line->AppendSwitchASCII(switches::kDeviceManagementUrl,
                                     "http://localhost");
+    ChromeBrowserPolicyConnector::EnableCommandLineSupportForTesting();
 
     // Set retry delay to prevent timeouts.
     policy::DeviceManagementService::SetRetryDelayForTesting(0);
@@ -169,7 +169,7 @@ class CloudPolicyManagerTest : public InProcessBrowserTest {
         g_browser_process->browser_policy_connector();
     connector->ScheduleServiceInitialization(0);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     policy_manager()->core()->client()->SetURLLoaderFactoryForTesting(
         test_url_loader_factory_->GetSafeWeakWrapper());
 #else
@@ -177,7 +177,8 @@ class CloudPolicyManagerTest : public InProcessBrowserTest {
     // the username to the UserCloudPolicyValidator.
     auto* identity_manager =
         IdentityManagerFactory::GetForProfile(browser()->profile());
-    identity::SetPrimaryAccount(identity_manager, "user@example.com");
+    signin::SetPrimaryAccount(identity_manager, "user@example.com",
+                              signin::ConsentLevel::kSync);
 
     ASSERT_TRUE(policy_manager());
     policy_manager()->Connect(
@@ -193,17 +194,15 @@ class CloudPolicyManagerTest : public InProcessBrowserTest {
     EXPECT_EQ(0, test_url_loader_factory_->NumPending());
   }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   UserCloudPolicyManagerChromeOS* policy_manager() {
-    return UserPolicyManagerFactoryChromeOS::GetCloudPolicyManagerForProfile(
-        browser()->profile());
+    return browser()->profile()->GetUserCloudPolicyManagerChromeOS();
   }
 #else
   UserCloudPolicyManager* policy_manager() {
-    return UserCloudPolicyManagerFactory::GetForBrowserContext(
-        browser()->profile());
+    return browser()->profile()->GetUserCloudPolicyManager();
   }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   // Register the client of the policy_manager() using a bogus auth token, and
   // returns once the registration gets a result back.
@@ -223,18 +222,16 @@ class CloudPolicyManagerTest : public InProcessBrowserTest {
 
     // Give a bogus OAuth token to the |policy_manager|. This should make its
     // CloudPolicyClient fetch the DMToken.
-    em::DeviceRegisterRequest::Type registration_type =
-#if defined(OS_CHROMEOS)
-        em::DeviceRegisterRequest::USER;
+    CloudPolicyClient::RegistrationParameters parameters(
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+        em::DeviceRegisterRequest::USER,
 #else
-        em::DeviceRegisterRequest::BROWSER;
+        em::DeviceRegisterRequest::BROWSER,
 #endif
+        em::DeviceRegisterRequest::FLAVOR_USER_REGISTRATION);
     policy_manager()->core()->client()->Register(
-        registration_type, em::DeviceRegisterRequest::FLAVOR_USER_REGISTRATION,
-        em::DeviceRegisterRequest::LIFETIME_INDEFINITE,
-        em::LicenseType::UNDEFINED, "oauth_token_unused" /* oauth_token */,
-        std::string() /* client_id */, std::string() /* requisition */,
-        std::string() /* current_state_key */);
+        parameters, std::string() /* client_id */,
+        "oauth_token_unused" /* oauth_token */);
     run_loop.Run();
     Mock::VerifyAndClearExpectations(&observer);
     policy_manager()->core()->client()->RemoveObserver(&observer);
@@ -249,7 +246,7 @@ IN_PROC_BROWSER_TEST_F(CloudPolicyManagerTest, Register) {
         // Accept one register request. The initial request should not include
         // the reregister flag.
         em::DeviceRegisterRequest::Type expected_type =
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
             em::DeviceRegisterRequest::USER;
 #else
             em::DeviceRegisterRequest::BROWSER;
@@ -283,9 +280,9 @@ IN_PROC_BROWSER_TEST_F(CloudPolicyManagerTest, RegisterFailsWithRetries) {
   test_url_loader_factory_->SetInterceptor(
       base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
         network::URLLoaderCompletionStatus status(net::ERR_NETWORK_CHANGED);
-        test_url_loader_factory_->AddResponse(request.url,
-                                              network::ResourceResponseHead(),
-                                              std::string(), status);
+        test_url_loader_factory_->AddResponse(
+            request.url, network::mojom::URLResponseHead::New(), std::string(),
+            status);
         ++count;
       }));
 
@@ -299,7 +296,7 @@ IN_PROC_BROWSER_TEST_F(CloudPolicyManagerTest, RegisterWithRetry) {
   test_url_loader_factory_->SetInterceptor(
       base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
         em::DeviceRegisterRequest::Type expected_type =
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
             em::DeviceRegisterRequest::USER;
 #else
             em::DeviceRegisterRequest::BROWSER;
@@ -311,9 +308,9 @@ IN_PROC_BROWSER_TEST_F(CloudPolicyManagerTest, RegisterWithRetry) {
         if (!gave_error) {
           gave_error = true;
           network::URLLoaderCompletionStatus status(net::ERR_NETWORK_CHANGED);
-          test_url_loader_factory_->AddResponse(request.url,
-                                                network::ResourceResponseHead(),
-                                                std::string(), status);
+          test_url_loader_factory_->AddResponse(
+              request.url, network::mojom::URLResponseHead::New(),
+              std::string(), status);
           return;
         }
 

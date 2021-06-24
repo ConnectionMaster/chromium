@@ -5,17 +5,18 @@
 #ifndef COMPONENTS_SYNC_ENGINE_NET_HTTP_POST_PROVIDER_FACTORY_H_
 #define COMPONENTS_SYNC_ENGINE_NET_HTTP_POST_PROVIDER_FACTORY_H_
 
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
+#include "base/memory/scoped_refptr.h"
+#include "components/sync/engine/net/network_time_update_callback.h"
 
-namespace net {
-class URLFetcher;
-}
+namespace network {
+class PendingSharedURLLoaderFactory;
+}  // namespace network
 
 namespace syncer {
-
-using BindToTrackerCallback = base::Callback<void(net::URLFetcher*)>;
 
 class HttpPostProviderInterface;
 
@@ -25,21 +26,18 @@ class HttpPostProviderInterface;
 // HttpPostProviders.
 class HttpPostProviderFactory {
  public:
-  virtual ~HttpPostProviderFactory() {}
-
-  virtual void Init(const std::string& user_agent,
-                    const BindToTrackerCallback& bind_to_tracker_callback) = 0;
+  virtual ~HttpPostProviderFactory() = default;
 
   // Obtain a new HttpPostProviderInterface instance, owned by caller.
-  virtual HttpPostProviderInterface* Create() = 0;
-
-  // When the interface is no longer needed (ready to be cleaned up), clients
-  // must call Destroy().
-  // This allows actual HttpPostProvider subclass implementations to be
-  // reference counted, which is useful if a particular implementation uses
-  // multiple threads to serve network requests.
-  virtual void Destroy(HttpPostProviderInterface* http) = 0;
+  virtual scoped_refptr<HttpPostProviderInterface> Create() = 0;
 };
+
+using CreateHttpPostProviderFactory =
+    base::RepeatingCallback<std::unique_ptr<HttpPostProviderFactory>(
+        const std::string& user_agent,
+        std::unique_ptr<network::PendingSharedURLLoaderFactory>
+            pending_url_loader_factory,
+        const NetworkTimeUpdateCallback& network_time_update_callback)>;
 
 }  // namespace syncer
 

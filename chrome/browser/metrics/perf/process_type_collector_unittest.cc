@@ -4,7 +4,6 @@
 
 #include "chrome/browser/metrics/perf/process_type_collector.h"
 
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -23,7 +22,6 @@ void GetExampleProcessTypeDataset(std::string* ps_output,
     4000 /opt/google/chrome/chrome --log-level=1 --type=utility
     5000 /opt/google/chrome/chrome --type=zygote
     6000 /opt/google/chrome/chrome --type=ppapi
-    7000 /opt/google/chrome/chrome --type=ppapi-broker
     7100 /opt/google/chrome/chrome --type=random-type
     7200 /opt/google/chrome/chrome --no_type
   129000 /opt/google/chrome/chrome --ppapi-flash-path=..../libpepflashplayer.so
@@ -43,8 +41,6 @@ void GetExampleProcessTypeDataset(std::string* ps_output,
   process_types->insert(google::protobuf::MapPair<uint32_t, Process>(
       6000, Process::PPAPI_PLUGIN_PROCESS));
   process_types->insert(google::protobuf::MapPair<uint32_t, Process>(
-      7000, Process::PPAPI_BROKER_PROCESS));
-  process_types->insert(google::protobuf::MapPair<uint32_t, Process>(
       7100, Process::OTHER_PROCESS));
   process_types->insert(google::protobuf::MapPair<uint32_t, Process>(
       7200, Process::BROWSER_PROCESS));
@@ -61,9 +57,18 @@ void GetExampleThreadTypeDataset(std::string* ps_output,
    4000  4726 Chrome_IOThread   /opt/google/chrome/chrome --ppapi-flash-path=...
   10000 12107 Chrome_ChildIOT   /opt/google/chrome/chrome --type=gpu-process
   11000 12207 VizCompositorTh   /opt/google/chrome/chrome --type=gpu-process
-  12103 12112 Compositor        /opt/google/chrome/chrome --type=gpu-process
+  12103 12112 Compositor/7      /opt/google/chrome/chrome --type=gpu-process
+  12304 12699 Compositor        /opt/google/chrome/chrome --type=gpu-process
+  13001 13521 GpuMemoryThread   /opt/google/chrome/chrome --type=renderer
+  15000 15112 ThreadPoolForeg   /opt/google/chrome/chrome --type=renderer
+  16000 16112 CompositorTileW   /opt/google/chrome/chrome --type=renderer
+  17001 17021 MemoryInfra       /opt/google/chrome/chrome --type=renderer
+  18020 18211 Media             /opt/google/chrome/chrome --type=renderer
+  19001 19008 DedicatedWorker   /opt/google/chrome/chrome --type=renderer
+  19123 19234 ServiceWorker     /opt/google/chrome/chrome --type=renderer
+  19321 19335 WebRTC_Signalin   /opt/google/chrome/chrome --type=renderer
   12345 12456 OtherThread       /opt/google/chrome/chrome --ppapi-flash-path=...
-  13456 13566 Compositor        non_chrome_exec --some-flag=foo)text";
+  13456 13566 Compositor/6      non_chrome_exec --some-flag=foo)text";
   thread_types->insert(
       google::protobuf::MapPair<uint32_t, Thread>(12000, Thread::MAIN_THREAD));
   thread_types->insert(
@@ -74,6 +79,24 @@ void GetExampleThreadTypeDataset(std::string* ps_output,
       12207, Thread::COMPOSITOR_THREAD));
   thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
       12112, Thread::COMPOSITOR_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      12699, Thread::COMPOSITOR_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      15112, Thread::THREAD_POOL_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      13521, Thread::GPU_MEMORY_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      16112, Thread::COMPOSITOR_TILE_WORKER_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      17021, Thread::MEMORY_INFRA_THREAD));
+  thread_types->insert(
+      google::protobuf::MapPair<uint32_t, Thread>(18211, Thread::MEDIA_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      19008, Thread::DEDICATED_WORKER_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      19234, Thread::SERVICE_WORKER_THREAD));
+  thread_types->insert(google::protobuf::MapPair<uint32_t, Thread>(
+      19335, Thread::WEBRTC_THREAD));
   thread_types->insert(
       google::protobuf::MapPair<uint32_t, Thread>(12456, Thread::OTHER_THREAD));
 }

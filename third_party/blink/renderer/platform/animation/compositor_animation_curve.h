@@ -5,11 +5,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_ANIMATION_COMPOSITOR_ANIMATION_CURVE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_ANIMATION_COMPOSITOR_ANIMATION_CURVE_H_
 
-#include "third_party/blink/renderer/platform/platform_export.h"
-
 #include <memory>
 
-namespace cc {
+#include "third_party/blink/renderer/platform/platform_export.h"
+
+namespace gfx {
 class AnimationCurve;
 }
 
@@ -18,7 +18,8 @@ namespace blink {
 class PLATFORM_EXPORT CompositorAnimationCurve {
  public:
   virtual ~CompositorAnimationCurve() = default;
-  virtual std::unique_ptr<cc::AnimationCurve> CloneToAnimationCurve() const = 0;
+  virtual std::unique_ptr<gfx::AnimationCurve> CloneToAnimationCurve()
+      const = 0;
 };
 
 }  // namespace blink

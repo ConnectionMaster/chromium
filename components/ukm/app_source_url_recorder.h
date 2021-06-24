@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_UKM_APP_SOURCE_URL_RECORDER_H_
 #define COMPONENTS_UKM_APP_SOURCE_URL_RECORDER_H_
 
+#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
 #include "base/feature_list.h"
@@ -15,8 +16,11 @@ class GURL;
 
 namespace app_list {
 class AppLaunchEventLogger;
-}
+}  // namespace app_list
 
+namespace badging {
+class BadgeManager;
+}  // namespace badging
 namespace ukm {
 
 const base::Feature kUkmAppLogging{"UkmAppLogging",
@@ -28,17 +32,19 @@ class AppSourceUrlRecorder {
 
   friend class app_list::AppLaunchEventLogger;
 
-  // Get a UKM SourceId for a Chrome app.
-  static SourceId GetSourceIdForChromeApp(const std::string& id);
+  friend class badging::BadgeManager;
+
+  // Get a UKM SourceId for a Chrome extension.
+  static SourceId GetSourceIdForChromeExtension(const std::string& id);
 
   // Get a UKM SourceId for an Arc app.
   static SourceId GetSourceIdForArc(const std::string& package_name);
 
-  // Get a UKM SourceId for a PWA.
+  // Get a UKM SourceId for a PWA or bookmark app.
   static SourceId GetSourceIdForPWA(const GURL& url);
 
   // For internal use only.
-  static SourceId GetSourceIdForUrl(const GURL& url);
+  static SourceId GetSourceIdForUrl(const GURL& url, const AppType);
 };
 
 }  // namespace ukm

@@ -4,15 +4,16 @@
 
 #include "third_party/blink/renderer/core/input/event_handling_util.h"
 
-#include "third_party/blink/public/platform/web_mouse_event.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 namespace event_handling_util {
@@ -27,7 +28,7 @@ HitTestResult HitTestResultInFrame(
   if (!frame || !frame->ContentLayoutObject())
     return result;
   if (LocalFrameView* frame_view = frame->View()) {
-    LayoutRect rect(LayoutPoint(), LayoutSize(frame_view->Size()));
+    PhysicalRect rect(PhysicalOffset(), PhysicalSize(frame_view->Size()));
     if (!location.Intersects(rect))
       return result;
   }
@@ -100,17 +101,30 @@ ScrollableArea* AssociatedScrollableArea(const PaintLayer* layer) {
   return nullptr;
 }
 
+ContainerNode* ParentForClickEventInteractiveElementSensitive(
+    const Node& node) {
+  // IE doesn't dispatch click events for mousedown/mouseup events across form
+  // controls.
+  auto* html_element = DynamicTo<HTMLElement>(node);
+  if (html_element && html_element->IsInteractiveContent())
+    return nullptr;
+
+  return FlatTreeTraversal::Parent(node);
+}
+
 ContainerNode* ParentForClickEvent(const Node& node) {
   return FlatTreeTraversal::Parent(node);
 }
 
-LayoutPoint ContentPointFromRootFrame(LocalFrame* frame,
-                                      const FloatPoint& point_in_root_frame) {
+PhysicalOffset ContentPointFromRootFrame(
+    LocalFrame* frame,
+    const FloatPoint& point_in_root_frame) {
   LocalFrameView* view = frame->View();
   // FIXME: Is it really OK to use the wrong coordinates here when view is 0?
   // Historically the code would just crash; this is clearly no worse than that.
-  return LayoutPoint(view ? view->ConvertFromRootFrame(point_in_root_frame)
-                          : point_in_root_frame);
+  return PhysicalOffset::FromFloatPointRound(
+      view ? view->ConvertFromRootFrame(point_in_root_frame)
+           : point_in_root_frame);
 }
 
 MouseEventWithHitTestResults PerformMouseEventHitTest(
@@ -121,20 +135,41 @@ MouseEventWithHitTestResults PerformMouseEventHitTest(
   DCHECK(frame->GetDocument());
 
   return frame->GetDocument()->PerformMouseEventHitTest(
-      request, ContentPointFromRootFrame(frame, mev.PositionInRootFrame()),
+      request,
+      ContentPointFromRootFrame(frame, FloatPoint(mev.PositionInRootFrame())),
       mev);
+}
+
+bool ShouldDiscardEventTargetingFrame(const WebInputEvent& event,
+                                      const LocalFrame& frame) {
+  // There are two different mechanisms for tracking whether an iframe has moved
+  // recently, for OOPIF and in-process iframes. For OOPIF's, frame movement is
+  // tracked in the browser process using hit test data, and it's propagated
+  // in event.GetModifiers(). For in-process iframes, frame movement is tracked
+  // during lifecycle updates, in FrameView::UpdateViewportIntersection, and
+  // propagated via FrameView::RectInParentIsStable.
+  bool should_discard = false;
+  if (frame.NeedsOcclusionTracking() && frame.IsCrossOriginToMainFrame()) {
+    should_discard =
+        (event.GetModifiers() & WebInputEvent::kTargetFrameMovedRecently) ||
+        !frame.View()->RectInParentIsStable(event.TimeStamp());
+  }
+  if (should_discard) {
+    UseCounter::Count(frame.GetDocument(),
+                      WebFeature::kDiscardInputEventToMovingIframe);
+  }
+  return should_discard;
 }
 
 LocalFrame* SubframeForTargetNode(Node* node, bool* is_remote_frame) {
   if (!node)
     return nullptr;
 
-  LayoutObject* layout_object = node->GetLayoutObject();
-  if (!layout_object || !layout_object->IsLayoutEmbeddedContent())
+  auto* embedded = DynamicTo<LayoutEmbeddedContent>(node->GetLayoutObject());
+  if (!embedded)
     return nullptr;
 
-  FrameView* frame_view =
-      ToLayoutEmbeddedContent(layout_object)->ChildFrameView();
+  FrameView* frame_view = embedded->ChildFrameView();
   if (!frame_view)
     return nullptr;
   auto* local_frame_view = DynamicTo<LocalFrameView>(frame_view);
@@ -151,16 +186,15 @@ LocalFrame* GetTargetSubframe(
     const MouseEventWithHitTestResults& hit_test_result,
     Node* capturing_node,
     bool* is_remote_frame) {
-  if (!RuntimeEnabledFeatures::UnifiedPointerCaptureInBlinkEnabled() &&
-      capturing_node) {
-    return event_handling_util::SubframeForTargetNode(capturing_node,
-                                                      is_remote_frame);
-  }
-
   if (!hit_test_result.IsOverEmbeddedContentView())
     return nullptr;
 
   return SubframeForTargetNode(hit_test_result.InnerNode(), is_remote_frame);
+}
+
+void PointerEventTarget::Trace(Visitor* visitor) const {
+  visitor->Trace(target_element);
+  visitor->Trace(target_frame);
 }
 
 }  // namespace event_handling_util

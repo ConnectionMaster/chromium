@@ -4,11 +4,13 @@
 
 package org.chromium.chrome.browser.metrics;
 
+import android.os.Build;
 import android.os.SystemClock;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.annotations.MainDex;
+import org.chromium.base.annotations.NativeMethods;
+import org.chromium.base.compat.ApiHelperForN;
 
 /**
  * Utilities to support startup metrics - Android version.
@@ -26,7 +28,6 @@ public class UmaUtils {
      * Record the time in the application lifecycle at which Chrome code first runs
      * (Application.attachBaseContext()).
      */
-    @MainDex
     public static void recordMainEntryPointTime() {
         // We can't simply pass this down through a JNI call, since the JNI for chrome
         // isn't initialized until we start the native content browser component, and we
@@ -73,7 +74,7 @@ public class UmaUtils {
      * is, and there was user consent, then metrics and crashes would be reported
      */
     public static boolean isClientInMetricsReportingSample() {
-        return nativeIsClientInMetricsReportingSample();
+        return UmaUtilsJni.get().isClientInMetricsReportingSample();
     }
 
     /**
@@ -82,12 +83,20 @@ public class UmaUtils {
      * This should only be set once, and only during first-run.
      */
     public static void recordMetricsReportingDefaultOptIn(boolean optIn) {
-        nativeRecordMetricsReportingDefaultOptIn(optIn);
+        UmaUtilsJni.get().recordMetricsReportingDefaultOptIn(optIn);
     }
 
     @CalledByNative
-    public static long getMainEntryPointTicks() {
+    public static long getApplicationStartTime() {
         return sApplicationStartTimeMs;
+    }
+
+    @CalledByNative
+    public static long getProcessStartTime() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return 0;
+        }
+        return ApiHelperForN.getStartUptimeMillis();
     }
 
     public static long getForegroundStartTicks() {
@@ -95,11 +104,9 @@ public class UmaUtils {
         return sForegroundStartTimeMs;
     }
 
-    @CalledByNative
-    private static void setUsageAndCrashReportingFromNative(boolean enabled) {
-        UmaSessionStats.changeMetricsReportingConsent(enabled);
+    @NativeMethods
+    interface Natives {
+        boolean isClientInMetricsReportingSample();
+        void recordMetricsReportingDefaultOptIn(boolean optIn);
     }
-
-    private static native boolean nativeIsClientInMetricsReportingSample();
-    private static native void nativeRecordMetricsReportingDefaultOptIn(boolean optIn);
 }

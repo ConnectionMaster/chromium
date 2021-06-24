@@ -81,6 +81,11 @@ void ReplaceSelection(PP_Instance instance, const char* text) {
       new PpapiMsg_PPPPdf_ReplaceSelection(API_ID_PPP_PDF, instance, text));
 }
 
+void SelectAll(PP_Instance instance) {
+  HostDispatcher::GetForInstance(instance)->Send(
+      new PpapiMsg_PPPPdf_SelectAll(API_ID_PPP_PDF, instance));
+}
+
 PP_Bool CanUndo(PP_Instance instance) {
   PP_Bool ret = PP_FALSE;
   HostDispatcher::GetForInstance(instance)->Send(
@@ -105,6 +110,14 @@ void Redo(PP_Instance instance) {
       new PpapiMsg_PPPPdf_Redo(API_ID_PPP_PDF, instance));
 }
 
+void HandleAccessibilityAction(
+    PP_Instance instance,
+    const PP_PdfAccessibilityActionData& action_data) {
+  HostDispatcher::GetForInstance(instance)->Send(
+      new PpapiMsg_PPPPdf_HandleAccessibilityAction(API_ID_PPP_PDF, instance,
+                                                    action_data));
+}
+
 int32_t PrintBegin(PP_Instance instance,
                    const PP_PrintSettings_Dev* print_settings,
                    const PP_PdfPrintSettings_Dev* pdf_print_settings) {
@@ -125,10 +138,12 @@ const PPP_Pdf ppp_pdf_interface = {
     &CanEditText,
     &HasEditableText,
     &ReplaceSelection,
+    &SelectAll,
     &CanUndo,
     &CanRedo,
     &Undo,
     &Redo,
+    &HandleAccessibilityAction,
     &PrintBegin,
 };
 #else
@@ -177,10 +192,13 @@ bool PPP_Pdf_Proxy::OnMessageReceived(const IPC::Message& msg) {
                         OnPluginMsgHasEditableText)
     IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_ReplaceSelection,
                         OnPluginMsgReplaceSelection)
+    IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_SelectAll, OnPluginMsgSelectAll)
     IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_CanUndo, OnPluginMsgCanUndo)
     IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_CanRedo, OnPluginMsgCanRedo)
     IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_Undo, OnPluginMsgUndo)
     IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_Redo, OnPluginMsgRedo)
+    IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_HandleAccessibilityAction,
+                        OnPluginMsgHandleAccessibilityAction)
     IPC_MESSAGE_HANDLER(PpapiMsg_PPPPdf_PrintBegin, OnPluginMsgPrintBegin)
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
@@ -248,6 +266,11 @@ void PPP_Pdf_Proxy::OnPluginMsgReplaceSelection(PP_Instance instance,
     CallWhileUnlocked(ppp_pdf_->ReplaceSelection, instance, text.c_str());
 }
 
+void PPP_Pdf_Proxy::OnPluginMsgSelectAll(PP_Instance instance) {
+  if (ppp_pdf_)
+    CallWhileUnlocked(ppp_pdf_->SelectAll, instance);
+}
+
 void PPP_Pdf_Proxy::OnPluginMsgCanUndo(PP_Instance instance, PP_Bool* result) {
   *result =
       PP_FromBool(ppp_pdf_ && CallWhileUnlocked(ppp_pdf_->CanUndo, instance));
@@ -266,6 +289,15 @@ void PPP_Pdf_Proxy::OnPluginMsgUndo(PP_Instance instance) {
 void PPP_Pdf_Proxy::OnPluginMsgRedo(PP_Instance instance) {
   if (ppp_pdf_)
     CallWhileUnlocked(ppp_pdf_->Redo, instance);
+}
+
+void PPP_Pdf_Proxy::OnPluginMsgHandleAccessibilityAction(
+    PP_Instance instance,
+    const PP_PdfAccessibilityActionData& action_data) {
+  if (ppp_pdf_) {
+    CallWhileUnlocked(ppp_pdf_->HandleAccessibilityAction, instance,
+                      action_data);
+  }
 }
 
 void PPP_Pdf_Proxy::OnPluginMsgPrintBegin(

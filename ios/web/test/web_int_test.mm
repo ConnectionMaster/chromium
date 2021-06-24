@@ -6,17 +6,20 @@
 
 #import "base/ios/block_types.h"
 #include "base/memory/ptr_util.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
+#include "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#import "ios/web/public/test/http_server/http_server.h"
+#import "ios/web/common/uikit_ui_util.h"
+#import "ios/web/common/web_view_creation_util.h"
 #import "ios/web/public/test/js_test_util.h"
-#include "ios/web/public/web_state/web_state_observer.h"
-#import "ios/web/public/web_view_creation_util.h"
+#import "ios/web/public/test/web_view_interaction_test_util.h"
+#include "ios/web/public/web_state_observer.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
+using base::test::ios::kWaitForClearBrowsingDataTimeout;
 using base::test::ios::kWaitForPageLoadTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
 
@@ -37,8 +40,6 @@ class IntTestWebStateObserver : public WebStateObserver {
   void PageLoaded(
       web::WebState* web_state,
       web::PageLoadCompletionStatus load_completion_status) override {
-    ASSERT_EQ(load_completion_status == web::PageLoadCompletionStatus::SUCCESS,
-              expected_url_.is_valid());
     page_loaded_ = true;
   }
 
@@ -59,11 +60,6 @@ WebIntTest::~WebIntTest() {}
 void WebIntTest::SetUp() {
   WebTest::SetUp();
 
-  // Start the http server.
-  web::test::HttpServer& server = web::test::HttpServer::GetSharedInstance();
-  ASSERT_FALSE(server.IsRunning());
-  server.StartOrDie();
-
   // Remove any previously existing WKWebView data.
   RemoveWKWebViewCreatedData([WKWebsiteDataStore defaultDataStore],
                              [WKWebsiteDataStore allWebsiteDataTypes]);
@@ -73,8 +69,7 @@ void WebIntTest::SetUp() {
   web_state_ = web::WebState::Create(web_state_create_params);
 
   // Resize the webview so that pages can be properly rendered.
-  web_state()->GetView().frame =
-      [UIApplication sharedApplication].keyWindow.bounds;
+  web_state()->GetView().frame = GetAnyKeyWindow().bounds;
 
   web_state()->SetDelegate(&web_state_delegate_);
   web_state()->SetKeepRenderProcessAlive(true);
@@ -84,16 +79,15 @@ void WebIntTest::TearDown() {
   RemoveWKWebViewCreatedData([WKWebsiteDataStore defaultDataStore],
                              [WKWebsiteDataStore allWebsiteDataTypes]);
 
-  web::test::HttpServer& server = web::test::HttpServer::GetSharedInstance();
-  server.Stop();
-  EXPECT_FALSE(server.IsRunning());
-
   WebTest::TearDown();
 }
 
-id WebIntTest::ExecuteJavaScript(NSString* script) {
-  return web::test::ExecuteJavaScript(web_state()->GetJSInjectionReceiver(),
-                                      script);
+std::unique_ptr<base::Value> WebIntTest::ExecuteJavaScript(NSString* script) {
+  return web::test::ExecuteJavaScript(web_state(),
+                                      base::SysNSStringToUTF8(script));
+  //  web_state()->ExecuteJavaScript
+  //  return web::test::ExecuteJavaScript(web_state()->GetJSInjectionReceiver(),
+  //                                      script);
 }
 
 bool WebIntTest::ExecuteBlockAndWaitForLoad(const GURL& url,
@@ -101,8 +95,9 @@ bool WebIntTest::ExecuteBlockAndWaitForLoad(const GURL& url,
   DCHECK(block);
 
   IntTestWebStateObserver observer(url);
-  ScopedObserver<WebState, WebStateObserver> scoped_observer(&observer);
-  scoped_observer.Add(web_state());
+  base::ScopedObservation<WebState, WebStateObserver> scoped_observer(
+      &observer);
+  scoped_observer.Observe(web_state());
 
   block();
 
@@ -157,9 +152,10 @@ void WebIntTest::RemoveWKWebViewCreatedData(WKWebsiteDataStore* data_store,
     remove_data();
   }
 
-  base::test::ios::WaitUntilCondition(^bool {
-    return data_removed;
-  });
+  EXPECT_TRUE(
+      WaitUntilConditionOrTimeout(kWaitForClearBrowsingDataTimeout * 2, ^{
+        return data_removed;
+      }));
 }
 
 NSInteger WebIntTest::GetIndexOfNavigationItem(

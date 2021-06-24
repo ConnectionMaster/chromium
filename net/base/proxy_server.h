@@ -7,7 +7,7 @@
 
 #include "build/build_config.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 
@@ -26,7 +26,7 @@ class NET_EXPORT ProxyServer {
  public:
   // The type of proxy. These are defined as bit flags so they can be ORed
   // together to pass as the |scheme_bit_field| argument to
-  // ProxyResolutionService::RemoveProxiesWithoutScheme().
+  // ProxyList::RemoveProxiesWithoutScheme().
   enum Scheme {
     SCHEME_INVALID = 1 << 0,
     SCHEME_DIRECT  = 1 << 1,
@@ -45,9 +45,6 @@ class NET_EXPORT ProxyServer {
   ProxyServer() {}
 
   ProxyServer(Scheme scheme, const HostPortPair& host_port_pair);
-  ProxyServer(Scheme scheme,
-              const HostPortPair& host_port_pair,
-              bool is_trusted_proxy);
 
   bool is_valid() const { return scheme_ != SCHEME_INVALID; }
 
@@ -60,7 +57,11 @@ class NET_EXPORT ProxyServer {
   // Returns true if this ProxyServer is an HTTP proxy.
   bool is_http() const { return scheme_ == SCHEME_HTTP; }
 
-  // Returns true if this ProxyServer is an HTTPS proxy.
+  // Returns true if this ProxyServer is an HTTPS proxy. Note this
+  // does not include proxies matched by |is_quic()|.
+  //
+  // Generally one should test the more general concept of
+  // |is_secure_http_like()| to account for |is_quic()|.
   bool is_https() const { return scheme_ == SCHEME_HTTPS; }
 
   // Returns true if this ProxyServer is a SOCKS proxy.
@@ -71,13 +72,13 @@ class NET_EXPORT ProxyServer {
   // Returns true if this ProxyServer is a QUIC proxy.
   bool is_quic() const { return scheme_ == SCHEME_QUIC; }
 
-  // Returns true of the ProxyServer's scheme is HTTP compatible (uses HTTP
+  // Returns true if the ProxyServer's scheme is HTTP compatible (uses HTTP
   // headers, has a CONNECT method for establishing tunnels).
   bool is_http_like() const { return is_http() || is_https() || is_quic(); }
 
-  // Returns true if the proxy is trusted to push cross-origin resources from
-  // HTTP hosts.
-  bool is_trusted_proxy() const { return is_trusted_proxy_; }
+  // Returns true if the proxy server has HTTP semantics, AND
+  // the channel between the client and proxy server is secure.
+  bool is_secure_http_like() const { return is_https() || is_quic(); }
 
   const HostPortPair& host_port_pair() const;
 
@@ -126,7 +127,7 @@ class NET_EXPORT ProxyServer {
     return ProxyServer(SCHEME_DIRECT, HostPortPair());
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Utility function to pull out a host/port pair from a dictionary and return
   // it as a ProxyServer object. Pass in a dictionary that has a  value for the
   // host key and optionally a value for the port key. In the error condition
@@ -153,17 +154,15 @@ class NET_EXPORT ProxyServer {
 
   bool operator==(const ProxyServer& other) const {
     return scheme_ == other.scheme_ &&
-           host_port_pair_.Equals(other.host_port_pair_) &&
-           is_trusted_proxy_ == other.is_trusted_proxy_;
+           host_port_pair_.Equals(other.host_port_pair_);
   }
 
   bool operator!=(const ProxyServer& other) const { return !(*this == other); }
 
   // Comparator function so this can be placed in a std::map.
   bool operator<(const ProxyServer& other) const {
-    return std::tie(scheme_, host_port_pair_, is_trusted_proxy_) <
-           std::tie(other.scheme_, other.host_port_pair_,
-                    other.is_trusted_proxy_);
+    return std::tie(scheme_, host_port_pair_) <
+           std::tie(other.scheme_, other.host_port_pair_);
   }
 
   // Returns the estimate of dynamically allocated memory in bytes.
@@ -177,7 +176,6 @@ class NET_EXPORT ProxyServer {
 
   Scheme scheme_ = SCHEME_INVALID;
   HostPortPair host_port_pair_;
-  bool is_trusted_proxy_ = false;
 };
 
 typedef std::pair<HostPortPair, ProxyServer> HostPortProxyPair;

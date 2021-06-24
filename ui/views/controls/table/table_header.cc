@@ -6,19 +6,28 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
+#include <vector>
 
+#include "base/i18n/rtl.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/skia_util.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/background.h"
+#include "ui/views/controls/focus_ring.h"
+#include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/table/table_utils.h"
 #include "ui/views/controls/table/table_view.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/native_cursor.h"
+#include "ui/views/style/platform_style.h"
 
 namespace views {
 
@@ -44,21 +53,52 @@ constexpr int kSortIndicatorSize = 8;
 }  // namespace
 
 // static
-const char TableHeader::kViewClassName[] = "TableHeader";
-// static
 const int TableHeader::kHorizontalPadding = 7;
 // static
 const int TableHeader::kSortIndicatorWidth =
     kSortIndicatorSize + TableHeader::kHorizontalPadding * 2;
 
+class TableHeader::HighlightPathGenerator
+    : public views::HighlightPathGenerator {
+ public:
+  HighlightPathGenerator() = default;
+  HighlightPathGenerator(const HighlightPathGenerator&) = delete;
+  HighlightPathGenerator& operator=(const HighlightPathGenerator&) = delete;
+  ~HighlightPathGenerator() override = default;
+
+  // HighlightPathGenerator:
+  SkPath GetHighlightPath(const View* view) override {
+    if (!PlatformStyle::kTableViewSupportsKeyboardNavigationByCell)
+      return SkPath();
+
+    const TableHeader* const header = static_cast<const TableHeader*>(view);
+    // If there's no focus indicator fall back on the default highlight path
+    // (highlights entire view instead of active cell).
+    if (!header->HasFocusIndicator())
+      return SkPath();
+
+    // Draw a focus indicator around the active cell.
+    gfx::Rect bounds = header->GetActiveHeaderCellBounds();
+    bounds.set_x(header->GetMirroredXForRect(bounds));
+    return SkPath().addRect(gfx::RectToSkRect(bounds));
+  }
+};
+
 using Columns = std::vector<TableView::VisibleColumn>;
 
-TableHeader::TableHeader(TableView* table) : table_(table) {}
+TableHeader::TableHeader(TableView* table) : table_(table) {
+  HighlightPathGenerator::Install(
+      this, std::make_unique<TableHeader::HighlightPathGenerator>());
+  FocusRing::Install(this);
+  views::FocusRing::Get(this)->SetHasFocusPredicate([&](View* view) {
+    return static_cast<TableHeader*>(view)->GetHeaderRowHasFocus();
+  });
+}
 
 TableHeader::~TableHeader() = default;
 
-void TableHeader::Layout() {
-  SetBounds(x(), y(), table_->width(), GetPreferredSize().height());
+void TableHeader::UpdateFocusState() {
+  views::FocusRing::Get(this)->SchedulePaint();
 }
 
 void TableHeader::OnPaint(gfx::Canvas* canvas) {
@@ -76,39 +116,39 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
                         gfx::PointF(width(), height() - 1), border_color);
 
   const Columns& columns = table_->visible_columns();
-  const int sorted_column_id = table_->sort_descriptors().empty() ? -1 :
-      table_->sort_descriptors()[0].column_id;
-  for (size_t i = 0; i < columns.size(); ++i) {
-    if (columns[i].width >= 2) {
-      const int separator_x = GetMirroredXInView(
-          columns[i].x + columns[i].width - 1);
+  const int sorted_column_id = table_->sort_descriptors().empty()
+                                   ? -1
+                                   : table_->sort_descriptors()[0].column_id;
+  for (const auto& column : columns) {
+    if (column.width >= 2) {
+      const int separator_x = GetMirroredXInView(column.x + column.width - 1);
       canvas->DrawSharpLine(
           gfx::PointF(separator_x, kSeparatorPadding),
           gfx::PointF(separator_x, height() - kSeparatorPadding),
           separator_color);
     }
 
-    const int x = columns[i].x + kHorizontalPadding;
-    int width = columns[i].width - kHorizontalPadding - kHorizontalPadding;
+    const int x = column.x + kHorizontalPadding;
+    int width = column.width - kHorizontalPadding - kHorizontalPadding;
     if (width <= 0)
       continue;
 
     const int title_width =
-        gfx::GetStringWidth(columns[i].column.title, font_list_);
+        gfx::GetStringWidth(column.column.title, font_list_);
     const bool paint_sort_indicator =
-        (columns[i].column.id == sorted_column_id &&
+        (column.column.id == sorted_column_id &&
          title_width + kSortIndicatorWidth <= width);
 
     if (paint_sort_indicator &&
-        columns[i].column.alignment == ui::TableColumn::RIGHT) {
+        column.column.alignment == ui::TableColumn::RIGHT) {
       width -= kSortIndicatorWidth;
     }
 
     canvas->DrawStringRectWithFlags(
-        columns[i].column.title, font_list_, text_color,
+        column.column.title, font_list_, text_color,
         gfx::Rect(GetMirroredXWithWidthInView(x, width), kVerticalPadding,
                   width, height() - kVerticalPadding * 2),
-        TableColumnAlignmentToCanvasAlignment(columns[i].column.alignment));
+        TableColumnAlignmentToCanvasAlignment(column.column.alignment));
 
     if (paint_sort_indicator) {
       cc::PaintFlags flags;
@@ -117,7 +157,7 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
       flags.setAntiAlias(true);
 
       int indicator_x = 0;
-      ui::TableColumn::Alignment alignment = columns[i].column.alignment;
+      ui::TableColumn::Alignment alignment = column.column.alignment;
       if (base::i18n::IsRTL()) {
         if (alignment == ui::TableColumn::LEFT)
           alignment = ui::TableColumn::RIGHT;
@@ -142,9 +182,8 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
       int indicator_y = height() / 2 - kSortIndicatorSize / 2;
       SkPath indicator_path;
       if (table_->sort_descriptors()[0].ascending) {
-        indicator_path.moveTo(
-            SkIntToScalar(indicator_x),
-            SkIntToScalar(indicator_y + kSortIndicatorSize));
+        indicator_path.moveTo(SkIntToScalar(indicator_x),
+                              SkIntToScalar(indicator_y + kSortIndicatorSize));
         indicator_path.lineTo(
             SkIntToScalar(indicator_x + kSortIndicatorSize * scale),
             SkIntToScalar(indicator_y + kSortIndicatorSize));
@@ -167,17 +206,30 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
   }
 }
 
-const char* TableHeader::GetClassName() const {
-  return kViewClassName;
-}
-
 gfx::Size TableHeader::CalculatePreferredSize() const {
   return gfx::Size(1, kVerticalPadding * 2 + font_list_.GetHeight());
 }
 
+bool TableHeader::GetNeedsNotificationWhenVisibleBoundsChange() const {
+  return true;
+}
+
+void TableHeader::OnVisibleBoundsChanged() {
+  // Ensure the TableView updates its virtual children's bounds, because that
+  // includes the bounds representing this TableHeader.
+  table_->UpdateVirtualAccessibilityChildrenBounds();
+}
+
+void TableHeader::AddedToWidget() {
+  // Ensure the TableView updates its virtual children's bounds, because that
+  // includes the bounds representing this TableHeader.
+  table_->UpdateVirtualAccessibilityChildrenBounds();
+}
+
 gfx::NativeCursor TableHeader::GetCursor(const ui::MouseEvent& event) {
-  return GetResizeColumn(GetMirroredXInView(event.x())) != -1 ?
-      GetNativeColumnResizeCursor() : View::GetCursor(event);
+  return GetResizeColumn(GetMirroredXInView(event.x())) != -1
+             ? GetNativeColumnResizeCursor()
+             : View::GetCursor(event);
 }
 
 bool TableHeader::OnMousePressed(const ui::MouseEvent& event) {
@@ -231,9 +283,10 @@ void TableHeader::OnGestureEvent(ui::GestureEvent* event) {
   event->SetHandled();
 }
 
-void TableHeader::OnNativeThemeChanged(const ui::NativeTheme* theme) {
-  SetBackground(CreateSolidBackground(
-      theme->GetSystemColor(ui::NativeTheme::kColorId_TableHeaderBackground)));
+void TableHeader::OnThemeChanged() {
+  View::OnThemeChanged();
+  SetBackground(CreateSolidBackground(GetNativeTheme()->GetSystemColor(
+      ui::NativeTheme::kColorId_TableHeaderBackground)));
 }
 
 void TableHeader::ResizeColumnViaKeyboard(
@@ -247,16 +300,33 @@ void TableHeader::ResizeColumnViaKeyboard(
 
   int new_width = column.width;
   switch (direction) {
-    case TableView::ADVANCE_INCREMENT:
+    case TableView::AdvanceDirection::kIncrement:
       new_width += kResizeKeyboardAmount;
       break;
-    case TableView::ADVANCE_DECREMENT:
+    case TableView::AdvanceDirection::kDecrement:
       new_width -= kResizeKeyboardAmount;
       break;
   }
 
   table_->SetVisibleColumnWidth(
       index, std::max({kMinColumnWidth, needed_for_title, new_width}));
+}
+
+bool TableHeader::GetHeaderRowHasFocus() const {
+  return table_->HasFocus() && table_->header_row_is_active();
+}
+
+gfx::Rect TableHeader::GetActiveHeaderCellBounds() const {
+  const int active_index = table_->GetActiveVisibleColumnIndex();
+  DCHECK_NE(ui::ListSelectionModel::kUnselectedIndex, active_index);
+  const TableView::VisibleColumn& column =
+      table_->GetVisibleColumn(active_index);
+  return gfx::Rect(column.x, 0, column.width, height());
+}
+
+bool TableHeader::HasFocusIndicator() const {
+  return table_->GetActiveVisibleColumnIndex() !=
+         ui::ListSelectionModel::kUnselectedIndex;
 }
 
 bool TableHeader::StartResize(const ui::LocatedEvent& event) {
@@ -279,8 +349,8 @@ void TableHeader::ContinueResize(const ui::LocatedEvent& event) {
     return;
 
   const int scale = base::i18n::IsRTL() ? -1 : 1;
-  const int delta = scale *
-      (event.root_location().x() - resize_details_->initial_x);
+  const int delta =
+      scale * (event.root_location().x() - resize_details_->initial_x);
   const TableView::VisibleColumn& column =
       table_->GetVisibleColumn(resize_details_->column_index);
   const int needed_for_title =
@@ -317,8 +387,10 @@ int TableHeader::GetResizeColumn(int x) const {
     return index - 1;
   }
   const int max_x = column.x + column.width;
-  return (x >= max_x - kResizePadding && x <= max_x + kResizePadding) ?
-      index : -1;
+  return (x >= max_x - kResizePadding && x <= max_x + kResizePadding) ? index
+                                                                      : -1;
 }
+BEGIN_METADATA(TableHeader, View)
+END_METADATA
 
 }  // namespace views

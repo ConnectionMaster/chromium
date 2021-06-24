@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/logging.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/chromeos/fake_ime_keyboard.h"
 #include "ui/base/ime/chromeos/ime_keyboard.h"
@@ -16,7 +15,7 @@ class ImeKeyboardTest : public testing::Test,
                         public ImeKeyboard::Observer {
  public:
   void SetUp() override {
-    xkey_.reset(new FakeImeKeyboard());
+    xkey_ = std::make_unique<FakeImeKeyboard>();
     xkey_->AddObserver(this);
     caps_changed_ = false;
   }

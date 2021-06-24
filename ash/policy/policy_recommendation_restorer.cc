@@ -4,11 +4,12 @@
 
 #include "ash/policy/policy_recommendation_restorer.h"
 
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "base/bind.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check.h"
+#include "base/containers/contains.h"
+#include "base/notreached.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/user_activity/user_activity_detector.h"
@@ -36,7 +37,7 @@ void PolicyRecommendationRestorer::ObservePref(const std::string& pref_name) {
   PrefService* prefs =
       Shell::Get()->session_controller()->GetSigninScreenPrefService();
   DCHECK(prefs);
-  DCHECK(!base::ContainsKey(pref_names_, pref_name));
+  DCHECK(!base::Contains(pref_names_, pref_name));
 
   if (!pref_change_registrar_) {
     pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
@@ -60,6 +61,10 @@ void PolicyRecommendationRestorer::OnActiveUserPrefServiceChanged(
 void PolicyRecommendationRestorer::OnUserActivity(const ui::Event* event) {
   if (restore_timer_.IsRunning())
     restore_timer_.Reset();
+}
+
+void PolicyRecommendationRestorer::DisableForTesting() {
+  disabled_for_testing_ = true;
 }
 
 void PolicyRecommendationRestorer::Restore(bool allow_delay,
@@ -89,7 +94,7 @@ void PolicyRecommendationRestorer::Restore(bool allow_delay,
 
   if (allow_delay)
     StartTimer();
-  else
+  else if (!disabled_for_testing_)
     pref_change_registrar_->prefs()->ClearPref(pref->name());
 }
 
@@ -115,10 +120,9 @@ void PolicyRecommendationRestorer::StartTimer() {
   // case of a recommended value changing, a single timer is a close
   // approximation of the behavior that would be obtained by resetting the timer
   // for the affected pref only.
-  restore_timer_.Start(
-      FROM_HERE, kRestoreDelayInMinutes,
-      base::BindRepeating(&PolicyRecommendationRestorer::RestoreAll,
-                          base::Unretained(this)));
+  restore_timer_.Start(FROM_HERE, kRestoreDelayInMinutes,
+                       base::BindOnce(&PolicyRecommendationRestorer::RestoreAll,
+                                      base::Unretained(this)));
 }
 
 void PolicyRecommendationRestorer::StopTimer() {

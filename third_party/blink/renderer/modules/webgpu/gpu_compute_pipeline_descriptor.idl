@@ -2,8 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// https://github.com/gpuweb/gpuweb/blob/master/design/sketch.webidl
+// https://gpuweb.github.io/gpuweb/
 
 dictionary GPUComputePipelineDescriptor : GPUPipelineDescriptorBase {
-    required GPUPipelineStageDescriptor computeStage;
+    // compute should be required, but cannot be until the deprecated
+    // computeStage property is removed.
+    GPUProgrammableStage compute;
+    GPUProgrammableStage computeStage; // Deprecated
 };

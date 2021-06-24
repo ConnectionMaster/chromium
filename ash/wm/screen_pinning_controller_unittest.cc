@@ -6,14 +6,14 @@
 
 #include <vector>
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/wm/client_controlled_state.h"
 #include "ash/wm/screen_pinning_controller.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
 #include "ash/wm/wm_event.h"
-#include "base/stl_util.h"
 #include "ui/aura/window.h"
 
 namespace ash {
@@ -25,6 +25,19 @@ int FindIndex(const std::vector<aura::Window*>& windows,
   return iter != windows.end() ? iter - windows.begin() : -1;
 }
 
+class TestClientControlledStateDelegate
+    : public ClientControlledState::Delegate {
+ public:
+  ~TestClientControlledStateDelegate() override = default;
+
+  void HandleWindowStateRequest(WindowState* state,
+                                chromeos::WindowStateType type) override {}
+  void HandleBoundsRequest(WindowState* state,
+                           chromeos::WindowStateType type,
+                           const gfx::Rect& requested_bounds,
+                           int64_t display_id) override {}
+};
+
 }  // namespace
 
 using ScreenPinningControllerTest = AshTestBase;
@@ -33,7 +46,7 @@ TEST_F(ScreenPinningControllerTest, IsPinned) {
   aura::Window* w1 = CreateTestWindowInShellWithId(0);
   wm::ActivateWindow(w1);
 
-  wm::PinWindow(w1, /* trusted */ false);
+  window_util::PinWindow(w1, /* trusted */ false);
   EXPECT_TRUE(Shell::Get()->screen_pinning_controller()->IsPinned());
 }
 
@@ -42,14 +55,14 @@ TEST_F(ScreenPinningControllerTest, OnlyOnePinnedWindow) {
   aura::Window* w2 = CreateTestWindowInShellWithId(1);
   wm::ActivateWindow(w1);
 
-  wm::PinWindow(w1, /* trusted */ false);
-  EXPECT_TRUE(wm::GetWindowState(w1)->IsPinned());
-  EXPECT_FALSE(wm::GetWindowState(w2)->IsPinned());
+  window_util::PinWindow(w1, /* trusted */ false);
+  EXPECT_TRUE(WindowState::Get(w1)->IsPinned());
+  EXPECT_FALSE(WindowState::Get(w2)->IsPinned());
 
   // Prohibit to pin two (or more) windows.
-  wm::PinWindow(w2, /* trusted */ false);
-  EXPECT_TRUE(wm::GetWindowState(w1)->IsPinned());
-  EXPECT_FALSE(wm::GetWindowState(w2)->IsPinned());
+  window_util::PinWindow(w2, /* trusted */ false);
+  EXPECT_TRUE(WindowState::Get(w1)->IsPinned());
+  EXPECT_FALSE(WindowState::Get(w2)->IsPinned());
 }
 
 TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
@@ -57,7 +70,7 @@ TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
   aura::Window* w2 = CreateTestWindowInShellWithId(1);
   wm::ActivateWindow(w1);
 
-  wm::PinWindow(w1, /* trusted */ false);
+  window_util::PinWindow(w1, /* trusted */ false);
   {
     // Window w1 should be in front of w2.
     std::vector<aura::Window*> siblings = w1->parent()->children();
@@ -71,8 +84,8 @@ TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
   // Set w2 to fullscreen.
   {
     wm::ActivateWindow(w2);
-    const wm::WMEvent event(wm::WM_EVENT_TOGGLE_FULLSCREEN);
-    wm::GetWindowState(w2)->OnWMEvent(&event);
+    const WMEvent event(WM_EVENT_TOGGLE_FULLSCREEN);
+    WindowState::Get(w2)->OnWMEvent(&event);
   }
   {
     // Verify that w1 is still in front of w2.
@@ -87,8 +100,8 @@ TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
   // Unset w2's fullscreen.
   {
     wm::ActivateWindow(w2);
-    const wm::WMEvent event(wm::WM_EVENT_TOGGLE_FULLSCREEN);
-    wm::GetWindowState(w2)->OnWMEvent(&event);
+    const WMEvent event(WM_EVENT_TOGGLE_FULLSCREEN);
+    WindowState::Get(w2)->OnWMEvent(&event);
   }
   {
     // Verify that w1 is still in front of w2.
@@ -103,8 +116,8 @@ TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
   // Maximize w2.
   {
     wm::ActivateWindow(w2);
-    const wm::WMEvent event(wm::WM_EVENT_TOGGLE_MAXIMIZE);
-    wm::GetWindowState(w2)->OnWMEvent(&event);
+    const WMEvent event(WM_EVENT_TOGGLE_MAXIMIZE);
+    WindowState::Get(w2)->OnWMEvent(&event);
   }
   {
     // Verify that w1 is still in front of w2.
@@ -119,8 +132,8 @@ TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
   // Unset w2's maximize.
   {
     wm::ActivateWindow(w2);
-    const wm::WMEvent event(wm::WM_EVENT_TOGGLE_MAXIMIZE);
-    wm::GetWindowState(w2)->OnWMEvent(&event);
+    const WMEvent event(WM_EVENT_TOGGLE_MAXIMIZE);
+    WindowState::Get(w2)->OnWMEvent(&event);
   }
   {
     // Verify that w1 is still in front of w2.
@@ -133,13 +146,13 @@ TEST_F(ScreenPinningControllerTest, FullscreenInPinnedMode) {
   }
 
   // Restore w1.
-  wm::GetWindowState(w1)->Restore();
+  WindowState::Get(w1)->Restore();
 
   // Now, fullscreen-ize w2 should put it in front of w1.
   {
     wm::ActivateWindow(w2);
-    const wm::WMEvent event(wm::WM_EVENT_TOGGLE_FULLSCREEN);
-    wm::GetWindowState(w2)->OnWMEvent(&event);
+    const WMEvent event(WM_EVENT_TOGGLE_FULLSCREEN);
+    WindowState::Get(w2)->OnWMEvent(&event);
   }
   {
     // Verify that w1 is still in front of w2.
@@ -156,13 +169,56 @@ TEST_F(ScreenPinningControllerTest, TrustedPinnedWithAccelerator) {
   aura::Window* w1 = CreateTestWindowInShellWithId(0);
   wm::ActivateWindow(w1);
 
-  wm::PinWindow(w1, /* trusted */ true);
+  window_util::PinWindow(w1, /* trusted */ true);
   EXPECT_TRUE(Shell::Get()->screen_pinning_controller()->IsPinned());
 
-  Shell::Get()->accelerator_controller()->PerformActionIfEnabled(UNPIN);
+  Shell::Get()->accelerator_controller()->PerformActionIfEnabled(UNPIN, {});
   // The UNPIN accelerator key is disabled for trusted pinned and the window
   // must be still pinned.
   EXPECT_TRUE(Shell::Get()->screen_pinning_controller()->IsPinned());
+}
+
+TEST_F(ScreenPinningControllerTest, ExitUnifiedDisplay) {
+  display_manager()->SetUnifiedDesktopEnabled(true);
+
+  UpdateDisplay("400x300, 400x400");
+
+  aura::Window* w1 = CreateTestWindowInShellWithId(0);
+  wm::ActivateWindow(w1);
+  auto* window_state = WindowState::Get(w1);
+
+  window_util::PinWindow(w1, /*trusted=*/true);
+
+  EXPECT_TRUE(window_state->IsPinned());
+  EXPECT_TRUE(Shell::Get()->screen_pinning_controller()->IsPinned());
+
+  UpdateDisplay("200x200");
+
+  EXPECT_TRUE(window_state->IsPinned());
+  EXPECT_TRUE(Shell::Get()->screen_pinning_controller()->IsPinned());
+}
+
+TEST_F(ScreenPinningControllerTest, CleanUpObservers) {
+  // Create a window with ClientControlledState.
+  auto w = CreateAppWindow(gfx::Rect(), AppType::CHROME_APP, 0);
+  ash::WindowState* ws = ash::WindowState::Get(w.get());
+  auto delegate = std::make_unique<TestClientControlledStateDelegate>();
+  auto state = std::make_unique<ClientControlledState>(std::move(delegate));
+  ws->SetStateObject(std::move(state));
+
+  wm::ActivateWindow(w.get());
+
+  // Observer should be added to |w|, and |w->parent()|.
+  window_util::PinWindow(w.get(), /* truested */ false);
+  EXPECT_TRUE(WindowState::Get(w.get())->IsPinned());
+
+  // Destroying |w| clears |pinned_window_|. The observers should be removed
+  // even if ClientControlledState doesn't call SetPinnedWindow when
+  // WindowState::Restore() is called.
+  w.reset();
+
+  // Add a sibling window. It should not crash.
+  CreateTestWindowInShellWithId(2);
 }
 
 }  // namespace ash

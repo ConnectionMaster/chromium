@@ -4,169 +4,85 @@
 
 #include "chrome/browser/signin/identity_manager_factory.h"
 
+#include <memory>
 #include <utility>
 
+#include "base/files/file_path.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/image_fetcher/image_decoder_impl.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
-#include "chrome/browser/signin/account_tracker_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
-#include "chrome/browser/signin/profile_oauth2_token_service_factory.h"
+#include "chrome/browser/signin/identity_manager_provider.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/signin/core/browser/signin_manager.h"
-#include "services/identity/public/cpp/accounts_cookie_mutator.h"
-#include "services/identity/public/cpp/accounts_cookie_mutator_impl.h"
-#include "services/identity/public/cpp/accounts_mutator.h"
-#include "services/identity/public/cpp/diagnostics_provider_impl.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/primary_account_mutator.h"
-
-#if !defined(OS_CHROMEOS)
-#include "services/identity/public/cpp/primary_account_mutator_impl.h"
-#endif
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_manager_builder.h"
+#include "components/signin/public/webdata/token_web_data.h"
+#include "content/public/browser/network_service_instance.h"
 
 #if !defined(OS_ANDROID)
-#include "services/identity/public/cpp/accounts_mutator_impl.h"
+#include "chrome/browser/content_settings/cookie_settings_factory.h"
+#include "chrome/browser/web_data_service_factory.h"
+#include "components/content_settings/core/browser/cookie_settings.h"
+#include "components/keyed_service/core/service_access_type.h"
+#include "components/signin/core/browser/cookie_settings_util.h"
 #endif
 
-namespace {
-
-#if !defined(OS_CHROMEOS)
-using ConcreteSigninManager = SigninManager;
-#else
-using ConcreteSigninManager = SigninManagerBase;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/components/account_manager/account_manager_factory.h"
+#include "chrome/browser/account_manager_facade_factory.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/browser_process_platform_part.h"
 #endif
 
-// Helper function returning a newly constructed PrimaryAccountMutator for
-// |profile|.  May return null if mutation of the signed-in state is not
-// supported on the current platform.
-std::unique_ptr<identity::PrimaryAccountMutator> BuildPrimaryAccountMutator(
-    Profile* profile,
-    ConcreteSigninManager* signin_manager) {
-#if !defined(OS_CHROMEOS)
-  return std::make_unique<identity::PrimaryAccountMutatorImpl>(
-      AccountTrackerServiceFactory::GetForProfile(profile),
-      SigninManager::FromSigninManagerBase(signin_manager));
-#else
-  return nullptr;
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "chrome/browser/account_manager_facade_factory.h"
 #endif
-}
 
-// Helper function returning a newly constructed AccountsMutator for
-// |profile|. May return null if mutation of accounts is not supported on the
-// current platform.
-std::unique_ptr<identity::AccountsMutator> BuildAccountsMutator(
-    Profile* profile,
-    SigninManagerBase* signin_manager) {
-#if !defined(OS_ANDROID)
-  return std::make_unique<identity::AccountsMutatorImpl>(
-      ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-      AccountTrackerServiceFactory::GetForProfile(profile), signin_manager,
-      profile->GetPrefs());
-#else
-  return nullptr;
+#if defined(OS_WIN)
+#include "base/bind.h"
+#include "chrome/browser/signin/signin_util_win.h"
 #endif
-}
-
-std::unique_ptr<ConcreteSigninManager> BuildSigninManager(
-    Profile* profile,
-    GaiaCookieManagerService* gaia_cookie_manager_service) {
-  std::unique_ptr<ConcreteSigninManager> signin_manager;
-  SigninClient* client =
-      ChromeSigninClientFactory::GetInstance()->GetForProfile(profile);
-#if defined(OS_CHROMEOS)
-  signin_manager = std::make_unique<ConcreteSigninManager>(
-      client, ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-      AccountTrackerServiceFactory::GetForProfile(profile));
-#else
-  signin_manager = std::make_unique<ConcreteSigninManager>(
-      client, ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-      AccountTrackerServiceFactory::GetForProfile(profile),
-      gaia_cookie_manager_service,
-      AccountConsistencyModeManager::GetMethodForProfile(profile));
-#endif
-  signin_manager->Initialize(g_browser_process->local_state());
-  return signin_manager;
-}
-
-std::unique_ptr<AccountFetcherService> BuildAccountFetcherService(
-    SigninClient* signin_client,
-    ProfileOAuth2TokenService* token_service,
-    AccountTrackerService* account_tracker_service) {
-  auto account_fetcher_service = std::make_unique<AccountFetcherService>();
-  account_fetcher_service->Initialize(signin_client, token_service,
-                                      account_tracker_service,
-                                      std::make_unique<ImageDecoderImpl>());
-  return account_fetcher_service;
-}
-
-}  // namespace
-
-// Subclass that wraps IdentityManager in a KeyedService (as IdentityManager is
-// a client-side library intended for use by any process, it would be a layering
-// violation for IdentityManager itself to have direct knowledge of
-// KeyedService).
-// NOTE: Do not add any code here that further ties IdentityManager to Profile
-// without communicating with {blundell, sdefresne}@chromium.org.
-class IdentityManagerWrapper : public KeyedService,
-                               public identity::IdentityManager {
- public:
-  explicit IdentityManagerWrapper(
-      Profile* profile,
-      std::unique_ptr<GaiaCookieManagerService> gaia_cookie_manager_service,
-      std::unique_ptr<SigninManagerBase> signin_manager,
-      std::unique_ptr<AccountFetcherService> account_fetcher_service,
-      std::unique_ptr<identity::PrimaryAccountMutator> primary_account_mutator,
-      std::unique_ptr<identity::AccountsMutator> accounts_mutator,
-      std::unique_ptr<identity::AccountsCookieMutatorImpl>
-          accounts_cookie_mutator,
-      std::unique_ptr<identity::DiagnosticsProviderImpl> diagnostics_provider)
-      : identity::IdentityManager(
-            std::move(gaia_cookie_manager_service),
-            std::move(signin_manager),
-            std::move(account_fetcher_service),
-            ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-            AccountTrackerServiceFactory::GetForProfile(profile),
-            std::move(primary_account_mutator),
-            std::move(accounts_mutator),
-            std::move(accounts_cookie_mutator),
-            std::move(diagnostics_provider)) {}
-
-  // KeyedService overrides.
-  void Shutdown() override { IdentityManager::Shutdown(); }
-};
 
 void IdentityManagerFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  identity::IdentityManager::RegisterProfilePrefs(registry);
+  signin::IdentityManager::RegisterProfilePrefs(registry);
 }
 
 IdentityManagerFactory::IdentityManagerFactory()
     : BrowserContextKeyedServiceFactory(
           "IdentityManager",
           BrowserContextDependencyManager::GetInstance()) {
-  DependsOn(AccountTrackerServiceFactory::GetInstance());
+#if !defined(OS_ANDROID)
+  DependsOn(WebDataServiceFactory::GetInstance());
+#endif
   DependsOn(ChromeSigninClientFactory::GetInstance());
-  DependsOn(ProfileOAuth2TokenServiceFactory::GetInstance());
+
+  signin::SetIdentityManagerProvider(
+      base::BindRepeating([](content::BrowserContext* context) {
+        return GetForProfile(Profile::FromBrowserContext(context));
+      }));
 }
 
-IdentityManagerFactory::~IdentityManagerFactory() {}
+IdentityManagerFactory::~IdentityManagerFactory() {
+  signin::SetIdentityManagerProvider({});
+}
 
 // static
-identity::IdentityManager* IdentityManagerFactory::GetForProfile(
+signin::IdentityManager* IdentityManagerFactory::GetForProfile(
     Profile* profile) {
-  return static_cast<IdentityManagerWrapper*>(
+  return static_cast<signin::IdentityManager*>(
       GetInstance()->GetServiceForBrowserContext(profile, true));
 }
 
 // static
-identity::IdentityManager* IdentityManagerFactory::GetForProfileIfExists(
+signin::IdentityManager* IdentityManagerFactory::GetForProfileIfExists(
     const Profile* profile) {
-  return static_cast<IdentityManagerWrapper*>(
+  return static_cast<signin::IdentityManager*>(
       GetInstance()->GetServiceForBrowserContext(const_cast<Profile*>(profile),
                                                  false));
 }
@@ -179,9 +95,7 @@ IdentityManagerFactory* IdentityManagerFactory::GetInstance() {
 // static
 void IdentityManagerFactory::EnsureFactoryAndDependeeFactoriesBuilt() {
   IdentityManagerFactory::GetInstance();
-  AccountTrackerServiceFactory::GetInstance();
   ChromeSigninClientFactory::GetInstance();
-  ProfileOAuth2TokenServiceFactory::GetInstance();
 }
 
 void IdentityManagerFactory::AddObserver(Observer* observer) {
@@ -196,46 +110,59 @@ KeyedService* IdentityManagerFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
   Profile* profile = Profile::FromBrowserContext(context);
 
-  // Construct the dependencies that IdentityManager will own.
-  auto gaia_cookie_manager_service = std::make_unique<GaiaCookieManagerService>(
-      ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-      ChromeSigninClientFactory::GetForProfile(profile));
-  std::unique_ptr<ConcreteSigninManager> signin_manager =
-      BuildSigninManager(profile, gaia_cookie_manager_service.get());
-  std::unique_ptr<identity::PrimaryAccountMutator> primary_account_mutator =
-      BuildPrimaryAccountMutator(profile, signin_manager.get());
-  std::unique_ptr<identity::AccountsMutator> accounts_mutator =
-      BuildAccountsMutator(profile, signin_manager.get());
-  auto accounts_cookie_mutator =
-      std::make_unique<identity::AccountsCookieMutatorImpl>(
-          gaia_cookie_manager_service.get());
-  auto diagnostics_provider =
-      std::make_unique<identity::DiagnosticsProviderImpl>(
-          ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-          gaia_cookie_manager_service.get());
-  std::unique_ptr<AccountFetcherService> account_fetcher_service =
-      BuildAccountFetcherService(
-          ChromeSigninClientFactory::GetForProfile(profile),
-          ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-          AccountTrackerServiceFactory::GetForProfile(profile));
+  signin::IdentityManagerBuildParams params;
+  params.account_consistency =
+      AccountConsistencyModeManager::GetMethodForProfile(profile),
+  params.image_decoder = std::make_unique<ImageDecoderImpl>();
+  params.local_state = g_browser_process->local_state();
+  params.network_connection_tracker = content::GetNetworkConnectionTracker();
+  params.pref_service = profile->GetPrefs();
+  params.profile_path = profile->GetPath();
+  params.signin_client = ChromeSigninClientFactory::GetForProfile(profile);
 
-  auto identity_manager = std::make_unique<IdentityManagerWrapper>(
-      profile, std::move(gaia_cookie_manager_service),
-      std::move(signin_manager), std::move(account_fetcher_service),
-      std::move(primary_account_mutator), std::move(accounts_mutator),
-      std::move(accounts_cookie_mutator), std::move(diagnostics_provider));
+#if !defined(OS_ANDROID)
+  params.delete_signin_cookies_on_exit =
+      signin::SettingsDeleteSigninCookiesOnExit(
+          CookieSettingsFactory::GetForProfile(profile).get());
+  params.token_web_data = WebDataServiceFactory::GetTokenWebDataForProfile(
+      profile, ServiceAccessType::EXPLICIT_ACCESS);
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  auto* factory =
+      g_browser_process->platform_part()->GetAccountManagerFactory();
+  DCHECK(factory);
+  params.account_manager =
+      factory->GetAccountManager(profile->GetPath().value());
+  params.account_manager_facade =
+      GetAccountManagerFacade(profile->GetPath().value());
+  params.is_regular_profile =
+      chromeos::ProfileHelper::IsRegularProfile(profile);
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  params.account_manager_facade =
+      GetAccountManagerFacade(profile->GetPath().value());
+  // Lacros runs inside a user session and is not used to render Chrome OS's
+  // Login Screen, or its Lock Screen. Hence, all Profiles in Lacros are regular
+  // Profiles.
+  params.is_regular_profile = true;
+#endif
+
+  // Ephemeral Guest profiles are not supposed to fetch Dice access tokens.
+  params.allow_access_token_fetch = !profile->IsEphemeralGuestProfile();
+
+#if defined(OS_WIN)
+  params.reauth_callback =
+      base::BindRepeating(&signin_util::ReauthWithCredentialProviderIfPossible,
+                          base::Unretained(profile));
+#endif
+
+  std::unique_ptr<signin::IdentityManager> identity_manager =
+      signin::BuildIdentityManager(&params);
+
   for (Observer& observer : observer_list_)
     observer.IdentityManagerCreated(identity_manager.get());
-  return identity_manager.release();
-}
 
-void IdentityManagerFactory::BrowserContextShutdown(
-    content::BrowserContext* context) {
-  auto* identity_manager = static_cast<IdentityManagerWrapper*>(
-      GetServiceForBrowserContext(context, false));
-  if (identity_manager) {
-    for (Observer& observer : observer_list_)
-      observer.IdentityManagerShutdown(identity_manager);
-  }
-  BrowserContextKeyedServiceFactory::BrowserContextShutdown(context);
+  return identity_manager.release();
 }

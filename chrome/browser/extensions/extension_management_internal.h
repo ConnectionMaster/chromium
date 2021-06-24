@@ -4,6 +4,7 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_EXTENSION_MANAGEMENT_INTERNAL_H_
 #define CHROME_BROWSER_EXTENSIONS_EXTENSION_MANAGEMENT_INTERNAL_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -76,10 +77,15 @@ struct IndividualSettings {
   ExtensionManagement::InstallationMode installation_mode;
   std::string update_url;
 
+  // Boolean to indicate whether the update URL of the extension/app is
+  // overridden by the policy or not. It can be true only for extensions/apps
+  // which are marked as |force_installed|.
+  bool override_update_url{false};
+
   // Permissions block list for extensions. This setting won't grant permissions
   // to extensions automatically. Instead, this setting will provide a list of
   // blocked permissions for each extension. That is, if an extension requires a
-  // permission which has been blacklisted, this extension will not be allowed
+  // permission which has been blocklisted, this extension will not be allowed
   // to load. And if it contains a blocked permission as optional requirement,
   // it will be allowed to load (of course, with permission granted from user if
   // necessary), but conflicting permissions will be dropped.
@@ -132,6 +138,12 @@ struct IndividualSettings {
   // users to company information about acceptable extensions, ways to request
   // exceptions etc. This string is limited to 1000 characters.
   std::string blocked_install_message;
+
+  // Allows admins to control whether the extension icon should be pinned to
+  // the toolbar next to the omnibar. If it is pinned, the icon is visible at
+  // all times.
+  ExtensionManagement::ToolbarPinMode toolbar_pin =
+      ExtensionManagement::ToolbarPinMode::kDefaultUnpinned;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(IndividualSettings);

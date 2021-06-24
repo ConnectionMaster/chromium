@@ -7,20 +7,28 @@
 
 #include <string>
 
+#if defined(OS_WIN)
+#include <windows.h>
+#endif
+
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/process/process_metrics.h"
 #include "base/single_thread_task_runner.h"
+#include "base/task/single_thread_task_executor.h"
 #include "build/build_config.h"
 #include "ipc/ipc_channel.h"
 #include "ipc/ipc_listener.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_sender.h"
 #include "ipc/ipc_test.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/system/core.h"
+
+#if defined(OS_WIN)
+#include <windows.h>
+#endif
 
 namespace IPC {
 
@@ -35,7 +43,7 @@ class ChannelReflectorListener : public Listener {
 
   ~ChannelReflectorListener() override;
 
-  void Init(Sender* channel, const base::Closure& quit_closure);
+  void Init(Sender* channel, base::OnceClosure quit_closure);
 
   bool OnMessageReceived(const Message& message) override;
 
@@ -51,7 +59,7 @@ class ChannelReflectorListener : public Listener {
 
  private:
   Sender* channel_;
-  base::Closure quit_closure_;
+  base::OnceClosure quit_closure_;
 };
 
 // This class locks the current thread to a particular CPU core. This is
@@ -69,7 +77,7 @@ class LockThreadAffinity {
   bool affinity_set_ok_;
 #if defined(OS_WIN)
   DWORD_PTR old_affinity_;
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
   cpu_set_t old_cpuset_;
 #endif
 
@@ -89,7 +97,7 @@ class MojoPerfTestClient {
   int Run(MojoHandle handle);
 
  private:
-  base::MessageLoop main_message_loop_;
+  base::SingleThreadTaskExecutor main_task_executor_;
   std::unique_ptr<ChannelReflectorListener> listener_;
   std::unique_ptr<Channel> channel_;
   mojo::ScopedMessagePipeHandle handle_;
@@ -98,7 +106,7 @@ class MojoPerfTestClient {
 class ReflectorImpl : public IPC::mojom::Reflector {
  public:
   explicit ReflectorImpl(mojo::ScopedMessagePipeHandle handle,
-                         const base::Closure& quit_closure);
+                         base::OnceClosure quit_closure);
 
   ~ReflectorImpl() override;
 
@@ -110,8 +118,8 @@ class ReflectorImpl : public IPC::mojom::Reflector {
 
   void Quit() override;
 
-  base::Closure quit_closure_;
-  mojo::Binding<IPC::mojom::Reflector> binding_;
+  base::OnceClosure quit_closure_;
+  mojo::Receiver<IPC::mojom::Reflector> receiver_;
 };
 
 }  // namespace IPC

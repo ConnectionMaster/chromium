@@ -21,23 +21,25 @@ class RenderViewContextMenuMac : public RenderViewContextMenu,
                            const content::ContextMenuParams& params);
   ~RenderViewContextMenuMac() override;
 
+  void Show() override {}
+
   // SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override;
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
 
   // TextServicesContextMenu::Delegate:
-  base::string16 GetSelectedText() const override;
+  std::u16string GetSelectedText() const override;
   bool IsTextDirectionEnabled(
       base::i18n::TextDirection direction) const override;
   bool IsTextDirectionChecked(
       base::i18n::TextDirection direction) const override;
   void UpdateTextDirection(base::i18n::TextDirection direction) override;
 
- protected:
   // Adds menu to the platform's toolkit.
   void InitToolkitMenu();
 
+ protected:
   // RenderViewContextMenu:
   void AppendPlatformEditableItems() override;
 

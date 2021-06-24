@@ -10,15 +10,17 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/json/json_string_value_serializer.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/metrics/histogram.h"
+#include "base/ranges/algorithm.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -33,26 +35,29 @@ struct JsonPrefStore::ReadResult {
  public:
   ReadResult();
   ~ReadResult();
+  ReadResult(const ReadResult&) = delete;
+  ReadResult& operator=(const ReadResult&) = delete;
 
   std::unique_ptr<base::Value> value;
-  PrefReadError error;
-  bool no_dir;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ReadResult);
+  PrefReadError error = PersistentPrefStore::PREF_READ_ERROR_NONE;
+  bool no_dir = false;
+  size_t num_bytes_read = 0u;
 };
 
-JsonPrefStore::ReadResult::ReadResult()
-    : error(PersistentPrefStore::PREF_READ_ERROR_NONE), no_dir(false) {
-}
-
-JsonPrefStore::ReadResult::~ReadResult() {
-}
+JsonPrefStore::ReadResult::ReadResult() = default;
+JsonPrefStore::ReadResult::~ReadResult() = default;
 
 namespace {
 
 // Some extensions we'll tack on to copies of the Preferences files.
 const base::FilePath::CharType kBadExtension[] = FILE_PATH_LITERAL("bad");
+
+bool BackupPrefsFile(const base::FilePath& path) {
+  const base::FilePath bad = path.ReplaceExtension(kBadExtension);
+  const bool bad_existed = base::PathExists(bad);
+  base::Move(path, bad);
+  return bad_existed;
+}
 
 PersistentPrefStore::PrefReadError HandleReadErrors(
     const base::Value* value,
@@ -78,13 +83,10 @@ PersistentPrefStore::PrefReadError HandleReadErrors(
         // We keep the old file for possible support and debugging assistance
         // as well as to detect if they're seeing these errors repeatedly.
         // TODO(erikkay) Instead, use the last known good file.
-        base::FilePath bad = path.ReplaceExtension(kBadExtension);
-
         // If they've ever had a parse error before, put them in another bucket.
         // TODO(erikkay) if we keep this error checking for very long, we may
         // want to differentiate between recent and long ago errors.
-        bool bad_existed = base::PathExists(bad);
-        base::Move(path, bad);
+        const bool bad_existed = BackupPrefsFile(path);
         return bad_existed ? PersistentPrefStore::PREF_READ_ERROR_JSON_REPEAT
                            : PersistentPrefStore::PREF_READ_ERROR_JSON_PARSE;
     }
@@ -116,18 +118,29 @@ std::unique_ptr<JsonPrefStore::ReadResult> ReadPrefsFromDisk(
     const base::FilePath& path) {
   int error_code;
   std::string error_msg;
-  std::unique_ptr<JsonPrefStore::ReadResult> read_result(
-      new JsonPrefStore::ReadResult);
+  auto read_result = std::make_unique<JsonPrefStore::ReadResult>();
   JSONFileValueDeserializer deserializer(path);
   read_result->value = deserializer.Deserialize(&error_code, &error_msg);
   read_result->error =
       HandleReadErrors(read_result->value.get(), path, error_code, error_msg);
   read_result->no_dir = !base::PathExists(path.DirName());
+  read_result->num_bytes_read = deserializer.get_last_read_size();
 
   if (read_result->error == PersistentPrefStore::PREF_READ_ERROR_NONE)
     RecordJsonDataSizeHistogram(path, deserializer.get_last_read_size());
 
   return read_result;
+}
+
+// Returns the a histogram suffix for a few allowlisted JsonPref files.
+const char* GetHistogramSuffix(const base::FilePath& path) {
+  std::string spaceless_basename;
+  base::ReplaceChars(path.BaseName().MaybeAsASCII(), " ", "_",
+                     &spaceless_basename);
+  static constexpr std::array<const char*, 3> kAllowList{
+      "Secure_Preferences", "Preferences", "Local_State"};
+  const char* const* it = base::ranges::find(kAllowList, spaceless_basename);
+  return it != kAllowList.end() ? *it : "";
 }
 
 }  // namespace
@@ -140,7 +153,9 @@ JsonPrefStore::JsonPrefStore(
       file_task_runner_(std::move(file_task_runner)),
       prefs_(new base::DictionaryValue()),
       read_only_(false),
-      writer_(pref_filename, file_task_runner_),
+      writer_(pref_filename,
+              file_task_runner_,
+              GetHistogramSuffix(pref_filename)),
       pref_filter_(std::move(pref_filter)),
       initialized_(false),
       filtering_in_progress_(false),
@@ -181,8 +196,7 @@ void JsonPrefStore::RemoveObserver(PrefStore::Observer* observer) {
 
 bool JsonPrefStore::HasObservers() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  return observers_.might_have_observers();
+  return !observers_.empty();
 }
 
 bool JsonPrefStore::IsInitializationComplete() const {
@@ -206,8 +220,8 @@ void JsonPrefStore::SetValue(const std::string& key,
   DCHECK(value);
   base::Value* old_value = nullptr;
   prefs_->Get(key, &old_value);
-  if (!old_value || !value->Equals(old_value)) {
-    prefs_->Set(key, std::move(value));
+  if (!old_value || *value != *old_value) {
+    prefs_->SetPath(key, std::move(*value));
     ReportValueChanged(key, flags);
   }
 }
@@ -220,8 +234,8 @@ void JsonPrefStore::SetValueSilently(const std::string& key,
   DCHECK(value);
   base::Value* old_value = nullptr;
   prefs_->Get(key, &old_value);
-  if (!old_value || !value->Equals(old_value)) {
-    prefs_->Set(key, std::move(value));
+  if (!old_value || *value != *old_value) {
+    prefs_->SetPath(key, std::move(*value));
     ScheduleWrite(flags);
   }
 }
@@ -239,6 +253,11 @@ void JsonPrefStore::RemoveValueSilently(const std::string& key,
 
   prefs_->RemovePath(key, nullptr);
   ScheduleWrite(flags);
+}
+
+void JsonPrefStore::RemoveValuesByPrefixSilently(const std::string& prefix) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RemoveValueSilently(prefix, /*flags*/ 0);
 }
 
 bool JsonPrefStore::ReadOnly() const {
@@ -269,8 +288,9 @@ void JsonPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
 
   // Weakly binds the read task so that it doesn't kick in during shutdown.
   base::PostTaskAndReplyWithResult(
-      file_task_runner_.get(), FROM_HERE, base::Bind(&ReadPrefsFromDisk, path_),
-      base::Bind(&JsonPrefStore::OnFileRead, AsWeakPtr()));
+      file_task_runner_.get(), FROM_HERE,
+      base::BindOnce(&ReadPrefsFromDisk, path_),
+      base::BindOnce(&JsonPrefStore::OnFileRead, AsWeakPtr()));
 }
 
 void JsonPrefStore::CommitPendingWrite(
@@ -301,6 +321,28 @@ void JsonPrefStore::CommitPendingWrite(
   }
 }
 
+void JsonPrefStore::CommitPendingWriteSynchronously() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // Schedule a write for any lossy writes that are outstanding to ensure that
+  // they get flushed when this function is called.
+  SchedulePendingLossyWrites();
+  if (!writer_.HasPendingWrite() || read_only_)
+    return;
+
+  const base::FilePath path = writer_.path();
+  std::string data;
+  if (!SerializeData(&data)) {
+    DVLOG(1) << "Failed to serialize data to be saved in " << path.value();
+    return;
+  }
+
+  const std::string suffix = GetHistogramSuffix(path);
+  if (!base::ImportantFileWriter::WriteFileAtomically(path, data, suffix)) {
+    DVLOG(1) << "Could not write " << suffix << " into " << path.value();
+  }
+}
+
 void JsonPrefStore::SchedulePendingLossyWrites() {
   if (pending_lossy_write_)
     writer_.ScheduleWrite(this);
@@ -324,37 +366,37 @@ void JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback(
 
   has_pending_write_reply_ = false;
   if (!on_next_successful_write_reply_.is_null()) {
-    base::Closure on_successful_write =
+    base::OnceClosure on_successful_write =
         std::move(on_next_successful_write_reply_);
     if (write_success) {
-      on_successful_write.Run();
+      std::move(on_successful_write).Run();
     } else {
-      RegisterOnNextSuccessfulWriteReply(on_successful_write);
+      RegisterOnNextSuccessfulWriteReply(std::move(on_successful_write));
     }
   }
 }
 
 // static
 void JsonPrefStore::PostWriteCallback(
-    const base::Callback<void(bool success)>& on_next_write_callback,
-    const base::Callback<void(bool success)>& on_next_write_reply,
+    base::OnceCallback<void(bool success)> on_next_write_callback,
+    base::OnceCallback<void(bool success)> on_next_write_reply,
     scoped_refptr<base::SequencedTaskRunner> reply_task_runner,
     bool write_success) {
   if (!on_next_write_callback.is_null())
-    on_next_write_callback.Run(write_success);
+    std::move(on_next_write_callback).Run(write_success);
 
   // We can't run |on_next_write_reply| on the current thread. Bounce back to
   // the |reply_task_runner| which is the correct sequenced thread.
   reply_task_runner->PostTask(
-      FROM_HERE, base::BindOnce(on_next_write_reply, write_success));
+      FROM_HERE, base::BindOnce(std::move(on_next_write_reply), write_success));
 }
 
 void JsonPrefStore::RegisterOnNextSuccessfulWriteReply(
-    const base::Closure& on_next_successful_write_reply) {
+    base::OnceClosure on_next_successful_write_reply) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(on_next_successful_write_reply_.is_null());
 
-  on_next_successful_write_reply_ = on_next_successful_write_reply;
+  on_next_successful_write_reply_ = std::move(on_next_successful_write_reply);
 
   // If there are pending callbacks, avoid erasing them; the reply will be used
   // as we set |on_next_successful_write_reply_|. Otherwise, setup a reply with
@@ -362,11 +404,12 @@ void JsonPrefStore::RegisterOnNextSuccessfulWriteReply(
   if (!has_pending_write_reply_) {
     has_pending_write_reply_ = true;
     writer_.RegisterOnNextWriteCallbacks(
-        base::Closure(),
-        base::Bind(
-            &PostWriteCallback, base::Callback<void(bool success)>(),
-            base::Bind(&JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
-                       AsWeakPtr()),
+        base::OnceClosure(),
+        base::BindOnce(
+            &PostWriteCallback, base::OnceCallback<void(bool success)>(),
+            base::BindOnce(
+                &JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
+                AsWeakPtr()),
             base::SequencedTaskRunnerHandle::Get()));
   }
 }
@@ -378,11 +421,12 @@ void JsonPrefStore::RegisterOnNextWriteSynchronousCallbacks(
   has_pending_write_reply_ = true;
 
   writer_.RegisterOnNextWriteCallbacks(
-      callbacks.first,
-      base::Bind(
-          &PostWriteCallback, callbacks.second,
-          base::Bind(&JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
-                     AsWeakPtr()),
+      std::move(callbacks.first),
+      base::BindOnce(
+          &PostWriteCallback, std::move(callbacks.second),
+          base::BindOnce(
+              &JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
+              AsWeakPtr()),
           base::SequencedTaskRunnerHandle::Get()));
 }
 
@@ -400,8 +444,7 @@ void JsonPrefStore::OnFileRead(std::unique_ptr<ReadResult> read_result) {
 
   DCHECK(read_result);
 
-  std::unique_ptr<base::DictionaryValue> unfiltered_prefs(
-      new base::DictionaryValue);
+  auto unfiltered_prefs = std::make_unique<base::DictionaryValue>();
 
   read_error_ = read_result->error;
 
@@ -418,6 +461,7 @@ void JsonPrefStore::OnFileRead(std::unique_ptr<ReadResult> read_result) {
         break;
       case PREF_READ_ERROR_NONE:
         DCHECK(read_result->value);
+        writer_.set_previous_data_size(read_result->num_bytes_read);
         unfiltered_prefs.reset(
             static_cast<base::DictionaryValue*>(read_result->value.release()));
         break;
@@ -439,11 +483,10 @@ void JsonPrefStore::OnFileRead(std::unique_ptr<ReadResult> read_result) {
 
   if (pref_filter_) {
     filtering_in_progress_ = true;
-    const PrefFilter::PostFilterOnLoadCallback post_filter_on_load_callback(
-        base::Bind(
-            &JsonPrefStore::FinalizeFileRead, AsWeakPtr(),
-            initialization_successful));
-    pref_filter_->FilterOnLoad(post_filter_on_load_callback,
+    PrefFilter::PostFilterOnLoadCallback post_filter_on_load_callback(
+        base::BindOnce(&JsonPrefStore::FinalizeFileRead, AsWeakPtr(),
+                       initialization_successful));
+    pref_filter_->FilterOnLoad(std::move(post_filter_on_load_callback),
                                std::move(unfiltered_prefs));
   } else {
     FinalizeFileRead(initialization_successful, std::move(unfiltered_prefs),
@@ -465,7 +508,7 @@ bool JsonPrefStore::SerializeData(std::string* output) {
     OnWriteCallbackPair callbacks =
         pref_filter_->FilterSerializeData(prefs_.get());
     if (!callbacks.first.is_null() || !callbacks.second.is_null())
-      RegisterOnNextWriteSynchronousCallbacks(callbacks);
+      RegisterOnNextWriteSynchronousCallbacks(std::move(callbacks));
   }
 
   JSONStringValueSerializer serializer(output);
@@ -473,8 +516,15 @@ bool JsonPrefStore::SerializeData(std::string* output) {
   // readable prefs for debugging purposes, you can dump your prefs into any
   // command-line or online JSON pretty printing tool.
   serializer.set_pretty_print(false);
-  bool success = serializer.Serialize(*prefs_);
-  DCHECK(success);
+  const bool success = serializer.Serialize(*prefs_);
+  if (!success) {
+    // Failed to serialize prefs file. Backup the existing prefs file and
+    // crash.
+    BackupPrefsFile(path_);
+    CHECK(false) << "Failed to serialize preferences : " << path_
+                 << "\nBacked up under "
+                 << path_.ReplaceExtension(kBadExtension);
+  }
   return success;
 }
 

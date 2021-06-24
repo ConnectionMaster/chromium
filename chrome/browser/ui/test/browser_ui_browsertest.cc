@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "base/process/launch.h"
 #include "base/stl_util.h"
 #include "base/test/launcher/test_launcher.h"
@@ -11,7 +12,6 @@
 #include "build/build_config.h"
 #include "content/public/common/content_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/compositor/compositor_switches.h"
 
 namespace {
 
@@ -68,22 +68,9 @@ TEST(BrowserUiTest, Invoke) {
 
   base::LaunchOptions options;
 
-  // Generate screen output if --test-launcher-interactive was specified.
-  if (command.HasSwitch(switches::kTestLauncherInteractive)) {
-    command.AppendSwitch(switches::kEnablePixelOutputInTests);
-#if defined(OS_WIN)
-    // Under Windows, the child process won't launch without the wait option.
-    // See http://crbug.com/688534.
-    options.wait = true;
-    // Under Windows, dialogs (but not the browser window) created in the
-    // spawned browser_test process are invisible for some unknown reason.
-    // Pass in --disable-gpu to resolve this for now. See
-    // http://crbug.com/687387.
-    command.AppendSwitch(switches::kDisableGpu);
-#endif
-  } else {
-    options.wait = true;
-  }
+  // Wait on subprocess. Otherwise the whole process group will be killed on
+  // parent process exit. See http://crbug.com/1094369.
+  options.wait = true;
 
   base::LaunchProcess(command, options);
 }

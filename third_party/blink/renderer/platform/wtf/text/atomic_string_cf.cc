@@ -28,10 +28,9 @@
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_table.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 
 #include <CoreFoundation/CoreFoundation.h>
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 
 namespace WTF {
 
@@ -57,4 +56,4 @@ scoped_refptr<StringImpl> AtomicString::Add(CFStringRef string) {
 
 }  // namespace WTF
 
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)

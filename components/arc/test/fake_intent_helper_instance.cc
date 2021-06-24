@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/threading/thread_task_runner_handle.h"
 
 namespace arc {
@@ -55,6 +55,12 @@ FakeIntentHelperInstance::~FakeIntentHelperInstance() {}
 void FakeIntentHelperInstance::AddPreferredPackage(
     const std::string& package_name) {}
 
+void FakeIntentHelperInstance::AddPreferredApp(const std::string& package_name,
+                                               IntentFilter intent_filter,
+                                               mojom::IntentInfoPtr intent) {}
+void FakeIntentHelperInstance::ResetVerifiedLinks(
+    const std::vector<std::string>& package_names) {}
+
 void FakeIntentHelperInstance::GetFileSizeDeprecated(
     const std::string& url,
     GetFileSizeDeprecatedCallback callback) {}
@@ -64,22 +70,27 @@ void FakeIntentHelperInstance::HandleIntent(mojom::IntentInfoPtr intent,
   handled_intents_.emplace_back(std::move(intent), std::move(activity));
 }
 
+void FakeIntentHelperInstance::HandleIntentWithWindowInfo(
+    mojom::IntentInfoPtr intent,
+    mojom::ActivityNamePtr activity,
+    mojom::WindowInfoPtr window_info) {
+  handled_intents_.emplace_back(std::move(intent), std::move(activity));
+}
+
 void FakeIntentHelperInstance::HandleUrl(const std::string& url,
                                          const std::string& package_name) {}
 
-void FakeIntentHelperInstance::HandleUrlListDeprecated(
-    std::vector<mojom::UrlWithMimeTypePtr> urls,
-    mojom::ActivityNamePtr activity,
-    mojom::ActionType action) {}
-
 void FakeIntentHelperInstance::InitDeprecated(
-    mojom::IntentHelperHostPtr host_ptr) {
-  Init(std::move(host_ptr), base::DoNothing());
+    mojo::PendingRemote<mojom::IntentHelperHost> host_remote) {
+  Init(std::move(host_remote), base::DoNothing());
 }
 
-void FakeIntentHelperInstance::Init(mojom::IntentHelperHostPtr host_ptr,
-                                    InitCallback callback) {
-  host_ = std::move(host_ptr);
+void FakeIntentHelperInstance::Init(
+    mojo::PendingRemote<mojom::IntentHelperHost> host_remote,
+    InitCallback callback) {
+  // For every change in a connection bind latest remote.
+  host_remote_.reset();
+  host_remote_.Bind(std::move(host_remote));
   std::move(callback).Run();
 }
 
@@ -110,7 +121,12 @@ void FakeIntentHelperInstance::RequestIntentHandlerList(
 
 void FakeIntentHelperInstance::RequestUrlHandlerList(
     const std::string& url,
-    RequestUrlHandlerListCallback callback) {}
+    RequestUrlHandlerListCallback callback) {
+  std::vector<mojom::IntentHandlerInfoPtr> handlers;
+  // Post the reply to run asynchronously to match the real implementation.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), std::move(handlers)));
+}
 
 void FakeIntentHelperInstance::RequestUrlListHandlerList(
     std::vector<mojom::UrlWithMimeTypePtr> urls,
@@ -133,6 +149,12 @@ void FakeIntentHelperInstance::RequestTextSelectionActions(
     ::arc::mojom::ScaleFactor scale_factor,
     RequestTextSelectionActionsCallback callback) {}
 
+void FakeIntentHelperInstance::HandleCameraResult(
+    uint32_t intent_id,
+    arc::mojom::CameraIntentAction action,
+    const std::vector<uint8_t>& data,
+    HandleCameraResultCallback callback) {}
+
 std::vector<FakeIntentHelperInstance::Broadcast>
 FakeIntentHelperInstance::GetBroadcastsForAction(
     const std::string& action) const {
@@ -142,5 +164,7 @@ FakeIntentHelperInstance::GetBroadcastsForAction(
                [action](const Broadcast& b) { return b.action == action; });
   return result;
 }
+
+void FakeIntentHelperInstance::RequestDomainVerificationStatusUpdate() {}
 
 }  // namespace arc

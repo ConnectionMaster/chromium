@@ -1,8 +1,9 @@
-<link rel="import" href="chrome://resources/html/polymer.html">
+<link rel="import" href="../../../html/polymer.html">
 
-<link rel="import" href="chrome://resources/cr_elements/cr_input/cr_input.html">
-<link rel="import" href="chrome://resources/html/i18n_behavior.html">
+<link rel="import" href="../../../cr_elements/cr_input/cr_input.html">
+<link rel="import" href="../../../html/i18n_behavior.html">
 <link rel="import" href="network_shared_css.html">
+<link rel="import" href="onc_mojo.html">
 
 <dom-module id="network-proxy-input">
   <template>
@@ -32,12 +33,14 @@
     </style>
     <div id="container">
       <div id="label">[[label]]</div>
-      <cr-input id="host" readonly="[[!editable]]" value="{{value.Host}}"
-          on-change="onValueChange_">
+      <cr-input id="host" readonly="[[!editable]]"
+          aria-label="[[i18n('networkProxyHostInputA11yLabel', label)]]"
+          value="{{value.host.activeValue}}" on-change="onValueChange_">
       </cr-input>
       <div>[[i18n('networkProxyPort')]]</div>
-      <cr-input id="port" readonly="[[!editable]]" value="{{value.Port}}"
-          on-change="onValueChange_">
+      <cr-input id="port" readonly="[[!editable]]"
+          aria-label="[[i18n('networkProxyPortInputA11yLabel', label)]]"
+          value="{{value.port.activeValue}}" on-change="onValueChange_">
       </cr-input>
     </div>
   </template>

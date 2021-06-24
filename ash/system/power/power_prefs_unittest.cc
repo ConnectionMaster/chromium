@@ -10,17 +10,19 @@
 #include <vector>
 
 #include "ash/public/cpp/ash_pref_names.h"
-#include "ash/session/session_controller.h"
+#include "ash/public/cpp/test/shell_test_api.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell.h"
-#include "ash/shell_test_api.h"
 #include "ash/test/ash_test_base.h"
+#include "base/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_policy_controller.h"
 #include "chromeos/dbus/power_manager/idle.pb.h"
+#include "chromeos/dbus/power_manager/policy.pb.h"
 #include "components/prefs/pref_notifier_impl.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -113,7 +115,13 @@ std::string GetExpectedPowerPolicyForPrefs(PrefService* prefs,
       prefs->GetBoolean(prefs::kPowerWaitForInitialUserActivity));
   expected_policy.set_force_nonzero_brightness_for_user_activity(
       prefs->GetBoolean(prefs::kPowerForceNonzeroBrightnessForUserActivity));
+
+  // Device-level prefs do not exist in the user-level |prefs|.
+  expected_policy.mutable_battery_charge_mode()->set_mode(
+      power_manager::PowerManagementPolicy::BatteryChargeMode::ADAPTIVE);
   expected_policy.set_boot_on_ac(false);
+  expected_policy.set_usb_power_share(true);
+
   expected_policy.set_reason("Prefs");
   return chromeos::PowerPolicyController::GetPolicyDebugString(expected_policy);
 }
@@ -122,13 +130,51 @@ bool GetExpectedAllowScreenWakeLocksForPrefs(PrefService* prefs) {
   return prefs->GetBoolean(prefs::kPowerAllowScreenWakeLocks);
 }
 
+std::string GetExpectedPeakShiftPolicyForPrefs(PrefService* prefs) {
+  DCHECK(prefs);
+
+  std::vector<power_manager::PowerManagementPolicy::PeakShiftDayConfig> configs;
+  EXPECT_TRUE(chromeos::PowerPolicyController::GetPeakShiftDayConfigs(
+      *prefs->GetDictionary(prefs::kPowerPeakShiftDayConfig), &configs));
+
+  power_manager::PowerManagementPolicy expected_policy;
+  expected_policy.set_peak_shift_battery_percent_threshold(
+      prefs->GetInteger(prefs::kPowerPeakShiftBatteryThreshold));
+  *expected_policy.mutable_peak_shift_day_configs() = {configs.begin(),
+                                                       configs.end()};
+
+  return chromeos::PowerPolicyController::GetPeakShiftPolicyDebugString(
+      expected_policy);
+}
+
+std::string GetExpectedAdvancedBatteryChargeModePolicyForPrefs(
+    PrefService* prefs) {
+  DCHECK(prefs);
+
+  std::vector<
+      power_manager::PowerManagementPolicy::AdvancedBatteryChargeModeDayConfig>
+      configs;
+  EXPECT_TRUE(
+      chromeos::PowerPolicyController::GetAdvancedBatteryChargeModeDayConfigs(
+          *prefs->GetDictionary(prefs::kAdvancedBatteryChargeModeDayConfig),
+          &configs));
+
+  power_manager::PowerManagementPolicy expected_policy;
+  *expected_policy.mutable_advanced_battery_charge_mode_day_configs() = {
+      configs.begin(), configs.end()};
+
+  return chromeos::PowerPolicyController::
+      GetAdvancedBatteryChargeModePolicyDebugString(expected_policy);
+}
+
 void DecodeJsonStringAndNormalize(const std::string& json_string,
                                   base::Value* value) {
-  base::JSONReader reader(base::JSON_ALLOW_TRAILING_COMMAS);
-  base::Optional<base::Value> read_value = reader.ReadToValue(json_string);
-  ASSERT_EQ(reader.GetErrorMessage(), "");
-  ASSERT_TRUE(read_value.has_value());
-  *value = std::move(read_value.value());
+  base::JSONReader::ValueWithError parsed_json =
+      base::JSONReader::ReadAndReturnValueWithError(
+          json_string, base::JSON_ALLOW_TRAILING_COMMAS);
+  ASSERT_EQ(parsed_json.error_message, "");
+  ASSERT_TRUE(parsed_json.value);
+  *value = std::move(*parsed_json.value);
 }
 
 }  // namespace
@@ -143,7 +189,7 @@ class PowerPrefsTest : public NoSessionAshTestBase {
     NoSessionAshTestBase::SetUp();
 
     power_policy_controller_ = chromeos::PowerPolicyController::Get();
-    power_prefs_ = ShellTestApi(Shell::Get()).power_prefs();
+    power_prefs_ = ShellTestApi().power_prefs();
 
     // Advance the clock an arbitrary amount of time so it won't report zero.
     tick_clock_.Advance(base::TimeDelta::FromSeconds(1));
@@ -156,8 +202,7 @@ class PowerPrefsTest : public NoSessionAshTestBase {
   }
 
   void TearDown() override {
-    static_cast<ShellObserver*>(power_prefs_)
-        ->OnLocalStatePrefServiceInitialized(nullptr);
+    power_prefs_->local_state_ = nullptr;
 
     NoSessionAshTestBase::TearDown();
   }
@@ -176,17 +221,12 @@ class PowerPrefsTest : public NoSessionAshTestBase {
 
     PowerPrefs::RegisterLocalStatePrefs(pref_registry_.get());
 
-    static_cast<ShellObserver*>(power_prefs_)
-        ->OnLocalStatePrefServiceInitialized(local_state_.get());
+    power_prefs_->local_state_ = local_state_.get();
+    power_prefs_->ObserveLocalStatePrefs(power_prefs_->local_state_);
   }
 
   std::string GetCurrentPowerPolicy() const {
     return chromeos::PowerPolicyController::GetPolicyDebugString(
-        power_manager_client()->policy());
-  }
-
-  std::string GetCurrentPowerPeakShiftPolicy() const {
-    return chromeos::PowerPolicyController::GetPeakShiftPolicyDebugString(
         power_manager_client()->policy());
   }
 
@@ -212,6 +252,8 @@ class PowerPrefsTest : public NoSessionAshTestBase {
     proto.set_off(off);
     power_manager_client()->SendScreenIdleStateChanged(proto);
   }
+
+  PrefService* local_state() { return local_state_.get(); }
 
   chromeos::PowerPolicyController* power_policy_controller_ =
       nullptr;                         // Not owned.
@@ -398,27 +440,98 @@ TEST_F(PowerPrefsTest, PeakShift) {
   base::Value day_configs;
   DecodeJsonStringAndNormalize(kDayConfigsJson, &day_configs);
 
-  managed_pref_store_->SetBoolean(prefs::kDevicePowerPeakShiftEnabled, true);
-  managed_pref_store_->SetInteger(prefs::kDevicePowerPeakShiftBatteryThreshold,
-                                  50);
+  managed_pref_store_->SetBoolean(prefs::kPowerPeakShiftEnabled, true);
+  managed_pref_store_->SetInteger(prefs::kPowerPeakShiftBatteryThreshold, 50);
   managed_pref_store_->SetValue(
-      prefs::kDevicePowerPeakShiftDayConfig,
+      prefs::kPowerPeakShiftDayConfig,
       std::make_unique<base::Value>(std::move(day_configs)), 0);
 
-  constexpr char kExpectedPeakShiftPolicy[] =
-      "peak_shift_battery_threshold=50 "
-      "peak_shift_day_configuration=["
-      "{day=0 start_time=7:30 end_time=10:15 charge_start_time=20:00} "
-      "{day=4 start_time=4:00 end_time=9:45 charge_start_time=22:30} ] ";
-  EXPECT_EQ(GetCurrentPowerPeakShiftPolicy(), kExpectedPeakShiftPolicy);
+  EXPECT_EQ(chromeos::PowerPolicyController::GetPeakShiftPolicyDebugString(
+                power_manager_client()->policy()),
+            GetExpectedPeakShiftPolicyForPrefs(local_state()));
+}
+
+TEST_F(PowerPrefsTest, AdvancedBatteryChargeMode) {
+  constexpr char kDayConfigsJson[] =
+      R"({
+        "entries": [
+          {
+            "charge_start_time": {
+               "hour": 15,
+               "minute": 15
+            },
+            "charge_end_time": {
+               "hour": 21,
+               "minute": 45
+            },
+            "day": "TUESDAY"
+          },
+          {
+            "charge_start_time": {
+               "hour": 10,
+               "minute": 30
+            },
+            "charge_end_time": {
+               "hour": 23,
+               "minute": 0
+            },
+            "day": "SUNDAY"
+          }
+        ]
+      })";
+  base::Value day_configs;
+  DecodeJsonStringAndNormalize(kDayConfigsJson, &day_configs);
+
+  managed_pref_store_->SetBoolean(prefs::kAdvancedBatteryChargeModeEnabled,
+                                  true);
+  managed_pref_store_->SetValue(
+      prefs::kAdvancedBatteryChargeModeDayConfig,
+      std::make_unique<base::Value>(std::move(day_configs)), 0);
+
+  EXPECT_EQ(chromeos::PowerPolicyController::
+                GetAdvancedBatteryChargeModePolicyDebugString(
+                    power_manager_client()->policy()),
+            GetExpectedAdvancedBatteryChargeModePolicyForPrefs(local_state()));
+}
+
+TEST_F(PowerPrefsTest, BatteryChargeMode) {
+  const auto& battery_charge_mode =
+      power_manager_client()->policy().battery_charge_mode();
+
+  managed_pref_store_->SetInteger(prefs::kBatteryChargeMode, 2);
+  EXPECT_EQ(
+      battery_charge_mode.mode(),
+      power_manager::PowerManagementPolicy::BatteryChargeMode::EXPRESS_CHARGE);
+
+  managed_pref_store_->SetInteger(prefs::kBatteryChargeMode, 5);
+  managed_pref_store_->SetInteger(prefs::kBatteryChargeCustomStartCharging, 55);
+  managed_pref_store_->SetInteger(prefs::kBatteryChargeCustomStopCharging, 87);
+  EXPECT_EQ(battery_charge_mode.mode(),
+            power_manager::PowerManagementPolicy::BatteryChargeMode::CUSTOM);
+  EXPECT_EQ(battery_charge_mode.custom_charge_start(), 55);
+  EXPECT_EQ(battery_charge_mode.custom_charge_stop(), 87);
 }
 
 TEST_F(PowerPrefsTest, BootOnAc) {
-  managed_pref_store_->SetBoolean(prefs::kDeviceBootOnAcEnabled, true);
+  managed_pref_store_->SetBoolean(prefs::kBootOnAcEnabled, true);
   EXPECT_TRUE(power_manager_client()->policy().boot_on_ac());
 
-  managed_pref_store_->SetBoolean(prefs::kDeviceBootOnAcEnabled, false);
+  managed_pref_store_->SetBoolean(prefs::kBootOnAcEnabled, false);
   EXPECT_FALSE(power_manager_client()->policy().boot_on_ac());
+}
+
+TEST_F(PowerPrefsTest, UsbPowerShare) {
+  managed_pref_store_->SetBoolean(prefs::kUsbPowerShareEnabled, true);
+  EXPECT_TRUE(power_manager_client()->policy().usb_power_share());
+
+  managed_pref_store_->SetBoolean(prefs::kUsbPowerShareEnabled, false);
+  EXPECT_FALSE(power_manager_client()->policy().usb_power_share());
+}
+
+TEST_F(PowerPrefsTest, AlsLoggingEnabled) {
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+  EXPECT_FALSE(prefs->GetBoolean(prefs::kPowerAlsLoggingEnabled));
 }
 
 }  // namespace ash

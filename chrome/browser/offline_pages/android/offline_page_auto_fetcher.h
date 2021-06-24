@@ -5,14 +5,11 @@
 #ifndef CHROME_BROWSER_OFFLINE_PAGES_ANDROID_OFFLINE_PAGE_AUTO_FETCHER_H_
 #define CHROME_BROWSER_OFFLINE_PAGES_ANDROID_OFFLINE_PAGE_AUTO_FETCHER_H_
 
-#include <memory>
-#include <queue>
-#include <vector>
-
 #include "base/memory/weak_ptr.h"
 #include "chrome/common/offline_page_auto_fetcher.mojom.h"
 #include "components/offline_pages/core/background/request_queue_results.h"
 #include "components/offline_pages/core/background/save_page_request.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace content {
 class RenderFrameHost;
@@ -29,8 +26,9 @@ class OfflinePageAutoFetcher : public chrome::mojom::OfflinePageAutoFetcher {
   void TrySchedule(bool user_requested, TryScheduleCallback callback) override;
   void CancelSchedule() override;
 
-  static void Create(chrome::mojom::OfflinePageAutoFetcherRequest request,
-                     content::RenderFrameHost* render_frame_host);
+  static void Create(
+      content::RenderFrameHost* render_frame_host,
+      mojo::PendingReceiver<chrome::mojom::OfflinePageAutoFetcher> receiver);
 
  private:
   OfflinePageAutoFetcherService* GetService();
@@ -38,7 +36,9 @@ class OfflinePageAutoFetcher : public chrome::mojom::OfflinePageAutoFetcher {
   using OfflinePageAutoFetcherScheduleResult =
       chrome::mojom::OfflinePageAutoFetcherScheduleResult;
 
-  content::RenderFrameHost* render_frame_host_;
+  GURL last_committed_url_;
+  int android_tab_id_;
+  OfflinePageAutoFetcherService* auto_fetcher_service_ = nullptr;
 };
 
 }  // namespace offline_pages

@@ -9,6 +9,7 @@
 
 #include "base/bind.h"
 #include "base/files/file.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "media/audio/audio_debug_file_writer.h"
@@ -22,8 +23,7 @@ AudioDebugRecordingHelper::AudioDebugRecordingHelper(
     : params_(params),
       recording_enabled_(0),
       task_runner_(std::move(task_runner)),
-      on_destruction_closure_(std::move(on_destruction_closure)),
-      weak_factory_(this) {}
+      on_destruction_closure_(std::move(on_destruction_closure)) {}
 
 AudioDebugRecordingHelper::~AudioDebugRecordingHelper() {
   if (on_destruction_closure_)

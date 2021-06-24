@@ -11,6 +11,7 @@
 #include "chrome/browser/ui/views/location_bar/selected_keyword_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
+#include "content/public/test/browser_test.h"
 
 namespace {
 
@@ -44,7 +45,7 @@ IN_PROC_BROWSER_TEST_F(SelectedKeywordViewTest,
   ASSERT_TRUE(ui_test_utils::IsViewFocused(browser(), VIEW_ID_OMNIBOX));
 
   // Activate the extension's omnibox keyword.
-  InputKeys(browser(), {ui::VKEY_K, ui::VKEY_E, ui::VKEY_Y, ui::VKEY_SPACE});
+  InputKeys(browser(), {ui::VKEY_K, ui::VKEY_E, ui::VKEY_Y, ui::VKEY_TAB});
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   SelectedKeywordView* selected_keyword_view =
@@ -53,7 +54,7 @@ IN_PROC_BROWSER_TEST_F(SelectedKeywordViewTest,
 
   // Verify that the label in the omnibox is the extension's shortname.
   EXPECT_EQ(extension->short_name(),
-            base::UTF16ToUTF8(selected_keyword_view->label()->text()));
+            base::UTF16ToUTF8(selected_keyword_view->label()->GetText()));
 }
 
 }  // namespace

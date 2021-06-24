@@ -9,10 +9,11 @@
 #include <string>
 #include <vector>
 
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/time/time.h"
-#include "net/url_request/url_request.h"
+#include "net/url_request/referrer_policy.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -25,7 +26,6 @@ struct RedirectInfo;
 
 namespace network {
 class SimpleURLLoader;
-struct ResourceResponseHead;
 }  // namespace network
 
 namespace customtabs {
@@ -39,7 +39,7 @@ namespace customtabs {
 // This is a UI thread class.
 class DetachedResourceRequest {
  public:
-  static constexpr int kMaxResponseSize = 100 * 1024;
+  static constexpr int kMaxResponseSize = 500 * 1024;
 
   // The motivation of the resource request, used for histograms reporting.
   // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.customtabs
@@ -56,21 +56,23 @@ class DetachedResourceRequest {
   static void CreateAndStart(content::BrowserContext* browser_context,
                              const GURL& url,
                              const GURL& first_party_for_cookies,
-                             net::URLRequest::ReferrerPolicy referer_policy,
+                             net::ReferrerPolicy referer_policy,
                              Motivation motivation,
+                             const std::string& package_name,
                              OnResultCallback cb = base::DoNothing());
 
  private:
   DetachedResourceRequest(const GURL& url,
                           const GURL& site_for_cookies,
-                          net::URLRequest::ReferrerPolicy referer_policy,
+                          net::ReferrerPolicy referer_policy,
                           Motivation motivation,
+                          const std::string& package_name,
                           OnResultCallback cb);
 
   static void Start(std::unique_ptr<DetachedResourceRequest> request,
                     content::BrowserContext* browser_context);
   void OnRedirectCallback(const net::RedirectInfo& redirect_info,
-                          const network::ResourceResponseHead& response_head,
+                          const network::mojom::URLResponseHead& response_head,
                           std::vector<std::string>* to_be_removed_headers);
   void OnResponseCallback(std::unique_ptr<std::string> response_body);
 
@@ -81,6 +83,7 @@ class DetachedResourceRequest {
   OnResultCallback cb_;
   std::unique_ptr<network::SimpleURLLoader> url_loader_;
   int redirects_;
+  bool is_from_aga_;
 
   DISALLOW_COPY_AND_ASSIGN(DetachedResourceRequest);
 };

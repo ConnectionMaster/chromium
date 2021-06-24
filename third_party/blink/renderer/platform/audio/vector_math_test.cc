@@ -5,17 +5,16 @@
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <limits>
 #include <numeric>
 #include <random>
-#include <vector>
 
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 namespace vector_math {
@@ -71,7 +70,7 @@ bool Equal(float a, float b) {
 // blink::vector_math functions.
 template <typename T>
 class TestVector {
-  STACK_ALLOCATED();
+  DISALLOW_NEW();
 
   class Iterator {
     STACK_ALLOCATED();
@@ -168,10 +167,8 @@ class TestVector {
 // Get primary input vectors with difference memory layout and size
 // combinations.
 template <typename T>
-std::array<TestVector<const T>, kVectorSizeCount * kMemoryLayoutCount>
-GetPrimaryVectors(const T* base) {
-  std::array<TestVector<const T>, kVectorSizeCount * kMemoryLayoutCount>
-      vectors;
+Vector<TestVector<const T>> GetPrimaryVectors(const T* base) {
+  Vector<TestVector<const T>> vectors(kVectorSizeCount * kMemoryLayoutCount);
   for (auto& vector : vectors) {
     ptrdiff_t i = &vector - &vectors[0];
     ptrdiff_t memory_layout_index = i % kMemoryLayoutCount;
@@ -191,11 +188,11 @@ GetPrimaryVectors(const T* base) {
 //    and which therefore is not aligned when the primary input vector is
 //    aligned.
 template <typename T>
-std::array<TestVector<T>, 2u> GetSecondaryVectors(
+Vector<TestVector<T>> GetSecondaryVectors(
     T* base,
     const MemoryLayout* primary_memory_layout,
     size_t size) {
-  std::array<TestVector<T>, 2u> vectors;
+  Vector<TestVector<T>> vectors(2u);
   const MemoryLayout* other_memory_layout =
       &kMemoryLayouts[primary_memory_layout == &kMemoryLayouts[0]];
   CHECK_NE(primary_memory_layout, other_memory_layout);
@@ -207,7 +204,7 @@ std::array<TestVector<T>, 2u> GetSecondaryVectors(
 }
 
 template <typename T>
-std::array<TestVector<T>, 2u> GetSecondaryVectors(
+Vector<TestVector<T>> GetSecondaryVectors(
     T* base,
     const TestVector<const float>& primary_vector) {
   return GetSecondaryVectors(base, primary_vector.memory_layout(),
@@ -322,6 +319,21 @@ TEST_F(VectorMathTest, Vadd) {
   }
 }
 
+TEST_F(VectorMathTest, Vsub) {
+  for (const auto& source1 : GetPrimaryVectors(GetSource(0u))) {
+    for (const auto& source2 : GetSecondaryVectors(GetSource(1u), source1)) {
+      TestVector<float> expected_dest(GetDestination(0u), source1);
+      for (size_t i = 0u; i < source1.size(); ++i)
+        expected_dest[i] = source1[i] - source2[i];
+      for (auto& dest : GetSecondaryVectors(GetDestination(1u), source1)) {
+        Vsub(source1.p(), source1.stride(), source2.p(), source2.stride(),
+             dest.p(), dest.stride(), source1.size());
+        EXPECT_EQ(expected_dest, dest);
+      }
+    }
+  }
+}
+
 TEST_F(VectorMathTest, Vclip) {
   // Vclip does not accept NaNs thus let's use only sources without NaNs.
   for (const auto& source : GetPrimaryVectors(GetSource(kFullyNonNanSource))) {
@@ -387,7 +399,7 @@ TEST_F(VectorMathTest, Vsma) {
       // expect only mostly equal floats.
       for (size_t i = 0u; i < source.size(); ++i) {
         if (std::isfinite(expected_dest[i])) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
           // On Mac, OS provided vectorized functions are used which may result
           // in bigger rounding errors than functions used on other OSes.
           EXPECT_NEAR(expected_dest[i], dest[i],
@@ -417,6 +429,20 @@ TEST_F(VectorMathTest, Vsmul) {
   }
 }
 
+TEST_F(VectorMathTest, Vsadd) {
+  for (const auto& source : GetPrimaryVectors(GetSource(0u))) {
+    const float addend = *GetSource(1u);
+    TestVector<float> expected_dest(GetDestination(0u), source);
+    for (size_t i = 0u; i < source.size(); ++i)
+      expected_dest[i] = addend + source[i];
+    for (auto& dest : GetSecondaryVectors(GetDestination(1u), source)) {
+      Vsadd(source.p(), source.stride(), &addend, dest.p(), dest.stride(),
+            source.size());
+      EXPECT_EQ(expected_dest, dest);
+    }
+  }
+}
+
 TEST_F(VectorMathTest, Vsvesq) {
   const auto sqsum = [](float init, float x) { return init + x * x; };
   for (const float* source_base :
@@ -440,8 +466,9 @@ TEST_F(VectorMathTest, Vsvesq) {
 
 TEST_F(VectorMathTest, Zvmul) {
   constexpr float kMax = std::numeric_limits<float>::max();
-  std::vector<std::array<float, kFloatArraySize + 1u>> sources(4u);
+  Vector<Vector<float>> sources(4u);
   for (size_t i = 0u; i < sources.size(); ++i) {
+    sources[i].resize(kFloatArraySize);
     // Initialize a local source with a randomized test case source.
     std::copy_n(GetSource(i), kFloatArraySize, sources[i].begin());
     // Put +FLT_MAX and -FLT_MAX in the middle of the source. Use a different
@@ -477,18 +504,25 @@ TEST_F(VectorMathTest, Zvmul) {
       // Different optimizations may use different precisions for intermediate
       // results which may result in different rounding errors thus let's
       // expect only mostly equal floats.
+#if defined(OS_MAC)
+#if defined(ARCH_CPU_ARM64)
+      const float threshold = 1.900e-5;
+#else
+      const float threshold = 1.5e-5;
+#endif
+#endif
       for (size_t i = 0u; i < real1.size(); ++i) {
         if (std::isfinite(expected_dest_real[i])) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
           // On Mac, OS provided vectorized functions are used which may result
           // in bigger rounding errors than functions used on other OSes.
           EXPECT_NEAR(expected_dest_real[i], dest_real[i],
-                      1e-5 * std::abs(expected_dest_real[i]));
+                      threshold * std::abs(expected_dest_real[i]));
 #else
           EXPECT_FLOAT_EQ(expected_dest_real[i], dest_real[i]);
 #endif
         } else {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
           // On Mac, OS provided vectorized functions are used which may result
           // in different NaN handling than functions used on other OSes.
           EXPECT_TRUE(!std::isfinite(dest_real[i]));
@@ -497,7 +531,7 @@ TEST_F(VectorMathTest, Zvmul) {
 #endif
         }
         if (std::isfinite(expected_dest_imag[i])) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
           // On Mac, OS provided vectorized functions are used which may result
           // in bigger rounding errors than functions used on other OSes.
           EXPECT_NEAR(expected_dest_imag[i], dest_imag[i],
@@ -506,7 +540,7 @@ TEST_F(VectorMathTest, Zvmul) {
           EXPECT_FLOAT_EQ(expected_dest_imag[i], dest_imag[i]);
 #endif
         } else {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
           // On Mac, OS provided vectorized functions are used which may result
           // in different NaN handling than functions used on other OSes.
           EXPECT_TRUE(!std::isfinite(dest_imag[i]));

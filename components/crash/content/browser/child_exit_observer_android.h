@@ -13,12 +13,13 @@
 #include "base/android/child_process_binding_types.h"
 #include "base/lazy_instance.h"
 #include "base/process/process.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/synchronization/lock.h"
 #include "components/crash/content/browser/crash_handler_host_linux.h"
 #include "content/public/browser/browser_child_process_observer.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/common/child_process_host.h"
 #include "content/public/common/process_type.h"
 #include "third_party/blink/public/common/oom_intervention/oom_intervention_types.h"
@@ -44,7 +45,9 @@ class ChildExitObserver : public content::BrowserChildProcessObserver,
     TerminationInfo(const TerminationInfo& other);
     TerminationInfo& operator=(const TerminationInfo& other);
 
-    bool is_crashed() const { return crash_signo != kInvalidSigno; }
+    bool is_crashed() const {
+      return crash_signo != kInvalidSigno || threw_exception_during_init;
+    }
 
     int process_host_id = content::ChildProcessHost::kInvalidUniqueID;
     // |pid| may not be valid if termination happens before the process has
@@ -61,15 +64,20 @@ class ChildExitObserver : public content::BrowserChildProcessObserver,
     // tab is closed. Some fields below may not be populated if this is true.
     bool normal_termination = false;
 
+    // Renderer process shutdown started by RenderProcessHost::Shutdown.
+    bool renderer_shutdown_requested = false;
+
     // Values from ChildProcessTerminationInfo.
     // Note base::TerminationStatus and exit_code are missing intentionally
     // because those fields hold no useful information on Android.
     base::android::ChildBindingState binding_state =
         base::android::ChildBindingState::UNBOUND;
+    bool threw_exception_during_init = false;
     bool was_killed_intentionally_by_browser = false;
     int remaining_process_with_strong_binding = 0;
     int remaining_process_with_moderate_binding = 0;
     int remaining_process_with_waived_binding = 0;
+    int best_effort_reverse_rank = -1;
 
     // Note this is slightly different |has_oom_protection_bindings|.
     // This is equivalent to status == TERMINATION_STATUS_NORMAL_TERMINATION,
@@ -164,9 +172,9 @@ class ChildExitObserver : public content::BrowserChildProcessObserver,
 
   base::Lock crash_signals_lock_;
   std::map<base::ProcessId, int> child_pid_to_crash_signal_;
-  ScopedObserver<crashpad::CrashHandlerHost,
-                 crashpad::CrashHandlerHost::Observer>
-      scoped_observer_;
+  base::ScopedObservation<crashpad::CrashHandlerHost,
+                          crashpad::CrashHandlerHost::Observer>
+      scoped_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ChildExitObserver);
 };

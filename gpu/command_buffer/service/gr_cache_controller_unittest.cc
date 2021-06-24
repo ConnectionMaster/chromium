@@ -4,7 +4,7 @@
 
 #include "gpu/command_buffer/service/gr_cache_controller.h"
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
@@ -26,7 +26,7 @@ namespace raster {
 class GrCacheControllerTest : public testing::Test {
  public:
   void SetUp() override {
-    gl::GLSurfaceTestSupport::InitializeOneOff();
+    gl::GLSurfaceTestSupport::InitializeOneOffWithStubBindings();
     gpu::GpuDriverBugWorkarounds workarounds;
 
     scoped_refptr<gl::GLShareGroup> share_group = new gl::GLShareGroup();
@@ -40,13 +40,13 @@ class GrCacheControllerTest : public testing::Test {
     context_state_ = base::MakeRefCounted<SharedContextState>(
         std::move(share_group), std::move(surface), std::move(context),
         false /* use_virtualized_gl_contexts */, base::DoNothing());
-    context_state_->InitializeGrContext(workarounds, nullptr);
+    context_state_->InitializeGrContext(GpuPreferences(), workarounds, nullptr);
     auto feature_info =
         base::MakeRefCounted<gles2::FeatureInfo>(workarounds, GpuFeatureInfo());
     context_state_->InitializeGL(GpuPreferences(), std::move(feature_info));
 
-    controller_ =
-        std::make_unique<GrCacheController>(context_state_.get(), task_runner_);
+    controller_ = base::WrapUnique(
+        new GrCacheController(context_state_.get(), task_runner_));
   }
 
   void TearDown() override {
@@ -56,7 +56,7 @@ class GrCacheControllerTest : public testing::Test {
     gl::init::ShutdownGL(false);
   }
 
-  GrContext* gr_context() { return context_state_->gr_context(); }
+  GrDirectContext* gr_context() { return context_state_->gr_context(); }
 
  protected:
   scoped_refptr<SharedContextState> context_state_;
@@ -72,7 +72,7 @@ TEST_F(GrCacheControllerTest, PurgeGrCache) {
     SkImageInfo info = SkImageInfo::MakeN32Premul(10, 10);
     ASSERT_TRUE(bm.tryAllocPixels(info));
     sk_sp<SkImage> uploaded =
-        SkImage::MakeFromBitmap(bm)->makeTextureImage(gr_context(), nullptr);
+        SkImage::MakeFromBitmap(bm)->makeTextureImage(gr_context());
     ASSERT_TRUE(uploaded);
   }
   EXPECT_GT(gr_context()->getResourceCachePurgeableBytes(), 0u);
@@ -94,7 +94,7 @@ TEST_F(GrCacheControllerTest, ResetPurgeGrCacheOnReuse) {
     SkImageInfo info = SkImageInfo::MakeN32Premul(10, 10);
     ASSERT_TRUE(bm.tryAllocPixels(info));
     sk_sp<SkImage> uploaded =
-        SkImage::MakeFromBitmap(bm)->makeTextureImage(gr_context(), nullptr);
+        SkImage::MakeFromBitmap(bm)->makeTextureImage(gr_context());
     ASSERT_TRUE(uploaded);
   }
   EXPECT_GT(gr_context()->getResourceCachePurgeableBytes(), 0u);

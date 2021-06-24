@@ -9,25 +9,23 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/json/json_reader.h"
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/trace_event/trace_buffer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/trace_event_impl.h"
 #include "base/values.h"
 #include "net/log/net_log_event_type.h"
-#include "net/log/net_log_parameters_callback.h"
 #include "net/log/net_log_source_type.h"
 #include "net/log/net_log_with_source.h"
 #include "net/log/test_net_log.h"
-#include "net/log/test_net_log_entry.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::trace_event::TraceLog;
@@ -47,13 +45,33 @@ struct TraceEntryInfo {
   std::string source_type;
 };
 
-TraceEntryInfo GetTraceEntryInfoFromValue(const base::DictionaryValue& value) {
+TraceEntryInfo GetTraceEntryInfoFromValue(const base::Value& value) {
   TraceEntryInfo info;
-  EXPECT_TRUE(value.GetString("cat", &info.category));
-  EXPECT_TRUE(value.GetString("id", &info.id));
-  EXPECT_TRUE(value.GetString("ph", &info.phase));
-  EXPECT_TRUE(value.GetString("name", &info.name));
-  EXPECT_TRUE(value.GetString("args.source_type", &info.source_type));
+  if (const std::string* cat = value.FindStringKey("cat")) {
+    info.category = *cat;
+  } else {
+    ADD_FAILURE() << "Missing 'cat'";
+  }
+  if (const std::string* id = value.FindStringKey("id")) {
+    info.id = *id;
+  } else {
+    ADD_FAILURE() << "Missing 'id'";
+  }
+  if (const std::string* ph = value.FindStringKey("ph")) {
+    info.phase = *ph;
+  } else {
+    ADD_FAILURE() << "Missing 'ph'";
+  }
+  if (const std::string* name = value.FindStringKey("name")) {
+    info.name = *name;
+  } else {
+    ADD_FAILURE() << "Missing 'name'";
+  }
+  if (const std::string* type = value.FindStringPath("args.source_type")) {
+    info.source_type = *type;
+  } else {
+    ADD_FAILURE() << "Missing 'args.source_type'";
+  }
 
   return info;
 }
@@ -83,15 +101,15 @@ void EnableTraceLogWithoutNetLog() {
   EnableTraceLog(disabled_netlog_category);
 }
 
-class TraceNetLogObserverTest : public TestWithScopedTaskEnvironment {
+class TraceNetLogObserverTest : public TestWithTaskEnvironment {
  public:
   TraceNetLogObserverTest() {
     TraceLog* tracelog = TraceLog::GetInstance();
     DCHECK(tracelog);
     DCHECK(!tracelog->IsEnabled());
     trace_buffer_.SetOutputCallback(json_output_.GetCallback());
-    trace_net_log_observer_.reset(new TraceNetLogObserver());
-    trace_events_.reset(new base::ListValue());
+    trace_net_log_observer_ = std::make_unique<TraceNetLogObserver>();
+    trace_events_ = std::make_unique<base::ListValue>();
   }
 
   ~TraceNetLogObserverTest() override {
@@ -124,9 +142,9 @@ class TraceNetLogObserverTest : public TestWithScopedTaskEnvironment {
   void EndTraceAndFlush() {
     DisableTraceLog();
     base::RunLoop run_loop;
-    TraceLog::GetInstance()->Flush(
-        base::Bind(&TraceNetLogObserverTest::OnTraceDataCollected,
-                   base::Unretained(this), base::Unretained(&run_loop)));
+    TraceLog::GetInstance()->Flush(base::BindRepeating(
+        &TraceNetLogObserverTest::OnTraceDataCollected, base::Unretained(this),
+        base::Unretained(&run_loop)));
     run_loop.Run();
   }
 
@@ -139,18 +157,18 @@ class TraceNetLogObserverTest : public TestWithScopedTaskEnvironment {
     std::unique_ptr<base::ListValue> filtered_trace_events(
         new base::ListValue());
     for (size_t i = 0; i < trace_events.GetSize(); i++) {
-      const base::DictionaryValue* dict = nullptr;
-      if (!trace_events.GetDictionary(i, &dict)) {
+      const base::Value* dict = &trace_events.GetList()[i];
+      if (!dict->is_dict()) {
         ADD_FAILURE() << "Unexpected non-dictionary event in trace_events";
         continue;
       }
-      std::string category;
-      if (!dict->GetString("cat", &category)) {
+      const std::string* category = dict->FindStringPath("cat");
+      if (!category) {
         ADD_FAILURE()
             << "Unexpected item without a category field in trace_events";
         continue;
       }
-      if (category != kNetLogTracingCategory)
+      if (*category != kNetLogTracingCategory)
         continue;
       filtered_trace_events->Append(dict->CreateDeepCopy());
     }
@@ -159,7 +177,7 @@ class TraceNetLogObserverTest : public TestWithScopedTaskEnvironment {
 
   base::ListValue* trace_events() const { return trace_events_.get(); }
 
-  TestNetLog* net_log() { return &net_log_; }
+  RecordingTestNetLog* net_log() { return &net_log_; }
 
   TraceNetLogObserver* trace_net_log_observer() const {
     return trace_net_log_observer_.get();
@@ -169,7 +187,7 @@ class TraceNetLogObserverTest : public TestWithScopedTaskEnvironment {
   std::unique_ptr<base::ListValue> trace_events_;
   base::trace_event::TraceResultBuffer trace_buffer_;
   base::trace_event::TraceResultBuffer::SimpleOutput json_output_;
-  TestNetLog net_log_;
+  RecordingTestNetLog net_log_;
   std::unique_ptr<TraceNetLogObserver> trace_net_log_observer_;
 };
 
@@ -205,8 +223,7 @@ TEST_F(TraceNetLogObserverTest, TracingDisabledDuringOnAddEntry) {
 }
 
 TEST_F(TraceNetLogObserverTest, TraceEventCaptured) {
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_TRUE(entries.empty());
 
   trace_net_log_observer()->WatchForTraceStart(net_log());
@@ -217,17 +234,19 @@ TEST_F(TraceNetLogObserverTest, TraceEventCaptured) {
   net_log_with_source.BeginEvent(NetLogEventType::URL_REQUEST_START_JOB);
   net_log_with_source.EndEvent(NetLogEventType::REQUEST_ALIVE);
 
-  net_log()->GetEntries(&entries);
+  entries = net_log()->GetEntries();
   EXPECT_EQ(3u, entries.size());
   EndTraceAndFlush();
   trace_net_log_observer()->StopWatchForTraceStart();
   EXPECT_EQ(3u, trace_events()->GetSize());
-  const base::DictionaryValue* item1 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(0, &item1));
-  const base::DictionaryValue* item2 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(1, &item2));
-  const base::DictionaryValue* item3 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(2, &item3));
+  const base::Value* item1 = &trace_events()->GetList()[0];
+  ASSERT_TRUE(item1->is_dict());
+  const base::Value* item2 = &trace_events()->GetList()[1];
+  ;
+  ASSERT_TRUE(item2->is_dict());
+  const base::Value* item3 = &trace_events()->GetList()[2];
+  ;
+  ASSERT_TRUE(item3->is_dict());
 
   TraceEntryInfo actual_item1 = GetTraceEntryInfoFromValue(*item1);
   TraceEntryInfo actual_item2 = GetTraceEntryInfoFromValue(*item2);
@@ -272,14 +291,13 @@ TEST_F(TraceNetLogObserverTest, EnableAndDisableTracing) {
   EndTraceAndFlush();
   trace_net_log_observer()->StopWatchForTraceStart();
 
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_EQ(3u, entries.size());
   EXPECT_EQ(2u, trace_events()->GetSize());
-  const base::DictionaryValue* item1 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(0, &item1));
-  const base::DictionaryValue* item2 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(1, &item2));
+  const base::Value* item1 = &trace_events()->GetList()[0];
+  ASSERT_TRUE(item1->is_dict());
+  const base::Value* item2 = &trace_events()->GetList()[1];
+  ASSERT_TRUE(item2->is_dict());
 
   TraceEntryInfo actual_item1 = GetTraceEntryInfoFromValue(*item1);
   TraceEntryInfo actual_item2 = GetTraceEntryInfoFromValue(*item2);
@@ -312,13 +330,12 @@ TEST_F(TraceNetLogObserverTest, DestroyObserverWhileTracing) {
 
   EndTraceAndFlush();
 
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_EQ(2u, entries.size());
   EXPECT_EQ(1u, trace_events()->GetSize());
 
-  const base::DictionaryValue* item1 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(0, &item1));
+  const base::Value* item1 = &trace_events()->GetList()[0];
+  ASSERT_TRUE(item1->is_dict());
 
   TraceEntryInfo actual_item1 = GetTraceEntryInfoFromValue(*item1);
   EXPECT_EQ(kNetLogTracingCategory, actual_item1.category);
@@ -341,8 +358,7 @@ TEST_F(TraceNetLogObserverTest, DestroyObserverWhileNotTracing) {
 
   EndTraceAndFlush();
 
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_EQ(3u, entries.size());
   EXPECT_EQ(0u, trace_events()->GetSize());
 }
@@ -359,8 +375,7 @@ TEST_F(TraceNetLogObserverTest, CreateObserverAfterTracingStarts) {
 
   EndTraceAndFlush();
 
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_EQ(3u, entries.size());
   EXPECT_EQ(1u, trace_events()->GetSize());
 }
@@ -380,8 +395,7 @@ TEST_F(TraceNetLogObserverTest,
 
   EndTraceAndFlush();
 
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_EQ(3u, entries.size());
   EXPECT_EQ(0u, trace_events()->GetSize());
 }
@@ -389,24 +403,21 @@ TEST_F(TraceNetLogObserverTest,
 TEST_F(TraceNetLogObserverTest, EventsWithAndWithoutParameters) {
   trace_net_log_observer()->WatchForTraceStart(net_log());
   EnableTraceLogWithNetLog();
-  NetLogParametersCallback net_log_callback;
-  std::string param = "bar";
-  net_log_callback = NetLog::StringCallback("foo", &param);
 
-  net_log()->AddGlobalEntry(NetLogEventType::CANCELLED, net_log_callback);
+  net_log()->AddGlobalEntryWithStringParams(NetLogEventType::CANCELLED, "foo",
+                                            "bar");
   net_log()->AddGlobalEntry(NetLogEventType::REQUEST_ALIVE);
 
   EndTraceAndFlush();
   trace_net_log_observer()->StopWatchForTraceStart();
 
-  TestNetLogEntry::List entries;
-  net_log()->GetEntries(&entries);
+  auto entries = net_log()->GetEntries();
   EXPECT_EQ(2u, entries.size());
   EXPECT_EQ(2u, trace_events()->GetSize());
-  const base::DictionaryValue* item1 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(0, &item1));
-  const base::DictionaryValue* item2 = nullptr;
-  ASSERT_TRUE(trace_events()->GetDictionary(1, &item2));
+  const base::Value* item1 = &trace_events()->GetList()[0];
+  ASSERT_TRUE(item1->is_dict());
+  const base::Value* item2 = &trace_events()->GetList()[1];
+  ASSERT_TRUE(item2->is_dict());
 
   TraceEntryInfo actual_item1 = GetTraceEntryInfoFromValue(*item1);
   TraceEntryInfo actual_item2 = GetTraceEntryInfoFromValue(*item2);
@@ -428,19 +439,19 @@ TEST_F(TraceNetLogObserverTest, EventsWithAndWithoutParameters) {
   EXPECT_EQ(NetLog::SourceTypeToString(entries[1].source.type),
             actual_item2.source_type);
 
-  std::string item1_params;
-  std::string item2_params;
-  EXPECT_TRUE(item1->GetString("args.params.foo", &item1_params));
-  EXPECT_EQ("bar", item1_params);
+  const std::string* item1_params = item1->FindStringPath("args.params.foo");
+  ASSERT_TRUE(item1_params);
+  EXPECT_EQ("bar", *item1_params);
 
-  EXPECT_TRUE(item2->GetString("args.params", &item2_params));
-  EXPECT_TRUE(item2_params.empty());
+  const base::Value* item2_params = item2->FindDictPath("args.params");
+  ASSERT_TRUE(item2_params);
+  EXPECT_TRUE(item2_params->DictEmpty());
 }
 
 TEST(TraceNetLogObserverCategoryTest, DisabledCategory) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
   TraceNetLogObserver observer;
-  NetLog net_log;
+  TestNetLog net_log;
   observer.WatchForTraceStart(&net_log);
 
   EXPECT_FALSE(net_log.IsCapturing());
@@ -455,9 +466,9 @@ TEST(TraceNetLogObserverCategoryTest, DisabledCategory) {
 }
 
 TEST(TraceNetLogObserverCategoryTest, EnabledCategory) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
   TraceNetLogObserver observer;
-  NetLog net_log;
+  TestNetLog net_log;
   observer.WatchForTraceStart(&net_log);
 
   EXPECT_FALSE(net_log.IsCapturing());

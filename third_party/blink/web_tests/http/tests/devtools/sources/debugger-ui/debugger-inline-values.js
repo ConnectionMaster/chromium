@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests inline values rendering in the sources panel.\n`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
       function testFunction()
@@ -32,9 +32,9 @@
     TestRunner.evaluateInPage('setTimeout(testFunction, 0)');
   }
 
-  function onSetExecutionLocation(liveLocation) {
+  async function onSetExecutionLocation(liveLocation) {
     TestRunner.deprecatedRunAfterPendingDispatches(dumpAndContinue.bind(
-        null, this._textEditor, liveLocation.uiLocation().lineNumber));
+        null, this._textEditor, (await liveLocation.uiLocation()).lineNumber));
   }
 
   function dumpAndContinue(textEditor, lineNumber) {

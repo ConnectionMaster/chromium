@@ -28,21 +28,28 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_GRAPHICS_SVG_IMAGE_H_
 
 #include "base/macros.h"
+#include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/platform/geometry/layout_size.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 
 namespace blink {
 
 class Document;
+class LayoutSVGRoot;
+class LocalFrame;
+class Node;
 class Page;
 class PaintController;
 class SVGImageChromeClient;
 class SVGImageForContainer;
+class SVGSVGElement;
 struct IntrinsicSizingInfo;
 
 // SVGImage does not use Skia to draw images (as BitmapImage does) but instead
@@ -66,7 +73,7 @@ class CORE_EXPORT SVGImage final : public Image {
   static bool IsInSVGImage(const Node*);
 
   bool IsSVGImage() const override { return true; }
-  IntSize Size() const override { return intrinsic_size_; }
+  IntSize SizeWithConfig(SizeConfig) const override;
 
   void CheckLoaded() const;
   bool CurrentFrameHasSingleSecurityOrigin() const override;
@@ -74,12 +81,6 @@ class CORE_EXPORT SVGImage final : public Image {
   void StartAnimation() override;
   void ResetAnimation() override;
   void RestoreAnimation();
-
-  PaintImage::CompletionState completion_state() const {
-    return load_state_ == LoadState::kLoadCompleted
-               ? PaintImage::CompletionState::DONE
-               : PaintImage::CompletionState::PARTIALLY_DONE;
-  }
 
   // Does the SVG image/document contain any animations?
   bool MaybeAnimated() override;
@@ -110,23 +111,11 @@ class CORE_EXPORT SVGImage final : public Image {
   // returns true if GetIntrinsicSizingInfo would.)
   bool HasIntrinsicSizingInfo() const;
 
-  // Unlike the above (HasIntrinsicSizingInfo) - which only indicates that
-  // dimensions can be read - this returns true if those dimensions are not
-  // empty (i.e if the concrete object size resolved using an empty default
-  // object size is non-empty.)
-  bool HasIntrinsicDimensions() const;
-
-  sk_sp<PaintRecord> PaintRecordForContainer(const KURL&,
-                                             const IntSize& container_size,
-                                             const IntRect& draw_src_rect,
-                                             const IntRect& draw_dst_rect,
-                                             bool flip_y) override;
-
   PaintImage PaintImageForCurrentFrame() override;
 
  protected:
   // Whether or not size is available yet.
-  bool IsSizeAvailable() override { return !!page_; }
+  bool IsSizeAvailable() override;
 
  private:
   // Accesses m_page.
@@ -140,8 +129,6 @@ class CORE_EXPORT SVGImage final : public Image {
 
   String FilenameExtension() const override;
 
-  IntSize ContainerSize() const;
-
   SizeAvailability DataChanged(bool all_data_received) override;
 
   // FIXME: SVGImages are underreporting decoded sizes and will be unable
@@ -151,58 +138,66 @@ class CORE_EXPORT SVGImage final : public Image {
   // FIXME: Implement this to be less conservative.
   bool CurrentFrameKnownToBeOpaque() override { return false; }
 
+  class DrawInfo {
+    STACK_ALLOCATED();
+
+   public:
+    DrawInfo(const FloatSize& container_size, float zoom, const KURL& url);
+
+    FloatSize CalculateResidualScale() const;
+    float Zoom() const { return zoom_; }
+    const FloatSize& ContainerSize() const { return container_size_; }
+    const IntSize& RoundedContainerSize() const {
+      return rounded_container_size_;
+    }
+    const KURL& Url() const { return url_; }
+
+   private:
+    const FloatSize container_size_;
+    const IntSize rounded_container_size_;
+    const float zoom_;
+    const KURL& url_;
+  };
+
   void Draw(cc::PaintCanvas*,
             const cc::PaintFlags&,
-            const FloatRect& from_rect,
-            const FloatRect& to_rect,
+            const FloatRect& dst_rect,
+            const FloatRect& src_rect,
+            const SkSamplingOptions&,
             RespectImageOrientationEnum,
             ImageClampingMode,
             ImageDecodingMode) override;
-  void DrawForContainer(cc::PaintCanvas*,
+  void DrawForContainer(const DrawInfo&,
+                        cc::PaintCanvas*,
                         const cc::PaintFlags&,
-                        const FloatSize&,
-                        float,
-                        const FloatRect&,
-                        const FloatRect&,
-                        const KURL&);
-  void DrawPatternForContainer(GraphicsContext&,
-                               const FloatSize,
-                               float,
-                               const FloatRect&,
-                               const FloatSize&,
-                               const FloatPoint&,
-                               SkBlendMode,
-                               const FloatRect&,
-                               const FloatSize& repeat_spacing,
-                               const KURL&);
-  void PopulatePaintRecordForCurrentFrameForContainer(
-      PaintImageBuilder&,
-      const KURL&,
-      const IntSize& container_size);
+                        const FloatRect& dst_rect,
+                        const FloatRect& src_rect);
+  void DrawPatternForContainer(const DrawInfo&,
+                               GraphicsContext&,
+                               const cc::PaintFlags&,
+                               const FloatRect& src_rect,
+                               const FloatSize& tile_scale,
+                               const FloatPoint& phase,
+                               const FloatRect& dst_rect,
+                               const FloatSize& repeat_spacing);
+  void PopulatePaintRecordForCurrentFrameForContainer(const DrawInfo&,
+                                                      PaintImageBuilder&);
 
   // Paints the current frame. Returns new PaintRecord.
-  sk_sp<PaintRecord> PaintRecordForCurrentFrame(const KURL&);
+  sk_sp<PaintRecord> PaintRecordForCurrentFrame(const DrawInfo&);
 
-  void DrawInternal(cc::PaintCanvas*,
+  void DrawInternal(const DrawInfo&,
+                    cc::PaintCanvas*,
                     const cc::PaintFlags&,
-                    const FloatRect& from_rect,
-                    const FloatRect& to_rect,
-                    RespectImageOrientationEnum,
-                    ImageClampingMode,
-                    const KURL&);
-
-  template <typename Func>
-  void ForContainer(const FloatSize&, Func&&);
-
+                    const FloatRect& dst_rect,
+                    const FloatRect& unzoomed_src_rect);
   bool ApplyShader(cc::PaintFlags&, const SkMatrix& local_matrix) override;
-  bool ApplyShaderForContainer(const FloatSize&,
-                               float zoom,
-                               const KURL&,
+  bool ApplyShaderForContainer(const DrawInfo&,
                                cc::PaintFlags&,
                                const SkMatrix& local_matrix);
-  bool ApplyShaderInternal(cc::PaintFlags&,
-                           const SkMatrix& local_matrix,
-                           const KURL&);
+  bool ApplyShaderInternal(const DrawInfo&,
+                           cc::PaintFlags&,
+                           const SkMatrix& local_matrix);
 
   void StopAnimation();
   void ScheduleTimelineRewind();
@@ -212,26 +207,23 @@ class CORE_EXPORT SVGImage final : public Image {
   void LoadCompleted();
   void NotifyAsyncLoadCompleted();
 
-  // TODO(v.paturi): Implement an SVG classifier which can decide if a
-  // filter should be applied based on the image's content and it's
-  // visibility on a dark background.
-  DarkModeClassification ClassifyImageForDarkMode(
-      const FloatRect& src_rect) override {
-    return DarkModeClassification::kApplyDarkModeFilter;
-  }
+  LocalFrame* GetFrame() const;
+  SVGSVGElement* RootElement() const;
+  LayoutSVGRoot* LayoutRoot() const;
 
   class SVGImageLocalFrameClient;
 
   Persistent<SVGImageChromeClient> chrome_client_;
   Persistent<Page> page_;
   std::unique_ptr<PaintController> paint_controller_;
+  std::unique_ptr<scheduler::WebAgentGroupScheduler> agent_group_scheduler_;
 
   // When an SVG image has no intrinsic size, the size depends on the default
   // object size, which in turn depends on the container. One SVGImage may
   // belong to multiple containers so the final image size can't be known in
   // SVGImage. SVGImageForContainer carries the final image size, also called
   // the "concrete object size". For more, see: SVGImageForContainer.h
-  IntSize intrinsic_size_;
+  LayoutSize intrinsic_size_;
   bool has_pending_timeline_rewind_;
 
   enum LoadState {
@@ -247,11 +239,16 @@ class CORE_EXPORT SVGImage final : public Image {
   FRIEND_TEST_ALL_PREFIXES(ElementFragmentAnchorTest,
                            SVGDocumentDoesntCreateFragment);
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, SupportsSubsequenceCaching);
-  FRIEND_TEST_ALL_PREFIXES(SVGImageTest, JankTrackerDisabled);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest, LayoutShiftTrackerDisabled);
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, SetSizeOnVisualViewport);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest, IsSizeAvailable);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest, DisablesSMILEvents);
 };
 
-DEFINE_IMAGE_TYPE_CASTS(SVGImage);
+template <>
+struct DowncastTraits<SVGImage> {
+  static bool AllowFrom(const Image& image) { return image.IsSVGImage(); }
+};
 
 class ImageObserverDisabler {
   STACK_ALLOCATED();

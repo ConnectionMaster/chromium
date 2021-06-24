@@ -6,14 +6,13 @@ package org.chromium.chrome.browser.offlinepages.prefetch;
 
 import android.content.Context;
 
-import org.chromium.base.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.chrome.browser.ChromeFeatureList;
-import org.chromium.chrome.browser.DeviceConditions;
-import org.chromium.chrome.browser.background_task_scheduler.NativeBackgroundTask;
-import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.util.FeatureUtilities;
+import org.chromium.base.annotations.NativeMethods;
+import org.chromium.chrome.browser.device.DeviceConditions;
+import org.chromium.components.background_task_scheduler.NativeBackgroundTask;
 import org.chromium.components.background_task_scheduler.TaskIds;
 import org.chromium.components.background_task_scheduler.TaskParameters;
 import org.chromium.net.ConnectionType;
@@ -26,16 +25,15 @@ public class PrefetchBackgroundTask extends NativeBackgroundTask {
     /** Key used in the extra data {@link Bundle} when the limitless flag is enabled. */
     public static final String LIMITLESS_BUNDLE_KEY = "limitlessPrefetching";
 
-    /** Key used in the extra data {@link Bundle} to store the GCM token. */
-    public static final String GCM_TOKEN_BUNDLE_KEY = "gcmToken";
-
     private static final int MINIMUM_BATTERY_PERCENTAGE_FOR_PREFETCHING = 50;
 
     private static boolean sSkipConditionCheckingForTesting;
+    private static boolean sAlwaysSupportMinimalBrowserForTesting;
+    private static boolean sSkipCachingFlagForTesting;
 
     private long mNativeTask;
     private TaskFinishedCallback mTaskFinishedCallback;
-    private Profile mProfile;
+
     // We update this when we call TaskFinishedCallback, so that subsequent calls to
     // onStopTask* can respond the same way.  This is possible due to races with the JobScheduler.
     // Defaults to true so that we are rescheduled automatically if somehow we were unable to start
@@ -43,14 +41,7 @@ public class PrefetchBackgroundTask extends NativeBackgroundTask {
     private boolean mCachedRescheduleResult = true;
     private boolean mLimitlessPrefetchingEnabled;
 
-    private String mGcmToken;
-
     public PrefetchBackgroundTask() {}
-
-    protected Profile getProfile() {
-        if (mProfile == null) mProfile = Profile.getLastUsedProfile();
-        return mProfile;
-    }
 
     @Override
     public @StartBeforeNativeResult int onStartTaskBeforeNativeLoaded(
@@ -64,7 +55,6 @@ public class PrefetchBackgroundTask extends NativeBackgroundTask {
 
         mTaskFinishedCallback = callback;
         mLimitlessPrefetchingEnabled = taskParameters.getExtras().getBoolean(LIMITLESS_BUNDLE_KEY);
-        mGcmToken = taskParameters.getExtras().getString(GCM_TOKEN_BUNDLE_KEY);
 
         // Check current device conditions. They might be set to null when testing and for some
         // specific Android devices.
@@ -95,30 +85,22 @@ public class PrefetchBackgroundTask extends NativeBackgroundTask {
         sSkipConditionCheckingForTesting = true;
     }
 
+    @VisibleForTesting
+    static void alwaysSupportMinimalBrowserForTesting() {
+        sAlwaysSupportMinimalBrowserForTesting = true;
+    }
+
     @Override
     protected void onStartTaskWithNative(
             Context context, TaskParameters taskParameters, TaskFinishedCallback callback) {
         assert taskParameters.getTaskId() == TaskIds.OFFLINE_PAGES_PREFETCH_JOB_ID;
         if (mNativeTask != 0) return;
 
-        // Only Feed is supported in reduced mode.
-        // If we launched chrome in reduced mode but it turns out that Feed is not enabled (because
-        // the cached value of the flag was stale), we should cache the new value and reschedule
-        // this task so that next time full browser is started rather than just reduced mode.
-        if (isBrowserRunningInReducedMode()
-                && !ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.INTEREST_FEED_CONTENT_SUGGESTIONS)) {
-            FeatureUtilities.cacheFeedEnabled();
-            mTaskFinishedCallback.taskFinished(true /* needsReschedule */);
-            return;
-        }
-
-        nativeStartPrefetchTask(getProfile(), mGcmToken);
+        PrefetchBackgroundTaskJni.get().startPrefetchTask(PrefetchBackgroundTask.this);
     }
 
     private boolean isBrowserRunningInReducedMode() {
-        return getBrowserStartupController().isServiceManagerSuccessfullyStarted()
-                && !getBrowserStartupController().isStartupSuccessfullyCompleted();
+        return getBrowserStartupController().isRunningInMinimalBrowserMode();
     }
 
     @Override
@@ -133,16 +115,19 @@ public class PrefetchBackgroundTask extends NativeBackgroundTask {
         // TaskFinishedCallback, so we need to save the reschedule result.
         if (mNativeTask == 0) return mCachedRescheduleResult;
 
-        return nativeOnStopTask(mNativeTask);
+        return PrefetchBackgroundTaskJni.get().onStopTask(mNativeTask, PrefetchBackgroundTask.this);
     }
 
     @Override
     public void reschedule(Context context) {
-        // TODO(dewittj): Set the backoff time appropriately.
+        // BackgroundTask::reschedule() docs explain this will only be called in situations like
+        // "Google Play Services update or OS upgrade". Given that these do not happen often and
+        // that backoff states are rare, we decided not to start native here just to get an unlikely
+        // set value of backoff time for the schedule calls.
         if (mLimitlessPrefetchingEnabled) {
-            PrefetchBackgroundTaskScheduler.scheduleTaskLimitless(0, mGcmToken);
+            PrefetchBackgroundTaskScheduler.scheduleTaskLimitless(0);
         } else {
-            PrefetchBackgroundTaskScheduler.scheduleTask(0, mGcmToken);
+            PrefetchBackgroundTaskScheduler.scheduleTask(0);
         }
     }
 
@@ -190,26 +175,33 @@ public class PrefetchBackgroundTask extends NativeBackgroundTask {
     @VisibleForTesting
     void setTaskReschedulingForTesting(int rescheduleType) {
         if (mNativeTask == 0) return;
-        nativeSetTaskReschedulingForTesting(mNativeTask, rescheduleType);
+        PrefetchBackgroundTaskJni.get().setTaskReschedulingForTesting(
+                mNativeTask, PrefetchBackgroundTask.this, rescheduleType);
     }
 
     @VisibleForTesting
     void signalTaskFinishedForTesting() {
         if (mNativeTask == 0) return;
-        nativeSignalTaskFinishedForTesting(mNativeTask);
+        PrefetchBackgroundTaskJni.get().signalTaskFinishedForTesting(
+                mNativeTask, PrefetchBackgroundTask.this);
     }
 
     @Override
-    protected boolean supportsServiceManagerOnly() {
-        return FeatureUtilities.isServiceManagerForBackgroundPrefetchEnabled()
-                && FeatureUtilities.isFeedEnabled();
+    protected boolean supportsMinimalBrowser() {
+        if (sAlwaysSupportMinimalBrowserForTesting) {
+            return true;
+        }
+
+        return PrefetchConfiguration.isMinimalBrowserForBackgroundPrefetchEnabled();
     }
 
-    @VisibleForTesting
-    native boolean nativeStartPrefetchTask(Profile profile, String gcmToken);
-    @VisibleForTesting
-    native boolean nativeOnStopTask(long nativePrefetchBackgroundTaskAndroid);
-    native void nativeSetTaskReschedulingForTesting(
-            long nativePrefetchBackgroundTaskAndroid, int rescheduleType);
-    native void nativeSignalTaskFinishedForTesting(long nativePrefetchBackgroundTaskAndroid);
+    @NativeMethods
+    interface Natives {
+        boolean startPrefetchTask(PrefetchBackgroundTask caller);
+        boolean onStopTask(long nativePrefetchBackgroundTaskAndroid, PrefetchBackgroundTask caller);
+        void setTaskReschedulingForTesting(long nativePrefetchBackgroundTaskAndroid,
+                PrefetchBackgroundTask caller, int rescheduleType);
+        void signalTaskFinishedForTesting(
+                long nativePrefetchBackgroundTaskAndroid, PrefetchBackgroundTask caller);
+    }
 }

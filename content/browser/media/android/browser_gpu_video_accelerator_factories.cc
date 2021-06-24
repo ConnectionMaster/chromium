@@ -5,6 +5,7 @@
 #include "content/browser/media/android/browser_gpu_video_accelerator_factories.h"
 
 #include "base/bind.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "content/browser/browser_main_loop.h"
 #include "content/public/browser/android/gpu_video_accelerator_factories_provider.h"
 #include "content/public/common/gpu_stream_constants.h"
@@ -13,8 +14,7 @@
 #include "gpu/ipc/client/command_buffer_proxy_impl.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
 #include "media/gpu/gpu_video_accelerator_util.h"
-#include "media/gpu/ipc/common/media_messages.h"
-#include "services/ws/public/cpp/gpu/context_provider_command_buffer.h"
+#include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
 
 namespace content {
 
@@ -33,6 +33,7 @@ void OnGpuChannelEstablished(
   attributes.samples = 0;
   attributes.sample_buffers = 0;
   attributes.bind_generates_resource = false;
+  attributes.enable_raster_interface = true;
 
   gpu::GpuChannelEstablishFactory* factory =
       BrowserMainLoop::GetInstance()->gpu_channel_establish_factory();
@@ -45,7 +46,7 @@ void OnGpuChannelEstablished(
   constexpr bool support_grcontext = true;
 
   auto context_provider =
-      base::MakeRefCounted<ws::ContextProviderCommandBuffer>(
+      base::MakeRefCounted<viz::ContextProviderCommandBuffer>(
           std::move(gpu_channel_host), factory->GetGpuMemoryBufferManager(),
           stream_id, stream_priority, gpu::kNullSurfaceHandle,
           GURL(std::string("chrome://gpu/"
@@ -53,7 +54,7 @@ void OnGpuChannelEstablished(
                            "CreateGpuVideoAcceleratorFactories")),
           automatic_flushes, support_locking, support_grcontext,
           gpu::SharedMemoryLimits::ForMailboxContext(), attributes,
-          ws::command_buffer_metrics::ContextType::UNKNOWN);
+          viz::command_buffer_metrics::ContextType::UNKNOWN);
 
   // TODO(xingliu): This is on main thread, move to another thread?
   context_provider->BindToCurrentThread();
@@ -74,7 +75,7 @@ void CreateGpuVideoAcceleratorFactories(
 }
 
 BrowserGpuVideoAcceleratorFactories::BrowserGpuVideoAcceleratorFactories(
-    scoped_refptr<ws::ContextProviderCommandBuffer> context_provider)
+    scoped_refptr<viz::ContextProviderCommandBuffer> context_provider)
     : context_provider_(std::move(context_provider)) {}
 
 BrowserGpuVideoAcceleratorFactories::~BrowserGpuVideoAcceleratorFactories() =
@@ -86,8 +87,8 @@ bool BrowserGpuVideoAcceleratorFactories::IsGpuVideoAcceleratorEnabled() {
 
 base::UnguessableToken BrowserGpuVideoAcceleratorFactories::GetChannelToken() {
   if (channel_token_.is_empty()) {
-    context_provider_->GetCommandBufferProxy()->channel()->Send(
-        new GpuCommandBufferMsg_GetChannelToken(&channel_token_));
+    context_provider_->GetCommandBufferProxy()->GetGpuChannel().GetChannelToken(
+        &channel_token_);
   }
 
   return channel_token_;
@@ -97,21 +98,28 @@ int32_t BrowserGpuVideoAcceleratorFactories::GetCommandBufferRouteId() {
   return context_provider_->GetCommandBufferProxy()->route_id();
 }
 
-bool BrowserGpuVideoAcceleratorFactories::IsDecoderConfigSupported(
+media::GpuVideoAcceleratorFactories::Supported
+BrowserGpuVideoAcceleratorFactories::IsDecoderConfigSupported(
     const media::VideoDecoderConfig& config) {
-  // TODO(sandersd): Add a cache here too?
+  // Tell the caller to just try it, there are no other decoders to fall back on
+  // anyway.
+  return media::GpuVideoAcceleratorFactories::Supported::kTrue;
+}
+
+bool BrowserGpuVideoAcceleratorFactories::IsDecoderSupportKnown() {
   return true;
+}
+
+void BrowserGpuVideoAcceleratorFactories::NotifyDecoderSupportKnown(
+    base::OnceClosure callback) {
+  base::SequencedTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                   std::move(callback));
 }
 
 std::unique_ptr<media::VideoDecoder>
 BrowserGpuVideoAcceleratorFactories::CreateVideoDecoder(
     media::MediaLog* media_log,
-    const media::RequestOverlayInfoCB& request_overlay_info_cb) {
-  return nullptr;
-}
-
-std::unique_ptr<media::VideoDecodeAccelerator>
-BrowserGpuVideoAcceleratorFactories::CreateVideoDecodeAccelerator() {
+    media::RequestOverlayInfoCB request_overlay_info_cb) {
   return nullptr;
 }
 
@@ -119,30 +127,6 @@ std::unique_ptr<media::VideoEncodeAccelerator>
 BrowserGpuVideoAcceleratorFactories::CreateVideoEncodeAccelerator() {
   return nullptr;
 }
-
-bool BrowserGpuVideoAcceleratorFactories::CreateTextures(
-    int32_t count,
-    const gfx::Size& size,
-    std::vector<uint32_t>* texture_ids,
-    std::vector<gpu::Mailbox>* texture_mailboxes,
-    uint32_t texture_target) {
-  return false;
-}
-
-void BrowserGpuVideoAcceleratorFactories::DeleteTexture(uint32_t texture_id) {}
-
-gpu::SyncToken BrowserGpuVideoAcceleratorFactories::CreateSyncToken() {
-  return gpu::SyncToken();
-}
-
-void BrowserGpuVideoAcceleratorFactories::ShallowFlushCHROMIUM() {}
-
-void BrowserGpuVideoAcceleratorFactories::WaitSyncToken(
-    const gpu::SyncToken& sync_token) {}
-
-void BrowserGpuVideoAcceleratorFactories::SignalSyncToken(
-    const gpu::SyncToken& sync_token,
-    base::OnceClosure callback) {}
 
 std::unique_ptr<gfx::GpuMemoryBuffer>
 BrowserGpuVideoAcceleratorFactories::CreateGpuMemoryBuffer(
@@ -168,10 +152,6 @@ BrowserGpuVideoAcceleratorFactories::VideoFrameOutputFormat(
   return GpuVideoAcceleratorFactories::OutputFormat::UNDEFINED;
 }
 
-gpu::gles2::GLES2Interface* BrowserGpuVideoAcceleratorFactories::ContextGL() {
-  return nullptr;
-}
-
 gpu::SharedImageInterface*
 BrowserGpuVideoAcceleratorFactories::SharedImageInterface() {
   NOTREACHED();
@@ -184,44 +164,44 @@ BrowserGpuVideoAcceleratorFactories::GpuMemoryBufferManager() {
   return nullptr;
 }
 
-std::unique_ptr<base::SharedMemory>
-BrowserGpuVideoAcceleratorFactories::CreateSharedMemory(size_t size) {
-  return nullptr;
+base::UnsafeSharedMemoryRegion
+BrowserGpuVideoAcceleratorFactories::CreateSharedMemoryRegion(size_t size) {
+  return {};
 }
 
-scoped_refptr<base::SingleThreadTaskRunner>
+scoped_refptr<base::SequencedTaskRunner>
 BrowserGpuVideoAcceleratorFactories::GetTaskRunner() {
   return nullptr;
 }
 
-media::VideoDecodeAccelerator::Capabilities
-BrowserGpuVideoAcceleratorFactories::GetVideoDecodeAcceleratorCapabilities() {
-  DCHECK(context_provider_);
-  auto* proxy = context_provider_->GetCommandBufferProxy();
-  DCHECK(proxy);
-  DCHECK(proxy->channel());
-
-  return media::GpuVideoAcceleratorUtil::ConvertGpuToMediaDecodeCapabilities(
-      proxy->channel()->gpu_info().video_decode_accelerator_capabilities);
-}
-
-media::VideoEncodeAccelerator::SupportedProfiles
+absl::optional<media::VideoEncodeAccelerator::SupportedProfiles>
 BrowserGpuVideoAcceleratorFactories::
     GetVideoEncodeAcceleratorSupportedProfiles() {
   return media::VideoEncodeAccelerator::SupportedProfiles();
 }
 
-scoped_refptr<ws::ContextProviderCommandBuffer>
-BrowserGpuVideoAcceleratorFactories::GetMediaContextProvider() {
-  return context_provider_;
+bool BrowserGpuVideoAcceleratorFactories::IsEncoderSupportKnown() {
+  return true;
 }
 
-gpu::ContextSupport*
-BrowserGpuVideoAcceleratorFactories::GetMediaContextProviderContextSupport() {
-  return GetMediaContextProvider()->ContextSupport();
+void BrowserGpuVideoAcceleratorFactories::NotifyEncoderSupportKnown(
+    base::OnceClosure callback) {
+  base::SequencedTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                   std::move(callback));
+}
+
+viz::RasterContextProvider*
+BrowserGpuVideoAcceleratorFactories::GetMediaContextProvider() {
+  return context_provider_.get();
 }
 
 void BrowserGpuVideoAcceleratorFactories::SetRenderingColorSpace(
     const gfx::ColorSpace& color_space) {}
+
+const gfx::ColorSpace&
+BrowserGpuVideoAcceleratorFactories::GetRenderingColorSpace() const {
+  static constexpr gfx::ColorSpace cs = gfx::ColorSpace::CreateSRGB();
+  return cs;
+}
 
 }  // namespace content

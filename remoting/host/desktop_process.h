@@ -10,7 +10,6 @@
 #include <memory>
 #include <string>
 
-#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -89,7 +88,7 @@ class DesktopProcess : public DesktopSessionAgent::Delegate,
   // the network process.
   scoped_refptr<DesktopSessionAgent> desktop_agent_;
 
-  base::WeakPtrFactory<DesktopProcess> weak_factory_;
+  base::WeakPtrFactory<DesktopProcess> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DesktopProcess);
 };

@@ -8,11 +8,11 @@
 #include <utility>
 
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -45,7 +45,7 @@ scoped_refptr<Extension> CreateTestExtension(const std::string& name,
 
   std::string error;
   scoped_refptr<Extension> extension(
-      Extension::Create(path, Manifest::INTERNAL, manifest,
+      Extension::Create(path, mojom::ManifestLocation::kInternal, manifest,
                         Extension::NO_FLAGS, &error));
   EXPECT_TRUE(extension.get()) << error;
   return extension;
@@ -168,6 +168,33 @@ TEST(ExtensionSetTest, ExtensionSet) {
 
   ASSERT_FALSE(extensions.InsertAll(*to_add));  // Re-adding same set no-ops.
   EXPECT_EQ(4u, extensions.size());
+}
+
+TEST(ExtensionSetTest, TestInsert) {
+  ExtensionSet set;
+  std::string id_a(32, 'a');
+  std::string id_b(32, 'b');
+  scoped_refptr<const Extension> extension_a_v1 =
+      ExtensionBuilder("A").SetID(id_a).SetVersion("0.1").Build();
+  scoped_refptr<const Extension> extension_a_v2 =
+      ExtensionBuilder("A").SetID(id_a).SetVersion("0.2").Build();
+  scoped_refptr<const Extension> extension_b =
+      ExtensionBuilder("B").SetID(id_b).SetVersion("1").Build();
+
+  // Inserting a new extension should return true.
+  EXPECT_TRUE(set.Insert(extension_a_v1));
+  EXPECT_EQ(1u, set.size());
+  EXPECT_EQ("0.1", set.GetByID(id_a)->version().GetString());
+  // Inserting a new version of an extension already in the set should replace
+  // the current entry, and return false.
+  EXPECT_FALSE(set.Insert(extension_a_v2));
+  EXPECT_EQ(1u, set.size());
+  // Verify the entry was updated.
+  EXPECT_EQ("0.2", set.GetByID(id_a)->version().GetString());
+
+  // Inserting a second new extension should return true.
+  EXPECT_TRUE(set.Insert(extension_b));
+  EXPECT_EQ(2u, set.size());
 }
 
 }  // namespace extensions

@@ -8,10 +8,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
-#include "base/optional.h"
 #include "chrome/browser/resources/chromeos/zip_archiver/cpp/minizip_helpers.h"
 #include "chrome/browser/resources/chromeos/zip_archiver/cpp/volume_archive.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/minizip/src/mz_strm.h"
 
 // Defines an implementation of VolumeArchive that wraps all minizip
@@ -150,7 +151,10 @@ class VolumeArchiveMinizip : public VolumeArchive {
   bool decompressed_error_;
 
   // The password cache to access password protected files.
-  base::Optional<std::string> password_cache_;
+  absl::optional<std::string> password_cache_;
+
+  // Map of file name to zip file offset.
+  std::unordered_map<std::string, int64_t> file_offset_map_;
 
   // The minizip correspondent archive object.
   // This must be destroyed before the archive stream and any of its buffers

@@ -21,6 +21,7 @@
 #include "base/synchronization/lock.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "base/win/scoped_handle.h"
 
@@ -114,7 +115,7 @@ constexpr char kLdrUnregisterDllNotification[] = "LdrUnregisterDllNotification";
 // Helper function for converting a UNICODE_STRING to a FilePath.
 base::FilePath ToFilePath(const UNICODE_STRING* str) {
   return base::FilePath(
-      base::StringPiece16(str->Buffer, str->Length / sizeof(wchar_t)));
+      base::WStringPiece(str->Buffer, str->Length / sizeof(wchar_t)));
 }
 
 template <typename NotificationDataType>
@@ -156,7 +157,7 @@ ModuleWatcher::~ModuleWatcher() {
   g_module_watcher_instance = nullptr;
 }
 
-ModuleWatcher::ModuleWatcher() : weak_ptr_factory_(this) {}
+ModuleWatcher::ModuleWatcher() {}
 
 // Initializes the ModuleWatcher instance.
 void ModuleWatcher::Initialize(OnModuleEventCallback callback) {
@@ -165,7 +166,7 @@ void ModuleWatcher::Initialize(OnModuleEventCallback callback) {
 
   // The enumeration of modules is done on a background task to make sure it
   // doesn't slow down startup.
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE,
       {base::TaskPriority::BEST_EFFORT,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},

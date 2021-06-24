@@ -26,19 +26,18 @@ struct CdmConfig;
 // at any time.
 class MEDIA_EXPORT MediaDrmBridgeFactory : public CdmFactory {
  public:
-  MediaDrmBridgeFactory(const CreateFetcherCB& create_fetcher_cb,
-                        const CreateStorageCB& create_storage_cb);
+  MediaDrmBridgeFactory(CreateFetcherCB create_fetcher_cb,
+                        CreateStorageCB create_storage_cb);
   ~MediaDrmBridgeFactory() final;
 
   // CdmFactory implementation.
   void Create(const std::string& key_system,
-              const url::Origin& security_origin,
               const CdmConfig& cdm_config,
               const SessionMessageCB& session_message_cb,
               const SessionClosedCB& session_closed_cb,
               const SessionKeysChangeCB& session_keys_change_cb,
               const SessionExpirationUpdateCB& session_expiration_update_cb,
-              const CdmCreatedCB& cdm_created_cb) final;
+              CdmCreatedCB cdm_created_cb) final;
 
  private:
   // Callback for Initialize() on |storage_|.
@@ -72,7 +71,7 @@ class MEDIA_EXPORT MediaDrmBridgeFactory : public CdmFactory {
   std::unique_ptr<MediaDrmStorageBridge> storage_;
   scoped_refptr<MediaDrmBridge> media_drm_bridge_;
 
-  base::WeakPtrFactory<MediaDrmBridgeFactory> weak_factory_;
+  base::WeakPtrFactory<MediaDrmBridgeFactory> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaDrmBridgeFactory);
 };

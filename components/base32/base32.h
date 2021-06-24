@@ -11,6 +11,9 @@
 
 namespace base32 {
 
+constexpr char kEncoding[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+constexpr char kPaddingChar = '=';
+
 enum class Base32EncodePolicy {
   // Include the trailing padding in the output, when necessary.
   INCLUDE_PADDING,
@@ -28,6 +31,10 @@ enum class Base32EncodePolicy {
 std::string Base32Encode(
     base::StringPiece input,
     Base32EncodePolicy policy = Base32EncodePolicy::INCLUDE_PADDING);
+
+// Decodes the |input| string piece from base32. Returns an empty string on
+// error, including if |input| is empty.
+std::string Base32Decode(base::StringPiece input);
 
 }  // namespace base32
 

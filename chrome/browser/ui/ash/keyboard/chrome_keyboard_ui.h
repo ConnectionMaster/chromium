@@ -7,9 +7,9 @@
 
 #include <memory>
 
+#include "ash/keyboard/ui/keyboard_ui.h"
 #include "base/macros.h"
 #include "ui/aura/window_observer.h"
-#include "ui/keyboard/keyboard_ui.h"
 
 class ChromeKeyboardWebContents;
 
@@ -37,6 +37,7 @@ class ChromeKeyboardUI : public keyboard::KeyboardUI,
   // keyboard::KeyboardUI:
   aura::Window* LoadKeyboardWindow(LoadCallback callback) override;
   aura::Window* GetKeyboardWindow() const override;
+  ui::GestureConsumer* GetGestureConsumer() const override;
   ui::InputMethod* GetInputMethod() override;
   void ReloadKeyboardIfNeeded() override;
 

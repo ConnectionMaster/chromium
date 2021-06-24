@@ -4,6 +4,7 @@
 
 #include "ash/utility/screenshot_controller.h"
 
+#include "ash/accessibility/accessibility_controller_impl.h"
 #include "ash/display/cursor_window_controller.h"
 #include "ash/display/mirror_window_test_api.h"
 #include "ash/display/mouse_cursor_event_filter.h"
@@ -11,14 +12,20 @@
 #include "ash/screenshot_delegate.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/test/test_window_builder.h"
 #include "ash/test_screenshot_delegate.h"
 #include "ash/wm/window_util.h"
+#include "base/bind.h"
 #include "base/run_loop.h"
-#include "services/ws/window_tree_test_helper.h"
+#include "base/strings/stringprintf.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/compositor/layer.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/codec/png_codec.h"
+#include "ui/snapshot/screenshot_grabber.h"
 #include "ui/wm/core/cursor_manager.h"
 
 namespace ash {
@@ -50,16 +57,19 @@ class ScreenshotControllerTest : public AshTestBase {
 
   bool IsActive() { return screenshot_controller()->in_screenshot_session_; }
 
-  const gfx::Point& GetStartPosition() const {
-    return Shell::Get()->screenshot_controller()->start_position_;
+  gfx::Point GetStartPosition() const {
+    return Shell::Get()->screenshot_controller()->GetStartPositionForTest();
   }
 
   const aura::Window* GetCurrentSelectedWindow() const {
     return Shell::Get()->screenshot_controller()->selected_;
   }
 
-  aura::Window* CreateSelectableWindow(const gfx::Rect& rect) {
-    return CreateTestWindowInShell(SK_ColorGRAY, 0, rect);
+  std::unique_ptr<aura::Window> CreateSelectableWindow(const gfx::Rect& rect) {
+    return TestWindowBuilder()
+        .SetColorWindowDelegate(SK_ColorGRAY)
+        .SetBounds(rect)
+        .Build();
   }
 
  private:
@@ -262,12 +272,12 @@ TEST_F(PartialScreenshotControllerTest, MouseWarpTest) {
   StartPartialScreenshotSession();
   EXPECT_FALSE(TestIfMouseWarpsAt(gfx::Point(499, 11)));
   EXPECT_EQ(gfx::Point(499, 11),
-            Shell::Get()->aura_env()->last_mouse_location());
+            aura::Env::GetInstance()->last_mouse_location());
 
   Cancel();
   EXPECT_TRUE(TestIfMouseWarpsAt(gfx::Point(499, 11)));
   EXPECT_EQ(gfx::Point(501, 11),
-            Shell::Get()->aura_env()->last_mouse_location());
+            aura::Env::GetInstance()->last_mouse_location());
 }
 
 TEST_F(PartialScreenshotControllerTest, CursorVisibilityTest) {
@@ -294,11 +304,7 @@ TEST_F(PartialScreenshotControllerTest, CursorVisibilityTest) {
 // Make sure ScreenshotController doesn't prevent handling of large
 // cursor. See http://crbug.com/459214
 TEST_F(PartialScreenshotControllerTest, LargeCursor) {
-  Shell::Get()->cursor_manager()->SetCursorSize(ui::CursorSize::kLarge);
-  Shell::Get()
-      ->window_tree_host_manager()
-      ->cursor_window_controller()
-      ->SetCursorCompositingEnabled(true);
+  Shell::Get()->accessibility_controller()->large_cursor().SetEnabled(true);
 
   // Large cursor is represented as cursor window.
   MirrorWindowTestApi test_api;
@@ -441,6 +447,36 @@ TEST_F(WindowScreenshotControllerTest, MultiDisplays) {
   EXPECT_EQ(window1.get(), test_delegate->GetSelectedWindowAndReset());
 }
 
+TEST_F(ScreenshotControllerTest, FractionScaleWithProperRounding) {
+  UpdateDisplay(base::StringPrintf("3000x2000*%s", display::kDsfStr_2_252));
+  aura::Window* root = Shell::GetAllRootWindows()[0];
+  EXPECT_EQ(gfx::Size(1332, 888), root->bounds().size());
+  EXPECT_EQ(display::kDsf_2_252, root->layer()->device_scale_factor());
+  std::unique_ptr<ui::ScreenshotGrabber> grabber =
+      std::make_unique<ui::ScreenshotGrabber>();
+
+  auto callback = [](base::RunLoop* run_loop,
+                     ui::ScreenshotResult screenshot_result,
+                     scoped_refptr<base::RefCountedMemory> png_data) {
+    ASSERT_TRUE(screenshot_result == ui::ScreenshotResult::SUCCESS);
+
+    const unsigned char* input =
+        reinterpret_cast<const unsigned char*>(png_data->front());
+    size_t size = png_data->size();
+    SkBitmap bitmap;
+    ASSERT_TRUE(gfx::PNGCodec::Decode(input, size, &bitmap));
+    EXPECT_EQ(bitmap.width(), 3000);
+    EXPECT_EQ(bitmap.height(), 2000);
+    run_loop->Quit();
+  };
+  base::RunLoop run_loop;
+  ui::ScreenshotGrabber::ScreenshotCallback cb =
+      base::BindOnce(callback, &run_loop);
+  grabber->TakeScreenshot(root, gfx::Rect(root->bounds().size()),
+                          std::move(cb));
+  run_loop.Run();
+}
+
 TEST_F(ScreenshotControllerTest, MultipleDisplays) {
   StartPartialScreenshotSession();
   EXPECT_TRUE(IsActive());
@@ -478,22 +514,6 @@ TEST_F(ScreenshotControllerTest, BreaksCapture) {
   EXPECT_TRUE(window->HasCapture());
   Cancel();
   EXPECT_FALSE(window->HasCapture());
-}
-
-TEST_F(ScreenshotControllerTest, DontTargetNonTopLevels) {
-  std::unique_ptr<aura::Window> toplevel = CreateTestWindow();
-  std::unique_ptr<aura::Window> content(GetWindowTreeTestHelper()->NewWindow());
-  content->SetBounds(gfx::Rect(toplevel->bounds().size()));
-  toplevel->AddChild(content.get());
-  content->set_owned_by_parent(false);
-  content->Show();
-
-  StartWindowScreenshotSession();
-
-  ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
-  generator.MoveMouseTo(toplevel->GetBoundsInScreen().CenterPoint());
-
-  EXPECT_EQ(toplevel.get(), GetCurrentSelectedWindow());
 }
 
 }  // namespace ash

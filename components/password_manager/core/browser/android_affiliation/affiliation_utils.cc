@@ -11,7 +11,6 @@
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "components/url_formatter/elide_url.h"
-#include "components/variations/variations_associated_data.h"
 #include "net/base/escape.h"
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_canon_stdstring.h"
@@ -94,11 +93,7 @@ bool CanonicalizeHashComponent(const base::StringPiece& input_hash,
   // safe" base64 alphabet; plus the padding ('=').
   const char kBase64NonAlphanumericChars[] = "-_=";
 
-  // We need net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS to
-  // unescape the padding ('=').
-  std::string base64_encoded_hash = net::UnescapeURLComponent(
-      input_hash.as_string(),
-      net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS);
+  std::string base64_encoded_hash = net::UnescapeBinaryURLComponent(input_hash);
 
   if (!base64_encoded_hash.empty() &&
       CanonicalizeBase64Padding(&base64_encoded_hash) &&
@@ -121,8 +116,8 @@ bool CanonicalizePackageNameComponent(
   // Characters other than alphanumeric that are permitted in the package names.
   const char kPackageNameNonAlphanumericChars[] = "._";
 
-  std::string package_name = net::UnescapeURLComponent(
-      input_package_name.as_string(), net::UnescapeRule::NORMAL);
+  std::string package_name =
+      net::UnescapeBinaryURLComponent(input_package_name);
 
   // TODO(engedy): We might want to use a regex to check this more throughly.
   if (!package_name.empty() &&
@@ -203,8 +198,7 @@ std::vector<FacetURI> ExtractAndSortFacetURIs(const AffiliatedFacets& facets) {
 
 // FacetURI -------------------------------------------------------------------
 
-FacetURI::FacetURI() : is_valid_(false) {
-}
+FacetURI::FacetURI() = default;
 
 // static
 FacetURI FacetURI::FromPotentiallyInvalidSpec(const std::string& spec) {
@@ -252,14 +246,14 @@ bool FacetURI::IsValidAndroidFacetURI() const {
 
 std::string FacetURI::scheme() const {
   return is_valid()
-             ? ComponentString(canonical_spec_, parsed_.scheme).as_string()
+             ? std::string(ComponentString(canonical_spec_, parsed_.scheme))
              : "";
 }
 
 std::string FacetURI::android_package_name() const {
   if (!IsValidAndroidFacetURI())
     return "";
-  return ComponentString(canonical_spec_, parsed_.host).as_string();
+  return std::string(ComponentString(canonical_spec_, parsed_.host));
 }
 
 FacetURI::FacetURI(const std::string& canonical_spec, bool is_valid)
@@ -270,18 +264,23 @@ FacetURI::FacetURI(const std::string& canonical_spec, bool is_valid)
                         &parsed_);
 }
 
-
 // AffiliatedFacetsWithUpdateTime ---------------------------------------------
 
-AffiliatedFacetsWithUpdateTime::AffiliatedFacetsWithUpdateTime() {
-}
+AffiliatedFacetsWithUpdateTime::AffiliatedFacetsWithUpdateTime() = default;
 
 AffiliatedFacetsWithUpdateTime::AffiliatedFacetsWithUpdateTime(
     const AffiliatedFacetsWithUpdateTime& other) = default;
 
-AffiliatedFacetsWithUpdateTime::~AffiliatedFacetsWithUpdateTime() {
-}
+AffiliatedFacetsWithUpdateTime::AffiliatedFacetsWithUpdateTime(
+    AffiliatedFacetsWithUpdateTime&& other) = default;
 
+AffiliatedFacetsWithUpdateTime& AffiliatedFacetsWithUpdateTime::operator=(
+    const AffiliatedFacetsWithUpdateTime& other) = default;
+
+AffiliatedFacetsWithUpdateTime& AffiliatedFacetsWithUpdateTime::operator=(
+    AffiliatedFacetsWithUpdateTime&& other) = default;
+
+AffiliatedFacetsWithUpdateTime::~AffiliatedFacetsWithUpdateTime() = default;
 
 // Helpers --------------------------------------------------------------------
 

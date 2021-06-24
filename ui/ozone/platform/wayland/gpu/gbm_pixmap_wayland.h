@@ -12,31 +12,40 @@
 #include "base/macros.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/linux/gbm_buffer.h"
 #include "ui/gfx/native_pixmap.h"
-#include "ui/ozone/common/linux/gbm_buffer.h"
+#include "ui/gfx/native_widget_types.h"
 
 namespace ui {
 
-class WaylandSurfaceFactory;
-class WaylandConnectionProxy;
+class WaylandBufferManagerGpu;
 
 class GbmPixmapWayland : public gfx::NativePixmap {
  public:
-  GbmPixmapWayland(WaylandSurfaceFactory* surface_manager,
-                   WaylandConnectionProxy* connection,
-                   gfx::AcceleratedWidget widget);
+  explicit GbmPixmapWayland(WaylandBufferManagerGpu* buffer_manager);
 
   // Creates a buffer object and initializes the pixmap buffer.
-  bool InitializeBuffer(gfx::Size size,
-                        gfx::BufferFormat format,
-                        gfx::BufferUsage usage);
+  // |visible_area_size| represents a 'visible size', i.e., a buffer
+  // of size |size| may actually contain visible data only in the
+  // subregion of size |visible_area_size|. If |visible_area_size| is
+  // not provided, |size| is used. If |widget| is provided, browser
+  // side wl_buffer is also created. Otherwise, this pixmap
+  // behaves as a staging pixmap and mustn't be scheduled as an overlay.
+  bool InitializeBuffer(
+      gfx::AcceleratedWidget widget,
+      gfx::Size size,
+      gfx::BufferFormat format,
+      gfx::BufferUsage usage,
+      absl::optional<gfx::Size> visible_area_size = absl::nullopt);
 
   // gfx::NativePixmap overrides:
   bool AreDmaBufFdsValid() const override;
   int GetDmaBufFd(size_t plane) const override;
-  int GetDmaBufPitch(size_t plane) const override;
-  int GetDmaBufOffset(size_t plane) const override;
-  uint64_t GetDmaBufModifier(size_t plane) const override;
+  uint32_t GetDmaBufPitch(size_t plane) const override;
+  size_t GetDmaBufOffset(size_t plane) const override;
+  size_t GetDmaBufPlaneSize(size_t plane) const override;
+  size_t GetNumberOfPlanes() const override;
+  uint64_t GetBufferFormatModifier() const override;
   gfx::BufferFormat GetBufferFormat() const override;
   gfx::Size GetBufferSize() const override;
   uint32_t GetUniqueId() const override;
@@ -46,25 +55,35 @@ class GbmPixmapWayland : public gfx::NativePixmap {
                             const gfx::Rect& display_bounds,
                             const gfx::RectF& crop_rect,
                             bool enable_blend,
-                            std::unique_ptr<gfx::GpuFence> gpu_fence) override;
+                            std::vector<gfx::GpuFence> acquire_fences,
+                            std::vector<gfx::GpuFence> release_fences) override;
   gfx::NativePixmapHandle ExportHandle() override;
 
  private:
   ~GbmPixmapWayland() override;
 
   // Asks Wayland to create a dmabuf based wl_buffer.
-  void CreateZwpLinuxDmabuf();
+  void CreateDmabufBasedBuffer();
 
   // gbm_bo wrapper for struct gbm_bo.
   std::unique_ptr<GbmBuffer> gbm_bo_;
 
-  WaylandSurfaceFactory* const surface_manager_;
-
   // Represents a connection to Wayland.
-  WaylandConnectionProxy* const connection_;
+  WaylandBufferManagerGpu* const buffer_manager_;
 
   // Represents widget this pixmap backs.
-  const gfx::AcceleratedWidget widget_;
+  gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
+
+  // A unique ID to identify the buffer for this pixmap.
+  const uint32_t buffer_id_;
+
+  // Represents the z-axis order of the wayland surface this buffer is attach
+  // to.
+  int32_t z_order_ = 0;
+  bool z_order_set_ = false;
+
+  // Size of the visible area of the buffer.
+  gfx::Size visible_area_size_;
 
   DISALLOW_COPY_AND_ASSIGN(GbmPixmapWayland);
 };

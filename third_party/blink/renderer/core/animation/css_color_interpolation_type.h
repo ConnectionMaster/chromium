@@ -15,7 +15,7 @@ namespace blink {
 class StyleColor;
 struct OptionalStyleColor;
 
-class CSSColorInterpolationType : public CSSInterpolationType {
+class CORE_EXPORT CSSColorInterpolationType : public CSSInterpolationType {
  public:
   CSSColorInterpolationType(PropertyHandle property,
                             const PropertyRegistration* registration = nullptr)
@@ -26,6 +26,10 @@ class CSSColorInterpolationType : public CSSInterpolationType {
   void ApplyStandardPropertyValue(const InterpolableValue&,
                                   const NonInterpolableValue*,
                                   StyleResolverState&) const final;
+  void Composite(UnderlyingValueOwner& underlying_value_owner,
+                 double underlying_fraction,
+                 const InterpolationValue& value,
+                 double interpolation_fraction) const final;
 
   static std::unique_ptr<InterpolableValue> CreateInterpolableColor(
       const Color&);
@@ -39,6 +43,10 @@ class CSSColorInterpolationType : public CSSInterpolationType {
       const StyleResolverState&,
       bool is_visited = false,
       bool is_text_decoration = false);
+
+  // Extract color info from a InterpolableValue-result, the input value must be
+  // a InterpolableList.
+  static Color GetRGBA(const InterpolableValue&);
 
  private:
   InterpolationValue MaybeConvertNeutral(const InterpolationValue& underlying,

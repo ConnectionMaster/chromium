@@ -19,13 +19,13 @@
 #include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #define METRICS_OS_NAME "Mac"
 #elif defined(OS_WIN)
 #define METRICS_OS_NAME "Win"
 #elif defined(OS_ANDROID)
 #define METRICS_OS_NAME "Android"
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
 #define METRICS_OS_NAME "Linux"
 #elif defined(OS_FUCHSIA)
 #define METRICS_OS_NAME "Fuchsia"
@@ -109,5 +109,25 @@ void Metrics::HandlerCrashed(uint32_t exception_code) {
   base::UmaHistogramSparse(
       "Crashpad.HandlerCrash.ExceptionCode." METRICS_OS_NAME, exception_code);
 }
+
+#if defined(OS_IOS)
+// static
+void Metrics::MissingIntermediateDumpKey(
+    const internal::IntermediateDumpKey& key) {
+  UMA_HISTOGRAM_ENUMERATION("Crashpad.IntermediateDump.Reader.MissingKey",
+                            key,
+                            internal::IntermediateDumpKey::kMaxValue);
+}
+
+// static
+void Metrics::InvalidIntermediateDumpKeySize(
+    const internal::IntermediateDumpKey& key) {
+  UMA_HISTOGRAM_ENUMERATION("Crashpad.IntermediateDump.Reader.InvalidKeySize",
+                            key,
+                            internal::IntermediateDumpKey::kMaxValue);
+}
+#endif
+
+// static
 
 }  // namespace crashpad

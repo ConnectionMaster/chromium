@@ -7,13 +7,16 @@
 #include <string>
 #include <utility>
 
+#include "ash/keyboard/ui/resources/keyboard_resource_util.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/feature_list.h"
+#include "base/trace_event/trace_event.h"
 #include "chrome/browser/extensions/chrome_extension_web_contents_observer.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_bounds_observer.h"
 #include "content/public/browser/host_zoom_map.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -25,15 +28,13 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/constants.h"
-#include "third_party/blink/public/platform/web_gesture_event.h"
+#include "extensions/common/mojom/view_type.mojom.h"
+#include "third_party/blink/public/common/input/web_gesture_event.h"
+#include "ui/accessibility/aura/aura_window_properties.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/accessibility/platform/aura_window_properties.h"
 #include "ui/aura/window.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/keyboard/resources/keyboard_resource_util.h"
-#include "ui/views/mus/remote_view/remote_view_provider.h"
 
 namespace {
 
@@ -49,32 +50,25 @@ class ChromeKeyboardContentsDelegate : public content::WebContentsDelegate,
   content::WebContents* OpenURLFromTab(
       content::WebContents* source,
       const content::OpenURLParams& params) override {
-    source->GetController().LoadURL(params.url, params.referrer,
-                                    params.transition, params.extra_headers);
+    source->GetController().LoadURLWithParams(
+        content::NavigationController::LoadURLParams(params));
     Observe(source);
     return source;
   }
 
   bool CanDragEnter(content::WebContents* source,
                     const content::DropData& data,
-                    blink::WebDragOperationsMask operations_allowed) override {
+                    blink::DragOperationsMask operations_allowed) override {
     return false;
   }
 
-  bool ShouldCreateWebContents(
-      content::WebContents* web_contents,
-      content::RenderFrameHost* opener,
+  bool IsWebContentsCreationOverridden(
       content::SiteInstance* source_site_instance,
-      int32_t route_id,
-      int32_t main_frame_route_id,
-      int32_t main_frame_widget_route_id,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,
       const std::string& frame_name,
-      const GURL& target_url,
-      const std::string& partition_id,
-      content::SessionStorageNamespace* session_storage_namespace) override {
-    return false;
+      const GURL& target_url) override {
+    return true;
   }
 
   void SetContentsBounds(content::WebContents* source,
@@ -84,7 +78,7 @@ class ChromeKeyboardContentsDelegate : public content::WebContentsDelegate,
     // keyboard window must have been added to keyboard container window at this
     // point. Otherwise, wrong keyboard bounds is used and may cause problem as
     // described in https://crbug.com/367788.
-    DCHECK(features::IsUsingWindowService() || keyboard_window->parent());
+    DCHECK(keyboard_window->parent());
     // keyboard window bounds may not set to |pos| after this call. If keyboard
     // is in FULL_WIDTH mode, only the height of keyboard window will be
     // changed.
@@ -113,11 +107,16 @@ class ChromeKeyboardContentsDelegate : public content::WebContentsDelegate,
     switch (event.GetType()) {
       // Scroll events are not suppressed because the menu to select IME should
       // be scrollable.
-      case blink::WebInputEvent::kGestureScrollBegin:
-      case blink::WebInputEvent::kGestureScrollEnd:
-      case blink::WebInputEvent::kGestureScrollUpdate:
-      case blink::WebInputEvent::kGestureFlingStart:
-      case blink::WebInputEvent::kGestureFlingCancel:
+      case blink::WebInputEvent::Type::kGestureScrollBegin:
+      case blink::WebInputEvent::Type::kGestureScrollEnd:
+      case blink::WebInputEvent::Type::kGestureScrollUpdate:
+      case blink::WebInputEvent::Type::kGestureFlingStart:
+      case blink::WebInputEvent::Type::kGestureFlingCancel:
+        return false;
+      // Allow tap events to allow browser scrollbars to be draggable by touch.
+      case blink::WebInputEvent::Type::kGestureTapDown:
+      case blink::WebInputEvent::Type::kGestureTap:
+      case blink::WebInputEvent::Type::kGestureTapCancel:
         return false;
       default:
         // Stop gesture events from being passed to renderer to suppress the
@@ -150,7 +149,8 @@ ChromeKeyboardWebContents::ChromeKeyboardWebContents(
   web_contents_ = content::WebContents::Create(web_contents_params);
   web_contents_->SetDelegate(new ChromeKeyboardContentsDelegate());
 
-  extensions::SetViewType(web_contents_.get(), extensions::VIEW_TYPE_COMPONENT);
+  extensions::SetViewType(web_contents_.get(),
+                          extensions::mojom::ViewType::kComponent);
   extensions::ChromeExtensionWebContentsObserver::CreateForWebContents(
       web_contents_.get());
   Observe(web_contents_.get());
@@ -171,11 +171,6 @@ ChromeKeyboardWebContents::ChromeKeyboardWebContents(
   keyboard_window->layer()->SetMasksToBounds(false);
   keyboard_window->SetProperty(ui::kAXRoleOverride, ax::mojom::Role::kKeyboard);
 
-  // TODO(stevenjb): For features::IsUsingWindowService() we need to add an
-  // EventHandler class so that the correct events are filtered and handled
-  // by the Ash containing window. See keyboard::KeyboardEventFilter.
-  // https://crbug.com/843332.
-
   keyboard_window->AddObserver(this);
 
   window_bounds_observer_ =
@@ -183,7 +178,6 @@ ChromeKeyboardWebContents::ChromeKeyboardWebContents(
 }
 
 ChromeKeyboardWebContents::~ChromeKeyboardWebContents() {
-  remote_view_provider_.reset();
   window_bounds_observer_.reset();
   if (web_contents_) {
     web_contents_->ClosePage();
@@ -218,40 +212,23 @@ void ChromeKeyboardWebContents::SetInitialContentsSize(const gfx::Size& size) {
   web_contents_->GetNativeView()->SetBounds(bounds);
 }
 
-void ChromeKeyboardWebContents::RenderViewCreated(
-    content::RenderViewHost* render_view_host) {
-  content::RenderProcessHost* render_process_host =
-      render_view_host->GetProcess();
-  content::HostZoomMap::GetDefaultForBrowserContext(
-      render_process_host->GetBrowserContext())
-      ->SetTemporaryZoomLevel(render_process_host->GetID(),
-                              render_view_host->GetRoutingID(), 0 /* level */);
+void ChromeKeyboardWebContents::RenderFrameCreated(
+    content::RenderFrameHost* frame_host) {
+  if (frame_host->GetParent())
+    return;
+  content::HostZoomMap* zoom_map =
+      content::HostZoomMap::GetDefaultForBrowserContext(
+          frame_host->GetBrowserContext());
+  zoom_map->SetTemporaryZoomLevel(
+      frame_host->GetProcess()->GetID(),
+      frame_host->GetRenderViewHost()->GetRoutingID(), 0 /* level */);
 }
 
 void ChromeKeyboardWebContents::DidStopLoading() {
-  if (!::features::IsUsingWindowService()) {
-    // TODO(https://crbug.com/845780): Change this to a DCHECK when we change
-    // ReloadKeyboardIfNeeded to also have a callback.
-    if (!load_callback_.is_null())
-      std::move(load_callback_).Run(base::UnguessableToken(), gfx::Size());
-    return;
-  }
-  if (remote_view_provider_)
-    return;
-  remote_view_provider_ = std::make_unique<views::RemoteViewProvider>(
-      web_contents_->GetNativeView());
-  remote_view_provider_->SetCallbacks(base::NullCallback(), unembed_callback_);
-  remote_view_provider_->GetEmbedToken(
-      base::BindOnce(&ChromeKeyboardWebContents::OnGotEmbedToken,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void ChromeKeyboardWebContents::OnGotEmbedToken(
-    const base::UnguessableToken& token) {
-  VLOG(1) << "OnGotEmbedToken: " << token;
-  token_ = token;
-  web_contents_->GetNativeView()->Show();
-  MaybeRunLoadCallback();
+  // TODO(https://crbug.com/845780): Change this to a DCHECK when we change
+  // ReloadKeyboardIfNeeded to also have a callback.
+  if (!load_callback_.is_null())
+    std::move(load_callback_).Run();
 }
 
 void ChromeKeyboardWebContents::LoadContents(const GURL& url) {
@@ -269,13 +246,4 @@ void ChromeKeyboardWebContents::OnWindowBoundsChanged(
     ui::PropertyChangeReason reason) {
   VLOG(1) << "OnWindowBoundsChanged: " << new_bounds.ToString();
   contents_size_ = new_bounds.size();
-  MaybeRunLoadCallback();
-}
-
-void ChromeKeyboardWebContents::MaybeRunLoadCallback() {
-  // Note: |contents_size_| may still be empty, in which case
-  // AshKeyboardUI::AshKeyboardView::OnWindowBoundsChanged should get called
-  // with the correct contents size.
-  if (!load_callback_.is_null() && !token_.is_empty())
-    std::move(load_callback_).Run(token_, contents_size_);
 }

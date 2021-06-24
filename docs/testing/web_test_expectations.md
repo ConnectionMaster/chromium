@@ -102,12 +102,28 @@ results from try jobs, by using the command-tool
 1. First, upload a CL.
 2. Trigger try jobs by running `blink_tool.py rebaseline-cl`. This should
    trigger jobs on
-   [tryserver.blink](https://build.chromium.org/p/tryserver.blink/builders).
+   [tryserver.blink](https://ci.chromium.org/p/chromium/g/tryserver.blink/builders).
+   In addition, this will also trigger the CQ try builders that run blink web tests.
+   linux-rel, mac-rel and win10_chromium_x64_rel_ng.
+   * Optionally one can choose to trigger only blink try bots alone.
+   Run the tool with the option -
+   `blink_tool.py rebaseline-cl --use-blink-try-bots-only`
+   * If you would like to rebaseline for highdpi, use the flag-specific option.
+   `blink_tool.py rebaseline-cl --flag-specific=highdpi`. This will trigger
+   only the highdpi try builder. Since this is an experimental builder at this time,
+   this will not be triggered with the default or '--use-blink-try-bots-only' options.
+   * If you need to trigger all the builders including highdpi, run the tool with
+   desired options multiple times. There is no need to wait for the builders
+   triggered with default option to finish before triggering the highdpi and vice versa.
 3. Wait for all try jobs to finish.
 4. Run `blink_tool.py rebaseline-cl` again to fetch new baselines.
    By default, this will download new baselines for any failing tests
-   in the try jobs.
+   in the blink try jobs and CQ try bots.
+   * Again, there is an option to use only blink try jobs results for rebaselining.
    (Run `blink_tool.py rebaseline-cl --help` for more specific options.)
+   * To rebaseline for highdpi runs -
+   `blink_tool.py rebaseline-cl --flag-specific=highdpi` which will download baselines
+   for any failures in the highdpi run only.
 5. Commit the new baselines and upload a new patch.
 
 This way, the new baselines can be reviewed along with the changes, which helps
@@ -115,8 +131,6 @@ the reviewer verify that the new baselines are correct. It also means that there
 is no period of time when the web test results are ignored.
 
 #### Options
-
-### Rebaselining with try jobs
 
 The tests which `blink_tool.py rebaseline-cl` tries to download new baselines for
 depends on its arguments.
@@ -130,6 +144,18 @@ depends on its arguments.
 * If some of the try jobs failed to run, and you wish to continue rebaselining
   assuming that there are no platform-specific results for those platforms,
   you can add the flag `--fill-missing`.
+* By default, it finds the try jobs by looking at the latest patchset. If you
+  have finished try jobs that are associated with an earlier patchset and you
+  want to use them instead of scheduling new try jobs, you can add the flag
+  `--patchset=n` to specify the patchset. This is very useful when the CL has
+  'trivial' patchsets that are created e.g. by editing the CL descrpition.
+
+### Local manual rebaselining
+
+This is often useful for rebaselining flag-specific results, or rebaselining
+just for the local platform.
+See [Rebaselining Web Tests](./web_tests.md#Rebaselining-Web-Tests) for more
+details.
 
 ## Kinds of expectations files
 
@@ -150,7 +176,7 @@ depends on its arguments.
   longer than the usual timeout to run. Slow tests are given 5x the usual
   timeout.
 * [SmokeTests](../../third_party/blink/web_tests/SmokeTests): A small subset
-  of tests that we run on the Android bot.
+  of tests that we run on the Fuchsia bots.
 * [StaleTestExpectations](../../third_party/blink/web_tests/StaleTestExpectations):
   Platform-specific lines that have been in TestExpectations for many months.
   They're moved here to get them out of the way of people doing rebaselines
@@ -266,7 +292,7 @@ You would expect:
 * `fast/html/article-element.html` to fail with a text diff (since it is in the
   fast/html directory).
 * `fast/html/keygen.html` to pass (since the exact match on the test name).
-* `fast/html/submit.html` to pass (since the configuration parameters don't
+* `fast/forms/submit.html` to pass (since the configuration parameters don't
   match).
 * `fast/html/section-element.html` to either crash or produce a text (or image
   and text) failure, but not time out or pass.

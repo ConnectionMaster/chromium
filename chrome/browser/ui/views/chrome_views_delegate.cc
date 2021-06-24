@@ -4,24 +4,33 @@
 
 #include "chrome/browser/ui/views/chrome_views_delegate.h"
 
-#include "base/logging.h"
+#include <memory>
+
+#include "base/check_op.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/scoped_profile_keep_alive.h"
 #include "chrome/browser/ui/browser_window_state.h"
+#include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/version_info/version_info.h"
-#include "content/public/browser/context_factory.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/app_types.h"
 #include "chrome/browser/ui/views/touch_selection_menu_runner_chromeos.h"
+#include "chromeos/ui/frame/frame_utils.h"
+#include "ui/aura/client/aura_constants.h"
 #endif
 
 // Helpers --------------------------------------------------------------------
@@ -56,7 +65,7 @@ PrefService* GetPrefsForWindow(const views::Widget* window) {
 // ChromeViewsDelegate --------------------------------------------------------
 
 ChromeViewsDelegate::ChromeViewsDelegate() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // ViewsDelegate's constructor may have created a menu runner already, and
   // since TouchSelectionMenuRunner is a singleton with checks to not
   // initialize it if there is already an existing runner we need to first
@@ -126,17 +135,35 @@ bool ChromeViewsDelegate::GetSavedWindowPlacement(
     dictionary->GetBoolean("maximized", &maximized);
   *show_state = maximized ? ui::SHOW_STATE_MAXIMIZED : ui::SHOW_STATE_NORMAL;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   AdjustSavedWindowPlacementChromeOS(widget, bounds);
 #endif
   return true;
 }
 
+bool ChromeViewsDelegate::IsShuttingDown() const {
+  return KeepAliveRegistry::GetInstance()->IsShuttingDown();
+}
+
 void ChromeViewsDelegate::AddRef() {
   if (ref_count_ == 0u) {
-    keep_alive_.reset(
-        new ScopedKeepAlive(KeepAliveOrigin::CHROME_VIEWS_DELEGATE,
-                            KeepAliveRestartOption::DISABLED));
+    keep_alive_ = std::make_unique<ScopedKeepAlive>(
+        KeepAliveOrigin::CHROME_VIEWS_DELEGATE,
+        KeepAliveRestartOption::DISABLED);
+  }
+
+  // There's no easy way to know which Profile caused this menu to open, so
+  // prevent all currently-loaded Profiles from deleting until the menu
+  // closes.
+  //
+  // Do this unconditionally, not just when the ref-count becomes non-zero. That
+  // way, we pick up any new profiles that have become loaded since the last
+  // call to AddRef().
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  DCHECK(profile_manager);
+  for (Profile* profile : profile_manager->GetLoadedProfiles()) {
+    profile_keep_alives_[profile] = std::make_unique<ScopedProfileKeepAlive>(
+        profile, ProfileKeepAliveOrigin::kChromeViewsDelegate);
   }
 
   ++ref_count_;
@@ -145,16 +172,33 @@ void ChromeViewsDelegate::AddRef() {
 void ChromeViewsDelegate::ReleaseRef() {
   DCHECK_NE(0u, ref_count_);
 
-  if (--ref_count_ == 0u)
+  if (--ref_count_ == 0u) {
     keep_alive_.reset();
+    profile_keep_alives_.clear();
+  }
 }
 
 void ChromeViewsDelegate::OnBeforeWidgetInit(
     views::Widget::InitParams* params,
     views::internal::NativeWidgetDelegate* delegate) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Only for dialog widgets, if this is not going to be a transient child,
+  // then we mark it as an OS system app, otherwise its transient root's app
+  // type should be used.
+  if (delegate->IsDialogBox() && !params->parent) {
+    params->init_properties_container.SetProperty(
+        aura::client::kAppType, static_cast<int>(ash::AppType::SYSTEM_APP));
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
   // We need to determine opacity if it's not already specified.
-  if (params->opacity == views::Widget::InitParams::INFER_OPACITY)
-    params->opacity = GetOpacityForInitParams(*params);
+  if (params->opacity == views::Widget::InitParams::WindowOpacity::kInferred) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    chromeos::ResolveInferredOpacity(params);
+#else
+    params->opacity = views::Widget::InitParams::WindowOpacity::kOpaque;
+#endif
+  }
 
   // If we already have a native_widget, we don't have to try to come
   // up with one.
@@ -170,22 +214,6 @@ void ChromeViewsDelegate::OnBeforeWidgetInit(
   params->native_widget = CreateNativeWidget(params, delegate);
 }
 
-ui::ContextFactory* ChromeViewsDelegate::GetContextFactory() {
-  return content::GetContextFactory();
-}
-
-ui::ContextFactoryPrivate* ChromeViewsDelegate::GetContextFactoryPrivate() {
-  return content::GetContextFactoryPrivate();
-}
-
 std::string ChromeViewsDelegate::GetApplicationName() {
   return version_info::GetProductName();
 }
-
-#if !defined(OS_CHROMEOS)
-views::Widget::InitParams::WindowOpacity
-ChromeViewsDelegate::GetOpacityForInitParams(
-    const views::Widget::InitParams& params) {
-  return views::Widget::InitParams::OPAQUE_WINDOW;
-}
-#endif

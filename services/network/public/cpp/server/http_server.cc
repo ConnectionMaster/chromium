@@ -15,6 +15,7 @@
 #include "base/strings/string_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/base/net_errors.h"
 #include "services/network/public/cpp/server/http_connection.h"
 #include "services/network/public/cpp/server/http_server_request_info.h"
@@ -51,12 +52,12 @@ constexpr net::NetworkTrafficAnnotationTag
 
 }  // namespace
 
-HttpServer::HttpServer(mojom::TCPServerSocketPtr server_socket,
-                       HttpServer::Delegate* delegate)
+HttpServer::HttpServer(
+    mojo::PendingRemote<mojom::TCPServerSocket> server_socket,
+    HttpServer::Delegate* delegate)
     : server_socket_(std::move(server_socket)),
       delegate_(delegate),
-      last_id_(0),
-      weak_ptr_factory_(this) {
+      last_id_(0) {
   DCHECK(server_socket_);
   // Start accepting connections in next run loop in case when delegate is not
   // ready to get callbacks.
@@ -180,14 +181,14 @@ bool HttpServer::SetSendBufferSize(int connection_id, int32_t size) {
 
 void HttpServer::DoAcceptLoop() {
   server_socket_->Accept(
-      nullptr, /* observer */
+      mojo::NullRemote(), /* observer */
       base::BindOnce(&HttpServer::OnAcceptCompleted, base::Unretained(this)));
 }
 
 void HttpServer::OnAcceptCompleted(
     int rv,
-    const base::Optional<net::IPEndPoint>& remote_addr,
-    mojom::TCPConnectedSocketPtr connected_socket,
+    const absl::optional<net::IPEndPoint>& remote_addr,
+    mojo::PendingRemote<mojom::TCPConnectedSocket> connected_socket,
     mojo::ScopedDataPipeConsumerHandle receive_pipe_handle,
     mojo::ScopedDataPipeProducerHandle send_pipe_handle) {
   if (rv != net::OK) {
@@ -298,7 +299,8 @@ void HttpServer::HandleReadResult(HttpConnection* connection, MojoResult rv) {
     // Sets peer address.
     request.peer = connection->GetPeerAddress();
 
-    if (request.HasHeaderValue("connection", "upgrade")) {
+    if (request.HasHeaderValue("connection", "upgrade") &&
+        request.HasHeaderValue("upgrade", "websocket")) {
       connection->SetWebSocket(std::make_unique<WebSocket>(this, connection));
       connection->read_buf().erase(0, pos);
       delegate_->OnWebSocketRequest(connection->id(), request);

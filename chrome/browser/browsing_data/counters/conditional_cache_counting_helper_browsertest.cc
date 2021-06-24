@@ -17,6 +17,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/simple_url_loader_test_helper.h"
 #include "net/test/embedded_test_server/default_handlers.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -52,7 +53,7 @@ class ConditionalCacheCountingHelperBrowserTest : public InProcessBrowserTest {
 
   void WaitForTasksOnIOThread() {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    run_loop_.reset(new base::RunLoop());
+    run_loop_ = std::make_unique<base::RunLoop>();
     run_loop_->Run();
   }
 
@@ -60,9 +61,8 @@ class ConditionalCacheCountingHelperBrowserTest : public InProcessBrowserTest {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
     last_size_ = -1;
     ConditionalCacheCountingHelper::Count(
-        content::BrowserContext::GetDefaultStoragePartition(
-            browser()->profile()),
-        begin_time, end_time,
+        browser()->profile()->GetDefaultStoragePartition(), begin_time,
+        end_time,
         base::BindOnce(
             &ConditionalCacheCountingHelperBrowserTest::CountCallback,
             base::Unretained(this)));
@@ -85,13 +85,24 @@ class ConditionalCacheCountingHelperBrowserTest : public InProcessBrowserTest {
           std::make_unique<network::ResourceRequest>();
       request->url =
           embedded_test_server()->GetURL(base::StrCat({"/cachetime/", key}));
+
+      // Populate the Network Isolation Key so that it is cacheable.
+      url::Origin origin =
+          url::Origin::Create(embedded_test_server()->base_url());
+      request->trusted_params = network::ResourceRequest::TrustedParams();
+      request->trusted_params->isolation_info =
+          net::IsolationInfo::CreateForInternalRequest(origin);
+      request->site_for_cookies =
+          request->trusted_params->isolation_info.site_for_cookies();
+
       content::SimpleURLLoaderTestHelper simple_loader_helper;
       std::unique_ptr<network::SimpleURLLoader> simple_loader =
           network::SimpleURLLoader::Create(std::move(request),
                                            TRAFFIC_ANNOTATION_FOR_TESTS);
       simple_loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
-          content::BrowserContext::GetDefaultStoragePartition(
-              browser()->profile())
+          browser()
+              ->profile()
+              ->GetDefaultStoragePartition()
               ->GetURLLoaderFactoryForBrowserProcess()
               .get(),
           simple_loader_helper.GetCallback());

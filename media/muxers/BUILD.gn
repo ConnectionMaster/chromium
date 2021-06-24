@@ -11,6 +11,10 @@ source_set("muxers") {
   visibility = [ "//media" ]
 
   sources = [
+    "file_webm_muxer_delegate.cc",
+    "file_webm_muxer_delegate.h",
+    "live_webm_muxer_delegate.cc",
+    "live_webm_muxer_delegate.h",
     "webm_muxer.cc",
     "webm_muxer.h",
   ]
@@ -19,7 +23,6 @@ source_set("muxers") {
     "//base",
     "//media/base",
     "//media/formats",
-    "//skia",
     "//third_party/libwebm",
     "//ui/gfx/geometry",
   ]
@@ -29,15 +32,14 @@ source_set("muxers") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "webm_muxer_unittest.cc",
-  ]
+  sources = [ "webm_muxer_unittest.cc" ]
 
   deps = [
     "//base/test:test_support",
     "//media:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/libwebm",
   ]
 
   configs += [

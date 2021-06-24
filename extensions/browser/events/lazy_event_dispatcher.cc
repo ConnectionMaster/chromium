@@ -5,10 +5,12 @@
 #include "extensions/browser/events/lazy_event_dispatcher.h"
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/lazy_context_id.h"
+#include "extensions/common/features/feature.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 
 using content::BrowserContext;
@@ -53,7 +55,7 @@ void LazyEventDispatcher::Dispatch(
 
 bool LazyEventDispatcher::HasAlreadyDispatched(
     const LazyContextId& dispatch_context) const {
-  return base::ContainsKey(dispatched_ids_, dispatch_context);
+  return base::Contains(dispatched_ids_, dispatch_context);
 }
 
 bool LazyEventDispatcher::QueueEventDispatch(
@@ -84,7 +86,11 @@ bool LazyEventDispatcher::QueueEventDispatch(
   // last until the event is dispatched.
   if (!dispatched_event->will_dispatch_callback.is_null()) {
     if (!dispatched_event->will_dispatch_callback.Run(
-            dispatch_context.browser_context(), extension,
+            dispatch_context.browser_context(),
+            // The only lazy listeners belong to an extension's background
+            // context (either an event page or a service worker), which are
+            // always BLESSED_EXTENSION_CONTEXTs
+            extensions::Feature::BLESSED_EXTENSION_CONTEXT, extension,
             dispatched_event.get(), listener_filter)) {
       // The event has been canceled.
       return true;

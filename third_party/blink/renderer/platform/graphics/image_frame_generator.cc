@@ -28,36 +28,56 @@
 #include <memory>
 #include <utility>
 
-#include "SkData.h"
-#include "base/macros.h"
 #include "third_party/blink/renderer/platform/graphics/image_decoder_wrapper.h"
 #include "third_party/blink/renderer/platform/graphics/image_decoding_store.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
-#include "third_party/skia/include/core/SkYUVASizeInfo.h"
+#include "third_party/skia/include/core/SkData.h"
 
 namespace blink {
 
-static bool UpdateYUVComponentSizes(ImageDecoder* decoder,
-                                    SkISize component_sizes[4],
-                                    size_t component_width_bytes[4]) {
-  DCHECK(decoder->CanDecodeToYUV());
-
-  for (int yuv_index = 0; yuv_index < 3; ++yuv_index) {
-    IntSize size = decoder->DecodedYUVSize(yuv_index);
-    component_sizes[yuv_index].set(size.Width(), size.Height());
-    component_width_bytes[yuv_index] = decoder->DecodedYUVWidthBytes(yuv_index);
+SkYUVAInfo::Subsampling SubsamplingToSkiaSubsampling(
+    cc::YUVSubsampling subsampling) {
+  switch (subsampling) {
+    case cc::YUVSubsampling::k410:
+      return SkYUVAInfo::Subsampling::k410;
+    case cc::YUVSubsampling::k411:
+      return SkYUVAInfo::Subsampling::k411;
+    case cc::YUVSubsampling::k420:
+      return SkYUVAInfo::Subsampling::k420;
+    case cc::YUVSubsampling::k422:
+      return SkYUVAInfo::Subsampling::k422;
+    case cc::YUVSubsampling::k440:
+      return SkYUVAInfo::Subsampling::k440;
+    case cc::YUVSubsampling::k444:
+      return SkYUVAInfo::Subsampling::k444;
+    case cc::YUVSubsampling::kUnknown:
+      return SkYUVAInfo::Subsampling::kUnknown;
   }
-  component_sizes[3] = SkISize::MakeEmpty();
-  component_width_bytes[3] = 0;
+}
 
+static bool UpdateYUVAInfoSubsamplingAndWidthBytes(
+    ImageDecoder* decoder,
+    SkYUVAInfo::Subsampling* subsampling,
+    size_t component_width_bytes[SkYUVAInfo::kMaxPlanes]) {
+  SkYUVAInfo::Subsampling tempSubsampling =
+      SubsamplingToSkiaSubsampling(decoder->GetYUVSubsampling());
+  if (tempSubsampling == SkYUVAInfo::Subsampling::kUnknown) {
+    return false;
+  }
+  *subsampling = tempSubsampling;
+  component_width_bytes[0] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kY);
+  component_width_bytes[1] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kU);
+  component_width_bytes[2] = decoder->DecodedYUVWidthBytes(cc::YUVIndex::kV);
+  // TODO(crbug/910276): Alpha plane is currently unsupported.
+  component_width_bytes[3] = 0;
   return true;
 }
 
 ImageFrameGenerator::ImageFrameGenerator(const SkISize& full_size,
                                          bool is_multi_frame,
                                          const ColorBehavior& color_behavior,
-                                         std::vector<SkISize> supported_sizes)
+                                         Vector<SkISize> supported_sizes)
     : full_size_(full_size),
       decoder_color_behavior_(color_behavior),
       is_multi_frame_(is_multi_frame),
@@ -74,6 +94,7 @@ ImageFrameGenerator::ImageFrameGenerator(const SkISize& full_size,
 }
 
 ImageFrameGenerator::~ImageFrameGenerator() {
+  // We expect all image decoders to be unlocked and catch with DCHECKs if not.
   ImageDecodingStore::Instance().RemoveCacheIndexedByGenerator(this);
 }
 
@@ -93,7 +114,7 @@ bool ImageFrameGenerator::DecodeAndScale(
   }
 
   TRACE_EVENT1("blink", "ImageFrameGenerator::decodeAndScale", "generator",
-               this);
+               static_cast<void*>(this));
 
   // This implementation does not support arbitrary scaling so check the
   // requested size.
@@ -144,51 +165,62 @@ bool ImageFrameGenerator::DecodeAndScale(
   return true;
 }
 
-bool ImageFrameGenerator::DecodeToYUV(SegmentReader* data,
-                                      size_t index,
-                                      const SkISize component_sizes[3],
-                                      void* planes[3],
-                                      const size_t row_bytes[3]) {
+bool ImageFrameGenerator::DecodeToYUV(
+    SegmentReader* data,
+    size_t index,
+    SkColorType color_type,
+    const SkISize component_sizes[cc::kNumYUVPlanes],
+    void* planes[cc::kNumYUVPlanes],
+    const size_t row_bytes[cc::kNumYUVPlanes]) {
   MutexLocker lock(generator_mutex_);
   DCHECK_EQ(index, 0u);
 
   // TODO (scroggo): The only interesting thing this uses from the
   // ImageFrameGenerator is m_decodeFailed. Move this into
   // DecodingImageGenerator, which is the only class that calls it.
-  if (decode_failed_)
+  if (decode_failed_ || yuv_decoding_failed_)
     return false;
 
   if (!planes || !planes[0] || !planes[1] || !planes[2] || !row_bytes ||
       !row_bytes[0] || !row_bytes[1] || !row_bytes[2]) {
     return false;
   }
-
-  const bool data_complete = true;
+  const bool all_data_received = true;
   std::unique_ptr<ImageDecoder> decoder = ImageDecoder::Create(
-      data, data_complete, ImageDecoder::kAlphaPremultiplied,
+      data, all_data_received, ImageDecoder::kAlphaPremultiplied,
       ImageDecoder::kDefaultBitDepth, decoder_color_behavior_);
   // getYUVComponentSizes was already called and was successful, so
   // ImageDecoder::create must succeed.
   DCHECK(decoder);
 
   std::unique_ptr<ImagePlanes> image_planes =
-      std::make_unique<ImagePlanes>(planes, row_bytes);
+      std::make_unique<ImagePlanes>(planes, row_bytes, color_type);
+  // TODO(crbug.com/943519): Don't forget to initialize planes to black or
+  // transparent for incremental decoding.
   decoder->SetImagePlanes(std::move(image_planes));
+
+  DCHECK(decoder->CanDecodeToYUV());
 
   {
     // This is the YUV analog of ImageFrameGenerator::decode.
-    TRACE_EVENT0("blink", "ImageFrameGenerator::decodeToYUV");
+    TRACE_EVENT0("blink,benchmark", "ImageFrameGenerator::decodeToYUV");
     decoder->DecodeToYUV();
   }
 
-  if (!decoder->Failed()) {
+  // Display a complete scan if available, even if decoding fails.
+  if (decoder->HasDisplayableYUVData()) {
     // TODO(crbug.com/910276): Set this properly for alpha support.
     SetHasAlpha(index, false);
     return true;
   }
 
-  DCHECK(decoder->Failed());
-  yuv_decoding_failed_ = true;
+  // Currently if there is no displayable data, the decoder always fails.
+  // This may not be the case once YUV supports incremental decoding
+  // (crbug.com/943519).
+  if (decoder->Failed()) {
+    yuv_decoding_failed_ = true;
+  }
+
   return false;
 }
 
@@ -212,31 +244,54 @@ bool ImageFrameGenerator::HasAlpha(size_t index) {
   return true;
 }
 
-bool ImageFrameGenerator::GetYUVComponentSizes(SegmentReader* data,
-                                               SkYUVASizeInfo* size_info) {
-  TRACE_EVENT2("blink", "ImageFrameGenerator::getYUVComponentSizes", "width",
+bool ImageFrameGenerator::GetYUVAInfo(
+    SegmentReader* data,
+    const SkYUVAPixmapInfo::SupportedDataTypes& supported_data_types,
+    SkYUVAPixmapInfo* info) {
+  TRACE_EVENT2("blink", "ImageFrameGenerator::GetYUVAInfo", "width",
                full_size_.width(), "height", full_size_.height());
 
   MutexLocker lock(generator_mutex_);
 
   if (yuv_decoding_failed_)
     return false;
-
-  const bool data_complete = true;
   std::unique_ptr<ImageDecoder> decoder = ImageDecoder::Create(
-      data, data_complete, ImageDecoder::kAlphaPremultiplied,
+      data, true /* data_complete */, ImageDecoder::kAlphaPremultiplied,
       ImageDecoder::kDefaultBitDepth, decoder_color_behavior_);
-  if (!decoder)
+  DCHECK(decoder);
+
+  DCHECK(decoder->CanDecodeToYUV());
+  SkYUVAInfo::Subsampling subsampling;
+  size_t width_bytes[SkYUVAInfo::kMaxPlanes];
+  if (!UpdateYUVAInfoSubsamplingAndWidthBytes(decoder.get(), &subsampling,
+                                              width_bytes)) {
     return false;
+  }
+  SkYUVAInfo yuva_info(full_size_, SkYUVAInfo::PlaneConfig::kY_U_V, subsampling,
+                       decoder->GetYUVColorSpace());
+  SkYUVAPixmapInfo::DataType dataType;
+  if (decoder->GetYUVBitDepth() > 8) {
+    if (supported_data_types.supported(SkYUVAInfo::PlaneConfig::kY_U_V,
+                                       SkYUVAPixmapInfo::DataType::kUnorm16)) {
+      dataType = SkYUVAPixmapInfo::DataType::kUnorm16;
+    } else if (supported_data_types.supported(
+                   SkYUVAInfo::PlaneConfig::kY_U_V,
+                   SkYUVAPixmapInfo::DataType::kFloat16)) {
+      dataType = SkYUVAPixmapInfo::DataType::kFloat16;
+    } else {
+      return false;
+    }
+  } else if (supported_data_types.supported(
+                 SkYUVAInfo::PlaneConfig::kY_U_V,
+                 SkYUVAPixmapInfo::DataType::kUnorm8)) {
+    dataType = SkYUVAPixmapInfo::DataType::kUnorm8;
+  } else {
+    return false;
+  }
+  *info = SkYUVAPixmapInfo(yuva_info, dataType, width_bytes);
+  DCHECK(info->isSupported(supported_data_types));
 
-  // Setting a dummy ImagePlanes object signals to the decoder that we want to
-  // do YUV decoding.
-  std::unique_ptr<ImagePlanes> dummy_image_planes =
-      std::make_unique<ImagePlanes>();
-  decoder->SetImagePlanes(std::move(dummy_image_planes));
-
-  return UpdateYUVComponentSizes(decoder.get(), size_info->fSizes,
-                                 size_info->fWidthBytes);
+  return true;
 }
 
 SkISize ImageFrameGenerator::GetSupportedDecodeSize(
@@ -256,12 +311,15 @@ ImageFrameGenerator::ClientMutexLocker::ClientMutexLocker(
     : generator_(generator), client_id_(client_id) {
   {
     MutexLocker lock(generator_->generator_mutex_);
-    ClientMutex* client_mutex = nullptr;
     auto it = generator_->mutex_map_.find(client_id_);
-    if (it == generator_->mutex_map_.end())
-      client_mutex = &generator_->mutex_map_[client_id];
-    else
-      client_mutex = &it->second;
+    ClientMutex* client_mutex;
+    if (it == generator_->mutex_map_.end()) {
+      auto result = generator_->mutex_map_.insert(
+          client_id_, std::make_unique<ClientMutex>());
+      client_mutex = result.stored_value->value.get();
+    } else {
+      client_mutex = it->value.get();
+    }
     client_mutex->ref_count++;
     mutex_ = &client_mutex->mutex;
   }
@@ -275,9 +333,9 @@ ImageFrameGenerator::ClientMutexLocker::~ClientMutexLocker() {
   MutexLocker lock(generator_->generator_mutex_);
   auto it = generator_->mutex_map_.find(client_id_);
   DCHECK(it != generator_->mutex_map_.end());
-  it->second.ref_count--;
+  it->value->ref_count--;
 
-  if (it->second.ref_count == 0)
+  if (it->value->ref_count == 0)
     generator_->mutex_map_.erase(it);
 }
 

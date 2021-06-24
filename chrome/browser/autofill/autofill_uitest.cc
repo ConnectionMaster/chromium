@@ -6,11 +6,12 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "chrome/browser/autofill/autofill_uitest.h"
+#include "chrome/browser/autofill/autofill_uitest_util.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/interactive_test_utils.h"
@@ -27,38 +28,57 @@
 
 namespace autofill {
 
-// AutofillManagerTestDelegateImpl --------------------------------------------
-AutofillManagerTestDelegateImpl::AutofillManagerTestDelegateImpl()
-    : is_expecting_dynamic_refill_(false) {}
+// BrowserAutofillManagerTestDelegateImpl
+// --------------------------------------------
+BrowserAutofillManagerTestDelegateImpl::
+    BrowserAutofillManagerTestDelegateImpl() = default;
 
-AutofillManagerTestDelegateImpl::~AutofillManagerTestDelegateImpl() {}
+BrowserAutofillManagerTestDelegateImpl::
+    ~BrowserAutofillManagerTestDelegateImpl() = default;
 
-void AutofillManagerTestDelegateImpl::DidPreviewFormData() {
+void BrowserAutofillManagerTestDelegateImpl::SetIgnoreBackToBackMessages(
+    ObservedUiEvents type,
+    bool ignore) {
+  if (ignore) {
+    ignore_back_to_back_event_types_.insert(type);
+  } else {
+    ignore_back_to_back_event_types_.erase(type);
+    if (last_event_ == type)
+      last_event_ = ObservedUiEvents::kNoEvent;
+  }
+}
+
+void BrowserAutofillManagerTestDelegateImpl::FireEvent(ObservedUiEvents event) {
   DCHECK(event_waiter_);
-  event_waiter_->OnEvent(ObservedUiEvents::kPreviewFormData);
+  if (event_waiter_ && (!ignore_back_to_back_event_types_.contains(event) ||
+                        last_event_ != event)) {
+    event_waiter_->OnEvent(event);
+  }
+  last_event_ = event;
 }
 
-void AutofillManagerTestDelegateImpl::DidFillFormData() {
-  DCHECK(event_waiter_);
-  event_waiter_->OnEvent(ObservedUiEvents::kFormDataFilled);
+void BrowserAutofillManagerTestDelegateImpl::DidPreviewFormData() {
+  FireEvent(ObservedUiEvents::kPreviewFormData);
 }
 
-void AutofillManagerTestDelegateImpl::DidShowSuggestions() {
-  DCHECK(event_waiter_);
-  event_waiter_->OnEvent(ObservedUiEvents::kSuggestionShown);
+void BrowserAutofillManagerTestDelegateImpl::DidFillFormData() {
+  FireEvent(ObservedUiEvents::kFormDataFilled);
 }
 
-void AutofillManagerTestDelegateImpl::OnTextFieldChanged() {}
-
-void AutofillManagerTestDelegateImpl::Reset() {
-  event_waiter_.reset();
+void BrowserAutofillManagerTestDelegateImpl::DidShowSuggestions() {
+  FireEvent(ObservedUiEvents::kSuggestionShown);
 }
 
-bool AutofillManagerTestDelegateImpl::Wait(
+void BrowserAutofillManagerTestDelegateImpl::OnTextFieldChanged() {}
+
+void BrowserAutofillManagerTestDelegateImpl::SetExpectations(
     std::list<ObservedUiEvents> expected_events,
     base::TimeDelta timeout) {
   event_waiter_ =
       std::make_unique<EventWaiter<ObservedUiEvents>>(expected_events, timeout);
+}
+
+bool BrowserAutofillManagerTestDelegateImpl::Wait() {
   return event_waiter_->Wait();
 }
 
@@ -73,11 +93,20 @@ AutofillUiTest::~AutofillUiTest() {}
 void AutofillUiTest::SetUpOnMainThread() {
   // Don't want Keychain coming up on Mac.
   test::DisableSystemServices(browser()->profile()->GetPrefs());
-
-  // Inject the test delegate into the AutofillManager of the main frame.
+  // Make autofill popup stay open by ignoring external changes when possible.
+  ChromeAutofillClient::FromWebContents(GetWebContents())
+      ->KeepPopupOpenForTesting();
+  // Inject the test delegate into the BrowserAutofillManager of the main frame.
   RenderFrameHostChanged(/* old_host = */ nullptr,
                          /* new_host = */ GetWebContents()->GetMainFrame());
   Observe(GetWebContents());
+
+  // Wait for Personal Data Manager to be fully loaded to prevent that
+  // spurious notifications deceive the tests.
+  WaitForPersonalDataManagerToBeLoaded(browser()->profile());
+
+  disable_animation_ = std::make_unique<ui::ScopedAnimationDurationScaleMode>(
+      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // If the mouse happened to be over where the suggestions are shown, then
   // the preview will show up and will fail the tests. We need to give it a
@@ -89,7 +118,10 @@ void AutofillUiTest::SetUpOnMainThread() {
 
 void AutofillUiTest::TearDownOnMainThread() {
   // Make sure to close any showing popups prior to tearing down the UI.
-  GetAutofillManager()->client()->HideAutofillPopup();
+  BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
+  if (autofill_manager)
+    autofill_manager->client()->HideAutofillPopup(
+        autofill::PopupHidingReason::kTabGone);
   test::ReenableSystemServices();
 }
 
@@ -114,10 +146,10 @@ void AutofillUiTest::SendKeyToPageAndWait(
     ui::DomCode code,
     ui::KeyboardCode key_code,
     std::list<ObservedUiEvents> expected_events) {
-  test_delegate()->Reset();
+  test_delegate()->SetExpectations(std::move(expected_events));
   content::SimulateKeyPress(GetWebContents(), key, code, key_code, false, false,
                             false, false);
-  test_delegate()->Wait(std::move(expected_events));
+  test_delegate()->Wait();
 }
 
 void AutofillUiTest::SendKeyToPopup(content::RenderFrameHost* render_frame_host,
@@ -128,9 +160,9 @@ void AutofillUiTest::SendKeyToPopup(content::RenderFrameHost* render_frame_host,
       render_frame_host->GetView()->GetRenderWidgetHost();
 
   // Route popup-targeted key presses via the render view host.
-  content::NativeWebKeyboardEvent event(blink::WebKeyboardEvent::kRawKeyDown,
-                                        blink::WebInputEvent::kNoModifiers,
-                                        ui::EventTimeForNow());
+  content::NativeWebKeyboardEvent event(
+      blink::WebKeyboardEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, ui::EventTimeForNow());
   event.windows_key_code = key_code;
   event.dom_code = static_cast<int>(code);
   event.dom_key = key;
@@ -158,25 +190,25 @@ void AutofillUiTest::SendKeyToPopupAndWait(
     std::list<ObservedUiEvents> expected_events,
     content::RenderWidgetHost* widget) {
   // Route popup-targeted key presses via the render view host.
-  content::NativeWebKeyboardEvent event(blink::WebKeyboardEvent::kRawKeyDown,
-                                        blink::WebInputEvent::kNoModifiers,
-                                        ui::EventTimeForNow());
+  content::NativeWebKeyboardEvent event(
+      blink::WebKeyboardEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, ui::EventTimeForNow());
   event.windows_key_code = key_code;
   event.dom_code = static_cast<int>(code);
   event.dom_key = key;
-  test_delegate()->Reset();
+  test_delegate()->SetExpectations(std::move(expected_events));
   // Install the key press event sink to ensure that any events that are not
   // handled by the installed callbacks do not end up crashing the test.
   widget->AddKeyPressEventCallback(key_press_event_sink_);
   widget->ForwardKeyboardEvent(event);
-  test_delegate()->Wait(std::move(expected_events));
+  test_delegate()->Wait();
   widget->RemoveKeyPressEventCallback(key_press_event_sink_);
 }
 
 void AutofillUiTest::DoNothingAndWait(unsigned seconds) {
-  test_delegate()->Reset();
-  ASSERT_FALSE(test_delegate()->Wait({ObservedUiEvents::kNoEvent},
-                                     base::TimeDelta::FromSeconds(seconds)));
+  test_delegate()->SetExpectations({ObservedUiEvents::kNoEvent},
+                                   base::TimeDelta::FromSeconds(seconds));
+  ASSERT_FALSE(test_delegate()->Wait());
 }
 
 void AutofillUiTest::SendKeyToDataListPopup(ui::DomKey key) {
@@ -191,9 +223,9 @@ void AutofillUiTest::SendKeyToDataListPopup(ui::DomKey key,
                                             ui::DomCode code,
                                             ui::KeyboardCode key_code) {
   // Route popup-targeted key presses via the render view host.
-  content::NativeWebKeyboardEvent event(blink::WebKeyboardEvent::kRawKeyDown,
-                                        blink::WebInputEvent::kNoModifiers,
-                                        ui::EventTimeForNow());
+  content::NativeWebKeyboardEvent event(
+      blink::WebKeyboardEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, ui::EventTimeForNow());
   event.windows_key_code = key_code;
   event.dom_code = static_cast<int>(code);
   event.dom_key = key;
@@ -216,13 +248,19 @@ content::WebContents* AutofillUiTest::GetWebContents() {
 }
 
 content::RenderViewHost* AutofillUiTest::GetRenderViewHost() {
-  return GetWebContents()->GetRenderViewHost();
+  return GetWebContents()->GetMainFrame()->GetRenderViewHost();
 }
 
-AutofillManager* AutofillUiTest::GetAutofillManager() {
-  return ContentAutofillDriverFactory::FromWebContents(GetWebContents())
-      ->DriverForFrame(current_main_rfh_)
-      ->autofill_manager();
+BrowserAutofillManager* AutofillUiTest::GetBrowserAutofillManager() {
+  ContentAutofillDriver* driver =
+      ContentAutofillDriverFactory::FromWebContents(GetWebContents())
+          ->DriverForFrame(current_main_rfh_);
+  // ContentAutofillDriver will be null if the current RenderFrameHost
+  // is not owned by the current WebContents. This state appears to occur
+  // when there is a web page popup during teardown
+  if (!driver)
+    return nullptr;
+  return driver->browser_autofill_manager();
 }
 
 void AutofillUiTest::RenderFrameHostChanged(
@@ -231,7 +269,9 @@ void AutofillUiTest::RenderFrameHostChanged(
   if (current_main_rfh_ != old_frame)
     return;
   current_main_rfh_ = new_frame;
-  GetAutofillManager()->SetTestDelegate(test_delegate());
+  BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
+  if (autofill_manager)
+    autofill_manager->SetTestDelegate(test_delegate());
 }
 
 }  // namespace autofill

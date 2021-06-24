@@ -7,8 +7,11 @@
 #include <tuple>
 #include <utility>
 
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/guest_view/browser/bad_message.h"
 #include "components/guest_view/browser/guest_view_base.h"
@@ -73,11 +76,14 @@ GuestViewManager::GuestViewManager(
     : current_instance_id_(0),
       last_instance_id_removed_(0),
       context_(context),
-      delegate_(std::move(delegate)),
-      weak_ptr_factory_(this) {}
+      delegate_(std::move(delegate)) {}
 
 GuestViewManager::~GuestViewManager() {
+  // It seems that ChromeOS OTR profiles may still have RenderProcessHosts at
+  // this point. See https://crbug.com/828479
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
   DCHECK(view_destruction_callback_map_.empty());
+#endif
 }
 
 // static
@@ -232,6 +238,19 @@ SiteInstance* GuestViewManager::GetGuestSiteInstance(
   return nullptr;
 }
 
+void GuestViewManager::ForEachUnattachedGuest(
+    content::WebContents* owner_web_contents,
+    base::RepeatingCallback<void(content::WebContents*)> callback) {
+  for (const auto& guest : guest_web_contents_by_instance_id_) {
+    auto* guest_view = GuestViewBase::FromWebContents(guest.second);
+
+    if (guest_view->owner_web_contents() == owner_web_contents &&
+        !guest_view->attached()) {
+      callback.Run(guest_view->web_contents());
+    }
+  }
+}
+
 bool GuestViewManager::ForEachGuest(WebContents* owner_web_contents,
                                     const GuestCallback& callback) {
   for (const auto& guest : guest_web_contents_by_instance_id_) {
@@ -248,15 +267,15 @@ bool GuestViewManager::ForEachGuest(WebContents* owner_web_contents,
 WebContents* GuestViewManager::GetFullPageGuest(
     WebContents* embedder_web_contents) {
   WebContents* result = nullptr;
-  ForEachGuest(embedder_web_contents,
-               base::Bind(&GuestViewManager::GetFullPageGuestHelper, &result));
+  ForEachGuest(
+      embedder_web_contents,
+      base::BindRepeating(&GuestViewManager::GetFullPageGuestHelper, &result));
   return result;
 }
 
 void GuestViewManager::AddGuest(int guest_instance_id,
                                 WebContents* guest_web_contents) {
-  CHECK(!base::ContainsKey(guest_web_contents_by_instance_id_,
-                           guest_instance_id));
+  CHECK(!base::Contains(guest_web_contents_by_instance_id_, guest_instance_id));
   CHECK(CanUseGuestInstanceID(guest_instance_id));
   guest_web_contents_by_instance_id_[guest_instance_id] = guest_web_contents;
 
@@ -445,7 +464,7 @@ bool GuestViewManager::CanEmbedderAccessInstanceIDMaybeKill(
 bool GuestViewManager::CanUseGuestInstanceID(int guest_instance_id) {
   if (guest_instance_id <= last_instance_id_removed_)
     return false;
-  return !base::ContainsKey(removed_instance_ids_, guest_instance_id);
+  return !base::Contains(removed_instance_ids_, guest_instance_id);
 }
 
 // static
@@ -515,8 +534,7 @@ bool GuestViewManager::CanEmbedderAccessInstanceID(
 
 GuestViewManager::ElementInstanceKey::ElementInstanceKey()
     : embedder_process_id(content::ChildProcessHost::kInvalidUniqueID),
-      element_instance_id(content::ChildProcessHost::kInvalidUniqueID) {
-}
+      element_instance_id(kInstanceIDNone) {}
 
 GuestViewManager::ElementInstanceKey::ElementInstanceKey(
     int embedder_process_id,

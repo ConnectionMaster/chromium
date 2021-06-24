@@ -4,14 +4,15 @@
 
 #include "device/gamepad/game_controller_data_fetcher_mac.h"
 
+#import <GameController/GameController.h>
 #include <string.h>
 
-#include "base/strings/string16.h"
-#include "base/strings/string_util.h"
+#include <string>
+
+#include "base/mac/mac_util.h"
+#include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "device/gamepad/gamepad_standard_mappings.h"
-
-#import <GameController/GameController.h>
 
 namespace device {
 
@@ -19,19 +20,37 @@ namespace {
 
 const int kGCControllerPlayerIndexCount = 4;
 
-void CopyNSStringAsUTF16LittleEndian(NSString* src,
-                                     UChar* dest,
-                                     size_t dest_len) {
-  NSData* as16 = [src dataUsingEncoding:NSUTF16LittleEndianStringEncoding];
-  memset(dest, 0, dest_len);
-  [as16 getBytes:dest length:dest_len - sizeof(UChar)];
+// Returns true if |controller| should be enumerated by this data fetcher.
+bool IsSupported(GCController* controller) {
+  // We only support the extendedGamepad profile, the basic gamepad profile
+  // appears to only be for iOS devices.
+  if (![controller extendedGamepad])
+    return false;
+
+  // In macOS 10.15, support for some console gamepads was added to the Game
+  // Controller framework and a productCategory property was added to enable
+  // applications to detect the new devices. These gamepads are already
+  // supported in Chrome through other data fetchers and must be blocked here to
+  // avoid double-enumeration.
+  if (@available(macOS 10.15, *)) {
+    NSString* product_category = [controller productCategory];
+    if ([product_category isEqualToString:@"Xbox One"] ||
+        [product_category isEqualToString:@"DualShock 4"] ||
+        [product_category isEqualToString:@"DualSense"] ||
+        [product_category isEqualToString:@"Switch Pro Controller"] ||
+        [product_category isEqualToString:@"Nintendo Switch JoyCon (L/R)"]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 }  // namespace
 
-GameControllerDataFetcherMac::GameControllerDataFetcherMac() {}
+GameControllerDataFetcherMac::GameControllerDataFetcherMac() = default;
 
-GameControllerDataFetcherMac::~GameControllerDataFetcherMac() {}
+GameControllerDataFetcherMac::~GameControllerDataFetcherMac() = default;
 
 GamepadSource GameControllerDataFetcherMac::source() {
   return Factory::static_source();
@@ -45,12 +64,10 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
   bool player_indices[Gamepads::kItemsLengthCap];
   std::fill(player_indices, player_indices + Gamepads::kItemsLengthCap, false);
   for (GCController* controller in controllers) {
-    // We only support the extendedGamepad profile, the basic gamepad profile
-    // appears to only be for iOS devices.
-    if (![controller extendedGamepad])
+    if (!IsSupported(controller))
       continue;
 
-    int player_index = [controller playerIndex];
+    int player_index = controller.playerIndex;
     if (player_index != GCControllerPlayerIndexUnset)
       player_indices[player_index] = true;
   }
@@ -63,12 +80,10 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
   // In the second pass, assign indices to newly connected gamepads and fetch
   // the gamepad state.
   for (GCController* controller in controllers) {
-    auto extended_gamepad = [controller extendedGamepad];
-
-    if (!extended_gamepad)
+    if (!IsSupported(controller))
       continue;
 
-    int player_index = [controller playerIndex];
+    int player_index = controller.playerIndex;
     if (player_index == GCControllerPlayerIndexUnset) {
       player_index = NextUnusedPlayerIndex();
       if (player_index == GCControllerPlayerIndexUnset)
@@ -90,30 +105,21 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
       NSString* ident =
           [NSString stringWithFormat:@"%@ (STANDARD GAMEPAD)",
                                      vendorName ? vendorName : @"Unknown"];
-      CopyNSStringAsUTF16LittleEndian(ident, pad.id, sizeof(pad.id));
 
-      CopyNSStringAsUTF16LittleEndian(@"standard", pad.mapping,
-                                      sizeof(pad.mapping));
-
+      pad.mapping = GamepadMapping::kStandard;
+      pad.SetID(base::SysNSStringToUTF16(ident));
       pad.axes_length = AXIS_INDEX_COUNT;
       pad.buttons_length = BUTTON_INDEX_COUNT - 1;
       pad.connected = true;
       connected_[player_index] = true;
 
-// In OS X 10.11, the type of the GCController playerIndex member was
-// changed from NSInteger to a GCControllerPlayerIndex enum. Once Chrome
-// no longer supports OSX 10.10, the integer version can be removed.
-#if !defined(MAC_OS_X_VERSION_10_11) || \
-    MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_11
-      [controller setPlayerIndex:player_index];
-#else
-      [controller
-          setPlayerIndex:static_cast<GCControllerPlayerIndex>(player_index)];
-#endif
+      controller.playerIndex =
+          static_cast<GCControllerPlayerIndex>(player_index);
     }
 
     pad.timestamp = CurrentTimeInMicroseconds();
 
+    auto extended_gamepad = [controller extendedGamepad];
     pad.axes[AXIS_INDEX_LEFT_STICK_X] =
         [[[extended_gamepad leftThumbstick] xAxis] value];
     pad.axes[AXIS_INDEX_LEFT_STICK_Y] =

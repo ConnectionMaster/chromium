@@ -260,6 +260,14 @@ const generateCSS = (options, fontSize=18)=> {
     button.${cssPrefix}-button[disabled=true] > .${cssPrefix}-logo > .${cssPrefix}-svg-error {
         display:initial;
     }
+
+    /*
+    * warning
+    */
+    div.webxrWarning {
+      color: #f00;
+      font-weight: bold;
+    }
   `);
 };
 
@@ -431,6 +439,23 @@ class EnterXRButton {
   }
 
   /**
+   * Add the button to the document header. WebXR is only available in secure
+   * contexts, so include a warning message above the button when using an
+   * insecure context.
+   * @return {EnterXRButton}
+   */
+  addToHeader() {
+    if (!window.isSecureContext) {
+      let warning_elem = document.createElement("div");
+      warning_elem.setAttribute("class", "webxrWarning");
+      warning_elem.innerText = "WebXR unavailable due to insecure context";
+      document.querySelector('header').appendChild(warning_elem);
+    }
+    document.querySelector('header').appendChild(this.domElement);
+    return this;
+  }
+
+  /**
    * clean up object for garbage collection
    */
   remove() {
@@ -495,9 +520,12 @@ class EnterXRButton {
 
     if (attempt < this.options.supportedSessionTypes.length) {
       let sessionMode = this.options.supportedSessionTypes[attempt];
-      navigator.xr.supportsSessionMode(sessionMode).then(() => {
-        this.enabled = true;
-      }, (err) => {
+      navigator.xr.isSessionSupported(sessionMode).then((supported) => {
+        if (supported) {
+          this.enabled = true;
+          return;
+        }
+
         attempt++;
         if (attempt < this.options.supportedSessionTypes.length) {
           this.__onDeviceChange(attempt);

@@ -11,9 +11,9 @@
 #include "base/component_export.h"
 #include "base/containers/span.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 #include "mojo/public/cpp/system/buffer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace mojo_base {
 
@@ -72,7 +72,7 @@ class COMPONENT_EXPORT(MOJO_BASE) BigBuffer {
     kInvalidBuffer,
   };
 
-  // Defaults to empty vector storage.
+  // Defaults to empty kBytes storage.
   BigBuffer();
   BigBuffer(BigBuffer&& other);
 
@@ -87,6 +87,11 @@ class COMPONENT_EXPORT(MOJO_BASE) BigBuffer {
   // Constructs a BigBuffer from an existing shared memory region. Not intended
   // for general-purpose use.
   explicit BigBuffer(internal::BigBufferSharedMemoryRegion shared_memory);
+
+  // Constructs a BigBuffer with the given size. The contents of buffer memory
+  // are uninitialized. Buffers constructed this way must be filled completely
+  // before transfer to avoid leaking information to less privileged processes.
+  explicit BigBuffer(size_t size);
 
   ~BigBuffer();
 
@@ -103,9 +108,9 @@ class COMPONENT_EXPORT(MOJO_BASE) BigBuffer {
 
   StorageType storage_type() const { return storage_type_; }
 
-  const std::vector<uint8_t>& bytes() const {
+  base::span<const uint8_t> byte_span() const {
     DCHECK_EQ(storage_type_, StorageType::kBytes);
-    return bytes_;
+    return base::make_span(bytes_.get(), bytes_size_);
   }
 
   internal::BigBufferSharedMemoryRegion& shared_memory() {
@@ -117,8 +122,9 @@ class COMPONENT_EXPORT(MOJO_BASE) BigBuffer {
   friend class BigBufferView;
 
   StorageType storage_type_;
-  std::vector<uint8_t> bytes_;
-  base::Optional<internal::BigBufferSharedMemoryRegion> shared_memory_;
+  std::unique_ptr<uint8_t[]> bytes_;
+  size_t bytes_size_;
+  absl::optional<internal::BigBufferSharedMemoryRegion> shared_memory_;
 
   DISALLOW_COPY_AND_ASSIGN(BigBuffer);
 };
@@ -170,9 +176,9 @@ class COMPONENT_EXPORT(MOJO_BASE) BigBufferView {
   static BigBufferView CreateInvalidForTest();
 
  private:
-  BigBuffer::StorageType storage_type_;
+  BigBuffer::StorageType storage_type_ = BigBuffer::StorageType::kBytes;
   base::span<const uint8_t> bytes_;
-  base::Optional<internal::BigBufferSharedMemoryRegion> shared_memory_;
+  absl::optional<internal::BigBufferSharedMemoryRegion> shared_memory_;
 
   DISALLOW_COPY_AND_ASSIGN(BigBufferView);
 };

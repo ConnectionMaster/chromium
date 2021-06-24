@@ -13,8 +13,8 @@
 #include "chrome/browser/vr/graphics_delegate.h"
 #include "chrome/browser/vr/scheduler_browser_renderer_interface.h"
 #include "chrome/browser/vr/vr_export.h"
-#include "device/vr/public/mojom/isolated_xr_service.mojom.h"
-#include "device/vr/public/mojom/vr_service.mojom.h"
+#include "device/vr/public/mojom/isolated_xr_service.mojom-forward.h"
+#include "device/vr/public/mojom/vr_service.mojom-forward.h"
 #include "device/vr/util/sliding_average.h"
 
 namespace base {
@@ -88,7 +88,8 @@ class VR_EXPORT BrowserRenderer : public SchedulerBrowserRendererInterface {
   void DrawBrowserFrame(base::TimeTicks current_time) override;
   void DrawWebXrFrame(base::TimeTicks current_time,
                       const gfx::Transform& head_pose) override;
-  void ProcessControllerInputForWebXr(base::TimeTicks current_time) override;
+  void ProcessControllerInputForWebXr(const gfx::Transform& head_pose,
+                                      base::TimeTicks current_time) override;
 
   void Draw(FrameType frame_type,
             base::TimeTicks current_time,
@@ -134,7 +135,7 @@ class VR_EXPORT BrowserRenderer : public SchedulerBrowserRendererInterface {
   // it must be destroyed before graphics_delegate_.
   std::unique_ptr<UiInterface> ui_;
 
-  base::WeakPtrFactory<BrowserRenderer> weak_ptr_factory_;
+  base::WeakPtrFactory<BrowserRenderer> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BrowserRenderer);
 };

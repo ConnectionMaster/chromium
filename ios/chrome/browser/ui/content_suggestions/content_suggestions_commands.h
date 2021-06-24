@@ -14,27 +14,38 @@
 // Opens the Reading List.
 - (void)openReadingList;
 // Opens the page associated with the item at |indexPath|.
-- (void)openPageForItemAtIndexPath:(nonnull NSIndexPath*)indexPath;
+- (void)openPageForItemAtIndexPath:(NSIndexPath*)indexPath;
 // Opens the Most Visited associated with this |item| at the |mostVisitedItem|.
-- (void)openMostVisitedItem:(nonnull CollectionViewItem*)item
+- (void)openMostVisitedItem:(CollectionViewItem*)item
                     atIndex:(NSInteger)mostVisitedIndex;
+// Handles the actions tapping the "Return to Recent Tab" item that returns the
+// user to the last opened tab.
+- (void)openMostRecentTab:(CollectionViewItem*)item;
 // Displays a context menu for the |suggestionItem|.
-- (void)displayContextMenuForSuggestion:
-            (nonnull CollectionViewItem*)suggestionItem
+- (void)displayContextMenuForSuggestion:(CollectionViewItem*)suggestionItem
                                 atPoint:(CGPoint)touchLocation
-                            atIndexPath:(nonnull NSIndexPath*)indexPath
+                            atIndexPath:(NSIndexPath*)indexPath
                         readLaterAction:(BOOL)readLaterAction;
 // Displays a context menu for the |mostVisitedItem|.
 - (void)displayContextMenuForMostVisitedItem:
-            (nonnull CollectionViewItem*)mostVisitedItem
+            (CollectionViewItem*)mostVisitedItem
                                      atPoint:(CGPoint)touchLocation
-                                 atIndexPath:(nonnull NSIndexPath*)indexPath;
+                                 atIndexPath:(NSIndexPath*)indexPath;
 // Dismisses the context menu if it is displayed.
 - (void)dismissModals;
 // Handles the actions following a tap on the promo.
 - (void)handlePromoTapped;
 // Handles the actions following a tap on the "Learn more" item.
 - (void)handleLearnMoreTapped;
+// Handles the actions following a tap on the "Manage Activity" item in the
+// Discover feed menu.
+- (void)handleFeedManageActivityTapped;
+// Handles the actions following a tap on the "Manage Interests" item in the
+// Discover feed menu.
+- (void)handleFeedManageInterestsTapped;
+// Handles the actions following a tap on the "Learn More" item in the Discover
+// feed menu.
+- (void)handleFeedLearnMoreTapped;
 
 @end
 

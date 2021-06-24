@@ -11,12 +11,11 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
-#include "base/task/post_task.h"
 #include "chrome/grit/theme_resources.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -195,8 +194,7 @@ IconLoader::IconGroup IconLoader::GroupForFilepath(
 scoped_refptr<base::TaskRunner> IconLoader::GetReadIconTaskRunner() {
   // ReadIcon touches non thread safe ResourceBundle images, so it must be on
   // the UI thread.
-  return base::CreateSingleThreadTaskRunnerWithTraits(
-      {content::BrowserThread::UI});
+  return content::GetUIThreadTaskRunner({});
 }
 
 void IconLoader::ReadIcon() {
@@ -207,7 +205,7 @@ void IconLoader::ReadIcon() {
   gfx::ImageSkia image_skia(ResizeImage(*(rb.GetImageNamed(idr)).ToImageSkia(),
                                         IconSizeToDIPSize(icon_size_)));
   image_skia.MakeThreadSafe();
-  std::unique_ptr<gfx::Image> image = std::make_unique<gfx::Image>(image_skia);
+  gfx::Image image(image_skia);
   target_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(std::move(callback_), std::move(image), group_));

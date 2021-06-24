@@ -7,21 +7,20 @@
 
 #include <ostream>
 
-#include "base/optional.h"
 #include "chromeos/services/device_sync/proto/cryptauth_directive.pb.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
 namespace device_sync {
 
 // Information about the result of a CryptAuth v2 Enrollment attempt.
-//
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused. If entries are added, kMaxValue should
-// be updated.
 class CryptAuthEnrollmentResult {
  public:
-  // Enum class to denote the result of a CryptAuth v2 Enrollment attempt
+  // Enum class to denote the result of a CryptAuth v2 Enrollment attempt.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused. If entries are added, kMaxValue
+  // should be updated.
   enum class ResultCode {
     // Successfully synced but no new keys were requested by CryptAuth, so no
     // EnrollKeysRequest was made.
@@ -106,20 +105,26 @@ class CryptAuthEnrollmentResult {
     kErrorTimeoutWaitingForGcmRegistration = 33,
     // The enrollment manager timed out waiting for ClientAppMetadata.
     kErrorTimeoutWaitingForClientAppMetadata = 34,
+    // Failed to create the user key pair to be enrolled.
+    kErrorUserKeyPairCreationFailed = 35,
+    // Failed to create the legacy authzen key to be enrolled.
+    kErrorLegacyAuthzenKeyCreationFailed = 36,
+    // Failed to create the DeviceSync:BetterTogether key to be enrolled.
+    kErrorDeviceSyncBetterTogetherKeyCreationFailed = 37,
     // Used for UMA logs.
-    kMaxValue = kErrorTimeoutWaitingForClientAppMetadata
+    kMaxValue = kErrorDeviceSyncBetterTogetherKeyCreationFailed
   };
 
   CryptAuthEnrollmentResult(
       ResultCode result_code,
-      const base::Optional<cryptauthv2::ClientDirective>& client_directive);
+      const absl::optional<cryptauthv2::ClientDirective>& client_directive);
   CryptAuthEnrollmentResult(const CryptAuthEnrollmentResult& other);
 
   ~CryptAuthEnrollmentResult();
 
   ResultCode result_code() const { return result_code_; }
 
-  const base::Optional<cryptauthv2::ClientDirective>& client_directive() const {
+  const absl::optional<cryptauthv2::ClientDirective>& client_directive() const {
     return client_directive_;
   }
 
@@ -130,7 +135,7 @@ class CryptAuthEnrollmentResult {
 
  private:
   ResultCode result_code_;
-  base::Optional<cryptauthv2::ClientDirective> client_directive_;
+  absl::optional<cryptauthv2::ClientDirective> client_directive_;
 };
 
 std::ostream& operator<<(

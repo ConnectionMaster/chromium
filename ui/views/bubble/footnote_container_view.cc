@@ -4,7 +4,11 @@
 
 #include "ui/views/bubble/footnote_container_view.h"
 
+#include <memory>
+#include <utility>
+
 #include "cc/paint/paint_flags.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -49,31 +53,52 @@ class HalfRoundedRectBackground : public Background {
 }  // namespace
 
 FootnoteContainerView::FootnoteContainerView(const gfx::Insets& margins,
-                                             View* child_view,
-                                             float corner_radius) {
-  SetLayoutManager(
-      std::make_unique<BoxLayout>(BoxLayout::kVertical, margins, 0));
-  SetCornerRadius(corner_radius);
-  SetBorder(CreateSolidSidedBorder(1, 0, 0, 0,
-                                   GetNativeTheme()->SystemDarkModeEnabled()
-                                       ? gfx::kGoogleGrey900
-                                       : gfx::kGoogleGrey200));
-  AddChildView(child_view);
-  SetVisible(child_view->visible());
+                                             std::unique_ptr<View> child_view,
+                                             float corner_radius)
+    : corner_radius_(corner_radius) {
+  SetLayoutManager(std::make_unique<BoxLayout>(
+      BoxLayout::Orientation::kVertical, margins, 0));
+  auto* child_view_ptr = AddChildView(std::move(child_view));
+  SetVisible(child_view_ptr->GetVisible());
 }
 
 FootnoteContainerView::~FootnoteContainerView() = default;
 
 void FootnoteContainerView::SetCornerRadius(float corner_radius) {
-  SkColor background_color = GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_BubbleFooterBackground);
-  SetBackground(std::make_unique<HalfRoundedRectBackground>(background_color,
-                                                            corner_radius));
+  corner_radius_ = corner_radius;
+  if (GetWidget())
+    ResetBackground();
+}
+
+void FootnoteContainerView::OnThemeChanged() {
+  View::OnThemeChanged();
+  ResetBorder();
+  ResetBackground();
 }
 
 void FootnoteContainerView::ChildVisibilityChanged(View* child) {
   DCHECK_EQ(1u, children().size());
-  SetVisible(child->visible());
+  SetVisible(child->GetVisible());
 }
+
+void FootnoteContainerView::ResetBackground() {
+  if (!GetWidget())
+    return;
+  SkColor background_color = GetNativeTheme()->GetSystemColor(
+      ui::NativeTheme::kColorId_BubbleFooterBackground);
+  SetBackground(std::make_unique<HalfRoundedRectBackground>(background_color,
+                                                            corner_radius_));
+}
+
+void FootnoteContainerView::ResetBorder() {
+  if (!GetWidget())
+    return;
+  SetBorder(CreateSolidSidedBorder(
+      1, 0, 0, 0, GetNativeTheme()->GetSystemColor(
+                ui::NativeTheme::kColorId_FootnoteContainerBorder)));
+}
+
+BEGIN_METADATA(FootnoteContainerView, View)
+END_METADATA
 
 }  // namespace views

@@ -10,7 +10,6 @@
 #include "base/values.h"
 #include "net/base/network_change_notifier.h"
 #include "net/reporting/reporting_cache.h"
-#include "net/reporting/reporting_client.h"
 #include "net/reporting/reporting_report.h"
 #include "net/reporting/reporting_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -32,11 +31,10 @@ class ReportingNetworkChangeObserverTest : public ReportingTestBase {
     base::RunLoop().RunUntilIdle();
   }
 
-  void SetClient() {
-    cache()->SetClient(
-        kOrigin_, kEndpoint_, ReportingClient::Subdomains::EXCLUDE, kGroup_,
-        tick_clock()->NowTicks() + base::TimeDelta::FromDays(7),
-        ReportingClient::kDefaultPriority, ReportingClient::kDefaultWeight);
+  void SetEndpoint() {
+    ASSERT_TRUE(
+        SetEndpointInCache(kGroupKey_, kEndpoint_,
+                           base::Time::Now() + base::TimeDelta::FromDays(7)));
   }
 
   size_t report_count() {
@@ -45,18 +43,15 @@ class ReportingNetworkChangeObserverTest : public ReportingTestBase {
     return reports.size();
   }
 
-  size_t client_count() {
-    std::vector<const ReportingClient*> clients;
-    cache()->GetClients(&clients);
-    return clients.size();
-  }
-
+  const NetworkIsolationKey kNik_;
   const GURL kUrl_ = GURL("https://origin/path");
   const url::Origin kOrigin_ = url::Origin::Create(kUrl_);
   const GURL kEndpoint_ = GURL("https://endpoint/");
   const std::string kUserAgent_ = "Mozilla/1.0";
   const std::string kGroup_ = "group";
   const std::string kType_ = "default";
+  const ReportingEndpointGroupKey kGroupKey_ =
+      ReportingEndpointGroupKey(NetworkIsolationKey(), kOrigin_, kGroup_);
 };
 
 TEST_F(ReportingNetworkChangeObserverTest, ClearNothing) {
@@ -65,17 +60,17 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearNothing) {
   new_policy.persist_clients_across_network_changes = true;
   UsePolicy(new_policy);
 
-  cache()->AddReport(kUrl_, kUserAgent_, kGroup_, kType_,
+  cache()->AddReport(kNik_, kUrl_, kUserAgent_, kGroup_, kType_,
                      std::make_unique<base::DictionaryValue>(), 0,
                      tick_clock()->NowTicks(), 0);
-  SetClient();
+  SetEndpoint();
   ASSERT_EQ(1u, report_count());
-  ASSERT_EQ(1u, client_count());
+  ASSERT_EQ(1u, cache()->GetEndpointCount());
 
   SimulateNetworkChange();
 
   EXPECT_EQ(1u, report_count());
-  EXPECT_EQ(1u, client_count());
+  EXPECT_EQ(1u, cache()->GetEndpointCount());
 }
 
 TEST_F(ReportingNetworkChangeObserverTest, ClearReports) {
@@ -84,17 +79,17 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearReports) {
   new_policy.persist_clients_across_network_changes = true;
   UsePolicy(new_policy);
 
-  cache()->AddReport(kUrl_, kUserAgent_, kGroup_, kType_,
+  cache()->AddReport(kNik_, kUrl_, kUserAgent_, kGroup_, kType_,
                      std::make_unique<base::DictionaryValue>(), 0,
                      tick_clock()->NowTicks(), 0);
-  SetClient();
+  SetEndpoint();
   ASSERT_EQ(1u, report_count());
-  ASSERT_EQ(1u, client_count());
+  ASSERT_EQ(1u, cache()->GetEndpointCount());
 
   SimulateNetworkChange();
 
   EXPECT_EQ(0u, report_count());
-  EXPECT_EQ(1u, client_count());
+  EXPECT_EQ(1u, cache()->GetEndpointCount());
 }
 
 TEST_F(ReportingNetworkChangeObserverTest, ClearClients) {
@@ -103,17 +98,17 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearClients) {
   new_policy.persist_clients_across_network_changes = false;
   UsePolicy(new_policy);
 
-  cache()->AddReport(kUrl_, kUserAgent_, kGroup_, kType_,
+  cache()->AddReport(kNik_, kUrl_, kUserAgent_, kGroup_, kType_,
                      std::make_unique<base::DictionaryValue>(), 0,
                      tick_clock()->NowTicks(), 0);
-  SetClient();
+  SetEndpoint();
   ASSERT_EQ(1u, report_count());
-  ASSERT_EQ(1u, client_count());
+  ASSERT_EQ(1u, cache()->GetEndpointCount());
 
   SimulateNetworkChange();
 
   EXPECT_EQ(1u, report_count());
-  EXPECT_EQ(0u, client_count());
+  EXPECT_EQ(0u, cache()->GetEndpointCount());
 }
 
 TEST_F(ReportingNetworkChangeObserverTest, ClearReportsAndClients) {
@@ -122,17 +117,17 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearReportsAndClients) {
   new_policy.persist_clients_across_network_changes = false;
   UsePolicy(new_policy);
 
-  cache()->AddReport(kUrl_, kUserAgent_, kGroup_, kType_,
+  cache()->AddReport(kNik_, kUrl_, kUserAgent_, kGroup_, kType_,
                      std::make_unique<base::DictionaryValue>(), 0,
                      tick_clock()->NowTicks(), 0);
-  SetClient();
+  SetEndpoint();
   ASSERT_EQ(1u, report_count());
-  ASSERT_EQ(1u, client_count());
+  ASSERT_EQ(1u, cache()->GetEndpointCount());
 
   SimulateNetworkChange();
 
   EXPECT_EQ(0u, report_count());
-  EXPECT_EQ(0u, client_count());
+  EXPECT_EQ(0u, cache()->GetEndpointCount());
 }
 
 }  // namespace

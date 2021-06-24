@@ -12,9 +12,11 @@
 #include "chrome/browser/profiles/profile_io_data.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/common/switches.h"
 #include "extensions/test/result_catcher.h"
 #include "net/base/backoff_entry.h"
+#include "net/base/features.h"
 #include "net/base/url_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -55,7 +57,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
   }
 
   // Unhandled requests result in the Embedded test server sending a 404.
-  return std::unique_ptr<net::test_server::BasicHttpResponse>();
+  return nullptr;
 }
 
 }  // namespace
@@ -98,19 +100,26 @@ class ExtensionURLLoaderThrottleBrowserTest : public ExtensionBrowserTest {
   const Extension* extension_;
 };
 
-class ExtensionURLLoaderThrottleCommandLineBrowserTest
-    : public ExtensionURLLoaderThrottleBrowserTest {
+class ExtensionURLLoaderThrottleWithSplitCacheBrowserTest
+    : public ExtensionURLLoaderThrottleBrowserTest,
+      public ::testing::WithParamInterface<bool> {
  public:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    ExtensionURLLoaderThrottleBrowserTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(
-        extensions::switches::kDisableExtensionsHttpThrottling);
+  void SetUp() override {
+    bool split_cache_by_network_isolation_key = GetParam();
+    feature_list_.InitWithFeatureState(
+        net::features::kSplitCacheByNetworkIsolationKey,
+        split_cache_by_network_isolation_key);
+    ExtensionURLLoaderThrottleBrowserTest::SetUp();
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 // Tests that if the same URL is requested repeatedly by an extension, it will
 // eventually be throttled.
-IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest, ThrottleRequest) {
+IN_PROC_BROWSER_TEST_P(ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
+                       ThrottleRequest) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleRequest, false, false));
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -123,7 +132,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest, ThrottleRequest) {
 
 // Tests that if the same URL is repeatedly requested by an extension, and the
 // response is served from the cache, it will not be throttled.
-IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
+IN_PROC_BROWSER_TEST_P(ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
                        DoNotThrottleCachedResponse) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleRequest, false, true));
@@ -136,7 +145,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
 }
 
 // Tests that the redirected request is also being throttled.
-IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
+IN_PROC_BROWSER_TEST_P(ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
                        ThrottleRequest_Redirect) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleRequest, false, false));
@@ -160,7 +169,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
 
 // Tests that if both redirect (302) and non-redirect (503) responses are
 // served from cache, the extension throttle does not throttle the request.
-IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
+IN_PROC_BROWSER_TEST_P(ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
                        DoNotThrottleCachedResponse_Redirect) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleRequest, true, true));
@@ -175,7 +184,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
 // Tests that if the redirect (302) is served from cache, but the non-redirect
 // (503) is not, the extension throttle throttles the requests for the second
 // url.
-IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
+IN_PROC_BROWSER_TEST_P(ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
                        ThrottleRequest_RedirectCached) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleRequest, true, false));
@@ -197,7 +206,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
 // Tests that if the redirect (302) is not served from cache, but the
 // non-redirect (503) is, the extension throttle only throttles requests to the
 // redirect URL.
-IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
+IN_PROC_BROWSER_TEST_P(ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
                        DoNotThrottleCachedResponse_NonRedirectCached) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleRequest, false, true));
@@ -215,6 +224,21 @@ IN_PROC_BROWSER_TEST_F(ExtensionURLLoaderThrottleBrowserTest,
                                  embedded_test_server()->port()),
               ""));
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ExtensionURLLoaderThrottleWithSplitCacheBrowserTest,
+    testing::Bool());
+
+class ExtensionURLLoaderThrottleCommandLineBrowserTest
+    : public ExtensionURLLoaderThrottleBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ExtensionURLLoaderThrottleBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        extensions::switches::kDisableExtensionsHttpThrottling);
+  }
+};
 
 // Tests that if switches::kDisableExtensionsHttpThrottling is set on the
 // command line, throttling is disabled.

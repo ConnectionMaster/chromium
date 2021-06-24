@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from __future__ import absolute_import
 from pylib.base import test_instance
 from pylib.utils import test_filter
 
@@ -11,15 +12,14 @@ class JunitTestInstance(test_instance.TestInstance):
   def __init__(self, args, _):
     super(JunitTestInstance, self).__init__()
 
-    self._android_manifest_path = args.android_manifest_path
     self._coverage_dir = args.coverage_dir
     self._debug_socket = args.debug_socket
-    self._jacoco = args.jacoco
+    self._coverage_on_the_fly = args.coverage_on_the_fly
     self._package_filter = args.package_filter
-    self._package_name = args.package_name
-    self._resource_zips = args.resource_zips
+    self._resource_apk = args.resource_apk
     self._robolectric_runtime_deps_dir = args.robolectric_runtime_deps_dir
     self._runner_filter = args.runner_filter
+    self._shards = args.shards
     self._test_filter = test_filter.InitializeFilterFromArgs(args)
     self._test_suite = args.test_suite
 
@@ -36,16 +36,12 @@ class JunitTestInstance(test_instance.TestInstance):
     pass
 
   @property
-  def android_manifest_path(self):
-    return self._android_manifest_path
-
-  @property
   def coverage_dir(self):
     return self._coverage_dir
 
   @property
-  def jacoco(self):
-    return self._jacoco
+  def coverage_on_the_fly(self):
+    return self._coverage_on_the_fly
 
   @property
   def debug_socket(self):
@@ -56,12 +52,8 @@ class JunitTestInstance(test_instance.TestInstance):
     return self._package_filter
 
   @property
-  def package_name(self):
-    return self._package_name
-
-  @property
-  def resource_zips(self):
-    return self._resource_zips
+  def resource_apk(self):
+    return self._resource_apk
 
   @property
   def robolectric_runtime_deps_dir(self):
@@ -74,6 +66,10 @@ class JunitTestInstance(test_instance.TestInstance):
   @property
   def test_filter(self):
     return self._test_filter
+
+  @property
+  def shards(self):
+    return self._shards
 
   @property
   def suite(self):

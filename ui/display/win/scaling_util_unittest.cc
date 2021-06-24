@@ -20,7 +20,8 @@ DisplayInfo CreateDisplayInfo(int x, int y, int width, int height,
   MONITORINFOEX monitor_info = CreateMonitorInfo(gfx::Rect(x, y, width, height),
                                                  gfx::Rect(x, y, width, height),
                                                  kFakeDisplayName);
-  return DisplayInfo(monitor_info, scale_factor, 1.0f);
+  return DisplayInfo(monitor_info, scale_factor, 1.0f, Display::ROTATE_0, 60,
+                     gfx::Vector2dF(), DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER);
 }
 
 ::testing::AssertionResult AssertOffsetsEqual(
@@ -429,15 +430,15 @@ TEST(ScalingUtilTest, CalculateDisplayPlacement2xScale) {
 TEST(ScalingUtilTest, SquaredDistanceBetweenRectsFullyIntersecting) {
   gfx::Rect rect1(0, 0, 100, 100);
   gfx::Rect rect2(5, 5, 10, 10);
-  EXPECT_EQ(0, SquaredDistanceBetweenRects(rect1, rect2));
-  EXPECT_EQ(0, SquaredDistanceBetweenRects(rect2, rect1));
+  EXPECT_EQ(-100, SquaredDistanceBetweenRects(rect1, rect2));
+  EXPECT_EQ(-100, SquaredDistanceBetweenRects(rect2, rect1));
 }
 
 TEST(ScalingUtilTest, SquaredDistanceBetweenRectsPartiallyIntersecting) {
   gfx::Rect rect1(0, 0, 10, 10);
-  gfx::Rect rect2(5, 5, 10, 10);
-  EXPECT_EQ(0, SquaredDistanceBetweenRects(rect1, rect2));
-  EXPECT_EQ(0, SquaredDistanceBetweenRects(rect2, rect1));
+  gfx::Rect rect2(5, 5, 20, 20);
+  EXPECT_EQ(-25, SquaredDistanceBetweenRects(rect1, rect2));
+  EXPECT_EQ(-25, SquaredDistanceBetweenRects(rect2, rect1));
 }
 
 TEST(ScalingUtilTest, SquaredDistanceBetweenRectsTouching) {

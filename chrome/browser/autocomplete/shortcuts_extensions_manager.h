@@ -6,15 +6,12 @@
 #define CHROME_BROWSER_AUTOCOMPLETE_SHORTCUTS_EXTENSIONS_MANAGER_H_
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 
 class Profile;
-
-namespace extensions {
-class ExtensionRegistry;
-}
 
 // This class manages the removal of shortcuts associated with an extension when
 // that extension is unloaded.
@@ -32,9 +29,9 @@ class ShortcutsExtensionsManager
   void OnShutdown(extensions::ExtensionRegistry* registry) override;
 
  private:
-  ScopedObserver<extensions::ExtensionRegistry,
-                 extensions::ExtensionRegistryObserver>
-      registry_observer_;
+  base::ScopedObservation<extensions::ExtensionRegistry,
+                          extensions::ExtensionRegistryObserver>
+      registry_observation_{this};
   Profile* profile_;
 
   DISALLOW_COPY_AND_ASSIGN(ShortcutsExtensionsManager);

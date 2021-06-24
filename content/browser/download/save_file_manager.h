@@ -71,7 +71,7 @@ class FilePath;
 }
 
 namespace content {
-class ResourceContext;
+class BrowserContext;
 class SaveFile;
 class SavePackage;
 class StoragePartition;
@@ -80,7 +80,7 @@ struct Referrer;
 class CONTENT_EXPORT SaveFileManager
     : public base::RefCountedThreadSafe<SaveFileManager> {
  public:
-   // Returns the singleton instance of the SaveFileManager.
+  // Returns the singleton instance of the SaveFileManager.
   static SaveFileManager* Get();
 
   SaveFileManager();
@@ -98,7 +98,7 @@ class CONTENT_EXPORT SaveFileManager
                int render_frame_routing_id,
                SaveFileCreateInfo::SaveFileSource save_source,
                const base::FilePath& file_full_path,
-               ResourceContext* context,
+               BrowserContext* context,
                StoragePartition* storage_partition,
                SavePackage* save_package);
 
@@ -116,9 +116,6 @@ class CONTENT_EXPORT SaveFileManager
   // Called on the UI thread to remove a save package from SaveFileManager's
   // tracking map.
   void RemoveSaveFile(SaveItemId save_item_id, SavePackage* package);
-
-  // Helper function for deleting specified file.
-  void DeleteDirectoryOrFile(const base::FilePath& full_path, bool is_dir);
 
   // Runs on file thread to save a file by copying from file system when
   // original url is using file scheme.
@@ -181,11 +178,6 @@ class CONTENT_EXPORT SaveFileManager
   void OnFinishSavePageJob(int render_process_id,
                            int render_frame_routing_id,
                            SavePackageId save_package_id);
-
-  // Notifications sent from the UI thread and run on the file thread.
-
-  // Deletes a specified file on the file thread.
-  void OnDeleteDirectoryOrFile(const base::FilePath& full_path, bool is_dir);
 
   // Notifications sent from the UI thread and run on the IO thread
 

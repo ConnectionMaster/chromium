@@ -4,6 +4,8 @@
 
 #include "ui/views/mouse_watcher.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/location.h"
@@ -12,22 +14,22 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/events/event.h"
-#include "ui/events/event_constants.h"
 #include "ui/events/event_observer.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/platform_event.h"
+#include "ui/events/types/event_type.h"
 #include "ui/views/event_monitor.h"
 
 namespace views {
 
 // Amount of time between when the mouse moves outside the Host's zone and when
 // the listener is notified.
-constexpr int kNotifyListenerTimeMs = 300;
+constexpr auto kNotifyListenerTime = base::TimeDelta::FromMilliseconds(300);
 
 class MouseWatcher::Observer : public ui::EventObserver {
  public:
   Observer(MouseWatcher* mouse_watcher, gfx::NativeWindow window)
-      : mouse_watcher_(mouse_watcher), notify_listener_factory_(this) {
+      : mouse_watcher_(mouse_watcher) {
     event_monitor_ = EventMonitor::CreateApplicationMonitor(
         this, window,
         {ui::ET_MOUSE_PRESSED, ui::ET_MOUSE_MOVED, ui::ET_MOUSE_EXITED,
@@ -72,7 +74,7 @@ class MouseWatcher::Observer : public ui::EventObserver {
             base::BindOnce(&Observer::NotifyListener,
                            notify_listener_factory_.GetWeakPtr()),
             event_type == EventType::kMove
-                ? base::TimeDelta::FromMilliseconds(kNotifyListenerTimeMs)
+                ? kNotifyListenerTime
                 : mouse_watcher_->notify_on_exit_time_);
       }
     } else {
@@ -92,7 +94,7 @@ class MouseWatcher::Observer : public ui::EventObserver {
   std::unique_ptr<views::EventMonitor> event_monitor_;
 
   // A factory that is used to construct a delayed callback to the listener.
-  base::WeakPtrFactory<Observer> notify_listener_factory_;
+  base::WeakPtrFactory<Observer> notify_listener_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(Observer);
 };
@@ -105,8 +107,7 @@ MouseWatcher::MouseWatcher(std::unique_ptr<MouseWatcherHost> host,
                            MouseWatcherListener* listener)
     : host_(std::move(host)),
       listener_(listener),
-      notify_on_exit_time_(
-          base::TimeDelta::FromMilliseconds(kNotifyListenerTimeMs)) {}
+      notify_on_exit_time_(kNotifyListenerTime) {}
 
 MouseWatcher::~MouseWatcher() = default;
 

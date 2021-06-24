@@ -5,8 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSSOM_CSS_UNIT_VALUE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSSOM_CSS_UNIT_VALUE_H_
 
-#include "base/macros.h"
-#include "third_party/blink/renderer/core/css/css_primitive_value.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/cssom/css_numeric_value.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
@@ -27,12 +27,14 @@ class CORE_EXPORT CSSUnitValue final : public CSSNumericValue {
   static CSSUnitValue* Create(
       double value,
       CSSPrimitiveValue::UnitType = CSSPrimitiveValue::UnitType::kNumber);
-  static CSSUnitValue* FromCSSValue(const CSSPrimitiveValue&);
+  static CSSUnitValue* FromCSSValue(const CSSNumericLiteralValue&);
 
   CSSUnitValue(double value, CSSPrimitiveValue::UnitType unit)
       : CSSNumericValue(CSSNumericValueType(unit)),
         value_(value),
         unit_(unit) {}
+  CSSUnitValue(const CSSUnitValue&) = delete;
+  CSSUnitValue& operator=(const CSSUnitValue&) = delete;
 
   // Setters and getters for attributes defined in the IDL.
   void setValue(double new_value) { value_ = new_value; }
@@ -45,17 +47,15 @@ class CORE_EXPORT CSSUnitValue final : public CSSNumericValue {
 
   // From CSSNumericValue.
   bool IsUnitValue() const final { return true; }
-  base::Optional<CSSNumericSumValue> SumValue() const final;
+  absl::optional<CSSNumericSumValue> SumValue() const final;
 
   bool Equals(const CSSNumericValue&) const final;
 
   // From CSSStyleValue.
   StyleValueType GetType() const final;
-  const CSSPrimitiveValue* ToCSSValue() const final;
-  const CSSPrimitiveValue* ToCSSValueWithProperty(
-      CSSPropertyID,
-      const CSSSyntaxComponent*) const final;
-  CSSCalcExpressionNode* ToCalcExpressionNode() const final;
+  const CSSNumericLiteralValue* ToCSSValue() const final;
+  const CSSPrimitiveValue* ToCSSValueWithProperty(CSSPropertyID) const final;
+  CSSMathExpressionNode* ToCalcExpressionNode() const final;
 
  private:
   double ConvertFixedLength(CSSPrimitiveValue::UnitType) const;
@@ -69,7 +69,6 @@ class CORE_EXPORT CSSUnitValue final : public CSSNumericValue {
 
   double value_;
   CSSPrimitiveValue::UnitType unit_;
-  DISALLOW_COPY_AND_ASSIGN(CSSUnitValue);
 };
 
 template <>

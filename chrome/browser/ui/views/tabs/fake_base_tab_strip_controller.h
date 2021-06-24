@@ -5,26 +5,31 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_FAKE_BASE_TAB_STRIP_CONTROLLER_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_FAKE_BASE_TAB_STRIP_CONTROLLER_H_
 
-#include <map>
 #include <memory>
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/macros.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
+#include "chrome/browser/ui/views/tabs/tab_strip_types.h"
+#include "components/tab_groups/tab_group_id.h"
+#include "components/tab_groups/tab_group_visual_data.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/models/list_selection_model.h"
 
 class FakeBaseTabStripController : public TabStripController {
  public:
   FakeBaseTabStripController();
+  FakeBaseTabStripController(const FakeBaseTabStripController&) = delete;
+  FakeBaseTabStripController& operator=(const FakeBaseTabStripController&) =
+      delete;
   ~FakeBaseTabStripController() override;
 
   void AddTab(int index, bool is_active);
   void AddPinnedTab(int index, bool is_active);
   void RemoveTab(int index);
 
-  TabGroupData* CreateTabGroup();
-  void MoveTabIntoGroup(int index, TabGroupData* new_group);
+  void MoveTabIntoGroup(int index,
+                        absl::optional<tab_groups::TabGroupId> new_group);
 
   ui::ListSelectionModel* selection_model() { return &selection_model_; }
 
@@ -43,33 +48,54 @@ class FakeBaseTabStripController : public TabStripController {
   void ToggleSelected(int index) override;
   void AddSelectionFromAnchorTo(int index) override;
   bool BeforeCloseTab(int index, CloseTabSource source) override;
-  void CloseTab(int index, CloseTabSource source) override;
+  void CloseTab(int index) override;
+  void MoveTab(int from_index, int to_index) override;
+  void MoveGroup(const tab_groups::TabGroupId&, int to_index) override;
+  bool ToggleTabGroupCollapsedState(
+      const tab_groups::TabGroupId group,
+      ToggleTabGroupCollapsedStateOrigin origin) override;
   void ShowContextMenuForTab(Tab* tab,
                              const gfx::Point& p,
                              ui::MenuSourceType source_type) override;
   int HasAvailableDragActions() const override;
   void OnDropIndexUpdate(int index, bool drop_before) override;
-  bool IsCompatibleWith(TabStrip* other) const override;
   void CreateNewTab() override;
-  void CreateNewTabWithLocation(const base::string16& loc) override;
+  void CreateNewTabWithLocation(const std::u16string& loc) override;
   void StackedLayoutMaybeChanged() override;
-  void OnStartedDraggingTabs() override;
-  void OnStoppedDraggingTabs() override;
-  std::vector<int> ListTabsInGroup(const TabGroupData* group) const override;
+  void OnStartedDragging(bool dragging_window) override;
+  void OnStoppedDragging() override;
+  void OnKeyboardFocusedTabChanged(absl::optional<int> index) override;
+  std::u16string GetGroupTitle(
+      const tab_groups::TabGroupId& group_id) const override;
+  std::u16string GetGroupContentString(
+      const tab_groups::TabGroupId& group_id) const override;
+  tab_groups::TabGroupColorId GetGroupColorId(
+      const tab_groups::TabGroupId& group_id) const override;
+  bool IsGroupCollapsed(const tab_groups::TabGroupId& group) const override;
+  void SetVisualDataForGroup(
+      const tab_groups::TabGroupId& group,
+      const tab_groups::TabGroupVisualData& visual_data) override;
+  absl::optional<int> GetFirstTabInGroup(
+      const tab_groups::TabGroupId& group) const override;
+  absl::optional<int> GetLastTabInGroup(
+      const tab_groups::TabGroupId& group) const override;
+  gfx::Range ListTabsInGroup(
+      const tab_groups::TabGroupId& group) const override;
+  void AddTabToGroup(int model_index,
+                     const tab_groups::TabGroupId& group) override;
+  void RemoveTabFromGroup(int model_index) override;
   bool IsFrameCondensed() const override;
   bool HasVisibleBackgroundTabShapes() const override;
   bool EverHasVisibleBackgroundTabShapes() const override;
   bool ShouldPaintAsActiveFrame() const override;
   bool CanDrawStrokes() const override;
-  SkColor GetFrameColor(
-      BrowserNonClientFrameView::ActiveState active_state =
-          BrowserNonClientFrameView::kUseCurrent) const override;
+  SkColor GetFrameColor(BrowserFrameActiveState active_state) const override;
   SkColor GetToolbarTopSeparatorColor() const override;
-  int GetTabBackgroundResourceId(
-      BrowserNonClientFrameView::ActiveState active_state,
-      bool* has_custom_image) const override;
-  base::string16 GetAccessibleTabName(const Tab* tab) const override;
+  absl::optional<int> GetCustomBackgroundId(
+      BrowserFrameActiveState active_state) const override;
+  std::u16string GetAccessibleTabName(const Tab* tab) const override;
   Profile* GetProfile() const override;
+  const Browser* GetBrowser() const override;
 
  private:
   void SetActiveIndex(int new_index);
@@ -79,12 +105,10 @@ class FakeBaseTabStripController : public TabStripController {
   int num_tabs_ = 0;
   int active_index_ = -1;
 
-  std::vector<std::unique_ptr<TabGroupData>> groups_;
-  std::map<int, TabGroupData*> tab_to_group_;
+  tab_groups::TabGroupVisualData fake_group_data_;
+  std::vector<absl::optional<tab_groups::TabGroupId>> tab_groups_;
 
   ui::ListSelectionModel selection_model_;
-
-  DISALLOW_COPY_AND_ASSIGN(FakeBaseTabStripController);
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_FAKE_BASE_TAB_STRIP_CONTROLLER_H_

@@ -8,41 +8,50 @@
 #include <stdint.h>
 
 #include "base/macros.h"
+#include "base/memory/platform_shared_memory_region.h"
 #include "base/memory/read_only_shared_memory_region.h"
-#include "base/memory/shared_memory.h"
 #include "base/memory/shared_memory_mapping.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "media/base/media_export.h"
 
 namespace media {
 
-// Wrapper over base::SharedMemory that can be mapped at unaligned offsets.
+// Wrapper over base::PlatformSharedMemoryRegion that can be mapped at unaligned
+// offsets.
 // DEPRECATED! See https://crbug.com/795291.
 class MEDIA_EXPORT UnalignedSharedMemory {
  public:
   // Creates an |UnalignedSharedMemory| instance from a
-  // |SharedMemoryHandle|. |size| sets the maximum size that may be mapped. This
-  // instance will own the handle.
-  UnalignedSharedMemory(const base::SharedMemoryHandle& handle,
+  // |PlatformSharedMemoryRegion|. |size| sets the maximum size that may be
+  // mapped. This instance will own the handle.
+  UnalignedSharedMemory(base::subtle::PlatformSharedMemoryRegion region,
                         size_t size,
                         bool read_only);
+
   ~UnalignedSharedMemory();
 
   // Map the shared memory region. Note that the passed |size| parameter should
   // be less than or equal to |size()|.
   bool MapAt(off_t offset, size_t size);
   size_t size() const { return size_; }
-  void* memory() const;
+  void* memory() const { return mapping_ptr_; }
 
  private:
-  base::SharedMemory shm_;
+  // Only one of the mappings is active, depending on the value of |read_only_|.
+  // These variables are held to keep the shared memory mapping valid for the
+  // lifetime of this instance.
+  base::subtle::PlatformSharedMemoryRegion region_;
+  base::WritableSharedMemoryMapping writable_mapping_;
+  base::ReadOnlySharedMemoryMapping read_only_mapping_;
 
-  // The size of the region associated with |shm_|.
+  // If the mapping should be made read-only.
+  bool read_only_;
+
+  // The size of the region associated with |region_|.
   size_t size_;
 
-  // Offset withing |shm_| memory that data has been mapped; strictly less than
-  // base::SysInfo::VMAllocationGranularity().
-  size_t misalignment_;
+  // Pointer to the unaligned data in the shared memory mapping.
+  uint8_t* mapping_ptr_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(UnalignedSharedMemory);
 };
@@ -56,13 +65,6 @@ class MEDIA_EXPORT WritableUnalignedMapping {
   // within |region| and |offset| is the offset that will be mapped. |region| is
   // not retained and is used only in the constructor.
   WritableUnalignedMapping(const base::UnsafeSharedMemoryRegion& region,
-                           size_t size,
-                           off_t offset);
-
-  // As above, but creates from a handle. This region will own the handle.
-  // DEPRECATED: this should be used only for the legacy shared memory
-  // conversion project, see https://crbug.com/795291.
-  WritableUnalignedMapping(const base::SharedMemoryHandle& handle,
                            size_t size,
                            off_t offset);
 

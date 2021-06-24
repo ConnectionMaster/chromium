@@ -18,6 +18,7 @@ enum class Error {
   UPDATE_CHECK_ERROR = 5,
   CRX_NOT_FOUND = 6,
   INVALID_ARGUMENT = 7,
+  BAD_CRX_DATA_CALLBACK = 8,
   MAX_VALUE,
 };
 
@@ -83,6 +84,7 @@ enum class InstallError {
   NO_DIR_COMPONENT_USER = 14,
   CLEAN_INSTALL_DIR_FAILED = 15,
   INSTALL_VERIFICATION_FAILED = 16,
+  MISSING_INSTALL_PARAMS = 17,
   CUSTOM_ERROR_BASE = 100,  // Specific installer errors go above this value.
 };
 

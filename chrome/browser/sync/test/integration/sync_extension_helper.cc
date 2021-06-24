@@ -20,7 +20,6 @@
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/pending_extension_info.h"
 #include "chrome/browser/extensions/pending_extension_manager.h"
-#include "chrome/browser/extensions/signin/gaia_auth_extension_loader.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
@@ -75,7 +74,7 @@ void SyncExtensionHelper::SetupIfNecessary(SyncTest* test) {
   for (int i = 0; i < test->num_clients(); ++i) {
     SetupProfile(test->GetProfile(i));
   }
-  if (test->use_verifier()) {
+  if (test->UseVerifier()) {
     SetupProfile(test->verifier());
   }
 
@@ -188,8 +187,8 @@ void SyncExtensionHelper::InstallExtensionsPendingForSync(Profile* profile) {
           ->extension_service()
           ->pending_extension_manager();
 
-  std::list<std::string> pending_crx_ids;
-  pending_extension_manager->GetPendingIdsForUpdateCheck(&pending_crx_ids);
+  std::list<std::string> pending_crx_ids =
+      pending_extension_manager->GetPendingIdsForUpdateCheck();
 
   std::list<std::string>::const_iterator iter;
   const extensions::PendingExtensionInfo* info = nullptr;
@@ -227,11 +226,6 @@ SyncExtensionHelper::ExtensionStateMap
       extensions::ExtensionSystem::Get(profile)->extension_service();
   for (const scoped_refptr<const Extension>& extension : *extensions) {
     const std::string& id = extension->id();
-    // When doing Chrome account sign in though the Gaia extension, the Gaia
-    // extensions gets installed once and used by multiple profiles.  This will
-    // cause extension list of profiles to not match.
-    if (id == extensions::kGaiaAuthExtensionId)
-      continue;
     ExtensionState& extension_state = extension_state_map[id];
     extension_state.enabled_state =
         extension_service->IsExtensionEnabled(id) ?
@@ -250,8 +244,8 @@ SyncExtensionHelper::ExtensionStateMap
   const extensions::PendingExtensionManager* pending_extension_manager =
       extension_service->pending_extension_manager();
 
-  std::list<std::string> pending_crx_ids;
-  pending_extension_manager->GetPendingIdsForUpdateCheck(&pending_crx_ids);
+  std::list<std::string> pending_crx_ids =
+      pending_extension_manager->GetPendingIdsForUpdateCheck();
 
   for (const std::string& id : pending_crx_ids) {
     ExtensionState& extension_state = extension_state_map[id];
@@ -382,9 +376,9 @@ scoped_refptr<Extension> CreateExtension(const base::FilePath& base_dir,
     return nullptr;
   }
   std::string error;
-  scoped_refptr<Extension> extension =
-      Extension::Create(extension_dir, Manifest::INTERNAL, source,
-                        Extension::NO_FLAGS, &error);
+  scoped_refptr<Extension> extension = Extension::Create(
+      extension_dir, extensions::mojom::ManifestLocation::kInternal, source,
+      Extension::NO_FLAGS, &error);
   if (!error.empty()) {
     ADD_FAILURE() << error;
     return nullptr;

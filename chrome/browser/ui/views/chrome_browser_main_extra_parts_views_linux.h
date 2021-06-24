@@ -11,24 +11,25 @@
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/chrome_browser_main_extra_parts_views.h"
-#include "ui/views/widget/desktop_aura/x11_desktop_handler_observer.h"
+#include "ui/display/display_observer.h"
 
+// Extra parts, which are used by both Ozone/X11/Wayland and inherited by the
+// non-ozone X11 extra parts.
 class ChromeBrowserMainExtraPartsViewsLinux
     : public ChromeBrowserMainExtraPartsViews,
-      public views::X11DesktopHandlerObserver {
+      public display::DisplayObserver {
  public:
   ChromeBrowserMainExtraPartsViewsLinux();
   ~ChromeBrowserMainExtraPartsViewsLinux() override;
 
   // Overridden from ChromeBrowserMainExtraParts:
-  void PreEarlyInitialization() override;
   void ToolkitInitialized() override;
   void PreCreateThreads() override;
 
-  // Overridden from views::X11DesktopHandlerObserver.
-  void OnWorkspaceChanged(const std::string& new_workspace) override;
-
  private:
+  // display::DisplayObserver:
+  void OnCurrentWorkspaceChanged(const std::string& new_workspace) override;
+
   DISALLOW_COPY_AND_ASSIGN(ChromeBrowserMainExtraPartsViewsLinux);
 };
 

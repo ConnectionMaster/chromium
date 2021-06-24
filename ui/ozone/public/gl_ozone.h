@@ -7,13 +7,13 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gpu_preference.h"
-#include "ui/ozone/ozone_base_export.h"
 
 namespace gl {
 class GLContext;
@@ -29,19 +29,16 @@ namespace ui {
 // Interface that has all of the required methods for an Ozone platform to
 // implement a GL implementation. Functions in gl_factory.h and gl_initializer.h
 // will delegate to functions in this interface.
-class OZONE_BASE_EXPORT GLOzone {
+class COMPONENT_EXPORT(OZONE_BASE) GLOzone {
  public:
   virtual ~GLOzone() {}
 
   // Initializes static GL bindings and sets GL implementation.
   virtual bool InitializeStaticGLBindings(
-      gl::GLImplementation implementation) = 0;
+      const gl::GLImplementationParts& implementation) = 0;
 
   // Performs any one off initialization for GL implementation.
   virtual bool InitializeGLOneOffPlatform() = 0;
-
-  // Initializes static debug GL bindings.
-  virtual void InitializeDebugGLBindings() = 0;
 
   // Disables the specified extensions in the window system bindings,
   // e.g., GLX, EGL, etc. This is part of the GPU driver bug workarounds

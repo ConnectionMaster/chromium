@@ -4,9 +4,9 @@
 
 #import "ios/chrome/browser/ui/util/named_guide.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #import "base/mac/foundation_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -57,6 +57,13 @@ NSString* const kActiveKeyPath = @"active";
 
 - (void)dealloc {
   [self resetConstraints];
+}
+
+- (NSString*)description {
+  return [NSString
+      stringWithFormat:@"<%@: %p - %@, layoutFrame=%@, owningView=%@>",
+                       NSStringFromClass([self class]), self, self.name,
+                       NSStringFromCGRect(self.layoutFrame), self.owningView];
 }
 
 #pragma mark - Accessors

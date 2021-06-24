@@ -9,11 +9,12 @@
 
 #include <utility>
 
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/stl_util.h"
+#include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/commander/commander.h"
 #include "printing/buildflags/buildflags.h"
 #import "ui/base/accelerators/platform_accelerator_cocoa.h"
 #import "ui/events/cocoa/cocoa_event_utils.h"
@@ -48,7 +49,7 @@ const struct AcceleratorMapping {
      ui::VKEY_B},
     {IDC_SHOW_BOOKMARK_MANAGER, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,
      ui::VKEY_B},
-    {IDC_BOOKMARK_PAGE, ui::EF_COMMAND_DOWN, ui::VKEY_D},
+    {IDC_BOOKMARK_THIS_TAB, ui::EF_COMMAND_DOWN, ui::VKEY_D},
     {IDC_SHOW_DOWNLOADS, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_J},
     {IDC_SHOW_HISTORY, ui::EF_COMMAND_DOWN, ui::VKEY_Y},
     {IDC_VIEW_SOURCE, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN, ui::VKEY_U},
@@ -104,6 +105,10 @@ const struct AcceleratorMapping {
      ui::VKEY_OEM_2},
     {IDC_TOGGLE_FULLSCREEN_TOOLBAR, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_F},
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+    {IDC_FEEDBACK, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN | ui::EF_SHIFT_DOWN,
+     ui::VKEY_I},
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 };
 
 }  // namespace
@@ -113,6 +118,11 @@ AcceleratorsCocoa::AcceleratorsCocoa() {
     const AcceleratorMapping& entry = kAcceleratorMap[i];
     ui::Accelerator accelerator(entry.key_code, entry.modifiers);
     accelerators_.insert(std::make_pair(entry.command_id, accelerator));
+  }
+  if (commander::IsEnabled()) {
+    accelerators_.insert(
+        std::make_pair(IDC_TOGGLE_COMMANDER,
+                       ui::Accelerator(ui::VKEY_SPACE, ui::EF_CONTROL_DOWN)));
   }
 }
 
@@ -130,4 +140,3 @@ const ui::Accelerator* AcceleratorsCocoa::GetAcceleratorForCommand(
     return NULL;
   return &it->second;
 }
-

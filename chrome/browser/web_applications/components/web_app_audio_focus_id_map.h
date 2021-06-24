@@ -7,8 +7,7 @@
 
 #include <map>
 
-#include "base/macros.h"
-#include "chrome/browser/web_applications/components/web_app_helpers.h"
+#include "chrome/browser/web_applications/components/web_app_id.h"
 
 namespace base {
 class UnguessableToken;
@@ -22,17 +21,18 @@ namespace web_app {
 class WebAppAudioFocusIdMap {
  public:
   WebAppAudioFocusIdMap();
+  WebAppAudioFocusIdMap(const WebAppAudioFocusIdMap&) = delete;
+  WebAppAudioFocusIdMap& operator=(const WebAppAudioFocusIdMap&) = delete;
   ~WebAppAudioFocusIdMap();
 
  protected:
-  friend class WebAppTabHelperBase;
+  friend class WebAppTabHelper;
 
   const base::UnguessableToken& CreateOrGetIdForApp(const AppId& app_id);
 
  private:
   std::map<AppId, base::UnguessableToken> ids_;
 
-  DISALLOW_COPY_AND_ASSIGN(WebAppAudioFocusIdMap);
 };
 
 }  // namespace web_app

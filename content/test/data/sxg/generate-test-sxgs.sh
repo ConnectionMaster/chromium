@@ -5,6 +5,7 @@
 # found in the LICENSE file.
 variants_header=variants-04
 variant_key_header=variant-key-04
+signature_date=2019-07-28T00:00:00Z
 
 set -e
 
@@ -12,6 +13,7 @@ for cmd in gen-signedexchange gen-certurl dump-signedexchange; do
     if ! command -v $cmd > /dev/null 2>&1; then
         echo "$cmd is not installed. Please run:"
         echo "  go get -u github.com/WICG/webpackage/go/signedexchange/cmd/..."
+        echo '  export PATH=$PATH:$(go env GOPATH)/bin'
         exit 1
     fi
 done
@@ -27,14 +29,32 @@ mkdir $sctdir
 # Make dummy OCSP and SCT data for cbor certificate chains.
 echo -n OCSP >$tmpdir/ocsp; echo -n SCT >$sctdir/dummy.sct
 
-# Generate the certificate chain of "*.example.org".
+# Generate the certificate chain of "*.example.org", whose validity period is
+# exactly 90 days.
 gen-certurl -pem prime256v1-sha256.public.pem \
   -ocsp $tmpdir/ocsp -sctDir $sctdir > test.example.org.public.pem.cbor
+
+
+# Same as above, but for google-com.example.org.
+gen-certurl -pem prime256v1-sha256-google-com.public.pem \
+  -ocsp $tmpdir/ocsp -sctDir $sctdir > google-com.example.org.public.pem.cbor
+
+# Generate the certificate chain of "*.example.org", whose validity period is
+# more than 90 days.
+gen-certurl -pem prime256v1-sha256-validity-too-long.public.pem \
+  -ocsp $tmpdir/ocsp -sctDir $sctdir \
+  > test.example.org-validity-too-long.public.pem.cbor
 
 # Generate the certificate chain of "*.example.org", without
 # CanSignHttpExchangesDraft extension.
 gen-certurl -pem prime256v1-sha256-noext.public.pem \
   -ocsp $tmpdir/ocsp -sctDir $sctdir > test.example.org-noext.public.pem.cbor
+
+# Generate the certificate chain of "*.example.org", for
+# SignedExchangeRequestHandlerRealCertVerifierBrowserTest.
+gen-certurl -pem prime256v1-sha256-long-validity.public.pem \
+  -ocsp $tmpdir/ocsp -sctDir $sctdir \
+  > test.example.org-long-validity.public.pem.cbor
 
 # Generate the signed exchange file.
 gen-signedexchange \
@@ -46,8 +66,25 @@ gen-signedexchange \
   -certUrl https://cert.example.org/cert.msg \
   -validityUrl https://test.example.org/resource.validity.msg \
   -privateKey prime256v1.key \
-  -date 2018-03-12T05:53:20Z \
+  -date $signature_date \
+  -expire 168h \
   -o test.example.org_test.sxg \
+  -miRecordSize 100
+
+# Generate the signed exchange file for google-com.example.org. This is used
+# for lookalike URL testing.
+gen-signedexchange \
+  -version 1b3 \
+  -uri https://google-com.example.org/test/ \
+  -status 200 \
+  -content test.html \
+  -certificate prime256v1-sha256-google-com.public.pem \
+  -certUrl https://google-com.example.org/cert.msg \
+  -validityUrl https://google-com.example.org/resource.validity.msg \
+  -privateKey prime256v1.key \
+  -date $signature_date \
+  -expire 168h \
+  -o google-com.example.org_test.sxg \
   -miRecordSize 100
 
 # Generate the signed exchange for the missing nosniff header test case.
@@ -71,6 +108,32 @@ xxd -p test.example.org_test.sxg |
   sed 's/a44664/a54664/' |
   xxd -r -p > test.example.org_test_invalid_cbor_header.sxg
 
+# Generate the signed exchange file with bad MICE integrity.
+gen-signedexchange \
+  -version 1b3 \
+  -uri https://test.example.org/test/ \
+  -status 200 \
+  -content badmice_test.html \
+  -certificate prime256v1-sha256.public.pem \
+  -certUrl https://cert.example.org/cert.msg \
+  -validityUrl https://test.example.org/resource.validity.msg \
+  -privateKey prime256v1.key \
+  -date $signature_date \
+  -expire 168h \
+  -o - \
+  -miRecordSize 32 |
+  xxd -p |
+  tr -d '\n' |
+  sed 's/585858/4f4f4f/' |
+  xxd -r -p > test.example.org_test_bad_mice.sxg
+
+# Generate the signed exchange file with bad MICE integrity (small).
+# s/Loc/OOO/
+xxd -p test.example.org_test.sxg |
+  tr -d '\n' |
+  sed 's/4c6f63/4f4f4f/' |
+  xxd -r -p > test.example.org_test_bad_mice_small.sxg
+
 # Generate the signed exchange file with noext certificate
 gen-signedexchange \
   -version 1b3 \
@@ -81,8 +144,41 @@ gen-signedexchange \
   -certUrl https://cert.example.org/cert.msg \
   -validityUrl https://test.example.org/resource.validity.msg \
   -privateKey prime256v1.key \
-  -date 2018-03-12T05:53:20Z \
+  -date $signature_date \
+  -expire 168h \
   -o test.example.org_noext_test.sxg \
+  -miRecordSize 100
+
+# Generate the signed exchange file whose certificate's validity period is more
+# than 90 days.
+gen-signedexchange \
+  -version 1b3 \
+  -uri https://test.example.org/test/ \
+  -status 200 \
+  -content test.html \
+  -certificate prime256v1-sha256-validity-too-long.public.pem \
+  -certUrl https://cert.example.org/cert.msg \
+  -validityUrl https://test.example.org/resource.validity.msg \
+  -privateKey prime256v1.key \
+  -date $signature_date \
+  -expire 168h \
+  -o test.example.org_cert_validity_too_long.sxg \
+  -miRecordSize 100
+
+# Generate the signed exchange file for
+# SignedExchangeRequestHandlerRealCertVerifierBrowserTest.
+gen-signedexchange \
+  -version 1b3 \
+  -uri https://test.example.org/test/ \
+  -status 200 \
+  -content test.html \
+  -certificate prime256v1-sha256-long-validity.public.pem \
+  -certUrl https://cert.example.org/cert.msg \
+  -validityUrl https://test.example.org/resource.validity.msg \
+  -privateKey prime256v1.key \
+  -date $signature_date \
+  -expire 168h \
+  -o test.example.org_long_cert_validity.sxg \
   -miRecordSize 100
 
 # Generate the signed exchange file with invalid URL.
@@ -95,7 +191,8 @@ gen-signedexchange \
   -certUrl https://cert.example.org/cert.msg \
   -validityUrl https://test.example.com/resource.validity.msg \
   -privateKey prime256v1.key \
-  -date 2018-03-12T05:53:20Z \
+  -date $signature_date \
+  -expire 168h \
   -o test.example.com_invalid_test.sxg \
   -miRecordSize 100
 
@@ -110,8 +207,26 @@ gen-signedexchange \
   -validityUrl https://test.example.org/resource.validity.msg \
   -privateKey prime256v1.key \
   -responseHeader 'Content-Type: text/plain; charset=iso-8859-1' \
-  -date 2018-03-12T05:53:20Z \
+  -date $signature_date \
+  -expire 168h \
   -o test.example.org_hello.txt.sxg
+
+# Generate the signed exchange whose content is a HTML but content-type is
+# an invalid value.
+gen-signedexchange \
+  -version 1b3 \
+  -uri https://test.example.org/test/ \
+  -status 200 \
+  -content test.html \
+  -certificate prime256v1-sha256.public.pem \
+  -certUrl https://cert.example.org/cert.msg \
+  -validityUrl https://test.example.org/resource.validity.msg \
+  -privateKey prime256v1.key \
+  -responseHeader 'Content-Type: 0' \
+  -date $signature_date \
+  -expire 168h \
+  -o test.example.org_bad_content_type.sxg \
+  -miRecordSize 100
 
 # Generate the signed exchange whose content is gzip-encoded.
 gzip -c test.html >$tmpdir/test.html.gz
@@ -125,7 +240,8 @@ gen-signedexchange \
   -validityUrl https://test.example.org/resource.validity.msg \
   -privateKey prime256v1.key \
   -responseHeader 'Content-Encoding: gzip' \
-  -date 2018-03-12T05:53:20Z \
+  -date $signature_date \
+  -expire 168h \
   -o test.example.org_test.html.gz.sxg
 
 # Generate the signed exchange with variants / variant-key headers.
@@ -138,10 +254,27 @@ gen-signedexchange \
   -certUrl https://cert.example.org/cert.msg \
   -validityUrl https://test.example.org/resource.validity.msg \
   -privateKey prime256v1.key \
-  -date 2018-03-12T05:53:20Z \
+  -date $signature_date \
+  -expire 168h \
   -responseHeader "${variants_header}: accept-language;en;fr" \
   -responseHeader "${variant_key_header}: fr" \
   -o test.example.org_fr_variant.sxg \
+  -miRecordSize 100
+
+# Generate the signed exchange with CSP.
+gen-signedexchange \
+  -version 1b3 \
+  -uri https://test.example.org/test/ \
+  -status 200 \
+  -content test.html \
+  -certificate prime256v1-sha256.public.pem \
+  -certUrl https://cert.example.org/cert.msg \
+  -validityUrl https://test.example.org/resource.validity.msg \
+  -privateKey prime256v1.key \
+  -date $signature_date \
+  -expire 168h \
+  -responseHeader "content-security-policy: frame-ancestors 'none'" \
+  -o test.example.org_csp.sxg \
   -miRecordSize 100
 
 echo "Update the test signatures in "

@@ -9,7 +9,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
 #include "base/time/clock.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
@@ -37,7 +36,7 @@ class WifiHotspotConnector : public NetworkStateHandlerObserver {
 
   // Function which receives the GUID of the connected Wi-Fi hotspot. If
   // the string passed is empty, an error occurred trying to connect.
-  using WifiConnectionCallback = base::Callback<void(const std::string&)>;
+  using WifiConnectionCallback = base::OnceCallback<void(const std::string&)>;
 
   // Connects to the Wi-Fi network with SSID |ssid| and password |password|,
   // invoking |callback| when the connection succeeds, fails, or times out.
@@ -47,7 +46,7 @@ class WifiHotspotConnector : public NetworkStateHandlerObserver {
   virtual void ConnectToWifiHotspot(const std::string& ssid,
                                     const std::string& password,
                                     const std::string& tether_network_guid,
-                                    const WifiConnectionCallback& callback);
+                                    WifiConnectionCallback callback);
 
   void OnEnableWifiError(const std::string& error_name,
                          std::unique_ptr<base::DictionaryValue> error_data);
@@ -90,7 +89,7 @@ class WifiHotspotConnector : public NetworkStateHandlerObserver {
   base::Time connection_attempt_start_time_;
   scoped_refptr<base::TaskRunner> task_runner_;
 
-  base::WeakPtrFactory<WifiHotspotConnector> weak_ptr_factory_;
+  base::WeakPtrFactory<WifiHotspotConnector> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WifiHotspotConnector);
 };

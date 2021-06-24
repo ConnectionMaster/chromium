@@ -21,9 +21,9 @@ const newTreeElement = (() => {
   /** @type {HTMLTemplateElement} Template for leaves in the tree */
   const _leafTemplate = document.getElementById('treenode-symbol');
   /** @type {HTMLTemplateElement} Template for trees */
-  const _treeTemplate = document.getElementById('treenode-container');
+  const _treeTemplate = document.getElementById('treenode-template');
 
-  /** @type {HTMLUListElement} Symbol tree container */
+  /** @type {HTMLUListElement} Symbol tree element */
   const _symbolTree = document.getElementById('symboltree');
 
   /**
@@ -39,27 +39,6 @@ const newTreeElement = (() => {
    * query the original data.
    */
   const _uiNodeData = new WeakMap();
-
-  /**
-   * Applies highlights to the tree element based on certain flags and state.
-   * @param {HTMLSpanElement} symbolNameElement Element that displays the
-   * short name of the tree item.
-   * @param {TreeNode} node Data about this symbol name element's tree node.
-   */
-  function _highlightSymbolName(symbolNameElement, node) {
-    const dexMethodStats = node.childStats[_DEX_METHOD_SYMBOL_TYPE];
-    if (dexMethodStats && dexMethodStats.count < 0) {
-      // This symbol was removed between the before and after versions.
-      symbolNameElement.classList.add('removed');
-    }
-
-    if (state.has('highlight')) {
-      const stats = Object.values(node.childStats);
-      if (stats.some(stat => stat.highlight > 0)) {
-        symbolNameElement.classList.add('highlight');
-      }
-    }
-  }
 
   /**
    * Replace the contents of the size element for a tree node.
@@ -103,7 +82,7 @@ const newTreeElement = (() => {
   async function _toggleTreeElement(event) {
     event.preventDefault();
 
-    // See `#treenode-container` for the relation of these elements.
+    // See `#treenode-template` for the relation of these elements.
     const link = /** @type {HTMLAnchorElement} */ (event.currentTarget);
     const treeitem = /** @type {HTMLLIElement} */ (link.parentElement);
     const group = /** @type {HTMLUListElement} */ (link.nextElementSibling);
@@ -123,7 +102,7 @@ const newTreeElement = (() => {
         /** @type {HTMLSpanElement} */
         const symbolName = link.querySelector('.symbol-name');
         const idPath = symbolName.title;
-        data = await worker.openNode(idPath);
+        data = await window.supersize.worker.openNode(idPath);
         _uiNodeData.set(link, data);
       }
 
@@ -156,7 +135,7 @@ const newTreeElement = (() => {
     /**
      * @type {HTMLAnchorElement | HTMLSpanElement} Tree node element, either
      * a tree or leaf. Trees use `<a>` tags, leaves use `<span>` tags.
-     * See `#treenode-container` and `#treenode-symbol`.
+     * See `#treenode-template` and `#treenode-symbol`.
      */
     const link = event.target;
     /** @type {number} Index of this element in the node list */
@@ -331,10 +310,10 @@ const newTreeElement = (() => {
     const isLeaf = data.children && data.children.length === 0;
     const template = isLeaf ? _leafTemplate : _treeTemplate;
     const element = document.importNode(template.content, true);
+    const listItemEl = element.firstElementChild;
+    const link = listItemEl.firstElementChild;
 
     // Associate clickable node & tree data
-    /** @type {HTMLAnchorElement | HTMLSpanElement} */
-    const link = element.querySelector('.node');
     _uiNodeData.set(link, Object.freeze(data));
 
     // Icons are predefined in the HTML through hidden SVG elements
@@ -344,6 +323,13 @@ const newTreeElement = (() => {
       const symbolStyle = getIconStyle(data.type[1]);
       icon.setAttribute('fill', symbolStyle.color);
     }
+
+    // Insert an SVG icon at the start of the link to represent adds/removals.
+    const diffStatusIcon = getDiffStatusTemplate(data);
+    if (diffStatusIcon) {
+      listItemEl.insertBefore(diffStatusIcon, listItemEl.firstElementChild);
+    }
+
     // Insert an SVG icon at the start of the link to represent type
     link.insertBefore(icon, link.firstElementChild);
 
@@ -355,7 +341,6 @@ const newTreeElement = (() => {
       _ZERO_WIDTH_SPACE
     );
     symbolName.title = data.idPath;
-    _highlightSymbolName(symbolName, data);
 
     // Set the byte size and hover text
     _setSize(element.querySelector('.size'), data);
@@ -420,12 +405,16 @@ const newTreeElement = (() => {
   const _dataUrlInput = form.elements.namedItem('load_url');
   const _progress = new ProgressBar('progress');
 
+  /** @type {boolean} */
+  let _doneLoad = false;
+
   /**
    * Displays the given data as a tree view
    * @param {TreeProgress} message
    */
   function displayTree(message) {
     const {root, percent, diffMode, error} = message;
+    state.set('diff_mode', diffMode ? 'on' : null);
     /** @type {DocumentFragment | null} */
     let rootElement = null;
     if (root) {
@@ -436,7 +425,6 @@ const newTreeElement = (() => {
       link.click();
       link.tabIndex = 0;
     }
-    state.set('diff_mode', diffMode ? 'on' : null);
 
     // Double requestAnimationFrame ensures that the code inside executes in a
     // different frame than the above tree element creation.
@@ -455,22 +443,41 @@ const newTreeElement = (() => {
         }
 
         dom.replace(_symbolTree, rootElement);
+        if (!_doneLoad && percent === 1) {
+          _doneLoad = true;
+          console.log(
+              '%cPro Tip: %cawait supersize.worker.openNode("$FILE_PATH")',
+              'font-weight:bold; color: red;', '')
+        }
       })
     );
   }
 
-  treeReady.then(displayTree);
-  worker.setOnProgressHandler(displayTree);
+  window.supersize.treeReady.then((message) => {
+    if (message.isMultiContainer) {
+      document.getElementById('group-by-container').checked = true;
+      // Fire a change event manually, to reload the tree otherwise it does not
+      // fire on its own. No need to display the tree since it is going to get
+      // reloaded anyways.
+      document.getElementById('options').dispatchEvent(new Event('change'));
+    } else {
+      document.querySelector('#group-by-container')
+        .toggleAttribute('disabled', true);
+      displayTree(message);
+    }
+  });
+  window.supersize.worker.setOnProgressHandler(displayTree);
 
   _fileUpload.addEventListener('change', event => {
     const input = /** @type {HTMLInputElement} */ (event.currentTarget);
     const file = input.files.item(0);
     const fileUrl = URL.createObjectURL(file);
+    startWorkerForFileName(file.name)
 
     _dataUrlInput.value = '';
     _dataUrlInput.dispatchEvent(new Event('change'));
 
-    worker.loadTree(fileUrl).then(displayTree);
+    window.supersize.worker.loadTree(fileUrl).then(displayTree);
     // Clean up afterwards so new files trigger event
     input.value = '';
   });
@@ -481,12 +488,12 @@ const newTreeElement = (() => {
     // options (marked by `data-dynamic`) are changed.
     if (!event.target.dataset.hasOwnProperty('dynamic')) {
       _progress.setValue(0);
-      worker.loadTree().then(displayTree);
+      window.supersize.worker.loadTree().then(displayTree);
     }
   });
   form.addEventListener('submit', event => {
     event.preventDefault();
     _progress.setValue(0);
-    worker.loadTree().then(displayTree);
+    window.supersize.worker.loadTree().then(displayTree);
   });
 }

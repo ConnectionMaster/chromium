@@ -7,35 +7,69 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner.h"
+#include "components/password_manager/core/browser/insecure_credentials_table.h"
 #include "components/password_manager/core/browser/password_store.h"
+#include "testing/gmock/include/gmock/gmock.h"
 
 namespace password_manager {
+
+// A matcher that compares two PasswordForm instances but ignores the |in_store|
+// member.
+MATCHER_P(MatchesFormExceptStore, expected, "") {
+  PasswordForm arg_copy = arg;
+  arg_copy.in_store = expected.in_store;
+  return arg_copy == expected;
+}
 
 // A very simple PasswordStore implementation that keeps all of the passwords
 // in memory and does all its manipulations on the main thread. Since this
 // is only used for testing, only the parts of the interface that are needed
 // for testing have been implemented.
-class TestPasswordStore : public PasswordStore {
+// TODO(crbug.com/1222591): Implement only the PasswordStoreInterface.
+class TestPasswordStore : public PasswordStore, public PasswordStoreBackend {
  public:
-  TestPasswordStore();
+  // We need to qualify password_manager::IsAccountStore with the full
+  // namespace, otherwise, it's confused with the method
+  // PasswordStoreSync::IsAccountStore().
+  explicit TestPasswordStore(password_manager::IsAccountStore is_account_store =
+                                 password_manager::IsAccountStore(false));
 
   using PasswordMap = std::map<std::string /* signon_realm */,
-                               std::vector<autofill::PasswordForm>,
+                               std::vector<PasswordForm>,
                                std::less<>>;
 
+  struct InsecureCredentialLess {
+    bool operator()(const InsecureCredential& lhs,
+                    const InsecureCredential& rhs) const {
+      // Only compare members that are part of the unique key in the database.
+      return std::tie(lhs.signon_realm, lhs.username, lhs.insecure_type) <
+             std::tie(rhs.signon_realm, rhs.username, rhs.insecure_type);
+    }
+  };
+
+  using InsecureCredentialsStorage =
+      base::flat_set<InsecureCredential, InsecureCredentialLess>;
+
   const PasswordMap& stored_passwords() const;
+
+  const InsecureCredentialsStorage& insecure_credentials() const {
+    return insecure_credentials_;
+  }
+
   void Clear();
 
   // Returns true if no passwords are stored in the store. Note that this is not
   // as simple as asking whether stored_passwords().empty(), because the map can
   // have entries of size 0.
-  bool IsEmpty() const;
+  bool IsEmpty() override;
 
   int fill_matching_logins_calls() const { return fill_matching_logins_calls_; }
 
@@ -45,45 +79,62 @@ class TestPasswordStore : public PasswordStore {
   scoped_refptr<base::SequencedTaskRunner> CreateBackgroundTaskRunner()
       const override;
 
+  // PasswordStoreBackend interface
+  void FillMatchingLoginsAsync(
+      LoginsReply callback,
+      const std::vector<PasswordFormDigest>& forms) override;
+
   // PasswordStore interface
-  PasswordStoreChangeList AddLoginImpl(
-      const autofill::PasswordForm& form) override;
-  PasswordStoreChangeList UpdateLoginImpl(
-      const autofill::PasswordForm& form) override;
-  PasswordStoreChangeList RemoveLoginImpl(
-      const autofill::PasswordForm& form) override;
-  std::vector<std::unique_ptr<autofill::PasswordForm>> FillMatchingLogins(
-      const FormDigest& form) override;
+  PasswordStoreChangeList AddLoginImpl(const PasswordForm& form,
+                                       AddLoginError* error) override;
+  PasswordStoreChangeList UpdateLoginImpl(const PasswordForm& form,
+                                          UpdateLoginError* error) override;
+  PasswordStoreChangeList RemoveLoginImpl(const PasswordForm& form) override;
+  std::vector<std::unique_ptr<PasswordForm>> FillMatchingLogins(
+      const PasswordFormDigest& form) override;
+  std::vector<std::unique_ptr<PasswordForm>> FillMatchingLoginsByPassword(
+      const std::u16string& plain_text_password) override;
   bool FillAutofillableLogins(
-      std::vector<std::unique_ptr<autofill::PasswordForm>>* forms) override;
-  bool FillBlacklistLogins(
-      std::vector<std::unique_ptr<autofill::PasswordForm>>* forms) override;
+      std::vector<std::unique_ptr<PasswordForm>>* forms) override;
+  bool FillBlocklistLogins(
+      std::vector<std::unique_ptr<PasswordForm>>* forms) override;
   DatabaseCleanupResult DeleteUndecryptableLogins() override;
   std::vector<InteractionsStats> GetSiteStatsImpl(
       const GURL& origin_domain) override;
 
   // Unused portions of PasswordStore interface
   void ReportMetricsImpl(const std::string& sync_username,
-                         bool custom_passphrase_sync_enabled) override;
+                         bool custom_passphrase_sync_enabled,
+                         BulkCheckDone bulk_check_done) override;
   PasswordStoreChangeList RemoveLoginsByURLAndTimeImpl(
-      const base::Callback<bool(const GURL&)>& url_filter,
+      const base::RepeatingCallback<bool(const GURL&)>& url_filter,
       base::Time begin,
       base::Time end) override;
   PasswordStoreChangeList RemoveLoginsCreatedBetweenImpl(
       base::Time begin,
       base::Time end) override;
-  PasswordStoreChangeList RemoveLoginsSyncedBetweenImpl(
-      base::Time delete_begin,
-      base::Time delete_end) override;
   PasswordStoreChangeList DisableAutoSignInForOriginsImpl(
-      const base::Callback<bool(const GURL&)>& origin_filter) override;
+      const base::RepeatingCallback<bool(const GURL&)>& origin_filter) override;
   bool RemoveStatisticsByOriginAndTimeImpl(
-      const base::Callback<bool(const GURL&)>& origin_filter,
+      const base::RepeatingCallback<bool(const GURL&)>& origin_filter,
       base::Time delete_begin,
       base::Time delete_end) override;
   void AddSiteStatsImpl(const InteractionsStats& stats) override;
   void RemoveSiteStatsImpl(const GURL& origin_domain) override;
   std::vector<InteractionsStats> GetAllSiteStatsImpl() override;
+  PasswordStoreChangeList AddInsecureCredentialImpl(
+      const InsecureCredential& insecure_credentials) override;
+  PasswordStoreChangeList RemoveInsecureCredentialsImpl(
+      const std::string& signon_realm,
+      const std::u16string& username,
+      RemoveInsecureCredentialsReason reason) override;
+  std::vector<InsecureCredential> GetAllInsecureCredentialsImpl() override;
+  std::vector<InsecureCredential> GetMatchingInsecureCredentialsImpl(
+      const std::string& signon_realm) override;
+  void AddFieldInfoImpl(const FieldInfo& field_info) override;
+  std::vector<FieldInfo> GetAllFieldInfoImpl() override;
+  void RemoveFieldInfoByTimeImpl(base::Time remove_begin,
+                                 base::Time remove_end) override;
 
   // PasswordStoreSync interface.
   bool BeginTransaction() override;
@@ -91,11 +142,24 @@ class TestPasswordStore : public PasswordStore {
   bool CommitTransaction() override;
   FormRetrievalResult ReadAllLogins(
       PrimaryKeyToFormMap* key_to_form_map) override;
-  PasswordStoreChangeList RemoveLoginByPrimaryKeySync(int primary_key) override;
+  std::vector<InsecureCredential> ReadSecurityIssues(
+      FormPrimaryKey parent_key) override;
+  PasswordStoreChangeList RemoveLoginByPrimaryKeySync(
+      FormPrimaryKey primary_key) override;
   PasswordStoreSync::MetadataStore* GetMetadataStore() override;
+  bool IsAccountStore() const override;
+  bool DeleteAndRecreateDatabaseFile() override;
 
  private:
+  std::vector<std::unique_ptr<PasswordForm>> FillMatchingLoginsBulk(
+      const std::vector<PasswordFormDigest>& forms);
+
+  const password_manager::IsAccountStore is_account_store_;
+
   PasswordMap stored_passwords_;
+  InsecureCredentialsStorage insecure_credentials_;
+
+  const std::unique_ptr<PasswordStoreSync::MetadataStore> metadata_store_;
 
   // Number of calls of FillMatchingLogins() method.
   int fill_matching_logins_calls_ = 0;

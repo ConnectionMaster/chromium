@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/values.h"
@@ -55,7 +57,8 @@ std::unique_ptr<APIPermission> UnpackPermissionWithArguments(
   // Explicitly check the permissions that accept arguments until
   // https://crbug.com/162042 is fixed.
   const APIPermissionInfo* usb_device_permission_info =
-      PermissionsInfo::GetInstance()->GetByID(APIPermission::kUsbDevice);
+      PermissionsInfo::GetInstance()->GetByID(
+          mojom::APIPermissionID::kUsbDevice);
   if (permission_name == usb_device_permission_info->name()) {
     permission =
         std::make_unique<UsbDevicePermission>(usb_device_permission_info);
@@ -114,21 +117,21 @@ bool UnpackAPIPermissions(const std::vector<std::string>& permissions_input,
   // Validate and partition the parsed APIs.
   for (const auto* api_permission : apis) {
     if (required_permissions.apis().count(api_permission->id())) {
-      result->required_apis.insert(api_permission->id());
+      result->required_apis.insert(api_permission->Clone());
       continue;
     }
 
     if (!optional_permissions.apis().count(api_permission->id())) {
-      result->unlisted_apis.insert(api_permission->id());
+      result->unlisted_apis.insert(api_permission->Clone());
       continue;
     }
 
-    if (!api_permission->info()->supports_optional()) {
-      result->unsupported_optional_apis.insert(api_permission->id());
-      continue;
-    }
+    // Permissions that don't support being optional are filtered out during
+    // manifest parsing, so between that and filtering out APIs that aren't in
+    // the optional set, all of these should support being optional.
+    DCHECK(api_permission->info()->supports_optional());
 
-    result->optional_apis.insert(api_permission->id());
+    result->optional_apis.insert(api_permission->Clone());
   }
 
   return true;
@@ -233,7 +236,7 @@ UnpackPermissionSetResult::~UnpackPermissionSetResult() = default;
 std::unique_ptr<Permissions> PackPermissionSet(const PermissionSet& set) {
   std::unique_ptr<Permissions> permissions(new Permissions());
 
-  permissions->permissions.reset(new std::vector<std::string>());
+  permissions->permissions = std::make_unique<std::vector<std::string>>();
   for (const APIPermission* api : set.apis()) {
     std::unique_ptr<base::Value> value(api->ToValue());
     if (!value) {
@@ -249,7 +252,7 @@ std::unique_ptr<Permissions> PackPermissionSet(const PermissionSet& set) {
   // TODO(rpaquay): We currently don't expose manifest permissions
   // to apps/extensions via the permissions API.
 
-  permissions->origins.reset(new std::vector<std::string>());
+  permissions->origins = std::make_unique<std::vector<std::string>>();
   for (const URLPattern& pattern : set.effective_hosts())
     permissions->origins->push_back(pattern.GetAsString());
 

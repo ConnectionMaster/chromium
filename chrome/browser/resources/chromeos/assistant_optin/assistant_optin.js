@@ -2,30 +2,32 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// <include src="../login/hd-iron-icon.js">
-// <include src="../login/oobe_types.js">
-// <include src="../login/oobe_buttons.js">
-// <include src="../login/oobe_change_picture.js">
-// <include src="../login/oobe_dialog_host_behavior.js">
-// <include src="../login/oobe_dialog.js">
+HTMLImports.whenReady(() => {
+// <include src="../login/components/behaviors/multi_step_behavior.js">
+// <include src="../login/components/oobe_types.js">
 // <include src="assistant_optin_flow.js">
+// <include src="browser_proxy.js">
 
 cr.define('login.AssistantOptInFlowScreen', function() {
   return {
 
     /**
      * Starts the assistant opt-in flow.
-     * @param {number} type The type of the flow.
      */
-    show: function(type) {
-      $('assistant-optin-flow-card').onShow(type);
+    show() {
+      var url = new URL(document.URL);
+      $('assistant-optin-flow-card').onBeforeShow();
+      $('assistant-optin-flow-card')
+          .onShow(
+              url.searchParams.get('flow-type'),
+              url.searchParams.get('caption-bar-height'));
     },
 
     /**
      * Reloads localized strings.
      * @param {!Object} data New dictionary with i18n values.
      */
-    reloadContent: function(data) {
+    reloadContent(data) {
       $('assistant-optin-flow-card').reloadContent(data);
     },
 
@@ -34,14 +36,14 @@ cr.define('login.AssistantOptInFlowScreen', function() {
      * @param {string} type type of the setting zippy.
      * @param {!Object} data String and url for the setting zippy.
      */
-    addSettingZippy: function(type, data) {
+    addSettingZippy(type, data) {
       $('assistant-optin-flow-card').addSettingZippy(type, data);
     },
 
     /**
      * Show the next screen in the flow.
      */
-    showNextScreen: function() {
+    showNextScreen() {
       $('assistant-optin-flow-card').showNextScreen();
     },
 
@@ -49,17 +51,25 @@ cr.define('login.AssistantOptInFlowScreen', function() {
      * Called when the Voice match state is updated.
      * @param {string} state the voice match state.
      */
-    onVoiceMatchUpdate: function(state) {
+    onVoiceMatchUpdate(state) {
       $('assistant-optin-flow-card').onVoiceMatchUpdate(state);
     },
 
-    closeDialog: function() {
-      chrome.send('dialogClose');
+    /**
+     * Called when the flow finished and close the dialog.
+     */
+    closeDialog() {
+      assistant.BrowserProxyImpl.getInstance().dialogClose();
     },
   };
 });
 
-document.addEventListener('DOMContentLoaded', function() {
-  var url = new URL(document.URL);
-  login.AssistantOptInFlowScreen.show(url.searchParams.get('flow-type'));
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', function() {
+    login.AssistantOptInFlowScreen.show();
+  });
+} else {
+  login.AssistantOptInFlowScreen.show();
+}
+
 });

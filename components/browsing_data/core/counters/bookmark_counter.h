@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_BROWSING_DATA_CORE_COUNTERS_BOOKMARK_COUNTER_H_
 #define COMPONENTS_BROWSING_DATA_CORE_COUNTERS_BOOKMARK_COUNTER_H_
 
-#include <memory>
-
 #include "components/browsing_data/core/counters/browsing_data_counter.h"
 
 namespace bookmarks {
@@ -33,7 +31,7 @@ class BookmarkCounter : public browsing_data::BrowsingDataCounter {
   void CountBookmarks(const bookmarks::BookmarkModel* bookmark_model);
 
   bookmarks::BookmarkModel* bookmark_model_;
-  base::WeakPtrFactory<BookmarkCounter> weak_ptr_factory_;
+  base::WeakPtrFactory<BookmarkCounter> weak_ptr_factory_{this};
 };
 
 }  // namespace browsing_data

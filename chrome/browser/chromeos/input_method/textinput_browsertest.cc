@@ -4,15 +4,15 @@
 
 #include <stddef.h>
 
-#include "base/stl_util.h"
 #include "chrome/browser/chromeos/input_method/textinput_test_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/interactive_test_utils.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -25,7 +25,7 @@ struct InputTypeExpectation {
 };
 }  // namespace
 
-typedef TextInputTestBase TextInput_TextInputStateChangedTest;
+using TextInput_TextInputStateChangedTest = TextInputTestBase;
 
 IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
                        SwitchToPasswordFieldTest) {
@@ -39,21 +39,11 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
   content::WebContents* tab =
       browser()->tab_strip_model()->GetActiveWebContents();
 
-  bool worker_finished = false;
-  ASSERT_TRUE(content::ExecuteScriptAndExtractBool(
-      tab,
-      "window.domAutomationController.send(text01_focus());",
-      &worker_finished));
-  EXPECT_TRUE(worker_finished);
+  EXPECT_EQ(true, content::EvalJs(tab, "text01_focus();"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_TEXT);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_TEXT, helper.GetTextInputType());
 
-  worker_finished = false;
-  ASSERT_TRUE(content::ExecuteScriptAndExtractBool(
-      tab,
-      "window.domAutomationController.send(password01_focus());",
-      &worker_finished));
-  EXPECT_TRUE(worker_finished);
+  EXPECT_EQ(true, content::EvalJs(tab, "password01_focus();"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_PASSWORD);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_PASSWORD, helper.GetTextInputType());
 }
@@ -99,7 +89,7 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
 
   content::WebContents* tab =
       browser()->tab_strip_model()->GetActiveWebContents();
-  content::WaitForLoadStop(tab);
+  EXPECT_TRUE(content::WaitForLoadStop(tab));
 
   ASSERT_TRUE(helper.ClickElement("text_id", tab));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_TEXT);
@@ -126,9 +116,8 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
       browser()->tab_strip_model()->GetActiveWebContents();
 
   std::string coordinate;
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.getElementById('text_id').focus();"));
+  ASSERT_TRUE(
+      content::ExecJs(tab, "document.getElementById('text_id').focus();"));
 
   // Expects PASSWORD text input type because javascript will change the focus
   // to password field in #text_id's onfocus handler.
@@ -157,16 +146,14 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
   content::WebContents* tab =
       browser()->tab_strip_model()->GetActiveWebContents();
 
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.getElementById('text_id').focus();"));
+  ASSERT_TRUE(
+      content::ExecJs(tab, "document.getElementById('text_id').focus();"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_TEXT);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_TEXT, helper.GetTextInputType());
 
   // Changing text input type to password.
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.body.removeChild(document.getElementById('text_id'));"));
+  ASSERT_TRUE(content::ExecJs(
+      tab, "document.body.removeChild(document.getElementById('text_id'));"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_NONE);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_NONE, helper.GetTextInputType());
 }
@@ -186,16 +173,14 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
   content::WebContents* tab =
       browser()->tab_strip_model()->GetActiveWebContents();
 
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.getElementById('text_id').focus();"));
+  ASSERT_TRUE(
+      content::ExecJs(tab, "document.getElementById('text_id').focus();"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_TEXT);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_TEXT, helper.GetTextInputType());
 
   // Changing text input type to password.
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.getElementById('text_id').type = 'password';"));
+  ASSERT_TRUE(content::ExecJs(
+      tab, "document.getElementById('text_id').type = 'password';"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_PASSWORD);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_PASSWORD, helper.GetTextInputType());
 }
@@ -218,16 +203,14 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
 
 
   // Disabling content editable, then expecting TEXT_INPUT_TYPE_NONE.
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.getElementById('anchor_id').contentEditable = false;"));
+  ASSERT_TRUE(content::ExecJs(
+      tab, "document.getElementById('anchor_id').contentEditable = false;"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_NONE);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_NONE, helper.GetTextInputType());
 
   // Then re-enabling content editable, then expecting CONTENT_EDITABLE.
-  ASSERT_TRUE(content::ExecuteScript(
-          tab,
-          "document.getElementById('anchor_id').contentEditable = true;"));
+  ASSERT_TRUE(content::ExecJs(
+      tab, "document.getElementById('anchor_id').contentEditable = true;"));
   helper.WaitForTextInputStateChanged(ui::TEXT_INPUT_TYPE_CONTENT_EDITABLE);
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_CONTENT_EDITABLE, helper.GetTextInputType());
 }
@@ -256,19 +239,19 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
     { "contenteditable_id", ui::TEXT_INPUT_TYPE_CONTENT_EDITABLE },
   };  // The order should be same as tab order in all_input_node.html.
 
-  for (size_t i = 0; i < base::size(expectations); ++i) {
+  for (auto& expectation : expectations) {
     content::SimulateKeyPress(tab, ui::DomKey::TAB, ui::DomCode::TAB,
                               ui::VKEY_TAB, false, false, false, false);
 
-    helper.WaitForTextInputStateChanged(expectations[i].type);
-    EXPECT_EQ(expectations[i].type, helper.GetTextInputType());
+    helper.WaitForTextInputStateChanged(expectation.type);
+    EXPECT_EQ(expectation.type, helper.GetTextInputType());
   }
 
-  for (size_t i = 0; i < base::size(expectations); ++i) {
-    helper.ClickElement(expectations[i].node_id, tab);
+  for (auto& expectation : expectations) {
+    helper.ClickElement(expectation.node_id, tab);
 
-    helper.WaitForTextInputStateChanged(expectations[i].type);
-    EXPECT_EQ(expectations[i].type, helper.GetTextInputType());
+    helper.WaitForTextInputStateChanged(expectation.type);
+    EXPECT_EQ(expectation.type, helper.GetTextInputType());
   }
 }
 

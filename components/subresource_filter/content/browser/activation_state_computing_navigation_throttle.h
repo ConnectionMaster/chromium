@@ -2,19 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_FRAME_ACTIVATION_NAVIGATION_THROTTLE_H_
-#define COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_FRAME_ACTIVATION_NAVIGATION_THROTTLE_H_
+#ifndef COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_ACTIVATION_STATE_COMPUTING_NAVIGATION_THROTTLE_H_
+#define COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_ACTIVATION_STATE_COMPUTING_NAVIGATION_THROTTLE_H_
 
 #include <memory>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
-#include "base/time/time.h"
-#include "base/timer/elapsed_timer.h"
 #include "components/subresource_filter/content/browser/verified_ruleset_dealer.h"
 #include "components/subresource_filter/core/mojom/subresource_filter.mojom.h"
 #include "content/public/browser/navigation_throttle.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace subresource_filter {
 
@@ -97,15 +95,13 @@ class ActivationStateComputingNavigationThrottle
   // This must be called at the end of the WillProcessResponse stage.
   void UpdateWithMoreAccurateState();
 
-  void LogDelayMetrics(base::TimeDelta delay) const;
-
   ActivationStateComputingNavigationThrottle(
       content::NavigationHandle* navigation_handle,
-      const base::Optional<mojom::ActivationState> parent_activation_state,
+      const absl::optional<mojom::ActivationState> parent_activation_state,
       VerifiedRuleset::Handle* ruleset_handle);
 
   // Optional to allow for DCHECKing.
-  base::Optional<mojom::ActivationState> parent_activation_state_;
+  absl::optional<mojom::ActivationState> parent_activation_state_;
 
   std::unique_ptr<AsyncDocumentSubresourceFilter> async_filter_;
 
@@ -113,9 +109,8 @@ class ActivationStateComputingNavigationThrottle
   // nullptr until NotifyPageActivationWithRuleset is called.
   VerifiedRuleset::Handle* ruleset_handle_;
 
-  // Will be set when DEFER is called in WillProcessResponse. If nullptr, not
-  // deferred.
-  std::unique_ptr<base::ElapsedTimer> defer_timer_;
+  // Will be set to true when DEFER is called in WillProcessResponse.
+  bool deferred_ = false;
 
   // Will become true when the throttle manager reaches ReadyToCommitNavigation.
   // Makes sure a caller cannot take ownership of the subresource filter unless
@@ -124,11 +119,11 @@ class ActivationStateComputingNavigationThrottle
   bool will_send_activation_to_renderer_ = false;
 
   base::WeakPtrFactory<ActivationStateComputingNavigationThrottle>
-      weak_ptr_factory_;
+      weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ActivationStateComputingNavigationThrottle);
 };
 
 }  // namespace subresource_filter
 
-#endif  // COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_FRAME_ACTIVATION_NAVIGATION_THROTTLE_H_
+#endif  // COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_ACTIVATION_STATE_COMPUTING_NAVIGATION_THROTTLE_H_

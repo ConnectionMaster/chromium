@@ -6,24 +6,26 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <memory>
 #include <random>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/scoped_task_environment.h"
-#include "base/time/time.h"
+#include "base/test/task_environment.h"
+#include "chrome/browser/local_discovery/fake_service_discovery_device_lister.h"
 #include "chrome/browser/local_discovery/service_discovery_device_lister.h"
+#include "net/base/ip_address.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
 namespace {
 
+using local_discovery::FakeServiceDiscoveryDeviceLister;
 using local_discovery::ServiceDescription;
 using local_discovery::ServiceDiscoveryDeviceLister;
 
@@ -55,32 +57,57 @@ int GetPortFor(const std::string& name) {
   return (std::hash<std::string>()(name) % 1000) + 1;
 }
 
-// Bitfield flags for MakeExpectedPrinter()
-int kFlagSSL = 0x1;   // Use ipps, not ipp.
-int kFlagIPPE = 0x2;  // Printer can be autoconfigured with IPP-Everywhere
+// Enums for MakeExpectedPrinter().
+enum class ServiceType {
+  kIpp,     // IPP
+  kIpps,    // IPPS
+  kIppE,    // IPP-Everywhere
+  kIppsE,   // IPPS-Everywhere
+  kSocket,  // Socket
+};
 
-// This corresponds to FakeServiceDeviceLister::MakeServiceDescription.  Given
-// the same name (and the correct ssl/ippe flags based on the service type) this
-// generates the DetectedPrinter record we expect from ZeroconfPrinterDectector
-// when it gets that ServiceDescription.  This needs to be kept in sync with
-// FakeServiceDeviceLister::MakeServiceDescription.
+// This corresponds to MakeServiceDescription() below. Given the same name (and
+// the correct service type), this generates the DetectedPrinter record we
+// expect from ZeroconfPrinterDetector when it gets that ServiceDescription.
+// This needs to be kept in sync with MakeServiceDescription().
 PrinterDetector::DetectedPrinter MakeExpectedPrinter(const std::string& name,
-                                                     int flags) {
+                                                     ServiceType service_type) {
   PrinterDetector::DetectedPrinter detected;
   Printer& printer = detected.printer;
   net::IPAddress ip_address = GetIPAddressFor(name);
   int port = GetPortFor(name);
-  bool ssl = flags & kFlagSSL;
-  printer.set_uri(base::StringPrintf("ipp%s://%s.local:%d/%s_rp",
-                                     ssl ? "s" : "", name.c_str(), port,
-                                     name.c_str()));
+  std::string scheme;
+  std::string rp = base::StrCat({name, "_rp"});
+  switch (service_type) {
+    case ServiceType::kIpp:
+      scheme = "ipp";
+      break;
+    case ServiceType::kIpps:
+      scheme = "ipps";
+      break;
+    case ServiceType::kIppE:
+      scheme = "ipp";
+      printer.mutable_ppd_reference()->autoconf = true;
+      break;
+    case ServiceType::kIppsE:
+      scheme = "ipps";
+      printer.mutable_ppd_reference()->autoconf = true;
+      break;
+    case ServiceType::kSocket:
+      scheme = "socket";
+      rp = "";
+      break;
+  }
+  printer.SetUri(base::StringPrintf("%s://%s.local:%d/%s", scheme.c_str(),
+                                    name.c_str(), port, rp.c_str()));
 
   printer.set_uuid(base::StrCat({name, "_UUID"}));
-  printer.set_display_name(base::StrCat({name, "_ty"}));
+  printer.set_display_name(name);
   printer.set_description(base::StrCat({name, "_note"}));
-  printer.set_make_and_model(base::StrCat({name, "_product"}));
-  detected.ppd_search_data.make_and_model.push_back(printer.display_name());
+  printer.set_make_and_model(base::StrCat({name, "_ty"}));
   detected.ppd_search_data.make_and_model.push_back(printer.make_and_model());
+  detected.ppd_search_data.make_and_model.push_back(
+      base::StrCat({name, "_product"}));
   if (GetUsbFor(name)) {
     // We should get an effective make and model guess from the usb fields
     // if they exist.
@@ -88,207 +115,35 @@ PrinterDetector::DetectedPrinter MakeExpectedPrinter(const std::string& name,
         base::StrCat({name, "_usb_MFG ", name, "_usb_MDL"}));
   }
 
-  if (flags & kFlagIPPE) {
-    printer.mutable_ppd_reference()->autoconf = true;
-  }
   return detected;
 }
 
-// This is a thin wrapper around Delegate that defers callbacks until
-// the actual delegate is initialized, then calls all deferred callbacks.  Once
-// the actual delegate is initialized, this just becomes a simple passthrough.
-class DeferringDelegate : public ServiceDiscoveryDeviceLister::Delegate {
- public:
-  void OnDeviceChanged(const std::string& service_type,
-                       bool added,
-                       const ServiceDescription& service_description) override {
-    if (actual_) {
-      actual_->OnDeviceChanged(service_type, added, service_description);
-    } else {
-      deferred_callbacks_.push_back(base::BindOnce(
-          &DeferringDelegate::OnDeviceChanged, base::Unretained(this),
-          service_type, added, service_description));
-    }
+// Creates a deterministic ServiceDescription based on the service name and
+// type. See the note on MakeExpectedPrinter() above. This must be kept in sync
+// with MakeExpectedPrinter().
+ServiceDescription MakeServiceDescription(const std::string& name,
+                                          const std::string& service_type) {
+  ServiceDescription sd;
+  sd.service_name = base::StrCat({name, ".", service_type});
+  sd.metadata.push_back(base::StrCat({"ty=", name, "_ty"}));
+  sd.metadata.push_back(base::StrCat({"product=(", name, "_product)"}));
+  if (GetUsbFor(name)) {
+    sd.metadata.push_back(base::StrCat({"usb_MFG=", name, "_usb_MFG"}));
+    sd.metadata.push_back(base::StrCat({"usb_MDL=", name, "_usb_MDL"}));
   }
-  // Not guaranteed to be called after OnDeviceChanged.
-  void OnDeviceRemoved(const std::string& service_type,
-                       const std::string& service_name) override {
-    if (actual_) {
-      actual_->OnDeviceRemoved(service_type, service_name);
-    } else {
-      deferred_callbacks_.push_back(
-          base::BindOnce(&DeferringDelegate::OnDeviceRemoved,
-                         base::Unretained(this), service_type, service_name));
-    }
-  }
-
-  void OnDeviceCacheFlushed(const std::string& service_type) override {
-    if (actual_) {
-      actual_->OnDeviceCacheFlushed(service_type);
-    } else {
-      deferred_callbacks_.push_back(
-          base::BindOnce(&DeferringDelegate::OnDeviceCacheFlushed,
-                         base::Unretained(this), service_type));
-    }
-  }
-
-  void SetActual(ServiceDiscoveryDeviceLister::Delegate* actual) {
-    CHECK(!actual_);
-    actual_ = actual;
-    for (auto& cb : deferred_callbacks_) {
-      std::move(cb).Run();
-    }
-    deferred_callbacks_.clear();
-  }
-
- private:
-  std::vector<base::OnceCallback<void()>> deferred_callbacks_;
-  ServiceDiscoveryDeviceLister::Delegate* actual_ = nullptr;
-};
-
-// A fake ServiceDiscoveryDeviceLister.  This provides an implementation
-// of ServiceDiscoveryDeviceLister that tests can use to trigger addition
-// and removal of devices.
-//
-// There's some hackery here to handle constructor order constraints.  There's a
-// circular dependency in that ZeroconfPrinterDetector (which is a device lister
-// delegate) needs its device lister set to be supplied at construction time,
-// and each device lister needs to know about its delegate for callbacks.  Thus
-// we use DeferringDelegate to queue callbacks triggered before we have the
-// delegate reference in this class, and invoke those queued callbacks when the
-// Delegate is set.
-class FakeServiceDiscoveryDeviceLister : public ServiceDiscoveryDeviceLister {
- public:
-  FakeServiceDiscoveryDeviceLister(base::TaskRunner* task_runner,
-                                   const std::string& service_type)
-      : task_runner_(task_runner), service_type_(service_type) {}
-
-  ~FakeServiceDiscoveryDeviceLister() override = default;
-
-  // The only thing we care about with Start() is that it's called before
-  // DiscoverNewDevices.
-  void Start() override {
-    if (start_called_) {
-      ADD_FAILURE() << "Start called multiple times";
-    }
-    start_called_ = true;
-  }
-
-  // When DiscoverNewDevices is called, all updates we've queued up until this
-  // point are invoked.
-  void DiscoverNewDevices() override {
-    if (!start_called_) {
-      ADD_FAILURE() << "DiscoverNewDevices called before Start";
-    }
-    discovery_started_ = true;
-    for (const auto& update : queued_updates_) {
-      SendUpdate(update);
-    }
-    queued_updates_.clear();
-  }
-
-  const std::string& service_type() const override { return service_type_; }
-
-  void SetDelegate(ServiceDiscoveryDeviceLister::Delegate* delegate) {
-    deferring_delegate_.SetActual(delegate);
-  }
-
-  // Announce a new service or update it if we've seen it before and already
-  // announced it.  If discovery hasn't started yet, queue the description
-  // to be sent when discovery is started.
-  void Announce(const std::string& name) {
-    ServiceDescription description = MakeServiceDescription(name);
-    if (!discovery_started_) {
-      queued_updates_.push_back(description);
-    } else {
-      SendUpdate(description);
-    }
-  }
-
-  void Remove(const std::string& name) {
-    std::string service_name = base::StrCat({name, ".", service_type_});
-    announced_services_.erase(service_name);
-    CHECK(task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&ServiceDiscoveryDeviceLister::Delegate::OnDeviceRemoved,
-                       base::Unretained(&deferring_delegate_), service_type_,
-                       service_name)));
-  }
-
-  // Simulate an event that clears downstream caches and the lister.
-  void Clear() {
-    announced_services_.clear();
-    discovery_started_ = false;
-    CHECK(task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            &ServiceDiscoveryDeviceLister::Delegate::OnDeviceCacheFlushed,
-            base::Unretained(&deferring_delegate_), service_type_)));
-  }
-
-  // Create a deterministic ServiceDescription based on the name and this
-  // lister's service_type.  See the note on MakeExpectedPrinter, above.  This
-  // is a member function instead of a free function because the service_type_
-  // impacts some of the fields.  This must be kept in sync with
-  // MakeExpectedPrinter.
-  ServiceDescription MakeServiceDescription(const std::string& name) {
-    ServiceDescription sd;
-    sd.service_name = base::StrCat({name, ".", service_type_});
-    sd.metadata.push_back(base::StrCat({"ty=", name, "_ty"}));
-    sd.metadata.push_back(base::StrCat({"product=(", name, "_product)"}));
-    if (GetUsbFor(name)) {
-      sd.metadata.push_back(base::StrCat({"usb_MFG=", name, "_usb_MFG"}));
-      sd.metadata.push_back(base::StrCat({"usb_MDL=", name, "_usb_MDL"}));
-    }
-    sd.metadata.push_back(base::StrCat({"rp=", name, "_rp"}));
-    sd.metadata.push_back(base::StrCat({"note=", name, "_note"}));
-    sd.metadata.push_back(base::StrCat({"UUID=", name, "_UUID"}));
-    sd.address.set_host(base::StrCat({name, ".local"}));
-    sd.ip_address = GetIPAddressFor(name);
-    sd.address.set_port(GetPortFor(name));
-    return sd;
-  }
-
-  bool discovery_started() { return discovery_started_; }
-
- private:
-  void SendUpdate(const ServiceDescription& description) {
-    bool is_new;
-    if (!base::ContainsKey(announced_services_, description.service_name)) {
-      is_new = true;
-      announced_services_.insert(description.service_name);
-    } else {
-      is_new = false;
-    }
-    CHECK(task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&ServiceDiscoveryDeviceLister::Delegate::OnDeviceChanged,
-                       base::Unretained(&deferring_delegate_), service_type_,
-                       is_new, description)));
-  }
-  base::TaskRunner* task_runner_;
-
-  // Services which have previously posted an update, and therefore are no
-  // longer 'new' for the purposes of the OnDeviceChanged callback.
-  std::set<std::string> announced_services_;
-
-  // Updates added to the class before discovery started.
-  std::vector<ServiceDescription> queued_updates_;
-
-  // Has Start() been called?
-  bool start_called_ = false;
-
-  // Has DiscoverNewDevices been called?
-  bool discovery_started_ = false;
-
-  std::string service_type_;
-  DeferringDelegate deferring_delegate_;
-};
+  sd.metadata.push_back(base::StrCat({"rp=", name, "_rp"}));
+  sd.metadata.push_back(base::StrCat({"note=", name, "_note"}));
+  sd.metadata.push_back(base::StrCat({"UUID=", name, "_UUID"}));
+  sd.address.set_host(base::StrCat({name, ".local"}));
+  sd.ip_address = GetIPAddressFor(name);
+  sd.address.set_port(GetPortFor(name));
+  return sd;
+}
 
 class ZeroconfPrinterDetectorTest : public testing::Test {
  public:
   ZeroconfPrinterDetectorTest() {
-    auto* runner = scoped_task_environment_.GetMainThreadTaskRunner().get();
+    auto* runner = task_environment_.GetMainThreadTaskRunner().get();
     auto ipp_lister = std::make_unique<FakeServiceDiscoveryDeviceLister>(
         runner, ZeroconfPrinterDetector::kIppServiceName);
     ipp_lister_ = ipp_lister.get();
@@ -301,6 +156,9 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
     auto ippse_lister = std::make_unique<FakeServiceDiscoveryDeviceLister>(
         runner, ZeroconfPrinterDetector::kIppsEverywhereServiceName);
     ippse_lister_ = ippse_lister.get();
+    auto socket_lister = std::make_unique<FakeServiceDiscoveryDeviceLister>(
+        runner, ZeroconfPrinterDetector::kSocketServiceName);
+    socket_lister_ = socket_lister.get();
 
     listers_[ZeroconfPrinterDetector::kIppServiceName] = std::move(ipp_lister);
     listers_[ZeroconfPrinterDetector::kIppsServiceName] =
@@ -309,6 +167,8 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
         std::move(ippe_lister);
     listers_[ZeroconfPrinterDetector::kIppsEverywhereServiceName] =
         std::move(ippse_lister);
+    listers_[ZeroconfPrinterDetector::kSocketServiceName] =
+        std::move(socket_lister);
   }
   ~ZeroconfPrinterDetectorTest() override = default;
 
@@ -326,6 +186,7 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
     ipps_lister_->SetDelegate(detector_.get());
     ippe_lister_->SetDelegate(detector_.get());
     ippse_lister_->SetDelegate(detector_.get());
+    socket_lister_->SetDelegate(detector_.get());
   }
 
   // Expect that the most up-to-date results from the detector match those
@@ -334,9 +195,17 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
       const std::vector<PrinterDetector::DetectedPrinter>& printers) {
     // The last observer callback should tell us the same thing as the querying
     // the detector manually.
-    ASSERT_GE(printers_found_callbacks_.size(), 1U);
+    ASSERT_FALSE(printers_found_callbacks_.empty());
     ExpectPrintersEq(printers, printers_found_callbacks_.back());
     ExpectPrintersEq(printers, detector_->GetPrinters());
+  }
+
+  // Expect that the detected printers list is empty.
+  void ExpectPrintersEmpty() {
+    // Assert that the most recent callbacks are empty.
+    ASSERT_FALSE(printers_found_callbacks_.empty());
+    ASSERT_TRUE(printers_found_callbacks_.back().empty());
+    ASSERT_TRUE(detector_->GetPrinters().empty());
   }
 
   // Expect that the given vectors have the same contents.  The ordering
@@ -393,7 +262,11 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
   }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  // Runs pending tasks regardless of delay.
+  void CompleteTasks() { task_environment_.FastForwardUntilNoTasksRemain(); }
+
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 
   // Device listers fakes.  These are initialized when the test is constructed.
   // These pointers don't involve ownership; ownership of the listers starts
@@ -404,6 +277,7 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
   FakeServiceDiscoveryDeviceLister* ipps_lister_;
   FakeServiceDiscoveryDeviceLister* ippe_lister_;
   FakeServiceDiscoveryDeviceLister* ippse_lister_;
+  FakeServiceDiscoveryDeviceLister* socket_lister_;
 
   // Detector under test.
   std::unique_ptr<ZeroconfPrinterDetector> detector_;
@@ -421,48 +295,62 @@ class ZeroconfPrinterDetectorTest : public testing::Test {
 
 // Very basic stuff, one printer of each protocol we support.
 TEST_F(ZeroconfPrinterDetectorTest, SingleIppPrinter) {
-  ipp_lister_->Announce("Printer1");
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer1", ZeroconfPrinterDetector::kIppServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer1", 0)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer1", ServiceType::kIpp)});
 }
 
 TEST_F(ZeroconfPrinterDetectorTest, SingleIppsPrinter) {
-  ipps_lister_->Announce("Printer2");
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer2", ZeroconfPrinterDetector::kIppsServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer2", kFlagSSL)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer2", ServiceType::kIpps)});
 }
 
 TEST_F(ZeroconfPrinterDetectorTest, SingleIppEverywherePrinter) {
-  ippe_lister_->Announce("Printer3");
+  ippe_lister_->Announce(MakeServiceDescription(
+      "Printer3", ZeroconfPrinterDetector::kIppEverywhereServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer3", kFlagIPPE)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer3", ServiceType::kIppE)});
 }
 
 TEST_F(ZeroconfPrinterDetectorTest, SingleIppsEverywherePrinter) {
-  ippse_lister_->Announce("Printer4");
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer4", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer4", kFlagSSL | kFlagIPPE)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer4", ServiceType::kIppsE)});
+}
+
+TEST_F(ZeroconfPrinterDetectorTest, SingleSocketPrinter) {
+  socket_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kSocketServiceName));
+  CreateDetector();
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kSocket)});
 }
 
 // Test that an announce after the detector creation shows up as a printer.
 TEST_F(ZeroconfPrinterDetectorTest, AnnounceAfterDetectorCreation) {
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ippse_lister_->Announce("Printer4");
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer4", kFlagSSL | kFlagIPPE)});
+  CompleteTasks();
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer4", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer4", ServiceType::kIppsE)});
 }
 
 // Test that we use the same printer ID regardless of which service type it
 // comes to us from.
 TEST_F(ZeroconfPrinterDetectorTest, StableIds) {
-  ipp_lister_->Announce("Printer1");
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer1", ZeroconfPrinterDetector::kIppServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   ASSERT_FALSE(printers_found_callbacks_.empty());
   ASSERT_EQ(1U, printers_found_callbacks_.back().size());
   // Grab the id when it's an IPPS printer We should continue to get the same id
@@ -471,54 +359,75 @@ TEST_F(ZeroconfPrinterDetectorTest, StableIds) {
 
   // Remove it as an IPP printer, add it as an IPPS printer.
   ipp_lister_->Remove("Printer1");
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   ASSERT_TRUE(printers_found_callbacks_.back().empty());
-  ipps_lister_->Announce("Printer1");
-  scoped_task_environment_.RunUntilIdle();
-  ASSERT_FALSE(printers_found_callbacks_.back().empty());
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer1", ZeroconfPrinterDetector::kIppsServiceName));
+  CompleteTasks();
+  ASSERT_EQ(1U, printers_found_callbacks_.back().size());
   // Id should be the same.
   ASSERT_EQ(id, printers_found_callbacks_.back()[0].printer.id());
 
   // Remove it as an IPPS printer, add it as an IPP-Everywhere printer.
   ipps_lister_->Remove("Printer1");
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   ASSERT_TRUE(printers_found_callbacks_.back().empty());
-  ippe_lister_->Announce("Printer1");
-  scoped_task_environment_.RunUntilIdle();
-  ASSERT_FALSE(printers_found_callbacks_.back().empty());
+  ippe_lister_->Announce(MakeServiceDescription(
+      "Printer1", ZeroconfPrinterDetector::kIppEverywhereServiceName));
+  CompleteTasks();
+  ASSERT_EQ(1U, printers_found_callbacks_.back().size());
   // Id should be the same.
   ASSERT_EQ(id, printers_found_callbacks_.back()[0].printer.id());
 
   // Remove it as an IPP-Everywhere printer, add it as an IPPS-Everywhere
   // printer.
   ippe_lister_->Remove("Printer1");
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   ASSERT_TRUE(printers_found_callbacks_.back().empty());
-  ippse_lister_->Announce("Printer1");
-  scoped_task_environment_.RunUntilIdle();
-  ASSERT_FALSE(printers_found_callbacks_.back().empty());
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer1", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
+  CompleteTasks();
+  ASSERT_EQ(1U, printers_found_callbacks_.back().size());
+  // Id should be the same.
+  ASSERT_EQ(id, printers_found_callbacks_.back()[0].printer.id());
+
+  // Remove it as an IPPS-Everywhere printer, add it as a socket printer.
+  ippse_lister_->Remove("Printer1");
+  CompleteTasks();
+  ASSERT_TRUE(printers_found_callbacks_.back().empty());
+  socket_lister_->Announce(MakeServiceDescription(
+      "Printer1", ZeroconfPrinterDetector::kSocketServiceName));
+  CompleteTasks();
+  ASSERT_EQ(1U, printers_found_callbacks_.back().size());
   // Id should be the same.
   ASSERT_EQ(id, printers_found_callbacks_.back()[0].printer.id());
 }
 
 // Test a basic removal.
 TEST_F(ZeroconfPrinterDetectorTest, Removal) {
-  ipp_lister_->Announce("Printer5");
-  ipp_lister_->Announce("Printer6");
-  ipp_lister_->Announce("Printer7");
-  ipp_lister_->Announce("Printer8");
-  ipp_lister_->Announce("Printer9");
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kIppServiceName));
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer6", ZeroconfPrinterDetector::kIppServiceName));
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer7", ZeroconfPrinterDetector::kIppServiceName));
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer8", ZeroconfPrinterDetector::kIppServiceName));
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer9", ZeroconfPrinterDetector::kIppServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre(
-      {MakeExpectedPrinter("Printer5", 0), MakeExpectedPrinter("Printer6", 0),
-       MakeExpectedPrinter("Printer7", 0), MakeExpectedPrinter("Printer8", 0),
-       MakeExpectedPrinter("Printer9", 0)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer6", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer7", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer8", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer9", ServiceType::kIpp)});
   ipp_lister_->Remove("Printer7");
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre(
-      {MakeExpectedPrinter("Printer5", 0), MakeExpectedPrinter("Printer6", 0),
-       MakeExpectedPrinter("Printer8", 0), MakeExpectedPrinter("Printer9", 0)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer6", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer8", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer9", ServiceType::kIpp)});
 }
 
 // Test that, when the same printer appears in multiple services, we
@@ -526,139 +435,159 @@ TEST_F(ZeroconfPrinterDetectorTest, Removal) {
 // are IPPS-E, IPP-E, IPPS, IPP.
 TEST_F(ZeroconfPrinterDetectorTest, ServiceTypePriorities) {
   // Advertise on all 4 services.
-  ipp_lister_->Announce("Printer5");
-  ipps_lister_->Announce("Printer5");
-  ippe_lister_->Announce("Printer5");
-  ippse_lister_->Announce("Printer5");
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kIppServiceName));
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kIppsServiceName));
+  ippe_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kIppEverywhereServiceName));
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
+  socket_lister_->Announce(MakeServiceDescription(
+      "Printer5", ZeroconfPrinterDetector::kSocketServiceName));
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   // IPPS-E is highest priority.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer5", kFlagSSL | kFlagIPPE)});
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kIppsE)});
   ippse_lister_->Remove("Printer5");
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   // IPP-E is highest remaining priority.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer5", kFlagIPPE)});
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kIppE)});
 
   ippe_lister_->Remove("Printer5");
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
   // IPPS is highest remaining priority.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer5", kFlagSSL)});
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kIpps)});
 
   ipps_lister_->Remove("Printer5");
-  scoped_task_environment_.RunUntilIdle();
-  // IPP is only remaining entry.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer5", 0)});
+  CompleteTasks();
+  // IPP is highest remaining priority.
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kIpp)});
 
   ipp_lister_->Remove("Printer5");
-  scoped_task_environment_.RunUntilIdle();
+  CompleteTasks();
+  // Socket is only remaining entry.
+  ExpectPrintersAre({MakeExpectedPrinter("Printer5", ServiceType::kSocket)});
+
+  socket_lister_->Remove("Printer5");
+  CompleteTasks();
   // No entries left.
-  ExpectPrintersAre({});
+  ExpectPrintersEmpty();
 }
 
 // Test that cache flushes appropriately remove entries.
 TEST_F(ZeroconfPrinterDetectorTest, CacheFlushes) {
-  ipp_lister_->Announce("Printer6");
-  ipp_lister_->Announce("Printer7");
-  ipps_lister_->Announce("Printer7");
-  ipps_lister_->Announce("Printer8");
-  ippe_lister_->Announce("Printer8");
-  ippe_lister_->Announce("Printer9");
-  ippse_lister_->Announce("Printer9");
-  ippse_lister_->Announce("Printer10");
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer6", ZeroconfPrinterDetector::kIppServiceName));
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer7", ZeroconfPrinterDetector::kIppServiceName));
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer7", ZeroconfPrinterDetector::kIppsServiceName));
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer8", ZeroconfPrinterDetector::kIppsServiceName));
+  ippe_lister_->Announce(MakeServiceDescription(
+      "Printer8", ZeroconfPrinterDetector::kIppEverywhereServiceName));
+  ippe_lister_->Announce(MakeServiceDescription(
+      "Printer9", ZeroconfPrinterDetector::kIppEverywhereServiceName));
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer9", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer10", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
+  socket_lister_->Announce(MakeServiceDescription(
+      "Printer10", ZeroconfPrinterDetector::kSocketServiceName));
+  socket_lister_->Announce(MakeServiceDescription(
+      "Printer11", ZeroconfPrinterDetector::kSocketServiceName));
 
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer6", 0),
-                     MakeExpectedPrinter("Printer7", kFlagSSL),
-                     MakeExpectedPrinter("Printer8", kFlagIPPE),
-                     MakeExpectedPrinter("Printer9", kFlagSSL | kFlagIPPE),
-                     MakeExpectedPrinter("Printer10", kFlagSSL | kFlagIPPE)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer6", ServiceType::kIpp),
+                     MakeExpectedPrinter("Printer7", ServiceType::kIpps),
+                     MakeExpectedPrinter("Printer8", ServiceType::kIppE),
+                     MakeExpectedPrinter("Printer9", ServiceType::kIppsE),
+                     MakeExpectedPrinter("Printer10", ServiceType::kIppsE),
+                     MakeExpectedPrinter("Printer11", ServiceType::kSocket)});
 
   ipps_lister_->Clear();
 
-  scoped_task_environment_.RunUntilIdle();
-  // With the IPPS lister cleared, Printer7 should fall back to the IPP listing.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer6", 0),
-                     MakeExpectedPrinter("Printer7", 0),
-                     MakeExpectedPrinter("Printer8", kFlagIPPE),
-                     MakeExpectedPrinter("Printer9", kFlagSSL | kFlagIPPE),
-                     MakeExpectedPrinter("Printer10", kFlagSSL | kFlagIPPE)});
+  CompleteTasks();
+  // With the IPPS lister cleared, all printers should be cleared.
+  ExpectPrintersEmpty();
 
   // We should have restarted discovery after dealing with the cache flush.
   EXPECT_TRUE(ipps_lister_->discovery_started());
 
-  ipp_lister_->Clear();
-  scoped_task_environment_.RunUntilIdle();
-  // With the IPP lister cleared, Printers 6 and 7 no longer should appear.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer8", kFlagIPPE),
-                     MakeExpectedPrinter("Printer9", kFlagSSL | kFlagIPPE),
-                     MakeExpectedPrinter("Printer10", kFlagSSL | kFlagIPPE)});
-  EXPECT_TRUE(ipps_lister_->discovery_started());
-
-  ippse_lister_->Clear();
-  scoped_task_environment_.RunUntilIdle();
-  // With the IPPSE lister cleared, Printer10 should disappear, and Printer9
-  // should fall back to the IPPE.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer8", kFlagIPPE),
-                     MakeExpectedPrinter("Printer9", kFlagIPPE)});
-  EXPECT_TRUE(ippse_lister_->discovery_started());
-
   // Just for kicks, announce something new at this point.
-  ipps_lister_->Announce("Printer11");
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer8", kFlagIPPE),
-                     MakeExpectedPrinter("Printer9", kFlagIPPE),
-                     MakeExpectedPrinter("Printer11", kFlagSSL)});
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer12", ZeroconfPrinterDetector::kIppsServiceName));
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer12", ServiceType::kIpps)});
 
-  // Clear out the IPPE lister, leaving only the new printer we announced
-  // on the IPPS lister.
-  ippe_lister_->Clear();
-  scoped_task_environment_.RunUntilIdle();
-  // With the IPPSE lister cleared, Printer10 should disappear, and Printer9
-  // should fall back to the IPPE entry.
-  ExpectPrintersAre({MakeExpectedPrinter("Printer11", kFlagSSL)});
+  // Clear out the IPPS lister, which will clear all printers too.
+  ipps_lister_->Clear();
+  CompleteTasks();
+
+  // With the IPPS lister cleared, Printer12 should disappear.
+  ExpectPrintersEmpty();
   EXPECT_TRUE(ippe_lister_->discovery_started());
 }
 
 // Test some general traffic with a mix of everything we expect to handle.
 TEST_F(ZeroconfPrinterDetectorTest, GeneralMixedTraffic) {
-  ipp_lister_->Announce("Printer12");
-  ipps_lister_->Announce("Printer12");
-  ipps_lister_->Announce("Printer13");
-  ippse_lister_->Announce("Printer14");
-  ipps_lister_->Announce("Printer15");
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer12", ZeroconfPrinterDetector::kIppServiceName));
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer12", ZeroconfPrinterDetector::kIppsServiceName));
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer13", ZeroconfPrinterDetector::kIppsServiceName));
+  ippse_lister_->Announce(MakeServiceDescription(
+      "Printer14", ZeroconfPrinterDetector::kIppsEverywhereServiceName));
+  ipps_lister_->Announce(MakeServiceDescription(
+      "Printer15", ZeroconfPrinterDetector::kIppsServiceName));
+  socket_lister_->Announce(MakeServiceDescription(
+      "Printer16", ZeroconfPrinterDetector::kSocketServiceName));
 
   CreateDetector();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer12", kFlagSSL),
-                     MakeExpectedPrinter("Printer13", kFlagSSL),
-                     MakeExpectedPrinter("Printer14", kFlagSSL | kFlagIPPE),
-                     MakeExpectedPrinter("Printer15", kFlagSSL)});
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer12", ServiceType::kIpps),
+                     MakeExpectedPrinter("Printer13", ServiceType::kIpps),
+                     MakeExpectedPrinter("Printer14", ServiceType::kIppsE),
+                     MakeExpectedPrinter("Printer15", ServiceType::kIpps),
+                     MakeExpectedPrinter("Printer16", ServiceType::kSocket)});
 
-  ippe_lister_->Announce("Printer13");
-  ipp_lister_->Announce("Printer16");
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer12", kFlagSSL),
-                     MakeExpectedPrinter("Printer13", kFlagIPPE),
-                     MakeExpectedPrinter("Printer14", kFlagSSL | kFlagIPPE),
-                     MakeExpectedPrinter("Printer15", kFlagSSL),
-                     MakeExpectedPrinter("Printer16", 0)});
+  ippe_lister_->Announce(MakeServiceDescription(
+      "Printer13", ZeroconfPrinterDetector::kIppEverywhereServiceName));
+  ipp_lister_->Announce(MakeServiceDescription(
+      "Printer17", ZeroconfPrinterDetector::kIppServiceName));
+  CompleteTasks();
+  ExpectPrintersAre({MakeExpectedPrinter("Printer12", ServiceType::kIpps),
+                     MakeExpectedPrinter("Printer13", ServiceType::kIppE),
+                     MakeExpectedPrinter("Printer14", ServiceType::kIppsE),
+                     MakeExpectedPrinter("Printer15", ServiceType::kIpps),
+                     MakeExpectedPrinter("Printer16", ServiceType::kSocket),
+                     MakeExpectedPrinter("Printer17", ServiceType::kIpp)});
 
   ipp_lister_->Remove("NonexistantPrinter");
   ipps_lister_->Remove("Printer12");
   ipps_lister_->Clear();
-  ipp_lister_->Announce("Printer17");
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({MakeExpectedPrinter("Printer12", 0),
-                     MakeExpectedPrinter("Printer13", kFlagIPPE),
-                     MakeExpectedPrinter("Printer14", kFlagSSL | kFlagIPPE),
-                     MakeExpectedPrinter("Printer16", 0),
-                     MakeExpectedPrinter("Printer17", 0)});
-  ipp_lister_->Clear();
-  ippse_lister_->Clear();
-  ippe_lister_->Clear();
-  scoped_task_environment_.RunUntilIdle();
-  ExpectPrintersAre({});
+  CompleteTasks();
+  ExpectPrintersEmpty();
+}
+
+// Verify tasks are cleaned up properly when class is destroyed.
+TEST_F(ZeroconfPrinterDetectorTest, DestroyedWithTasksPending) {
+  CreateDetector();
+  // Cause a callback to be queued.
+  ipp_lister_->Announce(MakeServiceDescription(
+      "TestPrinter", ZeroconfPrinterDetector::kIppServiceName));
+  // Run listers but don't run the delayed tasks.
+  task_environment_.RunUntilIdle();
+
+  // Delete the detector.
+  detector_.reset();
+
+  // Clear task queues where we would crash if we did something wrong.
+  task_environment_.FastForwardUntilNoTasksRemain();
+  SUCCEED();
 }
 
 }  // namespace

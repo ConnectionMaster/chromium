@@ -5,16 +5,16 @@
 #ifndef COMPONENTS_SYNC_TEST_FAKE_SYNC_ENCRYPTION_HANDLER_H_
 #define COMPONENTS_SYNC_TEST_FAKE_SYNC_ENCRYPTION_HANDLER_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/observer_list.h"
-#include "components/sync/base/cryptographer.h"
-#include "components/sync/base/fake_encryptor.h"
+#include "base/time/time.h"
+#include "components/sync/engine/nigori/keystore_keys_handler.h"
 #include "components/sync/engine/sync_encryption_handler.h"
-#include "components/sync/nigori/keystore_keys_handler.h"
-#include "components/sync/syncable/nigori_handler.h"
+#include "components/sync/test/engine/fake_cryptographer.h"
 
 namespace syncer {
 
@@ -25,8 +25,7 @@ namespace syncer {
 // Note: NOT thread safe. If threads attempt to check encryption state
 // while another thread is modifying it, races can occur.
 class FakeSyncEncryptionHandler : public KeystoreKeysHandler,
-                                  public SyncEncryptionHandler,
-                                  public syncable::NigoriHandler {
+                                  public SyncEncryptionHandler {
  public:
   FakeSyncEncryptionHandler();
   ~FakeSyncEncryptionHandler() override;
@@ -34,38 +33,27 @@ class FakeSyncEncryptionHandler : public KeystoreKeysHandler,
   // SyncEncryptionHandler implementation.
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
-  void Init() override;
+  void NotifyInitialStateToObservers() override;
+  ModelTypeSet GetEncryptedTypes() override;
+  Cryptographer* GetCryptographer() override;
+  PassphraseType GetPassphraseType() override;
   void SetEncryptionPassphrase(const std::string& passphrase) override;
   void SetDecryptionPassphrase(const std::string& passphrase) override;
-  void EnableEncryptEverything() override;
-  bool IsEncryptEverythingEnabled() const override;
-  PassphraseType GetPassphraseType(
-      syncable::BaseTransaction* const trans) const override;
-
-  // NigoriHandler implemenation.
-  void ApplyNigoriUpdate(const sync_pb::NigoriSpecifics& nigori,
-                         syncable::BaseTransaction* const trans) override;
-  void UpdateNigoriFromEncryptedTypes(
-      sync_pb::NigoriSpecifics* nigori,
-      syncable::BaseTransaction* const trans) const override;
-  ModelTypeSet GetEncryptedTypes(
-      syncable::BaseTransaction* const trans) const override;
+  void AddTrustedVaultDecryptionKeys(
+      const std::vector<std::vector<uint8_t>>& keys) override;
+  base::Time GetKeystoreMigrationTime() override;
+  KeystoreKeysHandler* GetKeystoreKeysHandler() override;
+  const sync_pb::NigoriSpecifics::TrustedVaultDebugInfo&
+  GetTrustedVaultDebugInfo() override;
 
   // KeystoreKeysHandler implementation.
   bool NeedKeystoreKey() const override;
-  bool SetKeystoreKeys(const std::vector<std::string>& keys) override;
-
-  Cryptographer* cryptographer() { return &cryptographer_; }
+  bool SetKeystoreKeys(const std::vector<std::vector<uint8_t>>& keys) override;
 
  private:
   base::ObserverList<SyncEncryptionHandler::Observer>::Unchecked observers_;
-  ModelTypeSet encrypted_types_;
-  bool encrypt_everything_;
-  PassphraseType passphrase_type_;
-
-  FakeEncryptor encryptor_;
-  Cryptographer cryptographer_;
-  std::string keystore_key_;
+  std::vector<uint8_t> keystore_key_;
+  FakeCryptographer fake_cryptographer_;
 };
 
 }  // namespace syncer

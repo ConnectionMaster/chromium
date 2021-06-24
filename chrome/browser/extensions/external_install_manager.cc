@@ -6,17 +6,18 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/metrics/histogram_macros.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/chrome_notification_types.h"
+#include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/external_install_error.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_source.h"
 #include "extensions/browser/extension_prefs.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/feature_switch.h"
 #include "extensions/common/features/feature_channel.h"
@@ -41,11 +42,12 @@ enum ExternalExtensionEvent {
 const int kMaxExtensionAcknowledgePromptCount = 3;
 
 void LogExternalExtensionEvent(const Extension* extension,
-                               ExternalExtensionEvent event) {
+                               ExternalExtensionEvent event,
+                               bool from_webstore) {
   UMA_HISTOGRAM_ENUMERATION("Extensions.ExternalExtensionEvent",
                             event,
                             EXTERNAL_EXTENSION_BUCKET_BOUNDARY);
-  if (ManifestURL::UpdatesFromGallery(extension)) {
+  if (from_webstore) {
     UMA_HISTOGRAM_ENUMERATION("Extensions.ExternalExtensionEventWebstore",
                               event,
                               EXTERNAL_EXTENSION_BUCKET_BOUNDARY);
@@ -64,14 +66,12 @@ ExternalInstallManager::ExternalInstallManager(
     : browser_context_(browser_context),
       is_first_run_(is_first_run),
       extension_prefs_(ExtensionPrefs::Get(browser_context_)),
-      currently_visible_install_alert_(nullptr),
-      extension_registry_observer_(this) {
+      currently_visible_install_alert_(nullptr) {
   DCHECK(browser_context_);
-  extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context_));
+  extension_registry_observation_.Observe(
+      ExtensionRegistry::Get(browser_context_));
   Profile* profile = Profile::FromBrowserContext(browser_context_);
   registrar_.Add(this, extensions::NOTIFICATION_EXTENSION_REMOVED,
-                 content::Source<Profile>(profile));
-  registrar_.Add(this, chrome::NOTIFICATION_PROFILE_DESTROYED,
                  content::Source<Profile>(profile));
   // Populate the set of unacknowledged external extensions now. We can't just
   // rely on IsUnacknowledgedExternalExtension() for cases like
@@ -85,8 +85,15 @@ ExternalInstallManager::ExternalInstallManager(
 }
 
 ExternalInstallManager::~ExternalInstallManager() {
+  // Shutdown should have been called.
+  DCHECK(errors_.empty());
 }
 
+void ExternalInstallManager::Shutdown() {
+  // Delete all errors when the profile is shutting down, before associated
+  // services are deleted.
+  errors_.clear();
+}
 
 bool ExternalInstallManager::IsPromptingEnabled() {
   return FeatureSwitch::prompt_for_external_extensions()->IsEnabled();
@@ -95,12 +102,14 @@ bool ExternalInstallManager::IsPromptingEnabled() {
 void ExternalInstallManager::AddExternalInstallError(const Extension* extension,
                                                      bool is_new_profile) {
   // Error already exists or has been previously shown.
-  if (base::ContainsKey(errors_, extension->id()) ||
+  if (base::Contains(errors_, extension->id()) ||
       shown_ids_.count(extension->id()) > 0)
     return;
 
+  ExtensionManagement* extension_management =
+      ExtensionManagementFactory::GetForBrowserContext(browser_context_);
   ExternalInstallError::AlertType alert_type =
-      (ManifestURL::UpdatesFromGallery(extension) && !is_new_profile)
+      (extension_management->UpdatesFromWebstore(*extension) && !is_new_profile)
           ? ExternalInstallError::BUBBLE_ALERT
           : ExternalInstallError::MENU_ALERT;
 
@@ -133,6 +142,9 @@ void ExternalInstallManager::UpdateExternalExtensionAlert() {
   if (!IsPromptingEnabled())
     return;
 
+  ExtensionManagement* settings =
+      ExtensionManagementFactory::GetForBrowserContext(browser_context_);
+
   // Look for any extensions that were disabled because of being unacknowledged
   // external extensions.
   const ExtensionSet& disabled_extensions =
@@ -143,7 +155,7 @@ void ExternalInstallManager::UpdateExternalExtensionAlert() {
   // The list of ids can be mutated during this loop, so make a copy.
   const std::set<ExtensionId> ids_copy = unacknowledged_ids_;
   for (const auto& id : ids_copy) {
-    if (base::ContainsKey(errors_, id) || shown_ids_.count(id) > 0)
+    if (base::Contains(errors_, id) || shown_ids_.count(id) > 0)
       continue;
 
     // Ignore the blocked and disabled extensions. They will be put into
@@ -159,7 +171,8 @@ void ExternalInstallManager::UpdateExternalExtensionAlert() {
         kMaxExtensionAcknowledgePromptCount) {
       // Stop prompting for this extension and record metrics.
       extension_prefs_->AcknowledgeExternalExtension(id);
-      LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_IGNORED);
+      LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_IGNORED,
+                                settings->UpdatesFromWebstore(*extension));
       unacknowledged_ids_.erase(id);
       continue;
     }
@@ -210,10 +223,14 @@ void ExternalInstallManager::OnExtensionLoaded(
   if (!unacknowledged_ids_.count(extension->id()))
     return;
 
+  ExtensionManagement* settings =
+      ExtensionManagementFactory::GetForBrowserContext(browser_context_);
+
   // We treat loading as acknowledgement (since the user consciously chose to
   // re-enable the extension).
   AcknowledgeExternalExtension(extension->id());
-  LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_REENABLED);
+  LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_REENABLED,
+                            settings->UpdatesFromWebstore(*extension));
 
   // If we had an error for this extension, remove it.
   RemoveExternalInstallError(extension->id());
@@ -223,10 +240,16 @@ void ExternalInstallManager::OnExtensionInstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     bool is_update) {
+  ExtensionManagement* settings =
+      ExtensionManagementFactory::GetForBrowserContext(browser_context_);
+  bool is_recommended_by_policy = settings->GetInstallationMode(extension) ==
+                                  ExtensionManagement::INSTALLATION_RECOMMENDED;
   // Certain extension locations are specific enough that we can
   // auto-acknowledge any extension that came from one of them.
+  // Extensions recommended by policy can also be auto-acknowledged.
   if (Manifest::IsPolicyLocation(extension->location()) ||
-      extension->location() == Manifest::EXTERNAL_COMPONENT) {
+      extension->location() == mojom::ManifestLocation::kExternalComponent ||
+      is_recommended_by_policy) {
     AcknowledgeExternalExtension(extension->id());
     return;
   }
@@ -235,7 +258,8 @@ void ExternalInstallManager::OnExtensionInstalled(
     return;
 
   unacknowledged_ids_.insert(extension->id());
-  LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_INSTALLED);
+  LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_INSTALLED,
+                            settings->UpdatesFromWebstore(*extension));
   UpdateExternalExtensionAlert();
 }
 
@@ -243,8 +267,12 @@ void ExternalInstallManager::OnExtensionUninstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     extensions::UninstallReason reason) {
-  if (unacknowledged_ids_.erase(extension->id()))
-    LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_UNINSTALLED);
+  ExtensionManagement* settings =
+      ExtensionManagementFactory::GetForBrowserContext(browser_context_);
+  if (unacknowledged_ids_.erase(extension->id())) {
+    LogExternalExtensionEvent(extension, EXTERNAL_EXTENSION_UNINSTALLED,
+                              settings->UpdatesFromWebstore(*extension));
+  }
 }
 
 bool ExternalInstallManager::IsUnacknowledgedExternalExtension(
@@ -269,28 +297,15 @@ void ExternalInstallManager::Observe(
     int type,
     const content::NotificationSource& source,
     const content::NotificationDetails& details) {
-  switch (type) {
-    case extensions::NOTIFICATION_EXTENSION_REMOVED: {
-      // The error is invalidated if the extension has been loaded or removed.
-      // It's a shame we have to use the notification system (instead of the
-      // registry observer) for this, but the ExtensionUnloaded notification is
-      // not sent out if the extension is disabled (which it is here).
-      const std::string& extension_id =
-          content::Details<const Extension>(details).ptr()->id();
-      if (base::ContainsKey(errors_, extension_id))
-        RemoveExternalInstallError(extension_id);
-      break;
-    }
-    case chrome::NOTIFICATION_PROFILE_DESTROYED:
-      DCHECK_EQ(Profile::FromBrowserContext(browser_context_),
-                content::Source<const Profile>(source).ptr());
-      // Delete all errors when the profile is shutting down, before associated
-      // services are deleted.
-      errors_.clear();
-      break;
-    default:
-      NOTREACHED();
-  }
+  DCHECK_EQ(type, extensions::NOTIFICATION_EXTENSION_REMOVED);
+  // The error is invalidated if the extension has been loaded or removed.
+  // It's a shame we have to use the notification system (instead of the
+  // registry observer) for this, but the ExtensionUnloaded notification is
+  // not sent out if the extension is disabled (which it is here).
+  const std::string& extension_id =
+      content::Details<const Extension>(details).ptr()->id();
+  if (base::Contains(errors_, extension_id))
+    RemoveExternalInstallError(extension_id);
 }
 
 }  // namespace extensions

@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
-#include "net/base/proxy_server.h"
 #include "net/http/http_stream.h"
 #include "net/http/http_stream_factory.h"
 #include "net/http/http_stream_factory_job.h"
@@ -17,6 +16,7 @@
 #include "net/proxy_resolution/proxy_info.h"
 #include "net/socket/next_proto.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "url/scheme_host_port.h"
 
 using testing::_;
 using testing::Invoke;
@@ -72,11 +72,12 @@ class MockHttpStreamRequestDelegate : public HttpStreamRequest::Delegate {
       const ProxyInfo& used_proxy_info,
       std::unique_ptr<WebSocketHandshakeStreamBase> stream) override {}
 
-  MOCK_METHOD4(OnStreamFailed,
+  MOCK_METHOD5(OnStreamFailed,
                void(int status,
                     const NetErrorDetails& net_error_details,
                     const SSLConfig& used_ssl_config,
-                    const ProxyInfo& used_proxy_info));
+                    const ProxyInfo& used_proxy_info,
+                    ResolveErrorInfo resolve_error_info));
 
   MOCK_METHOD3(OnCertificateError,
                void(int status,
@@ -92,13 +93,6 @@ class MockHttpStreamRequestDelegate : public HttpStreamRequest::Delegate {
   MOCK_METHOD2(OnNeedsClientAuth,
                void(const SSLConfig& used_ssl_config,
                     SSLCertRequestInfo* cert_info));
-
-  // std::unique_ptr is not copyable and therefore cannot be mocked.
-  void OnHttpsProxyTunnelResponseRedirect(
-      const HttpResponseInfo& response_info,
-      const SSLConfig& used_ssl_config,
-      const ProxyInfo& used_proxy_info,
-      std::unique_ptr<HttpStream> stream) override {}
 
   MOCK_METHOD0(OnQuicBroken, void());
 
@@ -116,11 +110,10 @@ class MockHttpStreamFactoryJob : public HttpStreamFactory::Job {
                            ProxyInfo proxy_info,
                            const SSLConfig& server_ssl_config,
                            const SSLConfig& proxy_ssl_config,
-                           HostPortPair destination,
+                           url::SchemeHostPort destination,
                            GURL origin_url,
                            NextProto alternative_protocol,
-                           quic::QuicTransportVersion quic_version,
-                           const ProxyServer& alternative_proxy_server,
+                           quic::ParsedQuicVersion quic_version,
                            bool is_websocket,
                            bool enable_ip_based_pooling,
                            NetLog* net_log);
@@ -147,7 +140,7 @@ class TestJobFactory : public HttpStreamFactory::JobFactory {
       const ProxyInfo& proxy_info,
       const SSLConfig& server_ssl_config,
       const SSLConfig& proxy_ssl_config,
-      HostPortPair destination,
+      url::SchemeHostPort destination,
       GURL origin_url,
       bool is_websocket,
       bool enable_ip_based_pooling,
@@ -162,26 +155,10 @@ class TestJobFactory : public HttpStreamFactory::JobFactory {
       const ProxyInfo& proxy_info,
       const SSLConfig& server_ssl_config,
       const SSLConfig& proxy_ssl_config,
-      HostPortPair destination,
+      url::SchemeHostPort destination,
       GURL origin_url,
       NextProto alternative_protocol,
-      quic::QuicTransportVersion quic_version,
-      bool is_websocket,
-      bool enable_ip_based_pooling,
-      NetLog* net_log) override;
-
-  std::unique_ptr<HttpStreamFactory::Job> CreateAltProxyJob(
-      HttpStreamFactory::Job::Delegate* delegate,
-      HttpStreamFactory::JobType job_type,
-      HttpNetworkSession* session,
-      const HttpRequestInfo& request_info,
-      RequestPriority priority,
-      const ProxyInfo& proxy_info,
-      const SSLConfig& server_ssl_config,
-      const SSLConfig& proxy_ssl_config,
-      HostPortPair destination,
-      GURL origin_url,
-      const ProxyServer& alternative_proxy_server,
+      quic::ParsedQuicVersion quic_version,
       bool is_websocket,
       bool enable_ip_based_pooling,
       NetLog* net_log) override;

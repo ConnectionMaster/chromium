@@ -13,12 +13,12 @@
 #include "chrome/browser/sync/test/integration/migration_waiter.h"
 #include "chrome/browser/sync/test/integration/migration_watcher.h"
 #include "chrome/browser/sync/test/integration/preferences_helper.h"
-#include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/sync/driver/profile_sync_service.h"
+#include "components/sync/driver/sync_service_impl.h"
 #include "components/translate/core/browser/translate_prefs.h"
+#include "content/public/test/browser_test.h"
 
 using bookmarks_helper::AddURL;
 using bookmarks_helper::IndexedURL;
@@ -91,22 +91,30 @@ class MigrationTest : public SyncTest  {
   }
 
   syncer::ModelTypeSet GetPreferredDataTypes() {
-    // ProfileSyncService must already have been created before we can call
+    // SyncServiceImpl must already have been created before we can call
     // GetPreferredDataTypes().
     DCHECK(GetSyncService(0));
     syncer::ModelTypeSet preferred_data_types =
         GetSyncService(0)->GetPreferredDataTypes();
+
+    // Make sure all clients have the same preferred data types.
+    for (int i = 1; i < num_clients(); ++i) {
+      const syncer::ModelTypeSet other_preferred_data_types =
+          GetSyncService(i)->GetPreferredDataTypes();
+      EXPECT_EQ(other_preferred_data_types, preferred_data_types);
+    }
+
     preferred_data_types.RemoveAll(syncer::ProxyTypes());
 
     // Supervised user data types will be "unready" during this test, so we
     // should not request that they be migrated.
     preferred_data_types.Remove(syncer::SUPERVISED_USER_SETTINGS);
-    preferred_data_types.Remove(syncer::SUPERVISED_USER_WHITELISTS);
 
     // Autofill wallet will be unready during this test, so we should not
     // request that it be migrated.
     preferred_data_types.Remove(syncer::AUTOFILL_WALLET_DATA);
     preferred_data_types.Remove(syncer::AUTOFILL_WALLET_METADATA);
+    preferred_data_types.Remove(syncer::AUTOFILL_WALLET_OFFER);
 
     // ARC package will be unready during this test, so we should not request
     // that it be migrated.
@@ -115,12 +123,6 @@ class MigrationTest : public SyncTest  {
     // Doesn't make sense to migrate commit only types.
     preferred_data_types.RemoveAll(syncer::CommitOnlyTypes());
 
-    // Make sure all clients have the same preferred data types.
-    for (int i = 1; i < num_clients(); ++i) {
-      const syncer::ModelTypeSet other_preferred_data_types =
-          GetSyncService(i)->GetPreferredDataTypes();
-      EXPECT_EQ(other_preferred_data_types, preferred_data_types);
-    }
     return preferred_data_types;
   }
 
@@ -146,7 +148,6 @@ class MigrationTest : public SyncTest  {
         // boolean pref clobbers the local value), so it doesn't work
         // for anything but single-client tests.
         ASSERT_EQ(1, num_clients());
-        ASSERT_TRUE(BooleanPrefMatches(prefs::kShowHomeButton));
         ChangeBooleanPref(0, prefs::kShowHomeButton);
         break;
       case MODIFY_BOOKMARK:
@@ -313,14 +314,13 @@ IN_PROC_BROWSER_TEST_F(MigrationSingleClientTest, AllTypesWithNigoriAtOnce) {
 class MigrationTwoClientTest : public MigrationTest {
  public:
   MigrationTwoClientTest() : MigrationTest(TWO_CLIENT) {}
-  ~MigrationTwoClientTest() override {}
+  ~MigrationTwoClientTest() override = default;
 
   // Helper function that verifies that preferences sync still works.
   void VerifyPrefSync() {
     ASSERT_TRUE(BooleanPrefMatches(prefs::kShowHomeButton));
     ChangeBooleanPref(0, prefs::kShowHomeButton);
-    ASSERT_TRUE(GetClient(0)->AwaitMutualSyncCycleCompletion(GetClient(1)));
-    ASSERT_TRUE(BooleanPrefMatches(prefs::kShowHomeButton));
+    ASSERT_TRUE(BooleanPrefMatchChecker(prefs::kShowHomeButton).Wait());
   }
 
   void RunTwoClientMigrationTest(const MigrationList& migration_list,
@@ -359,32 +359,22 @@ IN_PROC_BROWSER_TEST_F(MigrationTwoClientTest,
 
 // Migrate every datatype in sequence; the catch being that the server
 // will only tell the client about the migrations one at a time.
-// TODO(rsimha): This test takes longer than 60 seconds, and will cause tree
-// redness due to sharding.
-// Re-enable this test after syncer::kInitialBackoffShortRetrySeconds is reduced
-// to zero.
-IN_PROC_BROWSER_TEST_F(MigrationTwoClientTest,
-                       DISABLED_MigrationHellWithoutNigori) {
+IN_PROC_BROWSER_TEST_F(MigrationTwoClientTest, MigrationHellWithoutNigori) {
   ASSERT_TRUE(SetupClients());
   MigrationList migration_list = GetPreferredDataTypesList();
-  // Let the first nudge be a datatype that's neither prefs nor
-  // bookmarks.
+  // Let the first nudge be a datatype that's neither prefs nor bookmarks.
   migration_list.push_front(MakeSet(syncer::THEMES));
+  ASSERT_EQ(MakeSet(syncer::NIGORI), migration_list.back());
+  migration_list.pop_back();
   RunTwoClientMigrationTest(migration_list, MODIFY_BOOKMARK);
 }
 
-IN_PROC_BROWSER_TEST_F(MigrationTwoClientTest,
-                       DISABLED_MigrationHellWithNigori) {
+IN_PROC_BROWSER_TEST_F(MigrationTwoClientTest, MigrationHellWithNigori) {
   ASSERT_TRUE(SetupClients());
   MigrationList migration_list = GetPreferredDataTypesList();
-  // Let the first nudge be a datatype that's neither prefs nor
-  // bookmarks.
+  // Let the first nudge be a datatype that's neither prefs nor bookmarks.
   migration_list.push_front(MakeSet(syncer::THEMES));
-  // Pop off one so that we don't migrate all data types; the syncer
-  // freaks out if we do that (see http://crbug.com/94882).
-  ASSERT_GE(migration_list.size(), 2u);
-  ASSERT_NE(MakeSet(syncer::NIGORI), migration_list.back());
-  migration_list.back() = MakeSet(syncer::NIGORI);
+  ASSERT_EQ(MakeSet(syncer::NIGORI), migration_list.back());
   RunTwoClientMigrationTest(migration_list, MODIFY_BOOKMARK);
 }
 

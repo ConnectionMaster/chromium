@@ -8,8 +8,6 @@
 
 #include "base/lazy_instance.h"
 #include "components/pdf/renderer/pdf_accessibility_tree.h"
-#include "content/public/common/referrer.h"
-#include "content/public/common/referrer_type_converters.h"
 #include "content/public/renderer/pepper_plugin_instance.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
@@ -46,15 +44,12 @@ PepperPDFHost::PepperPDFHost(content::RendererPpapiHost* host,
                              PP_Instance instance,
                              PP_Resource resource)
     : ppapi::host::ResourceHost(host->GetPpapiHost(), instance, resource),
-      host_(host),
-      binding_(this) {
+      host_(host) {
   mojom::PdfService* service = GetRemotePdfService();
   if (!service)
     return;
 
-  mojom::PdfListenerPtr listener;
-  binding_.Bind(mojo::MakeRequest(&listener));
-  service->SetListener(std::move(listener));
+  service->SetListener(receiver_.BindNewPipeAndPassRemote());
 }
 
 PepperPDFHost::~PepperPDFHost() {}
@@ -218,23 +213,18 @@ int32_t PepperPDFHost::OnHostMsgSaveAs(
   if (!instance)
     return PP_ERROR_FAILED;
 
-  GURL url = instance->GetPluginURL();
-  content::Referrer referrer;
-  referrer.url = url;
-  referrer.policy = network::mojom::ReferrerPolicy::kDefault;
-  referrer = content::Referrer::SanitizeForRequest(url, referrer);
-
   mojom::PdfService* service = GetRemotePdfService();
   if (!service)
     return PP_ERROR_FAILED;
 
-  service->SaveUrlAs(url, blink::mojom::Referrer::From(referrer));
+  service->SaveUrlAs(instance->GetPluginURL(),
+                     network::mojom::ReferrerPolicy::kDefault);
   return PP_OK;
 }
 
 int32_t PepperPDFHost::OnHostMsgSetSelectedText(
     ppapi::host::HostMessageContext* context,
-    const base::string16& selected_text) {
+    const std::u16string& selected_text) {
   content::PepperPluginInstance* instance =
       host_->GetPluginInstance(pp_instance());
   if (!instance)
@@ -277,13 +267,14 @@ int32_t PepperPDFHost::OnHostMsgSetAccessibilityDocInfo(
 int32_t PepperPDFHost::OnHostMsgSetAccessibilityPageInfo(
     ppapi::host::HostMessageContext* context,
     const PP_PrivateAccessibilityPageInfo& page_info,
-    const std::vector<PP_PrivateAccessibilityTextRunInfo>& text_run_info,
-    const std::vector<PP_PrivateAccessibilityCharInfo>& chars) {
+    const std::vector<ppapi::PdfAccessibilityTextRunInfo>& text_run_info,
+    const std::vector<PP_PrivateAccessibilityCharInfo>& chars,
+    const ppapi::PdfAccessibilityPageObjects& page_objects) {
   if (!host_->GetPluginInstance(pp_instance()))
     return PP_ERROR_FAILED;
   CreatePdfAccessibilityTreeIfNeeded();
-  pdf_accessibility_tree_->SetAccessibilityPageInfo(
-      page_info, text_run_info, chars);
+  pdf_accessibility_tree_->SetAccessibilityPageInfo(page_info, text_run_info,
+                                                    chars, page_objects);
   return PP_OK;
 }
 
@@ -333,7 +324,7 @@ mojom::PdfService* PepperPDFHost::GetRemotePdfService() {
 
   if (!remote_pdf_service_) {
     render_frame->GetRemoteAssociatedInterfaces()->GetInterface(
-        &remote_pdf_service_);
+        remote_pdf_service_.BindNewEndpointAndPassReceiver());
   }
   return remote_pdf_service_.get();
 }

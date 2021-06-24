@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/storage_monitor/storage_info.h"
 #include "components/storage_monitor/storage_info_utils.h"
@@ -16,14 +17,9 @@ namespace storage_monitor {
 MtpManagerClientChromeOS::MtpManagerClientChromeOS(
     StorageMonitor::Receiver* receiver,
     device::mojom::MtpManager* mtp_manager)
-    : mtp_manager_(mtp_manager),
-      binding_(this),
-      notifications_(receiver),
-      weak_ptr_factory_(this) {
-  device::mojom::MtpManagerClientAssociatedPtrInfo client;
-  binding_.Bind(mojo::MakeRequest(&client));
+    : mtp_manager_(mtp_manager), notifications_(receiver) {
   mtp_manager_->EnumerateStoragesAndSetClient(
-      std::move(client),
+      receiver_.BindNewEndpointAndPassRemote(),
       base::BindOnce(&MtpManagerClientChromeOS::OnReceivedStorages,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -57,17 +53,17 @@ bool MtpManagerClientChromeOS::GetStorageInfoForPath(
 
 void MtpManagerClientChromeOS::EjectDevice(
     const std::string& device_id,
-    base::Callback<void(StorageMonitor::EjectStatus)> callback) {
+    base::OnceCallback<void(StorageMonitor::EjectStatus)> callback) {
   std::string location;
   if (!GetLocationForDeviceId(device_id, &location)) {
-    callback.Run(StorageMonitor::EJECT_NO_SUCH_DEVICE);
+    std::move(callback).Run(StorageMonitor::EJECT_NO_SUCH_DEVICE);
     return;
   }
 
   // TODO(thestig): Change this to tell the MTP manager to eject the device.
 
   StorageDetached(location);
-  callback.Run(StorageMonitor::EJECT_OK);
+  std::move(callback).Run(StorageMonitor::EJECT_OK);
 }
 
 // device::mojom::MtpManagerClient override.
@@ -78,17 +74,17 @@ void MtpManagerClientChromeOS::StorageAttached(
 
   // Create StorageMonitor format StorageInfo and update the local map.
   std::string device_id = GetDeviceIdFromStorageInfo(*mtp_storage_info);
-  base::string16 storage_label =
+  std::u16string storage_label =
       GetDeviceLabelFromStorageInfo(*mtp_storage_info);
   std::string location =
       GetDeviceLocationFromStorageName(mtp_storage_info->storage_name);
-  base::string16 vendor_name = base::UTF8ToUTF16(mtp_storage_info->vendor);
-  base::string16 product_name = base::UTF8ToUTF16(mtp_storage_info->product);
+  std::u16string vendor_name = base::UTF8ToUTF16(mtp_storage_info->vendor);
+  std::u16string product_name = base::UTF8ToUTF16(mtp_storage_info->product);
 
   if (device_id.empty() || storage_label.empty())
     return;
 
-  DCHECK(!base::ContainsKey(storage_map_, location));
+  DCHECK(!base::Contains(storage_map_, location));
 
   StorageInfo storage_info(device_id, location, storage_label, vendor_name,
                            product_name, 0);

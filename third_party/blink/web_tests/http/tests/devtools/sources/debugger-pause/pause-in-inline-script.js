@@ -6,7 +6,7 @@
   TestRunner.addResult(
       `Tests that main resource script text is correct when paused in inline script on reload.`);
 
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
 
   await SourcesTestRunner.startDebuggerTestPromise();
@@ -32,14 +32,14 @@
   }
 
   var callFrameIndex = 0;
-  function dumpNextCallFrame(next) {
+  async function dumpNextCallFrame(next) {
     var callFrames = TestRunner.debuggerModel.callFrames;
     if (callFrameIndex === callFrames.length) {
       next();
       return;
     }
     var frame = callFrames[callFrameIndex];
-    var uiLocation = Bindings.debuggerWorkspaceBinding.rawLocationToUILocation(
+    var uiLocation = await Bindings.debuggerWorkspaceBinding.rawLocationToUILocation(
         frame.location());
     SourcesTestRunner.showUISourceCode(
         uiLocation.uiSourceCode, dumpCallFrameLine);

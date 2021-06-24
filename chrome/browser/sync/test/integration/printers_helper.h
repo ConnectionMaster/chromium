@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_SYNC_TEST_INTEGRATION_PRINTERS_HELPER_H_
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_PRINTERS_HELPER_H_
 
+#include <iosfwd>
 #include <memory>
 #include <string>
 
@@ -16,10 +17,18 @@ namespace content {
 class BrowserContext;
 }
 
+namespace sync_pb {
+class PrinterSpecifics;
+}
+
 namespace printers_helper {
 
 // Create a test printer.
 chromeos::Printer CreateTestPrinter(int index);
+
+// Create a test printer, as PrinterSpecifics.
+std::unique_ptr<sync_pb::PrinterSpecifics> CreateTestPrinterSpecifics(
+    int index);
 
 // Add printer to the supplied store.
 void AddPrinter(chromeos::SyncedPrintersManager* manager,
@@ -50,7 +59,7 @@ int GetVerifierPrinterCount();
 int GetPrinterCount(int index);
 
 // Returns true if all profiles contain the same printers as profile 0.
-bool AllProfilesContainSamePrinters();
+bool AllProfilesContainSamePrinters(std::ostream* os = nullptr);
 
 // Returns true if the verifier store and printer store |index| contain the same
 // data.

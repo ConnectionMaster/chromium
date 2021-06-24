@@ -5,16 +5,16 @@
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_overlay_play_button_element.h"
 
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/public/platform/web_size.h"
+#include "third_party/blink/public/platform/user_metrics_action.h"
+#include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
-#include "third_party/blink/renderer/core/html/media/html_media_source.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_elements_helper.h"
 #include "third_party/blink/renderer/modules/media_controls/media_controls_impl.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace {
 
@@ -33,7 +33,6 @@ namespace blink {
 // MediaControlOverlayPlayButtonElement
 //   (-webkit-media-controls-overlay-play-button)
 // +-div (-internal-media-controls-overlay-play-button-internal)
-//   {if MediaControlsImpl::IsModern}
 //   This contains the inner circle with the actual play/pause icon.
 MediaControlOverlayPlayButtonElement::MediaControlOverlayPlayButtonElement(
     MediaControlsImpl& media_controls)
@@ -42,23 +41,18 @@ MediaControlOverlayPlayButtonElement::MediaControlOverlayPlayButtonElement(
   setType(input_type_names::kButton);
   SetShadowPseudoId(AtomicString("-webkit-media-controls-overlay-play-button"));
 
-  if (MediaControlsImpl::IsModern()) {
-    internal_button_ = MediaControlElementsHelper::CreateDiv(
-        "-internal-media-controls-overlay-play-button-internal",
-        GetShadowRoot());
-  }
+  internal_button_ = MediaControlElementsHelper::CreateDiv(
+      "-internal-media-controls-overlay-play-button-internal", GetShadowRoot());
 }
 
 void MediaControlOverlayPlayButtonElement::UpdateDisplayType() {
-  SetIsWanted(MediaElement().ShouldShowControls() &&
-              (MediaControlsImpl::IsModern() || MediaElement().paused()));
-  if (MediaControlsImpl::IsModern()) {
-    WebLocalizedString::Name state =
-        MediaElement().paused() ? WebLocalizedString::kAXMediaPlayButton
-                                : WebLocalizedString::kAXMediaPauseButton;
-    setAttribute(html_names::kAriaLabelAttr,
-                 WTF::AtomicString(GetLocale().QueryString(state)));
-  }
+  SetIsWanted(MediaElement().ShouldShowControls());
+
+  int state = MediaElement().paused() ? IDS_AX_MEDIA_PLAY_BUTTON
+                                      : IDS_AX_MEDIA_PAUSE_BUTTON;
+  setAttribute(html_names::kAriaLabelAttr,
+               WTF::AtomicString(GetLocale().QueryString(state)));
+
   MediaControlInputElement::UpdateDisplayType();
 }
 
@@ -78,10 +72,8 @@ void MediaControlOverlayPlayButtonElement::MaybePlayPause() {
   // Allow play attempts for plain src= media to force a reload in the error
   // state. This allows potential recovery for transient network and decoder
   // resource issues.
-  const String& url = MediaElement().currentSrc().GetString();
-  if (MediaElement().error() && !HTMLMediaSource::Lookup(url)) {
+  if (MediaElement().error() && !MediaElement().HasMediaSource())
     MediaElement().load();
-  }
 
   MediaElement().TogglePlayState();
 
@@ -107,11 +99,11 @@ bool MediaControlOverlayPlayButtonElement::KeepEventInNode(
   return MediaControlElementsHelper::IsUserInteractionEvent(event);
 }
 
-WebSize MediaControlOverlayPlayButtonElement::GetSizeOrDefault() const {
+gfx::Size MediaControlOverlayPlayButtonElement::GetSizeOrDefault() const {
   // The size should come from the internal button which actually displays the
   // button.
   return MediaControlElementsHelper::GetSizeOrDefault(
-      *internal_button_, WebSize(kInnerButtonSize, kInnerButtonSize));
+      *internal_button_, gfx::Size(kInnerButtonSize, kInnerButtonSize));
 }
 
 void MediaControlOverlayPlayButtonElement::SetIsDisplayed(bool displayed) {
@@ -122,7 +114,7 @@ void MediaControlOverlayPlayButtonElement::SetIsDisplayed(bool displayed) {
   displayed_ = displayed;
 }
 
-void MediaControlOverlayPlayButtonElement::Trace(blink::Visitor* visitor) {
+void MediaControlOverlayPlayButtonElement::Trace(Visitor* visitor) const {
   MediaControlInputElement::Trace(visitor);
   visitor->Trace(internal_button_);
 }

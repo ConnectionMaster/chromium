@@ -10,7 +10,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "chrome/browser/chromeos/arc/arc_optin_uma.h"
+#include "chrome/browser/ash/arc/arc_optin_uma.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
 #include "components/arc/arc_prefs.h"
@@ -24,16 +24,15 @@ namespace arc {
 
 namespace {
 
-constexpr int kMinRetryTimeSeconds = 30;
-constexpr int kMaxRetryTimeSeconds = 1800;
+constexpr base::TimeDelta kMinRetryTime = base::TimeDelta::FromMinutes(2);
+constexpr base::TimeDelta kMaxRetryTime = base::TimeDelta::FromMinutes(30);
 
 }  // namespace
 
 ArcPaiStarter::ArcPaiStarter(Profile* profile)
     : profile_(profile),
       pref_service_(profile->GetPrefs()),
-      retry_interval_seconds_(kMinRetryTimeSeconds),
-      weak_ptr_factory_(this) {
+      retry_interval_(kMinRetryTime) {
   ArcAppListPrefs* prefs = ArcAppListPrefs::Get(profile_);
   // Prefs may not available in some unit tests.
   if (!prefs)
@@ -52,7 +51,7 @@ ArcPaiStarter::~ArcPaiStarter() {
 // static
 std::unique_ptr<ArcPaiStarter> ArcPaiStarter::CreateIfNeeded(Profile* profile) {
   if (profile->GetPrefs()->GetBoolean(prefs::kArcPaiStarted))
-    return std::unique_ptr<ArcPaiStarter>();
+    return nullptr;
   return std::make_unique<ArcPaiStarter>(profile);
 }
 
@@ -143,10 +142,9 @@ void ArcPaiStarter::OnPaiRequested(mojom::PaiFlowState state) {
 
   if (state != mojom::PaiFlowState::SUCCEEDED) {
     retry_timer_.Start(
-        FROM_HERE, base::TimeDelta::FromSeconds(retry_interval_seconds_),
+        FROM_HERE, retry_interval_,
         base::BindOnce(&ArcPaiStarter::MaybeStartPai, base::Unretained(this)));
-    retry_interval_seconds_ =
-        std::min(retry_interval_seconds_ * 2, kMaxRetryTimeSeconds);
+    retry_interval_ = std::min(retry_interval_ * 2, kMaxRetryTime);
     return;
   }
 

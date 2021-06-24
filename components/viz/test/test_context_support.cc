@@ -7,6 +7,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
@@ -14,8 +17,7 @@
 
 namespace viz {
 
-TestContextSupport::TestContextSupport()
-    : out_of_order_callbacks_(false), weak_ptr_factory_(this) {}
+TestContextSupport::TestContextSupport() : out_of_order_callbacks_(false) {}
 
 TestContextSupport::~TestContextSupport() = default;
 
@@ -132,9 +134,14 @@ unsigned int TestContextSupport::GetTransferBufferFreeSize() const {
   NOTIMPLEMENTED();
   return 0;
 }
+bool TestContextSupport::IsJpegDecodeAccelerationSupported() const {
+  return false;
+}
+bool TestContextSupport::IsWebPDecodeAccelerationSupported() const {
+  return false;
+}
 bool TestContextSupport::CanDecodeWithHardwareAcceleration(
-    base::span<const uint8_t> encoded_data) const {
-  NOTIMPLEMENTED();
+    const cc::ImageHeaderMetadata* image_metadata) const {
   return false;
 }
 
@@ -142,7 +149,7 @@ bool TestContextSupport::HasGrContextSupport() const {
   return true;
 }
 
-void TestContextSupport::SetGrContext(GrContext* gr) {}
+void TestContextSupport::SetGrContext(GrDirectContext* gr) {}
 
 void TestContextSupport::WillCallGLFromSkia() {}
 

@@ -7,7 +7,8 @@ package org.chromium.android_webview.test;
 import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.SINGLE_PROCESS;
 
 import android.os.ParcelFileDescriptor;
-import android.support.test.filters.MediumTest;
+
+import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -15,8 +16,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.android_webview.VariationsUtils;
-import org.chromium.android_webview.services.ServiceInit;
+import org.chromium.android_webview.common.variations.VariationsUtils;
 import org.chromium.android_webview.services.VariationsSeedHolder;
 import org.chromium.android_webview.test.util.VariationsTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
@@ -25,7 +25,6 @@ import org.chromium.components.variations.firstrun.VariationsSeedFetcher.SeedInf
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -61,7 +60,7 @@ public class VariationsSeedHolderTest {
         }
 
         public void writeSeedIfNewerBlocking(File destination, long date)
-                throws IOException, TimeoutException, InterruptedException {
+                throws IOException, TimeoutException {
             ParcelFileDescriptor fd = null;
             try {
                 fd = ParcelFileDescriptor.open(destination, ParcelFileDescriptor.MODE_WRITE_ONLY);
@@ -73,8 +72,7 @@ public class VariationsSeedHolderTest {
             }
         }
 
-        public void updateSeedBlocking(SeedInfo newSeed)
-                throws TimeoutException, InterruptedException {
+        public void updateSeedBlocking(SeedInfo newSeed) throws TimeoutException {
             int calls = mUpdateFinished.getCallCount();
             updateSeed(newSeed, /*onFinished=*/() -> mUpdateFinished.notifyCalled());
             mUpdateFinished.waitForCallback(calls);
@@ -83,7 +81,6 @@ public class VariationsSeedHolderTest {
 
     @Before
     public void setUp() throws IOException {
-        ServiceInit.setPrivateDataDirectorySuffix();
         VariationsTestUtils.deleteSeeds();
     }
 
@@ -96,7 +93,7 @@ public class VariationsSeedHolderTest {
     // write should happen.
     @Test
     @MediumTest
-    public void testWriteNoSeed() throws IOException, TimeoutException, InterruptedException {
+    public void testWriteNoSeed() throws IOException, TimeoutException {
         TestHolder holder = new TestHolder();
         File file = null;
         try {
@@ -112,8 +109,7 @@ public class VariationsSeedHolderTest {
     // an empty file. The written seed should match the mock seed.
     @Test
     @MediumTest
-    public void testUpdateAndWriteToEmptySeed()
-            throws IOException, TimeoutException, InterruptedException {
+    public void testUpdateAndWriteToEmptySeed() throws IOException, TimeoutException {
         try {
             TestHolder holder = new TestHolder();
             holder.updateSeedBlocking(VariationsTestUtils.createMockSeed());
@@ -137,11 +133,10 @@ public class VariationsSeedHolderTest {
     // proceed. The written seed should match the mock seed.
     @Test
     @MediumTest
-    public void testUpdateAndWriteToStaleSeed()
-            throws IOException, TimeoutException, InterruptedException, ParseException {
+    public void testUpdateAndWriteToStaleSeed() throws IOException, TimeoutException {
         try {
             SeedInfo mockSeed = VariationsTestUtils.createMockSeed();
-            long mockDateMinusOneDay = mockSeed.parseDate().getTime() - TimeUnit.DAYS.toMillis(1);
+            long mockDateMinusOneDay = mockSeed.date - TimeUnit.DAYS.toMillis(1);
             TestHolder holder = new TestHolder();
             holder.updateSeedBlocking(mockSeed);
             File file = null;
@@ -162,17 +157,15 @@ public class VariationsSeedHolderTest {
     // a file. Pretend the file already contains an up-to-date seed, so no write should happen.
     @Test
     @MediumTest
-    public void testUpdateAndWriteToFreshSeed()
-            throws IOException, TimeoutException, InterruptedException, ParseException {
+    public void testUpdateAndWriteToFreshSeed() throws IOException, TimeoutException {
         try {
             SeedInfo mockSeed = VariationsTestUtils.createMockSeed();
-            long mockDate = mockSeed.parseDate().getTime();
             TestHolder holder = new TestHolder();
             holder.updateSeedBlocking(mockSeed);
             File file = null;
             try {
                 file = File.createTempFile("seed", null, null);
-                holder.writeSeedIfNewerBlocking(file, mockDate);
+                holder.writeSeedIfNewerBlocking(file, mockSeed.date);
                 Assert.assertEquals(0L, file.length());
             } finally {
                 if (file != null) file.delete();
@@ -185,7 +178,7 @@ public class VariationsSeedHolderTest {
     @Test
     @MediumTest
     public void testConcurrentUpdatesAndWrites()
-            throws IOException, FileNotFoundException, InterruptedException, TimeoutException {
+            throws IOException, FileNotFoundException, TimeoutException {
         ArrayList<File> files = new ArrayList<>();
         try {
             ArrayList<ParcelFileDescriptor> fds = new ArrayList<>();

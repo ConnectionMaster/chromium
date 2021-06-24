@@ -6,15 +6,14 @@
 #define ASH_WM_WINDOW_TRANSIENT_DESCENDANT_ITERATOR_H_
 
 #include "ash/ash_export.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 
 namespace aura {
 class Window;
 }
 
 namespace ash {
-namespace wm {
 
 using TransientTreeIgnorePredicate =
     base::RepeatingCallback<bool(aura::Window*)>;
@@ -97,7 +96,6 @@ ASH_EXPORT WindowTransientDescendantIteratorRange
 GetTransientTreeIterator(aura::Window* window,
                          TransientTreeIgnorePredicate hide_predicate);
 
-}  // namespace wm
 }  // namespace ash
 
 #endif  // ASH_WM_WINDOW_TRANSIENT_DESCENDANT_ITERATOR_H_

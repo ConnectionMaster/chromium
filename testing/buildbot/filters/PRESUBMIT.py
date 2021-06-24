@@ -11,11 +11,14 @@ import os
 import re
 
 
+USE_PYTHON3 = True
+
+
 def _CheckFilterFileFormat(input_api, output_api):
   """This ensures all modified filter files are free of common syntax errors.
 
   See the following for the correct syntax of these files:
-  https://chromium.googlesource.com/chromium/src/+/master/testing/buildbot/filters/README.md#file-syntax
+  https://chromium.googlesource.com/chromium/src/+/main/testing/buildbot/filters/README.md#file-syntax
   As well as:
   https://bit.ly/chromium-test-list-format
   """
@@ -37,6 +40,11 @@ def _CheckFilterFileFormat(input_api, output_api):
         continue
       if line.startswith('#'):
         # A comment. Ignore these.
+        continue
+      if line.find('#') >= 0:
+        errors.append(
+            '%s:%d "#" is not a valid method separator.  Use ".": "%s"' % (
+                filename, line_num, line))
         continue
       if line.startswith('//') or line.startswith('/*'):
         errors.append(

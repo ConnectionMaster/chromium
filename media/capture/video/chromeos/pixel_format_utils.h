@@ -7,8 +7,9 @@
 
 #include <vector>
 
-#include "media/capture/video/chromeos/mojo/camera3.mojom.h"
+#include "media/capture/video/chromeos/mojom/camera3.mojom.h"
 #include "media/capture/video_capture_types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/buffer_types.h"
 
 namespace media {
@@ -29,6 +30,10 @@ std::vector<ChromiumPixelFormat> PixFormatHalToChromium(
 // Converts the video pixel format |from| to DRM pixel format.  Returns 0
 // if |from| is not supported.
 uint32_t PixFormatVideoToDrm(VideoPixelFormat from);
+
+// Converts the video pixel format |pixel_format| to gfx::BufferFormat.
+absl::optional<gfx::BufferFormat> PixFormatVideoToGfx(
+    VideoPixelFormat pixel_format);
 
 }  // namespace media
 

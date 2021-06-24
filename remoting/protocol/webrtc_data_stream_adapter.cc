@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/location.h"
@@ -24,7 +23,7 @@ namespace protocol {
 
 WebrtcDataStreamAdapter::WebrtcDataStreamAdapter(
     rtc::scoped_refptr<webrtc::DataChannelInterface> channel)
-    : channel_(channel.get()), weak_ptr_factory_(this) {
+    : channel_(channel.get()) {
   channel_->RegisterObserver(this);
   DCHECK_EQ(channel_->state(), webrtc::DataChannelInterface::kConnecting);
 }
@@ -60,8 +59,7 @@ void WebrtcDataStreamAdapter::Send(google::protobuf::MessageLite* message,
 
   rtc::CopyOnWriteBuffer buffer;
   buffer.SetSize(message->ByteSize());
-  message->SerializeWithCachedSizesToArray(
-      reinterpret_cast<uint8_t*>(buffer.data()));
+  message->SerializeWithCachedSizesToArray(buffer.MutableData());
   pending_messages_.emplace(
       webrtc::DataBuffer(std::move(buffer), true /* binary */),
       std::move(done));

@@ -4,9 +4,11 @@
 
 #include "chrome/browser/policy/cloud/user_policy_signin_service_mobile.h"
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/single_thread_task_runner.h"
@@ -20,9 +22,8 @@
 #include "components/policy/core/common/policy_switches.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "net/base/network_change_notifier.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "services/identity/public/cpp/identity_manager.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace em = enterprise_management;
@@ -45,7 +46,7 @@ UserPolicySigninService::UserPolicySigninService(
     PrefService* local_state,
     DeviceManagementService* device_management_service,
     UserCloudPolicyManager* policy_manager,
-    identity::IdentityManager* identity_manager,
+    signin::IdentityManager* identity_manager,
     scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory)
     : UserPolicySigninServiceBase(profile,
                                   local_state,
@@ -53,8 +54,7 @@ UserPolicySigninService::UserPolicySigninService(
                                   policy_manager,
                                   identity_manager,
                                   system_url_loader_factory),
-      profile_prefs_(profile->GetPrefs()),
-      weak_factory_(this) {}
+      profile_prefs_(profile->GetPrefs()) {}
 
 UserPolicySigninService::~UserPolicySigninService() {}
 
@@ -65,13 +65,13 @@ void UserPolicySigninService::ShutdownUserCloudPolicyManager() {
 
 void UserPolicySigninService::RegisterForPolicyWithAccountId(
     const std::string& username,
-    const std::string& account_id,
-    const PolicyRegistrationCallback& callback) {
+    const CoreAccountId& account_id,
+    PolicyRegistrationCallback callback) {
   // Create a new CloudPolicyClient for fetching the DMToken.
   std::unique_ptr<CloudPolicyClient> policy_client =
       CreateClientForRegistrationOnly(username);
   if (!policy_client) {
-    callback.Run(std::string(), std::string());
+    std::move(callback).Run(std::string(), std::string());
     return;
   }
 
@@ -79,24 +79,23 @@ void UserPolicySigninService::RegisterForPolicyWithAccountId(
 
   // Fire off the registration process. Callback keeps the CloudPolicyClient
   // alive for the length of the registration process.
-  registration_helper_.reset(new CloudPolicyClientRegistrationHelper(
-      policy_client.get(),
-      kCloudPolicyRegistrationType));
+  registration_helper_ = std::make_unique<CloudPolicyClientRegistrationHelper>(
+      policy_client.get(), kCloudPolicyRegistrationType);
 
   // Using a raw pointer to |this| is okay, because we own the
   // |registration_helper_|.
-  auto registration_callback = base::Bind(
+  auto registration_callback = base::BindOnce(
       &UserPolicySigninService::CallPolicyRegistrationCallback,
-      base::Unretained(this), base::Passed(&policy_client), callback);
+      base::Unretained(this), std::move(policy_client), std::move(callback));
   registration_helper_->StartRegistration(identity_manager(), account_id,
-                                          registration_callback);
+                                          std::move(registration_callback));
 }
 
 void UserPolicySigninService::CallPolicyRegistrationCallback(
     std::unique_ptr<CloudPolicyClient> client,
     PolicyRegistrationCallback callback) {
   registration_helper_.reset();
-  callback.Run(client->dm_token(), client->client_id());
+  std::move(callback).Run(client->dm_token(), client->client_id());
 }
 
 void UserPolicySigninService::Shutdown() {
@@ -146,7 +145,7 @@ void UserPolicySigninService::RegisterCloudPolicyService() {
   // If the user signed-out while this task was waiting then Shutdown() would
   // have been called, which would have invalidated this task. Since we're here
   // then the user must still be signed-in.
-  DCHECK(identity_manager()->HasPrimaryAccount());
+  DCHECK(identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSync));
   DCHECK(!policy_manager()->IsClientRegistered());
   DCHECK(policy_manager()->core()->client());
 
@@ -154,13 +153,13 @@ void UserPolicySigninService::RegisterCloudPolicyService() {
   profile_prefs_->SetInt64(prefs::kLastPolicyCheckTime,
                            base::Time::Now().ToInternalValue());
 
-  registration_helper_.reset(new CloudPolicyClientRegistrationHelper(
-      policy_manager()->core()->client(),
-      kCloudPolicyRegistrationType));
+  registration_helper_ = std::make_unique<CloudPolicyClientRegistrationHelper>(
+      policy_manager()->core()->client(), kCloudPolicyRegistrationType);
   registration_helper_->StartRegistration(
-      identity_manager(), identity_manager()->GetPrimaryAccountId(),
-      base::Bind(&UserPolicySigninService::OnRegistrationDone,
-                 base::Unretained(this)));
+      identity_manager(),
+      identity_manager()->GetPrimaryAccountId(signin::ConsentLevel::kSync),
+      base::BindOnce(&UserPolicySigninService::OnRegistrationDone,
+                     base::Unretained(this)));
 }
 
 void UserPolicySigninService::CancelPendingRegistration() {

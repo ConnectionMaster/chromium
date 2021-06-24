@@ -10,21 +10,22 @@
 #include <utility>
 #include <vector>
 
+#include "base/callback.h"
+#include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/gtest_prod_util.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/chromeos/arc/process/arc_process.h"
-#include "chrome/browser/chromeos/arc/process/arc_process_service.h"
+#include "chrome/browser/ash/arc/process/arc_process.h"
+#include "chrome/browser/ash/arc/process/arc_process_service.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit.h"
-#include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
+#include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom-forward.h"
 #include "chrome/browser/resource_coordinator/tab_manager.h"
 #include "chrome/browser/ui/browser_list_observer.h"
-#include "chromeos/dbus/debug_daemon_client.h"
-#include "components/arc/common/process.mojom.h"
+#include "chromeos/dbus/debug_daemon/debug_daemon_client.h"
+#include "components/arc/mojom/process.mojom.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "ui/wm/public/activation_change_observer.h"
@@ -110,7 +111,7 @@ class TabManagerDelegate : public wm::ActivationChangeObserver,
   FRIEND_TEST_ALL_PREFIXES(TabManagerDelegateTest,
                            CandidatesSortedWithFocusedAppAndTab);
   FRIEND_TEST_ALL_PREFIXES(TabManagerDelegateTest,
-                           CandidatesSortedWithTabRanker);
+                           SortLifecycleUnitWithTabRanker);
   FRIEND_TEST_ALL_PREFIXES(TabManagerDelegateTest,
                            DoNotKillRecentlyKilledArcProcesses);
   FRIEND_TEST_ALL_PREFIXES(TabManagerDelegateTest, IsRecentlyKilledArcProcess);
@@ -138,6 +139,8 @@ class TabManagerDelegate : public wm::ActivationChangeObserver,
 
   // A map from an ARC process name to a monotonic timestamp when it's killed.
   typedef base::flat_map<std::string, base::TimeTicks> KilledArcProcessesMap;
+
+  typedef base::OnceCallback<void(LifecycleUnitVector*)> LifecycleUnitSorter;
 
   // Get the list of candidates to kill, sorted by descending importance.
   static std::vector<Candidate> GetSortedCandidates(
@@ -215,7 +218,7 @@ class TabManagerDelegate : public wm::ActivationChangeObserver,
   std::unique_ptr<TabManagerDelegate::MemoryStat> mem_stat_;
 
   // Weak pointer factory used for posting tasks to other threads.
-  base::WeakPtrFactory<TabManagerDelegate> weak_ptr_factory_;
+  base::WeakPtrFactory<TabManagerDelegate> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TabManagerDelegate);
 };
@@ -227,8 +230,7 @@ class TabManagerDelegate : public wm::ActivationChangeObserver,
 class TabManagerDelegate::Candidate {
  public:
   explicit Candidate(LifecycleUnit* lifecycle_unit)
-      : lifecycle_unit_(lifecycle_unit),
-        lifecycle_unit_sort_key_(lifecycle_unit_->GetSortKey()) {
+      : lifecycle_unit_(lifecycle_unit) {
     DCHECK(lifecycle_unit_);
   }
 
@@ -238,44 +240,29 @@ class TabManagerDelegate::Candidate {
   // kMaxScore so this has the effect of sorting by last_activity_time only.
   // But if TabRanker is on, kMaxScore guarantees all apps are sorted before
   // tabs.
-  explicit Candidate(const arc::ArcProcess* app)
-      : lifecycle_unit_sort_key_(
-            LifecycleUnit::SortKey::kMaxScore,
-            base::TimeTicks::FromUptimeMillis(app->last_activity_time())),
-        app_(app) {
-    DCHECK(app_);
-  }
+  explicit Candidate(const arc::ArcProcess* app) : app_(app) { DCHECK(app_); }
 
   // Move-only class.
   Candidate(Candidate&&) = default;
   Candidate& operator=(Candidate&& other);
 
-  // Candidates are sorted higher priority first. They are first sorted into
-  // their respective ProcessTypes.
-  // LifecycleUnit::SortKey is used to compare processes within a ProcessType,
-  // using a combination of TabRanker reactivation score (for tabs only) and
-  // last focused time for all processes. When TabRanker is disabled, tabs are
-  // given a default score of kMaxScore. An ArcProcess (app) is always assigned
-  // kMaxScore. This means that when TabRanker is off, all processes have
-  // kMaxScore and are then compared by last focused time.
-  // When TabRanker is on, tabs have their own defined order so we can't compare
-  // apps to tabs, since we wouldn't have a comparator to satisfy transitivity.
-  // In this case, ARC processes are sorted before (higher priority than) tabs
-  // and compared by last focused time, while tabs are compared by their
-  // reactivation score.
+  // Candidates are sorted by descending importance. A candidate is more
+  // important if:
+  // (1) it has lower respective ProcessTypes.
+  // (2) it has the same ProcessTypes, but larger LastActivityTime().
   bool operator<(const Candidate& rhs) const;
+  // Returns the last activity time of this Candidate.
+  base::TimeTicks LastActivityTime() const;
 
   LifecycleUnit* lifecycle_unit() { return lifecycle_unit_; }
   const LifecycleUnit* lifecycle_unit() const { return lifecycle_unit_; }
   const arc::ArcProcess* app() const { return app_; }
   ProcessType process_type() const { return process_type_; }
-
  private:
   // Derive process type for this candidate. Used to initialize |process_type_|.
   ProcessType GetProcessTypeInternal() const;
 
   LifecycleUnit* lifecycle_unit_ = nullptr;
-  LifecycleUnit::SortKey lifecycle_unit_sort_key_;
   const arc::ArcProcess* app_ = nullptr;
   ProcessType process_type_ = GetProcessTypeInternal();
   DISALLOW_COPY_AND_ASSIGN(Candidate);
@@ -294,14 +281,6 @@ class TabManagerDelegate::MemoryStat {
 
   // Returns estimated memory to be freed if the process |handle| is killed.
   virtual int EstimatedMemoryFreedKB(base::ProcessHandle handle);
-
- private:
-  // Returns the low memory margin system config. Low memory condition is
-  // reported if available memory is under the number.
-  static int LowMemoryMarginKB();
-
-  // Reads in an integer.
-  static int ReadIntFromFile(const char* file_name, int default_val);
 };
 
 }  // namespace resource_coordinator

@@ -7,9 +7,8 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "chrome/browser/chromeos/login/enrollment/auto_enrollment_check_screen_view.h"
+#include "chrome/browser/ash/login/enrollment/auto_enrollment_check_screen_view.h"
 #include "chrome/browser/ui/webui/chromeos/login/base_screen_handler.h"
-#include "content/public/browser/web_ui.h"
 
 namespace chromeos {
 
@@ -17,6 +16,8 @@ namespace chromeos {
 class AutoEnrollmentCheckScreenHandler : public AutoEnrollmentCheckScreenView,
                                          public BaseScreenHandler {
  public:
+  using TView = AutoEnrollmentCheckScreenView;
+
   explicit AutoEnrollmentCheckScreenHandler(
       JSCallsContainer* js_calls_container);
   ~AutoEnrollmentCheckScreenHandler() override;
@@ -43,6 +44,12 @@ class AutoEnrollmentCheckScreenHandler : public AutoEnrollmentCheckScreenView,
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::AutoEnrollmentCheckScreenHandler;
+}
 
 #endif  // CHROME_BROWSER_UI_WEBUI_CHROMEOS_LOGIN_AUTO_ENROLLMENT_CHECK_SCREEN_HANDLER_H_
 

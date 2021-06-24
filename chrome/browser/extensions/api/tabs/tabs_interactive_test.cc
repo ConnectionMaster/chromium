@@ -5,6 +5,8 @@
 #include <stddef.h>
 
 #include "base/values.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/tabs/tabs_api.h"
 #include "chrome/browser/extensions/api/tabs/tabs_constants.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -13,6 +15,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/common/extension_builder.h"
 
@@ -21,6 +24,7 @@ namespace extensions {
 namespace keys = tabs_constants;
 namespace utils = extension_function_test_utils;
 
+using ContextType = ExtensionBrowserTest::ContextType;
 using ExtensionTabsTest = InProcessBrowserTest;
 
 IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, GetLastFocusedWindow) {
@@ -64,7 +68,13 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, GetLastFocusedWindow) {
   EXPECT_TRUE(result.get()->GetList(keys::kTabsKey, &tabs));
 }
 
-IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, QueryLastFocusedWindowTabs) {
+// Flaky on LaCrOS: crbug.com/1179817
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#define MAYBE_QueryLastFocusedWindowTabs DISABLED_QueryLastFocusedWindowTabs
+#else
+#define MAYBE_QueryLastFocusedWindowTabs QueryLastFocusedWindowTabs
+#endif
+IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, MAYBE_QueryLastFocusedWindowTabs) {
   const size_t kExtraWindows = 2;
   for (size_t i = 0; i < kExtraWindows; ++i)
     CreateBrowser(browser()->profile());
@@ -117,8 +127,59 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, QueryLastFocusedWindowTabs) {
   }
 }
 
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, TabCurrentWindow) {
-  ASSERT_TRUE(RunExtensionTest("tabs/current_window")) << message_;
+class NonPersistentExtensionTabsTest
+    : public ExtensionApiTest,
+      public testing::WithParamInterface<ContextType> {
+ protected:
+  const Extension* LoadNonPersistentExtension(const char* relative_path) {
+    return LoadExtension(
+        test_data_dir_.AppendASCII(relative_path),
+        {.load_as_service_worker = GetParam() == ContextType::kServiceWorker});
+  }
+};
+
+// Crashes on Lacros only. http://crbug.com/1150133
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#define MAYBE_TabCurrentWindow DISABLED_TabCurrentWindow
+// Flakes on Linux Tests (Release Only). http://crbug.com/1162432
+#elif defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(NDEBUG)
+#define MAYBE_TabCurrentWindow DISABLED_TabCurrentWindow
+#else
+#define MAYBE_TabCurrentWindow TabCurrentWindow
+#endif
+
+// Tests chrome.windows.create and chrome.windows.getCurrent.
+// TODO(crbug.com/984350): Expand the test to verify that setSelfAsOpener
+// param is ignored from Service Worker extension scripts.
+IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest, MAYBE_TabCurrentWindow) {
+  ASSERT_TRUE(RunExtensionTest(
+      "tabs/current_window", {},
+      {.load_as_service_worker = GetParam() == ContextType::kServiceWorker}))
+      << message_;
 }
+
+// Crashes on Lacros and Linux-ozone-rel. http://crbug.com/1196709
+#if BUILDFLAG(IS_CHROMEOS_LACROS) || defined(USE_OZONE)
+#define MAYBE_TabGetLastFocusedWindow DISABLED_TabGetLastFocusedWindow
+#else
+#define MAYBE_TabGetLastFocusedWindow TabGetLastFocusedWindow
+#endif
+
+// Tests chrome.windows.getLastFocused.
+IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest,
+                       MAYBE_TabGetLastFocusedWindow) {
+  ASSERT_TRUE(RunExtensionTest(
+      "tabs/last_focused_window", {},
+      {.load_as_service_worker = GetParam() == ContextType::kServiceWorker}))
+      << message_;
+}
+
+INSTANTIATE_TEST_SUITE_P(EventPage,
+                         NonPersistentExtensionTabsTest,
+                         ::testing::Values(ContextType::kEventPage));
+
+INSTANTIATE_TEST_SUITE_P(ServiceWorker,
+                         NonPersistentExtensionTabsTest,
+                         ::testing::Values(ContextType::kServiceWorker));
 
 }  // namespace extensions

@@ -8,21 +8,17 @@
 #include <memory>
 
 #include "base/memory/weak_ptr.h"
-#include "content/browser/frame_host/navigation_request_info.h"
 #include "content/browser/loader/navigation_url_loader.h"
+#include "content/browser/renderer_host/navigation_request_info.h"
 #include "content/common/navigation_params.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 
 namespace net {
 struct RedirectInfo;
 }
 
-namespace network {
-struct ResourceResponse;
-}
-
 namespace content {
 
-class NavigationData;
 class NavigationURLLoaderDelegate;
 
 // Test implementation of NavigationURLLoader to simulate the network stack
@@ -32,13 +28,15 @@ class TestNavigationURLLoader
       public base::SupportsWeakPtr<TestNavigationURLLoader> {
  public:
   TestNavigationURLLoader(std::unique_ptr<NavigationRequestInfo> request_info,
-                          NavigationURLLoaderDelegate* delegate);
+                          NavigationURLLoaderDelegate* delegate,
+                          NavigationURLLoader::LoaderType loader_type);
 
   // NavigationURLLoader implementation.
-  void FollowRedirect(const std::vector<std::string>& removed_headers,
-                      const net::HttpRequestHeaders& modified_headers,
-                      PreviewsState new_previews_state) override;
-  void ProceedWithResponse() override;
+  void FollowRedirect(
+      const std::vector<std::string>& removed_headers,
+      const net::HttpRequestHeaders& modified_headers,
+      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      blink::PreviewsState new_previews_state) override;
 
   NavigationRequestInfo* request_info() const { return request_info_.get(); }
 
@@ -48,16 +46,14 @@ class TestNavigationURLLoader
   void SimulateErrorWithStatus(
       const network::URLLoaderCompletionStatus& status);
 
+  void SimulateEarlyHintsPreloadLinkHeaderReceived();
+
   void CallOnRequestRedirected(
       const net::RedirectInfo& redirect_info,
-      const scoped_refptr<network::ResourceResponse>& response);
-  void CallOnResponseStarted(
-      const scoped_refptr<network::ResourceResponse>& response,
-      std::unique_ptr<NavigationData> navigation_data);
+      network::mojom::URLResponseHeadPtr response_head);
+  void CallOnResponseStarted(network::mojom::URLResponseHeadPtr response_head);
 
   int redirect_count() { return redirect_count_; }
-
-  bool response_proceeded() { return response_proceeded_; }
 
  private:
   ~TestNavigationURLLoader() override;
@@ -65,7 +61,10 @@ class TestNavigationURLLoader
   std::unique_ptr<NavigationRequestInfo> request_info_;
   NavigationURLLoaderDelegate* delegate_;
   int redirect_count_;
-  bool response_proceeded_;
+
+  const NavigationURLLoader::LoaderType loader_type_;
+
+  bool was_early_hints_preload_link_header_received_ = false;
 };
 
 }  // namespace content

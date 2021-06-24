@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/double_or_string.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -57,7 +57,7 @@ DoubleOrString::DoubleOrString(const DoubleOrString&) = default;
 DoubleOrString::~DoubleOrString() = default;
 DoubleOrString& DoubleOrString::operator=(const DoubleOrString&) = default;
 
-void DoubleOrString::Trace(blink::Visitor* visitor) {
+void DoubleOrString::Trace(Visitor* visitor) const {
 }
 
 void V8DoubleOrString::ToImpl(
@@ -73,7 +73,7 @@ void V8DoubleOrString::ToImpl(
     return;
 
   if (v8_value->IsNumber()) {
-    double cpp_value = NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state);
+    double cpp_value{ NativeValueTraits<IDLDouble>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetDouble(cpp_value);
@@ -81,7 +81,7 @@ void V8DoubleOrString::ToImpl(
   }
 
   {
-    V8StringResource<> cpp_value = v8_value;
+    V8StringResource<> cpp_value{ v8_value };
     if (!cpp_value.Prepare(exception_state))
       return;
     impl.SetString(cpp_value);
@@ -111,3 +111,4 @@ DoubleOrString NativeValueTraits<DoubleOrString>::NativeValue(
 }
 
 }  // namespace blink
+

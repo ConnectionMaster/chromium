@@ -63,10 +63,9 @@ class COMPONENT_EXPORT(CHROMEOS_TIMEZONE) TimeZoneRequest {
   // The second argument indicates whether there was a server error or not.
   // It is true when there was a server or network error - either no response
   // or a 500 error code.
-  typedef base::Callback<void(
-      std::unique_ptr<TimeZoneResponseData> /* timezone */,
-      bool /* server_error */)>
-      TimeZoneResponseCallback;
+  using TimeZoneResponseCallback =
+      base::OnceCallback<void(std::unique_ptr<TimeZoneResponseData> timezone,
+                              bool server_error)>;
 
   // |url| is the server address to which the request wil be sent.
   // |geoposition| is the location to query timezone for.
@@ -134,5 +133,11 @@ class COMPONENT_EXPORT(CHROMEOS_TIMEZONE) TimeZoneRequest {
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when moved to ash.
+namespace ash {
+using ::chromeos::DefaultTimezoneProviderURL;
+using ::chromeos::TimeZoneResponseData;
+}
 
 #endif  // CHROMEOS_TIMEZONE_TIMEZONE_REQUEST_H_

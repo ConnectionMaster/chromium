@@ -5,8 +5,6 @@
 #ifndef CHROMECAST_BROWSER_EXTENSIONS_API_NOTIFICATIONS_NOTIFICATIONS_API_H_
 #define CHROMECAST_BROWSER_EXTENSIONS_API_NOTIFICATIONS_NOTIFICATIONS_API_H_
 
-#include <string>
-
 #include "chromecast/common/extensions_api/notifications.h"
 #include "extensions/browser/extension_function.h"
 
@@ -14,15 +12,7 @@ namespace extensions {
 namespace cast {
 namespace api {
 
-class NotificationsApiFunction : public ExtensionFunction {
- public:
-  void Destruct() const override;
-
- protected:
-  ~NotificationsApiFunction() override {}
-};
-
-class NotificationsCreateFunction : public NotificationsApiFunction {
+class NotificationsCreateFunction : public ExtensionFunction {
  protected:
   ~NotificationsCreateFunction() override {}
 
@@ -32,7 +22,7 @@ class NotificationsCreateFunction : public NotificationsApiFunction {
   DECLARE_EXTENSION_FUNCTION("notifications.create", NOTIFICATIONS_CREATE)
 };
 
-class NotificationsUpdateFunction : public NotificationsApiFunction {
+class NotificationsUpdateFunction : public ExtensionFunction {
  protected:
   ~NotificationsUpdateFunction() override {}
 
@@ -42,7 +32,7 @@ class NotificationsUpdateFunction : public NotificationsApiFunction {
   DECLARE_EXTENSION_FUNCTION("notifications.update", NOTIFICATIONS_UPDATE)
 };
 
-class NotificationsClearFunction : public NotificationsApiFunction {
+class NotificationsClearFunction : public ExtensionFunction {
  protected:
   ~NotificationsClearFunction() override {}
 
@@ -52,7 +42,7 @@ class NotificationsClearFunction : public NotificationsApiFunction {
   DECLARE_EXTENSION_FUNCTION("notifications.clear", NOTIFICATIONS_CLEAR)
 };
 
-class NotificationsGetAllFunction : public NotificationsApiFunction {
+class NotificationsGetAllFunction : public ExtensionFunction {
  protected:
   ~NotificationsGetAllFunction() override {}
 
@@ -62,8 +52,7 @@ class NotificationsGetAllFunction : public NotificationsApiFunction {
   DECLARE_EXTENSION_FUNCTION("notifications.getAll", NOTIFICATIONS_GET_ALL)
 };
 
-class NotificationsGetPermissionLevelFunction
-    : public NotificationsApiFunction {
+class NotificationsGetPermissionLevelFunction : public ExtensionFunction {
  protected:
   ~NotificationsGetPermissionLevelFunction() override {}
 

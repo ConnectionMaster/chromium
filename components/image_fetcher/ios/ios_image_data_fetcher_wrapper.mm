@@ -6,6 +6,7 @@
 
 #include "base/bind.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #import "components/image_fetcher/ios/webp_decoder.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -40,7 +41,7 @@ void IOSImageDataFetcherWrapper::FetchImageDataWebpDecoded(
     const GURL& image_url,
     ImageDataFetcherBlock callback,
     const std::string& referrer,
-    net::URLRequest::ReferrerPolicy referrer_policy,
+    net::ReferrerPolicy referrer_policy,
     bool send_cookies) {
   DCHECK(callback);
 
@@ -48,9 +49,6 @@ void IOSImageDataFetcherWrapper::FetchImageDataWebpDecoded(
       image_url, CallbackForImageDataFetcher(callback), referrer,
       referrer_policy, NO_TRAFFIC_ANNOTATION_YET, send_cookies);
 }
-
-void IOSImageDataFetcherWrapper::SetDataUseServiceName(
-    DataUseServiceName data_use_service_name) {}
 
 ImageDataFetcherCallback
 IOSImageDataFetcherWrapper::CallbackForImageDataFetcher(
@@ -69,7 +67,7 @@ IOSImageDataFetcherWrapper::CallbackForImageDataFetcher(
     // The image is a webp image.
     RequestMetadata webp_metadata = metadata;
 
-    base::PostTaskWithTraitsAndReplyWithResult(
+    base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE,
         {
             base::TaskPriority::BEST_EFFORT,

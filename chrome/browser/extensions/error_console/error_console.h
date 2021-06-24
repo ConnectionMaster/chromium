@@ -14,28 +14,25 @@
 
 #include "base/macros.h"
 #include "base/observer_list.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
+#include "base/scoped_observation.h"
 #include "base/threading/thread_checker.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/error_map.h"
 #include "extensions/browser/extension_error.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 
 namespace content {
 class BrowserContext;
-class NotificationDetails;
-class NotificationSource;
 }
-
-class Profile;
 
 namespace extensions {
 class Extension;
 class ExtensionPrefs;
-class ExtensionRegistry;
 
 // The ErrorConsole is a central object to which all extension errors are
 // reported. This includes errors detected in extensions core, as well as
@@ -44,7 +41,7 @@ class ExtensionRegistry;
 // This class is owned by ExtensionSystem, making it, in effect, a
 // BrowserContext-keyed service.
 class ErrorConsole : public KeyedService,
-                     public content::NotificationObserver,
+                     public ProfileObserver,
                      public ExtensionRegistryObserver {
  public:
   class Observer {
@@ -159,10 +156,9 @@ class ErrorConsole : public KeyedService,
   // Add manifest errors from an extension's install warnings.
   void AddManifestErrorsForExtension(const Extension* extension);
 
-  // content::NotificationObserver implementation.
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
+  // ProfileObserver:
+  void OnOffTheRecordProfileCreated(Profile* off_the_record) override;
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
   // Returns the applicable bit mask of reporting preferences for the extension.
   int GetMaskForExtension(const std::string& extension_id) const;
@@ -196,11 +192,12 @@ class ErrorConsole : public KeyedService,
   // is dependent on ExtensionPrefs.
   ExtensionPrefs* prefs_;
 
-  content::NotificationRegistrar notification_registrar_;
+  base::ScopedMultiSourceObservation<Profile, ProfileObserver>
+      profile_observations_{this};
   PrefChangeRegistrar pref_registrar_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      registry_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ErrorConsole);
 };

@@ -2,28 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import './pdf_viewer_wrapper.js';
 
-/**
- * Global PDFViewer object, accessible for testing.
- *
- * @type Object
- */
-window.viewer = null;
+import {BrowserApi, createBrowserApi} from './browser_api.js';
 
-
-(function() {
 /**
  * Stores any pending messages received which should be passed to the
  * PDFViewer when it is created.
- *
  * @type Array
  */
 const pendingMessages = [];
 
 /**
  * Handles events that are received prior to the PDFViewer being created.
- *
  * @param {Object} message A message event received.
  */
 function handleScriptingMessage(message) {
@@ -32,31 +23,30 @@ function handleScriptingMessage(message) {
 
 /**
  * Initialize the global PDFViewer and pass any outstanding messages to it.
- *
- * @param {Promise<BrowserApi>} browserApi A promise resolving to an API
- *     to the browser.
+ * @param {!BrowserApi} browserApi
  */
 function initViewer(browserApi) {
   // PDFViewer will handle any messages after it is created.
   window.removeEventListener('message', handleScriptingMessage, false);
-  viewer = new PDFViewer(browserApi);
+  const viewer = document.querySelector('#viewer');
+  viewer.init(browserApi);
   while (pendingMessages.length > 0) {
     viewer.handleScriptingMessage(pendingMessages.shift());
   }
+  window.viewer = viewer;
 }
 
 /**
  * Determine if the content settings allow PDFs to execute javascript.
- *
- * @param {Promise<BrowserApi>} browserApi A promise resolving to an API
- *     to the browser.
+ * @param {!BrowserApi} browserApi
+ * @return {!Promise<!BrowserApi>}
  */
 function configureJavaScriptContentSetting(browserApi) {
   return new Promise((resolve, reject) => {
     chrome.contentSettings.javascript.get(
         {
           'primaryUrl': browserApi.getStreamInfo().originalUrl,
-          'secondaryUrl': window.origin
+          'secondaryUrl': window.location.origin
         },
         (result) => {
           browserApi.getStreamInfo().javascript = result.setting;
@@ -67,23 +57,20 @@ function configureJavaScriptContentSetting(browserApi) {
 
 /**
  * Entrypoint for starting the PDF viewer. This function obtains the browser
- * API for the PDF and constructs a PDFViewer object with it.
+ * API for the PDF and initializes the PDF Viewer.
  */
 function main() {
   // Set up an event listener to catch scripting messages which are sent prior
   // to the PDFViewer being created.
   window.addEventListener('message', handleScriptingMessage, false);
-  HTMLImports.whenReady(() => {
-    let chain = createBrowserApi();
+  let chain = createBrowserApi();
 
-    // Content settings may not be present in test environments.
-    if (chrome.contentSettings) {
-      chain = chain.then(configureJavaScriptContentSetting);
-    }
+  // Content settings may not be present in test environments.
+  if (chrome.contentSettings) {
+    chain = chain.then(configureJavaScriptContentSetting);
+  }
 
-    chain = chain.then(initViewer);
-  });
+  chain.then(initViewer);
 }
 
 main();
-})();

@@ -16,8 +16,7 @@ ShellExtensionsRendererClient::ShellExtensionsRendererClient()
   dispatcher_->OnRenderThreadStarted(content::RenderThread::Get());
 }
 
-ShellExtensionsRendererClient::~ShellExtensionsRendererClient() {
-}
+ShellExtensionsRendererClient::~ShellExtensionsRendererClient() = default;
 
 bool ShellExtensionsRendererClient::IsIncognitoProcess() const {
   // app_shell doesn't support off-the-record contexts.
@@ -33,6 +32,12 @@ int ShellExtensionsRendererClient::GetLowestIsolatedWorldId() const {
 
 Dispatcher* ShellExtensionsRendererClient::GetDispatcher() {
   return dispatcher_.get();
+}
+
+bool ShellExtensionsRendererClient::ExtensionAPIEnabledForServiceWorkerScript(
+    const GURL& scope,
+    const GURL& script_url) const {
+  return false;
 }
 
 }  // namespace extensions

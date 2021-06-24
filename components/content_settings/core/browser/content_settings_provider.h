@@ -8,11 +8,11 @@
 #define COMPONENTS_CONTENT_SETTINGS_CORE_BROWSER_CONTENT_SETTINGS_PROVIDER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/values.h"
 #include "components/content_settings/core/browser/content_settings_rule.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_constraints.h"
 
 class ContentSettingsPattern;
 
@@ -34,7 +34,6 @@ class ProviderInterface {
   // Returns nullptr to indicate the RuleIterator is empty.
   virtual std::unique_ptr<RuleIterator> GetRuleIterator(
       ContentSettingsType content_type,
-      const ResourceIdentifier& resource_identifier,
       bool incognito) const = 0;
 
   // Asks the provider to set the website setting for a particular
@@ -49,8 +48,8 @@ class ProviderInterface {
       const ContentSettingsPattern& primary_pattern,
       const ContentSettingsPattern& secondary_pattern,
       ContentSettingsType content_type,
-      const ResourceIdentifier& resource_identifier,
-      base::Value* value) = 0;
+      std::unique_ptr<base::Value>&& value,
+      const ContentSettingConstraints& constraints) = 0;
 
   // Resets all content settings for the given |content_type| and empty resource
   // identifier to CONTENT_SETTING_DEFAULT.

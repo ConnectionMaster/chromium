@@ -6,23 +6,29 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/stringprintf.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/api/extensions_api_client.h"
+#include "extensions/browser/api/web_request/permission_helper.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
-#include "extensions/browser/info_map.h"
+#include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extensions_test.h"
+#include "extensions/browser/process_map.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/permissions/permission_set.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/url_pattern.h"
 #include "extensions/common/url_pattern_set.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace extensions {
 
-TEST(ExtensionWebRequestPermissions, TestHideRequestForURL) {
+using ExtensionWebRequestPermissionsTest = ExtensionsTest;
+
+TEST_F(ExtensionWebRequestPermissionsTest, TestHideRequestForURL) {
   enum HideRequestMask {
     HIDE_NONE = 0,
     HIDE_RENDERER_REQUEST = 1,
@@ -34,7 +40,7 @@ TEST(ExtensionWebRequestPermissions, TestHideRequestForURL) {
   };
 
   ExtensionsAPIClient api_client;
-  auto info_map = base::MakeRefCounted<extensions::InfoMap>();
+  auto* permission_helper = PermissionHelper::Get(browser_context());
 
   struct TestCase {
     const char* url;
@@ -87,6 +93,10 @@ TEST(ExtensionWebRequestPermissions, TestHideRequestForURL) {
       // Unsupported scheme.
       {"blob:https://chrome.google.com/fc3f440b-78ed-469f-8af8-7a1717ff39ae",
        HIDE_ALL},
+      // Unsupported scheme.
+      {"chrome://test/", HIDE_ALL},
+      // Unsupported scheme.
+      {"chrome-untrusted://test/", HIDE_ALL},
       {"notregisteredscheme://www.foobar.com", HIDE_ALL},
       {"https://chrome.google.com:80/webstore", HIDE_ALL},
       {"https://chrome.google.com/webstore?query", HIDE_ALL},
@@ -99,18 +109,18 @@ TEST(ExtensionWebRequestPermissions, TestHideRequestForURL) {
   const int kRendererProcessId = 1;
   const int kBrowserProcessId = -1;
 
-  // Returns a WebRequestInfo instance constructed as per the given parameters.
-  auto create_request = [](const GURL& url, content::ResourceType type,
-                           int render_process_id) {
-    WebRequestInfo request;
+  // Returns a WebRequestInfoInitParams instance constructed as per the given
+  // parameters.
+  auto create_request_params = [](const GURL& url,
+                                  WebRequestResourceType web_request_type,
+                                  int render_process_id) {
+    WebRequestInfoInitParams request;
     request.url = url;
-    request.type = type;
     request.render_process_id = render_process_id;
-
-    request.web_request_type = ToWebRequestResourceType(type);
-    request.is_browser_side_navigation =
-        type == content::RESOURCE_TYPE_MAIN_FRAME ||
-        type == content::RESOURCE_TYPE_SUB_FRAME;
+    request.web_request_type = web_request_type;
+    request.is_navigation_request =
+        web_request_type == WebRequestResourceType::MAIN_FRAME ||
+        web_request_type == WebRequestResourceType::SUB_FRAME;
     return request;
   };
 
@@ -122,78 +132,88 @@ TEST(ExtensionWebRequestPermissions, TestHideRequestForURL) {
 
     {
       SCOPED_TRACE("Renderer initiated sub-resource request");
-      WebRequestInfo request = create_request(
-          request_url, content::RESOURCE_TYPE_SUB_RESOURCE, kRendererProcessId);
+      WebRequestInfo request(create_request_params(
+          request_url, WebRequestResourceType::OTHER, kRendererProcessId));
       bool expect_hidden =
           test_case.expected_hide_request_mask & HIDE_RENDERER_REQUEST;
       EXPECT_EQ(expect_hidden,
-                WebRequestPermissions::HideRequest(info_map.get(), request));
+                WebRequestPermissions::HideRequest(permission_helper, request));
+    }
+
+    {
+      SCOPED_TRACE(
+          "Renderer initiated sub-resource request from "
+          "chrome-untrusted://");
+      auto request_init_params = create_request_params(
+          request_url, WebRequestResourceType::OTHER, kRendererProcessId);
+      GURL url("chrome-untrusted://test/");
+      request_init_params.initiator = url::Origin::Create(url);
+
+      WebRequestInfo request(std::move(request_init_params));
+      // Always hide requests from chrome-untrusted://
+      EXPECT_TRUE(
+          WebRequestPermissions::HideRequest(permission_helper, request));
     }
 
     {
       SCOPED_TRACE("Browser initiated sub-resource request");
-      WebRequestInfo request = create_request(
-          request_url, content::RESOURCE_TYPE_SUB_RESOURCE, kBrowserProcessId);
+      WebRequestInfo request(create_request_params(
+          request_url, WebRequestResourceType::OTHER, kBrowserProcessId));
       bool expect_hidden = test_case.expected_hide_request_mask &
                            HIDE_BROWSER_SUB_RESOURCE_REQUEST;
       EXPECT_EQ(expect_hidden,
-                WebRequestPermissions::HideRequest(info_map.get(), request));
+                WebRequestPermissions::HideRequest(permission_helper, request));
     }
 
     {
       SCOPED_TRACE("Main-frame navigation");
-      WebRequestInfo request = create_request(
-          request_url, content::RESOURCE_TYPE_MAIN_FRAME, kBrowserProcessId);
+      WebRequestInfo request(create_request_params(
+          request_url, WebRequestResourceType::MAIN_FRAME, kBrowserProcessId));
       bool expect_hidden =
           test_case.expected_hide_request_mask & HIDE_MAIN_FRAME_NAVIGATION;
       EXPECT_EQ(expect_hidden,
-                WebRequestPermissions::HideRequest(info_map.get(), request));
+                WebRequestPermissions::HideRequest(permission_helper, request));
     }
 
     {
       SCOPED_TRACE("Sub-frame navigation");
-      WebRequestInfo request = create_request(
-          request_url, content::RESOURCE_TYPE_SUB_FRAME, kBrowserProcessId);
+      WebRequestInfo request(create_request_params(
+          request_url, WebRequestResourceType::SUB_FRAME, kBrowserProcessId));
       bool expect_hidden =
           test_case.expected_hide_request_mask & HIDE_SUB_FRAME_NAVIGATION;
       EXPECT_EQ(expect_hidden,
-                WebRequestPermissions::HideRequest(info_map.get(), request));
+                WebRequestPermissions::HideRequest(permission_helper, request));
     }
   }
 
   // Check protection of requests originating from the frame showing the Chrome
   // WebStore. Normally this request is not protected:
   GURL non_sensitive_url("http://www.google.com/test.js");
-  WebRequestInfo non_sensitive_request_info = create_request(
-      non_sensitive_url, content::RESOURCE_TYPE_SCRIPT, kRendererProcessId);
-  EXPECT_FALSE(WebRequestPermissions::HideRequest(info_map.get(),
-                                                  non_sensitive_request_info));
+
+  {
+    WebRequestInfo non_sensitive_request(create_request_params(
+        non_sensitive_url, WebRequestResourceType::SCRIPT, kRendererProcessId));
+    EXPECT_FALSE(WebRequestPermissions::HideRequest(permission_helper,
+                                                    non_sensitive_request));
+  }
 
   // If the origin is labeled by the WebStoreAppId, it becomes protected.
   {
     const int kWebstoreProcessId = 42;
     const int kSiteInstanceId = 23;
-    info_map->RegisterExtensionProcess(extensions::kWebStoreAppId,
-                                       kWebstoreProcessId, kSiteInstanceId);
-    WebRequestInfo sensitive_request_info = create_request(
-        non_sensitive_url, content::RESOURCE_TYPE_SCRIPT, kWebstoreProcessId);
-    EXPECT_TRUE(WebRequestPermissions::HideRequest(info_map.get(),
+    ProcessMap::Get(browser_context())
+        ->Insert(extensions::kWebStoreAppId, kWebstoreProcessId,
+                 kSiteInstanceId);
+    WebRequestInfo sensitive_request_info(create_request_params(
+        non_sensitive_url, WebRequestResourceType::SCRIPT, kWebstoreProcessId));
+    EXPECT_TRUE(WebRequestPermissions::HideRequest(permission_helper,
                                                    sensitive_request_info));
   }
-
-  // Check that a request for a non-sensitive URL is rejected if it's a PAC
-  // script fetch.
-  non_sensitive_request_info.is_pac_request = true;
-  EXPECT_TRUE(WebRequestPermissions::HideRequest(info_map.get(),
-                                                 non_sensitive_request_info));
 }
 
-TEST(ExtensionWebRequestPermissions,
-     CanExtensionAccessURLWithWithheldPermissions) {
-  // The InfoMap requires methods to be called on the IO thread. Fake it.
-  content::TestBrowserThreadBundle thread_bundle(
-      content::TestBrowserThreadBundle::IO_MAINLOOP);
-
+TEST_F(ExtensionWebRequestPermissionsTest,
+       CanExtensionAccessURLWithWithheldPermissions) {
+  ExtensionsAPIClient api_client;
   scoped_refptr<const Extension> extension =
       ExtensionBuilder("ext").AddPermission("<all_urls>").Build();
   URLPatternSet all_urls(
@@ -205,21 +225,18 @@ TEST(ExtensionWebRequestPermissions,
           APIPermissionSet(), ManifestPermissionSet(), all_urls.Clone(),
           URLPatternSet()) /* withheld permissions */);
 
-  scoped_refptr<InfoMap> info_map = base::MakeRefCounted<InfoMap>();
-  info_map->AddExtension(extension.get(), base::Time(), false, false);
+  ExtensionRegistry::Get(browser_context())->AddEnabled(extension);
 
-  auto get_access = [extension, info_map](
+  auto get_access = [extension, this](
                         const GURL& url,
-                        const base::Optional<url::Origin>& initiator,
-                        const base::Optional<content::ResourceType>&
-                            resource_type) {
+                        const absl::optional<url::Origin>& initiator,
+                        const WebRequestResourceType type) {
     constexpr int kTabId = 42;
     constexpr WebRequestPermissions::HostPermissionsCheck kPermissionsCheck =
         WebRequestPermissions::REQUIRE_HOST_PERMISSION_FOR_URL;
     return WebRequestPermissions::CanExtensionAccessURL(
-        info_map.get(), extension->id(), url, kTabId,
-        false /* crosses incognito */, kPermissionsCheck, initiator,
-        resource_type);
+        PermissionHelper::Get(browser_context()), extension->id(), url, kTabId,
+        false /* crosses incognito */, kPermissionsCheck, initiator, type);
   };
 
   const GURL example_com("https://example.com");
@@ -228,19 +245,18 @@ TEST(ExtensionWebRequestPermissions,
   const url::Origin chromium_org_origin(url::Origin::Create(chromium_org));
 
   GURL urls[] = {example_com, chromium_org};
-  base::Optional<url::Origin> initiators[] = {base::nullopt, example_com_origin,
+  absl::optional<url::Origin> initiators[] = {absl::nullopt, example_com_origin,
                                               chromium_org_origin};
-  base::Optional<content::ResourceType> resource_types[] = {
-      base::nullopt, content::RESOURCE_TYPE_SUB_RESOURCE,
-      content::RESOURCE_TYPE_MAIN_FRAME};
+  WebRequestResourceType types[] = {WebRequestResourceType::OTHER,
+                                    WebRequestResourceType::MAIN_FRAME};
 
   // With all permissions withheld, the result of any request should be
   // kWithheld.
   for (const auto& url : urls) {
     for (const auto& initiator : initiators) {
-      for (const auto& resource_type : resource_types) {
+      for (const auto& type : types) {
         EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
-                  get_access(url, initiator, resource_type));
+                  get_access(url, initiator, type));
       }
     }
   }
@@ -258,12 +274,12 @@ TEST(ExtensionWebRequestPermissions,
 
   // example.com isn't granted, so without an initiator or with an initiator
   // that the extension doesn't have access to, access is withheld.
-  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
-            get_access(example_com, base::nullopt,
-                       content::RESOURCE_TYPE_SUB_RESOURCE));
+  EXPECT_EQ(
+      PermissionsData::PageAccess::kWithheld,
+      get_access(example_com, absl::nullopt, WebRequestResourceType::OTHER));
   EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
             get_access(example_com, example_com_origin,
-                       content::RESOURCE_TYPE_MAIN_FRAME));
+                       WebRequestResourceType::MAIN_FRAME));
 
   // However, if a sub-resource request is made to example.com from an initiator
   // that the extension has access to, access is allowed. This is functionally
@@ -271,31 +287,28 @@ TEST(ExtensionWebRequestPermissions,
   // permissions feature. See https://crbug.com/851722.
   EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
             get_access(example_com, chromium_org_origin,
-                       content::RESOURCE_TYPE_SUB_RESOURCE));
-  EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
-            get_access(example_com, chromium_org_origin, base::nullopt));
+                       WebRequestResourceType::OTHER));
   EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
             get_access(example_com, chromium_org_origin,
-                       content::RESOURCE_TYPE_SUB_FRAME));
+                       WebRequestResourceType::SUB_FRAME));
   EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
             get_access(example_com, chromium_org_origin,
-                       content::RESOURCE_TYPE_MAIN_FRAME));
+                       WebRequestResourceType::MAIN_FRAME));
 
   // With access to the requested origin, access is always allowed for
   // REQUIRE_HOST_PERMISSION_FOR_URL, independent of initiator.
   for (const auto& initiator : initiators) {
-    for (const auto& resource_type : resource_types) {
+    for (const auto& type : types) {
       EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
-                get_access(chromium_org, initiator, resource_type));
+                get_access(chromium_org, initiator, type));
     }
   }
 }
 
-TEST(ExtensionWebRequestPermissions,
-     RequireAccessToURLAndInitiatorWithWithheldPermissions) {
-  // The InfoMap requires methods to be called on the IO thread. Fake it.
-  content::TestBrowserThreadBundle thread_bundle(
-      content::TestBrowserThreadBundle::IO_MAINLOOP);
+TEST_F(ExtensionWebRequestPermissionsTest,
+       RequireAccessToURLAndInitiatorWithWithheldPermissions) {
+  ExtensionsAPIClient api_client;
+
   const char* kGoogleCom = "https://google.com/";
   const char* kExampleCom = "https://example.com/";
   const char* kYahooCom = "https://yahoo.com";
@@ -320,21 +333,18 @@ TEST(ExtensionWebRequestPermissions,
           kWithheldPatternSet.Clone(),
           kWithheldPatternSet.Clone()) /* withheld permissions */);
 
-  scoped_refptr<InfoMap> info_map = base::MakeRefCounted<InfoMap>();
-  info_map->AddExtension(extension.get(), base::Time(), false, false);
+  ExtensionRegistry::Get(browser_context())->AddEnabled(extension);
 
-  auto get_access = [extension, info_map](
+  auto get_access = [extension, this](
                         const GURL& url,
-                        const base::Optional<url::Origin>& initiator,
-                        const base::Optional<content::ResourceType>&
-                            resource_type) {
+                        const absl::optional<url::Origin>& initiator,
+                        WebRequestResourceType type) {
     constexpr int kTabId = 42;
     constexpr WebRequestPermissions::HostPermissionsCheck kPermissionsCheck =
         WebRequestPermissions::REQUIRE_HOST_PERMISSION_FOR_URL_AND_INITIATOR;
     return WebRequestPermissions::CanExtensionAccessURL(
-        info_map.get(), extension->id(), url, kTabId,
-        false /* crosses incognito */, kPermissionsCheck, initiator,
-        resource_type);
+        PermissionHelper::Get(browser_context()), extension->id(), url, kTabId,
+        false /* crosses incognito */, kPermissionsCheck, initiator, type);
   };
 
   using PageAccess = PermissionsData::PageAccess;
@@ -346,15 +356,15 @@ TEST(ExtensionWebRequestPermissions,
   const url::Origin kDeniedOrigin(url::Origin::Create(kDeniedUrl));
   const url::Origin kOpaqueOrigin;
   struct {
-    base::Optional<url::Origin> initiator;
+    absl::optional<url::Origin> initiator;
     GURL url;
     PermissionsData::PageAccess expected_access_subresource;
     PermissionsData::PageAccess expected_access_navigation;
   } cases[] = {
-      {base::nullopt, kAllowedUrl, PageAccess::kAllowed, PageAccess::kAllowed},
-      {base::nullopt, kWithheldUrl, PageAccess::kWithheld,
+      {absl::nullopt, kAllowedUrl, PageAccess::kAllowed, PageAccess::kAllowed},
+      {absl::nullopt, kWithheldUrl, PageAccess::kWithheld,
        PageAccess::kWithheld},
-      {base::nullopt, kDeniedUrl, PageAccess::kDenied, PageAccess::kDenied},
+      {absl::nullopt, kDeniedUrl, PageAccess::kDenied, PageAccess::kDenied},
 
       {kOpaqueOrigin, kAllowedUrl, PageAccess::kAllowed, PageAccess::kAllowed},
       {kOpaqueOrigin, kWithheldUrl, PageAccess::kWithheld,
@@ -382,15 +392,13 @@ TEST(ExtensionWebRequestPermissions,
         test_case.initiator ? test_case.initiator->Serialize().c_str()
                             : "empty"));
     EXPECT_EQ(get_access(test_case.url, test_case.initiator,
-                         content::RESOURCE_TYPE_SUB_RESOURCE),
-              test_case.expected_access_subresource);
-    EXPECT_EQ(get_access(test_case.url, test_case.initiator, base::nullopt),
+                         WebRequestResourceType::OTHER),
               test_case.expected_access_subresource);
     EXPECT_EQ(get_access(test_case.url, test_case.initiator,
-                         content::RESOURCE_TYPE_SUB_FRAME),
+                         WebRequestResourceType::SUB_FRAME),
               test_case.expected_access_navigation);
     EXPECT_EQ(get_access(test_case.url, test_case.initiator,
-                         content::RESOURCE_TYPE_MAIN_FRAME),
+                         WebRequestResourceType::MAIN_FRAME),
               test_case.expected_access_navigation);
   }
 }

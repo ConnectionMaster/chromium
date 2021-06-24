@@ -12,29 +12,28 @@
 #include <string>
 
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/strings/string_piece.h"
 #include "base/threading/thread_checker.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "media/base/audio_parameters.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "services/audio/public/mojom/audio_processing.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/audio/snoopable.h"
 #include "services/audio/stream_monitor.h"
-#include "services/audio/stream_monitor_coordinator.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 class AudioBus;
 class AudioInputStream;
 class AudioManager;
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-class AudioProcessor;
-#endif
 class UserInputMonitor;
 }  // namespace media
 
 namespace audio {
+class InputStreamActivityMonitor;
 
 // Only do power monitoring for non-mobile platforms to save resources.
 #if !defined(OS_ANDROID) && !defined(OS_IOS)
@@ -61,7 +60,33 @@ class InputController final : public StreamMonitor {
     // Native input stream reports an error. Exact reason differs between
     // platforms.
     STREAM_ERROR,  // = 3
+
+    // Open failed due to lack of system permissions.
+    STREAM_OPEN_SYSTEM_PERMISSIONS_ERROR,  // = 4
+
+    // Open failed due to device in use by another app.
+    STREAM_OPEN_DEVICE_IN_USE_ERROR,  // = 5
   };
+
+#if defined(AUDIO_POWER_MONITORING)
+  // Used to log a silence report (see OnData).
+  // Elements in this enum should not be deleted or rearranged; the only
+  // permitted operation is to add new elements before SILENCE_STATE_MAX and
+  // update SILENCE_STATE_MAX.
+  // Possible silence state transitions:
+  //           SILENCE_STATE_AUDIO_AND_SILENCE
+  //               ^                  ^
+  // SILENCE_STATE_ONLY_AUDIO   SILENCE_STATE_ONLY_SILENCE
+  //               ^                  ^
+  //            SILENCE_STATE_NO_MEASUREMENT
+  enum SilenceState {
+    SILENCE_STATE_NO_MEASUREMENT = 0,
+    SILENCE_STATE_ONLY_AUDIO = 1,
+    SILENCE_STATE_ONLY_SILENCE = 2,
+    SILENCE_STATE_AUDIO_AND_SILENCE = 3,
+    SILENCE_STATE_MAX = SILENCE_STATE_AUDIO_AND_SILENCE
+  };
+#endif
 
   // An event handler that receives events from the InputController. The
   // following methods are all called on the audio thread.
@@ -114,11 +139,10 @@ class InputController final : public StreamMonitor {
       EventHandler* event_handler,
       SyncWriter* sync_writer,
       media::UserInputMonitor* user_input_monitor,
+      InputStreamActivityMonitor* activity_monitor,
       const media::AudioParameters& params,
       const std::string& device_id,
-      bool agc_is_enabled,
-      StreamMonitorCoordinator* stream_monitor_coordinator,
-      mojom::AudioProcessingConfigPtr processing_config);
+      bool agc_is_enabled);
 
   // Starts recording using the created audio input stream.
   void Record();
@@ -134,8 +158,6 @@ class InputController final : public StreamMonitor {
   // Sets the output device which will be used to cancel audio from, if this
   // input device supports echo cancellation.
   void SetOutputDeviceForAec(const std::string& output_device_id);
-
-  bool ShouldRegisterWithStreamMonitorCoordinator() const;
 
   // StreamMonitor implementation
   void OnStreamActive(Snoopable* snoopable) override;
@@ -162,80 +184,12 @@ class InputController final : public StreamMonitor {
     CAPTURE_STARTUP_RESULT_MAX = CAPTURE_STARTUP_STOPPED_EARLY,
   };
 
-#if defined(AUDIO_POWER_MONITORING)
-  // Used to log a silence report (see OnData).
-  // Elements in this enum should not be deleted or rearranged; the only
-  // permitted operation is to add new elements before SILENCE_STATE_MAX and
-  // update SILENCE_STATE_MAX.
-  // Possible silence state transitions:
-  //           SILENCE_STATE_AUDIO_AND_SILENCE
-  //               ^                  ^
-  // SILENCE_STATE_ONLY_AUDIO   SILENCE_STATE_ONLY_SILENCE
-  //               ^                  ^
-  //            SILENCE_STATE_NO_MEASUREMENT
-  enum SilenceState {
-    SILENCE_STATE_NO_MEASUREMENT = 0,
-    SILENCE_STATE_ONLY_AUDIO = 1,
-    SILENCE_STATE_ONLY_SILENCE = 2,
-    SILENCE_STATE_AUDIO_AND_SILENCE = 3,
-    SILENCE_STATE_MAX = SILENCE_STATE_AUDIO_AND_SILENCE
-  };
-#endif
-
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-  class ProcessingHelper final : public mojom::AudioProcessorControls,
-                                 public Snoopable::Snooper {
-   public:
-    ProcessingHelper(const media::AudioParameters& params,
-                     media::AudioProcessingSettings processing_settings,
-                     mojom::AudioProcessorControlsRequest controls_request);
-    ~ProcessingHelper() final;
-
-    // Snoopable::Snooper implementation
-    void OnData(const media::AudioBus& audio_bus,
-                base::TimeTicks reference_time,
-                double volume) final;
-
-    // mojom::AudioProcessorControls implementation.
-    void GetStats(GetStatsCallback callback) final;
-    void StartEchoCancellationDump(base::File file) final;
-    void StopEchoCancellationDump() final;
-
-    media::AudioProcessor* GetAudioProcessor();
-
-    // Starts monitoring |output_stream| instead of the currently monitored
-    // stream, if any.
-    void StartMonitoringStream(Snoopable* output_stream);
-
-    // Stops monitoring |output_stream|, provided it's the currently monitored
-    // stream.
-    void StopMonitoringStream(Snoopable* output_stream);
-
-    // Stops monitoring |monitored_output_stream_|, if not null.
-    void StopAllStreamMonitoring();
-
-   private:
-    // Starts and/or stops snooping and updates |monitored_output_stream_|
-    // appropriately.
-    void ChangeMonitoredStream(Snoopable* output_stream);
-
-    THREAD_CHECKER(owning_thread_);
-
-    const mojo::Binding<mojom::AudioProcessorControls> binding_;
-    const media::AudioParameters params_;
-    const std::unique_ptr<media::AudioProcessor> audio_processor_;
-    media::AudioParameters output_params_;
-    Snoopable* monitored_output_stream_ = nullptr;
-  };
-#endif  // defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-
   InputController(EventHandler* handler,
                   SyncWriter* sync_writer,
                   media::UserInputMonitor* user_input_monitor,
+                  InputStreamActivityMonitor* activity_monitor,
                   const media::AudioParameters& params,
-                  StreamType type,
-                  StreamMonitorCoordinator* stream_monitor_coordinator,
-                  mojom::AudioProcessingConfigPtr processing_config);
+                  StreamType type);
 
   void DoCreate(media::AudioManager* audio_manager,
                 const media::AudioParameters& params,
@@ -279,11 +233,10 @@ class InputController final : public StreamMonitor {
 
   void CheckMutedState();
 
-  static StreamType ParamsToStreamType(const media::AudioParameters& params);
+  // Called once at first audio callback.
+  void ReportIsAlive();
 
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-  void UpdateVolumeAndAPMStats(base::Optional<double> new_volume);
-#endif
+  static StreamType ParamsToStreamType(const media::AudioParameters& params);
 
   // This class must be used on the audio manager thread.
   THREAD_CHECKER(owning_thread_);
@@ -305,9 +258,8 @@ class InputController final : public StreamMonitor {
 
   media::UserInputMonitor* const user_input_monitor_;
 
-  bool registered_to_coordinator_ = false;
-  StreamMonitorCoordinator* const stream_monitor_coordinator_;
-  mojom::AudioProcessingConfigPtr processing_config_;
+  // Notified when the stream starts/stops recording.
+  InputStreamActivityMonitor* const activity_monitor_;
 
 #if defined(AUDIO_POWER_MONITORING)
   // Whether the silence state and microphone levels should be checked and sent
@@ -329,11 +281,6 @@ class InputController final : public StreamMonitor {
   bool is_muted_ = false;
   base::RepeatingTimer check_muted_state_timer_;
 
-#if defined(AUDIO_PROCESSING_IN_AUDIO_SERVICE)
-  // Holds stats related to audio processing.
-  base::Optional<ProcessingHelper> processing_helper_;
-#endif
-
   class AudioCallback;
   // Holds a pointer to the callback object that receives audio data from
   // the lower audio layer. Valid only while 'recording' (between calls to
@@ -353,7 +300,7 @@ class InputController final : public StreamMonitor {
   // the error notification is pending and then make a callback from an
   // InputController that has already been closed.
   // All outstanding weak pointers, are invalidated at the end of DoClose.
-  base::WeakPtrFactory<InputController> weak_ptr_factory_;
+  base::WeakPtrFactory<InputController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(InputController);
 };

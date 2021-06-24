@@ -29,20 +29,20 @@
 import collections
 import logging
 import os
-import StringIO
 
 from blinkpy.common.system.executive import ScriptError
+
+from six import StringIO
 
 _log = logging.getLogger(__name__)
 
 
 class MockProcess(object):
-
     def __init__(self, stdout='MOCK STDOUT\n', stderr='', returncode=0):
         self.pid = 42
-        self.stdout = StringIO.StringIO(stdout)
-        self.stderr = StringIO.StringIO(stderr)
-        self.stdin = StringIO.StringIO()
+        self.stdout = StringIO(stdout)
+        self.stderr = StringIO(stderr)
+        self.stdin = StringIO()
         self.returncode = returncode
 
     def wait(self):
@@ -50,7 +50,8 @@ class MockProcess(object):
 
     def poll(self):
         # Consider the process completed when all the stdout and stderr has been read.
-        if self.stdout.len != self.stdout.tell() or self.stderr.len != self.stderr.tell():
+        if (self.stdout.len != self.stdout.tell()
+                or self.stderr.len != self.stderr.tell()):
             return None
         return self.returncode
 
@@ -64,8 +65,7 @@ class MockProcess(object):
         return
 
 
-MockCall = collections.namedtuple(
-    'MockCall', ('args', 'kwargs'))
+MockCall = collections.namedtuple('MockCall', ('args', 'kwargs'))
 
 
 class MockExecutive(object):
@@ -77,9 +77,14 @@ class MockExecutive(object):
     def ignore_error(error):
         pass
 
-    def __init__(self, should_log=False, should_throw=False,
-                 output='MOCK output of child process', stderr='',
-                 exit_code=0, exception=None, run_command_fn=None,
+    def __init__(self,
+                 should_log=False,
+                 should_throw=False,
+                 output='MOCK output of child process',
+                 stderr='',
+                 exit_code=0,
+                 exception=None,
+                 run_command_fn=None,
                  proc=None):
         self._should_log = should_log
         self._should_throw = should_throw
@@ -114,17 +119,19 @@ class MockExecutive(object):
 
     # The argument list should match Executive.run_command, even if
     # some arguments are not used. pylint: disable=unused-argument
-    def run_command(self,
-                    args,
-                    cwd=None,
-                    env=None,
-                    input=None,  # pylint: disable=redefined-builtin
-                    timeout_seconds=None,
-                    error_handler=None,
-                    return_exit_code=False,
-                    return_stderr=True,
-                    decode_output=True,
-                    debug_logging=True):
+    def run_command(
+            self,
+            args,
+            cwd=None,
+            env=None,
+            input=None,  # pylint: disable=redefined-builtin
+            timeout_seconds=None,
+            error_handler=None,
+            return_exit_code=False,
+            return_stderr=True,
+            ignore_stderr=False,
+            decode_output=True,
+            debug_logging=True):
         self._append_call(args, cwd=cwd, input=input, env=env)
 
         assert isinstance(args, list) or isinstance(args, tuple)
@@ -136,12 +143,15 @@ class MockExecutive(object):
             input_string = ''
             if input:
                 input_string = ', input=%s' % input
-            _log.info('MOCK run_command: %s, cwd=%s%s%s', args, cwd, env_string, input_string)
+            _log.info('MOCK run_command: %s, cwd=%s%s%s', args, cwd,
+                      env_string, input_string)
 
         if self._exception:
             raise self._exception  # pylint: disable=raising-bad-type
         if self._should_throw:
-            raise ScriptError('MOCK ScriptError', output=self._output)
+            raise ScriptError('MOCK ScriptError',
+                              output=self._output,
+                              exit_code=self._exit_code)
 
         if self._run_command_fn:
             return self._run_command_fn(args)
@@ -150,13 +160,16 @@ class MockExecutive(object):
             return self._exit_code
 
         if self._exit_code and error_handler:
-            script_error = ScriptError(script_args=args, exit_code=self._exit_code, output=self._output)
+            script_error = ScriptError(
+                script_args=args,
+                exit_code=self._exit_code,
+                output=self._output)
             error_handler(script_error)
 
         output = self._output
         if return_stderr:
             output += self._stderr
-        if decode_output and type(output) is not unicode:
+        if decode_output and not isinstance(output, unicode):
             output = output.decode('utf-8')
 
         return output
@@ -164,7 +177,7 @@ class MockExecutive(object):
     def cpu_count(self):
         return 2
 
-    def kill_process(self, pid):
+    def kill_process(self, pid, kill_tree=True):
         pass
 
     def interrupt(self, pid):
@@ -182,7 +195,10 @@ class MockExecutive(object):
                 env_string = ', env=%s' % env
             _log.info('MOCK popen: %s%s%s', args, cwd_string, env_string)
         if not self._proc:
-            self._proc = MockProcess(stdout=self._output, stderr=self._stderr, returncode=self._exit_code)
+            self._proc = MockProcess(
+                stdout=self._output,
+                stderr=self._stderr,
+                returncode=self._exit_code)
         return self._proc
 
     def call(self, args, **_):
@@ -197,7 +213,8 @@ class MockExecutive(object):
         command_outputs = []
         for cmd_line, cwd in commands:
             assert all(isinstance(arg, basestring) for arg in cmd_line)
-            command_outputs.append([0, self.run_command(cmd_line, cwd=cwd), ''])
+            command_outputs.append(
+                [0, self.run_command(cmd_line, cwd=cwd), ''])
 
         new_calls = self.full_calls[num_previous_calls:]
         self.full_calls = self.full_calls[:num_previous_calls]
@@ -218,7 +235,9 @@ class MockExecutive(object):
             elif isinstance(v, MockCall):
                 return v.args
             else:
-                return TypeError('Unknown full_calls type: %s' % (type(v).__name__,))
+                return TypeError(
+                    'Unknown full_calls type: %s' % (type(v).__name__, ))
+
         return get_args(self.full_calls)
 
 
@@ -230,4 +249,5 @@ def mock_git_commands(vals, strict=False):
             raise AssertionError('{} not found in sub-command list {}'.format(
                 sub_command, vals))
         return vals.get(sub_command, '')
+
     return MockExecutive(run_command_fn=run_fn)

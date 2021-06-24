@@ -40,6 +40,14 @@
       in_origin_trial: true,
     },
     {
+      name: "OriginTrialInterfaceFeature",
+      in_origin_trial: true,
+    },
+    {
+      name: "OriginTrialPartialFeature",
+      in_origin_trial: true,
+    },
+    {
       name: "PartialRuntimeFeature",
     },
     {

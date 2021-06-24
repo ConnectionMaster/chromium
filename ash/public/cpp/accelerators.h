@@ -8,10 +8,16 @@
 #include <stddef.h>
 
 #include "ash/public/cpp/ash_public_export.h"
+#include "base/callback_forward.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
+namespace ui {
+class Accelerator;
+}
+
 namespace ash {
+class AcceleratorHistory;
 
 // See documentation in ash/accelerators/accelerator_table.h.
 
@@ -20,8 +26,12 @@ enum AcceleratorAction {
   BRIGHTNESS_UP,
   CYCLE_BACKWARD_MRU,
   CYCLE_FORWARD_MRU,
-  DEV_ADD_REMOVE_DISPLAY,
-  DEV_TOGGLE_UNIFIED_DESKTOP,
+  DESKS_ACTIVATE_DESK_LEFT,
+  DESKS_ACTIVATE_DESK_RIGHT,
+  DESKS_MOVE_ACTIVE_ITEM_LEFT,
+  DESKS_MOVE_ACTIVE_ITEM_RIGHT,
+  DESKS_NEW_DESK,
+  DESKS_REMOVE_CURRENT_DESK,
   DISABLE_CAPS_LOCK,
   EXIT,
   FOCUS_NEXT_PANE,
@@ -44,31 +54,41 @@ enum AcceleratorAction {
   LOCK_SCREEN,
   MAGNIFIER_ZOOM_IN,
   MAGNIFIER_ZOOM_OUT,
+  MEDIA_FAST_FORWARD,
   MEDIA_NEXT_TRACK,
+  MEDIA_PAUSE,
+  MEDIA_PLAY,
   MEDIA_PLAY_PAUSE,
   MEDIA_PREV_TRACK,
+  MEDIA_REWIND,
+  MEDIA_STOP,
   MOVE_ACTIVE_WINDOW_BETWEEN_DISPLAYS,
   NEW_INCOGNITO_WINDOW,
   NEW_TAB,
   NEW_WINDOW,
+  OPEN_CALCULATOR,
   OPEN_CROSH,
+  OPEN_DIAGNOSTICS,
   OPEN_FEEDBACK_PAGE,
   OPEN_FILE_MANAGER,
   OPEN_GET_HELP,
   POWER_PRESSED,
   POWER_RELEASED,
   PRINT_UI_HIERARCHIES,
+  PRIVACY_SCREEN_TOGGLE,
   RESTORE_TAB,
   ROTATE_SCREEN,
   ROTATE_WINDOW,
   SCALE_UI_DOWN,
   SCALE_UI_RESET,
   SCALE_UI_UP,
+  SHOW_EMOJI_PICKER,
   SHOW_IME_MENU_BUBBLE,
   SHOW_SHORTCUT_VIEWER,
   SHOW_STYLUS_TOOLS,
   SHOW_TASK_MANAGER,
-  START_VOICE_INTERACTION,
+  START_AMBIENT_MODE,
+  START_ASSISTANT,
   SUSPEND,
   SWAP_PRIMARY_DISPLAY,
   SWITCH_IME,  // Switch to another IME depending on the accelerator.
@@ -82,6 +102,7 @@ enum AcceleratorAction {
   TOGGLE_APP_LIST,
   TOGGLE_APP_LIST_FULLSCREEN,
   TOGGLE_CAPS_LOCK,
+  TOGGLE_CLIPBOARD_HISTORY,
   TOGGLE_DICTATION,
   TOGGLE_DOCKED_MAGNIFIER,
   TOGGLE_FULLSCREEN,
@@ -103,7 +124,7 @@ enum AcceleratorAction {
   WINDOW_CYCLE_SNAP_LEFT,
   WINDOW_CYCLE_SNAP_RIGHT,
   WINDOW_MINIMIZE,
-  WINDOW_POSITION_CENTER,
+  MINIMIZE_TOP_WINDOW_ON_BACK,
 
   // Debug accelerators are intentionally at the end, so that if you remove one
   // you don't need to update tests which check hashes of the ids.
@@ -111,7 +132,6 @@ enum AcceleratorAction {
   DEBUG_PRINT_VIEW_HIERARCHY,
   DEBUG_PRINT_WINDOW_HIERARCHY,
   DEBUG_SHOW_TOAST,
-  DEBUG_TOGGLE_DEVICE_SCALE_FACTOR,
   DEBUG_TOGGLE_SHOW_DEBUG_BORDERS,
   DEBUG_TOGGLE_SHOW_FPS_COUNTER,
   DEBUG_TOGGLE_SHOW_PAINT_RECTS,
@@ -120,6 +140,12 @@ enum AcceleratorAction {
   DEBUG_TOGGLE_TABLET_MODE,
   DEBUG_TOGGLE_WALLPAPER_MODE,
   DEBUG_TRIGGER_CRASH,  // Intentionally crash the ash process.
+  DEBUG_TOGGLE_HUD_DISPLAY,
+  DEV_ADD_REMOVE_DISPLAY,
+  // Different than TOGGLE_APP_LIST to ignore search-as-modifier-key rules for
+  // enabling the accelerator.
+  DEV_TOGGLE_APP_LIST,
+  DEV_TOGGLE_UNIFIED_DESKTOP,
 };
 
 struct AcceleratorData {
@@ -136,6 +162,78 @@ ASH_PUBLIC_EXPORT constexpr int kDebugModifier =
 // Accelerators handled by AcceleratorController.
 ASH_PUBLIC_EXPORT extern const AcceleratorData kAcceleratorData[];
 ASH_PUBLIC_EXPORT extern const size_t kAcceleratorDataLength;
+
+// Accelerators that are enabled/disabled with new accelerator mapping.
+// crbug.com/1067269
+ASH_PUBLIC_EXPORT extern const AcceleratorData
+    kEnableWithNewMappingAcceleratorData[];
+ASH_PUBLIC_EXPORT extern const size_t
+    kEnableWithNewMappingAcceleratorDataLength;
+ASH_PUBLIC_EXPORT extern const AcceleratorData
+    kDisableWithNewMappingAcceleratorData[];
+ASH_PUBLIC_EXPORT extern const size_t
+    kDisableWithNewMappingAcceleratorDataLength;
+
+// Accelerators that are enabled with positional shortcut mapping.
+ASH_PUBLIC_EXPORT extern const AcceleratorData
+    kEnableWithPositionalAcceleratorsData[];
+ASH_PUBLIC_EXPORT extern const size_t
+    kEnableWithPositionalAcceleratorsDataLength;
+
+// The public-facing interface for accelerator handling, which is Ash's duty to
+// implement.
+class ASH_PUBLIC_EXPORT AcceleratorController {
+ public:
+  // Returns the singleton instance.
+  static AcceleratorController* Get();
+
+  // Called by Chrome to set the closure that should be run when the volume has
+  // been adjusted (playing an audible tone when spoken feedback is enabled).
+  static void SetVolumeAdjustmentSoundCallback(
+      const base::RepeatingClosure& closure);
+
+  // Called by Ash to run the closure from SetVolumeAdjustmentSoundCallback.
+  static void PlayVolumeAdjustmentSound();
+
+  // Activates the target associated with the specified accelerator.
+  // First, AcceleratorPressed handler of the most recently registered target
+  // is called, and if that handler processes the event (i.e. returns true),
+  // this method immediately returns. If not, we do the same thing on the next
+  // target, and so on.
+  // Returns true if an accelerator was activated.
+  virtual bool Process(const ui::Accelerator& accelerator) = 0;
+
+  // Returns true if the |accelerator| is deprecated. Deprecated accelerators
+  // can be consumed by web contents if needed.
+  virtual bool IsDeprecated(const ui::Accelerator& accelerator) const = 0;
+
+  // Performs the specified action if it is enabled. Returns whether the action
+  // was performed successfully.
+  virtual bool PerformActionIfEnabled(AcceleratorAction action,
+                                      const ui::Accelerator& accelerator) = 0;
+
+  // Called by Chrome when a menu item accelerator has been triggered. Returns
+  // true if the menu should close.
+  virtual bool OnMenuAccelerator(const ui::Accelerator& accelerator) = 0;
+
+  // Returns true if the |accelerator| is registered.
+  virtual bool IsRegistered(const ui::Accelerator& accelerator) const = 0;
+
+  // Returns the accelerator histotry.
+  virtual AcceleratorHistory* GetAcceleratorHistory() = 0;
+
+ protected:
+  AcceleratorController();
+  virtual ~AcceleratorController();
+};
+
+// The public facing interface for AcceleratorHistory, which is implemented in
+// ash.
+class ASH_PUBLIC_EXPORT AcceleratorHistory {
+ public:
+  // Stores |accelerator| if it's different than the currently stored one.
+  virtual void StoreCurrentAccelerator(const ui::Accelerator& accelerator) = 0;
+};
 
 }  // namespace ash
 

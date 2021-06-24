@@ -5,11 +5,15 @@
 package org.chromium.chrome.browser.autofill_assistant.infobox;
 
 import android.content.Context;
-import android.view.LayoutInflater;
 import android.view.View;
 
 import org.chromium.chrome.autofill_assistant.R;
+import org.chromium.chrome.browser.autofill_assistant.AutofillAssistantUiController;
+import org.chromium.chrome.browser.autofill_assistant.LayoutUtils;
 import org.chromium.chrome.browser.autofill_assistant.infobox.AssistantInfoBoxViewBinder.ViewHolder;
+import org.chromium.chrome.browser.image_fetcher.ImageFetcher;
+import org.chromium.chrome.browser.image_fetcher.ImageFetcherConfig;
+import org.chromium.chrome.browser.image_fetcher.ImageFetcherFactory;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 /**
@@ -20,10 +24,18 @@ public class AssistantInfoBoxCoordinator {
     private AssistantInfoBoxViewBinder mViewBinder;
 
     public AssistantInfoBoxCoordinator(Context context, AssistantInfoBoxModel model) {
-        mView = LayoutInflater.from(context).inflate(
+        this(context, model,
+                ImageFetcherFactory.createImageFetcher(ImageFetcherConfig.DISK_CACHE_ONLY,
+                        AutofillAssistantUiController.getProfile()));
+    }
+
+    /** Used for testing to inject an image fetcher. */
+    public AssistantInfoBoxCoordinator(
+            Context context, AssistantInfoBoxModel model, ImageFetcher imageFetcher) {
+        mView = LayoutUtils.createInflater(context).inflate(
                 R.layout.autofill_assistant_info_box, /* root= */ null);
         ViewHolder viewHolder = new ViewHolder(context, mView);
-        mViewBinder = new AssistantInfoBoxViewBinder(context);
+        mViewBinder = new AssistantInfoBoxViewBinder(context, imageFetcher);
         PropertyModelChangeProcessor.create(model, viewHolder, mViewBinder);
 
         // InfoBox view is initially hidden.

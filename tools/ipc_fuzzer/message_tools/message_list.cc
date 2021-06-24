@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "build/build_config.h"
 
 // Include once to get the type definitions
@@ -47,16 +47,7 @@ static bool check_msgtable() {
   // Exclude test and other non-browser files from consideration.  Do not
   // include message files used inside the actual chrome browser in this list.
   exemptions.push_back(TestMsgStart);
-  exemptions.push_back(BlinkTestMsgStart);
-  exemptions.push_back(WebTestMsgStart);
-  exemptions.push_back(CastCryptoMsgStart);   // Reserved for chromecast.
-  exemptions.push_back(CastChannelMsgStart);  // Reserved for chromecast.
-  exemptions.push_back(CastMediaMsgStart);    // Reserved for chromecast.
-  exemptions.push_back(IPCTestMsgStart);
   exemptions.push_back(WorkerMsgStart);    // Now only used by tests.
-  exemptions.push_back(ResourceMsgStart);  // Cleanup underway.
-  exemptions.push_back(ChromeUtilityPrintingMsgStart);  // BUILDFLAGS, sigh.
-  exemptions.push_back(WebRtcLoggingMsgStart);
 
 #if !BUILDFLAG(ENABLE_NACL)
   exemptions.push_back(NaClMsgStart);
@@ -64,19 +55,10 @@ static bool check_msgtable() {
 
 
 #if !defined(OS_ANDROID)
-  exemptions.push_back(JavaBridgeMsgStart);
-  exemptions.push_back(MediaPlayerMsgStart);
   exemptions.push_back(EncryptedMediaMsgStart);
   exemptions.push_back(GinJavaBridgeMsgStart);
-  exemptions.push_back(AndroidWebViewMsgStart);
-  exemptions.push_back(SyncCompositorMsgStart);
   exemptions.push_back(ExtensionWorkerMsgStart);
-  exemptions.push_back(SurfaceViewManagerMsgStart);
 #endif  // !defined(OS_ANDROID)
-
-#if !defined(USE_OZONE)
-  exemptions.push_back(OzoneGpuMsgStart);
-#endif  // !defined(USE_OZONE)
 
   for (size_t i = 0; i < MSGTABLE_SIZE; ++i) {
     int class_id = IPC_MESSAGE_ID_CLASS(msgtable[i].id);
@@ -93,7 +75,7 @@ static bool check_msgtable() {
       result = false;
     }
     while (class_id > previous_class_id + 1) {
-      if (!base::ContainsValue(exemptions, previous_class_id + 1)) {
+      if (!base::Contains(exemptions, previous_class_id + 1)) {
         std::cout << "Missing message file for enum "
                   << class_id - (previous_class_id + 1)
                   <<  " before enum used by " << file_name << "\n";
@@ -108,7 +90,7 @@ static bool check_msgtable() {
   }
 
   while (LastIPCMsgStart > highest_class_id + 1) {
-    if (!base::ContainsValue(exemptions, highest_class_id + 1)) {
+    if (!base::Contains(exemptions, highest_class_id + 1)) {
       std::cout << "Missing message file for enum "
                 << LastIPCMsgStart - (highest_class_id + 1)
                 << " before enum LastIPCMsgStart\n";

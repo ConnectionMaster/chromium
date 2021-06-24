@@ -16,14 +16,11 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/sequenced_task_runner.h"
 #include "base/strings/string_piece.h"
 #include "base/time/time.h"
 #include "dbus/dbus_export.h"
 #include "dbus/object_path.h"
-
-namespace base {
-class TaskRunner;
-}  // namespace base
 
 namespace dbus {
 
@@ -86,12 +83,12 @@ class CHROME_DBUS_EXPORT ObjectProxy
       base::OnceCallback<void(Response*, ErrorResponse*)>;
 
   // Called when a signal is received. Signal* is the incoming signal.
-  using SignalCallback = base::Callback<void(Signal*)>;
+  using SignalCallback = base::RepeatingCallback<void(Signal*)>;
 
   // Called when NameOwnerChanged signal is received.
   using NameOwnerChangedCallback =
-      base::Callback<void(const std::string& old_owner,
-                          const std::string& new_owner)>;
+      base::RepeatingCallback<void(const std::string& old_owner,
+                                   const std::string& new_owner)>;
 
   // Called when the service becomes available.
   using WaitForServiceToBeAvailableCallback =
@@ -191,6 +188,14 @@ class CHROME_DBUS_EXPORT ObjectProxy
                                SignalCallback signal_callback,
                                OnConnectedCallback on_connected_callback);
 
+  // Blocking version of ConnectToSignal.  Returns true on success.  Must be
+  // called from the DBus thread.
+  //
+  // BLOCKING CALL.
+  virtual bool ConnectToSignalAndBlock(const std::string& interface_name,
+                                       const std::string& signal_name,
+                                       SignalCallback signal_callback);
+
   // Sets a callback for "NameOwnerChanged" signal. The callback is called on
   // the origin thread when D-Bus system sends "NameOwnerChanged" for the name
   // represented by |service_name_|.
@@ -225,8 +230,9 @@ class CHROME_DBUS_EXPORT ObjectProxy
    public:
     // Designed to be created on the origin thread.
     // Both |origin_task_runner| and |callback| must not be null.
-    ReplyCallbackHolder(scoped_refptr<base::TaskRunner> origin_task_runner,
-                        ResponseOrErrorCallback callback);
+    ReplyCallbackHolder(
+        scoped_refptr<base::SequencedTaskRunner> origin_task_runner,
+        ResponseOrErrorCallback callback);
 
     // This is movable to be bound to an OnceCallback.
     ReplyCallbackHolder(ReplyCallbackHolder&& other);
@@ -240,8 +246,12 @@ class CHROME_DBUS_EXPORT ObjectProxy
     // This must be called on the origin thread.
     ResponseOrErrorCallback ReleaseCallback();
 
+    // Whether |callback_| is null.
+    // TODO(http://crbug/1211451): Remove after fix.
+    bool IsNullCallback() const;
+
    private:
-    scoped_refptr<base::TaskRunner> origin_task_runner_;
+    scoped_refptr<base::SequencedTaskRunner> origin_task_runner_;
     ResponseOrErrorCallback callback_;
     DISALLOW_COPY_AND_ASSIGN(ReplyCallbackHolder);
   };
@@ -267,10 +277,8 @@ class CHROME_DBUS_EXPORT ObjectProxy
   // Connects to NameOwnerChanged signal.
   bool ConnectToNameOwnerChangedSignal();
 
-  // Helper function for ConnectToSignal().
-  bool ConnectToSignalInternal(const std::string& interface_name,
-                               const std::string& signal_name,
-                               SignalCallback signal_callback);
+  // Tries to connect to NameOwnerChanged signal, ignores any error.
+  void TryConnectToNameOwnerChangedSignal();
 
   // Helper function for WaitForServiceToBeAvailable().
   void WaitForServiceToBeAvailableInternal();

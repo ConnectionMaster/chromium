@@ -5,8 +5,11 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_HOST_ZWP_TEXT_INPUT_WRAPPER_V1_H_
 #define UI_OZONE_PLATFORM_WAYLAND_HOST_ZWP_TEXT_INPUT_WRAPPER_V1_H_
 
+#include <stdint.h>
+
+#include <vector>
+
 #include <text-input-unstable-v1-client-protocol.h>
-#include <string>
 
 #include "ui/ozone/platform/wayland/host/zwp_text_input_wrapper.h"
 
@@ -36,7 +39,7 @@ class ZWPTextInputWrapperV1 : public ZWPTextInputWrapper {
   void HideInputPanel() override;
 
   void SetCursorRect(const gfx::Rect& rect) override;
-  void SetSurroundingText(const base::string16& text,
+  void SetSurroundingText(const std::string& text,
                           const gfx::Range& selection_range) override;
 
  private:
@@ -98,7 +101,12 @@ class ZWPTextInputWrapperV1 : public ZWPTextInputWrapper {
   wl::Object<zwp_text_input_v1> obj_;
   ZWPTextInputWrapperClient* client_;
 
-  int32_t preedit_cursor_;
+  std::vector<ZWPTextInputWrapperClient::SpanStyle> spans_;
+  int32_t preedit_cursor_ = -1;
+
+  // Stores the string in SetSurroundingText. This string is used in
+  // OnDeleteSurroundingText.
+  std::string text_for_surrounding_text_;
 };
 
 }  // namespace ui

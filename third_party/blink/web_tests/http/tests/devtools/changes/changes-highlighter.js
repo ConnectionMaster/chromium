@@ -4,18 +4,19 @@
 
 (async function() {
   TestRunner.addResult(`Tests that the changes view highlights diffs correctly.\n`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.loadModule('changes');
+  await TestRunner.loadLegacyModule('changes');
   await TestRunner.showPanel('sources');
   await TestRunner.addStylesheetTag('resources/before.css');
   await TestRunner.addStylesheetTag('resources/after.css');
 
   TestRunner.waitForUISourceCode('after.css').then(uiSourceCode => uiSourceCode.requestContent()).then(onAfterContent);
 
-  function onAfterContent(content) {
+  async function onAfterContent({ content, error, isEncoded }) {
     SourcesTestRunner.waitForScriptSource('before.css', uiSourceCode => uiSourceCode.setWorkingCopy(content));
     TestRunner.addSniffer(Changes.ChangesView.prototype, '_renderDiffRows', rowsRendered, true);
-    UI.viewManager.showView('changes.changes');
+    await UI.viewManager.showView('changes.changes');
   }
 
   function rowsRendered() {

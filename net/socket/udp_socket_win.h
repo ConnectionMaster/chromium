@@ -28,6 +28,7 @@
 #include "net/log/net_log_with_source.h"
 #include "net/socket/datagram_socket.h"
 #include "net/socket/diff_serv_code_point.h"
+#include "net/socket/udp_socket_global_limits.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace net {
@@ -145,7 +146,7 @@ class NET_EXPORT DscpManager {
   bool handle_is_initializing_ = false;
   // 0 means no flow has been constructed.
   QOS_FLOWID flow_id_ = 0;
-  base::WeakPtrFactory<DscpManager> weak_ptr_factory_;
+  base::WeakPtrFactory<DscpManager> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DscpManager);
 };
@@ -154,6 +155,8 @@ class NET_EXPORT DscpManager {
 
 class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
  public:
+  // BindType is ignored. Windows has an option to do random binds, so
+  // UDPSocketWin sets that whenever connecting a socket.
   UDPSocketWin(DatagramSocket::BindType bind_type,
                net::NetLog* net_log,
                const net::NetLogSource& source);
@@ -415,8 +418,6 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // Bind().
   int SetMulticastOptions();
   int DoBind(const IPEndPoint& address);
-  // Binds to a random port on |address|.
-  int RandomBind(const IPAddress& address);
 
   // This is provided to allow QwaveApi mocking in tests. |UDPSocketWin| method
   // implementations should call |GetQwaveApi()| instead of
@@ -437,10 +438,6 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // Multicast socket options cached for SetMulticastOption.
   // Cannot be used after Bind().
   int multicast_time_to_live_;
-
-  // How to do source port binding, used only when UDPSocket is part of
-  // UDPClientSocket, since UDPServerSocket provides Bind.
-  DatagramSocket::BindType bind_type_;
 
   // These are mutable since they're just cached copies to make
   // GetPeerAddress/GetLocalAddress smarter.
@@ -485,11 +482,15 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // Maintains remote addresses for QWAVE qos management.
   std::unique_ptr<DscpManager> dscp_manager_;
 
+  // Manages decrementing the global open UDP socket counter when this
+  // UDPSocket is destroyed.
+  OwnedUDPSocketCount owned_socket_count_;
+
   THREAD_CHECKER(thread_checker_);
 
   // Used to prevent null dereferences in OnObjectSignaled, when passing an
   // error to both read and write callbacks. Cleared in Close()
-  base::WeakPtrFactory<UDPSocketWin> event_pending_;
+  base::WeakPtrFactory<UDPSocketWin> event_pending_{this};
 
   DISALLOW_COPY_AND_ASSIGN(UDPSocketWin);
 };

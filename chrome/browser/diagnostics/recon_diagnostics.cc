@@ -20,6 +20,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/diagnostics/diagnostics_test.h"
 #include "chrome/common/channel_info.h"
@@ -155,11 +156,11 @@ class JSONTest : public DiagnosticsTest {
     }
 
     JSONStringValueDeserializer json(json_data);
-    int error_code = base::JSONReader::JSON_NO_ERROR;
+    int error_code = base::ValueDeserializer::kErrorCodeNoError;
     std::string error_message;
     std::unique_ptr<base::Value> json_root(
         json.Deserialize(&error_code, &error_message));
-    if (base::JSONReader::JSON_NO_ERROR != error_code) {
+    if (base::ValueDeserializer::kErrorCodeNoError != error_code) {
       if (error_message.empty()) {
         error_message = "Parse error " + base::NumberToString(error_code);
       }
@@ -293,12 +294,13 @@ class VersionTest : public DiagnosticsTest {
       RecordFailure(DIAG_RECON_EMPTY_VERSION, "Empty Version");
       return true;
     }
-    std::string version_modifier = chrome::GetChannelName();
+    std::string version_modifier =
+        chrome::GetChannelName(chrome::WithExtendedStable(true));
     if (!version_modifier.empty())
       current_version += " " + version_modifier;
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     current_version += " GCB";
-#endif  // defined(GOOGLE_CHROME_BUILD)
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
     RecordSuccess(current_version);
     return true;
   }

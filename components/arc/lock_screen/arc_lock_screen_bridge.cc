@@ -5,7 +5,6 @@
 #include "components/arc/lock_screen/arc_lock_screen_bridge.h"
 
 #include "base/bind.h"
-#include "base/logging.h"
 #include "base/memory/singleton.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/arc/arc_browser_context_keyed_service_factory_base.h"
@@ -43,6 +42,12 @@ class ArcLockScreenBridgeFactory
 ArcLockScreenBridge* ArcLockScreenBridge::GetForBrowserContext(
     content::BrowserContext* context) {
   return ArcLockScreenBridgeFactory::GetForBrowserContext(context);
+}
+
+// static
+ArcLockScreenBridge* ArcLockScreenBridge::GetForBrowserContextForTesting(
+    content::BrowserContext* context) {
+  return ArcLockScreenBridgeFactory::GetForBrowserContextForTesting(context);
 }
 
 ArcLockScreenBridge::ArcLockScreenBridge(content::BrowserContext* context,

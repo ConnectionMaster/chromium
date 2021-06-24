@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that links are updated properly when editing selector.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
       <style>
@@ -48,9 +48,9 @@
       ElementsTestRunner.waitForSelectorCommitted(onSelectorEdited);
       section._selectorElement.dispatchEvent(TestRunner.createKeyEvent('Enter'));
 
-      function onSelectorEdited() {
+      async function onSelectorEdited() {
         TestRunner.addResult('\n\n#### AFTER SELECTOR EDIT ####\n\n');
-        ElementsTestRunner.dumpSelectedElementStyles(true, false, true);
+        await ElementsTestRunner.dumpSelectedElementStyles(true, false, true);
         var rules = ElementsTestRunner.getMatchedRules();
         ElementsTestRunner.validateRuleRanges('container', rules, next);
       }

@@ -7,8 +7,6 @@
 
 #include <OpenGL/OpenGL.h>
 
-#include <map>
-#include <memory>
 
 #include "base/mac/scoped_nsobject.h"
 #include "base/memory/ref_counted.h"
@@ -46,7 +44,7 @@ class IOSurfaceContext
   CGLContextObj cgl_context() const { return cgl_context_; }
 
   // ui::GpuSwitchingObserver implementation.
-  void OnGpuSwitched() override;
+  void OnGpuSwitched(gl::GpuPreference active_gpu_heuristic) override;
 
  private:
   friend class base::RefCounted<IOSurfaceContext>;

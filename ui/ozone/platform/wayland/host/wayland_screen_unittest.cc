@@ -5,16 +5,27 @@
 #include <wayland-server.h>
 #include <memory>
 
+#include "base/strings/stringprintf.h"
+#include "base/test/scoped_command_line.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/display/display.h"
 #include "ui/display/display_observer.h"
+#include "ui/display/display_switches.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/native_widget_types.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
+#include "ui/ozone/platform/wayland/host/wayland_output.h"
 #include "ui/ozone/platform/wayland/host/wayland_output_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_screen.h"
 #include "ui/ozone/platform/wayland/test/mock_pointer.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
+#include "ui/ozone/platform/wayland/test/test_output.h"
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
 #include "ui/platform_window/platform_window_init_properties.h"
+
+using ::testing::Values;
 
 namespace ui {
 
@@ -64,20 +75,24 @@ class TestDisplayObserver : public display::DisplayObserver {
 
 class WaylandScreenTest : public WaylandTest {
  public:
-  WaylandScreenTest() {}
-  ~WaylandScreenTest() override {}
+  WaylandScreenTest() = default;
+  ~WaylandScreenTest() override = default;
 
   void SetUp() override {
     output_ = server_.output();
-    output_->SetRect(gfx::Rect(0, 0, kOutputWidth, kOutputHeight));
 
     WaylandTest::SetUp();
+
+    output_->SetRect({kOutputWidth, kOutputHeight});
+    output_->SetScale(1);
+    output_->Flush();
+    Sync();
 
     output_manager_ = connection_->wayland_output_manager();
     ASSERT_TRUE(output_manager_);
 
     EXPECT_TRUE(output_manager_->IsOutputReady());
-    platform_screen_ = output_manager_->CreateWaylandScreen(connection_.get());
+    platform_screen_ = output_manager_->CreateWaylandScreen();
   }
 
  protected:
@@ -86,24 +101,12 @@ class WaylandScreenTest : public WaylandTest {
       PlatformWindowType window_type,
       gfx::AcceleratedWidget parent_widget,
       MockPlatformWindowDelegate* delegate) {
-    auto window = std::make_unique<WaylandWindow>(delegate, connection_.get());
     PlatformWindowInitProperties properties;
     properties.bounds = bounds;
     properties.type = window_type;
     properties.parent_widget = parent_widget;
-    EXPECT_TRUE(window->Initialize(std::move(properties)));
-    return window;
-  }
-
-  void UpdateOutputGeometry(wl_resource* output_resource,
-                            const gfx::Rect& new_rect) {
-    wl_output_send_geometry(output_resource, new_rect.x(), new_rect.y(),
-                            0 /* physical_width */, 0 /* physical_height */,
-                            0 /* subpixel */, "unknown_make", "unknown_model",
-                            0 /* transform */);
-    wl_output_send_mode(output_resource, WL_OUTPUT_MODE_CURRENT,
-                        new_rect.width(), new_rect.height(), 0 /* refresh */);
-    wl_output_send_done(output_resource);
+    return WaylandWindow::Create(delegate, connection_.get(),
+                                 std::move(properties));
   }
 
   void ValidateTheDisplayForWidget(gfx::AcceleratedWidget widget,
@@ -143,18 +146,18 @@ TEST_P(WaylandScreenTest, MultipleOutputsAddedAndRemoved) {
 
   const int64_t old_primary_display_id =
       platform_screen_->GetPrimaryDisplay().id();
+  gfx::Rect output1_rect = server_.output()->GetRect();
 
   // Add a second display.
   wl::TestOutput* output2 = server_.CreateAndInitializeOutput();
 
   Sync();
 
-  // Update rect of that display.
-  gfx::Rect output1_rect = server_.output()->GetRect();
-  gfx::Rect output2_rect(output1_rect.width(), 0, 800, 600);
   // The second display is located to the right of first display like
   // | || |.
-  UpdateOutputGeometry(output2->resource(), output2_rect);
+  gfx::Rect output2_rect(output1_rect.width(), 0, 800, 600);
+  output2->SetRect(output2_rect);
+  output2->Flush();
 
   Sync();
 
@@ -176,7 +179,8 @@ TEST_P(WaylandScreenTest, MultipleOutputsAddedAndRemoved) {
   Sync();
 
   // Updates rect again.
-  UpdateOutputGeometry(output2->resource(), output2_rect);
+  output2->SetRect(output2_rect);
+  output2->Flush();
 
   Sync();
 
@@ -184,11 +188,14 @@ TEST_P(WaylandScreenTest, MultipleOutputsAddedAndRemoved) {
   added_display_id = observer.GetDisplay().id();
   EXPECT_NE(platform_screen_->GetPrimaryDisplay().id(), added_display_id);
 
-  // Now, rearrange displays so that second display becomes a primary one.
+  // Now, rearrange displays so that second display becomes the primary one.
   output1_rect = gfx::Rect(1024, 0, 1024, 768);
+  output_->SetRect(output1_rect);
+  output_->Flush();
+
   output2_rect = gfx::Rect(0, 0, 1024, 768);
-  UpdateOutputGeometry(server_.output()->resource(), output1_rect);
-  UpdateOutputGeometry(output2->resource(), output2_rect);
+  output2->SetRect(output2_rect);
+  output2->Flush();
 
   Sync();
 
@@ -212,33 +219,43 @@ TEST_P(WaylandScreenTest, OutputPropertyChanges) {
   TestDisplayObserver observer;
   platform_screen_->AddObserver(&observer);
 
-  const gfx::Rect new_rect(0, 0, 800, 600);
-  UpdateOutputGeometry(output_->resource(), new_rect);
+  gfx::Rect new_rect{100, 100};
+  output_->SetRect(new_rect);
+  output_->Flush();
 
   Sync();
 
-  uint32_t changed_values = 0;
-  changed_values |= display::DisplayObserver::DISPLAY_METRIC_BOUNDS;
-  changed_values |= display::DisplayObserver::DISPLAY_METRIC_WORK_AREA;
+  uint32_t changed_values = display::DisplayObserver::DISPLAY_METRIC_BOUNDS |
+                            display::DisplayObserver::DISPLAY_METRIC_WORK_AREA;
   EXPECT_EQ(observer.GetAndClearChangedMetrics(), changed_values);
   EXPECT_EQ(observer.GetDisplay().bounds(), new_rect);
 
-  const float new_scale_value = 2.0f;
-  wl_output_send_scale(output_->resource(), new_scale_value);
-  wl_output_send_done(output_->resource());
+  const int32_t new_scale_value = 2;
+  output_->SetScale(new_scale_value);
+  output_->Flush();
 
   Sync();
 
-  changed_values = 0;
-  changed_values |=
-      display::DisplayObserver::DISPLAY_METRIC_DEVICE_SCALE_FACTOR;
+  changed_values =
+      display::DisplayObserver::DISPLAY_METRIC_DEVICE_SCALE_FACTOR |
+      display::DisplayObserver::DISPLAY_METRIC_WORK_AREA |
+      display::DisplayObserver::DISPLAY_METRIC_BOUNDS;
   EXPECT_EQ(observer.GetAndClearChangedMetrics(), changed_values);
   EXPECT_EQ(observer.GetDisplay().device_scale_factor(), new_scale_value);
+  EXPECT_EQ(observer.GetDisplay().bounds(), gfx::Rect(50, 50));
 
   platform_screen_->RemoveObserver(&observer);
 }
 
 TEST_P(WaylandScreenTest, GetAcceleratedWidgetAtScreenPoint) {
+  // Now, send enter event for the surface, which was created before.
+  wl::MockSurface* surface = server_.GetObject<wl::MockSurface>(
+      window_->root_surface()->GetSurfaceId());
+  ASSERT_TRUE(surface);
+  wl_surface_send_enter(surface->resource(), output_->resource());
+
+  Sync();
+
   // If there is no focused window (focus is set whenever a pointer enters any
   // of the windows), there must be kNullAcceleratedWidget returned. There is no
   // real way to determine what window is located on a certain screen point in
@@ -248,7 +265,7 @@ TEST_P(WaylandScreenTest, GetAcceleratedWidgetAtScreenPoint) {
   EXPECT_EQ(widget_at_screen_point, gfx::kNullAcceleratedWidget);
 
   // Set a focus to the main window. Now, that focused window must be returned.
-  window_->set_pointer_focus(true);
+  window_->SetPointerFocus(true);
   widget_at_screen_point =
       platform_screen_->GetAcceleratedWidgetAtScreenPoint(gfx::Point(10, 10));
   EXPECT_EQ(widget_at_screen_point, window_->GetWidget());
@@ -261,18 +278,20 @@ TEST_P(WaylandScreenTest, GetAcceleratedWidgetAtScreenPoint) {
   EXPECT_EQ(widget_at_screen_point, gfx::kNullAcceleratedWidget);
 
   MockPlatformWindowDelegate delegate;
+  auto menu_window_bounds =
+      gfx::Rect(window_->GetBounds().width() - 10,
+                window_->GetBounds().height() - 10, 100, 100);
   std::unique_ptr<WaylandWindow> menu_window =
-      CreateWaylandWindowWithProperties(
-          gfx::Rect(window_->GetBounds().width() - 10,
-                    window_->GetBounds().height() - 10, 100, 100),
-          PlatformWindowType::kPopup, window_->GetWidget(), &delegate);
+      CreateWaylandWindowWithProperties(menu_window_bounds,
+                                        PlatformWindowType::kMenu,
+                                        window_->GetWidget(), &delegate);
 
   Sync();
 
   // Imagine the mouse enters a menu window, which is located on top of the main
   // window, and gathers focus.
-  window_->set_pointer_focus(false);
-  menu_window->set_pointer_focus(true);
+  window_->SetPointerFocus(false);
+  menu_window->SetPointerFocus(true);
   widget_at_screen_point =
       platform_screen_->GetAcceleratedWidgetAtScreenPoint(gfx::Point(
           menu_window->GetBounds().x() + 1, menu_window->GetBounds().y() + 1));
@@ -280,15 +299,53 @@ TEST_P(WaylandScreenTest, GetAcceleratedWidgetAtScreenPoint) {
 
   // Whenever a mouse pointer leaves the menu window, the accelerated widget
   // of that focused window must be returned.
-  window_->set_pointer_focus(true);
-  menu_window->set_pointer_focus(false);
+  window_->SetPointerFocus(true);
+  menu_window->SetPointerFocus(false);
   widget_at_screen_point =
       platform_screen_->GetAcceleratedWidgetAtScreenPoint(gfx::Point(0, 0));
   EXPECT_EQ(widget_at_screen_point, window_->GetWidget());
 
   // Reset the focus to avoid crash on dtor as long as there is no real pointer
   // object.
-  window_->set_pointer_focus(false);
+  window_->SetPointerFocus(false);
+
+  // Part 2: test that the window is found when display's scale changes.
+  // Update scale.
+  output_->SetScale(2);
+  output_->Flush();
+
+  Sync();
+
+  auto menu_bounds_px = menu_window->GetBounds();
+  // Translate the point to dip.
+  auto point_in_screen =
+      gfx::ScaleToRoundedPoint(menu_bounds_px.origin(), 1.f / 2);
+  menu_window->SetPointerFocus(true);
+  widget_at_screen_point =
+      platform_screen_->GetAcceleratedWidgetAtScreenPoint(point_in_screen);
+  EXPECT_EQ(widget_at_screen_point, menu_window->GetWidget());
+}
+
+TEST_P(WaylandScreenTest, GetLocalProcessWidgetAtPoint) {
+  gfx::Point point(10, 10);
+  EXPECT_EQ(platform_screen_->GetLocalProcessWidgetAtPoint(point, {}),
+            gfx::kNullAcceleratedWidget);
+
+  // Set a focus to the main window. Now, that focused window must be returned.
+  window_->SetPointerFocus(true);
+  EXPECT_EQ(platform_screen_->GetLocalProcessWidgetAtPoint(point, {}),
+            window_->GetWidget());
+
+  // Null widget must be returned when the focused window is part of the
+  // |ignore| list.
+  gfx::AcceleratedWidget w = window_->GetWidget();
+  EXPECT_EQ(
+      platform_screen_->GetLocalProcessWidgetAtPoint(point, {w - 1, w, w + 1}),
+      gfx::kNullAcceleratedWidget);
+
+  // Reset the focus to avoid crash on dtor as long as there is no real pointer
+  // object.
+  window_->SetPointerFocus(false);
 }
 
 TEST_P(WaylandScreenTest, GetDisplayMatching) {
@@ -305,7 +362,8 @@ TEST_P(WaylandScreenTest, GetDisplayMatching) {
   // Place it on the right side of the primary display.
   const gfx::Rect output2_rect =
       gfx::Rect(primary_display.bounds().width(), 0, 1024, 768);
-  UpdateOutputGeometry(output2->resource(), output2_rect);
+  output2->SetRect(output2_rect);
+  output2->Flush();
 
   Sync();
 
@@ -336,10 +394,10 @@ TEST_P(WaylandScreenTest, GetDisplayMatching) {
       platform_screen_->GetDisplayMatching(gfx::Rect(1019, 0, 10, 10)).id());
 
   // Place second display 700 pixels below along y axis (1024:700,1024x768)
-  UpdateOutputGeometry(
-      output2->resource(),
+  output2->SetRect(
       gfx::Rect(gfx::Point(output2_rect.x(), output2_rect.y() + 700),
                 output2_rect.size()));
+  output2->Flush();
 
   Sync();
 
@@ -364,6 +422,8 @@ TEST_P(WaylandScreenTest, GetDisplayMatching) {
             platform_screen_->GetDisplayMatching(gfx::Rect(0, 0, 0, 0)).id());
 
   platform_screen_->RemoveObserver(&observer);
+  output2->DestroyGlobal();
+  Sync();
 }
 
 TEST_P(WaylandScreenTest, GetDisplayForAcceleratedWidget) {
@@ -382,7 +442,8 @@ TEST_P(WaylandScreenTest, GetDisplayForAcceleratedWidget) {
   // display.
   const gfx::Rect output2_rect =
       gfx::Rect(primary_display.bounds().width(), 0, 1024, 768);
-  UpdateOutputGeometry(output2->resource(), output2_rect);
+  output2->SetRect(output2_rect);
+  output2->Flush();
 
   Sync();
 
@@ -395,7 +456,8 @@ TEST_P(WaylandScreenTest, GetDisplayForAcceleratedWidget) {
   ValidateTheDisplayForWidget(widget, primary_display.id());
 
   // Now, send enter event for the surface, which was created before.
-  wl::MockSurface* surface = server_.GetObject<wl::MockSurface>(widget);
+  wl::MockSurface* surface = server_.GetObject<wl::MockSurface>(
+      window_->root_surface()->GetSurfaceId());
   ASSERT_TRUE(surface);
   wl_surface_send_enter(surface->resource(), output_->resource());
 
@@ -423,13 +485,17 @@ TEST_P(WaylandScreenTest, GetDisplayForAcceleratedWidget) {
   ValidateTheDisplayForWidget(widget, secondary_display.id());
 
   // Leaving the same output twice (check comment in
-  // WaylandWindow::RemoveEnteredOutputId), must be ok and nothing must change.
+  // WaylandWindow::OnEnteredOutputIdRemoved), must be ok and nothing must
+  // change.
   wl_surface_send_leave(surface->resource(), output_->resource());
 
   Sync();
 
   // The id of the entered display must correspond to the second output.
   ValidateTheDisplayForWidget(widget, secondary_display.id());
+
+  output2->DestroyGlobal();
+  Sync();
 }
 
 TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
@@ -439,7 +505,8 @@ TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
                                         PlatformWindowType::kWindow,
                                         gfx::kNullAcceleratedWidget, &delegate);
 
-  auto* surface = server_.GetObject<wl::MockSurface>(window_->GetWidget());
+  auto* surface = server_.GetObject<wl::MockSurface>(
+      window_->root_surface()->GetSurfaceId());
   ASSERT_TRUE(surface);
 
   // Announce pointer capability so that WaylandPointer is created on the client
@@ -464,8 +531,8 @@ TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
   // WaylandScreen must return the last pointer location.
   EXPECT_EQ(gfx::Point(10, 20), platform_screen_->GetCursorScreenPoint());
 
-  auto* second_surface =
-      server_.GetObject<wl::MockSurface>(second_window->GetWidget());
+  auto* second_surface = server_.GetObject<wl::MockSurface>(
+      second_window->root_surface()->GetSurfaceId());
   ASSERT_TRUE(second_surface);
   // Now, leave the first surface and enter second one.
   wl_pointer_send_leave(pointer->resource(), ++serial, surface->resource());
@@ -502,12 +569,12 @@ TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
       CreateWaylandWindowWithProperties(
           gfx::Rect(second_window_bounds.width() - 10,
                     second_window_bounds.height() - 10, 10, 20),
-          PlatformWindowType::kPopup, second_window->GetWidget(), &delegate);
+          PlatformWindowType::kMenu, second_window->GetWidget(), &delegate);
 
   Sync();
 
-  auto* menu_surface =
-      server_.GetObject<wl::MockSurface>(menu_window->GetWidget());
+  auto* menu_surface = server_.GetObject<wl::MockSurface>(
+      menu_window->root_surface()->GetSurfaceId());
   ASSERT_TRUE(menu_surface);
 
   wl_pointer_send_enter(pointer->resource(), ++serial, menu_surface->resource(),
@@ -549,12 +616,12 @@ TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
       CreateWaylandWindowWithProperties(
           gfx::Rect(menu_window_bounds.x() + menu_window_bounds.width(),
                     menu_window_bounds.y() + 2, 10, 20),
-          PlatformWindowType::kPopup, second_window->GetWidget(), &delegate);
+          PlatformWindowType::kMenu, second_window->GetWidget(), &delegate);
 
   Sync();
 
-  auto* nested_menu_surface =
-      server_.GetObject<wl::MockSurface>(nested_menu_window->GetWidget());
+  auto* nested_menu_surface = server_.GetObject<wl::MockSurface>(
+      nested_menu_window->root_surface()->GetSurfaceId());
   ASSERT_TRUE(nested_menu_surface);
 
   wl_pointer_send_enter(pointer->resource(), ++serial,
@@ -580,11 +647,175 @@ TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
   EXPECT_EQ(gfx::Point(1912, 1071), platform_screen_->GetCursorScreenPoint());
 }
 
-INSTANTIATE_TEST_SUITE_P(XdgVersionV5Test,
+// Checks that the surface that backs the window receives new scale of the
+// output that it is in.
+TEST_P(WaylandScreenTest, SetWindowScale) {
+  // Place the window onto the output.
+  wl_surface_send_enter(surface_->resource(), output_->resource());
+
+  // Change the scale of the output.  Windows looking into that output must get
+  // the new scale and update scale of their buffers.  The default UI scale
+  // equals the output scale.
+  const int32_t kTripleScale = 3;
+  output_->SetScale(kTripleScale);
+  output_->Flush();
+
+  Sync();
+
+  EXPECT_EQ(window_->window_scale(), kTripleScale);
+  EXPECT_EQ(window_->ui_scale_, kTripleScale);
+
+  // Now simulate the --force-device-scale-factor=1.5
+  const float kForcedUIScale = 1.5;
+  base::test::ScopedCommandLine command_line;
+  command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kForceDeviceScaleFactor,
+      base::StringPrintf("%.1f", kForcedUIScale));
+  display::Display::ResetForceDeviceScaleFactorForTesting();
+
+  // Change the scale of the output again.  Windows must update scale of
+  // their buffers but the UI scale must get the forced value.
+  const int32_t kDoubleScale = 2;
+  // Question ourselves before questioning others!
+  EXPECT_NE(kForcedUIScale, kDoubleScale);
+  output_->SetScale(kDoubleScale);
+  output_->Flush();
+
+  Sync();
+
+  EXPECT_EQ(window_->window_scale(), kDoubleScale);
+  EXPECT_EQ(window_->ui_scale_, kForcedUIScale);
+
+  display::Display::ResetForceDeviceScaleFactorForTesting();
+}
+
+// Tests that WaylandScreen updates list of displays with additional fractional
+// scale by taking only decimal part of it and updating the displays using their
+// existing scale + fractional part. This fractional part comes from GNOME's
+// accessibility feature called "Large Text".
+TEST_P(WaylandScreenTest, SetAdditionalScale) {
+  TestDisplayObserver observer;
+  platform_screen_->AddObserver(&observer);
+
+  const display::Display primary_display =
+      platform_screen_->GetPrimaryDisplay();
+
+  wl::TestOutput* output2 = server_.CreateAndInitializeOutput();
+
+  Sync();
+
+  // Place it on the right side of the primary display.
+  const gfx::Rect output2_rect =
+      gfx::Rect(primary_display.bounds().width(), 0, 1024, 768);
+  output2->SetRect(output2_rect);
+  output2->Flush();
+
+  Sync();
+
+  const std::vector<float> scales = {0.2, 0.7, 1.3, 1.6, 1.8, 2.3, 2.9, 3.5};
+  // Pretend GNOME updates scale and sets fractional scale (Large Text feature).
+  for (auto scale : scales) {
+    platform_screen_->SetDeviceScaleFactor(scale);
+    for (auto& display : platform_screen_->GetAllDisplays()) {
+      float whole = 0;
+      // WaylandScreen will get decimal part and use the integer part provided
+      // by wl_output.
+      float expected_scale = std::modf(scale, &whole) + 1.f;
+      EXPECT_EQ(expected_scale, display.device_scale_factor());
+    }
+  }
+}
+
+namespace {
+
+class LazilyConfiguredScreenTest
+    : public WaylandTest,
+      public wl::TestWaylandServerThread::OutputDelegate {
+ public:
+  LazilyConfiguredScreenTest() = default;
+  LazilyConfiguredScreenTest(const LazilyConfiguredScreenTest&) = delete;
+  LazilyConfiguredScreenTest& operator=(const LazilyConfiguredScreenTest&) =
+      delete;
+  ~LazilyConfiguredScreenTest() override = default;
+
+  void SetUp() override {
+    // Being the server's output delegate allows LazilyConfiguredScreenTest to
+    // manipulate wl_outputs during the server's global objects initialization
+    // phase. See SetupOutputs() function below.
+    server_.set_output_delegate(this);
+
+    WaylandTest::SetUp();
+
+    output_manager_ = connection_->wayland_output_manager();
+    ASSERT_TRUE(output_manager_);
+  }
+
+  void TearDown() override {
+    WaylandTest::TearDown();
+    server_.set_output_delegate(nullptr);
+  }
+
+ protected:
+  // wl::TestWaylandServerThread::OutputDelegate:
+  void SetupOutputs(wl::TestOutput* primary) override {
+    // Keep the first wl_output announced "unconfigured" and just caches it for
+    // now, so we can exercise WaylandOutputManager::IsOutputReady() function
+    // when wl_output events come in unordered.
+    primary_output_ = primary;
+
+    // Create/announce a second wl_output object and makes it the first one to
+    // get configuration events (eg: geometry, done, etc). This is achieved by
+    // setting its bounds here.
+    aux_output_ = server_.CreateAndInitializeOutput();
+    aux_output_->SetRect({0, 0, 800, 600});
+  }
+
+  wl::TestOutput* primary_output_ = nullptr;
+  wl::TestOutput* aux_output_ = nullptr;
+  WaylandOutputManager* output_manager_ = nullptr;
+  bool auto_configure;
+};
+
+}  // namespace
+
+// Ensures WaylandOutputManager and WaylandScreen properly handle scenarios
+// where multiple wl_output objects are announced but not "configured" (ie:
+// size, position, mode, etc sent to client) at bind time.
+TEST_P(LazilyConfiguredScreenTest, DualOutput) {
+  // Ensure WaylandScreen got properly created and fed with a single display
+  // object, ie: |aux_output_| at server side.
+  EXPECT_TRUE(output_manager_->IsOutputReady());
+  EXPECT_TRUE(screen_);
+  EXPECT_EQ(1u, screen_->GetAllDisplays().size());
+  Sync();
+
+  // Send wl_output configuration events for the first advertised wl_output
+  // object. ie: |primary_output_| at server side.
+  primary_output_->SetRect({800, 0, kOutputWidth, kOutputHeight});
+  primary_output_->SetScale(1);
+  primary_output_->Flush();
+  Sync();
+
+  // And make sure it makes its way into the WaylandScreen's display list at
+  // client side.
+  EXPECT_EQ(2u, screen_->GetAllDisplays().size());
+}
+
+INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          WaylandScreenTest,
-                         ::testing::Values(kXdgShellV5));
+                         Values(wl::ServerConfig{
+                             .shell_version = wl::ShellVersion::kStable}));
 INSTANTIATE_TEST_SUITE_P(XdgVersionV6Test,
                          WaylandScreenTest,
-                         ::testing::Values(kXdgShellV6));
+                         Values(wl::ServerConfig{
+                             .shell_version = wl::ShellVersion::kV6}));
+INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
+                         LazilyConfiguredScreenTest,
+                         Values(wl::ServerConfig{
+                             .shell_version = wl::ShellVersion::kStable}));
+INSTANTIATE_TEST_SUITE_P(XdgVersionV6Test,
+                         LazilyConfiguredScreenTest,
+                         Values(wl::ServerConfig{
+                             .shell_version = wl::ShellVersion::kV6}));
 
 }  // namespace ui

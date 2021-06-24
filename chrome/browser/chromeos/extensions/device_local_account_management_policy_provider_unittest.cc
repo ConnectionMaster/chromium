@@ -9,14 +9,16 @@
 #include <utility>
 
 #include "base/files/file_path.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/string16.h"
 #include "base/values.h"
 #include "chromeos/login/login_state/scoped_test_public_session_login_state.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using extensions::mojom::ManifestLocation;
 
 namespace chromeos {
 
@@ -27,7 +29,7 @@ const char kBogusId[] = "bogus";
 
 scoped_refptr<const extensions::Extension> CreateExtensionFromValues(
     const std::string& id,
-    extensions::Manifest::Location location,
+    ManifestLocation location,
     base::DictionaryValue* values,
     int flags) {
   values->SetString(extensions::manifest_keys::kName, "test");
@@ -45,18 +47,21 @@ scoped_refptr<const extensions::Extension> CreateExtensionFromValues(
 scoped_refptr<const extensions::Extension> CreateRegularExtension(
     const std::string& id) {
   base::DictionaryValue values;
-  return CreateExtensionFromValues(id,
-                                   extensions::Manifest::INTERNAL,
-                                   &values,
+  return CreateExtensionFromValues(id, ManifestLocation::kInternal, &values,
                                    extensions::Extension::NO_FLAGS);
 }
 
 scoped_refptr<const extensions::Extension> CreateExternalComponentExtension() {
   base::DictionaryValue values;
   return CreateExtensionFromValues(std::string(),
-                                   extensions::Manifest::EXTERNAL_COMPONENT,
-                                   &values,
-                                   extensions::Extension::NO_FLAGS);
+                                   ManifestLocation::kExternalComponent,
+                                   &values, extensions::Extension::NO_FLAGS);
+}
+
+scoped_refptr<const extensions::Extension> CreateComponentExtension() {
+  base::DictionaryValue values;
+  return CreateExtensionFromValues(std::string(), ManifestLocation::kComponent,
+                                   &values, extensions::Extension::NO_FLAGS);
 }
 
 scoped_refptr<const extensions::Extension> CreateHostedApp() {
@@ -65,15 +70,13 @@ scoped_refptr<const extensions::Extension> CreateHostedApp() {
              std::make_unique<base::DictionaryValue>());
   values.Set(extensions::manifest_keys::kWebURLs,
              std::make_unique<base::ListValue>());
-  return CreateExtensionFromValues(std::string(),
-                                   extensions::Manifest::INTERNAL,
-                                   &values,
-                                   extensions::Extension::NO_FLAGS);
+  return CreateExtensionFromValues(std::string(), ManifestLocation::kInternal,
+                                   &values, extensions::Extension::NO_FLAGS);
 }
 
 scoped_refptr<const extensions::Extension> CreatePlatformAppWithExtraValues(
     const base::DictionaryValue* extra_values,
-    extensions::Manifest::Location location,
+    ManifestLocation location,
     int flags) {
   base::DictionaryValue values;
   values.SetString("app.background.page", "background.html");
@@ -83,8 +86,7 @@ scoped_refptr<const extensions::Extension> CreatePlatformAppWithExtraValues(
 
 scoped_refptr<const extensions::Extension> CreatePlatformApp() {
   base::DictionaryValue values;
-  return CreatePlatformAppWithExtraValues(&values,
-                                          extensions::Manifest::INTERNAL,
+  return CreatePlatformAppWithExtraValues(&values, ManifestLocation::kInternal,
                                           extensions::Extension::NO_FLAGS);
 }
 
@@ -101,9 +103,15 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   scoped_refptr<const extensions::Extension> extension =
       CreateExternalComponentExtension();
   ASSERT_TRUE(extension.get());
-  base::string16 error;
+  std::u16string error;
   EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_EQ(base::string16(), error);
+  EXPECT_EQ(std::u16string(), error);
+  error.clear();
+
+  extension = CreateComponentExtension();
+  ASSERT_TRUE(extension.get());
+  EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+  EXPECT_EQ(std::u16string(), error);
   error.clear();
 
   // Verify that if an extension's type has been whitelisted for use in
@@ -111,7 +119,7 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   extension = CreateHostedApp();
   ASSERT_TRUE(extension.get());
   EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_EQ(base::string16(), error);
+  EXPECT_EQ(std::u16string(), error);
   error.clear();
 
   // Verify that if an extension's ID has been explicitly whitelisted for use in
@@ -119,7 +127,7 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   extension = CreateRegularExtension(kWhitelistedId);
   ASSERT_TRUE(extension.get());
   EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_EQ(base::string16(), error);
+  EXPECT_EQ(std::u16string(), error);
   error.clear();
 
   // Verify that if neither the location, type nor the ID of an extension have
@@ -128,7 +136,7 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   extension = CreateRegularExtension(std::string());
   ASSERT_TRUE(extension.get());
   EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_NE(base::string16(), error);
+  EXPECT_NE(std::u16string(), error);
   error.clear();
 
   // Verify that a minimal platform app can be installed from location
@@ -136,13 +144,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   {
     base::DictionaryValue values;
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -151,13 +158,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   {
     base::DictionaryValue values;
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY_DOWNLOAD,
+        &values, ManifestLocation::kExternalPolicyDownload,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -166,13 +172,11 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   {
     base::DictionaryValue values;
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::UNPACKED,
-        extensions::Extension::NO_FLAGS);
+        &values, ManifestLocation::kUnpacked, extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -191,13 +195,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kOptionalPermissions,
                std::move(optional_permissions));
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -207,13 +210,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.SetString("not_whitelisted", "something");
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -226,13 +228,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set("chrome_settings_overrides",
                std::make_unique<base::DictionaryValue>());
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -242,13 +243,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.SetString("app.not_whitelisted2", "something2");
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -258,13 +258,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.SetString("app.content_security_policy", "something2");
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -278,14 +277,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
                std::make_unique<base::ListValue>());
     values.SetString("app.content_security_policy", "something2");
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -296,14 +293,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set("theme", std::make_unique<base::DictionaryValue>());
     values.SetString("app.content_security_policy", "something2");
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -316,13 +311,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -336,13 +330,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -356,13 +349,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
                std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -376,13 +368,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.SetString("url_handlers.example_com.title", "example title");
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -396,13 +387,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.SetString("url_handlers.example_com.title", "example title");
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::FROM_WEBSTORE);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -416,13 +406,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -436,14 +425,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -455,13 +442,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -478,13 +464,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -501,13 +486,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
-        &values,
-        extensions::Manifest::EXTERNAL_POLICY,
+        &values, ManifestLocation::kExternalPolicy,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 
@@ -515,14 +499,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   {
     base::DictionaryValue values;
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -531,14 +513,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.Set("export.whitelist", std::make_unique<base::ListValue>());
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -547,14 +527,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.Set("theme", std::make_unique<base::DictionaryValue>());
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_EQ(base::string16(), error);
+    EXPECT_EQ(std::u16string(), error);
     error.clear();
   }
 
@@ -564,56 +542,66 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.SetString("app.launch.local_path", "something");
     extension = CreateExtensionFromValues(
-        std::string(),
-        extensions::Manifest::EXTERNAL_POLICY,
-        &values,
+        std::string(), ManifestLocation::kExternalPolicy, &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
     EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-    EXPECT_NE(base::string16(), error);
+    EXPECT_NE(std::u16string(), error);
     error.clear();
   }
 }
 
-TEST(DeviceLocalAccountManagementPolicyProviderTest, KioskAppSession) {
-  DeviceLocalAccountManagementPolicyProvider
-      provider(policy::DeviceLocalAccount::TYPE_KIOSK_APP);
+TEST(DeviceLocalAccountManagementPolicyProviderTest, KioskAppSessions) {
+  std::vector<policy::DeviceLocalAccount::Type> types = {
+      policy::DeviceLocalAccount::TYPE_KIOSK_APP,
+      policy::DeviceLocalAccount::TYPE_WEB_KIOSK_APP};
 
-  // Verify that a platform app can be installed.
-  scoped_refptr<const extensions::Extension> extension = CreatePlatformApp();
-  ASSERT_TRUE(extension.get());
-  base::string16 error;
-  EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_EQ(base::string16(), error);
-  error.clear();
+  for (auto type : types) {
+    LOG(INFO) << "Testing device local account type = "<< static_cast<int>(type);
+    DeviceLocalAccountManagementPolicyProvider provider(type);
 
-  // Verify that an extension whose location has been whitelisted for use in
-  // other types of device-local accounts cannot be installed in a single-app
-  // kiosk session.
-  extension = CreateExternalComponentExtension();
-  ASSERT_TRUE(extension.get());
-  EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_EQ(base::string16(), error);
-  error.clear();
+    // Verify that a platform app can be installed.
+    scoped_refptr<const extensions::Extension> extension = CreatePlatformApp();
+    ASSERT_TRUE(extension.get());
+    std::u16string error;
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(std::u16string(), error);
+    error.clear();
 
-  // Verify that an extension whose type has been whitelisted for use in other
-  // types of device-local accounts cannot be installed in a single-app kiosk
-  // session.
-  extension = CreateHostedApp();
-  ASSERT_TRUE(extension.get());
-  EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_NE(base::string16(), error);
-  error.clear();
+    // Verify that an extension whose location has been whitelisted for use in
+    // other types of device-local accounts cannot be installed in a single-app
+    // kiosk session.
+    extension = CreateExternalComponentExtension();
+    ASSERT_TRUE(extension.get());
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(std::u16string(), error);
+    error.clear();
 
-  // Verify that an extension whose ID has been whitelisted for use in other
-  // types of device-local accounts cannot be installed in a single-app kiosk
-  // session.
-  extension = CreateRegularExtension(kWhitelistedId);
-  ASSERT_TRUE(extension.get());
-  EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
-  EXPECT_EQ(base::string16(), error);
-  error.clear();
+    extension = CreateComponentExtension();
+    ASSERT_TRUE(extension.get());
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(std::u16string(), error);
+    error.clear();
+
+    // Verify that an extension whose type has been whitelisted for use in other
+    // types of device-local accounts cannot be installed in a single-app kiosk
+    // session.
+    extension = CreateHostedApp();
+    ASSERT_TRUE(extension.get());
+    EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_NE(std::u16string(), error);
+    error.clear();
+
+    // Verify that an extension whose ID has been whitelisted for use in other
+    // types of device-local accounts cannot be installed in a single-app kiosk
+    // session.
+    extension = CreateRegularExtension(kWhitelistedId);
+    ASSERT_TRUE(extension.get());
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(std::u16string(), error);
+    error.clear();
+  }
 }
 
 TEST(DeviceLocalAccountManagementPolicyProviderTest, IsWhitelisted) {

@@ -10,11 +10,11 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/trace_event/trace_event.h"
 #include "components/offline_pages/core/client_namespace_constants.h"
 #include "components/offline_pages/core/offline_page_item.h"
 #include "components/offline_pages/core/offline_store_types.h"
@@ -400,16 +400,9 @@ StoreState OfflinePageMetadataStore::GetStateForTesting() const {
 void OfflinePageMetadataStore::OnOpenStart(base::TimeTicks last_closing_time) {
   TRACE_EVENT_ASYNC_BEGIN1("offline_pages", "Metadata Store", this, "is reopen",
                            !last_closing_time.is_null());
-  if (!last_closing_time.is_null()) {
-    ReportStoreEvent(OfflinePagesStoreEvent::kReopened);
-    UMA_HISTOGRAM_CUSTOM_TIMES("OfflinePages.SQLStorage.TimeFromCloseToOpen",
-                               base::TimeTicks::Now() - last_closing_time,
-                               base::TimeDelta::FromMilliseconds(10),
-                               base::TimeDelta::FromMinutes(10),
-                               50 /* buckets */);
-  } else {
-    ReportStoreEvent(OfflinePagesStoreEvent::kOpenedFirstTime);
-  }
+  ReportStoreEvent(last_closing_time.is_null()
+                       ? OfflinePagesStoreEvent::kOpenedFirstTime
+                       : OfflinePagesStoreEvent::kReopened);
 }
 
 void OfflinePageMetadataStore::OnOpenDone(bool success) {

@@ -5,9 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GPU_IMAGE_LAYER_BRIDGE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GPU_IMAGE_LAYER_BRIDGE_H_
 
-#include <memory>
-
-#include "base/macros.h"
 #include "cc/layers/texture_layer_client.h"
 #include "cc/resources/shared_bitmap_id_registrar.h"
 #include "components/viz/common/resources/resource_format.h"
@@ -30,11 +27,12 @@ class Size;
 namespace blink {
 
 class PLATFORM_EXPORT ImageLayerBridge
-    : public GarbageCollectedFinalized<ImageLayerBridge>,
+    : public GarbageCollected<ImageLayerBridge>,
       public cc::TextureLayerClient {
-
  public:
   ImageLayerBridge(OpacityMode);
+  ImageLayerBridge(const ImageLayerBridge&) = delete;
+  ImageLayerBridge& operator=(const ImageLayerBridge&) = delete;
   ~ImageLayerBridge() override;
 
   void SetImage(scoped_refptr<StaticBitmapImage>);
@@ -44,8 +42,7 @@ class PLATFORM_EXPORT ImageLayerBridge
   bool PrepareTransferableResource(
       cc::SharedBitmapIdRegistrar* bitmap_registrar,
       viz::TransferableResource* out_resource,
-      std::unique_ptr<viz::SingleReleaseCallback>* out_release_callback)
-      override;
+      viz::ReleaseCallback* out_release_callback) override;
 
   scoped_refptr<StaticBitmapImage> GetImage() { return image_; }
 
@@ -56,9 +53,9 @@ class PLATFORM_EXPORT ImageLayerBridge
   }
   void SetUV(const FloatPoint& left_top, const FloatPoint& right_bottom);
 
-  bool IsAccelerated() { return image_->IsTextureBacked(); }
+  bool IsAccelerated() { return image_ && image_->IsTextureBacked(); }
 
-  void Trace(blink::Visitor* visitor) {}
+  void Trace(Visitor* visitor) const {}
 
  private:
   // SharedMemory bitmap that was registered with SharedBitmapIdRegistrar. Used
@@ -98,8 +95,6 @@ class PLATFORM_EXPORT ImageLayerBridge
   bool disposed_ = false;
   bool has_presented_since_last_set_image_ = false;
   OpacityMode opacity_mode_ = kNonOpaque;
-
-  DISALLOW_COPY_AND_ASSIGN(ImageLayerBridge);
 };
 
 }  // namespace blink

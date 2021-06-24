@@ -7,6 +7,7 @@
 #include <map>
 
 #include "base/macros.h"
+#include "base/test/scoped_feature_list.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/default_capture_client.h"
 #include "ui/aura/client/focus_change_observer.h"
@@ -16,6 +17,7 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tracker.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_handler.h"
@@ -45,8 +47,8 @@ class FocusNotificationObserver : public ActivationChangeObserver,
         activation_changed_count_(0),
         focus_changed_count_(0),
         reactivation_count_(0),
-        reactivation_requested_window_(NULL),
-        reactivation_actual_window_(NULL) {}
+        reactivation_requested_window_(nullptr),
+        reactivation_actual_window_(nullptr) {}
   ~FocusNotificationObserver() override {}
 
   void ExpectCounts(int activation_changed_count, int focus_changed_count) {
@@ -130,6 +132,20 @@ class RecordingActivationAndFocusChangeObserver
   }
 
   // Overridden from ActivationChangeObserver:
+  void OnWindowActivating(ActivationReason reason,
+                          aura::Window* gaining_active,
+                          aura::Window* losing_active) override {
+    if (deleter_->GetDeletedWindow()) {
+      // A deleted window during activation should never be return as either the
+      // gaining or losing active windows, nor should it be returned as the
+      // currently active one.
+      auto* active_window = GetActivationClient(root_)->GetActiveWindow();
+      EXPECT_NE(active_window, deleter_->GetDeletedWindow());
+      EXPECT_NE(gaining_active, deleter_->GetDeletedWindow());
+      EXPECT_NE(losing_active, deleter_->GetDeletedWindow());
+    }
+  }
+
   void OnWindowActivated(ActivationReason reason,
                          aura::Window* gained_active,
                          aura::Window* lost_active) override {
@@ -192,40 +208,71 @@ class HideOnLoseActivationChangeObserver : public ActivationChangeObserver {
 };
 
 // ActivationChangeObserver that deletes the window losing activation.
-class DeleteOnLoseActivationChangeObserver : public ActivationChangeObserver,
-                                             public WindowDeleter {
+class DeleteOnActivationChangeObserver : public ActivationChangeObserver,
+                                         public WindowDeleter {
  public:
-  explicit DeleteOnLoseActivationChangeObserver(aura::Window* window)
+  // If |delete_on_activating| is true, |window| will be deleted when
+  // OnWindowActivating() is called, otherwise, it will be deleted when
+  // OnWindowActivated() is called.
+  // If |delete_window_losing_active| is true, |window| will be deleted if it is
+  // the window losing activation, otherwise, will be deleted if it is the one
+  // gaining activation.
+  DeleteOnActivationChangeObserver(aura::Window* window,
+                                   bool delete_on_activating,
+                                   bool delete_window_losing_active)
       : root_(window->GetRootWindow()),
         window_(window),
+        delete_on_activating_(delete_on_activating),
+        delete_window_losing_active_(delete_window_losing_active),
         did_delete_(false) {
     GetActivationClient(root_)->AddObserver(this);
   }
-  ~DeleteOnLoseActivationChangeObserver() override {
+  ~DeleteOnActivationChangeObserver() override {
     GetActivationClient(root_)->RemoveObserver(this);
   }
 
   // Overridden from ActivationChangeObserver:
+  void OnWindowActivating(ActivationReason reason,
+                          aura::Window* gaining_active,
+                          aura::Window* losing_active) override {
+    if (!delete_on_activating_)
+      return;
+
+    auto* window_to_delete =
+        delete_window_losing_active_ ? losing_active : gaining_active;
+    if (window_ && window_to_delete == window_) {
+      delete window_to_delete;
+      did_delete_ = true;
+    }
+  }
+
   void OnWindowActivated(ActivationReason reason,
                          aura::Window* gained_active,
                          aura::Window* lost_active) override {
-    if (window_ && lost_active == window_) {
-      delete lost_active;
+    if (delete_on_activating_)
+      return;
+
+    auto* window_to_delete =
+        delete_window_losing_active_ ? lost_active : gained_active;
+    if (window_ && window_to_delete == window_) {
+      delete window_to_delete;
       did_delete_ = true;
     }
   }
 
   // Overridden from WindowDeleter:
   aura::Window* GetDeletedWindow() override {
-    return did_delete_ ? window_ : NULL;
+    return did_delete_ ? window_ : nullptr;
   }
 
  private:
   aura::Window* root_;
   aura::Window* window_;
+  const bool delete_on_activating_;
+  const bool delete_window_losing_active_;
   bool did_delete_;
 
-  DISALLOW_COPY_AND_ASSIGN(DeleteOnLoseActivationChangeObserver);
+  DISALLOW_COPY_AND_ASSIGN(DeleteOnActivationChangeObserver);
 };
 
 // FocusChangeObserver that deletes the window losing focus.
@@ -254,7 +301,7 @@ class DeleteOnLoseFocusChangeObserver
 
   // Overridden from WindowDeleter:
   aura::Window* GetDeletedWindow() override {
-    return did_delete_ ? window_ : NULL;
+    return did_delete_ ? window_ : nullptr;
   }
 
  private:
@@ -293,8 +340,8 @@ class ScopedTargetFocusNotificationObserver : public FocusNotificationObserver {
   }
   ~ScopedTargetFocusNotificationObserver() override {
     if (tracker_.Contains(target_)) {
-      SetActivationChangeObserver(target_, NULL);
-      aura::client::SetFocusChangeObserver(target_, NULL);
+      SetActivationChangeObserver(target_, nullptr);
+      aura::client::SetFocusChangeObserver(target_, nullptr);
     }
   }
 
@@ -322,8 +369,7 @@ class SimpleEventHandler : public ui::EventHandler {
 class FocusShiftingActivationObserver : public ActivationChangeObserver {
  public:
   explicit FocusShiftingActivationObserver(aura::Window* activated_window)
-      : activated_window_(activated_window),
-        shift_focus_to_(NULL) {}
+      : activated_window_(activated_window), shift_focus_to_(nullptr) {}
   ~FocusShiftingActivationObserver() override {}
 
   void set_shift_focus_to(aura::Window* shift_focus_to) {
@@ -403,7 +449,7 @@ class ActivateWhileActivatingObserver : public ActivationChangeObserver {
 // in tests for those FocusRules implementations.
 class TestFocusRules : public BaseFocusRules {
  public:
-  TestFocusRules() : focus_restriction_(NULL) {}
+  TestFocusRules() : focus_restriction_(nullptr) {}
 
   // Restricts focus and activation to this window and its child hierarchy.
   void set_focus_restriction(aura::Window* focus_restriction) {
@@ -464,7 +510,7 @@ class FocusControllerTestBase : public aura::test::AuraTestBase {
     // window initializations, including the root_window()'s, so we create it
     // before allowing the base setup.
     test_focus_rules_ = new TestFocusRules;
-    focus_controller_.reset(new FocusController(test_focus_rules_));
+    focus_controller_ = std::make_unique<FocusController>(test_focus_rules_);
     aura::test::AuraTestBase::SetUp();
     root_window()->AddPreTargetHandler(focus_controller_.get());
     aura::client::SetFocusClient(root_window(), focus_controller_.get());
@@ -504,7 +550,7 @@ class FocusControllerTestBase : public aura::test::AuraTestBase {
   void TearDown() override {
     root_window()->RemovePreTargetHandler(focus_controller_.get());
     aura::test::AuraTestBase::TearDown();
-    test_focus_rules_ = NULL;  // Owned by FocusController.
+    test_focus_rules_ = nullptr;  // Owned by FocusController.
     focus_controller_.reset();
   }
 
@@ -516,7 +562,7 @@ class FocusControllerTestBase : public aura::test::AuraTestBase {
   }
   int GetFocusedWindowId() {
     aura::Window* focused_window = GetFocusedWindow();
-    return focused_window ? focused_window->id() : -1;
+    return focused_window ? focused_window->GetId() : -1;
   }
   void ActivateWindow(aura::Window* window) {
     GetActivationClient(root_window())->ActivateWindow(window);
@@ -529,7 +575,7 @@ class FocusControllerTestBase : public aura::test::AuraTestBase {
   }
   int GetActiveWindowId() {
     aura::Window* active_window = GetActiveWindow();
-    return active_window ? active_window->id() : -1;
+    return active_window ? active_window->GetId() : -1;
   }
 
   TestFocusRules* test_focus_rules() { return test_focus_rules_; }
@@ -595,21 +641,21 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
 
   // Overridden from FocusControllerTestBase:
   void BasicFocus() override {
-    EXPECT_EQ(NULL, GetFocusedWindow());
+    EXPECT_FALSE(GetFocusedWindow());
     FocusWindowById(1);
     EXPECT_EQ(1, GetFocusedWindowId());
     FocusWindowById(2);
     EXPECT_EQ(2, GetFocusedWindowId());
   }
   void BasicActivation() override {
-    EXPECT_EQ(NULL, GetActiveWindow());
+    EXPECT_FALSE(GetActiveWindow());
     ActivateWindowById(1);
     EXPECT_EQ(1, GetActiveWindowId());
     ActivateWindowById(2);
     EXPECT_EQ(2, GetActiveWindowId());
     // Verify that attempting to deactivate NULL does not crash and does not
     // change activation.
-    DeactivateWindow(NULL);
+    DeactivateWindow(nullptr);
     EXPECT_EQ(2, GetActiveWindowId());
     DeactivateWindow(GetActiveWindow());
     EXPECT_EQ(1, GetActiveWindowId());
@@ -730,7 +776,7 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
     EXPECT_EQ(11, GetFocusedWindowId());
   }
   void FocusRulesOverride() override {
-    EXPECT_EQ(NULL, GetFocusedWindow());
+    EXPECT_FALSE(GetFocusedWindow());
     FocusWindowById(11);
     EXPECT_EQ(11, GetFocusedWindowId());
 
@@ -741,7 +787,7 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
     int focused_window = IsInputEvent() ? 11 : 211;
     EXPECT_EQ(focused_window, GetFocusedWindowId());
 
-    test_focus_rules()->set_focus_restriction(NULL);
+    test_focus_rules()->set_focus_restriction(nullptr);
     FocusWindowById(12);
     EXPECT_EQ(12, GetFocusedWindowId());
   }
@@ -760,7 +806,7 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
     EXPECT_EQ(active_window, GetActiveWindowId());
     EXPECT_EQ(active_window, GetFocusedWindowId());
 
-    test_focus_rules()->set_focus_restriction(NULL);
+    test_focus_rules()->set_focus_restriction(nullptr);
     ActivateWindowById(2);
     EXPECT_EQ(2, GetActiveWindowId());
     EXPECT_EQ(2, GetFocusedWindowId());
@@ -795,7 +841,7 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
 
     // Simulate a focus reset by the ActivationChangeObserver. This should
     // trigger the default setting in FocusController.
-    observer->set_shift_focus_to(NULL);
+    observer->set_shift_focus_to(nullptr);
     ActivateWindowById(1);
     EXPECT_EQ(1, GetFocusedWindowId());
 
@@ -895,7 +941,10 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
 
     {
       aura::Window* to_delete = root_window()->GetChildById(1);
-      DeleteOnLoseActivationChangeObserver observer1(to_delete);
+      DeleteOnActivationChangeObserver observer1(
+          to_delete,
+          /*delete_on_activating=*/true,
+          /*delete_window_losing_active=*/true);
       RecordingActivationAndFocusChangeObserver observer2(root_window(),
                                                           &observer1);
 
@@ -910,7 +959,9 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
 
     {
       aura::Window* to_delete = root_window()->GetChildById(2);
-      DeleteOnLoseFocusChangeObserver observer1(to_delete);
+      DeleteOnActivationChangeObserver observer1(
+          to_delete, /*delete_on_activating=*/false,
+          /*delete_window_losing_active=*/true);
       RecordingActivationAndFocusChangeObserver observer2(root_window(),
                                                           &observer1);
 
@@ -921,6 +972,68 @@ class FocusControllerDirectTestBase : public FocusControllerTestBase {
 
       EXPECT_EQ(to_delete, observer1.GetDeletedWindow());
       EXPECT_FALSE(observer2.was_notified_with_deleted_window());
+    }
+
+    {
+      aura::test::CreateTestWindowWithDelegate(
+          aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 4,
+          gfx::Rect(125, 125, 50, 50), root_window());
+
+      EXPECT_EQ(3, GetActiveWindowId());
+      EXPECT_EQ(3, GetFocusedWindowId());
+
+      aura::Window* to_delete = root_window()->GetChildById(3);
+      DeleteOnLoseFocusChangeObserver observer1(to_delete);
+      RecordingActivationAndFocusChangeObserver observer2(root_window(),
+                                                          &observer1);
+
+      FocusWindowById(4);
+
+      EXPECT_EQ(4, GetActiveWindowId());
+      EXPECT_EQ(4, GetFocusedWindowId());
+
+      EXPECT_EQ(to_delete, observer1.GetDeletedWindow());
+      EXPECT_FALSE(observer2.was_notified_with_deleted_window());
+    }
+
+    {
+      aura::test::CreateTestWindowWithDelegate(
+          aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 5,
+          gfx::Rect(125, 125, 50, 50), root_window());
+      aura::test::CreateTestWindowWithDelegate(
+          aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 6,
+          gfx::Rect(125, 125, 50, 50), root_window());
+
+      EXPECT_EQ(4, GetActiveWindowId());
+      EXPECT_EQ(4, GetFocusedWindowId());
+
+      // Delete the window that is gaining activation at both the "activating"
+      // and "activated" phases. Make sure the activations were interrupted
+      // properly and the correct next activatable window is activated.
+      aura::Window* to_delete1 = root_window()->GetChildById(5);
+      DeleteOnActivationChangeObserver observer1(
+          to_delete1, /*delete_on_activating=*/false,
+          /*delete_window_losing_active=*/false);
+      RecordingActivationAndFocusChangeObserver observer2(root_window(),
+                                                          &observer1);
+      // Test a recursive scenario by having another observer that would delete
+      // the next activatable window during the "activating" phase.
+      aura::Window* to_delete2 = root_window()->GetChildById(6);
+      DeleteOnActivationChangeObserver observer3(
+          to_delete2, /*delete_on_activating=*/true,
+          /*delete_window_losing_active=*/false);
+      RecordingActivationAndFocusChangeObserver observer4(root_window(),
+                                                          &observer3);
+
+      FocusWindowById(5);
+
+      EXPECT_EQ(4, GetActiveWindowId());
+      EXPECT_EQ(4, GetFocusedWindowId());
+
+      EXPECT_EQ(to_delete1, observer1.GetDeletedWindow());
+      EXPECT_FALSE(observer2.was_notified_with_deleted_window());
+      EXPECT_EQ(to_delete2, observer3.GetDeletedWindow());
+      EXPECT_FALSE(observer4.was_notified_with_deleted_window());
     }
   }
 
@@ -1068,16 +1181,16 @@ class FocusControllerMouseEventTest : public FocusControllerDirectTestBase {
   // Tests that a handled mouse or gesture event does not trigger a window
   // activation.
   void IgnoreHandledEvent() {
-    EXPECT_EQ(NULL, GetActiveWindow());
+    EXPECT_FALSE(GetActiveWindow());
     aura::Window* w1 = root_window()->GetChildById(1);
     SimpleEventHandler handler;
     root_window()->AddPreTargetHandler(&handler,
                                        ui::EventTarget::Priority::kSystem);
     ui::test::EventGenerator generator(root_window(), w1);
     generator.ClickLeftButton();
-    EXPECT_EQ(NULL, GetActiveWindow());
+    EXPECT_FALSE(GetActiveWindow());
     generator.GestureTapAt(w1->bounds().CenterPoint());
-    EXPECT_EQ(NULL, GetActiveWindow());
+    EXPECT_FALSE(GetActiveWindow());
     root_window()->RemovePreTargetHandler(&handler);
     generator.ClickLeftButton();
     EXPECT_EQ(1, GetActiveWindowId());
@@ -1107,6 +1220,28 @@ class FocusControllerMouseEventTest : public FocusControllerDirectTestBase {
   }
 
   DISALLOW_COPY_AND_ASSIGN(FocusControllerMouseEventTest);
+};
+
+class FocusControllerMouseEnterEventTest
+    : public FocusControllerMouseEventTest {
+ public:
+  FocusControllerMouseEnterEventTest() {
+    scoped_feature_list_.InitAndEnableFeature(features::kFocusFollowsCursor);
+  }
+
+  void MouseEnteredEvent() {
+    aura::Window::Windows children_before = root_window()->children();
+    aura::Window* w2 = root_window()->GetChildById(2);
+
+    ui::test::EventGenerator generator(root_window(), w2);
+    generator.SendMouseEnter();
+
+    // The enter event should activate the window, but not stack the window.
+    EXPECT_EQ(w2, GetActiveWindow());
+    EXPECT_EQ(children_before, root_window()->children());
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 class FocusControllerGestureEventTest : public FocusControllerDirectTestBase {
@@ -1166,7 +1301,7 @@ class FocusControllerImplicitTestBase : public FocusControllerTestBase {
 
   // Overridden from FocusControllerTestBase:
   void BasicFocus() override {
-    EXPECT_EQ(NULL, GetFocusedWindow());
+    EXPECT_FALSE(GetFocusedWindow());
 
     aura::Window* w211 = root_window()->GetChildById(211);
     FocusWindow(w211);
@@ -1179,7 +1314,7 @@ class FocusControllerImplicitTestBase : public FocusControllerTestBase {
   void BasicActivation() override {
     DCHECK(!parent_) << "Activation tests don't support parent changes.";
 
-    EXPECT_EQ(NULL, GetActiveWindow());
+    EXPECT_FALSE(GetActiveWindow());
 
     aura::Window* w2 = root_window()->GetChildById(2);
     ActivateWindow(w2);
@@ -1223,7 +1358,7 @@ class FocusControllerImplicitTestBase : public FocusControllerTestBase {
     observer3.ExpectCounts(1, 1);
   }
   void FocusRulesOverride() override {
-    EXPECT_EQ(NULL, GetFocusedWindow());
+    EXPECT_FALSE(GetFocusedWindow());
     aura::Window* w211 = root_window()->GetChildById(211);
     FocusWindow(w211);
     EXPECT_EQ(211, GetFocusedWindowId());
@@ -1234,7 +1369,7 @@ class FocusControllerImplicitTestBase : public FocusControllerTestBase {
     // it to 11.
     EXPECT_EQ(11, GetFocusedWindowId());
 
-    test_focus_rules()->set_focus_restriction(NULL);
+    test_focus_rules()->set_focus_restriction(nullptr);
   }
   void ActivationRulesOverride() override {
     DCHECK(!parent_) << "Activation tests don't support parent changes.";
@@ -1254,7 +1389,7 @@ class FocusControllerImplicitTestBase : public FocusControllerTestBase {
     EXPECT_EQ(3, GetActiveWindowId());
     EXPECT_EQ(3, GetFocusedWindowId());
 
-    test_focus_rules()->set_focus_restriction(NULL);
+    test_focus_rules()->set_focus_restriction(nullptr);
     ActivateWindow(root_window()->GetChildById(2));
     EXPECT_EQ(2, GetActiveWindowId());
     EXPECT_EQ(2, GetFocusedWindowId());
@@ -1386,10 +1521,11 @@ class FocusControllerParentRemovalTest : public FocusControllerRemovalTest {
     TEST_F(TESTCLASS, TESTNAME) { TESTNAME(); }
 
 // Runs direct focus change tests (input events and API calls).
-#define DIRECT_FOCUS_CHANGE_TESTS(TESTNAME) \
-    FOCUS_CONTROLLER_TEST(FocusControllerApiTest, TESTNAME) \
-    FOCUS_CONTROLLER_TEST(FocusControllerMouseEventTest, TESTNAME) \
-    FOCUS_CONTROLLER_TEST(FocusControllerGestureEventTest, TESTNAME)
+#define DIRECT_FOCUS_CHANGE_TESTS(TESTNAME)                           \
+  FOCUS_CONTROLLER_TEST(FocusControllerApiTest, TESTNAME)             \
+  FOCUS_CONTROLLER_TEST(FocusControllerMouseEventTest, TESTNAME)      \
+  FOCUS_CONTROLLER_TEST(FocusControllerMouseEnterEventTest, TESTNAME) \
+  FOCUS_CONTROLLER_TEST(FocusControllerGestureEventTest, TESTNAME)
 
 // Runs implicit focus change tests for disposition changes to target.
 #define IMPLICIT_FOCUS_CHANGE_TARGET_TESTS(TESTNAME) \
@@ -1490,5 +1626,8 @@ FOCUS_CONTROLLER_TEST(FocusControllerParentHideTest,
 
 // If a mouse event was handled, it should not activate a window.
 FOCUS_CONTROLLER_TEST(FocusControllerMouseEventTest, IgnoreHandledEvent)
+
+// Mouse over window should activate it.
+FOCUS_CONTROLLER_TEST(FocusControllerMouseEnterEventTest, MouseEnteredEvent)
 
 }  // namespace wm

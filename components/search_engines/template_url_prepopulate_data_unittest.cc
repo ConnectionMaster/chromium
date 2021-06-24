@@ -10,8 +10,8 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "components/country_codes/country_codes.h"
@@ -145,8 +145,8 @@ TEST_F(TemplateURLPrepopulateDataTest, ProvidersFromPrefs) {
                                                          &default_index);
 
   ASSERT_EQ(1u, t_urls.size());
-  EXPECT_EQ(ASCIIToUTF16("foo"), t_urls[0]->short_name());
-  EXPECT_EQ(ASCIIToUTF16("fook"), t_urls[0]->keyword());
+  EXPECT_EQ(u"foo", t_urls[0]->short_name());
+  EXPECT_EQ(u"fook", t_urls[0]->keyword());
   EXPECT_EQ("foo.com", GetHostFromTemplateURLData(*t_urls[0]));
   EXPECT_EQ("foi.com", t_urls[0]->favicon_url.host());
   EXPECT_EQ(1u, t_urls[0]->input_encodings.size());
@@ -169,8 +169,8 @@ TEST_F(TemplateURLPrepopulateDataTest, ProvidersFromPrefs) {
   t_urls = TemplateURLPrepopulateData::GetPrepopulatedEngines(
       &prefs_, &default_index);
   ASSERT_EQ(1u, t_urls.size());
-  EXPECT_EQ(ASCIIToUTF16("foo"), t_urls[0]->short_name());
-  EXPECT_EQ(ASCIIToUTF16("fook"), t_urls[0]->keyword());
+  EXPECT_EQ(u"foo", t_urls[0]->short_name());
+  EXPECT_EQ(u"fook", t_urls[0]->keyword());
   EXPECT_EQ("foo.com", GetHostFromTemplateURLData(*t_urls[0]));
   EXPECT_EQ("foi.com", t_urls[0]->favicon_url.host());
   EXPECT_EQ(1u, t_urls[0]->input_encodings.size());
@@ -233,17 +233,16 @@ TEST_F(TemplateURLPrepopulateDataTest, ClearProvidersFromPrefs) {
                                                          &default_index);
   ASSERT_FALSE(t_urls.empty());
   for (size_t i = 0; i < t_urls.size(); ++i) {
-    EXPECT_NE(ASCIIToUTF16("foo"), t_urls[i]->short_name());
-    EXPECT_NE(ASCIIToUTF16("fook"), t_urls[i]->keyword());
+    EXPECT_NE(u"foo", t_urls[i]->short_name());
+    EXPECT_NE(u"fook", t_urls[i]->keyword());
     EXPECT_NE("foi.com", t_urls[i]->favicon_url.host());
     EXPECT_NE("foo.com", GetHostFromTemplateURLData(*t_urls[i]));
     EXPECT_NE(1001, t_urls[i]->prepopulate_id);
   }
   // Ensures the default URL is Google and has the optional fields filled.
-  EXPECT_EQ(ASCIIToUTF16("Google"), t_urls[default_index]->short_name());
+  EXPECT_EQ(u"Google", t_urls[default_index]->short_name());
   EXPECT_FALSE(t_urls[default_index]->suggestions_url.empty());
   EXPECT_FALSE(t_urls[default_index]->image_url.empty());
-  EXPECT_FALSE(t_urls[default_index]->new_tab_url.empty());
   EXPECT_FALSE(t_urls[default_index]->contextual_search_url.empty());
   EXPECT_FALSE(t_urls[default_index]->image_url_post_params.empty());
   EXPECT_EQ(SEARCH_ENGINE_GOOGLE,
@@ -275,10 +274,9 @@ TEST_F(TemplateURLPrepopulateDataTest, ProvidersFromPrepopulated) {
   }
 
   // Ensures the default URL is Google and has the optional fields filled.
-  EXPECT_EQ(ASCIIToUTF16("Google"), t_urls[default_index]->short_name());
+  EXPECT_EQ(u"Google", t_urls[default_index]->short_name());
   EXPECT_FALSE(t_urls[default_index]->suggestions_url.empty());
   EXPECT_FALSE(t_urls[default_index]->image_url.empty());
-  EXPECT_FALSE(t_urls[default_index]->new_tab_url.empty());
   EXPECT_FALSE(t_urls[default_index]->contextual_search_url.empty());
   EXPECT_FALSE(t_urls[default_index]->image_url_post_params.empty());
   // Expect at least 2 alternate_urls.
@@ -318,8 +316,8 @@ TEST_F(TemplateURLPrepopulateDataTest, GetEngineTypeAdvanced) {
 
   // Non-Google URLs.
   const char* kYahooURLs[] = {
-      "http://search.yahoo.com/search?"
-      "ei={inputEncoding}&fr=crmas&p={searchTerms}",
+      ("http://search.yahoo.com/search?"
+       "ei={inputEncoding}&fr=crmas&p={searchTerms}"),
       "http://search.yahoo.com/search?p={searchTerms}",
       // Aggressively match types by checking just TLD+1.
       "http://someothersite.yahoo.com/",
@@ -389,7 +387,7 @@ void CheckTemplateUrlRefIsCryptographic(const TemplateURLRef& url_ref) {
 
   // Double parentheses around the string16 constructor to prevent the compiler
   // from parsing it as a function declaration.
-  TemplateURLRef::SearchTermsArgs search_term_args((base::string16()));
+  TemplateURLRef::SearchTermsArgs search_term_args((std::u16string()));
   GURL url(url_ref.ReplaceSearchTerms(search_term_args, search_terms_data));
   EXPECT_TRUE(url.is_empty() || url.SchemeIsCryptographic()) << url;
 }
@@ -410,7 +408,7 @@ TEST_F(TemplateURLPrepopulateDataTest, HttpsUrls) {
   for (const PrepopulatedEngine* engine : all_engines) {
     std::unique_ptr<TemplateURLData> data =
         TemplateURLDataFromPrepopulatedEngine(*engine);
-    if (base::ContainsKey(exceptions, data->prepopulate_id))
+    if (base::Contains(exceptions, data->prepopulate_id))
       continue;
 
     GURL logo_url = data->logo_url;

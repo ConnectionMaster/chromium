@@ -7,7 +7,6 @@
 #include <algorithm>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/run_loop.h"
 #include "chrome/browser/notifications/notification_handler.h"
@@ -30,6 +29,11 @@ void StubNotificationDisplayService::SetNotificationAddedClosure(
   notification_added_closure_ = std::move(closure);
 }
 
+void StubNotificationDisplayService::SetNotificationClosedClosure(
+    base::RepeatingClosure closure) {
+  notification_closed_closure_ = std::move(closure);
+}
+
 std::vector<message_center::Notification>
 StubNotificationDisplayService::GetDisplayedNotificationsForType(
     NotificationHandler::Type type) const {
@@ -44,7 +48,7 @@ StubNotificationDisplayService::GetDisplayedNotificationsForType(
   return notifications;
 }
 
-base::Optional<message_center::Notification>
+absl::optional<message_center::Notification>
 StubNotificationDisplayService::GetNotification(
     const std::string& notification_id) {
   auto iter = std::find_if(notifications_.begin(), notifications_.end(),
@@ -53,7 +57,7 @@ StubNotificationDisplayService::GetNotification(
                            });
 
   if (iter == notifications_.end())
-    return base::nullopt;
+    return absl::nullopt;
 
   return iter->notification;
 }
@@ -75,8 +79,8 @@ StubNotificationDisplayService::GetMetadataForNotification(
 void StubNotificationDisplayService::SimulateClick(
     NotificationHandler::Type notification_type,
     const std::string& notification_id,
-    base::Optional<int> action_index,
-    base::Optional<base::string16> reply) {
+    absl::optional<int> action_index,
+    absl::optional<std::u16string> reply) {
   auto iter = FindNotification(notification_type, notification_id);
   if (iter == notifications_.end())
     return;
@@ -124,22 +128,22 @@ void StubNotificationDisplayService::RemoveNotification(
   auto iter = FindNotification(notification_type, notification_id);
   if (iter == notifications_.end())
     return;
+  NotificationData data = std::move(*iter);
+  notifications_.erase(iter);
 
   if (!silent) {
     NotificationHandler* handler = GetNotificationHandler(notification_type);
     if (notification_type == NotificationHandler::Type::TRANSIENT) {
       DCHECK(!handler);
-      if (iter->notification.delegate())
-        iter->notification.delegate()->Close(by_user);
+      if (data.notification.delegate())
+        data.notification.delegate()->Close(by_user);
     } else {
       base::RunLoop run_loop;
-      handler->OnClose(profile_, iter->notification.origin_url(),
+      handler->OnClose(profile_, data.notification.origin_url(),
                        notification_id, by_user, run_loop.QuitClosure());
       run_loop.Run();
     }
   }
-
-  notifications_.erase(iter);
 }
 
 void StubNotificationDisplayService::RemoveAllNotifications(
@@ -150,16 +154,17 @@ void StubNotificationDisplayService::RemoveAllNotifications(
             notification_type == NotificationHandler::Type::TRANSIENT);
   for (auto iter = notifications_.begin(); iter != notifications_.end();) {
     if (iter->type == notification_type) {
+      NotificationData data = std::move(*iter);
+      iter = notifications_.erase(iter);
       if (handler) {
         base::RunLoop run_loop;
-        handler->OnClose(profile_, iter->notification.origin_url(),
-                         iter->notification.id(), by_user,
+        handler->OnClose(profile_, data.notification.origin_url(),
+                         data.notification.id(), by_user,
                          run_loop.QuitClosure());
         run_loop.Run();
-      } else if (iter->notification.delegate()) {
-        iter->notification.delegate()->Close(by_user);
+      } else if (data.notification.delegate()) {
+        data.notification.delegate()->Close(by_user);
       }
-      iter = notifications_.erase(iter);
     } else {
       iter++;
     }
@@ -204,6 +209,9 @@ void StubNotificationDisplayService::Close(
   RemoveNotification(
       notification_type, notification_id, false /* by_user */,
       notification_type != NotificationHandler::Type::TRANSIENT /* silent */);
+
+  if (notification_closed_closure_)
+    notification_closed_closure_.Run();
 }
 
 void StubNotificationDisplayService::GetDisplayed(
@@ -222,9 +230,9 @@ void StubNotificationDisplayService::ProcessNotificationOperation(
     NotificationHandler::Type notification_type,
     const GURL& origin,
     const std::string& notification_id,
-    const base::Optional<int>& action_index,
-    const base::Optional<base::string16>& reply,
-    const base::Optional<bool>& by_user) {
+    const absl::optional<int>& action_index,
+    const absl::optional<std::u16string>& reply,
+    const absl::optional<bool>& by_user) {
   if (process_notification_operation_delegate_) {
     process_notification_operation_delegate_.Run(operation, notification_type,
                                                  origin, notification_id,

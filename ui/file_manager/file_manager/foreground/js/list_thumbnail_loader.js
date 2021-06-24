@@ -2,6 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {FileListModel} from './file_list_model.m.js';
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// #import {ThumbnailModel} from './metadata/thumbnail_model.js';
+// #import {DirectoryModel} from './directory_model.m.js';
+// #import {VolumeManagerCommon} from '../../common/js/volume_manager_types.m.js';
+// #import {LRUCache} from '../../common/js/lru_cache.js';
+// #import {ThumbnailLoader} from './thumbnail_loader.m.js';
+// #import {assert} from 'chrome://resources/js/assert.m.js';
+// #import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+// clang-format on
+
 /**
  * A thumbnail loader for list style UI.
  *
@@ -10,7 +22,7 @@
  * is responsible to return dataUrls of thumbnails and fetch them with proper
  * priority.
  */
-class ListThumbnailLoader extends cr.EventTarget {
+/* #export */ class ListThumbnailLoader extends cr.EventTarget {
   /**
    * @param {!DirectoryModel} directoryModel A directory model.
    * @param {!ThumbnailModel} thumbnailModel Thumbnail metadata model.
@@ -433,14 +445,15 @@ ListThumbnailLoader.Task = class {
             ThumbnailLoader.LoadTarget.EXTERNAL_METADATA
           ];
 
-          // If the file is on a provided file system which is based on
-          // network, then don't generate thumbnails from file entry, as it
-          // could cause very high network traffic.
+          // If the file is on a network filesystem, don't generate thumbnails
+          // from file entry, as it could cause very high network traffic.
+          // Allow Drive to do so however, as ThumbnailLoader tries to generate
+          // thumbnails of Drive files from file entry only if cached locally.
           const volumeInfo = this.volumeManager_.getVolumeInfo(this.entry_);
           if (volumeInfo &&
-              (volumeInfo.volumeType !==
-                   VolumeManagerCommon.VolumeType.PROVIDED ||
-               volumeInfo.source !== VolumeManagerCommon.Source.NETWORK)) {
+              (volumeInfo.source !== VolumeManagerCommon.Source.NETWORK ||
+               volumeInfo.volumeType ===
+                   VolumeManagerCommon.VolumeType.DRIVE)) {
             loadTargets.push(ThumbnailLoader.LoadTarget.FILE_ENTRY);
           }
 

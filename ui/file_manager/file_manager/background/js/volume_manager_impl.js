@@ -2,11 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {dispatchSimpleEvent} from 'chrome://resources/js/cr.m.js';
+import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+
+import {AsyncUtil} from '../../common/js/async_util.js';
+import {util} from '../../common/js/util.m.js';
+import {VolumeManagerCommon} from '../../common/js/volume_manager_types.m.js';
+import {VolumeInfo} from '../../externs/volume_info.js';
+import {VolumeManager} from '../../externs/volume_manager.js';
+
+import {EntryLocationImpl} from './entry_location_impl.js';
+import {VolumeInfoListImpl} from './volume_info_list_impl.js';
+import {volumeManagerUtil} from './volume_manager_util.js';
+
 /**
  * VolumeManager is responsible for tracking list of mounted volumes.
  * @implements {VolumeManager}
  */
-class VolumeManagerImpl extends cr.EventTarget {
+export class VolumeManagerImpl extends EventTarget {
   constructor() {
     super();
 
@@ -22,23 +36,24 @@ class VolumeManagerImpl extends cr.EventTarget {
     this.requests_ = {};
 
     /**
-     * Queue for mounting.
-     * @type {AsyncUtil.Queue}
-     * @private
+     * Mutex guarding the mounting and unmounting operations, in order to
+     * guarantee that onMountCompleted events happen after initialization.
+     * @private @const {AsyncUtil.Queue}
      */
-    this.mountQueue_ = new AsyncUtil.Queue();
+    this.mutex_ = new AsyncUtil.Queue();
 
     // The status should be merged into VolumeManager.
     // TODO(hidehiko): Remove them after the migration.
     /**
      * Connection state of the Drive.
-     * @type {VolumeManagerCommon.DriveConnectionState}
+     * @type {chrome.fileManagerPrivate.DriveConnectionState}
      * @private
      */
     this.driveConnectionState_ = {
-      type: VolumeManagerCommon.DriveConnectionType.OFFLINE,
-      reason: VolumeManagerCommon.DriveConnectionReason.NO_SERVICE,
-      hasCellularNetworkAccess: false
+      type: chrome.fileManagerPrivate.DriveConnectionStateType.OFFLINE,
+      reason: chrome.fileManagerPrivate.DriveOfflineReason.NO_SERVICE,
+      hasCellularNetworkAccess: false,
+      canPinHostedFiles: false,
     };
 
     chrome.fileManagerPrivate.onDriveConnectionStatusChanged.addListener(
@@ -46,16 +61,17 @@ class VolumeManagerImpl extends cr.EventTarget {
     this.onDriveConnectionStatusChanged_();
   }
 
+  /** @override */
+  dispose() {}
+
   /**
    * Invoked when the drive connection status is changed.
    * @private
    */
   onDriveConnectionStatusChanged_() {
     chrome.fileManagerPrivate.getDriveConnectionState(state => {
-      // TODO(crbug.com/931971): Convert private API to use enum.
-      this.driveConnectionState_ =
-          /** @type {VolumeManagerCommon.DriveConnectionState} */ (state);
-      cr.dispatchSimpleEvent(this, 'drive-connection-changed');
+      this.driveConnectionState_ = state;
+      dispatchSimpleEvent(this, 'drive-connection-changed');
     });
   }
 
@@ -71,155 +87,173 @@ class VolumeManagerImpl extends cr.EventTarget {
    * @return {!Promise<!VolumeInfo>}
    * @private
    */
-  addVolumeMetadata_(volumeMetadata) {
-    return volumeManagerUtil.createVolumeInfo(volumeMetadata)
-        .then(
-            /**
-             * @param {!VolumeInfo} volumeInfo
-             * @return {!VolumeInfo}
-             */
-            volumeInfo => {
-              // We don't show Downloads and Drive on volume list if they have
-              // mount error, since users can do nothing in this situation. We
-              // show Removable and Provided volumes regardless of mount error
-              // so that users can unmount or format the volume.
-              // TODO(fukino): Once the Files app gets ready, show erroneous
-              // Drive volume so that users can see auth warning banner on the
-              // volume. crbug.com/517772.
-              let shouldShow = true;
-              switch (volumeInfo.volumeType) {
-                case VolumeManagerCommon.VolumeType.DOWNLOADS:
-                case VolumeManagerCommon.VolumeType.DRIVE:
-                  shouldShow = !!volumeInfo.fileSystem;
-                  break;
-              }
-              if (!shouldShow) {
-                return volumeInfo;
-              }
-              if (this.volumeInfoList.findIndex(volumeInfo.volumeId) === -1) {
-                this.volumeInfoList.add(volumeInfo);
+  async addVolumeMetadata_(volumeMetadata) {
+    const volumeInfo = await volumeManagerUtil.createVolumeInfo(volumeMetadata);
 
-                // Update the network connection status, because until the drive
-                // is initialized, the status is set to not ready.
-                // TODO(mtomasz): The connection status should be migrated into
-                // chrome.fileManagerPrivate.VolumeMetadata.
-                if (volumeMetadata.volumeType ===
-                    VolumeManagerCommon.VolumeType.DRIVE) {
-                  this.onDriveConnectionStatusChanged_();
-                }
-              } else if (
-                  volumeMetadata.volumeType ===
-                  VolumeManagerCommon.VolumeType.REMOVABLE) {
-                // Update for remounted USB external storage, because they were
-                // remounted to switch read-only policy.
-                this.volumeInfoList.add(volumeInfo);
-              }
-              return volumeInfo;
-            });
+    // We don't show Downloads and Drive on volume list if they have
+    // mount error, since users can do nothing in this situation. We
+    // show Removable and Provided volumes regardless of mount error
+    // so that users can unmount or format the volume.
+    // TODO(fukino): Once the Files app gets ready, show erroneous
+    // Drive volume so that users can see auth warning banner on the
+    // volume. crbug.com/517772.
+    let shouldShow = true;
+    switch (volumeInfo.volumeType) {
+      case VolumeManagerCommon.VolumeType.DOWNLOADS:
+      case VolumeManagerCommon.VolumeType.DRIVE:
+        shouldShow = !!volumeInfo.fileSystem;
+        break;
+    }
+
+    if (!shouldShow) {
+      return volumeInfo;
+    }
+
+    if (this.volumeInfoList.findIndex(volumeInfo.volumeId) === -1) {
+      this.volumeInfoList.add(volumeInfo);
+
+      // Update the network connection status, because until the drive
+      // is initialized, the status is set to not ready.
+      // TODO(mtomasz): The connection status should be migrated into
+      // chrome.fileManagerPrivate.VolumeMetadata.
+      if (volumeMetadata.volumeType === VolumeManagerCommon.VolumeType.DRIVE) {
+        this.onDriveConnectionStatusChanged_();
+      }
+    } else if (
+        volumeMetadata.volumeType ===
+        VolumeManagerCommon.VolumeType.REMOVABLE) {
+      // Update for remounted USB external storage, because they were
+      // remounted to switch read-only policy.
+      this.volumeInfoList.add(volumeInfo);
+    }
+
+    return volumeInfo;
   }
 
   /**
    * Initializes mount points.
-   * @param {function()} callback Called upon the completion of the
-   *     initialization.
-   * @private
+   * @return {!Promise<void>}
    */
-  initialize_(callback) {
+  async initialize() {
     chrome.fileManagerPrivate.onMountCompleted.addListener(
         this.onMountCompleted_.bind(this));
-    console.warn('Requesting volume list.');
-    chrome.fileManagerPrivate.getVolumeMetadataList(volumeMetadataList => {
-      console.warn(
-          'Volume list fetched with: ' + volumeMetadataList.length + ' items.');
-      // We must subscribe to the mount completed event in the callback of
-      // getVolumeMetadataList. crbug.com/330061.
-      // But volumes reported by onMountCompleted events must be added after the
-      // volumes in the volumeMetadataList are mounted. crbug.com/135477.
-      this.mountQueue_.run(inCallback => {
-        // Create VolumeInfo for each volume.
-        Promise
-            .all(volumeMetadataList.map(volumeMetadata => {
-              console.warn('Initializing volume: ' + volumeMetadata.volumeId);
-              return this.addVolumeMetadata_(volumeMetadata)
-                  .then(volumeInfo => {
-                    console.warn('Initialized volume: ' + volumeInfo.volumeId);
-                  });
-            }))
-            .then(() => {
-              console.warn('Initialized all volumes.');
-              // Call the callback of the initialize function.
-              callback();
-              // Call the callback of AsyncQueue. Maybe it invokes callbacks
-              // registered by mountCompleted events.
-              inCallback();
-            });
-      });
-    });
+
+    console.warn('Getting volumes');
+    const volumeMetadataList = await new Promise(
+        resolve => chrome.fileManagerPrivate.getVolumeMetadataList(resolve));
+    if (!volumeMetadataList) {
+      console.error('Cannot get volumes');
+      return;
+    }
+    console.debug(`There are ${volumeMetadataList.length} volumes`);
+
+    // We must subscribe to the mount completed event in the callback of
+    // getVolumeMetadataList (crbug.com/330061). But volumes reported by
+    // onMountCompleted events must be added after the volumes in the
+    // volumeMetadataList are mounted (crbug.com/135477).
+    const unlock = await this.mutex_.lock();
+    try {
+      // Create VolumeInfo for each volume.
+      await Promise.all(volumeMetadataList.map(async (volumeMetadata) => {
+        console.debug(`Initializing volume '${volumeMetadata.volumeId}'`);
+        try {
+          // Handle error here otherwise every promise in Promise.all() fails.
+          const volumeInfo = await this.addVolumeMetadata_(volumeMetadata);
+          console.debug(`Initialized volume '${volumeInfo.volumeId}'`);
+        } catch (error) {
+          console.warn(`Error initiliazing ${volumeMetadata.volumeId}`);
+          console.error(error);
+        }
+      }));
+
+      console.warn(`Initialized all ${volumeMetadataList.length} volumes`);
+    } finally {
+      unlock();
+    }
   }
 
   /**
    * Event handler called when some volume was mounted or unmounted.
-   * @param {chrome.fileManagerPrivate.MountCompletedEvent} event Received
-   *     event.
+   * @param {chrome.fileManagerPrivate.MountCompletedEvent} event
    * @private
    */
-  onMountCompleted_(event) {
-    this.mountQueue_.run(callback => {
-      switch (event.eventType) {
-        case 'mount':
-          var requestKey = this.makeRequestKey_(
-              'mount', event.volumeMetadata.sourcePath || '');
+  async onMountCompleted_(event) {
+    const unlock = await this.mutex_.lock();
+    try {
+      const {eventType, status, volumeMetadata} = event;
+      const {sourcePath = '', volumeId} = volumeMetadata;
 
-          if (event.status === 'success' ||
-              event.status ===
-                  VolumeManagerCommon.VolumeError.UNKNOWN_FILESYSTEM ||
-              event.status ===
-                  VolumeManagerCommon.VolumeError.UNSUPPORTED_FILESYSTEM) {
-            this.addVolumeMetadata_(event.volumeMetadata).then(volumeInfo => {
-              this.finishRequest_(requestKey, event.status, volumeInfo);
-              callback();
-            });
-          } else if (
-              event.status ===
-              VolumeManagerCommon.VolumeError.ALREADY_MOUNTED) {
-            const navigationEvent =
-                new Event(VolumeManagerCommon.VOLUME_ALREADY_MOUNTED);
-            navigationEvent.volumeId = event.volumeMetadata.volumeId;
-            this.dispatchEvent(navigationEvent);
-            this.finishRequest_(requestKey, event.status);
-            callback();
-          } else {
-            console.warn('Failed to mount a volume: ' + event.status);
-            this.finishRequest_(requestKey, event.status);
-            callback();
+      switch (eventType) {
+        case 'mount': {
+          const requestKey = this.makeRequestKey_('mount', sourcePath);
+
+          switch (status) {
+            case 'success':
+            case VolumeManagerCommon.VolumeError.UNKNOWN_FILESYSTEM:
+            case VolumeManagerCommon.VolumeError.UNSUPPORTED_FILESYSTEM: {
+              console.debug(`Mounted '${sourcePath}' as '${volumeId}'`);
+              const volumeInfo = await this.addVolumeMetadata_(volumeMetadata);
+              this.finishRequest_(requestKey, status, volumeInfo);
+              return;
+            }
+
+            case VolumeManagerCommon.VolumeError.ALREADY_MOUNTED: {
+              console.warn(`'Cannot mount ${sourcePath}': Already mounted as '${
+                  volumeId}'`);
+              const navigationEvent =
+                  new Event(VolumeManagerCommon.VOLUME_ALREADY_MOUNTED);
+              navigationEvent.volumeId = volumeId;
+              this.dispatchEvent(navigationEvent);
+              this.finishRequest_(requestKey, status);
+              return;
+            }
+
+            case VolumeManagerCommon.VolumeError.NEED_PASSWORD: {
+              console.warn(`'Cannot mount ${sourcePath}': ${status}`);
+              this.finishRequest_(requestKey, status);
+              return;
+            }
+
+            default:
+              console.error(`Cannot mount '${sourcePath}': ${status}`);
+              this.finishRequest_(requestKey, status);
+              return;
           }
-          break;
+        }
 
-        case 'unmount':
-          const volumeId = event.volumeMetadata.volumeId;
-          const status = event.status;
-          var requestKey = this.makeRequestKey_('unmount', volumeId);
-          const requested = requestKey in this.requests_;
+        case 'unmount': {
+          const requestKey = this.makeRequestKey_('unmount', volumeId);
           const volumeInfoIndex = this.volumeInfoList.findIndex(volumeId);
           const volumeInfo = volumeInfoIndex !== -1 ?
               this.volumeInfoList.item(volumeInfoIndex) :
               null;
-          if (event.status === 'success' && !requested && volumeInfo) {
-            console.warn('Unmounted volume without a request: ' + volumeId);
-            const e = new Event('externally-unmounted');
-            e.volumeInfo = volumeInfo;
-            this.dispatchEvent(e);
-          }
 
-          this.finishRequest_(requestKey, status);
-          if (event.status === 'success') {
-            this.volumeInfoList.remove(event.volumeMetadata.volumeId);
+          switch (status) {
+            case 'success': {
+              const requested = requestKey in this.requests_;
+              if (!requested && volumeInfo) {
+                console.warn(`Unmounted '${volumeId}' without request`);
+                this.dispatchEvent(new CustomEvent(
+                    'externally-unmounted', {detail: volumeInfo}));
+              } else {
+                console.debug(`Unmounted '${volumeId}'`);
+              }
+
+              this.volumeInfoList.remove(volumeId);
+              this.finishRequest_(requestKey, status);
+              return;
+            }
+
+            default:
+              console.error(`Cannot unmount '${volumeId}': ${status}`);
+              this.finishRequest_(requestKey, status);
+              return;
           }
-          console.warn('unmounted volume: ' + volumeId);
-          callback();
-          break;
+        }
       }
-    });
+    } finally {
+      unlock();
+    }
   }
 
   /**
@@ -236,20 +270,21 @@ class VolumeManagerImpl extends cr.EventTarget {
   }
 
   /** @override */
-  mountArchive(fileUrl, successCallback, errorCallback) {
-    chrome.fileManagerPrivate.addMount(fileUrl, sourcePath => {
-      console.info(
-          'Mount request: url=' + fileUrl + '; sourcePath=' + sourcePath);
-      const requestKey = this.makeRequestKey_('mount', sourcePath);
-      this.startRequest_(requestKey, successCallback, errorCallback);
+  async mountArchive(fileUrl, password) {
+    const path = await new Promise(resolve => {
+      chrome.fileManagerPrivate.addMount(fileUrl, password, resolve);
     });
+    console.debug(`Mounting '${path}'`);
+    const key = this.makeRequestKey_('mount', path);
+    return this.startRequest_(key);
   }
 
   /** @override */
-  unmount(volumeInfo, successCallback, errorCallback) {
-    chrome.fileManagerPrivate.removeMount(volumeInfo.volumeId);
-    const requestKey = this.makeRequestKey_('unmount', volumeInfo.volumeId);
-    this.startRequest_(requestKey, successCallback, errorCallback);
+  async unmount({volumeId}) {
+    console.warn(`Unmounting '${volumeId}'`);
+    chrome.fileManagerPrivate.removeMount(volumeId);
+    const key = this.makeRequestKey_('unmount', volumeId);
+    await this.startRequest_(key);
   }
 
   /** @override */
@@ -268,9 +303,10 @@ class VolumeManagerImpl extends cr.EventTarget {
   /** @override */
   getVolumeInfo(entry) {
     if (!entry) {
-      console.error('Invalid entry passed to getVolumeInfo: ' + entry);
+      console.error(`Invalid entry passed to getVolumeInfo: ${entry}`);
       return null;
     }
+
     for (let i = 0; i < this.volumeInfoList.length; i++) {
       const volumeInfo = this.volumeInfoList.item(i);
       if (volumeInfo.fileSystem &&
@@ -278,13 +314,14 @@ class VolumeManagerImpl extends cr.EventTarget {
         return volumeInfo;
       }
       // Additionally, check fake entries.
-      for (let key in volumeInfo.fakeEntries_) {
-        const fakeEntry = volumeInfo.fakeEntries_[key];
+      for (const key in volumeInfo.fakeEntries) {
+        const fakeEntry = volumeInfo.fakeEntries[key];
         if (util.isSameEntry(fakeEntry, entry)) {
           return volumeInfo;
         }
       }
     }
+
     return null;
   }
 
@@ -303,9 +340,10 @@ class VolumeManagerImpl extends cr.EventTarget {
   /** @override */
   getLocationInfo(entry) {
     if (!entry) {
-      console.error('Invalid entry passed to getLocationInfo: ' + entry);
+      console.error(`Invalid entry passed to getLocationInfo: ${entry}`);
       return null;
     }
+
     const volumeInfo = this.getVolumeInfo(entry);
 
     if (util.isFakeEntry(entry)) {
@@ -383,14 +421,31 @@ class VolumeManagerImpl extends cr.EventTarget {
         // read-write.
         isReadOnly = entry.fullPath.split('/').length < 4;
         isRootEntry = entry.fullPath === '/.files-by-id';
+      } else if (
+          entry.fullPath === '/.shortcut-targets-by-id' ||
+          entry.fullPath.indexOf('/.shortcut-targets-by-id/') === 0) {
+        rootType = VolumeManagerCommon.RootType.DRIVE_OTHER;
+
+        // /.shortcut-targets-by-id/<id> is read-only, but
+        // /.shortcut-targets-by-id/<id>/foo is read-write.
+        isReadOnly = entry.fullPath.split('/').length < 4;
+        isRootEntry = entry.fullPath === '/.shortcut-targets-by-id';
+      } else if (
+          entry.fullPath === '/.Trash-1000' ||
+          entry.fullPath.indexOf('/.Trash-1000/') === 0) {
+        // Drive uses "$topdir/.Trash-$uid" as the trash dir as per XDG spec.
+        // User chronos is always uid 1000.
+        rootType = VolumeManagerCommon.RootType.TRASH;
+        isReadOnly = false;
+        isRootEntry = entry.fullPath === '/.Trash-1000';
       } else {
         // Accessing Drive files outside of /drive/root and /drive/other is not
         // allowed, but can happen. Therefore returning null.
         return null;
       }
     } else {
-      rootType =
-          VolumeManagerCommon.getRootTypeFromVolumeType(volumeInfo.volumeType);
+      rootType = VolumeManagerCommon.getRootTypeFromVolumeType(
+          assert(volumeInfo.volumeType));
       isRootEntry = util.isSameEntry(entry, volumeInfo.fileSystem.root);
       // Although "Play files" root directory is writable in file system level,
       // we prohibit write operations on it in the UI level to avoid confusion.
@@ -436,33 +491,32 @@ class VolumeManagerImpl extends cr.EventTarget {
 
   /** @override */
   getDefaultDisplayRoot(callback) {
-    console.error(
-        'Unexpectedly called VolumeManagerImpl.getDefaultDisplayRoot.');
+    console.error('Unexpected call to VolumeManagerImpl.getDefaultDisplayRoot');
     callback(null);
   }
 
   /**
    * @param {string} key Key produced by |makeRequestKey_|.
-   * @param {function(VolumeInfo)} successCallback To be called when the request
-   *     finishes successfully.
-   * @param {function(VolumeManagerCommon.VolumeError)} errorCallback To be
-   *     called when the request fails.
+   * @return {!Promise<!VolumeInfo>} Fulfilled on success, otherwise rejected
+   *     with a VolumeManagerCommon.VolumeError.
    * @private
    */
-  startRequest_(key, successCallback, errorCallback) {
-    if (key in this.requests_) {
-      const request = this.requests_[key];
-      request.successCallbacks.push(successCallback);
-      request.errorCallbacks.push(errorCallback);
-    } else {
-      this.requests_[key] = {
-        successCallbacks: [successCallback],
-        errorCallbacks: [errorCallback],
+  startRequest_(key) {
+    return new Promise((successCallback, errorCallback) => {
+      if (key in this.requests_) {
+        const request = this.requests_[key];
+        request.successCallbacks.push(successCallback);
+        request.errorCallbacks.push(errorCallback);
+      } else {
+        this.requests_[key] = {
+          successCallbacks: [successCallback],
+          errorCallbacks: [errorCallback],
 
-        timeout: setTimeout(
-            this.onTimeout_.bind(this, key), volumeManagerUtil.TIMEOUT)
-      };
-    }
+          timeout: setTimeout(
+              this.onTimeout_.bind(this, key), volumeManagerUtil.TIMEOUT)
+        };
+      }
+    });
   }
 
   /**
@@ -478,7 +532,7 @@ class VolumeManagerImpl extends cr.EventTarget {
 
   /**
    * @param {string} key Key produced by |makeRequestKey_|.
-   * @param {VolumeManagerCommon.VolumeError|string} status Status received
+   * @param {!VolumeManagerCommon.VolumeError|string} status Status received
    *     from the API.
    * @param {VolumeInfo=} opt_volumeInfo Volume info of the mounted volume.
    * @private
@@ -496,7 +550,7 @@ class VolumeManagerImpl extends cr.EventTarget {
 
   /**
    * @param {Object} request Structure created in |startRequest_|.
-   * @param {VolumeManagerCommon.VolumeError|string} status If status ===
+   * @param {!VolumeManagerCommon.VolumeError|string} status If status ===
    *     'success' success callbacks are called.
    * @param {VolumeInfo=} opt_volumeInfo Volume info of the mounted volume.
    * @private
@@ -507,6 +561,7 @@ class VolumeManagerImpl extends cr.EventTarget {
         callbacks[i].apply(self, args);
       }
     };
+
     if (status === 'success') {
       callEach(request.successCallbacks, this, [opt_volumeInfo]);
     } else {

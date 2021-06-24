@@ -5,13 +5,9 @@
 
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@drawable/autofill_assistant_shadow_bg"
     android:padding="16dp"
-    android:visibility="gone"
     android:orientation="vertical">
     <LinearLayout android:layout_width="match_parent"
                   android:layout_height="wrap_content"
@@ -89,15 +85,6 @@
             android:layout_marginStart="8dp"
             android:layout_marginEnd="4dp"
             android:singleLine="true"/>
-
-        <ImageView
-            android:id="@+id/details_total_price_label_icon"
-            android:layout_width="12dp"
-            android:layout_height="12dp"
-            android:layout_marginEnd="4dp"
-            android:tint="@color/default_text_color_secondary"
-            app:srcCompat="@drawable/ic_info_outline_grey"
-            tools:ignore="ContentDescription"/>
 
         <TextView
             android:id="@+id/details_total_price"

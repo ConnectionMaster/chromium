@@ -6,7 +6,6 @@
 
 #include <algorithm>
 
-#include "components/sync_sessions/favicon_cache.h"
 #include "components/sync_sessions/sync_sessions_client.h"
 #include "components/sync_sessions/synced_session_tracker.h"
 
@@ -32,21 +31,12 @@ bool SessionsRecencyComparator(const SyncedSession* s1,
 OpenTabsUIDelegateImpl::OpenTabsUIDelegateImpl(
     const SyncSessionsClient* sessions_client,
     const SyncedSessionTracker* session_tracker,
-    const FaviconCache* favicon_cache,
     const DeleteForeignSessionCallback& delete_foreign_session_cb)
     : sessions_client_(sessions_client),
       session_tracker_(session_tracker),
-      favicon_cache_(favicon_cache),
       delete_foreign_session_cb_(delete_foreign_session_cb) {}
 
 OpenTabsUIDelegateImpl::~OpenTabsUIDelegateImpl() {}
-
-bool OpenTabsUIDelegateImpl::GetSyncedFaviconForPageURL(
-    const std::string& page_url,
-    scoped_refptr<base::RefCountedMemory>* favicon_png) const {
-  return favicon_cache_->GetSyncedFaviconForPageURL(GURL(page_url),
-                                                    favicon_png);
-}
 
 bool OpenTabsUIDelegateImpl::GetAllForeignSessions(
     std::vector<const SyncedSession*>* sessions) {

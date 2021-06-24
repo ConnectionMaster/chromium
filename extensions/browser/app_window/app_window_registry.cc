@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/strings/stringprintf.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "content/public/browser/browser_context.h"
@@ -107,13 +107,6 @@ AppWindowRegistry::AppWindowList AppWindowRegistry::GetAppWindowsForApp(
   return app_windows;
 }
 
-void AppWindowRegistry::CloseAllAppWindowsForApp(const std::string& app_id) {
-  const AppWindowList windows = GetAppWindowsForApp(app_id);
-  for (auto it = windows.cbegin(); it != windows.cend(); ++it) {
-    (*it)->GetBaseWindow()->Close();
-  }
-}
-
 AppWindow* AppWindowRegistry::GetAppWindowForWebContents(
     const content::WebContents* web_contents) const {
   for (AppWindow* window : app_windows_) {
@@ -182,7 +175,7 @@ void AppWindowRegistry::DevToolsAgentHostDetached(
 }
 
 void AppWindowRegistry::AddAppWindowToList(AppWindow* app_window) {
-  if (base::ContainsValue(app_windows_, app_window))
+  if (base::Contains(app_windows_, app_window))
     return;
   app_windows_.push_back(app_window);
 }
@@ -245,10 +238,6 @@ KeyedService* AppWindowRegistry::Factory::BuildServiceInstanceFor(
 
 bool AppWindowRegistry::Factory::ServiceIsCreatedWithBrowserContext() const {
   return true;
-}
-
-bool AppWindowRegistry::Factory::ServiceIsNULLWhileTesting() const {
-  return false;
 }
 
 content::BrowserContext* AppWindowRegistry::Factory::GetBrowserContextToUse(

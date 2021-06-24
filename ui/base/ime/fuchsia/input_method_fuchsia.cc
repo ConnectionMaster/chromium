@@ -5,11 +5,11 @@
 #include "ui/base/ime/fuchsia/input_method_fuchsia.h"
 
 #include <fuchsia/ui/input/cpp/fidl.h>
+#include <lib/sys/cpp/component_context.h>
 #include <memory>
 #include <utility>
 
-#include "base/bind_helpers.h"
-#include "base/fuchsia/service_directory_client.h"
+#include "base/fuchsia/process_context.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -17,24 +17,15 @@
 
 namespace ui {
 
-InputMethodFuchsia::InputMethodFuchsia(internal::InputMethodDelegate* delegate)
+InputMethodFuchsia::InputMethodFuchsia(internal::InputMethodDelegate* delegate,
+                                       fuchsia::ui::views::ViewRef view_ref)
     : InputMethodBase(delegate),
-      event_converter_(this),
-      ime_client_binding_(this),
-      ime_service_(base::fuchsia::ServiceDirectoryClient::ForCurrentProcess()
-                       ->ConnectToService<fuchsia::ui::input::ImeService>()),
-      virtual_keyboard_controller_(ime_service_.get()) {}
+      virtual_keyboard_controller_(std::move(view_ref), this) {}
 
 InputMethodFuchsia::~InputMethodFuchsia() {}
 
-InputMethodKeyboardController*
-InputMethodFuchsia::GetInputMethodKeyboardController() {
+VirtualKeyboardController* InputMethodFuchsia::GetVirtualKeyboardController() {
   return &virtual_keyboard_controller_;
-}
-
-void InputMethodFuchsia::DispatchEvent(ui::Event* event) {
-  DCHECK(event->IsKeyEvent());
-  DispatchKeyEvent(event->AsKeyEvent());
 }
 
 ui::EventDispatchDetails InputMethodFuchsia::DispatchKeyEvent(
@@ -43,11 +34,10 @@ ui::EventDispatchDetails InputMethodFuchsia::DispatchKeyEvent(
 
   // If no text input client, do nothing.
   if (!GetTextInputClient())
-    return DispatchKeyEventPostIME(event, base::NullCallback());
+    return DispatchKeyEventPostIME(event);
 
   // Insert the character.
-  ui::EventDispatchDetails dispatch_details =
-      DispatchKeyEventPostIME(event, base::NullCallback());
+  ui::EventDispatchDetails dispatch_details = DispatchKeyEventPostIME(event);
   if (!event->stopped_propagation() && !dispatch_details.dispatcher_destroyed &&
       event->type() == ET_KEY_PRESSED && GetTextInputClient()) {
     const uint16_t ch = event->GetCharacter();
@@ -59,54 +49,23 @@ ui::EventDispatchDetails InputMethodFuchsia::DispatchKeyEvent(
   return dispatch_details;
 }
 
-void InputMethodFuchsia::OnCaretBoundsChanged(const TextInputClient* client) {}
-
 void InputMethodFuchsia::CancelComposition(const TextInputClient* client) {}
 
-bool InputMethodFuchsia::IsCandidatePopupOpen() const {
-  return false;
-}
+void InputMethodFuchsia::OnTextInputTypeChanged(const TextInputClient* client) {
+  InputMethodBase::OnTextInputTypeChanged(client);
 
-void InputMethodFuchsia::OnFocus() {
-  DCHECK(!ime_);
-
-  // TODO(crbug.com/876934): Instantiate the IME with details about the text
-  // being edited.
-  fuchsia::ui::input::TextInputState state = {};
-  state.text = "";
-  ime_service_->GetInputMethodEditor(
-      fuchsia::ui::input::KeyboardType::TEXT,
-      fuchsia::ui::input::InputMethodAction::UNSPECIFIED, std::move(state),
-      ime_client_binding_.NewBinding(), ime_.NewRequest());
-}
-
-void InputMethodFuchsia::OnBlur() {
-  virtual_keyboard_controller_.DismissVirtualKeyboard();
-  ime_client_binding_.Unbind();
-  ime_.Unbind();
-}
-
-void InputMethodFuchsia::DidUpdateState(
-    fuchsia::ui::input::TextInputState state,
-    std::unique_ptr<fuchsia::ui::input::InputEvent> input_event) {
-  if (input_event->is_keyboard())
-    event_converter_.ProcessEvent(*input_event);
-  else
-    NOTIMPLEMENTED();
-}
-
-void InputMethodFuchsia::OnAction(
-    fuchsia::ui::input::InputMethodAction action) {
-  if (action != fuchsia::ui::input::InputMethodAction::UNSPECIFIED) {
-    NOTIMPLEMENTED();
+  if (IsTextInputTypeNone()) {
+    virtual_keyboard_controller_.DismissVirtualKeyboard();
     return;
   }
 
-  // Synthesize an ENTER keypress and send it to the Window.
-  KeyEvent key_event(ET_KEY_PRESSED, KeyboardCode::VKEY_RETURN,
-                     ui::DomCode::ENTER, ui::EF_NONE, ui::DomKey::ENTER,
-                     ui::EventTimeForNow());
-  DispatchKeyEvent(&key_event);
+  virtual_keyboard_controller_.UpdateTextType();
+}
+
+void InputMethodFuchsia::OnCaretBoundsChanged(const TextInputClient* client) {}
+
+bool InputMethodFuchsia::IsCandidatePopupOpen() const {
+  return false;
 }
 
 }  // namespace ui

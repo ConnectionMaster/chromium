@@ -6,13 +6,18 @@
 
 #include <utility>
 
-#include "base/memory/shared_memory.h"
 #include "build/build_config.h"
 
 namespace base {
 
+ReadOnlySharedMemoryRegion::CreateFunction*
+    ReadOnlySharedMemoryRegion::create_hook_ = nullptr;
+
 // static
 MappedReadOnlyRegion ReadOnlySharedMemoryRegion::Create(size_t size) {
+  if (create_hook_)
+    return create_hook_(size);
+
   subtle::PlatformSharedMemoryRegion handle =
       subtle::PlatformSharedMemoryRegion::CreateWritable(size);
   if (!handle.IsValid())
@@ -25,11 +30,11 @@ MappedReadOnlyRegion ReadOnlySharedMemoryRegion::Create(size_t size) {
 
   WritableSharedMemoryMapping mapping(memory_ptr, size, mapped_size,
                                       handle.GetGUID());
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
   handle.ConvertToReadOnly(memory_ptr);
 #else
   handle.ConvertToReadOnly();
-#endif  // defined(OS_MACOSX) && !defined(OS_IOS)
+#endif  // defined(OS_MAC)
   ReadOnlySharedMemoryRegion region(std::move(handle));
 
   if (!region.IsValid() || !mapping.IsValid())

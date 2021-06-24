@@ -5,22 +5,21 @@
 #include "content/renderer/pepper/mock_renderer_ppapi_host.h"
 
 #include "content/public/renderer/render_view.h"
-#include "content/renderer/pepper/fake_pepper_plugin_instance.h"
+#include "content/public/test/fake_pepper_plugin_instance.h"
 #include "ui/gfx/geometry/point.h"
 
 namespace content {
 
 MockRendererPpapiHost::MockRendererPpapiHost(RenderView* render_view,
+                                             RenderFrame* render_frame,
                                              PP_Instance instance)
     : sink_(),
       ppapi_host_(&sink_, ppapi::PpapiPermissions()),
       render_view_(render_view),
+      render_frame_(render_frame),
       pp_instance_(instance),
       has_user_gesture_(false),
-      plugin_instance_(new FakePepperPluginInstance) {
-  if (render_view)
-    render_frame_ = render_view->GetMainRenderFrame();
-}
+      plugin_instance_(new FakePepperPluginInstance) {}
 
 MockRendererPpapiHost::~MockRendererPpapiHost() {}
 
@@ -76,13 +75,6 @@ IPC::PlatformFileForTransit MockRendererPpapiHost::ShareHandleWithRemote(
     bool should_close_source) {
   NOTIMPLEMENTED();
   return IPC::InvalidPlatformFileForTransit();
-}
-
-base::SharedMemoryHandle
-MockRendererPpapiHost::ShareSharedMemoryHandleWithRemote(
-    const base::SharedMemoryHandle& handle) {
-  NOTIMPLEMENTED();
-  return base::SharedMemoryHandle();
 }
 
 base::UnsafeSharedMemoryRegion

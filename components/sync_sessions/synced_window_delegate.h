@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_SYNC_SESSIONS_SYNCED_WINDOW_DELEGATE_H_
 #define COMPONENTS_SYNC_SESSIONS_SYNCED_WINDOW_DELEGATE_H_
 
-#include <set>
-
 #include "components/sessions/core/session_id.h"
 
 namespace sync_sessions {
@@ -33,11 +31,8 @@ class SyncedWindowDelegate {
   // see Browser::active_index
   virtual int GetActiveIndex() const = 0;
 
-  // see Browser::is_app
-  virtual bool IsApp() const = 0;
-
-  // see Browser::is_type_tabbed
-  virtual bool IsTypeTabbed() const = 0;
+  // see Browser::is_type_normal
+  virtual bool IsTypeNormal() const = 0;
 
   // see Browser::is_type_popup
   virtual bool IsTypePopup() const = 0;

@@ -9,9 +9,9 @@
 #include <string>
 
 #include "base/strings/string_piece.h"
-#include "base/values.h"
 #include "extensions/common/hashed_extension_id.h"
 #include "extensions/common/manifest.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 
 class GURL;
 
@@ -38,7 +38,7 @@ class Feature {
     WEB_PAGE_CONTEXT,
     BLESSED_WEB_PAGE_CONTEXT,
     WEBUI_CONTEXT,
-    SERVICE_WORKER_CONTEXT,
+    WEBUI_UNTRUSTED_CONTEXT,
     LOCK_SCREEN_EXTENSION_CONTEXT,
   };
 
@@ -46,6 +46,7 @@ class Feature {
   enum Platform {
     UNSPECIFIED_PLATFORM,
     CHROMEOS_PLATFORM,
+    LACROS_PLATFORM,
     LINUX_PLATFORM,
     MACOSX_PLATFORM,
     WIN_PLATFORM
@@ -68,6 +69,7 @@ class Feature {
     UNSUPPORTED_CHANNEL,
     FOUND_IN_BLACKLIST,
     MISSING_COMMAND_LINE_SWITCH,
+    FEATURE_FLAG_DISABLED,
   };
 
   // Container for AvailabiltyResult that also exposes a user-visible error
@@ -112,14 +114,14 @@ class Feature {
   // manifest.
   Availability IsAvailableToManifest(const HashedExtensionId& hashed_id,
                                      Manifest::Type type,
-                                     Manifest::Location location,
+                                     mojom::ManifestLocation location,
                                      int manifest_version) const {
     return IsAvailableToManifest(hashed_id, type, location, manifest_version,
                                  GetCurrentPlatform());
   }
   virtual Availability IsAvailableToManifest(const HashedExtensionId& hashed_id,
                                              Manifest::Type type,
-                                             Manifest::Location location,
+                                             mojom::ManifestLocation location,
                                              int manifest_version,
                                              Platform platform) const = 0;
 

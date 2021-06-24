@@ -9,27 +9,30 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bit_cast.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
-#include "components/sync/base/cancelation_signal.h"
+#include "components/sync/engine/cancelation_signal.h"
+#include "components/variations/scoped_variations_ids_provider.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "net/url_request/url_request_test_util.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/zlib/google/compression_utils.h"
 
 namespace syncer {
 
 namespace {
+
+using ::testing::HasSubstr;
 
 // TODO(timsteele): Should use PathService here. See Chromium Issue 3113.
 const base::FilePath::CharType kDocRoot[] =
@@ -53,8 +56,8 @@ class MAYBE_SyncHttpBridgeTest : public testing::Test {
 
   void SetUp() override {
     base::Thread::Options options;
-    options.message_loop_type = base::MessageLoop::TYPE_IO;
-    io_thread_.StartWithOptions(options);
+    options.message_pump_type = base::MessagePumpType::IO;
+    io_thread_.StartWithOptions(std::move(options));
 
     HttpBridge::SetIOCapableTaskRunnerForTest(io_thread_.task_runner());
   }
@@ -89,9 +92,8 @@ class MAYBE_SyncHttpBridgeTest : public testing::Test {
    public:
     CustomHttpBridge()
         : HttpBridge(kUserAgent,
-                     nullptr /*SharedURLLoaderFactoryInfo*/,
-                     NetworkTimeUpdateCallback(),
-                     BindToTrackerCallback()) {}
+                     nullptr /*PendingSharedURLLoaderFactory*/,
+                     NetworkTimeUpdateCallback()) {}
 
    protected:
     ~CustomHttpBridge() override {}
@@ -109,7 +111,9 @@ class MAYBE_SyncHttpBridgeTest : public testing::Test {
 
   HttpBridge* bridge_for_race_test_;
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
+  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+      variations::VariationsIdsProvider::Mode::kUseSignedInState};
   // Separate thread for IO used by the HttpBridge.
   base::Thread io_thread_;
 };
@@ -125,9 +129,9 @@ class ShuntedHttpBridge : public HttpBridge {
   ShuntedHttpBridge(MAYBE_SyncHttpBridgeTest* test, bool never_finishes)
       : HttpBridge(
             kUserAgent,
-            nullptr /*SharedURLLoaderFactoryInfo, unneeded as we mock stuff*/,
-            NetworkTimeUpdateCallback(),
-            BindToTrackerCallback()),
+            nullptr /*PendingSharedURLLoaderFactory, unneeded as we mock stuff*/
+            ,
+            NetworkTimeUpdateCallback()),
         test_(test),
         never_finishes_(never_finishes) {}
 
@@ -163,7 +167,7 @@ void MAYBE_SyncHttpBridgeTest::RunSyncThreadBridgeUseTest(
     base::WaitableEvent* signal_when_released) {
   {
     scoped_refptr<ShuntedHttpBridge> bridge(new ShuntedHttpBridge(this, true));
-    bridge->SetURL("http://www.google.com", 9999);
+    bridge->SetURL(GURL("http://www.google.com:9999"));
     bridge->SetPostPayload("text/plain", 2, " ");
     bridge_for_race_test_ = bridge.get();
     signal_when_created->Signal();
@@ -179,7 +183,7 @@ void MAYBE_SyncHttpBridgeTest::RunSyncThreadBridgeUseTest(
 // Test the HttpBridge without actually making any network requests.
 TEST_F(MAYBE_SyncHttpBridgeTest, TestMakeSynchronousPostShunted) {
   scoped_refptr<HttpBridge> http_bridge(new ShuntedHttpBridge(this, false));
-  http_bridge->SetURL("http://www.google.com", 9999);
+  http_bridge->SetURL(GURL("http://www.google.com:9999"));
   http_bridge->SetPostPayload("text/plain", 2, " ");
 
   int os_error = 0;
@@ -203,8 +207,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, CompressedRequestPayloadCheck) {
 
   std::string payload =
       "this should be echoed back, this should be echoed back.";
-  GURL echo = test_server_.GetURL("/echo");
-  http_bridge->SetURL(echo.spec().c_str(), echo.IntPort());
+  http_bridge->SetURL(test_server_.GetURL("/echo"));
   http_bridge->SetPostPayload("application/x-www-form-urlencoded",
                               payload.length(), payload.c_str());
   int os_error = 0;
@@ -232,8 +235,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, CompressedRequestHeaderCheck) {
 
   scoped_refptr<HttpBridge> http_bridge(BuildBridge());
 
-  GURL echo_header = test_server_.GetURL("/echoall");
-  http_bridge->SetURL(echo_header.spec().c_str(), echo_header.IntPort());
+  http_bridge->SetURL(test_server_.GetURL("/echoall"));
 
   std::string test_payload = "###TEST PAYLOAD###";
   http_bridge->SetPostPayload("text/html", test_payload.length() + 1,
@@ -248,11 +250,10 @@ TEST_F(MAYBE_SyncHttpBridgeTest, CompressedRequestHeaderCheck) {
 
   std::string response(http_bridge->GetResponseContent(),
                        http_bridge->GetResponseContentLength());
-  EXPECT_NE(std::string::npos, response.find("Content-Encoding: gzip"));
-  EXPECT_NE(std::string::npos,
-            response.find(base::StringPrintf(
-                "%s: %s", net::HttpRequestHeaders::kAcceptEncoding,
-                "gzip, deflate")));
+  EXPECT_THAT(response, HasSubstr("Content-Encoding: gzip"));
+  EXPECT_THAT(response, HasSubstr(base::StringPrintf(
+                            "%s: %s", net::HttpRequestHeaders::kAcceptEncoding,
+                            "gzip, deflate")));
   EXPECT_NE(std::string::npos,
             response.find(base::StringPrintf(
                 "%s: %s", net::HttpRequestHeaders::kUserAgent, kUserAgent)));
@@ -263,9 +264,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, TestExtraRequestHeaders) {
 
   scoped_refptr<HttpBridge> http_bridge(BuildBridge());
 
-  GURL echo_header = test_server_.GetURL("/echoall");
-
-  http_bridge->SetURL(echo_header.spec().c_str(), echo_header.IntPort());
+  http_bridge->SetURL(test_server_.GetURL("/echoall"));
   http_bridge->SetExtraRequestHeaders("test:fnord");
 
   std::string test_payload = "###TEST PAYLOAD###";
@@ -290,8 +289,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, TestResponseHeader) {
 
   scoped_refptr<HttpBridge> http_bridge(BuildBridge());
 
-  GURL echo_header = test_server_.GetURL("/echoall");
-  http_bridge->SetURL(echo_header.spec().c_str(), echo_header.IntPort());
+  http_bridge->SetURL(test_server_.GetURL("/echoall"));
 
   std::string test_payload = "###TEST PAYLOAD###";
   http_bridge->SetPostPayload("text/html", test_payload.length() + 1,
@@ -314,9 +312,8 @@ TEST_F(MAYBE_SyncHttpBridgeTest, HttpErrors) {
   auto function = base::BindLambdaForTesting([&](net::HttpStatusCode code) {
     scoped_refptr<HttpBridge> http_bridge(BuildBridge());
 
-    GURL echo_status = test_server_.GetURL(std::string("/echo?status=") +
-                                           std::to_string(code));
-    http_bridge->SetURL(echo_status.spec().c_str(), echo_status.IntPort());
+    http_bridge->SetURL(test_server_.GetURL(std::string("/echo?status=") +
+                                            base::NumberToString(code)));
 
     std::string test_payload = "###TEST PAYLOAD###";
     http_bridge->SetPostPayload("text/html", test_payload.length() + 1,
@@ -350,7 +347,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, NetErrorUnreached) {
   // Test deliberately does not start the EmbeddedTestServer.
   scoped_refptr<HttpBridge> http_bridge(BuildBridge());
 
-  http_bridge->SetURL("http://anything", 9999);
+  http_bridge->SetURL(GURL("http://anything:9999"));
 
   std::string test_payload = "###TEST PAYLOAD###";
   http_bridge->SetPostPayload("text/html", test_payload.length() + 1,
@@ -367,7 +364,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, NetErrorUnreached) {
 TEST_F(MAYBE_SyncHttpBridgeTest, Abort) {
   scoped_refptr<ShuntedHttpBridge> http_bridge(
       new ShuntedHttpBridge(this, true));
-  http_bridge->SetURL("http://www.google.com", 9999);
+  http_bridge->SetURL(GURL("http://www.google.com:9999"));
   http_bridge->SetPostPayload("text/plain", 2, " ");
 
   int os_error = 0;
@@ -384,7 +381,7 @@ TEST_F(MAYBE_SyncHttpBridgeTest, Abort) {
 TEST_F(MAYBE_SyncHttpBridgeTest, AbortLate) {
   scoped_refptr<ShuntedHttpBridge> http_bridge(
       new ShuntedHttpBridge(this, false));
-  http_bridge->SetURL("http://www.google.com", 9999);
+  http_bridge->SetURL(GURL("http://www.google.com:9999"));
   http_bridge->SetPostPayload("text/plain", 2, " ");
 
   int os_error = 0;

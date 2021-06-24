@@ -10,20 +10,19 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/win/scoped_handle.h"
 
 namespace base {
 class CommandLine;
 class TimeDelta;
-}
+}  // namespace base
 
 namespace installer {
 
 class InstallationState;
 class InstallerState;
-class MasterPreferences;
+class InitialPreferences;
 
 // Any modification to a Chrome installation should be done within the scope of
 // a SetupSingleton. There can be only one active SetupSingleton per Chrome
@@ -34,11 +33,11 @@ class SetupSingleton {
   // process the exclusive right to modify the Chrome installation described by
   // |installer_state| (installation directory and associated registry keys).
   // May block. |original_state| and |installer_state| are updated using
-  // |command_line| and |master_preferences| to reflect the new state of the
+  // |command_line| and |initial_preferences| to reflect the new state of the
   // installation after acquisition. Returns nullptr on failure.
   static std::unique_ptr<SetupSingleton> Acquire(
       const base::CommandLine& command_line,
-      const MasterPreferences& master_preferences,
+      const InitialPreferences& initial_preferences,
       InstallationState* original_state,
       InstallerState* installer_state);
 

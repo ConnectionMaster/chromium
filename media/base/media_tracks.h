@@ -7,7 +7,6 @@
 
 #include <map>
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "base/macros.h"
@@ -30,16 +29,16 @@ class MEDIA_EXPORT MediaTracks {
   // track within the bytestream.
   MediaTrack* AddAudioTrack(const AudioDecoderConfig& config,
                             StreamParser::TrackId bytestream_track_id,
-                            const std::string& kind,
-                            const std::string& label,
-                            const std::string& language);
+                            const MediaTrack::Kind& kind,
+                            const MediaTrack::Label& label,
+                            const MediaTrack::Language& language);
   // Adds a new video track. The |bytestreamTrackId| must uniquely identify the
   // track within the bytestream.
   MediaTrack* AddVideoTrack(const VideoDecoderConfig& config,
                             StreamParser::TrackId bytestream_track_id,
-                            const std::string& kind,
-                            const std::string& label,
-                            const std::string& language);
+                            const MediaTrack::Kind& kind,
+                            const MediaTrack::Label& label,
+                            const MediaTrack::Language& language);
 
   const MediaTracksCollection& tracks() const { return tracks_; }
 

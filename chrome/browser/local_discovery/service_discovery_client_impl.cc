@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/location.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/local_discovery/service_discovery_client_impl.h"
 #include "net/dns/public/dns_protocol.h"
@@ -37,8 +38,8 @@ ServiceDiscoveryClientImpl::~ServiceDiscoveryClientImpl() {
 std::unique_ptr<ServiceWatcher>
 ServiceDiscoveryClientImpl::CreateServiceWatcher(
     const std::string& service_type,
-    const ServiceWatcher::UpdatedCallback& callback) {
-  return std::make_unique<ServiceWatcherImpl>(service_type, callback,
+    ServiceWatcher::UpdatedCallback callback) {
+  return std::make_unique<ServiceWatcherImpl>(service_type, std::move(callback),
                                               mdns_client_);
 }
 
@@ -59,13 +60,14 @@ ServiceDiscoveryClientImpl::CreateLocalDomainResolver(
       domain, address_family, std::move(callback), mdns_client_);
 }
 
-ServiceWatcherImpl::ServiceWatcherImpl(
-    const std::string& service_type,
-    const ServiceWatcher::UpdatedCallback& callback,
-    net::MDnsClient* mdns_client)
-    : service_type_(service_type), callback_(callback), started_(false),
-      actively_refresh_services_(false), mdns_client_(mdns_client) {
-}
+ServiceWatcherImpl::ServiceWatcherImpl(const std::string& service_type,
+                                       ServiceWatcher::UpdatedCallback callback,
+                                       net::MDnsClient* mdns_client)
+    : service_type_(service_type),
+      callback_(std::move(callback)),
+      started_(false),
+      actively_refresh_services_(false),
+      mdns_client_(mdns_client) {}
 
 void ServiceWatcherImpl::Start() {
   DCHECK(!started_);
@@ -112,8 +114,8 @@ bool ServiceWatcherImpl::CreateTransaction(
   if (transaction_flags) {
     *transaction = mdns_client_->CreateTransaction(
         net::dns_protocol::kTypePTR, service_type_, transaction_flags,
-        base::Bind(&ServiceWatcherImpl::OnTransactionResponse,
-                   AsWeakPtr(), transaction));
+        base::BindRepeating(&ServiceWatcherImpl::OnTransactionResponse,
+                            AsWeakPtr(), transaction));
     return (*transaction)->Start();
   }
 
@@ -212,9 +214,10 @@ void ServiceWatcherImpl::ServiceListeners::SetActiveRefresh(
     srv_transaction_ = mdns_client_->CreateTransaction(
         net::dns_protocol::kTypeSRV, service_name_,
         net::MDnsTransaction::SINGLE_RESULT |
-        net::MDnsTransaction::QUERY_CACHE | net::MDnsTransaction::QUERY_NETWORK,
-        base::Bind(&ServiceWatcherImpl::ServiceListeners::OnSRVRecord,
-                   base::Unretained(this)));
+            net::MDnsTransaction::QUERY_CACHE |
+            net::MDnsTransaction::QUERY_NETWORK,
+        base::BindRepeating(&ServiceWatcherImpl::ServiceListeners::OnSRVRecord,
+                            base::Unretained(this)));
     srv_transaction_->Start();
   } else if (!active_refresh) {
     srv_transaction_.reset();
@@ -237,7 +240,7 @@ void ServiceWatcherImpl::AddService(const std::string& service) {
 
   std::unique_ptr<ServiceListeners>& listener = services_[service];
   if (!listener) {
-    listener.reset(new ServiceListeners(service, this, mdns_client_));
+    listener = std::make_unique<ServiceListeners>(service, this, mdns_client_);
     bool success = listener->Start();
     DCHECK(success);
     listener->SetActiveRefresh(actively_refresh_services_);
@@ -351,20 +354,19 @@ bool ServiceResolverImpl::CreateTxtTransaction() {
   txt_transaction_ = mdns_client_->CreateTransaction(
       net::dns_protocol::kTypeTXT, service_name_,
       net::MDnsTransaction::SINGLE_RESULT | net::MDnsTransaction::QUERY_CACHE |
-      net::MDnsTransaction::QUERY_NETWORK,
-      base::Bind(&ServiceResolverImpl::TxtRecordTransactionResponse,
-                 AsWeakPtr()));
+          net::MDnsTransaction::QUERY_NETWORK,
+      base::BindRepeating(&ServiceResolverImpl::TxtRecordTransactionResponse,
+                          AsWeakPtr()));
   return txt_transaction_->Start();
 }
 
 // TODO(noamsml): quick-resolve for AAAA records.  Since A records tend to be in
 void ServiceResolverImpl::CreateATransaction() {
   a_transaction_ = mdns_client_->CreateTransaction(
-      net::dns_protocol::kTypeA,
-      service_staging_.address.host(),
+      net::dns_protocol::kTypeA, service_staging_.address.host(),
       net::MDnsTransaction::SINGLE_RESULT | net::MDnsTransaction::QUERY_CACHE,
-      base::Bind(&ServiceResolverImpl::ARecordTransactionResponse,
-                 AsWeakPtr()));
+      base::BindRepeating(&ServiceResolverImpl::ARecordTransactionResponse,
+                          AsWeakPtr()));
   a_transaction_->Start();
 }
 
@@ -372,9 +374,9 @@ bool ServiceResolverImpl::CreateSrvTransaction() {
   srv_transaction_ = mdns_client_->CreateTransaction(
       net::dns_protocol::kTypeSRV, service_name_,
       net::MDnsTransaction::SINGLE_RESULT | net::MDnsTransaction::QUERY_CACHE |
-      net::MDnsTransaction::QUERY_NETWORK,
-      base::Bind(&ServiceResolverImpl::SrvRecordTransactionResponse,
-                 AsWeakPtr()));
+          net::MDnsTransaction::QUERY_NETWORK,
+      base::BindRepeating(&ServiceResolverImpl::SrvRecordTransactionResponse,
+                          AsWeakPtr()));
   return srv_transaction_->Start();
 }
 
@@ -511,11 +513,11 @@ void LocalDomainResolverImpl::Start() {
 std::unique_ptr<net::MDnsTransaction>
 LocalDomainResolverImpl::CreateTransaction(uint16_t type) {
   return mdns_client_->CreateTransaction(
-      type, domain_, net::MDnsTransaction::SINGLE_RESULT |
-                     net::MDnsTransaction::QUERY_CACHE |
-                     net::MDnsTransaction::QUERY_NETWORK,
-      base::Bind(&LocalDomainResolverImpl::OnTransactionComplete,
-                 base::Unretained(this)));
+      type, domain_,
+      net::MDnsTransaction::SINGLE_RESULT | net::MDnsTransaction::QUERY_CACHE |
+          net::MDnsTransaction::QUERY_NETWORK,
+      base::BindRepeating(&LocalDomainResolverImpl::OnTransactionComplete,
+                          base::Unretained(this)));
 }
 
 void LocalDomainResolverImpl::OnTransactionComplete(
@@ -533,9 +535,9 @@ void LocalDomainResolverImpl::OnTransactionComplete(
 
   if (transactions_finished_ == 1 &&
       address_family_ == net::ADDRESS_FAMILY_UNSPECIFIED) {
-    timeout_callback_.Reset(base::Bind(
-        &LocalDomainResolverImpl::SendResolvedAddresses,
-        base::Unretained(this)));
+    timeout_callback_.Reset(
+        base::BindOnce(&LocalDomainResolverImpl::SendResolvedAddresses,
+                       base::Unretained(this)));
 
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE, timeout_callback_.callback(),

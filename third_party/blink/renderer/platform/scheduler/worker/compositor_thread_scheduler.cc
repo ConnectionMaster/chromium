@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/message_loop/message_loop.h"
 #include "base/task/sequence_manager/task_queue.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -34,21 +33,7 @@ CompositorThreadScheduler::CompositorThreadScheduler(
     base::sequence_manager::SequenceManager* sequence_manager)
     : NonMainThreadSchedulerImpl(sequence_manager,
                                  TaskType::kCompositorThreadTaskQueueDefault),
-      input_task_queue_(
-          base::FeatureList::IsEnabled(kHighPriorityInputOnCompositorThread)
-              ? helper()->NewTaskQueue(
-                    base::sequence_manager::TaskQueue::Spec("input_tq")
-                        .SetShouldMonitorQuiescence(true))
-              : nullptr),
-      input_task_runner_(input_task_queue_
-                             ? input_task_queue_->CreateTaskRunner(
-                                   TaskType::kCompositorThreadTaskQueueInput)
-                             : nullptr),
       compositor_metrics_helper_(helper()->HasCPUTimingForEachTask()) {
-  if (input_task_queue_) {
-    input_task_queue_->SetQueuePriority(
-        base::sequence_manager::TaskQueue::QueuePriority::kHighestPriority);
-  }
   DCHECK(!g_compositor_thread_scheduler);
   g_compositor_thread_scheduler = this;
 }
@@ -63,14 +48,13 @@ CompositorThreadScheduler::DefaultTaskQueue() {
   return helper()->DefaultNonMainThreadTaskQueue();
 }
 
-void CompositorThreadScheduler::InitImpl() {}
-
 void CompositorThreadScheduler::OnTaskCompleted(
     NonMainThreadTaskQueue* worker_task_queue,
     const base::sequence_manager::Task& task,
-    const base::sequence_manager::TaskQueue::TaskTiming& task_timing) {
-  compositor_metrics_helper_.RecordTaskMetrics(worker_task_queue, task,
-                                               task_timing);
+    base::sequence_manager::TaskQueue::TaskTiming* task_timing,
+    base::sequence_manager::LazyNow* lazy_now) {
+  task_timing->RecordTaskEnd(lazy_now);
+  compositor_metrics_helper_.RecordTaskMetrics(task, *task_timing);
 }
 
 scoped_refptr<scheduler::SingleThreadIdleTaskRunner>
@@ -84,16 +68,14 @@ CompositorThreadScheduler::IdleTaskRunner() {
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
-CompositorThreadScheduler::InputTaskRunner() {
-  if (input_task_runner_)
-    return input_task_runner_;
-  return helper()->DefaultTaskRunner();
-}
-
-scoped_refptr<base::SingleThreadTaskRunner>
 CompositorThreadScheduler::V8TaskRunner() {
   NOTREACHED();
   return nullptr;
+}
+
+scoped_refptr<base::SingleThreadTaskRunner>
+CompositorThreadScheduler::DefaultTaskRunner() {
+  return helper()->DefaultTaskRunner();
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
@@ -103,7 +85,7 @@ CompositorThreadScheduler::CompositorTaskRunner() {
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
-CompositorThreadScheduler::IPCTaskRunner() {
+CompositorThreadScheduler::NonWakingTaskRunner() {
   NOTREACHED();
   return nullptr;
 }
@@ -117,17 +99,16 @@ bool CompositorThreadScheduler::ShouldYieldForHighPriorityWork() {
 }
 
 void CompositorThreadScheduler::AddTaskObserver(
-    base::MessageLoop::TaskObserver* task_observer) {
+    base::TaskObserver* task_observer) {
   helper()->AddTaskObserver(task_observer);
 }
 
 void CompositorThreadScheduler::RemoveTaskObserver(
-    base::MessageLoop::TaskObserver* task_observer) {
+    base::TaskObserver* task_observer) {
   helper()->RemoveTaskObserver(task_observer);
 }
 
 void CompositorThreadScheduler::Shutdown() {
-  input_task_queue_->ShutdownTaskQueue();
 }
 
 void CompositorThreadScheduler::OnIdleTaskPosted() {}

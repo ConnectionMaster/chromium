@@ -10,11 +10,11 @@
 #include <utility>
 
 #include "base/callback.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/values.h"
 #include "components/policy/core/common/async_policy_provider.h"
@@ -148,11 +148,10 @@ class PolicyLoaderMacTest : public PolicyTestBase {
 
   void SetUp() override {
     PolicyTestBase::SetUp();
-    std::unique_ptr<AsyncPolicyLoader> loader(
-        new PolicyLoaderMac(scoped_task_environment_.GetMainThreadTaskRunner(),
-                            base::FilePath(), prefs_));
-    provider_.reset(
-        new AsyncPolicyProvider(&schema_registry_, std::move(loader)));
+    std::unique_ptr<AsyncPolicyLoader> loader(new PolicyLoaderMac(
+        task_environment_.GetMainThreadTaskRunner(), base::FilePath(), prefs_));
+    provider_ = std::make_unique<AsyncPolicyProvider>(&schema_registry_,
+                                                      std::move(loader));
     provider_->Init(&schema_registry_);
   }
 
@@ -178,7 +177,7 @@ TEST_F(PolicyLoaderMacTest, Invalid) {
 
   // Make the provider read the updated |prefs_|.
   provider_->RefreshPolicies();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   const PolicyBundle kEmptyBundle;
   EXPECT_TRUE(provider_->policies().Equals(kEmptyBundle));
 }
@@ -193,12 +192,12 @@ TEST_F(PolicyLoaderMacTest, TestNonForcedValue) {
 
   // Make the provider read the updated |prefs_|.
   provider_->RefreshPolicies();
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   PolicyBundle expected_bundle;
   expected_bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()))
       .Set(test_keys::kKeyString, POLICY_LEVEL_RECOMMENDED,
            POLICY_SCOPE_MACHINE, POLICY_SOURCE_PLATFORM,
-           std::make_unique<base::Value>("string value"), nullptr);
+           base::Value("string value"), nullptr);
   EXPECT_TRUE(provider_->policies().Equals(expected_bundle));
 }
 

@@ -11,17 +11,19 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/process/kill.h"
 #include "base/process/launch.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "chrome/chrome_cleaner/buildflags.h"
 #include "chrome/chrome_cleaner/components/component_unpacker.h"
 #include "chrome/chrome_cleaner/constants/chrome_cleaner_switches.h"
 #include "chrome/chrome_cleaner/http/http_agent.h"
@@ -36,8 +38,8 @@ namespace {
 
 const char kComponentDownloadUrl[] =
     "https://clients2.google.com/service/update2/crx?response=redirect&os=win"
-    "&arch=x86&installsource=swreporter&x=id%3Dnpdjjkjlcidkjlamlmmdelcjbcpdjocm"
-    "%26v%3D0.0.0.0%26uc";
+    "&installsource=swreporter&x=id%3Dnpdjjkjlcidkjlamlmmdelcjbcpdjocm"
+    "%26v%3D0.0.0.0%26uc&acceptformat=crx3";
 
 // CRX hash. The extension id is: npdjjkjlcidkjlamlmmdelcjbcpdjocm.
 const uint8_t kSha2Hash[] = {0xdf, 0x39, 0x9a, 0x9b, 0x28, 0x3a, 0x9b, 0x0c,
@@ -133,7 +135,7 @@ bool RecoveryComponent::IsAvailable() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
 // Only add the recovery component in official builds, unless it's forced, and
 // not if it's explicitly disabled.
-#if defined(CHROME_CLEANER_OFFICIAL_BUILD)
+#if BUILDFLAG(IS_OFFICIAL_CHROME_CLEANER_BUILD)
   return !command_line->HasSwitch(kNoRecoveryComponentSwitch);
 #else
   return command_line->HasSwitch(kForceRecoveryComponentSwitch);
@@ -153,7 +155,7 @@ void RecoveryComponent::SetHttpAgentFactoryForTesting(
 
 void RecoveryComponent::PreScan() {
   bool success = recovery_io_thread_.StartWithOptions(
-      base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
+      base::Thread::Options(base::MessagePumpType::IO, 0));
   DCHECK(success) << "Can't start File Thread!";
 
   recovery_io_thread_.task_runner()->PostTask(
@@ -273,7 +275,7 @@ void RecoveryComponent::FetchOnIOThread() {
   }
 
   base::ScopedClosureRunner delete_file(
-      base::BindOnce(base::IgnoreResult(&base::DeleteFile), crx_file, false));
+      base::BindOnce(base::GetDeleteFileCallback(), crx_file));
 
   if (!SaveHttpResponseDataToFile(crx_file, http_response.get())) {
     LOG(WARNING) << "Failed to save downloaded recovery component";

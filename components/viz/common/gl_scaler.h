@@ -18,10 +18,10 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/optional.h"
 #include "components/viz/common/gpu/context_lost_observer.h"
 #include "components/viz/common/viz_common_export.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -40,7 +40,7 @@ class ContextProvider;
 // can be configured to operate at different quality levels, manages/converts
 // color spaces, and optionally re-arranges/formats data in output textures for
 // use with more-efficient texture readback pipelines.
-class VIZ_COMMON_EXPORT GLScaler : public ContextLostObserver {
+class VIZ_COMMON_EXPORT GLScaler final : public ContextLostObserver {
  public:
   struct VIZ_COMMON_EXPORT Parameters {
     // Relative scale from/to factors. Both of these must be non-zero.
@@ -191,7 +191,7 @@ class VIZ_COMMON_EXPORT GLScaler : public ContextLostObserver {
     ~Parameters();
   };
 
-  explicit GLScaler(scoped_refptr<ContextProvider> context_provider);
+  explicit GLScaler(ContextProvider* context_provider);
 
   ~GLScaler() final;
 
@@ -474,14 +474,14 @@ class VIZ_COMMON_EXPORT GLScaler : public ContextLostObserver {
 
   // The provider of the GL context. This is non-null while the GL context is
   // valid and GLScaler is observing for context loss.
-  scoped_refptr<ContextProvider> context_provider_;
+  ContextProvider* context_provider_;
 
   // Set by Configure() to the resolved set of Parameters.
   Parameters params_;
 
   // If set to true, half-float textures are supported. This is lazy-initialized
   // by SupportsPreciseColorManagement().
-  mutable base::Optional<bool> supports_half_floats_;
+  mutable absl::optional<bool> supports_half_floats_;
 
   // The maximum number of simultaneous draw buffers, lazy-initialized by
   // GetMaxDrawBuffersSupported(). -1 means "not yet known."

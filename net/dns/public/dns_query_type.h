@@ -13,11 +13,22 @@ namespace net {
 // DNS query type for HostResolver requests.
 // See:
 // https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-4
-enum class DnsQueryType { UNSPECIFIED, A, AAAA, TXT, PTR, SRV, MAX = SRV };
+enum class DnsQueryType {
+  UNSPECIFIED,
+  A,
+  AAAA,
+  TXT,
+  PTR,
+  SRV,
+  INTEGRITY,
+  HTTPS,
+  MAX = HTTPS
+};
 
 const DnsQueryType kDnsQueryTypes[] = {
-    DnsQueryType::UNSPECIFIED, DnsQueryType::A,   DnsQueryType::AAAA,
-    DnsQueryType::TXT,         DnsQueryType::PTR, DnsQueryType::SRV};
+    DnsQueryType::UNSPECIFIED, DnsQueryType::A,    DnsQueryType::AAAA,
+    DnsQueryType::TXT,         DnsQueryType::PTR,  DnsQueryType::SRV,
+    DnsQueryType::INTEGRITY,   DnsQueryType::HTTPS};
 
 static_assert(base::size(kDnsQueryTypes) ==
                   static_cast<unsigned>(DnsQueryType::MAX) + 1,

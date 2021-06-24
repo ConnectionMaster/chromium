@@ -11,10 +11,10 @@
 
 #include "base/component_export.h"
 #include "base/containers/flat_set.h"
-#include "base/optional.h"
 #include "components/cbor/values.h"
 #include "device/fido/fido_constants.h"
 #include "device/fido/fido_transport_protocol.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device {
 
@@ -24,9 +24,10 @@ namespace device {
 // AuthenticatorGetAssertion command.
 class COMPONENT_EXPORT(DEVICE_FIDO) PublicKeyCredentialDescriptor {
  public:
-  static base::Optional<PublicKeyCredentialDescriptor> CreateFromCBORValue(
+  static absl::optional<PublicKeyCredentialDescriptor> CreateFromCBORValue(
       const cbor::Value& cbor);
 
+  PublicKeyCredentialDescriptor();
   PublicKeyCredentialDescriptor(CredentialType credential_type,
                                 std::vector<uint8_t> id);
   PublicKeyCredentialDescriptor(
@@ -39,13 +40,20 @@ class COMPONENT_EXPORT(DEVICE_FIDO) PublicKeyCredentialDescriptor {
       const PublicKeyCredentialDescriptor& other);
   PublicKeyCredentialDescriptor& operator=(
       PublicKeyCredentialDescriptor&& other);
+  bool operator==(const PublicKeyCredentialDescriptor& other) const;
   ~PublicKeyCredentialDescriptor();
-
-  cbor::Value ConvertToCBOR() const;
 
   CredentialType credential_type() const { return credential_type_; }
   const std::vector<uint8_t>& id() const { return id_; }
   const base::flat_set<FidoTransportProtocol>& transports() const {
+    return transports_;
+  }
+
+  void SetCredentialTypeForTesting(CredentialType type) {
+    credential_type_ = type;
+  }
+  std::vector<uint8_t>& GetIdForTesting() { return id_; }
+  base::flat_set<FidoTransportProtocol>& GetTransportsForTesting() {
     return transports_;
   }
 
@@ -54,6 +62,8 @@ class COMPONENT_EXPORT(DEVICE_FIDO) PublicKeyCredentialDescriptor {
   std::vector<uint8_t> id_;
   base::flat_set<FidoTransportProtocol> transports_;
 };
+
+cbor::Value AsCBOR(const PublicKeyCredentialDescriptor&);
 
 }  // namespace device
 

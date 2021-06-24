@@ -8,24 +8,55 @@
 #include <unordered_map>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/ui/metrics/metrics_recorder.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
+#pragma mark - SilentlyFailingObject
+
+// Object that responds to any selector and does nothing when its called.
+// Used as a "nice OCMock" equivalent for CommandDispatcher that's preparing for
+// shutdown.
+@interface SilentlyFailingObject : NSProxy
+@end
+@implementation SilentlyFailingObject
+
+- (instancetype)init {
+  return self;
+}
+
+- (void)forwardInvocation:(NSInvocation*)invocation {
+}
+
+- (NSMethodSignature*)methodSignatureForSelector:(SEL)selector {
+  // Return some method signature to silence errors.
+  // Here it's (void)(self, _cmd).
+  return [NSMethodSignature signatureWithObjCTypes:"v@:"];
+}
+
+@end
+
+#pragma mark - CommandDispatcher
+
 @implementation CommandDispatcher {
   // Stores which target to forward to for a given selector.
   std::unordered_map<SEL, __weak id> _forwardingTargets;
 
-  // Stores which MetricsRecorder to notify for a given selector.
-  std::unordered_map<SEL, __weak id<MetricsRecorder>> _metricsRecorders;
+  // Stores remembered targets while preparing for shutdown.
+  std::unordered_map<SEL, __weak id> _silentlyFailingTargets;
+
+  // Tracks if preparing for shutdown has been requested.
+  // This is an ivar, not a property, to avoid having synthesized getter/setter
+  // methods.
+  BOOL _preparingForShutdown;
 }
 
 - (void)startDispatchingToTarget:(id)target forSelector:(SEL)selector {
   DCHECK(![self targetForSelector:selector]);
+  DCHECK(![self shouldFailSilentlyForSelector:selector]);
 
   _forwardingTargets[selector] = target;
 }
@@ -44,6 +75,10 @@
 }
 
 - (void)stopDispatchingForSelector:(SEL)selector {
+  if (_preparingForShutdown) {
+    id target = _forwardingTargets[selector];
+    _silentlyFailingTargets[selector] = target;
+  }
   _forwardingTargets.erase(selector);
 }
 
@@ -75,27 +110,59 @@
   }
 }
 
-- (void)registerMetricsRecorder:(id<MetricsRecorder>)recorder
-                    forSelector:(SEL)selector {
-  DCHECK(![self metricsRecorderForSelector:selector]);
+- (BOOL)dispatchingForProtocol:(Protocol*)protocol {
+  // Special-case the NSObject protocol.
+  if ([@"NSObject" isEqualToString:NSStringFromProtocol(protocol)]) {
+    return YES;
+  }
 
-  _metricsRecorders[selector] = recorder;
+  unsigned int methodCount;
+  objc_method_description* requiredInstanceMethods =
+      protocol_copyMethodDescriptionList(protocol, YES /* isRequiredMethod */,
+                                         YES /* isInstanceMethod */,
+                                         &methodCount);
+  BOOL conforming = YES;
+  for (unsigned int i = 0; i < methodCount; i++) {
+    SEL selector = requiredInstanceMethods[i].name;
+    BOOL targetFound =
+        _forwardingTargets.find(selector) != _forwardingTargets.end();
+    if (!targetFound && ![self shouldFailSilentlyForSelector:selector]) {
+      conforming = NO;
+      break;
+    }
+  }
+  free(requiredInstanceMethods);
+  if (!conforming)
+    return NO;
+
+  unsigned int protocolCount;
+  Protocol* __unsafe_unretained _Nonnull* _Nullable conformedProtocols =
+      protocol_copyProtocolList(protocol, &protocolCount);
+  for (unsigned int i = 0; i < protocolCount; i++) {
+    if (![self dispatchingForProtocol:conformedProtocols[i]]) {
+      conforming = NO;
+      break;
+    }
+  }
+
+  free(conformedProtocols);
+  return conforming;
 }
 
-- (void)deregisterMetricsRecordingForSelector:(SEL)selector {
-  _metricsRecorders.erase(selector);
+- (CommandDispatcher*)strictCallableForProtocol:(Protocol*)protocol {
+  CHECK([self dispatchingForProtocol:protocol])
+      << "Dispatcher failed protocol conformance";
+  return self;
+}
+
+- (void)prepareForShutdown {
+  _preparingForShutdown = YES;
 }
 
 #pragma mark - NSObject
 
 // Overridden to forward messages to registered handlers.
 - (id)forwardingTargetForSelector:(SEL)selector {
-  // If the selector is registered with a MetricsRecorder, return nil to force
-  // |forwardInvocation| to handle message forwarding. |forwardInvocation|
-  // provides an NSInvocation that is required by the MetricsRecorders.
-  if ([self metricsRecorderForSelector:selector])
-    return nil;
-
   id target = [self targetForSelector:selector];
   if (target)
     return target;
@@ -108,25 +175,6 @@
   if ([self targetForSelector:selector])
     return YES;
   return [super respondsToSelector:selector];
-}
-
-// Overriden to forward messages to registered handlers when an NSInvocation is
-// required.
-- (void)forwardInvocation:(NSInvocation*)anInvocation {
-  SEL selector = anInvocation.selector;
-
-  id<MetricsRecorder> recorder = [self metricsRecorderForSelector:selector];
-  if (recorder) {
-    [recorder recordMetricForInvocation:anInvocation];
-  }
-
-  id target = [self targetForSelector:selector];
-  if ([target respondsToSelector:selector]) {
-    [anInvocation invokeWithTarget:target];
-    return;
-  }
-
-  [super forwardInvocation:anInvocation];
 }
 
 // Overriden because overrides of |forwardInvocation| also require an override
@@ -146,18 +194,18 @@
 // Returns the target registered to receive messeages for |selector|.
 - (id)targetForSelector:(SEL)selector {
   auto target = _forwardingTargets.find(selector);
-  if (target == _forwardingTargets.end())
+  if (target == _forwardingTargets.end()) {
+    if ([self shouldFailSilentlyForSelector:selector]) {
+      return [[SilentlyFailingObject alloc] init];
+    }
     return nil;
+  }
   return target->second;
 }
 
-// Returns the MetricsRecorder registered to be notified when |selector| is
-// invoked on the dispatcher.
-- (id<MetricsRecorder>)metricsRecorderForSelector:(SEL)selector {
-  auto recorder = _metricsRecorders.find(selector);
-  if (recorder == _metricsRecorders.end())
-    return nil;
-  return recorder->second;
+- (BOOL)shouldFailSilentlyForSelector:(SEL)selector {
+  return _preparingForShutdown && _silentlyFailingTargets.find(selector) !=
+                                      _silentlyFailingTargets.end();
 }
 
 @end

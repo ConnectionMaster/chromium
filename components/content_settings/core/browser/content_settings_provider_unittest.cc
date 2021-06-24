@@ -18,71 +18,57 @@ TEST(ContentSettingsProviderTest, Mock) {
   GURL url("http://www.youtube.com");
 
   MockProvider mock_provider(false);
-  mock_provider.SetWebsiteSetting(pattern, pattern,
-                                  CONTENT_SETTINGS_TYPE_PLUGINS, "java_plugin",
-                                  new base::Value(CONTENT_SETTING_BLOCK));
+  mock_provider.SetWebsiteSetting(
+      pattern, pattern, ContentSettingsType::NOTIFICATIONS,
+      std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
 
-  EXPECT_EQ(CONTENT_SETTING_BLOCK,
-            TestUtils::GetContentSetting(&mock_provider, url, url,
-                                         CONTENT_SETTINGS_TYPE_PLUGINS,
-                                         "java_plugin", false));
+  EXPECT_EQ(
+      CONTENT_SETTING_BLOCK,
+      TestUtils::GetContentSetting(&mock_provider, url, url,
+                                   ContentSettingsType::NOTIFICATIONS, false));
   std::unique_ptr<base::Value> value_ptr(TestUtils::GetContentSettingValue(
-      &mock_provider, url, url, CONTENT_SETTINGS_TYPE_PLUGINS, "java_plugin",
-      false));
-  int int_value = -1;
-  value_ptr->GetAsInteger(&int_value);
-  EXPECT_EQ(CONTENT_SETTING_BLOCK, IntToContentSetting(int_value));
+      &mock_provider, url, url, ContentSettingsType::NOTIFICATIONS, false));
+  EXPECT_EQ(CONTENT_SETTING_BLOCK,
+            IntToContentSetting(value_ptr->GetIfInt().value_or(-1)));
 
-  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
-            TestUtils::GetContentSetting(&mock_provider, url, url,
-                                         CONTENT_SETTINGS_TYPE_PLUGINS,
-                                         "flash_plugin", false));
+  EXPECT_EQ(
+      CONTENT_SETTING_DEFAULT,
+      TestUtils::GetContentSetting(&mock_provider, url, url,
+                                   ContentSettingsType::GEOLOCATION, false));
   EXPECT_EQ(nullptr, TestUtils::GetContentSettingValue(
                          &mock_provider, url, url,
-                         CONTENT_SETTINGS_TYPE_PLUGINS, "flash_plugin", false));
-  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
-            TestUtils::GetContentSetting(&mock_provider, url, url,
-                                         CONTENT_SETTINGS_TYPE_GEOLOCATION,
-                                         std::string(), false));
-  EXPECT_EQ(nullptr,
-            TestUtils::GetContentSettingValue(&mock_provider, url, url,
-                                              CONTENT_SETTINGS_TYPE_GEOLOCATION,
-                                              std::string(), false));
+                         ContentSettingsType::GEOLOCATION, false));
 
   bool owned = mock_provider.SetWebsiteSetting(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_PLUGINS, "java_plugin",
-      new base::Value(CONTENT_SETTING_ALLOW));
+      pattern, pattern, ContentSettingsType::NOTIFICATIONS,
+      std::make_unique<base::Value>(CONTENT_SETTING_ALLOW));
   EXPECT_TRUE(owned);
-  EXPECT_EQ(CONTENT_SETTING_ALLOW,
-            TestUtils::GetContentSetting(&mock_provider, url, url,
-                                         CONTENT_SETTINGS_TYPE_PLUGINS,
-                                         "java_plugin", false));
+  EXPECT_EQ(
+      CONTENT_SETTING_ALLOW,
+      TestUtils::GetContentSetting(&mock_provider, url, url,
+                                   ContentSettingsType::NOTIFICATIONS, false));
 
   mock_provider.set_read_only(true);
   std::unique_ptr<base::Value> value(new base::Value(CONTENT_SETTING_BLOCK));
   owned = mock_provider.SetWebsiteSetting(
-      pattern,
-      pattern,
-      CONTENT_SETTINGS_TYPE_PLUGINS,
-      "java_plugin",
-      value.get());
+      pattern, pattern, ContentSettingsType::NOTIFICATIONS, std::move(value));
   EXPECT_FALSE(owned);
-  EXPECT_EQ(CONTENT_SETTING_ALLOW,
-            TestUtils::GetContentSetting(&mock_provider, url, url,
-                                         CONTENT_SETTINGS_TYPE_PLUGINS,
-                                         "java_plugin", false));
+  EXPECT_EQ(
+      CONTENT_SETTING_ALLOW,
+      TestUtils::GetContentSetting(&mock_provider, url, url,
+                                   ContentSettingsType::NOTIFICATIONS, false));
 
   EXPECT_TRUE(mock_provider.read_only());
 
   mock_provider.set_read_only(false);
   owned = mock_provider.SetWebsiteSetting(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_PLUGINS, "java_plugin",
-      new base::Value(CONTENT_SETTING_BLOCK));
+      pattern, pattern, ContentSettingsType::NOTIFICATIONS,
+      std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
   EXPECT_TRUE(owned);
-  EXPECT_EQ(CONTENT_SETTING_BLOCK,
-            TestUtils::GetContentSetting(&mock_provider, url, url,
-                                         CONTENT_SETTINGS_TYPE_PLUGINS,
-                                         "java_plugin", false));
+  EXPECT_EQ(
+      CONTENT_SETTING_BLOCK,
+      TestUtils::GetContentSetting(&mock_provider, url, url,
+                                   ContentSettingsType::NOTIFICATIONS, false));
 }
 
 }  // namespace content_settings

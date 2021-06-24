@@ -9,24 +9,24 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/containers/contains.h"
 #include "base/json/json_string_value_serializer.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/unguessable_token.h"
-#include "base/value_conversions.h"
+#include "base/util/values/values_util.h"
 #include "chrome/browser/media/android/cdm/media_drm_origin_id_manager_factory.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "media/base/android/media_drm_bridge.h"
 #include "media/base/media_switches.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace {
@@ -72,11 +72,14 @@ class MediaDrmOriginIdManagerTest : public testing::Test {
     MediaDrmOriginId result;
 
     origin_id_manager_->GetOriginId(base::BindOnce(
-        [](base::OnceClosure callback, MediaDrmOriginId* result, bool success,
+        [](base::OnceClosure callback, MediaDrmOriginId* result,
+           MediaDrmOriginIdManager::GetOriginIdStatus status,
            const MediaDrmOriginId& origin_id) {
-          // If |success| = true, then |origin_id| should be not null.
-          // If |success| = false, then |origin_id| should be null.
-          EXPECT_EQ(success, origin_id.has_value());
+          // If |status| = kFailure, then |origin_id| should be null.
+          // Otherwise (successful), |origin_id| should be not null.
+          EXPECT_EQ(
+              status != MediaDrmOriginIdManager::GetOriginIdStatus::kFailure,
+              origin_id.has_value());
           *result = origin_id;
           std::move(callback).Run();
         },
@@ -135,9 +138,8 @@ class MediaDrmOriginIdManagerTest : public testing::Test {
   }
 
  protected:
-  content::TestBrowserThreadBundle test_browser_thread_bundle_{
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME,
-      base::test::ScopedTaskEnvironment::NowSource::MAIN_THREAD_MOCK_TIME};
+  content::BrowserTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<TestingProfile> profile_;
   MediaDrmOriginIdManager* origin_id_manager_;
@@ -151,8 +153,10 @@ TEST_F(MediaDrmOriginIdManagerTest, DisablePreProvisioningAtStartup) {
 
   EXPECT_FALSE(
       base::FeatureList::IsEnabled(media::kMediaDrmPreprovisioningAtStartup));
+  EXPECT_FALSE(
+      base::FeatureList::IsEnabled(media::kFailUrlProvisionFetcherForTesting));
 
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Preference should not exist. Not using GetDictionary() as it will
   // create the preference if it doesn't exist.
@@ -186,7 +190,7 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvision) {
   Initialize();
 
   PreProvision();
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   CheckPreferenceForPreProvisioning();
 }
@@ -199,8 +203,8 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvisionAtStartup) {
   Initialize(true);
 
   DVLOG(1) << "Advancing Time";
-  test_browser_thread_bundle_.FastForwardBy(kStartupDelay);
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.FastForwardBy(kStartupDelay);
+  task_environment_.RunUntilIdle();
 
   CheckPreferenceForPreProvisioning();
 }
@@ -219,8 +223,8 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvisionFailAtStartup) {
   Initialize(true);
 
   DVLOG(1) << "Advancing Time";
-  test_browser_thread_bundle_.FastForwardBy(kStartupDelay);
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.FastForwardBy(kStartupDelay);
+  task_environment_.RunUntilIdle();
 
   // Pre-provisioning should have failed.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
@@ -246,7 +250,7 @@ TEST_F(MediaDrmOriginIdManagerTest, PreProvisionFailAtStartup) {
   // Trigger a network connection to force pre-provisioning to run again.
   network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
       network::mojom::ConnectionType::CONNECTION_ETHERNET);
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Pre-provisioning should have run again. Should return the same result as if
   // pre-provisioning had succeeded at startup.
@@ -261,7 +265,7 @@ TEST_F(MediaDrmOriginIdManagerTest, GetOriginIdCreatesList) {
   Initialize();
 
   GetOriginId();
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
   auto* pref = FindPreference(kMediaDrmOriginIds);
@@ -284,14 +288,14 @@ TEST_F(MediaDrmOriginIdManagerTest, OriginIdNotInList) {
   Initialize();
 
   MediaDrmOriginId origin_id = GetOriginId();
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Check that the preference does not contain |origin_id|.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
   auto* dict = GetDictionary(kMediaDrmOriginIds);
   auto* list = dict->FindKey(kAvailableOriginIds);
-  EXPECT_FALSE(ContainsValue(list->GetList(),
-                             CreateUnguessableTokenValue(origin_id.value())));
+  EXPECT_FALSE(base::Contains(
+      list->GetList(), util::UnguessableTokenToValue(origin_id.value())));
 }
 
 TEST_F(MediaDrmOriginIdManagerTest, ProvisioningFail) {
@@ -301,7 +305,7 @@ TEST_F(MediaDrmOriginIdManagerTest, ProvisioningFail) {
 
   EXPECT_FALSE(GetOriginId());
 
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // After failure the preference should contain |kExpireableToken| only if
   // per-application provisioning is NOT supported.
@@ -329,7 +333,7 @@ TEST_F(MediaDrmOriginIdManagerTest, ProvisioningSuccessAfterFail) {
   EXPECT_TRUE(GetOriginId());  // Provisioning will succeed on the second call.
 
   // Let pre-provisioning of other origin IDs finish.
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // After success the preference should not contain |kExpireableToken|.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
@@ -352,7 +356,7 @@ TEST_F(MediaDrmOriginIdManagerTest, ProvisioningAfterExpiration) {
   Initialize();
 
   EXPECT_FALSE(GetOriginId());
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Check that |kAvailableOriginIds| in the preference is empty.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
@@ -368,11 +372,11 @@ TEST_F(MediaDrmOriginIdManagerTest, ProvisioningAfterExpiration) {
   // Advance clock by |kExpirationDelta| (plus one minute) and attempt to
   // pre-provision more origin Ids.
   DVLOG(1) << "Advancing Time";
-  test_browser_thread_bundle_.FastForwardBy(kExpirationDelta);
-  test_browser_thread_bundle_.FastForwardBy(base::TimeDelta::FromMinutes(1));
+  task_environment_.FastForwardBy(kExpirationDelta);
+  task_environment_.FastForwardBy(base::TimeDelta::FromMinutes(1));
   DVLOG(1) << "Adjusted time: " << base::Time::Now();
   PreProvision();
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Look at the preference again.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds << " again";
@@ -399,7 +403,8 @@ TEST_F(MediaDrmOriginIdManagerTest, ProvisioningAfterExpiration) {
 TEST_F(MediaDrmOriginIdManagerTest, Incognito) {
   // No MediaDrmOriginIdManager should be created for an incognito profile.
   Initialize();
-  auto* incognito_profile = profile_->GetOffTheRecordProfile();
+  auto* incognito_profile =
+      profile_->GetPrimaryOTRProfile(/*create_if_needed=*/true);
   EXPECT_FALSE(
       MediaDrmOriginIdManagerFactory::GetForProfile(incognito_profile));
 }
@@ -417,7 +422,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChange) {
   Initialize();
 
   EXPECT_FALSE(GetOriginId());
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Check that |kAvailableOriginIds| in the preference is empty.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
@@ -429,7 +434,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChange) {
   // unconnected.
   network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
       network::mojom::ConnectionType::CONNECTION_NONE);
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Check that |kAvailableOriginIds| is still empty.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds << " again";
@@ -440,7 +445,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChange) {
   // Now trigger a network change to connected.
   network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
       network::mojom::ConnectionType::CONNECTION_ETHERNET);
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Pre-provisioning should have run and filled up the list.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds << " again";
@@ -466,7 +471,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChangeFails) {
   Initialize();
 
   EXPECT_FALSE(GetOriginId());
-  test_browser_thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // Check that |kAvailableOriginIds| in the preference is empty.
   DVLOG(1) << "Checking preference " << kMediaDrmOriginIds;
@@ -480,7 +485,7 @@ TEST_F(MediaDrmOriginIdManagerTest, NetworkChangeFails) {
   for (size_t i = 0; i < kConnectionAttempts + 3; ++i) {
     network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
         network::mojom::ConnectionType::CONNECTION_ETHERNET);
-    test_browser_thread_bundle_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
   }
 
   // Check that |kAvailableOriginIds| is still empty.

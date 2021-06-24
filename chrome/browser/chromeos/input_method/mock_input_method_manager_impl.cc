@@ -14,7 +14,7 @@ namespace input_method {
 
 MockInputMethodManagerImpl::State::State(MockInputMethodManagerImpl* manager)
     : manager_(manager) {
-  active_input_method_ids.push_back("xkb:us::eng");
+  active_input_method_ids.emplace_back("xkb:us::eng");
 }
 
 scoped_refptr<InputMethodManager::State>
@@ -36,8 +36,8 @@ MockInputMethodManagerImpl::State::GetInputMethodFromId(
     const std::string& input_method_id) const {
   static const InputMethodDescriptor defaultInputMethod =
       InputMethodUtil::GetFallbackInputMethodDescriptor();
-  for (size_t i = 0; i < active_input_method_ids.size(); i++) {
-    if (input_method_id == active_input_method_ids[i]) {
+  for (const auto& active_input_method_id : active_input_method_ids) {
+    if (input_method_id == active_input_method_id) {
       return &defaultInputMethod;
     }
   }
@@ -51,14 +51,14 @@ InputMethodDescriptor MockInputMethodManagerImpl::State::GetCurrentInputMethod()
   if (!current_input_method_id.empty()) {
     return InputMethodDescriptor(
         current_input_method_id, descriptor.name(), descriptor.indicator(),
-        descriptor.keyboard_layouts(), descriptor.language_codes(), true,
+        descriptor.keyboard_layout(), descriptor.language_codes(), true,
         GURL(),   // options page url.
         GURL());  // input view page url.
   }
   return descriptor;
 }
 
-MockInputMethodManagerImpl::State::~State() {}
+MockInputMethodManagerImpl::State::~State() = default;
 
 MockInputMethodManagerImpl::MockInputMethodManagerImpl()
     : state_(new State(this)), util_(new InputMethodUtil(&delegate_)) {}
@@ -82,18 +82,6 @@ void MockInputMethodManagerImpl::RemoveObserver(
 void MockInputMethodManagerImpl::RemoveImeMenuObserver(
     ImeMenuObserver* observer) {
   ++remove_menu_observer_count_;
-}
-
-std::unique_ptr<InputMethodDescriptors>
-MockInputMethodManagerImpl::GetSupportedInputMethods() const {
-  std::unique_ptr<InputMethodDescriptors> result;
-#if _LIBCPP_STD_VER > 11
-  result = std::make_unique<InputMethodDescriptors>();
-#else
-  result.reset(new InputMethodDescriptors);
-#endif
-  result->push_back(InputMethodUtil::GetFallbackInputMethodDescriptor());
-  return result;
 }
 
 bool MockInputMethodManagerImpl::IsISOLevel5ShiftUsedByCurrentInputMethod()

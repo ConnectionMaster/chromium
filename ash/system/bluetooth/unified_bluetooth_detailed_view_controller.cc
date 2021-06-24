@@ -8,13 +8,16 @@
 #include <string>
 #include <utility>
 
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/system/bluetooth/bluetooth_detailed_view.h"
 #include "ash/system/bluetooth/tray_bluetooth_helper.h"
 #include "ash/system/tray/detailed_view_delegate.h"
 #include "ash/system/tray/system_tray_notifier.h"
+#include "base/containers/contains.h"
 #include "base/stl_util.h"
+#include "ui/base/l10n/l10n_util.h"
 
 using device::mojom::BluetoothSystem;
 using device::mojom::BluetoothDeviceInfo;
@@ -46,7 +49,7 @@ void RemoveObsoleteBluetoothDevicesFromList(
     const std::set<BluetoothAddress>& new_device_address_list) {
   base::EraseIf(*device_list, [&new_device_address_list](
                                   const BluetoothDeviceInfoPtr& info) {
-    return !base::ContainsKey(new_device_address_list, info->address);
+    return !base::Contains(new_device_address_list, info->address);
   });
 }
 
@@ -80,6 +83,12 @@ views::View* UnifiedBluetoothDetailedViewController::CreateView() {
       Shell::Get()->session_controller()->login_status());
   OnBluetoothSystemStateChanged();
   return view_;
+}
+
+std::u16string UnifiedBluetoothDetailedViewController::GetAccessibleName()
+    const {
+  return l10n_util::GetStringUTF16(
+      IDS_ASH_QUICK_SETTINGS_BUBBLE_BLUETOOTH_SETTINGS_ACCESSIBLE_DESCRIPTION);
 }
 
 void UnifiedBluetoothDetailedViewController::OnBluetoothSystemStateChanged() {

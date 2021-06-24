@@ -8,14 +8,17 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
+#include "net/base/features.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/trace_constants.h"
 #include "net/base/url_util.h"
+#include "net/cert/x509_util.h"
 #include "net/http/http_proxy_client_socket.h"
 #include "net/http/http_proxy_connect_job.h"
 #include "net/log/net_log_source_type.h"
@@ -28,6 +31,8 @@
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_info.h"
+#include "net/ssl/ssl_legacy_crypto_fallback.h"
+#include "third_party/boringssl/src/include/openssl/pool.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
 
 namespace net {
@@ -46,13 +51,15 @@ SSLSocketParams::SSLSocketParams(
     scoped_refptr<HttpProxySocketParams> http_proxy_params,
     const HostPortPair& host_and_port,
     const SSLConfig& ssl_config,
-    PrivacyMode privacy_mode)
+    PrivacyMode privacy_mode,
+    NetworkIsolationKey network_isolation_key)
     : direct_params_(std::move(direct_params)),
       socks_proxy_params_(std::move(socks_proxy_params)),
       http_proxy_params_(std::move(http_proxy_params)),
       host_and_port_(host_and_port),
       ssl_config_(ssl_config),
-      privacy_mode_(privacy_mode) {
+      privacy_mode_(privacy_mode),
+      network_isolation_key_(network_isolation_key) {
   // Only one set of lower level ConnectJob params should be non-NULL.
   DCHECK((direct_params_ && !socks_proxy_params_ && !http_proxy_params_) ||
          (!direct_params_ && socks_proxy_params_ && !http_proxy_params_) ||
@@ -116,7 +123,8 @@ SSLConnectJob::SSLConnectJob(
       callback_(base::BindRepeating(&SSLConnectJob::OnIOComplete,
                                     base::Unretained(this))),
       ssl_negotiation_started_(false),
-      proxy_redirect_(false) {}
+      disable_legacy_crypto_with_fallback_(base::FeatureList::IsEnabled(
+          features::kTLSLegacyCryptoFallbackForMetrics)) {}
 
 SSLConnectJob::~SSLConnectJob() {
   // In the case the job was canceled, need to delete nested job first to
@@ -180,10 +188,8 @@ ConnectionAttempts SSLConnectJob::GetConnectionAttempts() const {
   return connection_attempts_;
 }
 
-std::unique_ptr<StreamSocket> SSLConnectJob::PassProxySocketOnFailure() {
-  if (proxy_redirect_)
-    return std::move(nested_socket_);
-  return nullptr;
+ResolveErrorInfo SSLConnectJob::GetResolveErrorInfo() const {
+  return resolve_error_info_;
 }
 
 bool SSLConnectJob::IsSSLError() const {
@@ -264,6 +270,7 @@ int SSLConnectJob::DoTransportConnect() {
 }
 
 int SSLConnectJob::DoTransportConnectComplete(int result) {
+  resolve_error_info_ = nested_connect_job_->GetResolveErrorInfo();
   ConnectionAttempts connection_attempts =
       nested_connect_job_->GetConnectionAttempts();
   connection_attempts_.insert(connection_attempts_.end(),
@@ -273,6 +280,7 @@ int SSLConnectJob::DoTransportConnectComplete(int result) {
     next_state_ = STATE_SSL_CONNECT;
     nested_socket_ = nested_connect_job_->PassSocket();
     nested_socket_->GetPeerAddress(&server_address_);
+    dns_aliases_ = nested_socket_->GetDnsAliases();
   }
 
   return result;
@@ -291,6 +299,7 @@ int SSLConnectJob::DoSOCKSConnect() {
 }
 
 int SSLConnectJob::DoSOCKSConnectComplete(int result) {
+  resolve_error_info_ = nested_connect_job_->GetResolveErrorInfo();
   if (result == OK) {
     next_state_ = STATE_SSL_CONNECT;
     nested_socket_ = nested_connect_job_->PassSocket();
@@ -314,6 +323,7 @@ int SSLConnectJob::DoTunnelConnect() {
 }
 
 int SSLConnectJob::DoTunnelConnectComplete(int result) {
+  resolve_error_info_ = nested_connect_job_->GetResolveErrorInfo();
   nested_socket_ = nested_connect_job_->PassSocket();
 
   if (result < 0) {
@@ -322,9 +332,6 @@ int SSLConnectJob::DoTunnelConnectComplete(int result) {
     // |GetAdditionalErrorState|, we can easily set the state.
     if (result == ERR_SSL_CLIENT_AUTH_CERT_NEEDED) {
       ssl_cert_request_info_ = nested_connect_job_->GetCertRequestInfo();
-    } else if (result == ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT) {
-      proxy_redirect_ = true;
-      connect_timing_ = nested_connect_job_->connect_timing();
     }
     return result;
   }
@@ -342,32 +349,27 @@ int SSLConnectJob::DoSSLConnect() {
   // Set the timeout to just the time allowed for the SSL handshake.
   ResetTimer(kSSLHandshakeTimeout);
 
-  // If the handle has a fresh socket, get its connect start and DNS times.
-  const LoadTimingInfo::ConnectTiming* socket_connect_timing = nullptr;
-  socket_connect_timing = &nested_connect_job_->connect_timing();
+  // Get the transport's connect start and DNS times.
+  const LoadTimingInfo::ConnectTiming& socket_connect_timing =
+      nested_connect_job_->connect_timing();
 
-  if (socket_connect_timing) {
-    // Overwriting |connect_start| serves two purposes - it adjusts timing so
-    // |connect_start| doesn't include dns times, and it adjusts the time so
-    // as not to include time spent waiting for an idle socket.
-    connect_timing_.connect_start = socket_connect_timing->connect_start;
-    connect_timing_.dns_start = socket_connect_timing->dns_start;
-    connect_timing_.dns_end = socket_connect_timing->dns_end;
-  }
+  // Overwriting |connect_start| serves two purposes - it adjusts timing so
+  // |connect_start| doesn't include dns times, and it adjusts the time so
+  // as not to include time spent waiting for an idle socket.
+  connect_timing_.connect_start = socket_connect_timing.connect_start;
+  connect_timing_.dns_start = socket_connect_timing.dns_start;
+  connect_timing_.dns_end = socket_connect_timing.dns_end;
 
   ssl_negotiation_started_ = true;
   connect_timing_.ssl_start = base::TimeTicks::Now();
 
-  // TODO(mmenke): Consider moving this up to the socket pool layer, after
-  // giving socket pools knowledge of privacy mode.
-  const SSLClientSocketContext& context =
-      params_->privacy_mode() == PRIVACY_MODE_ENABLED
-          ? ssl_client_socket_context_privacy_mode()
-          : ssl_client_socket_context();
-
+  SSLConfig ssl_config = params_->ssl_config();
+  ssl_config.network_isolation_key = params_->network_isolation_key();
+  ssl_config.privacy_mode = params_->privacy_mode();
+  ssl_config.disable_legacy_crypto = disable_legacy_crypto_with_fallback_;
   ssl_socket_ = client_socket_factory()->CreateSSLClientSocket(
-      std::move(nested_socket_), params_->host_and_port(),
-      params_->ssl_config(), context);
+      ssl_client_context(), std::move(nested_socket_), params_->host_and_port(),
+      ssl_config);
   nested_connect_job_.reset();
   return ssl_socket_->Connect(callback_);
 }
@@ -380,8 +382,27 @@ int SSLConnectJob::DoSSLConnectComplete(int result) {
     server_address_ = IPEndPoint();
   }
 
+  // Many servers which negotiate SHA-1 server signatures in TLS 1.2 actually
+  // support SHA-2 but preferentially sign SHA-1 if available. Likewise, some
+  // 3DES-negotiating servers support AES if 3DES is removed.
+  //
+  // To get more accurate metrics, initially connect with SHA-1 and 3DES
+  // disabled. If this fails, retry with them enabled. This keeps the legacy
+  // algorithms working for now, but they will only appear in metrics and
+  // DevTools if the site relies on them.
+  //
+  // See https://crbug.com/658905 and https://crbug.com/691888.
+  if (disable_legacy_crypto_with_fallback_ &&
+      (result == ERR_CONNECTION_CLOSED || result == ERR_CONNECTION_RESET ||
+       result == ERR_SSL_PROTOCOL_ERROR ||
+       result == ERR_SSL_VERSION_OR_CIPHER_MISMATCH)) {
+    ResetStateForRestart();
+    disable_legacy_crypto_with_fallback_ = false;
+    next_state_ = GetInitialState(params_->GetConnectionType());
+    return OK;
+  }
+
   const std::string& host = params_->host_and_port().host();
-  bool tls13_supported = IsTLS13ExperimentHost(host);
 
   if (result == OK) {
     DCHECK(!connect_timing_.ssl_start.is_null());
@@ -395,10 +416,18 @@ int SSLConnectJob::DoSSLConnectComplete(int result) {
     bool has_ssl_info = ssl_socket_->GetSSLInfo(&ssl_info);
     DCHECK(has_ssl_info);
 
-    UMA_HISTOGRAM_ENUMERATION(
-        "Net.SSLVersion",
-        SSLConnectionStatusToVersion(ssl_info.connection_status),
-        SSL_CONNECTION_VERSION_MAX);
+    SSLVersion version =
+        SSLConnectionStatusToVersion(ssl_info.connection_status);
+    UMA_HISTOGRAM_ENUMERATION("Net.SSLVersion", version,
+                              SSL_CONNECTION_VERSION_MAX);
+    if (IsGoogleHost(host)) {
+      // Google hosts all support TLS 1.2, so any occurrences of TLS 1.0 or TLS
+      // 1.1 will be from an outdated insecure TLS MITM proxy, such as some
+      // antivirus configurations. TLS 1.0 and 1.1 are deprecated, so record
+      // these to see how prevalent they are. See https://crbug.com/896013.
+      UMA_HISTOGRAM_ENUMERATION("Net.SSLVersionGoogle", version,
+                                SSL_CONNECTION_VERSION_MAX);
+    }
 
     uint16_t cipher_suite =
         SSLConnectionStatusToCipherSuite(ssl_info.connection_status);
@@ -409,38 +438,55 @@ int SSLConnectJob::DoSSLConnectComplete(int result) {
                                ssl_info.key_exchange_group);
     }
 
-    if (ssl_info.handshake_type == SSLInfo::HANDSHAKE_RESUME) {
-      UMA_HISTOGRAM_CUSTOM_TIMES("Net.SSL_Connection_Latency_Resume_Handshake",
-                                 connect_duration,
-                                 base::TimeDelta::FromMilliseconds(1),
-                                 base::TimeDelta::FromMinutes(1), 100);
-    } else if (ssl_info.handshake_type == SSLInfo::HANDSHAKE_FULL) {
-      UMA_HISTOGRAM_CUSTOM_TIMES("Net.SSL_Connection_Latency_Full_Handshake",
-                                 connect_duration,
-                                 base::TimeDelta::FromMilliseconds(1),
-                                 base::TimeDelta::FromMinutes(1), 100);
-    }
-
-    if (tls13_supported) {
-      UMA_HISTOGRAM_CUSTOM_TIMES("Net.SSL_Connection_Latency_TLS13Experiment",
-                                 connect_duration,
-                                 base::TimeDelta::FromMilliseconds(1),
-                                 base::TimeDelta::FromMinutes(1), 100);
+    // Classify whether the connection required the legacy crypto fallback.
+    if (base::FeatureList::IsEnabled(
+            features::kTLSLegacyCryptoFallbackForMetrics)) {
+      SSLLegacyCryptoFallback fallback = SSLLegacyCryptoFallback::kNoFallback;
+      if (!disable_legacy_crypto_with_fallback_) {
+        // Some servers, though they do not negotiate SHA-1, still fail the
+        // connection when SHA-1 is not offered. We believe these are servers
+        // which match the sent certificates against the ClientHello and then
+        // are configured with a SHA-1 certificate.
+        //
+        // SHA-1 certificate chains are no longer accepted, however servers may
+        // send extra unused certificates, most commonly a copy of the trust
+        // anchor.
+        bool sent_sha1_cert = ssl_info.unverified_cert &&
+                              x509_util::HasSHA1Signature(
+                                  ssl_info.unverified_cert->cert_buffer());
+        if (!sent_sha1_cert && ssl_info.unverified_cert) {
+          for (const auto& cert :
+               ssl_info.unverified_cert->intermediate_buffers()) {
+            if (x509_util::HasSHA1Signature(cert.get())) {
+              sent_sha1_cert = true;
+              break;
+            }
+          }
+        }
+        if (cipher_suite == 0x000a /* TLS_RSA_WITH_3DES_EDE_CBC_SHA */) {
+          // TLS_RSA_WITH_3DES_EDE_CBC_SHA does not involve a peer signature.
+          DCHECK_EQ(0, ssl_info.peer_signature_algorithm);
+          fallback = sent_sha1_cert
+                         ? SSLLegacyCryptoFallback::kSentSHA1CertAndUsed3DES
+                         : SSLLegacyCryptoFallback::kUsed3DES;
+        } else if (ssl_info.peer_signature_algorithm ==
+                   SSL_SIGN_RSA_PKCS1_SHA1) {
+          fallback = sent_sha1_cert
+                         ? SSLLegacyCryptoFallback::kSentSHA1CertAndUsedSHA1
+                         : SSLLegacyCryptoFallback::kUsedSHA1;
+        } else {
+          fallback = sent_sha1_cert ? SSLLegacyCryptoFallback::kSentSHA1Cert
+                                    : SSLLegacyCryptoFallback::kUnknownReason;
+        }
+      }
+      UMA_HISTOGRAM_ENUMERATION("Net.SSLLegacyCryptoFallback", fallback);
     }
   }
 
-  // Don't double-count the version interference probes.
-  if (!params_->ssl_config().version_interference_probe) {
-    base::UmaHistogramSparse("Net.SSL_Connection_Error", std::abs(result));
-
-    if (tls13_supported) {
-      base::UmaHistogramSparse("Net.SSL_Connection_Error_TLS13Experiment",
-                               std::abs(result));
-    }
-  }
+  base::UmaHistogramSparse("Net.SSL_Connection_Error", std::abs(result));
 
   if (result == OK || IsCertificateError(result)) {
-    SetSocket(std::move(ssl_socket_));
+    SetSocket(std::move(ssl_socket_), std::move(dns_aliases_));
   } else if (result == ERR_SSL_CLIENT_AUTH_CERT_NEEDED) {
     ssl_cert_request_info_ = base::MakeRefCounted<SSLCertRequestInfo>();
     ssl_socket_->GetSSLCertRequestInfo(ssl_cert_request_info_.get());
@@ -466,6 +512,17 @@ SSLConnectJob::State SSLConnectJob::GetInitialState(
 int SSLConnectJob::ConnectInternal() {
   next_state_ = GetInitialState(params_->GetConnectionType());
   return DoLoop(OK);
+}
+
+void SSLConnectJob::ResetStateForRestart() {
+  ResetTimer(base::TimeDelta());
+  nested_connect_job_ = nullptr;
+  nested_socket_ = nullptr;
+  ssl_socket_ = nullptr;
+  ssl_cert_request_info_ = nullptr;
+  ssl_negotiation_started_ = false;
+  resolve_error_info_ = ResolveErrorInfo();
+  server_address_ = IPEndPoint();
 }
 
 void SSLConnectJob::ChangePriorityInternal(RequestPriority priority) {

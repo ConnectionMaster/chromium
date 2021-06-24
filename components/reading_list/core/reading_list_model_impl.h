@@ -65,6 +65,13 @@ class ReadingListModelImpl : public ReadingListModel,
 
   void RemoveEntryByURL(const GURL& url) override;
 
+  bool IsUrlSupported(const GURL& url) override;
+
+  const ReadingListEntry& AddEntry(
+      const GURL& url,
+      const std::string& title,
+      reading_list::EntrySource source,
+      base::TimeDelta estimated_read_time) override;
   const ReadingListEntry& AddEntry(const GURL& url,
                                    const std::string& title,
                                    reading_list::EntrySource source) override;
@@ -100,6 +107,8 @@ class ReadingListModelImpl : public ReadingListModel,
     explicit ScopedReadingListBatchUpdate(ReadingListModelImpl* model);
 
     ~ScopedReadingListBatchUpdate() override;
+
+    void ReadingListModelBeingShutdown(const ReadingListModel* model) override;
 
    private:
     std::unique_ptr<ReadingListModelStorage::ScopedBatchUpdate> storage_token_;
@@ -147,7 +156,7 @@ class ReadingListModelImpl : public ReadingListModel,
   bool has_unseen_;
   bool loaded_;
 
-  base::WeakPtrFactory<ReadingListModelImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<ReadingListModelImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ReadingListModelImpl);
 };

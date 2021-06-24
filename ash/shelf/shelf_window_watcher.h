@@ -9,7 +9,8 @@
 
 #include "ash/shell_observer.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
+#include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
 #include "ui/wm/public/activation_change_observer.h"
 
@@ -20,16 +21,11 @@ class ShelfModel;
 // ShelfWindowWatcher manages ShelfItems for dialogs in the default container
 // with valid ShelfItemType and ShelfID window properties (ie. task manager).
 // ShelfWindowWatcher also tracks the active shelf item via window activation.
-//
-// Some windows are experimentally given default properties in MultiProcessMash.
-// TODO(crbug.com/722496|887156): Resolve, KSV etc. tracking approach for Mash.
 class ShelfWindowWatcher : public ::wm::ActivationChangeObserver,
                            public ShellObserver {
  public:
   explicit ShelfWindowWatcher(ShelfModel* model);
   ~ShelfWindowWatcher() override;
-
-  static const char kDefaultShelfIdPrefix[];
 
  private:
   // Observes for windows being added to a root window's default container.
@@ -40,7 +36,7 @@ class ShelfWindowWatcher : public ::wm::ActivationChangeObserver,
 
    private:
     // aura::WindowObserver:
-    void OnWindowHierarchyChanged(const HierarchyChangeParams& params) override;
+    void OnWindowAdded(aura::Window* new_window) override;
     void OnWindowDestroying(aura::Window* window) override;
 
     ShelfWindowWatcher* window_watcher_;
@@ -98,12 +94,13 @@ class ShelfWindowWatcher : public ::wm::ActivationChangeObserver,
 
   ShelfModel* model_;
 
-  ContainerWindowObserver container_window_observer_;
-  UserWindowObserver user_window_observer_;
+  ContainerWindowObserver container_window_observer_{this};
+  UserWindowObserver user_window_observer_{this};
 
-  ScopedObserver<aura::Window, ContainerWindowObserver>
+  base::ScopedMultiSourceObservation<aura::Window, aura::WindowObserver>
       observed_container_windows_;
-  ScopedObserver<aura::Window, UserWindowObserver> observed_user_windows_;
+  base::ScopedMultiSourceObservation<aura::Window, aura::WindowObserver>
+      observed_user_windows_;
 
   // The set of windows with shelf items managed by this ShelfWindowWatcher.
   std::set<aura::Window*> user_windows_with_items_;

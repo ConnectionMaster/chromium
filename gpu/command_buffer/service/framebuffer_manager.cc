@@ -7,9 +7,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
-#include "base/strings/stringprintf.h"
+#include "base/notreached.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/framebuffer_completeness_cache.h"
 #include "gpu/command_buffer/service/renderbuffer_manager.h"
@@ -539,7 +539,8 @@ void Framebuffer::RestoreDrawBuffers() const {
 bool Framebuffer::ValidateAndAdjustDrawBuffers(
     uint32_t fragment_output_type_mask, uint32_t fragment_output_written_mask) {
   uint32_t mask = draw_buffer_bound_mask_ & fragment_output_written_mask;
-  if ((mask & fragment_output_type_mask) != (mask & draw_buffer_type_mask_))
+  if (mask != draw_buffer_bound_mask_ ||
+      (mask & fragment_output_type_mask) != (mask & draw_buffer_type_mask_))
     return false;
 
   AdjustDrawBuffersImpl(mask);
@@ -707,6 +708,8 @@ GLenum Framebuffer::IsPossiblyComplete(const FeatureInfo* feature_info) const {
   GLsizei width = -1;
   GLsizei height = -1;
   GLsizei samples = -1;
+  uint32_t colorbufferSize = 0;
+  bool colorbufferSizeValid = false;
   const bool kSamplesMustMatch = feature_info->IsWebGLContext() ||
       !feature_info->feature_flags().chromium_framebuffer_mixed_samples;
 
@@ -749,10 +752,26 @@ GLenum Framebuffer::IsPossiblyComplete(const FeatureInfo* feature_info) const {
       return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
     }
 
-    // Attaching an image to more than one color attachment point should return
-    // FRAMEBUFFER_UNSUPPORTED.
     if (it->first >= GL_COLOR_ATTACHMENT0 &&
         it->first < GL_COLOR_ATTACHMENT0 + manager_->max_color_attachments_) {
+      // in GLES 2.0, all color attachments attachments must have the same
+      // number of bitplanes.
+      // in GLES 3.0, there is no such restriction.
+      if (feature_info->context_type() == CONTEXT_TYPE_WEBGL1) {
+        if (colorbufferSizeValid) {
+          if (colorbufferSize !=
+              GLES2Util::GetGLTypeSizeForTextures(attachment->texture_type())) {
+            return GL_FRAMEBUFFER_UNSUPPORTED;
+          }
+        } else {
+          colorbufferSize =
+              GLES2Util::GetGLTypeSizeForTextures(attachment->texture_type());
+          colorbufferSizeValid = true;
+        }
+      }
+
+      // Attaching an image to more than one color attachment point should
+      // return FRAMEBUFFER_UNSUPPORTED.
       for (GLenum i = it->first + 1;
            i < GL_COLOR_ATTACHMENT0 + manager_->max_color_attachments_; i++) {
         const Attachment* other = GetAttachment(i);

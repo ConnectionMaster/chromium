@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include <vector>
-
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "ppapi/c/pp_instance.h"
@@ -94,7 +92,7 @@ class PPB_Var_Deprecated_Proxy : public InterfaceProxy {
 
   const PPB_Var_Deprecated* ppb_var_impl_;
 
-  base::WeakPtrFactory<PPB_Var_Deprecated_Proxy> task_factory_;
+  base::WeakPtrFactory<PPB_Var_Deprecated_Proxy> task_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PPB_Var_Deprecated_Proxy);
 };

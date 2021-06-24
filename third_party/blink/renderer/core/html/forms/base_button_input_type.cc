@@ -37,16 +37,14 @@
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html_names.h"
-#include "third_party/blink/renderer/core/layout/layout_button.h"
+#include "third_party/blink/renderer/core/layout/layout_object_factory.h"
 
 namespace blink {
-
-using namespace html_names;
 
 BaseButtonInputType::BaseButtonInputType(HTMLInputElement& element)
     : InputType(element), KeyboardClickableInputTypeView(element) {}
 
-void BaseButtonInputType::Trace(Visitor* visitor) {
+void BaseButtonInputType::Trace(Visitor* visitor) const {
   KeyboardClickableInputTypeView::Trace(visitor);
   InputType::Trace(visitor);
 }
@@ -62,7 +60,7 @@ void BaseButtonInputType::CreateShadowSubtree() {
 }
 
 void BaseButtonInputType::ValueAttributeChanged() {
-  ToTextOrDie(GetElement().UserAgentShadowRoot()->firstChild())
+  To<Text>(GetElement().UserAgentShadowRoot()->firstChild())
       ->setData(DisplayValue());
 }
 
@@ -76,9 +74,10 @@ bool BaseButtonInputType::ShouldSaveAndRestoreFormControlState() const {
 
 void BaseButtonInputType::AppendToFormData(FormData&) const {}
 
-LayoutObject* BaseButtonInputType::CreateLayoutObject(const ComputedStyle&,
-                                                      LegacyLayout) const {
-  return new LayoutButton(&GetElement());
+LayoutObject* BaseButtonInputType::CreateLayoutObject(
+    const ComputedStyle& style,
+    LegacyLayout legacy) const {
+  return LayoutObjectFactory::CreateButton(GetElement(), style, legacy);
 }
 
 InputType::ValueMode BaseButtonInputType::GetValueMode() const {
@@ -89,7 +88,8 @@ void BaseButtonInputType::SetValue(const String& sanitized_value,
                                    bool,
                                    TextFieldEventBehavior,
                                    TextControlSetValueSelection) {
-  GetElement().setAttribute(kValueAttr, AtomicString(sanitized_value));
+  GetElement().setAttribute(html_names::kValueAttr,
+                            AtomicString(sanitized_value));
 }
 
 bool BaseButtonInputType::MatchesDefaultPseudoClass() {

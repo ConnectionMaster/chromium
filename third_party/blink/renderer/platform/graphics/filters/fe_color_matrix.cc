@@ -23,10 +23,9 @@
 
 #include "third_party/blink/renderer/platform/graphics/filters/fe_color_matrix.h"
 
-#include "SkColorFilterImageFilter.h"
-#include "SkColorMatrixFilter.h"
 #include "third_party/blink/renderer/platform/graphics/filters/paint_filter_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_stream.h"
+#include "third_party/skia/include/effects/SkColorMatrixFilter.h"
 
 namespace blink {
 
@@ -34,8 +33,8 @@ static const unsigned kColorMatrixSize = 20;
 
 FEColorMatrix::FEColorMatrix(Filter* filter,
                              ColorMatrixType type,
-                             const Vector<float>& values)
-    : FilterEffect(filter), type_(type), values_(values) {}
+                             Vector<float> values)
+    : FilterEffect(filter), type_(type), values_(std::move(values)) {}
 
 ColorMatrixType FEColorMatrix::GetType() const {
   return type_;
@@ -52,14 +51,14 @@ const Vector<float>& FEColorMatrix::Values() const {
   return values_;
 }
 
-bool FEColorMatrix::SetValues(const Vector<float>& values) {
+bool FEColorMatrix::SetValues(Vector<float> values) {
   if (values_ == values)
     return false;
-  values_ = values;
+  values_ = std::move(values);
   return true;
 }
 
-static void SaturateMatrix(float s, SkScalar matrix[kColorMatrixSize]) {
+static void SaturateMatrix(float s, float matrix[kColorMatrixSize]) {
   matrix[0] = 0.213f + 0.787f * s;
   matrix[1] = 0.715f - 0.715f * s;
   matrix[2] = 0.072f - 0.072f * s;
@@ -77,7 +76,7 @@ static void SaturateMatrix(float s, SkScalar matrix[kColorMatrixSize]) {
   matrix[19] = 0;
 }
 
-static void HueRotateMatrix(float hue, SkScalar matrix[kColorMatrixSize]) {
+static void HueRotateMatrix(float hue, float matrix[kColorMatrixSize]) {
   float cos_hue = cosf(hue * kPiFloat / 180);
   float sin_hue = sinf(hue * kPiFloat / 180);
   matrix[0] = 0.213f + cos_hue * 0.787f - sin_hue * 0.213f;
@@ -97,8 +96,8 @@ static void HueRotateMatrix(float hue, SkScalar matrix[kColorMatrixSize]) {
   matrix[19] = 0;
 }
 
-static void LuminanceToAlphaMatrix(SkScalar matrix[kColorMatrixSize]) {
-  memset(matrix, 0, kColorMatrixSize * sizeof(SkScalar));
+static void LuminanceToAlphaMatrix(float matrix[kColorMatrixSize]) {
+  memset(matrix, 0, kColorMatrixSize * sizeof(float));
   matrix[15] = 0.2125f;
   matrix[16] = 0.7154f;
   matrix[17] = 0.0721f;
@@ -107,8 +106,8 @@ static void LuminanceToAlphaMatrix(SkScalar matrix[kColorMatrixSize]) {
 static sk_sp<SkColorFilter> CreateColorFilter(ColorMatrixType type,
                                               const Vector<float>& values) {
   // Use defaults if values contains too few/many values.
-  SkScalar matrix[kColorMatrixSize];
-  memset(matrix, 0, kColorMatrixSize * sizeof(SkScalar));
+  float matrix[kColorMatrixSize];
+  memset(matrix, 0, kColorMatrixSize * sizeof(float));
   matrix[0] = matrix[6] = matrix[12] = matrix[18] = 1;
 
   switch (type) {
@@ -119,10 +118,6 @@ static sk_sp<SkColorFilter> CreateColorFilter(ColorMatrixType type,
         for (unsigned i = 0; i < kColorMatrixSize; ++i)
           matrix[i] = values[i];
       }
-      matrix[4] *= SkScalar(255);
-      matrix[9] *= SkScalar(255);
-      matrix[14] *= SkScalar(255);
-      matrix[19] *= SkScalar(255);
       break;
     case FECOLORMATRIX_TYPE_SATURATE:
       if (values.size() == 1)
@@ -136,7 +131,7 @@ static sk_sp<SkColorFilter> CreateColorFilter(ColorMatrixType type,
       LuminanceToAlphaMatrix(matrix);
       break;
   }
-  return SkColorFilters::MatrixRowMajor255(matrix);
+  return SkColorFilters::Matrix(matrix);
 }
 
 bool FEColorMatrix::AffectsTransparentPixels() const {
@@ -150,9 +145,9 @@ sk_sp<PaintFilter> FEColorMatrix::CreateImageFilter() {
   sk_sp<PaintFilter> input(paint_filter_builder::Build(
       InputEffect(0), OperatingInterpolationSpace()));
   sk_sp<SkColorFilter> filter = CreateColorFilter(type_, values_);
-  PaintFilter::CropRect rect = GetCropRect();
+  absl::optional<PaintFilter::CropRect> crop_rect = GetCropRect();
   return sk_make_sp<ColorFilterPaintFilter>(std::move(filter), std::move(input),
-                                            &rect);
+                                            base::OptionalOrNullptr(crop_rect));
 }
 
 static WTF::TextStream& operator<<(WTF::TextStream& ts,

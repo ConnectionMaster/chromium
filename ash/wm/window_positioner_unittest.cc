@@ -6,15 +6,15 @@
 
 #include <string>
 
-#include "ash/scoped_root_window_for_new_windows.h"
-#include "ash/shelf/shelf_constants.h"
+#include "ash/public/cpp/shelf_config.h"
 #include "ash/shell.h"
-#include "ash/shell/toplevel_window.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/test/toplevel_window.h"
 #include "ash/test_shell_delegate.h"
 #include "ash/wm/window_positioner.h"
 #include "ash/wm/window_state.h"
 #include "base/strings/string_number_conversions.h"
+#include "ui/display/scoped_display_for_new_windows.h"
 #include "ui/display/screen.h"
 #include "ui/views/widget/widget.h"
 
@@ -32,7 +32,8 @@ class WindowPositionerTest : public AshTestBase {
 TEST_F(WindowPositionerTest, OpenDefaultWindowOnSecondDisplay) {
   UpdateDisplay("400x400,1400x900");
   aura::Window* second_root_window = Shell::GetAllRootWindows()[1];
-  ScopedRootWindowForNewWindows root_for_new_windows(second_root_window);
+  display::ScopedDisplayForNewWindows display_for_new_windows(
+      second_root_window);
   shell::ToplevelWindow::CreateParams params;
   params.can_resize = true;
   params.can_maximize = true;
@@ -51,7 +52,7 @@ TEST_F(WindowPositionerTest, OpenDefaultWindowOnSecondDisplay) {
 // its restore bounds.
 TEST_F(WindowPositionerTest, SecondMaximizedWindowHasProperRestoreSize) {
   UpdateDisplay("1400x900");
-  const int bottom_inset = 900 - ShelfConstants::shelf_size();
+  const int bottom_inset = 900 - ShelfConfig::Get()->shelf_size();
   shell::ToplevelWindow::CreateParams params;
   params.can_resize = true;
   params.can_maximize = true;
@@ -91,8 +92,7 @@ TEST_F(WindowPositionerTest, IgnoreFullscreenInAutoRearrange) {
   params.can_resize = true;
   params.can_maximize = true;
   views::Widget* widget1 = shell::ToplevelWindow::CreateToplevelWindow(params);
-  wm::WindowState* managed_state =
-      wm::GetWindowState(widget1->GetNativeWindow());
+  WindowState* managed_state = WindowState::Get(widget1->GetNativeWindow());
   EXPECT_TRUE(managed_state->GetWindowPositionManaged());
   EXPECT_EQ("300x300", widget1->GetWindowBoundsInScreen().size().ToString());
   widget1->SetFullscreen(true);
@@ -101,7 +101,7 @@ TEST_F(WindowPositionerTest, IgnoreFullscreenInAutoRearrange) {
   // 2nd window mimics windowed v1 app.
   params.use_saved_placement = false;
   views::Widget* widget2 = shell::ToplevelWindow::CreateToplevelWindow(params);
-  wm::WindowState* state_2 = wm::GetWindowState(widget2->GetNativeWindow());
+  WindowState* state_2 = WindowState::Get(widget2->GetNativeWindow());
   EXPECT_TRUE(state_2->GetWindowPositionManaged());
   EXPECT_EQ("300x300", widget2->GetWindowBoundsInScreen().size().ToString());
 

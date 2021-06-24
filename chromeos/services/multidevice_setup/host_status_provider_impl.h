@@ -11,7 +11,6 @@
 #include "chromeos/services/multidevice_setup/host_backend_delegate.h"
 #include "chromeos/services/multidevice_setup/host_status_provider.h"
 #include "chromeos/services/multidevice_setup/host_verifier.h"
-#include "chromeos/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
 
 namespace chromeos {
 
@@ -29,14 +28,20 @@ class HostStatusProviderImpl : public HostStatusProvider,
  public:
   class Factory {
    public:
-    static Factory* Get();
-    static void SetFactoryForTesting(Factory* test_factory);
-    virtual ~Factory();
-    virtual std::unique_ptr<HostStatusProvider> BuildInstance(
+    static std::unique_ptr<HostStatusProvider> Create(
         EligibleHostDevicesProvider* eligible_host_devices_provider,
         HostBackendDelegate* host_backend_delegate,
         HostVerifier* host_verifier,
         device_sync::DeviceSyncClient* device_sync_client);
+    static void SetFactoryForTesting(Factory* test_factory);
+
+   protected:
+    virtual ~Factory();
+    virtual std::unique_ptr<HostStatusProvider> CreateInstance(
+        EligibleHostDevicesProvider* eligible_host_devices_provider,
+        HostBackendDelegate* host_backend_delegate,
+        HostVerifier* host_verifier,
+        device_sync::DeviceSyncClient* device_sync_client) = 0;
 
    private:
     static Factory* test_factory_;
@@ -64,7 +69,9 @@ class HostStatusProviderImpl : public HostStatusProvider,
   // device_sync::DeviceSyncClient::Observer:
   void OnNewDevicesSynced() override;
 
-  void CheckForUpdatedStatusAndNotifyIfChanged();
+  void CheckForUpdatedStatusAndNotifyIfChanged(
+      bool force_notify_host_status_change);
+
   HostStatusWithDevice GetCurrentStatus();
 
   EligibleHostDevicesProvider* eligible_host_devices_provider_;

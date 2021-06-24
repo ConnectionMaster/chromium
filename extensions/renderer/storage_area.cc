@@ -169,6 +169,43 @@ class ManagedStorageArea final : public gin::Wrappable<ManagedStorageArea> {
 
 gin::WrapperInfo ManagedStorageArea::kWrapperInfo = {gin::kEmbedderNativeGin};
 
+class SessionStorageArea final : public gin::Wrappable<SessionStorageArea> {
+ public:
+  SessionStorageArea(APIRequestHandler* request_handler,
+                     APIEventHandler* event_handler,
+                     const APITypeReferenceMap* type_refs,
+                     const BindingAccessChecker* access_checker)
+      : storage_area_(request_handler,
+                      event_handler,
+                      type_refs,
+                      "session",
+                      access_checker) {}
+  ~SessionStorageArea() override = default;
+
+  static gin::WrapperInfo kWrapperInfo;
+
+  gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
+      v8::Isolate* isolate) override {
+    return Wrappable<SessionStorageArea>::GetObjectTemplateBuilder(isolate)
+        .SetMethod("get", &SessionStorageArea::Get)
+        .SetMethod("set", &SessionStorageArea::Set)
+        .SetMethod("remove", &SessionStorageArea::Remove)
+        .SetMethod("clear", &SessionStorageArea::Clear)
+        .SetMethod("getBytesInUse", &SessionStorageArea::GetBytesInUse)
+        .SetProperty("onChanged", &SessionStorageArea::GetOnChangedEvent)
+        .SetValue("QUOTA_BYTES", api::storage::session::QUOTA_BYTES);
+  }
+
+ private:
+  DEFINE_STORAGE_AREA_HANDLERS()
+
+  StorageArea storage_area_;
+
+  DISALLOW_COPY_AND_ASSIGN(SessionStorageArea);
+};
+
+gin::WrapperInfo SessionStorageArea::kWrapperInfo = {gin::kEmbedderNativeGin};
+
 #undef DEFINE_STORAGE_AREA_HANDLERS
 
 }  // namespace
@@ -205,6 +242,11 @@ v8::Local<v8::Object> StorageArea::CreateStorageArea(
         isolate, new SyncStorageArea(request_handler, event_handler, type_refs,
                                      access_checker));
     object = handle.ToV8().As<v8::Object>();
+  } else if (property_name == "session") {
+    gin::Handle<SessionStorageArea> handle = gin::CreateHandle(
+        isolate, new SessionStorageArea(request_handler, event_handler,
+                                        type_refs, access_checker));
+    object = handle.ToV8().As<v8::Object>();
   } else {
     CHECK_EQ("managed", property_name);
     gin::Handle<ManagedStorageArea> handle = gin::CreateHandle(
@@ -232,24 +274,23 @@ void StorageArea::HandleFunctionCall(const std::string& method_name,
 
   std::vector<v8::Local<v8::Value>> argument_list = arguments->GetAll();
 
-  std::unique_ptr<base::ListValue> converted_arguments;
-  v8::Local<v8::Function> callback;
-  std::string error;
   const APISignature* signature = type_refs_->GetTypeMethodSignature(
       base::StringPrintf("%s.%s", "storage.StorageArea", method_name.c_str()));
   DCHECK(signature);
-  if (!signature->ParseArgumentsToJSON(context, argument_list, *type_refs_,
-                                       &converted_arguments, &callback,
-                                       &error)) {
+  APISignature::JSONParseResult parse_result =
+      signature->ParseArgumentsToJSON(context, argument_list, *type_refs_);
+  if (!parse_result.succeeded()) {
     arguments->ThrowTypeError(api_errors::InvocationError(
-        full_method_name, signature->GetExpectedSignature(), error));
+        full_method_name, signature->GetExpectedSignature(),
+        *parse_result.error));
     return;
   }
 
-  converted_arguments->Insert(0u, std::make_unique<base::Value>(name_));
+  parse_result.arguments_list->Insert(
+      parse_result.arguments_list->GetList().begin(), base::Value(name_));
   request_handler_->StartRequest(
-      context, full_method_name, std::move(converted_arguments), callback,
-      v8::Local<v8::Function>(), binding::RequestThread::UI);
+      context, full_method_name, std::move(parse_result.arguments_list),
+      parse_result.callback, v8::Local<v8::Function>());
 }
 
 v8::Local<v8::Value> StorageArea::GetOnChangedEvent(

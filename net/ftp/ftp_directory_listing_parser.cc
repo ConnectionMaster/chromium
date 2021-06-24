@@ -6,17 +6,17 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/cxx17_backports.h"
 #include "base/i18n/encoding_detection.h"
 #include "base/i18n/icu_string_conversions.h"
-#include "base/stl_util.h"
-#include "base/strings/string_util.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "net/base/net_errors.h"
 #include "net/ftp/ftp_directory_listing_parser_ls.h"
 #include "net/ftp/ftp_directory_listing_parser_vms.h"
 #include "net/ftp/ftp_directory_listing_parser_windows.h"
-#include "net/ftp/ftp_server_type_histograms.h"
+#include "net/ftp/ftp_server_type.h"
 
 namespace net {
 
@@ -39,36 +39,36 @@ int FillInRawName(const std::string& encoding,
 
 // Parses |text| as an FTP directory listing. Fills in |entries|
 // and |server_type| and returns network error code.
-int ParseListing(const base::string16& text,
-                 const base::string16& newline_separator,
+int ParseListing(const std::u16string& text,
+                 const std::u16string& newline_separator,
                  const std::string& encoding,
                  const base::Time& current_time,
                  std::vector<FtpDirectoryListingEntry>* entries,
                  FtpServerType* server_type) {
-  std::vector<base::string16> lines = base::SplitStringUsingSubstr(
+  std::vector<std::u16string> lines = base::SplitStringUsingSubstr(
       text, newline_separator, base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
 
   struct {
-    base::Callback<bool(void)> callback;
+    base::OnceCallback<bool(void)> callback;
     FtpServerType server_type;
   } parsers[] = {
     {
-      base::Bind(&ParseFtpDirectoryListingLs, lines, current_time, entries),
+      base::BindOnce(&ParseFtpDirectoryListingLs, lines, current_time, entries),
       SERVER_LS
     },
     {
-      base::Bind(&ParseFtpDirectoryListingWindows, lines, entries),
+      base::BindOnce(&ParseFtpDirectoryListingWindows, lines, entries),
       SERVER_WINDOWS
     },
     {
-      base::Bind(&ParseFtpDirectoryListingVms, lines, entries),
+      base::BindOnce(&ParseFtpDirectoryListingVms, lines, entries),
       SERVER_VMS
     },
   };
 
   for (size_t i = 0; i < base::size(parsers); i++) {
     entries->clear();
-    if (parsers[i].callback.Run()) {
+    if (std::move(parsers[i].callback).Run()) {
       *server_type = parsers[i].server_type;
       return FillInRawName(encoding, entries);
     }
@@ -89,7 +89,7 @@ int DecodeAndParse(const std::string& text,
     return ERR_ENCODING_DETECTION_FAILED;
   const char* encoding_name = encoding.c_str();
 
-  base::string16 converted_text;
+  std::u16string converted_text;
   if (base::CodepageToUTF16(text, encoding_name,
                             base::OnStringConversionError::SUBSTITUTE,
                             &converted_text)) {
@@ -121,7 +121,6 @@ int ParseFtpDirectoryListing(const std::string& text,
                              std::vector<FtpDirectoryListingEntry>* entries) {
   FtpServerType server_type = SERVER_UNKNOWN;
   int rv = DecodeAndParse(text, current_time, entries, &server_type);
-  UpdateFtpServerTypeHistograms(server_type);
   return rv;
 }
 

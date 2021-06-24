@@ -6,7 +6,6 @@
 #define CHROME_TEST_CHROMEDRIVER_WINDOW_COMMANDS_H_
 
 #include <memory>
-#include <string>
 
 #include "base/callback_forward.h"
 #include "base/values.h"
@@ -15,18 +14,19 @@
 namespace base {
 class DictionaryValue;
 class Value;
-}
+}  // namespace base
 
 struct Session;
 class Status;
 class Timeout;
 class WebView;
 
-typedef base::Callback<Status(Session* session,
-                              WebView* web_view,
-                              const base::DictionaryValue&,
-                              std::unique_ptr<base::Value>*,
-                              Timeout*)> WindowCommand;
+using WindowCommand =
+    base::RepeatingCallback<Status(Session* session,
+                                   WebView* web_view,
+                                   const base::DictionaryValue&,
+                                   std::unique_ptr<base::Value>*,
+                                   Timeout*)>;
 
 // Execute a Window Command on the target window.
 Status ExecuteWindowCommand(const WindowCommand& command,
@@ -54,6 +54,13 @@ Status ExecuteExecuteAsyncScript(Session* session,
                                  const base::DictionaryValue& params,
                                  std::unique_ptr<base::Value>* value,
                                  Timeout* timeout);
+
+// Creates a new window/tab.
+Status ExecuteNewWindow(Session* session,
+                        WebView* web_view,
+                        const base::DictionaryValue& params,
+                        std::unique_ptr<base::Value>* value,
+                        Timeout* timeout);
 
 // Changes the targeted frame for the given session.
 Status ExecuteSwitchToFrame(Session* session,
@@ -204,17 +211,17 @@ Status ExecuteTouchScroll(Session* session,
                           std::unique_ptr<base::Value>* value,
                           Timeout* timeout);
 
-Status ExecuteTouchPinch(Session* session,
-                         WebView* web_view,
-                         const base::DictionaryValue& params,
-                         std::unique_ptr<base::Value>* value,
-                         Timeout* timeout);
-
 Status ExecuteSendCommand(Session* session,
                           WebView* web_view,
                           const base::DictionaryValue& params,
                           std::unique_ptr<base::Value>* value,
                           Timeout* timeout);
+
+Status ExecuteSendCommandFromWebSocket(Session* session,
+                                       WebView* web_view,
+                                       const base::DictionaryValue& params,
+                                       std::unique_ptr<base::Value>* value,
+                                       Timeout* timeout);
 
 Status ExecuteSendCommandAndGetResult(Session* session,
                                       WebView* web_view,
@@ -234,19 +241,6 @@ Status ExecuteSendKeysToActiveElement(Session* session,
                                       const base::DictionaryValue& params,
                                       std::unique_ptr<base::Value>* value,
                                       Timeout* timeout);
-
-// Gets the status of the application cache (window.applicationCache.status).
-Status ExecuteGetAppCacheStatus(Session* session,
-                                WebView* web_view,
-                                const base::DictionaryValue& params,
-                                std::unique_ptr<base::Value>* value,
-                                Timeout* timeout);
-
-Status ExecuteIsBrowserOnline(Session* session,
-                              WebView* web_view,
-                              const base::DictionaryValue& params,
-                              std::unique_ptr<base::Value>* value,
-                              Timeout* timeout);
 
 Status ExecuteGetStorageItem(const char* storage,
                              Session* session,
@@ -295,6 +289,18 @@ Status ExecuteScreenshot(Session* session,
                          const base::DictionaryValue& params,
                          std::unique_ptr<base::Value>* value,
                          Timeout* timeout);
+
+Status ExecuteFullPageScreenshot(Session* session,
+                                 WebView* web_view,
+                                 const base::DictionaryValue& params,
+                                 std::unique_ptr<base::Value>* value,
+                                 Timeout* timeout);
+
+Status ExecutePrint(Session* session,
+                    WebView* web_view,
+                    const base::DictionaryValue& params,
+                    std::unique_ptr<base::Value>* value,
+                    Timeout* timeout);
 
 // Retrieve all cookies visible to the current page.
 Status ExecuteGetCookies(Session* session,
@@ -365,7 +371,7 @@ Status ExecutePerformActions(Session* session,
 Status ProcessInputActionSequence(
     Session* session,
     const base::DictionaryValue* action_sequence,
-    std::unique_ptr<base::DictionaryValue>* result);
+    std::vector<std::unique_ptr<base::DictionaryValue>>* action_list);
 
 Status ExecuteReleaseActions(Session* session,
                              WebView* web_view,
@@ -426,7 +432,7 @@ Status ExecuteStopCasting(Session* session,
                           std::unique_ptr<base::Value>* value,
                           Timeout* timeout);
 
-// Returns a list of names of Cast sinks that are available.
+// Returns a list of Cast sinks that are available.
 Status ExecuteGetSinks(Session* session,
                        WebView* web_view,
                        const base::DictionaryValue& params,
@@ -439,5 +445,12 @@ Status ExecuteGetIssueMessage(Session* session,
                               const base::DictionaryValue& params,
                               std::unique_ptr<base::Value>* value,
                               Timeout* timeout);
+
+// Sets permissions.
+Status ExecuteSetPermission(Session* session,
+                            WebView* web_view,
+                            const base::DictionaryValue& params,
+                            std::unique_ptr<base::Value>* value,
+                            Timeout* timeout);
 
 #endif  // CHROME_TEST_CHROMEDRIVER_WINDOW_COMMANDS_H_

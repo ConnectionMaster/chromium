@@ -13,33 +13,40 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "chrome/browser/chooser_controller/chooser_controller.h"
+#include "base/memory/weak_ptr.h"
+#include "components/permissions/chooser_controller.h"
 #include "content/public/browser/bluetooth_chooser.h"
+
+namespace content {
+class RenderFrameHost;
+}
 
 // BluetoothChooserController is a chooser that presents a list of
 // Bluetooth device names, which come from |bluetooth_chooser_desktop_|.
 // It can be used by WebBluetooth API to get the user's permission to
-// access a Bluetooth device. It is owned by ChooserBubbleDelegate.
-class BluetoothChooserController : public ChooserController {
+// access a Bluetooth device.
+class BluetoothChooserController : public permissions::ChooserController {
  public:
   BluetoothChooserController(
       content::RenderFrameHost* owner,
       const content::BluetoothChooser::EventHandler& event_handler);
   ~BluetoothChooserController() override;
 
-  // ChooserController:
+  // permissions::ChooserController:
   bool ShouldShowIconBeforeText() const override;
   bool ShouldShowReScanButton() const override;
-  base::string16 GetNoOptionsText() const override;
-  base::string16 GetOkButtonLabel() const override;
+  std::u16string GetNoOptionsText() const override;
+  std::u16string GetOkButtonLabel() const override;
+  std::pair<std::u16string, std::u16string> GetThrobberLabelAndTooltip()
+      const override;
   size_t NumOptions() const override;
   int GetSignalStrengthLevel(size_t index) const override;
   bool IsConnected(size_t index) const override;
   bool IsPaired(size_t index) const override;
-  base::string16 GetOption(size_t index) const override;
+  std::u16string GetOption(size_t index) const override;
   void RefreshOptions() override;
   void OpenAdapterOffHelpUrl() const override;
-  base::string16 GetStatus() const override;
+  void OpenPermissionPreferences() const override;
   void Select(const std::vector<size_t>& indices) override;
   void Cancel() override;
   void Close() override;
@@ -57,7 +64,7 @@ class BluetoothChooserController : public ChooserController {
   // The range of |signal_strength_level| is -1 to 4 inclusively.
   void AddOrUpdateDevice(const std::string& device_id,
                          bool should_update_name,
-                         const base::string16& device_name,
+                         const std::u16string& device_name,
                          bool is_gatt_connected,
                          bool is_paired,
                          int signal_strength_level);
@@ -68,6 +75,9 @@ class BluetoothChooserController : public ChooserController {
   // Called when |event_handler_| is no longer valid and should not be used
   // any more.
   void ResetEventHandler();
+
+  // Get a weak pointer to this controller.
+  base::WeakPtr<BluetoothChooserController> GetWeakPtr();
 
  private:
   struct BluetoothDeviceInfo {
@@ -81,13 +91,16 @@ class BluetoothChooserController : public ChooserController {
   // Bluetooth adapter is turned on or off, or when re-scan happens.
   void ClearAllDevices();
 
+  int frame_tree_node_id_ = -1;
+
   std::vector<BluetoothDeviceInfo> devices_;
-  std::unordered_map<std::string, base::string16> device_id_to_name_map_;
+  std::unordered_map<std::string, std::u16string> device_id_to_name_map_;
   // Maps from device name to number of devices with that name.
-  std::unordered_map<base::string16, int> device_name_counts_;
+  std::unordered_map<std::u16string, int> device_name_counts_;
 
   content::BluetoothChooser::EventHandler event_handler_;
-  base::string16 status_text_;
+
+  base::WeakPtrFactory<BluetoothChooserController> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothChooserController);
 };

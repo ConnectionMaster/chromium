@@ -5,9 +5,9 @@
 syntax = "proto2";
 
 option optimize_for = LITE_RUNTIME;
+option java_package = "org.chromium.components.metrics";
 
 option java_outer_classname = "TraceLogProtos";
-option java_package = "org.chromium.components.metrics";
 
 package metrics;
 
@@ -21,4 +21,6 @@ package metrics;
 message TraceLog {
   // Client uploads the trace data as a byte buffer.
   optional bytes raw_data = 1;
+
+  reserved 3;
 }

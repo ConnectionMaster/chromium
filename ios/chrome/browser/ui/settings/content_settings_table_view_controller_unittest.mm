@@ -7,7 +7,7 @@
 #include "ios/chrome/browser/browser_state/test_chrome_browser_state.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_controller_test.h"
 #include "ios/chrome/grit/ios_strings.h"
-#include "ios/web/public/test/test_web_thread_bundle.h"
+#include "ios/web/public/test/web_task_environment.h"
 #include "testing/gtest_mac.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -32,23 +32,20 @@ class ContentSettingsTableViewControllerTest
   }
 
  private:
-  web::TestWebThreadBundle thread_bundle_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestChromeBrowserState> chrome_browser_state_;
 };
 
-// Tests that there are 3 sections in Content Settings if mailto: URL
-// rewriting feature is enabled and mailto handling with Google UI is enabled.
+// Tests that there are 2 items in Content Settings.
 TEST_F(ContentSettingsTableViewControllerTest,
-       TestModelWithMailToUrlRewritingAndGoogleUI) {
+       TestModelWithLanguageSettingsUI) {
   CreateController();
   CheckController();
   CheckTitleWithId(IDS_IOS_CONTENT_SETTINGS_TITLE);
 
   ASSERT_EQ(1, NumberOfSections());
-  ASSERT_EQ(3, NumberOfItemsInSection(0));
+  ASSERT_EQ(2, NumberOfItemsInSection(0));
   CheckDetailItemTextWithIds(IDS_IOS_BLOCK_POPUPS, IDS_IOS_SETTING_ON, 0, 0);
-  CheckDetailItemTextWithIds(IDS_IOS_TRANSLATE_SETTING, IDS_IOS_SETTING_ON, 0,
-                             1);
 }
 
 }  // namespace

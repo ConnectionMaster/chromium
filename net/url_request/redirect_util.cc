@@ -17,8 +17,8 @@ void RedirectUtil::UpdateHttpRequest(
     const GURL& original_url,
     const std::string& original_method,
     const RedirectInfo& redirect_info,
-    const base::Optional<std::vector<std::string>>& removed_headers,
-    const base::Optional<net::HttpRequestHeaders>& modified_headers,
+    const absl::optional<std::vector<std::string>>& removed_headers,
+    const absl::optional<net::HttpRequestHeaders>& modified_headers,
     HttpRequestHeaders* request_headers,
     bool* should_clear_upload) {
   DCHECK(request_headers);
@@ -43,11 +43,17 @@ void RedirectUtil::UpdateHttpRequest(
     // See also: https://crbug.com/760487
     request_headers->RemoveHeader(HttpRequestHeaders::kOrigin);
 
-    // The inclusion of a multipart Content-Type header can cause problems with
-    // some servers:
-    // http://code.google.com/p/chromium/issues/detail?id=843
+    // This header should only be present further down the stack, but remove it
+    // here just in case.
     request_headers->RemoveHeader(HttpRequestHeaders::kContentLength);
+
+    // These are "request-body-headers" and should be removed on redirects that
+    // change the method, per the fetch spec.
+    // https://fetch.spec.whatwg.org/
     request_headers->RemoveHeader(HttpRequestHeaders::kContentType);
+    request_headers->RemoveHeader("Content-Encoding");
+    request_headers->RemoveHeader("Content-Language");
+    request_headers->RemoveHeader("Content-Location");
 
     *should_clear_upload = true;
   }
@@ -78,14 +84,14 @@ void RedirectUtil::UpdateHttpRequest(
 }
 
 // static
-base::Optional<std::string> RedirectUtil::GetReferrerPolicyHeader(
+absl::optional<std::string> RedirectUtil::GetReferrerPolicyHeader(
     const HttpResponseHeaders* response_headers) {
   if (!response_headers)
-    return base::nullopt;
+    return absl::nullopt;
   std::string referrer_policy_header;
   if (!response_headers->GetNormalizedHeader("Referrer-Policy",
                                              &referrer_policy_header)) {
-    return base::nullopt;
+    return absl::nullopt;
   }
   return referrer_policy_header;
 }

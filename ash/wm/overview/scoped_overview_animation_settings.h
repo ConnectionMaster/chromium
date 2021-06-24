@@ -7,8 +7,10 @@
 
 #include <memory>
 
-#include "ash/wm/overview/overview_animation_type.h"
+#include "ash/wm/overview/overview_types.h"
 #include "base/macros.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "ui/compositor/animation_throughput_reporter.h"
 
 namespace aura {
 class Window;
@@ -36,10 +38,14 @@ class ScopedOverviewAnimationSettings {
   void CacheRenderSurface();
   void DeferPaint();
   void TrilinearFiltering();
+  ui::LayerAnimator* GetAnimator();
 
  private:
   // The managed animation settings.
   std::unique_ptr<ui::ScopedLayerAnimationSettings> animation_settings_;
+
+  // Report smoothness of close animation.
+  absl::optional<ui::AnimationThroughputReporter> close_reporter_;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedOverviewAnimationSettings);
 };

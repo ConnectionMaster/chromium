@@ -21,8 +21,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_DOCUMENT_EXTENSIONS_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_DOCUMENT_EXTENSIONS_H_
 
+#include "base/dcheck_is_on.h"
 #include "base/macros.h"
-#include "third_party/blink/renderer/core/layout/svg/svg_resources_cache.h"
+#include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/geometry/float_point.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
@@ -35,8 +36,8 @@ class SVGElement;
 class SVGSVGElement;
 class SubtreeLayoutScope;
 
-class SVGDocumentExtensions
-    : public GarbageCollectedFinalized<SVGDocumentExtensions> {
+class CORE_EXPORT SVGDocumentExtensions final
+    : public GarbageCollected<SVGDocumentExtensions> {
  public:
   explicit SVGDocumentExtensions(Document*);
   ~SVGDocumentExtensions();
@@ -48,15 +49,17 @@ class SVGDocumentExtensions
   // needs applying.
   void AddWebAnimationsPendingSVGElement(SVGElement&);
 
-  static void ServiceOnAnimationFrame(Document&);
+  // True if a SMIL animation frame is successfully scheduled.
+  static bool ServiceSmilOnAnimationFrame(Document&);
+  static void ServiceWebAnimationsOnAnimationFrame(Document&);
 
   void StartAnimations();
   void PauseAnimations();
-  void ServiceAnimations();
+  // True if a SMIL animation frame is successfully scheduled.
+  bool ServiceSmilAnimations();
+  void ServiceWebAnimations();
 
   void DispatchSVGLoadEventToOutermostSVGElements();
-
-  SVGResourcesCache& ResourcesCache() { return resources_cache_; }
 
   void AddSVGRootWithRelativeLengthDescendents(SVGSVGElement*);
   void RemoveSVGRootWithRelativeLengthDescendents(SVGSVGElement*);
@@ -68,16 +71,14 @@ class SVGDocumentExtensions
   void UpdatePan(const FloatPoint& pos) const;
 
   static SVGSVGElement* rootElement(const Document&);
-  SVGSVGElement* rootElement() const;
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   Member<Document> document_;
   HeapHashSet<Member<SVGSVGElement>> time_containers_;
   using SVGElementSet = HeapHashSet<Member<SVGElement>>;
   SVGElementSet web_animations_pending_svg_elements_;
-  SVGResourcesCache resources_cache_;
   // Root SVG elements with relative length descendants.
   HeapHashSet<Member<SVGSVGElement>> relative_length_svg_roots_;
   FloatPoint translate_;
@@ -89,4 +90,4 @@ class SVGDocumentExtensions
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_DOCUMENT_EXTENSIONS_H_

@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include <string>
-
 #include "base/macros.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/audio_renderer_sink.h"
@@ -35,6 +33,7 @@ class FakeAudioRendererSink : public AudioRendererSink {
                   RenderCallback* callback) override;
   void Start() override;
   void Stop() override;
+  void Flush() override;
   void Pause() override;
   void Play() override;
   bool SetVolume(double volume) override;

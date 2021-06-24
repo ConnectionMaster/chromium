@@ -8,10 +8,13 @@
 #define MEDIA_AUDIO_FAKE_AUDIO_INPUT_STREAM_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/threading/thread.h"
 #include "media/audio/audio_io.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/fake_audio_worker.h"
@@ -25,13 +28,12 @@ class AudioManagerBase;
 // beeping sound unless --use-file-for-fake-audio-capture=<file> is specified,
 // in which case the indicated .wav file will be read and played into the
 // stream.
-class MEDIA_EXPORT FakeAudioInputStream
-    : public AudioInputStream {
+class MEDIA_EXPORT FakeAudioInputStream : public AudioInputStream {
  public:
-  static AudioInputStream* MakeFakeStream(
-      AudioManagerBase* manager, const AudioParameters& params);
+  static AudioInputStream* MakeFakeStream(AudioManagerBase* manager,
+                                          const AudioParameters& params);
 
-  bool Open() override;
+  OpenOutcome Open() override;
   void Start(AudioInputCallback* callback) override;
   void Stop() override;
   void Close() override;
@@ -68,12 +70,18 @@ class MEDIA_EXPORT FakeAudioInputStream
   void ReadAudioFromSource(base::TimeTicks ideal_time, base::TimeTicks now);
 
   AudioManagerBase* audio_manager_;
-  AudioInputCallback* callback_;
-  FakeAudioWorker fake_audio_worker_;
+  // |callback_| needs the lock as ReadAudioFromSource reads callback_
+  // on the capture thread, while callback_ is set on the audio thread.
+  base::Lock callback_lock_;
+  AudioInputCallback* callback_ GUARDED_BY(callback_lock_);
   AudioParameters params_;
 
+  std::unique_ptr<FakeAudioWorker> fake_audio_worker_;
   std::unique_ptr<AudioOutputStream::AudioSourceCallback> audio_source_;
   std::unique_ptr<media::AudioBus> audio_bus_;
+  // We will delete the capture thread on the AudioManager worker task runner
+  // since the audio thread is the main UI thread on Mac.
+  std::unique_ptr<base::Thread, base::OnTaskRunnerDeleter> capture_thread_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeAudioInputStream);
 };

@@ -8,8 +8,11 @@
 #include <memory>
 
 #include "base/memory/scoped_refptr.h"
+#include "gpu/vulkan/vulkan_swap_chain.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
 class SkCanvas;
@@ -25,7 +28,6 @@ class VulkanContextProvider;
 
 namespace ui {
 class PlatformEventSource;
-class PlatformWindow;
 }  // namespace ui
 
 namespace gpu {
@@ -44,27 +46,31 @@ class VulkanDemo : public ui::PlatformWindowDelegate {
 
  private:
   // ui::PlatformWindowDelegate:
-  void OnBoundsChanged(const gfx::Rect& new_bounds) override;
+  void OnBoundsChanged(const BoundsChange& change) override;
   void OnDamageRect(const gfx::Rect& damaged_region) override {}
   void DispatchEvent(ui::Event* event) override {}
   void OnCloseRequest() override;
   void OnClosed() override {}
-  void OnWindowStateChanged(ui::PlatformWindowState new_state) override {}
+  void OnWindowStateChanged(ui::PlatformWindowState old_state,
+                            ui::PlatformWindowState new_state) override {}
   void OnLostCapture() override {}
   void OnAcceleratedWidgetAvailable(gfx::AcceleratedWidget widget) override;
+  void OnWillDestroyAcceleratedWidget() override {}
   void OnAcceleratedWidgetDestroyed() override {}
   void OnActivationChanged(bool active) override {}
+  void OnMouseEnter() override {}
 
   void CreateSkSurface();
   void Draw(SkCanvas* canvas, float fraction);
   void RenderFrame();
 
-  std::unique_ptr<gpu::VulkanImplementation> vulkan_implementation_;
+  std::unique_ptr<VulkanImplementation> vulkan_implementation_;
   scoped_refptr<viz::VulkanContextProvider> vulkan_context_provider_;
   gfx::AcceleratedWidget accelerated_widget_ = gfx::kNullAcceleratedWidget;
   std::unique_ptr<ui::PlatformEventSource> event_source_;
   std::unique_ptr<ui::PlatformWindow> window_;
-  std::unique_ptr<gpu::VulkanSurface> vulkan_surface_;
+  std::unique_ptr<VulkanSurface> vulkan_surface_;
+  absl::optional<VulkanSwapChain::ScopedWrite> scoped_write_;
   sk_sp<SkSurface> sk_surface_;
   std::vector<sk_sp<SkSurface>> sk_surfaces_;
   float rotation_angle_ = 0;

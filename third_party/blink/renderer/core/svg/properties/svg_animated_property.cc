@@ -51,31 +51,26 @@ SVGAnimatedPropertyBase::SVGAnimatedPropertyBase(
       attribute_name_(attribute_name) {
   DCHECK(context_element_);
   DCHECK(attribute_name_ != QualifiedName::Null());
-  DCHECK_EQ(this->GetType(), type);
-  DCHECK_EQ(this->CssPropertyId(), css_property_id);
+  DCHECK_EQ(GetType(), type);
+  DCHECK_EQ(CssPropertyId(), css_property_id);
   DCHECK_EQ(initial_value_storage_, initial_value);
 }
 
 SVGAnimatedPropertyBase::~SVGAnimatedPropertyBase() = default;
 
-void SVGAnimatedPropertyBase::Trace(Visitor* visitor) {
+void SVGAnimatedPropertyBase::Trace(Visitor* visitor) const {
   visitor->Trace(context_element_);
-}
-
-void SVGAnimatedPropertyBase::AnimationEnded() {
-  SynchronizeAttribute();
 }
 
 bool SVGAnimatedPropertyBase::NeedsSynchronizeAttribute() const {
   // DOM attribute synchronization is only needed if a change has been made
-  // through JavaScript (via a tear-off or primitive) or the property is being
-  // animated. This prevents unnecessary attribute creation on the target
-  // element.
-  return base_value_needs_synchronization_ || IsAnimating();
+  // through the JavaScript IDL attribute (via a tear-off or primitive). This
+  // prevents unnecessary attribute creation on the target element.
+  return base_value_needs_synchronization_;
 }
 
 void SVGAnimatedPropertyBase::SynchronizeAttribute() {
-  AtomicString value(CurrentValueBase()->ValueAsString());
+  AtomicString value(BaseValueBase().ValueAsString());
   context_element_->SetSynchronizedLazyAttribute(attribute_name_, value);
   base_value_needs_synchronization_ = false;
 }
@@ -84,8 +79,7 @@ void SVGAnimatedPropertyBase::BaseValueChanged() {
   DCHECK(context_element_);
   DCHECK(attribute_name_ != QualifiedName::Null());
   base_value_needs_synchronization_ = true;
-  context_element_->InvalidateSVGAttributes();
-  context_element_->SvgAttributeBaseValChanged(attribute_name_);
+  context_element_->BaseValueChanged(*this);
 }
 
 void SVGAnimatedPropertyBase::EnsureAnimValUpdated() {

@@ -8,13 +8,13 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/check.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/guid.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/metrics/histogram_functions.h"
@@ -23,13 +23,13 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/safe_browsing/chrome_cleaner/srt_field_trial_win.h"
 #include "chrome/install_static/install_details.h"
 #include "chrome/install_static/install_modes.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/version_info/version_info.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
@@ -155,17 +155,17 @@ ChromeCleanerFetcher::ChromeCleanerFetcher(
     network::mojom::URLLoaderFactory* url_loader_factory)
     : fetched_callback_(std::move(fetched_callback)),
       url_loader_factory_(url_loader_factory),
-      blocking_task_runner_(base::CreateSequencedTaskRunnerWithTraits(
+      blocking_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
            base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})),
       scoped_temp_dir_(new base::ScopedTempDir(),
                        base::OnTaskRunnerDeleter(blocking_task_runner_)) {
   base::PostTaskAndReplyWithResult(
       blocking_task_runner_.get(), FROM_HERE,
-      base::Bind(&ChromeCleanerFetcher::CreateTemporaryDirectory,
-                 base::Unretained(this)),
-      base::Bind(&ChromeCleanerFetcher::OnTemporaryDirectoryCreated,
-                 base::Unretained(this)));
+      base::BindOnce(&ChromeCleanerFetcher::CreateTemporaryDirectory,
+                     base::Unretained(this)),
+      base::BindOnce(&ChromeCleanerFetcher::OnTemporaryDirectoryCreated,
+                     base::Unretained(this)));
 }
 
 bool ChromeCleanerFetcher::CreateTemporaryDirectory() {
@@ -188,13 +188,12 @@ void ChromeCleanerFetcher::OnTemporaryDirectoryCreated(bool success) {
   DCHECK(!scoped_temp_dir_->GetPath().empty());
 
   base::FilePath temp_file = scoped_temp_dir_->GetPath().Append(
-      base::ASCIIToUTF16(base::GenerateGUID()) + L".tmp");
+      base::ASCIIToWide(base::GenerateGUID()) + L".tmp");
 
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = GetSRTDownloadURL();
-  request->load_flags = net::LOAD_DISABLE_CACHE |
-                        net::LOAD_DO_NOT_SEND_COOKIES |
-                        net::LOAD_DO_NOT_SAVE_COOKIES;
+  request->load_flags = net::LOAD_DISABLE_CACHE;
+  request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
   url_loader_ = network::SimpleURLLoader::Create(
       std::move(request), kChromeCleanerTrafficAnnotation);

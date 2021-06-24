@@ -12,9 +12,11 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "base/sequence_checker.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/policy_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace policy {
 
@@ -26,11 +28,11 @@ class POLICY_EXPORT CloudPolicyService : public CloudPolicyClient::Observer,
  public:
   // Callback invoked once the policy refresh attempt has completed. Passed
   // bool parameter is true if the refresh was successful (no error).
-  using RefreshPolicyCallback = base::Callback<void(bool)>;
+  using RefreshPolicyCallback = base::OnceCallback<void(bool)>;
 
   // Callback invoked once the unregister attempt has completed. Passed bool
   // parameter is true if unregistering was successful (no error).
-  using UnregisterCallback = base::Callback<void(bool)>;
+  using UnregisterCallback = base::OnceCallback<void(bool)>;
 
   class POLICY_EXPORT Observer {
    public:
@@ -55,12 +57,12 @@ class POLICY_EXPORT CloudPolicyService : public CloudPolicyClient::Observer,
 
   // Refreshes policy. |callback| will be invoked after the operation completes
   // or aborts because of errors.
-  virtual void RefreshPolicy(const RefreshPolicyCallback& callback);
+  virtual void RefreshPolicy(RefreshPolicyCallback callback);
 
   // Unregisters the device. |callback| will be invoked after the operation
   // completes or aborts because of errors. All pending refresh policy requests
   // will be aborted, and no further refresh policy requests will be allowed.
-  void Unregister(const UnregisterCallback& callback);
+  void Unregister(UnregisterCallback callback);
 
   // Adds/Removes an Observer for this object.
   void AddObserver(Observer* observer);
@@ -77,7 +79,18 @@ class POLICY_EXPORT CloudPolicyService : public CloudPolicyClient::Observer,
 
   void ReportValidationResult(CloudPolicyStore* store);
 
-  bool IsInitializationComplete() const { return initialization_complete_; }
+  bool IsInitializationComplete() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return initialization_complete_;
+  }
+
+  // If initial policy refresh was completed returns its result.
+  // This allows ChildPolicyObserver to know whether policy was fetched before
+  // profile creation.
+  absl::optional<bool> initial_policy_refresh_result() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return initial_policy_refresh_result_;
+  }
 
  private:
   // Helper function that is called when initialization may be complete, and
@@ -91,6 +104,9 @@ class POLICY_EXPORT CloudPolicyService : public CloudPolicyClient::Observer,
   // Invokes the unregister callback and clears unregister state. The |success|
   // flag is passed through to the unregister callback.
   void UnregisterCompleted(bool success);
+
+  // Assert non-concurrent usage in debug builds.
+  SEQUENCE_CHECKER(sequence_checker_);
 
   // The policy type that will be fetched by the |client_|, with the optional
   // |settings_entity_id_|.
@@ -127,6 +143,10 @@ class POLICY_EXPORT CloudPolicyService : public CloudPolicyClient::Observer,
   // Set to true once the service is initialized (initial policy load/refresh
   // is complete).
   bool initialization_complete_;
+
+  // Set to true if initial policy refresh was successful. Set to false
+  // otherwise.
+  absl::optional<bool> initial_policy_refresh_result_;
 
   // Observers who will receive notifications when the service has finished
   // initializing.

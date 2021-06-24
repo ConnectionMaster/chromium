@@ -40,9 +40,8 @@
 #include "third_party/blink/renderer/platform/image-decoders/image_frame.h"
 #include "third_party/blink/renderer/platform/image-decoders/segment_reader.h"
 #include "third_party/blink/renderer/platform/image-encoders/image_encoder.h"
-#include "third_party/blink/renderer/platform/wtf/text/base64.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
+
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkPictureRecorder.h"
 
@@ -69,8 +68,8 @@ scoped_refptr<PictureSnapshot> PictureSnapshot::Load(
   if (tiles.size() == 1)
     return base::AdoptRef(new PictureSnapshot(std::move(pictures[0])));
   SkPictureRecorder recorder;
-  SkCanvas* canvas = recorder.beginRecording(union_rect.Width(),
-                                             union_rect.Height(), nullptr, 0);
+  SkCanvas* canvas =
+      recorder.beginRecording(union_rect.Width(), union_rect.Height());
   for (size_t i = 0; i < pictures.size(); ++i) {
     canvas->save();
     canvas->translate(tiles[i]->layer_offset.X() - union_rect.X(),
@@ -86,9 +85,9 @@ bool PictureSnapshot::IsEmpty() const {
   return picture_->cullRect().isEmpty();
 }
 
-Vector<char> PictureSnapshot::Replay(unsigned from_step,
-                                     unsigned to_step,
-                                     double scale) const {
+Vector<uint8_t> PictureSnapshot::Replay(unsigned from_step,
+                                        unsigned to_step,
+                                        double scale) const {
   const SkIRect bounds = picture_->cullRect().roundOut();
   int width = ceil(scale * bounds.width());
   int height = ceil(scale * bounds.height());
@@ -111,8 +110,7 @@ Vector<char> PictureSnapshot::Replay(unsigned from_step,
     canvas.ResetStepCount();
     picture_->playback(&canvas, &canvas);
   }
-  Vector<char> base64_data;
-  Vector<char> encoded_image;
+  Vector<uint8_t> encoded_image;
 
   SkPixmap src;
   bool peekResult = bitmap.peekPixels(&src);
@@ -121,21 +119,17 @@ Vector<char> PictureSnapshot::Replay(unsigned from_step,
   SkPngEncoder::Options options;
   options.fFilterFlags = SkPngEncoder::FilterFlag::kSub;
   options.fZLibLevel = 3;
-  if (!ImageEncoder::Encode(
-          reinterpret_cast<Vector<unsigned char>*>(&encoded_image), src,
-          options)) {
-    return Vector<char>();
-  }
+  if (!ImageEncoder::Encode(&encoded_image, src, options))
+    return Vector<uint8_t>();
 
-  Base64Encode(encoded_image, base64_data);
-  return base64_data;
+  return encoded_image;
 }
 
-Vector<Vector<TimeDelta>> PictureSnapshot::Profile(
+Vector<Vector<base::TimeDelta>> PictureSnapshot::Profile(
     unsigned min_repeat_count,
-    TimeDelta min_duration,
+    base::TimeDelta min_duration,
     const FloatRect* clip_rect) const {
-  Vector<Vector<TimeDelta>> timings;
+  Vector<Vector<base::TimeDelta>> timings;
   timings.ReserveInitialCapacity(min_repeat_count);
   const SkIRect bounds = picture_->cullRect().roundOut();
   SkBitmap bitmap;
@@ -143,10 +137,10 @@ Vector<Vector<TimeDelta>> PictureSnapshot::Profile(
       SkImageInfo::MakeN32Premul(bounds.width(), bounds.height()));
   bitmap.eraseARGB(0, 0, 0, 0);
 
-  TimeTicks now = WTF::CurrentTimeTicks();
-  TimeTicks stop_time = now + min_duration;
+  base::TimeTicks now = base::TimeTicks::Now();
+  base::TimeTicks stop_time = now + min_duration;
   for (unsigned step = 0; step < min_repeat_count || now < stop_time; ++step) {
-    Vector<TimeDelta> current_timings;
+    Vector<base::TimeDelta> current_timings;
     if (!timings.IsEmpty())
       current_timings.ReserveInitialCapacity(timings.front().size());
     ProfilingCanvas canvas(bitmap);
@@ -159,7 +153,7 @@ Vector<Vector<TimeDelta>> PictureSnapshot::Profile(
     canvas.SetTimings(&current_timings);
     picture_->playback(&canvas);
     timings.push_back(std::move(current_timings));
-    now = WTF::CurrentTimeTicks();
+    now = base::TimeTicks::Now();
   }
   return timings;
 }

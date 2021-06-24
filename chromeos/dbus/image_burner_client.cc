@@ -8,6 +8,7 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
@@ -22,30 +23,30 @@ namespace {
 // The ImageBurnerClient implementation.
 class ImageBurnerClientImpl : public ImageBurnerClient {
  public:
-  ImageBurnerClientImpl() : proxy_(NULL), weak_ptr_factory_(this) {}
+  ImageBurnerClientImpl() : proxy_(nullptr) {}
 
   ~ImageBurnerClientImpl() override = default;
 
   // ImageBurnerClient override.
   void BurnImage(const std::string& from_path,
                  const std::string& to_path,
-                 const ErrorCallback& error_callback) override {
+                 ErrorCallback error_callback) override {
     dbus::MethodCall method_call(imageburn::kImageBurnServiceInterface,
                                  imageburn::kBurnImage);
     dbus::MessageWriter writer(&method_call);
     writer.AppendString(from_path);
     writer.AppendString(to_path);
-    proxy_->CallMethod(
-        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::BindOnce(&ImageBurnerClientImpl::OnBurnImage,
-                       weak_ptr_factory_.GetWeakPtr(), error_callback));
+    proxy_->CallMethod(&method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+                       base::BindOnce(&ImageBurnerClientImpl::OnBurnImage,
+                                      weak_ptr_factory_.GetWeakPtr(),
+                                      std::move(error_callback)));
   }
 
   // ImageBurnerClient override.
   void SetEventHandlers(
-      const BurnFinishedHandler& burn_finished_handler,
+      BurnFinishedHandler burn_finished_handler,
       const BurnProgressUpdateHandler& burn_progress_update_handler) override {
-    burn_finished_handler_ = burn_finished_handler;
+    burn_finished_handler_ = std::move(burn_finished_handler);
     burn_progress_update_handler_ = burn_progress_update_handler;
   }
 
@@ -63,14 +64,14 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
     proxy_->ConnectToSignal(
         imageburn::kImageBurnServiceInterface,
         imageburn::kSignalBurnFinishedName,
-        base::Bind(&ImageBurnerClientImpl::OnBurnFinished,
-                   weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(&ImageBurnerClientImpl::OnBurnFinished,
+                            weak_ptr_factory_.GetWeakPtr()),
         base::BindOnce(&ImageBurnerClientImpl::OnSignalConnected,
                        weak_ptr_factory_.GetWeakPtr()));
     proxy_->ConnectToSignal(
         imageburn::kImageBurnServiceInterface, imageburn::kSignalBurnUpdateName,
-        base::Bind(&ImageBurnerClientImpl::OnBurnProgressUpdate,
-                   weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(&ImageBurnerClientImpl::OnBurnProgressUpdate,
+                            weak_ptr_factory_.GetWeakPtr()),
         base::BindOnce(&ImageBurnerClientImpl::OnSignalConnected,
                        weak_ptr_factory_.GetWeakPtr()));
   }
@@ -79,7 +80,7 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
   // Called when a response for BurnImage is received
   void OnBurnImage(ErrorCallback error_callback, dbus::Response* response) {
     if (!response) {
-      error_callback.Run();
+      std::move(error_callback).Run();
       return;
     }
   }
@@ -96,8 +97,8 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
       LOG(ERROR) << "Invalid signal: " << signal->ToString();
       return;
     }
-    if (!burn_finished_handler_.is_null())
-      burn_finished_handler_.Run(target_path, success, error);
+    if (burn_finished_handler_)
+      std::move(burn_finished_handler_).Run(target_path, success, error);
   }
 
   // Handles burn_progress_udpate signal and calls |handler|.
@@ -131,7 +132,7 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<ImageBurnerClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<ImageBurnerClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ImageBurnerClientImpl);
 };
@@ -143,8 +144,8 @@ ImageBurnerClient::ImageBurnerClient() = default;
 ImageBurnerClient::~ImageBurnerClient() = default;
 
 // static
-ImageBurnerClient* ImageBurnerClient::Create() {
-  return new ImageBurnerClientImpl();
+std::unique_ptr<ImageBurnerClient> ImageBurnerClient::Create() {
+  return std::make_unique<ImageBurnerClientImpl>();
 }
 
 }  // namespace chromeos

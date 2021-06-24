@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "components/sync/base/model_type.h"
@@ -18,21 +17,30 @@ namespace syncer {
 
 class SyncableService;
 
-// Controller responsible for integrating SyncableService implementations within
-// a non-blocking datatype (USS), for datatypes living in the UI thread.
+// Controller responsible for integrating legacy data type implementations
+// (SyncableService) within the new sync architecture (USS), for types living on
+// the UI thread.
 class SyncableServiceBasedModelTypeController : public ModelTypeController {
  public:
-  using SyncableServiceProvider =
-      base::OnceCallback<base::WeakPtr<syncer::SyncableService>()>;
+  enum class DelegateMode { kFullSyncModeOnly, kTransportModeWithSingleModel };
 
+  // |syncable_service| may be null in tests. If |use_transport_mode| is true,
+  // two delegates are created: one for full sync and one for transport only.
+  // Otherwise, only the full sync delegate is created.
   SyncableServiceBasedModelTypeController(
       ModelType type,
       OnceModelTypeStoreFactory store_factory,
-      SyncableServiceProvider syncable_service_provider,
-      const base::RepeatingClosure& dump_stack);
+      base::WeakPtr<SyncableService> syncable_service,
+      const base::RepeatingClosure& dump_stack,
+      DelegateMode delegate_mode = DelegateMode::kFullSyncModeOnly);
+
   ~SyncableServiceBasedModelTypeController() override;
 
  private:
+  // Delegate owned by this instance; delegate instances passed to the base
+  // class forward their calls to |delegate_|.
+  std::unique_ptr<ModelTypeControllerDelegate> delegate_;
+
   DISALLOW_COPY_AND_ASSIGN(SyncableServiceBasedModelTypeController);
 };
 

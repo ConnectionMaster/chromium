@@ -18,7 +18,6 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 
-using autofill::PasswordForm;
 using password_manager::PasswordStore;
 using testing::_;
 using testing::ElementsAre;
@@ -30,15 +29,15 @@ bool matchesOrigin(const url::Origin& origin, const GURL& url) {
 namespace password_manager {
 
 PasswordFormData CreateTestPasswordFormDataByOrigin(const char* origin_url) {
-  PasswordFormData data = {PasswordForm::SCHEME_HTML,
+  PasswordFormData data = {PasswordForm::Scheme::kHtml,
                            origin_url,
                            origin_url,
                            "login_element",
-                           L"submit_element",
-                           L"username_element",
-                           L"password_element",
-                           L"username_value",
-                           L"password_value",
+                           u"submit_element",
+                           u"username_element",
+                           u"password_element",
+                           u"username_value",
+                           u"password_value",
                            true,
                            1};
   return data;
@@ -73,10 +72,12 @@ TYPED_TEST_P(PasswordStoreOriginTest,
   this->delegate_.store()->AddObserver(&observer);
 
   const url::Origin origin = url::Origin::Create((GURL(origin_url)));
-  base::Callback<bool(const GURL&)> filter = base::Bind(&matchesOrigin, origin);
+  base::RepeatingCallback<bool(const GURL&)> filter =
+      base::BindRepeating(&matchesOrigin, origin);
   base::RunLoop run_loop;
-  EXPECT_CALL(observer, OnLoginsChanged(ElementsAre(PasswordStoreChange(
-                            PasswordStoreChange::REMOVE, *form))));
+  EXPECT_CALL(observer,
+              OnLoginsChanged(_, ElementsAre(PasswordStoreChange(
+                                     PasswordStoreChange::REMOVE, *form))));
   this->delegate_.store()->RemoveLoginsByURLAndTime(
       filter, base::Time(), base::Time::Max(), run_loop.QuitClosure());
   run_loop.Run();
@@ -101,11 +102,12 @@ TYPED_TEST_P(PasswordStoreOriginTest,
   this->delegate_.store()->AddObserver(&observer);
 
   const url::Origin fitting_origin = url::Origin::Create((GURL(fitting_url)));
-  base::Callback<bool(const GURL&)> filter =
-      base::Bind(&matchesOrigin, fitting_origin);
+  base::RepeatingCallback<bool(const GURL&)> filter =
+      base::BindRepeating(&matchesOrigin, fitting_origin);
   base::RunLoop run_loop;
-  EXPECT_CALL(observer, OnLoginsChanged(ElementsAre(PasswordStoreChange(
-                            PasswordStoreChange::REMOVE, *form))));
+  EXPECT_CALL(observer,
+              OnLoginsChanged(_, ElementsAre(PasswordStoreChange(
+                                     PasswordStoreChange::REMOVE, *form))));
   this->delegate_.store()->RemoveLoginsByURLAndTime(
       filter, base::Time(), base::Time::Max(), run_loop.QuitClosure());
   run_loop.Run();
@@ -116,7 +118,7 @@ TYPED_TEST_P(PasswordStoreOriginTest,
 TYPED_TEST_P(PasswordStoreOriginTest,
              RemoveLoginsByURLAndTimeImpl_NonMatchingOrigin) {
   const char origin_url[] = "http://foo.example.com/";
-  std::unique_ptr<autofill::PasswordForm> form =
+  std::unique_ptr<PasswordForm> form =
       FillPasswordFormWithData(CreateTestPasswordFormDataByOrigin(origin_url));
   this->delegate_.store()->AddLogin(*form);
   this->delegate_.FinishAsyncProcessing();
@@ -126,10 +128,10 @@ TYPED_TEST_P(PasswordStoreOriginTest,
 
   const url::Origin other_origin =
       url::Origin::Create(GURL("http://bar.example.com/"));
-  base::Callback<bool(const GURL&)> filter =
-      base::Bind(&matchesOrigin, other_origin);
+  base::RepeatingCallback<bool(const GURL&)> filter =
+      base::BindRepeating(&matchesOrigin, other_origin);
   base::RunLoop run_loop;
-  EXPECT_CALL(observer, OnLoginsChanged(_)).Times(0);
+  EXPECT_CALL(observer, OnLoginsChanged).Times(0);
   this->delegate_.store()->RemoveLoginsByURLAndTime(
       filter, base::Time(), base::Time::Max(), run_loop.QuitClosure());
   run_loop.Run();
@@ -140,7 +142,7 @@ TYPED_TEST_P(PasswordStoreOriginTest,
 TYPED_TEST_P(PasswordStoreOriginTest,
              RemoveLoginsByURLAndTimeImpl_NotWithinTimeInterval) {
   const char origin_url[] = "http://foo.example.com/";
-  std::unique_ptr<autofill::PasswordForm> form =
+  std::unique_ptr<PasswordForm> form =
       FillPasswordFormWithData(CreateTestPasswordFormDataByOrigin(origin_url));
   this->delegate_.store()->AddLogin(*form);
   this->delegate_.FinishAsyncProcessing();
@@ -149,11 +151,12 @@ TYPED_TEST_P(PasswordStoreOriginTest,
   this->delegate_.store()->AddObserver(&observer);
 
   const url::Origin origin = url::Origin::Create((GURL(origin_url)));
-  base::Callback<bool(const GURL&)> filter = base::Bind(&matchesOrigin, origin);
+  base::RepeatingCallback<bool(const GURL&)> filter =
+      base::BindRepeating(&matchesOrigin, origin);
   base::Time time_after_creation_date =
       form->date_created + base::TimeDelta::FromDays(1);
   base::RunLoop run_loop;
-  EXPECT_CALL(observer, OnLoginsChanged(_)).Times(0);
+  EXPECT_CALL(observer, OnLoginsChanged).Times(0);
   this->delegate_.store()->RemoveLoginsByURLAndTime(
       filter, time_after_creation_date, base::Time::Max(),
       run_loop.QuitClosure());

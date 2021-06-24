@@ -6,12 +6,13 @@
 
 #import <Foundation/Foundation.h>
 
-#include "base/mac/scoped_block.h"
 #include "base/strings/sys_string_conversions.h"
+#import "base/test/ios/wait_util.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #import "ios/public/provider/chrome/browser/signin/fake_chrome_identity.h"
 #import "ios/public/provider/chrome/browser/signin/fake_chrome_identity_interaction_manager.h"
+#import "ios/public/provider/chrome/browser/signin/fake_chrome_identity_service_constants.h"
 #include "ios/public/provider/chrome/browser/signin/signin_resources_provider.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -20,6 +21,8 @@
 
 using ::testing::_;
 using ::testing::Invoke;
+using base::test::ios::kWaitForUIElementTimeout;
+using base::test::ios::WaitUntilConditionOrTimeout;
 
 namespace {
 
@@ -29,31 +32,16 @@ UIImage* FakeGetCachedAvatarForIdentity(ChromeIdentity*) {
   return provider ? provider->GetDefaultAvatar() : nil;
 }
 
-void FakeGetAvatarForIdentity(ChromeIdentity* identity,
-                              ios::GetAvatarCallback callback) {
-  // |GetAvatarForIdentity| is normally an asynchronous operation, this is
-  // replicated here by dispatching it.
-  dispatch_async(dispatch_get_main_queue(), ^{
-    callback(FakeGetCachedAvatarForIdentity(identity));
-  });
-}
-
-void FakeGetHostedDomainForIdentity(ChromeIdentity* identity,
-                                    ios::GetHostedDomainCallback callback) {
-  NSString* domain = base::SysUTF8ToNSString(gaia::ExtractDomainName(
+NSString* FakeGetHostedDomainForIdentity(ChromeIdentity* identity) {
+  return base::SysUTF8ToNSString(gaia::ExtractDomainName(
       gaia::CanonicalizeEmail(base::SysNSStringToUTF8(identity.userEmail))));
-
-  // |GetHostedDomainForIdentity| is normally an asynchronous operation , this
-  // is replicated here by dispatching it.
-  dispatch_async(dispatch_get_main_queue(), ^{
-    callback(domain, nil);
-  });
 }
 }
 
 @interface FakeAccountDetailsViewController : UIViewController {
   __weak ChromeIdentity* _identity;
   UIButton* _removeAccountButton;
+  UIButton* _closeAccountDetailsButton;
 }
 @end
 
@@ -71,6 +59,9 @@ void FakeGetHostedDomainForIdentity(ChromeIdentity* identity,
   [_removeAccountButton removeTarget:self
                               action:@selector(didTapRemoveAccount:)
                     forControlEvents:UIControlEventTouchUpInside];
+  [_closeAccountDetailsButton removeTarget:self
+                                    action:@selector(didTapCloseAccount:)
+                          forControlEvents:UIControlEventTouchUpInside];
 }
 
 - (void)viewDidLoad {
@@ -80,21 +71,43 @@ void FakeGetHostedDomainForIdentity(ChromeIdentity* identity,
   self.view.backgroundColor = [UIColor orangeColor];
 
   _removeAccountButton = [UIButton buttonWithType:UIButtonTypeCustom];
-  [_removeAccountButton setTitle:@"Remove account"
-                        forState:UIControlStateNormal];
-  [_removeAccountButton addTarget:self
-                           action:@selector(didTapRemoveAccount:)
-                 forControlEvents:UIControlEventTouchUpInside];
-  [self.view addSubview:_removeAccountButton];
+  [self addButtonToSubviewWithTitle:@"Remove account"
+                             button:_removeAccountButton
+                             action:@selector(didTapRemoveAccount:)];
+
+  _closeAccountDetailsButton = [UIButton buttonWithType:UIButtonTypeCustom];
+  [self addButtonToSubviewWithTitle:@"Close account"
+                             button:_closeAccountDetailsButton
+                             action:@selector(didTapCloseAccount:)];
 }
 
 - (void)viewWillLayoutSubviews {
   [super viewWillLayoutSubviews];
 
   CGRect bounds = self.view.bounds;
-  [_removeAccountButton
-      setCenter:CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds))];
-  [_removeAccountButton sizeToFit];
+  [self sizeButtonToFitWithCenter:CGPointMake(CGRectGetMidX(bounds),
+                                              CGRectGetMinY(bounds))
+                           button:_removeAccountButton];
+  [self sizeButtonToFitWithCenter:CGPointMake(CGRectGetMidX(bounds),
+                                              CGRectGetMidY(bounds))
+                           button:_closeAccountDetailsButton];
+}
+
+#pragma mark - Private
+
+- (void)addButtonToSubviewWithTitle:(NSString*)title
+                             button:(UIButton*)button
+                             action:(SEL)action {
+  [button setTitle:title forState:UIControlStateNormal];
+  [button addTarget:self
+                action:action
+      forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:button];
+}
+
+- (void)sizeButtonToFitWithCenter:(CGPoint)center button:(UIButton*)button {
+  [button setCenter:center];
+  [button sizeToFit];
 }
 
 - (void)didTapRemoveAccount:(id)sender {
@@ -104,14 +117,20 @@ void FakeGetHostedDomainForIdentity(ChromeIdentity* identity,
       });
 }
 
+- (void)didTapCloseAccount:(id)sender {
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
 @end
 
 namespace ios {
-NSString* const kIdentityEmailFormat = @"%@@foo.com";
+NSString* const kIdentityEmailFormat = @"%@@gmail.com";
 NSString* const kIdentityGaiaIDFormat = @"%@ID";
 
 FakeChromeIdentityService::FakeChromeIdentityService()
-    : identities_([[NSMutableArray alloc] init]), _fakeMDMError(false) {}
+    : identities_([[NSMutableArray alloc] init]),
+      _fakeMDMError(false),
+      _pendingCallback(0) {}
 
 FakeChromeIdentityService::~FakeChromeIdentityService() {}
 
@@ -122,34 +141,51 @@ FakeChromeIdentityService::GetInstanceFromChromeProvider() {
       ios::GetChromeBrowserProvider()->GetChromeIdentityService());
 }
 
-UINavigationController*
-FakeChromeIdentityService::CreateAccountDetailsController(
+DismissASMViewControllerBlock
+FakeChromeIdentityService::PresentAccountDetailsController(
     ChromeIdentity* identity,
-    id<ChromeIdentityBrowserOpener> browser_opener) {
+    UIViewController* viewController,
+    BOOL animated) {
   UIViewController* accountDetailsViewController =
       [[FakeAccountDetailsViewController alloc] initWithIdentity:identity];
-  UINavigationController* navigationController = [[UINavigationController alloc]
-      initWithRootViewController:accountDetailsViewController];
-  return navigationController;
+  [viewController presentViewController:accountDetailsViewController
+                               animated:animated
+                             completion:nil];
+  return ^(BOOL animated) {
+    [accountDetailsViewController dismissViewControllerAnimated:animated
+                                                     completion:nil];
+  };
 }
 
 ChromeIdentityInteractionManager*
 FakeChromeIdentityService::CreateChromeIdentityInteractionManager(
-    ios::ChromeBrowserState* browser_state,
     id<ChromeIdentityInteractionManagerDelegate> delegate) const {
-  ChromeIdentityInteractionManager* manager =
+  return CreateFakeChromeIdentityInteractionManager(delegate);
+}
+
+FakeChromeIdentityInteractionManager*
+FakeChromeIdentityService::CreateFakeChromeIdentityInteractionManager(
+    id<ChromeIdentityInteractionManagerDelegate> delegate) const {
+  FakeChromeIdentityInteractionManager* manager =
       [[FakeChromeIdentityInteractionManager alloc] init];
   manager.delegate = delegate;
   return manager;
 }
 
-bool FakeChromeIdentityService::IsValidIdentity(
-    ChromeIdentity* identity) const {
+void FakeChromeIdentityService::IterateOverIdentities(
+    IdentityIteratorCallback callback) {
+  for (ChromeIdentity* identity in identities_) {
+    if (callback.Run(identity) == kIdentityIteratorInterruptIteration)
+      return;
+  }
+}
+
+bool FakeChromeIdentityService::IsValidIdentity(ChromeIdentity* identity) {
   return [identities_ indexOfObject:identity] != NSNotFound;
 }
 
 ChromeIdentity* FakeChromeIdentityService::GetIdentityWithGaiaID(
-    const std::string& gaia_id) const {
+    const std::string& gaia_id) {
   NSString* gaiaID = base::SysUTF8ToNSString(gaia_id);
   NSUInteger index =
       [identities_ indexOfObjectPassingTest:^BOOL(ChromeIdentity* obj,
@@ -162,15 +198,12 @@ ChromeIdentity* FakeChromeIdentityService::GetIdentityWithGaiaID(
   return [identities_ objectAtIndex:index];
 }
 
-bool FakeChromeIdentityService::HasIdentities() const {
+bool FakeChromeIdentityService::HasIdentities() {
   return [identities_ count] > 0;
 }
 
-NSArray* FakeChromeIdentityService::GetAllIdentities() const {
-  return identities_;
-}
-
-NSArray* FakeChromeIdentityService::GetAllIdentitiesSortedForDisplay() const {
+NSArray* FakeChromeIdentityService::GetAllIdentities(
+    PrefService* pref_service) {
   return identities_;
 }
 
@@ -178,12 +211,14 @@ void FakeChromeIdentityService::ForgetIdentity(
     ChromeIdentity* identity,
     ForgetIdentityCallback callback) {
   [identities_ removeObject:identity];
-  FireIdentityListChanged();
+  FireIdentityListChanged(/*keychain_reload=*/false);
   if (callback) {
     // Forgetting an identity is normally an asynchronous operation (that
     // require some network calls), this is replicated here by dispatching
     // it.
+    ++_pendingCallback;
     dispatch_async(dispatch_get_main_queue(), ^{
+      --_pendingCallback;
       callback(nil);
     });
   }
@@ -208,7 +243,9 @@ void FakeChromeIdentityService::GetAccessToken(
   }
   // |GetAccessToken| is normally an asynchronous operation (that requires some
   // network calls), this is replicated here by dispatching it.
+  ++_pendingCallback;
   dispatch_async(dispatch_get_main_queue(), ^{
+    --_pendingCallback;
     if (user_info)
       FireAccessTokenRefreshFailed(identity, user_info);
     // Token and expiration date. It should be larger than typical test
@@ -230,16 +267,83 @@ UIImage* FakeChromeIdentityService::GetCachedAvatarForIdentity(
 void FakeChromeIdentityService::GetAvatarForIdentity(
     ChromeIdentity* identity,
     GetAvatarCallback callback) {
-  FakeGetAvatarForIdentity(identity, callback);
+  if (!callback) {
+    return;
+  }
+  // |GetAvatarForIdentity| is normally an asynchronous operation, this is
+  // replicated here by dispatching it.
+  ++_pendingCallback;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    --_pendingCallback;
+    callback(FakeGetCachedAvatarForIdentity(identity));
+  });
 }
 
 void FakeChromeIdentityService::GetHostedDomainForIdentity(
     ChromeIdentity* identity,
     GetHostedDomainCallback callback) {
-  FakeGetHostedDomainForIdentity(identity, callback);
+  NSString* domain = FakeGetHostedDomainForIdentity(identity);
+  // |GetHostedDomainForIdentity| is normally an asynchronous operation , this
+  // is replicated here by dispatching it.
+  ++_pendingCallback;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    --_pendingCallback;
+    callback(domain, nil);
+  });
+}
+
+NSString* FakeChromeIdentityService::GetCachedHostedDomainForIdentity(
+    ChromeIdentity* identity) {
+  NSString* domain =
+      ChromeIdentityService::GetCachedHostedDomainForIdentity(identity);
+  if (domain) {
+    return domain;
+  }
+  return FakeGetHostedDomainForIdentity(identity);
+}
+
+bool FakeChromeIdentityService::CanOfferExtendedSyncPromos(
+    ChromeIdentity* identity) {
+  if (![identities_ containsObject:identity]) {
+    return false;
+  }
+  return ![identity.userEmail hasSuffix:kMinorModeIdentityEmailSuffix];
+}
+
+void FakeChromeIdentityService::SimulateForgetIdentityFromOtherApp(
+    ChromeIdentity* identity) {
+  [identities_ removeObject:identity];
+  FireChromeIdentityReload();
+}
+
+void FakeChromeIdentityService::FireChromeIdentityReload() {
+  FireIdentityListChanged(/*keychain_reload=*/true);
 }
 
 void FakeChromeIdentityService::SetUpForIntegrationTests() {}
+
+void FakeChromeIdentityService::AddManagedIdentities(NSArray* identitiesNames) {
+  for (NSString* name in identitiesNames) {
+    NSString* email =
+        [NSString stringWithFormat:@"%@%@", name, kManagedIdentityEmailSuffix];
+    NSString* gaiaID = [NSString stringWithFormat:kIdentityGaiaIDFormat, name];
+    [identities_ addObject:[FakeChromeIdentity identityWithEmail:email
+                                                          gaiaID:gaiaID
+                                                            name:name]];
+  }
+}
+
+void FakeChromeIdentityService::AddMinorModeIdentities(
+    NSArray* identitiesNames) {
+  for (NSString* name in identitiesNames) {
+    NSString* email = [NSString
+        stringWithFormat:@"%@%@", name, kMinorModeIdentityEmailSuffix];
+    NSString* gaiaID = [NSString stringWithFormat:kIdentityGaiaIDFormat, name];
+    [identities_ addObject:[FakeChromeIdentity identityWithEmail:email
+                                                          gaiaID:gaiaID
+                                                            name:name]];
+  }
+}
 
 void FakeChromeIdentityService::AddIdentities(NSArray* identitiesNames) {
   for (NSString* name in identitiesNames) {
@@ -255,18 +359,23 @@ void FakeChromeIdentityService::AddIdentity(ChromeIdentity* identity) {
   if (![identities_ containsObject:identity]) {
     [identities_ addObject:identity];
   }
-  FireIdentityListChanged();
-}
-
-void FakeChromeIdentityService::RemoveIdentity(ChromeIdentity* identity) {
-  if ([identities_ indexOfObject:identity] != NSNotFound) {
-    [identities_ removeObject:identity];
-    FireIdentityListChanged();
-  }
+  FireIdentityListChanged(/*keychain_reload=*/false);
 }
 
 void FakeChromeIdentityService::SetFakeMDMError(bool fakeMDMError) {
   _fakeMDMError = fakeMDMError;
+}
+
+bool FakeChromeIdentityService::WaitForServiceCallbacksToComplete() {
+  ConditionBlock condition = ^() {
+    return _pendingCallback == 0;
+  };
+  return WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, condition);
+}
+
+void FakeChromeIdentityService::TriggerIdentityUpdateNotification(
+    ChromeIdentity* identity) {
+  FireProfileDidUpdate(identity);
 }
 
 }  // namespace ios

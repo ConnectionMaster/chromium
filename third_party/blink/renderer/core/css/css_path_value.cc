@@ -8,24 +8,11 @@
 #include "third_party/blink/renderer/core/style/style_path.h"
 #include "third_party/blink/renderer/core/svg/svg_path_utilities.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
 
 namespace cssvalue {
-
-CSSPathValue* CSSPathValue::Create(
-    scoped_refptr<StylePath> style_path,
-    PathSerializationFormat serialization_format) {
-  return MakeGarbageCollected<CSSPathValue>(std::move(style_path),
-                                            serialization_format);
-}
-
-CSSPathValue* CSSPathValue::Create(
-    std::unique_ptr<SVGPathByteStream> path_byte_stream,
-    PathSerializationFormat serialization_format) {
-  return CSSPathValue::Create(StylePath::Create(std::move(path_byte_stream)),
-                              serialization_format);
-}
 
 CSSPathValue::CSSPathValue(scoped_refptr<StylePath> style_path,
                            PathSerializationFormat serialization_format)
@@ -35,6 +22,12 @@ CSSPathValue::CSSPathValue(scoped_refptr<StylePath> style_path,
   DCHECK(style_path_);
 }
 
+CSSPathValue::CSSPathValue(std::unique_ptr<SVGPathByteStream> path_byte_stream,
+                           WindRule wind_rule,
+                           PathSerializationFormat serialization_format)
+    : CSSPathValue(StylePath::Create(std::move(path_byte_stream), wind_rule),
+                   serialization_format) {}
+
 namespace {
 
 CSSPathValue* CreatePathValue() {
@@ -43,26 +36,32 @@ CSSPathValue* CreatePathValue() {
   // Need to be registered as LSan ignored, as it will be reachable and
   // separately referred to by emptyPathValue() callers.
   LEAK_SANITIZER_IGNORE_OBJECT(path_byte_stream.get());
-  return CSSPathValue::Create(std::move(path_byte_stream));
+  return MakeGarbageCollected<CSSPathValue>(std::move(path_byte_stream));
 }
 
 }  // namespace
 
-CSSPathValue& CSSPathValue::EmptyPathValue() {
+const CSSPathValue& CSSPathValue::EmptyPathValue() {
   DEFINE_STATIC_LOCAL(Persistent<CSSPathValue>, empty, (CreatePathValue()));
   return *empty;
 }
 
 String CSSPathValue::CustomCSSText() const {
-  return "path(\"" +
-         BuildStringFromByteStream(ByteStream(), serialization_format_) + "\")";
+  StringBuilder result;
+  result.Append("path(");
+  if (style_path_->GetWindRule() == RULE_EVENODD)
+    result.Append("evenodd, ");
+  result.Append("\"");
+  result.Append(BuildStringFromByteStream(ByteStream(), serialization_format_));
+  result.Append("\")");
+  return result.ToString();
 }
 
 bool CSSPathValue::Equals(const CSSPathValue& other) const {
   return ByteStream() == other.ByteStream();
 }
 
-void CSSPathValue::TraceAfterDispatch(blink::Visitor* visitor) {
+void CSSPathValue::TraceAfterDispatch(blink::Visitor* visitor) const {
   CSSValue::TraceAfterDispatch(visitor);
 }
 

@@ -5,7 +5,6 @@
 #ifndef EXTENSIONS_RENDERER_TEST_EXTENSIONS_RENDERER_CLIENT_H_
 #define EXTENSIONS_RENDERER_TEST_EXTENSIONS_RENDERER_CLIENT_H_
 
-#include "base/macros.h"
 #include "extensions/renderer/extensions_renderer_client.h"
 
 namespace extensions {
@@ -13,15 +12,18 @@ namespace extensions {
 class TestExtensionsRendererClient : public ExtensionsRendererClient {
  public:
   TestExtensionsRendererClient();
+  TestExtensionsRendererClient(const TestExtensionsRendererClient&) = delete;
+  TestExtensionsRendererClient& operator=(const TestExtensionsRendererClient&) =
+      delete;
   ~TestExtensionsRendererClient() override;
 
   // ExtensionsRendererClient implementation.
   bool IsIncognitoProcess() const override;
   int GetLowestIsolatedWorldId() const override;
   Dispatcher* GetDispatcher() override;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TestExtensionsRendererClient);
+  bool ExtensionAPIEnabledForServiceWorkerScript(
+      const GURL& scope,
+      const GURL& script_url) const override;
 };
 
 }  // namespace extensions

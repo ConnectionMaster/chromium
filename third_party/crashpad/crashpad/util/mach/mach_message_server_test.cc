@@ -21,9 +21,9 @@
 
 #include <set>
 
+#include "base/cxx17_backports.h"
 #include "base/mac/scoped_mach_port.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "gtest/gtest.h"
 #include "test/mac/mach_errors.h"
 #include "test/mac/mach_multiprocess.h"
@@ -309,7 +309,7 @@ class TestMachMessageServer : public MachMessageServer::Interface,
   // ensure that whatever buffer was allocated to receive a RequestMessage is
   // not large enough to receive a LargeRequestMessage.
   struct LargeRequestMessage : public RequestMessage {
-    uint8_t data[4 * PAGE_SIZE];
+    uint8_t data[4 * PAGE_MAX_SIZE];
   };
 
   struct ReplyMessage : public mig_reply_error_t {

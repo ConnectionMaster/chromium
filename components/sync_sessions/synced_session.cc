@@ -246,11 +246,6 @@ sync_pb::TabNavigation SessionNavigationToSyncData(
       static_cast<sync_pb::TabNavigation_PasswordState>(
           navigation.password_state()));
 
-  for (const std::string& content_pack_category :
-       navigation.content_pack_categories()) {
-    sync_data.add_content_pack_categories(content_pack_category);
-  }
-
   // Copy all redirect chain entries except the last URL (which should match
   // the virtual_url).
   const std::vector<GURL>& redirect_chain = navigation.redirect_chain();
@@ -268,7 +263,7 @@ sync_pb::TabNavigation SessionNavigationToSyncData(
     }
   }
 
-  const base::Optional<SerializedNavigationEntry::ReplacedNavigationEntryData>&
+  const absl::optional<SerializedNavigationEntry::ReplacedNavigationEntryData>&
       replaced_entry_data = navigation.replaced_entry_data();
   if (replaced_entry_data.has_value()) {
     sync_pb::ReplacedNavigation* replaced_navigation =
@@ -296,7 +291,7 @@ void SetSessionTabFromSyncData(const sync_pb::SessionTab& sync_data,
   tab->current_navigation_index = sync_data.current_navigation_index();
   tab->pinned = sync_data.pinned();
   tab->extension_app_id = sync_data.extension_app_id();
-  tab->user_agent_override.clear();
+  tab->user_agent_override = sessions::SerializedUserAgentOverride();
   tab->timestamp = timestamp;
   tab->navigations.clear();
   for (int i = 0; i < sync_data.navigation_size(); ++i) {
@@ -306,7 +301,9 @@ void SetSessionTabFromSyncData(const sync_pb::SessionTab& sync_data,
   tab->session_storage_persistent_id.clear();
 }
 
-sync_pb::SessionTab SessionTabToSyncData(const sessions::SessionTab& tab) {
+sync_pb::SessionTab SessionTabToSyncData(
+    const sessions::SessionTab& tab,
+    absl::optional<sync_pb::SessionWindow::BrowserType> browser_type) {
   sync_pb::SessionTab sync_data;
   sync_data.set_tab_id(tab.tab_id.id());
   sync_data.set_window_id(tab.window_id.id());
@@ -316,6 +313,9 @@ sync_pb::SessionTab SessionTabToSyncData(const sessions::SessionTab& tab) {
   sync_data.set_extension_app_id(tab.extension_app_id);
   for (const SerializedNavigationEntry& navigation : tab.navigations) {
     SessionNavigationToSyncData(navigation).Swap(sync_data.add_navigation());
+  }
+  if (browser_type.has_value()) {
+    sync_data.set_browser_type(*browser_type);
   }
   return sync_data;
 }

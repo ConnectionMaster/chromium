@@ -2,27 +2,36 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <string>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/first_run/first_run_internal.h"
 #include "chrome/browser/importer/importer_list.h"
+#include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/prefs/chrome_pref_service_factory.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
@@ -35,6 +44,7 @@
 #include "components/variations/variations_switches.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -50,11 +60,11 @@ IN_PROC_BROWSER_TEST_F(FirstRunBrowserTest, SetShouldShowWelcomePage) {
   EXPECT_FALSE(ShouldShowWelcomePage());
 }
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH) && !BUILDFLAG(IS_CHROMEOS_LACROS)
 namespace {
 
 // A generic test class to be subclassed by test classes testing specific
-// master_preferences. All subclasses must call SetMasterPreferencesForTest()
+// master_preferences. All subclasses must call SetInitialPreferencesForTest()
 // from their SetUp() method before deferring the remainder of Setup() to this
 // class.
 class FirstRunMasterPrefsBrowserTestBase : public InProcessBrowserTest {
@@ -63,21 +73,20 @@ class FirstRunMasterPrefsBrowserTestBase : public InProcessBrowserTest {
 
  protected:
   void SetUp() override {
-    // All users of this test class need to call SetMasterPreferencesForTest()
+    // All users of this test class need to call SetInitialPreferencesForTest()
     // before this class' SetUp() is invoked.
     ASSERT_TRUE(text_.get());
 
     ASSERT_TRUE(base::CreateTemporaryFile(&prefs_file_));
-    EXPECT_EQ(static_cast<int>(text_->size()),
-              base::WriteFile(prefs_file_, text_->c_str(), text_->size()));
-    SetMasterPrefsPathForTesting(prefs_file_);
+    EXPECT_TRUE(base::WriteFile(prefs_file_, *text_));
+    SetInitialPrefsPathForTesting(prefs_file_);
 
     // This invokes BrowserMain, and does the import, so must be done last.
     InProcessBrowserTest::SetUp();
   }
 
   void TearDown() override {
-    EXPECT_TRUE(base::DeleteFile(prefs_file_, false));
+    EXPECT_TRUE(base::DeleteFile(prefs_file_));
     InProcessBrowserTest::TearDown();
   }
 
@@ -88,7 +97,7 @@ class FirstRunMasterPrefsBrowserTestBase : public InProcessBrowserTest {
     extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
   }
 
-#if defined(OS_MACOSX) || defined(OS_LINUX)
+#if defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS)
   void SetUpInProcessBrowserTestFixture() override {
     InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
     // Suppress first run dialog since it blocks test progress.
@@ -96,8 +105,8 @@ class FirstRunMasterPrefsBrowserTestBase : public InProcessBrowserTest {
   }
 #endif
 
-  void SetMasterPreferencesForTest(const char text[]) {
-    text_.reset(new std::string(text));
+  void SetInitialPreferencesForTest(const char text[]) {
+    text_ = std::make_unique<std::string>(text);
   }
 
  private:
@@ -115,7 +124,7 @@ class FirstRunMasterPrefsBrowserTestT
 
  protected:
   void SetUp() override {
-    SetMasterPreferencesForTest(Text);
+    SetInitialPreferencesForTest(Text);
     FirstRunMasterPrefsBrowserTestBase::SetUp();
   }
 
@@ -261,10 +270,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunMasterPrefsWithTrackedPreferences,
   // true.
   const base::Value* default_homepage_is_ntp_value =
       user_prefs->GetDefaultPrefValue(prefs::kHomePageIsNewTabPage);
-  bool default_homepage_is_ntp = false;
-  EXPECT_TRUE(
-      default_homepage_is_ntp_value->GetAsBoolean(&default_homepage_is_ntp));
-  EXPECT_TRUE(default_homepage_is_ntp);
+  ASSERT_TRUE(default_homepage_is_ntp_value->is_bool());
+  EXPECT_TRUE(default_homepage_is_ntp_value->GetBool());
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -278,18 +285,18 @@ INSTANTIATE_TEST_SUITE_P(
             kSettingsEnforcementGroupEnforceAlwaysWithExtensionsAndDSE));
 
 #define COMPRESSED_SEED_TEST_VALUE                                             \
-  "H4sICMNRYFcAA3NlZWRfYmluAOPSMEwxsjQxM0lLMk4xt0hLMzQ1NUs1TTI1NUw2MzExT05KNj" \
-  "dJNU1LMRDay8glH+rrqBual5mWX5SbWVKpG1KUmZija2igG5BalJyaVyLRMGfSUlYLRif2lNS0" \
-  "xNKcEi9uLhhTgNGLh4sjvSi/"                                                   \
-  "tCDewBCFZ4TCM0bhmaDwTFF4Zig8cxSeBQrPUoARAEVeJPrqAAAA"
+  "H4sIAAAAAAAA/+LSME4xsTAySjYzSDQ1S01KSk1KMUg1SjI1Tk4yMjI2NDMzTzEySjRPMxA6xs" \
+  "glH+rrqBual5mWX5SbWVKpG1KUmZija2igG5BalJyaV2LB6MXDxZFelF9aEG9gKIDMM0LhGaPw" \
+  "TFB4pig8MxSeOQrPAoVnKcDoxc3FnpKalliaUyLAGCSiwaDBqMGkwazBosGqwZbR8LppA38CIy" \
+  "AAAP//KpzsDPMAAAA="
 #define SEED_SIGNATURE_TEST_VALUE                                              \
-  "MEQCIDD1IVxjzWYncun+9IGzqYjZvqxxujQEayJULTlbTGA/AiAr0oVmEgVUQZBYq5VLOSvy96" \
-  "JkMYgzTkHPwbv7K/CmgA=="
+  "MEUCIQCo4D8Ad0pMlFoLT4mMrv7/ZK7PqyEmJlW5jciua6mluAIgQQKcj352r/sjq8b98W+jRk" \
+  "dwyDZn3ocgV01juWKx3u0="
 
 constexpr char kCompressedSeedTestValue[] = COMPRESSED_SEED_TEST_VALUE;
 constexpr char kSignatureValue[] = SEED_SIGNATURE_TEST_VALUE;
 
-extern const char kWithVariationsPrefs[] =
+const char kWithVariationsPrefs[] =
     "{\n"
     "  \"variations_compressed_seed\": \"" COMPRESSED_SEED_TEST_VALUE
     "\",\n"
@@ -297,26 +304,66 @@ extern const char kWithVariationsPrefs[] =
     "\"\n"
     "}\n";
 
+#undef COMPRESSED_SEED_TEST_VALUE
+#undef SEED_SIGNATURE_TEST_VALUE
+
+// Note: This test is parametrized on metrics consent state, since that affects
+// field trial randomization.
 class FirstRunMasterPrefsVariationsSeedTest
-    : public FirstRunMasterPrefsBrowserTestT<kWithVariationsPrefs> {
+    : public FirstRunMasterPrefsBrowserTestT<kWithVariationsPrefs>,
+      public testing::WithParamInterface<bool> {
  public:
-  FirstRunMasterPrefsVariationsSeedTest() {
+  FirstRunMasterPrefsVariationsSeedTest() : metrics_consent_(GetParam()) {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         variations::switches::kDisableFieldTrialTestingConfig);
   }
   ~FirstRunMasterPrefsVariationsSeedTest() override = default;
 
+  void SetUp() override {
+    // Make metrics reporting work same as in Chrome branded builds, for test
+    // consistency between Chromium and Chrome builds.
+    ChromeMetricsServiceAccessor::SetForceIsMetricsReportingEnabledPrefLookup(
+        true);
+    // Based on GetParam(), either enable or disable metrics reporting.
+    ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(
+        &metrics_consent_);
+    FirstRunMasterPrefsBrowserTestT::SetUp();
+  }
+
+  // Writes the trial group to the temporary file.
+  void WriteTrialGroupToTestFile(const std::string& trial_group) {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    EXPECT_TRUE(base::WriteFile(GetTestFilePath(), trial_group));
+  }
+
+  // Reads the trial group from the temporary file.
+  std::string ReadTrialGroupFromTestFile() {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    char data[256];
+    int bytes_read = base::ReadFile(GetTestFilePath(), data, sizeof(data));
+    EXPECT_NE(-1, bytes_read);
+    return std::string(data, bytes_read);
+  }
+
  protected:
   base::HistogramTester histogram_tester_;
 
  private:
+  const bool metrics_consent_;
+
+  // Returns a file path for persisting a field trial's state. The path is
+  // under the user data dir, so should only persist between pairs of PRE_Foo
+  // and Foo tests.
+  base::FilePath GetTestFilePath() {
+    base::FilePath user_data_dir;
+    EXPECT_TRUE(base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir));
+    return user_data_dir.AppendASCII("FirstRunMasterPrefsVariationsSeedTest");
+  }
+
   DISALLOW_COPY_AND_ASSIGN(FirstRunMasterPrefsVariationsSeedTest);
 };
 
-#undef COMPRESSED_SEED_TEST_VALUE
-#undef SEED_SIGNATURE_TEST_VALUE
-
-IN_PROC_BROWSER_TEST_F(FirstRunMasterPrefsVariationsSeedTest, Test) {
+IN_PROC_BROWSER_TEST_P(FirstRunMasterPrefsVariationsSeedTest, Test) {
   // Tests variation migration from master_preferences to local_state.
   EXPECT_EQ(kCompressedSeedTestValue,
             g_browser_process->local_state()->GetString(
@@ -332,6 +379,47 @@ IN_PROC_BROWSER_TEST_F(FirstRunMasterPrefsVariationsSeedTest, Test) {
       variations::VerifySignatureResult::VALID_SIGNATURE, 1);
 }
 
-#endif  // !defined(OS_CHROMEOS)
+// The following tests are only enabled on Windows, since it is the only
+// platform where master prefs is used to deliver first run variations. The
+// tests do not pass on other platforms due to the provisional client id logic
+// in metrics_state_manager.cc. See the comment there for details.
+
+#if defined(OS_WIN)
+
+// The trial and groups encoded in the above seed.
+constexpr char kTrialName[] = "UMA-Uniformity-Trial-10-Percent";
+const char* kTrialGroups[] = {"default",  "group_01", "group_02", "group_03",
+                              "group_04", "group_05", "group_06", "group_07",
+                              "group_08", "group_09"};
+
+IN_PROC_BROWSER_TEST_P(FirstRunMasterPrefsVariationsSeedTest, PRE_SecondRun) {
+  // Check that the trial from the seed exists and is in one of the expected
+  // states. Persist the state so that we can verify its randomization persists
+  // in FirstRunMasterPrefsVariationsSeedTest.SecondRun.
+  const std::string group_name = base::FieldTrialList::FindFullName(kTrialName);
+  ASSERT_TRUE(base::Contains(kTrialGroups, group_name)) << group_name;
+  // Ensure trial is active (not disabled).
+  ASSERT_TRUE(base::FieldTrialList::IsTrialActive(kTrialName));
+  WriteTrialGroupToTestFile(group_name);
+}
+
+IN_PROC_BROWSER_TEST_P(FirstRunMasterPrefsVariationsSeedTest, SecondRun) {
+  // This test runs after PRE_SecondRun and verifies that the trial state on
+  // the second run matches what was seen in the PRE_ test.
+  const std::string group_name = base::FieldTrialList::FindFullName(kTrialName);
+  ASSERT_TRUE(base::Contains(kTrialGroups, group_name)) << group_name;
+  // Ensure trial is active (not disabled).
+  ASSERT_TRUE(base::FieldTrialList::IsTrialActive(kTrialName));
+  // Read the trial group name that was saved by PRE_ForceTrials from the
+  // corresponding test file.
+  EXPECT_EQ(group_name, ReadTrialGroupFromTestFile());
+}
+#endif  // defined(OS_WIN)
+
+INSTANTIATE_TEST_SUITE_P(FirstRunMasterPrefsVariationsSeedTests,
+                         FirstRunMasterPrefsVariationsSeedTest,
+                         testing::Bool());
+
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH) && !BUILDFLAG(IS_CHROMEOS_LACROS)
 
 }  // namespace first_run

@@ -8,20 +8,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/memory/shared_memory.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "build/build_config.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/generic_shared_memory_id.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/gfx_export.h"
+#include "ui/gfx/hdr_metadata.h"
 
-#if defined(USE_OZONE) || defined(OS_LINUX)
+#if defined(USE_OZONE) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 #include "ui/gfx/native_pixmap_handle.h"
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
 #include "ui/gfx/mac/io_surface.h"
 #elif defined(OS_WIN)
-#include "ipc/ipc_platform_file.h"  // nogncheck
+#include "base/win/scoped_handle.h"
 #elif defined(OS_ANDROID)
 #include "base/android/scoped_hardware_buffer_handle.h"
 #endif
@@ -56,22 +56,26 @@ using GpuMemoryBufferId = GenericSharedMemoryId;
 // time and it corresponds to |type|.
 struct GFX_EXPORT GpuMemoryBufferHandle {
   GpuMemoryBufferHandle();
+#if defined(OS_ANDROID)
+  explicit GpuMemoryBufferHandle(
+      base::android::ScopedHardwareBufferHandle handle);
+#endif
   GpuMemoryBufferHandle(GpuMemoryBufferHandle&& other);
   GpuMemoryBufferHandle& operator=(GpuMemoryBufferHandle&& other);
   ~GpuMemoryBufferHandle();
+  GpuMemoryBufferHandle Clone() const;
   bool is_null() const { return type == EMPTY_BUFFER; }
-  GpuMemoryBufferType type;
-  GpuMemoryBufferId id;
+  GpuMemoryBufferType type = GpuMemoryBufferType::EMPTY_BUFFER;
+  GpuMemoryBufferId id{0};
   base::UnsafeSharedMemoryRegion region;
-  uint32_t offset;
-  int32_t stride;
-#if defined(OS_LINUX) || defined(OS_FUCHSIA)
+  uint32_t offset = 0;
+  int32_t stride = 0;
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_FUCHSIA)
   NativePixmapHandle native_pixmap_handle;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-  ScopedRefCountedIOSurfaceMachPort mach_port;
+#elif defined(OS_MAC)
+  ScopedIOSurface io_surface;
 #elif defined(OS_WIN)
-  // TODO(crbug.com/863011): convert this to a scoped handle.
-  IPC::PlatformFileForTransit dxgi_handle;
+  base::win::ScopedHandle dxgi_handle;
 #elif defined(OS_ANDROID)
   base::android::ScopedHardwareBufferHandle android_hardware_buffer;
 #endif
@@ -98,11 +102,14 @@ class GFX_EXPORT GpuMemoryBuffer {
   // after this has been called.
   virtual void Unmap() = 0;
 
-  // Returns the size for the buffer.
+  // Returns the size in pixels of the first plane of the buffer.
   virtual Size GetSize() const = 0;
 
   // Returns the format for the buffer.
   virtual BufferFormat GetFormat() const = 0;
+
+  // Returns the size in pixels of the specified plane.
+  Size GetSizeOfPlane(gfx::BufferPlane plane) const;
 
   // Fills the stride in bytes for each plane of the buffer. The stride of
   // plane K is stored at index K-1 of the |stride| array.
@@ -110,7 +117,11 @@ class GFX_EXPORT GpuMemoryBuffer {
 
   // Set the color space in which this buffer should be interpreted when used
   // as an overlay. Note that this will not impact texturing from the buffer.
-  virtual void SetColorSpace(const gfx::ColorSpace& color_space);
+  virtual void SetColorSpace(const ColorSpace& color_space);
+
+  // Set the HDR metadata for use when this buffer is used as an overlay. Note
+  // that this will not impact texturing from the buffer.
+  virtual void SetHDRMetadata(const HDRMetadata& hdr_metadata);
 
   // Returns a unique identifier associated with buffer.
   virtual GpuMemoryBufferId GetId() const = 0;

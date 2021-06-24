@@ -16,6 +16,7 @@
 #include "base/bind.h"
 #include "base/sequenced_task_runner.h"
 #include "base/task/post_task.h"
+#include "chrome/android/chrome_jni_headers/OfflinePageEvaluationBridge_jni.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/offline_pages/android/background_scheduler_bridge.h"
 #include "chrome/browser/offline_pages/android/evaluation/evaluation_test_scheduler.h"
@@ -36,7 +37,6 @@
 #include "components/offline_pages/core/offline_page_item.h"
 #include "components/offline_pages/core/offline_page_model.h"
 #include "content/public/browser/browser_context.h"
-#include "jni/OfflinePageEvaluationBridge_jni.h"
 
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF16ToJavaString;
@@ -140,7 +140,7 @@ std::unique_ptr<KeyedService> GetTestingRequestCoordinator(
     std::unique_ptr<OfflinerPolicy> policy,
     std::unique_ptr<Offliner> offliner) {
   scoped_refptr<base::SequencedTaskRunner> background_task_runner =
-      base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()});
+      base::CreateSequencedTaskRunner({base::MayBlock()});
   Profile* profile = Profile::FromBrowserContext(context);
   base::FilePath queue_store_path =
       profile->GetPath().Append(kTestRequestQueueDirname);
@@ -157,8 +157,9 @@ std::unique_ptr<KeyedService> GetTestingRequestCoordinator(
           std::move(policy), std::move(offliner), std::move(queue),
           std::move(scheduler), network_quality_tracker);
   request_coordinator->SetInternalStartProcessingCallbackForTest(
-      base::Bind(&android::EvaluationTestScheduler::ImmediateScheduleCallback,
-                 base::Unretained(scheduler.get())));
+      base::BindRepeating(
+          &android::EvaluationTestScheduler::ImmediateScheduleCallback,
+          base::Unretained(scheduler.get())));
 
   return std::move(request_coordinator);
 }
@@ -249,7 +250,7 @@ void OfflinePageEvaluationBridge::OfflinePageAdded(
     const OfflinePageItem& added_page) {}
 
 void OfflinePageEvaluationBridge::OfflinePageDeleted(
-    const OfflinePageModel::DeletedPageInfo& page_info) {}
+    const OfflinePageItem& item) {}
 
 // Implement RequestCoordinator::Observer
 void OfflinePageEvaluationBridge::OnAdded(const SavePageRequest& request) {
@@ -311,7 +312,7 @@ void OfflinePageEvaluationBridge::GetAllPages(
   ScopedJavaGlobalRef<jobject> j_callback_ref(j_callback_obj);
 
   offline_page_model_->GetAllPages(
-      base::Bind(&GetAllPagesCallback, j_result_ref, j_callback_ref));
+      base::BindOnce(&GetAllPagesCallback, j_result_ref, j_callback_ref));
 }
 
 bool OfflinePageEvaluationBridge::PushRequestProcessing(
@@ -350,7 +351,7 @@ void OfflinePageEvaluationBridge::GetRequestsInQueue(
     const JavaParamRef<jobject>& j_callback_obj) {
   ScopedJavaGlobalRef<jobject> j_callback_ref(j_callback_obj);
   request_coordinator_->GetAllRequests(
-      base::Bind(&OnGetAllRequestsDone, j_callback_ref));
+      base::BindOnce(&OnGetAllRequestsDone, j_callback_ref));
 }
 
 void OfflinePageEvaluationBridge::RemoveRequestsFromQueue(
@@ -362,7 +363,7 @@ void OfflinePageEvaluationBridge::RemoveRequestsFromQueue(
   base::android::JavaLongArrayToInt64Vector(env, j_request_ids, &request_ids);
   ScopedJavaGlobalRef<jobject> j_callback_ref(j_callback_obj);
   request_coordinator_->RemoveRequests(
-      request_ids, base::Bind(&OnRemoveRequestsDone, j_callback_ref));
+      request_ids, base::BindOnce(&OnRemoveRequestsDone, j_callback_ref));
 }
 
 void OfflinePageEvaluationBridge::NotifyIfDoneLoading() const {

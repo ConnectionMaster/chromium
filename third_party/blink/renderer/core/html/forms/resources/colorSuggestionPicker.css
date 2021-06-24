@@ -24,6 +24,12 @@
  */
 
 body {
+    --color-swatch-border-width: 1px;
+    --color-swatch-padding: 0;
+    --color-swatch-margin: 3px;
+    --color-swatch-height: 18px;
+    --color-swatch-width: 18px;
+    --scrollbar-width: 4px;
     -webkit-user-select: none;
     background-color: white;
     font: -webkit-small-control;
@@ -31,29 +37,29 @@ body {
     overflow: hidden;
 }
 
-#main {
+.color-suggestion-picker-main {
     background-color: white;
-    border: solid 1px #8899aa;
-    box-shadow: inset 2px 2px 2px white,
-        inset -2px -2px 1px rgba(0,0,0,0.1);
-    padding: 6px;
     float: left;
+    border: 1px solid #bfbfbf;
+    box-shadow: none;
+    padding: 8px 8px 4px 8px;
 }
 
 .color-swatch {
     float: left;
-    width: 20px;
-    height: 20px;
-    margin: 1px;
-    padding: 0;
-    border: 1px solid #e0e0e0;
-    border-radius: 0;
+    width: var(--color-swatch-width);
+    height: var(--color-swatch-height);
+    margin: var(--color-swatch-margin);
+    padding: var(--color-swatch-padding);
     box-sizing: content-box;
+    border: var(--color-swatch-border-width) solid rgba(0, 0, 0, 0.19);
+    border-radius: 2px;
 }
 
 .color-swatch:focus {
-    border: 1px solid #000000;
-    outline: none;
+    border: var(--color-swatch-border-width) solid #000000;
+    outline: solid 2px -webkit-focus-ring-color;
+    outline-offset: -2px;
 }
 
 .color-swatch-container {
@@ -63,9 +69,88 @@ body {
     display: flex;
     flex-flow: row wrap;
     align-items: center;
+    margin: 4px;
+}
+
+.color-swatch-container::-webkit-scrollbar {
+    width: var(--scrollbar-width);
+}
+
+.color-swatch-container::-webkit-scrollbar-thumb {
+    background-color: #cecece;
+    border-radius: 2px;
+    height: 47px;
+    margin: 20px;
+    width: 4px;
 }
 
 .other-color {
     width: 100%;
-    margin: 4px 0 0 0;
+    background-color: #ffffff;
+    border-color: transparent;
+    border-radius: 2px;
+    color: #000000;
+    font-size: 12px;
+    line-height: 16px;
+    margin: 0;
+    text-align: left;
+}
+
+.other-color:hover {
+    background-color: #f3f3f3;
+}
+
+@media (forced-colors: active) {
+    .color-suggestion-picker-main {
+        border: 1px solid WindowText;
+    }
+
+    .color-swatch {
+        forced-color-adjust: none;
+        border-color: WindowText;
+    }
+
+    .color-swatch:focus {
+        outline-color: Highlight;
+    }
+
+    .color-swatch-container {
+        forced-color-adjust: none;
+    }
+
+    .color-swatch-container::-webkit-scrollbar-thumb {
+        background-color: WindowText;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    .color-suggestion-picker-main {
+        background: #3B3B3B;
+        color: #FFFFFF;
+        border: 1px solid #858585;
+        box-shadow: none;
+    }
+
+    .color-swatch {
+        border-color: #858585;
+    }
+
+    .color-swatch:focus {
+        outline-color: Highlight;
+    }
+
+    .other-color,
+    .other-color:hover {
+        background: #3B3B3B;
+        color: #FFFFFF;
+        border: 1px solid #858585;
+    }
+
+    .other-color:hover{
+        border: 1px solid #ACACAC;
+    }
+
+    .color-swatch-container::-webkit-scrollbar-thumb {
+        background-color: WindowText;
+    }
 }

@@ -16,13 +16,14 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "media/base/android/media_player_listener.h"
 #include "media/base/media_export.h"
+#include "media/base/simple_watch_timer.h"
 #include "ui/gl/android/scoped_java_surface.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace media {
 
@@ -77,10 +78,12 @@ class MEDIA_EXPORT MediaPlayerBridge {
   // the |manager| when needed.
   MediaPlayerBridge(const GURL& url,
                     const GURL& site_for_cookies,
+                    const url::Origin& top_frame_origin,
                     const std::string& user_agent,
                     bool hide_url_log,
                     Client* client,
-                    bool allow_credentials);
+                    bool allow_credentials,
+                    bool is_hls);
   virtual ~MediaPlayerBridge();
 
   // Initialize this object and extract the metadata from the media.
@@ -88,6 +91,7 @@ class MEDIA_EXPORT MediaPlayerBridge {
 
   // Methods to partially expose the underlying MediaPlayer.
   void SetVideoSurface(gl::ScopedJavaSurface surface);
+  void SetPlaybackRate(double playback_rate);
   void Pause();
   void SeekTo(base::TimeDelta timestamp);
   base::TimeDelta GetCurrentTime();
@@ -149,6 +153,7 @@ class MEDIA_EXPORT MediaPlayerBridge {
 
   // Set the data source for the media player.
   void SetDataSource(const std::string& url);
+  void SetDataSourceInternal();
 
   // Functions that implements media player control.
   void StartInternal();
@@ -167,8 +172,8 @@ class MEDIA_EXPORT MediaPlayerBridge {
 
   // Callback function passed to |resource_getter_|. Called when the auth
   // credentials are retrieved.
-  void OnAuthCredentialsRetrieved(const base::string16& username,
-                                  const base::string16& password);
+  void OnAuthCredentialsRetrieved(const std::u16string& username,
+                                  const std::u16string& password);
 
   // Extract the media metadata from a url, asynchronously.
   // OnMediaMetadataExtracted() will be called when this call finishes.
@@ -188,10 +193,15 @@ class MEDIA_EXPORT MediaPlayerBridge {
   // Sets the underlying MediaPlayer's volume.
   void UpdateVolumeInternal();
 
+  void OnWatchTimerTick();
+
   base::WeakPtr<MediaPlayerBridge> WeakPtrForUIThread();
 
   // Whether the player is prepared for playback.
   bool prepared_;
+
+  // Whether the player completed playback.
+  bool playback_completed_;
 
   // Pending play event while player is preparing.
   bool pending_play_;
@@ -205,8 +215,17 @@ class MEDIA_EXPORT MediaPlayerBridge {
   // Url for playback.
   GURL url_;
 
-  // First party url for cookies.
+  // Used to determine if cookies are accessed in a third-party context.
   GURL site_for_cookies_;
+
+  // Used to check for cookie content settings.
+  url::Origin top_frame_origin_;
+
+  // Waiting to retrieve cookies for |url_|.
+  bool pending_retrieve_cookies_;
+
+  // Whether to prepare after cookies retrieved.
+  bool should_prepare_on_retrieved_cookies_;
 
   // User agent string to be used for media player.
   const std::string user_agent_;
@@ -248,6 +267,10 @@ class MEDIA_EXPORT MediaPlayerBridge {
   // The flag is set if Start() has been called at least once.
   bool has_ever_started_;
 
+  // State for watch time reporting.
+  bool is_hls_;
+  SimpleWatchTimer watch_timer_;
+
   // A reference to the owner of |this|.
   Client* client_;
 
@@ -256,7 +279,7 @@ class MEDIA_EXPORT MediaPlayerBridge {
 
   // Weak pointer passed to |listener_| for callbacks.
   // NOTE: Weak pointers must be invalidated before all other member variables.
-  base::WeakPtrFactory<MediaPlayerBridge> weak_factory_;
+  base::WeakPtrFactory<MediaPlayerBridge> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaPlayerBridge);
 };

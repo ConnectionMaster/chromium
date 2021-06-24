@@ -107,6 +107,9 @@ struct RequestParams {
   // If the request will fetch HTTP error response body and treat them as
   // a successful download.
   bool fetch_error_body;
+
+  // Whether the download is not trustworthy and requires safe browsing checks.
+  bool require_safety_checks;
 };
 
 // The parameters that describe a download request made to the DownloadService.
@@ -139,11 +142,14 @@ struct DownloadParams {
     COUNT,
   };
 
-  using StartCallback = base::Callback<void(const std::string&, StartResult)>;
+  using StartCallback =
+      base::OnceCallback<void(const std::string&, StartResult)>;
 
   DownloadParams();
-  DownloadParams(const DownloadParams& other);
   ~DownloadParams();
+
+  DownloadParams(DownloadParams&& other);
+  DownloadParams& operator=(DownloadParams&& other);
 
   // The feature that is requesting this download.
   DownloadClient client;

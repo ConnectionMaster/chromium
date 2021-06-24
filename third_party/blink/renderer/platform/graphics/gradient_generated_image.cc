@@ -35,6 +35,7 @@ void GradientGeneratedImage::Draw(cc::PaintCanvas* canvas,
                                   const PaintFlags& flags,
                                   const FloatRect& dest_rect,
                                   const FloatRect& src_rect,
+                                  const SkSamplingOptions&,
                                   RespectImageOrientationEnum,
                                   ImageClampingMode,
                                   ImageDecodingMode) {
@@ -43,8 +44,7 @@ void GradientGeneratedImage::Draw(cc::PaintCanvas* canvas,
           SkRect::MakeWH(size_.Width(), size_.Height())))
     return;
 
-  const SkMatrix transform =
-      SkMatrix::MakeRectToRect(src_rect, dest_rect, SkMatrix::kFill_ScaleToFit);
+  const SkMatrix transform = SkMatrix::RectToRect(src_rect, dest_rect);
   SkRect visible_dest_rect;
   transform.mapRect(&visible_dest_rect, visible_src_rect);
 
@@ -54,7 +54,8 @@ void GradientGeneratedImage::Draw(cc::PaintCanvas* canvas,
 }
 
 void GradientGeneratedImage::DrawTile(GraphicsContext& context,
-                                      const FloatRect& src_rect) {
+                                      const FloatRect& src_rect,
+                                      RespectImageOrientationEnum) {
   // TODO(ccameron): This function should not ignore |context|'s color behavior.
   // https://crbug.com/672306
   PaintFlags gradient_flags(context.FillFlags());

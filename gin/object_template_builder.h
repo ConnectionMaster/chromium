@@ -46,6 +46,9 @@ class GIN_EXPORT ObjectTemplateBuilder {
  public:
   explicit ObjectTemplateBuilder(v8::Isolate* isolate);
   ObjectTemplateBuilder(v8::Isolate* isolate, const char* type_name);
+  ObjectTemplateBuilder(v8::Isolate* isolate,
+                        const char* type_name,
+                        v8::Local<v8::ObjectTemplate> tmpl);
   ObjectTemplateBuilder(const ObjectTemplateBuilder& other);
   ~ObjectTemplateBuilder();
 
@@ -58,9 +61,9 @@ class GIN_EXPORT ObjectTemplateBuilder {
   }
 
   // In the following methods, T and U can be function pointer, member function
-  // pointer, base::Callback, or v8::FunctionTemplate. Most clients will want to
-  // use one of the first two options. Also see gin::CreateFunctionTemplate()
-  // for creating raw function templates.
+  // pointer, base::RepeatingCallback, or v8::FunctionTemplate. Most clients
+  // will want to use one of the first two options. Also see
+  // gin::CreateFunctionTemplate() for creating raw function templates.
   template<typename T>
   ObjectTemplateBuilder& SetMethod(const base::StringPiece& name,
                                    const T& callback) {

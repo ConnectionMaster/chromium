@@ -7,6 +7,7 @@
 
 #include "base/macros.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "ui/base/ime/init/input_method_factory.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/mock_input_method.h"
 #include "ui/base/ime/text_input_client.h"
@@ -22,14 +23,14 @@ namespace chromeos {
 // The base class of text input testing.
 class TextInputTestBase : public InProcessBrowserTest {
  public:
-  TextInputTestBase() {}
-  ~TextInputTestBase() override {}
-
-  void SetUpInProcessBrowserTestFixture() override;
+  TextInputTestBase();
+  ~TextInputTestBase() override;
 
   ui::InputMethod* GetInputMethod() const;
 
  private:
+  ui::ScopedTestInputMethodFactory scoped_test_input_method_factory_;
+
   DISALLOW_COPY_AND_ASSIGN(TextInputTestBase);
 };
 
@@ -40,7 +41,7 @@ class TextInputTestHelper : public ui::InputMethodObserver {
   ~TextInputTestHelper() override;
 
   // Returns the latest status notified to ui::InputMethod
-  base::string16 GetSurroundingText() const;
+  std::u16string GetSurroundingText() const;
   gfx::Rect GetCaretRect() const;
   gfx::Rect GetCompositionHead() const;
   gfx::Range GetSelectionRange() const;
@@ -56,7 +57,8 @@ class TextInputTestHelper : public ui::InputMethodObserver {
   void WaitForBlur();
   void WaitForCaretBoundsChanged(const gfx::Rect& expected_caret_rect,
                                  const gfx::Rect& expected_composition_head);
-  void WaitForSurroundingTextChanged(const base::string16& expected_text,
+  void WaitForSurroundingTextChanged(const std::u16string& expected_text);
+  void WaitForSurroundingTextChanged(const std::u16string& expected_text,
                                      const gfx::Range& expected_selection);
   void WaitForPassageOfTimeMillis(const int milliseconds);
 
@@ -88,7 +90,7 @@ class TextInputTestHelper : public ui::InputMethodObserver {
   // Represents waiting type of text input event.
   WaitImeEventType waiting_type_;
 
-  base::string16 surrounding_text_;
+  std::u16string surrounding_text_;
   gfx::Rect caret_rect_;
   gfx::Rect composition_head_;
   gfx::Range selection_range_;

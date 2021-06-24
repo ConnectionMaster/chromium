@@ -4,11 +4,17 @@
 
 #include "cc/trees/property_tree.h"
 
+#include <utility>
+
 #include "cc/input/main_thread_scrolling_reason.h"
+#include "cc/test/fake_impl_task_runner_provider.h"
+#include "cc/test/fake_layer_tree_host_impl.h"
 #include "cc/test/geometry_test_utils.h"
+#include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/clip_node.h"
 #include "cc/trees/draw_property_utils.h"
 #include "cc/trees/effect_node.h"
+#include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/scroll_node.h"
 #include "cc/trees/transform_node.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
@@ -22,7 +28,6 @@ TEST(PropertyTreeTest, ComputeTransformRoot) {
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
   contents_root.local.Translate(2, 2);
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(1);
 
@@ -44,14 +49,13 @@ TEST(PropertyTreeTest, SetNeedsUpdate) {
   PropertyTrees property_trees;
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
 
   EXPECT_FALSE(tree.needs_update());
-  tree.SetRootTransformsAndScales(0.6f, 1.f, gfx::Transform());
+  tree.SetRootScaleAndTransform(0.6f, gfx::Transform());
   EXPECT_TRUE(tree.needs_update());
   tree.set_needs_update(false);
-  tree.SetRootTransformsAndScales(0.6f, 1.f, gfx::Transform());
+  tree.SetRootScaleAndTransform(0.6f, gfx::Transform());
   EXPECT_FALSE(tree.needs_update());
 }
 
@@ -60,13 +64,11 @@ TEST(PropertyTreeTest, ComputeTransformChild) {
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
   contents_root.local.Translate(2, 2);
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(contents_root.id);
 
   TransformNode child;
   child.local.Translate(3, 3);
-  child.source_node_id = 1;
   child.id = tree.Insert(child, contents_root.id);
 
   tree.UpdateTransforms(child.id);
@@ -103,19 +105,16 @@ TEST(PropertyTreeTest, ComputeTransformSibling) {
   PropertyTrees property_trees;
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
-  contents_root.source_node_id = 0;
   contents_root.local.Translate(2, 2);
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(1);
 
   TransformNode child;
   child.local.Translate(3, 3);
-  child.source_node_id = 1;
   child.id = tree.Insert(child, 1);
 
   TransformNode sibling;
   sibling.local.Translate(7, 7);
-  sibling.source_node_id = 1;
   sibling.id = tree.Insert(sibling, 1);
 
   tree.UpdateTransforms(2);
@@ -150,23 +149,19 @@ TEST(PropertyTreeTest, ComputeTransformSiblingSingularAncestor) {
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
   contents_root.local.Translate(2, 2);
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(1);
 
   TransformNode singular;
   singular.local.matrix().set(2, 2, 0.0);
-  singular.source_node_id = 1;
   singular.id = tree.Insert(singular, 1);
 
   TransformNode child;
   child.local.Translate(3, 3);
-  child.source_node_id = 2;
   child.id = tree.Insert(child, 2);
 
   TransformNode sibling;
   sibling.local.Translate(7, 7);
-  sibling.source_node_id = 2;
   sibling.id = tree.Insert(sibling, 2);
 
   tree.UpdateTransforms(2);
@@ -195,11 +190,11 @@ TEST(PropertyTreeTest, TransformsWithFlattening) {
 
   int grand_parent = tree.Insert(TransformNode(), 0);
   int effect_grand_parent = effect_tree.Insert(EffectNode(), 0);
-  effect_tree.Node(effect_grand_parent)->has_render_surface = true;
+  effect_tree.Node(effect_grand_parent)->render_surface_reason =
+      RenderSurfaceReason::kTest;
   effect_tree.Node(effect_grand_parent)->transform_id = grand_parent;
   effect_tree.Node(effect_grand_parent)->surface_contents_scale =
       gfx::Vector2dF(1.f, 1.f);
-  tree.Node(grand_parent)->source_node_id = 0;
 
   gfx::Transform rotation_about_x;
   rotation_about_x.RotateAboutXAxis(15);
@@ -207,19 +202,17 @@ TEST(PropertyTreeTest, TransformsWithFlattening) {
   int parent = tree.Insert(TransformNode(), grand_parent);
   int effect_parent = effect_tree.Insert(EffectNode(), effect_grand_parent);
   effect_tree.Node(effect_parent)->transform_id = parent;
-  effect_tree.Node(effect_parent)->has_render_surface = true;
+  effect_tree.Node(effect_parent)->render_surface_reason =
+      RenderSurfaceReason::kTest;
   effect_tree.Node(effect_parent)->surface_contents_scale =
       gfx::Vector2dF(1.f, 1.f);
-  tree.Node(parent)->source_node_id = grand_parent;
   tree.Node(parent)->local = rotation_about_x;
 
   int child = tree.Insert(TransformNode(), parent);
-  tree.Node(child)->source_node_id = parent;
   tree.Node(child)->flattens_inherited_transform = true;
   tree.Node(child)->local = rotation_about_x;
 
   int grand_child = tree.Insert(TransformNode(), child);
-  tree.Node(grand_child)->source_node_id = child;
   tree.Node(grand_child)->flattens_inherited_transform = true;
   tree.Node(grand_child)->local = rotation_about_x;
 
@@ -273,13 +266,11 @@ TEST(PropertyTreeTest, MultiplicationOrder) {
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
   contents_root.local.Translate(2, 2);
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(1);
 
   TransformNode child;
   child.local.Scale(2, 2);
-  child.source_node_id = 1;
   child.id = tree.Insert(child, 1);
 
   tree.UpdateTransforms(2);
@@ -306,13 +297,11 @@ TEST(PropertyTreeTest, ComputeTransformWithUninvertibleTransform) {
   PropertyTrees property_trees;
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(1);
 
   TransformNode child;
   child.local.Scale(0, 0);
-  child.source_node_id = 1;
   child.id = tree.Insert(child, 1);
 
   tree.UpdateTransforms(2);
@@ -336,25 +325,21 @@ TEST(PropertyTreeTest, ComputeTransformToTargetWithZeroSurfaceContentsScale) {
   PropertyTrees property_trees;
   TransformTree& tree = property_trees.transform_tree;
   TransformNode contents_root;
-  contents_root.source_node_id = 0;
   contents_root.id = tree.Insert(contents_root, 0);
   tree.UpdateTransforms(1);
 
   TransformNode grand_parent;
   grand_parent.local.Scale(2.f, 0.f);
-  grand_parent.source_node_id = 1;
   int grand_parent_id = tree.Insert(grand_parent, 1);
   tree.UpdateTransforms(grand_parent_id);
 
   TransformNode parent;
   parent.local.Translate(1.f, 1.f);
-  parent.source_node_id = grand_parent_id;
   int parent_id = tree.Insert(parent, grand_parent_id);
   tree.UpdateTransforms(parent_id);
 
   TransformNode child;
   child.local.Translate(3.f, 4.f);
-  child.source_node_id = parent_id;
   int child_id = tree.Insert(child, parent_id);
   tree.UpdateTransforms(child_id);
 
@@ -396,18 +381,15 @@ TEST(PropertyTreeTest, FlatteningWhenDestinationHasOnlyFlatAncestors) {
   TransformTree& tree = property_trees.transform_tree;
 
   int parent = tree.Insert(TransformNode(), 0);
-  tree.Node(parent)->source_node_id = 0;
   tree.Node(parent)->local.Translate(2, 2);
 
   gfx::Transform rotation_about_x;
   rotation_about_x.RotateAboutXAxis(15);
 
   int child = tree.Insert(TransformNode(), parent);
-  tree.Node(child)->source_node_id = parent;
   tree.Node(child)->local = rotation_about_x;
 
   int grand_child = tree.Insert(TransformNode(), child);
-  tree.Node(grand_child)->source_node_id = child;
   tree.Node(grand_child)->flattens_inherited_transform = true;
 
   tree.set_needs_update(true);
@@ -443,47 +425,6 @@ TEST(PropertyTreeTest, ScreenSpaceOpacityUpdateTest) {
   EXPECT_EQ(tree.Node(child)->screen_space_opacity, 0.25f);
 }
 
-TEST(PropertyTreeTest, NonIntegerTranslationTest) {
-  // This tests that when a node has non-integer translation, the information
-  // is propagated to the subtree.
-  PropertyTrees property_trees;
-  TransformTree& tree = property_trees.transform_tree;
-
-  int parent = tree.Insert(TransformNode(), 0);
-  tree.Node(parent)->source_node_id = 0;
-  tree.Node(parent)->local.Translate(1.5f, 1.5f);
-
-  int child = tree.Insert(TransformNode(), parent);
-  tree.Node(child)->local.Translate(1, 1);
-  tree.Node(child)->source_node_id = parent;
-  tree.set_needs_update(true);
-  draw_property_utils::ComputeTransforms(&tree);
-  EXPECT_FALSE(
-      tree.Node(parent)->node_and_ancestors_have_only_integer_translation);
-  EXPECT_FALSE(
-      tree.Node(child)->node_and_ancestors_have_only_integer_translation);
-
-  tree.Node(parent)->local.Translate(0.5f, 0.5f);
-  tree.Node(child)->local.Translate(0.5f, 0.5f);
-  tree.Node(parent)->needs_local_transform_update = true;
-  tree.Node(child)->needs_local_transform_update = true;
-  tree.set_needs_update(true);
-  draw_property_utils::ComputeTransforms(&tree);
-  EXPECT_TRUE(
-      tree.Node(parent)->node_and_ancestors_have_only_integer_translation);
-  EXPECT_FALSE(
-      tree.Node(child)->node_and_ancestors_have_only_integer_translation);
-
-  tree.Node(child)->local.Translate(0.5f, 0.5f);
-  tree.Node(child)->needs_local_transform_update = true;
-  tree.set_needs_update(true);
-  draw_property_utils::ComputeTransforms(&tree);
-  EXPECT_TRUE(
-      tree.Node(parent)->node_and_ancestors_have_only_integer_translation);
-  EXPECT_TRUE(
-      tree.Node(child)->node_and_ancestors_have_only_integer_translation);
-}
-
 TEST(PropertyTreeTest, SingularTransformSnapTest) {
   // This tests that to_target transform is not snapped when it has a singular
   // transform.
@@ -493,18 +434,17 @@ TEST(PropertyTreeTest, SingularTransformSnapTest) {
 
   int parent = tree.Insert(TransformNode(), 0);
   int effect_parent = effect_tree.Insert(EffectNode(), 0);
-  effect_tree.Node(effect_parent)->has_render_surface = true;
+  effect_tree.Node(effect_parent)->render_surface_reason =
+      RenderSurfaceReason::kTest;
   effect_tree.Node(effect_parent)->surface_contents_scale =
       gfx::Vector2dF(1.f, 1.f);
   tree.Node(parent)->scrolls = true;
-  tree.Node(parent)->source_node_id = 0;
 
   int child = tree.Insert(TransformNode(), parent);
   TransformNode* child_node = tree.Node(child);
   child_node->scrolls = true;
   child_node->local.Scale3d(6.0f, 6.0f, 0.0f);
   child_node->local.Translate(1.3f, 1.3f);
-  child_node->source_node_id = parent;
   tree.set_needs_update(true);
 
   draw_property_utils::ComputeTransforms(&tree);
@@ -541,13 +481,12 @@ TEST(EffectTreeTest, CopyOutputRequestsAreTransformed) {
   TransformTree& transform_tree = property_trees.transform_tree;
   TransformNode contents_root;
   contents_root.local.Scale(2, 2);
-  contents_root.source_node_id = 0;
   contents_root.id = transform_tree.Insert(contents_root, 0);
   transform_tree.UpdateTransforms(contents_root.id);
 
   EffectTree& effect_tree = property_trees.effect_tree;
   EffectNode effect_node;
-  effect_node.has_render_surface = true;
+  effect_node.render_surface_reason = RenderSurfaceReason::kTest;
   effect_node.has_copy_request = true;
   effect_node.transform_id = contents_root.id;
   effect_node.id = effect_tree.Insert(effect_node, 0);
@@ -640,13 +579,12 @@ TEST(EffectTreeTest, CopyOutputRequestsThatBecomeIllegalAreDropped) {
   TransformTree& transform_tree = property_trees.transform_tree;
   TransformNode contents_root;
   contents_root.local.Scale(1.0f / 1.0e9f, 1.0f / 1.0e9f);
-  contents_root.source_node_id = 0;
   contents_root.id = transform_tree.Insert(contents_root, 0);
   transform_tree.UpdateTransforms(contents_root.id);
 
   EffectTree& effect_tree = property_trees.effect_tree;
   EffectNode effect_node;
-  effect_node.has_render_surface = true;
+  effect_node.render_surface_reason = RenderSurfaceReason::kTest;
   effect_node.has_copy_request = true;
   effect_node.transform_id = contents_root.id;
   effect_node.id = effect_tree.Insert(effect_node, 0);
@@ -661,6 +599,105 @@ TEST(EffectTreeTest, CopyOutputRequestsThatBecomeIllegalAreDropped) {
   effect_tree.TakeCopyRequestsAndTransformToSurface(effect_node.id,
                                                     &requests_out);
   EXPECT_TRUE(requests_out.empty());
+}
+
+// Tests that GetPixelSnappedScrollOffset cannot return a negative offset, even
+// when the snap amount is larger than the scroll offset. The snap amount can be
+// (fractionally) larger due to floating point precision errors, and if the
+// scroll offset is near zero that can naively lead to a negative offset being
+// returned which is not desirable.
+TEST(ScrollTreeTest, GetPixelSnappedScrollOffsetNegativeOffset) {
+  PropertyTrees property_trees;
+  ScrollTree& scroll_tree = property_trees.scroll_tree;
+  TransformTree& transform_tree = property_trees.transform_tree;
+
+  ElementId element_id(5);
+  int transform_node_id = transform_tree.Insert(TransformNode(), 0);
+  int scroll_node_id = scroll_tree.Insert(ScrollNode(), 0);
+  scroll_tree.Node(scroll_node_id)->transform_id = transform_node_id;
+  scroll_tree.Node(scroll_node_id)->element_id = element_id;
+
+  // Set a scroll value close to 0.
+  scroll_tree.SetScrollOffset(element_id, gfx::ScrollOffset(0, 0.1));
+  transform_tree.Node(transform_node_id)->scrolls = true;
+  transform_tree.Node(transform_node_id)->scroll_offset =
+      gfx::ScrollOffset(0, 0.1);
+
+  // Pretend that the snap amount was slightly larger than 0.1.
+  transform_tree.Node(transform_node_id)->snap_amount = gfx::Vector2dF(0, 0.2);
+  transform_tree.Node(transform_node_id)->needs_local_transform_update = false;
+
+  // The returned offset should be clamped at a minimum of 0.
+  gfx::ScrollOffset offset =
+      scroll_tree.GetPixelSnappedScrollOffset(scroll_node_id);
+  EXPECT_EQ(offset.y(), 0);
+}
+
+// Verify that when fractional scroll delta is turned off, that the remaining
+// fractional delta does not cause additional property changes.
+TEST(ScrollTreeTest, PushScrollUpdatesFromMainThreadIntegerDelta) {
+  const bool use_fractional_deltas = false;
+
+  // Set up main property trees.
+  PropertyTrees property_trees;
+  ScrollTree& main_scroll_tree = property_trees.scroll_tree;
+  TransformTree& transform_tree = property_trees.transform_tree;
+  ElementId element_id(5);
+  int transform_node_id = transform_tree.Insert(TransformNode(), 0);
+  int scroll_node_id = main_scroll_tree.Insert(ScrollNode(), 0);
+  main_scroll_tree.Node(scroll_node_id)->transform_id = transform_node_id;
+  main_scroll_tree.Node(scroll_node_id)->element_id = element_id;
+  main_scroll_tree.Node(scroll_node_id)->is_composited = true;
+
+  // Set up FakeLayerTreeHostImpl.
+  TestTaskGraphRunner task_graph_runner;
+  FakeImplTaskRunnerProvider impl_task_runner_provider;
+  FakeLayerTreeHostImpl host_impl(
+      LayerTreeSettings(), &impl_task_runner_provider, &task_graph_runner);
+  host_impl.CreatePendingTree();
+
+  // Set up pending property trees.
+  PropertyTrees* pending_property_trees =
+      host_impl.pending_tree()->property_trees();
+  EXPECT_TRUE(pending_property_trees);
+  ScrollTree& pending_scroll_tree = pending_property_trees->scroll_tree;
+  TransformTree& pending_transform_tree =
+      pending_property_trees->transform_tree;
+  transform_node_id = pending_transform_tree.Insert(TransformNode(), 0);
+  scroll_node_id = pending_scroll_tree.Insert(ScrollNode(), 0);
+  pending_scroll_tree.Node(scroll_node_id)->transform_id = transform_node_id;
+  pending_scroll_tree.Node(scroll_node_id)->element_id = element_id;
+  pending_scroll_tree.Node(scroll_node_id)->is_composited = true;
+  pending_property_trees->element_id_to_scroll_node_index[element_id] =
+      scroll_node_id;
+
+  // Push main scroll to pending.
+  main_scroll_tree.SetScrollOffset(element_id, gfx::ScrollOffset(0, 1));
+  pending_scroll_tree.PushScrollUpdatesFromMainThread(
+      &property_trees, host_impl.pending_tree(), use_fractional_deltas);
+  const SyncedScrollOffset* scroll_offset =
+      pending_scroll_tree.GetSyncedScrollOffset(element_id);
+  EXPECT_TRUE(scroll_offset);
+
+  // Set a fractional delta and check it is not pulled with fractional delta
+  // turned off.
+  pending_scroll_tree.SetScrollOffsetDeltaForTesting(element_id,
+                                                     gfx::Vector2dF(0, 0.25));
+  main_scroll_tree.CollectScrollDeltasForTesting(use_fractional_deltas);
+  EXPECT_EQ(gfx::ScrollOffset(0, 1),
+            main_scroll_tree.current_scroll_offset(element_id));
+
+  // Rounding logic turned on should not cause property change on push.
+  host_impl.pending_tree()->property_trees()->changed = false;
+  pending_scroll_tree.PushScrollUpdatesFromMainThread(
+      &property_trees, host_impl.pending_tree(), use_fractional_deltas);
+  EXPECT_FALSE(host_impl.pending_tree()->property_trees()->changed);
+
+  // Rounding logic turned off should cause property change on push.
+  host_impl.pending_tree()->property_trees()->changed = false;
+  pending_scroll_tree.PushScrollUpdatesFromMainThread(
+      &property_trees, host_impl.pending_tree(), true);
+  EXPECT_TRUE(host_impl.pending_tree()->property_trees()->changed);
 }
 
 }  // namespace

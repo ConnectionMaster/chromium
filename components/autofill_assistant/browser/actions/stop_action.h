@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_ASSISTANT_BROWSER_ACTIONS_STOP_ACTION_H_
 #define COMPONENTS_AUTOFILL_ASSISTANT_BROWSER_ACTIONS_STOP_ACTION_H_
 
-#include <string>
-
 #include "base/macros.h"
 #include "components/autofill_assistant/browser/actions/action.h"
 
@@ -14,13 +12,12 @@ namespace autofill_assistant {
 // An action to stop Autofill Assistant.
 class StopAction : public Action {
  public:
-  explicit StopAction(const ActionProto& proto);
+  explicit StopAction(ActionDelegate* delegate, const ActionProto& proto);
   ~StopAction() override;
 
  private:
   // Overrides Action:
-  void InternalProcessAction(ActionDelegate* delegate,
-                             ProcessActionCallback callback) override;
+  void InternalProcessAction(ProcessActionCallback callback) override;
 
   DISALLOW_COPY_AND_ASSIGN(StopAction);
 };

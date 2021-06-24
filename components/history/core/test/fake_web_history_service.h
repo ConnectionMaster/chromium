@@ -18,8 +18,8 @@ namespace history {
 
 // A fake WebHistoryService for testing.
 //
-// Use |AddSyncedVisit| to fill the fake server-side database of synced visits.
-// Use |SetupFakeResponse| to influence whether the requests should succeed
+// Use `AddSyncedVisit` to fill the fake server-side database of synced visits.
+// Use `SetupFakeResponse` to influence whether the requests should succeed
 // or fail, and with which error code.
 //
 // Note: The behavior of this class is only defined for some WebHistoryService
@@ -33,12 +33,14 @@ class FakeWebHistoryService : public WebHistoryService {
   ~FakeWebHistoryService() override;
 
   // Sets up the behavior of the fake response returned when calling
-  // |WebHistoryService::QueryHistory|; whether it will succeed, and with
+  // `WebHistoryService::QueryHistory`; whether it will succeed, and with
   // which response code.
   void SetupFakeResponse(bool emulate_success, int emulate_response_code);
 
   // Adds a fake visit.
-  void AddSyncedVisit(std::string url, base::Time timestamp);
+  void AddSyncedVisit(const std::string& url,
+                      base::Time timestamp,
+                      const std::string& icon_url = std::string(""));
 
   // Clears all fake visits.
   void ClearSyncedVisits();
@@ -52,13 +54,20 @@ class FakeWebHistoryService : public WebHistoryService {
   void SetOtherFormsOfBrowsingHistoryPresent(bool present);
 
  protected:
-  typedef std::pair<std::string, base::Time> Visit;
+  struct Visit {
+    Visit(const std::string& url,
+          base::Time timestamp,
+          const std::string& icon_url);
+    std::string url;
+    base::Time timestamp;
+    std::string icon_url;
+  };
 
-  // Returns up to |count| results from |visits_| between |begin| and |end.
+  // Returns up to `count` results from `visits_` between `begin` and `end`.
   // Results are sorted from most recent to least recent, prioritizing more
-  // recent results when some need to be omitted. |more_results_left| will be
-  // set to true only if there are results from |visits_| that were not included
-  // because of |count| limitations, but were also within time range. Virtual to
+  // recent results when some need to be omitted. `more_results_left` will be
+  // set to true only if there are results from `visits_` that were not included
+  // because of `count` limitations, but were also within time range. Virtual to
   // allow subclasses to modify.
   virtual std::vector<FakeWebHistoryService::Visit> GetVisitsBetween(
       base::Time begin,
@@ -73,7 +82,7 @@ class FakeWebHistoryService : public WebHistoryService {
 
   // WebHistoryService implementation.
   Request* CreateRequest(const GURL& url,
-                         const CompletionCallback& callback,
+                         CompletionCallback callback,
                          const net::PartialNetworkTrafficAnnotationTag&
                              partial_traffic_annotation) override;
 

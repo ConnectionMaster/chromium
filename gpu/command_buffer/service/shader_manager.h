@@ -8,7 +8,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "gpu/command_buffer/service/gl_utils.h"
@@ -58,6 +58,7 @@ class GPU_GLES2_EXPORT Shader : public base::RefCounted<Shader> {
   // Returns true if we are ready to call DoCompile. If we have not yet called
   // RequestCompile or if we've already compiled, returns false.
   bool CanCompile() { return shader_state_ == kShaderStateCompileRequested; }
+  bool HasCompiled() { return shader_state_ == kShaderStateCompiled; }
   void DoCompile();
   void RefreshTranslatedShaderSource();
 

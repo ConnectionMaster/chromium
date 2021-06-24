@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/rand_util.h"
 #include "base/sequenced_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -62,13 +62,12 @@ AffiliationFetchThrottler::AffiliationFetchThrottler(
       state_(IDLE),
       has_network_connectivity_(false),
       is_fetch_scheduled_(false),
-      exponential_backoff_(new net::BackoffEntry(&kBackoffPolicy, tick_clock_)),
-      weak_ptr_factory_(this) {
+      exponential_backoff_(
+          new net::BackoffEntry(&kBackoffPolicy, tick_clock_)) {
   DCHECK(delegate);
   // Start observing before querying the current connectivity state, so that if
   // the state changes concurrently in-between, it will not go unnoticed.
   network_connection_tracker_->AddNetworkConnectionObserver(this);
-  has_network_connectivity_ = !network_connection_tracker_->IsOffline();
 }
 
 AffiliationFetchThrottler::~AffiliationFetchThrottler() {
@@ -80,6 +79,8 @@ void AffiliationFetchThrottler::SignalNetworkRequestNeeded() {
     return;
 
   state_ = FETCH_NEEDED;
+  has_network_connectivity_ = !network_connection_tracker_->IsOffline();
+
   if (has_network_connectivity_)
     EnsureCallbackIsScheduled();
 }

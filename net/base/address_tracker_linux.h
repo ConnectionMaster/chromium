@@ -13,13 +13,14 @@
 #include <stddef.h>
 
 #include <map>
+#include <memory>
+#include <string>
 #include <unordered_set>
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_descriptor_watcher_posix.h"
 #include "base/files/scoped_file.h"
-#include "base/macros.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
@@ -53,9 +54,9 @@ class NET_EXPORT_PRIVATE AddressTrackerLinux {
   // interfaces used to connect to the internet can cause critical network
   // changed signals to be lost allowing incorrect stale state to persist.
   AddressTrackerLinux(
-      const base::Closure& address_callback,
-      const base::Closure& link_callback,
-      const base::Closure& tunnel_callback,
+      const base::RepeatingClosure& address_callback,
+      const base::RepeatingClosure& link_callback,
+      const base::RepeatingClosure& tunnel_callback,
       const std::unordered_set<std::string>& ignored_interfaces);
   virtual ~AddressTrackerLinux();
 
@@ -94,12 +95,13 @@ class NET_EXPORT_PRIVATE AddressTrackerLinux {
    public:
     AddressTrackerAutoLock(const AddressTrackerLinux& tracker,
                            base::Lock& lock);
+    AddressTrackerAutoLock(const AddressTrackerAutoLock&) = delete;
+    AddressTrackerAutoLock& operator=(const AddressTrackerAutoLock&) = delete;
     ~AddressTrackerAutoLock();
 
    private:
     const AddressTrackerLinux& tracker_;
     base::Lock& lock_;
-    DISALLOW_COPY_AND_ASSIGN(AddressTrackerAutoLock);
   };
 
   // A function that returns the name of an interface given the interface index
@@ -119,8 +121,8 @@ class NET_EXPORT_PRIVATE AddressTrackerLinux {
   // |*link_changed| to true if |online_links_| changed, sets |*tunnel_changed|
   // to true if |online_links_| changed with regards to a tunnel interface while
   // reading the message from |buffer|.
-  void HandleMessage(char* buffer,
-                     size_t length,
+  void HandleMessage(const char* buffer,
+                     int length,
                      bool* address_changed,
                      bool* link_changed,
                      bool* tunnel_changed);
@@ -149,9 +151,9 @@ class NET_EXPORT_PRIVATE AddressTrackerLinux {
   // overridden by tests.
   GetInterfaceNameFunction get_interface_name_;
 
-  base::Closure address_callback_;
-  base::Closure link_callback_;
-  base::Closure tunnel_callback_;
+  base::RepeatingClosure address_callback_;
+  base::RepeatingClosure link_callback_;
+  base::RepeatingClosure tunnel_callback_;
 
   // Note that |watcher_| must be inactive when |netlink_fd_| is closed.
   base::ScopedFD netlink_fd_;

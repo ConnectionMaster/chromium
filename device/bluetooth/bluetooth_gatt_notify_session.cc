@@ -5,8 +5,7 @@
 #include "device/bluetooth/bluetooth_gatt_notify_session.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/logging.h"
+#include "base/callback_helpers.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic.h"
 
@@ -39,12 +38,13 @@ bool BluetoothGattNotifySession::IsActive() {
          characteristic_->IsNotifying();
 }
 
-void BluetoothGattNotifySession::Stop(const base::Closure& callback) {
+void BluetoothGattNotifySession::Stop(base::OnceClosure callback) {
   active_ = false;
   if (characteristic_ != nullptr) {
-    characteristic_->StopNotifySession(this, callback);
+    characteristic_->StopNotifySession(this, std::move(callback));
   } else {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
+    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                  std::move(callback));
   }
 }
 

@@ -1,2 +1,4 @@
 rootWebArea
-++list
+++genericContainer ignored
+++++genericContainer ignored
+++++++directory

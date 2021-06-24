@@ -4,6 +4,8 @@
 
 #include "fuchsia/base/agent_impl.h"
 
+#include <lib/sys/cpp/component_context.h>
+
 #include "base/bind.h"
 
 namespace cr_fuchsia {
@@ -13,14 +15,17 @@ AgentImpl::ComponentStateBase::~ComponentStateBase() = default;
 AgentImpl::ComponentStateBase::ComponentStateBase(
     base::StringPiece component_id)
     : component_id_(component_id) {
-  fidl::InterfaceHandle<::fuchsia::io::Directory> directory;
-  service_directory_.Initialize(directory.NewRequest());
-  service_provider_ = std::make_unique<base::fuchsia::ServiceProviderImpl>(
-      std::move(directory));
+  service_provider_ = base::ServiceProviderImpl::CreateForOutgoingDirectory(
+      &outgoing_directory_);
 
   // Tear down this instance when the client disconnects from the directory.
   service_provider_->SetOnLastClientDisconnectedClosure(base::BindOnce(
       &ComponentStateBase::TeardownIfUnused, base::Unretained(this)));
+}
+
+void AgentImpl::ComponentStateBase::DisconnectClientsAndTeardown() {
+  agent_impl_->DeleteComponentState(component_id_);
+  // Do not touch |this|, since it is already gone.
 }
 
 void AgentImpl::ComponentStateBase::TeardownIfUnused() {
@@ -36,17 +41,16 @@ void AgentImpl::ComponentStateBase::TeardownIfUnused() {
       return;
   }
 
-  agent_impl_->DeleteComponentState(component_id_);
+  DisconnectClientsAndTeardown();
   // Do not touch |this|, since it is already gone.
 }
 
 AgentImpl::AgentImpl(
-    base::fuchsia::ServiceDirectory* service_directory,
+    sys::OutgoingDirectory* outgoing_directory,
     CreateComponentStateCallback create_component_state_callback)
     : create_component_state_callback_(
           std::move(create_component_state_callback)),
-      agent_binding_(service_directory, this) {
-}
+      agent_binding_(outgoing_directory, this) {}
 
 AgentImpl::~AgentImpl() {
   DCHECK(active_components_.empty());
@@ -69,11 +73,6 @@ void AgentImpl::Connect(
     it->second->agent_impl_ = this;
   }
   it->second->service_provider_->AddBinding(std::move(services));
-}
-
-void AgentImpl::RunTask(std::string task_id, RunTaskCallback callback) {
-  NOTIMPLEMENTED();
-  callback();
 }
 
 void AgentImpl::DeleteComponentState(base::StringPiece component_id) {

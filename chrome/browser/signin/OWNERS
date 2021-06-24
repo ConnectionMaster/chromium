@@ -8,5 +8,4 @@ per-file easy_unlock_*=tbarzic@chromium.org
 per-file easy_unlock_*=tengs@chromium.org
 per-file easy_unlock_*=xiyuan@chromium.org
 
-# TEAM: chrome-signin@chromium.org
-# COMPONENT: Services>SignIn
+per-file signin_profile_attributes_updater*=msalama@chromium.org

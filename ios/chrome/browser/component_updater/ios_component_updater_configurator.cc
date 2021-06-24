@@ -14,7 +14,10 @@
 #include "base/version.h"
 #include "components/component_updater/component_updater_command_line_config_policy.h"
 #include "components/component_updater/configurator_impl.h"
+#include "components/services/patch/in_process_file_patcher.h"
+#include "components/services/unzip/in_process_unzipper.h"
 #include "components/update_client/activity_data_service.h"
+#include "components/update_client/crx_downloader_factory.h"
 #include "components/update_client/net/network_chromium.h"
 #include "components/update_client/patch/patch_impl.h"
 #include "components/update_client/patcher.h"
@@ -25,9 +28,7 @@
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/google/google_brand.h"
 #include "ios/chrome/common/channel_info.h"
-#include "ios/web/public/service_manager_connection.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace component_updater {
 
@@ -38,7 +39,7 @@ class IOSConfigurator : public update_client::Configurator {
   explicit IOSConfigurator(const base::CommandLine* cmdline);
 
   // update_client::Configurator overrides.
-  int InitialDelay() const override;
+  double InitialDelay() const override;
   int NextCheckDelay() const override;
   int OnDemandDelay() const override;
   int UpdateDelay() const override;
@@ -54,6 +55,8 @@ class IOSConfigurator : public update_client::Configurator {
   std::string GetDownloadPreference() const override;
   scoped_refptr<update_client::NetworkFetcherFactory> GetNetworkFetcherFactory()
       override;
+  scoped_refptr<update_client::CrxDownloaderFactory> GetCrxDownloaderFactory()
+      override;
   scoped_refptr<update_client::UnzipperFactory> GetUnzipperFactory() override;
   scoped_refptr<update_client::PatcherFactory> GetPatcherFactory() override;
   bool EnabledDeltas() const override;
@@ -63,21 +66,19 @@ class IOSConfigurator : public update_client::Configurator {
   PrefService* GetPrefService() const override;
   update_client::ActivityDataService* GetActivityDataService() const override;
   bool IsPerUserInstall() const override;
-  std::vector<uint8_t> GetRunActionKeyHash() const override;
-  std::string GetAppGuid() const override;
   std::unique_ptr<update_client::ProtocolHandlerFactory>
   GetProtocolHandlerFactory() const override;
-  update_client::RecoveryCRXElevator GetRecoveryCRXElevator() const override;
 
  private:
   friend class base::RefCountedThreadSafe<IOSConfigurator>;
 
   ConfiguratorImpl configurator_impl_;
   scoped_refptr<update_client::NetworkFetcherFactory> network_fetcher_factory_;
+  scoped_refptr<update_client::CrxDownloaderFactory> crx_downloader_factory_;
   scoped_refptr<update_client::UnzipperFactory> unzip_factory_;
   scoped_refptr<update_client::PatcherFactory> patch_factory_;
 
-  ~IOSConfigurator() override {}
+  ~IOSConfigurator() override = default;
 };
 
 // Allows the component updater to use non-encrypted communication with the
@@ -87,7 +88,7 @@ IOSConfigurator::IOSConfigurator(const base::CommandLine* cmdline)
     : configurator_impl_(ComponentUpdaterCommandLineConfigPolicy(cmdline),
                          false) {}
 
-int IOSConfigurator::InitialDelay() const {
+double IOSConfigurator::InitialDelay() const {
   return configurator_impl_.InitialDelay();
 }
 
@@ -152,16 +153,27 @@ IOSConfigurator::GetNetworkFetcherFactory() {
   if (!network_fetcher_factory_) {
     network_fetcher_factory_ =
         base::MakeRefCounted<update_client::NetworkFetcherChromiumFactory>(
-            GetApplicationContext()->GetSharedURLLoaderFactory());
+            GetApplicationContext()->GetSharedURLLoaderFactory(),
+            // Never send cookies for component update downloads.
+            base::BindRepeating([](const GURL& url) { return false; }));
   }
   return network_fetcher_factory_;
+}
+
+scoped_refptr<update_client::CrxDownloaderFactory>
+IOSConfigurator::GetCrxDownloaderFactory() {
+  if (!crx_downloader_factory_) {
+    crx_downloader_factory_ =
+        update_client::MakeCrxDownloaderFactory(GetNetworkFetcherFactory());
+  }
+  return crx_downloader_factory_;
 }
 
 scoped_refptr<update_client::UnzipperFactory>
 IOSConfigurator::GetUnzipperFactory() {
   if (!unzip_factory_) {
     unzip_factory_ = base::MakeRefCounted<update_client::UnzipChromiumFactory>(
-        web::ServiceManagerConnection::Get()->GetConnector()->Clone());
+        base::BindRepeating(&unzip::LaunchInProcessUnzipper));
   }
   return unzip_factory_;
 }
@@ -170,7 +182,7 @@ scoped_refptr<update_client::PatcherFactory>
 IOSConfigurator::GetPatcherFactory() {
   if (!patch_factory_) {
     patch_factory_ = base::MakeRefCounted<update_client::PatchChromiumFactory>(
-        web::ServiceManagerConnection::Get()->GetConnector()->Clone());
+        base::BindRepeating(&patch::LaunchInProcessFilePatcher));
   }
   return patch_factory_;
 }
@@ -204,22 +216,9 @@ bool IOSConfigurator::IsPerUserInstall() const {
   return true;
 }
 
-std::vector<uint8_t> IOSConfigurator::GetRunActionKeyHash() const {
-  return configurator_impl_.GetRunActionKeyHash();
-}
-
-std::string IOSConfigurator::GetAppGuid() const {
-  return configurator_impl_.GetAppGuid();
-}
-
 std::unique_ptr<update_client::ProtocolHandlerFactory>
 IOSConfigurator::GetProtocolHandlerFactory() const {
   return configurator_impl_.GetProtocolHandlerFactory();
-}
-
-update_client::RecoveryCRXElevator IOSConfigurator::GetRecoveryCRXElevator()
-    const {
-  return configurator_impl_.GetRecoveryCRXElevator();
 }
 
 }  // namespace

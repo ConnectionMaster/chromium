@@ -6,8 +6,11 @@
 
 #include <cmath>
 
+#include "base/check_op.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
+#include "base/notreached.h"
+#include "base/numerics/math_constants.h"
 
 namespace ui {
 namespace {
@@ -132,10 +135,9 @@ struct SplineConstants {
 };
 
 float ComputeDeceleration(float friction) {
-  const float kGravityEarth = 9.80665f;
-  return kGravityEarth  // g (m/s^2)
-         * 39.37f       // inch/meter
-         * 160.f        // pixels/inch
+  return base::kMeanGravityFloat  // g (m/s^2)
+         * 39.37f                 // inch/meter
+         * 160.f                  // pixels/inch
          * friction;
 }
 

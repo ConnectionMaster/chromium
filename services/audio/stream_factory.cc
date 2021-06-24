@@ -7,10 +7,10 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "base/unguessable_token.h"
-#include "components/crash/core/common/crash_key.h"
+#include "build/chromecast_buildflags.h"
+#include "media/audio/audio_device_description.h"
 #include "services/audio/input_stream.h"
 #include "services/audio/local_muter.h"
 #include "services/audio/loopback_stream.h"
@@ -20,55 +20,35 @@
 namespace audio {
 
 StreamFactory::StreamFactory(media::AudioManager* audio_manager)
-    : audio_manager_(audio_manager) {
-  magic_bytes_ = 0x600DC0DEu;
-  SetStateForCrashing("constructed");
+    : audio_manager_(audio_manager),
+      loopback_worker_thread_("Loopback Worker") {
 }
 
 StreamFactory::~StreamFactory() {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("destructing");
-  magic_bytes_ = 0xDEADBEEFu;
 }
 
-void StreamFactory::Bind(mojom::StreamFactoryRequest request,
-                         TracedServiceRef context_ref) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
+void StreamFactory::Bind(
+    mojo::PendingReceiver<media::mojom::AudioStreamFactory> receiver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  bindings_.AddBinding(this, std::move(request), std::move(context_ref));
+  receivers_.Add(this, std::move(receiver));
 }
 
 void StreamFactory::CreateInputStream(
-    media::mojom::AudioInputStreamRequest stream_request,
-    media::mojom::AudioInputStreamClientPtr client,
-    media::mojom::AudioInputStreamObserverPtr observer,
-    media::mojom::AudioLogPtr log,
+    mojo::PendingReceiver<media::mojom::AudioInputStream> stream_receiver,
+    mojo::PendingRemote<media::mojom::AudioInputStreamClient> client,
+    mojo::PendingRemote<media::mojom::AudioInputStreamObserver> observer,
+    mojo::PendingRemote<media::mojom::AudioLog> pending_log,
     const std::string& device_id,
     const media::AudioParameters& params,
     uint32_t shared_memory_count,
     bool enable_agc,
-    mojo::ScopedSharedBufferHandle key_press_count_buffer,
-    mojom::AudioProcessingConfigPtr processing_config,
+    base::ReadOnlySharedMemoryRegion key_press_count_buffer,
     CreateInputStreamCallback created_callback) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("creating input stream");
-  TRACE_EVENT_NESTABLE_ASYNC_INSTANT2(
-      "audio", "CreateInputStream", bindings_.dispatch_context().id_for_trace(),
-      "device id", device_id, "params", params.AsHumanReadableString());
-
-  if (processing_config && processing_config->settings.requires_apm() &&
-      params.GetBufferDuration() != base::TimeDelta::FromMilliseconds(10)) {
-    // If the buffer size is incorrect, the data can't be fed into the APM.
-    // This should never happen unless a renderer misbehaves.
-    log->OnLogMessage("Invalid APM config.");
-    log->OnError();
-    // The callback must still be invoked or mojo complains.
-    std::move(created_callback).Run(nullptr, false, base::nullopt);
-    SetStateForCrashing("input stream create failed");
-    return;
-  }
+  TRACE_EVENT_NESTABLE_ASYNC_INSTANT2("audio", "CreateInputStream", this,
+                                      "device id", device_id, "params",
+                                      params.AsHumanReadableString());
 
   // Unretained is safe since |this| indirectly owns the InputStream.
   auto deleter_callback = base::BindOnce(&StreamFactory::DestroyInputStream,
@@ -76,49 +56,38 @@ void StreamFactory::CreateInputStream(
 
   input_streams_.insert(std::make_unique<InputStream>(
       std::move(created_callback), std::move(deleter_callback),
-      std::move(stream_request), std::move(client), std::move(observer),
-      std::move(log), audio_manager_,
-      UserInputMonitor::Create(std::move(key_press_count_buffer)), device_id,
-      params, shared_memory_count, enable_agc, &stream_monitor_coordinator_,
-      std::move(processing_config)));
-  SetStateForCrashing("created input stream");
+      std::move(stream_receiver), std::move(client), std::move(observer),
+      std::move(pending_log), audio_manager_,
+      UserInputMonitor::Create(std::move(key_press_count_buffer)),
+      &stream_count_metric_reporter_, device_id, params, shared_memory_count,
+      enable_agc));
 }
 
 void StreamFactory::AssociateInputAndOutputForAec(
     const base::UnguessableToken& input_stream_id,
     const std::string& output_device_id) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("associating for AEC");
   for (const auto& stream : input_streams_) {
     if (stream->id() == input_stream_id) {
       stream->SetOutputDeviceForAec(output_device_id);
-      SetStateForCrashing("associated for AEC");
       return;
     }
   }
-  SetStateForCrashing("did not associate for AEC");
 }
 
 void StreamFactory::CreateOutputStream(
-    media::mojom::AudioOutputStreamRequest stream_request,
-    media::mojom::AudioOutputStreamObserverAssociatedPtrInfo observer_info,
-    media::mojom::AudioLogPtr log,
+    mojo::PendingReceiver<media::mojom::AudioOutputStream> stream_receiver,
+    mojo::PendingAssociatedRemote<media::mojom::AudioOutputStreamObserver>
+        observer,
+    mojo::PendingRemote<media::mojom::AudioLog> log,
     const std::string& output_device_id,
     const media::AudioParameters& params,
     const base::UnguessableToken& group_id,
-    const base::Optional<base::UnguessableToken>& processing_id,
     CreateOutputStreamCallback created_callback) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("creating output stream");
-  TRACE_EVENT_NESTABLE_ASYNC_INSTANT2(
-      "audio", "CreateOutputStream",
-      bindings_.dispatch_context().id_for_trace(), "device id",
-      output_device_id, "params", params.AsHumanReadableString());
-
-  media::mojom::AudioOutputStreamObserverAssociatedPtr observer;
-  observer.Bind(std::move(observer_info));
+  TRACE_EVENT_NESTABLE_ASYNC_INSTANT2("audio", "CreateOutputStream", this,
+                                      "device id", output_device_id, "params",
+                                      params.AsHumanReadableString());
 
   // Unretained is safe since |this| indirectly owns the OutputStream.
   auto deleter_callback = base::BindOnce(&StreamFactory::DestroyOutputStream,
@@ -127,29 +96,29 @@ void StreamFactory::CreateOutputStream(
   // This is required for multizone audio playback on Cast devices.
   // See //chromecast/media/cast_audio_manager.h for more information.
   const std::string device_id_or_group_id =
-#if defined(IS_CHROMECAST)
-      (group_id.ToString().empty()) ? output_device_id : group_id.ToString();
+#if BUILDFLAG(IS_CHROMECAST)
+      (::media::AudioDeviceDescription::IsCommunicationsDevice(
+           output_device_id) ||
+       group_id.is_empty())
+          ? output_device_id
+          : group_id.ToString();
 #else
       output_device_id;
 #endif
 
   output_streams_.insert(std::make_unique<OutputStream>(
       std::move(created_callback), std::move(deleter_callback),
-      std::move(stream_request), std::move(observer), std::move(log),
-      audio_manager_, device_id_or_group_id, params, &coordinator_, group_id,
-      &stream_monitor_coordinator_,
-      processing_id.value_or(base::UnguessableToken())));
-  SetStateForCrashing("created output stream");
+      std::move(stream_receiver), std::move(observer), std::move(log),
+      audio_manager_, &stream_count_metric_reporter_, device_id_or_group_id,
+      params, &coordinator_, group_id));
 }
 
-void StreamFactory::BindMuter(mojom::LocalMuterAssociatedRequest request,
-                              const base::UnguessableToken& group_id) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
+void StreamFactory::BindMuter(
+    mojo::PendingAssociatedReceiver<media::mojom::LocalMuter> receiver,
+    const base::UnguessableToken& group_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("binding muter");
-  TRACE_EVENT_NESTABLE_ASYNC_INSTANT1(
-      "audio", "BindMuter", bindings_.dispatch_context().id_for_trace(),
-      "group id", group_id.GetLowForSerialization());
+  TRACE_EVENT_NESTABLE_ASYNC_INSTANT1("audio", "BindMuter", this, "group id",
+                                      group_id.GetLowForSerialization());
 
   // Find the existing LocalMuter for this group, or create one on-demand.
   auto it = std::find_if(muters_.begin(), muters_.end(),
@@ -167,76 +136,103 @@ void StreamFactory::BindMuter(mojom::LocalMuterAssociatedRequest request,
     muter = it->get();
   }
 
-  // Add the binding.
-  muter->AddBinding(std::move(request));
-  SetStateForCrashing("bound muter");
+  // Add the receiver.
+  muter->AddReceiver(std::move(receiver));
 }
 
 void StreamFactory::CreateLoopbackStream(
-    media::mojom::AudioInputStreamRequest request,
-    media::mojom::AudioInputStreamClientPtr client,
-    media::mojom::AudioInputStreamObserverPtr observer,
+    mojo::PendingReceiver<media::mojom::AudioInputStream> receiver,
+    mojo::PendingRemote<media::mojom::AudioInputStreamClient> client,
+    mojo::PendingRemote<media::mojom::AudioInputStreamObserver> observer,
     const media::AudioParameters& params,
     uint32_t shared_memory_count,
     const base::UnguessableToken& group_id,
     CreateLoopbackStreamCallback created_callback) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("creating loopback stream");
-  TRACE_EVENT_NESTABLE_ASYNC_INSTANT2(
-      "audio", "CreateLoopbackStream",
-      bindings_.dispatch_context().id_for_trace(), "group id",
-      group_id.GetLowForSerialization(), "params",
-      params.AsHumanReadableString());
+  TRACE_EVENT_NESTABLE_ASYNC_INSTANT2("audio", "CreateLoopbackStream", this,
+                                      "group id",
+                                      group_id.GetLowForSerialization(),
+                                      "params", params.AsHumanReadableString());
+
+  // All LoopbackStreams share a single realtime worker thread. This is because
+  // the execution timing of scheduled tasks must be precise, and top priority
+  // should be given to the smooth continuous flow of audio while in low-CPU
+  // situations; all to avoid glitches. The thread is started just before the
+  // first LoopbackStream will be created, and stopped after all LoopbackStreams
+  // are gone.
+  scoped_refptr<base::SequencedTaskRunner> task_runner;
+  if (loopback_worker_thread_.IsRunning()) {
+    task_runner = loopback_worker_thread_.task_runner();
+  } else {
+    TRACE_EVENT_BEGIN0("audio", "Start Loopback Worker");
+    base::Thread::Options options;
+    options.timer_slack = base::TIMER_SLACK_NONE;
+    options.priority = base::ThreadPriority::REALTIME_AUDIO;
+    if (loopback_worker_thread_.StartWithOptions(std::move(options))) {
+      task_runner = loopback_worker_thread_.task_runner();
+      TRACE_EVENT_END1("audio", "Start Loopback Worker", "success", true);
+    } else {
+      // Something about this platform or its current environment has prevented
+      // a realtime audio thread from being started. Fall-back to using the
+      // AudioManager worker thread.
+      LOG(ERROR) << "Unable to start realtime loopback worker thread.";
+      task_runner = audio_manager_->GetWorkerTaskRunner();
+      TRACE_EVENT_END1("audio", "Start Loopback Worker", "success", false);
+    }
+  }
 
   auto stream = std::make_unique<LoopbackStream>(
       std::move(created_callback),
       base::BindOnce(&StreamFactory::DestroyLoopbackStream,
                      base::Unretained(this)),
-      audio_manager_->GetWorkerTaskRunner(), std::move(request),
-      std::move(client), std::move(observer), params, shared_memory_count,
-      &coordinator_, group_id);
+      std::move(task_runner), std::move(receiver), std::move(client),
+      std::move(observer), params, shared_memory_count, &coordinator_,
+      group_id);
   loopback_streams_.emplace_back(std::move(stream));
-  SetStateForCrashing("created loopback stream");
 }
 
 void StreamFactory::DestroyInputStream(InputStream* stream) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("destroying input stream");
   size_t erased = input_streams_.erase(stream);
   DCHECK_EQ(1u, erased);
-  SetStateForCrashing("destroyed input stream");
 }
 
 void StreamFactory::DestroyOutputStream(OutputStream* stream) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  SetStateForCrashing("destroying output stream");
   size_t erased = output_streams_.erase(stream);
   DCHECK_EQ(1u, erased);
-  SetStateForCrashing("destroyed output stream");
 }
 
 void StreamFactory::DestroyMuter(LocalMuter* muter) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
   DCHECK(muter);
-  SetStateForCrashing("destroying muter");
 
-  const auto it = std::find_if(muters_.begin(), muters_.end(),
-                               base::MatchesUniquePtr(muter));
-  DCHECK(it != muters_.end());
-  muters_.erase(it);
-  SetStateForCrashing("destroyed muter");
+  // Output streams have a task posting before destruction (see the OnError
+  // function in output_stream.cc). To ensure that stream destruction and
+  // unmuting is done in the intended order (the order in which the messages are
+  // received by the service), we post a task for destroying the muter as well.
+  // Otherwise, a "destroy all streams, then destroy the muter" sequence may
+  // result in a brief blip of audio.
+  auto do_destroy = [](base::WeakPtr<StreamFactory> weak_this,
+                       LocalMuter* muter) {
+    if (weak_this) {
+
+      const auto it =
+          std::find_if(weak_this->muters_.begin(), weak_this->muters_.end(),
+                       base::MatchesUniquePtr(muter));
+      DCHECK(it != weak_this->muters_.end());
+      weak_this->muters_.erase(it);
+    }
+  };
+
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE,
+      base::BindOnce(do_destroy, weak_ptr_factory_.GetWeakPtr(), muter));
 }
 
 void StreamFactory::DestroyLoopbackStream(LoopbackStream* stream) {
-  CHECK_EQ(magic_bytes_, 0x600DC0DEu);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
   DCHECK(stream);
-
-  SetStateForCrashing("destroying loopback stream");
 
   const auto it =
       std::find_if(loopback_streams_.begin(), loopback_streams_.end(),
@@ -244,20 +240,11 @@ void StreamFactory::DestroyLoopbackStream(LoopbackStream* stream) {
   DCHECK(it != loopback_streams_.end());
   loopback_streams_.erase(it);
 
-  SetStateForCrashing("destroyed loopback stream");
-}
-
-void StreamFactory::SetStateForCrashing(const char* state) {
-  static crash_reporter::CrashKeyString<256> crash_string(
-      "audio-service-factory-state");
-  crash_string.Set(base::StringPrintf(
-      "%s: binding_count=%d, muters_count=%d, loopback_count=%d, "
-      "input_stream_count=%d, output_stream_count=%d",
-      state, static_cast<int>(bindings_.size()),
-      static_cast<int>(muters_.size()),
-      static_cast<int>(loopback_streams_.size()),
-      static_cast<int>(input_streams_.size()),
-      static_cast<int>(output_streams_.size())));
+  // If all LoopbackStreams have ended, stop and join the worker thread.
+  if (loopback_streams_.empty()) {
+    TRACE_EVENT0("audio", "Stop Loopback Worker");
+    loopback_worker_thread_.Stop();
+  }
 }
 
 }  // namespace audio

@@ -4,6 +4,8 @@
 
 #include "media/cast/net/rtp/rtp_sender.h"
 
+#include <memory>
+
 #include "base/big_endian.h"
 #include "base/logging.h"
 #include "base/rand_util.h"
@@ -28,9 +30,7 @@ PacketRef FastCopyPacket(const PacketRef& packet) {
 RtpSender::RtpSender(
     const scoped_refptr<base::SingleThreadTaskRunner>& transport_task_runner,
     PacedSender* const transport)
-    : transport_(transport),
-      transport_task_runner_(transport_task_runner),
-      weak_factory_(this) {
+    : transport_(transport), transport_task_runner_(transport_task_runner) {
   // Randomly set sequence number start value.
   config_.sequence_number = base::RandInt(0, 65535);
 }
@@ -47,7 +47,7 @@ bool RtpSender::Initialize(const CastTransportRtpConfig& config) {
     config_.payload_type = 127;
   else
     config_.payload_type = 96;
-  packetizer_.reset(new RtpPacketizer(transport_, &storage_, config_));
+  packetizer_ = std::make_unique<RtpPacketizer>(transport_, &storage_, config_);
   return true;
 }
 

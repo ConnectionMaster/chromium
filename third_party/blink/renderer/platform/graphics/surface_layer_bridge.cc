@@ -10,14 +10,13 @@
 #include "cc/layers/layer.h"
 #include "cc/layers/solid_color_layer.h"
 #include "cc/layers/surface_layer.h"
-#include "components/viz/common/features.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "components/viz/common/surfaces/surface_info.h"
 #include "media/base/media_switches.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/frame_sinks/embedded_frame_sink.mojom-blink.h"
-#include "third_party/blink/public/platform/interface_provider.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/public/platform/web_layer_tree_view.h"
 #include "third_party/blink/renderer/platform/mojo/mojo_helper.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "ui/gfx/geometry/size.h"
@@ -25,29 +24,24 @@
 namespace blink {
 
 SurfaceLayerBridge::SurfaceLayerBridge(
-    WebLayerTreeView* layer_tree_view,
+    viz::FrameSinkId parent_frame_sink_id,
+    ContainsVideo contains_video,
     WebSurfaceLayerBridgeObserver* observer,
     cc::UpdateSubmissionStateCB update_submission_state_callback)
     : observer_(observer),
       update_submission_state_callback_(
           std::move(update_submission_state_callback)),
-      binding_(this),
-      surface_embedder_binding_(this),
-      enable_surface_synchronization_(
-          ::features::IsSurfaceSynchronizationEnabled()),
       frame_sink_id_(Platform::Current()->GenerateFrameSinkId()),
-      parent_frame_sink_id_(layer_tree_view ? layer_tree_view->GetFrameSinkId()
-                                            : viz::FrameSinkId()) {
-  mojom::blink::EmbeddedFrameSinkProviderPtr provider;
-  Platform::Current()->GetInterfaceProvider()->GetInterface(
-      mojo::MakeRequest(&provider));
+      contains_video_(contains_video),
+      parent_frame_sink_id_(parent_frame_sink_id) {
+  mojo::Remote<mojom::blink::EmbeddedFrameSinkProvider> provider;
+  Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
+      provider.BindNewPipeAndPassReceiver());
   // TODO(xlai): Ensure OffscreenCanvas commit() is still functional when a
   // frame-less HTML canvas's document is reparenting under another frame.
   // See crbug.com/683172.
-  blink::mojom::blink::EmbeddedFrameSinkClientPtr client;
-  binding_.Bind(mojo::MakeRequest(&client));
   provider->RegisterEmbeddedFrameSink(parent_frame_sink_id_, frame_sink_id_,
-                                      std::move(client));
+                                      receiver_.BindNewPipeAndPassRemote());
 }
 
 SurfaceLayerBridge::~SurfaceLayerBridge() = default;
@@ -63,22 +57,7 @@ void SurfaceLayerBridge::CreateSolidColorLayer() {
 
 void SurfaceLayerBridge::SetLocalSurfaceId(
     const viz::LocalSurfaceId& local_surface_id) {
-  if (!enable_surface_synchronization_) {
-    NOTREACHED();
-    return;
-  }
   EmbedSurface(viz::SurfaceId(frame_sink_id_, local_surface_id));
-}
-
-void SurfaceLayerBridge::OnFirstSurfaceActivation(
-    const viz::SurfaceInfo& surface_info) {
-  if (enable_surface_synchronization_) {
-    NOTREACHED();
-    return;
-  }
-  DCHECK(surface_info.is_valid());
-  DCHECK_EQ(frame_sink_id_, surface_info.id().frame_sink_id());
-  EmbedSurface(surface_info.id());
 }
 
 void SurfaceLayerBridge::EmbedSurface(const viz::SurfaceId& surface_id) {
@@ -111,8 +90,8 @@ void SurfaceLayerBridge::EmbedSurface(const viz::SurfaceId& surface_id) {
 }
 
 void SurfaceLayerBridge::BindSurfaceEmbedder(
-    mojom::blink::SurfaceEmbedderRequest request) {
-  surface_embedder_binding_.Bind(std::move(request));
+    mojo::PendingReceiver<mojom::blink::SurfaceEmbedder> receiver) {
+  surface_embedder_receiver_.Bind(std::move(receiver));
 }
 
 cc::Layer* SurfaceLayerBridge::GetCcLayer() const {
@@ -147,8 +126,7 @@ void SurfaceLayerBridge::CreateSurfaceLayer() {
   parent_local_surface_id_allocator_.GenerateId();
   current_surface_id_ = viz::SurfaceId(
       frame_sink_id_,
-      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id());
+      parent_local_surface_id_allocator_.GetCurrentLocalSurfaceId());
 
   surface_layer_->SetSurfaceId(current_surface_id_,
                                cc::DeadlinePolicy::UseDefaultDeadline());
@@ -156,7 +134,7 @@ void SurfaceLayerBridge::CreateSurfaceLayer() {
   surface_layer_->SetStretchContentToFillBounds(true);
   surface_layer_->SetIsDrawable(true);
   surface_layer_->SetHitTestable(true);
-  surface_layer_->SetMayContainVideo(true);
+  surface_layer_->SetMayContainVideo(contains_video_ == ContainsVideo::kYes);
 
   if (observer_) {
     observer_->RegisterContentsLayer(surface_layer_.get());
@@ -164,11 +142,6 @@ void SurfaceLayerBridge::CreateSurfaceLayer() {
   // We ignore our opacity until we are sure that we have something to show,
   // as indicated by getting an OnFirstSurfaceActivation call.
   surface_layer_->SetContentsOpaque(false);
-}
-
-base::TimeTicks SurfaceLayerBridge::GetLocalSurfaceIdAllocationTime() const {
-  return parent_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-      .allocation_time();
 }
 
 }  // namespace blink

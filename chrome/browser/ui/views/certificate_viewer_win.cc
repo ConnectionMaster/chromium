@@ -7,9 +7,8 @@
 #include <windows.h>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/task_runner.h"
@@ -34,7 +33,7 @@ class CertificateViewerDialog : public ui::BaseShellDialogImpl {
   // must ensure the CertificateViewerDialog remains valid until then.
   void Show(HWND parent,
             net::X509Certificate* cert,
-            const base::Closure& callback) {
+            base::RepeatingClosure callback) {
     if (IsRunningDialogForOwner(parent)) {
       base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
       return;
@@ -81,10 +80,10 @@ class CertificateViewerDialog : public ui::BaseShellDialogImpl {
   }
 
   void OnDialogClosed(std::unique_ptr<RunState> run_state,
-                      const base::Closure& callback) {
+                      base::OnceClosure callback) {
     EndRun(std::move(run_state));
     // May delete |this|.
-    callback.Run();
+    std::move(callback).Run();
   }
 
   DISALLOW_COPY_AND_ASSIGN(CertificateViewerDialog);
@@ -96,7 +95,7 @@ void ShowCertificateViewer(content::WebContents* web_contents,
                            gfx::NativeWindow parent,
                            net::X509Certificate* cert) {
   CertificateViewerDialog* dialog = new CertificateViewerDialog;
-  dialog->Show(
-      parent->GetHost()->GetAcceleratedWidget(), cert,
-      base::Bind(&base::DeletePointer<CertificateViewerDialog>, dialog));
+  dialog->Show(parent->GetHost()->GetAcceleratedWidget(), cert,
+               base::BindRepeating(
+                   &base::DeletePointer<CertificateViewerDialog>, dialog));
 }

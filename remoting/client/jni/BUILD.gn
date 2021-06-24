@@ -11,18 +11,21 @@ import("//remoting/remoting_options.gni")
 group("jni") {
   testonly = true
 
-  deps = [
-    ":remoting_client_jni",
-  ]
+  deps = [ ":remoting_client_jni" ]
 }
 
 shared_library("remoting_client_jni") {
   deps = [
     "//remoting/android:jni_headers",
     "//remoting/base",
+    "//remoting/base:authorization",
     "//remoting/client",
+    "//remoting/client/audio",
     "//remoting/client/display",
+    "//remoting/client/notification",
+    "//remoting/proto/remoting/v1:directory_proto",
     "//remoting/protocol",
+    "//services/network/public/cpp",
     "//ui/gfx",
   ]
   sources = [
@@ -30,8 +33,12 @@ shared_library("remoting_client_jni") {
     "egl_thread_context.h",
     "jni_client.cc",
     "jni_client.h",
+    "jni_directory_service.cc",
+    "jni_directory_service.h",
     "jni_gl_display_handler.cc",
     "jni_gl_display_handler.h",
+    "jni_notification_presenter.cc",
+    "jni_notification_presenter.h",
     "jni_oauth_token_getter.cc",
     "jni_oauth_token_getter.h",
     "jni_runtime_delegate.cc",
@@ -54,6 +61,7 @@ shared_library("remoting_client_jni") {
 
 java_cpp_enum("jni_enums") {
   sources = [
+    "jni_directory_service.h",
     "jni_oauth_token_getter.h",
   ]
 }

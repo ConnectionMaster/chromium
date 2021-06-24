@@ -11,6 +11,10 @@
 #include "gpu/config/gpu_feature_type.h"
 #include "gpu/gpu_export.h"
 
+namespace gfx {
+enum class BufferFormat;
+}
+
 namespace gl {
 class GLContext;
 }  // namespace gl
@@ -20,28 +24,11 @@ namespace gpu {
 // Flags indicating the status of a GPU feature (see gpu_feature_type.h).
 enum GpuFeatureStatus {
   kGpuFeatureStatusEnabled,
-  kGpuFeatureStatusBlacklisted,
+  kGpuFeatureStatusBlocklisted,
   kGpuFeatureStatusDisabled,
   kGpuFeatureStatusSoftware,
   kGpuFeatureStatusUndefined,
   kGpuFeatureStatusMax
-};
-
-enum AntialiasingMode {
-  kAntialiasingModeUnspecified,
-  kAntialiasingModeNone,
-  kAntialiasingModeMSAAImplicitResolve,
-  kAntialiasingModeMSAAExplicitResolve,
-  kAntialiasingModeScreenSpaceAntialiasing,
-};
-
-struct GPU_EXPORT WebglPreferences {
-  AntialiasingMode anti_aliasing_mode = kAntialiasingModeUnspecified;
-  uint32_t msaa_sample_count = 8;
-  uint32_t eqaa_storage_sample_count = 4;
-  // WebGL-specific numeric limits.
-  uint32_t max_active_webgl_contexts = 0;
-  uint32_t max_active_webgl_contexts_on_worker = 0;
 };
 
 struct GPU_EXPORT GpuFeatureInfo {
@@ -71,12 +58,15 @@ struct GPU_EXPORT GpuFeatureInfo {
   std::string disabled_extensions;
   // Disabled WebGL extensions separated by whitespaces.
   std::string disabled_webgl_extensions;
-  // Preferences for webgl.
-  WebglPreferences webgl_preferences;
-  // Applied gpu blacklist entry indices.
-  std::vector<uint32_t> applied_gpu_blacklist_entries;
+  // Applied gpu blocklist entry indices.
+  std::vector<uint32_t> applied_gpu_blocklist_entries;
   // Applied gpu driver bug list entry indices.
   std::vector<uint32_t> applied_gpu_driver_bug_list_entries;
+
+  // BufferFormats that can be allocated and then bound, if known and provided
+  // by the platform.
+  std::vector<gfx::BufferFormat>
+      supported_buffer_formats_for_allocation_and_texturing;
 };
 
 }  // namespace gpu

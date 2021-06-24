@@ -5,11 +5,8 @@
 #include "chrome/browser/chromeos/android_sms/fake_android_sms_app_setup_controller.h"
 
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/path_service.h"
-#include "extensions/common/extension.h"
-#include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_paths.h"
 
 namespace chromeos {
 
@@ -37,27 +34,19 @@ FakeAndroidSmsAppSetupController::GetAppMetadataAtUrl(
 
 void FakeAndroidSmsAppSetupController::SetAppAtUrl(
     const GURL& install_url,
-    const base::Optional<extensions::ExtensionId>& id_for_app) {
+    const absl::optional<web_app::AppId>& id_for_app) {
   if (!id_for_app) {
     install_url_to_metadata_map_.erase(install_url);
     return;
   }
 
-  // Create a test Extension and add it to |install_url_to_metadata_map_|.
-  base::FilePath path;
-  base::PathService::Get(extensions::DIR_TEST_DATA, &path);
-  install_url_to_metadata_map_[install_url].pwa =
-      extensions::ExtensionBuilder(
-          install_url.spec(), extensions::ExtensionBuilder::Type::PLATFORM_APP)
-          .SetPath(path.AppendASCII(install_url.spec()))
-          .SetID(*id_for_app)
-          .Build();
+  install_url_to_metadata_map_[install_url].pwa = *id_for_app;
 }
 
 void FakeAndroidSmsAppSetupController::CompletePendingSetUpAppRequest(
     const GURL& expected_app_url,
     const GURL& expected_install_url,
-    const base::Optional<extensions::ExtensionId>& id_for_app) {
+    const absl::optional<web_app::AppId>& id_for_app) {
   DCHECK(!pending_set_up_app_requests_.empty());
 
   auto request = std::move(pending_set_up_app_requests_.front());
@@ -107,7 +96,7 @@ void FakeAndroidSmsAppSetupController::CompleteRemoveAppRequest(
   DCHECK_EQ(expected_migrated_to_app_url, std::get<2>(*request));
 
   if (should_succeed)
-    SetAppAtUrl(expected_install_url, base::nullopt /* id_for_app */);
+    SetAppAtUrl(expected_install_url, absl::nullopt /* id_for_app */);
 
   std::move(std::get<3>(*request)).Run(should_succeed);
 }
@@ -119,12 +108,12 @@ void FakeAndroidSmsAppSetupController::SetUpApp(const GURL& app_url,
       app_url, install_url, std::move(callback)));
 }
 
-const extensions::Extension* FakeAndroidSmsAppSetupController::GetPwa(
+absl::optional<web_app::AppId> FakeAndroidSmsAppSetupController::GetPwa(
     const GURL& install_url) {
   auto it = install_url_to_metadata_map_.find(install_url);
   if (it == install_url_to_metadata_map_.end())
-    return nullptr;
-  return it->second.pwa.get();
+    return absl::nullopt;
+  return it->second.pwa;
 }
 
 void FakeAndroidSmsAppSetupController::DeleteRememberDeviceByDefaultCookie(

@@ -8,6 +8,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "build/build_config.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/pref_service_factory.h"
@@ -77,9 +78,12 @@ TEST_F(AutofillPrefsTest, MigrateDeprecatedAutofillPrefs) {
 
 // Tests that setting and getting the AutofillSyncTransportOptIn works as
 // expected.
+// On mobile, no dedicated opt-in is required for WalletSyncTransport - the
+// user is always considered opted-in and thus this test doesn't make sense.
+#if !defined(OS_ANDROID) && !defined(OS_IOS)
 TEST_F(AutofillPrefsTest, WalletSyncTransportPref_GetAndSet) {
-  const std::string account1 = "account1";
-  const std::string account2 = "account2";
+  const CoreAccountId account1("account1");
+  const CoreAccountId account2("account2");
 
   // There should be no opt-in recorded at first.
   ASSERT_FALSE(IsUserOptedInWalletSyncTransport(pref_service(), account1));
@@ -125,11 +129,12 @@ TEST_F(AutofillPrefsTest, WalletSyncTransportPref_GetAndSet) {
                     ->GetDictionary(prefs::kAutofillSyncTransportOptIn)
                     ->DictSize());
 }
+#endif  // !defined(OS_ANDROID) && !defined(OS_IOS)
 
 // Tests that AutofillSyncTransportOptIn is not stored using the plain text
 // account id.
 TEST_F(AutofillPrefsTest, WalletSyncTransportPref_UsesHashAccountId) {
-  const std::string account1 = "account1";
+  const CoreAccountId account1("account1");
 
   // There should be no opt-in recorded at first.
   EXPECT_TRUE(pref_service()
@@ -145,14 +150,14 @@ TEST_F(AutofillPrefsTest, WalletSyncTransportPref_UsesHashAccountId) {
   // Make sure that the dictionary keys don't contain the account id.
   auto* dictionary =
       pref_service()->GetDictionary(prefs::kAutofillSyncTransportOptIn);
-  EXPECT_EQ(NULL,
-            dictionary->FindKeyOfType(account1, base::Value::Type::INTEGER));
+  EXPECT_EQ(nullptr, dictionary->FindKeyOfType(account1.ToString(),
+                                               base::Value::Type::INTEGER));
 }
 
 // Tests that clearing the AutofillSyncTransportOptIn works as expected.
 TEST_F(AutofillPrefsTest, WalletSyncTransportPref_Clear) {
-  const std::string account1 = "account1";
-  const std::string account2 = "account2";
+  const CoreAccountId account1("account1");
+  const CoreAccountId account2("account2");
 
   // There should be no opt-in recorded at first.
   EXPECT_TRUE(pref_service()
@@ -181,7 +186,7 @@ TEST_F(AutofillPrefsTest, WalletSyncTransportPref_Clear) {
 // Tests that the account id hash that we generate can be written and read from
 // JSON properly.
 TEST_F(AutofillPrefsTest, WalletSyncTransportPref_CanBeSetAndReadFromJSON) {
-  const std::string account1 = "account1";
+  const CoreAccountId account1("account1");
 
   // Set the opt-in for the first account.
   SetUserOptedInWalletSyncTransport(pref_service(), account1, true);

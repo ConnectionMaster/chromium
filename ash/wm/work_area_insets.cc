@@ -4,13 +4,13 @@
 
 #include "ash/wm/work_area_insets.h"
 
+#include "ash/keyboard/ui/keyboard_ui_controller.h"
 #include "ash/root_window_controller.h"
 #include "ash/screen_util.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ui/aura/window.h"
-#include "ui/keyboard/keyboard_controller.h"
 #include "ui/wm/core/coordinate_conversion.h"
 
 namespace ash {
@@ -26,25 +26,23 @@ gfx::Insets CalculateWorkAreaInsets(const gfx::Insets accessibility_insets,
   // The virtual keyboard always hides the shelf (in any orientation).
   // Therefore, if the keyboard is shown, there is no need to reduce the work
   // area by the size of the shelf.
-  if (!keyboard_bounds.IsEmpty()) {
-    work_area_insets += gfx::Insets(0, 0, keyboard_bounds.height(), 0);
-  } else {
+  if (keyboard_bounds.IsEmpty())
     work_area_insets += shelf_insets;
-  }
+  else
+    work_area_insets += gfx::Insets(0, 0, keyboard_bounds.height(), 0);
   return work_area_insets;
 }
 
 // Returns work area bounds calculated for the given |window| and given
 // parameters.
 gfx::Rect CalculateWorkAreaBounds(const gfx::Insets accessibility_insets,
-                                  const gfx::Rect shelf_bounds,
-                                  const gfx::Rect keyboard_bounds,
+                                  const gfx::Rect shelf_bounds_in_screen,
+                                  const gfx::Rect keyboard_bounds_in_screen,
                                   aura::Window* window) {
   gfx::Rect work_area_bounds = screen_util::GetDisplayBoundsWithShelf(window);
   work_area_bounds.Inset(accessibility_insets);
-  work_area_bounds.Subtract(keyboard_bounds);
-  work_area_bounds.Subtract(shelf_bounds);
-  ::wm::ConvertRectToScreen(window, &work_area_bounds);
+  work_area_bounds.Subtract(shelf_bounds_in_screen);
+  work_area_bounds.Subtract(keyboard_bounds_in_screen);
   return work_area_bounds;
 }
 
@@ -57,11 +55,11 @@ WorkAreaInsets* WorkAreaInsets::ForWindow(const aura::Window* window) {
 
 WorkAreaInsets::WorkAreaInsets(RootWindowController* root_window_controller)
     : root_window_controller_(root_window_controller) {
-  keyboard::KeyboardController::Get()->AddObserver(this);
+  keyboard::KeyboardUIController::Get()->AddObserver(this);
 }
 
 WorkAreaInsets::~WorkAreaInsets() {
-  keyboard::KeyboardController::Get()->RemoveObserver(this);
+  keyboard::KeyboardUIController::Get()->RemoveObserver(this);
 }
 
 gfx::Insets WorkAreaInsets::GetAccessibilityInsets() const {
@@ -70,10 +68,16 @@ gfx::Insets WorkAreaInsets::GetAccessibilityInsets() const {
 }
 
 gfx::Rect WorkAreaInsets::ComputeStableWorkArea() const {
-  return CalculateWorkAreaBounds(
-      GetAccessibilityInsets(), keyboard_occluded_bounds_,
-      root_window_controller_->shelf()->GetIdealBounds(),
-      root_window_controller_->GetRootWindow());
+  aura::Window* root_window = root_window_controller_->GetRootWindow();
+
+  // The ideal shelf bounds are not in screen coordinates.
+  gfx::Rect shelf_bounds_in_screen(
+      root_window_controller_->shelf()->GetIdealBoundsForWorkAreaCalculation());
+  ::wm::ConvertRectToScreen(root_window, &shelf_bounds_in_screen);
+
+  return CalculateWorkAreaBounds(GetAccessibilityInsets(),
+                                 shelf_bounds_in_screen,
+                                 keyboard_displaced_bounds_, root_window);
 }
 
 bool WorkAreaInsets::IsKeyboardShown() const {
@@ -102,17 +106,17 @@ void WorkAreaInsets::SetShelfBoundsAndInsets(const gfx::Rect& bounds,
 }
 
 void WorkAreaInsets::OnKeyboardAppearanceChanged(
-    const keyboard::KeyboardStateDescriptor& state) {
+    const KeyboardStateDescriptor& state) {
   aura::Window* window = root_window_controller_->GetRootWindow();
 
-  keyboard_occluded_bounds_ = state.occluded_bounds;
-  keyboard_displaced_bounds_ = state.displaced_bounds;
+  keyboard_occluded_bounds_ = state.occluded_bounds_in_screen;
+  keyboard_displaced_bounds_ = state.displaced_bounds_in_screen;
 
   UpdateWorkArea();
   Shell::Get()->NotifyUserWorkAreaInsetsChanged(window);
 }
 
-void WorkAreaInsets::OnKeyboardVisibilityStateChanged(const bool is_visible) {
+void WorkAreaInsets::OnKeyboardVisibilityChanged(const bool is_visible) {
   // On login screen if keyboard has been just hidden, update bounds just once
   // but ignore work area insets since shelf overlaps with login window.
   if (Shell::Get()->session_controller()->IsUserSessionBlocked() &&

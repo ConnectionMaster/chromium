@@ -16,10 +16,8 @@ class PushManager;
 class ServiceWorkerRegistration;
 
 class ServiceWorkerRegistrationPush final
-    : public GarbageCollectedFinalized<ServiceWorkerRegistrationPush>,
+    : public GarbageCollected<ServiceWorkerRegistrationPush>,
       public Supplement<ServiceWorkerRegistration> {
-  USING_GARBAGE_COLLECTED_MIXIN(ServiceWorkerRegistrationPush);
-
  public:
   static const char kSupplementName[];
 
@@ -32,10 +30,9 @@ class ServiceWorkerRegistrationPush final
   static PushManager* pushManager(ServiceWorkerRegistration& registration);
   PushManager* pushManager();
 
-  void Trace(blink::Visitor* visitor) override;
+  void Trace(Visitor* visitor) const override;
 
  private:
-  Member<ServiceWorkerRegistration> registration_;
   Member<PushManager> push_manager_;
 
   DISALLOW_COPY_AND_ASSIGN(ServiceWorkerRegistrationPush);

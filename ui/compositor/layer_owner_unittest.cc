@@ -8,15 +8,16 @@
 
 #include "base/macros.h"
 #include "base/test/null_task_runner.h"
-#include "cc/animation/single_keyframe_effect_animation.h"
+#include "cc/animation/animation.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_animator.h"
+#include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
-#include "ui/compositor/test/context_factories_for_test.h"
+#include "ui/compositor/test/test_context_factories.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace ui {
@@ -26,8 +27,8 @@ namespace {
 // compositor is not null.
 class TestLayerAnimationObserver : public ImplicitAnimationObserver {
  public:
-  TestLayerAnimationObserver(Layer* layer) : layer_(layer) {}
-  ~TestLayerAnimationObserver() override {}
+  explicit TestLayerAnimationObserver(Layer* layer) : layer_(layer) {}
+  ~TestLayerAnimationObserver() override = default;
 
   // ImplicitAnimationObserver:
   void OnImplicitAnimationsCompleted() override {
@@ -42,7 +43,7 @@ class TestLayerAnimationObserver : public ImplicitAnimationObserver {
 
 class LayerOwnerForTesting : public LayerOwner {
  public:
-  LayerOwnerForTesting(std::unique_ptr<Layer> layer) {
+  explicit LayerOwnerForTesting(std::unique_ptr<Layer> layer) {
     SetLayer(std::move(layer));
   }
   void DestroyLayerForTesting() { DestroyLayer(); }
@@ -61,6 +62,7 @@ class LayerOwnerTestWithCompositor : public testing::Test {
   ui::Compositor* compositor() { return compositor_.get(); }
 
  private:
+  std::unique_ptr<ui::TestContextFactories> context_factories_;
   std::unique_ptr<ui::Compositor> compositor_;
 
   DISALLOW_COPY_AND_ASSIGN(LayerOwnerTestWithCompositor);
@@ -76,22 +78,20 @@ void LayerOwnerTestWithCompositor::SetUp() {
   scoped_refptr<base::SingleThreadTaskRunner> task_runner =
       new base::NullTaskRunner();
 
-  ui::ContextFactory* context_factory = nullptr;
-  ui::ContextFactoryPrivate* context_factory_private = nullptr;
+  const bool enable_pixel_output = false;
+  context_factories_ =
+      std::make_unique<ui::TestContextFactories>(enable_pixel_output);
 
-  ui::InitializeContextFactoryForTests(false, &context_factory,
-                                       &context_factory_private);
-
-  compositor_.reset(
-      new ui::Compositor(context_factory_private->AllocateFrameSinkId(),
-                         context_factory, context_factory_private, task_runner,
-                         false /* enable_pixel_canvas */));
+  compositor_ = std::make_unique<ui::Compositor>(
+      context_factories_->GetContextFactory()->AllocateFrameSinkId(),
+      context_factories_->GetContextFactory(), task_runner,
+      false /* enable_pixel_canvas */);
   compositor_->SetAcceleratedWidget(gfx::kNullAcceleratedWidget);
 }
 
 void LayerOwnerTestWithCompositor::TearDown() {
   compositor_.reset();
-  ui::TerminateContextFactoryForTests();
+  context_factories_.reset();
 }
 
 }  // namespace
@@ -184,7 +184,7 @@ TEST_F(LayerOwnerTestWithCompositor, DetachTimelineOnAnimatorDeletion) {
   layer->SetOpacity(0.5f);
   root_layer->Add(layer);
 
-  scoped_refptr<cc::SingleKeyframeEffectAnimation> animation =
+  scoped_refptr<cc::Animation> animation =
       layer->GetAnimator()->GetAnimationForTesting();
   EXPECT_TRUE(animation);
   EXPECT_TRUE(animation->animation_timeline());
@@ -207,10 +207,43 @@ TEST_F(LayerOwnerTestWithCompositor,
 
   layer->SetOpacity(0.5f);
 
-  scoped_refptr<cc::SingleKeyframeEffectAnimation> animation =
+  scoped_refptr<cc::Animation> animation =
       layer->GetAnimator()->GetAnimationForTesting();
   EXPECT_TRUE(animation);
   EXPECT_TRUE(animation->animation_timeline());
+}
+
+namespace {
+
+class TestLayerDelegate : public LayerDelegate {
+ public:
+  explicit TestLayerDelegate(ui::LayerOwner* owner) : owner_(owner) {}
+  TestLayerDelegate(TestLayerDelegate&) = delete;
+  TestLayerDelegate& operator=(TestLayerDelegate&) = delete;
+  ~TestLayerDelegate() override = default;
+
+  // LayerDelegate:
+  void OnPaintLayer(const PaintContext& context) override {}
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
+  void OnLayerBoundsChanged(const gfx::Rect& old_bounds,
+                            PropertyChangeReason reason) override {
+    owner_->RecreateLayer();
+  }
+
+ private:
+  ui::LayerOwner* owner_;
+};
+
+}  // namespace
+
+// Test if recreating a layer in OnLayerBoundsChanged will not
+// cause a use-after-free.
+TEST_F(LayerOwnerTestWithCompositor, DeleteOnLayerBoundsChanged) {
+  LayerOwnerForTesting owner(std::make_unique<Layer>());
+  TestLayerDelegate delegate(&owner);
+  owner.layer()->set_delegate(&delegate);
+  owner.layer()->SetBounds(gfx::Rect(100, 100));
 }
 
 }  // namespace ui

@@ -6,9 +6,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_SCRIPT_FORBIDDEN_SCOPE_H_
 
 #include "base/auto_reset.h"
-#include "base/macros.h"
+#include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/stack_util.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
@@ -17,18 +17,20 @@ namespace blink {
 // Scoped disabling of script execution.
 class PLATFORM_EXPORT ScriptForbiddenScope final {
   STACK_ALLOCATED();
-  DISALLOW_COPY_AND_ASSIGN(ScriptForbiddenScope);
 
  public:
   ScriptForbiddenScope() { Enter(); }
+  ScriptForbiddenScope(const ScriptForbiddenScope&) = delete;
+  ScriptForbiddenScope& operator=(const ScriptForbiddenScope&) = delete;
   ~ScriptForbiddenScope() { Exit(); }
 
   class PLATFORM_EXPORT AllowUserAgentScript final {
     STACK_ALLOCATED();
-    DISALLOW_COPY_AND_ASSIGN(AllowUserAgentScript);
 
    public:
     AllowUserAgentScript() : saved_counter_(&GetMutableCounter(), 0) {}
+    AllowUserAgentScript(const AllowUserAgentScript&) = delete;
+    AllowUserAgentScript& operator=(const AllowUserAgentScript&) = delete;
     ~AllowUserAgentScript() { DCHECK(!IsScriptForbidden()); }
 
    private:
@@ -41,7 +43,11 @@ class PLATFORM_EXPORT ScriptForbiddenScope final {
     return GetMutableCounter() > 0;
   }
 
-  // DO NOT USE THESE FUNCTIONS FROM OUTSIDE OF THIS CLASS.
+  static void ThrowScriptForbiddenException(v8::Isolate* isolate) {
+    V8ThrowException::ThrowError(isolate, "Script execution is forbidden.");
+  }
+
+ private:
   static void Enter() {
     if (LIKELY(!WTF::MayNotBeMainThread())) {
       ++g_main_thread_counter_;
@@ -58,9 +64,11 @@ class PLATFORM_EXPORT ScriptForbiddenScope final {
     }
   }
 
- private:
   static unsigned& GetMutableCounter();
   static unsigned g_main_thread_counter_;
+
+  // V8GCController is exceptionally allowed to call Enter/Exit.
+  friend class V8GCController;
 };
 
 }  // namespace blink

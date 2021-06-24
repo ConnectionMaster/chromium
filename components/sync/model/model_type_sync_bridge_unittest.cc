@@ -7,12 +7,12 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "components/sync/model/conflict_resolution.h"
 #include "components/sync/model/metadata_batch.h"
-#include "components/sync/model/mock_model_type_change_processor.h"
-#include "components/sync/model/stub_model_type_sync_bridge.h"
 #include "components/sync/protocol/model_type_state.pb.h"
+#include "components/sync/test/model/mock_model_type_change_processor.h"
+#include "components/sync/test/model/stub_model_type_sync_bridge.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -36,7 +36,7 @@ class ModelTypeSyncBridgeTest : public ::testing::Test {
   StubModelTypeSyncBridge bridge_;
 };
 
-// ResolveConflicts should return USE_REMOTE unless the remote data is deleted.
+// ResolveConflicts should return kUseRemote unless the remote data is deleted.
 TEST_F(ModelTypeSyncBridgeTest, DefaultConflictResolution) {
   EntityData local_data;
   EntityData remote_data;
@@ -46,20 +46,23 @@ TEST_F(ModelTypeSyncBridgeTest, DefaultConflictResolution) {
   local_data.specifics.mutable_preference()->set_value("value");
   EXPECT_FALSE(local_data.is_deleted());
   EXPECT_TRUE(remote_data.is_deleted());
-  EXPECT_EQ(ConflictResolution::USE_LOCAL,
-            bridge()->ResolveConflict(local_data, remote_data).type());
+  EXPECT_EQ(
+      ConflictResolution::kUseLocal,
+      bridge()->ResolveConflict(/*storage_key=*/std::string(), remote_data));
 
   remote_data.specifics.mutable_preference()->set_value("value");
   EXPECT_FALSE(local_data.is_deleted());
   EXPECT_FALSE(remote_data.is_deleted());
-  EXPECT_EQ(ConflictResolution::USE_REMOTE,
-            bridge()->ResolveConflict(local_data, remote_data).type());
+  EXPECT_EQ(
+      ConflictResolution::kUseRemote,
+      bridge()->ResolveConflict(/*storage_key=*/std::string(), remote_data));
 
   local_data.specifics.clear_preference();
   EXPECT_TRUE(local_data.is_deleted());
   EXPECT_FALSE(remote_data.is_deleted());
-  EXPECT_EQ(ConflictResolution::USE_REMOTE,
-            bridge()->ResolveConflict(local_data, remote_data).type());
+  EXPECT_EQ(
+      ConflictResolution::kUseRemote,
+      bridge()->ResolveConflict(/*storage_key=*/std::string(), remote_data));
 }
 
 }  // namespace

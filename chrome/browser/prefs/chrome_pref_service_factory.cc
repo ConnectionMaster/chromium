@@ -12,14 +12,16 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/prefs/chrome_command_line_pref_store.h"
@@ -46,10 +48,10 @@
 #include "components/prefs/pref_service.h"
 #include "components/prefs/pref_store.h"
 #include "components/prefs/pref_value_store.h"
-#include "components/safe_browsing/common/safe_browsing_prefs.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/search_engines/default_search_manager.h"
 #include "components/search_engines/search_engines_pref_names.h"
-#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/signin/public/base/signin_pref_names.h"
 #include "components/sync/base/model_type.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync_preferences/pref_model_associator.h"
@@ -58,7 +60,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/buildflags/buildflags.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "rlz/buildflags/buildflags.h"
 #include "services/preferences/public/cpp/tracked/configuration.h"
 #include "services/preferences/public/cpp/tracked/pref_names.h"
@@ -76,7 +78,7 @@
 #if defined(OS_WIN)
 #include "base/enterprise_util.h"
 #if BUILDFLAG(ENABLE_RLZ)
-#include "rlz/lib/machine_id.h"
+#include "rlz/lib/machine_id.h"  // nogncheck crbug.com/1125897
 #endif  // BUILDFLAG(ENABLE_RLZ)
 #endif  // defined(OS_WIN)
 
@@ -150,10 +152,6 @@ const prefs::TrackedPreferenceMetadata kTrackedPrefs[] = {
     {19, prefs::kSwReporterPromptVersion, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
 #endif
-    // This pref is deprecated and will be removed a few releases after M43.
-    // kGoogleServicesAccountId replaces it.
-    {21, prefs::kGoogleServicesUsername, EnforcementLevel::ENFORCE_ON_LOAD,
-     PrefTrackingStrategy::ATOMIC, ValueType::PERSONAL},
 #if defined(OS_WIN)
     {22, prefs::kSwReporterPromptSeed, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
@@ -178,13 +176,15 @@ const prefs::TrackedPreferenceMetadata kTrackedPrefs[] = {
 #endif  // defined(OS_WIN)
     {29, prefs::kMediaStorageIdSalt, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
-#if defined(OS_WIN) && defined(GOOGLE_CHROME_BUILD)
-    {30, prefs::kModuleBlacklistCacheMD5Digest,
+#if defined(OS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
+    {30, prefs::kModuleBlocklistCacheMD5Digest,
      EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
      ValueType::IMPERSONAL},
 #endif
 #if defined(OS_WIN)
     {31, prefs::kSwReporterReportingEnabled, EnforcementLevel::ENFORCE_ON_LOAD,
+     PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
+    {32, prefs::kMediaCdmOrigin, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
 #endif  // defined(OS_WIN)
 
@@ -225,50 +225,14 @@ SettingsEnforcementGroup GetSettingsEnforcementGroup() {
   }
 #endif
 
-  struct {
-    const char* group_name;
-    SettingsEnforcementGroup group;
-  } static const kEnforcementLevelMap[] = {
-    { chrome_prefs::internals::kSettingsEnforcementGroupNoEnforcement,
-      GROUP_NO_ENFORCEMENT },
-    { chrome_prefs::internals::kSettingsEnforcementGroupEnforceAlways,
-      GROUP_ENFORCE_ALWAYS },
-    { chrome_prefs::internals::
-          kSettingsEnforcementGroupEnforceAlwaysWithDSE,
-      GROUP_ENFORCE_ALWAYS_WITH_DSE },
-    { chrome_prefs::internals::
-          kSettingsEnforcementGroupEnforceAlwaysWithExtensionsAndDSE,
-      GROUP_ENFORCE_ALWAYS_WITH_EXTENSIONS_AND_DSE },
-  };
-
-  // Use the strongest enforcement setting in the absence of a field trial
-  // config on Windows and MacOS. Remember to update the OFFICIAL_BUILD section
-  // of extension_startup_browsertest.cc and pref_hash_browsertest.cc when
-  // updating the default value below.
-  // TODO(gab): Enforce this on all platforms.
-  SettingsEnforcementGroup enforcement_group =
-#if defined(OS_WIN) || defined(OS_MACOSX)
-      GROUP_ENFORCE_DEFAULT;
+  // Use the strongest enforcement setting on Windows and MacOS. Remember to
+  // update the OFFICIAL_BUILD section of extension_startup_browsertest.cc and
+  // pref_hash_browsertest.cc when updating the default value below.
+#if defined(OS_WIN) || defined(OS_MAC)
+  return GROUP_ENFORCE_DEFAULT;
 #else
-      GROUP_NO_ENFORCEMENT;
+  return GROUP_NO_ENFORCEMENT;
 #endif
-  bool group_determined_from_trial = false;
-  base::FieldTrial* trial =
-      base::FieldTrialList::Find(
-          chrome_prefs::internals::kSettingsEnforcementTrialName);
-  if (trial) {
-    const std::string& group_name = trial->group_name();
-    for (size_t i = 0; i < base::size(kEnforcementLevelMap); ++i) {
-      if (kEnforcementLevelMap[i].group_name == group_name) {
-        enforcement_group = kEnforcementLevelMap[i].group;
-        group_determined_from_trial = true;
-        break;
-      }
-    }
-  }
-  UMA_HISTOGRAM_BOOLEAN("Settings.EnforcementGroupDeterminedFromTrial",
-                        group_determined_from_trial);
-  return enforcement_group;
 }
 
 // Returns the effective preference tracking configuration.
@@ -318,16 +282,12 @@ std::unique_ptr<ProfilePrefStoreManager> CreateProfilePrefStoreManager(
   // As part of improving pref metrics on other platforms we may want to find
   // ways to defer preference loading until the device ID can be used.
   rlz_lib::GetMachineId(&legacy_device_id);
-
-  UMA_HISTOGRAM_BOOLEAN("Settings.LegacyMachineIdGenerationSuccess",
-                        !legacy_device_id.empty());
 #endif
   std::string seed;
   CHECK(ui::ResourceBundle::HasSharedInstance());
-#if defined(GOOGLE_CHROME_BUILD)
-  seed = ui::ResourceBundle::GetSharedInstance()
-             .GetRawDataResource(IDR_PREF_HASH_SEED_BIN)
-             .as_string();
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  seed = std::string(ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
+      IDR_PREF_HASH_SEED_BIN));
 #endif
   return std::make_unique<ProfilePrefStoreManager>(profile_path, seed,
                                                    legacy_device_id);
@@ -410,7 +370,6 @@ std::unique_ptr<PrefService> CreateLocalState(
     policy::PolicyService* policy_service,
     scoped_refptr<PrefRegistry> pref_registry,
     bool async,
-    std::unique_ptr<PrefValueStore::Delegate> delegate,
     policy::BrowserPolicyConnector* policy_connector) {
   sync_preferences::PrefServiceSyncableFactory factory;
   PrepareFactory(&factory, pref_filename, policy_service,
@@ -420,26 +379,26 @@ std::unique_ptr<PrefService> CreateLocalState(
                  nullptr,  // extension_prefs
                  async, policy_connector);
 
-  return factory.Create(std::move(pref_registry), std::move(delegate));
+  return factory.Create(std::move(pref_registry));
 }
 
 std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
     const base::FilePath& profile_path,
-    prefs::mojom::TrackedPreferenceValidationDelegatePtr validation_delegate,
+    mojo::PendingRemote<prefs::mojom::TrackedPreferenceValidationDelegate>
+        validation_delegate,
     policy::PolicyService* policy_service,
     SupervisedUserSettingsService* supervised_user_settings,
     scoped_refptr<PrefStore> extension_prefs,
     scoped_refptr<user_prefs::PrefRegistrySyncable> pref_registry,
+    policy::BrowserPolicyConnector* connector,
     bool async,
-    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
-    std::unique_ptr<PrefValueStore::Delegate> delegate) {
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner) {
   TRACE_EVENT0("browser", "chrome_prefs::CreateProfilePrefs");
-  SCOPED_UMA_HISTOGRAM_TIMER("PrefService.CreateProfilePrefsTime");
 
-  prefs::mojom::ResetOnLoadObserverPtr reset_on_load_observer;
-  mojo::MakeStrongBinding(
+  mojo::PendingRemote<prefs::mojom::ResetOnLoadObserver> reset_on_load_observer;
+  mojo::MakeSelfOwnedReceiver(
       std::make_unique<ResetOnLoadObserverImpl>(profile_path),
-      mojo::MakeRequest(&reset_on_load_observer));
+      reset_on_load_observer.InitWithNewPipeAndPassReceiver());
   sync_preferences::PrefServiceSyncableFactory factory;
   scoped_refptr<PersistentPrefStore> user_pref_store =
       CreateProfilePrefStoreManager(profile_path)
@@ -449,21 +408,8 @@ std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
               std::move(validation_delegate));
   PrepareFactory(&factory, profile_path, policy_service,
                  supervised_user_settings, std::move(user_pref_store),
-                 std::move(extension_prefs), async,
-                 g_browser_process->browser_policy_connector());
-  return factory.CreateSyncable(std::move(pref_registry), std::move(delegate));
-}
-
-void InstallPoliciesOnLocalState(
-    PrefService* preexisting_local_state,
-    policy::PolicyService* policy_service,
-    std::unique_ptr<PrefValueStore::Delegate> delegate) {
-  sync_preferences::PrefServiceSyncableFactory factory;
-  policy::BrowserPolicyConnector* policy_connector =
-      g_browser_process->browser_policy_connector();
-  factory.SetManagedPolicies(policy_service, policy_connector);
-  factory.SetRecommendedPolicies(policy_service, policy_connector);
-  factory.ChangePrefValueStore(preexisting_local_state, std::move(delegate));
+                 std::move(extension_prefs), async, connector);
+  return factory.CreateSyncable(std::move(pref_registry));
 }
 
 void DisableDomainCheckForTesting() {
@@ -508,7 +454,7 @@ void HandlePersistentPrefStoreReadError(
                             PersistentPrefStore::PREF_READ_ERROR_MAX_ENUM);
 
   if (error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
     // Failing to load prefs on startup is a bad thing(TM). See bug 38352 for
     // an example problem that this can cause.
     // Do some diagnosis and try to avoid losing data.

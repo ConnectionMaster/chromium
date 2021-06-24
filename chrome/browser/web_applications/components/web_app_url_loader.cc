@@ -8,27 +8,56 @@
 #include <utility>
 
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/timer/timer.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/url_constants.h"
 
 namespace web_app {
 
 constexpr base::TimeDelta WebAppUrlLoader::kSecondsToWaitForWebContentsLoad;
 
 namespace {
+using UrlComparison = WebAppUrlLoader::UrlComparison;
+
+bool EqualsWithComparison(const GURL& a,
+                          const GURL& b,
+                          UrlComparison url_comparison) {
+  DCHECK(a.is_valid());
+  DCHECK(b.is_valid());
+  if (a == b)
+    return true;
+  GURL::Replacements replace;
+  switch (url_comparison) {
+    case UrlComparison::kExact:
+      return false;
+    case UrlComparison::kSameOrigin:
+      replace.ClearPath();
+      FALLTHROUGH;
+    case UrlComparison::kIgnoreQueryParamsAndRef:
+      replace.ClearQuery();
+      replace.ClearRef();
+      break;
+  }
+  return a.ReplaceComponents(replace) == b.ReplaceComponents(replace);
+}
 
 class LoaderTask : public content::WebContentsObserver {
  public:
   LoaderTask() = default;
+  LoaderTask(const LoaderTask&) = delete;
+  LoaderTask& operator=(const LoaderTask&) = delete;
   ~LoaderTask() override = default;
 
   void LoadUrl(const GURL& url,
                content::WebContents* web_contents,
+               UrlComparison url_comparison,
                WebAppUrlLoader::ResultCallback callback) {
     url_ = url;
+    url_comparison_ = url_comparison;
     callback_ = std::move(callback);
     Observe(web_contents);
 
@@ -55,25 +84,40 @@ class LoaderTask : public content::WebContentsObserver {
       return;
     }
 
+    // Flush all DidFinishLoad events until about:blank loaded.
+    if (url_.IsAboutBlank() && !validated_url.IsAboutBlank())
+      return;
+
     timer_.Stop();
 
-    if (validated_url != url_) {
-      LOG(ERROR) << "Error loading " << url_;
-      LOG(ERROR) << "  page redirected to " << validated_url;
-      PostResultTask(WebAppUrlLoader::Result::kRedirectedUrlLoaded);
+    if (validated_url == content::kUnreachableWebDataURL) {
+      // Navigation ends up in an error page. For example, network errors and
+      // policy blocked URLs.
+      // TODO(https://crbug.com/1071300): Handle error codes appropriately.
+      PostResultTask(WebAppUrlLoader::Result::kFailedErrorPageLoaded);
       return;
     }
-    PostResultTask(WebAppUrlLoader::Result::kUrlLoaded);
+
+    if (EqualsWithComparison(validated_url, url_, url_comparison_)) {
+      PostResultTask(WebAppUrlLoader::Result::kUrlLoaded);
+      return;
+    }
+    LOG(ERROR) << "Error loading " << url_;
+    LOG(ERROR) << "  page redirected to " << validated_url;
+    PostResultTask(WebAppUrlLoader::Result::kRedirectedUrlLoaded);
   }
 
   void DidFailLoad(content::RenderFrameHost* render_frame_host,
                    const GURL& validated_url,
-                   int error_code,
-                   const base::string16& error_description) override {
+                   int error_code) override {
     // Ignore subframe loads.
     if (web_contents()->GetMainFrame() != render_frame_host) {
       return;
     }
+
+    // Flush all DidFailLoad events until about:blank loaded.
+    if (url_.IsAboutBlank())
+      return;
 
     timer_.Stop();
 
@@ -101,13 +145,14 @@ class LoaderTask : public content::WebContentsObserver {
         FROM_HERE, base::BindOnce(std::move(callback_), result));
   }
 
-  WebAppUrlLoader::ResultCallback callback_;
   GURL url_;
+  UrlComparison url_comparison_;
+  WebAppUrlLoader::ResultCallback callback_;
+
   base::OneShotTimer timer_;
 
   base::WeakPtrFactory<LoaderTask> weak_ptr_factory_{this};
 
-  DISALLOW_COPY_AND_ASSIGN(LoaderTask);
 };
 
 }  // namespace
@@ -118,11 +163,12 @@ WebAppUrlLoader::~WebAppUrlLoader() = default;
 
 void WebAppUrlLoader::LoadUrl(const GURL& url,
                               content::WebContents* web_contents,
+                              UrlComparison url_comparison,
                               ResultCallback callback) {
   auto loader_task = std::make_unique<LoaderTask>();
   auto* loader_task_ptr = loader_task.get();
   loader_task_ptr->LoadUrl(
-      url, web_contents,
+      url, web_contents, url_comparison,
       base::BindOnce(
           [](ResultCallback callback, std::unique_ptr<LoaderTask> task,
              Result result) {
@@ -130,6 +176,18 @@ void WebAppUrlLoader::LoadUrl(const GURL& url,
             task.reset();
           },
           std::move(callback), std::move(loader_task)));
+}
+
+void WebAppUrlLoader::PrepareForLoad(content::WebContents* web_contents,
+                                     ResultCallback callback) {
+  LoadUrl(GURL(url::kAboutBlankURL), web_contents, UrlComparison::kExact,
+          base::BindOnce(
+              [](ResultCallback callback, Result result) {
+                base::UmaHistogramEnumeration(
+                    "Webapp.WebAppUrlLoaderPrepareForLoadResult", result);
+                std::move(callback).Run(result);
+              },
+              std::move(callback)));
 }
 
 }  // namespace web_app

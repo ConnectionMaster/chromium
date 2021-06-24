@@ -5,21 +5,20 @@
 #include <map>
 #include <memory>
 
+#include "base/memory/ptr_util.h"
 #include "chrome/browser/notifications/notification_trigger_scheduler.h"
 #include "chrome/browser/notifications/platform_notification_service_factory.h"
 #include "chrome/browser/notifications/platform_notification_service_impl.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using ::testing::_;
 
 namespace {
-
-constexpr base::TimeDelta kTimeAdvance = base::TimeDelta::FromMilliseconds(1);
 
 std::unique_ptr<TestingProfileManager> CreateTestingProfileManager() {
   std::unique_ptr<TestingProfileManager> profile_manager(
@@ -40,15 +39,7 @@ class MockNotificationTriggerScheduler : public NotificationTriggerScheduler {
 class NotificationTriggerSchedulerTest : public testing::Test {
  protected:
   NotificationTriggerSchedulerTest()
-      : thread_bundle_(
-            base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME,
-            base::test::ScopedTaskEnvironment::NowSource::
-                MAIN_THREAD_MOCK_TIME) {}
-
-  void SetUp() override {
-    // Advance time a little bit so TimeTicks::Now().is_null() becomes false.
-    thread_bundle_.FastForwardBy(kTimeAdvance);
-  }
+      : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   class ProfileTestData {
    public:
@@ -68,7 +59,7 @@ class NotificationTriggerSchedulerTest : public testing::Test {
     MockNotificationTriggerScheduler* scheduler_;
   };
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 };
 
 TEST_F(NotificationTriggerSchedulerTest,
@@ -83,10 +74,10 @@ TEST_F(NotificationTriggerSchedulerTest,
   EXPECT_CALL(*data2.scheduler_, TriggerNotificationsForStoragePartition(_))
       .Times(0);
 
-  auto* partition1 = content::BrowserContext::GetStoragePartitionForSite(
-      data1.profile_, GURL("http://example.com"));
-  auto* partition2 = content::BrowserContext::GetStoragePartitionForSite(
-      data2.profile_, GURL("http://example.com"));
+  auto* partition1 =
+      data1.profile_->GetStoragePartitionForUrl(GURL("http://example.com"));
+  auto* partition2 =
+      data2.profile_->GetStoragePartitionForUrl(GURL("http://example.com"));
 
   auto now = base::Time::Now();
   auto delta = base::TimeDelta::FromSeconds(3);
@@ -102,6 +93,6 @@ TEST_F(NotificationTriggerSchedulerTest,
   EXPECT_CALL(*data2.scheduler_,
               TriggerNotificationsForStoragePartition(partition2));
 
-  thread_bundle_.FastForwardBy(delta);
+  task_environment_.FastForwardBy(delta);
   base::RunLoop().RunUntilIdle();
 }

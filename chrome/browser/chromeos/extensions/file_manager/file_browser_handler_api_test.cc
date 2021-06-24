@@ -13,8 +13,10 @@
 #include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -24,12 +26,13 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/browser/extension_function_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/result_catcher.h"
-#include "storage/browser/fileapi/external_mount_points.h"
-#include "storage/common/fileapi/file_system_types.h"
+#include "storage/browser/file_system/external_mount_points.h"
+#include "storage/common/file_system/file_system_types.h"
 
 namespace utils = extension_function_test_utils;
 
@@ -64,7 +67,7 @@ struct TestCase {
 };
 
 bool OverrideFunction(const std::string& name,
-                      extensions::ExtensionFunctionFactory factory) {
+                      ExtensionFunctionFactory factory) {
   return ExtensionFunctionRegistry::GetInstance().OverrideFunctionForTesting(
       name, factory);
 }
@@ -178,11 +181,9 @@ class FileBrowserHandlerExtensionTest : public extensions::ExtensionApiTest {
 
   // Creates new, test mount point.
   void AddTmpMountPoint(const std::string& extension_id) {
-    BrowserContext::GetMountPoints(browser()->profile())
-        ->RegisterFileSystem("tmp",
-                             storage::kFileSystemTypeNativeLocal,
-                             storage::FileSystemMountOption(),
-                             tmp_mount_point_);
+    browser()->profile()->GetMountPoints()->RegisterFileSystem(
+        "tmp", storage::kFileSystemTypeLocal, storage::FileSystemMountOption(),
+        tmp_mount_point_);
   }
 
   base::FilePath GetFullPathOnTmpMountPoint(
@@ -194,7 +195,7 @@ class FileBrowserHandlerExtensionTest : public extensions::ExtensionApiTest {
   // the test.  This function will be called from ExtensionFunctinoDispatcher
   // whenever an extension function for fileBrowserHandlerInternal.selectFile
   // will be needed.
-  static ExtensionFunction* TestSelectFileFunctionFactory() {
+  static scoped_refptr<ExtensionFunction> TestSelectFileFunctionFactory() {
     EXPECT_TRUE(test_cases_);
     EXPECT_TRUE(!test_cases_ || current_test_case_ < test_cases_->size());
 
@@ -208,7 +209,7 @@ class FileBrowserHandlerExtensionTest : public extensions::ExtensionApiTest {
         new MockFileSelectorFactory(test_cases_->at(current_test_case_));
     current_test_case_++;
 
-    return new FileBrowserHandlerInternalSelectFileFunction(
+    return base::MakeRefCounted<FileBrowserHandlerInternalSelectFileFunction>(
         mock_factory, false);
   }
 
@@ -295,7 +296,7 @@ IN_PROC_BROWSER_TEST_F(FileBrowserHandlerExtensionTest, EndToEnd) {
   const std::string kExpectedContents = "hello from test extension.";
   base::RunLoop run_loop;
   std::string contents;
-  base::PostTaskWithTraitsAndReply(
+  base::ThreadPool::PostTaskAndReply(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(base::IgnoreResult(base::ReadFileToString), selected_path,
                      &contents),

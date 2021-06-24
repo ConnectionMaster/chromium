@@ -6,7 +6,6 @@
 #define COMPONENTS_DOWNLOAD_INTERNAL_BACKGROUND_SERVICE_STATS_H_
 
 #include "base/files/file.h"
-#include "base/optional.h"
 #include "components/download/internal/background_service/controller.h"
 #include "components/download/internal/background_service/download_blockage_status.h"
 #include "components/download/internal/background_service/driver_entry.h"
@@ -14,6 +13,7 @@
 #include "components/download/public/background_service/clients.h"
 #include "components/download/public/background_service/download_params.h"
 #include "components/download/public/task/download_task_types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace download {
 
@@ -159,17 +159,6 @@ void LogServiceApiAction(DownloadClient client, ServiceApiAction action);
 void LogStartDownloadResult(DownloadClient client,
                             DownloadParams::StartResult result);
 
-// Logs the client response to StartDownload() attempt on the service.
-void LogStartDownloadResponse(DownloadClient client,
-                              download::Client::ShouldDownload should_download);
-
-// Logs the download parameters when StartDownload() is called.
-void LogDownloadParams(const DownloadParams& params);
-
-// Logs recovery operations that happened when we had to move from one state
-// to another on startup.
-void LogRecoveryOperation(Entry::State to_state);
-
 // Logs download completion event, download time, and the file size.
 void LogDownloadCompletion(CompletionType type, uint64_t file_size_bytes);
 
@@ -201,8 +190,7 @@ void LogFileCleanupStatus(FileCleanupReason reason,
                           int external_cleanups);
 
 // Logs the file life time for successfully completed download.
-void LogFileLifeTime(const base::TimeDelta& file_life_time,
-                     int num_cleanup_attempts);
+void LogFileLifeTime(const base::TimeDelta& file_life_time);
 
 // Logs the total disk space utilized by download files.
 // This includes the total size of all the files in |file_dir|.
@@ -211,24 +199,14 @@ void LogFileDirDiskUtilization(int64_t total_disk_space,
                                int64_t free_disk_space,
                                int64_t files_size);
 
-// Logs if the final download file path is different from the requested file
-// path.
-void LogFilePathRenamed(bool renamed);
-
 // Logs an action the Controller takes on an active download.
 void LogEntryEvent(DownloadEvent event);
-
-// At the time of a resumption, logs which resumption attempt count this is.
-void LogEntryResumptionCount(uint32_t resume_count);
 
 // At the time of a retry, logs which retry attempt count this is.
 void LogEntryRetryCount(uint32_t retry_count);
 
 // Records whether the entry was an upload.
 void LogHasUploadData(DownloadClient client, bool has_upload_data);
-
-// Records whether or not a completed entry has a hash value.
-void LogHashPresence(bool hash_exists);
 
 }  // namespace stats
 }  // namespace download

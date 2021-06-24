@@ -8,6 +8,10 @@
 #include "ash/app_menu/app_menu_model_adapter.h"
 #include "ash/ash_export.h"
 
+namespace views {
+class View;
+}
+
 namespace ash {
 
 // A class wrapping menu operations for ShelfView. Responsible for building,
@@ -18,13 +22,25 @@ class ASH_EXPORT ShelfMenuModelAdapter : public AppMenuModelAdapter {
                         std::unique_ptr<ui::SimpleMenuModel> model,
                         views::View* menu_owner,
                         ui::MenuSourceType source_type,
-                        base::OnceClosure on_menu_closed_callback);
+                        base::OnceClosure on_menu_closed_callback,
+                        bool is_tablet_mode,
+                        bool for_application_menu_items);
   ~ShelfMenuModelAdapter() override;
 
   // Overridden from AppMenuModelAdapter:
+  int GetCommandIdForHistograms(int command_id) override;
   void RecordHistogramOnMenuClosed() override;
 
+  // Whether this is showing a menu for |view|.
+  bool IsShowingMenuForView(const views::View& view) const;
+
  private:
+  // The view showing the context menu. Not owned.
+  views::View* menu_owner_;
+
+  // True if this adapter was created for the shelf application menu items.
+  const bool for_application_menu_items_;
+
   DISALLOW_COPY_AND_ASSIGN(ShelfMenuModelAdapter);
 };
 

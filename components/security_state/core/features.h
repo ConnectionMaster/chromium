@@ -2,31 +2,33 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_SECURITY_STATE_FEATURES_H_
-#define COMPONENTS_SECURITY_STATE_FEATURES_H_
+#ifndef COMPONENTS_SECURITY_STATE_CORE_FEATURES_H_
+#define COMPONENTS_SECURITY_STATE_CORE_FEATURES_H_
 
+#include "base/component_export.h"
 #include "base/feature_list.h"
 
 namespace security_state {
 namespace features {
 
-// This feature enables more aggressive warnings for nonsecure http:// pages.
-// The exact warning treatment is dependent on the parameter 'treatment' which
-// can have the following values:
-// - 'dangerous': Treat all http:// pages as actively dangerous
-// - 'warning-and-dangerous-on-form-edits': Show a Not Secure warning on all
-//   http:// pages, and treat them as actively dangerous when the user edits
-//   form fields
-extern const base::Feature kMarkHttpAsFeature;
+// This feature enables Safety Tip warnings on possibly-risky sites.
+COMPONENT_EXPORT(SECURITY_STATE_FEATURES)
+extern const base::Feature kSafetyTipUI;
 
-// The parameter name which controls the warning treatment.
-extern const char kMarkHttpAsFeatureParameterName[];
+// This feature enables Safety Tip warnings on some types of lookalike sites,
+// for the purposes of measuring Simplified Domain Display
+// (https://crbug.com/1090393). It has similar behavior to kSafetyTipUI, but can
+// be enabled independently in a separate experiment.
+COMPONENT_EXPORT(SECURITY_STATE_FEATURES)
+extern const base::Feature kSafetyTipUIForSimplifiedDomainDisplay;
 
-// The different parameter values, described above.
-extern const char kMarkHttpAsParameterDangerous[];
-extern const char kMarkHttpAsParameterWarningAndDangerousOnFormEdits[];
+// This feature enables Safety Tip warnings on pages where there is a delayed
+// Safe Browsing warning. Has no effect unless safe_browsing::kDelayedWarnings
+// is also enabled. Can be enabled independently of kSafetyTipUI.
+COMPONENT_EXPORT(SECURITY_STATE_FEATURES)
+extern const base::Feature kSafetyTipUIOnDelayedWarning;
 
 }  // namespace features
 }  // namespace security_state
 
-#endif  // COMPONENTS_SECURITY_STATE_FEATURES_H_
+#endif  // COMPONENTS_SECURITY_STATE_CORE_FEATURES_H_

@@ -2,10 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_elements/cr_toast/cr_toast.m.js';
+
+import {appUtil} from 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/common/js/app_util.js';
+import {assertInstanceof} from 'chrome://resources/js/assert.m.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+import {getRequiredElement, queryRequiredElement} from 'chrome://resources/js/util.m.js';
+
 /**
  * Video player with chrome's native controls.
  */
-class NativeControlsVideoPlayer {
+export class NativeControlsVideoPlayer {
   constructor() {
     /**
      * List of open videos.
@@ -43,13 +50,6 @@ class NativeControlsVideoPlayer {
     this.videoElement_.controlsList = 'nodownload';
     this.videoElement_.style.pointerEvents = 'auto';
     getRequiredElement('video-container').appendChild(this.videoElement_);
-
-    // TODO: remove the element in html when remove the feature flag
-    getRequiredElement('controls-wrapper').style.display = 'none';
-    getRequiredElement('spinner-container').style.display = 'none';
-    getRequiredElement('error-wrapper').style.display = 'none';
-    getRequiredElement('thumbnail').style.display = 'none';
-    getRequiredElement('cast-container').style.display = 'none';
 
     this.videoElement_.addEventListener('pause', this.onPause_.bind(this));
 
@@ -99,22 +99,29 @@ class NativeControlsVideoPlayer {
    * @private
    */
   addKeyControls_() {
-    document.addEventListener('keydown', (/** KeyboardEvent */ event) => {
+    document.addEventListener('keydown', (/** !Event */ event) => {
+      const keyboardEvent = /** @type {!KeyboardEvent} */ (event);
       const key =
-          (event.ctrlKey && event.shiftKey ? 'Ctrl+Shift+' : '') + event.key;
+          (keyboardEvent.ctrlKey && keyboardEvent.shiftKey ? 'Ctrl+Shift+' :
+                                                             '') +
+          keyboardEvent.key;
       switch (key) {
           // Handle debug shortcut keys.
         case 'Ctrl+Shift+I':
-          chrome.fileManagerPrivate.openInspector('normal');
+          chrome.fileManagerPrivate.openInspector(
+              chrome.fileManagerPrivate.InspectionType.NORMAL);
           break;
         case 'Ctrl+Shift+J':
-          chrome.fileManagerPrivate.openInspector('console');
+          chrome.fileManagerPrivate.openInspector(
+              chrome.fileManagerPrivate.InspectionType.CONSOLE);
           break;
         case 'Ctrl+Shift+C':
-          chrome.fileManagerPrivate.openInspector('element');
+          chrome.fileManagerPrivate.openInspector(
+              chrome.fileManagerPrivate.InspectionType.ELEMENT);
           break;
         case 'Ctrl+Shift+B':
-          chrome.fileManagerPrivate.openInspector('background');
+          chrome.fileManagerPrivate.openInspector(
+              chrome.fileManagerPrivate.InspectionType.BACKGROUND);
           break;
 
         case 'k':
@@ -143,12 +150,13 @@ class NativeControlsVideoPlayer {
     });
 
     getRequiredElement('video-container')
-        .addEventListener('click', (/** MouseEvent */ event) => {
+        .addEventListener('click', (/** !Event */ event) => {
+          const mouseEvent = /** @type {!MouseEvent} */ (event);
           // Turn on loop mode when ctrl+click while the video is playing.
           // If the video is paused, ignore ctrl and play the video.
-          if (event.ctrlKey && !this.videoElement_.paused) {
+          if (mouseEvent.ctrlKey && !this.videoElement_.paused) {
             this.setLoopedModeWithFeedback_(true);
-            event.preventDefault();
+            mouseEvent.preventDefault();
           }
         });
   }
@@ -258,7 +266,7 @@ class NativeControlsVideoPlayer {
       oldTop = window.screen.availHeight / 2;
     }
 
-    let appWindow = chrome.app.window.current();
+    const appWindow = chrome.app.window.current();
     appWindow.innerBounds.width = Math.round(newWidth);
     appWindow.innerBounds.height = Math.round(newHeight);
     appWindow.outerBounds.left =

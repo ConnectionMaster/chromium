@@ -7,23 +7,26 @@
 
 #include <string>
 
-#include "base/strings/string16.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 #include <vector>
 
 #include "chrome/browser/profiles/avatar_menu.h"
 #endif
 
+struct AccountInfo;
+struct CoreAccountInfo;
 class Browser;
 class PrefRegistrySimple;
+class PrefService;
 class Profile;
-class SigninErrorController;
 
-namespace base { class FilePath; }
-
-struct AccountInfo;
+namespace base {
+class CommandLine;
+class FilePath;
+}  // namespace base
 
 namespace profiles {
 
@@ -52,30 +55,46 @@ void SetLastUsedProfile(const std::string& profile_dir);
 // there is only one local profile present, it will return
 // IDS_SINGLE_PROFILE_DISPLAY_NAME, unless the profile has a user entered
 // custom name.
-base::string16 GetAvatarNameForProfile(const base::FilePath& profile_path);
+std::u16string GetAvatarNameForProfile(const base::FilePath& profile_path);
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 // Returns the string to use in the fast user switcher menu for the specified
 // menu item. Adds a supervision indicator to the profile name if appropriate.
-base::string16 GetProfileSwitcherTextForItem(const AvatarMenu::Item& item);
+std::u16string GetProfileSwitcherTextForItem(const AvatarMenu::Item& item);
 
 // Update the name of |profile| to |new_profile_name|. This updates the profile
 // preferences, which triggers an update in the ProfileAttributesStorage. This
 // method should be called when the user is explicitely changing the profile
 // name, as it will always set |prefs::kProfileUsingDefaultName| to false.
 void UpdateProfileName(Profile* profile,
-                       const base::string16& new_profile_name);
+                       const std::u16string& new_profile_name);
 
-// Returns the list of secondary accounts for a specific
-// |profile|. Note that the profile must be signed in.
-std::vector<AccountInfo> GetSecondaryAccountsForSignedInProfile(
-    Profile* profile);
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
 
-// Returns whether the |browser|'s profile is a non-incognito or guest profile.
-// The distinction is needed because guest profiles are implemented as
-// incognito profiles.
+// Returns whether the |browser|'s profile is not incognito (a regular profile
+// or a guest session).
+// The distinction is needed because guest profiles and incognito profiles are
+// implemented as off-the-record profiles.
 bool IsRegularOrGuestSession(Browser* browser);
+
+// Returns true if starting in guest mode is requested at startup (e.g. through
+// command line argument). If |show_warning| is true, send a warning if guest
+// mode is requested but not allowed by policy.
+bool IsGuestModeRequested(const base::CommandLine& command_line,
+                          PrefService* local_state,
+                          bool show_warning);
+
+// Returns true if profile creation is allowed by prefs.
+bool IsProfileCreationAllowed();
+
+// Returns true if guest mode is allowed by prefs.
+bool IsGuestModeEnabled();
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+// Returns true if secondary profiles are allowed by
+// |prefs::kLacrosSecondaryProfilesAllowed|.
+bool AreSecondaryProfilesAllowed();
+#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
 
 // Returns true if sign in is required to browse as this profile.  Call with
 // profile->GetPath() if you have a profile pointer.
@@ -83,42 +102,43 @@ bool IsRegularOrGuestSession(Browser* browser);
 // ProfileAttributesStorage::IsSigninRequired to call here instead.
 bool IsProfileLocked(const base::FilePath& profile_path);
 
-#if !defined(OS_CHROMEOS)
-// If the lock-enabled information for this profile is not up to date, starts
-// an update for the Gaia profile info.
-void UpdateIsProfileLockEnabledIfNeeded(Profile* profile);
-
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 // Starts an update for a new version of the Gaia profile picture and other
 // profile info.
 void UpdateGaiaProfileInfoIfNeeded(Profile* profile);
-
-// Returns the sign-in error controller for the given profile.  Some profiles,
-// like guest profiles, may not have a controller so this function may return
-// NULL.
-SigninErrorController* GetSigninErrorController(Profile* profile);
 
 // If the current active profile (given by prefs::kProfileLastUsed) is locked,
 // changes the active profile to the Guest profile. Returns true if the active
 // profile had been Guest before calling or became Guest as a result of this
 // method.
 bool SetActiveProfileToGuestIfLocked();
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
 
 // If the profile given by |profile_path| is loaded in the ProfileManager, use
 // a BrowsingDataRemover to delete all the Profile's data.
 void RemoveBrowsingDataForProfile(const base::FilePath& profile_path);
-
-#if !defined(OS_CHROMEOS)
-// Returns true if there exists at least one non-supervised or non-child profile
-// and they are all locked.
-bool AreAllNonChildNonSupervisedProfilesLocked();
-#endif
 
 // Returns whether a public session is being run currently.
 bool IsPublicSession();
 
 // Returns whether public session restrictions are enabled.
 bool ArePublicSessionRestrictionsEnabled();
+
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+// Returns the default name for a new enterprise profile.
+std::u16string GetDefaultNameForNewEnterpriseProfile(
+    const std::string& hosted_domain = std::string());
+
+// Returns the default name for a new signed-in profile, based on
+// `account_info`.
+std::u16string GetDefaultNameForNewSignedInProfile(
+    const AccountInfo& account_info);
+
+// The same as above but using incomplete account info.
+std::u16string GetDefaultNameForNewSignedInProfileWithIncompleteInfo(
+    const CoreAccountInfo& account_info);
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+
 #endif  // !defined(OS_ANDROID)
 
 }  // namespace profiles

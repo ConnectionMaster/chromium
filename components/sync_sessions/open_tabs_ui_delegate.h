@@ -10,20 +10,16 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_memory.h"
+#include "components/favicon_base/favicon_types.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/sync_sessions/synced_session.h"
+#include "url/gurl.h"
 
 namespace sync_sessions {
 
 class OpenTabsUIDelegate {
  public:
-  // If a valid favicon for the page at |url| is found, fills |favicon_png| with
-  // the png-encoded image and returns true. Else, returns false.
-  virtual bool GetSyncedFaviconForPageURL(
-      const std::string& pageurl,
-      scoped_refptr<base::RefCountedMemory>* favicon_png) const = 0;
-
   // Builds a list of all foreign sessions, ordered from most recent to least
   // recent. Caller does NOT own SyncedSession objects.
   // Returns true if foreign sessions were found, false otherwise.

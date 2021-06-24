@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef UI_ASH_METRICS_POINTER_METRICS_RECORDER_H_
-#define UI_ASH_METRICS_POINTER_METRICS_RECORDER_H_
+#ifndef ASH_METRICS_POINTER_METRICS_RECORDER_H_
+#define ASH_METRICS_POINTER_METRICS_RECORDER_H_
 
 #include "ash/ash_export.h"
 #include "base/macros.h"
@@ -34,21 +34,21 @@ enum class DownEventSource {
 
 // App type (Destination), Input and FormFactor Combination of the down event.
 // This enum is used to back an UMA histogram and new values should
-// be inserted immediately above kCombinationCount.
+// be inserted immediately above kMaxValue.
 enum class DownEventMetric2 {
   // All "Unknown" types are deprecated, never occur in practice.
-  kOthersUnknownClamshell = 0,
-  kOthersUnknownTabletLandscape = 1,
-  kOthersUnknownTabletPortrait = 2,
-  kOthersMouseClamshell = 3,
-  kOthersMouseTabletLandscape = 4,
-  kOthersMouseTabletPortrait = 5,
-  kOthersStylusClamshell = 6,
-  kOthersStylusTabletLandscape = 7,
-  kOthersStylusTabletPortrait = 8,
-  kOthersTouchClamshell = 9,
-  kOthersTouchTabletLandscape = 10,
-  kOthersTouchTabletPortrait = 11,
+  kNonAppUnknownClamshell = 0,
+  kNonAppUnknownTabletLandscape = 1,
+  kNonAppUnknownTabletPortrait = 2,
+  kNonAppMouseClamshell = 3,
+  kNonAppMouseTabletLandscape = 4,
+  kNonAppMouseTabletPortrait = 5,
+  kNonAppStylusClamshell = 6,
+  kNonAppStylusTabletLandscape = 7,
+  kNonAppStylusTabletPortrait = 8,
+  kNonAppTouchClamshell = 9,
+  kNonAppTouchTabletLandscape = 10,
+  kNonAppTouchTabletPortrait = 11,
   kBrowserUnknownClamshell = 12,
   kBrowserUnknownTabletLandscape = 13,
   kBrowserUnknownTabletPortrait = 14,
@@ -97,63 +97,19 @@ enum class DownEventMetric2 {
   kCrostiniAppTouchClamshell = 57,
   kCrostiniAppTouchTabletLandscape = 58,
   kCrostiniAppTouchTabletPortrait = 59,
-  kMaxValue = kCrostiniAppTouchTabletPortrait
-};
-
-// Input, FormFactor, and Destination Combination of the down event.
-// This enum is used to back an UMA histogram and new values should
-// be inserted immediately above kCombinationCount.
-enum class DownEventMetric {
-  // All "Unknown" types are deprecated, never occur in practice.
-  kUnknownClamshellOthers = 0,
-  kUnknownClamshellBrowser,
-  kUnknownClamshellChromeApp,
-  kUnknownClamshellArcApp,
-  kUnknownTabletLandscapeOthers,
-  kUnknownTabletLandscapeBrowser,
-  kUnknownTabletLandscapeChromeApp,
-  kUnknownTabletLandscapeArcApp,
-  kUnknownTabletPortraitOthers,
-  kUnknownTabletPortraitBrowser,
-  kUnknownTabletPortraitChromeApp,
-  kUnknownTabletPortraitArcApp,
-  kMouseClamshellOthers,
-  kMouseClamshellBrowser,
-  kMouseClamshellChromeApp,
-  kMouseClamshellArcApp,
-  kMouseTabletLandscapeOthers,
-  kMouseTabletLandscapeBrowser,
-  kMouseTabletLandscapeChromeApp,
-  kMouseTabletLandscapeArcApp,
-  kMouseTabletPortraitOthers,
-  kMouseTabletPortraitBrowser,
-  kMouseTabletPortraitChromeApp,
-  kMouseTabletPortraitArcApp,
-  kStylusClamshellOthers,
-  kStylusClamshellBrowser,
-  kStylusClamshellChromeApp,
-  kStylusClamshellArcApp,
-  kStylusTabletLandscapeOthers,
-  kStylusTabletLandscapeBrowser,
-  kStylusTabletLandscapeChromeApp,
-  kStylusTabletLandscapeArcApp,
-  kStylusTabletPortraitOthers,
-  kStylusTabletPortraitBrowser,
-  kStylusTabletPortraitChromeApp,
-  kStylusTabletPortraitArcApp,
-  kTouchClamshellOthers,
-  kTouchClamshellBrowser,
-  kTouchClamshellChromeApp,
-  kTouchClamshellArcApp,
-  kTouchTabletLandscapeOthers,
-  kTouchTabletLandscapeBrowser,
-  kTouchTabletLandscapeChromeApp,
-  kTouchTabletLandscapeArcApp,
-  kTouchTabletPortraitOthers,
-  kTouchTabletPortraitBrowser,
-  kTouchTabletPortraitChromeApp,
-  kTouchTabletPortraitArcApp,
-  kCombinationCount,
+  kSystemAppUnknownClamshell = 60,
+  kSystemAppUnknownTabletLandscape = 61,
+  kSystemAppUnknownTabletPortrait = 62,
+  kSystemAppMouseClamshell = 63,
+  kSystemAppMouseTabletLandscape = 64,
+  kSystemAppMouseTabletPortrait = 65,
+  kSystemAppStylusClamshell = 66,
+  kSystemAppStylusTabletLandscape = 67,
+  kSystemAppStylusTabletPortrait = 68,
+  kSystemAppTouchClamshell = 69,
+  kSystemAppTouchTabletLandscape = 70,
+  kSystemAppTouchTabletPortrait = 71,
+  kMaxValue = kSystemAppTouchTabletPortrait
 };
 
 // A metrics recorder that records pointer related metrics.
@@ -172,4 +128,4 @@ class ASH_EXPORT PointerMetricsRecorder : public ui::EventHandler {
 
 }  // namespace ash
 
-#endif  // UI_ASH_METRICS_POINTER_METRICS_RECORDER_H_
+#endif  // ASH_METRICS_POINTER_METRICS_RECORDER_H_

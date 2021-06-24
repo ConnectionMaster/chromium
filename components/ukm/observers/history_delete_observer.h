@@ -5,9 +5,8 @@
 #ifndef COMPONENTS_UKM_OBSERVERS_HISTORY_DELETE_OBSERVER_H_
 #define COMPONENTS_UKM_OBSERVERS_HISTORY_DELETE_OBSERVER_H_
 
-#include <set>
-
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
+#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
 
 namespace ukm {
@@ -33,8 +32,9 @@ class HistoryDeleteObserver : public history::HistoryServiceObserver {
 
  private:
   // Tracks observed history services, for cleanup.
-  ScopedObserver<history::HistoryService, history::HistoryServiceObserver>
-      history_observer_;
+  base::ScopedMultiSourceObservation<history::HistoryService,
+                                     history::HistoryServiceObserver>
+      history_observations_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HistoryDeleteObserver);
 };

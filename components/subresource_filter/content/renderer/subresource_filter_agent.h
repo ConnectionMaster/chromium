@@ -14,7 +14,9 @@
 #include "components/subresource_filter/core/mojom/subresource_filter.mojom.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "content/public/renderer/render_frame_observer_tracker.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "url/gurl.h"
 
 namespace blink {
@@ -45,6 +47,11 @@ class SubresourceFilterAgent
       std::unique_ptr<AdResourceTracker> ad_resource_tracker);
   ~SubresourceFilterAgent() override;
 
+  // Unit tests don't have a RenderFrame so the construction relies on virtual
+  // methods on this class instead to inject test behaviour. That can't happen
+  // in the constructor, so we need an Initialize() method.
+  void Initialize();
+
  protected:
   // Below methods are protected virtual so they can be mocked out in tests.
 
@@ -52,75 +59,96 @@ class SubresourceFilterAgent
   virtual GURL GetDocumentURL();
 
   virtual bool IsMainFrame();
+  virtual bool IsParentAdSubframe();
+  virtual bool IsProvisional();
+  virtual bool IsSubframeCreatedByAdScript();
 
   // Injects the provided subresource |filter| into the DocumentLoader
-  // orchestrating the most recently committed load.
-  virtual void SetSubresourceFilterForCommittedLoad(
+  // orchestrating the most recently created document.
+  virtual void SetSubresourceFilterForCurrentDocument(
       std::unique_ptr<blink::WebDocumentSubresourceFilter> filter);
 
   // Informs the browser that the first subresource load has been disallowed for
-  // the most recently committed load. Not called if all resources are allowed.
-  virtual void SignalFirstSubresourceDisallowedForCommittedLoad();
+  // the most recently created document. Not called if all resources are
+  // allowed.
+  virtual void SignalFirstSubresourceDisallowedForCurrentDocument();
 
   // Sends statistics about the DocumentSubresourceFilter's work to the browser.
   virtual void SendDocumentLoadStatistics(
       const mojom::DocumentLoadStatistics& statistics);
 
-  // Tells the browser that the frame is an ad subframe.
+  // Tells the browser that the renderer tagged the frame as an ad subframe.
+  // This is not sent for frames tagged by the browser.
   virtual void SendFrameIsAdSubframe();
+
+  // Tells the browser that the frame is a subframe that was created by ad
+  // script.
+  virtual void SendSubframeWasCreatedByAdScript();
 
   // True if the frame has been heuristically determined to be an ad subframe.
   virtual bool IsAdSubframe();
-  virtual void SetIsAdSubframe(blink::mojom::AdFrameType ad_frame_type);
+
+  virtual const absl::optional<blink::FrameAdEvidence>& AdEvidence();
+  virtual void SetAdEvidence(const blink::FrameAdEvidence& ad_evidence);
+
+  // The browser will not inform the renderer of the (sub)frame's ad status and
+  // evidence in the case of an initial synchronous commit to about:blank. We
+  // thus fill in the frame's ad evidence and, if necessary, tag it as an ad.
+  void SetAdEvidenceForInitialEmptySubframe();
 
   // mojom::SubresourceFilterAgent:
   void ActivateForNextCommittedLoad(
       mojom::ActivationStatePtr activation_state,
-      blink::mojom::AdFrameType ad_frame_type) override;
+      const absl::optional<blink::FrameAdEvidence>& ad_evidence) override;
 
  private:
-  // Assumes that the parent will be in a local frame relative to this one, upon
-  // construction.
-  static mojom::ActivationState GetParentActivationState(
+  // Returns the activation state for the `render_frame` to inherit. Main frames
+  // inherit from their opener frames, and subframes inherit from their parent
+  // frames. Assumes that the parent/opener is in a local frame relative to this
+  // one, upon construction.
+  static mojom::ActivationState GetInheritedActivationState(
       content::RenderFrame* render_frame);
 
-  void RecordHistogramsOnLoadCommitted(
+  void RecordHistogramsOnFilterCreation(
       const mojom::ActivationState& activation_state);
-  void RecordHistogramsOnLoadFinished();
-  void ResetInfoForNextCommit();
+  void ResetInfoForNextDocument();
 
-  const mojom::SubresourceFilterHostAssociatedPtr& GetSubresourceFilterHost();
+  virtual const mojom::ActivationState
+  GetInheritedActivationStateForNewDocument();
+
+  void ConstructFilter(const mojom::ActivationState activation_state,
+                       const GURL& url);
+
+  mojom::SubresourceFilterHost* GetSubresourceFilterHost();
 
   void OnSubresourceFilterAgentRequest(
-      mojom::SubresourceFilterAgentAssociatedRequest request);
+      mojo::PendingAssociatedReceiver<mojom::SubresourceFilterAgent> receiver);
 
   // content::RenderFrameObserver:
   void OnDestruct() override;
   void DidCreateNewDocument() override;
-  void DidFailProvisionalLoad(const blink::WebURLError& error) override;
+  void DidFailProvisionalLoad() override;
   void DidFinishLoad() override;
   void WillCreateWorkerFetchContext(blink::WebWorkerFetchContext*) override;
+  void OnOverlayPopupAdDetected() override;
+  void OnLargeStickyAdDetected() override;
 
   // Owned by the ChromeContentRendererClient and outlives us.
   UnverifiedRulesetDealer* ruleset_dealer_;
 
-  mojom::ActivationState activation_state_for_next_commit_;
+  mojom::ActivationState activation_state_for_next_document_;
 
   // Tracks all ad resource observers.
   std::unique_ptr<AdResourceTracker> ad_resource_tracker_;
 
   // Use associated interface to make sure mojo messages are ordered with regard
   // to legacy IPC messages.
-  mojom::SubresourceFilterHostAssociatedPtr subresource_filter_host_;
+  mojo::AssociatedRemote<mojom::SubresourceFilterHost> subresource_filter_host_;
 
-  mojo::AssociatedBinding<mojom::SubresourceFilterAgent> binding_;
-
-  // If a document has been created for this frame before. The first document
-  // for a new local subframe should be about:blank.
-  bool first_document_ = true;
+  mojo::AssociatedReceiver<mojom::SubresourceFilterAgent> receiver_{this};
 
   base::WeakPtr<WebDocumentSubresourceFilterImpl>
-      filter_for_last_committed_load_;
+      filter_for_last_created_document_;
 
   DISALLOW_COPY_AND_ASSIGN(SubresourceFilterAgent);
 };

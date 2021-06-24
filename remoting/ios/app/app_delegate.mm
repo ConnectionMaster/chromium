@@ -10,6 +10,8 @@
 
 #import <AVFoundation/AVFoundation.h>
 
+#include "remoting/base/string_resources.h"
+#import "remoting/ios/app/account_manager.h"
 #import "remoting/ios/app/app_initializer.h"
 #import "remoting/ios/app/app_view_controller.h"
 #import "remoting/ios/app/first_launch_view_presenter.h"
@@ -21,14 +23,20 @@
 #import "remoting/ios/app/view_utils.h"
 #import "remoting/ios/app/web_view_controller.h"
 #import "remoting/ios/facade/remoting_oauth_authentication.h"
+#include "ui/base/l10n/l10n_util.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "remoting/base/string_resources.h"
+#include "remoting/ios/app/notification_presenter.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 
+static NSString* const kTosUrl = @"https://policies.google.com/terms";
+static NSString* const kPrivacyPolicyUrl =
+    @"https://policies.google.com/privacy";
+
 @interface AppDelegate ()<FirstLaunchViewControllerDelegate> {
-  AppViewController* _appViewController;
   FirstLaunchViewPresenter* _firstLaunchViewPresenter;
 }
 @end
@@ -82,17 +90,6 @@
 }
 #endif  // ifndef NDEBUG
 
-#pragma mark - Public
-- (void)showMenuAnimated:(BOOL)animated {
-  DCHECK(_appViewController != nil);
-  [_appViewController showMenuAnimated:animated];
-}
-
-- (void)hideMenuAnimated:(BOOL)animated {
-  DCHECK(_appViewController != nil);
-  [_appViewController hideMenuAnimated:animated];
-}
-
 #pragma mark - Properties
 
 + (AppDelegate*)instance {
@@ -108,17 +105,24 @@
   UINavigationController* navController =
       [[UINavigationController alloc] initWithRootViewController:vc];
   navController.navigationBarHidden = true;
-  _appViewController =
-      [[AppViewController alloc] initWithMainViewController:navController];
   _firstLaunchViewPresenter =
       [[FirstLaunchViewPresenter alloc] initWithNavController:navController
                                        viewControllerDelegate:self];
   if (![RemotingService.instance.authentication.user isAuthenticated]) {
     [_firstLaunchViewPresenter presentView];
   }
-  self.window.rootViewController = _appViewController;
+  self.window.rootViewController = navController;
   [self.window makeKeyAndVisible];
   [UserStatusPresenter.instance start];
+  remoting::NotificationPresenter::GetInstance()->Start();
+}
+
+- (void)presentOnTopPresentingVC:(UIViewController*)viewController {
+  UINavigationController* navController = [[UINavigationController alloc]
+      initWithRootViewController:viewController];
+  [remoting::TopPresentingVC() presentViewController:navController
+                                            animated:YES
+                                          completion:nil];
 }
 
 #pragma mark - AppDelegate
@@ -129,11 +133,7 @@
 }
 
 - (void)presentHelpCenter {
-  UINavigationController* navController = [[UINavigationController alloc]
-      initWithRootViewController:[[HelpViewController alloc] init]];
-  [remoting::TopPresentingVC() presentViewController:navController
-                                            animated:YES
-                                          completion:nil];
+  [self presentOnTopPresentingVC:[[HelpViewController alloc] init]];
 }
 
 - (void)presentFeedbackFlowWithContext:(NSString*)context {
@@ -147,8 +147,7 @@
 #pragma mark - FirstLaunchViewPresenterDelegate
 
 - (void)presentSignInFlow {
-  DCHECK(_appViewController);
-  [_appViewController presentSignInFlow];
+  remoting::ios::AccountManager::GetInstance()->PresentSignInMenu();
 }
 
 @end

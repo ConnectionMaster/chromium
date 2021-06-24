@@ -7,10 +7,11 @@
 #include <stddef.h>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
 #include "services/preferences/tracked/device_id.h"
 #include "services/preferences/tracked/hash_store_contents.h"
 
@@ -206,7 +207,7 @@ ValueState PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckSplitValue(
   // Treat NULL and empty the same; otherwise we would need to store a hash for
   // the entire dictionary (or some other special beacon) to differentiate these
   // two cases which are really the same for dictionaries.
-  if (!initial_split_value || initial_split_value->empty())
+  if (!initial_split_value || initial_split_value->DictEmpty())
     return has_hashes ? ValueState::CLEARED : ValueState::UNCHANGED;
 
   if (!has_hashes)

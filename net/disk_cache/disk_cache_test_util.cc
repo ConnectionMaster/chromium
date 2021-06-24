@@ -4,9 +4,9 @@
 
 #include "net/disk_cache/disk_cache_test_util.h"
 
+#include "base/check_op.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/run_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "net/base/net_errors.h"
@@ -80,6 +80,20 @@ bool CheckCacheIntegrity(const base::FilePath& path,
 
 // -----------------------------------------------------------------------
 
+TestEntryResultCompletionCallback::TestEntryResultCompletionCallback() =
+    default;
+
+TestEntryResultCompletionCallback::~TestEntryResultCompletionCallback() =
+    default;
+
+disk_cache::Backend::EntryResultCallback
+TestEntryResultCompletionCallback::callback() {
+  return base::BindOnce(&TestEntryResultCompletionCallback::SetResult,
+                        base::Unretained(this));
+}
+
+// -----------------------------------------------------------------------
+
 MessageLoopHelper::MessageLoopHelper()
     : num_callbacks_(0),
       num_iterations_(0),
@@ -147,4 +161,9 @@ void CallbackTest::Run(int result) {
   }
 
   helper_->CallbackWasCalled();
+}
+
+void CallbackTest::RunWithEntry(disk_cache::EntryResult result) {
+  last_entry_result_ = std::move(result);
+  Run(last_entry_result_.net_error());
 }

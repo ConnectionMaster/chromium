@@ -4,29 +4,36 @@
 
 #include "chrome/browser/ui/webui/chromeos/multidevice_setup/multidevice_setup_dialog.h"
 
+#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/shell_window_ids.h"
+#include "ash/public/cpp/window_backdrop.h"
+#include "ash/public/cpp/window_properties.h"
 #include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
+#include "chrome/browser/ash/login/ui/oobe_dialog_size_utils.h"
+#include "chrome/browser/chromeos/multidevice_setup/multidevice_setup_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/webui/chromeos/multidevice_setup/multidevice_setup_handler.h"
 #include "chrome/browser/ui/webui/chromeos/multidevice_setup/multidevice_setup_localized_strings_provider.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
+#include "chrome/browser/ui/webui/webui_util.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/multidevice_setup_resources.h"
 #include "chrome/grit/multidevice_setup_resources_map.h"
 #include "chromeos/grit/chromeos_resources.h"
+#include "chromeos/services/multidevice_setup/multidevice_setup_service.h"
 #include "chromeos/services/multidevice_setup/public/cpp/url_provider.h"
-#include "chromeos/services/multidevice_setup/public/mojom/constants.mojom.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/gfx/native_widget_types.h"
 
 namespace chromeos {
 
@@ -34,8 +41,8 @@ namespace multidevice_setup {
 
 namespace {
 
-constexpr int kDialogHeightPx = 640;
-constexpr int kDialogWidthPx = 768;
+constexpr int kPreferredDialogHeightPx = 640;
+constexpr int kPreferredDialogWidthPx = 768;
 
 }  // namespace
 
@@ -43,24 +50,38 @@ constexpr int kDialogWidthPx = 768;
 MultiDeviceSetupDialog* MultiDeviceSetupDialog::current_instance_ = nullptr;
 
 // static
+gfx::NativeWindow MultiDeviceSetupDialog::containing_window_ = nullptr;
+
+// static
 void MultiDeviceSetupDialog::Show() {
-  // The dialog is already showing, so there is nothing to do.
-  if (current_instance_)
+  // Focus the window hosting the dialog that has already been created.
+  if (containing_window_) {
+    DCHECK(current_instance_);
+    containing_window_->Focus();
     return;
+  }
 
   current_instance_ = new MultiDeviceSetupDialog();
+  current_instance_->ShowSystemDialogForBrowserContext(
+      ProfileManager::GetActiveUserProfile(), nullptr);
 
-  // TODO(hansberry): This should pass ash_util::GetFramelessInitParams() for
-  // extra_params. Currently however, that prevents the dialog from presenting
-  // in full screen if tablet mode is enabled. See https://crbug.com/888629.
-  chrome::ShowWebDialog(nullptr /* parent */,
-                        ProfileManager::GetActiveUserProfile(),
-                        current_instance_);
+  containing_window_ = current_instance_->dialog_window();
+
+  // Remove the black backdrop behind the dialog window which appears in tablet
+  // and full-screen mode.
+  ash::WindowBackdrop::Get(containing_window_)
+      ->SetBackdropMode(ash::WindowBackdrop::BackdropMode::kDisabled);
 }
 
 // static
 MultiDeviceSetupDialog* MultiDeviceSetupDialog::Get() {
   return current_instance_;
+}
+
+// static
+void MultiDeviceSetupDialog::SetInstanceForTesting(
+    MultiDeviceSetupDialog* instance) {
+  current_instance_ = instance;
 }
 
 void MultiDeviceSetupDialog::AddOnCloseCallback(base::OnceClosure callback) {
@@ -69,7 +90,7 @@ void MultiDeviceSetupDialog::AddOnCloseCallback(base::OnceClosure callback) {
 
 MultiDeviceSetupDialog::MultiDeviceSetupDialog()
     : SystemWebDialogDelegate(GURL(chrome::kChromeUIMultiDeviceSetupUrl),
-                              base::string16()) {}
+                              std::u16string()) {}
 
 MultiDeviceSetupDialog::~MultiDeviceSetupDialog() {
   for (auto& callback : on_close_callbacks_)
@@ -77,12 +98,25 @@ MultiDeviceSetupDialog::~MultiDeviceSetupDialog() {
 }
 
 void MultiDeviceSetupDialog::GetDialogSize(gfx::Size* size) const {
-  size->SetSize(kDialogWidthPx, kDialogHeightPx);
+  if (features::IsNewOobeLayoutEnabled()) {
+    const gfx::Size dialog_size = CalculateOobeDialogSizeForPrimrayDisplay();
+    size->SetSize(dialog_size.width(), dialog_size.height());
+  } else {
+    // Note: The size is calculated once based on the current screen orientation
+    // and is not ever updated. It might be possible to resize the dialog upon
+    // each screen rotation, but https://crbug.com/1030993 prevents this from
+    // working.
+    // TODO(https://crbug.com/1030993): Explore resizing the dialog dynamically.
+    static const gfx::Size dialog_size = ComputeDialogSizeForInternalScreen(
+        gfx::Size(kPreferredDialogWidthPx, kPreferredDialogHeightPx));
+    size->SetSize(dialog_size.width(), dialog_size.height());
+  }
 }
 
 void MultiDeviceSetupDialog::OnDialogClosed(const std::string& json_retval) {
   DCHECK(this == current_instance_);
   current_instance_ = nullptr;
+  containing_window_ = nullptr;
 
   // Note: The call below deletes |this|, so there is no further need to keep
   // track of the pointer.
@@ -94,40 +128,35 @@ MultiDeviceSetupDialogUI::MultiDeviceSetupDialogUI(content::WebUI* web_ui)
   content::WebUIDataSource* source =
       content::WebUIDataSource::Create(chrome::kChromeUIMultiDeviceSetupHost);
 
-  chromeos::multidevice_setup::AddLocalizedStrings(source);
-  source->SetJsonPath("strings.js");
-  source->SetDefaultResource(
-      IDR_MULTIDEVICE_SETUP_MULTIDEVICE_SETUP_DIALOG_HTML);
+  source->DisableTrustedTypesCSP();
 
-  // Note: The |kMultiDeviceSetupResourcesSize| and |kMultideviceSetupResources|
-  // fields are defined in the generated file
-  // chrome/grit/multidevice_setup_resources_map.h.
-  for (size_t i = 0; i < kMultideviceSetupResourcesSize; ++i) {
-    source->AddResourcePath(kMultideviceSetupResources[i].name,
-                            kMultideviceSetupResources[i].value);
-  }
+  chromeos::multidevice_setup::AddLocalizedStrings(source);
+  source->UseStringsJs();
+
+  webui::SetupWebUIDataSource(
+      source,
+      base::make_span(kMultideviceSetupResources,
+                      kMultideviceSetupResourcesSize),
+      IDR_MULTIDEVICE_SETUP_MULTIDEVICE_SETUP_DIALOG_HTML);
 
   web_ui->AddMessageHandler(std::make_unique<MultideviceSetupHandler>());
   web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
   content::WebUIDataSource::Add(Profile::FromWebUI(web_ui), source);
-
-  // Add Mojo bindings to this WebUI so that Mojo calls can occur in JavaScript.
-  AddHandlerToRegistry(base::BindRepeating(
-      &MultiDeviceSetupDialogUI::BindMultiDeviceSetup, base::Unretained(this)));
 }
 
 MultiDeviceSetupDialogUI::~MultiDeviceSetupDialogUI() = default;
 
-void MultiDeviceSetupDialogUI::BindMultiDeviceSetup(
-    chromeos::multidevice_setup::mojom::MultiDeviceSetupRequest request) {
-  service_manager::Connector* connector =
-      content::BrowserContext::GetConnectorFor(
-          web_ui()->GetWebContents()->GetBrowserContext());
-  DCHECK(connector);
-
-  connector->BindInterface(chromeos::multidevice_setup::mojom::kServiceName,
-                           std::move(request));
+void MultiDeviceSetupDialogUI::BindInterface(
+    mojo::PendingReceiver<chromeos::multidevice_setup::mojom::MultiDeviceSetup>
+        receiver) {
+  MultiDeviceSetupService* service =
+      MultiDeviceSetupServiceFactory::GetForProfile(
+          Profile::FromWebUI(web_ui()));
+  if (service)
+    service->BindMultiDeviceSetup(std::move(receiver));
 }
+
+WEB_UI_CONTROLLER_TYPE_IMPL(MultiDeviceSetupDialogUI)
 
 }  // namespace multidevice_setup
 

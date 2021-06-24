@@ -6,11 +6,13 @@ package org.chromium.content_public.browser;
 import android.annotation.TargetApi;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewStructure;
 import android.view.accessibility.AccessibilityNodeProvider;
 
-import org.chromium.base.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.content.browser.accessibility.WebContentsAccessibilityImpl;
 
 /**
@@ -46,6 +48,12 @@ public interface WebContentsAccessibility {
      */
     @VisibleForTesting
     void setAccessibilityEnabledForTesting();
+
+    /**
+     *  Add a spelling error.
+     */
+    @VisibleForTesting
+    void addSpellingErrorForTesting(int virtualViewId, int startOffset, int endOffset);
 
     /**
      * Attempts to perform an accessibility action on the web content.  If the accessibility action
@@ -117,4 +125,10 @@ public interface WebContentsAccessibility {
      * Called when the a11y focus gets cleared on the autofill popup.
      */
     void onAutofillPopupAccessibilityFocusCleared();
+
+    /**
+     * Called directly from A {@link View} in the absence of a WebView and renderer.
+     * @return Whether the hover event was consumed.
+     */
+    boolean onHoverEventNoRenderer(MotionEvent event);
 }

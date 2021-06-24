@@ -14,12 +14,12 @@
 // Returns whether the entry is read.
 - (BOOL)isItemRead:(id<ReadingListListItem>)item;
 
-- (void)deleteItem:(id<ReadingListListItem>)item;
 - (void)openItemInNewTab:(id<ReadingListListItem>)item;
 - (void)openItemInNewIncognitoTab:(id<ReadingListListItem>)item;
 - (void)openItemOffline:(id<ReadingListListItem>)item;
 - (void)markItemRead:(id<ReadingListListItem>)item;
 - (void)markItemUnread:(id<ReadingListListItem>)item;
+- (void)deleteItem:(id<ReadingListListItem>)item;
 
 @end
 

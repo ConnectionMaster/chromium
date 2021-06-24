@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/long_or_test_dictionary.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -57,7 +57,7 @@ LongOrTestDictionary::LongOrTestDictionary(const LongOrTestDictionary&) = defaul
 LongOrTestDictionary::~LongOrTestDictionary() = default;
 LongOrTestDictionary& LongOrTestDictionary::operator=(const LongOrTestDictionary&) = default;
 
-void LongOrTestDictionary::Trace(blink::Visitor* visitor) {
+void LongOrTestDictionary::Trace(Visitor* visitor) const {
   visitor->Trace(test_dictionary_);
 }
 
@@ -74,7 +74,7 @@ void V8LongOrTestDictionary::ToImpl(
     return;
 
   if (IsUndefinedOrNull(v8_value)) {
-    TestDictionary* cpp_value = NativeValueTraits<TestDictionary>::NativeValue(isolate, v8_value, exception_state);
+    TestDictionary* cpp_value{ NativeValueTraits<TestDictionary>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetTestDictionary(cpp_value);
@@ -82,7 +82,7 @@ void V8LongOrTestDictionary::ToImpl(
   }
 
   if (v8_value->IsObject()) {
-    TestDictionary* cpp_value = NativeValueTraits<TestDictionary>::NativeValue(isolate, v8_value, exception_state);
+    TestDictionary* cpp_value{ NativeValueTraits<TestDictionary>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetTestDictionary(cpp_value);
@@ -90,7 +90,7 @@ void V8LongOrTestDictionary::ToImpl(
   }
 
   if (v8_value->IsNumber()) {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -98,7 +98,7 @@ void V8LongOrTestDictionary::ToImpl(
   }
 
   {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -128,3 +128,4 @@ LongOrTestDictionary NativeValueTraits<LongOrTestDictionary>::NativeValue(
 }
 
 }  // namespace blink
+

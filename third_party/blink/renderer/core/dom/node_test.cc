@@ -5,16 +5,21 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_shadow_root_init.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/comment.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
+#include "third_party/blink/renderer/core/dom/layout_tree_builder.h"
 #include "third_party/blink/renderer/core/dom/processing_instruction.h"
+#include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
-#include "third_party/blink/renderer/core/dom/shadow_root_init.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_engine.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
 #include "third_party/blink/renderer/core/html/html_div_element.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -35,10 +40,12 @@ class FakeMediaControls : public HTMLDivElement {
 class NodeTest : public EditingTestBase {
  protected:
   LayoutObject* ReattachLayoutTreeForNode(Node& node) {
-    node.LazyReattachIfAttached();
+    node.SetForceReattachLayoutTree();
     GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
-    GetDocument().GetStyleEngine().RecalcStyle({});
+    GetDocument().GetStyleEngine().RecalcStyle();
     Node::AttachContext context;
+    context.parent = LayoutTreeBuilderTraversal::ParentLayoutObject(node);
+    GetDocument().GetStyleEngine().in_layout_tree_rebuild_ = true;
     node.ReattachLayoutTree(context);
     return context.previous_in_flow;
   }
@@ -57,7 +64,7 @@ class NodeTest : public EditingTestBase {
     first_shadow.AppendChild(test_node);
     ShadowRoot& second_shadow = test_node->CreateUserAgentShadowRoot();
 
-    HTMLDivElement* class_div = HTMLDivElement::Create(GetDocument());
+    auto* class_div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
     class_div->setAttribute("class", "test");
     second_shadow.AppendChild(class_div);
     return class_div;
@@ -79,8 +86,7 @@ TEST_F(NodeTest, canStartSelection) {
 
 TEST_F(NodeTest, canStartSelectionWithShadowDOM) {
   const char* body_content = "<div id=host><span id=one>one</span></div>";
-  const char* shadow_content =
-      "<a href='http://www.msn.com'><content></content></a>";
+  const char* shadow_content = "<a href='http://www.msn.com'><slot></slot></a>";
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");
   Node* one = GetDocument().getElementById("one");
@@ -95,17 +101,14 @@ TEST_F(NodeTest, customElementState) {
   Element* div = GetDocument().getElementById("div");
   EXPECT_EQ(CustomElementState::kUncustomized, div->GetCustomElementState());
   EXPECT_TRUE(div->IsDefined());
-  EXPECT_EQ(Node::kV0NotCustomElement, div->GetV0CustomElementState());
 
   div->SetCustomElementState(CustomElementState::kUndefined);
   EXPECT_EQ(CustomElementState::kUndefined, div->GetCustomElementState());
   EXPECT_FALSE(div->IsDefined());
-  EXPECT_EQ(Node::kV0NotCustomElement, div->GetV0CustomElementState());
 
   div->SetCustomElementState(CustomElementState::kCustom);
   EXPECT_EQ(CustomElementState::kCustom, div->GetCustomElementState());
   EXPECT_TRUE(div->IsDefined());
-  EXPECT_EQ(Node::kV0NotCustomElement, div->GetV0CustomElementState());
 }
 
 TEST_F(NodeTest, AttachContext_PreviousInFlow_TextRoot) {
@@ -262,7 +265,7 @@ TEST_F(NodeTest, AttachContext_PreviousInFlow_Slotted) {
   ShadowRoot& shadow_root =
       GetDocument().getElementById("host")->AttachShadowRootInternal(
           ShadowRootType::kOpen);
-  shadow_root.SetInnerHTMLFromString(
+  shadow_root.setInnerHTML(
       "<div id=root style='display:contents'><span></span><slot></slot></div>");
   UpdateAllLifecyclePhasesForTest();
 
@@ -274,21 +277,8 @@ TEST_F(NodeTest, AttachContext_PreviousInFlow_Slotted) {
   EXPECT_EQ(span->GetLayoutObject(), previous_in_flow);
 }
 
-TEST_F(NodeTest, AttachContext_PreviousInFlow_V0Content) {
-  SetBodyContent("<div id=host><span id=inline></span></div>");
-  ShadowRoot* shadow_root = CreateShadowRootForElementWithIDAndSetInnerHTML(
-      GetDocument(), "host",
-      "<div id=root style='display:contents'><span></span><content /></div>");
-  Element* root = shadow_root->getElementById("root");
-  Element* span = GetDocument().getElementById("inline");
-  LayoutObject* previous_in_flow = ReattachLayoutTreeForNode(*root);
-
-  EXPECT_TRUE(previous_in_flow);
-  EXPECT_EQ(span->GetLayoutObject(), previous_in_flow);
-}
-
 TEST_F(NodeTest, HasMediaControlAncestor_Fail) {
-  HTMLDivElement* node = HTMLDivElement::Create(GetDocument());
+  auto* node = MakeGarbageCollected<HTMLDivElement>(GetDocument());
   EXPECT_FALSE(node->HasMediaControlAncestor());
   EXPECT_FALSE(InitializeUserAgentShadowTree(node)->HasMediaControlAncestor());
 }
@@ -310,8 +300,8 @@ TEST_F(NodeTest, HasMediaControlAncestor_MediaControls) {
 TEST_F(NodeTest, appendChildProcessingInstructionNoStyleRecalc) {
   UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(GetDocument().ChildNeedsStyleRecalc());
-  ProcessingInstruction* pi =
-      ProcessingInstruction::Create(GetDocument(), "A", "B");
+  auto* pi =
+      MakeGarbageCollected<ProcessingInstruction>(GetDocument(), "A", "B");
   GetDocument().body()->appendChild(pi, ASSERT_NO_EXCEPTION);
   EXPECT_FALSE(GetDocument().ChildNeedsStyleRecalc());
 }
@@ -324,26 +314,191 @@ TEST_F(NodeTest, appendChildCommentNoStyleRecalc) {
   EXPECT_FALSE(GetDocument().ChildNeedsStyleRecalc());
 }
 
-TEST_F(NodeTest, LazyReattachCommentAndPI) {
-  SetBodyContent("<!-- -->");
-  HTMLElement* body = GetDocument().body();
-  ProcessingInstruction* pi =
-      ProcessingInstruction::Create(GetDocument(), "A", "B");
-  body->appendChild(pi, ASSERT_NO_EXCEPTION);
+TEST_F(NodeTest, MutationOutsideFlatTreeStyleDirty) {
+  SetBodyContent("<div id=host><span id=nonslotted></span></div>");
+  GetDocument().getElementById("host")->AttachShadowRootInternal(
+      ShadowRootType::kOpen);
   UpdateAllLifecyclePhasesForTest();
 
-  Node* comment = body->firstChild();
-  EXPECT_EQ(Node::kCommentNode, comment->getNodeType());
+  EXPECT_FALSE(GetDocument().NeedsLayoutTreeUpdate());
+  GetDocument()
+      .getElementById("nonslotted")
+      ->setAttribute("style", "color:green");
+  EXPECT_FALSE(GetDocument().NeedsLayoutTreeUpdate());
+}
 
-  comment->LazyReattachIfAttached();
-  EXPECT_FALSE(body->ChildNeedsStyleRecalc());
-  EXPECT_FALSE(comment->GetForceReattachLayoutTree());
-  EXPECT_FALSE(comment->NeedsStyleRecalc());
+TEST_F(NodeTest, SkipStyleDirtyHostChild) {
+  SetBodyContent("<div id=host><span></span></div>");
+  Element* host = GetDocument().getElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootInternal(ShadowRootType::kOpen);
+  shadow_root.setInnerHTML("<div style='display:none'><slot></slot></div>");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(GetDocument().NeedsLayoutTreeUpdate());
 
-  pi->LazyReattachIfAttached();
-  EXPECT_FALSE(body->ChildNeedsStyleRecalc());
-  EXPECT_FALSE(pi->GetForceReattachLayoutTree());
-  EXPECT_FALSE(pi->NeedsStyleRecalc());
+  // Check that we do not mark an element for style recalc when the element and
+  // its flat tree parent are display:none.
+  To<Element>(host->firstChild())->setAttribute("style", "color:green");
+  EXPECT_FALSE(GetDocument().NeedsLayoutTreeUpdate());
+}
+
+TEST_F(NodeTest, ContainsChild) {
+  SetBodyContent("<div id=a><div id=b></div></div>");
+  Element* a = GetDocument().getElementById("a");
+  Element* b = GetDocument().getElementById("b");
+  EXPECT_TRUE(a->contains(b));
+}
+
+TEST_F(NodeTest, ContainsNoSibling) {
+  SetBodyContent("<div id=a></div><div id=b></div>");
+  Element* a = GetDocument().getElementById("a");
+  Element* b = GetDocument().getElementById("b");
+  EXPECT_FALSE(a->contains(b));
+}
+
+TEST_F(NodeTest, ContainsPseudo) {
+  SetBodyContent(
+      "<style>#a::before{content:'aaa';}</style>"
+      "<div id=a></div>");
+  Element* a = GetDocument().getElementById("a");
+  PseudoElement* pseudo = a->GetPseudoElement(kPseudoIdBefore);
+  ASSERT_TRUE(pseudo);
+  EXPECT_TRUE(a->contains(pseudo));
+}
+
+TEST_F(NodeTest, SkipForceReattachDisplayNone) {
+  SetBodyContent("<div id=host><span style='display:none'></span></div>");
+  Element* host = GetDocument().getElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootInternal(ShadowRootType::kOpen);
+  shadow_root.setInnerHTML("<slot name='target'></slot>");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* span = To<Element>(host->firstChild());
+  span->setAttribute(html_names::kSlotAttr, "target");
+  GetDocument().GetSlotAssignmentEngine().RecalcSlotAssignments();
+
+  // Node::FlatTreeParentChanged for a display:none could trigger style recalc,
+  // but we should skip a forced re-attach for nodes with a null ComputedStyle.
+  EXPECT_TRUE(GetDocument().NeedsLayoutTreeUpdate());
+  EXPECT_TRUE(span->NeedsStyleRecalc());
+  EXPECT_FALSE(span->GetForceReattachLayoutTree());
+}
+
+TEST_F(NodeTest, UpdateChildDirtyAncestorsOnSlotAssignment) {
+  SetBodyContent("<div id=host><span></span></div>");
+  Element* host = GetDocument().getElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootInternal(ShadowRootType::kOpen);
+  shadow_root.setInnerHTML(
+      "<div><slot></slot></div><div id='child-dirty'><slot "
+      "name='target'></slot></div>");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(GetDocument().NeedsLayoutTreeUpdate());
+
+  auto* span = To<Element>(host->firstChild());
+  auto* ancestor = shadow_root.getElementById("child-dirty");
+
+  // Make sure the span is dirty before the re-assignment.
+  span->setAttribute("style", "color:green");
+  EXPECT_FALSE(ancestor->ChildNeedsStyleRecalc());
+
+  // Re-assign to second slot.
+  span->setAttribute(html_names::kSlotAttr, "target");
+  GetDocument().GetSlotAssignmentEngine().RecalcSlotAssignments();
+  EXPECT_TRUE(ancestor->ChildNeedsStyleRecalc());
+}
+
+TEST_F(NodeTest, UpdateChildDirtySlotAfterRemoval) {
+  SetBodyContent("<div id=host><span></span></div>");
+  Element* host = GetDocument().getElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootInternal(ShadowRootType::kOpen);
+  shadow_root.setInnerHTML("<slot></slot>");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* span = To<Element>(host->firstChild());
+  auto* slot = shadow_root.firstChild();
+
+  // Make sure the span is dirty, and the slot marked child-dirty before the
+  // removal.
+  span->setAttribute("style", "color:green");
+  EXPECT_TRUE(span->NeedsStyleRecalc());
+  EXPECT_TRUE(slot->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(host->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(GetDocument().body()->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(GetDocument().GetStyleEngine().NeedsStyleRecalc());
+
+  // The StyleRecalcRoot is now the span. Removing the span should clear the
+  // root and the child-dirty bits on the ancestors.
+  span->remove();
+
+  EXPECT_FALSE(slot->ChildNeedsStyleRecalc());
+  EXPECT_FALSE(host->ChildNeedsStyleRecalc());
+  EXPECT_FALSE(GetDocument().body()->ChildNeedsStyleRecalc());
+  EXPECT_FALSE(GetDocument().GetStyleEngine().NeedsStyleRecalc());
+}
+
+TEST_F(NodeTest, UpdateChildDirtyAfterSlotRemoval) {
+  SetBodyContent("<div id=host><span></span></div>");
+  Element* host = GetDocument().getElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootInternal(ShadowRootType::kOpen);
+  shadow_root.setInnerHTML("<div><slot></slot></div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* span = To<Element>(host->firstChild());
+  auto* div = shadow_root.firstChild();
+  auto* slot = div->firstChild();
+
+  // Make sure the span is dirty, and the slot marked child-dirty before the
+  // removal.
+  span->setAttribute("style", "color:green");
+  EXPECT_TRUE(span->NeedsStyleRecalc());
+  EXPECT_TRUE(slot->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(div->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(host->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(GetDocument().body()->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(GetDocument().GetStyleEngine().NeedsStyleRecalc());
+
+  // The StyleRecalcRoot is now the span. Removing the slot breaks the flat
+  // tree ancestor chain so that the span is no longer in the flat tree. The
+  // StyleRecalcRoot is cleared.
+  slot->remove();
+
+  EXPECT_FALSE(div->ChildNeedsStyleRecalc());
+  EXPECT_FALSE(host->ChildNeedsStyleRecalc());
+  EXPECT_FALSE(GetDocument().body()->ChildNeedsStyleRecalc());
+  EXPECT_FALSE(GetDocument().GetStyleEngine().NeedsStyleRecalc());
+}
+
+TEST_F(NodeTest, UpdateChildDirtyAfterSlottingDirtyNode) {
+  SetBodyContent("<div id=host><span></span></div>");
+
+  auto* host = GetDocument().getElementById("host");
+  auto* span = To<Element>(host->firstChild());
+
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootInternal(ShadowRootType::kOpen);
+  shadow_root.setInnerHTML("<div><slot name=x></slot></div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  // Make sure the span is style dirty.
+  span->setAttribute("style", "color:green");
+
+  // Assign span to slot.
+  span->setAttribute("slot", "x");
+
+  GetDocument().GetSlotAssignmentEngine().RecalcSlotAssignments();
+
+  // Make sure shadow tree div and slot are marked with ChildNeedsStyleRecalc
+  // when the dirty span is slotted in.
+  EXPECT_TRUE(shadow_root.firstChild()->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(shadow_root.firstChild()->firstChild()->ChildNeedsStyleRecalc());
+  EXPECT_TRUE(span->NeedsStyleRecalc());
+
+  // This used to call a DCHECK failure. Make sure we don't regress.
+  UpdateAllLifecyclePhasesForTest();
 }
 
 }  // namespace blink

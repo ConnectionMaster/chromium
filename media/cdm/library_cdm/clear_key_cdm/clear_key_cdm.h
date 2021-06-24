@@ -23,7 +23,6 @@
 namespace media {
 
 class CdmHostProxy;
-class CdmProxyHandler;
 class CdmVideoDecoder;
 class DecoderBuffer;
 class FFmpegCdmAudioDecoder;
@@ -32,28 +31,12 @@ class FileIOTestRunner;
 const int64_t kInitialTimerDelayMs = 200;
 
 // Clear key implementation of the cdm::ContentDecryptionModule interfaces.
-class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
-                    public cdm::ContentDecryptionModule_10,
+class ClearKeyCdm : public cdm::ContentDecryptionModule_10,
                     public cdm::ContentDecryptionModule_11 {
  public:
   template <typename HostInterface>
   ClearKeyCdm(HostInterface* host, const std::string& key_system);
   ~ClearKeyCdm() override;
-
-  // cdm::ContentDecryptionModule_9 implementation.
-  void Initialize(bool allow_distinctive_identifier,
-                  bool allow_persistent_state) override;
-  cdm::Status InitializeAudioDecoder(
-      const cdm::AudioDecoderConfig_1& audio_decoder_config) override;
-  cdm::Status InitializeVideoDecoder(
-      const cdm::VideoDecoderConfig_1& video_decoder_config) override;
-  cdm::Status Decrypt(const cdm::InputBuffer_1& encrypted_buffer,
-                      cdm::DecryptedBlock* decrypted_block) override;
-  cdm::Status DecryptAndDecodeFrame(const cdm::InputBuffer_1& encrypted_buffer,
-                                    cdm::VideoFrame* video_frame) override;
-  cdm::Status DecryptAndDecodeSamples(
-      const cdm::InputBuffer_1& encrypted_buffer,
-      cdm::AudioFrames* audio_frames) override;
 
   // cdm::ContentDecryptionModule_10 implementation.
   cdm::Status InitializeVideoDecoder(
@@ -119,17 +102,6 @@ class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
                    uint32_t storage_id_size) override;
 
  private:
-  struct UpdateParams {
-    UpdateParams(uint32_t promise_id,
-                 std::string session_id,
-                 std::vector<uint8_t> response);
-    ~UpdateParams();
-
-    const uint32_t promise_id;
-    const std::string session_id;
-    const std::vector<uint8_t> response;
-  };
-
   // ContentDecryptionModule callbacks.
   void OnSessionMessage(const std::string& session_id,
                         CdmMessageType message_type,
@@ -137,7 +109,8 @@ class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
   void OnSessionKeysChange(const std::string& session_id,
                            bool has_additional_usable_key,
                            CdmKeysInfo keys_info);
-  void OnSessionClosed(const std::string& session_id);
+  void OnSessionClosed(const std::string& session_id,
+                       CdmSessionClosedReason reason);
   void OnSessionExpirationUpdate(const std::string& session_id,
                                  base::Time new_expiry_time);
 
@@ -154,7 +127,7 @@ class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
   void OnUpdateSuccess(uint32_t promise_id, const std::string& session_id);
 
   // Prepares next renewal message and sets a timer for it.
-  void ScheduleNextRenewal();
+  void ScheduleNextTimer();
 
   // Decrypts the |encrypted_buffer| and puts the result in |decrypted_buffer|.
   // Returns cdm::kSuccess if decryption succeeded. The decrypted result is
@@ -174,15 +147,10 @@ class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
   void OnFileIOTestComplete(bool success);
 
   void StartOutputProtectionTest();
+
   void StartPlatformVerificationTest();
   void ReportVerifyCdmHostTestResult();
   void StartStorageIdTest();
-
-  void InitializeCdmProxyHandler();
-  void OnCdmProxyHandlerInitialized(bool success);
-  void OnCdmProxyKeySet(bool success);
-
-  void UpdateSessionInternal(std::unique_ptr<UpdateParams> params);
 
   int host_interface_version_ = 0;
 
@@ -198,9 +166,9 @@ class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
   // Timer delay in milliseconds for the next cdm_host_proxy_->SetTimer() call.
   int64_t timer_delay_ms_ = kInitialTimerDelayMs;
 
-  // Indicates whether a renewal timer has been set to prevent multiple timers
-  // from running.
-  bool has_set_renewal_timer_ = false;
+  // Indicates whether a timer has been set to prevent multiple timers from
+  // running.
+  bool has_set_timer_ = false;
 
   bool has_sent_individualization_request_ = false;
 
@@ -208,12 +176,9 @@ class ClearKeyCdm : public cdm::ContentDecryptionModule_9,
   std::unique_ptr<FFmpegCdmAudioDecoder> audio_decoder_;
 #endif  // CLEAR_KEY_CDM_USE_FFMPEG_DECODER
 
-  std::unique_ptr<UpdateParams> pending_update_params_;
-
   std::unique_ptr<CdmVideoDecoder> video_decoder_;
 
   std::unique_ptr<FileIOTestRunner> file_io_test_runner_;
-  std::unique_ptr<CdmProxyHandler> cdm_proxy_handler_;
 
   bool is_running_output_protection_test_ = false;
   bool is_running_platform_verification_test_ = false;

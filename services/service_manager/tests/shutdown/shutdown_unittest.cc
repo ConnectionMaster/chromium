@@ -6,12 +6,13 @@
 
 #include "base/no_destructor.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/connector.h"
 #include "services/service_manager/public/cpp/manifest.h"
 #include "services/service_manager/public/cpp/manifest_builder.h"
 #include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/cpp/service_binding.h"
+#include "services/service_manager/public/cpp/service_receiver.h"
 #include "services/service_manager/public/cpp/test/test_service_manager.h"
 #include "services/service_manager/public/mojom/constants.mojom.h"
 #include "services/service_manager/tests/shutdown/shutdown.test-mojom.h"
@@ -31,6 +32,11 @@ const std::vector<Manifest>& GetTestManifests() {
   static base::NoDestructor<std::vector<Manifest>> manifests{
       {ManifestBuilder()
            .WithServiceName(kShutdownClientName)
+           .WithOptions(ManifestOptionsBuilder()
+                            .WithExecutionMode(
+                                Manifest::ExecutionMode::kStandaloneExecutable)
+                            .WithSandboxType("none")
+                            .Build())
            .ExposeCapability(
                kClientControllerCapability,
                Manifest::InterfaceList<mojom::ShutdownTestClientController>())
@@ -40,6 +46,11 @@ const std::vector<Manifest>& GetTestManifests() {
            .Build(),
        ManifestBuilder()
            .WithServiceName(kShutdownServiceName)
+           .WithOptions(ManifestOptionsBuilder()
+                            .WithExecutionMode(
+                                Manifest::ExecutionMode::kStandaloneExecutable)
+                            .WithSandboxType("none")
+                            .Build())
            .ExposeCapability(
                kShutdownServiceCapability,
                Manifest::InterfaceList<mojom::ShutdownTestService>())
@@ -60,18 +71,18 @@ class ShutdownTest : public testing::Test {
  public:
   ShutdownTest()
       : test_service_manager_(GetTestManifests()),
-        test_service_binding_(
+        test_service_receiver_(
             &test_service_,
             test_service_manager_.RegisterTestInstance(kTestServiceName)) {}
   ~ShutdownTest() override = default;
 
-  Connector* connector() { return test_service_binding_.GetConnector(); }
+  Connector* connector() { return test_service_receiver_.GetConnector(); }
 
  private:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   TestServiceManager test_service_manager_;
   Service test_service_;
-  ServiceBinding test_service_binding_;
+  ServiceReceiver test_service_receiver_;
 
   DISALLOW_COPY_AND_ASSIGN(ShutdownTest);
 };
@@ -82,12 +93,14 @@ TEST_F(ShutdownTest, ConnectRace) {
   // not
   // working as intended.
 
-  mojom::ShutdownTestClientControllerPtr control;
-  connector()->BindInterface(kShutdownClientName, &control);
+  mojo::Remote<mojom::ShutdownTestClientController> control;
+  connector()->Connect(kShutdownClientName,
+                       control.BindNewPipeAndPassReceiver());
 
   // Connect to shutdown_service and immediately request that it shut down.
-  mojom::ShutdownTestServicePtr service;
-  connector()->BindInterface(kShutdownServiceName, &service);
+  mojo::Remote<mojom::ShutdownTestService> service;
+  connector()->Connect(kShutdownServiceName,
+                       service.BindNewPipeAndPassReceiver());
   service->ShutDown();
 
   // Tell shutdown_client to connect to an interface on shutdown_service and

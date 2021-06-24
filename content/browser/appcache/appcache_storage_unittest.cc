@@ -4,13 +4,15 @@
 
 #include "content/browser/appcache/appcache_storage.h"
 
-#include "base/test/scoped_task_environment.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "content/browser/appcache/appcache.h"
 #include "content/browser/appcache/appcache_group.h"
-#include "content/browser/appcache/appcache_response.h"
+#include "content/browser/appcache/appcache_response_info.h"
 #include "content/browser/appcache/mock_appcache_service.h"
+#include "content/public/test/browser_task_environment.h"
 #include "storage/browser/test/mock_quota_manager_proxy.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace content {
 namespace appcache_storage_unittest {
@@ -24,7 +26,7 @@ class AppCacheStorageTest : public testing::Test {
   };
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  BrowserTaskEnvironment task_environment_;
 };
 
 TEST_F(AppCacheStorageTest, AddRemoveCache) {
@@ -68,7 +70,8 @@ TEST_F(AppCacheStorageTest, AddRemoveResponseInfo) {
   scoped_refptr<AppCacheResponseInfo> info =
       base::MakeRefCounted<AppCacheResponseInfo>(
           service.storage()->GetWeakPtr(), kManifestUrl, 111,
-          std::make_unique<net::HttpResponseInfo>(), kUnknownResponseDataSize);
+          std::make_unique<net::HttpResponseInfo>(),
+          HttpResponseInfoIOBuffer::kUnknownResponseDataSize);
 
   EXPECT_EQ(info.get(),
             service.storage()->working_set()->GetResponseInfo(111));
@@ -89,7 +92,8 @@ TEST_F(AppCacheStorageTest, ResponseInfoLifetime) {
     const GURL kManifestUrl("http://origin/");
     info = base::MakeRefCounted<AppCacheResponseInfo>(
         service.storage()->GetWeakPtr(), kManifestUrl, 111,
-        std::make_unique<net::HttpResponseInfo>(), kUnknownResponseDataSize);
+        std::make_unique<net::HttpResponseInfo>(),
+        HttpResponseInfoIOBuffer::kUnknownResponseDataSize);
 
     EXPECT_EQ(info.get(),
               service.storage()->working_set()->GetResponseInfo(111));
@@ -142,8 +146,8 @@ TEST_F(AppCacheStorageTest, UsageMap) {
   const url::Origin kOrigin2(url::Origin::Create(GURL("http://origin2/")));
 
   MockAppCacheService service;
-  scoped_refptr<MockQuotaManagerProxy> mock_proxy =
-      base::MakeRefCounted<MockQuotaManagerProxy>(nullptr, nullptr);
+  auto mock_proxy = base::MakeRefCounted<storage::MockQuotaManagerProxy>(
+      nullptr, base::SequencedTaskRunnerHandle::Get());
   service.set_quota_manager_proxy(mock_proxy.get());
 
   service.storage()->UpdateUsageMapAndNotify(kOrigin, 0);
@@ -152,19 +156,22 @@ TEST_F(AppCacheStorageTest, UsageMap) {
   service.storage()->UpdateUsageMapAndNotify(kOrigin, 10);
   EXPECT_EQ(1, mock_proxy->notify_storage_modified_count());
   EXPECT_EQ(10, mock_proxy->last_notified_delta());
-  EXPECT_EQ(kOrigin, mock_proxy->last_notified_origin());
+  EXPECT_EQ(blink::StorageKey(kOrigin),
+            mock_proxy->last_notified_storage_key());
   EXPECT_EQ(kTemp, mock_proxy->last_notified_type());
 
   service.storage()->UpdateUsageMapAndNotify(kOrigin, 100);
   EXPECT_EQ(2, mock_proxy->notify_storage_modified_count());
   EXPECT_EQ(90, mock_proxy->last_notified_delta());
-  EXPECT_EQ(kOrigin, mock_proxy->last_notified_origin());
+  EXPECT_EQ(blink::StorageKey(kOrigin),
+            mock_proxy->last_notified_storage_key());
   EXPECT_EQ(kTemp, mock_proxy->last_notified_type());
 
   service.storage()->UpdateUsageMapAndNotify(kOrigin, 0);
   EXPECT_EQ(3, mock_proxy->notify_storage_modified_count());
   EXPECT_EQ(-100, mock_proxy->last_notified_delta());
-  EXPECT_EQ(kOrigin, mock_proxy->last_notified_origin());
+  EXPECT_EQ(blink::StorageKey(kOrigin),
+            mock_proxy->last_notified_storage_key());
   EXPECT_EQ(kTemp, mock_proxy->last_notified_type());
 
   service.storage()->NotifyStorageAccessed(kOrigin2);
@@ -173,7 +180,8 @@ TEST_F(AppCacheStorageTest, UsageMap) {
   service.storage()->usage_map_[kOrigin2] = 1;
   service.storage()->NotifyStorageAccessed(kOrigin2);
   EXPECT_EQ(1, mock_proxy->notify_storage_accessed_count());
-  EXPECT_EQ(kOrigin2, mock_proxy->last_notified_origin());
+  EXPECT_EQ(blink::StorageKey(kOrigin2),
+            mock_proxy->last_notified_storage_key());
   EXPECT_EQ(kTemp, mock_proxy->last_notified_type());
 
   service.storage()->usage_map_.clear();
@@ -181,7 +189,8 @@ TEST_F(AppCacheStorageTest, UsageMap) {
   service.storage()->ClearUsageMapAndNotify();
   EXPECT_EQ(4, mock_proxy->notify_storage_modified_count());
   EXPECT_EQ(-5000, mock_proxy->last_notified_delta());
-  EXPECT_EQ(kOrigin, mock_proxy->last_notified_origin());
+  EXPECT_EQ(blink::StorageKey(kOrigin),
+            mock_proxy->last_notified_storage_key());
   EXPECT_EQ(kTemp, mock_proxy->last_notified_type());
   EXPECT_TRUE(service.storage()->usage_map_.empty());
 }

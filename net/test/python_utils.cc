@@ -16,7 +16,7 @@
 #include "base/process/launch.h"
 #include "build/build_config.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include "base/mac/foundation_util.h"
 #endif
 
@@ -57,22 +57,14 @@ bool GetPyProtoPath(base::FilePath* dir) {
     return false;
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   if (base::mac::AmIBundled())
     generated_code_dir = generated_code_dir.DirName().DirName().DirName();
 #endif
 
-  // Used for GYP. TODO(jam): remove after GN conversion.
   const base::FilePath kPyProto(FILE_PATH_LITERAL("pyproto"));
   if (base::DirectoryExists(generated_code_dir.Append(kPyProto))) {
     *dir = generated_code_dir.Append(kPyProto);
-    return true;
-  }
-
-  // Used for GN.
-  const base::FilePath kGen(FILE_PATH_LITERAL("gen"));
-  if (base::DirectoryExists(generated_code_dir.Append(kGen))) {
-    *dir = generated_code_dir.Append(kGen);
     return true;
   }
 

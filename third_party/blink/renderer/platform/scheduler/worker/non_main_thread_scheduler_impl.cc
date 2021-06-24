@@ -22,15 +22,11 @@ NonMainThreadSchedulerImpl::~NonMainThreadSchedulerImpl() = default;
 
 // static
 std::unique_ptr<NonMainThreadSchedulerImpl> NonMainThreadSchedulerImpl::Create(
-    WebThreadType thread_type,
+    ThreadType thread_type,
     base::sequence_manager::SequenceManager* sequence_manager,
     WorkerSchedulerProxy* proxy) {
   return std::make_unique<WorkerThreadScheduler>(thread_type, sequence_manager,
                                                  proxy);
-}
-
-void NonMainThreadSchedulerImpl::Init() {
-  InitImpl();
 }
 
 scoped_refptr<NonMainThreadTaskQueue>
@@ -61,9 +57,24 @@ void NonMainThreadSchedulerImpl::PostNonNestableIdleTask(
                                std::move(task)));
 }
 
-std::unique_ptr<blink::PageScheduler>
-NonMainThreadSchedulerImpl::CreatePageScheduler(
-    PageScheduler::Delegate* delegate) {
+void NonMainThreadSchedulerImpl::PostDelayedIdleTask(
+    const base::Location& location,
+    base::TimeDelta delay,
+    Thread::IdleTask task) {
+  IdleTaskRunner()->PostDelayedIdleTask(
+      location, delay,
+      base::BindOnce(&NonMainThreadSchedulerImpl::RunIdleTask,
+                     std::move(task)));
+}
+
+std::unique_ptr<WebAgentGroupScheduler>
+NonMainThreadSchedulerImpl::CreateAgentGroupScheduler() {
+  NOTREACHED();
+  return nullptr;
+}
+
+WebAgentGroupScheduler*
+NonMainThreadSchedulerImpl::GetCurrentAgentGroupScheduler() {
   NOTREACHED();
   return nullptr;
 }
@@ -105,6 +116,10 @@ const base::TickClock* NonMainThreadSchedulerImpl::GetTickClock() {
 scoped_refptr<base::SingleThreadTaskRunner>
 NonMainThreadSchedulerImpl::DeprecatedDefaultTaskRunner() {
   return DefaultTaskRunner();
+}
+
+void NonMainThreadSchedulerImpl::AttachToCurrentThread() {
+  helper_.AttachToCurrentThread();
 }
 
 }  // namespace scheduler

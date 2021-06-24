@@ -23,6 +23,7 @@
 #include "base/values.h"
 #include "net/base/escape.h"
 #include "net/base/load_flags.h"
+#include "net/base/net_errors.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/device/geolocation/location_arbitrator.h"
 #include "services/device/public/cpp/geolocation/geoposition.h"
@@ -64,6 +65,11 @@ void RecordUmaEvent(NetworkLocationRequestEvent event) {
 void RecordUmaResponseCode(int code) {
   base::UmaHistogramSparse("Geolocation.NetworkLocationRequest.ResponseCode",
                            code);
+}
+
+void RecordUmaNetError(int net_error) {
+  base::UmaHistogramSparse("Geolocation.NetworkLocationRequest.NetError",
+                           -net_error);
 }
 
 void RecordUmaAccessPoints(int count) {
@@ -153,9 +159,8 @@ bool NetworkLocationRequest::MakeRequest(
   resource_request->url = FormRequestURL(api_key_);
   DCHECK(resource_request->url.is_valid());
   resource_request->load_flags =
-      net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE |
-      net::LOAD_DO_NOT_SAVE_COOKIES | net::LOAD_DO_NOT_SEND_COOKIES |
-      net::LOAD_DO_NOT_SEND_AUTH_DATA;
+      net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
   url_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
                                                  traffic_annotation);
@@ -164,7 +169,6 @@ bool NetworkLocationRequest::MakeRequest(
   FormUploadData(wifi_data, wifi_timestamp, &upload_data);
   url_loader_->AttachStringForUpload(upload_data, "application/json");
 
-  request_start_time_ = base::TimeTicks::Now();
   url_loader_->DownloadToString(
       url_loader_factory_.get(),
       base::BindOnce(&NetworkLocationRequest::OnRequestComplete,
@@ -189,14 +193,6 @@ void NetworkLocationRequest::OnRequestComplete(
 
   bool server_error =
       net_error != net::OK || (response_code >= 500 && response_code < 600);
-  if (!server_error) {
-    const base::TimeDelta request_time =
-        base::TimeTicks::Now() - request_start_time_;
-
-    UMA_HISTOGRAM_CUSTOM_TIMES("Net.Wifi.LbsLatency", request_time,
-                               base::TimeDelta::FromMilliseconds(1),
-                               base::TimeDelta::FromSeconds(10), 100);
-  }
 
   url_loader_.reset();
 
@@ -278,8 +274,10 @@ void AddWifiData(const WifiData& wifi_data,
   auto wifi_access_point_list = std::make_unique<base::ListValue>();
   for (auto* ap_data : access_points_by_signal_strength) {
     auto wifi_dict = std::make_unique<base::DictionaryValue>();
-    AddString("macAddress", base::UTF16ToUTF8(ap_data->mac_address),
-              wifi_dict.get());
+    auto macAddress = base::UTF16ToUTF8(ap_data->mac_address);
+    if (macAddress.empty())
+      continue;
+    AddString("macAddress", macAddress, wifi_dict.get());
     AddInteger("signalStrength", ap_data->radio_signal_strength,
                wifi_dict.get());
     AddInteger("age", age_milliseconds, wifi_dict.get());
@@ -287,7 +285,8 @@ void AddWifiData(const WifiData& wifi_data,
     AddInteger("signalToNoiseRatio", ap_data->signal_to_noise, wifi_dict.get());
     wifi_access_point_list->Append(std::move(wifi_dict));
   }
-  request->Set("wifiAccessPoints", std::move(wifi_access_point_list));
+  if (!wifi_access_point_list->empty())
+    request->Set("wifiAccessPoints", std::move(wifi_access_point_list));
 }
 
 void FormatPositionError(const GURL& server_url,
@@ -310,12 +309,13 @@ void GetLocationFromResponse(int net_error,
                              const GURL& server_url,
                              mojom::Geoposition* position) {
   DCHECK(position);
-
   // HttpPost can fail for a number of reasons. Most likely this is because
   // we're offline, or there was no response.
   if (net_error != net::OK) {
-    FormatPositionError(server_url, "No response received", position);
+    FormatPositionError(server_url, net::ErrorToShortString(net_error),
+                        position);
     RecordUmaEvent(NETWORK_LOCATION_REQUEST_EVENT_RESPONSE_EMPTY);
+    RecordUmaNetError(net_error);
     return;
   }
 
@@ -360,13 +360,16 @@ bool GetAsDouble(const base::DictionaryValue& object,
   const base::Value* value = NULL;
   if (!object.Get(property_name, &value))
     return false;
-  int value_as_int;
   DCHECK(value);
-  if (value->GetAsInteger(&value_as_int)) {
-    *out = value_as_int;
+  if (value->is_int()) {
+    *out = value->GetInt();
     return true;
   }
-  return value->GetAsDouble(out);
+  if (value->is_double()) {
+    *out = value->GetDouble();
+    return true;
+  }
+  return false;
 }
 
 bool ParseServerResponse(const std::string& response_body,
@@ -384,22 +387,22 @@ bool ParseServerResponse(const std::string& response_body,
   DVLOG(1) << "ParseServerResponse() : Parsing response " << response_body;
 
   // Parse the response, ignoring comments.
-  std::string error_msg;
-  std::unique_ptr<base::Value> response_value =
-      base::JSONReader::ReadAndReturnErrorDeprecated(
-          response_body, base::JSON_PARSE_RFC, NULL, &error_msg);
-  if (response_value == NULL) {
-    LOG(WARNING) << "ParseServerResponse() : JSONReader failed : " << error_msg;
+  auto response_result =
+      base::JSONReader::ReadAndReturnValueWithError(response_body);
+  if (!response_result.value) {
+    LOG(WARNING) << "ParseServerResponse() : JSONReader failed : "
+                 << response_result.error_message;
     return false;
   }
+  base::Value response_value = std::move(*response_result.value);
 
-  if (!response_value->is_dict()) {
+  if (!response_value.is_dict()) {
     VLOG(1) << "ParseServerResponse() : Unexpected response type "
-            << response_value->type();
+            << response_value.type();
     return false;
   }
   const base::DictionaryValue* response_object =
-      static_cast<base::DictionaryValue*>(response_value.get());
+      static_cast<base::DictionaryValue*>(&response_value);
 
   // Get the location
   const base::Value* location_value = NULL;

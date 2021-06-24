@@ -7,8 +7,9 @@ package org.chromium.android_webview.test.services;
 import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.MULTI_PROCESS;
 
 import android.content.Context;
-import android.support.test.filters.SmallTest;
 import android.view.ViewGroup;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -34,14 +35,11 @@ import org.chromium.android_webview.test.TestAwContentsClient;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
-import org.chromium.content_public.common.ContentUrlConstants;
-
-import java.util.concurrent.TimeUnit;
 
 /**
- * Test VisualStateCallback when render process is gone.
+ * Test VisualStateCallback when render process is gone. Test is not batched because it tests
+ * behaviour in multiprocesses.
  */
 @RunWith(AwJUnit4ClassRunner.class)
 public class VisualStateCallbackTest {
@@ -144,7 +142,7 @@ public class VisualStateCallbackTest {
     private RenderProcessGoneHelper mHelper;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         RenderProcessGoneTestAwContentsClient contentsClient =
                 new RenderProcessGoneTestAwContentsClient();
         AwTestContainerView testView = mActivityTestRule.createAwTestContainerViewOnMainSync(
@@ -166,37 +164,6 @@ public class VisualStateCallbackTest {
         mActivityTestRule.loadUrlAsync(mAwContents, "chrome://kill");
 
         mHelper.waitForRenderProcessGoneNotifiedToAwContentsClient();
-
-        mActivityTestRule.destroyAwContentsOnMainSync(mAwContents);
-
-        mHelper.waitForAwContentsDestroyed();
-        Assert.assertFalse(vsImpl.called());
-    }
-
-    // Tests the callback isn't invoked when AwContents knows about render process being gone.
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    @RetryOnFailure
-    @OnlyRunIn(MULTI_PROCESS)
-    public void testVisualStateCallbackNotCalledAfterRendererGone() throws Throwable {
-        VisualStateCallbackImpl vsImpl = new VisualStateCallbackImpl();
-        mActivityTestRule.insertVisualStateCallbackOnUIThread(
-                mAwContents, vsImpl.requestId(), vsImpl);
-        VisualStateCallbackHelper vsCallbackHelper = mAwContents.getVisualStateCallbackHelper();
-        int callCount = vsCallbackHelper.getCallCount();
-        mActivityTestRule.loadUrlAsync(mAwContents, ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-        vsCallbackHelper.waitForCallback(
-                callCount, 1, CallbackHelper.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        Assert.assertEquals(callCount + 1, vsCallbackHelper.getCallCount());
-        Assert.assertTrue(vsCallbackHelper.visualStateCallbackArrived());
-        mActivityTestRule.killRenderProcessOnUiThreadAsync(mAwContents);
-
-        mHelper.waitForRenderProcessGone();
-        mAwContents.doInvokeVisualStateCallbackOnUiThread();
-
-        mHelper.waitForRenderProcessGoneNotifiedToAwContentsClient();
-        Assert.assertFalse(vsImpl.called());
 
         mActivityTestRule.destroyAwContentsOnMainSync(mAwContents);
 

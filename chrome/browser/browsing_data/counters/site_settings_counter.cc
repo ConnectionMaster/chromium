@@ -75,16 +75,15 @@ void SiteSettingsCounter::Count() {
   for (const content_settings::ContentSettingsInfo* info : *registry) {
     ContentSettingsType type = info->website_settings_info()->type();
     ContentSettingsForOneType content_settings_list;
-    map_->GetSettingsForOneType(type, content_settings::ResourceIdentifier(),
-                                &content_settings_list);
+    map_->GetSettingsForOneType(type, &content_settings_list);
     iterate_content_settings_list(type, content_settings_list);
   }
 
   ContentSettingsForOneType content_settings_list_for_usb_chooser;
-  map_->GetSettingsForOneType(CONTENT_SETTINGS_TYPE_USB_CHOOSER_DATA,
-                              content_settings::ResourceIdentifier(),
+  map_->GetSettingsForOneType(ContentSettingsType::USB_CHOOSER_DATA,
+
                               &content_settings_list_for_usb_chooser);
-  iterate_content_settings_list(CONTENT_SETTINGS_TYPE_USB_CHOOSER_DATA,
+  iterate_content_settings_list(ContentSettingsType::USB_CHOOSER_DATA,
                                 content_settings_list_for_usb_chooser);
 
 #if !defined(OS_ANDROID)
@@ -105,7 +104,7 @@ void SiteSettingsCounter::Count() {
 
   std::vector<std::string> blacklisted_sites =
       ChromeTranslateClient::CreateTranslatePrefs(pref_service_)
-          ->GetBlacklistedSitesBetween(period_start, period_end);
+          ->GetNeverPromptSitesBetween(period_start, period_end);
   for (const auto& site : blacklisted_sites)
     hosts.insert(site);
 

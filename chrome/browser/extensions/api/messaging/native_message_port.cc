@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/api/messaging/native_message_port.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -89,11 +90,10 @@ NativeMessagePort::NativeMessagePort(
     std::unique_ptr<NativeMessageHost> native_message_host)
     : weak_channel_delegate_(channel_delegate),
       host_task_runner_(native_message_host->task_runner()),
-      port_id_(port_id),
-      weak_factory_(this) {
-  core_.reset(new Core(std::move(native_message_host),
-                       weak_factory_.GetWeakPtr(),
-                       base::ThreadTaskRunnerHandle::Get()));
+      port_id_(port_id) {
+  core_ = std::make_unique<Core>(std::move(native_message_host),
+                                 weak_factory_.GetWeakPtr(),
+                                 base::ThreadTaskRunnerHandle::Get());
 }
 
 NativeMessagePort::~NativeMessagePort() {

@@ -33,13 +33,13 @@
 
 #include <memory>
 
-#include "base/time/time.h"
+#include "services/network/public/mojom/ip_address_space.mojom-shared.h"
 #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
+#include "third_party/blink/public/common/loader/previews_state.h"
 #include "third_party/blink/public/platform/web_archive_info.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_source_location.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
-#include "third_party/blink/public/web/web_text_direction.h"
 
 namespace blink {
 
@@ -47,8 +47,6 @@ class WebDocumentSubresourceFilter;
 class WebServiceWorkerNetworkProvider;
 class WebURL;
 class WebURLResponse;
-template <typename T>
-class WebVector;
 
 namespace mojom {
 enum class FetchCacheMode : int32_t;
@@ -93,17 +91,6 @@ class BLINK_EXPORT WebDocumentLoader {
   virtual bool HasUnreachableURL() const = 0;
   virtual WebURL UnreachableURL() const = 0;
 
-  // The error code for loading an error page.
-  virtual int ErrorCode() const = 0;
-
-  // Returns all redirects that occurred (both client and server) before
-  // at last committing the current page.  This will contain one entry
-  // for each intermediate URL, and one entry for the last URL (so if
-  // there are no redirects, it will contain exactly the current URL, and
-  // if there is one redirect, it will contain the source and destination
-  // URL).
-  virtual void RedirectChain(WebVector<WebURL>&) const = 0;
-
   // Returns whether the navigation associated with this datasource is a
   // client redirect.
   virtual bool IsClientRedirect() const = 0;
@@ -118,6 +105,7 @@ class BLINK_EXPORT WebDocumentLoader {
   // Extra data associated with this DocumentLoader.
   // Setting extra data will cause any existing extra data to be deleted.
   virtual ExtraData* GetExtraData() const = 0;
+  virtual std::unique_ptr<ExtraData> TakeExtraData() = 0;
   virtual void SetExtraData(std::unique_ptr<ExtraData>) = 0;
 
   // Allows the embedder to inject a filter that will be consulted for each
@@ -125,7 +113,6 @@ class BLINK_EXPORT WebDocumentLoader {
   // or not to allow the load. The passed-in filter object is deleted when the
   // datasource is destroyed or when a new filter is set.
   virtual void SetSubresourceFilter(WebDocumentSubresourceFilter*) = 0;
-
   // Allows the embedder to set and return the service worker provider
   // associated with the data source. The provider may provide the service
   // worker that controls the resource loading from this data source.
@@ -146,11 +133,15 @@ class BLINK_EXPORT WebDocumentLoader {
   // can return true even if archive loading ended up failing.
   virtual bool HasBeenLoadedAsWebArchive() const = 0;
 
+  // Returns the previews state for the document.
+  virtual PreviewsState GetPreviewsState() const = 0;
+
   // Returns archive info for the archive.
   virtual WebArchiveInfo GetArchiveInfo() const = 0;
 
-  // Whether this load was started with a user gesture.
-  virtual bool HadUserGesture() const = 0;
+  // Whether the last navigation (cross-document or same-document) that
+  // committed in this WebDocumentLoader had transient activation.
+  virtual bool LastNavigationHadTransientUserActivation() const = 0;
 
   // Returns true when the document is a FTP directory.
   virtual bool IsListingFtpDirectory() const = 0;
@@ -161,4 +152,4 @@ class BLINK_EXPORT WebDocumentLoader {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_DOCUMENT_LOADER_H_

@@ -19,7 +19,7 @@ output-results-details {
 
 table {
   --header-bg-color: #fafafa;
-  --row-hover-color: #fafafa;
+  --row-hover-color: #f5f5f5;
 
   background-color: white;
   border: 1px solid var(--border-color);
@@ -35,6 +35,7 @@ table {
 }
 
 .body tr {
+  /* sufficient to display 4 lines at 14px with 5px vert padding */
   height: 66px;
 }
 
@@ -43,7 +44,25 @@ table {
   max-height: 56px;
 }
 
+.body tr.thin {
+  /* sufficient to display 2 lines at 14px with 5px vert padding */
+  height: 38px;
+}
+
+.body tr.thin td > * {
+  max-height: 28px;
+}
+
+.body tr.expanded {
+  height: 200px;
+}
+
+.body tr.expanded td > * {
+  max-height: 190px;
+}
+
 .body td {
+  white-space: pre-wrap;
   word-break: break-all;
 }
 
@@ -52,7 +71,7 @@ table {
 }
 
 .body td.elided:not(:hover) {
-  white-space: nowrap;
+  white-space: pre;
 }
 
 .body td:not(:hover) * {
@@ -64,16 +83,17 @@ table {
 }
 
 .body tr td pre.json {
-  /* Browsers base rem font sizes on 16px, except for monospace fonts which use
-   a base size of 13px. Whereas the rest of the table has size set to .75rem
-   (.75 * 16px = 12px), pre's must have size 12/13rem (12/13 * 13px = 12px) in
-   order to have a consistent 12px across the table. */
-  font-size: .9231rem;
   margin: 0;
   white-space: pre-wrap;
 }
 
-.body tr:hover td {
+.body tr.thin:nth-child(even) {
+  background-color: #fafafa;
+}
+
+.body tr:hover,
+/* must explicitly select .thin tr's to override above .thin styling */
+.body tr.thin:hover {
   background-color: var(--row-hover-color);
 }
 
@@ -85,6 +105,10 @@ td {
 th {
   padding: 11px 5px 5px;
   text-align: start;
+}
+
+tbody.head th {
+  border-top: 1px solid var(--border-color);
 }
 
 .header-container {
@@ -212,6 +236,21 @@ th {
   color: red;
 }
 
+.cell-additional-info a {
+  /* Inlined version of cr:file-download icon */
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" height="24" width="24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"></path></svg>');
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  display: block;
+  height: 16px;
+  width: 16px;
+}
+
+.cell-additional-info:not(:hover) a {
+  visibility: hidden;
+}
+
 /* boolean cells */
 
 .check-mark,
@@ -224,11 +263,11 @@ th {
 }
 
 .check-mark {
-  background-image: url(../../../../ui/webui/resources/images/check_circle_green.svg);
+  background-image: url(chrome://resources/images/check_circle_green.svg);
 }
 
 .x-mark {
-  background-image: url(../../../../ui/webui/resources/images/cancel_red.svg);
+  background-image: url(chrome://resources/images/cancel_red.svg);
 }
 
 /* json cells */
@@ -265,10 +304,10 @@ img:not([src]),
 
 /* filter */
 
-.filtered-highlighted {
+.body tr.filtered-highlighted:not(:hover) {
   background-color: rgb(208, 240, 255);
 }
 
-.filtered-highlighted-nested {
+.body tr.filtered-highlighted:not(:hover) td.filtered-highlighted-nested {
   background-color: rgb(208, 255, 208);
 }

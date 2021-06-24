@@ -4,7 +4,7 @@
 
 #include "components/metrics/field_trials_provider.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "components/variations/active_field_trials.h"
 #include "components/variations/synthetic_trial_registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -15,7 +15,12 @@ namespace variations {
 namespace {
 
 const ActiveGroupId kFieldTrialIds[] = {{37, 43}, {13, 47}, {23, 17}};
-const ActiveGroupId kSyntheticTrials[] = {{55, 15}, {66, 16}};
+const ActiveGroupId kSyntheticTrialIds[] = {{55, 15}, {66, 16}};
+const ActiveGroupId kAllTrialIds[] = {{37, 43},
+                                      {13, 47},
+                                      {23, 17},
+                                      {55, 15},
+                                      {66, 16}};
 
 class TestProvider : public FieldTrialsProvider {
  public:
@@ -32,23 +37,15 @@ class TestProvider : public FieldTrialsProvider {
   }
 };
 
-// Check that the values in |system_values| correspond to the test data
-// defined at the top of this file.
-void CheckSystemProfile(const metrics::SystemProfileProto& system_profile) {
-  ASSERT_EQ(base::size(kFieldTrialIds) + base::size(kSyntheticTrials),
-            static_cast<size_t>(system_profile.field_trial_size()));
-  for (size_t i = 0; i < base::size(kFieldTrialIds); ++i) {
+// Check that the field trials in |system_profile| correspond to |expected|.
+void CheckFieldTrialsInSystemProfile(
+    const metrics::SystemProfileProto& system_profile,
+    const ActiveGroupId* expected) {
+  for (int i = 0; i < system_profile.field_trial_size(); ++i) {
     const metrics::SystemProfileProto::FieldTrial& field_trial =
         system_profile.field_trial(i);
-    EXPECT_EQ(kFieldTrialIds[i].name, field_trial.name_id());
-    EXPECT_EQ(kFieldTrialIds[i].group, field_trial.group_id());
-  }
-  // Verify the right data is present for the synthetic trials.
-  for (size_t i = 0; i < base::size(kSyntheticTrials); ++i) {
-    const metrics::SystemProfileProto::FieldTrial& field_trial =
-        system_profile.field_trial(i + base::size(kFieldTrialIds));
-    EXPECT_EQ(kSyntheticTrials[i].name, field_trial.name_id());
-    EXPECT_EQ(kSyntheticTrials[i].group, field_trial.group_id());
+    EXPECT_EQ(expected[i].name, field_trial.name_id());
+    EXPECT_EQ(expected[i].group, field_trial.group_id());
   }
 }
 
@@ -62,7 +59,7 @@ class FieldTrialsProviderTest : public ::testing::Test {
  protected:
   // Register trials which should get recorded.
   void RegisterExpectedSyntheticTrials() {
-    for (const ActiveGroupId& id : kSyntheticTrials) {
+    for (const ActiveGroupId& id : kSyntheticTrialIds) {
       registry_.RegisterSyntheticFieldTrial(
           SyntheticTrialGroup(id.name, id.group));
     }
@@ -90,15 +87,57 @@ TEST_F(FieldTrialsProviderTest, ProvideSyntheticTrials) {
   // Make sure these trials are older than the log.
   WaitUntilTimeChanges(base::TimeTicks::Now());
 
-  provider.OnDidCreateMetricsLog();
+  // Get the current time and wait for it to change.
+  base::TimeTicks log_creation_time = base::TimeTicks::Now();
+
   // Make sure that the log is older than the trials that should be excluded.
-  WaitUntilTimeChanges(base::TimeTicks::Now());
+  WaitUntilTimeChanges(log_creation_time);
 
   RegisterExtraSyntheticTrial();
 
   metrics::SystemProfileProto proto;
-  provider.ProvideSystemProfileMetrics(&proto);
-  CheckSystemProfile(proto);
+  provider.ProvideSystemProfileMetricsWithLogCreationTime(log_creation_time,
+                                                          &proto);
+
+  EXPECT_EQ(base::size(kAllTrialIds),
+            static_cast<size_t>(proto.field_trial_size()));
+  CheckFieldTrialsInSystemProfile(proto, kAllTrialIds);
+}
+
+TEST_F(FieldTrialsProviderTest, NoSyntheticTrials) {
+  TestProvider provider(nullptr, base::StringPiece());
+
+  metrics::SystemProfileProto proto;
+  provider.ProvideSystemProfileMetricsWithLogCreationTime(base::TimeTicks(),
+                                                          &proto);
+
+  EXPECT_EQ(base::size(kFieldTrialIds),
+            static_cast<size_t>(proto.field_trial_size()));
+  CheckFieldTrialsInSystemProfile(proto, kFieldTrialIds);
+}
+
+TEST_F(FieldTrialsProviderTest, ProvideCurrentSessionData) {
+  metrics::ChromeUserMetricsExtension uma_log;
+  uma_log.system_profile();
+
+  // {1, 1} should not be in the resulting proto as ProvideCurrentSessionData()
+  // clears existing trials and sets the trials to be those determined by
+  // GetSyntheticFieldTrialsOlderThan() and GetFieldTrialIds().
+  metrics::SystemProfileProto::FieldTrial* trial =
+      uma_log.mutable_system_profile()->add_field_trial();
+  trial->set_name_id(1);
+  trial->set_group_id(1);
+
+  TestProvider provider(&registry_, base::StringPiece());
+  RegisterExpectedSyntheticTrials();
+  WaitUntilTimeChanges(base::TimeTicks::Now());
+  provider.SetLogCreationTimeForTesting(base::TimeTicks::Now());
+
+  provider.ProvideCurrentSessionData(&uma_log);
+
+  EXPECT_EQ(base::size(kAllTrialIds),
+            static_cast<size_t>(uma_log.system_profile().field_trial_size()));
+  CheckFieldTrialsInSystemProfile(uma_log.system_profile(), kAllTrialIds);
 }
 
 }  // namespace variations

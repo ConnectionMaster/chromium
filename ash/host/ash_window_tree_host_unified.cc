@@ -9,8 +9,9 @@
 
 #include "ash/host/ash_window_tree_host_mirroring_delegate.h"
 #include "ash/host/root_window_transformer.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check.h"
+#include "base/containers/contains.h"
+#include "base/notreached.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_targeter.h"
@@ -40,7 +41,7 @@ class UnifiedEventTargeter : public aura::WindowTargeter {
             static_cast<aura::Window*>(nullptr), dst_root_);
       }
       ignore_result(
-          dst_root_->GetHost()->event_sink()->OnEventFromSource(event));
+          dst_root_->GetHost()->GetEventSink()->OnEventFromSource(event));
 
       // Reset the source host.
       delegate_->SetCurrentEventTargeterSourceHost(nullptr);
@@ -87,17 +88,9 @@ void AshWindowTreeHostUnified::RegisterMirroringHost(
   aura::Window* src_root = mirroring_ash_host->AsWindowTreeHost()->window();
   src_root->SetEventTargeter(
       std::make_unique<UnifiedEventTargeter>(src_root, window(), delegate_));
-  DCHECK(!base::ContainsValue(mirroring_hosts_, mirroring_ash_host));
+  DCHECK(!base::Contains(mirroring_hosts_, mirroring_ash_host));
   mirroring_hosts_.push_back(mirroring_ash_host);
   mirroring_ash_host->AsWindowTreeHost()->window()->AddObserver(this);
-}
-
-void AshWindowTreeHostUnified::SetBoundsInPixels(
-    const gfx::Rect& bounds,
-    const viz::LocalSurfaceIdAllocation& local_surface_id_allocation) {
-  AshWindowTreeHostPlatform::SetBoundsInPixels(bounds,
-                                               local_surface_id_allocation);
-  OnHostResizedInPixels(bounds.size());
 }
 
 void AshWindowTreeHostUnified::SetCursorNative(gfx::NativeCursor cursor) {
@@ -110,9 +103,9 @@ void AshWindowTreeHostUnified::OnCursorVisibilityChangedNative(bool show) {
     host->AsWindowTreeHost()->OnCursorVisibilityChanged(show);
 }
 
-void AshWindowTreeHostUnified::OnBoundsChanged(const gfx::Rect& bounds) {
+void AshWindowTreeHostUnified::OnBoundsChanged(const BoundsChange& bounds) {
   if (platform_window())
-    OnHostResizedInPixels(bounds.size());
+    OnHostResizedInPixels(bounds.bounds.size());
 }
 
 void AshWindowTreeHostUnified::OnWindowDestroying(aura::Window* window) {

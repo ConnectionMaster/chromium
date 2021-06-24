@@ -8,10 +8,10 @@
 
 #include "base/base_switches.h"
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/values.h"
 #include "components/autofill/core/common/autofill_switches.h"
 #include "components/flags_ui/feature_entry.h"
@@ -21,6 +21,7 @@
 #include "components/flags_ui/flags_ui_switches.h"
 #include "components/flags_ui/pref_service_flags_storage.h"
 #include "components/prefs/pref_service.h"
+#include "components/sync/base/sync_base_switches.h"
 #include "components/sync/driver/sync_driver_switches.h"
 #include "ios/web_view/internal/app/application_context.h"
 
@@ -86,8 +87,7 @@ const flags_ui::FeatureEntry kFeatureEntries[] = {
     _flagsStorage =
         std::make_unique<flags_ui::PrefServiceFlagsStorage>(_prefService);
     _flagsState = std::make_unique<flags_ui::FlagsState>(
-        ios_web_view::kFeatureEntries,
-        base::size(ios_web_view::kFeatureEntries));
+        ios_web_view::kFeatureEntries, nullptr);
   }
   return self;
 }

@@ -7,16 +7,18 @@
 
 #include <memory>
 
+#include "ash/public/cpp/keyboard/keyboard_controller_observer.h"
 #include "base/macros.h"
 #include "components/arc/ime/arc_ime_bridge.h"
+#include "components/arc/ime/key_event_result_receiver.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/aura/client/focus_change_observer.h"
 #include "ui/aura/env_observer.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/keyboard/keyboard_controller_observer.h"
 
 namespace aura {
 class Window;
@@ -41,16 +43,12 @@ class ArcImeService : public KeyedService,
                       public aura::EnvObserver,
                       public aura::WindowObserver,
                       public aura::client::FocusChangeObserver,
-                      public keyboard::KeyboardControllerObserver,
+                      public ash::KeyboardControllerObserver,
                       public ui::TextInputClient {
  public:
   // Returns singleton instance for the given BrowserContext,
   // or nullptr if the browser |context| is not allowed to use ARC.
   static ArcImeService* GetForBrowserContext(content::BrowserContext* context);
-
-  ArcImeService(content::BrowserContext* context,
-                ArcBridgeService* bridge_service);
-  ~ArcImeService() override;
 
   class ArcWindowDelegate {
    public:
@@ -63,14 +61,16 @@ class ArcImeService : public KeyedService,
     virtual void UnregisterFocusObserver() = 0;
     virtual ui::InputMethod* GetInputMethodForWindow(
         aura::Window* window) const = 0;
+    virtual bool IsImeBlocked(aura::Window* window) const = 0;
   };
+
+  ArcImeService(content::BrowserContext* context,
+                ArcBridgeService* bridge_service);
+
+  ~ArcImeService() override;
 
   // Injects the custom IPC bridge object for testing purpose only.
   void SetImeBridgeForTesting(std::unique_ptr<ArcImeBridge> test_ime_bridge);
-
-  // Injects the custom delegate for ARC windows, for testing purpose only.
-  void SetArcWindowDelegateForTesting(
-      std::unique_ptr<ArcWindowDelegate> delegate);
 
   // Overridden from aura::EnvObserver:
   void OnWindowInitialized(aura::Window* new_window) override;
@@ -79,6 +79,10 @@ class ArcImeService : public KeyedService,
   void OnWindowDestroying(aura::Window* window) override;
   void OnWindowRemovingFromRootWindow(aura::Window* window,
                                       aura::Window* new_root) override;
+  void OnWindowPropertyChanged(aura::Window* window,
+                               const void* key,
+                               intptr_t old) override;
+  void OnWindowRemoved(aura::Window* removed_window) override;
 
   // Overridden from aura::client::FocusChangeObserver:
   void OnWindowFocused(aura::Window* gained_focus,
@@ -95,27 +99,32 @@ class ArcImeService : public KeyedService,
   void OnCursorRectChangedWithSurroundingText(
       const gfx::Rect& rect,
       const gfx::Range& text_range,
-      const base::string16& text_in_range,
+      const std::u16string& text_in_range,
       const gfx::Range& selection_range,
       bool is_screen_coordinates) override;
-  void RequestHideIme() override;
+  bool ShouldEnableKeyEventForwarding() override;
+  void SendKeyEvent(std::unique_ptr<ui::KeyEvent> key_event,
+                    KeyEventDoneCallback callback) override;
 
-  // Overridden from keyboard::KeyboardControllerObserver.
+  // Overridden from ash::KeyboardControllerObserver.
   void OnKeyboardAppearanceChanged(
-      const keyboard::KeyboardStateDescriptor& state) override;
+      const ash::KeyboardStateDescriptor& state) override;
 
   // Overridden from ui::TextInputClient:
   void SetCompositionText(const ui::CompositionText& composition) override;
-  void ConfirmCompositionText() override;
+  uint32_t ConfirmCompositionText(bool keep_selection) override;
   void ClearCompositionText() override;
-  void InsertText(const base::string16& text) override;
+  void InsertText(const std::u16string& text,
+                  InsertTextCursorBehavior cursor_behavior) override;
   void InsertChar(const ui::KeyEvent& event) override;
   ui::TextInputType GetTextInputType() const override;
   gfx::Rect GetCaretBounds() const override;
+  gfx::Rect GetSelectionBoundingBox() const override;
   bool GetTextRange(gfx::Range* range) const override;
   bool GetEditableSelectionRange(gfx::Range* range) const override;
   bool GetTextFromRange(const gfx::Range& range,
-                        base::string16* text) const override;
+                        std::u16string* text) const override;
+  void EnsureCaretNotInRect(const gfx::Rect& rect) override;
 
   // Overridden from ui::TextInputClient (with default implementation):
   // TODO(kinaba): Support each of these methods to the extent possible in
@@ -135,19 +144,37 @@ class ArcImeService : public KeyedService,
   bool ChangeTextDirectionAndLayoutAlignment(
       base::i18n::TextDirection direction) override;
   void ExtendSelectionAndDelete(size_t before, size_t after) override;
-  void EnsureCaretNotInRect(const gfx::Rect& rect) override {}
   bool IsTextEditCommandEnabled(ui::TextEditCommand command) const override;
   void SetTextEditCommandForNextKeyEvent(ui::TextEditCommand command) override {
   }
   ukm::SourceId GetClientSourceForMetrics() const override;
   bool ShouldDoLearning() override;
+  bool SetCompositionFromExistingText(
+      const gfx::Range& range,
+      const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) override;
+  gfx::Range GetAutocorrectRange() const override;
+  gfx::Rect GetAutocorrectCharacterBounds() const override;
+  bool SetAutocorrectRange(const gfx::Range& range) override;
+  absl::optional<ui::GrammarFragment> GetGrammarFragment(
+      const gfx::Range& range) override;
+  bool ClearGrammarFragments(const gfx::Range& range) override;
+  bool AddGrammarFragments(
+      const std::vector<ui::GrammarFragment>& fragments) override;
+  void OnDispatchingKeyEventPostIME(ui::KeyEvent* event) override;
 
   // Normally, the default device scale factor is used to convert from DPI to
   // physical pixels. This method provides a way to override it for testing.
   static void SetOverrideDefaultDeviceScaleFactorForTesting(
-      base::Optional<double> scale_factor);
+      absl::optional<double> scale_factor);
 
  private:
+  friend class ArcImeServiceTest;
+
+  // Injects the custom delegate for ARC windows, for testing purpose only.
+  ArcImeService(content::BrowserContext* context,
+                ArcBridgeService* bridge_service,
+                std::unique_ptr<ArcWindowDelegate> delegate);
+
   ui::InputMethod* GetInputMethod();
 
   // Detaches from the IME associated with the |old_window|, and attaches to the
@@ -162,6 +189,13 @@ class ArcImeService : public KeyedService,
   // updates |cursor_rect_|. Returns whether or not the stored value changed.
   bool UpdateCursorRect(const gfx::Rect& rect, bool is_screen_coordinates);
 
+  // Returns true if this TextInputClient is active and incoming input state
+  // from Android is valid.
+  bool ShouldSendUpdateToInputMethod() const;
+
+  double GetDeviceScaleFactorForKeyboard() const;
+  double GetDeviceScaleFactorForFocusedWindow() const;
+
   std::unique_ptr<ArcImeBridge> ime_bridge_;
   std::unique_ptr<ArcWindowDelegate> arc_window_delegate_;
   ui::TextInputType ime_type_;
@@ -171,10 +205,16 @@ class ArcImeService : public KeyedService,
   gfx::Rect cursor_rect_;
   bool has_composition_text_;
   gfx::Range text_range_;
-  base::string16 text_in_range_;
+  std::u16string text_in_range_;
   gfx::Range selection_range_;
 
+  // Return value of IsImeBlocked() last time OnWindowPropertyChanged() is
+  // called. It might not be the latest blocking state.
+  bool last_ime_blocked_ = false;
+
   aura::Window* focused_arc_window_ = nullptr;
+
+  std::unique_ptr<KeyEventResultReceiver> receiver_;
 
   DISALLOW_COPY_AND_ASSIGN(ArcImeService);
 };

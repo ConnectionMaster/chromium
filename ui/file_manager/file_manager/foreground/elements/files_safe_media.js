@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
 const FILES_APP_ORIGIN = 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj';
 
 /**
@@ -10,7 +12,9 @@ const FILES_APP_ORIGIN = 'chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj';
  * files-safe-media-tap-outside events are fired depending on the position
  * of the tap.
  */
-var FilesSafeMedia = Polymer({
+const FilesSafeMedia = Polymer({
+  _template: html`{__html_template__}`,
+
   is: 'files-safe-media',
 
   properties: {
@@ -18,7 +22,7 @@ var FilesSafeMedia = Polymer({
     src: {
       type: String,
       observer: 'onSrcChange_',
-      reflectToAttribute: true
+      reflectToAttribute: true,
     },
     type: {
       type: String,
@@ -26,7 +30,9 @@ var FilesSafeMedia = Polymer({
     }
   },
 
-  listeners: {'src-changed': 'onSrcChange_'},
+  listeners: {
+    'src-changed': 'onSrcChange_',
+  },
 
   /**
    * @return {string}
@@ -34,11 +40,11 @@ var FilesSafeMedia = Polymer({
   sourceFile_: function() {
     switch (this.type) {
       case 'image':
-         return 'foreground/elements/files_safe_img_webview_content.html';
+        return 'foreground/elements/files_safe_img_webview_content.html';
       case 'audio':
-         return 'foreground/elements/files_safe_audio_webview_content.html';
+        return 'foreground/elements/files_safe_audio_webview_content.html';
       case 'video':
-         return 'foreground/elements/files_safe_video_webview_content.html';
+        return 'foreground/elements/files_safe_video_webview_content.html';
       case 'html':
         return 'foreground/elements/files_safe_text_webview_content.html';
       default:
@@ -50,7 +56,7 @@ var FilesSafeMedia = Polymer({
   onSrcChange_: function() {
     if (!this.src && this.webview_) {
       // Remove webview to clean up unnecessary processes.
-      Polymer.dom(this.$.content).removeChild(this.webview_);
+      this.$.content.removeChild(this.webview_);
       this.webview_ = null;
     } else if (this.src && !this.webview_) {
       // Create webview node only if src exists to save resources.
@@ -59,7 +65,7 @@ var FilesSafeMedia = Polymer({
       this.webview_ = webview;
       webview.partition = 'trusted';
       webview.allowtransparency = 'true';
-      Polymer.dom(this.$.content).appendChild(webview);
+      this.$.content.appendChild(webview);
       webview.addEventListener(
           'contentload', this.onSrcChange_.bind(this));
       webview.src = this.sourceFile_();
@@ -107,7 +113,11 @@ var FilesSafeMedia = Polymer({
         if (this.webview_) {
           this.webview_.removeAttribute('loaded');
         }
+      } else if (event.data === 'content-decode-failed') {
+        this.fire('files-safe-media-load-error');
       }
     });
   }
 });
+
+//# sourceURL=//ui/file_manager/file_manager/foreground/elements/files_safe_media.js

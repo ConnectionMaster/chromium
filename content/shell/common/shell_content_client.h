@@ -19,15 +19,13 @@ class ShellContentClient : public ContentClient {
   ShellContentClient();
   ~ShellContentClient() override;
 
-  base::string16 GetLocalizedString(int message_id) const override;
-  base::StringPiece GetDataResource(
-      int resource_id,
-      ui::ScaleFactor scale_factor) const override;
-  base::RefCountedMemory* GetDataResourceBytes(
-      int resource_id) const override;
-  gfx::Image& GetNativeImageNamed(int resource_id) const override;
-  base::DictionaryValue GetNetLogConstants() const override;
+  std::u16string GetLocalizedString(int message_id) override;
+  base::StringPiece GetDataResource(int resource_id,
+                                    ui::ScaleFactor scale_factor) override;
+  base::RefCountedMemory* GetDataResourceBytes(int resource_id) override;
+  gfx::Image& GetNativeImageNamed(int resource_id) override;
   blink::OriginTrialPolicy* GetOriginTrialPolicy() override;
+  void AddAdditionalSchemes(Schemes* schemes) override;
 
  private:
   ShellOriginTrialPolicy origin_trial_policy_;

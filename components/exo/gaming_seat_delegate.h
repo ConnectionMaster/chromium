@@ -9,6 +9,7 @@ namespace exo {
 class Surface;
 class GamepadDelegate;
 class GamingSeat;
+class Gamepad;
 
 // It send gamepad_added event and generate the GamepadDelegate.
 class GamingSeatDelegate {
@@ -21,9 +22,9 @@ class GamingSeatDelegate {
   // seat. E.g. the surface is owned by the same client as the gaming seat.
   virtual bool CanAcceptGamepadEventsForSurface(Surface* surface) const = 0;
 
-  // When a new gamepad is connected, gaming seat call this to get the
-  // gamepad delegate.
-  virtual GamepadDelegate* GamepadAdded() = 0;
+  // When a new gamepad is connected, gaming seat call this to assign a
+  // gamepad delegate to the gamepad.
+  virtual void GamepadAdded(Gamepad& gamepad) = 0;
 
  protected:
   virtual ~GamingSeatDelegate() {}

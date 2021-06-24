@@ -9,12 +9,10 @@
 
 namespace switches {
 
-extern const char kSyncEnableGetUpdatesBeforeCommit[];
-
 extern const base::Feature kSyncResetPollIntervalOnStart;
 extern const base::Feature kSyncUseScryptForNewCustomPassphrases;
-
-extern const base::Feature kSyncUSSNigori;
+extern const base::Feature kSyncTriggerFullKeystoreMigration;
+extern const base::Feature kIgnoreSyncEncryptionKeysLongMissing;
 
 }  // namespace switches
 

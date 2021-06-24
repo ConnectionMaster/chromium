@@ -10,11 +10,15 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/strings/grit/components_strings.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/payments/payment_request.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace payments {
+
+using ::testing::ElementsAre;
+using ::testing::UnorderedElementsAre;
 
 class PaymentRequestSpecTest : public testing::Test,
                                public PaymentRequestSpec::Observer {
@@ -27,7 +31,7 @@ class PaymentRequestSpecTest : public testing::Test,
       std::vector<mojom::PaymentMethodDataPtr> method_data) {
     spec_ = std::make_unique<PaymentRequestSpec>(
         mojom::PaymentOptions::New(), mojom::PaymentDetails::New(),
-        std::move(method_data), this, "en-US");
+        std::move(method_data), weak_ptr_factory_.GetWeakPtr(), "en-US");
   }
 
   void RecreateSpecWithOptionsAndDetails(mojom::PaymentOptionsPtr options,
@@ -36,7 +40,8 @@ class PaymentRequestSpecTest : public testing::Test,
       details->total = mojom::PaymentItem::New();
     spec_ = std::make_unique<PaymentRequestSpec>(
         std::move(options), std::move(details),
-        std::vector<mojom::PaymentMethodDataPtr>(), this, "en-US");
+        std::vector<mojom::PaymentMethodDataPtr>(),
+        weak_ptr_factory_.GetWeakPtr(), "en-US");
   }
 
   PaymentRequestSpec* spec() { return spec_.get(); }
@@ -44,6 +49,7 @@ class PaymentRequestSpecTest : public testing::Test,
  private:
   std::unique_ptr<PaymentRequestSpec> spec_;
   bool on_spec_updated_called_ = false;
+  base::WeakPtrFactory<PaymentRequestSpecTest> weak_ptr_factory_{this};
 };
 
 // Test that empty method data is parsed correctly.
@@ -125,7 +131,8 @@ TEST_F(PaymentRequestSpecTest,
 // works as expected.
 TEST_F(PaymentRequestSpecTest, SupportedMethods) {
   mojom::PaymentMethodDataPtr entry1 = mojom::PaymentMethodData::New();
-  entry1->supported_method = "visa";
+  entry1->supported_method = "basic-card";
+  entry1->supported_networks.push_back(mojom::BasicCardNetwork::VISA);
   mojom::PaymentMethodDataPtr entry2 = mojom::PaymentMethodData::New();
   entry2->supported_method = "mastercard";
   mojom::PaymentMethodDataPtr entry3 = mojom::PaymentMethodData::New();
@@ -133,7 +140,8 @@ TEST_F(PaymentRequestSpecTest, SupportedMethods) {
   mojom::PaymentMethodDataPtr entry4 = mojom::PaymentMethodData::New();
   entry4->supported_method = "";
   mojom::PaymentMethodDataPtr entry5 = mojom::PaymentMethodData::New();
-  entry5->supported_method = "visa";
+  entry5->supported_method = "basic-card";
+  entry5->supported_networks.push_back(mojom::BasicCardNetwork::VISA);
   std::vector<mojom::PaymentMethodDataPtr> method_data;
   method_data.push_back(std::move(entry1));
   method_data.push_back(std::move(entry2));
@@ -143,33 +151,8 @@ TEST_F(PaymentRequestSpecTest, SupportedMethods) {
 
   RecreateSpecWithMethodData(std::move(method_data));
 
-  // Only "visa" and "mastercard" remain, in order.
-  EXPECT_EQ(2u, spec()->supported_card_networks().size());
-  EXPECT_EQ("visa", spec()->supported_card_networks()[0]);
-  EXPECT_EQ("mastercard", spec()->supported_card_networks()[1]);
-}
-
-// Test that parsing supported methods in different method data entries (with
-// invalid values and duplicates) works as expected.
-TEST_F(PaymentRequestSpecTest, SupportedMethods_MultipleEntries) {
-  mojom::PaymentMethodDataPtr entry = mojom::PaymentMethodData::New();
-  entry->supported_method = "visa";
-  mojom::PaymentMethodDataPtr entry2 = mojom::PaymentMethodData::New();
-  entry2->supported_method = "mastercard";
-  mojom::PaymentMethodDataPtr entry3 = mojom::PaymentMethodData::New();
-  entry3->supported_method = "invalid";
-
-  std::vector<mojom::PaymentMethodDataPtr> method_data;
-  method_data.push_back(std::move(entry));
-  method_data.push_back(std::move(entry2));
-  method_data.push_back(std::move(entry3));
-
-  RecreateSpecWithMethodData(std::move(method_data));
-
-  // Only "visa" and "mastercard" remain, in order.
-  EXPECT_EQ(2u, spec()->supported_card_networks().size());
-  EXPECT_EQ("visa", spec()->supported_card_networks()[0]);
-  EXPECT_EQ("mastercard", spec()->supported_card_networks()[1]);
+  // Card networks are not valid |supported_method| so only 'visa' is left.
+  EXPECT_THAT(spec()->supported_card_networks(), ElementsAre("visa"));
 }
 
 // Test that parsing supported methods in different method data entries fails as
@@ -177,7 +160,8 @@ TEST_F(PaymentRequestSpecTest, SupportedMethods_MultipleEntries) {
 TEST_F(PaymentRequestSpecTest, SupportedMethods_MultipleEntries_OneEmpty) {
   // First entry is valid.
   mojom::PaymentMethodDataPtr entry = mojom::PaymentMethodData::New();
-  entry->supported_method = "visa";
+  entry->supported_method = "basic-card";
+  entry->supported_networks.push_back(mojom::BasicCardNetwork::VISA);
   // Empty method data entry.
   mojom::PaymentMethodDataPtr entry2 = mojom::PaymentMethodData::New();
   // Valid one follows the empty.
@@ -233,14 +217,9 @@ TEST_F(PaymentRequestSpecTest, SupportedMethods_BasicCard_WithSpecificMethod) {
   // All of the basic card networks are supported, but JCB is first because it
   // was specified first.
   EXPECT_EQ(8u, spec()->supported_card_networks().size());
-  EXPECT_EQ("jcb", spec()->supported_card_networks()[0]);
-  EXPECT_EQ("amex", spec()->supported_card_networks()[1]);
-  EXPECT_EQ("diners", spec()->supported_card_networks()[2]);
-  EXPECT_EQ("discover", spec()->supported_card_networks()[3]);
-  EXPECT_EQ("mastercard", spec()->supported_card_networks()[4]);
-  EXPECT_EQ("mir", spec()->supported_card_networks()[5]);
-  EXPECT_EQ("unionpay", spec()->supported_card_networks()[6]);
-  EXPECT_EQ("visa", spec()->supported_card_networks()[7]);
+  EXPECT_THAT(spec()->supported_card_networks(),
+              UnorderedElementsAre("jcb", "amex", "diners", "discover",
+                                   "mastercard", "mir", "unionpay", "visa"));
 }
 
 // Test that specifying basic-card with a supported network (with previous
@@ -264,9 +243,8 @@ TEST_F(PaymentRequestSpecTest, SupportedMethods_BasicCard_Overlap) {
   RecreateSpecWithMethodData(std::move(method_data));
 
   EXPECT_EQ(3u, spec()->supported_card_networks().size());
-  EXPECT_EQ("mastercard", spec()->supported_card_networks()[0]);
-  EXPECT_EQ("visa", spec()->supported_card_networks()[1]);
-  EXPECT_EQ("unionpay", spec()->supported_card_networks()[2]);
+  EXPECT_THAT(spec()->supported_card_networks(),
+              ElementsAre("visa", "mastercard", "unionpay"));
 }
 
 // Test that specifying basic-card with supported networks after specifying
@@ -367,8 +345,7 @@ TEST_F(PaymentRequestSpecTest, ShippingOptionsSelection_NoOptionsAtAll) {
 
   // No option selected, but there is an error provided by the mercahnt.
   EXPECT_EQ(nullptr, spec()->selected_shipping_option());
-  EXPECT_EQ(base::ASCIIToUTF16("No can do shipping."),
-            spec()->selected_shipping_option_error());
+  EXPECT_EQ(u"No can do shipping.", spec()->selected_shipping_option_error());
 }
 
 // Test that the last shipping option is selected, even in the case of
@@ -510,10 +487,10 @@ TEST_F(PaymentRequestSpecTest, RetryWithShippingAddressErrors) {
 
   spec()->Retry(std::move(errors));
 
-  EXPECT_EQ(base::UTF8ToUTF16("Invalid city"),
+  EXPECT_EQ(u"Invalid city",
             spec()->GetShippingAddressError(autofill::ADDRESS_HOME_CITY));
   EXPECT_EQ(
-      base::UTF8ToUTF16("Invalid address line"),
+      u"Invalid address line",
       spec()->GetShippingAddressError(autofill::ADDRESS_HOME_STREET_ADDRESS));
 
   EXPECT_TRUE(spec()->has_shipping_address_error());
@@ -540,11 +517,9 @@ TEST_F(PaymentRequestSpecTest, RetryWithPayerErrors) {
 
   spec()->Retry(std::move(errors));
 
-  EXPECT_EQ(base::UTF8ToUTF16("Invalid email"),
-            spec()->GetPayerError(autofill::EMAIL_ADDRESS));
-  EXPECT_EQ(base::UTF8ToUTF16("Invalid name"),
-            spec()->GetPayerError(autofill::NAME_FULL));
-  EXPECT_EQ(base::UTF8ToUTF16("Invalid phone"),
+  EXPECT_EQ(u"Invalid email", spec()->GetPayerError(autofill::EMAIL_ADDRESS));
+  EXPECT_EQ(u"Invalid name", spec()->GetPayerError(autofill::NAME_FULL));
+  EXPECT_EQ(u"Invalid phone",
             spec()->GetPayerError(autofill::PHONE_HOME_WHOLE_NUMBER));
 
   EXPECT_TRUE(spec()->has_payer_error());

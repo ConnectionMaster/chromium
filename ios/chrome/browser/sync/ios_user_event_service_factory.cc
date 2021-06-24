@@ -12,12 +12,12 @@
 #include "components/sync/base/model_type.h"
 #include "components/sync/base/report_unrecoverable_error.h"
 #include "components/sync/driver/sync_service.h"
+#include "components/sync/model/client_tag_based_model_type_processor.h"
 #include "components/sync/model/model_type_store_service.h"
-#include "components/sync/model_impl/client_tag_based_model_type_processor.h"
-#include "components/sync/user_events/no_op_user_event_service.h"
-#include "components/sync/user_events/user_event_service_impl.h"
-#include "components/sync/user_events/user_event_sync_bridge.h"
 #include "components/sync_sessions/session_sync_service.h"
+#include "components/sync_user_events/no_op_user_event_service.h"
+#include "components/sync_user_events/user_event_service_impl.h"
+#include "components/sync_user_events/user_event_sync_bridge.h"
 #include "ios/chrome/browser/browser_state/browser_state_otr_helper.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/sync/model_type_store_service_factory.h"
@@ -27,7 +27,7 @@
 
 // static
 syncer::UserEventService* IOSUserEventServiceFactory::GetForBrowserState(
-    ios::ChromeBrowserState* browser_state) {
+    ChromeBrowserState* browser_state) {
   return static_cast<syncer::UserEventService*>(
       GetInstance()->GetServiceForBrowserState(browser_state, true));
 }
@@ -55,8 +55,8 @@ IOSUserEventServiceFactory::BuildServiceInstanceFor(
     return std::make_unique<syncer::NoOpUserEventService>();
   }
 
-  ios::ChromeBrowserState* browser_state =
-      ios::ChromeBrowserState::FromBrowserState(context);
+  ChromeBrowserState* browser_state =
+      ChromeBrowserState::FromBrowserState(context);
   syncer::OnceModelTypeStoreFactory store_factory =
       ModelTypeStoreServiceFactory::GetForBrowserState(browser_state)
           ->GetStoreFactory();

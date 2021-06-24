@@ -15,29 +15,10 @@
 
 namespace display {
 
-namespace {
-
-bool GetHDCPCapableDisplays(
-    const DisplayLayoutManager& layout_manager,
-    std::vector<DisplaySnapshot*>* hdcp_capable_displays) {
-  for (DisplaySnapshot* display : layout_manager.GetDisplayStates()) {
-    uint32_t protection_mask;
-    if (!GetContentProtectionMethods(display->type(), &protection_mask))
-      return false;
-
-    if (protection_mask & CONTENT_PROTECTION_METHOD_HDCP)
-      hdcp_capable_displays->push_back(display);
-  }
-
-  return true;
-}
-
-}  // namespace
-
 ApplyContentProtectionTask::ApplyContentProtectionTask(
     DisplayLayoutManager* layout_manager,
     NativeDisplayDelegate* native_display_delegate,
-    DisplayConfigurator::ContentProtections requests,
+    ContentProtectionManager::ContentProtections requests,
     ResponseCallback callback)
     : layout_manager_(layout_manager),
       native_display_delegate_(native_display_delegate),
@@ -51,9 +32,15 @@ ApplyContentProtectionTask::~ApplyContentProtectionTask() {
 
 void ApplyContentProtectionTask::Run() {
   std::vector<DisplaySnapshot*> hdcp_capable_displays;
-  if (!GetHDCPCapableDisplays(*layout_manager_, &hdcp_capable_displays)) {
-    std::move(callback_).Run(Status::FAILURE);
-    return;
+  for (DisplaySnapshot* display : layout_manager_->GetDisplayStates()) {
+    uint32_t protection_mask;
+    if (!GetContentProtectionMethods(display->type(), &protection_mask)) {
+      std::move(callback_).Run(Status::FAILURE);
+      return;
+    }
+
+    if (protection_mask & kContentProtectionMethodHdcpAll)
+      hdcp_capable_displays.push_back(display);
   }
 
   pending_requests_ = hdcp_capable_displays.size();
@@ -72,11 +59,36 @@ void ApplyContentProtectionTask::Run() {
   }
 }
 
-void ApplyContentProtectionTask::OnGetHDCPState(int64_t display_id,
-                                                bool success,
-                                                HDCPState state) {
+void ApplyContentProtectionTask::OnGetHDCPState(
+    int64_t display_id,
+    bool success,
+    HDCPState state,
+    ContentProtectionMethod protection_method) {
   success_ &= success;
-  hdcp_states_[display_id] = state;
+
+  bool hdcp_enabled = state != HDCP_STATE_UNDESIRED;
+  uint32_t desired_hdcp_protections =
+      GetDesiredProtectionMask(display_id) & kContentProtectionMethodHdcpAll;
+  // Remove Type 0 from the mask if Type 1 is there.
+  if (desired_hdcp_protections & CONTENT_PROTECTION_METHOD_HDCP_TYPE_1)
+    desired_hdcp_protections &= ~CONTENT_PROTECTION_METHOD_HDCP_TYPE_0;
+
+  if (hdcp_enabled != !!desired_hdcp_protections ||
+      desired_hdcp_protections != protection_method) {
+    ContentProtectionMethod new_method;
+    if (!desired_hdcp_protections)
+      new_method = CONTENT_PROTECTION_METHOD_NONE;
+    else if (desired_hdcp_protections & CONTENT_PROTECTION_METHOD_HDCP_TYPE_1)
+      new_method = CONTENT_PROTECTION_METHOD_HDCP_TYPE_1;
+    else
+      new_method = CONTENT_PROTECTION_METHOD_HDCP_TYPE_0;
+
+    hdcp_requests_.emplace_back(
+        display_id,
+        desired_hdcp_protections ? HDCP_STATE_DESIRED : HDCP_STATE_UNDESIRED,
+        new_method);
+  }
+
   pending_requests_--;
 
   // Wait for all the requests before continuing.
@@ -88,37 +100,7 @@ void ApplyContentProtectionTask::OnGetHDCPState(int64_t display_id,
     return;
   }
 
-  ApplyProtections();
-}
-
-void ApplyContentProtectionTask::ApplyProtections() {
-  std::vector<DisplaySnapshot*> hdcp_capable_displays;
-  if (!GetHDCPCapableDisplays(*layout_manager_, &hdcp_capable_displays)) {
-    std::move(callback_).Run(Status::FAILURE);
-    return;
-  }
-
-  std::vector<std::pair<DisplaySnapshot*, HDCPState>> hdcp_requests;
-  // Figure out which displays need to have their HDCP state changed.
-  for (DisplaySnapshot* display : hdcp_capable_displays) {
-    uint32_t desired_mask = GetDesiredProtectionMask(display->display_id());
-
-    auto it = hdcp_states_.find(display->display_id());
-    // If the display can't be found, the display configuration changed.
-    if (it == hdcp_states_.end()) {
-      std::move(callback_).Run(Status::FAILURE);
-      return;
-    }
-
-    bool hdcp_enabled = it->second != HDCP_STATE_UNDESIRED;
-    bool hdcp_requested = desired_mask & CONTENT_PROTECTION_METHOD_HDCP;
-    if (hdcp_enabled != hdcp_requested) {
-      hdcp_requests.emplace_back(
-          display, hdcp_requested ? HDCP_STATE_DESIRED : HDCP_STATE_UNDESIRED);
-    }
-  }
-
-  pending_requests_ = hdcp_requests.size();
+  pending_requests_ = hdcp_requests_.size();
   // All the requested changes are the same as the current HDCP state. Nothing
   // to do anymore, just ack the content protection change.
   if (pending_requests_ == 0) {
@@ -126,9 +108,29 @@ void ApplyContentProtectionTask::ApplyProtections() {
     return;
   }
 
-  for (const auto& pair : hdcp_requests) {
+  std::vector<DisplaySnapshot*> displays = layout_manager_->GetDisplayStates();
+  std::vector<std::tuple<DisplaySnapshot*, HDCPState, ContentProtectionMethod>>
+      hdcped_displays;
+  // Lookup the displays again since display configuration may have changed.
+  for (const auto& request : hdcp_requests_) {
+    auto it = std::find_if(displays.begin(), displays.end(),
+                           [id = request.display_id](DisplaySnapshot* display) {
+                             return id == display->display_id();
+                           });
+    if (it == displays.end()) {
+      std::move(callback_).Run(Status::FAILURE);
+      return;
+    }
+
+    hdcped_displays.emplace_back(*it, request.state, request.protection_method);
+  }
+
+  // In synchronous callback execution this task can be deleted from the last
+  // invocation of SetHDCPState(), thus the for-loop should not iterate over
+  // object specific state (eg: |hdcp_requests_|).
+  for (const auto& tuple : hdcped_displays) {
     native_display_delegate_->SetHDCPState(
-        *pair.first, pair.second,
+        *std::get<0>(tuple), std::get<1>(tuple), std::get<2>(tuple),
         base::BindOnce(&ApplyContentProtectionTask::OnSetHDCPState,
                        weak_ptr_factory_.GetWeakPtr()));
   }

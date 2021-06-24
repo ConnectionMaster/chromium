@@ -6,9 +6,9 @@
 
 #include <utility>
 
+#include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/guid.h"
-#include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -39,7 +39,7 @@ int GetPhysicalMemoryGB() {
 std::string GetOSVersion() {
 #if defined(OS_WIN)
   const auto ver = base::win::OSInfo::GetInstance()->version_number();
-  return base::StringPrintf("%d.%d.%d.%d", ver.major, ver.minor, ver.build,
+  return base::StringPrintf("%u.%u.%u.%u", ver.major, ver.minor, ver.build,
                             ver.patch);
 #else
   return base::SysInfo().OperatingSystemVersion();
@@ -130,7 +130,7 @@ protocol_request::Request MakeProtocolRequest(
   request.os.arch = base::SysInfo().OperatingSystemArchitecture();
 
   if (updater_state_attributes) {
-    request.updater = base::make_optional<protocol_request::Updater>();
+    request.updater = absl::make_optional<protocol_request::Updater>();
     auto it = updater_state_attributes->find("name");
     if (it != updater_state_attributes->end())
       request.updater->name = it->second;
@@ -174,7 +174,7 @@ protocol_request::Request MakeProtocolRequest(
 protocol_request::App MakeProtocolApp(
     const std::string& app_id,
     const base::Version& version,
-    base::Optional<std::vector<base::Value>> events) {
+    absl::optional<std::vector<base::Value>> events) {
   protocol_request::App app;
   app.app_id = app_id;
   app.version = version.GetString();
@@ -193,10 +193,11 @@ protocol_request::App MakeProtocolApp(
     const std::string& cohort,
     const std::string& cohort_hint,
     const std::string& cohort_name,
+    const std::string& release_channel,
     const std::vector<int>& disabled_reasons,
-    base::Optional<protocol_request::UpdateCheck> update_check,
-    base::Optional<protocol_request::Ping> ping) {
-  auto app = MakeProtocolApp(app_id, version, base::nullopt);
+    absl::optional<protocol_request::UpdateCheck> update_check,
+    absl::optional<protocol_request::Ping> ping) {
+  auto app = MakeProtocolApp(app_id, version, absl::nullopt);
   app.brand_code = brand_code;
   app.install_source = install_source;
   app.install_location = install_location;
@@ -205,6 +206,7 @@ protocol_request::App MakeProtocolApp(
   app.cohort = cohort;
   app.cohort_hint = cohort_hint;
   app.cohort_name = cohort_name;
+  app.release_channel = release_channel;
   app.enabled = disabled_reasons.empty();
   app.disabled_reasons = disabled_reasons;
   app.update_check = std::move(update_check);
@@ -219,11 +221,12 @@ protocol_request::UpdateCheck MakeProtocolUpdateCheck(bool is_update_disabled) {
 }
 
 protocol_request::Ping MakeProtocolPing(const std::string& app_id,
-                                        const PersistedData* metadata) {
+                                        const PersistedData* metadata,
+                                        bool active) {
   DCHECK(metadata);
   protocol_request::Ping ping;
 
-  if (metadata->GetActiveBit(app_id)) {
+  if (active) {
     const int date_last_active = metadata->GetDateLastActive(app_id);
     if (date_last_active != kDateUnknown) {
       ping.date_last_active = date_last_active;

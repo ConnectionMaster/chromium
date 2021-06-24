@@ -95,7 +95,7 @@ class MediaRouterBasePage(page.Page):
                              error_message, timeout=5, retry=1):
     """Executes async javascript function and waits until it finishes."""
     exception = None
-    for _ in xrange(retry):
+    for _ in range(retry):
       try:
         action_runner.ExecuteJavaScript(script)
         self._WaitForResult(
@@ -121,6 +121,18 @@ class MediaRouterBasePage(page.Page):
              '"media-router-container").sinksToShow_.length'),
         'The dialog is not fully loaded within 15s.',
          timeout=15)
+
+  def WaitForSink(self, action_runner, target_sink, error_message, timeout=5):
+    sink_name_list = [sink['name'] for sink in action_runner.tab.GetCastSinks()]
+    start_time = time.time()
+    while (target_sink not in sink_name_list
+           and time.time() - start_time < timeout):
+      action_runner.tab.EnableCast()
+      sink_name_list = [
+          sink['name'] for sink in action_runner.tab.GetCastSinks()]
+      action_runner.Wait(1)
+    if target_sink not in sink_name_list:
+      raise RuntimeError(error_message)
 
   def _WaitForResult(self, action_runner, verify_func, error_message,
                      timeout=5):

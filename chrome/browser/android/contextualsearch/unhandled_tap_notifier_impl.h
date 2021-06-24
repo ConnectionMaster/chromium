@@ -7,12 +7,16 @@
 
 #include "base/macros.h"
 #include "chrome/browser/android/contextualsearch/unhandled_tap_web_contents_observer.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "third_party/blink/public/mojom/unhandled_tap_notifier/unhandled_tap_notifier.mojom.h"
 
 namespace contextual_search {
 
 // Implements a Mojo service endpoint for the mojo unhandled-tap notifier
 // message.
+// TODO(donnd): remove this as part of removal of all JS APIs for Contextual
+// Search since their primary need was for translations which are now handled
+// directly within the Bar.
 class UnhandledTapNotifierImpl : public blink::mojom::UnhandledTapNotifier {
  public:
   // Creates an implementation that will scale tap locations by the given
@@ -42,7 +46,7 @@ class UnhandledTapNotifierImpl : public blink::mojom::UnhandledTapNotifier {
 void CreateUnhandledTapNotifierImpl(
     float device_scale_factor,
     UnhandledTapCallback callback,
-    blink::mojom::UnhandledTapNotifierRequest request);
+    mojo::PendingReceiver<blink::mojom::UnhandledTapNotifier> receiver);
 
 }  // namespace contextual_search
 

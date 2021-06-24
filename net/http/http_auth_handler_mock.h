@@ -46,6 +46,7 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
     int CreateAuthHandler(HttpAuthChallengeTokenizer* challenge,
                           HttpAuth::Target target,
                           const SSLInfo& ssl_info,
+                          const NetworkIsolationKey& network_isolation_key,
                           const GURL& origin,
                           CreateReason reason,
                           int nonce_count,
@@ -84,21 +85,20 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
 
   State state() const { return state_; }
 
-  // HttpAuthHandler:
-  HttpAuth::AuthorizationResult HandleAnotherChallenge(
-      HttpAuthChallengeTokenizer* challenge) override;
+ protected:
+  // HttpAuthHandler
   bool NeedsIdentity() override;
   bool AllowsDefaultCredentials() override;
   bool AllowsExplicitCredentials() override;
-
- protected:
   bool Init(HttpAuthChallengeTokenizer* challenge,
-            const SSLInfo& ssl_info) override;
-
+            const SSLInfo& ssl_info,
+            const NetworkIsolationKey& network_isolation_key) override;
   int GenerateAuthTokenImpl(const AuthCredentials* credentials,
                             const HttpRequestInfo* request,
                             CompletionOnceCallback callback,
                             std::string* auth_token) override;
+  HttpAuth::AuthorizationResult HandleAnotherChallengeImpl(
+      HttpAuthChallengeTokenizer* challenge) override;
 
  private:
   void OnGenerateAuthToken();
@@ -113,7 +113,7 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
   bool allows_default_credentials_;
   bool allows_explicit_credentials_;
   GURL request_url_;
-  base::WeakPtrFactory<HttpAuthHandlerMock> weak_factory_;
+  base::WeakPtrFactory<HttpAuthHandlerMock> weak_factory_{this};
 };
 
 void PrintTo(const HttpAuthHandlerMock::State& state, ::std::ostream* os);

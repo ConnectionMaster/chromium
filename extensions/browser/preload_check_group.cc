@@ -11,8 +11,7 @@
 
 namespace extensions {
 
-PreloadCheckGroup::PreloadCheckGroup()
-    : PreloadCheck(nullptr), weak_ptr_factory_(this) {}
+PreloadCheckGroup::PreloadCheckGroup() : PreloadCheck(nullptr) {}
 
 PreloadCheckGroup::~PreloadCheckGroup() {}
 
@@ -28,8 +27,8 @@ void PreloadCheckGroup::Start(ResultCallback callback) {
   callback_ = std::move(callback);
   running_checks_ = checks_.size();
   for (auto* check : checks_) {
-    check->Start(base::Bind(&PreloadCheckGroup::OnCheckComplete,
-                            weak_ptr_factory_.GetWeakPtr()));
+    check->Start(base::BindOnce(&PreloadCheckGroup::OnCheckComplete,
+                                weak_ptr_factory_.GetWeakPtr()));
     // Synchronous checks may fail immediately.
     if (running_checks_ == 0)
       return;

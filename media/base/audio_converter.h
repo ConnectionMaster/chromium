@@ -23,7 +23,6 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/time/time.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/media_export.h"
 
@@ -95,6 +94,12 @@ class MEDIA_EXPORT AudioConverter {
 
   // See SincResampler::PrimeWithSilence.
   void PrimeWithSilence();
+
+  // Maximum number of frames requested via InputCallback::ProvideInput, when
+  // trying to convert |output_frames_requested| at a time.
+  // Returns |output_frames_requested| when we are not resampling, and a
+  // multiple of the request size when we are.
+  int GetMaxInputFramesRequested(int output_frames_requested);
 
   bool empty() const { return transform_inputs_.empty(); }
 

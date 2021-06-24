@@ -7,25 +7,27 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "build/chromeos_buildflags.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "remoting/host/chromeos/skia_bitmap_desktop_frame.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/compositor/layer.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "ash/shell.h"
 #endif
 
 namespace remoting {
 
 AuraDesktopCapturer::AuraDesktopCapturer()
-    : callback_(nullptr), desktop_window_(nullptr), weak_factory_(this) {}
+    : callback_(nullptr), desktop_window_(nullptr) {}
 
 AuraDesktopCapturer::~AuraDesktopCapturer() = default;
 
 void AuraDesktopCapturer::Start(webrtc::DesktopCapturer::Callback* callback) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (ash::Shell::HasInstance()) {
     // TODO(kelvinp): Use ash::Shell::GetAllRootWindows() when multiple monitor
     // support is implemented.
@@ -60,8 +62,9 @@ void AuraDesktopCapturer::OnFrameCaptured(
     return;
   }
 
+  auto scoped_bitmap = result->ScopedAccessSkBitmap();
   std::unique_ptr<webrtc::DesktopFrame> frame(SkiaBitmapDesktopFrame::Create(
-      std::make_unique<SkBitmap>(result->AsSkBitmap())));
+      std::make_unique<SkBitmap>(scoped_bitmap.GetOutScopedBitmap())));
 
   // |VideoFramePump| will not encode the frame if |updated_region| is empty.
   const webrtc::DesktopRect& rect = webrtc::DesktopRect::MakeWH(

@@ -4,47 +4,51 @@
 
 #include "ash/accessibility/test_accessibility_controller_client.h"
 
+#include <utility>
+
+#include "ash/public/cpp/accessibility_controller.h"
+#include "ui/gfx/geometry/point_f.h"
+
 namespace ash {
 
 constexpr base::TimeDelta
     TestAccessibilityControllerClient::kShutdownSoundDuration;
 
-TestAccessibilityControllerClient::TestAccessibilityControllerClient()
-    : binding_(this) {}
+TestAccessibilityControllerClient::TestAccessibilityControllerClient() {
+  AccessibilityController::Get()->SetClient(this);
+}
 
-TestAccessibilityControllerClient::~TestAccessibilityControllerClient() =
-    default;
-
-mojom::AccessibilityControllerClientPtr
-TestAccessibilityControllerClient::CreateInterfacePtrAndBind() {
-  mojom::AccessibilityControllerClientPtr ptr;
-  binding_.Bind(mojo::MakeRequest(&ptr));
-  return ptr;
+TestAccessibilityControllerClient::~TestAccessibilityControllerClient() {
+  AccessibilityController::Get()->SetClient(nullptr);
 }
 
 void TestAccessibilityControllerClient::TriggerAccessibilityAlert(
-    mojom::AccessibilityAlert alert) {
+    AccessibilityAlert alert) {
   last_a11y_alert_ = alert;
 }
 
-void TestAccessibilityControllerClient::PlayEarcon(int32_t sound_key) {
+void TestAccessibilityControllerClient::TriggerAccessibilityAlertWithMessage(
+    const std::string& message) {
+  last_alert_message_ = message;
+}
+
+void TestAccessibilityControllerClient::PlayEarcon(Sound sound_key) {
   sound_key_ = sound_key;
 }
 
-void TestAccessibilityControllerClient::PlayShutdownSound(
-    PlayShutdownSoundCallback callback) {
-  std::move(callback).Run(kShutdownSoundDuration);
+base::TimeDelta TestAccessibilityControllerClient::PlayShutdownSound() {
+  return kShutdownSoundDuration;
 }
 
 void TestAccessibilityControllerClient::HandleAccessibilityGesture(
-    ax::mojom::Gesture gesture) {
+    ax::mojom::Gesture gesture,
+    gfx::PointF location) {
   last_a11y_gesture_ = gesture;
 }
 
-void TestAccessibilityControllerClient::ToggleDictation(
-    ToggleDictationCallback callback) {
+bool TestAccessibilityControllerClient::ToggleDictation() {
   is_dictation_active_ = !is_dictation_active_;
-  std::move(callback).Run(is_dictation_active_);
+  return is_dictation_active_;
 }
 
 void TestAccessibilityControllerClient::SilenceSpokenFeedback() {}
@@ -53,9 +57,9 @@ void TestAccessibilityControllerClient::OnTwoFingerTouchStart() {}
 
 void TestAccessibilityControllerClient::OnTwoFingerTouchStop() {}
 
-void TestAccessibilityControllerClient::ShouldToggleSpokenFeedbackViaTouch(
-    ShouldToggleSpokenFeedbackViaTouchCallback callback) {
-  std::move(callback).Run(true);  // Passing true for testing.
+bool TestAccessibilityControllerClient::ShouldToggleSpokenFeedbackViaTouch()
+    const {
+  return true;
 }
 
 void TestAccessibilityControllerClient::PlaySpokenFeedbackToggleCountdown(
@@ -65,10 +69,27 @@ void TestAccessibilityControllerClient::RequestSelectToSpeakStateChange() {
   ++select_to_speak_state_change_requests_;
 }
 
-int32_t TestAccessibilityControllerClient::GetPlayedEarconAndReset() {
-  int32_t tmp = sound_key_;
-  sound_key_ = -1;
-  return tmp;
+void TestAccessibilityControllerClient::
+    RequestAutoclickScrollableBoundsForPoint(gfx::Point& point_in_screen) {}
+
+void TestAccessibilityControllerClient::MagnifierBoundsChanged(
+    const gfx::Rect& bounds_in_screen) {}
+
+void TestAccessibilityControllerClient::OnSwitchAccessDisabled() {}
+
+void TestAccessibilityControllerClient::OnSelectToSpeakPanelAction(
+    SelectToSpeakPanelAction action,
+    double value) {
+  last_select_to_speak_panel_action_ = action;
+  last_select_to_speak_panel_action_value_ = value;
+}
+
+void TestAccessibilityControllerClient::SetA11yOverrideWindow(
+    aura::Window* a11y_override_window) {}
+
+absl::optional<Sound>
+TestAccessibilityControllerClient::GetPlayedEarconAndReset() {
+  return std::exchange(sound_key_, absl::nullopt);
 }
 
 }  // namespace ash

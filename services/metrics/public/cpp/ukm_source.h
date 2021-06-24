@@ -9,10 +9,12 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "services/metrics/public/cpp/metrics_export.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace ukm {
@@ -79,6 +81,31 @@ class METRICS_EXPORT UkmSource {
     // document navigations are fragment navigations, pushState/replaceState,
     // and same page history navigation.
     bool is_same_document_navigation = false;
+
+    // Represents the same origin status of the navigation compared to the
+    // previous document.
+    enum SameOriginStatus {
+      UNSET = 0,
+      SAME_ORIGIN,
+      CROSS_ORIGIN,
+    };
+
+    // Whether this is the same origin as the previous document.
+    //
+    // This is set to the NavigationHandle's same origin state when the
+    // navigation is committed, is not a same document navigation and is not
+    // committed as an error page. Otherwise, this remains unset.
+    SameOriginStatus same_origin_status = SameOriginStatus::UNSET;
+
+    // Whether this navigation is initiated by the renderer.
+    bool is_renderer_initiated = false;
+
+    // Whether the navigation committed an error page.
+    bool is_error_page = false;
+
+    // The navigation start time relative to session start. The navigation
+    // time within session should be monotonically increasing.
+    absl::optional<base::TimeTicks> navigation_time;
   };
 
   UkmSource(SourceId id, const GURL& url);
@@ -108,6 +135,7 @@ class METRICS_EXPORT UkmSource {
 
  private:
   const ukm::SourceId id_;
+  const ukm::SourceIdType type_;
 
   NavigationData navigation_data_;
 

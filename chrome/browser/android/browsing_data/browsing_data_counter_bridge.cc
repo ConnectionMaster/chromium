@@ -7,12 +7,12 @@
 #include "base/android/jni_string.h"
 #include "base/bind.h"
 #include "base/trace_event/trace_event.h"
+#include "chrome/android/chrome_jni_headers/BrowsingDataCounterBridge_jni.h"
 #include "chrome/browser/browsing_data/counters/browsing_data_counter_factory.h"
 #include "chrome/browser/browsing_data/counters/browsing_data_counter_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/pref_names.h"
-#include "jni/BrowsingDataCounterBridge_jni.h"
 
 using base::android::JavaParamRef;
 using base::android::ScopedJavaLocalRef;
@@ -50,9 +50,10 @@ BrowsingDataCounterBridge::BrowsingDataCounterBridge(
   if (!counter_)
     return;
 
-  counter_->Init(profile->GetPrefs(), clear_browsing_data_tab_,
-                 base::Bind(&BrowsingDataCounterBridge::onCounterFinished,
-                            base::Unretained(this)));
+  counter_->Init(
+      profile->GetPrefs(), clear_browsing_data_tab_,
+      base::BindRepeating(&BrowsingDataCounterBridge::onCounterFinished,
+                          base::Unretained(this)));
   counter_->Restart();
 }
 

@@ -13,8 +13,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.contextualsearch.ContextualSearchTranslationImpl.TranslateBridgeWrapper;
-
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -23,6 +21,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.contextualsearch.ContextualSearchTranslationImpl.TranslateBridgeWrapper;
 
 import java.util.LinkedHashSet;
 
@@ -60,8 +59,7 @@ public class ContextualSearchTranslationImplTest {
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        mImpl = new ContextualSearchTranslationImpl(mPolicy, mTranslateBridgeWrapperMock);
-        doReturn(false).when(mPolicy).isTranslationDisabled();
+        mImpl = new ContextualSearchTranslationImpl(mTranslateBridgeWrapperMock);
     }
 
     @Test
@@ -94,10 +92,9 @@ public class ContextualSearchTranslationImplTest {
 
     @Test
     @Feature("TranslateUtilities")
-    public void testNeedsTranslationOtherBlocked() {
+    public void testGetFluentLanguages() {
         doReturn(ENGLISH_AND_SPANISH).when(mTranslateBridgeWrapperMock).getModelLanguages();
-        doReturn(true).when(mTranslateBridgeWrapperMock).isBlockedLanguage(GERMAN);
-        assertThat(mImpl.needsTranslation(GERMAN), is(false));
+        assertThat(mImpl.getTranslateServiceFluentLanguages(), is(ENGLISH + "," + SPANISH));
     }
 
     @Test
@@ -114,7 +111,7 @@ public class ContextualSearchTranslationImplTest {
         doNothing().when(mRequest).forceTranslation(any(), any());
         when(mRequest.isTranslationForced()).thenReturn(true);
 
-        mImpl.forceTranslateIfNeeded(mRequest, GERMAN);
+        mImpl.forceTranslateIfNeeded(mRequest, GERMAN, true);
 
         assertThat(mRequest.isTranslationForced(), is(true));
         verify(mTranslateBridgeWrapperMock).getModelLanguages();
@@ -126,7 +123,7 @@ public class ContextualSearchTranslationImplTest {
     public void testForceTranslateIfNeededWhenNotNeeded() {
         doReturn(ENGLISH_AND_SPANISH).when(mTranslateBridgeWrapperMock).getModelLanguages();
 
-        mImpl.forceTranslateIfNeeded(mRequest, ENGLISH);
+        mImpl.forceTranslateIfNeeded(mRequest, ENGLISH, true);
 
         assertThat(mRequest.isTranslationForced(), is(false));
         verify(mTranslateBridgeWrapperMock).getModelLanguages();

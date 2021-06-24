@@ -2,10 +2,34 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+
+import {AsyncUtil} from '../../common/js/async_util.js';
+import {importer} from '../../common/js/importer_common.js';
+import {metrics} from '../../common/js/metrics.m.js';
+import {ProgressCenterItem, ProgressItemState, ProgressItemType} from '../../common/js/progress_center_common.m.js';
+import {str, strf, util} from '../../common/js/util.m.js';
+import {xfm} from '../../common/js/xfm.m.js';
+import {ProgressCenter} from '../../externs/background/progress_center.js';
+import {VolumeInfo} from '../../externs/volume_info.js';
+import {VolumeManager} from '../../externs/volume_manager.js';
+
+import {volumeManagerFactory} from './volume_manager_factory.js';
+
+
 /** Handler of device event. */
-class DeviceHandler extends cr.EventTarget {
-  constructor() {
+export class DeviceHandler extends EventTarget {
+  /** @param {!ProgressCenter} progressCenter */
+  constructor(progressCenter) {
     super();
+
+    /**
+     * Progress center to notify for format events.
+     * @type {!ProgressCenter}
+     * @const
+     * @private
+     */
+    this.progressCenter_ = progressCenter;
 
     /**
      * Map of device path and mount status of devices.
@@ -17,10 +41,10 @@ class DeviceHandler extends cr.EventTarget {
         this.onDeviceChanged_.bind(this));
     chrome.fileManagerPrivate.onMountCompleted.addListener(
         this.onMountCompleted_.bind(this));
-    chrome.notifications.onClicked.addListener(
+    xfm.notifications.onClicked.addListener(
         this.onNotificationClicked_.bind(this));
-    chrome.notifications.onButtonClicked.addListener(
-        this.onNotificationClicked_.bind(this));
+    xfm.notifications.onButtonClicked.addListener(
+        this.onNotificationButtonClicked_.bind(this));
   }
 
   /**
@@ -54,15 +78,14 @@ class DeviceHandler extends cr.EventTarget {
         DeviceHandler.Notification.DEVICE_HARD_UNPLUGGED.show(event.devicePath);
         break;
       case 'format_start':
-        DeviceHandler.Notification.FORMAT_START.show(event.devicePath);
-        break;
       case 'format_success':
-        DeviceHandler.Notification.FORMAT_START.hide(event.devicePath);
-        DeviceHandler.Notification.FORMAT_SUCCESS.show(event.devicePath);
-        break;
       case 'format_fail':
-        DeviceHandler.Notification.FORMAT_START.hide(event.devicePath);
-        DeviceHandler.Notification.FORMAT_FAIL.show(event.devicePath);
+        this.handleFormatEvent_(event);
+        break;
+      case 'partition_start':
+      case 'partition_success':
+      case 'partition_fail':
+        this.handlePartitionEvent_(event);
         break;
       case 'rename_fail':
         DeviceHandler.Notification.RENAME_FAIL.show(event.devicePath);
@@ -71,6 +94,91 @@ class DeviceHandler extends cr.EventTarget {
         console.error('Unknown event type: ' + event.type);
         break;
     }
+  }
+
+  /**
+   * Handles format events and displays a notification in the progress center.
+   * @param {chrome.fileManagerPrivate.DeviceEvent} event Device event.
+   * @private
+   */
+  handleFormatEvent_(event) {
+    const item = new ProgressCenterItem();
+    item.id = 'format:' + event.devicePath;
+    item.type = ProgressItemType.FORMAT;
+    item.itemCount = 1;
+    item.progressMax = 1;
+
+    let notificationType;
+    switch (event.type) {
+      case 'format_start':
+        item.state = ProgressItemState.PROGRESSING;
+        item.message = strf('FORMAT_PROGRESS_MESSAGE', event.deviceLabel);
+        item.progressValue = 0;
+        notificationType = DeviceHandler.Notification.Type.FORMAT_START;
+        break;
+      case 'format_success':
+        item.state = ProgressItemState.COMPLETED;
+        item.message = strf('FORMAT_SUCCESS_MESSAGE', event.deviceLabel);
+        item.progressValue = 1;
+        notificationType = DeviceHandler.Notification.Type.FORMAT_SUCCESS;
+        break;
+      case 'format_fail':
+        item.state = ProgressItemState.ERROR;
+        item.message = strf('FORMAT_FAILURE_MESSAGE', event.deviceLabel);
+        item.progressValue = 0;
+        notificationType = DeviceHandler.Notification.Type.FORMAT_FAIL;
+        break;
+      default:
+        console.error('Unknown format event type: ' + event.type);
+        break;
+    }
+
+    this.progressCenter_.updateItem(item);
+
+    requestIdleCallback(
+        () => metrics.recordEnum(
+            'Notification.Show', notificationType,
+            DeviceHandler.Notification.TypesForUMA));
+  }
+
+  /**
+   * Handles partition events and displays a notification in the progress
+   * center. As the partitioning is the first part of SinglePartitionFormat
+   * operation, just show errors that would stop the operation. Other part
+   * handled in format event flow.
+   * @param {chrome.fileManagerPrivate.DeviceEvent} event Device event.
+   * @private
+   */
+  handlePartitionEvent_(event) {
+    const item = new ProgressCenterItem();
+    item.id = 'partition:' + event.devicePath;
+    item.type = ProgressItemType.PARTITION;
+    item.itemCount = 1;
+    item.progressMax = 1;
+
+    let notificationType;
+    switch (event.type) {
+      case 'partition_start':
+      case 'partition_success':
+        // No op for start/success.
+        return;
+      case 'partition_fail':
+        item.state = ProgressItemState.ERROR;
+        item.message = strf('FORMAT_FAILURE_MESSAGE', event.deviceLabel);
+        item.progressValue = 0;
+        notificationType = DeviceHandler.Notification.Type.PARTITION_FAIL;
+        break;
+      default:
+        console.error('Unknown partition event type: ' + event.type);
+        break;
+    }
+
+    this.progressCenter_.updateItem(item);
+
+    requestIdleCallback(
+        () => metrics.recordEnum(
+            'Notification.Show', notificationType,
+            DeviceHandler.Notification.TypesForUMA));
   }
 
   /**
@@ -253,8 +361,20 @@ class DeviceHandler extends cr.EventTarget {
               DeviceHandler.Notification.DEVICE_NAVIGATION_READONLY_POLICY.show(
                   /** @type {string} */ (metadata.devicePath));
             } else {
-              DeviceHandler.Notification.DEVICE_NAVIGATION.show(
-                  /** @type {string} */ (metadata.devicePath));
+              chrome.fileManagerPrivate.getPreferences(pref => {
+                if (!pref.arcEnabled || !util.isArcUsbStorageUIEnabled()) {
+                  DeviceHandler.Notification.DEVICE_NAVIGATION.show(
+                      /** @type {string} */ (metadata.devicePath));
+                } else if (pref.arcRemovableMediaAccessEnabled) {
+                  DeviceHandler.Notification.DEVICE_NAVIGATION_APPS_HAVE_ACCESS
+                      .show(
+                          /** @type {string} */ (metadata.devicePath));
+                } else {
+                  DeviceHandler.Notification.DEVICE_NAVIGATION_ALLOW_APP_ACCESS
+                      .show(
+                          /** @type {string} */ (metadata.devicePath));
+                }
+              });
             }
           }
         });
@@ -266,30 +386,78 @@ class DeviceHandler extends cr.EventTarget {
   }
 
   /**
-   * Handles notification body or button click.
+   * Handles notification body click.
    * @param {string} id ID of the notification.
    * @private
    */
   onNotificationClicked_(id) {
     util.doIfPrimaryContext(() => {
-      this.onNotificationClickedInternal_(id);
+      this.onNotificationClickedInternal_(id, -1 /* index */);
+    });
+  }
+
+  /**
+   * Handles notification button click.
+   * @param {string} id ID of the notification.
+   * @param {number} index index of the button.
+   * @private
+   */
+  onNotificationButtonClicked_(id, index) {
+    util.doIfPrimaryContext(() => {
+      this.onNotificationClickedInternal_(id, index);
     });
   }
 
   /**
    * @param {string} id ID of the notification.
+   * @param {number} index index of the button.
    * @private
    */
-  onNotificationClickedInternal_(id) {
+  onNotificationClickedInternal_(id, index) {
     const pos = id.indexOf(':');
-    const type = id.substr(0, pos);
+    const prefix = id.substr(0, pos);
     const devicePath = id.substr(pos + 1);
-    if (type === 'deviceNavigation' || type === 'deviceFail') {
-      chrome.notifications.clear(id, () => {});
+    if (prefix === 'deviceNavigation' || prefix === 'deviceFail') {
+      xfm.notifications.clear(id, () => {});
       this.openMediaDirectory_(null, devicePath, null);
-    } else if (type === 'deviceImport') {
-      chrome.notifications.clear(id, () => {});
+      metrics.recordEnum(
+          'Notification.UserAction',
+          prefix === 'deviceNavigation' ?
+              DeviceHandler.Notification.UserAction
+                  .OPEM_MEDIA_DEVICE_NAVIGATION :
+              DeviceHandler.Notification.UserAction.OPEN_MEDIA_DEVICE_FAIL,
+          DeviceHandler.Notification.UserActionsForUMA);
+      return;
+    }
+    if (prefix === 'deviceImport') {
+      xfm.notifications.clear(id, () => {});
       this.openMediaDirectory_(null, devicePath, 'DCIM');
+      metrics.recordEnum(
+          'Notification.UserAction',
+          DeviceHandler.Notification.UserAction.OPEN_MEDIA_DEVICE_IMPORT,
+          DeviceHandler.Notification.UserActionsForUMA);
+      return;
+    }
+    if (prefix === 'deviceNavigationAppAccess') {
+      xfm.notifications.clear(id, () => {});
+      const secondButtonIndex = 1;
+      if (index === secondButtonIndex) {
+        chrome.fileManagerPrivate.openSettingsSubpage(
+            'storage/externalStoragePreferences');
+        metrics.recordEnum(
+            'Notification.UserAction',
+            DeviceHandler.Notification.UserAction
+                .OPEN_EXTERNAL_STORAGE_PREFERENCES,
+            DeviceHandler.Notification.UserActionsForUMA);
+      } else {
+        this.openMediaDirectory_(null, devicePath, null);
+        metrics.recordEnum(
+            'Notification.UserAction',
+            DeviceHandler.Notification.UserAction
+                .OPEN_MEDIA_DEVICE_NAVIGATION_ARC,
+            DeviceHandler.Notification.UserActionsForUMA);
+      }
+      return;
     }
   }
 
@@ -344,14 +512,33 @@ DeviceHandler.VOLUME_NAVIGATION_REQUESTED = 'volumenavigationrequested';
  */
 DeviceHandler.Notification = class {
   /**
+   * @param {DeviceHandler.Notification.Type} type Type of notification.
    * @param {string} prefix Prefix of notification ID.
    * @param {string} title String ID of title.
    * @param {string} message String ID of message.
    * @param {string=} opt_buttonLabel String ID of the button label.
    * @param {boolean=} opt_isClickable True if the notification body is
    *     clickable.
+   * @param {string=} opt_additionalMessage String ID of additional message.
+   * @param {string=} opt_secondButtonLabel String ID of the second button
+   *     label.
    */
-  constructor(prefix, title, message, opt_buttonLabel, opt_isClickable) {
+  constructor(
+      type, prefix, title, message, opt_buttonLabel, opt_isClickable,
+      opt_additionalMessage, opt_secondButtonLabel) {
+    // Check that second button is used with primary button, because
+    // notifications API is based in button index, so the second button index
+    // is always 1.
+    if (opt_secondButtonLabel) {
+      console.assert(opt_buttonLabel !== undefined);
+    }
+
+    /**
+     * Type of this notification.
+     * @type {DeviceHandler.Notification.Type}
+     */
+    this.type = type;
+
     /**
      * Prefix of notification ID.
      * @type {string}
@@ -383,6 +570,18 @@ DeviceHandler.Notification = class {
     this.isClickable = opt_isClickable || false;
 
     /**
+     * String ID of additional message.
+     * @type {?string}
+     */
+    this.additionalMessage = opt_additionalMessage || null;
+
+    /**
+     * String ID of second button label.
+     * @type {?string}
+     */
+    this.secondButtonLabel = opt_secondButtonLabel || null;
+
+    /**
      * Queue of API call.
      * @type {AsyncUtil.Queue}
      * @private
@@ -412,7 +611,7 @@ DeviceHandler.Notification = class {
   showOnce(devicePath) {
     const notificationId = this.makeId_(devicePath);
     this.queue_.run(function(callback) {
-      chrome.notifications.getAll(idList => {
+      xfm.notifications.getAll(idList => {
         if (idList.indexOf(notificationId) !== -1) {
           callback();
           return;
@@ -433,16 +632,23 @@ DeviceHandler.Notification = class {
   showInternal_(notificationId, message, callback) {
     const buttons =
         this.buttonLabel ? [{title: str(this.buttonLabel)}] : undefined;
-    chrome.notifications.create(
+    if (this.secondButtonLabel) {
+      buttons.push({title: str(this.secondButtonLabel)});
+    }
+    const additionalMessage =
+        this.additionalMessage ? (' ' + str(this.additionalMessage)) : '';
+    xfm.notifications.create(
         notificationId, {
           type: 'basic',
           title: str(this.title),
-          message: message || str(this.message),
+          message: message || (str(this.message) + additionalMessage),
           iconUrl: chrome.runtime.getURL('/common/images/icon96.png'),
           buttons: buttons,
           isClickable: this.isClickable
         },
         callback);
+    metrics.recordEnum(
+        'Notification.Show', this.type, DeviceHandler.Notification.TypesForUMA);
   }
 
   /**
@@ -451,7 +657,7 @@ DeviceHandler.Notification = class {
    */
   hide(devicePath) {
     this.queue_.run(callback => {
-      chrome.notifications.clear(this.makeId_(devicePath), callback);
+      xfm.notifications.clear(this.makeId_(devicePath), callback);
     });
   }
 
@@ -467,12 +673,126 @@ DeviceHandler.Notification = class {
 };
 
 /**
+ * The type of each notification.
+ * @enum {string}
+ * @const
+ */
+DeviceHandler.Notification.Type = {
+  DEVICE_NAVIGATION_ALLOW_APP_ACCESS: 'device_navigation_uninitialized',
+  DEVICE_NAVIGATION_APPS_HAVE_ACCESS: 'device_navigation_apps_have_access',
+  DEVICE_NAVIGATION: 'device_navigation',
+  DEVICE_NAVIGATION_READONLY_POLICY: 'device_navigation_readonly_policy',
+  DEVICE_IMPORT: 'device_import',
+  DEVICE_FAIL: 'device_fail',
+  DEVICE_FAIL_UNKNOWN: 'device_fail_unknown',
+  DEVICE_FAIL_UNKNOWN_READONLY: 'device_fail_unknown_readonly',
+  DEVICE_EXTERNAL_STORAGE_DISABLED: 'device_external_storage_disabled',
+  DEVICE_HARD_UNPLUGGED: 'device_hard_unplugged',
+  FORMAT_START: 'format_start',
+  FORMAT_SUCCESS: 'format_success',
+  FORMAT_FAIL: 'format_fail',
+  RENAME_FAIL: 'rename_fail',
+  PARTITION_START: 'partition_start',
+  PARTITION_SUCCESS: 'partition_success',
+  PARTITION_FAIL: 'partition_fail',
+};
+
+/**
+ * Keep the order of this in sync with FileManagerNotificationType in
+ * tools/metrics/histograms/enums.xml.
+ *
+ * @type {!Array<DeviceHandler.Notification.Type>}
+ * @const
+ */
+DeviceHandler.Notification.TypesForUMA = Object.freeze([
+  DeviceHandler.Notification.Type.DEVICE_NAVIGATION_ALLOW_APP_ACCESS,
+  DeviceHandler.Notification.Type.DEVICE_NAVIGATION_APPS_HAVE_ACCESS,
+  DeviceHandler.Notification.Type.DEVICE_NAVIGATION,
+  DeviceHandler.Notification.Type.DEVICE_NAVIGATION_READONLY_POLICY,
+  DeviceHandler.Notification.Type.DEVICE_IMPORT,
+  DeviceHandler.Notification.Type.DEVICE_FAIL,
+  DeviceHandler.Notification.Type.DEVICE_FAIL_UNKNOWN,
+  DeviceHandler.Notification.Type.DEVICE_FAIL_UNKNOWN_READONLY,
+  DeviceHandler.Notification.Type.DEVICE_EXTERNAL_STORAGE_DISABLED,
+  DeviceHandler.Notification.Type.DEVICE_HARD_UNPLUGGED,
+  DeviceHandler.Notification.Type.FORMAT_START,
+  DeviceHandler.Notification.Type.FORMAT_SUCCESS,
+  DeviceHandler.Notification.Type.FORMAT_FAIL,
+  DeviceHandler.Notification.Type.RENAME_FAIL,
+  DeviceHandler.Notification.Type.PARTITION_START,
+  DeviceHandler.Notification.Type.PARTITION_SUCCESS,
+  DeviceHandler.Notification.Type.PARTITION_FAIL,
+]);
+console.assert(
+    Object.keys(DeviceHandler.Notification.Type).length ===
+        DeviceHandler.Notification.TypesForUMA.length,
+    'Members in Notification.TypesForUMA do not match the enum.');
+
+/**
+ * The type of user action on a notification.
+ * @enum {string}
+ * @const
+ */
+DeviceHandler.Notification.UserAction = {
+  OPEN_EXTERNAL_STORAGE_PREFERENCES: 'open_external_storage_preferences',
+  OPEM_MEDIA_DEVICE_NAVIGATION: 'open_media_device_navigation',
+  OPEN_MEDIA_DEVICE_NAVIGATION_ARC: 'open_media_device_navigation_arc',
+  OPEN_MEDIA_DEVICE_FAIL: 'open_media_device_fail',
+  OPEN_MEDIA_DEVICE_IMPORT: 'open_media_device_import',
+};
+
+/**
+ * Keep the order of this in sync with FileManagerNotificationUserAction in
+ * tools/metrics/histograms/enums.xml.
+ *
+ * @type {!Array<DeviceHandler.Notification.UserAction>}
+ * @const
+ */
+DeviceHandler.Notification.UserActionsForUMA = Object.freeze([
+  DeviceHandler.Notification.UserAction.OPEN_EXTERNAL_STORAGE_PREFERENCES,
+  DeviceHandler.Notification.UserAction.OPEM_MEDIA_DEVICE_NAVIGATION,
+  DeviceHandler.Notification.UserAction.OPEN_MEDIA_DEVICE_NAVIGATION_ARC,
+  DeviceHandler.Notification.UserAction.OPEN_MEDIA_DEVICE_FAIL,
+  DeviceHandler.Notification.UserAction.OPEN_MEDIA_DEVICE_IMPORT,
+]);
+console.assert(
+    Object.keys(DeviceHandler.Notification.UserAction).length ===
+        DeviceHandler.Notification.UserActionsForUMA.length,
+    'Members in Notification.UserActionsForUMA do not match the enum.');
+
+/**
+ * @type {DeviceHandler.Notification}
+ * @const
+ */
+DeviceHandler.Notification.DEVICE_NAVIGATION_ALLOW_APP_ACCESS =
+    new DeviceHandler.Notification(
+        DeviceHandler.Notification.Type.DEVICE_NAVIGATION_ALLOW_APP_ACCESS,
+        'deviceNavigationAppAccess', 'REMOVABLE_DEVICE_DETECTION_TITLE',
+        'REMOVABLE_DEVICE_NAVIGATION_MESSAGE',
+        'REMOVABLE_DEVICE_NAVIGATION_BUTTON_LABEL', true,
+        'REMOVABLE_DEVICE_ALLOW_PLAY_STORE_ACCESS_MESSAGE',
+        'REMOVABLE_DEVICE_OPEN_SETTTINGS_BUTTON_LABEL');
+
+/**
+ * @type {DeviceHandler.Notification}
+ * @const
+ */
+DeviceHandler.Notification.DEVICE_NAVIGATION_APPS_HAVE_ACCESS =
+    new DeviceHandler.Notification(
+        DeviceHandler.Notification.Type.DEVICE_NAVIGATION_APPS_HAVE_ACCESS,
+        'deviceNavigationAppAccess', 'REMOVABLE_DEVICE_DETECTION_TITLE',
+        'REMOVABLE_DEVICE_NAVIGATION_MESSAGE',
+        'REMOVABLE_DEVICE_NAVIGATION_BUTTON_LABEL', true,
+        'REMOVABLE_DEVICE_PLAY_STORE_APPS_HAVE_ACCESS_MESSAGE',
+        'REMOVABLE_DEVICE_OPEN_SETTTINGS_BUTTON_LABEL');
+
+/**
  * @type {DeviceHandler.Notification}
  * @const
  */
 DeviceHandler.Notification.DEVICE_NAVIGATION = new DeviceHandler.Notification(
-    'deviceNavigation', 'REMOVABLE_DEVICE_DETECTION_TITLE',
-    'REMOVABLE_DEVICE_NAVIGATION_MESSAGE',
+    DeviceHandler.Notification.Type.DEVICE_NAVIGATION, 'deviceNavigation',
+    'REMOVABLE_DEVICE_DETECTION_TITLE', 'REMOVABLE_DEVICE_NAVIGATION_MESSAGE',
     'REMOVABLE_DEVICE_NAVIGATION_BUTTON_LABEL', true);
 
 /**
@@ -481,6 +801,7 @@ DeviceHandler.Notification.DEVICE_NAVIGATION = new DeviceHandler.Notification(
  */
 DeviceHandler.Notification.DEVICE_NAVIGATION_READONLY_POLICY =
     new DeviceHandler.Notification(
+        DeviceHandler.Notification.Type.DEVICE_NAVIGATION_READONLY_POLICY,
         'deviceNavigation', 'REMOVABLE_DEVICE_DETECTION_TITLE',
         'REMOVABLE_DEVICE_NAVIGATION_MESSAGE_READONLY_POLICY',
         'REMOVABLE_DEVICE_NAVIGATION_BUTTON_LABEL', true);
@@ -490,25 +811,26 @@ DeviceHandler.Notification.DEVICE_NAVIGATION_READONLY_POLICY =
  * @const
  */
 DeviceHandler.Notification.DEVICE_IMPORT = new DeviceHandler.Notification(
-    'deviceImport', 'REMOVABLE_DEVICE_DETECTION_TITLE',
-    'REMOVABLE_DEVICE_IMPORT_MESSAGE', 'REMOVABLE_DEVICE_IMPORT_BUTTON_LABEL',
-    true);
+    DeviceHandler.Notification.Type.DEVICE_IMPORT, 'deviceImport',
+    'REMOVABLE_DEVICE_DETECTION_TITLE', 'REMOVABLE_DEVICE_IMPORT_MESSAGE',
+    'REMOVABLE_DEVICE_IMPORT_BUTTON_LABEL', true);
 
 /**
  * @type {DeviceHandler.Notification}
  * @const
  */
 DeviceHandler.Notification.DEVICE_FAIL = new DeviceHandler.Notification(
-    'deviceFail', 'REMOVABLE_DEVICE_DETECTION_TITLE',
-    'DEVICE_UNSUPPORTED_DEFAULT_MESSAGE');
+    DeviceHandler.Notification.Type.DEVICE_FAIL, 'deviceFail',
+    'REMOVABLE_DEVICE_DETECTION_TITLE', 'DEVICE_UNSUPPORTED_DEFAULT_MESSAGE');
 
 /**
  * @type {DeviceHandler.Notification}
  * @const
  */
 DeviceHandler.Notification.DEVICE_FAIL_UNKNOWN = new DeviceHandler.Notification(
-    'deviceFail', 'REMOVABLE_DEVICE_DETECTION_TITLE',
-    'DEVICE_UNKNOWN_DEFAULT_MESSAGE', 'DEVICE_UNKNOWN_BUTTON_LABEL');
+    DeviceHandler.Notification.Type.DEVICE_FAIL_UNKNOWN, 'deviceFail',
+    'REMOVABLE_DEVICE_DETECTION_TITLE', 'DEVICE_UNKNOWN_DEFAULT_MESSAGE',
+    'DEVICE_UNKNOWN_BUTTON_LABEL');
 
 /**
  * @type {DeviceHandler.Notification}
@@ -516,6 +838,7 @@ DeviceHandler.Notification.DEVICE_FAIL_UNKNOWN = new DeviceHandler.Notification(
  */
 DeviceHandler.Notification.DEVICE_FAIL_UNKNOWN_READONLY =
     new DeviceHandler.Notification(
+        DeviceHandler.Notification.Type.DEVICE_FAIL_UNKNOWN_READONLY,
         'deviceFail', 'REMOVABLE_DEVICE_DETECTION_TITLE',
         'DEVICE_UNKNOWN_DEFAULT_MESSAGE');
 
@@ -525,6 +848,7 @@ DeviceHandler.Notification.DEVICE_FAIL_UNKNOWN_READONLY =
  */
 DeviceHandler.Notification.DEVICE_EXTERNAL_STORAGE_DISABLED =
     new DeviceHandler.Notification(
+        DeviceHandler.Notification.Type.DEVICE_EXTERNAL_STORAGE_DISABLED,
         'deviceFail', 'REMOVABLE_DEVICE_DETECTION_TITLE',
         'EXTERNAL_STORAGE_DISABLED_MESSAGE');
 
@@ -534,37 +858,14 @@ DeviceHandler.Notification.DEVICE_EXTERNAL_STORAGE_DISABLED =
  */
 DeviceHandler.Notification.DEVICE_HARD_UNPLUGGED =
     new DeviceHandler.Notification(
-        'hardUnplugged', 'DEVICE_HARD_UNPLUGGED_TITLE',
-        'DEVICE_HARD_UNPLUGGED_MESSAGE');
-
-/**
- * @type {DeviceHandler.Notification}
- * @const
- */
-DeviceHandler.Notification.FORMAT_START = new DeviceHandler.Notification(
-    'formatStart', 'FORMATTING_OF_DEVICE_PENDING_TITLE',
-    'FORMATTING_OF_DEVICE_PENDING_MESSAGE');
-
-/**
- * @type {DeviceHandler.Notification}
- * @const
- */
-DeviceHandler.Notification.FORMAT_SUCCESS = new DeviceHandler.Notification(
-    'formatSuccess', 'FORMATTING_OF_DEVICE_FINISHED_TITLE',
-    'FORMATTING_FINISHED_SUCCESS_MESSAGE');
-
-/**
- * @type {DeviceHandler.Notification}
- * @const
- */
-DeviceHandler.Notification.FORMAT_FAIL = new DeviceHandler.Notification(
-    'formatFail', 'FORMATTING_OF_DEVICE_FAILED_TITLE',
-    'FORMATTING_FINISHED_FAILURE_MESSAGE');
+        DeviceHandler.Notification.Type.DEVICE_HARD_UNPLUGGED, 'hardUnplugged',
+        'DEVICE_HARD_UNPLUGGED_TITLE', 'DEVICE_HARD_UNPLUGGED_MESSAGE');
 
 /**
  * @type {DeviceHandler.Notification}
  * @const
  */
 DeviceHandler.Notification.RENAME_FAIL = new DeviceHandler.Notification(
-    'renameFail', 'RENAMING_OF_DEVICE_FAILED_TITLE',
+    DeviceHandler.Notification.Type.RENAME_FAIL, 'renameFail',
+    'RENAMING_OF_DEVICE_FAILED_TITLE',
     'RENAMING_OF_DEVICE_FINISHED_FAILURE_MESSAGE');

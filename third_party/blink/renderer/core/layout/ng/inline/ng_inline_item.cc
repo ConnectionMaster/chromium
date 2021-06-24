@@ -6,11 +6,21 @@
 
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_inline_text.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 
 namespace blink {
 namespace {
+
+struct SameSizeAsNGInlineItem {
+  void* pointers[2];
+  unsigned integers[3];
+  unsigned bit_fields : 32;
+};
+
+ASSERT_SIZE(NGInlineItem, SameSizeAsNGInlineItem);
 
 const char* kNGInlineItemTypeStrings[] = {
     "Text",     "Control",  "AtomicInline",        "OpenTag",
@@ -60,22 +70,20 @@ bool IsInlineBoxEndEmpty(const ComputedStyle& style,
 NGInlineItem::NGInlineItem(NGInlineItemType type,
                            unsigned start,
                            unsigned end,
-                           const ComputedStyle* style,
                            LayoutObject* layout_object)
     : start_offset_(start),
       end_offset_(end),
-      style_(style),
       layout_object_(layout_object),
       type_(type),
-      segment_data_(0),
-      bidi_level_(UBIDI_LTR),
-      shape_options_(kPreContext | kPostContext),
-      is_empty_item_(false),
+      text_type_(static_cast<unsigned>(NGTextType::kNormal)),
       style_variant_(static_cast<unsigned>(NGStyleVariant::kStandard)),
       end_collapse_type_(kNotCollapsible),
+      bidi_level_(UBIDI_LTR),
+      segment_data_(0),
+      is_empty_item_(false),
+      is_block_level_(false),
       is_end_collapsible_newline_(false),
-      is_symbol_marker_(false),
-      is_generated_(false) {
+      is_generated_for_line_break_(false) {
   DCHECK_GE(end, start);
   ComputeBoxProperties();
 }
@@ -87,18 +95,17 @@ NGInlineItem::NGInlineItem(const NGInlineItem& other,
     : start_offset_(start),
       end_offset_(end),
       shape_result_(shape_result),
-      style_(other.style_),
       layout_object_(other.layout_object_),
       type_(other.type_),
-      segment_data_(other.segment_data_),
-      bidi_level_(other.bidi_level_),
-      shape_options_(other.shape_options_),
-      is_empty_item_(other.is_empty_item_),
+      text_type_(other.text_type_),
       style_variant_(other.style_variant_),
       end_collapse_type_(other.end_collapse_type_),
+      bidi_level_(other.bidi_level_),
+      segment_data_(other.segment_data_),
+      is_empty_item_(other.is_empty_item_),
+      is_block_level_(other.is_block_level_),
       is_end_collapsible_newline_(other.is_end_collapsible_newline_),
-      is_symbol_marker_(other.is_symbol_marker_),
-      is_generated_(other.is_generated_) {
+      is_generated_for_line_break_(other.is_generated_for_line_break_) {
   DCHECK_GE(end, start);
 }
 
@@ -112,14 +119,14 @@ void NGInlineItem::ComputeBoxProperties() {
     return;
 
   if (type_ == NGInlineItem::kOpenTag) {
-    DCHECK(style_ && layout_object_ && layout_object_->IsLayoutInline());
-    is_empty_item_ = IsInlineBoxStartEmpty(*style_, *layout_object_);
+    DCHECK(layout_object_ && layout_object_->IsLayoutInline());
+    is_empty_item_ = IsInlineBoxStartEmpty(*Style(), *layout_object_);
     return;
   }
 
   if (type_ == NGInlineItem::kCloseTag) {
-    DCHECK(style_ && layout_object_ && layout_object_->IsLayoutInline());
-    is_empty_item_ = IsInlineBoxEndEmpty(*style_, *layout_object_);
+    DCHECK(layout_object_ && layout_object_->IsLayoutInline());
+    is_empty_item_ = IsInlineBoxEndEmpty(*Style(), *layout_object_);
     return;
   }
 
@@ -127,6 +134,9 @@ void NGInlineItem::ComputeBoxProperties() {
     is_empty_item_ = false;
     return;
   }
+
+  if (type_ == kOutOfFlowPositioned || type_ == kFloating)
+    is_block_level_ = true;
 
   is_empty_item_ = true;
 }
@@ -159,25 +169,42 @@ unsigned NGInlineItem::SetBidiLevel(Vector<NGInlineItem>& items,
                                     UBiDiLevel level) {
   for (; items[index].end_offset_ < end_offset; index++)
     items[index].SetBidiLevel(level);
-  items[index].SetBidiLevel(level);
+  NGInlineItem* item = &items[index];
+  item->SetBidiLevel(level);
 
-  if (items[index].end_offset_ == end_offset) {
+  if (item->end_offset_ == end_offset) {
     // Let close items have the same bidi-level as the previous item.
     while (index + 1 < items.size() &&
            items[index + 1].Type() == NGInlineItem::kCloseTag) {
       items[++index].SetBidiLevel(level);
     }
   } else {
+    // If a reused item needs to split, |SetNeedsLayout| to ensure the line is
+    // not reused.
+    LayoutObject* layout_object = item->GetLayoutObject();
+    if (layout_object->EverHadLayout() && !layout_object->NeedsLayout())
+      layout_object->SetNeedsLayout(layout_invalidation_reason::kStyleChange);
+
     Split(items, index, end_offset);
   }
 
   return index + 1;
 }
 
+const Font& NGInlineItem::FontWithSvgScaling() const {
+  if (const auto* svg_text = DynamicTo<LayoutSVGInlineText>(layout_object_)) {
+    DCHECK(RuntimeEnabledFeatures::SVGTextNGEnabled());
+    // We don't need to care about StyleVariant(). SVG 1.1 doesn't support
+    // ::first-line.
+    return svg_text->ScaledFont();
+  }
+  return Style()->GetFont();
+}
+
 String NGInlineItem::ToString() const {
   return String::Format("NGInlineItem. Type: '%s'. LayoutObject: '%s'",
                         NGInlineItemTypeToString(Type()),
-                        GetLayoutObject()->DebugName().Ascii().data());
+                        GetLayoutObject()->DebugName().Ascii().c_str());
 }
 
 // Split |items[index]| to 2 items at |offset|.
@@ -195,22 +222,6 @@ void NGInlineItem::Split(Vector<NGInlineItem>& items,
   items.insert(index + 1, items[index]);
   items[index].end_offset_ = offset;
   items[index + 1].start_offset_ = offset;
-}
-
-const NGInlineItem& NGInlineItemsData::FindItemForTextOffset(
-    unsigned offset) const {
-  DCHECK_LT(offset, text_content.length());
-  const NGInlineItem* item =
-      std::lower_bound(items.begin(), items.end(), offset,
-                       [](const NGInlineItem& item, unsigned offset) {
-                         if (item.StartOffset() > offset)
-                           return false;
-                         return item.EndOffset() <= offset;
-                       });
-  DCHECK_NE(item, items.end());
-  DCHECK_LE(item->StartOffset(), offset);
-  DCHECK_LT(offset, item->EndOffset());
-  return *item;
 }
 
 }  // namespace blink

@@ -4,8 +4,9 @@
 
 #include "chrome/browser/ui/login/login_handler.h"
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/blocked_content/popunder_preventer.h"
 #include "chrome/browser/ui/browser_dialogs.h"
@@ -47,8 +48,8 @@ class LoginHandlerViews : public LoginHandler {
 
  protected:
   // LoginHandler:
-  void BuildViewImpl(const base::string16& authority,
-                     const base::string16& explanation,
+  void BuildViewImpl(const std::u16string& authority,
+                     const std::u16string& explanation,
                      LoginModelData* login_model_data) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     DCHECK(!dialog_);
@@ -82,19 +83,37 @@ class LoginHandlerViews : public LoginHandler {
     // release pointers to the other.
     Dialog(LoginHandlerViews* handler,
            content::WebContents* web_contents,
-           const base::string16& authority,
-           const base::string16& explanation,
+           const std::u16string& authority,
+           const std::u16string& explanation,
            LoginHandler::LoginModelData* login_model_data)
         : handler_(handler), login_view_(nullptr), widget_(nullptr) {
+      SetButtonLabel(
+          ui::DIALOG_BUTTON_OK,
+          l10n_util::GetStringUTF16(IDS_LOGIN_DIALOG_OK_BUTTON_LABEL));
+      SetAcceptCallback(base::BindOnce(
+          [](Dialog* dialog) {
+            if (!dialog->handler_)
+              return;
+            dialog->handler_->SetAuth(dialog->login_view_->GetUsername(),
+                                      dialog->login_view_->GetPassword());
+          },
+          base::Unretained(this)));
+      SetCancelCallback(base::BindOnce(
+          [](Dialog* dialog) {
+            if (!dialog->handler_)
+              return;
+            dialog->handler_->CancelAuth();
+          },
+          base::Unretained(this)));
+      SetModalType(ui::MODAL_TYPE_CHILD);
+      SetOwnedByWidget(true);
+
       // Create a new LoginView and set the model for it.  The model (password
       // manager) is owned by the WebContents, but the view is parented to the
       // browser window, so the view may be destroyed after the password
       // manager. The view listens for model destruction and unobserves
       // accordingly.
       login_view_ = new LoginView(authority, explanation, login_model_data);
-
-      // ShowWebModalDialogViews takes ownership of this, by way of the
-      // DeleteDelegate method.
       widget_ = constrained_window::ShowWebModalDialogViews(this, web_contents);
     }
 
@@ -108,14 +127,7 @@ class LoginHandlerViews : public LoginHandler {
     // views::DialogDelegate:
     bool ShouldShowCloseButton() const override { return false; }
 
-    base::string16 GetDialogButtonLabel(
-        ui::DialogButton button) const override {
-      if (button == ui::DIALOG_BUTTON_OK)
-        return l10n_util::GetStringUTF16(IDS_LOGIN_DIALOG_OK_BUTTON_LABEL);
-      return DialogDelegate::GetDialogButtonLabel(button);
-    }
-
-    base::string16 GetWindowTitle() const override {
+    std::u16string GetWindowTitle() const override {
       return l10n_util::GetStringUTF16(IDS_LOGIN_DIALOG_TITLE);
     }
 
@@ -126,33 +138,16 @@ class LoginHandlerViews : public LoginHandler {
         handler_->CancelAuth();
     }
 
-    void DeleteDelegate() override { delete this; }
-
-    ui::ModalType GetModalType() const override { return ui::MODAL_TYPE_CHILD; }
-
-    bool Cancel() override {
-      DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-      if (handler_)
-        handler_->CancelAuth();
-      return true;
-    }
-
-    bool Accept() override {
-      DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-      if (handler_)
-        handler_->SetAuth(login_view_->GetUsername(),
-                          login_view_->GetPassword());
-      return true;
-    }
-
     views::View* GetInitiallyFocusedView() override {
       return login_view_->GetInitiallyFocusedView();
     }
 
     views::View* GetContentsView() override { return login_view_; }
-    views::Widget* GetWidget() override { return login_view_->GetWidget(); }
+    views::Widget* GetWidget() override {
+      return login_view_ ? login_view_->GetWidget() : nullptr;
+    }
     const views::Widget* GetWidget() const override {
-      return login_view_->GetWidget();
+      return login_view_ ? login_view_->GetWidget() : nullptr;
     }
 
    private:

@@ -5,7 +5,7 @@
 #include <memory>
 #include <vector>
 
-#include "base/message_loop/message_loop.h"
+#include "base/test/task_environment.h"
 #include "extensions/browser/preload_check_group.h"
 #include "extensions/browser/preload_check_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -15,8 +15,8 @@ namespace extensions {
 
 namespace {
 PreloadCheck::Error kDummyError1 = PreloadCheck::DISALLOWED_BY_POLICY;
-PreloadCheck::Error kDummyError2 = PreloadCheck::BLACKLISTED_ID;
-PreloadCheck::Error kDummyError3 = PreloadCheck::BLACKLISTED_UNKNOWN;
+PreloadCheck::Error kDummyError2 = PreloadCheck::BLOCKLISTED_ID;
+PreloadCheck::Error kDummyError3 = PreloadCheck::BLOCKLISTED_UNKNOWN;
 }
 
 class PreloadCheckGroupTest : public testing::Test {
@@ -50,8 +50,8 @@ class PreloadCheckGroupTest : public testing::Test {
   std::unique_ptr<PreloadCheckGroup> check_group_;
 
  private:
-  // A message loop is required for the asynchronous tests.
-  base::MessageLoop message_loop_;
+  // Required for the asynchronous tests.
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 
 // Tests multiple succeeding checks.

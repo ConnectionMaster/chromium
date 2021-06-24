@@ -4,24 +4,23 @@
 
 #include "ui/ozone/platform/wayland/host/wayland_output.h"
 
-#include <wayland-client.h>
-
+#include "ui/display/display.h"
 #include "ui/gfx/color_space.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 
 namespace ui {
 
-namespace {
-constexpr float kDefaultScaleFactor = 1.0f;
-}
-
-WaylandOutput::WaylandOutput(const uint32_t output_id, wl_output* output)
+WaylandOutput::WaylandOutput(uint32_t output_id, wl_output* output)
     : output_id_(output_id),
       output_(output),
-      device_scale_factor_(kDefaultScaleFactor),
-      rect_in_physical_pixels_(gfx::Rect()) {}
+      scale_factor_(kDefaultScaleFactor),
+      rect_in_physical_pixels_(gfx::Rect()) {
+  wl_output_set_user_data(output_.get(), this);
+}
 
-WaylandOutput::~WaylandOutput() = default;
+WaylandOutput::~WaylandOutput() {
+  wl_output_set_user_data(output_.get(), nullptr);
+}
 
 void WaylandOutput::Initialize(Delegate* delegate) {
   DCHECK(!delegate_);
@@ -35,10 +34,16 @@ void WaylandOutput::Initialize(Delegate* delegate) {
   wl_output_add_listener(output_.get(), &output_listener, this);
 }
 
-void WaylandOutput::TriggerDelegateNotification() const {
+float WaylandOutput::GetUIScaleFactor() const {
+  return display::Display::HasForceDeviceScaleFactor()
+             ? display::Display::GetForcedDeviceScaleFactor()
+             : scale_factor();
+}
+
+void WaylandOutput::TriggerDelegateNotifications() const {
   DCHECK(!rect_in_physical_pixels_.IsEmpty());
   delegate_->OnOutputHandleMetrics(output_id_, rect_in_physical_pixels_,
-                                   device_scale_factor_);
+                                   scale_factor_);
 }
 
 // static
@@ -71,9 +76,8 @@ void WaylandOutput::OutputHandleMode(void* data,
 
 // static
 void WaylandOutput::OutputHandleDone(void* data, struct wl_output* wl_output) {
-  WaylandOutput* wayland_output = static_cast<WaylandOutput*>(data);
-  if (wayland_output)
-    wayland_output->TriggerDelegateNotification();
+  if (auto* output = static_cast<WaylandOutput*>(data))
+    output->TriggerDelegateNotifications();
 }
 
 // static
@@ -82,7 +86,7 @@ void WaylandOutput::OutputHandleScale(void* data,
                                       int32_t factor) {
   WaylandOutput* wayland_output = static_cast<WaylandOutput*>(data);
   if (wayland_output)
-    wayland_output->device_scale_factor_ = factor;
+    wayland_output->scale_factor_ = factor;
 }
 
 }  // namespace ui

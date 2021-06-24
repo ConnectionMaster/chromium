@@ -7,6 +7,8 @@
 
 #include <map>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "base/containers/mru_cache.h"
 #include "base/containers/stack_container.h"
@@ -41,7 +43,8 @@ enum class PaintCacheEntryState : uint32_t {
   kEmpty,
   kCached,
   kInlined,
-  kLast = kInlined
+  kInlinedDoNotCache,
+  kLast = kInlinedDoNotCache
 };
 
 constexpr size_t PaintCacheDataTypeCount =
@@ -49,6 +52,11 @@ constexpr size_t PaintCacheDataTypeCount =
 
 class CC_PAINT_EXPORT ClientPaintCache {
  public:
+  // If ClientPaintCache is constructed with a max_budget_bytes of
+  // kNoCachingBudget, its Put() method becomes a no-op, rendering the instance
+  // a no-op instance.
+  static constexpr size_t kNoCachingBudget = 0u;
+
   explicit ClientPaintCache(size_t max_budget_bytes);
   ClientPaintCache(const ClientPaintCache&) = delete;
   ~ClientPaintCache();
@@ -104,10 +112,14 @@ class CC_PAINT_EXPORT ServicePaintCache {
 
   // Retrieves an entry for |id| stored in the cache. Or nullptr if the entry
   // is not found.
-  sk_sp<SkTextBlob> GetTextBlob(PaintCacheId id);
+  sk_sp<SkTextBlob> GetTextBlob(PaintCacheId id) const;
 
+  // Stores |path| received from the client in the cache.
   void PutPath(PaintCacheId, SkPath path);
-  SkPath* GetPath(PaintCacheId id);
+
+  // Retrieves an entry for |id| stored in the cache. The path data is stored in
+  // |path| pointed memory. Returns false, if the entry is not found.
+  bool GetPath(PaintCacheId id, SkPath* path) const;
 
   void Purge(PaintCacheDataType type,
              size_t n,

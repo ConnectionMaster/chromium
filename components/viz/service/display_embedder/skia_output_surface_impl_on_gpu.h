@@ -9,45 +9,50 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
+#include "base/types/pass_key.h"
 #include "build/build_config.h"
 #include "components/viz/common/display/renderer_settings.h"
-#include "components/viz/common/quads/render_pass.h"
+#include "components/viz/common/gpu/context_lost_reason.h"
+#include "components/viz/common/quads/compositor_render_pass.h"
+#include "components/viz/service/display/external_use_client.h"
 #include "components/viz/service/display/output_surface.h"
 #include "components/viz/service/display/output_surface_frame.h"
-#include "components/viz/service/display/resource_metadata.h"
+#include "components/viz/service/display/overlay_processor_interface.h"
 #include "components/viz/service/display_embedder/skia_output_device.h"
+#include "components/viz/service/display_embedder/skia_output_surface_dependency.h"
+#include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
+#include "gpu/command_buffer/service/shared_image_representation.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
-#include "gpu/ipc/common/surface_handle.h"
-#include "gpu/ipc/in_process_command_buffer.h"
+#include "gpu/ipc/service/context_url.h"
+#include "gpu/ipc/service/display_context.h"
 #include "gpu/ipc/service/image_transport_surface_delegate.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/skia/include/core/SkDeferredDisplayList.h"
 #include "third_party/skia/include/core/SkPromiseImageTexture.h"
 #include "third_party/skia/include/core/SkSurface.h"
-#include "ui/latency/latency_tracker.h"
-
-class SkDeferredDisplayList;
-
-namespace base {
-class WaitableEvent;
-}
+#include "third_party/skia/include/gpu/GrBackendSemaphore.h"
 
 namespace gfx {
+namespace mojom {
+class DelegatedInkPointRenderer;
+}  // namespace mojom
 class ColorSpace;
 }
 
 namespace gl {
-class GLApi;
 class GLSurface;
 }
 
 namespace gpu {
+class SharedImageRepresentationFactory;
+class SharedImageFactory;
 class SyncPointClientState;
-class SharedImageRepresentationSkia;
-}
+}  // namespace gpu
 
 namespace ui {
 #if defined(USE_OZONE)
@@ -57,10 +62,8 @@ class PlatformWindowSurface;
 
 namespace viz {
 
-class DirectContextProvider;
-class GLRendererCopier;
-class GpuServiceImpl;
-class TextureDeleter;
+class DawnContextProvider;
+class ImageContextImpl;
 class VulkanContextProvider;
 
 namespace copy_output {
@@ -69,140 +72,248 @@ struct RenderPassGeometry;
 
 // The SkiaOutputSurface implementation running on the GPU thread. This class
 // should be created, used and destroyed on the GPU thread.
-class SkiaOutputSurfaceImplOnGpu {
+class SkiaOutputSurfaceImplOnGpu
+    : public gpu::ImageTransportSurfaceDelegate,
+      public gpu::SharedContextState::ContextLostObserver {
  public:
   using DidSwapBufferCompleteCallback =
       base::RepeatingCallback<void(gpu::SwapBuffersCompleteParams,
-                                   const gfx::Size& pixel_size)>;
+                                   const gfx::Size& pixel_size,
+                                   gfx::GpuFenceHandle release_fence)>;
   using BufferPresentedCallback =
       base::RepeatingCallback<void(const gfx::PresentationFeedback& feedback)>;
-  using ContextLostCallback = base::RepeatingCallback<void()>;
+  using ContextLostCallback = base::OnceClosure;
+
+  // |gpu_vsync_callback| must be safe to call on any thread. The other
+  // callbacks will only be called via |deps->PostTaskToClientThread|.
+  static std::unique_ptr<SkiaOutputSurfaceImplOnGpu> Create(
+      SkiaOutputSurfaceDependency* deps,
+      const RendererSettings& renderer_settings,
+      const gpu::SequenceId sequence_id,
+      gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
+      DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
+      BufferPresentedCallback buffer_presented_callback,
+      ContextLostCallback context_lost_callback,
+      GpuVSyncCallback gpu_vsync_callback);
 
   SkiaOutputSurfaceImplOnGpu(
-      gpu::SurfaceHandle surface_handle,
+      base::PassKey<SkiaOutputSurfaceImplOnGpu> pass_key,
+      SkiaOutputSurfaceDependency* deps,
       scoped_refptr<gpu::gles2::FeatureInfo> feature_info,
-      gpu::MailboxManager* mailbox_manager,
-      scoped_refptr<gpu::SyncPointClientState> sync_point_client_data,
-      std::unique_ptr<gpu::SharedImageRepresentationFactory> sir_factory,
-      gpu::raster::GrShaderCache* gr_shader_cache,
-      VulkanContextProvider* vulkan_context_provider,
-      const RendererSettings& renderer_settings_,
-      const DidSwapBufferCompleteCallback& did_swap_buffer_complete_callback,
-      const BufferPresentedCallback& buffer_presented_callback,
-      const ContextLostCallback& context_lost_callback);
-  SkiaOutputSurfaceImplOnGpu(
-      GpuServiceImpl* gpu_service,
-      gpu::SurfaceHandle surface_handle,
-      const RendererSettings& renderer_settings_,
-      const DidSwapBufferCompleteCallback& did_swap_buffer_complete_callback,
-      const BufferPresentedCallback& buffer_presented_callback,
-      const ContextLostCallback& context_lost_callback);
-
-  ~SkiaOutputSurfaceImplOnGpu();
+      const RendererSettings& renderer_settings,
+      const gpu::SequenceId sequence_id,
+      gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps,
+      DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
+      BufferPresentedCallback buffer_presented_callback,
+      ContextLostCallback context_lost_callback,
+      GpuVSyncCallback gpu_vsync_callback);
+  ~SkiaOutputSurfaceImplOnGpu() override;
 
   gpu::CommandBufferId command_buffer_id() const {
-    return sync_point_client_state_->command_buffer_id();
+    return shared_gpu_deps_->command_buffer_id();
   }
-  const OutputSurface::Capabilities capabilities() const {
+
+  const OutputSurface::Capabilities& capabilities() const {
     return output_device_->capabilities();
   }
   const base::WeakPtr<SkiaOutputSurfaceImplOnGpu>& weak_ptr() const {
     return weak_ptr_;
   }
+  gl::GLSurface* gl_surface() const { return gl_surface_.get(); }
 
   void Reshape(const gfx::Size& size,
                float device_scale_factor,
                const gfx::ColorSpace& color_space,
-               bool has_alpha,
+               gfx::BufferFormat format,
                bool use_stencil,
-               SkSurfaceCharacterization* characterization,
-               base::WaitableEvent* event);
-  void FinishPaintCurrentFrame(
-      std::unique_ptr<SkDeferredDisplayList> ddl,
-      std::unique_ptr<SkDeferredDisplayList> overdraw_ddl,
-      std::vector<gpu::SyncToken> sync_tokens,
-      uint64_t sync_fence_release);
-  void SwapBuffers(OutputSurfaceFrame frame);
+               gfx::OverlayTransform transform);
+  void FinishPaintCurrentFrame(sk_sp<SkDeferredDisplayList> ddl,
+                               sk_sp<SkDeferredDisplayList> overdraw_ddl,
+                               std::vector<ImageContextImpl*> image_contexts,
+                               std::vector<gpu::SyncToken> sync_tokens,
+                               base::OnceClosure on_finished,
+                               absl::optional<gfx::Rect> draw_rectangle,
+                               bool allocate_frame_buffer);
+  void ScheduleOutputSurfaceAsOverlay(
+      const OverlayProcessorInterface::OutputSurfaceOverlayPlane&
+          output_surface_plane);
+  void SwapBuffers(OutputSurfaceFrame frame, bool release_frame_buffer);
+
+  void SetDependenciesResolvedTimings(base::TimeTicks task_ready);
+  void SetDrawTimings(base::TimeTicks task_ready);
+
+  // Runs |deferred_framebuffer_draw_closure| when SwapBuffers() or CopyOutput()
+  // will not.
+  void SwapBuffersSkipped();
   void EnsureBackbuffer() { output_device_->EnsureBackbuffer(); }
   void DiscardBackbuffer() { output_device_->DiscardBackbuffer(); }
-  void FinishPaintRenderPass(RenderPassId id,
-                             std::unique_ptr<SkDeferredDisplayList> ddl,
+  void FinishPaintRenderPass(AggregatedRenderPassId id,
+                             sk_sp<SkDeferredDisplayList> ddl,
+                             std::vector<ImageContextImpl*> image_contexts,
                              std::vector<gpu::SyncToken> sync_tokens,
-                             uint64_t sync_fence_release);
-  void RemoveRenderPassResource(std::vector<RenderPassId> ids);
-  void CopyOutput(RenderPassId id,
-                  const copy_output::RenderPassGeometry& geometry,
+                             base::OnceClosure on_finished);
+  // Deletes resources for RenderPasses in |ids|. Also takes ownership of
+  // |images_contexts| and destroys them on GPU thread.
+  void RemoveRenderPassResource(
+      std::vector<AggregatedRenderPassId> ids,
+      std::vector<std::unique_ptr<ImageContextImpl>> image_contexts);
+  void CopyOutput(AggregatedRenderPassId id,
+                  copy_output::RenderPassGeometry geometry,
                   const gfx::ColorSpace& color_space,
                   std::unique_ptr<CopyOutputRequest> request);
 
-  // Fulfill callback for promise SkImage created from a resource.
-  sk_sp<SkPromiseImageTexture> FulfillPromiseTexture(
-      const gpu::MailboxHolder& mailbox_holder,
-      const gfx::Size& size,
-      const ResourceFormat resource_format,
-      std::unique_ptr<gpu::SharedImageRepresentationSkia>* shared_image_out);
-  // Fulfill callback for promise SkImage created from a render pass.
-  // |shared_image_out| is ignored for render passes, as these aren't based on
-  // SharedImage.
-  sk_sp<SkPromiseImageTexture> FulfillPromiseTexture(
-      const RenderPassId id,
-      std::unique_ptr<gpu::SharedImageRepresentationSkia>* shared_image_out);
+  void BeginAccessImages(const std::vector<ImageContextImpl*>& image_contexts,
+                         std::vector<GrBackendSemaphore>* begin_semaphores,
+                         std::vector<GrBackendSemaphore>* end_semaphores);
+  void ResetStateOfImages();
+  void EndAccessImages(const base::flat_set<ImageContextImpl*>& image_contexts);
 
   sk_sp<GrContextThreadSafeProxy> GetGrContextThreadSafeProxy();
-  const gl::GLVersionInfo* gl_version_info() const { return gl_version_info_; }
+  size_t max_resource_cache_bytes() const { return max_resource_cache_bytes_; }
+  void ReleaseImageContexts(
+      std::vector<std::unique_ptr<ExternalUseClient::ImageContext>>
+          image_contexts);
+  void ScheduleOverlays(SkiaOutputSurface::OverlayList overlays,
+                        std::vector<ImageContextImpl*> image_contexts,
+                        base::OnceClosure on_finished);
 
-  void DestroySkImages(std::vector<sk_sp<SkImage>>&& images,
-                       uint64_t sync_fence_release);
+  void SetEnableDCLayers(bool enable);
+  void SetGpuVSyncEnabled(bool enabled);
 
-  void CreateFallbackPromiseImage(SkColorType color_type);
-
+  void SetFrameRate(float frame_rate);
   bool was_context_lost() { return context_state_->context_lost(); }
-
-  class ScopedUseContextProvider;
 
   void SetCapabilitiesForTesting(
       const OutputSurface::Capabilities& capabilities);
 
- private:
-  void InitializeForGLWithGpuService(GpuServiceImpl* gpu_service);
-  void InitializeForVulkan(GpuServiceImpl* gpu_service);
+  bool IsDisplayedAsOverlay();
 
-  void BindOrCopyTextureIfNecessary(gpu::TextureBase* texture_base);
+  // gpu::SharedContextState::ContextLostObserver implementation:
+  void OnContextLost() override;
+
+  // gpu::ImageTransportSurfaceDelegate implementation:
+#if defined(OS_WIN)
+  void DidCreateAcceleratedSurfaceChildWindow(
+      gpu::SurfaceHandle parent_window,
+      gpu::SurfaceHandle child_window) override;
+#endif
+  const gpu::gles2::FeatureInfo* GetFeatureInfo() const override;
+  const gpu::GpuPreferences& GetGpuPreferences() const override;
+  void DidSwapBuffersComplete(gpu::SwapBuffersCompleteParams params,
+                              gfx::GpuFenceHandle release_fence) override;
+  void BufferPresented(const gfx::PresentationFeedback& feedback) override;
+  GpuVSyncCallback GetGpuVSyncCallback() override;
+  base::TimeDelta GetGpuBlockedTimeSinceLastSwap() override;
+
+  void PostTaskToClientThread(base::OnceClosure closure) {
+    dependency_->PostTaskToClientThread(std::move(closure));
+  }
+
+  void ReadbackDone() {
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+    DCHECK_GT(num_readbacks_pending_, 0);
+    num_readbacks_pending_--;
+  }
 
   // Make context current for GL, and return false if the context is lost.
   // It will do nothing when Vulkan is used.
-  bool MakeCurrent(bool need_fbo0);
+  bool MakeCurrent(bool need_framebuffer);
 
-  void PullTextureUpdates(std::vector<gpu::SyncToken> sync_token);
+  void ReleaseFenceSync(uint64_t sync_fence_release);
 
-  void ReleaseFenceSyncAndPushTextureUpdates(uint64_t sync_fence_release);
+  void PreserveChildSurfaceControls();
 
-  GrContext* gr_context() { return context_state_->gr_context(); }
-  gpu::DecoderContext* decoder();
+  void InitDelegatedInkPointRendererReceiver(
+      mojo::PendingReceiver<gfx::mojom::DelegatedInkPointRenderer>
+          pending_receiver);
 
-  void ScheduleDelayedWork();
-  void PerformDelayedWork();
+ private:
+  class OffscreenSurface;
+  class DisplayContext;
 
-  bool is_using_vulkan() const { return !!vulkan_context_provider_; }
+  bool Initialize();
+  bool InitializeForGL();
+  bool InitializeForVulkan();
+  bool InitializeForDawn();
 
-  SkSurface* output_sk_surface() const {
-    return output_device_->draw_surface();
+  // Provided as a callback to |device_|.
+  void DidSwapBuffersCompleteInternal(gpu::SwapBuffersCompleteParams params,
+                                      const gfx::Size& pixel_size,
+                                      gfx::GpuFenceHandle release_fence);
+
+  DidSwapBufferCompleteCallback GetDidSwapBuffersCompleteCallback();
+
+  void MarkContextLost(ContextLostReason reason);
+
+  void DestroySharedImageOnImplThread(
+      std::unique_ptr<gpu::SharedImageRepresentationSkia> representation,
+      scoped_refptr<gpu::SharedContextState> context_state,
+      const gpu::SyncToken& sync_token,
+      bool is_lost);
+
+  void SwapBuffersInternal(absl::optional<OutputSurfaceFrame> frame);
+  void PostSubmit(absl::optional<OutputSurfaceFrame> frame);
+
+  GrDirectContext* gr_context() { return context_state_->gr_context(); }
+
+  bool is_using_vulkan() const {
+    return !!vulkan_context_provider_ &&
+           gpu_preferences_.gr_context_type == gpu::GrContextType::kVulkan;
+  }
+  bool is_using_dawn() const {
+    return !!dawn_context_provider_ &&
+           gpu_preferences_.gr_context_type == gpu::GrContextType::kDawn;
   }
 
-  sk_sp<SkPromiseImageTexture> FallbackPromiseImage(ResourceFormat format);
+  // Schedules a task to check if any skia readback requests have completed
+  // after a short delay. Will not schedule a task if there is already a
+  // scheduled task or no readback requests are pending.
+  void ScheduleCheckReadbackCompletion();
 
-  const gpu::SurfaceHandle surface_handle_;
+  // Checks if any skia readback requests have completed. If there are still
+  // pending readback requests after checking then it will reschedule itself
+  // after a short delay.
+  void CheckReadbackCompletion();
+
+  void ReleaseAsyncReadResultHelpers();
+
+#if defined(OS_APPLE)
+  std::unique_ptr<gpu::SharedImageRepresentationSkia>
+  GetOrCreateRenderPassOverlayBacking(
+      const SkSurfaceCharacterization& characterization);
+#endif
+
+  class ReleaseCurrent {
+   public:
+    ReleaseCurrent(scoped_refptr<gl::GLSurface> gl_surface,
+                   scoped_refptr<gpu::SharedContextState> context_state);
+    ~ReleaseCurrent();
+
+   private:
+    scoped_refptr<gl::GLSurface> gl_surface_;
+    scoped_refptr<gpu::SharedContextState> context_state_;
+  };
+
+  // This must remain the first member variable to ensure that other member
+  // dtors are called first.
+  absl::optional<ReleaseCurrent> release_current_last_;
+
+  SkiaOutputSurfaceDependency* const dependency_;
+  gpu::DisplayCompositorMemoryAndTaskControllerOnGpu* shared_gpu_deps_;
   scoped_refptr<gpu::gles2::FeatureInfo> feature_info_;
-  gpu::MailboxManager* const mailbox_manager_;
   scoped_refptr<gpu::SyncPointClientState> sync_point_client_state_;
+  std::unique_ptr<gpu::SharedImageFactory> shared_image_factory_;
   std::unique_ptr<gpu::SharedImageRepresentationFactory>
       shared_image_representation_factory_;
-  gpu::raster::GrShaderCache* const gr_shader_cache_;
   VulkanContextProvider* const vulkan_context_provider_;
+  DawnContextProvider* const dawn_context_provider_;
   const RendererSettings renderer_settings_;
+
+  // Should only be run on the client thread with PostTaskToClientThread().
   DidSwapBufferCompleteCallback did_swap_buffer_complete_callback_;
   BufferPresentedCallback buffer_presented_callback_;
   ContextLostCallback context_lost_callback_;
+  GpuVSyncCallback gpu_vsync_callback_;
 
 #if defined(USE_OZONE)
   // This should outlive gl_surface_ and vulkan_surface_.
@@ -214,52 +325,89 @@ class SkiaOutputSurfaceImplOnGpu {
   gfx::ColorSpace color_space_;
   scoped_refptr<gl::GLSurface> gl_surface_;
   scoped_refptr<gpu::SharedContextState> context_state_;
-  const gl::GLVersionInfo* gl_version_info_ = nullptr;
+  size_t max_resource_cache_bytes_ = 0u;
 
-  std::unique_ptr<SkiaOutputDevice> output_device_;
+  std::unique_ptr<DisplayContext> display_context_;
+  bool context_is_lost_ = false;
 
-  // Offscreen surfaces for render passes. It can only be accessed on GPU
-  // thread.
-  class OffscreenSurface {
+  class PromiseImageAccessHelper {
    public:
-    OffscreenSurface();
-    OffscreenSurface(const OffscreenSurface& offscreen_surface) = delete;
-    OffscreenSurface(OffscreenSurface&& offscreen_surface);
-    OffscreenSurface& operator=(const OffscreenSurface& offscreen_surface) =
-        delete;
-    OffscreenSurface& operator=(OffscreenSurface&& offscreen_surface);
-    ~OffscreenSurface();
-    SkSurface* surface() const;
-    sk_sp<SkPromiseImageTexture> fulfill();
-    void set_surface(sk_sp<SkSurface> surface);
+    explicit PromiseImageAccessHelper(SkiaOutputSurfaceImplOnGpu* impl_on_gpu);
+    ~PromiseImageAccessHelper();
+
+    void BeginAccess(std::vector<ImageContextImpl*> image_contexts,
+                     std::vector<GrBackendSemaphore>* begin_semaphores,
+                     std::vector<GrBackendSemaphore>* end_semaphores);
+    void EndAccess();
 
    private:
-    sk_sp<SkSurface> surface_;
-    sk_sp<SkPromiseImageTexture> promise_texture_;
+    SkiaOutputSurfaceImplOnGpu* const impl_on_gpu_;
+    base::flat_set<ImageContextImpl*> image_contexts_;
+
+    DISALLOW_COPY_AND_ASSIGN(PromiseImageAccessHelper);
   };
-  base::flat_map<RenderPassId, OffscreenSurface> offscreen_surfaces_;
+  PromiseImageAccessHelper promise_image_access_helper_{this};
+  base::flat_set<ImageContextImpl*> image_contexts_with_end_access_state_;
 
-  ui::LatencyTracker latency_tracker_;
+  std::unique_ptr<SkiaOutputDevice> output_device_;
+  std::unique_ptr<SkiaOutputDevice::ScopedPaint> scoped_output_device_paint_;
 
-  scoped_refptr<base::SingleThreadTaskRunner> context_current_task_runner_;
-  scoped_refptr<DirectContextProvider> context_provider_;
-  std::unique_ptr<TextureDeleter> texture_deleter_;
-  std::unique_ptr<GLRendererCopier> copier_;
+  absl::optional<OverlayProcessorInterface::OutputSurfaceOverlayPlane>
+      output_surface_plane_;
 
-  bool delayed_work_pending_ = false;
+  base::flat_map<AggregatedRenderPassId, OffscreenSurface> offscreen_surfaces_;
 
-  gl::GLApi* api_ = nullptr;
-  bool supports_alpha_ = false;
+  // Micro-optimization to get to issuing GPU SwapBuffers as soon as possible.
+  std::vector<sk_sp<SkDeferredDisplayList>> destroy_after_swap_;
 
-  // What we display when the mailbox for a texture is invalid. Indexed by
-  // SkColorType.
-  std::vector<sk_sp<SkPromiseImageTexture>> fallback_promise_image_texture_;
-  std::vector<sk_sp<SkImage>> fallback_promise_images_;
+  bool waiting_for_full_damage_ = false;
+
+  int num_readbacks_pending_ = 0;
+  bool readback_poll_pending_ = false;
+
+  class AsyncReadResultLock;
+  class AsyncReadResultHelper;
+  class CopyOutputResultYUV;
+  class CopyOutputResultRGBA;
+
+  // Lock for |async_read_result_helpers_|.
+  scoped_refptr<AsyncReadResultLock> async_read_result_lock_;
+
+  // Tracking for ongoing AsyncReadResults.
+  base::flat_set<AsyncReadResultHelper*> async_read_result_helpers_;
+
+#if defined(OS_APPLE)
+  using UniqueBackingPtr = std::unique_ptr<gpu::SharedImageRepresentationSkia>;
+  class BackingComparator {
+   public:
+    using is_transparent = void;
+    bool operator()(const UniqueBackingPtr& lhs,
+                    const UniqueBackingPtr& rhs) const {
+      return lhs->mailbox() < rhs->mailbox();
+    }
+    bool operator()(const UniqueBackingPtr& lhs,
+                    const gpu::Mailbox& rhs) const {
+      return lhs->mailbox() < rhs;
+    }
+    bool operator()(const gpu::Mailbox& lhs,
+                    const UniqueBackingPtr& rhs) const {
+      return lhs < rhs->mailbox();
+    }
+  };
+  // Render pass overlay backings are in flight.
+  // The base::flat_set uses backing->mailbox() as the unique key.
+  base::flat_set<UniqueBackingPtr, BackingComparator>
+      in_flight_render_pass_overlay_backings_;
+
+  // Render pass overlay backings are available for reusing.
+  std::vector<std::unique_ptr<gpu::SharedImageRepresentationSkia>>
+      available_render_pass_overlay_backings_;
+#endif
 
   THREAD_CHECKER(thread_checker_);
 
   base::WeakPtr<SkiaOutputSurfaceImplOnGpu> weak_ptr_;
-  base::WeakPtrFactory<SkiaOutputSurfaceImplOnGpu> weak_ptr_factory_;
+  base::WeakPtrFactory<SkiaOutputSurfaceImplOnGpu> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SkiaOutputSurfaceImplOnGpu);
 };

@@ -6,12 +6,14 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/ref_counted.h"
 #include "base/values.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/value_store/leveldb_value_store.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/leveldatabase/src/include/leveldb/db.h"
@@ -53,8 +55,8 @@ class LeveldbValueStoreUnitTest : public testing::Test {
   void CloseStore() { store_.reset(); }
 
   void CreateStore() {
-    store_.reset(
-        new LeveldbValueStore(kDatabaseUMAClientName, database_path()));
+    store_ = std::make_unique<LeveldbValueStore>(kDatabaseUMAClientName,
+                                                 database_path());
   }
 
   LeveldbValueStore* store() { return store_.get(); }
@@ -64,7 +66,7 @@ class LeveldbValueStoreUnitTest : public testing::Test {
   std::unique_ptr<LeveldbValueStore> store_;
   base::ScopedTempDir database_dir_;
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 };
 
 // Check that we can restore a single corrupted key in the LeveldbValueStore.
@@ -92,7 +94,7 @@ TEST_F(LeveldbValueStoreUnitTest, RestoreKeyTest) {
   result = store()->Get(kCorruptKey);
   EXPECT_TRUE(result.status().ok())
       << "Get result not OK: " << result.status().message;
-  EXPECT_TRUE(result.settings().empty());
+  EXPECT_TRUE(result.settings().DictEmpty());
 
   // Verify that the valid pair is still present.
   result = store()->Get(kNotCorruptKey);
@@ -184,5 +186,5 @@ TEST_F(LeveldbValueStoreUnitTest, RestoreFullDatabase) {
   ASSERT_EQ(ValueStore::DB_RESTORE_REPAIR_SUCCESS,
             result.status().restore_status);
   EXPECT_TRUE(result.status().ok());
-  EXPECT_EQ(0u, result.settings().size());
+  EXPECT_EQ(0u, result.settings().DictSize());
 }

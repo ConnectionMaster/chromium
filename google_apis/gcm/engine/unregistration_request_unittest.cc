@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include <stdint.h>
+
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +13,7 @@
 #include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_tokenizer.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "google_apis/gcm/engine/gcm_request_test_base.h"
 #include "google_apis/gcm/engine/gcm_unregistration_request_handler.h"
 #include "google_apis/gcm/engine/instance_id_delete_token_request_handler.h"
@@ -97,12 +100,13 @@ void GCMUnregistrationRequestTest::CreateRequest() {
                                                   std::string() /* subtype */);
   std::unique_ptr<GCMUnregistrationRequestHandler> request_handler(
       new GCMUnregistrationRequestHandler(kAppId));
-  request_.reset(new UnregistrationRequest(
+  request_ = std::make_unique<UnregistrationRequest>(
       GURL(kRegistrationURL), request_info, std::move(request_handler),
       GetBackoffPolicy(),
-      base::Bind(&UnregistrationRequestTest::UnregistrationCallback,
-                 base::Unretained(this)),
-      max_retry_count_, url_loader_factory(), &recorder_, std::string()));
+      base::BindOnce(&UnregistrationRequestTest::UnregistrationCallback,
+                     base::Unretained(this)),
+      max_retry_count_, url_loader_factory(),
+      base::ThreadTaskRunnerHandle::Get(), &recorder_, std::string());
 }
 
 TEST_F(GCMUnregistrationRequestTest, RequestDataPassedToFetcher) {
@@ -110,10 +114,11 @@ TEST_F(GCMUnregistrationRequestTest, RequestDataPassedToFetcher) {
   request_->Start();
 
   // Verify that the no-cookie flag is set.
-  int flags = 0;
-  ASSERT_TRUE(test_url_loader_factory()->IsPending(kRegistrationURL, &flags));
-  EXPECT_TRUE(flags & net::LOAD_DO_NOT_SEND_COOKIES);
-  EXPECT_TRUE(flags & net::LOAD_DO_NOT_SAVE_COOKIES);
+  const network::ResourceRequest* pending_request;
+  ASSERT_TRUE(
+      test_url_loader_factory()->IsPending(kRegistrationURL, &pending_request));
+  EXPECT_EQ(network::mojom::CredentialsMode::kOmit,
+            pending_request->credentials_mode);
 
   // Verify that authorization header was put together properly.
   const net::HttpRequestHeaders* headers =
@@ -123,11 +128,11 @@ TEST_F(GCMUnregistrationRequestTest, RequestDataPassedToFetcher) {
   headers->GetHeader(net::HttpRequestHeaders::kAuthorization, &auth_header);
   base::StringTokenizer auth_tokenizer(auth_header, " :");
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(kLoginHeader, auth_tokenizer.token());
+  EXPECT_EQ(kLoginHeader, auth_tokenizer.token_piece());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::NumberToString(kAndroidId), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kAndroidId), auth_tokenizer.token_piece());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::NumberToString(kSecurityToken), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kSecurityToken), auth_tokenizer.token_piece());
 
   std::map<std::string, std::string> expected_pairs;
   expected_pairs["app"] = kAppId;
@@ -312,12 +317,13 @@ void InstaceIDDeleteTokenRequestTest::CreateRequest(
   std::unique_ptr<InstanceIDDeleteTokenRequestHandler> request_handler(
       new InstanceIDDeleteTokenRequestHandler(instance_id, authorized_entity,
                                               scope, kGCMVersion));
-  request_.reset(new UnregistrationRequest(
+  request_ = std::make_unique<UnregistrationRequest>(
       GURL(kRegistrationURL), request_info, std::move(request_handler),
       GetBackoffPolicy(),
-      base::Bind(&UnregistrationRequestTest::UnregistrationCallback,
-                 base::Unretained(this)),
-      max_retry_count(), url_loader_factory(), &recorder_, std::string()));
+      base::BindOnce(&UnregistrationRequestTest::UnregistrationCallback,
+                     base::Unretained(this)),
+      max_retry_count(), url_loader_factory(),
+      base::ThreadTaskRunnerHandle::Get(), &recorder_, std::string());
 }
 
 TEST_F(InstaceIDDeleteTokenRequestTest, RequestDataPassedToFetcher) {
@@ -332,11 +338,11 @@ TEST_F(InstaceIDDeleteTokenRequestTest, RequestDataPassedToFetcher) {
   headers->GetHeader(net::HttpRequestHeaders::kAuthorization, &auth_header);
   base::StringTokenizer auth_tokenizer(auth_header, " :");
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(kLoginHeader, auth_tokenizer.token());
+  EXPECT_EQ(kLoginHeader, auth_tokenizer.token_piece());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::NumberToString(kAndroidId), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kAndroidId), auth_tokenizer.token_piece());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::NumberToString(kSecurityToken), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kSecurityToken), auth_tokenizer.token_piece());
 
   std::map<std::string, std::string> expected_pairs;
   expected_pairs["gmsv"] = base::NumberToString(kGCMVersion);

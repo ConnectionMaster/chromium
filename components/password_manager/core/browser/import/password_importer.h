@@ -5,18 +5,15 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_IMPORT_PASSWORD_IMPORTER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_IMPORT_PASSWORD_IMPORTER_H_
 
-#include <string>
 #include <vector>
 
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 
-namespace autofill {
-struct PasswordForm;
-}
-
 namespace password_manager {
+
+class CSVPasswordSequence;
 
 // Static-only class bundling together the API for importing passwords from a
 // file.
@@ -30,15 +27,15 @@ class PasswordImporter {
     NUM_IMPORT_RESULTS
   };
 
-  typedef base::Callback<void(Result,
-                              const std::vector<autofill::PasswordForm>&)>
-      CompletionCallback;
+  // CompletionCallback is the type of the processing function for parsed
+  // passwords.
+  using CompletionCallback =
+      base::OnceCallback<void(Result, CSVPasswordSequence)>;
 
   // Imports passwords from the file at |path|, and fires |completion| callback
   // on the calling thread with the passwords when ready. The only supported
   // file format is CSV.
-  static void Import(const base::FilePath& path,
-                     const CompletionCallback& completion);
+  static void Import(const base::FilePath& path, CompletionCallback completion);
 
   // Returns the file extensions corresponding to supported formats.
   static std::vector<std::vector<base::FilePath::StringType>>

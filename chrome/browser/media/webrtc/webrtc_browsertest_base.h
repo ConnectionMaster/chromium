@@ -10,9 +10,9 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "chrome/browser/media/webrtc/test_stats_dictionary.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace infobars {
 class InfoBar;
@@ -116,6 +116,10 @@ class WebRtcTestBase : public InProcessBrowserTest {
   std::string ExecuteJavascript(const std::string& javascript,
                                 content::WebContents* tab_contents) const;
 
+  // TODO(https://crbug.com/1004239): Remove this function as soon as browser
+  // tests stop relying on the legacy getStats() API.
+  void ChangeToLegacyGetStats(content::WebContents* tab) const;
+
   // Sets up a peer connection in the tab and adds the current local stream
   // (which you can prepare by calling one of the GetUserMedia* methods above).
   // Optionally, |certificate_keygen_algorithm| is JavaScript for an
@@ -178,7 +182,11 @@ class WebRtcTestBase : public InProcessBrowserTest {
   // make that work). Looks at a 320x240 area of the target video tag.
   void StartDetectingVideo(content::WebContents* tab_contents,
                            const std::string& video_element) const;
+
+  // Wait for a video to start/stop playing. StartDetectingVideo must have
+  // been called already.
   bool WaitForVideoToPlay(content::WebContents* tab_contents) const;
+  bool WaitForVideoToStop(content::WebContents* tab_contents) const;
 
   // Returns the stream size as a string on the format <width>x<height>.
   std::string GetStreamSize(content::WebContents* tab_contents,
@@ -222,7 +230,7 @@ class WebRtcTestBase : public InProcessBrowserTest {
   // Try to open a dekstop media stream, and return the stream id.
   // On failure, will return empty string.
   std::string GetDesktopMediaStream(content::WebContents* tab);
-  base::Optional<std::string> LoadDesktopCaptureExtension();
+  absl::optional<std::string> LoadDesktopCaptureExtension();
 
  private:
   void CloseInfoBarInTab(content::WebContents* tab_contents,

@@ -34,17 +34,33 @@ class VIEWS_EXPORT ViewObserver {
   // Called when the bounds of |observed_view| change.
   virtual void OnViewBoundsChanged(View* observed_view) {}
 
+  // Called when the bounds of |observed_view|'s layer change.
+  virtual void OnLayerTargetBoundsChanged(View* observed_view) {}
+
+  // Called when the `observed_view`'s layer transform changes.
+  // TODO(crbug.com/1203386): This is temporarily added to support a migration.
+  // Do not use for new call sites, we should instead figure out how to
+  // migrate this method (and possibly others) into callbacks.
+  virtual void OnViewLayerTransformed(View* observed_view) {}
+
   // Called when View::ViewHierarchyChanged() is called.
   virtual void OnViewHierarchyChanged(
       View* observed_view,
       const ViewHierarchyChangedDetails& details) {}
 
+  // Called when View::AddedToWidget() is called.
+  virtual void OnViewAddedToWidget(View* observed_view) {}
+
+  // Called when View::RemovedFromWidget() is called.
+  virtual void OnViewRemovedFromWidget(View* observed_view) {}
+
   // Called when a child is reordered among its siblings, specifically
   // View::ReorderChildView() is called on |observed_view|.
   virtual void OnChildViewReordered(View* observed_view, View* child) {}
 
-  // Called when the active NativeTheme has changed for |observed_view|.
-  virtual void OnViewNativeThemeChanged(View* observed_view) {}
+  // Called when the active UI theme or NativeTheme has changed for
+  // |observed_view|.
+  virtual void OnViewThemeChanged(View* observed_view) {}
 
   // Called from ~View.
   virtual void OnViewIsDeleting(View* observed_view) {}

@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 #include "ash/accelerators/spoken_feedback_toggler.h"
-#include "ash/accessibility/accessibility_controller.h"
+#include "ash/accessibility/accessibility_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/window_util.h"
@@ -17,35 +17,35 @@ using SpokenFeedbackTogglerTest = AshTestBase;
 
 TEST_F(SpokenFeedbackTogglerTest, Basic) {
   SpokenFeedbackToggler::ScopedEnablerForTest scoped;
-  AccessibilityController* controller =
+  AccessibilityControllerImpl* controller =
       Shell::Get()->accessibility_controller();
   ui::test::EventGenerator* generator = GetEventGenerator();
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
 
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
   generator->ReleaseKey(ui::VKEY_F6, 0);
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
 
   // Click and hold toggles the spoken feedback.
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_TRUE(controller->spoken_feedback_enabled());
+  EXPECT_TRUE(controller->spoken_feedback().enabled());
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_TRUE(controller->spoken_feedback_enabled());
+  EXPECT_TRUE(controller->spoken_feedback().enabled());
   generator->ReleaseKey(ui::VKEY_F6, 0);
-  EXPECT_TRUE(controller->spoken_feedback_enabled());
+  EXPECT_TRUE(controller->spoken_feedback().enabled());
 
   // toggle again
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_TRUE(controller->spoken_feedback_enabled());
+  EXPECT_TRUE(controller->spoken_feedback().enabled());
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
   generator->PressKey(ui::VKEY_F6, ui::EF_SHIFT_DOWN);
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
   generator->ReleaseKey(ui::VKEY_F6, 0);
-  EXPECT_FALSE(controller->spoken_feedback_enabled());
+  EXPECT_FALSE(controller->spoken_feedback().enabled());
 }
 
 TEST_F(SpokenFeedbackTogglerTest, PassThroughEvents) {

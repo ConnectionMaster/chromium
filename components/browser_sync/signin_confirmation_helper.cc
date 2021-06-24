@@ -5,12 +5,13 @@
 #include "components/browser_sync/signin_confirmation_helper.h"
 
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/logging.h"
 #include "base/sequenced_task_runner.h"
-#include "base/strings/string16.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_db_task.h"
@@ -33,8 +34,8 @@ class HasTypedURLsTask : public history::HistoryDBTask {
     history::URLRows rows;
     backend->GetAllTypedURLs(&rows);
     if (!rows.empty()) {
-      DVLOG(1) << "SigninConfirmationHelper: history contains " << rows.size()
-               << " typed URLs";
+      VLOG(1) << "SigninConfirmationHelper: history contains " << rows.size()
+              << " typed URLs";
       has_typed_urls_ = true;
     }
     return true;
@@ -63,13 +64,11 @@ SigninConfirmationHelper::~SigninConfirmationHelper() {
 
 void SigninConfirmationHelper::OnHistoryQueryResults(
     size_t max_entries,
-    history::QueryResults* results) {
-  history::QueryResults owned_results;
-  results->Swap(&owned_results);
-  bool too_much_history = owned_results.size() >= max_entries;
+    history::QueryResults results) {
+  bool too_much_history = results.size() >= max_entries;
   if (too_much_history) {
-    DVLOG(1) << "SigninConfirmationHelper: profile contains "
-             << owned_results.size() << " history entries";
+    VLOG(1) << "SigninConfirmationHelper: profile contains " << results.size()
+            << " history entries";
   }
   ReturnResult(too_much_history);
 }
@@ -83,9 +82,9 @@ void SigninConfirmationHelper::CheckHasHistory(int max_entries) {
   history::QueryOptions opts;
   opts.max_count = max_entries;
   history_service_->QueryHistory(
-      base::string16(), opts,
-      base::Bind(&SigninConfirmationHelper::OnHistoryQueryResults,
-                 base::Unretained(this), max_entries),
+      std::u16string(), opts,
+      base::BindOnce(&SigninConfirmationHelper::OnHistoryQueryResults,
+                     base::Unretained(this), max_entries),
       &task_tracker_);
 }
 

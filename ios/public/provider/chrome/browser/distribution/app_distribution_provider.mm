@@ -4,6 +4,8 @@
 
 #import "ios/public/provider/chrome/browser/distribution/app_distribution_provider.h"
 
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
@@ -22,6 +24,5 @@ void AppDistributionProvider::ScheduleDistributionNotifications(
 
 void AppDistributionProvider::CancelDistributionNotifications() {}
 
-bool AppDistributionProvider::IsPreFirebaseLegacyUser(int64_t install_date) {
-  return false;
-}
+void AppDistributionProvider::InitializeFirebase(base::Time install_date,
+                                                 bool is_first_run) {}

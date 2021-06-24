@@ -17,20 +17,25 @@ class PLATFORM_EXPORT UnacceleratedStaticBitmapImage final
     : public StaticBitmapImage {
  public:
   ~UnacceleratedStaticBitmapImage() override;
-  static scoped_refptr<UnacceleratedStaticBitmapImage> Create(sk_sp<SkImage>);
-  static scoped_refptr<UnacceleratedStaticBitmapImage> Create(PaintImage);
+
+  // The ImageOrientation should be derived from the source of the image data.
+  static scoped_refptr<UnacceleratedStaticBitmapImage> Create(
+      sk_sp<SkImage>,
+      ImageOrientation orientation = ImageOrientationEnum::kDefault);
+  static scoped_refptr<UnacceleratedStaticBitmapImage> Create(
+      PaintImage,
+      ImageOrientation orientation = ImageOrientationEnum::kDefault);
 
   bool CurrentFrameKnownToBeOpaque() override;
-  IntSize Size() const override;
   bool IsPremultiplied() const override;
-  scoped_refptr<StaticBitmapImage> MakeAccelerated(
-      base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_wrapper)
-      override;
+  scoped_refptr<StaticBitmapImage> ConvertToColorSpace(sk_sp<SkColorSpace>,
+                                                       SkColorType) override;
 
   void Draw(cc::PaintCanvas*,
             const cc::PaintFlags&,
             const FloatRect& dst_rect,
             const FloatRect& src_rect,
+            const SkSamplingOptions&,
             RespectImageOrientationEnum,
             ImageClampingMode,
             ImageDecodingMode) override;
@@ -39,9 +44,13 @@ class PLATFORM_EXPORT UnacceleratedStaticBitmapImage final
 
   void Transfer() final;
 
+  bool CopyToResourceProvider(CanvasResourceProvider*) override;
+
  private:
-  UnacceleratedStaticBitmapImage(sk_sp<SkImage>);
-  UnacceleratedStaticBitmapImage(PaintImage);
+  UnacceleratedStaticBitmapImage(sk_sp<SkImage>, ImageOrientation);
+  UnacceleratedStaticBitmapImage(PaintImage, ImageOrientation);
+
+  IntSize SizeInternal() const override;
 
   PaintImage paint_image_;
   THREAD_CHECKER(thread_checker_);
@@ -52,4 +61,4 @@ class PLATFORM_EXPORT UnacceleratedStaticBitmapImage final
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_UNACCELERATED_STATIC_BITMAP_IMAGE_H_

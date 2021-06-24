@@ -99,19 +99,25 @@ class ClearKeyPersistentSessionCdm : public ContentDecryptionModule {
 
   // When the session is closed, remove it from the list of open persistent
   // sessions if it was a persistent session.
-  void OnSessionClosed(const std::string& session_id);
+  void OnSessionClosed(const std::string& session_id,
+                       CdmSessionClosedReason reason);
+
+  void OnSessionMessage(const std::string& session_id,
+                        CdmMessageType message_type,
+                        const std::vector<uint8_t>& message);
 
   scoped_refptr<AesDecryptor> cdm_;
   CdmHostProxy* const cdm_host_proxy_ = nullptr;
 
   // Callbacks for firing session events. Other events aren't intercepted.
+  SessionMessageCB session_message_cb_;
   SessionClosedCB session_closed_cb_;
 
   // Keep track of current open persistent sessions.
   std::set<std::string> persistent_sessions_;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
-  base::WeakPtrFactory<ClearKeyPersistentSessionCdm> weak_factory_;
+  base::WeakPtrFactory<ClearKeyPersistentSessionCdm> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ClearKeyPersistentSessionCdm);
 };

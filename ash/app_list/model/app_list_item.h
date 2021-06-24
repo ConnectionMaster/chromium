@@ -7,24 +7,22 @@
 
 #include <stddef.h>
 
+#include <map>
+#include <memory>
 #include <string>
 #include <utility>
 
 #include "ash/app_list/model/app_list_model_export.h"
-#include "ash/public/interfaces/app_list.mojom.h"
+#include "ash/public/cpp/app_list/app_list_types.h"
+#include "ash/public/cpp/shelf_types.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "components/sync/model/string_ordinal.h"
 #include "ui/gfx/image/image_skia.h"
 
-class FastShowPickler;
-
 namespace ash {
+enum class AppListConfigType;
 class AppListControllerImpl;
-}  // namespace ash
-
-namespace app_list {
-
 class AppListItemList;
 class AppListItemListTest;
 class AppListItemObserver;
@@ -34,11 +32,21 @@ class AppListModel;
 // and action to be executed when the AppListItemView is activated.
 class APP_LIST_MODEL_EXPORT AppListItem {
  public:
+  using AppListItemMetadata = ash::AppListItemMetadata;
+
   explicit AppListItem(const std::string& id);
   virtual ~AppListItem();
 
-  void SetIcon(const gfx::ImageSkia& icon);
-  const gfx::ImageSkia& icon() const { return metadata_->icon; }
+  void SetIcon(AppListConfigType config_type, const gfx::ImageSkia& icon);
+  const gfx::ImageSkia& GetIcon(AppListConfigType config_type) const;
+
+  // Setter and getter for the default app list item icon. Used as a base to
+  // generate appropriate app list item icon for an app list config if an icon
+  // for the config has not been set using `SetIcon()`.
+  void SetDefaultIcon(const gfx::ImageSkia& icon);
+  const gfx::ImageSkia& GetDefaultIcon() const;
+
+  void SetNotificationBadgeColor(const SkColor color);
 
   const std::string& GetDisplayName() const {
     return short_name_.empty() ? name() : short_name_;
@@ -48,26 +56,18 @@ class APP_LIST_MODEL_EXPORT AppListItem {
   // Should only be used in tests; otherwise use GetDisplayName().
   const std::string& short_name() const { return short_name_; }
 
-  void SetIsInstalling(bool is_installing);
-  bool is_installing() const { return is_installing_; }
-
-  void SetPercentDownloaded(int percent_downloaded);
-  int percent_downloaded() const { return percent_downloaded_; }
-
   bool IsInFolder() const { return !folder_id().empty(); }
 
   const std::string& id() const { return metadata_->id; }
   const std::string& folder_id() const { return metadata_->folder_id; }
   const syncer::StringOrdinal& position() const { return metadata_->position; }
 
-  void SetMetadata(ash::mojom::AppListItemMetadataPtr metadata) {
+  void SetMetadata(std::unique_ptr<AppListItemMetadata> metadata) {
     metadata_ = std::move(metadata);
   }
-  const ash::mojom::AppListItemMetadata* GetMetadata() const {
-    return metadata_.get();
-  }
-  ash::mojom::AppListItemMetadataPtr CloneMetadata() const {
-    return metadata_.Clone();
+  const AppListItemMetadata* GetMetadata() const { return metadata_.get(); }
+  std::unique_ptr<AppListItemMetadata> CloneMetadata() const {
+    return std::make_unique<AppListItemMetadata>(*metadata_);
   }
 
   void AddObserver(AppListItemObserver* observer);
@@ -78,15 +78,13 @@ class APP_LIST_MODEL_EXPORT AppListItem {
   virtual const char* GetItemType() const;
 
   // Returns the item matching |id| contained in this item (e.g. if the item is
-  // a folder), or NULL if the item was not found or this is not a container.
+  // a folder), or nullptr if the item was not found or this is not a container.
   virtual AppListItem* FindChildItem(const std::string& id);
 
   // Returns the number of child items if it has any (e.g. is a folder) or 0.
   virtual size_t ChildItemCount() const;
 
-  // Utility functions for sync integration tests.
-  virtual bool CompareForTest(const AppListItem* other) const;
-  virtual std::string ToDebugString() const;
+  std::string ToDebugString() const;
 
   bool is_folder() const { return metadata_->is_folder; }
 
@@ -95,12 +93,25 @@ class APP_LIST_MODEL_EXPORT AppListItem {
   }
   bool is_page_break() const { return metadata_->is_page_break; }
 
+  bool has_notification_badge() const { return has_notification_badge_; }
+
+  SkColor notification_badge_color() const { return metadata_->badge_color; }
+
+  void UpdateNotificationBadgeForTesting(bool has_badge) {
+    UpdateNotificationBadge(has_badge);
+  }
+
+  AppStatus app_status() const { return metadata_->app_status; }
+
+  void UpdateAppStatusForTesting(AppStatus app_status) {
+    metadata_->app_status = app_status;
+  }
+
  protected:
   // Subclasses also have mutable access to the metadata ptr.
-  ash::mojom::AppListItemMetadata* metadata() { return metadata_.get(); }
+  AppListItemMetadata* metadata() { return metadata_.get(); }
 
-  friend class ::FastShowPickler;
-  friend class ash::AppListControllerImpl;
+  friend class AppListControllerImpl;
   friend class AppListItemList;
   friend class AppListItemListTest;
   friend class AppListModel;
@@ -116,6 +127,9 @@ class APP_LIST_MODEL_EXPORT AppListItem {
   void SetNameAndShortName(const std::string& name,
                            const std::string& short_name);
 
+  // Updates whether the notification badge is shown on the view.
+  void UpdateNotificationBadge(bool has_badge);
+
   void set_position(const syncer::StringOrdinal& new_position) {
     DCHECK(new_position.IsValid());
     metadata_->position = new_position;
@@ -130,19 +144,25 @@ class APP_LIST_MODEL_EXPORT AppListItem {
  private:
   friend class AppListModelTest;
 
-  ash::mojom::AppListItemMetadataPtr metadata_;
+  std::unique_ptr<AppListItemMetadata> metadata_;
+
+  // Contains icons for AppListConfigTypes different than kShared. For kShared
+  // config type, the item will always use the icon provided by |metadata_|.
+  // This is currently used for folder icons only (which are all generated in
+  // ash), when app_list_features::kScalableAppList feature is enabled.
+  std::map<AppListConfigType, gfx::ImageSkia> per_config_icons_;
 
   // A shortened name for the item, used for display.
   std::string short_name_;
 
-  bool is_installing_;
-  int percent_downloaded_;
+  // Whether this item currently has a notification badge that should be shown.
+  bool has_notification_badge_ = false;
 
-  base::ObserverList<AppListItemObserver>::Unchecked observers_;
+  base::ObserverList<AppListItemObserver> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(AppListItem);
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_MODEL_APP_LIST_ITEM_H_

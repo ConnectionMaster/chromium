@@ -8,9 +8,10 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/account_id/account_id.h"
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
@@ -19,7 +20,6 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_constants.h"
-#include "components/prefs/pref_service.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace em = enterprise_management;
@@ -53,6 +53,11 @@ void UserCloudPolicyManager::SetSigninAccountId(const AccountId& account_id) {
   store_->SetSigninAccountId(account_id);
 }
 
+void UserCloudPolicyManager::SetPoliciesRequired(bool required) {
+  policies_required_ = required;
+  RefreshPolicies();
+}
+
 void UserCloudPolicyManager::Connect(
     PrefService* local_state,
     std::unique_ptr<CloudPolicyClient> client) {
@@ -63,11 +68,7 @@ void UserCloudPolicyManager::Connect(
 
   CreateComponentCloudPolicyService(
       dm_protocol::kChromeExtensionPolicyType, component_policy_cache_path_,
-      (local_state->GetBoolean(
-           policy_prefs::kCloudPolicyOverridesPlatformPolicy)
-           ? POLICY_SOURCE_PRIORITY_CLOUD
-           : POLICY_SOURCE_CLOUD),
-      client.get(), schema_registry());
+      POLICY_SOURCE_CLOUD, client.get(), schema_registry());
   core()->Connect(std::move(client));
   core()->StartRefreshScheduler();
   core()->TrackRefreshDelayPref(local_state,
@@ -82,9 +83,7 @@ UserCloudPolicyManager::CreateCloudPolicyClient(
     DeviceManagementService* device_management_service,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
   return std::make_unique<CloudPolicyClient>(
-      std::string() /* machine_id */, std::string() /* machine_model */,
-      std::string() /* brand_code */, device_management_service,
-      std::move(url_loader_factory), nullptr /* signing_service */,
+      device_management_service, std::move(url_loader_factory),
       CloudPolicyClient::DeviceDMTokenCallback());
 }
 
@@ -102,10 +101,7 @@ void UserCloudPolicyManager::DisconnectAndRemovePolicy() {
   // all external data references have been removed, causing the
   // |external_data_manager_| to clear its cache as well.
   store_->Clear();
-}
-
-bool UserCloudPolicyManager::IsClientRegistered() const {
-  return client() && client()->is_registered();
+  SetPoliciesRequired(false);
 }
 
 void UserCloudPolicyManager::GetChromePolicy(PolicyMap* policy_map) {
@@ -114,17 +110,28 @@ void UserCloudPolicyManager::GetChromePolicy(PolicyMap* policy_map) {
   // If the store has a verified policy blob received from the server then apply
   // the defaults for policies that haven't been configured by the administrator
   // given that this is an enterprise user.
-  // TODO(crbug.com/640950): We should just call SetEnterpriseUsersDefaults
-  // here.
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  if (!store()->has_policy())
+    return;
+
+  // TODO(https://crbug.com/1206315): Don't apply enterprise defaults for Child
+  // user.
+  SetEnterpriseUsersProfileDefaults(policy_map);
+#endif
 #if defined(OS_ANDROID)
   if (store()->has_policy() &&
       !policy_map->Get(key::kNTPContentSuggestionsEnabled)) {
     policy_map->Set(key::kNTPContentSuggestionsEnabled, POLICY_LEVEL_MANDATORY,
                     POLICY_SCOPE_USER, POLICY_SOURCE_ENTERPRISE_DEFAULT,
-                    std::make_unique<base::Value>(false),
-                    nullptr /* external_data_fetcher */);
+                    base::Value(false), nullptr /* external_data_fetcher */);
   }
 #endif
+}
+
+bool UserCloudPolicyManager::IsFirstPolicyLoadComplete(
+    PolicyDomain domain) const {
+  return !policies_required_ ||
+         CloudPolicyManager::IsFirstPolicyLoadComplete(domain);
 }
 
 }  // namespace policy

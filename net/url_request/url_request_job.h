@@ -13,9 +13,8 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
-#include "base/power_monitor/power_observer.h"
 #include "net/base/completion_once_callback.h"
+#include "net/base/completion_repeating_callback.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/load_states.h"
 #include "net/base/net_error_details.h"
@@ -28,7 +27,9 @@
 #include "net/http/http_response_headers.h"
 #include "net/socket/connection_attempts.h"
 #include "net/url_request/redirect_info.h"
+#include "net/url_request/referrer_policy.h"
 #include "net/url_request/url_request.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace net {
@@ -40,20 +41,18 @@ class HttpRequestHeaders;
 class HttpResponseInfo;
 class IOBuffer;
 struct LoadTimingInfo;
-class NetworkDelegate;
 class ProxyServer;
 class SSLCertRequestInfo;
 class SSLInfo;
 class SSLPrivateKey;
+struct TransportInfo;
 class UploadDataStream;
-class URLRequestStatus;
 class X509Certificate;
 
-class NET_EXPORT URLRequestJob : public base::PowerObserver {
+class NET_EXPORT URLRequestJob {
  public:
-  explicit URLRequestJob(URLRequest* request,
-                         NetworkDelegate* network_delegate);
-  ~URLRequestJob() override;
+  explicit URLRequestJob(URLRequest* request);
+  virtual ~URLRequestJob();
 
   // Returns the request that owns this job.
   URLRequest* request() const {
@@ -73,7 +72,7 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   virtual void SetPriority(RequestPriority priority);
 
   // If any error occurs while starting the Job, NotifyStartError should be
-  // called.
+  // called asynchronously.
   // This helps ensure that all errors follow more similar notification code
   // paths, which should simplify testing.
   virtual void Start() = 0;
@@ -104,12 +103,6 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   // error. This is just the backend for URLRequest::Read, see that function for
   // more info.
   int Read(IOBuffer* buf, int buf_size);
-
-  // Stops further caching of this request, if any. For more info, see
-  // URLRequest::StopCaching().
-  virtual void StopCaching();
-
-  virtual bool GetFullRequestHeaders(HttpRequestHeaders* headers) const;
 
   // Get the number of bytes received from network. The values returned by this
   // will never decrease over the lifetime of the URLRequestJob.
@@ -198,8 +191,8 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   virtual void ContinueDespiteLastError();
 
   void FollowDeferredRedirect(
-      const base::Optional<std::vector<std::string>>& removed_headers,
-      const base::Optional<net::HttpRequestHeaders>& modified_headers);
+      const absl::optional<std::vector<std::string>>& removed_headers,
+      const absl::optional<net::HttpRequestHeaders>& modified_headers);
 
   // Returns true if the Job is done producing response data and has called
   // NotifyDone on the request.
@@ -228,10 +221,6 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   // See url_request.h for details.
   virtual IPEndPoint GetResponseRemoteEndpoint() const;
 
-  // base::PowerObserver methods:
-  // We invoke URLRequestJob::Kill on suspend (crbug.com/4606).
-  void OnSuspend() override;
-
   // Called after a NetworkDelegate has been informed that the URLRequest
   // will be destroyed. This is used to track that no pending callbacks
   // exist at destruction time of the URLRequestJob, unless they have been
@@ -245,29 +234,54 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
 
   // Sets a callback that will be invoked each time the request is about to
   // be actually sent and will receive actual request headers that are about
-  // to hit the wire, including SPDY/QUIC internal headers and any additional
-  // request headers set via BeforeSendHeaders hooks.
+  // to hit the wire, including SPDY/QUIC internal headers.
   virtual void SetRequestHeadersCallback(RequestHeadersCallback callback) {}
 
   // Sets a callback that will be invoked each time the response is received
   // from the remote party with the actual response headers recieved.
   virtual void SetResponseHeadersCallback(ResponseHeadersCallback callback) {}
 
-  // Given |policy|, |referrer|, and |destination|, returns the
+  // Sets a callback that will be invoked each time a 103 Early Hints response
+  // is received from the remote party with the actual response headers
+  // received.
+  virtual void SetEarlyResponseHeadersCallback(
+      ResponseHeadersCallback callback) {}
+
+  // Causes the current transaction always close its active socket on
+  // destruction. Does not close H2/H3 sessions.
+  virtual void CloseConnectionOnDestruction();
+
+  // Given |policy|, |original_referrer|, and |destination|, returns the
   // referrer URL mandated by |request|'s referrer policy.
-  static GURL ComputeReferrerForPolicy(URLRequest::ReferrerPolicy policy,
-                                       const GURL& original_referrer,
-                                       const GURL& destination);
+  //
+  // If |same_origin_out_for_metrics| is non-null, saves to
+  // |*same_origin_out_for_metrics| whether |original_referrer| and
+  // |destination| are cross-origin.
+  // (This allows reporting in a UMA whether the request is same-origin, without
+  // recomputing that information.)
+  static GURL ComputeReferrerForPolicy(
+      ReferrerPolicy policy,
+      const GURL& original_referrer,
+      const GURL& destination,
+      bool* same_origin_out_for_metrics = nullptr);
 
  protected:
+  // Notifies the job that we are connected.
+  int NotifyConnected(const TransportInfo& info,
+                      CompletionOnceCallback callback);
+
   // Notifies the job that a certificate is requested.
   void NotifyCertificateRequested(SSLCertRequestInfo* cert_request_info);
 
   // Notifies the job about an SSL certificate error.
-  void NotifySSLCertificateError(const SSLInfo& ssl_info, bool fatal);
+  void NotifySSLCertificateError(int net_error,
+                                 const SSLInfo& ssl_info,
+                                 bool fatal);
 
   // Delegates to URLRequest.
-  bool CanGetCookies(const CookieList& cookie_list) const;
+  void AnnotateAndMoveUserBlockedCookies(
+      CookieAccessResultList& maybe_included_cookies,
+      CookieAccessResultList& excluded_cookies) const;
 
   // Delegates to URLRequest.
   bool CanSetCookie(const net::CanonicalCookie& cookie,
@@ -279,16 +293,17 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   // Notifies the job that headers have been received.
   void NotifyHeadersComplete();
 
+  // Called when the final set headers have been received (no more redirects to
+  // follow, and no more auth challenges that will be responded to).
+  void NotifyFinalHeadersReceived();
+
   // Notifies the request that a start error has occurred.
-  void NotifyStartError(const URLRequestStatus& status);
+  // NOTE: Must not be called synchronously from |Start|.
+  void NotifyStartError(int net_error);
 
   // Used as an asynchronous callback for Kill to notify the URLRequest
   // that we were canceled.
   void NotifyCanceled();
-
-  // Notifies the job the request should be restarted.
-  // Should only be called if the job has not started a response.
-  void NotifyRestartRequired();
 
   // See corresponding functions in url_request.h.
   void OnCallToDelegate(NetLogEventType type);
@@ -321,12 +336,6 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   // Subclasses should return the appropriate last SourceStream of the chain,
   // or nullptr on error.
   virtual std::unique_ptr<SourceStream> SetUpSourceStream();
-
-  // Provides derived classes with access to the request's network delegate.
-  NetworkDelegate* network_delegate() { return network_delegate_; }
-
-  // The status of the job.
-  const URLRequestStatus GetStatus();
 
   // Set the proxy server that was used, if any.
   void SetProxyServer(const ProxyServer& proxy_server);
@@ -373,8 +382,8 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   // given redirect destination.
   void FollowRedirect(
       const RedirectInfo& redirect_info,
-      const base::Optional<std::vector<std::string>>& removed_headers,
-      const base::Optional<net::HttpRequestHeaders>& modified_headers);
+      const absl::optional<std::vector<std::string>>& removed_headers,
+      const absl::optional<net::HttpRequestHeaders>& modified_headers);
 
   // Called after every raw read. If |bytes_read| is > 0, this indicates
   // a successful read of |bytes_read| unfiltered bytes. If |bytes_read|
@@ -394,22 +403,11 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
   // asynchronously.  Otherwise, the caller will need to do this itself,
   // possibly through a synchronous return value.
   // TODO(mmenke):  Remove |notify_done|, and make caller handle notification.
-  void OnDone(const URLRequestStatus& status, bool notify_done);
+  void OnDone(int net_error, bool notify_done);
 
   // Takes care of the notification initiated by OnDone() to avoid re-entering
   // the URLRequest::Delegate.
   void NotifyDone();
-
-  // Subclasses may implement this method to record packet arrival times.
-  // The default implementation does nothing.  Only invoked when bytes have been
-  // read since the last invocation.
-  virtual void UpdatePacketReadTimes();
-
-
-  // Notify the network delegate that more bytes have been received or sent over
-  // the network, if bytes have been received or sent since the previous
-  // notification.
-  void MaybeNotifyNetworkBytes();
 
   // Indicates that the job is done producing data, either it has completed
   // all the data or an error has been encountered. Set exclusively by
@@ -442,26 +440,13 @@ class NET_EXPORT URLRequestJob : public base::PowerObserver {
 
   // Set when a redirect is deferred. Redirects are deferred after validity
   // checks are performed, so this field must not be modified.
-  base::Optional<RedirectInfo> deferred_redirect_info_;
-
-  // The network delegate to use with this request, if any.
-  NetworkDelegate* network_delegate_;
-
-  // The value from GetTotalReceivedBytes() the last time
-  // MaybeNotifyNetworkBytes() was called. Used to calculate how bytes have been
-  // newly received since the last notification.
-  int64_t last_notified_total_received_bytes_;
-
-  // The value from GetTotalSentBytes() the last time MaybeNotifyNetworkBytes()
-  // was called. Used to calculate how bytes have been newly sent since the last
-  // notification.
-  int64_t last_notified_total_sent_bytes_;
+  absl::optional<RedirectInfo> deferred_redirect_info_;
 
   // Non-null if ReadRawData() returned ERR_IO_PENDING, and the read has not
   // completed.
   CompletionOnceCallback read_raw_callback_;
 
-  base::WeakPtrFactory<URLRequestJob> weak_factory_;
+  base::WeakPtrFactory<URLRequestJob> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(URLRequestJob);
 };

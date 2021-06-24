@@ -6,6 +6,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram.h"
 #include "base/strings/string_util.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "content/public/browser/browser_thread.h"
@@ -85,7 +86,7 @@ LazyLevelDb::LazyLevelDb(const std::string& uma_client_name,
 LazyLevelDb::~LazyLevelDb() = default;
 
 ValueStore::Status LazyLevelDb::Read(const std::string& key,
-                                     std::unique_ptr<base::Value>* value) {
+                                     absl::optional<base::Value>* value) {
   DCHECK(value);
 
   std::string value_as_json;
@@ -100,13 +101,13 @@ ValueStore::Status LazyLevelDb::Read(const std::string& key,
   if (!s.ok())
     return ToValueStoreError(s);
 
-  std::unique_ptr<base::Value> val =
-      base::JSONReader().ReadToValueDeprecated(value_as_json);
-  if (!val)
+  absl::optional<base::Value> read_value =
+      base::JSONReader::Read(value_as_json);
+  if (!read_value) {
     return ValueStore::Status(ValueStore::CORRUPTION, FixCorruption(&key),
                               kInvalidJson);
-
-  *value = std::move(val);
+  }
+  *value = std::move(read_value);
   return ValueStore::Status();
 }
 

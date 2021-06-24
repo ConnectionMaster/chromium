@@ -21,12 +21,13 @@ class MockHidService : public HidService {
   const std::map<std::string, scoped_refptr<HidDeviceInfo>>& devices() const;
 
   void Connect(const std::string& device_id,
-               const ConnectCallback& callback) override;
+               bool allow_protected_reports,
+               ConnectCallback callback) override;
 
  private:
   base::WeakPtr<HidService> GetWeakPtr() override;
 
-  base::WeakPtrFactory<MockHidService> weak_factory_;
+  base::WeakPtrFactory<MockHidService> weak_factory_{this};
 };
 
 }  // namespace device

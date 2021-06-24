@@ -8,24 +8,28 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/unguessable_token.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/api/serial/serial_api.h"
 #include "extensions/browser/api/serial/serial_connection.h"
+#include "extensions/browser/api/serial/serial_port_manager.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_function_registry.h"
 #include "extensions/common/api/serial.h"
 #include "extensions/common/switches.h"
 #include "extensions/test/result_catcher.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
-#include "services/device/public/mojom/constants.mojom.h"
 #include "services/device/public/mojom/serial.mojom.h"
-#include "services/service_manager/public/cpp/service_binding.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 // Disable SIMULATE_SERIAL_PORTS only if all the following are true:
@@ -57,8 +61,9 @@ namespace {
 
 class FakeSerialPort : public device::mojom::SerialPort {
  public:
-  explicit FakeSerialPort(const base::FilePath& path)
-      : in_stream_watcher_(FROM_HERE,
+  explicit FakeSerialPort(device::mojom::SerialPortInfoPtr info)
+      : info_(std::move(info)),
+        in_stream_watcher_(FROM_HERE,
                            mojo::SimpleWatcher::ArmingPolicy::MANUAL),
         out_stream_watcher_(FROM_HERE,
                             mojo::SimpleWatcher::ArmingPolicy::MANUAL) {
@@ -69,35 +74,68 @@ class FakeSerialPort : public device::mojom::SerialPort {
     options_.cts_flow_control = false;
     options_.has_cts_flow_control = true;
   }
+
   ~FakeSerialPort() override = default;
+
+  mojo::PendingRemote<device::mojom::SerialPort> Open(
+      device::mojom::SerialConnectionOptionsPtr options,
+      mojo::PendingRemote<device::mojom::SerialPortClient> client) {
+    if (receiver_.is_bound()) {
+      // Port is already open.
+      return mojo::NullRemote();
+    }
+
+    DCHECK(!client_.is_bound());
+    DCHECK(client.is_valid());
+    client_.Bind(std::move(client));
+
+    DoConfigurePort(*options);
+
+    return receiver_.BindNewPipeAndPassRemote();
+  }
+
+  const device::mojom::SerialPortInfo& info() { return *info_; }
 
  private:
   // device::mojom::SerialPort methods:
-  void Open(device::mojom::SerialConnectionOptionsPtr options,
-            mojo::ScopedDataPipeConsumerHandle in_stream,
-            mojo::ScopedDataPipeProducerHandle out_stream,
-            device::mojom::SerialPortClientAssociatedPtrInfo client,
-            OpenCallback callback) override {
-    DoConfigurePort(*options);
-    DCHECK(client);
-    client_.Bind(std::move(client));
-    SetUpInStreamPipe(std::move(in_stream));
-    SetUpOutStreamPipe(std::move(out_stream));
-    std::move(callback).Run(true);
+  void StartWriting(mojo::ScopedDataPipeConsumerHandle consumer) override {
+    if (in_stream_)
+      return;
+
+    in_stream_ = std::move(consumer);
+    in_stream_watcher_.Watch(
+        in_stream_.get(),
+        MOJO_HANDLE_SIGNAL_READABLE | MOJO_HANDLE_SIGNAL_PEER_CLOSED,
+        MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
+        base::BindRepeating(&FakeSerialPort::DoWrite, base::Unretained(this)));
+    in_stream_watcher_.ArmOrNotify();
   }
-  void ClearSendError(mojo::ScopedDataPipeConsumerHandle consumer) override {
-    if (in_stream_) {
+
+  void StartReading(mojo::ScopedDataPipeProducerHandle producer) override {
+    if (out_stream_)
+      return;
+
+    out_stream_ = std::move(producer);
+    out_stream_watcher_.Watch(
+        out_stream_.get(),
+        MOJO_HANDLE_SIGNAL_WRITABLE | MOJO_HANDLE_SIGNAL_PEER_CLOSED,
+        MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
+        base::BindRepeating(&FakeSerialPort::DoRead, base::Unretained(this)));
+    out_stream_watcher_.ArmOrNotify();
+  }
+
+  void Flush(device::mojom::SerialPortFlushMode mode,
+             FlushCallback callback) override {
+    if (mode == device::mojom::SerialPortFlushMode::kReceiveAndTransmit) {
+      std::move(callback).Run();
       return;
     }
-    SetUpInStreamPipe(std::move(consumer));
+
+    NOTREACHED();
   }
-  void ClearReadError(mojo::ScopedDataPipeProducerHandle producer) override {
-    if (out_stream_) {
-      return;
-    }
-    SetUpOutStreamPipe(std::move(producer));
-  }
-  void Flush(FlushCallback callback) override { std::move(callback).Run(true); }
+
+  void Drain(DrainCallback callback) override { NOTREACHED(); }
+
   void GetControlSignals(GetControlSignalsCallback callback) override {
     auto signals = device::mojom::SerialPortControlSignals::New();
     signals->dcd = true;
@@ -124,21 +162,15 @@ class FakeSerialPort : public device::mojom::SerialPort {
     info->cts_flow_control = options_.cts_flow_control;
     std::move(callback).Run(std::move(info));
   }
-  void SetBreak(SetBreakCallback callback) override {
-    std::move(callback).Run(true);
-  }
-  void ClearBreak(ClearBreakCallback callback) override {
-    std::move(callback).Run(true);
-  }
 
-  void SetUpInStreamPipe(mojo::ScopedDataPipeConsumerHandle consumer) {
-    in_stream_.swap(consumer);
-    in_stream_watcher_.Watch(
-        in_stream_.get(),
-        MOJO_HANDLE_SIGNAL_READABLE | MOJO_HANDLE_SIGNAL_PEER_CLOSED,
-        MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
-        base::BindRepeating(&FakeSerialPort::DoWrite, base::Unretained(this)));
-    in_stream_watcher_.ArmOrNotify();
+  void Close(CloseCallback callback) override {
+    in_stream_watcher_.Cancel();
+    in_stream_.reset();
+    out_stream_watcher_.Cancel();
+    out_stream_.reset();
+    client_.reset();
+    std::move(callback).Run();
+    receiver_.reset();
   }
 
   void DoWrite(MojoResult result, const mojo::HandleSignalsState& state) {
@@ -178,16 +210,6 @@ class FakeSerialPort : public device::mojom::SerialPort {
     }
     // The code should not reach other cases.
     NOTREACHED();
-  }
-
-  void SetUpOutStreamPipe(mojo::ScopedDataPipeProducerHandle producer) {
-    out_stream_.swap(producer);
-    out_stream_watcher_.Watch(
-        out_stream_.get(),
-        MOJO_HANDLE_SIGNAL_WRITABLE | MOJO_HANDLE_SIGNAL_PEER_CLOSED,
-        MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
-        base::BindRepeating(&FakeSerialPort::DoRead, base::Unretained(this)));
-    out_stream_watcher_.ArmOrNotify();
   }
 
   void DoRead(MojoResult result, const mojo::HandleSignalsState& state) {
@@ -245,12 +267,15 @@ class FakeSerialPort : public device::mojom::SerialPort {
     }
   }
 
+  device::mojom::SerialPortInfoPtr info_;
+  mojo::Receiver<device::mojom::SerialPort> receiver_{this};
+
   // Currently applied connection options.
   device::mojom::SerialConnectionOptions options_;
   std::vector<uint8_t> buffer_;
   int read_step_ = 0;
   int write_step_ = 0;
-  device::mojom::SerialPortClientAssociatedPtr client_;
+  mojo::Remote<device::mojom::SerialPortClient> client_;
   mojo::ScopedDataPipeConsumerHandle in_stream_;
   mojo::SimpleWatcher in_stream_watcher_;
   mojo::ScopedDataPipeProducerHandle out_stream_;
@@ -262,39 +287,55 @@ class FakeSerialPort : public device::mojom::SerialPort {
 class FakeSerialPortManager : public device::mojom::SerialPortManager {
  public:
   FakeSerialPortManager() {
-    token_path_map_ = {
-        {base::UnguessableToken::Create(),
-         base::FilePath(FILE_PATH_LITERAL("/dev/fakeserialmojo"))},
-        {base::UnguessableToken::Create(),
-         base::FilePath(FILE_PATH_LITERAL("\\\\COM800\\"))}};
+    AddPort(base::FilePath(FILE_PATH_LITERAL("/dev/fakeserialmojo")));
+    AddPort(base::FilePath(FILE_PATH_LITERAL("\\\\COM800\\")));
   }
 
   ~FakeSerialPortManager() override = default;
 
+  void Bind(mojo::PendingReceiver<device::mojom::SerialPortManager> receiver) {
+    receivers_.Add(this, std::move(receiver));
+  }
+
  private:
   // device::mojom::SerialPortManager methods:
+  void SetClient(mojo::PendingRemote<device::mojom::SerialPortManagerClient>
+                     remote) override {
+    NOTIMPLEMENTED();
+  }
+
   void GetDevices(GetDevicesCallback callback) override {
-    std::vector<device::mojom::SerialPortInfoPtr> devices;
-    for (const auto& pair : token_path_map_) {
-      auto device = device::mojom::SerialPortInfo::New();
-      device->token = pair.first;
-      device->path = pair.second;
-      devices.push_back(std::move(device));
-    }
-    std::move(callback).Run(std::move(devices));
+    std::vector<device::mojom::SerialPortInfoPtr> ports;
+    for (const auto& port : ports_)
+      ports.push_back(port.second->info().Clone());
+    std::move(callback).Run(std::move(ports));
   }
 
-  void GetPort(const base::UnguessableToken& token,
-               device::mojom::SerialPortRequest request,
-               device::mojom::SerialPortConnectionWatcherPtr watcher) override {
+  void OpenPort(
+      const base::UnguessableToken& token,
+      bool use_alternate_path,
+      device::mojom::SerialConnectionOptionsPtr options,
+      mojo::PendingRemote<device::mojom::SerialPortClient> client,
+      mojo::PendingRemote<device::mojom::SerialPortConnectionWatcher> watcher,
+      OpenPortCallback callback) override {
     DCHECK(!watcher);
-    auto it = token_path_map_.find(token);
-    DCHECK(it != token_path_map_.end());
-    mojo::MakeStrongBinding(std::make_unique<FakeSerialPort>(it->second),
-                            std::move(request));
+    auto it = ports_.find(token);
+    DCHECK(it != ports_.end());
+    std::move(callback).Run(
+        it->second->Open(std::move(options), std::move(client)));
   }
 
-  std::map<base::UnguessableToken, base::FilePath> token_path_map_;
+  void AddPort(const base::FilePath& path) {
+    auto token = base::UnguessableToken::Create();
+    auto port = device::mojom::SerialPortInfo::New();
+    port->token = token;
+    port->path = path;
+    ports_.insert(std::make_pair(
+        token, std::make_unique<FakeSerialPort>(std::move(port))));
+  }
+
+  mojo::ReceiverSet<device::mojom::SerialPortManager> receivers_;
+  std::map<base::UnguessableToken, std::unique_ptr<FakeSerialPort>> ports_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeSerialPortManager);
 };
@@ -303,47 +344,35 @@ class SerialApiTest : public ExtensionApiTest {
  public:
   SerialApiTest() {
 #if SIMULATE_SERIAL_PORTS
-    // Because Device Service also runs in this process(browser process), we can
-    // set our binder to intercept requests for
-    // SerialPortManager/SerialPort interfaces to it.
-    service_manager::ServiceBinding::OverrideInterfaceBinderForTesting(
-        device::mojom::kServiceName,
-        base::BindRepeating(&SerialApiTest::BindSerialPortManager,
-                            base::Unretained(this)));
+    api::SerialPortManager::OverrideBinderForTesting(base::BindRepeating(
+        &SerialApiTest::BindSerialPortManager, base::Unretained(this)));
 #endif
   }
 
   ~SerialApiTest() override {
 #if SIMULATE_SERIAL_PORTS
-    service_manager::ServiceBinding::ClearInterfaceBinderOverrideForTesting<
-        device::mojom::SerialPortManager>(device::mojom::kServiceName);
-    service_manager::ServiceBinding::ClearInterfaceBinderOverrideForTesting<
-        device::mojom::SerialPort>(device::mojom::kServiceName);
+    api::SerialPortManager::OverrideBinderForTesting(base::NullCallback());
 #endif
   }
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    ExtensionApiTest::SetUpCommandLine(command_line);
-  }
-
-  void SetUpOnMainThread() override { ExtensionApiTest::SetUpOnMainThread(); }
-
-  void TearDownOnMainThread() override {
-    ExtensionApiTest::TearDownOnMainThread();
+  void SetUpOnMainThread() override {
+    ExtensionApiTest::SetUpOnMainThread();
+    port_manager_ = std::make_unique<FakeSerialPortManager>();
   }
 
   void FailEnumeratorRequest() { fail_enumerator_request_ = true; }
 
  protected:
-  void BindSerialPortManager(device::mojom::SerialPortManagerRequest request) {
+  void BindSerialPortManager(
+      mojo::PendingReceiver<device::mojom::SerialPortManager> receiver) {
     if (fail_enumerator_request_)
       return;
 
-    mojo::MakeStrongBinding(std::make_unique<FakeSerialPortManager>(),
-                            std::move(request));
+    port_manager_->Bind(std::move(receiver));
   }
 
   bool fail_enumerator_request_ = false;
+  std::unique_ptr<FakeSerialPortManager> port_manager_;
 };
 
 }  // namespace

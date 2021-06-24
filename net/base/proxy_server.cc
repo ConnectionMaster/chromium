@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/trace_event/memory_usage_estimator.h"
 #include "net/base/url_util.h"
@@ -72,18 +74,6 @@ ProxyServer::ProxyServer(Scheme scheme, const HostPortPair& host_port_pair)
     // do raw field comparisons in the equality and comparison functions.
     DCHECK(host_port_pair.Equals(HostPortPair()));
     host_port_pair_ = HostPortPair();
-  }
-}
-
-ProxyServer::ProxyServer(Scheme scheme,
-                         const HostPortPair& host_port_pair,
-                         bool is_trusted_proxy)
-    : ProxyServer(scheme, host_port_pair) {
-  if (is_trusted_proxy) {
-    is_trusted_proxy_ = true;
-    // TODO(https://crbug.com/778010): Update this when cross-origin server
-    // push is allowed for QUIC proxies.
-    DCHECK_EQ(SCHEME_HTTPS, scheme_);
   }
 }
 

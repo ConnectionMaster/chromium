@@ -6,8 +6,8 @@
 
 #include <stdint.h>
 
+#include "base/cxx17_backports.h"
 #include "base/format_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -172,6 +172,43 @@ const DeviceCapabilities kiBuffaloGamepad = {
     base::size(kiBuffaloGamepadAbsAxes),
 };
 
+// Captured from Basking.
+const DeviceAbsoluteAxis kBaskingTouchScreenAbsAxes[] = {
+    {ABS_X, {0, 0, 3520, 0, 0, 14}},
+    {ABS_Y, {0, 0, 1984, 0, 0, 14}},
+    {ABS_PRESSURE, {0, 0, 255, 0, 0, 0}},
+    {ABS_MT_SLOT, {0, 0, 9, 0, 0, 0}},
+    {ABS_MT_TOUCH_MAJOR, {0, 0, 255, 0, 0, 0}},
+    {ABS_MT_POSITION_X, {0, 0, 3520, 0, 0, 14}},
+    {ABS_MT_POSITION_Y, {0, 0, 1984, 0, 0, 14}},
+    {ABS_MT_TRACKING_ID, {0, 0, 65535, 0, 0, 0}},
+    {ABS_MT_PRESSURE, {0, 0, 255, 0, 0, 0}},
+};
+
+const DeviceCapabilities kBaskingTouchScreen = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:16.3/i2c_designware.3/i2c-9/"
+    "i2c-ELAN0001:00/input/input8/event8",
+    /* name */ "Elan Touchscreen",
+    /* phys */ "",
+    /* uniq */ "",
+    /* bustype */ "0018",
+    /* vendor */ "0000",
+    /* product */ "0000",
+    /* version */ "0000",
+    /* prop */ "2",
+    /* ev */ "b",
+    /* key */ "400 0 0 0 0 0",
+    /* rel */ "0",
+    /* abs */ "661800001000003",
+    /* msc */ "0",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kBaskingTouchScreenAbsAxes,
+    base::size(kBaskingTouchScreenAbsAxes),
+};
+
 // Captured from Pixelbook.
 const DeviceAbsoluteAxis kEveTouchScreenAbsAxes[] = {
     {ABS_X, {0, 0, 10368, 0, 0, 40}},
@@ -209,6 +246,45 @@ const DeviceCapabilities kEveTouchScreen = {
     /* ff */ "0",
     kEveTouchScreenAbsAxes,
     base::size(kEveTouchScreenAbsAxes),
+};
+
+// Captured from Pixel Slate.
+const DeviceAbsoluteAxis kNocturneTouchScreenAbsAxes[] = {
+    {ABS_X, {0, 0, 10404, 0, 0, 40}},
+    {ABS_Y, {0, 0, 6936, 0, 0, 40}},
+    {ABS_PRESSURE, {0, 0, 255, 0, 0, 0}},
+    {ABS_MT_SLOT, {0, 0, 9, 0, 0, 0}},
+    {ABS_MT_TOUCH_MAJOR, {0, 0, 255, 0, 0, 1}},
+    {ABS_MT_TOUCH_MINOR, {0, 0, 255, 0, 0, 1}},
+    {ABS_MT_ORIENTATION, {0, 0, 1, 0, 0, 0}},
+    {ABS_MT_POSITION_X, {0, 0, 10404, 0, 0, 40}},
+    {ABS_MT_POSITION_Y, {0, 0, 6936, 0, 0, 40}},
+    {ABS_MT_TOOL_TYPE, {0, 0, 2, 0, 0, 0}},
+    {ABS_MT_TRACKING_ID, {0, 0, 65535, 0, 0, 0}},
+    {ABS_MT_PRESSURE, {0, 0, 255, 0, 0, 0}},
+};
+const DeviceCapabilities kNocturneTouchScreen = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:15.0/i2c_designware.0/i2c-6/"
+    "i2c-WCOM50C1:00/0018:2D1F:486C.0001/input/input2/event2",
+    /* name */ "WCOM50C1:00 2D1F:486C",
+    /* phys */ "i2c-WCOM50C1:00",
+    /* uniq */ "",
+    /* bustype */ "0018",
+    /* vendor */ "2d1f",
+    /* product */ "486c",
+    /* version */ "0100",
+    /* prop */ "2",
+    /* ev */ "1b",
+    /* key */ "400 0 0 0 0 0",
+    /* rel */ "0",
+    /* abs */ "6f3800001000003",
+    /* msc */ "20",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kNocturneTouchScreenAbsAxes,
+    base::size(kNocturneTouchScreenAbsAxes),
 };
 
 // Captured from Chromebook Pixel.
@@ -343,6 +419,26 @@ const DeviceCapabilities kLinkTouchpad = {
     /* ff */ "0",
     kLinkTouchpadAbsAxes,
     base::size(kLinkTouchpadAbsAxes),
+};
+
+const DeviceCapabilities kMorphiusPointingStick = {
+    /* path */ "/sys/devices/platform/i8042/serio1/input/input12/event11",
+    /* name */ "TPPS/2 JYT_Synaptics TrackPoint",
+    /* phys */ "isa0060/serio1/input0",
+    /* uniq */ "",
+    /* bustype */ "0011",
+    /* vendor */ "0002",
+    /* product */ "000a",
+    /* version */ "0000",
+    /* prop */ "21",
+    /* ev */ "7",
+    /* key */ "70000 0 0 0 0",
+    /* rel */ "3",
+    /* abs */ "0",
+    /* msc */ "0",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
 };
 
 // Captured from generic HP KU-1156 USB keyboard.
@@ -613,18 +709,18 @@ const DeviceCapabilities kWilsonBeachActiveStylus = {
 const DeviceAbsoluteAxis kEveStylusAbsAxes[] = {
     {ABS_X, {0, 0, 25920, 0, 0, 100}},     {ABS_Y, {0, 0, 17280, 0, 0, 100}},
     {ABS_PRESSURE, {0, 0, 2047, 0, 0, 0}}, {ABS_TILT_X, {0, -90, 90, 0, 0, 57}},
-    {ABS_TILT_Y, {0, -90, 90, 0, 0, 57}},  {ABS_MISC, {0, 0, 255, 0, 0, 0}},
+    {ABS_TILT_Y, {0, -90, 90, 0, 0, 57}},  {ABS_MISC, {0, 0, 65535, 0, 0, 0}},
 };
 const DeviceCapabilities kEveStylus = {
     /* path */
     "/sys/devices/pci0000:00/0000:00:15.0/i2c_designware.0/i2c-6/"
-    "i2c-WCOM50C1:00/0018:2D1F:5134.0001/input/input7/event7",
-    /* name */ "WCOM50C1:00 2D1F:5134 Pen",
-    /* phys */ "",
+    "i2c-WCOM50C1:00/0018:2D1F:5143.0001/input/input5/event5",
+    /* name */ "WCOM50C1:00 2D1F:5143 Pen",
+    /* phys */ "i2c-WCOM50C1:00",
     /* uniq */ "",
     /* bustype */ "0018",
     /* vendor */ "2d1f",
-    /* product */ "5134",
+    /* product */ "5143",
     /* version */ "0100",
     /* prop */ "0",
     /* ev */ "1b",
@@ -637,6 +733,36 @@ const DeviceCapabilities kEveStylus = {
     /* ff */ "0",
     kEveStylusAbsAxes,
     base::size(kEveStylusAbsAxes),
+};
+
+// Captured from Pixel Slate
+const DeviceAbsoluteAxis kNocturneStylusAbsAxes[] = {
+    {ABS_X, {0, 0, 26010, 0, 0, 100}},     {ABS_Y, {0, 0, 17340, 0, 0, 100}},
+    {ABS_PRESSURE, {0, 0, 2047, 0, 0, 0}}, {ABS_TILT_X, {0, -90, 90, 0, 0, 57}},
+    {ABS_TILT_Y, {0, -90, 90, 0, 0, 57}},  {ABS_MISC, {0, 0, 65535, 0, 0, 0}},
+};
+const DeviceCapabilities kNocturneStylus = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:15.0/i2c_designware.0/i2c-6/"
+    "i2c-WCOM50C1:00/0018:2D1F:486C.0001/input/input3/event3",
+    /* name */ "WCOM50C1:00 2D1F:486C Pen",
+    /* phys */ "",
+    /* uniq */ "",
+    /* bustype */ "0018",
+    /* vendor */ "2d1f",
+    /* product */ "486c",
+    /* version */ "0100",
+    /* prop */ "0",
+    /* ev */ "1b",
+    /* key */ "1c03 1 0 0 0 0",
+    /* rel */ "0",
+    /* abs */ "1000d000003",
+    /* msc */ "11",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kNocturneStylusAbsAxes,
+    base::size(kNocturneStylusAbsAxes),
 };
 
 const DeviceCapabilities kHammerKeyboard = {
@@ -782,6 +908,254 @@ const DeviceCapabilities kSideVolumeButton = {
     /* ff */ "0",
 };
 
+const DeviceAbsoluteAxis kKohakuTouchscreenAxes[] = {
+    {ABS_X, {0, 0, 1079, 0, 0, 0}},
+    {ABS_Y, {0, 0, 1919, 0, 0, 0}},
+    {ABS_PRESSURE, {0, 0, 255, 0, 0, 0}},
+    {ABS_MT_SLOT, {0, 0, 15, 0, 0, 0}},
+    {ABS_MT_TOUCH_MAJOR, {0, 0, 255, 0, 0, 0}},
+    {ABS_MT_POSITION_X, {0, 0, 1079, 0, 0, 0}},
+    {ABS_MT_POSITION_Y, {0, 0, 1919, 0, 0, 0}},
+    {ABS_MT_TOOL_TYPE, {0, 0, 15, 0, 0, 0}},
+    {ABS_MT_TRACKING_ID, {0, 0, 65535, 0, 0, 0}},
+    {ABS_MT_PRESSURE, {0, 0, 255, 0, 0, 0}},
+    {ABS_MT_DISTANCE, {0, 0, 1, 0, 0, 0}},
+};
+// Captured from Kohaku EVT
+const DeviceCapabilities kKohakuTouchscreen = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:15.1/i2c_designware.1/i2c-8/"
+    "i2c-PRP0001:00/input/input3/event3",
+    /* name */ "Atmel maXTouch Touchscreen",
+    /* phys */ "i2c-8-004b/input0",
+    /* uniq */ "",
+    /* bustype */ "0018",
+    /* vendor */ "0000",
+    /* product */ "0000",
+    /* version */ "0000",
+    /* prop */ "2",
+    /* ev */ "b",
+    /* key */ "400 0 0 0 0 0",
+    /* rel */ "0",
+    /* abs */ "ee1800001000003",
+    /* msc */ "0",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kKohakuTouchscreenAxes,
+    base::size(kKohakuTouchscreenAxes),
+};
+
+const DeviceAbsoluteAxis kKohakuStylusAxes[] = {
+    {ABS_X, {0, 0, 29376, 0, 0, 100}},
+    {ABS_Y, {0, 0, 16524, 0, 0, 100}},
+    {ABS_PRESSURE, {0, 0, 4095, 0, 0, 0}},
+    {ABS_TILT_X, {0, -9000, 9000, 0, 0, 5730}},
+    {ABS_TILT_Y, {0, -9000, 9000, 0, 0, 5730}},
+};
+
+// Captured from Kohaku EVT
+const DeviceCapabilities kKohakuStylus = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:15.2/i2c_designware.2/i2c-9/"
+    "i2c-WCOM50C1:00/0018:2D1F:009D.0002/input/input6/event5",
+    /* name */ "WCOM50C1:00 2D1F:009D",
+    /* phys */ "i2c-WCOM50C1:00",
+    /* uniq */ "",
+    /* bustype */ "0018",
+    /* vendor */ "2d1f",
+    /* product */ "009d",
+    /* version */ "0100",
+    /* prop */ "0",
+    /* ev */ "1b",
+    /* key */ "1c03 0 0 0 0 0",
+    /* rel */ "0",
+    /* abs */ "d000003",
+    /* msc */ "10",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kKohakuStylusAxes,
+    base::size(kKohakuStylusAxes),
+};
+
+const DeviceAbsoluteAxis kXboxEliteAxes[] = {
+    {ABS_X, {0, 0, 65535, 255, 4095, 0}},
+    {ABS_Y, {0, 0, 65535, 255, 4095, 0}},
+    {ABS_Z, {0, 0, 65535, 255, 4095, 0}},
+    {ABS_RZ, {0, 0, 65535, 255, 4095, 0}},
+    {ABS_GAS, {0, 0, 1023, 3, 63, 0}},
+    {ABS_BRAKE, {0, 0, 1023, 3, 63, 0}},
+    {ABS_HAT0X, {0, -1, 1, 0, 0, 0}},
+    {ABS_HAT0Y, {0, -1, 1, 0, 0, 0}},
+};
+
+// captured from Xbox Elite series 2 controller
+const DeviceCapabilities kXboxElite = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/bluetooth/hci0/"
+    "hci0:256:11/0005:045E:0B05.000C/input/input21/event11",
+    /* name */ "Xbox Elite Wireless Controller",
+    /* phys */ "a0:af:bd:9f:2f:76",
+    /* uniq */ "98:7a:14:3b:42:b3",
+    /* bustype */ "0005",
+    /* vendor */ "045e",
+    /* product */ "0b05",
+    /* version */ "0903",
+    /* prop */ "0",
+    /* ev */ "10001b",
+    /* key */ "4000000 0 7fff000000000000 1000000000000 100040000000 e080ffdf01cfffff fffffffffffffffe",
+    /* rel */ "0",
+    /* abs */ "30627",
+    /* msc */ "10",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kXboxEliteAxes,
+    base::size(kXboxEliteAxes),
+};
+const DeviceCapabilities kDellActivePenButton = {
+    /* path */
+    "/sys/devices/virtual/misc/uhid/0005:413C:81D5.0004/input/input13/event11",
+    /* name */ "Dell Active Pen PN579X",
+    /* phys */ "f8:94:c2:b9:dd:b2",
+    /* uniq */ "90:7f:61:28:8d:09",
+    /* bustype */ "0005",
+    /* vendor */ "413c",
+    /* product */ "81d5",
+    /* version */ "0f08",
+    /* prop */ "0",
+    /* ev */ "100013",
+    /* key */ "7f80000000000000 e0b0ffdf01cfffff fffffffffffffffe",
+    /* rel */ "0",
+    /* abs */ "0",
+    /* msc */ "10",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+};
+
+const DeviceAbsoluteAxis kDrallionStylusAxes[] = {
+    {ABS_X, {0, 0, 30931, 0, 0, 100}},
+    {ABS_Y, {0, 0, 17399, 0, 0, 100}},
+    {ABS_PRESSURE, {0, 0, 4095, 0, 0, 0}},
+    {ABS_TILT_X, {0, -90, 90, 0, 0, 57}},
+    {ABS_TILT_Y, {0, -90, 90, 0, 0, 57}},
+    {ABS_MISC, {0, 0, 65535, 0, 0, 0}},
+};
+
+const DeviceCapabilities kDrallionStylus = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:15.0/i2c_designware.0/i2c-7/"
+    "i2c-WCOM48E2:00/0018:2D1F:4971.0001/input/input6/event5",
+    /* name */ "WCOM48E2:00 2D1F:4971 Pen",
+    /* phys */ "i2c-WCOM48E2:00",
+    /* uniq */ "",
+    /* bustype */ "0018",
+    /* vendor */ "2d1f",
+    /* product */ "4971",
+    /* version */ "0100",
+    /* prop */ "0",
+    /* ev */ "1b",
+    /* key */ "1c03 0 0 0 0 0",
+    /* rel */ "0",
+    /* abs */ "1000d000003",
+    /* msc */ "11",
+    /* sw */ "0",
+    /* led */ "0",
+    /* ff */ "0",
+    kDrallionStylusAxes,
+    base::size(kDrallionStylusAxes),
+};
+
+const DeviceCapabilities kPuffMicrophoneMuteSwitch = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:19.0/PRP0001:00/input/input3/event3",
+    /* name */ "mic_mute_switch",
+    /* phys */ "gpio-keys/input0",
+    /* uniq */ "",
+    /* bustype */ "0019",
+    /* vendor */ "0001",
+    /* product */ "0001",
+    /* version */ "0100",
+    /* prop */ "0",
+    /* ev */ "21",
+    /* key */ "0",
+    /* rel */ "0",
+    /* abs */ "0",
+    /* msc */ "0",
+    /* sw */ "4000",
+    /* led */ "0",
+    /* ff */ "0",
+};
+
+const DeviceCapabilities kDrawciaStylusGarage = {
+    /* path */
+    "/sys/devices/pci0000:00/0000:00:15.2/PRP0001:00/input/input4/event4",
+    /* name */ "PRP0001:00",
+    /* phys */ "gpio-keys/input0",
+    /* uniq */ "",
+    /* bustype */ "0019",
+    /* vendor */ "0001",
+    /* product */ "0001",
+    /* version */ "0100",
+    /* prop */ "0",
+    /* ev */ "21",
+    /* key */ "0",
+    /* rel */ "0",
+    /* abs */ "0",
+    /* msc */ "0",
+    /* sw */ "8000",
+    /* led */ "0",
+    /* ff */ "0",
+};
+
+// The built-in keyboard for Eve, which has an Assistant key.
+const DeviceCapabilities kEveKeyboard = {
+    /* path */ "/sys/devices/platform/i8042/serio0/input/input3/event3",
+    /* name */ "AT Translated Set 2 keyboard",
+    /* phys */ "isa0060/serio0/input0",
+    /* uniq */ "",
+    /* bustype */ "0011",
+    /* vendor */ "0001",
+    /* product */ "0001",
+    /* version */ "ab83",
+    /* prop */ "0",
+    /* ev */ "120013",
+    /* key */
+    "88 0 0 0 0 0 402000000 3003078f800d001 feffffdfffefffff "
+    "fffffffffffffffe",
+    /* rel */ "0",
+    /* abs */ "0",
+    /* msc */ "10",
+    /* sw */ "0",
+    /* led */ "7",
+    /* ff */ "0",
+};
+
+// The built-in keyboard on Sarien, which has a few more keys than normal.
+const DeviceCapabilities kSarienKeyboard = {
+    /* path */ "/sys/devices/platform/i8042/serio0/input/input2/event2",
+    /* name */ "AT Translated Set 2 keyboard",
+    /* phys */ "isa0060/serio0/input0",
+    /* uniq */ "",
+    /* bustype */ "0011",
+    /* vendor */ "0001",
+    /* product */ "0001",
+    /* version */ "ab41",
+    /* prop */ "0",
+    /* ev */ "120013",
+    /* key */
+    "100 0 0 0 10000000000000 0 f02000000 3803078f800d001 ffffffdfffefffff "
+    "fffffffffffffffe",
+    /* rel */ "0",
+    /* abs */ "0",
+    /* msc */ "10",
+    /* sw */ "0",
+    /* led */ "7",
+    /* ff */ "0",
+};
+
 // NB: Please use the capture_device_capabilities.py script to add more
 // test data here. This will help ensure the data matches what the kernel
 // reports for a real device and is entered correctly.
@@ -790,7 +1164,7 @@ const DeviceCapabilities kSideVolumeButton = {
 //   DEVICE_IP=<your device IP>
 //   cd ui/events/ozone/evdev/
 //   scp capture_device_capabilities.py "root@${DEVICE_IP}:/tmp/"
-//   ssh "root@${DEVICE_IP}" /tmp/capture_device_capabilities.py
+//   ssh "root@${DEVICE_IP}" python /tmp/capture_device_capabilities.py
 
 bool CapabilitiesToDeviceInfo(const DeviceCapabilities& capabilities,
                               EventDeviceInfo* devinfo) {
@@ -814,6 +1188,11 @@ bool CapabilitiesToDeviceInfo(const DeviceCapabilities& capabilities,
     return false;
   devinfo->SetAbsEvents(&abs_bits[0], abs_bits.size());
 
+  std::vector<unsigned long> sw_bits;
+  if (!ParseBitfield(capabilities.sw, SW_CNT, &sw_bits))
+    return false;
+  devinfo->SetSwEvents(&sw_bits[0], sw_bits.size());
+
   std::vector<unsigned long> msc_bits;
   if (!ParseBitfield(capabilities.msc, MSC_CNT, &msc_bits))
     return false;
@@ -823,6 +1202,11 @@ bool CapabilitiesToDeviceInfo(const DeviceCapabilities& capabilities,
   if (!ParseBitfield(capabilities.led, LED_CNT, &led_bits))
     return false;
   devinfo->SetLedEvents(&led_bits[0], led_bits.size());
+
+  std::vector<unsigned long> ff_bits;
+  if (!ParseBitfield(capabilities.ff, FF_CNT, &ff_bits))
+    return false;
+  devinfo->SetFfEvents(&ff_bits[0], ff_bits.size());
 
   std::vector<unsigned long> prop_bits;
   if (!ParseBitfield(capabilities.prop, INPUT_PROP_CNT, &prop_bits))
@@ -853,7 +1237,7 @@ bool CapabilitiesToDeviceInfo(const DeviceCapabilities& capabilities,
   sscanf(capabilities.version, "%" SCNx16, &id.version);
   devinfo->SetId(id);
   devinfo->SetDeviceType(EventDeviceInfo::GetInputDeviceTypeFromId(id));
-
+  devinfo->SetName(capabilities.name);
   return true;
 }
 

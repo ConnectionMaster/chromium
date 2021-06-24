@@ -7,8 +7,11 @@
 #include <algorithm>
 #include <climits>
 
+#include "base/check_op.h"
 #include "base/containers/stack_container.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
@@ -18,6 +21,8 @@
 
 namespace net {
 namespace {
+
+bool g_consider_loopback_ip_to_be_publicly_routable_for_testing = false;
 
 // The prefix for IPv6 mapped IPv4 addresses.
 // https://tools.ietf.org/html/rfc4291#section-2.5.5.2
@@ -50,7 +55,7 @@ bool IPAddressPrefixCheck(const IPAddressBytes& ip_address,
 }
 
 // Returns false if |ip_address| matches any of the reserved IPv4 ranges. This
-// method operates on a blacklist of reserved IPv4 ranges. Some ranges are
+// method operates on a list of reserved IPv4 ranges. Some ranges are
 // consolidated.
 // Sources for info:
 // www.iana.org/assignments/ipv4-address-space/ipv4-address-space.xhtml
@@ -80,8 +85,8 @@ bool IsPubliclyRoutableIPv4(const IPAddressBytes& ip_address) {
 }
 
 // Returns false if |ip_address| matches any of the IPv6 ranges IANA reserved
-// for local networks. This method operates on a whitelist of non-reserved
-// IPv6 ranges, plus the blacklist of reserved IPv4 ranges mapped to IPv6.
+// for local networks. This method operates on an allowlist of non-reserved
+// IPv6 ranges, plus the list of reserved IPv4 ranges mapped to IPv6.
 // Sources for info:
 // www.iana.org/assignments/ipv6-address-space/ipv6-address-space.xhtml
 bool IsPubliclyRoutableIPv6(const IPAddressBytes& ip_address) {
@@ -116,9 +121,7 @@ bool ParseIPLiteralToBytes(const base::StringPiece& ip_literal,
   // a colon however, it must be an IPv6 address.
   if (ip_literal.find(':') != base::StringPiece::npos) {
     // GURL expects IPv6 hostnames to be surrounded with brackets.
-    std::string host_brackets = "[";
-    ip_literal.AppendToString(&host_brackets);
-    host_brackets.push_back(']');
+    std::string host_brackets = base::StrCat({"[", ip_literal, "]"});
     url::Component host_comp(0, host_brackets.size());
 
     // Try parsing the hostname as an IPv6 literal.
@@ -233,12 +236,22 @@ bool IPAddress::IsValid() const {
 }
 
 bool IPAddress::IsPubliclyRoutable() const {
+  if (g_consider_loopback_ip_to_be_publicly_routable_for_testing &&
+      IsLoopback()) {
+    return true;
+  }
+
   if (IsIPv4()) {
     return IsPubliclyRoutableIPv4(ip_address_);
   } else if (IsIPv6()) {
     return IsPubliclyRoutableIPv6(ip_address_);
   }
   return true;
+}
+
+// static
+void IPAddress::ConsiderLoopbackIPToBePubliclyRoutableForTesting() {
+  g_consider_loopback_ip_to_be_publicly_routable_for_testing = true;
 }
 
 bool IPAddress::IsZero() const {
@@ -275,6 +288,10 @@ bool IPAddress::IsLinkLocal() const {
   // 169.254.0.0/16
   if (IsIPv4())
     return (ip_address_[0] == 169) && (ip_address_[1] == 254);
+
+  // [::ffff:169.254.0.0]/112
+  if (IsIPv4MappedIPv6())
+    return (ip_address_[12] == 169) && (ip_address_[13] == 254);
 
   // [fe80::]/10
   if (IsIPv6())
@@ -421,7 +438,7 @@ bool IPAddressMatchesPrefix(const IPAddress& ip_address,
                               prefix_length_in_bits);
 }
 
-bool ParseCIDRBlock(const std::string& cidr_literal,
+bool ParseCIDRBlock(base::StringPiece cidr_literal,
                     IPAddress* ip_address,
                     size_t* prefix_length_in_bits) {
   // We expect CIDR notation to match one of these two templates:

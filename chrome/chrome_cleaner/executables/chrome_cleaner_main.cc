@@ -13,21 +13,26 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
+#include "base/dcheck_is_on.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/single_thread_task_executor.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/version.h"
 #include "base/win/scoped_com_initializer.h"
+#include "base/win/scoped_handle.h"
+#include "chrome/chrome_cleaner/buildflags.h"
 #include "chrome/chrome_cleaner/components/recovery_component.h"
+#include "chrome/chrome_cleaner/components/reset_shortcuts_component.h"
 #include "chrome/chrome_cleaner/components/system_report_component.h"
 #include "chrome/chrome_cleaner/components/system_restore_point_component.h"
 #include "chrome/chrome_cleaner/constants/chrome_cleaner_switches.h"
@@ -46,8 +51,9 @@
 #include "chrome/chrome_cleaner/engines/target/engine_delegate_factory.h"
 #include "chrome/chrome_cleaner/engines/target/sandbox_setup.h"
 #include "chrome/chrome_cleaner/executables/shutdown_sequence.h"
-#include "chrome/chrome_cleaner/ipc/chrome_prompt_ipc.h"
+#include "chrome/chrome_cleaner/ipc/mojo_chrome_prompt_ipc.h"
 #include "chrome/chrome_cleaner/ipc/mojo_task_runner.h"
+#include "chrome/chrome_cleaner/ipc/proto_chrome_prompt_ipc.h"
 #include "chrome/chrome_cleaner/ipc/sandbox.h"
 #include "chrome/chrome_cleaner/logging/logging_service_api.h"
 #include "chrome/chrome_cleaner/logging/pending_logs_service.h"
@@ -69,7 +75,6 @@
 #include "chrome/chrome_cleaner/parsers/json_parser/sandboxed_json_parser.h"
 #include "chrome/chrome_cleaner/parsers/shortcut_parser/broker/sandboxed_shortcut_parser.h"
 #include "chrome/chrome_cleaner/parsers/target/sandbox_setup.h"
-#include "chrome/chrome_cleaner/scanner/force_installed_extension_scanner_impl.h"
 #include "chrome/chrome_cleaner/settings/engine_settings.h"
 #include "chrome/chrome_cleaner/settings/matching_options.h"
 #include "chrome/chrome_cleaner/settings/settings.h"
@@ -97,7 +102,7 @@ void LogsUploadCallback(bool* succeeded,
   if (succeeded)
     *succeeded = success;
   // Use a task instead of a direct call to QuitWhenIdle, in case we are called
-  // synchronously because of an upload error, and the message loop is not
+  // synchronously because of an upload error, and the task executor is not
   // running yet.
   base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
                                                 std::move(quit_closure));
@@ -107,7 +112,7 @@ void AddComponents(chrome_cleaner::MainController* main_controller,
                    base::CommandLine* command_line,
                    chrome_cleaner::JsonParserAPI* json_parser,
                    chrome_cleaner::SandboxedShortcutParser* shortcut_parser) {
-#if defined(CHROME_CLEANER_OFFICIAL_BUILD)
+#if BUILDFLAG(IS_OFFICIAL_CHROME_CLEANER_BUILD)
   // Ensure that the system restore point component runs first.
   main_controller->AddComponent(
       std::make_unique<chrome_cleaner::SystemRestorePointComponent>(
@@ -121,6 +126,12 @@ void AddComponents(chrome_cleaner::MainController* main_controller,
   main_controller->AddComponent(
       std::make_unique<chrome_cleaner::SystemReportComponent>(json_parser,
                                                               shortcut_parser));
+
+  if (command_line->HasSwitch(chrome_cleaner::kResetShortcutsSwitch)) {
+    main_controller->AddComponent(
+        std::make_unique<chrome_cleaner::ResetShortcutsComponent>(
+            shortcut_parser));
+  }
 }
 
 void SendLogsToSafeBrowsing(chrome_cleaner::ResultCode exit_code,
@@ -208,21 +219,20 @@ chrome_cleaner::ResultCode RunChromeCleaner(
   chrome_cleaner::SandboxConnectionErrorCallback connection_error_callback =
       main_controller.GetSandboxConnectionErrorCallback();
 
-  // Initialize a null UniqueParserPtr to be set by SpawnParserSandbox.
-  chrome_cleaner::UniqueParserPtr parser_ptr(
-      nullptr, base::OnTaskRunnerDeleter(nullptr));
+  // Initialize a null RemoteParserPtr to be set by SpawnParserSandbox.
+  chrome_cleaner::RemoteParserPtr parser(nullptr,
+                                         base::OnTaskRunnerDeleter(nullptr));
   chrome_cleaner::ResultCode init_result = chrome_cleaner::SpawnParserSandbox(
-      shutdown_sequence.mojo_task_runner, connection_error_callback,
-      &parser_ptr);
+      shutdown_sequence.mojo_task_runner, connection_error_callback, &parser);
   if (init_result != chrome_cleaner::RESULT_CODE_SUCCESS) {
     return init_result;
   }
   std::unique_ptr<chrome_cleaner::SandboxedJsonParser> json_parser =
       std::make_unique<chrome_cleaner::SandboxedJsonParser>(
-          shutdown_sequence.mojo_task_runner.get(), parser_ptr.get());
+          shutdown_sequence.mojo_task_runner.get(), parser.get());
   std::unique_ptr<chrome_cleaner::SandboxedShortcutParser> shortcut_parser =
       std::make_unique<chrome_cleaner::SandboxedShortcutParser>(
-          shutdown_sequence.mojo_task_runner.get(), parser_ptr.get());
+          shutdown_sequence.mojo_task_runner.get(), parser.get());
 
   chrome_cleaner::Settings* settings = chrome_cleaner::Settings::GetInstance();
   if (!chrome_cleaner::IsSupportedEngine(settings->engine())) {
@@ -245,12 +255,9 @@ chrome_cleaner::ResultCode RunChromeCleaner(
   if (engine_result != chrome_cleaner::RESULT_CODE_SUCCESS)
     return engine_result;
 
-  shutdown_sequence
-      .engine_facade = std::make_unique<chrome_cleaner::EngineFacade>(
-      shutdown_sequence.engine_client, json_parser.get(),
-      main_controller.main_dialog(),
-      std::make_unique<chrome_cleaner::ForceInstalledExtensionScannerImpl>(),
-      chrome_prompt_ipc);
+  shutdown_sequence.engine_facade =
+      std::make_unique<chrome_cleaner::EngineFacade>(
+          shutdown_sequence.engine_client);
 
   if (settings->execution_mode() == ExecutionMode::kScanning) {
     shutdown_sequence.engine_facade =
@@ -308,7 +315,7 @@ chrome_cleaner::ResultCode ReturnWithResultCode(
 
   bool self_delete = CanSelfDelete(result_code);
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-#if defined(CHROME_CLEANER_OFFICIAL_BUILD)
+#if BUILDFLAG(IS_OFFICIAL_CHROME_CLEANER_BUILD)
   self_delete = self_delete &&
                 !command_line->HasSwitch(chrome_cleaner::kNoSelfDeleteSwitch);
 #else
@@ -327,7 +334,7 @@ chrome_cleaner::ResultCode ReturnWithResultCode(
     // Embedded libraries may have been extracted. Try to delete them and ignore
     // errors.
     base::FilePath exe_dir = exe_path.DirName();
-    std::set<base::string16> embedded_libraries =
+    std::set<std::wstring> embedded_libraries =
         chrome_cleaner::GetLibrariesToLoad(
             chrome_cleaner::Settings::GetInstance()->engine());
     for (const auto& library : embedded_libraries) {
@@ -355,6 +362,10 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
   chrome_cleaner::EnableSecureDllLoading();
 
   base::AtExitManager at_exit;
+
+#if !DCHECK_IS_ON()
+  base::win::DisableHandleVerifier();
+#endif
 
   // This must be done BEFORE constructing ScopedLogging, which call InitLogging
   // to set the name of the log file, which needs to read from the command line.
@@ -411,7 +422,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
       sandbox::SandboxFactory::GetTargetServices();
   const bool is_sandbox_target = (sandbox_target_services != nullptr);
 
-  base::string16 log_suffix =
+  std::wstring log_suffix =
       command_line->HasSwitch(chrome_cleaner::kElevatedSwitch)
           ? kElevatedLogFileSuffix
           : L"";
@@ -425,7 +436,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
   // Only start the crash reporter for the main process, the sandboxed process
   // will use the same crash reporter.
   if (is_sandbox_target) {
-    const base::string16 ipc_pipe_name = command_line->GetSwitchValueNative(
+    const std::wstring ipc_pipe_name = command_line->GetSwitchValueNative(
         chrome_cleaner::kUseCrashHandlerWithIdSwitch);
     CHECK(!ipc_pipe_name.empty());
     UseCrashReporter(ipc_pipe_name);
@@ -436,6 +447,16 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
   const chrome_cleaner::Settings* settings =
       chrome_cleaner::Settings::GetInstance();
 
+  if (settings->execution_mode() == ExecutionMode::kNone) {
+    ::MessageBox(nullptr,
+                 L"Manually running this program is no longer supported. "
+                 L"Please visit "
+                 L"https://support.google.com/chrome/?p=chrome_cleanup_tool "
+                 L"for more information.",
+                 L"Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+    return chrome_cleaner::RESULT_CODE_MANUAL_EXECUTION_BY_USER;
+  }
+
   // Process priority modification has to be done before threads are created
   // because they inherit process' priority.
   if (settings->execution_mode() == ExecutionMode::kScanning) {
@@ -445,7 +466,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
       PLOG(ERROR) << "Can't SetPriorityClass to NORMAL_PRIORITY_CLASS";
   }
 
-  base::ThreadPool::CreateAndStartWithDefaultParams("chrome cleanup tool");
+  base::ThreadPoolInstance::CreateAndStartWithDefaultParams(
+      "chrome cleanup tool");
 
   chrome_cleaner::SandboxType sandbox_type =
       is_sandbox_target ? chrome_cleaner::SandboxProcessType()
@@ -490,7 +512,6 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
   // Setup Cleaner registry values.
   registry_logger.ClearExitCode();
   registry_logger.ClearEndTime();
-  registry_logger.WriteVersion();
   registry_logger.WriteStartTime();
 
   // CoInitialize into the MTA since we desire to use the System Restore Point
@@ -516,9 +537,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
     LOG(ERROR) << "Failed to remove zone identifier.";
   }
 
-  // Many pieces of code below need a message loop to have been instantiated
+  // Many pieces of code below need a task executor to have been instantiated
   // before them.
-  base::MessageLoopForUI ui_message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
 
   // The rebooter must be at the outermost scope so it can be called to reboot
   // before exiting, when appropriate.
@@ -533,7 +554,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
       // GetNextLogFilePath returns the same file and never gets to return an
       // empty one. This might leave some log file behind, in very rare error
       // cases, but it's better than an infinite loop.
-      std::set<base::string16> log_files;
+      std::set<std::wstring> log_files;
       while (true) {
         base::FilePath log_file;
         registry_logger.GetNextLogFilePath(&log_file);
@@ -565,44 +586,42 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, wchar_t*, int) {
         executable_path, &registry_logger, nullptr);
   }
 
-  rebooter.reset(new chrome_cleaner::Rebooter(PRODUCT_SHORTNAME_STRING));
+  rebooter =
+      std::make_unique<chrome_cleaner::Rebooter>(PRODUCT_SHORTNAME_STRING);
 
   shutdown_sequence.mojo_task_runner = chrome_cleaner::MojoTaskRunner::Create();
 
   // Only create the IPC if both the Mojo pipe token and the parent pipe handle
   // have been sent by Chrome. If either switch is not present, it will not be
   // connected to the parent process.
+  // This pointer is leaked, in order to simplify this object's lifetime.
   chrome_cleaner::ChromePromptIPC* chrome_prompt_ipc = nullptr;
+
   if (settings->execution_mode() == ExecutionMode::kScanning) {
-    // Scanning mode is only used by Chrome and all necessary mojo pipe flags
+    // Scanning mode is only used by Chrome and all necessary IPC flags
     // must have been passed on the command line.
-    if (settings->chrome_mojo_pipe_token().empty() ||
-        !settings->has_parent_pipe_handle()) {
+    if (!settings->switches_valid_for_ipc()) {
       return ReturnWithResultCode(
           chrome_cleaner::RESULT_CODE_INVALID_IPC_SWITCHES, executable_path,
           &registry_logger, rebooter.get());
     }
 
-    const std::string chrome_mojo_pipe_token =
-        settings->chrome_mojo_pipe_token();
-    // This pointer is leaked, in order to simplify this object's lifetime.
-    chrome_prompt_ipc = new chrome_cleaner::ChromePromptIPC(
-        chrome_mojo_pipe_token, shutdown_sequence.mojo_task_runner);
-  } else if (!settings->chrome_mojo_pipe_token().empty() ||
-             settings->has_parent_pipe_handle()) {
+    if (settings->prompt_using_mojo()) {
+      chrome_prompt_ipc = new chrome_cleaner::MojoChromePromptIPC(
+          settings->chrome_mojo_pipe_token(),
+          shutdown_sequence.mojo_task_runner);
+    } else {
+      // |chrome_prompt_ipc| takes ownership of the handles. The settings
+      // object will still return the handle values when queried but from this
+      // point on they may or may not be open.
+      chrome_prompt_ipc = new chrome_cleaner::ProtoChromePromptIPC(
+          base::win::ScopedHandle(settings->prompt_response_read_handle()),
+          base::win::ScopedHandle(settings->prompt_request_write_handle()));
+    }
+  } else if (settings->has_any_ipc_switch()) {
     return ReturnWithResultCode(
         chrome_cleaner::RESULT_CODE_EXPECTED_SCANNING_EXECUTION_MODE,
         executable_path, &registry_logger, rebooter.get());
-  }
-
-  if (settings->execution_mode() == ExecutionMode::kNone) {
-    ::MessageBox(NULL,
-                 L"Manually running this program is no longer supported. "
-                 L"Please visit "
-                 L"https://support.google.com/chrome/?p=chrome_cleanup_tool "
-                 L"for more information.",
-                 L"Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
-    return chrome_cleaner::RESULT_CODE_MANUAL_EXECUTION_BY_USER;
   }
 
   // If immediate elevation is not required, the process will restart elevated

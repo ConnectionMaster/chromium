@@ -13,12 +13,15 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/supports_user_data.h"
-#include "content/browser/frame_host/navigation_controller_android.h"
+#include "content/browser/renderer_host/navigation_controller_android.h"
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "content/common/content_export.h"
 
 class GURL;
+
+namespace ui {
+struct AXTreeUpdate;
+}
 
 namespace content {
 
@@ -27,17 +30,22 @@ class WebContentsImpl;
 // Android wrapper around WebContents that provides safer passage from java and
 // back to native and provides java with a means of communicating with its
 // native counterpart.
-class CONTENT_EXPORT WebContentsAndroid
-    : public base::SupportsUserData::Data {
+class CONTENT_EXPORT WebContentsAndroid {
  public:
   explicit WebContentsAndroid(WebContentsImpl* web_contents);
-  ~WebContentsAndroid() override;
+  ~WebContentsAndroid();
 
   WebContentsImpl* web_contents() const { return web_contents_; }
 
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
+  // Ensure that the render frame host etc are ready to handle JS eval
+  // (e.g. recover from a crashed state).
+  bool InitializeRenderFrameForJavaScript();
+
   // Methods called from Java
+  void ClearNativeReference(JNIEnv* env,
+                            const base::android::JavaParamRef<jobject>& obj);
   base::android::ScopedJavaLocalRef<jobject> GetTopLevelNativeWindow(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
@@ -52,10 +60,20 @@ class CONTENT_EXPORT WebContentsAndroid
   base::android::ScopedJavaLocalRef<jobject> GetMainFrame(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj) const;
+  base::android::ScopedJavaLocalRef<jobject> GetFocusedFrame(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj) const;
+  base::android::ScopedJavaLocalRef<jobject> GetRenderFrameHostFromId(
+      JNIEnv* env,
+      jint render_process_id,
+      jint render_frame_id) const;
+  base::android::ScopedJavaLocalRef<jobjectArray> GetAllRenderFrameHosts(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj) const;
   base::android::ScopedJavaLocalRef<jstring> GetTitle(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj) const;
-  base::android::ScopedJavaLocalRef<jstring> GetVisibleURL(
+  base::android::ScopedJavaLocalRef<jobject> GetVisibleURL(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj) const;
 
@@ -64,6 +82,10 @@ class CONTENT_EXPORT WebContentsAndroid
   bool IsLoadingToDifferentDocument(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj) const;
+
+  void DispatchBeforeUnload(JNIEnv* env,
+                            const base::android::JavaParamRef<jobject>& obj,
+                            bool auto_cancel);
 
   void Stop(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
   void Cut(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
@@ -79,7 +101,7 @@ class CONTENT_EXPORT WebContentsAndroid
                          const base::android::JavaParamRef<jobject>& obj);
   jint GetBackgroundColor(JNIEnv* env,
                           const base::android::JavaParamRef<jobject>& obj);
-  base::android::ScopedJavaLocalRef<jstring> GetLastCommittedURL(
+  base::android::ScopedJavaLocalRef<jobject> GetLastCommittedURL(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>&) const;
   jboolean IsIncognito(JNIEnv* env,
@@ -100,13 +122,10 @@ class CONTENT_EXPORT WebContentsAndroid
                      const base::android::JavaParamRef<jobject>& jobj,
                      jboolean mute);
 
-  jboolean IsShowingInterstitialPage(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj);
   jboolean FocusLocationBarByDefault(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
-  jboolean IsRenderWidgetHostViewReady(
+  bool IsFullscreenForCurrentTab(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
   void ExitFullscreen(JNIEnv* env,
@@ -138,10 +157,9 @@ class CONTENT_EXPORT WebContentsAndroid
       jint level,
       const base::android::JavaParamRef<jstring>& message);
 
-  void PostMessageToFrame(
+  void PostMessageToMainFrame(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      const base::android::JavaParamRef<jstring>& jframe_name,
       const base::android::JavaParamRef<jstring>& jmessage,
       const base::android::JavaParamRef<jstring>& jsource_origin,
       const base::android::JavaParamRef<jstring>& jtarget_origin,
@@ -155,6 +173,9 @@ class CONTENT_EXPORT WebContentsAndroid
   jint GetThemeColor(JNIEnv* env,
                      const base::android::JavaParamRef<jobject>& obj);
 
+  jfloat GetLoadProgress(JNIEnv* env,
+                         const base::android::JavaParamRef<jobject>& obj);
+
   void RequestSmartClipExtract(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
@@ -166,7 +187,8 @@ class CONTENT_EXPORT WebContentsAndroid
 
   void RequestAccessibilitySnapshot(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& view_structure_root,
+      const base::android::JavaParamRef<jobject>& view_structure_builder,
       const base::android::JavaParamRef<jobject>& callback);
 
   base::android::ScopedJavaLocalRef<jstring> GetEncoding(
@@ -178,32 +200,18 @@ class CONTENT_EXPORT WebContentsAndroid
       const base::android::JavaParamRef<jobject>& obj,
       const base::android::JavaParamRef<jobject>& overscroll_refresh_handler);
 
-  // Relay the access from Java layer to RWHV::CopyFromSurface() through JNI.
-  void WriteContentBitmapToDisk(
+  void SetSpatialNavigationDisabled(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      jint width,
-      jint height,
-      const base::android::JavaParamRef<jstring>& jpath,
-      const base::android::JavaParamRef<jobject>& jcallback);
-
-  void ReloadLoFiImages(JNIEnv* env,
-                        const base::android::JavaParamRef<jobject>& obj);
+      bool disabled);
 
   int DownloadImage(JNIEnv* env,
                     const base::android::JavaParamRef<jobject>& obj,
-                    const base::android::JavaParamRef<jstring>& url,
+                    const base::android::JavaParamRef<jobject>& url,
                     jboolean is_fav_icon,
                     jint max_bitmap_size,
                     jboolean bypass_cache,
                     const base::android::JavaParamRef<jobject>& jcallback);
-  void DismissTextHandles(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& obj);
-  void ShowContextMenuAtTouchHandle(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      int x,
-      int y);
   void SetHasPersistentVideo(JNIEnv* env,
                              const base::android::JavaParamRef<jobject>& obj,
                              jboolean value);
@@ -250,15 +258,37 @@ class CONTENT_EXPORT WebContentsAndroid
                                 int left,
                                 int bottom,
                                 int right);
+  void NotifyRendererPreferenceUpdate(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
+  void NotifyBrowserControlsHeightChanged(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
+  base::android::ScopedJavaLocalRef<jobject> GetRenderWidgetHostView(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
+  base::android::ScopedJavaLocalRef<jobjectArray> GetInnerWebContents(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
+  jint GetVisibility(JNIEnv* env);
 
   RenderWidgetHostViewAndroid* GetRenderWidgetHostViewAndroid();
 
- private:
-  void OnFinishGetContentBitmap(const base::android::JavaRef<jobject>& obj,
-                                const base::android::JavaRef<jobject>& callback,
-                                const std::string& path,
-                                const SkBitmap& bitmap);
+  class DestructionObserver : public base::CheckedObserver {
+   public:
+    // Invoked when the Java reference to the WebContents is being destroyed.
+    virtual void WebContentsAndroidDestroyed(
+        WebContentsAndroid* web_contents_android) = 0;
+  };
 
+  void AddDestructionObserver(DestructionObserver* observer);
+  void RemoveDestructionObserver(DestructionObserver* observer);
+
+ private:
   void OnFinishDownloadImage(const base::android::JavaRef<jobject>& obj,
                              const base::android::JavaRef<jobject>& callback,
                              int id,
@@ -269,13 +299,21 @@ class CONTENT_EXPORT WebContentsAndroid
   void SelectWordAroundCaretAck(bool did_select,
                                 int start_adjust,
                                 int end_adjust);
+  // Walks over the AXTreeUpdate and creates a light weight snapshot.
+  void AXTreeSnapshotCallback(
+      const base::android::JavaRef<jobject>& view_structure_root,
+      const base::android::JavaRef<jobject>& view_structure_builder,
+      const base::android::JavaRef<jobject>& callback,
+      const ui::AXTreeUpdate& result);
 
   WebContentsImpl* web_contents_;
 
   NavigationControllerAndroid navigation_controller_;
   base::android::ScopedJavaGlobalRef<jobject> obj_;
 
-  base::WeakPtrFactory<WebContentsAndroid> weak_factory_;
+  base::ObserverList<DestructionObserver> destruction_observers_;
+
+  base::WeakPtrFactory<WebContentsAndroid> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WebContentsAndroid);
 };

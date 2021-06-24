@@ -6,7 +6,7 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/values.h"
 #include "chrome/common/pref_names.h"
 #include "components/policy/core/common/policy_map.h"
@@ -19,7 +19,7 @@ SecureOriginPolicyHandler::SecureOriginPolicyHandler(const char* policy_name,
                                                      Schema schema)
     : SchemaValidatingPolicyHandler(policy_name,
                                     schema.GetKnownProperty(policy_name),
-                                    SCHEMA_STRICT) {
+                                    SCHEMA_ALLOW_UNKNOWN) {
   DCHECK(policy_name == key::kUnsafelyTreatInsecureOriginAsSecure ||
          policy_name == key::kOverrideSecurityRestrictionsOnInsecureOrigin);
 }

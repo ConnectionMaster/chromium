@@ -5,10 +5,8 @@
 #ifndef SERVICES_DEVICE_GEOLOCATION_GEOLOCATION_IMPL_H_
 #define SERVICES_DEVICE_GEOLOCATION_GEOLOCATION_IMPL_H_
 
-#include <memory>
-
 #include "base/macros.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "services/device/geolocation/geolocation_provider_impl.h"
 #include "services/device/public/mojom/geolocation.mojom.h"
 
@@ -21,7 +19,7 @@ class GeolocationContext;
 class GeolocationImpl : public mojom::Geolocation {
  public:
   // |context| must outlive this object.
-  GeolocationImpl(mojo::InterfaceRequest<mojom::Geolocation> request,
+  GeolocationImpl(mojo::PendingReceiver<mojom::Geolocation> receiver,
                   GeolocationContext* context);
   ~GeolocationImpl() override;
 
@@ -47,13 +45,13 @@ class GeolocationImpl : public mojom::Geolocation {
   void ReportCurrentPosition();
 
   // The binding between this object and the other end of the pipe.
-  mojo::Binding<mojom::Geolocation> binding_;
+  mojo::Receiver<mojom::Geolocation> receiver_;
 
   // Owns this object.
   GeolocationContext* context_;
 
   // Token that unsubscribes from GeolocationProvider updates when destroyed.
-  std::unique_ptr<GeolocationProvider::Subscription> geolocation_subscription_;
+  base::CallbackListSubscription geolocation_subscription_;
 
   // The callback passed to QueryNextPosition.
   QueryNextPositionCallback position_callback_;

@@ -13,7 +13,10 @@
 #include "content/browser/background_fetch/background_fetch.pb.h"
 #include "content/browser/background_fetch/storage/database_task.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
-#include "url/origin.h"
+
+namespace blink {
+class StorageKey;
+}  // namespace blink
 
 namespace content {
 namespace background_fetch {
@@ -27,7 +30,7 @@ class GetMetadataTask : public DatabaseTask {
 
   GetMetadataTask(DatabaseTaskHost* host,
                   int64_t service_worker_registration_id,
-                  const url::Origin& origin,
+                  const blink::StorageKey& storage_key,
                   const std::string& developer_id,
                   GetMetadataCallback callback);
 
@@ -48,14 +51,14 @@ class GetMetadataTask : public DatabaseTask {
   void FinishWithError(blink::mojom::BackgroundFetchError error) override;
 
   int64_t service_worker_registration_id_;
-  url::Origin origin_;
+  blink::StorageKey storage_key_;
   std::string developer_id_;
 
   GetMetadataCallback callback_;
 
   std::unique_ptr<proto::BackgroundFetchMetadata> metadata_proto_;
 
-  base::WeakPtrFactory<GetMetadataTask> weak_factory_;  // Keep as last.
+  base::WeakPtrFactory<GetMetadataTask> weak_factory_{this};  // Keep as last.
 
   DISALLOW_COPY_AND_ASSIGN(GetMetadataTask);
 };

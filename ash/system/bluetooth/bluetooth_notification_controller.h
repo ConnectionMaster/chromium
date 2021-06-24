@@ -14,9 +14,12 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_device.h"
+
+namespace message_center {
+class MessageCenter;
+}  // namespace message_center
 
 namespace ash {
 
@@ -28,7 +31,8 @@ class ASH_EXPORT BluetoothNotificationController
     : public device::BluetoothAdapter::Observer,
       public device::BluetoothDevice::PairingDelegate {
  public:
-  BluetoothNotificationController();
+  explicit BluetoothNotificationController(
+      message_center::MessageCenter* message_center);
   ~BluetoothNotificationController() override;
 
   // device::BluetoothAdapter::Observer override.
@@ -54,6 +58,20 @@ class ASH_EXPORT BluetoothNotificationController
   void AuthorizePairing(device::BluetoothDevice* device) override;
 
  private:
+  friend class BluetoothNotificationControllerTest;
+  class BluetoothPairedNotificationDelegate;
+
+  static const char kBluetoothDeviceDiscoverableNotificationId[];
+  // Identifier for the pairing notification; the Bluetooth code ensures we
+  // only receive one pairing request at a time, so a single id is sufficient
+  // and means we "update" one notification if not handled rather than
+  // continually bugging the user.
+  static const char kBluetoothDevicePairingNotificationId[];
+
+  // Adds a prefix to the device's address to obtain an unique notification ID.
+  static std::string GetPairedNotificationId(
+      const device::BluetoothDevice* device);
+
   // Internal method called by BluetoothAdapterFactory to provide the adapter
   // object.
   void OnGetAdapter(scoped_refptr<device::BluetoothAdapter> adapter);
@@ -68,11 +86,13 @@ class ASH_EXPORT BluetoothNotificationController
   // the notification will have Accept and Reject buttons, if false only the
   // usual cancel/dismiss button will be present on the notification.
   void NotifyPairing(device::BluetoothDevice* device,
-                     const base::string16& message,
+                     const std::u16string& message,
                      bool with_buttons);
 
   // Clears any shown pairing notification now that the device has been paired.
   void NotifyPairedDevice(device::BluetoothDevice* device);
+
+  message_center::MessageCenter* const message_center_;
 
   // Reference to the underlying BluetoothAdapter object, holding this reference
   // ensures we stay around as the pairing delegate for that adapter.
@@ -84,7 +104,7 @@ class ASH_EXPORT BluetoothNotificationController
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<BluetoothNotificationController> weak_ptr_factory_;
+  base::WeakPtrFactory<BluetoothNotificationController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothNotificationController);
 };

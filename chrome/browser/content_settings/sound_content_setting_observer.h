@@ -5,15 +5,14 @@
 #ifndef CHROME_BROWSER_CONTENT_SETTINGS_SOUND_CONTENT_SETTING_OBSERVER_H_
 #define CHROME_BROWSER_CONTENT_SETTINGS_SOUND_CONTENT_SETTING_OBSERVER_H_
 
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/browser/content_settings_observer.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
-
-class HostContentSettingsMap;
 
 class SoundContentSettingObserver
     : public content::WebContentsObserver,
@@ -40,8 +39,9 @@ class SoundContentSettingObserver
   // content_settings::Observer implementation.
   void OnContentSettingChanged(const ContentSettingsPattern& primary_pattern,
                                const ContentSettingsPattern& secondary_pattern,
-                               ContentSettingsType content_type,
-                               const std::string& resource_identifier) override;
+                               ContentSettingsType content_type) override;
+
+  bool HasLoggedSiteMutedUkmForTesting() { return logged_site_muted_ukm_; }
 
  private:
   explicit SoundContentSettingObserver(content::WebContents* web_contents);
@@ -72,7 +72,8 @@ class SoundContentSettingObserver
 
   HostContentSettingsMap* host_content_settings_map_;
 
-  ScopedObserver<HostContentSettingsMap, content_settings::Observer> observer_;
+  base::ScopedObservation<HostContentSettingsMap, content_settings::Observer>
+      observation_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

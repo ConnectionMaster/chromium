@@ -6,14 +6,14 @@
 
 #include <memory>
 
-#include "components/signin/core/browser/account_info.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/signin/identity_manager_factory.h"
 #import "ios/chrome/browser/ui/authentication/cells/signin_promo_view_configurator.h"
 #import "ios/chrome/browser/ui/authentication/cells/signin_promo_view_consumer.h"
 #import "ios/chrome/browser/ui/authentication/signin_promo_view_mediator.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/objc/identity_manager_observer_bridge.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -22,8 +22,8 @@
 @interface BookmarkPromoController ()<SigninPromoViewConsumer,
                                       IdentityManagerObserverBridgeDelegate> {
   bool _isIncognito;
-  ios::ChromeBrowserState* _browserState;
-  std::unique_ptr<identity::IdentityManagerObserverBridge>
+  ChromeBrowserState* _browserState;
+  std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserverBridge;
 }
 
@@ -39,7 +39,7 @@
 @synthesize shouldShowSigninPromo = _shouldShowSigninPromo;
 @synthesize signinPromoViewMediator = _signinPromoViewMediator;
 
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState
+- (instancetype)initWithBrowserState:(ChromeBrowserState*)browserState
                             delegate:
                                 (id<BookmarkPromoControllerDelegate>)delegate
                            presenter:(id<SigninPresenter>)presenter {
@@ -52,7 +52,7 @@
     if (!_isIncognito) {
       _browserState = browserState;
       _identityManagerObserverBridge.reset(
-          new identity::IdentityManagerObserverBridge(
+          new signin::IdentityManagerObserverBridge(
               IdentityManagerFactory::GetForBrowserState(_browserState), self));
       _signinPromoViewMediator = [[SigninPromoViewMediator alloc]
           initWithBrowserState:_browserState
@@ -67,7 +67,14 @@
 }
 
 - (void)dealloc {
-  [_signinPromoViewMediator signinPromoViewRemoved];
+  [self shutdown];
+}
+
+- (void)shutdown {
+  [_signinPromoViewMediator signinPromoViewIsRemoved];
+  _signinPromoViewMediator = nil;
+
+  _identityManagerObserverBridge.reset();
 }
 
 - (void)hidePromoCell {
@@ -93,24 +100,30 @@
           shouldDisplaySigninPromoViewWithAccessPoint:
               signin_metrics::AccessPoint::ACCESS_POINT_BOOKMARK_MANAGER
                                          browserState:_browserState]) {
-    identity::IdentityManager* identityManager =
+    signin::IdentityManager* identityManager =
         IdentityManagerFactory::GetForBrowserState(_browserState);
-    self.shouldShowSigninPromo = !identityManager->HasPrimaryAccount();
+    self.shouldShowSigninPromo =
+        !identityManager->HasPrimaryAccount(signin::ConsentLevel::kSync);
   }
 }
 
 #pragma mark - IdentityManagerObserverBridgeDelegate
 
-// Called when a user signs into Google services such as sync.
-- (void)onPrimaryAccountSet:(const CoreAccountInfo&)primaryAccountInfo {
-  if (!self.signinPromoViewMediator.isSigninInProgress)
-    self.shouldShowSigninPromo = NO;
-}
-
-// Called when the currently signed-in user for a user has been signed out.
-- (void)onPrimaryAccountCleared:
-    (const CoreAccountInfo&)previousPrimaryAccountInfo {
-  [self updateShouldShowSigninPromo];
+// Called when a user changes the syncing state.
+- (void)onPrimaryAccountChanged:
+    (const signin::PrimaryAccountChangeEvent&)event {
+  switch (event.GetEventTypeFor(signin::ConsentLevel::kSync)) {
+    case signin::PrimaryAccountChangeEvent::Type::kSet:
+      if (!self.signinPromoViewMediator.signinInProgress) {
+        self.shouldShowSigninPromo = NO;
+      }
+      break;
+    case signin::PrimaryAccountChangeEvent::Type::kCleared:
+      [self updateShouldShowSigninPromo];
+      break;
+    case signin::PrimaryAccountChangeEvent::Type::kNone:
+      break;
+  }
 }
 
 #pragma mark - SigninPromoViewConsumer

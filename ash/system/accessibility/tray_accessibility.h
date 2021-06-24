@@ -9,9 +9,10 @@
 
 #include "ash/accessibility/accessibility_delegate.h"
 #include "ash/accessibility/accessibility_observer.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/system/tray/tray_detailed_view.h"
 #include "base/macros.h"
+#include "components/soda/soda_installer.h"
 #include "ui/gfx/font.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/view.h"
@@ -35,12 +36,19 @@ class TrayAccessibilityTest;
 namespace tray {
 
 // Create the detailed view of accessibility tray.
-class ASH_EXPORT AccessibilityDetailedView : public TrayDetailedView {
+class ASH_EXPORT AccessibilityDetailedView
+    : public TrayDetailedView,
+      public speech::SodaInstaller::Observer {
  public:
+  static constexpr char kClassName[] = "AccessibilityDetailedView";
+
   explicit AccessibilityDetailedView(DetailedViewDelegate* delegate);
-  ~AccessibilityDetailedView() override {}
+  ~AccessibilityDetailedView() override;
 
   void OnAccessibilityStatusChanged();
+
+  // views::View
+  const char* GetClassName() const override;
 
  private:
   friend class ::ash::TrayAccessibilityLoginScreenTest;
@@ -49,8 +57,6 @@ class ASH_EXPORT AccessibilityDetailedView : public TrayDetailedView {
 
   // TrayDetailedView:
   void HandleViewClicked(views::View* view) override;
-  void HandleButtonPressed(views::Button* sender,
-                           const ui::Event& event) override;
   void CreateExtraTitleRowButtons() override;
 
   // Launches the WebUI settings in a browser and closes the system menu.
@@ -61,6 +67,22 @@ class ASH_EXPORT AccessibilityDetailedView : public TrayDetailedView {
 
   // Add the accessibility feature list.
   void AppendAccessibilityList();
+
+  void UpdateSodaInstallerObserverStatus();
+
+  // SodaInstaller::Observer:
+  void OnSodaInstalled() override;
+  void OnSodaLanguagePackInstalled(
+      speech::LanguageCode language_code) override {}
+  void OnSodaError() override;
+  void OnSodaLanguagePackError(speech::LanguageCode language_code) override {}
+  void OnSodaProgress(int combined_progress) override;
+  void OnSodaLanguagePackProgress(int language_progress,
+                                  speech::LanguageCode language_code) override {
+  }
+
+  void SetDictationViewSubtitleTextForTesting(std::u16string text);
+  std::u16string GetDictationViewSubtitleTextForTesting();
 
   HoverHighlightView* spoken_feedback_view_ = nullptr;
   HoverHighlightView* select_to_speak_view_ = nullptr;

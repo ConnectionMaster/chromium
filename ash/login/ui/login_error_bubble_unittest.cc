@@ -15,44 +15,43 @@ using LoginErrorBubbleTest = LoginTestBase;
 
 TEST_F(LoginErrorBubbleTest, PersistentEventHandling) {
   auto* container = new views::View;
-  container->SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+  container->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical));
   SetWidget(CreateWidgetWithContent(container));
 
   auto* anchor_view = new views::View;
   container->AddChildView(anchor_view);
 
-  auto* label = new views::Label(base::UTF8ToUTF16("A message"),
-                                 views::style::CONTEXT_LABEL,
+  auto* label = new views::Label(u"A message", views::style::CONTEXT_LABEL,
                                  views::style::STYLE_PRIMARY);
 
-  auto* bubble = new LoginErrorBubble(label /*content*/, anchor_view,
-                                      true /*is_persistent*/);
+  auto* bubble = new LoginErrorBubble(label /*content*/, anchor_view);
+  bubble->set_persistent(true);
   container->AddChildView(bubble);
 
-  EXPECT_FALSE(bubble->visible());
+  EXPECT_FALSE(bubble->GetVisible());
 
   bubble->Show();
-  EXPECT_TRUE(bubble->visible());
+  EXPECT_TRUE(bubble->GetVisible());
 
   ui::test::EventGenerator* generator = GetEventGenerator();
 
   generator->MoveMouseTo(anchor_view->GetBoundsInScreen().CenterPoint());
   generator->ClickLeftButton();
-  EXPECT_TRUE(bubble->visible());
+  EXPECT_TRUE(bubble->GetVisible());
 
   generator->MoveMouseTo(bubble->GetBoundsInScreen().CenterPoint());
   generator->ClickLeftButton();
-  EXPECT_TRUE(bubble->visible());
+  EXPECT_TRUE(bubble->GetVisible());
 
   generator->GestureTapAt(anchor_view->GetBoundsInScreen().CenterPoint());
-  EXPECT_TRUE(bubble->visible());
+  EXPECT_TRUE(bubble->GetVisible());
 
   generator->GestureTapAt(bubble->GetBoundsInScreen().CenterPoint());
-  EXPECT_TRUE(bubble->visible());
+  EXPECT_TRUE(bubble->GetVisible());
 
   generator->PressKey(ui::KeyboardCode::VKEY_A, ui::EF_NONE);
-  EXPECT_TRUE(bubble->visible());
+  EXPECT_TRUE(bubble->GetVisible());
 }
 
 }  // namespace ash

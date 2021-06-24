@@ -9,32 +9,26 @@
 #include <queue>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/guid.h"
 #include "base/i18n/case_conversion.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor_factory.h"
 #include "chrome/browser/predictors/predictor_database.h"
 #include "chrome/browser/predictors/predictor_database_factory.h"
-#include "chrome/browser/prerender/prerender_field_trial.h"
-#include "chrome/browser/prerender/prerender_handle.h"
-#include "chrome/browser/prerender/prerender_manager.h"
-#include "chrome/browser/prerender/prerender_manager_factory.h"
+#include "chrome/browser/prefetch/no_state_prefetch/no_state_prefetch_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/in_memory_database.h"
+#include "components/no_state_prefetch/browser/no_state_prefetch_handle.h"
+#include "components/no_state_prefetch/browser/no_state_prefetch_manager.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/omnibox_log.h"
 #include "components/omnibox/browser/omnibox_popup_model.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
 
 namespace {
 
@@ -72,10 +66,9 @@ const size_t AutocompleteActionPredictor::kMaximumStringLength = 1024;
 
 AutocompleteActionPredictor::AutocompleteActionPredictor(Profile* profile)
     : profile_(profile),
-      main_profile_predictor_(NULL),
-      incognito_predictor_(NULL),
-      initialized_(false),
-      history_service_observer_(this) {
+      main_profile_predictor_(nullptr),
+      incognito_predictor_(nullptr),
+      initialized_(false) {
   if (profile_->IsOffTheRecord()) {
     main_profile_predictor_ = AutocompleteActionPredictorFactory::GetForProfile(
         profile_->GetOriginalProfile());
@@ -95,32 +88,38 @@ AutocompleteActionPredictor::AutocompleteActionPredictor(Profile* profile)
     table_ =
         PredictorDatabaseFactory::GetForProfile(profile_)->autocomplete_table();
 
-    // Observe all main frame loads so we can wait for the first to complete
-    // before accessing DB sequence of the AutocompleteActionPredictorTable and
-    // IO thread to build the local cache.
-    notification_registrar_.Add(this,
-                                content::NOTIFICATION_LOAD_COMPLETED_MAIN_FRAME,
-                                content::NotificationService::AllSources());
+    // Create local caches using the database as loaded. We will garbage collect
+    // rows from the caches and the database once the history service is
+    // available.
+    auto rows =
+        std::make_unique<std::vector<AutocompleteActionPredictorTable::Row>>();
+    auto* rows_ptr = rows.get();
+    table_->GetTaskRunner()->PostTaskAndReply(
+        FROM_HERE,
+        base::BindOnce(&AutocompleteActionPredictorTable::GetAllRows, table_,
+                       rows_ptr),
+        base::BindOnce(&AutocompleteActionPredictor::CreateCaches, AsWeakPtr(),
+                       std::move(rows)));
   }
 }
 
 AutocompleteActionPredictor::~AutocompleteActionPredictor() {
   if (main_profile_predictor_)
-    main_profile_predictor_->incognito_predictor_ = NULL;
+    main_profile_predictor_->incognito_predictor_ = nullptr;
   else if (incognito_predictor_)
-    incognito_predictor_->main_profile_predictor_ = NULL;
-  if (prerender_handle_.get())
-    prerender_handle_->OnCancel();
+    incognito_predictor_->main_profile_predictor_ = nullptr;
+  if (no_state_prefetch_handle_.get())
+    no_state_prefetch_handle_->OnCancel();
 }
 
 void AutocompleteActionPredictor::RegisterTransitionalMatches(
-    const base::string16& user_text,
+    const std::u16string& user_text,
     const AutocompleteResult& result) {
   if (user_text.length() < kMinimumUserTextLength ||
       user_text.length() > kMaximumStringLength) {
     return;
   }
-  const base::string16 lower_user_text(base::i18n::ToLower(user_text));
+  const std::u16string lower_user_text(base::i18n::ToLower(user_text));
 
   // Merge this in to an existing match if we already saw |user_text|
   auto match_it = std::find(transitional_matches_.begin(),
@@ -139,8 +138,7 @@ void AutocompleteActionPredictor::RegisterTransitionalMatches(
   for (const auto& match : result) {
     const GURL& url = match.destination_url;
     const size_t size = url.spec().size();
-    if (!base::ContainsValue(match_it->urls, url) &&
-        size <= kMaximumStringLength &&
+    if (!base::Contains(match_it->urls, url) && size <= kMaximumStringLength &&
         transitional_matches_size_ + size <= kMaximumTransitionalMatchesSize) {
       match_it->urls.push_back(url);
       transitional_matches_size_ += size;
@@ -154,11 +152,11 @@ void AutocompleteActionPredictor::ClearTransitionalMatches() {
 }
 
 void AutocompleteActionPredictor::CancelPrerender() {
-  // If the prerender has already been abandoned, leave it to its own timeout;
+  // If the prefetch has already been abandoned, leave it to its own timeout;
   // this normally gets called immediately after OnOmniboxOpenedUrl.
-  if (prerender_handle_ && !prerender_handle_->IsAbandoned()) {
-    prerender_handle_->OnCancel();
-    prerender_handle_.reset();
+  if (no_state_prefetch_handle_ && !no_state_prefetch_handle_->IsAbandoned()) {
+    no_state_prefetch_handle_->OnCancel();
+    no_state_prefetch_handle_.reset();
   }
 }
 
@@ -166,24 +164,25 @@ void AutocompleteActionPredictor::StartPrerendering(
     const GURL& url,
     content::SessionStorageNamespace* session_storage_namespace,
     const gfx::Size& size) {
-  // Only cancel the old prerender after starting the new one, so if the URLs
-  // are the same, the underlying prerender will be reused.
-  std::unique_ptr<prerender::PrerenderHandle> old_prerender_handle =
-      std::move(prerender_handle_);
-  prerender::PrerenderManager* prerender_manager =
-      prerender::PrerenderManagerFactory::GetForBrowserContext(profile_);
-  if (prerender_manager) {
-    prerender_handle_ = prerender_manager->AddPrerenderFromOmnibox(
-        url, session_storage_namespace, size);
+  // Only cancel the old prefetch after starting the new one, so if the URLs
+  // are the same, the underlying prefetcher will be reused.
+  std::unique_ptr<prerender::NoStatePrefetchHandle>
+      old_no_state_prefetch_handle = std::move(no_state_prefetch_handle_);
+  prerender::NoStatePrefetchManager* no_state_prefetch_manager =
+      prerender::NoStatePrefetchManagerFactory::GetForBrowserContext(profile_);
+  if (no_state_prefetch_manager) {
+    no_state_prefetch_handle_ =
+        no_state_prefetch_manager->AddPrerenderFromOmnibox(
+            url, session_storage_namespace, size);
   }
-  if (old_prerender_handle)
-    old_prerender_handle->OnCancel();
+  if (old_no_state_prefetch_handle)
+    old_no_state_prefetch_handle->OnCancel();
 }
 
 AutocompleteActionPredictor::Action
-    AutocompleteActionPredictor::RecommendAction(
-        const base::string16& user_text,
-        const AutocompleteMatch& match) const {
+AutocompleteActionPredictor::RecommendAction(
+    const std::u16string& user_text,
+    const AutocompleteMatch& match) const {
   bool is_in_db = false;
   const double confidence = CalculateConfidence(user_text, match, &is_in_db);
   DCHECK(confidence >= 0.0 && confidence <= 1.0);
@@ -207,13 +206,9 @@ AutocompleteActionPredictor::Action
     }
   }
 
-  // Downgrade prerender to preconnect if this is a search match or if
-  // nostate-prefetch is disabled.
-  if (action == ACTION_PRERENDER &&
-      (AutocompleteMatch::IsSearchType(match.type) ||
-       !prerender::IsNoStatePrefetchEnabled())) {
+  // Downgrade prefetch to preconnect if this is a search match.
+  if (action == ACTION_PRERENDER && AutocompleteMatch::IsSearchType(match.type))
     action = ACTION_PRECONNECT;
-  }
 
   return action;
 }
@@ -225,7 +220,7 @@ bool AutocompleteActionPredictor::IsPreconnectable(
 }
 
 bool AutocompleteActionPredictor::IsPrerenderAbandonedForTesting() {
-  return prerender_handle_ && prerender_handle_->IsAbandoned();
+  return no_state_prefetch_handle_ && no_state_prefetch_handle_->IsAbandoned();
 }
 
 void AutocompleteActionPredictor::OnOmniboxOpenedUrl(const OmniboxLog& log) {
@@ -250,20 +245,17 @@ void AutocompleteActionPredictor::OnOmniboxOpenedUrl(const OmniboxLog& log) {
   if (!log.is_popup_open || log.is_paste_and_go)
     return;
 
-  // Abandon the current prerender. If it is to be used, it will be used very
+  // Abandon the current prefetch. If it is to be used, it will be used very
   // soon, so use the lower timeout.
-  if (prerender_handle_) {
-    prerender_handle_->OnNavigateAway();
-    // Don't release |prerender_handle_| so it is canceled if it survives to the
-    // next StartPrerendering call.
+  if (no_state_prefetch_handle_) {
+    no_state_prefetch_handle_->OnNavigateAway();
+    // Don't release |no_state_prefetch_handle_| so it is canceled if it
+    // survives to the next StartPrerendering call.
   }
-
-  UMA_HISTOGRAM_BOOLEAN("Prerender.OmniboxNavigationsCouldPrerender",
-                        prerender::IsNoStatePrefetchEnabled());
 
   const AutocompleteMatch& match = log.result.match_at(log.selected_index);
   const GURL& opened_url = match.destination_url;
-  const base::string16 lower_user_text(base::i18n::ToLower(log.text));
+  const std::u16string lower_user_text(base::i18n::ToLower(log.text));
 
   // Traverse transitional matches for those that have a user_text that is a
   // prefix of |lower_user_text|.
@@ -331,32 +323,6 @@ void AutocompleteActionPredictor::OnOmniboxOpenedUrl(const OmniboxLog& log) {
     }
   }
   tracked_urls_.clear();
-}
-
-void AutocompleteActionPredictor::Observe(
-    int type,
-    const content::NotificationSource& source,
-    const content::NotificationDetails& details) {
-  DCHECK_EQ(content::NOTIFICATION_LOAD_COMPLETED_MAIN_FRAME, type);
-  CreateLocalCachesFromDatabase();
-  notification_registrar_.Remove(
-      this, content::NOTIFICATION_LOAD_COMPLETED_MAIN_FRAME,
-      content::NotificationService::AllSources());
-}
-
-void AutocompleteActionPredictor::CreateLocalCachesFromDatabase() {
-  // Create local caches using the database as loaded. We will garbage collect
-  // rows from the caches and the database once the history service is
-  // available.
-  auto rows =
-      std::make_unique<std::vector<AutocompleteActionPredictorTable::Row>>();
-  auto* rows_ptr = rows.get();
-  table_->GetTaskRunner()->PostTaskAndReply(
-      FROM_HERE,
-      base::BindOnce(&AutocompleteActionPredictorTable::GetAllRows, table_,
-                     rows_ptr),
-      base::BindOnce(&AutocompleteActionPredictor::CreateCaches, AsWeakPtr(),
-                     std::move(rows)));
 }
 
 void AutocompleteActionPredictor::DeleteAllRows() {
@@ -457,7 +423,7 @@ void AutocompleteActionPredictor::CreateCaches(
                                            ServiceAccessType::EXPLICIT_ACCESS);
   if (history_service) {
     TryDeleteOldEntries(history_service);
-    history_service_observer_.Add(history_service);
+    history_service_observation_.Observe(history_service);
   }
 }
 
@@ -593,7 +559,7 @@ void AutocompleteActionPredictor::FinishInitialization() {
 }
 
 double AutocompleteActionPredictor::CalculateConfidence(
-    const base::string16& user_text,
+    const std::u16string& user_text,
     const AutocompleteMatch& match,
     bool* is_in_db) const {
   const DBCacheKey key = { user_text, match.destination_url };
@@ -621,7 +587,7 @@ double AutocompleteActionPredictor::CalculateConfidenceForDbEntry(
 }
 
 void AutocompleteActionPredictor::Shutdown() {
-  history_service_observer_.RemoveAll();
+  history_service_observation_.Reset();
 }
 
 void AutocompleteActionPredictor::OnURLsDeleted(
@@ -663,7 +629,7 @@ AutocompleteActionPredictor::TransitionalMatch::TransitionalMatch() {
 }
 
 AutocompleteActionPredictor::TransitionalMatch::TransitionalMatch(
-    const base::string16 in_user_text)
+    const std::u16string in_user_text)
     : user_text(in_user_text) {}
 
 AutocompleteActionPredictor::TransitionalMatch::TransitionalMatch(

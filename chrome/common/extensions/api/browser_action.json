@@ -6,6 +6,9 @@
   {
     "namespace": "browserAction",
     "description": "Use browser actions to put icons in the main Google Chrome toolbar, to the right of the address bar. In addition to its <a href='browserAction#icon'>icon</a>, a browser action can have a <a href='browserAction#tooltip'>tooltip</a>, a <a href='browserAction#badge'>badge</a>, and a <a href='browserAction#popups'>popup</a>.",
+    "compiler_options": {
+      "implemented_in": "chrome/browser/extensions/api/extension_action/extension_action_api.h"
+    },
     "types": [
       {
         "id": "ColorArray",
@@ -24,6 +27,13 @@
         "isInstanceOf": "ImageData",
         "additionalProperties": { "type": "any" },
         "description": "Pixel data for an image. Must be an ImageData object; for example, from a <code>canvas</code> element."
+      },
+      {
+        "id": "TabDetails",
+        "type": "object",
+        "properties": {
+          "tabId": { "type": "integer", "optional": true, "minimum": 0, "description": "The ID of the tab to query state for. If no tab is specified, the non-tab-specific state is returned." }
+        }
       }
     ],
     "functions": [
@@ -46,9 +56,9 @@
                 "description": "Limits the change to when a particular tab is selected. Automatically resets when the tab is closed."
               }
             }
-          },
-          {"type": "function", "name": "callback", "parameters": [], "optional": true}
-        ]
+          }
+        ],
+        "returns_async": {"name": "callback", "parameters": [], "optional": true}
       },
       {
         "name": "getTitle",
@@ -57,26 +67,18 @@
         "parameters": [
           {
             "name": "details",
-            "type": "object",
-            "properties": {
-              "tabId": {
-                "type": "integer",
-                "optional": true,
-                "description": "The tab to get the title from. If no tab is specified, the default title is returned."
-              }
-            }
-          },
-          {
-            "type": "function",
-            "name": "callback",
-            "parameters": [
-              {
-                "name": "result",
-                "type": "string"
-              }
-            ]
+            "$ref": "TabDetails"
           }
-        ]
+        ],
+        "returns_async": {
+          "name": "callback",
+          "parameters": [
+            {
+              "name": "result",
+              "type": "string"
+            }
+          ]
+        }
       },
       {
         "name": "setIcon",
@@ -144,9 +146,9 @@
                 "description": "The HTML file to show in a popup. If set to the empty string (''), no popup is shown."
               }
             }
-          },
-          {"type": "function", "name": "callback", "parameters": [], "optional": true}
-        ]
+          }
+        ],
+        "returns_async": {"name": "callback", "parameters": [], "optional": true}
       },
       {
         "name": "getPopup",
@@ -155,26 +157,18 @@
         "parameters": [
           {
             "name": "details",
-            "type": "object",
-            "properties": {
-              "tabId": {
-                "type": "integer",
-                "optional": true,
-                "description": "The tab to get the popup from. If no tab is specified, the non-tab-specific popup is returned."
-              }
-            }
-          },
-          {
-            "type": "function",
-            "name": "callback",
-            "parameters": [
-              {
-                "name": "result",
-                "type": "string"
-              }
-            ]
+            "$ref": "TabDetails"
           }
-        ]
+        ],
+        "returns_async": {
+          "name": "callback",
+          "parameters": [
+            {
+              "name": "result",
+              "type": "string"
+            }
+          ]
+        }
       },
       {
         "name": "setBadgeText",
@@ -187,7 +181,8 @@
             "properties": {
               "text": {
                 "type": "string",
-                "description": "Any number of characters can be passed, but only about four can fit into the space."
+                "optional": true,
+                "description": "Any number of characters can be passed, but only about four can fit into the space. If an empty string (<code>''</code>) is passed, the badge text is cleared.  If <code>tabId</code> is specified and <code>text</code> is null, the text for the specified tab is cleared and defaults to the global badge text."
               },
               "tabId": {
                 "type": "integer",
@@ -195,9 +190,9 @@
                 "description": "Limits the change to when a particular tab is selected. Automatically resets when the tab is closed."
               }
             }
-          },
-          {"type": "function", "name": "callback", "parameters": [], "optional": true}
-        ]
+          }
+        ],
+        "returns_async": {"name": "callback", "parameters": [], "optional": true}
       },
       {
         "name": "getBadgeText",
@@ -206,26 +201,18 @@
         "parameters": [
           {
             "name": "details",
-            "type": "object",
-            "properties": {
-              "tabId": {
-                "type": "integer",
-                "optional": true,
-                "description": "The tab to get the badge text from. If no tab is specified, the non-tab-specific badge text is returned."
-              }
-            }
-          },
-          {
-            "type": "function",
-            "name": "callback",
-            "parameters": [
-              {
-                "name": "result",
-                "type": "string"
-              }
-            ]
+            "$ref": "TabDetails"
           }
-        ]
+        ],
+        "returns_async": {
+          "name": "callback",
+          "parameters": [
+            {
+              "name": "result",
+              "type": "string"
+            }
+          ]
+        }
       },
       {
         "name": "setBadgeBackgroundColor",
@@ -249,9 +236,9 @@
                 "description": "Limits the change to when a particular tab is selected. Automatically resets when the tab is closed."
               }
             }
-          },
-          {"type": "function", "name": "callback", "parameters": [], "optional": true}
-        ]
+          }
+        ],
+        "returns_async": {"name": "callback", "parameters": [], "optional": true}
       },
       {
         "name": "getBadgeBackgroundColor",
@@ -260,26 +247,18 @@
         "parameters": [
           {
             "name": "details",
-            "type": "object",
-            "properties": {
-              "tabId": {
-                "type": "integer",
-                "optional": true,
-                "description": "The tab to get the badge background color from. If no tab is specified, the non-tab-specific badge background color is returned."
-              }
-            }
-          },
-          {
-            "type": "function",
-            "name": "callback",
-            "parameters": [
-              {
-                "name": "result",
-                "$ref": "ColorArray"
-              }
-            ]
+            "$ref": "TabDetails"
           }
-        ]
+        ],
+        "returns_async": {
+          "name": "callback",
+          "parameters": [
+            {
+              "name": "result",
+              "$ref": "ColorArray"
+            }
+          ]
+        }
       },
       {
         "name": "enable",
@@ -292,9 +271,9 @@
             "name": "tabId",
             "minimum": 0,
             "description": "The ID of the tab for which to modify the browser action."
-          },
-          {"type": "function", "name": "callback", "parameters": [], "optional": true}
-        ]
+          }
+        ],
+        "returns_async": {"name": "callback", "parameters": [], "optional": true}
       },
       {
         "name": "disable",
@@ -307,9 +286,9 @@
             "name": "tabId",
             "minimum": 0,
             "description": "The ID of the tab for which to modify the browser action."
-          },
-          {"type": "function", "name": "callback", "parameters": [], "optional": true}
-        ]
+          }
+        ],
+        "returns_async": {"name": "callback", "parameters": [], "optional": true}
       },
       {
         "name": "openPopup",

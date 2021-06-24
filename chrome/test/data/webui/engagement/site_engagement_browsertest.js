@@ -5,13 +5,14 @@
 /**
  * @fileoverview Test suite for the Site Engagement WebUI.
  */
-var ROOT_PATH = '../../../../../';
 var EXAMPLE_URL_1 = 'http://example.com/';
 var EXAMPLE_URL_2 = 'http://shmlexample.com/';
 
-GEN('#include "chrome/browser/engagement/site_engagement_service.h"');
+GEN('#include "components/site_engagement/content/site_engagement_service.h"');
 GEN('#include "chrome/browser/engagement/site_engagement_service_factory.h"');
+GEN('#include "chrome/browser/profiles/profile.h"');
 GEN('#include "chrome/browser/ui/browser.h"');
+GEN('#include "content/public/test/browser_test.h"');
 
 function SiteEngagementBrowserTest() {}
 
@@ -20,28 +21,27 @@ SiteEngagementBrowserTest.prototype = {
 
   browsePreload: 'chrome://site-engagement',
 
-  runAccessibilityChecks: false,
-
   isAsync: true,
 
   testGenPreamble: function() {
-    GEN('SiteEngagementService* service =');
-    GEN('  SiteEngagementServiceFactory::GetForProfile(browser()->profile());');
+    GEN('site_engagement::SiteEngagementService* service =');
+    GEN('    site_engagement::SiteEngagementServiceFactory::GetForProfile(browser()->profile());');
     GEN('service->ResetBaseScoreForURL(GURL("' + EXAMPLE_URL_1 + '"), 10);');
     GEN('service->ResetBaseScoreForURL(GURL("' + EXAMPLE_URL_2 +
         '"), 3.14159);');
   },
 
   extraLibraries: [
-    ROOT_PATH + 'third_party/mocha/mocha.js',
-    ROOT_PATH + 'chrome/test/data/webui/mocha_adapter.js',
+    '//third_party/mocha/mocha.js',
+    '//chrome/test/data/webui/mocha_adapter.js',
   ],
 
   /** @override */
   setUp: function() {
     testing.Test.prototype.setUp.call(this);
-    suiteSetup(function() {
-      return whenPageIsPopulatedForTest().then(disableAutoupdateForTests);
+    suiteSetup(async function() {
+      await whenPageIsPopulatedForTest();
+      await disableAutoupdateForTests();
     });
   },
 };
@@ -68,7 +68,8 @@ TEST_F('SiteEngagementBrowserTest', 'All', function() {
     });
   }
 
-  setup(function() {
+  setup(async function() {
+    await import('chrome://test/mojo_webui_test_support.js');
     cells = getCells();
   });
 
@@ -84,15 +85,14 @@ TEST_F('SiteEngagementBrowserTest', 'All', function() {
         ['10', '3.14'], cells.map((x) => x.totalScore.textContent));
   });
 
-  test('change score', function() {
+  test('change score', async function() {
     var firstRow = cells[0];
     firstRow.scoreInput.value = 50;
     firstRow.scoreInput.dispatchEvent(new Event('change'));
 
-    return uiHandler.getSiteEngagementDetails().then((response) => {
-      assertEquals(firstRow.origin.textContent, response.info[0].origin.url);
-      assertEquals(50, response.info[0].baseScore);
-    });
+    let {info} = await engagementDetailsProvider.getSiteEngagementDetails();
+    assertEquals(firstRow.origin.textContent, info[0].origin.url);
+    assertEquals(50, info[0].baseScore);
   });
   mocha.run();
 });

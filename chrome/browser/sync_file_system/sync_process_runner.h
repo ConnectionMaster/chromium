@@ -61,7 +61,7 @@ class SyncProcessRunner {
     virtual bool IsRunning() = 0;
     virtual void Start(const base::Location& from_here,
                        const base::TimeDelta& delay,
-                       const base::Closure& closure) = 0;
+                       base::OnceClosure closure) = 0;
     virtual base::TimeTicks Now() const = 0;
 
    protected:
@@ -75,7 +75,7 @@ class SyncProcessRunner {
   virtual ~SyncProcessRunner();
 
   // Subclass must implement this.
-  virtual void StartSync(const SyncStatusCallback& callback) = 0;
+  virtual void StartSync(SyncStatusCallback callback) = 0;
 
   // Schedules a new sync.
   void Schedule();
@@ -118,7 +118,7 @@ class SyncProcessRunner {
   base::TimeTicks throttle_until_;
 
   int64_t pending_changes_;
-  base::WeakPtrFactory<SyncProcessRunner> factory_;
+  base::WeakPtrFactory<SyncProcessRunner> factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SyncProcessRunner);
 };

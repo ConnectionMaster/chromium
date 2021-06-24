@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/css/css_markup.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/parser/css_property_parser.h"
+#include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -85,9 +86,11 @@ double CSSParserToken::NumericValue() const {
   return numeric_value_;
 }
 
-CSSPropertyID CSSParserToken::ParseAsUnresolvedCSSPropertyID() const {
+CSSPropertyID CSSParserToken::ParseAsUnresolvedCSSPropertyID(
+    const ExecutionContext* execution_context,
+    CSSParserMode mode) const {
   DCHECK_EQ(type_, static_cast<unsigned>(kIdentToken));
-  return UnresolvedCSSPropertyID(Value());
+  return UnresolvedCSSPropertyID(execution_context, Value(), mode);
 }
 
 AtRuleDescriptorID CSSParserToken::ParseAsAtRuleDescriptorID() const {

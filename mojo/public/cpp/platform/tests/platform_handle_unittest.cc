@@ -3,12 +3,12 @@
 // found in the LICENSE file.
 
 #include "mojo/public/cpp/platform/platform_handle.h"
+#include "base/check.h"
 #include "base/files/file.h"
 #include "base/files/platform_file.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/unsafe_shared_memory_region.h"
+#include "base/notreached.h"
 #include "base/rand_util.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
@@ -16,7 +16,7 @@
 #include "mojo/public/cpp/system/platform_handle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
 #include <mach/mach_vm.h>
 #endif
 
@@ -39,7 +39,7 @@ enum class HandleType {
 #if defined(OS_POSIX) || defined(OS_FUCHSIA)
   kFileDescriptor,
 #endif
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
   kMachPort,
 #endif
 };
@@ -59,6 +59,8 @@ class PlatformHandleTest : public testing::Test,
                            public testing::WithParamInterface<HandleType> {
  public:
   PlatformHandleTest() = default;
+  PlatformHandleTest(const PlatformHandleTest&) = delete;
+  PlatformHandleTest& operator=(const PlatformHandleTest&) = delete;
 
   void SetUp() override {
     test_type_ = TestType::kFile;
@@ -66,14 +68,14 @@ class PlatformHandleTest : public testing::Test,
 #if defined(OS_FUCHSIA)
     if (GetParam() == HandleType::kHandle)
       test_type_ = TestType::kSharedMemory;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
     if (GetParam() == HandleType::kMachPort)
       test_type_ = TestType::kSharedMemory;
 #endif
 
     if (test_type_ == TestType::kFile)
       test_handle_ = SetUpFile();
-#if defined(OS_FUCHSIA) || (defined(OS_MACOSX) && !defined(OS_IOS))
+#if defined(OS_FUCHSIA) || defined(OS_MAC)
     else
       test_handle_ = SetUpSharedMemory();
 #endif
@@ -85,12 +87,12 @@ class PlatformHandleTest : public testing::Test,
   std::string GetObjectContents(PlatformHandle& handle) {
     if (test_type_ == TestType::kFile)
       return GetFileContents(handle);
-#if defined(OS_FUCHSIA) || (defined(OS_MACOSX) && !defined(OS_IOS))
-    else
-      return GetSharedMemoryContents(handle);
-#endif
+#if defined(OS_FUCHSIA) || defined(OS_MAC)
+    return GetSharedMemoryContents(handle);
+#else
     NOTREACHED();
     return std::string();
+#endif
   }
 
  protected:
@@ -123,9 +125,10 @@ class PlatformHandleTest : public testing::Test,
 #if defined(OS_WIN)
     // We must temporarily release ownership of the handle due to how File
     // interacts with ScopedHandle.
-    base::File file(handle.TakeHandle().Take());
+    base::File file(handle.TakeHandle());
 #else
-    base::File file(handle.GetFD().get());
+    // Do the same as Windows for consistency, even though it is not necessary.
+    base::File file(handle.TakeFD());
 #endif
     std::vector<char> buffer(kTestData.size());
     file.Read(0, buffer.data(), static_cast<int>(buffer.size()));
@@ -135,13 +138,13 @@ class PlatformHandleTest : public testing::Test,
 #if defined(OS_WIN)
     handle = PlatformHandle(base::win::ScopedHandle(file.TakePlatformFile()));
 #else
-    ignore_result(file.TakePlatformFile());
+    handle = PlatformHandle(base::ScopedFD(file.TakePlatformFile()));
 #endif
 
     return contents;
   }
 
-#if defined(OS_FUCHSIA) || (defined(OS_MACOSX) && !defined(OS_IOS))
+#if defined(OS_FUCHSIA) || defined(OS_MAC)
   // Creates a shared memory region with some test data in it. Leaves the
   // handle open and returns it as a generic PlatformHandle.
   PlatformHandle SetUpSharedMemory() {
@@ -163,8 +166,8 @@ class PlatformHandleTest : public testing::Test,
         region_handle(
 #if defined(OS_FUCHSIA)
             handle.GetHandle().get()
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-            handle.GetMachPort().get()
+#elif defined(OS_MAC)
+            handle.GetMachSendRight().get()
 #endif
                 );
     auto generic_region = base::subtle::PlatformSharedMemoryRegion::Take(
@@ -185,7 +188,7 @@ class PlatformHandleTest : public testing::Test,
 
     return contents;
   }
-#endif  // defined(OS_FUCHSIA) || (defined(OS_MACOSX) && !defined(OS_IOS))
+#endif  // defined(OS_FUCHSIA) || defined(OS_MAC)
 
   base::ScopedTempDir temp_dir_;
   TestType test_type_;
@@ -194,8 +197,6 @@ class PlatformHandleTest : public testing::Test,
   // Needed to reconstitute a base::PlatformSharedMemoryRegion from an unwrapped
   // PlatformHandle.
   base::UnguessableToken shm_guid_;
-
-  DISALLOW_COPY_AND_ASSIGN(PlatformHandleTest);
 };
 
 TEST_P(PlatformHandleTest, BasicConstruction) {
@@ -244,14 +245,14 @@ TEST_P(PlatformHandleTest, CStructConversion) {
   EXPECT_EQ(kTestData, GetObjectContents(handle));
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          PlatformHandleTest,
 #if defined(OS_WIN)
                          testing::Values(HandleType::kHandle)
 #elif defined(OS_FUCHSIA)
                          testing::Values(HandleType::kHandle,
                                          HandleType::kFileDescriptor)
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
                          testing::Values(HandleType::kFileDescriptor,
                                          HandleType::kMachPort)
 #elif defined(OS_POSIX)

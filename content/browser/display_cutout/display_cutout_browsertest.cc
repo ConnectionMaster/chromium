@@ -5,15 +5,18 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/browser/display_cutout/display_cutout_constants.h"
-#include "content/browser/frame_host/frame_tree_node.h"
+#include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -22,9 +25,11 @@
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/page/display_cutout.mojom.h"
 
 namespace content {
@@ -77,27 +82,26 @@ class TestWebContentsObserver : public WebContentsObserver {
 
  private:
   base::RunLoop run_loop_;
-  base::Optional<blink::mojom::ViewportFit> value_;
+  absl::optional<blink::mojom::ViewportFit> value_;
   blink::mojom::ViewportFit wanted_value_ = blink::mojom::ViewportFit::kAuto;
 
   DISALLOW_COPY_AND_ASSIGN(TestWebContentsObserver);
 };
 
-// Used for forcing a specific |blink::WebDisplayMode| during a test.
+// Used for forcing a specific |blink::mojom::DisplayMode| during a test.
 class DisplayCutoutWebContentsDelegate : public WebContentsDelegate {
  public:
-  blink::WebDisplayMode GetDisplayMode(
-      const WebContents* web_contents) const override {
+  blink::mojom::DisplayMode GetDisplayMode(
+      const WebContents* web_contents) override {
     return display_mode_;
   }
 
-  void SetDisplayMode(blink::WebDisplayMode display_mode) {
+  void SetDisplayMode(blink::mojom::DisplayMode display_mode) {
     display_mode_ = display_mode;
   }
 
  private:
-  blink::WebDisplayMode display_mode_ =
-      blink::WebDisplayMode::kWebDisplayModeBrowser;
+  blink::mojom::DisplayMode display_mode_ = blink::mojom::DisplayMode::kBrowser;
 };
 
 const char kTestHTML[] =
@@ -119,7 +123,7 @@ class DisplayCutoutBrowserTest : public ContentBrowserTest {
   DisplayCutoutBrowserTest() = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitchASCII("enable-blink-features",
+    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
                                     "DisplayCutoutAPI");
   }
 
@@ -152,33 +156,27 @@ class DisplayCutoutBrowserTest : public ContentBrowserTest {
     web_contents_impl()->Focus();
   }
 
-  bool ClearViewportFitTag() {
-    return ExecuteScript(
-        web_contents_impl(),
-        "document.getElementsByTagName('meta')[0].content = ''");
+  void ClearViewportFitTag() {
+    ASSERT_TRUE(
+        ExecJs(web_contents_impl(),
+               "document.getElementsByTagName('meta')[0].content = ''"));
   }
 
   void SendSafeAreaToFrame(int top, int left, int bottom, int right) {
-    blink::mojom::DisplayCutoutClientAssociatedPtr client;
-    MainFrame()->GetRemoteAssociatedInterfaces()->GetInterface(&client);
+    mojo::AssociatedRemote<blink::mojom::DisplayCutoutClient> client;
+    MainFrame()->GetRemoteAssociatedInterfaces()->GetInterface(
+        client.BindNewEndpointAndPassReceiver());
     client->SetSafeArea(
         blink::mojom::DisplayCutoutSafeArea::New(top, left, bottom, right));
   }
 
   std::string GetCurrentSafeAreaValue(const std::string& name) {
-    std::string value;
-    EXPECT_TRUE(ExecuteScriptAndExtractString(
-        MainFrame(),
-        "(() => {"
-        "const e = document.getElementById('target');"
-        "const style = window.getComputedStyle(e, null);"
-        "window.domAutomationController.send("
-        "  style.getPropertyValue('margin-" +
-            name +
-            "'));"
-            "})();",
-        &value));
-    return value;
+    return EvalJs(MainFrame(),
+                  "const e = document.getElementById('target');"
+                  "const style = window.getComputedStyle(e, null);"
+                  "style.getPropertyValue('margin-" +
+                      name + "');")
+        .ExtractString();
   }
 
   void LoadTestPageWithData(const std::string& data) {
@@ -189,8 +187,7 @@ class DisplayCutoutBrowserTest : public ContentBrowserTest {
         base::StringPrintf("test_file_%d.html", s_test_file_number++));
     {
       base::ScopedAllowBlockingForTesting allow_temp_file_writing;
-      ASSERT_EQ(static_cast<int>(data.length()),
-                base::WriteFile(file_path, data.c_str(), data.length()));
+      ASSERT_TRUE(base::WriteFile(file_path, data));
     }
     GURL url = embedded_test_server()->GetURL(
         "/" + file_path.BaseName().AsUTF8Unsafe());
@@ -200,18 +197,21 @@ class DisplayCutoutBrowserTest : public ContentBrowserTest {
     ASSERT_TRUE(NavigateToURL(shell(), url));
   }
 
-  void SimulateFullscreenStateChanged(RenderFrameHost* frame,
+  void SimulateFullscreenStateChanged(RenderFrameHostImpl* frame,
                                       bool is_fullscreen) {
-    web_contents_impl()->FullscreenStateChanged(frame, is_fullscreen);
+    web_contents_impl()->FullscreenStateChanged(
+        frame, is_fullscreen, blink::mojom::FullscreenOptions::New());
   }
 
   void SimulateFullscreenExit() {
     web_contents_impl()->ExitFullscreenMode(true);
   }
 
-  RenderFrameHost* MainFrame() { return web_contents_impl()->GetMainFrame(); }
+  RenderFrameHostImpl* MainFrame() {
+    return web_contents_impl()->GetMainFrame();
+  }
 
-  RenderFrameHost* ChildFrame() {
+  RenderFrameHostImpl* ChildFrame() {
     FrameTreeNode* root = web_contents_impl()->GetFrameTree()->root();
     return root->child_at(0)->current_frame_host();
   }
@@ -306,7 +306,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest, ViewportFit_Fullscreen) {
   // Get the source id for the page and close the |shell|. This will flush any
   // unrecorded UKM metrics.
   ukm::SourceId source_id =
-      web_contents_impl()->GetUkmSourceIdForLastCommittedSource();
+      web_contents_impl()->GetMainFrame()->GetPageUkmSourceId();
   shell()->Close();
 
   // Check UKM metrics are recorded. The first two entries are from loading the
@@ -353,7 +353,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest,
 
   {
     TestWebContentsObserver observer(web_contents_impl());
-    EXPECT_TRUE(ClearViewportFitTag());
+    ClearViewportFitTag();
     observer.WaitForWantedValue(blink::mojom::ViewportFit::kAuto);
     web_contents_impl()->SetDisplayCutoutSafeArea(kNoCutoutInsets);
   }
@@ -361,7 +361,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest,
   // Get the source id for the page and close the |shell|. This will flush any
   // unrecorded UKM metrics.
   ukm::SourceId source_id =
-      web_contents_impl()->GetUkmSourceIdForLastCommittedSource();
+      web_contents_impl()->GetMainFrame()->GetPageUkmSourceId();
   shell()->Close();
 
   // Check UKM metrics are recorded.
@@ -384,7 +384,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest, ViewportFit_Noop_Navigate) {
   }
 
   ukm::SourceId source_id =
-      web_contents_impl()->GetUkmSourceIdForLastCommittedSource();
+      web_contents_impl()->GetMainFrame()->GetPageUkmSourceId();
   LoadTestPageWithData("");
 
   // Check UKM metrics are recorded.
@@ -404,7 +404,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest,
   }
 
   ukm::SourceId source_id =
-      web_contents_impl()->GetUkmSourceIdForLastCommittedSource();
+      web_contents_impl()->GetMainFrame()->GetPageUkmSourceId();
   shell()->Close();
 
   // Check UKM metrics are recorded.
@@ -433,7 +433,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest, WebDisplayMode_Fullscreen) {
   // Inject the custom delegate used for this test.
   std::unique_ptr<DisplayCutoutWebContentsDelegate> delegate(
       new DisplayCutoutWebContentsDelegate());
-  delegate->SetDisplayMode(blink::WebDisplayMode::kWebDisplayModeFullscreen);
+  delegate->SetDisplayMode(blink::mojom::DisplayMode::kFullscreen);
   web_contents_impl()->SetDelegate(delegate.get());
   EXPECT_EQ(delegate.get(), web_contents_impl()->GetDelegate());
 
@@ -448,7 +448,7 @@ IN_PROC_BROWSER_TEST_F(DisplayCutoutBrowserTest, WebDisplayMode_Standalone) {
   // Inject the custom delegate used for this test.
   std::unique_ptr<DisplayCutoutWebContentsDelegate> delegate(
       new DisplayCutoutWebContentsDelegate());
-  delegate->SetDisplayMode(blink::WebDisplayMode::kWebDisplayModeStandalone);
+  delegate->SetDisplayMode(blink::mojom::DisplayMode::kStandalone);
   web_contents_impl()->SetDelegate(delegate.get());
   EXPECT_EQ(delegate.get(), web_contents_impl()->GetDelegate());
 

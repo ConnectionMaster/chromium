@@ -17,7 +17,6 @@
 #include "chrome/browser/extensions/webstore_install_helper.h"
 #include "chrome/browser/extensions/webstore_installer.h"
 #include "chrome/common/extensions/webstore_install_result.h"
-#include "net/url_request/url_fetcher_delegate.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
 namespace base {
@@ -26,6 +25,7 @@ class DictionaryValue;
 
 namespace extensions {
 class Extension;
+class ScopedActiveInstall;
 class WebstoreDataFetcher;
 
 // A a purely abstract base for concrete classes implementing various types of
@@ -164,12 +164,14 @@ class WebstoreStandaloneInstaller
   // informs our delegate of success/failure.
 
   // WebstoreDataFetcherDelegate interface implementation.
-  void OnWebstoreRequestFailure() override;
+  void OnWebstoreRequestFailure(const std::string& extension_id) override;
 
   void OnWebstoreResponseParseSuccess(
+      const std::string& extension_id,
       std::unique_ptr<base::DictionaryValue> webstore_data) override;
 
-  void OnWebstoreResponseParseFailure(const std::string& error) override;
+  void OnWebstoreResponseParseFailure(const std::string& extension_id,
+                                      const std::string& error) override;
 
   // WebstoreInstallHelper::Delegate interface implementation.
   void OnWebstoreParseSuccess(

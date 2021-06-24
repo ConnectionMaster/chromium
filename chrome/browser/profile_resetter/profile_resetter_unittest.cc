@@ -13,11 +13,11 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/scoped_path_override.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -31,6 +31,7 @@
 #include "chrome/browser/profile_resetter/resettable_settings_snapshot.h"
 #include "chrome/browser/search/instant_service.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/themes/test/theme_service_changed_waiter.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -44,13 +45,14 @@
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_constants.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
@@ -66,6 +68,7 @@
 #include "base/win/shortcut.h"
 #endif
 
+using extensions::mojom::ManifestLocation;
 
 namespace {
 
@@ -155,7 +158,7 @@ void ProfileResetterTest::SetUp() {
   profile()->CreateWebDataService();
   TemplateURLServiceFactory::GetInstance()->SetTestingFactory(
       profile(), base::BindRepeating(&CreateTemplateURLServiceForTesting));
-  resetter_.reset(new ProfileResetter(profile()));
+  resetter_ = std::make_unique<ProfileResetter>(profile());
 }
 
 // PinnedTabsResetTest --------------------------------------------------------
@@ -170,7 +173,7 @@ class PinnedTabsResetTest : public BrowserWithTestWindowTest,
 
 void PinnedTabsResetTest::SetUp() {
   BrowserWithTestWindowTest::SetUp();
-  resetter_.reset(new ProfileResetter(profile()));
+  resetter_ = std::make_unique<ProfileResetter>(profile());
 }
 
 std::unique_ptr<content::WebContents> PinnedTabsResetTest::CreateWebContents() {
@@ -193,21 +196,15 @@ class ConfigParserTest : public testing::Test {
   }
 
  private:
-  std::unique_ptr<network::SimpleURLLoader> CreateFakeURLLoader(
-      const GURL& url,
-      const std::string& response_data,
-      net::HttpStatusCode response_code,
-      net::URLRequestStatus::Status status);
-
   MOCK_METHOD0(Callback, void(void));
 
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
+  data_decoder::test::InProcessDataDecoder data_decoder_;
 };
 
 ConfigParserTest::ConfigParserTest()
-    : test_browser_thread_bundle_(
-          content::TestBrowserThreadBundle::IO_MAINLOOP) {}
+    : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP) {}
 
 ConfigParserTest::~ConfigParserTest() {}
 
@@ -221,7 +218,7 @@ std::unique_ptr<BrandcodeConfigFetcher> ConfigParserTest::WaitForRequest(
       }));
   std::unique_ptr<BrandcodeConfigFetcher> fetcher(new BrandcodeConfigFetcher(
       &test_url_loader_factory_,
-      base::Bind(&ConfigParserTest::Callback, base::Unretained(this)), url,
+      base::BindOnce(&ConfigParserTest::Callback, base::Unretained(this)), url,
       "ABCD"));
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(fetcher->IsActive());
@@ -237,10 +234,12 @@ class ShortcutHandler {
   ~ShortcutHandler();
 
   static bool IsSupported();
-  ShortcutCommand CreateWithArguments(const base::string16& name,
-                                      const base::string16& args);
-  void CheckShortcutHasArguments(const base::string16& desired_args) const;
+  ShortcutCommand CreateWithArguments(const std::wstring& name,
+                                      const std::wstring& args);
+  void CheckShortcutHasArguments(const std::wstring& desired_args) const;
   void Delete();
+  void HideFile();
+  bool IsFileHidden() const;
 
  private:
 #if defined(OS_WIN)
@@ -263,9 +262,8 @@ bool ShortcutHandler::IsSupported() {
   return true;
 }
 
-ShortcutCommand ShortcutHandler::CreateWithArguments(
-    const base::string16& name,
-    const base::string16& args) {
+ShortcutCommand ShortcutHandler::CreateWithArguments(const std::wstring& name,
+                                                     const std::wstring& args) {
   EXPECT_TRUE(shortcut_path_.empty());
   base::FilePath path_to_create;
   EXPECT_TRUE(base::PathService::Get(base::DIR_USER_DESKTOP, &path_to_create));
@@ -285,18 +283,32 @@ ShortcutCommand ShortcutHandler::CreateWithArguments(
 }
 
 void ShortcutHandler::CheckShortcutHasArguments(
-    const base::string16& desired_args) const {
+    const std::wstring& desired_args) const {
   EXPECT_FALSE(shortcut_path_.empty());
-  base::string16 args;
+  std::wstring args;
   EXPECT_TRUE(base::win::ResolveShortcut(shortcut_path_, NULL, &args));
   EXPECT_EQ(desired_args, args);
 }
 
 void ShortcutHandler::Delete() {
   EXPECT_FALSE(shortcut_path_.empty());
-  EXPECT_TRUE(base::DeleteFile(shortcut_path_, false));
+  EXPECT_TRUE(base::DeleteFile(shortcut_path_));
   shortcut_path_.clear();
 }
+
+void ShortcutHandler::HideFile() {
+  DWORD attributes = ::GetFileAttributes(shortcut_path_.value().c_str());
+  ASSERT_NE(attributes, INVALID_FILE_ATTRIBUTES);
+  ASSERT_TRUE(::SetFileAttributes(shortcut_path_.value().c_str(),
+                                  attributes | FILE_ATTRIBUTE_HIDDEN));
+}
+
+bool ShortcutHandler::IsFileHidden() const {
+  DWORD attributes = ::GetFileAttributes(shortcut_path_.value().c_str());
+  EXPECT_NE(attributes, INVALID_FILE_ATTRIBUTES);
+  return attributes & FILE_ATTRIBUTE_HIDDEN;
+}
+
 #else
 ShortcutHandler::ShortcutHandler() {}
 
@@ -307,17 +319,21 @@ bool ShortcutHandler::IsSupported() {
   return false;
 }
 
-ShortcutCommand ShortcutHandler::CreateWithArguments(
-    const base::string16& name,
-    const base::string16& args) {
+ShortcutCommand ShortcutHandler::CreateWithArguments(const std::wstring& name,
+                                                     const std::wstring& args) {
   return ShortcutCommand();
 }
 
 void ShortcutHandler::CheckShortcutHasArguments(
-    const base::string16& desired_args) const {
-}
+    const std::wstring& desired_args) const {}
 
 void ShortcutHandler::Delete() {
+}
+
+void ShortcutHandler::HideFile() {}
+
+bool ShortcutHandler::IsFileHidden() const {
+  return false;
 }
 #endif  // defined(OS_WIN)
 
@@ -332,9 +348,9 @@ class MockInstantService : public InstantService {
 
 // helper functions -----------------------------------------------------------
 
-scoped_refptr<Extension> CreateExtension(const base::string16& name,
+scoped_refptr<Extension> CreateExtension(const std::u16string& name,
                                          const base::FilePath& path,
-                                         Manifest::Location location,
+                                         ManifestLocation location,
                                          extensions::Manifest::Type type,
                                          bool installed_by_default) {
   base::DictionaryValue manifest;
@@ -395,8 +411,8 @@ TEST_F(ProfileResetterTest, ResetDefaultSearchEngineNonOrganic) {
       TemplateURLServiceFactory::GetForProfile(profile());
   const TemplateURL* default_engine = model->GetDefaultSearchProvider();
   ASSERT_NE(static_cast<TemplateURL*>(NULL), default_engine);
-  EXPECT_EQ(base::ASCIIToUTF16("first"), default_engine->short_name());
-  EXPECT_EQ(base::ASCIIToUTF16("firstkey"), default_engine->keyword());
+  EXPECT_EQ(u"first", default_engine->short_name());
+  EXPECT_EQ(u"firstkey", default_engine->keyword());
   EXPECT_EQ("http://www.foo.com/s?q={searchTerms}", default_engine->url());
 }
 
@@ -456,8 +472,8 @@ TEST_F(ProfileResetterTest, ResetContentSettings) {
       content_settings::ContentSettingsRegistry::GetInstance();
   for (const content_settings::ContentSettingsInfo* info : *registry) {
     ContentSettingsType content_type = info->website_settings_info()->type();
-    if (content_type == CONTENT_SETTINGS_TYPE_MIXEDSCRIPT ||
-        content_type == CONTENT_SETTINGS_TYPE_PROTOCOL_HANDLERS) {
+    if (content_type == ContentSettingsType::MIXEDSCRIPT ||
+        content_type == ContentSettingsType::PROTOCOL_HANDLERS) {
       // These types are excluded because one can't call
       // GetDefaultContentSetting() for them.
       continue;
@@ -477,10 +493,10 @@ TEST_F(ProfileResetterTest, ResetContentSettings) {
     }
     if (info->IsSettingValid(site_setting)) {
       host_content_settings_map->SetContentSettingDefaultScope(
-          url, url, content_type, std::string(), site_setting);
+          url, url, content_type, site_setting);
       ContentSettingsForOneType host_settings;
-      host_content_settings_map->GetSettingsForOneType(
-          content_type, std::string(), &host_settings);
+      host_content_settings_map->GetSettingsForOneType(content_type,
+                                                       &host_settings);
       EXPECT_EQ(2U, host_settings.size());
     }
   }
@@ -489,8 +505,8 @@ TEST_F(ProfileResetterTest, ResetContentSettings) {
 
   for (const content_settings::ContentSettingsInfo* info : *registry) {
     ContentSettingsType content_type = info->website_settings_info()->type();
-    if (content_type == CONTENT_SETTINGS_TYPE_MIXEDSCRIPT ||
-        content_type == CONTENT_SETTINGS_TYPE_PROTOCOL_HANDLERS)
+    if (content_type == ContentSettingsType::MIXEDSCRIPT ||
+        content_type == ContentSettingsType::PROTOCOL_HANDLERS)
       continue;
     ContentSetting default_setting =
         host_content_settings_map->GetDefaultContentSetting(content_type,
@@ -498,12 +514,12 @@ TEST_F(ProfileResetterTest, ResetContentSettings) {
     EXPECT_TRUE(default_settings.count(content_type));
     EXPECT_EQ(default_settings[content_type], default_setting);
     ContentSetting site_setting = host_content_settings_map->GetContentSetting(
-        GURL("example.org"), GURL(), content_type, std::string());
+        GURL("example.org"), GURL(), content_type);
     EXPECT_EQ(default_setting, site_setting);
 
     ContentSettingsForOneType host_settings;
-    host_content_settings_map->GetSettingsForOneType(
-        content_type, std::string(), &host_settings);
+    host_content_settings_map->GetSettingsForOneType(content_type,
+                                                     &host_settings);
     EXPECT_EQ(1U, host_settings.size());
   }
 }
@@ -514,49 +530,40 @@ TEST_F(ProfileResetterTest, ResetExtensionsByDisabling) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
+  ThemeService* theme_service = ThemeServiceFactory::GetForProfile(profile());
+  test::ThemeServiceChangedWaiter waiter(theme_service);
+
   scoped_refptr<Extension> theme = CreateExtension(
-      base::ASCIIToUTF16("example1"), temp_dir.GetPath(), Manifest::UNPACKED,
+      u"example1", temp_dir.GetPath(), ManifestLocation::kUnpacked,
       extensions::Manifest::TYPE_THEME, false);
   service_->FinishInstallationForTest(theme.get());
-  // Let ThemeService finish creating the theme pack.
-  base::RunLoop().RunUntilIdle();
+  waiter.WaitForThemeChanged();
 
-  ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(profile());
   EXPECT_FALSE(theme_service->UsingDefaultTheme());
 
   scoped_refptr<Extension> ext2 = CreateExtension(
-      base::ASCIIToUTF16("example2"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"example2", base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext2.get());
   // Component extensions and policy-managed extensions shouldn't be disabled.
   scoped_refptr<Extension> ext3 = CreateExtension(
-      base::ASCIIToUTF16("example3"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent2")),
-      Manifest::COMPONENT,
-      extensions::Manifest::TYPE_EXTENSION,
+      u"example3", base::FilePath(FILE_PATH_LITERAL("//nonexistent2")),
+      ManifestLocation::kComponent, extensions::Manifest::TYPE_EXTENSION,
       false);
   service_->AddExtension(ext3.get());
-  scoped_refptr<Extension> ext4 =
-      CreateExtension(base::ASCIIToUTF16("example4"),
-                      base::FilePath(FILE_PATH_LITERAL("//nonexistent3")),
-                      Manifest::EXTERNAL_POLICY_DOWNLOAD,
-                      extensions::Manifest::TYPE_EXTENSION,
-                      false);
+  scoped_refptr<Extension> ext4 = CreateExtension(
+      u"example4", base::FilePath(FILE_PATH_LITERAL("//nonexistent3")),
+      ManifestLocation::kExternalPolicyDownload,
+      extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext4.get());
   scoped_refptr<Extension> ext5 = CreateExtension(
-      base::ASCIIToUTF16("example5"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent4")),
-      Manifest::EXTERNAL_COMPONENT,
-      extensions::Manifest::TYPE_EXTENSION,
-      false);
+      u"example5", base::FilePath(FILE_PATH_LITERAL("//nonexistent4")),
+      ManifestLocation::kExternalComponent,
+      extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext5.get());
   scoped_refptr<Extension> ext6 = CreateExtension(
-      base::ASCIIToUTF16("example6"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent5")),
-      Manifest::EXTERNAL_POLICY,
-      extensions::Manifest::TYPE_EXTENSION,
+      u"example6", base::FilePath(FILE_PATH_LITERAL("//nonexistent5")),
+      ManifestLocation::kExternalPolicy, extensions::Manifest::TYPE_EXTENSION,
       false);
   service_->AddExtension(ext6.get());
   EXPECT_EQ(6u, registry()->enabled_extensions().size());
@@ -574,15 +581,13 @@ TEST_F(ProfileResetterTest, ResetExtensionsByDisabling) {
 
 TEST_F(ProfileResetterTest, ResetExtensionsByDisablingNonOrganic) {
   scoped_refptr<Extension> ext2 = CreateExtension(
-      base::ASCIIToUTF16("example2"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"example2", base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext2.get());
   // Components and external policy extensions shouldn't be deleted.
   scoped_refptr<Extension> ext3 = CreateExtension(
-      base::ASCIIToUTF16("example3"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent2")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"example3", base::FilePath(FILE_PATH_LITERAL("//nonexistent2")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext3.get());
   EXPECT_EQ(2u, registry()->enabled_extensions().size());
 
@@ -601,27 +606,25 @@ TEST_F(ProfileResetterTest, ResetExtensionsAndDefaultApps) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
+  ThemeService* theme_service = ThemeServiceFactory::GetForProfile(profile());
+  test::ThemeServiceChangedWaiter waiter(theme_service);
+
   scoped_refptr<Extension> ext1 = CreateExtension(
-      base::ASCIIToUTF16("example1"), temp_dir.GetPath(), Manifest::UNPACKED,
+      u"example1", temp_dir.GetPath(), ManifestLocation::kUnpacked,
       extensions::Manifest::TYPE_THEME, false);
   service_->FinishInstallationForTest(ext1.get());
-  // Let ThemeService finish creating the theme pack.
-  base::RunLoop().RunUntilIdle();
+  waiter.WaitForThemeChanged();
 
-  ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(profile());
   EXPECT_FALSE(theme_service->UsingDefaultTheme());
 
   scoped_refptr<Extension> ext2 = CreateExtension(
-      base::ASCIIToUTF16("example2"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent2")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"example2", base::FilePath(FILE_PATH_LITERAL("//nonexistent2")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext2.get());
 
   scoped_refptr<Extension> ext3 = CreateExtension(
-      base::ASCIIToUTF16("example2"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent3")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_HOSTED_APP, true);
+      u"example2", base::FilePath(FILE_PATH_LITERAL("//nonexistent3")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_HOSTED_APP, true);
   service_->AddExtension(ext3.get());
   EXPECT_EQ(3u, registry()->enabled_extensions().size());
 
@@ -640,11 +643,10 @@ TEST_F(ProfileResetterTest, ResetExtensionsByReenablingExternalComponents) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
-  scoped_refptr<Extension> ext =
-      CreateExtension(base::ASCIIToUTF16("example"),
-                      base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
-                      Manifest::EXTERNAL_COMPONENT,
-                      extensions::Manifest::TYPE_EXTENSION, false);
+  scoped_refptr<Extension> ext = CreateExtension(
+      u"example", base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
+      ManifestLocation::kExternalComponent,
+      extensions::Manifest::TYPE_EXTENSION, false);
   service_->AddExtension(ext.get());
 
   service_->DisableExtension(ext->id(),
@@ -727,15 +729,17 @@ TEST_F(PinnedTabsResetTest, ResetPinnedTabs) {
 TEST_F(ProfileResetterTest, ResetShortcuts) {
   ShortcutHandler shortcut;
   ShortcutCommand command_line = shortcut.CreateWithArguments(
-      base::ASCIIToUTF16("chrome.lnk"),
-      base::ASCIIToUTF16("--profile-directory=Default foo.com"));
-  shortcut.CheckShortcutHasArguments(base::ASCIIToUTF16(
-      "--profile-directory=Default foo.com"));
+      L"chrome.lnk", L"--profile-directory=Default foo.com");
+  shortcut.HideFile();
+  shortcut.CheckShortcutHasArguments(L"--profile-directory=Default foo.com");
+#if defined(OS_WIN)
+  ASSERT_TRUE(shortcut.IsFileHidden());
+#endif
 
   ResetAndWait(ProfileResetter::SHORTCUTS);
 
-  shortcut.CheckShortcutHasArguments(base::ASCIIToUTF16(
-      "--profile-directory=Default"));
+  shortcut.CheckShortcutHasArguments(L"--profile-directory=Default");
+  EXPECT_FALSE(shortcut.IsFileHidden());
 }
 
 TEST_F(ProfileResetterTest, ResetFewFlags) {
@@ -749,7 +753,7 @@ TEST_F(ProfileResetterTest, ResetFewFlags) {
 TEST_F(ConfigParserTest, NoConnectivity) {
   const GURL url("http://test");
   test_url_loader_factory().AddResponse(
-      url, network::ResourceResponseHead(), "",
+      url, network::mojom::URLResponseHead::New(), "",
       network::URLLoaderCompletionStatus(net::HTTP_INTERNAL_SERVER_ERROR));
 
   std::unique_ptr<BrandcodeConfigFetcher> fetcher = WaitForRequest(GURL(url));
@@ -764,14 +768,15 @@ TEST_F(ConfigParserTest, ParseConfig) {
   ReplaceString(&xml_config,
                 "placeholder_for_id",
                 "abbaabbaabbaabbaabbaabbaabbaabba");
-  network::ResourceResponseHead head;
+  auto head = network::mojom::URLResponseHead::New();
   std::string headers("HTTP/1.1 200 OK\nContent-type: text/xml\n\n");
-  head.headers = base::MakeRefCounted<net::HttpResponseHeaders>(
-      net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.size()));
-  head.mime_type = "text/xml";
+  head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+      net::HttpUtil::AssembleRawHeaders(headers));
+  head->mime_type = "text/xml";
   network::URLLoaderCompletionStatus status;
   status.decoded_body_length = xml_config.size();
-  test_url_loader_factory().AddResponse(url, head, xml_config, status);
+  test_url_loader_factory().AddResponse(url, std::move(head), xml_config,
+                                        status);
 
   std::unique_ptr<BrandcodeConfigFetcher> fetcher = WaitForRequest(GURL(url));
   std::unique_ptr<BrandcodedDefaultSettings> settings = fetcher->GetSettings();
@@ -790,9 +795,9 @@ TEST_F(ConfigParserTest, ParseConfig) {
       settings->GetUrlsToRestoreOnStartup());
   EXPECT_TRUE(startup_list);
   std::vector<std::string> startup_pages;
-  for (auto i = startup_list->begin(); i != startup_list->end(); ++i) {
+  for (const auto& entry : startup_list->GetList()) {
     std::string url;
-    EXPECT_TRUE(i->GetAsString(&url));
+    EXPECT_TRUE(entry.GetAsString(&url));
     startup_pages.push_back(url);
   }
   ASSERT_EQ(2u, startup_pages.size());
@@ -805,9 +810,8 @@ TEST_F(ProfileResetterTest, CheckSnapshots) {
   EXPECT_EQ(0, empty_snap.FindDifferentFields(empty_snap));
 
   scoped_refptr<Extension> ext = CreateExtension(
-      base::ASCIIToUTF16("example"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"example", base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   ASSERT_TRUE(ext.get());
   service_->AddExtension(ext.get());
 
@@ -822,17 +826,15 @@ TEST_F(ProfileResetterTest, CheckSnapshots) {
                master_prefs);
   ShortcutHandler shortcut_hijacked;
   ShortcutCommand command_line = shortcut_hijacked.CreateWithArguments(
-      base::ASCIIToUTF16("chrome1.lnk"),
-      base::ASCIIToUTF16("--profile-directory=Default foo.com"));
+      L"chrome1.lnk", L"--profile-directory=Default foo.com");
   shortcut_hijacked.CheckShortcutHasArguments(
-      base::ASCIIToUTF16("--profile-directory=Default foo.com"));
+      L"--profile-directory=Default foo.com");
   ShortcutHandler shortcut_ok;
-  shortcut_ok.CreateWithArguments(
-      base::ASCIIToUTF16("chrome2.lnk"),
-      base::ASCIIToUTF16("--profile-directory=Default1"));
+  shortcut_ok.CreateWithArguments(L"chrome2.lnk",
+                                  L"--profile-directory=Default1");
 
   ResettableSettingsSnapshot nonorganic_snap(profile());
-  nonorganic_snap.RequestShortcuts(base::Closure());
+  nonorganic_snap.RequestShortcuts(base::OnceClosure());
   // Let it enumerate shortcuts on a blockable task runner.
   content::RunAllTasksUntilIdle();
   int diff_fields = ResettableSettingsSnapshot::ALL_FIELDS;
@@ -860,7 +862,7 @@ TEST_F(ProfileResetterTest, CheckSnapshots) {
                ProfileResetter::SHORTCUTS);
 
   ResettableSettingsSnapshot organic_snap(profile());
-  organic_snap.RequestShortcuts(base::Closure());
+  organic_snap.RequestShortcuts(base::OnceClosure());
   // Let it enumerate shortcuts on a blockable task runner.
   content::RunAllTasksUntilIdle();
   EXPECT_EQ(diff_fields, nonorganic_snap.FindDifferentFields(organic_snap));
@@ -892,19 +894,17 @@ TEST_F(ProfileResetterTest, FeedbackSerializationAsProtoTest) {
                kDistributionConfig);
 
   scoped_refptr<Extension> ext = CreateExtension(
-      base::ASCIIToUTF16("example"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"example", base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   ASSERT_TRUE(ext.get());
   service_->AddExtension(ext.get());
 
   ShortcutHandler shortcut;
   ShortcutCommand command_line = shortcut.CreateWithArguments(
-      base::ASCIIToUTF16("chrome.lnk"),
-      base::ASCIIToUTF16("--profile-directory=Default foo.com"));
+      L"chrome.lnk", L"--profile-directory=Default foo.com");
 
   ResettableSettingsSnapshot nonorganic_snap(profile());
-  nonorganic_snap.RequestShortcuts(base::Closure());
+  nonorganic_snap.RequestShortcuts(base::OnceClosure());
   // Let it enumerate shortcuts on a blockable task runner.
   content::RunAllTasksUntilIdle();
 
@@ -954,9 +954,8 @@ struct FeedbackCapture {
 // Make sure GetReadableFeedback handles non-ascii letters.
 TEST_F(ProfileResetterTest, GetReadableFeedback) {
   scoped_refptr<Extension> ext = CreateExtension(
-      base::WideToUTF16(L"Tiësto"),
-      base::FilePath(FILE_PATH_LITERAL("//nonexistent")), Manifest::UNPACKED,
-      extensions::Manifest::TYPE_EXTENSION, false);
+      u"Tiësto", base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
+      ManifestLocation::kUnpacked, extensions::Manifest::TYPE_EXTENSION, false);
   ASSERT_TRUE(ext.get());
   service_->AddExtension(ext.get());
 
@@ -974,15 +973,14 @@ TEST_F(ProfileResetterTest, GetReadableFeedback) {
 
   ShortcutHandler shortcut;
   ShortcutCommand command_line = shortcut.CreateWithArguments(
-      base::ASCIIToUTF16("chrome.lnk"),
-      base::ASCIIToUTF16("--profile-directory=Default foo.com"));
+      L"chrome.lnk", L"--profile-directory=Default foo.com");
 
   FeedbackCapture capture;
   EXPECT_CALL(capture, OnUpdatedList());
   ResettableSettingsSnapshot snapshot(profile());
-  snapshot.RequestShortcuts(base::Bind(&FeedbackCapture::SetFeedback,
-                                       base::Unretained(&capture), profile(),
-                                       std::cref(snapshot)));
+  snapshot.RequestShortcuts(base::BindOnce(&FeedbackCapture::SetFeedback,
+                                           base::Unretained(&capture),
+                                           profile(), std::cref(snapshot)));
   // Let it enumerate shortcuts on a blockable task runner.
   content::RunAllTasksUntilIdle();
   EXPECT_TRUE(snapshot.shortcuts_determined());
@@ -999,15 +997,14 @@ TEST_F(ProfileResetterTest, GetReadableFeedback) {
     std::string value;
     ASSERT_TRUE(dict->GetString("key", &value));
     if (value == "Extensions") {
-      base::string16 extensions;
+      std::u16string extensions;
       EXPECT_TRUE(dict->GetString("value", &extensions));
-      EXPECT_EQ(base::WideToUTF16(L"Tiësto"), extensions);
+      EXPECT_EQ(u"Tiësto", extensions);
       checked_extensions = true;
     } else if (value == "Shortcut targets") {
-      base::string16 targets;
+      std::u16string targets;
       EXPECT_TRUE(dict->GetString("value", &targets));
-      EXPECT_NE(base::string16::npos,
-                targets.find(base::ASCIIToUTF16("foo.com"))) << targets;
+      EXPECT_NE(std::u16string::npos, targets.find(u"foo.com")) << targets;
       checked_shortcuts = true;
     }
   }
@@ -1019,8 +1016,8 @@ TEST_F(ProfileResetterTest, DestroySnapshotFast) {
   FeedbackCapture capture;
   std::unique_ptr<ResettableSettingsSnapshot> deleted_snapshot(
       new ResettableSettingsSnapshot(profile()));
-  deleted_snapshot->RequestShortcuts(base::Bind(&FeedbackCapture::Fail,
-                                                base::Unretained(&capture)));
+  deleted_snapshot->RequestShortcuts(
+      base::BindOnce(&FeedbackCapture::Fail, base::Unretained(&capture)));
   deleted_snapshot.reset();
   // Running remaining tasks shouldn't trigger the callback to be called as
   // |deleted_snapshot| was deleted before it could run.

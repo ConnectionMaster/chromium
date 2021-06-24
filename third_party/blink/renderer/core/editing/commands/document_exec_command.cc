@@ -30,17 +30,18 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 
 #include "base/auto_reset.h"
+#include "base/metrics/histogram_functions.h"
 #include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
 #include "third_party/blink/renderer/core/editing/commands/editing_commands_utilities.h"
 #include "third_party/blink/renderer/core/editing/commands/editor_command.h"
 #include "third_party/blink/renderer/core/editing/editing_tri_state.h"
 #include "third_party/blink/renderer/core/editing/editor.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
-#include "third_party/blink/renderer/platform/histogram.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
@@ -80,9 +81,9 @@ bool Document::execCommand(const String& command_name,
     String message =
         "We don't execute document.execCommand() this time, because it is "
         "called recursively.";
-    AddConsoleMessage(
-        ConsoleMessage::Create(mojom::ConsoleMessageSource::kJavaScript,
-                               mojom::ConsoleMessageLevel::kWarning, message));
+    AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+        mojom::ConsoleMessageSource::kJavaScript,
+        mojom::ConsoleMessageLevel::kWarning, message));
     return false;
   }
   base::AutoReset<bool> execute_scope(&is_running_exec_command_, true);
@@ -93,9 +94,8 @@ bool Document::execCommand(const String& command_name,
   TidyUpHTMLStructure(*this);
   const EditorCommand editor_command = GetCommand(this, command_name);
 
-  DEFINE_STATIC_LOCAL(SparseHistogram, editor_command_histogram,
-                      ("WebCore.Document.execCommand"));
-  editor_command_histogram.Sample(editor_command.IdForHistogram());
+  base::UmaHistogramSparse("WebCore.Document.execCommand",
+                           editor_command.IdForHistogram());
   return editor_command.Execute(value);
 }
 

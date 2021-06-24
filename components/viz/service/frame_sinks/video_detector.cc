@@ -4,12 +4,17 @@
 
 #include "components/viz/service/frame_sinks/video_detector.h"
 
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "base/time/time.h"
 #include "components/viz/common/quads/compositor_frame.h"
 #include "components/viz/service/surfaces/surface.h"
 #include "components/viz/service/surfaces/surface_manager.h"
-#include "ui/gfx/geometry/dip_util.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 
 namespace viz {
 
@@ -37,8 +42,8 @@ class VideoDetector::ClientInfo {
     const CompositorFrame& frame = surface->GetActiveFrame();
 
     gfx::Rect damage =
-        gfx::ConvertRectToDIP(frame.device_scale_factor(),
-                              frame.render_pass_list.back()->damage_rect);
+        gfx::ScaleToEnclosingRect(frame.render_pass_list.back()->damage_rect,
+                                  1.f / frame.device_scale_factor());
 
     if (damage.width() < kMinDamageWidth || damage.height() < kMinDamageHeight)
       return false;
@@ -110,15 +115,18 @@ VideoDetector::~VideoDetector() {
 void VideoDetector::OnVideoActivityEnded() {
   DCHECK(video_is_playing_);
   video_is_playing_ = false;
-  observers_.ForAllPtrs([](mojom::VideoDetectorObserver* observer) {
+  for (auto& observer : observers_) {
     observer->OnVideoActivityEnded();
-  });
+  }
 }
 
-void VideoDetector::AddObserver(mojom::VideoDetectorObserverPtr observer) {
+void VideoDetector::AddObserver(
+    mojo::PendingRemote<mojom::VideoDetectorObserver> pending_observer) {
+  mojo::Remote<mojom::VideoDetectorObserver> observer(
+      std::move(pending_observer));
   if (video_is_playing_)
     observer->OnVideoActivityStarted();
-  observers_.AddPtr(std::move(observer));
+  observers_.Add(std::move(observer));
 }
 
 void VideoDetector::OnFrameSinkIdRegistered(const FrameSinkId& frame_sink_id) {
@@ -159,9 +167,9 @@ void VideoDetector::OnSurfaceWillBeDrawn(Surface* surface) {
                                 &VideoDetector::OnVideoActivityEnded);
     if (!video_is_playing_) {
       video_is_playing_ = true;
-      observers_.ForAllPtrs([](mojom::VideoDetectorObserver* observer) {
+      for (auto& observer : observers_) {
         observer->OnVideoActivityStarted();
-      });
+      }
     }
   }
 }

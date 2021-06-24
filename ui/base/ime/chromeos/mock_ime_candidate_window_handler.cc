@@ -11,9 +11,7 @@ MockIMECandidateWindowHandler::MockIMECandidateWindowHandler()
       update_lookup_table_call_count_(0) {
 }
 
-MockIMECandidateWindowHandler::~MockIMECandidateWindowHandler() {
-
-}
+MockIMECandidateWindowHandler::~MockIMECandidateWindowHandler() = default;
 
 void MockIMECandidateWindowHandler::UpdateLookupTable(
     const ui::CandidateWindow& table,
@@ -24,7 +22,7 @@ void MockIMECandidateWindowHandler::UpdateLookupTable(
 }
 
 void MockIMECandidateWindowHandler::UpdatePreeditText(
-    const base::string16& text,
+    const std::u16string& text,
     uint32_t cursor_pos,
     bool visible) {}
 

@@ -8,13 +8,16 @@
 
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/simple_test_clock.h"
+#include "base/test/task_environment.h"
 #include "base/timer/mock_timer.h"
 #include "chromeos/components/drivefs/fake_drivefs.h"
 #include "chromeos/components/drivefs/mojom/drivefs.mojom-test-utils.h"
 #include "chromeos/disks/mock_disk_mount_manager.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,9 +27,10 @@ namespace {
 constexpr char kExpectedMountDir[] = "drivefs-salt-g-ID";
 constexpr char kExpectedMountPath[] = "/media/drivefsroot/mountdir";
 constexpr char kExpectedDataDir[] = "/path/to/profile/GCache/v2/salt-g-ID";
+constexpr char kExpectedMyFilesDir[] = "/path/to/profile/MyFiles";
 
-static const base::Optional<base::TimeDelta> kEmptyDelay;
-static const base::Optional<base::TimeDelta> kDefaultDelay =
+static const absl::optional<base::TimeDelta> kEmptyDelay;
+static const absl::optional<base::TimeDelta> kDefaultDelay =
     base::TimeDelta::FromSeconds(5);
 
 using testing::_;
@@ -41,13 +45,16 @@ class DriveFsDiskMounterTest : public testing::Test {
     std::string source;
     EXPECT_CALL(
         disk_manager_,
-        MountPath(
-            testing::StartsWith("drivefs://"), "", kExpectedMountDir,
-            testing::Contains("datadir=/path/to/profile/GCache/v2/salt-g-ID"),
-            _, chromeos::MOUNT_ACCESS_MODE_READ_WRITE))
+        MountPath(testing::StartsWith("drivefs://"), "", kExpectedMountDir,
+                  testing::AllOf(
+                      testing::Contains(
+                          "datadir=/path/to/profile/GCache/v2/salt-g-ID"),
+                      testing::Contains("myfiles=/path/to/profile/MyFiles")),
+                  _, chromeos::MOUNT_ACCESS_MODE_READ_WRITE))
         .WillOnce(testing::SaveArg<0>(&source));
 
-    mounter->Mount(token, base::FilePath(kExpectedDataDir), kExpectedMountDir,
+    mounter->Mount(token, base::FilePath(kExpectedDataDir),
+                   base::FilePath(kExpectedMyFilesDir), kExpectedMountDir,
                    base::BindOnce(&DriveFsDiskMounterTest::OnCompleted,
                                   base::Unretained(this)));
     testing::Mock::VerifyAndClear(&disk_manager_);
@@ -62,77 +69,67 @@ class DriveFsDiskMounterTest : public testing::Test {
   }
 
   MOCK_METHOD1(OnCompleted, void(base::FilePath));
+
+  base::test::TaskEnvironment task_environment_;
   chromeos::disks::MockDiskMountManager disk_manager_;
 };
 
 TEST_F(DriveFsDiskMounterTest, MountUnmount) {
   auto mounter = DiskMounter::Create(&disk_manager_);
   auto token = StartMount(mounter.get());
-  EXPECT_CALL(*this, OnCompleted(base::FilePath(kExpectedMountPath)));
+  base::RunLoop run_loop;
+  EXPECT_CALL(*this, OnCompleted(base::FilePath(kExpectedMountPath)))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   DispatchMountEvent(chromeos::disks::DiskMountManager::MOUNTING,
                      chromeos::MOUNT_ERROR_NONE,
                      {base::StrCat({"drivefs://", token}),
                       kExpectedMountPath,
                       chromeos::MOUNT_TYPE_NETWORK_STORAGE,
                       {}});
-  EXPECT_CALL(disk_manager_, UnmountPath(kExpectedMountPath,
-                                         chromeos::UNMOUNT_OPTIONS_LAZY, _));
+  run_loop.Run();
+
+  EXPECT_CALL(disk_manager_, UnmountPath(kExpectedMountPath, _));
   mounter.reset();
 }
 
 TEST_F(DriveFsDiskMounterTest, DestroyAfterMounted) {
   auto mounter = DiskMounter::Create(&disk_manager_);
   auto token = StartMount(mounter.get());
-  EXPECT_CALL(*this, OnCompleted(base::FilePath(kExpectedMountPath)));
+  base::RunLoop run_loop;
+  EXPECT_CALL(*this, OnCompleted(base::FilePath(kExpectedMountPath)))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   DispatchMountEvent(chromeos::disks::DiskMountManager::MOUNTING,
                      chromeos::MOUNT_ERROR_NONE,
                      {base::StrCat({"drivefs://", token}),
                       kExpectedMountPath,
                       chromeos::MOUNT_TYPE_NETWORK_STORAGE,
                       {}});
-  EXPECT_CALL(disk_manager_, UnmountPath(kExpectedMountPath,
-                                         chromeos::UNMOUNT_OPTIONS_LAZY, _));
+  run_loop.Run();
+
+  EXPECT_CALL(disk_manager_, UnmountPath(kExpectedMountPath, _));
 }
 
 TEST_F(DriveFsDiskMounterTest, DestroyBeforeMounted) {
-  EXPECT_CALL(disk_manager_, UnmountPath(_, _, _)).Times(0);
+  EXPECT_CALL(disk_manager_, UnmountPath(_, _)).Times(0);
   auto mounter = DiskMounter::Create(&disk_manager_);
   StartMount(mounter.get());
 }
 
-TEST_F(DriveFsDiskMounterTest, ObserveOtherEvents) {
-  EXPECT_CALL(*this, OnCompleted(_)).Times(0);
-  EXPECT_CALL(disk_manager_, UnmountPath(_, _, _)).Times(0);
-
-  auto mounter = DiskMounter::Create(&disk_manager_);
-  auto token = StartMount(mounter.get());
-
-  DispatchMountEvent(chromeos::disks::DiskMountManager::MOUNTING,
-                     chromeos::MOUNT_ERROR_DIRECTORY_CREATION_FAILED,
-                     {"some/other/mount/event",
-                      "/some/other/mount/point",
-                      chromeos::MOUNT_TYPE_DEVICE,
-                      {}});
-  DispatchMountEvent(chromeos::disks::DiskMountManager::UNMOUNTING,
-                     chromeos::MOUNT_ERROR_NONE,
-                     {base::StrCat({"drivefs://", token}),
-                      kExpectedMountPath,
-                      chromeos::MOUNT_TYPE_NETWORK_STORAGE,
-                      {}});
-}
-
 TEST_F(DriveFsDiskMounterTest, MountError) {
-  EXPECT_CALL(disk_manager_, UnmountPath(_, _, _)).Times(0);
+  EXPECT_CALL(disk_manager_, UnmountPath(_, _)).Times(0);
 
   auto mounter = DiskMounter::Create(&disk_manager_);
   auto token = StartMount(mounter.get());
-  EXPECT_CALL(*this, OnCompleted(base::FilePath()));
+  base::RunLoop run_loop;
+  EXPECT_CALL(*this, OnCompleted(base::FilePath()))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   DispatchMountEvent(chromeos::disks::DiskMountManager::MOUNTING,
                      chromeos::MOUNT_ERROR_INVALID_MOUNT_OPTIONS,
                      {base::StrCat({"drivefs://", token}),
                       kExpectedMountPath,
                       chromeos::MOUNT_TYPE_NETWORK_STORAGE,
                       {}});
+  run_loop.Run();
 }
 
 // DiskMountManager sometimes sends mount events for all existing mount points.
@@ -140,7 +137,9 @@ TEST_F(DriveFsDiskMounterTest, MountError) {
 TEST_F(DriveFsDiskMounterTest, MultipleMountNotifications) {
   auto mounter = DiskMounter::Create(&disk_manager_);
   auto token = StartMount(mounter.get());
-  EXPECT_CALL(*this, OnCompleted(base::FilePath(kExpectedMountPath))).Times(1);
+  base::RunLoop run_loop;
+  EXPECT_CALL(*this, OnCompleted(base::FilePath(kExpectedMountPath)))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   DispatchMountEvent(chromeos::disks::DiskMountManager::MOUNTING,
                      chromeos::MOUNT_ERROR_NONE,
                      {base::StrCat({"drivefs://", token}),
@@ -159,6 +158,7 @@ TEST_F(DriveFsDiskMounterTest, MultipleMountNotifications) {
                       kExpectedMountPath,
                       chromeos::MOUNT_TYPE_NETWORK_STORAGE,
                       {}});
+  run_loop.Run();
 }
 
 class MockDiskMounter : public DiskMounter {
@@ -168,6 +168,7 @@ class MockDiskMounter : public DiskMounter {
 
   void Mount(const base::UnguessableToken& token,
              const base::FilePath& data_path,
+             const base::FilePath& my_files_path,
              const std::string& desired_mount_dir_name,
              base::OnceCallback<void(base::FilePath)> callback) override {
     callback_ = std::move(callback);
@@ -237,12 +238,14 @@ class DriveFsSessionForTest : public DriveFsSession {
                         std::unique_ptr<DiskMounter> disk_mounter,
                         std::unique_ptr<DriveFsConnection> connection,
                         const base::FilePath& data_path,
+                        const base::FilePath& my_files_path,
                         const std::string& desired_mount_dir_name,
                         MountObserver* observer)
       : DriveFsSession(timer,
                        std::move(disk_mounter),
                        std::move(connection),
                        data_path,
+                       my_files_path,
                        desired_mount_dir_name,
                        observer) {}
   ~DriveFsSessionForTest() override = default;
@@ -260,6 +263,13 @@ class DriveFsSessionForTest : public DriveFsSession {
   void OnTeamDriveChanged(
       const std::string& team_drive_id,
       mojom::DriveFsDelegate::CreateOrDelete change_type) override {}
+  void ConnectToExtension(
+      mojom::ExtensionConnectionParamsPtr params,
+      mojo::PendingReceiver<mojom::NativeMessagingPort> port,
+      mojo::PendingRemote<mojom::NativeMessagingHost> host,
+      ConnectToExtensionCallback callback) override {}
+  void DisplayConfirmDialog(mojom::DialogReasonPtr error,
+                            DisplayConfirmDialogCallback callback) override {}
   DISALLOW_COPY_AND_ASSIGN(DriveFsSessionForTest);
 };
 
@@ -270,10 +280,10 @@ class DriveFsSessionTest : public ::testing::Test,
 
  protected:
   MOCK_METHOD1(OnMounted, void(const base::FilePath& path));
-  MOCK_METHOD1(OnUnmounted, void(base::Optional<base::TimeDelta> delay));
+  MOCK_METHOD1(OnUnmounted, void(absl::optional<base::TimeDelta> delay));
   MOCK_METHOD2(OnMountFailed,
                void(MountFailure failure,
-                    base::Optional<base::TimeDelta> delay));
+                    absl::optional<base::TimeDelta> delay));
 
   void StartMounting() {
     DCHECK(!holder_);
@@ -291,7 +301,7 @@ class DriveFsSessionTest : public ::testing::Test,
                 OnMountCalled(_, data_path, kExpectedMountDir));
     session_ = std::make_unique<DriveFsSessionForTest>(
         &timer_, std::move(mounter), std::move(connection), data_path,
-        kExpectedMountDir, this);
+        base::FilePath(kExpectedMyFilesDir), kExpectedMountDir, this);
     holder_->delegate = session_.get();
     ASSERT_FALSE(session_->is_mounted());
   }
@@ -316,7 +326,7 @@ class DriveFsSessionTest : public ::testing::Test,
     holder_.reset();
   }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   struct PointerHolder {
     MockDiskMounter* mounter = nullptr;

@@ -4,32 +4,29 @@
 
 #include "third_party/blink/renderer/core/html/media/autoplay_uma_helper.h"
 
+#include "base/metrics/histogram_functions.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
-#include "third_party/blink/public/platform/interface_provider.h"
-#include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
 #include "third_party/blink/renderer/core/html/media/autoplay_policy.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_entry.h"
 #include "third_party/blink/renderer/core/page/page.h"
-#include "third_party/blink/renderer/platform/histogram.h"
+#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
 
 namespace blink {
 
 namespace {
 
-constexpr TimeDelta kMaxOffscreenDurationUma = TimeDelta::FromHours(1);
+constexpr base::TimeDelta kMaxOffscreenDurationUma =
+    base::TimeDelta::FromHours(1);
 constexpr int32_t kOffscreenDurationUmaBucketCount = 50;
-
-constexpr TimeDelta kMaxWaitTimeUma = TimeDelta::FromSeconds(30);
-constexpr int32_t kWaitTimeBucketCount = 50;
 
 // Returns a int64_t with the following structure:
 // 0b0001 set if there is a user gesture on the stack.
@@ -40,11 +37,11 @@ int64_t GetUserGestureStatusForUkmMetric(LocalFrame* frame) {
 
   int64_t result = 0;
 
-  if (LocalFrame::HasTransientUserActivation(frame, false))
+  if (LocalFrame::HasTransientUserActivation(frame))
     result |= 0x01;
-  if (frame->HasBeenActivated())
+  if (frame->HasStickyUserActivation())
     result |= 0x02;
-  if (frame->HasReceivedUserGestureBeforeNavigation())
+  if (frame->HadStickyUserActivationBeforeNavigation())
     result |= 0x04;
 
   return result;
@@ -53,119 +50,38 @@ int64_t GetUserGestureStatusForUkmMetric(LocalFrame* frame) {
 }  // namespace
 
 AutoplayUmaHelper::AutoplayUmaHelper(HTMLMediaElement* element)
-    : ContextLifecycleObserver(nullptr),
+    : ExecutionContextLifecycleObserver(
+          static_cast<ExecutionContext*>(nullptr)),
       element_(element),
       muted_video_play_method_intersection_observer_(nullptr),
       is_visible_(false),
-      muted_video_offscreen_duration_intersection_observer_(nullptr) {
-  element->addEventListener(event_type_names::kLoadstart, this, false);
-}
+      muted_video_offscreen_duration_intersection_observer_(nullptr) {}
 
 AutoplayUmaHelper::~AutoplayUmaHelper() = default;
 
-void AutoplayUmaHelper::OnLoadStarted() {
-  if (element_->GetLoadType() == WebMediaPlayer::kLoadTypeURL)
-    load_start_time_ = CurrentTimeTicks();
+static void RecordAutoplaySourceMetrics(HTMLMediaElement* element,
+                                        AutoplaySource source) {
+  if (IsA<HTMLVideoElement>(element)) {
+    base::UmaHistogramEnumeration("Media.Video.Autoplay", source);
+    return;
+  }
+  base::UmaHistogramEnumeration("Media.Audio.Autoplay", source);
 }
 
 void AutoplayUmaHelper::OnAutoplayInitiated(AutoplaySource source) {
-  base::Optional<TimeDelta> autoplay_wait_time;
-  if (!load_start_time_.is_null())
-    autoplay_wait_time = CurrentTimeTicks() - load_start_time_;
-  DEFINE_STATIC_LOCAL(EnumerationHistogram, video_histogram,
-                      ("Media.Video.Autoplay",
-                       static_cast<int>(AutoplaySource::kNumberOfUmaSources)));
-  DEFINE_STATIC_LOCAL(EnumerationHistogram, muted_video_histogram,
-                      ("Media.Video.Autoplay.Muted",
-                       static_cast<int>(AutoplaySource::kNumberOfUmaSources)));
-  DEFINE_STATIC_LOCAL(EnumerationHistogram, audio_histogram,
-                      ("Media.Audio.Autoplay",
-                       static_cast<int>(AutoplaySource::kNumberOfUmaSources)));
-  DEFINE_STATIC_LOCAL(
-      EnumerationHistogram, blocked_muted_video_histogram,
-      ("Media.Video.Autoplay.Muted.Blocked", kAutoplayBlockedReasonMax));
 
   // Autoplay already initiated
-  if (sources_.count(source))
+  if (sources_.Contains(source))
     return;
 
   sources_.insert(source);
 
   // Record the source.
-  if (element_->IsHTMLVideoElement()) {
-    video_histogram.Count(static_cast<int>(source));
-    if (element_->muted())
-      muted_video_histogram.Count(static_cast<int>(source));
-    if (autoplay_wait_time.has_value()) {
-      if (source == AutoplaySource::kAttribute) {
-        UMA_HISTOGRAM_CUSTOM_TIMES("Media.Video.Autoplay.Attribute.WaitTime",
-                                   *autoplay_wait_time,
-                                   TimeDelta::FromMilliseconds(1),
-                                   kMaxWaitTimeUma, kWaitTimeBucketCount);
-      } else if (source == AutoplaySource::kMethod) {
-        UMA_HISTOGRAM_CUSTOM_TIMES("Media.Video.Autoplay.PlayMethod.WaitTime",
-                                   *autoplay_wait_time,
-                                   TimeDelta::FromMilliseconds(1),
-                                   kMaxWaitTimeUma, kWaitTimeBucketCount);
-      }
-    }
-  } else {
-    audio_histogram.Count(static_cast<int>(source));
-    if (autoplay_wait_time.has_value()) {
-      if (source == AutoplaySource::kAttribute) {
-        UMA_HISTOGRAM_CUSTOM_TIMES("Media.Audio.Autoplay.Attribute.WaitTime",
-                                   *autoplay_wait_time,
-                                   TimeDelta::FromMilliseconds(1),
-                                   kMaxWaitTimeUma, kWaitTimeBucketCount);
-      } else if (source == AutoplaySource::kMethod) {
-        UMA_HISTOGRAM_CUSTOM_TIMES("Media.Audio.Autoplay.PlayMethod.WaitTime",
-                                   *autoplay_wait_time,
-                                   TimeDelta::FromMilliseconds(1),
-                                   kMaxWaitTimeUma, kWaitTimeBucketCount);
-      }
-    }
-  }
+  RecordAutoplaySourceMetrics(element_.Get(), source);
 
   // Record dual source.
-  if (sources_.size() ==
-      static_cast<size_t>(AutoplaySource::kNumberOfSources)) {
-    if (element_->IsHTMLVideoElement()) {
-      video_histogram.Count(static_cast<int>(AutoplaySource::kDualSource));
-      if (element_->muted())
-        muted_video_histogram.Count(
-            static_cast<int>(AutoplaySource::kDualSource));
-    } else {
-      audio_histogram.Count(static_cast<int>(AutoplaySource::kDualSource));
-    }
-  }
-
-  // Record the child frame and top-level frame URLs for autoplay muted videos
-  // by attribute.
-  if (element_->IsHTMLVideoElement() && element_->muted()) {
-    if (sources_.size() ==
-        static_cast<size_t>(AutoplaySource::kNumberOfSources)) {
-      Platform::Current()->RecordRapporURL(
-          "Media.Video.Autoplay.Muted.DualSource.Frame",
-          element_->GetDocument().Url());
-    } else if (source == AutoplaySource::kAttribute) {
-      Platform::Current()->RecordRapporURL(
-          "Media.Video.Autoplay.Muted.Attribute.Frame",
-          element_->GetDocument().Url());
-    } else {
-      DCHECK(source == AutoplaySource::kMethod);
-      Platform::Current()->RecordRapporURL(
-          "Media.Video.Autoplay.Muted.PlayMethod.Frame",
-          element_->GetDocument().Url());
-    }
-  }
-
-  // Record if it will be blocked by the Autoplay setting.
-  if (element_->IsHTMLVideoElement() && element_->muted() &&
-      AutoplayPolicy::DocumentShouldAutoplayMutedVideos(
-          element_->GetDocument()) &&
-      !element_->GetAutoplayPolicy().IsAutoplayAllowedPerSettings()) {
-    blocked_muted_video_histogram.Count(kAutoplayBlockedReasonSetting);
-  }
+  if (sources_.size() == kDualSourceSize)
+    RecordAutoplaySourceMetrics(element_.Get(), AutoplaySource::kDualSource);
 
   element_->addEventListener(event_type_names::kPlaying, this, false);
 
@@ -193,20 +109,15 @@ void AutoplayUmaHelper::OnAutoplayInitiated(AutoplaySource source) {
 
 void AutoplayUmaHelper::RecordAutoplayUnmuteStatus(
     AutoplayUnmuteActionStatus status) {
-  DEFINE_STATIC_LOCAL(
-      EnumerationHistogram, autoplay_unmute_histogram,
-      ("Media.Video.Autoplay.Muted.UnmuteAction",
-       static_cast<int>(AutoplayUnmuteActionStatus::kNumberOfStatus)));
-
-  autoplay_unmute_histogram.Count(static_cast<int>(status));
+  base::UmaHistogramEnumeration("Media.Video.Autoplay.Muted.UnmuteAction",
+                                status);
 
   // Record UKM event for unmute muted autoplay.
   if (element_->GetDocument().IsInMainFrame()) {
     int source = static_cast<int>(AutoplaySource::kAttribute);
-    if (sources_.size() ==
-        static_cast<size_t>(AutoplaySource::kNumberOfSources)) {
+    if (sources_.size() == kDualSourceSize) {
       source = static_cast<int>(AutoplaySource::kDualSource);
-    } else if (sources_.count(AutoplaySource::kMethod)) {
+    } else if (sources_.Contains(AutoplaySource::kMethod)) {
       source = static_cast<int>(AutoplaySource::kAttribute);
     }
 
@@ -231,7 +142,7 @@ void AutoplayUmaHelper::DidMoveToNewDocument(Document& old_document) {
   if (!ShouldListenToContextDestroyed())
     return;
 
-  SetContext(&element_->GetDocument());
+  SetExecutionContext(element_->GetExecutionContext());
 }
 
 void AutoplayUmaHelper::
@@ -252,9 +163,9 @@ void AutoplayUmaHelper::OnIntersectionChangedForMutedVideoOffscreenDuration(
 
   if (is_visible) {
     muted_video_autoplay_offscreen_duration_ +=
-        CurrentTimeTicks() - muted_video_autoplay_offscreen_start_time_;
+        base::TimeTicks::Now() - muted_video_autoplay_offscreen_start_time_;
   } else {
-    muted_video_autoplay_offscreen_start_time_ = CurrentTimeTicks();
+    muted_video_autoplay_offscreen_start_time_ = base::TimeTicks::Now();
   }
 
   is_visible_ = is_visible;
@@ -262,9 +173,7 @@ void AutoplayUmaHelper::OnIntersectionChangedForMutedVideoOffscreenDuration(
 
 void AutoplayUmaHelper::Invoke(ExecutionContext* execution_context,
                                Event* event) {
-  if (event->type() == event_type_names::kLoadstart)
-    OnLoadStarted();
-  else if (event->type() == event_type_names::kPlaying)
+  if (event->type() == event_type_names::kPlaying)
     HandlePlayingEvent();
   else if (event->type() == event_type_names::kPause)
     HandlePauseEvent();
@@ -283,7 +192,7 @@ void AutoplayUmaHelper::HandlePauseEvent() {
   MaybeStopRecordingMutedVideoOffscreenDuration();
 }
 
-void AutoplayUmaHelper::ContextDestroyed(ExecutionContext*) {
+void AutoplayUmaHelper::ContextDestroyed() {
   HandleContextDestroyed();
 }
 
@@ -293,8 +202,8 @@ void AutoplayUmaHelper::HandleContextDestroyed() {
 }
 
 void AutoplayUmaHelper::MaybeStartRecordingMutedVideoPlayMethodBecomeVisible() {
-  if (!sources_.count(AutoplaySource::kMethod) ||
-      !element_->IsHTMLVideoElement() || !element_->muted())
+  if (!sources_.Contains(AutoplaySource::kMethod) ||
+      !IsA<HTMLVideoElement>(element_.Get()) || !element_->muted())
     return;
 
   muted_video_play_method_intersection_observer_ = IntersectionObserver::Create(
@@ -302,9 +211,10 @@ void AutoplayUmaHelper::MaybeStartRecordingMutedVideoPlayMethodBecomeVisible() {
       WTF::BindRepeating(
           &AutoplayUmaHelper::
               OnIntersectionChangedForMutedVideoPlayMethodBecomeVisible,
-          WrapWeakPersistent(this)));
+          WrapWeakPersistent(this)),
+      LocalFrameUkmAggregator::kMediaIntersectionObserver);
   muted_video_play_method_intersection_observer_->observe(element_);
-  SetContext(&element_->GetDocument());
+  SetExecutionContext(element_->GetExecutionContext());
 }
 
 void AutoplayUmaHelper::MaybeStopRecordingMutedVideoPlayMethodBecomeVisible(
@@ -312,22 +222,21 @@ void AutoplayUmaHelper::MaybeStopRecordingMutedVideoPlayMethodBecomeVisible(
   if (!muted_video_play_method_intersection_observer_)
     return;
 
-  DEFINE_STATIC_LOCAL(BooleanHistogram, histogram,
-                      ("Media.Video.Autoplay.Muted.PlayMethod.BecomesVisible"));
+  base::UmaHistogramBoolean(
+      "Media.Video.Autoplay.Muted.PlayMethod.BecomesVisible", visible);
 
-  histogram.Count(visible);
   muted_video_play_method_intersection_observer_->disconnect();
   muted_video_play_method_intersection_observer_ = nullptr;
   MaybeUnregisterContextDestroyedObserver();
 }
 
 void AutoplayUmaHelper::MaybeStartRecordingMutedVideoOffscreenDuration() {
-  if (!element_->IsHTMLVideoElement() || !element_->muted() ||
-      !sources_.count(AutoplaySource::kMethod))
+  if (!IsA<HTMLVideoElement>(element_.Get()) || !element_->muted() ||
+      !sources_.Contains(AutoplaySource::kMethod))
     return;
 
   // Start recording muted video playing offscreen duration.
-  muted_video_autoplay_offscreen_start_time_ = CurrentTimeTicks();
+  muted_video_autoplay_offscreen_start_time_ = base::TimeTicks::Now();
   is_visible_ = false;
   muted_video_offscreen_duration_intersection_observer_ =
       IntersectionObserver::Create(
@@ -336,10 +245,11 @@ void AutoplayUmaHelper::MaybeStartRecordingMutedVideoOffscreenDuration() {
           WTF::BindRepeating(
               &AutoplayUmaHelper::
                   OnIntersectionChangedForMutedVideoOffscreenDuration,
-              WrapWeakPersistent(this)));
+              WrapWeakPersistent(this)),
+          LocalFrameUkmAggregator::kMediaIntersectionObserver);
   muted_video_offscreen_duration_intersection_observer_->observe(element_);
   element_->addEventListener(event_type_names::kPause, this, false);
-  SetContext(&element_->GetDocument());
+  SetExecutionContext(element_->GetExecutionContext());
 }
 
 void AutoplayUmaHelper::MaybeStopRecordingMutedVideoOffscreenDuration() {
@@ -348,26 +258,31 @@ void AutoplayUmaHelper::MaybeStopRecordingMutedVideoOffscreenDuration() {
 
   if (!is_visible_) {
     muted_video_autoplay_offscreen_duration_ +=
-        CurrentTimeTicks() - muted_video_autoplay_offscreen_start_time_;
+        base::TimeTicks::Now() - muted_video_autoplay_offscreen_start_time_;
   }
 
-  DCHECK(sources_.count(AutoplaySource::kMethod));
+  DCHECK(sources_.Contains(AutoplaySource::kMethod));
 
   UMA_HISTOGRAM_CUSTOM_TIMES(
       "Media.Video.Autoplay.Muted.PlayMethod.OffscreenDuration",
-      muted_video_autoplay_offscreen_duration_, TimeDelta::FromMilliseconds(1),
-      kMaxOffscreenDurationUma, kOffscreenDurationUmaBucketCount);
+      muted_video_autoplay_offscreen_duration_,
+      base::TimeDelta::FromMilliseconds(1), kMaxOffscreenDurationUma,
+      kOffscreenDurationUmaBucketCount);
 
   muted_video_offscreen_duration_intersection_observer_->disconnect();
   muted_video_offscreen_duration_intersection_observer_ = nullptr;
-  muted_video_autoplay_offscreen_duration_ = TimeDelta();
+  muted_video_autoplay_offscreen_duration_ = base::TimeDelta();
   MaybeUnregisterMediaElementPauseListener();
   MaybeUnregisterContextDestroyedObserver();
 }
 
 void AutoplayUmaHelper::MaybeUnregisterContextDestroyedObserver() {
-  if (!ShouldListenToContextDestroyed()) {
-    SetContext(nullptr);
+  // TODO(keishi): Remove IsIteratingOverObservers() check when
+  // HeapObserverSet() supports removal while iterating.
+  if (!ShouldListenToContextDestroyed() && !GetExecutionContext()
+                                                ->ContextLifecycleObserverSet()
+                                                .IsIteratingOverObservers()) {
+    SetExecutionContext(nullptr);
   }
 }
 
@@ -382,9 +297,9 @@ bool AutoplayUmaHelper::ShouldListenToContextDestroyed() const {
          muted_video_offscreen_duration_intersection_observer_;
 }
 
-void AutoplayUmaHelper::Trace(Visitor* visitor) {
+void AutoplayUmaHelper::Trace(Visitor* visitor) const {
   NativeEventListener::Trace(visitor);
-  ContextLifecycleObserver::Trace(visitor);
+  ExecutionContextLifecycleObserver::Trace(visitor);
   visitor->Trace(element_);
   visitor->Trace(muted_video_play_method_intersection_observer_);
   visitor->Trace(muted_video_offscreen_duration_intersection_observer_);

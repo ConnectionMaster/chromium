@@ -8,16 +8,18 @@
 #include <memory>
 
 #include "base/strings/sys_string_conversions.h"
-#include "components/signin/core/browser/account_info.h"
-#include "components/signin/core/browser/signin_error_controller.h"
+#include "components/autofill/core/common/autofill_prefs.h"
+#include "components/password_manager/core/browser/password_manager_features_util.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/device_accounts_synchronizer.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/sync/driver/sync_service.h"
 #include "components/sync/driver/sync_user_settings.h"
-#include "ios/web/public/web_thread.h"
 #import "ios/web_view/public/cwv_identity.h"
 #import "ios/web_view/public/cwv_sync_controller_data_source.h"
 #import "ios/web_view/public/cwv_sync_controller_delegate.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/primary_account_mutator.h"
+#import "ios/web_view/public/cwv_sync_errors.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -25,6 +27,12 @@
 
 NSErrorDomain const CWVSyncErrorDomain =
     @"org.chromium.chromewebview.SyncErrorDomain";
+NSErrorUserInfoKey const CWVSyncErrorDescriptionKey =
+    @"org.chromium.chromewebview.SyncErrorDescriptionKey";
+NSErrorUserInfoKey const CWVSyncErrorMessageKey =
+    @"org.chromium.chromewebview.SyncErrorMessageKey";
+NSErrorUserInfoKey const CWVSyncErrorIsTransientKey =
+    @"org.chromium.chromewebview.SyncErrorIsTransientKey";
 
 namespace {
 CWVSyncError CWVConvertGoogleServiceAuthErrorStateToCWVSyncError(
@@ -45,13 +53,7 @@ CWVSyncError CWVConvertGoogleServiceAuthErrorStateToCWVSyncError(
     case GoogleServiceAuthError::UNEXPECTED_SERVICE_RESPONSE:
       return CWVSyncErrorUnexpectedServiceResponse;
     // The following errors are unexpected on iOS.
-    case GoogleServiceAuthError::CAPTCHA_REQUIRED:
-    case GoogleServiceAuthError::ACCOUNT_DELETED:
-    case GoogleServiceAuthError::ACCOUNT_DISABLED:
-    case GoogleServiceAuthError::TWO_FACTOR:
-    case GoogleServiceAuthError::HOSTED_NOT_ALLOWED_DEPRECATED:
     case GoogleServiceAuthError::SERVICE_ERROR:
-    case GoogleServiceAuthError::WEB_LOGIN_REQUIRED:
     case GoogleServiceAuthError::NUM_STATES:
       NOTREACHED();
       return CWVSyncErrorNone;
@@ -61,16 +63,13 @@ CWVSyncError CWVConvertGoogleServiceAuthErrorStateToCWVSyncError(
 
 @interface CWVSyncController ()
 
-// Called by WebViewSyncControllerObserverBridge's
-// |OnSyncConfigurationCompleted|.
-- (void)didCompleteSyncConfiguration;
 // Called by WebViewSyncControllerObserverBridge's |OnSyncShutdown|.
 - (void)didShutdownSync;
-// Called by WebViewSyncControllerObserverBridge's |OnErrorChanged|.
-- (void)didUpdateAuthError;
+// Called by WebViewSyncControllerObserverBridge's |OnStateChanged|.
+- (void)syncStateDidChange;
 
-// Call to refresh access tokens for |currentIdentity|.
-- (void)reloadCredentials;
+// Call to reload accounts from the |dataSource|.
+- (void)reloadAccounts;
 
 @end
 
@@ -78,25 +77,19 @@ namespace ios_web_view {
 
 // Bridge that observes syncer::SyncService and calls analagous
 // methods on CWVSyncController.
-class WebViewSyncControllerObserverBridge
-    : public syncer::SyncServiceObserver,
-      public SigninErrorController::Observer {
+class WebViewSyncControllerObserverBridge : public syncer::SyncServiceObserver {
  public:
   explicit WebViewSyncControllerObserverBridge(
       CWVSyncController* sync_controller)
       : sync_controller_(sync_controller) {}
 
-  // syncer::SyncServiceObserver:
-  void OnSyncConfigurationCompleted(syncer::SyncService* sync) override {
-    [sync_controller_ didCompleteSyncConfiguration];
+  void OnStateChanged(syncer::SyncService* sync) override {
+    [sync_controller_ syncStateDidChange];
   }
 
   void OnSyncShutdown(syncer::SyncService* sync) override {
     [sync_controller_ didShutdownSync];
   }
-
-  // SigninErrorController::Observer:
-  void OnErrorChanged() override { [sync_controller_ didUpdateAuthError]; }
 
  private:
   __weak CWVSyncController* sync_controller_;
@@ -106,81 +99,109 @@ class WebViewSyncControllerObserverBridge
 
 @implementation CWVSyncController {
   syncer::SyncService* _syncService;
-  identity::IdentityManager* _identityManager;
-  SigninErrorController* _signinErrorController;
+  signin::IdentityManager* _identityManager;
   std::unique_ptr<ios_web_view::WebViewSyncControllerObserverBridge> _observer;
-
-  // Data source that can provide access tokens.
-  __weak id<CWVSyncControllerDataSource> _dataSource;
+  PrefService* _prefService;
+  syncer::SyncService::TransportState _lastTransportState;
+  GoogleServiceAuthError _lastAuthError;
 }
 
-@synthesize delegate = _delegate;
-@synthesize currentIdentity = _currentIdentity;
+namespace {
+// Data source that can provide access tokens.
+__weak id<CWVSyncControllerDataSource> gSyncDataSource;
+}
+
++ (void)setDataSource:(id<CWVSyncControllerDataSource>)dataSource {
+  gSyncDataSource = dataSource;
+}
+
++ (id<CWVSyncControllerDataSource>)dataSource {
+  return gSyncDataSource;
+}
 
 - (instancetype)initWithSyncService:(syncer::SyncService*)syncService
-                    identityManager:(identity::IdentityManager*)identityManager
-              signinErrorController:
-                  (SigninErrorController*)signinErrorController {
+                    identityManager:(signin::IdentityManager*)identityManager
+                        prefService:(PrefService*)prefService {
   self = [super init];
   if (self) {
     _syncService = syncService;
     _identityManager = identityManager;
-    _signinErrorController = signinErrorController;
+    _prefService = prefService;
     _observer =
         std::make_unique<ios_web_view::WebViewSyncControllerObserverBridge>(
             self);
     _syncService->AddObserver(_observer.get());
-    _signinErrorController->AddObserver(_observer.get());
 
     // Refresh access tokens on foreground to extend expiration dates.
     [[NSNotificationCenter defaultCenter]
         addObserver:self
-           selector:@selector(reloadCredentials)
+           selector:@selector(reloadAccounts)
                name:UIApplicationWillEnterForegroundNotification
              object:nil];
+
+    // This allows internals of |_identityManager| to fetch and store the user's
+    // info and profile image. This must be called manually *after* all services
+    // have been started to avoid issues in https://crbug.com/441399.
+    _identityManager->OnNetworkInitialized();
   }
   return self;
 }
 
 - (void)dealloc {
   _syncService->RemoveObserver(_observer.get());
-  _signinErrorController->RemoveObserver(_observer.get());
 }
 
 #pragma mark - Public Methods
 
-- (BOOL)isPassphraseNeeded {
-  return _syncService->GetUserSettings()->IsPassphraseRequiredForDecryption();
+- (CWVIdentity*)currentIdentity {
+  if (_identityManager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
+    CoreAccountInfo accountInfo =
+        _identityManager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync);
+    return [[CWVIdentity alloc]
+        initWithEmail:base::SysUTF8ToNSString(accountInfo.email)
+             fullName:nil
+               gaiaID:base::SysUTF8ToNSString(accountInfo.gaia)];
+  }
+
+  return nil;
 }
 
-- (void)startSyncWithIdentity:(CWVIdentity*)identity
-                   dataSource:
-                       (__weak id<CWVSyncControllerDataSource>)dataSource {
-  DCHECK(!_dataSource);
-  DCHECK(!_currentIdentity);
+- (BOOL)isPassphraseNeeded {
+  return _syncService->GetUserSettings()
+      ->IsPassphraseRequiredForPreferredDataTypes();
+}
 
-  _dataSource = dataSource;
-  _currentIdentity = identity;
+- (void)startSyncWithIdentity:(CWVIdentity*)identity {
+  DCHECK(!self.currentIdentity)
+      << "Already syncing! Call -stopSyncAndClearIdentity first.";
 
-  AccountInfo info;
-  info.gaia = base::SysNSStringToUTF8(identity.gaiaID);
-  info.email = base::SysNSStringToUTF8(identity.email);
-  std::string newAuthenticatedAccountID =
-      _identityManager->LegacySeedAccountInfo(info);
-  auto* primaryAccountMutator = _identityManager->GetPrimaryAccountMutator();
-  primaryAccountMutator->SetPrimaryAccount(newAuthenticatedAccountID);
+  _identityManager->GetDeviceAccountsSynchronizer()
+      ->ReloadAllAccountsFromSystemWithPrimaryAccount(CoreAccountId());
 
-  [self reloadCredentials];
+  const CoreAccountId accountId = _identityManager->PickAccountIdForAccount(
+      base::SysNSStringToUTF8(identity.gaiaID),
+      base::SysNSStringToUTF8(identity.email));
+  CHECK(_identityManager->HasAccountWithRefreshToken(accountId));
+
+  _identityManager->GetPrimaryAccountMutator()->SetPrimaryAccount(
+      accountId, signin::ConsentLevel::kSync);
+  CHECK_EQ(_identityManager->GetPrimaryAccountId(signin::ConsentLevel::kSync),
+           accountId);
+
+  autofill::prefs::SetUserOptedInWalletSyncTransport(_prefService, accountId,
+                                                     /*opted_in=*/true);
+  password_manager::features_util::SetDefaultPasswordStore(
+      _prefService, _syncService,
+      password_manager::PasswordForm::Store::kAccountStore);
+  password_manager::features_util::OptInToAccountStorage(_prefService,
+                                                         _syncService);
 }
 
 - (void)stopSyncAndClearIdentity {
   auto* primaryAccountMutator = _identityManager->GetPrimaryAccountMutator();
   primaryAccountMutator->ClearPrimaryAccount(
-      identity::PrimaryAccountMutator::ClearAccountsAction::kDefault,
       signin_metrics::ProfileSignout::USER_CLICKED_SIGNOUT_SETTINGS,
-      signin_metrics::SignoutDelete::IGNORE_METRIC);
-  _currentIdentity = nil;
-  _dataSource = nil;
+      signin_metrics::SignoutDelete::kIgnoreMetric);
 }
 
 - (BOOL)unlockWithPassphrase:(NSString*)passphrase {
@@ -190,71 +211,59 @@ class WebViewSyncControllerObserverBridge
 
 #pragma mark - Private Methods
 
-- (void)didCompleteSyncConfiguration {
-  if ([_delegate respondsToSelector:@selector(syncControllerDidStartSync:)]) {
-    [_delegate syncControllerDidStartSync:self];
-  }
-}
-
 - (void)didShutdownSync {
   _syncService->RemoveObserver(_observer.get());
-  _signinErrorController->RemoveObserver(_observer.get());
 }
 
-- (void)reloadCredentials {
-  _identityManager->LegacyReloadAccountsFromSystem();
-}
+- (void)syncStateDidChange {
+  if (_lastTransportState != _syncService->GetTransportState()) {
+    _lastTransportState = _syncService->GetTransportState();
 
-#pragma mark - Internal Methods
-
-- (void)fetchAccessTokenForScopes:(const std::set<std::string>&)scopes
-                         callback:(const ProfileOAuth2TokenServiceIOSProvider::
-                                       AccessTokenCallback&)callback {
-  NSMutableArray<NSString*>* scopesArray = [NSMutableArray array];
-  for (const auto& scope : scopes) {
-    [scopesArray addObject:base::SysUTF8ToNSString(scope)];
+    if (_lastTransportState == syncer::SyncService::TransportState::ACTIVE) {
+      if ([_delegate
+              respondsToSelector:@selector(syncControllerDidStartSync:)]) {
+        [_delegate syncControllerDidStartSync:self];
+      }
+    } else if (_lastTransportState ==
+               syncer::SyncService::TransportState::DISABLED) {
+      if ([_delegate
+              respondsToSelector:@selector(syncControllerDidStopSync:)]) {
+        [_delegate syncControllerDidStopSync:self];
+      }
+    }
   }
-  ProfileOAuth2TokenServiceIOSProvider::AccessTokenCallback scopedCallback =
-      callback;
-  [_dataSource syncController:self
-      getAccessTokenForScopes:[scopesArray copy]
-            completionHandler:^(NSString* accessToken, NSDate* expirationDate,
-                                NSError* error) {
-              if (!scopedCallback.is_null()) {
-                scopedCallback.Run(accessToken, expirationDate, error);
-              }
-            }];
-}
 
-- (void)didSignoutWithSourceMetric:(signin_metrics::ProfileSignout)metric {
-  if (![_delegate respondsToSelector:@selector
-                  (syncController:didStopSyncWithReason:)]) {
-    return;
-  }
-  CWVStopSyncReason reason;
-  if (metric == signin_metrics::ProfileSignout::USER_CLICKED_SIGNOUT_SETTINGS) {
-    reason = CWVStopSyncReasonClient;
-  } else if (metric == signin_metrics::ProfileSignout::SERVER_FORCED_DISABLE) {
-    reason = CWVStopSyncReasonServer;
-  } else {
-    NOTREACHED();
-    return;
-  }
-  [_delegate syncController:self didStopSyncWithReason:reason];
-}
+  if (_lastAuthError.state() != _syncService->GetAuthError().state()) {
+    _lastAuthError = _syncService->GetAuthError();
 
-- (void)didUpdateAuthError {
-  GoogleServiceAuthError authError = _signinErrorController->auth_error();
-  CWVSyncError code =
-      CWVConvertGoogleServiceAuthErrorStateToCWVSyncError(authError.state());
-  if (code != CWVSyncErrorNone) {
-    if ([_delegate
-            respondsToSelector:@selector(syncController:didFailWithError:)]) {
+    CWVSyncError code = CWVConvertGoogleServiceAuthErrorStateToCWVSyncError(
+        _lastAuthError.state());
+    if (code != CWVSyncErrorNone &&
+        [_delegate respondsToSelector:@selector(syncController:
+                                              didFailWithError:)]) {
+      NSString* description =
+          base::SysUTF8ToNSString(_lastAuthError.ToString());
+      NSString* message =
+          base::SysUTF8ToNSString(_lastAuthError.error_message());
+      BOOL isTransient = _lastAuthError.IsTransientError();
       NSError* error =
-          [NSError errorWithDomain:CWVSyncErrorDomain code:code userInfo:nil];
+          [NSError errorWithDomain:CWVSyncErrorDomain
+                              code:code
+                          userInfo:@{
+                            CWVSyncErrorDescriptionKey : description,
+                            CWVSyncErrorMessageKey : message,
+                            CWVSyncErrorIsTransientKey : @(isTransient),
+                          }];
       [_delegate syncController:self didFailWithError:error];
     }
   }
+}
+
+- (void)reloadAccounts {
+  _identityManager->GetDeviceAccountsSynchronizer()
+      ->ReloadAllAccountsFromSystemWithPrimaryAccount(
+          _identityManager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync)
+              .account_id);
 }
 
 @end

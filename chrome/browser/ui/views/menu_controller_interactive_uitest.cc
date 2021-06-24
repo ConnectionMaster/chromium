@@ -21,8 +21,8 @@ class MenuControllerMnemonicTest : public MenuTestBase {
   // MenuTestBase overrides:
   void BuildMenu(views::MenuItemView* menu) override {
     ASSERT_NE(ui::VKEY_DIVIDE, '/');
-    menu->AppendMenuItemWithLabel(1, base::ASCIIToUTF16("One&/"));
-    menu->AppendMenuItemWithLabel(2, base::ASCIIToUTF16("Two"));
+    menu->AppendMenuItem(1, u"One&/");
+    menu->AppendMenuItem(2, u"Two");
   }
 
   void DoTestWithMenuOpen() override {
@@ -56,7 +56,7 @@ class MenuControllerMnemonicTest : public MenuTestBase {
 typedef MenuControllerMnemonicTest<ui::VKEY_DIVIDE,1>
     MenuControllerMnemonicTestMnemonicMatch;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 // Mnemonics and activation by title match aren't used on macOS.
 #define MAYBE_MnemonicMatch DISABLED_MnemonicMatch
 #define MAYBE_TitleMatch DISABLED_TitleMatch

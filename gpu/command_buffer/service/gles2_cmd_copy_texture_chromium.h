@@ -5,9 +5,8 @@
 #ifndef GPU_COMMAND_BUFFER_SERVICE_GLES2_CMD_COPY_TEXTURE_CHROMIUM_H_
 #define GPU_COMMAND_BUFFER_SERVICE_GLES2_CMD_COPY_TEXTURE_CHROMIUM_H_
 
-#include <vector>
-
 #include "base/macros.h"
+#include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/gpu_gles2_export.h"
 
@@ -99,57 +98,6 @@ class GPU_GLES2_EXPORT CopyTextureCHROMIUMResourceManager {
       bool premultiply_alpha,
       bool unpremultiply_alpha,
       bool dither,
-      CopyTextureMethod method,
-      CopyTexImageResourceManager* luma_emulation_blitter) = 0;
-
-  virtual void DoCopySubTextureWithTransform(
-      DecoderContext* decoder,
-      GLenum source_target,
-      GLuint source_id,
-      GLint source_level,
-      GLenum source_internal_format,
-      GLenum dest_target,
-      GLuint dest_id,
-      GLint dest_level,
-      GLenum dest_internal_format,
-      GLint xoffset,
-      GLint yoffset,
-      GLint x,
-      GLint y,
-      GLsizei width,
-      GLsizei height,
-      GLsizei dest_width,
-      GLsizei dest_height,
-      GLsizei source_width,
-      GLsizei source_height,
-      bool flip_y,
-      bool premultiply_alpha,
-      bool unpremultiply_alpha,
-      bool dither,
-      const GLfloat transform_matrix[16],
-      CopyTexImageResourceManager* luma_emulation_blitter) = 0;
-
-  // This will apply a transform on the texture coordinates before sampling
-  // the source texture and copying to the destination texture. The transform
-  // matrix should be given in column-major form, so it can be passed
-  // directly to GL.
-  virtual void DoCopyTextureWithTransform(
-      DecoderContext* decoder,
-      GLenum source_target,
-      GLuint source_id,
-      GLint source_level,
-      GLenum source_format,
-      GLenum dest_target,
-      GLuint dest_id,
-      GLint dest_level,
-      GLenum dest_format,
-      GLsizei width,
-      GLsizei height,
-      bool flip_y,
-      bool premultiply_alpha,
-      bool unpremultiply_alpha,
-      bool dither,
-      const GLfloat transform_matrix[16],
       CopyTextureMethod method,
       CopyTexImageResourceManager* luma_emulation_blitter) = 0;
 

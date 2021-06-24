@@ -85,14 +85,9 @@ class OfflineInternalsUIMessageHandler : public content::WebUIMessageHandler {
 
   // Schedules an NWake signal.
   void HandleScheduleNwake(const base::ListValue* args);
-  void ScheduleNwakeWithGCMToken(base::Value callback_id,
-                                 const std::string& gcm_token);
 
   // Cancels an NWake signal.
   void HandleCancelNwake(const base::ListValue* args);
-
-  // Shows an example prefetching notification.
-  void HandleShowPrefetchNotification(const base::ListValue* args);
 
   // Sends and processes the request to generate page bundle.
   void HandleGeneratePageBundle(const base::ListValue* args);
@@ -136,7 +131,8 @@ class OfflineInternalsUIMessageHandler : public content::WebUIMessageHandler {
   offline_pages::PrefetchService* prefetch_service_;
 
   // Factory for creating references in callbacks.
-  base::WeakPtrFactory<OfflineInternalsUIMessageHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<OfflineInternalsUIMessageHandler> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(OfflineInternalsUIMessageHandler);
 };

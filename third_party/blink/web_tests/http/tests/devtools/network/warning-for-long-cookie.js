@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Checks that we show warning message for long cookie.\n`);
-  await TestRunner.loadModule('console_test_runner');
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
   await TestRunner.showPanel('network');
 
   NetworkTestRunner.makeFetch(
@@ -13,11 +13,21 @@
 
   function step1() {
     NetworkTestRunner.makeFetch(
-        'http://127.0.0.1:8000/devtools/network/resources/set-cookie.php?length=4097', {});
+        'http://127.0.0.1:8000/devtools/network/resources/set-cookie.php?length=4097', {}, step2);
   }
 
-  await ConsoleTestRunner.waitForConsoleMessagesPromise(1);
+  function step2() {
+    NetworkTestRunner.makeFetch(
+        'http://127.0.0.1:8000/devtools/network/resources/set-two-cookies.php?length=4097', {}, step3);
+  }
 
-  ConsoleTestRunner.dumpConsoleMessages();
+  function step3() {
+    NetworkTestRunner.makeFetch(
+        'http://127.0.0.1:8000/devtools/network/resources/set-two-cookies.php?length=3072', {});
+  }
+
+  await ConsoleTestRunner.waitForConsoleMessagesPromise(2);
+
+  await ConsoleTestRunner.dumpConsoleMessages();
   TestRunner.completeTest();
 })();

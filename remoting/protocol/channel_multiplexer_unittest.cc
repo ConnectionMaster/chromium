@@ -4,14 +4,16 @@
 
 #include "remoting/protocol/channel_multiplexer.h"
 
+#include <memory>
 #include <utility>
 
+#include "base/barrier_closure.h"
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/test/mock_callback.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/net_errors.h"
@@ -77,10 +79,10 @@ class ChannelMultiplexerTest : public testing::Test {
     host_channel_factory_.PairWith(&client_channel_factory_);
 
     // Create pair of multiplexers and connect them to each other.
-    host_mux_.reset(
-        new ChannelMultiplexer(&host_channel_factory_, kMuxChannelName));
-    client_mux_.reset(
-        new ChannelMultiplexer(&client_channel_factory_, kMuxChannelName));
+    host_mux_ = std::make_unique<ChannelMultiplexer>(&host_channel_factory_,
+                                                     kMuxChannelName);
+    client_mux_ = std::make_unique<ChannelMultiplexer>(&client_channel_factory_,
+                                                       kMuxChannelName);
 
     // Make writes asynchronous in one direction
     host_channel_factory_.set_async_write(true);
@@ -90,12 +92,12 @@ class ChannelMultiplexerTest : public testing::Test {
                      std::unique_ptr<P2PStreamSocket>* host_socket,
                      std::unique_ptr<P2PStreamSocket>* client_socket) {
     int counter = 2;
-    host_mux_->CreateChannel(name, base::Bind(
-        &ChannelMultiplexerTest::OnChannelConnected, base::Unretained(this),
-        host_socket, &counter));
-    client_mux_->CreateChannel(name, base::Bind(
-        &ChannelMultiplexerTest::OnChannelConnected, base::Unretained(this),
-        client_socket, &counter));
+    host_mux_->CreateChannel(
+        name, base::BindOnce(&ChannelMultiplexerTest::OnChannelConnected,
+                             base::Unretained(this), host_socket, &counter));
+    client_mux_->CreateChannel(
+        name, base::BindOnce(&ChannelMultiplexerTest::OnChannelConnected,
+                             base::Unretained(this), client_socket, &counter));
 
     base::RunLoop().Run();
 
@@ -124,7 +126,7 @@ class ChannelMultiplexerTest : public testing::Test {
 
  private:
   // Must be instantiated before the FakeStreamChannelFactories below.
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
  protected:
   FakeStreamChannelFactory host_channel_factory_;
@@ -148,8 +150,9 @@ TEST_F(ChannelMultiplexerTest, OneChannel) {
 
   StreamConnectionTester tester(host_socket.get(), client_socket.get(),
                                 kMessageSize, kMessages);
-  tester.Start();
-  base::RunLoop().Run();
+  base::RunLoop run_loop;
+  tester.Start(run_loop.QuitClosure());
+  run_loop.Run();
   tester.CheckResults();
 }
 
@@ -168,11 +171,11 @@ TEST_F(ChannelMultiplexerTest, TwoChannels) {
                                 kMessageSize, kMessages);
   StreamConnectionTester tester2(host_socket2_.get(), client_socket2_.get(),
                                  kMessageSize, kMessages);
-  tester1.Start();
-  tester2.Start();
-  while (!tester1.done() || !tester2.done()) {
-    base::RunLoop().Run();
-  }
+  base::RunLoop run_loop;
+  auto done_barrier = base::BarrierClosure(2, run_loop.QuitClosure());
+  tester1.Start(done_barrier);
+  tester2.Start(done_barrier);
+  run_loop.Run();
   tester1.CheckResults();
   tester2.CheckResults();
 }
@@ -207,14 +210,13 @@ TEST_F(ChannelMultiplexerTest, FourChannels) {
                                  kMessageSize, kMessages);
   StreamConnectionTester tester4(client_socket4.get(), host_socket4.get(),
                                  kMessageSize, kMessages);
-  tester1.Start();
-  tester2.Start();
-  tester3.Start();
-  tester4.Start();
-  while (!tester1.done() || !tester2.done() ||
-         !tester3.done() || !tester4.done()) {
-    base::RunLoop().Run();
-  }
+  base::RunLoop run_loop;
+  auto done_barrier = base::BarrierClosure(4, run_loop.QuitClosure());
+  tester1.Start(done_barrier);
+  tester2.Start(done_barrier);
+  tester3.Start(done_barrier);
+  tester4.Start(done_barrier);
+  run_loop.Run();
   tester1.CheckResults();
   tester2.CheckResults();
   tester3.CheckResults();
@@ -322,10 +324,12 @@ TEST_F(ChannelMultiplexerTest, SessionFail) {
   MockConnectCallback cb1;
   MockConnectCallback cb2;
 
-  host_mux_->CreateChannel(kTestChannelName, base::Bind(
-      &MockConnectCallback::OnConnected, base::Unretained(&cb1)));
-  host_mux_->CreateChannel(kTestChannelName2, base::Bind(
-      &MockConnectCallback::OnConnected, base::Unretained(&cb2)));
+  host_mux_->CreateChannel(kTestChannelName,
+                           base::BindOnce(&MockConnectCallback::OnConnected,
+                                          base::Unretained(&cb1)));
+  host_mux_->CreateChannel(kTestChannelName2,
+                           base::BindOnce(&MockConnectCallback::OnConnected,
+                                          base::Unretained(&cb2)));
 
   EXPECT_CALL(cb1, OnConnectedPtr(nullptr))
       .Times(AtMost(1))

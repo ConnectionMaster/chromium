@@ -8,109 +8,105 @@
 #include <memory>
 #include <string>
 
-#include "base/callback_forward.h"
-#include "base/callback_list.h"
 #include "base/macros.h"
-#include "remoting/signaling/chromoting_message.pb.h"
-#include "remoting/signaling/ftl_services.grpc.pb.h"
+#include "base/memory/scoped_refptr.h"
+#include "remoting/signaling/message_tracker.h"
+#include "remoting/signaling/messaging_client.h"
+
+namespace google {
+namespace protobuf {
+class MessageLite;
+}  // namespace protobuf
+}  // namespace google
+
+namespace net {
+struct NetworkTrafficAnnotationTag;
+}  // namespace net
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace remoting {
 
-class GrpcExecutor;
+class ProtobufHttpClient;
 class MessageReceptionChannel;
 class OAuthTokenGetter;
 class RegistrationManager;
-class ScopedGrpcServerStream;
+class ScopedProtobufHttpRequest;
+class SignalingTracker;
 
 // A class for sending and receiving messages via the FTL API.
-class FtlMessagingClient final {
+class FtlMessagingClient final : public MessagingClient {
  public:
-  using MessageCallback =
-      base::RepeatingCallback<void(const std::string& sender_id,
-                                   const std::string& sender_registration_id,
-                                   const ftl::ChromotingMessage& message)>;
-  using MessageCallbackList =
-      base::CallbackList<void(const std::string&,
-                              const std::string&,
-                              const ftl::ChromotingMessage&)>;
-  using MessageCallbackSubscription = MessageCallbackList::Subscription;
-  using DoneCallback = base::OnceCallback<void(const grpc::Status& status)>;
+  // |signaling_tracker| is nullable.
+  // Raw pointers must outlive |this|.
+  FtlMessagingClient(
+      OAuthTokenGetter* token_getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      RegistrationManager* registration_manager,
+      SignalingTracker* signaling_tracker = nullptr);
+  ~FtlMessagingClient() override;
 
-  // |token_getter| and |registration_manager| must outlive |this|.
-  FtlMessagingClient(OAuthTokenGetter* token_getter,
-                     RegistrationManager* registration_manager);
-  ~FtlMessagingClient();
-
-  // Registers a callback which is run for each new message received.
-  // Simply delete the returned subscription object to unregister. The
-  // subscription object must be deleted before |this| is deleted.
-  std::unique_ptr<MessageCallbackSubscription> RegisterMessageCallback(
-      const MessageCallback& callback);
-
-  // Retrieves messages from the user's inbox over slow path and calls the
-  // registered MessageCallback on every received message.
-  // |on_done| is called once the messages have been received and acked on the
-  // server's inbox.
-  void PullMessages(DoneCallback on_done);
+  // MessagingClient implementations.
+  base::CallbackListSubscription RegisterMessageCallback(
+      const MessageCallback& callback) override;
+  void PullMessages(DoneCallback on_done) override;
   void SendMessage(const std::string& destination,
                    const std::string& destination_registration_id,
                    const ftl::ChromotingMessage& message,
-                   DoneCallback on_done);
-
-  // Opens a stream to continuously receive new messages from the server and
-  // calls the registered MessageCallback once a new message is received.
-  // |on_ready| is called once the stream is successfully started.
-  // |on_closed| is called if the stream fails to start, in which case
-  // |on_ready| will not be called, or when the stream is closed or dropped,
-  // in which case it is called after |on_ready| is called.
+                   DoneCallback on_done) override;
   void StartReceivingMessages(base::OnceClosure on_ready,
-                              DoneCallback on_closed);
-
-  // Stops the stream for continuously receiving new messages.
-  void StopReceivingMessages();
-
-  // Returns true if the streaming channel is open.
-  bool IsReceivingMessages();
+                              DoneCallback on_closed) override;
+  void StopReceivingMessages() override;
+  bool IsReceivingMessages() const override;
 
  private:
-  using Messaging =
-      google::internal::communications::instantmessaging::v1::Messaging;
-
   friend class FtlMessagingClientTest;
 
-  FtlMessagingClient(std::unique_ptr<GrpcExecutor> executor,
+  FtlMessagingClient(std::unique_ptr<ProtobufHttpClient> client,
                      RegistrationManager* registration_manager,
                      std::unique_ptr<MessageReceptionChannel> channel);
 
-  void OnPullMessagesResponse(DoneCallback on_done,
-                              const grpc::Status& status,
-                              const ftl::PullMessagesResponse& response);
+  template <typename CallbackFunctor>
+  void ExecuteRequest(const net::NetworkTrafficAnnotationTag& tag,
+                      const std::string& path,
+                      std::unique_ptr<google::protobuf::MessageLite> request,
+                      CallbackFunctor callback_functor,
+                      DoneCallback on_done);
+
+  void OnPullMessagesResponse(
+      DoneCallback on_done,
+      const ProtobufHttpStatus& status,
+      std::unique_ptr<ftl::PullMessagesResponse> response);
 
   void OnSendMessageResponse(DoneCallback on_done,
-                             const grpc::Status& status,
-                             const ftl::InboxSendResponse& response);
+                             const ProtobufHttpStatus& status,
+                             std::unique_ptr<ftl::InboxSendResponse> response);
 
-  void AckMessages(const ftl::AckMessagesRequest& request,
-                   DoneCallback on_done);
+  void BatchAckMessages(const ftl::BatchAckMessagesRequest& request,
+                        DoneCallback on_done);
 
-  void OnAckMessagesResponse(DoneCallback on_done,
-                             const grpc::Status& status,
-                             const ftl::AckMessagesResponse& response);
+  void OnBatchAckMessagesResponse(
+      DoneCallback on_done,
+      const ProtobufHttpStatus& status,
+      std::unique_ptr<ftl::BatchAckMessagesResponse> response);
 
-  std::unique_ptr<ScopedGrpcServerStream> OpenReceiveMessagesStream(
-      const base::RepeatingCallback<void(const ftl::ReceiveMessagesResponse&)>&
-          on_incoming_msg,
-      base::OnceCallback<void(const grpc::Status&)> on_channel_closed);
+  std::unique_ptr<ScopedProtobufHttpRequest> OpenReceiveMessagesStream(
+      base::OnceClosure on_channel_ready,
+      const base::RepeatingCallback<
+          void(std::unique_ptr<ftl::ReceiveMessagesResponse>)>& on_incoming_msg,
+      base::OnceCallback<void(const ProtobufHttpStatus&)> on_channel_closed);
 
   void RunMessageCallbacks(const ftl::InboxMessage& message);
 
   void OnMessageReceived(const ftl::InboxMessage& message);
 
-  std::unique_ptr<GrpcExecutor> executor_;
+  std::unique_ptr<ProtobufHttpClient> client_;
   RegistrationManager* registration_manager_;
-  std::unique_ptr<Messaging::Stub> messaging_stub_;
   std::unique_ptr<MessageReceptionChannel> reception_channel_;
   MessageCallbackList callback_list_;
+  MessageTracker message_tracker_;
 
   DISALLOW_COPY_AND_ASSIGN(FtlMessagingClient);
 };

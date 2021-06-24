@@ -23,14 +23,28 @@ FakeTileManagerClient::BuildEvictionQueue(TreePriority tree_priority) {
   return nullptr;
 }
 
-const gfx::ColorSpace& FakeTileManagerClient::GetRasterColorSpace() const {
+gfx::ColorSpace FakeTileManagerClient::GetRasterColorSpace(
+    gfx::ContentColorUsage /*content_color_usage*/) const {
   return color_space_;
+}
+
+float FakeTileManagerClient::GetSDRWhiteLevel() const {
+  return gfx::ColorSpace::kDefaultSDRWhiteLevel;
 }
 
 size_t FakeTileManagerClient::GetFrameIndexForImage(
     const PaintImage& paint_image,
     WhichTree tree) const {
   return PaintImage::kDefaultFrameIndex;
+}
+
+int FakeTileManagerClient::GetMSAASampleCountForRaster(
+    const scoped_refptr<DisplayItemList>& display_list) {
+  return 0;
+}
+
+bool FakeTileManagerClient::HasPendingTree() {
+  return true;
 }
 
 }  // namespace cc

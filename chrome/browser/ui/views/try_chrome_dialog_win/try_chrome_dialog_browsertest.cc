@@ -13,6 +13,7 @@
 #include "chrome/common/chrome_result_codes.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 using ::testing::_;
@@ -155,7 +156,7 @@ class TryChromeDialogBrowserTestBase : public InProcessBrowserTest {
   const int group_;
   ::testing::NiceMock<MockDelegate> delegate_;
   std::unique_ptr<TryChromeDialog> dialog_;
-  base::Closure quit_closure_;
+  base::RepeatingClosure quit_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(TryChromeDialogBrowserTestBase);
 };

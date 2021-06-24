@@ -21,12 +21,14 @@ enum class OverlayStrategy {
   kSingleOnTop = 3,
   kUnderlay = 4,
   kUnderlayCast = 5,
-  kMaxValue = kUnderlayCast,
+  kNoStrategyAllFail = 6,
+  kNoStrategyFailMin = 7,
+  kMaxValue = kNoStrategyFailMin,
 };
 
 // Parses a comma separated list of overlay strategy types and returns a list
 // of the corresponding OverlayStrategy enum values.
-VIZ_COMMON_EXPORT std::vector<OverlayStrategy> ParseOverlayStategies(
+VIZ_COMMON_EXPORT std::vector<OverlayStrategy> ParseOverlayStrategies(
     const std::string& strategies_string);
 
 }  // namespace viz

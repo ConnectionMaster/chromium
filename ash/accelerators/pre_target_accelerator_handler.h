@@ -6,8 +6,6 @@
 #define ASH_ACCELERATORS_PRE_TARGET_ACCELERATOR_HANDLER_H_
 
 #include "ash/ash_export.h"
-#include "base/macros.h"
-#include "base/time/time.h"
 #include "ui/wm/core/accelerator_delegate.h"
 
 namespace aura {
@@ -30,6 +28,9 @@ class ASH_EXPORT PreTargetAcceleratorHandler
     : public ::wm::AcceleratorDelegate {
  public:
   PreTargetAcceleratorHandler();
+  PreTargetAcceleratorHandler(const PreTargetAcceleratorHandler&) = delete;
+  PreTargetAcceleratorHandler& operator=(const PreTargetAcceleratorHandler&) =
+      delete;
   ~PreTargetAcceleratorHandler() override;
 
   // wm::AcceleratorDelegate:
@@ -45,16 +46,6 @@ class ASH_EXPORT PreTargetAcceleratorHandler
   bool ShouldProcessAcceleratorNow(aura::Window* target,
                                    const ui::KeyEvent& event,
                                    const ui::Accelerator& accelerator);
-
-  // Records a histogram on how long the "Search" key is held when a user
-  // presses an accelerator that involes the "Search" key.
-  void RecordSearchKeyStats(const ui::Accelerator& accelerator);
-
-  enum SearchKeyState { RELEASED = 0, PRESSED, RECORDED };
-  SearchKeyState search_key_state_ = RELEASED;
-  base::TimeTicks search_key_pressed_timestamp_;
-
-  DISALLOW_COPY_AND_ASSIGN(PreTargetAcceleratorHandler);
 };
 
 }  // namespace ash

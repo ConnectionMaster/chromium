@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <memory>
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
@@ -82,7 +83,8 @@ const char TimeZoneResolver::kLastTimeZoneRefreshTime[] =
 
 // This class periodically refreshes location and timezone.
 // It should be destroyed to stop refresh.
-class TimeZoneResolver::TimeZoneResolverImpl : public base::PowerObserver {
+class TimeZoneResolver::TimeZoneResolverImpl
+    : public base::PowerSuspendObserver {
  public:
   explicit TimeZoneResolverImpl(const TimeZoneResolver* resolver);
 
@@ -91,7 +93,7 @@ class TimeZoneResolver::TimeZoneResolverImpl : public base::PowerObserver {
   // This is called once after the object is created.
   void Start();
 
-  // PowerObserver implementation.
+  // PowerSuspendObserver implementation.
   void OnResume() override;
 
   // (Re)Starts timer.
@@ -144,7 +146,7 @@ class TimeZoneResolver::TimeZoneResolverImpl : public base::PowerObserver {
   std::unique_ptr<TZRequest> request_;
 
   base::WeakPtrFactory<TimeZoneResolver::TimeZoneResolverImpl>
-      weak_ptr_factory_;
+      weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TimeZoneResolverImpl);
 };
@@ -155,7 +157,7 @@ namespace {
 class TZRequest {
  public:
   explicit TZRequest(TimeZoneResolver::TimeZoneResolverImpl* resolver)
-      : resolver_(resolver), weak_ptr_factory_(this) {}
+      : resolver_(resolver) {}
 
   ~TZRequest();
 
@@ -179,7 +181,7 @@ class TZRequest {
 
   TimeZoneResolver::TimeZoneResolverImpl* const resolver_;
 
-  base::WeakPtrFactory<TZRequest> weak_ptr_factory_;
+  base::WeakPtrFactory<TZRequest> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TZRequest);
 };
@@ -192,13 +194,13 @@ void TZRequest::StartRequestOnNetworkAvailable() {
       base::TimeDelta::FromSeconds(kRefreshTimeZoneTimeoutSeconds),
       resolver_->ShouldSendWiFiGeolocationData(),
       resolver_->ShouldSendCellularGeolocationData(),
-      base::Bind(&TZRequest::OnLocationResolved, AsWeakPtr()));
+      base::BindOnce(&TZRequest::OnLocationResolved, AsWeakPtr()));
 }
 
 void TZRequest::Start() {
   // call to chromeos::DelayNetworkCall
   resolver_->delay_network_call().Run(
-      base::Bind(&TZRequest::StartRequestOnNetworkAvailable, AsWeakPtr()));
+      base::BindOnce(&TZRequest::StartRequestOnNetworkAvailable, AsWeakPtr()));
 }
 
 void TZRequest::OnLocationResolved(const Geoposition& position,
@@ -222,9 +224,8 @@ void TZRequest::OnLocationResolved(const Geoposition& position,
   }
 
   resolver_->timezone_provider()->RequestTimezone(
-      position,
-      timeout - elapsed,
-      base::Bind(&TZRequest::OnTimezoneResolved, AsWeakPtr()));
+      position, timeout - elapsed,
+      base::BindOnce(&TZRequest::OnTimezoneResolved, AsWeakPtr()));
 
   // Prevent |on_request_finished| from firing here.
   base::OnceClosure unused = on_request_finished.Release();
@@ -266,13 +267,11 @@ TimeZoneResolver::TimeZoneResolverImpl::TimeZoneResolverImpl(
           SimpleGeolocationProvider::DefaultGeolocationProviderURL()),
       timezone_provider_(resolver->shared_url_loader_factory(),
                          DefaultTimezoneProviderURL()),
-      requests_count_(0),
-      weak_ptr_factory_(this) {
+      requests_count_(0) {
   DCHECK(!resolver_->apply_timezone().is_null());
   DCHECK(!resolver_->delay_network_call().is_null());
 
-  base::PowerMonitor* power_monitor = base::PowerMonitor::Get();
-  power_monitor->AddObserver(this);
+  base::PowerMonitor::AddPowerSuspendObserver(this);
 
   const int64_t last_refresh_at_raw =
       resolver_->local_state()->GetInt64(kLastTimeZoneRefreshTime);
@@ -289,9 +288,7 @@ TimeZoneResolver::TimeZoneResolverImpl::TimeZoneResolverImpl(
 }
 
 TimeZoneResolver::TimeZoneResolverImpl::~TimeZoneResolverImpl() {
-  base::PowerMonitor* power_monitor = base::PowerMonitor::Get();
-  if (power_monitor)
-    power_monitor->RemoveObserver(this);
+  base::PowerMonitor::RemovePowerSuspendObserver(this);
 }
 
 void TimeZoneResolver::TimeZoneResolverImpl::Start() {
@@ -345,8 +342,8 @@ void TimeZoneResolver::TimeZoneResolverImpl::ScheduleRequest() {
   refresh_timer_.Stop();
   refresh_timer_.Start(
       FROM_HERE, interval,
-      base::Bind(&TimeZoneResolver::TimeZoneResolverImpl::CreateNewRequest,
-                 AsWeakPtr()));
+      base::BindOnce(&TimeZoneResolver::TimeZoneResolverImpl::CreateNewRequest,
+                     AsWeakPtr()));
 }
 
 void TimeZoneResolver::TimeZoneResolverImpl::CreateNewRequest() {
@@ -355,7 +352,7 @@ void TimeZoneResolver::TimeZoneResolverImpl::CreateNewRequest() {
 
   refresh_timer_.Stop();
 
-  request_.reset(new TZRequest(this));
+  request_ = std::make_unique<TZRequest>(this);
   request_->Start();
 }
 
@@ -421,7 +418,7 @@ TimeZoneResolver::~TimeZoneResolver() {
 void TimeZoneResolver::Start() {
   DCHECK(thread_checker_.CalledOnValidThread());
   if (!implementation_) {
-    implementation_.reset(new TimeZoneResolverImpl(this));
+    implementation_ = std::make_unique<TimeZoneResolverImpl>(this);
     implementation_->Start();
   }
 }

@@ -14,9 +14,9 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "net/base/completion_once_callback.h"
+#include "net/base/isolation_info.h"
 #include "net/base/net_export.h"
 #include "net/proxy_resolution/pac_file_fetcher.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -50,13 +50,6 @@ class NET_EXPORT PacFileFetcherImpl : public PacFileFetcher,
   static std::unique_ptr<PacFileFetcherImpl> Create(
       URLRequestContext* url_request_context);
 
-  // Same as Create(), but additionally allows fetching PAC URLs from file://
-  // URLs (provided the URLRequestContext supports it).
-  //
-  // This should not be used in new code (see https://crbug.com/839566).
-  static std::unique_ptr<PacFileFetcherImpl> CreateWithFileUrlSupport(
-      URLRequestContext* url_request_context);
-
   ~PacFileFetcherImpl() override;
 
   // Used by unit-tests to modify the default limits.
@@ -67,7 +60,7 @@ class NET_EXPORT PacFileFetcherImpl : public PacFileFetcher,
 
   // PacFileFetcher methods:
   int Fetch(const GURL& url,
-            base::string16* text,
+            std::u16string* text,
             CompletionOnceCallback callback,
             const NetworkTrafficAnnotationTag traffic_annotation) override;
   void Cancel() override;
@@ -81,16 +74,18 @@ class NET_EXPORT PacFileFetcherImpl : public PacFileFetcher,
   void OnAuthRequired(URLRequest* request,
                       const AuthChallengeInfo& auth_info) override;
   void OnSSLCertificateError(URLRequest* request,
+                             int net_error,
                              const SSLInfo& ssl_info,
                              bool is_hsts_ok) override;
   void OnResponseStarted(URLRequest* request, int net_error) override;
   void OnReadCompleted(URLRequest* request, int num_bytes) override;
 
+  const IsolationInfo& isolation_info_for_testing() { return isolation_info_; }
+
  private:
   enum { kBufSize = 4096 };
 
-  PacFileFetcherImpl(URLRequestContext* url_request_context,
-                     bool allow_file_url);
+  explicit PacFileFetcherImpl(URLRequestContext* url_request_context);
 
   // Returns true if |url| has an acceptable URL scheme (i.e. http://, https://,
   // etc).
@@ -117,6 +112,9 @@ class NET_EXPORT PacFileFetcherImpl : public PacFileFetcher,
   // OnShutdown.
   URLRequestContext* url_request_context_;
 
+  // Transient IsolationInfo used to fetch PAC scripts.
+  const IsolationInfo isolation_info_;
+
   // Buffer that URLRequest writes into.
   scoped_refptr<IOBuffer> buf_;
 
@@ -142,7 +140,7 @@ class NET_EXPORT PacFileFetcherImpl : public PacFileFetcher,
 
   // This buffer is owned by the owner of |callback|, and will be filled with
   // UTF16 response on completion.
-  base::string16* result_text_;
+  std::u16string* result_text_;
 
   // The maximum number of bytes to allow in responses.
   size_t max_response_bytes_;
@@ -156,11 +154,9 @@ class NET_EXPORT PacFileFetcherImpl : public PacFileFetcher,
   // The time that the first byte was received.
   base::TimeTicks fetch_time_to_first_byte_;
 
-  const bool allow_file_url_;
-
   // Factory for creating the time-out task. This takes care of revoking
   // outstanding tasks when |this| is deleted.
-  base::WeakPtrFactory<PacFileFetcherImpl> weak_factory_;
+  base::WeakPtrFactory<PacFileFetcherImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PacFileFetcherImpl);
 };

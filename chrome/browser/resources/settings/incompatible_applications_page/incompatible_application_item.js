@@ -6,7 +6,7 @@
  * @fileoverview
  * 'incompatible-application-item' represents one item in a "list-box" of
  * incompatible applications, as defined in
- * chrome/browser/conflicts/incompatible_applications_updater_win.h.
+ * chrome/browser/win/conflicts/incompatible_applications_updater_win.h.
  * This element contains a button that can be used to remove or update the
  * incompatible application, depending on the value of the action-type property.
  *
@@ -33,8 +33,19 @@
  *   </div>
  */
 
+import 'chrome://resources/cr_elements/cr_button/cr_button.m.js';
+import '../settings_shared_css.js';
+
+import {assertNotReached} from 'chrome://resources/js/assert.m.js';
+import {I18nBehavior} from 'chrome://resources/js/i18n_behavior.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {ActionTypes, IncompatibleApplicationsBrowserProxy, IncompatibleApplicationsBrowserProxyImpl} from './incompatible_applications_browser_proxy.js';
+
 Polymer({
   is: 'incompatible-application-item',
+
+  _template: html`{__html_template__}`,
 
   behaviors: [I18nBehavior],
 
@@ -49,8 +60,8 @@ Polymer({
     /**
      * The type of the action to be taken on this incompatible application. Must
      * be one of BlacklistMessageType in
-     * chrome/browser/conflicts/proto/module_list.proto.
-     * @type {!settings.ActionTypes}
+     * chrome/browser/win/conflicts/proto/module_list.proto.
+     * @type {!ActionTypes}
      */
     actionType: Number,
 
@@ -61,13 +72,12 @@ Polymer({
     actionUrl: String,
   },
 
-  /** @private {settings.IncompatibleApplicationsBrowserProxy} */
+  /** @private {IncompatibleApplicationsBrowserProxy} */
   browserProxy_: null,
 
   /** @override */
-  created: function() {
-    this.browserProxy_ =
-        settings.IncompatibleApplicationsBrowserProxyImpl.getInstance();
+  created() {
+    this.browserProxy_ = IncompatibleApplicationsBrowserProxyImpl.getInstance();
   },
 
   /**
@@ -75,12 +85,12 @@ Polymer({
    * actionType.
    * @private
    */
-  onActionTap_: function() {
-    if (this.actionType === settings.ActionTypes.UNINSTALL) {
+  onActionTap_() {
+    if (this.actionType === ActionTypes.UNINSTALL) {
       this.browserProxy_.startApplicationUninstallation(this.applicationName);
     } else if (
-        this.actionType === settings.ActionTypes.MORE_INFO ||
-        this.actionType === settings.ActionTypes.UPGRADE) {
+        this.actionType === ActionTypes.MORE_INFO ||
+        this.actionType === ActionTypes.UPGRADE) {
       this.browserProxy_.openURL(this.actionUrl);
     } else {
       assertNotReached();
@@ -91,14 +101,14 @@ Polymer({
    * @return {string} The label that should be applied to the action button.
    * @private
    */
-  getActionName_: function(actionType) {
-    if (actionType === settings.ActionTypes.UNINSTALL) {
+  getActionName_(actionType) {
+    if (actionType === ActionTypes.UNINSTALL) {
       return this.i18n('incompatibleApplicationsRemoveButton');
     }
-    if (actionType === settings.ActionTypes.MORE_INFO) {
+    if (actionType === ActionTypes.MORE_INFO) {
       return this.i18n('learnMore');
     }
-    if (actionType === settings.ActionTypes.UPGRADE) {
+    if (actionType === ActionTypes.UPGRADE) {
       return this.i18n('incompatibleApplicationsUpdateButton');
     }
     assertNotReached();

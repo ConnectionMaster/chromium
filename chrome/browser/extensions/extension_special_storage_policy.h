@@ -9,15 +9,12 @@
 #include <memory>
 #include <string>
 
+#include "base/sequenced_task_runner.h"
 #include "base/synchronization/lock.h"
 #include "extensions/common/extension_set.h"
-#include "services/network/session_cleanup_cookie_store.h"
+#include "services/network/public/cpp/session_cookie_delete_predicate.h"
 #include "storage/browser/quota/special_storage_policy.h"
 #include "url/gurl.h"
-
-namespace content {
-class BrowserContext;
-}
 
 namespace content_settings {
 class CookieSettings;
@@ -43,12 +40,10 @@ class ExtensionSpecialStoragePolicy : public storage::SpecialStoragePolicy {
   bool HasIsolatedStorage(const GURL& origin) override;
   bool HasSessionOnlyOrigins() override;
   bool IsStorageDurable(const GURL& origin) override;
-  network::SessionCleanupCookieStore::DeleteCookiePredicate
-  CreateDeleteCookieOnExitPredicate() override;
+  network::DeleteCookiePredicate CreateDeleteCookieOnExitPredicate() override;
 
   // Methods used by the ExtensionService to populate this class.
-  void GrantRightsForExtension(const extensions::Extension* extension,
-                               content::BrowserContext* browser_context);
+  void GrantRightsForExtension(const extensions::Extension* extension);
   void RevokeRightsForExtension(const extensions::Extension* extension);
   void RevokeRightsForAllExtensions();
 
@@ -95,6 +90,12 @@ class ExtensionSpecialStoragePolicy : public storage::SpecialStoragePolicy {
   SpecialCollection isolated_extensions_;
   SpecialCollection content_capabilities_unlimited_extensions_;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_;
+
+  // We live on the IO thread but need to observe CookieSettings from the UI
+  // thread. This helper does that.
+  class CookieSettingsObserver;
+  const std::unique_ptr<CookieSettingsObserver, base::OnTaskRunnerDeleter>
+      cookie_settings_observer_;
 };
 
 #endif  // CHROME_BROWSER_EXTENSIONS_EXTENSION_SPECIAL_STORAGE_POLICY_H_

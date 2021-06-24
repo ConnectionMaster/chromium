@@ -25,11 +25,11 @@ namespace cc {
 class Animation;
 class AnimationTimeline;
 class Layer;
-class SingleKeyframeEffectAnimation;
 }
 
 namespace gfx {
 class Animation;
+class AnimationCurve;
 class Rect;
 class Transform;
 }
@@ -100,6 +100,14 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
   virtual void SetColor(SkColor color);
   SkColor GetTargetColor() const;
 
+  // Sets the clip rect on the delegate. May cause an implicit animation.
+  virtual void SetClipRect(const gfx::Rect& clip_rect);
+  gfx::Rect GetTargetClipRect() const;
+
+  // Sets the rounded corners on the delegate. May cause an implicit animation.
+  virtual void SetRoundedCorners(const gfx::RoundedCornersF& rounded_corners);
+  gfx::RoundedCornersF GetTargetRoundedCorners() const;
+
   // Returns the default length of animations, including adjustment for slow
   // animation mode if set.
   base::TimeDelta GetTransitionDuration() const;
@@ -118,7 +126,7 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
   // Detach Animation from Layer and AnimationTimeline
   void DetachLayerAndTimeline(Compositor* compositor);
 
-  cc::SingleKeyframeEffectAnimation* GetAnimationForTesting() const;
+  cc::Animation* GetAnimationForTesting() const;
 
   // Sets the animation preemption strategy. This determines the behaviour if
   // a property is set during an animation. The default is
@@ -251,6 +259,7 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
   friend class base::RefCounted<LayerAnimator>;
   friend class ScopedLayerAnimationSettings;
   friend class LayerAnimatorTestController;
+  friend class AnimationThroughputReporter;
   FRIEND_TEST_ALL_PREFIXES(LayerAnimatorTest, AnimatorStartedCorrectly);
   FRIEND_TEST_ALL_PREFIXES(LayerAnimatorTest,
                            AnimatorRemovedFromCollectionWhenLayerIsDestroyed);
@@ -367,7 +376,9 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
       base::TimeTicks monotonic_time,
       int target_property,
       base::TimeTicks animation_start_time,
-      std::unique_ptr<cc::AnimationCurve> curve) override {}
+      std::unique_ptr<gfx::AnimationCurve> curve) override {}
+  void NotifyLocalTimeUpdated(
+      absl::optional<base::TimeDelta> local_time) override {}
 
   // Implementation of LayerThreadedAnimationDelegate.
   void AddThreadedAnimation(
@@ -377,10 +388,6 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
   void AttachLayerToAnimation(int layer_id);
   void DetachLayerFromAnimation();
 
-  void set_animation_metrics_reporter(AnimationMetricsReporter* reporter) {
-    animation_metrics_reporter_ = reporter;
-  }
-
   // This is the queue of animations to run.
   AnimationQueue animation_queue_;
 
@@ -388,7 +395,7 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
   LayerAnimationDelegate* delegate_;
 
   // Plays CC animations.
-  scoped_refptr<cc::SingleKeyframeEffectAnimation> animation_;
+  scoped_refptr<cc::Animation> animation_;
 
   // The currently running animations.
   RunningAnimations running_animations_;
@@ -419,9 +426,6 @@ class COMPOSITOR_EXPORT LayerAnimator : public base::RefCounted<LayerAnimator>,
   // Prevents timer adjustments in case when we start multiple animations
   // with preemption strategies that discard previous animations.
   bool adding_animations_;
-
-  // Helper to output UMA performance metrics.
-  AnimationMetricsReporter* animation_metrics_reporter_;
 
   // Observers are notified when layer animations end, are scheduled or are
   // aborted.

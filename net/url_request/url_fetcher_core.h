@@ -19,13 +19,14 @@
 #include "base/timer/timer.h"
 #include "net/base/chunked_upload_data_stream.h"
 #include "net/base/ip_endpoint.h"
+#include "net/base/net_errors.h"
 #include "net/base/proxy_server.h"
 #include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/referrer_policy.h"
 #include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context_getter_observer.h"
-#include "net/url_request/url_request_status.h"
 #include "url/gurl.h"
 
 namespace base {
@@ -88,15 +89,15 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   int GetLoadFlags() const;
   void SetAllowCredentials(bool allow_credentials);
   void SetReferrer(const std::string& referrer);
-  void SetReferrerPolicy(URLRequest::ReferrerPolicy referrer_policy);
-  void SetExtraRequestHeaders(const std::string& extra_request_headers);
-  void AddExtraRequestHeader(const std::string& header_line);
+  void SetReferrerPolicy(ReferrerPolicy referrer_policy);
+  void ClearExtraRequestHeaders();
+  void AddExtraRequestHeader(const std::string& name, const std::string& value);
   void SetRequestContext(URLRequestContextGetter* request_context_getter);
   // Set the origin that should be considered as "initiating" the fetch. This
   // URL
   // will be considered the "first-party" when applying cookie blocking policy
   // to requests, and treated as the request's initiator.
-  void SetInitiator(const base::Optional<url::Origin>& initiator);
+  void SetInitiator(const absl::optional<url::Origin>& initiator);
   // Set the key and data callback that is used when setting the user
   // data on any URLRequest objects this object creates.
   void SetURLRequestUserData(
@@ -122,7 +123,7 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   bool WasCached() const;
   const GURL& GetOriginalURL() const;
   const GURL& GetURL() const;
-  const URLRequestStatus& GetStatus() const;
+  Error GetError() const;
   int GetResponseCode() const;
   int64_t GetReceivedResponseContentLength() const;
   int64_t GetTotalReceivedBytes() const;
@@ -237,7 +238,7 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   GURL original_url_;                // The URL we were asked to fetch
   GURL url_;                         // The URL we eventually wound up at
   URLFetcher::RequestType request_type_;  // What type of request is this?
-  URLRequestStatus status_;          // Status of the request
+  Error error_;                           // Error from the request
   URLFetcherDelegate* delegate_;     // Object to notify on completion
   // Task runner for the creating sequence. Used to interact with the delegate.
   const scoped_refptr<base::SequencedTaskRunner> delegate_task_runner_;
@@ -248,13 +249,13 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   std::unique_ptr<URLRequest> request_;  // The actual request this wraps
   int load_flags_;                   // Flags for the load operation
   // Whether credentials are sent along with the request.
-  base::Optional<bool> allow_credentials_;
+  absl::optional<bool> allow_credentials_;
   int response_code_;                // HTTP status code for the request
   scoped_refptr<IOBuffer> buffer_;
                                      // Read buffer
   scoped_refptr<URLRequestContextGetter> request_context_getter_;
                                      // Cookie/cache info for the request
-  base::Optional<url::Origin> initiator_;  // The request's initiator
+  absl::optional<url::Origin> initiator_;  // The request's initiator
   // The user data to add to each newly-created URLRequest.
   const void* url_request_data_key_;
   URLFetcher::CreateDataCallback url_request_create_data_callback_;
@@ -277,7 +278,7 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
       upload_stream_factory_;        // Callback to create HTTP POST payload.
   std::string upload_content_type_;  // MIME type of POST payload
   std::string referrer_;             // HTTP Referer header value and policy
-  URLRequest::ReferrerPolicy referrer_policy_;
+  ReferrerPolicy referrer_policy_;
   bool is_chunked_upload_;           // True if using chunked transfer encoding
 
   // Used to write to |chunked_stream|, even after ownership has been passed to

@@ -17,32 +17,38 @@
 
 namespace ui {
 
-class GbmSurfacelessWayland;
-class WaylandConnectionProxy;
+class WaylandConnection;
+class WaylandBufferManagerGpu;
 
 class WaylandSurfaceFactory : public SurfaceFactoryOzone {
  public:
-  WaylandSurfaceFactory();
+  WaylandSurfaceFactory(WaylandConnection* connection,
+                        WaylandBufferManagerGpu* buffer_manager);
   ~WaylandSurfaceFactory() override;
-
-  void SetProxy(WaylandConnectionProxy* proxy);
-
-  // These methods are used, when a dmabuf based approach is used.
-  void RegisterSurface(gfx::AcceleratedWidget widget,
-                       GbmSurfacelessWayland* surface);
-  void UnregisterSurface(gfx::AcceleratedWidget widget);
-  GbmSurfacelessWayland* GetSurface(gfx::AcceleratedWidget widget) const;
 
   // SurfaceFactoryOzone overrides:
   std::vector<gl::GLImplementation> GetAllowedGLImplementations() override;
-  GLOzone* GetGLOzone(gl::GLImplementation implementation) override;
+  GLOzone* GetGLOzone(const gl::GLImplementationParts& implementation) override;
+#if BUILDFLAG(ENABLE_VULKAN)
+  std::unique_ptr<gpu::VulkanImplementation> CreateVulkanImplementation(
+      bool use_swiftshader,
+      bool allow_protected_memory) override;
+#endif
   std::unique_ptr<SurfaceOzoneCanvas> CreateCanvasForWidget(
       gfx::AcceleratedWidget widget) override;
   scoped_refptr<gfx::NativePixmap> CreateNativePixmap(
       gfx::AcceleratedWidget widget,
+      VkDevice vk_device,
       gfx::Size size,
       gfx::BufferFormat format,
-      gfx::BufferUsage usage) override;
+      gfx::BufferUsage usage,
+      absl::optional<gfx::Size> framebuffer_size = absl::nullopt) override;
+  void CreateNativePixmapAsync(gfx::AcceleratedWidget widget,
+                               VkDevice vk_device,
+                               gfx::Size size,
+                               gfx::BufferFormat format,
+                               gfx::BufferUsage usage,
+                               NativePixmapCallback callback) override;
   scoped_refptr<gfx::NativePixmap> CreateNativePixmapFromHandle(
       gfx::AcceleratedWidget widget,
       gfx::Size size,
@@ -50,11 +56,9 @@ class WaylandSurfaceFactory : public SurfaceFactoryOzone {
       gfx::NativePixmapHandle handle) override;
 
  private:
-  WaylandConnectionProxy* connection_ = nullptr;
+  WaylandConnection* const connection_;
+  WaylandBufferManagerGpu* const buffer_manager_;
   std::unique_ptr<GLOzone> egl_implementation_;
-
-  std::map<gfx::AcceleratedWidget, GbmSurfacelessWayland*>
-      widget_to_surface_map_;
 
   DISALLOW_COPY_AND_ASSIGN(WaylandSurfaceFactory);
 };

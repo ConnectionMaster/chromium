@@ -8,18 +8,19 @@
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
-#include "chrome/browser/extensions/extension_action.h"
-#include "chrome/browser/extensions/extension_action_manager.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/lazy_background_page_test_util.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/sessions/content/session_tab_helper.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/api/file_system/file_system_api.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
@@ -37,11 +38,10 @@ class NativeBindingsApiTest : public ExtensionApiTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     ExtensionApiTest::SetUpCommandLine(command_line);
-    // We whitelist the extension so that it can use the cast.streaming.* APIs,
+    // We allowlist the extension so that it can use the cast.streaming.* APIs,
     // which are the only APIs that are prefixed twice.
-    command_line->AppendSwitchASCII(
-        switches::kWhitelistedExtensionID,
-        "ddchlicdkolnonkihahngkmmmjnjlkkf");
+    command_line->AppendSwitchASCII(switches::kAllowlistedExtensionID,
+                                    "ddchlicdkolnonkihahngkmmmjnjlkkf");
   }
 
   void SetUpOnMainThread() override {
@@ -62,7 +62,9 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, SimpleEndToEndTest) {
 // A simplistic app test for app-specific APIs.
 IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, SimpleAppTest) {
   ExtensionTestMessageListener ready_listener("ready", true);
-  ASSERT_TRUE(RunPlatformAppTest("native_bindings/platform_app")) << message_;
+  ASSERT_TRUE(RunExtensionTest("native_bindings/platform_app",
+                               {.launch_as_platform_app = true}))
+      << message_;
   ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
 
   // On reply, the extension will try to close the app window and send a
@@ -90,26 +92,26 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, DeclarativeEvents) {
   ASSERT_TRUE(listener.WaitUntilSatisfied());
 
   // The extension's page action should currently be hidden.
-  ExtensionAction* page_action =
-      ExtensionActionManager::Get(profile())->GetPageAction(*extension);
+  ExtensionAction* action =
+      ExtensionActionManager::Get(profile())->GetExtensionAction(*extension);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  int tab_id = SessionTabHelper::IdForTab(web_contents).id();
-  EXPECT_FALSE(page_action->GetIsVisible(tab_id));
-  EXPECT_TRUE(page_action->GetDeclarativeIcon(tab_id).IsEmpty());
+  int tab_id = sessions::SessionTabHelper::IdForTab(web_contents).id();
+  EXPECT_FALSE(action->GetIsVisible(tab_id));
+  EXPECT_TRUE(action->GetDeclarativeIcon(tab_id).IsEmpty());
 
   // Navigating to example.com should show the page action.
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(
                      "example.com", "/native_bindings/simple.html"));
   base::RunLoop().RunUntilIdle();
-  EXPECT_TRUE(page_action->GetIsVisible(tab_id));
-  EXPECT_FALSE(page_action->GetDeclarativeIcon(tab_id).IsEmpty());
+  EXPECT_TRUE(action->GetIsVisible(tab_id));
+  EXPECT_FALSE(action->GetDeclarativeIcon(tab_id).IsEmpty());
 
   // And the extension should be notified of the click.
   ExtensionTestMessageListener clicked_listener("clicked and removed", false);
   ExtensionActionAPI::Get(profile())->DispatchExtensionActionClicked(
-      *page_action, web_contents, extension);
+      *action, web_contents, extension);
   ASSERT_TRUE(clicked_listener.WaitUntilSatisfied());
 }
 
@@ -136,9 +138,11 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, FileSystemApiGetDisplayPath) {
   FileSystemChooseEntryFunction::RegisterTempExternalFileSystemForTest(
       "test_root", test_dir);
   base::FilePath test_file = test_dir.AppendASCII("text.txt");
-  FileSystemChooseEntryFunction::SkipPickerAndAlwaysSelectPathForTest(
-      &test_file);
-  ASSERT_TRUE(RunPlatformAppTest("native_bindings/instance_of")) << message_;
+  FileSystemChooseEntryFunction::SkipPickerAndAlwaysSelectPathForTest picker(
+      test_file);
+  ASSERT_TRUE(RunExtensionTest("native_bindings/instance_of",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 // Tests the webRequest API, which requires IO thread requests and custom
@@ -282,6 +286,148 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, APICreationFromNewContext) {
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("native_bindings/context_initialization"))
       << message_;
+}
+
+// End-to-end test for promise support on bindings for MV3 extensions, using a
+// few tabs APIs. Also ensures callbacks still work for the API as expected.
+IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, PromiseBasedAPI) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(
+      R"({
+           "name": "Promises",
+           "manifest_version": 3,
+           "version": "0.1",
+           "background": {
+             "service_worker": "background.js"
+           },
+           "permissions": ["tabs"]
+         })");
+  constexpr char kBackgroundJs[] =
+      R"(let tabIdExample;
+         let tabIdGoogle;
+
+         chrome.test.getConfig((config) => {
+           let exampleUrl = `https://example.com:${config.testServer.port}/`;
+           let googleUrl = `https://google.com:${config.testServer.port}/`
+
+           chrome.test.runTests([
+             function createNewTabPromise() {
+               let promise = chrome.tabs.create({url: exampleUrl});
+               chrome.test.assertNoLastError();
+               chrome.test.assertTrue(promise instanceof Promise);
+               promise.then((tab) => {
+                 let url = tab.pendingUrl;
+                 chrome.test.assertEq(exampleUrl, url);
+                 tabIdExample = tab.id;
+                 chrome.test.assertNoLastError();
+                 chrome.test.succeed();
+               });
+             },
+             function queryTabPromise() {
+               let promise = chrome.tabs.query({url: exampleUrl});
+               chrome.test.assertNoLastError();
+               chrome.test.assertTrue(promise instanceof Promise);
+               promise.then((tabs) => {
+                 chrome.test.assertTrue(tabs instanceof Array);
+                 chrome.test.assertEq(1, tabs.length);
+                 chrome.test.assertEq(tabIdExample, tabs[0].id);
+                 chrome.test.assertNoLastError();
+                 chrome.test.succeed();
+               });
+             },
+
+             function createNewTabCallback() {
+               chrome.tabs.create({url: googleUrl}, (tab) => {
+                 let url = tab.pendingUrl;
+                 chrome.test.assertEq(googleUrl, url);
+                 tabIdGoogle = tab.id;
+                 chrome.test.assertNoLastError();
+                 chrome.test.succeed();
+               });
+             },
+             function queryTabCallback() {
+               chrome.tabs.query({url: googleUrl}, (tabs) => {
+                 chrome.test.assertTrue(tabs instanceof Array);
+                 chrome.test.assertEq(1, tabs.length);
+                 chrome.test.assertEq(tabIdGoogle, tabs[0].id);
+                 chrome.test.assertNoLastError();
+                 chrome.test.succeed();
+               });
+             }
+           ]);
+         });)";
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+  ResultCatcher catcher;
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+  ASSERT_TRUE(catcher.GetNextResult()) << catcher.message();
+}
+
+// Tests that calling an API which supports promises using an MV2 extension does
+// not get a promise based return and still needs to use callbacks when
+// required.
+IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, MV2PromisesNotSupported) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(
+      R"({
+           "name": "Promises",
+           "manifest_version": 2,
+           "version": "0.1",
+           "background": {
+             "scripts": ["background.js"]
+           },
+           "permissions": ["tabs"]
+         })");
+  constexpr char kBackgroundJs[] =
+      R"(let tabIdGooge;
+
+         chrome.test.getConfig((config) => {
+           let exampleUrl = `https://example.com:${config.testServer.port}/`;
+           let googleUrl = `https://google.com:${config.testServer.port}/`
+
+           chrome.test.runTests([
+             function createNewTabPromise() {
+               let result = chrome.tabs.create({url: exampleUrl});
+               chrome.test.assertEq(undefined, result);
+               chrome.test.assertNoLastError();
+               chrome.test.succeed();
+             },
+             function queryTabPromise() {
+               let expectedError = 'Error in invocation of tabs.query(object ' +
+                   'queryInfo, function callback): No matching signature.';
+               chrome.test.assertThrows(chrome.tabs.query,
+                                        [{url: exampleUrl}],
+                                        expectedError);
+               chrome.test.succeed();
+             },
+
+             function createNewTabCallback() {
+               chrome.tabs.create({url: googleUrl}, (tab) => {
+                 let url = tab.pendingUrl;
+                 chrome.test.assertEq(googleUrl, url);
+                 tabIdGoogle = tab.id;
+                 chrome.test.assertNoLastError();
+                 chrome.test.succeed();
+               });
+             },
+             function queryTabCallback() {
+               chrome.tabs.query({url: googleUrl}, (tabs) => {
+                 chrome.test.assertTrue(tabs instanceof Array);
+                 chrome.test.assertEq(1, tabs.length);
+                 chrome.test.assertEq(tabIdGoogle, tabs[0].id);
+                 chrome.test.assertNoLastError();
+                 chrome.test.succeed();
+               });
+             }
+           ]);
+         });)";
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+  ResultCatcher catcher;
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+  ASSERT_TRUE(catcher.GetNextResult()) << catcher.message();
 }
 
 }  // namespace extensions

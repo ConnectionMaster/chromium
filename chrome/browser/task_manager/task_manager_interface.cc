@@ -7,42 +7,25 @@
 #include "base/bind.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/task_manager/sampling/task_manager_impl.h"
-#include "chrome/browser/task_manager/sampling/task_manager_io_thread_helper.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/resource_request_info.h"
 #include "content/public/common/child_process_host.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "chrome/browser/ui/browser_dialogs.h"
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/crosapi/browser_util.h"
+#include "chrome/browser/ash/crosapi/crosapi_ash.h"
+#include "chrome/browser/ash/crosapi/crosapi_manager.h"
+#include "chrome/browser/ash/crosapi/task_manager_ash.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 namespace task_manager {
-
-namespace {
-BytesTransferredKey KeyForRequest(const net::URLRequest& request) {
-  // Only net::URLRequestJob instances created by the ResourceDispatcherHost
-  // have an associated ResourceRequestInfo and a render frame associated.
-  content::ResourceRequestInfo* info =
-      content::ResourceRequestInfo::ForRequest(&request);
-
-  // Requests without ResourceRequestInfo are attributed to the browser process.
-  if (!info)
-    return {content::ChildProcessHost::kInvalidUniqueID, MSG_ROUTING_NONE};
-
-  // Requests from PPAPI instances are proxied through the renderer, and specify
-  // the plugin_child_id of the plugin process.
-  if (info->GetPluginChildID() != content::ChildProcessHost::kInvalidUniqueID)
-    return {info->GetPluginChildID(), MSG_ROUTING_NONE};
-
-  // Other requests are associated with the child process (and frame, if
-  // originating from a renderer process).
-  return {info->GetChildID(), info->GetRenderFrameID()};
-}
-}  // namespace
 
 // static
 void TaskManagerInterface::RegisterPrefs(PrefRegistrySimple* registry) {
@@ -65,21 +48,16 @@ TaskManagerInterface* TaskManagerInterface::GetTaskManager() {
 }
 
 // static
-void TaskManagerInterface::OnRawBytesRead(const net::URLRequest& request,
-                                          int64_t bytes_read) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  BytesTransferredKey key = KeyForRequest(request);
-  TaskManagerIoThreadHelper::OnRawBytesTransferred(key, bytes_read,
-                                                   0 /*bytes_sent*/);
-}
-
-// static
-void TaskManagerInterface::OnRawBytesSent(const net::URLRequest& request,
-                                          int64_t bytes_sent) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  BytesTransferredKey key = KeyForRequest(request);
-  TaskManagerIoThreadHelper::OnRawBytesTransferred(key, 0 /*bytes_read*/,
-                                                   bytes_sent);
+void TaskManagerInterface::UpdateAccumulatedStatsNetworkForRoute(
+    int process_id,
+    int route_id,
+    int64_t recv_bytes,
+    int64_t sent_bytes) {
+  // Don't create a task manager if it hasn't already been created.
+  if (TaskManagerImpl::IsCreated()) {
+    TaskManagerImpl::GetInstance()->UpdateAccumulatedStatsNetworkForRoute(
+        process_id, route_id, recv_bytes, sent_bytes);
+  }
 }
 
 void TaskManagerInterface::AddObserver(TaskManagerObserver* observer) {
@@ -144,8 +122,7 @@ bool TaskManagerInterface::IsResourceRefreshEnabled(RefreshType type) const {
 TaskManagerInterface::TaskManagerInterface()
     : refresh_timer_(new base::RepeatingTimer()), enabled_resources_flags_(0) {}
 
-TaskManagerInterface::~TaskManagerInterface() {
-}
+TaskManagerInterface::~TaskManagerInterface() = default;
 
 void TaskManagerInterface::NotifyObserversOnTaskAdded(TaskId id) {
   for (TaskManagerObserver& observer : observers_)
@@ -164,7 +141,7 @@ void TaskManagerInterface::NotifyObserversOnRefresh(
 }
 
 void TaskManagerInterface::NotifyObserversOnRefreshWithBackgroundCalculations(
-      const TaskIdList& task_ids) {
+    const TaskIdList& task_ids) {
   for (TaskManagerObserver& observer : observers_)
     observer.OnTasksRefreshedWithBackgroundCalculations(task_ids);
 }
@@ -180,18 +157,28 @@ base::TimeDelta TaskManagerInterface::GetCurrentRefreshTime() const {
 }
 
 void TaskManagerInterface::ResourceFlagsAdded(int64_t flags) {
-  enabled_resources_flags_ |= flags;
+  SetEnabledResourceFlags(enabled_resources_flags_ | flags);
 }
 
 void TaskManagerInterface::SetEnabledResourceFlags(int64_t flags) {
   enabled_resources_flags_ = flags;
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Set refresh flags of the remote task manager if lacros is enabled.
+  if (crosapi::browser_util::IsLacrosEnabled() &&
+      crosapi::CrosapiManager::IsInitialized()) {
+    crosapi::CrosapiManager::Get()
+        ->crosapi_ash()
+        ->task_manager_ash()
+        ->SetRefreshFlags(enabled_resources_flags_);
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 }
 
 void TaskManagerInterface::ScheduleRefresh(base::TimeDelta refresh_time) {
-  refresh_timer_->Start(FROM_HERE,
-                        refresh_time,
-                        base::Bind(&TaskManagerInterface::Refresh,
-                                   base::Unretained(this)));
+  refresh_timer_->Start(FROM_HERE, refresh_time,
+                        base::BindRepeating(&TaskManagerInterface::Refresh,
+                                            base::Unretained(this)));
 }
 
 }  // namespace task_manager

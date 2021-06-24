@@ -10,8 +10,8 @@
 #include "content/common/content_export.h"
 #include "content/renderer/service_worker/service_worker_provider_context.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "third_party/blink/public/mojom/service_worker/controller_service_worker.mojom.h"
-#include "third_party/blink/public/mojom/service_worker/service_worker_provider.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/controller_service_worker.mojom-forward.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_provider.mojom-forward.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_network_provider.h"
 
 namespace content {
@@ -31,7 +31,7 @@ class CONTENT_EXPORT ServiceWorkerNetworkProviderForFrame final
   // the loading context, e.g. a frame, provides it.
   static std::unique_ptr<ServiceWorkerNetworkProviderForFrame> Create(
       RenderFrameImpl* frame,
-      blink::mojom::ServiceWorkerProviderInfoForWindowPtr provider_info,
+      blink::mojom::ServiceWorkerContainerInfoForClientPtr container_info,
       blink::mojom::ControllerServiceWorkerInfoPtr controller_info,
       scoped_refptr<network::SharedURLLoaderFactory> fallback_loader_factory);
 
@@ -47,11 +47,20 @@ class CONTENT_EXPORT ServiceWorkerNetworkProviderForFrame final
   std::unique_ptr<blink::WebURLLoader> CreateURLLoader(
       const blink::WebURLRequest& request,
       std::unique_ptr<blink::scheduler::WebResourceLoadingTaskRunnerHandle>
-          task_runner_handle) override;
-  blink::mojom::ControllerServiceWorkerMode IsControlledByServiceWorker()
+          freezable_task_runner_handle,
+      std::unique_ptr<blink::scheduler::WebResourceLoadingTaskRunnerHandle>
+          unfreezable_task_runner_handle,
+      blink::CrossVariantMojoRemote<blink::mojom::KeepAliveHandleInterfaceBase>
+          keep_alive_handle,
+      blink::WebBackForwardCacheLoaderHelper back_forward_cache_loader_helper)
+      override;
+  blink::mojom::ControllerServiceWorkerMode GetControllerServiceWorkerMode()
       override;
   int64_t ControllerServiceWorkerID() override;
   void DispatchNetworkQuiet() override;
+  blink::CrossVariantMojoReceiver<
+      blink::mojom::WorkerTimingContainerInterfaceBase>
+  TakePendingWorkerTimingReceiver(int request_id) override;
 
   ServiceWorkerProviderContext* context() { return context_.get(); }
 
@@ -67,6 +76,8 @@ class CONTENT_EXPORT ServiceWorkerNetworkProviderForFrame final
   scoped_refptr<ServiceWorkerProviderContext> context_;
 
   std::unique_ptr<NewDocumentObserver> observer_;
+
+  const bool service_worker_subresource_filter_enabled_ = false;
 };
 
 }  // namespace content

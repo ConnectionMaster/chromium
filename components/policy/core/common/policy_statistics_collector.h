@@ -47,6 +47,8 @@ class POLICY_EXPORT PolicyStatisticsCollector {
  protected:
   // protected virtual for mocking.
   virtual void RecordPolicyUse(int id);
+  virtual void RecordPolicyGroupWithConflicts(int id);
+  virtual void RecordPolicyIgnoredByAtomicGroup(int id);
 
  private:
   void CollectStatistics();
@@ -57,7 +59,7 @@ class POLICY_EXPORT PolicyStatisticsCollector {
   PolicyService* policy_service_;
   PrefService* prefs_;
 
-  base::CancelableClosure update_callback_;
+  base::CancelableOnceClosure update_callback_;
 
   const scoped_refptr<base::TaskRunner> task_runner_;
 

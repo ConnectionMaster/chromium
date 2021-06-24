@@ -7,9 +7,9 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/stl_util.h"
 
 namespace device {
 
@@ -34,7 +34,7 @@ std::unique_ptr<FidoHidInitPacket> FidoHidInitPacket::CreateFromSerializedData(
   channel_id |= serialized[index++] & 0xff;
 
   auto command = static_cast<FidoHidDeviceCommand>(serialized[index++] & 0x7f);
-  if (!base::ContainsValue(GetFidoHidDeviceCommandList(), command))
+  if (!base::Contains(GetFidoHidDeviceCommandList(), command))
     return nullptr;
 
   uint16_t payload_size = serialized[index++] << 8;

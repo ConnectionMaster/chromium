@@ -47,8 +47,12 @@ void FakeAudioRendererSink::Start() {
 }
 
 void FakeAudioRendererSink::Stop() {
-  callback_ = NULL;
+  callback_ = nullptr;
   ChangeState(kStopped);
+}
+
+void FakeAudioRendererSink::Flush() {
+  DCHECK_NE(state_, kPlaying);
 }
 
 void FakeAudioRendererSink::Pause() {

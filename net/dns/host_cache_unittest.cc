@@ -9,13 +9,25 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/format_macros.h"
-#include "base/stl_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "net/base/network_isolation_key.h"
+#include "net/base/schemeful_site.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
+
+using ::testing::ElementsAre;
+using ::testing::ElementsAreArray;
+using ::testing::Optional;
+using ::testing::Pair;
+using ::testing::Property;
+using ::testing::UnorderedElementsAre;
 
 namespace net {
 
@@ -26,7 +38,7 @@ const int kMaxCacheEntries = 10;
 // Builds a key for |hostname|, defaulting the query type to unspecified.
 HostCache::Key Key(const std::string& hostname) {
   return HostCache::Key(hostname, DnsQueryType::UNSPECIFIED, 0,
-                        HostResolverSource::ANY);
+                        HostResolverSource::ANY, NetworkIsolationKey());
 }
 
 bool FoobarIndexIsOdd(const std::string& foobarx_com) {
@@ -105,6 +117,65 @@ TEST(HostCacheTest, Basic) {
 
   EXPECT_FALSE(cache.Lookup(key1, now));
   EXPECT_FALSE(cache.Lookup(key2, now));
+}
+
+// Make sure NetworkIsolationKey is respected.
+TEST(HostCacheTest, NetworkIsolationKey) {
+  const char kHostname[] = "hostname.test";
+  const base::TimeDelta kTTL = base::TimeDelta::FromSeconds(10);
+
+  const SchemefulSite kSite1(GURL("https://site1.test/"));
+  const NetworkIsolationKey kNetworkIsolationKey1(kSite1, kSite1);
+  const SchemefulSite kSite2(GURL("https://site2.test/"));
+  const NetworkIsolationKey kNetworkIsolationKey2(kSite2, kSite2);
+
+  HostCache::Key key1(kHostname, DnsQueryType::UNSPECIFIED, 0,
+                      HostResolverSource::ANY, kNetworkIsolationKey1);
+  HostCache::Key key2(kHostname, DnsQueryType::UNSPECIFIED, 0,
+                      HostResolverSource::ANY, kNetworkIsolationKey2);
+  HostCache::Entry entry1 =
+      HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
+  HostCache::Entry entry2 = HostCache::Entry(ERR_FAILED, AddressList(),
+                                             HostCache::Entry::SOURCE_UNKNOWN);
+
+  HostCache cache(kMaxCacheEntries);
+
+  // Start at t=0.
+  base::TimeTicks now;
+
+  EXPECT_EQ(0U, cache.size());
+
+  // Add an entry for kNetworkIsolationKey1.
+  EXPECT_FALSE(cache.Lookup(key1, now));
+  cache.Set(key1, entry1, now, kTTL);
+
+  const std::pair<const HostCache::Key, HostCache::Entry>* result =
+      cache.Lookup(key1, now);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(kNetworkIsolationKey1, result->first.network_isolation_key);
+  EXPECT_EQ(OK, result->second.error());
+  EXPECT_FALSE(cache.Lookup(key2, now));
+  EXPECT_EQ(1U, cache.size());
+
+  // Add a different entry for kNetworkIsolationKey2.
+  cache.Set(key2, entry2, now, 3 * kTTL);
+  result = cache.Lookup(key1, now);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(kNetworkIsolationKey1, result->first.network_isolation_key);
+  EXPECT_EQ(OK, result->second.error());
+  result = cache.Lookup(key2, now);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(kNetworkIsolationKey2, result->first.network_isolation_key);
+  EXPECT_EQ(ERR_FAILED, result->second.error());
+  EXPECT_EQ(2U, cache.size());
+
+  // Advance time so that first entry times out. Second entry should remain.
+  now += 2 * kTTL;
+  EXPECT_FALSE(cache.Lookup(key1, now));
+  result = cache.Lookup(key2, now);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(kNetworkIsolationKey2, result->first.network_isolation_key);
+  EXPECT_EQ(ERR_FAILED, result->second.error());
 }
 
 // Try caching entries for a failed resolve attempt -- since we set the TTL of
@@ -210,9 +281,9 @@ TEST(HostCacheTest, DnsQueryTypeIsPartOfKey) {
   base::TimeTicks now;
 
   HostCache::Key key1("foobar.com", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY);
-  HostCache::Key key2("foobar.com", DnsQueryType::A, 0,
-                      HostResolverSource::ANY);
+                      HostResolverSource::ANY, NetworkIsolationKey());
+  HostCache::Key key2("foobar.com", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey());
   HostCache::Entry entry =
       HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
 
@@ -245,12 +316,13 @@ TEST(HostCacheTest, HostResolverFlagsArePartOfKey) {
   // t=0.
   base::TimeTicks now;
 
-  HostCache::Key key1("foobar.com", DnsQueryType::A, 0,
-                      HostResolverSource::ANY);
+  HostCache::Key key1("foobar.com", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey());
   HostCache::Key key2("foobar.com", DnsQueryType::A, HOST_RESOLVER_CANONNAME,
-                      HostResolverSource::ANY);
+                      HostResolverSource::ANY, NetworkIsolationKey());
   HostCache::Key key3("foobar.com", DnsQueryType::A,
-                      HOST_RESOLVER_LOOPBACK_ONLY, HostResolverSource::ANY);
+                      HOST_RESOLVER_LOOPBACK_ONLY, HostResolverSource::ANY,
+                      NetworkIsolationKey());
   HostCache::Entry entry =
       HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
 
@@ -292,9 +364,9 @@ TEST(HostCacheTest, HostResolverSourceIsPartOfKey) {
   base::TimeTicks now;
 
   HostCache::Key key1("foobar.com", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY);
+                      HostResolverSource::ANY, NetworkIsolationKey());
   HostCache::Key key2("foobar.com", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::DNS);
+                      HostResolverSource::DNS, NetworkIsolationKey());
   HostCache::Entry entry =
       HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
 
@@ -328,11 +400,11 @@ TEST(HostCacheTest, SecureIsPartOfKey) {
   base::TimeTicks now;
   HostCache::EntryStaleness stale;
 
-  HostCache::Key key1("foobar.com", DnsQueryType::A, 0,
-                      HostResolverSource::ANY);
+  HostCache::Key key1("foobar.com", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey());
   key1.secure = true;
-  HostCache::Key key2("foobar.com", DnsQueryType::A, 0,
-                      HostResolverSource::ANY);
+  HostCache::Key key2("foobar.com", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey());
   key2.secure = false;
   HostCache::Entry entry =
       HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
@@ -374,9 +446,9 @@ TEST(HostCacheTest, PreferLessStaleMoreSecure) {
   HostCache::EntryStaleness stale;
 
   HostCache::Key insecure_key("foobar.com", DnsQueryType::A, 0,
-                              HostResolverSource::ANY);
+                              HostResolverSource::ANY, NetworkIsolationKey());
   HostCache::Key secure_key("foobar.com", DnsQueryType::A, 0,
-                            HostResolverSource::ANY);
+                            HostResolverSource::ANY, NetworkIsolationKey());
   secure_key.secure = true;
   HostCache::Entry entry =
       HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
@@ -395,7 +467,7 @@ TEST(HostCacheTest, PreferLessStaleMoreSecure) {
             cache.Lookup(insecure_key, now, true /* ignore_secure */)->first);
 
   // Simulate network change.
-  cache.OnNetworkChange();
+  cache.Invalidate();
 
   // Re-add insecure entry.
   cache.Set(insecure_key, entry, now, kSuccessEntryTTL);
@@ -494,14 +566,14 @@ TEST(HostCacheTest, ClearForHosts) {
   EXPECT_EQ(5u, cache.size());
 
   // Clear the hosts matching a certain predicate, such as the number being odd.
-  cache.ClearForHosts(base::Bind(&FoobarIndexIsOdd));
+  cache.ClearForHosts(base::BindRepeating(&FoobarIndexIsOdd));
 
   EXPECT_EQ(2u, cache.size());
   EXPECT_TRUE(cache.Lookup(Key("foobar2.com"), now));
   EXPECT_TRUE(cache.Lookup(Key("foobar4.com"), now));
 
   // Passing null callback will delete all hosts.
-  cache.ClearForHosts(base::Callback<bool(const std::string&)>());
+  cache.ClearForHosts(base::NullCallback());
 
   EXPECT_EQ(0u, cache.size());
 }
@@ -597,7 +669,7 @@ TEST(HostCacheTest, Stale) {
   EXPECT_EQ(2, stale.stale_hits);
 
   // Simulate network change.
-  cache.OnNetworkChange();
+  cache.Invalidate();
 
   EXPECT_FALSE(cache.Lookup(key, now));
   EXPECT_TRUE(cache.LookupStale(key, now, &stale));
@@ -632,7 +704,7 @@ TEST(HostCacheTest, EvictStale) {
   EXPECT_FALSE(cache.Lookup(key3, now));
 
   // Simulate network change, expiring the cache.
-  cache.OnNetworkChange();
+  cache.Invalidate();
 
   EXPECT_EQ(1u, cache.size());
   EXPECT_FALSE(cache.Lookup(key1, now));
@@ -671,6 +743,148 @@ TEST(HostCacheTest, EvictStale) {
   EXPECT_FALSE(cache.LookupStale(key3, now, &stale));
 }
 
+// Pinned entries should not be evicted, even if the cache is full and the Entry
+// has expired.
+TEST(HostCacheTest, NoEvictPinned) {
+  HostCache cache(2);
+
+  base::TimeTicks now;
+
+  HostCache::Key key1 = Key("foobar.com");
+  HostCache::Key key2 = Key("foobar2.com");
+  HostCache::Key key3 = Key("foobar3.com");
+  HostCache::Entry entry =
+      HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
+  entry.set_pinned(true);
+
+  cache.Set(key1, entry, now, base::TimeDelta::FromSeconds(5));
+  now += base::TimeDelta::FromSeconds(10);
+  cache.Set(key2, entry, now, base::TimeDelta::FromSeconds(5));
+  now += base::TimeDelta::FromSeconds(10);
+  cache.Set(key3, entry, now, base::TimeDelta::FromSeconds(5));
+
+  // There are 3 entries in this cache whose nominal max size is 2.
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_TRUE(cache.LookupStale(key1, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key2, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key3, now));
+}
+
+// Obsolete pinned entries should be evicted normally.
+TEST(HostCacheTest, EvictObsoletePinned) {
+  HostCache cache(2);
+
+  base::TimeTicks now;
+
+  HostCache::Key key1 = Key("foobar.com");
+  HostCache::Key key2 = Key("foobar2.com");
+  HostCache::Key key3 = Key("foobar3.com");
+  HostCache::Key key4 = Key("foobar4.com");
+  HostCache::Entry entry =
+      HostCache::Entry(OK, AddressList(), HostCache::Entry::SOURCE_UNKNOWN);
+  entry.set_pinned(true);
+
+  // |key2| should be preserved, since it expires later.
+  cache.Set(key1, entry, now, base::TimeDelta::FromSeconds(5));
+  cache.Set(key2, entry, now, base::TimeDelta::FromSeconds(10));
+  cache.Set(key3, entry, now, base::TimeDelta::FromSeconds(5));
+  // There are 3 entries in this cache whose nominal max size is 2.
+  EXPECT_EQ(3u, cache.size());
+
+  cache.Invalidate();
+  // |Invalidate()| does not trigger eviction.
+  EXPECT_EQ(3u, cache.size());
+
+  // |Set()| triggers an eviction, leaving only |key2| in cache,
+  // before adding |key4|
+  cache.Set(key4, entry, now, base::TimeDelta::FromSeconds(2));
+  EXPECT_EQ(2u, cache.size());
+  EXPECT_FALSE(cache.LookupStale(key1, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key2, now, nullptr));
+  EXPECT_FALSE(cache.LookupStale(key3, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key4, now, nullptr));
+}
+
+// An active pin is preserved if the record is
+// replaced due to a Set() call without the pin.
+TEST(HostCacheTest, PreserveActivePin) {
+  HostCache cache(2);
+
+  base::TimeTicks now;
+
+  // Make entry1 and entry2, identical except for IP and pinned flag.
+  IPAddress address1(192, 0, 2, 1);
+  IPAddress address2(192, 0, 2, 2);
+  IPEndPoint endpoint1(address1, 0);
+  IPEndPoint endpoint2(address2, 0);
+  HostCache::Entry entry1 = HostCache::Entry(OK, AddressList(endpoint1),
+                                             HostCache::Entry::SOURCE_UNKNOWN);
+  HostCache::Entry entry2 = HostCache::Entry(OK, AddressList(endpoint2),
+                                             HostCache::Entry::SOURCE_UNKNOWN);
+  entry1.set_pinned(true);
+
+  HostCache::Key key = Key("foobar.com");
+
+  // Insert entry1, and verify that it can be retrieved with the
+  // correct IP and |pinned()| == true.
+  cache.Set(key, entry1, now, base::TimeDelta::FromSeconds(10));
+  const auto* pair1 = cache.Lookup(key, now);
+  ASSERT_TRUE(pair1);
+  const HostCache::Entry& result1 = pair1->second;
+  EXPECT_EQ(endpoint1, result1.addresses()->front());
+  EXPECT_TRUE(result1.pinned());
+
+  // Insert |entry2|, and verify that it when it is retrieved, it
+  // has the new IP, and the "pinned" flag copied from |entry1|.
+  cache.Set(key, entry2, now, base::TimeDelta::FromSeconds(10));
+  const auto* pair2 = cache.Lookup(key, now);
+  ASSERT_TRUE(pair2);
+  const HostCache::Entry& result2 = pair2->second;
+  EXPECT_EQ(endpoint2, result2.addresses()->front());
+  EXPECT_TRUE(result2.pinned());
+}
+
+// An obsolete cache pin is not preserved if the record is replaced.
+TEST(HostCacheTest, DontPreserveObsoletePin) {
+  HostCache cache(2);
+
+  base::TimeTicks now;
+
+  // Make entry1 and entry2, identical except for IP and "pinned" flag.
+  IPAddress address1(192, 0, 2, 1);
+  IPAddress address2(192, 0, 2, 2);
+  IPEndPoint endpoint1(address1, 0);
+  IPEndPoint endpoint2(address2, 0);
+  HostCache::Entry entry1 = HostCache::Entry(OK, AddressList(endpoint1),
+                                             HostCache::Entry::SOURCE_UNKNOWN);
+  HostCache::Entry entry2 = HostCache::Entry(OK, AddressList(endpoint2),
+                                             HostCache::Entry::SOURCE_UNKNOWN);
+  entry1.set_pinned(true);
+
+  HostCache::Key key = Key("foobar.com");
+
+  // Insert entry1, and verify that it can be retrieved with the
+  // correct IP and |pinned()| == true.
+  cache.Set(key, entry1, now, base::TimeDelta::FromSeconds(10));
+  const auto* pair1 = cache.Lookup(key, now);
+  ASSERT_TRUE(pair1);
+  const HostCache::Entry& result1 = pair1->second;
+  EXPECT_EQ(endpoint1, result1.addresses()->front());
+  EXPECT_TRUE(result1.pinned());
+
+  // Make entry1 obsolete.
+  cache.Invalidate();
+
+  // Insert |entry2|, and verify that it when it is retrieved, it
+  // has the new IP, and the "pinned" flag is not copied from |entry1|.
+  cache.Set(key, entry2, now, base::TimeDelta::FromSeconds(10));
+  const auto* pair2 = cache.Lookup(key, now);
+  ASSERT_TRUE(pair2);
+  const HostCache::Entry& result2 = pair2->second;
+  EXPECT_EQ(endpoint2, result2.addresses()->front());
+  EXPECT_FALSE(result2.pinned());
+}
+
 // Tests the less than and equal operators for HostCache::Key work.
 TEST(HostCacheTest, KeyComparators) {
   struct CacheTestParameters {
@@ -691,51 +905,61 @@ TEST(HostCacheTest, KeyComparators) {
   };
   std::vector<CacheTestParameters> tests = {
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        0},
-      {HostCache::Key("host1", DnsQueryType::A, 0, HostResolverSource::ANY),
+      {HostCache::Key("host1", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        1},
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
-       HostCache::Key("host1", DnsQueryType::A, 0, HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
+       HostCache::Key("host1", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        -1},
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        HostCache::Key("host2", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        -1},
-      {HostCache::Key("host1", DnsQueryType::A, 0, HostResolverSource::ANY),
+      {HostCache::Key("host1", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        HostCache::Key("host2", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        1},
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
-       HostCache::Key("host2", DnsQueryType::A, 0, HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
+       HostCache::Key("host2", DnsQueryType::A, 0, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        -1},
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        HostCache::Key("host1", DnsQueryType::UNSPECIFIED,
-                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY),
+                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        -1},
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED,
-                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY),
+                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY),
+                      HostResolverSource::ANY, NetworkIsolationKey()),
        1},
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED,
-                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY),
+                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        HostCache::Key("host2", DnsQueryType::UNSPECIFIED,
-                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY),
+                      HOST_RESOLVER_CANONNAME, HostResolverSource::ANY,
+                      NetworkIsolationKey()),
        -1},
   };
-  HostCache::Key insecure_key = HostCache::Key(
-      "host1", DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY);
-  HostCache::Key secure_key = HostCache::Key("host1", DnsQueryType::UNSPECIFIED,
-                                             0, HostResolverSource::ANY);
+  HostCache::Key insecure_key =
+      HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
+                     HostResolverSource::ANY, NetworkIsolationKey());
+  HostCache::Key secure_key =
+      HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
+                     HostResolverSource::ANY, NetworkIsolationKey());
   secure_key.secure = true;
   tests.emplace_back(insecure_key, secure_key, -1);
 
@@ -824,7 +1048,8 @@ TEST(HostCacheTest, SerializeAndDeserialize) {
   now += base::TimeDelta::FromSeconds(7);
 
   base::ListValue serialized_cache;
-  cache.GetAsListValue(&serialized_cache, /*include_staleness=*/false);
+  cache.GetAsListValue(&serialized_cache, false /* include_staleness */,
+                       HostCache::SerializationType::kRestorable);
   HostCache restored_cache(kMaxCacheEntries);
 
   // Add entries for "foobar3.com" and "foobar4.com" to the cache before
@@ -900,13 +1125,100 @@ TEST(HostCacheTest, SerializeAndDeserialize) {
   EXPECT_EQ(2u, restored_cache.last_restore_size());
 }
 
+TEST(HostCacheTest, SerializeAndDeserializeWithNetworkIsolationKey) {
+  const char kHostname[] = "hostname.test";
+  const base::TimeDelta kTTL = base::TimeDelta::FromSeconds(10);
+  const SchemefulSite kSite(GURL("https://site.test/"));
+  const NetworkIsolationKey kNetworkIsolationKey(kSite, kSite);
+  const SchemefulSite kOpaqueSite;
+  const NetworkIsolationKey kOpaqueNetworkIsolationKey(kOpaqueSite,
+                                                       kOpaqueSite);
+
+  HostCache::Key key1(kHostname, DnsQueryType::UNSPECIFIED, 0,
+                      HostResolverSource::ANY, kNetworkIsolationKey);
+  HostCache::Key key2(kHostname, DnsQueryType::UNSPECIFIED, 0,
+                      HostResolverSource::ANY, kOpaqueNetworkIsolationKey);
+  IPEndPoint endpoint(IPAddress(1, 2, 3, 4), 0);
+
+  HostCache::Entry entry = HostCache::Entry(OK, AddressList(endpoint),
+                                            HostCache::Entry::SOURCE_UNKNOWN);
+
+  base::TimeTicks now;
+  HostCache cache(kMaxCacheEntries);
+
+  cache.Set(key1, entry, now, kTTL);
+  cache.Set(key2, entry, now, kTTL);
+
+  EXPECT_TRUE(cache.Lookup(key1, now));
+  EXPECT_EQ(kNetworkIsolationKey,
+            cache.Lookup(key1, now)->first.network_isolation_key);
+  EXPECT_TRUE(cache.Lookup(key2, now));
+  EXPECT_EQ(kOpaqueNetworkIsolationKey,
+            cache.Lookup(key2, now)->first.network_isolation_key);
+  EXPECT_EQ(2u, cache.size());
+
+  base::ListValue serialized_cache;
+  cache.GetAsListValue(&serialized_cache, false /* include_staleness */,
+                       HostCache::SerializationType::kRestorable);
+  HostCache restored_cache(kMaxCacheEntries);
+  EXPECT_TRUE(restored_cache.RestoreFromListValue(serialized_cache));
+  EXPECT_EQ(1u, restored_cache.size());
+
+  HostCache::EntryStaleness stale;
+  const std::pair<const HostCache::Key, HostCache::Entry>* result =
+      restored_cache.LookupStale(key1, now, &stale);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(kNetworkIsolationKey, result->first.network_isolation_key);
+  EXPECT_EQ(kHostname, result->first.hostname);
+  ASSERT_EQ(1u, result->second.addresses().value().size());
+  EXPECT_EQ(endpoint, result->second.addresses().value().front());
+  EXPECT_FALSE(restored_cache.Lookup(key2, now));
+}
+
+TEST(HostCacheTest, SerializeForDebugging) {
+  const char kHostname[] = "hostname.test";
+  const base::TimeDelta kTTL = base::TimeDelta::FromSeconds(10);
+  const NetworkIsolationKey kNetworkIsolationKey =
+      NetworkIsolationKey::CreateTransient();
+
+  HostCache::Key key(kHostname, DnsQueryType::UNSPECIFIED, 0,
+                     HostResolverSource::ANY, kNetworkIsolationKey);
+  IPEndPoint endpoint(IPAddress(1, 2, 3, 4), 0);
+
+  HostCache::Entry entry = HostCache::Entry(OK, AddressList(endpoint),
+                                            HostCache::Entry::SOURCE_UNKNOWN);
+
+  base::TimeTicks now;
+  HostCache cache(kMaxCacheEntries);
+
+  cache.Set(key, entry, now, kTTL);
+
+  EXPECT_TRUE(cache.Lookup(key, now));
+  EXPECT_EQ(kNetworkIsolationKey,
+            cache.Lookup(key, now)->first.network_isolation_key);
+  EXPECT_EQ(1u, cache.size());
+
+  base::ListValue serialized_cache;
+  cache.GetAsListValue(&serialized_cache, false /* include_staleness */,
+                       HostCache::SerializationType::kDebug);
+  HostCache restored_cache(kMaxCacheEntries);
+  EXPECT_FALSE(restored_cache.RestoreFromListValue(serialized_cache));
+
+  base::Value::ListView list = serialized_cache.GetList();
+  ASSERT_EQ(1u, list.size());
+  ASSERT_TRUE(list[0].is_dict());
+  base::Value* nik_value = list[0].FindPath("network_isolation_key");
+  ASSERT_TRUE(nik_value);
+  ASSERT_EQ(base::Value(kNetworkIsolationKey.ToDebugString()), *nik_value);
+}
+
 TEST(HostCacheTest, SerializeAndDeserialize_Text) {
   base::TimeTicks now;
 
   base::TimeDelta ttl = base::TimeDelta::FromSeconds(99);
   std::vector<std::string> text_records({"foo", "bar"});
-  HostCache::Key key("example.com", DnsQueryType::A, 0,
-                     HostResolverSource::DNS);
+  HostCache::Key key("example.com", DnsQueryType::A, 0, HostResolverSource::DNS,
+                     NetworkIsolationKey());
   key.secure = true;
   HostCache::Entry entry(OK, text_records, HostCache::Entry::SOURCE_DNS, ttl);
   EXPECT_TRUE(entry.text_records());
@@ -916,13 +1228,16 @@ TEST(HostCacheTest, SerializeAndDeserialize_Text) {
   EXPECT_EQ(1u, cache.size());
 
   base::ListValue serialized_cache;
-  cache.GetAsListValue(&serialized_cache, false /* include_staleness */);
+  cache.GetAsListValue(&serialized_cache, false /* include_staleness */,
+                       HostCache::SerializationType::kRestorable);
   HostCache restored_cache(kMaxCacheEntries);
   restored_cache.RestoreFromListValue(serialized_cache);
 
-  ASSERT_EQ(1u, cache.size());
+  ASSERT_EQ(1u, serialized_cache.GetList().size());
+  ASSERT_EQ(1u, restored_cache.size());
+  HostCache::EntryStaleness stale;
   const std::pair<const HostCache::Key, HostCache::Entry>* result =
-      cache.Lookup(key, now);
+      restored_cache.LookupStale(key, now, &stale);
   ASSERT_TRUE(result);
   EXPECT_TRUE(result->first.secure);
   EXPECT_FALSE(result->second.addresses());
@@ -937,8 +1252,8 @@ TEST(HostCacheTest, SerializeAndDeserialize_Hostname) {
   base::TimeDelta ttl = base::TimeDelta::FromSeconds(99);
   std::vector<HostPortPair> hostnames(
       {HostPortPair("example.com", 95), HostPortPair("chromium.org", 122)});
-  HostCache::Key key("example.com", DnsQueryType::A, 0,
-                     HostResolverSource::DNS);
+  HostCache::Key key("example.com", DnsQueryType::A, 0, HostResolverSource::DNS,
+                     NetworkIsolationKey());
   HostCache::Entry entry(OK, hostnames, HostCache::Entry::SOURCE_DNS, ttl);
   EXPECT_TRUE(entry.hostnames());
 
@@ -947,13 +1262,15 @@ TEST(HostCacheTest, SerializeAndDeserialize_Hostname) {
   EXPECT_EQ(1u, cache.size());
 
   base::ListValue serialized_cache;
-  cache.GetAsListValue(&serialized_cache, false /* include_staleness */);
+  cache.GetAsListValue(&serialized_cache, false /* include_staleness */,
+                       HostCache::SerializationType::kRestorable);
   HostCache restored_cache(kMaxCacheEntries);
   restored_cache.RestoreFromListValue(serialized_cache);
 
-  ASSERT_EQ(1u, cache.size());
+  ASSERT_EQ(1u, restored_cache.size());
+  HostCache::EntryStaleness stale;
   const std::pair<const HostCache::Key, HostCache::Entry>* result =
-      cache.Lookup(key, now);
+      restored_cache.LookupStale(key, now, &stale);
   ASSERT_TRUE(result);
   EXPECT_FALSE(result->first.secure);
   EXPECT_FALSE(result->second.addresses());
@@ -1041,7 +1358,9 @@ TEST(HostCacheTest, PersistenceDelegate) {
 TEST(HostCacheTest, MergeEntries) {
   const IPAddress kAddressFront(1, 2, 3, 4);
   const IPEndPoint kEndpointFront(kAddressFront, 0);
-  HostCache::Entry front(OK, AddressList(kEndpointFront),
+  std::vector<std::string> aliases_front({"alias1", "alias2", "alias3"});
+  HostCache::Entry front(OK,
+                         AddressList(kEndpointFront, std::move(aliases_front)),
                          HostCache::Entry::SOURCE_DNS);
   front.set_text_records(std::vector<std::string>{"text1"});
   const HostPortPair kHostnameFront("host", 1);
@@ -1050,7 +1369,8 @@ TEST(HostCacheTest, MergeEntries) {
   const IPAddress kAddressBack(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                0);
   const IPEndPoint kEndpointBack(kAddressBack, 0);
-  HostCache::Entry back(OK, AddressList(kEndpointBack),
+  std::vector<std::string> aliases_back({"alias2", "alias4", "alias5"});
+  HostCache::Entry back(OK, AddressList(kEndpointBack, std::move(aliases_back)),
                         HostCache::Entry::SOURCE_DNS);
   back.set_text_records(std::vector<std::string>{"text2"});
   const HostPortPair kHostnameBack("host", 2);
@@ -1062,13 +1382,100 @@ TEST(HostCacheTest, MergeEntries) {
   EXPECT_EQ(OK, result.error());
   EXPECT_EQ(HostCache::Entry::SOURCE_DNS, result.source());
 
+  // Expect the IPv6 address to precede the IPv4 address.
+  EXPECT_THAT(result.addresses(),
+              Optional(Property(&AddressList::endpoints,
+                                ElementsAre(kEndpointBack, kEndpointFront))));
+  EXPECT_THAT(result.text_records(), Optional(ElementsAre("text1", "text2")));
+
+  EXPECT_THAT(result.hostnames(),
+              Optional(ElementsAre(kHostnameFront, kHostnameBack)));
+
   ASSERT_TRUE(result.addresses());
-  EXPECT_THAT(result.addresses().value().endpoints(),
-              testing::ElementsAre(kEndpointFront, kEndpointBack));
-  EXPECT_THAT(result.text_records(),
-              testing::Optional(testing::ElementsAre("text1", "text2")));
-  EXPECT_THAT(result.hostnames(), testing::Optional(testing::ElementsAre(
-                                      kHostnameFront, kHostnameBack)));
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3", "alias4", "alias5"));
+}
+
+IPAddress MakeIP(base::StringPiece literal) {
+  IPAddress ret;
+  CHECK(ret.AssignFromIPLiteral(literal));
+  return ret;
+}
+
+IPAddressList MakeIPList(std::vector<std::string> my_addresses) {
+  IPAddressList out(my_addresses.size());
+  std::transform(my_addresses.begin(), my_addresses.end(), out.begin(),
+                 &MakeIP);
+  return out;
+}
+
+std::vector<IPEndPoint> MakeEndpoints(std::vector<std::string> my_addresses) {
+  std::vector<IPEndPoint> out(my_addresses.size());
+  std::transform(my_addresses.begin(), my_addresses.end(), out.begin(),
+                 [](auto& s) { return IPEndPoint(MakeIP(s), 0); });
+  return out;
+}
+
+TEST(HostCacheTest, SortsAndDeduplicatesAddresses) {
+  IPAddressList front_addresses = MakeIPList({"0.0.0.1", "0.0.0.1", "0.0.0.2"});
+  IPAddressList back_addresses =
+      MakeIPList({"0.0.0.2", "0.0.0.2", "::3", "::3"});
+
+  std::vector<std::string> front_aliases({"front"});
+  HostCache::Entry front(OK,
+                         AddressList::CreateFromIPAddressList(
+                             front_addresses, std::move(front_aliases)),
+                         HostCache::Entry::SOURCE_DNS);
+  std::vector<std::string> back_aliases({"back"});
+  HostCache::Entry back(OK,
+                        AddressList::CreateFromIPAddressList(
+                            back_addresses, std::move(back_aliases)),
+                        HostCache::Entry::SOURCE_DNS);
+
+  HostCache::Entry result =
+      HostCache::Entry::MergeEntries(std::move(front), std::move(back));
+
+  EXPECT_EQ(OK, result.error());
+  EXPECT_EQ(HostCache::Entry::SOURCE_DNS, result.source());
+
+  EXPECT_THAT(
+      result.addresses(),
+      Optional(Property(
+          &AddressList::endpoints,
+          ElementsAreArray(MakeEndpoints({"::3", "0.0.0.1", "0.0.0.2"})))));
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("front", "back"));
+}
+
+TEST(HostCacheTest, PrefersAddressesWithIpv6) {
+  IPAddressList front_addresses = MakeIPList({"::1", "0.0.0.2", "0.0.0.4"});
+  IPAddressList back_addresses =
+      MakeIPList({"0.0.0.2", "0.0.0.2", "::3", "::3", "0.0.0.4"});
+
+  std::vector<std::string> front_aliases({"front"});
+  HostCache::Entry front(OK,
+                         AddressList::CreateFromIPAddressList(
+                             front_addresses, std::move(front_aliases)),
+                         HostCache::Entry::SOURCE_DNS);
+  std::vector<std::string> back_aliases({"back"});
+  HostCache::Entry back(OK,
+                        AddressList::CreateFromIPAddressList(
+                            back_addresses, std::move(back_aliases)),
+                        HostCache::Entry::SOURCE_DNS);
+
+  HostCache::Entry result =
+      HostCache::Entry::MergeEntries(std::move(front), std::move(back));
+
+  EXPECT_THAT(result.addresses(),
+              Optional(Property(&AddressList::endpoints,
+                                ElementsAreArray(MakeEndpoints(
+                                    {"::1", "::3", "0.0.0.2", "0.0.0.4"})))));
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("front", "back"));
 }
 
 TEST(HostCacheTest, MergeEntries_frontEmpty) {
@@ -1077,7 +1484,8 @@ TEST(HostCacheTest, MergeEntries_frontEmpty) {
   const IPAddress kAddressBack(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                0);
   const IPEndPoint kEndpointBack(kAddressBack, 0);
-  HostCache::Entry back(OK, AddressList(kEndpointBack),
+  std::vector<std::string> aliases_back({"alias1", "alias2", "alias3"});
+  HostCache::Entry back(OK, AddressList(kEndpointBack, std::move(aliases_back)),
                         HostCache::Entry::SOURCE_DNS,
                         base::TimeDelta::FromHours(4));
   back.set_text_records(std::vector<std::string>{"text2"});
@@ -1092,21 +1500,24 @@ TEST(HostCacheTest, MergeEntries_frontEmpty) {
 
   ASSERT_TRUE(result.addresses());
   EXPECT_THAT(result.addresses().value().endpoints(),
-              testing::ElementsAre(kEndpointBack));
-  EXPECT_THAT(result.text_records(),
-              testing::Optional(testing::ElementsAre("text2")));
-  EXPECT_THAT(result.hostnames(),
-              testing::Optional(testing::ElementsAre(kHostnameBack)));
+              ElementsAre(kEndpointBack));
+  EXPECT_THAT(result.text_records(), Optional(ElementsAre("text2")));
+  EXPECT_THAT(result.hostnames(), Optional(ElementsAre(kHostnameBack)));
 
   EXPECT_EQ(base::TimeDelta::FromHours(4), result.ttl());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3"));
 }
 
 TEST(HostCacheTest, MergeEntries_backEmpty) {
   const IPAddress kAddressFront(1, 2, 3, 4);
   const IPEndPoint kEndpointFront(kAddressFront, 0);
-  HostCache::Entry front(OK, AddressList(kEndpointFront),
-                         HostCache::Entry::SOURCE_DNS,
-                         base::TimeDelta::FromMinutes(5));
+  std::vector<std::string> aliases_front({"alias1", "alias2", "alias3"});
+  HostCache::Entry front(
+      OK, AddressList(kEndpointFront, std::move(aliases_front)),
+      HostCache::Entry::SOURCE_DNS, base::TimeDelta::FromMinutes(5));
   front.set_text_records(std::vector<std::string>{"text1"});
   const HostPortPair kHostnameFront("host", 1);
   front.set_hostnames(std::vector<HostPortPair>{kHostnameFront});
@@ -1121,13 +1532,15 @@ TEST(HostCacheTest, MergeEntries_backEmpty) {
 
   ASSERT_TRUE(result.addresses());
   EXPECT_THAT(result.addresses().value().endpoints(),
-              testing::ElementsAre(kEndpointFront));
-  EXPECT_THAT(result.text_records(),
-              testing::Optional(testing::ElementsAre("text1")));
-  EXPECT_THAT(result.hostnames(),
-              testing::Optional(testing::ElementsAre(kHostnameFront)));
+              ElementsAre(kEndpointFront));
+  EXPECT_THAT(result.text_records(), Optional(ElementsAre("text1")));
+  EXPECT_THAT(result.hostnames(), Optional(ElementsAre(kHostnameFront)));
 
   EXPECT_EQ(base::TimeDelta::FromMinutes(5), result.ttl());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3"));
 }
 
 TEST(HostCacheTest, MergeEntries_bothEmpty) {
@@ -1143,8 +1556,136 @@ TEST(HostCacheTest, MergeEntries_bothEmpty) {
   EXPECT_FALSE(result.addresses());
   EXPECT_FALSE(result.text_records());
   EXPECT_FALSE(result.hostnames());
-
   EXPECT_FALSE(result.has_ttl());
+}
+
+TEST(HostCacheTest, MergeEntries_frontWithAliasesNoAddressesBackWithBoth) {
+  HostCache::Entry front(ERR_NAME_NOT_RESOLVED, HostCache::Entry::SOURCE_DNS);
+  AddressList front_addresses;
+  std::vector<std::string> aliases_front({"alias0", "alias1", "alias2"});
+  front_addresses.SetDnsAliases(std::move(aliases_front));
+  front.set_addresses(front_addresses);
+
+  const IPAddress kAddressBack(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                               0);
+  const IPEndPoint kEndpointBack(kAddressBack, 0);
+  std::vector<std::string> aliases_back({"alias1", "alias2", "alias3"});
+  HostCache::Entry back(OK, AddressList(kEndpointBack, std::move(aliases_back)),
+                        HostCache::Entry::SOURCE_DNS,
+                        base::TimeDelta::FromHours(4));
+
+  HostCache::Entry result =
+      HostCache::Entry::MergeEntries(std::move(front), std::move(back));
+
+  EXPECT_EQ(OK, result.error());
+  EXPECT_EQ(HostCache::Entry::SOURCE_DNS, result.source());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().endpoints(),
+              ElementsAre(kEndpointBack));
+
+  EXPECT_EQ(base::TimeDelta::FromHours(4), result.ttl());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias0", "alias1", "alias2", "alias3"));
+}
+
+TEST(HostCacheTest, MergeEntries_backWithAliasesNoAddressesFrontWithBoth) {
+  HostCache::Entry back(ERR_NAME_NOT_RESOLVED, HostCache::Entry::SOURCE_DNS);
+  AddressList back_addresses;
+  std::vector<std::string> aliases_back({"alias1", "alias2", "alias3"});
+
+  back_addresses.SetDnsAliases(std::move(aliases_back));
+  back.set_addresses(back_addresses);
+
+  const IPAddress kAddressFront(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                0);
+  const IPEndPoint kEndpointFront(kAddressFront, 0);
+  std::vector<std::string> aliases_front({"alias0", "alias1", "alias2"});
+  HostCache::Entry front(
+      OK, AddressList(kEndpointFront, std::move(aliases_front)),
+      HostCache::Entry::SOURCE_DNS, base::TimeDelta::FromHours(4));
+
+  HostCache::Entry result =
+      HostCache::Entry::MergeEntries(std::move(front), std::move(back));
+
+  EXPECT_EQ(OK, result.error());
+  EXPECT_EQ(HostCache::Entry::SOURCE_DNS, result.source());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().endpoints(),
+              ElementsAre(kEndpointFront));
+
+  EXPECT_EQ(base::TimeDelta::FromHours(4), result.ttl());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias0", "alias1", "alias2", "alias3"));
+}
+
+TEST(HostCacheTest, MergeEntries_frontWithAddressesNoAliasesBackWithBoth) {
+  const IPAddress kAddressFront(1, 2, 3, 4);
+  const IPEndPoint kEndpointFront(kAddressFront, 0);
+  HostCache::Entry front(OK, AddressList(kEndpointFront),
+                         HostCache::Entry::SOURCE_DNS,
+                         base::TimeDelta::FromHours(4));
+
+  const IPAddress kAddressBack(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                               0);
+  const IPEndPoint kEndpointBack(kAddressBack, 0);
+  std::vector<std::string> aliases_back({"alias1", "alias2", "alias3"});
+  HostCache::Entry back(OK, AddressList(kEndpointBack, std::move(aliases_back)),
+                        HostCache::Entry::SOURCE_DNS,
+                        base::TimeDelta::FromHours(4));
+
+  HostCache::Entry result =
+      HostCache::Entry::MergeEntries(std::move(front), std::move(back));
+
+  EXPECT_EQ(OK, result.error());
+  EXPECT_EQ(HostCache::Entry::SOURCE_DNS, result.source());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().endpoints(),
+              ElementsAre(kEndpointBack, kEndpointFront));
+
+  EXPECT_EQ(base::TimeDelta::FromHours(4), result.ttl());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3"));
+}
+
+TEST(HostCacheTest, MergeEntries_backWithAddressesNoAliasesFrontWithBoth) {
+  const IPAddress kAddressFront(1, 2, 3, 4);
+  const IPEndPoint kEndpointFront(kAddressFront, 0);
+  std::vector<std::string> aliases_front({"alias1", "alias2", "alias3"});
+  HostCache::Entry front(
+      OK, AddressList(kEndpointFront, std::move(aliases_front)),
+      HostCache::Entry::SOURCE_DNS, base::TimeDelta::FromHours(4));
+
+  const IPAddress kAddressBack(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                               0);
+  const IPEndPoint kEndpointBack(kAddressBack, 0);
+  HostCache::Entry back(OK, AddressList(kEndpointBack),
+                        HostCache::Entry::SOURCE_DNS,
+                        base::TimeDelta::FromHours(4));
+
+  HostCache::Entry result =
+      HostCache::Entry::MergeEntries(std::move(front), std::move(back));
+
+  EXPECT_EQ(OK, result.error());
+  EXPECT_EQ(HostCache::Entry::SOURCE_DNS, result.source());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().endpoints(),
+              ElementsAre(kEndpointBack, kEndpointFront));
+
+  EXPECT_EQ(base::TimeDelta::FromHours(4), result.ttl());
+
+  ASSERT_TRUE(result.addresses());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3"));
 }
 
 TEST(HostCacheTest, MergeEntries_differentTtl) {
@@ -1162,38 +1703,45 @@ TEST(HostCacheTest, MergeEntries_differentTtl) {
 TEST(HostCacheTest, MergeEntries_FrontCannonnamePreserved) {
   AddressList addresses_front;
   const std::string kCanonicalNameFront = "name1";
-  addresses_front.set_canonical_name(kCanonicalNameFront);
+  std::vector<std::string> front_aliases({kCanonicalNameFront});
+  addresses_front.SetDnsAliases(std::move(front_aliases));
   HostCache::Entry front(OK, addresses_front, HostCache::Entry::SOURCE_DNS);
 
   AddressList addresses_back;
   const std::string kCanonicalNameBack = "name2";
-  addresses_back.set_canonical_name(kCanonicalNameBack);
+  std::vector<std::string> back_aliases({kCanonicalNameBack});
+  addresses_back.SetDnsAliases(std::move(back_aliases));
   HostCache::Entry back(OK, addresses_back, HostCache::Entry::SOURCE_DNS);
 
   HostCache::Entry result =
       HostCache::Entry::MergeEntries(std::move(front), std::move(back));
 
   ASSERT_TRUE(result.addresses());
-  EXPECT_EQ(kCanonicalNameFront, result.addresses().value().canonical_name());
+  EXPECT_EQ(kCanonicalNameFront, result.addresses().value().GetCanonicalName());
+  EXPECT_THAT(result.addresses().value().dns_aliases(),
+              ElementsAre("name1", "name2"));
 }
 
 // Test that the back canonname can be used if there is no front cannonname.
 TEST(HostCacheTest, MergeEntries_BackCannonnameUsable) {
   AddressList addresses_front;
   const std::string kCanonicalNameFront = "";
-  addresses_front.set_canonical_name(kCanonicalNameFront);
+  std::vector<std::string> front_aliases({kCanonicalNameFront});
+  addresses_front.SetDnsAliases(std::move(front_aliases));
   HostCache::Entry front(OK, addresses_front, HostCache::Entry::SOURCE_DNS);
 
   AddressList addresses_back;
   const std::string kCanonicalNameBack = "name2";
-  addresses_back.set_canonical_name(kCanonicalNameBack);
+  std::vector<std::string> back_aliases({kCanonicalNameBack});
+  addresses_back.SetDnsAliases(std::move(back_aliases));
   HostCache::Entry back(OK, addresses_back, HostCache::Entry::SOURCE_DNS);
 
   HostCache::Entry result =
       HostCache::Entry::MergeEntries(std::move(front), std::move(back));
 
   ASSERT_TRUE(result.addresses());
-  EXPECT_EQ(kCanonicalNameBack, result.addresses().value().canonical_name());
+  EXPECT_EQ(kCanonicalNameBack, result.addresses().value().GetCanonicalName());
+  EXPECT_THAT(result.addresses().value().dns_aliases(), ElementsAre("name2"));
 }
 
 void GetMatchingKeyHelper(const HostCache::Key key, bool expect_match) {
@@ -1222,15 +1770,17 @@ void GetMatchingKeyHelper(const HostCache::Key key, bool expect_match) {
 
 TEST(HostCacheTest, GetMatchingKey_ExactMatch) {
   // Should find match because this mimics the default Key struct.
-  GetMatchingKeyHelper(HostCache::Key("foobar.com", DnsQueryType::UNSPECIFIED,
-                                      0, HostResolverSource::ANY),
-                       true);
+  GetMatchingKeyHelper(
+      HostCache::Key("foobar.com", DnsQueryType::UNSPECIFIED, 0,
+                     HostResolverSource::ANY, NetworkIsolationKey()),
+      true);
 }
 
 TEST(HostCacheTest, GetMatchingKey_IgnoreSecureField) {
   // Should find match because lookups ignore the secure field.
-  HostCache::Key secure_key = HostCache::Key(
-      "foobar.com", DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY);
+  HostCache::Key secure_key =
+      HostCache::Key("foobar.com", DnsQueryType::UNSPECIFIED, 0,
+                     HostResolverSource::ANY, NetworkIsolationKey());
   secure_key.secure = true;
   GetMatchingKeyHelper(secure_key, true);
 }
@@ -1238,7 +1788,8 @@ TEST(HostCacheTest, GetMatchingKey_IgnoreSecureField) {
 TEST(HostCacheTest, GetMatchingKey_UnsupportedDnsQueryType) {
   // Should not find match because the DnsQueryType field matters.
   GetMatchingKeyHelper(
-      HostCache::Key("foobar.com", DnsQueryType::A, 0, HostResolverSource::ANY),
+      HostCache::Key("foobar.com", DnsQueryType::A, 0, HostResolverSource::ANY,
+                     NetworkIsolationKey()),
       false);
 }
 
@@ -1247,22 +1798,24 @@ TEST(HostCacheTest, GetMatchingKey_UnsupportedHostResolverFlags) {
   GetMatchingKeyHelper(
       HostCache::Key("foobar.com", DnsQueryType::UNSPECIFIED,
                      HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6,
-                     HostResolverSource::ANY),
+                     HostResolverSource::ANY, NetworkIsolationKey()),
       false);
 }
 
 TEST(HostCacheTest, GetMatchingKey_UnsupportedHostResolverSource) {
   // Should not find match because the HostResolverSource field matters.
-  GetMatchingKeyHelper(HostCache::Key("foobar.com", DnsQueryType::UNSPECIFIED,
-                                      0, HostResolverSource::DNS),
-                       false);
+  GetMatchingKeyHelper(
+      HostCache::Key("foobar.com", DnsQueryType::UNSPECIFIED, 0,
+                     HostResolverSource::DNS, NetworkIsolationKey()),
+      false);
 }
 
 TEST(HostCacheTest, GetMatchingKey_AlternativeMatch) {
   // Should find match because a lookup with these alternate fields is tried.
-  HostCache::Key secure_key = HostCache::Key(
-      "foobar.com", DnsQueryType::A,
-      HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6, HostResolverSource::ANY);
+  HostCache::Key secure_key =
+      HostCache::Key("foobar.com", DnsQueryType::A,
+                     HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6,
+                     HostResolverSource::ANY, NetworkIsolationKey());
   secure_key.secure = true;
   GetMatchingKeyHelper(secure_key, true);
 }

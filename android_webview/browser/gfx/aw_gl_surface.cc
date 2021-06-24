@@ -7,14 +7,37 @@
 #include <utility>
 
 #include "android_webview/browser/gfx/scoped_app_gl_state_restore.h"
+#include "ui/gl/gl_bindings.h"
+
+#define EGL_EXTERNAL_SURFACE_ANGLE 0x348F
 
 namespace android_webview {
 
-AwGLSurface::AwGLSurface() : size_(1, 1) {}
+AwGLSurface::AwGLSurface(bool is_angle) : is_angle_(is_angle) {}
 
-AwGLSurface::~AwGLSurface() {}
+AwGLSurface::~AwGLSurface() {
+  Destroy();
+}
+
+bool AwGLSurface::Initialize(gl::GLSurfaceFormat format) {
+  if (!is_angle_)
+    return true;
+
+  Destroy();
+
+  EGLint attribs[] = {EGL_WIDTH,      size_.width(), EGL_HEIGHT,
+                      size_.height(), EGL_NONE,      EGL_NONE};
+  surface_ = eglCreatePbufferFromClientBuffer(
+      GetDisplay(), EGL_EXTERNAL_SURFACE_ANGLE, nullptr, GetConfig(), attribs);
+  DCHECK_NE(surface_, EGL_NO_SURFACE);
+  return surface_ != EGL_NO_SURFACE;
+}
 
 void AwGLSurface::Destroy() {
+  if (surface_) {
+    eglDestroySurface(GetDisplay(), surface_);
+    surface_ = nullptr;
+  }
 }
 
 bool AwGLSurface::IsOffscreen() {
@@ -26,13 +49,9 @@ unsigned int AwGLSurface::GetBackingFramebufferObject() {
 }
 
 gfx::SwapResult AwGLSurface::SwapBuffers(PresentationCallback callback) {
-  DCHECK(pending_presentation_callback_.is_null());
+  DCHECK(!pending_presentation_callback_);
   pending_presentation_callback_ = std::move(callback);
   return gfx::SwapResult::SWAP_ACK;
-}
-
-bool AwGLSurface::SupportsPresentationCallback() {
-  return true;
 }
 
 gfx::Size AwGLSurface::GetSize() {
@@ -40,11 +59,13 @@ gfx::Size AwGLSurface::GetSize() {
 }
 
 void* AwGLSurface::GetHandle() {
-  return NULL;
+  return surface_;
 }
 
 void* AwGLSurface::GetDisplay() {
-  return NULL;
+  if (!is_angle_)
+    return nullptr;
+  return gl::GLSurfaceEGL::GetDisplay();
 }
 
 gl::GLSurfaceFormat AwGLSurface::GetFormat() {
@@ -53,16 +74,29 @@ gl::GLSurfaceFormat AwGLSurface::GetFormat() {
 
 bool AwGLSurface::Resize(const gfx::Size& size,
                          float scale_factor,
-                         ColorSpace color_space,
+                         const gfx::ColorSpace& color_space,
                          bool has_alpha) {
+  if (size_ == size)
+    return true;
   size_ = size;
-  return true;
+
+  return Initialize(gl::GLSurfaceFormat());
 }
 
-void AwGLSurface::MaybeDidPresent(gfx::PresentationFeedback feedback) {
-  if (pending_presentation_callback_.is_null())
+void AwGLSurface::SetSize(const gfx::Size& size) {
+  size_ = size;
+}
+
+EGLConfig AwGLSurface::GetConfig() {
+  if (!is_angle_)
+    return nullptr;
+  return gl::GLSurfaceEGL::GetConfig();
+}
+
+void AwGLSurface::MaybeDidPresent(const gfx::PresentationFeedback& feedback) {
+  if (!pending_presentation_callback_)
     return;
-  std::move(pending_presentation_callback_).Run(std::move(feedback));
+  std::move(pending_presentation_callback_).Run(feedback);
 }
 
 }  // namespace android_webview

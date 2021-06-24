@@ -5,18 +5,22 @@
 #ifndef CONTENT_BROWSER_ACCESSIBILITY_DUMP_ACCESSIBILITY_BROWSERTEST_BASE_H_
 #define CONTENT_BROWSER_ACCESSIBILITY_DUMP_ACCESSIBILITY_BROWSERTEST_BASE_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "base/debug/leak_annotations.h"
-#include "base/strings/string16.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/build_config.h"
-#include "content/browser/accessibility/accessibility_event_recorder.h"
-#include "content/browser/accessibility/accessibility_tree_formatter.h"
+#include "content/public/browser/ax_inspect_factory.h"
 #include "content/public/test/content_browser_test.h"
+#include "content/public/test/dump_accessibility_test_helper.h"
+#include "third_party/blink/public/common/features.h"
+#include "ui/accessibility/platform/inspect/ax_inspect_scenario.h"
 
 namespace content {
+
+class BrowserAccessibility;
+class BrowserAccessibilityManager;
+class DumpAccessibilityTestHelper;
 
 // Base class for an accessibility browsertest that takes an HTML file as
 // input, loads it into a tab, dumps some accessibility data in text format,
@@ -26,8 +30,9 @@ namespace content {
 // testing accessibility in Chromium.
 //
 // See content/test/data/accessibility/readme.md for an overview.
-class DumpAccessibilityTestBase : public ContentBrowserTest,
-                                  public ::testing::WithParamInterface<size_t> {
+class DumpAccessibilityTestBase
+    : public ContentBrowserTest,
+      public ::testing::WithParamInterface<AXInspectFactory::Type> {
  public:
   DumpAccessibilityTestBase();
   ~DumpAccessibilityTestBase() override;
@@ -36,7 +41,10 @@ class DumpAccessibilityTestBase : public ContentBrowserTest,
   // loads the HTML, loads the accessibility tree, calls Dump(), then
   // compares the output to the expected result and has the test succeed
   // or fail based on the diff.
-  void RunTest(const base::FilePath file_path, const char* file_dir);
+  void RunTest(const base::FilePath file_path,
+               const char* file_dir,
+               const base::FilePath::StringType& expectations_qualifier =
+                   FILE_PATH_LITERAL(""));
 
  protected:
   void SetUpCommandLine(base::CommandLine* command_line) override;
@@ -55,13 +63,15 @@ class DumpAccessibilityTestBase : public ContentBrowserTest,
       std::vector<std::string>& run_until) = 0;
 
   // Add the default filters that are applied to all tests.
-  virtual void AddDefaultFilters(
-      std::vector<AccessibilityTreeFormatter::PropertyFilter>*
-          property_filters) = 0;
+  virtual std::vector<ui::AXPropertyFilter> DefaultFilters() const = 0;
 
   // This gets called if the diff didn't match; the test can print
   // additional useful info.
   virtual void OnDiffFailed() {}
+
+  // Choose which feature flags to enable or disable.
+  virtual void ChooseFeatures(std::vector<base::Feature>* enabled_features,
+                              std::vector<base::Feature>* disabled_features);
 
   //
   // Helpers
@@ -69,62 +79,58 @@ class DumpAccessibilityTestBase : public ContentBrowserTest,
 
   // Dump the whole accessibility tree, without applying any filters,
   // and return it as a string.
-  base::string16 DumpUnfilteredAccessibilityTreeAsString();
+  std::string DumpUnfilteredAccessibilityTreeAsString();
 
-  // Utility helper that does a comment-aware equality check.
-  // Returns array of lines from expected file which are different.
-  std::vector<int> DiffLines(const std::vector<std::string>& expected_lines,
-                             const std::vector<std::string>& actual_lines);
+  void RunTestForPlatform(const base::FilePath file_path,
+                          const char* file_dir,
+                          const base::FilePath::StringType&
+                              expectations_qualifier = FILE_PATH_LITERAL(""));
 
-  // Parse the test html file and parse special directives, usually
-  // beginning with an '@' and inside an HTML comment, that control how the
-  // test is run and how the results are interpreted.
-  //
-  // When the accessibility tree is dumped as text, each node and each attribute
-  // is run through filters before being appended to the string. An "allow"
-  // filter specifies attribute strings that should be dumped, and a "deny"
-  // filter specifies strings or nodes that should be suppressed. As an example,
-  // @MAC-ALLOW:AXSubrole=* means that the AXSubrole attribute should be
-  // printed, while @MAC-ALLOW:AXSubrole=AXList* means that any subrole
-  // beginning with the text "AXList" should be printed.
-  //
-  // The @WAIT-FOR:text directive allows the test to specify that the document
-  // may dynamically change after initial load, and the test is to wait
-  // until the given string (e.g., "text") appears in the resulting dump.
-  // A test can make some changes to the document, then append a magic string
-  // indicating that the test is done, and this framework will wait for that
-  // string to appear before comparing the results. There can be multiple
-  // @WAIT-FOR: directives.
-  void ParseHtmlForExtraDirectives(const std::string& test_html,
-                                   std::vector<std::string>* wait_for,
-                                   std::vector<std::string>* run_until);
+  // Retrieve the accessibility node that matches the accessibility name. There
+  // is an optional search_root parameter that defaults to the document root if
+  // not provided.
+  BrowserAccessibility* FindNode(const std::string& name,
+                                 BrowserAccessibility* search_root = nullptr);
 
-  void RunTestForPlatform(const base::FilePath file_path, const char* file_dir);
+  // Retrieve the browser accessibility manager object for the current web
+  // contents.
+  BrowserAccessibilityManager* GetManager();
 
-  // The default property filters plus the property filters loaded from the test
-  // file.
-  std::vector<AccessibilityTreeFormatter::PropertyFilter> property_filters_;
+  std::unique_ptr<ui::AXTreeFormatter> CreateFormatter() const;
 
-  // The node filters loaded from the test file.
-  std::vector<AccessibilityTreeFormatter::NodeFilter> node_filters_;
-
-#if defined(LEAK_SANITIZER) && !defined(OS_NACL)
-  // http://crbug.com/568674
-  ScopedLeakSanitizerDisabler lsan_disabler;
-#endif
-
-  // The current tree-formatter and event-recorder factories.
-  AccessibilityTreeFormatter::FormatterFactory formatter_factory_;
-  AccessibilityEventRecorder::EventRecorderFactory event_recorder_factory_;
-
-  // The current AccessibilityTreeFormatter.
-  std::unique_ptr<AccessibilityTreeFormatter> formatter_;
+  // Test scenario loaded from the test file.
+  ui::AXInspectScenario scenario_;
 
   // Whether we should enable accessibility after navigating to the page,
   // otherwise we enable it first.
   bool enable_accessibility_after_navigating_;
 
   base::test::ScopedFeatureList scoped_feature_list_;
+
+  bool HasHtmlAttribute(BrowserAccessibility& node,
+                        const char* attr,
+                        const std::string& value);
+
+  BrowserAccessibility* FindNodeByHTMLAttribute(const char* attr,
+                                                const std::string& value);
+
+ protected:
+  DumpAccessibilityTestHelper test_helper_;
+
+ private:
+  BrowserAccessibility* FindNodeInSubtree(BrowserAccessibility& node,
+                                          const std::string& name);
+
+  BrowserAccessibility* FindNodeByHTMLAttributeInSubtree(
+      BrowserAccessibility& node,
+      const char* attr,
+      const std::string& value);
+
+  std::vector<std::string> CollectAllFrameUrls(
+      WebContentsImpl* web_contents,
+      const std::vector<std::string>& skip_urls);
+
+  void WaitForAXTreeLoaded(WebContentsImpl* web_contents);
 };
 
 }  // namespace content

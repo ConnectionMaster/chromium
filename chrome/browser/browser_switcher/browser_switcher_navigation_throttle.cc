@@ -13,13 +13,13 @@
 #include "chrome/browser/browser_switcher/browser_switcher_service.h"
 #include "chrome/browser/browser_switcher/browser_switcher_service_factory.h"
 #include "chrome/browser/browser_switcher/browser_switcher_sitelist.h"
-#include "chrome/browser/prerender/prerender_contents.h"
+#include "chrome/browser/prefetch/no_state_prefetch/chrome_no_state_prefetch_contents_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/navigation_interception/intercept_navigation_throttle.h"
 #include "components/navigation_interception/navigation_params.h"
+#include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/guest_mode.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/url_util.h"
@@ -55,16 +55,18 @@ bool MaybeLaunchAlternativeBrowser(
     return false;
 
   // Redirect top-level navigations only. This excludes iframes and webviews
-  // in particular.
-  if (content::GuestMode::IsCrossProcessFrameGuest(web_contents))
+  // in particular. Since we can only navigate a guest after attaching to the
+  // outer WebContents, this check works for both guests and portals.
+  if (web_contents->GetOuterWebContents())
     return false;
 
-  // If prerendering, don't launch the alternative browser but abort the
+  // If no-state prefetching, don't launch the alternative browser but abort the
   // navigation.
-  prerender::PrerenderContents* prerender_contents =
-      prerender::PrerenderContents::FromWebContents(web_contents);
-  if (prerender_contents) {
-    prerender_contents->Destroy(prerender::FINAL_STATUS_BROWSER_SWITCH);
+  prerender::NoStatePrefetchContents* no_state_prefetch_contents =
+      prerender::ChromeNoStatePrefetchContentsDelegate::FromWebContents(
+          web_contents);
+  if (no_state_prefetch_contents) {
+    no_state_prefetch_contents->Destroy(prerender::FINAL_STATUS_BROWSER_SWITCH);
     return true;
   }
 

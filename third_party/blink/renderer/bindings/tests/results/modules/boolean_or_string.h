@@ -11,7 +11,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_BINDINGS_TESTS_RESULTS_MODULES_BOOLEAN_OR_STRING_H_
 #define THIRD_PARTY_BLINK_RENDERER_BINDINGS_TESTS_RESULTS_MODULES_BOOLEAN_OR_STRING_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -40,7 +40,7 @@ class MODULES_EXPORT BooleanOrString final {
   BooleanOrString(const BooleanOrString&);
   ~BooleanOrString();
   BooleanOrString& operator=(const BooleanOrString&);
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   enum class SpecificType {

@@ -4,15 +4,15 @@
 
 #include "ash/system/unified/notification_hidden_view.h"
 
-#include "ash/public/cpp/ash_features.h"
+#include "ash/login/login_screen_controller.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "ash/style/ash_color_provider.h"
 #include "ash/system/message_center/ash_message_center_lock_screen_controller.h"
-#include "ash/system/message_center/message_center_controller.h"
 #include "ash/system/tray/tray_constants.h"
-#include "ash/system/unified/sign_out_button.h"
+#include "ash/system/unified/rounded_label_button.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/message_center/lock_screen/lock_screen_controller.h"
 #include "ui/message_center/message_center.h"
@@ -28,53 +28,66 @@ namespace {
 
 void ShowLockScreenNotificationSettings() {
   ash::Shell::Get()
-      ->message_center_controller()
+      ->login_screen_controller()
       ->ShowLockScreenNotificationSettings();
+}
+
+SkColor GetBackgroundColor() {
+  return AshColorProvider::Get()->GetControlsLayerColor(
+      AshColorProvider::ControlsLayerType::kControlBackgroundColorInactive);
 }
 
 }  // namespace
 
-NotificationHiddenView::NotificationHiddenView() {
-  auto* label = new views::Label;
-  label->SetEnabledColor(kUnifiedMenuTextColor);
-  label->SetAutoColorReadabilityEnabled(false);
-  label->SetText(
+NotificationHiddenView::NotificationHiddenView()
+    : container_(AddChildView(std::make_unique<views::View>())),
+      label_(container_->AddChildView(std::make_unique<views::Label>())) {
+  label_->SetAutoColorReadabilityEnabled(false);
+  label_->SetText(
       l10n_util::GetStringUTF16(IDS_ASH_MESSAGE_CENTER_LOCKSCREEN_UNIFIED));
-  label->SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
-  label->SetLineHeight(kUnifiedNotificationHiddenLineHeight);
-  label->SetBorder(views::CreateEmptyBorder(kUnifiedNotificationHiddenPadding));
+  label_->SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
+  label_->SetLineHeight(kUnifiedNotificationHiddenLineHeight);
+  label_->SetBorder(
+      views::CreateEmptyBorder(kUnifiedNotificationHiddenPadding));
 
-  auto* container = new views::View;
-  container->SetBackground(views::CreateBackgroundFromPainter(
-      views::Painter::CreateSolidRoundRectPainter(kUnifiedMenuButtonColor,
-                                                  kUnifiedTrayCornerRadius)));
+  container_->SetBackground(views::CreateRoundedRectBackground(
+      GetBackgroundColor(), kUnifiedTrayCornerRadius));
 
-  auto* layout = container->SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kHorizontal));
-
-  container->AddChildView(label);
-  layout->SetFlexForView(label, 1);
+  auto* layout =
+      container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal));
+  layout->SetFlexForView(label_, 1);
 
   // Shows the "Change" button, unless the locks screen notification is
   // prohibited by policy or flag.
   if (AshMessageCenterLockScreenController::IsAllowed()) {
-    change_button_ = new RoundedLabelButton(
-        this,
-        l10n_util::GetStringUTF16(IDS_ASH_MESSAGE_CENTER_LOCKSCREEN_CHANGE));
+    change_button_ =
+        container_->AddChildView(std::make_unique<RoundedLabelButton>(
+            base::BindRepeating(&NotificationHiddenView::ChangeButtonPressed,
+                                base::Unretained(this)),
+            l10n_util::GetStringUTF16(
+                IDS_ASH_MESSAGE_CENTER_LOCKSCREEN_CHANGE)));
     change_button_->SetTooltipText(l10n_util::GetStringUTF16(
         IDS_ASH_MESSAGE_CENTER_LOCKSCREEN_CHANGE_TOOLTIP));
-
-    container->AddChildView(change_button_);
   }
 
   SetBorder(
       views::CreateEmptyBorder(gfx::Insets(kUnifiedNotificationCenterSpacing)));
   SetLayoutManager(std::make_unique<views::FillLayout>());
-  AddChildView(container);
 }
 
-void NotificationHiddenView::ButtonPressed(views::Button* sender,
-                                           const ui::Event& event) {
+const char* NotificationHiddenView::GetClassName() const {
+  return "NotificationHiddenView";
+}
+
+void NotificationHiddenView::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  label_->SetEnabledColor(AshColorProvider::Get()->GetContentLayerColor(
+      AshColorProvider::ContentLayerType::kTextColorPrimary));
+  container_->background()->SetNativeControlColor(GetBackgroundColor());
+}
+
+void NotificationHiddenView::ChangeButtonPressed() {
   // TODO(yoshiki): Refactor LockScreenController and remove the static cast.
   // TODO(yoshiki): Show the setting after unlocking.
   static_cast<message_center::MessageCenterImpl*>(

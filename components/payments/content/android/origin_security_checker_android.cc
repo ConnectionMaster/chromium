@@ -4,40 +4,33 @@
 
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
-#include "components/payments/content/origin_security_checker.h"
-#include "content/public/browser/web_contents.h"
-#include "jni/OriginSecurityChecker_jni.h"
+#include "components/payments/content/android/jni_headers/OriginSecurityChecker_jni.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
+#include "url/android/gurl_android.h"
+#include "url/gurl.h"
 
 namespace payments {
 namespace {
 
-using ::base::android::JavaParamRef;
 using ::base::android::ConvertJavaStringToUTF8;
+using ::base::android::JavaParamRef;
 
 }  // namespace
 
 // static
 jboolean JNI_OriginSecurityChecker_IsOriginSecure(
     JNIEnv* env,
-    const JavaParamRef<jstring>& jurl) {
-  return OriginSecurityChecker::IsOriginSecure(
-      GURL(ConvertJavaStringToUTF8(env, jurl)));
+    const JavaParamRef<jobject>& j_url) {
+  std::unique_ptr<GURL> url = url::GURLAndroid::ToNativeGURL(env, j_url);
+  return url->is_valid() && network::IsUrlPotentiallyTrustworthy(*url);
 }
 
 // static
 jboolean JNI_OriginSecurityChecker_IsSchemeCryptographic(
     JNIEnv* env,
-    const JavaParamRef<jstring>& jurl) {
-  return OriginSecurityChecker::IsSchemeCryptographic(
-      GURL(ConvertJavaStringToUTF8(env, jurl)));
-}
-
-// static
-jboolean JNI_OriginSecurityChecker_IsOriginLocalhostOrFile(
-    JNIEnv* env,
-    const JavaParamRef<jstring>& jurl) {
-  return OriginSecurityChecker::IsOriginLocalhostOrFile(
-      GURL(ConvertJavaStringToUTF8(env, jurl)));
+    const JavaParamRef<jobject>& j_url) {
+  std::unique_ptr<GURL> url = url::GURLAndroid::ToNativeGURL(env, j_url);
+  return url->is_valid() && url->SchemeIsCryptographic();
 }
 
 }  // namespace payments

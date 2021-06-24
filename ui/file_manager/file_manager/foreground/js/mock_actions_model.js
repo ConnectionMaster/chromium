@@ -2,46 +2,50 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/**
- * @param {string} title
- * @param {Array<!Entry>} entries
- * @constructor
- * @struct
- */
-function MockActionModel(title, entries) {
-  this.title = title;
-  this.entries = entries;
-  this.actionsModel = null;
+// clang-format off
+// #import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+// #import {dispatchSimpleEvent} from 'chrome://resources/js/cr.m.js';
+// clang-format on
+
+/* #export */ class MockActionModel extends cr.EventTarget {
+  /**
+   * @param {string} title
+   * @param {Array<!Entry>} entries
+   */
+  constructor(title, entries) {
+    super();
+
+    this.title = title;
+    this.entries = entries;
+    this.actionsModel = null;
+  }
+
+  getTitle() {
+    return this.title;
+  }
+
+  onCanExecute() {}
+
+  onExecute() {
+    cr.dispatchSimpleEvent(this, 'invalidated', true);
+  }
 }
 
-MockActionModel.prototype.getTitle = function() {
-  return this.title;
-};
+/* #export */ class MockActionsModel extends cr.EventTarget {
+  constructor(actions) {
+    super();
 
-MockActionModel.prototype.onCanExecute = () => {};
+    this.actions_ = actions;
+    Object.keys(actions).forEach(function(key) {
+      actions[key].actionsModel = this;
+    });
+  }
 
-MockActionModel.prototype.onExecute = function() {
-  cr.dispatchSimpleEvent('invalidated', this.actionsModel);
-};
+  initialize() {
+    return Promise.resolve();
+  }
 
-/**
- * @constructor
- */
-function MockActionsModel(actions) {
-  this.actions_ = actions;
-  Object.keys(actions).forEach(function(key) {
-    actions[key].actionsModel = this;
-  });
+  getActions() {
+    return this.actions_;
+  }
 }
-
-MockActionsModel.prototype = {
-  __proto__: cr.EventTarget.prototype
-};
-
-MockActionsModel.prototype.initialize = () => {
-  return Promise.resolve();
-};
-
-MockActionsModel.prototype.getActions = function() {
-  return this.actions_;
-};

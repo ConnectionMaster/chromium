@@ -4,14 +4,16 @@
 
 #import "ios/chrome/browser/ui/collection_view/collection_view_controller.h"
 
-#include "base/logging.h"
+#import <MaterialComponents/MaterialCollectionCells.h>
+
+#include "base/check.h"
 #include "base/mac/foundation_util.h"
 #import "ios/chrome/browser/ui/collection_view/cells/MDCCollectionViewCell+Chrome.h"
 #import "ios/chrome/browser/ui/collection_view/cells/collection_view_item.h"
 #import "ios/chrome/browser/ui/collection_view/collection_view_model.h"
 #import "ios/chrome/browser/ui/material_components/chrome_app_bar_view_controller.h"
 #import "ios/chrome/browser/ui/material_components/utils.h"
-#import "ios/third_party/material_components_ios/src/components/CollectionCells/src/MaterialCollectionCells.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -61,6 +63,12 @@
                name:UIContentSizeCategoryDidChangeNotification
              object:nil];
   }
+
+  // Suport dark mode.
+  self.collectionView.backgroundColor =
+      [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
+  self.styler.cellBackgroundColor =
+      [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
 }
 
 - (void)contentSizeCategoryDidChange:(id)sender {

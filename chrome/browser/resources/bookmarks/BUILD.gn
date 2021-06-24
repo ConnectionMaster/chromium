@@ -2,241 +2,171 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//third_party/closure_compiler/compile_js.gni")
-import("../optimize_webui.gni")
+import("//chrome/common/features.gni")
+import("//tools/grit/grit_rule.gni")
+import("//tools/grit/preprocess_if_expr.gni")
+import("//tools/polymer/html_to_js.gni")
+import("//tools/typescript/ts_library.gni")
+import("//ui/webui/resources/tools/generate_grd.gni")
+import("../tools/optimize_webui.gni")
 
-optimize_webui("build") {
-  host = "bookmarks"
-  html_in_files = [ "bookmarks.html" ]
-  html_out_files = [ "vulcanized.html" ]
-  html_out_files_polymer2 = [ "vulcanized.p2.html" ]
+preprocess_folder = "preprocessed"
+tsc_folder = "tsc"
+preprocess_manifest = "preprocessed_manifest.json"
+preprocess_gen_manifest = "preprocessed_gen_manifest.json"
 
-  input = rebase_path(".", root_build_dir)
-  js_out_files = [ "crisper.js" ]
+if (optimize_webui) {
+  build_manifest = "build_manifest.json"
 
-  deps = []
+  optimize_webui("build") {
+    host = "bookmarks"
+    input = rebase_path("$target_gen_dir/$tsc_folder", root_build_dir)
+    js_out_files = [ "bookmarks.rollup.js" ]
+    js_module_in_files = [ "bookmarks.js" ]
+    out_manifest = "$target_gen_dir/$build_manifest"
+
+    deps = [
+      ":build_ts",
+      "../../../../ui/webui/resources:preprocess",
+    ]
+    excludes = [ "chrome://resources/js/cr.m.js" ]
+  }
 }
 
-js_type_check("closure_compile") {
+generate_grd("build_grd") {
+  input_files = [ "bookmarks.html" ]
+  input_files_base_dir = rebase_path(".", "//")
+
+  if (optimize_webui) {
+    deps = [ ":build" ]
+    manifest_files = [ "$target_gen_dir/$build_manifest" ]
+    resource_path_rewrites = [ "bookmarks.rollup.js|bookmarks.js" ]
+  } else {
+    deps = [ ":build_ts" ]
+    manifest_files = [ "$target_gen_dir/tsconfig.manifest" ]
+  }
+  grd_prefix = "bookmarks"
+  out_grd = "$target_gen_dir/${grd_prefix}_resources.grd"
+}
+
+preprocess_if_expr("preprocess") {
+  in_folder = "./"
+  out_folder = "$target_gen_dir/$preprocess_folder"
+  out_manifest = "$target_gen_dir/$preprocess_manifest"
+  in_files = [
+    "actions.ts",
+    "api_listener.ts",
+    "bookmarks.ts",
+    "browser_proxy.ts",
+    "constants.ts",
+    "debouncer.ts",
+    "dialog_focus_manager.ts",
+    "dnd_manager.ts",
+    "mouse_focus_behavior.ts",
+    "reducers.ts",
+    "store_client.ts",
+    "store.ts",
+    "types.ts",
+    "util.ts",
+  ]
+}
+
+preprocess_if_expr("preprocess_generated") {
+  deps = [ ":web_components" ]
+  in_folder = target_gen_dir
+  out_folder = "$target_gen_dir/$preprocess_folder"
+  out_manifest = "$target_gen_dir/$preprocess_gen_manifest"
+  in_files = [
+    "app.ts",
+    "command_manager.ts",
+    "edit_dialog.ts",
+    "folder_node.ts",
+    "item.ts",
+    "list.ts",
+    "router.ts",
+    "shared_style.ts",
+    "shared_vars.ts",
+    "toolbar.ts",
+  ]
+}
+
+html_to_js("web_components") {
+  js_files = [
+    "app.ts",
+    "command_manager.ts",
+    "edit_dialog.ts",
+    "folder_node.ts",
+    "item.ts",
+    "list.ts",
+    "router.ts",
+    "shared_style.ts",
+    "shared_vars.ts",
+    "toolbar.ts",
+  ]
+}
+
+grit("resources") {
+  defines = chrome_grit_defines
+
+  # These arguments are needed since the grd is generated at build time.
+  enable_input_discovery_for_gn_analyze = false
+  source = "$target_gen_dir/bookmarks_resources.grd"
+  deps = [ ":build_grd" ]
+
+  outputs = [
+    "grit/bookmarks_resources.h",
+    "grit/bookmarks_resources_map.cc",
+    "grit/bookmarks_resources_map.h",
+    "bookmarks_resources.pak",
+  ]
+  output_dir = "$root_gen_dir/chrome"
+}
+
+ts_library("build_ts") {
+  root_dir = "$target_gen_dir/$preprocess_folder"
+  out_dir = "$target_gen_dir/$tsc_folder"
+  tsconfig_base = "tsconfig_base.json"
+  in_files = [
+    "actions.ts",
+    "api_listener.ts",
+    "app.ts",
+    "bookmarks.ts",
+    "browser_proxy.ts",
+    "command_manager.ts",
+    "constants.ts",
+    "debouncer.ts",
+    "dialog_focus_manager.ts",
+    "dnd_manager.ts",
+    "edit_dialog.ts",
+    "folder_node.ts",
+    "item.ts",
+    "list.ts",
+    "mouse_focus_behavior.ts",
+    "reducers.ts",
+    "router.ts",
+    "shared_vars.ts",
+    "shared_style.ts",
+    "store.ts",
+    "store_client.ts",
+    "toolbar.ts",
+    "types.ts",
+    "util.ts",
+  ]
+  definitions = [
+    "//tools/typescript/definitions/bookmarks.d.ts",
+    "//tools/typescript/definitions/bookmark_manager_private.d.ts",
+    "//tools/typescript/definitions/chrome_event.d.ts",
+    "//tools/typescript/definitions/chrome_send.d.ts",
+    "//tools/typescript/definitions/metrics_private.d.ts",
+    "//tools/typescript/definitions/tabs.d.ts",
+    "//tools/typescript/definitions/windows.d.ts",
+  ]
   deps = [
-    ":actions",
-    ":api_listener",
-    ":app",
-    ":command_manager",
-    ":constants",
-    ":debouncer",
-    ":dialog_focus_manager",
-    ":dnd_manager",
-    ":edit_dialog",
-    ":folder_node",
-    ":item",
-    ":list",
-    ":mouse_focus_behavior",
-    ":reducers",
-    ":router",
-    ":store",
-    ":store_client",
-    ":toolbar",
-    ":types",
-    ":util",
+    "//third_party/polymer/v3_0:library",
+    "//ui/webui/resources:library",
   ]
-}
-
-js_library("actions") {
-  deps = [
-    ":types",
-    ":util",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js/cr/ui:store",
+  extra_deps = [
+    ":preprocess",
+    ":preprocess_generated",
   ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("api_listener") {
-  deps = [
-    ":actions",
-    ":debouncer",
-    ":store",
-    ":util",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js/cr/ui:store",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("app") {
-  deps = [
-    ":api_listener",
-    ":dnd_manager",
-    ":mouse_focus_behavior",
-    ":router",
-    ":store",
-    ":store_client",
-    "//ui/webui/resources/js:find_shortcut_behavior",
-    "//ui/webui/resources/js:load_time_data",
-    "//ui/webui/resources/js/cr/ui:splitter",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("command_manager") {
-  deps = [
-    ":api_listener",
-    ":dialog_focus_manager",
-    ":edit_dialog",
-    ":store_client",
-    "//third_party/polymer/v1_0/components-chromium/iron-a11y-keys-behavior:iron-a11y-keys-behavior-extracted",
-    "//ui/webui/resources/cr_elements/cr_action_menu:cr_action_menu",
-    "//ui/webui/resources/cr_elements/cr_lazy_render:cr_lazy_render",
-    "//ui/webui/resources/cr_elements/cr_toast:cr_toast_manager",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js:load_time_data",
-    "//ui/webui/resources/js/cr/ui:command",
-  ]
-  externs_list = [ "$externs_path/bookmark_manager_private.js" ]
-}
-
-js_library("constants") {
-}
-
-js_library("debouncer") {
-  deps = [
-    "//ui/webui/resources/js:cr",
-  ]
-}
-
-js_library("dialog_focus_manager") {
-  deps = [
-    "//ui/webui/resources/js:cr",
-  ]
-}
-
-js_library("dnd_manager") {
-  deps = [
-    ":api_listener",
-    ":debouncer",
-    ":folder_node",
-    ":store",
-    ":types",
-    ":util",
-    "//ui/webui/resources/js:cr",
-  ]
-  externs_list = [
-    "$externs_path/bookmark_manager_private.js",
-    "$externs_path/metrics_private.js",
-  ]
-}
-
-js_library("edit_dialog") {
-  deps = [
-    ":api_listener",
-    ":dialog_focus_manager",
-    ":types",
-    "//ui/webui/resources/cr_elements/cr_input:cr_input",
-    "//ui/webui/resources/js:assert",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js:load_time_data",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("folder_node") {
-  deps = [
-    ":actions",
-    ":command_manager",
-    ":store_client",
-    "//ui/webui/resources/js:load_time_data",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("item") {
-  deps = [
-    ":actions",
-    ":command_manager",
-    ":store_client",
-    "//ui/webui/resources/js:icon",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("list") {
-  deps = [
-    ":actions",
-    ":command_manager",
-    ":item",
-    ":store_client",
-    "//third_party/polymer/v1_0/components-chromium/iron-list:iron-list-extracted",
-    "//ui/webui/resources/js:list_property_update_behavior",
-    "//ui/webui/resources/js:load_time_data",
-  ]
-}
-
-js_library("mouse_focus_behavior") {
-  deps = [
-    "//ui/webui/resources/js:cr",
-  ]
-}
-
-js_library("reducers") {
-  deps = [
-    ":actions",
-    ":types",
-    "//ui/webui/resources/js:cr",
-  ]
-}
-
-js_library("router") {
-  deps = [
-    ":actions",
-    ":store_client",
-  ]
-}
-
-js_library("store") {
-  deps = [
-    ":reducers",
-    ":types",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js/cr/ui:store",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("store_client") {
-  deps = [
-    ":store",
-    ":types",
-    "//ui/webui/resources/js:cr",
-    "//ui/webui/resources/js/cr/ui:store_client",
-  ]
-}
-
-js_library("toolbar") {
-  deps = [
-    ":command_manager",
-    ":edit_dialog",
-    ":store_client",
-    "//ui/webui/resources/cr_elements/cr_action_menu:cr_action_menu",
-    "//ui/webui/resources/cr_elements/cr_toolbar:cr_toolbar",
-  ]
-  externs_list = [
-    "$externs_path/bookmark_manager_private.js",
-    "$externs_path/chrome_extensions.js",
-  ]
-}
-
-js_library("types") {
-  deps = [
-    ":constants",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
-}
-
-js_library("util") {
-  deps = [
-    ":types",
-    "//ui/webui/resources/js:cr",
-  ]
-  externs_list = [ "$externs_path/chrome_extensions.js" ]
 }

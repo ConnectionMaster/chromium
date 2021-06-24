@@ -19,15 +19,14 @@ namespace blink {
 // or the wrapped object and forwards the operation to it.)
 class SVGAnimatedHref final : public SVGAnimatedString {
  public:
-  static SVGAnimatedHref* Create(SVGElement* context_element);
-
   explicit SVGAnimatedHref(SVGElement* context_element);
 
   SVGString* CurrentValue();
   const SVGString* CurrentValue() const;
 
-  String baseVal() override;
-  void setBaseVal(const String&, ExceptionState&) override;
+  V8UnionStringOrTrustedScriptURL* baseVal() override;
+  void setBaseVal(const V8UnionStringOrTrustedScriptURL* value,
+                  ExceptionState& exception_state) override;
   String animVal() override;
 
   bool IsSpecified() const {
@@ -37,7 +36,7 @@ class SVGAnimatedHref final : public SVGAnimatedString {
   static bool IsKnownAttribute(const QualifiedName&);
   void AddToPropertyMap(SVGElement*);
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
   SVGAnimatedString* BackingString();

@@ -4,14 +4,13 @@
 
 #include "content/browser/notifications/blink_notification_service_impl.h"
 
+#include <string>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
+#include "base/check_op.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
-#include "base/strings/string16.h"
 #include "base/task/post_task.h"
 #include "content/browser/notifications/notification_event_dispatcher_impl.h"
 #include "content/browser/notifications/platform_notification_context_impl.h"
@@ -28,7 +27,6 @@
 #include "third_party/blink/public/common/notifications/notification_resources.h"
 #include "third_party/blink/public/common/notifications/platform_notification_data.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
-#include "url/gurl.h"
 
 namespace content {
 
@@ -39,6 +37,9 @@ const char kBadMessageImproperNotificationImage[] =
     "disabled.";
 const char kBadMessageInvalidNotificationTriggerTimestamp[] =
     "Received an invalid notification trigger timestamp.";
+const char kBadMessageInvalidNotificationActionButtons[] =
+    "Received a notification with a number of action images that does not "
+    "match the number of actions.";
 
 // Returns the implementation of the PlatformNotificationService. May be NULL.
 PlatformNotificationService* GetNotificationService(
@@ -89,17 +90,19 @@ BlinkNotificationServiceImpl::BlinkNotificationServiceImpl(
     BrowserContext* browser_context,
     scoped_refptr<ServiceWorkerContextWrapper> service_worker_context,
     const url::Origin& origin,
-    mojo::InterfaceRequest<blink::mojom::NotificationService> request)
+    const GURL& document_url,
+    mojo::PendingReceiver<blink::mojom::NotificationService> receiver)
     : notification_context_(notification_context),
       browser_context_(browser_context),
       service_worker_context_(std::move(service_worker_context)),
       origin_(origin),
-      binding_(this, std::move(request)) {
+      document_url_(document_url),
+      receiver_(this, std::move(receiver)) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(notification_context_);
   DCHECK(browser_context_);
 
-  binding_.set_connection_error_handler(base::BindOnce(
+  receiver_.set_disconnect_handler(base::BindOnce(
       &BlinkNotificationServiceImpl::OnConnectionError,
       base::Unretained(this) /* the channel is owned by |this| */));
 }
@@ -129,9 +132,11 @@ void BlinkNotificationServiceImpl::DisplayNonPersistentNotification(
     const std::string& token,
     const blink::PlatformNotificationData& platform_notification_data,
     const blink::NotificationResources& notification_resources,
-    blink::mojom::NonPersistentNotificationListenerPtr event_listener_ptr) {
+    mojo::PendingRemote<blink::mojom::NonPersistentNotificationListener>
+        event_listener_remote) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!ValidateNotificationResources(notification_resources))
+  if (!ValidateNotificationDataAndResources(platform_notification_data,
+                                            notification_resources))
     return;
 
   if (!GetNotificationService(browser_context_))
@@ -147,10 +152,10 @@ void BlinkNotificationServiceImpl::DisplayNonPersistentNotification(
   NotificationEventDispatcherImpl* event_dispatcher =
       NotificationEventDispatcherImpl::GetInstance();
   event_dispatcher->RegisterNonPersistentNotificationListener(
-      notification_id, std::move(event_listener_ptr));
+      notification_id, std::move(event_listener_remote));
 
   GetNotificationService(browser_context_)
-      ->DisplayNotification(notification_id, origin_.GetURL(),
+      ->DisplayNotification(notification_id, origin_.GetURL(), document_url_,
                             platform_notification_data, notification_resources);
 }
 
@@ -178,33 +183,38 @@ void BlinkNotificationServiceImpl::CloseNonPersistentNotification(
 blink::mojom::PermissionStatus
 BlinkNotificationServiceImpl::CheckPermissionStatus() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return BrowserContext::GetPermissionController(browser_context_)
-      ->GetPermissionStatus(PermissionType::NOTIFICATIONS, origin_.GetURL(),
-                            origin_.GetURL());
+  // TOOD(crbug.com/987654): It is odd that a service instance can be created
+  // for cross-origin subframes, yet the instance is completely oblivious of
+  // whether it is serving a top-level browsing context or an embedded one.
+  return browser_context_->GetPermissionController()->GetPermissionStatus(
+      PermissionType::NOTIFICATIONS, origin_.GetURL(), origin_.GetURL());
 }
 
-bool BlinkNotificationServiceImpl::ValidateNotificationResources(
+bool BlinkNotificationServiceImpl::ValidateNotificationDataAndResources(
+    const blink::PlatformNotificationData& platform_notification_data,
     const blink::NotificationResources& notification_resources) {
-  if (notification_resources.image.drawsNothing() ||
-      base::FeatureList::IsEnabled(features::kNotificationContentImage))
-    return true;
-  binding_.ReportBadMessage(kBadMessageImproperNotificationImage);
-  // The above ReportBadMessage() closes |binding_| but does not trigger its
-  // connection error handler, so we need to call the error handler explicitly
-  // here to do some necessary work.
-  OnConnectionError();
-  return false;
-}
-
-// Checks if this notification has a valid trigger.
-bool BlinkNotificationServiceImpl::ValidateNotificationData(
-    const blink::PlatformNotificationData& notification_data) {
-  if (!CheckNotificationTriggerRange(notification_data)) {
-    binding_.ReportBadMessage(kBadMessageInvalidNotificationTriggerTimestamp);
+  if (platform_notification_data.actions.size() !=
+      notification_resources.action_icons.size()) {
+    receiver_.ReportBadMessage(kBadMessageInvalidNotificationActionButtons);
     OnConnectionError();
     return false;
   }
 
+  if (!CheckNotificationTriggerRange(platform_notification_data)) {
+    receiver_.ReportBadMessage(kBadMessageInvalidNotificationTriggerTimestamp);
+    OnConnectionError();
+    return false;
+  }
+
+  if (!notification_resources.image.drawsNothing() &&
+      !base::FeatureList::IsEnabled(features::kNotificationContentImage)) {
+    receiver_.ReportBadMessage(kBadMessageImproperNotificationImage);
+    // The above ReportBadMessage() closes |binding_| but does not trigger its
+    // connection error handler, so we need to call the error handler explicitly
+    // here to do some necessary work.
+    OnConnectionError();
+    return false;
+  }
   return true;
 }
 
@@ -214,10 +224,8 @@ void BlinkNotificationServiceImpl::DisplayPersistentNotification(
     const blink::NotificationResources& notification_resources,
     DisplayPersistentNotificationCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!ValidateNotificationResources(notification_resources))
-    return;
-
-  if (!ValidateNotificationData(platform_notification_data))
+  if (!ValidateNotificationDataAndResources(platform_notification_data,
+                                            notification_resources))
     return;
 
   if (!GetNotificationService(browser_context_)) {
@@ -268,14 +276,9 @@ void BlinkNotificationServiceImpl::ClosePersistentNotification(
   if (CheckPermissionStatus() != blink::mojom::PermissionStatus::GRANTED)
     return;
 
-  GetNotificationService(browser_context_)
-      ->ClosePersistentNotification(notification_id);
-
-  // Deleting the data associated with |notification_id| from the notification
-  // database will be done in a task runner, but there's no reason to postpone
-  // removing the notification from the user's display until that's done.
   notification_context_->DeleteNotificationData(
-      notification_id, origin_.GetURL(), base::DoNothing());
+      notification_id, origin_.GetURL(), /* close_notification= */ true,
+      base::DoNothing());
 }
 
 void BlinkNotificationServiceImpl::GetNotifications(

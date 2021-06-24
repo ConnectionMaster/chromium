@@ -7,9 +7,9 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "base/unguessable_token.h"
 #include "chromeos/components/multidevice/remote_device_test_util.h"
 #include "chromeos/services/secure_channel/fake_connection.h"
@@ -27,8 +27,7 @@ class SecureChannelSecureChannelDisconnectorImplTest : public testing::Test {
 
   // testing::Test:
   void SetUp() override {
-    disconnector_ =
-        SecureChannelDisconnectorImpl::Factory::Get()->BuildInstance();
+    disconnector_ = SecureChannelDisconnectorImpl::Factory::Create();
   }
 
   // Returns an ID associated with the request as well as a pointer to the
@@ -54,7 +53,7 @@ class SecureChannelSecureChannelDisconnectorImplTest : public testing::Test {
   }
 
   bool HasChannelBeenDeleted(const base::UnguessableToken id) {
-    return base::ContainsKey(deleted_request_ids_, id);
+    return base::Contains(deleted_request_ids_, id);
   }
 
  private:

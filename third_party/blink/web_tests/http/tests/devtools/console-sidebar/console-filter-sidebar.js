@@ -5,7 +5,7 @@
 (async function() {
   TestRunner.addResult(`Tests that console sidebar behaves properly.\n`);
 
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
   await TestRunner.addScriptTag('resources/log-source.js');
   await TestRunner.evaluateInPagePromise(`
@@ -60,7 +60,7 @@
       sidebar._treeElements[2].select();
       TestRunner.addResult('Selecting item: ' + sidebar._selectedTreeElement.title);
       TestRunner.addResult('MESSAGES:');
-      ConsoleTestRunner.dumpConsoleMessages();
+      await ConsoleTestRunner.dumpConsoleMessages();
       TestRunner.addResult('');
       dumpSidebar();
       next();
@@ -71,7 +71,7 @@
       sidebar._tree.selectNext();
       TestRunner.addResult('Selecting item: ' + sidebar._selectedTreeElement.title);
       TestRunner.addResult('MESSAGES:');
-      ConsoleTestRunner.dumpConsoleMessages();
+      await ConsoleTestRunner.dumpConsoleMessages();
       next();
     },
     async function clearConsole(next) {

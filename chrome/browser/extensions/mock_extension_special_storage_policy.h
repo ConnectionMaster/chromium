@@ -6,11 +6,10 @@
 #define CHROME_BROWSER_EXTENSIONS_MOCK_EXTENSION_SPECIAL_STORAGE_POLICY_H_
 
 #include <set>
-#include <string>
 
 #include "base/macros.h"
 #include "chrome/browser/extensions/extension_special_storage_policy.h"
-#include "services/network/session_cleanup_cookie_store.h"
+#include "services/network/public/cpp/session_cookie_delete_predicate.h"
 #include "url/gurl.h"
 
 // This class is the same as MockSpecialStoragePolicy (in
@@ -25,8 +24,7 @@ class MockExtensionSpecialStoragePolicy : public ExtensionSpecialStoragePolicy {
   bool IsStorageUnlimited(const GURL& origin) override;
   bool IsStorageSessionOnly(const GURL& origin) override;
   bool HasSessionOnlyOrigins() override;
-  network::SessionCleanupCookieStore::DeleteCookiePredicate
-  CreateDeleteCookieOnExitPredicate() override;
+  network::DeleteCookiePredicate CreateDeleteCookieOnExitPredicate() override;
 
   void AddProtected(const GURL& origin) {
     protected_.insert(origin);

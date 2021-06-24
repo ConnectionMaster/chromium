@@ -15,14 +15,20 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/macros.h"
-#include "base/optional.h"
+#include "base/timer/timer.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/authenticator_request_client_delegate.h"
-#include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/global_routing_id.h"
 #include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/authenticator_make_credential_response.h"
+#include "device/fido/authenticator_selection_criteria.h"
+#include "device/fido/ctap_get_assertion_request.h"
+#include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/fido_constants.h"
 #include "device/fido/fido_transport_protocol.h"
+#include "device/fido/make_credential_request_handler.h"
+#include "services/data_decoder/public/cpp/data_decoder.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/webauthn/authenticator.mojom.h"
 #include "url/origin.h"
 
@@ -32,17 +38,15 @@ class OneShotTimer;
 
 namespace device {
 
-struct PlatformAuthenticatorInfo;
-class CtapGetAssertionRequest;
 class FidoRequestHandlerBase;
+class FidoDiscoveryFactory;
 
 enum class FidoReturnCode : uint8_t;
 
-}  // namespace device
+enum class GetAssertionStatus;
+enum class MakeCredentialStatus;
 
-namespace service_manager {
-class Connector;
-}  // namespace service_manager
+}  // namespace device
 
 namespace url {
 class Origin;
@@ -52,6 +56,7 @@ namespace content {
 
 class BrowserContext;
 class RenderFrameHost;
+class WebAuthRequestSecurityChecker;
 
 namespace client_data {
 // These enumerate the possible values for the `type` member of
@@ -61,13 +66,31 @@ CONTENT_EXPORT extern const char kCreateType[];
 CONTENT_EXPORT extern const char kGetType[];
 }  // namespace client_data
 
+enum class RequestExtension;
+
+// Builds the CollectedClientData[1] dictionary with the given values,
+// serializes it to JSON, and returns the resulting string. For legacy U2F
+// requests coming from the CryptoToken U2F extension, modifies the object key
+// 'type' as required[2].
+// [1] https://w3c.github.io/webauthn/#dictdef-collectedclientdata
+// [2]
+// https://fidoalliance.org/specs/fido-u2f-v1.2-ps-20170411/fido-u2f-raw-message-formats-v1.2-ps-20170411.html#client-data
+CONTENT_EXPORT std::string SerializeWebAuthnCollectedClientDataToJson(
+    const std::string& type,
+    const std::string& origin,
+    base::span<const uint8_t> challenge,
+    bool is_cross_origin,
+    bool use_legacy_u2f_type_key = false,
+    blink::mojom::PaymentOptionsPtr payment_options = nullptr,
+    const std::string& payment_rp = "",
+    const std::string& payment_top_origin = "");
+
 // Common code for any WebAuthn Authenticator interfaces.
 class CONTENT_EXPORT AuthenticatorCommon {
  public:
-  // Permits setting connector and timer for testing.
-  AuthenticatorCommon(RenderFrameHost* render_frame_host,
-                      service_manager::Connector*,
-                      std::unique_ptr<base::OneShotTimer>);
+  // Creates a new AuthenticatorCommon. Callers must ensure that this instance
+  // outlives the RenderFrameHost.
+  explicit AuthenticatorCommon(RenderFrameHost* render_frame_host);
   virtual ~AuthenticatorCommon();
 
   // This is not-quite an implementation of blink::mojom::Authenticator. The
@@ -83,25 +106,31 @@ class CONTENT_EXPORT AuthenticatorCommon {
   void IsUserVerifyingPlatformAuthenticatorAvailable(
       blink::mojom::Authenticator::
           IsUserVerifyingPlatformAuthenticatorAvailableCallback callback);
-
-  // Synchronous implementation of
-  // IsUserVerifyingPlatformAuthenticatorAvailable.
-  bool IsUserVerifyingPlatformAuthenticatorAvailableImpl(
-      AuthenticatorRequestClientDelegate* request_delegate);
+  void Cancel();
 
   void Cleanup();
 
-  base::flat_set<device::FidoTransportProtocol> enabled_transports_for_testing()
-      const {
-    return transports_;
-  }
-  void set_transports_for_testing(
-      base::flat_set<device::FidoTransportProtocol> transports) {
-    transports_ = transports;
-  }
+  void DisableUI();
+
+  // GetRenderFrameHost returns a pointer to the RenderFrameHost that was given
+  // to the constructor. Use this rather than keeping a copy of the
+  // RenderFrameHost* that was passed in.
+  //
+  // This object assumes that the RenderFrameHost overlives it but, in case it
+  // doesn't, this avoids holding a raw pointer and creating a use-after-free.
+  // If the RenderFrameHost has been destroyed then this function will return
+  // nullptr and the process will crash when it tries to use it.
+  RenderFrameHost* GetRenderFrameHost() const;
 
  protected:
-  virtual void UpdateRequestDelegate();
+  // MaybeCreateRequestDelegate returns the embedder-provided implementation of
+  // AuthenticatorRequestClientDelegate, which encapsulates per-request state
+  // relevant to the embedder, e.g. because it is used to display browser UI.
+  //
+  // Chrome may return nullptr here in order to ensure that at most one request
+  // per WebContents is ongoing at once.
+  virtual std::unique_ptr<AuthenticatorRequestClientDelegate>
+  MaybeCreateRequestDelegate();
 
   std::unique_ptr<AuthenticatorRequestClientDelegate> request_delegate_;
 
@@ -114,99 +143,121 @@ class CONTENT_EXPORT AuthenticatorCommon {
     kDontCheck,
   };
 
+  // Replaces the current |request_| with a |MakeCredentialRequestHandler|,
+  // effectively restarting the request.
+  void StartMakeCredentialRequest(bool allow_skipping_pin_touch);
+
+  // Replaces the current |request_| with a |GetAssertionRequestHandler|,
+  // effectively restarting the request.
+  void StartGetAssertionRequest(bool allow_skipping_pin_touch);
+
   bool IsFocused() const;
 
-  // Builds the CollectedClientData[1] dictionary with the given values,
-  // serializes it to JSON, and returns the resulting string. For legacy U2F
-  // requests coming from the CryptoToken U2F extension, modifies the object key
-  // 'type' as required[2].
-  // [1] https://w3c.github.io/webauthn/#dictdef-collectedclientdata
-  // [2]
-  // https://fidoalliance.org/specs/fido-u2f-v1.2-ps-20170411/fido-u2f-raw-message-formats-v1.2-ps-20170411.html#client-data
-  static std::string SerializeCollectedClientDataToJson(
-      const std::string& type,
-      const std::string& origin,
-      base::span<const uint8_t> challenge,
-      bool use_legacy_u2f_type_key = false);
+  // Callback to handle the large blob being compressed before attempting to
+  // start a request.
+  void OnLargeBlobCompressed(
+      data_decoder::DataDecoder::ResultOrError<mojo_base::BigBuffer> result);
+
+  // Callback to handle the large blob being uncompressed before completing a
+  // request.
+  void OnLargeBlobUncompressed(
+      device::AuthenticatorGetAssertionResponse response,
+      data_decoder::DataDecoder::ResultOrError<mojo_base::BigBuffer> result);
 
   // Callback to handle the async response from a U2fDevice.
   void OnRegisterResponse(
-      device::FidoReturnCode status_code,
-      base::Optional<device::AuthenticatorMakeCredentialResponse> response_data,
-      base::Optional<device::FidoTransportProtocol> transport_used);
+      device::MakeCredentialStatus status_code,
+      absl::optional<device::AuthenticatorMakeCredentialResponse> response_data,
+      const device::FidoAuthenticator* authenticator);
 
   // Callback to complete the registration process once a decision about
   // whether or not to return attestation data has been made.
   void OnRegisterResponseAttestationDecided(
       device::AuthenticatorMakeCredentialResponse response_data,
-      bool is_transport_used_internal,
       bool attestation_permitted);
 
   // Callback to handle the async response from a U2fDevice.
   void OnSignResponse(
-      device::FidoReturnCode status_code,
-      base::Optional<std::vector<device::AuthenticatorGetAssertionResponse>>
+      device::GetAssertionStatus status_code,
+      absl::optional<std::vector<device::AuthenticatorGetAssertionResponse>>
           response_data,
-      base::Optional<device::FidoTransportProtocol> transport_used);
-
-  void FailWithErrorAndCleanup();
+      const device::FidoAuthenticator* authenticator);
 
   // Runs when timer expires and cancels all issued requests to a U2fDevice.
   void OnTimeout();
+  // Cancels the currently pending request (if any) with the supplied status.
+  void CancelWithStatus(blink::mojom::AuthenticatorStatus status);
   // Runs when the user cancels WebAuthN request via UI dialog.
-  void Cancel();
+  void OnCancelFromUI();
 
   // Called when a GetAssertion has completed, either because an allow_list was
   // used and so an answer is returned directly, or because the user selected an
   // account from the options.
   void OnAccountSelected(device::AuthenticatorGetAssertionResponse response);
 
-  // Decides whether or not UI is present that needs to block on user
-  // acknowledgement before returning the error, and handles the error
-  // appropriately.
+  // Signals to the request delegate that the request has failed for |reason|.
+  // The request delegate decides whether to present the user with a visual
+  // error before the request is finally resolved with |status|.
   void SignalFailureToRequestDelegate(
-      AuthenticatorRequestClientDelegate::InterestingFailureReason reason);
+      const device::FidoAuthenticator* authenticator,
+      AuthenticatorRequestClientDelegate::InterestingFailureReason reason,
+      blink::mojom::AuthenticatorStatus status);
 
-  void InvokeCallbackAndCleanup(
-      blink::mojom::Authenticator::MakeCredentialCallback callback,
+  // Runs |make_credential_response_callback_| and then Cleanup().
+  void CompleteMakeCredentialRequest(
       blink::mojom::AuthenticatorStatus status,
       blink::mojom::MakeCredentialAuthenticatorResponsePtr response = nullptr,
       Focus focus_check = Focus::kDontCheck);
-  void InvokeCallbackAndCleanup(
-      blink::mojom::Authenticator::GetAssertionCallback callback,
+
+  // Runs |get_assertion_callback_| and then Cleanup().
+  void CompleteGetAssertionRequest(
       blink::mojom::AuthenticatorStatus status,
       blink::mojom::GetAssertionAuthenticatorResponsePtr response = nullptr);
 
-  base::Optional<device::PlatformAuthenticatorInfo>
-  CreatePlatformAuthenticatorIfAvailable();
-  base::Optional<device::PlatformAuthenticatorInfo>
-  CreatePlatformAuthenticatorIfAvailableAndCheckIfCredentialExists(
-      const device::CtapGetAssertionRequest& request);
+  BrowserContext* GetBrowserContext() const;
 
-  BrowserContext* browser_context() const;
+  // Returns the FidoDiscoveryFactory for the current request. This may be a
+  // real instance, or one injected by the Virtual Authenticator environment, or
+  // a unit testing fake. InitDiscoveryFactory() must be called before this
+  // accessor. It gets reset at the end of each request by Cleanup().
+  device::FidoDiscoveryFactory* discovery_factory();
+  void InitDiscoveryFactory();
 
-  RenderFrameHost* const render_frame_host_;
-  service_manager::Connector* connector_ = nullptr;
-  base::flat_set<device::FidoTransportProtocol> transports_;
-
+  const GlobalRenderFrameHostId render_frame_host_id_;
   std::unique_ptr<device::FidoRequestHandlerBase> request_;
+  std::unique_ptr<device::FidoDiscoveryFactory> discovery_factory_;
+  device::FidoDiscoveryFactory* discovery_factory_testing_override_ = nullptr;
   blink::mojom::Authenticator::MakeCredentialCallback
       make_credential_response_callback_;
   blink::mojom::Authenticator::GetAssertionCallback
       get_assertion_response_callback_;
   std::string client_data_json_;
-  bool attestation_requested_;
+  // empty_allow_list_ is true iff a GetAssertion is currently pending and the
+  // request did not list any credential IDs in the allow list.
+  bool empty_allow_list_ = false;
+  bool disable_ui_ = false;
   url::Origin caller_origin_;
   std::string relying_party_id_;
-  std::unique_ptr<base::OneShotTimer> timer_;
-  base::Optional<std::string> app_id_;
+  scoped_refptr<WebAuthRequestSecurityChecker> security_checker_;
+  std::unique_ptr<base::OneShotTimer> timer_ =
+      std::make_unique<base::OneShotTimer>();
+  absl::optional<std::string> app_id_;
+  absl::optional<device::CtapMakeCredentialRequest>
+      ctap_make_credential_request_;
+  absl::optional<device::MakeCredentialRequestHandler::Options>
+      make_credential_options_;
+  absl::optional<device::CtapGetAssertionRequest> ctap_get_assertion_request_;
+  absl::optional<device::CtapGetAssertionOptions> ctap_get_assertion_options_;
   // awaiting_attestation_response_ is true if the embedder has been queried
   // about an attestsation decision and the response is still pending.
   bool awaiting_attestation_response_ = false;
   blink::mojom::AuthenticatorStatus error_awaiting_user_acknowledgement_ =
       blink::mojom::AuthenticatorStatus::NOT_ALLOWED_ERROR;
+  data_decoder::DataDecoder data_decoder_;
 
-  base::WeakPtrFactory<AuthenticatorCommon> weak_factory_;
+  base::flat_set<RequestExtension> requested_extensions_;
+
+  base::WeakPtrFactory<AuthenticatorCommon> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AuthenticatorCommon);
 };

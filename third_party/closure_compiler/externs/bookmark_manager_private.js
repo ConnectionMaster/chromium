@@ -1,4 +1,4 @@
-// Copyright 2019 The Chromium Authors. All rights reserved.
+// Copyright 2020 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -10,13 +10,11 @@
 // See https://chromium.googlesource.com/chromium/src/+/master/docs/closure_compilation.md
 
 // IMPORTANT NOTE: Work-around for crbug.com/543822
-// s/chrome.bookmarkManagerPrivate.bookmarks.BookmarkTreeNode/BookmarkTreeNode/
+// s/chrome.bookmarkManagerPrivate.bookmarks.BookmarkTreeNode/chrome.bookmarks.BookmarkTreeNode/
 
 /** @fileoverview Externs generated from namespace: bookmarkManagerPrivate */
 
-/**
- * @const
- */
+/** @const */
 chrome.bookmarkManagerPrivate = {};
 
 /**
@@ -42,14 +40,14 @@ chrome.bookmarkManagerPrivate.BookmarkNodeData;
 /**
  * Copies the given bookmarks into the clipboard.
  * @param {!Array<string>} idList An array of string-valued ids
- * @param {function():void=} callback
+ * @param {function(): void=} callback
  */
 chrome.bookmarkManagerPrivate.copy = function(idList, callback) {};
 
 /**
  * Cuts the given bookmarks into the clipboard.
  * @param {!Array<string>} idList An array of string-valued ids
- * @param {function():void=} callback
+ * @param {function(): void=} callback
  */
 chrome.bookmarkManagerPrivate.cut = function(idList, callback) {};
 
@@ -59,9 +57,16 @@ chrome.bookmarkManagerPrivate.cut = function(idList, callback) {};
  * @param {string} parentId
  * @param {!Array<string>=} selectedIdList An array of string-valued ids for
  *     selected bookmarks.
- * @param {function():void=} callback
+ * @param {function(): void=} callback
  */
 chrome.bookmarkManagerPrivate.paste = function(parentId, selectedIdList, callback) {};
+
+/**
+ * Whether there are any bookmarks that can be pasted.
+ * @param {string} parentId The ID of the folder to paste into.
+ * @param {function(boolean): void} callback
+ */
+chrome.bookmarkManagerPrivate.canPaste = function(parentId, callback) {};
 
 /**
  * Sorts the children of a given folder.
@@ -74,15 +79,17 @@ chrome.bookmarkManagerPrivate.sortChildren = function(parentId) {};
  * @param {!Array<string>} idList An array of string-valued ids.
  * @param {number} dragNodeIndex The index of the dragged node in |idList|
  * @param {boolean} isFromTouch True if the drag was initiated from touch.
+ * @param {number} x The clientX of the dragStart event
+ * @param {number} y The clientY of the dragStart event
  */
-chrome.bookmarkManagerPrivate.startDrag = function(idList, dragNodeIndex, isFromTouch) {};
+chrome.bookmarkManagerPrivate.startDrag = function(idList, dragNodeIndex, isFromTouch, x, y) {};
 
 /**
  * Performs the drop action of the drag and drop session.
  * @param {string} parentId The ID of the folder that the drop was made.
  * @param {number=} index The index of the position to drop at. If left out the
  *     dropped items will be placed at the end of the existing children.
- * @param {function():void=} callback
+ * @param {function(): void=} callback
  */
 chrome.bookmarkManagerPrivate.drop = function(parentId, index, callback) {};
 
@@ -93,7 +100,7 @@ chrome.bookmarkManagerPrivate.drop = function(parentId, index, callback) {};
  * @param {string} id ID of the root of the tree to pull.  If empty, the entire
  *     tree will be returned.
  * @param {boolean} foldersOnly Pass true to only return folders.
- * @param {function(!Array<!BookmarkTreeNode>):void}
+ * @param {function(!Array<!chrome.bookmarks.BookmarkTreeNode>): void}
  *     callback
  */
 chrome.bookmarkManagerPrivate.getSubtree = function(id, foldersOnly, callback) {};
@@ -101,7 +108,7 @@ chrome.bookmarkManagerPrivate.getSubtree = function(id, foldersOnly, callback) {
 /**
  * Recursively removes list of bookmarks nodes.
  * @param {!Array<string>} idList An array of string-valued ids.
- * @param {function():void=} callback
+ * @param {function(): void=} callback
  */
 chrome.bookmarkManagerPrivate.removeTrees = function(idList, callback) {};
 

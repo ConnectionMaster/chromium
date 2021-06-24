@@ -4,13 +4,13 @@
 
 #include "chrome/browser/chromeos/printing/zeroconf_printer_detector.h"
 
-#include <map>
-#include <string>
 #include <utility>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/hash/md5.h"
 #include "base/stl_util.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -23,12 +23,24 @@ namespace chromeos {
 // Supported service names for printers.
 const char ZeroconfPrinterDetector::kIppServiceName[] = "_ipp._tcp.local";
 const char ZeroconfPrinterDetector::kIppsServiceName[] = "_ipps._tcp.local";
+const char ZeroconfPrinterDetector::kSocketServiceName[] =
+    "_pdl-datastream._tcp.local";
 
 // IppEverywhere printers are also required to advertise these services.
 const char ZeroconfPrinterDetector::kIppEverywhereServiceName[] =
     "_print._sub._ipp._tcp.local";
 const char ZeroconfPrinterDetector::kIppsEverywhereServiceName[] =
     "_print._sub._ipps._tcp.local";
+
+// These service names are ordered in priority. In other words, earlier
+// service types in this list will be used preferentially over later ones.
+constexpr std::array<const char*, 5> kServiceNames = {
+    ZeroconfPrinterDetector::kIppsEverywhereServiceName,
+    ZeroconfPrinterDetector::kIppEverywhereServiceName,
+    ZeroconfPrinterDetector::kIppsServiceName,
+    ZeroconfPrinterDetector::kIppServiceName,
+    ZeroconfPrinterDetector::kSocketServiceName,
+};
 
 namespace {
 
@@ -70,24 +82,24 @@ class ParsedMetadata {
       base::StringPiece value(m.data() + equal_pos + 1,
                               m.length() - (equal_pos + 1));
       if (key == "note") {
-        note = value.as_string();
+        note = std::string(value);
       } else if (key == "pdl") {
-        pdl = value.as_string();
+        pdl = std::string(value);
       } else if (key == "product") {
         // Strip parens; ignore anything not enclosed in parens as malformed.
-        if (value.starts_with("(") && value.ends_with(")")) {
-          product = value.substr(1, value.size() - 2).as_string();
+        if (base::StartsWith(value, "(") && base::EndsWith(value, ")")) {
+          product = std::string(value.substr(1, value.size() - 2));
         }
       } else if (key == "rp") {
-        rp = value.as_string();
+        rp = std::string(value);
       } else if (key == "ty") {
-        ty = value.as_string();
+        ty = std::string(value);
       } else if (key == "usb_MDL") {
-        usb_MDL = value.as_string();
+        usb_MDL = std::string(value);
       } else if (key == "usb_MFG") {
-        usb_MFG = value.as_string();
+        usb_MFG = std::string(value);
       } else if (key == "UUID") {
-        UUID = value.as_string();
+        UUID = std::string(value);
       }
     }
   }
@@ -133,7 +145,7 @@ bool ConvertToPrinter(const std::string& service_type,
   // If we don't have the minimum information needed to attempt a setup, fail.
   // Also fail on a port of 0, as this is used to indicate that the service
   // doesn't *actually* exist, the device just wants to guard the name.
-  if (service_description.service_name.empty() || metadata.ty.empty() ||
+  if (service_description.service_name.empty() ||
       service_description.ip_address.empty() ||
       (service_description.address.port() == 0)) {
     return false;
@@ -142,17 +154,24 @@ bool ConvertToPrinter(const std::string& service_type,
   Printer& printer = detected_printer->printer;
   printer.set_id(ZeroconfPrinterId(service_description, metadata));
   printer.set_uuid(metadata.UUID);
-  printer.set_display_name(metadata.ty);
+  printer.set_display_name(service_description.instance_name());
   printer.set_description(metadata.note);
-  printer.set_make_and_model(metadata.product);
-  const char* uri_protocol;
+  printer.set_make_and_model(metadata.ty);
+  Uri uri;
+  std::string rp = metadata.rp;
   if (service_type == ZeroconfPrinterDetector::kIppServiceName ||
       service_type == ZeroconfPrinterDetector::kIppEverywhereServiceName) {
-    uri_protocol = "ipp";
+    uri.SetScheme("ipp");
   } else if (service_type == ZeroconfPrinterDetector::kIppsServiceName ||
              service_type ==
                  ZeroconfPrinterDetector::kIppsEverywhereServiceName) {
-    uri_protocol = "ipps";
+    uri.SetScheme("ipps");
+  } else if (service_type == ZeroconfPrinterDetector::kSocketServiceName) {
+    uri.SetScheme("socket");
+    // Bonjour Printing Specification v1.2.1 section 9.2.2:
+    // If the "rp" key is present in a Socket TXT record, the key/value MUST
+    // be ignored.
+    rp.clear();
   } else {
     // Since we only register for these services, we should never get back
     // a service other than the ones above.
@@ -160,16 +179,18 @@ bool ConvertToPrinter(const std::string& service_type,
                  << service_description.service_type();
     return false;
   }
-  printer.set_uri(base::StringPrintf(
-      "%s://%s/%s", uri_protocol,
-      service_description.address.ToString().c_str(), metadata.rp.c_str()));
+
+  if (!uri.SetHostEncoded(service_description.address.HostForURL()) ||
+      !uri.SetPort(service_description.address.port()) ||
+      !uri.SetPathEncoded("/" + rp) || !printer.SetUri(uri))
+    return false;
 
   // Per the IPP Everywhere Standard 5100.14-2013, section 4.2.1, IPP
   // everywhere-capable printers advertise services prefixed with "_print"
   // (possibly in addition to prefix-free versions).  If we get a printer from a
   // _print service type, it should be auto-configurable with IPP Everywhere.
   printer.mutable_ppd_reference()->autoconf =
-      base::StringPiece(service_type).starts_with("_print._sub");
+      base::StartsWith(service_type, "_print._sub");
 
   // Gather ppd identification candidates.
   detected_printer->ppd_search_data.discovery_type =
@@ -210,10 +231,9 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
   // Normal constructor, connects to service discovery.
   ZeroconfPrinterDetectorImpl()
       : discovery_client_(ServiceDiscoverySharedClient::GetInstance()) {
-    CreateDeviceLister(kIppServiceName);
-    CreateDeviceLister(kIppsServiceName);
-    CreateDeviceLister(kIppEverywhereServiceName);
-    CreateDeviceLister(kIppsEverywhereServiceName);
+    for (const char* service_type : kServiceNames) {
+      CreateDeviceLister(service_type);
+    }
   }
 
   // Testing constructor, uses injected backends.
@@ -282,12 +302,13 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
     }
   }
 
-  // Remove all devices that originated on this service type, and request
-  // a new round of discovery.
+  // Remove all devices that originated on all services types, and request
+  // a new round of discovery. We clear all printers to prevent
+  // |on_printers_found_callback| from returning stale cached printers.
   void OnDeviceCacheFlushed(const std::string& service_type) override {
     base::AutoLock auto_lock(printers_lock_);
-    if (!printers_[service_type].empty()) {
-      printers_[service_type].clear();
+    if (!IsPrintersEmpty()) {
+      ClearPrinters();
       if (on_printers_found_callback_) {
         on_printers_found_callback_.Run(GetPrintersLocked());
       }
@@ -306,7 +327,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
         this, discovery_client_.get(), service_type);
     lister->Start();
     lister->DiscoverNewDevices();
-    DCHECK(!base::ContainsKey(device_listers_, service_type));
+    DCHECK(!base::Contains(device_listers_, service_type));
     device_listers_[service_type] = std::move(lister);
   }
 
@@ -319,10 +340,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
     // service types in this list will be used preferentially over later ones.
     // This depends on the fact that map::insert will fail if the entry already
     // exists.
-    for (const char* service_type : {
-             kIppsEverywhereServiceName, kIppEverywhereServiceName,
-             kIppsServiceName, kIppServiceName,
-         }) {
+    for (const char* service_type : kServiceNames) {
       for (const auto& entry : printers_[service_type]) {
         unified.insert({entry.first, entry.second});
       }
@@ -333,6 +351,26 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
       ret.push_back(entry.second);
     }
     return ret;
+  }
+
+  // Clear all printers for every service type.
+  void ClearPrinters() {
+    printers_lock_.AssertAcquired();
+    for (const char* service_type : kServiceNames) {
+      printers_[service_type].clear();
+    }
+  }
+
+  // Returns true if all the service names in |printers_| are empty.
+  bool IsPrintersEmpty() const {
+    printers_lock_.AssertAcquired();
+    for (const char* service_type : kServiceNames) {
+      DCHECK(base::Contains(printers_, service_type));
+      if (!printers_.at(service_type).empty()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   SEQUENCE_CHECKER(sequence_);

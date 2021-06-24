@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -30,11 +31,10 @@ SoftwareRenderer::SoftwareRenderer(
     const gfx::Size& size)
     : RendererBase(widget, size),
       window_surface_(std::move(window_surface)),
-      vsync_period_(base::TimeDelta::FromMilliseconds(kFrameDelayMilliseconds)),
-      weak_ptr_factory_(this) {}
+      vsync_period_(
+          base::TimeDelta::FromMilliseconds(kFrameDelayMilliseconds)) {}
 
-SoftwareRenderer::~SoftwareRenderer() {
-}
+SoftwareRenderer::~SoftwareRenderer() = default;
 
 bool SoftwareRenderer::Initialize() {
   software_surface_ = ui::OzonePlatform::GetInstance()
@@ -45,7 +45,7 @@ bool SoftwareRenderer::Initialize() {
     return false;
   }
 
-  software_surface_->ResizeCanvas(size_);
+  software_surface_->ResizeCanvas(size_, 1.f /*scale_factor*/);
   vsync_provider_ = software_surface_->CreateVSyncProvider();
   RenderFrame();
   return true;
@@ -56,19 +56,19 @@ void SoftwareRenderer::RenderFrame() {
 
   float fraction = NextFraction();
 
-  sk_sp<SkSurface> surface = software_surface_->GetSurface();
+  SkCanvas* canvas = software_surface_->GetCanvas();
 
   SkColor color =
       SkColorSetARGB(0xff, 0, 0xff * fraction, 0xff * (1 - fraction));
 
-  surface->getCanvas()->clear(color);
+  canvas->clear(color);
 
   software_surface_->PresentCanvas(gfx::Rect(size_));
 
   if (vsync_provider_) {
     vsync_provider_->GetVSyncParameters(
-        base::Bind(&SoftwareRenderer::UpdateVSyncParameters,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&SoftwareRenderer::UpdateVSyncParameters,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   timer_.Start(FROM_HERE, vsync_period_, this, &SoftwareRenderer::RenderFrame);

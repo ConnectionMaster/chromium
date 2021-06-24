@@ -18,6 +18,7 @@
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_export.h"
+#include "net/base/network_isolation_key.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -41,15 +42,56 @@ namespace net {
 
 class NET_EXPORT NetworkErrorLoggingService {
  public:
-  class PersistentNELStore;
+  class PersistentNelStore;
 
-  // NEL policy set by an origin.
-  struct NET_EXPORT NELPolicy {
-    NELPolicy();
-    NELPolicy(const NELPolicy& other);
-    ~NELPolicy();
+  // Every (NIK, origin) pair can have at most one policy.
+  struct NET_EXPORT NelPolicyKey {
+    NelPolicyKey();
+    NelPolicyKey(const NetworkIsolationKey& network_isolation_key,
+                 const url::Origin& origin);
+    NelPolicyKey(const NelPolicyKey& other);
+    ~NelPolicyKey();
+
+    bool operator<(const NelPolicyKey& other) const;
+    bool operator==(const NelPolicyKey& other) const;
+    bool operator!=(const NelPolicyKey& other) const;
+
+    // The NIK of the request this policy was received from. This will be used
+    // for any requests uploading reports according to this policy. (Not
+    // included in the report itself.)
+    NetworkIsolationKey network_isolation_key;
 
     url::Origin origin;
+  };
+
+  // Used for wildcard policies that are applicable to |domain| and its
+  // subdomains.
+  struct WildcardNelPolicyKey {
+    WildcardNelPolicyKey();
+    WildcardNelPolicyKey(const NetworkIsolationKey& network_isolation_key,
+                         const std::string& domain);
+    explicit WildcardNelPolicyKey(const NelPolicyKey& origin_key);
+    WildcardNelPolicyKey(const WildcardNelPolicyKey& other);
+    ~WildcardNelPolicyKey();
+
+    bool operator<(const WildcardNelPolicyKey& other) const;
+
+    // The NIK of the request this policy was received from. This will be used
+    // for any requests uploading reports according to this policy. (Not
+    // included in the report itself.)
+    NetworkIsolationKey network_isolation_key;
+
+    std::string domain;
+  };
+
+  // NEL policy set by an origin.
+  struct NET_EXPORT NelPolicy {
+    NelPolicy();
+    NelPolicy(const NelPolicy& other);
+    ~NelPolicy();
+
+    NelPolicyKey key;
+
     IPAddress received_ip_address = IPAddress();
 
     // Reporting API endpoint group to which reports should be sent.
@@ -74,6 +116,10 @@ class NET_EXPORT NetworkErrorLoggingService {
     RequestDetails();
     RequestDetails(const RequestDetails& other);
     ~RequestDetails();
+
+    // NetworkIsolationKey of the request triggering the error. Not included
+    // in the uploaded report.
+    NetworkIsolationKey network_isolation_key;
 
     GURL uri;
     GURL referrer;
@@ -100,6 +146,10 @@ class NET_EXPORT NetworkErrorLoggingService {
     SignedExchangeReportDetails();
     SignedExchangeReportDetails(const SignedExchangeReportDetails& other);
     ~SignedExchangeReportDetails();
+
+    // NetworkIsolationKey of the request triggering the error. Not included
+    // in the uploaded report.
+    NetworkIsolationKey network_isolation_key;
 
     bool success;
     std::string type;
@@ -142,37 +192,11 @@ class NET_EXPORT NetworkErrorLoggingService {
   // Maximum number of NEL policies to store before evicting.
   static const size_t kMaxPolicies;
 
-  // Histograms.  These are mainly used in test cases to verify that interesting
-  // events occurred.
-
-  static const char kHeaderOutcomeHistogram[];
-  static const char kRequestOutcomeHistogram[];
   static const char kSignedExchangeRequestOutcomeHistogram[];
 
-  enum class HeaderOutcome {
-    DISCARDED_NO_NETWORK_ERROR_LOGGING_SERVICE = 0,
-    DISCARDED_INVALID_SSL_INFO = 1,
-    DISCARDED_CERT_STATUS_ERROR = 2,
-
-    DISCARDED_INSECURE_ORIGIN = 3,
-
-    DISCARDED_JSON_TOO_BIG = 4,
-    DISCARDED_JSON_INVALID = 5,
-    DISCARDED_NOT_DICTIONARY = 6,
-    DISCARDED_TTL_MISSING = 7,
-    DISCARDED_TTL_NOT_INTEGER = 8,
-    DISCARDED_TTL_NEGATIVE = 9,
-    DISCARDED_REPORT_TO_MISSING = 10,
-    DISCARDED_REPORT_TO_NOT_STRING = 11,
-
-    REMOVED = 12,
-    SET = 13,
-
-    DISCARDED_MISSING_REMOTE_ENDPOINT = 14,
-
-    MAX
-  };
-
+  // Used for histogramming Signed Exchange request outcomes only. Previously,
+  // the outcome of all requests would be histogrammed, but this was removed in
+  // crbug.com/1007122 because the histogram was very large and not very useful.
   enum class RequestOutcome {
     kDiscardedNoNetworkErrorLoggingService = 0,
 
@@ -190,25 +214,18 @@ class NET_EXPORT NetworkErrorLoggingService {
     kMaxValue = kDiscardedIPAddressMismatch
   };
 
-  static void RecordHeaderDiscardedForNoNetworkErrorLoggingService();
-  static void RecordHeaderDiscardedForInvalidSSLInfo();
-  static void RecordHeaderDiscardedForCertStatusError();
-  static void RecordHeaderDiscardedForMissingRemoteEndpoint();
-
-  static void RecordRequestDiscardedForNoNetworkErrorLoggingService();
-  static void RecordRequestDiscardedForInsecureOrigin();
-
   // NEL policies are persisted to disk if |store| is not null.
   // The store, if given, should outlive |*this|.
   static std::unique_ptr<NetworkErrorLoggingService> Create(
-      PersistentNELStore* store);
+      PersistentNelStore* store);
 
   virtual ~NetworkErrorLoggingService();
 
-  // Ingests a "NEL:" header received for |origin| from |received_ip_address|
-  // with normalized value |value|. May or may not actually set a policy for
-  // that origin.
-  virtual void OnHeader(const url::Origin& origin,
+  // Ingests a "NEL:" header received for |network_isolation_key| and |origin|
+  // from |received_ip_address| with normalized value |value|. May or may not
+  // actually set a policy for that origin.
+  virtual void OnHeader(const NetworkIsolationKey& network_isolation_key,
+                        const url::Origin& origin,
                         const IPAddress& received_ip_address,
                         const std::string& value) = 0;
 
@@ -227,7 +244,7 @@ class NET_EXPORT NetworkErrorLoggingService {
 
   // Queues a Signed Exchange report.
   virtual void QueueSignedExchangeReport(
-      const SignedExchangeReportDetails& details) = 0;
+      SignedExchangeReportDetails details) = 0;
 
   // Removes browsing data (origin policies) associated with any origin for
   // which |origin_filter| returns true.
@@ -241,10 +258,12 @@ class NET_EXPORT NetworkErrorLoggingService {
   // Sets the ReportingService that will be used to queue network error reports.
   // If |nullptr| is passed, reports will be queued locally or discarded.
   // |reporting_service| must outlive the NetworkErrorLoggingService.
+  // Should not be called again if previously called with a non-null pointer.
   void SetReportingService(ReportingService* reporting_service);
 
-  // Shuts down the NEL service so that no more requests or headers are
-  // processed and no more reports are queued.
+  // Shuts down the NEL service, so that no more requests or headers can be
+  // processed, no more reports are queued, and browsing data can no longer be
+  // cleared.
   void OnShutdown();
 
   // Sets a base::Clock (used to track policy expiration) for tests.
@@ -256,8 +275,12 @@ class NET_EXPORT NetworkErrorLoggingService {
   // Used to display information about NEL policies on the NetLog Reporting tab.
   virtual base::Value StatusAsValue() const;
 
-  // Gets the origins of all currently stored policies, including expired ones.
-  virtual std::set<url::Origin> GetPolicyOriginsForTesting();
+  // Gets the (NIK, origin) keys of all currently stored policies, including
+  // expired ones.
+  virtual std::set<NelPolicyKey> GetPolicyKeysForTesting();
+
+  virtual PersistentNelStore* GetPersistentNelStoreForTesting();
+  virtual ReportingService* GetReportingServiceForTesting();
 
  protected:
   NetworkErrorLoggingService();
@@ -272,32 +295,32 @@ class NET_EXPORT NetworkErrorLoggingService {
 };
 
 // Persistent storage for NEL policies.
-class NET_EXPORT NetworkErrorLoggingService::PersistentNELStore {
+class NET_EXPORT NetworkErrorLoggingService::PersistentNelStore {
  public:
-  using NELPoliciesLoadedCallback =
-      base::OnceCallback<void(std::vector<NELPolicy>)>;
+  using NelPoliciesLoadedCallback =
+      base::OnceCallback<void(std::vector<NelPolicy>)>;
 
-  PersistentNELStore() = default;
-  virtual ~PersistentNELStore() = default;
+  PersistentNelStore() = default;
+  virtual ~PersistentNelStore() = default;
 
   // Initializes the store and retrieves stored NEL policies. This will be
   // called only once at startup.
-  virtual void LoadNELPolicies(NELPoliciesLoadedCallback loaded_callback) = 0;
+  virtual void LoadNelPolicies(NelPoliciesLoadedCallback loaded_callback) = 0;
 
   // Adds a NEL policy to the store.
-  virtual void AddNELPolicy(const NELPolicy& policy) = 0;
+  virtual void AddNelPolicy(const NelPolicy& policy) = 0;
 
   // Updates the access time of the NEL policy in the store.
-  virtual void UpdateNELPolicyAccessTime(const NELPolicy& policy) = 0;
+  virtual void UpdateNelPolicyAccessTime(const NelPolicy& policy) = 0;
 
   // Deletes a NEL policy from the store.
-  virtual void DeleteNELPolicy(const NELPolicy& policy) = 0;
+  virtual void DeleteNelPolicy(const NelPolicy& policy) = 0;
 
   // Flushes the store.
   virtual void Flush() = 0;
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(PersistentNELStore);
+  DISALLOW_COPY_AND_ASSIGN(PersistentNelStore);
 };
 
 }  // namespace net

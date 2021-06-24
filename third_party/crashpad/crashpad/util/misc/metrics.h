@@ -18,7 +18,12 @@
 #include <inttypes.h>
 
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "util/file/file_io.h"
+
+#if defined(OS_IOS)
+#include "util/ios/ios_intermediate_dump_format.h"
+#endif
 
 namespace crashpad {
 
@@ -139,6 +144,9 @@ class Metrics {
     //! \brief Sanitization caused this crash dump to be skipped.
     kSkippedDueToSanitization = 11,
 
+    //! \brief Failure to open a memfd caused this crash dump to be skipped.
+    kOpenMemfdFailed = 12,
+
     //! \brief The number of values in this enumeration; not a valid value.
     kMaxValue
   };
@@ -191,6 +199,16 @@ class Metrics {
   //!
   //! This is currently only reported on Windows.
   static void HandlerCrashed(uint32_t exception_code);
+
+#if defined(OS_IOS) || DOXYGEN
+  //! \brief Records a missing key from an intermediate dump.
+  static void MissingIntermediateDumpKey(
+      const internal::IntermediateDumpKey& key);
+
+  //! \brief Records a key with an invalid key size from an intermediate dump.
+  static void InvalidIntermediateDumpKeySize(
+      const internal::IntermediateDumpKey& key);
+#endif
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(Metrics);

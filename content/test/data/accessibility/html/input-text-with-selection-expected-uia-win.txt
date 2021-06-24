@@ -1,4 +1,3 @@
-region
-++document
-++++group
-++++++textbox Value.Value='Selection'
+Document
+++Group IsControlElement=false
+++++Edit Value.Value='Selection'

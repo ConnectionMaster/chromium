@@ -28,12 +28,19 @@ class PLATFORM_EXPORT HyphenationMinikin final : public Hyphenation {
                                 wtf_size_t before_index) const override;
   Vector<wtf_size_t, 8> HyphenLocations(const StringView&) const override;
 
+  // Extract the word to hyphenate by skipping leading and trailing spaces and
+  // punctuations.
+  static StringView WordToHyphenate(const StringView& text,
+                                    unsigned* num_leading_chars_out);
+
+  static AtomicString MapLocale(const AtomicString& locale);
+
   static scoped_refptr<HyphenationMinikin> FromFileForTesting(base::File);
 
  private:
   bool OpenDictionary(base::File);
 
-  std::vector<uint8_t> Hyphenate(const StringView&) const;
+  Vector<uint8_t> Hyphenate(const StringView&) const;
 
   base::MemoryMappedFile file_;
   std::unique_ptr<android::Hyphenator> hyphenator_;

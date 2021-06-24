@@ -5,12 +5,13 @@
 #include "remoting/host/chromoting_host_context.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "remoting/base/auto_thread.h"
 #include "remoting/base/url_request_context_getter.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -36,8 +37,7 @@ ChromotingHostContext::ChromotingHostContext(
     scoped_refptr<AutoThreadTaskRunner> network_task_runner,
     scoped_refptr<AutoThreadTaskRunner> video_capture_task_runner,
     scoped_refptr<AutoThreadTaskRunner> video_encode_task_runner,
-    scoped_refptr<net::URLRequestContextGetter> url_request_context_getter,
-    ui::SystemInputInjectorFactory* system_input_injector_factory)
+    scoped_refptr<net::URLRequestContextGetter> url_request_context_getter)
     : ui_task_runner_(ui_task_runner),
       audio_task_runner_(audio_task_runner),
       file_task_runner_(file_task_runner),
@@ -45,8 +45,7 @@ ChromotingHostContext::ChromotingHostContext(
       network_task_runner_(network_task_runner),
       video_capture_task_runner_(video_capture_task_runner),
       video_encode_task_runner_(video_encode_task_runner),
-      url_request_context_getter_(url_request_context_getter),
-      system_input_injector_factory_(system_input_injector_factory) {}
+      url_request_context_getter_(url_request_context_getter) {}
 
 ChromotingHostContext::~ChromotingHostContext() {
   if (url_loader_factory_owner_)
@@ -58,8 +57,7 @@ std::unique_ptr<ChromotingHostContext> ChromotingHostContext::Copy() {
   return base::WrapUnique(new ChromotingHostContext(
       ui_task_runner_, audio_task_runner_, file_task_runner_,
       input_task_runner_, network_task_runner_, video_capture_task_runner_,
-      video_encode_task_runner_, url_request_context_getter_,
-      system_input_injector_factory_));
+      video_encode_task_runner_, url_request_context_getter_));
 }
 
 scoped_refptr<AutoThreadTaskRunner> ChromotingHostContext::audio_task_runner()
@@ -113,11 +111,6 @@ ChromotingHostContext::url_loader_factory() {
   return url_loader_factory_owner_->GetURLLoaderFactory();
 }
 
-ui::SystemInputInjectorFactory*
-ChromotingHostContext::system_input_injector_factory() const {
-  return system_input_injector_factory_;
-}
-
 std::unique_ptr<ChromotingHostContext> ChromotingHostContext::Create(
     scoped_refptr<AutoThreadTaskRunner> ui_task_runner) {
 #if defined(OS_WIN)
@@ -125,49 +118,54 @@ std::unique_ptr<ChromotingHostContext> ChromotingHostContext::Create(
   // apartment, which requires a UI thread.
   scoped_refptr<AutoThreadTaskRunner> audio_task_runner =
       AutoThread::CreateWithLoopAndComInitTypes(
-          "ChromotingAudioThread", ui_task_runner, base::MessageLoop::TYPE_UI,
+          "ChromotingAudioThread", ui_task_runner, base::MessagePumpType::UI,
           AutoThread::COM_INIT_STA);
 #else   // !defined(OS_WIN)
   scoped_refptr<AutoThreadTaskRunner> audio_task_runner =
       AutoThread::CreateWithType("ChromotingAudioThread", ui_task_runner,
-                                 base::MessageLoop::TYPE_IO);
+                                 base::MessagePumpType::IO);
 #endif  // !defined(OS_WIN)
   scoped_refptr<AutoThreadTaskRunner> file_task_runner =
       AutoThread::CreateWithType("ChromotingFileThread", ui_task_runner,
-                                 base::MessageLoop::TYPE_IO);
+                                 base::MessagePumpType::IO);
 
   scoped_refptr<AutoThreadTaskRunner> network_task_runner =
       AutoThread::CreateWithType("ChromotingNetworkThread", ui_task_runner,
-                                 base::MessageLoop::TYPE_IO);
+                                 base::MessagePumpType::IO);
   network_task_runner->PostTask(FROM_HERE,
                                 base::BindOnce(&DisallowBlockingOperations));
 
-  return base::WrapUnique(new ChromotingHostContext(
-      ui_task_runner, audio_task_runner, file_task_runner,
+  // InputInjectorX11 requires an X11EventSource, which can only be created
+  // on a UI thread.
+  scoped_refptr<AutoThreadTaskRunner> input_task_runner =
       AutoThread::CreateWithType("ChromotingInputThread", ui_task_runner,
-                                 base::MessageLoop::TYPE_IO),
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+                                 base::MessagePumpType::UI);
+#else
+                                 base::MessagePumpType::IO);
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
+
+  return base::WrapUnique(new ChromotingHostContext(
+      ui_task_runner, audio_task_runner, file_task_runner, input_task_runner,
       network_task_runner,
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
       // Mac requires a UI thread for the capturer.
       AutoThread::CreateWithType("ChromotingCaptureThread", ui_task_runner,
-                                 base::MessageLoop::TYPE_UI),
+                                 base::MessagePumpType::UI),
 #else
       AutoThread::Create("ChromotingCaptureThread", ui_task_runner),
 #endif
       AutoThread::Create("ChromotingEncodeThread", ui_task_runner),
-      base::MakeRefCounted<URLRequestContextGetter>(network_task_runner),
-      nullptr));
+      base::MakeRefCounted<URLRequestContextGetter>(network_task_runner)));
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 
 // static
 std::unique_ptr<ChromotingHostContext> ChromotingHostContext::CreateForChromeOS(
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
-    ui::SystemInputInjectorFactory* system_input_injector_factory) {
-
+    scoped_refptr<base::SingleThreadTaskRunner> file_task_runner) {
   // AutoThreadTaskRunner is a TaskRunner with the special property that it will
   // continue to process tasks until no references remain, at least. The
   // QuitClosure we usually pass does the simple thing of stopping the
@@ -191,9 +189,8 @@ std::unique_ptr<ChromotingHostContext> ChromotingHostContext::CreateForChromeOS(
       io_auto_task_runner,  // network_task_runner
       ui_auto_task_runner,  // video_capture_task_runner
       AutoThread::Create("ChromotingEncodeThread", file_auto_task_runner),
-      base::MakeRefCounted<URLRequestContextGetter>(io_auto_task_runner),
-      system_input_injector_factory));
+      base::MakeRefCounted<URLRequestContextGetter>(io_auto_task_runner)));
 }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace remoting

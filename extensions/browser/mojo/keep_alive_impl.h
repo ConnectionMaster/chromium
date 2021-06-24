@@ -7,10 +7,14 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
-#include "extensions/common/mojo/keep_alive.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "extensions/browser/process_manager.h"
+#include "extensions/browser/process_manager_observer.h"
+#include "extensions/common/mojom/keep_alive.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 
 namespace content {
 class BrowserContext;
@@ -19,22 +23,25 @@ class RenderFrameHost;
 
 namespace extensions {
 class Extension;
+class ProcessManager;
 
 // An RAII mojo service implementation for extension keep alives. This adds a
 // keep alive on construction and removes it on destruction.
-class KeepAliveImpl : public KeepAlive, public ExtensionRegistryObserver {
+class KeepAliveImpl : public KeepAlive,
+                      public ExtensionRegistryObserver,
+                      public ProcessManagerObserver {
  public:
   // Create a keep alive for |extension| running in |context| and connect it to
-  // |request|. When the requester closes its pipe, the keep alive ends.
+  // |receiver|. When the receiver closes its pipe, the keep alive ends.
   static void Create(content::BrowserContext* browser_context,
                      const Extension* extension,
-                     KeepAliveRequest request,
-                     content::RenderFrameHost* render_frame_host);
+                     content::RenderFrameHost* render_frame_host,
+                     mojo::PendingReceiver<KeepAlive> receiver);
 
  private:
   KeepAliveImpl(content::BrowserContext* context,
                 const Extension* extension,
-                KeepAliveRequest request);
+                mojo::PendingReceiver<KeepAlive> receiver);
   ~KeepAliveImpl() override;
 
   // ExtensionRegistryObserver overrides.
@@ -43,13 +50,19 @@ class KeepAliveImpl : public KeepAlive, public ExtensionRegistryObserver {
                            UnloadedExtensionReason reason) override;
   void OnShutdown(ExtensionRegistry* registry) override;
 
+  // ProcessManagerObserver overrides.
+  void OnProcessManagerShutdown(ProcessManager* manager) override;
+
   // Invoked when the mojo connection is disconnected.
   void OnDisconnected();
 
   content::BrowserContext* context_;
   const Extension* extension_;
-  ScopedObserver<ExtensionRegistry, KeepAliveImpl> extension_registry_observer_;
-  mojo::Binding<KeepAlive> binding_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
+  base::ScopedObservation<ProcessManager, ProcessManagerObserver>
+      process_manager_observation_{this};
+  mojo::Receiver<KeepAlive> receiver_;
 
   DISALLOW_COPY_AND_ASSIGN(KeepAliveImpl);
 };

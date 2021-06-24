@@ -11,6 +11,7 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/location.h"
@@ -19,15 +20,16 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "components/prefs/persistent_pref_store_unittest.h"
 #include "components/prefs/pref_filter.h"
@@ -68,12 +70,12 @@ class InterceptingPrefFilter : public PrefFilter {
 
   // PrefFilter implementation:
   void FilterOnLoad(
-      const PostFilterOnLoadCallback& post_filter_on_load_callback,
+      PostFilterOnLoadCallback post_filter_on_load_callback,
       std::unique_ptr<base::DictionaryValue> pref_store_contents) override;
   void FilterUpdate(const std::string& path) override {}
   OnWriteCallbackPair FilterSerializeData(
       base::DictionaryValue* pref_store_contents) override {
-    return on_write_callback_pair_;
+    return std::move(on_write_callback_pair_);
   }
   void OnStoreDeletionFromDisk() override {}
 
@@ -95,22 +97,22 @@ InterceptingPrefFilter::InterceptingPrefFilter() {}
 
 InterceptingPrefFilter::InterceptingPrefFilter(
     OnWriteCallbackPair callback_pair) {
-  on_write_callback_pair_ = callback_pair;
+  on_write_callback_pair_ = std::move(callback_pair);
 }
 
 InterceptingPrefFilter::~InterceptingPrefFilter() {}
 
 void InterceptingPrefFilter::FilterOnLoad(
-    const PostFilterOnLoadCallback& post_filter_on_load_callback,
+    PostFilterOnLoadCallback post_filter_on_load_callback,
     std::unique_ptr<base::DictionaryValue> pref_store_contents) {
-  post_filter_on_load_callback_ = post_filter_on_load_callback;
+  post_filter_on_load_callback_ = std::move(post_filter_on_load_callback);
   intercepted_prefs_ = std::move(pref_store_contents);
 }
 
 void InterceptingPrefFilter::ReleasePrefs() {
   EXPECT_FALSE(post_filter_on_load_callback_.is_null());
-  post_filter_on_load_callback_.Run(std::move(intercepted_prefs_), false);
-  post_filter_on_load_callback_.Reset();
+  std::move(post_filter_on_load_callback_)
+      .Run(std::move(intercepted_prefs_), false);
 }
 
 class MockPrefStoreObserver : public PrefStore::Observer {
@@ -134,31 +136,30 @@ enum class CommitPendingWriteMode {
   WITH_SYNCHRONOUS_CALLBACK,
 };
 
-base::test::ScopedTaskEnvironment::ExecutionMode GetExecutionMode(
+base::test::TaskEnvironment::ThreadPoolExecutionMode GetExecutionMode(
     CommitPendingWriteMode commit_mode) {
   switch (commit_mode) {
     case CommitPendingWriteMode::WITHOUT_CALLBACK:
       FALLTHROUGH;
     case CommitPendingWriteMode::WITH_CALLBACK:
-      return base::test::ScopedTaskEnvironment::ExecutionMode::QUEUED;
+      return base::test::TaskEnvironment::ThreadPoolExecutionMode::QUEUED;
     case CommitPendingWriteMode::WITH_SYNCHRONOUS_CALLBACK:
       // Synchronous callbacks require async tasks to run on their own.
-      return base::test::ScopedTaskEnvironment::ExecutionMode::ASYNC;
+      return base::test::TaskEnvironment::ThreadPoolExecutionMode::ASYNC;
   }
 }
 
-void CommitPendingWrite(
-    JsonPrefStore* pref_store,
-    CommitPendingWriteMode commit_pending_write_mode,
-    base::test::ScopedTaskEnvironment* scoped_task_environment) {
+void CommitPendingWrite(JsonPrefStore* pref_store,
+                        CommitPendingWriteMode commit_pending_write_mode,
+                        base::test::TaskEnvironment* task_environment) {
   switch (commit_pending_write_mode) {
     case CommitPendingWriteMode::WITHOUT_CALLBACK: {
       pref_store->CommitPendingWrite();
-      scoped_task_environment->RunUntilIdle();
+      task_environment->RunUntilIdle();
       break;
     }
     case CommitPendingWriteMode::WITH_CALLBACK: {
-      TestCommitPendingWriteWithCallback(pref_store, scoped_task_environment);
+      TestCommitPendingWriteWithCallback(pref_store, task_environment);
       break;
     }
     case CommitPendingWriteMode::WITH_SYNCHRONOUS_CALLBACK: {
@@ -176,19 +177,18 @@ class JsonPrefStoreTest
     : public testing::TestWithParam<CommitPendingWriteMode> {
  public:
   JsonPrefStoreTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::DEFAULT,
-            GetExecutionMode(GetParam())) {}
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::DEFAULT,
+                          GetExecutionMode(GetParam())) {}
 
  protected:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
-
   // The path to temporary directory used to contain the test operations.
   base::ScopedTempDir temp_dir_;
+
+  base::test::TaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(JsonPrefStoreTest);
 };
@@ -203,6 +203,7 @@ TEST_P(JsonPrefStoreTest, NonExistentFile) {
   EXPECT_EQ(PersistentPrefStore::PREF_READ_ERROR_NO_FILE,
             pref_store->ReadPrefs());
   EXPECT_FALSE(pref_store->ReadOnly());
+  EXPECT_EQ(0u, pref_store->get_writer().previous_data_size());
 }
 
 // Test fallback behavior for an invalid file.
@@ -229,11 +230,10 @@ TEST_P(JsonPrefStoreTest, InvalidFile) {
 // This function is used to avoid code duplication while testing synchronous
 // and asynchronous version of the JsonPrefStore loading. It validates that the
 // given output file's contents matches kWriteGolden.
-void RunBasicJsonPrefStoreTest(
-    JsonPrefStore* pref_store,
-    const base::FilePath& output_file,
-    CommitPendingWriteMode commit_pending_write_mode,
-    base::test::ScopedTaskEnvironment* scoped_task_environment) {
+void RunBasicJsonPrefStoreTest(JsonPrefStore* pref_store,
+                               const base::FilePath& output_file,
+                               CommitPendingWriteMode commit_pending_write_mode,
+                               base::test::TaskEnvironment* task_environment) {
   const char kNewWindowsInTabs[] = "tabs.new_windows_in_tabs";
   const char kMaxTabs[] = "tabs.max_tabs";
   const char kLongIntPref[] = "long_int.pref";
@@ -242,65 +242,60 @@ void RunBasicJsonPrefStoreTest(
 
   const Value* actual;
   EXPECT_TRUE(pref_store->GetValue(kHomePage, &actual));
-  std::string string_value;
-  EXPECT_TRUE(actual->GetAsString(&string_value));
-  EXPECT_EQ(cnn, string_value);
+  EXPECT_TRUE(actual->is_string());
+  EXPECT_EQ(cnn, actual->GetString());
 
   const char kSomeDirectory[] = "some_directory";
 
   EXPECT_TRUE(pref_store->GetValue(kSomeDirectory, &actual));
-  base::FilePath::StringType path;
-  EXPECT_TRUE(actual->GetAsString(&path));
-  EXPECT_EQ(base::FilePath::StringType(FILE_PATH_LITERAL("/usr/local/")), path);
+  EXPECT_TRUE(actual->is_string());
+  EXPECT_EQ("/usr/local/", actual->GetString());
   base::FilePath some_path(FILE_PATH_LITERAL("/usr/sbin/"));
 
   pref_store->SetValue(kSomeDirectory,
-                       std::make_unique<Value>(some_path.value()),
+                       std::make_unique<Value>(some_path.AsUTF8Unsafe()),
                        WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_TRUE(pref_store->GetValue(kSomeDirectory, &actual));
-  EXPECT_TRUE(actual->GetAsString(&path));
-  EXPECT_EQ(some_path.value(), path);
+  EXPECT_TRUE(actual->is_string());
+  EXPECT_EQ(some_path.AsUTF8Unsafe(), actual->GetString());
 
   // Test reading some other data types from sub-dictionaries.
   EXPECT_TRUE(pref_store->GetValue(kNewWindowsInTabs, &actual));
-  bool boolean = false;
-  EXPECT_TRUE(actual->GetAsBoolean(&boolean));
-  EXPECT_TRUE(boolean);
+  EXPECT_TRUE(actual->is_bool());
+  EXPECT_TRUE(actual->GetBool());
 
   pref_store->SetValue(kNewWindowsInTabs, std::make_unique<Value>(false),
                        WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_TRUE(pref_store->GetValue(kNewWindowsInTabs, &actual));
-  EXPECT_TRUE(actual->GetAsBoolean(&boolean));
-  EXPECT_FALSE(boolean);
+  EXPECT_TRUE(actual->is_bool());
+  EXPECT_FALSE(actual->GetBool());
 
   EXPECT_TRUE(pref_store->GetValue(kMaxTabs, &actual));
-  int integer = 0;
-  EXPECT_TRUE(actual->GetAsInteger(&integer));
-  EXPECT_EQ(20, integer);
+  ASSERT_TRUE(actual->is_int());
+  EXPECT_EQ(20, actual->GetInt());
   pref_store->SetValue(kMaxTabs, std::make_unique<Value>(10),
                        WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_TRUE(pref_store->GetValue(kMaxTabs, &actual));
-  EXPECT_TRUE(actual->GetAsInteger(&integer));
-  EXPECT_EQ(10, integer);
+  ASSERT_TRUE(actual->is_int());
+  EXPECT_EQ(10, actual->GetInt());
 
   pref_store->SetValue(
       kLongIntPref,
       std::make_unique<Value>(base::NumberToString(214748364842LL)),
       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_TRUE(pref_store->GetValue(kLongIntPref, &actual));
-  EXPECT_TRUE(actual->GetAsString(&string_value));
+  EXPECT_TRUE(actual->is_string());
   int64_t value;
-  base::StringToInt64(string_value, &value);
+  base::StringToInt64(actual->GetString(), &value);
   EXPECT_EQ(214748364842LL, value);
 
   // Serialize and compare to expected output.
-  CommitPendingWrite(pref_store, commit_pending_write_mode,
-                     scoped_task_environment);
+  CommitPendingWrite(pref_store, commit_pending_write_mode, task_environment);
 
   std::string output_contents;
   ASSERT_TRUE(base::ReadFileToString(output_file, &output_contents));
   EXPECT_EQ(kWriteGolden, output_contents);
-  ASSERT_TRUE(base::DeleteFile(output_file, false));
+  ASSERT_TRUE(base::DeleteFile(output_file));
 }
 
 TEST_P(JsonPrefStoreTest, Basic) {
@@ -314,6 +309,7 @@ TEST_P(JsonPrefStoreTest, Basic) {
   ASSERT_EQ(PersistentPrefStore::PREF_READ_ERROR_NONE, pref_store->ReadPrefs());
   EXPECT_FALSE(pref_store->ReadOnly());
   EXPECT_TRUE(pref_store->IsInitializationComplete());
+  EXPECT_GT(pref_store->get_writer().previous_data_size(), 0u);
 
   // The JSON file looks like this:
   // {
@@ -326,7 +322,7 @@ TEST_P(JsonPrefStoreTest, Basic) {
   // }
 
   RunBasicJsonPrefStoreTest(pref_store.get(), input_file, GetParam(),
-                            &scoped_task_environment_);
+                            &task_environment_);
 }
 
 TEST_P(JsonPrefStoreTest, BasicAsync) {
@@ -347,11 +343,12 @@ TEST_P(JsonPrefStoreTest, BasicAsync) {
     EXPECT_CALL(mock_observer, OnInitializationCompleted(true)).Times(1);
     EXPECT_CALL(*mock_error_delegate,
                 OnError(PersistentPrefStore::PREF_READ_ERROR_NONE)).Times(0);
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     pref_store->RemoveObserver(&mock_observer);
 
     EXPECT_FALSE(pref_store->ReadOnly());
     EXPECT_TRUE(pref_store->IsInitializationComplete());
+    EXPECT_GT(pref_store->get_writer().previous_data_size(), 0u);
   }
 
   // The JSON file looks like this:
@@ -365,7 +362,7 @@ TEST_P(JsonPrefStoreTest, BasicAsync) {
   // }
 
   RunBasicJsonPrefStoreTest(pref_store.get(), input_file, GetParam(),
-                            &scoped_task_environment_);
+                            &task_environment_);
 }
 
 TEST_P(JsonPrefStoreTest, PreserveEmptyValues) {
@@ -380,7 +377,7 @@ TEST_P(JsonPrefStoreTest, PreserveEmptyValues) {
                        WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
 
   // Write to file.
-  CommitPendingWrite(pref_store.get(), GetParam(), &scoped_task_environment_);
+  CommitPendingWrite(pref_store.get(), GetParam(), &task_environment_);
 
   // Reload.
   pref_store = base::MakeRefCounted<JsonPrefStore>(pref_file);
@@ -429,7 +426,7 @@ TEST_P(JsonPrefStoreTest, AsyncNonExistingFile) {
   EXPECT_CALL(mock_observer, OnInitializationCompleted(true)).Times(1);
   EXPECT_CALL(*mock_error_delegate,
               OnError(PersistentPrefStore::PREF_READ_ERROR_NO_FILE)).Times(1);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   pref_store->RemoveObserver(&mock_observer);
 
   EXPECT_FALSE(pref_store->ReadOnly());
@@ -474,7 +471,7 @@ TEST_P(JsonPrefStoreTest, ReadWithInterceptor) {
   // }
 
   RunBasicJsonPrefStoreTest(pref_store.get(), input_file, GetParam(),
-                            &scoped_task_environment_);
+                            &task_environment_);
 }
 
 TEST_P(JsonPrefStoreTest, ReadAsyncWithInterceptor) {
@@ -501,7 +498,7 @@ TEST_P(JsonPrefStoreTest, ReadAsyncWithInterceptor) {
     EXPECT_CALL(mock_observer, OnInitializationCompleted(true)).Times(0);
     // EXPECT_CALL(*mock_error_delegate,
     //             OnError(PersistentPrefStore::PREF_READ_ERROR_NONE)).Times(0);
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
 
     EXPECT_FALSE(pref_store->ReadOnly());
     EXPECT_TRUE(raw_intercepting_pref_filter_->has_intercepted_prefs());
@@ -535,7 +532,31 @@ TEST_P(JsonPrefStoreTest, ReadAsyncWithInterceptor) {
   // }
 
   RunBasicJsonPrefStoreTest(pref_store.get(), input_file, GetParam(),
-                            &scoped_task_environment_);
+                            &task_environment_);
+}
+
+TEST_P(JsonPrefStoreTest, RemoveValuesByPrefix) {
+  FilePath pref_file = temp_dir_.GetPath().AppendASCII("empty.json");
+
+  auto pref_store = base::MakeRefCounted<JsonPrefStore>(pref_file);
+
+  const Value* value;
+  const std::string prefix = "pref";
+  const std::string subpref_name1 = "pref.a";
+  const std::string subpref_name2 = "pref.b";
+  const std::string other_name = "other";
+
+  pref_store->SetValue(subpref_name1, std::make_unique<base::Value>(42),
+                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+  pref_store->SetValue(subpref_name2, std::make_unique<base::Value>(42),
+                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+  pref_store->SetValue(other_name, std::make_unique<base::Value>(42),
+                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+
+  pref_store->RemoveValuesByPrefixSilently(prefix);
+  EXPECT_FALSE(pref_store->GetValue(subpref_name1, &value));
+  EXPECT_FALSE(pref_store->GetValue(subpref_name2, &value));
+  EXPECT_TRUE(pref_store->GetValue(other_name, &value));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -550,6 +571,65 @@ INSTANTIATE_TEST_SUITE_P(
     WithSynchronousCallback,
     JsonPrefStoreTest,
     ::testing::Values(CommitPendingWriteMode::WITH_SYNCHRONOUS_CALLBACK));
+
+class JsonPrefStoreWriteSynchronouslyTest : public testing::Test {
+ public:
+  JsonPrefStoreWriteSynchronouslyTest() = default;
+  ~JsonPrefStoreWriteSynchronouslyTest() override = default;
+
+ protected:
+  void SetUp() override { ASSERT_TRUE(temp_dir_.CreateUniqueTempDir()); }
+
+  base::test::TaskEnvironment task_environment_;
+  base::ScopedTempDir temp_dir_;
+};
+
+TEST_F(JsonPrefStoreWriteSynchronouslyTest,
+       WriteFailsWhenBlockingIsDisallowed) {
+  const char kEmptyPrefContents[] = "{}";
+
+  base::FilePath pref_file = temp_dir_.GetPath().AppendASCII("write.json");
+  ASSERT_LT(0, base::WriteFile(pref_file, kEmptyPrefContents,
+                               base::size(kEmptyPrefContents) - 1));
+
+  auto pref_store = base::MakeRefCounted<JsonPrefStore>(pref_file);
+  ASSERT_EQ(PersistentPrefStore::PREF_READ_ERROR_NONE, pref_store->ReadPrefs());
+
+  const std::string test_pref = "test";
+  pref_store->SetValue(test_pref, std::make_unique<Value>(3),
+                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+  {
+    base::ScopedDisallowBlocking scoped_disallow_blocking;
+    EXPECT_DCHECK_DEATH(pref_store->CommitPendingWriteSynchronously());
+  }
+}
+
+TEST_F(JsonPrefStoreWriteSynchronouslyTest, CommitPendingWriteSynchronously) {
+  const char kInputPrefContents[] =
+      "{\n"
+      "  \"homepage\": \"http://www.cnn.com\"\n"
+      "}";
+
+  const std::string kExpectedPrefContents =
+      "{\"homepage\":\"http://www.cnn.com\",\"test\":3}";
+
+  base::FilePath pref_file = temp_dir_.GetPath().AppendASCII("write.json");
+  ASSERT_LT(0, base::WriteFile(pref_file, kInputPrefContents,
+                               base::size(kInputPrefContents) - 1));
+
+  auto pref_store = base::MakeRefCounted<JsonPrefStore>(pref_file);
+  ASSERT_EQ(PersistentPrefStore::PREF_READ_ERROR_NONE, pref_store->ReadPrefs());
+
+  const std::string test_pref = "test";
+  pref_store->SetValue(test_pref, std::make_unique<Value>(3),
+                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+  pref_store->CommitPendingWriteSynchronously();
+
+  std::string pref_file_contents;
+  ASSERT_TRUE(base::ReadFileToString(pref_file, &pref_file_contents));
+  EXPECT_EQ(kExpectedPrefContents, pref_file_contents);
+  ASSERT_TRUE(base::DeleteFile(pref_file));
+}
 
 class JsonPrefStoreLossyWriteTest : public JsonPrefStoreTest {
  public:
@@ -573,7 +653,7 @@ class JsonPrefStoreLossyWriteTest : public JsonPrefStoreTest {
   // Get the contents of kTestFile. Pumps the message loop before returning the
   // result.
   std::string GetTestFileContents() {
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     std::string file_contents;
     ReadFileToString(test_file_, &file_contents);
     return file_contents;
@@ -736,8 +816,8 @@ class SuccessfulWriteReplyObserver {
 void SuccessfulWriteReplyObserver::ObserveNextWriteCallback(
     JsonPrefStore* json_pref_store) {
   json_pref_store->RegisterOnNextSuccessfulWriteReply(
-      base::Bind(&SuccessfulWriteReplyObserver::OnSuccessfulWrite,
-                 base::Unretained(this)));
+      base::BindOnce(&SuccessfulWriteReplyObserver::OnSuccessfulWrite,
+                     base::Unretained(this)));
 }
 
 enum WriteCallbackObservationState {
@@ -762,10 +842,10 @@ class WriteCallbacksObserver {
   WriteCallbackObservationState GetAndResetPostWriteObservationState();
 
   JsonPrefStore::OnWriteCallbackPair GetCallbackPair() {
-    return std::make_pair(
-        base::Bind(&WriteCallbacksObserver::OnPreWrite, base::Unretained(this)),
-        base::Bind(&WriteCallbacksObserver::OnPostWrite,
-                   base::Unretained(this)));
+    return std::make_pair(base::BindOnce(&WriteCallbacksObserver::OnPreWrite,
+                                         base::Unretained(this)),
+                          base::BindOnce(&WriteCallbacksObserver::OnPostWrite,
+                                         base::Unretained(this)));
   }
 
   void OnPreWrite() {
@@ -825,10 +905,10 @@ class JsonPrefStoreCallbackTest : public testing::Test {
 
   void TriggerFakeWriteForCallback(JsonPrefStore* pref_store, bool success) {
     JsonPrefStore::PostWriteCallback(
-        base::Bind(&JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
-                   pref_store->AsWeakPtr()),
-        base::Bind(&WriteCallbacksObserver::OnPostWrite,
-                   base::Unretained(&write_callback_observer_)),
+        base::BindOnce(&JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
+                       pref_store->AsWeakPtr()),
+        base::BindOnce(&WriteCallbacksObserver::OnPostWrite,
+                       base::Unretained(&write_callback_observer_)),
         base::SequencedTaskRunnerHandle::Get(), success);
   }
 
@@ -836,9 +916,9 @@ class JsonPrefStoreCallbackTest : public testing::Test {
   WriteCallbacksObserver write_callback_observer_;
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_{
-      base::test::ScopedTaskEnvironment::MainThreadType::DEFAULT,
-      base::test::ScopedTaskEnvironment::ExecutionMode::QUEUED};
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::MainThreadType::DEFAULT,
+      base::test::TaskEnvironment::ThreadPoolExecutionMode::QUEUED};
 
   base::ScopedTempDir temp_dir_;
 
@@ -870,7 +950,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestSerializeDataCallbacks) {
   EXPECT_EQ(NOT_CALLED,
             write_callback_observer_.GetAndResetPostWriteObservationState());
 
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   EXPECT_TRUE(write_callback_observer_.GetAndResetPreWriteObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,
@@ -886,7 +966,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacks) {
   successful_write_reply_observer_.ObserveNextWriteCallback(pref_store.get());
   write_callback_observer_.ObserveNextWriteCallback(pref_store.get());
   file_writer->WriteNow(std::make_unique<std::string>("foo"));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_TRUE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_TRUE(write_callback_observer_.GetAndResetPreWriteObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,
@@ -897,7 +977,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacks) {
   successful_write_reply_observer_.ObserveNextWriteCallback(pref_store.get());
   write_callback_observer_.ObserveNextWriteCallback(pref_store.get());
   file_writer->WriteNow(std::make_unique<std::string>("foo"));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_TRUE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_TRUE(write_callback_observer_.GetAndResetPreWriteObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,
@@ -906,7 +986,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacks) {
   // Test RegisterOnNextSuccessfulWriteReply only.
   successful_write_reply_observer_.ObserveNextWriteCallback(pref_store.get());
   file_writer->WriteNow(std::make_unique<std::string>("foo"));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_TRUE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_FALSE(write_callback_observer_.GetAndResetPreWriteObservationState());
   EXPECT_EQ(NOT_CALLED,
@@ -915,7 +995,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacks) {
   // Test RegisterOnNextWriteSynchronousCallbacks only.
   write_callback_observer_.ObserveNextWriteCallback(pref_store.get());
   file_writer->WriteNow(std::make_unique<std::string>("foo"));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_FALSE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_TRUE(write_callback_observer_.GetAndResetPreWriteObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,
@@ -928,7 +1008,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacksWithFakeFailure) {
   // Confirm that the observers are invoked.
   successful_write_reply_observer_.ObserveNextWriteCallback(pref_store.get());
   TriggerFakeWriteForCallback(pref_store.get(), true);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_TRUE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,
             write_callback_observer_.GetAndResetPostWriteObservationState());
@@ -941,7 +1021,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacksWithFakeFailure) {
   // Confirm that re-installing the observers works for another write.
   successful_write_reply_observer_.ObserveNextWriteCallback(pref_store.get());
   TriggerFakeWriteForCallback(pref_store.get(), true);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_TRUE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,
             write_callback_observer_.GetAndResetPostWriteObservationState());
@@ -950,7 +1030,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacksWithFakeFailure) {
   // write, and that the synchronous observer is invoked.
   successful_write_reply_observer_.ObserveNextWriteCallback(pref_store.get());
   TriggerFakeWriteForCallback(pref_store.get(), false);
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_FALSE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_EQ(CALLED_WITH_ERROR,
             write_callback_observer_.GetAndResetPostWriteObservationState());
@@ -959,7 +1039,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacksWithFakeFailure) {
   // being set by |PostWriteCallback| by the last TriggerFakeWriteCallback.
   ImportantFileWriter* file_writer = GetImportantFileWriter(pref_store.get());
   file_writer->WriteNow(std::make_unique<std::string>("foo"));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_TRUE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_EQ(NOT_CALLED,
             write_callback_observer_.GetAndResetPostWriteObservationState());
@@ -979,7 +1059,7 @@ TEST_F(JsonPrefStoreCallbackTest, TestPostWriteCallbacksDuringProfileDeath) {
         soon_out_of_scope_pref_store.get());
     file_writer->WriteNow(std::make_unique<std::string>("foo"));
   }
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_FALSE(successful_write_reply_observer_.GetAndResetObservationState());
   EXPECT_TRUE(write_callback_observer_.GetAndResetPreWriteObservationState());
   EXPECT_EQ(CALLED_WITH_SUCCESS,

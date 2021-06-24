@@ -9,8 +9,9 @@
 
 #include "base/macros.h"
 #include "base/time/time.h"
+#include "services/device/public/mojom/screen_orientation_lock_types.mojom-shared.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
-#include "third_party/blink/public/common/screen_orientation/web_screen_orientation_lock_type.h"
 #include "third_party/skia/include/core/SkColor.h"
 
 // Structure with information about a WebAPK.
@@ -23,18 +24,23 @@ struct WebApkInfo {
   WebApkInfo(std::string name,
              std::string short_name,
              std::string package_name,
+             std::string id,
              int shell_apk_version,
              int version_code,
              std::string uri,
              std::string scope,
              std::string manifest_url,
              std::string manifest_start_url,
-             blink::WebDisplayMode display,
-             blink::WebScreenOrientationLockType orientation,
-             base::Optional<SkColor> theme_color,
-             base::Optional<SkColor> background_color,
+             blink::mojom::DisplayMode display,
+             device::mojom::ScreenOrientationLockType orientation,
+             absl::optional<SkColor> theme_color,
+             absl::optional<SkColor> background_color,
              base::Time last_update_check_time,
-             bool relax_updates);
+             base::Time last_update_completion_time,
+             bool relax_updates,
+             std::string backing_browser_package_name,
+             bool is_backing_browser,
+             std::string update_status);
   ~WebApkInfo();
 
   WebApkInfo& operator=(WebApkInfo&& other) noexcept;
@@ -49,6 +55,9 @@ struct WebApkInfo {
   // Package name of the WebAPK.
   std::string package_name;
 
+  // Internal ID of the WebAPK.
+  std::string id;
+
   // Shell APK version of the WebAPK.
   int shell_apk_version;
 
@@ -59,12 +68,18 @@ struct WebApkInfo {
   std::string scope;
   std::string manifest_url;
   std::string manifest_start_url;
-  blink::WebDisplayMode display;
-  blink::WebScreenOrientationLockType orientation;
-  base::Optional<SkColor> theme_color;
-  base::Optional<SkColor> background_color;
+  blink::mojom::DisplayMode display;
+  device::mojom::ScreenOrientationLockType orientation;
+  absl::optional<SkColor> theme_color;
+  absl::optional<SkColor> background_color;
   base::Time last_update_check_time;
+  base::Time last_update_completion_time;
   bool relax_updates;
+  std::string backing_browser_package_name;
+  bool is_backing_browser;
+
+  // Update Status of the WebAPK.
+  std::string update_status;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(WebApkInfo);

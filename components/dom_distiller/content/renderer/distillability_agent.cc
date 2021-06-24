@@ -4,16 +4,17 @@
 
 #include "components/dom_distiller/content/renderer/distillability_agent.h"
 
+#include "base/json/json_writer.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
-#include "components/dom_distiller/content/common/distillability_service.mojom.h"
+#include "components/dom_distiller/content/common/mojom/distillability_service.mojom.h"
 #include "components/dom_distiller/core/distillable_page_detector.h"
 #include "components/dom_distiller/core/experiments.h"
 #include "components/dom_distiller/core/page_features.h"
 #include "components/dom_distiller/core/url_utils.h"
 #include "content/public/renderer/render_frame.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/web_distillability.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_element.h"
@@ -21,16 +22,15 @@
 
 namespace dom_distiller {
 
-using namespace blink;
-
 namespace {
 
-const char* const kBlacklist[] = {"www.reddit.com", "tools.usps.com"};
+const char* const kFilterlist[] = {"www.reddit.com", "tools.usps.com",
+                                   "old.reddit.com"};
 
 enum RejectionBuckets {
   NOT_ARTICLE = 0,
   MOBILE_FRIENDLY,
-  BLACKLISTED,
+  FILTERED,
   TOO_SHORT,
   NOT_REJECTED,
   REJECTION_BUCKET_BOUNDARY
@@ -66,25 +66,73 @@ bool IsLast(bool is_loaded) {
   return true;
 }
 
-bool IsBlacklisted(const GURL& url) {
-  for (size_t i = 0; i < base::size(kBlacklist); ++i) {
-    if (base::LowerCaseEqualsASCII(url.host(), kBlacklist[i])) {
+bool IsFiltered(const GURL& url) {
+  for (auto* filter : kFilterlist) {
+    if (base::LowerCaseEqualsASCII(url.host(), filter)) {
       return true;
     }
   }
   return false;
 }
 
-bool IsDistillablePageAdaboost(WebDocument& doc,
+void DumpDistillability(content::RenderFrame* render_frame,
+                        const blink::WebDistillabilityFeatures& features,
+                        const std::vector<double>& derived,
+                        double score,
+                        bool distillable,
+                        double long_score,
+                        bool long_page,
+                        bool filtered) {
+  base::DictionaryValue dict;
+  std::string msg;
+
+  base::DictionaryValue raw_features;
+  raw_features.SetInteger("is_mobile_friendly", features.is_mobile_friendly);
+  raw_features.SetInteger("open_graph", features.open_graph);
+  raw_features.SetInteger("element_count", features.element_count);
+  raw_features.SetInteger("anchor_count", features.anchor_count);
+  raw_features.SetInteger("form_count", features.form_count);
+  raw_features.SetInteger("text_input_count", features.text_input_count);
+  raw_features.SetInteger("password_input_count",
+                          features.password_input_count);
+  raw_features.SetInteger("p_count", features.p_count);
+  raw_features.SetInteger("pre_count", features.pre_count);
+  raw_features.SetDouble("moz_score", features.moz_score);
+  raw_features.SetDouble("moz_score_all_sqrt", features.moz_score_all_sqrt);
+  raw_features.SetDouble("moz_score_all_linear", features.moz_score_all_linear);
+  dict.SetKey("features", std::move(raw_features));
+
+  base::ListValue derived_features;
+  for (double value : derived) {
+    derived_features.Append(value);
+  }
+  dict.SetKey("derived_features", std::move(derived_features));
+
+  dict.SetDouble("score", score);
+  dict.SetInteger("distillable", distillable);
+  dict.SetDouble("long_score", long_score);
+  dict.SetInteger("long_page", long_page);
+  dict.SetInteger("filtered", filtered);
+  base::JSONWriter::WriteWithOptions(
+      dict, base::JSONWriter::OPTIONS_PRETTY_PRINT, &msg);
+  msg = "adaboost_classification = " + msg;
+
+  render_frame->AddMessageToConsole(blink::mojom::ConsoleMessageLevel::kVerbose,
+                                    msg);
+}
+
+bool IsDistillablePageAdaboost(blink::WebDocument& doc,
                                const DistillablePageDetector* detector,
                                const DistillablePageDetector* long_page,
                                bool is_last,
-                               bool& is_mobile_friendly) {
+                               bool& is_mobile_friendly,
+                               content::RenderFrame* render_frame,
+                               bool dump_info) {
   GURL parsed_url(doc.Url());
   if (!parsed_url.is_valid()) {
     return false;
   }
-  WebDistillabilityFeatures features = doc.DistillabilityFeatures();
+  blink::WebDistillabilityFeatures features = doc.DistillabilityFeatures();
   is_mobile_friendly = features.is_mobile_friendly;
   std::vector<double> derived = CalculateDerivedFeatures(
       features.open_graph, parsed_url, features.element_count,
@@ -94,7 +142,12 @@ bool IsDistillablePageAdaboost(WebDocument& doc,
   double long_score = long_page->Score(derived) - long_page->GetThreshold();
   bool distillable = score > 0;
   bool long_article = long_score > 0;
-  bool blacklisted = IsBlacklisted(parsed_url);
+  bool filtered = IsFiltered(parsed_url);
+
+  if (dump_info) {
+    DumpDistillability(render_frame, features, derived, score, distillable,
+                       long_score, long_article, filtered);
+  }
 
   if (!features.is_mobile_friendly) {
     int score_int = std::round(score * 100);
@@ -134,9 +187,9 @@ bool IsDistillablePageAdaboost(WebDocument& doc,
     } else if (features.is_mobile_friendly) {
       UMA_HISTOGRAM_ENUMERATION("DomDistiller.DistillabilityRejection",
                                 MOBILE_FRIENDLY, REJECTION_BUCKET_BOUNDARY);
-    } else if (blacklisted) {
+    } else if (filtered) {
       UMA_HISTOGRAM_ENUMERATION("DomDistiller.DistillabilityRejection",
-                                BLACKLISTED, REJECTION_BUCKET_BOUNDARY);
+                                FILTERED, REJECTION_BUCKET_BOUNDARY);
     } else if (!long_article) {
       UMA_HISTOGRAM_ENUMERATION("DomDistiller.DistillabilityRejection",
                                 TOO_SHORT, REJECTION_BUCKET_BOUNDARY);
@@ -146,15 +199,17 @@ bool IsDistillablePageAdaboost(WebDocument& doc,
     }
   }
 
-  if (blacklisted) {
+  if (filtered) {
     return false;
   }
   return distillable && long_article;
 }
 
-bool IsDistillablePage(WebDocument& doc,
+bool IsDistillablePage(blink::WebDocument& doc,
                        bool is_last,
-                       bool& is_mobile_friendly) {
+                       bool& is_mobile_friendly,
+                       content::RenderFrame* render_frame,
+                       bool dump_info) {
   switch (GetDistillerHeuristicsType()) {
     case DistillerHeuristicsType::ALWAYS_TRUE:
       return true;
@@ -165,7 +220,7 @@ bool IsDistillablePage(WebDocument& doc,
       return IsDistillablePageAdaboost(
           doc, DistillablePageDetector::GetNewModel(),
           DistillablePageDetector::GetLongPageModel(), is_last,
-          is_mobile_friendly);
+          is_mobile_friendly, render_frame, dump_info);
     case DistillerHeuristicsType::NONE:
     default:
       return false;
@@ -174,12 +229,14 @@ bool IsDistillablePage(WebDocument& doc,
 
 }  // namespace
 
-DistillabilityAgent::DistillabilityAgent(content::RenderFrame* render_frame)
-    : RenderFrameObserver(render_frame) {}
+DistillabilityAgent::DistillabilityAgent(content::RenderFrame* render_frame,
+                                         bool dump_info)
+    : RenderFrameObserver(render_frame), dump_info_(dump_info) {}
 
-void DistillabilityAgent::DidMeaningfulLayout(WebMeaningfulLayout layout_type) {
-  if (layout_type != WebMeaningfulLayout::kFinishedParsing &&
-      layout_type != WebMeaningfulLayout::kFinishedLoading) {
+void DistillabilityAgent::DidMeaningfulLayout(
+    blink::WebMeaningfulLayout layout_type) {
+  if (layout_type != blink::WebMeaningfulLayout::kFinishedParsing &&
+      layout_type != blink::WebMeaningfulLayout::kFinishedLoading) {
     return;
   }
 
@@ -187,25 +244,26 @@ void DistillabilityAgent::DidMeaningfulLayout(WebMeaningfulLayout layout_type) {
   if (!render_frame()->IsMainFrame())
     return;
   DCHECK(render_frame()->GetWebFrame());
-  WebDocument doc = render_frame()->GetWebFrame()->GetDocument();
+  blink::WebDocument doc = render_frame()->GetWebFrame()->GetDocument();
   if (doc.IsNull() || doc.Body().IsNull())
     return;
   if (!url_utils::IsUrlDistillable(doc.Url()))
     return;
 
-  bool is_loaded = layout_type == WebMeaningfulLayout::kFinishedLoading;
+  bool is_loaded = layout_type == blink::WebMeaningfulLayout::kFinishedLoading;
   if (!NeedToUpdate(is_loaded))
     return;
 
   bool is_last = IsLast(is_loaded);
   // Connect to Mojo service on browser to notify page distillability.
-  mojom::DistillabilityServicePtr distillability_service;
-  render_frame()->GetRemoteInterfaces()->GetInterface(&distillability_service);
-  DCHECK(distillability_service);
+  mojo::Remote<mojom::DistillabilityService> distillability_service;
+  render_frame()->GetBrowserInterfaceBroker()->GetInterface(
+      distillability_service.BindNewPipeAndPassReceiver());
   if (!distillability_service.is_bound())
     return;
   bool is_mobile_friendly = false;
-  bool is_distillable = IsDistillablePage(doc, is_last, is_mobile_friendly);
+  bool is_distillable = IsDistillablePage(doc, is_last, is_mobile_friendly,
+                                          render_frame(), dump_info_);
   distillability_service->NotifyIsDistillable(is_distillable, is_last,
                                               is_mobile_friendly);
 }

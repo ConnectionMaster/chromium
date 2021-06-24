@@ -18,7 +18,9 @@ import android.os.Build;
 import android.os.ConditionVariable;
 import android.os.Process;
 import android.os.StrictMode;
-import android.support.test.filters.SmallTest;
+import android.support.test.runner.AndroidJUnit4;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -27,7 +29,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.Log;
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.net.CronetTestRule.CronetTestFramework;
@@ -59,7 +60,7 @@ import java.util.regex.Pattern;
 /**
  * Test functionality of CronetUrlRequest.
  */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class CronetUrlRequestTest {
     private static final String TAG = CronetUrlRequestTest.class.getSimpleName();
 
@@ -312,6 +313,30 @@ public class CronetUrlRequestTest {
     }
 
     /**
+     * Tests redirect without location header doesn't cause a crash.
+     */
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    public void testRedirectWithNullLocationHeader() throws Exception {
+        String url = NativeTestServer.getFileURL("/redirect_broken_header.html");
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+
+        UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                url, callback, callback.getExecutor());
+        final UrlRequest urlRequest = builder.build();
+        urlRequest.start();
+        callback.blockForDone();
+        assertEquals("<!DOCTYPE html>\n<html>\n<head>\n<title>Redirect</title>\n"
+                        + "<p>Redirecting...</p>\n</head>\n</html>\n",
+                callback.mResponseAsString);
+        assertEquals(ResponseStep.ON_SUCCEEDED, callback.mResponseStep);
+        assertEquals(302, callback.mResponseInfo.getHttpStatusCode());
+        assertNull(callback.mError);
+        assertFalse(callback.mOnErrorCalled);
+    }
+
+    /**
      * Tests onRedirectReceived after cancel doesn't cause a crash.
      */
     @Test
@@ -545,6 +570,56 @@ public class CronetUrlRequestTest {
         }
         assertEquals(1, actualValues.size());
         assertEquals("header-value2", actualValues.get(0));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    public void testCustomReferer_verbatim() throws Exception {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        String refererName = "Referer";
+        String refererValue = "http://example.com/";
+        UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                NativeTestServer.getEchoHeaderURL(refererName), callback, callback.getExecutor());
+        builder.addHeader(refererName, refererValue);
+        builder.build().start();
+        callback.blockForDone();
+        assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
+        assertEquals(refererValue, callback.mResponseAsString);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @OnlyRunNativeCronet
+    public void testCustomReferer_changeToCanonical() throws Exception {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        String refererName = "Referer";
+        String refererValueNoTrailingSlash = "http://example.com";
+        UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                NativeTestServer.getEchoHeaderURL(refererName), callback, callback.getExecutor());
+        builder.addHeader(refererName, refererValueNoTrailingSlash);
+        builder.build().start();
+        callback.blockForDone();
+        assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
+        assertEquals(refererValueNoTrailingSlash + "/", callback.mResponseAsString);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @OnlyRunNativeCronet
+    public void testCustomReferer_discardInvalid() throws Exception {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        String refererName = "Referer";
+        String invalidRefererValue = "foobar";
+        UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                NativeTestServer.getEchoHeaderURL(refererName), callback, callback.getExecutor());
+        builder.addHeader(refererName, invalidRefererValue);
+        builder.build().start();
+        callback.blockForDone();
+        assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
+        assertEquals("Header not found. :(", callback.mResponseAsString);
     }
 
     @Test
@@ -1391,7 +1466,6 @@ public class CronetUrlRequestTest {
                 uploadDataSink.onReadSucceeded(false);
             }
         };
-        dataProvider.addRead("test".getBytes());
         builder.setUploadDataProvider(dataProvider, callback.getExecutor());
         builder.addHeader("Content-Type", "useless/string");
         builder.build().start();
@@ -1575,7 +1649,7 @@ public class CronetUrlRequestTest {
         };
         UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
                 NativeTestServer.getEchoBodyURL(), callback, myExecutor);
-        UploadDataProvider dataProvider = UploadDataProviders.create("test".getBytes("UTF-8"));
+        UploadDataProvider dataProvider = UploadDataProviders.create("test".getBytes());
         builder.setUploadDataProvider(dataProvider, myExecutor);
         builder.addHeader("Content-Type", "useless/string");
         builder.allowDirectExecutor();
@@ -2413,6 +2487,28 @@ public class CronetUrlRequestTest {
         for (TestUrlRequestCallback callback : callbacks) {
             callback.blockForDone();
         }
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    public void testSetIdempotency() throws Exception {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        ExperimentalUrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                NativeTestServer.getEchoMethodURL(), callback, callback.getExecutor());
+        assertEquals(builder.setIdempotency(ExperimentalUrlRequest.Builder.IDEMPOTENT), builder);
+
+        TestUploadDataProvider dataProvider = new TestUploadDataProvider(
+                TestUploadDataProvider.SuccessCallbackMode.SYNC, callback.getExecutor());
+        dataProvider.addRead("test".getBytes());
+        builder.setUploadDataProvider(dataProvider, callback.getExecutor());
+        builder.addHeader("Content-Type", "useless/string");
+        builder.build().start();
+        callback.blockForDone();
+        dataProvider.assertClosed();
+
+        assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
+        assertEquals("POST", callback.mResponseAsString);
     }
 
     // Return connection migration disable load flag value.

@@ -74,15 +74,6 @@ class ProcessManagerTest : public ExtensionsTest {
     return &process_manager_delegate_;
   }
 
-  // Returns true if the notification |type| is registered for |manager| with
-  // source |context|. Pass NULL for |context| for all sources.
-  static bool IsRegistered(ProcessManager* manager,
-                           int type,
-                           BrowserContext* context) {
-    return manager->registrar_.IsRegistered(
-        manager, type, content::Source<BrowserContext>(context));
-  }
-
  private:
   std::unique_ptr<ExtensionRegistry>
       extension_registry_;  // Shared between BrowserContexts.
@@ -90,43 +81,6 @@ class ProcessManagerTest : public ExtensionsTest {
 
   DISALLOW_COPY_AND_ASSIGN(ProcessManagerTest);
 };
-
-// Test that notification registration works properly.
-TEST_F(ProcessManagerTest, ExtensionNotificationRegistration) {
-  // Test for a normal context ProcessManager.
-  std::unique_ptr<ProcessManager> manager1(ProcessManager::CreateForTesting(
-      original_context(), extension_registry()));
-
-  EXPECT_EQ(original_context(), manager1->browser_context());
-  EXPECT_EQ(0u, manager1->background_hosts().size());
-
-  // It observes other notifications from this context.
-  EXPECT_TRUE(IsRegistered(manager1.get(),
-                           extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED,
-                           original_context()));
-  EXPECT_TRUE(IsRegistered(manager1.get(),
-                           extensions::NOTIFICATION_EXTENSION_HOST_DESTROYED,
-                           original_context()));
-
-  // Test for an incognito context ProcessManager.
-  std::unique_ptr<ProcessManager> manager2(
-      ProcessManager::CreateIncognitoForTesting(
-          incognito_context(), original_context(), extension_registry()));
-
-  EXPECT_EQ(incognito_context(), manager2->browser_context());
-  EXPECT_EQ(0u, manager2->background_hosts().size());
-
-  // Some notifications are observed for the incognito context.
-  EXPECT_TRUE(IsRegistered(manager2.get(),
-                           extensions::NOTIFICATION_EXTENSION_HOST_DESTROYED,
-                           incognito_context()));
-
-  // Some are not observed at all.
-  EXPECT_FALSE(
-      IsRegistered(manager2.get(),
-                   extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED,
-                   original_context()));
-}
 
 // Test that startup background hosts are created when the extension system
 // becomes ready.
@@ -140,23 +94,8 @@ TEST_F(ProcessManagerTest, CreateBackgroundHostsOnExtensionsReady) {
   ASSERT_FALSE(manager->startup_background_hosts_created_for_test());
 
   // Simulate the extension system becoming ready.
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED,
-      content::Source<BrowserContext>(original_context()),
-      content::NotificationService::NoDetails());
-  EXPECT_TRUE(manager->startup_background_hosts_created_for_test());
-}
-
-// Test that startup background hosts can be created explicitly before the
-// extension system is ready (this is the normal pattern in Chrome).
-TEST_F(ProcessManagerTest, CreateBackgroundHostsExplicitly) {
-  std::unique_ptr<ProcessManager> manager(ProcessManager::CreateForTesting(
-      original_context(), extension_registry()));
-  ASSERT_FALSE(manager->startup_background_hosts_created_for_test());
-
-  // Embedder explicitly asks for hosts to be created. Chrome does this on
-  // normal startup.
-  manager->MaybeCreateStartupBackgroundHosts();
+  extension_system()->SetReady();
+  base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(manager->startup_background_hosts_created_for_test());
 }
 
@@ -173,10 +112,8 @@ TEST_F(ProcessManagerTest, CreateBackgroundHostsDeferred) {
   EXPECT_FALSE(manager->startup_background_hosts_created_for_test());
 
   // The extension system becoming ready still doesn't create the hosts.
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED,
-      content::Source<BrowserContext>(original_context()),
-      content::NotificationService::NoDetails());
+  extension_system()->SetReady();
+  base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(manager->startup_background_hosts_created_for_test());
 
   // Once the embedder is ready the background hosts can be created.
@@ -198,10 +135,8 @@ TEST_F(ProcessManagerTest, IsBackgroundHostAllowed) {
   EXPECT_FALSE(manager->startup_background_hosts_created_for_test());
 
   // The extension system becoming ready still doesn't create the hosts.
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED,
-      content::Source<BrowserContext>(original_context()),
-      content::NotificationService::NoDetails());
+  extension_system()->SetReady();
+  base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(manager->startup_background_hosts_created_for_test());
 }
 
@@ -238,6 +173,9 @@ TEST_F(ProcessManagerTest, ProcessGrouping) {
   scoped_refptr<SiteInstance> other_profile_site =
       manager2->GetSiteInstanceForURL(ext1_url1);
   EXPECT_NE(site11, other_profile_site);
+
+  BrowserContextDependencyManager::GetInstance()->DestroyBrowserContextServices(
+      &another_context);
 }
 
 }  // namespace extensions

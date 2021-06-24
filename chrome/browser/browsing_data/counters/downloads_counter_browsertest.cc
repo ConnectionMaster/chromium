@@ -4,6 +4,7 @@
 
 #include "chrome/browser/browsing_data/counters/downloads_counter.h"
 
+#include <memory>
 #include <set>
 
 #include "base/bind.h"
@@ -23,7 +24,9 @@
 #include "components/history/core/browser/download_row.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/buildflags/buildflags.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "extensions/common/extension.h"
@@ -37,16 +40,16 @@ class DownloadsCounterTest : public InProcessBrowserTest,
   void SetUpOnMainThread() override {
     time_ = base::Time::Now();
     items_count_ = 0;
-    manager_ =
-        content::BrowserContext::GetDownloadManager(browser()->profile());
+    manager_ = browser()->profile()->GetDownloadManager();
     history_ =
         DownloadCoreServiceFactory::GetForBrowserContext(browser()->profile())
             ->GetDownloadHistory();
     history_->AddObserver(this);
 
-    otr_manager_ =
-        content::BrowserContext::GetDownloadManager(
-            browser()->profile()->GetOffTheRecordProfile());
+    otr_manager_ = browser()
+                       ->profile()
+                       ->GetPrimaryOTRProfile(/*create_if_needed=*/true)
+                       ->GetDownloadManager();
     SetDownloadsDeletionPref(true);
     SetDeletionPeriodPref(browsing_data::TimePeriod::ALL_TIME);
   }
@@ -122,8 +125,8 @@ class DownloadsCounterTest : public InProcessBrowserTest,
         guid, download::DownloadItem::kInvalidId + (++items_count_),
         base::FilePath(FILE_PATH_LITERAL("current/path")),
         base::FilePath(FILE_PATH_LITERAL("target/path")), url_chain, GURL(),
-        GURL(), GURL(), GURL(), mime_type, std::string(), time_, time_,
-        std::string(), std::string(), 1, 1, std::string(), state, danger,
+        GURL(), GURL(), GURL(), url::Origin(), mime_type, std::string(), time_,
+        time_, std::string(), std::string(), 1, 1, std::string(), state, danger,
         reason, false, time_, false,
         std::vector<download::DownloadItem::ReceivedSlice>());
 
@@ -185,7 +188,7 @@ class DownloadsCounterTest : public InProcessBrowserTest,
       return;
 
     DCHECK(!run_loop_ || !run_loop_->running());
-    run_loop_.reset(new base::RunLoop());
+    run_loop_ = std::make_unique<base::RunLoop>();
     run_loop_->Run();
   }
 
@@ -238,8 +241,8 @@ IN_PROC_BROWSER_TEST_F(DownloadsCounterTest, Count) {
   DownloadsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
                browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::Bind(&DownloadsCounterTest::ResultCallback,
-                          base::Unretained(this)));
+               base::BindRepeating(&DownloadsCounterTest::ResultCallback,
+                                   base::Unretained(this)));
   counter.Restart();
   EXPECT_EQ(0u, GetResult());
 
@@ -268,8 +271,8 @@ IN_PROC_BROWSER_TEST_F(DownloadsCounterTest, Types) {
   DownloadsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
                browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::Bind(&DownloadsCounterTest::ResultCallback,
-                          base::Unretained(this)));
+               base::BindRepeating(&DownloadsCounterTest::ResultCallback,
+                                   base::Unretained(this)));
 
   AddDownload();
   AddDownloadWithProperties(download::DownloadItem::COMPLETE,
@@ -299,8 +302,8 @@ IN_PROC_BROWSER_TEST_F(DownloadsCounterTest, NotPersisted) {
   DownloadsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
                browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::Bind(&DownloadsCounterTest::ResultCallback,
-                          base::Unretained(this)));
+               base::BindRepeating(&DownloadsCounterTest::ResultCallback,
+                                   base::Unretained(this)));
 
   // Extension and user scripts download are not persisted.
   AddDownload();
@@ -323,7 +326,7 @@ IN_PROC_BROWSER_TEST_F(DownloadsCounterTest, NotPersisted) {
 
 // Tests that the counter takes time ranges into account.
 // Flaky on Mac (crbug.com/736820)
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_TimeRanges DISABLED_TimeRanges
 #else
 #define MAYBE_TimeRanges TimeRanges
@@ -355,8 +358,8 @@ IN_PROC_BROWSER_TEST_F(DownloadsCounterTest, MAYBE_TimeRanges) {
   DownloadsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
                browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::Bind(&DownloadsCounterTest::ResultCallback,
-                          base::Unretained(this)));
+               base::BindRepeating(&DownloadsCounterTest::ResultCallback,
+                                   base::Unretained(this)));
 
   SetDeletionPeriodPref(browsing_data::TimePeriod::LAST_HOUR);
   EXPECT_EQ(2u, GetResult());

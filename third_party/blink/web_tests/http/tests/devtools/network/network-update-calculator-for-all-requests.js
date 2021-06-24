@@ -4,11 +4,11 @@
 
 (async function() {
   TestRunner.addResult(`Tests that time calculator is updated for both visible and hidden requests.\n`);
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
   await TestRunner.showPanel('network');
 
   var target = UI.panels.network._networkLogView;
-  target._resourceCategoryFilterUI._toggleTypeFilter(Common.resourceTypes.XHR.category().title, false);
+  target._resourceCategoryFilterUI._toggleTypeFilter(Common.resourceTypes.XHR.category().title(), false);
   TestRunner.addResult('Clicked \'' + Common.resourceTypes.XHR.name() + '\' button.');
   target._reset();
 
@@ -21,7 +21,8 @@
     TestRunner.networkManager._dispatcher._startNetworkRequest(request);
     target._refresh();
 
-    var isFilteredOut = !!target.nodeForRequest(request)[Network.NetworkLogView._isFilteredOutSymbol];
+    var isFilteredOut = Network.NetworkLogView.isRequestFilteredOut(
+        target.nodeForRequest(request));
     TestRunner.addResult('');
     TestRunner.addResult(
         'Appended request [' + request.requestId() + '] of type \'' + request.resourceType().name() +

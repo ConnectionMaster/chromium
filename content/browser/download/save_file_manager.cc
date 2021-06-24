@@ -2,36 +2,41 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "build/build_config.h"
-
-#include "base/task/post_task.h"
 #include "content/browser/download/save_file_manager.h"
-#include "content/public/browser/browser_task_traits.h"
+
+#include <utility>
 
 #include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
+#include "build/build_config.h"
 #include "components/download/public/common/download_task_runner.h"
 #include "content/browser/child_process_security_policy_impl.h"
+#include "content/browser/data_url_loader_factory.h"
 #include "content/browser/download/save_file.h"
 #include "content/browser/download/save_package.h"
+#include "content/browser/file_system/file_system_url_loader_factory.h"
+#include "content/browser/loader/file_url_loader_factory.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/resource_context.h"
+#include "content/public/browser/shared_cors_origin_access_list.h"
 #include "content/public/browser/storage_partition.h"
-#include "content/public/common/previews_state.h"
-#include "net/base/io_buffer.h"
+#include "content/public/browser/web_ui_url_loader_factory.h"
+#include "content/public/common/content_client.h"
 #include "net/base/load_flags.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "net/url_request/url_request.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_job_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/blink/public/common/loader/previews_state.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -91,7 +96,7 @@ class SaveFileManager::SimpleURLLoaderHelper
                          int render_process_id,
                          int render_frame_routing_id,
                          const GURL& final_url,
-                         const network::ResourceResponseHead& response_head) {
+                         const network::mojom::URLResponseHead& response_head) {
     std::string content_disposition;
     if (response_head.headers) {
       response_head.headers->GetNormalizedHeader("Content-Disposition",
@@ -114,7 +119,7 @@ class SaveFileManager::SimpleURLLoaderHelper
     download::GetDownloadTaskRunner()->PostTask(
         FROM_HERE,
         base::BindOnce(&SaveFileManager::UpdateSaveProgress, save_file_manager_,
-                       save_item_id_, string_piece.as_string()));
+                       save_item_id_, std::string(string_piece)));
     std::move(resume).Run();
   }
 
@@ -192,7 +197,7 @@ void SaveFileManager::SaveURL(SaveItemId save_item_id,
                               int render_frame_routing_id,
                               SaveFileCreateInfo::SaveFileSource save_source,
                               const base::FilePath& file_full_path,
-                              ResourceContext* context,
+                              BrowserContext* context,
                               StoragePartition* storage_partition,
                               SavePackage* save_package) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -240,12 +245,51 @@ void SaveFileManager::SaveURL(SaveItemId save_item_id,
     request->priority = net::DEFAULT_PRIORITY;
     request->load_flags = net::LOAD_SKIP_CACHE_VALIDATION;
 
+    // To avoid https://crbug.com/974312, downloads initiated by Save-Page-As
+    // should be treated as navigations. This definitely makes sense for the
+    // top-level page (e.g. in SAVE_PAGE_TYPE_AS_ONLY_HTML mode). This is
+    // probably also okay for subresources downloaded in
+    // SAVE_PAGE_TYPE_AS_COMPLETE_HTML mode.
+    request->mode = network::mojom::RequestMode::kNavigate;
+
+    network::mojom::URLLoaderFactory* factory = nullptr;
+    mojo::Remote<network::mojom::URLLoaderFactory> factory_remote;
+    auto* rfh = RenderFrameHostImpl::FromID(render_process_host_id,
+                                            render_frame_routing_id);
+
+    // TODO(qinmin): should this match the if statements in
+    // DownloadManagerImpl::BeginResourceDownloadOnChecksComplete so that it
+    // can handle blob, file, webui, embedder provided schemes etc?
+    // https://crbug.com/953967
+    if (url.SchemeIs(url::kDataScheme)) {
+      factory_remote.Bind(DataURLLoaderFactory::Create());
+      factory = factory_remote.get();
+    } else if (url.SchemeIsFile()) {
+      factory_remote.Bind(FileURLLoaderFactory::Create(
+          context->GetPath(), context->GetSharedCorsOriginAccessList(),
+          base::TaskPriority::USER_VISIBLE));
+      factory = factory_remote.get();
+    } else if (url.SchemeIsFileSystem() && rfh) {
+      auto* storage_partition_impl =
+          static_cast<StoragePartitionImpl*>(storage_partition);
+      auto partition_domain =
+          rfh->GetSiteInstance()->GetPartitionDomain(storage_partition_impl);
+      factory_remote.Bind(CreateFileSystemURLLoaderFactory(
+          rfh->GetProcess()->GetID(), rfh->GetFrameTreeNodeId(),
+          storage_partition->GetFileSystemContext(), partition_domain));
+      factory = factory_remote.get();
+    } else if (rfh && url.SchemeIs(content::kChromeUIScheme)) {
+      factory_remote.Bind(CreateWebUIURLLoaderFactory(rfh, url.scheme(), {}));
+      factory = factory_remote.get();
+    } else {
+      factory = storage_partition->GetURLLoaderFactoryForBrowserProcess().get();
+    }
+
     url_loader_helpers_[save_item_id] =
         SimpleURLLoaderHelper::CreateAndStartDownload(
             std::move(request), save_item_id, save_package->id(),
             render_process_host_id, render_frame_routing_id, traffic_annotation,
-            storage_partition->GetURLLoaderFactoryForBrowserProcess().get(),
-            this);
+            factory, this);
   } else {
     // We manually start the save job.
     auto info = std::make_unique<SaveFileCreateInfo>(
@@ -292,14 +336,6 @@ SavePackage* SaveFileManager::GetSavePackageFromRenderIds(
   return web_contents->save_package();
 }
 
-void SaveFileManager::DeleteDirectoryOrFile(const base::FilePath& full_path,
-                                            bool is_dir) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  download::GetDownloadTaskRunner()->PostTask(
-      FROM_HERE, base::BindOnce(&SaveFileManager::OnDeleteDirectoryOrFile, this,
-                                full_path, is_dir));
-}
-
 void SaveFileManager::SendCancelRequest(SaveItemId save_item_id) {
   // Cancel the request which has specific save id.
   DCHECK(!save_item_id.is_null());
@@ -327,9 +363,9 @@ void SaveFileManager::StartSave(std::unique_ptr<SaveFileCreateInfo> info) {
   DCHECK(!LookupSaveFile(save_file->save_item_id()));
   save_file_map_[save_file->save_item_id()] = std::move(save_file);
 
-  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                           base::BindOnce(&SaveFileManager::OnStartSave, this,
-                                          save_file_create_info));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&SaveFileManager::OnStartSave, this,
+                                save_file_create_info));
 }
 
 // We do forward an update to the UI thread here, since we do not use timer to
@@ -345,8 +381,8 @@ void SaveFileManager::UpdateSaveProgress(SaveItemId save_item_id,
 
     download::DownloadInterruptReason reason =
         save_file->AppendDataToFile(data.data(), data.size());
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&SaveFileManager::OnUpdateSaveProgress, this,
                        save_file->save_item_id(), save_file->BytesSoFar(),
                        reason == download::DOWNLOAD_INTERRUPT_REASON_NONE));
@@ -376,10 +412,9 @@ void SaveFileManager::SaveFinished(SaveItemId save_item_id,
     save_file->Detach();
   }
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
-      base::BindOnce(&SaveFileManager::OnSaveFinished, this, save_item_id,
-                     bytes_so_far, is_success));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&SaveFileManager::OnSaveFinished, this,
+                                save_item_id, bytes_so_far, is_success));
 }
 
 // Notifications sent from the file thread and run on the UI thread.
@@ -436,11 +471,11 @@ void SaveFileManager::CancelSave(SaveItemId save_item_id) {
       // We've won a race with the UI thread--we finished the file before
       // the UI thread cancelled it on us.  Unfortunately, in this situation
       // the cancel wins, so we need to delete the now detached file.
-      base::DeleteFile(save_file->FullPath(), false);
+      base::DeleteFile(save_file->FullPath());
     } else if (save_file->save_source() ==
                SaveFileCreateInfo::SAVE_FILE_FROM_NET) {
-      base::PostTaskWithTraits(
-          FROM_HERE, {BrowserThread::UI},
+      GetUIThreadTaskRunner({})->PostTask(
+          FROM_HERE,
           base::BindOnce(&SaveFileManager::ClearURLLoader, this, save_item_id));
     }
 
@@ -455,14 +490,6 @@ void SaveFileManager::ClearURLLoader(SaveItemId save_item_id) {
   auto url_loader_iter = url_loader_helpers_.find(save_item_id);
   if (url_loader_iter != url_loader_helpers_.end())
     url_loader_helpers_.erase(url_loader_iter);
-}
-
-void SaveFileManager::OnDeleteDirectoryOrFile(const base::FilePath& full_path,
-                                              bool is_dir) {
-  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
-  DCHECK(!full_path.empty());
-
-  base::DeleteFile(full_path, is_dir);
 }
 
 void SaveFileManager::RenameAllFiles(const FinalNamesMap& final_names,
@@ -488,11 +515,10 @@ void SaveFileManager::RenameAllFiles(const FinalNamesMap& final_names,
     }
   }
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
-      base::BindOnce(&SaveFileManager::OnFinishSavePageJob, this,
-                     render_process_id, render_frame_routing_id,
-                     save_package_id));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&SaveFileManager::OnFinishSavePageJob, this,
+                                render_process_id, render_frame_routing_id,
+                                save_package_id));
 }
 
 void SaveFileManager::OnFinishSavePageJob(int render_process_id,
@@ -516,7 +542,7 @@ void SaveFileManager::RemoveSavedFileFromFileMap(
     if (it != save_file_map_.end()) {
       SaveFile* save_file = it->second.get();
       DCHECK(!save_file->InProgress());
-      base::DeleteFile(save_file->FullPath(), false);
+      base::DeleteFile(save_file->FullPath());
       save_file_map_.erase(it);
     }
   }

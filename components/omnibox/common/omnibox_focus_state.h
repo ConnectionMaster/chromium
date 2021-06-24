@@ -16,7 +16,8 @@ enum OmniboxFocusState {
   // Invisibly focused, i.e. focused with a hidden caret.
   //
   // Omnibox will not look focused visibly but any user key strokes will go to
-  // the omnibox.
+  // the omnibox. Only used on desktop by search providers supplying a custom
+  // new tab page with a fakebox.
   OMNIBOX_FOCUS_INVISIBLE,
 
   OMNIBOX_FOCUS_STATE_LAST = OMNIBOX_FOCUS_INVISIBLE
@@ -37,6 +38,21 @@ enum OmniboxFocusChangeReason {
   OMNIBOX_FOCUS_CHANGE_TYPING,
 
   OMNIBOX_FOCUS_CHANGE_REASON_LAST = OMNIBOX_FOCUS_CHANGE_TYPING
+};
+
+// Did the Omnibox focus originate via the user clicking on the Omnibox, on
+// the Fakebox or the Search button?
+enum class OmniboxFocusSource {
+  // Invalid sentinel value.
+  INVALID = 0,
+
+  // Focus originated from user clicking on the omnibox.
+  OMNIBOX = 1,
+
+  // Focus originated from user clicking on the fakebox. Only used on Android,
+  // iOS, and on desktop by search providers supplying a custom new tab page
+  // with a fakebox.
+  FAKEBOX = 2,
 };
 
 #endif  // COMPONENTS_OMNIBOX_COMMON_OMNIBOX_FOCUS_STATE_H_

@@ -15,19 +15,14 @@
 #include "content/common/url_schemes.h"
 #include "content/gpu/in_process_gpu_thread.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/content_switches.h"
 #include "content/renderer/in_process_renderer_thread.h"
 #include "content/utility/in_process_utility_thread.h"
-#include "services/network/network_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/ui_base_paths.h"
 
 #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
 #include "gin/v8_initializer.h"  // nogncheck
-#endif
-
-#if defined(OS_ANDROID) && !defined(USE_AURA)
-#include "content/public/browser/android/compositor.h"
 #endif
 
 namespace content {
@@ -43,6 +38,23 @@ constexpr gin::V8Initializer::V8SnapshotFileType kSnapshotType =
 #endif
 #endif
 
+// See kRunManualTestsFlag in "content_switches.cc".
+const char kManualTestPrefix[] = "MANUAL_";
+
+// Tests starting with 'MANUAL_' are skipped unless the
+// command line flag "--run-manual" is supplied.
+class SkipManualTests : public testing::EmptyTestEventListener {
+ public:
+  void OnTestStart(const testing::TestInfo& test_info) override {
+    if (base::StartsWith(test_info.name(), kManualTestPrefix,
+                         base::CompareCase::SENSITIVE) &&
+        !base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kRunManualTestsFlag)) {
+      GTEST_SKIP();
+    }
+  }
+};
+
 }  // namespace
 
 ContentTestSuiteBase::ContentTestSuiteBase(int argc, char** argv)
@@ -51,29 +63,23 @@ ContentTestSuiteBase::ContentTestSuiteBase(int argc, char** argv)
 
 void ContentTestSuiteBase::Initialize() {
   base::TestSuite::Initialize();
-
-  // Tell the network service to not create its own NetworkChangeNotifier
-  // instance, since it will get leaked and can mess with future tests.
-  // TODO(crbug.com/901092): Remove once the network service cleans itself up.
-  network::NetworkService::DisableNetworkChangeNotifierForTesting();
+  testing::UnitTest::GetInstance()->listeners().Append(
+      std::make_unique<SkipManualTests>().release());
 
 #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
   gin::V8Initializer::LoadV8Snapshot(kSnapshotType);
-  gin::V8Initializer::LoadV8Natives();
 #endif
-
-#if defined(OS_ANDROID) && !defined(USE_AURA)
-  content::Compositor::Initialize();
-#endif
-
-  ui::MaterialDesignController::Initialize();
 }
 
 void ContentTestSuiteBase::RegisterContentSchemes(
     ContentClient* content_client) {
   SetContentClient(content_client);
-  content::RegisterContentSchemes(false);
+  content::RegisterContentSchemes();
   SetContentClient(nullptr);
+}
+
+void ContentTestSuiteBase::ReRegisterContentSchemes() {
+  content::ReRegisterContentSchemesForTests();
 }
 
 void ContentTestSuiteBase::RegisterInProcessThreads() {

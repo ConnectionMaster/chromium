@@ -7,10 +7,10 @@
 
 #include "ash/system/unified/feature_pod_controller_base.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 
 namespace ash {
 
+class NetworkFeaturePodButton;
 class UnifiedSystemTrayController;
 
 // Controller of network feature pod button.
@@ -30,7 +30,7 @@ class NetworkFeaturePodController : public FeaturePodControllerBase {
 
   // Unowned.
   UnifiedSystemTrayController* tray_controller_;
-  FeaturePodButton* button_ = nullptr;
+  NetworkFeaturePodButton* button_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(NetworkFeaturePodController);
 };

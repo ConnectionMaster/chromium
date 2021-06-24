@@ -5,13 +5,14 @@
 
 """Sets environment variables needed to run a chromium unit test."""
 
+from __future__ import print_function
 import io
 import os
 import signal
-import stat
 import subprocess
 import sys
 import time
+
 
 # This is hardcoded to be src/ relative to this script.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -93,6 +94,10 @@ def get_sanitizer_env(cmd, asan, lsan, msan, tsan, cfi_diag):
     asan_options = symbolization_options[:]
     if lsan:
       asan_options.append('detect_leaks=1')
+      # LSan appears to have trouble with later versions of glibc.
+      # See https://github.com/google/sanitizers/issues/1322
+      if 'linux' in sys.platform:
+        asan_options.append('intercept_tls_get_addr=0')
 
     if asan_options:
       extra_env['ASAN_OPTIONS'] = ' '.join(asan_options)
@@ -167,12 +172,12 @@ def symbolize_snippets_in_json(cmd, env):
     p = subprocess.Popen(symbolize_command, stderr=subprocess.PIPE, env=env)
     (_, stderr) = p.communicate()
   except OSError as e:
-    print >> sys.stderr, 'Exception while symbolizing snippets: %s' % e
+    print('Exception while symbolizing snippets: %s' % e, file=sys.stderr)
     raise
 
   if p.returncode != 0:
-    print >> sys.stderr, "Error: failed to symbolize snippets in JSON:\n"
-    print >> sys.stderr, stderr
+    print("Error: failed to symbolize snippets in JSON:\n", file=sys.stderr)
+    print(stderr, file=sys.stderr)
     raise subprocess.CalledProcessError(p.returncode, symbolize_command)
 
 
@@ -180,7 +185,7 @@ def run_command_with_output(argv, stdoutfile, env=None, cwd=None):
   """Run command and stream its stdout/stderr to the console & |stdoutfile|.
 
   Also forward_signals to obey
-  https://chromium.googlesource.com/infra/luci/luci-py/+/master/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+  https://chromium.googlesource.com/infra/luci/luci-py/+/main/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
 
   Returns:
     integer returncode of the subprocess.
@@ -189,8 +194,8 @@ def run_command_with_output(argv, stdoutfile, env=None, cwd=None):
   assert stdoutfile
   with io.open(stdoutfile, 'wb') as writer, \
       io.open(stdoutfile, 'rb', 1) as reader:
-    process = subprocess.Popen(argv, env=env, cwd=cwd, stdout=writer,
-        stderr=subprocess.STDOUT)
+    process = _popen(argv, env=env, cwd=cwd, stdout=writer,
+                     stderr=subprocess.STDOUT)
     forward_signals([process])
     while process.poll() is None:
       sys.stdout.write(reader.read())
@@ -207,16 +212,34 @@ def run_command(argv, env=None, cwd=None, log=True):
   """Run command and stream its stdout/stderr both to stdout.
 
   Also forward_signals to obey
-  https://chromium.googlesource.com/infra/luci/luci-py/+/master/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+  https://chromium.googlesource.com/infra/luci/luci-py/+/main/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
 
   Returns:
     integer returncode of the subprocess.
   """
   if log:
     print('Running %r in %r (env: %r)' % (argv, cwd, env))
-  process = subprocess.Popen(argv, env=env, cwd=cwd, stderr=subprocess.STDOUT)
+  process = _popen(argv, env=env, cwd=cwd, stderr=subprocess.STDOUT)
   forward_signals([process])
   return wait_with_signals(process)
+
+
+def run_command_output_to_handle(argv, file_handle, env=None, cwd=None):
+  """Run command and stream its stdout/stderr both to |file_handle|.
+
+  Also forward_signals to obey
+  https://chromium.googlesource.com/infra/luci/luci-py/+/main/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+
+  Returns:
+    integer returncode of the subprocess.
+  """
+  print('Running %r in %r (env: %r)' % (argv, cwd, env))
+  process = _popen(
+      argv, env=env, cwd=cwd, stderr=file_handle, stdout=file_handle)
+  forward_signals([process])
+  exit_code = wait_with_signals(process)
+  print('Command returned exit code %d' % exit_code)
+  return exit_code
 
 
 def wait_with_signals(process):
@@ -245,7 +268,7 @@ def forward_signals(procs):
   """Forwards unix's SIGTERM or win's CTRL_BREAK_EVENT to the given processes.
 
   This plays nicely with swarming's timeout handling. See also
-  https://chromium.googlesource.com/infra/luci/luci-py/+/master/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+  https://chromium.googlesource.com/infra/luci/luci-py/+/main/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
 
   Args:
       procs: A list of subprocess.Popen objects representing child processes.
@@ -253,6 +276,8 @@ def forward_signals(procs):
   assert all(isinstance(p, subprocess.Popen) for p in procs)
   def _sig_handler(sig, _):
     for p in procs:
+      if p.poll() is not None:
+        continue
       # SIGBREAK is defined only for win32.
       if sys.platform == 'win32' and sig == signal.SIGBREAK:
         p.send_signal(signal.CTRL_BREAK_EVENT)
@@ -262,6 +287,7 @@ def forward_signals(procs):
     signal.signal(signal.SIGBREAK, _sig_handler)
   else:
     signal.signal(signal.SIGTERM, _sig_handler)
+    signal.signal(signal.SIGINT, _sig_handler)
 
 
 def run_executable(cmd, env, stdoutfile=None):
@@ -297,9 +323,9 @@ def run_executable(cmd, env, stdoutfile=None):
     # Symbolization works in-process on Windows even when sandboxed.
     use_symbolization_script = False
   else:
-    # LSan doesn't support sandboxing yet, so we use the in-process symbolizer.
-    # Note that ASan and MSan can work together with LSan.
-    use_symbolization_script = (asan or msan or cfi_diag) and not lsan
+    # If any sanitizer is enabled, we print unsymbolized stack trace
+    # that is required to run through symbolization script.
+    use_symbolization_script = (asan or msan or cfi_diag or lsan or tsan)
 
   if asan or lsan or msan or tsan or cfi_diag:
     extra_env.update(get_sanitizer_env(cmd, asan, lsan, msan, tsan, cfi_diag))
@@ -318,13 +344,13 @@ def run_executable(cmd, env, stdoutfile=None):
   # because you need them to reproduce the task properly.
   env_to_print = extra_env.copy()
   for env_var_name in ('GTEST_SHARD_INDEX', 'GTEST_TOTAL_SHARDS'):
-      if env_var_name in env:
-          env_to_print[env_var_name] = env[env_var_name]
+    if env_var_name in env:
+      env_to_print[env_var_name] = env[env_var_name]
 
   print('Additional test environment:\n%s\n'
         'Command: %s\n' % (
-        '\n'.join('    %s=%s' %
-            (k, v) for k, v in sorted(env_to_print.iteritems())),
+        '\n'.join('    %s=%s' % (k, v)
+                  for k, v in sorted(env_to_print.items())),
         ' '.join(cmd)))
   sys.stdout.flush()
   env.update(extra_env or {})
@@ -335,9 +361,9 @@ def run_executable(cmd, env, stdoutfile=None):
     elif use_symbolization_script:
       # See above comment regarding offline symbolization.
       # Need to pipe to the symbolizer script.
-      p1 = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
-                            stderr=sys.stdout)
-      p2 = subprocess.Popen(
+      p1 = _popen(cmd, env=env, stdout=subprocess.PIPE,
+                  stderr=sys.stdout)
+      p2 = _popen(
           get_sanitizer_symbolize_command(executable_path=cmd[0]),
           env=env, stdin=p1.stdout)
       p1.stdout.close()  # Allow p1 to receive a SIGPIPE if p2 exits.
@@ -350,8 +376,16 @@ def run_executable(cmd, env, stdoutfile=None):
     else:
       return run_command(cmd, env=env, log=False)
   except OSError:
-    print >> sys.stderr, 'Failed to start %s' % cmd
+    print('Failed to start %s' % cmd, file=sys.stderr)
     raise
+
+
+def _popen(*args, **kwargs):
+  assert 'creationflags' not in kwargs
+  if sys.platform == 'win32':
+    # Necessary for signal handling. See crbug.com/733612#c6.
+    kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+  return subprocess.Popen(*args, **kwargs)
 
 
 def main():
@@ -359,4 +393,9 @@ def main():
 
 
 if __name__ == '__main__':
+  if sys.platform == 'win32':
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+        'scripts'))
+    import common
+    common.set_lpac_acls(ROOT_DIR)
   sys.exit(main())

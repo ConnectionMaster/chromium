@@ -6,19 +6,19 @@
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_FILE_MANAGER_DRIVEFS_EVENT_ROUTER_H_
 
 #include <map>
-#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "base/macros.h"
+#include "base/values.h"
 #include "chromeos/components/drivefs/drivefs_host_observer.h"
+#include "chromeos/components/drivefs/mojom/drivefs.mojom.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "url/gurl.h"
 
 namespace base {
 class FilePath;
-class ListValue;
 }
 
 namespace extensions {
@@ -38,7 +38,24 @@ class DriveFsEventRouter : public drivefs::DriveFsHostObserver {
   DriveFsEventRouter();
   virtual ~DriveFsEventRouter();
 
+  // Triggers an event in the UI to display a confirmation dialog.
+  void DisplayConfirmDialog(
+      const drivefs::mojom::DialogReason& reason,
+      base::OnceCallback<void(drivefs::mojom::DialogResult)> callback);
+
+  // Called from the UI to notify the caller of DisplayConfirmDialog() of the
+  // dialog's result.
+  void OnDialogResult(drivefs::mojom::DialogResult result);
+
  private:
+  struct SyncingStatusState {
+    SyncingStatusState();
+    ~SyncingStatusState();
+
+    std::map<int64_t, int64_t> group_id_to_bytes_to_transfer;
+    int64_t completed_bytes = 0;
+  };
+
   // DriveFsHostObserver:
   void OnUnmounted() override;
   void OnSyncingStatusUpdate(
@@ -50,12 +67,11 @@ class DriveFsEventRouter : public drivefs::DriveFsHostObserver {
   void DispatchOnFileTransfersUpdatedEvent(
       const extensions::api::file_manager_private::FileTransferStatus& status);
 
-  virtual std::set<std::string> GetEventListenerExtensionIds(
+  virtual std::set<GURL> GetEventListenerURLs(
       const std::string& event_name) = 0;
 
-  virtual GURL ConvertDrivePathToFileSystemUrl(
-      const base::FilePath& file_path,
-      const std::string& extension_id) = 0;
+  virtual GURL ConvertDrivePathToFileSystemUrl(const base::FilePath& file_path,
+                                               const GURL& listener_url) = 0;
 
   virtual std::string GetDriveFileSystemName() = 0;
 
@@ -65,8 +81,14 @@ class DriveFsEventRouter : public drivefs::DriveFsHostObserver {
       const std::string& extension_id,
       const extensions::api::file_manager_private::FileTransferStatus& status);
 
-  void DispatchOnDirectoryChangedEventToExtension(
+  void DispatchOnPinTransfersUpdatedEvent(
+      const extensions::api::file_manager_private::FileTransferStatus& status);
+
+  void DispatchOnPinTransfersUpdatedEventToExtension(
       const std::string& extension_id,
+      const extensions::api::file_manager_private::FileTransferStatus& status);
+
+  void BroadcastOnDirectoryChangedEvent(
       const base::FilePath& directory,
       const extensions::api::file_manager_private::FileWatchEvent& event);
 
@@ -75,10 +97,22 @@ class DriveFsEventRouter : public drivefs::DriveFsHostObserver {
       const std::string& extension_id,
       extensions::events::HistogramValue histogram_value,
       const std::string& event_name,
-      std::unique_ptr<base::ListValue> event_args) = 0;
+      std::vector<base::Value> event_args) = 0;
 
-  std::map<int64_t, int64_t> group_id_to_bytes_to_transfer_;
-  int64_t completed_bytes_ = 0;
+  // Helper method for broadcasting events.
+  virtual void BroadcastEvent(
+      extensions::events::HistogramValue histogram_value,
+      const std::string& event_name,
+      std::vector<base::Value> event_args) = 0;
+
+  static extensions::api::file_manager_private::FileTransferStatus
+  CreateFileTransferStatus(
+      const std::vector<drivefs::mojom::ItemEvent*>& item_events,
+      SyncingStatusState* state);
+
+  SyncingStatusState sync_status_state_;
+  SyncingStatusState pin_status_state_;
+  base::OnceCallback<void(drivefs::mojom::DialogResult)> dialog_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(DriveFsEventRouter);
 };

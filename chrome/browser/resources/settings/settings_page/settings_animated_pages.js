@@ -14,10 +14,22 @@
  *    </settings-animated-pages>
  */
 
+import '//resources/polymer/v3_0/iron-pages/iron-pages.js';
+
+import {assert} from '//resources/js/assert.m.js';
+import {focusWithoutInk} from '//resources/js/cr/ui/focus_without_ink.m.js';
+import {loadTimeData} from '//resources/js/load_time_data.m.js';
+import {afterNextRender, dom, DomIf, html, Polymer} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {Route, RouteObserverBehavior, Router} from '../router.js';
+import {getSettingIdParameter} from '../setting_id_param_util.js';
+
 Polymer({
   is: 'settings-animated-pages',
 
-  behaviors: [settings.RouteObserverBehavior],
+  _template: html`{__html_template__}`,
+
+  behaviors: [RouteObserverBehavior],
 
   properties: {
     /**
@@ -31,7 +43,7 @@ Polymer({
 
     /**
      * A Map specifying which element should be focused when exiting a subpage.
-     * The key of the map holds a settings.Route path, and the value holds
+     * The key of the map holds a Route path, and the value holds
      * either a query selector that identifies the desired element, an element
      * or a function to be run when a neon-animation-finish event is handled.
      * @type {?Map<string, (string|Element|Function)>}
@@ -41,37 +53,53 @@ Polymer({
 
   /**
    * The last "previous" route reported by the router.
-   * @private {?settings.Route}
+   * @private {?Route}
    */
   previousRoute_: null,
 
   /** @override */
-  created: function() {
+  created() {
     // Observe the light DOM so we know when it's ready.
     this.lightDomObserver_ =
-        Polymer.dom(this).observeNodes(this.lightDomChanged_.bind(this));
+        dom(this).observeNodes(this.lightDomChanged_.bind(this));
   },
 
   /**
    * @param {!Event} e
    * @private
    */
-  onIronSelect_: function(e) {
-    // Call initialFocus() on the selected subpage, only if:
+  onIronSelect_(e) {
+    // Ignore bubbling 'iron-select' events not originating from
+    // |animatedPages| itself.
+    if (e.target !== this.$.animatedPages) {
+      return;
+    }
+
+    // <if expr="chromeos">
+    // If the setting ID parameter is present, don't focus anything since
+    // a setting element will be deep linked and focused.
+    if (loadTimeData.valueExists('isOSSettings') &&
+        loadTimeData.getBoolean('isOSSettings') && getSettingIdParameter()) {
+      return;
+    }
+    // </if>
+
+    // Call focusBackButton() on the selected subpage, only if:
     //  1) Not a direct navigation (such that the search box stays focused), and
     //  2) Not a "back" navigation, in which case the anchor element should be
     //     focused (further below in this function).
-    if (this.previousRoute_ && !settings.lastRouteChangeWasPopstate()) {
+    if (this.previousRoute_ &&
+        !Router.getInstance().lastRouteChangeWasPopstate()) {
       const subpage = this.querySelector('settings-subpage.iron-selected');
       if (subpage) {
-        subpage.initialFocus();
+        subpage.focusBackButton();
         return;
       }
     }
 
     // Don't attempt to focus any anchor element, unless last navigation was a
     // 'pop' (backwards) navigation.
-    if (!settings.lastRouteChangeWasPopstate()) {
+    if (!Router.getInstance().lastRouteChangeWasPopstate()) {
       return;
     }
 
@@ -79,48 +107,27 @@ Polymer({
       return;
     }
 
-    const subpagePaths = [];
-    if (settings.routes.SITE_SETTINGS_COOKIES) {
-      subpagePaths.push(settings.routes.SITE_SETTINGS_COOKIES.path);
-    }
+    // Ensure focus-config was correctly specified as a Polymer property.
+    assert(this.focusConfig instanceof Map);
 
-    if (settings.routes.SITE_SETTINGS_SITE_DATA) {
-      subpagePaths.push(settings.routes.SITE_SETTINGS_SITE_DATA.path);
-    }
 
-    if (settings.routes.SITE_SETTINGS_ALL) {
-      subpagePaths.push(settings.routes.SITE_SETTINGS_ALL.path);
-    }
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    const fromToKey = `${this.previousRoute_.path}_${currentRoute.path}`;
 
-    // <if expr="chromeos">
-    if (settings.routes.INTERNET_NETWORKS) {
-      subpagePaths.push(settings.routes.INTERNET_NETWORKS.path);
-    }
-    // </if>
-
-    // Only handle iron-select events from div elements and the
-    // given whitelist of settings-subpage instances.
-    const whitelist = ['settings-subpage#site-settings', 'div[route-path]'];
-    whitelist.push.apply(
-        whitelist,
-        subpagePaths.map(path => `settings-subpage[route-path="${path}"]`));
-    const query = whitelist.join(', ');
-
-    if (!e.detail.item.matches(query)) {
-      return;
-    }
-
-    let pathConfig = this.focusConfig.get(this.previousRoute_.path);
+    // Look for a key that captures both previous and current route first. If
+    // not found, then look for a key that only captures the previous route.
+    let pathConfig = this.focusConfig.get(fromToKey) ||
+        this.focusConfig.get(this.previousRoute_.path);
     if (pathConfig) {
       let handler;
-      if (typeof pathConfig == 'function') {
+      if (typeof pathConfig === 'function') {
         handler = pathConfig;
       } else {
         handler = () => {
-          if (typeof pathConfig == 'string') {
+          if (typeof pathConfig === 'string') {
             pathConfig = assert(this.querySelector(pathConfig));
           }
-          cr.ui.focusWithoutInk(/** @type {!Element} */ (pathConfig));
+          focusWithoutInk(/** @type {!Element} */ (pathConfig));
         };
       }
       handler();
@@ -131,13 +138,13 @@ Polymer({
    * Called initially once the effective children are ready.
    * @private
    */
-  lightDomChanged_: function() {
+  lightDomChanged_() {
     if (this.lightDomReady_) {
       return;
     }
 
     this.lightDomReady_ = true;
-    Polymer.dom(this).unobserveNodes(this.lightDomObserver_);
+    dom(this).unobserveNodes(this.lightDomObserver_);
     this.runQueuedRouteChange_();
   },
 
@@ -145,7 +152,7 @@ Polymer({
    * Calls currentRouteChanged with the deferred route change info.
    * @private
    */
-  runQueuedRouteChange_: function() {
+  runQueuedRouteChange_() {
     if (!this.queuedRouteChange_) {
       return;
     }
@@ -155,10 +162,10 @@ Polymer({
   },
 
   /** @protected */
-  currentRouteChanged: function(newRoute, oldRoute) {
+  currentRouteChanged(newRoute, oldRoute) {
     this.previousRoute_ = oldRoute;
 
-    if (newRoute.section == this.section && newRoute.isSubpage()) {
+    if (newRoute.section === this.section && newRoute.isSubpage()) {
       this.switchToSubpage_(newRoute, oldRoute);
     } else {
       this.$.animatedPages.selected = 'default';
@@ -167,11 +174,11 @@ Polymer({
 
   /**
    * Selects the subpage specified by |newRoute|.
-   * @param {!settings.Route} newRoute
-   * @param {!settings.Route} oldRoute
+   * @param {!Route} newRoute
+   * @param {!Route} oldRoute
    * @private
    */
-  switchToSubpage_: function(newRoute, oldRoute) {
+  switchToSubpage_(newRoute, oldRoute) {
     // Don't manipulate the light DOM until it's ready.
     if (!this.lightDomReady_) {
       this.queuedRouteChange_ = this.queuedRouteChange_ || {oldRoute: oldRoute};
@@ -187,27 +194,24 @@ Polymer({
    * Ensures that the template enclosing the subpage is stamped.
    * @private
    */
-  ensureSubpageInstance_: function() {
-    const routePath = settings.getCurrentRoute().path;
-    /* TODO(dpapad): Remove conditional logic once migration to Polymer 2 is
-     * completed. */
-    const domIf = this.querySelector(
-        (Polymer.DomIf ? 'dom-if' : 'template') +
-        `[route-path='${routePath}']`);
+  ensureSubpageInstance_() {
+    const routePath = Router.getInstance().getCurrentRoute().path;
+    const domIf = this.querySelector(`dom-if[route-path='${routePath}']`);
 
-    // Nothing to do if the subpage isn't wrapped in a <dom-if>
-    // (or <template is="dom-if" for Poylmer 1) or the template is already
-    // stamped.
+    // Nothing to do if the subpage isn't wrapped in a <dom-if> or the template
+    // is already stamped.
     if (!domIf || domIf.if) {
       return;
     }
 
     // Set the subpage's id for use by neon-animated-pages.
-    // TODO(dpapad): Remove conditional logic once migration to Polymer 2 is
-    // completed.
-    const content = Polymer.DomIf ?
-        Polymer.DomIf._contentForTemplate(domIf.firstElementChild) :
-        /** @type {{_content: DocumentFragment}} */ (domIf)._content;
+    const content =
+        /**
+           @type {!{_contentForTemplate:
+               function(!HTMLTemplateElement):!HTMLElement}}
+         */
+        (DomIf)._contentForTemplate(
+            /** @type {!HTMLTemplateElement} */ (domIf.firstElementChild));
     const subpage = content.querySelector('settings-subpage');
     subpage.setAttribute('route-path', routePath);
 

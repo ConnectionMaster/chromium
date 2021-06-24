@@ -93,11 +93,18 @@ def CheckHtml(input_api, output_api):
       input_api, output_api, 80, lambda x: x.LocalPath().endswith('.html'))
 
 
-def RunOptimizeWebUiTests(input_api, output_api):
-  presubmit_path = input_api.PresubmitLocalPath()
-  sources = ['optimize_webui_test.py', 'unpack_pak_test.py']
-  tests = [input_api.os_path.join(presubmit_path, s) for s in sources]
-  return input_api.canned_checks.RunUnitTests(input_api, output_api, tests)
+def _CheckSvgsOptimized(input_api, output_api):
+  results = []
+  try:
+    import sys
+    old_sys_path = sys.path[:]
+    cwd = input_api.PresubmitLocalPath()
+    sys.path += [input_api.os_path.join(cwd, '..', '..', '..', 'tools')]
+    from resources import svgo_presubmit
+    results += svgo_presubmit.CheckOptimized(input_api, output_api)
+  finally:
+    sys.path = old_sys_path
+  return results
 
 
 def _CheckWebDevStyle(input_api, output_api):
@@ -108,8 +115,8 @@ def _CheckWebDevStyle(input_api, output_api):
     old_sys_path = sys.path[:]
     cwd = input_api.PresubmitLocalPath()
     sys.path += [input_api.os_path.join(cwd, '..', '..', '..', 'tools')]
-    import web_dev_style.presubmit_support
-    results += web_dev_style.presubmit_support.CheckStyle(input_api, output_api)
+    from web_dev_style import presubmit_support
+    results += presubmit_support.CheckStyle(input_api, output_api)
   finally:
     sys.path = old_sys_path
 
@@ -121,11 +128,7 @@ def _CheckChangeOnUploadOrCommit(input_api, output_api):
   affected = input_api.AffectedFiles()
   if any(f for f in affected if f.LocalPath().endswith('.html')):
     results += CheckHtml(input_api, output_api)
-
-  webui_sources = set(['optimize_webui.py', 'unpack_pak.py'])
-  affected_files = [input_api.os_path.basename(f.LocalPath()) for f in affected]
-  if webui_sources.intersection(set(affected_files)):
-    results += RunOptimizeWebUiTests(input_api, output_api)
+  results += _CheckSvgsOptimized(input_api, output_api)
   results += _CheckWebDevStyle(input_api, output_api)
   results += input_api.canned_checks.CheckPatchFormatted(input_api, output_api,
                                                          check_js=True)

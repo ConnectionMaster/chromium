@@ -10,7 +10,7 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/ui/webui/print_preview/printer_handler.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 
@@ -23,32 +23,30 @@ namespace content {
 class WebContents;
 }
 
-namespace printing {
-class StickySettings;
-}
-
 class GURL;
 class Profile;
 
 namespace printing {
+
+class PrintPreviewStickySettings;
 
 class PdfPrinterHandler : public PrinterHandler,
                           public ui::SelectFileDialog::Listener {
  public:
   PdfPrinterHandler(Profile* profile,
                     content::WebContents* preview_web_contents,
-                    StickySettings* sticky_settings);
+                    PrintPreviewStickySettings* sticky_settings);
 
   ~PdfPrinterHandler() override;
 
   // PrinterHandler implementation
   void Reset() override;
   // Required by PrinterHandler implementation but should never be called.
-  void StartGetPrinters(const AddedPrintersCallback& added_printers_callback,
+  void StartGetPrinters(AddedPrintersCallback added_printers_callback,
                         GetPrintersDoneCallback done_callback) override;
   void StartGetCapability(const std::string& destination_id,
                           GetCapabilityCallback callback) override;
-  void StartPrint(const base::string16& job_title,
+  void StartPrint(const std::u16string& job_title,
                   base::Value settings,
                   scoped_refptr<base::RefCountedMemory> print_data,
                   PrintCallback callback) override;
@@ -60,14 +58,17 @@ class PdfPrinterHandler : public PrinterHandler,
   void FileSelectionCanceled(void* params) override;
 
   // Sets |pdf_file_saved_closure_| to |closure|.
-  void SetPdfSavedClosureForTesting(const base::Closure& closure);
+  void SetPdfSavedClosureForTesting(base::OnceClosure closure);
+
+  // Sets |print_to_pdf_path_| to |path|.
+  void SetPrintToPdfPathForTesting(const base::FilePath& path);
 
   // Exposed for testing.
   static base::FilePath GetFileNameForPrintJobTitle(
-      const base::string16& job_title);
+      const std::u16string& job_title);
   static base::FilePath GetFileNameForURL(const GURL& url);
   static base::FilePath GetFileName(const GURL& url,
-                                    const base::string16& job_title,
+                                    const std::u16string& job_title,
                                     bool is_savable);
 
  protected:
@@ -90,8 +91,15 @@ class PdfPrinterHandler : public PrinterHandler,
   void OnDirectorySelected(const base::FilePath& filename,
                            const base::FilePath& directory);
 
+  void OnSaveLocationReady(const base::FilePath& default_filename,
+                           bool prompt_user,
+                           const base::FilePath& path);
+
+  // Return save location as the Drive mount or fetch from Download Preferences.
+  base::FilePath GetSaveLocation() const;
+
   Profile* const profile_;
-  StickySettings* const sticky_settings_;
+  PrintPreviewStickySettings* const sticky_settings_;
 
   // Holds the path to the print to pdf request. It is empty if no such request
   // exists.
@@ -99,7 +107,7 @@ class PdfPrinterHandler : public PrinterHandler,
 
   // Notifies tests that want to know if the PDF has been saved. This doesn't
   // notify the test if it was a successful save, only that it was attempted.
-  base::Closure pdf_file_saved_closure_;
+  base::OnceClosure pdf_file_saved_closure_;
 
   // The data to print
   scoped_refptr<base::RefCountedMemory> print_data_;
@@ -107,7 +115,13 @@ class PdfPrinterHandler : public PrinterHandler,
   // The callback to call when complete.
   PrintCallback print_callback_;
 
-  base::WeakPtrFactory<PdfPrinterHandler> weak_ptr_factory_;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Determines if the local Drive mount is sent to the file picker as the
+  // default save location. Set to true for Save to Drive print jobs.
+  bool use_drive_mount_ = false;
+#endif
+
+  base::WeakPtrFactory<PdfPrinterHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PdfPrinterHandler);
 };

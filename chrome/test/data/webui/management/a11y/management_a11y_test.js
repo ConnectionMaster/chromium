@@ -2,31 +2,33 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @const {string} Path to root from chrome/test/data/webui/management/a11y. */
-const ROOT_PATH = '../../../../../../';
-
 // Polymer BrowserTest fixture and aXe-core accessibility audit.
 GEN_INCLUDE([
-  ROOT_PATH + 'chrome/test/data/webui/a11y/accessibility_test.js',
-  ROOT_PATH + 'chrome/test/data/webui/polymer_browser_test_base.js',
+  '//chrome/test/data/webui/a11y/accessibility_test.js',
+  '//chrome/test/data/webui/polymer_browser_test_base.js',
 ]);
 
-GEN('#include "chrome/browser/ui/webui/management_a11y_browsertest.h"');
+GEN('#include "chrome/browser/ui/webui/management/management_a11y_browsertest.h"');
+GEN('#include "content/public/test/browser_test.h"');
 
 /**
  * Test fixture for Accessibility of Chrome Management page.
  * @constructor
  * @extends {PolymerTest}
  */
-CrManagementA11yTest = class extends PolymerTest {
+// eslint-disable-next-line no-var
+var CrManagementA11yTest = class extends PolymerTest {
   /** @override */
   get browsePreload() {
     return 'chrome://management/';
   }
 
-  // Include files that define the mocha tests.
+  /** @override */
   get extraLibraries() {
-    return PolymerTest.getLibraries(ROOT_PATH);
+    return [
+      '//third_party/mocha/mocha.js',
+      '//chrome/test/data/webui/mocha_adapter.js',
+    ];
   }
 
   // Default accessibility audit options. Specify in test definition to use.
@@ -38,6 +40,8 @@ CrManagementA11yTest = class extends PolymerTest {
         'skip-link': {enabled: false},
         // TODO(crbug.com/761461): enable after addressing flaky tests.
         'color-contrast': {enabled: false},
+        // TODO(crbug.com/1002623): remove this line after addressing bug
+        'link-in-text-block': {enabled: false},
       },
     };
   }
@@ -50,8 +54,8 @@ CrManagementA11yTest = class extends PolymerTest {
       },
       'list': function(nodeResult) {
         return nodeResult && nodeResult.element &&
-            nodeResult.element.tagName == 'UL' &&
-            nodeResult.element.getElementsByTagName('DOM-REPEAT').length != 0;
+            nodeResult.element.tagName === 'UL' &&
+            nodeResult.element.getElementsByTagName('DOM-REPEAT').length !== 0;
       },
     };
   }

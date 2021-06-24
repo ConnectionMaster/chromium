@@ -7,17 +7,18 @@
 #include "base/bind.h"
 #include "base/guid.h"
 #include "base/values.h"
-#include "chrome/browser/download/download_service_factory.h"
+#include "chrome/browser/download/background_download_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_key.h"
+#include "components/download/public/background_service/background_download_service.h"
 #include "components/download/public/background_service/download_params.h"
-#include "components/download/public/background_service/download_service.h"
 #include "content/public/browser/web_ui.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace download_internals {
 
 DownloadInternalsUIMessageHandler::DownloadInternalsUIMessageHandler()
-    : download_service_(nullptr), weak_ptr_factory_(this) {}
+    : download_service_(nullptr) {}
 
 DownloadInternalsUIMessageHandler::~DownloadInternalsUIMessageHandler() {
   if (download_service_)
@@ -42,7 +43,8 @@ void DownloadInternalsUIMessageHandler::RegisterMessages() {
           weak_ptr_factory_.GetWeakPtr()));
 
   Profile* profile = Profile::FromWebUI(web_ui());
-  download_service_ = DownloadServiceFactory::GetForBrowserContext(profile);
+  download_service_ =
+      BackgroundDownloadServiceFactory::GetForKey(profile->GetProfileKey());
   download_service_->GetLogger()->AddObserver(this);
 }
 
@@ -144,7 +146,7 @@ void DownloadInternalsUIMessageHandler::HandleStartDownload(
       net::MutableNetworkTrafficAnnotationTag(traffic_annotation);
 
   DCHECK(download_service_);
-  download_service_->StartDownload(params);
+  download_service_->StartDownload(std::move(params));
 }
 
 }  // namespace download_internals

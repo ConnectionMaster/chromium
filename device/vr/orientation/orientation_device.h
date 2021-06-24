@@ -2,24 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef DEVICE_VR_ORIENTATION_DEVICE_H
-#define DEVICE_VR_ORIENTATION_DEVICE_H
+#ifndef DEVICE_VR_ORIENTATION_ORIENTATION_DEVICE_H_
+#define DEVICE_VR_ORIENTATION_ORIENTATION_DEVICE_H_
 
 #include <memory>
 
 #include "base/callback_forward.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/threading/simple_thread.h"
 #include "build/build_config.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
 #include "device/vr/vr_device_base.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/sensor_provider.mojom.h"
 #include "ui/gfx/geometry/quaternion.h"
 
 namespace device {
 
 class SensorReadingSharedBufferReader;
+class VROrientationSession;
 
 // Use RELATIVE_ORIENTATION_QUATERNION rather than
 // ABSOLUTE_ORIENTATION_QUATERNION because compass readings can be inacurate
@@ -35,10 +38,11 @@ static constexpr mojom::SensorType kOrientationSensorType =
 #endif
 
 // This class connects the orientation sensor events to the Web VR apis.
-class DEVICE_VR_EXPORT VROrientationDevice : public VRDeviceBase,
-                                             public mojom::SensorClient {
+class COMPONENT_EXPORT(VR_ORIENTATION) VROrientationDevice
+    : public VRDeviceBase,
+      public mojom::SensorClient {
  public:
-  VROrientationDevice(mojom::SensorProviderPtr* sensor_provider,
+  VROrientationDevice(mojom::SensorProvider* sensor_provider,
                       base::OnceClosure ready_callback);
   ~VROrientationDevice() override;
 
@@ -47,12 +51,12 @@ class DEVICE_VR_EXPORT VROrientationDevice : public VRDeviceBase,
       mojom::XRRuntimeSessionOptionsPtr options,
       mojom::XRRuntime::RequestSessionCallback callback) override;
 
-  // VRDeviceBase
-  void OnGetInlineFrameData(
-      mojom::XRFrameDataProvider::GetFrameDataCallback callback) override;
-
   // Indicates whether the device was able to connect to orientation events.
   bool IsAvailable() const { return available_; }
+
+  void EndMagicWindowSession(VROrientationSession* session);
+  virtual void GetInlineFrameData(
+      mojom::XRFrameDataProvider::GetFrameDataCallback callback);
 
  private:
   // SensorClient Functions.
@@ -72,16 +76,16 @@ class DEVICE_VR_EXPORT VROrientationDevice : public VRDeviceBase,
   base::OnceClosure ready_callback_;
 
   // The initial state of the world used to define forwards.
-  base::Optional<gfx::Quaternion> base_pose_;
+  absl::optional<gfx::Quaternion> base_pose_;
   gfx::Quaternion latest_pose_;
 
-  mojom::SensorPtr sensor_;
-  mojo::ScopedSharedBufferHandle shared_buffer_handle_;
-  mojo::ScopedSharedBufferMapping shared_buffer_;
+  mojo::Remote<mojom::Sensor> sensor_;
   std::unique_ptr<SensorReadingSharedBufferReader> shared_buffer_reader_;
-  mojo::Binding<mojom::SensorClient> binding_;
+  mojo::Receiver<mojom::SensorClient> receiver_{this};
+
+  std::vector<std::unique_ptr<VROrientationSession>> magic_window_sessions_;
 };
 
 }  // namespace device
 
-#endif  // DEVICE_VR_ORIENTATION_DEVICE_H
+#endif  // DEVICE_VR_ORIENTATION_ORIENTATION_DEVICE_H_

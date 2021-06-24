@@ -7,13 +7,14 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/lazy_instance.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
@@ -33,7 +34,7 @@ class SyncUrlFetcher {
         url_loader_factory_(url_loader_factory),
         network_task_runner_(g_io_capable_task_runner_for_tests.Get()
                                  ? g_io_capable_task_runner_for_tests.Get()
-                                 : base::CreateSequencedTaskRunnerWithTraits(
+                                 : base::ThreadPool::CreateSequencedTaskRunner(
                                        {base::MayBlock()})),
         response_(response),
         event_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
@@ -56,6 +57,7 @@ class SyncUrlFetcher {
 
     loader_ = network::SimpleURLLoader::Create(std::move(request),
                                                TRAFFIC_ANNOTATION_FOR_TESTS);
+    loader_->SetTimeoutDuration(base::TimeDelta::FromSeconds(10));
     loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
         url_loader_factory_, base::BindOnce(&SyncUrlFetcher::OnURLLoadComplete,
                                             base::Unretained(this)));

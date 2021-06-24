@@ -14,14 +14,10 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "chromeos/dbus/dbus_method_call_status.h"
 #include "chromeos/dbus/shill/shill_property_changed_observer.h"
 #include "chromeos/network/network_handler.h"
 #include "chromeos/network/network_profile.h"
-
-namespace base {
-class DictionaryValue;
-}
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -37,15 +33,14 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) NetworkProfileHandler
   void AddObserver(NetworkProfileObserver* observer);
   void RemoveObserver(NetworkProfileObserver* observer);
 
-  void GetManagerPropertiesCallback(DBusMethodCallStatus call_status,
-                                    const base::DictionaryValue& properties);
+  void GetManagerPropertiesCallback(absl::optional<base::Value> properties);
 
   // ShillPropertyChangedObserver overrides
   void OnPropertyChanged(const std::string& name,
                          const base::Value& value) override;
 
   void GetProfilePropertiesCallback(const std::string& profile_path,
-                                    const base::DictionaryValue& properties);
+                                    base::Value properties);
 
   const NetworkProfile* GetProfileForPath(
       const std::string& profile_path) const;
@@ -57,7 +52,23 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) NetworkProfileHandler
   // userhash.
   const NetworkProfile* GetDefaultUserProfile() const;
 
+  // Fetch the always-on VPN settings from |profile_path| profile.
+  // |callback| is called with the always-on VPN mode and service path.
+  void GetAlwaysOnVpnConfiguration(
+      const std::string& profile_path,
+      base::OnceCallback<void(std::string, std::string)> callback);
+
+  // Sets the always-on VPN mode |mode| in |profile_path| profile.
+  void SetAlwaysOnVpnMode(const std::string& profile_path,
+                          const std::string& mode);
+
+  // Sets the always-on VPN service in |profile_path| profile.
+  void SetAlwaysOnVpnService(const std::string& profile_path,
+                             const std::string& service_path);
+
   static std::string GetSharedProfilePath();
+
+  static std::unique_ptr<NetworkProfileHandler> InitializeForTesting();
 
  protected:
   friend class AutoConnectHandlerTest;
@@ -74,6 +85,13 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) NetworkProfileHandler
   void RemoveProfile(const std::string& profile_path);
 
  private:
+  // Callback for always-on VPN configuration trigger when a result for the
+  // GetAlwaysOnVpnConfiguration() call is available. It extracts the two
+  // settings and transmit them to the original caller through |callback|.
+  void GetAlwaysOnVpnConfigurationCallback(
+      base::OnceCallback<void(std::string, std::string)> callback,
+      base::Value properties);
+
   ProfileList profiles_;
 
   // Contains the profile paths for which properties were requested. Once the
@@ -83,7 +101,7 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) NetworkProfileHandler
   base::ObserverList<NetworkProfileObserver, true>::Unchecked observers_;
 
   // For Shill client callbacks
-  base::WeakPtrFactory<NetworkProfileHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<NetworkProfileHandler> weak_ptr_factory_{this};
 
  private:
   DISALLOW_COPY_AND_ASSIGN(NetworkProfileHandler);

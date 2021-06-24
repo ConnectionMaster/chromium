@@ -2,32 +2,31 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/**
- * In the real (non-test) code, this data comes from the C++ handler.
- * Only used for tests.
- * @typedef {{defaults: !Object<settings.ContentSettingsTypes,
- *                             !DefaultContentSetting>,
- *            exceptions: !Object<settings.ContentSettingsTypes,
- *                                !Array<!RawSiteException>>,
- *            chooserExceptions: !Object<settings.ContentSettingsTypes,
- *                                       !Array<!RawChooserException>>}}
- */
-let SiteSettingsPref;
+// clang-format off
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {webUIListenerCallback} from 'chrome://resources/js/cr.m.js';
+import {ContentSetting, ContentSettingsTypes, HandlerEntry, ProtocolEntry, RawChooserException, RawSiteException, RecentSitePermissions, SiteSettingSource, SiteSettingsPrefsBrowserProxy, ZoomLevelEntry} from 'chrome://settings/lazy_load.js';
+
+import {TestBrowserProxy} from '../test_browser_proxy.m.js';
+
+import {createOriginInfo, createSiteGroup,createSiteSettingsPrefs, getContentSettingsTypeFromChooserType, SiteSettingsPref} from './test_util.js';
+// clang-format on
+
 
 /**
  * A test version of SiteSettingsPrefsBrowserProxy. Provides helper methods
  * for allowing tests to know when a method was called, as well as
  * specifying mock responses.
  *
- * @implements {settings.SiteSettingsPrefsBrowserProxy}
+ * @implements {SiteSettingsPrefsBrowserProxy}
  */
-class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
+export class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
   constructor() {
     super([
-      'clearFlashPref',
       'fetchBlockAutoplayStatus',
       'fetchZoomLevels',
       'getAllSites',
+      'getCategoryList',
       'getChooserExceptionList',
       'getDefaultValueForContentType',
       'getFormattedBytes',
@@ -46,16 +45,52 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
       'setDefaultValueForContentType',
       'setOriginPermissions',
       'setProtocolDefault',
+      'setProtocolHandlerDefault',
       'updateIncognitoStatus',
       'clearEtldPlus1DataAndCookies',
+      'clearOriginDataAndCookies',
       'recordAction',
+      'getCookieSettingDescription',
+      'getRecentSitePermissions',
     ]);
 
     /** @private {boolean} */
     this.hasIncognito_ = false;
 
+    this.categoryList_ = [
+      ContentSettingsTypes.ADS,
+      ContentSettingsTypes.AR,
+      ContentSettingsTypes.AUTOMATIC_DOWNLOADS,
+      ContentSettingsTypes.BACKGROUND_SYNC,
+      ContentSettingsTypes.BLUETOOTH_DEVICES,
+      ContentSettingsTypes.BLUETOOTH_SCANNING,
+      ContentSettingsTypes.CAMERA,
+      ContentSettingsTypes.CLIPBOARD,
+      ContentSettingsTypes.FILE_HANDLING,
+      ContentSettingsTypes.FILE_SYSTEM_WRITE,
+      ContentSettingsTypes.FONT_ACCESS,
+      ContentSettingsTypes.GEOLOCATION,
+      ContentSettingsTypes.HID_DEVICES,
+      ContentSettingsTypes.IDLE_DETECTION,
+      ContentSettingsTypes.IMAGES,
+      ContentSettingsTypes.JAVASCRIPT,
+      ContentSettingsTypes.MIC,
+      ContentSettingsTypes.MIDI_DEVICES,
+      ContentSettingsTypes.MIXEDSCRIPT,
+      ContentSettingsTypes.NOTIFICATIONS,
+      ContentSettingsTypes.PAYMENT_HANDLER,
+      ContentSettingsTypes.POPUPS,
+      ContentSettingsTypes.PROTECTED_CONTENT,
+      ContentSettingsTypes.SENSORS,
+      ContentSettingsTypes.SERIAL_PORTS,
+      ContentSettingsTypes.SOUND,
+      ContentSettingsTypes.USB_DEVICES,
+      ContentSettingsTypes.VR,
+      ContentSettingsTypes.WINDOW_PLACEMENT,
+    ];
+
     /** @private {!SiteSettingsPref} */
-    this.prefs_ = test_util.createSiteSettingsPrefs([], [], []);
+    this.prefs_ = createSiteSettingsPrefs([], [], []);
 
     /** @private {!Array<ZoomLevelEntry>} */
     this.zoomList_ = [];
@@ -71,6 +106,24 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
 
     /** @private {boolean} */
     this.isPatternValidForType_ = true;
+
+    /** @private {string} */
+    this.cookieSettingDesciption_ = '';
+
+    /** @private {!Array<!RecentSitePermissions>} */
+    this.recentSitePermissions_ = [];
+  }
+
+  /**
+   * Test/fake implementation for {@link getCategoryList}.
+   * @param {!string} origin the origin for the list of visible permissions.
+   */
+  getCategoryListForTest(origin) {
+    return this.categoryList_;
+  }
+
+  setCategoryList(list) {
+    this.categoryList_ = list;
   }
 
   /**
@@ -79,7 +132,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
    */
   setIncognito(hasIncognito) {
     this.hasIncognito_ = hasIncognito;
-    cr.webUIListenerCallback('onIncognitoStatusChanged', hasIncognito);
+    webUIListenerCallback('onIncognitoStatusChanged', hasIncognito);
   }
 
   /**
@@ -91,21 +144,20 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
 
     // Notify all listeners that their data may be out of date.
     for (const type in prefs.defaults) {
-      cr.webUIListenerCallback('contentSettingCategoryChanged', type);
+      webUIListenerCallback('contentSettingCategoryChanged', type);
     }
     for (const type in this.prefs_.exceptions) {
-      let exceptionList = this.prefs_.exceptions[type];
+      const exceptionList = this.prefs_.exceptions[type];
       for (let i = 0; i < exceptionList.length; ++i) {
-        cr.webUIListenerCallback(
+        webUIListenerCallback(
             'contentSettingSitePermissionChanged', type,
             exceptionList[i].origin, '');
       }
     }
     for (const type in this.prefs_.chooserExceptions) {
-      let chooserExceptionList = this.prefs_.chooserExceptions[type];
+      const chooserExceptionList = this.prefs_.chooserExceptions[type];
       for (let i = 0; i < chooserExceptionList.length; ++i) {
-        cr.webUIListenerCallback(
-            'contentSettingChooserPermissionChanged', type);
+        webUIListenerCallback('contentSettingChooserPermissionChanged', type);
       }
     }
   }
@@ -113,7 +165,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
   /**
    * Sets one exception for a given category, replacing any existing exceptions
    * for the same origin. Note this ignores embedding origins.
-   * @param {!settings.ContentSettingsTypes} category The category the new
+   * @param {!ContentSettingsTypes} category The category the new
    *     exception belongs to.
    * @param {!RawSiteException} newException The new preference to add/replace.
    */
@@ -121,14 +173,14 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     // Remove entries from the current prefs which have the same origin.
     const newPrefs = /** @type {!Array<RawSiteException>} */
         (this.prefs_.exceptions[category].filter((categoryException) => {
-          if (categoryException.origin != newException.origin) {
+          if (categoryException.origin !== newException.origin) {
             return true;
           }
         }));
     newPrefs.push(newException);
     this.prefs_.exceptions[category] = newPrefs;
 
-    cr.webUIListenerCallback(
+    webUIListenerCallback(
         'contentSettingSitePermissionChanged', category, newException.origin);
   }
 
@@ -151,7 +203,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
 
   /**
    * Sets the prefs to use when testing.
-   * @param {!Array<!HandlerEntry>}
+   * @param {!Array<!HandlerEntry>} list
    */
   setIgnoredProtocols(list) {
     // Shallow copy of the passed-in array so mutation won't impact the source
@@ -165,15 +217,17 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
   }
 
   /** @override */
-  setOriginPermissions(origin, contentTypes, blanketSetting) {
+  setOriginPermissions(origin, category, blanketSetting) {
+    const contentTypes =
+        category ? [category] : this.getCategoryListForTest(origin);
     for (let i = 0; i < contentTypes.length; ++i) {
-      let type = contentTypes[i];
-      let exceptionList = this.prefs_.exceptions[type];
+      const type = contentTypes[i];
+      const exceptionList = this.prefs_.exceptions[type];
       for (let j = 0; j < exceptionList.length; ++j) {
         let effectiveSetting = blanketSetting;
-        if (blanketSetting == settings.ContentSetting.DEFAULT) {
+        if (blanketSetting === ContentSetting.DEFAULT) {
           effectiveSetting = this.prefs_.defaults[type].setting;
-          exceptionList[j].source = settings.SiteSettingSource.DEFAULT;
+          exceptionList[j].source = SiteSettingSource.DEFAULT;
         }
         exceptionList[j].setting = effectiveSetting;
       }
@@ -181,17 +235,13 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
 
     this.setPrefs(this.prefs_);
     this.methodCalled(
-        'setOriginPermissions', [origin, contentTypes, blanketSetting]);
+        'setOriginPermissions', [origin, category, blanketSetting]);
   }
 
   /** @override */
-  clearFlashPref(origin) {
-    this.methodCalled('clearFlashPref', origin);
-  }
-
-  /** @override */
-  getAllSites(contentTypes) {
-    this.methodCalled('getAllSites', contentTypes);
+  getAllSites() {
+    this.methodCalled('getAllSites');
+    const contentTypes = this.getCategoryListForTest('https://example.com');
     const origins_set = new Set();
 
     contentTypes.forEach((contentType) => {
@@ -204,7 +254,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     });
 
     const origins_array = [...origins_set];
-    let result = [];
+    const result = [];
     origins_array.forEach((origin, index) => {
       // Functionality to get the eTLD+1 from an origin exists only on the
       // C++ side, so just do an (incorrect) approximate extraction here.
@@ -213,19 +263,30 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
       urlParts = urlParts.slice(Math.max(urlParts.length - 2, 0));
       const etldPlus1Name = urlParts.join('.');
 
-      let existing = result.find(siteGroup => {
-        return siteGroup.etldPlus1 == etldPlus1Name;
+      const existing = result.find(siteGroup => {
+        return siteGroup.etldPlus1 === etldPlus1Name;
       });
 
+      const mockUsage = index * 100;
+
+      // TODO(https://crbug.com/1021606): Add test where existing evaluates to
+      // true.
       if (existing) {
-        existing.origins.push(test_util.createOriginInfo(origin));
+        const originInfo = createOriginInfo(origin, {usage: mockUsage});
+        existing.origins.push(originInfo);
       } else {
-        const entry = test_util.createSiteGroup(etldPlus1Name, [origin]);
+        const entry = createSiteGroup(etldPlus1Name, [origin], mockUsage);
         result.push(entry);
       }
     });
 
     return Promise.resolve(result);
+  }
+
+  /** @override */
+  getCategoryList(origin) {
+    this.methodCalled('getCategoryList', origin);
+    return Promise.resolve(this.getCategoryListForTest(origin));
   }
 
   /** @override */
@@ -237,8 +298,8 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
   /** @override */
   getDefaultValueForContentType(contentType) {
     this.methodCalled('getDefaultValueForContentType', contentType);
-    let pref = this.prefs_.defaults[contentType];
-    assert(pref != undefined, 'Pref is missing for ' + contentType);
+    const pref = this.prefs_.defaults[contentType];
+    assert(pref !== undefined, 'Pref is missing for ' + contentType);
     return Promise.resolve(pref);
   }
 
@@ -250,7 +311,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     window.setTimeout(
         () => this.methodCalled('getExceptionList', contentType), 0);
     let pref = this.prefs_.exceptions[contentType];
-    assert(pref != undefined, 'Pref is missing for ' + contentType);
+    assert(pref !== undefined, 'Pref is missing for ' + contentType);
 
     if (this.hasIncognito_) {
       const incognitoElements = [];
@@ -271,16 +332,16 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     // permission, however the test stores the permissions with the setting
     // category, so we need to get the content settings type that pertains to
     // this chooser type.
-    let setting = test_util.getContentSettingsTypeFromChooserType(chooserType);
+    const setting = getContentSettingsTypeFromChooserType(chooserType);
     assert(
-        settings != null,
+        setting != null,
         'ContentSettingsType mapping missing for ' + chooserType);
 
     // Create a deep copy of the pref so that the chooser-exception-list element
     // is able update the UI appropriately when incognito mode is toggled.
-    let pref =
-        JSON.parse(JSON.stringify(this.prefs_.chooserExceptions[setting]));
-    assert(pref != undefined, 'Pref is missing for ' + chooserType);
+    const pref = /** @type {!Array<!RawChooserException>} */ (
+        JSON.parse(JSON.stringify(this.prefs_.chooserExceptions[setting])));
+    assert(pref !== undefined, 'Pref is missing for ' + chooserType);
 
     if (this.hasIncognito_) {
       for (let i = 0; i < pref.length; ++i) {
@@ -289,7 +350,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
           // Skip preferences that are not controlled by policy since opening an
           // incognito session does not automatically grant permission to
           // chooser exceptions that have been granted in the main session.
-          if (pref[i].sites[j].source != settings.SiteSettingSource.POLICY) {
+          if (pref[i].sites[j].source !== SiteSettingSource.POLICY) {
             continue;
           }
 
@@ -321,7 +382,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
 
   /** @override */
   isPatternValidForType(pattern, category) {
-    this.methodCalled('isPatternValidForType', pattern, category);
+    this.methodCalled('isPatternValidForType', [pattern, category]);
     return Promise.resolve({
       isValid: this.isPatternValidForType_,
       reason: this.isPatternValidForType_ ? '' : 'pattern is invalid',
@@ -341,7 +402,6 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     this.methodCalled(
         'resetCategoryPermissionForPattern',
         [primaryPattern, secondaryPattern, contentType, incognito]);
-    return Promise.resolve();
   }
 
   /** @override */
@@ -350,7 +410,6 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     this.methodCalled(
         'resetChooserExceptionForSite',
         [chooserType, origin, embeddingOrigin, exception]);
-    return Promise.resolve();
   }
 
   /** @override */
@@ -361,8 +420,8 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     contentTypes.forEach(function(contentType) {
       let setting;
       let source;
-      let isSet = this.prefs_.exceptions[contentType].some(originPrefs => {
-        if (originPrefs.origin == origin) {
+      const isSet = this.prefs_.exceptions[contentType].some(originPrefs => {
+        if (originPrefs.origin === origin) {
           setting = originPrefs.setting;
           source = originPrefs.source;
           return true;
@@ -373,7 +432,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
       if (!isSet) {
         this.prefs_.chooserExceptions[contentType].some(chooserException => {
           return chooserException.sites.some(originPrefs => {
-            if (originPrefs.origin == origin) {
+            if (originPrefs.origin === origin) {
               setting = originPrefs.setting;
               source = originPrefs.source;
               return true;
@@ -384,7 +443,7 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
       }
 
       assert(
-          setting != undefined,
+          setting !== undefined,
           'There was no exception set for origin: ' + origin +
               ' and contentType: ' + contentType);
 
@@ -406,12 +465,11 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
     this.methodCalled(
         'setCategoryPermissionForPattern',
         [primaryPattern, secondaryPattern, contentType, value, incognito]);
-    return Promise.resolve();
   }
 
   /** @override */
   fetchZoomLevels() {
-    cr.webUIListenerCallback('onZoomLevelsChanged', this.zoomList_);
+    webUIListenerCallback('onZoomLevelsChanged', this.zoomList_);
     this.methodCalled('fetchZoomLevels');
   }
 
@@ -422,16 +480,15 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
 
   /** @override */
   observeProtocolHandlers() {
-    cr.webUIListenerCallback('setHandlersEnabled', true);
-    cr.webUIListenerCallback('setProtocolHandlers', this.protocolHandlers_);
-    cr.webUIListenerCallback(
-        'setIgnoredProtocolHandlers', this.ignoredProtocols_);
+    webUIListenerCallback('setHandlersEnabled', true);
+    webUIListenerCallback('setProtocolHandlers', this.protocolHandlers_);
+    webUIListenerCallback('setIgnoredProtocolHandlers', this.ignoredProtocols_);
     this.methodCalled('observeProtocolHandlers');
   }
 
   /** @override */
   observeProtocolHandlersEnabledState() {
-    cr.webUIListenerCallback('setHandlersEnabled', true);
+    webUIListenerCallback('setHandlersEnabled', true);
     this.methodCalled('observeProtocolHandlersEnabledState');
   }
 
@@ -461,7 +518,45 @@ class TestSiteSettingsPrefsBrowserProxy extends TestBrowserProxy {
   }
 
   /** @override */
+  clearOriginDataAndCookies() {
+    this.methodCalled('clearOriginDataAndCookies');
+  }
+
+  /** @override */
   recordAction() {
     this.methodCalled('recordAction');
+  }
+
+  /** @param {string} label */
+  setCookieSettingDescription(label) {
+    this.cookieSettingDesciption_ = label;
+  }
+
+  /** @override */
+  getCookieSettingDescription() {
+    this.methodCalled('getCookieSettingDescription');
+    return Promise.resolve(this.cookieSettingDesciption_);
+  }
+
+  /** @param {!Array<!RecentSitePermissions>} permissions */
+  setRecentSitePermissions(permissions) {
+    this.recentSitePermissions_ = permissions;
+  }
+
+  /** @override */
+  getRecentSitePermissions() {
+    this.methodCalled('getRecentSitePermissions');
+    return Promise.resolve(this.recentSitePermissions_);
+  }
+
+  /** @override */
+  getDefaultCaptureDevices() {}
+
+  /** @override */
+  setDefaultCaptureDevice() {}
+
+  /** @override */
+  setProtocolHandlerDefault(value) {
+    this.methodCalled('setProtocolHandlerDefault', value);
   }
 }

@@ -8,50 +8,41 @@
 #include <utility>
 
 #include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
 
 void ExpectDictBooleanValue(bool expected_value,
-                            const DictionaryValue& value,
+                            const Value& value,
                             const std::string& key) {
-  bool boolean_value = false;
-  EXPECT_TRUE(value.GetBoolean(key, &boolean_value)) << key;
-  EXPECT_EQ(expected_value, boolean_value) << key;
-}
-
-void ExpectDictDictionaryValue(const DictionaryValue& expected_value,
-                               const DictionaryValue& value,
-                               const std::string& key) {
-  const DictionaryValue* dict_value = nullptr;
-  EXPECT_TRUE(value.GetDictionary(key, &dict_value)) << key;
-  EXPECT_EQ(expected_value, *dict_value) << key;
+  EXPECT_EQ(value.FindBoolPath(key), absl::optional<bool>(expected_value))
+      << key;
 }
 
 void ExpectDictIntegerValue(int expected_value,
-                            const DictionaryValue& value,
+                            const Value& value,
                             const std::string& key) {
-  int integer_value = 0;
-  EXPECT_TRUE(value.GetInteger(key, &integer_value)) << key;
-  EXPECT_EQ(expected_value, integer_value) << key;
-}
-
-void ExpectDictListValue(const ListValue& expected_value,
-                         const DictionaryValue& value,
-                         const std::string& key) {
-  const ListValue* list_value = nullptr;
-  EXPECT_TRUE(value.GetList(key, &list_value)) << key;
-  EXPECT_EQ(expected_value, *list_value) << key;
+  EXPECT_EQ(value.FindIntPath(key), absl::optional<int>(expected_value)) << key;
 }
 
 void ExpectDictStringValue(const std::string& expected_value,
-                           const DictionaryValue& value,
+                           const Value& value,
                            const std::string& key) {
-  std::string string_value;
-  EXPECT_TRUE(value.GetString(key, &string_value)) << key;
-  EXPECT_EQ(expected_value, string_value) << key;
+  EXPECT_EQ(OptionalFromPtr(value.FindStringPath(key)),
+            absl::optional<std::string>(expected_value))
+      << key;
+}
+
+void ExpectDictValue(const Value& expected_value,
+                     const Value& value,
+                     const std::string& key) {
+  const Value* found_value = value.FindPath(key);
+  EXPECT_TRUE(found_value) << key;
+  EXPECT_EQ(*found_value, expected_value) << key;
 }
 
 void ExpectStringValue(const std::string& expected_str, const Value& actual) {
@@ -60,6 +51,132 @@ void ExpectStringValue(const std::string& expected_str, const Value& actual) {
 }
 
 namespace test {
+
+namespace {
+
+std::string FormatAsJSON(const base::Value& value) {
+  std::string json;
+  JSONWriter::Write(value, &json);
+  return json;
+}
+
+class DictionaryHasValueMatcher
+    : public testing::MatcherInterface<const base::Value&> {
+ public:
+  DictionaryHasValueMatcher(const std::string& key,
+                            const base::Value& expected_value)
+      : key_(key), expected_value_(expected_value.Clone()) {}
+
+  ~DictionaryHasValueMatcher() = default;
+
+  bool MatchAndExplain(const base::Value& value,
+                       testing::MatchResultListener* listener) const override {
+    if (!value.is_dict()) {
+      *listener << "The value '" << FormatAsJSON(value)
+                << "' is not a dictionary";
+      return false;
+    }
+    const base::Value* sub_value = value.FindKey(key_);
+    if (!sub_value) {
+      *listener << "Dictionary '" << FormatAsJSON(value)
+                << "' does not have key '" << key_ << "'";
+      return false;
+    }
+    if (*sub_value != expected_value_) {
+      *listener << "Dictionary value under key '" << key_ << "' is '"
+                << FormatAsJSON(*sub_value) << "', expected '"
+                << FormatAsJSON(expected_value_) << "'";
+      return false;
+    }
+    return true;
+  }
+
+  void DescribeTo(std::ostream* os) const override {
+    *os << "has key '" << key_ << "' with value '"
+        << FormatAsJSON(expected_value_) << "'";
+  }
+
+  void DescribeNegationTo(std::ostream* os) const override {
+    *os << "does not have key '" << key_ << "' with value '"
+        << FormatAsJSON(expected_value_) << "'";
+  }
+
+ private:
+  DictionaryHasValueMatcher& operator=(const DictionaryHasValueMatcher& other) =
+      delete;
+
+  const std::string key_;
+  const base::Value expected_value_;
+};
+
+class DictionaryHasValuesMatcher
+    : public testing::MatcherInterface<const base::Value&> {
+ public:
+  DictionaryHasValuesMatcher(const base::Value& template_value)
+      : template_value_(template_value.Clone()) {
+    CHECK(template_value.is_dict());
+  }
+
+  ~DictionaryHasValuesMatcher() = default;
+
+  bool MatchAndExplain(const base::Value& value,
+                       testing::MatchResultListener* listener) const override {
+    if (!value.is_dict()) {
+      *listener << "The value '" << FormatAsJSON(value)
+                << "' is not a dictionary";
+      return false;
+    }
+
+    bool ok = true;
+    for (const auto& template_dict_item : template_value_.DictItems()) {
+      const base::Value* sub_value = value.FindKey(template_dict_item.first);
+      if (!sub_value) {
+        *listener << "\nDictionary does not have key '"
+                  << template_dict_item.first << "'";
+        ok = false;
+        continue;
+      }
+      if (*sub_value != template_dict_item.second) {
+        *listener << "\nDictionary value under key '"
+                  << template_dict_item.first << "' is '"
+                  << FormatAsJSON(*sub_value) << "', expected '"
+                  << FormatAsJSON(template_dict_item.second) << "'";
+        ok = false;
+      }
+    }
+    return ok;
+  }
+
+  void DescribeTo(std::ostream* os) const override {
+    *os << "contains all key-values from '" << FormatAsJSON(template_value_)
+        << "'";
+  }
+
+  void DescribeNegationTo(std::ostream* os) const override {
+    *os << "does not contain key-values from '" << FormatAsJSON(template_value_)
+        << "'";
+  }
+
+ private:
+  DictionaryHasValueMatcher& operator=(const DictionaryHasValueMatcher& other) =
+      delete;
+
+  const base::Value template_value_;
+};
+
+}  // namespace
+
+testing::Matcher<const base::Value&> DictionaryHasValue(
+    const std::string& key,
+    const base::Value& expected_value) {
+  return testing::MakeMatcher(
+      new DictionaryHasValueMatcher(key, expected_value));
+}
+
+testing::Matcher<const base::Value&> DictionaryHasValues(
+    const base::Value& template_value) {
+  return testing::MakeMatcher(new DictionaryHasValuesMatcher(template_value));
+}
 
 IsJsonMatcher::IsJsonMatcher(base::StringPiece json)
     : expected_value_(test::ParseJson(json)) {}

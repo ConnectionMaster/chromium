@@ -12,12 +12,11 @@
 
 """
 
-import ConfigParser
+import configparser
 import fnmatch
 import glob
 import optparse
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -25,7 +24,7 @@ import sys
 
 ARCHIVE_DIR = "installer_archive"
 
-# suffix to uncompresed full archive file, appended to options.output_name
+# suffix to uncompressed full archive file, appended to options.output_name
 ARCHIVE_SUFFIX = ".7z"
 BSDIFF_EXEC = "bsdiff.exe"
 CHROME_DIR = "Chrome-bin"
@@ -95,12 +94,14 @@ def CompressUsingLZMA(build_dir, compressed_file, input_file, verbose):
 
 
 def CopyAllFilesToStagingDir(config, distribution, staging_dir, build_dir,
-                             enable_hidpi):
+                             enable_hidpi, include_snapshotblob,
+                             component_build, component_ffmpeg_build, verbose):
   """Copies the files required for installer archive.
   Copies all common files required for various distributions of Chromium and
   also files for the specific Chromium build specified by distribution.
   """
-  CopySectionFilesToStagingDir(config, 'GENERAL', staging_dir, build_dir)
+  CopySectionFilesToStagingDir(config, 'GENERAL', staging_dir, build_dir,
+                               verbose)
   if distribution:
     if len(distribution) > 1 and distribution[0] == '_':
       distribution = distribution[1:]
@@ -108,12 +109,30 @@ def CopyAllFilesToStagingDir(config, distribution, staging_dir, build_dir,
     distribution = distribution.upper()
     if config.has_section(distribution):
       CopySectionFilesToStagingDir(config, distribution,
-                                   staging_dir, build_dir)
+                                   staging_dir, build_dir, verbose)
   if enable_hidpi == '1':
-    CopySectionFilesToStagingDir(config, 'HIDPI', staging_dir, build_dir)
+    CopySectionFilesToStagingDir(config, 'HIDPI', staging_dir, build_dir,
+                                 verbose)
 
+  if include_snapshotblob == '1':
+    CopySectionFilesToStagingDir(config, 'SNAPSHOTBLOB', staging_dir, build_dir,
+                                 verbose)
 
-def CopySectionFilesToStagingDir(config, section, staging_dir, src_dir):
+  if component_build != '1' and component_ffmpeg_build == '1':
+    CopySectionFilesToStagingDir(config, 'FFMPEG', staging_dir, build_dir,
+                                 verbose)
+
+# The 'ConfigParser' makes all strings lowercase - which works fine on
+# a cases-insensitive NTFS partition, but makes no sense when trying to build
+# mini_installer.exe on a linux box. This function can be used to make glob
+# matches case insensitive to bypass this issue.
+def insensiglob(pattern):
+  def recase(c):
+    return '[{}{}]'.format(c.lower(), c.upper()) if c.isalpha() else c
+  return glob.glob(''.join(map(recase, pattern)))
+
+def CopySectionFilesToStagingDir(config, section, staging_dir, src_dir,
+                                 verbose):
   """Copies installer archive files specified in section from src_dir to
   staging_dir. This method reads section from config and copies all the
   files specified from src_dir to staging dir.
@@ -125,7 +144,12 @@ def CopySectionFilesToStagingDir(config, section, staging_dir, src_dir):
     src_subdir = option.replace('\\', os.sep)
     dst_dir = os.path.join(staging_dir, config.get(section, option))
     dst_dir = dst_dir.replace('\\', os.sep)
-    src_paths = glob.glob(os.path.join(src_dir, src_subdir))
+    # There are specific issues with libEGL.dll and libGLESv2.dll which require
+    # insensitive globbing on linux machines.
+    src_paths = insensiglob(os.path.join(src_dir, src_subdir))
+    if verbose and not src_paths:
+      print('No matches found for {} in {}'.format(
+        option, os.path.join(os.getcwd(), src_dir)))
     if src_paths and not os.path.exists(dst_dir):
       os.makedirs(dst_dir)
     for src_path in src_paths:
@@ -185,7 +209,7 @@ def Readconfig(input_file, current_version):
   variables['ChromeDir'] = CHROME_DIR
   variables['VersionDir'] = os.path.join(variables['ChromeDir'],
                                           current_version)
-  config = ConfigParser.SafeConfigParser(variables)
+  config = configparser.ConfigParser(variables)
   config.read(input_file)
   return config
 
@@ -194,14 +218,14 @@ def RunSystemCommand(cmd, verbose):
   captures its output and only emits it on failure.
   """
   if verbose:
-    print 'Running', cmd
+    print('Running %s' % ' '.join(cmd))
 
   try:
     # Run |cmd|, redirecting stderr to stdout in order for captured errors to be
     # inline with corresponding stdout.
     output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
     if verbose:
-      print output
+      print(output)
   except subprocess.CalledProcessError as e:
     raise Exception("Error while running cmd: %s\n"
                     "Exit code: %s\n"
@@ -249,9 +273,10 @@ def CreateArchiveFile(options, staging_dir, current_version, prev_version):
 
     # Finally, write the depfile referencing the inputs.
     with open(options.depfile, 'wb') as f:
-      f.write(path_fixup(os.path.relpath(archive_file, options.build_dir)) +
-              ': \\\n')
-      f.write('  ' + ' \\\n  '.join(path_fixup(x) for x in g_archive_inputs))
+      f.write((path_fixup(os.path.relpath(archive_file, options.build_dir)) +
+              ': \\\n').encode())
+      f.write(('  ' + ' \\\n  '.join(path_fixup(x)
+              for x in g_archive_inputs)).encode())
 
   # It is important to use abspath to create the path to the directory because
   # if you use a relative path without any .. sequences then 7za.exe uses the
@@ -395,7 +420,7 @@ def CopyAndAugmentManifest(build_dir, output_dir, manifest_name,
 
   insert_line = -1
   insert_pos = -1
-  for i in xrange(len(manifest_lines)):
+  for i in range(len(manifest_lines)):
     insert_pos = manifest_lines[i].find(insert_before)
     if insert_pos != -1:
       insert_line = i
@@ -517,7 +542,11 @@ def main(options):
   # Copy the files from the build dir.
   CopyAllFilesToStagingDir(config, options.distribution,
                            staging_dir, options.build_dir,
-                           options.enable_hidpi)
+                           options.enable_hidpi,
+                           options.include_snapshotblob,
+                           options.component_build,
+                           options.component_ffmpeg_build,
+                           options.verbose)
 
   if options.component_build == '1':
     DoComponentBuildTasks(staging_dir, options.build_dir,
@@ -578,8 +607,12 @@ def _ParseOptions():
       help='Name used to prefix names of generated archives.')
   parser.add_option('--enable_hidpi', default='0',
       help='Whether to include HiDPI resource files.')
+  parser.add_option('--include_snapshotblob', default='0',
+      help='Whether to include the V8 snapshot blob.')
   parser.add_option('--component_build', default='0',
       help='Whether this archive is packaging a component build.')
+  parser.add_option('--component_ffmpeg_build', default='0',
+      help='Whether this archive is packaging with ffmpeg component build.')
   parser.add_option('--skip_archive_compression',
       action='store_true', default=False,
       help='This will turn off compression of chrome.7z into chrome.packed.7z '
@@ -631,5 +664,5 @@ def _ParseOptions():
 if '__main__' == __name__:
   options = _ParseOptions()
   if options.verbose:
-    print sys.argv
+    print(sys.argv)
   sys.exit(main(options))

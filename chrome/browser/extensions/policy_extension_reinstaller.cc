@@ -45,9 +45,7 @@ const net::BackoffEntry::Policy kPolicyReinstallBackoffPolicy = {
 
 PolicyExtensionReinstaller::PolicyExtensionReinstaller(
     content::BrowserContext* context)
-    : context_(context),
-      backoff_entry_(&kPolicyReinstallBackoffPolicy),
-      weak_factory_(this) {}
+    : context_(context), backoff_entry_(&kPolicyReinstallBackoffPolicy) {}
 
 PolicyExtensionReinstaller::~PolicyExtensionReinstaller() {}
 
@@ -68,7 +66,7 @@ void PolicyExtensionReinstaller::Fire() {
   PendingExtensionManager* pending_manager =
       service->pending_extension_manager();
   // If there's nothing to repair, then bail out.
-  if (!pending_manager->HasAnyPolicyReinstallForCorruption())
+  if (!pending_manager->HasAnyReinstallForCorruption())
     return;
 
   service->CheckForExternalUpdates();

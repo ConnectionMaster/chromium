@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_OFFLINE_PAGES_CORE_MODEL_CLEANUP_VISUALS_TASK_H_
 #define COMPONENTS_OFFLINE_PAGES_CORE_MODEL_CLEANUP_VISUALS_TASK_H_
 
-#include <vector>
-
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "components/offline_pages/core/offline_page_types.h"
@@ -30,16 +28,16 @@ class CleanupVisualsTask : public Task {
                      CleanupVisualsCallback complete_callback);
   ~CleanupVisualsTask() override;
 
+ private:
   // Task implementation:
   void Run() override;
 
- private:
   void Complete(Result result);
   OfflinePageMetadataStore* store_;
   base::Time now_;
 
   CleanupVisualsCallback complete_callback_;
-  base::WeakPtrFactory<CleanupVisualsTask> weak_ptr_factory_;
+  base::WeakPtrFactory<CleanupVisualsTask> weak_ptr_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(CleanupVisualsTask);
 };
 

@@ -41,19 +41,17 @@ class DemuxerStreamForTest : public ::media::DemuxerStream {
   ~DemuxerStreamForTest() override;
 
   // ::media::DemuxerStream implementation.
-  void Read(const ReadCB& read_cb) override;
+  void Read(ReadCB read_cb) override;
   ::media::AudioDecoderConfig audio_decoder_config() override;
   ::media::VideoDecoderConfig video_decoder_config() override;
   Type type() const override;
   bool SupportsConfigChanges() override;
 
-  bool has_pending_read() const { return has_pending_read_; }
-
   // Frame duration
   static const int kDemuxerStreamForTestFrameDuration = 40;
 
  private:
-  void DoRead(const ReadCB& read_cb);
+  void DoRead(ReadCB read_cb);
 
   // Demuxer configuration.
   int total_frame_count_;
@@ -63,8 +61,6 @@ class DemuxerStreamForTest : public ::media::DemuxerStream {
 
   // Number of frames sent so far.
   int frame_count_;
-
-  bool has_pending_read_;
 
   DISALLOW_COPY_AND_ASSIGN(DemuxerStreamForTest);
 };

@@ -32,7 +32,7 @@
 #include "third_party/blink/renderer/core/layout/layout_frame.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/frame_set_painter.h"
-#include "third_party/blink/renderer/platform/cursor.h"
+#include "third_party/blink/renderer/platform/cursors.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 
 namespace blink {
@@ -49,7 +49,7 @@ static int AdjustSizeToRemainingSize(int current,
 }
 
 LayoutFrameSet::LayoutFrameSet(HTMLFrameSetElement* frame_set)
-    : LayoutBox(frame_set), is_resizing_(false), is_child_resizing_(false) {
+    : LayoutBox(frame_set), is_resizing_(false) {
   SetInline(false);
 }
 
@@ -58,17 +58,13 @@ LayoutFrameSet::~LayoutFrameSet() = default;
 LayoutFrameSet::GridAxis::GridAxis() : split_being_resized_(kNoSplit) {}
 
 HTMLFrameSetElement* LayoutFrameSet::FrameSet() const {
-  return ToHTMLFrameSetElement(GetNode());
+  NOT_DESTROYED();
+  return To<HTMLFrameSetElement>(GetNode());
 }
 
 void LayoutFrameSet::Paint(const PaintInfo& paint_info) const {
+  NOT_DESTROYED();
   FrameSetPainter(*this).Paint(paint_info);
-}
-
-void LayoutFrameSet::ComputePreferredLogicalWidths() {
-  min_preferred_logical_width_ = LayoutUnit();
-  max_preferred_logical_width_ = LayoutUnit();
-  ClearPreferredLogicalWidthsDirty();
 }
 
 void LayoutFrameSet::GridAxis::Resize(int size) {
@@ -88,6 +84,7 @@ void LayoutFrameSet::GridAxis::Resize(int size) {
 void LayoutFrameSet::LayOutAxis(GridAxis& axis,
                                 const Vector<HTMLDimension>& grid,
                                 int available_len) {
+  NOT_DESTROYED();
   available_len = max(available_len, 0);
 
   int* grid_layout = axis.sizes_.data();
@@ -115,7 +112,7 @@ void LayoutFrameSet::LayOutAxis(GridAxis& axis,
     // Count the total length of all of the fixed columns/rows -> totalFixed.
     // Count the number of columns/rows which are fixed -> countFixed.
     if (grid[i].IsAbsolute()) {
-      grid_layout[i] = max<int>(grid[i].Value() * effective_zoom, 0);
+      grid_layout[i] = clampTo<int>(max(grid[i].Value() * effective_zoom, 0.0));
       total_fixed += grid_layout[i];
       count_fixed++;
     }
@@ -124,7 +121,8 @@ void LayoutFrameSet::LayOutAxis(GridAxis& axis,
     // totalPercent. Count the number of columns/rows which are percentages ->
     // countPercent.
     if (grid[i].IsPercentage()) {
-      grid_layout[i] = max<int>(grid[i].Value() * available_len / 100., 0);
+      grid_layout[i] =
+          clampTo<int>(max(grid[i].Value() * available_len / 100., 0.0));
       total_percent += grid_layout[i];
       count_percent++;
     }
@@ -133,7 +131,7 @@ void LayoutFrameSet::LayOutAxis(GridAxis& axis,
     // totalRelative. Count the number of columns/rows which are relative ->
     // countRelative.
     if (grid[i].IsRelative()) {
-      total_relative += max<int>(grid[i].Value(), 1);
+      total_relative += clampTo<int>(max(grid[i].Value(), 1.0));
       count_relative++;
     }
   }
@@ -291,6 +289,7 @@ void LayoutFrameSet::LayOutAxis(GridAxis& axis,
 }
 
 void LayoutFrameSet::NotifyFrameEdgeInfoChanged() {
+  NOT_DESTROYED();
   if (NeedsLayout())
     return;
   // FIXME: We should only recompute the edge info with respect to the frame
@@ -302,6 +301,7 @@ void LayoutFrameSet::NotifyFrameEdgeInfoChanged() {
 void LayoutFrameSet::FillFromEdgeInfo(const FrameEdgeInfo& edge_info,
                                       int r,
                                       int c) {
+  NOT_DESTROYED();
   if (edge_info.AllowBorder(kLeftFrameEdge))
     cols_.allow_border_[c] = true;
   if (edge_info.AllowBorder(kRightFrameEdge))
@@ -322,6 +322,7 @@ void LayoutFrameSet::FillFromEdgeInfo(const FrameEdgeInfo& edge_info,
 }
 
 void LayoutFrameSet::ComputeEdgeInfo() {
+  NOT_DESTROYED();
   rows_.prevent_resize_.Fill(FrameSet()->NoResize());
   rows_.allow_border_.Fill(false);
   cols_.prevent_resize_.Fill(FrameSet()->NoResize());
@@ -337,9 +338,9 @@ void LayoutFrameSet::ComputeEdgeInfo() {
     for (size_t c = 0; c < cols; ++c) {
       FrameEdgeInfo edge_info;
       if (child->IsFrameSet())
-        edge_info = ToLayoutFrameSet(child)->EdgeInfo();
+        edge_info = To<LayoutFrameSet>(child)->EdgeInfo();
       else
-        edge_info = ToLayoutFrame(child)->EdgeInfo();
+        edge_info = To<LayoutFrame>(child)->EdgeInfo();
       FillFromEdgeInfo(edge_info, r, c);
       child = child->NextSibling();
       if (!child)
@@ -349,6 +350,7 @@ void LayoutFrameSet::ComputeEdgeInfo() {
 }
 
 FrameEdgeInfo LayoutFrameSet::EdgeInfo() const {
+  NOT_DESTROYED();
   FrameEdgeInfo result(FrameSet()->NoResize(), true);
 
   int rows = FrameSet()->TotalRows();
@@ -368,6 +370,7 @@ FrameEdgeInfo LayoutFrameSet::EdgeInfo() const {
 }
 
 void LayoutFrameSet::UpdateLayout() {
+  NOT_DESTROYED();
   DCHECK(NeedsLayout());
 
   if (!Parent()->IsFrameSet() && !GetDocument().Printing()) {
@@ -410,6 +413,7 @@ static void ClearNeedsLayoutOnHiddenFrames(LayoutBox* frame) {
 }
 
 void LayoutFrameSet::PositionFrames() {
+  NOT_DESTROYED();
   LayoutBox* child = FirstChildBox();
   if (!child)
     return;
@@ -453,6 +457,7 @@ void LayoutFrameSet::PositionFrames() {
 }
 
 void LayoutFrameSet::StartResizing(GridAxis& axis, int position) {
+  NOT_DESTROYED();
   int split = HitTestSplit(axis, position);
   if (split == kNoSplit || axis.prevent_resize_[split]) {
     axis.split_being_resized_ = kNoSplit;
@@ -463,6 +468,7 @@ void LayoutFrameSet::StartResizing(GridAxis& axis, int position) {
 }
 
 void LayoutFrameSet::ContinueResizing(GridAxis& axis, int position) {
+  NOT_DESTROYED();
   if (NeedsLayout())
     return;
   if (axis.split_being_resized_ == kNoSplit)
@@ -478,6 +484,7 @@ void LayoutFrameSet::ContinueResizing(GridAxis& axis, int position) {
 }
 
 bool LayoutFrameSet::UserResize(const MouseEvent& evt) {
+  NOT_DESTROYED();
   if (!is_resizing_) {
     if (NeedsLayout())
       return false;
@@ -485,7 +492,7 @@ bool LayoutFrameSet::UserResize(const MouseEvent& evt) {
         evt.button() ==
             static_cast<int16_t>(WebPointerProperties::Button::kLeft)) {
       FloatPoint local_pos =
-          AbsoluteToLocal(FloatPoint(evt.AbsoluteLocation()), kUseTransforms);
+          AbsoluteToLocalFloatPoint(FloatPoint(evt.AbsoluteLocation()));
       StartResizing(cols_, local_pos.X());
       StartResizing(rows_, local_pos.Y());
       if (cols_.split_being_resized_ != kNoSplit ||
@@ -500,7 +507,7 @@ bool LayoutFrameSet::UserResize(const MouseEvent& evt) {
          evt.button() ==
              static_cast<int16_t>(WebPointerProperties::Button::kLeft))) {
       FloatPoint local_pos =
-          AbsoluteToLocal(FloatPoint(evt.AbsoluteLocation()), kUseTransforms);
+          AbsoluteToLocalFloatPoint(FloatPoint(evt.AbsoluteLocation()));
       ContinueResizing(cols_, local_pos.X());
       ContinueResizing(rows_, local_pos.Y());
       if (evt.type() == event_type_names::kMouseup &&
@@ -516,12 +523,8 @@ bool LayoutFrameSet::UserResize(const MouseEvent& evt) {
 }
 
 void LayoutFrameSet::SetIsResizing(bool is_resizing) {
+  NOT_DESTROYED();
   is_resizing_ = is_resizing;
-  for (LayoutObject* ancestor = Parent(); ancestor;
-       ancestor = ancestor->Parent()) {
-    if (ancestor->IsFrameSet())
-      ToLayoutFrameSet(ancestor)->is_child_resizing_ = is_resizing;
-  }
   if (LocalFrame* frame = GetFrame()) {
     frame->GetEventHandler().SetResizingFrameSet(is_resizing ? FrameSet()
                                                              : nullptr);
@@ -529,16 +532,19 @@ void LayoutFrameSet::SetIsResizing(bool is_resizing) {
 }
 
 bool LayoutFrameSet::CanResizeRow(const IntPoint& p) const {
+  NOT_DESTROYED();
   int r = HitTestSplit(rows_, p.Y());
   return r != kNoSplit && !rows_.prevent_resize_[r];
 }
 
 bool LayoutFrameSet::CanResizeColumn(const IntPoint& p) const {
+  NOT_DESTROYED();
   int c = HitTestSplit(cols_, p.X());
   return c != kNoSplit && !cols_.prevent_resize_[c];
 }
 
 int LayoutFrameSet::SplitPosition(const GridAxis& axis, int split) const {
+  NOT_DESTROYED();
   if (NeedsLayout())
     return 0;
 
@@ -555,6 +561,7 @@ int LayoutFrameSet::SplitPosition(const GridAxis& axis, int split) const {
 }
 
 int LayoutFrameSet::HitTestSplit(const GridAxis& axis, int position) const {
+  NOT_DESTROYED();
   if (NeedsLayout())
     return kNoSplit;
 
@@ -578,11 +585,13 @@ int LayoutFrameSet::HitTestSplit(const GridAxis& axis, int position) const {
 
 bool LayoutFrameSet::IsChildAllowed(LayoutObject* child,
                                     const ComputedStyle&) const {
+  NOT_DESTROYED();
   return child->IsFrame() || child->IsFrameSet();
 }
 
-CursorDirective LayoutFrameSet::GetCursor(const LayoutPoint& point,
-                                          Cursor& cursor) const {
+CursorDirective LayoutFrameSet::GetCursor(const PhysicalOffset& point,
+                                          ui::Cursor& cursor) const {
+  NOT_DESTROYED();
   IntPoint rounded_point = RoundedIntPoint(point);
   if (CanResizeRow(rounded_point)) {
     cursor = RowResizeCursor();

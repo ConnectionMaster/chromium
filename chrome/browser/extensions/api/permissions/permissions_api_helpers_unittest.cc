@@ -9,12 +9,15 @@
 #include <memory>
 #include <utility>
 
+#include "base/json/json_reader.h"
 #include "base/macros.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/permissions_test_util.h"
 #include "chrome/common/extensions/api/permissions.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/permissions/permission_set.h"
+#include "extensions/common/permissions/permissions_info.h"
+#include "extensions/common/permissions/usb_device_permission.h"
 #include "extensions/common/url_pattern_set.h"
 #include "extensions/common/user_script.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -22,6 +25,7 @@
 #include "url/gurl.h"
 
 using extensions::api::permissions::Permissions;
+using extensions::mojom::APIPermissionID;
 using extensions::permissions_api_helpers::PackPermissionSet;
 using extensions::permissions_api_helpers::UnpackPermissionSet;
 using extensions::permissions_api_helpers::UnpackPermissionSetResult;
@@ -32,8 +36,8 @@ namespace extensions {
 // Tests that we can convert PermissionSets to the generated types.
 TEST(ExtensionPermissionsAPIHelpers, Pack) {
   APIPermissionSet apis;
-  apis.insert(APIPermission::kTab);
-  apis.insert(APIPermission::kFileBrowserHandler);
+  apis.insert(APIPermissionID::kTab);
+  apis.insert(APIPermissionID::kFileBrowserHandler);
   // Note: kFileBrowserHandler implies kFileBrowserHandlerInternal.
 
   URLPatternSet explicit_hosts(
@@ -72,7 +76,7 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
   std::string error;
 
   APIPermissionSet optional_apis;
-  optional_apis.insert(APIPermission::kTab);
+  optional_apis.insert(APIPermissionID::kTab);
   URLPatternSet optional_explicit_hosts(
       {URLPattern(Extension::kValidHostPermissionSchemes, "http://a.com/*")});
   PermissionSet optional_permissions(
@@ -82,7 +86,7 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
   // Origins shouldn't have to be present.
   {
     Permissions permissions_object;
-    value->Set("permissions", apis->CreateDeepCopy());
+    value->SetKey("permissions", apis->Clone());
     EXPECT_TRUE(Permissions::Populate(*value, &permissions_object));
 
     std::unique_ptr<UnpackPermissionSetResult> unpack_result =
@@ -92,14 +96,15 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
     ASSERT_TRUE(unpack_result);
     EXPECT_TRUE(error.empty());
     EXPECT_EQ(1u, unpack_result->optional_apis.size());
-    EXPECT_TRUE(unpack_result->optional_apis.count(APIPermission::kTab));
+    EXPECT_TRUE(
+        unpack_result->optional_apis.count(mojom::APIPermissionID::kTab));
   }
 
   // The api permissions don't need to be present either.
   {
     Permissions permissions_object;
     value->Clear();
-    value->Set("origins", origins->CreateDeepCopy());
+    value->SetKey("origins", origins->Clone());
     EXPECT_TRUE(Permissions::Populate(*value, &permissions_object));
 
     std::unique_ptr<UnpackPermissionSetResult> unpack_result =
@@ -116,9 +121,9 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
   {
     Permissions permissions_object;
     value->Clear();
-    std::unique_ptr<base::ListValue> invalid_apis = apis->CreateDeepCopy();
-    invalid_apis->AppendInteger(3);
-    value->Set("permissions", std::move(invalid_apis));
+    base::Value invalid_apis = apis->Clone();
+    invalid_apis.Append(3);
+    value->SetKey("permissions", std::move(invalid_apis));
     EXPECT_FALSE(Permissions::Populate(*value, &permissions_object));
   }
 
@@ -126,10 +131,9 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
   {
     Permissions permissions_object;
     value->Clear();
-    std::unique_ptr<base::ListValue> invalid_origins =
-        origins->CreateDeepCopy();
-    invalid_origins->AppendInteger(3);
-    value->Set("origins", std::move(invalid_origins));
+    base::Value invalid_origins = origins->Clone();
+    invalid_origins.Append(3);
+    value->SetKey("origins", std::move(invalid_origins));
     EXPECT_FALSE(Permissions::Populate(*value, &permissions_object));
   }
 
@@ -152,8 +156,8 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
   {
     Permissions permissions_object;
     value->Clear();
-    value->Set("origins", origins->CreateDeepCopy());
-    value->Set("random", std::make_unique<base::Value>(3));
+    value->SetKey("origins", origins->Clone());
+    value->SetKey("random", base::Value(3));
     EXPECT_TRUE(Permissions::Populate(*value, &permissions_object));
 
     std::unique_ptr<UnpackPermissionSetResult> unpack_result =
@@ -170,9 +174,9 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_Basic) {
   {
     Permissions permissions_object;
     value->Clear();
-    std::unique_ptr<base::ListValue> invalid_apis = apis->CreateDeepCopy();
-    invalid_apis->AppendString("unknown_permission");
-    value->Set("permissions", std::move(invalid_apis));
+    base::Value invalid_apis = apis->Clone();
+    invalid_apis.Append("unknown_permission");
+    value->SetKey("permissions", std::move(invalid_apis));
     EXPECT_TRUE(Permissions::Populate(*value, &permissions_object));
 
     EXPECT_FALSE(UnpackPermissionSet(permissions_object, PermissionSet(),
@@ -266,11 +270,11 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_HostSeparation) {
 // Tests that host permissions are properly partitioned according to the
 // required/optional permission sets.
 TEST(ExtensionPermissionsAPIHelpers, Unpack_APISeparation) {
-  constexpr APIPermission::ID kRequired1 = APIPermission::kTab;
-  constexpr APIPermission::ID kRequired2 = APIPermission::kStorage;
-  constexpr APIPermission::ID kOptional1 = APIPermission::kCookie;
-  constexpr APIPermission::ID kOptional2 = APIPermission::kAlarms;
-  constexpr APIPermission::ID kUnlisted1 = APIPermission::kIdle;
+  constexpr APIPermissionID kRequired1 = APIPermissionID::kTab;
+  constexpr APIPermissionID kRequired2 = APIPermissionID::kStorage;
+  constexpr APIPermissionID kOptional1 = APIPermissionID::kCookie;
+  constexpr APIPermissionID kOptional2 = APIPermissionID::kAlarms;
+  constexpr APIPermissionID kUnlisted1 = APIPermissionID::kIdle;
 
   APIPermissionSet required_apis;
   required_apis.insert(kRequired1);
@@ -304,30 +308,6 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_APISeparation) {
   EXPECT_TRUE(unpack_result->optional_apis.count(kOptional1));
   EXPECT_EQ(1u, unpack_result->unlisted_apis.size());
   EXPECT_TRUE(unpack_result->unlisted_apis.count(kUnlisted1));
-}
-
-// Tests that an error is thrown for permissions that cannot be optional, when
-// requested as an optional permission.
-TEST(ExtensionPermissionsAPIHelpers, Unpack_UnsupportedAPIPermission) {
-  APIPermissionSet optional_apis;
-  optional_apis.insert(APIPermission::kWallpaper);
-  EXPECT_FALSE((*optional_apis.begin())->info()->supports_optional());
-  PermissionSet optional_permissions(std::move(optional_apis),
-                                     ManifestPermissionSet(), URLPatternSet(),
-                                     URLPatternSet());
-
-  Permissions permissions_object;
-  permissions_object.permissions = std::make_unique<std::vector<std::string>>(
-      std::vector<std::string>({"wallpaper"}));
-
-  std::string error;
-  std::unique_ptr<UnpackPermissionSetResult> unpack_result =
-      UnpackPermissionSet(permissions_object, PermissionSet(),
-                          optional_permissions, true, &error);
-  ASSERT_TRUE(unpack_result) << error;
-  EXPECT_EQ(1u, unpack_result->unsupported_optional_apis.size());
-  EXPECT_TRUE(unpack_result->unsupported_optional_apis.count(
-      APIPermission::kWallpaper));
 }
 
 // Tests that unpacking works correctly with wildcard schemes (which are
@@ -482,6 +462,49 @@ TEST(ExtensionPermissionsAPIHelpers, Unpack_FileSchemes_Specific) {
         GetPatternsAsStrings(unpack_result->restricted_file_scheme_patterns),
         testing::IsEmpty());
   }
+}
+
+// Tests that unpacking a UsbDevicePermission with a list of USB device IDs
+// preserves the device list in the result object.
+TEST(ExtensionPermissionsAPIHelpers, Unpack_UsbDevicePermission) {
+  constexpr char kDeviceListJson[] = R"([{"productId":2,"vendorId":1}])";
+  constexpr char kUsbDevicesPermissionJson[] =
+      R"(usbDevices|[{"productId":2,"vendorId":1}])";
+
+  auto device_list = base::JSONReader::Read(kDeviceListJson);
+  ASSERT_TRUE(device_list) << "Failed to parse device list JSON.";
+
+  auto usb_device_permission = std::make_unique<UsbDevicePermission>(
+      PermissionsInfo::GetInstance()->GetByID(
+          mojom::APIPermissionID::kUsbDevice));
+  std::string error;
+  std::vector<std::string> unhandled_permissions;
+  bool from_value_result = usb_device_permission->FromValue(
+      &device_list.value(), &error, &unhandled_permissions);
+  ASSERT_TRUE(from_value_result);
+  EXPECT_TRUE(unhandled_permissions.empty());
+
+  APIPermissionSet api_permission_set;
+  api_permission_set.insert(usb_device_permission->Clone());
+  PermissionSet optional_permissions(std::move(api_permission_set),
+                                     ManifestPermissionSet(), URLPatternSet(),
+                                     URLPatternSet());
+
+  Permissions permissions_object;
+  permissions_object.permissions = std::make_unique<std::vector<std::string>>(
+      std::vector<std::string>({kUsbDevicesPermissionJson}));
+  constexpr bool kHasFileAccess = false;
+  std::unique_ptr<UnpackPermissionSetResult> unpack_result =
+      UnpackPermissionSet(permissions_object, PermissionSet(),
+                          optional_permissions, kHasFileAccess, &error);
+
+  ASSERT_TRUE(unpack_result) << error;
+
+  ASSERT_EQ(1U, unpack_result->optional_apis.size());
+  EXPECT_EQ(mojom::APIPermissionID::kUsbDevice,
+            unpack_result->optional_apis.begin()->id());
+  EXPECT_TRUE(unpack_result->optional_apis.begin()->Contains(
+      usb_device_permission.get()));
 }
 
 }  // namespace extensions

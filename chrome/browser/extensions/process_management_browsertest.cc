@@ -4,15 +4,16 @@
 
 #include <stddef.h>
 
+#include "base/feature_list.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
@@ -24,13 +25,16 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/manifest_handlers/web_accessible_resources_info.h"
 #include "extensions/common/switches.h"
 #include "net/dns/mock_host_resolver.h"
@@ -44,12 +48,18 @@ namespace extensions {
 namespace {
 
 bool IsExtensionProcessSharingAllowed() {
-  // TODO(nick): Currently, process sharing is allowed even in
-  // --site-per-process. Lock this down.  https://crbug.com/766267
-  return true;
+  return !base::FeatureList::IsEnabled(
+      extensions_features::kStrictExtensionIsolation);
 }
 
 class ProcessManagementTest : public ExtensionBrowserTest {
+ public:
+  ProcessManagementTest() {
+    // TODO(https://crbug.com/1110891): Remove this once Extensions are
+    // supported with BackForwardCache.
+    disabled_feature_list_.InitWithFeatures({}, {features::kBackForwardCache});
+  }
+
  private:
   // This is needed for testing isolated apps, which are still experimental.
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -62,6 +72,8 @@ class ProcessManagementTest : public ExtensionBrowserTest {
     ExtensionBrowserTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
   }
+
+  base::test::ScopedFeatureList disabled_feature_list_;
 };
 
 class ChromeWebStoreProcessTest : public ExtensionBrowserTest {
@@ -148,38 +160,38 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest, MAYBE_ProcessOverflow) {
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(chrome::kChromeUINewTabURL),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("hosted_app/main.html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("test_file.html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("isolated_apps/app2/main.html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(chrome::kChromeUINewTabURL),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("api_test/app_process/path1/empty.html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("test_file_with_body.html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Load another copy of isolated app 1.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("isolated_apps/app1/main.html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Load another extension.
   const extensions::Extension* extension2 = LoadExtension(
@@ -326,14 +338,18 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest, MAYBE_ExtensionProcessBalancing) {
   // chrome-extension:// URIs below (not to HTTP URIs) to make sure the 1/3rd
   // of process limit also applies to normal tabs (not just to background pages
   // and scripts).
-  content::RenderProcessHost* first_renderer = ui_test_utils::NavigateToURL(
-      browser(), base_url.Resolve("isolated_apps/app1/main.html"));
+  content::RenderProcessHost* first_renderer =
+      ui_test_utils::NavigateToURL(
+          browser(), base_url.Resolve("isolated_apps/app1/main.html"))
+          ->GetProcess();
   content::RenderProcessHostWatcher first_renderer_watcher(
       first_renderer,
       content::RenderProcessHostWatcher::WATCH_FOR_HOST_DESTRUCTION);
 
-  content::RenderProcessHost* second_renderer = ui_test_utils::NavigateToURL(
-      browser(), base_url.Resolve("api_test/management/test/basics.html"));
+  content::RenderProcessHost* second_renderer =
+      ui_test_utils::NavigateToURL(
+          browser(), base_url.Resolve("api_test/management/test/basics.html"))
+          ->GetProcess();
 
   std::set<int> process_ids;
   Profile* profile = browser()->profile();
@@ -357,7 +373,7 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest, MAYBE_ExtensionProcessBalancing) {
   if (first_renderer != second_renderer) {
     // Wait for the first renderer to be torn down before verifying the number
     // of processes, else we race with the teardown here (specifically the
-    // FrameMsg_SwapOut -> FrameHostMsg_SwapOut_ACK round trip).
+    // UnfreezableFrameMsg_SwapOut -> FrameHostMsg_SwapOut_ACK round trip).
     first_renderer_watcher.Wait();
   }
 
@@ -370,6 +386,144 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest, MAYBE_ExtensionProcessBalancing) {
   extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile);
   EXPECT_EQ(5u, process_map->size());
 }
+
+// Parameterized tests that run with and without StrictExtensionIsolation, to
+// ensure we have test coverage for both paths.
+class ProcessManagementExtensionIsolationTest
+    : public ProcessManagementTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  ProcessManagementExtensionIsolationTest() {
+    if (GetParam()) {
+      feature_list_.InitAndEnableFeature(
+          extensions_features::kStrictExtensionIsolation);
+    } else {
+      feature_list_.InitAndDisableFeature(
+          extensions_features::kStrictExtensionIsolation);
+    }
+  }
+
+  // Provides meaningful param names instead of /0, /1, ...
+  static std::string DescribeParams(
+      const testing::TestParamInfo<ParamType>& info) {
+    return info.param ? "StrictExtensionIsolation" : "ExtensionSharing";
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Test that pushing both extensions and web processes past the limit creates
+// the expected number of processes.
+//
+// Sets the process limit to 3, with 1 expected extension process when sharing
+// is allowed between extensions. The test then creates 3 separate extensions,
+// 3 same-site web pages, and 1 cross-site web page.
+//
+// With extension process sharing, there should be 1 process for all extensions,
+// 2 processes for the same-site pages, and an extra process for the cross-site
+// page due to Site Isolation.
+//
+// Without extension process sharing, there should be 3 processes for the
+// extensions. The web pages should act as if there were only 1 process used by
+// the extensions, so there are 2 web processes for the same-site pages, and an
+// extra process for the cross-site page due to Site Isolation.
+IN_PROC_BROWSER_TEST_P(ProcessManagementExtensionIsolationTest,
+                       ExtensionAndWebProcessOverflow) {
+  // Set max renderers to 3, to expect a single extension process when sharing
+  // is allowed.
+  content::RenderProcessHost::SetMaxRendererProcessCount(3);
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Load 3 extensions with background processes, similar to Chrome startup.
+  ASSERT_TRUE(LoadExtension(
+      test_data_dir_.AppendASCII("api_test/browser_action/none")));
+  ASSERT_TRUE(LoadExtension(
+      test_data_dir_.AppendASCII("api_test/browser_action/basics")));
+  ASSERT_TRUE(LoadExtension(
+      test_data_dir_.AppendASCII("api_test/browser_action/add_popup")));
+
+  // Verify the number of extension processes.
+  std::set<int> process_ids;
+  Profile* profile = browser()->profile();
+  ProcessManager* epm = ProcessManager::Get(profile);
+  for (ExtensionHost* host : epm->background_hosts()) {
+    SCOPED_TRACE(testing::Message()
+                 << "When testing extension: " << host->extension_id());
+    // The process should be locked iff process sharing is not allowed.
+    EXPECT_NE(IsExtensionProcessSharingAllowed(),
+              host->render_process_host()->IsProcessLockedToSiteForTesting());
+    process_ids.insert(host->render_process_host()->GetID());
+  }
+  if (IsExtensionProcessSharingAllowed()) {
+    // All extensions share a single process, since this is 1/3 the process
+    // limit.
+    EXPECT_EQ(1u, process_ids.size());
+  } else {
+    // Each extension is in a locked process, unavailable for sharing.
+    EXPECT_EQ(3u, process_ids.size());
+  }
+
+  // Load 3 same-site tabs after the extensions.
+  GURL web_url1(embedded_test_server()->GetURL("foo.com", "/title1.html"));
+  GURL web_url2(embedded_test_server()->GetURL("foo.com", "/title2.html"));
+  GURL web_url3(embedded_test_server()->GetURL("foo.com", "/title3.html"));
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), web_url1, WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  WebContents* web_contents1 =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), web_url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  WebContents* web_contents2 =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), web_url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  WebContents* web_contents3 =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  // Verify the number of processes across extensions and tabs.
+  process_ids.insert(web_contents1->GetMainFrame()->GetProcess()->GetID());
+  process_ids.insert(web_contents2->GetMainFrame()->GetProcess()->GetID());
+  process_ids.insert(web_contents3->GetMainFrame()->GetProcess()->GetID());
+  if (IsExtensionProcessSharingAllowed()) {
+    // The web pages share the 2 remaining processes to stay under the limit.
+    EXPECT_EQ(3u, process_ids.size());
+  } else {
+    // The web processes still share 2 processes as if there were a single
+    // extension process (making a total of 5 processes counting the existing 3
+    // extension processes). This avoids starving the web pages with a single
+    // process (if the extensions pushed us past the limit on their own), or
+    // increasing the process count further (if all extension processes were
+    // ignored).
+    EXPECT_EQ(5u, process_ids.size());
+  }
+
+  // Add a cross-site web process.
+  GURL cross_site_url(
+      embedded_test_server()->GetURL("bar.com", "/title1.html"));
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), cross_site_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  WebContents* web_contents4 =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  process_ids.insert(web_contents4->GetMainFrame()->GetProcess()->GetID());
+  // The cross-site process adds 1 more process to the total, to avoid sharing
+  // with the existing web renderer processes (due to Site Isolation).
+  if (IsExtensionProcessSharingAllowed())
+    EXPECT_EQ(4u, process_ids.size());
+  else
+    EXPECT_EQ(6u, process_ids.size());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ProcessManagementExtensionIsolationTest,
+    testing::Bool(),
+    ProcessManagementExtensionIsolationTest::DescribeParams);
 
 IN_PROC_BROWSER_TEST_F(ProcessManagementTest,
                        NavigateExtensionTabToWebViaPost) {
@@ -484,11 +638,18 @@ IN_PROC_BROWSER_TEST_F(ChromeWebStoreInIsolatedOriginTest,
       content::SiteInstance::CreateForURL(context, gallery_url());
   EXPECT_TRUE(cws_site_instance->RequiresDedicatedProcess());
 
+  // Calculate an URL that is 1) relative to the fake (i.e. test-controlled)
+  // Chrome Web Store gallery URL and 2) resolves to something that
+  // embedded_test_server can actually serve (e.g. title1.html test file).
+  GURL::Replacements replace_path;
+  replace_path.SetPathStr("/title1.html");
+  GURL cws_web_url = gallery_url().ReplaceComponents(replace_path);
+
   // Navigate to Chrome Web Store and check that it's loaded successfully.
-  ui_test_utils::NavigateToURL(browser(), gallery_url());
+  ui_test_utils::NavigateToURL(browser(), cws_web_url);
   WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_EQ(gallery_url(), web_contents->GetLastCommittedURL());
+  EXPECT_EQ(cws_web_url, web_contents->GetLastCommittedURL());
 
   // Verify that the Chrome Web Store hosted app is really loaded.
   content::RenderProcessHost* render_process_host =
@@ -528,7 +689,7 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest,
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   WebContents* new_web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
 

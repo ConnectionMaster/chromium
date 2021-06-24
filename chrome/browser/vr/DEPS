@@ -3,12 +3,15 @@ include_rules = [
   "+cc/base",
   "+cc/test",
   "+cc/trees",
-  "+device/vr/util",
+  "+chrome/android/features/vr/jni_headers",
+  "+components/webxr",
+  "+device/vr",
 ]
 
+# Test files may access VRService as they will either move with it, or we can
+# expose test-specific interfaces if needed.
 specific_include_rules = {
   ".*test.*\.cc": [
     "+device/vr/test/test_hook.h",
-    "+third_party/openvr/src/headers/openvr.h",
-  ],
+  ]
 }

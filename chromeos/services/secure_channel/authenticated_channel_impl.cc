@@ -5,9 +5,9 @@
 #include "chromeos/services/secure_channel/authenticated_channel_impl.h"
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/no_destructor.h"
 #include "chromeos/components/multidevice/logging/logging.h"
 
 namespace chromeos {
@@ -19,12 +19,17 @@ AuthenticatedChannelImpl::Factory*
     AuthenticatedChannelImpl::Factory::test_factory_ = nullptr;
 
 // static
-AuthenticatedChannelImpl::Factory* AuthenticatedChannelImpl::Factory::Get() {
-  if (test_factory_)
-    return test_factory_;
+std::unique_ptr<AuthenticatedChannel> AuthenticatedChannelImpl::Factory::Create(
+    const std::vector<mojom::ConnectionCreationDetail>&
+        connection_creation_details,
+    std::unique_ptr<SecureChannel> secure_channel) {
+  if (test_factory_) {
+    return test_factory_->CreateInstance(connection_creation_details,
+                                         std::move(secure_channel));
+  }
 
-  static base::NoDestructor<AuthenticatedChannelImpl::Factory> factory;
-  return factory.get();
+  return base::WrapUnique(new AuthenticatedChannelImpl(
+      connection_creation_details, std::move(secure_channel)));
 }
 
 // static
@@ -33,14 +38,7 @@ void AuthenticatedChannelImpl::Factory::SetFactoryForTesting(
   test_factory_ = test_factory;
 }
 
-std::unique_ptr<AuthenticatedChannel>
-AuthenticatedChannelImpl::Factory::BuildInstance(
-    const std::vector<mojom::ConnectionCreationDetail>&
-        connection_creation_details,
-    std::unique_ptr<SecureChannel> secure_channel) {
-  return base::WrapUnique(new AuthenticatedChannelImpl(
-      connection_creation_details, std::move(secure_channel)));
-}
+AuthenticatedChannelImpl::Factory::~Factory() = default;
 
 AuthenticatedChannelImpl::AuthenticatedChannelImpl(
     const std::vector<mojom::ConnectionCreationDetail>&
@@ -75,7 +73,7 @@ void AuthenticatedChannelImpl::PerformSendMessage(
 
   int sequence_number = secure_channel_->SendMessage(feature, payload);
 
-  if (base::ContainsKey(sequence_number_to_callback_map_, sequence_number)) {
+  if (base::Contains(sequence_number_to_callback_map_, sequence_number)) {
     PA_LOG(ERROR) << "AuthenticatedChannelImpl::SendMessage(): Started sending "
                   << "a message whose sequence number already exists in the "
                   << "map.";
@@ -121,7 +119,7 @@ void AuthenticatedChannelImpl::OnMessageSent(SecureChannel* secure_channel,
                                              int sequence_number) {
   DCHECK_EQ(secure_channel_.get(), secure_channel);
 
-  if (!base::ContainsKey(sequence_number_to_callback_map_, sequence_number)) {
+  if (!base::Contains(sequence_number_to_callback_map_, sequence_number)) {
     PA_LOG(WARNING) << "AuthenticatedChannelImpl::OnMessageSent(): Sent a "
                     << "message whose sequence number did not exist in the "
                     << "map. Disregarding.";
@@ -137,7 +135,7 @@ void AuthenticatedChannelImpl::OnMessageSent(SecureChannel* secure_channel,
 
 void AuthenticatedChannelImpl::OnRssiFetched(
     base::OnceCallback<void(mojom::ConnectionMetadataPtr)> callback,
-    base::Optional<int32_t> current_rssi) {
+    absl::optional<int32_t> current_rssi) {
   mojom::BluetoothConnectionMetadataPtr bluetooth_connection_metadata_ptr;
   if (current_rssi) {
     bluetooth_connection_metadata_ptr =

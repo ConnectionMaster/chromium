@@ -2,17 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/public/interfaces/constants.mojom.h"
-#include "ash/public/interfaces/system_tray_test_api.test-mojom-test-utils.h"
-#include "ash/public/interfaces/system_tray_test_api.test-mojom.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/system_tray_test_api.h"
+#include "ash/public/cpp/test/shell_test_api.h"
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ash/login/test/js_checker.h"
 #include "chrome/browser/chromeos/first_run/first_run.h"
 #include "chrome/browser/chromeos/first_run/first_run_controller.h"
 #include "chrome/browser/chromeos/first_run/step_names.h"
-#include "chrome/browser/chromeos/login/test/js_checker.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "content/public/common/service_manager_connection.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "ui/aura/window.h"
 #include "ui/events/event_handler.h"
 #include "ui/events/test/event_generator.h"
@@ -55,27 +55,34 @@ class CountingEventHandler : public ui::EventHandler {
 
 }  // namespace
 
-class FirstRunUIBrowserTest : public InProcessBrowserTest,
-                              public FirstRunActor::Delegate {
+// The param respectively indicate whether tablet mode and the
+// kHideShelfControlsInTabletMode feature are enabled.
+class FirstRunUIBrowserTest
+    : public InProcessBrowserTest,
+      public FirstRunActor::Delegate,
+      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   FirstRunUIBrowserTest()
       : initialized_(false),
         finalized_(false) {
+    scoped_feature_list_.InitWithFeatureState(
+        ash::features::kHideShelfControlsInTabletMode,
+        IsHomeButtonHiddenInTabletMode());
   }
 
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
-    // Connect to the ash test interface.
-    content::ServiceManagerConnection::GetForProcess()
-        ->GetConnector()
-        ->BindInterface(ash::mojom::kServiceName, &tray_test_api_);
+    tray_test_api_ = ash::SystemTrayTestApi::Create();
+
+    if (InTabletMode())
+      ash::ShellTestApi().SetTabletModeEnabledForTest(true);
   }
 
   // FirstRunActor::Delegate overrides.
   void OnActorInitialized() override {
     initialized_ = true;
-    if (!on_initialized_callback_.is_null())
-      on_initialized_callback_.Run();
+    if (on_initialized_callback_)
+      std::move(on_initialized_callback_).Run();
     controller()->OnActorInitialized();
   }
 
@@ -85,8 +92,8 @@ class FirstRunUIBrowserTest : public InProcessBrowserTest,
 
   void OnStepShown(const std::string& step_name) override {
     current_step_name_ = step_name;
-    if (!on_step_shown_callback_.is_null())
-      on_step_shown_callback_.Run();
+    if (on_step_shown_callback_)
+      std::move(on_step_shown_callback_).Run();
     controller()->OnStepShown(step_name);
   }
 
@@ -98,12 +105,22 @@ class FirstRunUIBrowserTest : public InProcessBrowserTest,
 
   void OnActorFinalized() override {
     finalized_ = true;
-    if (!on_finalized_callback_.is_null())
-      on_finalized_callback_.Run();
+    if (on_finalized_callback_)
+      std::move(on_finalized_callback_).Run();
     controller()->OnActorFinalized();
   }
 
   void OnActorDestroyed() override { controller()->OnActorDestroyed(); }
+
+  bool InTabletMode() const { return std::get<0>(GetParam()); }
+
+  bool IsHomeButtonHiddenInTabletMode() const {
+    return std::get<1>(GetParam());
+  }
+
+  bool IsHomeButtonShown() const {
+    return !InTabletMode() || !IsHomeButtonHiddenInTabletMode();
+  }
 
   void LaunchTutorial() {
     chromeos::first_run::LaunchTutorial();
@@ -140,12 +157,11 @@ class FirstRunUIBrowserTest : public InProcessBrowserTest,
     }
   }
 
-  void WaitUntilCalled(base::Closure* callback) {
+  void WaitUntilCalled(base::OnceClosure* callback) {
     scoped_refptr<content::MessageLoopRunner> runner =
         new content::MessageLoopRunner;
     *callback = runner->QuitClosure();
     runner->Run();
-    callback->Reset();
   }
 
   test::JSChecker& js() { return js_; }
@@ -154,40 +170,40 @@ class FirstRunUIBrowserTest : public InProcessBrowserTest,
     return FirstRunController::GetInstanceForTest();
   }
 
-  bool IsTrayBubbleOpen() {
-    bool is_open = false;
-    ash::mojom::SystemTrayTestApiAsyncWaiter wait_for(tray_test_api_.get());
-    wait_for.IsTrayBubbleOpen(&is_open);
-    return is_open;
-  }
+  bool IsTrayBubbleOpen() { return tray_test_api_->IsTrayBubbleOpen(); }
 
   views::Widget* GetOverlayWidget() { return controller()->widget_.get(); }
 
-  void FlushForTesting() {
-    controller()->first_run_helper_ptr_.FlushForTesting();
-  }
-
  private:
-  ash::mojom::SystemTrayTestApiPtr tray_test_api_;
+  std::unique_ptr<ash::SystemTrayTestApi> tray_test_api_;
   std::string current_step_name_;
   bool initialized_;
   bool finalized_;
-  base::Closure on_initialized_callback_;
-  base::Closure on_step_shown_callback_;
-  base::Closure on_finalized_callback_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+  base::OnceClosure on_initialized_callback_;
+  base::OnceClosure on_step_shown_callback_;
+  base::OnceClosure on_finalized_callback_;
   test::JSChecker js_;
 };
 
-IN_PROC_BROWSER_TEST_F(FirstRunUIBrowserTest, FirstRunFlow) {
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    FirstRunUIBrowserTest,
+    ::testing::Combine(
+        ::testing::Bool() /*tablet mode*/,
+        ::testing::Bool() /*home button hidden in tablet mode*/));
+
+IN_PROC_BROWSER_TEST_P(FirstRunUIBrowserTest, FirstRunFlow) {
   LaunchTutorial();
   WaitForInitialization();
-  WaitForStep(first_run::kAppListStep);
-  FlushForTesting();
-  EXPECT_FALSE(IsTrayBubbleOpen());
 
-  AdvanceStep();
+  if (IsHomeButtonShown()) {
+    WaitForStep(first_run::kAppListStep);
+    EXPECT_FALSE(IsTrayBubbleOpen());
+    AdvanceStep();
+  }
+
   WaitForStep(first_run::kTrayStep);
-  FlushForTesting();
   EXPECT_TRUE(IsTrayBubbleOpen());
 
   AdvanceStep();
@@ -201,12 +217,12 @@ IN_PROC_BROWSER_TEST_F(FirstRunUIBrowserTest, FirstRunFlow) {
 // window might be open if enterprise policy forces a browser tab to open
 // on first login and the web page opens a JavaScript alert.
 // See https://crrev.com/99673003
-IN_PROC_BROWSER_TEST_F(FirstRunUIBrowserTest, ModalWindowDoesNotBlock) {
+IN_PROC_BROWSER_TEST_P(FirstRunUIBrowserTest, ModalWindowDoesNotBlock) {
   // Start the tutorial.
   LaunchTutorial();
   WaitForInitialization();
-  WaitForStep(first_run::kAppListStep);
-  FlushForTesting();
+  WaitForStep(IsHomeButtonShown() ? first_run::kAppListStep
+                                  : first_run::kTrayStep);
 
   // Simulate the browser opening a modal dialog.
   views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
@@ -228,14 +244,15 @@ IN_PROC_BROWSER_TEST_F(FirstRunUIBrowserTest, ModalWindowDoesNotBlock) {
 }
 
 // Tests that the escape key cancels the tutorial.
-IN_PROC_BROWSER_TEST_F(FirstRunUIBrowserTest, EscapeCancelsTutorial) {
+IN_PROC_BROWSER_TEST_P(FirstRunUIBrowserTest, EscapeCancelsTutorial) {
   // Run the tutorial for a couple steps, but don't finish it.
   LaunchTutorial();
   WaitForInitialization();
-  WaitForStep(first_run::kAppListStep);
-  AdvanceStep();
+  if (IsHomeButtonShown()) {
+    WaitForStep(first_run::kAppListStep);
+    AdvanceStep();
+  }
   WaitForStep(first_run::kTrayStep);
-  FlushForTesting();
   EXPECT_TRUE(IsTrayBubbleOpen());
 
   // Press the escape key.

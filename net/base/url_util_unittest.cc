@@ -8,9 +8,9 @@
 
 #include "base/format_macros.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+#include "url/url_util.h"
 
 using base::ASCIIToUTF16;
 using base::WideToUTF16;
@@ -268,6 +268,63 @@ TEST(UrlUtilTest, GetHostOrSpecFromURL) {
             GetHostOrSpecFromURL(GURL("file:///tmp/test.html")));
 }
 
+TEST(UrlUtilTest, GetSuperdomain) {
+  struct {
+    const char* const domain;
+    const char* const expected_superdomain;
+  } tests[] = {
+      // Basic cases
+      {"foo.bar.example", "bar.example"},
+      {"bar.example", "example"},
+      {"example", ""},
+
+      // Returned value may be an eTLD.
+      {"google.com", "com"},
+      {"google.co.uk", "co.uk"},
+
+      // Weird cases.
+      {"", ""},
+      {"has.trailing.dot.", "trailing.dot."},
+      {"dot.", ""},
+      {".has.leading.dot", "has.leading.dot"},
+      {".", ""},
+      {"..", "."},
+      {"127.0.0.1", "0.0.1"},
+  };
+
+  for (const auto& test : tests) {
+    EXPECT_EQ(test.expected_superdomain, GetSuperdomain(test.domain));
+  }
+}
+
+TEST(UrlUtilTest, IsSubdomainOf) {
+  struct {
+    const char* subdomain;
+    const char* superdomain;
+    bool is_subdomain;
+  } tests[] = {
+      {"bar.foo.com", "foo.com", true},
+      {"barfoo.com", "foo.com", false},
+      {"bar.foo.com", "com", true},
+      {"bar.foo.com", "other.com", false},
+      {"bar.foo.com", "bar.foo.com", true},
+      {"bar.foo.com", "baz.foo.com", false},
+      {"bar.foo.com", "baz.bar.foo.com", false},
+      {"bar.foo.com", "ar.foo.com", false},
+      {"foo.com", "foo.com.", false},
+      {"bar.foo.com", "foo.com.", false},
+      {"", "", true},
+      {"a", "", false},
+      {"", "a", false},
+      {"127.0.0.1", "0.0.1", true},  // Don't do this...
+  };
+
+  for (const auto& test : tests) {
+    EXPECT_EQ(test.is_subdomain,
+              IsSubdomainOf(test.subdomain, test.superdomain));
+  }
+}
+
 TEST(UrlUtilTest, CompliantHost) {
   struct {
     const char* const host;
@@ -383,7 +440,7 @@ TEST_P(UrlUtilNonUniqueNameTest, IsHostnameNonUnique) {
   EXPECT_EQ(test_data.is_unique, IsUnique(test_data.hostname));
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          UrlUtilNonUniqueNameTest,
                          testing::ValuesIn(kNonUniqueNameTestData));
 
@@ -392,13 +449,6 @@ TEST(UrlUtilTest, IsLocalhost) {
   EXPECT_TRUE(HostStringIsLocalhost("localHosT"));
   EXPECT_TRUE(HostStringIsLocalhost("localhost."));
   EXPECT_TRUE(HostStringIsLocalhost("localHost."));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost.localdomain"));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost.localDOMain"));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost.localdomain."));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost6"));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost6."));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost6.localdomain6"));
-  EXPECT_TRUE(HostStringIsLocalhost("localhost6.localdomain6."));
   EXPECT_TRUE(HostStringIsLocalhost("127.0.0.1"));
   EXPECT_TRUE(HostStringIsLocalhost("127.0.1.0"));
   EXPECT_TRUE(HostStringIsLocalhost("127.1.0.0"));
@@ -411,6 +461,14 @@ TEST(UrlUtilTest, IsLocalhost) {
   EXPECT_TRUE(HostStringIsLocalhost("foo.localhost."));
   EXPECT_TRUE(HostStringIsLocalhost("foo.localhoST"));
   EXPECT_TRUE(HostStringIsLocalhost("foo.localhoST."));
+
+  EXPECT_FALSE(HostStringIsLocalhost("localhost.localdomain"));
+  EXPECT_FALSE(HostStringIsLocalhost("localhost.localDOMain"));
+  EXPECT_FALSE(HostStringIsLocalhost("localhost.localdomain."));
+  EXPECT_FALSE(HostStringIsLocalhost("localhost6"));
+  EXPECT_FALSE(HostStringIsLocalhost("localhost6."));
+  EXPECT_FALSE(HostStringIsLocalhost("localhost6.localdomain6"));
+  EXPECT_FALSE(HostStringIsLocalhost("localhost6.localdomain6."));
 
   EXPECT_FALSE(HostStringIsLocalhost("localhostx"));
   EXPECT_FALSE(HostStringIsLocalhost("localhost.x"));
@@ -494,74 +552,142 @@ TEST(UrlUtilTest, ChangeWebSocketSchemeToHttpScheme) {
   }
 }
 
+TEST(UrlUtilTest, SchemeHasNetworkHost) {
+  const char kCustomSchemeWithHostPortAndUserInformation[] = "foo";
+  const char kCustomSchemeWithHostAndPort[] = "bar";
+  const char kCustomSchemeWithHost[] = "baz";
+  const char kCustomSchemeWithoutAuthority[] = "qux";
+  const char kNonStandardScheme[] = "not-registered";
+
+  url::ScopedSchemeRegistryForTests scheme_registry;
+  AddStandardScheme(kCustomSchemeWithHostPortAndUserInformation,
+                    url::SCHEME_WITH_HOST_PORT_AND_USER_INFORMATION);
+  AddStandardScheme(kCustomSchemeWithHostAndPort,
+                    url::SCHEME_WITH_HOST_AND_PORT);
+  AddStandardScheme(kCustomSchemeWithHost, url::SCHEME_WITH_HOST);
+  AddStandardScheme(kCustomSchemeWithoutAuthority,
+                    url::SCHEME_WITHOUT_AUTHORITY);
+
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kHttpScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kHttpsScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kWsScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kWssScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kQuicTransportScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kFtpScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(url::kFileScheme));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(
+      kCustomSchemeWithHostPortAndUserInformation));
+  EXPECT_TRUE(IsStandardSchemeWithNetworkHost(kCustomSchemeWithHostAndPort));
+
+  EXPECT_FALSE(IsStandardSchemeWithNetworkHost(url::kFileSystemScheme));
+  EXPECT_FALSE(IsStandardSchemeWithNetworkHost(kCustomSchemeWithHost));
+  EXPECT_FALSE(IsStandardSchemeWithNetworkHost(kCustomSchemeWithoutAuthority));
+  EXPECT_FALSE(IsStandardSchemeWithNetworkHost(kNonStandardScheme));
+}
+
 TEST(UrlUtilTest, GetIdentityFromURL) {
   struct {
     const char* const input_url;
     const char* const expected_username;
     const char* const expected_password;
   } tests[] = {
-    {
-      "http://username:password@google.com",
-      "username",
-      "password",
-    },
-    { // Test for http://crbug.com/19200
-      "http://username:p@ssword@google.com",
-      "username",
-      "p@ssword",
-    },
-    { // Special URL characters should be unescaped.
-      "http://username:p%3fa%26s%2fs%23@google.com",
-      "username",
-      "p?a&s/s#",
-    },
-    { // Username contains %20.
-      "http://use rname:password@google.com",
-      "use rname",
-      "password",
-    },
-    { // Keep %00 as is.
-      "http://use%00rname:password@google.com",
-      "use%00rname",
-      "password",
-    },
-    { // Use a '+' in the username.
-      "http://use+rname:password@google.com",
-      "use+rname",
-      "password",
-    },
-    { // Use a '&' in the password.
-      "http://username:p&ssword@google.com",
-      "username",
-      "p&ssword",
-    },
+      {
+          "http://username:password@google.com",
+          "username",
+          "password",
+      },
+      {
+          // Test for http://crbug.com/19200
+          "http://username:p@ssword@google.com",
+          "username",
+          "p@ssword",
+      },
+      {
+          // Special URL characters should be unescaped.
+          "http://username:p%3fa%26s%2fs%23@google.com",
+          "username",
+          "p?a&s/s#",
+      },
+      {
+          // Username contains %20, password %25.
+          "http://use rname:password%25@google.com",
+          "use rname",
+          "password%",
+      },
+      {
+          // Username and password contain forward / backward slashes.
+          "http://username%2F:password%5C@google.com",
+          "username/",
+          "password\\",
+      },
+      {
+          // Keep %00 and %01 as-is, and ignore other escaped characters when
+          // present.
+          "http://use%00rname%20:pass%01word%25@google.com",
+          "use%00rname%20",
+          "pass%01word%25",
+      },
+      {
+          // Keep CR and LF as-is.
+          "http://use%0Arname:pass%0Dword@google.com",
+          "use%0Arname",
+          "pass%0Dword",
+      },
+      {
+          // Use a '+' in the username.
+          "http://use+rname:password@google.com",
+          "use+rname",
+          "password",
+      },
+      {
+          // Use a '&' in the password.
+          "http://username:p&ssword@google.com",
+          "username",
+          "p&ssword",
+      },
+      {
+          // These UTF-8 characters are considered unsafe to unescape by
+          // UnescapeURLComponent, but raise no special concerns as part of the
+          // identity portion of a URL.
+          "http://%F0%9F%94%92:%E2%80%82@google.com",
+          "\xF0\x9F\x94\x92",
+          "\xE2\x80\x82",
+      },
+      {
+          // Leave invalid UTF-8 alone, and leave valid UTF-8 characters alone
+          // if there's also an invalid character in the string - strings should
+          // not be partially unescaped.
+          "http://%81:%E2%80%82%E2%80@google.com",
+          "%81",
+          "%E2%80%82%E2%80",
+      },
   };
   for (const auto& test : tests) {
     SCOPED_TRACE(test.input_url);
     GURL url(test.input_url);
 
-    base::string16 username, password;
+    std::u16string username, password;
     GetIdentityFromURL(url, &username, &password);
 
-    EXPECT_EQ(ASCIIToUTF16(test.expected_username), username);
-    EXPECT_EQ(ASCIIToUTF16(test.expected_password), password);
+    EXPECT_EQ(base::UTF8ToUTF16(test.expected_username), username);
+    EXPECT_EQ(base::UTF8ToUTF16(test.expected_password), password);
   }
 }
 
 // Try extracting a username which was encoded with UTF8.
 TEST(UrlUtilTest, GetIdentityFromURL_UTF8) {
-  GURL url(WideToUTF16(L"http://foo:\x4f60\x597d@blah.com"));
+  GURL url(u"http://foo:\x4f60\x597d@blah.com");
 
   EXPECT_EQ("foo", url.username());
   EXPECT_EQ("%E4%BD%A0%E5%A5%BD", url.password());
 
   // Extract the unescaped identity.
-  base::string16 username, password;
+  std::u16string username, password;
   GetIdentityFromURL(url, &username, &password);
 
   // Verify that it was decoded as UTF8.
-  EXPECT_EQ(ASCIIToUTF16("foo"), username);
-  EXPECT_EQ(WideToUTF16(L"\x4f60\x597d"), password);
+  EXPECT_EQ(u"foo", username);
+  EXPECT_EQ(u"\x4f60\x597d", password);
 }
 
 TEST(UrlUtilTest, GoogleHost) {

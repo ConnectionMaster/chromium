@@ -11,6 +11,7 @@
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -32,7 +33,7 @@ bool GetNativeWindow(const Browser* browser, gfx::NativeWindow* native_window) {
 }  // namespace
 
 BrowserActivationWaiter::BrowserActivationWaiter(const Browser* browser)
-    : browser_(browser), observed_(false) {
+    : browser_(browser) {
   // When the active browser closes, the next "last active browser" in the
   // BrowserList might not be immediately activated. So we need to wait for the
   // "last active browser" to actually be active.
@@ -42,8 +43,6 @@ BrowserActivationWaiter::BrowserActivationWaiter(const Browser* browser)
   }
   BrowserList::AddObserver(this);
 }
-
-BrowserActivationWaiter::~BrowserActivationWaiter() {}
 
 void BrowserActivationWaiter::WaitForActivation() {
   if (observed_)
@@ -60,7 +59,7 @@ void BrowserActivationWaiter::OnBrowserSetLastActive(Browser* browser) {
 
 // On Mac, BrowserWindowCocoa::Show() sets the active browser before the
 // window becomes the key window.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
   EXPECT_TRUE(browser->window()->IsActive());
 #endif
 
@@ -71,7 +70,7 @@ void BrowserActivationWaiter::OnBrowserSetLastActive(Browser* browser) {
 }
 
 BrowserDeactivationWaiter::BrowserDeactivationWaiter(const Browser* browser)
-    : browser_(browser), observed_(false) {
+    : browser_(browser) {
   if (chrome::FindLastActive() != browser_ && !browser->window()->IsActive()) {
     observed_ = true;
     return;
@@ -158,23 +157,6 @@ bool SendKeyPressToWindowSync(const gfx::NativeWindow window,
   // or the test timed out (in which case testing::Test::HasFatalFailure should
   // be set).
   runner->Run();
-  return !testing::Test::HasFatalFailure();
-}
-
-bool SendKeyPressAndWait(const Browser* browser,
-                         ui::KeyboardCode key,
-                         bool control,
-                         bool shift,
-                         bool alt,
-                         bool command,
-                         int type,
-                         const content::NotificationSource& source) {
-  content::WindowedNotificationObserver observer(type, source);
-
-  if (!SendKeyPressSync(browser, key, control, shift, alt, command))
-    return false;
-
-  observer.Wait();
   return !testing::Test::HasFatalFailure();
 }
 

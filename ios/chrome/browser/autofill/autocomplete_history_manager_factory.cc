@@ -17,14 +17,14 @@
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/history/history_service_factory.h"
 #include "ios/chrome/browser/signin/identity_manager_factory.h"
-#include "ios/chrome/browser/web_data_service_factory.h"
+#include "ios/chrome/browser/webdata_services/web_data_service_factory.h"
 
 namespace autofill {
 
 // static
 AutocompleteHistoryManager*
 AutocompleteHistoryManagerFactory::GetForBrowserState(
-    ios::ChromeBrowserState* browser_state) {
+    ChromeBrowserState* browser_state) {
   return static_cast<AutocompleteHistoryManager*>(
       GetInstance()->GetServiceForBrowserState(browser_state, true));
 }
@@ -48,8 +48,8 @@ AutocompleteHistoryManagerFactory::~AutocompleteHistoryManagerFactory() {}
 std::unique_ptr<KeyedService>
 AutocompleteHistoryManagerFactory::BuildServiceInstanceFor(
     web::BrowserState* context) const {
-  ios::ChromeBrowserState* chrome_browser_state =
-      ios::ChromeBrowserState::FromBrowserState(context);
+  ChromeBrowserState* chrome_browser_state =
+      ChromeBrowserState::FromBrowserState(context);
   std::unique_ptr<AutocompleteHistoryManager> service(
       new AutocompleteHistoryManager());
   auto autofill_db =

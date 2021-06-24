@@ -5,14 +5,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_RESOURCE_IMAGE_RESOURCE_CONTENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_RESOURCE_IMAGE_RESOURCE_CONTENT_H_
 
-#include <memory>
 #include "base/auto_reset.h"
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_observer.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/graphics/image_observer.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
+#include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_error.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_priority.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_status.h"
@@ -22,13 +23,14 @@
 
 namespace blink {
 
+class ExecutionContext;
 class FetchParameters;
 class ImageResourceInfo;
 class ImageResourceObserver;
 class ResourceError;
 class ResourceFetcher;
 class ResourceResponse;
-class SecurityContext;
+class UseCounter;
 
 // ImageResourceContent is a container that holds fetch result of
 // an ImageResource in a decoded form.
@@ -38,13 +40,9 @@ class SecurityContext;
 // https://docs.google.com/document/d/1O-fB83mrE0B_V8gzXNqHgmRLCvstTB4MMi3RnVLr8bE/edit?usp=sharing
 // TODO(hiroshige): Make ImageResourceContent ResourceClient and remove the
 // word 'observer' from ImageResource.
-// TODO(hiroshige): Rename local variables of type ImageResourceContent to
-// e.g. |imageContent|. Currently they have Resource-like names.
 class CORE_EXPORT ImageResourceContent final
-    : public GarbageCollectedFinalized<ImageResourceContent>,
+    : public GarbageCollected<ImageResourceContent>,
       public ImageObserver {
-  USING_GARBAGE_COLLECTED_MIXIN(ImageResourceContent);
-
  public:
   // Used for loading.
   // Returned content will be associated immediately later with ImageResource.
@@ -63,12 +61,15 @@ class CORE_EXPORT ImageResourceContent final
   blink::Image* GetImage() const;
   bool HasImage() const { return image_.get(); }
 
-  // The device pixel ratio we got from the server for this image, or 1.0.
-  float DevicePixelRatioHeaderValue() const;
-  bool HasDevicePixelRatioHeaderValue() const;
+  // Returns true if enough of the image has been decoded to allow its size to
+  // be determined. If this returns true, so will HasImage().
+  bool IsSizeAvailable() const {
+    return size_available_ != Image::kSizeUnavailable;
+  }
 
   // Returns the intrinsic width and height of the image, or 0x0 if no image
-  // exists. If the image is a BitmapImage, then this corresponds to the
+  // exists. IsSizeAvailable() can be used to determine if the value returned is
+  // reliable. If the image is a BitmapImage, then this corresponds to the
   // physical pixel dimensions of the image. If the image is an SVGImage, this
   // does not quite return the intrinsic width/height, but rather a concrete
   // object size resolved using a default object size of 300x150.
@@ -76,16 +77,19 @@ class CORE_EXPORT ImageResourceContent final
   IntSize IntrinsicSize(
       RespectImageOrientationEnum should_respect_image_orientation) const;
 
-  void UpdateImageAnimationPolicy();
-
   void AddObserver(ImageResourceObserver*);
   void RemoveObserver(ImageResourceObserver*);
 
-  bool IsSizeAvailable() const {
-    return size_available_ != Image::kSizeUnavailable;
-  }
+  // The device pixel ratio we got from the server for this image, or 1.0.
+  float DevicePixelRatioHeaderValue() const;
+  bool HasDevicePixelRatioHeaderValue() const;
 
-  void Trace(blink::Visitor*) override;
+  // Correct the image orientation preference for potentially cross-origin
+  // content.
+  RespectImageOrientationEnum ForceOrientationIfNecessary(
+      RespectImageOrientationEnum default_orientation) const;
+
+  void Trace(Visitor*) const override;
 
   // Content status and deriving predicates.
   // https://docs.google.com/document/d/1O-fB83mrE0B_V8gzXNqHgmRLCvstTB4MMi3RnVLr8bE/edit#heading=h.6cyqmir0f30h
@@ -108,10 +112,10 @@ class CORE_EXPORT ImageResourceContent final
 
   // Redirecting methods to Resource.
   const KURL& Url() const;
-  TimeTicks LoadResponseEnd() const;
-  bool IsAccessAllowed();
+  base::TimeTicks LoadResponseEnd() const;
+  bool IsAccessAllowed() const;
   const ResourceResponse& GetResponse() const;
-  base::Optional<ResourceError> GetResourceError() const;
+  absl::optional<ResourceError> GetResourceError() const;
   // DEPRECATED: ImageResourceContents consumers shouldn't need to worry about
   // whether the underlying Resource is being revalidated.
   bool IsCacheValidator() const;
@@ -175,12 +179,22 @@ class CORE_EXPORT ImageResourceContent final
     return is_refetchable_data_from_disk_cache_;
   }
 
-  // Optimized image policies: This method is used to determine whether the
-  // image resource violates any of the image policies in effect on the current
-  // page.
-  bool IsAcceptableCompressionRatio(const SecurityContext& context);
+  ImageDecoder::CompressionFormat GetCompressionFormat() const;
+
+  // Returns true if the image content is well-compressed (and not full of
+  // extraneous metadata). "well-compressed" is determined by comparing the
+  // image's compression ratio against a specific value that is defined by an
+  // unoptimized image policy on |context|.
+  bool IsAcceptableCompressionRatio(ExecutionContext& context);
 
   void LoadDeferredImage(ResourceFetcher* fetcher);
+
+  // Returns whether the resource request has been tagged as an ad.
+  bool IsAdResource() const;
+
+  // Records the decoded image type in a UseCounter if the image is a
+  // BitmapImage. |use_counter| may be a null pointer.
+  void RecordDecodedImageType(UseCounter* use_counter);
 
  private:
   using CanDeferInvalidation = ImageResourceObserver::CanDeferInvalidation;
@@ -196,10 +210,10 @@ class CORE_EXPORT ImageResourceContent final
 
   enum NotifyFinishOption { kShouldNotifyFinish, kDoNotNotifyFinish };
 
-  // If not null, changeRect is the changed part of the image.
   void NotifyObservers(NotifyFinishOption, CanDeferInvalidation);
-  void MarkObserverFinished(ImageResourceObserver*);
+  void HandleObserverFinished(ImageResourceObserver*);
   void UpdateToLoadedContentStatus(ResourceStatus);
+  void UpdateImageAnimationPolicy();
 
   class ProhibitAddRemoveObserverInScope : public base::AutoReset<bool> {
    public:
@@ -234,4 +248,4 @@ class CORE_EXPORT ImageResourceContent final
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_RESOURCE_IMAGE_RESOURCE_CONTENT_H_

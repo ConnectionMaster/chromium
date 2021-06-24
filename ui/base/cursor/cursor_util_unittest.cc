@@ -4,9 +4,9 @@
 
 #include "ui/base/cursor/cursor_util.h"
 
-#include "base/logging.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/gfx/geometry/point.h"
 
 namespace ui {
 namespace {
@@ -64,7 +64,7 @@ TEST_P(CursorUtilTest, ScaleAndRotate) {
   EXPECT_EQ(pixel_color, bitmap.pixmap().getColor(0, 0));
 }
 
-INSTANTIATE_TEST_SUITE_P(, CursorUtilTest, testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All, CursorUtilTest, testing::Bool());
 
 }  // namespace
 }  // namespace ui

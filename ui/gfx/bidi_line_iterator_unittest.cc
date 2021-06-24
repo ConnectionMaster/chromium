@@ -4,7 +4,6 @@
 
 #include "ui/gfx/bidi_line_iterator.h"
 
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -26,7 +25,7 @@ class BiDiLineIteratorTest
 };
 
 TEST_P(BiDiLineIteratorTest, OnlyLTR) {
-  iterator()->Open(base::UTF8ToUTF16("abc 😁 测试"), GetParam());
+  iterator()->Open(u"abc 😁 测试", GetParam());
   ASSERT_EQ(1, iterator()->CountRuns());
 
   int start, length;
@@ -45,7 +44,7 @@ TEST_P(BiDiLineIteratorTest, OnlyLTR) {
 }
 
 TEST_P(BiDiLineIteratorTest, OnlyRTL) {
-  iterator()->Open(base::UTF8ToUTF16("מה השעה"), GetParam());
+  iterator()->Open(u"מה השעה", GetParam());
   ASSERT_EQ(1, iterator()->CountRuns());
 
   int start, length;
@@ -61,8 +60,7 @@ TEST_P(BiDiLineIteratorTest, OnlyRTL) {
 }
 
 TEST_P(BiDiLineIteratorTest, Mixed) {
-  iterator()->Open(base::UTF8ToUTF16("אני משתמש ב- Chrome כדפדפן האינטרנט שלי"),
-                   GetParam());
+  iterator()->Open(u"אני משתמש ב- Chrome כדפדפן האינטרנט שלי", GetParam());
   ASSERT_EQ(3, iterator()->CountRuns());
 
   // We'll get completely different results depending on the top-level paragraph
@@ -122,9 +120,10 @@ TEST_P(BiDiLineIteratorTest, Mixed) {
 
 TEST_P(BiDiLineIteratorTest, RTLPunctuationNoCustomBehavior) {
   // This string features Hebrew characters interleaved with ASCII punctuation.
-  iterator()->Open(base::UTF8ToUTF16("א!ב\"ג#ד$ה%ו&ז'ח(ט)י*ך+כ,ל-ם.מ/"
-                                     "ן:נ;ס<ע=ף>פ?ץ@צ[ק\\ר]ש^ת_א`ב{ג|ד}ה~ו"),
-                   GetParam());
+  iterator()->Open(
+      u"א!ב\"ג#ד$ה%ו&ז'ח(ט)י*ך+כ,ל-ם.מ/"
+      u"ן:נ;ס<ע=ף>פ?ץ@צ[ק\\ר]ש^ת_א`ב{ג|ד}ה~ו",
+      GetParam());
 
   // Expect a single RTL run.
   ASSERT_EQ(1, iterator()->CountRuns());
@@ -142,7 +141,7 @@ TEST_P(BiDiLineIteratorTest, RTLPunctuationNoCustomBehavior) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     BiDiLineIteratorTest,
     ::testing::Values(base::i18n::TextDirection::LEFT_TO_RIGHT,
                       base::i18n::TextDirection::RIGHT_TO_LEFT));

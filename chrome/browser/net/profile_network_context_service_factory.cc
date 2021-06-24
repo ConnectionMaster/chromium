@@ -4,9 +4,15 @@
 
 #include "chrome/browser/net/profile_network_context_service_factory.h"
 
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/net/profile_network_context_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
+#endif
 
 ProfileNetworkContextService*
 ProfileNetworkContextServiceFactory::GetForContext(
@@ -23,7 +29,11 @@ ProfileNetworkContextServiceFactory::GetInstance() {
 ProfileNetworkContextServiceFactory::ProfileNetworkContextServiceFactory()
     : BrowserContextKeyedServiceFactory(
           "ProfileNetworkContextService",
-          BrowserContextDependencyManager::GetInstance()) {}
+          BrowserContextDependencyManager::GetInstance()) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  DependsOn(chromeos::CertificateProviderServiceFactory::GetInstance());
+#endif
+}
 
 ProfileNetworkContextServiceFactory::~ProfileNetworkContextServiceFactory() {}
 
@@ -37,4 +47,8 @@ ProfileNetworkContextServiceFactory::GetBrowserContextToUse(
     content::BrowserContext* context) const {
   // Create separate service for incognito profiles.
   return context;
+}
+
+bool ProfileNetworkContextServiceFactory::ServiceIsNULLWhileTesting() const {
+  return true;
 }

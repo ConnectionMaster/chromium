@@ -39,7 +39,7 @@ class RemoteDeviceLifeCycleImpl
   // |proximity_auth_client| is not owned.
   RemoteDeviceLifeCycleImpl(
       chromeos::multidevice::RemoteDeviceRef remote_device,
-      base::Optional<chromeos::multidevice::RemoteDeviceRef> local_device,
+      absl::optional<chromeos::multidevice::RemoteDeviceRef> local_device,
       chromeos::secure_channel::SecureChannelClient* secure_channel_client);
   ~RemoteDeviceLifeCycleImpl() override;
 
@@ -78,7 +78,7 @@ class RemoteDeviceLifeCycleImpl
   const chromeos::multidevice::RemoteDeviceRef remote_device_;
 
   // Represents this device (i.e. this Chromebook) for a particular profile.
-  base::Optional<chromeos::multidevice::RemoteDeviceRef> local_device_;
+  absl::optional<chromeos::multidevice::RemoteDeviceRef> local_device_;
 
   // The entrypoint to the SecureChannel API.
   chromeos::secure_channel::SecureChannelClient* secure_channel_client_;
@@ -104,7 +104,7 @@ class RemoteDeviceLifeCycleImpl
   // retrying the connection.
   base::OneShotTimer authentication_recovery_timer_;
 
-  base::WeakPtrFactory<RemoteDeviceLifeCycleImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<RemoteDeviceLifeCycleImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RemoteDeviceLifeCycleImpl);
 };

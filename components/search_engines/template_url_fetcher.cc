@@ -16,8 +16,21 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 
 namespace {
+
+// In some network environments, silent failure can be avoided by retrying
+// request on network change. This helps OpenSearch get through in such cases.
+// See https://crbug.com/956689 for context.
+constexpr int kOpenSearchRetryCount = 3;
+
+// Timeout for OpenSearch description document (OSDD) fetch request.
+// Requests for a particular resource are limited to one.
+// Requests may not receive a response, and in that case no
+// further requests would be allowed. The timeout cleans up failed requests
+// so that later attempts to fetch the OSDD can be made.
+constexpr int kOpenSearchTimeoutSeconds = 30;
 
 // Traffic annotation for RequestDelegate.
 const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
@@ -49,13 +62,13 @@ const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
 class TemplateURLFetcher::RequestDelegate {
  public:
   RequestDelegate(TemplateURLFetcher* fetcher,
-                  const base::string16& keyword,
+                  const std::u16string& keyword,
                   const GURL& osdd_url,
                   const GURL& favicon_url,
                   const url::Origin& initiator,
                   network::mojom::URLLoaderFactory* url_loader_factory,
                   int render_frame_id,
-                  int resource_type);
+                  int32_t request_id);
 
   // If data contains a valid OSDD, a TemplateURL is created and added to
   // the TemplateURLService.
@@ -65,33 +78,34 @@ class TemplateURLFetcher::RequestDelegate {
   GURL url() const { return osdd_url_; }
 
   // Keyword to use.
-  base::string16 keyword() const { return keyword_; }
+  std::u16string keyword() const { return keyword_; }
 
  private:
+  void OnTemplateURLParsed(std::unique_ptr<TemplateURL> template_url);
   void OnLoaded();
   void AddSearchProvider();
 
   std::unique_ptr<network::SimpleURLLoader> simple_url_loader_;
   TemplateURLFetcher* fetcher_;
   std::unique_ptr<TemplateURL> template_url_;
-  base::string16 keyword_;
+  std::u16string keyword_;
   const GURL osdd_url_;
   const GURL favicon_url_;
 
-  std::unique_ptr<TemplateURLService::Subscription> template_url_subscription_;
+  base::CallbackListSubscription template_url_subscription_;
 
   DISALLOW_COPY_AND_ASSIGN(RequestDelegate);
 };
 
 TemplateURLFetcher::RequestDelegate::RequestDelegate(
     TemplateURLFetcher* fetcher,
-    const base::string16& keyword,
+    const std::u16string& keyword,
     const GURL& osdd_url,
     const GURL& favicon_url,
     const url::Origin& initiator,
     network::mojom::URLLoaderFactory* url_loader_factory,
     int render_frame_id,
-    int resource_type)
+    int32_t request_id)
     : fetcher_(fetcher),
       keyword_(keyword),
       osdd_url_(osdd_url),
@@ -102,20 +116,28 @@ TemplateURLFetcher::RequestDelegate::RequestDelegate(
   if (!model->loaded()) {
     // Start the model load and set-up waiting for it.
     template_url_subscription_ = model->RegisterOnLoadedCallback(
-        base::Bind(&TemplateURLFetcher::RequestDelegate::OnLoaded,
-                   base::Unretained(this)));
+        base::BindOnce(&TemplateURLFetcher::RequestDelegate::OnLoaded,
+                       base::Unretained(this)));
     model->Load();
   }
 
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = osdd_url;
   resource_request->request_initiator = initiator;
-  resource_request->render_frame_id = render_frame_id;
-  resource_request->resource_type = resource_type;
+  // TODO(crbug.com/1059639): Remove |resource_type| once the request is handled
+  // with RequestDestination without ResourceType.
+  resource_request->resource_type =
+      /* blink::mojom::ResourceType::kSubResource */ 6;
+  resource_request->destination = network::mojom::RequestDestination::kEmpty;
   resource_request->load_flags = net::LOAD_DO_NOT_SAVE_COOKIES;
   simple_url_loader_ = network::SimpleURLLoader::Create(
       std::move(resource_request), kTrafficAnnotation);
   simple_url_loader_->SetAllowHttpErrorResults(true);
+  simple_url_loader_->SetTimeoutDuration(
+      base::TimeDelta::FromSeconds(kOpenSearchTimeoutSeconds));
+  simple_url_loader_->SetRetryOptions(
+      kOpenSearchRetryCount, network::SimpleURLLoader::RETRY_ON_NETWORK_CHANGE);
+  simple_url_loader_->SetRequestID(request_id);
   simple_url_loader_->DownloadToString(
       url_loader_factory,
       base::BindOnce(
@@ -124,8 +146,27 @@ TemplateURLFetcher::RequestDelegate::RequestDelegate(
       50000 /* max_body_size */);
 }
 
+void TemplateURLFetcher::RequestDelegate::OnTemplateURLParsed(
+    std::unique_ptr<TemplateURL> template_url) {
+  template_url_ = std::move(template_url);
+
+  if (!template_url_ ||
+      !template_url_->url_ref().SupportsReplacement(
+          fetcher_->template_url_service_->search_terms_data())) {
+    fetcher_->RequestCompleted(this);
+    // WARNING: RequestCompleted deletes us.
+    return;
+  }
+
+  // Wait for the model to be loaded before adding the provider.
+  if (!fetcher_->template_url_service_->loaded())
+    return;
+  AddSearchProvider();
+  // WARNING: AddSearchProvider deletes us.
+}
+
 void TemplateURLFetcher::RequestDelegate::OnLoaded() {
-  template_url_subscription_.reset();
+  template_url_subscription_ = {};
   if (!template_url_)
     return;
   AddSearchProvider();
@@ -142,22 +183,11 @@ void TemplateURLFetcher::RequestDelegate::OnSimpleLoaderComplete(
     return;
   }
 
-  template_url_ = TemplateURLParser::Parse(
-      fetcher_->template_url_service_->search_terms_data(),
-      response_body->data(), response_body->length(), nullptr);
-  if (!template_url_ ||
-      !template_url_->url_ref().SupportsReplacement(
-          fetcher_->template_url_service_->search_terms_data())) {
-    fetcher_->RequestCompleted(this);
-    // WARNING: RequestCompleted deletes us.
-    return;
-  }
-
-  // Wait for the model to be loaded before adding the provider.
-  if (!fetcher_->template_url_service_->loaded())
-    return;
-  AddSearchProvider();
-  // WARNING: AddSearchProvider deletes us.
+  TemplateURLParser::Parse(
+      &fetcher_->template_url_service_->search_terms_data(),
+      *response_body.get(), TemplateURLParser::ParameterFilter(),
+      base::BindOnce(&RequestDelegate::OnTemplateURLParsed,
+                     base::Unretained(this)));
 }
 
 void TemplateURLFetcher::RequestDelegate::AddSearchProvider() {
@@ -167,15 +197,11 @@ void TemplateURLFetcher::RequestDelegate::AddSearchProvider() {
   DCHECK(model);
   DCHECK(model->loaded());
 
-  const TemplateURL* existing_url = nullptr;
-  if (!model->CanAddAutogeneratedKeyword(keyword_, GURL(template_url_->url()),
-                                         &existing_url)) {
+  if (!model->CanAddAutogeneratedKeyword(keyword_,
+                                         GURL(template_url_->url()))) {
     fetcher_->RequestCompleted(this);  // WARNING: Deletes us!
     return;
   }
-
-  if (existing_url)
-    model->Remove(existing_url);
 
   // The short name is what is shown to the user. We preserve original names
   // since it is better when generated keyword in many cases.
@@ -188,6 +214,7 @@ void TemplateURLFetcher::RequestDelegate::AddSearchProvider() {
     data.favicon_url = favicon_url_;
 
   // Mark the keyword as replaceable so it can be removed if necessary.
+  // Add() will automatically remove conflicting keyword replaceable engines.
   data.safe_for_autoreplace = true;
   model->Add(std::make_unique<TemplateURL>(data));
 
@@ -204,13 +231,13 @@ TemplateURLFetcher::~TemplateURLFetcher() {
 }
 
 void TemplateURLFetcher::ScheduleDownload(
-    const base::string16& keyword,
+    const std::u16string& keyword,
     const GURL& osdd_url,
     const GURL& favicon_url,
     const url::Origin& initiator,
     network::mojom::URLLoaderFactory* url_loader_factory,
     int render_frame_id,
-    int resource_type) {
+    int32_t request_id) {
   DCHECK(osdd_url.is_valid());
   DCHECK(!keyword.empty());
 
@@ -235,7 +262,7 @@ void TemplateURLFetcher::ScheduleDownload(
 
   requests_.push_back(std::make_unique<RequestDelegate>(
       this, keyword, osdd_url, favicon_url, initiator, url_loader_factory,
-      render_frame_id, resource_type));
+      render_frame_id, request_id));
 }
 
 void TemplateURLFetcher::RequestCompleted(RequestDelegate* request) {

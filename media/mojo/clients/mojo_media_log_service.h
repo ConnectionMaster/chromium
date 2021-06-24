@@ -9,18 +9,18 @@
 
 #include "base/macros.h"
 #include "media/base/media_log.h"
-#include "media/mojo/interfaces/media_log.mojom.h"
+#include "media/mojo/mojom/media_log.mojom.h"
 
 namespace media {
 
 // Implementation of a mojom::MediaLog service which wraps a media::MediaLog.
-class MojoMediaLogService : public mojom::MediaLog {
+class MojoMediaLogService final : public mojom::MediaLog {
  public:
   explicit MojoMediaLogService(media::MediaLog* media_log);
   ~MojoMediaLogService() final;
 
   // mojom::MediaLog implementation
-  void AddEvent(const media::MediaLogEvent& event) final;
+  void AddLogRecord(const media::MediaLogRecord& event) final;
 
  private:
   media::MediaLog* media_log_;

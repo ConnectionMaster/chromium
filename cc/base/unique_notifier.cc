@@ -5,7 +5,7 @@
 #include "cc/base/unique_notifier.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/sequenced_task_runner.h"
 
@@ -15,8 +15,7 @@ UniqueNotifier::UniqueNotifier(base::SequencedTaskRunner* task_runner,
                                base::RepeatingClosure closure)
     : task_runner_(task_runner),
       closure_(std::move(closure)),
-      notification_pending_(false),
-      weak_ptr_factory_(this) {}
+      notification_pending_(false) {}
 
 UniqueNotifier::~UniqueNotifier() = default;
 

@@ -6,10 +6,10 @@
 
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/data_use_measurement/core/data_use_user_data.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -36,13 +36,6 @@ HandleResourceRequestWithPlaintextMimeType(
 }  // namespace
 
 class DataUseMetricsObserverBrowserTest : public InProcessBrowserTest {
- protected:
-  void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(
-        network::features::kNetworkService);
-    InProcessBrowserTest::SetUp();
-  }
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(DataUseMetricsObserverBrowserTest,

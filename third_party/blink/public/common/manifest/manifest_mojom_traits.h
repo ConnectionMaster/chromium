@@ -10,25 +10,26 @@
 #include <vector>
 
 #include "mojo/public/cpp/bindings/struct_traits.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/common_export.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 
 namespace mojo {
 namespace internal {
 
-inline base::StringPiece16 TruncateString16(const base::string16& string) {
+inline base::StringPiece16 TruncateString16(const std::u16string& string) {
   // We restrict the maximum length for all the strings inside the Manifest
   // when it is sent over Mojo. The renderer process truncates the strings
   // before sending the Manifest and the browser process validates that.
   return base::StringPiece16(string).substr(0, 4 * 1024);
 }
 
-inline base::Optional<base::StringPiece16> TruncateNullableString16(
-    const base::NullableString16& string) {
-  if (string.is_null())
-    return base::nullopt;
+inline absl::optional<base::StringPiece16> TruncateOptionalString16(
+    const absl::optional<std::u16string>& string) {
+  if (!string)
+    return absl::nullopt;
 
-  return TruncateString16(string.string());
+  return TruncateString16(*string);
 }
 
 }  // namespace internal
@@ -44,19 +45,29 @@ struct BLINK_COMMON_EXPORT
     *manifest = ::blink::Manifest();
   }
 
-  static base::Optional<base::StringPiece16> name(
+  static absl::optional<base::StringPiece16> name(
       const ::blink::Manifest& manifest) {
-    return internal::TruncateNullableString16(manifest.name);
+    return internal::TruncateOptionalString16(manifest.name);
   }
 
-  static base::Optional<base::StringPiece16> short_name(
+  static absl::optional<base::StringPiece16> short_name(
       const ::blink::Manifest& manifest) {
-    return internal::TruncateNullableString16(manifest.short_name);
+    return internal::TruncateOptionalString16(manifest.short_name);
   }
 
-  static base::Optional<base::StringPiece16> gcm_sender_id(
+  static absl::optional<base::StringPiece16> description(
       const ::blink::Manifest& manifest) {
-    return internal::TruncateNullableString16(manifest.gcm_sender_id);
+    return internal::TruncateOptionalString16(manifest.description);
+  }
+
+  static absl::optional<base::StringPiece16> id(
+      const ::blink::Manifest& manifest) {
+    return internal::TruncateOptionalString16(manifest.id);
+  }
+
+  static absl::optional<base::StringPiece16> gcm_sender_id(
+      const ::blink::Manifest& manifest) {
+    return internal::TruncateOptionalString16(manifest.gcm_sender_id);
   }
 
   static const GURL& start_url(const ::blink::Manifest& manifest) {
@@ -67,11 +78,16 @@ struct BLINK_COMMON_EXPORT
     return manifest.scope;
   }
 
-  static blink::WebDisplayMode display(const ::blink::Manifest& manifest) {
+  static blink::mojom::DisplayMode display(const ::blink::Manifest& manifest) {
     return manifest.display;
   }
 
-  static blink::WebScreenOrientationLockType orientation(
+  static const std::vector<blink::mojom::DisplayMode> display_override(
+      const ::blink::Manifest& manifest) {
+    return manifest.display_override;
+  }
+
+  static device::mojom::ScreenOrientationLockType orientation(
       const ::blink::Manifest& manifest) {
     return manifest.orientation;
   }
@@ -92,23 +108,44 @@ struct BLINK_COMMON_EXPORT
     return m.background_color.value_or(0);
   }
 
-  static const GURL& splash_screen_url(const ::blink::Manifest& manifest) {
-    return manifest.splash_screen_url;
-  }
-
   static const std::vector<::blink::Manifest::ImageResource>& icons(
       const ::blink::Manifest& manifest) {
     return manifest.icons;
   }
 
-  static const base::Optional<::blink::Manifest::ShareTarget>& share_target(
+  static const std::vector<::blink::Manifest::ImageResource>& screenshots(
+      const ::blink::Manifest& manifest) {
+    return manifest.screenshots;
+  }
+
+  static const std::vector<::blink::Manifest::ShortcutItem>& shortcuts(
+      const ::blink::Manifest& manifest) {
+    return manifest.shortcuts;
+  }
+
+  static const absl::optional<::blink::Manifest::ShareTarget>& share_target(
       const ::blink::Manifest& manifest) {
     return manifest.share_target;
   }
 
-  static const base::Optional<::blink::Manifest::FileHandler>& file_handler(
+  static const std::vector<::blink::Manifest::FileHandler>& file_handlers(
       const ::blink::Manifest& manifest) {
-    return manifest.file_handler;
+    return manifest.file_handlers;
+  }
+
+  static const std::vector<::blink::Manifest::ProtocolHandler>&
+  protocol_handlers(const ::blink::Manifest& manifest) {
+    return manifest.protocol_handlers;
+  }
+
+  static const std::vector<::blink::Manifest::UrlHandler>& url_handlers(
+      const ::blink::Manifest& manifest) {
+    return manifest.url_handlers;
+  }
+
+  static const absl::optional<::blink::Manifest::NoteTaking>& note_taking(
+      const ::blink::Manifest& manifest) {
+    return manifest.note_taking;
   }
 
   static const std::vector<::blink::Manifest::RelatedApplication>&
@@ -118,6 +155,15 @@ struct BLINK_COMMON_EXPORT
 
   static bool prefer_related_applications(const ::blink::Manifest& manifest) {
     return manifest.prefer_related_applications;
+  }
+
+  static blink::mojom::CaptureLinks capture_links(
+      const ::blink::Manifest& manifest) {
+    return manifest.capture_links;
+  }
+
+  static bool isolated_storage(const ::blink::Manifest& manifest) {
+    return manifest.isolated_storage;
   }
 
   static bool Read(blink::mojom::ManifestDataView data, ::blink::Manifest* out);
@@ -140,8 +186,8 @@ struct BLINK_COMMON_EXPORT
     return icon.sizes;
   }
 
-  static const std::vector<::blink::Manifest::ImageResource::Purpose>& purpose(
-      const ::blink::Manifest::ImageResource& icon) {
+  static const std::vector<::blink::mojom::ManifestImageResource_Purpose>&
+  purpose(const ::blink::Manifest::ImageResource& icon) {
     return icon.purpose;
   }
 
@@ -151,11 +197,43 @@ struct BLINK_COMMON_EXPORT
 
 template <>
 struct BLINK_COMMON_EXPORT
+    StructTraits<blink::mojom::ManifestShortcutItemDataView,
+                 ::blink::Manifest::ShortcutItem> {
+  static base::StringPiece16 name(
+      const ::blink::Manifest::ShortcutItem& shortcut) {
+    return internal::TruncateString16(shortcut.name);
+  }
+
+  static absl::optional<base::StringPiece16> short_name(
+      const ::blink::Manifest::ShortcutItem& shortcut) {
+    return internal::TruncateOptionalString16(shortcut.short_name);
+  }
+
+  static absl::optional<base::StringPiece16> description(
+      const ::blink::Manifest::ShortcutItem& shortcut) {
+    return internal::TruncateOptionalString16(shortcut.description);
+  }
+
+  static const GURL& url(const ::blink::Manifest::ShortcutItem& shortcut) {
+    return shortcut.url;
+  }
+
+  static const std::vector<::blink::Manifest::ImageResource>& icons(
+      const ::blink::Manifest::ShortcutItem& shortcut) {
+    return shortcut.icons;
+  }
+
+  static bool Read(blink::mojom::ManifestShortcutItemDataView data,
+                   ::blink::Manifest::ShortcutItem* out);
+};
+
+template <>
+struct BLINK_COMMON_EXPORT
     StructTraits<blink::mojom::ManifestRelatedApplicationDataView,
                  ::blink::Manifest::RelatedApplication> {
-  static base::Optional<base::StringPiece16> platform(
+  static absl::optional<base::StringPiece16> platform(
       const ::blink::Manifest::RelatedApplication& related_application) {
-    return internal::TruncateNullableString16(related_application.platform);
+    return internal::TruncateOptionalString16(related_application.platform);
   }
 
   static const GURL& url(
@@ -163,9 +241,9 @@ struct BLINK_COMMON_EXPORT
     return related_application.url;
   }
 
-  static base::Optional<base::StringPiece16> id(
+  static absl::optional<base::StringPiece16> id(
       const ::blink::Manifest::RelatedApplication& related_application) {
-    return internal::TruncateNullableString16(related_application.id);
+    return internal::TruncateOptionalString16(related_application.id);
   }
 
   static bool Read(blink::mojom::ManifestRelatedApplicationDataView data,
@@ -185,7 +263,7 @@ struct BLINK_COMMON_EXPORT
       const ::blink::Manifest::FileFilter& share_target_file) {
     std::vector<base::StringPiece16> accept_types;
 
-    for (const base::string16& accept_type : share_target_file.accept)
+    for (const std::u16string& accept_type : share_target_file.accept)
       accept_types.push_back(internal::TruncateString16(accept_type));
 
     return accept_types;
@@ -197,19 +275,37 @@ struct BLINK_COMMON_EXPORT
 
 template <>
 struct BLINK_COMMON_EXPORT
+    StructTraits<blink::mojom::ManifestUrlHandlerDataView,
+                 ::blink::Manifest::UrlHandler> {
+  static const url::Origin& origin(
+      const ::blink::Manifest::UrlHandler& url_handler) {
+    return url_handler.origin;
+  }
+
+  static bool has_origin_wildcard(
+      const ::blink::Manifest::UrlHandler& url_handler) {
+    return url_handler.has_origin_wildcard;
+  }
+
+  static bool Read(blink::mojom::ManifestUrlHandlerDataView data,
+                   ::blink::Manifest::UrlHandler* out);
+};
+
+template <>
+struct BLINK_COMMON_EXPORT
     StructTraits<blink::mojom::ManifestShareTargetParamsDataView,
                  ::blink::Manifest::ShareTargetParams> {
-  static const base::Optional<base::StringPiece16> text(
+  static const absl::optional<base::StringPiece16> text(
       const ::blink::Manifest::ShareTargetParams& share_target_params) {
-    return internal::TruncateNullableString16(share_target_params.text);
+    return internal::TruncateOptionalString16(share_target_params.text);
   }
-  static const base::Optional<base::StringPiece16> title(
+  static const absl::optional<base::StringPiece16> title(
       const ::blink::Manifest::ShareTargetParams& share_target_params) {
-    return internal::TruncateNullableString16(share_target_params.title);
+    return internal::TruncateOptionalString16(share_target_params.title);
   }
-  static const base::Optional<base::StringPiece16> url(
+  static const absl::optional<base::StringPiece16> url(
       const ::blink::Manifest::ShareTargetParams& share_target_params) {
-    return internal::TruncateNullableString16(share_target_params.url);
+    return internal::TruncateOptionalString16(share_target_params.url);
   }
   static const std::vector<blink::Manifest::FileFilter>& files(
       const ::blink::Manifest::ShareTargetParams& share_target_params) {
@@ -228,11 +324,11 @@ struct BLINK_COMMON_EXPORT
       const ::blink::Manifest::ShareTarget& share_target) {
     return share_target.action;
   }
-  static ::blink::Manifest::ShareTarget::Method method(
+  static ::blink::mojom::ManifestShareTarget_Method method(
       const ::blink::Manifest::ShareTarget& share_target) {
     return share_target.method;
   }
-  static ::blink::Manifest::ShareTarget::Enctype enctype(
+  static ::blink::mojom::ManifestShareTarget_Enctype enctype(
       const ::blink::Manifest::ShareTarget& share_target) {
     return share_target.enctype;
   }
@@ -246,95 +342,52 @@ struct BLINK_COMMON_EXPORT
 
 template <>
 struct BLINK_COMMON_EXPORT
-    EnumTraits<blink::mojom::ManifestImageResource_Purpose,
-               ::blink::Manifest::ImageResource::Purpose> {
-  static blink::mojom::ManifestImageResource_Purpose ToMojom(
-      ::blink::Manifest::ImageResource::Purpose purpose) {
-    switch (purpose) {
-      case ::blink::Manifest::ImageResource::Purpose::ANY:
-        return blink::mojom::ManifestImageResource_Purpose::ANY;
-      case ::blink::Manifest::ImageResource::Purpose::BADGE:
-        return blink::mojom::ManifestImageResource_Purpose::BADGE;
-      case ::blink::Manifest::ImageResource::Purpose::MASKABLE:
-        return blink::mojom::ManifestImageResource_Purpose::MASKABLE;
-    }
-    NOTREACHED();
-    return blink::mojom::ManifestImageResource_Purpose::ANY;
+    StructTraits<blink::mojom::ManifestFileHandlerDataView,
+                 ::blink::Manifest::FileHandler> {
+  static const GURL& action(const ::blink::Manifest::FileHandler& entry) {
+    return entry.action;
   }
-  static bool FromMojom(blink::mojom::ManifestImageResource_Purpose input,
-                        ::blink::Manifest::ImageResource::Purpose* out) {
-    switch (input) {
-      case blink::mojom::ManifestImageResource_Purpose::ANY:
-        *out = ::blink::Manifest::ImageResource::Purpose::ANY;
-        return true;
-      case blink::mojom::ManifestImageResource_Purpose::BADGE:
-        *out = ::blink::Manifest::ImageResource::Purpose::BADGE;
-        return true;
-      case blink::mojom::ManifestImageResource_Purpose::MASKABLE:
-        *out = ::blink::Manifest::ImageResource::Purpose::MASKABLE;
-        return true;
-    }
 
-    return false;
+  static const std::u16string& name(
+      const ::blink::Manifest::FileHandler& entry) {
+    return entry.name;
   }
+
+  static const std::map<std::u16string, std::vector<std::u16string>>& accept(
+      const ::blink::Manifest::FileHandler& entry) {
+    return entry.accept;
+  }
+
+  static bool Read(blink::mojom::ManifestFileHandlerDataView data,
+                   ::blink::Manifest::FileHandler* out);
 };
 
 template <>
-struct BLINK_COMMON_EXPORT EnumTraits<blink::mojom::ManifestShareTarget_Method,
-                                      ::blink::Manifest::ShareTarget::Method> {
-  static blink::mojom::ManifestShareTarget_Method ToMojom(
-      ::blink::Manifest::ShareTarget::Method method) {
-    switch (method) {
-      case ::blink::Manifest::ShareTarget::Method::kGet:
-        return blink::mojom::ManifestShareTarget_Method::kGet;
-      case ::blink::Manifest::ShareTarget::Method::kPost:
-        return blink::mojom::ManifestShareTarget_Method::kPost;
-    }
-    NOTREACHED();
-    return blink::mojom::ManifestShareTarget_Method::kGet;
+struct BLINK_COMMON_EXPORT
+    StructTraits<blink::mojom::ManifestProtocolHandlerDataView,
+                 ::blink::Manifest::ProtocolHandler> {
+  static base::StringPiece16 protocol(
+      const ::blink::Manifest::ProtocolHandler& protocol) {
+    return internal::TruncateString16(protocol.protocol);
   }
-  static bool FromMojom(blink::mojom::ManifestShareTarget_Method input,
-                        ::blink::Manifest::ShareTarget::Method* out) {
-    switch (input) {
-      case blink::mojom::ManifestShareTarget_Method::kGet:
-        *out = ::blink::Manifest::ShareTarget::Method::kGet;
-        return true;
-      case blink::mojom::ManifestShareTarget_Method::kPost:
-        *out = ::blink::Manifest::ShareTarget::Method::kPost;
-        return true;
-    }
-
-    return false;
+  static const GURL& url(const ::blink::Manifest::ProtocolHandler& protocol) {
+    return protocol.url;
   }
+  static bool Read(blink::mojom::ManifestProtocolHandlerDataView data,
+                   ::blink::Manifest::ProtocolHandler* out);
 };
 
 template <>
-struct BLINK_COMMON_EXPORT EnumTraits<blink::mojom::ManifestShareTarget_Enctype,
-                                      ::blink::Manifest::ShareTarget::Enctype> {
-  static blink::mojom::ManifestShareTarget_Enctype ToMojom(
-      ::blink::Manifest::ShareTarget::Enctype enctype) {
-    switch (enctype) {
-      case ::blink::Manifest::ShareTarget::Enctype::kApplication:
-        return blink::mojom::ManifestShareTarget_Enctype::kApplication;
-      case ::blink::Manifest::ShareTarget::Enctype::kMultipart:
-        return blink::mojom::ManifestShareTarget_Enctype::kMultipart;
-    }
-    NOTREACHED();
-    return blink::mojom::ManifestShareTarget_Enctype::kApplication;
+struct BLINK_COMMON_EXPORT
+    StructTraits<blink::mojom::ManifestNoteTakingDataView,
+                 ::blink::Manifest::NoteTaking> {
+  static const GURL new_note_url(
+      const ::blink::Manifest::NoteTaking& note_taking) {
+    return note_taking.new_note_url;
   }
-  static bool FromMojom(blink::mojom::ManifestShareTarget_Enctype input,
-                        ::blink::Manifest::ShareTarget::Enctype* out) {
-    switch (input) {
-      case blink::mojom::ManifestShareTarget_Enctype::kApplication:
-        *out = ::blink::Manifest::ShareTarget::Enctype::kApplication;
-        return true;
-      case blink::mojom::ManifestShareTarget_Enctype::kMultipart:
-        *out = ::blink::Manifest::ShareTarget::Enctype::kMultipart;
-        return true;
-    }
 
-    return false;
-  }
+  static bool Read(blink::mojom::ManifestNoteTakingDataView data,
+                   ::blink::Manifest::NoteTaking* out);
 };
 
 }  // namespace mojo

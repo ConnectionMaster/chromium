@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "components/search_engines/default_search_manager.h"
@@ -14,17 +15,27 @@
 #include "components/search_engines/template_url_data.h"
 #include "url/gurl.h"
 
+namespace {
+
+// Converts the C-style string `str` to a base::StringPiece making sure to avoid
+// dereferencing nullptrs.
+base::StringPiece ToStringPiece(const char* str) {
+  return str ? base::StringPiece(str) : base::StringPiece();
+}
+
+}  // namespace
+
 std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
     const base::DictionaryValue& dict) {
   std::string search_url;
-  base::string16 keyword;
-  base::string16 short_name;
+  std::u16string keyword;
+  std::u16string short_name;
   dict.GetString(DefaultSearchManager::kURL, &search_url);
   dict.GetString(DefaultSearchManager::kKeyword, &keyword);
   dict.GetString(DefaultSearchManager::kShortName, &short_name);
   // Check required TemplateURLData fields first.
   if (search_url.empty() || keyword.empty() || short_name.empty())
-    return std::unique_ptr<TemplateURLData>();
+    return nullptr;
 
   auto result = std::make_unique<TemplateURLData>();
   result->SetKeyword(keyword);
@@ -90,7 +101,7 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
 
   const base::ListValue* alternate_urls = nullptr;
   if (dict.GetList(DefaultSearchManager::kAlternateURLs, &alternate_urls)) {
-    for (const auto& it : *alternate_urls) {
+    for (const auto& it : alternate_urls->GetList()) {
       std::string alternate_url;
       if (it.GetAsString(&alternate_url))
         result->alternate_urls.push_back(std::move(alternate_url));
@@ -99,7 +110,7 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
 
   const base::ListValue* encodings = nullptr;
   if (dict.GetList(DefaultSearchManager::kInputEncodings, &encodings)) {
-    for (const auto& it : *encodings) {
+    for (const auto& it : encodings->GetList()) {
       std::string encoding;
       if (it.GetAsString(&encoding))
         result->input_encodings.push_back(std::move(encoding));
@@ -108,6 +119,8 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
 
   dict.GetBoolean(DefaultSearchManager::kCreatedByPolicy,
                   &result->created_by_policy);
+  dict.GetBoolean(DefaultSearchManager::kCreatedFromPlayAPI,
+                  &result->created_from_play_api);
   return result;
 }
 
@@ -170,6 +183,8 @@ std::unique_ptr<base::DictionaryValue> TemplateURLDataToDictionary(
 
   url_dict->SetBoolean(DefaultSearchManager::kCreatedByPolicy,
                        data.created_by_policy);
+  url_dict->SetBoolean(DefaultSearchManager::kCreatedFromPlayAPI,
+                       data.created_from_play_api);
   return url_dict;
 }
 
@@ -183,17 +198,21 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromPrepopulatedEngine(
 
   return std::make_unique<TemplateURLData>(
       base::WideToUTF16(engine.name), base::WideToUTF16(engine.keyword),
-      engine.search_url, engine.suggest_url, engine.image_url,
-      engine.new_tab_url, engine.contextual_search_url, engine.logo_url,
-      engine.doodle_url, engine.search_url_post_params,
-      engine.suggest_url_post_params, engine.image_url_post_params,
-      engine.favicon_url, engine.encoding, alternate_urls, engine.id);
+      ToStringPiece(engine.search_url), ToStringPiece(engine.suggest_url),
+      ToStringPiece(engine.image_url), ToStringPiece(engine.new_tab_url),
+      ToStringPiece(engine.contextual_search_url),
+      ToStringPiece(engine.logo_url), ToStringPiece(engine.doodle_url),
+      ToStringPiece(engine.search_url_post_params),
+      ToStringPiece(engine.suggest_url_post_params),
+      ToStringPiece(engine.image_url_post_params),
+      ToStringPiece(engine.favicon_url), ToStringPiece(engine.encoding),
+      alternate_urls, engine.id);
 }
 
 std::unique_ptr<TemplateURLData> TemplateURLDataFromOverrideDictionary(
     const base::DictionaryValue& engine) {
-  base::string16 name;
-  base::string16 keyword;
+  std::u16string name;
+  std::u16string keyword;
   std::string search_url;
   std::string favicon_url;
   std::string encoding;
@@ -233,5 +252,5 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromOverrideDictionary(
         suggest_url_post_params, image_url_post_params, favicon_url, encoding,
         *alternate_urls, id);
   }
-  return std::unique_ptr<TemplateURLData>();
+  return nullptr;
 }

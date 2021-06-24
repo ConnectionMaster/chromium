@@ -6,8 +6,10 @@
 
 import os, re, json
 
+USE_PYTHON3 = True
+
 AX_MOJOM = 'ui/accessibility/ax_enums.mojom'
-AUTOMATION_IDL = 'chrome/common/extensions/api/automation.idl'
+AUTOMATION_IDL = 'extensions/common/api/automation.idl'
 
 AX_JS_FILE = 'chrome/browser/resources/accessibility/accessibility.js'
 AX_MODE_HEADER = 'ui/accessibility/ax_mode.h'
@@ -34,6 +36,9 @@ def GetEnumsFromFile(fullpath):
     # Strip out comments
     line = re.sub('//.*', '', line)
 
+    # Strip out mojo annotations.
+    line = re.sub('\[(.*)\]', '', line)
+
     # Look for lines of the form "enum ENUM_NAME {" and get the enum_name
     m = re.search('enum ([\w]+) {', line)
     if m:
@@ -59,8 +64,6 @@ def GetEnumsFromFile(fullpath):
         enum_value = CamelToLowerHacker(enum_value[1:])
       if enum_value == 'none' or enum_value == 'last':
         continue
-      if enum_value == 'active_descendant_changed':
-        enum_value = 'activedescendantchanged'
       enums[enum_name].append(enum_value)
 
   return enums
@@ -71,7 +74,8 @@ def CheckMatchingEnum(ax_enums,
                       automation_enum_name,
                       errs,
                       output_api,
-                      strict_ordering=False):
+                      strict_ordering=False,
+                      allow_extra_destination_enums=False):
   if ax_enum_name not in ax_enums:
     errs.append(output_api.PresubmitError(
         'Expected %s to have an enum named %s' % (AX_MOJOM, ax_enum_name)))
@@ -113,12 +117,13 @@ def CheckMatchingEnum(ax_enums,
               automation_enum_name, InitialLowerCamelCase(value),
               AUTOMATION_IDL)))
   #  Should be no remaining items
-  for value in dst:
-      errs.append(output_api.PresubmitError(
-          'Found %s.%s in %s, but did not find %s.%s in %s' % (
-              automation_enum_name, value, AUTOMATION_IDL,
-              ax_enum_name, InitialLowerCamelCase(value),
-              AX_MOJOM)))
+  if not allow_extra_destination_enums:
+      for value in dst:
+          errs.append(output_api.PresubmitError(
+              'Found %s.%s in %s, but did not find %s.%s in %s' % (
+                  automation_enum_name, value, AUTOMATION_IDL,
+                  ax_enum_name, InitialLowerCamelCase(value),
+                  AX_MOJOM)))
 
 def CheckEnumsMatch(input_api, output_api):
   repo_root = input_api.change.RepositoryRoot()
@@ -138,13 +143,31 @@ def CheckEnumsMatch(input_api, output_api):
   CheckMatchingEnum(ax_enums, 'Action', automation_enums, 'ActionType', errs,
                     output_api, strict_ordering=True)
   CheckMatchingEnum(ax_enums, 'Event', automation_enums, 'EventType', errs,
-                    output_api)
+                    output_api, allow_extra_destination_enums=True)
   CheckMatchingEnum(ax_enums, 'NameFrom', automation_enums, 'NameFromType',
                     errs, output_api)
+  CheckMatchingEnum(ax_enums, 'DescriptionFrom', automation_enums,
+                    'DescriptionFromType', errs, output_api)
   CheckMatchingEnum(ax_enums, 'Restriction', automation_enums,
                    'Restriction', errs, output_api)
   CheckMatchingEnum(ax_enums, 'DefaultActionVerb', automation_enums,
                    'DefaultActionVerb', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'MarkerType', automation_enums,
+                   'MarkerType', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'Command', automation_enums,
+                   'IntentCommandType', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'InputEventType', automation_enums,
+                   'IntentInputEventType', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'TextBoundary', automation_enums,
+                   'IntentTextBoundaryType', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'MoveDirection', automation_enums,
+                   'IntentMoveDirectionType', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'SortDirection', automation_enums,
+                   'SortDirectionType', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'HasPopup', automation_enums,
+                   'HasPopup', errs, output_api)
+  CheckMatchingEnum(ax_enums, 'AriaCurrentState', automation_enums,
+                   'AriaCurrentState', errs, output_api)
   return errs
 
 # Given a full path to c++ header, return an array of the first static
@@ -243,7 +266,3 @@ def CheckChangeOnCommit(input_api, output_api):
       errs.extend(CheckModesMatch(input_api, output_api))
 
   return errs
-
-# Run this script directly to dump its keys, for debugging.
-if __name__ == '__main__':
-  print json.dumps(GetEnumsFromFile(AX_MOJOM), sort_keys=True, indent=4)

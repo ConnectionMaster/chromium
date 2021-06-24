@@ -4,8 +4,12 @@
 
 #include "components/viz/service/display/software_output_device.h"
 
-#include "base/logging.h"
+#include <utility>
+
+#include "base/bind.h"
+#include "base/check.h"
 #include "base/threading/sequenced_task_runner_handle.h"
+#include "skia/ext/legacy_display_globals.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "ui/gfx/vsync_provider.h"
 
@@ -35,7 +39,8 @@ void SoftwareOutputDevice::Resize(const gfx::Size& viewport_pixel_size,
       SkImageInfo::MakeN32(viewport_pixel_size.width(),
                            viewport_pixel_size.height(), kOpaque_SkAlphaType);
   viewport_pixel_size_ = viewport_pixel_size;
-  surface_ = SkSurface::MakeRaster(info);
+  SkSurfaceProps props = skia::LegacyDisplayGlobals::GetSkSurfaceProps();
+  surface_ = SkSurface::MakeRaster(info, &props);
 }
 
 SkCanvas* SoftwareOutputDevice::BeginPaint(const gfx::Rect& damage_rect) {
@@ -49,8 +54,14 @@ gfx::VSyncProvider* SoftwareOutputDevice::GetVSyncProvider() {
   return vsync_provider_.get();
 }
 
-void SoftwareOutputDevice::OnSwapBuffers(base::OnceClosure swap_ack_callback) {
-  task_runner_->PostTask(FROM_HERE, std::move(swap_ack_callback));
+void SoftwareOutputDevice::OnSwapBuffers(
+    SwapBuffersCallback swap_ack_callback) {
+  task_runner_->PostTask(FROM_HERE, base::BindOnce(std::move(swap_ack_callback),
+                                                   viewport_pixel_size_));
+}
+
+int SoftwareOutputDevice::MaxFramesPending() const {
+  return 1;
 }
 
 }  // namespace viz

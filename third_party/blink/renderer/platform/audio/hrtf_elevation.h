@@ -31,11 +31,9 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/platform/audio/hrtf_kernel.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -48,15 +46,13 @@ class PLATFORM_EXPORT HRTFElevation {
 
  public:
   // Loads and returns an HRTFElevation with the given HRTF database subject
-  // name and elevation from browser (or WebKit.framework) resources.
+  // id and elevation from browser (or WebKit.framework) resources.
   // Normally, there will only be a single HRTF database set, but this API
   // supports the possibility of multiple ones with different names.
   // Interpolated azimuths will be generated based on InterpolationFactor.
   // Valid values for elevation are -45 -> +90 in 15 degree increments.
-  static std::unique_ptr<HRTFElevation> CreateForSubject(
-      const String& subject_name,
-      int elevation,
-      float sample_rate);
+  static std::unique_ptr<HRTFElevation>
+  CreateForSubject(int subject_resource_id, int elevation, float sample_rate);
 
   // Given two HRTFElevations, and an interpolation factor x: 0 -> 1, returns an
   // interpolated HRTFElevation.
@@ -65,6 +61,9 @@ class PLATFORM_EXPORT HRTFElevation {
       HRTFElevation* hrtf_elevation2,
       float x,
       float sample_rate);
+
+  HRTFElevation(const HRTFElevation&) = delete;
+  HRTFElevation& operator=(const HRTFElevation&) = delete;
 
   // Returns the list of left or right ear HRTFKernels for all the azimuths
   // going from 0 to 360 degrees.
@@ -107,7 +106,7 @@ class PLATFORM_EXPORT HRTFElevation {
       int azimuth,
       int elevation,
       float sample_rate,
-      const String& subject_name,
+      int subject_resource_id,
       std::unique_ptr<HRTFKernel>& kernel_l,
       std::unique_ptr<HRTFKernel>& kernel_r);
 
@@ -125,8 +124,6 @@ class PLATFORM_EXPORT HRTFElevation {
   std::unique_ptr<HRTFKernelList> kernel_list_r_;
   double elevation_angle_;
   float sample_rate_;
-
-  DISALLOW_COPY_AND_ASSIGN(HRTFElevation);
 };
 
 }  // namespace blink

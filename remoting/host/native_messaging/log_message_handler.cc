@@ -6,6 +6,7 @@
 
 #include "base/bind.h"
 #include "base/lazy_instance.h"
+#include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
@@ -25,12 +26,10 @@ base::LazyInstance<base::Lock>::Leaky g_log_message_handler_lock =
 LogMessageHandler* g_log_message_handler = nullptr;
 }  // namespace
 
-LogMessageHandler::LogMessageHandler(
-    const Delegate& delegate)
+LogMessageHandler::LogMessageHandler(const Delegate& delegate)
     : delegate_(delegate),
       suppress_logging_(false),
-      caller_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      weak_ptr_factory_(this) {
+      caller_task_runner_(base::ThreadTaskRunnerHandle::Get()) {
   base::AutoLock lock(g_log_message_handler_lock.Get());
   if (g_log_message_handler) {
     LOG(FATAL) << "LogMessageHandler is already registered. Only one instance "

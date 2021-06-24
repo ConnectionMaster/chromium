@@ -3,22 +3,22 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/css/font_face_cache.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/css_font_face_src_value.h"
 #include "third_party/blink/renderer/core/css/css_font_family_value.h"
 #include "third_party/blink/renderer/core/css/css_font_style_range_value.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_segmented_font_face.h"
 #include "third_party/blink/renderer/core/css/css_value_list.h"
 #include "third_party/blink/renderer/core/css/font_face.h"
 #include "third_party/blink/renderer/core/css/style_rule.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
-
-using namespace cssvalue;
 
 class FontFaceCacheTest : public PageTestBase {
   USING_FAST_MALLOC(FontFaceCacheTest);
@@ -41,9 +41,7 @@ class FontFaceCacheTest : public PageTestBase {
                                             FontSelectionValue style,
                                             FontSelectionValue weight);
 
-  FontFaceCache cache_;
-
-  void Trace(blink::Visitor*);
+  Persistent<FontFaceCache> cache_;
 
  protected:
   const AtomicString kFontNameForTesting{"Arial"};
@@ -51,11 +49,12 @@ class FontFaceCacheTest : public PageTestBase {
 
 void FontFaceCacheTest::SetUp() {
   PageTestBase::SetUp();
+  cache_ = MakeGarbageCollected<FontFaceCache>();
   ClearCache();
 }
 
 void FontFaceCacheTest::ClearCache() {
-  cache_.ClearAll();
+  cache_->ClearAll();
 }
 
 void FontFaceCacheTest::AppendTestFaceForCapabilities(const CSSValue& stretch,
@@ -64,14 +63,16 @@ void FontFaceCacheTest::AppendTestFaceForCapabilities(const CSSValue& stretch,
   CSSFontFamilyValue* family_name =
       CSSFontFamilyValue::Create(kFontNameForTesting);
   CSSFontFaceSrcValue* src = CSSFontFaceSrcValue::CreateLocal(
-      kFontNameForTesting, kDoNotCheckContentSecurityPolicy);
+      kFontNameForTesting, nullptr /* world */, OriginClean::kTrue,
+      false /* is_ad_related */);
   CSSValueList* src_value_list = CSSValueList::CreateCommaSeparated();
   src_value_list->Append(*src);
   CSSPropertyValue properties[] = {
-      CSSPropertyValue(GetCSSPropertyFontFamily(), *family_name),
-      CSSPropertyValue(GetCSSPropertySrc(), *src_value_list)};
-  MutableCSSPropertyValueSet* font_face_descriptor =
-      MutableCSSPropertyValueSet::Create(properties, base::size(properties));
+      CSSPropertyValue(CSSPropertyName(CSSPropertyID::kFontFamily),
+                       *family_name),
+      CSSPropertyValue(CSSPropertyName(CSSPropertyID::kSrc), *src_value_list)};
+  auto* font_face_descriptor = MakeGarbageCollected<MutableCSSPropertyValueSet>(
+      properties, base::size(properties));
 
   font_face_descriptor->SetProperty(CSSPropertyID::kFontStretch, stretch);
   font_face_descriptor->SetProperty(CSSPropertyID::kFontStyle, style);
@@ -81,7 +82,7 @@ void FontFaceCacheTest::AppendTestFaceForCapabilities(const CSSValue& stretch,
       MakeGarbageCollected<StyleRuleFontFace>(font_face_descriptor);
   FontFace* font_face = FontFace::Create(&GetDocument(), style_rule_font_face);
   CHECK(font_face);
-  cache_.Add(style_rule_font_face, font_face);
+  cache_->Add(style_rule_font_face, font_face);
 }
 
 void FontFaceCacheTest::AppendTestFaceForCapabilities(
@@ -114,7 +115,7 @@ TEST_F(FontFaceCacheTest, Instantiate) {
       CSSIdentifierValue::Create(CSSValueID::kUltraExpanded);
   CSSIdentifierValue* stretch_value_condensed =
       CSSIdentifierValue::Create(CSSValueID::kCondensed);
-  CSSPrimitiveValue* weight_value = CSSPrimitiveValue::Create(
+  CSSPrimitiveValue* weight_value = CSSNumericLiteralValue::Create(
       BoldWeightValue(), CSSPrimitiveValue::UnitType::kNumber);
   CSSIdentifierValue* style_value =
       CSSIdentifierValue::Create(CSSValueID::kItalic);
@@ -123,7 +124,7 @@ TEST_F(FontFaceCacheTest, Instantiate) {
                                 *weight_value);
   AppendTestFaceForCapabilities(*stretch_value_condensed, *style_value,
                                 *weight_value);
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 }
 
 TEST_F(FontFaceCacheTest, SimpleWidthMatch) {
@@ -131,7 +132,7 @@ TEST_F(FontFaceCacheTest, SimpleWidthMatch) {
       CSSIdentifierValue::Create(CSSValueID::kUltraExpanded);
   CSSIdentifierValue* stretch_value_condensed =
       CSSIdentifierValue::Create(CSSValueID::kCondensed);
-  CSSPrimitiveValue* weight_value = CSSPrimitiveValue::Create(
+  CSSPrimitiveValue* weight_value = CSSNumericLiteralValue::Create(
       NormalWeightValue(), CSSPrimitiveValue::UnitType::kNumber);
   CSSIdentifierValue* style_value =
       CSSIdentifierValue::Create(CSSValueID::kNormal);
@@ -139,12 +140,12 @@ TEST_F(FontFaceCacheTest, SimpleWidthMatch) {
                                 *weight_value);
   AppendTestFaceForCapabilities(*stretch_value_condensed, *style_value,
                                 *weight_value);
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 
   const FontDescription& description_condensed = FontDescriptionForRequest(
       CondensedWidthValue(), NormalSlopeValue(), NormalWeightValue());
   CSSSegmentedFontFace* result =
-      cache_.Get(description_condensed, kFontNameForTesting);
+      cache_->Get(description_condensed, kFontNameForTesting);
   ASSERT_TRUE(result);
 
   FontSelectionCapabilities result_capabilities =
@@ -163,19 +164,19 @@ TEST_F(FontFaceCacheTest, SimpleWeightMatch) {
   CSSIdentifierValue* style_value =
       CSSIdentifierValue::Create(CSSValueID::kNormal);
   CSSPrimitiveValue* weight_value_black =
-      CSSPrimitiveValue::Create(900, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(900, CSSPrimitiveValue::UnitType::kNumber);
   AppendTestFaceForCapabilities(*stretch_value, *style_value,
                                 *weight_value_black);
   CSSPrimitiveValue* weight_value_thin =
-      CSSPrimitiveValue::Create(100, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(100, CSSPrimitiveValue::UnitType::kNumber);
   AppendTestFaceForCapabilities(*stretch_value, *style_value,
                                 *weight_value_thin);
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 
   const FontDescription& description_bold = FontDescriptionForRequest(
       NormalWidthValue(), NormalSlopeValue(), BoldWeightValue());
   CSSSegmentedFontFace* result =
-      cache_.Get(description_bold, kFontNameForTesting);
+      cache_->Get(description_bold, kFontNameForTesting);
   ASSERT_TRUE(result);
   FontSelectionCapabilities result_capabilities =
       result->GetFontSelectionCapabilities();
@@ -233,8 +234,9 @@ TEST_F(FontFaceCacheTest, DISABLED_MatchCombinations) {
   CSSValue* slopes[] = {CSSIdentifierValue::Create(CSSValueID::kNormal),
                         CSSIdentifierValue::Create(CSSValueID::kItalic)};
   CSSValue* weights[] = {
-      CSSPrimitiveValue::Create(100, CSSPrimitiveValue::UnitType::kNumber),
-      CSSPrimitiveValue::Create(900, CSSPrimitiveValue::UnitType::kNumber)};
+      CSSNumericLiteralValue::Create(100, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(900,
+                                     CSSPrimitiveValue::UnitType::kNumber)};
 
   Vector<FontSelectionValue> width_choices = {CondensedWidthValue(),
                                               ExpandedWidthValue()};
@@ -269,7 +271,7 @@ TEST_F(FontFaceCacheTest, DISABLED_MatchCombinations) {
         }
         for (FontDescription& test_description : test_descriptions) {
           CSSSegmentedFontFace* result =
-              cache_.Get(test_description, kFontNameForTesting);
+              cache_->Get(test_description, kFontNameForTesting);
           ASSERT_TRUE(result);
           FontSelectionCapabilities result_capabilities =
               result->GetFontSelectionCapabilities();
@@ -294,30 +296,30 @@ TEST_F(FontFaceCacheTest, WidthRangeMatching) {
   CSSIdentifierValue* style_value =
       CSSIdentifierValue::Create(CSSValueID::kNormal);
   CSSPrimitiveValue* weight_value_from =
-      CSSPrimitiveValue::Create(700, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(700, CSSPrimitiveValue::UnitType::kNumber);
   CSSPrimitiveValue* weight_value_to =
-      CSSPrimitiveValue::Create(800, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(800, CSSPrimitiveValue::UnitType::kNumber);
   CSSValueList* weight_list = CSSValueList::CreateSpaceSeparated();
   weight_list->Append(*weight_value_from);
   weight_list->Append(*weight_value_to);
   AppendTestFaceForCapabilities(*stretch_value, *style_value, *weight_list);
 
   CSSPrimitiveValue* second_weight_value_from =
-      CSSPrimitiveValue::Create(100, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(100, CSSPrimitiveValue::UnitType::kNumber);
   CSSPrimitiveValue* second_weight_value_to =
-      CSSPrimitiveValue::Create(200, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(200, CSSPrimitiveValue::UnitType::kNumber);
   CSSValueList* second_weight_list = CSSValueList::CreateSpaceSeparated();
   second_weight_list->Append(*second_weight_value_from);
   second_weight_list->Append(*second_weight_value_to);
   AppendTestFaceForCapabilities(*stretch_value, *style_value,
                                 *second_weight_list);
 
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 
   const FontDescription& description_bold = FontDescriptionForRequest(
       NormalWidthValue(), NormalSlopeValue(), BoldWeightValue());
   CSSSegmentedFontFace* result =
-      cache_.Get(description_bold, kFontNameForTesting);
+      cache_->Get(description_bold, kFontNameForTesting);
   ASSERT_TRUE(result);
   FontSelectionCapabilities result_capabilities =
       result->GetFontSelectionCapabilities();
@@ -339,15 +341,15 @@ TEST_F(FontFaceCacheTest, WidthRangeMatchingBetween400500) {
       CSSIdentifierValue::Create(CSSValueID::kNormal);
 
   CSSPrimitiveValue* weight_values_lower[] = {
-      CSSPrimitiveValue::Create(600, CSSPrimitiveValue::UnitType::kNumber),
-      CSSPrimitiveValue::Create(415, CSSPrimitiveValue::UnitType::kNumber),
-      CSSPrimitiveValue::Create(475, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(600, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(415, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(475, CSSPrimitiveValue::UnitType::kNumber),
   };
 
   CSSPrimitiveValue* weight_values_upper[] = {
-      CSSPrimitiveValue::Create(610, CSSPrimitiveValue::UnitType::kNumber),
-      CSSPrimitiveValue::Create(425, CSSPrimitiveValue::UnitType::kNumber),
-      CSSPrimitiveValue::Create(485, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(610, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(425, CSSPrimitiveValue::UnitType::kNumber),
+      CSSNumericLiteralValue::Create(485, CSSPrimitiveValue::UnitType::kNumber),
   };
 
   // From https://drafts.csswg.org/css-fonts-4/#font-style-matching: "If the
@@ -362,14 +364,14 @@ TEST_F(FontFaceCacheTest, WidthRangeMatchingBetween400500) {
                                 *(weight_values_lower[0]),
                                 *(weight_values_upper[0]));
 
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 1ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 1ul);
 
   FontSelectionValue test_weight(450);
 
   const FontDescription& description_expanded = FontDescriptionForRequest(
       NormalWidthValue(), NormalSlopeValue(), test_weight);
   CSSSegmentedFontFace* result =
-      cache_.Get(description_expanded, kFontNameForTesting);
+      cache_->Get(description_expanded, kFontNameForTesting);
   ASSERT_TRUE(result);
   ASSERT_EQ(result->GetFontSelectionCapabilities().weight.minimum,
             FontSelectionValue(600));
@@ -377,9 +379,9 @@ TEST_F(FontFaceCacheTest, WidthRangeMatchingBetween400500) {
   AppendTestFaceForCapabilities(*stretch_value, *style_value,
                                 *(weight_values_lower[1]),
                                 *(weight_values_upper[1]));
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 
-  result = cache_.Get(description_expanded, kFontNameForTesting);
+  result = cache_->Get(description_expanded, kFontNameForTesting);
   ASSERT_TRUE(result);
   ASSERT_EQ(result->GetFontSelectionCapabilities().weight.minimum,
             FontSelectionValue(415));
@@ -387,23 +389,23 @@ TEST_F(FontFaceCacheTest, WidthRangeMatchingBetween400500) {
   AppendTestFaceForCapabilities(*stretch_value, *style_value,
                                 *(weight_values_lower[2]),
                                 *(weight_values_upper[2]));
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 3ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 3ul);
 
-  result = cache_.Get(description_expanded, kFontNameForTesting);
+  result = cache_->Get(description_expanded, kFontNameForTesting);
   ASSERT_TRUE(result);
   ASSERT_EQ(result->GetFontSelectionCapabilities().weight.minimum,
             FontSelectionValue(475));
 }
 
 TEST_F(FontFaceCacheTest, StretchRangeMatching) {
-  CSSPrimitiveValue* stretch_value_from =
-      CSSPrimitiveValue::Create(65, CSSPrimitiveValue::UnitType::kPercentage);
-  CSSPrimitiveValue* stretch_value_to =
-      CSSPrimitiveValue::Create(70, CSSPrimitiveValue::UnitType::kPercentage);
+  CSSPrimitiveValue* stretch_value_from = CSSNumericLiteralValue::Create(
+      65, CSSPrimitiveValue::UnitType::kPercentage);
+  CSSPrimitiveValue* stretch_value_to = CSSNumericLiteralValue::Create(
+      70, CSSPrimitiveValue::UnitType::kPercentage);
   CSSIdentifierValue* style_value =
       CSSIdentifierValue::Create(CSSValueID::kNormal);
   CSSPrimitiveValue* weight_value =
-      CSSPrimitiveValue::Create(400, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(400, CSSPrimitiveValue::UnitType::kNumber);
   CSSValueList* stretch_list = CSSValueList::CreateSpaceSeparated();
   stretch_list->Append(*stretch_value_from);
   stretch_list->Append(*stretch_value_to);
@@ -411,9 +413,9 @@ TEST_F(FontFaceCacheTest, StretchRangeMatching) {
 
   const float kStretchFrom = 110;
   const float kStretchTo = 120;
-  CSSPrimitiveValue* second_stretch_value_from = CSSPrimitiveValue::Create(
+  CSSPrimitiveValue* second_stretch_value_from = CSSNumericLiteralValue::Create(
       kStretchFrom, CSSPrimitiveValue::UnitType::kPercentage);
-  CSSPrimitiveValue* second_stretch_value_to = CSSPrimitiveValue::Create(
+  CSSPrimitiveValue* second_stretch_value_to = CSSNumericLiteralValue::Create(
       kStretchTo, CSSPrimitiveValue::UnitType::kPercentage);
   CSSValueList* second_stretch_list = CSSValueList::CreateSpaceSeparated();
   second_stretch_list->Append(*second_stretch_value_from);
@@ -421,12 +423,12 @@ TEST_F(FontFaceCacheTest, StretchRangeMatching) {
   AppendTestFaceForCapabilities(*second_stretch_list, *style_value,
                                 *weight_value);
 
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 
   const FontDescription& description_expanded = FontDescriptionForRequest(
       FontSelectionValue(105), NormalSlopeValue(), NormalWeightValue());
   CSSSegmentedFontFace* result =
-      cache_.Get(description_expanded, kFontNameForTesting);
+      cache_->Get(description_expanded, kFontNameForTesting);
   ASSERT_TRUE(result);
   FontSelectionCapabilities result_capabilities =
       result->GetFontSelectionCapabilities();
@@ -443,42 +445,43 @@ TEST_F(FontFaceCacheTest, ObliqueRangeMatching) {
   CSSIdentifierValue* stretch_value =
       CSSIdentifierValue::Create(CSSValueID::kNormal);
   CSSPrimitiveValue* weight_value =
-      CSSPrimitiveValue::Create(400, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(400, CSSPrimitiveValue::UnitType::kNumber);
 
   CSSIdentifierValue* oblique_keyword_value =
       CSSIdentifierValue::Create(CSSValueID::kOblique);
 
   CSSValueList* oblique_range = CSSValueList::CreateCommaSeparated();
   CSSPrimitiveValue* oblique_from =
-      CSSPrimitiveValue::Create(30, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(30, CSSPrimitiveValue::UnitType::kNumber);
   CSSPrimitiveValue* oblique_to =
-      CSSPrimitiveValue::Create(35, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(35, CSSPrimitiveValue::UnitType::kNumber);
   oblique_range->Append(*oblique_from);
   oblique_range->Append(*oblique_to);
-  auto* oblique_value = MakeGarbageCollected<CSSFontStyleRangeValue>(
+  auto* oblique_value = MakeGarbageCollected<cssvalue::CSSFontStyleRangeValue>(
       *oblique_keyword_value, *oblique_range);
 
   AppendTestFaceForCapabilities(*stretch_value, *oblique_value, *weight_value);
 
   CSSValueList* oblique_range_second = CSSValueList::CreateCommaSeparated();
   CSSPrimitiveValue* oblique_from_second =
-      CSSPrimitiveValue::Create(5, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(5, CSSPrimitiveValue::UnitType::kNumber);
   CSSPrimitiveValue* oblique_to_second =
-      CSSPrimitiveValue::Create(10, CSSPrimitiveValue::UnitType::kNumber);
+      CSSNumericLiteralValue::Create(10, CSSPrimitiveValue::UnitType::kNumber);
   oblique_range_second->Append(*oblique_from_second);
   oblique_range_second->Append(*oblique_to_second);
-  auto* oblique_value_second = MakeGarbageCollected<CSSFontStyleRangeValue>(
-      *oblique_keyword_value, *oblique_range_second);
+  auto* oblique_value_second =
+      MakeGarbageCollected<cssvalue::CSSFontStyleRangeValue>(
+          *oblique_keyword_value, *oblique_range_second);
 
   AppendTestFaceForCapabilities(*stretch_value, *oblique_value_second,
                                 *weight_value);
 
-  ASSERT_EQ(cache_.GetNumSegmentedFacesForTesting(), 2ul);
+  ASSERT_EQ(cache_->GetNumSegmentedFacesForTesting(), 2ul);
 
   const FontDescription& description_italic = FontDescriptionForRequest(
       NormalWidthValue(), ItalicSlopeValue(), NormalWeightValue());
   CSSSegmentedFontFace* result =
-      cache_.Get(description_italic, kFontNameForTesting);
+      cache_->Get(description_italic, kFontNameForTesting);
   ASSERT_TRUE(result);
   FontSelectionCapabilities result_capabilities =
       result->GetFontSelectionCapabilities();
@@ -489,10 +492,6 @@ TEST_F(FontFaceCacheTest, ObliqueRangeMatching) {
   ASSERT_EQ(
       result_capabilities.slope,
       FontSelectionRange({FontSelectionValue(30), FontSelectionValue(35)}));
-}
-
-void FontFaceCacheTest::Trace(blink::Visitor* visitor) {
-  visitor->Trace(cache_);
 }
 
 }  // namespace blink

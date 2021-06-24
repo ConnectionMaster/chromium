@@ -27,9 +27,7 @@ constexpr int kActionableSubmenuIdBase = 300;
 class MenuModelBase : public ui::MenuModel {
  public:
   explicit MenuModelBase(int command_id_base)
-      : command_id_base_(command_id_base),
-        last_activation_(-1) {
-  }
+      : command_id_base_(command_id_base), last_activation_(-1) {}
 
   ~MenuModelBase() override = default;
 
@@ -49,7 +47,7 @@ class MenuModelBase : public ui::MenuModel {
     return index + command_id_base_;
   }
 
-  base::string16 GetLabelAt(int index) const override {
+  std::u16string GetLabelAt(int index) const override {
     return items_[index].label;
   }
 
@@ -68,7 +66,9 @@ class MenuModelBase : public ui::MenuModel {
 
   int GetGroupIdAt(int index) const override { return 0; }
 
-  bool GetIconAt(int index, gfx::Image* icon) override { return false; }
+  ui::ImageModel GetIconAt(int index) const override {
+    return ui::ImageModel();
+  }
 
   ui::ButtonMenuItemModel* GetButtonMenuItemAt(int index) const override {
     return nullptr;
@@ -77,6 +77,12 @@ class MenuModelBase : public ui::MenuModel {
   bool IsEnabledAt(int index) const override { return items_[index].enabled; }
 
   bool IsVisibleAt(int index) const override { return items_[index].visible; }
+
+  bool IsAlertedAt(int index) const override { return items_[index].alerted; }
+
+  bool IsNewFeatureAt(int index) const override {
+    return items_[index].new_feature;
+  }
 
   MenuModel* GetSubmenuModelAt(int index) const override {
     return items_[index].submenu;
@@ -113,10 +119,12 @@ class MenuModelBase : public ui::MenuModel {
           visible(visible) {}
 
     ItemType type;
-    base::string16 label;
+    std::u16string label;
     ui::MenuModel* submenu;
     bool enabled;
     bool visible;
+    bool alerted = false;
+    bool new_feature = false;
   };
 
   const Item& GetItemDefinition(size_t index) { return items_[index]; }
@@ -142,6 +150,7 @@ class SubmenuModel : public MenuModelBase {
   SubmenuModel() : MenuModelBase(kSubmenuIdBase) {
     items_.emplace_back(TYPE_COMMAND, "submenu item 0", nullptr, false, true);
     items_.emplace_back(TYPE_COMMAND, "submenu item 1", nullptr);
+    items_[1].alerted = true;
   }
 
   ~SubmenuModel() override = default;
@@ -155,6 +164,7 @@ class ActionableSubmenuModel : public MenuModelBase {
   ActionableSubmenuModel() : MenuModelBase(kActionableSubmenuIdBase) {
     items_.emplace_back(TYPE_COMMAND, "actionable submenu item 0", nullptr);
     items_.emplace_back(TYPE_COMMAND, "actionable submenu item 1", nullptr);
+    items_[1].new_feature = true;
   }
   ~ActionableSubmenuModel() override = default;
 
@@ -209,42 +219,52 @@ void CheckSubmenu(const RootModel& model,
       continue;
     }
     // Check placement.
-    EXPECT_EQ(i, size_t{submenu->GetSubmenu()->GetIndexOf(item)});
+    EXPECT_EQ(i, static_cast<size_t>(submenu->GetSubmenu()->GetIndexOf(item)));
 
     // Check type.
     switch (model_item.type) {
+      case ui::MenuModel::TYPE_TITLE:
+        EXPECT_EQ(views::MenuItemView::Type::kTitle, item->GetType());
+        break;
       case ui::MenuModel::TYPE_COMMAND:
-        EXPECT_EQ(views::MenuItemView::NORMAL, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kNormal, item->GetType());
         break;
       case ui::MenuModel::TYPE_CHECK:
-        EXPECT_EQ(views::MenuItemView::CHECKBOX, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kCheckbox, item->GetType());
         break;
       case ui::MenuModel::TYPE_RADIO:
-        EXPECT_EQ(views::MenuItemView::RADIO, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kRadio, item->GetType());
         break;
       case ui::MenuModel::TYPE_SEPARATOR:
       case ui::MenuModel::TYPE_BUTTON_ITEM:
         break;
       case ui::MenuModel::TYPE_SUBMENU:
-        EXPECT_EQ(views::MenuItemView::SUBMENU, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kSubMenu, item->GetType());
         break;
       case ui::MenuModel::TYPE_ACTIONABLE_SUBMENU:
-        EXPECT_EQ(views::MenuItemView::ACTIONABLE_SUBMENU, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kActionableSubMenu,
+                  item->GetType());
         break;
       case ui::MenuModel::TYPE_HIGHLIGHTED:
-        EXPECT_EQ(views::MenuItemView::HIGHLIGHTED, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kHighlighted, item->GetType());
         break;
     }
 
     // Check enabled state.
-    EXPECT_EQ(model_item.enabled, item->enabled());
+    EXPECT_EQ(model_item.enabled, item->GetEnabled());
 
     // Check visibility.
-    EXPECT_EQ(model_item.visible, item->visible());
+    EXPECT_EQ(model_item.visible, item->GetVisible());
+
+    // Check alert state.
+    EXPECT_EQ(model_item.alerted, item->is_alerted());
+
+    // Check new feature flag.
+    EXPECT_EQ(model_item.new_feature, item->is_new());
 
     // Check activation.
     static_cast<views::MenuDelegate*>(delegate)->ExecuteCommand(id);
-    EXPECT_EQ(i, size_t{submodel->last_activation()});
+    EXPECT_EQ(i, static_cast<size_t>(submodel->last_activation()));
     submodel->set_last_activation(-1);
   }
 }
@@ -283,42 +303,52 @@ TEST_F(MenuModelAdapterTest, BasicTest) {
     }
 
     // Check placement.
-    EXPECT_EQ(i, size_t{menu->GetSubmenu()->GetIndexOf(item)});
+    EXPECT_EQ(i, static_cast<size_t>(menu->GetSubmenu()->GetIndexOf(item)));
 
     // Check type.
     switch (model_item.type) {
+      case ui::MenuModel::TYPE_TITLE:
+        EXPECT_EQ(views::MenuItemView::Type::kTitle, item->GetType());
+        break;
       case ui::MenuModel::TYPE_COMMAND:
-        EXPECT_EQ(views::MenuItemView::NORMAL, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kNormal, item->GetType());
         break;
       case ui::MenuModel::TYPE_CHECK:
-        EXPECT_EQ(views::MenuItemView::CHECKBOX, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kCheckbox, item->GetType());
         break;
       case ui::MenuModel::TYPE_RADIO:
-        EXPECT_EQ(views::MenuItemView::RADIO, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kRadio, item->GetType());
         break;
       case ui::MenuModel::TYPE_SEPARATOR:
       case ui::MenuModel::TYPE_BUTTON_ITEM:
         break;
       case ui::MenuModel::TYPE_SUBMENU:
-        EXPECT_EQ(views::MenuItemView::SUBMENU, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kSubMenu, item->GetType());
         break;
       case ui::MenuModel::TYPE_ACTIONABLE_SUBMENU:
-        EXPECT_EQ(views::MenuItemView::ACTIONABLE_SUBMENU, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kActionableSubMenu,
+                  item->GetType());
         break;
       case ui::MenuModel::TYPE_HIGHLIGHTED:
-        EXPECT_EQ(views::MenuItemView::HIGHLIGHTED, item->GetType());
+        EXPECT_EQ(views::MenuItemView::Type::kHighlighted, item->GetType());
         break;
     }
 
     // Check enabled state.
-    EXPECT_EQ(model_item.enabled, item->enabled());
+    EXPECT_EQ(model_item.enabled, item->GetEnabled());
 
     // Check visibility.
-    EXPECT_EQ(model_item.visible, item->visible());
+    EXPECT_EQ(model_item.visible, item->GetVisible());
+
+    // Check alert state.
+    EXPECT_EQ(model_item.alerted, item->is_alerted());
+
+    // Check new feature flag.
+    EXPECT_EQ(model_item.new_feature, item->is_new());
 
     // Check activation.
     static_cast<views::MenuDelegate*>(&delegate)->ExecuteCommand(id);
-    EXPECT_EQ(i, size_t{model.last_activation()});
+    EXPECT_EQ(i, static_cast<size_t>(model.last_activation()));
     model.set_last_activation(-1);
   }
 

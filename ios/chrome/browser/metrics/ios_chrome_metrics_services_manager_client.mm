@@ -4,22 +4,26 @@
 
 #include "ios/chrome/browser/metrics/ios_chrome_metrics_services_manager_client.h"
 
+#include <string>
+
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/command_line.h"
-#include "base/logging.h"
-#include "base/strings/string16.h"
 #include "components/metrics/enabled_state_provider.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/prefs/pref_service.h"
-#include "components/rappor/rappor_service_impl.h"
 #include "components/variations/service/variations_service.h"
 #include "ios/chrome/browser/application_context.h"
+#include "ios/chrome/browser/browser_state/chrome_browser_state_manager.h"
 #include "ios/chrome/browser/chrome_switches.h"
+#import "ios/chrome/browser/main/browser.h"
+#import "ios/chrome/browser/main/browser_list.h"
+#import "ios/chrome/browser/main/browser_list_factory.h"
 #include "ios/chrome/browser/metrics/ios_chrome_metrics_service_accessor.h"
 #include "ios/chrome/browser/metrics/ios_chrome_metrics_service_client.h"
-#include "ios/chrome/browser/tabs/tab_model_list.h"
 #include "ios/chrome/browser/variations/ios_chrome_variations_service_client.h"
 #include "ios/chrome/browser/variations/ios_ui_string_overrider_factory.h"
+#import "ios/chrome/browser/web_state_list/web_state_list.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -31,7 +35,7 @@ namespace {
 void PostStoreMetricsClientInfo(const metrics::ClientInfo& client_info) {}
 
 std::unique_ptr<metrics::ClientInfo> LoadMetricsClientInfo() {
-  return std::unique_ptr<metrics::ClientInfo>();
+  return nullptr;
 }
 
 }  // namespace
@@ -60,13 +64,6 @@ IOSChromeMetricsServicesManagerClient::IOSChromeMetricsServicesManagerClient(
 IOSChromeMetricsServicesManagerClient::
     ~IOSChromeMetricsServicesManagerClient() = default;
 
-std::unique_ptr<rappor::RapporServiceImpl>
-IOSChromeMetricsServicesManagerClient::CreateRapporServiceImpl() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return std::make_unique<rappor::RapporServiceImpl>(
-      local_state_, base::Bind(&TabModelList::IsOffTheRecordSessionActive));
-}
-
 std::unique_ptr<variations::VariationsService>
 IOSChromeMetricsServicesManagerClient::CreateVariationsService() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -93,9 +90,9 @@ IOSChromeMetricsServicesManagerClient::GetMetricsStateManager() {
   DCHECK(thread_checker_.CalledOnValidThread());
   if (!metrics_state_manager_) {
     metrics_state_manager_ = metrics::MetricsStateManager::Create(
-        local_state_, enabled_state_provider_.get(), base::string16(),
-        base::Bind(&PostStoreMetricsClientInfo),
-        base::Bind(&LoadMetricsClientInfo));
+        local_state_, enabled_state_provider_.get(), std::wstring(),
+        base::BindRepeating(&PostStoreMetricsClientInfo),
+        base::BindRepeating(&LoadMetricsClientInfo));
   }
   return metrics_state_manager_.get();
 }
@@ -113,6 +110,25 @@ bool IOSChromeMetricsServicesManagerClient::IsMetricsConsentGiven() {
   return enabled_state_provider_->IsConsentGiven();
 }
 
-bool IOSChromeMetricsServicesManagerClient::IsIncognitoSessionActive() {
-  return TabModelList::IsOffTheRecordSessionActive();
+bool IOSChromeMetricsServicesManagerClient::IsOffTheRecordSessionActive() {
+  return AreIncognitoTabsPresent();
+}
+
+// static
+bool IOSChromeMetricsServicesManagerClient::AreIncognitoTabsPresent() {
+  std::vector<ChromeBrowserState*> browser_states =
+      GetApplicationContext()
+          ->GetChromeBrowserStateManager()
+          ->GetLoadedBrowserStates();
+
+  for (ChromeBrowserState* browser_state : browser_states) {
+    BrowserList* browser_list =
+        BrowserListFactory::GetForBrowserState(browser_state);
+    for (Browser* browser : browser_list->AllIncognitoBrowsers()) {
+      if (!browser->GetWebStateList()->empty()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

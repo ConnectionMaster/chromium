@@ -13,7 +13,7 @@ class ListValue;
 
 class UploadList;
 
-namespace crash {
+namespace crash_reporter {
 
 // Mapping between a WebUI resource (identified by |name|) and a GRIT resource
 // (identified by |resource_id|).
@@ -29,6 +29,8 @@ extern const size_t kCrashesUILocalizedStringsCount;
 // Strings used by the WebUI resources.
 // Must match the constants used in the resource files.
 extern const char kCrashesUICrashesJS[];
+extern const char kCrashesUICrashesCSS[];
+extern const char kCrashesUISadTabSVG[];
 extern const char kCrashesUIRequestCrashList[];
 extern const char kCrashesUIRequestCrashUpload[];
 extern const char kCrashesUIShortProductName[];
@@ -38,6 +40,6 @@ extern const char kCrashesUIRequestSingleCrashUpload[];
 // Converts and appends the most recent uploads to |out_value|.
 void UploadListToValue(UploadList* upload_list, base::ListValue* out_value);
 
-}  // namespace crash
+}  // namespace crash_reporter
 
 #endif  // COMPONENTS_CRASH_CORE_BROWSER_CRASHES_UI_UTIL_H_

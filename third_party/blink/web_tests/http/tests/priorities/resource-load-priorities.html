@@ -5,23 +5,13 @@
 <script src="/resources/testharnessreport.js"></script>
 
 <script>
-function openWindow(url) {
-  const win = window.open(url, '_blank');
-  add_result_callback(() => win.close());
-  return win;
-}
-
-function resource_load_priority_test(windowURL, expected_priority, description) {
-  promise_test(async () => {
-    openWindow('resources/' + windowURL);
-    const priority_event =
-      await new Promise(resolve => window.onmessage = resolve);
-    assert_not_equals(priority_event.data,
-                      'FAILED',
-                      'The resource failed to load for some reason.');
-
-    assert_equals(priority_event.data, expected_priority);
-  }, description);
+window.onmessage = function(message) {
+  if (message.data.hasOwnProperty('Priority')) {
+    window.onRequestPriorityUpdated(message.data['Priority']);
+  }
+  if (message.data.hasOwnProperty('Status')) {
+    window.onRequestStatusChanged(message.data['Status']);
+  }
 }
 
 resource_load_priority_test(

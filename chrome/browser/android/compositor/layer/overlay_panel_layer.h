@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_ANDROID_COMPOSITOR_LAYER_OVERLAY_PANEL_LAYER_H_
 #define CHROME_BROWSER_ANDROID_COMPOSITOR_LAYER_OVERLAY_PANEL_LAYER_H_
 
-#include <memory>
-
 #include "chrome/browser/android/compositor/layer/layer.h"
 
 namespace cc {
@@ -24,10 +22,19 @@ namespace android {
 
 class OverlayPanelLayer : public Layer {
  public:
+  // Default width for any icon displayed on an OverlayPanel.
+  static constexpr float kDefaultIconWidthDp = 36.0f;
+
+  // ID for Invalid resource.
+  static constexpr int kInvalidResourceID = -1;
+
   void SetResourceIds(int bar_text_resource_id,
                       int panel_shadow_resource_id,
+                      int rounded_bar_top_resource_id,
                       int bar_shadow_resource_id,
                       int panel_icon_resource_id,
+                      int drag_handlebar_resource_id,
+                      int open_tab_resource_id,
                       int close_icon_resource_id);
 
   void SetProperties(float dp_to_px,
@@ -39,15 +46,17 @@ class OverlayPanelLayer : public Layer {
                      float panel_height,
                      int bar_background_color,
                      float bar_margin_side,
+                     float bar_margin_top,
                      float bar_height,
                      float bar_offset_y,
                      float bar_text_opacity,
                      bool bar_border_visible,
                      float bar_border_height,
-                     bool bar_shadow_visible,
-                     float bar_shadow_opacity,
                      int icon_tint,
-                     float close_icon_opacity);
+                     int drag_handlebar_tint,
+                     float icon_opacity,
+                     int separator_line_color,
+                     float in_bar_related_searches_height);
 
   void SetProgressBar(int progress_bar_background_resource_id,
                       int progress_bar_resource_id,
@@ -55,7 +64,7 @@ class OverlayPanelLayer : public Layer {
                       float progress_bar_position_y,
                       float progress_bar_height,
                       float progress_bar_opacity,
-                      int progress_bar_completion,
+                      float progress_bar_completion,
                       float panel_width);
 
   scoped_refptr<cc::Layer> layer() override;
@@ -71,10 +80,13 @@ class OverlayPanelLayer : public Layer {
   scoped_refptr<cc::Layer> layer_;
 
   scoped_refptr<cc::NinePatchLayer> panel_shadow_;
+  scoped_refptr<cc::NinePatchLayer> rounded_bar_top_;
   scoped_refptr<cc::SolidColorLayer> bar_background_;
   scoped_refptr<cc::UIResourceLayer> bar_text_;
   scoped_refptr<cc::UIResourceLayer> bar_shadow_;
   scoped_refptr<cc::UIResourceLayer> panel_icon_;
+  scoped_refptr<cc::UIResourceLayer> drag_handlebar_;
+  scoped_refptr<cc::UIResourceLayer> open_tab_icon_;
   scoped_refptr<cc::UIResourceLayer> close_icon_;
   scoped_refptr<cc::Layer> content_container_;
   scoped_refptr<cc::Layer> text_container_;
@@ -85,7 +97,10 @@ class OverlayPanelLayer : public Layer {
   int panel_icon_resource_id_;
   int bar_text_resource_id_;
   int panel_shadow_resource_id_;
+  int rounded_bar_top_resource_id_;
   int bar_shadow_resource_id_;
+  int drag_handlebar_resource_id_;
+  int open_tab_icon_resource_id_;
   int close_icon_resource_id_;
 };
 

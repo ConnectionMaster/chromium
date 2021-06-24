@@ -9,7 +9,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
-#include "chrome/browser/policy/cloud/user_cloud_policy_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/pref_names.h"
@@ -17,7 +16,6 @@
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
-#include "net/url_request/url_request_context_getter.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if defined(OS_ANDROID)
@@ -40,7 +38,6 @@ UserPolicySigninServiceFactory::UserPolicySigninServiceFactory()
         "UserPolicySigninService",
         BrowserContextDependencyManager::GetInstance()) {
   DependsOn(IdentityManagerFactory::GetInstance());
-  DependsOn(UserCloudPolicyManagerFactory::GetInstance());
 }
 
 UserPolicySigninServiceFactory::~UserPolicySigninServiceFactory() {}
@@ -74,7 +71,7 @@ KeyedService* UserPolicySigninServiceFactory::BuildServiceInstanceFor(
 
   UserPolicySigninService* service = new UserPolicySigninService(
       profile, g_browser_process->local_state(), device_management_service,
-      UserCloudPolicyManagerFactory::GetForBrowserContext(context),
+      profile->GetUserCloudPolicyManager(),
       IdentityManagerFactory::GetForProfile(profile),
       g_browser_process->shared_url_loader_factory());
   return service;
@@ -89,6 +86,7 @@ UserPolicySigninServiceFactory::ServiceIsCreatedWithBrowserContext() const {
 
 void UserPolicySigninServiceFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* user_prefs) {
+  user_prefs->RegisterBooleanPref(prefs::kUserAcceptedAccountManagement, false);
 #if defined(OS_ANDROID)
   user_prefs->RegisterInt64Pref(prefs::kLastPolicyCheckTime, 0);
 #endif

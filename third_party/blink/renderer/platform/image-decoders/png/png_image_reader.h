@@ -26,11 +26,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_PNG_PNG_IMAGE_READER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_PNG_PNG_IMAGE_READER_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_frame.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 #define PNG_SET_OPTION_SUPPORTED
@@ -58,6 +57,8 @@ class PLATFORM_EXPORT PNGImageReader final {
 
  public:
   PNGImageReader(PNGImageDecoder*, size_t initial_offset);
+  PNGImageReader(const PNGImageReader&) = delete;
+  PNGImageReader& operator=(const PNGImageReader&) = delete;
   ~PNGImageReader();
 
   struct FrameInfo {
@@ -165,10 +166,8 @@ class PLATFORM_EXPORT PNGImageReader final {
     return !frame_info_.IsEmpty() &&
            frame_info_[0].byte_length != kFirstFrameIndicator;
   }
-
-  DISALLOW_COPY_AND_ASSIGN(PNGImageReader);
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_PNG_PNG_IMAGE_READER_H_

@@ -5,10 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_MEDIA_CONTROLS_ELEMENTS_MEDIA_CONTROL_OVERFLOW_MENU_LIST_ELEMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_MEDIA_CONTROLS_ELEMENTS_MEDIA_CONTROL_OVERFLOW_MENU_LIST_ELEMENT_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_popup_menu_element.h"
-#include "third_party/blink/renderer/platform/scheduler/public/post_cancellable_task.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
@@ -26,21 +24,9 @@ class MediaControlOverflowMenuListElement final
 
   // Override MediaControlPopupMenuElement
   void SetIsWanted(bool) final;
-  Element* PopupAnchor() const final;
-  void OnItemSelected() final;
 
  private:
-  enum TimeTakenHistogram {
-    kTimeToAction,
-    kTimeToDismiss,
-  };
-  void MaybeRecordTimeTaken(TimeTakenHistogram);
-
   void DefaultEventHandler(Event&) override;
-
-  TaskHandle current_task_handle_;
-
-  base::Optional<WTF::TimeTicks> time_shown_;
 };
 
 }  // namespace blink

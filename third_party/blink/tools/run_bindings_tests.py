@@ -31,21 +31,26 @@ path_finder.add_typ_dir_to_sys_path()
 
 import typ
 
+
 def create_argument_parser():
     argument_parser = typ.ArgumentParser()
-    argument_parser.add_argument('--reset-results',
+    argument_parser.add_argument(
+        '--reset-results',
         default=False,
         action='store_true',
         help='Overwrites reference files with the generated results.')
-    argument_parser.add_argument('--skip-unit-tests',
+    argument_parser.add_argument(
+        '--skip-unit-tests',
         default=False,
         action='store_true',
         help='Skip running unit tests (only run reference tests).')
-    argument_parser.add_argument('--skip-reference-tests',
+    argument_parser.add_argument(
+        '--skip-reference-tests',
         default=False,
         action='store_true',
         help='Skip running reference tests (only run unit tests).')
-    argument_parser.add_argument('--suppress-diff',
+    argument_parser.add_argument(
+        '--suppress-diff',
         default=False,
         action='store_true',
         help='Suppress diff for reference tests.')
@@ -71,7 +76,10 @@ def main(argv):
         return argument_parser.exit_status
 
     args = runner.args
-    args.top_level_dir = path_finder.get_bindings_scripts_dir()
+    args.top_level_dirs = [
+        path_finder.get_bindings_scripts_dir(),
+        path_finder.get_build_scripts_dir(),
+    ]
     if not args.skip_unit_tests:
         return_code, _, _ = runner.run()
         if return_code != 0:
@@ -81,8 +89,8 @@ def main(argv):
     if args.skip_reference_tests:
         return 0
 
-    return run_bindings_tests(
-        args.reset_results, args.verbose, args.suppress_diff)
+    return run_bindings_tests(args.reset_results, args.verbose,
+                              args.suppress_diff)
 
 
 if __name__ == '__main__':

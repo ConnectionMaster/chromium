@@ -4,7 +4,6 @@
 
 #include "components/infobars/core/infobar_delegate.h"
 
-#include "base/logging.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "components/infobars/core/infobar.h"
@@ -54,6 +53,14 @@ gfx::Image InfoBarDelegate::GetIcon() const {
                    icon_id);
 }
 
+std::u16string InfoBarDelegate::GetLinkText() const {
+  return std::u16string();
+}
+
+GURL InfoBarDelegate::GetLinkURL() const {
+  return GURL();
+}
+
 bool InfoBarDelegate::EqualsDelegate(InfoBarDelegate* delegate) const {
   return false;
 }
@@ -69,7 +76,20 @@ bool InfoBarDelegate::ShouldExpire(const NavigationDetails& details) const {
       ((nav_entry_id_ != details.entry_id) || details.is_reload);
 }
 
+bool InfoBarDelegate::LinkClicked(WindowOpenDisposition disposition) {
+  infobar()->owner()->OpenURL(GetLinkURL(), disposition);
+  return false;
+}
+
 void InfoBarDelegate::InfoBarDismissed() {
+}
+
+bool InfoBarDelegate::IsCloseable() const {
+  return true;
+}
+
+bool InfoBarDelegate::ShouldAnimate() const {
+  return true;
 }
 
 ConfirmInfoBarDelegate* InfoBarDelegate::AsConfirmInfoBarDelegate() {
@@ -80,35 +100,13 @@ HungRendererInfoBarDelegate* InfoBarDelegate::AsHungRendererInfoBarDelegate() {
   return nullptr;
 }
 
-InsecureContentInfoBarDelegate*
-    InfoBarDelegate::AsInsecureContentInfoBarDelegate() {
-  return nullptr;
-}
-
-NativeAppInfoBarDelegate* InfoBarDelegate::AsNativeAppInfoBarDelegate() {
-  return nullptr;
-}
-
-PopupBlockedInfoBarDelegate* InfoBarDelegate::AsPopupBlockedInfoBarDelegate() {
-  return nullptr;
-}
-
-RegisterProtocolHandlerInfoBarDelegate*
-    InfoBarDelegate::AsRegisterProtocolHandlerInfoBarDelegate() {
-  return nullptr;
-}
-
-ScreenCaptureInfoBarDelegate*
-    InfoBarDelegate::AsScreenCaptureInfoBarDelegate() {
+blocked_content::PopupBlockedInfoBarDelegate*
+InfoBarDelegate::AsPopupBlockedInfoBarDelegate() {
   return nullptr;
 }
 
 ThemeInstalledInfoBarDelegate*
     InfoBarDelegate::AsThemePreviewInfobarDelegate() {
-  return nullptr;
-}
-
-ThreeDAPIInfoBarDelegate* InfoBarDelegate::AsThreeDAPIInfoBarDelegate() {
   return nullptr;
 }
 
@@ -124,7 +122,6 @@ InfoBarDelegate::AsOfflinePageInfoBarDelegate() {
 }
 #endif
 
-InfoBarDelegate::InfoBarDelegate() : nav_entry_id_(0) {
-}
+InfoBarDelegate::InfoBarDelegate() = default;
 
 }  // namespace infobars

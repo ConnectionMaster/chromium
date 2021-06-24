@@ -7,6 +7,9 @@
 
 #import <UIKit/UIKit.h>
 
+// The font text style of the sublabel.
+extern const UIFontTextStyle kTableViewSublabelFontStyle;
+
 // The minimum height for a TableViewHeaderFooterView.
 extern const CGFloat kTableViewHeaderFooterViewHeight;
 
@@ -44,20 +47,24 @@ extern const CGFloat kTableViewLabelVerticalTopSpacing;
 // The width taken by the accessory view when it is displayed.
 extern const CGFloat kTableViewAccessoryWidth;
 
-// Hex Value for blue label text color.
-extern const int kTableViewTextLabelColorBlue;
+// Size of the icon image.
+extern const CGFloat kTableViewIconImageSize;
 
-// Hex Value for light gray label text color.
-extern const int kTableViewTextLabelColorLightGrey;
+// Padding used between the image and the text labels.
+extern const CGFloat kTableViewImagePadding;
 
-// Hex Value for the text color of the secondary labels (e.g. details, URL,
-// metadata...).
-extern const int kTableViewSecondaryLabelLightGrayTextColor;
-
-// Hex Value for the tint color for switches.
-extern const int kTableViewSwitchTintColor;
+// Padding used between the trailing content and the trailing of the
+// contentView.
+extern const CGFloat kTableViewTrailingContentPadding;
 
 // A masked password string(e.g. "••••••••").
 extern NSString* const kMaskedPassword;
+
+// The accessibility identifier of the info button of the
+// TableViewInfoButtonCell.
+extern NSString* const kTableViewCellInfoButtonViewId;
+
+// Returns a padding according to the width of the current device.
+extern CGFloat HorizontalPadding();
 
 #endif  // IOS_CHROME_BROWSER_UI_TABLE_VIEW_CELLS_TABLE_VIEW_CELLS_CONSTANTS_H_

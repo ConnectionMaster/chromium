@@ -5,7 +5,9 @@
 #ifndef UI_MESSAGE_CENTER_VIEWS_MESSAGE_POPUP_VIEW_H_
 #define UI_MESSAGE_CENTER_VIEWS_MESSAGE_POPUP_VIEW_H_
 
+#include "base/scoped_observation.h"
 #include "ui/message_center/message_center_export.h"
+#include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
 
@@ -13,17 +15,18 @@ namespace message_center {
 
 class MessagePopupCollection;
 class MessageView;
-class MessageViewContextMenuController;
 class Notification;
-class PopupAlignmentDelegate;
 
 // The widget delegate of a notification popup. The view is owned by the widget.
 class MESSAGE_CENTER_EXPORT MessagePopupView : public views::WidgetDelegateView,
                                                public views::WidgetObserver {
  public:
+  METADATA_HEADER(MessagePopupView);
+
   MessagePopupView(const Notification& notification,
-                   PopupAlignmentDelegate* alignment_delegate,
                    MessagePopupCollection* popup_collection);
+  MessagePopupView(const MessagePopupView&) = delete;
+  MessagePopupView& operator=(const MessagePopupView&) = delete;
   ~MessagePopupView() override;
 
   // Update notification contents to |notification|. Virtual for unit testing.
@@ -55,20 +58,22 @@ class MESSAGE_CENTER_EXPORT MessagePopupView : public views::WidgetDelegateView,
   void OnMouseExited(const ui::MouseEvent& event) override;
   void ChildPreferredSizeChanged(views::View* child) override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
-  const char* GetClassName() const override;
   void OnDisplayChanged() override;
   void OnWorkAreaChanged() override;
+  void OnFocus() override;
 
   // views::WidgetObserver:
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+  void OnWidgetDestroyed(views::Widget* widget) override;
 
   bool is_hovered() const { return is_hovered_; }
   bool is_active() const { return is_active_; }
 
+  MessageView* message_view() { return message_view_; }
+
  protected:
   // For unit testing.
-  MessagePopupView(PopupAlignmentDelegate* alignment_delegate,
-                   MessagePopupCollection* popup_collection);
+  explicit MessagePopupView(MessagePopupCollection* popup_collection);
 
  private:
   // True if the view has a widget and the widget is not closed.
@@ -78,16 +83,14 @@ class MESSAGE_CENTER_EXPORT MessagePopupView : public views::WidgetDelegateView,
   MessageView* message_view_;
 
   // Unowned.
-  PopupAlignmentDelegate* const alignment_delegate_;
   MessagePopupCollection* const popup_collection_;
-
-  std::unique_ptr<MessageViewContextMenuController> context_menu_controller_;
 
   const bool a11y_feedback_on_init_;
   bool is_hovered_ = false;
   bool is_active_ = false;
 
-  DISALLOW_COPY_AND_ASSIGN(MessagePopupView);
+  base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
+      this};
 };
 
 }  // namespace message_center

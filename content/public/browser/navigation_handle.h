@@ -7,17 +7,28 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "base/supports_user_data.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/navigation_handle_timing.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/restore_type.h"
 #include "content/public/common/referrer.h"
-#include "content/public/common/transferrable_url_loader.mojom.h"
+#include "net/base/auth.h"
 #include "net/base/ip_endpoint.h"
+#include "net/base/isolation_info.h"
 #include "net/base/net_errors.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "net/http/http_response_info.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/cpp/resource_request_body.h"
+#include "third_party/blink/public/common/navigation/impression.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/mojom/loader/referrer.mojom.h"
+#include "third_party/blink/public/mojom/loader/transferrable_url_loader.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 #include "ui/base/page_transition_types.h"
 
 class GURL;
@@ -25,11 +36,13 @@ class GURL;
 namespace net {
 class HttpRequestHeaders;
 class HttpResponseHeaders;
+class ProxyServer;
 }  // namespace net
 
 namespace content {
+struct GlobalRenderFrameHostId;
 struct GlobalRequestID;
-class NavigationData;
+class NavigationEntry;
 class NavigationThrottle;
 class NavigationUIData;
 class RenderFrameHost;
@@ -42,9 +55,9 @@ class WebContents;
 // references to a NavigationHandle at the time of
 // WebContentsObserver::DidFinishNavigation, just before the handle is
 // destroyed.
-class CONTENT_EXPORT NavigationHandle {
+class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
  public:
-  virtual ~NavigationHandle() {}
+  ~NavigationHandle() override = default;
 
   // Parameters available at navigation start time -----------------------------
   //
@@ -52,7 +65,11 @@ class CONTENT_EXPORT NavigationHandle {
   // some may change during navigation (e.g. due to server redirects).
 
   // Get a unique ID for this navigation.
-  virtual int64_t GetNavigationId() const = 0;
+  virtual int64_t GetNavigationId() = 0;
+
+  // Get the page UKM ID that will be in use once this navigation fully commits
+  // (the eventual value of GetRenderFrameHost()->GetPageUkmSourceId()).
+  virtual ukm::SourceId GetNextPageUkmSourceId() = 0;
 
   // The URL the frame is navigating to. This may change during the navigation
   // when encountering a server redirect.
@@ -60,20 +77,48 @@ class CONTENT_EXPORT NavigationHandle {
   // WebContents::GetVisibleURL and WebContents::GetLastCommittedURL. For
   // example, viewing a page's source navigates to the URL of the page, but the
   // virtual URL is prefixed with "view-source:".
+  // Note: The URL of a NavigationHandle can change over its lifetime.
+  // e.g. URLs might be rewritten by the renderer before being committed.
   virtual const GURL& GetURL() = 0;
 
-  // Returns the SiteInstance that started the request.
-  // If a frame in SiteInstance A navigates a frame in SiteInstance B to a URL
-  // in SiteInstance C, then this returns B.
+  // Returns the SiteInstance where the frame being navigated was at the start
+  // of the navigation.  If a frame in SiteInstance A navigates a frame in
+  // SiteInstance B to a URL in SiteInstance C, then this returns B.
   virtual SiteInstance* GetStartingSiteInstance() = 0;
 
-  // Whether the navigation is taking place in the main frame or in a subframe.
-  // This remains constant over the navigation lifetime.
+  // Returns the SiteInstance of the initiator of the navigation.  If a frame in
+  // SiteInstance A navigates a frame in SiteInstance B to a URL in SiteInstance
+  // C, then this returns A.
+  virtual SiteInstance* GetSourceSiteInstance() = 0;
+
+  // Whether the navigation is taking place in a main frame or in a subframe.
+  // This can also return true for navigations in the root of a non-primary
+  // page, so consider whether you want to call IsInPrimaryMainFrame() instead.
+  // See the documentation below for details. The return value remains constant
+  // over the navigation lifetime.
   virtual bool IsInMainFrame() = 0;
 
-  // Whether the navigation is taking place in a frame that is a direct child
-  // of the main frame. This remains constant over the navigation lifetime.
-  virtual bool IsParentMainFrame() = 0;
+  // Whether the navigation is taking place in the main frame of the primary
+  // frame tree. With MPArch (crbug.com/1164280), a WebContents may have
+  // additional frame trees for prerendering pages in addition to the primary
+  // frame tree (holding the page currently shown to the user). The return
+  // value remains constant over the navigation lifetime.
+  virtual bool IsInPrimaryMainFrame() = 0;
+
+  // Prerender2:
+  // Whether the navigation is taking place in the main frame of the
+  // prerendered frame tree. Prerender will create separate frame trees to load
+  // a page in the background, which later then be activated by a separate
+  // prerender page activation navigation in the primary main frame. This
+  // returns false for prerender page activation navigations, which should be
+  // checked by IsPrerenderedPageActivation(). The return value remains
+  // constant over the navigation lifetime.
+  virtual bool IsInPrerenderedMainFrame() = 0;
+
+  // Prerender2
+  // Returns true if this navigation will activate a prerendered page. It is
+  // only meaningful to call this after BeginNavigation().
+  virtual bool IsPrerenderedPageActivation() = 0;
 
   // Whether the navigation was initiated by the renderer process. Examples of
   // renderer-initiated navigations include:
@@ -89,6 +134,16 @@ class CONTENT_EXPORT NavigationHandle {
   //  * using window.history.forward() or window.history.back()
   //  * any other "explicit" URL navigations, e.g. bookmarks
   virtual bool IsRendererInitiated() = 0;
+
+  // Whether the previous document in this frame was same-origin with the new
+  // one created by this navigation.
+  //
+  // |HasCommitted()| must be true before calling this function.
+  //
+  // Note: This doesn't take the initiator of the navigation into consideration.
+  // For instance, a parent (A) can initiate a navigation in its iframe,
+  // replacing document (B) by (C). This methods compare (B) with (C).
+  virtual bool IsSameOrigin() = 0;
 
   // Returns the FrameTreeNode ID for the frame in which the navigation is
   // performed. This ID is browser-global and uniquely identifies a frame that
@@ -112,17 +167,18 @@ class CONTENT_EXPORT NavigationHandle {
   // set if unknown.
   virtual base::TimeTicks NavigationInputStart() = 0;
 
+  // The timing information of loading for the navigation.
+  virtual const NavigationHandleTiming& GetNavigationHandleTiming() = 0;
+
   // Whether or not the navigation was started within a context menu.
-  virtual bool WasStartedFromContextMenu() const = 0;
+  virtual bool WasStartedFromContextMenu() = 0;
 
   // Returns the URL and encoding of an INPUT field that corresponds to a
   // searchable form request.
   virtual const GURL& GetSearchableFormURL() = 0;
   virtual const std::string& GetSearchableFormEncoding() = 0;
 
-  // Returns the reload type for this navigation. Note that renderer-initiated
-  // reloads (via location.reload()) won't count as a reload and do return
-  // ReloadType::NONE.
+  // Returns the reload type for this navigation.
   virtual ReloadType GetReloadType() = 0;
 
   // Returns the restore type for this navigation. RestoreType::NONE is returned
@@ -141,30 +197,32 @@ class CONTENT_EXPORT NavigationHandle {
   // |bool IsPost()| as opposed to |const std::string& GetMethod()| method.
   virtual bool IsPost() = 0;
 
-  // Returns the POST body associated with this navigation. This will be null
-  // for GET and/or other non-POST requests (or if a response to a POST request
-  // was a redirect that changed the method to GET - for example 302).
-  virtual const scoped_refptr<network::ResourceRequestBody>&
-  GetResourceRequestBody() = 0;
-
   // Returns a sanitized version of the referrer for this request.
-  virtual const Referrer& GetReferrer() = 0;
+  virtual const blink::mojom::Referrer& GetReferrer() = 0;
+
+  // Sets the referrer. The referrer may only be set during start and redirect
+  // phases. If the referer is set in navigation start, it is reset during the
+  // redirect. In other words, if you need to set a referer that applies to
+  // redirects, then this must be called during DidRedirectNavigation().
+  virtual void SetReferrer(blink::mojom::ReferrerPtr referrer) = 0;
 
   // Whether the navigation was initiated by a user gesture. Note that this
   // will return false for browser-initiated navigations.
-  // TODO(clamy): when PlzNavigate launches, this should return true for
-  // browser-initiated navigations.
+  // TODO(clamy): This should return true for browser-initiated navigations.
   virtual bool HasUserGesture() = 0;
 
   // Returns the page transition type.
   virtual ui::PageTransition GetPageTransition() = 0;
 
   // Returns the NavigationUIData associated with the navigation.
-  virtual const NavigationUIData* GetNavigationUIData() = 0;
+  virtual NavigationUIData* GetNavigationUIData() = 0;
 
   // Whether the target URL cannot be handled by the browser's internal protocol
   // handlers.
   virtual bool IsExternalProtocol() = 0;
+
+  // Whether the navigation is restoring a page from back-forward cache.
+  virtual bool IsServedFromBackForwardCache() = 0;
 
   // Navigation control flow --------------------------------------------------
 
@@ -179,6 +237,14 @@ class CONTENT_EXPORT NavigationHandle {
   // response has been delivered for processing, or after the navigation fails
   // with an error page.
   virtual RenderFrameHost* GetRenderFrameHost() = 0;
+
+  // Returns the id of the RenderFrameHost this navigation is committing from.
+  // In case a navigation happens within the same RenderFrameHost,
+  // GetRenderFrameHost() and GetPreviousRenderFrameHostId() will refer to the
+  // same RenderFrameHost.
+  // Note: This is not guaranteed to refer to a RenderFrameHost that still
+  // exists.
+  virtual GlobalRenderFrameHostId GetPreviousRenderFrameHostId() = 0;
 
   // Whether the navigation happened without changing document. Examples of
   // same document navigations are:
@@ -203,9 +269,10 @@ class CONTENT_EXPORT NavigationHandle {
   // errors that leave the user on the previous page.
   virtual bool HasCommitted() = 0;
 
-  // Whether the navigation resulted in an error page.
-  // Note that if an error page reloads, this will return true even though
-  // GetNetErrorCode will be net::OK.
+  // Whether the navigation committed an error page.
+  //
+  // DO NOT use this before the navigation commit. It would always return false.
+  // You can use it from WebContentsObserver::DidFinishNavigation().
   virtual bool IsErrorPage() = 0;
 
   // Not all committed subframe navigations (i.e., !IsInMainFrame &&
@@ -224,12 +291,14 @@ class CONTENT_EXPORT NavigationHandle {
   virtual bool DidReplaceEntry() = 0;
 
   // Returns true if the browser history should be updated. Otherwise only
-  // the session history will be updated. E.g., on unreachable urls.
+  // the session history will be updated. E.g., on unreachable urls or other
+  // navigations that the users may not think of as navigations (such as
+  // happens with 'history.replaceState()').
   virtual bool ShouldUpdateHistory() = 0;
 
   // The previous main frame URL that the user was on. This may be empty if
   // there was no last committed entry.
-  virtual const GURL& GetPreviousURL() = 0;
+  virtual const GURL& GetPreviousMainFrameURL() = 0;
 
   // Returns the remote address of the socket which fetched this resource.
   virtual net::IPEndPoint GetSocketAddress() = 0;
@@ -248,6 +317,15 @@ class CONTENT_EXPORT NavigationHandle {
   virtual void SetRequestHeader(const std::string& header_name,
                                 const std::string& header_value) = 0;
 
+  // Set a request's header that is exempt from CORS checks. This is only
+  // honored if the NetworkContext was configured to allow any cors exempt
+  // header (see
+  // |NetworkContext::mojom::allow_any_cors_exempt_header_for_browser|) or
+  // if |header_name| is specified in
+  // |NetworkContextParams::cors_exempt_header_list|.
+  virtual void SetCorsExemptRequestHeader(const std::string& header_name,
+                                          const std::string& header_value) = 0;
+
   // Returns the response headers for the request, or nullptr if there aren't
   // any response headers or they have not been received yet. The response
   // headers may change during the navigation (e.g. after encountering a server
@@ -264,7 +342,21 @@ class CONTENT_EXPORT NavigationHandle {
   // Returns the SSLInfo for a request that succeeded or failed due to a
   // certificate error. In the case of other request failures or of a non-secure
   // scheme, returns an empty object.
-  virtual const base::Optional<net::SSLInfo> GetSSLInfo() = 0;
+  virtual const absl::optional<net::SSLInfo>& GetSSLInfo() = 0;
+
+  // Returns the AuthChallengeInfo for the request, if the response contained an
+  // authentication challenge.
+  virtual const absl::optional<net::AuthChallengeInfo>&
+  GetAuthChallengeInfo() = 0;
+
+  // Returns host resolution error info associated with the request.
+  virtual net::ResolveErrorInfo GetResolveErrorInfo() = 0;
+
+  // Gets the net::IsolationInfo associated with the navigation. Updated as
+  // redirects are followed. When one of the origins used to construct the
+  // IsolationInfo is opaque, the returned IsolationInfo will not be consistent
+  // between calls.
+  virtual net::IsolationInfo GetIsolationInfo() = 0;
 
   // Returns the ID of the URLRequest associated with this navigation. Can only
   // be called from NavigationThrottle::WillProcessResponse and
@@ -283,8 +375,15 @@ class CONTENT_EXPORT NavigationHandle {
   // Returns true if this navigation was initiated by a form submission.
   virtual bool IsFormSubmission() = 0;
 
+  // Returns true if this navigation was initiated by a link click.
+  virtual bool WasInitiatedByLinkClick() = 0;
+
   // Returns true if the target is an inner response of a signed exchange.
   virtual bool IsSignedExchangeInnerResponse() = 0;
+
+  // Returns true if prefetched alternative subresource signed exchange was sent
+  // to the renderer process.
+  virtual bool HasPrefetchedAlternativeSubresourceSignedExchange() = 0;
 
   // Returns true if the navigation response was cached.
   virtual bool WasResponseCached() = 0;
@@ -296,13 +395,39 @@ class CONTENT_EXPORT NavigationHandle {
   // initiated from a link that had that attribute set.
   virtual const std::string& GetHrefTranslate() = 0;
 
+  // Returns, if available, the impression associated with the link clicked to
+  // initiate this navigation. The impression is available for the entire
+  // lifetime of the navigation.
+  virtual const absl::optional<blink::Impression>& GetImpression() = 0;
+
+  // Returns the frame token associated with the frame that initiated the
+  // navigation. This can be nullptr if the navigation was not associated with a
+  // frame, or may return a valid frame token to a frame that no longer exists
+  // because it was deleted before the navigation began. This parameter is
+  // defined if and only if GetInitiatorProcessID below is.
+  virtual const absl::optional<blink::LocalFrameToken>&
+  GetInitiatorFrameToken() = 0;
+
+  // Return the ID of the renderer process of the frame host that initiated the
+  // navigation. This is defined if and only if GetInitiatorFrameToken above is,
+  // and it is only valid in conjunction with it.
+  virtual int GetInitiatorProcessID() = 0;
+
   // Returns, if available, the origin of the document that has initiated the
   // navigation for this NavigationHandle.
-  virtual const base::Optional<url::Origin>& GetInitiatorOrigin() = 0;
+  virtual const absl::optional<url::Origin>& GetInitiatorOrigin() = 0;
+
+  // Retrieves any DNS aliases for the requested URL. The alias chain order
+  // is preserved in reverse, from canonical name (i.e. address record name)
+  // through to query name.
+  virtual const std::vector<std::string>& GetDnsAliases() = 0;
 
   // Whether the new document will be hosted in the same process as the current
   // document or not. Set only when the navigation commits.
   virtual bool IsSameProcess() = 0;
+
+  // Returns the NavigationEntry associated with this, which may be null.
+  virtual NavigationEntry* GetNavigationEntry() = 0;
 
   // Returns the offset between the indices of the previous last committed and
   // the newly committed navigation entries.
@@ -317,6 +442,45 @@ class CONTENT_EXPORT NavigationHandle {
   //   navigations will return 1 here although they don't create a new
   //   navigation entry.
   virtual int GetNavigationEntryOffset() = 0;
+
+  virtual void RegisterSubresourceOverride(
+      blink::mojom::TransferrableURLLoaderPtr transferrable_loader) = 0;
+
+  // Force enables the given origin trials for this navigation. This needs to
+  // be called from WebContents::ReadyToCommitNavigation or earlier to have an
+  // effect.
+  virtual void ForceEnableOriginTrials(
+      const std::vector<std::string>& trials) = 0;
+
+  // Store whether or not we're overriding the user agent. This may only be
+  // called from DidStartNavigation().
+  virtual void SetIsOverridingUserAgent(bool override_ua) = 0;
+
+  // Suppress any errors during a navigation and behave as if the user cancelled
+  // the navigation: no error page will commit.
+  virtual void SetSilentlyIgnoreErrors() = 0;
+
+  // The sandbox flags of the new document created by this navigation. This
+  // function can only be called for cross-document navigations after receiving
+  // the final response.
+  // See also: content/browser/renderer_host/sandbox_flags.md
+  //
+  // TODO(arthursonzogni): After RenderDocument, this can be computed and stored
+  // directly into the RenderDocumentHost.
+  virtual network::mojom::WebSandboxFlags SandboxFlagsToCommit() = 0;
+
+  // Whether the navigation was sent to be committed in a renderer by the
+  // RenderFrameHost. This can either be for the commit of a successful
+  // navigation or an error page.
+  virtual bool IsWaitingToCommit() = 0;
+
+  // Returns true when at least one preload Link header was received via an
+  // Early Hints response during this navigation. True only for a main frame
+  // navigation.
+  virtual bool WasEarlyHintsPreloadLinkHeaderReceived() = 0;
+
+  // Write a representation of this object into a trace.
+  virtual void WriteIntoTrace(perfetto::TracedValue context) = 0;
 
   // Testing methods ----------------------------------------------------------
   //
@@ -334,14 +498,6 @@ class CONTENT_EXPORT NavigationHandle {
 
   // Returns whether this navigation is currently deferred.
   virtual bool IsDeferredForTesting() = 0;
-
-  // The NavigationData that the embedder returned from
-  // ResourceDispatcherHostDelegate::GetNavigationData during commit. This will
-  // be a clone of the NavigationData.
-  virtual NavigationData* GetNavigationData() = 0;
-
-  virtual void RegisterSubresourceOverride(
-      mojom::TransferrableURLLoaderPtr transferrable_loader) = 0;
 };
 
 }  // namespace content

@@ -10,12 +10,16 @@
 
 #include "base/component_export.h"
 #include "base/macros.h"
-#include "mojo/public/cpp/bindings/strong_binding_set.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/unique_receiver_set.h"
 #include "net/http/http_network_session.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/mojom/network_service.mojom.h"
+#include "services/network/public/mojom/tcp_socket.mojom.h"
 #include "services/network/public/mojom/tls_socket.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace net {
 class ClientSocketFactory;
@@ -40,7 +44,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) TLSSocketFactory {
       base::OnceCallback<void(int32_t net_error,
                               mojo::ScopedDataPipeConsumerHandle receive_stream,
                               mojo::ScopedDataPipeProducerHandle send_stream,
-                              const base::Optional<net::SSLInfo>& ssl_info)>;
+                              const absl::optional<net::SSLInfo>& ssl_info)>;
 
   // Constructs a TLSSocketFactory. If |net_log| is non-null, it is used to
   // log NetLog events when logging is enabled. |net_log| used to must outlive
@@ -60,37 +64,36 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) TLSSocketFactory {
       const net::HostPortPair& host_port_pair,
       mojom::TLSClientSocketOptionsPtr socket_options,
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
-      mojom::TLSClientSocketRequest request,
-      mojom::SocketObserverPtr observer,
+      mojo::PendingReceiver<mojom::TLSClientSocket> receiver,
+      mojo::PendingRemote<mojom::SocketObserver> observer,
       UpgradeToTLSCallback callback);
 
  private:
   void CreateTLSClientSocket(
       const net::HostPortPair& host_port_pair,
       mojom::TLSClientSocketOptionsPtr socket_options,
-      mojom::TLSClientSocketRequest request,
+      mojo::PendingReceiver<mojom::TLSClientSocket> receiver,
       std::unique_ptr<net::StreamSocket> underlying_socket,
-      mojom::SocketObserverPtr observer,
+      mojo::PendingRemote<mojom::SocketObserver> observer,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
       mojom::TCPConnectedSocket::UpgradeToTLSCallback callback);
 
   // The following are used when |unsafely_skip_cert_verification| is specified
   // in upgrade options.
-  net::SSLClientSocketContext no_verification_ssl_client_socket_context_;
+  std::unique_ptr<net::SSLClientContext> no_verification_ssl_client_context_;
   std::unique_ptr<net::CertVerifier> no_verification_cert_verifier_;
   std::unique_ptr<net::TransportSecurityState>
       no_verification_transport_security_state_;
-  std::unique_ptr<net::CTVerifier> no_verification_cert_transparency_verifier_;
   std::unique_ptr<net::CTPolicyEnforcer> no_verification_ct_policy_enforcer_;
 
-  net::SSLClientSocketContext ssl_client_socket_context_;
+  net::SSLClientContext ssl_client_context_;
   net::ClientSocketFactory* client_socket_factory_;
   net::SSLConfigService* const ssl_config_service_;
-  mojo::StrongBindingSet<mojom::TLSClientSocket> tls_socket_bindings_;
+  mojo::UniqueReceiverSet<mojom::TLSClientSocket> tls_socket_receivers_;
 
   DISALLOW_COPY_AND_ASSIGN(TLSSocketFactory);
 };
 
 }  // namespace network
 
-#endif  // SERVICES_NETWORK_SOCKET_FACTORY_H_
+#endif  // SERVICES_NETWORK_TLS_SOCKET_FACTORY_H_

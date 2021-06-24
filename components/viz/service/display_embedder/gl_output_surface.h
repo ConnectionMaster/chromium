@@ -6,7 +6,10 @@
 #define COMPONENTS_VIZ_SERVICE_DISPLAY_EMBEDDER_GL_OUTPUT_SURFACE_H_
 
 #include <memory>
+#include <vector>
 
+#include "base/callback_helpers.h"
+#include "components/viz/common/display/update_vsync_parameters_callback.h"
 #include "components/viz/service/display/output_surface.h"
 #include "components/viz/service/display_embedder/viz_process_context_provider.h"
 #include "gpu/command_buffer/client/context_support.h"
@@ -14,14 +17,12 @@
 
 namespace viz {
 
-class SyntheticBeginFrameSource;
-
 // An OutputSurface implementation that directly draws and
 // swaps to an actual GL surface.
 class GLOutputSurface : public OutputSurface {
  public:
   GLOutputSurface(scoped_refptr<VizProcessContextProvider> context_provider,
-                  SyntheticBeginFrameSource* synthetic_begin_frame_source);
+                  gpu::SurfaceHandle surface_handle);
   ~GLOutputSurface() override;
 
   // OutputSurface implementation
@@ -30,29 +31,43 @@ class GLOutputSurface : public OutputSurface {
   void DiscardBackbuffer() override;
   void BindFramebuffer() override;
   void SetDrawRectangle(const gfx::Rect& draw_rectangle) override;
+  void SetEnableDCLayers(bool enabled) override;
   void Reshape(const gfx::Size& size,
                float device_scale_factor,
                const gfx::ColorSpace& color_space,
-               bool has_alpha,
+               gfx::BufferFormat format,
                bool use_stencil) override;
   void SwapBuffers(OutputSurfaceFrame frame) override;
   uint32_t GetFramebufferCopyTextureFormat() override;
-  OverlayCandidateValidator* GetOverlayCandidateValidator() const override;
   bool IsDisplayedAsOverlayPlane() const override;
   unsigned GetOverlayTextureId() const override;
-  gfx::BufferFormat GetOverlayBufferFormat() const override;
   bool HasExternalStencilTest() const override;
   void ApplyExternalStencil() override;
   unsigned UpdateGpuFence() override;
   void SetNeedsSwapSizeNotifications(
       bool needs_swap_size_notifications) override;
+  void SetUpdateVSyncParametersCallback(
+      UpdateVSyncParametersCallback callback) override;
+  void SetGpuVSyncCallback(GpuVSyncCallback callback) override;
+  void SetGpuVSyncEnabled(bool enabled) override;
+  void SetDisplayTransformHint(gfx::OverlayTransform transform) override {}
+  gfx::OverlayTransform GetDisplayTransform() override;
+  base::ScopedClosureRunner GetCacheBackBufferCb() override;
+
+  gpu::SurfaceHandle GetSurfaceHandle() const override;
+  void SetFrameRate(float frame_rate) override;
+  void SetNeedsMeasureNextDrawLatency() override;
 
  protected:
   OutputSurfaceClient* client() const { return client_; }
   ui::LatencyTracker* latency_tracker() { return &latency_tracker_; }
+  bool needs_swap_size_notifications() {
+    return needs_swap_size_notifications_;
+  }
 
   // Called when a swap completion is signaled from ImageTransportSurface.
-  virtual void DidReceiveSwapBuffersAck(gfx::SwapResult result);
+  virtual void DidReceiveSwapBuffersAck(const gfx::SwapResponse& response,
+                                        gfx::GpuFenceHandle release_fence);
 
   // Called in SwapBuffers() when a swap is determined to be partial. Subclasses
   // might override this method because different platforms handle partial swaps
@@ -66,15 +81,20 @@ class GLOutputSurface : public OutputSurface {
  private:
   // Called when a swap completion is signaled from ImageTransportSurface.
   void OnGpuSwapBuffersCompleted(std::vector<ui::LatencyInfo> latency_info,
+                                 bool top_controls_visible_height_changed,
                                  const gfx::Size& pixel_size,
-                                 const gpu::SwapBuffersCompleteParams& params);
-  void OnVSyncParametersUpdated(base::TimeTicks timebase,
-                                base::TimeDelta interval);
+                                 const gpu::SwapBuffersCompleteParams& params,
+                                 gfx::GpuFenceHandle release_fence);
   void OnPresentation(const gfx::PresentationFeedback& feedback);
+  void OnGpuVSync(base::TimeTicks vsync_time, base::TimeDelta vsync_interval);
+  gfx::Rect ApplyDisplayInverse(const gfx::Rect& input);
 
+  scoped_refptr<VizProcessContextProvider> viz_context_provider_;
   OutputSurfaceClient* client_ = nullptr;
-  SyntheticBeginFrameSource* const synthetic_begin_frame_source_;
+  bool wants_vsync_parameter_updates_ = false;
   ui::LatencyTracker latency_tracker_;
+
+  const gpu::SurfaceHandle surface_handle_;
 
   bool set_draw_rectangle_for_frame_ = false;
   // True if the draw rectangle has been set at all since the last resize.
@@ -85,7 +105,7 @@ class GLOutputSurface : public OutputSurface {
   // Whether to send OutputSurfaceClient::DidSwapWithSize notifications.
   bool needs_swap_size_notifications_ = false;
 
-  base::WeakPtrFactory<GLOutputSurface> weak_ptr_factory_;
+  base::WeakPtrFactory<GLOutputSurface> weak_ptr_factory_{this};
 };
 
 }  // namespace viz

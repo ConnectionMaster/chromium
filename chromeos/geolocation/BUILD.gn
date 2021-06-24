@@ -32,6 +32,7 @@ source_set("unit_tests") {
   deps = [
     ":geolocation",
     "//base",
+    "//base/test:test_support",
     "//chromeos/dbus/shill",
     "//chromeos/network:test_support",
     "//net",
@@ -39,7 +40,5 @@ source_set("unit_tests") {
     "//services/network/public/cpp",
     "//testing/gtest",
   ]
-  sources = [
-    "simple_geolocation_unittest.cc",
-  ]
+  sources = [ "simple_geolocation_unittest.cc" ]
 }

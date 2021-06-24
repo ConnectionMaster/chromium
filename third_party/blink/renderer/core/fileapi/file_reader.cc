@@ -31,32 +31,32 @@
 #include "third_party/blink/renderer/core/fileapi/file_reader.h"
 
 #include "base/auto_reset.h"
+#include "base/timer/elapsed_timer.h"
 #include "third_party/blink/public/platform/task_type.h"
-#include "third_party/blink/renderer/bindings/core/v8/string_or_array_buffer.h"
-#include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_string.h"
 #include "third_party/blink/renderer/core/events/progress_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
 #include "third_party/blink/renderer/core/fileapi/file_error.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
 namespace {
 
-const CString Utf8BlobUUID(Blob* blob) {
+const std::string Utf8BlobUUID(Blob* blob) {
   return blob->Uuid().Utf8();
 }
 
-const CString Utf8FilePath(Blob* blob) {
+const std::string Utf8FilePath(Blob* blob) {
   return blob->HasBackingFile() ? To<File>(blob)->GetPath().Utf8() : "";
 }
 
@@ -66,13 +66,12 @@ const CString Utf8FilePath(Blob* blob) {
 // excessive IPC congestion. We limit this to 100 per thread to throttle the
 // requests (the value is arbitrarily chosen).
 static const size_t kMaxOutstandingRequestsPerThread = 100;
-static const double kProgressNotificationIntervalMS = 50;
+static const base::TimeDelta kProgressNotificationInterval =
+    base::TimeDelta::FromMilliseconds(50);
 
 class FileReader::ThrottlingController final
     : public GarbageCollected<FileReader::ThrottlingController>,
       public Supplement<ExecutionContext> {
-  USING_GARBAGE_COLLECTED_MIXIN(FileReader::ThrottlingController);
-
  public:
   static const char kSupplementName[];
 
@@ -96,7 +95,7 @@ class FileReader::ThrottlingController final
     if (!controller)
       return;
 
-    probe::AsyncTaskScheduled(context, "FileReader", reader);
+    probe::AsyncTaskScheduled(context, "FileReader", reader->async_task_id());
     controller->PushReader(reader);
   }
 
@@ -117,14 +116,14 @@ class FileReader::ThrottlingController final
       return;
 
     controller->FinishReader(reader, next_step);
-    probe::AsyncTaskCanceled(context, reader);
+    probe::AsyncTaskCanceled(context, reader->async_task_id());
   }
 
   explicit ThrottlingController(ExecutionContext& context)
       : Supplement<ExecutionContext>(context),
         max_running_readers_(kMaxOutstandingRequestsPerThread) {}
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(pending_readers_);
     visitor->Trace(running_readers_);
     Supplement<ExecutionContext>::Trace(visitor);
@@ -197,12 +196,11 @@ FileReader* FileReader::Create(ExecutionContext* context) {
 }
 
 FileReader::FileReader(ExecutionContext* context)
-    : ContextLifecycleObserver(context),
+    : ExecutionContextLifecycleObserver(context),
       state_(kEmpty),
       loading_state_(kLoadingStateNone),
       still_firing_events_(false),
-      read_type_(FileReaderLoader::kReadAsBinaryString),
-      last_progress_notification_time_ms_(0) {}
+      read_type_(FileReaderLoader::kReadAsBinaryString) {}
 
 FileReader::~FileReader() {
   Terminate();
@@ -212,12 +210,13 @@ const AtomicString& FileReader::InterfaceName() const {
   return event_target_names::kFileReader;
 }
 
-void FileReader::ContextDestroyed(ExecutionContext* destroyed_context) {
+void FileReader::ContextDestroyed() {
   // The delayed abort task tidies up and advances to the DONE state.
   if (loading_state_ == kLoadingStateAborted)
     return;
 
   if (HasPendingActivity()) {
+    ExecutionContext* destroyed_context = GetExecutionContext();
     ThrottlingController::FinishReader(
         destroyed_context, this,
         ThrottlingController::RemoveReader(destroyed_context, this));
@@ -292,7 +291,8 @@ void FileReader::ReadInternal(Blob* blob,
 
   // A document loader will not load new resources once the Document has
   // detached from its frame.
-  if (IsA<Document>(context) && !To<Document>(context)->GetFrame()) {
+  LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(context);
+  if (window && !window->GetFrame()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kAbortError,
         "Reading from a Document-detached FileReader is not supported.");
@@ -335,7 +335,10 @@ void FileReader::abort() {
   loading_state_ = kLoadingStateAborted;
 
   DCHECK_NE(kDone, state_);
-  state_ = kDone;
+  // Synchronously cancel the loader before dispatching events. This way we make
+  // sure the FileReader internal state stays consistent even if another load
+  // is started from one of the event handlers, or right after abort returns.
+  Terminate();
 
   base::AutoReset<bool> firing_events(&still_firing_events_, true);
 
@@ -347,31 +350,31 @@ void FileReader::abort() {
       ThrottlingController::RemoveReader(GetExecutionContext(), this);
 
   FireEvent(event_type_names::kAbort);
+  // TODO(https://crbug.com/1204139): Only fire loadend event if no new load was
+  // started from the abort event handler.
   FireEvent(event_type_names::kLoadend);
 
   // All possible events have fired and we're done, no more pending activity.
   ThrottlingController::FinishReader(GetExecutionContext(), this, final_step);
-
-  // Also synchronously cancel the loader, as script might initiate a new load
-  // right after this method returns, in which case an async termination would
-  // terminate the wrong loader.
-  Terminate();
 }
 
-void FileReader::result(ScriptState* state,
-                        StringOrArrayBuffer& result_attribute) const {
+V8UnionArrayBufferOrString* FileReader::result() const {
   if (error_ || !loader_)
-    return;
+    return nullptr;
 
-  if (!loader_->HasFinishedLoading()) {
-    UseCounter::Count(ExecutionContext::From(state),
-                      WebFeature::kFileReaderResultBeforeCompletion);
+  // Only set the result after |loader_| has finished loading which means that
+  // FileReader::DidFinishLoading() has also been called. This ensures that the
+  // result is not available until just before the kLoad event is fired.
+  if (!loader_->HasFinishedLoading() || state_ != ReadyState::kDone) {
+    return nullptr;
   }
 
-  if (read_type_ == FileReaderLoader::kReadAsArrayBuffer)
-    result_attribute.SetArrayBuffer(loader_->ArrayBufferResult());
-  else
-    result_attribute.SetString(loader_->StringResult());
+  if (read_type_ == FileReaderLoader::kReadAsArrayBuffer) {
+    return MakeGarbageCollected<V8UnionArrayBufferOrString>(
+        loader_->ArrayBufferResult());
+  }
+  return MakeGarbageCollected<V8UnionArrayBufferOrString>(
+      loader_->StringResult());
 }
 
 void FileReader::Terminate() {
@@ -390,14 +393,13 @@ void FileReader::DidStartLoading() {
 
 void FileReader::DidReceiveData() {
   // Fire the progress event at least every 50ms.
-  double now = CurrentTimeMS();
-  if (!last_progress_notification_time_ms_) {
-    last_progress_notification_time_ms_ = now;
-  } else if (now - last_progress_notification_time_ms_ >
-             kProgressNotificationIntervalMS) {
+  if (!last_progress_notification_time_) {
+    last_progress_notification_time_ = base::ElapsedTimer();
+  } else if (last_progress_notification_time_->Elapsed() >
+             kProgressNotificationInterval) {
     base::AutoReset<bool> firing_events(&still_firing_events_, true);
     FireEvent(event_type_names::kProgress);
-    last_progress_notification_time_ms_ = now;
+    last_progress_notification_time_ = base::ElapsedTimer();
   }
 }
 
@@ -428,6 +430,8 @@ void FileReader::DidFinishLoading() {
       ThrottlingController::RemoveReader(GetExecutionContext(), this);
 
   FireEvent(event_type_names::kLoad);
+  // TODO(https://crbug.com/1204139): Only fire loadend event if no new load was
+  // started from the abort event handler.
   FireEvent(event_type_names::kLoadend);
 
   // All possible events have fired and we're done, no more pending activity.
@@ -460,7 +464,7 @@ void FileReader::DidFail(FileErrorCode error_code) {
 }
 
 void FileReader::FireEvent(const AtomicString& type) {
-  probe::AsyncTask async_task(GetExecutionContext(), this, "event");
+  probe::AsyncTask async_task(GetExecutionContext(), async_task_id(), "event");
   if (!loader_) {
     DispatchEvent(*ProgressEvent::Create(type, false, 0, 0));
     return;
@@ -475,10 +479,10 @@ void FileReader::FireEvent(const AtomicString& type) {
   }
 }
 
-void FileReader::Trace(blink::Visitor* visitor) {
+void FileReader::Trace(Visitor* visitor) const {
   visitor->Trace(error_);
   EventTargetWithInlineData::Trace(visitor);
-  ContextLifecycleObserver::Trace(visitor);
+  ExecutionContextLifecycleObserver::Trace(visitor);
 }
 
 }  // namespace blink

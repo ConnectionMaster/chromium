@@ -12,14 +12,10 @@
 #include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/hash/hash.h"
-#include "base/logging.h"
-#include "base/metrics/field_trial.h"
-#include "base/metrics/field_trial_param_associator.h"
 #include "base/pickle.h"
 #include "base/strings/stringprintf.h"
 #include "base/task_runner.h"
 #include "base/test/mock_entropy_provider.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "net/base/cache_type.h"
@@ -28,7 +24,7 @@
 #include "net/disk_cache/simple/simple_index_file.h"
 #include "net/disk_cache/simple/simple_test_util.h"
 #include "net/disk_cache/simple/simple_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace disk_cache {
@@ -70,9 +66,9 @@ class MockSimpleIndexFile : public SimpleIndexFile,
       : SimpleIndexFile(nullptr, nullptr, cache_type, base::FilePath()) {}
 
   void LoadIndexEntries(base::Time cache_last_modified,
-                        const base::Closure& callback,
+                        base::OnceClosure callback,
                         SimpleIndexLoadResult* out_load_result) override {
-    load_callback_ = callback;
+    load_callback_ = std::move(callback);
     load_result_ = out_load_result;
     ++load_index_entries_calls_;
   }
@@ -81,9 +77,7 @@ class MockSimpleIndexFile : public SimpleIndexFile,
                    SimpleIndex::IndexWriteToDiskReason reason,
                    const SimpleIndex::EntrySet& entry_set,
                    uint64_t cache_size,
-                   const base::TimeTicks& start,
-                   bool app_on_background,
-                   const base::Closure& callback) override {
+                   base::OnceClosure callback) override {
     disk_writes_++;
     disk_write_entry_set_ = entry_set;
   }
@@ -92,20 +86,20 @@ class MockSimpleIndexFile : public SimpleIndexFile,
     entry_set->swap(disk_write_entry_set_);
   }
 
-  const base::Closure& load_callback() const { return load_callback_; }
+  base::OnceClosure TakeLoadCallback() { return std::move(load_callback_); }
   SimpleIndexLoadResult* load_result() const { return load_result_; }
   int load_index_entries_calls() const { return load_index_entries_calls_; }
   int disk_writes() const { return disk_writes_; }
 
  private:
-  base::Closure load_callback_;
+  base::OnceClosure load_callback_;
   SimpleIndexLoadResult* load_result_ = nullptr;
   int load_index_entries_calls_ = 0;
   int disk_writes_ = 0;
   SimpleIndex::EntrySet disk_write_entry_set_;
 };
 
-class SimpleIndexTest : public net::TestWithScopedTaskEnvironment,
+class SimpleIndexTest : public net::TestWithTaskEnvironment,
                         public SimpleIndexDelegate {
  protected:
   SimpleIndexTest() : hashes_(base::BindRepeating(&HashesInitializer)) {}
@@ -119,9 +113,10 @@ class SimpleIndexTest : public net::TestWithScopedTaskEnvironment,
     std::unique_ptr<MockSimpleIndexFile> index_file(
         new MockSimpleIndexFile(CacheType()));
     index_file_ = index_file->AsWeakPtr();
-    index_.reset(new SimpleIndex(/* io_thread = */ nullptr,
-                                 /* cleanup_tracker = */ nullptr, this,
-                                 CacheType(), std::move(index_file)));
+    index_ =
+        std::make_unique<SimpleIndex>(/* io_thread = */ nullptr,
+                                      /* cleanup_tracker = */ nullptr, this,
+                                      CacheType(), std::move(index_file));
 
     index_->Initialize(base::Time());
   }
@@ -162,7 +157,7 @@ class SimpleIndexTest : public net::TestWithScopedTaskEnvironment,
 
   void ReturnIndexFile() {
     index_file_->load_result()->did_load = true;
-    index_file_->load_callback().Run();
+    index_file_->TakeLoadCallback().Run();
   }
 
   // Non-const for timer manipulation.
@@ -180,9 +175,6 @@ class SimpleIndexTest : public net::TestWithScopedTaskEnvironment,
   std::unique_ptr<SimpleIndex> index_;
   base::WeakPtr<MockSimpleIndexFile> index_file_;
 
-  std::unique_ptr<base::FieldTrialList> field_trial_list_;
-  base::test::ScopedFeatureList scoped_feature_list_;
-
   std::vector<uint64_t> last_doom_entry_hashes_;
   int doom_entries_calls_ = 0;
 };
@@ -190,6 +182,13 @@ class SimpleIndexTest : public net::TestWithScopedTaskEnvironment,
 class SimpleIndexAppCacheTest : public SimpleIndexTest {
  protected:
   net::CacheType CacheType() const override { return net::APP_CACHE; }
+};
+
+class SimpleIndexCodeCacheTest : public SimpleIndexTest {
+ protected:
+  net::CacheType CacheType() const override {
+    return net::GENERATED_BYTE_CODE_CACHE;
+  }
 };
 
 TEST_F(EntryMetadataTest, Basics) {
@@ -609,40 +608,6 @@ TEST_F(SimpleIndexTest, BasicEviction) {
   ASSERT_EQ(2u, last_doom_entry_hashes().size());
 }
 
-TEST_F(SimpleIndexTest, EvictByLRU) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(kSimpleCacheEvictionWithSize);
-
-  base::Time now(base::Time::Now());
-  index()->SetMaxSize(50000);
-  InsertIntoIndexFileReturn(hashes_.at<1>(), now - base::TimeDelta::FromDays(2),
-                            475u);
-  InsertIntoIndexFileReturn(hashes_.at<2>(), now - base::TimeDelta::FromDays(1),
-                            40000u);
-  ReturnIndexFile();
-  WaitForTimeChange();
-
-  index()->Insert(hashes_.at<3>());
-  // Confirm index is as expected: No eviction, everything there.
-  EXPECT_EQ(3, index()->GetEntryCount());
-  EXPECT_EQ(0, doom_entries_calls());
-  EXPECT_TRUE(index()->Has(hashes_.at<1>()));
-  EXPECT_TRUE(index()->Has(hashes_.at<2>()));
-  EXPECT_TRUE(index()->Has(hashes_.at<3>()));
-
-  // Trigger an eviction, and make sure the right things are tossed.
-  // TODO(morlovich): This is dependent on the innards of the implementation
-  // as to at exactly what point we trigger eviction. Not sure how to fix
-  // that.
-  index()->UpdateEntrySize(hashes_.at<3>(), 40000u);
-  EXPECT_EQ(1, doom_entries_calls());
-  EXPECT_EQ(1, index()->GetEntryCount());
-  EXPECT_FALSE(index()->Has(hashes_.at<1>()));
-  EXPECT_FALSE(index()->Has(hashes_.at<2>()));
-  EXPECT_TRUE(index()->Has(hashes_.at<3>()));
-  ASSERT_EQ(2u, last_doom_entry_hashes().size());
-}
-
 TEST_F(SimpleIndexTest, EvictBySize) {
   base::Time now(base::Time::Now());
   index()->SetMaxSize(50000);
@@ -672,6 +637,36 @@ TEST_F(SimpleIndexTest, EvictBySize) {
   EXPECT_FALSE(index()->Has(hashes_.at<2>()));
   EXPECT_TRUE(index()->Has(hashes_.at<3>()));
   ASSERT_EQ(1u, last_doom_entry_hashes().size());
+}
+
+TEST_F(SimpleIndexCodeCacheTest, DisableEvictBySize) {
+  base::Time now(base::Time::Now());
+  index()->SetMaxSize(50000);
+  InsertIntoIndexFileReturn(hashes_.at<1>(), now - base::TimeDelta::FromDays(2),
+                            475u);
+  InsertIntoIndexFileReturn(hashes_.at<2>(), now - base::TimeDelta::FromDays(1),
+                            40000u);
+  ReturnIndexFile();
+  WaitForTimeChange();
+
+  index()->Insert(hashes_.at<3>());
+  // Confirm index is as expected: No eviction, everything there.
+  EXPECT_EQ(3, index()->GetEntryCount());
+  EXPECT_EQ(0, doom_entries_calls());
+  EXPECT_TRUE(index()->Has(hashes_.at<1>()));
+  EXPECT_TRUE(index()->Has(hashes_.at<2>()));
+  EXPECT_TRUE(index()->Has(hashes_.at<3>()));
+
+  // Trigger an eviction, and make sure the right things are tossed.
+  // Since evict by size is supposed to be disabled, it evicts in LRU order,
+  // so entries 1 and 2 are both kicked out.
+  index()->UpdateEntrySize(hashes_.at<3>(), 40000u);
+  EXPECT_EQ(1, doom_entries_calls());
+  EXPECT_EQ(1, index()->GetEntryCount());
+  EXPECT_FALSE(index()->Has(hashes_.at<1>()));
+  EXPECT_FALSE(index()->Has(hashes_.at<2>()));
+  EXPECT_TRUE(index()->Has(hashes_.at<3>()));
+  ASSERT_EQ(2u, last_doom_entry_hashes().size());
 }
 
 // Same as test above, but using much older entries to make sure that small

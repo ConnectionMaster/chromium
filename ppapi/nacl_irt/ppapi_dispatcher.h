@@ -61,9 +61,6 @@ class PpapiDispatcher : public proxy::PluginDispatcher::PluginDelegate,
       base::PlatformFile handle,
       base::ProcessId peer_pid,
       bool should_close_source) override;
-  base::SharedMemoryHandle ShareSharedMemoryHandleWithRemote(
-      const base::SharedMemoryHandle& handle,
-      base::ProcessId remote_pid) override;
   base::UnsafeSharedMemoryRegion ShareUnsafeSharedMemoryRegionWithRemote(
       const base::UnsafeSharedMemoryRegion& region,
       base::ProcessId remote_pid) override;
@@ -77,7 +74,6 @@ class PpapiDispatcher : public proxy::PluginDispatcher::PluginDelegate,
   // PluginProxyDelegate implementation.
   IPC::Sender* GetBrowserSender() override;
   std::string GetUILanguage() override;
-  void PreCacheFontForFlash(const void* logfontw) override;
   void SetActiveURL(const std::string& url) override;
   PP_Resource CreateBrowserFont(proxy::Connection connection,
                                 PP_Instance instance,

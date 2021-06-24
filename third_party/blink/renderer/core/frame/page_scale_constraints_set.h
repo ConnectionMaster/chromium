@@ -31,8 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_PAGE_SCALE_CONSTRAINTS_SET_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_PAGE_SCALE_CONSTRAINTS_SET_H_
 
-#include <memory>
-
 #include "base/memory/ptr_util.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/frame/page_scale_constraints.h"
@@ -40,7 +38,7 @@
 #include "third_party/blink/renderer/platform/geometry/int_size.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -53,7 +51,7 @@ class CORE_EXPORT PageScaleConstraintsSet
  public:
   explicit PageScaleConstraintsSet(Page* page);
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
   void SetDefaultConstraints(const PageScaleConstraints&);
   const PageScaleConstraints& DefaultConstraints() const;

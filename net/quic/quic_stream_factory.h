@@ -10,12 +10,13 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "base/containers/mru_cache.h"
 #include "base/gtest_prod_util.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/tick_clock.h"
@@ -27,21 +28,23 @@
 #include "net/base/network_change_notifier.h"
 #include "net/base/proxy_server.h"
 #include "net/cert/cert_database.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/http/http_server_properties.h"
 #include "net/http/http_stream_factory.h"
 #include "net/log/net_log_with_source.h"
 #include "net/quic/network_connection.h"
 #include "net/quic/quic_chromium_client_session.h"
 #include "net/quic/quic_clock_skew_detector.h"
+#include "net/quic/quic_connectivity_monitor.h"
+#include "net/quic/quic_context.h"
+#include "net/quic/quic_crypto_client_config_handle.h"
 #include "net/quic/quic_session_key.h"
 #include "net/socket/client_socket_pool.h"
 #include "net/ssl/ssl_config_service.h"
-#include "net/third_party/quiche/src/quic/core/http/quic_client_push_promise_index.h"
 #include "net/third_party/quiche/src/quic/core/quic_config.h"
 #include "net/third_party/quiche/src/quic/core/quic_crypto_stream.h"
 #include "net/third_party/quiche/src/quic/core/quic_packets.h"
 #include "net/third_party/quiche/src/quic/core/quic_server_id.h"
-#include "net/third_party/quiche/src/quic/platform/api/quic_string_piece.h"
 
 namespace base {
 class Value;
@@ -61,14 +64,16 @@ namespace net {
 class CTPolicyEnforcer;
 class CertVerifier;
 class ClientSocketFactory;
-class CTVerifier;
 class HostResolver;
 class HttpServerProperties;
 class NetLog;
+class NetworkIsolationKey;
 class QuicChromiumConnectionHelper;
 class QuicCryptoClientStreamFactory;
 class QuicServerInfo;
 class QuicStreamFactory;
+class QuicContext;
+class SCTAuditingDelegate;
 class SocketPerformanceWatcherFactory;
 class SocketTag;
 class TransportSecurityState;
@@ -77,29 +82,14 @@ namespace test {
 class QuicStreamFactoryPeer;
 }  // namespace test
 
-// When a connection is idle for 30 seconds it will be closed.
-const int kIdleConnectionTimeoutSeconds = 30;
-
-// Sessions can migrate if they have been idle for less than this period.
-const int kDefaultIdleSessionMigrationPeriodSeconds = 30;
-
-// The maximum time allowed to have no retransmittable packets on the wire
-// (after sending the first retransmittable packet) if
-// |migrate_session_early_v2_| is true. PING frames will be sent as needed to
-// enforce this.
-const int64_t kDefaultRetransmittableOnWireTimeoutMillisecs = 100;
-
-// The default maximum time QUIC session could be on non-default network before
-// migrate back to default network.
-const int64_t kMaxTimeOnNonDefaultNetworkSecs = 128;
-
-// The default maximum number of migrations to non default network on write
-// error per network.
-const int64_t kMaxMigrationsToNonDefaultNetworkOnWriteError = 5;
-
-// The default maximum number of migrations to non default network on path
-// degrading per network.
-const int64_t kMaxMigrationsToNonDefaultNetworkOnPathDegrading = 5;
+// Maximum number of not currently in use QuicCryptoClientConfig that can be
+// stored in |recent_crypto_config_map_|.
+//
+// TODO(mmenke): Should figure out a reasonable value of this, using field
+// trials. The optimal value may increase over time, as QUIC becomes more
+// prevalent. Whether or not NetworkIsolationKeys end up including subframe URLs
+// will also influence the ideal value.
+const int kMaxRecentCryptoConfigs = 100;
 
 enum QuicPlatformNotification {
   NETWORK_CONNECTED,
@@ -108,6 +98,12 @@ enum QuicPlatformNotification {
   NETWORK_SOON_TO_DISCONNECT,
   NETWORK_IP_ADDRESS_CHANGED,
   NETWORK_NOTIFICATION_MAX
+};
+
+enum AllActiveSessionsGoingAwayReason {
+  kClockSkewDetected,
+  kIPAddressChanged,
+  kCertDBChanged
 };
 
 // Encapsulates a pending request for a QuicChromiumClientSession.
@@ -123,11 +119,17 @@ class NET_EXPORT_PRIVATE QuicStreamRequest {
   // |destination| will be resolved and resulting IPEndPoint used to open a
   // quic::QuicConnection.  This can be different than
   // HostPortPair::FromURL(url).
+  // When |use_dns_aliases| is true, any DNS aliases found in host resolution
+  // are stored in the |dns_aliases_by_session_key_| map. |use_dns_aliases|
+  // should be false in the case of a proxy.
   int Request(const HostPortPair& destination,
-              quic::QuicTransportVersion quic_version,
+              quic::ParsedQuicVersion quic_version,
               PrivacyMode privacy_mode,
               RequestPriority priority,
               const SocketTag& socket_tag,
+              const NetworkIsolationKey& network_isolation_key,
+              SecureDnsPolicy secure_dns_policy,
+              bool use_dns_aliases,
               int cert_verify_flags,
               const GURL& url,
               const NetLogWithSource& net_log,
@@ -227,7 +229,6 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
     const QuicSessionKey& session_key() const { return session_key_; }
 
     // Returns the estimate of dynamically allocated memory in bytes.
-    size_t EstimateMemoryUsage() const;
 
    private:
     HostPortPair destination_;
@@ -243,39 +244,10 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
       CertVerifier* cert_verifier,
       CTPolicyEnforcer* ct_policy_enforcer,
       TransportSecurityState* transport_security_state,
-      CTVerifier* cert_transparency_verifier,
+      SCTAuditingDelegate* sct_auditing_delegate,
       SocketPerformanceWatcherFactory* socket_performance_watcher_factory,
       QuicCryptoClientStreamFactory* quic_crypto_client_stream_factory,
-      quic::QuicRandom* random_generator,
-      quic::QuicClock* clock,
-      size_t max_packet_length,
-      const std::string& user_agent_id,
-      bool store_server_configs_in_properties,
-      bool close_sessions_on_ip_change,
-      bool goway_sessions_on_ip_change,
-      bool mark_quic_broken_when_network_blackholes,
-      int idle_connection_timeout_seconds,
-      int reduced_ping_timeout_seconds,
-      int retransmittable_on_wire_timeout_milliseconds_,
-      int max_time_before_crypto_handshake_seconds,
-      int max_idle_time_before_crypto_handshake_seconds,
-      bool migrate_sessions_on_network_change_v2,
-      bool migrate_sessions_early_v2,
-      bool retry_on_alternate_network_before_handshake,
-      bool migrate_idle_sessions,
-      base::TimeDelta idle_session_migration_period,
-      base::TimeDelta max_time_on_non_default_network,
-      int max_migrations_to_non_default_network_on_write_error,
-      int max_migrations_to_non_default_network_on_path_degrading,
-      bool allow_server_migration,
-      bool race_stale_dns_on_connection,
-      bool go_away_on_path_degrading,
-      bool race_cert_verification,
-      bool estimate_initial_rtt,
-      bool headers_include_h2_stream_dependency,
-      const quic::QuicTagVector& connection_options,
-      const quic::QuicTagVector& client_connection_options,
-      bool enable_socket_recv_optimization);
+      QuicContext* context);
   ~QuicStreamFactory() override;
 
   // Returns true if there is an existing session for |session_key| or if the
@@ -289,10 +261,14 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
   // If a matching session already exists, this method will return OK.  If no
   // matching session exists, this will return ERR_IO_PENDING and will invoke
   // OnRequestComplete asynchronously.
+  // When |use_dns_aliases| is true, any DNS aliases found in host resolution
+  // are stored in the |dns_aliases_by_session_key_| map. |use_dns_aliases|
+  // should be false in the case of a proxy.
   int Create(const QuicSessionKey& session_key,
              const HostPortPair& destination,
-             quic::QuicTransportVersion quic_version,
+             quic::ParsedQuicVersion quic_version,
              RequestPriority priority,
+             bool use_dns_aliases,
              int cert_verify_flags,
              const GURL& url,
              const NetLogWithSource& net_log,
@@ -323,7 +299,7 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
   // Delete cached state objects in |crypto_config_|. If |origin_filter| is not
   // null, only objects on matching origins will be deleted.
   void ClearCachedStatesInCryptoConfig(
-      const base::Callback<bool(const GURL&)>& origin_filter);
+      const base::RepeatingCallback<bool(const GURL&)>& origin_filter);
 
   // Helper method that configures a DatagramClientSocket. Socket is
   // bound to the default network if the |network| param is
@@ -367,15 +343,22 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
   // We close all sessions when certificate database is changed.
   void OnCertDBChanged() override;
 
-  bool require_confirmation() const { return require_confirmation_; }
+  bool is_quic_known_to_work_on_current_network() const {
+    return is_quic_known_to_work_on_current_network_;
+  }
 
-  bool allow_server_migration() const { return allow_server_migration_; }
+  bool allow_server_migration() const { return params_.allow_server_migration; }
 
-  void set_require_confirmation(bool require_confirmation);
+  // Returns true is gQUIC 0-RTT is disabled from quic_context.
+  bool gquic_zero_rtt_disabled() const {
+    return params_.disable_gquic_zero_rtt;
+  }
+
+  void set_is_quic_known_to_work_on_current_network(
+      bool is_quic_known_to_work_on_current_network);
 
   // It returns the amount of time waiting job should be delayed.
-  base::TimeDelta GetTimeDelayForWaitingJob(
-      const quic::QuicServerId& server_id);
+  base::TimeDelta GetTimeDelayForWaitingJob(const QuicSessionKey& session_key);
 
   QuicChromiumConnectionHelper* helper() { return helper_.get(); }
 
@@ -383,10 +366,6 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
 
   void set_server_push_delegate(ServerPushDelegate* push_delegate) {
     push_delegate_ = push_delegate;
-  }
-
-  bool mark_quic_broken_when_network_blackholes() const {
-    return mark_quic_broken_when_network_blackholes_;
   }
 
   NetworkChangeNotifier::NetworkHandle default_network() const {
@@ -398,32 +377,39 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
   void DumpMemoryStats(base::trace_event::ProcessMemoryDump* pmd,
                        const std::string& parent_absolute_name) const;
 
+  // Returns the stored DNS aliases for the session key.
+  const std::vector<std::string>& GetDnsAliasesForSessionKey(
+      const QuicSessionKey& key) const;
+
  private:
   class Job;
-  class CertVerifierJob;
+  class QuicCryptoClientConfigOwner;
+  class CryptoClientConfigHandle;
   friend class test::QuicStreamFactoryPeer;
 
-  typedef std::map<QuicSessionKey, QuicChromiumClientSession*> SessionMap;
-  typedef std::map<QuicChromiumClientSession*, QuicSessionAliasKey>
-      SessionIdMap;
-  typedef std::set<QuicSessionAliasKey> AliasSet;
-  typedef std::map<QuicChromiumClientSession*, AliasSet> SessionAliasMap;
-  typedef std::set<QuicChromiumClientSession*> SessionSet;
-  typedef std::map<IPEndPoint, SessionSet> IPAliasMap;
-  typedef std::map<QuicChromiumClientSession*, IPEndPoint> SessionPeerIPMap;
-  typedef std::map<QuicSessionKey, std::unique_ptr<Job>> JobMap;
-  typedef std::map<quic::QuicServerId, std::unique_ptr<CertVerifierJob>>
-      CertVerifierJobMap;
+  using SessionMap = std::map<QuicSessionKey, QuicChromiumClientSession*>;
+  using SessionIdMap =
+      std::map<QuicChromiumClientSession*, QuicSessionAliasKey>;
+  using AliasSet = std::set<QuicSessionAliasKey>;
+  using SessionAliasMap = std::map<QuicChromiumClientSession*, AliasSet>;
+  using SessionSet = std::set<QuicChromiumClientSession*>;
+  using IPAliasMap = std::map<IPEndPoint, SessionSet>;
+  using SessionPeerIPMap = std::map<QuicChromiumClientSession*, IPEndPoint>;
+  using JobMap = std::map<QuicSessionKey, std::unique_ptr<Job>>;
+  using DnsAliasesBySessionKeyMap =
+      std::map<QuicSessionKey, std::vector<std::string>>;
+  using QuicCryptoClientConfigMap =
+      std::map<NetworkIsolationKey,
+               std::unique_ptr<QuicCryptoClientConfigOwner>>;
 
   bool HasMatchingIpSession(const QuicSessionAliasKey& key,
-                            const AddressList& address_list);
+                            const AddressList& address_list,
+                            bool use_dns_aliases);
   void OnJobComplete(Job* job, int rv);
-  void OnCertVerifyJobComplete(CertVerifierJob* job, int rv);
   bool HasActiveSession(const QuicSessionKey& session_key) const;
   bool HasActiveJob(const QuicSessionKey& session_key) const;
-  bool HasActiveCertVerifierJob(const quic::QuicServerId& server_id) const;
   int CreateSession(const QuicSessionAliasKey& key,
-                    const quic::QuicTransportVersion& quic_version,
+                    quic::ParsedQuicVersion quic_version,
                     int cert_verify_flags,
                     bool require_confirmation,
                     const AddressList& address_list,
@@ -433,41 +419,49 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
                     QuicChromiumClientSession** session,
                     NetworkChangeNotifier::NetworkHandle* network);
   void ActivateSession(const QuicSessionAliasKey& key,
-                       QuicChromiumClientSession* session);
-  void MarkAllActiveSessionsGoingAway();
+                       QuicChromiumClientSession* session,
+                       std::vector<std::string> dns_aliases);
+  // Go away all active sessions. May disable session's connectivity monitoring
+  // based on the |reason|.
+  void MarkAllActiveSessionsGoingAway(AllActiveSessionsGoingAwayReason reason);
 
-  void ConfigureInitialRttEstimate(const quic::QuicServerId& server_id,
-                                   quic::QuicConfig* config);
+  void ConfigureInitialRttEstimate(
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key,
+      quic::QuicConfig* config);
 
   // Returns |srtt| in micro seconds from ServerNetworkStats. Returns 0 if there
   // is no |http_server_properties_| or if |http_server_properties_| doesn't
   // have ServerNetworkStats for the given |server_id|.
   int64_t GetServerNetworkStatsSmoothedRttInMicroseconds(
-      const quic::QuicServerId& server_id) const;
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key) const;
 
   // Returns |srtt| from ServerNetworkStats. Returns null if there
   // is no |http_server_properties_| or if |http_server_properties_| doesn't
   // have ServerNetworkStats for the given |server_id|.
   const base::TimeDelta* GetServerNetworkStatsSmoothedRtt(
-      const quic::QuicServerId& server_id) const;
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key) const;
 
   // Helper methods.
-  bool WasQuicRecentlyBroken(const quic::QuicServerId& server_id) const;
+  bool WasQuicRecentlyBroken(const QuicSessionKey& session_key) const;
 
-  bool CryptoConfigCacheIsEmpty(const quic::QuicServerId& server_id);
-
-  // Starts an asynchronous job for cert verification if
-  // |race_cert_verification_| is enabled and if there are cached certs for the
-  // given |server_id|.
-  quic::QuicAsyncStatus StartCertVerifyJob(const quic::QuicServerId& server_id,
-                                           int cert_verify_flags,
-                                           const NetLogWithSource& net_log);
+  // Helper method to initialize the following migration options and check
+  // pre-requisites:
+  // - |params_.migrate_sessions_on_network_change_v2|
+  // - |params_.migrate_sessions_early_v2|
+  // - |params_.migrate_idle_sessions|
+  // - |params_.retry_on_alternate_network_before_handshake|
+  // If pre-requisites are not met, turn off the corresponding options.
+  void InitializeMigrationOptions();
 
   // Initializes the cached state associated with |server_id| in
   // |crypto_config_| with the information in |server_info|. Populates
   // |connection_id| with the next server designated connection id,
   // if any, and otherwise leaves it unchanged.
   void InitializeCachedStateInCryptoConfig(
+      const CryptoClientConfigHandle& crypto_config_handle,
       const quic::QuicServerId& server_id,
       const std::unique_ptr<QuicServerInfo>& server_info,
       quic::QuicConnectionId* connection_id);
@@ -476,18 +470,66 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
                                const quic::QuicServerId& server_id,
                                bool was_session_active);
 
-  bool require_confirmation_;
+  // Insert the given alias `key` in the AliasSet for the given `session` in
+  // the map `session_aliases_`, and add the given `dns_aliases` for
+  // `key.session_key()` in `dns_aliases_by_session_key_`.
+  void MapSessionToAliasKey(QuicChromiumClientSession* session,
+                            const QuicSessionAliasKey& key,
+                            std::vector<std::string> dns_aliases);
+
+  // For all alias keys for `session` in `session_aliases_`, erase the
+  // corresponding DNS aliases in `dns_aliases_by_session_key_`. Then erase
+  // `session` from `session_aliases_`.
+  void UnmapSessionFromSessionAliases(QuicChromiumClientSession* session);
+
+  // Creates a CreateCryptoConfigHandle for the specified NetworkIsolationKey.
+  // If there's already a corresponding entry in |active_crypto_config_map_|,
+  // reuses it. If there's a corresponding entry in |recent_crypto_config_map_|,
+  // promotes it to |active_crypto_config_map_| and then reuses it. Otherwise,
+  // creates a new entry in |active_crypto_config_map_|.
+  std::unique_ptr<CryptoClientConfigHandle> CreateCryptoConfigHandle(
+      const NetworkIsolationKey& network_isolation_key);
+
+  // Salled when the indicated member of |active_crypto_config_map_| has no
+  // outstanding references. The QuicCryptoClientConfigOwner is then moved to
+  // |recent_crypto_config_map_|, an MRU cache.
+  void OnAllCryptoClientRefReleased(
+      QuicCryptoClientConfigMap::iterator& map_iterator);
+
+  // Called when a network change happens.
+  // Collect platform notification metrics, and if the change affects the
+  // original default network interface, collect connectivity degradation
+  // metrics from |connectivity_monitor_| and add to histograms.
+  void CollectDataOnPlatformNotification(
+      enum QuicPlatformNotification notification,
+      NetworkChangeNotifier::NetworkHandle affected_network) const;
+
+  std::unique_ptr<QuicCryptoClientConfigHandle> GetCryptoConfigForTesting(
+      const NetworkIsolationKey& network_isolation_key);
+
+  bool CryptoConfigCacheIsEmptyForTesting(
+      const quic::QuicServerId& server_id,
+      const NetworkIsolationKey& network_isolation_key);
+
+  // Whether QUIC is known to work on current network. This is true when QUIC is
+  // expected to work in general, rather than whether QUIC was broken / recently
+  // broken when used with a particular server. That information is stored in
+  // the broken alternative service map in HttpServerProperties.
+  bool is_quic_known_to_work_on_current_network_;
+
   NetLog* net_log_;
   HostResolver* host_resolver_;
   ClientSocketFactory* client_socket_factory_;
   HttpServerProperties* http_server_properties_;
   ServerPushDelegate* push_delegate_;
-  TransportSecurityState* transport_security_state_;
-  CTVerifier* cert_transparency_verifier_;
+  CertVerifier* const cert_verifier_;
+  CTPolicyEnforcer* const ct_policy_enforcer_;
+  TransportSecurityState* const transport_security_state_;
+  SCTAuditingDelegate* const sct_auditing_delegate_;
   QuicCryptoClientStreamFactory* quic_crypto_client_stream_factory_;
   quic::QuicRandom* random_generator_;  // Unowned.
-  quic::QuicClock* clock_;              // Unowned.
-  const size_t max_packet_length_;
+  const quic::QuicClock* clock_;        // Unowned.
+  QuicParams params_;
   QuicClockSkewDetector clock_skew_detector_;
 
   // Factory which is used to create socket performance watcher. A new watcher
@@ -516,20 +558,24 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
   // Origins which have gone away recently.
   AliasSet gone_away_aliases_;
 
+  // A map of DNS alias vectors by session keys.
+  DnsAliasesBySessionKeyMap dns_aliases_by_session_key_;
+
+  // When a QuicCryptoClientConfig is in use, it has one or more live
+  // CryptoClientConfigHandles, and is stored in |active_crypto_config_map_|.
+  // Once all the handles are deleted, it's moved to
+  // |recent_crypto_config_map_|. If reused before it is evicted from MRUCache,
+  // it will be removed from the cache and return to the active config map.
+  // These two maps should never both have entries with the same
+  // NetworkIsolationKey.
+  QuicCryptoClientConfigMap active_crypto_config_map_;
+  base::MRUCache<NetworkIsolationKey,
+                 std::unique_ptr<QuicCryptoClientConfigOwner>>
+      recent_crypto_config_map_;
+
   const quic::QuicConfig config_;
-  quic::QuicCryptoClientConfig crypto_config_;
 
   JobMap active_jobs_;
-
-  // Map of quic::QuicServerId to owning CertVerifierJob.
-  CertVerifierJobMap active_cert_verifier_jobs_;
-
-  // True if QUIC should be marked as broken when a connection blackholes after
-  // the handshake is confirmed.
-  bool mark_quic_broken_when_network_blackholes_;
-
-  // Set if QUIC server configs should be stored in HttpServerProperties.
-  bool store_server_configs_in_properties_;
 
   // PING timeout for connections.
   quic::QuicTime::Delta ping_timeout_;
@@ -544,79 +590,23 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
   int yield_after_packets_;
   quic::QuicTime::Delta yield_after_duration_;
 
-  // Set if all sessions should be closed when any local IP address changes.
-  const bool close_sessions_on_ip_change_;
-
-  // Set if all sessions should be marked as go away when any local IP address
-  // changes.
-  const bool goaway_sessions_on_ip_change_;
-
-  // Set if migration should be attempted after probing.
-  const bool migrate_sessions_on_network_change_v2_;
-
-  // Set if early migration should be attempted after probing when the
-  // connection experiences poor connectivity.
-  const bool migrate_sessions_early_v2_;
-
-  // Set if a new connection may be kicked off on an alternate network when a
-  // connection fails on the default network before handshake is confirmed.
-  const bool retry_on_alternate_network_before_handshake_;
-
   // If |migrate_sessions_early_v2_| is true, tracks the current default
   // network, and is updated OnNetworkMadeDefault.
   // Otherwise, always set to NetworkChangeNotifier::kInvalidNetwork.
   NetworkChangeNotifier::NetworkHandle default_network_;
-
-  // Set if idle sessions can be migrated within
-  // |idle_session_migration_period_| when connection migration is triggered.
-  const bool migrate_idle_sessions_;
-
-  // Sessions can migrate if they have been idle for less than this period.
-  const base::TimeDelta idle_session_migration_period_;
-
-  // Maximum time sessions could use on non-default network before try to
-  // migrate back to default network.
-  const base::TimeDelta max_time_on_non_default_network_;
-
-  // Maximum number of migrations to non default network on write error.
-  const int max_migrations_to_non_default_network_on_write_error_;
-
-  // Maximum number of migrations to non default network on path degrading.
-  const int max_migrations_to_non_default_network_on_path_degrading_;
-
-  // If set, allows migration of connection to server-specified alternate
-  // server address.
-  const bool allow_server_migration_;
-
-  // Set if stale DNS result may be speculatively used to connect and then
-  // compared with the original DNS result.
-  const bool race_stale_dns_on_connection_;
-
-  // Set if client should mark the session as GOAWAY when the connection
-  // experiences poor connectivity
-  const bool go_away_on_path_degrading_;
-
-  // Set if cert verification is to be raced with host resolution.
-  bool race_cert_verification_;
-
-  // If true, estimate the initial RTT based on network type.
-  bool estimate_initial_rtt;
-
-  // If true, client headers will include HTTP/2 stream dependency info
-  // derived from spdy::SpdyPriority.
-  bool headers_include_h2_stream_dependency_;
 
   // Local address of socket that was created in CreateSession.
   IPEndPoint local_address_;
   // True if we need to check HttpServerProperties if QUIC was supported last
   // time.
   bool need_to_check_persisted_supports_quic_;
+  bool prefer_aes_gcm_recorded_;
 
   NetworkConnection network_connection_;
 
   int num_push_streams_created_;
 
-  quic::QuicClientPushPromiseIndex push_promise_index_;
+  QuicConnectivityMonitor connectivity_monitor_;
 
   const base::TickClock* tick_clock_;
 
@@ -624,11 +614,17 @@ class NET_EXPORT_PRIVATE QuicStreamFactory
 
   SSLConfigService* const ssl_config_service_;
 
-  // If set to true, the stream factory will create UDP Sockets with
-  // experimental optimization enabled for receiving data.
-  bool enable_socket_recv_optimization_;
+  // Whether NetworkIsolationKeys should be used for
+  // |active_crypto_config_map_|. If false, there will just be one config with
+  // an empty NetworkIsolationKey. Whether QuicSessionAliasKeys all have an
+  // empty NIK is based on whether socket pools are respecting NIKs, but whether
+  // those NIKs are also used when accessing |active_crypto_config_map_| is also
+  // gated this, which is set based on whether HttpServerProperties is
+  // respecting NIKs, as that data is fed into the crypto config map using the
+  // corresponding NIK.
+  const bool use_network_isolation_key_for_crypto_configs_;
 
-  base::WeakPtrFactory<QuicStreamFactory> weak_factory_;
+  base::WeakPtrFactory<QuicStreamFactory> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(QuicStreamFactory);
 };

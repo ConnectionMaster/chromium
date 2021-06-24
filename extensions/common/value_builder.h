@@ -28,7 +28,6 @@
 #include <utility>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_piece_forward.h"
 #include "base/values.h"
 
@@ -73,7 +72,6 @@ class DictionaryBuilder {
 class ListBuilder {
  public:
   ListBuilder();
-  explicit ListBuilder(const base::ListValue& init);
   ~ListBuilder();
 
   // Can only be called once, after which it's invalid to use the builder.
@@ -81,14 +79,23 @@ class ListBuilder {
 
   template <typename T>
   ListBuilder& Append(T in_value) {
-    list_->GetList().emplace_back(in_value);
+    list_->Append(in_value);
+    return *this;
+  }
+
+  // Utility for appending a collection. Is this templating simplistic? Yes.
+  // But if it's good enough for the STL, it's good enough for this class.
+  template <typename InputIt>
+  ListBuilder& Append(InputIt first, InputIt last) {
+    for (; first != last; ++first)
+      list_->Append(*first);
     return *this;
   }
 
   // See note on DictionaryBuilder::Set().
   template <typename T>
   ListBuilder& Append(std::unique_ptr<T> in_value) {
-    list_->GetList().push_back(std::move(*in_value));
+    list_->Append(std::move(*in_value));
     return *this;
   }
 

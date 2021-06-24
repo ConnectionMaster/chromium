@@ -21,15 +21,25 @@ class InfoBarContainerIOS : public infobars::InfoBarContainer {
                       id<InfobarContainerConsumer> legacyConsumer);
   ~InfoBarContainerIOS() override;
 
+  // Changes the InfoBarManager for which this container is showing infobars.
+  // This will hide all current infobars, remove them from the container, add
+  // the infobars from |infobar_manager|, and show them all. If
+  // |infobar_manager| is nullptr, it will hide all current Infobars but won't
+  // be able to present new ones.
+  void ChangeInfoBarManager(infobars::InfoBarManager* infobar_manager);
+
  protected:
   void PlatformSpecificAddInfoBar(infobars::InfoBar* infobar,
                                   size_t position) override;
   void PlatformSpecificRemoveInfoBar(infobars::InfoBar* infobar) override;
   void PlatformSpecificInfoBarStateChanged(bool is_animating) override;
+  void PlatformSpecificReplaceInfoBar(infobars::InfoBar* old_infobar,
+                                      infobars::InfoBar* new_infobar) override;
 
  private:
-  id<InfobarContainerConsumer> consumer_;
-  id<InfobarContainerConsumer> legacyConsumer_;
+  infobars::InfoBarManager* info_bar_manager_ = nullptr;
+  __weak id<InfobarContainerConsumer> consumer_;
+  __weak id<InfobarContainerConsumer> legacyConsumer_;
 
   DISALLOW_COPY_AND_ASSIGN(InfoBarContainerIOS);
 };

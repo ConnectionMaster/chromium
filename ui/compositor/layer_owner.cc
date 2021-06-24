@@ -4,6 +4,13 @@
 
 #include "ui/compositor/layer_owner.h"
 
+// layer_owner.h is a widely included header and its size impacts build
+// time. Try not to raise this limit unless necessary. See
+// https://chromium.googlesource.com/chromium/src/+/HEAD/docs/wmax_tokens.md
+#pragma clang max_tokens_here 480000
+
+#include "ui/compositor/layer.h"
+
 #include <utility>
 
 
@@ -16,6 +23,14 @@ LayerOwner::LayerOwner(std::unique_ptr<Layer> layer) {
 
 LayerOwner::~LayerOwner() = default;
 
+void LayerOwner::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void LayerOwner::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
+
 void LayerOwner::SetLayer(std::unique_ptr<Layer> layer) {
   DCHECK(!OwnsLayer());
   layer_owner_ = std::move(layer);
@@ -25,8 +40,18 @@ void LayerOwner::SetLayer(std::unique_ptr<Layer> layer) {
 
 std::unique_ptr<Layer> LayerOwner::AcquireLayer() {
   if (layer_owner_)
-    layer_owner_->owner_ = NULL;
+    layer_owner_->owner_ = nullptr;
   return std::move(layer_owner_);
+}
+
+std::unique_ptr<Layer> LayerOwner::ReleaseLayer() {
+  layer_ = nullptr;
+  return AcquireLayer();
+}
+
+void LayerOwner::Reset(std::unique_ptr<Layer> layer) {
+  ReleaseLayer();
+  SetLayer(std::move(layer));
 }
 
 std::unique_ptr<Layer> LayerOwner::RecreateLayer() {
@@ -35,7 +60,7 @@ std::unique_ptr<Layer> LayerOwner::RecreateLayer() {
     return old_layer;
 
   LayerDelegate* old_delegate = old_layer->delegate();
-  old_layer->set_delegate(NULL);
+  old_layer->set_delegate(nullptr);
 
   SetLayer(old_layer->Clone());
 
@@ -63,11 +88,14 @@ std::unique_ptr<Layer> LayerOwner::RecreateLayer() {
   // state to the new layer.
   layer_->set_delegate(old_delegate);
 
+  for (auto& observer : observers_)
+    observer.OnLayerRecreated(old_layer.get());
+
   return old_layer;
 }
 
 void LayerOwner::DestroyLayer() {
-  layer_ = NULL;
+  layer_ = nullptr;
   layer_owner_.reset();
 }
 

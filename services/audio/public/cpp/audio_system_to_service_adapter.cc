@@ -7,13 +7,12 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "media/audio/audio_device_description.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
-#include "services/audio/public/mojom/constants.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace audio {
 
@@ -31,7 +30,7 @@ int64_t ToTraceId(base::TimeTicks time) {
   return (time - base::TimeTicks()).InNanoseconds();
 }
 
-std::string ParamsToString(base::Optional<AudioParameters> params) {
+std::string ParamsToString(absl::optional<AudioParameters> params) {
   return params ? params->AsHumanReadableString() : "nullopt";
 }
 
@@ -70,50 +69,6 @@ const char* GetTraceEvent(Action action) {
   NOTREACHED();
 }
 
-void LogUMA(Action action, base::TimeTicks start_time) {
-  const base::TimeDelta duration = base::TimeTicks::Now() - start_time;
-  switch (action) {
-    case kGetInputStreamParameters:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.GetInputStreamParameters",
-          duration);
-      return;
-    case kGetOutputStreamParameters:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.GetOutputStreamParameters",
-          duration);
-      return;
-    case kHasInputDevices:
-      UMA_HISTOGRAM_TIMES("Media.AudioService.SystemInfoClient.HasInputDevices",
-                          duration);
-      return;
-    case kHasOutputDevices:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.HasOutputDevices", duration);
-      return;
-    case kGetInputDeviceDescriptions:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.GetInputDeviceDescriptions",
-          duration);
-      return;
-    case kGetOutputDeviceDescriptions:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.GetOutputDeviceDescriptions",
-          duration);
-      return;
-    case kGetAssociatedOutputDeviceID:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.GetAssociatedOutputDeviceID",
-          duration);
-      return;
-    case kGetInputDeviceInfo:
-      UMA_HISTOGRAM_TIMES(
-          "Media.AudioService.SystemInfoClient.GetInputDeviceInfo", duration);
-      return;
-  }
-  NOTREACHED();
-}
-
 OnAudioParamsCallback WrapGetStreamParametersReply(
     StreamType stream_type,
     const std::string& device_id,
@@ -127,11 +82,10 @@ OnAudioParamsCallback WrapGetStreamParametersReply(
   return base::BindOnce(
       [](Action action, base::TimeTicks start_time,
          OnAudioParamsCallback on_params_callback,
-         const base::Optional<media::AudioParameters>& params) {
+         const absl::optional<media::AudioParameters>& params) {
         TRACE_EVENT_ASYNC_END1("audio", GetTraceEvent(action),
                                ToTraceId(start_time), "params",
                                ParamsToString(params));
-        LogUMA(action, start_time);
         std::move(on_params_callback).Run(params);
       },
       action, start_time, std::move(on_params_callback));
@@ -150,7 +104,6 @@ OnBoolCallback WrapHasDevicesReply(StreamType stream_type,
          OnBoolCallback on_has_devices_callback, bool answer) {
         TRACE_EVENT_ASYNC_END1("audio", GetTraceEvent(action),
                                ToTraceId(start_time), "answer", answer);
-        LogUMA(action, start_time);
         std::move(on_has_devices_callback).Run(answer);
       },
       action, start_time, std::move(on_has_devices_callback));
@@ -172,7 +125,6 @@ OnDeviceDescriptionsCallback WrapGetDeviceDescriptionsReply(
         TRACE_EVENT_ASYNC_END1("audio", GetTraceEvent(action),
                                ToTraceId(start_time), "device count",
                                descriptions.size());
-        LogUMA(action, start_time);
         std::move(on_descriptions_callback).Run(std::move(descriptions));
       },
       action, start_time, std::move(on_descriptions_callback));
@@ -188,11 +140,10 @@ OnDeviceIdCallback WrapGetAssociatedOutputDeviceIDReply(
 
   return base::BindOnce(
       [](base::TimeTicks start_time, OnDeviceIdCallback on_device_id_callback,
-         const base::Optional<std::string>& answer) {
+         const absl::optional<std::string>& answer) {
         TRACE_EVENT_ASYNC_END1(
             "audio", GetTraceEvent(kGetAssociatedOutputDeviceID),
             ToTraceId(start_time), "answer", answer.value_or("nullopt"));
-        LogUMA(kGetAssociatedOutputDeviceID, start_time);
         std::move(on_device_id_callback).Run(answer);
       },
       start_time, std::move(on_device_id_callback));
@@ -209,13 +160,12 @@ OnInputDeviceInfoCallback WrapGetInputDeviceInfoReply(
   return base::BindOnce(
       [](base::TimeTicks start_time,
          OnInputDeviceInfoCallback on_input_device_info_callback,
-         const base::Optional<AudioParameters>& params,
-         const base::Optional<std::string>& associated_output_device_id) {
+         const absl::optional<AudioParameters>& params,
+         const absl::optional<std::string>& associated_output_device_id) {
         TRACE_EVENT_ASYNC_END2(
             "audio", GetTraceEvent(kGetInputDeviceInfo), ToTraceId(start_time),
             "params", ParamsToString(params), "associated_output_device_id",
             associated_output_device_id.value_or("nullopt"));
-        LogUMA(kGetInputDeviceInfo, start_time);
         std::move(on_input_device_info_callback)
             .Run(params, associated_output_device_id);
       },
@@ -225,25 +175,22 @@ OnInputDeviceInfoCallback WrapGetInputDeviceInfoReply(
 }  // namespace
 
 AudioSystemToServiceAdapter::AudioSystemToServiceAdapter(
-    std::unique_ptr<service_manager::Connector> connector,
+    SystemInfoBinder system_info_binder,
     base::TimeDelta disconnect_timeout)
-    : connector_(std::move(connector)) {
-  DCHECK(connector_);
+    : system_info_binder_(std::move(system_info_binder)),
+      disconnect_timeout_(disconnect_timeout) {
+  DCHECK(system_info_binder_);
   DETACH_FROM_THREAD(thread_checker_);
-  if (disconnect_timeout > base::TimeDelta()) {
-    disconnect_timer_.emplace(
-        FROM_HERE, disconnect_timeout, this,
-        &AudioSystemToServiceAdapter::DisconnectOnTimeout);
-  }
 }
 
 AudioSystemToServiceAdapter::AudioSystemToServiceAdapter(
-    std::unique_ptr<service_manager::Connector> connector)
-    : AudioSystemToServiceAdapter(std::move(connector), base::TimeDelta()) {}
+    SystemInfoBinder system_info_binder)
+    : AudioSystemToServiceAdapter(std::move(system_info_binder),
+                                  base::TimeDelta()) {}
 
 AudioSystemToServiceAdapter::~AudioSystemToServiceAdapter() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  if (!!system_info_) {
+  if (system_info_.is_bound()) {
     TRACE_EVENT_NESTABLE_ASYNC_END1("audio",
                                     "AudioSystemToServiceAdapter bound", this,
                                     "disconnect reason", "destroyed");
@@ -257,7 +204,7 @@ void AudioSystemToServiceAdapter::GetInputStreamParameters(
       device_id, mojo::WrapCallbackWithDefaultInvokeIfNotRun(
                      WrapGetStreamParametersReply(
                          kInput, device_id, std::move(on_params_callback)),
-                     base::nullopt));
+                     absl::nullopt));
 }
 
 void AudioSystemToServiceAdapter::GetOutputStreamParameters(
@@ -267,7 +214,7 @@ void AudioSystemToServiceAdapter::GetOutputStreamParameters(
       device_id, mojo::WrapCallbackWithDefaultInvokeIfNotRun(
                      WrapGetStreamParametersReply(
                          kOutput, device_id, std::move(on_params_callback)),
-                     base::nullopt));
+                     absl::nullopt));
 }
 
 void AudioSystemToServiceAdapter::HasInputDevices(
@@ -305,7 +252,7 @@ void AudioSystemToServiceAdapter::GetAssociatedOutputDeviceID(
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(
           WrapGetAssociatedOutputDeviceIDReply(
               input_device_id, std::move(on_device_id_callback)),
-          base::nullopt));
+          absl::nullopt));
 }
 
 void AudioSystemToServiceAdapter::GetInputDeviceInfo(
@@ -316,7 +263,7 @@ void AudioSystemToServiceAdapter::GetInputDeviceInfo(
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(
           WrapGetInputDeviceInfoReply(input_device_id,
                                       std::move(on_input_device_info_callback)),
-          base::nullopt, base::nullopt));
+          absl::nullopt, absl::nullopt));
 }
 
 mojom::SystemInfo* AudioSystemToServiceAdapter::GetSystemInfo() {
@@ -324,30 +271,15 @@ mojom::SystemInfo* AudioSystemToServiceAdapter::GetSystemInfo() {
   if (!system_info_) {
     TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
         "audio", "AudioSystemToServiceAdapter bound", this);
-    connector_->BindInterface(mojom::kServiceName,
-                              mojo::MakeRequest(&system_info_));
-    system_info_.set_connection_error_handler(
+    system_info_binder_.Run(system_info_.BindNewPipeAndPassReceiver());
+    system_info_.set_disconnect_handler(
         base::BindOnce(&AudioSystemToServiceAdapter::OnConnectionError,
                        base::Unretained(this)));
-    DCHECK(system_info_);
+    if (!disconnect_timeout_.is_zero())
+      system_info_.reset_on_idle_timeout(disconnect_timeout_);
   }
-  if (disconnect_timer_)
-    disconnect_timer_->Reset();
-  return system_info_.get();
-}
 
-void AudioSystemToServiceAdapter::DisconnectOnTimeout() {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  if (system_info_.IsExpectingResponse()) {
-    if (disconnect_timer_)
-      disconnect_timer_->Reset();
-    TRACE_EVENT_NESTABLE_ASYNC_INSTANT0("audio", "Timeout: expecting responce",
-                                        this);
-    return;
-  }
-  TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "AudioSystemToServiceAdapter bound",
-                                  this, "disconnect reason", "timeout");
-  system_info_.reset();
+  return system_info_.get();
 }
 
 void AudioSystemToServiceAdapter::OnConnectionError() {

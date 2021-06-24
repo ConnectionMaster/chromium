@@ -9,47 +9,36 @@
 #include <set>
 
 #include "ash/ash_export.h"
+#include "ash/public/cpp/keyboard/keyboard_controller_observer.h"
 #include "ash/shelf/shelf_observer.h"
 #include "ash/shell_observer.h"
 #include "ash/wm/window_state_observer.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
 #include "ui/aura/layout_manager.h"
 #include "ui/aura/window_observer.h"
 #include "ui/display/display_observer.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/keyboard/keyboard_controller_observer.h"
 #include "ui/wm/public/activation_change_observer.h"
 
 namespace ash {
 
 class RootWindowController;
-class BackdropDelegate;
 class BackdropController;
-
-namespace wm {
 class WMEvent;
-}
 
 // LayoutManager used on the window created for a workspace.
-class ASH_EXPORT WorkspaceLayoutManager
-    : public aura::LayoutManager,
-      public aura::WindowObserver,
-      public ::wm::ActivationChangeObserver,
-      public keyboard::KeyboardControllerObserver,
-      public display::DisplayObserver,
-      public ShellObserver,
-      public wm::WindowStateObserver,
-      public ShelfObserver {
+class ASH_EXPORT WorkspaceLayoutManager : public aura::LayoutManager,
+                                          public aura::WindowObserver,
+                                          public ::wm::ActivationChangeObserver,
+                                          public KeyboardControllerObserver,
+                                          public display::DisplayObserver,
+                                          public ShellObserver,
+                                          public WindowStateObserver,
+                                          public ShelfObserver {
  public:
   // |window| is the container for this layout manager.
   explicit WorkspaceLayoutManager(aura::Window* window);
   ~WorkspaceLayoutManager() override;
-
-  // A delegate which can be set to add a backdrop behind the top most visible
-  // window. With the call the ownership of the delegate will be transferred to
-  // the WorkspaceLayoutManager.
-  void SetBackdropDelegate(std::unique_ptr<BackdropDelegate> delegate);
 
   BackdropController* backdrop_controller() {
     return backdrop_controller_.get();
@@ -87,14 +76,13 @@ class ASH_EXPORT WorkspaceLayoutManager
       aura::Window* gained_active,
       aura::Window* lost_active) override;
 
-  // keyboard::KeyboardControllerObserver:
+  // KeyboardControllerObserver:
   void OnKeyboardVisibleBoundsChanged(const gfx::Rect& new_bounds) override;
-  void OnKeyboardWorkspaceDisplacingBoundsChanged(
-      const gfx::Rect& new_bounds) override;
+  void OnKeyboardDisplacingBoundsChanged(const gfx::Rect& new_bounds) override;
 
   // WindowStateObserver:
-  void OnPostWindowStateTypeChange(wm::WindowState* window_state,
-                                   mojom::WindowStateType old_type) override;
+  void OnPostWindowStateTypeChange(WindowState* window_state,
+                                   chromeos::WindowStateType old_type) override;
 
   // display::DisplayObserver:
   void OnDisplayMetricsChanged(const display::Display& display,
@@ -107,18 +95,19 @@ class ASH_EXPORT WorkspaceLayoutManager
 
   // ShelfObserver:
   void OnAutoHideStateChanged(ShelfAutoHideState new_state) override;
+  void OnHotseatStateChanged(HotseatState old_state,
+                             HotseatState new_state) override;
 
  private:
   friend class WorkspaceControllerTestApi;
   typedef std::set<aura::Window*> WindowSet;
 
-  // Observes changes in windows in the SettingsBubbleWindowObserver, and
+  // Observes changes in windows in the BubbleWindowObserver, and
   // notifies WorkspaceLayoutManager to send out system ui area change events.
-  class SettingsBubbleWindowObserver : public aura::WindowObserver {
+  class BubbleWindowObserver : public aura::WindowObserver {
    public:
-    SettingsBubbleWindowObserver(
-        WorkspaceLayoutManager* workspace_layout_manager);
-    ~SettingsBubbleWindowObserver() override;
+    BubbleWindowObserver(WorkspaceLayoutManager* workspace_layout_manager);
+    ~BubbleWindowObserver() override;
 
     void ObserveWindow(aura::Window* window);
 
@@ -138,7 +127,7 @@ class ASH_EXPORT WorkspaceLayoutManager
 
     void StopOberservingWindow(aura::Window* window);
 
-    DISALLOW_COPY_AND_ASSIGN(SettingsBubbleWindowObserver);
+    DISALLOW_COPY_AND_ASSIGN(BubbleWindowObserver);
   };
 
   // Adjusts the bounds of all managed windows when the display area changes.
@@ -148,7 +137,7 @@ class ASH_EXPORT WorkspaceLayoutManager
   // windows are readjusted to make sure the window is completely within the
   // display region. Otherwise, it makes sure at least some parts of the window
   // is on display.
-  void AdjustAllWindowsBoundsForWorkAreaChange(const wm::WMEvent* event);
+  void AdjustAllWindowsBoundsForWorkAreaChange(const WMEvent* event);
 
   // Updates the visibility state of the shelf.
   void UpdateShelfVisibility();
@@ -162,16 +151,23 @@ class ASH_EXPORT WorkspaceLayoutManager
   void UpdateAlwaysOnTop(aura::Window* active_desk_fullscreen_window);
 
   // Notifies windows about a change in a system ui area. This could be
-  // the keyboard or any window in the SettingsBubbleContainer. Windows will
-  // only be notified about changes to system ui areas on the display they are
-  // on.
+  // the keyboard or any window in the SettingsBubbleContainer or
+  // |accessibility_bubble_container_|. Windows will only be notified about
+  // changes to system ui areas on the display they are on.
   void NotifySystemUiAreaChanged();
+
+  // Notifies the autoclick controller about a workspace event. If autoclick
+  // is enabled, the autoclick bubble may need to move in response to that
+  // event.
+  void NotifyAccessibilityWorkspaceChanged();
 
   aura::Window* window_;
   aura::Window* root_window_;
   RootWindowController* root_window_controller_;
   aura::Window* settings_bubble_container_;
-  SettingsBubbleWindowObserver settings_bubble_window_observer_;
+  BubbleWindowObserver settings_bubble_window_observer_;
+  aura::Window* accessibility_bubble_container_;
+  BubbleWindowObserver accessibility_bubble_window_observer_;
 
   // Set of windows we're listening to.
   WindowSet windows_;

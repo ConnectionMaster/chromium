@@ -44,17 +44,8 @@ class SVGAnimatedTransformList final
     : public ScriptWrappable,
       public SVGAnimatedProperty<SVGTransformList> {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(SVGAnimatedTransformList);
 
  public:
-  static SVGAnimatedTransformList* Create(
-      SVGElement* context_element,
-      const QualifiedName& attribute_name,
-      CSSPropertyID css_property_id = CSSPropertyID::kInvalid) {
-    return MakeGarbageCollected<SVGAnimatedTransformList>(
-        context_element, attribute_name, css_property_id);
-  }
-
   SVGAnimatedTransformList(SVGElement* context_element,
                            const QualifiedName& attribute_name,
                            CSSPropertyID css_property_id)
@@ -64,7 +55,7 @@ class SVGAnimatedTransformList final
             MakeGarbageCollected<SVGTransformList>(),
             css_property_id) {}
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     SVGAnimatedProperty<SVGTransformList>::Trace(visitor);
     ScriptWrappable::Trace(visitor);
   }
@@ -72,4 +63,4 @@ class SVGAnimatedTransformList final
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_ANIMATED_TRANSFORM_LIST_H_

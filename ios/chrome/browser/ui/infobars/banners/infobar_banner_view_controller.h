@@ -7,31 +7,33 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/infobars/infobar_type.h"
+#import "ios/chrome/browser/ui/infobars/banners/infobar_banner_consumer.h"
+#import "ios/chrome/browser/ui/infobars/banners/infobar_banner_container.h"
+#import "ios/chrome/browser/ui/infobars/banners/infobar_banner_interaction_delegate.h"
+
 @protocol InfobarBannerDelegate;
 
 // ViewController that manages an InfobarBanner. It consists of a leading icon,
 // a title and optional subtitle, and a trailing button.
-@interface InfobarBannerViewController : UIViewController
+@interface InfobarBannerViewController
+    : UIViewController <InfobarBannerConsumer,
+                        InfobarBannerInteractable,
+                        InfobarBannerContained>
 
+// Designated Initializer. |delegate| handles InfobarBannerVC actions.
+// |presentsModal| should be YES if the banner is able to present an
+// InfobarModal. |infobarType| is used to know which Coordinator presented this
+// VC.
 - (instancetype)initWithDelegate:(id<InfobarBannerDelegate>)delegate
+                   presentsModal:(BOOL)presentsModal
+                            type:(InfobarType)infobarType
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithNibName:(NSString*)nibNameOrNil
                          bundle:(NSBundle*)nibBundleOrNil NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)aDecoder NS_UNAVAILABLE;
 - (instancetype)init NS_UNAVAILABLE;
-
-// The icon displayed by this InfobarBanner.
-@property(nonatomic, strong) UIImage* iconImage;
-
-// The title displayed by this InfobarBanner.
-@property(nonatomic, copy) NSString* titleText;
-
-// The subtitle displayed by this InfobarBanner.
-@property(nonatomic, copy) NSString* subTitleText;
-
-// The button text displayed by this InfobarBanner.
-@property(nonatomic, copy) NSString* buttonText;
 
 // - If no interaction is occuring, the InfobarBanner will be dismissed.
 // - If there's some interaction occuring the InfobarBanner will be dismissed

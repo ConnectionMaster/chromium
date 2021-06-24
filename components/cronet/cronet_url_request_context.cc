@@ -10,6 +10,7 @@
 
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -23,7 +24,7 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/single_thread_task_runner.h"
@@ -41,6 +42,7 @@
 #include "net/base/logging_network_change_observer.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_delegate_impl.h"
+#include "net/base/network_isolation_key.h"
 #include "net/base/url_util.h"
 #include "net/cert/caching_cert_verifier.h"
 #include "net/cert/cert_verifier.h"
@@ -51,7 +53,6 @@
 #include "net/net_buildflags.h"
 #include "net/nqe/network_quality_estimator_params.h"
 #include "net/proxy_resolution/proxy_resolution_service.h"
-#include "net/ssl/channel_id_service.h"
 #include "net/third_party/quiche/src/quic/core/quic_versions.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
@@ -68,9 +69,9 @@ namespace {
 // This class wraps a NetLog that also contains network change events.
 class NetLogWithNetworkChangeEvents {
  public:
-  NetLogWithNetworkChangeEvents() {}
+  NetLogWithNetworkChangeEvents() : net_log_(net::NetLog::Get()) {}
 
-  net::NetLog* net_log() { return &net_log_; }
+  net::NetLog* net_log() { return net_log_; }
   // This function registers with the NetworkChangeNotifier and so must be
   // called *after* the NetworkChangeNotifier is created. Should only be
   // called on the init thread as it is not thread-safe and the init thread is
@@ -85,11 +86,12 @@ class NetLogWithNetworkChangeEvents {
     DCHECK(cronet::OnInitThread());
     if (net_change_logger_)
       return;
-    net_change_logger_.reset(new net::LoggingNetworkChangeObserver(&net_log_));
+    net_change_logger_ =
+        std::make_unique<net::LoggingNetworkChangeObserver>(net_log_);
   }
 
  private:
-  net::NetLog net_log_;
+  net::NetLog* net_log_;
   // LoggingNetworkChangeObserver logs network change events to a NetLog.
   // This class bundles one LoggingNetworkChangeObserver with one NetLog,
   // so network change event are logged just once in the NetLog.
@@ -109,10 +111,14 @@ class BasicNetworkDelegate : public net::NetworkDelegateImpl {
 
  private:
   // net::NetworkDelegate implementation.
-  bool OnCanGetCookies(const net::URLRequest& request,
-                       const net::CookieList& cookie_list,
-                       bool allowed_from_caller) override {
+  bool OnAnnotateAndMoveUserBlockedCookies(
+      const net::URLRequest& request,
+      net::CookieAccessResultList& maybe_included_cookies,
+      net::CookieAccessResultList& excluded_cookies,
+      bool allowed_from_caller) override {
     // Disallow sending cookies by default.
+    ExcludeAllCookies(net::CookieInclusionStatus::EXCLUDE_USER_PREFERENCES,
+                      maybe_included_cookies, excluded_cookies);
     return false;
   }
 
@@ -121,12 +127,6 @@ class BasicNetworkDelegate : public net::NetworkDelegateImpl {
                       net::CookieOptions* options,
                       bool allowed_from_caller) override {
     // Disallow saving cookies by default.
-    return false;
-  }
-
-  bool OnCanAccessFile(const net::URLRequest& request,
-                       const base::FilePath& original_path,
-                       const base::FilePath& absolute_path) const override {
     return false;
   }
 
@@ -150,8 +150,8 @@ CronetURLRequestContext::CronetURLRequestContext(
   if (!network_task_runner_) {
     network_thread_ = std::make_unique<base::Thread>("network");
     base::Thread::Options options;
-    options.message_loop_type = base::MessageLoop::TYPE_IO;
-    network_thread_->StartWithOptions(options);
+    options.message_pump_type = base::MessagePumpType::IO;
+    network_thread_->StartWithOptions(std::move(options));
     network_task_runner_ = network_thread_->task_runner();
   }
 }
@@ -294,8 +294,7 @@ void CronetURLRequestContext::NetworkTasks::Initialize(
       cronet::CreateProxyResolutionService(std::move(proxy_config_service),
                                            g_net_log.Get().net_log()));
 
-  config->ConfigureURLRequestContextBuilder(&context_builder,
-                                            g_net_log.Get().net_log());
+  config->ConfigureURLRequestContextBuilder(&context_builder);
   effective_experimental_options_ =
       std::move(config->effective_experimental_options);
 
@@ -392,8 +391,8 @@ void CronetURLRequestContext::NetworkTasks::Initialize(
           net::kProtoQUIC, "",
           static_cast<uint16_t>(quic_hint->alternate_port));
       context_->http_server_properties()->SetQuicAlternativeService(
-          quic_server, alternative_service, base::Time::Max(),
-          quic::QuicTransportVersionVector());
+          quic_server, net::NetworkIsolationKey(), alternative_service,
+          base::Time::Max(), quic::ParsedQuicVersionVector());
     }
   }
 
@@ -427,15 +426,17 @@ void CronetURLRequestContext::NetworkTasks::Initialize(
 #if BUILDFLAG(ENABLE_REPORTING)
   if (context_->reporting_service()) {
     for (const auto& preloaded_header : config->preloaded_report_to_headers) {
-      context_->reporting_service()->ProcessHeader(
-          preloaded_header.origin.GetURL(), preloaded_header.value);
+      context_->reporting_service()->ProcessReportToHeader(
+          preloaded_header.origin.GetURL(), net::NetworkIsolationKey(),
+          preloaded_header.value);
     }
   }
 
   if (context_->network_error_logging_service()) {
     for (const auto& preloaded_header : config->preloaded_nel_headers) {
       context_->network_error_logging_service()->OnHeader(
-          preloaded_header.origin, net::IPAddress(), preloaded_header.value);
+          net::NetworkIsolationKey(), preloaded_header.origin, net::IPAddress(),
+          preloaded_header.value);
     }
   }
 #endif  // BUILDFLAG(ENABLE_REPORTING)
@@ -568,7 +569,7 @@ int CronetURLRequestContext::default_load_flags() const {
 base::Thread* CronetURLRequestContext::GetFileThread() {
   DCHECK(OnInitThread());
   if (!file_thread_) {
-    file_thread_.reset(new base::Thread("Network File Thread"));
+    file_thread_ = std::make_unique<base::Thread>("Network File Thread");
     file_thread_->Start();
   }
   return file_thread_.get();
@@ -628,15 +629,15 @@ void CronetURLRequestContext::NetworkTasks::StartNetLog(
   // Do nothing if already logging to a file.
   if (net_log_file_observer_)
     return;
+
+  net::NetLogCaptureMode capture_mode =
+      include_socket_bytes ? net::NetLogCaptureMode::kEverything
+                           : net::NetLogCaptureMode::kDefault;
   net_log_file_observer_ = net::FileNetLogObserver::CreateUnbounded(
-      file_path, /*constants=*/nullptr);
+      file_path, capture_mode, /*constants=*/nullptr);
   CreateNetLogEntriesForActiveObjects({context_.get()},
                                       net_log_file_observer_.get());
-  net::NetLogCaptureMode capture_mode =
-      include_socket_bytes ? net::NetLogCaptureMode::IncludeSocketBytes()
-                           : net::NetLogCaptureMode::Default();
-  net_log_file_observer_->StartObserving(g_net_log.Get().net_log(),
-                                         capture_mode);
+  net_log_file_observer_->StartObserving(g_net_log.Get().net_log());
 }
 
 void CronetURLRequestContext::NetworkTasks::StartNetLogToBoundedFile(
@@ -665,17 +666,16 @@ void CronetURLRequestContext::NetworkTasks::StartNetLogToBoundedFile(
     }
   }
 
+  net::NetLogCaptureMode capture_mode =
+      include_socket_bytes ? net::NetLogCaptureMode::kEverything
+                           : net::NetLogCaptureMode::kDefault;
   net_log_file_observer_ = net::FileNetLogObserver::CreateBounded(
-      file_path, size, /*constants=*/nullptr);
+      file_path, size, capture_mode, /*constants=*/nullptr);
 
   CreateNetLogEntriesForActiveObjects({context_.get()},
                                       net_log_file_observer_.get());
 
-  net::NetLogCaptureMode capture_mode =
-      include_socket_bytes ? net::NetLogCaptureMode::IncludeSocketBytes()
-                           : net::NetLogCaptureMode::Default();
-  net_log_file_observer_->StartObserving(g_net_log.Get().net_log(),
-                                         capture_mode);
+  net_log_file_observer_->StartObserving(g_net_log.Get().net_log());
 }
 
 void CronetURLRequestContext::NetworkTasks::StopNetLog() {
@@ -684,7 +684,7 @@ void CronetURLRequestContext::NetworkTasks::StopNetLog() {
   if (!net_log_file_observer_)
     return;
   net_log_file_observer_->StopObserving(
-      GetNetLogInfo(),
+      base::Value::ToUniquePtrValue(GetNetLogInfo()),
       base::BindOnce(
           &CronetURLRequestContext::NetworkTasks::StopNetLogCompleted,
           base::Unretained(this)));
@@ -696,13 +696,11 @@ void CronetURLRequestContext::NetworkTasks::StopNetLogCompleted() {
   callback_->OnStopNetLogCompleted();
 }
 
-std::unique_ptr<base::DictionaryValue>
-CronetURLRequestContext::NetworkTasks::GetNetLogInfo() const {
-  std::unique_ptr<base::DictionaryValue> net_info =
-      net::GetNetInfo(context_.get(), net::NET_INFO_ALL_SOURCES);
+base::Value CronetURLRequestContext::NetworkTasks::GetNetLogInfo() const {
+  base::Value net_info = net::GetNetInfo(context_.get());
   if (effective_experimental_options_) {
-    net_info->Set("cronetExperimentalParams",
-                  effective_experimental_options_->CreateDeepCopy());
+    net_info.SetKey("cronetExperimentalParams",
+                    effective_experimental_options_->Clone());
   }
   return net_info;
 }

@@ -18,7 +18,7 @@
 #include "chrome/browser/sync_file_system/sync_callbacks.h"
 #include "chrome/browser/sync_file_system/sync_file_metadata.h"
 #include "google_apis/drive/drive_api_error_codes.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 namespace drive {
 class DriveServiceInterface;
@@ -106,8 +106,8 @@ class RemoteToLocalSyncer : public SyncTask {
   void ResolveRemoteChange(std::unique_ptr<SyncTaskToken> token);
 
   void MoveToBackground(std::unique_ptr<SyncTaskToken> token,
-                        const Continuation& continuation);
-  void ContinueAsBackgroundTask(const Continuation& continuation,
+                        Continuation continuation);
+  void ContinueAsBackgroundTask(Continuation continuation,
                                 std::unique_ptr<SyncTaskToken> token);
 
   // Handles missing remote metadata case.
@@ -172,8 +172,8 @@ class RemoteToLocalSyncer : public SyncTask {
   void FinalizeSync(std::unique_ptr<SyncTaskToken> token,
                     SyncStatusCode status);
 
-  void Prepare(const SyncStatusCallback& callback);
-  void DidPrepare(const SyncStatusCallback& callback,
+  void Prepare(SyncStatusCallback callback);
+  void DidPrepare(SyncStatusCallback callback,
                   SyncStatusCode status,
                   const SyncFileMetadata& metadata,
                   const FileChangeList& changes);
@@ -214,7 +214,7 @@ class RemoteToLocalSyncer : public SyncTask {
   std::unique_ptr<SyncFileMetadata> local_metadata_;
   std::unique_ptr<FileChangeList> local_changes_;
 
-  base::WeakPtrFactory<RemoteToLocalSyncer> weak_ptr_factory_;
+  base::WeakPtrFactory<RemoteToLocalSyncer> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RemoteToLocalSyncer);
 };

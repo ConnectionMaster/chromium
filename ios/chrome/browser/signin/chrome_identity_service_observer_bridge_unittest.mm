@@ -28,7 +28,7 @@
 @end
 
 @implementation TestChromeIdentityServiceObserver {
-  std::unique_ptr<ios::ChromeIdentityService::Observer> observer_bridge_;
+  std::unique_ptr<ios::ChromeIdentityService::Observer> _observer_bridge;
 }
 
 @synthesize onIdentityListChangedCalled = _onIdentityListChangedCalled;
@@ -42,13 +42,13 @@
 
 - (instancetype)init {
   if (self == [super init]) {
-    observer_bridge_.reset(new ChromeIdentityServiceObserverBridge(self));
+    _observer_bridge.reset(new ChromeIdentityServiceObserverBridge(self));
   }
   return self;
 }
 
 - (ios::ChromeIdentityService::Observer*)observerBridge {
-  return observer_bridge_.get();
+  return _observer_bridge.get();
 }
 
 #pragma mark - ios::ChromeIdentityService::Observer
@@ -97,7 +97,7 @@ class ChromeIdentityServiceObserverBridgeTest : public PlatformTest {
 // Tests that |onIdentityListChanged| is forwarded.
 TEST_F(ChromeIdentityServiceObserverBridgeTest, onIdentityListChanged) {
   ASSERT_FALSE(GetTestObserver().onIdentityListChangedCalled);
-  GetObserverBridge()->OnIdentityListChanged();
+  GetObserverBridge()->OnIdentityListChanged(false);
   EXPECT_TRUE(GetTestObserver().onIdentityListChangedCalled);
   EXPECT_FALSE(GetTestObserver().onAccessTokenRefreshFailedCalled);
   EXPECT_FALSE(GetTestObserver().onProfileUpdateCalled);

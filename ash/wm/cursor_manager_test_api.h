@@ -10,6 +10,10 @@
 #include "ui/display/display.h"
 #include "ui/gfx/native_widget_types.h"
 
+namespace ui {
+enum class CursorSize;
+}
+
 namespace wm {
 class CursorManager;
 }
@@ -25,7 +29,6 @@ class CursorManagerTestApi {
   ui::CursorSize GetCurrentCursorSize() const;
   gfx::NativeCursor GetCurrentCursor() const;
   display::Display::Rotation GetCurrentCursorRotation() const;
-  float GetCurrentCursorScale() const;
 
  private:
   ::wm::CursorManager* cursor_manager_;

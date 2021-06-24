@@ -8,7 +8,6 @@
 #include "base/macros.h"
 #include "chrome/browser/policy/cloud/cloud_policy_invalidator.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/policy/proto/device_management_backend.pb.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 
@@ -29,11 +28,8 @@ class UserCloudPolicyInvalidator : public CloudPolicyInvalidator,
   // invalidation service must remain valid until Shutdown is called.
   // |policy_manager| is the policy manager for the user policy and must remain
   // valid until Shutdown is called.
-  UserCloudPolicyInvalidator(
-      Profile* profile,
-      CloudPolicyManager* policy_manager);
-
-  static enterprise_management::DeviceRegisterRequest::Type GetPolicyType();
+  UserCloudPolicyInvalidator(Profile* profile,
+                             CloudPolicyManager* policy_manager);
 
   // KeyedService:
   void Shutdown() override;

@@ -29,6 +29,14 @@ SchedulerHelper::SchedulerHelper(SequenceManager* sequence_manager)
   sequence_manager_->SetWorkBatchSize(4);
 }
 
+void SchedulerHelper::AttachToCurrentThread() {
+  DETACH_FROM_THREAD(thread_checker_);
+  CheckOnValidThread();
+  DCHECK(default_task_runner_) << "Must be invoked after InitDefaultQueues.";
+  DCHECK(!simple_task_executor_.has_value());
+  simple_task_executor_.emplace(default_task_runner_);
+}
+
 void SchedulerHelper::InitDefaultQueues(
     scoped_refptr<TaskQueue> default_task_queue,
     scoped_refptr<TaskQueue> control_task_queue,
@@ -38,6 +46,9 @@ void SchedulerHelper::InitDefaultQueues(
   default_task_runner_ =
       default_task_queue->CreateTaskRunner(static_cast<int>(default_task_type));
 
+  // Invoking SequenceManager::SetDefaultTaskRunner() before attaching the
+  // SchedulerHelper to a thread is fine. The default TaskRunner will be stored
+  // in TLS by the ThreadController before tasks are executed.
   DCHECK(sequence_manager_);
   sequence_manager_->SetDefaultTaskRunner(default_task_runner_);
 }
@@ -48,16 +59,13 @@ SchedulerHelper::~SchedulerHelper() {
 
 void SchedulerHelper::Shutdown() {
   CheckOnValidThread();
+  DCHECK(simple_task_executor_.has_value())
+      << "AttachToCurrentThread() was not invoked.";
   if (!sequence_manager_)
     return;
   ShutdownAllQueues();
   sequence_manager_->SetObserver(nullptr);
   sequence_manager_ = nullptr;
-}
-
-scoped_refptr<base::SingleThreadTaskRunner>
-SchedulerHelper::DefaultTaskRunner() {
-  return default_task_runner_;
 }
 
 void SchedulerHelper::SetWorkBatchSizeForTesting(int work_batch_size) {
@@ -72,8 +80,7 @@ bool SchedulerHelper::GetAndClearSystemIsQuiescentBit() {
   return sequence_manager_->GetAndClearSystemIsQuiescentBit();
 }
 
-void SchedulerHelper::AddTaskObserver(
-    base::MessageLoop::TaskObserver* task_observer) {
+void SchedulerHelper::AddTaskObserver(base::TaskObserver* task_observer) {
   CheckOnValidThread();
   if (sequence_manager_) {
     static_cast<base::sequence_manager::internal::SequenceManagerImpl*>(
@@ -82,8 +89,7 @@ void SchedulerHelper::AddTaskObserver(
   }
 }
 
-void SchedulerHelper::RemoveTaskObserver(
-    base::MessageLoop::TaskObserver* task_observer) {
+void SchedulerHelper::RemoveTaskObserver(base::TaskObserver* task_observer) {
   CheckOnValidThread();
   if (sequence_manager_) {
     static_cast<base::sequence_manager::internal::SequenceManagerImpl*>(

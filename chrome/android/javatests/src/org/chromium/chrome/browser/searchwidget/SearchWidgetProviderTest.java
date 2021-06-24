@@ -9,14 +9,14 @@ import android.app.Instrumentation;
 import android.app.Instrumentation.ActivityMonitor;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
 import android.util.Pair;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.RemoteViews;
 import android.widget.TextView;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -24,18 +24,20 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.IntentUtils;
 import org.chromium.base.test.util.AdvancedMockContext;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.InMemorySharedPreferences;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.firstrun.FirstRunActivity;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.locale.LocaleManager;
+import org.chromium.chrome.browser.locale.LocaleManagerDelegate;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.SharedPreferencesManager;
 import org.chromium.chrome.browser.searchwidget.SearchActivity.SearchActivityDelegate;
-import org.chromium.chrome.browser.util.IntentUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.util.ApplicationTestUtils;
-import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
 import org.chromium.content_public.browser.test.util.TestThreadUtils;
 
 import java.util.ArrayList;
@@ -62,22 +64,15 @@ public class SearchWidgetProviderTest {
 
         public final List<Pair<Integer, RemoteViews>> mViews = new ArrayList<>();
         private Context mContext;
-        private SharedPreferences mPreferences;
 
         private TestDelegate(Context context) {
             super(context);
             mContext = context;
-            mPreferences = new InMemorySharedPreferences();
         }
 
         @Override
         protected Context getContext() {
             return mContext;
-        }
-
-        @Override
-        protected SharedPreferences getSharedPreferences() {
-            return mPreferences;
         }
 
         @Override
@@ -91,7 +86,7 @@ public class SearchWidgetProviderTest {
         }
     }
 
-    private final static class TestContext extends AdvancedMockContext {
+    private static final class TestContext extends AdvancedMockContext {
         public TestContext() {
             super(InstrumentationRegistry.getInstrumentation()
                             .getTargetContext()
@@ -107,8 +102,8 @@ public class SearchWidgetProviderTest {
     private TestDelegate mDelegate;
 
     @Before
-    public void setUp() throws Exception {
-        ApplicationTestUtils.setUp(InstrumentationRegistry.getTargetContext(), true);
+    public void setUp() {
+        ChromeApplicationTestUtils.setUp(InstrumentationRegistry.getTargetContext());
         SearchActivity.setDelegateForTests(new TestSearchDelegate());
 
         mContext = new TestContext();
@@ -117,8 +112,8 @@ public class SearchWidgetProviderTest {
     }
 
     @After
-    public void tearDown() throws Exception {
-        ApplicationTestUtils.tearDown(InstrumentationRegistry.getTargetContext());
+    public void tearDown() {
+        ChromeApplicationTestUtils.tearDown(InstrumentationRegistry.getTargetContext());
     }
 
     @Test
@@ -145,7 +140,7 @@ public class SearchWidgetProviderTest {
         // it should say "Search with X".
         mDelegate.mViews.clear();
         TestThreadUtils.runOnUiThreadBlocking(() -> {
-            LocaleManager.setInstanceForTest(new LocaleManager() {
+            LocaleManager.getInstance().setDelegateForTest(new LocaleManagerDelegate() {
                 @Override
                 public boolean needToCheckForSearchEnginePromo() {
                     return false;
@@ -168,7 +163,7 @@ public class SearchWidgetProviderTest {
     public void testUpdateCachedEngineNameBeforeFirstRun() throws ExecutionException {
         Assert.assertFalse(TestThreadUtils.runOnUiThreadBlocking(new Callable<Boolean>() {
             @Override
-            public Boolean call() throws Exception {
+            public Boolean call() {
                 return SearchWidgetProvider.shouldShowFullString();
             }
         }));
@@ -184,7 +179,7 @@ public class SearchWidgetProviderTest {
         // updated.
         mDelegate.mViews.clear();
         TestThreadUtils.runOnUiThreadBlocking(() -> {
-            LocaleManager.setInstanceForTest(new LocaleManager() {
+            LocaleManager.getInstance().setDelegateForTest(new LocaleManagerDelegate() {
                 @Override
                 public boolean needToCheckForSearchEnginePromo() {
                     return false;
@@ -198,10 +193,8 @@ public class SearchWidgetProviderTest {
         // SearchWidgetProvider should now believe that its widgets are displaying branding when it
         // isn't allowed to, then update them.
         mDelegate.mViews.clear();
-        mDelegate.getSharedPreferences()
-                .edit()
-                .putString(SearchWidgetProvider.PREF_SEARCH_ENGINE_SHORTNAME, TEXT_SEARCH_ENGINE)
-                .apply();
+        mDelegate.getSharedPreferencesManager().writeString(
+                ChromePreferenceKeys.SEARCH_WIDGET_SEARCH_ENGINE_SHORTNAME, TEXT_SEARCH_ENGINE);
         TestThreadUtils.runOnUiThreadBlocking(
                 () -> SearchWidgetProvider.updateCachedEngineName(TEXT_SEARCH_ENGINE));
         checkWidgetStates(TEXT_GENERIC, View.VISIBLE);
@@ -294,6 +287,9 @@ public class SearchWidgetProviderTest {
             boolean microphoneState = IntentUtils.safeGetBooleanExtra(
                     intent, SearchWidgetProvider.EXTRA_START_VOICE_SEARCH, false);
             Assert.assertEquals(clickTarget == R.id.microphone_icon, microphoneState);
+            boolean fromWidget = IntentUtils.safeGetBooleanExtra(
+                    intent, SearchWidgetProvider.EXTRA_FROM_SEARCH_WIDGET, false);
+            Assert.assertTrue(fromWidget);
         }
     }
 
@@ -307,7 +303,7 @@ public class SearchWidgetProviderTest {
             }
         };
 
-        SharedPreferences prefs = mDelegate.getSharedPreferences();
+        SharedPreferencesManager prefs = mDelegate.getSharedPreferencesManager();
         Assert.assertEquals(0, SearchWidgetProvider.getNumConsecutiveCrashes(prefs));
 
         // The first few crashes should be silently absorbed.

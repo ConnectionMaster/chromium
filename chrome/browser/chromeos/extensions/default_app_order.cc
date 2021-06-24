@@ -6,22 +6,23 @@
 
 #include <utility>
 
+#include "ash/constants/ash_paths.h"
 #include "ash/public/cpp/app_list/internal_app_id_constants.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/extensions/default_web_app_ids.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ui/app_list/page_break_constants.h"
+#include "chrome/browser/web_applications/components/web_app_id_constants.h"
 #include "chrome/common/extensions/extension_constants.h"
-#include "chromeos/constants/chromeos_paths.h"
 #include "extensions/common/constants.h"
 
 namespace chromeos {
@@ -38,44 +39,89 @@ const char kDefaultAttr[] = "default";
 const char kNameAttr[] = "name";
 const char kImportDefaultOrderAttr[] = "import_default_order";
 
+// Canonical ordering specified in: go/default-apps
 const char* const kDefaultAppOrder[] = {
     extension_misc::kChromeAppId,
     arc::kPlayStoreAppId,
     extension_misc::kFilesManagerAppId,
+
+    arc::kGmailAppId,
     extension_misc::kGmailAppId,
+    web_app::kGmailAppId,
+
+    web_app::kGoogleMeetAppId,
+
+    web_app::kGoogleChatAppId,
+
     extension_misc::kGoogleDocAppId,
+    web_app::kGoogleDocsAppId,
+
     extension_misc::kGoogleSlidesAppId,
+    web_app::kGoogleSlidesAppId,
+
     extension_misc::kGoogleSheetsAppId,
+    web_app::kGoogleSheetsAppId,
+
     extension_misc::kDriveHostedAppId,
+    web_app::kGoogleDriveAppId,
+
     extension_misc::kGoogleKeepAppId,
+    web_app::kGoogleKeepAppId,
+
+    arc::kGoogleCalendarAppId,
     extension_misc::kCalendarAppId,
+    web_app::kGoogleCalendarAppId,
+
+    arc::kYoutubeAppId,
     extension_misc::kYoutubeAppId,
-    arc::kPlayMoviesAppId,                   // Play Movies & TV ARC app
-    extension_misc::kGooglePlayMoviesAppId,  // Play Movies & TV Chrome app
-    arc::kPlayMusicAppId,                    // Play Music ARC app
-    extension_misc::kGooglePlayMusicAppId,   // Play Music Chrome app
-    arc::kPlayGamesAppId,
-    arc::kPlayBooksAppId,                   // Play Books ARC app
-    extension_misc::kGooglePlayBooksAppId,  // Play Books Chrome app
-    app_list::kInternalAppIdCamera,
+    web_app::kYoutubeAppId,
+
+    arc::kYoutubeMusicAppId,
+    web_app::kYoutubeMusicAppId,
+    arc::kYoutubeMusicWebApkAppId,
+
+    arc::kPlayMoviesAppId,
+    extension_misc::kGooglePlayMoviesAppId,
+
+    arc::kPlayMusicAppId,
+    extension_misc::kGooglePlayMusicAppId,
+
+    arc::kPlayBooksAppId,
+    extension_misc::kGooglePlayBooksAppId,
+    web_app::kPlayBooksAppId,
+
     extension_misc::kCameraAppId,
+    web_app::kCameraAppId,
+
+    arc::kGooglePhotosAppId,
     extension_misc::kGooglePhotosAppId,
-    app_list::kDefaultPageBreak1,  // First default page break
-    extension_misc::kGoogleMapsAppId,
-    app_list::kInternalAppIdSettings,
-    app_list::kInternalAppIdDiscover,
-    extension_misc::kGeniusAppId,
+
+    arc::kGoogleDuoAppId,
+    web_app::kStadiaAppId,
+
+    // First default page break
+    app_list::kDefaultPageBreak1,
+
+    arc::kGoogleMapsAppId,
+    extension_misc::kGoogleMapsAppId,  // TODO(crbug.com/976578): Remove.
+    web_app::kGoogleMapsAppId,
+
+    ash::kInternalAppIdSettings,
+    web_app::kSettingsAppId,
+    web_app::kOsSettingsAppId,
+
+    web_app::kHelpAppId,
     extension_misc::kCalculatorAppId,
-    default_web_apps::kCanvasAppId,
+    web_app::kA4AppId,
+    web_app::kCanvasAppId,
     extension_misc::kTextEditorAppId,
-    arc::kGoogleDuo,
-    default_web_apps::kYoutubeTVAppId,
-    arc::kLightRoom,
-    arc::kInfinitePainter,
-    default_web_apps::kShowtimeAppId,
-    extension_misc::kGooglePlusAppId,
-    extension_misc::kChromeRemoteDesktopAppId,
+    web_app::kYoutubeTVAppId,
+    web_app::kGoogleNewsAppId,
     extensions::kWebStoreAppId,
+    arc::kLightRoomAppId,
+    arc::kInfinitePainterAppId,
+    web_app::kShowtimeAppId,
+    extension_misc::kGooglePlusAppId,
 };
 
 // Reads external ordinal json file and returned the parsed value. Returns NULL
@@ -147,7 +193,7 @@ ExternalLoader::ExternalLoader(bool async)
   loader_instance = this;
 
   if (async) {
-    base::PostTaskWithTraits(
+    base::ThreadPool::PostTask(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
         base::BindOnce(&ExternalLoader::Load, base::Unretained(this)));
   } else {

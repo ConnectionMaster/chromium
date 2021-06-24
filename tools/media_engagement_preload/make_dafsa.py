@@ -1,13 +1,15 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2017 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
+
+from __future__ import print_function
 
 import array
 import json
 import sys
 import os
-import urlparse
+import urllib.parse
 
 SOURCE_ROOT = os.path.join(os.path.dirname(
     os.path.abspath(__file__)), os.pardir, os.pardir)
@@ -24,7 +26,7 @@ import media_engagement_preload_pb2
 A Deterministic acyclic finite state automaton (DAFSA) is a compact
 representation of an unordered word list (dictionary).
 
-http://en.wikipedia.org/wiki/Deterministic_acyclic_finite_state_automaton
+https://en.wikipedia.org/wiki/Deterministic_acyclic_finite_state_automaton
 
 This python program converts a list of strings to a byte array in C++.
 This python program fetches strings and return values from a gperf file
@@ -438,7 +440,7 @@ def encode(dafsa):
 def to_proto(data):
   """Generates protobuf from a list of encoded bytes."""
   message = media_engagement_preload_pb2.PreloadedData()
-  message.dafsa = array.array('B', data).tostring()
+  message.dafsa = array.array('B', data).tobytes()
   return message.SerializeToString()
 
 
@@ -456,7 +458,7 @@ def parse_json(infile):
     netlocs = {}
     for entry in json.loads(infile):
       # Parse the origin and reject any with an invalid protocol.
-      parsed = urlparse.urlparse(entry)
+      parsed = urllib.parse.urlparse(entry)
       if parsed.scheme != 'http' and parsed.scheme != 'https':
         raise InputError('Invalid protocol: %s' % entry)
 
@@ -469,7 +471,7 @@ def parse_json(infile):
 
     # Join the numerical values to the netlocs.
     output = []
-    for location, value in netlocs.iteritems():
+    for location, value in netlocs.items():
       output.append(location + str(value))
     return output
   except ValueError:

@@ -2,6 +2,7 @@ Test that each agent could be enabled/disabled separately.
 
 Accessibility.disable finished successfully
 Animation.disable finished successfully
+Audits.disable finished successfully
 CSS.disable finished successfully
 DOM.disable finished successfully
 DOMSnapshot.disable finished with error DOM snapshot agent hasn't been enabled.
@@ -12,18 +13,24 @@ HeapProfiler.disable finished successfully
 IndexedDB.disable finished successfully
 LayerTree.disable finished successfully
 Log.disable finished successfully
+Media.disable finished successfully
 Network.disable finished successfully
 Overlay.disable finished successfully
 Page.disable finished successfully
 Performance.disable finished successfully
 Profiler.disable finished successfully
 Runtime.disable finished successfully
+WebAudio.disable finished successfully
+WebAuthn.disable finished successfully
 
 Accessibility.enable finished successfully
 Accessibility.disable finished successfully
 
 Animation.enable finished successfully
 Animation.disable finished successfully
+
+Audits.enable finished successfully
+Audits.disable finished successfully
 
 CSS.enable finished with error DOM agent needs to be enabled first.
 CSS.disable finished successfully
@@ -55,6 +62,9 @@ LayerTree.disable finished successfully
 Log.enable finished successfully
 Log.disable finished successfully
 
+Media.enable finished successfully
+Media.disable finished successfully
+
 Network.enable finished successfully
 Network.disable finished successfully
 
@@ -72,4 +82,10 @@ Profiler.disable finished successfully
 
 Runtime.enable finished successfully
 Runtime.disable finished successfully
+
+WebAudio.enable finished successfully
+WebAudio.disable finished successfully
+
+WebAuthn.enable finished successfully
+WebAuthn.disable finished successfully
 

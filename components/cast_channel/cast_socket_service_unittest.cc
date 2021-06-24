@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "components/cast_channel/cast_socket_service.h"
+
 #include "base/memory/ptr_util.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_simple_task_runner.h"
 #include "components/cast_channel/cast_test_util.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -24,7 +26,7 @@ namespace cast_channel {
 
 class CastSocketServiceTest : public testing::Test {
  public:
-  CastSocketServiceTest() : cast_socket_service_(new CastSocketService()) {
+  CastSocketServiceTest() : cast_socket_service_(new CastSocketServiceImpl()) {
     cast_socket_service_->SetTaskRunnerForTest(
         base::MakeRefCounted<base::TestSimpleTaskRunner>());
   }
@@ -36,8 +38,8 @@ class CastSocketServiceTest : public testing::Test {
   void TearDown() override { cast_socket_service_ = nullptr; }
 
  protected:
-  content::TestBrowserThreadBundle thread_bundle_;
-  std::unique_ptr<CastSocketService> cast_socket_service_;
+  content::BrowserTaskEnvironment task_environment_;
+  std::unique_ptr<CastSocketServiceImpl> cast_socket_service_;
   base::MockCallback<CastSocket::OnOpenCallback> mock_on_open_callback_;
   MockCastSocketObserver mock_observer_;
 };
@@ -83,11 +85,8 @@ TEST_F(CastSocketServiceTest, TestOpenChannel) {
   mock_socket->SetIPEndpoint(ip_endpoint);
   cast_socket_service_->SetSocketForTest(base::WrapUnique(mock_socket));
 
-  EXPECT_CALL(*mock_socket, ConnectInternal(_))
-      .WillOnce(WithArgs<0>(
-          Invoke([&](const MockCastSocket::MockOnOpenCallback& callback) {
-            callback.Run(mock_socket);
-          })));
+  EXPECT_CALL(*mock_socket, Connect_(_))
+      .WillOnce(base::test::RunOnceCallback<0>(mock_socket));
   EXPECT_CALL(mock_on_open_callback_, Run(mock_socket));
   EXPECT_CALL(*mock_socket, AddObserver(_));
 

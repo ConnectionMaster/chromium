@@ -21,6 +21,7 @@
 #include "media/formats/mp4/box_reader.h"
 #include "media/formats/mp4/fourccs.h"
 #include "media/media_buildflags.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 namespace mp4 {
@@ -133,12 +134,10 @@ struct MEDIA_EXPORT TrackEncryption : Box {
   bool is_encrypted;
   uint8_t default_iv_size;
   std::vector<uint8_t> default_kid;
-#if BUILDFLAG(ENABLE_CBCS_ENCRYPTION_SCHEME)
   uint8_t default_crypt_byte_block;
   uint8_t default_skip_byte_block;
   uint8_t default_constant_iv_size;
   uint8_t default_constant_iv[kInitializationVectorSize];
-#endif
 };
 
 struct MEDIA_EXPORT SchemeInfo : Box {
@@ -228,6 +227,7 @@ struct MEDIA_EXPORT AVCDecoderConfigurationRecord : Box {
   //       in |data|.
   // Returns true if |data| was successfully parsed.
   bool Parse(const uint8_t* data, int data_size);
+  bool Serialize(std::vector<uint8_t>& output) const;
 
   uint8_t version;
   uint8_t profile_indication;
@@ -250,6 +250,8 @@ struct MEDIA_EXPORT VPCodecConfigurationRecord : Box {
   DECLARE_BOX_METHODS(VPCodecConfigurationRecord);
 
   VideoCodecProfile profile;
+  VideoColorSpace color_space;
+  uint8_t level;
 };
 
 #if BUILDFLAG(ENABLE_AV1_DECODER)
@@ -267,6 +269,51 @@ struct MEDIA_EXPORT PixelAspectRatioBox : Box {
   uint32_t v_spacing;
 };
 
+struct MEDIA_EXPORT ColorParameterInformation : Box {
+  DECLARE_BOX_METHODS(ColorParameterInformation);
+
+  uint16_t colour_primaries;
+  uint16_t transfer_characteristics;
+  uint16_t matrix_coefficients;
+  bool full_range;
+};
+
+struct MEDIA_EXPORT MasteringDisplayColorVolume : Box {
+  DECLARE_BOX_METHODS(MasteringDisplayColorVolume);
+
+  float display_primaries_gx;
+  float display_primaries_gy;
+  float display_primaries_bx;
+  float display_primaries_by;
+  float display_primaries_rx;
+  float display_primaries_ry;
+  float white_point_x;
+  float white_point_y;
+  float max_display_mastering_luminance;
+  float min_display_mastering_luminance;
+};
+
+// Mostly the same as MasteringDisplayColorVolume, but with a different fourcc
+// and slightly different layout and format of encoded values.
+struct MEDIA_EXPORT SMPTE2086MasteringDisplayMetadataBox
+    : MasteringDisplayColorVolume {
+  bool Parse(BoxReader* reader) override;
+  FourCC BoxType() const override;
+};
+
+struct MEDIA_EXPORT ContentLightLevelInformation : Box {
+  DECLARE_BOX_METHODS(ContentLightLevelInformation);
+
+  uint16_t max_content_light_level;
+  uint16_t max_pic_average_light_level;
+};
+
+// Same as ContentLightLevelInformation, but with a different fourcc.
+struct MEDIA_EXPORT ContentLightLevel : ContentLightLevelInformation {
+  bool Parse(BoxReader* reader) override;
+  FourCC BoxType() const override;
+};
+
 struct MEDIA_EXPORT VideoSampleEntry : Box {
   DECLARE_BOX_METHODS(VideoSampleEntry);
 
@@ -280,6 +327,11 @@ struct MEDIA_EXPORT VideoSampleEntry : Box {
 
   VideoCodec video_codec;
   VideoCodecProfile video_codec_profile;
+  VideoCodecLevel video_codec_level;
+  VideoColorSpace video_color_space;
+
+  absl::optional<MasteringDisplayColorVolume> mastering_display_color_volume;
+  absl::optional<ContentLightLevelInformation> content_light_level_information;
 
   bool IsFormatValid() const;
 
@@ -357,12 +409,10 @@ struct MEDIA_EXPORT CencSampleEncryptionInfoEntry {
   bool is_encrypted;
   uint8_t iv_size;
   std::vector<uint8_t> key_id;
-#if BUILDFLAG(ENABLE_CBCS_ENCRYPTION_SCHEME)
   uint8_t crypt_byte_block;
   uint8_t skip_byte_block;
   uint8_t constant_iv_size;
   uint8_t constant_iv[kInitializationVectorSize];
-#endif
 };
 
 struct MEDIA_EXPORT SampleGroupDescription : Box {  // 'sgpd'.

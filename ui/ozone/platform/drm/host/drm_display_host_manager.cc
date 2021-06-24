@@ -13,14 +13,15 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/display/types/display_snapshot.h"
 #include "ui/events/ozone/device/device_event.h"
 #include "ui/events/ozone/device/device_manager.h"
-#include "ui/ozone/platform/drm/common/drm_overlay_manager.h"
 #include "ui/ozone/platform/drm/common/drm_util.h"
 #include "ui/ozone/platform/drm/host/drm_device_handle.h"
 #include "ui/ozone/platform/drm/host/drm_display_host.h"
@@ -39,7 +40,9 @@ typedef base::OnceCallback<void(const base::FilePath&,
 const char kDefaultGraphicsCardPattern[] = "/dev/dri/card%d";
 
 const char* kDisplayActionString[] = {
-    "ADD", "REMOVE", "CHANGE",
+    "ADD",
+    "REMOVE",
+    "CHANGE",
 };
 
 // Find sysfs device path for the given device path.
@@ -49,8 +52,40 @@ base::FilePath MapDevPathToSysPath(const base::FilePath& device_path) {
   // symlink that points to something like
   // /sys/devices/pci0000:00/0000:00:02.0/0000:05:00.0/drm/card0, which exposes
   // some metadata about the attached device.
-  return base::MakeAbsoluteFilePath(
+  base::FilePath sys_path = base::MakeAbsoluteFilePath(
       base::FilePath("/sys/class/drm").Append(device_path.BaseName()));
+
+  std::vector<base::FilePath::StringType> components;
+  sys_path.GetComponents(&components);
+  base::FilePath path_thus_far;
+
+  for (const auto& component : components) {
+    if (path_thus_far.empty()) {
+      path_thus_far = base::FilePath(component);
+    } else {
+      path_thus_far = path_thus_far.Append(component);
+    }
+
+    // Newer versions of the EVDI kernel driver include a symlink to the USB
+    // device in the sysfs EVDI directory (e.g.
+    // /sys/devices/platform/evdi.0/device) for EVDI displays that are USB. If
+    // that symlink exists, read it, and use that path as the sysfs path for the
+    // display when calculating the association score to match it with a
+    // corresponding USB touch device. If the symlink doesn't exist, use the
+    // normal sysfs path. In order to ensure that the sysfs path remains unique,
+    // append the card name to it.
+    if (base::StartsWith(component, "evdi", base::CompareCase::SENSITIVE)) {
+      base::FilePath usb_device_path;
+      if (base::ReadSymbolicLink(path_thus_far.Append("device"),
+                                 &usb_device_path)) {
+        return base::MakeAbsoluteFilePath(path_thus_far.Append(usb_device_path))
+            .Append(device_path.BaseName());
+      }
+      break;
+    }
+  }
+
+  return sys_path;
 }
 
 void OpenDeviceAsync(const base::FilePath& device_path,
@@ -112,14 +147,11 @@ DrmDisplayHostManager::DrmDisplayHostManager(
     GpuThreadAdapter* proxy,
     DeviceManager* device_manager,
     OzonePlatform::InitializedHostProperties* host_properties,
-    DrmOverlayManager* overlay_manager,
     InputControllerEvdev* input_controller)
     : proxy_(proxy),
       device_manager_(device_manager),
-      overlay_manager_(overlay_manager),
       input_controller_(input_controller),
-      primary_graphics_card_path_(GetPrimaryDisplayCardPath()),
-      weak_ptr_factory_(this) {
+      primary_graphics_card_path_(GetPrimaryDisplayCardPath()) {
   {
     // First device needs to be treated specially. We need to open this
     // synchronously since the GPU process will need it to initialize the
@@ -129,7 +161,7 @@ DrmDisplayHostManager::DrmDisplayHostManager(
     base::FilePath primary_graphics_card_path_sysfs =
         MapDevPathToSysPath(primary_graphics_card_path_);
 
-    primary_drm_device_handle_.reset(new DrmDeviceHandle());
+    primary_drm_device_handle_ = std::make_unique<DrmDeviceHandle>();
     if (!primary_drm_device_handle_->Initialize(
             primary_graphics_card_path_, primary_graphics_card_path_sysfs)) {
       LOG(FATAL) << "Failed to open primary graphics card";
@@ -235,6 +267,19 @@ void DrmDisplayHostManager::UpdateDisplays(
   }
 }
 
+void DrmDisplayHostManager::ConfigureDisplays(
+    const std::vector<display::DisplayConfigurationParams>& config_requests,
+    display::ConfigureCallback callback) {
+  for (auto& config : config_requests) {
+    if (GetDisplay(config.id)->is_dummy()) {
+      std::move(callback).Run(true);
+      return;
+    }
+  }
+
+  proxy_->GpuConfigureNativeDisplays(config_requests, std::move(callback));
+}
+
 void DrmDisplayHostManager::OnDeviceEvent(const DeviceEvent& event) {
   if (event.device_type() != DeviceEvent::DISPLAY)
     return;
@@ -252,7 +297,7 @@ void DrmDisplayHostManager::ProcessEvent() {
     switch (event.action_type) {
       case DeviceEvent::ADD:
         if (drm_devices_.find(event.path) == drm_devices_.end()) {
-          base::PostTaskWithTraits(
+          base::ThreadPool::PostTask(
               FROM_HERE,
               {base::MayBlock(),
                base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
@@ -292,7 +337,7 @@ void DrmDisplayHostManager::OnAddGraphicsDevice(
     std::unique_ptr<DrmDeviceHandle> handle) {
   if (handle->IsValid()) {
     drm_devices_[dev_path] = sys_path;
-    proxy_->GpuAddGraphicsDevice(sys_path, handle->PassFD());
+    proxy_->GpuAddGraphicsDeviceOnUIThread(sys_path, handle->PassFD());
     NotifyDisplayDelegate();
   }
 
@@ -334,10 +379,8 @@ void DrmDisplayHostManager::OnGpuProcessLaunched() {
 
   // Send the primary device first since this is used to initialize graphics
   // state.
-  if (!proxy_->GpuAddGraphicsDevice(drm_devices_[primary_graphics_card_path_],
-                                    handle->PassFD())) {
-    LOG(ERROR) << "Failed to add primary graphics device.";
-  }
+  proxy_->GpuAddGraphicsDeviceOnIOThread(
+      drm_devices_[primary_graphics_card_path_], handle->PassFD());
 }
 
 void DrmDisplayHostManager::OnGpuThreadReady() {
@@ -370,19 +413,19 @@ void DrmDisplayHostManager::OnGpuThreadReady() {
 void DrmDisplayHostManager::OnGpuThreadRetired() {}
 
 void DrmDisplayHostManager::GpuHasUpdatedNativeDisplays(
-    const std::vector<DisplaySnapshot_Params>& params_vector) {
+    MovableDisplaySnapshots displays) {
   if (delegate_)
     delegate_->OnDisplaySnapshotsInvalidated();
   std::vector<std::unique_ptr<DrmDisplayHost>> old_displays;
   displays_.swap(old_displays);
-  for (const auto& params : params_vector) {
+  for (auto& display : displays) {
     auto it = std::find_if(old_displays.begin(), old_displays.end(),
-                           FindDrmDisplayHostById(params.display_id));
+                           FindDrmDisplayHostById(display->display_id()));
     if (it == old_displays.end()) {
       displays_.push_back(std::make_unique<DrmDisplayHost>(
-          proxy_, CreateDisplaySnapshot(params), false /* is_dummy */));
+          proxy_, std::move(display), false /* is_dummy */));
     } else {
-      (*it)->UpdateDisplaySnapshot(CreateDisplaySnapshot(params));
+      (*it)->UpdateDisplaySnapshot(std::move(display));
       displays_.push_back(std::move(*it));
       old_displays.erase(it);
     }
@@ -398,25 +441,14 @@ void DrmDisplayHostManager::GpuHasUpdatedNativeDisplays(
   }
 }
 
-void DrmDisplayHostManager::GpuConfiguredDisplay(int64_t display_id,
-                                                 bool status) {
-  DrmDisplayHost* display = GetDisplay(display_id);
-  if (display) {
-    display->OnDisplayConfigured(status);
-
-    if (overlay_manager_)
-      overlay_manager_->ResetCache();
-  } else {
-    LOG(ERROR) << "Couldn't find display with id=" << display_id;
-  }
-}
-
-void DrmDisplayHostManager::GpuReceivedHDCPState(int64_t display_id,
-                                                 bool status,
-                                                 display::HDCPState state) {
+void DrmDisplayHostManager::GpuReceivedHDCPState(
+    int64_t display_id,
+    bool status,
+    display::HDCPState state,
+    display::ContentProtectionMethod protection_method) {
   DrmDisplayHost* display = GetDisplay(display_id);
   if (display)
-    display->OnHDCPStateReceived(status, state);
+    display->OnHDCPStateReceived(status, state, protection_method);
   else
     LOG(ERROR) << "Couldn't find display with id=" << display_id;
 }

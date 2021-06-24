@@ -7,7 +7,7 @@
 #include <memory>
 #include <utility>
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
@@ -28,7 +28,7 @@ class ChromeKeyboardWebContentsTest : public ChromeRenderViewHostTestHarness {
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
     chrome_keyboard_controller_client_ =
-        ChromeKeyboardControllerClient::CreateForTest(nullptr /* connector */);
+        ChromeKeyboardControllerClient::CreateForTest();
   }
 
   void TearDown() override {

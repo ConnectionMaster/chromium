@@ -5,8 +5,6 @@
 #ifndef CHROMECAST_BROWSER_UI_AURA_ACCESSIBILITY_AX_TREE_SOURCE_AURA_H_
 #define CHROMECAST_BROWSER_UI_AURA_ACCESSIBILITY_AX_TREE_SOURCE_AURA_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "ui/views/accessibility/ax_tree_source_views.h"
 
@@ -25,6 +23,8 @@ class AXTreeSourceAura : public views::AXTreeSourceViews {
                      ui::AXNodeData* out_data) const override;
 
  private:
+  views::AXAuraObjCache* cache_;
+
   DISALLOW_COPY_AND_ASSIGN(AXTreeSourceAura);
 };
 

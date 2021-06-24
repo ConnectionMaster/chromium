@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/files/file_path.h"
 #include "base/memory/ptr_util.h"
 
 namespace chromeos {
@@ -17,12 +18,10 @@ constexpr char kStatefulPartition[] = "/mnt/stateful_partition";
 
 Disk::Disk(const DiskInfo& disk_info,
            bool write_disabled_by_policy,
-           const std::string& system_path_prefix,
            const std::string& base_mount_path)
     : device_path_(disk_info.device_path()),
       mount_path_(disk_info.mount_path()),
       write_disabled_by_policy_(write_disabled_by_policy),
-      system_path_(disk_info.system_path()),
       file_path_(disk_info.file_path()),
       device_label_(disk_info.label()),
       drive_label_(disk_info.drive_label()),
@@ -31,8 +30,10 @@ Disk::Disk(const DiskInfo& disk_info,
       product_id_(disk_info.product_id()),
       product_name_(disk_info.product_name()),
       fs_uuid_(disk_info.uuid()),
-      system_path_prefix_(system_path_prefix),
+      storage_device_path_(disk_info.storage_device_path()),
       device_type_(disk_info.device_type()),
+      bus_number_(disk_info.bus_number()),
+      device_number_(disk_info.device_number()),
       total_size_in_bytes_(disk_info.total_size_in_bytes()),
       is_parent_(disk_info.is_drive()),
       is_read_only_hardware_(disk_info.is_read_only()),
@@ -82,10 +83,6 @@ Disk::Builder& Disk::Builder::SetWriteDisabledByPolicy(
   disk_->write_disabled_by_policy_ = write_disabled_by_policy;
   return *this;
 }
-Disk::Builder& Disk::Builder::SetSystemPath(const std::string& system_path) {
-  disk_->system_path_ = system_path;
-  return *this;
-}
 Disk::Builder& Disk::Builder::SetFilePath(const std::string& file_path) {
   disk_->file_path_ = file_path;
   return *this;
@@ -124,14 +121,24 @@ Disk::Builder& Disk::Builder::SetFileSystemUUID(const std::string& fs_uuid) {
   return *this;
 }
 
-Disk::Builder& Disk::Builder::SetSystemPathPrefix(
-    const std::string& system_path_prefix) {
-  disk_->system_path_prefix_ = system_path_prefix;
+Disk::Builder& Disk::Builder::SetStorageDevicePath(
+    const std::string& storage_device_path) {
+  disk_->storage_device_path_ = storage_device_path;
   return *this;
 }
 
 Disk::Builder& Disk::Builder::SetDeviceType(DeviceType device_type) {
   disk_->device_type_ = device_type;
+  return *this;
+}
+
+Disk::Builder& Disk::Builder::SetBusNumber(int bus_number) {
+  disk_->bus_number_ = bus_number;
+  return *this;
+}
+
+Disk::Builder& Disk::Builder::SetDeviceNumber(int device_number) {
+  disk_->device_number_ = device_number;
   return *this;
 }
 
@@ -190,6 +197,10 @@ std::unique_ptr<Disk> Disk::Builder::Build() {
 Disk::Builder& Disk::Builder::SetIsMounted(bool is_mounted) {
   disk_->is_mounted_ = is_mounted;
   return *this;
+}
+
+base::FilePath GetStatefulPartitionPath() {
+  return base::FilePath(kStatefulPartition);
 }
 
 }  // namespace disks

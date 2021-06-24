@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_DOWNLOAD_PUBLIC_COMMON_DOWNLOAD_UTILS_H_
 #define COMPONENTS_DOWNLOAD_PUBLIC_COMMON_DOWNLOAD_UTILS_H_
 
+#include <memory>
+
 #include "components/download/database/download_db_entry.h"
 #include "components/download/database/in_progress/download_entry.h"
 #include "components/download/public/common/download_export.h"
@@ -16,6 +18,7 @@
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/http/http_response_headers.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace net {
 class HttpRequestHeaders;
@@ -41,6 +44,7 @@ COMPONENTS_DOWNLOAD_EXPORT DownloadInterruptReason
 HandleRequestCompletionStatus(net::Error error_code,
                               bool has_strong_validators,
                               net::CertStatus cert_status,
+                              bool is_partial_request,
                               DownloadInterruptReason abort_reason);
 
 // Parse the HTTP server response code.
@@ -74,8 +78,8 @@ CreateDownloadDBEntryFromItem(const DownloadItemImpl& item);
 
 // Helper function to convert DownloadDBEntry to DownloadEntry.
 // TODO(qinmin): remove this function after DownloadEntry is deprecated.
-COMPONENTS_DOWNLOAD_EXPORT base::Optional<DownloadEntry>
-CreateDownloadEntryFromDownloadDBEntry(base::Optional<DownloadDBEntry> entry);
+COMPONENTS_DOWNLOAD_EXPORT std::unique_ptr<DownloadEntry>
+CreateDownloadEntryFromDownloadDBEntry(absl::optional<DownloadDBEntry> entry);
 
 COMPONENTS_DOWNLOAD_EXPORT uint64_t GetUniqueDownloadId();
 
@@ -97,10 +101,38 @@ COMPONENTS_DOWNLOAD_EXPORT bool IsDownloadDone(
 COMPONENTS_DOWNLOAD_EXPORT bool DeleteDownloadedFile(
     const base::FilePath& path);
 
-// Rename downloaded file from |oldpath| to newname.
-COMPONENTS_DOWNLOAD_EXPORT download::DownloadItem::DownloadRenameResult
+// Rename downloaded file |from_path| to a new |display_name|.
+COMPONENTS_DOWNLOAD_EXPORT DownloadItem::DownloadRenameResult
 RenameDownloadedFile(const base::FilePath& from_path,
-                     const base::FilePath& to_path);
+                     const base::FilePath& display_name);
+
+// Finch parameter key value for number of bytes used for content validation
+// during resumption.
+constexpr char kDownloadContentValidationLengthFinchKey[] =
+    "download_validation_length";
+
+// Get the number of bytes to validate from finch configuration.
+int64_t GetDownloadValidationLengthConfig();
+
+// Finch parameter key value for the time to delete expired downloads in days.
+constexpr char kExpiredDownloadDeleteTimeFinchKey[] =
+    "expired_download_delete_days";
+
+// Finch parameter key value for the time to delete expired downloads in days.
+constexpr char kOverwrittenDownloadDeleteTimeFinchKey[] =
+    "overwritten_download_delete_days";
+
+// Finch parameter key value for the buffer size to write to the download file.
+constexpr char kDownloadFileBufferSizeFinchKey[] = "download_file_buffer_size";
+
+// Returns the time to delete expired downloads.
+COMPONENTS_DOWNLOAD_EXPORT base::TimeDelta GetExpiredDownloadDeleteTime();
+
+// Returns the time in days to delete download that is overwritten by others.
+COMPONENTS_DOWNLOAD_EXPORT base::TimeDelta GetOverwrittenDownloadDeleteTime();
+
+// Returns the size of the file buffer that reads data from the data pipe.
+COMPONENTS_DOWNLOAD_EXPORT int GetDownloadFileBufferSize();
 }  // namespace download
 
 #endif  // COMPONENTS_DOWNLOAD_PUBLIC_COMMON_DOWNLOAD_UTILS_H_

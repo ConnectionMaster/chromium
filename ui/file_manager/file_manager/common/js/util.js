@@ -6,7 +6,21 @@
  * @fileoverview This file should contain utility functions used only by the
  * files app. Other shared utility functions can be found in base/*_util.js,
  * which allows finer-grained control over introducing dependencies.
+ * @suppress {uselessCode} Temporary suppress because of the line exporting.
  */
+
+// clang-format off
+// #import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+// #import {queryRequiredElement} from 'chrome://resources/js/util.m.js';
+// #import {assert} from 'chrome://resources/js/assert.m.js';
+// #import {VolumeManagerCommon} from './volume_manager_types.m.js';
+// #import {decorate} from 'chrome://resources/js/cr/ui.m.js';
+// #import {FilesAppEntry, FakeEntry} from '../../externs/files_app_entry_interfaces.js';
+// #import {EntryList} from './files_app_entry_types.js';
+// #import {VolumeInfo} from '../../externs/volume_info.js';
+// #import {EntryLocation} from '../../externs/entry_location.js';
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// clang-format on
 
 /**
  * Namespace for utility functions.
@@ -39,47 +53,37 @@ util.iconSetToCSSBackgroundImageValue = iconSet => {
 };
 
 /**
- * @param {string} name File error name.
+ * Mapping table of file error name to i18n localized error name.
+ *
+ * @const @enum {string}
+ */
+util.FileErrorLocalizedName = {
+  'InvalidModificationError': 'FILE_ERROR_INVALID_MODIFICATION',
+  'InvalidStateError': 'FILE_ERROR_INVALID_STATE',
+  'NoModificationAllowedError': 'FILE_ERROR_NO_MODIFICATION_ALLOWED',
+  'NotFoundError': 'FILE_ERROR_NOT_FOUND',
+  'NotReadableError': 'FILE_ERROR_NOT_READABLE',
+  'PathExistsError': 'FILE_ERROR_PATH_EXISTS',
+  'QuotaExceededError': 'FILE_ERROR_QUOTA_EXCEEDED',
+  'SecurityError': 'FILE_ERROR_SECURITY',
+};
+Object.freeze(util.FileErrorLocalizedName);
+
+/**
+ * Returns i18n localized error name for file error |name|.
+ *
+ * @param {?string|undefined} name File error name.
  * @return {string} Translated file error string.
  */
 util.getFileErrorString = name => {
-  let candidateMessageFragment;
-  switch (name) {
-    case 'NotFoundError':
-      candidateMessageFragment = 'NOT_FOUND';
-      break;
-    case 'SecurityError':
-      candidateMessageFragment = 'SECURITY';
-      break;
-    case 'NotReadableError':
-      candidateMessageFragment = 'NOT_READABLE';
-      break;
-    case 'NoModificationAllowedError':
-      candidateMessageFragment = 'NO_MODIFICATION_ALLOWED';
-      break;
-    case 'InvalidStateError':
-      candidateMessageFragment = 'INVALID_STATE';
-      break;
-    case 'InvalidModificationError':
-      candidateMessageFragment = 'INVALID_MODIFICATION';
-      break;
-    case 'PathExistsError':
-      candidateMessageFragment = 'PATH_EXISTS';
-      break;
-    case 'QuotaExceededError':
-      candidateMessageFragment = 'QUOTA_EXCEEDED';
-      break;
-  }
-
-  return loadTimeData.getString('FILE_ERROR_' + candidateMessageFragment) ||
-      loadTimeData.getString('FILE_ERROR_GENERIC');
+  const error = util.FileErrorLocalizedName[name] || 'FILE_ERROR_GENERIC';
+  return loadTimeData.getString(error);
 };
 
 /**
  * Mapping table for FileError.code style enum to DOMError.name string.
  *
- * @enum {string}
- * @const
+ * @const @enum {string}
  */
 util.FileError = {
   ABORT_ERR: 'AbortError',
@@ -219,9 +223,10 @@ util.removeFileOrDirectory = (entry, onSuccess, onError) => {
  * number separators.
  *
  * @param {number} bytes The number of bytes.
+ * @param {number=} addedPrecision The number of precision digits to add.
  * @return {string} Localized string.
  */
-util.bytesToString = bytes => {
+util.bytesToString = (bytes, addedPrecision = 0) => {
   // Translation identifiers for size units.
   const UNITS = [
     'SIZE_BYTES',
@@ -242,12 +247,18 @@ util.bytesToString = bytes => {
     Math.pow(2, 50),
   ];
 
+  // Rounding with precision.
+  const round = (value, decimals) => {
+    const scale = Math.pow(10, decimals);
+    return Math.round(value * scale) / scale;
+  };
+
   const str = (n, u) => {
     return strf(u, n.toLocaleString());
   };
 
   const fmt = (s, u) => {
-    const rounded = Math.round(bytes / s * 10) / 10;
+    const rounded = round(bytes / s, 1 + addedPrecision);
     return str(rounded, u);
   };
 
@@ -256,9 +267,11 @@ util.bytesToString = bytes => {
     return str(bytes, UNITS[0]);
   }
 
-  // Up to 1MB is displayed as rounded up number of KBs.
+  // Up to 1MB is displayed as rounded up number of KBs, or with the desired
+  // number of precision digits.
   if (bytes < STEPS[2]) {
-    const rounded = Math.ceil(bytes / STEPS[1]);
+    const rounded = addedPrecision ? round(bytes / STEPS[1], addedPrecision) :
+                                     Math.ceil(bytes / STEPS[1]);
     return str(rounded, UNITS[1]);
   }
 
@@ -366,8 +379,13 @@ util.queryDecoratedElement = (query, type) => {
  * @param {string} id The id of the string to return.
  * @return {string} The translated string.
  */
-function str(id) {
-  return loadTimeData.getString(id);
+/* #export */ function str(id) {
+  try {
+    return loadTimeData.getString(id);
+  } catch (e) {
+    console.warn('Failed to get string for ', id);
+    return id;
+  }
 }
 
 /**
@@ -380,9 +398,12 @@ function str(id) {
  * @param {...*} var_args The values to replace into the string.
  * @return {string} The translated string with replaced values.
  */
-function strf(id, var_args) {
+/* #export */ function strf(id, var_args) {
   return loadTimeData.getStringF.apply(loadTimeData, arguments);
 }
+
+// Export strf() into the util namespace.
+util.strf = strf;
 
 /**
  * @return {boolean} True if the Files app is running as an open files or a
@@ -458,7 +479,9 @@ util.toggleFullScreen = (appWindow, enabled) => {
  */
 util.FileOperationType = {
   COPY: 'COPY',
+  DELETE: 'DELETE',
   MOVE: 'MOVE',
+  RESTORE: 'RESTORE',
   ZIP: 'ZIP',
 };
 Object.freeze(util.FileOperationType);
@@ -563,13 +586,24 @@ util.getTeamDriveName = entry => {
 };
 
 /**
+ * Returns true if the given root type is for a container of recent files.
+ * @param {VolumeManagerCommon.RootType|null} rootType
+ * @return {boolean}
+ */
+util.isRecentRootType = rootType => {
+  return rootType == VolumeManagerCommon.RootType.RECENT ||
+      rootType == VolumeManagerCommon.RootType.RECENT_AUDIO ||
+      rootType == VolumeManagerCommon.RootType.RECENT_IMAGES ||
+      rootType == VolumeManagerCommon.RootType.RECENT_VIDEOS;
+};
+
+/**
  * Returns true if the given entry is the root folder of recent files.
  * @param {!Entry|!FilesAppEntry} entry Entry or a fake entry.
  * @returns {boolean}
  */
 util.isRecentRoot = entry => {
-  return util.isFakeEntry(entry) &&
-      entry.rootType == VolumeManagerCommon.RootType.RECENT;
+  return util.isFakeEntry(entry) && util.isRecentRootType(entry.rootType);
 };
 
 /**
@@ -603,8 +637,30 @@ util.isComputersEntry = entry => {
 };
 
 /**
- * Creates an instance of UserDOMError with given error name that looks like a
- * FileError except that it does not have the deprecated FileError.code member.
+ * Returns true if the given entry is the root folder of Trash.
+ * @param {!Entry|!FilesAppEntry} entry Entry or a fake entry.
+ * @returns {boolean}
+ */
+util.isTrashRoot = entry => {
+  return entry.fullPath === '/' &&
+      entry.rootType == VolumeManagerCommon.RootType.TRASH;
+};
+
+/**
+ * Returns true if the given entry is a descendent of Trash.
+ * @param {!Entry|!FilesAppEntry} entry Entry or a fake entry.
+ * @returns {boolean}
+ */
+util.isTrashEntry = entry => {
+  return entry.fullPath !== '/' &&
+      entry.rootType == VolumeManagerCommon.RootType.TRASH;
+};
+
+/**
+ * Creates an instance of UserDOMError subtype of DOMError because DOMError is
+ * deprecated and its Closure extern is wrong, doesn't have the constructor
+ * with 2 arguments. This DOMError looks like a FileError except that it does
+ * not have the deprecated FileError.code member.
  *
  * @param {string} name Error name for the file error.
  * @param {string=} opt_message optional message.
@@ -616,40 +672,44 @@ util.createDOMError = (name, opt_message) => {
 
 /**
  * Creates a DOMError-like object to be used in place of returning file errors.
- *
- * @param {string} name Error name for the file error.
- * @param {string=} opt_message Optional message for this error.
- * @extends {DOMError}
- * @constructor
  */
-util.UserDOMError = function(name, opt_message) {
+util.UserDOMError = class UserDOMError extends DOMError {
   /**
-   * @type {string}
-   * @private
+   * @param {string} name Error name for the file error.
+   * @param {string=} opt_message Optional message for this error.
+   * @suppress {checkTypes} Closure externs for DOMError doesn't have
+   * constructor with 2 args.
    */
-  this.name_ = name;
+  constructor(name, opt_message) {
+    super(name, opt_message);
 
-  /**
-   * @type {string}
-   * @private
-   */
-  this.message_ = opt_message || '';
-  Object.freeze(this);
-};
+    /**
+     * @type {string}
+     * @private
+     */
+    this.name_ = name;
 
-util.UserDOMError.prototype = {
+    /**
+     * @type {string}
+     * @private
+     */
+    this.message_ = opt_message || '';
+    Object.freeze(this);
+  }
+
   /**
    * @return {string} File error name.
    */
   get name() {
     return this.name_;
-  },
+  }
+
   /**
    * @return {string} Error message.
    */
   get message() {
     return this.message_;
-  },
+  }
 };
 
 /**
@@ -1101,10 +1161,18 @@ util.getRootTypeLabel = locationInfo => {
       return str('DRIVE_DIRECTORY_LABEL');
     case VolumeManagerCommon.RootType.RECENT:
       return str('RECENT_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.RECENT_AUDIO:
+      return str('MEDIA_VIEW_AUDIO_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.RECENT_IMAGES:
+      return str('MEDIA_VIEW_IMAGES_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.RECENT_VIDEOS:
+      return str('MEDIA_VIEW_VIDEOS_ROOT_LABEL');
     case VolumeManagerCommon.RootType.CROSTINI:
       return str('LINUX_FILES_ROOT_LABEL');
     case VolumeManagerCommon.RootType.MY_FILES:
       return str('MY_FILES_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.TRASH:
+      return str('TRASH_ROOT_LABEL');
     case VolumeManagerCommon.RootType.MEDIA_VIEW:
       const mediaViewRootType =
           VolumeManagerCommon.getMediaViewRootTypeFromVolumeId(
@@ -1126,6 +1194,7 @@ util.getRootTypeLabel = locationInfo => {
     case VolumeManagerCommon.RootType.PROVIDED:
     case VolumeManagerCommon.RootType.ANDROID_FILES:
     case VolumeManagerCommon.RootType.DOCUMENTS_PROVIDER:
+    case VolumeManagerCommon.RootType.SMB:
       return locationInfo.volumeInfo.label;
     default:
       console.error('Unsupported root type: ' + locationInfo.rootType);
@@ -1141,18 +1210,116 @@ util.getRootTypeLabel = locationInfo => {
  * @return {string} The localized name.
  */
 util.getEntryLabel = (locationInfo, entry) => {
-  if (locationInfo && locationInfo.hasFixedLabel) {
-    return util.getRootTypeLabel(locationInfo);
+  if (locationInfo) {
+    if (locationInfo.hasFixedLabel) {
+      return util.getRootTypeLabel(locationInfo);
+    }
+
+    if (entry.filesystem && entry.filesystem.root === entry) {
+      return util.getRootTypeLabel(locationInfo);
+    }
   }
 
-  // Special case for MyFiles/Downloads.
-  if (locationInfo && util.isMyFilesVolumeEnabled() &&
-      locationInfo.rootType == VolumeManagerCommon.RootType.DOWNLOADS &&
-      entry.fullPath == '/Downloads') {
-    return str('DOWNLOADS_DIRECTORY_LABEL');
+  // Special case for MyFiles/Downloads, MyFiles/PvmDefault and MyFiles/Camera.
+  if (locationInfo &&
+      locationInfo.rootType == VolumeManagerCommon.RootType.DOWNLOADS) {
+    if (entry.fullPath == '/Downloads') {
+      return str('DOWNLOADS_DIRECTORY_LABEL');
+    }
+    if (entry.fullPath == '/PvmDefault') {
+      return str('PLUGIN_VM_DIRECTORY_LABEL');
+    }
+    if (entry.fullPath == '/Camera') {
+      return str('CAMERA_DIRECTORY_LABEL');
+    }
   }
 
   return entry.name;
+};
+
+/**
+ * Returns true if the given |entry| matches any of the special entries:
+ *
+ *  - "My Files"/{Downloads,PvmDefault,Camera} directories, or
+ *  - "Play Files"/{<any-directory>,DCIM/Camera} directories, or
+ *  - "Linux Files" root "/" directory
+ *
+ * which cannot be modified such as deleted/cut or renamed.
+ *
+ * @param {!VolumeManager} volumeManager
+ * @param {(Entry|FakeEntry)} entry Entry or a fake entry.
+ * @return {boolean}
+ */
+util.isNonModifiable = (volumeManager, entry) => {
+  if (!entry) {
+    return false;
+  }
+
+  if (util.isFakeEntry(entry)) {
+    return true;
+  }
+
+  if (!volumeManager) {
+    return false;
+  }
+
+  const volumeInfo = volumeManager.getVolumeInfo(entry);
+  if (!volumeInfo) {
+    return false;
+  }
+
+  const volumeType = volumeInfo.volumeType;
+
+  if (volumeType === VolumeManagerCommon.RootType.DOWNLOADS) {
+    if (!entry.isDirectory) {
+      return false;
+    }
+
+    const fullPath = entry.fullPath;
+
+    if (fullPath === '/Downloads') {
+      return true;
+    }
+
+    if (fullPath === '/PvmDefault' && util.isPluginVmEnabled()) {
+      return true;
+    }
+
+    if (fullPath === '/Camera') {
+      return true;
+    }
+
+    return false;
+  }
+
+  if (volumeType === VolumeManagerCommon.RootType.ANDROID_FILES) {
+    if (!entry.isDirectory) {
+      return false;
+    }
+
+    const fullPath = entry.fullPath;
+
+    if (fullPath === '/') {
+      return true;
+    }
+
+    const isRootDirectory = fullPath === ('/' + entry.name);
+    if (isRootDirectory) {
+      return true;
+    }
+
+    if (fullPath === '/DCIM/Camera') {
+      return true;
+    }
+
+    return false;
+  }
+
+  if (volumeType === VolumeManagerCommon.RootType.CROSTINI) {
+    return entry.fullPath === '/';
+  }
+
+  return false;
 };
 
 /**
@@ -1166,21 +1333,6 @@ util.getEntryLabel = (locationInfo, entry) => {
 util.isDropEffectAllowed = (effectAllowed, dropEffect) => {
   return effectAllowed === 'all' ||
       effectAllowed.toLowerCase().indexOf(dropEffect) !== -1;
-};
-
-/**
- * Checks if the specified character is printable ASCII.
- *
- * @param {string} character The input character.
- * @return {boolean} True if |character| is printable ASCII, else false.
- */
-util.isPrintable = character => {
-  if (character.length != 1) {
-    return false;
-  }
-
-  const charCode = character.charCodeAt(0);
-  return charCode >= 32 && charCode <= 126;
 };
 
 /**
@@ -1235,47 +1387,33 @@ util.validateFileName = (parentEntry, name, filterHiddenOn) => {
  * It also verifies that name length is in the limits of the filesystem.
  *
  * @param {string} name New external drive name.
- * @param {!VolumeInfo} volumeInfo
+ * @param {!VolumeManagerCommon.FileSystemType} fileSystem
  * @return {Promise} Promise fulfilled on success, or rejected with the error
  *     message.
  */
-util.validateExternalDriveName = (name, volumeInfo) => {
+util.validateExternalDriveName = (name, fileSystem) => {
   // Verify if entered name for external drive respects restrictions provided by
   // the target filesystem
 
-  const fileSystem = volumeInfo.diskFileSystemType;
   const nameLength = name.length;
+  const lengthLimit = VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit;
 
   // Verify length for the target file system type
-  if (fileSystem == VolumeManagerCommon.FileSystemType.VFAT &&
-      nameLength >
-          VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.VFAT) {
-    return Promise.reject(strf(
-        'ERROR_EXTERNAL_DRIVE_LONG_NAME',
-        VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.VFAT));
-  } else if (
-      fileSystem == VolumeManagerCommon.FileSystemType.EXFAT &&
-      nameLength >
-          VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.EXFAT) {
-    return Promise.reject(strf(
-        'ERROR_EXTERNAL_DRIVE_LONG_NAME',
-        VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.EXFAT));
+  if (lengthLimit.hasOwnProperty(fileSystem) &&
+      nameLength > lengthLimit[fileSystem]) {
+    return Promise.reject(
+        strf('ERROR_EXTERNAL_DRIVE_LONG_NAME', lengthLimit[fileSystem]));
   }
 
-  // Checks if name contains only printable ASCII (from ' ' to '~')
+  // Checks if the name contains only alphanumeric characters or allowed special
+  // characters. This needs to stay in sync with cros-disks/filesystem_label.cc
+  // on the ChromeOS side.
+  const validCharRegex = /[a-zA-Z0-9 \!\#\$\%\&\(\)\-\@\^\_\`\{\}\~]/;
   for (let i = 0; i < nameLength; i++) {
-    if (!util.isPrintable(name[i])) {
+    if (!validCharRegex.test(name[i])) {
       return Promise.reject(
           strf('ERROR_EXTERNAL_DRIVE_INVALID_CHARACTER', name[i]));
     }
-  }
-
-  const containsForbiddenCharacters =
-      /[\*\?\.\,\;\:\/\\\|\+\=\<\>\[\]\"\'\t]/.exec(name);
-  if (containsForbiddenCharacters) {
-    return Promise.reject(strf(
-        'ERROR_EXTERNAL_DRIVE_INVALID_CHARACTER',
-        containsForbiddenCharacters[0]));
   }
 
   return Promise.resolve();
@@ -1332,11 +1470,62 @@ util.timeoutPromise = (promise, ms, opt_message) => {
 };
 
 /**
- * Examines whether the new feedback panel mode is enabled.
- * @return {boolean} True if the new feedback panel UI mode is enabled.
+ * Returns true when copy image to clipboard is enabled.
+ * @return {boolean}
  */
-util.isFeedbackPanelEnabled = () => {
-  return loadTimeData.getBoolean('FEEDBACK_PANEL_ENABLED');
+util.isCopyImageEnabled = () => {
+  return loadTimeData.getBoolean('COPY_IMAGE_ENABLED');
+};
+
+/**
+ * Returns true if filters in Recents view is enabled.
+ * @return {boolean}
+ */
+util.isRecentsFilterEnabled = () => {
+  return loadTimeData.getBoolean('FILTERS_IN_RECENTS_ENABLED');
+};
+
+/**
+ * Returns true when FilesZipMount feature is enabled.
+ * TODO(crbug.com/912236) Remove once transition to new ZIP system is finished.
+ * @return {boolean}
+ */
+util.isZipMountEnabled = () => {
+  return loadTimeData.getBoolean('ZIP_MOUNT');
+};
+
+/**
+ * Returns true when FilesZipPack feature is enabled.
+ * TODO(crbug.com/912236) Remove once transition to new ZIP system is finished.
+ * @return {boolean}
+ */
+util.isZipPackEnabled = () => {
+  return loadTimeData.getBoolean('ZIP_PACK');
+};
+
+/**
+ * Returns true when FilesZipUnpack feature is enabled.
+ * TODO(crbug.com/912236) Remove once transition to new ZIP system is finished.
+ * @return {boolean}
+ */
+util.isZipUnpackEnabled = () => {
+  return loadTimeData.getBoolean('ZIP_UNPACK');
+};
+
+/**
+ * Returns true if FilesSinglePartitionFormat flag is enabled.
+ * @return {boolean}
+ */
+util.isSinglePartitionFormatEnabled = () => {
+  return loadTimeData.getBoolean('FILES_SINGLE_PARTITION_FORMAT_ENABLED');
+};
+
+/**
+ * Returns true if  flag is enabled.
+ * @return {boolean}
+ */
+util.isVideoPlayerJsModulesEnabled = () => {
+  return loadTimeData.getBoolean('VIDEO_PLAYER_JS_MODULES_ENABLED');
 };
 
 /**
@@ -1499,9 +1688,15 @@ util.unwrapEntry = entry => {
 };
 
 /** @return {boolean} */
-util.isMyFilesVolumeEnabled = () => {
-  return loadTimeData.valueExists('MY_FILES_VOLUME_ENABLED') &&
-      loadTimeData.getBoolean('MY_FILES_VOLUME_ENABLED');
+util.isArcUsbStorageUIEnabled = () => {
+  return loadTimeData.valueExists('ARC_USB_STORAGE_UI_ENABLED') &&
+      loadTimeData.getBoolean('ARC_USB_STORAGE_UI_ENABLED');
+};
+
+/** @return {boolean} */
+util.isPluginVmEnabled = () => {
+  return loadTimeData.valueExists('PLUGIN_VM_ENABLED') &&
+      loadTimeData.getBoolean('PLUGIN_VM_ENABLED');
 };
 
 /**
@@ -1533,3 +1728,97 @@ util.entryDebugString = (entry) => {
   }
   return entryDescription;
 };
+
+/**
+ * Returns true if all entries belong to the same volume. If there are no
+ * entries it also returns false.
+ *
+ * @param {!Array<Entry|FilesAppEntry>} entries
+ * @param {!VolumeManager} volumeManager
+ * @return boolean
+ */
+util.isSameVolume = (entries, volumeManager) => {
+  if (!entries.length) {
+    return false;
+  }
+
+  const firstEntry = entries[0];
+  if (!firstEntry) {
+    return false;
+  }
+  const volumeInfo = volumeManager.getVolumeInfo(firstEntry);
+
+  for (let i = 1; i < entries.length; i++) {
+    if (!entries[i]) {
+      return false;
+    }
+    const volumeInfoToCompare = volumeManager.getVolumeInfo(assert(entries[i]));
+    if (!volumeInfoToCompare ||
+        volumeInfoToCompare.volumeId !== volumeInfo.volumeId) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Sets line clamp properties on elements to limit element's text to specified
+ * number of lines and add ellipsis.
+ *
+ * @param {!Element} element Element to clamp.
+ * @param {string} lines Maximum number of lines in element.
+ * @return {!Element}
+ */
+util.setClampLine = (element, lines) => {
+  element.style.overflow = 'hidden';
+  element.style.textOverflow = 'ellipsis';
+  element.style.webkitBoxOrient = 'vertical';
+  element.style.display = '-webkit-box';
+  element.style.webkitLineClamp = lines;
+
+  return element;
+};
+
+/**
+ * Returns true if the element's content has overflowed.
+ *
+ * @param {!Element} element The element to check.
+ * @returns {boolean}
+ */
+util.hasOverflow = (element) => {
+  return element.clientWidth < element.scrollWidth ||
+      element.clientHeight < element.scrollHeight;
+};
+
+/**
+ * Returns the Files app modal dialog used to embed any files app dialog
+ * that derives from cr.ui.dialogs.
+ *
+ * @return {!HTMLDialogElement}
+ */
+util.getFilesAppModalDialogInstance = () => {
+  let dialogElement = document.querySelector('#files-app-modal-dialog');
+
+  if (!dialogElement) {  // Lazily create the files app dialog instance.
+    dialogElement = document.createElement('dialog');
+    dialogElement.id = 'files-app-modal-dialog';
+    document.body.appendChild(dialogElement);
+  }
+
+  return /** @type {!HTMLDialogElement} */ (dialogElement);
+};
+
+/** @return {boolean} */
+util.isSharesheetEnabled = () => {
+  return loadTimeData.valueExists('SHARESHEET_ENABLED') &&
+      loadTimeData.getBoolean('SHARESHEET_ENABLED');
+};
+
+util.isDriveDssPinEnabled = () => {
+  return loadTimeData.valueExists('DRIVE_DSS_PIN_ENABLED') &&
+      loadTimeData.getBoolean('DRIVE_DSS_PIN_ENABLED');
+};
+
+// eslint-disable-next-line semi,no-extra-semi
+/* #export */ {util};

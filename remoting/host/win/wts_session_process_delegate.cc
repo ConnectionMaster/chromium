@@ -15,12 +15,12 @@
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/process/process_handle.h"
 #include "base/rand_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/current_thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/win/scoped_handle.h"
 #include "ipc/ipc_channel.h"
@@ -114,34 +114,34 @@ class WtsSessionProcessDelegate::Core
   void ReportProcessLaunched(base::win::ScopedHandle worker_process);
 
   // The task runner all public methods of this class should be called on.
-  scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner_;
+  const scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner_;
 
   // The task runner serving job object notifications.
-  scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
+  const scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
   // The server end of the IPC channel used to communicate to the worker
   // process.
   std::unique_ptr<IPC::ChannelProxy> channel_;
 
   // Security descriptor (as SDDL) to be applied to |channel_|.
-  std::string channel_security_;
+  const std::string channel_security_;
 
-  WorkerProcessLauncher* event_handler_;
+  WorkerProcessLauncher* event_handler_ = nullptr;
 
   // The job object used to control the lifetime of child processes.
   base::win::ScopedHandle job_;
 
   // True if the worker process should be launched elevated.
-  bool launch_elevated_;
+  const bool launch_elevated_;
 
-  // True if a laucnh attemp is pending.
-  bool launch_pending_;
+  // True if a launch attempt is pending.
+  bool launch_pending_ = false;
 
   // The token to be used to launch a process in a different session.
   base::win::ScopedHandle session_token_;
 
   // Command line of the launched process.
-  std::unique_ptr<base::CommandLine> target_command_;
+  const std::unique_ptr<base::CommandLine> target_command_;
 
   // The handle of the worker process, if launched.
   base::win::ScopedHandle worker_process_;
@@ -167,12 +167,11 @@ WtsSessionProcessDelegate::Core::Core(
     std::unique_ptr<base::CommandLine> target_command,
     bool launch_elevated,
     const std::string& channel_security)
-    : caller_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      io_task_runner_(io_task_runner),
+    : base::MessagePumpForIO::IOHandler(FROM_HERE),
+      caller_task_runner_(base::ThreadTaskRunnerHandle::Get()),
+      io_task_runner_(std::move(io_task_runner)),
       channel_security_(channel_security),
-      event_handler_(nullptr),
       launch_elevated_(launch_elevated),
-      launch_pending_(false),
       target_command_(std::move(target_command)) {}
 
 bool WtsSessionProcessDelegate::Core::Initialize(uint32_t session_id) {
@@ -210,7 +209,7 @@ bool WtsSessionProcessDelegate::Core::Initialize(uint32_t session_id) {
     // the completion port represented by |io_task_runner|. The registration has
     // to be done on the I/O thread because
     // MessageLoopForIO::RegisterJobObject() can only be called via
-    // MessageLoopCurrentForIO::Get().
+    // CurrentIOThread::Get().
     io_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(&Core::InitializeJob, this, std::move(job)));
   }
@@ -402,7 +401,7 @@ void WtsSessionProcessDelegate::Core::DoLaunchProcess() {
   if (launch_elevated_) {
     // Pass the name of the IPC channel to use.
     mojo::NamedPlatformChannel::Options options;
-    options.security_descriptor = base::UTF8ToUTF16(channel_security_);
+    options.security_descriptor = base::UTF8ToWide(channel_security_);
     elevated_mojo_channel =
         std::make_unique<mojo::NamedPlatformChannel>(options);
     elevated_mojo_channel->PassServerNameOnCommandLine(&command_line);
@@ -420,7 +419,7 @@ void WtsSessionProcessDelegate::Core::DoLaunchProcess() {
           session_token_.Get(), /*security_attributes=*/nullptr,
           /* thread_attributes= */ nullptr, handles_to_inherit,
           /* creation_flags= */ CREATE_SUSPENDED | CREATE_BREAKAWAY_FROM_JOB,
-          base::UTF8ToUTF16(kDefaultDesktopName).c_str(), &worker_process,
+          base::UTF8ToWide(kDefaultDesktopName).c_str(), &worker_process,
           &worker_thread)) {
     ReportFatalError();
     return;
@@ -485,8 +484,7 @@ void WtsSessionProcessDelegate::Core::InitializeJob(ScopedHandle job) {
   DCHECK(io_task_runner_->BelongsToCurrentThread());
 
   // Register to receive job notifications via the I/O thread's completion port.
-  if (!base::MessageLoopCurrentForIO::Get()->RegisterJobObject(job.Get(),
-                                                               this)) {
+  if (!base::CurrentIOThread::Get()->RegisterJobObject(job.Get(), this)) {
     PLOG(ERROR) << "Failed to associate the job object with a completion port";
     return;
   }

@@ -9,17 +9,24 @@
 #include <utility>
 #include <vector>
 
+#include "base/cxx17_backports.h"
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/format_macros.h"
 #include "base/macros.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/paint/paint_flags.h"
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/avatar_menu.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
@@ -29,19 +36,69 @@
 #include "third_party/skia/include/core/SkScalar.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/webui/web_ui_util.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/favicon_size.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia_operations.h"
+#include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/skia_util.h"
+#include "ui/native_theme/native_theme.h"
 #include "url/url_canon.h"
+
+#if defined(OS_WIN)
+#include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/grit/chrome_unscaled_resources.h"  // nogncheck crbug.com/1125897
+#include "ui/gfx/icon_util.h"  // For Iconutil::kLargeIconSize.
+#endif
+
+#if defined(OS_MAC)
+#include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#endif
 
 // Helper methods for transforming and drawing avatar icons.
 namespace {
 
+#if defined(OS_WIN)
 const int kOldAvatarIconWidth = 38;
 const int kOldAvatarIconHeight = 31;
+
+// 2x sized versions of the old profile avatar icons.
+// TODO(crbug.com/937834): Clean this up.
+const int kProfileAvatarIconResources2x[] = {
+    IDR_PROFILE_AVATAR_2X_0,  IDR_PROFILE_AVATAR_2X_1,
+    IDR_PROFILE_AVATAR_2X_2,  IDR_PROFILE_AVATAR_2X_3,
+    IDR_PROFILE_AVATAR_2X_4,  IDR_PROFILE_AVATAR_2X_5,
+    IDR_PROFILE_AVATAR_2X_6,  IDR_PROFILE_AVATAR_2X_7,
+    IDR_PROFILE_AVATAR_2X_8,  IDR_PROFILE_AVATAR_2X_9,
+    IDR_PROFILE_AVATAR_2X_10, IDR_PROFILE_AVATAR_2X_11,
+    IDR_PROFILE_AVATAR_2X_12, IDR_PROFILE_AVATAR_2X_13,
+    IDR_PROFILE_AVATAR_2X_14, IDR_PROFILE_AVATAR_2X_15,
+    IDR_PROFILE_AVATAR_2X_16, IDR_PROFILE_AVATAR_2X_17,
+    IDR_PROFILE_AVATAR_2X_18, IDR_PROFILE_AVATAR_2X_19,
+    IDR_PROFILE_AVATAR_2X_20, IDR_PROFILE_AVATAR_2X_21,
+    IDR_PROFILE_AVATAR_2X_22, IDR_PROFILE_AVATAR_2X_23,
+    IDR_PROFILE_AVATAR_2X_24, IDR_PROFILE_AVATAR_2X_25,
+    IDR_PROFILE_AVATAR_2X_26,
+};
+
+// Returns a copied SkBitmap for the given image that can be safely passed to
+// another thread.
+SkBitmap GetSkBitmapCopy(const gfx::Image& image) {
+  DCHECK(!image.IsEmpty());
+  const SkBitmap* image_bitmap = image.ToSkBitmap();
+  SkBitmap bitmap_copy;
+  if (bitmap_copy.tryAllocPixels(image_bitmap->info()))
+    image_bitmap->readPixels(bitmap_copy.info(), bitmap_copy.getPixels(),
+                             bitmap_copy.rowBytes(), 0, 0);
+  return bitmap_copy;
+}
+#endif  // OS_WIN
 
 // Determine what the scaled height of the avatar icon should be for a
 // specified width, to preserve the aspect ratio.
@@ -104,7 +161,7 @@ AvatarImageSource::AvatarImageSource(gfx::ImageSkia avatar,
                                      AvatarPosition position,
                                      AvatarBorder border,
                                      profiles::AvatarShape shape)
-    : gfx::CanvasImageSource(canvas_size, false),
+    : gfx::CanvasImageSource(canvas_size),
       canvas_size_(canvas_size),
       width_(width),
       height_(GetScaledAvatarHeightForWidth(width, avatar)),
@@ -234,6 +291,28 @@ void AvatarImageSource::Draw(gfx::Canvas* canvas) {
   }
 }
 
+class ImageWithBackgroundSource : public gfx::CanvasImageSource {
+ public:
+  ImageWithBackgroundSource(const gfx::ImageSkia& image, SkColor background)
+      : gfx::CanvasImageSource(image.size()),
+        image_(image),
+        background_(background) {}
+
+  ~ImageWithBackgroundSource() override = default;
+
+  // gfx::CanvasImageSource override.
+  void Draw(gfx::Canvas* canvas) override {
+    canvas->DrawColor(background_);
+    canvas->DrawImageInt(image_, 0, 0);
+  }
+
+ private:
+  const gfx::ImageSkia image_;
+  const SkColor background_;
+
+  DISALLOW_COPY_AND_ASSIGN(ImageWithBackgroundSource);
+};
+
 }  // namespace
 
 namespace profiles {
@@ -256,21 +335,39 @@ constexpr SkColor kAvatarBubbleGaiaBackgroundColor =
 constexpr SkColor kUserManagerBackgroundColor = SkColorSetRGB(0xee, 0xee, 0xee);
 
 constexpr char kDefaultUrlPrefix[] = "chrome://theme/IDR_PROFILE_AVATAR_";
-constexpr char kGAIAPictureFileName[] = "Google Profile Picture.png";
-constexpr char kHighResAvatarFolderName[] = "Avatars";
+constexpr base::FilePath::CharType kGAIAPictureFileName[] =
+    FILE_PATH_LITERAL("Google Profile Picture.png");
+constexpr base::FilePath::CharType kHighResAvatarFolderName[] =
+    FILE_PATH_LITERAL("Avatars");
 
 // The size of the function-static kDefaultAvatarIconResources array below.
-#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
-constexpr size_t kDefaultAvatarIconsCount = 38;
-#else
+#if defined(OS_ANDROID)
+constexpr size_t kDefaultAvatarIconsCount = 1;
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
 constexpr size_t kDefaultAvatarIconsCount = 27;
+#else
+constexpr size_t kDefaultAvatarIconsCount = 56;
 #endif
 
+#if !defined(OS_ANDROID)
 // The first 8 icons are generic.
 constexpr size_t kGenericAvatarIconsCount = 8;
+#else
+constexpr size_t kGenericAvatarIconsCount = 0;
+#endif
 
-// The avatar used as a placeholder (grey silhouette).
+#if !defined(OS_ANDROID)
+// The avatar used as a placeholder.
 constexpr size_t kPlaceholderAvatarIndex = 26;
+#else
+constexpr size_t kPlaceholderAvatarIndex = 0;
+#endif
+
+ui::ImageModel GetGuestAvatar(int size) {
+    return ui::ImageModel::FromVectorIcon(
+        kUserAccountAvatarIcon, ui::NativeTheme::kColorId_AvatarIconGuest,
+        size);
+}
 
 gfx::Image GetSizedAvatarIcon(const gfx::Image& image,
                               bool is_rectangle,
@@ -313,7 +410,7 @@ gfx::Image GetAvatarIconForTitleBar(const gfx::Image& image,
   if (!is_gaia_image && image.Height() <= kAvatarIconSize)
     return image;
 
-  int size = std::min(kAvatarIconSize, std::min(dst_width, dst_height));
+  int size = std::min({kAvatarIconSize, dst_width, dst_height});
   gfx::Size dst_size(dst_width, dst_height);
 
   // Source for a sized icon drawn at the bottom center of the canvas,
@@ -327,25 +424,25 @@ gfx::Image GetAvatarIconForTitleBar(const gfx::Image& image,
   return gfx::Image(gfx::ImageSkia(std::move(source), dst_size));
 }
 
-SkBitmap GetAvatarIconAsSquare(const SkBitmap& source_bitmap,
-                               int scale_factor) {
-  SkBitmap square_bitmap;
-  if ((source_bitmap.width() == scale_factor * kOldAvatarIconWidth) &&
-      (source_bitmap.height() == scale_factor * kOldAvatarIconHeight)) {
-    // If |source_bitmap| matches the old avatar icon dimensions, i.e. it's an
-    // old avatar icon, shave a couple of columns so the |source_bitmap| is more
-    // square. So when resized to a square aspect ratio it looks pretty.
-    gfx::Rect frame(scale_factor * profiles::kAvatarIconSize,
-                    scale_factor * profiles::kAvatarIconSize);
-    frame.Inset(scale_factor * 2, 0, scale_factor * 2, 0);
-    source_bitmap.extractSubset(&square_bitmap, gfx::RectToSkIRect(frame));
-  } else {
-    // If it's not an old avatar icon, the image should be square.
-    DCHECK(source_bitmap.width() == source_bitmap.height());
-    square_bitmap = source_bitmap;
+#if defined(OS_MAC)
+gfx::Image GetAvatarIconForNSMenu(const base::FilePath& profile_path) {
+  ProfileAttributesEntry* entry =
+      g_browser_process->profile_manager()
+          ->GetProfileAttributesStorage()
+          .GetProfileAttributesWithPath(profile_path);
+  if (!entry) {
+    // This can happen if the user deletes the current profile.
+    return gfx::Image();
   }
-  return square_bitmap;
+
+  // Get a higher res than 16px so it looks good after cropping to a circle.
+  gfx::Image icon =
+      entry->GetAvatarIcon(kAvatarIconSize, /*download_high_res=*/false);
+  return profiles::GetSizedAvatarIcon(icon, /*is_rectangle=*/true,
+                                      kMenuAvatarIconSize, kMenuAvatarIconSize,
+                                      profiles::SHAPE_CIRCLE);
 }
+#endif
 
 // Helper methods for accessing, transforming and drawing avatar icons.
 size_t GetDefaultAvatarIconCount() {
@@ -361,7 +458,7 @@ size_t GetPlaceholderAvatarIndex() {
 }
 
 size_t GetModernAvatarIconStartIndex() {
-#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
+#if !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_ANDROID)
   return GetPlaceholderAvatarIndex() + 1;
 #else
   // Only use the placeholder avatar on ChromeOS and Android.
@@ -378,17 +475,26 @@ bool IsModernAvatarIconIndex(size_t icon_index) {
 }
 
 int GetPlaceholderAvatarIconResourceID() {
+  // TODO(crbug.com/1100835): Replace with the new icon. Consider coloring the
+  // icon (i.e. providing the image through
+  // ProfileAttributesEntry::GetAvatarIcon(), instead) which would require more
+  // refactoring.
   return IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE;
 }
 
 std::string GetPlaceholderAvatarIconUrl() {
+  // TODO(crbug.com/1100835): Replace with the new icon. Consider coloring the
+  // icon (i.e. providing the image through
+  // ProfileAttributesEntry::GetAvatarIcon(), instead) which would require more
+  // refactoring.
   return "chrome://theme/IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE";
 }
 
 const IconResourceInfo* GetDefaultAvatarIconResourceInfo(size_t index) {
   CHECK_LT(index, kDefaultAvatarIconsCount);
   static const IconResourceInfo resource_info[kDefaultAvatarIconsCount] = {
-    // Old avatar icons:
+  // Old avatar icons:
+#if !defined(OS_ANDROID)
     {IDR_PROFILE_AVATAR_0, "avatar_generic.png", IDS_DEFAULT_AVATAR_LABEL_0},
     {IDR_PROFILE_AVATAR_1, "avatar_generic_aqua.png",
      IDS_DEFAULT_AVATAR_LABEL_1},
@@ -427,11 +533,11 @@ const IconResourceInfo* GetDefaultAvatarIconResourceInfo(size_t index) {
     {IDR_PROFILE_AVATAR_24, "avatar_note.png", IDS_DEFAULT_AVATAR_LABEL_24},
     {IDR_PROFILE_AVATAR_25, "avatar_sun_cloud.png",
      IDS_DEFAULT_AVATAR_LABEL_25},
-
+#endif
     // Placeholder avatar icon:
-    {IDR_PROFILE_AVATAR_26, NULL, -1},
+    {IDR_PROFILE_AVATAR_26, nullptr, IDS_DEFAULT_AVATAR_LABEL_26},
 
-#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
+#if !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_ANDROID)
     // Modern avatar icons:
     {IDR_PROFILE_AVATAR_27, "avatar_origami_cat.png",
      IDS_DEFAULT_AVATAR_LABEL_27},
@@ -455,14 +561,71 @@ const IconResourceInfo* GetDefaultAvatarIconResourceInfo(size_t index) {
      IDS_DEFAULT_AVATAR_LABEL_36},
     {IDR_PROFILE_AVATAR_37, "avatar_origami_unicorn.png",
      IDS_DEFAULT_AVATAR_LABEL_37},
+    {IDR_PROFILE_AVATAR_38, "avatar_illustration_basketball.png",
+     IDS_DEFAULT_AVATAR_LABEL_38},
+    {IDR_PROFILE_AVATAR_39, "avatar_illustration_bike.png",
+     IDS_DEFAULT_AVATAR_LABEL_39},
+    {IDR_PROFILE_AVATAR_40, "avatar_illustration_bird.png",
+     IDS_DEFAULT_AVATAR_LABEL_40},
+    {IDR_PROFILE_AVATAR_41, "avatar_illustration_cheese.png",
+     IDS_DEFAULT_AVATAR_LABEL_41},
+    {IDR_PROFILE_AVATAR_42, "avatar_illustration_football.png",
+     IDS_DEFAULT_AVATAR_LABEL_42},
+    {IDR_PROFILE_AVATAR_43, "avatar_illustration_ramen.png",
+     IDS_DEFAULT_AVATAR_LABEL_43},
+    {IDR_PROFILE_AVATAR_44, "avatar_illustration_sunglasses.png",
+     IDS_DEFAULT_AVATAR_LABEL_44},
+    {IDR_PROFILE_AVATAR_45, "avatar_illustration_sushi.png",
+     IDS_DEFAULT_AVATAR_LABEL_45},
+    {IDR_PROFILE_AVATAR_46, "avatar_illustration_tamagotchi.png",
+     IDS_DEFAULT_AVATAR_LABEL_46},
+    {IDR_PROFILE_AVATAR_47, "avatar_illustration_vinyl.png",
+     IDS_DEFAULT_AVATAR_LABEL_47},
+    {IDR_PROFILE_AVATAR_48, "avatar_abstract_avocado.png",
+     IDS_DEFAULT_AVATAR_LABEL_48},
+    {IDR_PROFILE_AVATAR_49, "avatar_abstract_cappuccino.png",
+     IDS_DEFAULT_AVATAR_LABEL_49},
+    {IDR_PROFILE_AVATAR_50, "avatar_abstract_icecream.png",
+     IDS_DEFAULT_AVATAR_LABEL_50},
+    {IDR_PROFILE_AVATAR_51, "avatar_abstract_icewater.png",
+     IDS_DEFAULT_AVATAR_LABEL_51},
+    {IDR_PROFILE_AVATAR_52, "avatar_abstract_melon.png",
+     IDS_DEFAULT_AVATAR_LABEL_52},
+    {IDR_PROFILE_AVATAR_53, "avatar_abstract_onigiri.png",
+     IDS_DEFAULT_AVATAR_LABEL_53},
+    {IDR_PROFILE_AVATAR_54, "avatar_abstract_pizza.png",
+     IDS_DEFAULT_AVATAR_LABEL_54},
+    {IDR_PROFILE_AVATAR_55, "avatar_abstract_sandwich.png",
+     IDS_DEFAULT_AVATAR_LABEL_55},
 #endif
   };
   return &resource_info[index];
 }
 
+gfx::Image GetPlaceholderAvatarIconWithColors(SkColor fill_color,
+                                              SkColor stroke_color,
+                                              int size) {
+  const gfx::VectorIcon& person_icon =
+      size >= 40 ? kPersonFilledPaddedLargeIcon : kPersonFilledPaddedSmallIcon;
+  gfx::ImageSkia icon_without_background = gfx::CreateVectorIcon(
+      gfx::IconDescription(person_icon, size, stroke_color));
+  gfx::ImageSkia icon_with_background(
+      std::make_unique<ImageWithBackgroundSource>(icon_without_background,
+                                                  fill_color),
+      gfx::Size(size, size));
+  return gfx::Image(icon_with_background);
+}
+
 int GetDefaultAvatarIconResourceIDAtIndex(size_t index) {
   return GetDefaultAvatarIconResourceInfo(index)->resource_id;
 }
+
+#if defined(OS_WIN)
+int GetOldDefaultAvatar2xIconResourceIDAtIndex(size_t index) {
+  DCHECK_LT(index, base::size(kProfileAvatarIconResources2x));
+  return kProfileAvatarIconResources2x[index];
+}
+#endif  // defined(OS_WIN)
 
 const char* GetDefaultAvatarIconFileNameAtIndex(size_t index) {
   CHECK_NE(index, kPlaceholderAvatarIndex);
@@ -473,17 +636,17 @@ base::FilePath GetPathOfHighResAvatarAtIndex(size_t index) {
   const char* file_name = GetDefaultAvatarIconFileNameAtIndex(index);
   base::FilePath user_data_dir;
   CHECK(base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir));
-  return user_data_dir.AppendASCII(
-      kHighResAvatarFolderName).AppendASCII(file_name);
+  return user_data_dir.Append(kHighResAvatarFolderName).AppendASCII(file_name);
 }
 
 std::string GetDefaultAvatarIconUrl(size_t index) {
+#if !defined(OS_ANDROID)
   CHECK(IsDefaultAvatarIconIndex(index));
+#endif
   return base::StringPrintf("%s%" PRIuS, kDefaultUrlPrefix, index);
 }
 
 int GetDefaultAvatarLabelResourceIDAtIndex(size_t index) {
-  CHECK_NE(index, kPlaceholderAvatarIndex);
   return GetDefaultAvatarIconResourceInfo(index)->label_id;
 }
 
@@ -497,9 +660,8 @@ bool IsDefaultAvatarIconUrl(const std::string& url, size_t* icon_index) {
     return false;
 
   int int_value = -1;
-  if (base::StringToInt(base::StringPiece(url.begin() +
-                                          strlen(kDefaultUrlPrefix),
-                                          url.end()),
+  if (base::StringToInt(base::MakeStringPiece(
+                            url.begin() + strlen(kDefaultUrlPrefix), url.end()),
                         &int_value)) {
     if (int_value < 0 ||
         int_value >= static_cast<int>(kDefaultAvatarIconsCount))
@@ -511,22 +673,46 @@ bool IsDefaultAvatarIconUrl(const std::string& url, size_t* icon_index) {
   return false;
 }
 
-std::unique_ptr<base::ListValue> GetDefaultProfileAvatarIconsAndLabels(
+base::flat_map<std::string, base::Value> GetAvatarIconAndLabelDict(
+    const std::string& url,
+    const std::u16string& label,
+    size_t index,
+    bool selected,
+    bool is_gaia_avatar) {
+  base::flat_map<std::string, base::Value> avatar_info;
+  avatar_info.emplace("url", url);
+  avatar_info.emplace("label", label);
+  avatar_info.emplace("index", static_cast<int>(index));
+  avatar_info.emplace("selected", selected);
+  avatar_info.emplace("isGaiaAvatar", is_gaia_avatar);
+  return avatar_info;
+}
+
+base::flat_map<std::string, base::Value> GetDefaultProfileAvatarIconAndLabel(
+    SkColor fill_color,
+    SkColor stroke_color,
+    bool selected) {
+  gfx::Image icon = profiles::GetPlaceholderAvatarIconWithColors(
+      fill_color, stroke_color, kAvatarIconSize);
+  size_t index = profiles::GetPlaceholderAvatarIndex();
+  return GetAvatarIconAndLabelDict(
+      webui::GetBitmapDataUrl(icon.AsBitmap()),
+      l10n_util::GetStringUTF16(
+          profiles::GetDefaultAvatarLabelResourceIDAtIndex(index)),
+      index, selected, /*is_gaia_avatar=*/false);
+}
+
+std::vector<base::Value> GetCustomProfileAvatarIconsAndLabels(
     size_t selected_avatar_idx) {
-  std::unique_ptr<base::ListValue> avatars(new base::ListValue());
+  std::vector<base::Value> avatars;
 
   for (size_t i = GetModernAvatarIconStartIndex();
        i < GetDefaultAvatarIconCount(); ++i) {
-    std::unique_ptr<base::DictionaryValue> avatar_info(
-        new base::DictionaryValue());
-    avatar_info->SetString("url", profiles::GetDefaultAvatarIconUrl(i));
-    avatar_info->SetString(
-        "label", l10n_util::GetStringUTF16(
-                     profiles::GetDefaultAvatarLabelResourceIDAtIndex(i)));
-    if (i == selected_avatar_idx)
-      avatar_info->SetBoolean("selected", true);
-
-    avatars->Append(std::move(avatar_info));
+    avatars.emplace_back(GetAvatarIconAndLabelDict(
+        profiles::GetDefaultAvatarIconUrl(i),
+        l10n_util::GetStringUTF16(
+            profiles::GetDefaultAvatarLabelResourceIDAtIndex(i)),
+        i, i == selected_avatar_idx, /*is_gaia_avatar=*/false));
   }
   return avatars;
 }
@@ -547,5 +733,81 @@ size_t GetRandomAvatarIconIndex(
   // All indices are used, so return a random one.
   return interval_begin + random_offset;
 }
+
+#if defined(OS_WIN)
+SkBitmap GetWin2xAvatarImage(ProfileAttributesEntry* entry) {
+  // Request just one size large enough for all uses.
+  return GetSkBitmapCopy(entry->GetAvatarIcon(IconUtil::kLargeIconSize));
+}
+
+SkBitmap GetWin2xAvatarIconAsSquare(const SkBitmap& source_bitmap) {
+  constexpr int kIconScaleFactor = 2;
+  if ((source_bitmap.width() != kIconScaleFactor * kOldAvatarIconWidth) ||
+      (source_bitmap.height() != kIconScaleFactor * kOldAvatarIconHeight)) {
+    // It's not an old avatar icon, the image should be square.
+    DCHECK_EQ(source_bitmap.width(), source_bitmap.height());
+    return source_bitmap;
+  }
+
+  // If |source_bitmap| matches the old avatar icon dimensions, i.e. it's an
+  // old avatar icon, shave a couple of columns so the |source_bitmap| is more
+  // square. So when resized to a square aspect ratio it looks pretty.
+  gfx::Rect frame(gfx::SkIRectToRect(source_bitmap.bounds()));
+  frame.Inset(/*horizontal=*/kIconScaleFactor * 2, /*vertical=*/0);
+  SkBitmap cropped_bitmap;
+  source_bitmap.extractSubset(&cropped_bitmap, gfx::RectToSkIRect(frame));
+  return cropped_bitmap;
+}
+
+SkBitmap GetBadgedWinIconBitmapForAvatar(const SkBitmap& app_icon_bitmap,
+                                         const SkBitmap& avatar_bitmap) {
+  // TODO(dfried): This function often doesn't actually do the thing it claims
+  // to. We should probably fix it.
+  SkBitmap source_bitmap = profiles::GetWin2xAvatarIconAsSquare(avatar_bitmap);
+
+  int avatar_badge_width = kProfileAvatarBadgeSizeWin;
+  if (app_icon_bitmap.width() != kShortcutIconSizeWin) {
+    avatar_badge_width = std::ceilf(
+        app_icon_bitmap.width() *
+        (float{kProfileAvatarBadgeSizeWin} / float{kShortcutIconSizeWin}));
+  }
+
+  // Resize the avatar image down to the desired badge size, maintaining aspect
+  // ratio (but prefer more square than rectangular when rounding).
+  const int avatar_badge_height = base::ClampCeil(
+      avatar_badge_width *
+      (static_cast<float>(source_bitmap.height()) / source_bitmap.width()));
+  SkBitmap sk_icon = skia::ImageOperations::Resize(
+      source_bitmap, skia::ImageOperations::RESIZE_LANCZOS3,
+      avatar_badge_width, avatar_badge_height);
+
+  // Sanity check - avatars shouldn't be taller than they are wide.
+  DCHECK_GE(sk_icon.width(), sk_icon.height());
+
+  // Overlay the avatar on the icon, anchoring it to the bottom-right of the
+  // icon.
+  SkBitmap badged_bitmap;
+  badged_bitmap.allocN32Pixels(app_icon_bitmap.width(),
+                               app_icon_bitmap.height());
+  SkCanvas offscreen_canvas(badged_bitmap, SkSurfaceProps{});
+  offscreen_canvas.clear(SK_ColorTRANSPARENT);
+  offscreen_canvas.drawImage(app_icon_bitmap.asImage(), 0, 0);
+
+  // Render the avatar in a cutout circle. If the avatar is not square, center
+  // it in the circle but favor pushing it further down.
+  const int cutout_size = avatar_badge_width;
+  const int cutout_left = app_icon_bitmap.width() - cutout_size;
+  const int cutout_top = app_icon_bitmap.height() - cutout_size;
+  const int icon_left = cutout_left;
+  const int icon_top =
+      cutout_top + base::ClampCeil((cutout_size - avatar_badge_height) / 2.0f);
+  const SkRRect clip_circle = SkRRect::MakeOval(
+      SkRect::MakeXYWH(cutout_left, cutout_top, cutout_size, cutout_size));
+
+  offscreen_canvas.clipRRect(clip_circle, true);
+  offscreen_canvas.drawImage(sk_icon.asImage(), icon_left, icon_top);
+  return badged_bitmap;
+}
+#endif  // OS_WIN
 
 }  // namespace profiles

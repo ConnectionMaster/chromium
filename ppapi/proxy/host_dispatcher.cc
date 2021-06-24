@@ -7,7 +7,8 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "ppapi/c/ppb_var.h"
 #include "ppapi/c/private/ppb_proxy_private.h"
@@ -68,8 +69,7 @@ HostDispatcher::HostDispatcher(PP_Module module,
     : Dispatcher(local_get_interface, permissions),
       pp_module_(module),
       ppb_proxy_(NULL),
-      allow_plugin_reentrancy_(false),
-      weak_ptr_factory_(this) {
+      allow_plugin_reentrancy_(false) {
   if (!g_module_to_dispatcher)
     g_module_to_dispatcher = new ModuleToDispatcherMap;
   (*g_module_to_dispatcher)[pp_module_] = this;
@@ -135,9 +135,9 @@ bool HostDispatcher::IsPlugin() const {
 }
 
 bool HostDispatcher::Send(IPC::Message* msg) {
-  TRACE_EVENT2("ppapi proxy", "HostDispatcher::Send",
-               "Class", IPC_MESSAGE_ID_CLASS(msg->type()),
-               "Line", IPC_MESSAGE_ID_LINE(msg->type()));
+  TRACE_EVENT2("ppapi_proxy", "HostDispatcher::Send", "Class",
+               IPC_MESSAGE_ID_CLASS(msg->type()), "Line",
+               IPC_MESSAGE_ID_LINE(msg->type()));
 
   // Normal sync messages are set to unblock, which would normally cause the
   // plugin to be reentered to process them. We only want to do this when we
@@ -179,9 +179,9 @@ bool HostDispatcher::OnMessageReceived(const IPC::Message& msg) {
   // be at the outermost scope so it's released last.
   ScopedModuleReference death_grip(this);
 
-  TRACE_EVENT2("ppapi proxy", "HostDispatcher::OnMessageReceived",
-               "Class", IPC_MESSAGE_ID_CLASS(msg.type()),
-               "Line", IPC_MESSAGE_ID_LINE(msg.type()));
+  TRACE_EVENT2("ppapi_proxy", "HostDispatcher::OnMessageReceived", "Class",
+               IPC_MESSAGE_ID_CLASS(msg.type()), "Line",
+               IPC_MESSAGE_ID_LINE(msg.type()));
 
   // We only want to allow reentrancy when the most recent message from the
   // plugin was a scripting message. We save the old state of the flag on the
@@ -240,12 +240,11 @@ const void* HostDispatcher::GetProxiedInterface(const std::string& iface_name) {
   return NULL;
 }
 
-base::Closure HostDispatcher::AddSyncMessageStatusObserver(
+base::OnceClosure HostDispatcher::AddSyncMessageStatusObserver(
     SyncMessageStatusObserver* obs) {
   sync_status_observer_list_.AddObserver(obs);
-  return base::Bind(&HostDispatcher::RemoveSyncMessageStatusObserver,
-                    weak_ptr_factory_.GetWeakPtr(),
-                    obs);
+  return base::BindOnce(&HostDispatcher::RemoveSyncMessageStatusObserver,
+                        weak_ptr_factory_.GetWeakPtr(), obs);
 }
 
 void HostDispatcher::RemoveSyncMessageStatusObserver(

@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/macros.h"
@@ -29,7 +30,7 @@ class IndexWriter {
   explicit IndexWriter(const blink::IndexedDBIndexMetadata& index_metadata);
 
   IndexWriter(const blink::IndexedDBIndexMetadata& index_metadata,
-              const blink::IndexedDBIndexKeys& index_keys);
+              const std::vector<blink::IndexedDBKey>& keys);
 
   bool VerifyIndexKeys(IndexedDBBackingStore* store,
                        IndexedDBBackingStore::Transaction* transaction,
@@ -38,13 +39,14 @@ class IndexWriter {
                        int64_t index_id,
                        bool* can_add_keys,
                        const blink::IndexedDBKey& primary_key,
-                       base::string16* error_message) const WARN_UNUSED_RESULT;
+                       std::u16string* error_message) const WARN_UNUSED_RESULT;
 
-  void WriteIndexKeys(const IndexedDBBackingStore::RecordIdentifier& record,
-                      IndexedDBBackingStore* store,
-                      IndexedDBBackingStore::Transaction* transaction,
-                      int64_t database_id,
-                      int64_t object_store_id) const;
+  leveldb::Status WriteIndexKeys(
+      const IndexedDBBackingStore::RecordIdentifier& record,
+      IndexedDBBackingStore* store,
+      IndexedDBBackingStore::Transaction* transaction,
+      int64_t database_id,
+      int64_t object_store_id) const;
 
   ~IndexWriter();
 
@@ -59,7 +61,7 @@ class IndexWriter {
                         bool* allowed) const WARN_UNUSED_RESULT;
 
   const blink::IndexedDBIndexMetadata index_metadata_;
-  blink::IndexedDBIndexKeys index_keys_;
+  const std::vector<blink::IndexedDBKey> keys_;
 
   DISALLOW_COPY_AND_ASSIGN(IndexWriter);
 };
@@ -72,7 +74,7 @@ bool MakeIndexWriters(IndexedDBTransaction* transaction,
                       bool key_was_generated,
                       const std::vector<blink::IndexedDBIndexKeys>& index_keys,
                       std::vector<std::unique_ptr<IndexWriter>>* index_writers,
-                      base::string16* error_message,
+                      std::u16string* error_message,
                       bool* completed) WARN_UNUSED_RESULT;
 
 }  // namespace content

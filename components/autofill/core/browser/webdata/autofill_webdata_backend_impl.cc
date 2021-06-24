@@ -4,13 +4,18 @@
 
 #include "components/autofill/core/browser/webdata/autofill_webdata_backend_impl.h"
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/location.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/single_thread_task_runner.h"
-#include "components/autofill/core/browser/autofill_country.h"
-#include "components/autofill/core/browser/autofill_profile.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "components/autofill/core/browser/data_model/autofill_offer_data.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
+#include "components/autofill/core/browser/data_model/credit_card_cloud_token_data.h"
+#include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/autofill/core/browser/payments/payments_customer_data.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/browser/webdata/autofill_entry.h"
@@ -21,7 +26,6 @@
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/webdata/common/web_database_backend.h"
 
-using base::Bind;
 using base::Time;
 
 namespace autofill {
@@ -36,9 +40,10 @@ AutofillWebDataBackendImpl::AutofillWebDataBackendImpl(
     scoped_refptr<WebDatabaseBackend> web_database_backend,
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> db_task_runner,
-    const base::Closure& on_changed_callback,
-    const base::Closure& on_address_conversion_completed_callback,
-    const base::Callback<void(syncer::ModelType)>& on_sync_started_callback)
+    const base::RepeatingClosure& on_changed_callback,
+    const base::RepeatingClosure& on_address_conversion_completed_callback,
+    const base::RepeatingCallback<void(syncer::ModelType)>&
+        on_sync_started_callback)
     : base::RefCountedDeleteOnSequence<AutofillWebDataBackendImpl>(
           std::move(db_task_runner)),
       ui_task_runner_(ui_task_runner),
@@ -75,12 +80,7 @@ WebDatabase* AutofillWebDataBackendImpl::GetDatabase() {
 }
 
 void AutofillWebDataBackendImpl::CommitChanges() {
-  web_database_backend_->ExecuteWriteTask(Bind(&DoNothingAndCommit));
-}
-
-void AutofillWebDataBackendImpl::RemoveExpiredFormElements() {
-  web_database_backend_->ExecuteWriteTask(
-      Bind(&AutofillWebDataBackendImpl::RemoveExpiredFormElementsImpl, this));
+  web_database_backend_->ExecuteWriteTask(base::BindOnce(&DoNothingAndCommit));
 }
 
 std::unique_ptr<WDTypedResult>
@@ -101,7 +101,6 @@ AutofillWebDataBackendImpl::RemoveExpiredAutocompleteEntries(WebDatabase* db) {
   return std::make_unique<WDResult<size_t>>(AUTOFILL_CLEANUP_RESULT,
                                             changes.size());
 }
-
 void AutofillWebDataBackendImpl::NotifyOfAutofillProfileChanged(
     const AutofillProfileChange& change) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
@@ -122,10 +121,6 @@ void AutofillWebDataBackendImpl::NotifyOfCreditCardChanged(
 
 void AutofillWebDataBackendImpl::NotifyOfMultipleAutofillChanges() {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
-
-  // DB sequence notification.
-  for (auto& db_observer : db_observer_list_)
-    db_observer.AutofillMultipleChangedBySync();
 
   // UI sequence notification.
   ui_task_runner_->PostTask(FROM_HERE, on_changed_callback_);
@@ -154,7 +149,7 @@ void AutofillWebDataBackendImpl::NotifyThatSyncHasStarted(
 base::SupportsUserData* AutofillWebDataBackendImpl::GetDBUserData() {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   if (!user_data_)
-    user_data_.reset(new SupportsUserDataAggregatable());
+    user_data_ = std::make_unique<SupportsUserDataAggregatable>();
   return user_data_.get();
 }
 
@@ -163,11 +158,12 @@ void AutofillWebDataBackendImpl::ResetUserData() {
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::AddFormElements(
-    const std::vector<FormFieldData>& fields, WebDatabase* db) {
+    const std::vector<FormFieldData>& fields,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   AutofillChangeList changes;
-  if (!AutofillTable::FromWebDatabase(db)->AddFormFieldValues(
-        fields, &changes)) {
+  if (!AutofillTable::FromWebDatabase(db)->AddFormFieldValues(fields,
+                                                              &changes)) {
     NOTREACHED();
     return WebDatabase::COMMIT_NOT_NEEDED;
   }
@@ -183,8 +179,8 @@ WebDatabase::State AutofillWebDataBackendImpl::AddFormElements(
 
 std::unique_ptr<WDTypedResult>
 AutofillWebDataBackendImpl::GetFormValuesForElementName(
-    const base::string16& name,
-    const base::string16& prefix,
+    const std::u16string& name,
+    const std::u16string& prefix,
     int limit,
     WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
@@ -217,7 +213,9 @@ WebDatabase::State AutofillWebDataBackendImpl::RemoveFormElementsAddedBetween(
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::RemoveFormValueForElementName(
-    const base::string16& name, const base::string16& value, WebDatabase* db) {
+    const std::u16string& name,
+    const std::u16string& value,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
 
   if (AutofillTable::FromWebDatabase(db)->RemoveFormElement(name, value)) {
@@ -235,7 +233,8 @@ WebDatabase::State AutofillWebDataBackendImpl::RemoveFormValueForElementName(
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::AddAutofillProfile(
-    const AutofillProfile& profile, WebDatabase* db) {
+    const AutofillProfile& profile,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   if (!AutofillTable::FromWebDatabase(db)->AddAutofillProfile(profile)) {
     NOTREACHED();
@@ -243,8 +242,8 @@ WebDatabase::State AutofillWebDataBackendImpl::AddAutofillProfile(
   }
 
   // Send GUID-based notification.
-  AutofillProfileChange change(
-      AutofillProfileChange::ADD, profile.guid(), &profile);
+  AutofillProfileChange change(AutofillProfileChange::ADD, profile.guid(),
+                               &profile);
   for (auto& db_observer : db_observer_list_)
     db_observer.AutofillProfileChanged(change);
 
@@ -259,7 +258,8 @@ WebDatabase::State AutofillWebDataBackendImpl::AddAutofillProfile(
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::UpdateAutofillProfile(
-    const AutofillProfile& profile, WebDatabase* db) {
+    const AutofillProfile& profile,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   // Only perform the update if the profile exists.  It is currently
   // valid to try to update a missing profile.  We simply drop the write and
@@ -275,8 +275,8 @@ WebDatabase::State AutofillWebDataBackendImpl::UpdateAutofillProfile(
   }
 
   // Send GUID-based notification.
-  AutofillProfileChange change(
-      AutofillProfileChange::UPDATE, profile.guid(), &profile);
+  AutofillProfileChange change(AutofillProfileChange::UPDATE, profile.guid(),
+                               &profile);
   for (auto& db_observer : db_observer_list_)
     db_observer.AutofillProfileChanged(change);
 
@@ -291,7 +291,8 @@ WebDatabase::State AutofillWebDataBackendImpl::UpdateAutofillProfile(
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::RemoveAutofillProfile(
-    const std::string& guid, WebDatabase* db) {
+    const std::string& guid,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   std::unique_ptr<AutofillProfile> profile =
       AutofillTable::FromWebDatabase(db)->GetAutofillProfile(guid);
@@ -358,8 +359,9 @@ AutofillWebDataBackendImpl::GetCountOfValuesContainedBetween(
     const base::Time& end,
     WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
-  int value = AutofillTable::FromWebDatabase(db)
-      ->GetCountOfValuesContainedBetween(begin, end);
+  int value =
+      AutofillTable::FromWebDatabase(db)->GetCountOfValuesContainedBetween(
+          begin, end);
   return std::unique_ptr<WDTypedResult>(
       new WDResult<int>(AUTOFILL_VALUE_RESULT, value));
 }
@@ -368,15 +370,16 @@ WebDatabase::State AutofillWebDataBackendImpl::UpdateAutofillEntries(
     const std::vector<AutofillEntry>& autofill_entries,
     WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
-  if (!AutofillTable::FromWebDatabase(db)
-           ->UpdateAutofillEntries(autofill_entries))
+  if (!AutofillTable::FromWebDatabase(db)->UpdateAutofillEntries(
+          autofill_entries))
     return WebDatabase::COMMIT_NOT_NEEDED;
 
   return WebDatabase::COMMIT_NEEDED;
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::AddCreditCard(
-    const CreditCard& credit_card, WebDatabase* db) {
+    const CreditCard& credit_card,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   if (!AutofillTable::FromWebDatabase(db)->AddCreditCard(credit_card)) {
     NOTREACHED();
@@ -391,7 +394,8 @@ WebDatabase::State AutofillWebDataBackendImpl::AddCreditCard(
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::UpdateCreditCard(
-    const CreditCard& credit_card, WebDatabase* db) {
+    const CreditCard& credit_card,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   // It is currently valid to try to update a missing profile.  We simply drop
   // the write and the caller will detect this on the next refresh.
@@ -413,7 +417,8 @@ WebDatabase::State AutofillWebDataBackendImpl::UpdateCreditCard(
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::RemoveCreditCard(
-    const std::string& guid, WebDatabase* db) {
+    const std::string& guid,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   std::unique_ptr<CreditCard> card =
       AutofillTable::FromWebDatabase(db)->GetCreditCard(guid);
@@ -473,19 +478,18 @@ std::unique_ptr<WDTypedResult> AutofillWebDataBackendImpl::GetServerCreditCards(
 
 WebDatabase::State AutofillWebDataBackendImpl::UnmaskServerCreditCard(
     const CreditCard& card,
-    const base::string16& full_number,
+    const std::u16string& full_number,
     WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
-  if (AutofillTable::FromWebDatabase(db)->UnmaskServerCreditCard(
-          card, full_number))
+  if (AutofillTable::FromWebDatabase(db)->UnmaskServerCreditCard(card,
+                                                                 full_number))
     return WebDatabase::COMMIT_NEEDED;
   return WebDatabase::COMMIT_NOT_NEEDED;
 }
 
-WebDatabase::State
-    AutofillWebDataBackendImpl::MaskServerCreditCard(
-        const std::string& id,
-        WebDatabase* db) {
+WebDatabase::State AutofillWebDataBackendImpl::MaskServerCreditCard(
+    const std::string& id,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   if (AutofillTable::FromWebDatabase(db)->MaskServerCreditCard(id))
     return WebDatabase::COMMIT_NEEDED;
@@ -526,6 +530,26 @@ WebDatabase::State AutofillWebDataBackendImpl::UpdateServerAddressMetadata(
   return WebDatabase::COMMIT_NEEDED;
 }
 
+WebDatabase::State AutofillWebDataBackendImpl::AddUpiId(
+    const std::string& upi_id,
+    WebDatabase* db) {
+  DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
+
+  if (!AutofillTable::FromWebDatabase(db)->InsertUpiId(upi_id))
+    return WebDatabase::COMMIT_NOT_NEEDED;
+  return WebDatabase::COMMIT_NEEDED;
+}
+
+std::unique_ptr<WDTypedResult> AutofillWebDataBackendImpl::GetAllUpiIds(
+    WebDatabase* db) {
+  DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
+
+  std::vector<std::string> upi_ids =
+      AutofillTable::FromWebDatabase(db)->GetAllUpiIds();
+  return std::make_unique<WDResult<std::vector<std::string>>>(
+      AUTOFILL_UPI_RESULT, std::move(upi_ids));
+}
+
 std::unique_ptr<WDTypedResult>
 AutofillWebDataBackendImpl::GetPaymentsCustomerData(WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
@@ -533,6 +557,27 @@ AutofillWebDataBackendImpl::GetPaymentsCustomerData(WebDatabase* db) {
   AutofillTable::FromWebDatabase(db)->GetPaymentsCustomerData(&customer_data);
   return std::make_unique<WDResult<std::unique_ptr<PaymentsCustomerData>>>(
       AUTOFILL_CUSTOMERDATA_RESULT, std::move(customer_data));
+}
+
+std::unique_ptr<WDTypedResult>
+AutofillWebDataBackendImpl::GetCreditCardCloudTokenData(WebDatabase* db) {
+  DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
+  std::vector<std::unique_ptr<CreditCardCloudTokenData>> cloud_token_data;
+  AutofillTable::FromWebDatabase(db)->GetCreditCardCloudTokenData(
+      &cloud_token_data);
+  return std::make_unique<
+      WDResult<std::vector<std::unique_ptr<CreditCardCloudTokenData>>>>(
+      AUTOFILL_CLOUDTOKEN_RESULT, std::move(cloud_token_data));
+}
+
+std::unique_ptr<WDTypedResult> AutofillWebDataBackendImpl::GetAutofillOffers(
+    WebDatabase* db) {
+  DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
+  std::vector<std::unique_ptr<AutofillOfferData>> offers;
+  AutofillTable::FromWebDatabase(db)->GetAutofillOffers(&offers);
+  return std::make_unique<
+      WDResult<std::vector<std::unique_ptr<AutofillOfferData>>>>(
+      AUTOFILL_OFFER_DATA, std::move(offers));
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::ClearAllServerData(
@@ -556,10 +601,10 @@ WebDatabase::State AutofillWebDataBackendImpl::ClearAllLocalData(
 }
 
 WebDatabase::State
-    AutofillWebDataBackendImpl::RemoveAutofillDataModifiedBetween(
-        const base::Time& delete_begin,
-        const base::Time& delete_end,
-        WebDatabase* db) {
+AutofillWebDataBackendImpl::RemoveAutofillDataModifiedBetween(
+    const base::Time& delete_begin,
+    const base::Time& delete_end,
+    WebDatabase* db) {
   DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
   std::vector<std::unique_ptr<AutofillProfile>> profiles;
   std::vector<std::unique_ptr<CreditCard>> credit_cards;
@@ -604,24 +649,6 @@ WebDatabase::State AutofillWebDataBackendImpl::RemoveOriginURLsModifiedBetween(
   // Note: It is the caller's responsibility to post notifications for any
   // changes, e.g. by calling the Refresh() method of PersonalDataManager.
   return WebDatabase::COMMIT_NEEDED;
-}
-
-WebDatabase::State AutofillWebDataBackendImpl::RemoveExpiredFormElementsImpl(
-    WebDatabase* db) {
-  DCHECK(owning_task_runner()->RunsTasksInCurrentSequence());
-  AutofillChangeList changes;
-
-  if (AutofillTable::FromWebDatabase(db)->RemoveExpiredFormElements(&changes)) {
-    if (!changes.empty()) {
-      // Post the notifications including the list of affected keys.
-      // This is sent here so that work resulting from this notification
-      // will be done on the DB sequence, and not the UI sequence.
-      for (auto& db_observer : db_observer_list_)
-        db_observer.AutofillEntriesChanged(changes);
-    }
-    return WebDatabase::COMMIT_NEEDED;
-  }
-  return WebDatabase::COMMIT_NOT_NEEDED;
 }
 
 WebDatabase::State AutofillWebDataBackendImpl::RemoveOrphanAutofillTableRows(

@@ -14,6 +14,7 @@
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 
 OfflineInternalsUI::OfflineInternalsUI(content::WebUI* web_ui)
     : content::WebUIController(web_ui) {
@@ -21,8 +22,11 @@ OfflineInternalsUI::OfflineInternalsUI(content::WebUI* web_ui)
   content::WebUIDataSource* html_source =
       content::WebUIDataSource::Create(chrome::kChromeUIOfflineInternalsHost);
 
+  html_source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::TrustedTypes,
+      "trusted-types parse-html-subset;");
   // Required resources.
-  html_source->SetJsonPath("strings.js");
+  html_source->UseStringsJs();
   html_source->AddResourcePath("offline_internals.css",
                                IDR_OFFLINE_INTERNALS_CSS);
   html_source->AddResourcePath("offline_internals.js",
@@ -30,7 +34,6 @@ OfflineInternalsUI::OfflineInternalsUI(content::WebUI* web_ui)
   html_source->AddResourcePath("offline_internals_browser_proxy.js",
                                IDR_OFFLINE_INTERNALS_BROWSER_PROXY_JS);
   html_source->SetDefaultResource(IDR_OFFLINE_INTERNALS_HTML);
-  html_source->UseGzip();
 
   Profile* profile = Profile::FromWebUI(web_ui);
   html_source->AddBoolean("isIncognito", profile->IsOffTheRecord());

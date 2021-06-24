@@ -41,7 +41,7 @@ class ExecutionContext;
 class URLRegistrable;
 class URLSearchParams;
 
-class DOMURL final : public ScriptWrappable, public DOMURLUtils {
+class CORE_EXPORT DOMURL final : public ScriptWrappable, public DOMURLUtils {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -59,21 +59,25 @@ class DOMURL final : public ScriptWrappable, public DOMURLUtils {
   DOMURL(const String& url, const KURL& base, ExceptionState&);
   ~DOMURL() override;
 
-  CORE_EXPORT static String CreatePublicURL(ExecutionContext*, URLRegistrable*);
+  static String CreatePublicURL(ExecutionContext*, URLRegistrable*);
 
   KURL Url() const override { return url_; }
   void SetURL(const KURL& url) override { url_ = url; }
 
-  String Input() const override { return input_; }
-  void SetInput(const String&) override;
+  String Input() const override {
+    // Url() can never be null, so Input() is never called.
+    NOTREACHED();
+    return String();
+  }
 
+  void setHref(const String&, ExceptionState& exception_state);
   void setSearch(const String&) override;
 
   URLSearchParams* searchParams();
 
   String toJSON() { return href(); }
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
   friend class URLSearchParams;
@@ -82,7 +86,6 @@ class DOMURL final : public ScriptWrappable, public DOMURLUtils {
   void UpdateSearchParams(const String&);
 
   KURL url_;
-  String input_;
   WeakMember<URLSearchParams> search_params_;
 };
 

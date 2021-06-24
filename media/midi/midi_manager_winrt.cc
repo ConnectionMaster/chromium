@@ -6,6 +6,8 @@
 
 #pragma warning(disable : 4467)
 
+#define INITGUID
+
 #include <windows.h>
 
 #include <cfgmgr32.h>
@@ -20,6 +22,7 @@
 #include <wrl/event.h>
 
 #include <iomanip>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -38,35 +41,27 @@ namespace midi {
 namespace {
 
 namespace WRL = Microsoft::WRL;
+namespace Win = ABI::Windows;
 
-using namespace ABI::Windows::Devices::Enumeration;
-using namespace ABI::Windows::Devices::Midi;
-using namespace ABI::Windows::Foundation;
-using namespace ABI::Windows::Storage::Streams;
-
-using base::win::ScopedHString;
 using base::win::GetActivationFactory;
+using base::win::ScopedHString;
 using mojom::PortState;
 using mojom::Result;
+using Win::Devices::Enumeration::DeviceInformationUpdate;
+using Win::Devices::Enumeration::DeviceWatcher;
+using Win::Devices::Enumeration::IDeviceInformation;
+using Win::Devices::Enumeration::IDeviceInformationUpdate;
+using Win::Devices::Enumeration::IDeviceWatcher;
+using Win::Foundation::IAsyncOperation;
+using Win::Foundation::ITypedEventHandler;
+
+// Alias for printing HRESULT.
+const auto PrintHr = logging::SystemErrorCodeToString;
 
 enum {
   kDefaultTaskRunner = TaskService::kDefaultRunnerId,
   kComTaskRunner
 };
-
-// Helpers for printing HRESULTs.
-struct PrintHr {
-  PrintHr(HRESULT hr) : hr(hr) {}
-  HRESULT hr;
-};
-
-std::ostream& operator<<(std::ostream& os, const PrintHr& phr) {
-  std::ios_base::fmtflags ff = os.flags();
-  os << _com_error(phr.hr).ErrorMessage() << " (0x" << std::hex
-     << std::uppercase << std::setfill('0') << std::setw(8) << phr.hr << ")";
-  os.flags(ff);
-  return os;
-}
 
 template <typename T>
 std::string GetIdString(T* obj) {
@@ -103,9 +98,10 @@ std::string GetNameString(IDeviceInformation* info) {
 // Checks if given DeviceInformation represent a Microsoft GS Wavetable Synth
 // instance.
 bool IsMicrosoftSynthesizer(IDeviceInformation* info) {
-  WRL::ComPtr<IMidiSynthesizerStatics> midi_synthesizer_statics;
+  WRL::ComPtr<Win::Devices::Midi::IMidiSynthesizerStatics>
+      midi_synthesizer_statics;
   HRESULT hr =
-      GetActivationFactory<IMidiSynthesizerStatics,
+      GetActivationFactory<Win::Devices::Midi::IMidiSynthesizerStatics,
                            RuntimeClass_Windows_Devices_Midi_MidiSynthesizer>(
           &midi_synthesizer_statics);
   if (FAILED(hr)) {
@@ -148,7 +144,7 @@ void GetDevPropString(DEVINST handle,
   if (cr != CR_SUCCESS)
     VLOG(1) << "CM_Get_DevNode_Property failed: CONFIGRET 0x" << std::hex << cr;
   else
-    *out = base::WideToUTF8(reinterpret_cast<base::char16*>(buffer.get()));
+    *out = base::WideToUTF8(reinterpret_cast<wchar_t*>(buffer.get()));
 }
 
 // Retrieves manufacturer (provider) and version information of underlying
@@ -168,7 +164,7 @@ void GetDevPropString(DEVINST handle,
 void GetDriverInfoFromDeviceId(const std::string& dev_id,
                                std::string* out_manufacturer,
                                std::string* out_driver_version) {
-  base::string16 dev_instance_id =
+  std::wstring dev_instance_id =
       base::UTF8ToWide(dev_id.substr(4, dev_id.size() - 43));
   base::ReplaceChars(dev_instance_id, L"#", L"\\", &dev_instance_id);
 
@@ -213,7 +209,7 @@ struct MidiPort {
 template <typename InterfaceType,
           typename RuntimeType,
           typename StaticsInterfaceType,
-          base::char16 const* runtime_class_id>
+          wchar_t const* runtime_class_id>
 class MidiManagerWinrt::MidiPortManager {
  public:
   // MidiPortManager instances should be constructed on the kComTaskRunner.
@@ -241,9 +237,10 @@ class MidiManagerWinrt::MidiPortManager {
       return false;
     }
 
-    WRL::ComPtr<IDeviceInformationStatics> dev_info_statics;
+    WRL::ComPtr<Win::Devices::Enumeration::IDeviceInformationStatics>
+        dev_info_statics;
     hr = GetActivationFactory<
-        IDeviceInformationStatics,
+        Win::Devices::Enumeration::IDeviceInformationStatics,
         RuntimeClass_Windows_Devices_Enumeration_DeviceInformation>(
         &dev_info_statics);
     if (FAILED(hr)) {
@@ -251,8 +248,7 @@ class MidiManagerWinrt::MidiPortManager {
       return false;
     }
 
-    hr = dev_info_statics->CreateWatcherAqsFilter(device_selector,
-                                                  watcher_.GetAddressOf());
+    hr = dev_info_statics->CreateWatcherAqsFilter(device_selector, &watcher_);
     if (FAILED(hr)) {
       VLOG(1) << "CreateWatcherAqsFilter failed: " << PrintHr(hr);
       return false;
@@ -267,7 +263,8 @@ class MidiManagerWinrt::MidiPortManager {
     TaskService* task_service = midi_service_->task_service();
 
     hr = watcher_->add_Added(
-        WRL::Callback<ITypedEventHandler<DeviceWatcher*, DeviceInformation*>>(
+        WRL::Callback<ITypedEventHandler<
+            DeviceWatcher*, Win::Devices::Enumeration::DeviceInformation*>>(
             [port_manager, task_service](IDeviceWatcher* watcher,
                                          IDeviceInformation* info) {
               if (!info) {
@@ -473,7 +470,8 @@ class MidiManagerWinrt::MidiPortManager {
     TaskService* task_service = midi_service_->task_service();
 
     hr = async_op->put_Completed(
-        WRL::Callback<IAsyncOperationCompletedHandler<RuntimeType*>>(
+        WRL::Callback<
+            Win::Foundation::IAsyncOperationCompletedHandler<RuntimeType*>>(
             [port_manager, task_service](
                 IAsyncOperation<RuntimeType*>* async_op, AsyncStatus status) {
               // A reference to |async_op| is kept in |async_ops_|, safe to pass
@@ -631,9 +629,9 @@ class MidiManagerWinrt::MidiPortManager {
 };
 
 class MidiManagerWinrt::MidiInPortManager final
-    : public MidiPortManager<IMidiInPort,
-                             MidiInPort,
-                             IMidiInPortStatics,
+    : public MidiPortManager<Win::Devices::Midi::IMidiInPort,
+                             Win::Devices::Midi::MidiInPort,
+                             Win::Devices::Midi::IMidiInPortStatics,
                              RuntimeClass_Windows_Devices_Midi_MidiInPort> {
  public:
   MidiInPortManager(MidiManagerWinrt* midi_manager)
@@ -641,7 +639,7 @@ class MidiManagerWinrt::MidiInPortManager final
 
  private:
   // MidiPortManager overrides:
-  bool RegisterOnMessageReceived(IMidiInPort* handle,
+  bool RegisterOnMessageReceived(Win::Devices::Midi::IMidiInPort* handle,
                                  EventRegistrationToken* p_token) override {
     DCHECK(midi_service_->task_service()->IsOnTaskRunner(kComTaskRunner));
 
@@ -649,23 +647,25 @@ class MidiManagerWinrt::MidiInPortManager final
     TaskService* task_service = midi_service_->task_service();
 
     HRESULT hr = handle->add_MessageReceived(
-        WRL::Callback<
-            ITypedEventHandler<MidiInPort*, MidiMessageReceivedEventArgs*>>(
-            [port_manager, task_service](IMidiInPort* handle,
-                                         IMidiMessageReceivedEventArgs* args) {
+        WRL::Callback<ITypedEventHandler<
+            Win::Devices::Midi::MidiInPort*,
+            Win::Devices::Midi::MidiMessageReceivedEventArgs*>>(
+            [port_manager, task_service](
+                Win::Devices::Midi::IMidiInPort* handle,
+                Win::Devices::Midi::IMidiMessageReceivedEventArgs* args) {
               const base::TimeTicks now = base::TimeTicks::Now();
 
               std::string dev_id = GetDeviceIdString(handle);
 
-              WRL::ComPtr<IMidiMessage> message;
-              HRESULT hr = args->get_Message(message.GetAddressOf());
+              WRL::ComPtr<Win::Devices::Midi::IMidiMessage> message;
+              HRESULT hr = args->get_Message(&message);
               if (FAILED(hr)) {
                 VLOG(1) << "get_Message failed: " << PrintHr(hr);
                 return hr;
               }
 
-              WRL::ComPtr<IBuffer> buffer;
-              hr = message->get_RawData(buffer.GetAddressOf());
+              WRL::ComPtr<Win::Storage::Streams::IBuffer> buffer;
+              hr = message->get_RawData(&buffer);
               if (FAILED(hr)) {
                 VLOG(1) << "get_RawData failed: " << PrintHr(hr);
                 return hr;
@@ -699,7 +699,8 @@ class MidiManagerWinrt::MidiInPortManager final
     return true;
   }
 
-  void RemovePortEventHandlers(MidiPort<IMidiInPort>* port) override {
+  void RemovePortEventHandlers(
+      MidiPort<Win::Devices::Midi::IMidiInPort>* port) override {
     if (!(port->handle &&
           port->token_MessageReceived.value != kInvalidTokenValue))
       return;
@@ -724,7 +725,7 @@ class MidiManagerWinrt::MidiInPortManager final
                          base::TimeTicks time) {
     DCHECK(midi_service_->task_service()->IsOnTaskRunner(kComTaskRunner));
 
-    MidiPort<IMidiInPort>* port = GetPortByDeviceId(dev_id);
+    MidiPort<Win::Devices::Midi::IMidiInPort>* port = GetPortByDeviceId(dev_id);
     CHECK(port);
 
     midi_manager_->ReceiveMidiData(port->index, &data[0], data.size(), time);
@@ -734,9 +735,9 @@ class MidiManagerWinrt::MidiInPortManager final
 };
 
 class MidiManagerWinrt::MidiOutPortManager final
-    : public MidiPortManager<IMidiOutPort,
-                             IMidiOutPort,
-                             IMidiOutPortStatics,
+    : public MidiPortManager<Win::Devices::Midi::IMidiOutPort,
+                             Win::Devices::Midi::IMidiOutPort,
+                             Win::Devices::Midi::IMidiOutPortStatics,
                              RuntimeClass_Windows_Devices_Midi_MidiOutPort> {
  public:
   MidiOutPortManager(MidiManagerWinrt* midi_manager)
@@ -828,8 +829,8 @@ void MidiManagerWinrt::InitializeOnComRunner() {
     return;
   }
 
-  port_manager_in_.reset(new MidiInPortManager(this));
-  port_manager_out_.reset(new MidiOutPortManager(this));
+  port_manager_in_ = std::make_unique<MidiInPortManager>(this);
+  port_manager_out_ = std::make_unique<MidiOutPortManager>(this);
 
   if (!(port_manager_in_->StartWatcher() &&
         port_manager_out_->StartWatcher())) {
@@ -847,13 +848,14 @@ void MidiManagerWinrt::SendOnComRunner(uint32_t port_index,
   DCHECK(service()->task_service()->IsOnTaskRunner(kComTaskRunner));
 
   base::AutoLock auto_lock(lazy_init_member_lock_);
-  MidiPort<IMidiOutPort>* port = port_manager_out_->GetPortByIndex(port_index);
+  MidiPort<Win::Devices::Midi::IMidiOutPort>* port =
+      port_manager_out_->GetPortByIndex(port_index);
   if (!(port && port->handle)) {
     VLOG(1) << "Port not available: " << port_index;
     return;
   }
 
-  WRL::ComPtr<IBuffer> buffer;
+  WRL::ComPtr<Win::Storage::Streams::IBuffer> buffer;
   HRESULT hr = base::win::CreateIBufferFromData(
       data.data(), static_cast<UINT32>(data.size()), &buffer);
   if (FAILED(hr)) {

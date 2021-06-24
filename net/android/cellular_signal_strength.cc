@@ -4,7 +4,7 @@
 
 #include "net/android/cellular_signal_strength.h"
 
-#include "jni/AndroidCellularSignalStrength_jni.h"
+#include "net/net_jni_headers/AndroidCellularSignalStrength_jni.h"
 
 namespace net {
 
@@ -29,12 +29,12 @@ static_assert(
 
 }  // namespace
 
-base::Optional<int32_t> GetSignalStrengthLevel() {
+absl::optional<int32_t> GetSignalStrengthLevel() {
   int32_t signal_strength_level =
       Java_AndroidCellularSignalStrength_getSignalStrengthLevel(
           base::android::AttachCurrentThread());
   if (signal_strength_level == ERROR_NOT_SUPPORTED)
-    return base::nullopt;
+    return absl::nullopt;
 
   // |signal_strength_level| is expected to be between 0 and 4 (both inclusive).
   // See

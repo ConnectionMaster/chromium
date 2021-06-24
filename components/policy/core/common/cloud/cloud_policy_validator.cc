@@ -5,14 +5,17 @@
 #include "components/policy/core/common/cloud/cloud_policy_validator.h"
 
 #include <stddef.h>
+
+#include <memory>
 #include <utility>
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
@@ -25,24 +28,6 @@ namespace em = enterprise_management;
 namespace policy {
 
 namespace {
-
-const char kMetricPolicyKeyVerification[] = "Enterprise.PolicyKeyVerification";
-
-enum MetricPolicyKeyVerification {
-  // Obsolete. Kept to avoid reuse, as this is used in histograms.
-  // UMA metric recorded when the client has no verification key.
-  METRIC_POLICY_KEY_VERIFICATION_KEY_MISSING_DEPRECATED,
-  // Recorded when the policy being verified has no key signature (e.g. policy
-  // fetched before the server supported the verification key).
-  METRIC_POLICY_KEY_VERIFICATION_SIGNATURE_MISSING,
-  // Recorded when the key signature did not match the expected value (in
-  // theory, this should only happen after key rotation or if the policy cached
-  // on disk has been modified).
-  METRIC_POLICY_KEY_VERIFICATION_FAILED,
-  // Recorded when key verification succeeded.
-  METRIC_POLICY_KEY_VERIFICATION_SUCCEEDED,
-  METRIC_POLICY_KEY_VERIFICATION_SIZE  // Must be the last.
-};
 
 const char kMetricPolicyUserVerification[] =
     "Enterprise.PolicyUserVerification";
@@ -128,18 +113,28 @@ void CloudPolicyValidatorBase::ValidateTimestamp(
 
 void CloudPolicyValidatorBase::ValidateUser(const AccountId& account_id) {
   validation_flags_ |= VALIDATE_USER;
-  account_id_ = account_id;
+  username_ = account_id.GetUserEmail();
+  gaia_id_ = account_id.GetGaiaId();
   // Always canonicalize when falls back to username check,
   // because it checks only for regular users.
   canonicalize_user_ = true;
 }
 
-void CloudPolicyValidatorBase::ValidateUsername(
+void CloudPolicyValidatorBase::ValidateUsernameAndGaiaId(
     const std::string& expected_user,
-    bool canonicalize) {
+    const std::string& gaia_id) {
   validation_flags_ |= VALIDATE_USER;
-  account_id_ = AccountId::FromUserEmail(expected_user);
-  canonicalize_user_ = canonicalize;
+  username_ = expected_user;
+  gaia_id_ = gaia_id;
+  canonicalize_user_ = false;
+}
+
+void CloudPolicyValidatorBase::ValidateUsername(
+    const std::string& expected_user) {
+  validation_flags_ |= VALIDATE_USER;
+  username_ = expected_user;
+  gaia_id_.clear();
+  canonicalize_user_ = false;
 }
 
 void CloudPolicyValidatorBase::ValidateDomain(
@@ -230,6 +225,35 @@ void CloudPolicyValidatorBase::ValidateAgainstCurrentPolicy(
   ValidateDeviceId(expected_device_id, device_id_option);
 }
 
+// static
+bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
+                                               const std::string& key,
+                                               const std::string& signature,
+                                               SignatureType signature_type) {
+  crypto::SignatureVerifier verifier;
+  crypto::SignatureVerifier::SignatureAlgorithm algorithm;
+  switch (signature_type) {
+    case SHA1:
+      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA1;
+      break;
+    case SHA256:
+      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA256;
+      break;
+    default:
+      NOTREACHED() << "Invalid signature type: " << signature_type;
+      return false;
+  }
+
+  if (!verifier.VerifyInit(algorithm,
+                           base::as_bytes(base::make_span(signature)),
+                           base::as_bytes(base::make_span(key)))) {
+    DLOG(ERROR) << "Invalid verification signature/key format";
+    return false;
+  }
+  verifier.VerifyUpdate(base::as_bytes(base::make_span(data)));
+  return verifier.VerifyFinal();
+}
+
 CloudPolicyValidatorBase::CloudPolicyValidatorBase(
     std::unique_ptr<em::PolicyFetchResponse> policy_response,
     scoped_refptr<base::SequencedTaskRunner> background_task_runner)
@@ -250,38 +274,39 @@ CloudPolicyValidatorBase::CloudPolicyValidatorBase(
 // static
 void CloudPolicyValidatorBase::PostValidationTask(
     std::unique_ptr<CloudPolicyValidatorBase> validator,
-    const base::Closure& completion_callback) {
+    base::OnceClosure completion_callback) {
   const auto task_runner = validator->background_task_runner_;
   task_runner->PostTask(
       FROM_HERE,
       base::BindOnce(&CloudPolicyValidatorBase::PerformValidation,
                      std::move(validator), base::ThreadTaskRunnerHandle::Get(),
-                     completion_callback));
+                     std::move(completion_callback)));
 }
 
 // static
 void CloudPolicyValidatorBase::PerformValidation(
     std::unique_ptr<CloudPolicyValidatorBase> self,
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    const base::Closure& completion_callback) {
+    base::OnceClosure completion_callback) {
   // Run the validation activities on this thread.
   self->RunValidation();
 
   // Report completion on |task_runner|.
   task_runner->PostTask(
-      FROM_HERE, base::BindOnce(&CloudPolicyValidatorBase::ReportCompletion,
-                                std::move(self), completion_callback));
+      FROM_HERE,
+      base::BindOnce(&CloudPolicyValidatorBase::ReportCompletion,
+                     std::move(self), std::move(completion_callback)));
 }
 
 // static
 void CloudPolicyValidatorBase::ReportCompletion(
     std::unique_ptr<CloudPolicyValidatorBase> self,
-    const base::Closure& completion_callback) {
-  completion_callback.Run();
+    base::OnceClosure completion_callback) {
+  std::move(completion_callback).Run();
 }
 
 void CloudPolicyValidatorBase::RunValidation() {
-  policy_data_.reset(new em::PolicyData());
+  policy_data_ = std::make_unique<em::PolicyData>();
   RunChecks();
 }
 
@@ -351,9 +376,6 @@ bool CloudPolicyValidatorBase::CheckNewPublicKeyVerificationSignature() {
   if (!policy_->has_new_public_key_verification_signature_deprecated()) {
     // Policy does not contain a verification signature, so log an error.
     LOG(ERROR) << "Policy is missing public_key_verification_signature";
-    UMA_HISTOGRAM_ENUMERATION(kMetricPolicyKeyVerification,
-                              METRIC_POLICY_KEY_VERIFICATION_SIGNATURE_MISSING,
-                              METRIC_POLICY_KEY_VERIFICATION_SIZE);
     return false;
   }
 
@@ -361,16 +383,10 @@ bool CloudPolicyValidatorBase::CheckNewPublicKeyVerificationSignature() {
           policy_->new_public_key(), verification_key_,
           policy_->new_public_key_verification_signature_deprecated())) {
     LOG(ERROR) << "Signature verification failed";
-    UMA_HISTOGRAM_ENUMERATION(kMetricPolicyKeyVerification,
-                              METRIC_POLICY_KEY_VERIFICATION_FAILED,
-                              METRIC_POLICY_KEY_VERIFICATION_SIZE);
     return false;
   }
   // Signature verification succeeded - return success to the caller.
   DVLOG(1) << "Signature verification succeeded";
-  UMA_HISTOGRAM_ENUMERATION(kMetricPolicyKeyVerification,
-                            METRIC_POLICY_KEY_VERIFICATION_SUCCEEDED,
-                            METRIC_POLICY_KEY_VERIFICATION_SIZE);
   return true;
 }
 
@@ -546,9 +562,8 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckUser() {
   }
 
   if (policy_data_->has_gaia_id() && !policy_data_->gaia_id().empty() &&
-      account_id_.GetAccountType() == AccountType::GOOGLE &&
-      !account_id_.GetGaiaId().empty()) {
-    std::string expected = account_id_.GetGaiaId();
+      !gaia_id_.empty()) {
+    std::string expected = gaia_id_;
     std::string actual = policy_data_->gaia_id();
 
     if (expected != actual) {
@@ -560,7 +575,7 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckUser() {
     UMA_HISTOGRAM_ENUMERATION(kMetricPolicyUserVerification,
                               MetricPolicyUserVerification::kGaiaIdSucceeded);
   } else {
-    std::string expected = account_id_.GetUserEmail();
+    std::string expected = username_;
     std::string actual = policy_data_->username();
     if (canonicalize_user_) {
       expected = gaia::CanonicalizeEmail(gaia::SanitizeEmail(expected));
@@ -573,8 +588,7 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckUser() {
                                 MetricPolicyUserVerification::kUsernameFailed);
       return VALIDATION_BAD_USER;
     }
-    if (account_id_.GetAccountType() != AccountType::GOOGLE ||
-        account_id_.GetGaiaId().empty()) {
+    if (gaia_id_.empty()) {
       UMA_HISTOGRAM_ENUMERATION(
           kMetricPolicyUserVerification,
           MetricPolicyUserVerification::kUsernameSucceeded);
@@ -601,35 +615,6 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckDomain() {
   }
 
   return VALIDATION_OK;
-}
-
-// static
-bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
-                                               const std::string& key,
-                                               const std::string& signature,
-                                               SignatureType signature_type) {
-  crypto::SignatureVerifier verifier;
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm;
-  switch (signature_type) {
-    case SHA1:
-      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA1;
-      break;
-    case SHA256:
-      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA256;
-      break;
-    default:
-      NOTREACHED() << "Invalid signature type: " << signature_type;
-      return false;
-  }
-
-  if (!verifier.VerifyInit(algorithm,
-                           base::as_bytes(base::make_span(signature)),
-                           base::as_bytes(base::make_span(key)))) {
-    DLOG(ERROR) << "Invalid verification signature/key format";
-    return false;
-  }
-  verifier.VerifyUpdate(base::as_bytes(base::make_span(data)));
-  return verifier.VerifyFinal();
 }
 
 template class CloudPolicyValidator<em::CloudPolicySettings>;

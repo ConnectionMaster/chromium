@@ -35,7 +35,7 @@ class URLPatternSet;
 // process. This should be implemented by the client of the extensions system.
 class ExtensionsClient {
  public:
-  typedef std::vector<std::string> ScriptingWhitelist;
+  using ScriptingAllowlist = std::vector<std::string>;
 
   // Return the extensions client.
   static ExtensionsClient* Get();
@@ -44,6 +44,8 @@ class ExtensionsClient {
   static void Set(ExtensionsClient* client);
 
   ExtensionsClient();
+  ExtensionsClient(const ExtensionsClient&) = delete;
+  ExtensionsClient& operator=(const ExtensionsClient&) = delete;
   virtual ~ExtensionsClient();
 
   // Create a FeatureProvider for a specific feature type, e.g. "permission".
@@ -92,13 +94,13 @@ class ExtensionsClient {
                                      URLPatternSet* new_hosts,
                                      PermissionIDSet* permissions) const = 0;
 
-  // Replaces the scripting whitelist with |whitelist|. Used in the renderer;
+  // Replaces the scripting allowlist with |allowlist|. Used in the renderer;
   // only used for testing in the browser process.
-  virtual void SetScriptingWhitelist(const ScriptingWhitelist& whitelist) = 0;
+  virtual void SetScriptingAllowlist(const ScriptingAllowlist& allowlist) = 0;
 
-  // Return the whitelist of extensions that can run content scripts on
+  // Return the allowlist of extensions that can run content scripts on
   // any origin.
-  virtual const ScriptingWhitelist& GetScriptingWhitelist() const = 0;
+  virtual const ScriptingAllowlist& GetScriptingAllowlist() const = 0;
 
   // Get the set of chrome:// hosts that |extension| can have host permissions
   // for.
@@ -108,15 +110,6 @@ class ExtensionsClient {
 
   // Returns false if content scripts are forbidden from running on |url|.
   virtual bool IsScriptableURL(const GURL& url, std::string* error) const = 0;
-
-  // Determines if certain fatal extensions errors should be surpressed
-  // (i.e., only logged) or allowed (i.e., logged before crashing).
-  virtual bool ShouldSuppressFatalErrors() const = 0;
-
-  // Records that a fatal error was caught and suppressed. It is expected that
-  // embedders will only do so if ShouldSuppressFatalErrors at some point
-  // returned true.
-  virtual void RecordDidSuppressFatalError() = 0;
 
   // Returns the base webstore URL prefix.
   virtual const GURL& GetWebstoreBaseURL() const = 0;
@@ -141,19 +134,17 @@ class ExtensionsClient {
   virtual std::set<base::FilePath> GetBrowserImagePaths(
       const Extension* extension);
 
-  // Returns whether or not extension APIs are allowed in extension service
-  // workers.
-  // This is currently disallowed as the code to support this is work in
-  // progress.
-  // Can be overridden in tests.
-  virtual bool ExtensionAPIEnabledInExtensionServiceWorkers() const;
-
   // Adds client specific permitted origins to |origin_patterns| for
   // cross-origin communication for an extension context.
   virtual void AddOriginAccessPermissions(
       const Extension& extension,
       bool is_extension_active,
       std::vector<network::mojom::CorsOriginPatternPtr>* origin_patterns) const;
+
+  // Returns the extended error code used by the embedder when an extension
+  // blocks a request. Returns absl::nullopt if the embedder doesn't define such
+  // an error code.
+  virtual absl::optional<int> GetExtensionExtendedErrorCode() const;
 
  private:
   // Performs common initialization and calls Initialize() to allow subclasses
@@ -164,8 +155,6 @@ class ExtensionsClient {
 
   // Whether DoInitialize() has been called.
   bool initialize_called_ = false;
-
-  DISALLOW_COPY_AND_ASSIGN(ExtensionsClient);
 };
 
 }  // namespace extensions

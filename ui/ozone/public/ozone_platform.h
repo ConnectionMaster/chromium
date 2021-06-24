@@ -6,39 +6,51 @@
 #define UI_OZONE_PUBLIC_OZONE_PLATFORM_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/single_thread_task_runner.h"
+#include "mojo/public/cpp/bindings/binder_map.h"
 #include "ui/gfx/buffer_types.h"
-#include "ui/ozone/ozone_export.h"
+#include "ui/gfx/native_widget_types.h"
+#include "ui/platform_window/platform_window.h"
+#include "ui/platform_window/platform_window_delegate.h"
 
 namespace display {
 class NativeDisplayDelegate;
 }
 
-namespace IPC {
-class MessageFilter;
-}
-
-namespace service_manager {
-class Connector;
-}
-
 namespace ui {
+enum class DomCode;
+enum class PlatformKeyboardHookTypes;
 
-class CursorFactoryOzone;
-class InputController;
+class CursorFactory;
 class GpuPlatformSupportHost;
+class InputController;
+class KeyEvent;
 class OverlayManagerOzone;
+class PlatformClipboard;
+class PlatformGLEGLUtility;
+class PlatformGlobalShortcutListener;
+class PlatformGlobalShortcutListenerDelegate;
+class PlatformKeyboardHook;
+class PlatformUtils;
+class PlatformMenuUtils;
 class PlatformScreen;
-class PlatformWindow;
-class PlatformWindowDelegate;
+class PlatformUserInputMonitor;
+class PlatformUtils;
 class SurfaceFactoryOzone;
 class SystemInputInjector;
-class PlatformClipboard;
+
+namespace internal {
+class InputMethodDelegate;
+}  // namespace internal
+class InputMethod;
 
 struct PlatformWindowInitProperties;
 
@@ -56,7 +68,7 @@ struct PlatformWindowInitProperties;
 // interface depending on the context. You can, for example, create
 // different objects depending on the underlying hardware, command
 // line flags, or whatever is appropriate for the platform.
-class OZONE_EXPORT OzonePlatform {
+class COMPONENT_EXPORT(OZONE) OzonePlatform {
  public:
   OzonePlatform();
   virtual ~OzonePlatform();
@@ -64,52 +76,95 @@ class OZONE_EXPORT OzonePlatform {
   // Additional initialization params for the platform. Platforms must not
   // retain a reference to this structure.
   struct InitParams {
-    // Ozone may retain this pointer for later use. An Ozone platform embedder
-    // may set this value if operating in the idiomatic mojo fashion with a
-    // service manager. Mojo transport does not require a service manager but in
-    // that case ozone will not be able to connect to the DRM and cursor
-    // services. Instead the host must invoke |OnGpuServiceLaunched| as
-    // described in ui/ozone/public/gpu_platform_support_host.h to inform the
-    // ozone host that a process containing these services is running.
-    service_manager::Connector* connector = nullptr;
-
     // Setting this to true indicates that the platform implementation should
     // operate as a single process for platforms (i.e. drm) that are usually
     // split between a host and viz specific portion.
     bool single_process = false;
 
-    // Setting this to true indicates that the platform implementation should
-    // use mojo. Setting this to true requires calling |AddInterfaces|
-    // afterwards in the Viz process and providing a connector as part.
-    bool using_mojo = false;
+    // Setting this to true indicates the the platform can do additional
+    // initialization for the GpuMemoryBuffer framework.
+    bool enable_native_gpu_memory_buffers = false;
 
-    // Setting this to true indicates the display compositor will run in the GPU
-    // process (as part of the viz service). Note this param is currently only
-    // checked in Ozone DRM for overlay support. Other Ozone platforms either
-    // don't need to change anything or assume that VizDisplayCompositor is
-    // always enabled.
-    // TODO(crbug.com/936425): Remove after VizDisplayCompositor feature
-    // launches.
-    bool viz_display_compositor = false;
+    // The direct VideoDecoder is disallowed on some particular SoC/platforms.
+    // This flag is a reflection of whatever the ChromeOS command line builder
+    // says. If false, overlay manager will not use synchronous pageflip
+    // testing with real buffer.
+    // TODO(fangzhoug): Some Chrome OS boards still use the legacy video
+    // decoder. Remove this once ChromeOSVideoDecoder is on everywhere.
+    bool allow_sync_and_real_buffer_page_flip_testing = false;
   };
 
   // Struct used to indicate platform properties.
   struct PlatformProperties {
+    PlatformProperties();
+    PlatformProperties(const PlatformProperties& other) = delete;
+    PlatformProperties& operator=(const PlatformProperties& other) = delete;
+    ~PlatformProperties();
+
     // Fuchsia only: set to true when the platforms requires |view_token| field
     // in PlatformWindowInitProperties when creating a window.
     bool needs_view_token = false;
 
-    // Determine whether we should default to native decorations or the custom
+    // Determines whether we should default to native decorations or the custom
     // frame based on the currently-running window manager.
     bool custom_frame_pref_default = false;
 
-    // Determine whether switching between system and custom frames is
+    // Determines whether switching between system and custom frames is
     // supported.
     bool use_system_title_bar = false;
 
-    // Determines if the platform requires mojo communication for the IPC.
-    // Currently used only by the Ozone/Wayland platform.
-    bool requires_mojo = false;
+    // Determines the type of message pump that should be used for GPU main
+    // thread.
+    base::MessagePumpType message_pump_type_for_gpu =
+        base::MessagePumpType::DEFAULT;
+
+    // Determines the type of message pump that should be used for viz
+    // compositor thread.
+    base::MessagePumpType message_pump_type_for_viz_compositor =
+        base::MessagePumpType::DEFAULT;
+
+    // Determines if the platform supports vulkan swap chain.
+    bool supports_vulkan_swap_chain = false;
+
+    // Linux only: determines if the platform uses the external Vulkan image
+    // factory.
+    bool uses_external_vulkan_image_factory = false;
+
+    // Linux only: determines if Skia can fall back to the X11 output device.
+    bool skia_can_fall_back_to_x11 = false;
+
+    // Wayland only: determines if the client must ignore the screen bounds when
+    // calculating bounds of menu windows.
+    bool ignore_screen_bounds_for_menus = false;
+
+    // Wayland only: determines whether BufferQueue needs a background image to
+    // be stacked below an AcceleratedWidget to make a widget opaque.
+    bool needs_background_image = false;
+
+    // Wayland only: determines whether windows which are not top level ones
+    // should be given parents explicitly.
+    bool set_parent_for_non_top_level_windows = false;
+
+    // If true, the platform shows and updates the drag image.
+    bool platform_shows_drag_image = true;
+
+    // Linux only, but see a TODO in BrowserDesktopWindowTreeHostLinux.
+    // Determines whether the platform supports the global application menu.
+    bool supports_global_application_menus = false;
+
+    // Determines if the application modal dialogs should use the event blocker
+    // to allow the only browser window receiving UI events.
+    bool app_modal_dialogs_use_event_blocker = false;
+
+    // Determines whether buffer formats should be fetched on GPU and passed
+    // back via gpu extra info.
+    bool fetch_buffer_formats_for_gmb_on_gpu = false;
+  };
+
+  // Groups platform properties that can only be known at run time.
+  struct PlatformRuntimeProperties {
+    // Indicates whether the platform supports server-side window decorations.
+    bool supports_server_side_window_decorations = true;
   };
 
   // Properties available in the host process after initialization.
@@ -120,13 +175,30 @@ class OZONE_EXPORT OzonePlatform {
     bool supports_overlays = false;
   };
 
-  using StartupCallback = base::OnceCallback<void(OzonePlatform*)>;
-
-  // Ensures the OzonePlatform instance without doing any initialization.
-  // No-op in case the instance is already created.
-  // This is useful in order call virtual methods that depend on the ozone
-  // platform selected at runtime, e.g. ::GetMessageLoopTypeForGpu.
-  static OzonePlatform* EnsureInstance();
+  // Corresponds to chrome_browser_main_extra_parts.h.
+  //
+  // The browser process' initialization involves several steps -
+  // PreEarlyInitialization, PostCreateMainMessageLoop, PostMainMessageLoopRun,
+  // etc. In order to be consistent with that and allow platform specific
+  // initialization steps, the OzonePlatform has three methods - one static
+  // PreEarlyInitialization that is expected to do some early non-ui
+  // initialization (like error handlers that X11 sets), and two non-static
+  // methods - PostMainmessageLoopStart and PostMainMessageLoopRun. The latter
+  // two are supposed to be called on a post start and a post-run of the
+  // MessageLoop. Please note that this methods must be run on the browser' UI
+  // thread.
+  //
+  // Creates OzonePlatform and does pre-early initialization (internally, sets
+  // error handlers if supported so that we can print errors during the browser
+  // process' start up).
+  static void PreEarlyInitialization();
+  // Sets error handlers if supported for the browser process after the message
+  // loop started. It's required to call this so that we can exit cleanly if the
+  // server can exit before we do.
+  virtual void PostCreateMainMessageLoop(
+      base::OnceCallback<void()> shutdown_cb);
+  // Resets the error handlers if set.
+  virtual void PostMainMessageLoopRun();
 
   // Initializes the subsystems/resources necessary for the UI process (e.g.
   // events) with additional properties to customize the ozone platform
@@ -140,22 +212,17 @@ class OZONE_EXPORT OzonePlatform {
 
   static OzonePlatform* GetInstance();
 
-  // Registers a callback to be run when the OzonePlatform is initialized. Note
-  // that if an instance already exists, then the callback is called
-  // immediately. If an instance does not exist, and is created later, then the
-  // callback is called once the instance is created and initialized, on the
-  // thread it is initialized on. If the caller requires the callback to run on
-  // a specific thread, then it needs to do ensure that by itself.
-  static void RegisterStartupCallback(StartupCallback callback);
+  // Returns the current ozone platform name.
+  // Some tests may skip based on the platform name.
+  static std::string GetPlatformNameForTest();
 
   // Factory getters to override in subclasses. The returned objects will be
   // injected into the appropriate layer at startup. Subclasses should not
   // inject these objects themselves. Ownership is retained by OzonePlatform.
   virtual ui::SurfaceFactoryOzone* GetSurfaceFactoryOzone() = 0;
   virtual ui::OverlayManagerOzone* GetOverlayManager() = 0;
-  virtual ui::CursorFactoryOzone* GetCursorFactoryOzone() = 0;
+  virtual ui::CursorFactory* GetCursorFactory() = 0;
   virtual ui::InputController* GetInputController() = 0;
-  virtual IPC::MessageFilter* GetGpuMessageFilter();
   virtual ui::GpuPlatformSupportHost* GetGpuPlatformSupportHost() = 0;
   virtual std::unique_ptr<SystemInputInjector> CreateSystemInputInjector() = 0;
   virtual std::unique_ptr<PlatformWindow> CreatePlatformWindow(
@@ -163,54 +230,105 @@ class OZONE_EXPORT OzonePlatform {
       PlatformWindowInitProperties properties) = 0;
   virtual std::unique_ptr<display::NativeDisplayDelegate>
   CreateNativeDisplayDelegate() = 0;
-  virtual std::unique_ptr<PlatformScreen> CreateScreen();
+  virtual std::unique_ptr<PlatformScreen> CreateScreen() = 0;
   virtual PlatformClipboard* GetPlatformClipboard();
+  virtual std::unique_ptr<InputMethod> CreateInputMethod(
+      internal::InputMethodDelegate* delegate,
+      gfx::AcceleratedWidget widget) = 0;
+  virtual PlatformGLEGLUtility* GetPlatformGLEGLUtility();
+  virtual PlatformMenuUtils* GetPlatformMenuUtils();
+  virtual PlatformUtils* GetPlatformUtils();
+  virtual PlatformGlobalShortcutListener* GetPlatformGlobalShortcutListener(
+      PlatformGlobalShortcutListenerDelegate* delegate);
+  // Returns the keyboard hook that captures the specified keys.  See more in
+  // ui::KeyboardHook.  However, unlike that interface, Ozone tries to register
+  // the hook that it has created, and returns the one only if it was registered
+  // successfully.
+  // Handles creating both modifier and media keyboard hooks.  |dom_codes| and
+  // |accelerated_widget| are only used if |type| is
+  // PlatformKeyboardHookTypes::kModifier.
+  virtual std::unique_ptr<PlatformKeyboardHook> CreateKeyboardHook(
+      PlatformKeyboardHookTypes type,
+      base::RepeatingCallback<void(KeyEvent* event)> callback,
+      absl::optional<base::flat_set<DomCode>> dom_codes,
+      gfx::AcceleratedWidget accelerated_widget);
 
   // Returns true if the specified buffer format is supported.
   virtual bool IsNativePixmapConfigSupported(gfx::BufferFormat format,
                                              gfx::BufferUsage usage) const;
+
+  // Returns whether a custom frame should be used for windows.
+  // The default behaviour is returning what is suggested by the
+  // custom_frame_pref_default property of the platform: if the platform
+  // suggests using the custom frame, likely it lacks native decorations.
+  // See https://crbug.com/1212555
+  virtual bool ShouldUseCustomFrame();
 
   // Returns a struct that contains configuration and requirements for the
   // current platform implementation. This can be called from either host or GPU
   // process at any time.
   virtual const PlatformProperties& GetPlatformProperties();
 
+  // Returns runtime properties of the current platform implementation.
+  virtual const PlatformRuntimeProperties& GetPlatformRuntimeProperties();
+
   // Returns a struct that contains properties available in the host process
   // after InitializeForUI() runs.
   virtual const InitializedHostProperties& GetInitializedHostProperties();
 
-  // Returns the message loop type required for OzonePlatform instance that
-  // will be initialized for the GPU process.
-  virtual base::MessageLoop::Type GetMessageLoopTypeForGpu();
-
   // Ozone platform implementations may also choose to expose mojo interfaces to
   // internal functionality. Embedders wishing to take advantage of ozone mojo
-  // implementations must invoke AddInterfaces with a valid
-  // service_manager::BinderRegistry* pointer to export all Mojo interfaces
-  // defined within Ozone.
+  // implementations must invoke AddInterfaces with a valid mojo::BinderMap
+  // pointer to export all Mojo interfaces defined within Ozone.
   //
   // Requests arriving before they can be immediately handled will be queued and
   // executed later.
   //
   // A default do-nothing implementation is provided to permit platform
   // implementations to opt out of implementing any Mojo interfaces.
-  virtual void AddInterfaces(service_manager::BinderRegistry* registry);
+  virtual void AddInterfaces(mojo::BinderMap* binders);
 
   // The GPU-specific portion of Ozone would typically run in a sandboxed
   // process for additional security. Some startup might need to wait until
-  // after the sandbox has been configured. The embedder should use this method
-  // to specify that the sandbox is configured and that GPU-side setup should
-  // complete. A default do-nothing implementation is provided to permit
-  // platform implementations to ignore sandboxing and any associated launch
-  // ordering issues.
+  // after the sandbox has been configured.
+  // When the GPU is in a separate process, the embedder should call this method
+  // after it has configured (or failed to configure) the sandbox so that the
+  // GPU-side setup is completed. If the GPU is in-process, there is no
+  // sandboxing and the embedder should not call this method.
+  // A default do-nothing implementation is provided to permit platform
+  // implementations to ignore sandboxing and any associated launch ordering
+  // issues.
   virtual void AfterSandboxEntry();
 
+  // Creates a user input monitor.
+  // The user input comes from I/O devices and must be handled on the IO thread.
+  // |io_task_runner| must be bound to the IO thread so the implementation could
+  // ensure that calls happen on the right thread.
+  virtual std::unique_ptr<PlatformUserInputMonitor> GetPlatformUserInputMonitor(
+      const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner);
+
  protected:
-  static bool has_initialized_ui();
+  bool has_initialized_ui() const { return initialized_ui_; }
+  bool has_initialized_gpu() const { return initialized_gpu_; }
+
+  bool single_process() const { return single_process_; }
 
  private:
+  // Optional method for pre-early initialization. In case of X11, sets X11
+  // error handlers so that errors can be caught if early initialization fails.
+  virtual void PreEarlyInitialize();
+
   virtual void InitializeUI(const InitParams& params) = 0;
   virtual void InitializeGPU(const InitParams& params) = 0;
+
+  bool initialized_ui_ = false;
+  bool initialized_gpu_ = false;
+  bool prearly_initialized_ = false;
+
+  // This value is checked on multiple threads. Declaring it volatile makes
+  // modifications to |single_process_| visible by other threads. Mutex is not
+  // needed since it's set before other threads are started.
+  volatile bool single_process_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(OzonePlatform);
 };

@@ -8,14 +8,11 @@
 
 #include <cmath>
 
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/strings/stringprintf.h"
 #include "ui/gfx/geometry/insets.h"
 
 namespace ui {
-
 
 namespace {
 
@@ -30,9 +27,9 @@ bool IsNearBorder(const gfx::Point& point, gfx::Size touchscreen_size) {
 
 }  // namespace
 
-EdgeTouchFilter::EdgeTouchFilter(gfx::Size& touchscreen_size)
-    : touchscreen_size_(touchscreen_size) {
-}
+EdgeTouchFilter::EdgeTouchFilter(const gfx::Size& touchscreen_size)
+    : touchscreen_size_(touchscreen_size) {}
+
 EdgeTouchFilter::~EdgeTouchFilter() {}
 
 void EdgeTouchFilter::Filter(

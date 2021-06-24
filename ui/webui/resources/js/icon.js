@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// #import {isAndroid, isIOS} from './cr.m.js';
+
 cr.define('cr.icon', function() {
   /**
    * @return {!Array<number>} The scale factors supported by this platform for
@@ -14,7 +16,7 @@ cr.define('cr.icon', function() {
       // supports SCALE_FACTOR_100P on all non-iOS platforms.
       supportedScaleFactors.push(1);
     }
-    if (cr.isMac || cr.isChromeOS || cr.isWindows || cr.isLinux) {
+    if (!cr.isIOS && !cr.isAndroid) {
       // All desktop platforms support zooming which also updates the renderer's
       // device scale factors (a.k.a devicePixelRatio), and these platforms have
       // high DPI assets for 2x.  Let the renderer pick the closest image for
@@ -31,13 +33,28 @@ cr.define('cr.icon', function() {
   }
 
   /**
+   * Generates a CSS url string.
+   * @param {string} s The URL to generate the CSS url for.
+   * @return {string} The CSS url string.
+   */
+  /* #export */ function getUrlForCss(s) {
+    // http://www.w3.org/TR/css3-values/#uris
+    // Parentheses, commas, whitespace characters, single quotes (') and double
+    // quotes (") appearing in a URI must be escaped with a backslash
+    const s2 = s.replace(/(\(|\)|\,|\s|\'|\"|\\)/g, '\\$1');
+    return `url("${s2}")`;
+  }
+
+  /**
    * A URL for the filetype icon for |filePath|. OS and theme dependent.
    * @param {string} filePath
    * @return {string}
    */
-  function getFileIconUrl(filePath) {
-    return 'chrome://fileicon/' + encodeURIComponent(filePath) +
-        '?scale=' + window.devicePixelRatio + 'x';
+  /* #export */ function getFileIconUrl(filePath) {
+    const url = new URL('chrome://fileicon/');
+    url.searchParams.set('path', filePath);
+    url.searchParams.set('scale', window.devicePixelRatio + 'x');
+    return url.toString();
   }
 
   /**
@@ -53,7 +70,7 @@ cr.define('cr.icon', function() {
   function getImageSet(path) {
     const supportedScaleFactors = getSupportedScaleFactors();
 
-    const replaceStartIndex = path.indexOf('scalefactor');
+    const replaceStartIndex = path.indexOf('SCALEFACTOR');
     if (replaceStartIndex < 0) {
       return getUrlForCss(path);
     }
@@ -66,7 +83,7 @@ cr.define('cr.icon', function() {
 
       s += getUrlForCss(pathWithScaleFactor) + ' ' + scaleFactor + 'x';
 
-      if (i != supportedScaleFactors.length - 1) {
+      if (i !== supportedScaleFactors.length - 1) {
         s += ', ';
       }
     }
@@ -80,38 +97,71 @@ cr.define('cr.icon', function() {
    * @param {string} path The path of the image.
    * @return {string} The url, or an image set of URLs.
    */
-  function getImage(path) {
+  /* #export */ function getImage(path) {
     const chromeThemePath = 'chrome://theme';
     const isChromeThemeUrl =
-        (path.slice(0, chromeThemePath.length) == chromeThemePath);
-    return isChromeThemeUrl ? getImageSet(path + '@scalefactorx') :
+        (path.slice(0, chromeThemePath.length) === chromeThemePath);
+    return isChromeThemeUrl ? getImageSet(path + '@SCALEFACTORx') :
                               getUrlForCss(path);
   }
 
-  /**
-   * A regular expression for identifying favicon URLs.
-   * @const {!RegExp}
-   */
-  const FAVICON_URL_REGEX = /\.ico$/i;
-
-  /**
-   * Creates a CSS -webkit-image-set for a favicon request.
-   *
-   * @param {string} url Either the URL of the original page or of the favicon
-   *     itself.
-   * @return {string} -webkit-image-set for the favicon.
-   */
-  function getFavicon(url) {
-    return getImageSet(
-        'chrome://favicon/size/16@scalefactorx/' +
-        // Note: Literal 'iconurl' must match |kIconURLParameter| in
-        // components/favicon_base/favicon_url_parser.cc.
-        (FAVICON_URL_REGEX.test(url) ? 'iconurl/' : '') + url);
+  function getBaseFaviconUrl() {
+    const faviconUrl = new URL('chrome://favicon2/');
+    faviconUrl.searchParams.set('size', '16');
+    faviconUrl.searchParams.set('scale_factor', 'SCALEFACTORx');
+    return faviconUrl;
   }
 
+  /**
+   * Creates a CSS -webkit-image-set for a favicon.
+   *
+   * @param {string} url URL of the favicon
+   * @return {string} -webkit-image-set for the favicon
+   */
+  /* #export */ function getFavicon(url) {
+    const faviconUrl = getBaseFaviconUrl();
+    faviconUrl.searchParams.set('icon_url', url);
+    return getImageSet(faviconUrl.toString());
+  }
+
+  /**
+   * Creates a CSS -webkit-image-set for a favicon request based on a page URL.
+   *
+   * @param {string} url URL of the original page
+   * @param {boolean} isSyncedUrlForHistoryUi Should be set to true only if the
+   *     caller is an UI aimed at displaying user history, and the requested url
+   *     is known to be present in Chrome sync data.
+   * @param {string} remoteIconUrlForUma In case the entry is contained in sync
+   *     data, we can pass the associated icon url.
+   * @param {number} size The favicon size.
+   *
+   * @return {string} -webkit-image-set for the favicon.
+   */
+  /* #export */ function getFaviconForPageURL(
+      url, isSyncedUrlForHistoryUi, remoteIconUrlForUma = '', size = 16) {
+    // Note: URL param keys used below must match those in the description of
+    // chrome://favicon2 format in components/favicon_base/favicon_url_parser.h.
+    const faviconUrl = getBaseFaviconUrl();
+    faviconUrl.searchParams.set('size', size);
+    faviconUrl.searchParams.set('page_url', url);
+    // TODO(dbeam): use the presence of 'allow_google_server_fallback' to
+    // indicate true, otherwise false.
+    const fallback = isSyncedUrlForHistoryUi ? '1' : '0';
+    faviconUrl.searchParams.set('allow_google_server_fallback', fallback);
+    if (isSyncedUrlForHistoryUi) {
+      faviconUrl.searchParams.set('icon_url', remoteIconUrlForUma);
+    }
+
+    return getImageSet(faviconUrl.toString());
+  }
+
+  // #cr_define_end
+  console.warn('crbug/1173575, non-JS module files deprecated.');
   return {
-    getImage: getImage,
     getFavicon: getFavicon,
+    getFaviconForPageURL: getFaviconForPageURL,
     getFileIconUrl: getFileIconUrl,
+    getImage: getImage,
+    getUrlForCss: getUrlForCss,
   };
 });

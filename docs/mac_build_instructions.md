@@ -12,16 +12,20 @@ Are you a Google employee? See
 
 ## System requirements
 
-*   A 64-bit Mac running 10.12+.
-*   [Xcode](https://developer.apple.com/xcode) 8+
-*   The OS X 10.12 SDK. Run
+*   A Mac running 10.15.4+, Intel or Arm.
+    ([More details about Arm Macs](https://chromium.googlesource.com/chromium/src.git/+/main/docs/mac_arm64.md).)
+*   [Xcode](https://developer.apple.com/xcode/) 12.2+. This version of Xcode
+    comes with ...
+*   The macOS 11.0 SDK. Run
 
     ```shell
     $ ls `xcode-select -p`/Platforms/MacOSX.platform/Developer/SDKs
     ```
 
-    to check whether you have it.  Building with a newer SDK works too, but
-    the releases currently use the 10.12 SDK.
+    to check whether you have it. Building with a newer SDK usually works too
+    (please fix it if it doesn't), but the releases
+    [currently use Xcode 12.2](https://source.chromium.org/search?q=MAC_BINARIES_LABEL&ss=chromium)
+    and the macOS 11.0 SDK.
 
 ## Install `depot_tools`
 
@@ -31,9 +35,10 @@ Clone the `depot_tools` repository:
 $ git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
 ```
 
-Add `depot_tools` to the end of your PATH (you will probably want to put this
-in your `~/.bashrc` or `~/.zshrc`). Assuming you cloned `depot_tools` to
-`/path/to/depot_tools`:
+Add `depot_tools` to the end of your PATH (you will probably want to put this in
+your `~/.bash_profile` or `~/.zshrc`). Assuming you cloned `depot_tools` to
+`/path/to/depot_tools` (note: you **must** use the absolute path or Python will
+not be able to find infra tools):
 
 ```shell
 $ export PATH="$PATH:/path/to/depot_tools"
@@ -47,13 +52,17 @@ Ensure that unicode filenames aren't mangled by HFS:
 $ git config --global core.precomposeUnicode true
 ```
 
+In System Preferences, check that "Energy Saver" -> "Power Adapter" ->
+"Prevent computer from sleeping automatically when the display is off" is
+checked so that your laptop doesn't go to sleep and interrupt the long network
+connection needed here.
+
 Create a `chromium` directory for the checkout and change to it (you can call
 this whatever you like and put it wherever you like, as long as the full path
 has no spaces):
 
 ```shell
 $ mkdir chromium && cd chromium
-$ git config --global core.precomposeUnicode true
 ```
 
 Run the `fetch` tool from `depot_tools` to check out the code and its
@@ -64,7 +73,8 @@ $ fetch chromium
 ```
 
 If you don't need the full repo history, you can save time by using
-`fetch --no-history chromium`.
+`fetch --no-history chromium`. You can call `git fetch --unshallow` to retrieve
+the full history later.
 
 Expect the command to take 30 minutes on even a fast connection, and many
 hours on slower ones.
@@ -102,7 +112,8 @@ $ gn gen out/Default
   The default will be a debug component build matching the current host
   operating system and CPU.
 * For more info on GN, run `gn help` on the command line or read the
-  [quick start guide](../tools/gn/docs/quick_start.md).
+  [quick start guide](https://gn.googlesource.com/gn/+/master/docs/quick_start.md).
+* Building Chromium for arm Macs requires [additional setup](mac_arm64.md).
 
 
 ### Faster builds
@@ -139,15 +150,6 @@ in your args.gn to disable debug symbols altogether.  This makes both full
 rebuilds and linking faster (at the cost of not getting symbolized backtraces
 in gdb).
 
-#### Jumbo/Unity builds
-
-Jumbo builds merge many translation units ("source files") and compile them
-together. Since a large portion of Chromium's code is in shared header files,
-this dramatically reduces the total amount of work needed. Check out the
-[Jumbo / Unity builds](jumbo.md) for more information.
-
-Enable jumbo builds by setting the GN arg `use_jumbo_build=true`.
-
 #### CCache
 
 You might also want to [install ccache](ccache_mac.md) to speed up the build.
@@ -176,6 +178,14 @@ Once it is built, you can simply run the browser:
 $ out/Default/Chromium.app/Contents/MacOS/Chromium
 ```
 
+## Avoiding the "incoming network connections" dialog
+
+Every time you start a new developer build of Chrome you get a system dialog
+asking "Do you want the application Chromium.app to accept incoming
+network connections?" - to avoid this, run with this command-line flag:
+
+--disable-features="MediaRouter"
+
 ## Running test targets
 
 You can run the tests in the same way. You can also limit which tests are
@@ -190,21 +200,7 @@ You can find out more about GoogleTest at its
 
 ## Debugging
 
-Good debugging tips can be found
-[here](https://dev.chromium.org/developers/how-tos/debugging-on-os-x). If you
-would like to debug in a graphical environment, rather than using `lldb` at the
-command line, that is possible without building in Xcode (see
-[Debugging in Xcode](https://www.chromium.org/developers/how-tos/debugging-on-os-x/building-with-ninja-debugging-with-xcode)).
-
-Tips for printing variables from `lldb` prompt (both in Xcode or in terminal):
-* If `uptr` is a `std::unique_ptr`, the address it wraps is accessible as
-  `uptr.__ptr_.__value_`.
-* To pretty-print `base::string16`, ensure you have a `~/.lldbinit` file and
-  add the following line into it (substitute {SRC} for your actual path to the
-  root of Chromium's sources):
-```
-command script import {SRC}/tools/lldb/lldb_chrome.py
-```
+Good debugging tips can be found [here](mac/debugging.md).
 
 ## Update your checkout
 
@@ -234,7 +230,7 @@ build in the Terminal and write code with a text editor, though.
 
 With hybrid builds, compilation is still handled by Ninja, and can be run from
 the command line (e.g. `autoninja -C out/gn chrome`) or by choosing the `chrome`
-target in the hybrid workspace and choosing Build.
+target in the hybrid project and choosing Build.
 
 To use Xcode-Ninja Hybrid pass `--ide=xcode` to `gn gen`:
 
@@ -245,7 +241,7 @@ $ gn gen out/gn --ide=xcode
 Open it:
 
 ```shell
-$ open out/gn/ninja/all.xcworkspace
+$ open out/gn/all.xcodeproj
 ```
 
 You may run into a problem where http://YES is opened as a new tab every time

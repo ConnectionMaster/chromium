@@ -7,37 +7,41 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
-#include "base/task/post_task.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/tick_clock.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/browser/media/capture/desktop_capture_device_uma_types.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/desktop_capture.h"
 #include "content/public/browser/desktop_media_id.h"
+#include "content/public/browser/device_service.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/service_manager_connection.h"
 #include "media/base/video_util.h"
 #include "media/capture/content/capture_resolution_chooser.h"
-#include "services/device/public/mojom/constants.mojom.h"
+#include "media/webrtc/webrtc_switches.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/wake_lock.mojom.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "third_party/libyuv/include/libyuv/scale_argb.h"
 #include "third_party/webrtc/modules/desktop_capture/cropped_desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/cropping_window_capturer.h"
@@ -47,6 +51,11 @@
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/fake_desktop_capturer.h"
 #include "third_party/webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
+#include "ui/gfx/icc_profile.h"
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "content/browser/media/capture/desktop_capturer_lacros.h"
+#endif
 
 namespace content {
 
@@ -73,14 +82,10 @@ bool IsFrameUnpackedOrInverted(webrtc::DesktopFrame* frame) {
       frame->size().width() * webrtc::DesktopFrame::kBytesPerPixel;
 }
 
-std::unique_ptr<service_manager::Connector> GetServiceConnector() {
+void BindWakeLockProvider(
+    mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-
-  service_manager::Connector* connector =
-      ServiceManagerConnection::GetForProcess()->GetConnector();
-
-  DCHECK(connector);
-  return connector->Clone();
+  GetDeviceService().BindWakeLockProvider(std::move(receiver));
 }
 
 int GetMaximumCpuConsumptionPercentage() {
@@ -123,6 +128,7 @@ class DesktopCaptureDevice::Core : public webrtc::DesktopCapturer::Callback {
 
  private:
   // webrtc::DesktopCapturer::Callback interface.
+  // A side-effect of this method is to schedule the next frame.
   void OnCaptureResult(
     webrtc::DesktopCapturer::Result result,
     std::unique_ptr<webrtc::DesktopFrame> frame) override;
@@ -131,13 +137,14 @@ class DesktopCaptureDevice::Core : public webrtc::DesktopCapturer::Callback {
   // to capture a frame.
   void OnCaptureTimer();
 
-  // Captures a frame and schedules timer for the next one.
-  void CaptureFrameAndScheduleNext();
+  // Captures a frame. Upon completion, schedules the next frame.
+  void CaptureFrame();
 
-  // Captures a single frame.
-  void DoCapture();
+  // Schedules a timer for the next call to |CaptureFrame|. This method assumes
+  // that |CaptureFrame| has already been called at least once before.
+  void ScheduleNextCaptureFrame();
 
-  void RequestWakeLock(std::unique_ptr<service_manager::Connector> connector);
+  void RequestWakeLock();
 
   base::TimeTicks NowTicks() const;
 
@@ -156,6 +163,9 @@ class DesktopCaptureDevice::Core : public webrtc::DesktopCapturer::Callback {
 
   // Inverse of the requested frame rate.
   base::TimeDelta requested_frame_duration_;
+
+  // Records time of last call to CaptureFrame.
+  base::TimeTicks capture_start_time_;
 
   // Size of frame most recently captured from the source.
   webrtc::DesktopSize previous_frame_size_;
@@ -197,9 +207,9 @@ class DesktopCaptureDevice::Core : public webrtc::DesktopCapturer::Callback {
 
   // TODO(jiayl): Remove wake_lock_ when there is an API to keep the
   // screen from sleeping for the drive-by web.
-  device::mojom::WakeLockPtr wake_lock_;
+  mojo::Remote<device::mojom::WakeLock> wake_lock_;
 
-  base::WeakPtrFactory<Core> weak_factory_;
+  base::WeakPtrFactory<Core> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(Core);
 };
@@ -215,8 +225,7 @@ DesktopCaptureDevice::Core::Core(
       capture_in_progress_(false),
       first_capture_returned_(false),
       first_permanent_error_logged(false),
-      capturer_type_(type),
-      weak_factory_(this) {}
+      capturer_type_(type) {}
 
 DesktopCaptureDevice::Core::~Core() {
   DCHECK(task_runner_->BelongsToCurrentThread());
@@ -252,21 +261,13 @@ void DesktopCaptureDevice::Core::AllocateAndStart(
                                      constraints.fixed_aspect_ratio);
 
   DCHECK(!wake_lock_);
-  // Gets a service_manager::Connector first, then request a wake lock.
-  // TODO(https://crbug.com/823869): Fix DesktopCaptureDeviceTest and remove
-  // this conditional.
-  if (BrowserThread::IsThreadInitialized(BrowserThread::UI)) {
-    base::PostTaskWithTraitsAndReplyWithResult(
-        FROM_HERE, {BrowserThread::UI}, base::BindOnce(&GetServiceConnector),
-        base::BindOnce(&DesktopCaptureDevice::Core::RequestWakeLock,
-                       weak_factory_.GetWeakPtr()));
-  }
+  RequestWakeLock();
 
   desktop_capturer_->Start(this);
   // Assume it will be always started successfully for now.
   client_->OnStarted();
 
-  CaptureFrameAndScheduleNext();
+  CaptureFrame();
 }
 
 void DesktopCaptureDevice::Core::SetNotificationWindowId(
@@ -280,7 +281,7 @@ void DesktopCaptureDevice::Core::SetMockTimeForTesting(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
     const base::TickClock* tick_clock) {
   tick_clock_ = tick_clock;
-  capture_timer_.reset(new base::OneShotTimer(tick_clock_));
+  capture_timer_ = std::make_unique<base::OneShotTimer>(tick_clock_);
   capture_timer_->SetTaskRunner(task_runner);
 }
 
@@ -318,7 +319,10 @@ void DesktopCaptureDevice::Core::OnCaptureResult(
       client_->OnError(media::VideoCaptureError::
                            kDesktopCaptureDeviceWebrtcDesktopCapturerHasFailed,
                        FROM_HERE, "The desktop capturer has failed.");
+      return;
     }
+    // Continue capturing frames in the temporary error case.
+    ScheduleNextCaptureFrame();
     return;
   }
   DCHECK(frame);
@@ -363,7 +367,7 @@ void DesktopCaptureDevice::Core::OnCaptureResult(
     // replace it with a black frame to avoid the video appearing frozen at the
     // last frame.
     if (!black_frame_ || !black_frame_->size().equals(output_size)) {
-      black_frame_.reset(new webrtc::BasicDesktopFrame(output_size));
+      black_frame_ = std::make_unique<webrtc::BasicDesktopFrame>(output_size);
     }
     output_data = black_frame_->data();
   } else {
@@ -393,7 +397,8 @@ void DesktopCaptureDevice::Core::OnCaptureResult(
       // don't need to worry about clearing out stale pixel data in
       // letterboxed areas.
       if (!output_frame_) {
-        output_frame_.reset(new webrtc::BasicDesktopFrame(output_size));
+        output_frame_ =
+            std::make_unique<webrtc::BasicDesktopFrame>(output_size);
       }
       DCHECK(output_frame_->size().equals(output_size));
 
@@ -414,7 +419,8 @@ void DesktopCaptureDevice::Core::OnCaptureResult(
       // crbug.com/306876), or if |frame| is cropped form a larger frame (see
       // crbug.com/437740).
       if (!output_frame_) {
-        output_frame_.reset(new webrtc::BasicDesktopFrame(output_size));
+        output_frame_ =
+            std::make_unique<webrtc::BasicDesktopFrame>(output_size);
       }
 
       output_frame_->CopyPixelsFrom(
@@ -428,6 +434,13 @@ void DesktopCaptureDevice::Core::OnCaptureResult(
     }
   }
 
+  gfx::ColorSpace frame_color_space;
+  if (!frame->icc_profile().empty()) {
+    gfx::ICCProfile icc_profile = gfx::ICCProfile::FromData(
+        frame->icc_profile().data(), frame->icc_profile().size());
+    frame_color_space = icc_profile.GetColorSpace();
+  }
+
   base::TimeTicks now = NowTicks();
   if (first_ref_time_.is_null())
     first_ref_time_ = now;
@@ -436,7 +449,10 @@ void DesktopCaptureDevice::Core::OnCaptureResult(
       media::VideoCaptureFormat(
           gfx::Size(output_size.width(), output_size.height()),
           requested_frame_rate_, media::PIXEL_FORMAT_ARGB),
-      0, now, now - first_ref_time_);
+      frame_color_space, 0 /* clockwise_rotation */, false /* flip_y */, now,
+      now - first_ref_time_);
+
+  ScheduleNextCaptureFrame();
 }
 
 void DesktopCaptureDevice::Core::OnCaptureTimer() {
@@ -445,14 +461,24 @@ void DesktopCaptureDevice::Core::OnCaptureTimer() {
   if (!client_)
     return;
 
-  CaptureFrameAndScheduleNext();
+  CaptureFrame();
 }
 
-void DesktopCaptureDevice::Core::CaptureFrameAndScheduleNext() {
+void DesktopCaptureDevice::Core::CaptureFrame() {
   DCHECK(task_runner_->BelongsToCurrentThread());
-  base::TimeTicks started_time = NowTicks();
-  DoCapture();
-  base::TimeDelta last_capture_duration = NowTicks() - started_time;
+  DCHECK(!capture_in_progress_);
+
+  capture_start_time_ = NowTicks();
+  capture_in_progress_ = true;
+
+  desktop_capturer_->CaptureFrame();
+}
+
+void DesktopCaptureDevice::Core::ScheduleNextCaptureFrame() {
+  // Make sure CaptureFrame() was called at least once before.
+  DCHECK(!capture_start_time_.is_null());
+
+  base::TimeDelta last_capture_duration = NowTicks() - capture_start_time_;
 
   // Limit frame-rate to reduce CPU consumption.
   base::TimeDelta capture_period =
@@ -464,27 +490,20 @@ void DesktopCaptureDevice::Core::CaptureFrameAndScheduleNext() {
                         &Core::OnCaptureTimer);
 }
 
-void DesktopCaptureDevice::Core::DoCapture() {
-  DCHECK(task_runner_->BelongsToCurrentThread());
-  DCHECK(!capture_in_progress_);
+void DesktopCaptureDevice::Core::RequestWakeLock() {
+  mojo::Remote<device::mojom::WakeLockProvider> wake_lock_provider;
+  auto receiver = wake_lock_provider.BindNewPipeAndPassReceiver();
+  // TODO(https://crbug.com/823869): Fix DesktopCaptureDeviceTest and remove
+  // this conditional.
+  if (BrowserThread::IsThreadInitialized(BrowserThread::UI)) {
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&BindWakeLockProvider, std::move(receiver)));
+  }
 
-  capture_in_progress_ = true;
-  desktop_capturer_->CaptureFrame();
-
-  // Currently only synchronous implementations of DesktopCapturer are
-  // supported.
-  DCHECK(!capture_in_progress_);
-}
-
-void DesktopCaptureDevice::Core::RequestWakeLock(
-    std::unique_ptr<service_manager::Connector> connector) {
-  device::mojom::WakeLockProviderPtr wake_lock_provider;
-  connector->BindInterface(device::mojom::kServiceName,
-                           mojo::MakeRequest(&wake_lock_provider));
   wake_lock_provider->GetWakeLockWithoutContext(
       device::mojom::WakeLockType::kPreventDisplaySleep,
       device::mojom::WakeLockReason::kOther, "Native desktop capture",
-      mojo::MakeRequest(&wake_lock_));
+      wake_lock_.BindNewPipeAndPassReceiver());
 
   wake_lock_->RequestWakeLock();
 }
@@ -500,20 +519,34 @@ std::unique_ptr<media::VideoCaptureDevice> DesktopCaptureDevice::Create(
   std::unique_ptr<webrtc::DesktopCapturer> capturer;
   std::unique_ptr<media::VideoCaptureDevice> result;
 
+#if defined(OS_WIN)
+  options.set_allow_cropping_window_capturer(true);
+  if (base::FeatureList::IsEnabled(features::kWebRtcAllowWgcDesktopCapturer))
+    options.set_allow_wgc_capturer(true);
+#endif
+
   // For browser tests, to create a fake desktop capturer.
   if (source.id == DesktopMediaID::kFakeId) {
-    capturer.reset(new webrtc::FakeDesktopCapturer());
+    capturer = std::make_unique<webrtc::FakeDesktopCapturer>();
     result.reset(new DesktopCaptureDevice(std::move(capturer), source.type));
     return result;
   }
 
   switch (source.type) {
     case DesktopMediaID::TYPE_SCREEN: {
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+      // TODO(https://crbug.com/1094460): Handle options.
+      std::unique_ptr<webrtc::DesktopCapturer> screen_capturer =
+          std::make_unique<DesktopCapturerLacros>(
+              DesktopCapturerLacros::CaptureType::kScreen,
+              webrtc::DesktopCaptureOptions());
+#else
       std::unique_ptr<webrtc::DesktopCapturer> screen_capturer(
           webrtc::DesktopCapturer::CreateScreenCapturer(options));
+#endif
       if (screen_capturer && screen_capturer->SelectSource(source.id)) {
-        capturer.reset(new webrtc::DesktopAndCursorComposer(
-            std::move(screen_capturer), options));
+        capturer = std::make_unique<webrtc::DesktopAndCursorComposer>(
+            std::move(screen_capturer), options);
         IncrementDesktopCaptureCounter(SCREEN_CAPTURER_CREATED);
         IncrementDesktopCaptureCounter(
             source.audio_share ? SCREEN_CAPTURER_CREATED_WITH_AUDIO
@@ -523,12 +556,18 @@ std::unique_ptr<media::VideoCaptureDevice> DesktopCaptureDevice::Create(
     }
 
     case DesktopMediaID::TYPE_WINDOW: {
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+      std::unique_ptr<webrtc::DesktopCapturer> window_capturer(
+          new DesktopCapturerLacros(DesktopCapturerLacros::CaptureType::kWindow,
+                                    webrtc::DesktopCaptureOptions()));
+#else
       std::unique_ptr<webrtc::DesktopCapturer> window_capturer =
-          webrtc::CroppingWindowCapturer::CreateCapturer(options);
+          webrtc::DesktopCapturer::CreateWindowCapturer(options);
+#endif
       if (window_capturer && window_capturer->SelectSource(source.id)) {
         window_capturer->FocusOnSelectedSource();
-        capturer.reset(new webrtc::DesktopAndCursorComposer(
-            std::move(window_capturer), options));
+        capturer = std::make_unique<webrtc::DesktopAndCursorComposer>(
+            std::move(window_capturer), options);
         IncrementDesktopCaptureCounter(WINDOW_CAPTURER_CREATED);
       }
       break;
@@ -580,16 +619,17 @@ DesktopCaptureDevice::DesktopCaptureDevice(
     std::unique_ptr<webrtc::DesktopCapturer> capturer,
     DesktopMediaID::Type type)
     : thread_("desktopCaptureThread") {
-#if defined(OS_WIN) || defined(OS_MACOSX)
+#if defined(OS_WIN) || defined(OS_MAC)
   // On Windows/OSX the thread must be a UI thread.
-  base::MessageLoop::Type thread_type = base::MessageLoop::TYPE_UI;
+  base::MessagePumpType thread_type = base::MessagePumpType::UI;
 #else
-  base::MessageLoop::Type thread_type = base::MessageLoop::TYPE_DEFAULT;
+  base::MessagePumpType thread_type = base::MessagePumpType::DEFAULT;
 #endif
 
   thread_.StartWithOptions(base::Thread::Options(thread_type, 0));
 
-  core_.reset(new Core(thread_.task_runner(), std::move(capturer), type));
+  core_ =
+      std::make_unique<Core>(thread_.task_runner(), std::move(capturer), type);
 }
 
 void DesktopCaptureDevice::SetMockTimeForTesting(

@@ -33,10 +33,11 @@
 #include <limits>
 #include <memory>
 
+#include "base/cxx17_backports.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
-#include "third_party/blink/renderer/platform/date_components.h"
+#include "base/strings/string_util.h"
 #include "third_party/blink/renderer/platform/language.h"
+#include "third_party/blink/renderer/platform/text/date_components.h"
 #include "third_party/blink/renderer/platform/text/date_time_format.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
 #include "third_party/blink/renderer/platform/wtf/date_math.h"
@@ -44,7 +45,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
+#include "ui/base/ui_base_features.h"
 
 namespace blink {
 
@@ -70,7 +71,7 @@ static LCID LCIDFromLocaleInternal(LCID user_default_lcid,
   else
     StringImpl::CopyChars(buffer, locale.Characters16(), locale.length());
   buffer[locale.length()] = '\0';
-  return ::LocaleNameToLCID(buffer, 0);
+  return ::LocaleNameToLCID(base::as_writable_wcstr(buffer), 0);
 }
 
 static LCID LCIDFromLocale(const String& locale, bool defaults_for_locale) {
@@ -81,7 +82,8 @@ static LCID LCIDFromLocale(const String& locale, bool defaults_for_locale) {
                   LOCALE_SISO639LANGNAME |
                       (defaults_for_locale ? LOCALE_NOUSEROVERRIDE : 0),
                   lowercase_language_code, kLanguageCodeBufferSize);
-  String user_default_language_code = String(lowercase_language_code);
+  String user_default_language_code =
+      String(base::as_u16cstr(lowercase_language_code));
 
   LCID lcid = LCIDFromLocaleInternal(LOCALE_USER_DEFAULT,
                                      user_default_language_code, locale);
@@ -125,9 +127,9 @@ String LocaleWin::GetLocaleInfoString(LCTYPE type) {
   if (buffer_size_with_nul <= 0)
     return String();
   StringBuffer<UChar> buffer(buffer_size_with_nul);
-  ::GetLocaleInfo(lcid_,
-                  type | (defaults_for_locale_ ? LOCALE_NOUSEROVERRIDE : 0),
-                  buffer.Characters(), buffer_size_with_nul);
+  ::GetLocaleInfo(
+      lcid_, type | (defaults_for_locale_ ? LOCALE_NOUSEROVERRIDE : 0),
+      base::as_writable_wcstr(buffer.Characters()), buffer_size_with_nul);
   buffer.Shrink(buffer_size_with_nul - 1);
   return String::Adopt(buffer);
 }
@@ -291,11 +293,11 @@ void LocaleWin::EnsureMonthLabels() {
 void LocaleWin::EnsureWeekDayShortLabels() {
   if (!week_day_short_labels_.IsEmpty())
     return;
-  const LCTYPE kTypes[7] = {LOCALE_SABBREVDAYNAME7,  // Sunday
-                            LOCALE_SABBREVDAYNAME1,  // Monday
-                            LOCALE_SABBREVDAYNAME2, LOCALE_SABBREVDAYNAME3,
-                            LOCALE_SABBREVDAYNAME4, LOCALE_SABBREVDAYNAME5,
-                            LOCALE_SABBREVDAYNAME6};
+  const LCTYPE kTypes[7] = {LOCALE_SSHORTESTDAYNAME7,  // Sunday
+                            LOCALE_SSHORTESTDAYNAME1,  // Monday
+                            LOCALE_SSHORTESTDAYNAME2, LOCALE_SSHORTESTDAYNAME3,
+                            LOCALE_SSHORTESTDAYNAME4, LOCALE_SSHORTESTDAYNAME5,
+                            LOCALE_SSHORTESTDAYNAME6};
   week_day_short_labels_.ReserveCapacity(base::size(kTypes));
   for (unsigned i = 0; i < base::size(kTypes); ++i) {
     week_day_short_labels_.push_back(GetLocaleInfoString(kTypes[i]));

@@ -4,15 +4,15 @@
 
 #include "chrome/browser/ui/android/autofill/autofill_logger_android.h"
 
-#include "jni/AutofillLogger_jni.h"
+#include "chrome/android/chrome_jni_headers/AutofillLogger_jni.h"
 
 using base::android::ScopedJavaLocalRef;
 
 namespace autofill {
 
 void AutofillLoggerAndroid::DidFillOrPreviewField(
-    const base::string16& autofilled_value,
-    const base::string16& profile_full_name) {
+    const std::u16string& autofilled_value,
+    const std::u16string& profile_full_name) {
   JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jstring> j_autofilled_value =
       base::android::ConvertUTF16ToJavaString(env, autofilled_value);

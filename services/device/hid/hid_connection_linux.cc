@@ -184,11 +184,11 @@ class HidConnectionLinux::BlockingTaskRunnerHelper {
 HidConnectionLinux::HidConnectionLinux(
     scoped_refptr<HidDeviceInfo> device_info,
     base::ScopedFD fd,
-    scoped_refptr<base::SequencedTaskRunner> blocking_task_runner)
-    : HidConnection(device_info),
+    scoped_refptr<base::SequencedTaskRunner> blocking_task_runner,
+    bool allow_protected_reports)
+    : HidConnection(device_info, allow_protected_reports),
       helper_(nullptr, base::OnTaskRunnerDeleter(blocking_task_runner)),
-      blocking_task_runner_(std::move(blocking_task_runner)),
-      weak_factory_(this) {
+      blocking_task_runner_(std::move(blocking_task_runner)) {
   helper_.reset(new BlockingTaskRunnerHelper(std::move(fd), device_info,
                                              weak_factory_.GetWeakPtr()));
   blocking_task_runner_->PostTask(

@@ -6,9 +6,10 @@
 
 #include <memory>
 
+#include "ash/constants/ash_features.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chromeos/network/network_event_log.h"
 #include "chromeos/network/shill_property_util.h"
@@ -17,14 +18,7 @@
 namespace chromeos {
 
 DeviceState::DeviceState(const std::string& path)
-    : ManagedState(MANAGED_TYPE_DEVICE, path),
-      allow_roaming_(false),
-      provider_requires_roaming_(false),
-      support_network_scan_(false),
-      scanning_(false),
-      sim_retries_left_(0),
-      sim_present_(true),
-      eap_authentication_completed_(false) {}
+    : ManagedState(MANAGED_TYPE_DEVICE, path) {}
 
 DeviceState::~DeviceState() = default;
 
@@ -43,7 +37,12 @@ bool DeviceState::PropertyChanged(const std::string& key,
     return GetBooleanValue(key, value, &scanning_);
   } else if (key == shill::kSupportNetworkScanProperty) {
     return GetBooleanValue(key, value, &support_network_scan_);
-  } else if (key == shill::kCellularAllowRoamingProperty) {
+  } else if ((base::FeatureList::IsEnabled(
+                  ash::features::kCellularAllowPerNetworkRoaming) &&
+              key == shill::kCellularPolicyAllowRoamingProperty) ||
+             (!base::FeatureList::IsEnabled(
+                  ash::features::kCellularAllowPerNetworkRoaming) &&
+              key == shill::kCellularAllowRoamingProperty)) {
     return GetBooleanValue(key, value, &allow_roaming_);
   } else if (key == shill::kProviderRequiresRoamingProperty) {
     return GetBooleanValue(key, value, &provider_requires_roaming_);
@@ -64,8 +63,6 @@ bool DeviceState::PropertyChanged(const std::string& key,
     country_code_ = country_code ? country_code->GetString() : "";
   } else if (key == shill::kTechnologyFamilyProperty) {
     return GetStringValue(key, value, &technology_family_);
-  } else if (key == shill::kCarrierProperty) {
-    return GetStringValue(key, value, &carrier_);
   } else if (key == shill::kFoundNetworksProperty) {
     const base::ListValue* list = nullptr;
     if (!value.GetAsList(&list))
@@ -74,6 +71,16 @@ bool DeviceState::PropertyChanged(const std::string& key,
     if (!network_util::ParseCellularScanResults(*list, &parsed_results))
       return false;
     scan_results_.swap(parsed_results);
+    return true;
+  } else if (key == shill::kSIMSlotInfoProperty) {
+    if (!value.is_list())
+      return false;
+    CellularSIMSlotInfos parsed_results;
+    if (!network_util::ParseCellularSIMSlotInfo(value.GetList(),
+                                                &parsed_results)) {
+      return false;
+    }
+    sim_slot_infos_.swap(parsed_results);
     return true;
   } else if (key == shill::kSIMLockStatusProperty) {
     const base::DictionaryValue* dict = nullptr;
@@ -86,17 +93,17 @@ bool DeviceState::PropertyChanged(const std::string& key,
     sim_lock_enabled_ = false;
 
     const base::Value* out_value = nullptr;
-    if (dict->GetWithoutPathExpansion(shill::kSIMLockTypeProperty,
-                                      &out_value)) {
+    out_value = dict->FindKey(shill::kSIMLockTypeProperty);
+    if (out_value) {
       GetStringValue(shill::kSIMLockTypeProperty, *out_value, &sim_lock_type_);
     }
-    if (dict->GetWithoutPathExpansion(shill::kSIMLockRetriesLeftProperty,
-                                      &out_value)) {
+    out_value = dict->FindKey(shill::kSIMLockRetriesLeftProperty);
+    if (out_value) {
       GetIntegerValue(shill::kSIMLockRetriesLeftProperty, *out_value,
                       &sim_retries_left_);
     }
-    if (dict->GetWithoutPathExpansion(shill::kSIMLockEnabledProperty,
-                                      &out_value)) {
+    out_value = dict->FindKey(shill::kSIMLockEnabledProperty);
+    if (out_value) {
       GetBooleanValue(shill::kSIMLockEnabledProperty, *out_value,
                       &sim_lock_enabled_);
     }
@@ -111,6 +118,13 @@ bool DeviceState::PropertyChanged(const std::string& key,
     return GetStringValue(key, value, &mdn_);
   } else if (key == shill::kSIMPresentProperty) {
     return GetBooleanValue(key, value, &sim_present_);
+  } else if (key == shill::kCellularApnListProperty) {
+    if (!value.is_list())
+      return false;
+    apn_list_ = value.Clone();
+    return true;
+  } else if (key == shill::kInhibitedProperty) {
+    return GetBooleanValue(key, value, &inhibited_);
   } else if (key == shill::kEapAuthenticationCompletedProperty) {
     return GetBooleanValue(key, value, &eap_authentication_completed_);
   } else if (key == shill::kIPConfigsProperty) {
@@ -119,8 +133,18 @@ bool DeviceState::PropertyChanged(const std::string& key,
     // calls to IPConfigPropertiesChanged.
     ip_configs_.Clear();
     return false;  // No actual state change.
+  } else if (key == shill::kLinkUpProperty) {
+    return GetBooleanValue(key, value, &link_up_);
+  } else if (key == shill::kDeviceBusTypeProperty) {
+    return GetStringValue(key, value, &device_bus_type_);
+  } else if (key == shill::kUsbEthernetMacAddressSourceProperty) {
+    return GetStringValue(key, value, &mac_address_source_);
   }
   return false;
+}
+
+bool DeviceState::IsActive() const {
+  return true;
 }
 
 void DeviceState::IPConfigPropertiesChanged(const std::string& ip_config_path,
@@ -134,6 +158,30 @@ std::string DeviceState::GetName() const {
   if (!operator_name_.empty())
     return operator_name_;
   return name();
+}
+
+DeviceState::CellularSIMSlotInfos DeviceState::GetSimSlotInfos() const {
+  // If information was provided from Shill, return it directly.
+  if (!sim_slot_infos_.empty())
+    return sim_slot_infos_;
+
+  // Non-cellular types do not have any SIM slots.
+  if (type() != shill::kTypeCellular) {
+    NET_LOG(ERROR) << "Attempted to fetch SIM slots for device of type "
+                   << type() << ". Returning empty list.";
+    return {};
+  }
+
+  // Some devices do not return SIMSlotInfo properties (see b/189874098). If the
+  // list is currently empty, we assume that this is a single-pSIM device and
+  // return one CellularSIMSlotInfo object representing the single pSIM.
+  CellularSIMSlotInfo info;
+  info.slot_id = 1;          // Slot numbers start at 1, not 0.
+  info.eid = std::string();  // Empty EID implies a physical SIM slot.
+  info.iccid = iccid();      // Copy ICCID property.
+  info.primary = true;       // Only one slot, so it must be the primary one.
+
+  return CellularSIMSlotInfos{info};
 }
 
 std::string DeviceState::GetIpAddressByType(const std::string& type) const {
@@ -166,6 +214,21 @@ bool DeviceState::IsSimLocked() const {
     return false;
   return sim_lock_type_ == shill::kSIMLockPin ||
          sim_lock_type_ == shill::kSIMLockPuk;
+}
+
+bool DeviceState::HasAPN(const std::string& access_point_name) const {
+  for (const auto& apn : apn_list_.GetList()) {
+    // bogus empty entries in the list might have been converted to a list while
+    // traveling over D-Bus, skip them rather than crashing below.
+    if (!apn.is_dict())
+      continue;
+
+    const std::string* apn_name = apn.FindStringKey(shill::kApnProperty);
+    if (apn_name && *apn_name == access_point_name) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace chromeos

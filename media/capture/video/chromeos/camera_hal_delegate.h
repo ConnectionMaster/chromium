@@ -9,22 +9,28 @@
 #include <string>
 #include <unordered_map>
 
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread.h"
-#include "media/capture/video/chromeos/mojo/camera3.mojom.h"
-#include "media/capture/video/chromeos/mojo/camera_common.mojom.h"
+#include "media/capture/video/chromeos/mojom/camera3.mojom.h"
+#include "media/capture/video/chromeos/mojom/camera_common.mojom.h"
+#include "media/capture/video/chromeos/vendor_tag_ops_delegate.h"
 #include "media/capture/video/video_capture_device_factory.h"
 #include "media/capture/video_capture_types.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 namespace media {
 
 class CameraBufferFactory;
-class ReprocessManager;
+class VideoCaptureDeviceChromeOSDelegate;
 
 // CameraHalDelegate is the component which does Mojo IPCs to the camera HAL
 // process on Chrome OS to access the module-level camera functionalities such
@@ -43,11 +49,13 @@ class CAPTURE_EXPORT CameraHalDelegate final
       scoped_refptr<base::SingleThreadTaskRunner> ipc_task_runner);
 
   // Registers the camera client observer to the CameraHalDispatcher instance.
-  void RegisterCameraClient();
+  // Returns true if successful, false if failed (e.g., authentication failure).
+  bool RegisterCameraClient();
 
-  void SetCameraModule(cros::mojom::CameraModulePtrInfo camera_module_ptr_info);
+  void SetCameraModule(
+      mojo::PendingRemote<cros::mojom::CameraModule> camera_module);
 
-  // Resets |camera_module_| and |camera_module_callbacks_|.
+  // Resets various mojo bindings, WaitableEvents, and cached information.
   void Reset();
 
   // Delegation methods for the VideoCaptureDeviceFactory interface.  These
@@ -57,34 +65,53 @@ class CAPTURE_EXPORT CameraHalDelegate final
   std::unique_ptr<VideoCaptureDevice> CreateDevice(
       scoped_refptr<base::SingleThreadTaskRunner>
           task_runner_for_screen_observer,
-      const VideoCaptureDeviceDescriptor& device_descriptor,
-      ReprocessManager* reprocess_manager);
-  void GetSupportedFormats(
-      const VideoCaptureDeviceDescriptor& device_descriptor,
-      VideoCaptureFormats* supported_formats);
-  void GetDeviceDescriptors(VideoCaptureDeviceDescriptors* device_descriptors);
-
-  // Asynchronous method to get the camera info of |camera_id|.  This method may
-  // be called on any thread.
-  using GetCameraInfoCallback =
-      base::OnceCallback<void(int32_t, cros::mojom::CameraInfoPtr)>;
-  void GetCameraInfo(int32_t camera_id, GetCameraInfoCallback callback);
+      const VideoCaptureDeviceDescriptor& device_descriptor);
+  void GetDevicesInfo(
+      VideoCaptureDeviceFactory::GetDevicesInfoCallback callback);
 
   // Asynchronous method to open the camera device designated by |camera_id|.
   // This method may be called on any thread; |callback| will run on
   // |ipc_task_runner_|.
   using OpenDeviceCallback = base::OnceCallback<void(int32_t)>;
-  void OpenDevice(int32_t camera_id,
-                  cros::mojom::Camera3DeviceOpsRequest device_ops_request,
-                  OpenDeviceCallback callback);
+  void OpenDevice(
+      int32_t camera_id,
+      mojo::PendingReceiver<cros::mojom::Camera3DeviceOps> device_ops_receiver,
+      OpenDeviceCallback callback);
+
+  // Gets camera id from device id. Returns -1 on error.
+  int GetCameraIdFromDeviceId(const std::string& device_id);
+
+  // Returns camera pan, tilt, zoom capability support.
+  VideoCaptureControlSupport GetControlSupport(
+      const cros::mojom::CameraInfoPtr& camera_info);
+
+  // Gets the camera info of |device_id|. Returns null CameraInfoPtr on error.
+  cros::mojom::CameraInfoPtr GetCameraInfoFromDeviceId(
+      const std::string& device_id);
+
+  const VendorTagInfo* GetVendorTagInfoByName(const std::string& full_name);
+
+  void EnableVirtualDevice(const std::string& device_id, bool enable);
+
+  void DisableAllVirtualDevices();
 
  private:
   friend class base::RefCountedThreadSafe<CameraHalDelegate>;
 
   ~CameraHalDelegate() final;
 
+  void OnRegisteredCameraHalClient(int32_t result);
+
+  void GetSupportedFormats(const cros::mojom::CameraInfoPtr& camera_info,
+                           VideoCaptureFormats* supported_formats);
+
+  VideoCaptureDeviceChromeOSDelegate* GetVCDDelegate(
+      scoped_refptr<base::SingleThreadTaskRunner>
+          task_runner_for_screen_observer,
+      const VideoCaptureDeviceDescriptor& device_descriptor);
+
   void SetCameraModuleOnIpcThread(
-      cros::mojom::CameraModulePtrInfo camera_module_ptr_info);
+      mojo::PendingRemote<cros::mojom::CameraModule> camera_module);
 
   // Resets the Mojo interface and bindings.
   void ResetMojoInterfaceOnIpcThread();
@@ -94,13 +121,22 @@ class CAPTURE_EXPORT CameraHalDelegate final
   // GetDeviceDescriptors.
   bool UpdateBuiltInCameraInfo();
   void UpdateBuiltInCameraInfoOnIpcThread();
+
   // Callback for GetNumberOfCameras Mojo IPC function.  GetNumberOfCameras
   // returns the number of built-in cameras on the device.
   void OnGotNumberOfCamerasOnIpcThread(int32_t num_cameras);
+
   // Callback for SetCallbacks Mojo IPC function. SetCallbacks is called after
   // GetNumberOfCameras is called for the first time, and before any other calls
   // to |camera_module_|.
   void OnSetCallbacksOnIpcThread(int32_t result);
+
+  // Callback for GetVendorTagOps Mojo IPC function, which will initialize the
+  // |vendor_tag_ops_delegate_|.
+  void OnGotVendorTagOpsOnIpcThread();
+
+  using GetCameraInfoCallback =
+      base::OnceCallback<void(int32_t, cros::mojom::CameraInfoPtr)>;
   void GetCameraInfoOnIpcThread(int32_t camera_id,
                                 GetCameraInfoCallback callback);
   void OnGotCameraInfoOnIpcThread(int32_t camera_id,
@@ -111,7 +147,7 @@ class CAPTURE_EXPORT CameraHalDelegate final
   // This method runs on |ipc_task_runner_|.
   void OpenDeviceOnIpcThread(
       int32_t camera_id,
-      cros::mojom::Camera3DeviceOpsRequest device_ops_request,
+      mojo::PendingReceiver<cros::mojom::Camera3DeviceOps> device_ops_receiver,
       OpenDeviceCallback callback);
 
   // CameraModuleCallbacks implementation. Operates on |ipc_task_runner_|.
@@ -120,6 +156,9 @@ class CAPTURE_EXPORT CameraHalDelegate final
       cros::mojom::CameraDeviceStatus new_status) final;
   void TorchModeStatusChange(int32_t camera_id,
                              cros::mojom::TorchModeStatus new_status) final;
+
+  base::WaitableEvent camera_hal_client_registered_;
+  bool authenticated_;
 
   base::WaitableEvent camera_module_has_been_set_;
 
@@ -143,10 +182,22 @@ class CAPTURE_EXPORT CameraHalDelegate final
   // UpdateBuiltInCameraInfo and |builtin_camera_info_updated_| to avoid race
   // conditions. For external cameras, the |camera_info_| would be read nad
   // updated in CameraDeviceStatusChange, which is also protected by
-  // |camera_info_lock|.
-  size_t num_builtin_cameras_;
+  // |camera_info_lock_|.
   base::Lock camera_info_lock_;
-  std::unordered_map<std::string, cros::mojom::CameraInfoPtr> camera_info_;
+  size_t num_builtin_cameras_ GUARDED_BY(camera_info_lock_);
+  std::unordered_map<int, cros::mojom::CameraInfoPtr> camera_info_
+      GUARDED_BY(camera_info_lock_);
+
+  // A map from |VideoCaptureDeviceDescriptor.device_id| to camera id, which is
+  // updated in GetDeviceDescriptors() and queried in
+  // GetCameraIdFromDeviceId().
+  base::Lock device_id_to_camera_id_lock_;
+  std::map<std::string, int> device_id_to_camera_id_
+      GUARDED_BY(device_id_to_camera_id_lock_);
+  // A virtual device is enabled/disabled for camera id.
+  base::Lock enable_virtual_device_lock_;
+  base::flat_map<int, bool> enable_virtual_device_
+      GUARDED_BY(enable_virtual_device_lock_);
 
   SEQUENCE_CHECKER(sequence_checker_);
 
@@ -157,11 +208,20 @@ class CAPTURE_EXPORT CameraHalDelegate final
 
   // The Mojo proxy to access the camera module at the remote camera HAL.  Bound
   // to |ipc_task_runner_|.
-  cros::mojom::CameraModulePtr camera_module_;
+  mojo::Remote<cros::mojom::CameraModule> camera_module_;
 
-  // The Mojo binding serving the camera module callbacks.  Bound to
+  // The Mojo receiver serving the camera module callbacks.  Bound to
   // |ipc_task_runner_|.
-  mojo::Binding<cros::mojom::CameraModuleCallbacks> camera_module_callbacks_;
+  mojo::AssociatedReceiver<cros::mojom::CameraModuleCallbacks>
+      camera_module_callbacks_;
+
+  // An internal delegate to handle VendorTagOps mojo connection and query
+  // information of vendor tags.  Bound to |ipc_task_runner_|.
+  VendorTagOpsDelegate vendor_tag_ops_delegate_;
+
+  // A map from camera id to corresponding delegate instance.
+  base::flat_map<int, std::unique_ptr<VideoCaptureDeviceChromeOSDelegate>>
+      vcd_delegate_map_;
 
   DISALLOW_COPY_AND_ASSIGN(CameraHalDelegate);
 };

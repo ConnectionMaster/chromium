@@ -7,16 +7,16 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/unguessable_token.h"
 #include "media/base/media_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
 struct MEDIA_EXPORT OverlayInfo {
   // An unset routing token indicates "do not use any routing token".  A null
   // routing token isn't serializable, else we'd probably use that instead.
-  using RoutingToken = base::Optional<base::UnguessableToken>;
+  using RoutingToken = absl::optional<base::UnguessableToken>;
 
   OverlayInfo();
   OverlayInfo(const OverlayInfo&);
@@ -40,9 +40,12 @@ struct MEDIA_EXPORT OverlayInfo {
   bool is_persistent_video = false;
 };
 
-using ProvideOverlayInfoCB = base::Callback<void(const OverlayInfo&)>;
+// Used by the WebMediaPlayer to provide overlay information to the decoder,
+// which can ask for that information repeatedly (see
+// WebMediaPlayerImpl::OnOverlayInfoRequested).
+using ProvideOverlayInfoCB = base::RepeatingCallback<void(const OverlayInfo&)>;
 using RequestOverlayInfoCB =
-    base::Callback<void(bool, const ProvideOverlayInfoCB&)>;
+    base::RepeatingCallback<void(bool, ProvideOverlayInfoCB)>;
 
 }  // namespace media
 

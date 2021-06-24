@@ -10,9 +10,10 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/message_loop/message_pump_default.h"
 #include "base/run_loop.h"
+#include "base/test/gtest_util.h"
+#include "base/test/task_environment.h"
 #include "jingle/glue/mock_task.h"
 #include "jingle/glue/network_service_config_test_util.h"
 #include "jingle/glue/task_pump.h"
@@ -79,7 +80,7 @@ class XmppConnectionTest : public testing::Test {
       : mock_pre_xmpp_auth_(new MockPreXmppAuth()),
         net_config_helper_(
             base::MakeRefCounted<net::TestURLRequestContextGetter>(
-                message_loop_.task_runner())) {
+                task_environment_.GetMainThreadTaskRunner())) {
     // GTest death tests by default execute in a fork()ed but not exec()ed
     // process. On macOS, a CoreFoundation-backed MessageLoop will exit with a
     // __THE_PROCESS_HAS_FORKED_AND_YOU_CANNOT_USE_THIS_COREFOUNDATION_FUNCTIONALITY___YOU_MUST_EXEC__
@@ -95,7 +96,7 @@ class XmppConnectionTest : public testing::Test {
   }
 
   // Needed by XmppConnection.
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   MockXmppConnectionDelegate mock_xmpp_connection_delegate_;
   std::unique_ptr<MockPreXmppAuth> mock_pre_xmpp_auth_;
   jingle_glue::NetworkServiceConfigTestUtil net_config_helper_;
@@ -200,25 +201,28 @@ TEST_F(XmppConnectionTest, Connect) {
 }
 
 TEST_F(XmppConnectionTest, MultipleConnect) {
-  EXPECT_DEBUG_DEATH({
-    base::WeakPtr<jingle_xmpp::Task> weak_ptr;
-    EXPECT_CALL(mock_xmpp_connection_delegate_, OnConnect(_)).
-        WillOnce(SaveArg<0>(&weak_ptr));
+  EXPECT_DCHECK_DEATH_WITH(
+      {
+        base::WeakPtr<jingle_xmpp::Task> weak_ptr;
+        EXPECT_CALL(mock_xmpp_connection_delegate_, OnConnect(_))
+            .WillOnce(SaveArg<0>(&weak_ptr));
 
-    XmppConnection xmpp_connection(
-        jingle_xmpp::XmppClientSettings(),
-        net_config_helper_.MakeSocketFactoryCallback(),
-        &mock_xmpp_connection_delegate_, NULL, TRAFFIC_ANNOTATION_FOR_TESTS);
+        XmppConnection xmpp_connection(
+            jingle_xmpp::XmppClientSettings(),
+            net_config_helper_.MakeSocketFactoryCallback(),
+            &mock_xmpp_connection_delegate_, nullptr,
+            TRAFFIC_ANNOTATION_FOR_TESTS);
 
-    xmpp_connection.weak_xmpp_client_->
-        SignalStateChange(jingle_xmpp::XmppEngine::STATE_OPEN);
-    for (int i = 0; i < 3; ++i) {
-      xmpp_connection.weak_xmpp_client_->
-          SignalStateChange(jingle_xmpp::XmppEngine::STATE_OPEN);
-    }
+        xmpp_connection.weak_xmpp_client_->SignalStateChange(
+            jingle_xmpp::XmppEngine::STATE_OPEN);
+        for (int i = 0; i < 3; ++i) {
+          xmpp_connection.weak_xmpp_client_->SignalStateChange(
+              jingle_xmpp::XmppEngine::STATE_OPEN);
+        }
 
-    EXPECT_EQ(xmpp_connection.weak_xmpp_client_.get(), weak_ptr.get());
-  }, "more than once");
+        EXPECT_EQ(xmpp_connection.weak_xmpp_client_.get(), weak_ptr.get());
+      },
+      "more than once");
 }
 
 TEST_F(XmppConnectionTest, ConnectThenError) {

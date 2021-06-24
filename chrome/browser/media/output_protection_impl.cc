@@ -5,18 +5,18 @@
 #include "chrome/browser/media/output_protection_impl.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/logging.h"
 #include "chrome/browser/media/output_protection_proxy.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
 
 // static
 void OutputProtectionImpl::Create(
     content::RenderFrameHost* render_frame_host,
-    media::mojom::OutputProtectionRequest request) {
+    mojo::PendingReceiver<media::mojom::OutputProtection> receiver) {
   DVLOG(2) << __func__;
 
   // OutputProtectionProxy requires to run on the UI thread.
@@ -24,17 +24,16 @@ void OutputProtectionImpl::Create(
   DCHECK(render_frame_host);
 
   // The object is bound to the lifetime of |render_frame_host| and the mojo
-  // connection. See FrameServiceBase for details.
-  new OutputProtectionImpl(render_frame_host, std::move(request));
+  // connection. See DocumentServiceBase for details.
+  new OutputProtectionImpl(render_frame_host, std::move(receiver));
 }
 
 OutputProtectionImpl::OutputProtectionImpl(
     content::RenderFrameHost* render_frame_host,
-    media::mojom::OutputProtectionRequest request)
-    : FrameServiceBase(render_frame_host, std::move(request)),
+    mojo::PendingReceiver<media::mojom::OutputProtection> receiver)
+    : DocumentServiceBase(render_frame_host, std::move(receiver)),
       render_process_id_(render_frame_host->GetProcess()->GetID()),
-      render_frame_id_(render_frame_host->GetRoutingID()),
-      weak_factory_(this) {}
+      render_frame_id_(render_frame_host->GetRoutingID()) {}
 
 OutputProtectionImpl::~OutputProtectionImpl() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -44,9 +43,9 @@ void OutputProtectionImpl::QueryStatus(QueryStatusCallback callback) {
   DVLOG(2) << __func__;
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  GetProxy()->QueryStatus(base::Bind(&OutputProtectionImpl::OnQueryStatusResult,
-                                     weak_factory_.GetWeakPtr(),
-                                     base::Passed(&callback)));
+  GetProxy()->QueryStatus(
+      base::BindOnce(&OutputProtectionImpl::OnQueryStatusResult,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void OutputProtectionImpl::EnableProtection(uint32_t desired_protection_mask,
@@ -56,8 +55,8 @@ void OutputProtectionImpl::EnableProtection(uint32_t desired_protection_mask,
 
   GetProxy()->EnableProtection(
       desired_protection_mask,
-      base::Bind(&OutputProtectionImpl::OnEnableProtectionResult,
-                 weak_factory_.GetWeakPtr(), base::Passed(&callback)));
+      base::BindOnce(&OutputProtectionImpl::OnEnableProtectionResult,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void OutputProtectionImpl::OnQueryStatusResult(QueryStatusCallback callback,

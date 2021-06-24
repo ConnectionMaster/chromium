@@ -27,6 +27,8 @@
  */
 
 #include "third_party/blink/renderer/modules/webaudio/audio_listener.h"
+
+#include "third_party/blink/renderer/modules/webaudio/audio_graph_tracer.h"
 #include "third_party/blink/renderer/modules/webaudio/panner_node.h"
 #include "third_party/blink/renderer/platform/audio/audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
@@ -35,71 +37,84 @@
 namespace blink {
 
 AudioListener::AudioListener(BaseAudioContext& context)
-    : position_x_(
-          AudioParam::Create(context,
-                             kParamTypeAudioListenerPositionX,
-                             0.0,
-                             AudioParamHandler::AutomationRate::kAudio,
-                             AudioParamHandler::AutomationRateMode::kVariable)),
-      position_y_(
-          AudioParam::Create(context,
-                             kParamTypeAudioListenerPositionY,
-                             0.0,
-                             AudioParamHandler::AutomationRate::kAudio,
-                             AudioParamHandler::AutomationRateMode::kVariable)),
-      position_z_(
-          AudioParam::Create(context,
-                             kParamTypeAudioListenerPositionZ,
-                             0.0,
-                             AudioParamHandler::AutomationRate::kAudio,
-                             AudioParamHandler::AutomationRateMode::kVariable)),
+    : InspectorHelperMixin(context.GraphTracer(), context.Uuid()),
+      position_x_(AudioParam::Create(
+          context,
+          Uuid(),
+          AudioParamHandler::kParamTypeAudioListenerPositionX,
+          0.0,
+          AudioParamHandler::AutomationRate::kAudio,
+          AudioParamHandler::AutomationRateMode::kVariable)),
+      position_y_(AudioParam::Create(
+          context,
+          Uuid(),
+          AudioParamHandler::kParamTypeAudioListenerPositionY,
+          0.0,
+          AudioParamHandler::AutomationRate::kAudio,
+          AudioParamHandler::AutomationRateMode::kVariable)),
+      position_z_(AudioParam::Create(
+          context,
+          Uuid(),
+          AudioParamHandler::kParamTypeAudioListenerPositionZ,
+          0.0,
+          AudioParamHandler::AutomationRate::kAudio,
+          AudioParamHandler::AutomationRateMode::kVariable)),
       forward_x_(
           AudioParam::Create(context,
-                             kParamTypeAudioListenerForwardX,
+                             Uuid(),
+                             AudioParamHandler::kParamTypeAudioListenerForwardX,
                              0.0,
                              AudioParamHandler::AutomationRate::kAudio,
                              AudioParamHandler::AutomationRateMode::kVariable)),
       forward_y_(
           AudioParam::Create(context,
-                             kParamTypeAudioListenerForwardY,
+                             Uuid(),
+                             AudioParamHandler::kParamTypeAudioListenerForwardY,
                              0.0,
                              AudioParamHandler::AutomationRate::kAudio,
                              AudioParamHandler::AutomationRateMode::kVariable)),
       forward_z_(
           AudioParam::Create(context,
-                             kParamTypeAudioListenerForwardZ,
+                             Uuid(),
+                             AudioParamHandler::kParamTypeAudioListenerForwardZ,
                              -1.0,
                              AudioParamHandler::AutomationRate::kAudio,
                              AudioParamHandler::AutomationRateMode::kVariable)),
       up_x_(
           AudioParam::Create(context,
-                             kParamTypeAudioListenerUpX,
+                             Uuid(),
+                             AudioParamHandler::kParamTypeAudioListenerUpX,
                              0.0,
                              AudioParamHandler::AutomationRate::kAudio,
                              AudioParamHandler::AutomationRateMode::kVariable)),
       up_y_(
           AudioParam::Create(context,
-                             kParamTypeAudioListenerUpY,
+                             Uuid(),
+                             AudioParamHandler::kParamTypeAudioListenerUpY,
                              1.0,
                              AudioParamHandler::AutomationRate::kAudio,
                              AudioParamHandler::AutomationRateMode::kVariable)),
       up_z_(
           AudioParam::Create(context,
-                             kParamTypeAudioListenerUpZ,
+                             Uuid(),
+                             AudioParamHandler::kParamTypeAudioListenerUpZ,
                              0.0,
                              AudioParamHandler::AutomationRate::kAudio,
                              AudioParamHandler::AutomationRateMode::kVariable)),
       last_update_time_(-1),
       is_listener_dirty_(false),
-      position_x_values_(audio_utilities::kRenderQuantumFrames),
-      position_y_values_(audio_utilities::kRenderQuantumFrames),
-      position_z_values_(audio_utilities::kRenderQuantumFrames),
-      forward_x_values_(audio_utilities::kRenderQuantumFrames),
-      forward_y_values_(audio_utilities::kRenderQuantumFrames),
-      forward_z_values_(audio_utilities::kRenderQuantumFrames),
-      up_x_values_(audio_utilities::kRenderQuantumFrames),
-      up_y_values_(audio_utilities::kRenderQuantumFrames),
-      up_z_values_(audio_utilities::kRenderQuantumFrames) {
+      position_x_values_(
+          context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      position_y_values_(
+          context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      position_z_values_(
+          context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      forward_x_values_(context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      forward_y_values_(context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      forward_z_values_(context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      up_x_values_(context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      up_y_values_(context.GetDeferredTaskHandler().RenderQuantumFrames()),
+      up_z_values_(context.GetDeferredTaskHandler().RenderQuantumFrames()) {
   // Initialize the cached values with the current values.  Thus, we don't need
   // to notify any panners because we haved moved.
   last_position_ = GetPosition();
@@ -109,7 +124,7 @@ AudioListener::AudioListener(BaseAudioContext& context)
 
 AudioListener::~AudioListener() = default;
 
-void AudioListener::Trace(blink::Visitor* visitor) {
+void AudioListener::Trace(Visitor* visitor) const {
   visitor->Trace(position_x_);
   visitor->Trace(position_y_);
   visitor->Trace(position_z_);
@@ -122,6 +137,7 @@ void AudioListener::Trace(blink::Visitor* visitor) {
   visitor->Trace(up_y_);
   visitor->Trace(up_z_);
 
+  InspectorHelperMixin::Trace(visitor);
   ScriptWrappable::Trace(visitor);
 }
 
@@ -148,6 +164,17 @@ bool AudioListener::HasSampleAccurateValues() const {
          upZ()->Handler().HasSampleAccurateValues();
 }
 
+bool AudioListener::IsAudioRate() const {
+  return positionX()->Handler().IsAudioRate() ||
+         positionY()->Handler().IsAudioRate() ||
+         positionZ()->Handler().IsAudioRate() ||
+         forwardX()->Handler().IsAudioRate() ||
+         forwardY()->Handler().IsAudioRate() ||
+         forwardZ()->Handler().IsAudioRate() ||
+         upX()->Handler().IsAudioRate() || upY()->Handler().IsAudioRate() ||
+         upZ()->Handler().IsAudioRate();
+}
+
 void AudioListener::UpdateValuesIfNeeded(uint32_t frames_to_process) {
   double current_time =
       positionX()->Handler().DestinationHandler().CurrentTime();
@@ -155,19 +182,15 @@ void AudioListener::UpdateValuesIfNeeded(uint32_t frames_to_process) {
     // Time has changed. Update all of the automation values now.
     last_update_time_ = current_time;
 
-    bool sizes_are_good = frames_to_process <= position_x_values_.size() &&
-                          frames_to_process <= position_y_values_.size() &&
-                          frames_to_process <= position_z_values_.size() &&
-                          frames_to_process <= forward_x_values_.size() &&
-                          frames_to_process <= forward_y_values_.size() &&
-                          frames_to_process <= forward_z_values_.size() &&
-                          frames_to_process <= up_x_values_.size() &&
-                          frames_to_process <= up_y_values_.size() &&
-                          frames_to_process <= up_z_values_.size();
-
-    DCHECK(sizes_are_good);
-    if (!sizes_are_good)
-      return;
+    DCHECK_LE(frames_to_process, position_x_values_.size());
+    DCHECK_LE(frames_to_process, position_y_values_.size());
+    DCHECK_LE(frames_to_process, position_z_values_.size());
+    DCHECK_LE(frames_to_process, forward_x_values_.size());
+    DCHECK_LE(frames_to_process, forward_y_values_.size());
+    DCHECK_LE(frames_to_process, forward_z_values_.size());
+    DCHECK_LE(frames_to_process, up_x_values_.size());
+    DCHECK_LE(frames_to_process, up_y_values_.size());
+    DCHECK_LE(frames_to_process, up_z_values_.size());
 
     positionX()->Handler().CalculateSampleAccurateValues(
         position_x_values_.Data(), frames_to_process);
@@ -336,6 +359,32 @@ void AudioListener::SetUpVector(const FloatPoint3D& up_vector,
   up_z_->setValueAtTime(up_vector.Z(), now, exceptionState);
 
   MarkPannersAsDirty(PannerHandler::kAzimuthElevationDirty);
+}
+
+void AudioListener::ReportDidCreate() {
+  GraphTracer().DidCreateAudioListener(this);
+  GraphTracer().DidCreateAudioParam(position_x_);
+  GraphTracer().DidCreateAudioParam(position_y_);
+  GraphTracer().DidCreateAudioParam(position_z_);
+  GraphTracer().DidCreateAudioParam(forward_x_);
+  GraphTracer().DidCreateAudioParam(forward_y_);
+  GraphTracer().DidCreateAudioParam(forward_z_);
+  GraphTracer().DidCreateAudioParam(up_x_);
+  GraphTracer().DidCreateAudioParam(up_y_);
+  GraphTracer().DidCreateAudioParam(up_z_);
+}
+
+void AudioListener::ReportWillBeDestroyed() {
+  GraphTracer().WillDestroyAudioParam(position_x_);
+  GraphTracer().WillDestroyAudioParam(position_y_);
+  GraphTracer().WillDestroyAudioParam(position_z_);
+  GraphTracer().WillDestroyAudioParam(forward_x_);
+  GraphTracer().WillDestroyAudioParam(forward_y_);
+  GraphTracer().WillDestroyAudioParam(forward_z_);
+  GraphTracer().WillDestroyAudioParam(up_x_);
+  GraphTracer().WillDestroyAudioParam(up_y_);
+  GraphTracer().WillDestroyAudioParam(up_z_);
+  GraphTracer().WillDestroyAudioListener(this);
 }
 
 }  // namespace blink

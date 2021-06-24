@@ -20,7 +20,7 @@ class ShellAppDelegate : public AppDelegate {
 
   // AppDelegate overrides:
   void InitWebContents(content::WebContents* web_contents) override;
-  void RenderViewCreated(content::RenderViewHost* render_view_host) override;
+  void RenderFrameCreated(content::RenderFrameHost* frame_host) override;
   void ResizeWebContents(content::WebContents* web_contents,
                          const gfx::Size& size) override;
   content::WebContents* OpenURLFromTab(
@@ -29,13 +29,15 @@ class ShellAppDelegate : public AppDelegate {
       const content::OpenURLParams& params) override;
   void AddNewContents(content::BrowserContext* context,
                       std::unique_ptr<content::WebContents> new_contents,
+                      const GURL& target_url,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture) override;
-  content::ColorChooser* ShowColorChooser(content::WebContents* web_contents,
-                                          SkColor initial_color) override;
+  std::unique_ptr<content::ColorChooser> ShowColorChooser(
+      content::WebContents* web_contents,
+      SkColor initial_color) override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      std::unique_ptr<content::FileSelectListener> listener,
+                      scoped_refptr<content::FileSelectListener> listener,
                       const blink::mojom::FileChooserParams& params) override;
   void RequestMediaAccessPermission(content::WebContents* web_contents,
                                     const content::MediaStreamRequest& request,
@@ -43,19 +45,20 @@ class ShellAppDelegate : public AppDelegate {
                                     const Extension* extension) override;
   bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  blink::MediaStreamType type,
+                                  blink::mojom::MediaStreamType type,
                                   const Extension* extension) override;
   int PreferredIconSize() const override;
   void SetWebContentsBlocked(content::WebContents* web_contents,
                              bool blocked) override;
   bool IsWebContentsVisible(content::WebContents* web_contents) override;
-  void SetTerminatingCallback(const base::Closure& callback) override;
+  void SetTerminatingCallback(base::OnceClosure callback) override;
   void OnHide() override {}
   void OnShow() override {}
   bool TakeFocus(content::WebContents* web_contents, bool reverse) override;
-  gfx::Size EnterPictureInPicture(content::WebContents* web_contents,
-                                  const viz::SurfaceId& surface_id,
-                                  const gfx::Size& natural_size) override;
+  content::PictureInPictureResult EnterPictureInPicture(
+      content::WebContents* web_contents,
+      const viz::SurfaceId& surface_id,
+      const gfx::Size& natural_size) override;
   void ExitPictureInPicture() override;
 
  private:

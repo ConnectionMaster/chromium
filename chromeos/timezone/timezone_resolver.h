@@ -31,7 +31,7 @@ class COMPONENT_EXPORT(CHROMEOS_TIMEZONE) TimeZoneResolver {
 
   // This callback will be called when new timezone arrives.
   using ApplyTimeZoneCallback =
-      base::Callback<void(const TimeZoneResponseData*)>;
+      base::RepeatingCallback<void(const TimeZoneResponseData*)>;
 
   // chromeos::DelayNetworkCall cannot be used directly due to link
   // restrictions.
@@ -114,5 +114,10 @@ class COMPONENT_EXPORT(CHROMEOS_TIMEZONE) TimeZoneResolver {
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when moved to ash.
+namespace ash {
+using ::chromeos::TimeZoneResolver;
+}
 
 #endif  // CHROMEOS_TIMEZONE_TIMEZONE_RESOLVER_H_

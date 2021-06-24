@@ -15,7 +15,7 @@
 #include "build/build_config.h"
 #include "components/nacl/browser/pnacl_translation_cache.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
 #include "net/base/test_completion_callback.h"
 #include "net/disk_cache/disk_cache.h"
@@ -36,10 +36,10 @@ const size_t kBufferSize = 16u;
 class PnaclHostTest : public testing::Test {
  protected:
   PnaclHostTest()
-      : host_(NULL),
+      : host_(nullptr),
         temp_callback_count_(0),
         write_callback_count_(0),
-        thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP) {}
+        task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP) {}
   void SetUp() override {
     host_ = PnaclHost::GetInstance();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
@@ -108,7 +108,7 @@ class PnaclHostTest : public testing::Test {
   PnaclHost* host_;
   int temp_callback_count_;
   int write_callback_count_;
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
 };
 
@@ -122,18 +122,14 @@ static nacl::PnaclCacheInfo GetTestCacheInfo() {
   return info;
 }
 
-#define GET_NEXE_FD(renderer, instance, incognito, info, expect_hit) \
-  do {                                                               \
-    SCOPED_TRACE("");                                                \
-    host_->GetNexeFd(                                                \
-        renderer,                                                    \
-        0, /* ignore render_view_id for now */                       \
-        instance,                                                    \
-        incognito,                                                   \
-        info,                                                        \
-        base::Bind(expect_hit ? &PnaclHostTest::CallbackExpectHit    \
-                              : &PnaclHostTest::CallbackExpectMiss,  \
-                   base::Unretained(this)));                         \
+#define GET_NEXE_FD(renderer, instance, incognito, info, expect_hit)         \
+  do {                                                                       \
+    SCOPED_TRACE("");                                                        \
+    host_->GetNexeFd(                                                        \
+        renderer, instance, incognito, info,                                 \
+        base::BindRepeating(expect_hit ? &PnaclHostTest::CallbackExpectHit   \
+                                       : &PnaclHostTest::CallbackExpectMiss, \
+                            base::Unretained(this)));                        \
   } while (0)
 
 TEST_F(PnaclHostTest, BasicMiss) {

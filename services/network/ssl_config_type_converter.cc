@@ -4,6 +4,9 @@
 
 #include "services/network/ssl_config_type_converter.h"
 
+#include "base/check_op.h"
+#include "base/notreached.h"
+
 namespace mojo {
 
 int MojoSSLVersionToNetSSLVersion(network::mojom::SSLVersion mojo_version) {
@@ -21,22 +24,35 @@ int MojoSSLVersionToNetSSLVersion(network::mojom::SSLVersion mojo_version) {
   return net::SSL_PROTOCOL_VERSION_TLS1_3;
 }
 
-net::SSLConfig
-TypeConverter<net::SSLConfig, network::mojom::SSLConfigPtr>::Convert(
+net::SSLContextConfig MojoSSLConfigToSSLContextConfig(
     const network::mojom::SSLConfigPtr& mojo_config) {
-  DCHECK(mojo_config);
-
-  net::SSLConfig net_config;
+  net::SSLContextConfig net_config;
 
   net_config.version_min =
       MojoSSLVersionToNetSSLVersion(mojo_config->version_min);
+  net_config.version_min_warn =
+      MojoSSLVersionToNetSSLVersion(mojo_config->version_min_warn);
   net_config.version_max =
       MojoSSLVersionToNetSSLVersion(mojo_config->version_max);
   DCHECK_LE(net_config.version_min, net_config.version_max);
 
-  for (uint16_t cipher_suite : mojo_config->disabled_cipher_suites) {
-    net_config.disabled_cipher_suites.push_back(cipher_suite);
-  }
+  net_config.disabled_cipher_suites = mojo_config->disabled_cipher_suites;
+  net_config.cecpq2_enabled = mojo_config->cecpq2_enabled;
+  net_config.triple_des_enabled = mojo_config->triple_des_enabled;
+  return net_config;
+}
+
+net::CertVerifier::Config MojoSSLConfigToCertVerifierConfig(
+    const network::mojom::SSLConfigPtr& mojo_config) {
+  net::CertVerifier::Config net_config;
+  net_config.enable_rev_checking = mojo_config->rev_checking_enabled;
+  net_config.require_rev_checking_local_anchors =
+      mojo_config->rev_checking_required_local_anchors;
+  net_config.enable_sha1_local_anchors =
+      mojo_config->sha1_local_anchors_enabled;
+  net_config.disable_symantec_enforcement =
+      mojo_config->symantec_enforcement_disabled;
+
   return net_config;
 }
 

@@ -13,8 +13,8 @@ static_library("network_time") {
   deps = [
     "//base",
     "//base:i18n",
+    "//build:chromeos_buildflags",
     "//components/client_update_protocol",
-    "//components/data_use_measurement/core",
     "//components/prefs",
     "//components/variations",
     "//net",
@@ -24,9 +24,7 @@ static_library("network_time") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "network_time_tracker_unittest.cc",
-  ]
+  sources = [ "network_time_tracker_unittest.cc" ]
 
   deps = [
     ":network_time",

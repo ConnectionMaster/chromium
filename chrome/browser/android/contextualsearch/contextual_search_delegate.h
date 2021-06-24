@@ -17,6 +17,7 @@
 #include "base/values.h"
 #include "chrome/browser/android/contextualsearch/contextual_search_context.h"
 #include "chrome/browser/android/contextualsearch/resolved_search_term.h"
+#include "net/http/http_request_headers.h"
 
 namespace content {
 class WebContents;
@@ -27,21 +28,20 @@ class SharedURLLoaderFactory;
 class SimpleURLLoader;
 }  // namespace network
 
-class Profile;
 class TemplateURLService;
 class ContextualSearchFieldTrial;
 
-// Handles tasks for the ContextualSearchManager in a separable and testable
-// way, without the complication of being connected to a Java object.
+// Handles tasks for the ContextualSearchManager including communicating with
+// the server. This class has no JNI in order to keep it separable and testable.
 class ContextualSearchDelegate
     : public base::SupportsWeakPtr<ContextualSearchDelegate> {
  public:
   // Provides the Resolved Search Term, called when the Resolve Request returns.
-  typedef base::Callback<void(const ResolvedSearchTerm&)>
+  typedef base::RepeatingCallback<void(const ResolvedSearchTerm&)>
       SearchTermResolutionCallback;
   // Provides text surrounding the selection to Java.
-  typedef base::Callback<
-      void(const std::string&, const base::string16&, size_t, size_t)>
+  typedef base::RepeatingCallback<
+      void(const std::string&, const std::u16string&, size_t, size_t)>
       SurroundingTextCallback;
 
   // Constructs a delegate that will always call back to the given callbacks
@@ -49,8 +49,8 @@ class ContextualSearchDelegate
   ContextualSearchDelegate(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       TemplateURLService* template_url_service,
-      const SearchTermResolutionCallback& search_term_callback,
-      const SurroundingTextCallback& surrounding_callback);
+      SearchTermResolutionCallback search_term_callback,
+      SurroundingTextCallback surrounding_callback);
   virtual ~ContextualSearchDelegate();
 
   // Gathers surrounding text and saves it locally in the given context.
@@ -117,20 +117,13 @@ class ContextualSearchDelegate
       const bool may_send_base_page_url);
 
   void OnTextSurroundingSelectionAvailable(
-    const base::string16& surrounding_text,
-    int start_offset,
-    int end_offset);
+      const std::u16string& surrounding_text,
+      uint32_t start_offset,
+      uint32_t end_offset);
 
   // Populates and returns the discourse context.
-  std::string GetDiscourseContext(const ContextualSearchContext& context);
-
-  // Checks if we can send the URL for this user. Several conditions are checked
-  // to make sure it's OK to send the URL.  These fall into two categories:
-  // 1) check if it's allowed by our policy, and 2) ensure that the user is
-  // already sending their URL browsing activity to Google.
-  bool CanSendPageURL(const GURL& current_page_url,
-                      Profile* profile,
-                      TemplateURLService* template_url_service);
+  const net::HttpRequestHeaders GetDiscourseContext(
+      const ContextualSearchContext& context);
 
   // Builds a Resolved Search Term by decoding the given JSON string.
   std::unique_ptr<ResolvedSearchTerm> GetResolvedSearchTermFromJson(
@@ -154,7 +147,9 @@ class ContextualSearchDelegate
       QuickActionCategory* quick_action_category,
       int64_t* logged_event_id,
       std::string* search_url_full,
-      std::string* search_url_preload);
+      std::string* search_url_preload,
+      int* coca_card_tag,
+      std::string* related_searches_json);
 
   // Extracts the start and end location from a mentions list, and sets the
   // integers referenced by |startResult| and |endResult|.
@@ -174,7 +169,7 @@ class ContextualSearchDelegate
   // of the selection in the function result.
   // |return| the trimmed surrounding text with selection at the
   // updated start/end offsets.
-  base::string16 SampleSurroundingText(const base::string16& surrounding_text,
+  std::u16string SampleSurroundingText(const std::u16string& surrounding_text,
                                        int padding_each_side,
                                        size_t* start,
                                        size_t* end);

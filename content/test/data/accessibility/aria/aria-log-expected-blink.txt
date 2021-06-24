@@ -1,2 +1,4 @@
 rootWebArea
-++log
+++genericContainer ignored
+++++genericContainer ignored
+++++++log

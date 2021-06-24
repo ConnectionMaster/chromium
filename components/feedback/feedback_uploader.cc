@@ -7,16 +7,15 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/command_line.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "components/feedback/feedback_report.h"
 #include "components/feedback/feedback_switches.h"
 #include "components/variations/net/variations_http_headers.h"
-#include "content/public/browser/browser_context.h"
-#include "content/public/browser/storage_partition.h"
 #include "net/base/load_flags.h"
 #include "net/url_request/url_fetcher.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 
 namespace feedback {
@@ -46,10 +45,6 @@ base::TimeDelta g_minimum_retry_delay = base::TimeDelta::FromMinutes(60);
 // dispatched, this is the time to wait for the on-going dispatching to finish.
 base::TimeDelta g_dispatching_wait_delay = base::TimeDelta::FromSeconds(4);
 
-base::FilePath GetPathFromContext(content::BrowserContext* context) {
-  return context->GetPath().Append(kFeedbackReportPath);
-}
-
 GURL GetFeedbackPostGURL() {
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
@@ -58,22 +53,35 @@ GURL GetFeedbackPostGURL() {
                   : kFeedbackPostUrl);
 }
 
+// Creates a new SingleThreadTaskRunner that is used to run feedback blocking
+// background work.
+scoped_refptr<base::SingleThreadTaskRunner> CreateUploaderTaskRunner() {
+  // Uses a BLOCK_SHUTDOWN file task runner to prevent losing reports or
+  // corrupting report's files.
+  return base::ThreadPool::CreateSingleThreadTaskRunner(
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
+}
+
 }  // namespace
 
 FeedbackUploader::FeedbackUploader(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    content::BrowserContext* context,
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner)
-    : url_loader_factory_(std::move(url_loader_factory)),
-      context_(context),
-      feedback_reports_path_(GetPathFromContext(context)),
-      task_runner_(task_runner),
-      feedback_post_url_(GetFeedbackPostGURL()),
-      retry_delay_(g_minimum_retry_delay),
-      is_dispatching_(false) {
-  DCHECK(task_runner_);
-  DCHECK(context_);
-}
+    bool is_off_the_record,
+    const base::FilePath& state_path,
+    SharedURLLoaderFactoryGetter shared_url_loader_factory_getter)
+    : FeedbackUploader(is_off_the_record,
+                       state_path,
+                       std::move(shared_url_loader_factory_getter),
+                       nullptr) {}
+
+FeedbackUploader::FeedbackUploader(
+    bool is_off_the_record,
+    const base::FilePath& state_path,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory)
+    : FeedbackUploader(is_off_the_record,
+                       state_path,
+                       SharedURLLoaderFactoryGetter(),
+                       shared_url_loader_factory) {}
 
 FeedbackUploader::~FeedbackUploader() {}
 
@@ -82,8 +90,19 @@ void FeedbackUploader::SetMinimumRetryDelayForTesting(base::TimeDelta delay) {
   g_minimum_retry_delay = delay;
 }
 
-void FeedbackUploader::QueueReport(std::unique_ptr<std::string> data) {
-  QueueReportWithDelay(std::move(data), base::TimeDelta());
+void FeedbackUploader::QueueReport(std::unique_ptr<std::string> data,
+                                   bool has_email) {
+  reports_queue_.emplace(base::MakeRefCounted<FeedbackReport>(
+      feedback_reports_path_, base::Time::Now(), std::move(data), task_runner_,
+      has_email));
+  UpdateUploadTimer();
+}
+
+void FeedbackUploader::RequeueReport(scoped_refptr<FeedbackReport> report) {
+  DCHECK_EQ(task_runner_, report->reports_task_runner());
+  report->set_upload_at(base::Time::Now());
+  reports_queue_.emplace(std::move(report));
+  UpdateUploadTimer();
 }
 
 void FeedbackUploader::StartDispatchingReport() {
@@ -105,10 +124,7 @@ void FeedbackUploader::OnReportUploadFailure(bool should_retry) {
     retry_delay_ *= 2;
     report_being_dispatched_->set_upload_at(retry_delay_ + base::Time::Now());
     reports_queue_.emplace(report_being_dispatched_);
-    VLOG(1) << "Report upload failed. Will retry again after "
-            << retry_delay_.InSeconds() << " seconds.";
   } else {
-    VLOG(1) << "Report upload failed. Will discard.";
     // The report won't be retried, hence explicitly delete its file on disk.
     report_being_dispatched_->DeleteReportOnDisk();
   }
@@ -128,11 +144,25 @@ bool FeedbackUploader::ReportsUploadTimeComparator::operator()(
   return a->upload_at() > b->upload_at();
 }
 
+FeedbackUploader::FeedbackUploader(
+    bool is_off_the_record,
+    const base::FilePath& state_path,
+    SharedURLLoaderFactoryGetter url_loader_factory_getter,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : url_loader_factory_getter_(std::move(url_loader_factory_getter)),
+      url_loader_factory_(url_loader_factory),
+      feedback_reports_path_(state_path.Append(kFeedbackReportPath)),
+      task_runner_(CreateUploaderTaskRunner()),
+      feedback_post_url_(GetFeedbackPostGURL()),
+      retry_delay_(g_minimum_retry_delay),
+      is_off_the_record_(is_off_the_record) {
+  DCHECK(!!url_loader_factory_getter_ != !!url_loader_factory_);
+}
+
 void FeedbackUploader::AppendExtraHeadersToUploadRequest(
     network::ResourceRequest* resource_request) {}
 
 void FeedbackUploader::DispatchReport() {
-  VLOG(1) << "Uploading report.";
   net::NetworkTrafficAnnotationTag traffic_annotation =
       net::DefineNetworkTrafficAnnotation("chrome_feedback_report_app", R"(
         semantics {
@@ -164,18 +194,19 @@ void FeedbackUploader::DispatchReport() {
         })");
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = feedback_post_url_;
-  resource_request->load_flags =
-      net::LOAD_DO_NOT_SAVE_COOKIES | net::LOAD_DO_NOT_SEND_COOKIES;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   resource_request->method = "POST";
 
   // Tell feedback server about the variation state of this install.
   variations::AppendVariationsHeaderUnknownSignedIn(
       feedback_post_url_,
-      context_->IsOffTheRecord() ? variations::InIncognito::kYes
-                                 : variations::InIncognito::kNo,
+      is_off_the_record_ ? variations::InIncognito::kYes
+                         : variations::InIncognito::kNo,
       resource_request.get());
 
-  AppendExtraHeadersToUploadRequest(resource_request.get());
+  if (report_being_dispatched_->has_email()) {
+    AppendExtraHeadersToUploadRequest(resource_request.get());
+  }
 
   std::unique_ptr<network::SimpleURLLoader> simple_url_loader =
       network::SimpleURLLoader::Create(std::move(resource_request),
@@ -185,9 +216,13 @@ void FeedbackUploader::DispatchReport() {
                                            kProtoBufMimeType);
   auto it = uploads_in_progress_.insert(uploads_in_progress_.begin(),
                                         std::move(simple_url_loader));
-  // TODO(https://crbug.com/808498): Re-add data use measurement once
-  // SimpleURLLoader supports it.
-  // ID=data_use_measurement::DataUseUserData::FEEDBACK_UPLOADER
+
+  if (!url_loader_factory_) {
+    // Lazily create the URLLoaderFactory.
+    url_loader_factory_ = std::move(url_loader_factory_getter_).Run();
+    DCHECK(url_loader_factory_);
+  }
+
   simple_url_loader_ptr->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
       url_loader_factory_.get(),
       base::BindOnce(&FeedbackUploader::OnDispatchComplete,
@@ -256,15 +291,6 @@ void FeedbackUploader::UpdateUploadTimer() {
     upload_timer_.Start(FROM_HERE, delay, this,
                         &FeedbackUploader::UpdateUploadTimer);
   }
-}
-
-void FeedbackUploader::QueueReportWithDelay(std::unique_ptr<std::string> data,
-                                            base::TimeDelta delay) {
-  VLOG(1) << "Queuing report with delay = " << delay.InSeconds() << " seconds.";
-  reports_queue_.emplace(base::MakeRefCounted<FeedbackReport>(
-      feedback_reports_path_, base::Time::Now() + delay, std::move(data),
-      task_runner_));
-  UpdateUploadTimer();
 }
 
 }  // namespace feedback

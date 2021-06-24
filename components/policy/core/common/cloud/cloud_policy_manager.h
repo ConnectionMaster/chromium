@@ -54,10 +54,15 @@ class POLICY_EXPORT CloudPolicyManager
   CloudPolicyCore* core() { return &core_; }
   const CloudPolicyCore* core() const { return &core_; }
 
+  // Returns true if the underlying CloudPolicyClient is already registered.
+  // Virtual for mocking.
+  virtual bool IsClientRegistered() const;
+
   // ConfigurationPolicyProvider:
   void Init(SchemaRegistry* registry) override;
   void Shutdown() override;
   bool IsInitializationComplete(PolicyDomain domain) const override;
+  bool IsFirstPolicyLoadComplete(PolicyDomain domain) const override;
   void RefreshPolicies() override;
 
   // CloudPolicyStore::Observer:
@@ -107,8 +112,6 @@ class POLICY_EXPORT CloudPolicyManager
   // Whether there's a policy refresh operation pending, in which case all
   // policy update notifications are deferred until after it completes.
   bool waiting_for_policy_refresh_;
-
-  scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(CloudPolicyManager);
 };

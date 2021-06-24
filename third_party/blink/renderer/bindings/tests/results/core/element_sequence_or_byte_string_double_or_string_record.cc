@@ -10,13 +10,13 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/element_sequence_or_byte_string_double_or_string_record.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/double_or_string.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_iterator.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_element.h"
-#include "third_party/blink/renderer/core/animation/element_animation.h"
 #include "third_party/blink/renderer/core/css/cssom/element_computed_style_map.h"
 #include "third_party/blink/renderer/core/dom/child_node.h"
 #include "third_party/blink/renderer/core/dom/non_document_type_child_node.h"
@@ -65,7 +65,7 @@ ElementSequenceOrByteStringDoubleOrStringRecord::ElementSequenceOrByteStringDoub
 ElementSequenceOrByteStringDoubleOrStringRecord::~ElementSequenceOrByteStringDoubleOrStringRecord() = default;
 ElementSequenceOrByteStringDoubleOrStringRecord& ElementSequenceOrByteStringDoubleOrStringRecord::operator=(const ElementSequenceOrByteStringDoubleOrStringRecord&) = default;
 
-void ElementSequenceOrByteStringDoubleOrStringRecord::Trace(blink::Visitor* visitor) {
+void ElementSequenceOrByteStringDoubleOrStringRecord::Trace(Visitor* visitor) const {
   visitor->Trace(byte_string_double_or_string_record_);
   visitor->Trace(element_sequence_);
 }
@@ -82,16 +82,22 @@ void V8ElementSequenceOrByteStringDoubleOrStringRecord::ToImpl(
   if (conversion_mode == UnionTypeConversionMode::kNullable && IsUndefinedOrNull(v8_value))
     return;
 
-  if (HasCallableIteratorSymbol(isolate, v8_value, exception_state)) {
-    HeapVector<Member<Element>> cpp_value = NativeValueTraits<IDLSequence<Element>>::NativeValue(isolate, v8_value, exception_state);
+  if (v8_value->IsObject()) {
+    ScriptIterator script_iterator = ScriptIterator::FromIterable(
+        isolate, v8_value.As<v8::Object>(), exception_state);
     if (exception_state.HadException())
       return;
-    impl.SetElementSequence(cpp_value);
-    return;
+    if (!script_iterator.IsNull()) {
+      HeapVector<Member<Element>> cpp_value{ NativeValueTraits<IDLSequence<Element>>::NativeValue(isolate, std::move(script_iterator), exception_state) };
+      if (exception_state.HadException())
+        return;
+      impl.SetElementSequence(cpp_value);
+      return;
+    }
   }
 
   if (v8_value->IsObject()) {
-    HeapVector<std::pair<String, DoubleOrString>> cpp_value = NativeValueTraits<IDLRecord<IDLByteString, DoubleOrString>>::NativeValue(isolate, v8_value, exception_state);
+    HeapVector<std::pair<String, DoubleOrString>> cpp_value{ NativeValueTraits<IDLRecord<IDLByteString, DoubleOrString>>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetByteStringDoubleOrStringRecord(cpp_value);
@@ -123,3 +129,4 @@ ElementSequenceOrByteStringDoubleOrStringRecord NativeValueTraits<ElementSequenc
 }
 
 }  // namespace blink
+

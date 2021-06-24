@@ -41,12 +41,16 @@ class PPP_Pdf_Proxy : public InterfaceProxy {
                                      const PP_FloatPoint& extent);
   void OnPluginMsgCanEditText(PP_Instance instance, PP_Bool* result);
   void OnPluginMsgHasEditableText(PP_Instance instance, PP_Bool* result);
+  void OnPluginMsgReplaceSelection(PP_Instance instance,
+                                   const std::string& text);
+  void OnPluginMsgSelectAll(PP_Instance instance);
   void OnPluginMsgCanUndo(PP_Instance instance, PP_Bool* result);
   void OnPluginMsgCanRedo(PP_Instance instance, PP_Bool* result);
   void OnPluginMsgUndo(PP_Instance instance);
   void OnPluginMsgRedo(PP_Instance instance);
-  void OnPluginMsgReplaceSelection(PP_Instance instance,
-                                   const std::string& text);
+  void OnPluginMsgHandleAccessibilityAction(
+      PP_Instance instance,
+      const PP_PdfAccessibilityActionData& action_data);
   void OnPluginMsgPrintBegin(PP_Instance instance,
                              const PP_PrintSettings_Dev& print_settings,
                              const PP_PdfPrintSettings_Dev& pdf_print_settings,

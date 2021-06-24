@@ -7,13 +7,14 @@ package org.chromium.chromecast.shell;
 import android.content.Intent;
 import android.content.SharedPreferences;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.chromecast.base.Itertools;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -65,6 +66,7 @@ public class CastCommandLineHelper {
      * Reads command line args from persistent storage and initializes the CommandLine with those
      * args. Does not initialize CommandLine if it has been already been done.
      */
+    @SuppressWarnings("VisibleForTests")  // For call to cmdline.hasSwitch()
     public static void initCommandLineWithSavedArgs(CommandLineInitializer commandLineInitializer) {
         // CommandLine is a singleton, so check whether CastCommandLineHelper has initialized it
         // already and do nothing if so. We keep track of this in a static variable so we can still

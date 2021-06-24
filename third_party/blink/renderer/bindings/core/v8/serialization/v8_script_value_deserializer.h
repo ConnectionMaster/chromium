@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SERIALIZATION_V8_SCRIPT_VALUE_DESERIALIZER_H_
 #define THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SERIALIZATION_V8_SCRIPT_VALUE_DESERIALIZER_H_
 
+#include "base/dcheck_is_on.h"
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialization_tag.h"
@@ -12,7 +13,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "v8/include/v8.h"
 
 namespace blink {
@@ -83,6 +84,10 @@ class CORE_EXPORT V8ScriptValueDeserializer
     return false;
   }
 
+  SerializedScriptValue* GetSerializedScriptValue() {
+    return serialized_script_value_.get();
+  }
+
  private:
   V8ScriptValueDeserializer(ScriptState*,
                             UnpackedSerializedScriptValue*,
@@ -105,15 +110,17 @@ class CORE_EXPORT V8ScriptValueDeserializer
       v8::Isolate*,
       uint32_t) override;
 
-  Member<ScriptState> script_state_;
-  Member<UnpackedSerializedScriptValue> unpacked_value_;
+  bool TransferableStreamsEnabled() const;
+
+  ScriptState* script_state_;
+  UnpackedSerializedScriptValue* unpacked_value_;
   scoped_refptr<SerializedScriptValue> serialized_script_value_;
   v8::ValueDeserializer deserializer_;
 
   // Message ports which were transferred in.
   const MessagePortArray* transferred_message_ports_ = nullptr;
 
-  Member<MessagePortArray> transferred_stream_ports_;
+  Vector<SerializedScriptValue::Stream> streams_;
 
   // Blob info for blobs stored by index.
   const WebBlobInfoArray* blob_info_array_ = nullptr;

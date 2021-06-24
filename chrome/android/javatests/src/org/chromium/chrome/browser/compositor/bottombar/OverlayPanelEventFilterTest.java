@@ -4,30 +4,42 @@
 
 package org.chromium.chrome.browser.compositor.bottombar;
 
+import android.app.Activity;
 import android.content.Context;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.annotation.UiThreadTest;
-import android.support.test.filters.SmallTest;
-import android.support.test.rule.UiThreadTestRule;
 import android.view.MotionEvent;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 
+import androidx.test.filters.MediumTest;
+
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.test.UiThreadTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.compositor.layouts.eventfilter.OverlayPanelEventFilter;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-
+import org.chromium.content_public.browser.test.util.TestThreadUtils;
+import org.chromium.ui.base.ActivityWindowAndroid;
+import org.chromium.ui.base.IntentRequestTracker;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.test.util.DummyUiActivityTestCase;
 /**
  * Class responsible for testing the OverlayPanelEventFilter.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-public class OverlayPanelEventFilterTest {
+public class OverlayPanelEventFilterTest extends DummyUiActivityTestCase {
     private static final float PANEL_ALMOST_MAXIMIZED_OFFSET_Y_DP = 50.f;
     private static final float BAR_HEIGHT_DP = 100.f;
 
@@ -36,6 +48,24 @@ public class OverlayPanelEventFilterTest {
 
     // A small value used to check whether two floats are almost equal.
     private static final float EPSILON = 1e-04f;
+
+    private static final int MOCK_TOOLBAR_HEIGHT = 100;
+
+    @Rule
+    public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Mock
+    private LayoutManagerImpl mLayoutManager;
+    @Mock
+    private BrowserControlsStateProvider mBrowserControlsStateProvider;
+    @Mock
+    private ViewGroup mCompositorViewHolder;
+    @Mock
+    private Tab mTab;
+    @Mock
+    private OverlayContentDelegate mOverlayContentDelegate;
+    @Mock
+    private OverlayContentProgressObserver mOverlayContentProgressObserver;
 
     private float mTouchSlopDp;
     private float mDpToPx;
@@ -56,12 +86,12 @@ public class OverlayPanelEventFilterTest {
     private boolean mEventWasScroll;
     private boolean mEventWasTap;
 
+    private WindowAndroid mWindowAndroid;
+    private Activity mActivity;
+
     // --------------------------------------------------------------------------------------------
     // OverlayPanelEventFilterWrapper
     // --------------------------------------------------------------------------------------------
-
-    @Rule
-    public UiThreadTestRule mRule = new UiThreadTestRule();
 
     /**
      * Wrapper around OverlayPanelEventFilter used by tests.
@@ -109,8 +139,12 @@ public class OverlayPanelEventFilterTest {
         private boolean mWasTapDetectedOnPanel;
         private boolean mWasScrollDetectedOnPanel;
 
-        public MockOverlayPanel(Context context, OverlayPanelManager panelManager) {
-            super(context, null, panelManager);
+        public MockOverlayPanel(Context context, LayoutManagerImpl layoutManager,
+                OverlayPanelManager manager,
+                BrowserControlsStateProvider browserControlsStateProvider,
+                WindowAndroid windowAndroid, ViewGroup compositorViewHolder, Tab tab) {
+            super(context, layoutManager, manager, browserControlsStateProvider, windowAndroid,
+                    compositorViewHolder, MOCK_TOOLBAR_HEIGHT, () -> tab);
         }
 
         @Override
@@ -123,7 +157,9 @@ public class OverlayPanelEventFilterTest {
          */
         private class MockOverlayPanelContent extends OverlayPanelContent {
             public MockOverlayPanelContent() {
-                super(null, null, null, false, 0);
+                super(mOverlayContentDelegate, mOverlayContentProgressObserver, mActivity,
+                        /* isIncognito= */ false, MOCK_TOOLBAR_HEIGHT, mCompositorViewHolder,
+                        mWindowAndroid, () -> mTab);
             }
 
             @Override
@@ -206,22 +242,30 @@ public class OverlayPanelEventFilterTest {
     // --------------------------------------------------------------------------------------------
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         Context context = InstrumentationRegistry.getTargetContext();
 
         mDpToPx = context.getResources().getDisplayMetrics().density;
         mTouchSlopDp = ViewConfiguration.get(context).getScaledTouchSlop() / mDpToPx;
 
-        mPanel = new MockOverlayPanel(context, new OverlayPanelManager());
-        mEventFilter = new OverlayPanelEventFilterWrapper(context, mPanel);
+        TestThreadUtils.runOnUiThreadBlocking(() -> {
+            mWindowAndroid =
+                    new ActivityWindowAndroid(getActivity(), /* listenToActivityState= */ true,
+                            IntentRequestTracker.createFromActivity(getActivity()));
+            mActivity = getActivity();
 
-        mPanel.setSearchBarHeightForTesting(BAR_HEIGHT_DP);
-        mPanel.setHeightForTesting(LAYOUT_HEIGHT_DP);
-        mPanel.setIsFullWidthSizePanelForTesting(true);
+            mPanel = new MockOverlayPanel(context, mLayoutManager, new OverlayPanelManager(),
+                    mBrowserControlsStateProvider, mWindowAndroid, mCompositorViewHolder, mTab);
+            mEventFilter = new OverlayPanelEventFilterWrapper(context, mPanel);
 
-        // NOTE(pedrosimonetti): This should be called after calling the method
-        // setIsFullWidthSizePanelForTesting(), otherwise it will crash the test.
-        mPanel.onSizeChanged(LAYOUT_WIDTH_DP, LAYOUT_HEIGHT_DP, 0, 0);
+            mPanel.setSearchBarHeightForTesting(BAR_HEIGHT_DP);
+            mPanel.setHeightForTesting(LAYOUT_HEIGHT_DP);
+            mPanel.setIsFullWidthSizePanelForTesting(true);
+
+            // NOTE(pedrosimonetti): This should be called after calling the method
+            // setIsFullWidthSizePanelForTesting(), otherwise it will crash the test.
+            mPanel.onSizeChanged(LAYOUT_WIDTH_DP, LAYOUT_HEIGHT_DP, 0, 0);
+        });
 
         setContentViewVerticalScroll(0);
 
@@ -235,8 +279,13 @@ public class OverlayPanelEventFilterTest {
         mShouldLockHorizontalMotionInContent = false;
     }
 
+    @After
+    public void tearDown() {
+        TestThreadUtils.runOnUiThreadBlocking(() -> { mWindowAndroid.destroy(); });
+    }
+
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testTapContentView() {
@@ -254,7 +303,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testScrollingContentViewDragsPanel() {
@@ -273,7 +322,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testScrollUpContentView() {
@@ -292,7 +341,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testScrollDownContentView() {
@@ -315,7 +364,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testDragByOverscrollingContentView() {
@@ -338,7 +387,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testUnwantedScrollDoesNotHappenInContentView() {
@@ -374,7 +423,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testDragPanelThenContinuouslyScrollContentView() {
@@ -404,7 +453,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testTapPanel() {
@@ -422,7 +471,7 @@ public class OverlayPanelEventFilterTest {
     }
 
     @Test
-    @SmallTest
+    @MediumTest
     @Feature({"OverlayPanel"})
     @UiThreadTest
     public void testScrollPanel() {

@@ -11,14 +11,14 @@
 
 #include "base/i18n/encoding_detection.h"
 #include "base/i18n/icu_string_conversions.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversion_utils.h"
 #include "base/values.h"
+#include "chromeos/network/network_event_log.h"
 #include "chromeos/network/network_ui_data.h"
 #include "chromeos/network/onc/onc_utils.h"
-#include "components/device_event_log/device_event_log.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace chromeos {
@@ -91,9 +91,9 @@ std::string GetSSIDFromProperties(const base::Value& properties,
   }
 
   std::string ssid;
-  std::vector<uint8_t> raw_ssid_bytes;
-  if (base::HexStringToBytes(hex_ssid, &raw_ssid_bytes)) {
-    ssid = std::string(raw_ssid_bytes.begin(), raw_ssid_bytes.end());
+  std::string ssid_bytes;
+  if (base::HexStringToString(hex_ssid, &ssid_bytes)) {
+    ssid = ssid_bytes;
     VLOG(2) << "GetSSIDFromProperties: " << name << " HexSsid=" << hex_ssid
             << " SSID=" << ssid;
   } else {
@@ -138,21 +138,17 @@ std::string GetSSIDFromProperties(const base::Value& properties,
 std::string GetNetworkIdFromProperties(const base::Value& properties) {
   if (properties.DictEmpty())
     return "EmptyProperties";
-  const base::Value* result =
-      properties.FindKeyOfType(shill::kGuidProperty, base::Value::Type::STRING);
-  if (!result) {
-    result = properties.FindKeyOfType(shill::kSSIDProperty,
-                                      base::Value::Type::STRING);
+  std::string guid = GetStringFromDictionary(&properties, shill::kGuidProperty);
+  if (!guid.empty())
+    return NetworkGuidId(guid);
+  std::string type = GetStringFromDictionary(&properties, shill::kTypeProperty);
+  if (!type.empty()) {
+    std::string security =
+        GetStringFromDictionary(&properties, shill::kSecurityClassProperty);
+    if (!security.empty())
+      return type + "_" + security + "_unconfigured";
   }
-  if (!result) {
-    result = properties.FindKeyOfType(shill::kNameProperty,
-                                      base::Value::Type::STRING);
-  }
-  if (result)
-    return result->GetString();
-  result =
-      properties.FindKeyOfType(shill::kTypeProperty, base::Value::Type::STRING);
-  return result ? "Unidentified " + result->GetString() : "UnknownType";
+  return "<Unconfigured Network>";
 }
 
 std::string GetNameFromProperties(const std::string& service_path,
@@ -197,24 +193,22 @@ std::unique_ptr<NetworkUIData> GetUIDataFromValue(
     const base::Value& ui_data_value) {
   std::string ui_data_str;
   if (!ui_data_value.GetAsString(&ui_data_str))
-    return std::unique_ptr<NetworkUIData>();
+    return nullptr;
   if (ui_data_str.empty())
     return std::make_unique<NetworkUIData>();
-  std::unique_ptr<base::Value> ui_data_dict(
-      chromeos::onc::ReadDictionaryFromJson(ui_data_str));
-  if (!ui_data_dict)
-    return std::unique_ptr<NetworkUIData>();
-  return std::make_unique<NetworkUIData>(*ui_data_dict);
+  base::Value ui_data_dict = chromeos::onc::ReadDictionaryFromJson(ui_data_str);
+  if (!ui_data_dict.is_dict())
+    return nullptr;
+  return std::make_unique<NetworkUIData>(ui_data_dict);
 }
 
 std::unique_ptr<NetworkUIData> GetUIDataFromProperties(
     const base::DictionaryValue& shill_dictionary) {
-  const base::Value* ui_data_value = NULL;
-  shill_dictionary.GetWithoutPathExpansion(shill::kUIDataProperty,
-                                           &ui_data_value);
+  const base::Value* ui_data_value =
+      shill_dictionary.FindKey(shill::kUIDataProperty);
   if (!ui_data_value) {
     VLOG(2) << "Dictionary has no UIData entry.";
-    return std::unique_ptr<NetworkUIData>();
+    return nullptr;
   }
   std::unique_ptr<NetworkUIData> ui_data = GetUIDataFromValue(*ui_data_value);
   if (!ui_data)
@@ -222,10 +216,29 @@ std::unique_ptr<NetworkUIData> GetUIDataFromProperties(
   return ui_data;
 }
 
-void SetUIData(const NetworkUIData& ui_data,
-               base::DictionaryValue* shill_dictionary) {
+void SetUIDataAndSource(const NetworkUIData& ui_data,
+                        base::DictionaryValue* shill_dictionary) {
   shill_dictionary->SetKey(shill::kUIDataProperty,
                            base::Value(ui_data.GetAsJson()));
+  std::string source;
+  switch (ui_data.onc_source()) {
+    case ::onc::ONC_SOURCE_UNKNOWN:
+      source = shill::kONCSourceUnknown;
+      break;
+    case ::onc::ONC_SOURCE_NONE:
+      source = shill::kONCSourceNone;
+      break;
+    case ::onc::ONC_SOURCE_USER_IMPORT:
+      source = shill::kONCSourceUserImport;
+      break;
+    case ::onc::ONC_SOURCE_DEVICE_POLICY:
+      source = shill::kONCSourceDevicePolicy;
+      break;
+    case ::onc::ONC_SOURCE_USER_POLICY:
+      source = shill::kONCSourceUserPolicy;
+      break;
+  }
+  shill_dictionary->SetKey(shill::kONCSourceProperty, base::Value(source));
 }
 
 bool CopyIdentifyingProperties(const base::DictionaryValue& service_properties,
@@ -286,7 +299,7 @@ bool CopyIdentifyingProperties(const base::DictionaryValue& service_properties,
     // Ethernet and EthernetEAP don't have any additional identifying
     // properties.
   } else {
-    NOTREACHED() << "Unsupported network type " << type;
+    NET_LOG(ERROR) << "Unsupported network type " << type;
     success = false;
   }
   if (!success) {
@@ -312,7 +325,7 @@ bool DoIdentifyingPropertiesMatch(const base::DictionaryValue& new_properties,
     return false;
   }
 
-  return new_identifying.Equals(&old_identifying);
+  return new_identifying == old_identifying;
 }
 
 bool IsLoggableShillProperty(const std::string& key) {
@@ -320,24 +333,16 @@ bool IsLoggableShillProperty(const std::string& key) {
   if (!s_skip_properties) {
     s_skip_properties = new std::set<std::string>;
     s_skip_properties->insert(shill::kApnPasswordProperty);
-    s_skip_properties->insert(shill::kEapCaCertNssProperty);
     s_skip_properties->insert(shill::kEapCaCertPemProperty);
     s_skip_properties->insert(shill::kEapCaCertProperty);
-    s_skip_properties->insert(shill::kEapClientCertNssProperty);
-    s_skip_properties->insert(shill::kEapClientCertProperty);
     s_skip_properties->insert(shill::kEapPasswordProperty);
     s_skip_properties->insert(shill::kEapPinProperty);
-    s_skip_properties->insert(shill::kEapPrivateKeyPasswordProperty);
-    s_skip_properties->insert(shill::kEapPrivateKeyProperty);
     s_skip_properties->insert(shill::kL2tpIpsecCaCertPemProperty);
     s_skip_properties->insert(shill::kL2tpIpsecPasswordProperty);
     s_skip_properties->insert(shill::kL2tpIpsecPinProperty);
     s_skip_properties->insert(shill::kL2tpIpsecPskProperty);
     s_skip_properties->insert(shill::kOpenVPNAuthUserPassProperty);
-    s_skip_properties->insert(shill::kOpenVPNCaCertNSSProperty);
     s_skip_properties->insert(shill::kOpenVPNCaCertPemProperty);
-    s_skip_properties->insert(shill::kOpenVPNCaCertProperty);
-    s_skip_properties->insert(shill::kOpenVPNCertProperty);
     s_skip_properties->insert(shill::kOpenVPNExtraCertPemProperty);
     s_skip_properties->insert(shill::kOpenVPNOTPProperty);
     s_skip_properties->insert(shill::kOpenVPNPasswordProperty);

@@ -8,8 +8,8 @@
 
 #if defined(OS_WIN)
 #include <windows.h>
-#include <objidl.h>
 #include <mlang.h>
+#include <objidl.h>
 #endif
 
 #include <stddef.h>
@@ -25,8 +25,11 @@
 #include "base/debug/stack_trace.h"
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/string_piece.h"
+#include "base/strings/string_split.h"
 #include "base/system/sys_info.h"
 #include "base/task/thread_pool/initialization_util.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/time/time.h"
 #include "content/common/thread_pool_util.h"
 #include "content/public/common/bindings_policy.h"
@@ -34,14 +37,20 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/renderer/content_renderer_client.h"
-#include "services/service_manager/embedder/switches.h"
+#include "services/network/public/cpp/features.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/platform/web_runtime_features.h"
+#include "third_party/blink/public/web/blink.h"
 #include "third_party/blink/public/web/web_frame.h"
+#include "third_party/blink/public/web/web_v8_features.h"
 #include "v8/include/v8.h"
 
 #if defined(OS_WIN)
 #include "base/win/win_util.h"
 #endif
-
+#if (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(ARCH_CPU_X86_64)
+#include "v8/include/v8-wasm-trap-handler-posix.h"
+#endif
 namespace {
 
 void SetV8FlagIfFeature(const base::Feature& feature, const char* v8_flag) {
@@ -62,25 +71,20 @@ void SetV8FlagIfHasSwitch(const char* switch_name, const char* v8_flag) {
   }
 }
 
-std::unique_ptr<base::ThreadPool::InitParams> GetDefaultThreadPoolInitParams() {
-  constexpr int kMaxNumThreadsInBackgroundPool = 2;
+std::unique_ptr<base::ThreadPoolInstance::InitParams>
+GetThreadPoolInitParams() {
   constexpr int kMaxNumThreadsInForegroundPoolLowerBound = 3;
-  constexpr auto kSuggestedReclaimTime = base::TimeDelta::FromSeconds(30);
-
-  return std::make_unique<base::ThreadPool::InitParams>(
-      base::SchedulerWorkerPoolParams(kMaxNumThreadsInBackgroundPool,
-                                      kSuggestedReclaimTime),
-      base::SchedulerWorkerPoolParams(
-          std::max(kMaxNumThreadsInForegroundPoolLowerBound,
-                   content::GetMinForegroundThreadsInRendererThreadPool()),
-          kSuggestedReclaimTime));
+  return std::make_unique<base::ThreadPoolInstance::InitParams>(
+      std::max(kMaxNumThreadsInForegroundPoolLowerBound,
+               content::GetMinForegroundThreadsInRendererThreadPool()));
 }
 
 #if defined(DCHECK_IS_CONFIGURABLE)
 void V8DcheckCallbackHandler(const char* file, int line, const char* message) {
   // TODO(siggi): Set a crash key or a breadcrumb so the fact that we hit a
   //     V8 DCHECK gets out in the crash report.
-  ::logging::LogMessage(file, line, logging::LOG_DCHECK).stream() << message;
+  ::logging::LogMessage(file, line, logging::LOGGING_DCHECK).stream()
+      << message;
 }
 #endif  // defined(DCHECK_IS_CONFIGURABLE)
 
@@ -88,10 +92,10 @@ void V8DcheckCallbackHandler(const char* file, int line, const char* message) {
 
 namespace content {
 
-RenderProcessImpl::RenderProcessImpl(
-    std::unique_ptr<base::ThreadPool::InitParams> thread_pool_init_params)
-    : RenderProcess("Renderer", std::move(thread_pool_init_params)),
-      enabled_bindings_(0) {
+RenderProcessImpl::RenderProcessImpl()
+    : RenderProcess("Renderer", GetThreadPoolInitParams()) {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+
 #if defined(DCHECK_IS_CONFIGURABLE)
   // Some official builds ship with DCHECKs compiled in. Failing DCHECKs then
   // are either fatal or simply log the error, based on a feature flag.
@@ -115,70 +119,118 @@ RenderProcessImpl::RenderProcessImpl(
 
   if (base::SysInfo::IsLowEndDevice()) {
     std::string optimize_flag("--optimize-for-size");
-    v8::V8::SetFlagsFromString(optimize_flag.c_str(),
-                               static_cast<int>(optimize_flag.size()));
+    v8::V8::SetFlagsFromString(optimize_flag.c_str(), optimize_flag.size());
   }
 
   SetV8FlagIfHasSwitch(switches::kDisableJavaScriptHarmonyShipping,
                        "--noharmony-shipping");
   SetV8FlagIfHasSwitch(switches::kJavaScriptHarmony, "--harmony");
+  SetV8FlagIfHasSwitch(switches::kEnableExperimentalWebAssemblyFeatures,
+                       "--wasm-staging");
 
-  constexpr char kModuleFlags[] =
-      "--harmony-dynamic-import --harmony-import-meta";
-  v8::V8::SetFlagsFromString(kModuleFlags, sizeof(kModuleFlags));
-
-  SetV8FlagIfFeature(features::kV8Orinoco, "--no-single-threaded-gc");
-  SetV8FlagIfNotFeature(features::kV8Orinoco, "--single-threaded-gc");
+  SetV8FlagIfHasSwitch(switches::kEnableUnsafeFastJSCalls,
+                       "--turbo-fast-api-calls");
 
   SetV8FlagIfFeature(features::kV8VmFuture, "--future");
   SetV8FlagIfNotFeature(features::kV8VmFuture, "--no-future");
 
-  SetV8FlagIfFeature(features::kWebAssemblyBaseline,
-                     "--liftoff --wasm-tier-up");
-  SetV8FlagIfNotFeature(features::kWebAssemblyBaseline,
-                        "--no-liftoff --no-wasm-tier-up");
+  SetV8FlagIfFeature(features::kWebAssemblyBaseline, "--liftoff");
+  SetV8FlagIfNotFeature(features::kWebAssemblyBaseline, "--no-liftoff");
 
-  if (base::FeatureList::IsEnabled(features::kWebAssemblyThreads)) {
-    constexpr char kFlags[] =
-        "--harmony-sharedarraybuffer "
-        "--no-wasm-disable-structured-cloning "
-        "--experimental-wasm-threads";
+  SetV8FlagIfFeature(features::kWebAssemblyCodeProtection,
+                     "--wasm-write-protect-code-memory");
+  SetV8FlagIfNotFeature(features::kWebAssemblyCodeProtection,
+                        "--no-wasm-write-protect-code-memory");
 
-    v8::V8::SetFlagsFromString(kFlags, sizeof(kFlags));
-  } else {
-    SetV8FlagIfNotFeature(features::kWebAssembly,
-                          "--wasm-disable-structured-cloning");
-    SetV8FlagIfFeature(features::kSharedArrayBuffer,
-                       "--harmony-sharedarraybuffer");
-    SetV8FlagIfNotFeature(features::kSharedArrayBuffer,
-                          "--no-harmony-sharedarraybuffer");
+#if (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(ARCH_CPU_X86_64)
+  SetV8FlagIfFeature(features::kWebAssemblyCodeProtectionPku,
+                     "--wasm-memory-protection-keys");
+  SetV8FlagIfNotFeature(features::kWebAssemblyCodeProtectionPku,
+                        "--no-wasm-memory-protection-keys");
+#endif  // (defined(OS_LINUX) || defined(OS_CHROMEOS)) &&
+        // defined(ARCH_CPU_X86_64)
+
+  SetV8FlagIfFeature(features::kWebAssemblyLazyCompilation,
+                     "--wasm-lazy-compilation");
+  SetV8FlagIfNotFeature(features::kWebAssemblyLazyCompilation,
+                        "--no-wasm-lazy-compilation");
+
+  SetV8FlagIfFeature(features::kWebAssemblySimd, "--experimental-wasm-simd");
+  SetV8FlagIfNotFeature(features::kWebAssemblySimd,
+                        "--no-experimental-wasm-simd");
+
+  SetV8FlagIfFeature(blink::features::kTopLevelAwait,
+                     "--harmony-top-level-await");
+
+  SetV8FlagIfFeature(blink::features::kJSONModules,
+                     "--harmony-import-assertions");
+
+  constexpr char kAtomicsFlag[] = "--harmony-atomics";
+  v8::V8::SetFlagsFromString(kAtomicsFlag, sizeof(kAtomicsFlag));
+
+  bool enable_shared_array_buffer_unconditionally =
+      base::FeatureList::IsEnabled(features::kSharedArrayBuffer);
+
+#if (!defined(OS_ANDROID))
+  // Bypass the SAB restriction for the Finch "kill switch".
+  enable_shared_array_buffer_unconditionally =
+      enable_shared_array_buffer_unconditionally ||
+      base::FeatureList::IsEnabled(features::kSharedArrayBufferOnDesktop);
+
+  // Bypass the SAB restriction when enabled by Enterprise Policy.
+  if (!enable_shared_array_buffer_unconditionally &&
+      command_line->HasSwitch(
+          switches::kSharedArrayBufferUnrestrictedAccessAllowed)) {
+    enable_shared_array_buffer_unconditionally = true;
+    blink::WebRuntimeFeatures::EnableSharedArrayBufferUnrestrictedAccessAllowed(
+        true);
+  }
+#endif
+
+  // The following line enables V8 support for SharedArrayBuffer. Note that the
+  // SharedArrayBuffer constructor will be added to every global object only if
+  // the v8 flag `sharedarraybuffer-per-context` is disabled (cf. next block of
+  // code).
+  blink::WebV8Features::EnableSharedArrayBuffer();
+
+  if (!enable_shared_array_buffer_unconditionally) {
+    // It is still possible to enable SharedArrayBuffer per context using the
+    // `SharedArrayBufferConstructorEnabledCallback`. This will be done if the
+    // context is cross-origin isolated or if it opts in into the reverse origin
+    // trial.
+    constexpr char kSABPerContextFlag[] =
+        "--enable-sharedarraybuffer-per-context";
+    v8::V8::SetFlagsFromString(kSABPerContextFlag, sizeof(kSABPerContextFlag));
   }
 
-  SetV8FlagIfFeature(features::kAwaitOptimization,
-                     "--harmony-await-optimization");
-  SetV8FlagIfNotFeature(features::kAwaitOptimization,
-                        "--no-harmony-await-optimization");
+  SetV8FlagIfFeature(features::kWebAssemblyTiering, "--wasm-tier-up");
+  SetV8FlagIfNotFeature(features::kWebAssemblyTiering, "--no-wasm-tier-up");
 
   SetV8FlagIfNotFeature(features::kWebAssemblyTrapHandler,
                         "--no-wasm-trap-handler");
-#if defined(OS_LINUX) && defined(ARCH_CPU_X86_64)
+#if (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(ARCH_CPU_X86_64)
   if (base::FeatureList::IsEnabled(features::kWebAssemblyTrapHandler)) {
-    bool use_v8_signal_handler = false;
-    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-    if (!command_line->HasSwitch(
-            service_manager::switches::kDisableInProcessStackTraces)) {
-      base::debug::SetStackDumpFirstChanceCallback(v8::V8::TryHandleSignal);
-    } else if (!command_line->HasSwitch(switches::kEnableCrashReporter) &&
-               !command_line->HasSwitch(
-                   switches::kEnableCrashReporterForTesting)) {
-      // If we are using WebAssembly trap handling but both Breakpad and
-      // in-process stack traces are disabled then there will be no signal
-      // handler. In this case, we fall back on V8's default handler
-      // (https://crbug.com/798150).
-      use_v8_signal_handler = true;
+    if (command_line->HasSwitch(switches::kEnableCrashpad) ||
+        command_line->HasSwitch(switches::kEnableCrashReporter) ||
+        command_line->HasSwitch(switches::kEnableCrashReporterForTesting)) {
+      // The trap handler is set as the first chance handler for Crashpad or
+      // Breakpad's signal handler.
+      v8::V8::EnableWebAssemblyTrapHandler(/*use_v8_signal_handler=*/false);
+    } else if (!command_line->HasSwitch(
+                   switches::kDisableInProcessStackTraces)) {
+      if (base::debug::SetStackDumpFirstChanceCallback(
+              v8::TryHandleWebAssemblyTrapPosix)) {
+        // Crashpad and Breakpad are disabled, but the in-process stack dump
+        // handlers are enabled, so set the callback on the stack dump handlers.
+        v8::V8::EnableWebAssemblyTrapHandler(/*use_v8_signal_handler=*/false);
+      } else {
+        // As the registration of the callback failed, we don't enable trap
+        // handlers.
+      }
+    } else {
+      // There is no signal handler yet, but it's okay if v8 registers one.
+      v8::V8::EnableWebAssemblyTrapHandler(/*use_v8_signal_handler=*/true);
     }
-    // TODO(eholk): report UMA stat for how often this succeeds
-    v8::V8::EnableWebAssemblyTrapHandler(use_v8_signal_handler);
   }
 #endif
 #if defined(OS_WIN) && defined(ARCH_CPU_X86_64)
@@ -188,7 +240,7 @@ RenderProcessImpl::RenderProcessImpl(
     v8::V8::EnableWebAssemblyTrapHandler(use_v8_trap_handler);
   }
 #endif
-#if defined(OS_MACOSX) && defined(ARCH_CPU_X86_64)
+#if defined(OS_MAC) && (defined(ARCH_CPU_X86_64) || defined(ARCH_CPU_ARM64))
   if (base::FeatureList::IsEnabled(features::kWebAssemblyTrapHandler)) {
     // On macOS, Crashpad uses exception ports to handle signals in a different
     // process. As we cannot just pass a callback to this other process, we ask
@@ -196,27 +248,23 @@ RenderProcessImpl::RenderProcessImpl(
     bool use_v8_signal_handler = true;
     v8::V8::EnableWebAssemblyTrapHandler(use_v8_signal_handler);
   }
-#endif  // defined(OS_MACOSX) && defined(ARCH_CPU_X86_64)
+#endif  // defined(OS_MAC) && defined(ARCH_CPU_X86_64)
 
-  const base::CommandLine& command_line =
-      *base::CommandLine::ForCurrentProcess();
-
-  if (command_line.HasSwitch(switches::kNoV8UntrustedCodeMitigations)) {
+  if (command_line->HasSwitch(switches::kNoV8UntrustedCodeMitigations)) {
     const char* disable_mitigations = "--no-untrusted-code-mitigations";
     v8::V8::SetFlagsFromString(disable_mitigations,
                                strlen(disable_mitigations));
   }
 
-  if (command_line.HasSwitch(switches::kJavaScriptFlags)) {
-    std::string flags(
-        command_line.GetSwitchValueASCII(switches::kJavaScriptFlags));
-    v8::V8::SetFlagsFromString(flags.c_str(), static_cast<int>(flags.size()));
+  if (command_line->HasSwitch(switches::kJavaScriptFlags)) {
+    std::string js_flags =
+        command_line->GetSwitchValueASCII(switches::kJavaScriptFlags);
+    std::vector<base::StringPiece> flag_list = base::SplitStringPiece(
+        js_flags, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+    for (const auto& flag : flag_list) {
+      v8::V8::SetFlagsFromString(std::string(flag).c_str(), flag.size());
+    }
   }
-
-  if (command_line.HasSwitch(switches::kDomAutomationController))
-    enabled_bindings_ |= BINDINGS_POLICY_DOM_AUTOMATION;
-  if (command_line.HasSwitch(switches::kStatsCollectionController))
-    enabled_bindings_ |= BINDINGS_POLICY_STATS_COLLECTION;
 }
 
 RenderProcessImpl::~RenderProcessImpl() {
@@ -230,21 +278,7 @@ RenderProcessImpl::~RenderProcessImpl() {
 }
 
 std::unique_ptr<RenderProcess> RenderProcessImpl::Create() {
-  auto thread_pool_init_params =
-      content::GetContentClient()->renderer()->GetThreadPoolInitParams();
-  if (!thread_pool_init_params)
-    thread_pool_init_params = GetDefaultThreadPoolInitParams();
-
-  return base::WrapUnique(
-      new RenderProcessImpl(std::move(thread_pool_init_params)));
-}
-
-void RenderProcessImpl::AddBindings(int bindings) {
-  enabled_bindings_ |= bindings;
-}
-
-int RenderProcessImpl::GetEnabledBindings() const {
-  return enabled_bindings_;
+  return base::WrapUnique(new RenderProcessImpl());
 }
 
 void RenderProcessImpl::AddRefProcess() {

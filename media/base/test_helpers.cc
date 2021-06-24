@@ -6,9 +6,12 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/pickle.h"
 #include "base/run_loop.h"
 #include "base/test/test_timeouts.h"
@@ -45,22 +48,22 @@ class MockCallback : public base::RefCountedThreadSafe<MockCallback> {
 MockCallback::MockCallback() = default;
 MockCallback::~MockCallback() = default;
 
-base::Closure NewExpectedClosure() {
+base::OnceClosure NewExpectedClosure() {
   StrictMock<MockCallback>* callback = new StrictMock<MockCallback>();
   EXPECT_CALL(*callback, Run());
-  return base::Bind(&MockCallback::Run, WrapRefCounted(callback));
+  return base::BindOnce(&MockCallback::Run, WrapRefCounted(callback));
 }
 
-base::Callback<void(bool)> NewExpectedBoolCB(bool success) {
+base::OnceCallback<void(bool)> NewExpectedBoolCB(bool success) {
   StrictMock<MockCallback>* callback = new StrictMock<MockCallback>();
   EXPECT_CALL(*callback, RunWithBool(success));
-  return base::Bind(&MockCallback::RunWithBool, WrapRefCounted(callback));
+  return base::BindOnce(&MockCallback::RunWithBool, WrapRefCounted(callback));
 }
 
-PipelineStatusCB NewExpectedStatusCB(PipelineStatus status) {
+PipelineStatusCallback NewExpectedStatusCB(PipelineStatus status) {
   StrictMock<MockCallback>* callback = new StrictMock<MockCallback>();
   EXPECT_CALL(*callback, RunWithStatus(status));
-  return base::Bind(&MockCallback::RunWithStatus, WrapRefCounted(callback));
+  return base::BindOnce(&MockCallback::RunWithStatus, WrapRefCounted(callback));
 }
 
 WaitableMessageLoopEvent::WaitableMessageLoopEvent()
@@ -73,17 +76,16 @@ WaitableMessageLoopEvent::~WaitableMessageLoopEvent() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-base::Closure WaitableMessageLoopEvent::GetClosure() {
+base::OnceClosure WaitableMessageLoopEvent::GetClosure() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return BindToCurrentLoop(base::Bind(
-      &WaitableMessageLoopEvent::OnCallback, base::Unretained(this),
-      PIPELINE_OK));
+  return BindToCurrentLoop(base::BindOnce(&WaitableMessageLoopEvent::OnCallback,
+                                          base::Unretained(this), PIPELINE_OK));
 }
 
-PipelineStatusCB WaitableMessageLoopEvent::GetPipelineStatusCB() {
+PipelineStatusCallback WaitableMessageLoopEvent::GetPipelineStatusCB() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return BindToCurrentLoop(base::Bind(
-      &WaitableMessageLoopEvent::OnCallback, base::Unretained(this)));
+  return BindToCurrentLoop(base::BindOnce(&WaitableMessageLoopEvent::OnCallback,
+                                          base::Unretained(this)));
 }
 
 void WaitableMessageLoopEvent::RunAndWait() {
@@ -98,11 +100,11 @@ void WaitableMessageLoopEvent::RunAndWaitForStatus(PipelineStatus expected) {
     return;
   }
 
-  run_loop_.reset(new base::RunLoop());
+  run_loop_ = std::make_unique<base::RunLoop>();
   base::OneShotTimer timer;
-  timer.Start(
-      FROM_HERE, timeout_,
-      base::Bind(&WaitableMessageLoopEvent::OnTimeout, base::Unretained(this)));
+  timer.Start(FROM_HERE, timeout_,
+              base::BindOnce(&WaitableMessageLoopEvent::OnTimeout,
+                             base::Unretained(this)));
 
   run_loop_->Run();
   EXPECT_TRUE(signaled_);
@@ -136,9 +138,10 @@ static VideoDecoderConfig GetTestConfig(VideoCodec codec,
   gfx::Size natural_size = coded_size;
 
   return VideoDecoderConfig(
-      codec, profile, PIXEL_FORMAT_I420, color_space, rotation, coded_size,
-      visible_rect, natural_size, EmptyExtraData(),
-      is_encrypted ? AesCtrEncryptionScheme() : Unencrypted());
+      codec, profile, VideoDecoderConfig::AlphaMode::kIsOpaque, color_space,
+      VideoTransformation(rotation), coded_size, visible_rect, natural_size,
+      EmptyExtraData(),
+      is_encrypted ? EncryptionScheme::kCenc : EncryptionScheme::kUnencrypted);
 }
 
 static VideoCodecProfile MinProfile(VideoCodec codec) {
@@ -159,7 +162,7 @@ static VideoCodecProfile MinProfile(VideoCodec codec) {
     case kCodecHEVC:
       return HEVCPROFILE_MIN;
     case kCodecDolbyVision:
-      return DOLBYVISION_MIN;
+      return DOLBYVISION_PROFILE0;
     case kCodecAV1:
       return AV1PROFILE_MIN;
   }
@@ -167,6 +170,7 @@ static VideoCodecProfile MinProfile(VideoCodec codec) {
 
 static const gfx::Size kNormalSize(320, 240);
 static const gfx::Size kLargeSize(640, 480);
+static const gfx::Size kExtraLargeSize(15360, 8640);
 
 // static
 VideoDecoderConfig TestVideoConfig::Invalid() {
@@ -230,6 +234,31 @@ VideoDecoderConfig TestVideoConfig::LargeEncrypted(VideoCodec codec) {
 }
 
 // static
+VideoDecoderConfig TestVideoConfig::ExtraLarge(VideoCodec codec) {
+  return GetTestConfig(codec, MinProfile(codec), VideoColorSpace::JPEG(),
+                       VIDEO_ROTATION_0, kExtraLargeSize, false);
+}
+
+// static
+VideoDecoderConfig TestVideoConfig::ExtraLargeEncrypted(VideoCodec codec) {
+  return GetTestConfig(codec, MinProfile(codec), VideoColorSpace::JPEG(),
+                       VIDEO_ROTATION_0, kExtraLargeSize, true);
+}
+
+// static
+VideoDecoderConfig TestVideoConfig::Custom(gfx::Size size, VideoCodec codec) {
+  return GetTestConfig(codec, MinProfile(codec), VideoColorSpace::JPEG(),
+                       VIDEO_ROTATION_0, size, false);
+}
+
+// static
+VideoDecoderConfig TestVideoConfig::CustomEncrypted(gfx::Size size,
+                                                    VideoCodec codec) {
+  return GetTestConfig(codec, MinProfile(codec), VideoColorSpace::JPEG(),
+                       VIDEO_ROTATION_0, size, true);
+}
+
+// static
 gfx::Size TestVideoConfig::NormalCodedSize() {
   return kNormalSize;
 }
@@ -239,16 +268,41 @@ gfx::Size TestVideoConfig::LargeCodedSize() {
   return kLargeSize;
 }
 
+// static
+gfx::Size TestVideoConfig::ExtraLargeCodedSize() {
+  return kExtraLargeSize;
+}
+
 AudioDecoderConfig TestAudioConfig::Normal() {
   return AudioDecoderConfig(kCodecVorbis, kSampleFormatPlanarF32,
-                            CHANNEL_LAYOUT_STEREO, 44100, EmptyExtraData(),
-                            Unencrypted());
+                            CHANNEL_LAYOUT_STEREO, NormalSampleRateValue(),
+                            EmptyExtraData(), EncryptionScheme::kUnencrypted);
 }
 
 AudioDecoderConfig TestAudioConfig::NormalEncrypted() {
   return AudioDecoderConfig(kCodecVorbis, kSampleFormatPlanarF32,
-                            CHANNEL_LAYOUT_STEREO, 44100, EmptyExtraData(),
-                            AesCtrEncryptionScheme());
+                            CHANNEL_LAYOUT_STEREO, NormalSampleRateValue(),
+                            EmptyExtraData(), EncryptionScheme::kCenc);
+}
+
+AudioDecoderConfig TestAudioConfig::HighSampleRate() {
+  return AudioDecoderConfig(kCodecVorbis, kSampleFormatPlanarF32,
+                            CHANNEL_LAYOUT_STEREO, HighSampleRateValue(),
+                            EmptyExtraData(), EncryptionScheme::kUnencrypted);
+}
+
+AudioDecoderConfig TestAudioConfig::HighSampleRateEncrypted() {
+  return AudioDecoderConfig(kCodecVorbis, kSampleFormatPlanarF32,
+                            CHANNEL_LAYOUT_STEREO, HighSampleRateValue(),
+                            EmptyExtraData(), EncryptionScheme::kCenc);
+}
+
+int TestAudioConfig::NormalSampleRateValue() {
+  return 44100;
+}
+
+int TestAudioConfig::HighSampleRateValue() {
+  return 192000;
 }
 
 // static
@@ -293,6 +347,45 @@ scoped_refptr<AudioBuffer> MakeAudioBuffer(SampleFormat format,
     for (size_t i = 0; i < frames; ++i) {
       buffer[is_planar ? i : ch + i * channels] =
           static_cast<T>(v + i * increment);
+    }
+  }
+  return output;
+}
+
+template <>
+scoped_refptr<AudioBuffer> MakeAudioBuffer<float>(SampleFormat format,
+                                                  ChannelLayout channel_layout,
+                                                  size_t channel_count,
+                                                  int sample_rate,
+                                                  float start,
+                                                  float increment,
+                                                  size_t frames,
+                                                  base::TimeDelta timestamp) {
+  const size_t channels = ChannelLayoutToChannelCount(channel_layout);
+  scoped_refptr<AudioBuffer> output = AudioBuffer::CreateBuffer(
+      format, channel_layout, static_cast<int>(channel_count), sample_rate,
+      static_cast<int>(frames));
+  output->set_timestamp(timestamp);
+
+  const bool is_planar =
+      format == kSampleFormatPlanarS16 || format == kSampleFormatPlanarF32;
+
+  // Values in channel 0 will be:
+  //   (start) / max_value
+  //   (start + increment) / max_value
+  //   (start + 2 * increment) / max_value, ...
+  // While, values in channel 1 will be:
+  //   (start + frames * increment) / max_value
+  //   (start + (frames + 1) * increment) / max_value
+  //   (start + (frames + 2) * increment) / max_value, ...
+  for (size_t ch = 0; ch < channels; ++ch) {
+    float* buffer =
+        reinterpret_cast<float*>(output->channel_data()[is_planar ? ch : 0]);
+    const float v = static_cast<float>(start + ch * frames * increment);
+    for (size_t i = 0; i < frames; ++i) {
+      buffer[is_planar ? i : ch + i * channels] =
+          static_cast<float>(v + i * increment) /
+          std::numeric_limits<uint16_t>::max();
     }
   }
   return output;
@@ -356,7 +449,6 @@ void VerifyBitstreamAudioBus(AudioBus* bus,
 DEFINE_MAKE_AUDIO_BUFFER_INSTANCE(uint8_t);
 DEFINE_MAKE_AUDIO_BUFFER_INSTANCE(int16_t);
 DEFINE_MAKE_AUDIO_BUFFER_INSTANCE(int32_t);
-DEFINE_MAKE_AUDIO_BUFFER_INSTANCE(float);
 
 static const char kFakeVideoBufferHeader[] = "FakeVideoBufferForTest";
 

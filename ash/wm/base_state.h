@@ -14,21 +14,20 @@ class Window;
 }  // namespace aura
 
 namespace ash {
-namespace wm {
 
 // BaseState implements the common framework for WindowState::State.
 class BaseState : public WindowState::State {
  public:
-  explicit BaseState(mojom::WindowStateType initial_state_type);
+  explicit BaseState(chromeos::WindowStateType initial_state_type);
   ~BaseState() override;
 
   // WindowState::State:
   void OnWMEvent(WindowState* window_state, const WMEvent* event) override;
-  mojom::WindowStateType GetType() const override;
+  chromeos::WindowStateType GetType() const override;
 
  protected:
-  // Returns the WindowStateType corresponds to the WMEvent type.
-  static mojom::WindowStateType GetStateForTransitionEvent(
+  // Returns the chromeos::WindowStateType corresponds to the WMEvent type.
+  static chromeos::WindowStateType GetStateForTransitionEvent(
       const WMEvent* event);
 
   static void CenterWindow(WindowState* window_state);
@@ -53,21 +52,27 @@ class BaseState : public WindowState::State {
 
   // Shows/Hides window when minimized state changes.
   void UpdateMinimizedState(WindowState* window_state,
-                            mojom::WindowStateType previous_state_type);
+                            chromeos::WindowStateType previous_state_type);
 
   // Returns the window bounds for snapped window state.
   gfx::Rect GetSnappedWindowBoundsInParent(
       aura::Window* window,
-      const mojom::WindowStateType state_type);
+      const chromeos::WindowStateType state_type);
+
+  // Prepares for the window snap event. Check if the window can be snapped in
+  // split screen and if so, SplitViewController will start observe this window.
+  // This needs to be done before the window's state and bounds change to its
+  // snapped window state and bounds to make sure split screen can be properly
+  // set up.
+  void HandleWindowSnapping(WindowState* window_state, WMEventType event_type);
 
   // The current type of the window.
-  mojom::WindowStateType state_type_;
+  chromeos::WindowStateType state_type_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BaseState);
 };
 
-}  // namespace wm
 }  // namespace ash
 
 #endif  // ASH_WM_BASE_STATE_H_

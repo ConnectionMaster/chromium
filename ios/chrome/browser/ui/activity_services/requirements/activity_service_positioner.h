@@ -11,9 +11,13 @@
 // activity services menu on the screen.
 @protocol ActivityServicePositioner
 
-// Returns the view that defines the coordinate system that is used for the
-// CGRect returned by |shareButtonAnchorRect|.
-- (UIView*)shareButtonView;
+// Returns the view where the UIActivityViewController
+// should be presented.
+- (UIView*)sourceView;
+
+// Returns the bounds where the UIActivityViewController's popover should be
+// presented.
+- (CGRect)sourceRect;
 
 @end
 

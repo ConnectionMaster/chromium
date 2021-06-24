@@ -12,7 +12,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "ui/aura/window.h"
-#include "ui/base/ime/ime_bridge.h"
+#include "ui/base/ime/chromeos/ime_bridge.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/ui_base_features.h"
@@ -58,6 +58,7 @@ ChromeKeyboardBoundsObserver::~ChromeKeyboardBoundsObserver() {
   RemoveAllObservedWindows();
 
   ChromeKeyboardControllerClient::Get()->RemoveObserver(this);
+  CHECK(!views::WidgetObserver::IsInObserverList());
 }
 
 void ChromeKeyboardBoundsObserver::OnKeyboardOccludedBoundsChanged(
@@ -164,6 +165,10 @@ void ChromeKeyboardBoundsObserver::OnWidgetDestroying(views::Widget* widget) {
 void ChromeKeyboardBoundsObserver::UpdateInsets(
     aura::Window* window,
     content::RenderWidgetHostView* view) {
+  if (view->ShouldVirtualKeyboardOverlayContent()) {
+    view->SetInsets(gfx::Insets());
+    return;
+  }
   gfx::Rect view_bounds_in_screen = view->GetViewBounds();
   if (!ShouldEnableInsets(window)) {
     DVLOG(2) << "ResetInsets: " << window->GetName()

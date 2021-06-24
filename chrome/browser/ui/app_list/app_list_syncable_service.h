@@ -10,12 +10,13 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include "ash/public/interfaces/app_list.mojom.h"
 #include "base/callback.h"
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/observer_list_types.h"
+#include "base/one_shot_event.h"
 #include "build/build_config.h"
 #include "chrome/browser/sync/glue/sync_start_util.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -28,14 +29,11 @@
 
 class AppListModelUpdater;
 class AppServiceAppModelBuilder;
-class ArcAppModelBuilder;
 class ChromeAppListItem;
-class CrostiniAppModelBuilder;
-class ExtensionAppModelBuilder;
-class InternalAppModelBuilder;
 class Profile;
 
 namespace extensions {
+class ExtensionRegistry;
 class ExtensionSystem;
 }
 
@@ -67,42 +65,52 @@ class AppListSyncableService : public syncer::SyncableService,
     std::string ToString() const;
   };
 
-  class Observer {
+  class Observer : public base::CheckedObserver {
    public:
     // Notifies that sync model was updated.
     virtual void OnSyncModelUpdated() = 0;
 
    protected:
-    virtual ~Observer() = default;
+    ~Observer() override;
   };
 
   // An app list model updater factory function used by tests.
   using ModelUpdaterFactoryCallback =
-      base::Callback<std::unique_ptr<AppListModelUpdater>()>;
+      base::RepeatingCallback<std::unique_ptr<AppListModelUpdater>()>;
 
   // Sets and resets an app list model updater factory function for tests.
   class ScopedModelUpdaterFactoryForTest {
    public:
     explicit ScopedModelUpdaterFactoryForTest(
-        const ModelUpdaterFactoryCallback& factory);
+        ModelUpdaterFactoryCallback factory);
+    ScopedModelUpdaterFactoryForTest(const ScopedModelUpdaterFactoryForTest&) =
+        delete;
+    ScopedModelUpdaterFactoryForTest& operator=(
+        const ScopedModelUpdaterFactoryForTest&) = delete;
     ~ScopedModelUpdaterFactoryForTest();
 
    private:
     ModelUpdaterFactoryCallback factory_;
-
-    DISALLOW_COPY_AND_ASSIGN(ScopedModelUpdaterFactoryForTest);
   };
 
   using SyncItemMap = std::map<std::string, std::unique_ptr<SyncItem>>;
 
-  // Populates the model when |extension_system| is ready.
-  AppListSyncableService(Profile* profile,
-                         extensions::ExtensionSystem* extension_system);
-
+  // Populates the model when |profile|'s extension system is ready.
+  explicit AppListSyncableService(Profile* profile);
+  AppListSyncableService(const AppListSyncableService&) = delete;
+  AppListSyncableService& operator=(const AppListSyncableService&) = delete;
   ~AppListSyncableService() override;
 
   // Registers prefs to support local storage.
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
+  // Some sync behavior depends on whether or not an app was installed by
+  // default (as opposed to e.g. installed via explicit user action). Some
+  // tests want the AppListSyncableService to consider an app to be installed
+  // by default, without going through the heavyweight process of completely
+  // installing an app. These functions facilitate that.
+  static bool AppIsDefaultForTest(Profile* profile, const std::string& id);
+  static void SetAppIsDefaultForTest(Profile* profile, const std::string& id);
 
   // Adds |item| to |sync_items_| and |model_|. If a sync item already exists,
   // updates the existing sync item instead.
@@ -152,6 +160,12 @@ class AppListSyncableService : public syncer::SyncableService,
   // Returns true if this service was initialized.
   bool IsInitialized() const;
 
+  // Signalled when AppListSyncableService is Initialized.
+  const base::OneShotEvent& on_initialized() const { return on_initialized_; }
+
+  // Returns true if sync was started.
+  bool IsSyncing() const;
+
   // Registers new observers and makes sure that service is started.
   void AddObserverAndStart(Observer* observer);
   void RemoveObserver(Observer* observer);
@@ -168,14 +182,14 @@ class AppListSyncableService : public syncer::SyncableService,
 
   // syncer::SyncableService
   void WaitUntilReadyToSync(base::OnceClosure done) override;
-  syncer::SyncMergeResult MergeDataAndStartSyncing(
+  absl::optional<syncer::ModelError> MergeDataAndStartSyncing(
       syncer::ModelType type,
       const syncer::SyncDataList& initial_sync_data,
       std::unique_ptr<syncer::SyncChangeProcessor> sync_processor,
       std::unique_ptr<syncer::SyncErrorFactory> error_handler) override;
   void StopSyncing(syncer::ModelType type) override;
-  syncer::SyncDataList GetAllSyncData(syncer::ModelType type) const override;
-  syncer::SyncError ProcessSyncChanges(
+  syncer::SyncDataList GetAllSyncDataForTesting() const;
+  absl::optional<syncer::ModelError> ProcessSyncChanges(
       const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
 
@@ -208,6 +222,11 @@ class AppListSyncableService : public syncer::SyncableService,
   // item and returns false.
   bool RemoveDefaultApp(const ChromeAppListItem* item, SyncItem* sync_item);
 
+  // Returns whether the delete-sync-item request was for a default app. If
+  // true, the |sync_item| is set to REMOVE_DEFAULT and bounced back to the
+  // sync server. The caller should abort deleting the |sync_item|.
+  bool InterceptDeleteDefaultApp(SyncItem* sync_item);
+
   // Deletes a sync item from |sync_items_| and sends a DELETE action.
   void DeleteSyncItem(const std::string& item_id);
 
@@ -226,6 +245,7 @@ class AppListSyncableService : public syncer::SyncableService,
 
   // Creates or updates a SyncItem from |specifics|. Returns true if a new item
   // was created.
+  // TODO(crbug.com/1057577): Change return type to void.
   bool ProcessSyncItemSpecifics(const sync_pb::AppListSpecifics& specifics);
 
   // Handles a newly created sync item (e.g. creates a new AppItem and adds it
@@ -268,7 +288,23 @@ class AppListSyncableService : public syncer::SyncableService,
 
   // Handles model update start/finish.
   void HandleUpdateStarted();
-  void HandleUpdateFinished();
+  void HandleUpdateFinished(bool clean_up_after_init_sync);
+
+  // Cleans up the folder sync item with only one item in it.
+  // There are some edge cases with synch which will create a folder with only
+  // one item in it, which is not legitimate and the folder should be removed.
+  // We will find such folders after the initial sync and clean them up.
+  void CleanUpSingleItemSyncFolder();
+
+  // Returns child item if |sync_item| is a user created folder with only one
+  // child item in it; otherwise, returns nullptr.
+  SyncItem* GetOnlyChildOfUserCreatedFolder(SyncItem* sync_item);
+
+  // Returns true if |sync_item| is a user created folder with only one
+  // child item in it, the child item will be removed out of the folder and
+  // place at the same location of its original folder.
+  // Otherwise, return false, no change will be made.
+  bool RemoveOnlyChildOutOfUserCreatedFolderIfNecessary(SyncItem* sync_item);
 
   // Returns true if extension service is ready.
   bool IsExtensionServiceReady() const;
@@ -301,16 +337,11 @@ class AppListSyncableService : public syncer::SyncableService,
 
   Profile* profile_;
   extensions::ExtensionSystem* extension_system_;
+  extensions::ExtensionRegistry* extension_registry_;
   std::unique_ptr<AppListModelUpdater> model_updater_;
   std::unique_ptr<ModelUpdaterObserver> model_updater_observer_;
 
   std::unique_ptr<AppServiceAppModelBuilder> app_service_apps_builder_;
-  // TODO(crbug.com/826982): delete all the other FooModelBuilder's, after
-  // folding them into the App Service.
-  std::unique_ptr<ExtensionAppModelBuilder> ext_apps_builder_;
-  std::unique_ptr<ArcAppModelBuilder> arc_apps_builder_;
-  std::unique_ptr<CrostiniAppModelBuilder> crostini_apps_builder_;
-  std::unique_ptr<InternalAppModelBuilder> internal_apps_builder_;
   std::unique_ptr<syncer::SyncChangeProcessor> sync_processor_;
   std::unique_ptr<syncer::SyncErrorFactory> sync_error_handler_;
   SyncItemMap sync_items_;
@@ -318,18 +349,19 @@ class AppListSyncableService : public syncer::SyncableService,
   // another.
   SyncItemMap pending_transfer_map_;
   syncer::SyncableService::StartSyncFlare flare_;
-  bool initial_sync_data_processed_;
-  bool first_app_list_sync_;
-  const bool is_app_service_enabled_;
+  bool initial_sync_data_processed_ = false;
+  bool first_app_list_sync_ = true;
   std::string oem_folder_name_;
+  // Callback to install default page breaks.
+  // Only set for first time user for tablet form devices.
+  base::OnceClosure install_default_page_breaks_;
   base::OnceClosure wait_until_ready_to_sync_cb_;
 
   // List of observers.
-  base::ObserverList<Observer>::Unchecked observer_list_;
+  base::ObserverList<Observer> observer_list_;
+  base::OneShotEvent on_initialized_;
 
-  base::WeakPtrFactory<AppListSyncableService> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(AppListSyncableService);
+  base::WeakPtrFactory<AppListSyncableService> weak_ptr_factory_{this};
 };
 
 }  // namespace app_list

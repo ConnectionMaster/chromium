@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include <vector>
-
 #include "base/callback.h"
 #include "base/component_export.h"
 #include "base/macros.h"
@@ -45,7 +43,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoTask {
 
  private:
   FidoDevice* const device_;
-  base::WeakPtrFactory<FidoTask> weak_factory_;
+  base::WeakPtrFactory<FidoTask> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FidoTask);
 };

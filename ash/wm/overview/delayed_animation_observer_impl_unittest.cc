@@ -4,13 +4,16 @@
 
 #include "ash/wm/overview/delayed_animation_observer_impl.h"
 
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/overview/overview_delegate.h"
 #include "base/containers/unique_ptr_adapters.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "ui/aura/window.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/transform.h"
 
@@ -25,7 +28,6 @@ class TestOverviewDelegate : public OverviewDelegate {
   ~TestOverviewDelegate() override = default;
 
   // OverviewDelegate:
-  void OnSelectionEnded() override {}
   void AddExitAnimationObserver(
       std::unique_ptr<DelayedAnimationObserver> animation_observer) override {
     animation_observer->SetOwner(this);
@@ -59,16 +61,9 @@ class TestOverviewDelegate : public OverviewDelegate {
 
 class ForceDelayObserverTest : public AshTestBase {
  public:
-  ForceDelayObserverTest() {
-    DestroyScopedTaskEnvironment();
-    scoped_task_environment_ =
-        std::make_unique<base::test::ScopedTaskEnvironment>(
-            base::test::ScopedTaskEnvironment::MainThreadType::UI_MOCK_TIME);
-  }
+  ForceDelayObserverTest()
+      : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   ~ForceDelayObserverTest() override = default;
-
- protected:
-  std::unique_ptr<base::test::ScopedTaskEnvironment> scoped_task_environment_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ForceDelayObserverTest);
@@ -82,12 +77,10 @@ TEST_F(ForceDelayObserverTest, Basic) {
   delegate.AddEnterAnimationObserver(std::move(observer));
   EXPECT_EQ(1u, delegate.num_enter_observers());
 
-  scoped_task_environment_->FastForwardBy(
-      base::TimeDelta::FromMilliseconds(50));
+  task_environment()->FastForwardBy(base::TimeDelta::FromMilliseconds(50));
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1u, delegate.num_enter_observers());
-  scoped_task_environment_->FastForwardBy(
-      base::TimeDelta::FromMilliseconds(55));
+  task_environment()->FastForwardBy(base::TimeDelta::FromMilliseconds(55));
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0u, delegate.num_enter_observers());
 }

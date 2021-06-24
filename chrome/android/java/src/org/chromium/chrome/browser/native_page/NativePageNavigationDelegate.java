@@ -4,9 +4,9 @@
 
 package org.chromium.chrome.browser.native_page;
 
-import android.support.annotation.Nullable;
+import androidx.annotation.Nullable;
 
-import org.chromium.chrome.browser.preferences.PrefServiceBridge;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.content_public.browser.LoadUrlParams;
 
@@ -16,8 +16,15 @@ import org.chromium.content_public.browser.LoadUrlParams;
 public interface NativePageNavigationDelegate {
     /** @return Whether context menus should allow the option to open a link in incognito. */
     default boolean isOpenInIncognitoEnabled() {
-        return PrefServiceBridge.getInstance().isIncognitoModeEnabled();
+        return IncognitoUtils.isIncognitoModeEnabled();
     }
+
+    /**
+     * Returns whether context menus should allow the option to open a link in a new tab in group.
+     */
+    default boolean isOpenInNewTabInGroupEnabled() {
+        return true;
+    };
 
     /** @return Whether context menus should allow the option to open a link in a new window. */
     boolean isOpenInNewWindowEnabled();
@@ -32,4 +39,11 @@ public interface NativePageNavigationDelegate {
      */
     @Nullable
     Tab openUrl(int windowOpenDisposition, LoadUrlParams loadUrlParams);
+
+    /**
+     * Opens an URL with the desired disposition in a tab in group.
+     * @return The tab where the URL is being loaded.
+     */
+    @Nullable
+    Tab openUrlInGroup(int windowOpenDisposition, LoadUrlParams loadUrlParams);
 }

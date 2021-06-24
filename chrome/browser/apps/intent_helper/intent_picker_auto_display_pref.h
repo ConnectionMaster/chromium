@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/values.h"
 #include "url/gurl.h"
 
@@ -17,13 +16,24 @@ class HostContentSettingsMap;
 // UI for a given origin.
 class IntentPickerAutoDisplayPref final {
  public:
+  // The platform selected by the user to handle this URL for devices of tablet
+  // form factor.
+  enum class Platform { kNone = 0, kArc = 1, kChrome = 2, kMaxValue = kChrome };
+
   IntentPickerAutoDisplayPref(const GURL& origin,
                               HostContentSettingsMap* settings);
+  IntentPickerAutoDisplayPref(const IntentPickerAutoDisplayPref&) = delete;
+  IntentPickerAutoDisplayPref& operator=(const IntentPickerAutoDisplayPref&) =
+      delete;
   ~IntentPickerAutoDisplayPref();
 
   void IncrementCounter();
 
-  bool HasExceededThreshold();
+  bool HasExceededThreshold() const;
+
+  Platform GetPlatform();
+
+  void UpdatePlatform(Platform platform);
 
  private:
   // Creates and keep track of the dictionary for this specific origin.
@@ -34,6 +44,8 @@ class IntentPickerAutoDisplayPref final {
 
   void SetDismissedCounter(int new_counter);
 
+  Platform QueryPlatform();
+
   void Commit();
 
   // Origin associated to this preference.
@@ -41,13 +53,15 @@ class IntentPickerAutoDisplayPref final {
 
   int ui_dismissed_counter_;
 
+  // The platform selected by the user to handle link navigations with.
+  // This is only for devices of tablet form factor.
+  Platform platform_;
+
   // Dictionary for this particular preference.
   std::unique_ptr<base::DictionaryValue> pref_dict_;
 
   // Content settings map used to persist the local values.
   HostContentSettingsMap* settings_map_;
-
-  DISALLOW_COPY_AND_ASSIGN(IntentPickerAutoDisplayPref);
 };
 
 #endif  // CHROME_BROWSER_APPS_INTENT_HELPER_INTENT_PICKER_AUTO_DISPLAY_PREF_H_

@@ -7,7 +7,9 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/task/post_task.h"
 #include "base/threading/sequenced_task_runner_handle.h"
@@ -18,6 +20,7 @@
 #include "chromecast/device/bluetooth/le/remote_device.h"
 #include "chromecast/device/bluetooth/le/remote_service.h"
 #include "device/bluetooth/bluetooth_device.h"
+#include "device/bluetooth/bluetooth_discovery_filter.h"
 #include "device/bluetooth/bluetooth_discovery_session_outcome.h"
 #include "device/bluetooth/cast/bluetooth_device_cast.h"
 #include "device/bluetooth/cast/bluetooth_utils.h"
@@ -33,11 +36,11 @@ BluetoothAdapterCast::FactoryCb& GetFactory() {
 }  // namespace
 
 BluetoothAdapterCast::DiscoveryParams::DiscoveryParams(
-    device::BluetoothDiscoveryFilter* filter,
-    base::Closure success_callback,
+    std::unique_ptr<device::BluetoothDiscoveryFilter> filter,
+    base::OnceClosure success_callback,
     DiscoverySessionErrorCallback error_callback)
-    : filter(filter),
-      success_callback(success_callback),
+    : filter(std::move(filter)),
+      success_callback(std::move(success_callback)),
       error_callback(std::move(error_callback)) {}
 
 BluetoothAdapterCast::DiscoveryParams::DiscoveryParams(
@@ -63,6 +66,12 @@ BluetoothAdapterCast::~BluetoothAdapterCast() {
   le_scan_manager_->RemoveObserver(this);
 }
 
+void BluetoothAdapterCast::Initialize(base::OnceClosure callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  initialized_ = true;
+  std::move(callback).Run();
+}
+
 std::string BluetoothAdapterCast::GetAddress() const {
   // TODO(slan|bcf): Right now, we aren't surfacing the address of the GATT
   // client to the caller, because there is no apparent need and this
@@ -75,10 +84,10 @@ std::string BluetoothAdapterCast::GetName() const {
 }
 
 void BluetoothAdapterCast::SetName(const std::string& name,
-                                   const base::Closure& callback,
-                                   const ErrorCallback& error_callback) {
+                                   base::OnceClosure callback,
+                                   ErrorCallback error_callback) {
   name_ = name;
-  callback.Run();
+  std::move(callback).Run();
 }
 
 bool BluetoothAdapterCast::IsInitialized() const {
@@ -96,8 +105,8 @@ bool BluetoothAdapterCast::IsPowered() const {
 }
 
 void BluetoothAdapterCast::SetPowered(bool powered,
-                                      const base::Closure& callback,
-                                      const ErrorCallback& error_callback) {
+                                      base::OnceClosure callback,
+                                      ErrorCallback error_callback) {
   // This class cannot actually change the powered state of the BT stack.
   // We simulate these changes for the benefit of testing. However, we may
   // want to actually delegate this call to the bluetooth service, at least
@@ -105,20 +114,19 @@ void BluetoothAdapterCast::SetPowered(bool powered,
   // TODO(slan): Determine whether this would be useful.
   powered_ = powered;
   NotifyAdapterPoweredChanged(powered_);
-  callback.Run();
+  std::move(callback).Run();
 }
 
 bool BluetoothAdapterCast::IsDiscoverable() const {
-  VLOG(2) << __func__ << " GATT server mode not supported";
+  DVLOG(2) << __func__ << " GATT server mode not supported";
   return false;
 }
 
-void BluetoothAdapterCast::SetDiscoverable(
-    bool discoverable,
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+void BluetoothAdapterCast::SetDiscoverable(bool discoverable,
+                                           base::OnceClosure callback,
+                                           ErrorCallback error_callback) {
   NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
-  error_callback.Run();
+  std::move(error_callback).Run();
 }
 
 bool BluetoothAdapterCast::IsDiscovering() const {
@@ -133,43 +141,55 @@ BluetoothAdapter::UUIDList BluetoothAdapterCast::GetUUIDs() const {
 void BluetoothAdapterCast::CreateRfcommService(
     const BluetoothUUID& uuid,
     const ServiceOptions& options,
-    const CreateServiceCallback& callback,
-    const CreateServiceErrorCallback& error_callback) {
+    CreateServiceCallback callback,
+    CreateServiceErrorCallback error_callback) {
   NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
-  error_callback.Run("Not Implemented");
+  std::move(error_callback).Run("Not Implemented");
 }
 
 void BluetoothAdapterCast::CreateL2capService(
     const BluetoothUUID& uuid,
     const ServiceOptions& options,
-    const CreateServiceCallback& callback,
-    const CreateServiceErrorCallback& error_callback) {
+    CreateServiceCallback callback,
+    CreateServiceErrorCallback error_callback) {
   NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
-  error_callback.Run("Not Implemented");
+  std::move(error_callback).Run("Not Implemented");
 }
 
 void BluetoothAdapterCast::RegisterAdvertisement(
     std::unique_ptr<BluetoothAdvertisement::Data> advertisement_data,
-    const CreateAdvertisementCallback& callback,
-    const AdvertisementErrorCallback& error_callback) {
+    CreateAdvertisementCallback callback,
+    AdvertisementErrorCallback error_callback) {
   NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
-  error_callback.Run(BluetoothAdvertisement::ERROR_UNSUPPORTED_PLATFORM);
+  std::move(error_callback)
+      .Run(BluetoothAdvertisement::ERROR_UNSUPPORTED_PLATFORM);
 }
 
 void BluetoothAdapterCast::SetAdvertisingInterval(
     const base::TimeDelta& min,
     const base::TimeDelta& max,
-    const base::Closure& callback,
-    const AdvertisementErrorCallback& error_callback) {
+    base::OnceClosure callback,
+    AdvertisementErrorCallback error_callback) {
   NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
-  error_callback.Run(BluetoothAdvertisement::ERROR_UNSUPPORTED_PLATFORM);
+  std::move(error_callback)
+      .Run(BluetoothAdvertisement::ERROR_UNSUPPORTED_PLATFORM);
+}
+
+void BluetoothAdapterCast::ConnectDevice(
+    const std::string& address,
+    const absl::optional<BluetoothDevice::AddressType>& address_type,
+    ConnectDeviceCallback callback,
+    ErrorCallback error_callback) {
+  NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
+  std::move(error_callback).Run();
 }
 
 void BluetoothAdapterCast::ResetAdvertising(
-    const base::Closure& callback,
-    const AdvertisementErrorCallback& error_callback) {
+    base::OnceClosure callback,
+    AdvertisementErrorCallback error_callback) {
   NOTIMPLEMENTED() << __func__ << " GATT server mode not supported";
-  error_callback.Run(BluetoothAdvertisement::ERROR_UNSUPPORTED_PLATFORM);
+  std::move(error_callback)
+      .Run(BluetoothAdvertisement::ERROR_UNSUPPORTED_PLATFORM);
 }
 
 BluetoothLocalGattService* BluetoothAdapterCast::GetGattService(
@@ -178,32 +198,39 @@ BluetoothLocalGattService* BluetoothAdapterCast::GetGattService(
   return nullptr;
 }
 
+base::WeakPtr<BluetoothAdapter> BluetoothAdapterCast::GetWeakPtr() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return weak_factory_.GetWeakPtr();
+}
+
+base::WeakPtr<BluetoothAdapterCast> BluetoothAdapterCast::GetCastWeakPtr() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return weak_factory_.GetWeakPtr();
+}
+
 bool BluetoothAdapterCast::SetPoweredImpl(bool powered) {
   NOTREACHED() << "This method is not invoked when SetPowered() is overridden.";
   return true;
 }
 
-void BluetoothAdapterCast::AddDiscoverySession(
-    BluetoothDiscoveryFilter* discovery_filter,
-    const base::Closure& callback,
-    DiscoverySessionErrorCallback error_callback) {
+void BluetoothAdapterCast::StartScanWithFilter(
+    std::unique_ptr<device::BluetoothDiscoveryFilter> discovery_filter,
+    DiscoverySessionResultCallback callback) {
   // The discovery filter is unused for now, as the Cast bluetooth stack does
   // not expose scan filters yet. However, implementation of filtering would
-  // save numerous UI<->IO threadhops by eliminating uneccessary calls to
+  // save numerous UI<->IO threadhops by eliminating unnecessary calls to
   // GetDevice().
   // TODO(bcf|slan): Wire this up once scan filters are implemented.
   (void)discovery_filter;
 
-  // If the count is greater than 0, increment the count and return success.
-  if (num_discovery_sessions_ > 0) {
-    num_discovery_sessions_++;
-    callback.Run();
-    return;
-  }
+  auto split_callback = base::SplitOnceCallback(std::move(callback));
 
   // Add this request to the queue.
-  pending_discovery_requests_.emplace(discovery_filter, std::move(callback),
-                                      std::move(error_callback));
+  pending_discovery_requests_.emplace(BluetoothAdapterCast::DiscoveryParams(
+      std::move(discovery_filter),
+      base::BindOnce(std::move(split_callback.first), /*is_error=*/false,
+                     UMABluetoothDiscoverySessionOutcome::SUCCESS),
+      base::BindOnce(std::move(split_callback.second), /*is_error=*/true)));
 
   // If the queue length is greater than 1 (i.e. there was a pending request
   // when this method was called), exit early. This request will be processed
@@ -217,59 +244,35 @@ void BluetoothAdapterCast::AddDiscoverySession(
       &BluetoothAdapterCast::OnScanEnabled, weak_factory_.GetWeakPtr()));
 }
 
-void BluetoothAdapterCast::RemoveDiscoverySession(
-    BluetoothDiscoveryFilter* discovery_filter,
-    const base::Closure& callback,
-    DiscoverySessionErrorCallback error_callback) {
-  // The discovery filter is unused for now, as the Cast bluetooth stack does
-  // not expose scan filters yet. However, implementation of filtering would
-  // save numerous UI<->IO threadhops by eliminating uneccessary calls to
-  // GetDevice().
-  // TODO(b/77663782): Wire this up once scan filters are implemented.
-  (void)discovery_filter;
-
-  // If there are pending requests, run the error call immediately.
-  if (pending_discovery_requests_.size() > 0u) {
-    std::move(error_callback)
-        .Run(UMABluetoothDiscoverySessionOutcome::REMOVE_WITH_PENDING_REQUEST);
-    return;
-  }
-
-  // If the count is greater than 1, decrement the count and return success.
-  if (num_discovery_sessions_ > 1) {
-    num_discovery_sessions_--;
-    callback.Run();
-    return;
-  }
-
-  // This was the last active discovery session. Disable scanning.
-  num_discovery_sessions_--;
-  DCHECK(scan_handle_);
-  scan_handle_.reset();
-  callback.Run();
-}
-
-void BluetoothAdapterCast::SetDiscoveryFilter(
-    std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
-    const base::Closure& callback,
-    DiscoverySessionErrorCallback error_callback) {
+void BluetoothAdapterCast::UpdateFilter(
+    std::unique_ptr<device::BluetoothDiscoveryFilter> discovery_filter,
+    DiscoverySessionResultCallback callback) {
   // The discovery filter is unused for now, as the Cast bluetooth stack does
   // not expose scan filters yet. However, implementation of filtering would
   // save numerous UI<->IO threadhops by eliminating unnecessary calls to
   // GetDevice().
-  NOTIMPLEMENTED();
-  callback.Run();
+  // TODO(bcf|slan): Wire this up once scan filters are implemented.
+
+  // If calling update then there must be other sessions actively scanning
+  // besides this one.
+  DCHECK_GT(NumDiscoverySessions(), 1);
+
+  // Since filters are not used simply return success.
+  std::move(callback).Run(/*is_error=*/false,
+                          UMABluetoothDiscoverySessionOutcome::SUCCESS);
+}
+
+void BluetoothAdapterCast::StopScan(DiscoverySessionResultCallback callback) {
+  DCHECK(scan_handle_);
+  scan_handle_.reset();
+  std::move(callback).Run(/*is_error*/ false,
+                          UMABluetoothDiscoverySessionOutcome::SUCCESS);
 }
 
 void BluetoothAdapterCast::RemovePairingDelegateInternal(
     BluetoothDevice::PairingDelegate* pairing_delegate) {
   // TODO(slan): Implement this or properly stub.
   NOTIMPLEMENTED();
-}
-
-base::WeakPtr<BluetoothAdapterCast> BluetoothAdapterCast::GetWeakPtr() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return weak_factory_.GetWeakPtr();
 }
 
 void BluetoothAdapterCast::OnConnectChanged(
@@ -423,7 +426,7 @@ void BluetoothAdapterCast::OnScanEnabled(
   // For each pending request, increment the count and run the success callback.
   while (!pending_discovery_requests_.empty()) {
     num_discovery_sessions_++;
-    pending_discovery_requests_.front().success_callback.Run();
+    std::move(pending_discovery_requests_.front().success_callback).Run();
     pending_discovery_requests_.pop();
   }
 }
@@ -457,12 +460,6 @@ void BluetoothAdapterCast::OnGetScanResults(
     OnNewScanResult(result);
 }
 
-void BluetoothAdapterCast::InitializeAsynchronously(InitCallback callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  initialized_ = true;
-  std::move(callback).Run();
-}
-
 // static
 void BluetoothAdapterCast::SetFactory(FactoryCb factory_cb) {
   FactoryCb& factory = GetFactory();
@@ -476,25 +473,15 @@ void BluetoothAdapterCast::ResetFactoryForTest() {
 }
 
 // static
-base::WeakPtr<BluetoothAdapter> BluetoothAdapterCast::Create(
-    InitCallback callback) {
+scoped_refptr<BluetoothAdapter> BluetoothAdapterCast::Create() {
   FactoryCb& factory = GetFactory();
   DCHECK(factory) << "SetFactory() must be called before this method!";
-  base::WeakPtr<BluetoothAdapterCast> weak_ptr = factory.Run();
-
-  // BluetoothAdapterFactory assumes that |init_callback| will be called
-  // asynchronously the first time, and that IsInitialized() will return false.
-  // Post init_callback to this sequence so that it gets called back later.
-  base::SequencedTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(&BluetoothAdapterCast::InitializeAsynchronously,
-                                weak_ptr, std::move(callback)));
-  return weak_ptr;
+  return factory.Run();
 }
 
 // static
-base::WeakPtr<BluetoothAdapter> BluetoothAdapter::CreateAdapter(
-    InitCallback init_callback) {
-  return BluetoothAdapterCast::Create(std::move(init_callback));
+scoped_refptr<BluetoothAdapter> BluetoothAdapter::CreateAdapter() {
+  return BluetoothAdapterCast::Create();
 }
 
 }  // namespace device

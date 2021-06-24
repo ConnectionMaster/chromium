@@ -29,23 +29,26 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/platform/fonts/font_selection_types.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
+
+class Document;
 
 class CORE_EXPORT LayoutThemeFontProvider {
   STATIC_ONLY(LayoutThemeFontProvider);
 
  public:
-  static void SystemFont(CSSValueID system_font_id,
-                         FontSelectionValue& slope,
-                         FontSelectionValue& weight,
-                         float& font_size,
-                         AtomicString& font_family);
+  static const FontSelectionValue& SystemFontStyle(CSSValueID system_font_id);
+  static const FontSelectionValue& SystemFontWeight(CSSValueID system_font_id);
+  static const AtomicString& SystemFontFamily(CSSValueID system_font_id);
+  static float SystemFontSize(CSSValueID system_font_id,
+                              const Document* document);
 
  protected:
   static const WTF::AtomicString& DefaultGUIFont();
+  static float DefaultFontSize(const Document*);
 };
 
 }  // namespace blink

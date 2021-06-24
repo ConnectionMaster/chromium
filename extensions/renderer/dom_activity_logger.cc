@@ -4,6 +4,7 @@
 
 #include "extensions/renderer/dom_activity_logger.h"
 
+#include <memory>
 #include <utility>
 
 #include "content/public/renderer/render_thread.h"
@@ -47,7 +48,7 @@ DOMActivityLogger::DOMActivityLogger(const std::string& extension_id)
 
 DOMActivityLogger::~DOMActivityLogger() {}
 
-void DOMActivityLogger::AttachToWorld(int world_id,
+void DOMActivityLogger::AttachToWorld(int32_t world_id,
                                       const std::string& extension_id) {
   // If there is no logger registered for world_id, construct a new logger
   // and register it with world_id.
@@ -64,7 +65,7 @@ void DOMActivityLogger::LogGetter(const WebString& api_name,
                                   const WebString& title) {
   SendDomActionMessage(api_name.Utf8(), url, title.Utf16(),
                        DomActionType::GETTER,
-                       std::unique_ptr<base::ListValue>(new base::ListValue()));
+                       std::make_unique<base::ListValue>());
 }
 
 void DOMActivityLogger::LogSetter(const WebString& api_name,
@@ -117,7 +118,7 @@ void DOMActivityLogger::LogEvent(const WebString& event_name,
 void DOMActivityLogger::SendDomActionMessage(
     const std::string& api_call,
     const GURL& url,
-    const base::string16& url_title,
+    const std::u16string& url_title,
     DomActionType::Type call_type,
     std::unique_ptr<base::ListValue> args) {
   ExtensionHostMsg_DOMAction_Params params;

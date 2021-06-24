@@ -4,8 +4,6 @@
 
 static_library("renderer") {
   sources = [
-    "ad_delay_renderer_metadata_provider.cc",
-    "ad_delay_renderer_metadata_provider.h",
     "ad_resource_tracker.cc",
     "ad_resource_tracker.h",
     "subresource_filter_agent.cc",
@@ -20,21 +18,19 @@ static_library("renderer") {
     "//components/subresource_filter/content/common",
     "//components/subresource_filter/content/mojom",
     "//components/subresource_filter/core/common",
+    "//components/subresource_filter/core/mojom",
     "//content/public/common",
     "//content/public/renderer",
     "//third_party/blink/public:blink",
+    "//third_party/blink/public/common",
     "//url",
   ]
-  public_deps = [
-    "//ipc",
-  ]
+  public_deps = [ "//ipc" ]
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "subresource_filter_agent_unittest.cc",
-  ]
+  sources = [ "subresource_filter_agent_unittest.cc" ]
   deps = [
     ":renderer",
     "//base",

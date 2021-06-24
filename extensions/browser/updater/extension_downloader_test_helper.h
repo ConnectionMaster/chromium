@@ -7,42 +7,59 @@
 
 #include <memory>
 #include <set>
+#include <string>
 
 #include "extensions/browser/updater/extension_downloader.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
-#include "services/data_decoder/public/cpp/test_data_decoder_service.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace extensions {
 
-class MockExtensionDownloaderDelegate : public ExtensionDownloaderDelegate {
+class MockExtensionDownloaderDelegate
+    : public testing::NiceMock<ExtensionDownloaderDelegate> {
  public:
   MockExtensionDownloaderDelegate();
 
   ~MockExtensionDownloaderDelegate();
 
-  MOCK_METHOD4(
-      OnExtensionDownloadFailed,
-      void(const std::string&, Error, const PingResult&, const std::set<int>&));
+  MOCK_METHOD5(OnExtensionDownloadFailed,
+               void(const ExtensionId&,
+                    Error,
+                    const PingResult&,
+                    const std::set<int>&,
+                    const FailureData&));
   MOCK_METHOD2(OnExtensionDownloadStageChanged,
-               void(const std::string&, Stage));
-  MOCK_METHOD7(OnExtensionDownloadFinished,
+               void(const ExtensionId&, Stage));
+  MOCK_METHOD2(OnExtensionDownloadCacheStatusRetrieved,
+               void(const ExtensionId&, CacheStatus));
+  // Gmock doesn't have good support for move-only types like
+  // base::OnceCallback, so we have to do this hack.
+  void OnExtensionDownloadFinished(const CRXFileInfo& file,
+                                   bool file_ownership_passed,
+                                   const GURL& download_url,
+                                   const PingResult& ping_result,
+                                   const std::set<int>& request_ids,
+                                   InstallCallback callback) override {
+    OnExtensionDownloadFinished_(file, file_ownership_passed, download_url,
+                                 ping_result, request_ids, callback);
+  }
+  MOCK_METHOD6(OnExtensionDownloadFinished_,
                void(const extensions::CRXFileInfo&,
                     bool,
                     const GURL&,
-                    const std::string&,
                     const PingResult&,
                     const std::set<int>&,
-                    const InstallCallback&));
+                    InstallCallback&));
   MOCK_METHOD0(OnExtensionDownloadRetryForTests, void());
   MOCK_METHOD2(GetPingDataForExtension,
-               bool(const std::string&, ManifestFetchData::PingData*));
-  MOCK_METHOD1(GetUpdateUrlData, std::string(const std::string&));
-  MOCK_METHOD1(IsExtensionPending, bool(const std::string&));
+               bool(const ExtensionId&, ManifestFetchData::PingData*));
+  MOCK_METHOD1(GetUpdateUrlData, std::string(const ExtensionId&));
+  MOCK_METHOD1(IsExtensionPending, bool(const ExtensionId&));
   MOCK_METHOD2(GetExtensionExistingVersion,
-               bool(const std::string&, std::string*));
+               bool(const ExtensionId&, std::string*));
 
   void Wait();
 
@@ -79,11 +96,15 @@ class ExtensionDownloaderTestHelper {
   // Clears previously added responses from URL loader factory.
   void ClearURLLoaderFactoryResponses();
 
+  // Create a downloader in a separate pointer. Could be used by, for example,
+  // ExtensionUpdater.
+  std::unique_ptr<ExtensionDownloader> CreateDownloader();
+
  private:
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::SharedURLLoaderFactory>
       test_shared_url_loader_factory_;
-  data_decoder::TestDataDecoderService test_data_decoder_service_;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   MockExtensionDownloaderDelegate delegate_;
   ExtensionDownloader downloader_;
 

@@ -8,7 +8,7 @@
 
 #include <memory>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/memory/free_deleter.h"
 #include "base/win/windows_version.h"
 #include "sandbox/win/src/interceptors.h"
@@ -42,15 +42,15 @@ HandleCloser::HandleCloser() {}
 
 HandleCloser::~HandleCloser() {}
 
-ResultCode HandleCloser::AddHandle(const base::char16* handle_type,
-                                   const base::char16* handle_name) {
+ResultCode HandleCloser::AddHandle(const wchar_t* handle_type,
+                                   const wchar_t* handle_name) {
   if (!handle_type)
     return SBOX_ERROR_BAD_PARAMS;
 
-  base::string16 resolved_name;
+  std::wstring resolved_name;
   if (handle_name) {
     resolved_name = handle_name;
-    if (handle_type == base::string16(L"Key"))
+    if (handle_type == std::wstring(L"Key"))
       if (!ResolveRegistryName(resolved_name, &resolved_name))
         return SBOX_ERROR_BAD_PARAMS;
   }
@@ -77,10 +77,10 @@ size_t HandleCloser::GetBufferSize() {
   for (HandleMap::iterator i = handles_to_close_.begin();
        i != handles_to_close_.end(); ++i) {
     size_t bytes_entry = offsetof(HandleListEntry, handle_type) +
-                         (i->first.size() + 1) * sizeof(base::char16);
+                         (i->first.size() + 1) * sizeof(wchar_t);
     for (HandleMap::mapped_type::iterator j = i->second.begin();
          j != i->second.end(); ++j) {
-      bytes_entry += ((*j).size() + 1) * sizeof(base::char16);
+      bytes_entry += ((*j).size() + 1) * sizeof(wchar_t);
     }
 
     // Round up to the nearest multiple of word size.
@@ -91,7 +91,7 @@ size_t HandleCloser::GetBufferSize() {
   return bytes_total;
 }
 
-bool HandleCloser::InitializeTargetHandles(TargetProcess* target) {
+bool HandleCloser::InitializeTargetHandles(TargetProcess& target) {
   // Do nothing on an empty list (global pointer already initialized to
   // nullptr).
   if (handles_to_close_.empty())
@@ -104,26 +104,14 @@ bool HandleCloser::InitializeTargetHandles(TargetProcess* target) {
   if (!SetupHandleList(local_buffer.get(), bytes_needed))
     return false;
 
-  HANDLE child = target->Process();
-
-  // Allocate memory in the target process without specifying the address
-  void* remote_data = ::VirtualAllocEx(child, nullptr, bytes_needed, MEM_COMMIT,
-                                       PAGE_READWRITE);
-  if (!remote_data)
+  void* remote_data;
+  if (!CopyToChildMemory(target.Process(), local_buffer.get(), bytes_needed,
+                         &remote_data))
     return false;
-
-  // Copy the handle buffer over.
-  SIZE_T bytes_written;
-  bool result = ::WriteProcessMemory(child, remote_data, local_buffer.get(),
-                                     bytes_needed, &bytes_written);
-  if (!result || bytes_written != bytes_needed) {
-    ::VirtualFreeEx(child, remote_data, 0, MEM_RELEASE);
-    return false;
-  }
 
   g_handles_to_close = reinterpret_cast<HandleCloserInfo*>(remote_data);
 
-  ResultCode rc = target->TransferVariable(
+  ResultCode rc = target.TransferVariable(
       "g_handles_to_close", &g_handles_to_close, sizeof(g_handles_to_close));
 
   return (SBOX_ALL_OK == rc);
@@ -135,10 +123,9 @@ bool HandleCloser::SetupHandleList(void* buffer, size_t buffer_bytes) {
   handle_info->record_bytes = buffer_bytes;
   handle_info->num_handle_types = handles_to_close_.size();
 
-  base::char16* output =
-      reinterpret_cast<base::char16*>(&handle_info->handle_entries[0]);
-  base::char16* end = reinterpret_cast<base::char16*>(
-      reinterpret_cast<char*>(buffer) + buffer_bytes);
+  wchar_t* output = reinterpret_cast<wchar_t*>(&handle_info->handle_entries[0]);
+  wchar_t* end = reinterpret_cast<wchar_t*>(reinterpret_cast<char*>(buffer) +
+                                            buffer_bytes);
   for (HandleMap::iterator i = handles_to_close_.begin();
        i != handles_to_close_.end(); ++i) {
     if (output >= end)
@@ -170,7 +157,7 @@ bool HandleCloser::SetupHandleList(void* buffer, size_t buffer_bytes) {
   return output <= end;
 }
 
-bool GetHandleName(HANDLE handle, base::string16* handle_name) {
+bool GetHandleName(HANDLE handle, std::wstring* handle_name) {
   static NtQueryObject QueryObject = nullptr;
   if (!QueryObject)
     ResolveNTFunctionPtr("NtQueryObject", &QueryObject);

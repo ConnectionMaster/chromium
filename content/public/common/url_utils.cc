@@ -7,21 +7,23 @@
 #include <set>
 #include <string>
 
+#include "base/check_op.h"
 #include "base/containers/flat_set.h"
-#include "base/logging.h"
+#include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_piece.h"
-#include "build/build_config.h"
 #include "content/common/url_schemes.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
+#include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "url/gurl.h"
 #include "url/url_util.h"
 
 namespace content {
 
 bool HasWebUIScheme(const GURL& url) {
-  return url.SchemeIs(kChromeDevToolsScheme) ||
-         url.SchemeIs(kChromeUIScheme);
+  return url.SchemeIs(kChromeDevToolsScheme) || url.SchemeIs(kChromeUIScheme) ||
+         url.SchemeIs(kChromeUIUntrustedScheme);
 }
 
 bool IsSavableURL(const GURL& url) {
@@ -36,7 +38,7 @@ bool IsURLHandledByNetworkStack(const GURL& url) {
   // Javascript URLs, srcdoc, schemes that don't load data should not send a
   // request to the network stack.
   if (url.SchemeIs(url::kJavaScriptScheme) || url.is_empty() ||
-      url == content::kAboutSrcDocURL) {
+      url.IsAboutSrcdoc()) {
     return false;
   }
 
@@ -47,7 +49,7 @@ bool IsURLHandledByNetworkStack(const GURL& url) {
 
   // Renderer debug URLs (e.g. chrome://kill) are handled in the renderer
   // process directly and should not be sent to the network stack.
-  if (IsRendererDebugURL(url))
+  if (blink::IsRendererDebugURL(url))
     return false;
 
   // For you information, even though a "data:" url doesn't generate actual
@@ -62,62 +64,14 @@ bool IsURLHandledByNetworkStack(const GURL& url) {
   return true;
 }
 
-bool IsURLHandledByNetworkService(const GURL& url) {
-  return url.SchemeIsHTTPOrHTTPS() || url.SchemeIsWSOrWSS() ||
-         url.SchemeIs(url::kFtpScheme) || url.SchemeIs(url::kGopherScheme) ||
-         url.SchemeIs(url::kDataScheme);
-}
-
-bool IsRendererDebugURL(const GURL& url) {
-  if (!url.is_valid())
-    return false;
-
-  if (url.SchemeIs(url::kJavaScriptScheme))
-    return true;
-
-  if (!url.SchemeIs(kChromeUIScheme))
-    return false;
-
-  if (url == kChromeUICheckCrashURL || url == kChromeUIBadCastCrashURL ||
-      url == kChromeUICrashURL || url == kChromeUIDumpURL ||
-      url == kChromeUIKillURL || url == kChromeUIHangURL ||
-      url == kChromeUIShorthangURL || url == kChromeUIMemoryExhaustURL) {
-    return true;
-  }
-
-#if defined(ADDRESS_SANITIZER)
-  if (url == kChromeUICrashHeapOverflowURL ||
-      url == kChromeUICrashHeapUnderflowURL ||
-      url == kChromeUICrashUseAfterFreeURL) {
-    return true;
-  }
-#endif
-
-#if defined(OS_WIN)
-  if (url == kChromeUIHeapCorruptionCrashURL)
-    return true;
-#endif
-
-#if DCHECK_IS_ON()
-  if (url == kChromeUICrashDcheckURL)
-    return true;
-#endif
-
-#if defined(OS_WIN) && defined(ADDRESS_SANITIZER)
-  if (url == kChromeUICrashCorruptHeapBlockURL ||
-      url == kChromeUICrashCorruptHeapURL) {
-    return true;
-  }
-#endif
-
-  return false;
-}
-
 bool IsSafeRedirectTarget(const GURL& from_url, const GURL& to_url) {
   static const base::NoDestructor<base::flat_set<base::StringPiece>>
       kUnsafeSchemes(base::flat_set<base::StringPiece>({
-        url::kAboutScheme, url::kDataScheme, url::kFileScheme,
+        url::kAboutScheme, url::kFileScheme,
             url::kFileSystemScheme, url::kBlobScheme,
+#if !defined(CHROMECAST_BUILD)
+            url::kDataScheme,
+#endif
 #if defined(OS_ANDROID)
             url::kContentScheme,
 #endif

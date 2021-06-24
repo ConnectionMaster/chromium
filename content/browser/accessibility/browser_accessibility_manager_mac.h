@@ -9,29 +9,29 @@
 #include <stdint.h>
 
 #include <map>
+#include <string>
 #include <vector>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #import "content/browser/accessibility/browser_accessibility_cocoa.h"
 #include "content/browser/accessibility/browser_accessibility_manager.h"
 #include "content/public/browser/ax_event_notification_details.h"
 
 namespace content {
 
+class BrowserAccessibilityCocoaBrowserTest;
+
 class CONTENT_EXPORT BrowserAccessibilityManagerMac
     : public BrowserAccessibilityManager {
  public:
-  BrowserAccessibilityManagerMac(
-      const ui::AXTreeUpdate& initial_tree,
-      BrowserAccessibilityDelegate* delegate,
-      BrowserAccessibilityFactory* factory = new BrowserAccessibilityFactory());
+  BrowserAccessibilityManagerMac(const ui::AXTreeUpdate& initial_tree,
+                                 BrowserAccessibilityDelegate* delegate);
 
   ~BrowserAccessibilityManagerMac() override;
 
   static ui::AXTreeUpdate GetEmptyDocument();
 
-  BrowserAccessibility* GetFocus() override;
+  BrowserAccessibility* GetFocus() const override;
 
   // Implementation of BrowserAccessibilityManager.
   void FireFocusEvent(BrowserAccessibility* node) override;
@@ -40,7 +40,7 @@ class CONTENT_EXPORT BrowserAccessibilityManagerMac
   void FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
                           BrowserAccessibility* node) override;
 
-  void OnAccessibilityEvents(
+  bool OnAccessibilityEvents(
       const AXEventNotificationDetails& details) override;
 
   id GetParentView();
@@ -61,8 +61,16 @@ class CONTENT_EXPORT BrowserAccessibilityManagerMac
   // Returns an autoreleased object.
   NSDictionary* GetUserInfoForValueChangedNotification(
       const BrowserAccessibilityCocoa* native_node,
-      const base::string16& deleted_text,
-      const base::string16& inserted_text) const;
+      const std::u16string& deleted_text,
+      const std::u16string& inserted_text,
+      id edit_text_marker) const;
+
+  void AnnounceActiveDescendant(BrowserAccessibility* node) const;
+
+  bool IsInGeneratedEventBatch(ui::AXEventGenerator::Event event_type) const;
+
+  // Returns whether this page is a new tab page on Chrome.
+  bool IsChromeNewTabPage();
 
   // Keeps track of any edits that have been made by the user during a tree
   // update. Used by NSAccessibilityValueChangedNotification.
@@ -73,9 +81,11 @@ class CONTENT_EXPORT BrowserAccessibilityManagerMac
   // constructor.
   friend class BrowserAccessibilityManager;
 
+  friend class BrowserAccessibilityCocoaBrowserTest;
+
   DISALLOW_COPY_AND_ASSIGN(BrowserAccessibilityManagerMac);
 };
 
-}
+}  // namespace content
 
 #endif  // CONTENT_BROWSER_ACCESSIBILITY_BROWSER_ACCESSIBILITY_MANAGER_MAC_H_

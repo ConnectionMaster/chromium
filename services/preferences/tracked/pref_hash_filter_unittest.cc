@@ -14,18 +14,17 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
-#include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/cxx17_backports.h"
 #include "base/metrics/histogram_base.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "components/prefs/testing_pref_store.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/preferences/public/cpp/tracked/configuration.h"
 #include "services/preferences/public/cpp/tracked/mock_validation_delegate.h"
 #include "services/preferences/public/cpp/tracked/pref_names.h"
@@ -367,7 +366,7 @@ class MockHashStoreContents : public HashStoreContents {
   MockHashStoreContents() {}
 
   // Returns the number of hashes stored.
-  size_t stored_hashes_count() const { return dictionary_.size(); }
+  size_t stored_hashes_count() const { return dictionary_.DictSize(); }
 
   // Returns the number of paths cleared.
   size_t cleared_paths_count() const { return removed_entries_.size(); }
@@ -430,8 +429,8 @@ class MockHashStoreContents : public HashStoreContents {
 };
 
 std::string MockHashStoreContents::GetStoredMac(const std::string& path) const {
-  const base::Value* out_value;
-  if (dictionary_.GetWithoutPathExpansion(path, &out_value)) {
+  const base::Value* out_value = dictionary_.FindKey(path);
+  if (out_value) {
     const base::Value* value_as_string;
     EXPECT_TRUE(out_value->GetAsString(&value_as_string));
 
@@ -444,12 +443,13 @@ std::string MockHashStoreContents::GetStoredMac(const std::string& path) const {
 std::string MockHashStoreContents::GetStoredSplitMac(
     const std::string& path,
     const std::string& split_path) const {
-  const base::Value* out_value;
-  if (dictionary_.GetWithoutPathExpansion(path, &out_value)) {
+  const base::Value* out_value = dictionary_.FindKey(path);
+  if (out_value) {
     const base::DictionaryValue* value_as_dict;
     EXPECT_TRUE(out_value->GetAsDictionary(&value_as_dict));
 
-    if (value_as_dict->GetWithoutPathExpansion(split_path, &out_value)) {
+    out_value = dictionary_.FindKey(split_path);
+    if (out_value) {
       const base::Value* value_as_string;
       EXPECT_TRUE(out_value->GetAsString(&value_as_string));
 
@@ -543,10 +543,11 @@ class PrefHashFilterTest : public testing::TestWithParam<EnforcementLevel>,
                            public prefs::mojom::ResetOnLoadObserver {
  public:
   PrefHashFilterTest()
-      : mock_pref_hash_store_(NULL),
+      : mock_pref_hash_store_(nullptr),
         pref_store_contents_(new base::DictionaryValue),
         mock_validation_delegate_record_(new MockValidationDelegateRecord),
         mock_validation_delegate_(mock_validation_delegate_record_),
+        validation_delegate_receiver_(&mock_validation_delegate_),
         reset_recorded_(false) {}
 
   void SetUp() override {
@@ -577,16 +578,25 @@ class PrefHashFilterTest : public testing::TestWithParam<EnforcementLevel>,
         temp_mock_external_validation_pref_hash_store.get();
     mock_external_validation_hash_store_contents_ =
         temp_mock_external_validation_hash_store_contents.get();
-    prefs::mojom::ResetOnLoadObserverPtr reset_on_load_observer;
-    reset_on_load_observer_bindings_.AddBinding(
-        this, mojo::MakeRequest(&reset_on_load_observer));
-    pref_hash_filter_.reset(new PrefHashFilter(
+    mojo::PendingRemote<prefs::mojom::ResetOnLoadObserver>
+        reset_on_load_observer;
+    reset_on_load_observer_receivers_.Add(
+        this, reset_on_load_observer.InitWithNewPipeAndPassReceiver());
+    mojo::Remote<prefs::mojom::TrackedPreferenceValidationDelegate>
+        validation_delegate_remote(
+            validation_delegate_receiver_.BindNewPipeAndPassRemote());
+    auto validation_delegate_remote_ref =
+        base::MakeRefCounted<base::RefCountedData<
+            mojo::Remote<prefs::mojom::TrackedPreferenceValidationDelegate>>>(
+            std::move(validation_delegate_remote));
+    pref_hash_filter_ = std::make_unique<PrefHashFilter>(
         std::move(temp_mock_pref_hash_store),
         PrefHashFilter::StoreContentsPair(
             std::move(temp_mock_external_validation_pref_hash_store),
             std::move(temp_mock_external_validation_hash_store_contents)),
         std::move(configuration), std::move(reset_on_load_observer),
-        &mock_validation_delegate_, base::size(kTestTrackedPrefs), true));
+        std::move(validation_delegate_remote_ref),
+        base::size(kTestTrackedPrefs));
   }
 
   // Verifies whether a reset was reported by the PrefHashFiler. Also verifies
@@ -604,8 +614,8 @@ class PrefHashFilterTest : public testing::TestWithParam<EnforcementLevel>,
   // |pref_hash_filter_|.
   void DoFilterOnLoad(bool expect_prefs_modifications) {
     pref_hash_filter_->FilterOnLoad(
-        base::Bind(&PrefHashFilterTest::GetPrefsBack, base::Unretained(this),
-                   expect_prefs_modifications),
+        base::BindOnce(&PrefHashFilterTest::GetPrefsBack,
+                       base::Unretained(this), expect_prefs_modifications),
         std::move(pref_store_contents_));
   }
 
@@ -634,10 +644,12 @@ class PrefHashFilterTest : public testing::TestWithParam<EnforcementLevel>,
     reset_recorded_ = true;
   }
 
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   MockValidationDelegate mock_validation_delegate_;
-  mojo::BindingSet<prefs::mojom::ResetOnLoadObserver>
-      reset_on_load_observer_bindings_;
+  mojo::Receiver<prefs::mojom::TrackedPreferenceValidationDelegate>
+      validation_delegate_receiver_;
+  mojo::ReceiverSet<prefs::mojom::ResetOnLoadObserver>
+      reset_on_load_observer_receivers_;
   bool reset_recorded_;
 
   DISALLOW_COPY_AND_ASSIGN(PrefHashFilterTest);
@@ -715,42 +727,6 @@ TEST_P(PrefHashFilterTest, FilterTrackedPrefClearing) {
 
   ASSERT_EQ(1u, mock_pref_hash_store_->transactions_performed());
   VerifyRecordedReset(false);
-}
-
-TEST_P(PrefHashFilterTest, ReportSuperMacValidity) {
-  // Do this once just to force the histogram to be defined.
-  DoFilterOnLoad(false);
-
-  base::HistogramBase* histogram = base::StatisticsRecorder::FindHistogram(
-      "Settings.HashesDictionaryTrusted");
-  ASSERT_TRUE(histogram);
-
-  base::HistogramBase::Count initial_untrusted =
-      histogram->SnapshotSamples()->GetCount(0);
-  base::HistogramBase::Count initial_trusted =
-      histogram->SnapshotSamples()->GetCount(1);
-
-  Reset();
-
-  // Run with an invalid super MAC.
-  mock_pref_hash_store_->set_is_super_mac_valid_result(false);
-
-  DoFilterOnLoad(false);
-
-  // Verify that the invalidity was reported.
-  ASSERT_EQ(initial_untrusted + 1, histogram->SnapshotSamples()->GetCount(0));
-  ASSERT_EQ(initial_trusted, histogram->SnapshotSamples()->GetCount(1));
-
-  Reset();
-
-  // Run with a valid super MAC.
-  mock_pref_hash_store_->set_is_super_mac_valid_result(true);
-
-  DoFilterOnLoad(false);
-
-  // Verify that the validity was reported.
-  ASSERT_EQ(initial_untrusted + 1, histogram->SnapshotSamples()->GetCount(0));
-  ASSERT_EQ(initial_trusted + 1, histogram->SnapshotSamples()->GetCount(1));
 }
 
 TEST_P(PrefHashFilterTest, FilterSplitPrefUpdate) {
@@ -1055,11 +1031,11 @@ TEST_P(PrefHashFilterTest, InitialValueChanged) {
     // invalid keys.
     const base::Value* split_value_in_store;
     ASSERT_TRUE(pref_store_contents_->Get(kSplitPref, &split_value_in_store));
-    ASSERT_EQ(2U, dict_value->size());
-    ASSERT_FALSE(dict_value->HasKey("a"));
-    ASSERT_TRUE(dict_value->HasKey("b"));
-    ASSERT_FALSE(dict_value->HasKey("c"));
-    ASSERT_TRUE(dict_value->HasKey("d"));
+    ASSERT_EQ(2U, dict_value->DictSize());
+    ASSERT_EQ(dict_value->FindKey("a"), nullptr);
+    ASSERT_NE(dict_value->FindKey("b"), nullptr);
+    ASSERT_EQ(dict_value->FindKey("c"), nullptr);
+    ASSERT_NE(dict_value->FindKey("d"), nullptr);
     ASSERT_EQ(dict_value, stored_split_value.first);
 
     VerifyRecordedReset(true);
@@ -1074,11 +1050,11 @@ TEST_P(PrefHashFilterTest, InitialValueChanged) {
     const base::Value* split_value_in_store;
     ASSERT_TRUE(pref_store_contents_->Get(kSplitPref, &split_value_in_store));
     ASSERT_EQ(dict_value, split_value_in_store);
-    ASSERT_EQ(4U, dict_value->size());
-    ASSERT_TRUE(dict_value->HasKey("a"));
-    ASSERT_TRUE(dict_value->HasKey("b"));
-    ASSERT_TRUE(dict_value->HasKey("c"));
-    ASSERT_TRUE(dict_value->HasKey("d"));
+    ASSERT_EQ(4U, dict_value->DictSize());
+    ASSERT_NE(dict_value->FindKey("a"), nullptr);
+    ASSERT_NE(dict_value->FindKey("b"), nullptr);
+    ASSERT_NE(dict_value->FindKey("c"), nullptr);
+    ASSERT_NE(dict_value->FindKey("d"), nullptr);
     ASSERT_EQ(dict_value, stored_split_value.first);
 
     VerifyRecordedReset(false);
@@ -1265,7 +1241,7 @@ TEST_P(PrefHashFilterTest, CallFilterSerializeDataCallbacks) {
   // before-write callback is run.
   ASSERT_EQ(
       0u, mock_external_validation_hash_store_contents_->cleared_paths_count());
-  callbacks.first.Run();
+  std::move(callbacks.first).Run();
   ASSERT_EQ(
       2u, mock_external_validation_hash_store_contents_->cleared_paths_count());
 
@@ -1273,7 +1249,7 @@ TEST_P(PrefHashFilterTest, CallFilterSerializeDataCallbacks) {
   ASSERT_EQ(
       0u, mock_external_validation_hash_store_contents_->stored_hashes_count());
 
-  callbacks.second.Run(true);
+  std::move(callbacks.second).Run(true);
 
   ASSERT_EQ(
       2u, mock_external_validation_hash_store_contents_->stored_hashes_count());
@@ -1302,13 +1278,13 @@ TEST_P(PrefHashFilterTest, CallFilterSerializeDataCallbacksWithFailure) {
 
   ASSERT_FALSE(callbacks.first.is_null());
 
-  callbacks.first.Run();
+  std::move(callbacks.first).Run();
 
   // The pref should have been cleared from the external validation store.
   ASSERT_EQ(
       1u, mock_external_validation_hash_store_contents_->cleared_paths_count());
 
-  callbacks.second.Run(false);
+  std::move(callbacks.second).Run(false);
 
   // Expect no writes to the external validation hash store contents.
   ASSERT_EQ(0u,

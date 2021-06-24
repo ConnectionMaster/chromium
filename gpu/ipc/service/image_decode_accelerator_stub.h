@@ -16,7 +16,8 @@
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "gpu/command_buffer/service/sequence_id.h"
-#include "gpu/ipc/common/gpu_messages.h"
+#include "gpu/ipc/common/gpu_channel.mojom.h"
+#include "gpu/ipc/service/gpu_ipc_service_export.h"
 #include "gpu/ipc/service/image_decode_accelerator_worker.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -24,12 +25,9 @@ namespace base {
 class SingleThreadTaskRunner;
 }  // namespace base
 
-namespace IPC {
-class Message;
-}  // namespace IPC
-
 namespace gpu {
 class GpuChannel;
+class ImageFactory;
 class SyncPointClientState;
 
 // Processes incoming image decode requests from renderers: it schedules the
@@ -46,7 +44,7 @@ class SyncPointClientState;
 // An object of this class is meant to be used in
 // both the IO thread (for receiving decode requests) and the main thread (for
 // processing completed decodes).
-class ImageDecodeAcceleratorStub
+class GPU_IPC_SERVICE_EXPORT ImageDecodeAcceleratorStub
     : public base::RefCountedThreadSafe<ImageDecodeAcceleratorStub> {
  public:
   // TODO(andrescj): right now, we only accept one worker to be used for JPEG
@@ -56,38 +54,36 @@ class ImageDecodeAcceleratorStub
                              GpuChannel* channel,
                              int32_t route_id);
 
-  // Processes a message from the renderer. Should be called on the IO thread.
-  bool OnMessageReceived(const IPC::Message& msg);
+  // Processes a decode request. Must be called on the IO thread.
+  void ScheduleImageDecode(mojom::ScheduleImageDecodeParamsPtr params,
+                           uint64_t release_count);
 
   // Called on the main thread to indicate that |channel_| should no longer be
   // used.
   void Shutdown();
 
+  void SetImageFactoryForTesting(ImageFactory* image_factory);
+
  private:
   friend class base::RefCountedThreadSafe<ImageDecodeAcceleratorStub>;
   ~ImageDecodeAcceleratorStub();
 
-  void OnScheduleImageDecode(
-      const GpuChannelMsg_ScheduleImageDecode_Params& params,
-      uint64_t release_count);
-
   // Creates the service-side cache entry for a completed decode and releases
-  // the decode sync token.
-  void ProcessCompletedDecode(GpuChannelMsg_ScheduleImageDecode_Params params,
+  // the decode sync token. If the decode was unsuccessful, no cache entry is
+  // created but the decode sync token is still released.
+  void ProcessCompletedDecode(mojom::ScheduleImageDecodeParamsPtr params_ptr,
                               uint64_t decode_release_count);
 
-  // The |worker_| calls this when a decode is completed. If the decode is
-  // successful, |sequence_| will be enabled so that ProcessCompletedDecode() is
-  // called. If the decode is not successful, we destroy the channel (see
-  // OnError()).
+  // Releases the decode sync token corresponding to |decode_release_count| and
+  // disables |sequence_| if there are no more decodes to process for now.
+  void FinishCompletedDecode(uint64_t decode_release_count)
+      EXCLUSIVE_LOCKS_REQUIRED(lock_);
+
+  // The |worker_| calls this when a decode is completed. |result| is enqueued
+  // and |sequence_| is enabled so that ProcessCompletedDecode() picks it up.
   void OnDecodeCompleted(
       gfx::Size expected_output_size,
       std::unique_ptr<ImageDecodeAcceleratorWorker::DecodeResult> result);
-
-  // Triggers the destruction of the channel asynchronously and makes it so that
-  // we stop accepting completed decodes. On entry, |channel_| must not be
-  // nullptr.
-  void OnError() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // The object to which the actual decoding can be delegated.
   ImageDecodeAcceleratorWorker* worker_ = nullptr;
@@ -99,8 +95,8 @@ class ImageDecodeAcceleratorStub
       GUARDED_BY(lock_);
   base::queue<std::unique_ptr<ImageDecodeAcceleratorWorker::DecodeResult>>
       pending_completed_decodes_ GUARDED_BY(lock_);
-  bool destroying_channel_ GUARDED_BY(lock_) = false;
-  uint64_t last_release_count_ GUARDED_BY(lock_) = 0;
+
+  ImageFactory* external_image_factory_for_testing_ = nullptr;
 
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;

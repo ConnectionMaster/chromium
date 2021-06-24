@@ -14,11 +14,13 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "components/reading_list/core/offline_url_utils.h"
 #include "components/reading_list/core/reading_list_entry.h"
 #include "components/reading_list/core/reading_list_model.h"
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/reading_list/reading_list_distiller_page_factory.h"
+#include "net/base/network_change_notifier.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
@@ -53,7 +55,7 @@ void CleanUpFiles(base::FilePath root,
        !sub_directory.empty(); sub_directory = file_enumerator.Next()) {
     std::string directory_name = sub_directory.BaseName().value();
     if (!processed_directories.count(directory_name)) {
-      base::DeleteFile(sub_directory, true);
+      base::DeletePathRecursively(sub_directory);
     }
   }
 }
@@ -70,8 +72,7 @@ ReadingListDownloadService::ReadingListDownloadService(
         distiller_page_factory)
     : reading_list_model_(reading_list_model),
       chrome_profile_path_(chrome_profile_path),
-      had_connection_(
-          !GetApplicationContext()->GetNetworkConnectionTracker()->IsOffline()),
+      had_connection_(!net::NetworkChangeNotifier::IsOffline()),
       distiller_page_factory_(std::move(distiller_page_factory)),
       distiller_factory_(std::move(distiller_factory)),
       weak_ptr_factory_(this) {
@@ -80,10 +81,10 @@ ReadingListDownloadService::ReadingListDownloadService(
   url_downloader_ = std::make_unique<URLDownloader>(
       distiller_factory_.get(), distiller_page_factory_.get(), prefs,
       chrome_profile_path, url_loader_factory,
-      base::Bind(&ReadingListDownloadService::OnDownloadEnd,
-                 base::Unretained(this)),
-      base::Bind(&ReadingListDownloadService::OnDeleteEnd,
-                 base::Unretained(this)));
+      base::BindRepeating(&ReadingListDownloadService::OnDownloadEnd,
+                          base::Unretained(this)),
+      base::BindRepeating(&ReadingListDownloadService::OnDeleteEnd,
+                          base::Unretained(this)));
 
   GetApplicationContext()
       ->GetNetworkConnectionTracker()
@@ -169,13 +170,13 @@ void ReadingListDownloadService::SyncWithModel() {
         break;
     }
   }
-  base::PostTaskWithTraitsAndReply(
+  base::ThreadPool::PostTaskAndReply(
       FROM_HERE,
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
-      base::Bind(&::CleanUpFiles, OfflineRoot(), processed_directories),
-      base::Bind(&ReadingListDownloadService::DownloadUnprocessedEntries,
-                 base::Unretained(this), unprocessed_entries));
+      base::BindOnce(&::CleanUpFiles, OfflineRoot(), processed_directories),
+      base::BindOnce(&ReadingListDownloadService::DownloadUnprocessedEntries,
+                     base::Unretained(this), unprocessed_entries));
 }
 
 void ReadingListDownloadService::DownloadUnprocessedEntries(
@@ -208,7 +209,7 @@ void ReadingListDownloadService::DownloadEntry(const GURL& url) {
       entry->DistilledState() == ReadingListEntry::PROCESSED || entry->IsRead())
     return;
 
-  if (GetApplicationContext()->GetNetworkConnectionTracker()->IsOffline()) {
+  if (net::NetworkChangeNotifier::IsOffline()) {
     // There is no connection, save it for download only if we did not exceed
     // the maximaxum number of tries.
     if (entry->FailedDownloadCounter() < kNumberOfFailsBeforeWifiOnly)

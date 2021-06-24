@@ -9,18 +9,17 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
-
-class ExtensionAction;
 
 namespace content {
 class BrowserContext;
 }
 
 namespace extensions {
-class ExtensionRegistry;
 class StateStore;
 
 // This class manages reading and writing browser action values from storage.
@@ -53,13 +52,13 @@ class ExtensionActionStorageManager : public ExtensionActionAPI::Observer,
 
   content::BrowserContext* browser_context_;
 
-  ScopedObserver<ExtensionActionAPI, ExtensionActionAPI::Observer>
-      extension_action_observer_;
+  base::ScopedObservation<ExtensionActionAPI, ExtensionActionAPI::Observer>
+      extension_action_observation_{this};
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
-  base::WeakPtrFactory<ExtensionActionStorageManager> weak_factory_;
+  base::WeakPtrFactory<ExtensionActionStorageManager> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionActionStorageManager);
 };

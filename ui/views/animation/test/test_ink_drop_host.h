@@ -7,16 +7,16 @@
 
 #include "base/macros.h"
 #include "ui/views/animation/ink_drop_host_view.h"
+#include "ui/views/animation/ink_drop_impl.h"
 
 namespace views {
 
-// A non-functional implementation of an InkDropHost that can be used during
-// tests.  Tracks the number of hosted ink drop layers.
-//
-// Note that CreateInkDrop() is not supported.
-class TestInkDropHost : public InkDropHostView {
+// A non-functional implementation of an View with an ink drop that can be used
+// during tests.  Tracks the number of hosted ink drop layers.
+class TestInkDropHost : public View {
  public:
-  TestInkDropHost();
+  explicit TestInkDropHost(InkDropImpl::AutoHighlightMode auto_highlight_mode =
+                               InkDropImpl::AutoHighlightMode::NONE);
   ~TestInkDropHost() override;
 
   int num_ink_drop_layers_added() const { return num_ink_drop_layers_added_; }
@@ -42,11 +42,9 @@ class TestInkDropHost : public InkDropHostView {
     disable_timers_for_test_ = disable_timers_for_test;
   }
 
-  // InkDropHostView:
-  void AddInkDropLayer(ui::Layer* ink_drop_layer) override;
-  void RemoveInkDropLayer(ui::Layer* ink_drop_layer) override;
-  std::unique_ptr<InkDropRipple> CreateInkDropRipple() const override;
-  std::unique_ptr<InkDropHighlight> CreateInkDropHighlight() const override;
+  // View:
+  void AddLayerBeneathView(ui::Layer* layer) override;
+  void RemoveLayerBeneathView(ui::Layer* layer) override;
 
  private:
   int num_ink_drop_layers_added_ = 0;

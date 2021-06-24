@@ -123,7 +123,7 @@ class SecurityKeyAuthHandlerPosix : public SecurityKeyAuthHandler {
   // Timeout used for a request.
   base::TimeDelta request_timeout_;
 
-  base::WeakPtrFactory<SecurityKeyAuthHandlerPosix> weak_factory_;
+  base::WeakPtrFactory<SecurityKeyAuthHandlerPosix> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SecurityKeyAuthHandlerPosix);
 };
@@ -147,17 +147,15 @@ SecurityKeyAuthHandlerPosix::SecurityKeyAuthHandlerPosix(
     scoped_refptr<base::SingleThreadTaskRunner> file_task_runner)
     : file_task_runner_(file_task_runner),
       request_timeout_(
-          base::TimeDelta::FromSeconds(kDefaultRequestTimeoutSeconds)),
-      weak_factory_(this) {}
+          base::TimeDelta::FromSeconds(kDefaultRequestTimeoutSeconds)) {}
 
 SecurityKeyAuthHandlerPosix::~SecurityKeyAuthHandlerPosix() {
   DCHECK(thread_checker_.CalledOnValidThread());
   if (file_task_runner_) {
     // Attempt to clean up the socket before being destroyed.
     file_task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(base::IgnoreResult(&base::DeleteFile),
-                                  g_security_key_socket_name.Get(),
-                                  /*recursive=*/false));
+        FROM_HERE, base::BindOnce(base::GetDeleteFileCallback(),
+                                  g_security_key_socket_name.Get()));
   }
 }
 
@@ -170,11 +168,11 @@ void SecurityKeyAuthHandlerPosix::CreateSecurityKeyConnection() {
   // that task has completed, the main thread will be called back and we will
   // resume setting up our security key auth socket there.
   file_task_runner_->PostTaskAndReply(
-      FROM_HERE, base::Bind(base::IgnoreResult(&base::DeleteFile),
-                            g_security_key_socket_name.Get(),
-                            /*recursive=*/false),
-      base::Bind(&SecurityKeyAuthHandlerPosix::CreateSocket,
-                 weak_factory_.GetWeakPtr()));
+      FROM_HERE,
+      base::BindOnce(base::GetDeleteFileCallback(),
+                     g_security_key_socket_name.Get()),
+      base::BindOnce(&SecurityKeyAuthHandlerPosix::CreateSocket,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void SecurityKeyAuthHandlerPosix::CreateSocket() {
@@ -182,8 +180,8 @@ void SecurityKeyAuthHandlerPosix::CreateSocket() {
   HOST_LOG << "Listening for security key requests on "
            << g_security_key_socket_name.Get().value();
 
-  auth_socket_.reset(
-      new net::UnixDomainServerSocket(base::Bind(MatchUid), false));
+  auth_socket_ = std::make_unique<net::UnixDomainServerSocket>(
+      base::BindRepeating(MatchUid), false);
   int rv = auth_socket_->BindAndListen(g_security_key_socket_name.Get().value(),
                                        /*backlog=*/1);
   if (rv != net::OK) {
@@ -205,8 +203,8 @@ void SecurityKeyAuthHandlerPosix::SendClientResponse(
     HOST_DLOG << "Sending client response to socket: " << connection_id;
     iter->second->SendResponse(response);
     iter->second->StartReadingRequest(
-        base::Bind(&SecurityKeyAuthHandlerPosix::OnReadComplete,
-                   base::Unretained(this), connection_id));
+        base::BindOnce(&SecurityKeyAuthHandlerPosix::OnReadComplete,
+                       base::Unretained(this), connection_id));
   } else {
     LOG(WARNING) << "Unknown gnubby-auth connection id: " << connection_id;
   }
@@ -239,8 +237,8 @@ void SecurityKeyAuthHandlerPosix::SetRequestTimeoutForTest(
 void SecurityKeyAuthHandlerPosix::DoAccept() {
   DCHECK(thread_checker_.CalledOnValidThread());
   int result = auth_socket_->Accept(
-      &accept_socket_, base::Bind(&SecurityKeyAuthHandlerPosix::OnAccepted,
-                                  base::Unretained(this)));
+      &accept_socket_, base::BindOnce(&SecurityKeyAuthHandlerPosix::OnAccepted,
+                                      base::Unretained(this)));
   if (result != net::ERR_IO_PENDING) {
     OnAccepted(result);
   }
@@ -259,12 +257,12 @@ void SecurityKeyAuthHandlerPosix::OnAccepted(int result) {
   HOST_DLOG << "Creating new socket: " << security_key_connection_id;
   SecurityKeySocket* socket = new SecurityKeySocket(
       std::move(accept_socket_), request_timeout_,
-      base::Bind(&SecurityKeyAuthHandlerPosix::RequestTimedOut,
-                 base::Unretained(this), security_key_connection_id));
+      base::BindOnce(&SecurityKeyAuthHandlerPosix::RequestTimedOut,
+                     base::Unretained(this), security_key_connection_id));
   active_sockets_[security_key_connection_id] = base::WrapUnique(socket);
   socket->StartReadingRequest(
-      base::Bind(&SecurityKeyAuthHandlerPosix::OnReadComplete,
-                 base::Unretained(this), security_key_connection_id));
+      base::BindOnce(&SecurityKeyAuthHandlerPosix::OnReadComplete,
+                     base::Unretained(this), security_key_connection_id));
 
   // Continue accepting new connections.
   DoAccept();

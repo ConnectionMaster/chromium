@@ -2,55 +2,36 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+import {addSingletonGetter, sendWithPromise} from 'chrome://resources/js/cr.m.js';
+// clang-format on
+
 /**
  * @typedef {{
  *   fontList: !Array<{
  *       0: string,
  *       1: (string|undefined),
  *       2: (string|undefined)}>,
- *   extensionUrl: string
  * }}
  */
-let FontsData;
+export let FontsData;
 
-cr.define('settings', function() {
-  /** @interface */
-  class FontsBrowserProxy {
-    /**
-     * @return {!Promise<!FontsData>} Fonts and the advanced font settings
-     *     extension URL.
-     */
-    fetchFontsData() {}
-
-    observeAdvancedFontExtensionAvailable() {}
-
-    openAdvancedFontSettings() {}
-  }
-
+/** @interface */
+export class FontsBrowserProxy {
   /**
-   * @implements {settings.FontsBrowserProxy}
+   * @return {!Promise<!FontsData>} Fonts
    */
-  class FontsBrowserProxyImpl {
-    /** @override */
-    fetchFontsData() {
-      return cr.sendWithPromise('fetchFontsData');
-    }
+  fetchFontsData() {}
+}
 
-    /** @override */
-    observeAdvancedFontExtensionAvailable() {
-      chrome.send('observeAdvancedFontExtensionAvailable');
-    }
-
-    /** @override */
-    openAdvancedFontSettings() {
-      chrome.send('openAdvancedFontSettings');
-    }
+/**
+ * @implements {FontsBrowserProxy}
+ */
+export class FontsBrowserProxyImpl {
+  /** @override */
+  fetchFontsData() {
+    return sendWithPromise('fetchFontsData');
   }
+}
 
-  cr.addSingletonGetter(FontsBrowserProxyImpl);
-
-  return {
-    FontsBrowserProxy: FontsBrowserProxy,
-    FontsBrowserProxyImpl: FontsBrowserProxyImpl,
-  };
-});
+addSingletonGetter(FontsBrowserProxyImpl);

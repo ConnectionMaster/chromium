@@ -6,7 +6,6 @@
 
 #include <stddef.h>
 
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -115,7 +114,7 @@ class ComponentExtensionIMEManagerTest : public testing::Test {
 
     mock_delegate_ = new MockComponentExtIMEManagerDelegate();
     mock_delegate_->set_ime_list(ime_list_);
-    component_ext_mgr_.reset(new ComponentExtensionIMEManager());
+    component_ext_mgr_ = std::make_unique<ComponentExtensionIMEManager>();
     component_ext_mgr_->Initialize(base::WrapUnique(mock_delegate_));
   }
 
@@ -162,28 +161,25 @@ TEST_F(ComponentExtensionIMEManagerTest, UnloadComponentExtensionIMETest) {
   EXPECT_EQ(9, mock_delegate_->unload_call_count());
 }
 
-TEST_F(ComponentExtensionIMEManagerTest, IsWhitelistedTest) {
-  EXPECT_TRUE(component_ext_mgr_->IsWhitelisted(
+TEST_F(ComponentExtensionIMEManagerTest, IsAllowlistedTest) {
+  EXPECT_TRUE(component_ext_mgr_->IsAllowlisted(
       extension_ime_util::GetComponentInputMethodID(
-          ime_list_[0].id,
-          ime_list_[0].engines[0].engine_id)));
-  EXPECT_FALSE(component_ext_mgr_->IsWhitelisted(
-      extension_ime_util::GetInputMethodID(
-          ime_list_[0].id,
-          ime_list_[0].engines[0].engine_id)));
-  EXPECT_FALSE(component_ext_mgr_->IsWhitelisted("mozc"));
-  EXPECT_FALSE(component_ext_mgr_->IsWhitelisted(
+          ime_list_[0].id, ime_list_[0].engines[0].engine_id)));
+  EXPECT_FALSE(
+      component_ext_mgr_->IsAllowlisted(extension_ime_util::GetInputMethodID(
+          ime_list_[0].id, ime_list_[0].engines[0].engine_id)));
+  EXPECT_FALSE(component_ext_mgr_->IsAllowlisted("mozc"));
+  EXPECT_FALSE(component_ext_mgr_->IsAllowlisted(
       extension_ime_util::GetInputMethodID("AAAA", "012345")));
-  EXPECT_FALSE(component_ext_mgr_->IsWhitelisted(
-      extension_ime_util::GetComponentInputMethodID(
-          "AAAA", "012345")));
+  EXPECT_FALSE(component_ext_mgr_->IsAllowlisted(
+      extension_ime_util::GetComponentInputMethodID("AAAA", "012345")));
 }
 
-TEST_F(ComponentExtensionIMEManagerTest, IsWhitelistedExtensionTest) {
-  EXPECT_TRUE(component_ext_mgr_->IsWhitelistedExtension(ime_list_[0].id));
-  EXPECT_TRUE(component_ext_mgr_->IsWhitelistedExtension(ime_list_[1].id));
-  EXPECT_FALSE(component_ext_mgr_->IsWhitelistedExtension("dummy"));
-  EXPECT_FALSE(component_ext_mgr_->IsWhitelistedExtension(""));
+TEST_F(ComponentExtensionIMEManagerTest, IsAllowlistedExtensionTest) {
+  EXPECT_TRUE(component_ext_mgr_->IsAllowlistedExtension(ime_list_[0].id));
+  EXPECT_TRUE(component_ext_mgr_->IsAllowlistedExtension(ime_list_[1].id));
+  EXPECT_FALSE(component_ext_mgr_->IsAllowlistedExtension("dummy"));
+  EXPECT_FALSE(component_ext_mgr_->IsAllowlistedExtension(""));
 }
 
 TEST_F(ComponentExtensionIMEManagerTest, GetAllIMEAsInputMethodDescriptor) {

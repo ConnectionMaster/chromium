@@ -21,7 +21,7 @@ class ComponentUpdateService;
 
 // Component for receiving Third Party Module Lists. The lists are in proto
 // format, corresponding to the proto definition in
-// chrome/browser/conflicts/proto/module_list.proto
+// chrome/browser/win/conflicts/proto/module_list.proto
 //
 // Notifications of a new version of the module list are sent to the
 // ThirdPartyConflictsManager instance in the ModuleDatabase, if it exists.
@@ -47,7 +47,6 @@ class ThirdPartyModuleListComponentInstallerPolicy
   base::FilePath GetRelativeInstallDir() const override;
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
-  std::vector<std::string> GetMimeTypes() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
 
   // Returns the path to the proto file for the given |install_dir|.

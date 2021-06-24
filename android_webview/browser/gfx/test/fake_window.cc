@@ -16,6 +16,9 @@
 #include "ui/gl/init/gl_factory.h"
 
 namespace android_webview {
+namespace {
+std::unique_ptr<base::Thread> g_render_thread;
+}
 
 class FakeWindow::ScopedMakeCurrent {
  public:
@@ -50,8 +53,7 @@ FakeWindow::FakeWindow(BrowserViewRenderer* view,
       surface_size_(100, 100),
       location_(location),
       on_draw_hardware_pending_(false),
-      context_current_(false),
-      weak_ptr_factory_(this) {
+      context_current_(false) {
   CheckCurrentlyOnUIThread();
   DCHECK(view_);
   view_->OnAttachedToWindow(location_.width(), location_.height());
@@ -70,8 +72,6 @@ FakeWindow::~FakeWindow() {
                                   base::Unretained(this), &completion));
     completion.Wait();
   }
-
-  render_thread_.reset();
 }
 
 void FakeWindow::Detach() {
@@ -170,13 +170,17 @@ void FakeWindow::CheckCurrentlyOnUIThread() {
 
 void FakeWindow::CreateRenderThreadIfNeeded() {
   CheckCurrentlyOnUIThread();
-  if (render_thread_) {
-    DCHECK(render_thread_loop_);
+  if (render_thread_loop_) {
+    DCHECK(g_render_thread);
     return;
   }
-  render_thread_.reset(new base::Thread("TestRenderThread"));
-  render_thread_->Start();
-  render_thread_loop_ = render_thread_->task_runner();
+
+  if (!g_render_thread) {
+    g_render_thread = std::make_unique<base::Thread>("TestRenderThread");
+    g_render_thread->Start();
+  }
+
+  render_thread_loop_ = g_render_thread->task_runner();
   rt_checker_.DetachFromSequence();
 
   base::WaitableEvent completion(
@@ -248,7 +252,8 @@ void FakeFunctor::Draw(WindowHooks* hooks) {
   params.height = committed_location_.height();
   if (!hooks->WillDrawOnRT(&params))
     return;
-  render_thread_manager_->DrawOnRT(false /* save_restore */, &params);
+  render_thread_manager_->DrawOnRT(/*save_restore=*/false, params,
+                                   OverlaysParams());
   hooks->DidDrawOnRT();
 }
 

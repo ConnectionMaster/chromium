@@ -130,8 +130,10 @@ class AppCacheStorageImpl : public AppCacheStorage {
   void LazilyCommitLastAccessTimes();
   void OnLazyCommitTimer();
 
+  // If there is appcache data to be deleted (|force_keep_session_state| is
+  // false), deletes session-only appcache data.
   static void ClearSessionOnlyOrigins(
-      AppCacheDatabase* database,
+      std::unique_ptr<AppCacheDatabase> database,
       scoped_refptr<storage::SpecialStoragePolicy> special_storage_policy,
       bool force_keep_session_state);
 
@@ -145,21 +147,22 @@ class AppCacheStorageImpl : public AppCacheStorage {
       scoped_refptr<AppCache> newest_cache,
       scoped_refptr<DelegateReference> delegate_ref);
 
-  void CallOnMainResponseFound(DelegateReferenceVector* delegates,
-                               const GURL& url,
-                               const AppCacheEntry& entry,
-                               const GURL& namespace_entry_url,
-                               const AppCacheEntry& fallback_entry,
-                               int64_t cache_id,
-                               int64_t group_id,
-                               const GURL& manifest_url);
+  void CallOnMainResponseFound(
+      std::vector<scoped_refptr<DelegateReference>>* delegates,
+      const GURL& url,
+      const AppCacheEntry& entry,
+      const GURL& namespace_entry_url,
+      const AppCacheEntry& fallback_entry,
+      int64_t cache_id,
+      int64_t group_id,
+      const GURL& manifest_url);
 
   // Don't call this when |is_disabled_| is true.
   CONTENT_EXPORT AppCacheDiskCache* disk_cache();
 
   // The directory in which we place files in the file system.
   base::FilePath cache_directory_;
-  bool is_incognito_;
+  bool is_incognito_ = false;
 
   // This class operates primarily on the IO thread, but schedules
   // its DatabaseTasks on the db thread.
@@ -175,24 +178,24 @@ class AppCacheStorageImpl : public AppCacheStorage {
   // Structures to keep track of lazy response deletion.
   base::circular_deque<int64_t> deletable_response_ids_;
   std::vector<int64_t> deleted_response_ids_;
-  bool is_response_deletion_scheduled_;
-  bool did_start_deleting_responses_;
-  int64_t last_deletable_response_rowid_;
+  bool is_response_deletion_scheduled_ = false;
+  bool did_start_deleting_responses_ = false;
+  int64_t last_deletable_response_rowid_ = 0;
 
   // Created on the IO thread, but only used on the DB thread.
-  AppCacheDatabase* database_;
+  std::unique_ptr<AppCacheDatabase> database_;
 
   // Set if we discover a fatal error like a corrupt SQL database or
   // disk cache and cannot continue.
-  bool is_disabled_;
+  bool is_disabled_ = false;
 
   // This is set when we want to use the post-cleanup callback to initiate
   // directory deletion.
-  bool delete_and_start_over_pending_;
+  bool delete_and_start_over_pending_ = false;
 
   // This is set when we know that a call to Disable() will result in
   // OnDiskCacheCleanupComplete() eventually called.
-  bool expecting_cleanup_complete_on_disable_;
+  bool expecting_cleanup_complete_on_disable_ = false;
 
   std::unique_ptr<AppCacheDiskCache> disk_cache_;
   base::OneShotTimer lazy_commit_timer_;
@@ -200,7 +203,7 @@ class AppCacheStorageImpl : public AppCacheStorage {
   // Used to short-circuit certain operations without having to schedule
   // any tasks on the background database thread.
   base::circular_deque<base::OnceClosure> pending_simple_tasks_;
-  base::WeakPtrFactory<AppCacheStorageImpl> weak_factory_;
+  base::WeakPtrFactory<AppCacheStorageImpl> weak_factory_{this};
 
   friend class content::AppCacheStorageImplTest;
   friend class content::ChromeAppCacheServiceTest;

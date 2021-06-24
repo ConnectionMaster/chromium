@@ -4,9 +4,9 @@
 
 #include "base/command_line.h"
 #include "base/macros.h"
-#include "base/strings/stringprintf.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -64,8 +64,9 @@ class OpenedByDOMTest : public ContentBrowserTest {
         "setTimeout(function() {"
         "window.domAutomationController.send(0);"
         "});";
-    int dummy;
-    CHECK(ExecuteScriptAndExtractInt(web_contents, kCloseWindowScript, &dummy));
+    CHECK_EQ(0, EvalJs(web_contents, kCloseWindowScript,
+                       EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+                    .ExtractInt());
 
     web_contents->SetDelegate(old_delegate);
     return close_tracking_delegate.close_contents_called();
@@ -76,8 +77,7 @@ class OpenedByDOMTest : public ContentBrowserTest {
     ShellAddedObserver new_shell_observer;
     TestNavigationObserver nav_observer(nullptr);
     nav_observer.StartWatchingNewWebContents();
-    CHECK(ExecuteScript(
-        shell, base::StringPrintf("window.open('%s')", url.spec().c_str())));
+    CHECK(ExecJs(shell, JsReplace("window.open($1)", url)));
     nav_observer.Wait();
     return new_shell_observer.GetShell();
   }
@@ -92,8 +92,8 @@ IN_PROC_BROWSER_TEST_F(OpenedByDOMTest, NormalWindow) {
   // list has only one element. Navigate a bit so the second condition is false.
   GURL url1 = embedded_test_server()->GetURL("/site_isolation/blank.html?1");
   GURL url2 = embedded_test_server()->GetURL("/site_isolation/blank.html?2");
-  NavigateToURL(shell(), url1);
-  NavigateToURL(shell(), url2);
+  EXPECT_TRUE(NavigateToURL(shell(), url1));
+  EXPECT_TRUE(NavigateToURL(shell(), url2));
 
   // This window was not opened by DOM, so close does not reach the browser
   // process.
@@ -108,10 +108,10 @@ IN_PROC_BROWSER_TEST_F(OpenedByDOMTest, Popup) {
   GURL url1 = embedded_test_server()->GetURL("/site_isolation/blank.html?1");
   GURL url2 = embedded_test_server()->GetURL("/site_isolation/blank.html?2");
   GURL url3 = embedded_test_server()->GetURL("/site_isolation/blank.html?3");
-  NavigateToURL(shell(), url1);
+  EXPECT_TRUE(NavigateToURL(shell(), url1));
 
   Shell* popup = OpenWindowFromJavaScript(shell(), url2);
-  NavigateToURL(popup, url3);
+  EXPECT_TRUE(NavigateToURL(popup, url3));
   EXPECT_TRUE(AttemptCloseFromJavaScript(popup->web_contents()));
 }
 
@@ -130,10 +130,10 @@ IN_PROC_BROWSER_TEST_F(OpenedByDOMTest, CrossProcessPopup) {
   GURL url3 = embedded_test_server()->GetURL("/site_isolation/blank.html?3");
   url3 = url3.ReplaceComponents(replace_host);
 
-  NavigateToURL(shell(), url1);
+  EXPECT_TRUE(NavigateToURL(shell(), url1));
 
   Shell* popup = OpenWindowFromJavaScript(shell(), url2);
-  NavigateToURL(popup, url3);
+  EXPECT_TRUE(NavigateToURL(popup, url3));
   EXPECT_TRUE(AttemptCloseFromJavaScript(popup->web_contents()));
 }
 

@@ -28,8 +28,7 @@ class DownloadTestFileActivityObserver::MockDownloadManagerDelegate
   explicit MockDownloadManagerDelegate(Profile* profile)
       : ChromeDownloadManagerDelegate(profile),
         file_chooser_enabled_(false),
-        file_chooser_displayed_(false),
-        weak_ptr_factory_(this) {
+        file_chooser_displayed_(false) {
     if (!profile->IsOffTheRecord())
       GetDownloadIdReceiverCallback().Run(download::DownloadItem::kInvalidId +
                                           1);
@@ -55,14 +54,14 @@ class DownloadTestFileActivityObserver::MockDownloadManagerDelegate
   void ShowFilePickerForDownload(
       download::DownloadItem* download,
       const base::FilePath& suggested_path,
-      const DownloadTargetDeterminerDelegate::ConfirmationCallback& callback)
+      DownloadTargetDeterminerDelegate::ConfirmationCallback callback)
       override {
     file_chooser_displayed_ = true;
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
         base::BindOnce(
             &MockDownloadManagerDelegate::OnConfirmationCallbackComplete,
-            base::Unretained(this), callback,
+            base::Unretained(this), std::move(callback),
             (file_chooser_enabled_ ? DownloadConfirmationResult::CONFIRMED
                                    : DownloadConfirmationResult::CANCELED),
             suggested_path));
@@ -73,7 +72,7 @@ class DownloadTestFileActivityObserver::MockDownloadManagerDelegate
  private:
   bool file_chooser_enabled_;
   bool file_chooser_displayed_;
-  base::WeakPtrFactory<MockDownloadManagerDelegate> weak_ptr_factory_;
+  base::WeakPtrFactory<MockDownloadManagerDelegate> weak_ptr_factory_{this};
 };
 
 DownloadTestFileActivityObserver::DownloadTestFileActivityObserver(

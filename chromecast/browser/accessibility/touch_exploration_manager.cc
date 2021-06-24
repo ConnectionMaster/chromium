@@ -7,6 +7,9 @@
 
 #include "chromecast/browser/accessibility/touch_exploration_manager.h"
 
+#include <utility>
+#include <vector>
+
 #include "chromecast/browser/cast_browser_context.h"
 #include "chromecast/browser/cast_browser_process.h"
 #include "chromecast/common/extensions_api/accessibility_private.h"
@@ -47,34 +50,25 @@ void TouchExplorationManager::Enable(bool enabled) {
   UpdateTouchExplorationState();
 }
 
-ui::EventRewriteStatus TouchExplorationManager::RewriteEvent(
+ui::EventDispatchDetails TouchExplorationManager::RewriteEvent(
     const ui::Event& event,
-    std::unique_ptr<ui::Event>* rewritten_event) {
-  if (touch_exploration_controller_) {
-    return touch_exploration_controller_->RewriteEvent(event, rewritten_event);
-  }
-  return ui::EVENT_REWRITE_CONTINUE;
-}
-
-ui::EventRewriteStatus TouchExplorationManager::NextDispatchEvent(
-    const ui::Event& last_event,
-    std::unique_ptr<ui::Event>* new_event) {
-  if (touch_exploration_controller_) {
-    return touch_exploration_controller_->NextDispatchEvent(last_event,
-                                                            new_event);
-  }
-  return ui::EVENT_REWRITE_CONTINUE;
+    const Continuation continuation) {
+  return touch_exploration_controller_
+             ? touch_exploration_controller_->RewriteEvent(event, continuation)
+             : SendEvent(continuation, &event);
 }
 
 void TouchExplorationManager::HandleAccessibilityGesture(
-    ax::mojom::Gesture gesture) {
+    const ax::mojom::Gesture gesture,
+    const gfx::PointF& location) {
   // (Code copied from Chrome's
   // AccessibilityController::HandleAccessibilityGestore.)
   extensions::EventRouter* event_router = extensions::EventRouter::Get(
       shell::CastBrowserProcess::GetInstance()->browser_context());
-  std::unique_ptr<base::ListValue> event_args =
-      std::make_unique<base::ListValue>();
-  event_args->AppendString(ui::ToString(gesture));
+  std::vector<base::Value> event_args;
+  event_args.push_back(base::Value(ui::ToString(gesture)));
+  event_args.push_back(base::Value(location.x()));
+  event_args.push_back(base::Value(location.y()));
   std::unique_ptr<extensions::Event> event(new extensions::Event(
       extensions::events::ACCESSIBILITY_PRIVATE_ON_ACCESSIBILITY_GESTURE,
       extensions::cast::api::accessibility_private::OnAccessibilityGesture::
@@ -84,7 +78,7 @@ void TouchExplorationManager::HandleAccessibilityGesture(
       extension_misc::kChromeVoxExtensionId, std::move(event));
 }
 
-void TouchExplorationManager::HandleTap(const gfx::Point touch_location) {
+void TouchExplorationManager::HandleTap(const gfx::Point& touch_location) {
   cast_gesture_handler_->HandleTapDownGesture(touch_location);
   cast_gesture_handler_->HandleTapGesture(touch_location);
 }
@@ -104,6 +98,12 @@ void TouchExplorationManager::SetTouchAccessibilityAnchorPoint(
   }
 }
 
+void TouchExplorationManager::SetVirtualKeyboardBounds(const gfx::Rect& rect) {
+  if (touch_exploration_controller_) {
+    touch_exploration_controller_->SetLiftActivationBounds(rect);
+  }
+}
+
 void TouchExplorationManager::UpdateTouchExplorationState() {
   // See https://crbug.com/603745 for more details.
   aura::Window* active_window = activation_client_->GetActiveWindow();
@@ -120,8 +120,7 @@ void TouchExplorationManager::UpdateTouchExplorationState() {
     }
     if (pass_through_surface) {
       const display::Display display =
-          display::Screen::GetScreen()->GetDisplayNearestWindow(
-              root_window_);
+          display::Screen::GetScreen()->GetDisplayNearestWindow(root_window_);
       const gfx::Rect work_area = display.work_area();
       touch_exploration_controller_->SetExcludeBounds(work_area);
       // Clear the focus highlight.

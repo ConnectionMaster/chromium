@@ -18,7 +18,6 @@
 namespace gcm {
 
 const uint32_t MAX_LOGGED_ACTIVITY_COUNT = 100;
-const int64_t RECEIVED_DATA_MESSAGE_BURST_LENGTH_SECONDS = 2;
 
 namespace {
 
@@ -164,13 +163,9 @@ std::string GetUnregistrationStatusString(
 }  // namespace
 
 GCMStatsRecorderImpl::GCMStatsRecorderImpl()
-    : is_recording_(false),
-      delegate_(nullptr),
-      data_message_received_since_connected_(false),
-      received_data_message_burst_size_(0) {}
+    : is_recording_(false), delegate_(nullptr) {}
 
-GCMStatsRecorderImpl::~GCMStatsRecorderImpl() {
-}
+GCMStatsRecorderImpl::~GCMStatsRecorderImpl() = default;
 
 void GCMStatsRecorderImpl::SetDelegate(Delegate* delegate) {
   delegate_ = delegate;
@@ -263,10 +258,9 @@ void GCMStatsRecorderImpl::RecordConnection(
 
 void GCMStatsRecorderImpl::RecordConnectionInitiated(const std::string& host) {
   last_connection_initiation_time_ = base::TimeTicks::Now();
-  last_connection_success_time_ = base::TimeTicks();
-  data_message_received_since_connected_ = false;
   if (!is_recording_)
     return;
+
   RecordConnection("Connection initiated", host);
 }
 
@@ -274,6 +268,7 @@ void GCMStatsRecorderImpl::RecordConnectionDelayedDueToBackoff(
     int64_t delay_msec) {
   if (!is_recording_)
     return;
+
   RecordConnection("Connection backoff",
                    base::StringPrintf("Delayed for %" PRId64 " msec",
                                       delay_msec));
@@ -284,7 +279,6 @@ void GCMStatsRecorderImpl::RecordConnectionSuccess() {
   UMA_HISTOGRAM_MEDIUM_TIMES(
       "GCM.ConnectionLatency",
       (base::TimeTicks::Now() - last_connection_initiation_time_));
-  last_connection_success_time_ = base::TimeTicks::Now();
   last_connection_initiation_time_ = base::TimeTicks();
   if (!is_recording_)
     return;
@@ -417,36 +411,6 @@ void GCMStatsRecorderImpl::RecordDataMessageReceived(
     const std::string& from,
     int message_byte_size,
     ReceivedMessageType message_type) {
-  base::TimeTicks new_timestamp = base::TimeTicks::Now();
-  if (last_received_data_message_burst_start_time_.is_null()) {
-    last_received_data_message_burst_start_time_ = new_timestamp;
-    last_received_data_message_time_within_burst_ = new_timestamp;
-    received_data_message_burst_size_ = 1;
-  } else if ((new_timestamp - last_received_data_message_burst_start_time_) >=
-             base::TimeDelta::FromSeconds(
-                 RECEIVED_DATA_MESSAGE_BURST_LENGTH_SECONDS)) {
-    UMA_HISTOGRAM_LONG_TIMES(
-        "GCM.DataMessageBurstReceivedInterval",
-        (new_timestamp - last_received_data_message_burst_start_time_));
-    UMA_HISTOGRAM_COUNTS_1M("GCM.ReceivedDataMessageBurstSize",
-                            received_data_message_burst_size_);
-    last_received_data_message_burst_start_time_ = new_timestamp;
-    last_received_data_message_time_within_burst_ = new_timestamp;
-    received_data_message_burst_size_ = 1;
-  } else {
-    UMA_HISTOGRAM_TIMES(
-        "GCM.ReceivedDataMessageIntervalWithinBurst",
-        (new_timestamp - last_received_data_message_time_within_burst_));
-    last_received_data_message_time_within_burst_ = new_timestamp;
-    ++received_data_message_burst_size_;
-  }
-  if (!data_message_received_since_connected_) {
-    DCHECK(!last_connection_success_time_.is_null());
-    UMA_HISTOGRAM_TIMES("GCM.FirstReceivedDataMessageLatencyAfterConnection",
-                        (new_timestamp - last_connection_success_time_));
-    data_message_received_since_connected_ = true;
-  }
-
   if (!is_recording_)
     return;
 

@@ -21,12 +21,14 @@ class FakeDownloadTask : public DownloadTask {
   ~FakeDownloadTask() override;
 
   // DownloadTask overrides:
+  WebState* GetWebState() override;
   DownloadTask::State GetState() const override;
   void Start(std::unique_ptr<net::URLFetcherResponseWriter> writer) override;
   void Cancel() override;
   net::URLFetcherResponseWriter* GetResponseWriter() const override;
   NSString* GetIndentifier() const override;
   const GURL& GetOriginalUrl() const override;
+  NSString* GetHttpMethod() const override;
   bool IsDone() const override;
   int GetErrorCode() const override;
   int GetHttpCode() const override;
@@ -36,13 +38,13 @@ class FakeDownloadTask : public DownloadTask {
   std::string GetContentDisposition() const override;
   std::string GetOriginalMimeType() const override;
   std::string GetMimeType() const override;
-  ui::PageTransition GetTransitionType() const override;
-  base::string16 GetSuggestedFilename() const override;
+  std::u16string GetSuggestedFilename() const override;
   bool HasPerformedBackgroundDownload() const override;
   void AddObserver(DownloadTaskObserver* observer) override;
   void RemoveObserver(DownloadTaskObserver* observer) override;
 
   // Setters for task properties. Setters invoke OnDownloadUpdated callback.
+  void SetWebState(WebState* web_state);
   void SetDone(bool done);
   void SetErrorCode(int error_code);
   void SetHttpCode(int http_code);
@@ -51,8 +53,7 @@ class FakeDownloadTask : public DownloadTask {
   void SetPercentComplete(int percent_complete);
   void SetContentDisposition(const std::string& content_disposition);
   void SetMimeType(const std::string& mime_type);
-  void SetTransitionType(ui::PageTransition page_transition);
-  void SetSuggestedFilename(const base::string16& suggested_file_name);
+  void SetSuggestedFilename(const std::u16string& suggested_file_name);
   void SetPerformedBackgroundDownload(bool flag);
 
  private:
@@ -61,6 +62,7 @@ class FakeDownloadTask : public DownloadTask {
 
   base::ObserverList<DownloadTaskObserver, true>::Unchecked observers_;
 
+  WebState* web_state_ = nullptr;
   State state_ = State::kNotStarted;
   std::unique_ptr<net::URLFetcherResponseWriter> writer_;
   GURL original_url_;
@@ -72,8 +74,7 @@ class FakeDownloadTask : public DownloadTask {
   int percent_complete_ = -1;
   std::string original_mime_type_;
   std::string mime_type_;
-  ui::PageTransition page_transition_ = ui::PAGE_TRANSITION_LINK;
-  base::string16 suggested_file_name_;
+  std::u16string suggested_file_name_;
   bool has_performed_background_download_ = false;
   __strong NSString* identifier_ = nil;
 

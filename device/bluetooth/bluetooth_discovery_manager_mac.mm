@@ -7,9 +7,9 @@
 #import <IOBluetooth/objc/IOBluetoothDevice.h>
 #import <IOBluetooth/objc/IOBluetoothDeviceInquiry.h>
 
+#include "base/check_op.h"
 #include "base/logging.h"
 #include "base/mac/scoped_nsobject.h"
-#include "base/mac/sdk_forward_declarations.h"
 #include "base/macros.h"
 
 namespace device {
@@ -22,10 +22,11 @@ class BluetoothDiscoveryManagerMacClassic;
 @interface BluetoothDeviceInquiryDelegate
     : NSObject<IOBluetoothDeviceInquiryDelegate> {
  @private
-  device::BluetoothDiscoveryManagerMacClassic* manager_;  // weak
+  device::BluetoothDiscoveryManagerMacClassic* _manager;  // weak
 }
 
-- (id)initWithManager:(device::BluetoothDiscoveryManagerMacClassic*)manager;
+- (instancetype)initWithManager:
+    (device::BluetoothDiscoveryManagerMacClassic*)manager;
 
 @end
 
@@ -201,27 +202,27 @@ BluetoothDiscoveryManagerMac* BluetoothDiscoveryManagerMac::CreateClassic(
 
 @implementation BluetoothDeviceInquiryDelegate
 
-- (id)initWithManager:
-          (device::BluetoothDiscoveryManagerMacClassic*)manager {
+- (instancetype)initWithManager:
+    (device::BluetoothDiscoveryManagerMacClassic*)manager {
   if ((self = [super init]))
-    manager_ = manager;
+    _manager = manager;
 
   return self;
 }
 
 - (void)deviceInquiryStarted:(IOBluetoothDeviceInquiry*)sender {
-  manager_->DeviceInquiryStarted(sender);
+  _manager->DeviceInquiryStarted(sender);
 }
 
 - (void)deviceInquiryDeviceFound:(IOBluetoothDeviceInquiry*)sender
                           device:(IOBluetoothDevice*)device {
-  manager_->DeviceFound(sender, device);
+  _manager->DeviceFound(sender, device);
 }
 
 - (void)deviceInquiryComplete:(IOBluetoothDeviceInquiry*)sender
                         error:(IOReturn)error
                       aborted:(BOOL)aborted {
-  manager_->DeviceInquiryComplete(sender, error, aborted);
+  _manager->DeviceInquiryComplete(sender, error, aborted);
 }
 
 @end

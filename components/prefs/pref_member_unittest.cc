@@ -8,10 +8,11 @@
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/single_thread_task_runner.h"
+#include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/test/scoped_task_environment.h"
-#include "base/threading/thread.h"
+#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
+#include "base/test/task_environment.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -35,13 +36,13 @@ void RegisterTestPrefs(PrefRegistrySimple* registry) {
 class GetPrefValueHelper
     : public base::RefCountedThreadSafe<GetPrefValueHelper> {
  public:
-  GetPrefValueHelper() : value_(false), pref_thread_("pref thread") {
-    pref_thread_.Start();
-  }
+  GetPrefValueHelper()
+      : value_(false),
+        task_runner_(base::ThreadPool::CreateSequencedTaskRunner({})) {}
 
   void Init(const std::string& pref_name, PrefService* prefs) {
     pref_.Init(pref_name, prefs);
-    pref_.MoveToThread(pref_thread_.task_runner());
+    pref_.MoveToSequence(task_runner_);
   }
 
   void Destroy() {
@@ -51,16 +52,10 @@ class GetPrefValueHelper
   void FetchValue() {
     base::WaitableEvent event(base::WaitableEvent::ResetPolicy::MANUAL,
                               base::WaitableEvent::InitialState::NOT_SIGNALED);
-    ASSERT_TRUE(pref_thread_.task_runner()->PostTask(
+    ASSERT_TRUE(task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&GetPrefValueHelper::GetPrefValue, this, &event)));
     event.Wait();
-  }
-
-  // The thread must be stopped on the main thread. GetPrefValueHelper being
-  // ref-counted, the destructor can be called from any thread.
-  void StopThread() {
-    pref_thread_.Stop();
   }
 
   bool value() { return value_; }
@@ -77,7 +72,8 @@ class GetPrefValueHelper
   BooleanPrefMember pref_;
   bool value_;
 
-  base::Thread pref_thread_;  // The thread |pref_| runs on.
+  // The sequence |pref_| runs on.
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
 };
 
 class PrefMemberTestClass {
@@ -85,13 +81,15 @@ class PrefMemberTestClass {
   explicit PrefMemberTestClass(PrefService* prefs)
       : observe_cnt_(0), prefs_(prefs) {
     str_.Init(kStringPref, prefs,
-              base::Bind(&PrefMemberTestClass::OnPreferenceChanged,
-                         base::Unretained(this)));
+              base::BindRepeating(&PrefMemberTestClass::OnPreferenceChanged,
+                                  base::Unretained(this)));
   }
 
   void OnPreferenceChanged(const std::string& pref_name) {
     EXPECT_EQ(pref_name, kStringPref);
     EXPECT_EQ(str_.GetValue(), prefs_->GetString(kStringPref));
+    EXPECT_EQ(str_.IsDefaultValue(),
+              prefs_->FindPreference(kStringPref)->IsDefaultValue());
     ++observe_cnt_;
   }
 
@@ -105,7 +103,7 @@ class PrefMemberTestClass {
 }  // anonymous namespace
 
 class PrefMemberTest : public testing::Test {
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 };
 
 TEST_F(PrefMemberTest, BasicGetAndSet) {
@@ -120,18 +118,21 @@ TEST_F(PrefMemberTest, BasicGetAndSet) {
   EXPECT_FALSE(prefs.GetBoolean(kBoolPref));
   EXPECT_FALSE(boolean.GetValue());
   EXPECT_FALSE(*boolean);
+  EXPECT_TRUE(boolean.IsDefaultValue());
 
   // Try changing through the member variable.
   boolean.SetValue(true);
   EXPECT_TRUE(boolean.GetValue());
   EXPECT_TRUE(prefs.GetBoolean(kBoolPref));
   EXPECT_TRUE(*boolean);
+  EXPECT_FALSE(boolean.IsDefaultValue());
 
   // Try changing back through the pref.
   prefs.SetBoolean(kBoolPref, false);
   EXPECT_FALSE(prefs.GetBoolean(kBoolPref));
   EXPECT_FALSE(boolean.GetValue());
   EXPECT_FALSE(*boolean);
+  EXPECT_FALSE(boolean.IsDefaultValue());
 
   // Test int
   IntegerPrefMember integer;
@@ -141,18 +142,21 @@ TEST_F(PrefMemberTest, BasicGetAndSet) {
   EXPECT_EQ(0, prefs.GetInteger(kIntPref));
   EXPECT_EQ(0, integer.GetValue());
   EXPECT_EQ(0, *integer);
+  EXPECT_TRUE(integer.IsDefaultValue());
 
   // Try changing through the member variable.
   integer.SetValue(5);
   EXPECT_EQ(5, integer.GetValue());
   EXPECT_EQ(5, prefs.GetInteger(kIntPref));
   EXPECT_EQ(5, *integer);
+  EXPECT_FALSE(integer.IsDefaultValue());
 
   // Try changing back through the pref.
   prefs.SetInteger(kIntPref, 2);
   EXPECT_EQ(2, prefs.GetInteger(kIntPref));
   EXPECT_EQ(2, integer.GetValue());
   EXPECT_EQ(2, *integer);
+  EXPECT_FALSE(integer.IsDefaultValue());
 
   // Test double
   DoublePrefMember double_member;
@@ -162,18 +166,21 @@ TEST_F(PrefMemberTest, BasicGetAndSet) {
   EXPECT_EQ(0.0, prefs.GetDouble(kDoublePref));
   EXPECT_EQ(0.0, double_member.GetValue());
   EXPECT_EQ(0.0, *double_member);
+  EXPECT_TRUE(double_member.IsDefaultValue());
 
   // Try changing through the member variable.
   double_member.SetValue(1.0);
   EXPECT_EQ(1.0, double_member.GetValue());
   EXPECT_EQ(1.0, prefs.GetDouble(kDoublePref));
   EXPECT_EQ(1.0, *double_member);
+  EXPECT_FALSE(double_member.IsDefaultValue());
 
   // Try changing back through the pref.
   prefs.SetDouble(kDoublePref, 3.0);
   EXPECT_EQ(3.0, prefs.GetDouble(kDoublePref));
   EXPECT_EQ(3.0, double_member.GetValue());
   EXPECT_EQ(3.0, *double_member);
+  EXPECT_FALSE(double_member.IsDefaultValue());
 
   // Test string
   StringPrefMember string;
@@ -183,21 +190,24 @@ TEST_F(PrefMemberTest, BasicGetAndSet) {
   EXPECT_EQ("default", prefs.GetString(kStringPref));
   EXPECT_EQ("default", string.GetValue());
   EXPECT_EQ("default", *string);
+  EXPECT_TRUE(string.IsDefaultValue());
 
   // Try changing through the member variable.
   string.SetValue("foo");
   EXPECT_EQ("foo", string.GetValue());
   EXPECT_EQ("foo", prefs.GetString(kStringPref));
   EXPECT_EQ("foo", *string);
+  EXPECT_FALSE(string.IsDefaultValue());
 
   // Try changing back through the pref.
   prefs.SetString(kStringPref, "bar");
   EXPECT_EQ("bar", prefs.GetString(kStringPref));
   EXPECT_EQ("bar", string.GetValue());
   EXPECT_EQ("bar", *string);
+  EXPECT_FALSE(string.IsDefaultValue());
 
   // Test string list
-  base::ListValue expected_list;
+  base::Value expected_list(base::Value::Type::LIST);
   std::vector<std::string> expected_vector;
   StringListPrefMember string_list;
   string_list.Init(kStringListPref, &prefs);
@@ -206,33 +216,37 @@ TEST_F(PrefMemberTest, BasicGetAndSet) {
   EXPECT_TRUE(expected_list.Equals(prefs.GetList(kStringListPref)));
   EXPECT_EQ(expected_vector, string_list.GetValue());
   EXPECT_EQ(expected_vector, *string_list);
+  EXPECT_TRUE(string_list.IsDefaultValue());
 
   // Try changing through the pref member.
-  expected_list.AppendString("foo");
+  expected_list.Append("foo");
   expected_vector.push_back("foo");
   string_list.SetValue(expected_vector);
 
   EXPECT_TRUE(expected_list.Equals(prefs.GetList(kStringListPref)));
   EXPECT_EQ(expected_vector, string_list.GetValue());
   EXPECT_EQ(expected_vector, *string_list);
+  EXPECT_FALSE(string_list.IsDefaultValue());
 
   // Try adding through the pref.
-  expected_list.AppendString("bar");
+  expected_list.Append("bar");
   expected_vector.push_back("bar");
   prefs.Set(kStringListPref, expected_list);
 
   EXPECT_TRUE(expected_list.Equals(prefs.GetList(kStringListPref)));
   EXPECT_EQ(expected_vector, string_list.GetValue());
   EXPECT_EQ(expected_vector, *string_list);
+  EXPECT_FALSE(string_list.IsDefaultValue());
 
   // Try removing through the pref.
-  expected_list.Remove(0, nullptr);
+  EXPECT_TRUE(expected_list.EraseListIter(expected_list.GetList().begin()));
   expected_vector.erase(expected_vector.begin());
   prefs.Set(kStringListPref, expected_list);
 
   EXPECT_TRUE(expected_list.Equals(prefs.GetList(kStringListPref)));
   EXPECT_EQ(expected_vector, string_list.GetValue());
   EXPECT_EQ(expected_vector, *string_list);
+  EXPECT_FALSE(string_list.IsDefaultValue());
 }
 
 TEST_F(PrefMemberTest, InvalidList) {
@@ -241,14 +255,14 @@ TEST_F(PrefMemberTest, InvalidList) {
   expected_vector.push_back("foo");
 
   // Try to add a valid list first.
-  base::ListValue list;
-  list.AppendString("foo");
+  base::Value list(base::Value::Type::LIST);
+  list.Append("foo");
   std::vector<std::string> vector;
   EXPECT_TRUE(subtle::PrefMemberVectorStringUpdate(list, &vector));
   EXPECT_EQ(expected_vector, vector);
 
   // Now try to add an invalid list.  |vector| should not be changed.
-  list.AppendInteger(0);
+  list.Append(0);
   EXPECT_FALSE(subtle::PrefMemberVectorStringUpdate(list, &vector));
   EXPECT_EQ(expected_vector, vector);
 }
@@ -280,24 +294,33 @@ TEST_F(PrefMemberTest, Observer) {
 
   PrefMemberTestClass test_obj(&prefs);
   EXPECT_EQ("default", *test_obj.str_);
+  EXPECT_TRUE(test_obj.str_.IsDefaultValue());
+
+  // Changing the pref from the default value to an explicitly-set version of
+  // the same value fires the observer. The caller may be sensitive to
+  // IsDefaultValue().
+  prefs.SetString(kStringPref, "default");
+  EXPECT_EQ("default", *test_obj.str_);
+  EXPECT_EQ(1, test_obj.observe_cnt_);
+  EXPECT_FALSE(test_obj.str_.IsDefaultValue());
 
   // Calling SetValue should not fire the observer.
   test_obj.str_.SetValue("hello");
-  EXPECT_EQ(0, test_obj.observe_cnt_);
+  EXPECT_EQ(1, test_obj.observe_cnt_);
   EXPECT_EQ("hello", prefs.GetString(kStringPref));
 
   // Changing the pref does fire the observer.
   prefs.SetString(kStringPref, "world");
-  EXPECT_EQ(1, test_obj.observe_cnt_);
+  EXPECT_EQ(2, test_obj.observe_cnt_);
   EXPECT_EQ("world", *(test_obj.str_));
 
   // Not changing the value should not fire the observer.
   prefs.SetString(kStringPref, "world");
-  EXPECT_EQ(1, test_obj.observe_cnt_);
+  EXPECT_EQ(2, test_obj.observe_cnt_);
   EXPECT_EQ("world", *(test_obj.str_));
 
   prefs.SetString(kStringPref, "hello");
-  EXPECT_EQ(2, test_obj.observe_cnt_);
+  EXPECT_EQ(3, test_obj.observe_cnt_);
   EXPECT_EQ("hello", prefs.GetString(kStringPref));
 }
 
@@ -306,7 +329,7 @@ TEST_F(PrefMemberTest, NoInit) {
   IntegerPrefMember pref;
 }
 
-TEST_F(PrefMemberTest, MoveToThread) {
+TEST_F(PrefMemberTest, MoveToSequence) {
   TestingPrefServiceSimple prefs;
   scoped_refptr<GetPrefValueHelper> helper(new GetPrefValueHelper());
   RegisterTestPrefs(prefs.registry());
@@ -324,6 +347,4 @@ TEST_F(PrefMemberTest, MoveToThread) {
 
   helper->FetchValue();
   EXPECT_TRUE(helper->value());
-
-  helper->StopThread();
 }

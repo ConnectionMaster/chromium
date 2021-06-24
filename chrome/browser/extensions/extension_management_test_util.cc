@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/contains.h"
 #include "base/run_loop.h"
 #include "components/crx_file/id_util.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
@@ -46,18 +47,18 @@ ExtensionManagementPrefUpdaterBase::~ExtensionManagementPrefUpdaterBase() {
 void ExtensionManagementPrefUpdaterBase::UnsetPerExtensionSettings(
     const ExtensionId& id) {
   DCHECK(crx_file::id_util::IdIsValid(id));
-  pref_->RemoveWithoutPathExpansion(id, nullptr);
+  pref_->RemoveKey(id);
 }
 
 void ExtensionManagementPrefUpdaterBase::ClearPerExtensionSettings(
     const ExtensionId& id) {
   DCHECK(crx_file::id_util::IdIsValid(id));
-  pref_->SetWithoutPathExpansion(id, std::make_unique<base::DictionaryValue>());
+  pref_->SetKey(id, base::DictionaryValue());
 }
 
 // Helper functions for 'installation_mode' manipulation -----------------------
 
-void ExtensionManagementPrefUpdaterBase::SetBlacklistedByDefault(bool value) {
+void ExtensionManagementPrefUpdaterBase::SetBlocklistedByDefault(bool value) {
   pref_->SetString(make_path(schema::kWildcard, schema::kInstallationMode),
                    value ? schema::kBlocked : schema::kAllowed);
 }
@@ -303,8 +304,8 @@ void ExtensionManagementPrefUpdaterBase::AddStringToList(
     list_value_weak = list_value.get();
     pref_->Set(path, std::move(list_value));
   }
-  CHECK(
-      list_value_weak->AppendIfNotPresent(std::make_unique<base::Value>(str)));
+  CHECK(!base::Contains(list_value_weak->GetList(), base::Value(str)));
+  list_value_weak->Append(str);
 }
 
 void ExtensionManagementPrefUpdaterBase::RemoveStringFromList(
@@ -312,7 +313,7 @@ void ExtensionManagementPrefUpdaterBase::RemoveStringFromList(
     const std::string& str) {
   base::ListValue* list_value = nullptr;
   if (pref_->GetList(path, &list_value))
-    CHECK(list_value->Remove(base::Value(str), nullptr));
+    CHECK_GT(list_value->EraseListValue(base::Value(str)), 0u);
 }
 
 // ExtensionManagementPolicyUpdater --------------------------------------------
@@ -337,8 +338,8 @@ ExtensionManagementPolicyUpdater::~ExtensionManagementPolicyUpdater() {
       ->Get(
           policy::PolicyNamespace(policy::POLICY_DOMAIN_CHROME, std::string()))
       .Set(policy::key::kExtensionSettings, policy::POLICY_LEVEL_MANDATORY,
-           policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD, TakePref(),
-           nullptr);
+           policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD,
+           std::move(*TakePref()), nullptr);
   provider_->UpdatePolicy(std::move(policies_));
 }
 

@@ -29,14 +29,14 @@ class URLRequestFailedJob : public URLRequestJob {
   };
 
   URLRequestFailedJob(URLRequest* request,
-                      NetworkDelegate* network_delegate,
                       FailurePhase phase,
                       int net_error);
 
   // Same as above, except that the job fails at FailurePhase.START.
   URLRequestFailedJob(URLRequest* request,
-                      NetworkDelegate* network_delegate,
                       int net_error);
+
+  ~URLRequestFailedJob() override;
 
   // URLRequestJob implementation:
   void Start() override;
@@ -72,7 +72,6 @@ class URLRequestFailedJob : public URLRequestJob {
                                          const std::string& hostname);
 
  protected:
-  ~URLRequestFailedJob() override;
   void StartAsync();
 
  private:
@@ -81,7 +80,7 @@ class URLRequestFailedJob : public URLRequestJob {
   const int net_error_;
   int64_t total_received_bytes_;
 
-  base::WeakPtrFactory<URLRequestFailedJob> weak_factory_;
+  base::WeakPtrFactory<URLRequestFailedJob> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(URLRequestFailedJob);
 };

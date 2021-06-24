@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "chrome/browser/plugins/flash_temporary_permission_tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/browser_thread.h"
@@ -38,8 +38,9 @@ class FlashTemporaryPermissionTracker::GrantObserver
 
 // static
 scoped_refptr<FlashTemporaryPermissionTracker>
-FlashTemporaryPermissionTracker::Get(Profile* profile) {
-  return FlashTemporaryPermissionTrackerFactory::GetForProfile(profile);
+FlashTemporaryPermissionTracker::Get(content::BrowserContext* browser_context) {
+  return FlashTemporaryPermissionTrackerFactory::GetForBrowserContext(
+      browser_context);
 }
 
 FlashTemporaryPermissionTracker::FlashTemporaryPermissionTracker(
@@ -50,7 +51,7 @@ FlashTemporaryPermissionTracker::~FlashTemporaryPermissionTracker() {}
 
 bool FlashTemporaryPermissionTracker::IsFlashEnabled(const GURL& url) {
   base::AutoLock lock(granted_origins_lock_);
-  return base::ContainsKey(granted_origins_, url.GetOrigin());
+  return base::Contains(granted_origins_, url.GetOrigin());
 }
 
 void FlashTemporaryPermissionTracker::FlashEnabledForWebContents(

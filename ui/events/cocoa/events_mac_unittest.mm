@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "base/mac/scoped_cftyperef.h"
-#include "base/mac/sdk_forward_declarations.h"
 #include "base/macros.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #import "ui/base/test/cocoa_helper.h"
@@ -18,6 +17,7 @@
 #include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 #import "ui/events/test/cocoa_test_event_utils.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 
 namespace ui {
@@ -204,6 +204,10 @@ TEST_F(EventsMacTest, EventFlagsFromNative) {
       NSLeftMouseUp, NSCommandKeyMask | NSAlternateKeyMask);
   EXPECT_EQ(EF_LEFT_MOUSE_BUTTON | EF_COMMAND_DOWN | EF_ALT_DOWN,
             EventFlagsFromNative(cmdalt));
+
+  // Make sure a repeat key-down event gets ui::EF_IS_REPEAT set.
+  NSEvent* repeat_key_down = cocoa_test_event_utils::KeyDownEventWithRepeat();
+  EXPECT_EQ(ui::EF_IS_REPEAT, EventFlagsFromNative(repeat_key_down));
 }
 
 // Tests mouse button presses and mouse wheel events.

@@ -5,16 +5,10 @@
 #ifndef UI_ACCESSIBILITY_AX_NODE_POSITION_H_
 #define UI_ACCESSIBILITY_AX_NODE_POSITION_H_
 
-#include <stdint.h>
-
-#include <vector>
-
-#include "base/strings/string16.h"
-#include "ui/accessibility/ax_enum_util.h"
+#include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_export.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_position.h"
-#include "ui/accessibility/ax_tree.h"
 
 namespace ui {
 
@@ -22,32 +16,18 @@ namespace ui {
 // knowledge of the AXPosition AXNodeType (which is unknown by AXPosition).
 class AX_EXPORT AXNodePosition : public AXPosition<AXNodePosition, AXNode> {
  public:
+  // Creates either a text or a tree position, depending on the type of the node
+  // provided.
+  static AXPositionInstance CreatePosition(
+      const AXNode& node,
+      int child_index_or_text_offset,
+      ax::mojom::TextAffinity affinity = ax::mojom::TextAffinity::kDownstream);
+
   AXNodePosition();
   ~AXNodePosition() override;
+  AXNodePosition(const AXNodePosition& other);
 
   AXPositionInstance Clone() const override;
-
-  base::string16 GetInnerText() const override;
-
-  static void SetTreeForTesting(AXTree* tree) { tree_ = tree; }
-
- protected:
-  AXNodePosition(const AXNodePosition& other) = default;
-  void AnchorChild(int child_index,
-                   AXTreeID* tree_id,
-                   int32_t* child_id) const override;
-  int AnchorChildCount() const override;
-  int AnchorIndexInParent() const override;
-  void AnchorParent(AXTreeID* tree_id, int32_t* parent_id) const override;
-  AXNode* GetNodeInTree(AXTreeID tree_id, int32_t node_id) const override;
-  bool IsInWhiteSpace() const override;
-  std::vector<int32_t> GetWordStartOffsets() const override;
-  std::vector<int32_t> GetWordEndOffsets() const override;
-  int32_t GetNextOnLineID(int32_t node_id) const override;
-  int32_t GetPreviousOnLineID(int32_t node_id) const override;
-
- private:
-  static AXTree* tree_;
 };
 
 }  // namespace ui

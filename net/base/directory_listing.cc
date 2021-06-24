@@ -7,7 +7,7 @@
 #include "base/i18n/time_formatting.h"
 #include "base/json/string_escape.h"
 #include "base/logging.h"
-#include "base/strings/string_piece.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -17,16 +17,15 @@
 
 namespace net {
 
-std::string GetDirectoryListingHeader(const base::string16& title) {
-  static const base::StringPiece header(
+std::string GetDirectoryListingHeader(const std::u16string& title) {
+  scoped_refptr<base::RefCountedMemory> header(
       NetModule::GetResource(IDR_DIR_HEADER_HTML));
   // This can be null in unit tests.
-  DLOG_IF(WARNING, header.empty())
-      << "Missing resource: directory listing header";
+  DLOG_IF(WARNING, !header) << "Missing resource: directory listing header";
 
   std::string result;
-  if (!header.empty())
-    result.assign(header.data(), header.size());
+  if (header)
+    result.assign(header->front_as<char>(), header->size());
 
   result.append("<script>start(");
   base::EscapeJSONString(title, true, &result);
@@ -35,7 +34,7 @@ std::string GetDirectoryListingHeader(const base::string16& title) {
   return result;
 }
 
-std::string GetDirectoryListingEntry(const base::string16& name,
+std::string GetDirectoryListingEntry(const std::u16string& name,
                                      const std::string& raw_bytes,
                                      bool is_dir,
                                      int64_t size,
@@ -61,7 +60,7 @@ std::string GetDirectoryListingEntry(const base::string16& name,
   raw_size_string_stream << size << ",";
   result.append(raw_size_string_stream.str());
 
-  base::string16 size_string;
+  std::u16string size_string;
   if (size >= 0)
     size_string = base::FormatBytesUnlocalized(size);
   base::EscapeJSONString(size_string, true, &result);
@@ -69,7 +68,7 @@ std::string GetDirectoryListingEntry(const base::string16& name,
   result.append(",");
 
   // |modified| can be NULL in FTP listings.
-  base::string16 modified_str;
+  std::u16string modified_str;
   if (modified.is_null()) {
     result.append("0,");
   } else {

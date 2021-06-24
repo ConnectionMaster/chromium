@@ -9,7 +9,7 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
@@ -103,17 +103,16 @@ HttpServer::HttpServer() : port_(0) {}
 
 HttpServer::~HttpServer() {}
 
-void HttpServer::StartOrDie() {
+void HttpServer::StartOrDie(const base::FilePath& files_path) {
   DCHECK([NSThread isMainThread]);
 
   // Registers request handler which serves files from the http test files
   // directory. The current tests calls full path relative to DIR_SOURCE_ROOT.
   // Registers the DIR_SOURCE_ROOT to avoid massive test changes.
   embedded_test_server_ = std::make_unique<net::EmbeddedTestServer>();
-  embedded_test_server_->ServeFilesFromSourceDirectory(".");
-
+  embedded_test_server_->ServeFilesFromDirectory(files_path);
   embedded_test_server_->RegisterDefaultHandler(
-      base::Bind(&HttpServer::GetResponse, this));
+      base::BindRepeating(&HttpServer::GetResponse, this));
 
   if (embedded_test_server_->Start()) {
     SetPort((NSUInteger)embedded_test_server_->port());

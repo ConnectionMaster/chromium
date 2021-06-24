@@ -7,8 +7,7 @@
 
 #include <memory>
 
-#include "ios/web/public/app/web_main_parts.h"
-
+#include "ios/web/public/init/web_main_parts.h"
 
 namespace web {
 class ShellBrowserState;
@@ -22,7 +21,6 @@ class ShellWebMainParts : public WebMainParts {
   ShellBrowserState* browser_state() const { return browser_state_.get(); }
 
   // WebMainParts implementation.
-  void PreMainMessageLoopStart() override;
   void PreMainMessageLoopRun() override;
 
  private:

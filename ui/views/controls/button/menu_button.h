@@ -5,14 +5,15 @@
 #ifndef UI_VIEWS_CONTROLS_BUTTON_MENU_BUTTON_H_
 #define UI_VIEWS_CONTROLS_BUTTON_MENU_BUTTON_H_
 
-#include "base/macros.h"
-#include "base/strings/string16.h"
+#include <string>
+
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/metadata/view_factory.h"
 
 namespace views {
 
 class MenuButtonController;
-class MenuButtonListener;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -23,16 +24,12 @@ class MenuButtonListener;
 ////////////////////////////////////////////////////////////////////////////////
 class VIEWS_EXPORT MenuButton : public LabelButton {
  public:
-  static const char kViewClassName[];
-
-  // How much padding to put on the left and right of the menu marker.
-  static constexpr int kMenuMarkerPaddingLeft = 3;
-  static constexpr int kMenuMarkerPaddingRight = -1;
-
-  // Create a Button.
-  MenuButton(const base::string16& text,
-             MenuButtonListener* menu_button_listener,
-             int button_context = style::CONTEXT_BUTTON);
+  METADATA_HEADER(MenuButton);
+  explicit MenuButton(PressedCallback callback = PressedCallback(),
+                      const std::u16string& text = std::u16string(),
+                      int button_context = style::CONTEXT_BUTTON);
+  MenuButton(const MenuButton&) = delete;
+  MenuButton& operator=(const MenuButton&) = delete;
   ~MenuButton() override;
 
   MenuButtonController* button_controller() const {
@@ -41,25 +38,19 @@ class VIEWS_EXPORT MenuButton : public LabelButton {
 
   bool Activate(const ui::Event* event);
 
-  // TODO(cyan): Remove this method and move into MenuButtonController.
-  virtual bool IsTriggerableEventType(const ui::Event& event);
-
-  // View:
-  const char* GetClassName() const override;
-
-  // ui::EventHandler:
-  void OnGestureEvent(ui::GestureEvent* event) override;
-
  protected:
   // Button:
   void NotifyClick(const ui::Event& event) final;
 
  private:
   MenuButtonController* menu_button_controller_;
-
-  DISALLOW_COPY_AND_ASSIGN(MenuButton);
 };
 
+BEGIN_VIEW_BUILDER(VIEWS_EXPORT, MenuButton, LabelButton)
+END_VIEW_BUILDER
+
 }  // namespace views
+
+DEFINE_VIEW_BUILDER(VIEWS_EXPORT, MenuButton)
 
 #endif  // UI_VIEWS_CONTROLS_BUTTON_MENU_BUTTON_H_

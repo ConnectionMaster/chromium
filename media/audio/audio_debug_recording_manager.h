@@ -7,7 +7,6 @@
 
 #include <map>
 #include <memory>
-#include <string>
 #include <utility>
 
 #include "base/callback.h"
@@ -111,7 +110,7 @@ class MEDIA_EXPORT AudioDebugRecordingManager {
   // recording is enabled.
   CreateWavFileCallback create_file_callback_;
 
-  base::WeakPtrFactory<AudioDebugRecordingManager> weak_factory_;
+  base::WeakPtrFactory<AudioDebugRecordingManager> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(AudioDebugRecordingManager);
 };
 

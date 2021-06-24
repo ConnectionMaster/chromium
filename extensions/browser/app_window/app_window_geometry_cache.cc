@@ -9,12 +9,11 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_factory.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/common/extension.h"
 
@@ -31,9 +30,8 @@ namespace extensions {
 AppWindowGeometryCache::AppWindowGeometryCache(content::BrowserContext* context,
                                                ExtensionPrefs* prefs)
     : prefs_(prefs),
-      sync_delay_(base::TimeDelta::FromMilliseconds(kSyncTimeoutMilliseconds)),
-      extension_registry_observer_(this) {
-  extension_registry_observer_.Add(ExtensionRegistry::Get(context));
+      sync_delay_(base::TimeDelta::FromMilliseconds(kSyncTimeoutMilliseconds)) {
+  extension_registry_observation_.Observe(ExtensionRegistry::Get(context));
 }
 
 AppWindowGeometryCache::~AppWindowGeometryCache() {}
@@ -56,7 +54,7 @@ void AppWindowGeometryCache::SaveGeometry(const std::string& extension_id,
   if (extension_data[window_id].bounds == bounds &&
       extension_data[window_id].window_state == window_state &&
       extension_data[window_id].screen_bounds == screen_bounds &&
-      !base::ContainsKey(unsynced_extensions_, extension_id))
+      !base::Contains(unsynced_extensions_, extension_id))
     return;
 
   base::Time now = base::Time::Now();
@@ -122,7 +120,8 @@ void AppWindowGeometryCache::SyncToStorage() {
       value->SetInteger("state", it->second.window_state);
       value->SetString(
           "ts", base::NumberToString(it->second.last_change.ToInternalValue()));
-      dict->SetWithoutPathExpansion(it->first, std::move(value));
+      dict->SetKey(it->first,
+                   base::Value::FromUniquePtrValue(std::move(value)));
 
       for (auto& observer : observers_)
         observer.OnGeometryCacheChanged(extension_id, it->first, bounds);
@@ -277,10 +276,6 @@ AppWindowGeometryCache::Factory::~Factory() {}
 KeyedService* AppWindowGeometryCache::Factory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
   return new AppWindowGeometryCache(context, ExtensionPrefs::Get(context));
-}
-
-bool AppWindowGeometryCache::Factory::ServiceIsNULLWhileTesting() const {
-  return false;
 }
 
 content::BrowserContext*

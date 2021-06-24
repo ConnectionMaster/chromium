@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that console preserves scroll position when switching away.\n`);
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
   // Do not use ConsoleTestRunner.fixConsoleViewportDimensions because fixing the height will affect
   // tests that may cause scrolling while the console moves into/out of the drawer.
@@ -37,7 +37,11 @@
     },
 
     async function testClickLinkToRevealAnotherPanel(next) {
-      consoleView._visibleViewMessages[0]._element.querySelector('.devtools-link').click();
+      // Ordering is important here, as accessing the element the first time around
+      // triggers live location creation and updates which we need to await properly.
+      const element = consoleView._visibleViewMessages[0]._element;
+      await TestRunner.waitForPendingLiveLocationUpdates();
+      element.querySelector('.devtools-link').click();
       await UI.inspectorView._tabbedPane.once(UI.TabbedPane.Events.TabSelected);
       await TestRunner.showPanel('console');
       dumpScrollTop();

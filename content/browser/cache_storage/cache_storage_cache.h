@@ -8,28 +8,32 @@
 #include <stdint.h>
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "base/callback.h"
+#include "base/memory/ref_counted.h"
 #include "content/browser/cache_storage/cache_storage_cache_handle.h"
+#include "content/browser/cache_storage/cache_storage_scheduler_types.h"
 #include "content/common/content_export.h"
+#include "net/base/io_buffer.h"
 #include "third_party/blink/public/mojom/cache_storage/cache_storage.mojom.h"
-#include "url/origin.h"
 
 namespace content {
 
-// Represents a ServiceWorker Cache as seen in
-// https://slightlyoff.github.io/ServiceWorker/spec/service_worker/ The
-// asynchronous methods are executed serially. Callbacks to the public functions
-// will be called so long as the cache object lives.
+// Represents a ServiceWorker Cache as seen in:
+//
+//  https://w3c.github.io/ServiceWorker/#cache-interface
+//
+// The asynchronous methods are executed serially. Callbacks to the public
+// functions will be called so long as the cache object lives. It is important
+// to for client code hold a |CacheStorageCacheHandle| to the cache for the
+// duration of any operations. Otherwise it is possible the operation may
+// get cancelled in some circumstances.
 class CONTENT_EXPORT CacheStorageCache {
  public:
-  using CacheEntry = std::pair<blink::mojom::FetchAPIRequestPtr,
-                               blink::mojom::FetchAPIResponsePtr>;
   using CacheEntriesCallback =
       base::OnceCallback<void(blink::mojom::CacheStorageError,
-                              std::vector<CacheEntry>)>;
+                              std::vector<blink::mojom::CacheEntryPtr>)>;
   using ErrorCallback =
       base::OnceCallback<void(blink::mojom::CacheStorageError)>;
   using VerboseErrorCallback =
@@ -49,8 +53,21 @@ class CONTENT_EXPORT CacheStorageCache {
   // The stream index for a cache Entry. This cannot be extended without changes
   // in the Entry implementation. INDEX_SIDE_DATA is used for storing any
   // additional data, such as response side blobs or request bodies.
-  enum EntryIndex { INDEX_HEADERS = 0, INDEX_RESPONSE_BODY, INDEX_SIDE_DATA };
+  enum EntryIndex {
+    INDEX_INVALID = -1,
+    INDEX_HEADERS = 0,
+    INDEX_RESPONSE_BODY,
+    INDEX_SIDE_DATA
+  };
 
+  // Create a handle that will hold the CacheStorageCache alive. Client code
+  // should hold one of these handles while waiting for operation callbacks to
+  // be invoked.
+  //
+  // Note, its still possible for the CacheStorageCache to be deleted even if
+  // there are outstanding handle references. This can occur when the user
+  // triggers a storage wipe, for example. The handle value should be treated
+  // as a weak pointer.
   virtual CacheStorageCacheHandle CreateHandle() = 0;
   virtual void AddHandleRef() = 0;
   virtual void DropHandleRef() = 0;
@@ -59,6 +76,7 @@ class CONTENT_EXPORT CacheStorageCache {
   // Returns ERROR_TYPE_NOT_FOUND if not found.
   virtual void Match(blink::mojom::FetchAPIRequestPtr request,
                      blink::mojom::CacheQueryOptionsPtr match_options,
+                     CacheStorageSchedulerPriority priority,
                      int64_t trace_id,
                      ResponseCallback callback) = 0;
 
@@ -124,6 +142,11 @@ class CONTENT_EXPORT CacheStorageCache {
       blink::mojom::CacheQueryOptionsPtr match_options,
       int64_t trace_id,
       CacheEntriesCallback callback) = 0;
+
+  // Try to determine the initialization state of the cache.  Unknown may be
+  // returned for cross-sequence clients using the cross-sequence wrappers.
+  enum class InitState { Unknown, Initializing, Initialized };
+  virtual InitState GetInitState() const = 0;
 
  protected:
   virtual ~CacheStorageCache() = default;

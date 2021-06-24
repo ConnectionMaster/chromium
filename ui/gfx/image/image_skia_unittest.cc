@@ -6,8 +6,8 @@
 
 #include <stddef.h>
 
+#include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/threading/simple_thread.h"
@@ -316,7 +316,7 @@ TEST_F(ImageSkiaTest, GetBitmap) {
   ImageSkia image_skia(std::make_unique<DynamicSource>(Size(100, 200)),
                        Size(100, 200));
   const SkBitmap* bitmap = image_skia.bitmap();
-  EXPECT_NE(static_cast<SkBitmap*>(NULL), bitmap);
+  ASSERT_NE(nullptr, bitmap);
   EXPECT_FALSE(bitmap->isNull());
 }
 
@@ -330,7 +330,7 @@ TEST_F(ImageSkiaTest, GetBitmapFromEmpty) {
   // Check that ImageSkia::bitmap() still returns a valid SkBitmap pointer for
   // the image and all its copies.
   const SkBitmap* bitmap = empty_image_copy.bitmap();
-  ASSERT_NE(static_cast<SkBitmap*>(NULL), bitmap);
+  ASSERT_NE(nullptr, bitmap);
   EXPECT_TRUE(bitmap->isNull());
   EXPECT_TRUE(bitmap->empty());
 }
@@ -388,27 +388,27 @@ TEST_F(ImageSkiaTest, StaticOnThreadTest) {
   EXPECT_TRUE(image.CanModify());
 
   image.DetachStorageFromSequence();
-  std::unique_ptr<ImageSkia> deep_copy(image.DeepCopy());
-  EXPECT_FALSE(deep_copy->IsThreadSafe());
-  test::TestOnThread deepcopy_on_thread(deep_copy.get());
+  ImageSkia deep_copy(image.DeepCopy());
+  EXPECT_FALSE(deep_copy.IsThreadSafe());
+  test::TestOnThread deepcopy_on_thread(&deep_copy);
   deepcopy_on_thread.StartAndJoin();
   EXPECT_TRUE(deepcopy_on_thread.can_read());
   EXPECT_TRUE(deepcopy_on_thread.can_modify());
-  EXPECT_FALSE(deep_copy->CanRead());
-  EXPECT_FALSE(deep_copy->CanModify());
+  EXPECT_FALSE(deep_copy.CanRead());
+  EXPECT_FALSE(deep_copy.CanModify());
 
-  std::unique_ptr<ImageSkia> deep_copy2(image.DeepCopy());
-  EXPECT_EQ(1U, deep_copy2->image_reps().size());
+  ImageSkia deep_copy2(image.DeepCopy());
+  EXPECT_EQ(1U, deep_copy2.image_reps().size());
   // Access it from current thread so that it can't be
   // accessed from another thread.
-  deep_copy2->image_reps();
-  EXPECT_FALSE(deep_copy2->IsThreadSafe());
-  test::TestOnThread deepcopy2_on_thread(deep_copy2.get());
+  deep_copy2.image_reps();
+  EXPECT_FALSE(deep_copy2.IsThreadSafe());
+  test::TestOnThread deepcopy2_on_thread(&deep_copy2);
   deepcopy2_on_thread.StartAndJoin();
   EXPECT_FALSE(deepcopy2_on_thread.can_read());
   EXPECT_FALSE(deepcopy2_on_thread.can_modify());
-  EXPECT_TRUE(deep_copy2->CanRead());
-  EXPECT_TRUE(deep_copy2->CanModify());
+  EXPECT_TRUE(deep_copy2.CanRead());
+  EXPECT_TRUE(deep_copy2.CanModify());
 
   image.DetachStorageFromSequence();
   image.SetReadOnly();

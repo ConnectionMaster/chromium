@@ -10,16 +10,18 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "net/base/features.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/base/schemeful_site.h"
 #include "net/network_error_logging/mock_persistent_nel_store.h"
 #include "net/network_error_logging/network_error_logging_service.h"
-#include "net/reporting/reporting_policy.h"
-#include "net/reporting/reporting_service.h"
+#include "net/reporting/reporting_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -27,102 +29,25 @@
 namespace net {
 namespace {
 
-class TestReportingService : public ReportingService {
- public:
-  struct Report {
-    Report() = default;
-
-    Report(Report&& other)
-        : url(other.url),
-          user_agent(other.user_agent),
-          group(other.group),
-          type(other.type),
-          body(std::move(other.body)),
-          depth(other.depth) {}
-
-    Report(const GURL& url,
-           const std::string& user_agent,
-           const std::string& group,
-           const std::string& type,
-           std::unique_ptr<const base::Value> body,
-           int depth)
-        : url(url),
-          user_agent(user_agent),
-          group(group),
-          type(type),
-          body(std::move(body)),
-          depth(depth) {}
-
-    ~Report() = default;
-
-    GURL url;
-    std::string user_agent;
-    std::string group;
-    std::string type;
-    std::unique_ptr<const base::Value> body;
-    int depth;
-
-   private:
-    DISALLOW_COPY(Report);
-  };
-
-  TestReportingService() = default;
-
-  const std::vector<Report>& reports() const { return reports_; }
-
-  // ReportingService implementation:
-
-  ~TestReportingService() override = default;
-
-  void QueueReport(const GURL& url,
-                   const std::string& user_agent,
-                   const std::string& group,
-                   const std::string& type,
-                   std::unique_ptr<const base::Value> body,
-                   int depth) override {
-    reports_.push_back(
-        Report(url, user_agent, group, type, std::move(body), depth));
-  }
-
-  void ProcessHeader(const GURL& url,
-                     const std::string& header_value) override {
-    NOTREACHED();
-  }
-
-  void RemoveBrowsingData(int data_type_mask,
-                          const base::RepeatingCallback<bool(const GURL&)>&
-                              origin_filter) override {
-    NOTREACHED();
-  }
-
-  void RemoveAllBrowsingData(int data_type_mask) override { NOTREACHED(); }
-
-  void OnShutdown() override {}
-
-  const ReportingPolicy& GetPolicy() const override {
-    NOTREACHED();
-    return dummy_policy_;
-  }
-
-  ReportingContext* GetContextForTesting() const override {
-    NOTREACHED();
-    return nullptr;
-  }
-
- private:
-  std::vector<Report> reports_;
-  ReportingPolicy dummy_policy_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestReportingService);
-};
-
 // The tests are parametrized on a boolean value which represents whether or not
-// to use a MockPersistentNELStore.
+// to use a MockPersistentNelStore.
+// If a MockPersistentNelStore is used, then calls to
+// NetworkErrorLoggingService::OnHeader(), OnRequest(),
+// QueueSignedExchangeReport(), RemoveBrowsingData(), and
+// RemoveAllBrowsingData() will block until the store finishes loading.
+// Therefore, for tests that should run synchronously (i.e. tests that don't
+// specifically test the asynchronous/deferred task behavior), FinishLoading()
+// must be called after the first call to one of the above methods.
 class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
  protected:
+  using NelPolicyKey = NetworkErrorLoggingService::NelPolicyKey;
+
   NetworkErrorLoggingServiceTest() {
+    feature_list_.InitAndEnableFeature(
+        features::kPartitionNelAndReportingByNetworkIsolationKey);
+
     if (GetParam()) {
-      store_ = std::make_unique<MockPersistentNELStore>();
+      store_ = std::make_unique<MockPersistentNelStore>();
     } else {
       store_.reset(nullptr);
     }
@@ -137,21 +62,16 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
     service_->SetReportingService(reporting_service_.get());
   }
 
-  void DestroyReportingService() {
-    DCHECK(reporting_service_);
-
-    service_->SetReportingService(nullptr);
-    reporting_service_.reset();
-  }
-
   NetworkErrorLoggingService::RequestDetails MakeRequestDetails(
-      GURL url,
+      const NetworkIsolationKey& network_isolation_key,
+      const GURL& url,
       Error error_type,
       std::string method = "GET",
       int status_code = 0,
       IPAddress server_ip = IPAddress()) {
     NetworkErrorLoggingService::RequestDetails details;
 
+    details.network_isolation_key = network_isolation_key;
     details.uri = url;
     details.referrer = kReferrer_;
     details.user_agent = kUserAgent_;
@@ -166,13 +86,16 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
   }
 
   NetworkErrorLoggingService::SignedExchangeReportDetails
-  MakeSignedExchangeReportDetails(bool success,
-                                  const std::string& type,
-                                  const GURL& outer_url,
-                                  const GURL& inner_url,
-                                  const GURL& cert_url,
-                                  const IPAddress& server_ip_address) {
+  MakeSignedExchangeReportDetails(
+      const NetworkIsolationKey& network_isolation_key,
+      bool success,
+      const std::string& type,
+      const GURL& outer_url,
+      const GURL& inner_url,
+      const GURL& cert_url,
+      const IPAddress& server_ip_address) {
     NetworkErrorLoggingService::SignedExchangeReportDetails details;
+    details.network_isolation_key = network_isolation_key;
     details.success = success;
     details.type = type;
     details.outer_url = outer_url;
@@ -188,30 +111,64 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
     return details;
   }
   NetworkErrorLoggingService* service() { return service_.get(); }
-  MockPersistentNELStore* store() { return store_.get(); }
+  MockPersistentNelStore* store() { return store_.get(); }
   const std::vector<TestReportingService::Report>& reports() {
     return reporting_service_->reports();
   }
 
-  const url::Origin MakeOrigin(size_t index) {
-    GURL url(base::StringPrintf("https://example%zd.com/", index));
+  // These methods are design so that using them together will create unique
+  // Origin, NetworkIsolationKey pairs, but they do return repeated values when
+  // called separately, so they can be used to ensure that reports are keyed on
+  // both NIK and Origin.
+  url::Origin MakeOrigin(size_t index) {
+    GURL url(base::StringPrintf("https://example%zd.com/", index / 2));
     return url::Origin::Create(url);
+  }
+  NetworkIsolationKey MakeNetworkIsolationKey(size_t index) {
+    SchemefulSite site(
+        GURL(base::StringPrintf("https://example%zd.com/", (index + 1) / 2)));
+    return NetworkIsolationKey(site, site);
+  }
+
+  NetworkErrorLoggingService::NelPolicy MakePolicy(
+      const NetworkIsolationKey& network_isolation_key,
+      const url::Origin& origin,
+      base::Time expires = base::Time(),
+      base::Time last_used = base::Time()) {
+    NetworkErrorLoggingService::NelPolicy policy;
+    policy.key = NelPolicyKey(network_isolation_key, origin);
+    policy.expires = expires;
+    policy.last_used = last_used;
+
+    return policy;
   }
 
   // Returns whether the NetworkErrorLoggingService has a policy corresponding
-  // to |origin|. Returns true if so, even if the policy is expired.
-  bool HasPolicyForOrigin(const url::Origin& origin) {
-    std::set<url::Origin> all_policy_origins =
-        service_->GetPolicyOriginsForTesting();
-    return all_policy_origins.find(origin) != all_policy_origins.end();
+  // to |network_isolation_key| and |origin|. Returns true if so, even if the
+  // policy is expired.
+  bool HasPolicy(const NetworkIsolationKey& network_isolation_key,
+                 const url::Origin& origin) {
+    std::set<NelPolicyKey> all_policy_keys =
+        service_->GetPolicyKeysForTesting();
+    return all_policy_keys.find(NelPolicyKey(network_isolation_key, origin)) !=
+           all_policy_keys.end();
   }
 
-  size_t PolicyCount() { return service_->GetPolicyOriginsForTesting().size(); }
+  size_t PolicyCount() { return service_->GetPolicyKeysForTesting().size(); }
+
+  // Makes the rest of the test run synchronously.
+  void FinishLoading(bool load_success) {
+    if (store())
+      store()->FinishLoading(load_success);
+  }
+
+  base::test::ScopedFeatureList feature_list_;
 
   const GURL kUrl_ = GURL("https://example.com/path");
   const GURL kUrlDifferentPort_ = GURL("https://example.com:4433/path");
   const GURL kUrlSubdomain_ = GURL("https://subdomain.example.com/path");
-  const GURL kUrlDifferentHost_ = GURL("https://example2.com/path");
+  const GURL kUrlDifferentHost_ = GURL("https://somewhere-else.com/path");
+  const GURL kUrlEtld_ = GURL("https://co.uk/foo.html");
 
   const GURL kInnerUrl_ = GURL("https://example.net/path");
   const GURL kCertUrl_ = GURL("https://example.com/cert_path");
@@ -224,6 +181,12 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
   const url::Origin kOriginSubdomain_ = url::Origin::Create(kUrlSubdomain_);
   const url::Origin kOriginDifferentHost_ =
       url::Origin::Create(kUrlDifferentHost_);
+  const url::Origin kOriginEtld_ = url::Origin::Create(kUrlEtld_);
+  const NetworkIsolationKey kNik_ =
+      NetworkIsolationKey(SchemefulSite(kOrigin_), SchemefulSite(kOrigin_));
+  const NetworkIsolationKey kOtherNik_ =
+      NetworkIsolationKey(SchemefulSite(kOriginDifferentHost_),
+                          SchemefulSite(kOriginDifferentHost_));
 
   const std::string kHeader_ = "{\"report_to\":\"group\",\"max_age\":86400}";
   const std::string kHeaderSuccessFraction0_ =
@@ -247,9 +210,8 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
 
   const GURL kReferrer_ = GURL("https://referrer.com/");
 
- private:
   // |store_| needs to outlive |service_|.
-  std::unique_ptr<MockPersistentNELStore> store_;
+  std::unique_ptr<MockPersistentNelStore> store_;
   std::unique_ptr<NetworkErrorLoggingService> service_;
   std::unique_ptr<TestReportingService> reporting_service_;
 };
@@ -268,42 +230,200 @@ TEST_P(NetworkErrorLoggingServiceTest, CreateService) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, NoReportingService) {
-  DestroyReportingService();
+  service_ = NetworkErrorLoggingService::Create(store_.get());
 
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Should not crash.
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 }
 
-TEST_P(NetworkErrorLoggingServiceTest, NoPolicyForOrigin) {
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+TEST_P(NetworkErrorLoggingServiceTest, NoPolicy) {
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   EXPECT_TRUE(reports().empty());
 }
 
-TEST_P(NetworkErrorLoggingServiceTest, JsonTooLong) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderTooLong_);
+TEST_P(NetworkErrorLoggingServiceTest, PolicyKeyMatchesNikAndOrigin) {
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Wrong NIK and origin.
+  service()->OnRequest(MakeRequestDetails(kOtherNik_, kUrlDifferentHost_,
+                                          ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong NIK.
+  service()->OnRequest(
+      MakeRequestDetails(kOtherNik_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong origin.
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrlDifferentHost_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Correct key.
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
+  EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
+  EXPECT_EQ(kGroup_, reports()[0].group);
+  EXPECT_EQ(kType_, reports()[0].type);
+}
+
+TEST_P(NetworkErrorLoggingServiceTest,
+       PolicyKeyMatchesNikAndOriginIncludeSubdomains) {
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Wrong NIK and origin.
+  service()->OnRequest(MakeRequestDetails(kOtherNik_, kUrlDifferentHost_,
+                                          ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong NIK (same origin).
+  service()->OnRequest(
+      MakeRequestDetails(kOtherNik_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong NIK (subdomain).
+  service()->OnRequest(
+      MakeRequestDetails(kOtherNik_, kUrlSubdomain_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong origin.
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrlDifferentHost_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Correct key (same origin).
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
+  EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
+  EXPECT_EQ(kGroup_, reports()[0].group);
+  EXPECT_EQ(kType_, reports()[0].type);
+
+  // Correct key (subdomain).
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_EQ(2u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[1].url);
+  EXPECT_EQ(kNik_, reports()[1].network_isolation_key);
+  EXPECT_EQ(kUserAgent_, reports()[1].user_agent);
+  EXPECT_EQ(kGroup_, reports()[1].group);
+  EXPECT_EQ(kType_, reports()[1].type);
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, NetworkIsolationKeyDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kPartitionNelAndReportingByNetworkIsolationKey);
+
+  // Need to re-create the service, since it caches the feature value on
+  // creation.
+  service_ = NetworkErrorLoggingService::Create(store_.get());
+  reporting_service_ = std::make_unique<TestReportingService>();
+  service_->SetReportingService(reporting_service_.get());
+
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Wrong NIK, but a report should be generated anyways.
+  service()->OnRequest(
+      MakeRequestDetails(kOtherNik_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(NetworkIsolationKey(), reports()[0].network_isolation_key);
+  EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
+  EXPECT_EQ(kGroup_, reports()[0].group);
+  EXPECT_EQ(kType_, reports()[0].type);
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, JsonTooLong) {
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderTooLong_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, JsonTooDeep) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderTooDeep_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderTooDeep_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
 
-TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+TEST_P(NetworkErrorLoggingServiceTest, IncludeSubdomainsEtldRejected) {
+  service()->OnHeader(kNik_, kOriginEtld_, kServerIP_,
+                      kHeaderIncludeSubdomains_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, OK));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  EXPECT_EQ(0u, PolicyCount());
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrlEtld_, ERR_CONNECTION_REFUSED));
+
+  EXPECT_TRUE(reports().empty());
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, NonIncludeSubdomainsEtldAccepted) {
+  service()->OnHeader(kNik_, kOriginEtld_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  EXPECT_EQ(1u, PolicyCount());
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrlEtld_, ERR_CONNECTION_REFUSED));
+
+  EXPECT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrlEtld_, reports()[0].url);
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued) {
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, OK));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
@@ -335,12 +455,17 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued) {
 TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued) {
   static const std::string kHeaderFailureFraction1 =
       "{\"report_to\":\"group\",\"max_age\":86400,\"failure_fraction\":1.0}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderFailureFraction1);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderFailureFraction1);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
@@ -372,11 +497,14 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued) {
 TEST_P(NetworkErrorLoggingServiceTest, UnknownFailureReportQueued) {
   static const std::string kHeaderFailureFraction1 =
       "{\"report_to\":\"group\",\"max_age\":86400,\"failure_fraction\":1.0}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderFailureFraction1);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderFailureFraction1);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // This error code happens to not be mapped to a NEL report `type` field
   // value.
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_FILE_NO_SPACE));
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, ERR_FILE_NO_SPACE));
 
   ASSERT_EQ(1u, reports().size());
   const base::DictionaryValue* body;
@@ -390,12 +518,16 @@ TEST_P(NetworkErrorLoggingServiceTest, UnknownFailureReportQueued) {
 TEST_P(NetworkErrorLoggingServiceTest, UnknownCertFailureReportQueued) {
   static const std::string kHeaderFailureFraction1 =
       "{\"report_to\":\"group\",\"max_age\":86400,\"failure_fraction\":1.0}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderFailureFraction1);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderFailureFraction1);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // This error code happens to not be mapped to a NEL report `type` field
   // value.  Because it's a certificate error, we'll set the `phase` to be
   // `connection`.
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CERT_NON_UNIQUE_NAME));
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CERT_NON_UNIQUE_NAME));
 
   ASSERT_EQ(1u, reports().size());
   const base::DictionaryValue* body;
@@ -409,12 +541,16 @@ TEST_P(NetworkErrorLoggingServiceTest, UnknownCertFailureReportQueued) {
 TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportQueued) {
   static const std::string kHeaderFailureFraction1 =
       "{\"report_to\":\"group\",\"max_age\":86400,\"failure_fraction\":1.0}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderFailureFraction1);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderFailureFraction1);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, OK, "GET", 504));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, OK, "GET", 504));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
@@ -444,13 +580,17 @@ TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportQueued) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessReportDowngraded) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrl_, OK, "GET", 200, kOtherServerIP_));
+      MakeRequestDetails(kNik_, kUrl_, OK, "GET", 200, kOtherServerIP_));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
@@ -478,13 +618,17 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessReportDowngraded) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, FailureReportDowngraded) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED, "GET",
-                                          200, kOtherServerIP_));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED,
+                                          "GET", 200, kOtherServerIP_));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
@@ -512,13 +656,17 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureReportDowngraded) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportDowngraded) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrl_, OK, "GET", 504, kOtherServerIP_));
+      MakeRequestDetails(kNik_, kUrl_, OK, "GET", 504, kOtherServerIP_));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
@@ -546,13 +694,17 @@ TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportDowngraded) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, DNSFailureReportNotDowngraded) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_NAME_NOT_RESOLVED, "GET",
-                                          0, kOtherServerIP_));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, ERR_NAME_NOT_RESOLVED,
+                                          "GET", 0, kOtherServerIP_));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
@@ -580,12 +732,16 @@ TEST_P(NetworkErrorLoggingServiceTest, DNSFailureReportNotDowngraded) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessPOSTReportQueued) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, OK, "POST"));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, OK, "POST"));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
@@ -609,26 +765,34 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessPOSTReportQueued) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, MaxAge0) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   EXPECT_EQ(1u, PolicyCount());
 
   // Max_age of 0 removes the policy.
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderMaxAge0_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderMaxAge0_);
   EXPECT_EQ(0u, PolicyCount());
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessFraction0) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction0_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction0_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // Each network error has a 0% chance of being reported.  Fire off several and
   // verify that no reports are produced.
   constexpr size_t kReportCount = 100;
   for (size_t i = 0; i < kReportCount; ++i)
-    service()->OnRequest(MakeRequestDetails(kUrl_, OK));
+    service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, OK));
 
   EXPECT_TRUE(reports().empty());
 }
@@ -639,14 +803,17 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessFractionHalf) {
   static const std::string kHeaderSuccessFractionHalf =
       "{\"report_to\":\"group\",\"max_age\":86400,\"success_fraction\":0.5,"
       "\"failure_fraction\":0.25}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFractionHalf);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFractionHalf);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // Each network error has a 50% chance of being reported.  Fire off several
   // and verify that some requests were reported and some weren't.  (We can't
   // verify exact counts because each decision is made randomly.)
   constexpr size_t kReportCount = 100;
   for (size_t i = 0; i < kReportCount; ++i)
-    service()->OnRequest(MakeRequestDetails(kUrl_, OK));
+    service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, OK));
 
   // If our random selection logic is correct, there is a 2^-100 chance that
   // every single report above was skipped.  If this check fails, it's much more
@@ -670,13 +837,17 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessFractionHalf) {
 TEST_P(NetworkErrorLoggingServiceTest, FailureFraction0) {
   static const std::string kHeaderFailureFraction0 =
       "{\"report_to\":\"group\",\"max_age\":86400,\"failure_fraction\":0.0}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderFailureFraction0);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderFailureFraction0);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // Each network error has a 0% chance of being reported.  Fire off several and
   // verify that no reports are produced.
   constexpr size_t kReportCount = 100;
   for (size_t i = 0; i < kReportCount; ++i)
-    service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+    service()->OnRequest(
+        MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
@@ -687,14 +858,18 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureFractionHalf) {
   static const std::string kHeaderFailureFractionHalf =
       "{\"report_to\":\"group\",\"max_age\":86400,\"failure_fraction\":0.5,"
       "\"success_fraction\":0.25}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderFailureFractionHalf);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderFailureFractionHalf);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // Each network error has a 50% chance of being reported.  Fire off several
   // and verify that some requests were reported and some weren't.  (We can't
   // verify exact counts because each decision is made randomly.)
   constexpr size_t kReportCount = 100;
   for (size_t i = 0; i < kReportCount; ++i)
-    service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+    service()->OnRequest(
+        MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   // If our random selection logic is correct, there is a 2^-100 chance that
   // every single report above was skipped.  If this check fails, it's much more
@@ -715,75 +890,100 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureFractionHalf) {
 
 TEST_P(NetworkErrorLoggingServiceTest,
        ExcludeSubdomainsDoesntMatchDifferentPort) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlDifferentPort_, ERR_CONNECTION_REFUSED));
+      MakeRequestDetails(kNik_, kUrlDifferentPort_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, ExcludeSubdomainsDoesntMatchSubdomain) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlSubdomain_, ERR_CONNECTION_REFUSED));
+      MakeRequestDetails(kNik_, kUrlSubdomain_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, IncludeSubdomainsMatchesDifferentPort) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlDifferentPort_, ERR_NAME_NOT_RESOLVED));
+      MakeRequestDetails(kNik_, kUrlDifferentPort_, ERR_NAME_NOT_RESOLVED));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrlDifferentPort_, reports()[0].url);
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, IncludeSubdomainsMatchesSubdomain) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlSubdomain_, ERR_NAME_NOT_RESOLVED));
+      MakeRequestDetails(kNik_, kUrlSubdomain_, ERR_NAME_NOT_RESOLVED));
 
   ASSERT_EQ(1u, reports().size());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest,
        IncludeSubdomainsDoesntMatchSuperdomain) {
-  service()->OnHeader(kOriginSubdomain_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOriginSubdomain_, kServerIP_,
+                      kHeaderIncludeSubdomains_);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_NAME_NOT_RESOLVED));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, ERR_NAME_NOT_RESOLVED));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest,
        IncludeSubdomainsDoesntReportConnectionError) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlSubdomain_, ERR_CONNECTION_REFUSED));
+      MakeRequestDetails(kNik_, kUrlSubdomain_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest,
        IncludeSubdomainsDoesntReportApplicationError) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlSubdomain_, ERR_INVALID_HTTP_RESPONSE));
+      MakeRequestDetails(kNik_, kUrlSubdomain_, ERR_INVALID_HTTP_RESPONSE));
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, IncludeSubdomainsDoesntReportSuccess) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
 
-  service()->OnRequest(MakeRequestDetails(kUrlSubdomain_, OK));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrlSubdomain_, OK));
 
   EXPECT_TRUE(reports().empty());
 }
@@ -793,31 +993,44 @@ TEST_P(NetworkErrorLoggingServiceTest,
   static const std::string kHeaderIncludeSubdomainsSuccess1 =
       "{\"report_to\":\"group\",\"max_age\":86400,"
       "\"include_subdomains\":true,\"success_fraction\":1.0}";
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomainsSuccess1);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_,
+                      kHeaderIncludeSubdomainsSuccess1);
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, OK));
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnRequest(MakeRequestDetails(kNik_, kUrl_, OK));
 
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, RemoveAllBrowsingData) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   EXPECT_EQ(1u, PolicyCount());
-  EXPECT_TRUE(HasPolicyForOrigin(kOrigin_));
+  EXPECT_TRUE(HasPolicy(kNik_, kOrigin_));
 
   service()->RemoveAllBrowsingData();
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   EXPECT_EQ(0u, PolicyCount());
-  EXPECT_FALSE(HasPolicyForOrigin(kOrigin_));
+  EXPECT_FALSE(HasPolicy(kNik_, kOrigin_));
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, RemoveSomeBrowsingData) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
-  service()->OnHeader(kOriginDifferentHost_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnHeader(kNik_, kOriginDifferentHost_, kServerIP_, kHeader_);
   EXPECT_EQ(2u, PolicyCount());
 
   // Remove policy for kOrigin_ but not kOriginDifferentHost_
@@ -826,24 +1039,28 @@ TEST_P(NetworkErrorLoggingServiceTest, RemoveSomeBrowsingData) {
         return origin.host() == "example.com";
       }));
   EXPECT_EQ(1u, PolicyCount());
-  EXPECT_TRUE(HasPolicyForOrigin(kOriginDifferentHost_));
-  EXPECT_FALSE(HasPolicyForOrigin(kOrigin_));
+  EXPECT_TRUE(HasPolicy(kNik_, kOriginDifferentHost_));
+  EXPECT_FALSE(HasPolicy(kNik_, kOrigin_));
 
-  service()->OnRequest(MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED));
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED));
 
   EXPECT_TRUE(reports().empty());
 
   service()->OnRequest(
-      MakeRequestDetails(kUrlDifferentHost_, ERR_CONNECTION_REFUSED));
+      MakeRequestDetails(kNik_, kUrlDifferentHost_, ERR_CONNECTION_REFUSED));
 
   ASSERT_EQ(1u, reports().size());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, Nested) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   NetworkErrorLoggingService::RequestDetails details =
-      MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED);
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED);
   details.reporting_upload_depth =
       NetworkErrorLoggingService::kMaxNestedReportDepth;
   service()->OnRequest(details);
@@ -854,10 +1071,13 @@ TEST_P(NetworkErrorLoggingServiceTest, Nested) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, NestedTooDeep) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   NetworkErrorLoggingService::RequestDetails details =
-      MakeRequestDetails(kUrl_, ERR_CONNECTION_REFUSED);
+      MakeRequestDetails(kNik_, kUrl_, ERR_CONNECTION_REFUSED);
   details.reporting_upload_depth =
       NetworkErrorLoggingService::kMaxNestedReportDepth + 1;
   service()->OnRequest(details);
@@ -879,9 +1099,14 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
       base::TimeTicks::UnixEpoch().since_origin();
   clock.Advance(delta_from_origin);
 
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
-  service()->OnHeader(kOriginDifferentHost_, kServerIP_, kHeader_);
-  service()->OnHeader(kOriginSubdomain_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->OnHeader(kNik_, kOriginDifferentHost_, kServerIP_, kHeader_);
+  service()->OnHeader(kOtherNik_, kOriginSubdomain_, kServerIP_,
+                      kHeaderIncludeSubdomains_);
   const std::string kHeaderWrongTypes =
       ("{\"report_to\":\"group\","
        "\"max_age\":86400,"
@@ -891,15 +1116,15 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
        "\"success_fraction\": \"1.0\","
        "\"failure_fraction\": \"0.0\"}");
   service()->OnHeader(
-      url::Origin::Create(GURL("https://invalid-types.example.com")),
+      kNik_, url::Origin::Create(GURL("https://invalid-types.example.com")),
       kServerIP_, kHeaderWrongTypes);
 
   base::Value actual = service()->StatusAsValue();
-  std::unique_ptr<base::Value> expected =
-      base::test::ParseJsonDeprecated(R"json(
+  base::Value expected = base::test::ParseJson(R"json(
       {
         "originPolicies": [
           {
+            "networkIsolationKey": "https://example.com https://example.com",
             "origin": "https://example.com",
             "includeSubdomains": false,
             "expires": "86400000",
@@ -908,14 +1133,7 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
             "failureFraction": 1.0,
           },
           {
-            "origin": "https://example2.com",
-            "includeSubdomains": false,
-            "expires": "86400000",
-            "reportTo": "group",
-            "successFraction": 0.0,
-            "failureFraction": 1.0,
-          },
-          {
+            "networkIsolationKey": "https://example.com https://example.com",
             "origin": "https://invalid-types.example.com",
             "includeSubdomains": false,
             "expires": "86400000",
@@ -924,6 +1142,16 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
             "failureFraction": 1.0,
           },
           {
+            "networkIsolationKey": "https://example.com https://example.com",
+            "origin": "https://somewhere-else.com",
+            "includeSubdomains": false,
+            "expires": "86400000",
+            "reportTo": "group",
+            "successFraction": 0.0,
+            "failureFraction": 1.0,
+          },
+          {
+            "networkIsolationKey": "https://somewhere-else.com https://somewhere-else.com",
             "origin": "https://subdomain.example.com",
             "includeSubdomains": true,
             "expires": "86400000",
@@ -934,43 +1162,60 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
         ]
       }
       )json");
-  EXPECT_EQ(*expected, actual);
+  EXPECT_EQ(expected, actual);
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, NoReportingService_SignedExchange) {
-  DestroyReportingService();
+  service_ = NetworkErrorLoggingService::Create(store_.get());
 
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Should not crash
   service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-      false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, NoPolicyForOrigin_SignedExchange) {
   service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-      false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessFraction0_SignedExchange) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction0_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction0_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   // Each network error has a 0% chance of being reported.  Fire off several and
   // verify that no reports are produced.
   constexpr size_t kReportCount = 100;
   for (size_t i = 0; i < kReportCount; ++i) {
     service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-        true, "ok", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+        kNik_, true, "ok", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
   }
 
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued_SignedExchange) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-      true, "ok", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+      kNik_, true, "ok", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
@@ -1012,11 +1257,16 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued_SignedExchange) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued_SignedExchange) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-      false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
   ASSERT_EQ(1u, reports().size());
   EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNik_, reports()[0].network_isolation_key);
   EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
@@ -1058,17 +1308,57 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued_SignedExchange) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, MismatchingSubdomain_SignedExchange) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-      false, "sxg.failed", kUrlSubdomain_, kInnerUrl_, kCertUrl_, kServerIP_));
+      kNik_, false, "sxg.failed", kUrlSubdomain_, kInnerUrl_, kCertUrl_,
+      kServerIP_));
   EXPECT_TRUE(reports().empty());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, MismatchingIPAddress_SignedExchange) {
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
-  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
-      false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kOtherServerIP_));
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  service()->QueueSignedExchangeReport(
+      MakeSignedExchangeReportDetails(kNik_, false, "sxg.failed", kUrl_,
+                                      kInnerUrl_, kCertUrl_, kOtherServerIP_));
   EXPECT_TRUE(reports().empty());
+}
+
+TEST_P(NetworkErrorLoggingServiceTest,
+       SignedExchangeNetworkIsolationKeyDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kPartitionNelAndReportingByNetworkIsolationKey);
+
+  // Need to re-create the service, since it caches the feature value on
+  // creation.
+  service_ = NetworkErrorLoggingService::Create(store_.get());
+  reporting_service_ = std::make_unique<TestReportingService>();
+  service_->SetReportingService(reporting_service_.get());
+
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Wrong NIK, but a report should be generated anyways.
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kOtherNik_, true, "ok", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+
+  ASSERT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(NetworkIsolationKey(), reports()[0].network_isolation_key);
+  EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
+  EXPECT_EQ(kGroup_, reports()[0].group);
+  EXPECT_EQ(kType_, reports()[0].type);
+  EXPECT_EQ(0, reports()[0].depth);
 }
 
 // When the max number of policies is exceeded, first try to remove expired
@@ -1079,8 +1369,12 @@ TEST_P(NetworkErrorLoggingServiceTest, EvictAllExpiredPoliciesFirst) {
 
   // Add 100 policies then make them expired.
   for (size_t i = 0; i < 100; ++i) {
-    service()->OnHeader(MakeOrigin(i), kServerIP_, kHeader_);
+    service()->OnHeader(MakeNetworkIsolationKey(i), MakeOrigin(i), kServerIP_,
+                        kHeader_);
   }
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
   EXPECT_EQ(100u, PolicyCount());
   clock.Advance(base::TimeDelta::FromSeconds(86401));  // max_age is 86400 sec
   // Expired policies are allowed to linger before hitting the policy limit.
@@ -1088,12 +1382,13 @@ TEST_P(NetworkErrorLoggingServiceTest, EvictAllExpiredPoliciesFirst) {
 
   // Reach the max policy limit.
   for (size_t i = 100; i < NetworkErrorLoggingService::kMaxPolicies; ++i) {
-    service()->OnHeader(MakeOrigin(i), kServerIP_, kHeader_);
+    service()->OnHeader(MakeNetworkIsolationKey(i), MakeOrigin(i), kServerIP_,
+                        kHeader_);
   }
   EXPECT_EQ(NetworkErrorLoggingService::kMaxPolicies, PolicyCount());
 
   // Add one more policy to trigger eviction of only the expired policies.
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
   EXPECT_EQ(NetworkErrorLoggingService::kMaxPolicies - 100 + 1, PolicyCount());
 }
 
@@ -1103,53 +1398,367 @@ TEST_P(NetworkErrorLoggingServiceTest, EvictLeastRecentlyUsedPolicy) {
 
   // A policy's |last_used| is updated when it is added
   for (size_t i = 0; i < NetworkErrorLoggingService::kMaxPolicies; ++i) {
-    service()->OnHeader(MakeOrigin(i), kServerIP_, kHeader_);
+    service()->OnHeader(MakeNetworkIsolationKey(i), MakeOrigin(i), kServerIP_,
+                        kHeader_);
     clock.Advance(base::TimeDelta::FromSeconds(1));
   }
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
   EXPECT_EQ(PolicyCount(), NetworkErrorLoggingService::kMaxPolicies);
 
   // Set another policy which triggers eviction. None of the policies have
   // expired, so the least recently used (i.e. least recently added) policy
   // should be evicted.
-  service()->OnHeader(kOrigin_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
   clock.Advance(base::TimeDelta::FromSeconds(1));
   EXPECT_EQ(PolicyCount(), NetworkErrorLoggingService::kMaxPolicies);
 
-  EXPECT_FALSE(HasPolicyForOrigin(MakeOrigin(0)));  // evicted
-  std::set<url::Origin> all_policy_origins =
-      service()->GetPolicyOriginsForTesting();
+  EXPECT_FALSE(
+      HasPolicy(MakeNetworkIsolationKey(0), MakeOrigin(0)));  // evicted
+  std::set<NelPolicyKey> all_policy_keys = service()->GetPolicyKeysForTesting();
   for (size_t i = 1; i < NetworkErrorLoggingService::kMaxPolicies; ++i) {
-    // Avoid n calls to HasPolicyForOrigin(), which would be O(n^2).
-    EXPECT_EQ(1u, all_policy_origins.count(MakeOrigin(i)));
+    // Avoid n calls to HasPolicy(), which would be O(n^2).
+    NelPolicyKey key(MakeNetworkIsolationKey(i), MakeOrigin(i));
+    EXPECT_EQ(1u, all_policy_keys.count(key));
   }
-  EXPECT_TRUE(HasPolicyForOrigin(kOrigin_));
+  EXPECT_TRUE(HasPolicy(kNik_, kOrigin_));
 
   // Now use the policies in reverse order starting with kOrigin_, then add
   // another policy to trigger eviction, to check that the stalest policy is
   // identified correctly.
   service()->OnRequest(
-      MakeRequestDetails(kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
+      MakeRequestDetails(kNik_, kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
   clock.Advance(base::TimeDelta::FromSeconds(1));
   for (size_t i = NetworkErrorLoggingService::kMaxPolicies - 1; i >= 1; --i) {
-    service()->OnRequest(
-        MakeRequestDetails(MakeOrigin(i).GetURL(), ERR_CONNECTION_REFUSED));
+    service()->OnRequest(MakeRequestDetails(MakeNetworkIsolationKey(i),
+                                            MakeOrigin(i).GetURL(),
+                                            ERR_CONNECTION_REFUSED));
     clock.Advance(base::TimeDelta::FromSeconds(1));
   }
-  service()->OnHeader(kOriginSubdomain_, kServerIP_, kHeader_);
+  service()->OnHeader(kNik_, kOriginSubdomain_, kServerIP_, kHeader_);
   EXPECT_EQ(PolicyCount(), NetworkErrorLoggingService::kMaxPolicies);
 
-  EXPECT_FALSE(HasPolicyForOrigin(kOrigin_));  // evicted
-  all_policy_origins = service()->GetPolicyOriginsForTesting();
+  EXPECT_FALSE(HasPolicy(kNik_, kOrigin_));  // evicted
+  all_policy_keys = service()->GetPolicyKeysForTesting();
   for (size_t i = NetworkErrorLoggingService::kMaxPolicies - 1; i >= 1; --i) {
-    // Avoid n calls to HasPolicyForOrigin(), which would be O(n^2).
-    EXPECT_EQ(1u, all_policy_origins.count(MakeOrigin(i)));
+    // Avoid n calls to HasPolicy(), which would be O(n^2).
+    NelPolicyKey key(MakeNetworkIsolationKey(i), MakeOrigin(i));
+    EXPECT_EQ(1u, all_policy_keys.count(key));
   }
-  EXPECT_TRUE(HasPolicyForOrigin(kOriginSubdomain_));  // most recently added
+  EXPECT_TRUE(HasPolicy(kNik_, kOriginSubdomain_));  // most recently added
 
   // Note: This test advances the clock by ~2000 seconds, which is below the
   // specified max_age of 86400 seconds, so none of the policies expire during
   // this test.
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, SendsCommandsToStoreSynchronous) {
+  if (!store())
+    return;
+
+  MockPersistentNelStore::CommandList expected_commands;
+  NetworkErrorLoggingService::NelPolicy policy1 = MakePolicy(kNik_, kOrigin_);
+  NetworkErrorLoggingService::NelPolicy policy2 =
+      MakePolicy(kNik_, kOriginDifferentHost_);
+  std::vector<NetworkErrorLoggingService::NelPolicy> prestored_policies = {
+      policy1, policy2};
+  store()->SetPrestoredPolicies(std::move(prestored_policies));
+
+  // The first call to any of the public methods triggers a load.
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::LOAD_NEL_POLICIES);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+  // DoOnHeader() should now execute.
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy1);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::ADD_NEL_POLICY, policy1);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // Removes policy1 but not policy2.
+  EXPECT_EQ(2, store()->StoredPoliciesCount());
+  service()->RemoveBrowsingData(
+      base::BindRepeating([](const GURL& origin) -> bool {
+        return origin.host() == "example.com";
+      }));
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy1);
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_EQ(1, store()->StoredPoliciesCount());
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->RemoveAllBrowsingData();
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy2);
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_EQ(0, store()->StoredPoliciesCount());
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+}
+
+// Same as the above test, except that all the tasks are queued until loading
+// is complete.
+TEST_P(NetworkErrorLoggingServiceTest, SendsCommandsToStoreDeferred) {
+  if (!store())
+    return;
+
+  MockPersistentNelStore::CommandList expected_commands;
+  NetworkErrorLoggingService::NelPolicy policy1 = MakePolicy(kNik_, kOrigin_);
+  NetworkErrorLoggingService::NelPolicy policy2 =
+      MakePolicy(kNik_, kOriginDifferentHost_);
+  std::vector<NetworkErrorLoggingService::NelPolicy> prestored_policies = {
+      policy1, policy2};
+  store()->SetPrestoredPolicies(std::move(prestored_policies));
+
+  // The first call to any of the public methods triggers a load.
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::LOAD_NEL_POLICIES);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // Removes policy1 but not policy2.
+  service()->RemoveBrowsingData(
+      base::BindRepeating([](const GURL& origin) -> bool {
+        return origin.host() == "example.com";
+      }));
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->RemoveAllBrowsingData();
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // The store has not yet been told to remove the policies because the tasks
+  // to remove browsing data were queued pending initialization.
+  EXPECT_EQ(2, store()->StoredPoliciesCount());
+
+  FinishLoading(true /* load_success */);
+  // DoOnHeader()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy1);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::ADD_NEL_POLICY, policy1);
+  // DoOnRequest()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  // DoQueueSignedExchangeReport()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  // DoRemoveBrowsingData()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy1);
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  // DoRemoveAllBrowsingData()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy2);
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+}
+
+// These two tests check that if loading fails, the commands should still
+// be sent to the store; the actual store impl will just ignore them.
+TEST_P(NetworkErrorLoggingServiceTest,
+       SendsCommandsToStoreSynchronousLoadFailed) {
+  if (!store())
+    return;
+
+  MockPersistentNelStore::CommandList expected_commands;
+  NetworkErrorLoggingService::NelPolicy policy1 = MakePolicy(kNik_, kOrigin_);
+  NetworkErrorLoggingService::NelPolicy policy2 =
+      MakePolicy(kNik_, kOriginDifferentHost_);
+  std::vector<NetworkErrorLoggingService::NelPolicy> prestored_policies = {
+      policy1, policy2};
+  store()->SetPrestoredPolicies(std::move(prestored_policies));
+
+  // The first call to any of the public methods triggers a load.
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::LOAD_NEL_POLICIES);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(false /* load_success */);
+  // DoOnHeader() should now execute.
+  // Because the load failed, there will be no policies in memory, so the store
+  // is not told to delete anything.
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::ADD_NEL_POLICY, policy1);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // Removes policy1 but not policy2.
+  service()->RemoveBrowsingData(
+      base::BindRepeating([](const GURL& origin) -> bool {
+        return origin.host() == "example.com";
+      }));
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy1);
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->RemoveAllBrowsingData();
+  // We failed to load policy2 from the store, so there is nothing to remove
+  // here.
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, SendsCommandsToStoreDeferredLoadFailed) {
+  if (!store())
+    return;
+
+  MockPersistentNelStore::CommandList expected_commands;
+  NetworkErrorLoggingService::NelPolicy policy1 = MakePolicy(kNik_, kOrigin_);
+  NetworkErrorLoggingService::NelPolicy policy2 =
+      MakePolicy(kNik_, kOriginDifferentHost_);
+  std::vector<NetworkErrorLoggingService::NelPolicy> prestored_policies = {
+      policy1, policy2};
+  store()->SetPrestoredPolicies(std::move(prestored_policies));
+
+  // The first call to any of the public methods triggers a load.
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::LOAD_NEL_POLICIES);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  // Removes policy1 but not policy2.
+  service()->RemoveBrowsingData(
+      base::BindRepeating([](const GURL& origin) -> bool {
+        return origin.host() == "example.com";
+      }));
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->RemoveAllBrowsingData();
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  FinishLoading(false /* load_success */);
+  // DoOnHeader()
+  // Because the load failed, there will be no policies in memory, so the store
+  // is not told to delete anything.
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::ADD_NEL_POLICY, policy1);
+  // DoOnRequest()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  // DoQueueSignedExchangeReport()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::UPDATE_NEL_POLICY, policy1);
+  // DoRemoveBrowsingData()
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::DELETE_NEL_POLICY, policy1);
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  // DoRemoveAllBrowsingData()
+  // We failed to load policy2 from the store, so there is nothing to remove
+  // here.
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, FlushesStoreOnDestruction) {
+  auto store = std::make_unique<MockPersistentNelStore>();
+  std::unique_ptr<NetworkErrorLoggingService> service =
+      NetworkErrorLoggingService::Create(store.get());
+
+  MockPersistentNelStore::CommandList expected_commands;
+
+  service->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::LOAD_NEL_POLICIES);
+  EXPECT_TRUE(store->VerifyCommands(expected_commands));
+
+  store->FinishLoading(false /* load_success */);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::ADD_NEL_POLICY,
+      MakePolicy(kNik_, kOrigin_));
+  EXPECT_TRUE(store->VerifyCommands(expected_commands));
+
+  // Store should be flushed on destruction of service.
+  service.reset();
+  expected_commands.emplace_back(MockPersistentNelStore::Command::Type::FLUSH);
+  EXPECT_TRUE(store->VerifyCommands(expected_commands));
+}
+
+TEST_P(NetworkErrorLoggingServiceTest,
+       DoesntFlushStoreOnDestructionBeforeLoad) {
+  auto store = std::make_unique<MockPersistentNelStore>();
+  std::unique_ptr<NetworkErrorLoggingService> service =
+      NetworkErrorLoggingService::Create(store.get());
+
+  service.reset();
+  EXPECT_EQ(0u, store->GetAllCommands().size());
+}
+
+TEST_P(NetworkErrorLoggingServiceTest, DoNothingIfShutDown) {
+  if (!store())
+    return;
+
+  MockPersistentNelStore::CommandList expected_commands;
+
+  // The first call to any of the public methods triggers a load.
+  service()->OnHeader(kNik_, kOrigin_, kServerIP_, kHeader_);
+  expected_commands.emplace_back(
+      MockPersistentNelStore::Command::Type::LOAD_NEL_POLICIES);
+  EXPECT_TRUE(store()->VerifyCommands(expected_commands));
+
+  service()->OnRequest(
+      MakeRequestDetails(kNik_, kOrigin_.GetURL(), ERR_CONNECTION_REFUSED));
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kNik_, false, "sxg.failed", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
+  service()->RemoveBrowsingData(
+      base::BindRepeating([](const GURL& origin) -> bool {
+        return origin.host() == "example.com";
+      }));
+  service()->RemoveAllBrowsingData();
+
+  // Finish loading after the service has been shut down.
+  service()->OnShutdown();
+  FinishLoading(true /* load_success */);
+
+  // Only the LOAD command should have been sent to the store.
+  EXPECT_EQ(1u, store()->GetAllCommands().size());
+  EXPECT_EQ(0u, PolicyCount());
+  EXPECT_EQ(0u, reports().size());
 }
 
 INSTANTIATE_TEST_SUITE_P(NetworkErrorLoggingServiceStoreTest,

@@ -6,11 +6,10 @@
 #define NET_SOCKET_CLIENT_SOCKET_HANDLE_H_
 
 #include <memory>
-#include <string>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
@@ -20,16 +19,19 @@
 #include "net/base/net_errors.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "net/log/net_log_source.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_pool.h"
 #include "net/socket/connection_attempts.h"
 #include "net/socket/stream_socket.h"
 #include "net/ssl/ssl_cert_request_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace net {
 
 class ConnectJob;
+struct NetworkTrafficAnnotationTag;
 class SocketTag;
 
 // A container for a StreamSocket.
@@ -79,15 +81,17 @@ class NET_EXPORT ClientSocketHandle {
   // Init may be called multiple times.
   //
   // Profiling information for the request is saved to |net_log| if non-NULL.
-  int Init(const ClientSocketPool::GroupId& group_id,
-           scoped_refptr<ClientSocketPool::SocketParams> socket_params,
-           RequestPriority priority,
-           const SocketTag& socket_tag,
-           ClientSocketPool::RespectLimits respect_limits,
-           CompletionOnceCallback callback,
-           const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback,
-           ClientSocketPool* pool,
-           const NetLogWithSource& net_log);
+  int Init(
+      const ClientSocketPool::GroupId& group_id,
+      scoped_refptr<ClientSocketPool::SocketParams> socket_params,
+      const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
+      RequestPriority priority,
+      const SocketTag& socket_tag,
+      ClientSocketPool::RespectLimits respect_limits,
+      CompletionOnceCallback callback,
+      const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback,
+      ClientSocketPool* pool,
+      const NetLogWithSource& net_log);
 
   // Changes the priority of the ClientSocketHandle to the passed value.
   // This function is a no-op if |priority| is the same as the current
@@ -104,6 +108,11 @@ class NET_EXPORT ClientSocketHandle {
   // Disconnect method.  This will result in the ClientSocketPool deleting the
   // StreamSocket.
   void Reset();
+
+  // Like Reset(), but also closes the socket (if there is one) and cancels any
+  // pending attempt to establish a connection, if the connection attempt is
+  // still ongoing.
+  void ResetAndCloseSocket();
 
   // Used after Init() is called, but before the ClientSocketPool has
   // initialized the ClientSocketHandle.
@@ -122,7 +131,7 @@ class NET_EXPORT ClientSocketHandle {
   void RemoveHigherLayeredPool(HigherLayeredPool* higher_pool);
 
   // Closes idle sockets that are in the same group with |this|.
-  void CloseIdleSocketsInGroup();
+  void CloseIdleSocketsInGroup(const char* net_log_reason_utf8);
 
   // Returns true when Init() has completed successfully.
   bool is_initialized() const { return is_initialized_; }
@@ -160,12 +169,10 @@ class NET_EXPORT ClientSocketHandle {
       scoped_refptr<SSLCertRequestInfo> ssl_cert_request_info) {
     ssl_cert_request_info_ = std::move(ssl_cert_request_info);
   }
-  void set_pending_http_proxy_socket(std::unique_ptr<StreamSocket> socket) {
-    pending_http_proxy_socket_ = std::move(socket);
-  }
   void set_connection_attempts(const ConnectionAttempts& attempts) {
     connection_attempts_ = attempts;
   }
+  ResolveErrorInfo resolve_error_info() const { return resolve_error_info_; }
 
   // Only valid if there is no |socket_|.
   bool is_ssl_error() const {
@@ -177,10 +184,6 @@ class NET_EXPORT ClientSocketHandle {
   // is set.
   scoped_refptr<SSLCertRequestInfo> ssl_cert_request_info() const {
     return ssl_cert_request_info_;
-  }
-
-  std::unique_ptr<StreamSocket> release_pending_http_proxy_socket() {
-    return std::move(pending_http_proxy_socket_);
   }
 
   // If the connection failed, returns the connection attempts made. (If it
@@ -219,8 +222,11 @@ class NET_EXPORT ClientSocketHandle {
 
   // Resets the state of the ClientSocketHandle.  |cancel| indicates whether or
   // not to try to cancel the request with the ClientSocketPool.  Does not
-  // reset the supplemental error state.
-  void ResetInternal(bool cancel);
+  // reset the supplemental error state. |cancel_connect_job| indicates whether
+  // a pending ConnectJob, if there is one in the SocketPool, should be
+  // cancelled in addition to cancelling the request. It may only be true if
+  // |cancel| is also true.
+  void ResetInternal(bool cancel, bool cancel_connect_job);
 
   // Resets the supplemental error state.
   void ResetErrorState();
@@ -235,9 +241,9 @@ class NET_EXPORT ClientSocketHandle {
   base::TimeDelta idle_time_;
   // See ClientSocketPool::ReleaseSocket() for an explanation.
   int64_t group_generation_;
+  ResolveErrorInfo resolve_error_info_;
   bool is_ssl_error_;
   scoped_refptr<SSLCertRequestInfo> ssl_cert_request_info_;
-  std::unique_ptr<StreamSocket> pending_http_proxy_socket_;
   std::vector<ConnectionAttempt> connection_attempts_;
 
   NetLogSource requesting_source_;

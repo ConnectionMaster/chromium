@@ -4,9 +4,8 @@
 
 #include "content/test/did_commit_navigation_interceptor.h"
 
-#include "content/browser/frame_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/common/frame.mojom-test-utils.h"
-#include "content/common/frame_messages.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 
@@ -29,7 +28,7 @@ class DidCommitNavigationInterceptor::FrameAgent
 
   bool WillProcessDidCommitNavigation(
       NavigationRequest* navigation_request,
-      ::FrameHostMsg_DidCommitProvisionalLoad_Params* params,
+      mojom::DidCommitProvisionalLoadParamsPtr* params,
       mojom::DidCommitProvisionalLoadInterfaceParamsPtr* interface_params)
       override {
     return interceptor_->WillProcessDidCommitNavigation(

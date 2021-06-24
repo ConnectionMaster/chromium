@@ -11,21 +11,29 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_timeouts.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/extension_apitest.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
+#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/guest_view/browser/test_guest_view_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/guest_view/extensions_guest_view_manager_delegate.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "extensions/browser/guest_view/mime_handler_view/test_mime_handler_view_guest.h"
+#include "extensions/common/constants.h"
 #include "extensions/test/result_catcher.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "third_party/blink/public/common/input/web_pointer_properties.h"
 
 using guest_view::GuestViewManager;
 using guest_view::GuestViewManagerDelegate;
@@ -34,12 +42,8 @@ using guest_view::TestGuestViewManagerFactory;
 
 namespace extensions {
 
-// The test extension id is set by the key value in the manifest.
-const char kExtensionId[] = "oickdpebdnfbgkcaoklfcdhjniefkcji";
-
 // Counts the number of URL requests made for a given URL.
-class MimeHandlerViewTest : public ExtensionApiTest,
-                            public testing::WithParamInterface<bool> {
+class MimeHandlerViewTest : public ExtensionApiTest {
  public:
   MimeHandlerViewTest() {
     GuestViewManager::set_factory_for_testing(&factory_);
@@ -53,24 +57,6 @@ class MimeHandlerViewTest : public ExtensionApiTest,
     embedded_test_server()->ServeFilesFromDirectory(
         test_data_dir_.AppendASCII("mime_handler_view"));
     ASSERT_TRUE(StartEmbeddedTestServer());
-  }
-
-  // TODO(ekaramad): These tests run for OOPIF guests too, except that they
-  // still use BrowserPlugin code path. They are activated to make sure we can
-  // still show PDF when the rest of the guests migrate to OOPIF. Eventually,
-  // MimeHandlerViewGuest will be based on OOPIF and we can remove this comment
-  // (https://crbug.com/642826).
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    ExtensionApiTest::SetUpCommandLine(command_line);
-
-    bool use_cross_process_frames_for_guests = GetParam();
-    if (use_cross_process_frames_for_guests) {
-      scoped_feature_list_.InitAndEnableFeature(
-          features::kGuestViewCrossProcessFrames);
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(
-          features::kGuestViewCrossProcessFrames);
-    }
   }
 
   // TODO(paulmeyer): This function is implemented over and over by the
@@ -100,7 +86,8 @@ class MimeHandlerViewTest : public ExtensionApiTest,
     if (!extension)
       return nullptr;
 
-    CHECK_EQ(std::string(kExtensionId), extension->id());
+    EXPECT_EQ(std::string(extension_misc::kMimeHandlerPrivateTestExtensionId),
+              extension->id());
 
     return extension;
   }
@@ -129,18 +116,85 @@ class MimeHandlerViewTest : public ExtensionApiTest,
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-INSTANTIATE_TEST_SUITE_P(MimeHandlerViewTests,
-                         MimeHandlerViewTest,
-                         testing::Bool());
-
 // Test is flaky on Linux.  https://crbug.com/877627
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 #define MAYBE_Fullscreen DISABLED_Fullscreen
 #else
 #define MAYBE_Fullscreen Fullscreen
 #endif
-IN_PROC_BROWSER_TEST_P(MimeHandlerViewTest, MAYBE_Fullscreen) {
+IN_PROC_BROWSER_TEST_F(MimeHandlerViewTest, MAYBE_Fullscreen) {
   RunTest("testFullscreen.csv");
+}
+
+namespace {
+
+void WaitForFullscreenAnimation() {
+#if defined(OS_MAC)
+  const int delay_in_ms = 1500;
+#else
+  const int delay_in_ms = 100;
+#endif
+  // Wait for Mac OS fullscreen animation.
+  base::RunLoop run_loop;
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+      FROM_HERE, run_loop.QuitClosure(),
+      base::TimeDelta::FromMilliseconds(delay_in_ms));
+  run_loop.Run();
+}
+
+}  // namespace
+
+// TODO(1119576): Flaky under Lacros.
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#define MAYBE_EscapeExitsFullscreen DISABLED_EscapeExitsFullscreen
+#else
+#define MAYBE_EscapeExitsFullscreen EscapeExitsFullscreen
+#endif
+IN_PROC_BROWSER_TEST_F(MimeHandlerViewTest, MAYBE_EscapeExitsFullscreen) {
+  // Use the testing subclass of MimeHandlerViewGuest.
+  GetGuestViewManager()->RegisterTestGuestViewType<MimeHandlerViewGuest>(
+      base::BindRepeating(&TestMimeHandlerViewGuest::Create));
+
+  const Extension* extension = LoadTestExtension();
+  ASSERT_TRUE(extension);
+
+  ResultCatcher catcher;
+
+  // Set observer to watch for fullscreen.
+  FullscreenNotificationObserver fullscreen_waiter(browser());
+
+  ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/testFullscreenEscape.csv"));
+
+  // Make sure we have a guestviewmanager.
+  auto* embedder_contents = browser()->tab_strip_model()->GetWebContentsAt(0);
+  auto* guest_contents = GetGuestViewManager()->WaitForSingleGuestCreated();
+  auto* guest_rwh =
+      guest_contents->GetRenderWidgetHostView()->GetRenderWidgetHost();
+
+  // Wait for fullscreen mode.
+  fullscreen_waiter.Wait();
+  WaitForFullscreenAnimation();
+
+  // Send a touch to focus the guest. We can't directly test that the correct
+  // RenderWidgetHost got focus, but the wait seems to work.
+  SimulateMouseClick(guest_contents, 0, blink::WebMouseEvent::Button::kLeft);
+  while (!IsRenderWidgetHostFocused(guest_rwh)) {
+    base::RunLoop run_loop;
+    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+        FROM_HERE, run_loop.QuitClosure(), TestTimeouts::tiny_timeout());
+    run_loop.Run();
+  }
+  EXPECT_EQ(guest_contents, content::GetFocusedWebContents(embedder_contents));
+
+  // Send <esc> to exit fullscreen.
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_ESCAPE, false,
+                                              false, false, false));
+  WaitForFullscreenAnimation();
+
+  // Now wait for the test to succeed, or timeout.
+  if (!catcher.GetNextResult())
+    FAIL() << catcher.message();
 }
 
 }  // namespace extensions

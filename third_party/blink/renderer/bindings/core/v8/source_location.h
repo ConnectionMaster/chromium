@@ -8,9 +8,10 @@
 #include <v8-inspector-protocol.h>
 #include <memory>
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 
 namespace blink {
 
@@ -58,10 +59,18 @@ class CORE_EXPORT SourceLocation {
     return std::move(stack_trace_);
   }
 
-  std::unique_ptr<SourceLocation> Clone()
-      const;  // Safe to pass between threads.
+  bool HasStackTrace() const {
+    return stack_trace_ && !stack_trace_->isEmpty();
+  }
+
+  // Safe to pass between threads, drops async chain in stack trace.
+  std::unique_ptr<SourceLocation> Clone() const;
+
+  void WriteIntoTrace(perfetto::TracedValue context) const;
 
   // No-op when stack trace is unknown.
+  // TODO(altimin): Replace all usages of `ToTracedValue` with
+  // `WriteIntoTrace` and remove this method.
   void ToTracedValue(TracedValue*, const char* name) const;
 
   // Could be null string when stack trace is unknown.
@@ -71,10 +80,12 @@ class CORE_EXPORT SourceLocation {
   std::unique_ptr<v8_inspector::protocol::Runtime::API::StackTrace>
   BuildInspectorObject() const;
 
+  std::unique_ptr<v8_inspector::protocol::Runtime::API::StackTrace>
+  BuildInspectorObject(int max_async_depth) const;
+
  private:
   static std::unique_ptr<SourceLocation> CreateFromNonEmptyV8StackTrace(
-      std::unique_ptr<v8_inspector::V8StackTrace>,
-      int script_id);
+      std::unique_ptr<v8_inspector::V8StackTrace>);
 
   String url_;
   unsigned line_number_;

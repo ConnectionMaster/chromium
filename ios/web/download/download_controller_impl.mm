@@ -5,6 +5,7 @@
 #import "ios/web/download/download_controller_impl.h"
 
 #include "base/strings/sys_string_conversions.h"
+#import "ios/web/download/download_session_cookie_storage.h"
 #include "ios/web/public/browser_state.h"
 #import "ios/web/public/download/download_controller_delegate.h"
 #import "ios/web/public/web_client.h"
@@ -50,17 +51,17 @@ void DownloadControllerImpl::CreateDownloadTask(
     WebState* web_state,
     NSString* identifier,
     const GURL& original_url,
+    NSString* http_method,
     const std::string& content_disposition,
     int64_t total_bytes,
-    const std::string& mime_type,
-    ui::PageTransition page_transition) {
+    const std::string& mime_type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(my_sequence_checker_);
   if (!delegate_)
     return;
 
   auto task = std::make_unique<DownloadTaskImpl>(
-      web_state, original_url, content_disposition, total_bytes, mime_type,
-      page_transition, identifier, this);
+      web_state, original_url, http_method, content_disposition, total_bytes,
+      mime_type, identifier, this);
   alive_tasks_.insert(task.get());
   delegate_->OnDownloadCreated(this, web_state, std::move(task));
 }
@@ -89,11 +90,16 @@ NSURLSession* DownloadControllerImpl::CreateSession(
     NSOperationQueue* delegate_queue) {
   NSURLSessionConfiguration* configuration = [NSURLSessionConfiguration
       backgroundSessionConfigurationWithIdentifier:identifier];
+  configuration.HTTPCookieStorage = [[DownloadSessionCookieStorage alloc] init];
+  configuration.HTTPCookieStorage.cookieAcceptPolicy =
+      [NSHTTPCookieStorage sharedHTTPCookieStorage].cookieAcceptPolicy;
   // Cookies have to be set in session configuration before the session is
   // created. Once the session is created, the configuration object can't be
   // edited and configuration property will return a copy of the originally used
   // configuration.
   for (NSHTTPCookie* cookie in cookies) {
+    // Cookies copied from the internal WebSiteDataStore cookie store, so
+    // there will be no duplications or invalid cookies.
     [configuration.HTTPCookieStorage setCookie:cookie];
   }
   std::string user_agent = GetWebClient()->GetUserAgent(UserAgentType::MOBILE);

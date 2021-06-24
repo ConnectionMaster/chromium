@@ -5,10 +5,9 @@
 #include <fuchsia/net/oldhttp/cpp/fidl.h>
 #include <lib/fidl/cpp/binding.h>
 
-#include "base/fuchsia/scoped_service_binding.h"
-#include "base/fuchsia/service_directory.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/task/current_thread.h"
+#include "base/test/task_environment.h"
 #include "fuchsia/http/http_service_impl.h"
 #include "fuchsia/http/url_loader_impl.h"
 #include "net/base/net_errors.h"
@@ -20,8 +19,7 @@ namespace oldhttp = ::fuchsia::net::oldhttp;
 
 namespace {
 
-const base::FilePath::CharType kTestFilePath[] =
-    FILE_PATH_LITERAL("fuchsia/http/testdata");
+const base::FilePath::CharType kTestFilePath[] = "fuchsia/http/testdata";
 
 // Capacity, in bytes, for buffers used to read data off the URLResponse.
 const size_t kBufferCapacity = 1024;
@@ -31,17 +29,15 @@ using ResponseHeaders = std::multimap<std::string, std::string>;
 class HttpServiceTest : public ::testing::Test {
  public:
   HttpServiceTest()
-      : task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::IO_MOCK_TIME),
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
         binding_(&http_service_server_) {
     // Initialize the test server.
-    test_server_.AddDefaultHandlers(
-        base::FilePath(FILE_PATH_LITERAL(kTestFilePath)));
+    test_server_.AddDefaultHandlers(base::FilePath(kTestFilePath));
     net::test_server::RegisterDefaultHandlers(&test_server_);
   }
 
  protected:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   void SetUp() override {
     ASSERT_TRUE(test_server_.Start());
@@ -117,11 +113,46 @@ zx_signals_t RunLoopUntilSignal(zx_handle_t handle, zx_signals_t signals) {
   TestZxHandleWatcher watcher(run_loop.QuitClosure());
   base::MessagePumpForIO::ZxHandleWatchController watch_contoller(FROM_HERE);
 
-  base::MessageLoopCurrentForIO::Get()->WatchZxHandle(
+  base::CurrentIOThread::Get()->WatchZxHandle(
       handle, /*persistent=*/false, signals, &watch_contoller, &watcher);
   run_loop.Run();
 
   return watcher.signals();
+}
+
+void CheckResponseError(const oldhttp::URLResponse& response,
+                        int expected_network_error) {
+  // Unexpected network error.
+  ASSERT_TRUE(expected_network_error != net::OK || !response.error)
+      << response.error->description;
+
+  // Unexpected success.
+  ASSERT_TRUE(expected_network_error == net::OK || response.error) << "net::OK";
+
+  // Wrong network error.
+  ASSERT_TRUE(expected_network_error == net::OK ||
+              response.error->code == expected_network_error)
+      << response.error->description;
+}
+
+void CheckQueryStatus(const oldhttp::URLLoaderPtr& url_loader,
+                      bool is_loading,
+                      int expected_network_error) {
+  base::RunLoop run_loop;
+  url_loader->QueryStatus([&run_loop, &is_loading, &expected_network_error](
+                              oldhttp::URLLoaderStatus status) {
+    EXPECT_EQ(status.is_loading, is_loading);
+    if (status.is_loading || expected_network_error == net::OK) {
+      EXPECT_FALSE(status.error);
+    } else {
+      EXPECT_TRUE(status.error);
+      if (status.error) {
+        EXPECT_EQ(status.error->code, expected_network_error);
+      }
+    }
+    run_loop.Quit();
+  });
+  run_loop.Run();
 }
 
 void CheckResponseStream(const oldhttp::URLResponse& response,
@@ -188,7 +219,8 @@ void CheckResponseBuffer(const oldhttp::URLResponse& response,
 
 void CheckResponseHeaders(const oldhttp::URLResponse& response,
                           ResponseHeaders* expected_headers) {
-  for (auto& header : response.headers.get()) {
+  ASSERT_TRUE(response.headers.has_value());
+  for (auto& header : response.headers.value()) {
     const std::string header_name = header.name.data();
     const std::string header_value = header.value.data();
     auto iter = std::find_if(expected_headers->begin(), expected_headers->end(),
@@ -220,8 +252,10 @@ TEST_F(HttpServiceTest, BasicRequestStream) {
   request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
 
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 200u);
   CheckResponseStream(url_response(), "hello");
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check a basic end-to-end request resolution with the response being
@@ -236,8 +270,10 @@ TEST_F(HttpServiceTest, BasicRequestBuffer) {
   request.response_body_mode = oldhttp::ResponseBodyMode::BUFFER;
 
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 200u);
   CheckResponseBuffer(url_response(), "hello");
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check network request headers are received properly.
@@ -251,6 +287,7 @@ TEST_F(HttpServiceTest, RequestWithHeaders) {
   request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
 
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 200u);
   CheckResponseStream(
       url_response(),
@@ -262,6 +299,7 @@ TEST_F(HttpServiceTest, RequestWithHeaders) {
       {"X-Multiple-Entries", "b"},
   };
   CheckResponseHeaders(url_response(), &expected_headers);
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check duplicate network request headers are received properly.
@@ -276,6 +314,7 @@ TEST_F(HttpServiceTest, RequestWithDuplicateHeaders) {
   request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
 
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 200u);
   CheckResponseStream(
       url_response(),
@@ -288,6 +327,7 @@ TEST_F(HttpServiceTest, RequestWithDuplicateHeaders) {
       {"X-Multiple-Entries", "b"},
   };
   CheckResponseHeaders(url_response(), &expected_headers);
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check a request with automatic redirect resolution is handled properly.
@@ -302,9 +342,15 @@ TEST_F(HttpServiceTest, AutoRedirect) {
   request.auto_follow_redirects = true;
 
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 200u);
-  EXPECT_EQ(url_response().url,
+  ASSERT_TRUE(url_response().url.has_value());
+  EXPECT_EQ(url_response().url.value(),
             http_test_server()->GetURL("/with-headers.html").spec());
+  CheckResponseStream(
+      url_response(),
+      "This file is boring; all the action's in the .mock-http-headers.\n");
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check a request with manual redirect resolution is handled properly.
@@ -317,24 +363,27 @@ TEST_F(HttpServiceTest, ManualRedirect) {
   oldhttp::URLRequest request;
   request.url = request_url;
   request.method = "GET";
-  request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
+  request.response_body_mode = oldhttp::ResponseBodyMode::BUFFER;
   request.auto_follow_redirects = false;
 
   ExecuteRequest(url_loader, std::move(request));
   std::string final_url =
       http_test_server()->GetURL("/with-headers.html").spec();
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 302u);
-  EXPECT_EQ(url_response().url, request_url);
-  EXPECT_EQ(url_response().redirect_url, final_url);
+  EXPECT_EQ(url_response().url.value_or(""), request_url);
+  EXPECT_EQ(url_response().redirect_url.value_or(""), final_url);
+  CheckQueryStatus(url_loader, true, net::OK);
 
   base::RunLoop run_loop;
   url_loader->FollowRedirect(
       [&run_loop, &final_url](oldhttp::URLResponse response) {
         EXPECT_EQ(response.status_code, 200u);
-        EXPECT_EQ(response.url, final_url);
+        EXPECT_EQ(response.url.value_or(""), final_url);
         run_loop.Quit();
       });
   run_loop.Run();
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check HTTP error codes are properly populated.
@@ -351,7 +400,9 @@ TEST_F(HttpServiceTest, HttpErrorCode) {
   request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
 
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 404u);
+  CheckQueryStatus(url_loader, false, net::OK);
 }
 
 // Check network error codes are properly populated.
@@ -365,19 +416,21 @@ TEST_F(HttpServiceTest, InvalidURL) {
   request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
 
   ExecuteRequest(url_loader, std::move(request));
-  EXPECT_EQ(url_response().error->code, net::ERR_INVALID_URL);
+  CheckResponseError(url_response(), net::ERR_INVALID_URL);
+  CheckQueryStatus(url_loader, false, net::ERR_INVALID_URL);
 }
 
 // Ensure the service can handle multiple concurrent requests.
 TEST_F(HttpServiceTest, MultipleRequests) {
-  oldhttp::URLLoaderPtr url_loaders[100];
-  for (int i = 0; i < 100; i++) {
+  const int kNumRequests = 10;
+  oldhttp::URLLoaderPtr url_loaders[kNumRequests];
+  for (int i = 0; i < kNumRequests; i++) {
     http_service()->CreateURLLoader(url_loaders[i].NewRequest());
   }
 
   base::RunLoop run_loop;
   int requests_done = 0;
-  for (int i = 0; i < 100; i++) {
+  for (int i = 0; i < kNumRequests; i++) {
     oldhttp::URLRequest request;
     request.url = http_test_server()->GetURL("/simple.html").spec();
     request.method = "GET";
@@ -387,16 +440,18 @@ TEST_F(HttpServiceTest, MultipleRequests) {
     url_loaders[i]->Start(
         std::move(request),
         [&requests_done, &run_loop](oldhttp::URLResponse response) {
-          EXPECT_EQ(response.status_code, 200u);
+          requests_done++;
+          if (requests_done == kNumRequests) {
+            // Last request signals the run_loop to exit.
+            run_loop.Quit();
+          }
+
+          CheckResponseError(response, net::OK);
+          ASSERT_EQ(response.status_code, 200u);
           if (response.body->is_buffer()) {
             CheckResponseBuffer(response, "hello");
           } else {
             CheckResponseStream(response, "hello");
-          }
-          requests_done++;
-          if (requests_done == 100) {
-            // Last request signals the run_loop to exit.
-            run_loop.Quit();
           }
         });
   }
@@ -416,14 +471,9 @@ TEST_F(HttpServiceTest, QueryStatus) {
 
   // In socket mode, we should still get the response headers.
   ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
   EXPECT_EQ(url_response().status_code, 200u);
-
-  base::RunLoop run_loop;
-  url_loader->QueryStatus([&run_loop](oldhttp::URLLoaderStatus status) {
-    EXPECT_TRUE(status.is_loading);
-    run_loop.Quit();
-  });
-  run_loop.Run();
+  CheckQueryStatus(url_loader, true, net::OK);
 }
 
 // Check the response error is properly set if the server disconnects early.
@@ -437,5 +487,24 @@ TEST_F(HttpServiceTest, CloseSocket) {
   request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
 
   ExecuteRequest(url_loader, std::move(request));
-  EXPECT_EQ(url_response().error->code, net::ERR_EMPTY_RESPONSE);
+  CheckResponseError(url_response(), net::ERR_EMPTY_RESPONSE);
+  CheckQueryStatus(url_loader, false, net::ERR_EMPTY_RESPONSE);
+}
+
+// Checks the QueryStatus gets set properly if an error occurs after the
+// response has started being processed.
+TEST_F(HttpServiceTest, ContentLengthTooLong) {
+  oldhttp::URLLoaderPtr url_loader;
+  http_service()->CreateURLLoader(url_loader.NewRequest());
+
+  oldhttp::URLRequest request;
+  request.url =
+      http_test_server()->GetURL("/content-length-too-long.html").spec();
+  request.method = "GET";
+  request.response_body_mode = oldhttp::ResponseBodyMode::STREAM;
+
+  ExecuteRequest(url_loader, std::move(request));
+  CheckResponseError(url_response(), net::OK);
+  CheckResponseStream(url_response(), "hello");
+  CheckQueryStatus(url_loader, false, net::ERR_CONTENT_LENGTH_MISMATCH);
 }

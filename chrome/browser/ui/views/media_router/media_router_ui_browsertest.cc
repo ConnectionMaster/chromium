@@ -4,7 +4,6 @@
 
 #include "base/bind.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -14,8 +13,6 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/extensions/browser_action_test_util.h"
-#include "chrome/browser/ui/media_router/media_router_dialog_controller_impl_base.h"
 #include "chrome/browser/ui/media_router/media_router_ui_service.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/media_router_action_controller.h"
@@ -23,13 +20,15 @@
 #include "chrome/browser/ui/views/media_router/app_menu_test_api.h"
 #include "chrome/browser/ui/views/media_router/cast_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/media_router/browser/media_router_dialog_controller.h"
+#include "components/media_router/browser/media_router_metrics.h"
+#include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/context_menu_params.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "ui/base/ui_base_features.h"
@@ -38,8 +37,8 @@
 
 namespace media_router {
 
-// Base class containing setup code and test cases shared between WebUI and
-// Views dialog tests.
+// Base class containing setup code and test cases shared between Views dialog
+// tests.
 class MediaRouterUIBrowserTest : public InProcessBrowserTest {
  public:
   MediaRouterUIBrowserTest()
@@ -57,8 +56,8 @@ class MediaRouterUIBrowserTest : public InProcessBrowserTest {
   }
 
   // Returns the dialog controller for the active WebContents.
-  MediaRouterDialogControllerImplBase* GetDialogController() {
-    return MediaRouterDialogControllerImplBase::GetOrCreateForWebContents(
+  MediaRouterDialogController* GetDialogController() {
+    return MediaRouterDialogController::GetOrCreateForWebContents(
         browser()->tab_strip_model()->GetActiveWebContents());
   }
 
@@ -77,11 +76,12 @@ class MediaRouterUIBrowserTest : public InProcessBrowserTest {
     GetCastIcon()->OnMousePressed(
         ui::MouseEvent(ui::ET_MOUSE_PRESSED, gfx::Point(0, 0), gfx::Point(0, 0),
                        ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON, 0));
+    base::RunLoop().RunUntilIdle();
   }
 
   bool ToolbarIconExists() {
     base::RunLoop().RunUntilIdle();
-    return GetCastIcon()->visible();
+    return GetCastIcon()->GetVisible();
   }
 
   void SetAlwaysShowActionPref(bool always_show) {
@@ -137,29 +137,36 @@ IN_PROC_BROWSER_TEST_F(MediaRouterUIBrowserTest, OpenDialogFromAppMenu) {
   EXPECT_FALSE(dialog_controller->IsShowingMediaRouterDialog());
 }
 
+// TODO(crbug.com/1004635) Disabled on Linux due to flakiness.
+#if defined(OS_LINUX)
+#define MAYBE_EphemeralToolbarIconForDialog \
+  DISABLED_EphemeralToolbarIconForDialog
+#else
+#define MAYBE_EphemeralToolbarIconForDialog EphemeralToolbarIconForDialog
+#endif
 IN_PROC_BROWSER_TEST_F(MediaRouterUIBrowserTest,
-                       EphemeralToolbarIconForDialog) {
+                       MAYBE_EphemeralToolbarIconForDialog) {
   MediaRouterDialogController* dialog_controller = GetDialogController();
 
   EXPECT_FALSE(ToolbarIconExists());
-  dialog_controller->ShowMediaRouterDialog();
+  dialog_controller->ShowMediaRouterDialog(MediaRouterDialogOpenOrigin::PAGE);
   EXPECT_TRUE(ToolbarIconExists());
   dialog_controller->HideMediaRouterDialog();
   EXPECT_FALSE(ToolbarIconExists());
 
-  dialog_controller->ShowMediaRouterDialog();
+  dialog_controller->ShowMediaRouterDialog(MediaRouterDialogOpenOrigin::PAGE);
   EXPECT_TRUE(ToolbarIconExists());
   // Clicking on the toolbar icon should hide both the dialog and the icon.
   PressToolbarIcon();
   EXPECT_FALSE(dialog_controller->IsShowingMediaRouterDialog());
   EXPECT_FALSE(ToolbarIconExists());
 
-  dialog_controller->ShowMediaRouterDialog();
+  dialog_controller->ShowMediaRouterDialog(MediaRouterDialogOpenOrigin::PAGE);
   SetAlwaysShowActionPref(true);
   // When the pref is set to true, hiding the dialog shouldn't hide the icon.
   dialog_controller->HideMediaRouterDialog();
   EXPECT_TRUE(ToolbarIconExists());
-  dialog_controller->ShowMediaRouterDialog();
+  dialog_controller->ShowMediaRouterDialog(MediaRouterDialogOpenOrigin::PAGE);
   // While the dialog is showing, setting the pref to false shouldn't hide the
   // icon.
   SetAlwaysShowActionPref(false);
@@ -169,7 +176,8 @@ IN_PROC_BROWSER_TEST_F(MediaRouterUIBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(MediaRouterUIBrowserTest, PinAndUnpinToolbarIcon) {
-  GetDialogController()->ShowMediaRouterDialog();
+  GetDialogController()->ShowMediaRouterDialog(
+      MediaRouterDialogOpenOrigin::PAGE);
   EXPECT_TRUE(ToolbarIconExists());
   // Pin the icon via its context menu.
   ui::SimpleMenuModel* context_menu = GetIconContextMenu();
@@ -222,8 +230,17 @@ IN_PROC_BROWSER_TEST_F(MediaRouterUIBrowserTest,
   EXPECT_TRUE(ToolbarIconExists());
 }
 
+// TODO(https://crbug.com/1124982): Fix flake on linux-lacros-rel and re-enable
+// this test.
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+#define MAYBE_OpenDialogWithMediaRouterAction \
+  DISABLED_OpenDialogWithMediaRouterAction
+#else
+#define MAYBE_OpenDialogWithMediaRouterAction OpenDialogWithMediaRouterAction
+#endif
+
 IN_PROC_BROWSER_TEST_F(MediaRouterUIBrowserTest,
-                       OpenDialogWithMediaRouterAction) {
+                       MAYBE_OpenDialogWithMediaRouterAction) {
   MediaRouterDialogController* dialog_controller = GetDialogController();
   // We start off at about:blank page.
   // Make sure there is 1 tab and media router is enabled.

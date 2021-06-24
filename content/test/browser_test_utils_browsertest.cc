@@ -4,6 +4,7 @@
 
 #include "base/macros.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -62,19 +63,15 @@ IN_PROC_BROWSER_TEST_F(CrossSiteRedirectorBrowserTest,
 
   // Navigate to http://localhost:<port>/cross-site/foo.com/title2.html and
   // ensure that the redirector forwards the navigation to
-  // http://foo.com:<port>/title2.html
+  // http://foo.com:<port>/title2.html.  The expectation is that the cross-site
+  // redirector will take the hostname supplied in the URL and rewrite the URL.
+  GURL expected_url(embedded_test_server()->GetURL("foo.com", "/title2.html"));
   NavigationObserver observer(shell()->web_contents());
-  NavigateToURL(
-      shell(),
-      embedded_test_server()->GetURL("/cross-site/foo.com/title2.html"));
 
-  // The expectation is that the cross-site redirector will take the
-  // hostname supplied in the URL and rewrite the URL. Build the
-  // expected URL to ensure navigation was properly redirected.
-  GURL::Replacements replace_host;
-  GURL expected_url(embedded_test_server()->GetURL("/title2.html"));
-  replace_host.SetHostStr("foo.com");
-  expected_url = expected_url.ReplaceComponents(replace_host);
+  EXPECT_TRUE(NavigateToURL(
+      shell(),
+      embedded_test_server()->GetURL("/cross-site/foo.com/title2.html"),
+      expected_url /* expected_commit_url */));
 
   EXPECT_EQ(expected_url, observer.navigation_url());
   EXPECT_EQ(observer.redirect_url(), observer.navigation_url());
@@ -86,7 +83,8 @@ using EvalJsBrowserTest = ContentBrowserTest;
 // see chromium:916975
 IN_PROC_BROWSER_TEST_F(EvalJsBrowserTest, DISABLED_EvalJsErrors) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  NavigateToURL(shell(), embedded_test_server()->GetURL("/title2.html"));
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title2.html")));
 
   {
     // Test syntax errors.
@@ -152,12 +150,14 @@ ReferenceError: z is not defined
 
 IN_PROC_BROWSER_TEST_F(EvalJsBrowserTest, EvalJsWithManualReply) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  NavigateToURL(shell(), embedded_test_server()->GetURL("/title2.html"));
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title2.html")));
 
   std::string script = "window.domAutomationController.send(20); 'hi';";
 
-  // Calling domAutomationController is required for EvalJsWithManualReply.
-  EXPECT_EQ(20, EvalJsWithManualReply(shell(), script));
+  // Calling domAutomationController is required for
+  // EXECUTE_SCRIPT_USE_MANUAL_REPLY.
+  EXPECT_EQ(20, EvalJs(shell(), script, EXECUTE_SCRIPT_USE_MANUAL_REPLY));
 
   // Calling domAutomationController is an error with EvalJs.
   auto result = EvalJs(shell(), script);
@@ -170,9 +170,10 @@ IN_PROC_BROWSER_TEST_F(EvalJsBrowserTest, EvalJsWithManualReply) {
       result.error,
       ::testing::EndsWith("This is potentially because a script tried to call "
                           "domAutomationController.send itself -- that is only "
-                          "allowed when using EvalJsWithManualReply().  When "
-                          "using EvalJs(), result values are just the result "
-                          "of calling eval() on the script -- the completion "
+                          "allowed when using "
+                          "EXECUTE_SCRIPT_USE_MANUAL_REPLY.  When using "
+                          "EvalJs(), result values are just the result of "
+                          "calling eval() on the script -- the completion "
                           "value is the value of the last executed statement.  "
                           "When using ExecJs(), there is no result value."));
 }

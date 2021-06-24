@@ -9,6 +9,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_value_converter.h"
+#include "base/ranges/algorithm.h"
 #include "base/values.h"
 
 namespace password_manager {
@@ -56,9 +57,8 @@ bool AssetLinkData::Parse(const std::string& data) {
   std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(data);
   if (!value || !value->is_list())
     return false;
-  const base::Value::ListStorage& list_storage = value->GetList();
   base::JSONValueConverter<Statement> converter;
-  for (const auto& item : list_storage) {
+  for (const auto& item : value->GetList()) {
     Statement statement;
     if (converter.Convert(item, &statement)) {
       if (!statement.include.empty()) {
@@ -66,11 +66,9 @@ bool AssetLinkData::Parse(const std::string& data) {
         GURL include(statement.include);
         if (include.is_valid() && include.SchemeIs(url::kHttpsScheme))
           includes_.push_back(std::move(include));
-      } else if (std::any_of(statement.relations.begin(),
-                             statement.relations.end(),
-                             [](const std::unique_ptr<std::string>& relation) {
-                               return *relation == kGetLoginsRelation;
-                             })) {
+      } else if (base::ranges::any_of(statement.relations, [](const auto& rel) {
+                   return *rel == kGetLoginsRelation;
+                 })) {
         // 'get_login_creds' statement. Only web HTTPS targets are interesting.
         if (statement.target.target_namespace == kWebNamespace) {
           GURL site(statement.target.site);

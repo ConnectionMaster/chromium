@@ -5,18 +5,27 @@
 #ifndef CONTENT_BROWSER_DEVTOOLS_SHARED_WORKER_DEVTOOLS_AGENT_HOST_H_
 #define CONTENT_BROWSER_DEVTOOLS_SHARED_WORKER_DEVTOOLS_AGENT_HOST_H_
 
+#include <string>
+#include <vector>
+
 #include "base/macros.h"
 #include "base/unguessable_token.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
+#include "content/public/browser/shared_worker_instance.h"
+
+namespace blink {
+class StorageKey;
+}  // namespace blink
 
 namespace content {
 
-class SharedWorkerInstance;
 class SharedWorkerHost;
 
 class SharedWorkerDevToolsAgentHost : public DevToolsAgentHostImpl {
  public:
   using List = std::vector<scoped_refptr<SharedWorkerDevToolsAgentHost>>;
+
+  static SharedWorkerDevToolsAgentHost* GetFor(SharedWorkerHost* worker_host);
 
   SharedWorkerDevToolsAgentHost(
       SharedWorkerHost* worker_host,
@@ -31,8 +40,17 @@ class SharedWorkerDevToolsAgentHost : public DevToolsAgentHostImpl {
   void Reload() override;
   bool Close() override;
 
+  NetworkLoaderFactoryParamsAndInfo CreateNetworkFactoryParamsForDevTools()
+      override;
+  RenderProcessHost* GetProcessHost() override;
+
+  blink::StorageKey GetStorageKey() const;
+
   bool Matches(SharedWorkerHost* worker_host);
-  void WorkerReadyForInspection();
+  void WorkerReadyForInspection(
+      mojo::PendingRemote<blink::mojom::DevToolsAgent> agent_remote,
+      mojo::PendingReceiver<blink::mojom::DevToolsAgentHost>
+          agent_host_receiver);
   void WorkerRestarted(SharedWorkerHost* worker_host);
   void WorkerDestroyed();
 
@@ -44,9 +62,8 @@ class SharedWorkerDevToolsAgentHost : public DevToolsAgentHostImpl {
   ~SharedWorkerDevToolsAgentHost() override;
 
   // DevToolsAgentHostImpl overrides.
-  bool AttachSession(DevToolsSession* session) override;
+  bool AttachSession(DevToolsSession* session, bool acquire_wake_lock) override;
   void DetachSession(DevToolsSession* session) override;
-  void UpdateRendererChannel(bool force) override;
 
   enum WorkerState {
     WORKER_NOT_READY,
@@ -56,7 +73,7 @@ class SharedWorkerDevToolsAgentHost : public DevToolsAgentHostImpl {
   WorkerState state_;
   SharedWorkerHost* worker_host_;
   base::UnguessableToken devtools_worker_token_;
-  std::unique_ptr<SharedWorkerInstance> instance_;
+  SharedWorkerInstance instance_;
 
   DISALLOW_COPY_AND_ASSIGN(SharedWorkerDevToolsAgentHost);
 };

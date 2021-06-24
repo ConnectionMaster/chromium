@@ -1,2 +1,4 @@
 rootWebArea
-++checkBox name='aria label' checkedState=false
+++genericContainer ignored
+++++genericContainer ignored
+++++++checkBox name='aria label' checkedState=false

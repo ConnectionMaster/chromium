@@ -11,8 +11,10 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/observer_list.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
+#include "components/viz/common/gpu/context_lost_observer.h"
 #include "components/viz/common/gpu/context_provider.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "gpu/command_buffer/common/context_creation_attribs.h"
@@ -59,7 +61,7 @@ class InProcessContextProvider
   gpu::gles2::GLES2Interface* ContextGL() override;
   gpu::raster::RasterInterface* RasterInterface() override;
   gpu::ContextSupport* ContextSupport() override;
-  class GrContext* GrContext() override;
+  class GrDirectContext* GrContext() override;
   gpu::SharedImageInterface* SharedImageInterface() override;
   viz::ContextCacheController* CacheController() override;
   base::Lock* GetLock() override;
@@ -69,6 +71,9 @@ class InProcessContextProvider
   // Gives the GL internal format that should be used for calling CopyTexImage2D
   // on the default framebuffer.
   uint32_t GetCopyTextureInternalFormat();
+
+  // Calls OnContextLost() on all observers. This doesn't modify the context.
+  void SendOnContextLost();
 
  private:
   friend class base::RefCountedThreadSafe<InProcessContextProvider>;
@@ -111,6 +116,8 @@ class InProcessContextProvider
   std::string debug_name_;
 
   base::Lock context_lock_;
+
+  base::ObserverList<viz::ContextLostObserver>::Unchecked observers_;
 
   DISALLOW_COPY_AND_ASSIGN(InProcessContextProvider);
 };

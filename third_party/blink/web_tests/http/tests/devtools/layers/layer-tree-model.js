@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests general layer tree model functionality`);
-  await TestRunner.loadModule('layers_test_runner');
+  await TestRunner.loadModule('panels/layers'); await TestRunner.loadTestModule('layers_test_runner');
   await TestRunner.loadHTML(`
       <style>
       .layer {
@@ -43,6 +43,10 @@
       function updateGeometry()
       {
           document.getElementById("c").style.width = "80px";
+          // Simply changing the transform or transform-origin may not cause a
+          // full layer update due to optimizations. Changing backface
+          // visibility is a heavier hammer to force a full update.
+          document.getElementById("c").style.backfaceVisibility = "hidden";
       }
   `);
 

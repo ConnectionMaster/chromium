@@ -5,6 +5,7 @@
 #ifndef CC_LAYERS_PICTURE_LAYER_H_
 #define CC_LAYERS_PICTURE_LAYER_H_
 
+#include <memory>
 #include <vector>
 
 #include "cc/base/devtools_instrumentation.h"
@@ -32,9 +33,9 @@ class CC_EXPORT PictureLayer : public Layer {
     return picture_layer_inputs_.nearest_neighbor;
   }
 
-  void SetTransformedRasterizationAllowed(bool allowed);
-  bool transformed_rasterization_allowed() const {
-    return picture_layer_inputs_.transformed_rasterization_allowed;
+  void SetIsBackdropFilterMask(bool is_backdrop_filter_mask);
+  bool is_backdrop_filter_mask() const {
+    return picture_layer_inputs_.is_backdrop_filter_mask;
   }
 
   // Layer interface.
@@ -44,11 +45,9 @@ class CC_EXPORT PictureLayer : public Layer {
   void SetNeedsDisplayRect(const gfx::Rect& layer_rect) override;
   sk_sp<SkPicture> GetPicture() const override;
   bool Update() override;
-  bool HasSlowPaths() const override;
-  bool HasNonAAPaint() const override;
   void RunMicroBenchmark(MicroBenchmark* benchmark) override;
   void CaptureContent(const gfx::Rect& rect,
-                      std::vector<NodeHolder>* content) override;
+                      std::vector<NodeInfo>* content) override;
 
   ContentLayerClient* client() { return picture_layer_inputs_.client; }
 
@@ -58,9 +57,6 @@ class CC_EXPORT PictureLayer : public Layer {
 
   const DisplayItemList* GetDisplayItemList();
 
-  void SetLayerMaskType(LayerMaskType mask_type);
-  LayerMaskType mask_type() { return mask_type_; }
-
  protected:
   // Encapsulates all data, callbacks or interfaces received from the embedder.
   struct PictureLayerInputs {
@@ -69,10 +65,9 @@ class CC_EXPORT PictureLayer : public Layer {
 
     ContentLayerClient* client = nullptr;
     bool nearest_neighbor = false;
-    bool transformed_rasterization_allowed = false;
-    gfx::Rect recorded_viewport;
+    bool is_backdrop_filter_mask = false;
     scoped_refptr<DisplayItemList> display_list;
-    size_t painter_reported_memory_usage = 0;
+    absl::optional<gfx::Size> directly_composited_image_size = absl::nullopt;
   };
 
   explicit PictureLayer(ContentLayerClient* client);
@@ -90,8 +85,6 @@ class CC_EXPORT PictureLayer : public Layer {
 
   void DropRecordingSourceContentIfInvalid();
 
-  bool ShouldUseTransformedRasterization() const;
-
   std::unique_ptr<RecordingSource> recording_source_;
   devtools_instrumentation::
       ScopedLayerObjectTracker instrumentation_object_tracker_;
@@ -99,7 +92,6 @@ class CC_EXPORT PictureLayer : public Layer {
   Region last_updated_invalidation_;
 
   int update_source_frame_number_;
-  LayerMaskType mask_type_;
 };
 
 }  // namespace cc

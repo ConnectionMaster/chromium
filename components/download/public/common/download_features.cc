@@ -15,7 +15,7 @@ const base::Feature kUseDownloadOfflineContentProvider{
 const base::Feature kDownloadAutoResumptionNative {
   "DownloadsAutoResumptionNative",
 #if defined(OS_ANDROID)
-      base::FEATURE_DISABLED_BY_DEFAULT
+      base::FEATURE_ENABLED_BY_DEFAULT
 #else
       base::FEATURE_DISABLED_BY_DEFAULT
 #endif
@@ -30,13 +30,55 @@ const base::Feature kParallelDownloading {
 #endif
 };
 
-const base::Feature kDownloadDBForNewDownloads{
-    "DownloadDBForNewDownloads", base::FEATURE_ENABLED_BY_DEFAULT};
+const base::Feature kDownloadLater{"DownloadLater",
+                                   base::FEATURE_DISABLED_BY_DEFAULT};
 
 #if defined(OS_ANDROID)
+const base::Feature kSmartSuggestionForLargeDownloads{
+    "SmartSuggestionForLargeDownloads", base::FEATURE_DISABLED_BY_DEFAULT};
+
 const base::Feature kRefreshExpirationDate{"RefreshExpirationDate",
                                            base::FEATURE_ENABLED_BY_DEFAULT};
 #endif
 
+const base::Feature kUseInProgressDownloadManagerForDownloadService{
+    "UseInProgressDownloadManagerForDownloadService",
+    base::FEATURE_DISABLED_BY_DEFAULT};
+
+const base::Feature kAllowDownloadResumptionWithoutStrongValidators{
+  "AllowDownloadResumptionWithoutStrongValidators",
+#if defined(OS_ANDROID)
+      base::FEATURE_ENABLED_BY_DEFAULT
+#else
+      base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+};
+
+const base::Feature kUseParallelRequestsForUnknwonRangeSupport{
+    "UseParallelRequestForUnknownRangeSupport",
+    base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kUseParallelRequestsForHTTP2{
+    "UseParallelRequestsForHTTP2", base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kUseParallelRequestsForQUIC{
+    "UseParallelRequestsForQUIC", base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kDeleteExpiredDownloads{"DeleteExpiredDownloads",
+                                            base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kDeleteOverwrittenDownloads{
+    "DeleteOverwrittenDownloads", base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kAllowFileBufferSizeControl{
+    "AllowFileBufferSizeControl", base::FEATURE_DISABLED_BY_DEFAULT};
+
 }  // namespace features
+
+namespace switches {
+
+const char kDownloadLaterDebugOnWifi[] = "download-later-debug-on-wifi";
+
+}  // namespace switches
+
 }  // namespace download

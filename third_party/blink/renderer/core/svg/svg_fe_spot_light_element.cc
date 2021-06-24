@@ -19,16 +19,15 @@
 
 #include "third_party/blink/renderer/core/svg/svg_fe_spot_light_element.h"
 
+#include "third_party/blink/renderer/core/svg/svg_animated_number.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/graphics/filters/filter.h"
 #include "third_party/blink/renderer/platform/graphics/filters/spot_light_source.h"
 
 namespace blink {
 
-inline SVGFESpotLightElement::SVGFESpotLightElement(Document& document)
+SVGFESpotLightElement::SVGFESpotLightElement(Document& document)
     : SVGFELightElement(svg_names::kFESpotLightTag, document) {}
-
-DEFINE_NODE_FACTORY(SVGFESpotLightElement)
 
 scoped_refptr<LightSource> SVGFESpotLightElement::GetLightSource(
     Filter* filter) const {

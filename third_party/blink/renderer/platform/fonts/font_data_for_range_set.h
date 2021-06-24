@@ -29,7 +29,7 @@
 #include "third_party/blink/renderer/platform/fonts/font_data.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/unicode_range_set.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 
 namespace blink {
@@ -58,6 +58,12 @@ class PLATFORM_EXPORT FontDataForRangeSet
   bool HasFontData() const { return font_data_.get(); }
   const SimpleFontData* FontData() const { return font_data_.get(); }
 
+  // TODO(xiaochengh): |FontData::IsLoadingFallback()| returns true if the
+  // FontData is a pending custom font. We should rename it for better clarity.
+  bool IsPendingCustomFont() const {
+    return font_data_ && font_data_->IsLoadingFallback();
+  }
+
  protected:
   scoped_refptr<SimpleFontData> font_data_;
   scoped_refptr<UnicodeRangeSet> range_set_;
@@ -75,4 +81,4 @@ class PLATFORM_EXPORT FontDataForRangeSetFromCache
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FONT_DATA_FOR_RANGE_SET_H_

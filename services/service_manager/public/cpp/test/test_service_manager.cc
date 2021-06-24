@@ -4,6 +4,8 @@
 
 #include "services/service_manager/public/cpp/test/test_service_manager.h"
 
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/service_manager/background_service_manager.h"
 
 namespace service_manager {
@@ -17,19 +19,19 @@ TestServiceManager::TestServiceManager(const std::vector<Manifest>& manifests)
 
 TestServiceManager::~TestServiceManager() = default;
 
-mojom::ServiceRequest TestServiceManager::RegisterTestInstance(
+mojo::PendingReceiver<mojom::Service> TestServiceManager::RegisterTestInstance(
     const std::string& service_name) {
   return RegisterInstance(Identity{service_name, base::Token::CreateRandom(),
                                    base::Token{}, base::Token::CreateRandom()});
 }
 
-mojom::ServiceRequest TestServiceManager::RegisterInstance(
+mojo::PendingReceiver<mojom::Service> TestServiceManager::RegisterInstance(
     const Identity& identity) {
-  mojom::ServicePtr service;
-  mojom::ServiceRequest request = mojo::MakeRequest(&service);
+  mojo::PendingRemote<mojom::Service> service;
+  auto receiver = service.InitWithNewPipeAndPassReceiver();
   background_service_manager_->RegisterService(identity, std::move(service),
-                                               nullptr);
-  return request;
+                                               mojo::NullReceiver());
+  return receiver;
 }
 
 }  // namespace service_manager

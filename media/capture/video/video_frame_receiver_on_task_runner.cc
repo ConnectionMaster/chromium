@@ -4,6 +4,8 @@
 
 #include "media/capture/video/video_frame_receiver_on_task_runner.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/single_thread_task_runner.h"
 
@@ -20,22 +22,17 @@ void VideoFrameReceiverOnTaskRunner::OnNewBuffer(
     int buffer_id,
     media::mojom::VideoBufferHandlePtr buffer_handle) {
   task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&VideoFrameReceiver::OnNewBuffer, receiver_, buffer_id,
-                     base::Passed(std::move(buffer_handle))));
+      FROM_HERE, base::BindOnce(&VideoFrameReceiver::OnNewBuffer, receiver_,
+                                buffer_id, std::move(buffer_handle)));
 }
 
 void VideoFrameReceiverOnTaskRunner::OnFrameReadyInBuffer(
-    int buffer_id,
-    int frame_feedback_id,
-    std::unique_ptr<VideoCaptureDevice::Client::Buffer::ScopedAccessPermission>
-        buffer_read_permission,
-    mojom::VideoFrameInfoPtr frame_info) {
+    ReadyFrameInBuffer frame,
+    std::vector<ReadyFrameInBuffer> scaled_frames) {
   task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&VideoFrameReceiver::OnFrameReadyInBuffer,
-                                receiver_, buffer_id, frame_feedback_id,
-                                base::Passed(&buffer_read_permission),
-                                base::Passed(&frame_info)));
+      FROM_HERE,
+      base::BindOnce(&VideoFrameReceiver::OnFrameReadyInBuffer, receiver_,
+                     std::move(frame), std::move(scaled_frames)));
 }
 
 void VideoFrameReceiverOnTaskRunner::OnBufferRetired(int buffer_id) {

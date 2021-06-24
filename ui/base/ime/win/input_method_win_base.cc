@@ -10,12 +10,9 @@
 
 #include "base/auto_reset.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "base/memory/ptr_util.h"
 #include "base/win/windows_version.h"
-#include "ui/base/ime/ime_bridge.h"
-#include "ui/base/ime/ime_engine_handler_interface.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/ime/win/on_screen_keyboard_display_manager_input_pane.h"
 #include "ui/base/ime/win/on_screen_keyboard_display_manager_tab_tip.h"
@@ -23,10 +20,9 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/events/event.h"
-#include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/keyboard_codes.h"
-#include "ui/gfx/win/hwnd_util.h"
+#include "ui/events/types/event_type.h"
 
 namespace ui {
 namespace {
@@ -35,13 +31,13 @@ namespace {
 // is returned to IME for improving conversion accuracy.
 constexpr size_t kExtraNumberOfChars = 20;
 
-std::unique_ptr<InputMethodKeyboardController> CreateKeyboardController(
+std::unique_ptr<VirtualKeyboardController> CreateKeyboardController(
     HWND toplevel_window_handle) {
   if (base::FeatureList::IsEnabled(features::kInputPaneOnScreenKeyboard) &&
-      base::win::GetVersion() >= base::win::VERSION_WIN10_RS4) {
+      base::win::GetVersion() >= base::win::Version::WIN10_RS4) {
     return std::make_unique<OnScreenKeyboardDisplayManagerInputPane>(
         toplevel_window_handle);
-  } else if (base::win::GetVersion() >= base::win::VERSION_WIN8) {
+  } else if (base::win::GetVersion() >= base::win::Version::WIN8) {
     return std::make_unique<OnScreenKeyboardDisplayManagerTabTip>(
         toplevel_window_handle);
   }
@@ -164,8 +160,7 @@ InputMethodWinBase::InputMethodWinBase(internal::InputMethodDelegate* delegate,
     : InputMethodBase(delegate,
                       CreateKeyboardController(toplevel_window_handle)),
       toplevel_window_handle_(toplevel_window_handle),
-      pending_requested_direction_(base::i18n::UNKNOWN_DIRECTION),
-      weak_ptr_factory_(this) {}
+      pending_requested_direction_(base::i18n::UNKNOWN_DIRECTION) {}
 
 InputMethodWinBase::~InputMethodWinBase() {}
 
@@ -203,18 +198,14 @@ ui::EventDispatchDetails InputMethodWinBase::DispatchKeyEvent(
   // the WM_KEY*.
   // Chrome never handles dead chars so it is safe to remove/ignore
   // WM_*DEADCHAR messages.
-  MSG msg;
-  while (::PeekMessage(&msg, native_key_event.hwnd, WM_CHAR, WM_DEADCHAR,
-                       PM_REMOVE)) {
-    if (msg.message == WM_CHAR)
-      char_msgs.push_back(msg);
+  if (!HandlePeekMessage(native_key_event.hwnd, WM_CHAR, WM_DEADCHAR,
+                         &char_msgs)) {
+    return DispatcherDestroyedDetails();
   }
-  while (::PeekMessage(&msg, native_key_event.hwnd, WM_SYSCHAR, WM_SYSDEADCHAR,
-                       PM_REMOVE)) {
-    if (msg.message == WM_SYSCHAR)
-      char_msgs.push_back(msg);
+  if (!HandlePeekMessage(native_key_event.hwnd, WM_SYSCHAR, WM_SYSDEADCHAR,
+                         &char_msgs)) {
+    return DispatcherDestroyedDetails();
   }
-
   // Handles ctrl-shift key to change text direction and layout alignment.
   if (IsRTLKeyboardLayoutInstalled() && !IsTextInputTypeNone()) {
     ui::KeyboardCode code = event->key_code();
@@ -238,25 +229,29 @@ ui::EventDispatchDetails InputMethodWinBase::DispatchKeyEvent(
   // If only 1 WM_CHAR per the key event, set it as the character of it.
   if (char_msgs.size() == 1 &&
       !std::iswcntrl(static_cast<wint_t>(char_msgs[0].wParam)))
-    event->set_character(static_cast<base::char16>(char_msgs[0].wParam));
-
-  // Dispatches the key events to the Chrome IME extension which is listening to
-  // key events on the following two situations:
-  // 1) |char_msgs| is empty when the event is non-character key.
-  // 2) |char_msgs|.size() == 1 when the event is character key and the WM_CHAR
-  // messages have been combined in the event processing flow.
-  if (char_msgs.size() <= 1 && GetEngine() &&
-      GetEngine()->IsInterestedInKeyEvent()) {
-    ui::IMEEngineHandlerInterface::KeyEventDoneCallback callback =
-        base::BindOnce(&InputMethodWinBase::ProcessKeyEventDone,
-                       weak_ptr_factory_.GetWeakPtr(),
-                       base::Owned(new ui::KeyEvent(*event)),
-                       base::Owned(new std::vector<MSG>(char_msgs)));
-    GetEngine()->ProcessKeyEvent(*event, std::move(callback));
-    return ui::EventDispatchDetails();
-  }
+    event->set_character(static_cast<char16_t>(char_msgs[0].wParam));
 
   return ProcessUnhandledKeyEvent(event, &char_msgs);
+}
+
+bool InputMethodWinBase::HandlePeekMessage(HWND hwnd,
+                                           UINT msg_filter_min,
+                                           UINT msg_filter_max,
+                                           std::vector<MSG>* char_msgs) {
+  auto ref = weak_ptr_factory_.GetWeakPtr();
+  while (true) {
+    MSG msg_found;
+    const bool result = !!::PeekMessage(&msg_found, hwnd, msg_filter_min,
+                                        msg_filter_max, PM_REMOVE);
+    // PeekMessage may result in WM_NCDESTROY which will cause deletion of
+    // |this|. We should use WeakPtr to check whether |this| is destroyed.
+    if (!ref)
+      return false;
+    if (result && msg_found.message == msg_filter_min)
+      char_msgs->push_back(msg_found);
+    if (!result)
+      return true;
+  }
 }
 
 bool InputMethodWinBase::IsWindowFocused(const TextInputClient* client) const {
@@ -282,8 +277,8 @@ LRESULT InputMethodWinBase::OnChar(HWND window_handle,
   // We need to send character events to the focused text input client event if
   // its text input type is ui::TEXT_INPUT_TYPE_NONE.
   if (GetTextInputClient()) {
-    const base::char16 kCarriageReturn = L'\r';
-    const base::char16 ch = static_cast<base::char16>(wparam);
+    const char16_t kCarriageReturn = u'\r';
+    const char16_t ch = static_cast<char16_t>(wparam);
     // A mask to determine the previous key state from |lparam|. The value is 1
     // if the key is down before the message is sent, or it is 0 if the key is
     // up.
@@ -297,12 +292,6 @@ LRESULT InputMethodWinBase::OnChar(HWND window_handle,
       GetTextInputClient()->InsertChar(char_event);
     }
   }
-
-  // Explicitly show the system menu at a good location on [Alt]+[Space].
-  // Note: Setting |handled| to FALSE for DefWindowProc triggering of the system
-  //       menu causes undesirable titlebar artifacts in the classic theme.
-  if (message == WM_SYSCHAR && wparam == VK_SPACE)
-    gfx::ShowSystemMenu(window_handle);
 
   return 0;
 }
@@ -374,7 +363,7 @@ LRESULT InputMethodWinBase::OnDocumentFeed(RECONVERTSTRING* reconv) {
   if (reconv->dwSize < need_size)
     return 0;
 
-  base::string16 text;
+  std::u16string text;
   if (!GetTextInputClient()->GetTextFromRange(text_range, &text))
     return 0;
   DCHECK_EQ(text_range.length(), text.length());
@@ -430,7 +419,7 @@ LRESULT InputMethodWinBase::OnReconvertString(RECONVERTSTRING* reconv) {
 
   // TODO(penghuang): Return some extra context to help improve IME's
   // reconversion accuracy.
-  base::string16 text;
+  std::u16string text;
   if (!GetTextInputClient()->GetTextFromRange(selection_range, &text))
     return 0;
   DCHECK_EQ(selection_range.length(), text.length());
@@ -500,8 +489,7 @@ ui::EventDispatchDetails InputMethodWinBase::ProcessUnhandledKeyEvent(
     ui::KeyEvent* event,
     const std::vector<MSG>* char_msgs) {
   DCHECK(event);
-  ui::EventDispatchDetails details =
-      DispatchKeyEventPostIME(event, base::NullCallback());
+  ui::EventDispatchDetails details = DispatchKeyEventPostIME(event);
   if (details.dispatcher_destroyed || details.target_destroyed ||
       event->stopped_propagation()) {
     return details;
@@ -515,50 +503,6 @@ ui::EventDispatchDetails InputMethodWinBase::ProcessUnhandledKeyEvent(
       return DispatcherDestroyedDetails();
   }
   return details;
-}
-
-void InputMethodWinBase::UpdateCompositionBoundsForEngine(
-    const TextInputClient* client) {
-  TextInputType text_input_type = GetTextInputType();
-  if (client == GetTextInputClient() &&
-      text_input_type != TEXT_INPUT_TYPE_NONE &&
-      text_input_type != TEXT_INPUT_TYPE_PASSWORD && GetEngine()) {
-    GetEngine()->SetCompositionBounds(GetCompositionBounds(client));
-  }
-}
-
-void InputMethodWinBase::ResetEngine() {
-  if (GetEngine())
-    GetEngine()->Reset();
-}
-
-void InputMethodWinBase::CancelCompositionForEngine() {
-  TextInputType text_input_type = GetTextInputType();
-  if (text_input_type != TEXT_INPUT_TYPE_NONE &&
-      text_input_type != TEXT_INPUT_TYPE_PASSWORD) {
-    InputMethodWinBase::ResetEngine();
-  }
-}
-
-void InputMethodWinBase::UpdateEngineFocusAndInputContext() {
-  if (!ui::IMEBridge::Get())  // IMEBridge could be null for tests.
-    return;
-
-  const TextInputType old_text_input_type =
-      ui::IMEBridge::Get()->GetCurrentInputContext().type;
-  ui::IMEEngineHandlerInterface::InputContext context(
-      GetTextInputType(), GetTextInputMode(), GetTextInputFlags(),
-      ui::TextInputClient::FOCUS_REASON_OTHER, GetClientShouldDoLearning());
-  ui::IMEBridge::Get()->SetCurrentInputContext(context);
-
-  // Update IME Engine state.
-  ui::IMEEngineHandlerInterface* engine = GetEngine();
-  if (engine) {
-    if (old_text_input_type != ui::TEXT_INPUT_TYPE_NONE)
-      engine->FocusOut();
-    if (GetTextInputType() != ui::TEXT_INPUT_TYPE_NONE)
-      engine->FocusIn(context);
-  }
 }
 
 }  // namespace ui

@@ -1,3 +1,5 @@
 rootWebArea
-++genericContainer
-++++embeddedObject
+++genericContainer ignored
+++++genericContainer
+++++++pluginObject
+++++++++genericContainer ignored invisible

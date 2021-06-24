@@ -9,7 +9,6 @@
 #include <map>
 
 #include "base/lazy_instance.h"
-#include "base/stl_util.h"
 
 namespace ui {
 
@@ -139,7 +138,8 @@ const struct KeyCodeTable {
                      {VKEY_BRIGHTNESS_DOWN, "BrightnessDown"},
                      {VKEY_BRIGHTNESS_UP, "BrightnessUp"},
                      {VKEY_MEDIA_LAUNCH_APP1, "ChromeOSSwitchWindow"},
-                     {VKEY_MEDIA_LAUNCH_APP2, "ChromeOSFullscreen"},
+                     // LaunchApplication2 is calculator.
+                     {VKEY_MEDIA_LAUNCH_APP2, "LaunchApplication2"},
                      {VKEY_MEDIA_NEXT_TRACK, "MediaTrackNext"},
                      {VKEY_MEDIA_PREV_TRACK, "MediaTrackPrevious"},
                      {VKEY_MEDIA_STOP, "MediaStop"},
@@ -155,26 +155,25 @@ const struct KeyCodeTable {
                      {VKEY_OEM_4, "BracketLeft"},
                      {VKEY_OEM_5, "Backslash"},
                      {VKEY_OEM_6, "BracketRight"},
-                     {VKEY_OEM_7, "Quote"}};
+                     {VKEY_OEM_7, "Quote"},
+                     {VKEY_ZOOM, "ChromeOSFullscreen"}};
 
 class KeyCodeMap {
  public:
   KeyCodeMap() {
-    for (size_t i = 0; i < base::size(kKeyCodeTable); ++i) {
-      map_dom_key_[kKeyCodeTable[i].dom_code] = kKeyCodeTable[i].keyboard_code;
-      map_key_dom_[kKeyCodeTable[i].keyboard_code] = kKeyCodeTable[i].dom_code;
+    for (const auto& key_code : kKeyCodeTable) {
+      map_dom_key_[key_code.dom_code] = key_code.keyboard_code;
+      map_key_dom_[key_code.keyboard_code] = key_code.dom_code;
     }
   }
 
   KeyboardCode GetKeyboardCode(const std::string& dom_code) const {
-    std::map<std::string, KeyboardCode>::const_iterator it =
-        map_dom_key_.find(dom_code);
+    auto it = map_dom_key_.find(dom_code);
     return (it == map_dom_key_.end()) ? VKEY_UNKNOWN : it->second;
   }
 
   std::string GetDomKeycode(KeyboardCode key_code) const {
-    std::map<KeyboardCode, std::string>::const_iterator it =
-        map_key_dom_.find(key_code);
+    auto it = map_key_dom_.find(key_code);
     return (it == map_key_dom_.end()) ? "" : it->second;
   }
 

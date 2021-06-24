@@ -9,11 +9,14 @@
 #include <utility>
 
 #include "ash/app_list/app_list_metrics.h"
-#include "ash/app_list/pagination_model.h"
+#include "ash/public/cpp/app_list/app_list_color_provider.h"
+#include "ash/public/cpp/pagination/pagination_model.h"
+#include "base/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/animation/throb_animation.h"
 #include "ui/gfx/canvas.h"
@@ -21,51 +24,82 @@
 #include "ui/gfx/skia_util.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/animation/flood_fill_ink_drop_ripple.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_highlight.h"
 #include "ui/views/animation/ink_drop_impl.h"
-#include "ui/views/animation/ink_drop_mask.h"
-#include "ui/views/animation/ink_drop_painted_layer_delegates.h"
 #include "ui/views/controls/button/button.h"
+#include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/layout/box_layout.h"
 
-namespace app_list {
+namespace ash {
 
 namespace {
 
-constexpr int kNormalButtonRadius = 4;
-constexpr int kSelectedButtonRadius = 5;
-constexpr int kInkDropRadius = 16;
-constexpr int kMaxButtonRadius = 16;
-constexpr int kPreferredButtonStripWidth = kMaxButtonRadius * 2;
+constexpr int kNormalButtonRadius = 3;
+constexpr int kSelectedButtonRadius = 4;
+constexpr int kInkDropRadiusForRootGrid = 16;
+constexpr int kInkDropRadiusForFolderGrid = 10;
 constexpr SkScalar kStrokeWidth = SkIntToScalar(2);
 
 // Constants for the button strip that grows vertically.
 // The padding on top/bottom side of each button.
 constexpr int kVerticalButtonPadding = 0;
-// The selected button color.
-constexpr SkColor kVerticalSelectedButtonColor =
-    SkColorSetARGB(255, 232, 234, 237);
-// The normal button color (54% white).
-constexpr SkColor kVerticalNormalColor = SkColorSetARGB(255, 232, 234, 237);
-constexpr SkColor kVerticalInkDropBaseColor = SkColorSetRGB(241, 243, 244);
-constexpr SkColor kVerticalInkDropRippleColor =
-    SkColorSetA(kVerticalInkDropBaseColor, 15);
-constexpr SkColor kVerticalInkDropHighlightColor =
-    SkColorSetA(kVerticalInkDropBaseColor, 20);
 
 // Constants for the button strip that grows horizontally.
 // The padding on left/right side of each button.
-constexpr int kHorizontalButtonPadding = 6;
-// The normal button color (54% black).
-constexpr SkColor kHorizontalNormalColor = SkColorSetA(SK_ColorBLACK, 138);
+constexpr int kHorizontalButtonPadding = 0;
 
 class PageSwitcherButton : public views::Button {
  public:
-  PageSwitcherButton(views::ButtonListener* listener, bool vertical)
-      : views::Button(listener), vertical_(vertical) {
-    if (vertical)
-      SetInkDropMode(InkDropMode::ON);
+  explicit PageSwitcherButton(bool is_root_app_grid_page_switcher,
+                              SkColor background_color)
+      : is_root_app_grid_page_switcher_(is_root_app_grid_page_switcher),
+        background_color_(background_color) {
+    SetFocusBehavior(views::View::FocusBehavior::ACCESSIBLE_ONLY);
+    views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
+    views::InkDrop::UseInkDropForFloodFillRipple(views::InkDrop::Get(this));
+    views::InkDrop::Get(this)->SetCreateHighlightCallback(base::BindRepeating(
+        [](PageSwitcherButton* host) {
+          const AppListColorProvider* const color_provider =
+              AppListColorProvider::Get();
+          auto highlight = std::make_unique<views::InkDropHighlight>(
+              gfx::SizeF(host->size()),
+              color_provider->GetRippleAttributesBaseColor(
+                  host->background_color_));
+          highlight->set_visible_opacity(
+              color_provider->GetRippleAttributesHighlightOpacity(
+                  host->background_color_));
+          return highlight;
+        },
+        this));
+    views::InkDrop::Get(this)->SetCreateRippleCallback(base::BindRepeating(
+        [](PageSwitcherButton* host) -> std::unique_ptr<views::InkDropRipple> {
+          const gfx::Point center = host->GetLocalBounds().CenterPoint();
+          const int max_radius =
+              host->is_root_app_grid_page_switcher_
+                  ? PageSwitcher::kMaxButtonRadiusForRootGrid
+                  : PageSwitcher::kMaxButtonRadiusForFolderGrid;
+          gfx::Rect bounds(center.x() - max_radius, center.y() - max_radius,
+                           2 * max_radius, 2 * max_radius);
+          const AppListColorProvider* const color_provider =
+              AppListColorProvider::Get();
+          return std::make_unique<views::FloodFillInkDropRipple>(
+              host->size(), host->GetLocalBounds().InsetsFrom(bounds),
+              views::InkDrop::Get(host)->GetInkDropCenterBasedOnLastEvent(),
+              color_provider->GetRippleAttributesBaseColor(
+                  host->background_color_),
+              color_provider->GetRippleAttributesInkDropOpacity(
+                  host->background_color_));
+        },
+        this));
+
+    views::InstallFixedSizeCircleHighlightPathGenerator(
+        this, is_root_app_grid_page_switcher ? kInkDropRadiusForRootGrid
+                                             : kInkDropRadiusForFolderGrid);
   }
+
+  PageSwitcherButton(const PageSwitcherButton&) = delete;
+  PageSwitcherButton& operator=(const PageSwitcherButton&) = delete;
 
   ~PageSwitcherButton() override {}
 
@@ -79,9 +113,12 @@ class PageSwitcherButton : public views::Button {
       NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
   }
 
-  // Overridden from views::View:
+  // views::Button:
   gfx::Size CalculatePreferredSize() const override {
-    return gfx::Size(kMaxButtonRadius * 2, kMaxButtonRadius * 2);
+    const int max_radius = is_root_app_grid_page_switcher_
+                               ? PageSwitcher::kMaxButtonRadiusForRootGrid
+                               : PageSwitcher::kMaxButtonRadiusForFolderGrid;
+    return gfx::Size(max_radius * 2, max_radius * 2);
   }
 
   void PaintButtonContents(gfx::Canvas* canvas) override {
@@ -89,41 +126,11 @@ class PageSwitcherButton : public views::Button {
   }
 
  protected:
-  std::unique_ptr<views::InkDrop> CreateInkDrop() override {
-    std::unique_ptr<views::InkDropImpl> ink_drop =
-        Button::CreateDefaultInkDropImpl();
-    ink_drop->SetShowHighlightOnHover(true);
-    ink_drop->SetAutoHighlightMode(
-        views::InkDropImpl::AutoHighlightMode::SHOW_ON_RIPPLE);
-    return std::move(ink_drop);
-  }
-
-  std::unique_ptr<views::InkDropMask> CreateInkDropMask() const override {
-    return std::make_unique<views::CircleInkDropMask>(
-        size(), GetLocalBounds().CenterPoint(), kInkDropRadius);
-  }
-
-  std::unique_ptr<views::InkDropRipple> CreateInkDropRipple() const override {
-    gfx::Point center = GetLocalBounds().CenterPoint();
-    gfx::Rect bounds(center.x() - kMaxButtonRadius,
-                     center.y() - kMaxButtonRadius, 2 * kMaxButtonRadius,
-                     2 * kMaxButtonRadius);
-    return std::make_unique<views::FloodFillInkDropRipple>(
-        size(), GetLocalBounds().InsetsFrom(bounds),
-        GetInkDropCenterBasedOnLastEvent(), kVerticalInkDropRippleColor, 1.0f);
-  }
-
-  std::unique_ptr<views::InkDropHighlight> CreateInkDropHighlight()
-      const override {
-    return std::make_unique<views::InkDropHighlight>(
-        gfx::PointF(GetLocalBounds().CenterPoint()),
-        std::make_unique<views::CircleLayerDelegate>(
-            kVerticalInkDropHighlightColor, kInkDropRadius));
-  }
-
+  // views::Button:
   void NotifyClick(const ui::Event& event) override {
     Button::NotifyClick(event);
-    GetInkDrop()->AnimateToState(views::InkDropState::ACTION_TRIGGERED);
+    views::InkDrop::Get(this)->GetInkDrop()->AnimateToState(
+        views::InkDropState::ACTION_TRIGGERED);
   }
 
  private:
@@ -138,14 +145,13 @@ class PageSwitcherButton : public views::Button {
   // Returns the information of how to paint selected/normal button.
   PaintButtonInfo BuildPaintButtonInfo() {
     PaintButtonInfo info;
+    info.color = AppListColorProvider::Get()->GetPageSwitcherButtonColor(
+        is_root_app_grid_page_switcher_);
     if (selected_) {
-      info.color =
-          vertical_ ? kVerticalSelectedButtonColor : kHorizontalNormalColor;
       info.style = cc::PaintFlags::kFill_Style;
       info.radius = SkIntToScalar(kSelectedButtonRadius);
       info.stroke_width = SkIntToScalar(0);
     } else {
-      info.color = vertical_ ? kVerticalNormalColor : kHorizontalNormalColor;
       info.style = cc::PaintFlags::kStroke_Style;
       info.radius = SkIntToScalar(kNormalButtonRadius);
       info.stroke_width = kStrokeWidth;
@@ -170,36 +176,43 @@ class PageSwitcherButton : public views::Button {
   // If this button is selected, set to true. By default, set to false;
   bool selected_ = false;
 
-  // True if the page switcher button strip should grow vertically.
-  const bool vertical_;
+  // True if the page switcher root is the app grid.
+  const bool is_root_app_grid_page_switcher_;
 
-  DISALLOW_COPY_AND_ASSIGN(PageSwitcherButton);
+  const SkColor background_color_;
 };
 
 // Gets PageSwitcherButton at |index| in |buttons|.
-PageSwitcherButton* GetButtonByIndex(views::View* buttons, int index) {
-  return static_cast<PageSwitcherButton*>(buttons->child_at(index));
+PageSwitcherButton* GetButtonByIndex(views::View* buttons, size_t index) {
+  return static_cast<PageSwitcherButton*>(buttons->children()[index]);
 }
 
 }  // namespace
 
-PageSwitcher::PageSwitcher(PaginationModel* model, bool vertical)
-    : model_(model), buttons_(new views::View), vertical_(vertical) {
+PageSwitcher::PageSwitcher(PaginationModel* model,
+                           bool is_root_app_grid_page_switcher,
+                           bool is_tablet_mode,
+                           SkColor background_color)
+    : model_(model),
+      buttons_(new views::View),
+      is_root_app_grid_page_switcher_(is_root_app_grid_page_switcher),
+      is_tablet_mode_(is_tablet_mode),
+      background_color_(background_color) {
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
-
-  if (vertical_) {
+  if (is_root_app_grid_page_switcher_) {
     buttons_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::kVertical, gfx::Insets(), kVerticalButtonPadding));
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(),
+        kVerticalButtonPadding));
   } else {
     buttons_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::kHorizontal, gfx::Insets(),
+        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
         kHorizontalButtonPadding));
   }
 
   AddChildView(buttons_);
 
-  TotalPagesChanged();
+  TotalPagesChanged(0, model->total_pages());
   SelectedPageChanged(-1, model->selected_page());
   model_->AddObserver(this);
 }
@@ -210,14 +223,15 @@ PageSwitcher::~PageSwitcher() {
 }
 
 gfx::Size PageSwitcher::CalculatePreferredSize() const {
+  const int max_radius = is_root_app_grid_page_switcher_
+                             ? PageSwitcher::kMaxButtonRadiusForRootGrid
+                             : PageSwitcher::kMaxButtonRadiusForFolderGrid;
   // Always return a size with correct width so that container resize is not
   // needed when more pages are added.
-  if (vertical_) {
-    return gfx::Size(kPreferredButtonStripWidth,
-                     buttons_->GetPreferredSize().height());
+  if (is_root_app_grid_page_switcher_) {
+    return gfx::Size(2 * max_radius, buttons_->GetPreferredSize().height());
   }
-  return gfx::Size(buttons_->GetPreferredSize().width(),
-                   kPreferredButtonStripWidth);
+  return gfx::Size(buttons_->GetPreferredSize().width(), 2 * max_radius);
 }
 
 void PageSwitcher::Layout() {
@@ -229,53 +243,70 @@ void PageSwitcher::Layout() {
   buttons_->SetBoundsRect(rect);
 }
 
-void PageSwitcher::ButtonPressed(views::Button* sender,
-                                 const ui::Event& event) {
-  if (!model_ || ignore_button_press_)
-    return;
+const char* PageSwitcher::GetClassName() const {
+  return "PageSwitcher";
+}
 
-  for (int i = 0; i < buttons_->child_count(); ++i) {
-    if (sender == static_cast<views::Button*>(buttons_->child_at(i))) {
-      if (model_->selected_page() == i)
-        break;
-      UMA_HISTOGRAM_ENUMERATION(
-          kAppListPageSwitcherSourceHistogram,
-          event.IsGestureEvent() ? kTouchPageIndicator : kClickPageIndicator,
-          kMaxAppListPageSwitcherSource);
-      model_->SelectPage(i, true /* animate */);
-      break;
-    }
+void PageSwitcher::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  if (!buttons_)
+    return;
+  for (auto* child : buttons_->children()) {
+    if (child->GetVisible())
+      child->SchedulePaint();
   }
 }
 
-void PageSwitcher::TotalPagesChanged() {
+void PageSwitcher::OnButtonPressed(views::Button* sender,
+                                   const ui::Event& event) {
+  if (!model_ || ignore_button_press_)
+    return;
+
+  const auto& children = buttons_->children();
+  const auto it = std::find(children.begin(), children.end(), sender);
+  DCHECK(it != children.end());
+  const int page = std::distance(children.begin(), it);
+  if (page == model_->selected_page())
+    return;
+  if (is_root_app_grid_page_switcher_) {
+    RecordPageSwitcherSource(
+        event.IsGestureEvent() ? kTouchPageIndicator : kClickPageIndicator,
+        is_tablet_mode_);
+  }
+  model_->SelectPage(page, true /* animate */);
+}
+
+void PageSwitcher::TotalPagesChanged(int previous_page_count,
+                                     int new_page_count) {
   if (!model_)
     return;
 
   buttons_->RemoveAllChildViews(true);
   for (int i = 0; i < model_->total_pages(); ++i) {
-    PageSwitcherButton* button = new PageSwitcherButton(this, vertical_);
+    PageSwitcherButton* button =
+        buttons_->AddChildView(std::make_unique<PageSwitcherButton>(
+            is_root_app_grid_page_switcher_, background_color_));
+    button->SetCallback(base::BindRepeating(&PageSwitcher::OnButtonPressed,
+                                            base::Unretained(this),
+                                            base::Unretained(button)));
     button->SetAccessibleName(l10n_util::GetStringFUTF16(
         IDS_APP_LIST_PAGE_SWITCHER, base::FormatNumber(i + 1),
         base::FormatNumber(model_->total_pages())));
     button->SetSelected(i == model_->selected_page() ? true : false);
-    buttons_->AddChildView(button);
   }
   buttons_->SetVisible(model_->total_pages() > 1);
-  Layout();
+  PreferredSizeChanged();
 }
 
 void PageSwitcher::SelectedPageChanged(int old_selected, int new_selected) {
-  if (old_selected >= 0 && size_t{old_selected} < buttons_->children().size())
-    GetButtonByIndex(buttons_, old_selected)->SetSelected(false);
-  if (new_selected >= 0 && size_t{new_selected} < buttons_->children().size())
-    GetButtonByIndex(buttons_, new_selected)->SetSelected(true);
+  if (old_selected >= 0 &&
+      static_cast<size_t>(old_selected) < buttons_->children().size())
+    GetButtonByIndex(buttons_, static_cast<size_t>(old_selected))
+        ->SetSelected(false);
+  if (new_selected >= 0 &&
+      static_cast<size_t>(new_selected) < buttons_->children().size())
+    GetButtonByIndex(buttons_, static_cast<size_t>(new_selected))
+        ->SetSelected(true);
 }
 
-void PageSwitcher::TransitionStarted() {}
-
-void PageSwitcher::TransitionChanged() {}
-
-void PageSwitcher::TransitionEnded() {}
-
-}  // namespace app_list
+}  // namespace ash

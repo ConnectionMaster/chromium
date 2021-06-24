@@ -14,7 +14,8 @@ import android.os.FileObserver;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.MediumTest;
+
+import androidx.test.filters.MediumTest;
 
 import dalvik.system.DexFile;
 
@@ -27,8 +28,8 @@ import org.junit.runner.RunWith;
 import org.chromium.base.FileUtils;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.webapk.shell_apk.test.dex_optimizer.IDexOptimizerService;
 
 import java.io.File;
@@ -110,7 +111,7 @@ public class DexLoaderTest {
 
         mLocalDexDir = mContext.getDir("dex", Context.MODE_PRIVATE);
         if (mLocalDexDir.exists()) {
-            FileUtils.recursivelyDeleteFile(mLocalDexDir);
+            FileUtils.recursivelyDeleteFile(mLocalDexDir, FileUtils.DELETE_ALL);
             if (mLocalDexDir.exists()) {
                 Assert.fail("Could not delete local dex directory.");
             }
@@ -129,7 +130,7 @@ public class DexLoaderTest {
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         mContext.unbindService(mServiceConnection);
     }
 
@@ -139,7 +140,6 @@ public class DexLoaderTest {
      */
     @Test
     @MediumTest
-    @MinAndroidSdkLevel(Build.VERSION_CODES.KITKAT)
     @DisabledTest(message = "crbug.com/871920")
     public void testLoadFromRemoteDataDir() {
         // Extract the dex file into another app's data directory and optimize the dex.
@@ -176,6 +176,7 @@ public class DexLoaderTest {
      */
     @Test
     @MediumTest
+    @DisableIf.Build(sdk_is_greater_than = 25, message = "crbug.com/999363")
     public void testLoadFromLocalDataDir() {
         ClassLoader loader = mDexLoader.load(
                 mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);

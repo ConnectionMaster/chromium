@@ -3,6 +3,11 @@
 // found in the LICENSE file.
 
 /**
+ * @fileoverview
+ * @suppress {uselessCode} Temporary suppress because of the line exporting.
+ */
+
+/**
  * Namespace for common constnats used in Files app.
  * @namespace
  */
@@ -54,6 +59,7 @@ constants.LIST_CONTAINER_METADATA_PREFETCH_PROPERTY_NAMES = [
   'hosted',
   'modificationTime',
   'modificationByMeTime',
+  'pinned',
   'shared',
   'size',
   'canCopy',
@@ -79,6 +85,19 @@ constants.FILES_QUICK_VIEW_HTML = 'foreground/elements/files_quick_view.html';
 constants.DRIVE_WELCOME_CSS = 'foreground/css/drive_welcome.css';
 
 /**
+ * Path for photos_welcome.css file.
+ * @type {string}
+ */
+constants.PHOTOS_WELCOME_CSS = 'foreground/css/photos_welcome.css';
+
+/**
+ * Path for holding_space_welcome.css file. Allow override for testing.
+ * @type {string}
+ */
+constants.HOLDING_SPACE_WELCOME_CSS =
+    'foreground/css/holding_space_welcome.css';
+
+/**
  * Name of the default crostini VM.
  * @const
  */
@@ -88,4 +107,13 @@ constants.DEFAULT_CROSTINI_VM = 'termina';
  * Name of the Plugin VM.
  * @const
  */
-constants.PLUGIN_VM = 'PluginVm';
+constants.PLUGIN_VM = 'PvmDefault';
+
+/**
+ * DOMError type for crostini connection failure.
+ * @const {string}
+ */
+constants.CROSTINI_CONNECT_ERR = 'CrostiniConnectErr';
+
+// eslint-disable-next-line semi,no-extra-semi
+/* #export */ {constants};

@@ -7,8 +7,7 @@
 #include <map>
 #include <memory>
 
-#include "base/lazy_instance.h"
-#include "base/logging.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -23,9 +22,6 @@ namespace {
 
 unsigned g_next_serial_number = 0;
 
-base::LazyInstance<std::map<std::string, const gfx::VectorIcon&>>::Leaky
-    g_vector_icon_registry = LAZY_INSTANCE_INITIALIZER;
-
 const gfx::ImageSkia CreateSolidColorImage(int width,
                                            int height,
                                            SkColor color) {
@@ -35,17 +31,15 @@ const gfx::ImageSkia CreateSolidColorImage(int width,
   return gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
 }
 
-gfx::Image DeepCopyImage(const gfx::Image& image) {
-  if (image.IsEmpty())
-    return gfx::Image();
-  std::unique_ptr<gfx::ImageSkia> image_skia(
-      new gfx::ImageSkia(*image.ToImageSkia()));
-  return gfx::Image(*image_skia);
+// Returns an image created on the current thread that shares the same
+// underlying ImageSkia data as the original image.
+gfx::Image DuplicateImage(const gfx::Image& image) {
+  return image.IsEmpty() ? gfx::Image() : gfx::Image(image.AsImageSkia());
 }
 
 }  // namespace
 
-ButtonInfo::ButtonInfo(const base::string16& title) : title(title) {}
+ButtonInfo::ButtonInfo(const std::u16string& title) : title(title) {}
 
 ButtonInfo::ButtonInfo(const ButtonInfo& other) = default;
 
@@ -62,14 +56,12 @@ RichNotificationData::RichNotificationData(const RichNotificationData& other) =
 
 RichNotificationData::~RichNotificationData() = default;
 
-Notification::Notification() : serial_number_(g_next_serial_number++) {}
-
 Notification::Notification(NotificationType type,
                            const std::string& id,
-                           const base::string16& title,
-                           const base::string16& message,
+                           const std::u16string& title,
+                           const std::u16string& message,
                            const gfx::Image& icon,
-                           const base::string16& display_source,
+                           const std::u16string& display_source,
                            const GURL& origin_url,
                            const NotifierId& notifier_id,
                            const RichNotificationData& optional_fields,
@@ -85,6 +77,12 @@ Notification::Notification(NotificationType type,
       optional_fields_(optional_fields),
       serial_number_(g_next_serial_number++),
       delegate_(std::move(delegate)) {}
+
+Notification::Notification(scoped_refptr<NotificationDelegate> delegate,
+                           const Notification& other)
+    : Notification(other) {
+  delegate_ = delegate;
+}
 
 Notification::Notification(const std::string& id, const Notification& other)
     : Notification(other) {
@@ -105,16 +103,16 @@ std::unique_ptr<Notification> Notification::DeepCopy(
     bool include_icon_images) {
   std::unique_ptr<Notification> notification_copy =
       std::make_unique<Notification>(notification);
-  notification_copy->set_icon(DeepCopyImage(notification_copy->icon()));
+  notification_copy->set_icon(DuplicateImage(notification_copy->icon()));
   notification_copy->set_image(include_body_image
-                                   ? DeepCopyImage(notification_copy->image())
+                                   ? DuplicateImage(notification_copy->image())
                                    : gfx::Image());
   notification_copy->set_small_image(
       include_small_image ? notification_copy->small_image() : gfx::Image());
   for (size_t i = 0; i < notification_copy->buttons().size(); i++) {
     notification_copy->SetButtonIcon(
         i, include_icon_images
-               ? DeepCopyImage(notification_copy->buttons()[i].icon)
+               ? DuplicateImage(notification_copy->buttons()[i].icon)
                : gfx::Image());
   }
   return notification_copy;
@@ -136,39 +134,63 @@ bool Notification::UseOriginAsContextMessage() const {
          origin_url_.SchemeIsHTTPOrHTTPS();
 }
 
-gfx::Image Notification::GenerateMaskedSmallIcon(int dip_size,
-                                                 SkColor color) const {
+gfx::Image Notification::GenerateMaskedSmallIcon(
+    int dip_size,
+    SkColor mask_color,
+    SkColor background_color,
+    SkColor foreground_color) const {
   if (!vector_small_image().is_empty())
     return gfx::Image(
-        gfx::CreateVectorIcon(vector_small_image(), dip_size, color));
+        gfx::CreateVectorIcon(vector_small_image(), dip_size, mask_color));
 
   if (small_image().IsEmpty())
     return gfx::Image();
 
   // If |vector_small_image| is not available, fallback to raster based
   // masking and resizing.
-  gfx::ImageSkia image = small_image().AsImageSkia();
-  gfx::ImageSkia masked = gfx::ImageSkiaOperations::CreateMaskedImage(
-      CreateSolidColorImage(image.width(), image.height(), color), image);
+  gfx::ImageSkia image;
+  if (small_image_needs_additional_masking()) {
+    image = GetMaskedSmallImage(small_image().AsImageSkia(), background_color,
+                                foreground_color)
+                .AsImageSkia();
+  } else {
+    image = small_image().AsImageSkia();
+  }
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  bool create_masked_image =
+      !optional_fields_.ignore_accent_color_for_small_image;
+#else
+  bool create_masked_image = false;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  if (create_masked_image) {
+    image = gfx::ImageSkiaOperations::CreateMaskedImage(
+        CreateSolidColorImage(image.width(), image.height(), mask_color),
+        image);
+  }
   gfx::ImageSkia resized = gfx::ImageSkiaOperations::CreateResizedImage(
-      masked, skia::ImageOperations::ResizeMethod::RESIZE_BEST,
+      image, skia::ImageOperations::ResizeMethod::RESIZE_BEST,
       gfx::Size(dip_size, dip_size));
   return gfx::Image(resized);
 }
 
-// static
-void RegisterVectorIcons(
-    const std::vector<const gfx::VectorIcon*>& vector_icons) {
-  for (const gfx::VectorIcon* icon : vector_icons) {
-    g_vector_icon_registry.Get().insert(
-        std::pair<std::string, const gfx::VectorIcon&>(icon->name, *icon));
-  }
-}
+// Take the alpha channel of small_image, mask it with the foreground,
+// then add the masked foreground on top of the background
+gfx::Image Notification::GetMaskedSmallImage(const gfx::ImageSkia& small_image,
+                                             SkColor background_color,
+                                             SkColor foreground_color) const {
+  int width = small_image.width();
+  int height = small_image.height();
 
-// static
-const gfx::VectorIcon* GetRegisteredVectorIcon(const std::string& id) {
-  auto iter = g_vector_icon_registry.Get().find(id);
-  return iter != g_vector_icon_registry.Get().end() ? &iter->second : nullptr;
+  const gfx::ImageSkia background =
+      CreateSolidColorImage(width, height, background_color);
+  const gfx::ImageSkia foreground =
+      CreateSolidColorImage(width, height, foreground_color);
+  const gfx::ImageSkia masked_small_image =
+      gfx::ImageSkiaOperations::CreateMaskedImage(foreground, small_image);
+  return gfx::Image(gfx::ImageSkiaOperations::CreateSuperimposedImage(
+      background, masked_small_image));
 }
 
 }  // namespace message_center

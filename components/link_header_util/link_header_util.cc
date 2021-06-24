@@ -154,7 +154,7 @@ bool ParseLinkHeaderValue(
     std::string::const_iterator begin,
     std::string::const_iterator end,
     std::string* url,
-    std::unordered_map<std::string, base::Optional<std::string>>* params) {
+    std::unordered_map<std::string, absl::optional<std::string>>* params) {
   // Can't parse an empty string.
   if (begin == end)
     return false;
@@ -178,14 +178,12 @@ bool ParseLinkHeaderValue(
       net::HttpUtil::NameValuePairsIterator::Values::NOT_REQUIRED,
       net::HttpUtil::NameValuePairsIterator::Quotes::STRICT_QUOTES);
   while (params_iterator.GetNext()) {
-    if (!net::HttpUtil::IsParmName(params_iterator.name_begin(),
-                                   params_iterator.name_end()))
+    if (!net::HttpUtil::IsParmName(params_iterator.name_piece()))
       return false;
-    std::string name = base::ToLowerASCII(base::StringPiece(
-        params_iterator.name_begin(), params_iterator.name_end()));
+    std::string name = base::ToLowerASCII(params_iterator.name_piece());
     if (!params_iterator.value_is_quoted() &&
-        params_iterator.value_begin() == params_iterator.value_end())
-      params->insert(std::make_pair(name, base::nullopt));
+        params_iterator.value_piece().empty())
+      params->insert(std::make_pair(name, absl::nullopt));
     else
       params->insert(std::make_pair(name, params_iterator.value()));
   }

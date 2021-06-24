@@ -11,11 +11,12 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "chrome/common/cloud_print_utility.mojom.h"
 #include "chrome/services/printing/public/mojom/pdf_to_emf_converter.mojom.h"
 #include "content/public/common/child_process_host_delegate.h"
-#include "ipc/ipc_platform_file.h"
-#include "mojo/public/cpp/system/invitation.h"
-#include "services/service_manager/public/cpp/identity.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class CommandLine;
@@ -25,7 +26,6 @@ class SingleThreadTaskRunner;
 
 namespace content {
 class ChildProcessHost;
-class ServiceManagerConnection;
 }
 
 namespace printing {
@@ -34,10 +34,6 @@ struct PdfRenderSettings;
 struct PrinterCapsAndDefaults;
 struct PrinterSemanticCapsAndDefaults;
 }  // namespace printing
-
-namespace service_manager {
-class ServiceManager;
-}
 
 // Acts as the service-side host to a utility child process. A
 // utility process is a short-lived sandboxed process that is created to run
@@ -96,6 +92,8 @@ class ServiceUtilityProcessHost : public content::ChildProcessHostDelegate {
                             base::SingleThreadTaskRunner* client_task_runner);
   ~ServiceUtilityProcessHost() override;
 
+  content::ChildProcessHost* GetHost() { return child_process_host_.get(); }
+
   // Starts a process to render the specified pages in the given PDF file into
   // a metafile. Currently only implemented for Windows. If the PDF has fewer
   // pages than the specified page ranges, it will render as many as available.
@@ -116,17 +114,14 @@ class ServiceUtilityProcessHost : public content::ChildProcessHostDelegate {
   bool StartGetPrinterSemanticCapsAndDefaults(const std::string& printer_name);
 
  protected:
-  bool Send(IPC::Message* msg);
-
   // Allows this method to be overridden for tests.
   virtual base::FilePath GetUtilityProcessCmd();
 
   // ChildProcessHostDelegate implementation:
   void OnChildDisconnected() override;
   bool OnMessageReceived(const IPC::Message& message) override;
-  const base::Process& GetProcess() const override;
-  void BindInterface(const std::string& interface_name,
-                     mojo::ScopedMessagePipeHandle interface_pipe) override;
+  const base::Process& GetProcess() override;
+  void BindHostReceiver(mojo::GenericPendingReceiver receiver) override;
 
  private:
   // Starts a process.  Returns true iff it succeeded.
@@ -142,40 +137,34 @@ class ServiceUtilityProcessHost : public content::ChildProcessHostDelegate {
 
   // PdfToEmfState callbacks:
   void OnRenderPDFPagesToMetafilesPageCount(
-      printing::mojom::PdfToEmfConverterPtr converter,
+      mojo::PendingRemote<printing::mojom::PdfToEmfConverter> converter,
       uint32_t page_count);
   void OnRenderPDFPagesToMetafilesPageDone(
       base::ReadOnlySharedMemoryRegion emf_region,
       float scale_factor);
 
-  // IPC Messages handlers:
-  void OnGetPrinterCapsAndDefaultsSucceeded(
+  // IPC response handlers:
+  void OnGetPrinterCapsAndDefaults(
       const std::string& printer_name,
-      const printing::PrinterCapsAndDefaults& caps_and_defaults);
-  void OnGetPrinterCapsAndDefaultsFailed(const std::string& printer_name);
-  void OnGetPrinterSemanticCapsAndDefaultsSucceeded(
+      const absl::optional<printing::PrinterCapsAndDefaults>&
+          caps_and_defaults);
+  void OnGetPrinterSemanticCapsAndDefaults(
       const std::string& printer_name,
-      const printing::PrinterSemanticCapsAndDefaults& caps_and_defaults);
-  void OnGetPrinterSemanticCapsAndDefaultsFailed(
-      const std::string& printer_name);
+      const absl::optional<printing::PrinterSemanticCapsAndDefaults>&
+          caps_and_defaults);
 
   std::unique_ptr<content::ChildProcessHost> child_process_host_;
   base::Process process_;
+  mojo::Remote<chrome::mojom::CloudPrintUtility> cloud_print_utility_remote_;
   // A pointer to our client interface, who will be informed of progress.
   scoped_refptr<Client> client_;
   scoped_refptr<base::SingleThreadTaskRunner> client_task_runner_;
   bool waiting_for_reply_;
-  mojo::OutgoingInvitation mojo_invitation_;
 
   class PdfToEmfState;
   std::unique_ptr<PdfToEmfState> pdf_to_emf_state_;
 
-  std::unique_ptr<service_manager::ServiceManager> service_manager_;
-  std::unique_ptr<content::ServiceManagerConnection>
-      service_manager_connection_;
-  service_manager::Identity utility_service_instance_identity_;
-
-  base::WeakPtrFactory<ServiceUtilityProcessHost> weak_ptr_factory_;
+  base::WeakPtrFactory<ServiceUtilityProcessHost> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ServiceUtilityProcessHost);
 };

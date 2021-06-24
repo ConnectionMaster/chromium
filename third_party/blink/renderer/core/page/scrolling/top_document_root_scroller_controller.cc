@@ -6,6 +6,7 @@
 
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/page_scale_constraints_set.h"
 #include "third_party/blink/renderer/core/frame/root_frame_viewport.h"
@@ -15,7 +16,6 @@
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/scrolling/overscroll_controller.h"
-#include "third_party/blink/renderer/core/page/scrolling/root_scroller_util.h"
 #include "third_party/blink/renderer/core/page/scrolling/viewport_scroll_callback.h"
 #include "third_party/blink/renderer/core/paint/compositing/paint_layer_compositor.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -31,7 +31,7 @@ ScrollableArea* GetScrollableArea(Node* node) {
       !node->GetLayoutObject()->IsBoxModelObject())
     return nullptr;
 
-  return ToLayoutBoxModelObject(node->GetLayoutObject())->GetScrollableArea();
+  return To<LayoutBoxModelObject>(node->GetLayoutObject())->GetScrollableArea();
 }
 
 }  // namespace
@@ -39,7 +39,7 @@ ScrollableArea* GetScrollableArea(Node* node) {
 TopDocumentRootScrollerController::TopDocumentRootScrollerController(Page& page)
     : page_(&page) {}
 
-void TopDocumentRootScrollerController::Trace(blink::Visitor* visitor) {
+void TopDocumentRootScrollerController::Trace(Visitor* visitor) const {
   visitor->Trace(viewport_apply_scroll_);
   visitor->Trace(global_root_scroller_);
   visitor->Trace(page_);
@@ -57,10 +57,8 @@ void TopDocumentRootScrollerController::DidResizeViewport() {
   if (!GlobalRootScroller()->GetLayoutObject())
     return;
 
-  DCHECK(GlobalRootScroller()->GetLayoutObject()->IsBoxModelObject());
-
-  LayoutBoxModelObject* layout_object =
-      ToLayoutBoxModelObject(GlobalRootScroller()->GetLayoutObject());
+  auto* layout_object =
+      To<LayoutBoxModelObject>(GlobalRootScroller()->GetLayoutObject());
 
   // Top controls can resize the viewport without invalidating compositing or
   // paint so we need to do that manually here.
@@ -140,7 +138,10 @@ void TopDocumentRootScrollerController::UpdateGlobalRootScroller(
   if (!viewport_apply_scroll_)
     return;
 
-  if (new_global_root_scroller == global_root_scroller_)
+  // Note, the layout object can be replaced during a rebuild. In that case,
+  // re-run process even if the element itself is the same.
+  if (new_global_root_scroller == global_root_scroller_ &&
+      global_root_scroller_->GetLayoutObject()->IsGlobalRootScroller())
     return;
 
   ScrollableArea* target_scroller = GetScrollableArea(new_global_root_scroller);
@@ -199,20 +200,6 @@ Document* TopDocumentRootScrollerController::TopDocument() const {
   return main_local_frame ? main_local_frame->GetDocument() : nullptr;
 }
 
-void TopDocumentRootScrollerController::DidUpdateCompositing(
-    const LocalFrameView& frame_view) {
-  if (!page_)
-    return;
-
-  // The only other way to get here is from a local root OOPIF but we ignore
-  // that case since the global root can't cross remote frames today.
-  if (!frame_view.GetFrame().IsMainFrame())
-    return;
-
-  // Let the compositor-side counterpart know about this change.
-  page_->GetChromeClient().RegisterViewportLayers();
-}
-
 void TopDocumentRootScrollerController::DidDisposeScrollableArea(
     ScrollableArea& area) {
   if (!TopDocument() || !TopDocument()->View())
@@ -253,30 +240,6 @@ bool TopDocumentRootScrollerController::IsViewportScrollCallback(
     return false;
 
   return callback == viewport_apply_scroll_.Get();
-}
-
-GraphicsLayer* TopDocumentRootScrollerController::RootScrollerLayer() const {
-  ScrollableArea* area = GetScrollableArea(global_root_scroller_);
-
-  if (!area)
-    return nullptr;
-
-  GraphicsLayer* graphics_layer = area->LayerForScrolling();
-
-  // TODO(bokan): We should assert graphicsLayer here and
-  // RootScrollerController should do whatever needs to happen to ensure
-  // the root scroller gets composited.
-
-  return graphics_layer;
-}
-
-GraphicsLayer* TopDocumentRootScrollerController::RootContainerLayer() const {
-  ScrollableArea* area = GetScrollableArea(global_root_scroller_);
-  return area ? area->LayerForContainer() : nullptr;
-}
-
-PaintLayer* TopDocumentRootScrollerController::RootScrollerPaintLayer() const {
-  return root_scroller_util::PaintLayerForRootScroller(global_root_scroller_);
 }
 
 Node* TopDocumentRootScrollerController::GlobalRootScroller() const {

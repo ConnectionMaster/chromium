@@ -18,14 +18,14 @@
 #if defined(OS_IOS)
 #include "base/mac/foundation_util.h"
 #include "skia/ext/skia_utils_ios.h"
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
 #include "base/mac/foundation_util.h"
 #include "skia/ext/skia_utils_mac.h"
 #endif
 
 namespace {
 
-#if defined(OS_IOS) || defined(OS_MACOSX)
+#if defined(OS_APPLE)
 const bool kUsesSkiaNatively = false;
 #else
 const bool kUsesSkiaNatively = true;
@@ -56,8 +56,8 @@ TEST_F(ImageTest, EmptyImage) {
 
 // Test constructing a gfx::Image from an empty PlatformImage.
 TEST_F(ImageTest, EmptyImageFromEmptyPlatformImage) {
-#if defined(OS_IOS) || defined(OS_MACOSX)
-  gfx::Image image1(NULL);
+#if defined(OS_APPLE)
+  gfx::Image image1(nullptr);
   EXPECT_TRUE(image1.IsEmpty());
   EXPECT_EQ(0, image1.Width());
   EXPECT_EQ(0, image1.Height());
@@ -85,7 +85,7 @@ TEST_F(ImageTest, EmptyImageFromEmptyPlatformImage) {
 // invalid data.
 TEST_F(ImageTest, EmptyImageFromObviouslyInvalidPNGImage) {
   std::vector<gfx::ImagePNGRep> image_png_reps1;
-  image_png_reps1.push_back(gfx::ImagePNGRep(NULL, 1.0f));
+  image_png_reps1.push_back(gfx::ImagePNGRep(nullptr, 1.0f));
   gfx::Image image1(image_png_reps1);
   EXPECT_TRUE(image1.IsEmpty());
   EXPECT_EQ(0U, image1.RepresentationCount());
@@ -150,7 +150,7 @@ TEST_F(ImageTest, EmptyImageToPNG) {
 }
 
 // Check that getting the 1x PNG bytes from images which do not have a 1x
-// representation returns NULL.
+// representation returns null.
 TEST_F(ImageTest, ImageNo1xToPNG) {
   // Image with 2x only.
   const int kSize2x = 50;
@@ -208,7 +208,7 @@ TEST_F(ImageTest, MultiResolutionImageSkiaToPNG) {
   gfx::Image image(image_skia);
 
   EXPECT_TRUE(
-      gt::ArePNGBytesCloseToBitmap(image.As1xPNGBytes(), bitmap_1x,
+      gt::ArePNGBytesCloseToBitmap(*image.As1xPNGBytes(), bitmap_1x,
                                    gt::MaxColorSpaceConversionColorShift()));
   EXPECT_TRUE(image.HasRepresentation(gfx::Image::kImageRepPNG));
 }
@@ -230,10 +230,10 @@ TEST_F(ImageTest, MultiResolutionPNGToImageSkia) {
   scales.push_back(2.0f);
   gfx::ImageSkia image_skia = image.AsImageSkia();
   EXPECT_TRUE(gt::ArePNGBytesCloseToBitmap(
-      bytes1x, image_skia.GetRepresentation(1.0f).GetBitmap(),
+      *bytes1x, image_skia.GetRepresentation(1.0f).GetBitmap(),
       gt::MaxColorSpaceConversionColorShift()));
   EXPECT_TRUE(gt::ArePNGBytesCloseToBitmap(
-      bytes2x, image_skia.GetRepresentation(2.0f).GetBitmap(),
+      *bytes2x, image_skia.GetRepresentation(2.0f).GetBitmap(),
       gt::MaxColorSpaceConversionColorShift()));
   EXPECT_TRUE(gt::ImageSkiaStructureMatches(image_skia, kSize1x, kSize1x,
                                             scales));
@@ -269,16 +269,17 @@ TEST_F(ImageTest, MultiResolutionPNGToPlatform) {
   EXPECT_EQ(scales.size(), 1U);
   if (scales[0] == 1.0f)
     EXPECT_TRUE(
-        gt::ArePNGBytesCloseToBitmap(bytes1x, from_platform.AsBitmap(),
+        gt::ArePNGBytesCloseToBitmap(*bytes1x, from_platform.AsBitmap(),
                                      gt::MaxColorSpaceConversionColorShift()));
   else if (scales[0] == 2.0f)
-    EXPECT_TRUE(gt::ArePNGBytesCloseToBitmap(bytes2x, from_platform.AsBitmap(),
-                gt::MaxColorSpaceConversionColorShift()));
+    EXPECT_TRUE(
+        gt::ArePNGBytesCloseToBitmap(*bytes2x, from_platform.AsBitmap(),
+                                     gt::MaxColorSpaceConversionColorShift()));
   else
     ADD_FAILURE() << "Unexpected platform scale factor.";
 #else
   EXPECT_TRUE(
-      gt::ArePNGBytesCloseToBitmap(bytes1x, from_platform.AsBitmap(),
+      gt::ArePNGBytesCloseToBitmap(*bytes1x, from_platform.AsBitmap(),
                                    gt::MaxColorSpaceConversionColorShift()));
 #endif  // defined(OS_IOS)
 }
@@ -316,7 +317,7 @@ TEST_F(ImageTest, PNGEncodeFromSkiaDecodeToPlatform) {
 
   EXPECT_TRUE(gt::IsPlatformImageValid(gt::ToPlatformType(from_platform)));
   EXPECT_TRUE(
-      gt::ArePNGBytesCloseToBitmap(png_bytes, from_platform.AsBitmap(),
+      gt::ArePNGBytesCloseToBitmap(*png_bytes, from_platform.AsBitmap(),
                                    gt::MaxColorSpaceConversionColorShift()));
 }
 
@@ -436,7 +437,7 @@ TEST_F(ImageTest, SkBitmapConversionPreservesOrientation) {
   bitmap.eraseARGB(255, 0, 255, 0);
 
   // Paint the upper half of the image in red (lower half is in green).
-  SkCanvas canvas(bitmap);
+  SkCanvas canvas(bitmap, SkSurfaceProps{});
   SkPaint red;
   red.setColor(SK_ColorRED);
   canvas.drawRect(SkRect::MakeWH(width, height / 2), red);
@@ -477,7 +478,7 @@ TEST_F(ImageTest, SkBitmapConversionPreservesTransparency) {
   bitmap.eraseARGB(0, 0, 255, 0);
 
   // Paint the upper half of the image in red (lower half is transparent).
-  SkCanvas canvas(bitmap);
+  SkCanvas canvas(bitmap, SkSurfaceProps{});
   SkPaint red;
   red.setColor(SK_ColorRED);
   canvas.drawRect(SkRect::MakeWH(width, height / 2), red);

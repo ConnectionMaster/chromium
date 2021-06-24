@@ -7,11 +7,44 @@
  * 'site-details' show the details (permissions and usage) for a given origin
  * under Site Settings.
  */
+import 'chrome://resources/js/action_link.js';
+import 'chrome://resources/cr_elements/action_link_css.m.js';
+import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.m.js';
+import 'chrome://resources/cr_elements/cr_button/cr_button.m.js';
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.m.js';
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import 'chrome://resources/cr_elements/icons.m.js';
+import 'chrome://resources/cr_elements/shared_style_css.m.js';
+import 'chrome://resources/cr_elements/shared_vars_css.m.js';
+import 'chrome://resources/polymer/v3_0/iron-flex-layout/iron-flex-layout-classes.js';
+import '../icons.js';
+import '../settings_shared_css.js';
+import './all_sites_icons.js';
+import './clear_storage_dialog_css.js';
+import './site_details_permission.js';
+
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {focusWithoutInk} from 'chrome://resources/js/cr/ui/focus_without_ink.m.js';
+import {I18nBehavior} from 'chrome://resources/js/i18n_behavior.m.js';
+import {WebUIListenerBehavior} from 'chrome://resources/js/web_ui_listener_behavior.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+import {MetricsBrowserProxyImpl, PrivacyElementInteractions} from '../metrics_browser_proxy.js';
+import {routes} from '../route.js';
+import {Route, RouteObserverBehavior, Router} from '../router.js';
+
+import {ContentSetting, ContentSettingsTypes} from './constants.js';
+import {SiteSettingsBehavior} from './site_settings_behavior.js';
+import {WebsiteUsageBrowserProxy, WebsiteUsageBrowserProxyImpl} from './website_usage_browser_proxy.js';
+
 Polymer({
   is: 'site-details',
 
+  _template: html`{__html_template__}`,
+
   behaviors: [
-    I18nBehavior, SiteSettingsBehavior, settings.RouteObserverBehavior,
+    I18nBehavior, SiteSettingsBehavior, RouteObserverBehavior,
     WebUIListenerBehavior
   ],
 
@@ -57,111 +90,124 @@ Polymer({
     /** @private */
     enableExperimentalWebPlatformFeatures_: {
       type: Boolean,
-      value: function() {
+      value() {
         return loadTimeData.getBoolean('enableExperimentalWebPlatformFeatures');
       },
     },
 
     /** @private */
-    enableSiteSettings_: {
+    enableWebBluetoothNewPermissionsBackend_: {
       type: Boolean,
-      value: function() {
-        return loadTimeData.getBoolean('enableSiteSettings');
-      },
+      value: () =>
+          loadTimeData.getBoolean('enableWebBluetoothNewPermissionsBackend'),
     },
   },
 
-  listeners: {
-    'usage-deleted': 'onUsageDeleted_',
-  },
+  /** @private {string} */
+  fetchingForHost_: '',
+
+  /** @private {?WebsiteUsageBrowserProxy} */
+  websiteUsageProxy_: null,
 
   /** @override */
-  attached: function() {
+  attached() {
+    this.websiteUsageProxy_ = WebsiteUsageBrowserProxyImpl.getInstance();
+    this.addWebUIListener('usage-total-changed', (host, data, cookies) => {
+      this.onUsageTotalChanged_(host, data, cookies);
+    });
+
     this.addWebUIListener(
         'contentSettingSitePermissionChanged',
         this.onPermissionChanged_.bind(this));
-
-    // <if expr="chromeos">
-    this.addWebUIListener(
-        'prefEnableDrmChanged', this.prefEnableDrmChanged_.bind(this));
-    // </if>
 
     // Refresh block autoplay status from the backend.
     this.browserProxy.fetchBlockAutoplayStatus();
   },
 
   /** @override */
-  ready: function() {
-    this.ContentSettingsTypes = settings.ContentSettingsTypes;
+  ready() {
+    this.ContentSettingsTypes = ContentSettingsTypes;
   },
 
   /**
-   * settings.RouteObserverBehavior
-   * @param {!settings.Route} route
+   * RouteObserverBehavior
+   * @param {!Route} route
    * @protected
    */
-  currentRouteChanged: function(route) {
-    if (route != settings.routes.SITE_SETTINGS_SITE_DETAILS) {
+  currentRouteChanged(route) {
+    if (route !== routes.SITE_SETTINGS_SITE_DETAILS) {
       return;
     }
-    const site = settings.getQueryParameters().get('site');
+    const site = Router.getInstance().getQueryParameters().get('site');
     if (!site) {
       return;
     }
     this.origin_ = site;
     this.browserProxy.isOriginValid(this.origin_).then((valid) => {
       if (!valid) {
-        settings.navigateToPreviousRoute();
+        Router.getInstance().navigateToPreviousRoute();
       } else {
-        if (this.enableSiteSettings_) {
-          this.$.usageApi.fetchUsageTotal(this.toUrl(this.origin_).hostname);
-        }
-
-        this.updatePermissions_(this.getCategoryList());
+        this.fetchingForHost_ = this.toUrl(this.origin_).hostname;
+        this.storedData_ = '';
+        this.websiteUsageProxy_.fetchUsageTotal(this.fetchingForHost_);
+        this.browserProxy.getCategoryList(this.origin_).then((categoryList) => {
+          this.updatePermissions_(categoryList, /*hideOthers=*/ true);
+        });
       }
     });
   },
 
   /**
    * Called when a site within a category has been changed.
-   * @param {!settings.ContentSettingsTypes} category The category that
+   * @param {!ContentSettingsTypes} category The category that
    *     changed.
    * @param {string} origin The origin of the site that changed.
    * @param {string} embeddingOrigin The embedding origin of the site that
    *     changed.
    * @private
    */
-  onPermissionChanged_: function(category, origin, embeddingOrigin) {
-    if (this.origin_ === undefined || this.origin_ == '' ||
-        origin === undefined || origin == '') {
-      return;
-    }
-    if (!this.getCategoryList().includes(category)) {
+  onPermissionChanged_(category, origin, embeddingOrigin) {
+    if (this.origin_ === undefined || this.origin_ === '' ||
+        origin === undefined || origin === '') {
       return;
     }
 
-    // Site details currently doesn't support embedded origins, so ignore it
-    // and just check whether the origins are the same.
-    this.updatePermissions_([category]);
+    this.browserProxy.getCategoryList(this.origin_).then((categoryList) => {
+      if (categoryList.includes(category)) {
+        this.updatePermissions_([category], /*hideOthers=*/ false);
+      }
+    });
   },
 
-  // <if expr="chromeos">
-  prefEnableDrmChanged_: function() {
-    this.updatePermissions_([settings.ContentSettingsTypes.PROTECTED_CONTENT]);
+  /**
+   * Callback for when the usage total is known.
+   * @param {string} host The host that the usage was fetched for.
+   * @param {string} usage The string showing how much data the given host
+   *     is using.
+   * @param {string} cookies The string showing how many cookies the given host
+   *     is using.
+   * @private
+   */
+  onUsageTotalChanged_(host, usage, cookies) {
+    if (this.fetchingForHost_ === host) {
+      this.storedData_ = usage;
+      this.numCookies_ = cookies;
+    }
   },
-  // </if>
 
   /**
    * Retrieves the permissions listed in |categoryList| from the backend for
    * |this.origin_|.
-   * @param {!Array<!settings.ContentSettingsTypes>} categoryList The list
+   * @param {!Array<!ContentSettingsTypes>} categoryList The list
    *     of categories to update permissions for.
+   * @param {boolean} hideOthers If true, permissions for categories not in
+   *     |categoryList| will be hidden.
    * @private
    */
-  updatePermissions_: function(categoryList) {
+  updatePermissions_(categoryList, hideOthers) {
     const permissionsMap =
         /**
-         * @type {!Object<!settings.ContentSettingsTypes,
+         * @type {!Object<!ContentSettingsTypes,
          *         !SiteDetailsPermissionElement>}
          */
         (Array.prototype.reduce.call(
@@ -169,6 +215,9 @@ Polymer({
             (map, element) => {
               if (categoryList.includes(element.category)) {
                 map[element.category] = element;
+              } else if (hideOthers) {
+                // This will hide any permission not in the category list.
+                element.site = null;
               }
               return map;
             },
@@ -179,18 +228,21 @@ Polymer({
           exceptionList.forEach((exception, i) => {
             // |exceptionList| should be in the same order as
             // |categoryList|.
-            permissionsMap[categoryList[i]].site = exception;
+            if (permissionsMap[categoryList[i]]) {
+              permissionsMap[categoryList[i]].site = exception;
+            }
           });
 
           // The displayName won't change, so just use the first
           // exception.
           assert(exceptionList.length > 0);
-          this.pageTitle = exceptionList[0].displayName;
+          this.pageTitle =
+              this.originRepresentation(exceptionList[0].displayName);
         });
   },
 
   /** @private */
-  onCloseDialog_: function(e) {
+  onCloseDialog_(e) {
     e.target.closest('cr-dialog').close();
   },
 
@@ -199,7 +251,7 @@ Polymer({
    * @param {!Event} e
    * @private
    */
-  onConfirmClearSettings_: function(e) {
+  onConfirmClearSettings_(e) {
     e.preventDefault();
     this.$.confirmResetSettings.showModal();
   },
@@ -209,22 +261,18 @@ Polymer({
    * @param {!Event} e
    * @private
    */
-  onConfirmClearStorage_: function(e) {
+  onConfirmClearStorage_(e) {
     e.preventDefault();
-    this.$.confirmClearStorage.showModal();
+    this.$.confirmClearStorageNew.showModal();
   },
 
   /**
    * Resets all permissions for the current origin.
    * @private
    */
-  onResetSettings_: function(e) {
+  onResetSettings_(e) {
     this.browserProxy.setOriginPermissions(
-        this.origin_, this.getCategoryList(), settings.ContentSetting.DEFAULT);
-    if (this.getCategoryList().includes(
-            settings.ContentSettingsTypes.PLUGINS)) {
-      this.browserProxy.clearFlashPref(this.origin_);
-    }
+        this.origin_, null, ContentSetting.DEFAULT);
 
     this.onCloseDialog_(e);
   },
@@ -233,38 +281,16 @@ Polymer({
    * Clears all data stored, except cookies, for the current origin.
    * @private
    */
-  onClearStorage_: function(e) {
-    // Since usage is only shown when "Site Settings" is enabled, don't
-    // clear it when it's not shown.
-    if (this.enableSiteSettings_ &&
-        this.hasUsage_(this.storedData_, this.numCookies_)) {
-      this.$.usageApi.clearUsage(this.toUrl(this.origin_).href);
-    }
-
-    this.onCloseDialog_(e);
-  },
-
-  /**
-   * Called when usage has been deleted for an origin via a non-Site Details
-   * source, e.g. clear browsing data.
-   * @param {!CustomEvent<!{origin: string}>} event
-   * @private
-   */
-  onUsageDeleted_: function(event) {
-    if (event.detail.origin == this.toUrl(this.origin_).href) {
+  onClearStorage_(e) {
+    MetricsBrowserProxyImpl.getInstance().recordSettingsPageHistogram(
+        PrivacyElementInteractions.SITE_DETAILS_CLEAR_DATA);
+    if (this.hasUsage_(this.storedData_, this.numCookies_)) {
+      this.websiteUsageProxy_.clearUsage(this.toUrl(this.origin_).href);
       this.storedData_ = '';
       this.numCookies_ = '';
     }
-  },
 
-  /**
-   * Checks whether the permission list is standalone or has a heading.
-   * @return {string} CSS class applied when the permission list has no
-   *     heading.
-   * @private
-   */
-  permissionListClass_: function(hasHeading) {
-    return hasHeading ? '' : 'without-heading';
+    this.onCloseDialog_(e);
   },
 
   /**
@@ -273,8 +299,8 @@ Polymer({
    *     disk or battery).
    * @private
    */
-  hasUsage_: function(storage, cookies) {
-    return storage != '' || cookies != '';
+  hasUsage_(storage, cookies) {
+    return storage !== '' || cookies !== '';
   },
 
   /**
@@ -283,17 +309,17 @@ Polymer({
    *     show.
    * @private
    */
-  hasDataAndCookies_: function(storage, cookies) {
-    return storage != '' && cookies != '';
+  hasDataAndCookies_(storage, cookies) {
+    return storage !== '' && cookies !== '';
   },
 
   /** @private */
-  onResetSettingsDialogClosed_: function() {
-    cr.ui.focusWithoutInk(assert(this.$$('#resetSettingsButton')));
+  onResetSettingsDialogClosed_() {
+    focusWithoutInk(assert(this.$$('#resetSettingsButton')));
   },
 
   /** @private */
-  onClearStorageDialogClosed_: function() {
-    cr.ui.focusWithoutInk(assert(this.$$('#clearStorage')));
+  onClearStorageDialogClosed_() {
+    focusWithoutInk(assert(this.$$('#clearStorage')));
   },
 });

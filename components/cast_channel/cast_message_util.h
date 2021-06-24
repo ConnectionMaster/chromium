@@ -8,16 +8,16 @@
 #include <string>
 
 #include "base/values.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/openscreen/src/cast/common/channel/proto/cast_channel.pb.h"
 
 namespace cast_channel {
 
 class AuthContext;
-class CastMessage;
-class DeviceAuthMessage;
+using ::cast::channel::CastMessage;
+using ::cast::channel::DeviceAuthMessage;
 
 // Reserved message namespaces for internal messages.
-static constexpr char kCastInternalNamespacePrefix[] =
-    "urn:x-cast:com.google.cast.";
 static constexpr char kAuthNamespace[] =
     "urn:x-cast:com.google.cast.tp.deviceauth";
 static constexpr char kHeartbeatNamespace[] =
@@ -36,23 +36,60 @@ static constexpr char kPlatformReceiverId[] = "receiver-0";
 
 // Cast application protocol message types.
 enum class CastMessageType {
+  // Heartbeat messages.
   kPing,
   kPong,
+
+  // RPC control/status messages used by Media Remoting. These occur at high
+  // frequency, up to dozens per second at times, and should not be logged.
+  kRpc,
+
   kGetAppAvailability,
-  kReceiverStatusRequest,
-  kConnect,          // Virtual connection request
-  kCloseConnection,  // Close virtual connection
-  kBroadcast,        // Application broadcast / precache
-  kLaunch,           // Session launch request
-  kStop,             // Session stop request
+  kGetStatus,
+
+  // Virtual connection request
+  kConnect,
+
+  // Close virtual connection
+  kCloseConnection,
+
+  // Application broadcast / precache
+  kBroadcast,
+
+  // Session launch request
+  kLaunch,
+
+  // Session stop request
+  kStop,
+
   kReceiverStatus,
   kMediaStatus,
+
+  // error from receiver
   kLaunchError,
-  kOther  // Add new types above |kOther|.
+
+  kOffer,
+  kAnswer,
+  kCapabilitiesResponse,
+  kStatusResponse,
+
+  // The following values are part of the protocol but are not currently used.
+  kMultizoneStatus,
+  kInvalidPlayerState,
+  kLoadFailed,
+  kLoadCancelled,
+  kInvalidRequest,
+  kPresentation,
+  kGetCapabilities,
+
+  kOther,  // Add new types above |kOther|.
+  kMaxValue = kOther,
 };
 
 enum class V2MessageType {
+  // Request to modify the text tracks style or change the tracks status.
   kEditTracksInfo,
+
   kGetStatus,
   kLoad,
   kMediaGetStatus,
@@ -60,24 +97,73 @@ enum class V2MessageType {
   kPause,
   kPlay,
   kPrecache,
+
+  // Inserts a list of new media items into the queue.
   kQueueInsert,
+
+  // Loads and optionally starts playback of a new queue of media items.
   kQueueLoad,
+
+  // Removes a list of items from the queue. If the remaining queue is empty,
+  // the media session will be terminated.
   kQueueRemove,
+
+  // Reorder a list of media items in the queue.
   kQueueReorder,
+
+  // Updates properties of the media queue, e.g. repeat mode, and properties of
+  // the existing items in the media queue.
   kQueueUpdate,
+
+  kQueueNext,
+  kQueuePrev,
   kSeek,
+
+  // Device set volume is also 'SET_VOLUME'. Thus, give this a different name.
+  // The message will be translate before being sent to the receiver.
   kSetVolume,
+
   kStop,
+
+  // Stop-media type is 'kStop', which collides with stop-session.
+  // Thus, give it a different name.  The message will be translate
+  // before being sent to the receiver.
   kStopMedia,
-  kOther  // Add new types above |kOther|.
+
+  kOther,  // Add new types above |kOther|.
+  kMaxValue = kOther,
 };
+
+// Receiver App Type determines App types that can be supported by a Cast media
+// source. All Cast media sources support the web type.
+// Please keep it in sync with the EnumTable in
+// components/media_router/common/providers/cast/cast_media_source.cc.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused. Please keep it in sync with
+// MediaRouterResponseReceiverAppType in tools/metrics/histograms/enums.xml.
+enum class ReceiverAppType {
+  kOther = 0,
+
+  // Web-based Cast receiver apps. This is supported by all Cast media source
+  // by default.
+  kWeb = 1,
+
+  // A media source may support launching an Android TV app in addition to a
+  // Cast web app.
+  kAndroidTv = 2,
+
+  // Do not reorder existing entries, and add new types above |kMaxValue|.
+  kMaxValue = kAndroidTv,
+};
+
+std::ostream& operator<<(std::ostream& lhs, const CastMessage& rhs);
 
 // Checks if the contents of |message_proto| are valid.
 bool IsCastMessageValid(const CastMessage& message_proto);
 
 // Returns true if |message_namespace| is a namespace reserved for internal
 // messages.
-bool IsCastInternalNamespace(const std::string& message_namespace);
+bool IsCastReservedNamespace(base::StringPiece message_namespace);
 
 // Returns the value in the "type" field or |kOther| if the field is not found.
 // The result is only valid if |payload| is a Cast application protocol message.
@@ -94,9 +180,6 @@ CastMessageType CastMessageTypeFromString(const std::string& type);
 // Returns the V2MessageType for |type|, or |kOther| if it does not
 // correspond to a known type.
 V2MessageType V2MessageTypeFromString(const std::string& type);
-
-// Returns a human readable string for |message_proto|.
-std::string CastMessageToString(const CastMessage& message_proto);
 
 // Returns a human readable string for |message|.
 std::string AuthMessageToString(const DeviceAuthMessage& message);
@@ -137,6 +220,9 @@ CastMessage CreateVirtualConnectionRequest(
     const std::string& user_agent,
     const std::string& browser_version);
 
+CastMessage CreateVirtualConnectionClose(const std::string& source_id,
+                                         const std::string& destination_id);
+
 // Creates an app availability request for |app_id| from |source_id| with
 // ID |request_id|.
 // TODO(imcheng): May not need |source_id|, just use sender-0?
@@ -166,10 +252,13 @@ CastMessage CreateBroadcastRequest(const std::string& source_id,
                                    const BroadcastRequest& request);
 
 // Creates a session launch request with the given parameters.
-CastMessage CreateLaunchRequest(const std::string& source_id,
-                                int request_id,
-                                const std::string& app_id,
-                                const std::string& locale);
+CastMessage CreateLaunchRequest(
+    const std::string& source_id,
+    int request_id,
+    const std::string& app_id,
+    const std::string& locale,
+    const std::vector<std::string>& supported_app_types,
+    const absl::optional<base::Value>& app_params);
 
 CastMessage CreateStopRequest(const std::string& source_id,
                               int request_id,
@@ -198,12 +287,13 @@ enum class GetAppAvailabilityResult {
   kAvailable,
   kUnavailable,
   kUnknown,
+  kMaxValue = kUnknown,
 };
 
 const char* ToString(GetAppAvailabilityResult result);
 
 // Extracts request ID from |payload| corresponding to a Cast message response.
-base::Optional<int> GetRequestIdFromResponse(const base::Value& payload);
+absl::optional<int> GetRequestIdFromResponse(const base::Value& payload);
 
 // Returns the GetAppAvailabilityResult corresponding to |app_id| in |payload|.
 // Returns kUnknown if result is not found.
@@ -213,15 +303,20 @@ GetAppAvailabilityResult GetAppAvailabilityResultFromResponse(
 
 // Result of a session launch.
 struct LaunchSessionResponse {
-  enum Result { kOk, kError, kTimedOut, kUnknown };
+  enum Result { kOk, kError, kTimedOut, kUnknown, kMaxValue = kUnknown };
 
   LaunchSessionResponse();
+  LaunchSessionResponse(const LaunchSessionResponse& other) = delete;
   LaunchSessionResponse(LaunchSessionResponse&& other);
+  LaunchSessionResponse& operator=(const LaunchSessionResponse& other) = delete;
+  LaunchSessionResponse& operator=(LaunchSessionResponse&& other);
   ~LaunchSessionResponse();
 
   Result result = Result::kUnknown;
   // Populated if |result| is |kOk|.
-  base::Optional<base::Value> receiver_status;
+  absl::optional<base::Value> receiver_status;
+  // Populated if |result| is |kError|.
+  std::string error_msg;
 };
 
 // Parses |payload| into a LaunchSessionResponse. Returns an empty
@@ -229,6 +324,11 @@ struct LaunchSessionResponse {
 // response. |payload| must be a dictionary from the string payload of a
 // CastMessage.
 LaunchSessionResponse GetLaunchSessionResponse(const base::Value& payload);
+
+LaunchSessionResponse GetLaunchSessionResponseError(std::string error_msg);
+
+// Returns what connection type should be used based on the destination ID.
+VirtualConnectionType GetConnectionType(const std::string& destination_id);
 
 }  // namespace cast_channel
 

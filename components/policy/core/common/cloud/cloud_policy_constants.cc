@@ -7,8 +7,8 @@
 #include <stdint.h>
 
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/policy/core/common/policy_switches.h"
 
 namespace policy {
@@ -38,6 +38,7 @@ const char kEnrollmentTokenAuthHeaderPrefix[] = "GoogleEnrollmentToken token=";
 const char kValueAppType[] = "Chrome";
 const char kValueDeviceType[] = "2";
 const char kValueRequestAutoEnrollment[] = "enterprise_check";
+const char kValueRequestPsmHasDeviceState[] = "enterprise_psm_check";
 const char kValueRequestPolicy[] = "policy";
 const char kValueRequestRegister[] = "register";
 const char kValueRequestApiAuthorization[] = "api_authorization";
@@ -56,17 +57,19 @@ const char kValueRequestActiveDirectoryEnrollPlayUser[] =
     "active_directory_enroll_play_user";
 const char kValueRequestActiveDirectoryPlayActivity[] =
     "active_directory_play_activity";
-const char kValueRequestCheckDeviceLicense[] = "check_device_license";
 const char kValueRequestAppInstallReport[] = "app_install_report";
 const char kValueRequestTokenEnrollment[] = "register_browser";
 const char kValueRequestChromeDesktopReport[] = "chrome_desktop_report";
+const char kValueRequestChromeOsUserReport[] = "chrome_os_user_report";
 const char kValueRequestInitialEnrollmentStateRetrieval[] =
     "device_initial_enrollment_state";
 const char kValueRequestUploadPolicyValidationReport[] =
     "policy_validation_report";
+const char kValueRequestPublicSamlUser[] = "public_saml_user_request";
+const char kValueRequestCertProvisioningRequest[] = "client_cert_provisioning";
 
 const char kChromeDevicePolicyType[] = "google/chromeos/device";
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 const char kChromeUserPolicyType[] = "google/chromeos/user";
 #elif defined(OS_ANDROID)
 const char kChromeUserPolicyType[] = "google/android/user";
@@ -81,12 +84,18 @@ const char kChromeSigninExtensionPolicyType[] =
     "google/chromeos/signinextension";
 const char kChromeMachineLevelUserCloudPolicyType[] =
     "google/chrome/machine-level-user";
+const char kChromeMachineLevelUserCloudPolicyAndroidType[] =
+    "google/chrome/machine-level-user-android";
+const char kChromeMachineLevelUserCloudPolicyIOSType[] =
+    "google/chrome/machine-level-user-ios";
 const char kChromeMachineLevelExtensionCloudPolicyType[] =
     "google/chrome/machine-level-extension";
+const char kChromeRemoteCommandPolicyType[] = "google/chromeos/remotecommand";
+
+const char kChromeMachineLevelUserCloudPolicyTypeBase64[] =
+    "Z29vZ2xlL2Nocm9tZS9tYWNoaW5lLWxldmVsLXVzZXI=";
 
 }  // namespace dm_protocol
-
-const char kChromePolicyHeader[] = "Chrome-Policy-Posture";
 
 const uint8_t kPolicyVerificationKey[] = {
     0x30, 0x82, 0x01, 0x22, 0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86,
@@ -123,5 +132,7 @@ std::string GetPolicyVerificationKey() {
   return std::string(reinterpret_cast<const char*>(kPolicyVerificationKey),
                      sizeof(kPolicyVerificationKey));
 }
+
+const char kPolicyFCMInvalidationSenderID[] = "1013309121859";
 
 }  // namespace policy

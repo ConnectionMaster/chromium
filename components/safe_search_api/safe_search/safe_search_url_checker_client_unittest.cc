@@ -9,13 +9,14 @@
 
 #include "base/bind.h"
 #include "base/json/json_writer.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_util.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -35,8 +36,8 @@ std::string BuildResponse(bool is_porn) {
     classification_dict->SetBoolean("pornography", is_porn);
   auto classifications_list = std::make_unique<base::ListValue>();
   classifications_list->Append(std::move(classification_dict));
-  dict.SetWithoutPathExpansion("classifications",
-                               std::move(classifications_list));
+  dict.SetKey("classifications",
+              base::Value::FromUniquePtrValue(std::move(classifications_list)));
   std::string result;
   base::JSONWriter::Write(dict, &result);
   return result;
@@ -86,7 +87,7 @@ class SafeSearchURLCheckerClientTest : public testing::Test {
     network::URLLoaderCompletionStatus status(error);
     status.decoded_body_length = response.size();
     test_url_loader_factory_.AddResponse(GURL(kSafeSearchApiUrl),
-                                         network::ResourceResponseHead(),
+                                         network::mojom::URLResponseHead::New(),
                                          response, status);
   }
 
@@ -109,7 +110,7 @@ class SafeSearchURLCheckerClientTest : public testing::Test {
   }
 
   size_t next_url_;
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
   std::unique_ptr<SafeSearchURLCheckerClient> checker_;

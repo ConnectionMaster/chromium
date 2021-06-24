@@ -42,8 +42,8 @@ std::ostream& operator<<(std::ostream& out, const RelativeSize& size) {
 
 }  // namespace
 
-GLScaler::GLScaler(scoped_refptr<ContextProvider> context_provider)
-    : context_provider_(std::move(context_provider)) {
+GLScaler::GLScaler(ContextProvider* context_provider)
+    : context_provider_(context_provider) {
   if (context_provider_) {
     DCHECK(context_provider_->ContextGL());
     context_provider_->AddObserver(this);
@@ -208,14 +208,7 @@ bool GLScaler::Configure(const Parameters& new_params) {
   std::unique_ptr<gfx::ColorTransform> transform;
   if (scaling_color_space_ != params_.output_color_space) {
     transform = gfx::ColorTransform::NewColorTransform(
-        scaling_color_space_, params_.output_color_space,
-        gfx::ColorTransform::Intent::INTENT_PERCEPTUAL);
-    if (!transform->CanGetShaderSource()) {
-      NOTIMPLEMENTED() << "color transform from "
-                       << scaling_color_space_.ToString() << " to "
-                       << params_.output_color_space.ToString();
-      return false;
-    }
+        scaling_color_space_, params_.output_color_space);
   }
   ScalerStage* const final_stage = chain.get();
   final_stage->set_shader_program(
@@ -245,14 +238,7 @@ bool GLScaler::Configure(const Parameters& new_params) {
         input_stage->scale_from()));
     input_stage = input_stage->input_stage();
     transform = gfx::ColorTransform::NewColorTransform(
-        params_.source_color_space, scaling_color_space_,
-        gfx::ColorTransform::Intent::INTENT_PERCEPTUAL);
-    if (!transform->CanGetShaderSource()) {
-      NOTIMPLEMENTED() << "color transform from "
-                       << params_.source_color_space.ToString() << " to "
-                       << scaling_color_space_.ToString();
-      return false;
-    }
+        params_.source_color_space, scaling_color_space_);
     input_stage->set_shader_program(
         GetShaderProgram(input_stage->shader(), intermediate_texture_type,
                          transform.get(), kNoSwizzle));
@@ -1420,8 +1406,8 @@ void GLScaler::ScalerStage::ScaleToMultipleOutputs(
 gfx::RectF GLScaler::ScalerStage::ToSourceRect(
     const gfx::Rect& output_rect) const {
   return gfx::ScaleRect(gfx::RectF(output_rect),
-                        float{scale_from_.x()} / scale_to_.x(),
-                        float{scale_from_.y()} / scale_to_.y());
+                        static_cast<float>(scale_from_.x()) / scale_to_.x(),
+                        static_cast<float>(scale_from_.y()) / scale_to_.y());
 }
 
 gfx::Rect GLScaler::ScalerStage::ToInputRect(gfx::RectF source_rect) const {

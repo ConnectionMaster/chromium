@@ -27,20 +27,26 @@ Polymer({
       type: Boolean,
       value: true,
     },
+
+    /** Whether a shadow should appear over the button bar. */
+    shouldShowShadow: {
+      type: Boolean,
+      value: false,
+    }
   },
 
   /** @private */
-  onForwardButtonClicked_: function() {
+  onForwardButtonClicked_() {
     this.fire('forward-navigation-requested');
   },
 
   /** @private */
-  onCancelButtonClicked_: function() {
+  onCancelButtonClicked_() {
     this.fire('cancel-requested');
   },
 
   /** @private */
-  onBackwardButtonClicked_: function() {
+  onBackwardButtonClicked_() {
     this.fire('backward-navigation-requested');
   },
 });

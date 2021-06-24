@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_ASSISTANT_BROWSER_ACTIONS_SHOW_DETAILS_ACTION_H_
 #define COMPONENTS_AUTOFILL_ASSISTANT_BROWSER_ACTIONS_SHOW_DETAILS_ACTION_H_
 
-#include <string>
-
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -16,13 +14,13 @@ namespace autofill_assistant {
 // An action to show contextual information.
 class ShowDetailsAction : public Action {
  public:
-  explicit ShowDetailsAction(const ActionProto& proto);
+  explicit ShowDetailsAction(ActionDelegate* delegate,
+                             const ActionProto& proto);
   ~ShowDetailsAction() override;
 
  private:
   // Overrides Action:
-  void InternalProcessAction(ActionDelegate* delegate,
-                             ProcessActionCallback callback) override;
+  void InternalProcessAction(ProcessActionCallback callback) override;
 
   DISALLOW_COPY_AND_ASSIGN(ShowDetailsAction);
 };

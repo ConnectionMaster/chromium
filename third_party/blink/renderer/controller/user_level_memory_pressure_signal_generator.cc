@@ -9,6 +9,7 @@
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/system/sys_info.h"
+#include "base/time/default_tick_clock.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
@@ -22,32 +23,68 @@ namespace {
 constexpr double kDefaultMemoryThresholdMB =
     std::numeric_limits<double>::infinity();
 
-constexpr base::FeatureParam<double> k512MBDeviceMemoryThresholdParam{
-    &blink::features::kUserLevelMemoryPressureSignal,
-    "param_512mb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+double MemoryThresholdParamOf512MbDevices() {
+  static const base::FeatureParam<double> k512MBDeviceMemoryThresholdParam{
+      &blink::features::kUserLevelMemoryPressureSignal,
+      "param_512mb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+  return k512MBDeviceMemoryThresholdParam.Get();
+}
 
-constexpr base::FeatureParam<double> k1GBDeviceMemoryThresholdParam{
-    &blink::features::kUserLevelMemoryPressureSignal,
-    "param_1gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+double MemoryThresholdParamOf1GbDevices() {
+  static const base::FeatureParam<double> k1GBDeviceMemoryThresholdParam{
+      &blink::features::kUserLevelMemoryPressureSignal,
+      "param_1gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+  return k1GBDeviceMemoryThresholdParam.Get();
+}
 
-constexpr base::FeatureParam<double> k2GBDeviceMemoryThresholdParam{
-    &blink::features::kUserLevelMemoryPressureSignal,
-    "param_2gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+double MemoryThresholdParamOf2GbDevices() {
+  static const base::FeatureParam<double> k2GBDeviceMemoryThresholdParam{
+      &blink::features::kUserLevelMemoryPressureSignal,
+      "param_2gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+  return k2GBDeviceMemoryThresholdParam.Get();
+}
 
-constexpr base::FeatureParam<double> k3GBDeviceMemoryThresholdParam{
-    &blink::features::kUserLevelMemoryPressureSignal,
-    "param_3gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+double MemoryThresholdParamOf3GbDevices() {
+  static const base::FeatureParam<double> k3GBDeviceMemoryThresholdParam{
+      &blink::features::kUserLevelMemoryPressureSignal,
+      "param_3gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+  return k3GBDeviceMemoryThresholdParam.Get();
+}
 
-constexpr base::FeatureParam<double> k4GBDeviceMemoryThresholdParam{
-    &blink::features::kUserLevelMemoryPressureSignal,
-    "param_4gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+double MemoryThresholdParamOf4GbDevices() {
+  static const base::FeatureParam<double> k4GBDeviceMemoryThresholdParam{
+      &blink::features::kUserLevelMemoryPressureSignal,
+      "param_4gb_device_memory_threshold_mb", kDefaultMemoryThresholdMB};
+  return k4GBDeviceMemoryThresholdParam.Get();
+}
 
-// Minimum time interval between generated memory pressure signals.
 constexpr double kDefaultMinimumIntervalSeconds = 10 * 60;
 
-constexpr base::FeatureParam<double> kMinimumIntervalSeconds{
-    &blink::features::kUserLevelMemoryPressureSignal, "minimum_interval_s",
-    kDefaultMinimumIntervalSeconds};
+// Minimum time interval between generated memory pressure signals.
+base::TimeDelta MinimumIntervalSeconds() {
+  static const base::FeatureParam<double> kMinimumIntervalSeconds{
+      &blink::features::kUserLevelMemoryPressureSignal, "minimum_interval_s",
+      kDefaultMinimumIntervalSeconds};
+  return base::TimeDelta::FromSeconds(kMinimumIntervalSeconds.Get());
+}
+
+double MemoryThresholdParam() {
+  int64_t physical_memory = base::SysInfo::AmountOfPhysicalMemory();
+  double memory_threshold_mb = kDefaultMemoryThresholdMB;
+
+  if (physical_memory > 3.1 * 1024 * 1024 * 1024)
+    memory_threshold_mb = MemoryThresholdParamOf4GbDevices();
+  else if (physical_memory > 2.1 * 1024 * 1024 * 1024)
+    memory_threshold_mb = MemoryThresholdParamOf3GbDevices();
+  else if (physical_memory > 1.1 * 1024 * 1024 * 1024)
+    memory_threshold_mb = MemoryThresholdParamOf2GbDevices();
+  else if (physical_memory > 600 * 1024 * 1024)
+    memory_threshold_mb = MemoryThresholdParamOf1GbDevices();
+  else
+    memory_threshold_mb = MemoryThresholdParamOf512MbDevices();
+
+  return memory_threshold_mb;
+}
 
 }  // namespace
 
@@ -58,42 +95,42 @@ UserLevelMemoryPressureSignalGenerator::Instance() {
   return generator;
 }
 
-UserLevelMemoryPressureSignalGenerator::UserLevelMemoryPressureSignalGenerator()
-    : delayed_report_timer_(
-          Thread::MainThread()->GetTaskRunner(),
-          this,
-          &UserLevelMemoryPressureSignalGenerator::OnTimerFired) {
-  int64_t physical_memory = base::SysInfo::AmountOfPhysicalMemory();
-  if (physical_memory > 3.1 * 1024 * 1024 * 1024)
-    memory_threshold_mb_ = k4GBDeviceMemoryThresholdParam.Get();
-  else if (physical_memory > 2.1 * 1024 * 1024 * 1024)
-    memory_threshold_mb_ = k3GBDeviceMemoryThresholdParam.Get();
-  else if (physical_memory > 1.1 * 1024 * 1024 * 1024)
-    memory_threshold_mb_ = k2GBDeviceMemoryThresholdParam.Get();
-  else if (physical_memory > 600 * 1024 * 1024)
-    memory_threshold_mb_ = k1GBDeviceMemoryThresholdParam.Get();
-  else
-    memory_threshold_mb_ = k512MBDeviceMemoryThresholdParam.Get();
-
-  minimum_interval_ =
-      WTF::TimeDelta::FromSeconds(kMinimumIntervalSeconds.Get());
+// static
+bool UserLevelMemoryPressureSignalGenerator::Enabled() {
+  if (!base::FeatureList::IsEnabled(
+          blink::features::kUserLevelMemoryPressureSignal))
+    return false;
 
   // Can be disabled for certain device classes by setting the field param to an
   // empty string.
-  bool enabled = base::FeatureList::IsEnabled(
-                     blink::features::kUserLevelMemoryPressureSignal) &&
-                 !std::isinf(memory_threshold_mb_);
-  if (enabled) {
-    monitoring_ = true;
-    MemoryUsageMonitor::Instance().AddObserver(this);
-    ThreadScheduler::Current()->AddRAILModeObserver(this);
-  }
+  return !std::isinf(MemoryThresholdParam());
+}
+
+UserLevelMemoryPressureSignalGenerator::UserLevelMemoryPressureSignalGenerator()
+    : memory_threshold_mb_(MemoryThresholdParam()),
+      minimum_interval_(MinimumIntervalSeconds()),
+      delayed_report_timer_(
+          Thread::MainThread()->GetTaskRunner(),
+          this,
+          &UserLevelMemoryPressureSignalGenerator::OnTimerFired),
+      clock_(base::DefaultTickClock::GetInstance()) {
+  DCHECK(base::FeatureList::IsEnabled(
+      blink::features::kUserLevelMemoryPressureSignal));
+  DCHECK(!std::isinf(memory_threshold_mb_));
+
+  MemoryUsageMonitor::Instance().AddObserver(this);
+  ThreadScheduler::Current()->AddRAILModeObserver(this);
 }
 
 UserLevelMemoryPressureSignalGenerator::
     ~UserLevelMemoryPressureSignalGenerator() {
   MemoryUsageMonitor::Instance().RemoveObserver(this);
   ThreadScheduler::Current()->RemoveRAILModeObserver(this);
+}
+
+void UserLevelMemoryPressureSignalGenerator::SetTickClockForTesting(
+    const base::TickClock* clock) {
+  clock_ = clock;
 }
 
 void UserLevelMemoryPressureSignalGenerator::OnRAILModeChanged(
@@ -108,8 +145,8 @@ void UserLevelMemoryPressureSignalGenerator::OnMemoryPing(MemoryUsage usage) {
     return;
   if (usage.private_footprint_bytes / 1024 / 1024 < memory_threshold_mb_)
     return;
-  base::TimeDelta elapsed = WTF::CurrentTimeTicks() - last_generated_;
-  if (elapsed >= WTF::TimeDelta::FromSeconds(kMinimumIntervalSeconds.Get()))
+  base::TimeDelta elapsed = clock_->NowTicks() - last_generated_;
+  if (elapsed >= MinimumIntervalSeconds())
     Generate(usage);
 }
 
@@ -122,9 +159,10 @@ void UserLevelMemoryPressureSignalGenerator::Generate(MemoryUsage usage) {
 
   base::MemoryPressureListener::NotifyMemoryPressure(
       base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL);
-  last_generated_ = WTF::CurrentTimeTicks();
+  last_generated_ = clock_->NowTicks();
 
-  delayed_report_timer_.StartOneShot(TimeDelta::FromSeconds(10), FROM_HERE);
+  delayed_report_timer_.StartOneShot(base::TimeDelta::FromSeconds(10),
+                                     FROM_HERE);
 }
 
 void UserLevelMemoryPressureSignalGenerator::OnTimerFired(TimerBase*) {

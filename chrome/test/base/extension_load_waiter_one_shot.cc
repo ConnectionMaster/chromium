@@ -11,15 +11,12 @@
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/extension_host.h"
 
-ExtensionLoadWaiterOneShot::ExtensionLoadWaiterOneShot() : extension_id_(NULL),
-                                             browser_context_(NULL) {
-}
+ExtensionLoadWaiterOneShot::ExtensionLoadWaiterOneShot() = default;
 
-ExtensionLoadWaiterOneShot::~ExtensionLoadWaiterOneShot() {
-}
+ExtensionLoadWaiterOneShot::~ExtensionLoadWaiterOneShot() = default;
 
 void ExtensionLoadWaiterOneShot::WaitForExtension(const char* extension_id,
-                                  const base::Closure& load_cb) {
+                                                  base::OnceClosure load_cb) {
   CHECK(!extension_id_) <<
       "ExtensionLoadWaiterOneShot should only be used once.";
   extension_id_ = extension_id;
@@ -27,7 +24,7 @@ void ExtensionLoadWaiterOneShot::WaitForExtension(const char* extension_id,
   registrar_.Add(this,
                  extensions::NOTIFICATION_EXTENSION_HOST_DID_STOP_FIRST_LOAD,
                  content::NotificationService::AllSources());
-  load_cb.Run();
+  std::move(load_cb).Run();
   load_looper_->Run();
 }
 

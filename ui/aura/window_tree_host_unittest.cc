@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/aura/test/aura_test_base.h"
-#include "ui/aura/test/test_cursor_client.h"
 #include "ui/aura/test/test_screen.h"
 #include "ui/aura/test/window_event_dispatcher_test_api.h"
 #include "ui/aura/window.h"
@@ -11,7 +12,6 @@
 #include "ui/base/ime/input_method.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
-#include "ui/events/base_event_utils.h"
 #include "ui/events/event_rewriter.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/test/test_event_rewriter.h"
@@ -22,7 +22,9 @@ namespace aura {
 using WindowTreeHostTest = test::AuraTestBase;
 
 TEST_F(WindowTreeHostTest, DPIWindowSize) {
-  gfx::Rect starting_bounds(0, 0, 800, 600);
+  constexpr gfx::Rect starting_bounds(
+      aura::test::AuraTestHelper::kDefaultHostSize);
+
   EXPECT_EQ(starting_bounds.size(), host()->compositor()->size());
   EXPECT_EQ(starting_bounds, host()->GetBoundsInPixels());
   EXPECT_EQ(starting_bounds, root_window()->bounds());
@@ -33,17 +35,64 @@ TEST_F(WindowTreeHostTest, DPIWindowSize) {
   EXPECT_EQ(gfx::Rect(0, 0, 534, 400), root_window()->bounds());
 
   gfx::Transform transform;
-  transform.Translate(0, 1.1f);
+  transform.Translate(0, -1.1f);
   host()->SetRootTransform(transform);
   EXPECT_EQ(gfx::Rect(0, 1, 534, 401), root_window()->bounds());
 
   EXPECT_EQ(starting_bounds, host()->GetBoundsInPixels());
   EXPECT_EQ(gfx::Rect(0, 1, 534, 401), root_window()->bounds());
-  EXPECT_EQ(gfx::Vector2dF(0, 0),
-            host()->compositor()->root_layer()->subpixel_position_offset());
 }
 
-#if defined(OS_CHROMEOS)
+TEST_F(WindowTreeHostTest,
+       ShouldHaveExactRootWindowBoundsWithDisplayRotation1xScale) {
+  test_screen()->SetDeviceScaleFactor(1.f);
+
+  host()->SetBoundsInPixels(gfx::Rect(0, 0, 400, 300));
+  test_screen()->SetDisplayRotation(display::Display::ROTATE_0);
+  EXPECT_EQ(host()->GetBoundsInPixels(), gfx::Rect(0, 0, 400, 300));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().rotation(),
+            display::Display::ROTATE_0);
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().GetSizeInPixel(),
+            gfx::Size(400, 300));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().bounds(),
+            gfx::Rect(0, 0, 400, 300));
+  EXPECT_EQ(gfx::Rect(400, 300), host()->window()->bounds());
+
+  host()->SetBoundsInPixels(gfx::Rect(0, 0, 400, 300));
+  test_screen()->SetDisplayRotation(display::Display::ROTATE_90);
+  EXPECT_EQ(host()->GetBoundsInPixels(), gfx::Rect(0, 0, 400, 300));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().rotation(),
+            display::Display::ROTATE_90);
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().GetSizeInPixel(),
+            gfx::Size(300, 400));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().bounds(),
+            gfx::Rect(0, 0, 300, 400));
+  EXPECT_EQ(gfx::Rect(300, 400), host()->window()->bounds());
+
+  host()->SetBoundsInPixels(gfx::Rect(0, 0, 400, 300));
+  test_screen()->SetDisplayRotation(display::Display::ROTATE_180);
+  EXPECT_EQ(host()->GetBoundsInPixels(), gfx::Rect(0, 0, 400, 300));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().rotation(),
+            display::Display::ROTATE_180);
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().GetSizeInPixel(),
+            gfx::Size(400, 300));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().bounds(),
+            gfx::Rect(0, 0, 400, 300));
+  EXPECT_EQ(gfx::Rect(400, 300), host()->window()->bounds());
+
+  host()->SetBoundsInPixels(gfx::Rect(0, 0, 400, 300));
+  test_screen()->SetDisplayRotation(display::Display::ROTATE_270);
+  EXPECT_EQ(host()->GetBoundsInPixels(), gfx::Rect(0, 0, 400, 300));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().rotation(),
+            display::Display::ROTATE_270);
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().GetSizeInPixel(),
+            gfx::Size(300, 400));
+  EXPECT_EQ(display::Screen::GetScreen()->GetPrimaryDisplay().bounds(),
+            gfx::Rect(0, 0, 300, 400));
+  EXPECT_EQ(gfx::Rect(300, 400), host()->window()->bounds());
+}
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 TEST_F(WindowTreeHostTest, HoldPointerMovesOnChildResizing) {
   aura::WindowEventDispatcher* dispatcher = host()->dispatcher();
 
@@ -67,6 +116,30 @@ TEST_F(WindowTreeHostTest, HoldPointerMovesOnChildResizing) {
 }
 #endif
 
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+// Tests if scale factor changes take effect. Previously a scale factor change
+// wouldn't take effect without a bounds change. For context see
+// https://crbug.com/1087626
+TEST_F(WindowTreeHostTest, ShouldHandleTextScale) {
+  constexpr gfx::Rect starting_bounds(
+      aura::test::AuraTestHelper::kDefaultHostSize);
+  auto asserter = [&](float test_scale_factor) {
+    test_screen()->SetDeviceScaleFactor(test_scale_factor, false);
+
+    EXPECT_EQ(starting_bounds, host()->GetBoundsInPixels());
+    // Size should be rounded up after scaling.
+    EXPECT_EQ(
+        gfx::ScaleToEnclosingRect(starting_bounds, 1.0f / test_scale_factor),
+        root_window()->bounds());
+    EXPECT_EQ(test_scale_factor, host()->device_scale_factor());
+  };
+
+  asserter(1.0f);
+  asserter(1.05f);
+  asserter(1.5f);
+}
+#endif
+
 TEST_F(WindowTreeHostTest, NoRewritesPostIME) {
   ui::test::TestEventRewriter event_rewriter;
   host()->AddEventRewriter(&event_rewriter);
@@ -78,14 +151,6 @@ TEST_F(WindowTreeHostTest, NoRewritesPostIME) {
   EXPECT_EQ(0, event_rewriter.events_seen());
 
   host()->RemoveEventRewriter(&event_rewriter);
-}
-
-TEST_F(WindowTreeHostTest, ColorSpace) {
-  EXPECT_EQ(gfx::ColorSpace::CreateSRGB(),
-            host()->compositor()->output_color_space());
-  test_screen()->SetColorSpace(gfx::ColorSpace::CreateSCRGBLinear());
-  EXPECT_EQ(gfx::ColorSpace::CreateSCRGBLinear(),
-            host()->compositor()->output_color_space());
 }
 
 class TestWindow : public ui::StubWindow {
@@ -112,51 +177,12 @@ class TestWindowTreeHost : public WindowTreeHostPlatform {
     CreateCompositor();
   }
 
-  ui::CursorType GetCursorType() { return GetCursorNative()->native_type(); }
-  void DispatchEventForTest(ui::Event* event) { DispatchEvent(event); }
-
  private:
   DISALLOW_COPY_AND_ASSIGN(TestWindowTreeHost);
 };
 
-class TestCursorClient : public test::TestCursorClient {
- public:
-  explicit TestCursorClient(aura::Window* root_window)
-      : test::TestCursorClient(root_window) {
-    window_ = root_window;
-  }
-  ~TestCursorClient() override {}
-
-  // Overridden from test::TestCursorClient:
-  void SetCursor(gfx::NativeCursor cursor) override {
-    WindowTreeHost* host = window_->GetHost();
-    if (host)
-      host->SetCursor(cursor);
-  }
-
- private:
-  aura::Window* window_;
-  DISALLOW_COPY_AND_ASSIGN(TestCursorClient);
-};
-
 TEST_F(WindowTreeHostTest, LostCaptureDuringTearDown) {
   TestWindowTreeHost host;
-}
-
-// Tests if the cursor type is reset after ET_MOUSE_EXITED event.
-TEST_F(WindowTreeHostTest, ResetCursorOnExit) {
-  TestWindowTreeHost host;
-  aura::TestCursorClient cursor_client(host.window());
-
-  // Set the cursor with the specific type to check if it's reset after
-  // ET_MOUSE_EXITED event.
-  host.SetCursorNative(ui::CursorType::kCross);
-
-  ui::MouseEvent exit_event(ui::ET_MOUSE_EXITED, gfx::Point(), gfx::Point(),
-                            ui::EventTimeForNow(), 0, 0);
-
-  host.DispatchEventForTest(&exit_event);
-  EXPECT_EQ(host.GetCursorType(), ui::CursorType::kNone);
 }
 
 }  // namespace aura

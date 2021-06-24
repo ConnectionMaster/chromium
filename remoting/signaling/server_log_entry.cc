@@ -4,7 +4,7 @@
 
 #include "remoting/signaling/server_log_entry.h"
 
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/system/sys_info.h"
 #include "remoting/base/constants.h"
 #include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
@@ -83,6 +83,16 @@ std::unique_ptr<XmlElement> ServerLogEntry::ToStanza() const {
     stanza->AddAttr(QName(std::string(), iter->first), iter->second);
   }
   return stanza;
+}
+
+apis::v1::GenericLogEntry ServerLogEntry::ToGenericLogEntry() const {
+  apis::v1::GenericLogEntry log_entry;
+  for (auto pair : values_map_) {
+    auto* field = log_entry.add_field();
+    field->set_key(pair.first);
+    field->set_value(pair.second);
+  }
+  return log_entry;
 }
 
 }  // namespace remoting

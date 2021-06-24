@@ -5,10 +5,11 @@
 #include "chrome/browser/ui/ash/tab_scrubber.h"
 
 #include <memory>
+#include <utility>
 
+#include "ash/constants/ash_switches.h"
 #include "ash/display/event_transformation_handler.h"
 #include "ash/shell.h"
-#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
@@ -21,16 +22,17 @@
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
-#include "chromeos/constants/chromeos_switches.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/common/url_constants.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "ui/aura/window.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
 
 namespace {
+
+constexpr int kScrubbingGestureFingerCount = 3;
 
 // Waits until the immersive mode reveal ends, and therefore the top view of
 // the browser is no longer visible.
@@ -59,7 +61,7 @@ class ImmersiveRevealEndedWaiter : public ImmersiveModeController::Observer {
  private:
   void MaybeQuitRunLoop() {
     if (!quit_closure_.is_null())
-      base::ResetAndReturn(&quit_closure_).Run();
+      std::move(quit_closure_).Run();
   }
 
   // ImmersiveModeController::Observer:
@@ -72,7 +74,7 @@ class ImmersiveRevealEndedWaiter : public ImmersiveModeController::Observer {
   }
 
   ImmersiveModeController* immersive_controller_;
-  base::Closure quit_closure_;
+  base::OnceClosure quit_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(ImmersiveRevealEndedWaiter);
 };
@@ -153,7 +155,7 @@ class TabScrubberTest : public InProcessBrowserTest,
                  GetStartX(browser, active_index, direction);
     ui::ScrollEvent scroll_event(ui::ET_SCROLL, gfx::Point(0, 0),
                                  ui::EventTimeForNow(), 0, offset, 0, offset, 0,
-                                 3);
+                                 kScrubbingGestureFingerCount);
     event_generator->Dispatch(&scroll_event);
   }
 
@@ -213,6 +215,25 @@ class TabScrubberTest : public InProcessBrowserTest,
     browser->tab_strip_model()->RemoveObserver(this);
   }
 
+  // Sends alt-tab key press event to start the window cycle list.
+  void StartCyclingWindows(Browser* browser) {
+    auto event_generator = CreateEventGenerator(browser);
+    // Views use VKEY_MENU for both left and right Alt keys.
+    event_generator->PressKey(ui::VKEY_MENU, ui::EF_NONE);
+    event_generator->PressKey(ui::KeyboardCode::VKEY_TAB, ui::EF_ALT_DOWN);
+    event_generator->ReleaseKey(ui::KeyboardCode::VKEY_TAB, ui::EF_ALT_DOWN);
+  }
+
+  // Sends alt-tab key release event to start the window cycle list.
+  void StopCyclingWindows(Browser* browser) {
+    auto event_generator = CreateEventGenerator(browser);
+    event_generator->ReleaseKey(ui::VKEY_MENU, ui::EF_NONE);
+  }
+
+  bool IsTabScrubberEnabled() {
+    return TabScrubber::GetInstance()->GetEnabledForTesting();
+  }
+
   void AddTabs(Browser* browser, int num_tabs) {
     TabStrip* tab_strip = GetTabStrip(browser);
     for (int i = 0; i < num_tabs; ++i)
@@ -221,6 +242,10 @@ class TabScrubberTest : public InProcessBrowserTest,
     ASSERT_EQ(num_tabs, browser->tab_strip_model()->active_index());
     tab_strip->StopAnimating(true);
     ASSERT_FALSE(tab_strip->IsAnimating());
+    // Perform any scheduled layouts so the tabstrip is in a steady state.
+    BrowserView::GetBrowserViewForBrowser(browser)
+        ->GetWidget()
+        ->LayoutRootViewIfNecessary();
   }
 
   // TabStripModelObserver overrides.
@@ -243,23 +268,20 @@ class TabScrubberTest : public InProcessBrowserTest,
   // forces the TabScrubber to complete any pending activation.
   class ScrollGenerator {
    public:
-    // TabScrubber reacts to three-finger scrolls.
-    static const int kNumFingers = 3;
-
     explicit ScrollGenerator(ui::test::EventGenerator* event_generator)
         : event_generator_(event_generator) {
       ui::ScrollEvent fling_cancel(ui::ET_SCROLL_FLING_CANCEL, gfx::Point(),
                                    time_for_next_event_, 0, 0, 0, 0, 0,
-                                   kNumFingers);
+                                   kScrubbingGestureFingerCount);
       event_generator->Dispatch(&fling_cancel);
       if (TabScrubber::GetInstance()->IsActivationPending())
         TabScrubber::GetInstance()->FinishScrub(true);
     }
 
     ~ScrollGenerator() {
-      ui::ScrollEvent fling_start(ui::ET_SCROLL_FLING_START, gfx::Point(),
-                                  time_for_next_event_, 0, last_x_offset_, 0,
-                                  last_x_offset_, 0, kNumFingers);
+      ui::ScrollEvent fling_start(
+          ui::ET_SCROLL_FLING_START, gfx::Point(), time_for_next_event_, 0,
+          last_x_offset_, 0, last_x_offset_, 0, kScrubbingGestureFingerCount);
       event_generator_->Dispatch(&fling_start);
       if (TabScrubber::GetInstance()->IsActivationPending())
         TabScrubber::GetInstance()->FinishScrub(true);
@@ -268,7 +290,8 @@ class TabScrubberTest : public InProcessBrowserTest,
     void GenerateScroll(int x_offset) {
       time_for_next_event_ += base::TimeDelta::FromMilliseconds(100);
       ui::ScrollEvent scroll(ui::ET_SCROLL, gfx::Point(), time_for_next_event_,
-                             0, x_offset, 0, x_offset, 0, kNumFingers);
+                             0, x_offset, 0, x_offset, 0,
+                             kScrubbingGestureFingerCount);
       last_x_offset_ = x_offset;
       event_generator_->Dispatch(&scroll);
       if (TabScrubber::GetInstance()->IsActivationPending())
@@ -287,10 +310,8 @@ class TabScrubberTest : public InProcessBrowserTest,
       Browser* browser) {
     aura::Window* window = browser->window()->GetNativeWindow();
     aura::Window* root = window->GetRootWindow();
-    return std::make_unique<ui::test::EventGenerator>(
-        features::IsUsingWindowService() ? nullptr : root, window);
+    return std::make_unique<ui::test::EventGenerator>(root, window);
   }
-
 
   DISALLOW_COPY_AND_ASSIGN(TabScrubberTest);
 };
@@ -568,4 +589,34 @@ IN_PROC_BROWSER_TEST_F(TabScrubberTest, RTLMoveBefore) {
   browser()->tab_strip_model()->ToggleSelectionAt(2);
   browser()->tab_strip_model()->MoveSelectedTabsTo(2);
   EXPECT_EQ(0, TabScrubber::GetInstance()->highlighted_tab());
+}
+
+// If the window cycle list is open, the tab scrubber should be disabled.
+IN_PROC_BROWSER_TEST_F(TabScrubberTest, DisabledIfWindowCycleListOpen) {
+  AddTabs(browser(), 4);
+
+  // Create a second browser, but don't make it active.
+  Browser* browser2 = CreateBrowser(browser()->profile());
+  browser()->window()->Activate();
+  ASSERT_FALSE(browser2->window()->IsActive());
+  ASSERT_TRUE(browser()->window()->IsActive());
+
+  // Open window cycle list. It should be open now so tab scrubber should be
+  // disabled.
+  StartCyclingWindows(browser());
+  EXPECT_FALSE(IsTabScrubberEnabled());
+  Scrub(browser(), 0, EACH_TAB);
+  EXPECT_EQ(0u, activation_order_.size());
+  EXPECT_EQ(4, browser()->tab_strip_model()->active_index());
+
+  // Stop cycling. Scrub should work again.
+  StopCyclingWindows(browser());
+  EXPECT_TRUE(IsTabScrubberEnabled());
+  Scrub(browser(), 0, EACH_TAB);
+  ASSERT_EQ(4U, activation_order_.size());
+  EXPECT_EQ(3, activation_order_[0]);
+  EXPECT_EQ(2, activation_order_[1]);
+  EXPECT_EQ(1, activation_order_[2]);
+  EXPECT_EQ(0, activation_order_[3]);
+  EXPECT_EQ(0, browser()->tab_strip_model()->active_index());
 }

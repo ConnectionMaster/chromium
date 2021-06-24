@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 
+#include <atomic>
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/wtf/stack_util.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_table.h"
@@ -11,17 +12,17 @@
 
 namespace WTF {
 
+#if !defined(OS_ANDROID)
 base::PlatformThreadId CurrentThread() {
   thread_local base::PlatformThreadId g_id = base::PlatformThread::CurrentId();
   return g_id;
 }
+#endif  // !defined(OS_ANDROID)
 
 // For debugging only -- whether a non-main thread has been created.
-// No synchronization is required, since this is called before any such thread
-// exists.
 
 #if DCHECK_IS_ON()
-static bool g_thread_created = false;
+static std::atomic_bool g_thread_created(false);
 
 bool IsBeforeThreadCreated() {
   return !g_thread_created;
@@ -29,6 +30,10 @@ bool IsBeforeThreadCreated() {
 
 void WillCreateThread() {
   g_thread_created = true;
+}
+
+void SetIsBeforeThreadCreatedForTest() {
+  g_thread_created = false;
 }
 #endif
 

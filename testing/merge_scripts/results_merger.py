@@ -24,12 +24,13 @@ OPTIONAL_MATCHING = (
     'has_wdiff',
     'path_delimiter',
     'pixel_tests_enabled',
-    'random_order_seed',
-    'metadata'
+    'random_order_seed'
     )
 
+# The last shard's value for these fields will show up in the merged results
 OPTIONAL_IGNORED = (
     'layout_tests_dir',
+    'metadata'
     )
 
 # These fields are optional and will be summed together
@@ -114,7 +115,7 @@ def _merge_json_test_result_format(shard_results_list):
   # To make sure that we don't mutate existing shard_results_list.
   shard_results_list = copy.deepcopy(shard_results_list)
   for result_json in shard_results_list:
-    # TODO(tansell): check whether this deepcopy is actually neccessary.
+    # TODO(tansell): check whether this deepcopy is actually necessary.
     result_json = copy.deepcopy(result_json)
 
     # Check the version first

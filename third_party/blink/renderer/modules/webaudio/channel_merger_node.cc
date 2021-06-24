@@ -28,11 +28,11 @@
 
 #include "third_party/blink/renderer/modules/webaudio/channel_merger_node.h"
 
+#include "third_party/blink/renderer/bindings/modules/v8/v8_channel_merger_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
 #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
-#include "third_party/blink/renderer/modules/webaudio/channel_merger_options.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 
@@ -54,6 +54,13 @@ ChannelMergerHandler::ChannelMergerHandler(AudioNode& node,
   AddOutput(number_of_inputs);
 
   Initialize();
+
+  // Until something is connected, we're not actively processing, so disable
+  // outputs so that we produce a single channel of silence.  The graph lock is
+  // needed to be able to disable outputs.
+  BaseAudioContext::GraphAutoLocker context_locker(Context());
+
+  DisableOutputs();
 }
 
 scoped_refptr<ChannelMergerHandler> ChannelMergerHandler::Create(
@@ -65,7 +72,7 @@ scoped_refptr<ChannelMergerHandler> ChannelMergerHandler::Create(
 }
 
 void ChannelMergerHandler::Process(uint32_t frames_to_process) {
-  AudioNodeOutput& output = this->Output(0);
+  AudioNodeOutput& output = Output(0);
   DCHECK_EQ(frames_to_process, output.Bus()->length());
 
   unsigned number_of_output_channels = output.NumberOfChannels();
@@ -73,7 +80,7 @@ void ChannelMergerHandler::Process(uint32_t frames_to_process) {
 
   // Merge multiple inputs into one output.
   for (unsigned i = 0; i < number_of_output_channels; ++i) {
-    AudioNodeInput& input = this->Input(i);
+    AudioNodeInput& input = Input(i);
     DCHECK_EQ(input.NumberOfChannels(), 1u);
     AudioChannel* output_channel = output.Bus()->Channel(i);
     if (input.IsConnected()) {
@@ -171,6 +178,14 @@ ChannelMergerNode* ChannelMergerNode::Create(
   node->HandleChannelOptions(options, exception_state);
 
   return node;
+}
+
+void ChannelMergerNode::ReportDidCreate() {
+  GraphTracer().DidCreateAudioNode(this);
+}
+
+void ChannelMergerNode::ReportWillBeDestroyed() {
+  GraphTracer().WillDestroyAudioNode(this);
 }
 
 }  // namespace blink

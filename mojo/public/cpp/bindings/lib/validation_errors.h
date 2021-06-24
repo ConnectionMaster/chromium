@@ -9,13 +9,14 @@
 #include "base/component_export.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "mojo/public/cpp/bindings/lib/validation_context.h"
 
 namespace mojo {
 
 class Message;
 
 namespace internal {
+
+class ValidationContext;
 
 enum ValidationError {
   // There is no validation error.
@@ -87,7 +88,9 @@ void ReportValidationError(ValidationContext* context,
 COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 void ReportValidationErrorForMessage(mojo::Message* message,
                                      ValidationError error,
-                                     const char* description = nullptr);
+                                     const char* interface_name,
+                                     unsigned int method_ordinal,
+                                     bool is_response);
 
 // This class may be used by tests to suppress validation error logging. This is
 // not thread-safe and must only be instantiated on the main thread with no
@@ -109,7 +112,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
     ValidationErrorObserverForTesting {
  public:
-  explicit ValidationErrorObserverForTesting(const base::Closure& callback);
+  explicit ValidationErrorObserverForTesting(base::RepeatingClosure callback);
   ~ValidationErrorObserverForTesting();
 
   ValidationError last_error() const { return last_error_; }
@@ -120,7 +123,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 
  private:
   ValidationError last_error_;
-  base::Closure callback_;
+  base::RepeatingClosure callback_;
 
   DISALLOW_COPY_AND_ASSIGN(ValidationErrorObserverForTesting);
 };
@@ -148,6 +151,11 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 
   DISALLOW_COPY_AND_ASSIGN(SerializationWarningObserverForTesting);
 };
+
+// Used to record that Deserialize() of a Mojo string failed because it was not
+// valid UTF-8.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+void RecordInvalidStringDeserialization();
 
 }  // namespace internal
 }  // namespace mojo

@@ -20,28 +20,35 @@ class WaylandOutput {
  public:
   class Delegate {
    public:
-    virtual ~Delegate() {}
-
     virtual void OnOutputHandleMetrics(uint32_t output_id,
                                        const gfx::Rect& new_bounds,
                                        int32_t scale_factor) = 0;
+
+   protected:
+    virtual ~Delegate() = default;
   };
 
-  WaylandOutput(const uint32_t output_id, wl_output* output);
+  WaylandOutput(uint32_t output_id, wl_output* output);
   ~WaylandOutput();
 
   void Initialize(Delegate* delegate);
 
-  void TriggerDelegateNotification() const;
+  float GetUIScaleFactor() const;
 
   uint32_t output_id() const { return output_id_; }
   bool has_output(wl_output* output) const { return output_.get() == output; }
+  int32_t scale_factor() const { return scale_factor_; }
+  gfx::Rect bounds() const { return rect_in_physical_pixels_; }
 
   // Tells if the output has already received physical screen dimensions in the
   // global compositor space.
   bool is_ready() const { return !rect_in_physical_pixels_.IsEmpty(); }
 
  private:
+  static constexpr int32_t kDefaultScaleFactor = 1;
+
+  void TriggerDelegateNotifications() const;
+
   // Callback functions used for setting geometric properties of the output
   // and available modes.
   static void OutputHandleGeometry(void* data,
@@ -68,7 +75,7 @@ class WaylandOutput {
 
   const uint32_t output_id_ = 0;
   wl::Object<wl_output> output_;
-  float device_scale_factor_;
+  int32_t scale_factor_ = kDefaultScaleFactor;
   gfx::Rect rect_in_physical_pixels_;
 
   Delegate* delegate_ = nullptr;
@@ -78,4 +85,4 @@ class WaylandOutput {
 
 }  // namespace ui
 
-#endif  // UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_SCREEN_H_
+#endif  // UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_OUTPUT_H_

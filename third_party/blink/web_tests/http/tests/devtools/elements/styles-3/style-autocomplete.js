@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that autocompletions are computed correctly when editing the Styles pane.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
       <style>
@@ -81,6 +81,14 @@
       testAgainstGolden(
           valuePromptFor('transform'), 'tr', false, [], [], next,
           ['translate(10px, 10px)', 'translateY(10px)', 'translate3d(10px, 10px, 10px)']);
+    },
+
+    function testNameValuePresets(next) {
+      testAgainstGolden(namePrompt, 'underli', false, ['text-decoration: underline'], [], next);
+    },
+
+    function testNameValuePresetWithNameMatch(next) {
+      testAgainstGolden(namePrompt, 'display', false, ['display: block'], [], next);
     },
 
     function testValueSubstring(next) {

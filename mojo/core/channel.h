@@ -9,13 +9,14 @@
 
 #include "base/containers/span.h"
 #include "base/macros.h"
+#include "base/memory/nonscannable_memory.h"
 #include "base/memory/ref_counted.h"
+#include "base/process/process.h"
 #include "base/process/process_handle.h"
-#include "base/task_runner.h"
+#include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "mojo/core/connection_params.h"
 #include "mojo/core/platform_handle_in_transit.h"
-#include "mojo/core/scoped_process_handle.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
 
 namespace mojo {
@@ -57,16 +58,19 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
   struct Message;
 
   using MessagePtr = std::unique_ptr<Message>;
+  using AlignedBuffer = std::unique_ptr<char, base::NonScannableDeleter>;
 
   // A message to be written to a channel.
   struct MOJO_SYSTEM_IMPL_EXPORT Message {
+    virtual ~Message() = default;
+
     enum class MessageType : uint16_t {
       // An old format normal message, that uses the LegacyHeader.
       // Only used on Android and ChromeOS.
       // TODO(https://crbug.com/695645): remove legacy support when Arc++ has
       // updated to Mojo with normal versioned messages.
       NORMAL_LEGACY = 0,
-#if defined(OS_MACOSX)
+#if defined(OS_IOS)
       // A control message containing handles to echo back.
       HANDLES_SENT,
       // A control message containing handles that can now be closed.
@@ -74,6 +78,16 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
 #endif
       // A normal message that uses Header and can contain extra header values.
       NORMAL,
+
+      // The UPGRADE_OFFER control message offers to upgrade the channel to
+      // another side who has advertised support for an upgraded channel.
+      UPGRADE_OFFER,
+      // The UPGRADE_ACCEPT control message is returned when an upgrade offer is
+      // accepted.
+      UPGRADE_ACCEPT,
+      // The UPGRADE_REJECT control message is returned when the receiver cannot
+      // or chooses not to upgrade the channel.
+      UPGRADE_REJECT,
     };
 
 #pragma pack(push, 1)
@@ -110,28 +124,13 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
       char padding[6];
     };
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-    union MachPortsEntry {
-      // Used with ChannelPosix.
-      struct {
-        // Index of Mach port in the original vector of
-        // PlatformHandleInTransits.
-        uint16_t index;
-
-        // Mach port name.
-        uint32_t mach_port;
-      } posix_entry;
-
-      // Used with ChannelMac.
-      struct {
-        // The PlatformHandle::Type.
-        uint8_t type;
-      } mach_entry;
-      static_assert(sizeof(mach_port_t) <= sizeof(uint32_t),
-                    "mach_port_t must be no larger than uint32_t");
+#if defined(OS_MAC)
+    struct MachPortsEntry {
+      // The PlatformHandle::Type.
+      uint8_t type;
     };
-    static_assert(sizeof(MachPortsEntry) == 6,
-                  "sizeof(MachPortsEntry) must be 6 bytes");
+    static_assert(sizeof(MachPortsEntry) == 1,
+                  "sizeof(MachPortsEntry) must be 1 byte");
 
     // Structure of the extra header field when present on OSX.
     struct MachPortsExtraHeader {
@@ -162,14 +161,25 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
 
     // Allocates and owns a buffer for message data with enough capacity for
     // |payload_size| bytes plus a header, plus |max_handles| platform handles.
-    Message(size_t payload_size, size_t max_handles);
-    Message(size_t payload_size, size_t max_handles, MessageType message_type);
-    Message(size_t capacity, size_t payload_size, size_t max_handles);
-    Message(size_t capacity,
-            size_t max_handles,
-            size_t payload_size,
-            MessageType message_type);
-    ~Message();
+    static MessagePtr CreateMessage(size_t payload_size, size_t max_handles);
+    static MessagePtr CreateMessage(size_t payload_size,
+                                    size_t max_handles,
+                                    MessageType message_type);
+    static MessagePtr CreateMessage(size_t capacity,
+                                    size_t payload_size,
+                                    size_t max_handles);
+    static MessagePtr CreateMessage(size_t capacity,
+                                    size_t max_handles,
+                                    size_t payload_size,
+                                    MessageType message_type);
+
+    // Extends the portion of the total message capacity which contains
+    // meaningful payload data. Storage capacity which falls outside of this
+    // range is not transmitted when the message is sent.
+    //
+    // If the message's current capacity is not large enough to accommodate the
+    // new payload size, it will be reallocated accordingly.
+    static void ExtendPayload(MessagePtr& message, size_t new_payload_size);
 
     static MessagePtr CreateRawForFuzzing(base::span<const unsigned char> data);
 
@@ -178,22 +188,17 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
     static MessagePtr Deserialize(
         const void* data,
         size_t data_num_bytes,
+        HandlePolicy handle_policy,
         base::ProcessHandle from_process = base::kNullProcessHandle);
 
-    const void* data() const { return data_; }
+    virtual const void* data() const = 0;
+    virtual void* mutable_data() const = 0;
+
     size_t data_num_bytes() const { return size_; }
 
     // The current capacity of the message buffer, not counting internal header
     // data.
-    size_t capacity() const;
-
-    // Extends the portion of the total message capacity which contains
-    // meaningful payload data. Storage capacity which falls outside of this
-    // range is not transmitted when the message is sent.
-    //
-    // If the message's current capacity is not large enough to accommodate the
-    // new payload size, it will be reallocated accordingly.
-    void ExtendPayload(size_t new_payload_size);
+    virtual size_t capacity() const = 0;
 
     const void* extra_header() const;
     void* mutable_extra_header();
@@ -205,9 +210,6 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
 
     size_t num_handles() const;
     bool has_handles() const;
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-    bool has_mach_ports() const;
-#endif
 
     bool is_legacy_message() const;
     LegacyHeader* legacy_header() const;
@@ -215,43 +217,23 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
 
     // Note: SetHandles() and TakeHandles() invalidate any previous value of
     // handles().
-    void SetHandles(std::vector<PlatformHandle> new_handles);
-    void SetHandles(std::vector<PlatformHandleInTransit> new_handles);
-    std::vector<PlatformHandleInTransit> TakeHandles();
-    // Version of TakeHandles that returns a vector of platform handles suitable
-    // for transfer over an underlying OS mechanism. i.e. file descriptors over
-    // a unix domain socket. Any handle that cannot be transferred this way,
-    // such as Mach ports, will be removed.
-    std::vector<PlatformHandleInTransit> TakeHandlesForTransport();
+    virtual void SetHandles(std::vector<PlatformHandle> new_handles) = 0;
+    virtual void SetHandles(
+        std::vector<PlatformHandleInTransit> new_handles) = 0;
+    virtual std::vector<PlatformHandleInTransit> TakeHandles() = 0;
+    virtual size_t NumHandlesForTransit() const = 0;
 
     void SetVersionForTest(uint16_t version_number);
 
-   private:
-    Message();
+   protected:
+    Message() = default;
 
-    // The message data buffer.
-    char* data_ = nullptr;
-
-    // The capacity of the buffer at |data_|.
-    size_t capacity_ = 0;
+    virtual bool ExtendPayload(size_t new_payload_size) = 0;
 
     // The size of the message. This is the portion of |data_| that should
     // be transmitted if the message is written to a channel. Includes all
     // headers and user payload.
     size_t size_ = 0;
-
-    // Maximum number of handles which may be attached to this message.
-    size_t max_handles_ = 0;
-
-    std::vector<PlatformHandleInTransit> handle_vector_;
-
-#if defined(OS_WIN)
-    // On Windows, handles are serialised into the extra header section.
-    HandleEntry* handles_ = nullptr;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-    // On OSX, handles are serialised into the extra header section.
-    MachPortsExtraHeader* mach_ports_header_ = nullptr;
-#endif
 
     DISALLOW_COPY_AND_ASSIGN(Message);
   };
@@ -275,7 +257,7 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
   // was created (see Channel::Create).
   class Delegate {
    public:
-    virtual ~Delegate() {}
+    virtual ~Delegate() = default;
 
     // Notify of a received message. |payload| is not owned and must not be
     // retained; it will be null if |payload_size| is 0. |handles| are
@@ -296,7 +278,22 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
       Delegate* delegate,
       ConnectionParams connection_params,
       HandlePolicy handle_policy,
-      scoped_refptr<base::TaskRunner> io_task_runner);
+      scoped_refptr<base::SingleThreadTaskRunner> io_task_runner);
+
+#if defined(OS_POSIX) && !defined(OS_NACL) && !defined(OS_MAC)
+  // At this point only ChannelPosix needs InitFeatures.
+  static void set_posix_use_writev(bool use_writev);
+#endif  // defined(OS_POSIX) && !defined(OS_NACL) && !defined(OS_MAC)
+
+  static void set_use_trivial_messages(bool use_trivial_messages);
+
+  // SupportsChannelUpgrade will return true if this channel is capable of being
+  // upgraded.
+  static bool SupportsChannelUpgrade();
+
+  // OfferChannelUpgrade will inform this channel that it should offer an
+  // upgrade to the remote.
+  void OfferChannelUpgrade();
 
   // Allows the caller to change the Channel's HandlePolicy after construction.
   void set_handle_policy(HandlePolicy policy) { handle_policy_ = policy; }
@@ -310,11 +307,11 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
 
   // Sets the process handle of the remote endpoint to which this Channel is
   // connected. If called at all, must be called only once, and before Start().
-  void set_remote_process(ScopedProcessHandle remote_process) {
-    DCHECK(!remote_process_.is_valid());
+  void set_remote_process(base::Process remote_process) {
+    DCHECK(!remote_process_.IsValid());
     remote_process_ = std::move(remote_process);
   }
-  const ScopedProcessHandle& remote_process() const { return remote_process_; }
+  const base::Process& remote_process() const { return remote_process_; }
 
   // Begin processing I/O events. Delegate methods must only be invoked after
   // this call.
@@ -342,6 +339,9 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
   virtual ~Channel();
 
   Delegate* delegate() const { return delegate_; }
+
+  // Allows the caller to determine the current HandlePolicy.
+  HandlePolicy handle_policy() const { return handle_policy_; }
 
   // Called by the implementation when it wants somewhere to stick data.
   // |*buffer_capacity| may be set by the caller to indicate the desired buffer
@@ -425,7 +425,7 @@ class MOJO_SYSTEM_IMPL_EXPORT Channel
   const std::unique_ptr<ReadBuffer> read_buffer_;
 
   // Handle to the process on the other end of this Channel, iff known.
-  ScopedProcessHandle remote_process_;
+  base::Process remote_process_;
 
   DISALLOW_COPY_AND_ASSIGN(Channel);
 };

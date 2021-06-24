@@ -6,14 +6,13 @@
 #define CHROME_BROWSER_PROFILES_PROFILE_METRICS_H_
 
 #include <stddef.h>
-#include <string>
 
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/signin/core/browser/signin_header_helper.h"
 
 class Profile;
-class ProfileManager;
+class ProfileAttributesEntry;
+class ProfileAttributesStorage;
 
 namespace base {
 class FilePath;
@@ -23,17 +22,56 @@ namespace profile_metrics {
 struct Counts;
 }
 
+#if defined(OS_ANDROID)
+namespace signin {
+enum GAIAServiceType : int;
+}
+#endif  // defined(OS_ANDROID)
+
 class ProfileMetrics {
  public:
-
   // Enum for counting the ways users were added.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
   enum ProfileAdd {
-    ADD_NEW_USER_ICON = 0,      // User adds new user from icon menu
-    ADD_NEW_USER_MENU,          // User adds new user from menu bar
-    ADD_NEW_USER_DIALOG,        // User adds new user from create-profile dialog
-    ADD_NEW_USER_MANAGER,       // User adds new user from User Manager
-    ADD_NEW_USER_LAST_DELETED,  // Auto-created after deleting last user
-    NUM_PROFILE_ADD_METRICS
+    // User adds new user from icon menu -- no longer used
+    // ADD_NEW_USER_ICON = 0,
+    // User adds new user from menu bar -- no longer used
+    // ADD_NEW_USER_MENU = 1,
+    // User adds new profile from the (old) create-profile dialog
+    ADD_NEW_USER_DIALOG = 2,
+    // User adds new local profile from Profile Picker
+    ADD_NEW_PROFILE_PICKER_LOCAL = 3,
+    // Auto-created after deleting last user
+    ADD_NEW_USER_LAST_DELETED = 4,
+    // Created by the sign-in interception prompt
+    ADD_NEW_USER_SIGNIN_INTERCEPTION = 5,
+    // Created during the sync flow (to avoid clash with data in the existing
+    // profile)
+    ADD_NEW_USER_SYNC_FLOW = 6,
+    // User adds new signed-in profile from Profile Picker
+    ADD_NEW_PROFILE_PICKER_SIGNED_IN = 7,
+    kMaxValue = ADD_NEW_PROFILE_PICKER_SIGNED_IN
+  };
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class ProfileAddSignInFlowOutcome {
+    kConsumerSync = 0,
+    kConsumerSigninOnly = 1,
+    kConsumerSyncSettings = 2,
+    kEnterpriseSync = 3,
+    kEnterpriseSigninOnly = 4,
+    kEnterpriseSigninOnlyNotLinked = 5,
+    kEnterpriseSyncSettings = 6,
+    kEnterpriseSyncDisabled = 7,
+    // Includes the case that the account is already syncing in another profile.
+    kLoginError = 8,
+    kSAML = 9,
+    kAbortedBeforeSignIn = 10,
+    kAbortedAfterSignIn = 11,
+    kAbortedOnEnterpriseWelcome = 12,
+    kMaxValue = kAbortedOnEnterpriseWelcome,
   };
 
   enum ProfileDelete {
@@ -56,44 +94,16 @@ class ProfileMetrics {
     NUM_DELETE_PROFILE_METRICS
   };
 
-  // Enum for counting the ways user profiles and menus were opened.
-  enum ProfileOpen {
-    NTP_AVATAR_BUBBLE = 0,   // User opens avatar menu from NTP
-    ICON_AVATAR_BUBBLE,      // User opens the avatar menu from button
-    SWITCH_PROFILE_ICON,     // User switches profiles from icon menu
-    SWITCH_PROFILE_MENU,     // User switches profiles from menu bar
-    SWITCH_PROFILE_DOCK,     // User switches profiles from dock (Mac-only)
-    OPEN_USER_MANAGER,       // User opens the User Manager
-    SWITCH_PROFILE_MANAGER,  // User switches profiles from the User Manager
-    SWITCH_PROFILE_UNLOCK,   // User switches to locked profile via User Manager
-    SWITCH_PROFILE_GUEST,    // User switches to guest profile
-    SWITCH_PROFILE_CONTEXT_MENU,  // User switches profiles from context menu
-    SWITCH_PROFILE_DUPLICATE,     // User switches to existing duplicate profile
-    NUM_PROFILE_OPEN_METRICS
-  };
-
-  // Enum for getting net counts for adding and deleting users.
-  enum ProfileNetUserCounts {
-    ADD_NEW_USER = 0,         // Total count of add new user
-    PROFILE_DELETED,          // User deleted a profile
-    NUM_PROFILE_NET_METRICS
-  };
-
-  // Sign in is logged once the user has entered their GAIA information.
-  // The options for sync are logged after the user has submitted the options
-  // form. See sync_setup_handler.h.
+  // The options for sync are logged after the user has changed their sync
+  // setting. See people_handler.h.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
   enum ProfileSync {
-    SYNC_CUSTOMIZE = 0,       // User decided to customize sync
-    SYNC_CHOOSE,              // User chose what to sync
-    SYNC_ENCRYPT,             // User has chosen to encrypt all data
-    SYNC_PASSPHRASE,          // User is using a passphrase
+    SYNC_CUSTOMIZE = 0,           // User decided to customize sync
+    SYNC_CHOOSE,                  // User chose what to sync
+    SYNC_CREATED_NEW_PASSPHRASE,  // User created a passphrase to encrypt data
+    SYNC_ENTERED_EXISTING_PASSPHRASE,  // User entered an existing passphrase
     NUM_PROFILE_SYNC_METRICS
-  };
-
-  enum ProfileType {
-    ORIGINAL = 0,             // Refers to the original/default profile
-    SECONDARY,                // Refers to a user-created profile
-    NUM_PROFILE_TYPE_METRICS
   };
 
   enum ProfileGaia {
@@ -109,29 +119,6 @@ class ProfileMetrics {
     AUTH_FAILED,          // Profile failed authentication
     AUTH_FAILED_OFFLINE,  // Profile failed authentication and was offline
     NUM_PROFILE_AUTH_METRICS
-  };
-
-  // Enum for tracking user interactions with the user menu and user manager.
-  // Interactions initiated from the content area are logged into a different
-  // histogram from those that were initiated from the avatar button.
-  // An example of the interaction beginning in the content area is
-  // clicking "Manage Accounts" within account selection on a Google property.
-  enum ProfileDesktopMenu {
-    // User opened the user menu, and clicked lock.
-    PROFILE_DESKTOP_MENU_LOCK = 0,
-    // User opened the user menu, and removed an account.
-    PROFILE_DESKTOP_MENU_REMOVE_ACCT,
-    // User opened the user menu, and started adding an account.
-    PROFILE_DESKTOP_MENU_ADD_ACCT,
-    // User opened the user menu, and changed the profile name.
-    PROFILE_DESKTOP_MENU_EDIT_NAME,
-    // User opened the user menu, and started selecting a new profile image.
-    PROFILE_DESKTOP_MENU_EDIT_IMAGE,
-    // User opened the user menu, and opened the user manager.
-    PROFILE_DESKTOP_MENU_OPEN_USER_MANAGER,
-    // User opened the user menu, and selected Go Incognito.
-    DEPRECATED_PROFILE_DESKTOP_MENU_GO_INCOGNITO,
-    NUM_PROFILE_DESKTOP_MENU_METRICS,
   };
 
 #if defined(OS_ANDROID)
@@ -166,30 +153,22 @@ class ProfileMetrics {
   };
 #endif  // defined(OS_ANDROID)
 
+  // Returns whether profile |entry| is considered active for metrics.
+  static bool IsProfileActive(const ProfileAttributesEntry* entry);
+
   // Count and return summary information about the profiles currently in the
-  // |manager|. This information is returned in the output variable |counts|.
-  static bool CountProfileInformation(ProfileManager* manager,
+  // |storage|. This information is returned in the output variable |counts|.
+  static void CountProfileInformation(ProfileAttributesStorage* storage,
                                       profile_metrics::Counts* counts);
 
-#if !defined(OS_ANDROID)
-  static void LogNumberOfProfileSwitches();
-#endif
-
-  static void LogNumberOfProfiles(ProfileManager* manager);
+  static void LogNumberOfProfiles(ProfileAttributesStorage* storage);
   static void LogProfileAddNewUser(ProfileAdd metric);
+  static void LogProfileAddSignInFlowOutcome(
+      ProfileAddSignInFlowOutcome outcome);
   static void LogProfileAvatarSelection(size_t icon_index);
   static void LogProfileDeleteUser(ProfileDelete metric);
-  static void LogProfileOpenMethod(ProfileOpen metric);
-#if !defined(OS_ANDROID)
-  static void LogProfileSwitch(ProfileOpen metric,
-                               ProfileManager* manager,
-                               const base::FilePath& profile_path);
-#endif
   static void LogProfileSwitchGaia(ProfileGaia metric);
   static void LogProfileSyncInfo(ProfileSync metric);
-  static void LogProfileAuthResult(ProfileAuth metric);
-  static void LogProfileDesktopMenu(ProfileDesktopMenu metric,
-                                    signin::GAIAServiceType gaia_service);
   static void LogProfileDelete(bool profile_was_signed_in);
   static void LogTimeToOpenUserManager(const base::TimeDelta& time_to_open);
 
@@ -204,6 +183,5 @@ class ProfileMetrics {
   static void LogProfileLaunch(Profile* profile);
   static void LogProfileUpdate(const base::FilePath& profile_path);
 };
-
 
 #endif  // CHROME_BROWSER_PROFILES_PROFILE_METRICS_H_

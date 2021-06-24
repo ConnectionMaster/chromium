@@ -4,7 +4,7 @@
 
 #include "ash/highlighter/highlighter_controller_test_api.h"
 
-#include "ash/components/fast_ink/fast_ink_points.h"
+#include "ash/fast_ink/fast_ink_points.h"
 #include "ash/highlighter/highlighter_controller.h"
 #include "ash/highlighter/highlighter_view.h"
 #include "base/timer/timer.h"
@@ -13,38 +13,32 @@ namespace ash {
 
 HighlighterControllerTestApi::HighlighterControllerTestApi(
     HighlighterController* instance)
-    : binding_(this), instance_(instance) {
+    : instance_(instance) {
   AttachClient();
 }
 
 HighlighterControllerTestApi::~HighlighterControllerTestApi() {
-  if (binding_.is_bound())
+  if (scoped_observation_)
     DetachClient();
-  if (instance_->enabled())
+  if (instance_->is_enabled())
     instance_->SetEnabled(false);
   instance_->DestroyPointerView();
 }
 
 void HighlighterControllerTestApi::AttachClient() {
-  DCHECK(!binding_.is_bound());
-  DCHECK(!highlighter_controller_);
-  instance_->BindRequest(mojo::MakeRequest(&highlighter_controller_));
-  ash::mojom::HighlighterControllerClientPtr client;
-  binding_.Bind(mojo::MakeRequest(&client));
-  highlighter_controller_->SetClient(std::move(client));
-  highlighter_controller_.FlushForTesting();
+  scoped_observation_ = std::make_unique<ScopedObservation>(this);
+  scoped_observation_->Observe(instance_);
 }
 
 void HighlighterControllerTestApi::DetachClient() {
-  DCHECK(binding_.is_bound());
-  DCHECK(highlighter_controller_);
-  highlighter_controller_ = nullptr;
-  binding_.Close();
-  instance_->FlushMojoForTesting();
+  scoped_observation_.reset();
+  instance_->CallExitCallback();
 }
 
 void HighlighterControllerTestApi::SetEnabled(bool enabled) {
-  instance_->SetEnabled(enabled);
+  instance_->UpdateEnabledState(
+      enabled ? HighlighterEnabledState::kEnabled
+              : HighlighterEnabledState::kDisabledBySessionComplete);
 }
 
 void HighlighterControllerTestApi::DestroyPointerView() {
@@ -59,15 +53,15 @@ void HighlighterControllerTestApi::SimulateInterruptedStrokeTimeout() {
 }
 
 bool HighlighterControllerTestApi::IsShowingHighlighter() const {
-  return instance_->highlighter_view_.get();
+  return !!instance_->highlighter_view_widget_;
 }
 
 bool HighlighterControllerTestApi::IsFadingAway() const {
-  return IsShowingHighlighter() && instance_->highlighter_view_->animating();
+  return IsShowingHighlighter() && instance_->GetHighlighterView()->animating();
 }
 
 bool HighlighterControllerTestApi::IsShowingSelectionResult() const {
-  return instance_->result_view_.get();
+  return !!instance_->result_view_widget_;
 }
 
 bool HighlighterControllerTestApi::IsWaitingToResumeStroke() const {
@@ -76,30 +70,31 @@ bool HighlighterControllerTestApi::IsWaitingToResumeStroke() const {
 }
 
 const fast_ink::FastInkPoints& HighlighterControllerTestApi::points() const {
-  return instance_->highlighter_view_->points_;
+  return instance_->GetHighlighterView()->points_;
 }
 
 const fast_ink::FastInkPoints& HighlighterControllerTestApi::predicted_points()
     const {
-  return instance_->highlighter_view_->predicted_points_;
+  return instance_->GetHighlighterView()->predicted_points_;
 }
 
 bool HighlighterControllerTestApi::HandleEnabledStateChangedCalled() {
-  instance_->FlushMojoForTesting();
   return handle_enabled_state_changed_called_;
 }
 
 bool HighlighterControllerTestApi::HandleSelectionCalled() {
-  instance_->FlushMojoForTesting();
   return handle_selection_called_;
 }
 
-void HighlighterControllerTestApi::HandleSelection(const gfx::Rect& rect) {
+void HighlighterControllerTestApi::OnHighlighterSelectionRecognized(
+    const gfx::Rect& rect) {
   handle_selection_called_ = true;
   selection_ = rect;
 }
 
-void HighlighterControllerTestApi::HandleEnabledStateChange(bool enabled) {
+void HighlighterControllerTestApi::OnHighlighterEnabledChanged(
+    HighlighterEnabledState state) {
+  const bool enabled = (state == HighlighterEnabledState::kEnabled);
   handle_enabled_state_changed_called_ = true;
   enabled_ = enabled;
 }

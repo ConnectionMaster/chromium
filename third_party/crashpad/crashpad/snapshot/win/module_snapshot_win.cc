@@ -19,7 +19,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "client/crashpad_info.h"
 #include "client/simple_address_range_bag.h"
-#include "snapshot/win/memory_snapshot_win.h"
+#include "snapshot/memory_snapshot_generic.h"
 #include "snapshot/win/pe_image_annotations_reader.h"
 #include "snapshot/win/pe_image_reader.h"
 #include "util/misc/tri_state.h"
@@ -44,8 +44,7 @@ ModuleSnapshotWin::ModuleSnapshotWin()
       age_(0),
       initialized_() {}
 
-ModuleSnapshotWin::~ModuleSnapshotWin() {
-}
+ModuleSnapshotWin::~ModuleSnapshotWin() {}
 
 bool ModuleSnapshotWin::Initialize(
     ProcessReaderWin* process_reader,
@@ -59,7 +58,7 @@ bool ModuleSnapshotWin::Initialize(
   if (!pe_image_reader_->Initialize(process_reader_,
                                     process_reader_module.dll_base,
                                     process_reader_module.size,
-                                    base::UTF16ToUTF8(name_))) {
+                                    base::WideToUTF8(name_))) {
     return false;
   }
 
@@ -74,7 +73,7 @@ bool ModuleSnapshotWin::Initialize(
     // would do). As we don't expect to ever encounter a module that wouldn't be
     // using .PDB that we actually have symbols for, we simply set a plausible
     // name here, but this will never correspond to symbols that we have.
-    pdb_name_ = base::UTF16ToUTF8(name_);
+    pdb_name_ = base::WideToUTF8(name_);
   }
 
   if (!memory_range_.Initialize(process_reader_->Memory(),
@@ -111,7 +110,7 @@ void ModuleSnapshotWin::GetCrashpadOptions(CrashpadInfoClientOptions* options) {
 
 std::string ModuleSnapshotWin::Name() const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
-  return base::UTF16ToUTF8(name_);
+  return base::WideToUTF8(name_);
 }
 
 uint64_t ModuleSnapshotWin::Address() const {
@@ -193,6 +192,11 @@ void ModuleSnapshotWin::UUIDAndAge(crashpad::UUID* uuid, uint32_t* age) const {
 std::string ModuleSnapshotWin::DebugFileName() const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
   return pdb_name_;
+}
+
+std::vector<uint8_t> ModuleSnapshotWin::BuildID() const {
+  INITIALIZATION_STATE_DCHECK_VALID(initialized_);
+  return std::vector<uint8_t>();
 }
 
 std::vector<std::string> ModuleSnapshotWin::AnnotationsVector() const {
@@ -295,7 +299,7 @@ void ModuleSnapshotWin::GetCrashpadExtraMemoryRanges(
           simple_ranges.size() * sizeof(simple_ranges[0]),
           &simple_ranges[0])) {
     LOG(WARNING) << "could not read simple address_ranges from "
-                 << base::UTF16ToUTF8(name_);
+                 << base::WideToUTF8(name_);
     return;
   }
 
@@ -318,15 +322,15 @@ void ModuleSnapshotWin::GetCrashpadUserMinidumpStreams(
     if (!process_reader_->Memory()->Read(
             cur, sizeof(list_entry), &list_entry)) {
       LOG(WARNING) << "could not read user data stream entry from "
-                   << base::UTF16ToUTF8(name_);
+                   << base::WideToUTF8(name_);
       return;
     }
 
     if (list_entry.size != 0) {
-      std::unique_ptr<internal::MemorySnapshotWin> memory(
-          new internal::MemorySnapshotWin());
+      std::unique_ptr<internal::MemorySnapshotGeneric> memory(
+          new internal::MemorySnapshotGeneric());
       memory->Initialize(
-          process_reader_, list_entry.base_address, list_entry.size);
+          process_reader_->Memory(), list_entry.base_address, list_entry.size);
       streams->push_back(std::make_unique<UserMinidumpStream>(
           list_entry.stream_type, memory.release()));
     }

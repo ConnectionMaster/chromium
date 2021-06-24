@@ -4,6 +4,8 @@
 
 #include "components/ui_devtools/views/window_element.h"
 
+#include <memory>
+
 #include "components/ui_devtools/Protocol.h"
 #include "components/ui_devtools/ui_devtools_unittest_utils.h"
 #include "ui/aura/window.h"
@@ -21,15 +23,17 @@ class WindowElementTest : public views::ViewsTestBase {
   void SetUp() override {
     views::ViewsTestBase::SetUp();
 
-    window_.reset(new aura::Window(nullptr, aura::client::WINDOW_TYPE_NORMAL));
+    window_ = std::make_unique<aura::Window>(nullptr,
+                                             aura::client::WINDOW_TYPE_NORMAL);
     window_->Init(ui::LAYER_NOT_DRAWN);
     aura::Window* root_window = GetContext();
     DCHECK(root_window);
     root_window->AddChild(window_.get());
-    delegate_.reset(new testing::NiceMock<MockUIElementDelegate>);
+    delegate_ = std::make_unique<testing::NiceMock<MockUIElementDelegate>>();
     // |OnUIElementAdded| is called on element creation.
     EXPECT_CALL(*delegate_, OnUIElementAdded(_, _)).Times(1);
-    element_.reset(new WindowElement(window_.get(), delegate_.get(), nullptr));
+    element_ = std::make_unique<WindowElement>(window_.get(), delegate_.get(),
+                                               nullptr);
   }
 
   void TearDown() override {
@@ -103,22 +107,15 @@ TEST_F(WindowElementTest, GetAttributes) {
   std::string window_name("A window name");
   window()->SetName(window_name);
 
-  std::unique_ptr<protocol::Array<std::string>> attrs =
-      element()->GetAttributes();
+  std::vector<std::string> attrs = element()->GetAttributes();
 
-  DCHECK_EQ(attrs->length(), 4U);
-
-  EXPECT_EQ(attrs->get(0), "name");
-  EXPECT_EQ(attrs->get(1), window_name);
-
-  DCHECK(!wm::IsActiveWindow(window()));
-  EXPECT_EQ(attrs->get(2), "active");
-  EXPECT_EQ(attrs->get(3), "false");
+  ASSERT_FALSE(wm::IsActiveWindow(window()));
+  EXPECT_THAT(attrs,
+              testing::ElementsAre("name", window_name, "active", "false"));
 
   wm::ActivateWindow(window());
   attrs = element()->GetAttributes();
-  DCHECK_EQ(attrs->length(), 4U);
-  EXPECT_EQ(attrs->get(2), "active");
-  EXPECT_EQ(attrs->get(3), "true");
+  EXPECT_THAT(attrs,
+              testing::ElementsAre("name", window_name, "active", "true"));
 }
 }  // namespace ui_devtools

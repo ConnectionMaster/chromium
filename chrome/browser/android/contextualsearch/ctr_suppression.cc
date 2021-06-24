@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <chrome/browser/android/contextualsearch/ctr_suppression.h>
+#include "chrome/browser/android/contextualsearch/ctr_suppression.h"
+
+#include <memory>
 #include <set>
 
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
-#include "jni/CtrSuppression_jni.h"
+#include "chrome/android/chrome_jni_headers/CtrSuppression_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF8ToJavaString;
@@ -22,7 +24,7 @@ CtrSuppression::CtrSuppression(JNIEnv* env, jobject obj)
   // NOTE: Creating the aggregator needs to be done after setting up the Java
   // object because the constructor will call back through the Java object
   // to access storage.
-  aggregator_.reset(new CtrAggregator(*this));
+  aggregator_ = std::make_unique<CtrAggregator>(*this);
   DCHECK(aggregator_);
 }
 
@@ -79,18 +81,47 @@ jfloat CtrSuppression::GetPrevious28DayCtr(JNIEnv* env,
 
 // WeeklyActivityStorage overrides
 
-int CtrSuppression::ReadStorage(std::string storage_bucket) {
+int CtrSuppression::ReadClicksForWeekRemainder(int week_remainder) {
   JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jstring> j_storage_bucket =
-      ConvertUTF8ToJavaString(env, storage_bucket);
-  return Java_CtrSuppression_readInt(env, java_object_, j_storage_bucket);
+  return Java_CtrSuppression_readClicks(env, java_object_, week_remainder);
 }
 
-void CtrSuppression::WriteStorage(std::string storage_bucket, int value) {
+int CtrSuppression::ReadImpressionsForWeekRemainder(int week_remainder) {
   JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jstring> j_storage_bucket =
-      ConvertUTF8ToJavaString(env, storage_bucket);
-  Java_CtrSuppression_writeInt(env, java_object_, j_storage_bucket, value);
+  return Java_CtrSuppression_readImpressions(env, java_object_, week_remainder);
+}
+
+int CtrSuppression::ReadOldestWeekWritten() {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_CtrSuppression_readOldestWeek(env, java_object_);
+}
+
+int CtrSuppression::ReadNewestWeekWritten() {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_CtrSuppression_readNewestWeek(env, java_object_);
+}
+
+void CtrSuppression::WriteClicksForWeekRemainder(int week_remainder,
+                                                 int value) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_CtrSuppression_writeClicks(env, java_object_, week_remainder, value);
+}
+
+void CtrSuppression::WriteImpressionsForWeekRemainder(int week_remainder,
+                                                      int value) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_CtrSuppression_writeImpressions(env, java_object_, week_remainder,
+                                       value);
+}
+
+void CtrSuppression::WriteOldestWeekWritten(int value) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_CtrSuppression_writeOldestWeek(env, java_object_, value);
+}
+
+void CtrSuppression::WriteNewestWeekWritten(int value) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_CtrSuppression_writeNewestWeek(env, java_object_, value);
 }
 
 // Java wrapper boilerplate

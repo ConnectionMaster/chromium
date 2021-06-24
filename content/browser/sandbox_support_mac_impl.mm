@@ -10,6 +10,7 @@
 #import "content/browser/theme_helper_mac.h"
 #include "content/common/mac/font_loader.h"
 #include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 
 namespace content {
 
@@ -17,15 +18,13 @@ SandboxSupportMacImpl::SandboxSupportMacImpl() = default;
 
 SandboxSupportMacImpl::~SandboxSupportMacImpl() = default;
 
-void SandboxSupportMacImpl::BindRequest(
-    mojom::SandboxSupportMacRequest request,
-    const service_manager::BindSourceInfo& source_info) {
-  bindings_.AddBinding(this, std::move(request));
+void SandboxSupportMacImpl::BindReceiver(
+    mojo::PendingReceiver<mojom::SandboxSupportMac> receiver) {
+  receivers_.Add(this, std::move(receiver));
 }
 
 void SandboxSupportMacImpl::GetSystemColors(GetSystemColorsCallback callback) {
-  auto task_runner =
-      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI});
+  auto task_runner = GetUIThreadTaskRunner({});
   base::PostTaskAndReplyWithResult(
       task_runner.get(), FROM_HERE,
       base::BindOnce(&ThemeHelperMac::DuplicateReadOnlyColorMapRegion,
@@ -33,7 +32,7 @@ void SandboxSupportMacImpl::GetSystemColors(GetSystemColorsCallback callback) {
       std::move(callback));
 }
 
-void SandboxSupportMacImpl::LoadFont(const base::string16& font_name,
+void SandboxSupportMacImpl::LoadFont(const std::u16string& font_name,
                                      float font_point_size,
                                      LoadFontCallback callback) {
   FontLoader::LoadFont(font_name, font_point_size, std::move(callback));

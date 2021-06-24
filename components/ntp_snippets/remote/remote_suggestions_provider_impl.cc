@@ -10,21 +10,19 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/location.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/image_fetcher/core/image_fetcher.h"
-#include "components/ntp_snippets/breaking_news/breaking_news_listener.h"
 #include "components/ntp_snippets/category_rankers/category_ranker.h"
 #include "components/ntp_snippets/features.h"
 #include "components/ntp_snippets/pref_names.h"
@@ -69,21 +67,6 @@ const char kCategoryContentAllowFetchingMore[] = "allow_fetching_more";
 const char kOrderNewRemoteCategoriesBasedOnArticlesCategory[] =
     "order_new_remote_categories_based_on_articles_category";
 
-// Variation parameter for additional prefetched suggestions quantity. Not more
-// than this number of prefetched suggestions will be kept longer.
-const char kMaxAdditionalPrefetchedSuggestionsParamName[] =
-    "max_additional_prefetched_suggestions";
-
-const int kDefaultMaxAdditionalPrefetchedSuggestions = 5;
-
-// Variation parameter for additional prefetched suggestions age. Only
-// prefetched suggestions fetched not later than this are considered to be kept
-// longer.
-const char kMaxAgeForAdditionalPrefetchedSuggestionParamName[] =
-    "max_age_for_additional_prefetched_suggestion_minutes";
-
-const int kDefaultMaxAgeForAdditionalPrefetchedSuggestionMinutes = 36 * 60;
-
 bool IsOrderingNewRemoteCategoriesBasedOnArticlesCategoryEnabled() {
   // TODO(vitaliii): Use GetFieldTrialParamByFeature(As.*)? from
   // base/metrics/field_trial_params.h. GetVariationParamByFeature(As.*)? are
@@ -122,24 +105,6 @@ void AddFetchedCategoriesToRankerBasedOnArticlesCategory(
   NOTREACHED() << "Articles category was not found.";
 }
 
-bool IsKeepingPrefetchedSuggestionsEnabled() {
-  return base::FeatureList::IsEnabled(kKeepPrefetchedContentSuggestions);
-}
-
-int GetMaxAdditionalPrefetchedSuggestions() {
-  return base::GetFieldTrialParamByFeatureAsInt(
-      kKeepPrefetchedContentSuggestions,
-      kMaxAdditionalPrefetchedSuggestionsParamName,
-      kDefaultMaxAdditionalPrefetchedSuggestions);
-}
-
-base::TimeDelta GetMaxAgeForAdditionalPrefetchedSuggestion() {
-  return base::TimeDelta::FromMinutes(base::GetFieldTrialParamByFeatureAsInt(
-      kKeepPrefetchedContentSuggestions,
-      kMaxAgeForAdditionalPrefetchedSuggestionParamName,
-      kDefaultMaxAgeForAdditionalPrefetchedSuggestionMinutes));
-}
-
 // Whether notifications for fetched suggestions are enabled. Note that this
 // param does not overwrite other switches which could disable these
 // notifications.
@@ -164,30 +129,6 @@ bool IsPushedSuggestionsNotificationsEnabled() {
   return base::GetFieldTrialParamByFeatureAsBool(
       kNotificationsFeature, kEnablePushedSuggestionsNotificationsParamName,
       kEnablePushedSuggestionsNotificationsDefault);
-}
-
-// Whether signed-in users should be subscribed for pushed suggestions.
-const bool kEnableSignedInUsersSubscriptionForPushedSuggestionsDefault = true;
-const char kEnableSignedInUsersSubscriptionForPushedSuggestionsParamName[] =
-    "enable_signed_in_users_subscription_for_pushed_suggestions";
-
-bool IsSignedInUsersSubscriptionForPushedSuggestionsEnabled() {
-  return base::GetFieldTrialParamByFeatureAsBool(
-      kBreakingNewsPushFeature,
-      kEnableSignedInUsersSubscriptionForPushedSuggestionsParamName,
-      kEnableSignedInUsersSubscriptionForPushedSuggestionsDefault);
-}
-
-// Whether signed-out users should be subscribed for pushed suggestions.
-const bool kEnableSignedOutUsersSubscriptionForPushedSuggestionsDefault = false;
-const char kEnableSignedOutUsersSubscriptionForPushedSuggestionsParamName[] =
-    "enable_signed_out_users_subscription_for_pushed_suggestions";
-
-bool IsSignedOutUsersSubscriptionForPushedSuggestionsEnabled() {
-  return base::GetFieldTrialParamByFeatureAsBool(
-      kBreakingNewsPushFeature,
-      kEnableSignedOutUsersSubscriptionForPushedSuggestionsParamName,
-      kEnableSignedOutUsersSubscriptionForPushedSuggestionsDefault);
 }
 
 // Whether notification info is overriden for fetched suggestions. Note that
@@ -367,9 +308,6 @@ RemoteSuggestionsProviderImpl::RemoteSuggestionsProviderImpl(
     std::unique_ptr<image_fetcher::ImageFetcher> image_fetcher,
     std::unique_ptr<RemoteSuggestionsDatabase> database,
     std::unique_ptr<RemoteSuggestionsStatusService> status_service,
-    std::unique_ptr<PrefetchedPagesTracker> prefetched_pages_tracker,
-    std::unique_ptr<BreakingNewsListener> breaking_news_raw_data_provider,
-    Logger* debug_logger,
     std::unique_ptr<base::OneShotTimer> fetch_timeout_timer)
     : RemoteSuggestionsProvider(observer),
       state_(State::NOT_INITED),
@@ -386,20 +324,15 @@ RemoteSuggestionsProviderImpl::RemoteSuggestionsProviderImpl(
       clear_history_dependent_state_when_initialized_(false),
       clear_cached_suggestions_when_initialized_(false),
       clock_(base::DefaultClock::GetInstance()),
-      prefetched_pages_tracker_(std::move(prefetched_pages_tracker)),
-      breaking_news_raw_data_provider_(
-          std::move(breaking_news_raw_data_provider)),
-      debug_logger_(debug_logger),
       fetch_timeout_timer_(std::move(fetch_timeout_timer)),
       request_status_(FetchRequestStatus::NONE) {
-  DCHECK(debug_logger_);
   DCHECK(fetch_timeout_timer_);
   RestoreCategoriesFromPrefs();
   // The articles category always exists. Add it if we didn't get it from prefs.
   // TODO(treib): Rethink this.
   category_contents_.insert(
       std::make_pair(articles_category_,
-                     CategoryContent(BuildArticleCategoryInfo(base::nullopt))));
+                     CategoryContent(BuildArticleCategoryInfo(absl::nullopt))));
   // Tell the observer about all the categories.
   for (const auto& entry : category_contents_) {
     observer->OnCategoryStatusChanged(this, entry.first, entry.second.status);
@@ -411,7 +344,7 @@ RemoteSuggestionsProviderImpl::RemoteSuggestionsProviderImpl(
     return;
   }
 
-  database_->SetErrorCallback(base::Bind(
+  database_->SetErrorCallback(base::BindRepeating(
       &RemoteSuggestionsProviderImpl::OnDatabaseError, base::Unretained(this)));
 
   // We transition to other states while finalizing the initialization, when the
@@ -423,10 +356,6 @@ RemoteSuggestionsProviderImpl::RemoteSuggestionsProviderImpl(
 }
 
 RemoteSuggestionsProviderImpl::~RemoteSuggestionsProviderImpl() {
-  if (breaking_news_raw_data_provider_ &&
-      breaking_news_raw_data_provider_->IsListening()) {
-    breaking_news_raw_data_provider_->StopListening();
-  }
 }
 
 // static
@@ -434,8 +363,6 @@ void RemoteSuggestionsProviderImpl::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
   registry->RegisterListPref(prefs::kRemoteSuggestionCategories);
   registry->RegisterInt64Pref(prefs::kLastSuccessfulBackgroundFetchTime, 0);
-
-  RemoteSuggestionsStatusServiceImpl::RegisterProfilePrefs(registry);
 }
 
 void RemoteSuggestionsProviderImpl::ReloadSuggestions() {
@@ -492,7 +419,7 @@ RemoteSuggestionsProviderImpl::suggestions_fetcher_for_debugging() const {
 
 GURL RemoteSuggestionsProviderImpl::GetUrlWithFavicon(
     const ContentSuggestion::ID& suggestion_id) const {
-  DCHECK(base::ContainsKey(category_contents_, suggestion_id.category()));
+  DCHECK(base::Contains(category_contents_, suggestion_id.category()));
 
   const CategoryContent& content =
       category_contents_.at(suggestion_id.category());
@@ -520,9 +447,6 @@ void RemoteSuggestionsProviderImpl::FetchSuggestionsWithLoadingIndicator(
     // If the article section is not AVAILABLE, we cannot safely flip its status
     // to AVAILABLE_LOADING and back. Instead, we fallback to the standard
     // background refetch.
-    debug_logger_->Log(
-        FROM_HERE,
-        "fallback because the articles category is not displayed yet");
     FetchSuggestions(interactive_request, std::move(callback));
     return;
   }
@@ -564,7 +488,6 @@ void RemoteSuggestionsProviderImpl::
 void RemoteSuggestionsProviderImpl::FetchSuggestions(
     bool interactive_request,
     FetchStatusCallback callback) {
-  debug_logger_->Log(FROM_HERE, /*message=*/std::string());
   if (!ready()) {
     if (callback) {
       std::move(callback).Run(
@@ -584,7 +507,7 @@ void RemoteSuggestionsProviderImpl::FetchSuggestions(
 
   // |count_to_fetch| is actually ignored, because the server does not support
   // this functionality.
-  RequestParams params = BuildFetchParams(/*fetched_category=*/base::nullopt,
+  RequestParams params = BuildFetchParams(/*fetched_category=*/absl::nullopt,
                                           /*count_to_fetch=*/10);
   params.interactive_request = interactive_request;
   suggestions_fetcher_->FetchSnippets(
@@ -597,8 +520,6 @@ void RemoteSuggestionsProviderImpl::Fetch(
     const Category& category,
     const std::set<std::string>& known_suggestion_ids,
     FetchDoneCallback callback) {
-  debug_logger_->Log(FROM_HERE, /*message=*/std::string());
-
   if (!ready()) {
     CallWithEmptyResults(std::move(callback),
                          Status(StatusCode::TEMPORARY_ERROR,
@@ -635,7 +556,7 @@ void RemoteSuggestionsProviderImpl::Fetch(
 
 // Builds default fetcher params.
 RequestParams RemoteSuggestionsProviderImpl::BuildFetchParams(
-    base::Optional<Category> fetched_category,
+    absl::optional<Category> fetched_category,
     int count_to_fetch) const {
   RequestParams result;
   result.language_code = application_language_code_;
@@ -729,7 +650,7 @@ void RemoteSuggestionsProviderImpl::DismissSuggestion(
 void RemoteSuggestionsProviderImpl::ClearHistory(
     base::Time begin,
     base::Time end,
-    const base::Callback<bool(const GURL& url)>& filter) {
+    const base::RepeatingCallback<bool(const GURL& url)>& filter) {
   // Both time range and the filter are ignored and all suggestions are removed,
   // because it is not known which history entries were used for the suggestions
   // personalization.
@@ -801,7 +722,7 @@ int RemoteSuggestionsProviderImpl::
 
 GURL RemoteSuggestionsProviderImpl::FindSuggestionImageUrl(
     const ContentSuggestion::ID& suggestion_id) const {
-  DCHECK(base::ContainsKey(category_contents_, suggestion_id.category()));
+  DCHECK(base::Contains(category_contents_, suggestion_id.category()));
 
   const CategoryContent& content =
       category_contents_.at(suggestion_id.category());
@@ -819,7 +740,7 @@ void RemoteSuggestionsProviderImpl::OnDatabaseLoaded(
     return;
   }
   DCHECK(state_ == State::NOT_INITED);
-  DCHECK(base::ContainsKey(category_contents_, articles_category_));
+  DCHECK(base::Contains(category_contents_, articles_category_));
 
   base::TimeDelta database_load_time =
       base::TimeTicks::Now() - database_load_start_;
@@ -918,7 +839,6 @@ void RemoteSuggestionsProviderImpl::OnFetchFinished(
     bool interactive_request,
     Status status,
     RemoteSuggestionsFetcher::OptionalFetchedCategories fetched_categories) {
-  debug_logger_->Log(FROM_HERE, /*message=*/std::string());
 
   FetchRequestStatus request_status = request_status_;
   // TODO(jkrcal): This is potentially incorrect if there is another concurrent
@@ -949,16 +869,6 @@ void RemoteSuggestionsProviderImpl::OnFetchFinished(
     if (callback) {
       std::move(callback).Run(status);
     }
-    return;
-  }
-
-  if (IsKeepingPrefetchedSuggestionsEnabled() && prefetched_pages_tracker_ &&
-      !prefetched_pages_tracker_->IsInitialized()) {
-    // Wait until the tracker is initialized.
-    prefetched_pages_tracker_->Initialize(base::BindOnce(
-        &RemoteSuggestionsProviderImpl::OnFetchFinished, base::Unretained(this),
-        std::move(callback), interactive_request, status,
-        std::move(fetched_categories)));
     return;
   }
 
@@ -999,12 +909,6 @@ void RemoteSuggestionsProviderImpl::OnFetchFinished(
   // If suggestions were fetched successfully, update our |category_contents_|
   // from each category provided by the server.
   if (fetched_categories) {
-    if (Logger::IsLoggingEnabled()) {
-      debug_logger_->Log(
-          FROM_HERE,
-          base::StringPrintf("fetched categories count = %d",
-                             static_cast<int>(fetched_categories->size())));
-    }
 
     // TODO(treib): Reorder |category_contents_| to match the order we received
     // from the server. crbug.com/653816
@@ -1016,14 +920,6 @@ void RemoteSuggestionsProviderImpl::OnFetchFinished(
             std::min(fetched_category.suggestions.size(),
                      static_cast<size_t>(kMaxNormalFetchSuggestionCount)));
         response_includes_article_category = true;
-
-        if (Logger::IsLoggingEnabled()) {
-          debug_logger_->Log(
-              FROM_HERE,
-              base::StringPrintf(
-                  "articles category size = %d",
-                  static_cast<int>(fetched_category.suggestions.size())));
-        }
       }
 
       CategoryContent* content =
@@ -1136,50 +1032,6 @@ void RemoteSuggestionsProviderImpl::IntegrateSuggestions(
   EraseByPrimaryID(&content->suggestions,
                    *GetSuggestionIDVector(new_suggestions));
 
-  // If enabled, keep some older prefetched article suggestions, otherwise the
-  // user has little time to see them.
-  if (IsKeepingPrefetchedSuggestionsEnabled() &&
-      category == articles_category_ && prefetched_pages_tracker_) {
-    DCHECK(prefetched_pages_tracker_->IsInitialized());
-
-    // Select suggestions to keep.
-    std::sort(content->suggestions.begin(), content->suggestions.end(),
-              [](const std::unique_ptr<RemoteSuggestion>& first,
-                 const std::unique_ptr<RemoteSuggestion>& second) {
-                return first->fetch_date() > second->fetch_date();
-              });
-    std::vector<std::unique_ptr<RemoteSuggestion>>
-        additional_prefetched_suggestions, other_suggestions;
-    for (auto& remote_suggestion : content->suggestions) {
-      const GURL& url = remote_suggestion->amp_url().is_empty()
-                            ? remote_suggestion->url()
-                            : remote_suggestion->amp_url();
-      if (prefetched_pages_tracker_->PrefetchedOfflinePageExists(url) &&
-          clock_->Now() - remote_suggestion->fetch_date() <
-              GetMaxAgeForAdditionalPrefetchedSuggestion() &&
-          static_cast<int>(additional_prefetched_suggestions.size()) <
-              GetMaxAdditionalPrefetchedSuggestions()) {
-        additional_prefetched_suggestions.push_back(
-            std::move(remote_suggestion));
-      } else {
-        other_suggestions.push_back(std::move(remote_suggestion));
-      }
-    }
-
-    // Mix them into the new set according to their score.
-    for (auto& remote_suggestion : additional_prefetched_suggestions) {
-      new_suggestions.push_back(std::move(remote_suggestion));
-    }
-    std::sort(new_suggestions.begin(), new_suggestions.end(),
-              [](const std::unique_ptr<RemoteSuggestion>& first,
-                 const std::unique_ptr<RemoteSuggestion>& second) {
-                return first->score() > second->score();
-              });
-
-    // Treat remaining suggestions as usual.
-    content->suggestions = std::move(other_suggestions);
-  }
-
   // Do not delete the thumbnail images as they are still handy on open NTPs.
   database_->DeleteSnippets(GetSuggestionIDVector(content->suggestions));
   // Note, that ArchiveSuggestions will clear |content->suggestions|.
@@ -1238,7 +1090,7 @@ void RemoteSuggestionsProviderImpl::PrependArticleSuggestion(
       [&content](const std::unique_ptr<RemoteSuggestion>& suggestion) {
         const std::vector<std::string>& ids = suggestion->GetAllIDs();
         for (const auto& archived_suggestion : content->archived) {
-          if (base::ContainsValue(ids, archived_suggestion->id())) {
+          if (base::Contains(ids, archived_suggestion->id())) {
             return true;
           }
         }
@@ -1374,7 +1226,6 @@ void RemoteSuggestionsProviderImpl::ClearHistoryDependentState() {
     return;
   }
 
-  debug_logger_->Log(FROM_HERE, /*message=*/std::string());
   NukeAllSuggestions();
   remote_suggestions_scheduler_->OnHistoryCleared();
 }
@@ -1385,7 +1236,6 @@ void RemoteSuggestionsProviderImpl::ClearCachedSuggestionsImpl() {
     return;
   }
 
-  debug_logger_->Log(FROM_HERE, /*message=*/std::string());
   NukeAllSuggestions();
   remote_suggestions_scheduler_->OnSuggestionsCleared();
 }
@@ -1425,7 +1275,7 @@ void RemoteSuggestionsProviderImpl::NukeAllSuggestions() {
 
 GURL RemoteSuggestionsProviderImpl::GetImageURLToFetch(
     const ContentSuggestion::ID& suggestion_id) const {
-  if (!base::ContainsKey(category_contents_, suggestion_id.category())) {
+  if (!base::Contains(category_contents_, suggestion_id.category())) {
     return GURL();
   }
   return FindSuggestionImageUrl(suggestion_id);
@@ -1465,50 +1315,10 @@ void RemoteSuggestionsProviderImpl::FetchSuggestionImageData(
                                       ntp_snippets::ImageFetchedCallback());
 }
 
-void RemoteSuggestionsProviderImpl::
-    UpdatePushedSuggestionsSubscriptionDueToStatusChange(
-        RemoteSuggestionsStatus new_status) {
-  if (!breaking_news_raw_data_provider_) {
-    return;
-  }
-
-  bool should_be_subscribed = false;
-  switch (new_status) {
-    case RemoteSuggestionsStatus::ENABLED_AND_SIGNED_IN:
-      should_be_subscribed =
-          IsSignedInUsersSubscriptionForPushedSuggestionsEnabled();
-      break;
-
-    case RemoteSuggestionsStatus::ENABLED_AND_SIGNED_OUT:
-      should_be_subscribed =
-          IsSignedOutUsersSubscriptionForPushedSuggestionsEnabled();
-      break;
-
-    case RemoteSuggestionsStatus::EXPLICITLY_DISABLED:
-      should_be_subscribed = false;
-      break;
-  }
-
-  if (should_be_subscribed) {
-    if (!breaking_news_raw_data_provider_->IsListening()) {
-      breaking_news_raw_data_provider_->StartListening(
-          base::Bind(&RemoteSuggestionsProviderImpl::PrependArticleSuggestion,
-                     base::Unretained(this)),
-          base::Bind(&RemoteSuggestionsProviderImpl::
-                         RefreshSuggestionsUponPushToRefreshRequest,
-                     base::Unretained(this)));
-    }
-  } else {
-    if (breaking_news_raw_data_provider_->IsListening()) {
-      breaking_news_raw_data_provider_->StopListening();
-    }
-  }
-}
-
 void RemoteSuggestionsProviderImpl::FinishInitialization() {
   // Note: Initializing the status service will run the callback right away with
   // the current state.
-  status_service_->Init(base::Bind(
+  status_service_->Init(base::BindRepeating(
       &RemoteSuggestionsProviderImpl::OnStatusChanged, base::Unretained(this)));
 
   // Always notify here even if we got nothing from the database, because we
@@ -1560,8 +1370,6 @@ void RemoteSuggestionsProviderImpl::OnStatusChanged(
       EnterState(State::DISABLED);
       break;
   }
-
-  UpdatePushedSuggestionsSubscriptionDueToStatusChange(new_status);
 }
 
 void RemoteSuggestionsProviderImpl::EnterState(State state) {
@@ -1620,10 +1428,6 @@ void RemoteSuggestionsProviderImpl::EnterState(State state) {
       ClearCachedSuggestionsImpl();
       clear_cached_suggestions_when_initialized_ = false;
 
-      if (breaking_news_raw_data_provider_ &&
-          breaking_news_raw_data_provider_->IsListening()) {
-        breaking_news_raw_data_provider_->StopListening();
-      }
       UpdateAllCategoryStatus(CategoryStatus::CATEGORY_EXPLICITLY_DISABLED);
       break;
 
@@ -1754,7 +1558,7 @@ void RemoteSuggestionsProviderImpl::RestoreCategoriesFromPrefs() {
 
   const base::ListValue* list =
       pref_service_->GetList(prefs::kRemoteSuggestionCategories);
-  for (const base::Value& entry : *list) {
+  for (const base::Value& entry : list->GetList()) {
     const base::DictionaryValue* dict = nullptr;
     if (!entry.GetAsDictionary(&dict)) {
       DLOG(WARNING) << "Invalid category pref value: " << entry;
@@ -1766,7 +1570,7 @@ void RemoteSuggestionsProviderImpl::RestoreCategoriesFromPrefs() {
                     << kCategoryContentId << "': " << entry;
       continue;
     }
-    base::string16 title;
+    std::u16string title;
     if (!dict->GetString(kCategoryContentTitle, &title)) {
       DLOG(WARNING) << "Invalid category pref value, missing '"
                     << kCategoryContentTitle << "': " << entry;
@@ -1791,9 +1595,11 @@ void RemoteSuggestionsProviderImpl::RestoreCategoriesFromPrefs() {
     // serialization / deserialization should not be done inside this
     // class. We should move that into a central place that also knows how to
     // parse data we received from remote backends.
+    // We don't want to use the restored title for BuildArticleCategoryInfo to
+    // avoid using a title that was calculated for a stale locale.
     CategoryInfo info =
         category == articles_category_
-            ? BuildArticleCategoryInfo(title)
+            ? BuildArticleCategoryInfo(absl::nullopt)
             : BuildRemoteCategoryInfo(title, allow_fetching_more_results);
     CategoryContent* content = UpdateCategoryInfo(category, info);
     content->included_in_last_server_response =

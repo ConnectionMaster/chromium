@@ -27,25 +27,23 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_IMAGE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_IMAGE_H_
 
-#include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
+#include "third_party/blink/renderer/platform/geometry/float_point.h"
 #include "third_party/blink/renderer/platform/geometry/float_size.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_color_params.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_types.h"
-#include "third_party/blink/renderer/platform/graphics/image_animation_policy.h"
 #include "third_party/blink/renderer/platform/graphics/image_observer.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_image.h"
-#include "third_party/blink/renderer/platform/graphics/paint/paint_record.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
+#include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
+#include "ui/base/resource/scale_factor.h"
 
 class SkMatrix;
 
@@ -57,13 +55,12 @@ class ImageDecodeCache;
 
 namespace blink {
 
-class FloatPoint;
 class FloatRect;
 class GraphicsContext;
 class Image;
-class KURL;
 class WebGraphicsContext3DProvider;
 class WebGraphicsContext3DProviderWrapper;
+class DarkModeImageCache;
 
 class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
   friend class GeneratedImage;
@@ -72,13 +69,15 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
   friend class GraphicsContext;
 
  public:
+  Image(const Image&) = delete;
+  Image& operator=(const Image&) = delete;
   virtual ~Image();
 
-  static cc::ImageDecodeCache* SharedCCDecodeCache(
-      CanvasColorSpace color_space,
-      CanvasPixelFormat pixel_format);
+  static cc::ImageDecodeCache& SharedCCDecodeCache(SkColorType);
 
-  static scoped_refptr<Image> LoadPlatformResource(const char* name);
+  static scoped_refptr<Image> LoadPlatformResource(
+      int resource_id,
+      ui::ScaleFactor scale_factor = ui::SCALE_FACTOR_100P);
 
   static PaintImage ResizeAndOrientImage(
       const PaintImage&,
@@ -108,10 +107,62 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
 
   virtual bool HasIntrinsicSize() const { return true; }
 
-  virtual IntSize Size() const = 0;
+  struct SizeConfig {
+    // Apply density correction.
+    bool apply_density = false;
+
+    // Apply preferred orientation.
+    bool apply_orientation = false;
+  };
+
+  // Size of the Image optionally modified per the provided SizeConfig.
+  virtual IntSize SizeWithConfig(SizeConfig) const = 0;
+  virtual FloatSize SizeWithConfigAsFloat(SizeConfig config) const {
+    return FloatSize(SizeWithConfig(config));
+  }
+
+  // Size of the Image.
+  IntSize Size() const { return SizeWithConfig({}); }
+
+  // Size of the Image with density correction applied.
+  IntSize DensityCorrectedSize() const {
+    SizeConfig config;
+    config.apply_density = true;
+    return SizeWithConfig(config);
+  }
+
+  // Size of the Image with density correction and orientation applied
+  // regardless of any settings or style affecting orientation.
+  IntSize PreferredDisplaySize() const {
+    SizeConfig config;
+    config.apply_density = true;
+    config.apply_orientation = true;
+    return SizeWithConfig(config);
+  }
+
+  // Size of the Image with density correction applied. If the argument is
+  // kRespectImageOrientation orientation is applied as well.
+  IntSize Size(RespectImageOrientationEnum respect_orientation) const {
+    SizeConfig config;
+    config.apply_density = true;
+    config.apply_orientation = respect_orientation == kRespectImageOrientation;
+    return SizeWithConfig(config);
+  }
+
+  // Same as Size(RespectImageOrientationEnum) above, but returns a floating
+  // point representation of the size. For subclasses of Image that can have a
+  // fractional size this will return the unrounded size.
+  FloatSize SizeAsFloat(RespectImageOrientationEnum respect_orientation) const {
+    SizeConfig config;
+    config.apply_density = true;
+    config.apply_orientation = respect_orientation == kRespectImageOrientation;
+    return SizeWithConfigAsFloat(config);
+  }
+
   IntRect Rect() const { return IntRect(IntPoint(), Size()); }
   int width() const { return Size().Width(); }
   int height() const { return Size().Height(); }
+
   virtual bool GetHotSpot(IntPoint&) const { return false; }
 
   enum SizeAvailability {
@@ -138,7 +189,22 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
 
   virtual void DestroyDecodedData() = 0;
 
+  // In some overrides, |Data()| can be somewhat expensive (e.g. in BitmapImage,
+  // we don't use a SharedBuffer to store the image data, so |Data()| involves a
+  // copy). |HasData()| and |DataSize()| should be preferred in cases where the
+  // data itself is not needed.
+  //
+  // If a subclass overrides |Data|, it must override |HasData| and |DataSize|
+  // as well.
   virtual scoped_refptr<SharedBuffer> Data() { return encoded_image_data_; }
+  // Returns true iff the encoded image data is available.
+  virtual bool HasData() const { return encoded_image_data_ != nullptr; }
+  // Returns the size of the encoded image data, in bytes. Should only be called
+  // if |HasData()| is true.
+  virtual size_t DataSize() const {
+    DCHECK(encoded_image_data_);
+    return encoded_image_data_->size();
+  }
 
   // Animation begins whenever someone draws the image, so startAnimation() is
   // not normally called. It will automatically pause once all observers no
@@ -150,9 +216,9 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
   virtual bool MaybeAnimated() { return false; }
 
   // Set animationPolicy
-  virtual void SetAnimationPolicy(ImageAnimationPolicy) {}
-  virtual ImageAnimationPolicy AnimationPolicy() {
-    return kImageAnimationPolicyAllowed;
+  virtual void SetAnimationPolicy(mojom::blink::ImageAnimationPolicy) {}
+  virtual mojom::blink::ImageAnimationPolicy AnimationPolicy() {
+    return mojom::blink::ImageAnimationPolicy::kImageAnimationPolicyAllowed;
   }
 
   // Advances an animated image. For BitmapImage (e.g., animated gifs) this
@@ -201,6 +267,23 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
 
   virtual PaintImage PaintImageForCurrentFrame() = 0;
 
+  // Most image types have the default orientation. Only bitmap derived image
+  // types need to override this method.
+  virtual ImageOrientation CurrentFrameOrientation() const {
+    return ImageOrientationEnum::kDefault;
+  }
+  bool HasDefaultOrientation() const {
+    return CurrentFrameOrientation() == ImageOrientationEnum::kDefault;
+  }
+
+  // Correct the src rect (rotate and maybe translate it) to account for a
+  // non-default image orientation. The image must have non-default orientation
+  // to call this method. The image_size is the oriented size of the image (i.e.
+  // after orientation has been applied). src_rect may be a subset of the image,
+  // also oriented.
+  FloatRect CorrectSrcRectForImageOrientation(FloatSize image_size,
+                                              FloatRect src_rect) const;
+
   enum ImageClampingMode {
     kClampImageToSourceRect,
     kDoNotClampImageToSourceRect
@@ -210,10 +293,14 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
                     const cc::PaintFlags&,
                     const FloatRect& dst_rect,
                     const FloatRect& src_rect,
+                    const SkSamplingOptions&,
                     RespectImageOrientationEnum,
                     ImageClampingMode,
                     ImageDecodingMode) = 0;
 
+  // Apply this Image as a shader to the passed PaintFlags. This is currently
+  // only used by GraphicsContext::DrawImageRRect() and to match the semantics
+  // of that function the shader should use a clamping tile mode if possible.
   virtual bool ApplyShader(cc::PaintFlags&, const SkMatrix& local_matrix);
 
   // Use ContextProvider() for immediate use only, use
@@ -227,45 +314,24 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
     return nullptr;
   }
 
-  virtual sk_sp<PaintRecord> PaintRecordForContainer(
-      const KURL& url,
-      const IntSize& container_size,
-      const IntRect& draw_src_rect,
-      const IntRect& draw_dst_rect,
-      bool flip_y) {
-    return nullptr;
-  }
-
-  void SetShouldCacheDarkModeClassification(bool should_cache_result) {
-    should_cache_dark_mode_classification_ = should_cache_result;
-  }
-
-  bool ShouldCacheDarkModeClassification() {
-    return should_cache_dark_mode_classification_;
-  }
-
-  // Decides if a dark mode filter should be applied to the image or not.
-  // |src_rect| is needed in case of image sprites for the location and
-  // size of the smaller images that the sprite holds.
-  // For images that come from sprites the |src_rect.X| and |src_rect.Y|
-  // can be non-zero. But for other images they are both zero.
-  bool ShouldApplyDarkModeFilter(const FloatRect& src_rect);
-
   PaintImage::Id paint_image_id() const { return stable_image_id_; }
 
   // Returns an SkBitmap that is a copy of the image's current frame.
   SkBitmap AsSkBitmapForCurrentFrame(RespectImageOrientationEnum);
 
+  DarkModeImageCache* GetDarkModeImageCache();
+
  protected:
   Image(ImageObserver* = nullptr, bool is_multipart = false);
 
   virtual void DrawPattern(GraphicsContext&,
+                           const cc::PaintFlags&,
                            const FloatRect&,
                            const FloatSize&,
                            const FloatPoint& phase,
-                           SkBlendMode,
                            const FloatRect&,
-                           const FloatSize& repeat_spacing);
+                           const FloatSize& repeat_spacing,
+                           RespectImageOrientationEnum);
 
   // Creates and initializes a PaintImageBuilder with the metadata flags for the
   // PaintImage.
@@ -274,24 +340,7 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
   // Whether or not size is available yet.
   virtual bool IsSizeAvailable() { return true; }
 
-  DarkModeClassification GetDarkModeClassification(const FloatRect& src_rect);
-
-  // Dark mode classification result is cached to be consistent and have
-  // higher performance for future paints.
-  void AddDarkModeClassification(
-      const FloatRect& src_rect,
-      const DarkModeClassification dark_mode_classification);
-
-  typedef std::pair<float, float> ClassificationKey;
-  std::map<ClassificationKey, DarkModeClassification>
-      dark_mode_classifications_;
-
  private:
-  virtual DarkModeClassification ClassifyImageForDarkMode(
-      const FloatRect& src_rect) {
-    return DarkModeClassification::kDoNotApplyDarkModeFilter;
-  }
-
   bool image_observer_disabled_;
   scoped_refptr<SharedBuffer> encoded_image_data_;
   // TODO(Oilpan): consider having Image on the Oilpan heap and
@@ -304,14 +353,9 @@ class PLATFORM_EXPORT Image : public ThreadSafeRefCounted<Image> {
   WeakPersistent<ImageObserver> image_observer_;
   PaintImage::Id stable_image_id_;
   const bool is_multipart_;
-  bool should_cache_dark_mode_classification_ = true;
-  DISALLOW_COPY_AND_ASSIGN(Image);
+  std::unique_ptr<DarkModeImageCache> dark_mode_image_cache_;
 };
-
-#define DEFINE_IMAGE_TYPE_CASTS(typeName)                          \
-  DEFINE_TYPE_CASTS(typeName, Image, image, image->Is##typeName(), \
-                    image.Is##typeName())
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_IMAGE_H_

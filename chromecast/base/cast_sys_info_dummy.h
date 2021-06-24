@@ -18,6 +18,7 @@ namespace chromecast {
 class CastSysInfoDummy : public CastSysInfo {
  public:
   CastSysInfoDummy();
+  CastSysInfoDummy(const std::string& sys_info_file);
   ~CastSysInfoDummy() override;
 
   // CastSysInfo implementation:
@@ -34,6 +35,7 @@ class CastSysInfoDummy : public CastSysInfo {
   std::vector<std::string> GetFactoryLocaleList() override;
   std::string GetWifiInterface() override;
   std::string GetApInterface() override;
+  std::string GetProductSsidSuffix() override;
 
   void SetBuildTypeForTesting(BuildType build_type);
   void SetSystemReleaseChannelForTesting(
@@ -46,9 +48,11 @@ class CastSysInfoDummy : public CastSysInfo {
   void SetManufacturerForTesting(const std::string& manufacturer);
   void SetSystemBuildNumberForTesting(const std::string& system_build_number);
   void SetFactoryCountryForTesting(const std::string& factory_country);
-  void SetFactoryLocaleListForTesting(const std::vector<std::string>& factory_locale_list);
+  void SetFactoryLocaleListForTesting(
+      const std::vector<std::string>& factory_locale_list);
   void SetWifiInterfaceForTesting(const std::string& wifi_interface);
   void SetApInterfaceForTesting(const std::string& ap_interface);
+  void SetProductSsidSuffixForTesting(const std::string& ssid_suffix);
 
  private:
   BuildType build_type_;
@@ -64,6 +68,7 @@ class CastSysInfoDummy : public CastSysInfo {
   std::vector<std::string> factory_locale_list_;
   std::string wifi_interface_;
   std::string ap_interface_;
+  std::string ssid_suffix_;
 
   DISALLOW_COPY_AND_ASSIGN(CastSysInfoDummy);
 };

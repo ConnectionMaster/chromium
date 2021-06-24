@@ -39,7 +39,6 @@
 // Specifically for this case we avoid supporting complex formats such as MP3
 // or WMA. Complex format decoding should be done by the renderers.
 
-
 // Models an audio stream that gets rendered to the audio hardware output.
 // Because we support more audio streams than physically available channels
 // a given AudioOutputStream might or might not talk directly to hardware.
@@ -79,7 +78,13 @@ class MEDIA_EXPORT AudioOutputStream {
     // destroyed yet. No direct action needed by the AudioStream, but it is
     // a good place to stop accumulating sound data since is is likely that
     // playback will not continue.
-    virtual void OnError() = 0;
+    //
+    // An ErrorType may be provided with more information on what went wrong. An
+    // unhandled kDeviceChange type error is likely to result in further errors;
+    // so it's recommended that sources close their existing output stream and
+    // request a new one when this error is sent.
+    enum class ErrorType { kUnknown, kDeviceChange };
+    virtual void OnError(ErrorType type) = 0;
   };
 
   virtual ~AudioOutputStream() {}
@@ -110,7 +115,14 @@ class MEDIA_EXPORT AudioOutputStream {
 
   // Close the stream.
   // After calling this method, the object should not be used anymore.
+  // After calling this method, no further AudioSourceCallback methods
+  // should be called on the callback object that was supplied to Start()
+  // by the AudioOutputStream implementation.
   virtual void Close() = 0;
+
+  // Flushes the stream. This should only be called if the stream is not
+  // playing. (i.e. called after Stop or Open)
+  virtual void Flush() = 0;
 };
 
 // Models an audio sink receiving recorded audio from the audio driver.
@@ -142,9 +154,20 @@ class MEDIA_EXPORT AudioInputStream {
 
   virtual ~AudioInputStream() {}
 
+  enum class OpenOutcome {
+    kSuccess,
+    kAlreadyOpen,
+    // Failed due to an unknown or unspecified reason.
+    kFailed,
+    // Failed to open due to OS-level System permissions.
+    kFailedSystemPermissions,
+    // Failed to open as the device is exclusively opened by another app.
+    kFailedInUse,
+  };
+
   // Open the stream and prepares it for recording. Call Start() to actually
   // begin recording.
-  virtual bool Open() = 0;
+  virtual OpenOutcome Open() = 0;
 
   // Starts recording audio and generating AudioInputCallback::OnData().
   // The input stream does not take ownership of this callback.

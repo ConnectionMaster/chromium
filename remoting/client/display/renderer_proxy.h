@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef REMOTING_CLIENT_UI_RENDERER_PROXY_H_
-#define REMOTING_CLIENT_UI_RENDERER_PROXY_H_
+#ifndef REMOTING_CLIENT_DISPLAY_RENDERER_PROXY_H_
+#define REMOTING_CLIENT_DISPLAY_RENDERER_PROXY_H_
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -39,7 +39,7 @@ class RendererProxy {
   // Runs the |task| on the thread of |task_runner_|. All tasks run with
   // |needs_synchronization| set to true inside the same tick will be run on
   // |task_runner_| within the same tick.
-  void RunTaskOnProperThread(const base::Closure& task,
+  void RunTaskOnProperThread(base::OnceClosure task,
                              bool needs_synchronization);
 
   base::WeakPtr<GlRenderer> renderer_;
@@ -52,4 +52,4 @@ class RendererProxy {
 };
 
 }  // namespace remoting
-#endif  // REMOTING_CLIENT_UI_RENDERER_PROXY_H_
+#endif  // REMOTING_CLIENT_DISPLAY_RENDERER_PROXY_H_

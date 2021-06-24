@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/layout/ng/ng_break_token.h"
 
 #include "third_party/blink/renderer/core/layout/ng/ng_block_break_token.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -17,12 +18,11 @@ struct SameSizeAsNGBreakToken : RefCounted<NGBreakToken> {
   unsigned flags;
 };
 
-static_assert(sizeof(NGBreakToken) == sizeof(SameSizeAsNGBreakToken),
-              "NGBreakToken should stay small");
+ASSERT_SIZE(NGBreakToken, SameSizeAsNGBreakToken);
 
 }  // namespace
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 namespace {
 
@@ -51,8 +51,6 @@ String NGBreakToken::ToString() const {
   string_builder.Append("(");
   string_builder.Append(InputNode().ToString());
   string_builder.Append(")");
-  if (IsFinished())
-    string_builder.Append(" finished");
   return string_builder.ToString();
 }
 
@@ -60,8 +58,8 @@ void NGBreakToken::ShowBreakTokenTree() const {
   StringBuilder string_builder;
   string_builder.Append(".:: LayoutNG Break Token Tree ::.\n");
   AppendBreakTokenToString(this, &string_builder);
-  fprintf(stderr, "%s\n", string_builder.ToString().Utf8().data());
+  fprintf(stderr, "%s\n", string_builder.ToString().Utf8().c_str());
 }
-#endif  // NDEBUG
+#endif  // DCHECK_IS_ON()
 
 }  // namespace blink

@@ -239,10 +239,10 @@ To enable UMA tracking, you need to make the following changes to the metrics
 configuration:
 
 1.  Add feature to the histogram suffix `IPHFeatures` in:
-    `//tools/metrics/histograms/histograms.xml`.
+    `//tools/metrics/histograms/histograms_xml/histogram_suffixes_list.xml`.
     *   The suffix must match the `base::Feature` `name` member of your feature.
 1.  Add feature to the actions file at: `//tools/metrics/actions/actions.xml`.
-    *   The suffix must match the `base::Feature` `name` member.
+    *   The suffix must match the `base::Feature` `name` member with `IPH_` stripped.
     *   Find the `<action-suffix>` entry at the end of the file, where the
         following `<affected-action>`s are listed:
         *   `InProductHelp.NotifyEvent.IPH`
@@ -350,10 +350,27 @@ Format:
   "x_???": "..."
  }
 ```
+Alternate format:
+
+```
+{
+  "IPH_MyFunFeature_availability": "{Comparator}",
+  "IPH_MyFunFeature_session_rate": "{Comparator}",
+  "IPH_MyFunFeature_session_rate_impact": "{SessionRateImpact}",
+  "IPH_MyFunFeature_event_used": "{EventConfig}",
+  "IPH_MyFunFeature_event_trigger": "{EventConfig}",
+  "IPH_MyFunFeature_event_???": "{EventConfig}",
+  "IPH_MyFunFeature_tracking_only": "{Boolean}"
+  "IPH_MyFunFeature_x_???": "..."
+ }
+```
 
 The `FeatureConfig` fields `availability`, `session_rate`, `event_used` and
 `event_trigger` are required, and there can be an arbitrary amount of other
-`event_???` entries.
+`event_???` entries. The fields can optionally have a feature name prefix 
+(e.g. `IPH_MyFunFeature_`) as well, which is sometimes required to 
+disambiguate between param names between different IPHs if they are combined 
+into the same finch study.
 
 *   `availability` __REQUIRED__
     *   For how long must an in-product help experiment have been available to
@@ -589,13 +606,14 @@ that you can start Chrome and verify that it behaves correctly.
     python ./tools/variations/fieldtrial_util.py DownloadStudy.json android shell_cmd
     ```
 
-1.  Pass the command line along to the binary you are planning on running or the
-    command line utility for the Android platform.
+1.  Pass the command line along to the binary you are planning on running.
 
-    For the target `chrome_public_apk` it would be:
+    Note: For Android you need to ensure that all arguments are are within one
+    set of double quotes. In particular, for the Android target
+    `chrome_public_apk` it would be:
 
     ```bash
-    ./build/android/adb_chrome_public_command_line "--force-fieldtrials=DownloadStudy/DownloadExperiment" "--force-fieldtrial-params=DownloadStudy.DownloadExperiment:availability/>=30/event_1/name%3Adownload_completed;comparator%3A>=1;window%3A120;storage%3A180/event_trigger/name%3Adownload_home_iph_trigger;comparator%3Aany;window%3A90;storage%3A360/event_used/name%3Adownload_home_opened;comparator%3Aany;window%3A90;storage%3A360/session_rate/<1" "--enable-features=IPH_DownloadHome<DownloadStudy"
+    ./out/Debug/bin/chrome_public_apk run --args "--force-fieldtrials=DownloadStudy/DownloadExperiment --force-fieldtrial-params=DownloadStudy.DownloadExperiment:availability/>=30/event_1/name%3Adownload_completed;comparator%3A>=1;window%3A120;storage%3A180/event_trigger/name%3Adownload_home_iph_trigger;comparator%3Aany;window%3A90;storage%3A360/event_used/name%3Adownload_home_opened;comparator%3Aany;window%3A90;storage%3A360/session_rate/<1 --enable-features=IPH_DownloadHome<DownloadStudy"
     ```
 
 ### Printf debugging
@@ -624,4 +642,8 @@ ninja -C out/Debug components_unittests ;
 When adding new test suites, also remember to add the suite to the filter file:
 `//components/feature_engagement/components_unittests.filter`.
 
-[field-trial-testing-configuration]: https://chromium.googlesource.com/chromium/src/+/master/testing/variations/README.md
+[field-trial-testing-configuration]: https://chromium.googlesource.com/chromium/src/+/main/testing/variations/README.md
+
+## IPH Analysis Guideline
+
+See [this doc](https://docs.google.com/document/d/1EhQe3G9juBiw-otuRnGf5gzTsfHZVZiSKrgF6r7Sz4E/edit#heading=h.la5fs7q2klme)

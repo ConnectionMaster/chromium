@@ -4,14 +4,15 @@
 
 #include "ash/metrics/pointer_metrics_recorder.h"
 
+#include "ash/constants/app_types.h"
 #include "ash/display/screen_orientation_controller.h"
-#include "ash/public/cpp/app_types.h"
 #include "ash/shell.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "base/metrics/histogram_macros.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/events/event_constants.h"
+#include "ui/events/types/event_type.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
@@ -20,30 +21,15 @@ namespace {
 
 int GetDestination(views::Widget* target) {
   if (!target)
-    return static_cast<int>(AppType::OTHERS);
+    return static_cast<int>(AppType::NON_APP);
 
   aura::Window* window = target->GetNativeWindow();
   DCHECK(window);
-  return window->GetProperty(aura::client::kAppType);
-}
-
-// Find the input type, form factor and destination combination of the down
-// event. Used to get the UMA histogram bucket.
-DownEventMetric FindCombinationDeprecated(DownEventSource input_type,
-                                          DownEventFormFactor form_factor,
-                                          int destination) {
-  if (destination == static_cast<int>(AppType::CROSTINI_APP))
-    destination = static_cast<int>(AppType::OTHERS);
-  constexpr int kAppCountDeprecated = kAppCount - 1;
-  int num_combination_per_input =
-      kAppCountDeprecated *
-      static_cast<int>(DownEventFormFactor::kFormFactorCount);
-  int result = static_cast<int>(input_type) * num_combination_per_input +
-               static_cast<int>(form_factor) * kAppCountDeprecated +
-               destination;
-  DCHECK(result >= 0 &&
-         result < static_cast<int>(DownEventMetric::kCombinationCount));
-  return static_cast<DownEventMetric>(result);
+  int app_type = window->GetProperty(aura::client::kAppType);
+  // Use "BROWSER" for Lacros Chrome's pointer metrics.
+  if (app_type == static_cast<int>(AppType::LACROS))
+    return static_cast<int>(AppType::BROWSER);
+  return app_type;
 }
 
 DownEventMetric2 FindCombination(int destination,
@@ -62,13 +48,11 @@ DownEventMetric2 FindCombination(int destination,
 }
 
 void RecordUMA(ui::EventPointerType type, ui::EventTarget* event_target) {
-  DCHECK_NE(type, ui::EventPointerType::POINTER_TYPE_UNKNOWN);
+  DCHECK_NE(type, ui::EventPointerType::kUnknown);
   views::Widget* target = views::Widget::GetTopLevelWidgetForNativeView(
       static_cast<aura::Window*>(event_target));
   DownEventFormFactor form_factor = DownEventFormFactor::kClamshell;
-  if (Shell::Get()
-          ->tablet_mode_controller()
-          ->IsTabletModeWindowManagerEnabled()) {
+  if (Shell::Get()->tablet_mode_controller()->InTabletMode()) {
     OrientationLockType screen_orientation =
         Shell::Get()->screen_orientation_controller()->GetCurrentOrientation();
     if (screen_orientation == OrientationLockType::kLandscapePrimary ||
@@ -81,27 +65,21 @@ void RecordUMA(ui::EventPointerType type, ui::EventTarget* event_target) {
 
   DownEventSource input_type = DownEventSource::kUnknown;
   switch (type) {
-    case ui::EventPointerType::POINTER_TYPE_UNKNOWN:
+    case ui::EventPointerType::kUnknown:
       return;
-    case ui::EventPointerType::POINTER_TYPE_MOUSE:
+    case ui::EventPointerType::kMouse:
       input_type = DownEventSource::kMouse;
       break;
-    case ui::EventPointerType::POINTER_TYPE_PEN:
+    case ui::EventPointerType::kPen:
       input_type = DownEventSource::kStylus;
       break;
-    case ui::EventPointerType::POINTER_TYPE_TOUCH:
+    case ui::EventPointerType::kTouch:
       input_type = DownEventSource::kTouch;
       break;
-    case ui::EventPointerType::POINTER_TYPE_ERASER:
+    case ui::EventPointerType::kEraser:
       input_type = DownEventSource::kStylus;
       break;
   }
-
-  UMA_HISTOGRAM_ENUMERATION(
-      "Event.DownEventCount.PerInputFormFactorDestinationCombination",
-      FindCombinationDeprecated(input_type, form_factor,
-                                GetDestination(target)),
-      DownEventMetric::kCombinationCount);
 
   UMA_HISTOGRAM_ENUMERATION(
       "Event.DownEventCount.PerInputFormFactorDestinationCombination2",

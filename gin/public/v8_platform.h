@@ -5,10 +5,9 @@
 #ifndef GIN_PUBLIC_V8_PLATFORM_H_
 #define GIN_PUBLIC_V8_PLATFORM_H_
 
+#include "base/allocator/buildflags.h"
 #include "base/compiler_specific.h"
 #include "base/lazy_instance.h"
-#include "base/macros.h"
-#include "base/partition_alloc_buildflags.h"
 #include "gin/gin_export.h"
 #include "v8/include/v8-platform.h"
 
@@ -17,6 +16,9 @@ namespace gin {
 // A v8::Platform implementation to use with gin.
 class GIN_EXPORT V8Platform : public v8::Platform {
  public:
+  V8Platform(const V8Platform&) = delete;
+  V8Platform& operator=(const V8Platform&) = delete;
+
   static V8Platform* Get();
 
 // v8::Platform implementation.
@@ -34,12 +36,9 @@ class GIN_EXPORT V8Platform : public v8::Platform {
       std::unique_ptr<v8::Task> task) override;
   void CallDelayedOnWorkerThread(std::unique_ptr<v8::Task> task,
                                  double delay_in_seconds) override;
-  void CallOnForegroundThread(v8::Isolate* isolate, v8::Task* task) override;
-  void CallDelayedOnForegroundThread(v8::Isolate* isolate,
-                                     v8::Task* task,
-                                     double delay_in_seconds) override;
-  void CallIdleOnForegroundThread(v8::Isolate* isolate,
-                                  v8::IdleTask* task) override;
+  std::unique_ptr<v8::JobHandle> PostJob(
+      v8::TaskPriority priority,
+      std::unique_ptr<v8::JobTask> job_task) override;
   bool IdleTasksEnabled(v8::Isolate* isolate) override;
   double MonotonicallyIncreasingTime() override;
   double CurrentClockTimeMillis() override;
@@ -54,8 +53,6 @@ class GIN_EXPORT V8Platform : public v8::Platform {
 
   class TracingControllerImpl;
   std::unique_ptr<TracingControllerImpl> tracing_controller_;
-
-  DISALLOW_COPY_AND_ASSIGN(V8Platform);
 };
 
 }  // namespace gin

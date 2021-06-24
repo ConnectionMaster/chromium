@@ -5,8 +5,6 @@
 #ifndef NET_CERT_CERT_DATABASE_H_
 #define NET_CERT_CERT_DATABASE_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
@@ -66,7 +64,7 @@ class NET_EXPORT CertDatabase {
   // on the same thread on which AddObserver() was called.
   void RemoveObserver(Observer* observer);
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
   // Start observing and forwarding events from Keychain services on the
   // current thread. Current thread must have an associated CFRunLoop,
   // which means that this must be called from a MessageLoop of TYPE_UI.
@@ -86,7 +84,7 @@ class NET_EXPORT CertDatabase {
 
   const scoped_refptr<base::ObserverListThreadSafe<Observer>> observer_list_;
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
   void ReleaseNotifier();
 
   class Notifier;

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "base/values.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
@@ -44,7 +45,7 @@ class ProcessesEventRouter : public task_manager::TaskManagerObserver {
 
   void DispatchEvent(events::HistogramValue histogram_value,
                      const std::string& event_name,
-                     std::unique_ptr<base::ListValue> event_args) const;
+                     std::vector<base::Value> event_args) const;
 
   // Determines whether there is a registered listener for the specified event.
   // It helps to avoid collecting data if no one is interested in it.
@@ -110,9 +111,9 @@ class ProcessesAPI : public BrowserContextKeyedAPI,
 ////////////////////////////////////////////////////////////////////////////////
 // This extension function returns the Process object for the renderer process
 // currently in use by the specified Tab.
-class ProcessesGetProcessIdForTabFunction : public UIThreadExtensionFunction {
+class ProcessesGetProcessIdForTabFunction : public ExtensionFunction {
  public:
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ExtensionFunction::ResponseAction Run() override;
 
   DECLARE_EXTENSION_FUNCTION("processes.getProcessIdForTab",
@@ -128,9 +129,9 @@ class ProcessesGetProcessIdForTabFunction : public UIThreadExtensionFunction {
 // Using unique IDs instead of OS process IDs allows two advantages:
 // * guaranteed uniqueness, since OS process IDs can be reused.
 // * guards against killing non-Chrome processes.
-class ProcessesTerminateFunction : public UIThreadExtensionFunction {
+class ProcessesTerminateFunction : public ExtensionFunction {
  public:
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ExtensionFunction::ResponseAction Run() override;
 
   DECLARE_EXTENSION_FUNCTION("processes.terminate", PROCESSES_TERMINATE)
@@ -157,13 +158,13 @@ class ProcessesTerminateFunction : public UIThreadExtensionFunction {
 ////////////////////////////////////////////////////////////////////////////////
 // Extension function which returns a set of Process objects, containing the
 // details corresponding to the process IDs supplied as input.
-class ProcessesGetProcessInfoFunction :
-    public UIThreadExtensionFunction,
-    public task_manager::TaskManagerObserver {
+class ProcessesGetProcessInfoFunction
+    : public ExtensionFunction,
+      public task_manager::TaskManagerObserver {
  public:
   ProcessesGetProcessInfoFunction();
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ExtensionFunction::ResponseAction Run() override;
 
   // task_manager::TaskManagerObserver:

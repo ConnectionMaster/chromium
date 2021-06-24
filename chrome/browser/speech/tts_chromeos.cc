@@ -4,51 +4,110 @@
 
 #include "chrome/browser/speech/tts_chromeos.h"
 
-#include "base/macros.h"
+#include <algorithm>
+#include <utility>
+
+#include "base/strings/string_number_conversions.h"
 #include "components/arc/arc_service_manager.h"
-#include "components/arc/common/tts.mojom.h"
+#include "components/arc/mojom/tts.mojom.h"
 #include "components/arc/session/arc_bridge_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/tts_platform.h"
 
-bool TtsPlatformImplChromeOs::PlatformImplAvailable() {
+void TtsPlatformImplChromeOs::SetVoices(
+    std::vector<content::VoiceData> voices) {
+  std::sort(voices.begin(), voices.end(), [](const auto& v1, const auto& v2) {
+    return !v1.remote && v2.remote;
+  });
+  voices_ = std::move(voices);
+  received_word_event_ = false;
+}
+
+void TtsPlatformImplChromeOs::ReceivedWordEvent() {
+  if (received_word_event_)
+    return;
+
+  received_word_event_ = true;
+  for (auto& voice : voices_)
+    voice.events.insert(content::TTS_EVENT_WORD);
+
+  content::TtsController::GetInstance()->VoicesChanged();
+}
+
+TtsPlatformImplChromeOs::TtsPlatformImplChromeOs() = default;
+TtsPlatformImplChromeOs::~TtsPlatformImplChromeOs() = default;
+
+bool TtsPlatformImplChromeOs::PlatformImplSupported() {
+  // TODO(1133813): Chrome OS Platform should support background initialisation.
   return arc::ArcServiceManager::Get() && arc::ArcServiceManager::Get()
                                               ->arc_bridge_service()
                                               ->tts()
                                               ->IsConnected();
 }
 
-bool TtsPlatformImplChromeOs::LoadBuiltInTtsEngine(
+bool TtsPlatformImplChromeOs::PlatformImplInitialized() {
+  // On Chrome OS, the extension-based voices are really the platform level
+  // voices. ARC++ takes a while to load, so do not block TtsController from
+  // processing and speaking utterances here.
+  return true;
+}
+
+void TtsPlatformImplChromeOs::LoadBuiltInTtsEngine(
     content::BrowserContext* browser_context) {
   content::TtsEngineDelegate* tts_engine_delegate =
       content::TtsController::GetInstance()->GetTtsEngineDelegate();
   if (tts_engine_delegate)
-    return tts_engine_delegate->LoadBuiltInTtsEngine(browser_context);
-  return false;
+    tts_engine_delegate->LoadBuiltInTtsEngine(browser_context);
 }
 
-bool TtsPlatformImplChromeOs::Speak(
+void TtsPlatformImplChromeOs::Speak(
     int utterance_id,
     const std::string& utterance,
     const std::string& lang,
     const content::VoiceData& voice,
-    const content::UtteranceContinuousParameters& params) {
+    const content::UtteranceContinuousParameters& params,
+    base::OnceCallback<void(bool)> on_speak_finished) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  // Parse SSML and process speech.
+  content::TtsController::GetInstance()->StripSSML(
+      utterance, base::BindOnce(&TtsPlatformImplChromeOs::ProcessSpeech,
+                                base::Unretained(this), utterance_id, lang,
+                                voice, params, std::move(on_speak_finished)));
+}
+
+void TtsPlatformImplChromeOs::ProcessSpeech(
+    int utterance_id,
+    const std::string& lang,
+    const content::VoiceData& voice,
+    const content::UtteranceContinuousParameters& params,
+    base::OnceCallback<void(bool)> on_speak_finished,
+    const std::string& parsed_utterance) {
   auto* const arc_service_manager = arc::ArcServiceManager::Get();
-  if (!arc_service_manager)
-    return false;
+  if (!arc_service_manager) {
+    std::move(on_speak_finished).Run(false);
+    return;
+  }
   arc::mojom::TtsInstance* tts = ARC_GET_INSTANCE_FOR_METHOD(
       arc_service_manager->arc_bridge_service()->tts(), Speak);
-  if (!tts)
-    return false;
+  if (!tts) {
+    std::move(on_speak_finished).Run(false);
+    return;
+  }
 
   arc::mojom::TtsUtterancePtr arc_utterance = arc::mojom::TtsUtterance::New();
   arc_utterance->utteranceId = utterance_id;
-  arc_utterance->text = utterance;
+  arc_utterance->text = parsed_utterance;
   arc_utterance->rate = params.rate;
   arc_utterance->pitch = params.pitch;
+  int voice_id = 0;
+  if (!voice.native_voice_identifier.empty() &&
+      base::StringToInt(voice.native_voice_identifier, &voice_id)) {
+    arc_utterance->voice_id = voice_id;
+  }
+
   tts->Speak(std::move(arc_utterance));
-  return true;
+  std::move(on_speak_finished).Run(true);
 }
 
 bool TtsPlatformImplChromeOs::StopSpeaking() {
@@ -67,12 +126,8 @@ bool TtsPlatformImplChromeOs::StopSpeaking() {
 
 void TtsPlatformImplChromeOs::GetVoices(
     std::vector<content::VoiceData>* out_voices) {
-  out_voices->push_back(content::VoiceData());
-  content::VoiceData& voice = out_voices->back();
-  voice.native = true;
-  voice.name = "Android";
-  voice.events.insert(content::TTS_EVENT_START);
-  voice.events.insert(content::TTS_EVENT_END);
+  for (const auto& voice : voices_)
+    out_voices->push_back(voice);
 }
 
 std::string TtsPlatformImplChromeOs::GetError() {
@@ -91,8 +146,13 @@ bool TtsPlatformImplChromeOs::IsSpeaking() {
   return false;
 }
 
+bool TtsPlatformImplChromeOs::PreferEngineDelegateVoices() {
+  return true;
+}
+
 // static
 TtsPlatformImplChromeOs*
 TtsPlatformImplChromeOs::GetInstance() {
-  return base::Singleton<TtsPlatformImplChromeOs>::get();
+  static base::NoDestructor<TtsPlatformImplChromeOs> tts_platform;
+  return tts_platform.get();
 }

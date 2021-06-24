@@ -12,4 +12,12 @@ bool WebUIController::OverrideHandleWebUIMessage(const GURL& source_url,
   return false;
 }
 
+WebUIController::Type WebUIController::GetType() {
+  return nullptr;
+}
+
+bool WebUIController::IsJavascriptErrorReportingEnabled() {
+  return true;
+}
+
 }  // namespace content

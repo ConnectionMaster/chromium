@@ -2,7 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-var FilesQuickView = Polymer({
+import 'chrome://resources/cr_elements/cr_button/cr_button.m.js';
+import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
+import './files_icon_button.js';
+import './files_metadata_box.js';
+import './files_safe_media.js';
+import './files_tooltip.js';
+import './icons.js';
+
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+export const FilesQuickView = Polymer({
+  _template: html`{__html_template__}`,
+
   is: 'files-quick-view',
 
   properties: {
@@ -10,33 +23,52 @@ var FilesQuickView = Polymer({
     type: String,
     subtype: String,
     filePath: String,
-    // If there is a task to open the file.
+
+    // True if there is a file task that can open the file type.
     hasTask: Boolean,
-    // URLs should be accessible from webview since contets are rendered inside
-    // it. Hint: use URL.createObjectURL.
+
+    /**
+     * True if the entry shown in Quick View can be deleted.
+     * @type {boolean}
+     */
+    canDelete: Boolean,
+
+    // URLs should be accessible from the <webview> since their content is
+    // rendered inside the <wevbiew>. Hint: use URL.createObjectURL.
     contentUrl: String,
     videoPoster: String,
     audioArtwork: String,
+
+    // Autoplay property for audio, video.
     autoplay: Boolean,
-    // True if this file is not image, audio, video nor HTML but supported on
-    // Chrome, i.e. preview-able by directly src-ing the file path to webview.
-    // Example: pdf, text.
+
+    // True if this file is not image, audio, video nor HTML but is supported
+    // by Chrome - content that is directly preview-able in Chrome by setting
+    // the <webview> src attribute. Examples: pdf, text.
     browsable: Boolean,
 
-    // metadata-box-active-changed event is fired on attribute change.
+    // The metadata-box-active-changed event is fired on attribute change.
     metadataBoxActive: {
       value: true,
       type: Boolean,
       notify: true,
     },
-    // Text shown when no playback is available.
+
+    // Text shown when there is no playback/preview available.
     noPlaybackText: String,
-    // Text shown when no preview is available.
     noPreviewText: String,
+
+    /**
+     * True if the Files app window is a dialog, e.g. save-as or open-with.
+     * @type {boolean}
+     */
+    isModal: Boolean,
   },
 
   listeners: {
+    'files-safe-media-tap-inside': 'tapInside',
     'files-safe-media-tap-outside': 'close',
+    'files-safe-media-load-error': 'loaderror',
   },
 
   /**
@@ -45,22 +77,45 @@ var FilesQuickView = Polymer({
    * @param {!Event} e
    */
   applyTextCss: function(e) {
+    // Don't override the Chrome PDF viewer's CSS: crbug.com/1001034.
+    if (this.subtype === 'PDF') {
+      return;
+    }
+
     const webview = /** @type {WebView} */ (e.target);
-    webview.insertCSS(
-        {'file': 'foreground/elements/files_safe_text_webview_content.css'});
+    webview.insertCSS({
+      'file': 'foreground/elements/files_safe_text_webview_content.css',
+    });
   },
 
   // Clears fields.
   clear: function() {
-    this.type = '';
-    this.subtype = '';
-    this.filePath = '';
-    this.hasTask = false;
+    this.setProperties({
+        type: '',
+        subtype: '',
+        filePath: '',
+        hasTask: false,
+        canDelete: false,
+        contentUrl: '',
+        videoPoster: '',
+        audioArtwork: '',
+        autoplay: false,
+        browsable: false,
+    });
+
+    const video = this.$.contentPanel.querySelector('#videoSafeMedia');
+    if (video) {
+      video.src = '';
+      video.fire('src-changed');
+    }
+
+    this.removeAttribute('load-error');
+  },
+
+  // Handle load error from the files-safe-media container.
+  loaderror: function() {
+    this.setAttribute('load-error', '');
     this.contentUrl = '';
-    this.videoPoster = '';
-    this.audioArtwork = '';
-    this.autoplay = false;
-    this.browsable = false;
   },
 
   /** @return {boolean} */
@@ -89,11 +144,18 @@ var FilesQuickView = Polymer({
     }
   },
 
+  tapInside: function(e) {
+    if (this.type === 'image') {
+      const dialog = this.shadowRoot.querySelector('#dialog');
+      dialog.focus();
+    }
+  },
+
   /**
-   * @return {!FilesMetadataBox}
+   * @return {!FilesMetadataBoxElement}
    */
   getFilesMetadataBox: function() {
-    return this.$['metadata-box'];
+    return /** @type {!FilesMetadataBoxElement} */ (this.$['metadata-box']);
   },
 
   /**
@@ -104,14 +166,50 @@ var FilesQuickView = Polymer({
   onOpenInNewButtonTap: function(event) {},
 
   /**
+   * @param {boolean} hasTask
+   * @param {boolean} isModal
+   * @return {boolean}
+   *
+   * @private
+   */
+  shouldShowOpenButton_: function(hasTask, isModal) {
+    return hasTask && !isModal;
+  },
+
+  /**
+   * Client should assign the function to delete the file.
+   *
+   * @param {!Event} event
+   */
+  onDeleteButtonTap: function(event) {},
+
+  /**
+   * @param {boolean} canDelete
+   * @param {boolean} isModal
+   * @return {boolean}
+   *
+   * @private
+   */
+  shouldShowDeleteButton_: function(canDelete, isModal) {
+    return canDelete && !isModal;
+  },
+
+  /**
+   * See the changes on crbug.com/641587, but crbug.com/779044#c11 later undid
+   * that work. So the focus remains on the metadata button when clicked after
+   * the crbug.com/779044 "ghost focus" fix.
+   *
+   * crbug.com/641587 mentions a different UI behavior, that was wanted to fix
+   * that bug. TODO(files-ng): UX to resolve the correct behavior needed here.
+   *
    * @param {!Event} event tap event.
    *
    * @private
    */
   onMetadataButtonTap_: function(event) {
-    // Set focus back to innerContent panel so that pressing space key next
-    // closes Quick View.
-    this.$.innerContentPanel.focus();
+    if (this.hasAttribute('files-ng')) {
+      this.metadataBoxActive = !this.metadataBoxActive;
+    }
   },
 
   /**
@@ -202,12 +300,10 @@ var FilesQuickView = Polymer({
 
     this.clear();
 
-    // TODO(dpapad): This is necessary to make the code work both for Polymer 1
-    // and Polymer 2. Remove once migration to Polymer 2 is completed.
-    e.stopPropagation();
-
     // Catch and re-fire the 'close' event such that it bubbles across Shadow
     // DOM v1.
     this.fire('close');
   }
 });
+
+//# sourceURL=//ui/file_manager/file_manager/foreground/elements/files_quick_view.js

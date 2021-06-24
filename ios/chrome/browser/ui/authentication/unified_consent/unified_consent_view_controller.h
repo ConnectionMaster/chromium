@@ -9,9 +9,6 @@
 
 #include <vector>
 
-// Accessibility identifier for |-UnifiedConsentViewController.view|.
-extern NSString* const kUnifiedConsentScrollViewIdentifier;
-
 @protocol UnifiedConsentViewControllerDelegate;
 
 // UnifiedConsentViewController is a sub view controller to ask for the user
@@ -36,17 +33,17 @@ extern NSString* const kUnifiedConsentScrollViewIdentifier;
 // the way they appear on the screen.
 - (const std::vector<int>&)consentStringIds;
 
-// Shows (if hidden) and updates the IdentityPickerView.
-- (void)updateIdentityPickerViewWithUserFullName:(NSString*)fullName
-                                           email:(NSString*)email;
+// Shows (if hidden) and updates the IdentityButtonControl.
+- (void)updateIdentityButtonControlWithUserFullName:(NSString*)fullName
+                                              email:(NSString*)email;
 
-// Updates the IdentityPickerView avatar. If the identity picker view is hidden,
-// -[UnifiedConsentViewController updateIdentityPickerViewWithUserFullName:
-//  email:] has to be called before.
-- (void)updateIdentityPickerViewWithAvatar:(UIImage*)avatar;
+// Updates the IdentityButtonControl avatar. If the identity picker view is
+// hidden, -[UnifiedConsentViewController
+// updateIdentityButtonControlWithUserFullName:email:] has to be called before.
+- (void)updateIdentityButtonControlWithAvatar:(UIImage*)avatar;
 
-// Hides the IdentityPickerView.
-- (void)hideIdentityPickerView;
+// Hides the IdentityButtonControl.
+- (void)hideIdentityButtonControl;
 
 // Scrolls the consent view to the bottom.
 - (void)scrollToBottom;

@@ -183,7 +183,7 @@ void Vp8Encoder::ConfigureForNewFrameSize(const gfx::Size& frame_size) {
            VPX_CODEC_OK);
 }
 
-void Vp8Encoder::Encode(const scoped_refptr<media::VideoFrame>& video_frame,
+void Vp8Encoder::Encode(scoped_refptr<media::VideoFrame> video_frame,
                         const base::TimeTicks& reference_time,
                         SenderEncodedFrame* encoded_frame) {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -202,24 +202,42 @@ void Vp8Encoder::Encode(const scoped_refptr<media::VideoFrame>& video_frame,
 
   // Wrapper for vpx_codec_encode() to access the YUV data in the |video_frame|.
   // Only the VISIBLE rectangle within |video_frame| is exposed to the codec.
+  vpx_img_fmt_t vpx_format = video_frame->format() == PIXEL_FORMAT_NV12
+                                 ? VPX_IMG_FMT_NV12
+                                 : VPX_IMG_FMT_I420;
   vpx_image_t vpx_image;
   vpx_image_t* const result = vpx_img_wrap(
-      &vpx_image,
-      VPX_IMG_FMT_I420,
-      frame_size.width(),
-      frame_size.height(),
-      1,
+      &vpx_image, vpx_format, frame_size.width(), frame_size.height(), 1,
       video_frame->data(VideoFrame::kYPlane));
   DCHECK_EQ(result, &vpx_image);
-  vpx_image.planes[VPX_PLANE_Y] =
-      video_frame->visible_data(VideoFrame::kYPlane);
-  vpx_image.planes[VPX_PLANE_U] =
-      video_frame->visible_data(VideoFrame::kUPlane);
-  vpx_image.planes[VPX_PLANE_V] =
-      video_frame->visible_data(VideoFrame::kVPlane);
-  vpx_image.stride[VPX_PLANE_Y] = video_frame->stride(VideoFrame::kYPlane);
-  vpx_image.stride[VPX_PLANE_U] = video_frame->stride(VideoFrame::kUPlane);
-  vpx_image.stride[VPX_PLANE_V] = video_frame->stride(VideoFrame::kVPlane);
+  switch (vpx_format) {
+    case VPX_IMG_FMT_I420:
+      vpx_image.planes[VPX_PLANE_Y] =
+          video_frame->visible_data(VideoFrame::kYPlane);
+      vpx_image.planes[VPX_PLANE_U] =
+          video_frame->visible_data(VideoFrame::kUPlane);
+      vpx_image.planes[VPX_PLANE_V] =
+          video_frame->visible_data(VideoFrame::kVPlane);
+      vpx_image.stride[VPX_PLANE_Y] = video_frame->stride(VideoFrame::kYPlane);
+      vpx_image.stride[VPX_PLANE_U] = video_frame->stride(VideoFrame::kUPlane);
+      vpx_image.stride[VPX_PLANE_V] = video_frame->stride(VideoFrame::kVPlane);
+      break;
+    case VPX_IMG_FMT_NV12:
+      vpx_image.planes[VPX_PLANE_Y] =
+          video_frame->visible_data(VideoFrame::kYPlane);
+      // In libvpx, the UV plane of NV12 frames is represented by two planes
+      // with the same stride, shifted by one byte.
+      vpx_image.planes[VPX_PLANE_U] =
+          video_frame->visible_data(VideoFrame::kUVPlane);
+      vpx_image.planes[VPX_PLANE_V] = vpx_image.planes[VPX_PLANE_U] + 1;
+      vpx_image.stride[VPX_PLANE_Y] = video_frame->stride(VideoFrame::kYPlane);
+      vpx_image.stride[VPX_PLANE_U] = video_frame->stride(VideoFrame::kUVPlane);
+      vpx_image.stride[VPX_PLANE_V] = video_frame->stride(VideoFrame::kUVPlane);
+      break;
+    default:
+      NOTREACHED();
+      break;
+  }
 
   // The frame duration given to the VP8 codec affects a number of important
   // behaviors, including: per-frame bandwidth, CPU time spent encoding,
@@ -231,11 +249,9 @@ void Vp8Encoder::Encode(const scoped_refptr<media::VideoFrame>& video_frame,
   const base::TimeDelta maximum_frame_duration =
       base::TimeDelta::FromSecondsD(static_cast<double>(kRestartFramePeriods) /
                                         cast_config_.max_frame_rate);
-  base::TimeDelta predicted_frame_duration;
-  if (!video_frame->metadata()->GetTimeDelta(
-          media::VideoFrameMetadata::FRAME_DURATION,
-          &predicted_frame_duration) ||
-      predicted_frame_duration <= base::TimeDelta()) {
+  base::TimeDelta predicted_frame_duration =
+      video_frame->metadata().frame_duration.value_or(base::TimeDelta());
+  if (predicted_frame_duration <= base::TimeDelta()) {
     // The source of the video frame did not provide the frame duration.  Use
     // the actual amount of time between the current and previous frame as a
     // prediction for the next frame's duration.
@@ -290,7 +306,7 @@ void Vp8Encoder::Encode(const scoped_refptr<media::VideoFrame>& video_frame,
   // frame duration.
   const base::TimeDelta processing_time = base::TimeTicks::Now() - start_time;
   encoded_frame->encoder_utilization =
-      processing_time.InSecondsF() / predicted_frame_duration.InSecondsF();
+      processing_time / predicted_frame_duration;
 
   // Compute lossy utilization.  The VP8 encoder took an estimated guess at what
   // quantizer value would produce an encoded frame size as close to the target

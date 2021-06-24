@@ -12,6 +12,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/hash/md5.h"
+#include "base/logging.h"
 #include "base/path_service.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_util.h"
@@ -41,7 +42,7 @@ bool ShouldSkipFile(const base::FilePath& path,
          (image_size > threshold);
 }
 
-void ReadFileToVector(const base::FilePath& path, std::vector<char>* contents) {
+void ReadFileToVector(const base::FilePath& path, Vector<char>* contents) {
   std::string raw_image_data;
   base::ReadFileToString(path, &raw_image_data);
   contents->resize(raw_image_data.size());
@@ -106,7 +107,7 @@ void ImageDecoderBaseTest::SetUp() {
   base::FilePath data_dir;
   ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &data_dir));
   data_dir_ = data_dir.AppendASCII("webkit").AppendASCII("data").AppendASCII(
-      format_ + "_decoder");
+      format_.Utf8() + "_decoder");
   if (!base::PathExists(data_dir_)) {
     const testing::TestInfo* const test_info =
         testing::UnitTest::GetInstance()->current_test_info();
@@ -123,19 +124,15 @@ base::FilePath ImageDecoderBaseTest::GetMD5SumPath(const base::FilePath& path) {
   return base::FilePath(path.value() + kDecodedDataExtension);
 }
 
-std::vector<base::FilePath> ImageDecoderBaseTest::GetImageFiles() const {
-  std::string pattern = "*." + format_;
+Vector<base::FilePath> ImageDecoderBaseTest::GetImageFiles() const {
+  std::string pattern = "*." + format_.Utf8();
   base::FileEnumerator enumerator(data_dir_, false,
                                   base::FileEnumerator::FILES);
-  std::vector<base::FilePath> image_files;
+  Vector<base::FilePath> image_files;
   for (base::FilePath next_file_name = enumerator.Next();
        !next_file_name.empty(); next_file_name = enumerator.Next()) {
     base::FilePath base_name = next_file_name.BaseName();
-#if defined(OS_WIN)
-    std::string base_name_ascii = base::UTF16ToASCII(base_name.value());
-#else
-    std::string base_name_ascii = base_name.value();
-#endif
+    std::string base_name_ascii = base_name.MaybeAsASCII();
     if (base::MatchPattern(base_name_ascii, pattern))
       image_files.push_back(next_file_name);
   }
@@ -156,8 +153,8 @@ void ImageDecoderBaseTest::TestDecoding(
     const int64_t threshold) {
   if (data_dir_.empty())
     return;
-  const std::vector<base::FilePath> image_files(GetImageFiles());
-  for (std::vector<base::FilePath>::const_iterator i = image_files.begin();
+  const Vector<base::FilePath> image_files(GetImageFiles());
+  for (Vector<base::FilePath>::const_iterator i = image_files.begin();
        i != image_files.end(); ++i) {
     if (!ShouldSkipFile(*i, file_selection, threshold))
       TestImageDecoder(*i, GetMD5SumPath(*i), kFirstFrameIndex);
@@ -173,7 +170,7 @@ void ImageDecoderBaseTest::TestImageDecoder(const base::FilePath& image_path,
     return;
 #endif
 
-  std::vector<char> image_contents;
+  Vector<char> image_contents;
   ReadFileToVector(image_path, &image_contents);
   EXPECT_TRUE(image_contents.size());
   std::unique_ptr<ImageDecoder> decoder(CreateImageDecoder());

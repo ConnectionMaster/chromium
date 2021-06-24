@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/browser_dialogs.h"
 
+#include "base/callback_helpers.h"
 #include "base/metrics/histogram_macros.h"
 
 namespace chrome {
@@ -12,6 +13,17 @@ void RecordDialogCreation(DialogIdentifier identifier) {
   UMA_HISTOGRAM_ENUMERATION("Dialog.Creation", identifier,
                             DialogIdentifier::MAX_VALUE);
 }
+
+#if !defined(TOOLKIT_VIEWS)
+void ShowWindowNamePrompt(Browser* browser) {
+  NOTIMPLEMENTED();
+}
+
+void ShowWindowNamePromptForTesting(Browser* browser,
+                                    gfx::NativeWindow context) {
+  NOTIMPLEMENTED();
+}
+#endif
 
 }  // namespace chrome
 

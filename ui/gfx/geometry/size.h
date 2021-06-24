@@ -5,6 +5,7 @@
 #ifndef UI_GFX_GEOMETRY_SIZE_H_
 #define UI_GFX_GEOMETRY_SIZE_H_
 
+#include <algorithm>
 #include <iosfwd>
 #include <string>
 
@@ -15,7 +16,7 @@
 
 #if defined(OS_WIN)
 typedef struct tagSIZE SIZE;
-#elif defined(OS_MACOSX) || defined(OS_IOS)
+#elif defined(OS_APPLE)
 typedef struct CGSize CGSize;
 #endif
 
@@ -26,26 +27,30 @@ class GEOMETRY_EXPORT Size {
  public:
   constexpr Size() : width_(0), height_(0) {}
   constexpr Size(int width, int height)
-      : width_(width < 0 ? 0 : width), height_(height < 0 ? 0 : height) {}
-#if defined(OS_MACOSX) || defined(OS_IOS)
+      : width_(std::max(0, width)), height_(std::max(0, height)) {}
+#if defined(OS_APPLE)
   explicit Size(const CGSize& s);
 #endif
 
-#if defined(OS_MACOSX) || defined(OS_IOS)
+#if defined(OS_APPLE)
   Size& operator=(const CGSize& s);
 #endif
 
+  void operator+=(const Size& size);
+
+  void operator-=(const Size& size);
+
 #if defined(OS_WIN)
   SIZE ToSIZE() const;
-#elif defined(OS_MACOSX) || defined(OS_IOS)
+#elif defined(OS_APPLE)
   CGSize ToCGSize() const;
 #endif
 
   constexpr int width() const { return width_; }
   constexpr int height() const { return height_; }
 
-  void set_width(int width) { width_ = width < 0 ? 0 : width; }
-  void set_height(int height) { height_ = height < 0 ? 0 : height; }
+  void set_width(int width) { width_ = std::max(0, width); }
+  void set_height(int height) { height_ = std::max(0, height); }
 
   // This call will CHECK if the area of this size would overflow int.
   int GetArea() const;
@@ -77,6 +82,16 @@ inline bool operator==(const Size& lhs, const Size& rhs) {
 
 inline bool operator!=(const Size& lhs, const Size& rhs) {
   return !(lhs == rhs);
+}
+
+inline Size operator+(Size lhs, const Size& rhs) {
+  lhs += rhs;
+  return lhs;
+}
+
+inline Size operator-(Size lhs, const Size& rhs) {
+  lhs -= rhs;
+  return lhs;
 }
 
 // This is declared here for use in gtest-based unit tests but is defined in

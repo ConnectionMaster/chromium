@@ -10,6 +10,16 @@
 
 @implementation ExtendedTouchTargetButton
 
+- (instancetype)initWithFrame:(CGRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    if (@available(iOS 13.4, *)) {
+        self.pointerInteractionEnabled = YES;
+    }
+  }
+  return self;
+}
+
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent*)event {
   // Point is in |bounds| coordinates, but |center| is in the |superview|
   // coordinates. Compute center in |bounds| coords.

@@ -13,10 +13,10 @@
 #include <string>
 #include <vector>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "ui/events/devices/input_device.h"
 #include "ui/events/ozone/evdev/event_device_util.h"
-#include "ui/events/ozone/evdev/events_ozone_evdev_export.h"
 
 #if !defined(ABS_MT_TOOL_Y)
 #define ABS_MT_TOOL_Y 0x3d
@@ -34,9 +34,10 @@ class FilePath;
 namespace ui {
 
 // Input device types.
-enum EVENTS_OZONE_EVDEV_EXPORT EventDeviceType {
+enum COMPONENT_EXPORT(EVDEV) EventDeviceType {
   DT_KEYBOARD,
   DT_MOUSE,
+  DT_POINTING_STICK,
   DT_TOUCHPAD,
   DT_TOUCHSCREEN,
   DT_MULTITOUCH,
@@ -48,7 +49,7 @@ enum EVENTS_OZONE_EVDEV_EXPORT EventDeviceType {
 //
 // This stores and queries information about input devices; in
 // particular it knows which events the device can generate.
-class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
+class COMPONENT_EXPORT(EVDEV) EventDeviceInfo {
  public:
   EventDeviceInfo();
   ~EventDeviceInfo();
@@ -64,12 +65,14 @@ class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
   void SetMscEvents(const unsigned long* msc_bits, size_t len);
   void SetSwEvents(const unsigned long* sw_bits, size_t len);
   void SetLedEvents(const unsigned long* led_bits, size_t len);
+  void SetFfEvents(const unsigned long* ff_bits, size_t len);
   void SetProps(const unsigned long* prop_bits, size_t len);
   void SetAbsInfo(unsigned int code, const input_absinfo& absinfo);
   void SetAbsMtSlots(unsigned int code, const std::vector<int32_t>& values);
   void SetAbsMtSlot(unsigned int code, unsigned int slot, uint32_t value);
   void SetDeviceType(InputDeviceType type);
   void SetId(input_id id);
+  void SetName(const std::string& name);
 
   // Check events this device can generate.
   bool HasEventType(unsigned int type) const;
@@ -79,10 +82,12 @@ class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
   bool HasMscEvent(unsigned int code) const;
   bool HasSwEvent(unsigned int code) const;
   bool HasLedEvent(unsigned int code) const;
+  bool HasFfEvent(unsigned int code) const;
 
   // Properties of absolute axes.
   int32_t GetAbsMinimum(unsigned int code) const;
   int32_t GetAbsMaximum(unsigned int code) const;
+  int32_t GetAbsResolution(unsigned int code) const;
   int32_t GetAbsValue(unsigned int code) const;
   input_absinfo GetAbsInfoByCode(unsigned int code) const;
   uint32_t GetAbsMtSlotCount() const;
@@ -97,6 +102,7 @@ class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
   uint16_t bustype() const { return input_id_.bustype; }
   uint16_t vendor_id() const { return input_id_.vendor; }
   uint16_t product_id() const { return input_id_.product; }
+  uint16_t version() const { return input_id_.version; }
 
   // Check input device properties.
   bool HasProp(unsigned int code) const;
@@ -130,8 +136,12 @@ class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
   // Determine whether there's a keyboard on this device.
   bool HasKeyboard() const;
 
-  // Determine whether there's a mouse on this device.
+  // Determine whether there's a mouse on this device. Excludes pointing sticks.
   bool HasMouse() const;
+
+  // Determine whether there's a pointing stick (such as a TrackPoint) on this
+  // device.
+  bool HasPointingStick() const;
 
   // Determine whether there's a touchpad on this device.
   bool HasTouchpad() const;
@@ -142,8 +152,22 @@ class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
   // Determine whether there's a touchscreen on this device.
   bool HasTouchscreen() const;
 
+  // Determine whether there's a stylus garage switch on this device.
+  bool HasStylusSwitch() const;
+
   // Determine whether there's a gamepad on this device.
   bool HasGamepad() const;
+
+  // Determine whether the device supports rumble.
+  bool SupportsRumble() const;
+
+  // Determine if this is a dedicated device for a stylus button.
+  bool IsStylusButtonDevice() const;
+
+  // Determine whether this is a dedicated device for microphone mute hw switch
+  // on Chrome OS. The switch disables the internal microphone feed. The input
+  // device is used to track the mute switch state.
+  bool IsMicrophoneMuteSwitchDevice() const;
 
   // The device type (internal or external.)
   InputDeviceType device_type() const { return device_type_; }
@@ -171,6 +195,7 @@ class EVENTS_OZONE_EVDEV_EXPORT EventDeviceInfo {
   unsigned long sw_bits_[EVDEV_BITS_TO_LONGS(SW_CNT)];
   unsigned long led_bits_[EVDEV_BITS_TO_LONGS(LED_CNT)];
   unsigned long prop_bits_[EVDEV_BITS_TO_LONGS(INPUT_PROP_CNT)];
+  unsigned long ff_bits_[EVDEV_BITS_TO_LONGS(FF_CNT)];
 
   struct input_absinfo abs_info_[ABS_CNT];
 

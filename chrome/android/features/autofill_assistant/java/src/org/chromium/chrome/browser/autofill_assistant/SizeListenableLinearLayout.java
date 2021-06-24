@@ -5,16 +5,17 @@
 package org.chromium.chrome.browser.autofill_assistant;
 
 import android.content.Context;
-import android.support.annotation.Nullable;
 import android.util.AttributeSet;
 import android.widget.LinearLayout;
 
-import org.chromium.chrome.browser.widget.bottomsheet.BottomSheet;
+import androidx.annotation.Nullable;
+
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 
 /** A LinearLayout that can notify when its size changes. */
 public class SizeListenableLinearLayout extends LinearLayout {
     @Nullable
-    private BottomSheet.ContentSizeListener mListener;
+    private BottomSheetContent.ContentSizeListener mListener;
 
     public SizeListenableLinearLayout(Context context) {
         super(context);
@@ -29,6 +30,19 @@ public class SizeListenableLinearLayout extends LinearLayout {
     }
 
     @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (mListener != null) {
+            // TODO(crbug.com/806868): In some edge cases, #onLayout is called and #onSizeChanged is
+            // not. This call with invalid values ensures that the BottomSheet is resized correctly
+            // when that happens. A correct fix is to make the BottomSheet always listen for layout
+            // changes (it currently does that only if there is no ContentSizeListener attached to
+            // the BottomSheetContent).
+            mListener.onSizeChanged(right - left, bottom - top, -1, -1);
+        }
+    }
+
+    @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
         if (mListener != null) {
@@ -36,7 +50,7 @@ public class SizeListenableLinearLayout extends LinearLayout {
         }
     }
 
-    void setContentSizeListener(@Nullable BottomSheet.ContentSizeListener listener) {
+    void setContentSizeListener(@Nullable BottomSheetContent.ContentSizeListener listener) {
         mListener = listener;
     }
 }

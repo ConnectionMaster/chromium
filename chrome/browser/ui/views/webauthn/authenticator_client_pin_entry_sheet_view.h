@@ -16,7 +16,6 @@
 // PIN.
 class AuthenticatorClientPinEntrySheetView
     : public AuthenticatorRequestSheetView,
-      public AuthenticatorClientPinEntrySheetModel::Delegate,
       public AuthenticatorClientPinEntryView::Delegate {
  public:
   explicit AuthenticatorClientPinEntrySheetView(
@@ -27,16 +26,12 @@ class AuthenticatorClientPinEntrySheetView
   AuthenticatorClientPinEntrySheetModel* pin_entry_sheet_model();
 
   // AuthenticatorRequestSheetView:
-  std::unique_ptr<views::View> BuildStepSpecificContent() override;
-
-  // AuthenticatorClientPinEntrySheetModel::Delegate:
-  void ShowPinError(const base::string16& error) override;
+  std::pair<std::unique_ptr<views::View>, AutoFocus> BuildStepSpecificContent()
+      override;
 
   // AuthenticatorClientPinEntryView::Delegate:
-  void OnPincodeChanged(base::string16 pincode) override;
-  void OnConfirmationChanged(base::string16 pincode) override;
-
-  AuthenticatorClientPinEntryView* pin_entry_view_ = nullptr;
+  void OnPincodeChanged(std::u16string pincode) override;
+  void OnConfirmationChanged(std::u16string pincode) override;
 
   DISALLOW_COPY_AND_ASSIGN(AuthenticatorClientPinEntrySheetView);
 };

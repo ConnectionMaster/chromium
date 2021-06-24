@@ -4,6 +4,7 @@
 
 #include "chrome/browser/metrics/metrics_reporting_state.h"
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
@@ -12,6 +13,7 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_browser_main.h"
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
@@ -23,9 +25,10 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service_accessor.h"
+#include "content/public/test/browser_test.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/settings/device_settings_cache.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/settings/device_settings_cache.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #endif
@@ -79,7 +82,7 @@ class MetricsReportingStateTest : public InProcessBrowserTest,
     ChromeMetricsServiceAccessor::SetForceIsMetricsReportingEnabledPrefLookup(
         true);
     static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
-        new ChromeBrowserMainExtraPartsChecker(
+        std::make_unique<ChromeBrowserMainExtraPartsChecker>(
             is_metrics_reporting_enabled_initial_value()));
   }
 
@@ -113,10 +116,10 @@ void ChromeBrowserMainExtraPartsChecker::PostEarlyInitialization() {
 
 // Callback from changing whether reporting is enabled.
 void OnMetricsReportingStateChanged(bool* new_state_ptr,
-                                    base::Closure run_loop_closure,
+                                    base::OnceClosure run_loop_closure,
                                     bool new_state) {
   *new_state_ptr = new_state;
-  run_loop_closure.Run();
+  std::move(run_loop_closure).Run();
 }
 
 IN_PROC_BROWSER_TEST_P(MetricsReportingStateTest, ChangeMetricsReportingState) {
@@ -126,8 +129,8 @@ IN_PROC_BROWSER_TEST_P(MetricsReportingStateTest, ChangeMetricsReportingState) {
   bool value_after_change = false;
   ChangeMetricsReportingStateWithReply(
       !is_metrics_reporting_enabled_initial_value(),
-      base::Bind(&OnMetricsReportingStateChanged, &value_after_change,
-                 run_loop.QuitClosure()));
+      base::BindOnce(&OnMetricsReportingStateChanged, &value_after_change,
+                     run_loop.QuitClosure()));
   run_loop.Run();
   EXPECT_EQ(!is_metrics_reporting_enabled_initial_value(), value_after_change);
 }

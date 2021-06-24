@@ -23,7 +23,9 @@
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/notification_service.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/extension_test_message_listener.h"
@@ -85,8 +87,8 @@ IN_PROC_BROWSER_TEST_F(QuitWithAppsControllerInteractiveTest, QuitBehavior) {
   // If notification was dismissed by click, show again on next quit.
   display_service.SimulateClick(
       NotificationHandler::Type::TRANSIENT,
-      QuitWithAppsController::kQuitWithAppsNotificationID, base::nullopt,
-      base::nullopt);
+      QuitWithAppsController::kQuitWithAppsNotificationID, absl::nullopt,
+      absl::nullopt);
   EXPECT_FALSE(display_service.GetNotification(
       QuitWithAppsController::kQuitWithAppsNotificationID));
   EXPECT_FALSE(controller->ShouldQuit());
@@ -113,11 +115,8 @@ IN_PROC_BROWSER_TEST_F(QuitWithAppsControllerInteractiveTest, QuitBehavior) {
   extensions::AppWindow* app_window = GetFirstAppWindow();
 
   // Quitting should not quit but close all browsers
-  content::WindowedNotificationObserver observer(
-      chrome::NOTIFICATION_BROWSER_CLOSED,
-      content::NotificationService::AllSources());
   chrome_browser_application_mac::Terminate();
-  observer.Wait();
+  ui_test_utils::WaitForBrowserToClose();
 
   EXPECT_TRUE(BrowserList::GetInstance()->empty());
   EXPECT_TRUE(AppWindowRegistryUtil::IsAppWindowVisibleInAnyProfile(0));
@@ -139,7 +138,7 @@ IN_PROC_BROWSER_TEST_F(QuitWithAppsControllerInteractiveTest, QuitBehavior) {
   display_service.SimulateClick(
       NotificationHandler::Type::TRANSIENT,
       QuitWithAppsController::kQuitWithAppsNotificationID,
-      0 /* kQuitAllAppsButtonIndex */, base::nullopt);
+      0 /* kQuitAllAppsButtonIndex */, absl::nullopt);
   destroyed_watcher.Wait();
   EXPECT_FALSE(AppWindowRegistryUtil::IsAppWindowVisibleInAnyProfile(0));
   quit_observer.Wait();

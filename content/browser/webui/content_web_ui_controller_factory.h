@@ -19,14 +19,12 @@ class CONTENT_EXPORT ContentWebUIControllerFactory
 
   // WebUIControllerFactory:
   WebUI::TypeID GetWebUIType(BrowserContext* browser_context,
-                             const GURL& url) const override;
+                             const GURL& url) override;
   bool UseWebUIForURL(BrowserContext* browser_context,
-                      const GURL& url) const override;
-  bool UseWebUIBindingsForURL(BrowserContext* browser_context,
-                              const GURL& url) const override;
+                      const GURL& url) override;
   std::unique_ptr<WebUIController> CreateWebUIControllerForURL(
       WebUI* web_ui,
-      const GURL& url) const override;
+      const GURL& url) override;
 
  protected:
   ContentWebUIControllerFactory();

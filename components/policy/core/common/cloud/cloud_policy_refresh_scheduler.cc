@@ -8,9 +8,10 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
@@ -36,6 +37,8 @@ const int64_t CloudPolicyRefreshScheduler::kRefreshDelayMinMs =
     30 * 60 * 1000;  // 30 minutes.
 const int64_t CloudPolicyRefreshScheduler::kRefreshDelayMaxMs =
     7 * 24 * 60 * 60 * 1000;  // 1 week.
+const int64_t CloudPolicyRefreshScheduler::kRandomSaltDelayMaxValueMs =
+    5 * 60 * 1000;  // 5 minutes.
 
 #else
 
@@ -53,6 +56,8 @@ const int64_t CloudPolicyRefreshScheduler::kRefreshDelayMinMs =
     30 * 60 * 1000;  // 30 minutes.
 const int64_t CloudPolicyRefreshScheduler::kRefreshDelayMaxMs =
     24 * 60 * 60 * 1000;  // 1 day.
+const int64_t CloudPolicyRefreshScheduler::kRandomSaltDelayMaxValueMs =
+    5 * 60 * 1000;  // 5 minutes.
 
 #endif
 
@@ -69,9 +74,10 @@ CloudPolicyRefreshScheduler::CloudPolicyRefreshScheduler(
       network_connection_tracker_(network_connection_tracker_getter.Run()),
       error_retry_delay_ms_(kInitialErrorRetryDelayMs),
       refresh_delay_ms_(kDefaultRefreshDelayMs),
+      refresh_delay_salt_ms_(static_cast<int64_t>(
+          base::RandGenerator(kRandomSaltDelayMaxValueMs))),
       invalidations_available_(false),
-      creation_time_(base::Time::NowFromSystemTime()),
-      weak_factory_(this) {
+      creation_time_(base::Time::NowFromSystemTime()) {
   client_->AddObserver(this);
   store_->AddObserver(this);
   network_connection_tracker_->AddNetworkConnectionObserver(this);
@@ -146,9 +152,13 @@ void CloudPolicyRefreshScheduler::OnPolicyFetched(CloudPolicyClient* client) {
 
 void CloudPolicyRefreshScheduler::OnRegistrationStateChanged(
     CloudPolicyClient* client) {
-  error_retry_delay_ms_ = kInitialErrorRetryDelayMs;
+  if (!client->is_registered()) {
+    CancelRefresh();
+    return;
+  }
 
-  // The client might have registered, so trigger an immediate refresh.
+  // The client has registered, so trigger an immediate refresh.
+  error_retry_delay_ms_ = kInitialErrorRetryDelayMs;
   RefreshSoon();
 }
 
@@ -297,6 +307,7 @@ void CloudPolicyRefreshScheduler::ScheduleRefresh() {
       return;
     case DM_STATUS_SERVICE_ACTIVATION_PENDING:
     case DM_STATUS_SERVICE_POLICY_NOT_FOUND:
+    case DM_STATUS_SERVICE_TOO_MANY_REQUESTS:
       RefreshAfter(GetActualRefreshDelay());
       return;
     case DM_STATUS_REQUEST_FAILED:
@@ -308,6 +319,7 @@ void CloudPolicyRefreshScheduler::ScheduleRefresh() {
     case DM_STATUS_HTTP_STATUS_ERROR:
     case DM_STATUS_RESPONSE_DECODING_ERROR:
     case DM_STATUS_SERVICE_MANAGEMENT_NOT_SUPPORTED:
+    case DM_STATUS_REQUEST_TOO_LARGE:
       RefreshAfter(kUnmanagedRefreshDelayMs);
       return;
     case DM_STATUS_SERVICE_MANAGEMENT_TOKEN_INVALID:
@@ -318,6 +330,9 @@ void CloudPolicyRefreshScheduler::ScheduleRefresh() {
     case DM_STATUS_SERVICE_DEPROVISIONED:
     case DM_STATUS_SERVICE_DOMAIN_MISMATCH:
     case DM_STATUS_SERVICE_CONSUMER_ACCOUNT_WITH_PACKAGED_LICENSE:
+    case DM_STATUS_SERVICE_ENTERPRISE_ACCOUNT_IS_NOT_ELIGIBLE_TO_ENROLL:
+    case DM_STATUS_SERVICE_ENTERPRISE_TOS_HAS_NOT_BEEN_ACCEPTED:
+    case DM_STATUS_SERVICE_ILLEGAL_ACCOUNT_FOR_PACKAGED_EDU_LICENSE:
       // Need a re-registration, no use in retrying.
       CancelRefresh();
       return;
@@ -341,8 +356,8 @@ void CloudPolicyRefreshScheduler::PerformRefresh() {
     // and OnPolicyRefreshed() callbacks. Next refresh will be scheduled in
     // OnPolicyFetched().
     service_->RefreshPolicy(
-        base::BindRepeating(&CloudPolicyRefreshScheduler::OnPolicyRefreshed,
-                            base::Unretained(this)));
+        base::BindOnce(&CloudPolicyRefreshScheduler::OnPolicyRefreshed,
+                       base::Unretained(this)));
     return;
   }
 
@@ -364,10 +379,15 @@ void CloudPolicyRefreshScheduler::RefreshAfter(int delta_ms) {
   const base::TimeDelta time_ticks_delay =
       std::max((last_refresh_ticks_ + delta) - base::TimeTicks::Now(),
                base::TimeDelta());
-  const base::TimeDelta delay = std::min(system_delay, time_ticks_delay);
-  refresh_callback_.Reset(
-      base::Bind(&CloudPolicyRefreshScheduler::PerformRefresh,
-                 base::Unretained(this)));
+  base::TimeDelta delay = std::min(system_delay, time_ticks_delay);
+
+  // Unless requesting an immediate refresh, add a delay to the scheduled policy
+  // refresh in order to spread out server load.
+  if (!delay.is_zero())
+    delay += base::TimeDelta::FromMilliseconds(refresh_delay_salt_ms_);
+
+  refresh_callback_.Reset(base::BindOnce(
+      &CloudPolicyRefreshScheduler::PerformRefresh, base::Unretained(this)));
   task_runner_->PostDelayedTask(FROM_HERE, refresh_callback_.callback(), delay);
 }
 

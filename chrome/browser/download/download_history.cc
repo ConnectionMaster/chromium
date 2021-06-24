@@ -29,15 +29,16 @@
 
 #include "chrome/browser/download/download_history.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/browser/download/download_crx_util.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_utils.h"
@@ -49,12 +50,33 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/download_manager.h"
 #include "extensions/buildflags/buildflags.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/api/downloads/downloads_api.h"
 #endif
 
+using history::DownloadState;
+
 namespace {
+
+// Max data url size to be stored in history DB.
+const size_t kMaxDataURLSize = 1024u;
+
+// If there is a data URL at the end of the url chain, truncate it if it is too
+// long.
+void TruncatedDataUrlAtTheEndIfNeeded(std::vector<GURL>* url_chain) {
+  if (url_chain->empty())
+    return;
+  GURL* url = &url_chain->back();
+  if (url->SchemeIs(url::kDataScheme)) {
+    const std::string& data_url = url->spec();
+    if (data_url.size() > kMaxDataURLSize) {
+      GURL truncated_url(data_url.substr(0, kMaxDataURLSize));
+      url->Swap(&truncated_url);
+    }
+  }
+}
 
 // Per-DownloadItem data. This information does not belong inside DownloadItem,
 // and keeping maps in DownloadHistory from DownloadItem to this information is
@@ -96,7 +118,7 @@ class DownloadHistoryData : public base::SupportsUserData::Data {
   history::DownloadRow* info() { return info_.get(); }
   void set_info(const history::DownloadRow& i) {
     // TODO(qinmin): avoid creating a new copy each time.
-    info_.reset(new history::DownloadRow(i));
+    info_ = std::make_unique<history::DownloadRow>(i);
   }
   void clear_info() {
     info_.reset();
@@ -156,6 +178,7 @@ history::DownloadRow GetDownloadRow(download::DownloadItem* item) {
   download.by_ext_id = by_ext_id;
   download.by_ext_name = by_ext_name;
   download.download_slice_info = history::GetHistoryDownloadSliceInfos(*item);
+  TruncatedDataUrlAtTheEndIfNeeded(&download.url_chain);
   return download;
 }
 
@@ -203,7 +226,51 @@ ShouldUpdateHistoryResult ShouldUpdateHistory(
   return ShouldUpdateHistoryResult::NO_UPDATE;
 }
 
-typedef std::vector<history::DownloadRow> InfoVector;
+// Counts how many times a target file path exists in |rows| and stores
+// the result into |file_path_count|.
+void CountFilePathOccurences(const std::vector<history::DownloadRow>& rows,
+                             std::map<std::string, int>* file_path_count) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  if (!base::FeatureList::IsEnabled(
+          download::features::kDeleteOverwrittenDownloads)) {
+    return;
+  }
+
+  for (const history::DownloadRow& row : rows) {
+    if (row.state != DownloadState::COMPLETE || row.target_path.empty())
+      continue;
+    std::string file_path = row.target_path.AsUTF8Unsafe();
+    if (file_path.empty())
+      continue;
+    ++(*file_path_count)[file_path];
+  }
+}
+
+// Checks whether a particular download row should be skipped from loading given
+// the number of times the same target file path appears in |file_path_count|.
+bool ShouldSkipLoadingDownload(const history::DownloadRow& row,
+                               std::map<std::string, int>* file_path_count) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  if (!base::FeatureList::IsEnabled(
+          download::features::kDeleteOverwrittenDownloads)) {
+    return false;
+  }
+
+  if (row.state != DownloadState::COMPLETE || row.target_path.empty())
+    return false;
+  const std::string file_path = row.target_path.AsUTF8Unsafe();
+  if (file_path.empty())
+    return false;
+  auto iter = file_path_count->find(file_path);
+  DCHECK(iter != file_path_count->end());
+  --iter->second;
+  if (iter->second < 1)
+    return false;
+  return base::Time::Now() - row.end_time >=
+         download::GetOverwrittenDownloadDeleteTime();
+}
 
 }  // anonymous namespace
 
@@ -214,14 +281,14 @@ DownloadHistory::HistoryAdapter::HistoryAdapter(
 DownloadHistory::HistoryAdapter::~HistoryAdapter() {}
 
 void DownloadHistory::HistoryAdapter::QueryDownloads(
-    const history::HistoryService::DownloadQueryCallback& callback) {
-  history_->QueryDownloads(callback);
+    history::HistoryService::DownloadQueryCallback callback) {
+  history_->QueryDownloads(std::move(callback));
 }
 
 void DownloadHistory::HistoryAdapter::CreateDownload(
     const history::DownloadRow& info,
-    const history::HistoryService::DownloadCreateCallback& callback) {
-  history_->CreateDownload(info, callback);
+    history::HistoryService::DownloadCreateCallback callback) {
+  history_->CreateDownload(info, std::move(callback));
 }
 
 void DownloadHistory::HistoryAdapter::UpdateDownload(
@@ -248,16 +315,14 @@ DownloadHistory::DownloadHistory(content::DownloadManager* manager,
     : notifier_(manager, this),
       history_(std::move(history)),
       loading_id_(download::DownloadItem::kInvalidId),
-      history_size_(0),
-      initial_history_query_complete_(false),
-      weak_ptr_factory_(this) {
+      initial_history_query_complete_(false) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   download::SimpleDownloadManager::DownloadVector items;
   notifier_.GetManager()->GetAllDownloads(&items);
   for (auto* item : items)
     OnDownloadCreated(notifier_.GetManager(), item);
-  history_->QueryDownloads(base::Bind(
-      &DownloadHistory::QueryCallback, weak_ptr_factory_.GetWeakPtr()));
+  history_->QueryDownloads(base::BindOnce(&DownloadHistory::QueryCallback,
+                                          weak_ptr_factory_.GetWeakPtr()));
 }
 
 DownloadHistory::~DownloadHistory() {
@@ -280,7 +345,7 @@ void DownloadHistory::RemoveObserver(DownloadHistory::Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void DownloadHistory::QueryCallback(std::unique_ptr<InfoVector> infos) {
+void DownloadHistory::QueryCallback(std::vector<history::DownloadRow> rows) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   // ManagerGoingDown() may have happened before the history loaded.
   if (!notifier_.GetManager())
@@ -288,36 +353,49 @@ void DownloadHistory::QueryCallback(std::unique_ptr<InfoVector> infos) {
 
   notifier_.GetManager()->OnHistoryQueryComplete(
       base::BindOnce(&DownloadHistory::LoadHistoryDownloads,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(infos)));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(rows)));
 }
 
-void DownloadHistory::LoadHistoryDownloads(std::unique_ptr<InfoVector> infos) {
+void DownloadHistory::LoadHistoryDownloads(
+    const std::vector<history::DownloadRow>& rows) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(notifier_.GetManager());
 
-  for (InfoVector::const_iterator it = infos->begin();
-       it != infos->end(); ++it) {
-    loading_id_ = history::ToContentDownloadId(it->id);
+  std::map<std::string, int> file_name_count;
+  CountFilePathOccurences(rows, &file_name_count);
+
+  int overwritten_download_removals = 0;
+  for (const history::DownloadRow& row : rows) {
+    if (ShouldSkipLoadingDownload(row, &file_name_count)) {
+      ++overwritten_download_removals;
+      ScheduleRemoveDownload(row.id);
+      continue;
+    }
+
+    loading_id_ = history::ToContentDownloadId(row.id);
     download::DownloadItem::DownloadState history_download_state =
-        history::ToContentDownloadState(it->state);
+        history::ToContentDownloadState(row.state);
     download::DownloadInterruptReason history_reason =
-        history::ToContentDownloadInterruptReason(it->interrupt_reason);
+        history::ToContentDownloadInterruptReason(row.interrupt_reason);
+    std::vector<GURL> url_chain = row.url_chain;
+    TruncatedDataUrlAtTheEndIfNeeded(&url_chain);
     download::DownloadItem* item = notifier_.GetManager()->CreateDownloadItem(
-        it->guid, loading_id_, it->current_path, it->target_path, it->url_chain,
-        it->referrer_url, it->site_url, it->tab_url, it->tab_referrer_url,
-        it->mime_type, it->original_mime_type, it->start_time, it->end_time,
-        it->etag, it->last_modified, it->received_bytes, it->total_bytes,
+        row.guid, loading_id_, row.current_path, row.target_path, url_chain,
+        row.referrer_url, row.site_url, row.tab_url, row.tab_referrer_url,
+        absl::nullopt, row.mime_type, row.original_mime_type, row.start_time,
+        row.end_time, row.etag, row.last_modified, row.received_bytes,
+        row.total_bytes,
         std::string(),  // TODO(asanka): Need to persist and restore hash of
                         // partial file for an interrupted download. No need to
                         // store hash for a completed file.
         history_download_state,
-        history::ToContentDownloadDangerType(it->danger_type), history_reason,
-        it->opened, it->last_access_time, it->transient,
-        history::ToContentReceivedSlices(it->download_slice_info));
+        history::ToContentDownloadDangerType(row.danger_type), history_reason,
+        row.opened, row.last_access_time, row.transient,
+        history::ToContentReceivedSlices(row.download_slice_info));
     // DownloadManager returns a nullptr if it decides to remove the download
     // permanently.
     if (item == nullptr) {
-      ScheduleRemoveDownload(it->id);
+      ScheduleRemoveDownload(row.id);
       continue;
     }
     DCHECK_EQ(download::DownloadItem::kInvalidId, loading_id_);
@@ -331,16 +409,17 @@ void DownloadHistory::LoadHistoryDownloads(std::unique_ptr<InfoVector> infos) {
       OnDownloadUpdated(notifier_.GetManager(), item);
     }
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-    if (!it->by_ext_id.empty() && !it->by_ext_name.empty()) {
-      new extensions::DownloadedByExtension(
-          item, it->by_ext_id, it->by_ext_name);
+    if (!row.by_ext_id.empty() && !row.by_ext_name.empty()) {
+      new extensions::DownloadedByExtension(item, row.by_ext_id,
+                                            row.by_ext_name);
       item->UpdateObservers();
     }
 #endif
     DCHECK_EQ(DownloadHistoryData::PERSISTED,
               DownloadHistoryData::Get(item)->state());
-    ++history_size_;
   }
+  UMA_HISTOGRAM_COUNTS_1000("Download.OverwrittenDownloadRemovedFromHistory",
+                            overwritten_download_removals);
 
   // Indicate that the history db is initialized.
   notifier_.GetManager()->PostInitialization(
@@ -362,11 +441,15 @@ void DownloadHistory::MaybeAddToHistory(download::DownloadItem* item) {
   bool removing = removing_ids_.find(download_id) != removing_ids_.end();
 
   // TODO(benjhayden): Remove IsTemporary().
-  if (download_crx_util::IsExtensionDownload(*item) ||
+  if ((notifier_.GetManager() &&
+       download_crx_util::IsTrustedExtensionDownload(
+           Profile::FromBrowserContext(
+               notifier_.GetManager()->GetBrowserContext()),
+           *item)) ||
       item->IsTemporary() ||
-      (data->state() != DownloadHistoryData::NOT_PERSISTED) ||
-      removing)
+      (data->state() != DownloadHistoryData::NOT_PERSISTED) || removing) {
     return;
+  }
 
   data->SetState(DownloadHistoryData::PERSISTING);
   // Keep the info for in-progress download, so we can check whether history DB
@@ -376,10 +459,10 @@ void DownloadHistory::MaybeAddToHistory(download::DownloadItem* item) {
     data->set_info(download_row);
   else
     data->clear_info();
-  history_->CreateDownload(download_row,
-                           base::BindRepeating(&DownloadHistory::ItemAdded,
-                                               weak_ptr_factory_.GetWeakPtr(),
-                                               download_id, download_row));
+  history_->CreateDownload(
+      download_row, base::BindOnce(&DownloadHistory::ItemAdded,
+                                   weak_ptr_factory_.GetWeakPtr(), download_id,
+                                   download_row));
 }
 
 void DownloadHistory::ItemAdded(uint32_t download_id,
@@ -418,13 +501,6 @@ void DownloadHistory::ItemAdded(uint32_t download_id,
     return;
   }
   data->SetState(DownloadHistoryData::PERSISTED);
-
-  UMA_HISTOGRAM_CUSTOM_COUNTS("Download.HistorySize2",
-                              history_size_,
-                              1/*min*/,
-                              (1 << 23)/*max*/,
-                              (1 << 7)/*num_buckets*/);
-  ++history_size_;
 
   // Notify the observer about the change in the persistence state.
   if (was_persisted != IsPersisted(item)) {
@@ -469,8 +545,6 @@ void DownloadHistory::OnDownloadUpdated(content::DownloadManager* manager,
       ShouldUpdateHistory(data->info(), current_info);
   bool should_update =
       (should_update_result != ShouldUpdateHistoryResult::NO_UPDATE);
-  UMA_HISTOGRAM_ENUMERATION("Download.HistoryPropagatedUpdate",
-                            should_update, 2);
   if (should_update) {
     history_->UpdateDownload(
         current_info,
@@ -506,10 +580,6 @@ void DownloadHistory::OnDownloadRemoved(content::DownloadManager* manager,
   // This is important: another OnDownloadRemoved() handler could do something
   // that synchronously fires an OnDownloadUpdated().
   data->SetState(DownloadHistoryData::NOT_PERSISTED);
-  // ItemAdded increments history_size_ only if the item wasn't
-  // removed_while_adding_, so the next line does not belong in
-  // ScheduleRemoveDownload().
-  --history_size_;
 }
 
 void DownloadHistory::ScheduleRemoveDownload(uint32_t download_id) {
@@ -518,10 +588,9 @@ void DownloadHistory::ScheduleRemoveDownload(uint32_t download_id) {
   // For database efficiency, batch removals together if they happen all at
   // once.
   if (removing_ids_.empty()) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {content::BrowserThread::UI},
-        base::BindOnce(&DownloadHistory::RemoveDownloadsBatch,
-                       weak_ptr_factory_.GetWeakPtr()));
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&DownloadHistory::RemoveDownloadsBatch,
+                                  weak_ptr_factory_.GetWeakPtr()));
   }
   removing_ids_.insert(download_id);
 }
@@ -556,9 +625,8 @@ bool DownloadHistory::NeedToUpdateDownloadHistory(
 #endif
 
   // When download DB is enabled, only downloads that are in terminal state
-  // are added to or updated in history DB. In-progress and interrupted download
-  // will be stored in the in-progress DB.
-  return !base::FeatureList::IsEnabled(
-             download::features::kDownloadDBForNewDownloads) ||
-         item->IsSavePackageDownload() || item->IsDone();
+  // are added to or updated in history DB. Non-transient in-progress and
+  // interrupted download will be stored in the in-progress DB.
+  return !item->IsTransient() &&
+         (item->IsSavePackageDownload() || item->IsDone());
 }

@@ -12,28 +12,42 @@
 #include "components/autofill_assistant/browser/service.pb.h"
 
 namespace autofill_assistant {
+class UserAction;  // For SetDefaultChipType
 
 // A structure to represent a Chip shown in the carousel.
+//
+// Might be empty.
 struct Chip {
+  explicit Chip(const ChipProto& proto);
   Chip();
+  Chip(const Chip& other);
   ~Chip();
-  Chip(Chip&&);
-  Chip& operator=(Chip&&);
+
+  bool empty() const;
 
   ChipType type = UNKNOWN_CHIP_TYPE;
+
+  ChipIcon icon = NO_ICON;
 
   // Localized string to display.
   std::string text;
 
-  // Callback triggered when the chip is tapped.
-  base::OnceClosure callback;
+  // Whether this chip is sticky. A sticky chip will be a candidate to be
+  // displayed in the header if the peek mode of the sheet is HANDLE_HEADER.
+  bool sticky = false;
 
-  // Whether this chip is disabled.
-  bool disabled = false;
+  // Whether this chip should be displayed in the carousel.
+  bool visible = true;
+
+  // Accessibility string for chip.
+  std::string content_description;
+
+  // True when accessibility string for chip is set.
+  bool is_content_description_set;
 };
 
 // Guarantees that the Chip.type of all chips is set to a sensible value.
-void SetDefaultChipType(std::vector<Chip>* chips);
+void SetDefaultChipType(std::vector<UserAction>* chips);
 
 }  // namespace autofill_assistant
 

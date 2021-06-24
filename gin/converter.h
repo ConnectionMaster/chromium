@@ -7,11 +7,13 @@
 
 #include <stdint.h>
 
+#include <ostream>
 #include <string>
 #include <type_traits>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/strings/string_piece.h"
 #include "gin/gin_export.h"
 #include "v8/include/v8.h"
@@ -119,8 +121,17 @@ struct GIN_EXPORT Converter<std::string> {
                      std::string* out);
 };
 
-template<>
-struct GIN_EXPORT Converter<v8::Local<v8::Function> > {
+template <>
+struct GIN_EXPORT Converter<std::u16string> {
+  static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
+                                   const std::u16string& val);
+  static bool FromV8(v8::Isolate* isolate,
+                     v8::Local<v8::Value> val,
+                     std::u16string* out);
+};
+
+template <>
+struct GIN_EXPORT Converter<v8::Local<v8::Function>> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
                                    v8::Local<v8::Function> val);
   static bool FromV8(v8::Isolate* isolate,
@@ -262,6 +273,10 @@ GIN_EXPORT inline v8::Local<v8::String> StringToV8(
 // This crashes when input.size() > v8::String::kMaxLength.
 GIN_EXPORT v8::Local<v8::String> StringToSymbol(v8::Isolate* isolate,
                                                  const base::StringPiece& val);
+
+// This crashes when input.size() > v8::String::kMaxLength.
+GIN_EXPORT v8::Local<v8::String> StringToSymbol(v8::Isolate* isolate,
+                                                const base::StringPiece16& val);
 
 template<typename T>
 bool ConvertFromV8(v8::Isolate* isolate, v8::Local<v8::Value> input,

@@ -26,23 +26,49 @@ class COMPONENT_EXPORT(KERBEROS) KerberosClient {
       base::OnceCallback<void(const kerberos::AddAccountResponse& response)>;
   using RemoveAccountCallback =
       base::OnceCallback<void(const kerberos::RemoveAccountResponse& response)>;
+  using ClearAccountsCallback =
+      base::OnceCallback<void(const kerberos::ClearAccountsResponse& response)>;
+  using ListAccountsCallback =
+      base::OnceCallback<void(const kerberos::ListAccountsResponse& response)>;
   using SetConfigCallback =
       base::OnceCallback<void(const kerberos::SetConfigResponse& response)>;
+  using ValidateConfigCallback = base::OnceCallback<void(
+      const kerberos::ValidateConfigResponse& response)>;
   using AcquireKerberosTgtCallback = base::OnceCallback<void(
       const kerberos::AcquireKerberosTgtResponse& response)>;
   using GetKerberosFilesCallback = base::OnceCallback<void(
       const kerberos::GetKerberosFilesResponse& response)>;
   using KerberosFilesChangedCallback =
       base::RepeatingCallback<void(const std::string& principal_name)>;
+  using KerberosTicketExpiringCallback =
+      base::RepeatingCallback<void(const std::string& principal_name)>;
 
-  // Interface for testing. Only implemented in the fake implementation.
+  // Interface with testing functionality. Accessed through GetTestInterface(),
+  // only implemented in the fake implementation.
   class TestInterface {
    public:
-    // Sets whether the (fake) daemon has been started by Upstart.
-    virtual void set_started(bool started) = 0;
+    // Sets the artificial delay for asynchronous function calls.
+    // Should be set to 0 for tests.
+    virtual void SetTaskDelay(base::TimeDelta delay) = 0;
 
-    // Whether the (fake) daemon has been started and is in a running state.
-    virtual bool started() const = 0;
+    // Starts recording which functions are called.
+    virtual void StartRecordingFunctionCalls() = 0;
+
+    // Stops recording which functions are called and returns calls as a
+    // comma separated list, e.g. "AddAccount,ListAccounts".
+    virtual std::string StopRecordingAndGetRecordedFunctionCalls() = 0;
+
+    // Returns the number of accounts currently saved.
+    virtual std::size_t GetNumberOfAccounts() const = 0;
+
+    // Sets the simulated number of network failures for |AcquireKerberosTgt()|.
+    // The default value is zero. This value should be set when testing the
+    // exponential backoff retry for adding managed accounts.
+    virtual void SetSimulatedNumberOfNetworkFailures(
+        int number_of_failures) = 0;
+
+   protected:
+    virtual ~TestInterface() {}
   };
 
   // Creates and initializes the global instance. |bus| must not be null.
@@ -66,8 +92,17 @@ class COMPONENT_EXPORT(KERBEROS) KerberosClient {
   virtual void RemoveAccount(const kerberos::RemoveAccountRequest& request,
                              RemoveAccountCallback callback) = 0;
 
+  virtual void ClearAccounts(const kerberos::ClearAccountsRequest& request,
+                             ClearAccountsCallback callback) = 0;
+
+  virtual void ListAccounts(const kerberos::ListAccountsRequest& request,
+                            ListAccountsCallback callback) = 0;
+
   virtual void SetConfig(const kerberos::SetConfigRequest& request,
                          SetConfigCallback callback) = 0;
+
+  virtual void ValidateConfig(const kerberos::ValidateConfigRequest& request,
+                              ValidateConfigCallback callback) = 0;
 
   virtual void AcquireKerberosTgt(
       const kerberos::AcquireKerberosTgtRequest& request,
@@ -81,6 +116,10 @@ class COMPONENT_EXPORT(KERBEROS) KerberosClient {
   virtual void ConnectToKerberosFileChangedSignal(
       KerberosFilesChangedCallback callback) = 0;
 
+  virtual void ConnectToKerberosTicketExpiringSignal(
+      KerberosTicketExpiringCallback callback) = 0;
+
+  // Returns an interface for testing (fake only), or returns nullptr.
   virtual TestInterface* GetTestInterface() = 0;
 
  protected:
@@ -93,5 +132,10 @@ class COMPONENT_EXPORT(KERBEROS) KerberosClient {
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when //chromeos/dbus moved to ash.
+namespace ash {
+using ::chromeos::KerberosClient;
+}  // namespace ash
 
 #endif  // CHROMEOS_DBUS_KERBEROS_KERBEROS_CLIENT_H_

@@ -8,9 +8,10 @@
 
 #include <memory>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "build/chromeos_buildflags.h"
 #include "media/base/container_names.h"
 #include "media/base/mock_filters.h"
 #include "media/base/test_data_util.h"
@@ -49,7 +50,7 @@ class FFmpegGlueTest : public ::testing::Test {
       : protocol_(new StrictMock<MockProtocol>()) {
     // IsStreaming() is called when opening.
     EXPECT_CALL(*protocol_.get(), IsStreaming()).WillOnce(Return(true));
-    glue_.reset(new FFmpegGlue(protocol_.get()));
+    glue_ = std::make_unique<FFmpegGlue>(protocol_.get());
     CHECK(glue_->format_context());
     CHECK(glue_->format_context()->pb);
   }
@@ -86,9 +87,9 @@ class FFmpegGlueDestructionTest : public ::testing::Test {
 
   void Initialize(const char* filename) {
     data_ = ReadTestDataFile(filename);
-    protocol_.reset(new InMemoryUrlProtocol(
-        data_->data(), data_->data_size(), false));
-    glue_.reset(new FFmpegGlue(protocol_.get()));
+    protocol_ = std::make_unique<InMemoryUrlProtocol>(
+        data_->data(), data_->data_size(), false);
+    glue_ = std::make_unique<FFmpegGlue>(protocol_.get());
     CHECK(glue_->format_context());
     CHECK(glue_->format_context()->pb);
   }
@@ -103,7 +104,7 @@ class FFmpegGlueDestructionTest : public ::testing::Test {
 
     // |protocol_| should be destroyed before |data_|.
     protocol_.reset();
-    data_ = NULL;
+    data_.reset();
   }
 
  protected:
@@ -157,7 +158,7 @@ TEST_F(FFmpegGlueTest, Read) {
   EXPECT_CALL(*protocol_, Read(kBufferSize, buffer))
       .WillOnce(Return(kBufferSize));
   EXPECT_CALL(*protocol_, Read(kBufferSize, buffer))
-      .WillOnce(Return(DataSource::kReadError));
+      .WillOnce(Return(AVERROR(EIO)));
 
   EXPECT_EQ(0, ReadPacket(0, buffer));
   EXPECT_EQ(kBufferSize, ReadPacket(kBufferSize, buffer));
@@ -315,7 +316,7 @@ TEST_F(FFmpegGlueContainerTest, AAC) {
   ExpectContainer(container_names::CONTAINER_AAC);
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 TEST_F(FFmpegGlueContainerTest, AVI) {
   InitializeAndOpen("bear.avi");
   ExpectContainer(container_names::CONTAINER_AVI);
@@ -325,7 +326,7 @@ TEST_F(FFmpegGlueContainerTest, AMR) {
   InitializeAndOpen("bear.amr");
   ExpectContainer(container_names::CONTAINER_AMR);
 }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 // Probe something unsupported to ensure we fall back to the our internal guess.

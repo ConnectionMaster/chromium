@@ -14,32 +14,44 @@ import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ApplicationStatus.ActivityStateListener;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.annotations.CalledByNative;
-import org.chromium.chrome.browser.metrics.WebApkUma;
-import org.chromium.chrome.browser.webapps.WebApkActivity;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.PermissionCallback;
 import org.chromium.ui.base.WindowAndroid;
+
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Handles requesting the android runtime permissions for the permission update infobar.
  */
 class PermissionUpdateInfoBarDelegate implements PermissionCallback {
     private final WebContents mWebContents;
+    private final Set<String> mRequiredAndroidPermissions;
     private final String[] mAndroidPermisisons;
     private long mNativePtr;
     private ActivityStateListener mActivityStateListener;
 
     @CalledByNative
-    private static PermissionUpdateInfoBarDelegate create(
-            long nativePtr, WebContents webContents, String[] permissions) {
-        return new PermissionUpdateInfoBarDelegate(nativePtr, webContents, permissions);
+    private static PermissionUpdateInfoBarDelegate create(long nativePtr, WebContents webContents,
+            String[] requiredPermissions, String[] optionalPermissions) {
+        return new PermissionUpdateInfoBarDelegate(
+                nativePtr, webContents, requiredPermissions, optionalPermissions);
     }
 
-    private PermissionUpdateInfoBarDelegate(
-            long nativePtr, WebContents webContents, String[] permissions) {
+    private PermissionUpdateInfoBarDelegate(long nativePtr, WebContents webContents,
+            String[] requiredPermissions, String[] optionalPermissions) {
         mNativePtr = nativePtr;
-        mAndroidPermisisons = permissions;
         mWebContents = webContents;
+
+        mRequiredAndroidPermissions = new HashSet<String>();
+        Collections.addAll(mRequiredAndroidPermissions, requiredPermissions);
+
+        Set<String> allPermissions = new HashSet<String>();
+        Collections.addAll(allPermissions, requiredPermissions);
+        Collections.addAll(allPermissions, optionalPermissions);
+        mAndroidPermisisons = allPermissions.toArray(new String[allPermissions.size()]);
     }
 
     @CalledByNative
@@ -55,7 +67,8 @@ class PermissionUpdateInfoBarDelegate implements PermissionCallback {
     private void requestPermissions() {
         WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
         if (windowAndroid == null) {
-            nativeOnPermissionResult(mNativePtr, false);
+            PermissionUpdateInfoBarDelegateJni.get().onPermissionResult(
+                    mNativePtr, PermissionUpdateInfoBarDelegate.this, false);
             return;
         }
 
@@ -69,12 +82,10 @@ class PermissionUpdateInfoBarDelegate implements PermissionCallback {
         Activity activity = windowAndroid.getActivity().get();
         if (canRequestAllPermissions) {
             windowAndroid.requestPermissions(mAndroidPermisisons, this);
-            if (activity instanceof WebApkActivity) {
-                WebApkUma.recordAndroidRuntimePermissionPromptInWebApk(mAndroidPermisisons);
-            }
         } else {
             if (activity == null) {
-                nativeOnPermissionResult(mNativePtr, false);
+                PermissionUpdateInfoBarDelegateJni.get().onPermissionResult(
+                        mNativePtr, PermissionUpdateInfoBarDelegate.this, false);
                 return;
             }
 
@@ -85,7 +96,8 @@ class PermissionUpdateInfoBarDelegate implements PermissionCallback {
                         ApplicationStatus.unregisterActivityStateListener(this);
                         mActivityStateListener = null;
 
-                        nativeOnPermissionResult(mNativePtr, false);
+                        PermissionUpdateInfoBarDelegateJni.get().onPermissionResult(
+                                mNativePtr, PermissionUpdateInfoBarDelegate.this, false);
                     } else if (newState == ActivityState.RESUMED) {
                         ApplicationStatus.unregisterActivityStateListener(this);
                         mActivityStateListener = null;
@@ -116,12 +128,21 @@ class PermissionUpdateInfoBarDelegate implements PermissionCallback {
             hasAllPermissions = false;
         } else {
             for (int i = 0; i < mAndroidPermisisons.length; i++) {
+                if (!mRequiredAndroidPermissions.contains(mAndroidPermisisons[i])) {
+                    continue;
+                }
                 hasAllPermissions &= windowAndroid.hasPermission(mAndroidPermisisons[i]);
             }
         }
-        if (mNativePtr != 0) nativeOnPermissionResult(mNativePtr, hasAllPermissions);
+        if (mNativePtr != 0) {
+            PermissionUpdateInfoBarDelegateJni.get().onPermissionResult(
+                    mNativePtr, PermissionUpdateInfoBarDelegate.this, hasAllPermissions);
+        }
     }
 
-    private native void nativeOnPermissionResult(
-            long nativePermissionUpdateInfoBarDelegate, boolean allPermissionsGranted);
+    @NativeMethods
+    interface Natives {
+        void onPermissionResult(long nativePermissionUpdateInfoBarDelegate,
+                PermissionUpdateInfoBarDelegate caller, boolean allPermissionsGranted);
+    }
 }

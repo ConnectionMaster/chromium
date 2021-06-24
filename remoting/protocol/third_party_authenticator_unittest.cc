@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
@@ -60,7 +60,7 @@ class ThirdPartyAuthenticatorTest : public AuthenticatorTestBase {
     void OnTokenFetched(const std::string& token,
                         const std::string& shared_secret) {
       ASSERT_FALSE(on_token_fetched_.is_null());
-      base::ResetAndReturn(&on_token_fetched_).Run(token, shared_secret);
+      std::move(on_token_fetched_).Run(token, shared_secret);
     }
 
    private:
@@ -77,14 +77,14 @@ class ThirdPartyAuthenticatorTest : public AuthenticatorTestBase {
 
     void ValidateThirdPartyToken(
         const std::string& token,
-        const TokenValidatedCallback& token_validated_callback) override {
+        TokenValidatedCallback token_validated_callback) override {
       ASSERT_FALSE(token_validated_callback.is_null());
-      on_token_validated_ = token_validated_callback;
+      on_token_validated_ = std::move(token_validated_callback);
     }
 
     void OnTokenValidated(const std::string& shared_secret) {
       ASSERT_FALSE(on_token_validated_.is_null());
-      base::ResetAndReturn(&on_token_validated_).Run(shared_secret);
+      std::move(on_token_validated_).Run(shared_secret);
     }
 
     const GURL& token_url() const override { return token_url_; }
@@ -94,7 +94,8 @@ class ThirdPartyAuthenticatorTest : public AuthenticatorTestBase {
    private:
     GURL token_url_;
     std::string token_scope_;
-    base::Callback<void(const std::string& shared_secret)> on_token_validated_;
+    base::OnceCallback<void(const std::string& shared_secret)>
+        on_token_validated_;
   };
 
  public:
@@ -104,13 +105,14 @@ class ThirdPartyAuthenticatorTest : public AuthenticatorTestBase {
  protected:
   void InitAuthenticators() {
     token_validator_ = new FakeTokenValidator();
-    host_.reset(new ThirdPartyHostAuthenticator(
-        base::Bind(&V2Authenticator::CreateForHost, host_cert_, key_pair_),
-        base::WrapUnique(token_validator_)));
-    client_.reset(new ThirdPartyClientAuthenticator(
-        base::Bind(&V2Authenticator::CreateForClient),
-        base::Bind(&FakeTokenFetcher::FetchThirdPartyToken,
-                   base::Unretained(&token_fetcher_))));
+    host_ = std::make_unique<ThirdPartyHostAuthenticator>(
+        base::BindRepeating(&V2Authenticator::CreateForHost, host_cert_,
+                            key_pair_),
+        base::WrapUnique(token_validator_));
+    client_ = std::make_unique<ThirdPartyClientAuthenticator>(
+        base::BindRepeating(&V2Authenticator::CreateForClient),
+        base::BindRepeating(&FakeTokenFetcher::FetchThirdPartyToken,
+                            base::Unretained(&token_fetcher_)));
   }
 
   FakeTokenFetcher token_fetcher_;
@@ -140,8 +142,9 @@ TEST_F(ThirdPartyAuthenticatorTest, SuccessfulAuth) {
   StreamConnectionTester tester(host_socket_.get(), client_socket_.get(),
                                 kMessageSize, kMessages);
 
-  tester.Start();
-  base::RunLoop().Run();
+  base::RunLoop run_loop;
+  tester.Start(run_loop.QuitClosure());
+  run_loop.Run();
   tester.CheckResults();
 }
 

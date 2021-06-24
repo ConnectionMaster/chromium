@@ -64,18 +64,10 @@ void InstallOriginTrialFeaturesForCore(
       V8TestInterface::InstallOriginTrialFeature(
           isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
     }
-    if (RuntimeEnabledFeatures::TestFeatureEnabled(execution_context)) {
-      V8TestInterface::InstallTestFeature(
-          isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
-    }
   }
   if (wrapper_type_info == V8TestObject::GetWrapperTypeInfo()) {
     if (RuntimeEnabledFeatures::OriginTrialFeatureEnabled(execution_context)) {
       V8TestObject::InstallOriginTrialFeature(
-          isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
-    }
-    if (RuntimeEnabledFeatures::FeatureNameEnabled(execution_context)) {
-      V8TestObject::InstallFeatureName(
           isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
     }
   }
@@ -92,15 +84,12 @@ void InstallPendingOriginTrialFeatureForCore(OriginTrialFeature feature,
   v8::Isolate* isolate = script_state->GetIsolate();
   const DOMWrapperWorld& world = script_state->World();
   V8PerContextData* context_data = script_state->PerContextData();
+  v8::Local<v8::Context> current_context = script_state->GetContext();
+  v8::Local<v8::Object> global_object = current_context->Global();
+  ALLOW_UNUSED_LOCAL(global_object);
+  ExecutionContext* execution_context = ToExecutionContext(current_context);
+  ALLOW_UNUSED_LOCAL(execution_context);
   switch (feature) {
-    case OriginTrialFeature::kFeatureName: {
-      if (context_data->GetExistingConstructorAndPrototypeForType(
-              V8TestObject::GetWrapperTypeInfo(), &prototype_object, &interface_object)) {
-        V8TestObject::InstallFeatureName(
-            isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
-      }
-      break;
-    }
     case OriginTrialFeature::kOriginTrialFeature: {
       if (context_data->GetExistingConstructorAndPrototypeForType(
               V8TestInterface::GetWrapperTypeInfo(), &prototype_object, &interface_object)) {
@@ -110,14 +99,6 @@ void InstallPendingOriginTrialFeatureForCore(OriginTrialFeature feature,
       if (context_data->GetExistingConstructorAndPrototypeForType(
               V8TestObject::GetWrapperTypeInfo(), &prototype_object, &interface_object)) {
         V8TestObject::InstallOriginTrialFeature(
-            isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
-      }
-      break;
-    }
-    case OriginTrialFeature::kTestFeature: {
-      if (context_data->GetExistingConstructorAndPrototypeForType(
-              V8TestInterface::GetWrapperTypeInfo(), &prototype_object, &interface_object)) {
-        V8TestInterface::InstallTestFeature(
             isolate, world, v8::Local<v8::Object>(), prototype_object, interface_object);
       }
       break;

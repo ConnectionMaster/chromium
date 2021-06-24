@@ -5,16 +5,15 @@
 #ifndef COMPONENTS_VIZ_COMMON_QUADS_YUV_VIDEO_DRAW_QUAD_H_
 #define COMPONENTS_VIZ_COMMON_QUADS_YUV_VIDEO_DRAW_QUAD_H_
 
-#include <stddef.h>
-
-#include <memory>
-
 #include "components/viz/common/quads/draw_quad.h"
+#include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/viz_common_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gl/dc_renderer_layer_params.h"
+#include "ui/gfx/hdr_metadata.h"
+#include "ui/gfx/video_types.h"
 
 namespace viz {
 
@@ -43,10 +42,10 @@ class VIZ_COMMON_EXPORT YUVVideoDrawQuad : public DrawQuad {
               const gfx::RectF& uv_tex_coord_rect,
               const gfx::Size& ya_tex_size,
               const gfx::Size& uv_tex_size,
-              unsigned y_plane_resource_id,
-              unsigned u_plane_resource_id,
-              unsigned v_plane_resource_id,
-              unsigned a_plane_resource_id,
+              ResourceId y_plane_resource_id,
+              ResourceId u_plane_resource_id,
+              ResourceId v_plane_resource_id,
+              ResourceId a_plane_resource_id,
               const gfx::ColorSpace& video_color_space,
               float offset,
               float multiplier,
@@ -63,15 +62,16 @@ class VIZ_COMMON_EXPORT YUVVideoDrawQuad : public DrawQuad {
               const gfx::RectF& uv_tex_coord_rect,
               const gfx::Size& ya_tex_size,
               const gfx::Size& uv_tex_size,
-              unsigned y_plane_resource_id,
-              unsigned u_plane_resource_id,
-              unsigned v_plane_resource_id,
-              unsigned a_plane_resource_id,
+              ResourceId y_plane_resource_id,
+              ResourceId u_plane_resource_id,
+              ResourceId v_plane_resource_id,
+              ResourceId a_plane_resource_id,
               const gfx::ColorSpace& video_color_space,
               float offset,
               float multiplier,
               uint32_t bits_per_channel,
-              ui::ProtectedVideoType protected_video_type);
+              gfx::ProtectedVideoType protected_video_type,
+              gfx::HDRMetadata hdr_metadata);
 
   gfx::RectF ya_tex_coord_rect;
   gfx::RectF uv_tex_coord_rect;
@@ -82,7 +82,12 @@ class VIZ_COMMON_EXPORT YUVVideoDrawQuad : public DrawQuad {
   uint32_t bits_per_channel = 8;
   // TODO(hubbe): Move to ResourceProvider::ScopedSamplerGL.
   gfx::ColorSpace video_color_space;
-  ui::ProtectedVideoType protected_video_type = ui::ProtectedVideoType::kClear;
+  gfx::ProtectedVideoType protected_video_type =
+      gfx::ProtectedVideoType::kClear;
+  gfx::HDRMetadata hdr_metadata;
+
+  // This optional damage is in target render pass coordinate space.
+  absl::optional<gfx::Rect> damage_rect;
 
   static const YUVVideoDrawQuad* MaterialCast(const DrawQuad*);
 

@@ -11,6 +11,7 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/cookies/cookie_store.h"
+#include "net/cookies/cookie_util.h"
 #include "url/gurl.h"
 
 using net::registry_controlled_domains::GetDomainAndRegistry;
@@ -64,55 +65,38 @@ DelayedCookieMonsterChangeDispatcher::AddCallbackForAllChanges(
 }
 
 DelayedCookieMonster::DelayedCookieMonster()
-    : cookie_monster_(new CookieMonster(nullptr /* store */,
-                                        nullptr /* netlog */)),
+    : cookie_monster_(
+          new CookieMonster(nullptr /* store */, nullptr /* netlog */)),
       did_run_(false),
-      result_(
-          CanonicalCookie::CookieInclusionStatus::EXCLUDE_FAILURE_TO_STORE) {}
+      result_(CookieAccessResult(CookieInclusionStatus(
+          CookieInclusionStatus::EXCLUDE_FAILURE_TO_STORE))) {}
 
 DelayedCookieMonster::~DelayedCookieMonster() = default;
 
 void DelayedCookieMonster::SetCookiesInternalCallback(
-    CanonicalCookie::CookieInclusionStatus result) {
+    CookieAccessResult result) {
   result_ = result;
   did_run_ = true;
 }
 
 void DelayedCookieMonster::GetCookieListWithOptionsInternalCallback(
-    const CookieList& cookie_list,
-    const CookieStatusList& excluded_cookies) {
-  cookie_list_ = cookie_list;
+    const CookieAccessResultList& cookie_list,
+    const CookieAccessResultList& excluded_cookies) {
+  cookie_access_result_list_ = cookie_list;
+  cookie_list_ = cookie_util::StripAccessResults(cookie_access_result_list_);
   did_run_ = true;
-}
-
-void DelayedCookieMonster::SetCookieWithOptionsAsync(
-    const GURL& url,
-    const std::string& cookie_line,
-    const CookieOptions& options,
-    CookieMonster::SetCookiesCallback callback) {
-  did_run_ = false;
-  cookie_monster_->SetCookieWithOptionsAsync(
-      url, cookie_line, options,
-      base::Bind(&DelayedCookieMonster::SetCookiesInternalCallback,
-                 base::Unretained(this)));
-  DCHECK_EQ(did_run_, true);
-  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&DelayedCookieMonster::InvokeSetCookiesCallback,
-                     base::Unretained(this), std::move(callback)),
-      base::TimeDelta::FromMilliseconds(kDelayedTime));
 }
 
 void DelayedCookieMonster::SetCanonicalCookieAsync(
     std::unique_ptr<CanonicalCookie> cookie,
-    std::string source_scheme,
+    const GURL& source_url,
     const CookieOptions& options,
     SetCookiesCallback callback) {
   did_run_ = false;
   cookie_monster_->SetCanonicalCookieAsync(
-      std::move(cookie), std::move(source_scheme), options,
-      base::Bind(&DelayedCookieMonster::SetCookiesInternalCallback,
-                 base::Unretained(this)));
+      std::move(cookie), source_url, options,
+      base::BindOnce(&DelayedCookieMonster::SetCookiesInternalCallback,
+                     base::Unretained(this)));
   DCHECK_EQ(did_run_, true);
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
@@ -128,7 +112,7 @@ void DelayedCookieMonster::GetCookieListWithOptionsAsync(
   did_run_ = false;
   cookie_monster_->GetCookieListWithOptionsAsync(
       url, options,
-      base::Bind(
+      base::BindOnce(
           &DelayedCookieMonster::GetCookieListWithOptionsInternalCallback,
           base::Unretained(this)));
   DCHECK_EQ(did_run_, true);
@@ -139,7 +123,7 @@ void DelayedCookieMonster::GetCookieListWithOptionsAsync(
       base::TimeDelta::FromMilliseconds(kDelayedTime));
 }
 
-void DelayedCookieMonster::GetAllCookiesAsync(GetCookieListCallback callback) {
+void DelayedCookieMonster::GetAllCookiesAsync(GetAllCookiesCallback callback) {
   cookie_monster_->GetAllCookiesAsync(std::move(callback));
 }
 
@@ -152,15 +136,8 @@ void DelayedCookieMonster::InvokeSetCookiesCallback(
 void DelayedCookieMonster::InvokeGetCookieListCallback(
     CookieMonster::GetCookieListCallback callback) {
   if (!callback.is_null())
-    std::move(callback).Run(cookie_list_, CookieStatusList());
-}
-
-bool DelayedCookieMonster::SetCookieWithOptions(
-    const GURL& url,
-    const std::string& cookie_line,
-    const CookieOptions& options) {
-  ADD_FAILURE();
-  return false;
+    std::move(callback).Run(cookie_access_result_list_,
+                            CookieAccessResultList());
 }
 
 void DelayedCookieMonster::DeleteCanonicalCookieAsync(
@@ -181,6 +158,11 @@ void DelayedCookieMonster::DeleteAllMatchingInfoAsync(
   ADD_FAILURE();
 }
 
+void DelayedCookieMonster::DeleteMatchingCookiesAsync(DeletePredicate,
+                                                      DeleteCallback) {
+  ADD_FAILURE();
+}
+
 void DelayedCookieMonster::DeleteSessionCookiesAsync(DeleteCallback) {
   ADD_FAILURE();
 }
@@ -197,10 +179,6 @@ void DelayedCookieMonster::SetCookieableSchemes(
     const std::vector<std::string>& schemes,
     SetCookieableSchemesCallback callback) {
   ADD_FAILURE();
-}
-
-bool DelayedCookieMonster::IsEphemeral() {
-  return true;
 }
 
 //

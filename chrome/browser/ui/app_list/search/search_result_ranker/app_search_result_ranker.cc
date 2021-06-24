@@ -8,8 +8,10 @@
 #include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/files/important_file_writer.h"
+#include "base/logging.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "chrome/browser/profiles/profile.h"
@@ -92,11 +94,14 @@ std::unique_ptr<AppLaunchPredictor> LoadPredictorFromDiskOnWorkerThread(
 AppSearchResultRanker::AppSearchResultRanker(const base::FilePath& profile_path,
                                              bool is_ephemeral_user)
     : predictor_filename_(
-          profile_path.AppendASCII(kAppLaunchPredictorFilename)),
-      weak_factory_(this) {
-  if (!app_list_features::IsZeroStateAppsRankerEnabled())
+          profile_path.AppendASCII(kAppLaunchPredictorFilename)) {
+  if (!app_list_features::IsZeroStateAppsRankerEnabled()) {
+    LOG(ERROR) << "AppSearchResultRanker: ZeroStateAppsRanker is not enabled.";
     return;
-
+  }
+  // TODO(charleszhao): remove these logs once the test review is done.
+  LOG(ERROR) << "AppSearchResultRanker::AppSearchResultRankerPredictorName "
+             << app_list_features::AppSearchResultRankerPredictorName();
   predictor_ =
       CreatePredictor(app_list_features::AppSearchResultRankerPredictorName());
 
@@ -113,7 +118,7 @@ AppSearchResultRanker::AppSearchResultRanker(const base::FilePath& profile_path,
   if (is_ephemeral_user)
     return;
 
-  task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
+  task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
       {base::TaskPriority::BEST_EFFORT, base::MayBlock(),
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
 
@@ -156,6 +161,8 @@ void AppSearchResultRanker::OnLoadFromDiskComplete(
     predictor_.swap(predictor);
   }
   load_from_disk_completed_ = true;
+  LOG(ERROR) << "AppSearchResultRanker::OnLoadFromDiskComplete "
+             << predictor_->GetPredictorName();
 }
 
 }  // namespace app_list

@@ -12,11 +12,11 @@
 #include "base/callback_list.h"
 #include "base/containers/mru_cache.h"
 #include "base/gtest_prod_util.h"
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "components/favicon_base/favicon_types.h"
+#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
 #include "components/history/core/browser/history_types.h"
 
@@ -44,6 +44,8 @@ class FaviconCache : public history::HistoryServiceObserver {
   FaviconCache(favicon::FaviconService* favicon_service,
                history::HistoryService* history_service);
   ~FaviconCache() override;
+  FaviconCache(const FaviconCache&) = delete;
+  FaviconCache& operator=(const FaviconCache&) = delete;
 
   // These methods fetch favicons by the |page_url| or |icon_url| respectively.
   // If the correct favicon is already cached, these methods return the image
@@ -62,11 +64,19 @@ class FaviconCache : public history::HistoryServiceObserver {
   // isn't in our database), we simply erase all the pending callbacks, and also
   // cache the result.
   //
-  // Therefore, |on_favicon_fetched| may or may not be called asynchrously
+  // Therefore, |on_favicon_fetched| may or may not be called asynchronously
   // later, but will never be called with an empty result. It will also never
   // be called synchronously.
+  //
+  // Note that GetFaviconForPageUrl and GetLargestFaviconForPageUrl should not
+  // be used interchangeably. These methods use the same |page_url| key for
+  // caching favicons and as a result may return favicons with the wrong size if
+  // called with the same |page_url|.
   gfx::Image GetFaviconForPageUrl(const GURL& page_url,
                                   FaviconFetchedCallback on_favicon_fetched);
+  gfx::Image GetLargestFaviconForPageUrl(
+      const GURL& page_url,
+      FaviconFetchedCallback on_favicon_fetched);
   gfx::Image GetFaviconForIconUrl(const GURL& icon_url,
                                   FaviconFetchedCallback on_favicon_fetched);
 
@@ -78,6 +88,7 @@ class FaviconCache : public history::HistoryServiceObserver {
   enum class RequestType {
     BY_PAGE_URL,
     BY_ICON_URL,
+    RAW_BY_PAGE_URL,
   };
 
   struct Request {
@@ -92,10 +103,17 @@ class FaviconCache : public history::HistoryServiceObserver {
   gfx::Image GetFaviconInternal(const Request& request,
                                 FaviconFetchedCallback on_favicon_fetched);
 
-  // This is the callback passed to the underyling FaviconService. When this
-  // is called, all the pending requests that match |request| will be called.
+  // These are the callbacks passed to the underlying FaviconService. When these
+  // are called, all the pending requests that match |request| will be called.
   void OnFaviconFetched(const Request& request,
                         const favicon_base::FaviconImageResult& result);
+  void OnFaviconRawBitmapFetched(
+      const Request& request,
+      const favicon_base::FaviconRawBitmapResult& bitmap_result);
+
+  // Invokes all the pending requests that match |request| with |image|.
+  void InvokeRequestCallbackWithFavicon(const Request& request,
+                                        const gfx::Image& image);
 
   // Removes cached favicons and null responses that match |request| from the
   // cache. Subsequent matching requests pull fresh data from FaviconService.
@@ -114,7 +132,9 @@ class FaviconCache : public history::HistoryServiceObserver {
   // Non-owning pointer to a KeyedService.
   favicon::FaviconService* favicon_service_;
 
-  ScopedObserver<history::HistoryService, FaviconCache> history_observer_;
+  base::ScopedObservation<history::HistoryService,
+                          history::HistoryServiceObserver>
+      history_observation_{this};
 
   base::CancelableTaskTracker task_tracker_;
   std::map<Request, std::list<FaviconFetchedCallback>> pending_requests_;
@@ -127,13 +147,9 @@ class FaviconCache : public history::HistoryServiceObserver {
   base::MRUCache<Request, bool> responses_without_favicons_;
 
   // Subscription for notifications of changes to favicons.
-  std::unique_ptr<base::CallbackList<void(const std::set<GURL>&,
-                                          const GURL&)>::Subscription>
-      favicons_changed_subscription_;
+  base::CallbackListSubscription favicons_changed_subscription_;
 
-  base::WeakPtrFactory<FaviconCache> weak_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(FaviconCache);
+  base::WeakPtrFactory<FaviconCache> weak_factory_{this};
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_FAVICON_CACHE_H_

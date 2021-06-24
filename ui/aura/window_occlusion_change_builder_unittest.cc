@@ -21,6 +21,8 @@ class OcclusionTrackWindowDelegate : public test::TestWindowDelegate {
   OcclusionTrackWindowDelegate() = default;
   ~OcclusionTrackWindowDelegate() override = default;
 
+  void set_window(Window* window) { window_ = window; }
+
   bool occlusion_change_count() const { return occlusion_change_count_; }
   Window::OcclusionState last_occlusion_state() const {
     return last_occlusion_state_;
@@ -29,13 +31,14 @@ class OcclusionTrackWindowDelegate : public test::TestWindowDelegate {
 
  private:
   // test::TestWindowDelegate:
-  void OnWindowOcclusionChanged(Window::OcclusionState occlusion_state,
-                                const SkRegion& occluded_region) override {
+  void OnWindowOcclusionChanged(
+      Window::OcclusionState occlusion_state) override {
     ++occlusion_change_count_;
     last_occlusion_state_ = occlusion_state;
-    last_occluded_region_ = occluded_region;
+    last_occluded_region_ = window_->occluded_region_in_root();
   }
 
+  Window* window_ = nullptr;
   int occlusion_change_count_ = 0;
   Window::OcclusionState last_occlusion_state_ =
       Window::OcclusionState::UNKNOWN;
@@ -54,6 +57,7 @@ class WindowOcclusionChangeBuilderTest : public test::AuraTestBase {
   std::unique_ptr<Window> CreateTestWindow(
       OcclusionTrackWindowDelegate* delegate) {
     auto window = std::make_unique<Window>(delegate);
+    delegate->set_window(window.get());
     window->set_owned_by_parent(false);
     window->SetType(client::WINDOW_TYPE_NORMAL);
     window->Init(ui::LAYER_TEXTURED);
@@ -70,7 +74,7 @@ class WindowOcclusionChangeBuilderTest : public test::AuraTestBase {
 // Test that window occlusion info is updated after commit.
 TEST_F(WindowOcclusionChangeBuilderTest, SingleWindow) {
   SkRegion region;
-  region.setRect(1, 2, 3, 4);
+  region.setRect({1, 2, 3, 4});
 
   for (const auto state :
        {Window::OcclusionState::VISIBLE, Window::OcclusionState::OCCLUDED,
@@ -101,14 +105,14 @@ TEST_F(WindowOcclusionChangeBuilderTest, MultipleWindow) {
   auto window1 = CreateTestWindow(&delegate1);
   const Window::OcclusionState state1 = Window::OcclusionState::VISIBLE;
   SkRegion region1;
-  region1.setRect(1, 2, 3, 4);
+  region1.setRect({1, 2, 3, 4});
   builder->Add(window1.get(), state1, region1);
 
   OcclusionTrackWindowDelegate delegate2;
   auto window2 = CreateTestWindow(&delegate2);
   const Window::OcclusionState state2 = Window::OcclusionState::OCCLUDED;
   SkRegion region2;
-  region2.setRect(5, 6, 7, 8);
+  region2.setRect({5, 6, 7, 8});
   builder->Add(window2.get(), state2, region2);
 
   // Changes should not be applied before Commit call.
@@ -138,7 +142,7 @@ TEST_F(WindowOcclusionChangeBuilderTest, MultipleChanges) {
   builder->Add(window.get(), Window::OcclusionState::HIDDEN, SkRegion());
 
   SkRegion region;
-  region.setRect(1, 2, 3, 4);
+  region.setRect({1, 2, 3, 4});
   builder->Add(window.get(), Window::OcclusionState::OCCLUDED, region);
 
   // All changes are committed when builder is released.

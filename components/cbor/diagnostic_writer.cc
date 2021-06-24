@@ -7,7 +7,7 @@
 #include <string>
 
 #include "base/json/string_escape.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/numerics/clamped_math.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/cbor/constants.h"
@@ -17,6 +17,23 @@ using base::ClampAdd;
 using base::ClampMul;
 
 namespace cbor {
+
+static bool AppendHex(const std::vector<uint8_t> bytes,
+                      char type_char,
+                      size_t rough_max_output_bytes,
+                      std::string* s) {
+  s->push_back(type_char);
+  s->push_back('\'');
+
+  if (ClampAdd(s->size(), ClampMul(2u, bytes.size())) >
+      rough_max_output_bytes) {
+    return false;
+  }
+  s->append(base::HexEncode(bytes.data(), bytes.size()));
+
+  s->push_back('\'');
+  return true;
+}
 
 static bool Serialize(const Value& node,
                       size_t rough_max_output_bytes,
@@ -30,19 +47,17 @@ static bool Serialize(const Value& node,
       s->append(base::NumberToString(node.GetNegative()));
       break;
 
-    case Value::Type::BYTE_STRING: {
-      s->append("h'");
-
-      const std::vector<uint8_t>& bytes = node.GetBytestring();
-      if (ClampAdd(s->size(), ClampMul(2u, bytes.size())) >
-          rough_max_output_bytes) {
+    case Value::Type::INVALID_UTF8:
+      if (!AppendHex(node.GetInvalidUTF8(), 's', rough_max_output_bytes, s)) {
         return false;
       }
-      s->append(base::HexEncode(bytes.data(), bytes.size()));
-
-      s->push_back('\'');
       break;
-    }
+
+    case Value::Type::BYTE_STRING:
+      if (!AppendHex(node.GetBytestring(), 'h', rough_max_output_bytes, s)) {
+        return false;
+      }
+      break;
 
     case Value::Type::STRING: {
       std::string quoted_and_escaped;

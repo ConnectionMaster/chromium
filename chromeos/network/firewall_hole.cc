@@ -12,6 +12,7 @@
 
 #include "base/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromeos/dbus/permission_broker/permission_broker_client.h"
@@ -49,20 +50,20 @@ void PortReleased(FirewallHole::PortType type,
 void FirewallHole::Open(PortType type,
                         uint16_t port,
                         const std::string& interface,
-                        const OpenCallback& callback) {
+                        OpenCallback callback) {
   int lifeline[2] = {-1, -1};
   if (pipe2(lifeline, O_CLOEXEC) < 0) {
     PLOG(ERROR) << "Failed to create a lifeline pipe";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(callback, nullptr));
+        FROM_HERE, base::BindOnce(std::move(callback), nullptr));
     return;
   }
-  base::ScopedFD lifeline_local(lifeline[0]);
-  base::ScopedFD lifeline_remote(lifeline[1]);
+  base::ScopedFD lifeline_local(lifeline[1]);
+  base::ScopedFD lifeline_remote(lifeline[0]);
 
   base::OnceCallback<void(bool)> access_granted_closure =
       base::BindOnce(&FirewallHole::PortAccessGranted, type, port, interface,
-                     std::move(lifeline_local), callback);
+                     std::move(lifeline_local), std::move(callback));
 
   PermissionBrokerClient* client = PermissionBrokerClient::Get();
   DCHECK(client) << "Could not get permission broker client.";
@@ -101,13 +102,13 @@ void FirewallHole::PortAccessGranted(PortType type,
                                      uint16_t port,
                                      const std::string& interface,
                                      base::ScopedFD lifeline_fd,
-                                     const FirewallHole::OpenCallback& callback,
+                                     FirewallHole::OpenCallback callback,
                                      bool success) {
   if (success) {
-    callback.Run(base::WrapUnique(
+    std::move(callback).Run(base::WrapUnique(
         new FirewallHole(type, port, interface, std::move(lifeline_fd))));
   } else {
-    callback.Run(nullptr);
+    std::move(callback).Run(nullptr);
   }
 }
 

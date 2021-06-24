@@ -6,10 +6,12 @@
 
 #include <memory>
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/accelerators/pre_target_accelerator_handler.h"
 #include "ash/app_list/test/app_list_test_helper.h"
-#include "ash/session/session_controller.h"
+#include "ash/capture_mode/capture_mode_controller.h"
+#include "ash/constants/ash_features.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test_screenshot_delegate.h"
@@ -19,7 +21,6 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
-#include "ui/base/accelerators/accelerator_history.h"
 #include "ui/events/event.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/rect.h"
@@ -34,13 +35,16 @@ TEST_F(AcceleratorFilterTest, TestFilterWithoutFocus) {
   EXPECT_EQ(0, delegate->handle_take_screenshot_count());
 
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
+  // VKEY_SNAPSHOT opens capture mode when the feature is enabled. Otherwise,
   // AcceleratorController calls ScreenshotDelegate::HandleTakeScreenshot() when
   // VKEY_SNAPSHOT is pressed. See kAcceleratorData[] in
   // accelerator_controller.cc.
   generator.PressKey(ui::VKEY_SNAPSHOT, 0);
-  EXPECT_EQ(1, delegate->handle_take_screenshot_count());
   generator.ReleaseKey(ui::VKEY_SNAPSHOT, 0);
-  EXPECT_EQ(1, delegate->handle_take_screenshot_count());
+  if (features::IsCaptureModeEnabled())
+    EXPECT_TRUE(CaptureModeController::Get()->IsActive());
+  else
+    EXPECT_EQ(1, delegate->handle_take_screenshot_count());
 }
 
 // Tests if AcceleratorFilter works as expected with a focused window.
@@ -57,9 +61,11 @@ TEST_F(AcceleratorFilterTest, TestFilterWithFocus) {
   // not focused.
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
   generator.PressKey(ui::VKEY_SNAPSHOT, 0);
-  EXPECT_EQ(0, delegate->handle_take_screenshot_count());
   generator.ReleaseKey(ui::VKEY_SNAPSHOT, 0);
-  EXPECT_EQ(0, delegate->handle_take_screenshot_count());
+  if (features::IsCaptureModeEnabled())
+    EXPECT_FALSE(CaptureModeController::Get()->IsActive());
+  else
+    EXPECT_EQ(0, delegate->handle_take_screenshot_count());
 
   // Reset window before |test_delegate| gets deleted.
   window.reset();
@@ -72,26 +78,31 @@ TEST_F(AcceleratorFilterTest, TestCapsLockMask) {
 
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
   generator.PressKey(ui::VKEY_SNAPSHOT, 0);
-  EXPECT_EQ(1, delegate->handle_take_screenshot_count());
   generator.ReleaseKey(ui::VKEY_SNAPSHOT, 0);
-  EXPECT_EQ(1, delegate->handle_take_screenshot_count());
+  const bool capture_mode_enabled = features::IsCaptureModeEnabled();
+  auto* controller = CaptureModeController::Get();
+  if (capture_mode_enabled) {
+    EXPECT_TRUE(controller->IsActive());
+    controller->Stop();
+  } else {
+    EXPECT_EQ(1, delegate->handle_take_screenshot_count());
+  }
 
   // Check if AcceleratorFilter ignores the mask for Caps Lock. Note that there
   // is no ui::EF_ mask for Num Lock.
   generator.PressKey(ui::VKEY_SNAPSHOT, ui::EF_CAPS_LOCK_ON);
-  EXPECT_EQ(2, delegate->handle_take_screenshot_count());
   generator.ReleaseKey(ui::VKEY_SNAPSHOT, ui::EF_CAPS_LOCK_ON);
-  EXPECT_EQ(2, delegate->handle_take_screenshot_count());
+  if (capture_mode_enabled)
+    EXPECT_TRUE(controller->IsActive());
+  else
+    EXPECT_EQ(2, delegate->handle_take_screenshot_count());
 }
 
 // Tests if special hardware keys like brightness and volume are consumed as
 // expected by the shell.
 TEST_F(AcceleratorFilterTest, CanConsumeSystemKeys) {
-  std::unique_ptr<ui::AcceleratorHistory> accelerator_history(
-      new ui::AcceleratorHistory());
   ::wm::AcceleratorFilter filter(
-      std::make_unique<PreTargetAcceleratorHandler>(),
-      accelerator_history.get());
+      std::make_unique<PreTargetAcceleratorHandler>());
   aura::Window* root_window = Shell::GetPrimaryRootWindow();
 
   // Normal keys are not consumed.
@@ -115,7 +126,7 @@ TEST_F(AcceleratorFilterTest, CanConsumeSystemKeys) {
 
   // Setting a window property on the target allows system keys to pass through.
   std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(1));
-  wm::GetWindowState(window.get())->SetCanConsumeSystemKeys(true);
+  WindowState::Get(window.get())->SetCanConsumeSystemKeys(true);
   ui::KeyEvent press_volume_up(ui::ET_KEY_PRESSED, ui::VKEY_VOLUME_UP,
                                ui::EF_NONE);
   ui::Event::DispatcherApi dispatch_helper(&press_volume_up);
@@ -133,7 +144,7 @@ TEST_F(AcceleratorFilterTest, CanConsumeSystemKeys) {
 }
 
 TEST_F(AcceleratorFilterTest, SearchKeyShortcutsAreAlwaysHandled) {
-  SessionController* const session_controller =
+  SessionControllerImpl* const session_controller =
       Shell::Get()->session_controller();
   EXPECT_FALSE(session_controller->IsScreenLocked());
 
@@ -142,7 +153,7 @@ TEST_F(AcceleratorFilterTest, SearchKeyShortcutsAreAlwaysHandled) {
   // We can lock the screen (Search+L) if a window is not present.
   generator.PressKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
   generator.ReleaseKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
-  session_controller->FlushMojoForTest();  // LockScreen is an async mojo call.
+  GetSessionControllerClient()->FlushForTest();  // LockScreen is an async call.
   EXPECT_TRUE(session_controller->IsScreenLocked());
   UnblockUserSession();
   EXPECT_FALSE(session_controller->IsScreenLocked());
@@ -152,7 +163,7 @@ TEST_F(AcceleratorFilterTest, SearchKeyShortcutsAreAlwaysHandled) {
   GetAppListTestHelper()->CheckVisibility(false);
   generator.PressKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
   generator.ReleaseKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
-  session_controller->FlushMojoForTest();  // LockScreen is an async mojo call.
+  GetSessionControllerClient()->FlushForTest();  // LockScreen is an async call.
   EXPECT_TRUE(session_controller->IsScreenLocked());
   UnblockUserSession();
   EXPECT_FALSE(session_controller->IsScreenLocked());
@@ -164,7 +175,7 @@ TEST_F(AcceleratorFilterTest, SearchKeyShortcutsAreAlwaysHandled) {
   window->SetProperty(aura::client::kShowStateKey, ui::SHOW_STATE_FULLSCREEN);
   generator.PressKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
   generator.ReleaseKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
-  session_controller->FlushMojoForTest();  // LockScreen is an async mojo call.
+  GetSessionControllerClient()->FlushForTest();  // LockScreen is an async call.
   EXPECT_TRUE(session_controller->IsScreenLocked());
   UnblockUserSession();
   EXPECT_FALSE(session_controller->IsScreenLocked());

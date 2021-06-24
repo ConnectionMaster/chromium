@@ -51,9 +51,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterSpecialSubframeNavigationsBrowserTest,
 }
 
 // Navigate to a site with site hierarchy a(b(c)). Let a navigate c to a data
-// URL, and expect that the resulting frame has activation. We expect to fail in
-// --site-per-process with PlzNavigate disabled because c is navigated to a's
-// process. Therefore we can't sniff b's activation state from c.
+// URL, and expect that the resulting frame has activation.
 // See crbug.com/739777.
 IN_PROC_BROWSER_TEST_F(SubresourceFilterSpecialSubframeNavigationsBrowserTest,
                        NavigateCrossProcessDataUrl_MaintainsActivation) {
@@ -70,7 +68,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterSpecialSubframeNavigationsBrowserTest,
   // The root node will initiate the navigation; its grandchild node will be the
   // target of the navigation.
   content::TestNavigationObserver navigation_observer(web_contents(), 1);
-  EXPECT_TRUE(content::ExecuteScript(
+  EXPECT_TRUE(content::ExecJs(
       web_contents()->GetMainFrame(),
       base::StringPrintf(
           "var data_url = 'data:text/html,<script src=\"%s\"></script>';"
@@ -79,7 +77,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterSpecialSubframeNavigationsBrowserTest,
   navigation_observer.Wait();
 
   content::RenderFrameHost* target = content::FrameMatchingPredicate(
-      web_contents(), base::Bind([](content::RenderFrameHost* rfh) {
+      web_contents(), base::BindRepeating([](content::RenderFrameHost* rfh) {
         return rfh->GetLastCommittedURL().scheme_piece() == url::kDataScheme;
       }));
   ASSERT_NE(target, nullptr);

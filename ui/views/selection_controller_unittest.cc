@@ -3,11 +3,16 @@
 // found in the LICENSE file.
 
 #include "ui/views/selection_controller.h"
+
+#include <memory>
+#include <string>
+
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/render_text.h"
 #include "ui/views/metrics.h"
 #include "ui/views/selection_controller_delegate.h"
@@ -60,7 +65,7 @@ class TestSelectionControllerDelegate : public SelectionControllerDelegate {
 class SelectionControllerTest : public ::testing::Test {
  public:
   void SetUp() override {
-    render_text_ = gfx::RenderText::CreateHarfBuzzInstance();
+    render_text_ = gfx::RenderText::CreateRenderText();
     delegate_ =
         std::make_unique<TestSelectionControllerDelegate>(render_text_.get());
     controller_ = std::make_unique<SelectionController>(delegate_.get());
@@ -118,8 +123,9 @@ class SelectionControllerTest : public ::testing::Test {
         ui::MouseEvent(ui::ET_MOUSE_PRESSED, location, location,
                        last_event_time_, mouse_flags_, button),
         false,
-        focused ? SelectionController::FOCUSED
-                : SelectionController::UNFOCUSED);
+        focused
+            ? SelectionController::InitialFocusStateOnMousePress::kFocused
+            : SelectionController::InitialFocusStateOnMousePress::kUnFocused);
   }
 
   void ReleaseMouseButton(int button) {

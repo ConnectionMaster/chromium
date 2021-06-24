@@ -6,18 +6,21 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/gmock_callback_support.h"
+#include "base/test/task_environment.h"
 #include "base/threading/sequenced_task_runner_handle.h"
-#include "media/base/gmock_callback_support.h"
 #include "media/base/media_util.h"
 #include "media/base/mock_filters.h"
 #include "media/filters/decoder_stream.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+using ::base::test::RunCallback;
+using ::base::test::RunOnceCallback;
 using testing::_;
+using testing::AnyNumber;
 using testing::DoAll;
 using testing::Invoke;
 using testing::Return;
@@ -75,7 +78,7 @@ class AudioDecoderStreamTest : public testing::Test {
   }
 
   void ProduceDecoderOutput(scoped_refptr<DecoderBuffer> buffer,
-                            const AudioDecoder::DecodeCB& decode_cb) {
+                            AudioDecoder::DecodeCB decode_cb) {
     // Make sure successive AudioBuffers have increasing timestamps.
     last_timestamp_ += base::TimeDelta::FromMilliseconds(27);
     const auto& config = demuxer_stream_.audio_decoder_config();
@@ -87,7 +90,7 @@ class AudioDecoderStreamTest : public testing::Test {
                 config.channel_layout(), config.channels(),
                 config.samples_per_second(), 1221, last_timestamp_)));
     base::SequencedTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(decode_cb, DecodeStatus::OK));
+        FROM_HERE, base::BindOnce(std::move(decode_cb), DecodeStatus::OK));
   }
 
   void RunUntilIdle() { task_environment_.RunUntilIdle(); }
@@ -95,8 +98,10 @@ class AudioDecoderStreamTest : public testing::Test {
  private:
   std::vector<std::unique_ptr<AudioDecoder>> CreateMockAudioDecoder() {
     auto decoder = std::make_unique<MockAudioDecoder>();
-    EXPECT_CALL(*decoder, Initialize(_, _, _, _, _))
-        .WillOnce(DoAll(SaveArg<3>(&decoder_output_cb_), RunCallback<2>(true)));
+    EXPECT_CALL(*decoder, Initialize_(_, _, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly(DoAll(SaveArg<3>(&decoder_output_cb_),
+                              RunOnceCallback<2>(OkStatus())));
     decoder_ = decoder.get();
 
     std::vector<std::unique_ptr<AudioDecoder>> result;
@@ -105,12 +110,11 @@ class AudioDecoderStreamTest : public testing::Test {
   }
 
   void OnAudioBufferReadDone(base::OnceClosure closure,
-                             AudioDecoderStream::Status status,
-                             const scoped_refptr<AudioBuffer>& audio_buffer) {
+                             AudioDecoderStream::ReadResult result) {
     std::move(closure).Run();
   }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   NullMediaLog media_log_;
   testing::NiceMock<MockDemuxerStream> demuxer_stream_{DemuxerStream::AUDIO};
   AudioDecoderStream audio_decoder_stream_;
@@ -127,8 +131,8 @@ TEST_F(AudioDecoderStreamTest, FlushOnConfigChange) {
   ASSERT_NE(first_decoder, nullptr);
 
   // Make a regular DemuxerStream::Read().
-  EXPECT_CALL(*demuxer_stream(), Read(_))
-      .WillOnce(RunCallback<0>(DemuxerStream::kOk, new DecoderBuffer(12)));
+  EXPECT_CALL(*demuxer_stream(), OnRead(_))
+      .WillOnce(RunOnceCallback<0>(DemuxerStream::kOk, new DecoderBuffer(12)));
   EXPECT_CALL(*decoder(), Decode(IsRegularDecoderBuffer(), _))
       .WillOnce(Invoke(this, &AudioDecoderStreamTest::ProduceDecoderOutput));
   base::RunLoop run_loop0;
@@ -138,8 +142,8 @@ TEST_F(AudioDecoderStreamTest, FlushOnConfigChange) {
   // Make a config-change DemuxerStream::Read().
   // Expect the decoder to be flushed.  Upon flushing, the decoder releases
   // internally buffered output.
-  EXPECT_CALL(*demuxer_stream(), Read(_))
-      .WillOnce(RunCallback<0>(DemuxerStream::kConfigChanged, nullptr));
+  EXPECT_CALL(*demuxer_stream(), OnRead(_))
+      .WillOnce(RunOnceCallback<0>(DemuxerStream::kConfigChanged, nullptr));
   EXPECT_CALL(*decoder(), Decode(IsEOSDecoderBuffer(), _))
       .WillOnce(Invoke(this, &AudioDecoderStreamTest::ProduceDecoderOutput));
   base::RunLoop run_loop1;
@@ -148,7 +152,7 @@ TEST_F(AudioDecoderStreamTest, FlushOnConfigChange) {
 
   // Expect the decoder to be re-initialized when AudioDecoderStream finishes
   // processing the last decode.
-  EXPECT_CALL(*decoder(), Initialize(_, _, _, _, _));
+  EXPECT_CALL(*decoder(), Initialize_(_, _, _, _, _));
   RunUntilIdle();
 }
 

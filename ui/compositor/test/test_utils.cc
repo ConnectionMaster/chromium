@@ -4,11 +4,14 @@
 
 #include "ui/compositor/test/test_utils.h"
 
+#include "base/cancelable_callback.h"
 #include "base/run_loop.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
+#include "base/timer/timer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/transform.h"
 
 namespace ui {
@@ -39,13 +42,36 @@ void CheckApproximatelyEqual(const gfx::Rect& lhs, const gfx::Rect& rhs) {
   EXPECT_FLOAT_EQ(lhs.height(), rhs.height());
 }
 
-void WaitForNextFrameToBePresented(ui::Compositor* compositor) {
+void CheckApproximatelyEqual(const gfx::RoundedCornersF& lhs,
+                             const gfx::RoundedCornersF& rhs) {
+  EXPECT_FLOAT_EQ(lhs.upper_left(), rhs.upper_left());
+  EXPECT_FLOAT_EQ(lhs.upper_right(), rhs.upper_right());
+  EXPECT_FLOAT_EQ(lhs.lower_left(), rhs.lower_left());
+  EXPECT_FLOAT_EQ(lhs.lower_right(), rhs.lower_right());
+}
+
+bool WaitForNextFrameToBePresented(ui::Compositor* compositor,
+                                   absl::optional<base::TimeDelta> timeout) {
+  bool frames_presented = false;
   base::RunLoop runloop;
-  compositor->RequestPresentationTimeForNextFrame(base::BindLambdaForTesting(
-      [&runloop](const gfx::PresentationFeedback& feedback) {
-        runloop.QuitClosure().Run();
-      }));
+  base::CancelableOnceCallback<void(const gfx::PresentationFeedback&)>
+      cancelable_callback(base::BindLambdaForTesting(
+          [&](const gfx::PresentationFeedback& feedback) {
+            frames_presented = true;
+            runloop.Quit();
+          }));
+  compositor->RequestPresentationTimeForNextFrame(
+      cancelable_callback.callback());
+
+  absl::optional<base::OneShotTimer> timer;
+  if (timeout.has_value()) {
+    timer.emplace();
+    timer->Start(FROM_HERE, timeout.value(), runloop.QuitClosure());
+  }
+
   runloop.Run();
+
+  return frames_presented;
 }
 
 }  // namespace ui

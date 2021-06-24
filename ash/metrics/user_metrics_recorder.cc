@@ -11,12 +11,12 @@
 #include "ash/metrics/demo_session_metrics_recorder.h"
 #include "ash/metrics/desktop_task_switch_metric_recorder.h"
 #include "ash/metrics/pointer_metrics_recorder.h"
+#include "ash/public/cpp/accessibility_controller_enums.h"
+#include "ash/public/cpp/ash_pref_names.h"
 #include "ash/public/cpp/shelf_item.h"
 #include "ash/public/cpp/shelf_model.h"
 #include "ash/public/cpp/shell_window_ids.h"
-#include "ash/public/interfaces/accessibility_controller.mojom-shared.h"
-#include "ash/public/interfaces/window_state_type.mojom.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_view.h"
 #include "ash/shell.h"
@@ -24,11 +24,14 @@
 #include "ash/wm/window_state.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
+#include "components/prefs/pref_service.h"
 #include "ui/aura/window.h"
 
 namespace ash {
 
 namespace {
+
+using ::chromeos::WindowStateType;
 
 // Time in seconds between calls to "RecordPeriodicMetrics".
 const int kAshPeriodicMetricsTimeInSeconds = 30 * 60;
@@ -48,33 +51,33 @@ enum ActiveWindowStateType {
 ActiveWindowStateType GetActiveWindowState() {
   ActiveWindowStateType active_window_state_type =
       ACTIVE_WINDOW_STATE_TYPE_NO_ACTIVE_WINDOW;
-  wm::WindowState* active_window_state = ash::wm::GetActiveWindowState();
+  WindowState* active_window_state = WindowState::ForActiveWindow();
   if (active_window_state) {
     switch (active_window_state->GetStateType()) {
-      case mojom::WindowStateType::MAXIMIZED:
+      case WindowStateType::kMaximized:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_MAXIMIZED;
         break;
-      case mojom::WindowStateType::FULLSCREEN:
+      case WindowStateType::kFullscreen:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_FULLSCREEN;
         break;
-      case mojom::WindowStateType::LEFT_SNAPPED:
-      case mojom::WindowStateType::RIGHT_SNAPPED:
+      case WindowStateType::kPrimarySnapped:
+      case WindowStateType::kSecondarySnapped:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_SNAPPED;
         break;
-      case mojom::WindowStateType::PINNED:
+      case WindowStateType::kPinned:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_PINNED;
         break;
-      case mojom::WindowStateType::TRUSTED_PINNED:
+      case WindowStateType::kTrustedPinned:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_TRUSTED_PINNED;
         break;
-      case mojom::WindowStateType::PIP:
+      case WindowStateType::kPip:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_PIP;
         break;
-      case mojom::WindowStateType::DEFAULT:
-      case mojom::WindowStateType::NORMAL:
-      case mojom::WindowStateType::MINIMIZED:
-      case mojom::WindowStateType::INACTIVE:
-      case mojom::WindowStateType::AUTO_POSITIONED:
+      case WindowStateType::kDefault:
+      case WindowStateType::kNormal:
+      case WindowStateType::kMinimized:
+      case WindowStateType::kInactive:
+      case WindowStateType::kAutoPositioned:
         active_window_state_type = ACTIVE_WINDOW_STATE_TYPE_OTHER;
         break;
     }
@@ -88,16 +91,10 @@ bool IsKioskModeActive() {
          LoginStatus::KIOSK_APP;
 }
 
-// Returns true if ARC kiosk mode is active.
-bool IsArcKioskModeActive() {
-  return Shell::Get()->session_controller()->login_status() ==
-         LoginStatus::ARC_KIOSK_APP;
-}
-
 // Returns true if there is an active user and their session isn't currently
 // locked.
 bool IsUserActive() {
-  SessionController* session = Shell::Get()->session_controller();
+  SessionControllerImpl* session = Shell::Get()->session_controller();
   return session->IsActiveUserSessionStarted() && !session->IsScreenLocked();
 }
 
@@ -133,8 +130,7 @@ int GetNumVisibleWindowsInPrimaryDisplay() {
                                                        rend = children.rend();
          it != rend; ++it) {
       const aura::Window* child_window = *it;
-      const wm::WindowState* child_window_state =
-          wm::GetWindowState(child_window);
+      const WindowState* child_window_state = WindowState::Get(child_window);
 
       if (!child_window->IsVisible() || child_window_state->IsMinimized())
         continue;
@@ -162,10 +158,10 @@ int GetNumVisibleWindowsInPrimaryDisplay() {
 void RecordShelfItemCounts() {
   int pinned_item_count = 0;
   int unpinned_item_count = 0;
-  for (const ShelfItem& item : Shell::Get()->shelf_model()->items()) {
+  for (const ShelfItem& item : ShelfModel::Get()->items()) {
     if (item.type == TYPE_PINNED_APP || item.type == TYPE_BROWSER_SHORTCUT)
       ++pinned_item_count;
-    else if (item.type != TYPE_APP_LIST && item.type != TYPE_BACK_BUTTON)
+    else
       ++unpinned_item_count;
   }
 
@@ -210,7 +206,7 @@ void UserMetricsRecorder::RecordUserClickOnShelfButton(
 
 // static
 void UserMetricsRecorder::RecordUserToggleDictation(
-    mojom::DictationToggleSource source) {
+    DictationToggleSource source) {
   UMA_HISTOGRAM_ENUMERATION("Accessibility.CrosDictation.ToggleDictationMethod",
                             source);
 }
@@ -255,6 +251,12 @@ void UserMetricsRecorder::RecordUserMetricsAction(UserMetricsAction action) {
       break;
     case UMA_SHELF_ALIGNMENT_SET_RIGHT:
       RecordAction(UserMetricsAction("Shelf_AlignmentSetRight"));
+      break;
+    case UMA_SHELF_ITEM_PINNED:
+      RecordAction(UserMetricsAction("Shelf_ItemPinned"));
+      break;
+    case UMA_SHELF_ITEM_UNPINNED:
+      RecordAction(UserMetricsAction("Shelf_ItemUnpinned"));
       break;
     case UMA_STATUS_AREA_AUDIO_CURRENT_INPUT_DEVICE:
       RecordAction(UserMetricsAction("StatusArea_Audio_CurrentInputDevice"));
@@ -450,8 +452,8 @@ void UserMetricsRecorder::OnShellInitialized() {
   // Lazy creation of the DesktopTaskSwitchMetricRecorder because it accesses
   // Shell::Get() which is not available when |this| is instantiated.
   if (!desktop_task_switch_metric_recorder_) {
-    desktop_task_switch_metric_recorder_.reset(
-        new DesktopTaskSwitchMetricRecorder());
+    desktop_task_switch_metric_recorder_ =
+        std::make_unique<DesktopTaskSwitchMetricRecorder>();
   }
   pointer_metrics_recorder_ = std::make_unique<PointerMetricsRecorder>();
 }
@@ -485,6 +487,11 @@ void UserMetricsRecorder::RecordPeriodicMetrics() {
     RecordShelfItemCounts();
     UMA_HISTOGRAM_COUNTS_100("Ash.NumberOfVisibleWindowsInPrimaryDisplay",
                              GetNumVisibleWindowsInPrimaryDisplay());
+
+    base::UmaHistogramBoolean(
+        "Ash.AppNotificationBadgingPref",
+        Shell::Get()->session_controller()->GetActivePrefService()->GetBoolean(
+            prefs::kAppNotificationBadgingEnabled));
   }
 
   // TODO(bruthig): Find out if this should only be logged when the user is
@@ -497,7 +504,7 @@ void UserMetricsRecorder::RecordPeriodicMetrics() {
 }
 
 bool UserMetricsRecorder::IsUserInActiveDesktopEnvironment() const {
-  return IsUserActive() && !IsKioskModeActive() && !IsArcKioskModeActive();
+  return IsUserActive() && !IsKioskModeActive();
 }
 
 void UserMetricsRecorder::StartTimer() {

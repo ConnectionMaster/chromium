@@ -6,10 +6,10 @@
 
 #include <memory>
 
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/proxy_config/pref_proxy_config_tracker_impl.h"
-#import "ios/web/public/test/fakes/test_web_client.h"
+#import "ios/web/public/test/fakes/fake_web_client.h"
 #include "ios/web/public/test/scoped_testing_web_client.h"
 #include "ios/web/public/test/test_web_thread.h"
 #include "ios/web/web_thread_impl.h"
@@ -42,11 +42,11 @@ class TestIOThread : public io_thread::IOSIOThread {
 
 class IOSIOThreadTest : public PlatformTest {
  public:
-  IOSIOThreadTest() : web_client_(std::make_unique<web::TestWebClient>()) {
+  IOSIOThreadTest() : web_client_(std::make_unique<web::FakeWebClient>()) {
     web::WebThreadImpl::CreateTaskExecutor();
 
     ui_thread_ = std::make_unique<web::TestWebThread>(
-        web::WebThread::UI, scoped_task_environment_.GetMainThreadTaskRunner());
+        web::WebThread::UI, task_environment_.GetMainThreadTaskRunner());
   }
 
   ~IOSIOThreadTest() override {
@@ -54,7 +54,7 @@ class IOSIOThreadTest : public PlatformTest {
   }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   web::ScopedTestingWebClient web_client_;
   std::unique_ptr<web::TestWebThread> ui_thread_;
 };

@@ -16,12 +16,10 @@
 #include "content/public/renderer/content_renderer_client.h"
 #include "headless/lib/browser/headless_platform_event_source.h"
 #include "headless/lib/headless_content_client.h"
+#include "headless/public/headless_browser.h"
 #include "headless/public/headless_export.h"
 
 namespace base {
-namespace debug {
-struct CrashKeyString;
-}  // namespace debug
 class CommandLine;
 }  // namespace base
 
@@ -35,6 +33,7 @@ class HEADLESS_EXPORT HeadlessContentMainDelegate
  public:
   explicit HeadlessContentMainDelegate(
       std::unique_ptr<HeadlessBrowserImpl> browser);
+  explicit HeadlessContentMainDelegate(HeadlessBrowser::Options options);
   ~HeadlessContentMainDelegate() override;
 
   // content::ContentMainDelegate implementation:
@@ -43,9 +42,10 @@ class HEADLESS_EXPORT HeadlessContentMainDelegate
   int RunProcess(
       const std::string& process_type,
       const content::MainFunctionParams& main_function_params) override;
-#if defined(OS_MACOSX)
-  void PreCreateMainMessageLoop() override;
+#if defined(OS_MAC)
+  void PreBrowserMain() override;
 #endif
+  content::ContentClient* CreateContentClient() override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
   content::ContentUtilityClient* CreateContentUtilityClient() override;
   content::ContentRendererClient* CreateContentRendererClient() override;
@@ -54,14 +54,17 @@ class HEADLESS_EXPORT HeadlessContentMainDelegate
 
   HeadlessBrowserImpl* browser() const { return browser_.get(); }
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   void ZygoteForked() override;
 #endif
 
  private:
   friend class HeadlessBrowserTest;
 
-  static void InitializeResourceBundle();
+  void Init();
+
+  HeadlessBrowser::Options* options();
+
   static HeadlessContentMainDelegate* GetInstance();
 
   void InitLogging(const base::CommandLine& command_line);
@@ -74,7 +77,7 @@ class HEADLESS_EXPORT HeadlessContentMainDelegate
   HeadlessPlatformEventSource platform_event_source_;
 
   std::unique_ptr<HeadlessBrowserImpl> browser_;
-  base::debug::CrashKeyString* headless_crash_key_;  // Note: never deallocated.
+  std::unique_ptr<HeadlessBrowser::Options> options_;
 
   DISALLOW_COPY_AND_ASSIGN(HeadlessContentMainDelegate);
 };

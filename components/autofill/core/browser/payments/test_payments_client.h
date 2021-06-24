@@ -5,7 +5,10 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_TEST_PAYMENTS_CLIENT_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_TEST_PAYMENTS_CLIENT_H_
 
+#include <memory>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -22,10 +25,20 @@ class TestPaymentsClient : public payments::PaymentsClient {
  public:
   TestPaymentsClient(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_,
-      identity::IdentityManager* identity_manager,
+      signin::IdentityManager* identity_manager,
       PersonalDataManager* personal_data_manager);
 
   ~TestPaymentsClient() override;
+
+  void GetUnmaskDetails(
+      base::OnceCallback<void(AutofillClient::PaymentsRpcResult,
+                              PaymentsClient::UnmaskDetails&)> callback,
+      const std::string& app_locale) override;
+
+  void UnmaskCard(
+      const UnmaskRequestDetails& unmask_request_,
+      base::OnceCallback<void(AutofillClient::PaymentsRpcResult,
+                              UnmaskResponseDetails&)> callback) override;
 
   void GetUploadDetails(
       const std::vector<AutofillProfile>& addresses,
@@ -33,7 +46,7 @@ class TestPaymentsClient : public payments::PaymentsClient {
       const std::vector<const char*>& active_experiments,
       const std::string& app_locale,
       base::OnceCallback<void(AutofillClient::PaymentsRpcResult,
-                              const base::string16&,
+                              const std::u16string&,
                               std::unique_ptr<base::Value>,
                               std::vector<std::pair<int, int>>)> callback,
       const int billable_service_number,
@@ -50,6 +63,16 @@ class TestPaymentsClient : public payments::PaymentsClient {
       const std::vector<MigratableCreditCard>& migratable_credit_cards,
       MigrateCardsCallback callback) override;
 
+  // Some metrics are affected by the latency of GetUnmaskDetails, so it is
+  // useful to control whether or not GetUnmaskDetails() is responded to.
+  void ShouldReturnUnmaskDetailsImmediately(bool should_return_unmask_details);
+
+  void AllowFidoRegistration(bool offer_fido_opt_in = true);
+
+  void AddFidoEligibleCard(std::string server_id,
+                           std::string credential_id,
+                           std::string relying_party_id);
+
   void SetServerIdForCardUpload(std::string);
 
   void SetSaveResultForCardsMigration(
@@ -58,6 +81,15 @@ class TestPaymentsClient : public payments::PaymentsClient {
 
   void SetSupportedBINRanges(std::vector<std::pair<int, int>> bin_ranges);
 
+  void SetUseInvalidLegalMessageInGetUploadDetails(
+      bool use_invalid_legal_message);
+
+  payments::PaymentsClient::UnmaskDetails* unmask_details() {
+    return &unmask_details_;
+  }
+  const payments::PaymentsClient::UnmaskRequestDetails* unmask_request() {
+    return unmask_request_;
+  }
   int detected_values_in_upload_details() const { return detected_values_; }
   const std::vector<AutofillProfile>& addresses_in_upload_details() const {
     return upload_details_addresses_;
@@ -77,6 +109,12 @@ class TestPaymentsClient : public payments::PaymentsClient {
 
  private:
   std::string server_id_;
+  // Some metrics are affected by the latency of GetUnmaskDetails, so it is
+  // useful to control whether or not GetUnmaskDetails() is responded to.
+  bool should_return_unmask_details_ = true;
+  payments::PaymentsClient::UnmaskDetails unmask_details_;
+  const payments::PaymentsClient::UnmaskRequestDetails* unmask_request_ =
+      nullptr;
   std::vector<std::pair<int, int>> supported_card_bin_ranges_;
   std::vector<AutofillProfile> upload_details_addresses_;
   std::vector<AutofillProfile> upload_card_addresses_;
@@ -86,6 +124,8 @@ class TestPaymentsClient : public payments::PaymentsClient {
   int billable_service_number_;
   PaymentsClient::UploadCardSource upload_card_source_;
   std::unique_ptr<std::unordered_map<std::string, std::string>> save_result_;
+  bool use_invalid_legal_message_ = false;
+  std::unique_ptr<base::Value> LegalMessage();
 
   DISALLOW_COPY_AND_ASSIGN(TestPaymentsClient);
 };

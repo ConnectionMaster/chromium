@@ -17,11 +17,12 @@
 #include "base/files/file_path.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/single_thread_task_executor.h"
 #include "base/threading/thread.h"
 #include "base/time/default_tick_clock.h"
 #include "base/values.h"
@@ -31,7 +32,6 @@
 #include "media/cast/cast_environment.h"
 #include "media/cast/cast_sender.h"
 #include "media/cast/logging/encoding_event_subscriber.h"
-#include "media/cast/logging/log_serializer.h"
 #include "media/cast/logging/logging_defines.h"
 #include "media/cast/logging/proto/raw_events.pb.h"
 #include "media/cast/logging/receiver_time_offset_estimator_impl.h"
@@ -44,9 +44,6 @@
 #include "media/cast/test/utility/input_builder.h"
 
 namespace {
-
-// The max allowed size of serialized log.
-const int kMaxSerializedLogBytes = 10 * 1000 * 1000;
 
 // Flags for this program:
 //
@@ -88,33 +85,6 @@ net::IPEndPoint CreateUDPAddress(const std::string& ip_str, uint16_t port) {
   return net::IPEndPoint(ip_address, port);
 }
 
-void DumpLoggingData(const media::cast::proto::LogMetadata& log_metadata,
-                     const media::cast::FrameEventList& frame_events,
-                     const media::cast::PacketEventList& packet_events,
-                     base::ScopedFILE log_file) {
-  VLOG(0) << "Frame map size: " << frame_events.size();
-  VLOG(0) << "Packet map size: " << packet_events.size();
-
-  std::unique_ptr<char[]> event_log(new char[kMaxSerializedLogBytes]);
-  int event_log_bytes;
-  if (!media::cast::SerializeEvents(log_metadata,
-                                    frame_events,
-                                    packet_events,
-                                    true,
-                                    kMaxSerializedLogBytes,
-                                    event_log.get(),
-                                    &event_log_bytes)) {
-    VLOG(0) << "Failed to serialize events.";
-    return;
-  }
-
-  VLOG(0) << "Events serialized length: " << event_log_bytes;
-
-  int ret = fwrite(event_log.get(), 1, event_log_bytes, log_file.get());
-  if (ret != event_log_bytes)
-    VLOG(0) << "Failed to write logs to file.";
-}
-
 void WriteLogsToFileAndDestroySubscribers(
     const scoped_refptr<media::cast::CastEnvironment>& cast_environment,
     std::unique_ptr<media::cast::EncodingEventSubscriber>
@@ -125,23 +95,6 @@ void WriteLogsToFileAndDestroySubscribers(
     base::ScopedFILE audio_log_file) {
   cast_environment->logger()->Unsubscribe(video_event_subscriber.get());
   cast_environment->logger()->Unsubscribe(audio_event_subscriber.get());
-
-  VLOG(0) << "Dumping logging data for video stream.";
-  media::cast::proto::LogMetadata log_metadata;
-  media::cast::FrameEventList frame_events;
-  media::cast::PacketEventList packet_events;
-  video_event_subscriber->GetEventsAndReset(
-      &log_metadata, &frame_events, &packet_events);
-
-  DumpLoggingData(log_metadata, frame_events, packet_events,
-                  std::move(video_log_file));
-
-  VLOG(0) << "Dumping logging data for audio stream.";
-  audio_event_subscriber->GetEventsAndReset(
-      &log_metadata, &frame_events, &packet_events);
-
-  DumpLoggingData(log_metadata, frame_events, packet_events,
-                  std::move(audio_log_file));
 }
 
 void WriteStatsAndDestroySubscribers(
@@ -210,7 +163,7 @@ int main(int argc, char** argv) {
   audio_thread.Start();
   video_thread.Start();
 
-  base::MessageLoopForIO io_message_loop;
+  base::SingleThreadTaskExecutor io_task_executor(base::MessagePumpType::IO);
 
   // Default parameters.
   base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
@@ -239,7 +192,7 @@ int main(int argc, char** argv) {
   // Running transport on the main thread.
   scoped_refptr<media::cast::CastEnvironment> cast_environment(
       new media::cast::CastEnvironment(
-          base::DefaultTickClock::GetInstance(), io_message_loop.task_runner(),
+          base::DefaultTickClock::GetInstance(), io_task_executor.task_runner(),
           audio_thread.task_runner(), video_thread.task_runner()));
 
   // SendProcess initialization.
@@ -267,9 +220,9 @@ int main(int argc, char** argv) {
           cast_environment->Clock(), base::TimeDelta::FromSeconds(1),
           std::make_unique<TransportClient>(cast_environment->logger()),
           std::make_unique<media::cast::UdpTransportImpl>(
-              nullptr, io_message_loop.task_runner(), net::IPEndPoint(),
-              remote_endpoint, base::Bind(&UpdateCastTransportStatus)),
-          io_message_loop.task_runner());
+              io_task_executor.task_runner(), net::IPEndPoint(),
+              remote_endpoint, base::BindRepeating(&UpdateCastTransportStatus)),
+          io_task_executor.task_runner());
 
   // Set up event subscribers.
   std::unique_ptr<media::cast::EncodingEventSubscriber> video_event_subscriber;
@@ -278,10 +231,12 @@ int main(int argc, char** argv) {
   std::string audio_log_file_name("/tmp/audio_events.log.gz");
   LOG(INFO) << "Logging audio events to: " << audio_log_file_name;
   LOG(INFO) << "Logging video events to: " << video_log_file_name;
-  video_event_subscriber.reset(new media::cast::EncodingEventSubscriber(
-      media::cast::VIDEO_EVENT, 10000));
-  audio_event_subscriber.reset(new media::cast::EncodingEventSubscriber(
-      media::cast::AUDIO_EVENT, 10000));
+  video_event_subscriber =
+      std::make_unique<media::cast::EncodingEventSubscriber>(
+          media::cast::VIDEO_EVENT, 10000);
+  audio_event_subscriber =
+      std::make_unique<media::cast::EncodingEventSubscriber>(
+          media::cast::AUDIO_EVENT, 10000);
   cast_environment->logger()->Subscribe(video_event_subscriber.get());
   cast_environment->logger()->Subscribe(audio_event_subscriber.get());
 
@@ -313,7 +268,7 @@ int main(int argc, char** argv) {
   }
 
   const int logging_duration_seconds = 10;
-  io_message_loop.task_runner()->PostDelayedTask(
+  io_task_executor.task_runner()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&WriteLogsToFileAndDestroySubscribers, cast_environment,
                      std::move(video_event_subscriber),
@@ -321,7 +276,7 @@ int main(int argc, char** argv) {
                      std::move(video_log_file), std::move(audio_log_file)),
       base::TimeDelta::FromSeconds(logging_duration_seconds));
 
-  io_message_loop.task_runner()->PostDelayedTask(
+  io_task_executor.task_runner()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&WriteStatsAndDestroySubscribers, cast_environment,
                      std::move(video_stats_subscriber),
@@ -332,16 +287,15 @@ int main(int argc, char** argv) {
   // CastSender initialization.
   std::unique_ptr<media::cast::CastSender> cast_sender =
       media::cast::CastSender::Create(cast_environment, transport_sender.get());
-  io_message_loop.task_runner()->PostTask(
+  io_task_executor.task_runner()->PostTask(
       FROM_HERE,
       base::BindOnce(&media::cast::CastSender::InitializeVideo,
                      base::Unretained(cast_sender.get()),
                      fake_media_source->get_video_config(),
-                     base::Bind(&QuitLoopOnInitializationResult),
-                     media::cast::CreateDefaultVideoEncodeAcceleratorCallback(),
-                     media::cast::CreateDefaultVideoEncodeMemoryCallback()));
+                     base::BindRepeating(&QuitLoopOnInitializationResult),
+                     base::DoNothing()));
   base::RunLoop().Run();  // Wait for video initialization.
-  io_message_loop.task_runner()->PostTask(
+  io_task_executor.task_runner()->PostTask(
       FROM_HERE,
       base::BindOnce(&media::cast::CastSender::InitializeAudio,
                      base::Unretained(cast_sender.get()), audio_config,

@@ -22,18 +22,18 @@ class Observer;
 @interface ProfileMenuController : NSObject {
  @private
   // The controller for the profile submenu.
-  std::unique_ptr<AvatarMenu> avatarMenu_;
+  std::unique_ptr<AvatarMenu> _avatarMenu;
 
   // An observer to be notified when the active browser changes and when the
   // menu model changes.
-  std::unique_ptr<ProfileMenuControllerInternal::Observer> observer_;
+  std::unique_ptr<ProfileMenuControllerInternal::Observer> _observer;
 
   // The main menu item to which the profile menu is attached.
-  NSMenuItem* mainMenuItem_;  // weak
+  NSMenuItem* _mainMenuItem;  // weak
 }
 
 // Designated initializer.
-- (id)initWithMainMenuItem:(NSMenuItem*)item;
+- (instancetype)initWithMainMenuItem:(NSMenuItem*)item;
 
 // Actions for the menu items.
 - (IBAction)switchToProfileFromMenu:(id)sender;

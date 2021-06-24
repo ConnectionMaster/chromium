@@ -4,37 +4,47 @@
 
 #include "third_party/blink/renderer/platform/graphics/video_frame_submitter.h"
 
-#include <vector>
+#include <utility>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
-#include "components/viz/common/features.h"
+#include "cc/metrics/video_playback_roughness_reporter.h"
+#include "components/power_scheduler/power_mode.h"
+#include "components/power_scheduler/power_mode_arbiter.h"
+#include "components/power_scheduler/power_mode_voter.h"
 #include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/resources/returned_resource.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_types.h"
-#include "services/viz/public/interfaces/compositing/compositor_frame_sink.mojom-blink.h"
-#include "services/viz/public/interfaces/hit_test/hit_test_region_list.mojom-blink.h"
-#include "services/ws/public/cpp/gpu/context_provider_command_buffer.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
+#include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom-blink.h"
+#include "services/viz/public/mojom/hit_test/hit_test_region_list.mojom-blink.h"
+#include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/frame_sinks/embedded_frame_sink.mojom-blink.h"
-#include "third_party/blink/public/platform/interface_provider.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
+#include "ui/gfx/presentation_feedback.h"
 
 namespace blink {
 
 VideoFrameSubmitter::VideoFrameSubmitter(
     WebContextProviderCallback context_provider_callback,
+    cc::VideoPlaybackRoughnessReporter::ReportingCallback
+        roughness_reporting_callback,
     std::unique_ptr<VideoFrameResourceProvider> resource_provider)
-    : binding_(this),
-      context_provider_callback_(context_provider_callback),
+    : context_provider_callback_(context_provider_callback),
       resource_provider_(std::move(resource_provider)),
       rotation_(media::VIDEO_ROTATION_0),
-      enable_surface_synchronization_(
-          ::features::IsSurfaceSynchronizationEnabled()),
-      empty_frame_weak_ptr_factory_(this),
-      weak_ptr_factory_(this) {
+      roughness_reporter_(std::make_unique<cc::VideoPlaybackRoughnessReporter>(
+          std::move(roughness_reporting_callback))),
+      frame_trackers_(false, nullptr),
+      power_mode_voter_(
+          power_scheduler::PowerModeArbiter::GetInstance()->NewVoter(
+              "PowerModeVoter.VideoPlayback")) {
   DETACH_FROM_THREAD(thread_checker_);
 }
 
@@ -60,8 +70,12 @@ void VideoFrameSubmitter::StartRendering() {
   DCHECK(!is_rendering_);
   is_rendering_ = true;
 
-  if (compositor_frame_sink_)
-    compositor_frame_sink_->SetNeedsBeginFrame(is_rendering_ && ShouldSubmit());
+  if (compositor_frame_sink_) {
+    compositor_frame_sink_->SetNeedsBeginFrame(IsDrivingFrameUpdates());
+    power_mode_voter_->VoteFor(power_scheduler::PowerMode::kVideoPlayback);
+  }
+
+  frame_trackers_.StartSequence(cc::FrameSequenceTrackerType::kVideo);
 }
 
 void VideoFrameSubmitter::StopRendering() {
@@ -70,17 +84,16 @@ void VideoFrameSubmitter::StopRendering() {
   DCHECK(video_frame_provider_);
 
   is_rendering_ = false;
+
+  frame_trackers_.StopSequence(cc::FrameSequenceTrackerType::kVideo);
+
   UpdateSubmissionState();
 }
 
 void VideoFrameSubmitter::DidReceiveFrame() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(video_frame_provider_);
-
-  // DidReceiveFrame is called before rendering has started, as a part of
-  // VideoRendererSink::PaintSingleFrame.
-  if (!is_rendering_)
-    SubmitSingleFrame();
+  SubmitSingleFrame();
 }
 
 bool VideoFrameSubmitter::IsDrivingFrameUpdates() const {
@@ -89,16 +102,18 @@ bool VideoFrameSubmitter::IsDrivingFrameUpdates() const {
   // We drive frame updates only when we believe that something is consuming
   // them.  This is different than VideoLayer, which drives updates any time
   // they're in the layer tree.
-  return is_rendering_ && ShouldSubmit();
+  return (is_rendering_ && ShouldSubmit()) || force_begin_frames_;
 }
 
-void VideoFrameSubmitter::Initialize(cc::VideoFrameProvider* provider) {
+void VideoFrameSubmitter::Initialize(cc::VideoFrameProvider* provider,
+                                     bool is_media_stream) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   if (!provider)
     return;
 
   DCHECK(!video_frame_provider_);
   video_frame_provider_ = provider;
+  is_media_stream_ = is_media_stream;
   context_provider_callback_.Run(
       nullptr, base::BindOnce(&VideoFrameSubmitter::OnReceivedContextProvider,
                               weak_ptr_factory_.GetWeakPtr()));
@@ -109,17 +124,14 @@ void VideoFrameSubmitter::SetRotation(media::VideoRotation rotation) {
   rotation_ = rotation;
 }
 
-void VideoFrameSubmitter::EnableSubmission(
-    viz::SurfaceId surface_id,
-    base::TimeTicks local_surface_id_allocation_time) {
+void VideoFrameSubmitter::EnableSubmission(viz::SurfaceId surface_id) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   // TODO(lethalantidote): Set these fields earlier in the constructor. Will
   // need to construct VideoFrameSubmitter later in order to do this.
   frame_sink_id_ = surface_id.frame_sink_id();
   child_local_surface_id_allocator_.UpdateFromParent(
-      viz::LocalSurfaceIdAllocation(surface_id.local_surface_id(),
-                                    local_surface_id_allocation_time));
+      surface_id.local_surface_id());
   if (resource_provider_->IsInitialized())
     StartSubmitting();
 }
@@ -136,6 +148,12 @@ void VideoFrameSubmitter::SetIsPageVisible(bool is_visible) {
   UpdateSubmissionState();
 }
 
+void VideoFrameSubmitter::SetForceBeginFrames(bool force_begin_frames) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  force_begin_frames_ = force_begin_frames;
+  UpdateSubmissionState();
+}
+
 void VideoFrameSubmitter::SetForceSubmit(bool force_submit) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   force_submit_ = force_submit;
@@ -144,13 +162,13 @@ void VideoFrameSubmitter::SetForceSubmit(bool force_submit) {
 
 void VideoFrameSubmitter::OnContextLost() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  if (binding_.is_bound())
-    binding_.Unbind();
+  receiver_.reset();
 
   if (context_provider_)
     context_provider_->RemoveObserver(this);
 
   waiting_for_compositor_ack_ = false;
+  last_frame_id_.reset();
 
   resource_provider_->OnContextLost();
 
@@ -164,31 +182,70 @@ void VideoFrameSubmitter::OnContextLost() {
 }
 
 void VideoFrameSubmitter::DidReceiveCompositorFrameAck(
-    const WTF::Vector<viz::ReturnedResource>& resources) {
+    WTF::Vector<viz::ReturnedResource> resources) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  ReclaimResources(resources);
+  ReclaimResources(std::move(resources));
   waiting_for_compositor_ack_ = false;
 }
 
 void VideoFrameSubmitter::OnBeginFrame(
     const viz::BeginFrameArgs& args,
-    WTF::HashMap<uint32_t, ::gfx::mojom::blink::PresentationFeedbackPtr>
-        feedbacks) {
+    const WTF::HashMap<uint32_t, viz::FrameTimingDetails>& timing_details) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   TRACE_EVENT0("media", "VideoFrameSubmitter::OnBeginFrame");
 
-  for (const auto& pair : feedbacks) {
+  last_begin_frame_args_ = args;
+
+  for (const auto& pair : timing_details) {
     if (viz::FrameTokenGT(pair.key, *next_frame_token_))
       continue;
-    TRACE_EVENT_ASYNC_END_WITH_TIMESTAMP0("media", "VideoFrameSubmitter",
-                                          pair.key, pair.value->timestamp);
+    auto& feedback = pair.value.presentation_feedback;
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+    // TODO: On Linux failure flag is unreliable, and perfectly rendered frames
+    // are reported as failures all the time.
+    bool presentation_failure = false;
+#else
+    bool presentation_failure =
+        feedback.flags & gfx::PresentationFeedback::kFailure;
+#endif
+    if (!presentation_failure &&
+        !ignorable_submitted_frames_.contains(pair.key)) {
+      frame_trackers_.NotifyFramePresented(
+          pair.key, gfx::PresentationFeedback(
+                        feedback.timestamp, feedback.interval, feedback.flags));
+
+      // We assume that presentation feedback is reliable if
+      // 1. (kHWCompletion) OS told us that the frame was shown at that time
+      //  or
+      // 2. (kVSync) at least presentation time is aligned with vsyncs intervals
+      uint32_t reliable_feedback_mask =
+          gfx::PresentationFeedback::kHWCompletion |
+          gfx::PresentationFeedback::kVSync;
+      bool reliable_timestamp = feedback.flags & reliable_feedback_mask;
+      roughness_reporter_->FramePresented(pair.key, feedback.timestamp,
+                                          reliable_timestamp);
+    }
+
+    ignorable_submitted_frames_.erase(pair.key);
+    TRACE_EVENT_NESTABLE_ASYNC_END_WITH_TIMESTAMP0(
+        "media", "VideoFrameSubmitter", TRACE_ID_LOCAL(pair.key),
+        feedback.timestamp);
   }
+  frame_trackers_.NotifyBeginImplFrame(args);
+
+  base::ScopedClosureRunner end_frame(
+      base::BindOnce(&cc::FrameSequenceTrackerCollection::NotifyFrameEnd,
+                     base::Unretained(&frame_trackers_), args, args));
+  base::ScopedClosureRunner roughness_processing(
+      base::BindOnce(&cc::VideoPlaybackRoughnessReporter::ProcessFrameWindow,
+                     base::Unretained(roughness_reporter_.get())));
 
   // Don't call UpdateCurrentFrame() for MISSED BeginFrames. Also don't call it
   // after StopRendering() has been called (forbidden by API contract).
   viz::BeginFrameAck current_begin_frame_ack(args, false);
   if (args.type == viz::BeginFrameArgs::MISSED || !is_rendering_) {
     compositor_frame_sink_->DidNotProduceFrame(current_begin_frame_ack);
+    frame_trackers_.NotifyImplFrameCausedNoDamage(current_begin_frame_ack);
     return;
   }
 
@@ -200,20 +257,16 @@ void VideoFrameSubmitter::OnBeginFrame(
                                     args.frame_time + args.interval,
                                     args.frame_time + 2 * args.interval)) {
     compositor_frame_sink_->DidNotProduceFrame(current_begin_frame_ack);
+    frame_trackers_.NotifyImplFrameCausedNoDamage(current_begin_frame_ack);
     return;
   }
 
-  scoped_refptr<media::VideoFrame> video_frame =
-      video_frame_provider_->GetCurrentFrame();
-
   // We do have a new frame that we could display.  See if we're supposed to
   // actually submit a frame or not, and try to submit one.
-  //
-  // Not submitting a frame when waiting for a previous ack saves memory by
-  // not building up unused remote side resources. See https://crbug.com/830828.
-  if (waiting_for_compositor_ack_ ||
-      !SubmitFrame(current_begin_frame_ack, std::move(video_frame))) {
+  auto video_frame = video_frame_provider_->GetCurrentFrame();
+  if (!SubmitFrame(current_begin_frame_ack, std::move(video_frame))) {
     compositor_frame_sink_->DidNotProduceFrame(current_begin_frame_ack);
+    frame_trackers_.NotifyImplFrameCausedNoDamage(current_begin_frame_ack);
     return;
   }
 
@@ -227,26 +280,23 @@ void VideoFrameSubmitter::OnBeginFrame(
 }
 
 void VideoFrameSubmitter::ReclaimResources(
-    const WTF::Vector<viz::ReturnedResource>& resources) {
+    WTF::Vector<viz::ReturnedResource> resources) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  resource_provider_->ReceiveReturnsFromParent(
-      WebVector<viz::ReturnedResource>(resources).ReleaseVector());
+  resource_provider_->ReceiveReturnsFromParent(std::move(resources));
 }
 
 void VideoFrameSubmitter::DidAllocateSharedBitmap(
-    mojo::ScopedSharedBufferHandle buffer,
+    base::ReadOnlySharedMemoryRegion region,
     const viz::SharedBitmapId& id) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(compositor_frame_sink_);
-  compositor_frame_sink_->DidAllocateSharedBitmap(
-      std::move(buffer), SharedBitmapIdToGpuMailboxPtr(id));
+  compositor_frame_sink_->DidAllocateSharedBitmap(std::move(region), id);
 }
 
 void VideoFrameSubmitter::DidDeleteSharedBitmap(const viz::SharedBitmapId& id) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(compositor_frame_sink_);
-  compositor_frame_sink_->DidDeleteSharedBitmap(
-      SharedBitmapIdToGpuMailboxPtr(id));
+  compositor_frame_sink_->DidDeleteSharedBitmap(id);
 }
 
 void VideoFrameSubmitter::OnReceivedContextProvider(
@@ -255,6 +305,8 @@ void VideoFrameSubmitter::OnReceivedContextProvider(
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   if (!use_gpu_compositing) {
     resource_provider_->Initialize(nullptr, this);
+    if (frame_sink_id_.is_valid())
+      StartSubmitting();
     return;
   }
 
@@ -297,25 +349,29 @@ void VideoFrameSubmitter::StartSubmitting() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(frame_sink_id_.is_valid());
 
-  mojom::blink::EmbeddedFrameSinkProviderPtr provider;
-  Platform::Current()->GetInterfaceProvider()->GetInterface(
-      mojo::MakeRequest(&provider));
+  mojo::Remote<mojom::blink::EmbeddedFrameSinkProvider> provider;
+  Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
+      provider.BindNewPipeAndPassReceiver());
 
-  viz::mojom::blink::CompositorFrameSinkClientPtr client;
-  binding_.Bind(mojo::MakeRequest(&client));
   provider->CreateCompositorFrameSink(
-      frame_sink_id_, std::move(client),
-      mojo::MakeRequest(&compositor_frame_sink_));
+      frame_sink_id_, receiver_.BindNewPipeAndPassRemote(),
+      compositor_frame_sink_.BindNewPipeAndPassReceiver());
   if (!surface_embedder_.is_bound()) {
     provider->ConnectToEmbedder(frame_sink_id_,
-                                mojo::MakeRequest(&surface_embedder_));
+                                surface_embedder_.BindNewPipeAndPassReceiver());
   } else {
     GenerateNewSurfaceId();
   }
 
-  compositor_frame_sink_.set_connection_error_handler(base::BindOnce(
+  compositor_frame_sink_.set_disconnect_handler(base::BindOnce(
       &VideoFrameSubmitter::OnContextLost, base::Unretained(this)));
 
+  if (!compositor_frame_sink_)
+    return;
+
+  compositor_frame_sink_->InitializeCompositorFrameSinkType(
+      is_media_stream_ ? viz::mojom::CompositorFrameSinkType::kMediaStream
+                       : viz::mojom::CompositorFrameSinkType::kVideo);
   UpdateSubmissionState();
 }
 
@@ -324,7 +380,17 @@ void VideoFrameSubmitter::UpdateSubmissionState() {
   if (!compositor_frame_sink_)
     return;
 
-  compositor_frame_sink_->SetNeedsBeginFrame(IsDrivingFrameUpdates());
+  const auto is_driving_frame_updates = IsDrivingFrameUpdates();
+  compositor_frame_sink_->SetNeedsBeginFrame(is_driving_frame_updates);
+  power_mode_voter_->VoteFor(power_scheduler::PowerMode::kVideoPlayback);
+  // If we're not driving frame updates, then we're paused / off-screen / etc.
+  // Roughness reporting should stop until we resume.  Since the current frame
+  // might be on-screen for a long time, we also discard the current window.
+  if (!is_driving_frame_updates) {
+    roughness_reporter_->Reset();
+    power_mode_voter_->ResetVoteAfterTimeout(
+        power_scheduler::PowerModeVoter::kVideoTimeout);
+  }
 
   // These two calls are very important; they are responsible for significant
   // memory savings when content is off-screen.
@@ -337,11 +403,9 @@ void VideoFrameSubmitter::UpdateSubmissionState() {
   //
   // See https://crbug.com/829813 and https://crbug.com/829565.
   if (ShouldSubmit()) {
-    // We don't want to submit when |is_rendering_| because OnBeginFrame() calls
-    // are already driving submissions. We should still submit the empty frame
-    // in the other branch for memory savings.
-    if (!is_rendering_)
-      SubmitSingleFrame();
+    // Submit even if we're rendering, otherwise we may display an empty frame
+    // before the next OnBeginFrame() which can cause a visible flash.
+    SubmitSingleFrame();
   } else {
     // Post a delayed task to submit an empty frame. We don't do this here,
     // since there is a race between when we're notified that the player is not
@@ -352,15 +416,13 @@ void VideoFrameSubmitter::UpdateSubmissionState() {
     // the auto-PiP a chance to start. Note that the empty frame isn't required
     // for visual correctness; it's just for resource cleanup. We can delay
     // resource cleanup a little.
-
-    // If there are any in-flight empty frame requests, then cancel them. We
+    //
+    // If there are any in-flight empty frame requests, this cancels them. We
     // want to wait until any group of state changes stabilizes.
-    empty_frame_weak_ptr_factory_.InvalidateWeakPtrs();
-    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE,
+    empty_frame_timer_.Start(
+        FROM_HERE, base::TimeDelta::FromMilliseconds(500),
         base::BindOnce(&VideoFrameSubmitter::SubmitEmptyFrameIfNeeded,
-                       empty_frame_weak_ptr_factory_.GetWeakPtr()),
-        base::TimeDelta::FromMilliseconds(500));
+                       base::Unretained(this)));
   }
 }
 
@@ -395,36 +457,63 @@ bool VideoFrameSubmitter::SubmitFrame(
   if (!compositor_frame_sink_ || !ShouldSubmit())
     return false;
 
+  // Not submitting a frame when waiting for a previous ack saves memory by
+  // not building up unused remote side resources. See https://crbug.com/830828.
+  //
+  // Similarly we don't submit the same frame multiple times.
+  if (waiting_for_compositor_ack_ || last_frame_id_ == video_frame->unique_id())
+    return false;
+
+  last_frame_id_ = video_frame->unique_id();
+
   gfx::Size frame_size(video_frame->natural_size());
   if (rotation_ == media::VIDEO_ROTATION_90 ||
       rotation_ == media::VIDEO_ROTATION_270) {
     frame_size = gfx::Size(frame_size.height(), frame_size.width());
   }
+
+  if (frame_size.IsEmpty()) {
+    // We're not supposed to get 0x0 frames.  For now, just ignore it until we
+    // track down where they're coming from.  Creating a CompositorFrame with an
+    // empty output rectangle isn't allowed.
+    // crbug.com/979564
+    return false;
+  }
+
   if (frame_size_ != frame_size) {
     if (!frame_size_.IsEmpty())
       GenerateNewSurfaceId();
     frame_size_ = frame_size;
   }
 
-  auto compositor_frame =
-      CreateCompositorFrame(begin_frame_ack, std::move(video_frame));
+  auto frame_token = ++next_frame_token_;
+  auto source_id = begin_frame_ack.frame_id.source_id;
+  if (source_id != viz::BeginFrameArgs::kManualSourceId) {
+    // Roughness reporter only cares about true video frames.
+    roughness_reporter_->FrameSubmitted(frame_token, *video_frame.get(),
+                                        last_begin_frame_args_.interval);
+  }
+  auto compositor_frame = CreateCompositorFrame(frame_token, begin_frame_ack,
+                                                std::move(video_frame));
 
-  std::vector<viz::ResourceId> resources;
+  WebVector<viz::ResourceId> resources;
   const auto& quad_list = compositor_frame.render_pass_list.back()->quad_list;
   if (!quad_list.empty()) {
     DCHECK_EQ(quad_list.size(), 1u);
-    resources.assign(quad_list.front()->resources.begin(),
-                     quad_list.front()->resources.end());
+    resources.Assign(quad_list.front()->resources);
   }
-  resource_provider_->PrepareSendToParent(resources,
-                                          &compositor_frame.resource_list);
+
+  WebVector<viz::TransferableResource> resource_list;
+  resource_provider_->PrepareSendToParent(resources, &resource_list);
+  compositor_frame.resource_list = resource_list.ReleaseVector();
 
   // We can pass nullptr for the HitTestData as the CompositorFram will not
   // contain any SurfaceDrawQuads.
   compositor_frame_sink_->SubmitCompositorFrame(
-      child_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id(),
-      std::move(compositor_frame), nullptr, 0);
+      child_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
+      std::move(compositor_frame), absl::nullopt, 0);
+  frame_trackers_.NotifySubmitFrame(frame_token, false, begin_frame_ack,
+                                    last_begin_frame_args_);
   resource_provider_->ReleaseFrameResources();
 
   waiting_for_compositor_ack_ = true;
@@ -437,16 +526,25 @@ void VideoFrameSubmitter::SubmitEmptyFrame() {
   DCHECK(!frame_size_.IsEmpty());
   TRACE_EVENT0("media", "VideoFrameSubmitter::SubmitEmptyFrame");
 
-  if (!compositor_frame_sink_)
+  // If there's nothing to submit to or we've already submitted an empty frame,
+  // don't submit another one.
+  if (!compositor_frame_sink_ || !last_frame_id_.has_value())
     return;
 
+  last_frame_id_.reset();
+  auto begin_frame_ack = viz::BeginFrameAck::CreateManualAckWithDamage();
+  auto frame_token = ++next_frame_token_;
+  auto compositor_frame =
+      CreateCompositorFrame(frame_token, begin_frame_ack, nullptr);
+
   compositor_frame_sink_->SubmitCompositorFrame(
-      child_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id(),
-      CreateCompositorFrame(viz::BeginFrameAck::CreateManualAckWithDamage(),
-                            nullptr),
-      nullptr, 0);
-  waiting_for_compositor_ack_ = true;
+      child_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
+      std::move(compositor_frame), absl::nullopt, 0);
+  frame_trackers_.NotifySubmitFrame(frame_token, false, begin_frame_ack,
+                                    last_begin_frame_args_);
+
+  // We don't set |waiting_for_compositor_ack_| here since we want to allow a
+  // subsequent real frame to replace it at any time if needed.
 }
 
 void VideoFrameSubmitter::SubmitSingleFrame() {
@@ -464,17 +562,10 @@ void VideoFrameSubmitter::SubmitSingleFrame() {
   if (!video_frame)
     return;
 
-  // TODO(dalecurtis): This probably shouldn't be posted since it runs the risk
-  // of having state change out from under it. All call sites into this method
-  // should be from posted tasks so it should be safe to remove the post.
-  base::SequencedTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::BindOnce(base::IgnoreResult(&VideoFrameSubmitter::SubmitFrame),
-                     weak_ptr_factory_.GetWeakPtr(),
-                     viz::BeginFrameAck::CreateManualAckWithDamage(),
-                     std::move(video_frame)));
-
-  video_frame_provider_->PutCurrentFrame();
+  if (SubmitFrame(viz::BeginFrameAck::CreateManualAckWithDamage(),
+                  std::move(video_frame))) {
+    video_frame_provider_->PutCurrentFrame();
+  }
 }
 
 bool VideoFrameSubmitter::ShouldSubmit() const {
@@ -483,26 +574,38 @@ bool VideoFrameSubmitter::ShouldSubmit() const {
 }
 
 viz::CompositorFrame VideoFrameSubmitter::CreateCompositorFrame(
+    uint32_t frame_token,
     const viz::BeginFrameAck& begin_frame_ack,
     scoped_refptr<media::VideoFrame> video_frame) {
   DCHECK(!frame_size_.IsEmpty());
 
   viz::CompositorFrame compositor_frame;
   compositor_frame.metadata.begin_frame_ack = begin_frame_ack;
-  compositor_frame.metadata.frame_token = ++next_frame_token_;
+  compositor_frame.metadata.frame_token = frame_token;
+  compositor_frame.metadata.preferred_frame_interval =
+      video_frame_provider_
+          ? video_frame_provider_->GetPreferredRenderInterval()
+          : viz::BeginFrameArgs::MinInterval();
 
-  base::TimeTicks value;
-  if (video_frame &&
-      video_frame->metadata()->GetTimeTicks(
-          media::VideoFrameMetadata::DECODE_COMPLETE_TIMESTAMP, &value)) {
-    TRACE_EVENT_ASYNC_BEGIN_WITH_TIMESTAMP0("media", "VideoFrameSubmitter",
-                                            *next_frame_token_, value);
-    TRACE_EVENT_ASYNC_STEP_PAST0("media", "VideoFrameSubmitter",
-                                 *next_frame_token_, "Pre-submit buffering");
+  if (video_frame && video_frame->metadata().decode_end_time.has_value()) {
+    base::TimeTicks value = *video_frame->metadata().decode_end_time;
+    TRACE_EVENT_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP0(
+        "media", "VideoFrameSubmitter", TRACE_ID_LOCAL(frame_token), value);
+    TRACE_EVENT_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP0(
+        "media", "Pre-submit buffering", TRACE_ID_LOCAL(frame_token), value);
+    TRACE_EVENT_NESTABLE_ASYNC_END0("media", "Pre-submit buffering",
+                                    TRACE_ID_LOCAL(frame_token));
+
+    if (begin_frame_ack.frame_id.source_id ==
+        viz::BeginFrameArgs::kManualSourceId)
+      ignorable_submitted_frames_.insert(frame_token);
+
+    UMA_HISTOGRAM_TIMES("Media.VideoFrameSubmitter.PreSubmitBuffering",
+                        base::TimeTicks::Now() - value);
   } else {
-    TRACE_EVENT_ASYNC_BEGIN_WITH_TIMESTAMP1(
-        "media", "VideoFrameSubmitter", *next_frame_token_,
-        base::TimeTicks::Now(), "empty video frame?", !video_frame);
+    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("media", "VideoFrameSubmitter",
+                                      TRACE_ID_LOCAL(frame_token),
+                                      "empty video frame?", !video_frame);
   }
 
   // We don't assume that the ack is marked as having damage.  However, we're
@@ -510,15 +613,18 @@ viz::CompositorFrame VideoFrameSubmitter::CreateCompositorFrame(
   compositor_frame.metadata.begin_frame_ack.has_damage = true;
   compositor_frame.metadata.device_scale_factor = 1;
   compositor_frame.metadata.may_contain_video = true;
-  compositor_frame.metadata.local_surface_id_allocation_time =
-      child_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .allocation_time();
 
-  auto render_pass = viz::RenderPass::Create();
-  render_pass->SetNew(1, gfx::Rect(frame_size_), gfx::Rect(frame_size_),
-                      gfx::Transform());
+  // Specify size of shared quad state and quad lists so that RenderPass doesn't
+  // allocate using the defaults of 32 and 128 since we only append one quad.
+  auto render_pass =
+      viz::CompositorRenderPass::Create(/*shared_quad_state_list_size=*/1u,
+                                        /*quad_list_size*/ 1u);
+  render_pass->SetNew(viz::CompositorRenderPassId{1}, gfx::Rect(frame_size_),
+                      gfx::Rect(frame_size_), gfx::Transform());
 
   if (video_frame) {
+    compositor_frame.metadata.content_color_usage =
+        video_frame->ColorSpace().GetContentColorUsage();
     const bool is_opaque = media::IsOpaque(video_frame->format());
     resource_provider_->AppendQuads(render_pass.get(), std::move(video_frame),
                                     rotation_, is_opaque);
@@ -529,14 +635,13 @@ viz::CompositorFrame VideoFrameSubmitter::CreateCompositorFrame(
 }
 
 void VideoFrameSubmitter::GenerateNewSurfaceId() {
+  last_frame_id_.reset();
+
   // We need a new id in the event of context loss.
   child_local_surface_id_allocator_.GenerateId();
-  if (!enable_surface_synchronization_)
-    return;
 
   surface_embedder_->SetLocalSurfaceId(
-      child_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id());
+      child_local_surface_id_allocator_.GetCurrentLocalSurfaceId());
 }
 
 }  // namespace blink

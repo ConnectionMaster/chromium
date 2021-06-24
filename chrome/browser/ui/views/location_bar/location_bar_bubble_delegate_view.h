@@ -6,16 +6,16 @@
 #define CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_LOCATION_BAR_BUBBLE_DELEGATE_VIEW_H_
 
 #include "base/macros.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
+#include "base/scoped_observation.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_observer.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/events/event_observer.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/event_monitor.h"
 
 namespace content {
-class NotificationDetails;
-class NotificationSource;
 class WebContents;
 }  // namespace content
 
@@ -24,9 +24,11 @@ class WebContents;
 // mode.
 // TODO(https://crbug.com/788051): Move to chrome/browser/ui/views/page_action/.
 class LocationBarBubbleDelegateView : public views::BubbleDialogDelegateView,
-                                      public content::NotificationObserver,
+                                      public FullscreenObserver,
                                       public content::WebContentsObserver {
  public:
+  METADATA_HEADER(LocationBarBubbleDelegateView);
+
   enum DisplayReason {
     // The bubble appears as a direct result of a user action (clicking on the
     // location bar icon).
@@ -39,13 +41,16 @@ class LocationBarBubbleDelegateView : public views::BubbleDialogDelegateView,
   };
 
   // Constructs LocationBarBubbleDelegateView. Anchors the bubble to
-  // |anchor_view| when it is not nullptr or alternatively, to |anchor_point|.
+  // |anchor_view|. If |anchor_view| is nullptr, the bubble is anchored at
+  // (0,0).
   // Registers with a fullscreen controller identified by |web_contents| to
   // close the bubble if the fullscreen state changes.
   LocationBarBubbleDelegateView(views::View* anchor_view,
-                                const gfx::Point& anchor_point,
                                 content::WebContents* web_contents);
 
+  LocationBarBubbleDelegateView(const LocationBarBubbleDelegateView&) = delete;
+  LocationBarBubbleDelegateView& operator=(
+      const LocationBarBubbleDelegateView&) = delete;
   ~LocationBarBubbleDelegateView() override;
 
   // Displays the bubble with appearance and behavior tailored for |reason|.
@@ -56,16 +61,17 @@ class LocationBarBubbleDelegateView : public views::BubbleDialogDelegateView,
   // user).
   void ShowForReason(DisplayReason reason, bool allow_refocus_alert = true);
 
-  // content::NotificationObserver:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
+  // FullscreenObserver:
+  void OnFullscreenStateChanged() override;
 
   // content::WebContentsObserver:
   void OnVisibilityChanged(content::Visibility visibility) override;
   void WebContentsDestroyed() override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
   // views::BubbleDialogDelegateView:
+  ax::mojom::Role GetAccessibleWindowRole() override;
   gfx::Rect GetAnchorBoundsInScreen() const override;
 
   // If the bubble is not anchored to a view, places the bubble in the top right
@@ -98,11 +104,18 @@ class LocationBarBubbleDelegateView : public views::BubbleDialogDelegateView,
   // Closes the bubble.
   virtual void CloseBubble();
 
- private:
-  // Used to register for fullscreen change notifications.
-  content::NotificationRegistrar registrar_;
+  void SetCloseOnMainFrameOriginNavigation(bool close);
+  bool GetCloseOnMainFrameOriginNavigation() const;
 
-  DISALLOW_COPY_AND_ASSIGN(LocationBarBubbleDelegateView);
+ private:
+  base::ScopedObservation<FullscreenController, FullscreenObserver>
+      fullscreen_observation_{this};
+
+  // A flag controlling bubble closure when the main frame navigates to a
+  // different origin.
+  bool close_on_main_frame_origin_navigation_ = false;
+
+  DisplayReason display_reason_ = AUTOMATIC;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_LOCATION_BAR_BUBBLE_DELEGATE_VIEW_H_

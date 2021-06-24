@@ -8,6 +8,7 @@
 
 #include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "components/language/core/common/language_util.h"
@@ -27,20 +28,17 @@ TranslateAcceptLanguages::TranslateAcceptLanguages(
   pref_change_registrar_.Init(prefs);
   pref_change_registrar_.Add(
       accept_languages_pref,
-      base::Bind(&TranslateAcceptLanguages::InitAcceptLanguages,
-                 base::Unretained(this),
-                 prefs));
+      base::BindRepeating(&TranslateAcceptLanguages::InitAcceptLanguages,
+                          base::Unretained(this), prefs));
 }
 
-TranslateAcceptLanguages::~TranslateAcceptLanguages() {
-}
+TranslateAcceptLanguages::~TranslateAcceptLanguages() {}
 
 // static
-bool TranslateAcceptLanguages::CanBeAcceptLanguage(
-    const std::string& language) {
+bool TranslateAcceptLanguages::CanBeAcceptLanguage(base::StringPiece language) {
   SCOPED_UMA_HISTOGRAM_TIMER("Translate.AcceptLanguages.CanBeAcceptDuration");
 
-  std::string accept_language = language;
+  std::string accept_language(language);
   language::ToChromeLanguageSynonym(&accept_language);
 
   const std::string locale =
@@ -49,8 +47,9 @@ bool TranslateAcceptLanguages::CanBeAcceptLanguage(
   return l10n_util::IsLanguageAccepted(locale, accept_language);
 }
 
-bool TranslateAcceptLanguages::IsAcceptLanguage(const std::string& language) {
-  std::string accept_language = language;
+bool TranslateAcceptLanguages::IsAcceptLanguage(
+    base::StringPiece language) const {
+  std::string accept_language(language);
   language::ToChromeLanguageSynonym(&accept_language);
   return accept_languages_.find(accept_language) != accept_languages_.end();
 }
@@ -60,15 +59,15 @@ void TranslateAcceptLanguages::InitAcceptLanguages(PrefService* prefs) {
   // Build the languages.
   accept_languages_.clear();
   std::string accept_languages_pref = prefs->GetString(accept_languages_pref_);
-  for (const base::StringPiece& lang : base::SplitStringPiece(
-           accept_languages_pref, ",",
-           base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
+  for (const base::StringPiece& lang :
+       base::SplitStringPiece(accept_languages_pref, ",", base::TRIM_WHITESPACE,
+                              base::SPLIT_WANT_ALL)) {
     // Get rid of the locale extension if any (ex: en-US -> en), but for Chinese
     // for which the CLD reports zh-CN and zh-TW.
     size_t index = lang.find('-');
     if (index != base::StringPiece::npos && lang != "zh-CN" && lang != "zh-TW")
-      accept_languages_.insert(lang.substr(0, index).as_string());
-    accept_languages_.insert(lang.as_string());
+      accept_languages_.insert(std::string(lang.substr(0, index)));
+    accept_languages_.insert(std::string(lang));
   }
 }
 

@@ -10,17 +10,18 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/optional.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/test/multiprocess_test.h"
 #include "base/win/scoped_handle.h"
+#include "chrome/chrome_cleaner/buildflags.h"
 #include "chrome/chrome_cleaner/ipc/mojo_task_runner.h"
 #include "chrome/chrome_cleaner/logging/scoped_logging.h"
 #include "chrome/chrome_cleaner/os/disk_util.h"
@@ -29,6 +30,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chrome_cleaner {
 
@@ -91,7 +93,7 @@ class SandboxTest : public base::MultiProcessTest {
     // exist.
     sandbox_process_log_file_path_ =
         ScopedLogging::GetLogFilePath(kSandboxLogFileSuffix);
-    EXPECT_TRUE(base::DeleteFile(sandbox_process_log_file_path_, false));
+    EXPECT_TRUE(base::DeleteFile(sandbox_process_log_file_path_));
   }
 
   void TearDown() override {
@@ -146,10 +148,10 @@ MULTIPROCESS_TEST_MAIN(MockSandboxProcessMain) {
   base::FilePath temp_file;
   if (base::CreateTemporaryFileInDir(product_path, &temp_file)) {
     have_write_access = true;
-    base::DeleteFile(temp_file, /*recursive=*/false);
+    base::DeleteFile(temp_file);
   }
 
-#if defined(CHROME_CLEANER_OFFICIAL_BUILD)
+#if BUILDFLAG(IS_OFFICIAL_CHROME_CLEANER_BUILD)
   CHECK(!have_write_access);
 #else
   CHECK(have_write_access);

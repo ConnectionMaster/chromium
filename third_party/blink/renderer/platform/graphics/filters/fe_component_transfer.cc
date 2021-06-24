@@ -26,12 +26,11 @@
 
 #include <algorithm>
 
-#include "SkTableColorFilter.h"
-
 #include "base/stl_util.h"
 #include "third_party/blink/renderer/platform/graphics/filters/paint_filter_builder.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_stream.h"
+#include "third_party/skia/include/effects/SkTableColorFilter.h"
 
 namespace blink {
 
@@ -133,11 +132,12 @@ sk_sp<PaintFilter> FEComponentTransfer::CreateImageFilter() {
   unsigned char r_values[256], g_values[256], b_values[256], a_values[256];
   GetValues(r_values, g_values, b_values, a_values);
 
-  PaintFilter::CropRect crop_rect = GetCropRect();
+  absl::optional<PaintFilter::CropRect> crop_rect = GetCropRect();
   sk_sp<SkColorFilter> color_filter =
       SkTableColorFilter::MakeARGB(a_values, r_values, g_values, b_values);
   return sk_make_sp<ColorFilterPaintFilter>(std::move(color_filter),
-                                            std::move(input), &crop_rect);
+                                            std::move(input),
+                                            base::OptionalOrNullptr(crop_rect));
 }
 
 void FEComponentTransfer::GetValues(unsigned char r_values[256],

@@ -14,7 +14,7 @@ using offline_pages::Task;
 
 namespace explore_sites {
 
-// Takes a URL that the user has asked us to remove, and adds it to a blacklist
+// Takes a URL that the user has asked us to remove, and adds it to a blocklist
 // of sites we will stop showing in Explore on Sites.
 class ClearCatalogTask : public Task {
  public:
@@ -30,7 +30,7 @@ class ClearCatalogTask : public Task {
   ExploreSitesStore* store_;  // outlives this class.
   BooleanCallback callback_;
 
-  base::WeakPtrFactory<ClearCatalogTask> weak_factory_;
+  base::WeakPtrFactory<ClearCatalogTask> weak_factory_{this};
 };
 
 }  // namespace explore_sites

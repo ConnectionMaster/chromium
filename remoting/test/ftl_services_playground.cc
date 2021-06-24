@@ -11,7 +11,7 @@
 
 #include "base/base64.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/guid.h"
@@ -20,13 +20,15 @@
 #include "base/run_loop.h"
 #include "base/task/post_task.h"
 #include "remoting/base/oauth_token_getter_impl.h"
-#include "remoting/signaling/ftl_grpc_context.h"
-#include "remoting/signaling/ftl_services.grpc.pb.h"
-#include "remoting/signaling/grpc_support/grpc_async_unary_request.h"
+#include "remoting/base/protobuf_http_status.h"
+#include "remoting/base/url_request_context_getter.h"
+#include "remoting/proto/ftl/v1/ftl_messages.pb.h"
 #include "remoting/test/cli_util.h"
 #include "remoting/test/test_device_id_provider.h"
 #include "remoting/test/test_oauth_token_getter.h"
 #include "remoting/test/test_token_storage.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/transitional_url_loader_factory_owner.h"
 
 namespace {
 
@@ -44,7 +46,7 @@ bool NeedsManualSignin() {
 
 namespace remoting {
 
-FtlServicesPlayground::FtlServicesPlayground() : weak_factory_(this) {}
+FtlServicesPlayground::FtlServicesPlayground() {}
 
 FtlServicesPlayground::~FtlServicesPlayground() = default;
 
@@ -65,7 +67,6 @@ void FtlServicesPlayground::PrintHelp() {
 void FtlServicesPlayground::StartAndAuthenticate() {
   DCHECK(!storage_);
   DCHECK(!token_getter_);
-  DCHECK(!executor_);
 
   base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
   std::string username = cmd_line->GetSwitchValueASCII(kSwitchNameUsername);
@@ -86,8 +87,6 @@ void FtlServicesPlayground::StartAndAuthenticate() {
 
 void FtlServicesPlayground::StartLoop() {
   std::vector<test::CommandOption> options{
-      {"GetIceServer", base::BindRepeating(&FtlServicesPlayground::GetIceServer,
-                                           weak_factory_.GetWeakPtr())},
       {"PullMessages", base::BindRepeating(&FtlServicesPlayground::PullMessages,
                                            weak_factory_.GetWeakPtr())},
       {"ReceiveMessages",
@@ -103,20 +102,25 @@ void FtlServicesPlayground::StartLoop() {
                                            weak_factory_.GetWeakPtr())});
   }
 
+  auto url_request_context_getter =
+      base::MakeRefCounted<URLRequestContextGetter>(
+          base::ThreadTaskRunnerHandle::Get());
+  url_loader_factory_owner_ =
+      std::make_unique<network::TransitionalURLLoaderFactoryOwner>(
+          url_request_context_getter);
+
   test::RunCommandOptionsLoop(options);
 }
 
 void FtlServicesPlayground::ResetServices(base::OnceClosure on_done) {
-  executor_ = std::make_unique<GrpcAuthenticatedExecutor>(token_getter_.get());
-  peer_to_peer_stub_ = PeerToPeer::NewStub(FtlGrpcContext::CreateChannel());
-
   registration_manager_ = std::make_unique<FtlRegistrationManager>(
-      token_getter_.get(),
+      token_getter_.get(), url_loader_factory_owner_->GetURLLoaderFactory(),
       std::make_unique<test::TestDeviceIdProvider>(storage_.get()));
 
-  message_subscription_.reset();
+  message_subscription_ = {};
   messaging_client_ = std::make_unique<FtlMessagingClient>(
-      token_getter_.get(), registration_manager_.get());
+      token_getter_.get(), url_loader_factory_owner_->GetURLLoaderFactory(),
+      registration_manager_.get());
   message_subscription_ = messaging_client_->RegisterMessageCallback(
       base::BindRepeating(&FtlServicesPlayground::OnMessageReceived,
                           weak_factory_.GetWeakPtr()));
@@ -128,47 +132,6 @@ void FtlServicesPlayground::ResetServices(base::OnceClosure on_done) {
   }
 }
 
-void FtlServicesPlayground::GetIceServer(base::OnceClosure on_done) {
-  DCHECK(peer_to_peer_stub_);
-  VLOG(0) << "Running GetIceServer...";
-  ftl::GetICEServerRequest request;
-  *request.mutable_header() = FtlGrpcContext::CreateRequestHeader();
-  auto grpc_request = CreateGrpcAsyncUnaryRequest(
-      base::BindOnce(&PeerToPeer::Stub::AsyncGetICEServer,
-                     base::Unretained(peer_to_peer_stub_.get())),
-      FtlGrpcContext::CreateClientContext(), request,
-      base::BindOnce(&FtlServicesPlayground::OnGetIceServerResponse,
-                     weak_factory_.GetWeakPtr(), std::move(on_done)));
-  executor_->ExecuteRpc(std::move(grpc_request));
-}
-
-void FtlServicesPlayground::OnGetIceServerResponse(
-    base::OnceClosure on_done,
-    const grpc::Status& status,
-    const ftl::GetICEServerResponse& response) {
-  if (!status.ok()) {
-    HandleGrpcStatusError(std::move(on_done), status);
-    return;
-  }
-
-  printf("Ice transport policy: %s\n",
-         response.ice_config().ice_transport_policy().c_str());
-  for (const ftl::ICEServerList& server : response.ice_config().ice_servers()) {
-    printf(
-        "ICE server:\n"
-        "  hostname=%s\n"
-        "  username=%s\n"
-        "  credential=%s\n"
-        "  max_rate_kbps=%" PRId64 "\n",
-        server.hostname().c_str(), server.username().c_str(),
-        server.credential().c_str(), server.max_rate_kbps());
-    for (const std::string& url : server.urls()) {
-      printf("  url=%s\n", url.c_str());
-    }
-  }
-  std::move(on_done).Run();
-}
-
 void FtlServicesPlayground::SignInGaia(base::OnceClosure on_done) {
   DCHECK(registration_manager_);
   VLOG(0) << "Running SignInGaia...";
@@ -177,10 +140,11 @@ void FtlServicesPlayground::SignInGaia(base::OnceClosure on_done) {
                      weak_factory_.GetWeakPtr(), std::move(on_done)));
 }
 
-void FtlServicesPlayground::OnSignInGaiaResponse(base::OnceClosure on_done,
-                                                 const grpc::Status& status) {
+void FtlServicesPlayground::OnSignInGaiaResponse(
+    base::OnceClosure on_done,
+    const ProtobufHttpStatus& status) {
   if (!status.ok()) {
-    HandleGrpcStatusError(std::move(on_done), status);
+    HandleStatusError(std::move(on_done), status);
     return;
   }
 
@@ -201,10 +165,11 @@ void FtlServicesPlayground::PullMessages(base::OnceClosure on_done) {
                      weak_factory_.GetWeakPtr(), std::move(on_done)));
 }
 
-void FtlServicesPlayground::OnPullMessagesResponse(base::OnceClosure on_done,
-                                                   const grpc::Status& status) {
+void FtlServicesPlayground::OnPullMessagesResponse(
+    base::OnceClosure on_done,
+    const ProtobufHttpStatus& status) {
   if (!status.ok()) {
-    HandleGrpcStatusError(std::move(on_done), status);
+    HandleStatusError(std::move(on_done), status);
     return;
   }
   std::move(on_done).Run();
@@ -261,10 +226,9 @@ void FtlServicesPlayground::DoSendMessage(const std::string& receiver_id,
 
 void FtlServicesPlayground::OnSendMessageResponse(
     base::OnceCallback<void(bool)> on_continue,
-    const grpc::Status& status) {
+    const ProtobufHttpStatus& status) {
   if (!status.ok()) {
-    HandleGrpcStatusError(base::BindOnce(std::move(on_continue), false),
-                          status);
+    HandleStatusError(base::BindOnce(std::move(on_continue), false), status);
     return;
   }
 
@@ -288,7 +252,7 @@ void FtlServicesPlayground::StopReceivingMessages(base::OnceClosure on_done) {
 }
 
 void FtlServicesPlayground::OnMessageReceived(
-    const std::string& sender_id,
+    const ftl::Id& sender_id,
     const std::string& sender_registration_id,
     const ftl::ChromotingMessage& message) {
   std::string message_text = message.xmpp().stanza();
@@ -297,7 +261,8 @@ void FtlServicesPlayground::OnMessageReceived(
       "  Sender ID=%s\n"
       "  Sender Registration ID=%s\n"
       "  Message=%s\n",
-      sender_id.c_str(), sender_registration_id.c_str(), message_text.c_str());
+      sender_id.id().c_str(), sender_registration_id.c_str(),
+      message_text.c_str());
 }
 
 void FtlServicesPlayground::OnReceiveMessagesStreamReady() {
@@ -308,20 +273,20 @@ void FtlServicesPlayground::OnReceiveMessagesStreamReady() {
 }
 
 void FtlServicesPlayground::OnReceiveMessagesStreamClosed(
-    const grpc::Status& status) {
+    const ProtobufHttpStatus& status) {
   base::OnceClosure callback = std::move(receive_messages_done_callback_);
   bool is_callback_null = callback.is_null();
   if (is_callback_null) {
     callback = base::DoNothing::Once();
   }
-  if (status.error_code() == grpc::StatusCode::CANCELLED) {
+  if (status.error_code() == ProtobufHttpStatus::Code::CANCELLED) {
     printf("ReceiveMessages stream canceled by client.\n");
     std::move(callback).Run();
     return;
   }
 
   if (!status.ok()) {
-    HandleGrpcStatusError(std::move(callback), status);
+    HandleStatusError(std::move(callback), status);
   } else {
     printf("Stream closed by server.\n");
     std::move(callback).Run();
@@ -334,22 +299,22 @@ void FtlServicesPlayground::OnReceiveMessagesStreamClosed(
   }
 }
 
-void FtlServicesPlayground::HandleGrpcStatusError(base::OnceClosure on_done,
-                                                  const grpc::Status& status) {
+void FtlServicesPlayground::HandleStatusError(
+    base::OnceClosure on_done,
+    const ProtobufHttpStatus& status) {
   DCHECK(!status.ok());
-  if (status.error_code() == grpc::StatusCode::UNAUTHENTICATED) {
+  if (status.error_code() == ProtobufHttpStatus::Code::UNAUTHENTICATED) {
     if (NeedsManualSignin()) {
       printf(
           "Request is unauthenticated. You should run SignInGaia first if "
           "you haven't done so, otherwise your OAuth token might be expired. \n"
           "Request for new OAuth token? [y/N]: ");
-      std::string result = test::ReadString();
-      if (result != "y" && result != "Y") {
+      if (!test::ReadYNBool()) {
         std::move(on_done).Run();
         return;
       }
     }
-    VLOG(0) << "Grpc request failed to authenticate. "
+    VLOG(0) << "Request failed to authenticate. "
             << "Trying to reauthenticate...";
     token_getter_->ResetWithAuthenticationFlow(
         base::BindOnce(&FtlServicesPlayground::ResetServices,

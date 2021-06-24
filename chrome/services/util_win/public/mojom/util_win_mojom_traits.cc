@@ -6,6 +6,8 @@
 
 #include <utility>
 
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "mojo/public/cpp/base/file_path_mojom_traits.h"
 #include "mojo/public/cpp/base/string16_mojom_traits.h"
 
@@ -104,34 +106,34 @@ bool EnumTraits<chrome::mojom::CertificateType, CertificateInfo::Type>::
 }
 
 // static
-const base::string16& StructTraits<
+const std::u16string& StructTraits<
     chrome::mojom::InspectionResultDataView,
     ModuleInspectionResult>::location(const ModuleInspectionResult& input) {
   return input.location;
 }
 // static
-const base::string16& StructTraits<
+const std::u16string& StructTraits<
     chrome::mojom::InspectionResultDataView,
     ModuleInspectionResult>::basename(const ModuleInspectionResult& input) {
   return input.basename;
 }
 // static
-const base::string16& StructTraits<
+const std::u16string& StructTraits<
     chrome::mojom::InspectionResultDataView,
     ModuleInspectionResult>::product_name(const ModuleInspectionResult& input) {
   return input.product_name;
 }
 // static
-const base::string16& StructTraits<
+const std::u16string& StructTraits<
     chrome::mojom::InspectionResultDataView,
     ModuleInspectionResult>::description(const ModuleInspectionResult& input) {
   return input.description;
 }
 // static
-const base::string16& StructTraits<
+const std::u16string& StructTraits<
     chrome::mojom::InspectionResultDataView,
     ModuleInspectionResult>::version(const ModuleInspectionResult& input) {
-  return input.basename;
+  return input.version;
 }
 // static
 chrome::mojom::CertificateType
@@ -148,7 +150,7 @@ StructTraits<chrome::mojom::InspectionResultDataView, ModuleInspectionResult>::
   return input.certificate_info.path;
 }
 // static
-const base::string16&
+const std::u16string&
 StructTraits<chrome::mojom::InspectionResultDataView, ModuleInspectionResult>::
     certificate_subject(const ModuleInspectionResult& input) {
   return input.certificate_info.subject;
@@ -197,7 +199,7 @@ bool StructTraits<chrome::mojom::AntiVirusProductDataView,
     output->set_product_name(std::move(product_name));
 
   std::string product_version;
-  if (!input.ReadProductName(&product_version))
+  if (!input.ReadProductVersion(&product_version))
     return false;
   if (!product_version.empty())
     output->set_product_version(std::move(product_version));

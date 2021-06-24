@@ -11,7 +11,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/chromeos/policy/remote_commands/device_command_screenshot_job.h"
-#include "chrome/browser/chromeos/policy/upload_job.h"
+#include "chrome/browser/chromeos/policy/uploading/upload_job.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/snapshot/snapshot.h"
@@ -28,19 +28,18 @@ class ScreenshotDelegate : public DeviceCommandScreenshotJob::Delegate {
 
   // DeviceCommandScreenshotJob::Delegate:
   bool IsScreenshotAllowed() override;
-  void TakeSnapshot(
-      gfx::NativeWindow window,
-      const gfx::Rect& source_rect,
-      const ui::GrabWindowSnapshotAsyncPNGCallback& callback) override;
+  void TakeSnapshot(gfx::NativeWindow window,
+                    const gfx::Rect& source_rect,
+                    ui::GrabWindowSnapshotAsyncPNGCallback callback) override;
   std::unique_ptr<UploadJob> CreateUploadJob(
       const GURL& upload_url,
       UploadJob::Delegate* delegate) override;
 
  private:
-  void StoreScreenshot(const ui::GrabWindowSnapshotAsyncPNGCallback& callback,
+  void StoreScreenshot(ui::GrabWindowSnapshotAsyncPNGCallback callback,
                        scoped_refptr<base::RefCountedMemory> png_data);
 
-  base::WeakPtrFactory<ScreenshotDelegate> weak_ptr_factory_;
+  base::WeakPtrFactory<ScreenshotDelegate> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ScreenshotDelegate);
 };

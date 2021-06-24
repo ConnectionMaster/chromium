@@ -5,12 +5,18 @@
 #ifndef ASH_APP_LIST_VIEWS_GHOST_IMAGE_VIEW_H_
 #define ASH_APP_LIST_VIEWS_GHOST_IMAGE_VIEW_H_
 
+#include <vector>
+
 #include "base/macros.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/views/controls/image_view.h"
 
-namespace app_list {
+namespace gfx {
+class Point;
+}  // namespace gfx
+
+namespace ash {
 
 class AppListItemView;
 
@@ -20,12 +26,11 @@ class AppListItemView;
 class GhostImageView : public views::ImageView,
                        public ui::ImplicitAnimationObserver {
  public:
-  GhostImageView(AppListItemView* drag_view,
-                 bool is_folder,
-                 bool is_in_folder,
-                 const gfx::Rect& drop_target_bounds,
-                 int page);
+  GhostImageView(bool is_folder, bool is_in_folder, int page);
   ~GhostImageView() override;
+
+  // Initialize the GhostImageView.
+  void Init(AppListItemView* drag_view, const gfx::Rect& drop_target_bounds);
 
   // Begins the fade out animation.
   void FadeOut();
@@ -38,6 +43,9 @@ class GhostImageView : public views::ImageView,
 
   // Returns the page number which this view belongs to.
   int page() const { return page_; }
+
+  // views::View:
+  const char* GetClassName() const override;
 
  private:
   // Start the animation for showing or for hiding the GhostImageView.
@@ -61,19 +69,22 @@ class GhostImageView : public views::ImageView,
   // Page this this view belongs to, used to calculate transition offset.
   int page_;
 
-  // Bounds for the location of the GhostImageView in parent AppGridView's
-  // coordinates.
-  gfx::Rect drop_target_bounds_;
+  // The radius used for drawing the icons shown inside the folder ghost image.
+  int inner_icon_radius_;
 
   // Icon bounds used to determine size and placement of the GhostImageView.
   gfx::Rect icon_bounds_;
 
   // The number of items within the GhostImageView folder.
-  base::Optional<size_t> num_items_;
+  absl::optional<size_t> num_items_;
+
+  // The origins of the top icons within a folder icon. Used for the folder
+  // ghost image.
+  std::vector<gfx::Point> inner_folder_icon_origins_;
 
   DISALLOW_COPY_AND_ASSIGN(GhostImageView);
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_VIEWS_GHOST_IMAGE_VIEW_H_

@@ -12,7 +12,6 @@
 #include "extensions/shell/browser/shell_app_delegate.h"
 #include "ui/aura/test/aura_test_helper.h"
 #include "ui/compositor/compositor.h"
-#include "ui/compositor/test/context_factories_for_test.h"
 #include "url/gurl.h"
 
 namespace extensions {
@@ -22,22 +21,14 @@ ShellTestHelperAura::ShellTestHelperAura() {}
 ShellTestHelperAura::~ShellTestHelperAura() {}
 
 void ShellTestHelperAura::SetUp() {
-  // The ContextFactory must exist before any Compositors are created.
-  ui::ContextFactory* context_factory = nullptr;
-  ui::ContextFactoryPrivate* context_factory_private = nullptr;
-  ui::InitializeContextFactoryForTests(/*enable_pixel_output=*/false,
-                                       &context_factory,
-                                       &context_factory_private);
-
   // AuraTestHelper sets up the rest of the Aura initialization.
-  helper_.reset(new aura::test::AuraTestHelper());
-  helper_->SetUp(context_factory, context_factory_private);
+  helper_ = std::make_unique<aura::test::AuraTestHelper>();
+  helper_->SetUp();
 }
 
 void ShellTestHelperAura::TearDown() {
   helper_->RunAllPendingInMessageLoop();
   helper_->TearDown();
-  ui::TerminateContextFactoryForTests();
 }
 
 void ShellTestHelperAura::InitAppWindow(AppWindow* app_window,

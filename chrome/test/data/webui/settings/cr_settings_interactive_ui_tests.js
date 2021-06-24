@@ -1,96 +1,122 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2020 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @fileoverview Runs the Polymer Settings interactive UI tests. */
-
-/** @const {string} Path to source root. */
-const ROOT_PATH = '../../../../../';
+/** @fileoverview Tests for shared Polymer 3 elements. */
 
 // Polymer BrowserTest fixture.
-GEN_INCLUDE(
-    [ROOT_PATH + 'chrome/test/data/webui/polymer_interactive_ui_test.js']);
+GEN_INCLUDE(['//chrome/test/data/webui/polymer_interactive_ui_test.js']);
 
-/**
- * Test fixture for interactive Polymer Settings elements.
- * @constructor
- * @extends {PolymerInteractiveUITest}
- */
-function CrSettingsInteractiveUITest() {}
+GEN('#include "content/public/test/browser_test.h"');
 
-CrSettingsInteractiveUITest.prototype = {
-  __proto__: PolymerInteractiveUITest.prototype,
-
+/** Test fixture for shared Polymer 3 elements. */
+// eslint-disable-next-line no-var
+var CrSettingsV3InteractiveUITest = class extends PolymerInteractiveUITest {
   /** @override */
   get browsePreload() {
-    throw 'this is abstract and should be overriden by subclasses';
-  },
-
-  /** @override */
-  extraLibraries: PolymerTest.getLibraries(ROOT_PATH),
-
-  /** @override */
-  setUp: function() {
-    PolymerTest.prototype.setUp.call(this);
-    // We aren't loading the main document.
-    this.accessibilityAuditConfig.ignoreSelectors('humanLangMissing', 'html');
-  },
+    return 'chrome://settings';
+  }
 };
 
-
-/**
- * Test fixture for Sync Page.
- * @constructor
- * @extends {CrSettingsInteractiveUITest}
- */
-function CrSettingsSyncPageTest() {}
-
-CrSettingsSyncPageTest.prototype = {
-  __proto__: CrSettingsInteractiveUITest.prototype,
-
+// eslint-disable-next-line no-var
+var CrSettingsAnimatedPagesV3Test =
+    class extends CrSettingsV3InteractiveUITest {
   /** @override */
-  browsePreload: 'chrome://settings/people_page/sync_page.html',
-
-  /** @override */
-  extraLibraries: CrSettingsInteractiveUITest.prototype.extraLibraries.concat([
-    'people_page_sync_page_interactive_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=settings/settings_animated_pages_test.js';
+  }
 };
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_All DISABLED_All');
-GEN('#else');
-GEN('#define MAYBE_All All');
-GEN('#endif');
-TEST_F('CrSettingsSyncPageTest', 'MAYBE_All', function() {
+TEST_F('CrSettingsAnimatedPagesV3Test', 'All', function() {
   mocha.run();
 });
 
-
-/**
- * @constructor
- * @extends {CrSettingsInteractiveUITest}
- */
-function CrSettingsAnimatedPagesTest() {}
-
-CrSettingsAnimatedPagesTest.prototype = {
-  __proto__: CrSettingsInteractiveUITest.prototype,
-
+// eslint-disable-next-line no-var
+var CrSettingsPaymentsSectionV3Test =
+    class extends CrSettingsV3InteractiveUITest {
   /** @override */
-  browsePreload: 'chrome://settings/settings_page/settings_animated_pages.html',
-
-  extraLibraries: CrSettingsInteractiveUITest.prototype.extraLibraries.concat([
-    'settings_animated_pages_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=settings/payments_section_interactive_test.js';
+  }
 };
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_All DISABLED_All');
+TEST_F('CrSettingsPaymentsSectionV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrSettingsSyncPageV3Test = class extends CrSettingsV3InteractiveUITest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=settings/people_page_sync_page_interactive_test.js';
+  }
+};
+
+TEST_F('CrSettingsSyncPageV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrSettingsSecureDnsV3Test = class extends CrSettingsV3InteractiveUITest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=settings/secure_dns_interactive_test.js';
+  }
+};
+
+TEST_F('CrSettingsSecureDnsV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var SettingsUIV3InteractiveTest = class extends CrSettingsV3InteractiveUITest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=settings/settings_ui_tests.js';
+  }
+};
+
+// Times out on Mac. See https://crbug.com/1060981.
+GEN('#if defined(OS_MAC)');
+GEN('#define MAYBE_SettingsUIToolbarAndDrawer DISABLED_SettingsUIToolbarAndDrawer');
 GEN('#else');
-GEN('#define MAYBE_All All');
+GEN('#define MAYBE_SettingsUIToolbarAndDrawer SettingsUIToolbarAndDrawer');
 GEN('#endif');
-TEST_F('CrSettingsAnimatedPagesTest', 'MAYBE_All', function() {
+TEST_F(
+    'SettingsUIV3InteractiveTest', 'MAYBE_SettingsUIToolbarAndDrawer',
+    function() {
+      runMochaSuite('SettingsUIToolbarAndDrawer');
+    });
+
+// Times out on Mac. See https://crbug.com/1060981.
+GEN('#if defined(OS_MAC)');
+GEN('#define MAYBE_SettingsUIAdvanced DISABLED_SettingsUIAdvanced');
+GEN('#else');
+GEN('#define MAYBE_SettingsUIAdvanced SettingsUIAdvanced');
+GEN('#endif');
+TEST_F('SettingsUIV3InteractiveTest', 'MAYBE_SettingsUIAdvanced', function() {
+  runMochaSuite('SettingsUIAdvanced');
+});
+
+// Times out on Mac. See https://crbug.com/1060981.
+GEN('#if defined(OS_MAC)');
+GEN('#define MAYBE_SettingsUISearch DISABLED_SettingsUISearch');
+GEN('#else');
+GEN('#define MAYBE_SettingsUISearch SettingsUISearch');
+GEN('#endif');
+TEST_F('SettingsUIV3InteractiveTest', 'MAYBE_SettingsUISearch', function() {
+  runMochaSuite('SettingsUISearch');
+});
+
+// eslint-disable-next-line no-var
+var CrSettingsMenuV3InteractiveTest =
+    class extends CrSettingsV3InteractiveUITest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://settings/test_loader.html?module=settings/settings_menu_interactive_ui_test.js';
+  }
+};
+
+TEST_F('CrSettingsMenuV3InteractiveTest', 'All', function() {
   mocha.run();
 });

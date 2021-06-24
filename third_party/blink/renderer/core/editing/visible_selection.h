@@ -26,15 +26,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_VISIBLE_SELECTION_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_VISIBLE_SELECTION_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/editing_strategy.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/editing/position.h"
-#include "third_party/blink/renderer/core/editing/selection_type.h"
 #include "third_party/blink/renderer/core/editing/text_affinity.h"
 #include "third_party/blink/renderer/core/editing/text_granularity.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -87,17 +87,9 @@ class VisibleSelectionTemplate {
 
   bool IsValidFor(const Document&) const;
 
-  // TODO(editing-dev): |CreateWithoutValidationDeprecated()| is allowed
-  // only to use in |TypingCommand| to remove part of grapheme cluster.
-  // Note: |base| and |extent| can be disconnect position.
-  static VisibleSelectionTemplate<Strategy> CreateWithoutValidationDeprecated(
-      const PositionTemplate<Strategy>& base,
-      const PositionTemplate<Strategy>& extent,
-      TextAffinity);
+  void Trace(Visitor*) const;
 
-  void Trace(Visitor*);
-
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
   void ShowTreeForThis() const;
 #endif
   static void PrintTo(const VisibleSelectionTemplate&, std::ostream*);
@@ -134,17 +126,17 @@ CORE_EXPORT VisibleSelection CreateVisibleSelection(const SelectionInDOMTree&);
 CORE_EXPORT VisibleSelectionInFlatTree
 CreateVisibleSelection(const SelectionInFlatTree&);
 
-CORE_EXPORT VisibleSelection
-CreateVisibleSelectionWithGranularity(const SelectionInDOMTree&,
-                                      TextGranularity);
+CORE_EXPORT SelectionInDOMTree ExpandWithGranularity(const SelectionInDOMTree&,
+                                                     TextGranularity);
 
-CORE_EXPORT VisibleSelectionInFlatTree
-CreateVisibleSelectionWithGranularity(const SelectionInFlatTree&,
-                                      TextGranularity);
+CORE_EXPORT SelectionInFlatTree
+ExpandWithGranularity(const SelectionInFlatTree&, TextGranularity);
 
 // We don't yet support multi-range selections, so we only ever have one range
 // to return.
 CORE_EXPORT EphemeralRange FirstEphemeralRangeOf(const VisibleSelection&);
+CORE_EXPORT EphemeralRange NormalizeRange(const SelectionInDOMTree&);
+CORE_EXPORT EphemeralRangeInFlatTree NormalizeRange(const SelectionInFlatTree&);
 
 CORE_EXPORT std::ostream& operator<<(std::ostream&, const VisibleSelection&);
 CORE_EXPORT std::ostream& operator<<(std::ostream&,
@@ -161,8 +153,8 @@ PositionInFlatTree ComputeEndRespectingGranularity(
 
 }  // namespace blink
 
-#ifndef NDEBUG
-// Outside the WebCore namespace for ease of invocation from gdb.
+#if DCHECK_IS_ON()
+// Outside the blink namespace for ease of invocation from gdb.
 void showTree(const blink::VisibleSelection&);
 void showTree(const blink::VisibleSelection*);
 void showTree(const blink::VisibleSelectionInFlatTree&);

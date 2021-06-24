@@ -11,6 +11,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/external_loader.h"
 
 class Profile;
@@ -31,9 +32,11 @@ class ExternalPrefLoader : public ExternalLoader {
     // owned by root and not writable by any non-root user.
     ENSURE_PATH_CONTROLLED_BY_ADMIN = 1 << 0,
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     // Delay external preference load. It delays default apps installation
     // to not overload the system on first time user login.
     DELAY_LOAD_UNTIL_PRIORITY_SYNC = 1 << 1,
+#endif
 
     // Use profile user type filter to load extensions.
     USE_USER_TYPE_PROFILE_FILTER = 1 << 2,
@@ -67,7 +70,9 @@ class ExternalPrefLoader : public ExternalLoader {
   friend class ExternalTestingLoader;
   friend class TestExternalPrefLoader;
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   class PrioritySyncReadyWaiter;
+#endif
 
   // Extracts extension information from a json file serialized by |serializer|.
   // |path| is only used for informational purposes (outputted when an error
@@ -102,7 +107,9 @@ class ExternalPrefLoader : public ExternalLoader {
   // Must be called from the File thread.
   void ReadStandaloneExtensionPrefFiles(base::DictionaryValue* prefs);
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   void OnPrioritySyncReady(PrioritySyncReadyWaiter* waiter);
+#endif
 
   // The path (coresponding to |base_path_id_| containing the json files
   // describing which extensions to load.
@@ -116,7 +123,12 @@ class ExternalPrefLoader : public ExternalLoader {
   // tests may not be set.
   const std::string user_type_;
 
+  // Task runner for tasks that touch file.
+  scoped_refptr<base::SequencedTaskRunner> file_task_runner_;
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::vector<std::unique_ptr<PrioritySyncReadyWaiter>> pending_waiter_list_;
+#endif
 
   DISALLOW_COPY_AND_ASSIGN(ExternalPrefLoader);
 };

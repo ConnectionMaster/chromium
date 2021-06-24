@@ -22,16 +22,20 @@ class AccessibilityMediaElement : public AXLayoutObject {
 
   // AXLayoutObject overrides.
   String TextAlternative(bool recursive,
-                         bool in_aria_labelled_by_traversal,
+                         const AXObject* aria_label_or_description_root,
                          AXObjectSet& visited,
                          ax::mojom::NameFrom&,
                          AXRelatedObjectVector*,
                          NameSources*) const override;
 
   // AXNodeObject overrides.
+  bool CanHaveChildren() const override;
+  bool ComputeAccessibilityIsIgnored(IgnoredReasons* = nullptr) const override;
   AXRestriction Restriction() const override;
 
  protected:
+  bool HasControls() const;
+  bool HasEmptySource() const;
   bool IsUnplayable() const;
 
   DISALLOW_COPY_AND_ASSIGN(AccessibilityMediaElement);

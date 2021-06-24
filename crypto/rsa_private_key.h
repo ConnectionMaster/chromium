@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "crypto/crypto_export.h"
@@ -32,14 +33,14 @@ class CRYPTO_EXPORT RSAPrivateKey {
   // an ASN.1-encoded PrivateKeyInfo block from PKCS #8. This can return NULL if
   // initialization fails.
   static std::unique_ptr<RSAPrivateKey> CreateFromPrivateKeyInfo(
-      const std::vector<uint8_t>& input);
+      base::span<const uint8_t> input);
 
   // Create a new instance from an existing EVP_PKEY, taking a
   // reference to it. |key| must be an RSA key. Returns NULL on
   // failure.
   static std::unique_ptr<RSAPrivateKey> CreateFromKey(EVP_PKEY* key);
 
-  EVP_PKEY* key() { return key_.get(); }
+  EVP_PKEY* key() const { return key_.get(); }
 
   // Creates a copy of the object.
   std::unique_ptr<RSAPrivateKey> Copy() const;

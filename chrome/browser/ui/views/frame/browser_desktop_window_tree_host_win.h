@@ -5,7 +5,18 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_DESKTOP_WINDOW_TREE_HOST_WIN_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_DESKTOP_WINDOW_TREE_HOST_WIN_H_
 
+#include <shobjidl.h>
+#include <wrl/client.h>
+
+#include <memory>
+#include <string>
+
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
+#include "base/sequenced_task_runner.h"
+#include "base/win/scoped_gdi_object.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/ui/views/frame/browser_desktop_window_tree_host.h"
 #include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
@@ -13,20 +24,27 @@
 class BrowserFrame;
 class BrowserView;
 class BrowserWindowPropertyManager;
+class VirtualDesktopHelper;
 
 namespace views {
 class DesktopNativeWidgetAura;
 class NativeMenuWin;
 }
 
-class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
-                                        public views::DesktopWindowTreeHostWin {
+class BrowserDesktopWindowTreeHostWin
+    : public BrowserDesktopWindowTreeHost,
+      public views::DesktopWindowTreeHostWin,
+      public ProfileAttributesStorage::Observer {
  public:
   BrowserDesktopWindowTreeHostWin(
       views::internal::NativeWidgetDelegate* native_widget_delegate,
       views::DesktopNativeWidgetAura* desktop_native_widget_aura,
       BrowserView* browser_view,
       BrowserFrame* browser_frame);
+  BrowserDesktopWindowTreeHostWin(const BrowserDesktopWindowTreeHostWin&) =
+      delete;
+  BrowserDesktopWindowTreeHostWin& operator=(
+      const BrowserDesktopWindowTreeHostWin&) = delete;
   ~BrowserDesktopWindowTreeHostWin() override;
 
  private:
@@ -38,6 +56,10 @@ class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
   bool UsesNativeSystemMenu() const override;
 
   // Overridden from DesktopWindowTreeHostWin:
+  void Init(const views::Widget::InitParams& params) override;
+  void Show(ui::WindowShowState show_state,
+            const gfx::Rect& restore_bounds) override;
+  std::string GetWorkspace() const override;
   int GetInitialShowState() const override;
   bool GetClientAreaInsets(gfx::Insets* insets,
                            HMONITOR monitor) const override;
@@ -55,7 +77,19 @@ class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
 
+  // ProfileAttributesStorage::Observer:
+  void OnProfileAvatarChanged(const base::FilePath& profile_path) override;
+  void OnProfileAdded(const base::FilePath& profile_path) override;
+  void OnProfileWasRemoved(const base::FilePath& profile_path,
+                           const std::u16string& profile_name) override;
+
+  // Kicks off an asynchronous update of |workspace_|, and notifies
+  // WindowTreeHost of its value.
+  void UpdateWorkspace();
+
   bool IsOpaqueHostedAppFrame() const;
+
+  void SetWindowIcon(bool badged);
 
   BrowserView* browser_view_;
   BrowserFrame* browser_frame_;
@@ -68,8 +102,18 @@ class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
   // The wrapped system menu itself.
   std::unique_ptr<views::NativeMenuWin> system_menu_;
 
-  DISALLOW_COPY_AND_ASSIGN(BrowserDesktopWindowTreeHostWin);
-};
+  // This is used to monitor when the window icon needs to be updated because
+  // the icon badge has changed (e.g., avatar icon changed).
+  base::ScopedObservation<ProfileAttributesStorage,
+                          ProfileAttributesStorage::Observer>
+      profile_observation_{this};
 
+  base::win::ScopedHICON icon_handle_;
+
+  // This will be null pre Win10.
+  scoped_refptr<VirtualDesktopHelper> virtual_desktop_helper_;
+
+  base::WeakPtrFactory<BrowserDesktopWindowTreeHostWin> weak_factory_{this};
+};
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_DESKTOP_WINDOW_TREE_HOST_WIN_H_

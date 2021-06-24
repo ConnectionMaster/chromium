@@ -24,6 +24,7 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/extension_creator.h"
 #include "extensions/common/constants.h"
@@ -55,7 +56,7 @@ class ExtensionOverrideTest : public ExtensionApiTest {
       return false;
 
     std::set<std::string> seen_overrides;
-    for (const auto& val : *values) {
+    for (const auto& val : values->GetList()) {
       const base::DictionaryValue* dict = nullptr;
       std::string entry;
       if (!val.GetAsDictionary(&dict) || !dict->GetString("entry", &entry) ||
@@ -231,15 +232,15 @@ IN_PROC_BROWSER_TEST_F(ExtensionOverrideTest,
         browser()->tab_strip_model()->GetActiveWebContents(),
         extension1_id));
   }
+
+  UnloadExtension(extension1_id);
+  content::WebContents* active_tab =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  EXPECT_TRUE(content::WaitForLoadStop(active_tab));
+  EXPECT_FALSE(ExtensionControlsPage(active_tab, extension1_id));
 }
 
-#if defined(OS_MACOSX)
-// Hangy: http://crbug.com/70511
-#define MAYBE_OverrideNewTabIncognito DISABLED_OverrideNewTabIncognito
-#else
-#define MAYBE_OverrideNewTabIncognito OverrideNewTabIncognito
-#endif
-IN_PROC_BROWSER_TEST_F(ExtensionOverrideTest, MAYBE_OverrideNewTabIncognito) {
+IN_PROC_BROWSER_TEST_F(ExtensionOverrideTest, OverrideNewTabIncognito) {
   LoadExtension(data_dir().AppendASCII("newtab"));
 
   // Navigate an incognito tab to the new tab page.  We should get the actual
@@ -279,7 +280,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionOverrideTest,
                        "f.src = '" + cross_site_url.spec() + "';\n"
                        "document.body.appendChild(f);\n";
   EXPECT_TRUE(ExecuteScript(contents, script));
-  WaitForLoadStop(contents);
+  EXPECT_TRUE(WaitForLoadStop(contents));
 
   // The page should still have focus.  The cross-process subframe navigation
   // above should not try to focus the omnibox, which would make this false.

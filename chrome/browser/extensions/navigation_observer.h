@@ -11,10 +11,11 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 
 class Profile;
@@ -75,10 +76,10 @@ class NavigationObserver : public content::NotificationObserver,
   // The extension ids we've already prompted the user about.
   std::set<std::string> prompted_extensions_;
 
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
-  base::WeakPtrFactory<NavigationObserver> weak_factory_;
+  base::WeakPtrFactory<NavigationObserver> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(NavigationObserver);
 };

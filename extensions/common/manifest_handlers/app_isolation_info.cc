@@ -7,8 +7,9 @@
 #include <stddef.h>
 
 #include <memory>
+#include <string>
 
-#include "base/strings/string16.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -41,7 +42,7 @@ AppIsolationHandler::AppIsolationHandler() {
 AppIsolationHandler::~AppIsolationHandler() {
 }
 
-bool AppIsolationHandler::Parse(Extension* extension, base::string16* error) {
+bool AppIsolationHandler::Parse(Extension* extension, std::u16string* error) {
   // Platform apps always get isolated storage.
   if (extension->is_platform_app()) {
     extension->SetManifestData(keys::kIsolation,
@@ -52,8 +53,8 @@ bool AppIsolationHandler::Parse(Extension* extension, base::string16* error) {
   // Other apps only get it if it is requested _and_ experimental APIs are
   // enabled.
   if (!extension->is_app() ||
-      !PermissionsParser::HasAPIPermission(extension,
-                                           APIPermission::kExperimental)) {
+      !PermissionsParser::HasAPIPermission(
+          extension, mojom::APIPermissionID::kExperimental)) {
     return true;
   }
 
@@ -68,15 +69,15 @@ bool AppIsolationHandler::Parse(Extension* extension, base::string16* error) {
   }
 
   bool has_isolated_storage = false;
-  const base::Value::ListStorage& list_storage = isolation_list->GetList();
-  for (size_t i = 0; i < list_storage.size(); ++i) {
-    if (!list_storage[i].is_string()) {
+  base::Value::ConstListView list_view = isolation_list->GetList();
+  for (size_t i = 0; i < list_view.size(); ++i) {
+    if (!list_view[i].is_string()) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
           manifest_errors::kInvalidIsolationValue, base::NumberToString(i));
       return false;
     }
 
-    const std::string& isolation_string = list_storage[i].GetString();
+    const std::string& isolation_string = list_view[i].GetString();
     // Check for isolated storage.
     if (isolation_string == manifest_values::kIsolatedStorage) {
       has_isolated_storage = true;

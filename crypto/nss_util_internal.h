@@ -12,6 +12,7 @@
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "build/chromeos_buildflags.h"
 #include "crypto/crypto_export.h"
 #include "crypto/scoped_nss_types.h"
 
@@ -30,12 +31,6 @@ namespace crypto {
 CRYPTO_EXPORT ScopedPK11Slot OpenSoftwareNSSDB(const base::FilePath& path,
                                                const std::string& description);
 
-#if !defined(OS_CHROMEOS)
-// Returns a reference to the default NSS key slot for storing persistent data.
-// Caller must release returned reference with PK11_FreeSlot.
-CRYPTO_EXPORT PK11SlotInfo* GetPersistentNSSKeySlot() WARN_UNUSED_RESULT;
-#endif
-
 // A helper class that acquires the SECMOD list read lock while the
 // AutoSECMODListReadLock is in scope.
 class CRYPTO_EXPORT AutoSECMODListReadLock {
@@ -48,7 +43,12 @@ class CRYPTO_EXPORT AutoSECMODListReadLock {
   DISALLOW_COPY_AND_ASSIGN(AutoSECMODListReadLock);
 };
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+// Returns path to the NSS database file in the provided profile
+// directory.
+CRYPTO_EXPORT base::FilePath GetSoftwareNSSDBPath(
+    const base::FilePath& profile_directory_path);
+
 // Returns a reference to the system-wide TPM slot if it is loaded. If it is not
 // loaded and |callback| is non-null, the |callback| will be run once the slot
 // is loaded.
@@ -62,6 +62,14 @@ CRYPTO_EXPORT ScopedPK11Slot GetSystemNSSKeySlot(
 // This must must not be called consecutively with a |slot| != nullptr. If
 // |slot| is nullptr, the test system slot is unset.
 CRYPTO_EXPORT void SetSystemKeySlotForTesting(ScopedPK11Slot slot);
+
+// Injects the given |slot| as a system slot set by the future
+// |InitializeTPMTokenAndSystemSlot| call.
+// This must must not be called consecutively with a |slot| != nullptr. If
+// |slot| is nullptr and the system slot is already initialized to the
+// previously passed test value, the system slot is unset.
+CRYPTO_EXPORT void SetSystemKeySlotWithoutInitializingTPMForTesting(
+    ScopedPK11Slot slot);
 
 // Prepare per-user NSS slot mapping. It is safe to call this function multiple
 // times. Returns true if the user was added, or false if it already existed.
@@ -119,7 +127,15 @@ CRYPTO_EXPORT void CloseChromeOSUserForTesting(
 CRYPTO_EXPORT void SetPrivateSoftwareSlotForChromeOSUserForTesting(
     ScopedPK11Slot slot);
 
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+// Loads the given module for this NSS session.
+SECMODModule* LoadNSSModule(const char* name,
+                            const char* library_path,
+                            const char* params);
+
+// Returns the current NSS error message.
+std::string GetNSSErrorMessage();
 
 }  // namespace crypto
 

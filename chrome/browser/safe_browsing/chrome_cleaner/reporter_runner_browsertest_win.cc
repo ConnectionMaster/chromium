@@ -11,13 +11,16 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
+#include "base/check.h"
+#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
+#include "base/notreached.h"
+#include "base/process/launch.h"
+#include "base/process/process.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/synchronization/lock.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -29,6 +32,7 @@
 #include "chrome/browser/safe_browsing/chrome_cleaner/mock_chrome_cleaner_controller_win.h"
 #include "chrome/browser/safe_browsing/chrome_cleaner/srt_client_info_win.h"
 #include "chrome/browser/safe_browsing/chrome_cleaner/srt_field_trial_win.h"
+#include "chrome/browser/safe_browsing/chrome_cleaner/sw_reporter_invocation_win.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/common/chrome_switches.h"
@@ -40,8 +44,8 @@
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/common/safe_browsing_prefs.h"
-#include "components/variations/variations_params_manager.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -122,8 +126,10 @@ class ReporterRunnerPolicyTest
   }
 
   void SetUpInProcessBrowserTestFixture() override {
-    EXPECT_CALL(policy_provider_, IsInitializationComplete(_))
-        .WillRepeatedly(Return(true));
+    ON_CALL(policy_provider_, IsInitializationComplete(_))
+        .WillByDefault(Return(true));
+    ON_CALL(policy_provider_, IsFirstPolicyLoadComplete(_))
+        .WillByDefault(Return(true));
     policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
         &policy_provider_);
 
@@ -133,15 +139,15 @@ class ReporterRunnerPolicyTest
       policy::PolicyMap policies;
       policies.Set(policy::key::kChromeCleanupEnabled,
                    policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
-                   policy::POLICY_SOURCE_PLATFORM,
-                   std::make_unique<base::Value>(is_enabled), nullptr);
+                   policy::POLICY_SOURCE_PLATFORM, base::Value(is_enabled),
+                   nullptr);
       policy_provider_.UpdateChromePolicy(policies);
     }
   }
 
   void ComponentRegistered() { waiter_.Signal(); }
 
-  policy::MockConfigurationPolicyProvider policy_provider_;
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
   Waiter waiter_;
 
   DISALLOW_COPY_AND_ASSIGN(ReporterRunnerPolicyTest);
@@ -154,8 +160,8 @@ IN_PROC_BROWSER_TEST_P(ReporterRunnerPolicyTest, CheckComponent) {
   // component installed.  Otherwise it should be installed.
   std::vector<std::string> component_ids =
       g_browser_process->component_updater()->GetComponentIDs();
-  bool sw_component_registered = base::ContainsValue(
-      component_ids, component_updater::kSwReporterComponentId);
+  bool sw_component_registered =
+      base::Contains(component_ids, component_updater::kSwReporterComponentId);
   ASSERT_EQ(policy_ != ReporterRunnerPolicy::kDisabled,
             sw_component_registered);
 }
@@ -184,7 +190,7 @@ using ReporterRunnerTestParams =
 
 class ReporterRunnerTest
     : public InProcessBrowserTest,
-      public SwReporterTestingDelegate,
+      public internal::SwReporterTestingDelegate,
       public ::testing::WithParamInterface<ReporterRunnerTestParams> {
  public:
   ReporterRunnerTest() {
@@ -192,18 +198,16 @@ class ReporterRunnerTest
         GetParam();
   }
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    variations::testing::VariationParamsManager::AppendVariationParams(
-        kSRTPromptTrial, kSRTPromptGroup, {{"Seed", incoming_seed_}},
-        command_line);
-  }
-
   void SetUpInProcessBrowserTestFixture() override {
-    SetSwReporterTestingDelegate(this);
+    internal::SetSwReporterTestingDelegate(this);
     EXPECT_CALL(policy_provider_, IsInitializationComplete(_))
         .WillRepeatedly(Return(true));
     policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
         &policy_provider_);
+
+    scoped_feature_list_.InitAndEnableFeatureWithParameters(
+        kChromeCleanupInBrowserPromptFeature,
+        {{"Seed", incoming_seed_}, {"Group", kSRTPromptGroup}});
 
     switch (policy_state_) {
       case PolicyState::kNoLogs:
@@ -215,8 +219,8 @@ class ReporterRunnerTest
         policy::PolicyMap policies;
         policies.Set(policy::key::kChromeCleanupReportingEnabled,
                      policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
-                     policy::POLICY_SOURCE_PLATFORM,
-                     std::make_unique<base::Value>(is_enabled), nullptr);
+                     policy::POLICY_SOURCE_PLATFORM, base::Value(is_enabled),
+                     nullptr);
         policy_provider_.UpdateChromePolicy(policies);
         EXPECT_CALL(mock_chrome_cleaner_controller_, logs_enabled(_))
             .WillRepeatedly(Return(is_enabled));
@@ -238,16 +242,25 @@ class ReporterRunnerTest
   }
 
   void TearDownInProcessBrowserTestFixture() override {
-    SetSwReporterTestingDelegate(nullptr);
+    internal::SetSwReporterTestingDelegate(nullptr);
   }
 
   // Records that the reporter was launched with the parameters given in
   // |invocation|.
-  int LaunchReporter(const SwReporterInvocation& invocation) override {
+  base::Process LaunchReporterProcess(
+      const SwReporterInvocation& invocation,
+      const base::LaunchOptions& options) override {
+    ANALYZER_ALLOW_UNUSED(options);
     ++reporter_launch_count_;
     reporter_launch_parameters_.push_back(invocation);
     if (first_launch_callback_)
       std::move(first_launch_callback_).Run();
+    // Need to return a valid process so the launch continues.
+    return base::Process::Current();
+  }
+
+  int WaitForReporterExit(const base::Process& reporter_process) const {
+    ANALYZER_ALLOW_UNUSED(reporter_process);
     return exit_code_to_report_;
   }
 
@@ -364,7 +377,7 @@ class ReporterRunnerTest
     Browser* browser = chrome::FindLastActive();
     DCHECK(browser);
     Profile* profile = browser->profile();
-    SetExtendedReportingPref(profile->GetPrefs(), true);
+    SetExtendedReportingPrefForTests(profile->GetPrefs(), true);
   }
 
   // Expects that the reporter has been launched |expected_launch_count| times,
@@ -501,14 +514,6 @@ class ReporterRunnerTest
                                   SwReporterInvocationResult result) {
     EXPECT_EQ(expected_result, result);
     std::move(closure).Run();
-  }
-
-  OnReporterSequenceDone ExpectResultOnSequenceDoneCallback(
-      SwReporterInvocationResult expected_result,
-      base::OnceClosure closure) {
-    return base::BindOnce(&ReporterRunnerTest::ExpectResultOnSequenceDone,
-                          base::Unretained(this), expected_result,
-                          base::Passed(&closure));
   }
 
   bool PromptDialogShouldBeShown(SwReporterInvocationType invocation_type) {
@@ -827,13 +832,13 @@ IN_PROC_BROWSER_TEST_P(ReporterRunnerTest, ReporterLogging_MultipleLaunches) {
     first_launch_callback_ = base::BindOnce(
         &ReporterRunnerTest::
             FutureExpectNoReporterLoggingWithLastTimeSentReportSet,
-        base::Unretained(this), base::Passed(&get_first_invocation),
+        base::Unretained(this), std::move(get_first_invocation),
         last_time_sent_logs);
   } else {
     bool expect_logging = ExpectLogging(true);
     first_launch_callback_ = base::BindOnce(
         &ReporterRunnerTest::FutureExpectReporterLoggingHappenedInTheLastHour,
-        base::Unretained(this), base::Passed(&get_first_invocation),
+        base::Unretained(this), std::move(get_first_invocation),
         expect_logging);
   }
 

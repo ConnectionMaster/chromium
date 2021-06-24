@@ -11,7 +11,6 @@
 
 #include "base/compiler_specific.h"
 #include "base/numerics/checked_math.h"
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/base/audio_bus.h"
@@ -20,6 +19,7 @@
 #include "media/base/channel_layout.h"
 #include "media/base/media_shmem_export.h"
 #include "media/base/sample_format.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -76,6 +76,22 @@ struct MEDIA_SHMEM_EXPORT AudioInputBuffer {
 struct MEDIA_SHMEM_EXPORT AudioOutputBuffer {
   AudioOutputBufferParameters params;
   int8_t audio[1];
+};
+
+struct MEDIA_SHMEM_EXPORT AudioRendererAlgorithmParameters {
+  // The maximum size for the audio buffer.
+  base::TimeDelta max_capacity;
+
+  // The minimum size for the audio buffer.
+  base::TimeDelta starting_capacity;
+
+  // The minimum size for the audio buffer for encrypted streams.
+  // Set this to be larger than |max_capacity| because the
+  // performance of encrypted playback is always worse than clear playback, due
+  // to decryption and potentially IPC overhead. For the context, see
+  // https://crbug.com/403462, https://crbug.com/718161 and
+  // https://crbug.com/879970.
+  base::TimeDelta starting_capacity_for_encrypted;
 };
 
 // These convenience function safely computes the size required for
@@ -136,16 +152,17 @@ class MEDIA_SHMEM_EXPORT AudioParameters {
   // effects should be enabled.
   enum PlatformEffectsMask {
     NO_EFFECTS = 0x0,
-    ECHO_CANCELLER = 0x1,
-    DUCKING = 0x2,  // Enables ducking if the OS supports it.
-    KEYBOARD_MIC = 0x4,
-    HOTWORD = 0x8,
-    NOISE_SUPPRESSION = 0x10,
-    AUTOMATIC_GAIN_CONTROL = 0x20,
-    EXPERIMENTAL_ECHO_CANCELLER = 0x40,  // Indicates an echo canceller is
-                                         // available that should only
-                                         // experimentally be enabled.
-    MULTIZONE = 0x80,
+    ECHO_CANCELLER = 1 << 0,
+    DUCKING = 1 << 1,  // Enables ducking if the OS supports it.
+    KEYBOARD_MIC = 1 << 2,
+    HOTWORD = 1 << 3,
+    NOISE_SUPPRESSION = 1 << 4,
+    AUTOMATIC_GAIN_CONTROL = 1 << 5,
+    EXPERIMENTAL_ECHO_CANCELLER = 1 << 6,  // Indicates an echo canceller is
+                                           // available that should only
+                                           // experimentally be enabled.
+    MULTIZONE = 1 << 7,
+    AUDIO_PREFETCH = 1 << 8,
   };
 
   struct HardwareCapabilities {
@@ -237,7 +254,7 @@ class MEDIA_SHMEM_EXPORT AudioParameters {
   }
   int frames_per_buffer() const { return frames_per_buffer_; }
 
-  base::Optional<HardwareCapabilities> hardware_capabilities() const {
+  absl::optional<HardwareCapabilities> hardware_capabilities() const {
     return hardware_capabilities_;
   }
 
@@ -288,7 +305,7 @@ class MEDIA_SHMEM_EXPORT AudioParameters {
 
   // Audio hardware specific parameters, these are treated as read-only and
   // changing them has no effect.
-  base::Optional<HardwareCapabilities> hardware_capabilities_;
+  absl::optional<HardwareCapabilities> hardware_capabilities_;
 };
 
 // Comparison is useful when AudioParameters is used with std structures.

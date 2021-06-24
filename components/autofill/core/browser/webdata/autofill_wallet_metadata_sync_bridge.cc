@@ -10,23 +10,24 @@
 #include <vector>
 
 #include "base/base64.h"
-#include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/optional.h"
+#include "base/callback_helpers.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
+#include "base/notreached.h"
 #include "base/pickle.h"
-#include "components/autofill/core/browser/autofill_metadata.h"
-#include "components/autofill/core/browser/autofill_profile.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "components/autofill/core/browser/data_model/autofill_metadata.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
 #include "components/autofill/core/browser/webdata/autofill_sync_bridge_util.h"
 #include "components/autofill/core/browser/webdata/autofill_table.h"
-#include "components/autofill/core/browser/webdata/autofill_webdata_backend.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_util.h"
-#include "components/sync/model/entity_data.h"
+#include "components/sync/engine/entity_data.h"
+#include "components/sync/model/client_tag_based_model_type_processor.h"
 #include "components/sync/model/mutable_data_batch.h"
-#include "components/sync/model_impl/client_tag_based_model_type_processor.h"
-#include "components/sync/model_impl/sync_metadata_store_change_list.h"
+#include "components/sync/model/sync_metadata_store_change_list.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace autofill {
 
@@ -104,7 +105,7 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillMetadata(
     const AutofillMetadata& local_metadata) {
   auto entity_data = std::make_unique<EntityData>();
   std::string specifics_id = GetSpecificsIdForMetadataId(local_metadata.id);
-  entity_data->non_unique_name = GetClientTagForSpecificsId(type, specifics_id);
+  entity_data->name = GetClientTagForSpecificsId(type, specifics_id);
 
   WalletMetadataSpecifics* remote_metadata =
       entity_data->specifics.mutable_wallet_metadata();
@@ -299,6 +300,28 @@ bool UpdateServerMetadata(AutofillTable* table,
   }
 }
 
+bool IsSyncedWalletAddress(const AutofillProfile* profile) {
+  switch (profile->record_type()) {
+    case AutofillProfile::LOCAL_PROFILE:
+      return false;
+    case AutofillProfile::SERVER_PROFILE:
+      return true;
+  }
+}
+
+bool IsSyncedWalletCard(const CreditCard* card) {
+  switch (card->record_type()) {
+    case CreditCard::LOCAL_CARD:
+      return false;
+    case CreditCard::MASKED_SERVER_CARD:
+      return true;
+    case CreditCard::FULL_SERVER_CARD:
+      return true;
+    case CreditCard::VIRTUAL_CARD:
+      return false;
+  }
+}
+
 }  // namespace
 
 // static
@@ -311,7 +334,7 @@ void AutofillWalletMetadataSyncBridge::CreateForWebDataServiceAndBackend(
       std::make_unique<AutofillWalletMetadataSyncBridge>(
           std::make_unique<syncer::ClientTagBasedModelTypeProcessor>(
               syncer::AUTOFILL_WALLET_METADATA,
-              /*dump_stack=*/base::RepeatingClosure()),
+              /*dump_stack=*/base::DoNothing()),
           web_data_backend));
 }
 
@@ -328,12 +351,9 @@ AutofillWalletMetadataSyncBridge::AutofillWalletMetadataSyncBridge(
     std::unique_ptr<syncer::ModelTypeChangeProcessor> change_processor,
     AutofillWebDataBackend* web_data_backend)
     : ModelTypeSyncBridge(std::move(change_processor)),
-      web_data_backend_(web_data_backend),
-      scoped_observer_(this),
-      track_wallet_data_(false),
-      weak_ptr_factory_(this) {
+      web_data_backend_(web_data_backend) {
   DCHECK(web_data_backend_);
-  scoped_observer_.Add(web_data_backend_);
+  scoped_observation_.Observe(web_data_backend_);
 
   LoadDataCacheAndMetadata();
 
@@ -344,11 +364,6 @@ AutofillWalletMetadataSyncBridge::~AutofillWalletMetadataSyncBridge() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-void AutofillWalletMetadataSyncBridge::OnWalletDataTrackingStateChanged(
-    bool is_tracking) {
-  track_wallet_data_ = is_tracking;
-}
-
 std::unique_ptr<syncer::MetadataChangeList>
 AutofillWalletMetadataSyncBridge::CreateMetadataChangeList() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -356,7 +371,7 @@ AutofillWalletMetadataSyncBridge::CreateMetadataChangeList() {
       GetAutofillTable(), syncer::AUTOFILL_WALLET_METADATA);
 }
 
-base::Optional<syncer::ModelError>
+absl::optional<syncer::ModelError>
 AutofillWalletMetadataSyncBridge::MergeSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_data) {
@@ -368,7 +383,7 @@ AutofillWalletMetadataSyncBridge::MergeSyncData(
                             std::move(entity_data));
 }
 
-base::Optional<syncer::ModelError>
+absl::optional<syncer::ModelError>
 AutofillWalletMetadataSyncBridge::ApplySyncChanges(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_data) {
@@ -388,7 +403,7 @@ void AutofillWalletMetadataSyncBridge::GetData(StorageKeyList storage_keys,
 void AutofillWalletMetadataSyncBridge::GetAllDataForDebugging(
     DataCallback callback) {
   // Get all data by not providing any |storage_keys| filter.
-  GetDataImpl(/*storage_keys=*/base::nullopt, std::move(callback));
+  GetDataImpl(/*storage_keys=*/absl::nullopt, std::move(callback));
 }
 
 std::string AutofillWalletMetadataSyncBridge::GetClientTag(
@@ -414,18 +429,19 @@ void AutofillWalletMetadataSyncBridge::ApplyStopSyncChanges(
   // disabled, so we want to delete the data as well (i.e. the wallet metadata
   // entities).
   if (delete_metadata_change_list) {
-    bool is_any_local_modified = false;
-    for (const std::pair<std::string, AutofillMetadata>& pair : cache_) {
+    for (const std::pair<const std::string, AutofillMetadata>& pair : cache_) {
       TypeAndMetadataId parsed_storage_key =
           ParseWalletMetadataStorageKey(pair.first);
-      is_any_local_modified |=
-          RemoveServerMetadata(GetAutofillTable(), parsed_storage_key.type,
-                               parsed_storage_key.metadata_id);
+      RemoveServerMetadata(GetAutofillTable(), parsed_storage_key.type,
+                           parsed_storage_key.metadata_id);
     }
     cache_.clear();
-    if (is_any_local_modified) {
-      web_data_backend_->NotifyOfMultipleAutofillChanges();
-    }
+
+    // We do not notify the change to the UI because the data bridge will notify
+    // anyway and notifying on metadata deletion potentially before the data
+    // deletion is risky. This can cause another conversion of server addresses
+    // to local addresses as we lack the metadata (that it has been converted
+    // already).
 
     // Commit the transaction to make sure the sync data (deleted here) and the
     // sync metadata and the progress marker (deleted by the processor via
@@ -438,8 +454,7 @@ void AutofillWalletMetadataSyncBridge::ApplyStopSyncChanges(
 
 void AutofillWalletMetadataSyncBridge::AutofillProfileChanged(
     const AutofillProfileChange& change) {
-  // Skip local profiles.
-  if (change.data_model()->record_type() != AutofillProfile::SERVER_PROFILE) {
+  if (!IsSyncedWalletAddress(change.data_model())) {
     return;
   }
   LocalMetadataChanged(WalletMetadataSpecifics::ADDRESS, change);
@@ -447,6 +462,11 @@ void AutofillWalletMetadataSyncBridge::AutofillProfileChanged(
 
 void AutofillWalletMetadataSyncBridge::CreditCardChanged(
     const CreditCardChange& change) {
+  // TODO(crbug.com/1206306): Clean up old metadata for local cards, this early
+  // return was missing for quite a while in production.
+  if (!IsSyncedWalletCard(change.data_model())) {
+    return;
+  }
   LocalMetadataChanged(WalletMetadataSpecifics::CARD, change);
 }
 
@@ -475,26 +495,10 @@ void AutofillWalletMetadataSyncBridge::LoadDataCacheAndMetadata() {
   for (const auto& it : addresses_metadata) {
     cache_[GetStorageKeyForWalletMetadataTypeAndId(
         WalletMetadataSpecifics::ADDRESS, it.first)] = it.second;
-    // TODO(crbug.com/949034): Consider adding standard functions for recording
-    // large times in seconds/minutes.
-    UMA_HISTOGRAM_CUSTOM_COUNTS(
-        "Autofill.WalletUseDateInMinutes.Address",
-        /*sample=*/(AutofillClock::Now() - it.second.use_date).InMinutes(),
-        /*min=*/base::TimeDelta::FromMinutes(1).InMinutes(),
-        /*max=*/base::TimeDelta::FromDays(365).InMinutes(),
-        /*bucket_count=*/50);
   }
   for (const auto& it : cards_metadata) {
     cache_[GetStorageKeyForWalletMetadataTypeAndId(
         WalletMetadataSpecifics::CARD, it.first)] = it.second;
-    // TODO(crbug.com/949034): Consider adding standard functions for recording
-    // large times in seconds/minutes.
-    UMA_HISTOGRAM_CUSTOM_COUNTS(
-        "Autofill.WalletUseDateInMinutes.Card",
-        /*sample=*/(AutofillClock::Now() - it.second.use_date).InMinutes(),
-        /*min=*/base::TimeDelta::FromMinutes(1).InMinutes(),
-        /*max=*/base::TimeDelta::FromDays(365).InMinutes(),
-        /*bucket_count=*/50);
   }
 
   // Load the metadata and send to the processor.
@@ -550,7 +554,7 @@ void AutofillWalletMetadataSyncBridge::DeleteOldOrphanMetadata() {
 
   std::unique_ptr<MetadataChangeList> metadata_change_list =
       CreateMetadataChangeList();
-  for (const std::string storage_key : old_orphan_keys) {
+  for (const std::string& storage_key : old_orphan_keys) {
     TypeAndMetadataId parsed_storage_key =
         ParseWalletMetadataStorageKey(storage_key);
     if (RemoveServerMetadata(GetAutofillTable(), parsed_storage_key.type,
@@ -559,14 +563,19 @@ void AutofillWalletMetadataSyncBridge::DeleteOldOrphanMetadata() {
       change_processor()->Delete(storage_key, metadata_change_list.get());
     }
   }
+
   // Commit the transaction to make sure the data and the metadata is written
   // down (especially on Android where we cannot rely on committing transactions
   // on shutdown).
   web_data_backend_->CommitChanges();
+
+  // We do not need to NotifyOfMultipleAutofillChanges() because this change is
+  // invisible for PersonalDataManager - it does not change metadata for any
+  // existing data.
 }
 
 void AutofillWalletMetadataSyncBridge::GetDataImpl(
-    base::Optional<std::unordered_set<std::string>> storage_keys_set,
+    absl::optional<std::unordered_set<std::string>> storage_keys_set,
     DataCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -577,8 +586,7 @@ void AutofillWalletMetadataSyncBridge::GetDataImpl(
     const AutofillMetadata& metadata = pair.second;
     TypeAndMetadataId parsed_storage_key =
         ParseWalletMetadataStorageKey(storage_key);
-    if (!storage_keys_set ||
-        base::ContainsKey(*storage_keys_set, storage_key)) {
+    if (!storage_keys_set || base::Contains(*storage_keys_set, storage_key)) {
       batch->Put(storage_key, CreateEntityDataFromAutofillMetadata(
                                   parsed_storage_key.type, metadata));
     }
@@ -612,7 +620,7 @@ void AutofillWalletMetadataSyncBridge::UploadInitialLocalData(
   }
 }
 
-base::Optional<syncer::ModelError>
+absl::optional<syncer::ModelError>
 AutofillWalletMetadataSyncBridge::MergeRemoteChanges(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_data) {
@@ -631,7 +639,7 @@ AutofillWalletMetadataSyncBridge::MergeRemoteChanges(
         AutofillMetadata remote =
             CreateAutofillMetadataFromWalletMetadataSpecifics(specifics);
         auto it = cache_.find(change->storage_key());
-        base::Optional<AutofillMetadata> local = base::nullopt;
+        absl::optional<AutofillMetadata> local = absl::nullopt;
         if (it != cache_.end()) {
           local = it->second;
         }
@@ -660,9 +668,15 @@ AutofillWalletMetadataSyncBridge::MergeRemoteChanges(
         break;
       }
       case EntityChange::ACTION_DELETE: {
-        cache_.erase(change->storage_key());
-        is_any_local_modified |= RemoveServerMetadata(
-            table, parsed_storage_key.type, parsed_storage_key.metadata_id);
+        // We intentionally ignore remote deletions in order to avoid
+        // delete-create ping pongs (if we delete metadata for address data
+        // entity that still locally exists, PDM will think the server address
+        // has not been converted to a local address yet and will trigger
+        // conversion that in turn triggers creating and committing the metadata
+        // entity again).
+        // This is safe because this client will delete the wallet_metadata
+        // entity locally as soon as the wallet_data entity gets deleted.
+        // Corner cases are handled by DeleteOldOrphanMetadata().
         break;
       }
     }
@@ -678,7 +692,10 @@ AutofillWalletMetadataSyncBridge::MergeRemoteChanges(
   if (is_any_local_modified) {
     web_data_backend_->NotifyOfMultipleAutofillChanges();
   }
-  return base::nullopt;
+
+  return static_cast<syncer::SyncMetadataStoreChangeList*>(
+             metadata_change_list.get())
+      ->TakeError();
 }
 
 template <class DataType>
@@ -711,7 +728,7 @@ void AutofillWalletMetadataSyncBridge::LocalMetadataChanged(
 
       AutofillMetadata new_entry = change.data_model()->GetMetadata();
       auto it = cache_.find(storage_key);
-      base::Optional<AutofillMetadata> existing_entry = base::nullopt;
+      absl::optional<AutofillMetadata> existing_entry = absl::nullopt;
       if (it != cache_.end()) {
         existing_entry = it->second;
       }

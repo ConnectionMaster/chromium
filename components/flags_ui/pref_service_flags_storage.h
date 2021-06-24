@@ -7,6 +7,7 @@
 
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/flags_ui/flags_storage.h"
 
 class PrefService;
@@ -25,15 +26,19 @@ class PrefServiceFlagsStorage : public FlagsStorage {
   explicit PrefServiceFlagsStorage(PrefService* prefs);
   ~PrefServiceFlagsStorage() override;
 
-  std::set<std::string> GetFlags() override;
+  std::set<std::string> GetFlags() const override;
   bool SetFlags(const std::set<std::string>& flags) override;
   void CommitPendingWrites() override;
+  std::string GetOriginListFlag(
+      const std::string& internal_entry_name) const override;
+  void SetOriginListFlag(const std::string& internal_entry_name,
+                         const std::string& origin_list_value) override;
 
   static void RegisterPrefs(PrefRegistrySimple* registry);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
  private:
   PrefService* prefs_;

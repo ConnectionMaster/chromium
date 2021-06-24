@@ -13,6 +13,17 @@ extern const char kFindInPageSearch[];
 extern const char kFindInPagePump[];
 // The name of JavaScript function which selects and scrolls to a match.
 extern const char kFindInPageSelectAndScrollToMatch[];
+// Dictionary key that holds value of updated match count in
+// kFindInPageSelectAndScrollToMatch response.
+extern const char kSelectAndScrollResultMatches[];
+// Dictionary key that holds value of currently selected index in
+// kFindInPageSelectAndScrollToMatch resoonse.
+extern const char kSelectAndScrollResultIndex[];
+// Dictionary key in kFindInPageSelectAndScrollToMatch response that
+// holds the value of the context for the currently selected match.
+extern const char kSelectAndScrollResultContextString[];
+// The name of JavaScript function which stops Find in Page.
+extern const char kFindInPageStop[];
 
 }  // namespace web
 

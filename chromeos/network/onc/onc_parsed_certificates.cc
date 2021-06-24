@@ -8,12 +8,15 @@
 #include <vector>
 
 #include "base/base64.h"
-#include "base/optional.h"
+#include "base/containers/span.h"
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "chromeos/network/onc/onc_utils.h"
 #include "components/onc/onc_constants.h"
 #include "net/cert/x509_certificate.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 namespace onc {
@@ -21,6 +24,19 @@ namespace onc {
 namespace {
 
 enum class CertificateType { kServer, kAuthority, kClient };
+
+// Parses the "Scope" of a policy-provided certificate.
+// If a Scope element is not present, returns CertificateScope::Default().
+// If a Scope element is present but malformed, returns an empty absl::optional.
+absl::optional<CertificateScope> ParseCertScope(
+    const base::Value& onc_certificate) {
+  const base::Value* scope_dict = onc_certificate.FindKeyOfType(
+      ::onc::certificate::kScope, base::Value::Type::DICTIONARY);
+  if (!scope_dict)
+    return CertificateScope::Default();
+
+  return CertificateScope::ParseFromOncValue(*scope_dict);
+}
 
 // Returns true if the certificate described by |onc_certificate| requests web
 // trust.
@@ -52,8 +68,8 @@ bool HasWebTrustFlag(const base::Value& onc_certificate) {
 }
 
 // Converts the ONC string certificate type into the CertificateType enum.
-// Returns |base::nullopt| if the certificate type was not understood.
-base::Optional<CertificateType> GetCertTypeAsEnum(
+// Returns |absl::nullopt| if the certificate type was not understood.
+absl::optional<CertificateType> GetCertTypeAsEnum(
     const std::string& cert_type) {
   if (cert_type == ::onc::certificate::kServer) {
     return CertificateType::kServer;
@@ -67,18 +83,20 @@ base::Optional<CertificateType> GetCertTypeAsEnum(
     return CertificateType::kClient;
   }
 
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 }  // namespace
 
 OncParsedCertificates::ServerOrAuthorityCertificate::
     ServerOrAuthorityCertificate(
+        CertificateScope scope,
         Type type,
         const std::string& guid,
         const scoped_refptr<net::X509Certificate>& certificate,
         bool web_trust_requested)
-    : type_(type),
+    : scope_(scope),
+      type_(type),
       guid_(guid),
       certificate_(certificate),
       web_trust_requested_(web_trust_requested) {}
@@ -100,6 +118,9 @@ OncParsedCertificates::ServerOrAuthorityCertificate::
 
 bool OncParsedCertificates::ServerOrAuthorityCertificate::operator==(
     const ServerOrAuthorityCertificate& other) const {
+  if (scope() != other.scope())
+    return false;
+
   if (type() != other.type())
     return false;
 
@@ -165,7 +186,7 @@ OncParsedCertificates::OncParsedCertificates(
   }
 
   for (size_t i = 0; i < onc_certificates.GetList().size(); ++i) {
-    const base::Value& onc_certificate = onc_certificates.GetList().at(i);
+    const base::Value& onc_certificate = onc_certificates.GetList()[i];
     DCHECK(onc_certificate.is_dict());
 
     VLOG(2) << "Parsing certificate at index " << i << ": " << onc_certificate;
@@ -191,7 +212,7 @@ bool OncParsedCertificates::ParseCertificate(
   const base::Value* type_key = onc_certificate.FindKeyOfType(
       ::onc::certificate::kType, base::Value::Type::STRING);
   DCHECK(type_key);
-  base::Optional<CertificateType> type_opt =
+  absl::optional<CertificateType> type_opt =
       GetCertTypeAsEnum(type_key->GetString());
   if (!type_opt)
     return false;
@@ -206,10 +227,8 @@ bool OncParsedCertificates::ParseCertificate(
           onc_certificate);
     case CertificateType::kClient:
       return ParseClientCertificate(guid, onc_certificate);
-    default:
-      NOTREACHED();
-      return false;
   }
+  NOTREACHED();
   return false;
 }
 
@@ -217,6 +236,12 @@ bool OncParsedCertificates::ParseServerOrCaCertificate(
     ServerOrAuthorityCertificate::Type type,
     const std::string& guid,
     const base::Value& onc_certificate) {
+  absl::optional<CertificateScope> scope = ParseCertScope(onc_certificate);
+  if (!scope) {
+    LOG(ERROR) << "Certificate has malformed 'Scope'";
+    return false;
+  }
+
   bool web_trust_requested = HasWebTrustFlag(onc_certificate);
   const base::Value* x509_data_key = onc_certificate.FindKeyOfType(
       ::onc::certificate::kX509, base::Value::Type::STRING);
@@ -233,15 +258,15 @@ bool OncParsedCertificates::ParseServerOrCaCertificate(
   }
 
   scoped_refptr<net::X509Certificate> certificate =
-      net::X509Certificate::CreateFromBytes(certificate_der_data.data(),
-                                            certificate_der_data.length());
+      net::X509Certificate::CreateFromBytes(
+          base::as_bytes(base::make_span(certificate_der_data)));
   if (!certificate) {
     LOG(ERROR) << "Unable to create certificate from PEM encoding.";
     return false;
   }
 
   server_or_authority_certificates_.push_back(ServerOrAuthorityCertificate(
-      type, guid, certificate, web_trust_requested));
+      scope.value(), type, guid, certificate, web_trust_requested));
   return true;
 }
 

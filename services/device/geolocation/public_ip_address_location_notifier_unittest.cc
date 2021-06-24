@@ -7,12 +7,13 @@
 #include "base/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/device/device_service_test_base.h"
 #include "services/device/public/cpp/geolocation/geoposition.h"
 #include "services/device/public/mojom/geoposition.mojom.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_network_connection_tracker.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -34,7 +35,7 @@ class PublicIpAddressLocationNotifierTest : public testing::Test {
     // Optional. Wait until the callback from MakeCallback() is called.
     void Wait() { loop_.Run(); }
 
-    const base::Optional<mojom::Geoposition>& position() const {
+    const absl::optional<mojom::Geoposition>& position() const {
       return position_;
     }
 
@@ -45,14 +46,16 @@ class PublicIpAddressLocationNotifierTest : public testing::Test {
     }
 
     base::RunLoop loop_;
-    base::Optional<mojom::Geoposition> position_;
+    absl::optional<mojom::Geoposition> position_;
   };
 
   PublicIpAddressLocationNotifierTest()
-      : network_change_notifier_(net::NetworkChangeNotifier::CreateMock()),
+      : network_connection_tracker_(
+            network::TestNetworkConnectionTracker::CreateInstance()),
         notifier_(
             base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
                 &test_url_loader_factory_),
+            network::TestNetworkConnectionTracker::GetInstance(),
             kTestGeolocationApiKey) {}
 
   ~PublicIpAddressLocationNotifierTest() override {}
@@ -82,7 +85,7 @@ class PublicIpAddressLocationNotifierTest : public testing::Test {
     std::string body =
         base::StringPrintf(kNetworkResponseFormatString, latitude);
     test_url_loader_factory_.AddResponse(request_url, body, net::HTTP_OK);
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     test_url_loader_factory_.ClearResponses();
   }
 
@@ -99,31 +102,32 @@ class PublicIpAddressLocationNotifierTest : public testing::Test {
 
     test_url_loader_factory_.AddResponse(request_url, std::string(),
                                          net::HTTP_INTERNAL_SERVER_ERROR);
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     test_url_loader_factory_.ClearResponses();
   }
 
   // Expects a non-empty and valid Geoposition, including the specified
   // |latitude|.
-  void ExpectValidPosition(const base::Optional<mojom::Geoposition>& position,
+  void ExpectValidPosition(const absl::optional<mojom::Geoposition>& position,
                            const float latitude) {
     ASSERT_TRUE(position);
     EXPECT_TRUE(ValidateGeoposition(*position));
     EXPECT_FLOAT_EQ(position->latitude, latitude);
   }
 
-  void ExpectError(const base::Optional<mojom::Geoposition>& position) {
+  void ExpectError(const absl::optional<mojom::Geoposition>& position) {
     ASSERT_TRUE(position);
     EXPECT_THAT(position->error_code,
                 mojom::Geoposition::ErrorCode::POSITION_UNAVAILABLE);
   }
 
   // Use a TaskRunner on which we can fast-forward time.
-  base::test::ScopedTaskEnvironment scoped_task_environment_{
-      base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME};
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 
-  // notifier_ requires a NetworkChangeNotifier to exist.
-  std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
+  // Test NetworkConnectionTracker instance.
+  std::unique_ptr<network::TestNetworkConnectionTracker>
+      network_connection_tracker_;
 
   // Test URLLoaderFactory for handling requests to the geolocation API.
   network::TestURLLoaderFactory test_url_loader_factory_;
@@ -191,10 +195,10 @@ TEST_F(PublicIpAddressLocationNotifierTest,
   EXPECT_FALSE(query_2.position().has_value());
 
   // Fake a network change notification.
-  net::NetworkChangeNotifier::NotifyObserversOfNetworkChangeForTests(
-      net::NetworkChangeNotifier::CONNECTION_UNKNOWN);
+  network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
+      network::mojom::ConnectionType::CONNECTION_UNKNOWN);
   // Wait for the notifier to complete its delayed reaction.
-  scoped_task_environment_.FastForwardUntilNoTasksRemain();
+  task_environment_.FastForwardUntilNoTasksRemain();
 
   // Now expect a network request and query_2 to return.
   RespondToFetchWithLatitude(2.0f);
@@ -224,16 +228,16 @@ TEST_F(PublicIpAddressLocationNotifierTest,
 
   // Fake several consecutive network changes notification.
   for (int i = 0; i < 10; ++i) {
-    net::NetworkChangeNotifier::NotifyObserversOfNetworkChangeForTests(
-        net::NetworkChangeNotifier::CONNECTION_UNKNOWN);
-    scoped_task_environment_.FastForwardBy(base::TimeDelta::FromSeconds(5));
+    network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
+        network::mojom::ConnectionType::CONNECTION_UNKNOWN);
+    task_environment_.FastForwardBy(base::TimeDelta::FromSeconds(5));
   }
   // Expect still no network request or callback.
   EXPECT_EQ(0, test_url_loader_factory_.NumPending());
   EXPECT_FALSE(query_2.position().has_value());
 
   // Wait longer.
-  scoped_task_environment_.FastForwardUntilNoTasksRemain();
+  task_environment_.FastForwardUntilNoTasksRemain();
 
   // Now expect a network request & query_2 to return.
   RespondToFetchWithLatitude(2.0f);
@@ -266,10 +270,10 @@ TEST_F(PublicIpAddressLocationNotifierTest, MutipleWaitingQueries) {
   EXPECT_FALSE(query_3.position().has_value());
 
   // Fake a network change notification.
-  net::NetworkChangeNotifier::NotifyObserversOfNetworkChangeForTests(
-      net::NetworkChangeNotifier::CONNECTION_UNKNOWN);
+  network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
+      network::mojom::ConnectionType::CONNECTION_UNKNOWN);
   // Wait for the notifier to complete its delayed reaction.
-  scoped_task_environment_.FastForwardUntilNoTasksRemain();
+  task_environment_.FastForwardUntilNoTasksRemain();
 
   // Now expect a network request & fake a valid response.
   RespondToFetchWithLatitude(2.0f);

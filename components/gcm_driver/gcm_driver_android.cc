@@ -13,7 +13,7 @@
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "jni/GCMDriver_jni.h"
+#include "components/gcm_driver/android/jni_headers/GCMDriver_jni.h"
 
 using base::android::AppendJavaStringArrayToStringVector;
 using base::android::AttachCurrentThread;
@@ -24,11 +24,10 @@ using base::android::JavaParamRef;
 
 namespace gcm {
 
- GCMDriverAndroid::GCMDriverAndroid(
-     const base::FilePath& store_path,
-     const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner)
-     : GCMDriver(store_path, blocking_task_runner),
-       recorder_(this) {
+GCMDriverAndroid::GCMDriverAndroid(
+    const base::FilePath& store_path,
+    const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner)
+    : GCMDriver(store_path, blocking_task_runner), recorder_(this) {
   JNIEnv* env = AttachCurrentThread();
   java_ref_.Reset(Java_GCMDriver_create(env, reinterpret_cast<intptr_t>(this)));
 }
@@ -46,8 +45,8 @@ void GCMDriverAndroid::OnRegisterFinished(
     jboolean success) {
   std::string app_id = ConvertJavaStringToUTF8(env, j_app_id);
   std::string registration_id = ConvertJavaStringToUTF8(env, j_registration_id);
-  GCMClient::Result result = success ? GCMClient::SUCCESS
-                                     : GCMClient::UNKNOWN_ERROR;
+  GCMClient::Result result =
+      success ? GCMClient::SUCCESS : GCMClient::UNKNOWN_ERROR;
 
   recorder_.RecordRegistrationResponse(app_id, success);
 
@@ -60,8 +59,8 @@ void GCMDriverAndroid::OnUnregisterFinished(
     const JavaParamRef<jstring>& j_app_id,
     jboolean success) {
   std::string app_id = ConvertJavaStringToUTF8(env, j_app_id);
-  GCMClient::Result result = success ? GCMClient::SUCCESS
-                                     : GCMClient::UNKNOWN_ERROR;
+  GCMClient::Result result =
+      success ? GCMClient::SUCCESS : GCMClient::UNKNOWN_ERROR;
 
   recorder_.RecordUnregistrationResponse(app_id, success);
 
@@ -73,6 +72,7 @@ void GCMDriverAndroid::OnMessageReceived(
     const JavaParamRef<jobject>& obj,
     const JavaParamRef<jstring>& j_app_id,
     const JavaParamRef<jstring>& j_sender_id,
+    const JavaParamRef<jstring>& j_message_id,
     const JavaParamRef<jstring>& j_collapse_key,
     const JavaParamRef<jbyteArray>& j_raw_data,
     const JavaParamRef<jobjectArray>& j_data_keys_and_values) {
@@ -82,17 +82,19 @@ void GCMDriverAndroid::OnMessageReceived(
 
   IncomingMessage message;
   message.sender_id = ConvertJavaStringToUTF8(env, j_sender_id);
+
+  if (!j_message_id.is_null())
+    ConvertJavaStringToUTF8(env, j_message_id, &message.message_id);
   if (!j_collapse_key.is_null())
     ConvertJavaStringToUTF8(env, j_collapse_key, &message.collapse_key);
 
   // Expand j_data_keys_and_values from array to map.
   std::vector<std::string> data_keys_and_values;
-  AppendJavaStringArrayToStringVector(env,
-                                      j_data_keys_and_values,
+  AppendJavaStringArrayToStringVector(env, j_data_keys_and_values,
                                       &data_keys_and_values);
   for (size_t i = 0; i + 1 < data_keys_and_values.size(); i += 2) {
-    message.data[data_keys_and_values[i]] = data_keys_and_values[i+1];
-    message_byte_size += data_keys_and_values[i+1].size();
+    message.data[data_keys_and_values[i]] = data_keys_and_values[i + 1];
+    message_byte_size += data_keys_and_values[i + 1].size();
   }
   // Convert j_raw_data from byte[] to binary std::string.
   if (j_raw_data) {
@@ -111,17 +113,15 @@ void GCMDriverAndroid::ValidateRegistration(
     const std::string& app_id,
     const std::vector<std::string>& sender_ids,
     const std::string& registration_id,
-    const ValidateRegistrationCallback& callback) {
+    ValidateRegistrationCallback callback) {
   // gcm_driver doesn't store registration IDs on Android, so assume it's valid.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, true /* is_valid */));
+      FROM_HERE, base::BindOnce(std::move(callback), true /* is_valid */));
 }
 
-void GCMDriverAndroid::OnSignedIn() {
-}
+void GCMDriverAndroid::OnSignedIn() {}
 
-void GCMDriverAndroid::OnSignedOut() {
-}
+void GCMDriverAndroid::OnSignedOut() {}
 
 void GCMDriverAndroid::AddAppHandler(const std::string& app_id,
                                      GCMAppHandler* handler) {
@@ -133,18 +133,10 @@ void GCMDriverAndroid::AddAppHandler(const std::string& app_id,
                                          ConvertUTF8ToJavaString(env, app_id));
 }
 
-void GCMDriverAndroid::AddConnectionObserver(GCMConnectionObserver* observer) {
-}
+void GCMDriverAndroid::AddConnectionObserver(GCMConnectionObserver* observer) {}
 
 void GCMDriverAndroid::RemoveConnectionObserver(
-    GCMConnectionObserver* observer) {
-}
-
-void GCMDriverAndroid::Enable() {
-}
-
-void GCMDriverAndroid::Disable() {
-}
+    GCMConnectionObserver* observer) {}
 
 GCMClient* GCMDriverAndroid::GetGCMClientForTesting() const {
   NOTIMPLEMENTED();
@@ -160,12 +152,9 @@ bool GCMDriverAndroid::IsConnected() const {
   return true;
 }
 
-void GCMDriverAndroid::GetGCMStatistics(
-    const GetGCMStatisticsCallback& callback,
-    ClearActivityLogs clear_logs) {
+void GCMDriverAndroid::GetGCMStatistics(GetGCMStatisticsCallback callback,
+                                        ClearActivityLogs clear_logs) {
   DCHECK(!callback.is_null());
-
-  get_gcm_statistics_callback_ = callback;
 
   if (clear_logs == CLEAR_LOGS)
     recorder_.Clear();
@@ -175,16 +164,23 @@ void GCMDriverAndroid::GetGCMStatistics(
 
   recorder_.CollectActivities(&stats.recorded_activities);
 
-  callback.Run(stats);
+  std::move(callback).Run(stats);
 }
 
-void GCMDriverAndroid::SetGCMRecording(const GetGCMStatisticsCallback& callback,
-                                       bool recording) {
+void GCMDriverAndroid::SetGCMRecording(
+    const GCMStatisticsRecordingCallback& callback,
+    bool recording) {
   DCHECK(!callback.is_null());
 
+  gcm_statistics_recording_callback_ = callback;
   recorder_.set_is_recording(recording);
 
-  GetGCMStatistics(callback, recording ? KEEP_LOGS : CLEAR_LOGS);
+  GCMClient::GCMStatistics stats;
+  stats.is_recording = recording;
+
+  recorder_.CollectActivities(&stats.recorded_activities);
+
+  callback.Run(stats);
 }
 
 void GCMDriverAndroid::SetAccountTokens(
@@ -197,7 +193,7 @@ void GCMDriverAndroid::UpdateAccountMapping(
   NOTIMPLEMENTED();
 }
 
-void GCMDriverAndroid::RemoveAccountMapping(const std::string& account_id) {
+void GCMDriverAndroid::RemoveAccountMapping(const CoreAccountId& account_id) {
   NOTIMPLEMENTED();
 }
 
@@ -210,25 +206,25 @@ void GCMDriverAndroid::SetLastTokenFetchTime(const base::Time& time) {
   NOTIMPLEMENTED();
 }
 
-void GCMDriverAndroid::WakeFromSuspendForHeartbeat(bool wake) {
-}
-
 InstanceIDHandler* GCMDriverAndroid::GetInstanceIDHandlerInternal() {
   // Not supported for Android.
   return NULL;
 }
 
 void GCMDriverAndroid::AddHeartbeatInterval(const std::string& scope,
-                                            int interval_ms) {
-}
+                                            int interval_ms) {}
 
-void GCMDriverAndroid::RemoveHeartbeatInterval(const std::string& scope) {
-}
+void GCMDriverAndroid::RemoveHeartbeatInterval(const std::string& scope) {}
 
 void GCMDriverAndroid::OnActivityRecorded() {
-  DCHECK(!get_gcm_statistics_callback_.is_null());
+  DCHECK(gcm_statistics_recording_callback_);
 
-  GetGCMStatistics(get_gcm_statistics_callback_, KEEP_LOGS);
+  GCMClient::GCMStatistics stats;
+  stats.is_recording = recorder_.is_recording();
+
+  recorder_.CollectActivities(&stats.recorded_activities);
+
+  gcm_statistics_recording_callback_.Run(stats);
 }
 
 GCMClient::Result GCMDriverAndroid::EnsureStarted(
@@ -238,7 +234,8 @@ GCMClient::Result GCMDriverAndroid::EnsureStarted(
 }
 
 void GCMDriverAndroid::RegisterImpl(
-    const std::string& app_id, const std::vector<std::string>& sender_ids) {
+    const std::string& app_id,
+    const std::vector<std::string>& sender_ids) {
   DCHECK_EQ(1u, sender_ids.size());
   JNIEnv* env = AttachCurrentThread();
 

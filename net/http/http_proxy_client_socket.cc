@@ -4,10 +4,10 @@
 
 #include "net/http/http_proxy_client_socket.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
@@ -15,7 +15,9 @@
 #include "net/base/host_port_pair.h"
 #include "net/base/io_buffer.h"
 #include "net/base/proxy_delegate.h"
+#include "net/base/proxy_server.h"
 #include "net/http/http_basic_stream.h"
+#include "net/http/http_log_util.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_request_info.h"
 #include "net/http/http_response_headers.h"
@@ -39,7 +41,6 @@ HttpProxyClientSocket::HttpProxyClientSocket(
     bool using_spdy,
     NextProto negotiated_protocol,
     ProxyDelegate* proxy_delegate,
-    bool is_https_proxy,
     const NetworkTrafficAnnotationTag& traffic_annotation)
     : io_callback_(base::BindRepeating(&HttpProxyClientSocket::OnIOComplete,
                                        base::Unretained(this))),
@@ -51,7 +52,6 @@ HttpProxyClientSocket::HttpProxyClientSocket(
       tunnel_(tunnel),
       using_spdy_(using_spdy),
       negotiated_protocol_(negotiated_protocol),
-      is_https_proxy_(is_https_proxy),
       proxy_server_(proxy_server),
       proxy_delegate_(proxy_delegate),
       traffic_annotation_(traffic_annotation),
@@ -383,8 +383,8 @@ int HttpProxyClientSocket::DoSendRequest() {
 
     if (proxy_delegate_) {
       HttpRequestHeaders proxy_delegate_headers;
-      proxy_delegate_->OnBeforeHttp1TunnelRequest(proxy_server_,
-                                                  &proxy_delegate_headers);
+      proxy_delegate_->OnBeforeTunnelRequest(proxy_server_,
+                                             &proxy_delegate_headers);
       extra_headers.MergeFrom(proxy_delegate_headers);
     }
 
@@ -396,15 +396,14 @@ int HttpProxyClientSocket::DoSendRequest() {
     BuildTunnelRequest(endpoint_, extra_headers, user_agent, &request_line_,
                        &request_headers_);
 
-    net_log_.AddEvent(
-        NetLogEventType::HTTP_TRANSACTION_SEND_TUNNEL_HEADERS,
-        base::Bind(&HttpRequestHeaders::NetLogCallback,
-                   base::Unretained(&request_headers_), &request_line_));
+    NetLogRequestHeaders(net_log_,
+                         NetLogEventType::HTTP_TRANSACTION_SEND_TUNNEL_HEADERS,
+                         request_line_, &request_headers_);
   }
 
   parser_buf_ = base::MakeRefCounted<GrowableIOBuffer>();
-  http_stream_parser_.reset(new HttpStreamParser(
-      socket_.get(), is_reused_, &request_, parser_buf_.get(), net_log_));
+  http_stream_parser_ = std::make_unique<HttpStreamParser>(
+      socket_.get(), is_reused_, &request_, parser_buf_.get(), net_log_);
   return http_stream_parser_->SendRequest(request_line_, request_headers_,
                                           traffic_annotation_, &response_,
                                           io_callback_);
@@ -431,13 +430,13 @@ int HttpProxyClientSocket::DoReadHeadersComplete(int result) {
   if (response_.headers->GetHttpVersion() < HttpVersion(1, 0))
     return ERR_TUNNEL_CONNECTION_FAILED;
 
-  net_log_.AddEvent(
-      NetLogEventType::HTTP_TRANSACTION_READ_TUNNEL_RESPONSE_HEADERS,
-      base::Bind(&HttpResponseHeaders::NetLogCallback, response_.headers));
+  NetLogResponseHeaders(
+      net_log_, NetLogEventType::HTTP_TRANSACTION_READ_TUNNEL_RESPONSE_HEADERS,
+      response_.headers.get());
 
   if (proxy_delegate_) {
-    int rv = proxy_delegate_->OnHttp1TunnelHeadersReceived(proxy_server_,
-                                                           *response_.headers);
+    int rv = proxy_delegate_->OnTunnelHeadersReceived(proxy_server_,
+                                                      *response_.headers);
     if (rv != OK) {
       DCHECK_NE(ERR_IO_PENDING, rv);
       return rv;
@@ -460,26 +459,12 @@ int HttpProxyClientSocket::DoReadHeadersComplete(int result) {
       // client is expecting an SSL protected response.
       // See http://crbug.com/7338.
 
-    case 302:  // Found / Moved Temporarily
-      // Attempt to follow redirects from HTTPS proxies, but only if we can
-      // sanitize the response.  This still allows a rogue HTTPS proxy to
-      // redirect an HTTPS site load to a similar-looking site, but no longer
-      // allows it to impersonate the site the user requested.
-      if (!is_https_proxy_ || !SanitizeProxyRedirect(&response_))
-        return ERR_TUNNEL_CONNECTION_FAILED;
-
-      http_stream_parser_.reset();
-      socket_.reset();
-      is_reused_ = false;
-      return ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT;
-
     case 407:  // Proxy Authentication Required
       // We need this status code to allow proxy authentication.  Our
       // authentication code is smart enough to avoid being tricked by an
       // active network attacker.
       // The next state is intentionally not set as it should be STATE_NONE;
-      if (!SanitizeProxyAuth(&response_))
-        return ERR_TUNNEL_CONNECTION_FAILED;
+      SanitizeProxyAuth(response_);
       return HandleProxyAuthChallenge(auth_.get(), &response_, net_log_);
 
     default:

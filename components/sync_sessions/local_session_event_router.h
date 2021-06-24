@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_SYNC_SESSIONS_LOCAL_SESSION_EVENT_ROUTER_H_
 #define COMPONENTS_SYNC_SESSIONS_LOCAL_SESSION_EVENT_ROUTER_H_
 
-#include <set>
-
 #include "base/macros.h"
 #include "url/gurl.h"
 
@@ -30,15 +28,6 @@ class LocalSessionEventHandler {
   // A local navigation event took place that affects the synced session
   // for this instance of Chrome.
   virtual void OnLocalTabModified(SyncedTabDelegate* modified_tab) = 0;
-
-  // A local navigation occurred that triggered updates to favicon data for
-  // each page URL in |page_urls| (e.g. http://www.google.com) and the icon URL
-  // |icon_url| (e.g. http://www.google.com/favicon.ico). This is routed through
-  // Sessions Sync so that we can filter (exclude) favicon updates for pages
-  // that aren't currently part of the set of local open tabs, and pass relevant
-  // updates on to FaviconCache for out-of-band favicon syncing.
-  virtual void OnFaviconsChanged(const std::set<GURL>& page_urls,
-                                 const GURL& icon_url) = 0;
 
  protected:
   LocalSessionEventHandler() {}

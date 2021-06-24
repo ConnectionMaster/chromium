@@ -1,63 +1,62 @@
-<html>
-    <head>
-        <script src="../../resources/js-test.js"></script>
-        <script>
-            var givenScrollTop = 2;
-            var givenScrollLeft = 0;
-            var expectedScrollTop = 0;
-            var expectedScrollLeft = 0;
-            var pixelsPerWheelTick = 40;
-            var event;
-            var div;
+<!DOCTYPE html>
+<script src='../../resources/testharness.js'></script>
+<script src='../../resources/testharnessreport.js'></script>
+<script src='../../resources/gesture-util.js'></script>
+<style>
+  body {
+    margin: 0;
+  }
 
-            if (window.testRunner)
-                testRunner.waitUntilDone();
+  #overflow {
+    border:2px solid black;
+    overflow:auto;
+    white-space:nowrap;
+    height:200px;
+    width:200px;
+  }
 
-            function dispatchWheelEvent()
-            {
-                var overflowElement = document.getElementById("overflow");
-                if (overflowElement)
-                    overflowElement.addEventListener("mousewheel", mousewheelHandler, false);
+  #container {
+    height: 185px;
+    width: 600px;
+  }
 
-                if (window.eventSender) {
-                    eventSender.mouseMoveTo(100, 110);
-                    eventSender.continuousMouseScrollBy(-window.givenScrollLeft, -window.givenScrollTop, true);
-                }
+  .box {
+    height:181px;
+    width:300px;
+    display:inline-block;
+  }
+</style>
 
-                setTimeout('checkOffsets();', 100);
-            }
+<div id="overflow">
+  <div id="container">
+    <div class="box" style="background-color:red"></div>
+    <div class="box" style="background-color:green"></div>
+  </div>
+</div>
 
-            function checkOffsets()
-            {
-                div = document.getElementById("overflow");
-                shouldBe("div.scrollTop", "window.expectedScrollTop");
-                shouldBe("div.scrollLeft", "window.expectedScrollLeft");
+<script>
+    const scrollDelta = 2;
+    var last_event = null;
+    var source = GestureSourceType.MOUSE_INPUT;
+    const numTicksY = scrollDelta / pixelsPerTick();
+    const expectedWheelDeltaY = numTicksY * LEGACY_MOUSE_WHEEL_TICK_MULTIPLIER;
 
-                if (window.testRunner)
-                    testRunner.notifyDone();
-            }
+    function mousewheelHandler(e)
+    {
+        last_event = e;
+    }
 
-            function mousewheelHandler(e)
-            {
-                event = e;
-                shouldBe("event.wheelDeltaY", "window.givenScrollTop*-3");
-                shouldBe("event.wheelDeltaX", "0");
+    promise_test(async () => {
+      const overflowElement = document.getElementById("overflow");
+      overflowElement.addEventListener("mousewheel", mousewheelHandler, false);
 
-                if (e.wheelDeltaY)
-                    shouldBe("event.wheelDelta", "window.givenScrollTop*-3");
-                else
-                    shouldBe("event.wheelDelta", "0");
-            }
-        </script>
-    </head>
-
-    <body style="margin:0" onload="setTimeout('dispatchWheelEvent();', 100)">
-        <div id="overflow" style="border:2px solid black;overflow:auto;white-space:nowrap;height:200px;width:200px;">
-        <div style="height:185px;width:600px;">
-          <div style="border:0px;background-color:red;height:181px;width:300px;display:inline-block;"></div>
-          <div style="border:0px;background-color:green;height:181px;width:300px;display:inline-block;"></div>
-        </div>
-        </div>
-        <div id="console"></div>
-    </body>
-</html>
+      await smoothScroll(scrollDelta, 100, 110, source, 'down', SPEED_INSTANT, false /* precise_scrolling_deltas */, true /* scroll_by_page */);
+      await conditionHolds( () => {
+          return overflowElement.scrollTop == 0;
+      });
+      assert_equals(last_event.wheelDeltaY, -Math.floor(expectedWheelDeltaY));
+      assert_equals(last_event.wheelDeltaX, 0);
+      assert_equals(last_event.wheelDelta, -Math.floor(expectedWheelDeltaY));
+    }, "Page-based wheel scrolls provide correct delta in event handler, don't scroll if there's no " +
+       "overflow in direction when scrolling on div.");
+</script>

@@ -43,8 +43,8 @@ def main():
         '--strip-comments',
         '--inline-scripts',
         '--inline-css',
-        '--in-html', os.path.join(tmp_dir, 'polymer.html'),
-        '--out-html', os.path.join(tmp_out_dir, 'polymer.html')
+        '--out-file', os.path.join(tmp_out_dir, 'polymer.html'),
+        os.path.join(tmp_dir, 'polymer.html'),
     ])
 
     # Extract the JS to a separate file named polymer-extracted.js.
@@ -54,8 +54,8 @@ def main():
     # Minify the JS bundle.
     extracted_js = os.path.join(tmp_out_dir, 'polymer-extracted.js')
     node.RunNode([
-        node_modules.PathToUglify(), extracted_js,
-        '--comments', '"/Copyright|license|LICENSE/"',
+        node_modules.PathToTerser(), extracted_js,
+        '--comments', '/Copyright|license|LICENSE/',
         '--output', extracted_js])
 
     # Copy generated bundled JS/HTML files back to the original location.

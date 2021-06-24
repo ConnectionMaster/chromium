@@ -11,7 +11,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -106,8 +106,7 @@ struct PluginMetricsProvider::ChildProcessStats {
 };
 
 PluginMetricsProvider::PluginMetricsProvider(PrefService* local_state)
-    : local_state_(local_state),
-      weak_ptr_factory_(this) {
+    : local_state_(local_state) {
   DCHECK(local_state_);
 
   BrowserChildProcessObserver::Add(this);
@@ -117,11 +116,10 @@ PluginMetricsProvider::~PluginMetricsProvider() {
   BrowserChildProcessObserver::Remove(this);
 }
 
-void PluginMetricsProvider::AsyncInit(const base::Closure& done_callback) {
+void PluginMetricsProvider::AsyncInit(base::OnceClosure done_callback) {
   content::PluginService::GetInstance()->GetPlugins(
-      base::Bind(&PluginMetricsProvider::OnGotPlugins,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 done_callback));
+      base::BindOnce(&PluginMetricsProvider::OnGotPlugins,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(done_callback)));
 }
 
 void PluginMetricsProvider::ProvideSystemProfileMetrics(
@@ -143,7 +141,7 @@ void PluginMetricsProvider::ProvideStabilityMetrics(
 
   metrics::SystemProfileProto::Stability* stability =
       system_profile_proto->mutable_stability();
-  for (const auto& value : *plugin_stats_list) {
+  for (const auto& value : plugin_stats_list->GetList()) {
     const base::DictionaryValue* plugin_dict;
     if (!value.GetAsDictionary(&plugin_dict)) {
       NOTREACHED();
@@ -166,7 +164,6 @@ void PluginMetricsProvider::ProvideStabilityMetrics(
     }
 
     if (!system_profile_plugin) {
-      NOTREACHED();
       continue;
     }
 
@@ -210,14 +207,14 @@ void PluginMetricsProvider::RecordCurrentState() {
   base::ListValue* plugins = update.Get();
   DCHECK(plugins);
 
-  for (auto& value : *plugins) {
+  for (auto& value : plugins->GetList()) {
     base::DictionaryValue* plugin_dict;
     if (!value.GetAsDictionary(&plugin_dict)) {
       NOTREACHED();
       continue;
     }
 
-    base::string16 plugin_name;
+    std::u16string plugin_name;
     plugin_dict->GetString(prefs::kStabilityPluginName, &plugin_name);
     if (plugin_name.empty()) {
       NOTREACHED();
@@ -324,24 +321,24 @@ void PluginMetricsProvider::RegisterPrefs(PrefRegistrySimple* registry) {
 }
 
 void PluginMetricsProvider::OnGotPlugins(
-    const base::Closure& done_callback,
+    base::OnceClosure done_callback,
     const std::vector<content::WebPluginInfo>& plugins) {
   plugins_ = plugins;
-  done_callback.Run();
+  std::move(done_callback).Run();
 }
 
 PluginMetricsProvider::ChildProcessStats&
 PluginMetricsProvider::GetChildProcessStats(
     const content::ChildProcessData& data) {
-  const base::string16& child_name = data.name;
-  if (!base::ContainsKey(child_process_stats_buffer_, child_name)) {
+  const std::u16string& child_name = data.name;
+  if (!base::Contains(child_process_stats_buffer_, child_name)) {
     child_process_stats_buffer_[child_name] =
         ChildProcessStats(data.process_type);
   }
   return child_process_stats_buffer_[child_name];
 }
 
-void PluginMetricsProvider::BrowserChildProcessHostConnected(
+void PluginMetricsProvider::BrowserChildProcessLaunchedAndConnected(
     const content::ChildProcessData& data) {
   GetChildProcessStats(data).process_launches++;
   RecordCurrentStateWithDelay();

@@ -12,16 +12,17 @@
 #include <string>
 #include <vector>
 
+#include "ash/public/cpp/tablet_mode_observer.h"
 #include "base/compiler_specific.h"
-#include "base/files/file_path_watcher.h"
 #include "base/macros.h"
-#include "chrome/browser/chromeos/crostini/crostini_share_path.h"
-#include "chrome/browser/chromeos/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/file_manager/file_watcher.h"
+#include "chrome/browser/ash/file_manager/fileapi_util.h"
+#include "chrome/browser/ash/guest_os/guest_os_share_path.h"
+#include "chrome/browser/ash/plugin_vm/plugin_vm_util.h"
 #include "chrome/browser/chromeos/extensions/file_manager/device_event_router.h"
 #include "chrome/browser/chromeos/extensions/file_manager/drivefs_event_router.h"
-#include "chrome/browser/chromeos/extensions/file_manager/job_event_router.h"
-#include "chrome/browser/chromeos/file_manager/file_watcher.h"
-#include "chrome/browser/chromeos/file_manager/fileapi_util.h"
+#include "chrome/browser/chromeos/extensions/file_manager/system_notification_manager.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager_observer.h"
 #include "chrome/common/extensions/api/file_manager_private.h"
@@ -29,21 +30,18 @@
 #include "chromeos/settings/timezone_settings.h"
 #include "components/arc/arc_service_manager.h"
 #include "components/arc/intent_helper/arc_intent_helper_observer.h"
-#include "components/drive/chromeos/file_system_observer.h"
-#include "components/drive/chromeos/sync_client.h"
-#include "components/drive/service/drive_service_interface.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "extensions/browser/extension_registry_observer.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
-#include "storage/browser/fileapi/file_system_operation.h"
+#include "storage/browser/file_system/file_system_operation.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 class PrefChangeRegistrar;
 class Profile;
 
 using file_manager::util::EntryDefinition;
-
-namespace drive {
-class FileChange;
-}
 
 namespace file_manager {
 
@@ -52,25 +50,25 @@ namespace file_manager {
 class EventRouter
     : public KeyedService,
       public network::NetworkConnectionTracker::NetworkConnectionObserver,
+      public extensions::ExtensionRegistryObserver,
       public chromeos::system::TimezoneSettings::Observer,
-      public drive::FileSystemObserver,
-      public drive::DriveServiceObserver,
       public VolumeManagerObserver,
       public arc::ArcIntentHelperObserver,
       public drive::DriveIntegrationServiceObserver,
-      public crostini::CrostiniSharePath::Observer {
+      public guest_os::GuestOsSharePath::Observer,
+      public ash::TabletModeObserver {
  public:
-  typedef base::Callback<void(const base::FilePath& virtual_path,
-                              const drive::FileChange* list,
-                              bool got_error,
-                              const std::vector<std::string>& extension_ids)>
-      DispatchDirectoryChangeEventImplCallback;
+  using DispatchDirectoryChangeEventImplCallback =
+      base::RepeatingCallback<void(const base::FilePath& virtual_path,
+                                   bool got_error,
+                                   const std::vector<url::Origin>& listeners)>;
 
   explicit EventRouter(Profile* profile);
   ~EventRouter() override;
 
   // arc::ArcIntentHelperObserver overrides.
-  void OnIntentFiltersUpdated() override;
+  void OnIntentFiltersUpdated(
+      const absl::optional<std::string>& package_name) override;
 
   // KeyedService overrides.
   void Shutdown() override;
@@ -78,7 +76,7 @@ class EventRouter
   using BoolCallback = base::OnceCallback<void(bool success)>;
 
   // Adds a file watch at |local_path|, associated with |virtual_path|, for
-  // an extension with |extension_id|.
+  // an listener with |listener_origin|.
   //
   // |callback| will be called with true on success, or false on failure.
   // |callback| must not be null.
@@ -87,15 +85,15 @@ class EventRouter
   // storage::WatcherManager interface.
   void AddFileWatch(const base::FilePath& local_path,
                     const base::FilePath& virtual_path,
-                    const std::string& extension_id,
+                    const url::Origin& listener_origin,
                     BoolCallback callback);
 
-  // Removes a file watch at |local_path| for an extension with |extension_id|.
+  // Removes a file watch at |local_path| for listener with |listener_origin|.
   //
   // Obsolete. Used as fallback for files which backends do not implement the
   // storage::WatcherManager interface.
   void RemoveFileWatch(const base::FilePath& local_path,
-                       const std::string& extension_id);
+                       const url::Origin& listener_origin);
 
   // Called when a copy task is completed.
   void OnCopyCompleted(
@@ -104,7 +102,7 @@ class EventRouter
 
   // Called when a copy task progress is updated.
   void OnCopyProgress(int copy_id,
-                      storage::FileSystemOperation::CopyProgressType type,
+                      storage::FileSystemOperation::CopyOrMoveProgressType type,
                       const GURL& source_url,
                       const GURL& destination_url,
                       int64_t size);
@@ -112,24 +110,21 @@ class EventRouter
   // Called when a notification from a watcher manager arrives.
   void OnWatcherManagerNotification(
       const storage::FileSystemURL& file_system_url,
-      const std::string& extension_id,
+      const url::Origin& listener_origin,
       storage::WatcherManager::ChangeType change_type);
 
   // network::NetworkConnectionTracker::NetworkConnectionObserver overrides.
   void OnConnectionChanged(network::mojom::ConnectionType type) override;
 
+  // extensions::ExtensionRegistryObserver overrides
+  void OnExtensionLoaded(content::BrowserContext* browser_context,
+                         const extensions::Extension* extension) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const extensions::Extension* extension,
+                           extensions::UnloadedExtensionReason reason) override;
+
   // chromeos::system::TimezoneSettings::Observer overrides.
   void TimezoneChanged(const icu::TimeZone& timezone) override;
-
-  // drive::DriveServiceObserver overrides.
-  void OnRefreshTokenInvalid() override;
-  void OnReadyToSendRequests() override;
-
-  // drive::FileSystemObserver overrides.
-  void OnDirectoryChanged(const base::FilePath& drive_path) override;
-  void OnFileChanged(const drive::FileChange& changed_files) override;
-  void OnDriveSyncError(drive::file_system::DriveSyncErrorType type,
-                        const base::FilePath& drive_path) override;
 
   // VolumeManagerObserver overrides.
   void OnDiskAdded(const chromeos::disks::Disk& disk, bool mounting) override;
@@ -140,10 +135,24 @@ class EventRouter
                        const Volume& volume) override;
   void OnVolumeUnmounted(chromeos::MountError error_code,
                          const Volume& volume) override;
-  void OnFormatStarted(const std::string& device_path, bool success) override;
-  void OnFormatCompleted(const std::string& device_path, bool success) override;
-  void OnRenameStarted(const std::string& device_path, bool success) override;
-  void OnRenameCompleted(const std::string& device_path, bool success) override;
+  void OnFormatStarted(const std::string& device_path,
+                       const std::string& device_label,
+                       bool success) override;
+  void OnFormatCompleted(const std::string& device_path,
+                         const std::string& device_label,
+                         bool success) override;
+  void OnPartitionStarted(const std::string& device_path,
+                          const std::string& device_label,
+                          bool success) override;
+  void OnPartitionCompleted(const std::string& device_path,
+                            const std::string& device_label,
+                            bool success) override;
+  void OnRenameStarted(const std::string& device_path,
+                       const std::string& device_label,
+                       bool success) override;
+  void OnRenameCompleted(const std::string& device_path,
+                         const std::string& device_label,
+                         bool success) override;
   // Set custom dispatch directory change event implementation for testing.
   void SetDispatchDirectoryChangeEventImplForTesting(
       const DispatchDirectoryChangeEventImplCallback& callback);
@@ -151,15 +160,29 @@ class EventRouter
   // DriveIntegrationServiceObserver override.
   void OnFileSystemMountFailed() override;
 
-  // crostini::CrostiniSharePath::Observer overrides
+  // guest_os::GuestOsSharePath::Observer overrides.
+  void OnShare(const std::string& vm_name,
+               const base::FilePath& path,
+               bool persist) override;
   void OnUnshare(const std::string& vm_name,
                  const base::FilePath& path) override;
+
+  // ash:TabletModeObserver overrides.
+  void OnTabletModeStarted() override;
+  void OnTabletModeEnded() override;
+
+  // Notifies FilesApp that file drop to Plugin VM was not in a shared directory
+  // and failed FilesApp will show the "Move to Windows files" dialog.
+  void DropFailedPluginVmDirectoryNotShared();
+
+  // Called by the UI to notify the result of a displayed dialog.
+  void OnDriveDialogResult(drivefs::mojom::DialogResult result);
 
   // Returns a weak pointer for the event router.
   base::WeakPtr<EventRouter> GetWeakPtr();
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(EventRouterTest, PopulateCrostiniUnshareEvent);
+  FRIEND_TEST_ALL_PREFIXES(EventRouterTest, PopulateCrostiniEvent);
 
   // Starts observing file system change events.
   void ObserveEvents();
@@ -168,29 +191,22 @@ class EventRouter
   void OnFileManagerPrefsChanged();
 
   // Process file watch notifications.
-  void HandleFileWatchNotification(const drive::FileChange* list,
-                                   const base::FilePath& path,
-                                   bool got_error);
+  void HandleFileWatchNotification(const base::FilePath& path, bool got_error);
 
   // Sends directory change event.
-  void DispatchDirectoryChangeEvent(
-      const base::FilePath& path,
-      const drive::FileChange* list,
-      bool got_error,
-      const std::vector<std::string>& extension_ids);
+  void DispatchDirectoryChangeEvent(const base::FilePath& path,
+                                    bool got_error,
+                                    const std::vector<url::Origin>& listeners);
 
   // Default implementation of DispatchDirectoryChangeEvent.
   void DispatchDirectoryChangeEventImpl(
       const base::FilePath& path,
-      const drive::FileChange* list,
       bool got_error,
-      const std::vector<std::string>& extension_ids);
+      const std::vector<url::Origin>& listeners);
 
   // Sends directory change event, after converting the file definition to entry
   // definition.
   void DispatchDirectoryChangeEventWithEntryDefinition(
-      std::unique_ptr<drive::FileChange> list,
-      const std::string* extension_id,
       bool watcher_error,
       const EntryDefinition& entry_definition);
 
@@ -200,34 +216,57 @@ class EventRouter
       chromeos::MountError error,
       const Volume& volume);
 
-  // Populate the path unshared event.
-  static void PopulateCrostiniUnshareEvent(
-      extensions::api::file_manager_private::CrostiniEvent& event,
+  // Send crostini path shared or unshared event.
+  void SendCrostiniEvent(
+      extensions::api::file_manager_private::CrostiniEventType event_type,
       const std::string& vm_name,
-      const std::string& extension_id,
+      const base::FilePath& path);
+
+  // Populate the crostini path shared or unshared event.
+  static void PopulateCrostiniEvent(
+      extensions::api::file_manager_private::CrostiniEvent& event,
+      extensions::api::file_manager_private::CrostiniEventType event_type,
+      const std::string& vm_name,
+      const url::Origin& origin,
       const std::string& mount_name,
       const std::string& file_system_name,
       const std::string& full_path);
 
-  // Called when crostini is enabled/disabled.
-  void OnCrostiniEnabledChanged();
+  // Called for Crostini events when the specified pref value changes.
+  void OnCrostiniChanged(
+      const std::string& vm_name,
+      const std::string& pref_name,
+      extensions::api::file_manager_private::CrostiniEventType pref_true,
+      extensions::api::file_manager_private::CrostiniEventType pref_false);
+
+  // Called when Plugin VM enabled state may have changed.
+  void OnPluginVmChanged();
+
+  void NotifyDriveConnectionStatusChanged();
+
+  void DisplayDriveConfirmDialog(
+      const drivefs::mojom::DialogReason& reason,
+      base::OnceCallback<void(drivefs::mojom::DialogResult)> callback);
 
   base::Time last_copy_progress_event_;
 
   std::map<base::FilePath, std::unique_ptr<FileWatcher>> file_watchers_;
+  std::unique_ptr<plugin_vm::PluginVmPolicySubscription>
+      plugin_vm_subscription_;
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
   Profile* profile_;
 
   std::unique_ptr<DeviceEventRouter> device_event_router_;
-  std::unique_ptr<JobEventRouter> job_event_router_;
   std::unique_ptr<DriveFsEventRouter> drivefs_event_router_;
 
   DispatchDirectoryChangeEventImplCallback
       dispatch_directory_change_event_impl_;
 
+  std::unique_ptr<SystemNotificationManager> notification_manager_;
+
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate the weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<EventRouter> weak_factory_;
+  base::WeakPtrFactory<EventRouter> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(EventRouter);
 };

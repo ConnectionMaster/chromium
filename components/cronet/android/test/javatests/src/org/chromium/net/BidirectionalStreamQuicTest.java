@@ -12,7 +12,9 @@ import static org.junit.Assert.assertTrue;
 import static org.chromium.base.CollectionUtil.newHashSet;
 import static org.chromium.net.CronetTestRule.getContext;
 
-import android.support.test.filters.SmallTest;
+import android.support.test.runner.AndroidJUnit4;
+
+import androidx.test.filters.SmallTest;
 
 import org.json.JSONObject;
 import org.junit.After;
@@ -20,7 +22,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.net.CronetTestRule.OnlyRunNativeCronet;
 import org.chromium.net.MetricsTestUtil.TestRequestFinishedListener;
@@ -32,7 +33,7 @@ import java.util.HashSet;
 /**
  * Tests functionality of BidirectionalStream's QUIC implementation.
  */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class BidirectionalStreamQuicTest {
     @Rule
     public final CronetTestRule mTestRule = new CronetTestRule();

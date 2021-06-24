@@ -1,3 +1,5 @@
 rootWebArea
-++textField
-++textField multiline
+++genericContainer ignored
+++++genericContainer ignored
+++++++textField
+++++++textField multiline

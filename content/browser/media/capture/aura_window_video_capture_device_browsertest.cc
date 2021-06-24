@@ -8,8 +8,8 @@
 
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/test/pixel_test_utils.h"
 #include "components/viz/common/features.h"
 #include "content/browser/media/capture/content_capture_device_browsertest_base.h"
@@ -19,12 +19,12 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/shell/browser/shell.h"
 #include "media/base/video_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/aura/window.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -40,7 +40,7 @@ class AuraWindowVideoCaptureDeviceBrowserTest
   ~AuraWindowVideoCaptureDeviceBrowserTest() override = default;
 
   aura::Window* GetCapturedWindow() const {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     // Since the LameWindowCapturerChromeOS will be used, just return the normal
     // shell window.
     return shell()->window();
@@ -97,7 +97,7 @@ class AuraWindowVideoCaptureDeviceBrowserTest
         const gfx::RectF webcontents_in_frame_rect_f = TransformSimilarly(
             gfx::Rect(window_size), window_in_frame_rect_f, webcontents_rect);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
         // Browser window capture on ChromeOS uses the
         // LameWindowCapturerChromeOS, which takes RGB snapshots and then
         // software-converts them to YUV, and color accuracy is greatly reduced.
@@ -162,9 +162,8 @@ class AuraWindowVideoCaptureDeviceBrowserTest
       // Wait for at least the minimum capture period before checking for more
       // captured frames.
       base::RunLoop run_loop;
-      base::PostDelayedTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                                      run_loop.QuitClosure(),
-                                      GetMinCapturePeriod());
+      GetUIThreadTaskRunner({})->PostDelayedTask(
+          FROM_HERE, run_loop.QuitClosure(), GetMinCapturePeriod());
       run_loop.Run();
     }
   }
@@ -223,14 +222,12 @@ IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
   RunUntilIdle();
 }
 
+// Disabled (crbug.com/1096988)
 // Tests that the device starts, captures a frame, and then gracefully
 // errors-out because the target window is destroyed before the device is
 // stopped.
 IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
-                       ErrorsOutWhenWindowIsDestroyed) {
-  // TODO(crbug.com/877172): CopyOutputRequests not allowed.
-  if (features::IsSingleProcessMash())
-    return;
+                       DISABLED_ErrorsOutWhenWindowIsDestroyed) {
   NavigateToInitialDocument();
   AllocateAndStartAndWaitForFirstFrame();
 
@@ -248,14 +245,12 @@ IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
   StopAndDeAllocate();
 }
 
+// Disabled (crbug.com/1096988)
 // Tests that the device stops delivering frames while suspended. When resumed,
 // any content changes that occurred during the suspend should cause a new frame
 // to be delivered, to ensure the client is up-to-date.
 IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
-                       SuspendsAndResumes) {
-  // TODO(crbug.com/877172): CopyOutputRequests not allowed.
-  if (features::IsSingleProcessMash())
-    return;
+                       DISABLED_SuspendsAndResumes) {
   NavigateToInitialDocument();
   AllocateAndStartAndWaitForFirstFrame();
 
@@ -272,9 +267,8 @@ IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
   // frames were queued because the device should be suspended.
   ChangePageContentColor(SK_ColorGREEN);
   base::RunLoop run_loop;
-  base::PostDelayedTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                                  run_loop.QuitClosure(),
-                                  base::TimeDelta::FromSeconds(5));
+  GetUIThreadTaskRunner({})->PostDelayedTask(FROM_HERE, run_loop.QuitClosure(),
+                                             base::TimeDelta::FromSeconds(5));
   run_loop.Run();
   EXPECT_FALSE(HasCapturedFramesInQueue());
 
@@ -286,13 +280,11 @@ IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
   StopAndDeAllocate();
 }
 
+// Disabled (crbug.com/1096988)
 // Tests that the device delivers refresh frames when asked, while the source
 // content is not changing.
 IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
-                       DeliversRefreshFramesUponRequest) {
-  // TODO(crbug.com/877172): CopyOutputRequests not allowed.
-  if (features::IsSingleProcessMash())
-    return;
+                       DISABLED_DeliversRefreshFramesUponRequest) {
   NavigateToInitialDocument();
   AllocateAndStartAndWaitForFirstFrame();
 
@@ -311,19 +303,17 @@ IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
   StopAndDeAllocate();
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+// Disabled (crbug.com/1096988)
 // On ChromeOS, another window may occlude a window that is being captured.
 // Make sure the visibility is set to visible during capture if it's occluded.
 IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
-                       CapturesOccludedWindows) {
-  // TODO(crbug.com/877172): CopyOutputRequests not allowed.
-  if (features::IsSingleProcessMash())
-    return;
+                       DISABLED_CapturesOccludedWindows) {
   NavigateToInitialDocument();
   AllocateAndStartAndWaitForFirstFrame();
 
   ASSERT_EQ(aura::Window::OcclusionState::VISIBLE,
-            shell()->web_contents()->GetNativeView()->occlusion_state());
+            shell()->web_contents()->GetNativeView()->GetOcclusionState());
   // Create a window on top of the window being captured with same size so that
   // it is occluded.
   auto window = std::make_unique<aura::Window>(nullptr);
@@ -332,12 +322,12 @@ IN_PROC_BROWSER_TEST_F(AuraWindowVideoCaptureDeviceBrowserTest,
   window->SetBounds(shell()->window()->bounds());
   window->Show();
   EXPECT_EQ(aura::Window::OcclusionState::VISIBLE,
-            shell()->web_contents()->GetNativeView()->occlusion_state());
+            shell()->web_contents()->GetNativeView()->GetOcclusionState());
 
   window.reset();
   StopAndDeAllocate();
 }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 class AuraWindowVideoCaptureDeviceBrowserTestP
     : public AuraWindowVideoCaptureDeviceBrowserTest,
@@ -351,9 +341,9 @@ class AuraWindowVideoCaptureDeviceBrowserTestP
   }
 };
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     AuraWindowVideoCaptureDeviceBrowserTestP,
     testing::Combine(
         // Note: On ChromeOS, software compositing is not an option.
@@ -362,22 +352,20 @@ INSTANTIATE_TEST_SUITE_P(
                         true /* fixed aspect ratio */)));
 #else
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     AuraWindowVideoCaptureDeviceBrowserTestP,
     testing::Combine(testing::Values(false /* GPU-accelerated compositing */,
                                      true /* software compositing */),
                      testing::Values(false /* variable aspect ratio */,
                                      true /* fixed aspect ratio */)));
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
+// Disabled (crbug.com/1096988)
 // Tests that the device successfully captures a series of content changes,
 // whether the browser is running with software compositing or GPU-accelerated
 // compositing.
 IN_PROC_BROWSER_TEST_P(AuraWindowVideoCaptureDeviceBrowserTestP,
-                       CapturesContentChanges) {
-  // TODO(crbug.com/877172): CopyOutputRequests not allowed.
-  if (features::IsSingleProcessMash())
-    return;
+                       DISABLED_CapturesContentChanges) {
   SCOPED_TRACE(testing::Message()
                << "Test parameters: "
                << (IsSoftwareCompositingTest() ? "Software Compositing"

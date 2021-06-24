@@ -5,7 +5,8 @@
 #include "media/renderers/decrypting_renderer.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "media/base/cdm_context.h"
 #include "media/base/demuxer_stream.h"
 #include "media/base/media_log.h"
 #include "media/base/media_resource.h"
@@ -24,8 +25,7 @@ DecryptingRenderer::DecryptingRenderer(
       media_task_runner_(media_task_runner),
       client_(nullptr),
       media_resource_(nullptr),
-      decrypting_media_resource_(nullptr),
-      weak_factory_(this) {
+      decrypting_media_resource_(nullptr) {
   DCHECK(renderer_);
 }
 
@@ -43,7 +43,7 @@ DecryptingRenderer::~DecryptingRenderer() {}
 // Encrypted  Other         InitializeRenderer()
 void DecryptingRenderer::Initialize(MediaResource* media_resource,
                                     RendererClient* client,
-                                    const PipelineStatusCB& init_cb) {
+                                    PipelineStatusCallback init_cb) {
   DCHECK(media_task_runner_->BelongsToCurrentThread());
   DCHECK(media_resource);
   DCHECK(client);
@@ -74,12 +74,12 @@ void DecryptingRenderer::Initialize(MediaResource* media_resource,
 }
 
 void DecryptingRenderer::SetCdm(CdmContext* cdm_context,
-                                const CdmAttachedCB& cdm_attached_cb) {
+                                CdmAttachedCB cdm_attached_cb) {
   DCHECK(media_task_runner_->BelongsToCurrentThread());
 
   if (cdm_context_) {
     DVLOG(1) << "Switching CDM not supported.";
-    cdm_attached_cb.Run(false);
+    std::move(cdm_attached_cb).Run(false);
     return;
   }
 
@@ -94,11 +94,11 @@ void DecryptingRenderer::SetCdm(CdmContext* cdm_context,
     // scenario we want to initialize the DecryptingMediaResource here.
     if (waiting_for_cdm_)
       CreateAndInitializeDecryptingMediaResource();
-    cdm_attached_cb.Run(true);
+    std::move(cdm_attached_cb).Run(true);
     return;
   }
 
-  renderer_->SetCdm(cdm_context_, cdm_attached_cb);
+  renderer_->SetCdm(cdm_context_, std::move(cdm_attached_cb));
 
   // We only want to initialize the renderer if we were waiting for the
   // CdmContext, otherwise it will already have been initialized.
@@ -106,8 +106,21 @@ void DecryptingRenderer::SetCdm(CdmContext* cdm_context,
     InitializeRenderer(true);
 }
 
-void DecryptingRenderer::Flush(const base::Closure& flush_cb) {
-  renderer_->Flush(flush_cb);
+void DecryptingRenderer::SetLatencyHint(
+    absl::optional<base::TimeDelta> latency_hint) {
+  renderer_->SetLatencyHint(latency_hint);
+}
+
+void DecryptingRenderer::SetPreservesPitch(bool preserves_pitch) {
+  renderer_->SetPreservesPitch(preserves_pitch);
+}
+
+void DecryptingRenderer::SetAutoplayInitiated(bool autoplay_initiated) {
+  renderer_->SetAutoplayInitiated(autoplay_initiated);
+}
+
+void DecryptingRenderer::Flush(base::OnceClosure flush_cb) {
+  renderer_->Flush(std::move(flush_cb));
 }
 
 void DecryptingRenderer::StartPlayingFrom(base::TimeDelta time) {

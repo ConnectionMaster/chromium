@@ -9,7 +9,9 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -39,6 +41,7 @@ AccountId::AccountId(const std::string& id,
                      const std::string& user_email,
                      const AccountType& account_type)
     : id_(id), user_email_(user_email), account_type_(account_type) {
+  DCHECK(user_email == gaia::CanonicalizeEmail(user_email));
   DCHECK(account_type != AccountType::UNKNOWN || id.empty());
   DCHECK(account_type != AccountType::ACTIVE_DIRECTORY || !id.empty());
   // Fail if e-mail looks similar to GaiaIdKey.
@@ -154,6 +157,7 @@ const std::string AccountId::GetAccountIdKey() const {
 }
 
 void AccountId::SetUserEmail(const std::string& email) {
+  DCHECK(email == gaia::CanonicalizeEmail(email));
   DCHECK(!email.empty());
   user_email_ = email;
 }
@@ -240,7 +244,7 @@ std::string AccountId::Serialize() const {
 // static
 bool AccountId::Deserialize(const std::string& serialized,
                             AccountId* account_id) {
-  base::Optional<base::Value> value(base::JSONReader::Read(serialized));
+  absl::optional<base::Value> value(base::JSONReader::Read(serialized));
   if (!value || !value->is_dict())
     return false;
 

@@ -10,10 +10,27 @@ mojom_component("mojom") {
     "fake_drivefs_launcher.mojom",
   ]
 
-  public_deps = [
-    "//mojo/public/mojom/base",
-  ]
+  public_deps = [ "//mojo/public/mojom/base" ]
 
   output_prefix = "drivefs_mojom"
   macro_prefix = "DRIVEFS_MOJOM"
+
+  cpp_typemaps = [
+    {
+      types = [
+        {
+          mojom = "drivefs.mojom.FileError"
+          cpp = "::drive::FileError"
+        },
+      ]
+      traits_headers =
+          [ "//chromeos/components/drivefs/drivefs_mojom_traits.h" ]
+      traits_sources =
+          [ "//chromeos/components/drivefs/drivefs_mojom_traits.cc" ]
+      traits_public_deps = [
+        "//base",
+        "//components/drive",
+      ]
+    },
+  ]
 }

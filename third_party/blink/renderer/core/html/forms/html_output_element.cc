@@ -35,7 +35,7 @@
 
 namespace blink {
 
-inline HTMLOutputElement::HTMLOutputElement(Document& document)
+HTMLOutputElement::HTMLOutputElement(Document& document)
     : HTMLFormControlElement(html_names::kOutputTag, document),
       is_default_value_mode_(true),
       default_value_(""),
@@ -43,10 +43,6 @@ inline HTMLOutputElement::HTMLOutputElement(Document& document)
 }
 
 HTMLOutputElement::~HTMLOutputElement() = default;
-
-HTMLOutputElement* HTMLOutputElement::Create(Document& document) {
-  return MakeGarbageCollected<HTMLOutputElement>(document);
-}
 
 const AtomicString& HTMLOutputElement::FormControlType() const {
   DEFINE_STATIC_LOCAL(const AtomicString, output, ("output"));
@@ -77,20 +73,13 @@ DOMTokenList* HTMLOutputElement::htmlFor() const {
   return tokens_.Get();
 }
 
-void HTMLOutputElement::ChildrenChanged(const ChildrenChange& change) {
-  HTMLFormControlElement::ChildrenChanged(change);
-
-  if (is_default_value_mode_)
-    default_value_ = textContent();
-}
-
 void HTMLOutputElement::ResetImpl() {
   // The reset algorithm for output elements is to set the element's
   // value mode flag to "default" and then to set the element's textContent
   // attribute to the default value.
-  if (default_value_ == value())
+  if (defaultValue() == value())
     return;
-  setTextContent(default_value_);
+  setTextContent(defaultValue());
   is_default_value_mode_ = true;
 }
 
@@ -98,16 +87,21 @@ String HTMLOutputElement::value() const {
   return textContent();
 }
 
-void HTMLOutputElement::setValue(const String& value) {
+void HTMLOutputElement::setValue(const String& new_value) {
+  String old_value = value();
+
+  if (is_default_value_mode_)
+    default_value_ = old_value;
+
   // The value mode flag set to "value" when the value attribute is set.
   is_default_value_mode_ = false;
-  if (value == this->value())
-    return;
-  setTextContent(value);
+
+  if (new_value != old_value)
+    setTextContent(new_value);
 }
 
 String HTMLOutputElement::defaultValue() const {
-  return default_value_;
+  return is_default_value_mode_ ? textContent() : default_value_;
 }
 
 void HTMLOutputElement::setDefaultValue(const String& value) {
@@ -120,11 +114,7 @@ void HTMLOutputElement::setDefaultValue(const String& value) {
     setTextContent(value);
 }
 
-int HTMLOutputElement::tabIndex() const {
-  return HTMLElement::tabIndex();
-}
-
-void HTMLOutputElement::Trace(Visitor* visitor) {
+void HTMLOutputElement::Trace(Visitor* visitor) const {
   visitor->Trace(tokens_);
   HTMLFormControlElement::Trace(visitor);
 }

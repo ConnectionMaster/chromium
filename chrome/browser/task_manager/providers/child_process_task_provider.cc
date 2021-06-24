@@ -4,14 +4,16 @@
 
 #include "chrome/browser/task_manager/providers/child_process_task_provider.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/process/process.h"
-#include "base/task/post_task.h"
 #include "chrome/browser/task_manager/providers/child_process_task.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
+#include "content/public/common/content_features.h"
 
 using content::BrowserChildProcessHostIterator;
 using content::BrowserThread;
@@ -26,7 +28,9 @@ namespace {
 // |BrowserChildProcessObserver|.
 std::unique_ptr<std::vector<ChildProcessData>> CollectChildProcessData() {
   // The |BrowserChildProcessHostIterator| must only be used on the IO thread.
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CURRENTLY_ON(base::FeatureList::IsEnabled(features::kProcessHostOnUI)
+                          ? content::BrowserThread::UI
+                          : content::BrowserThread::IO);
 
   std::unique_ptr<std::vector<ChildProcessData>> child_processes(
       new std::vector<ChildProcessData>());
@@ -45,9 +49,7 @@ std::unique_ptr<std::vector<ChildProcessData>> CollectChildProcessData() {
 
 }  // namespace
 
-ChildProcessTaskProvider::ChildProcessTaskProvider()
-    : weak_ptr_factory_(this) {
-}
+ChildProcessTaskProvider::ChildProcessTaskProvider() {}
 
 ChildProcessTaskProvider::~ChildProcessTaskProvider() {
 }
@@ -83,10 +85,13 @@ void ChildProcessTaskProvider::StartUpdating() {
   DCHECK(tasks_by_child_id_.empty());
 
   // First, get the pre-existing child processes data.
-  base::PostTaskWithTraitsAndReplyWithResult(
-      FROM_HERE, {BrowserThread::IO}, base::Bind(&CollectChildProcessData),
-      base::Bind(&ChildProcessTaskProvider::ChildProcessDataCollected,
-                 weak_ptr_factory_.GetWeakPtr()));
+  auto task_runner = base::FeatureList::IsEnabled(features::kProcessHostOnUI)
+                         ? content::GetUIThreadTaskRunner({})
+                         : content::GetIOThreadTaskRunner({});
+  task_runner->PostTaskAndReplyWithResult(
+      FROM_HERE, base::BindOnce(&CollectChildProcessData),
+      base::BindOnce(&ChildProcessTaskProvider::ChildProcessDataCollected,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ChildProcessTaskProvider::StopUpdating() {
@@ -132,7 +137,8 @@ void ChildProcessTaskProvider::CreateTask(
   }
 
   // Create the task and notify the observer.
-  task.reset(new ChildProcessTask(data));
+  task = std::make_unique<ChildProcessTask>(
+      data, ChildProcessTask::ProcessSubtype::kNoSubtype);
   tasks_by_child_id_[task->GetChildProcessUniqueID()] = task.get();
   NotifyObserverTaskAdded(task.get());
 }

@@ -8,7 +8,7 @@
 #include <string>
 
 #include "base/callback_forward.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class GURL;
 struct SearchSuggestData;
@@ -17,8 +17,10 @@ struct SearchSuggestData;
 class SearchSuggestLoader {
  public:
   enum class Status {
-    // Received a valid response.
-    OK,
+    // Received a valid response that contained search suggestions.
+    OK_WITH_SUGGESTIONS,
+    // Received a valid response that did not contain search suggestions.
+    OK_WITHOUT_SUGGESTIONS,
     // User is signed out, no request was made.
     SIGNED_OUT,
     // Some transient error occurred, e.g. the network request failed because
@@ -37,7 +39,7 @@ class SearchSuggestLoader {
   };
   using SearchSuggestionsCallback =
       base::OnceCallback<void(Status,
-                              const base::Optional<SearchSuggestData>&)>;
+                              const absl::optional<SearchSuggestData>&)>;
 
   virtual ~SearchSuggestLoader() = default;
 

@@ -10,6 +10,7 @@ include_rules = [
   "+content/grit",
   "+content/public/common",
   "+content/public/test",
+  "+content/services/auction_worklet/public",
   "+content/test",
   "+blink/public/resources/grit",
   "+cc",
@@ -24,12 +25,13 @@ include_rules = [
   # as autofill or extensions, and chrome implementation details such as
   # settings, packaging details, installation or crash reporting.
 
+  "+components/power_scheduler",
   "+components/services/filesystem",
   "+components/services/font/public",
+  "+components/variations",
 
   "+crypto",
   "+grit/blink_resources.h",
-  "+grit/content_strings.h",
 
   "+dbus",
   "+gpu",
@@ -41,8 +43,6 @@ include_rules = [
   "+printing",
   "+sandbox",
   "+services/proxy_resolver/public/mojom",
-  "+services/service_manager/embedder",
-  "+services/service_manager/sandbox",
   "+services/service_manager/zygote",
   "+skia",
 
@@ -90,6 +90,8 @@ include_rules = [
   "+ui/latency",
   "+ui/native_theme",
   "+ui/resources/grit/ui_resources.h",
+  "+ui/resources/grit/webui_generated_resources.h",
+  "+ui/resources/grit/webui_generated_resources_map.h",
   "+ui/resources/grit/webui_resources.h",
   "+ui/resources/grit/webui_resources_map.h",
   "+ui/shell_dialogs",
@@ -115,7 +117,8 @@ include_rules = [
   "+storage/common",
 
   # For generated JNI includes.
-  "+jni",
+  "+content/public/android/content_jni_headers",
+  "+content/public/android/jar_jni",
 ]
 
 specific_include_rules = {
@@ -123,15 +126,5 @@ specific_include_rules = {
     # content -> content/shell dependency is disallowed, except browser tests.
     "+content/shell/browser",
     "+content/shell/common",
-
-    # components/variations/variations_params_manager.h is allowed from tests
-    # (it is part of //components/variations:test_support target).
-    "+components/variations/variations_params_manager.h",
-  ],
-
-  "test_utils\.cc": [
-    # components/variations/variations_params_manager.h is allowed from tests
-    # (it is part of //components/variations:test_support target).
-    "+components/variations/variations_params_manager.h",
   ],
 }

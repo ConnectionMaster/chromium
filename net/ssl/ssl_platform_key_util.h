@@ -12,9 +12,9 @@
 
 #include "base/containers/span.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/single_thread_task_runner.h"
 #include "net/base/net_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/boringssl/src/include/openssl/base.h"
 
 namespace net {
@@ -25,7 +25,8 @@ class X509Certificate;
 // background thread to avoid problems with buggy smartcards. Its underlying
 // Thread is non-joinable and as such provides
 // TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN semantics.
-scoped_refptr<base::SingleThreadTaskRunner> GetSSLPlatformKeyTaskRunner();
+NET_EXPORT_PRIVATE scoped_refptr<base::SingleThreadTaskRunner>
+GetSSLPlatformKeyTaskRunner();
 
 // Returns the public key of |certificate| as an |EVP_PKEY| or nullptr on error.
 bssl::UniquePtr<EVP_PKEY> GetClientCertPublicKey(
@@ -41,7 +42,7 @@ NET_EXPORT_PRIVATE bool GetClientCertInfo(const X509Certificate* certificate,
 // Returns the encoded form of |digest| for use with RSA-PSS with |pubkey|,
 // using |md| as the hash function and MGF-1 function, and the digest size of
 // |md| as the salt length.
-base::Optional<std::vector<uint8_t>> AddPSSPadding(
+absl::optional<std::vector<uint8_t>> AddPSSPadding(
     EVP_PKEY* pubkey,
     const EVP_MD* md,
     base::span<const uint8_t> digest);

@@ -18,12 +18,10 @@
 #include "base/process/process_metrics_iocounters.h"
 #include "base/system/sys_info.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/values.h"
 
 namespace base {
 namespace {
-
-// System pagesize. This value remains constant on x86/64 architectures.
-const int PAGESIZE_KB = 4;
 
 // ntstatus.h conflicts with windows.h so define this locally.
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
@@ -129,6 +127,12 @@ size_t GetMaxFds() {
   return std::numeric_limits<size_t>::max();
 }
 
+size_t GetHandleLimit() {
+  // Rounded down from value reported here:
+  // http://blogs.technet.com/b/markrussinovich/archive/2009/09/29/3283844.aspx
+  return static_cast<size_t>(1 << 23);
+}
+
 // static
 std::unique_ptr<ProcessMetrics> ProcessMetrics::CreateProcessMetrics(
     ProcessHandle process) {
@@ -141,11 +145,14 @@ TimeDelta ProcessMetrics::GetCumulativeCPUUsage() {
   FILETIME kernel_time;
   FILETIME user_time;
 
+  if (!process_.IsValid())
+    return TimeDelta();
+
   if (!GetProcessTimes(process_.Get(), &creation_time, &exit_time, &kernel_time,
                        &user_time)) {
-    // We don't assert here because in some cases (such as in the Task Manager)
-    // we may call this function on a process that has just exited but we have
-    // not yet received the notification.
+    // This should never fail because we duplicate the handle to guarantee it
+    // will remain valid.
+    DCHECK(false);
     return TimeDelta();
   }
 
@@ -154,6 +161,9 @@ TimeDelta ProcessMetrics::GetCumulativeCPUUsage() {
 }
 
 bool ProcessMetrics::GetIOCounters(IoCounters* io_counters) const {
+  if (!process_.IsValid())
+    return false;
+
   return GetProcessIoCounters(process_.Get(), io_counters) != FALSE;
 }
 
@@ -188,10 +198,6 @@ size_t GetSystemCommitCharge() {
     return 0;
   }
   return (info.CommitTotal * system_info.dwPageSize) / 1024;
-}
-
-size_t GetPageSize() {
-  return PAGESIZE_KB * 1024;
 }
 
 // This function uses the following mapping between MEMORYSTATUSEX and

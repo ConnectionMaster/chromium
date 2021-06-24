@@ -37,7 +37,7 @@ struct CONTENT_EXPORT AppCacheInfoCollection
 };
 
 // Exposes a limited interface to the AppCacheService.
-// Call these methods only on the IO thread.
+// Call these methods only on the UI thread.
 class CONTENT_EXPORT AppCacheService {
  public:
   // Populates 'collection' with info about all of the appcaches stored
@@ -47,22 +47,14 @@ class CONTENT_EXPORT AppCacheService {
   virtual void GetAllAppCacheInfo(AppCacheInfoCollection* collection,
                                   net::CompletionOnceCallback callback) = 0;
 
-  // Deletes the group identified by 'manifest_url', 'callback' is
-  // invoked upon completion. Upon completion, the cache group and
-  // any resources within the group are no longer loadable and all
-  // subresource loads for pages associated with a deleted group
-  // will fail. This method always completes asynchronously.
-  virtual void DeleteAppCacheGroup(const GURL& manifest_url,
-                                   net::CompletionOnceCallback callback) = 0;
-
   // Deletes all appcache groups associated with an origin.
-  // Always completes asynchronously.
+  // This method always completes asynchronously.
   virtual void DeleteAppCachesForOrigin(
       const url::Origin& origin,
       net::CompletionOnceCallback callback) = 0;
 
  protected:
-  virtual ~AppCacheService() {}
+  virtual ~AppCacheService();
 };
 
 }  // namespace content

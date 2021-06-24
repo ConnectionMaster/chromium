@@ -6,7 +6,7 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
-#include "components/open_from_clipboard/clipboard_recent_content_features.h"
+#include "build/build_config.h"
 #include "components/variations/variations_associated_data.h"
 #include "url/url_constants.h"
 
@@ -34,9 +34,5 @@ void ClipboardRecentContent::SetInstance(
 
 // static
 base::TimeDelta ClipboardRecentContent::MaximumAgeOfClipboard() {
-  // Identify the current setting for this parameter from the feature, using
-  // 3600 seconds (1 hour) as a default if the parameter is not set.
-  int value = variations::GetVariationParamByFeatureAsInt(
-      kClipboardMaximumAge, kClipboardMaximumAgeParam, 3600);
-  return base::TimeDelta::FromSeconds(value);
+  return base::TimeDelta::FromMinutes(10);
 }

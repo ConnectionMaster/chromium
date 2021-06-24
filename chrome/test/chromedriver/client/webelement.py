@@ -34,8 +34,11 @@ class WebElement(object):
   def GetProperty(self,name):
     return self._Execute(Command.GET_ELEMENT_PROPERTY, {'name': name})
 
-  def HoverOver(self):
-    self._Execute(Command.HOVER_OVER_ELEMENT)
+  def GetComputedLabel(self):
+    return self._Execute(Command.GET_ELEMENT_COMPUTED_LABEL)
+
+  def GetComputedRole(self):
+    return self._Execute(Command.GET_ELEMENT_COMPUTED_ROLE)
 
   def Click(self):
     self._Execute(Command.CLICK_ELEMENT)

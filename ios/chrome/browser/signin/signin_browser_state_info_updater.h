@@ -7,20 +7,19 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/signin/core/browser/signin_error_controller.h"
-#include "services/identity/public/cpp/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 
 // This class listens to various signin events and updates the signin-related
 // fields of BrowserStateInfoCache.
-class SigninBrowserStateInfoUpdater
-    : public KeyedService,
-      public SigninErrorController::Observer,
-      public identity::IdentityManager::Observer {
+class SigninBrowserStateInfoUpdater : public KeyedService,
+                                      public SigninErrorController::Observer,
+                                      public signin::IdentityManager::Observer {
  public:
-  SigninBrowserStateInfoUpdater(identity::IdentityManager* identity_manager,
+  SigninBrowserStateInfoUpdater(signin::IdentityManager* identity_manager,
                                 SigninErrorController* signin_error_controller,
                                 const base::FilePath& browser_state_path);
 
@@ -37,18 +36,18 @@ class SigninBrowserStateInfoUpdater
   void OnErrorChanged() override;
 
   // IdentityManager::Observer:
-  void OnPrimaryAccountSet(
-      const CoreAccountInfo& primary_account_info) override;
-  void OnPrimaryAccountCleared(
-      const CoreAccountInfo& previous_primary_account_info) override;
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event) override;
 
-  identity::IdentityManager* identity_manager_ = nullptr;
+  signin::IdentityManager* identity_manager_ = nullptr;
   SigninErrorController* signin_error_controller_ = nullptr;
   const base::FilePath browser_state_path_;
-  ScopedObserver<identity::IdentityManager, SigninBrowserStateInfoUpdater>
-      identity_manager_observer_;
-  ScopedObserver<SigninErrorController, SigninBrowserStateInfoUpdater>
-      signin_error_controller_observer_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
+  base::ScopedObservation<SigninErrorController,
+                          SigninErrorController::Observer>
+      signin_error_controller_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SigninBrowserStateInfoUpdater);
 };

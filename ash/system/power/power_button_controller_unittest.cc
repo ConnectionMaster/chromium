@@ -4,13 +4,12 @@
 
 #include "ash/system/power/power_button_controller.h"
 
-#include "ash/accessibility/accessibility_controller.h"
 #include "ash/accessibility/test_accessibility_controller_client.h"
+#include "ash/constants/ash_switches.h"
 #include "ash/display/screen_orientation_controller.h"
 #include "ash/display/screen_orientation_controller_test_api.h"
-#include "ash/media/media_controller.h"
-#include "ash/public/cpp/ash_switches.h"
-#include "ash/session/session_controller.h"
+#include "ash/media/media_controller_impl.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/system/power/power_button_controller_test_api.h"
 #include "ash/system/power/power_button_menu_item_view.h"
@@ -25,7 +24,6 @@
 #include "base/command_line.h"
 #include "base/json/json_writer.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power_manager/suspend.pb.h"
@@ -84,9 +82,6 @@ class PowerButtonControllerTest : public PowerButtonTestBase {
     // Run the event loop so that PowerButtonDisplayController can receive the
     // initial backlights-forced-off state.
     base::RunLoop().RunUntilIdle();
-
-    a11y_controller_ = Shell::Get()->accessibility_controller();
-    a11y_controller_->SetClient(a11y_client_.CreateInterfacePtrAndBind());
   }
 
  protected:
@@ -101,10 +96,8 @@ class PowerButtonControllerTest : public PowerButtonTestBase {
 
   bool GetLockedState() {
     // LockScreen is an async mojo call.
-    SessionController* const session_controller =
-        Shell::Get()->session_controller();
-    session_controller->FlushMojoForTest();
-    return session_controller->IsScreenLocked();
+    GetSessionControllerClient()->FlushForTest();
+    return Shell::Get()->session_controller()->IsScreenLocked();
   }
 
   bool GetGlobalTouchscreenEnabled() const {
@@ -127,9 +120,7 @@ class PowerButtonControllerTest : public PowerButtonTestBase {
   // Press the power button to show the menu.
   void OpenPowerButtonMenu() {
     PressPowerButton();
-    if (Shell::Get()
-            ->tablet_mode_controller()
-            ->IsTabletModeWindowManagerEnabled()) {
+    if (Shell::Get()->tablet_mode_controller()->InTabletMode()) {
       EXPECT_TRUE(power_button_test_api_->PowerButtonMenuTimerIsRunning());
       ASSERT_TRUE(power_button_test_api_->TriggerPowerButtonMenuTimeout());
     }
@@ -140,8 +131,10 @@ class PowerButtonControllerTest : public PowerButtonTestBase {
   // Tap outside of the menu view to dismiss the menu.
   void TapToDismissPowerButtonMenu() {
     gfx::Rect menu_bounds = power_button_test_api_->GetMenuBoundsInScreen();
-    GetEventGenerator()->GestureTapAt(
-        gfx::Point(menu_bounds.x() - 5, menu_bounds.y() - 5));
+    gfx::Point point = menu_bounds.bottom_right();
+    point.Offset(5, 5);
+    GetEventGenerator()->GestureTapAt(point);
+
     EXPECT_FALSE(power_button_test_api_->IsMenuOpened());
   }
 
@@ -152,9 +145,6 @@ class PowerButtonControllerTest : public PowerButtonTestBase {
   void ReleaseLockButton() {
     power_button_controller_->OnLockButtonEvent(false, base::TimeTicks::Now());
   }
-
-  AccessibilityController* a11y_controller_ = nullptr;  // not owned
-  TestAccessibilityControllerClient a11y_client_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PowerButtonControllerTest);
@@ -711,7 +701,7 @@ TEST_F(PowerButtonControllerTest, SyncTouchscreenEnabled) {
 // sessions should be suspended.
 TEST_F(PowerButtonControllerTest, SuspendMediaSessions) {
   TestMediaClient client;
-  Shell::Get()->media_controller()->SetClient(client.CreateAssociatedPtrInfo());
+  Shell::Get()->media_controller()->SetClient(&client);
   ASSERT_FALSE(client.media_sessions_suspended());
 
   EnableTabletMode(true);
@@ -776,19 +766,17 @@ TEST_F(PowerButtonControllerTest, IgnoreForcingOffWhenDisplayIsTurningOn) {
 // Tests that a11y alert is sent on tablet power button induced screen state
 // change.
 TEST_F(PowerButtonControllerTest, A11yAlert) {
+  TestAccessibilityControllerClient a11y_client;
+
   EnableTabletMode(true);
   PressPowerButton();
   ReleasePowerButton();
   SendBrightnessChange(0, kUserCause);
-  a11y_controller_->FlushMojoForTest();
-  EXPECT_EQ(mojom::AccessibilityAlert::SCREEN_OFF,
-            a11y_client_.last_a11y_alert());
+  EXPECT_EQ(AccessibilityAlert::SCREEN_OFF, a11y_client.last_a11y_alert());
 
   PressPowerButton();
   SendBrightnessChange(kNonZeroBrightness, kUserCause);
-  a11y_controller_->FlushMojoForTest();
-  EXPECT_EQ(mojom::AccessibilityAlert::SCREEN_ON,
-            a11y_client_.last_a11y_alert());
+  EXPECT_EQ(AccessibilityAlert::SCREEN_ON, a11y_client.last_a11y_alert());
   ReleasePowerButton();
 }
 
@@ -811,22 +799,31 @@ TEST_F(PowerButtonControllerTest, MouseClickToDismissMenu) {
 
 // Tests the menu items according to the login and screen locked status.
 TEST_F(PowerButtonControllerTest, MenuItemsToLoginAndLockedStatus) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeature(PowerButtonMenuView::kEnableFeedbackItem);
-
-  // No sign out, lock screen and feedback items if user is not logged in.
+  // Should have feedback but not sign out and lock screen items if there is no
+  // user signed in.
   ClearLogin();
   Shell::Get()->UpdateAfterLoginStatusChange(LoginStatus::NOT_LOGGED_IN);
   OpenPowerButtonMenu();
   EXPECT_FALSE(power_button_test_api_->MenuHasSignOutItem());
   EXPECT_FALSE(power_button_test_api_->MenuHasLockScreenItem());
-  EXPECT_FALSE(power_button_test_api_->MenuHasFeedbackItem());
+  EXPECT_TRUE(power_button_test_api_->MenuHasFeedbackItem());
+  TapToDismissPowerButtonMenu();
+
+  // Should have sign out and feedback items if in guest mode (or, generally,
+  // if screen locking is disabled).
+  ClearLogin();
+  Initialize(ButtonType::NORMAL, LoginStatus::GUEST);
+  OpenPowerButtonMenu();
+  EXPECT_FALSE(GetLockedState());
+  EXPECT_TRUE(power_button_test_api_->MenuHasSignOutItem());
+  EXPECT_FALSE(power_button_test_api_->MenuHasLockScreenItem());
+  EXPECT_TRUE(power_button_test_api_->MenuHasFeedbackItem());
   TapToDismissPowerButtonMenu();
 
   // Should have sign out, lock screen and feedback items if user is logged in
   // and screen is unlocked.
+  ClearLogin();
   CreateUserSessions(1);
-  Shell::Get()->UpdateAfterLoginStatusChange(LoginStatus::USER);
   OpenPowerButtonMenu();
   EXPECT_FALSE(GetLockedState());
   EXPECT_TRUE(power_button_test_api_->MenuHasSignOutItem());
@@ -944,7 +941,7 @@ TEST_F(PowerButtonControllerTest, FormerlyActiveWindowInShowingMenu) {
   // The active window becomes inactive after menu is shown but it is still
   // painted as active to avoid frame color change.
   EXPECT_FALSE(widget->IsActive());
-  EXPECT_TRUE(widget->IsAlwaysRenderAsActive());
+  EXPECT_TRUE(widget->ShouldPaintAsActive());
   EXPECT_TRUE(widget->non_client_view()->frame_view()->ShouldPaintAsActive());
   EXPECT_TRUE(
       wm::IsActiveWindow(power_button_test_api_->GetPowerButtonMenuView()
@@ -953,23 +950,25 @@ TEST_F(PowerButtonControllerTest, FormerlyActiveWindowInShowingMenu) {
   // Should reset the previous painting as active setting of the active window
   // if dismissing the menu.
   TapToDismissPowerButtonMenu();
-  EXPECT_FALSE(widget->IsAlwaysRenderAsActive());
-  EXPECT_TRUE(widget->IsActive());
 
-  // Showing or dismissing menu should not change the original setting of the
-  // formerly-active window.
-  widget->SetAlwaysRenderAsActive(true);
+  // Focus may fall to the widget if it's the only remaining widget on the
+  // screen. Deactivate it to verify that it's no longer being forced to render
+  // as active.
+  widget->Deactivate();
+  EXPECT_FALSE(widget->ShouldPaintAsActive());
+
+  // A widget which is not the active widget is not affected by opening the
+  // power button menu.
   OpenPowerButtonMenu();
+  EXPECT_FALSE(widget->ShouldPaintAsActive());
   TapToDismissPowerButtonMenu();
-  EXPECT_TRUE(widget->IsAlwaysRenderAsActive());
-  widget->SetAlwaysRenderAsActive(false);
+
+  // If focus didn't fall to the widget after the menu was closed, focus it.
+  widget->Activate();
 
   // Dismiss menu should work well after the active window is closed between
   // showing and dismissing menu.
-  EXPECT_TRUE(widget->IsActive());
-  EXPECT_FALSE(widget->IsAlwaysRenderAsActive());
   OpenPowerButtonMenu();
-  EXPECT_TRUE(widget->IsAlwaysRenderAsActive());
   widget->Close();
   TapToDismissPowerButtonMenu();
 }
@@ -1009,57 +1008,50 @@ TEST_F(PowerButtonControllerTest, ESCDismissMenu) {
 
 // Tests the navigation of the menu.
 TEST_F(PowerButtonControllerTest, MenuNavigation) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeature(PowerButtonMenuView::kEnableFeedbackItem);
+  ClearLogin();
+  Shell::Get()->UpdateAfterLoginStatusChange(LoginStatus::NOT_LOGGED_IN);
+  OpenPowerButtonMenu();
+  ASSERT_TRUE(power_button_test_api_->MenuHasFeedbackItem());
+  auto* menu_view = power_button_test_api_->GetPowerButtonMenuView();
+  PressKey(ui::VKEY_TAB);
+  EXPECT_TRUE(menu_view->power_off_item_for_test()->HasFocus());
+  PressKey(ui::VKEY_TAB);
+  EXPECT_TRUE(menu_view->feedback_item_for_test()->HasFocus());
+  TapToDismissPowerButtonMenu();
 
+  ClearLogin();
+  CreateUserSessions(1);
   OpenPowerButtonMenu();
   ASSERT_TRUE(power_button_test_api_->MenuHasSignOutItem());
   ASSERT_TRUE(power_button_test_api_->MenuHasLockScreenItem());
   ASSERT_TRUE(power_button_test_api_->MenuHasFeedbackItem());
+  menu_view = power_button_test_api_->GetPowerButtonMenuView();
   PressKey(ui::VKEY_TAB);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->power_off_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->power_off_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_RIGHT);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->sign_out_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->sign_out_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_DOWN);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->lock_screen_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->lock_screen_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_TAB);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->feedback_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->feedback_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_TAB);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->power_off_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->power_off_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_UP);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->feedback_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->feedback_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_UP);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->lock_screen_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->lock_screen_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_LEFT);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->sign_out_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->sign_out_item_for_test()->HasFocus());
 
   PressKey(ui::VKEY_UP);
-  EXPECT_TRUE(power_button_test_api_->GetPowerButtonMenuView()
-                  ->power_off_item_for_test()
-                  ->HasFocus());
+  EXPECT_TRUE(menu_view->power_off_item_for_test()->HasFocus());
 }
 
 // Tests that the partially shown menu will be dismissed by power button up in
@@ -1127,9 +1119,7 @@ class PowerButtonControllerWithPositionTest
 
   // Returns true if it is in tablet mode.
   bool IsTabletMode() const {
-    return Shell::Get()
-        ->tablet_mode_controller()
-        ->IsTabletModeWindowManagerEnabled();
+    return Shell::Get()->tablet_mode_controller()->InTabletMode();
   }
 
   // Returns true if the menu is at the center of the display.
@@ -1151,8 +1141,9 @@ class PowerButtonControllerWithPositionTest
   DISALLOW_COPY_AND_ASSIGN(PowerButtonControllerWithPositionTest);
 };
 
+// TODO(crbug.com/1010194).
 TEST_P(PowerButtonControllerWithPositionTest,
-       MenuNextToPowerButtonInTabletMode) {
+       DISABLED_MenuNextToPowerButtonInTabletMode) {
   std::string display =
       std::to_string(kDisplayWidth) + "x" + std::to_string(kDisplayHeight);
   UpdateDisplay(display);
@@ -1387,7 +1378,6 @@ TEST_F(PowerButtonControllerTest, LegacyPowerButtonIgnoreExtraPress) {
   EXPECT_EQ(menu_view_before, power_button_test_api_->GetPowerButtonMenuView());
   // This is needed to simulate the shutdown sound having been played,
   // which blocks the shutdown timer.
-  a11y_controller_->FlushMojoForTest();
   // Make sure that the second press did not trigger a shutdown.
   EXPECT_FALSE(lock_state_test_api_->real_shutdown_timer_is_running());
   // Make sure that power menu is still in partially shown state.

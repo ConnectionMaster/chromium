@@ -4,22 +4,18 @@
 
 package org.chromium.chrome.browser;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.ContextUtils;
-import org.chromium.base.PathUtils;
 import org.chromium.base.library_loader.LibraryLoader;
-import org.chromium.base.library_loader.LibraryProcessType;
-import org.chromium.base.library_loader.ProcessInitException;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.MetricsUtils;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 
@@ -32,24 +28,10 @@ public class RestoreHistogramTest {
     @Rule
     public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
 
-    private static final String PRIVATE_DATA_DIRECTORY_SUFFIX = "chrome";
-
-    @Before
-    public void setUp() throws Exception {
-        // TODO(aberent): Find the correct place to put this.  Calling ensureInitialized() on the
-        //                current pathway fails to set this variable with the modern linker.
-        PathUtils.setPrivateDataDirectorySuffix(PRIVATE_DATA_DIRECTORY_SUFFIX);
-    }
-
-    private void clearPrefs() {
-        ContextUtils.getAppSharedPreferences().edit().clear().apply();
-    }
-
     /**
      * Test that the fundamental method for writing the histogram
      * {@link ChromeBackupAgent#recordRestoreHistogram()} works correctly
      *
-     * @throws ProcessInitException
      * @Note This can't be tested in the ChromeBackupAgent Junit test, since the histograms are
      *       written in the C++ code, and because all the functions are static there is no easy way
      *       of mocking them in Mockito (one can disable them, but that would spoil the point of the
@@ -57,37 +39,37 @@ public class RestoreHistogramTest {
      */
     @Test
     @SmallTest
-    public void testHistogramWriter() throws ProcessInitException {
-        LibraryLoader.getInstance().ensureInitialized(LibraryProcessType.PROCESS_BROWSER);
-        MetricsUtils.HistogramDelta noRestoreDelta =
-                new MetricsUtils.HistogramDelta(ChromeBackupAgent.HISTOGRAM_ANDROID_RESTORE_RESULT,
-                        ChromeBackupAgent.RestoreStatus.NO_RESTORE);
-        MetricsUtils.HistogramDelta restoreCompletedDelta =
-                new MetricsUtils.HistogramDelta(ChromeBackupAgent.HISTOGRAM_ANDROID_RESTORE_RESULT,
-                        ChromeBackupAgent.RestoreStatus.RESTORE_COMPLETED);
-        MetricsUtils.HistogramDelta restoreStatusRecorded =
-                new MetricsUtils.HistogramDelta(ChromeBackupAgent.HISTOGRAM_ANDROID_RESTORE_RESULT,
-                        ChromeBackupAgent.RestoreStatus.RESTORE_STATUS_RECORDED);
+    public void testHistogramWriter() {
+        LibraryLoader.getInstance().ensureInitialized();
+        MetricsUtils.HistogramDelta noRestoreDelta = new MetricsUtils.HistogramDelta(
+                ChromeBackupAgentImpl.HISTOGRAM_ANDROID_RESTORE_RESULT,
+                ChromeBackupAgentImpl.RestoreStatus.NO_RESTORE);
+        MetricsUtils.HistogramDelta restoreCompletedDelta = new MetricsUtils.HistogramDelta(
+                ChromeBackupAgentImpl.HISTOGRAM_ANDROID_RESTORE_RESULT,
+                ChromeBackupAgentImpl.RestoreStatus.RESTORE_COMPLETED);
+        MetricsUtils.HistogramDelta restoreStatusRecorded = new MetricsUtils.HistogramDelta(
+                ChromeBackupAgentImpl.HISTOGRAM_ANDROID_RESTORE_RESULT,
+                ChromeBackupAgentImpl.RestoreStatus.RESTORE_STATUS_RECORDED);
 
         // Check behavior with no preference set
-        clearPrefs();
-        ChromeBackupAgent.recordRestoreHistogram();
+        ChromeBackupAgentImpl.recordRestoreHistogram();
         Assert.assertEquals(1, noRestoreDelta.getDelta());
         Assert.assertEquals(0, restoreCompletedDelta.getDelta());
-        Assert.assertEquals(ChromeBackupAgent.RestoreStatus.RESTORE_STATUS_RECORDED,
-                ChromeBackupAgent.getRestoreStatus());
+        Assert.assertEquals(ChromeBackupAgentImpl.RestoreStatus.RESTORE_STATUS_RECORDED,
+                ChromeBackupAgentImpl.getRestoreStatus());
 
         // Check behavior with a restore status
-        ChromeBackupAgent.setRestoreStatus(ChromeBackupAgent.RestoreStatus.RESTORE_COMPLETED);
-        ChromeBackupAgent.recordRestoreHistogram();
+        ChromeBackupAgentImpl.setRestoreStatus(
+                ChromeBackupAgentImpl.RestoreStatus.RESTORE_COMPLETED);
+        ChromeBackupAgentImpl.recordRestoreHistogram();
         Assert.assertEquals(1, noRestoreDelta.getDelta());
         Assert.assertEquals(1, restoreCompletedDelta.getDelta());
-        Assert.assertEquals(ChromeBackupAgent.RestoreStatus.RESTORE_STATUS_RECORDED,
-                ChromeBackupAgent.getRestoreStatus());
+        Assert.assertEquals(ChromeBackupAgentImpl.RestoreStatus.RESTORE_STATUS_RECORDED,
+                ChromeBackupAgentImpl.getRestoreStatus());
 
         // Second call should record nothing (note this assumes it doesn't record something totally
         // random)
-        ChromeBackupAgent.recordRestoreHistogram();
+        ChromeBackupAgentImpl.recordRestoreHistogram();
         Assert.assertEquals(0, restoreStatusRecorded.getDelta());
     }
 
@@ -95,16 +77,15 @@ public class RestoreHistogramTest {
      * Test that the histogram is written during Chrome first run.
      *
      * @throws InterruptedException
-     * @throws ProcessInitException
      */
     @Test
     @DisabledTest(message = "Test is flaky. crbug.com/875372")
     @SmallTest
-    public void testWritingHistogramAtStartup() throws InterruptedException, ProcessInitException {
-        LibraryLoader.getInstance().ensureInitialized(LibraryProcessType.PROCESS_BROWSER);
-        MetricsUtils.HistogramDelta noRestoreDelta =
-                new MetricsUtils.HistogramDelta(ChromeBackupAgent.HISTOGRAM_ANDROID_RESTORE_RESULT,
-                        ChromeBackupAgent.RestoreStatus.NO_RESTORE);
+    public void testWritingHistogramAtStartup() throws InterruptedException {
+        LibraryLoader.getInstance().ensureInitialized();
+        MetricsUtils.HistogramDelta noRestoreDelta = new MetricsUtils.HistogramDelta(
+                ChromeBackupAgentImpl.HISTOGRAM_ANDROID_RESTORE_RESULT,
+                ChromeBackupAgentImpl.RestoreStatus.NO_RESTORE);
 
         // Histogram should be written the first time the activity is started.
         mActivityTestRule.startMainActivityOnBlankPage();

@@ -7,7 +7,9 @@ package org.chromium.net.smoke;
 import static org.chromium.net.smoke.TestSupport.Protocol.QUIC;
 
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
+import android.support.test.runner.AndroidJUnit4;
+
+import androidx.test.filters.SmallTest;
 
 import org.json.JSONObject;
 import org.junit.After;
@@ -17,7 +19,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.net.UrlRequest;
 
 import java.net.URL;
@@ -25,7 +26,7 @@ import java.net.URL;
 /**
  * QUIC Tests.
  */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class QuicTest {
     private TestSupport.TestServer mServer;
 
@@ -72,7 +73,8 @@ public class QuicTest {
             requestBuilder.build().start();
             callback.blockForDone();
             NativeCronetTestRule.assertSuccessfulNonEmptyResponse(callback, urlString);
-            if (callback.getResponseInfo().getNegotiatedProtocol().startsWith("http/2+quic/")) {
+            if (callback.getResponseInfo().getNegotiatedProtocol().startsWith("http/2+quic")
+                    || callback.getResponseInfo().getNegotiatedProtocol().startsWith("h3")) {
                 quicNegotiated = true;
                 break;
             }

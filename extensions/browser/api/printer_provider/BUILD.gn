@@ -13,16 +13,27 @@ source_set("printer_provider") {
     "printer_provider_api.h",
     "printer_provider_api_factory.cc",
     "printer_provider_api_factory.h",
+    "printer_provider_internal_api.cc",
+    "printer_provider_internal_api.h",
+    "printer_provider_internal_api_observer.h",
     "printer_provider_print_job.cc",
     "printer_provider_print_job.h",
   ]
 
-  deps = [
-    "//device/usb",
-    "//extensions/common/api",
+  configs += [
+    # TODO(jschuh): crbug.com/167187 fix size_t to int truncations.
+    "//build/config/compiler:no_size_t_to_int_warning",
   ]
 
-  public_deps = [
-    "//extensions/browser:browser_sources",
+  deps = [
+    "//components/keyed_service/content",
+    "//content/public/browser",
+    "//extensions/browser/api",
+    "//extensions/common",
+    "//extensions/common/api",
+    "//services/device/public/cpp/usb",
+    "//services/device/public/mojom:usb",
   ]
+
+  public_deps = [ "//extensions/browser:browser_sources" ]
 }

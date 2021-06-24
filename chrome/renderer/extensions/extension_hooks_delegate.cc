@@ -9,7 +9,8 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
-#include "extensions/common/view_type.h"
+#include "extensions/common/mojom/view_type.mojom.h"
+#include "extensions/common/view_type_util.h"
 #include "extensions/renderer/bindings/api_signature.h"
 #include "extensions/renderer/extension_frame_helper.h"
 #include "extensions/renderer/extensions_renderer_client.h"
@@ -17,6 +18,7 @@
 #include "extensions/renderer/message_target.h"
 #include "extensions/renderer/messaging_util.h"
 #include "extensions/renderer/native_renderer_messaging_service.h"
+#include "extensions/renderer/runtime_hooks_delegate.h"
 #include "extensions/renderer/script_context.h"
 #include "gin/converter.h"
 #include "gin/dictionary.h"
@@ -146,32 +148,21 @@ RequestResult ExtensionHooksDelegate::HandleRequest(
                                                 arguments);
   }
 
-  std::string error;
-  std::vector<v8::Local<v8::Value>> parsed_arguments;
-  if (!signature->ParseArgumentsToV8(context, *arguments, refs,
-                                     &parsed_arguments, &error)) {
+  APISignature::V8ParseResult parse_result =
+      signature->ParseArgumentsToV8(context, *arguments, refs);
+  if (!parse_result.succeeded()) {
     RequestResult result(RequestResult::INVALID_INVOCATION);
-    result.error = std::move(error);
+    result.error = std::move(*parse_result.error);
     return result;
   }
 
-  return (this->*handler)(script_context, parsed_arguments);
+  return (this->*handler)(script_context, *parse_result.arguments);
 }
 
 void ExtensionHooksDelegate::InitializeTemplate(
     v8::Isolate* isolate,
     v8::Local<v8::ObjectTemplate> object_template,
     const APITypeReferenceMap& type_refs) {
-  static constexpr const char* kAliases[] = {
-      "connect",   "connectNative",     "sendMessage", "sendNativeMessage",
-      "onConnect", "onConnectExternal", "onMessage",   "onMessageExternal",
-  };
-
-  for (const auto* alias : kAliases) {
-    object_template->SetAccessor(gin::StringToSymbol(isolate, alias),
-                                 &GetAliasedFeature);
-  }
-
   bool is_incognito = ExtensionsRendererClient::Get()->IsIncognitoProcess();
   object_template->Set(isolate, "inIncognitoContext",
                        v8::Boolean::New(isolate, is_incognito));
@@ -180,17 +171,37 @@ void ExtensionHooksDelegate::InitializeTemplate(
 void ExtensionHooksDelegate::InitializeInstance(
     v8::Local<v8::Context> context,
     v8::Local<v8::Object> instance) {
+  v8::Isolate* isolate = context->GetIsolate();
+  ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
+
   // Throw access errors for deprecated sendRequest-related properties. This
   // isn't terribly efficient, but is only done for certain unpacked extensions
   // and only if they access the chrome.extension module.
-  if (messaging_util::IsSendRequestDisabled(
-          GetScriptContextFromV8ContextChecked(context))) {
+  if (messaging_util::IsSendRequestDisabled(script_context)) {
     static constexpr const char* kDeprecatedSendRequestProperties[] = {
         "sendRequest", "onRequest", "onRequestExternal"};
     for (const char* property : kDeprecatedSendRequestProperties) {
+      v8::Maybe<bool> success =
+          instance->SetAccessor(context, gin::StringToV8(isolate, property),
+                                &ThrowDeprecatedAccessError);
+      DCHECK(success.IsJust());
+      DCHECK(success.FromJust());
+    }
+  }
+
+  constexpr int kMaxManifestVersionForAliases = 2;
+
+  if (script_context->extension() &&
+      script_context->extension()->manifest_version() <=
+          kMaxManifestVersionForAliases) {
+    static constexpr const char* kAliases[] = {
+        "connect",   "connectNative",     "sendMessage", "sendNativeMessage",
+        "onConnect", "onConnectExternal", "onMessage",   "onMessageExternal",
+    };
+
+    for (const auto* alias : kAliases) {
       v8::Maybe<bool> success = instance->SetAccessor(
-          context, gin::StringToV8(context->GetIsolate(), property),
-          &ThrowDeprecatedAccessError);
+          context, gin::StringToV8(isolate, alias), &GetAliasedFeature);
       DCHECK(success.IsJust());
       DCHECK(success.FromJust());
     }
@@ -231,7 +242,7 @@ RequestResult ExtensionHooksDelegate::HandleSendRequest(
 
   messaging_service_->SendOneTimeMessage(
       script_context, MessageTarget::ForExtension(target_id),
-      messaging_util::kSendRequestChannel, false, *message, response_callback);
+      messaging_util::kSendRequestChannel, *message, response_callback);
 
   return RequestResult(RequestResult::HANDLED);
 }
@@ -239,17 +250,10 @@ RequestResult ExtensionHooksDelegate::HandleSendRequest(
 RequestResult ExtensionHooksDelegate::HandleGetURL(
     ScriptContext* script_context,
     const std::vector<v8::Local<v8::Value>>& arguments) {
-  DCHECK_EQ(1u, arguments.size());
-  DCHECK(arguments[0]->IsString());
-  DCHECK(script_context->extension());
-
-  std::string path = gin::V8ToString(script_context->isolate(), arguments[0]);
-
-  RequestResult result(RequestResult::HANDLED);
-  result.return_value =
-      gin::StringToV8(script_context->isolate(),
-                      script_context->extension()->GetResourceURL(path).spec());
-  return result;
+  // We call a static implementation here rather using an alias due to not being
+  // able to remove the extension.json GetURL entry, as it is used for generated
+  // documentation and api feature lists some other methods refer to.
+  return RuntimeHooksDelegate::GetURL(script_context, arguments);
 }
 
 APIBindingHooks::RequestResult ExtensionHooksDelegate::HandleGetViews(
@@ -258,7 +262,7 @@ APIBindingHooks::RequestResult ExtensionHooksDelegate::HandleGetViews(
   const Extension* extension = script_context->extension();
   DCHECK(extension);
 
-  ViewType view_type = VIEW_TYPE_INVALID;
+  mojom::ViewType view_type = mojom::ViewType::kInvalid;
   int window_id = extension_misc::kUnknownWindowId;
   int tab_id = extension_misc::kUnknownTabId;
 
@@ -310,7 +314,7 @@ RequestResult ExtensionHooksDelegate::HandleGetExtensionTabs(
   const Extension* extension = script_context->extension();
   DCHECK(extension);
 
-  ViewType view_type = VIEW_TYPE_TAB_CONTENTS;
+  mojom::ViewType view_type = mojom::ViewType::kTabContents;
   int window_id = extension_misc::kUnknownWindowId;
   int tab_id = extension_misc::kUnknownTabId;
 

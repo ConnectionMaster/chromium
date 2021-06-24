@@ -46,11 +46,12 @@ class GLOzoneEGLWindows : public GLOzoneEGL {
 
  protected:
   // GLOzoneEGL:
-  HDC GetNativeDisplay() override {
-    return GetWindowDC(nullptr);
+  gl::EGLDisplayPlatform GetNativeDisplay() override {
+    return gl::EGLDisplayPlatform(GetWindowDC(nullptr));
   }
 
-  bool LoadGLES2Bindings(gl::GLImplementation implementation) override {
+  bool LoadGLES2Bindings(
+      const gl::GLImplementationParts& implementation) override {
     return LoadDefaultEGLGLES2Bindings(implementation);
   }
 
@@ -72,8 +73,8 @@ WindowsSurfaceFactory::GetAllowedGLImplementations() {
 }
 
 GLOzone* WindowsSurfaceFactory::GetGLOzone(
-    gl::GLImplementation implementation) {
-  switch (implementation) {
+    const gl::GLImplementationParts& implementation) {
+  switch (implementation.gl) {
     case gl::kGLImplementationSwiftShaderGL:
     case gl::kGLImplementationEGLGLES2:
       return egl_implementation_.get();

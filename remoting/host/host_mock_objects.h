@@ -27,6 +27,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
+#include "ui/events/event.h"
 
 namespace base {
 class TimeDelta;
@@ -45,10 +46,16 @@ class MockDesktopEnvironment : public DesktopEnvironment {
   MOCK_METHOD0(CreateScreenControlsPtr, ScreenControls*());
   MOCK_METHOD0(CreateVideoCapturerPtr, webrtc::DesktopCapturer*());
   MOCK_METHOD0(CreateMouseCursorMonitorPtr, webrtc::MouseCursorMonitor*());
+  MOCK_METHOD1(
+      CreateKeyboardLayoutMonitorPtr,
+      KeyboardLayoutMonitor*(
+          base::RepeatingCallback<void(const protocol::KeyboardLayout&)>));
   MOCK_METHOD0(CreateFileOperationsPtr, FileOperations*());
   MOCK_CONST_METHOD0(GetCapabilities, std::string());
   MOCK_METHOD1(SetCapabilities, void(const std::string&));
   MOCK_CONST_METHOD0(GetDesktopSessionId, uint32_t());
+  MOCK_METHOD0(CreateComposingVideoCapturerPtr,
+               DesktopAndCursorConditionalComposer*());
 
   // DesktopEnvironment implementation.
   std::unique_ptr<ActionExecutor> CreateActionExecutor() override;
@@ -58,7 +65,12 @@ class MockDesktopEnvironment : public DesktopEnvironment {
   std::unique_ptr<webrtc::DesktopCapturer> CreateVideoCapturer() override;
   std::unique_ptr<webrtc::MouseCursorMonitor> CreateMouseCursorMonitor()
       override;
+  std::unique_ptr<KeyboardLayoutMonitor> CreateKeyboardLayoutMonitor(
+      base::RepeatingCallback<void(const protocol::KeyboardLayout&)> callback)
+      override;
   std::unique_ptr<FileOperations> CreateFileOperations() override;
+  std::unique_ptr<DesktopAndCursorConditionalComposer>
+  CreateComposingVideoCapturer() override;
 };
 
 class MockClientSessionControl : public ClientSessionControl {
@@ -68,7 +80,9 @@ class MockClientSessionControl : public ClientSessionControl {
 
   MOCK_CONST_METHOD0(client_jid, const std::string&());
   MOCK_METHOD1(DisconnectSession, void(protocol::ErrorCode error));
-  MOCK_METHOD1(OnLocalMouseMoved, void(const webrtc::DesktopVector&));
+  MOCK_METHOD2(OnLocalPointerMoved,
+               void(const webrtc::DesktopVector&, ui::EventType));
+  MOCK_METHOD1(OnLocalKeyPressed, void(uint32_t));
   MOCK_METHOD1(SetDisableInputs, void(bool));
   MOCK_METHOD0(ResetVideoPipeline, void());
   MOCK_METHOD1(OnDesktopDisplayChanged,

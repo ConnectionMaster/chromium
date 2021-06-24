@@ -4,7 +4,8 @@
 
 #include "content/browser/devtools/protocol/background_service_handler.h"
 
-#include "content/browser/frame_host/frame_tree.h"
+#include "base/metrics/histogram_functions.h"
+#include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/service_worker/service_worker_version.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/public/browser/render_process_host.h"
@@ -21,6 +22,18 @@ devtools::proto::BackgroundService ServiceNameToEnum(
   } else if (service_name ==
              BackgroundService::ServiceNameEnum::BackgroundSync) {
     return devtools::proto::BackgroundService::BACKGROUND_SYNC;
+  } else if (service_name ==
+             BackgroundService::ServiceNameEnum::PushMessaging) {
+    return devtools::proto::BackgroundService::PUSH_MESSAGING;
+  } else if (service_name ==
+             BackgroundService::ServiceNameEnum::Notifications) {
+    return devtools::proto::BackgroundService::NOTIFICATIONS;
+  } else if (service_name ==
+             BackgroundService::ServiceNameEnum::PaymentHandler) {
+    return devtools::proto::BackgroundService::PAYMENT_HANDLER;
+  } else if (service_name ==
+             BackgroundService::ServiceNameEnum::PeriodicBackgroundSync) {
+    return devtools::proto::BackgroundService::PERIODIC_BACKGROUND_SYNC;
   }
   return devtools::proto::BackgroundService::UNKNOWN;
 }
@@ -31,6 +44,14 @@ std::string ServiceEnumToName(devtools::proto::BackgroundService service_enum) {
       return BackgroundService::ServiceNameEnum::BackgroundFetch;
     case devtools::proto::BackgroundService::BACKGROUND_SYNC:
       return BackgroundService::ServiceNameEnum::BackgroundSync;
+    case devtools::proto::BackgroundService::PUSH_MESSAGING:
+      return BackgroundService::ServiceNameEnum::PushMessaging;
+    case devtools::proto::BackgroundService::NOTIFICATIONS:
+      return BackgroundService::ServiceNameEnum::Notifications;
+    case devtools::proto::BackgroundService::PAYMENT_HANDLER:
+      return BackgroundService::ServiceNameEnum::PaymentHandler;
+    case devtools::proto::BackgroundService::PERIODIC_BACKGROUND_SYNC:
+      return BackgroundService::ServiceNameEnum::PeriodicBackgroundSync;
     default:
       NOTREACHED();
   }
@@ -41,15 +62,15 @@ std::string ServiceEnumToName(devtools::proto::BackgroundService service_enum) {
 std::unique_ptr<protocol::Array<protocol::BackgroundService::EventMetadata>>
 ProtoMapToArray(
     const google::protobuf::Map<std::string, std::string>& event_metadata_map) {
-  auto metadata_array =
-      protocol::Array<protocol::BackgroundService::EventMetadata>::create();
+  auto metadata_array = std::make_unique<
+      protocol::Array<protocol::BackgroundService::EventMetadata>>();
 
   for (const auto& entry : event_metadata_map) {
     auto event_metadata = protocol::BackgroundService::EventMetadata::Create()
                               .SetKey(entry.first)
                               .SetValue(entry.second)
                               .Build();
-    metadata_array->addItem(std::move(event_metadata));
+    metadata_array->emplace_back(std::move(event_metadata));
   }
 
   return metadata_array;
@@ -75,8 +96,7 @@ ToBackgroundServiceEvent(const devtools::proto::BackgroundServiceEvent& event) {
 
 BackgroundServiceHandler::BackgroundServiceHandler()
     : DevToolsDomainHandler(BackgroundService::Metainfo::domainName),
-      devtools_context_(nullptr),
-      weak_ptr_factory_(this) {}
+      devtools_context_(nullptr) {}
 
 BackgroundServiceHandler::~BackgroundServiceHandler() {
   DCHECK(enabled_services_.empty());
@@ -116,7 +136,7 @@ Response BackgroundServiceHandler::Disable() {
   if (!enabled_services_.empty())
     devtools_context_->RemoveObserver(this);
   enabled_services_.clear();
-  return Response::OK();
+  return Response::Success();
 }
 
 void BackgroundServiceHandler::StartObserving(
@@ -157,13 +177,13 @@ Response BackgroundServiceHandler::StopObserving(const std::string& service) {
     return Response::InvalidParams("Invalid service name");
 
   if (!enabled_services_.count(service_enum))
-    return Response::OK();
+    return Response::Success();
 
   enabled_services_.erase(service_enum);
   if (enabled_services_.empty())
     devtools_context_->RemoveObserver(this);
 
-  return Response::OK();
+  return Response::Success();
 }
 
 void BackgroundServiceHandler::DidGetLoggedEvents(
@@ -188,12 +208,15 @@ Response BackgroundServiceHandler::SetRecording(bool should_record,
   if (service_enum == devtools::proto::BackgroundService::UNKNOWN)
     return Response::InvalidParams("Invalid service name");
 
-  if (should_record)
+  if (should_record) {
     devtools_context_->StartRecording(service_enum);
-  else
+    base::UmaHistogramEnumeration("DevTools.BackgroundService.StartRecording",
+                                  service_enum, devtools::proto::COUNT);
+  } else {
     devtools_context_->StopRecording(service_enum);
+  }
 
-  return Response::OK();
+  return Response::Success();
 }
 
 Response BackgroundServiceHandler::ClearEvents(const std::string& service) {
@@ -204,7 +227,7 @@ Response BackgroundServiceHandler::ClearEvents(const std::string& service) {
     return Response::InvalidParams("Invalid service name");
 
   devtools_context_->ClearLoggedBackgroundServiceEvents(service_enum);
-  return Response::OK();
+  return Response::Success();
 }
 
 void BackgroundServiceHandler::OnEventReceived(

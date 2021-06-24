@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/logging.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -25,9 +26,7 @@ namespace ui {
 DemoWindow::DemoWindow(WindowManager* window_manager,
                        RendererFactory* renderer_factory,
                        const gfx::Rect& bounds)
-    : window_manager_(window_manager),
-      renderer_factory_(renderer_factory),
-      weak_ptr_factory_(this) {
+    : window_manager_(window_manager), renderer_factory_(renderer_factory) {
   PlatformWindowInitProperties properties;
   properties.bounds = bounds;
 
@@ -67,9 +66,11 @@ void DemoWindow::Quit() {
   window_manager_->Quit();
 }
 
-void DemoWindow::OnBoundsChanged(const gfx::Rect& new_bounds) {
+void DemoWindow::OnBoundsChanged(const BoundsChange& change) {
   StartRendererIfNecessary();
 }
+
+void DemoWindow::OnMouseEnter() {}
 
 void DemoWindow::OnDamageRect(const gfx::Rect& damaged_region) {}
 
@@ -84,7 +85,8 @@ void DemoWindow::OnCloseRequest() {
 
 void DemoWindow::OnClosed() {}
 
-void DemoWindow::OnWindowStateChanged(PlatformWindowState new_state) {}
+void DemoWindow::OnWindowStateChanged(PlatformWindowState old_state,
+                                      PlatformWindowState new_state) {}
 
 void DemoWindow::OnLostCapture() {}
 

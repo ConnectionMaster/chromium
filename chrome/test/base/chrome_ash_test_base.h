@@ -7,22 +7,15 @@
 
 #include "ash/test/ash_test_base.h"
 
-namespace content {
-class TestBrowserThreadBundle;
-}
-
 // AshTestBase used in Chrome.
 // TODO(crbug.com/890677): Chrome should not have tests subclassing
 // AshTestBase.
 class ChromeAshTestBase : public ash::AshTestBase {
  public:
   ChromeAshTestBase();
+  ChromeAshTestBase(const ChromeAshTestBase&) = delete;
+  ChromeAshTestBase& operator=(const ChromeAshTestBase&) = delete;
   ~ChromeAshTestBase() override;
-
- private:
-  std::unique_ptr<content::TestBrowserThreadBundle> thread_bundle_;
-
-  DISALLOW_COPY_AND_ASSIGN(ChromeAshTestBase);
 };
 
 #endif  // CHROME_TEST_BASE_CHROME_ASH_TEST_BASE_H_

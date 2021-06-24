@@ -8,12 +8,15 @@
 #include "ash/wm/window_positioning_utils.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_event.h"
+#include "base/containers/contains.h"
+#include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
 #include "ui/display/screen.h"
+#include "ui/events/base_event_utils.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
-namespace wm {
+namespace window_util {
 
 namespace {
 
@@ -33,8 +36,8 @@ class FakeWindowState : public WindowState::State {
     if (event->type() == WM_EVENT_MINIMIZE)
       was_visible_on_minimize_ = window_state->window()->IsVisible();
   }
-  mojom::WindowStateType GetType() const override {
-    return mojom::WindowStateType::NORMAL;
+  chromeos::WindowStateType GetType() const override {
+    return chromeos::WindowStateType::kNormal;
   }
   void AttachState(WindowState* window_state,
                    WindowState::State* previous_state) override {}
@@ -57,18 +60,18 @@ TEST_F(WindowUtilTest, CenterWindow) {
   std::unique_ptr<aura::Window> window(
       CreateTestWindowInShellWithBounds(gfx::Rect(12, 20, 100, 100)));
 
-  WindowState* window_state = GetWindowState(window.get());
+  WindowState* window_state = WindowState::Get(window.get());
   EXPECT_FALSE(window_state->bounds_changed_by_user());
 
   CenterWindow(window.get());
   // Centring window is considered as a user's action.
   EXPECT_TRUE(window_state->bounds_changed_by_user());
-  EXPECT_EQ("200,122 100x100", window->bounds().ToString());
-  EXPECT_EQ("200,122 100x100", window->GetBoundsInScreen().ToString());
+  EXPECT_EQ("200,126 100x100", window->bounds().ToString());
+  EXPECT_EQ("200,126 100x100", window->GetBoundsInScreen().ToString());
   window->SetBoundsInScreen(gfx::Rect(600, 0, 100, 100), GetSecondaryDisplay());
   CenterWindow(window.get());
-  EXPECT_EQ("250,122 100x100", window->bounds().ToString());
-  EXPECT_EQ("750,122 100x100", window->GetBoundsInScreen().ToString());
+  EXPECT_EQ("250,126 100x100", window->bounds().ToString());
+  EXPECT_EQ("750,126 100x100", window->GetBoundsInScreen().ToString());
 }
 
 TEST_F(WindowUtilTest, AdjustBoundsToEnsureMinimumVisibility) {
@@ -142,15 +145,8 @@ TEST_F(WindowUtilTest, MoveWindowToDisplay) {
   const int64_t original_display_id =
       screen->GetDisplayNearestWindow(window.get()).id();
   EXPECT_EQ(screen->GetPrimaryDisplay().id(), original_display_id);
-  const int original_container_id = window->parent()->id();
+  const int original_container_id = window->parent()->GetId();
   const aura::Window* original_root = window->GetRootWindow();
-
-  EXPECT_FALSE(MoveWindowToDisplay(window.get(), display::kInvalidDisplayId));
-  EXPECT_EQ(original_display_id,
-            screen->GetDisplayNearestWindow(window.get()).id());
-  EXPECT_FALSE(MoveWindowToDisplay(window.get(), original_display_id));
-  EXPECT_EQ(original_display_id,
-            screen->GetDisplayNearestWindow(window.get()).id());
 
   ASSERT_EQ(2, screen->GetNumDisplays());
   const int64_t secondary_display_id = screen->GetAllDisplays()[1].id();
@@ -158,63 +154,145 @@ TEST_F(WindowUtilTest, MoveWindowToDisplay) {
   EXPECT_TRUE(MoveWindowToDisplay(window.get(), secondary_display_id));
   EXPECT_EQ(secondary_display_id,
             screen->GetDisplayNearestWindow(window.get()).id());
-  EXPECT_EQ(original_container_id, window->parent()->id());
+  EXPECT_EQ(original_container_id, window->parent()->GetId());
   EXPECT_NE(original_root, window->GetRootWindow());
 
   EXPECT_TRUE(MoveWindowToDisplay(window.get(), original_display_id));
   EXPECT_EQ(original_display_id,
             screen->GetDisplayNearestWindow(window.get()).id());
-  EXPECT_EQ(original_container_id, window->parent()->id());
+  EXPECT_EQ(original_container_id, window->parent()->GetId());
   EXPECT_EQ(original_root, window->GetRootWindow());
 }
 
-TEST_F(WindowUtilTest, RemoveTransientDescendants) {
+// Tests that locking and unlocking the screen does not alter the display of a
+// window moved by MoveWindowToDisplay.
+TEST_F(WindowUtilTest, MoveWindowToDisplayAndLockScreen) {
+  UpdateDisplay("500x400, 600x400");
+  auto window = CreateTestWindow(gfx::Rect(12, 20, 100, 100));
+  display::Screen* screen = display::Screen::GetScreen();
+  ASSERT_EQ(2, screen->GetNumDisplays());
+  const int64_t primary_display_id = screen->GetAllDisplays()[0].id();
+  const int64_t secondary_display_id = screen->GetAllDisplays()[1].id();
+  ASSERT_EQ(primary_display_id,
+            screen->GetDisplayNearestWindow(window.get()).id());
+
+  EXPECT_TRUE(MoveWindowToDisplay(window.get(), secondary_display_id));
+  EXPECT_EQ(secondary_display_id,
+            screen->GetDisplayNearestWindow(window.get()).id());
+
+  // Tests that after locking and unlocking the screen the window remains on the
+  // secondary display.
+  GetSessionControllerClient()->LockScreen();
+  GetSessionControllerClient()->UnlockScreen();
+  EXPECT_EQ(secondary_display_id,
+            screen->GetDisplayNearestWindow(window.get()).id());
+
+  // Move the window to the primary display. Tests that after locking and
+  // unlocking the screen the window remains on the secondary display.
+  EXPECT_TRUE(MoveWindowToDisplay(window.get(), primary_display_id));
+  GetSessionControllerClient()->LockScreen();
+  GetSessionControllerClient()->UnlockScreen();
+  EXPECT_EQ(primary_display_id,
+            screen->GetDisplayNearestWindow(window.get()).id());
+}
+
+TEST_F(WindowUtilTest, EnsureTransientRoots) {
   // Create two windows which have no transient children or parents. Test that
-  // neither of them get removed when running RemoveTransientDescendants.
+  // neither of them get removed when running EnsureTransientRoots.
   auto window1 = CreateTestWindow();
   auto window2 = CreateTestWindow();
   std::vector<aura::Window*> window_list = {window1.get(), window2.get()};
-  RemoveTransientDescendants(&window_list);
+  EnsureTransientRoots(&window_list);
   ASSERT_EQ(2u, window_list.size());
 
   // Create two windows whose transient roots are |window1|. One is a direct
   // transient child and one is a transient descendant. Test that both get
-  // removed when calling RemoveTransientDescendants.
+  // removed when calling EnsureTransientRoots.
   auto descendant1 = CreateTestWindow();
   auto descendant2 = CreateTestWindow();
   ::wm::AddTransientChild(descendant1.get(), descendant2.get());
   ::wm::AddTransientChild(window1.get(), descendant1.get());
   window_list.push_back(descendant1.get());
   window_list.push_back(descendant2.get());
-  RemoveTransientDescendants(&window_list);
+  EnsureTransientRoots(&window_list);
   ASSERT_EQ(2u, window_list.size());
-  ASSERT_TRUE(base::ContainsValue(window_list, window1.get()));
-  ASSERT_TRUE(base::ContainsValue(window_list, window2.get()));
+  ASSERT_TRUE(base::Contains(window_list, window1.get()));
+  ASSERT_TRUE(base::Contains(window_list, window2.get()));
 
   // Create a window which has a transient parent that is not in |window_list|.
-  // Test that the window is not removed when calling
-  // RemoveTransientDescendants.
+  // Test that the window is replaced with its transient root when calling
+  // EnsureTransientRoots.
   auto window3 = CreateTestWindow();
   auto descendant3 = CreateTestWindow();
   ::wm::AddTransientChild(window3.get(), descendant3.get());
   window_list.push_back(descendant3.get());
-  RemoveTransientDescendants(&window_list);
+  EnsureTransientRoots(&window_list);
   EXPECT_EQ(3u, window_list.size());
+  EXPECT_TRUE(base::Contains(window_list, window3.get()));
+  EXPECT_FALSE(base::Contains(window_list, descendant3.get()));
+
+  // Create two windows which have the same transient parent that is not in
+  // |window_list|. Test that one of the windows is replaced with its transient
+  // root and the other is removed from |window_list| when calling
+  // EnsureTransientRoots.
+  auto window4 = CreateTestWindow();
+  auto descendant4 = CreateTestWindow();
+  auto descendant5 = CreateTestWindow();
+  ::wm::AddTransientChild(window4.get(), descendant4.get());
+  ::wm::AddTransientChild(window4.get(), descendant5.get());
+  window_list.push_back(descendant4.get());
+  window_list.push_back(descendant5.get());
+  EnsureTransientRoots(&window_list);
+  EXPECT_EQ(4u, window_list.size());
+  EXPECT_TRUE(base::Contains(window_list, window4.get()));
+  EXPECT_FALSE(base::Contains(window_list, descendant4.get()));
+  EXPECT_FALSE(base::Contains(window_list, descendant5.get()));
 }
 
 TEST_F(WindowUtilTest,
-       HideAndMaybeMinimizeWithoutAnimationMinimizesArcWindowsBeforeHiding) {
+       MinimizeAndHideWithoutAnimationMinimizesArcWindowsBeforeHiding) {
   auto window = CreateTestWindow();
   auto* state = new FakeWindowState();
-  GetWindowState(window.get())
+  WindowState::Get(window.get())
       ->SetStateObject(std::unique_ptr<WindowState::State>(state));
 
   std::vector<aura::Window*> windows = {window.get()};
-  HideAndMaybeMinimizeWithoutAnimation(windows, /*minimize=*/true);
+  MinimizeAndHideWithoutAnimation(windows);
 
   EXPECT_FALSE(window->IsVisible());
   EXPECT_TRUE(state->was_visible_on_minimize());
 }
 
-}  // namespace wm
+TEST_F(WindowUtilTest, InteriorTargeter) {
+  auto window = CreateTestWindow();
+  window->SetBounds(gfx::Rect(0, 0, 100, 100));
+
+  WindowState::Get(window.get())->Maximize();
+  InstallResizeHandleWindowTargeterForWindow(window.get());
+
+  auto* child = aura::test::CreateTestWindowWithDelegateAndType(
+      aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+      aura::client::WINDOW_TYPE_UNKNOWN, 1, gfx::Rect(window->bounds().size()),
+      window.get(),
+      /*show_on_creation=*/true);
+
+  ui::EventTarget* root_target = window->GetRootWindow();
+  auto* targeter = root_target->GetEventTargeter();
+  {
+    ui::MouseEvent mouse(ui::ET_MOUSE_MOVED, gfx::Point(0, 0), gfx::Point(0, 0),
+                         ui::EventTimeForNow(), ui::EF_NONE, ui::EF_NONE);
+    EXPECT_EQ(child, targeter->FindTargetForEvent(root_target, &mouse));
+  }
+
+  // InteriorEventTargeter is now active and should pass an event at the edge to
+  // its parent.
+  WindowState::Get(window.get())->Restore();
+  {
+    ui::MouseEvent mouse(ui::ET_MOUSE_MOVED, gfx::Point(0, 0), gfx::Point(0, 0),
+                         ui::EventTimeForNow(), ui::EF_NONE, ui::EF_NONE);
+    EXPECT_EQ(window.get(), targeter->FindTargetForEvent(root_target, &mouse));
+  }
+}
+
+}  // namespace window_util
 }  // namespace ash

@@ -15,7 +15,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/native_library.h"
-#include "base/optional.h"
 #include "base/process/process.h"
 #include "base/single_thread_task_runner.h"
 #include "content/common/content_export.h"
@@ -25,6 +24,7 @@
 #include "ppapi/c/ppb_core.h"
 #include "ppapi/c/private/ppb_instance_private.h"
 #include "ppapi/shared_impl/ppapi_permissions.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/origin.h"
 
 typedef void* NPIdentifier;
@@ -50,7 +50,6 @@ class WebPluginContainer;
 namespace content {
 class HostDispatcherWrapper;
 class PepperPluginInstanceImpl;
-class PepperBroker;
 class RendererPpapiHostImpl;
 class RenderFrameImpl;
 struct WebPluginInfo;
@@ -183,10 +182,6 @@ class CONTENT_EXPORT PluginModule : public base::RefCounted<PluginModule>,
   void SetReserveInstanceIDCallback(PP_Bool (*reserve)(PP_Module, PP_Instance));
   bool ReserveInstanceID(PP_Instance instance);
 
-  // These should only be called from the main thread.
-  void SetBroker(PepperBroker* broker);
-  PepperBroker* GetBroker();
-
   // Create a new HostDispatcher for proxying, hook it to the PluginModule,
   // and perform other common initialization.
   RendererPpapiHostImpl* CreateOutOfProcessModule(
@@ -217,7 +212,7 @@ class CONTENT_EXPORT PluginModule : public base::RefCounted<PluginModule>,
   static scoped_refptr<PluginModule> Create(
       RenderFrameImpl* render_frame,
       const WebPluginInfo& webplugin_info,
-      const base::Optional<url::Origin>& origin_lock,
+      const absl::optional<url::Origin>& origin_lock,
       bool* pepper_plugin_was_registered,
       scoped_refptr<base::SingleThreadTaskRunner> task_runner);
 
@@ -248,10 +243,6 @@ class CONTENT_EXPORT PluginModule : public base::RefCounted<PluginModule>,
   // pointer indicates that the plugin is running out of process and that the
   // entry_points_ aren't valid.
   std::unique_ptr<HostDispatcherWrapper> host_dispatcher_wrapper_;
-
-  // Non-owning pointer to the broker for this plugin module, if one exists.
-  // It is populated and cleared in the main thread.
-  PepperBroker* broker_;
 
   // Holds a reference to the base::NativeLibrary handle if this PluginModule
   // instance wraps functions loaded from a library.  Can be NULL.  If

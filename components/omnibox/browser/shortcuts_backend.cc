@@ -7,20 +7,21 @@
 #include <stddef.h>
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/guid.h"
 #include "base/i18n/case_conversion.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "components/history/core/browser/history_service.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
@@ -75,16 +76,15 @@ ShortcutsBackend::ShortcutsBackend(
     : template_url_service_(template_url_service),
       search_terms_data_(std::move(search_terms_data)),
       current_state_(NOT_INITIALIZED),
-      history_service_observer_(this),
       main_runner_(base::ThreadTaskRunnerHandle::Get()),
-      db_runner_(base::CreateSequencedTaskRunnerWithTraits(
+      db_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
       no_db_access_(suppress_db) {
   if (!suppress_db)
     db_ = new ShortcutsDatabase(database_path);
   if (history_service)
-    history_service_observer_.Add(history_service);
+    history_service_observation_.Observe(history_service);
 }
 
 bool ShortcutsBackend::Init() {
@@ -118,12 +118,12 @@ void ShortcutsBackend::RemoveObserver(ShortcutsBackendObserver* obs) {
   observer_list_.RemoveObserver(obs);
 }
 
-void ShortcutsBackend::AddOrUpdateShortcut(const base::string16& text,
+void ShortcutsBackend::AddOrUpdateShortcut(const std::u16string& text,
                                            const AutocompleteMatch& match) {
 #if DCHECK_IS_ON()
   match.Validate();
 #endif  // DCHECK_IS_ON()
-  const base::string16 text_lowercase(base::i18n::ToLower(text));
+  const std::u16string text_lowercase(base::i18n::ToLower(text));
   const base::Time now(base::Time::Now());
   for (ShortcutMap::const_iterator it(
            shortcuts_map_.lower_bound(text_lowercase));
@@ -169,17 +169,24 @@ ShortcutsDatabase::Shortcut::MatchCore ShortcutsBackend::MatchToMatchCore(
     normalized_match = &temp;
   }
 
+  auto description = normalized_match->description_for_shortcuts.empty()
+                         ? normalized_match->description
+                         : normalized_match->description_for_shortcuts;
+  auto description_class =
+      normalized_match->description_class_for_shortcuts.empty()
+          ? normalized_match->description_class
+          : normalized_match->description_class_for_shortcuts;
+
   return ShortcutsDatabase::Shortcut::MatchCore(
       normalized_match->fill_into_edit, normalized_match->destination_url,
-      normalized_match->contents,
-      StripMatchMarkers(normalized_match->contents_class),
-      normalized_match->description,
-      StripMatchMarkers(normalized_match->description_class),
-      normalized_match->transition, match_type, normalized_match->keyword);
+      normalized_match->document_type, normalized_match->contents,
+      StripMatchMarkers(normalized_match->contents_class), description,
+      StripMatchMarkers(description_class), normalized_match->transition,
+      match_type, normalized_match->keyword);
 }
 
 void ShortcutsBackend::ShutdownOnUIThread() {
-  history_service_observer_.RemoveAll();
+  history_service_observation_.Reset();
 }
 
 void ShortcutsBackend::OnURLsDeleted(
@@ -212,8 +219,8 @@ void ShortcutsBackend::InitInternal() {
   db_->Init();
   ShortcutsDatabase::GuidToShortcutMap shortcuts;
   db_->LoadShortcuts(&shortcuts);
-  temp_shortcuts_map_.reset(new ShortcutMap);
-  temp_guid_map_.reset(new GuidMap);
+  temp_shortcuts_map_ = std::make_unique<ShortcutMap>();
+  temp_guid_map_ = std::make_unique<GuidMap>();
   for (ShortcutsDatabase::GuidToShortcutMap::const_iterator it(
            shortcuts.begin());
        it != shortcuts.end(); ++it) {

@@ -11,11 +11,12 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/threading/thread_checker.h"
 #include "base/timer/timer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "ui/base/idle/idle.h"
 
@@ -28,7 +29,6 @@ class BrowserContext;
 }  // namespace content
 
 namespace extensions {
-class ExtensionRegistry;
 
 struct IdleMonitor {
   explicit IdleMonitor(ui::IdleState initial_state);
@@ -137,8 +137,8 @@ class IdleManager : public ExtensionRegistryObserver,
   base::ThreadChecker thread_checker_;
 
   // Listen to extension unloaded notification.
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(IdleManager);
 };

@@ -5,7 +5,7 @@
 #include "content/browser/service_worker/service_worker_info.h"
 
 #include "content/browser/service_worker/embedded_worker_status.h"
-#include "content/common/service_worker/service_worker_types.h"
+#include "content/browser/service_worker/service_worker_consts.h"
 #include "content/public/common/child_process_host.h"
 #include "ipc/ipc_message.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom.h"
@@ -18,31 +18,35 @@ ServiceWorkerVersionInfo::ServiceWorkerVersionInfo()
       status(ServiceWorkerVersion::NEW),
       fetch_handler_existence(
           ServiceWorkerVersion::FetchHandlerExistence::UNKNOWN),
-      registration_id(blink::mojom::kInvalidServiceWorkerRegistrationId),
-      version_id(blink::mojom::kInvalidServiceWorkerVersionId),
-      process_id(ChildProcessHost::kInvalidUniqueID),
-      thread_id(kInvalidEmbeddedWorkerThreadId),
-      devtools_agent_route_id(MSG_ROUTING_NONE) {}
+      thread_id(ServiceWorkerConsts::kInvalidEmbeddedWorkerThreadId),
+      devtools_agent_route_id(MSG_ROUTING_NONE),
+      ukm_source_id(ukm::kInvalidSourceId) {}
 
 ServiceWorkerVersionInfo::ServiceWorkerVersionInfo(
     EmbeddedWorkerStatus running_status,
     ServiceWorkerVersion::Status status,
     ServiceWorkerVersion::FetchHandlerExistence fetch_handler_existence,
     const GURL& script_url,
+    const GURL& scope,
+    const url::Origin& origin,
     int64_t registration_id,
     int64_t version_id,
     int process_id,
     int thread_id,
-    int devtools_agent_route_id)
-    : running_status(running_status),
+    int devtools_agent_route_id,
+    ukm::SourceId ukm_source_id)
+    : ServiceWorkerVersionBaseInfo(scope,
+                                   origin,
+                                   registration_id,
+                                   version_id,
+                                   process_id),
+      running_status(running_status),
       status(status),
       fetch_handler_existence(fetch_handler_existence),
       script_url(script_url),
-      registration_id(registration_id),
-      version_id(version_id),
-      process_id(process_id),
       thread_id(thread_id),
-      devtools_agent_route_id(devtools_agent_route_id) {}
+      devtools_agent_route_id(devtools_agent_route_id),
+      ukm_source_id(ukm_source_id) {}
 
 ServiceWorkerVersionInfo::ServiceWorkerVersionInfo(
     const ServiceWorkerVersionInfo& other) = default;

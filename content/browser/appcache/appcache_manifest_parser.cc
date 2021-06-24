@@ -36,9 +36,16 @@
 #include <tuple>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/string_piece.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "content/browser/appcache/appcache.h"
+#include "third_party/blink/public/common/origin_trials/trial_token.h"
+#include "third_party/blink/public/common/origin_trials/trial_token_result.h"
+#include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -51,6 +58,7 @@ enum class Mode {
   kIntercept,       // In the CHROMIUM-INTERCEPT: section. (non-standard)
   kFallback,        // In the FALLBACK: section.
   kOnlineSafelist,  // In the NETWORK: section.
+  kOriginTrial,     // In the ORIGIN-TRIAL: section. (non-standard)
   kUnknown,         // Sections that are not covered by the spec.
 };
 
@@ -183,18 +191,11 @@ Mode ParseModeSettingLine(base::StringPiece line) {
   if (line == kInterceptLine)
     return Mode::kIntercept;
 
+  static constexpr base::StringPiece kOriginTrialLine("ORIGIN-TRIAL:");
+  if (line == kOriginTrialLine)
+    return Mode::kOriginTrial;
+
   return Mode::kUnknown;
-}
-
-// True if the next token in the manifest line is the pattern indicator flag.
-//
-// Pattern URLs are a non-standard feature.
-bool NextTokenIsPatternMatchingFlag(base::StringPiece line) {
-  base::StringPiece is_pattern_token;
-  std::tie(is_pattern_token, line) = SplitLineToken(line);
-
-  static constexpr base::StringPiece kPatternFlag("isPattern");
-  return is_pattern_token == kPatternFlag;
 }
 
 // Parses a URL token in an AppCache manifest.
@@ -217,11 +218,87 @@ GURL ParseUrlToken(base::StringPiece url_token, const GURL& manifest_url) {
   return url;
 }
 
-bool ScopeMatches(const GURL& manifest_url, const GURL& namespace_url) {
-  return base::StartsWith(namespace_url.spec(),
-                          manifest_url.GetWithoutFilename().spec(),
-                          base::CompareCase::SENSITIVE);
+bool IsUrlWithinScope(const GURL& url, const GURL& scope) {
+  return base::StartsWith(url.spec(), scope.spec());
 }
+
+// Records UMA metrics for parsing one AppCache manifest.
+//
+// The manifest parser accumulates metrics data in an instance of this class by
+// calling the Record*() methods. When the manifest is successfully parsed, the
+// accumulated metrics are logged by calling RecordParseSuccess(). Metrics for
+// manifests that don't parse in the success case are discarded. Failure metrics
+// are used to log early-exit conditions like invalid manifest URLs.
+class ParseMetricsRecorder {
+ public:
+  ParseMetricsRecorder() = default;
+  ~ParseMetricsRecorder() = default;
+
+  // Manifest starts with Chrome-specific header, not standard header.
+  void RecordChromeHeader() {
+#if DCHECK_IS_ON()
+    DCHECK(!finalized_) << "Metrics already recorded";
+#endif  // DCHECK_IS_ON()
+    has_chrome_header_ = true;
+  }
+
+  // Manifest served with the MIME type that enables dangerous features.
+  void RecordDangerousMode() { used_dangerous_mode_ = true; }
+
+  // Manifest contains a valid Chrome-specific CHROMIUM-INTERCEPT: entry.
+  void RecordInterceptEntry() {
+#if DCHECK_IS_ON()
+    DCHECK(!finalized_) << "Metrics already recorded";
+#endif  // DCHECK_IS_ON()
+    has_intercept_entry_ = true;
+  }
+
+  // Called after the parser has successfully consumed the entire manifest.
+  //
+  // Must be called exactly once. No other Record*() method may be called after
+  // this method is called.
+  void RecordParseSuccess() {
+#if DCHECK_IS_ON()
+    DCHECK(!finalized_) << "Metrics already recorded";
+    finalized_ = true;
+#endif  // DCHECK_IS_ON()
+
+    base::UmaHistogramBoolean("appcache.Manifest.ChromeHeader",
+                              has_chrome_header_);
+    base::UmaHistogramBoolean("appcache.Manifest.DangerousMode",
+                              used_dangerous_mode_);
+    base::UmaHistogramEnumeration(
+        "appcache.Manifest.InterceptUsage",
+        has_intercept_entry_ ? InterceptUsage::kExact : InterceptUsage::kNone);
+  }
+
+ private:
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class InterceptUsage {
+    // The manifest contains no intercept entry.
+    kNone = 0,
+    // The manifest contains at least one intercept entry. All entries use exact
+    // URLs.
+    kExact = 1,
+    // The manifest contains at least one intercept entry. At least one
+    // intercept entry uses a pattern URL.
+    kPattern = 2,
+    // Required by base::UmaHistogramEnumeration(). Must be last in the enum.
+    kMaxValue = kPattern,
+  };
+
+  bool has_chrome_header_ = false;
+  bool used_dangerous_mode_ = false;
+  bool has_intercept_entry_ = false;
+
+#if DCHECK_IS_ON()
+  // True after RecordParseSuccess() was called.
+  bool finalized_ = false;
+#endif  // DCHECK_IS_ON()
+};
+
+constexpr char kAppCacheOriginTrialName[] = "AppCache";
 
 }  // namespace
 
@@ -230,6 +307,7 @@ AppCacheManifest::AppCacheManifest() = default;
 AppCacheManifest::~AppCacheManifest() = default;
 
 bool ParseManifest(const GURL& manifest_url,
+                   const std::string& manifest_scope,
                    const char* manifest_bytes,
                    int manifest_size,
                    ParseMode parse_mode,
@@ -239,10 +317,16 @@ bool ParseManifest(const GURL& manifest_url,
 
   DCHECK(manifest.explicit_urls.empty());
   DCHECK(manifest.fallback_namespaces.empty());
-  DCHECK(manifest.online_whitelist_namespaces.empty());
-  DCHECK(!manifest.online_whitelist_all);
+  DCHECK(manifest.online_safelist_namespaces.empty());
+  DCHECK_EQ(manifest.parser_version, -1);
+  DCHECK_EQ(manifest.scope, "");
+  DCHECK(!manifest.online_safelist_all);
   DCHECK(!manifest.did_ignore_intercept_namespaces);
   DCHECK(!manifest.did_ignore_fallback_namespaces);
+
+  ParseMetricsRecorder parse_metrics;
+  if (parse_mode == PARSE_MANIFEST_ALLOWING_DANGEROUS_FEATURES)
+    parse_metrics.RecordDangerousMode();
 
   Mode mode = Mode::kExplicit;
 
@@ -252,7 +336,7 @@ bool ParseManifest(const GURL& manifest_url,
   // purpose, but AppCache isn't important enough to add conversion code just
   // to accelerate manifest decoding.
   DCHECK_GE(manifest_size, 0);
-  base::string16 wide_manifest_bytes =
+  std::u16string wide_manifest_bytes =
       base::UTF8ToUTF16(base::StringPiece(manifest_bytes, manifest_size));
   std::string decoded_manifest_bytes = base::UTF16ToUTF8(wide_manifest_bytes);
 
@@ -261,24 +345,23 @@ bool ParseManifest(const GURL& manifest_url,
 
   // Discard a leading UTF-8 Byte-Order-Mark (BOM) (0xEF, 0xBB, 0xBF);
   static constexpr base::StringPiece kUtf8Bom("\xEF\xBB\xBF");
-  if (data.starts_with(kUtf8Bom))
+  if (base::StartsWith(data, kUtf8Bom))
     data = data.substr(kUtf8Bom.length());
 
   // The manifest has to start with a well-defined signature.
   static constexpr base::StringPiece kSignature("CACHE MANIFEST");
   static constexpr base::StringPiece kChromiumSignature(
       "CHROMIUM CACHE MANIFEST");
-  if (data.starts_with(kSignature)) {
+  if (base::StartsWith(data, kSignature)) {
     data = data.substr(kSignature.length());
-  } else if (data.starts_with(kChromiumSignature)) {
+  } else if (base::StartsWith(data, kChromiumSignature)) {
     // Chrome recognizes a separate signature, CHROMIUM CACHE MANIFEST. This was
     // built so that manifests that use the Chrome-only feature
     // CHROMIUM-INTERCEPT will be ignored by other browsers.
     // See https://crbug.com/101565
 
-    // TODO(pwnall): Add a UMA metric to see if we can remove support for this
-    //               non-standard signature.
     data = data.substr(kChromiumSignature.length());
+    parse_metrics.RecordChromeHeader();
   } else {
     return false;
   }
@@ -286,6 +369,32 @@ bool ParseManifest(const GURL& manifest_url,
   // The character after "CACHE MANIFEST" must be a whitespace character.
   if (!data.empty() && !IsWhiteSpace(data[0]))
     return false;
+
+  if (!manifest_url.is_valid()) {
+    return false;
+  }
+
+  if (!AppCache::CheckValidManifestScope(manifest_url, manifest_scope))
+    return false;
+
+  // Manifest parser version handling.
+  //
+  // Version 0: Pre-manifest scope, a manifest's scope for resources listed in
+  // the FALLBACK and CHROMIUM-INTERCEPT sections can span the entire origin.
+  //
+  // Version 1: Manifests have a scope, resources listed in the FALLBACK and
+  // CHROMIUM-INTERCEPT sections must exist within that scope or be ignored.
+  // Changing the manifest, the scope, or the version of the manifest will
+  // trigger a refetch of the manifest.
+  //
+  // Version 2: Manifests can have an ORIGIN-TRIAL section.  This is a
+  // separate version so that a new version of Chrome will force a refetch.
+  //
+  // This code generates manifests with parser version 2.
+  manifest.parser_version = 2;
+  manifest.scope = manifest_scope;
+
+  const GURL manifest_scope_url = manifest_url.Resolve(manifest_scope);
 
   // The spec requires ignoring any characters on the first line after the
   // signature and its following whitespace.
@@ -319,7 +428,29 @@ bool ParseManifest(const GURL& manifest_url,
 
     static constexpr base::StringPiece kOnlineSafelistWildcard("*");
     if (mode == Mode::kOnlineSafelist && line == kOnlineSafelistWildcard) {
-      manifest.online_whitelist_all = true;
+      manifest.online_safelist_all = true;
+      continue;
+    }
+
+    if (mode == Mode::kOriginTrial) {
+      // Only accept the first valid token.
+      if (manifest.token_expires != base::Time())
+        continue;
+
+      base::StringPiece origin_trial_token;
+      std::tie(origin_trial_token, line) = SplitLineToken(line);
+
+      if (!blink::TrialTokenValidator::IsTrialPossibleOnOrigin(manifest_url))
+        continue;
+
+      blink::TrialTokenValidator validator;
+      url::Origin origin = url::Origin::Create(manifest_url);
+      blink::TrialTokenResult result = validator.ValidateToken(
+          origin_trial_token, origin, base::Time::Now());
+      if (result.Status() == blink::OriginTrialTokenStatus::kSuccess) {
+        if (result.ParsedToken()->feature_name() == kAppCacheOriginTrialName)
+          manifest.token_expires = result.ParsedToken()->expiry_time();
+      }
       continue;
     }
 
@@ -351,16 +482,11 @@ bool ParseManifest(const GURL& manifest_url,
 
       if (mode == Mode::kExplicit) {
         manifest.explicit_urls.insert(namespace_url.spec());
-      } else {
-        // Chrome supports URL patterns in manifests. This is not standardized.
-        // An URL record followed by the "isPattern" token is considered a
-        // pattern.
-
-        // TODO(pwnall): Add a UMA metric to see if we can remove this feature.
-        bool is_pattern = NextTokenIsPatternMatchingFlag(line);
-        manifest.online_whitelist_namespaces.emplace_back(AppCacheNamespace(
-            APPCACHE_NETWORK_NAMESPACE, namespace_url, GURL(), is_pattern));
+        continue;
       }
+
+      manifest.online_safelist_namespaces.emplace_back(
+          AppCacheNamespace(APPCACHE_NETWORK_NAMESPACE, namespace_url, GURL()));
       continue;
     }
 
@@ -375,7 +501,10 @@ bool ParseManifest(const GURL& manifest_url,
         continue;
       }
 
-      if (manifest_url.GetOrigin() != namespace_url.GetOrigin())
+      if (namespace_url.GetOrigin() != manifest_url.GetOrigin())
+        continue;
+
+      if (!IsUrlWithinScope(namespace_url, manifest_scope_url))
         continue;
 
       // The only supported verb is "return".
@@ -396,23 +525,26 @@ bool ParseManifest(const GURL& manifest_url,
       if (manifest_url.GetOrigin() != target_url.GetOrigin())
         continue;
 
-      // TODO(pwnall): Add a UMA metric to see if we can remove this feature.
-      bool is_pattern = NextTokenIsPatternMatchingFlag(line);
-      manifest.intercept_namespaces.emplace_back(
-          APPCACHE_INTERCEPT_NAMESPACE, namespace_url, target_url, is_pattern);
+      manifest.intercept_namespaces.emplace_back(APPCACHE_INTERCEPT_NAMESPACE,
+                                                 namespace_url, target_url);
+      parse_metrics.RecordInterceptEntry();
       continue;
     }
 
     if (mode == Mode::kFallback) {
-      if (manifest_url.GetOrigin() != namespace_url.GetOrigin())
+      if (namespace_url.GetOrigin() != manifest_url.GetOrigin())
         continue;
 
       if (parse_mode != PARSE_MANIFEST_ALLOWING_DANGEROUS_FEATURES) {
-        if (!ScopeMatches(manifest_url, namespace_url)) {
+        if (!IsUrlWithinScope(namespace_url,
+                              manifest_url.GetWithoutFilename())) {
           manifest.did_ignore_fallback_namespaces = true;
           continue;
         }
       }
+
+      if (!IsUrlWithinScope(namespace_url, manifest_scope_url))
+        continue;
 
       base::StringPiece fallback_url_token;
       std::tie(fallback_url_token, line) = SplitLineToken(line);
@@ -425,21 +557,22 @@ bool ParseManifest(const GURL& manifest_url,
       if (manifest_url.GetOrigin() != fallback_url.GetOrigin())
         continue;
 
-      // TODO(pwnall): Add a UMA metric to see if we can remove this feature.
-      bool is_pattern = NextTokenIsPatternMatchingFlag(line);
-
       // Store regardless of duplicate namespace URL. Only the first match will
       // ever be used.
-      manifest.fallback_namespaces.emplace_back(
-          AppCacheNamespace(APPCACHE_FALLBACK_NAMESPACE, namespace_url,
-                            fallback_url, is_pattern));
+      manifest.fallback_namespaces.emplace_back(APPCACHE_FALLBACK_NAMESPACE,
+                                                namespace_url, fallback_url);
       continue;
     }
 
     NOTREACHED() << "Unimplemented AppCache manifest parser mode";
   }
 
+  parse_metrics.RecordParseSuccess();
   return true;
+}
+
+std::string GetAppCacheOriginTrialNameForTesting() {
+  return kAppCacheOriginTrialName;
 }
 
 }  // namespace content

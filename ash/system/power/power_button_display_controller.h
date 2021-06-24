@@ -11,7 +11,7 @@
 #include "ash/system/power/backlights_forced_off_setter.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "ui/events/devices/input_device_event_observer.h"
@@ -29,7 +29,7 @@ class ScopedBacklightsForcedOff;
 // backlights off or disabling the touchscreen) on behalf of
 // PowerButtonController and TabletPowerButtonController.
 class ASH_EXPORT PowerButtonDisplayController
-    : public BacklightsForcedOffSetter::Observer,
+    : public ScreenBacklightObserver,
       public chromeos::PowerManagerClient::Observer,
       public ui::EventHandler,
       public ui::InputDeviceEventObserver {
@@ -50,17 +50,17 @@ class ASH_EXPORT PowerButtonDisplayController
   // |forced_off|.
   void SetBacklightsForcedOff(bool forced_off);
 
-  // Overridden from BacklightsForcedOffObserver:
+  // Overridden from ScreenBacklightObserver:
   void OnBacklightsForcedOffChanged(bool forced_off) override;
-  void OnScreenStateChanged(
-      BacklightsForcedOffSetter::ScreenState screen_state) override;
+  void OnScreenBacklightStateChanged(
+      ScreenBacklightState screen_backlight_state) override;
 
   // Overridden from chromeos::PowerManagerClient::Observer:
-  void SuspendDone(const base::TimeDelta& sleep_duration) override;
+  void SuspendDone(base::TimeDelta sleep_duration) override;
   void LidEventReceived(chromeos::PowerManagerClient::LidState state,
-                        const base::TimeTicks& timestamp) override;
+                        base::TimeTicks timestamp) override;
   void TabletModeEventReceived(chromeos::PowerManagerClient::TabletMode mode,
-                               const base::TimeTicks& timestamp) override;
+                               base::TimeTicks timestamp) override;
 
   // Overridden from ui::EventHandler:
   void OnKeyEvent(ui::KeyEvent* event) override;
@@ -75,8 +75,8 @@ class ASH_EXPORT PowerButtonDisplayController
 
   BacklightsForcedOffSetter* backlights_forced_off_setter_;  // Not owned.
 
-  ScopedObserver<BacklightsForcedOffSetter, BacklightsForcedOffSetter::Observer>
-      backlights_forced_off_observer_;
+  base::ScopedObservation<BacklightsForcedOffSetter, ScreenBacklightObserver>
+      backlights_forced_off_observation_{this};
 
   // Whether an accessibility alert should be sent when the backlights
   // forced-off state changes.
@@ -89,7 +89,7 @@ class ASH_EXPORT PowerButtonDisplayController
   // order to force the backlights off.
   std::unique_ptr<ScopedBacklightsForcedOff> backlights_forced_off_;
 
-  base::WeakPtrFactory<PowerButtonDisplayController> weak_ptr_factory_;
+  base::WeakPtrFactory<PowerButtonDisplayController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PowerButtonDisplayController);
 };

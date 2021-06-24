@@ -42,6 +42,8 @@ component("prefs") {
     "prefs_export.h",
     "scoped_user_pref_update.cc",
     "scoped_user_pref_update.h",
+    "segregated_pref_store.cc",
+    "segregated_pref_store.h",
     "value_map_pref_store.cc",
     "value_map_pref_store.h",
     "writeable_pref_store.cc",
@@ -50,9 +52,17 @@ component("prefs") {
 
   defines = [ "COMPONENTS_PREFS_IMPLEMENTATION" ]
 
-  deps = [
-    "//base",
-  ]
+  deps = [ "//base/util/values:values_util" ]
+
+  public_deps = [ "//base" ]
+
+  if (is_android) {
+    sources += [
+      "android/pref_service_android.cc",
+      "android/pref_service_android.h",
+    ]
+    deps += [ "android:jni_headers" ]
+  }
 }
 
 static_library("test_support") {
@@ -62,17 +72,18 @@ static_library("test_support") {
     "mock_pref_change_callback.h",
     "pref_store_observer_mock.cc",
     "pref_store_observer_mock.h",
+    "pref_test_utils.cc",
+    "pref_test_utils.h",
     "testing_pref_service.cc",
     "testing_pref_service.h",
     "testing_pref_store.cc",
     "testing_pref_store.h",
   ]
 
-  public_deps = [
-    ":prefs",
-  ]
+  public_deps = [ ":prefs" ]
   deps = [
     "//base",
+    "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]
@@ -94,6 +105,7 @@ source_set("unit_tests") {
     "pref_value_map_unittest.cc",
     "pref_value_store_unittest.cc",
     "scoped_user_pref_update_unittest.cc",
+    "segregated_pref_store_unittest.cc",
   ]
 
   deps = [

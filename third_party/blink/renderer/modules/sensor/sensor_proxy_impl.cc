@@ -11,15 +11,19 @@
 #include "third_party/blink/renderer/modules/sensor/sensor_reading_remapper.h"
 #include "third_party/blink/renderer/platform/mojo/mojo_helper.h"
 
+using device::mojom::blink::SensorCreationResult;
+
 namespace blink {
 
-using namespace device::mojom::blink;
-
-SensorProxyImpl::SensorProxyImpl(SensorType sensor_type,
+SensorProxyImpl::SensorProxyImpl(device::mojom::blink::SensorType sensor_type,
                                  SensorProviderProxy* provider,
                                  Page* page)
     : SensorProxy(sensor_type, provider, page),
-      client_binding_(this),
+      sensor_remote_(provider->GetSupplementable()->GetExecutionContext()),
+      client_receiver_(this,
+                       provider->GetSupplementable()->GetExecutionContext()),
+      task_runner_(
+          provider->GetSupplementable()->GetTaskRunner(TaskType::kSensor)),
       polling_timer_(
           provider->GetSupplementable()->GetTaskRunner(TaskType::kSensor),
           this,
@@ -27,11 +31,10 @@ SensorProxyImpl::SensorProxyImpl(SensorType sensor_type,
 
 SensorProxyImpl::~SensorProxyImpl() {}
 
-void SensorProxyImpl::Dispose() {
-  client_binding_.Close();
-}
-
-void SensorProxyImpl::Trace(blink::Visitor* visitor) {
+void SensorProxyImpl::Trace(Visitor* visitor) const {
+  visitor->Trace(sensor_remote_);
+  visitor->Trace(client_receiver_);
+  visitor->Trace(polling_timer_);
   SensorProxy::Trace(visitor);
 }
 
@@ -39,30 +42,32 @@ void SensorProxyImpl::Initialize() {
   if (state_ != kUninitialized)
     return;
 
-  if (!sensor_provider()) {
+  if (!sensor_provider_proxy()) {
     HandleSensorError();
     return;
   }
 
   state_ = kInitializing;
-  auto callback =
-      WTF::Bind(&SensorProxyImpl::OnSensorCreated, WrapWeakPersistent(this));
-  sensor_provider()->GetSensor(type_, std::move(callback));
+  sensor_provider_proxy()->GetSensor(
+      type_,
+      WTF::Bind(&SensorProxyImpl::OnSensorCreated, WrapWeakPersistent(this)));
 }
 
 void SensorProxyImpl::AddConfiguration(
-    SensorConfigurationPtr configuration,
+    device::mojom::blink::SensorConfigurationPtr configuration,
     base::OnceCallback<void(bool)> callback) {
   DCHECK(IsInitialized());
   AddActiveFrequency(configuration->frequency);
-  sensor_->AddConfiguration(std::move(configuration), std::move(callback));
+  sensor_remote_->AddConfiguration(std::move(configuration),
+                                   std::move(callback));
 }
 
 void SensorProxyImpl::RemoveConfiguration(
-    SensorConfigurationPtr configuration) {
+    device::mojom::blink::SensorConfigurationPtr configuration) {
   DCHECK(IsInitialized());
   RemoveActiveFrequency(configuration->frequency);
-  sensor_->RemoveConfiguration(std::move(configuration));
+  if (sensor_remote_.is_bound())
+    sensor_remote_->RemoveConfiguration(std::move(configuration));
 }
 
 double SensorProxyImpl::GetDefaultFrequency() const {
@@ -76,26 +81,26 @@ std::pair<double, double> SensorProxyImpl::GetFrequencyLimits() const {
 }
 
 void SensorProxyImpl::Suspend() {
-  if (suspended_)
+  if (suspended_ || !sensor_remote_.is_bound())
     return;
 
-  sensor_->Suspend();
+  sensor_remote_->Suspend();
   suspended_ = true;
   UpdatePollingStatus();
 }
 
 void SensorProxyImpl::Resume() {
-  if (!suspended_)
+  if (!suspended_ || !sensor_remote_.is_bound())
     return;
 
-  sensor_->Resume();
+  sensor_remote_->Resume();
   suspended_ = false;
   UpdatePollingStatus();
 }
 
 void SensorProxyImpl::UpdateSensorReading() {
   DCHECK(ShouldProcessReadings());
-  DCHECK(shared_buffer_handle_->is_valid());
+  DCHECK(shared_buffer_reader_);
 
   // Try to read the latest value from shared memory. Failure should not be
   // fatal because we only retry a finite number of times.
@@ -122,7 +127,7 @@ void SensorProxyImpl::RaiseError() {
 }
 
 void SensorProxyImpl::SensorReadingChanged() {
-  DCHECK_EQ(ReportingMode::ON_CHANGE, mode_);
+  DCHECK_EQ(device::mojom::blink::ReportingMode::ON_CHANGE, mode_);
   if (ShouldProcessReadings())
     UpdateSensorReading();
 }
@@ -134,14 +139,11 @@ void SensorProxyImpl::ReportError(DOMExceptionCode code,
   reading_ = device::SensorReading();
   UpdatePollingStatus();
 
-  // The m_sensor.reset() will release all callbacks and its bound parameters,
-  // therefore, handleSensorError accepts messages by value.
-  sensor_.reset();
-  shared_buffer_.reset();
-  shared_buffer_handle_.reset();
+  sensor_remote_.reset();
+  shared_buffer_reader_.reset();
   default_frequency_ = 0.0;
   frequency_limits_ = {0.0, 0.0};
-  client_binding_.Close();
+  client_receiver_.reset();
 
   SensorProxy::ReportError(code, message);
 }
@@ -155,8 +157,9 @@ void SensorProxyImpl::HandleSensorError(SensorCreationResult error) {
   }
 }
 
-void SensorProxyImpl::OnSensorCreated(SensorCreationResult result,
-                                      SensorInitParamsPtr params) {
+void SensorProxyImpl::OnSensorCreated(
+    SensorCreationResult result,
+    device::mojom::blink::SensorInitParamsPtr params) {
   DCHECK_EQ(kInitializing, state_);
   if (!params) {
     DCHECK_NE(SensorCreationResult::SUCCESS, result);
@@ -165,9 +168,6 @@ void SensorProxyImpl::OnSensorCreated(SensorCreationResult result,
   }
 
   DCHECK_EQ(SensorCreationResult::SUCCESS, result);
-  const size_t kReadBufferSize = sizeof(ReadingBuffer);
-
-  DCHECK_EQ(0u, params->buffer_offset % kReadBufferSize);
 
   mode_ = params->mode;
   if (!params->default_configuration) {
@@ -178,23 +178,16 @@ void SensorProxyImpl::OnSensorCreated(SensorCreationResult result,
   default_frequency_ = params->default_configuration->frequency;
   DCHECK_GT(default_frequency_, 0.0);
 
-  sensor_.Bind(std::move(params->sensor));
-  client_binding_.Bind(std::move(params->client_request));
+  sensor_remote_.Bind(std::move(params->sensor), task_runner_);
+  client_receiver_.Bind(std::move(params->client_receiver), task_runner_);
 
-  shared_buffer_handle_ = std::move(params->memory);
-  DCHECK(!shared_buffer_);
-  shared_buffer_ = shared_buffer_handle_->MapAtOffset(kReadBufferSize,
-                                                      params->buffer_offset);
-
-  if (!shared_buffer_) {
+  shared_buffer_reader_ = device::SensorReadingSharedBufferReader::Create(
+      std::move(params->memory), params->buffer_offset);
+  if (!shared_buffer_reader_) {
     HandleSensorError();
     return;
   }
 
-  const auto* buffer = static_cast<const device::SensorReadingSharedBuffer*>(
-      shared_buffer_.get());
-  shared_buffer_reader_ =
-      std::make_unique<device::SensorReadingSharedBufferReader>(buffer);
   shared_buffer_reader_->GetReading(&reading_);
 
   frequency_limits_.first = params->minimum_frequency;
@@ -208,7 +201,7 @@ void SensorProxyImpl::OnSensorCreated(SensorCreationResult result,
   auto error_callback =
       WTF::Bind(&SensorProxyImpl::HandleSensorError, WrapWeakPersistent(this),
                 SensorCreationResult::ERROR_NOT_AVAILABLE);
-  sensor_.set_connection_error_handler(std::move(error_callback));
+  sensor_remote_.set_disconnect_handler(std::move(error_callback));
 
   state_ = kInitialized;
 
@@ -227,14 +220,14 @@ bool SensorProxyImpl::ShouldProcessReadings() const {
 }
 
 void SensorProxyImpl::UpdatePollingStatus() {
-  if (mode_ != ReportingMode::CONTINUOUS)
+  if (mode_ != device::mojom::blink::ReportingMode::CONTINUOUS)
     return;
 
   if (ShouldProcessReadings()) {
     // TODO(crbug/721297) : We need to find out an algorithm for resulting
     // polling frequency.
     polling_timer_.StartRepeating(
-        WTF::TimeDelta::FromSecondsD(1 / active_frequencies_.back()),
+        base::TimeDelta::FromSecondsD(1 / active_frequencies_.back()),
         FROM_HERE);
   } else {
     polling_timer_.Stop();

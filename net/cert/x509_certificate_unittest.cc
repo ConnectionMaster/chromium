@@ -8,18 +8,19 @@
 
 #include <memory>
 
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/hash/sha1.h"
 #include "base/pickle.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "crypto/rsa_private_key.h"
 #include "net/base/net_errors.h"
 #include "net/cert/asn1_util.h"
-#include "net/cert/pem_tokenizer.h"
+#include "net/cert/internal/parse_certificate.h"
+#include "net/cert/pem.h"
 #include "net/cert/x509_util.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/test_certificate_data.h"
@@ -110,8 +111,7 @@ void CheckGoogleCert(const scoped_refptr<X509Certificate>& google_cert,
 
 TEST(X509CertificateTest, GoogleCertParsing) {
   scoped_refptr<X509Certificate> google_cert(
-      X509Certificate::CreateFromBytes(
-          reinterpret_cast<const char*>(google_der), sizeof(google_der)));
+      X509Certificate::CreateFromBytes(google_der));
 
   CheckGoogleCert(google_cert, google_fingerprint,
                   1238192407,   // Mar 27 22:20:07 2009 GMT
@@ -119,8 +119,8 @@ TEST(X509CertificateTest, GoogleCertParsing) {
 }
 
 TEST(X509CertificateTest, WebkitCertParsing) {
-  scoped_refptr<X509Certificate> webkit_cert(X509Certificate::CreateFromBytes(
-      reinterpret_cast<const char*>(webkit_der), sizeof(webkit_der)));
+  scoped_refptr<X509Certificate> webkit_cert(
+      X509Certificate::CreateFromBytes(webkit_der));
 
   ASSERT_NE(static_cast<X509Certificate*>(nullptr), webkit_cert.get());
 
@@ -170,8 +170,8 @@ TEST(X509CertificateTest, WebkitCertParsing) {
 }
 
 TEST(X509CertificateTest, ThawteCertParsing) {
-  scoped_refptr<X509Certificate> thawte_cert(X509Certificate::CreateFromBytes(
-      reinterpret_cast<const char*>(thawte_der), sizeof(thawte_der)));
+  scoped_refptr<X509Certificate> thawte_cert(
+      X509Certificate::CreateFromBytes(thawte_der));
 
   ASSERT_NE(static_cast<X509Certificate*>(nullptr), thawte_cert.get());
 
@@ -357,8 +357,7 @@ TEST(X509CertificateTest, TeletexStringIsNotARealT61String) {
 
 TEST(X509CertificateTest, SerialNumbers) {
   scoped_refptr<X509Certificate> google_cert(
-      X509Certificate::CreateFromBytes(
-          reinterpret_cast<const char*>(google_der), sizeof(google_der)));
+      X509Certificate::CreateFromBytes(google_der));
   ASSERT_TRUE(google_cert);
 
   static const uint8_t google_serial[16] = {
@@ -439,8 +438,8 @@ TEST(X509CertificateTest, SerialNumber37BytesLong) {
 }
 
 TEST(X509CertificateTest, SHA256FingerprintsCorrectly) {
-  scoped_refptr<X509Certificate> google_cert(X509Certificate::CreateFromBytes(
-      reinterpret_cast<const char*>(google_der), sizeof(google_der)));
+  scoped_refptr<X509Certificate> google_cert(
+      X509Certificate::CreateFromBytes(google_der));
   ASSERT_TRUE(google_cert);
 
   const SHA256HashValue google_sha256_fingerprint = {
@@ -634,16 +633,13 @@ TEST(X509CertificateTest, ExtractExtension) {
   base::FilePath certs_dir = GetTestCertsDirectory();
   scoped_refptr<X509Certificate> cert =
       ImportCertFromFile(certs_dir, "ok_cert.pem");
-  ASSERT_NE(static_cast<X509Certificate*>(nullptr), cert.get());
+  ASSERT_TRUE(cert);
 
-  static constexpr uint8_t kBasicConstraintsOID[] = {0x55, 0x1d, 0x13};
   bool present, critical;
   base::StringPiece contents;
   ASSERT_TRUE(asn1::ExtractExtensionFromDERCert(
       x509_util::CryptoBufferAsStringPiece(cert->cert_buffer()),
-      base::StringPiece(reinterpret_cast<const char*>(kBasicConstraintsOID),
-                        sizeof(kBasicConstraintsOID)),
-      &present, &critical, &contents));
+      BasicConstraintsOid().AsStringPiece(), &present, &critical, &contents));
   EXPECT_TRUE(present);
   EXPECT_TRUE(critical);
   ASSERT_EQ(base::StringPiece("\x30\x00", 2), contents);
@@ -655,6 +651,16 @@ TEST(X509CertificateTest, ExtractExtension) {
                         sizeof(kNonsenseOID)),
       &present, &critical, &contents));
   ASSERT_FALSE(present);
+
+  scoped_refptr<X509Certificate> uid_cert =
+      ImportCertFromFile(certs_dir, "ct-test-embedded-with-uids.pem");
+  ASSERT_TRUE(uid_cert);
+  ASSERT_TRUE(asn1::ExtractExtensionFromDERCert(
+      x509_util::CryptoBufferAsStringPiece(uid_cert->cert_buffer()),
+      BasicConstraintsOid().AsStringPiece(), &present, &critical, &contents));
+  EXPECT_TRUE(present);
+  EXPECT_FALSE(critical);
+  ASSERT_EQ(base::StringPiece("\x30\x00", 2), contents);
 }
 
 // Tests CRYPTO_BUFFER deduping via X509Certificate::CreateFromBuffer.  We
@@ -665,16 +671,14 @@ TEST(X509CertificateTest, Cache) {
   bssl::UniquePtr<CRYPTO_BUFFER> thawte_cert_handle;
 
   // Add a single certificate to the certificate cache.
-  google_cert_handle = X509Certificate::CreateCertBufferFromBytes(
-      reinterpret_cast<const char*>(google_der), sizeof(google_der));
+  google_cert_handle = X509Certificate::CreateCertBufferFromBytes(google_der);
   ASSERT_TRUE(google_cert_handle);
   scoped_refptr<X509Certificate> cert1(
       X509Certificate::CreateFromBuffer(std::move(google_cert_handle), {}));
   ASSERT_TRUE(cert1);
 
   // Add the same certificate, but as a new handle.
-  google_cert_handle = X509Certificate::CreateCertBufferFromBytes(
-      reinterpret_cast<const char*>(google_der), sizeof(google_der));
+  google_cert_handle = X509Certificate::CreateCertBufferFromBytes(google_der);
   ASSERT_TRUE(google_cert_handle);
   scoped_refptr<X509Certificate> cert2(
       X509Certificate::CreateFromBuffer(std::move(google_cert_handle), {}));
@@ -690,10 +694,8 @@ TEST(X509CertificateTest, Cache) {
   // Add the same certificate, but this time with an intermediate. This
   // should result in the intermediate being cached. Note that this is not
   // a legitimate chain, but is suitable for testing.
-  google_cert_handle = X509Certificate::CreateCertBufferFromBytes(
-      reinterpret_cast<const char*>(google_der), sizeof(google_der));
-  thawte_cert_handle = X509Certificate::CreateCertBufferFromBytes(
-      reinterpret_cast<const char*>(thawte_der), sizeof(thawte_der));
+  google_cert_handle = X509Certificate::CreateCertBufferFromBytes(google_der);
+  thawte_cert_handle = X509Certificate::CreateCertBufferFromBytes(thawte_der);
   ASSERT_TRUE(google_cert_handle);
   ASSERT_TRUE(thawte_cert_handle);
   std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates;
@@ -712,12 +714,10 @@ TEST(X509CertificateTest, Cache) {
 
 TEST(X509CertificateTest, Pickle) {
   bssl::UniquePtr<CRYPTO_BUFFER> google_cert_handle =
-      X509Certificate::CreateCertBufferFromBytes(
-          reinterpret_cast<const char*>(google_der), sizeof(google_der));
+      X509Certificate::CreateCertBufferFromBytes(google_der);
   ASSERT_TRUE(google_cert_handle);
   bssl::UniquePtr<CRYPTO_BUFFER> thawte_cert_handle =
-      X509Certificate::CreateCertBufferFromBytes(
-          reinterpret_cast<const char*>(thawte_der), sizeof(thawte_der));
+      X509Certificate::CreateCertBufferFromBytes(thawte_der);
   ASSERT_TRUE(thawte_cert_handle);
 
   std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates;
@@ -746,19 +746,16 @@ TEST(X509CertificateTest, Pickle) {
 
 TEST(X509CertificateTest, IntermediateCertificates) {
   scoped_refptr<X509Certificate> webkit_cert(
-      X509Certificate::CreateFromBytes(
-          reinterpret_cast<const char*>(webkit_der), sizeof(webkit_der)));
+      X509Certificate::CreateFromBytes(webkit_der));
   ASSERT_TRUE(webkit_cert);
 
   scoped_refptr<X509Certificate> thawte_cert(
-      X509Certificate::CreateFromBytes(
-          reinterpret_cast<const char*>(thawte_der), sizeof(thawte_der)));
+      X509Certificate::CreateFromBytes(thawte_der));
   ASSERT_TRUE(thawte_cert);
 
   bssl::UniquePtr<CRYPTO_BUFFER> google_handle;
   // Create object with no intermediates:
-  google_handle = X509Certificate::CreateCertBufferFromBytes(
-      reinterpret_cast<const char*>(google_der), sizeof(google_der));
+  google_handle = X509Certificate::CreateCertBufferFromBytes(google_der);
   scoped_refptr<X509Certificate> cert1;
   cert1 =
       X509Certificate::CreateFromBuffer(bssl::UpRef(google_handle.get()), {});
@@ -769,9 +766,8 @@ TEST(X509CertificateTest, IntermediateCertificates) {
   std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates2;
   intermediates2.push_back(bssl::UpRef(webkit_cert->cert_buffer()));
   intermediates2.push_back(bssl::UpRef(thawte_cert->cert_buffer()));
-  scoped_refptr<X509Certificate> cert2;
-  cert2 = X509Certificate::CreateFromBuffer(std::move(google_handle),
-                                            std::move(intermediates2));
+  scoped_refptr<X509Certificate> cert2 = X509Certificate::CreateFromBuffer(
+      std::move(google_handle), std::move(intermediates2));
   ASSERT_TRUE(cert2);
 
   // Verify it has all the intermediates:
@@ -815,7 +811,7 @@ TEST(X509CertificateTest, Equals) {
   intermediates2.push_back(bssl::UpRef(certs[2]->cert_buffer()));
   scoped_refptr<X509Certificate> cert0_with_intermediate2 =
       X509Certificate::CreateFromBuffer(bssl::UpRef(certs[0]->cert_buffer()),
-                                        std::move(intermediates1));
+                                        std::move(intermediates2));
   ASSERT_TRUE(cert0_with_intermediate2);
 
   // Comparing X509Certificate with one intermediate to X509Certificate with
@@ -1151,7 +1147,7 @@ TEST_P(X509CertificateParseTest, CanParseFormat) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          X509CertificateParseTest,
                          testing::ValuesIn(kFormatTestData));
 
@@ -1175,10 +1171,9 @@ struct CertificateNameVerifyTestData {
 void PrintTo(const CertificateNameVerifyTestData& data, std::ostream* os) {
   ASSERT_TRUE(data.hostname);
   ASSERT_TRUE(data.dns_names || data.ip_addrs);
-  // Using StringPiece to allow for optional fields being NULL.
   *os << " expected: " << data.expected << "; hostname: " << data.hostname
-      << "; dns_names: " << base::StringPiece(data.dns_names)
-      << "; ip_addrs: " << base::StringPiece(data.ip_addrs);
+      << "; dns_names: " << (data.dns_names ? data.dns_names : "")
+      << "; ip_addrs: " << (data.ip_addrs ? data.ip_addrs : "");
 }
 
 const CertificateNameVerifyTestData kNameVerifyTestData[] = {
@@ -1202,8 +1197,14 @@ const CertificateNameVerifyTestData kNameVerifyTestData[] = {
     {false, "wwww.bar.foo.com", "w*w.bar.foo.c0m"},
     {false, "WALLY.bar.foo.com", "wa*.bar.foo.com"},
     {false, "wally.bar.foo.com", "*Ly.bar.foo.com"},
+    // Hostname escaping tests
     {true, "ww%57.foo.com", "www.foo.com"},
-    {true, "www&.foo.com", "www%26.foo.com"},
+    {true, "www%2Efoo.com", "www.foo.com"},
+    {false, "www%00.foo.com", "www,foo.com,www.foo.com"},
+    {false, "www%0D.foo.com", "www.foo.com,www\r.foo.com"},
+    {false, "www%40foo.com", "www@foo.com"},
+    {false, "www%2E%2Efoo.com", "www.foo.com,www..foo.com"},
+    {false, "www%252Efoo.com", "www.foo.com"},
     // IDN tests
     {true, "xn--poema-9qae5a.com.br", "xn--poema-9qae5a.com.br"},
     {true, "www.xn--poema-9qae5a.com.br", "*.xn--poema-9qae5a.com.br"},
@@ -1287,6 +1288,16 @@ const CertificateNameVerifyTestData kNameVerifyTestData[] = {
     {false, "1.2.3.4.5.6", "*.2.3.4.5.6"},
     {true, "1.2.3.4.5", "1.2.3.4.5"},
     // Invalid host names.
+    {false, ".", ""},
+    {false, ".", "."},
+    {false, "1.2.3.4..", "", "1.2.3.4"},
+    {false, "www..domain.example", "www.domain.example"},
+    {false, "www^domain.example", "www^domain.example"},
+    {false, "www%20.domain.example", "www .domain.example"},
+    {false, "www%2520.domain.example", "www .domain.example"},
+    {false, "www%5E.domain.example", "www^domain.example"},
+    {false, "www,domain.example", "www,domain.example"},
+    {false, "0x000000002200037955161..", "0x000000002200037955161"},
     {false, "junk)(£)$*!@~#", "junk)(£)$*!@~#"},
     {false, "www.*.com", "www.*.com"},
     {false, "w$w.f.com", "w$w.f.com"},
@@ -1321,11 +1332,10 @@ TEST_P(X509CertificateNameVerifyTest, VerifyHostname) {
       ASSERT_NE(0U, addr_ascii.length());
       if (addr_ascii[0] == 'x') {  // Hex encoded address
         addr_ascii.erase(0, 1);
-        std::vector<uint8_t> bytes;
-        EXPECT_TRUE(base::HexStringToBytes(addr_ascii, &bytes))
+        std::string bytes;
+        EXPECT_TRUE(base::HexStringToString(addr_ascii, &bytes))
             << "Could not parse hex address " << addr_ascii << " i = " << i;
-        ip_addressses.push_back(std::string(reinterpret_cast<char*>(&bytes[0]),
-                                            bytes.size()));
+        ip_addressses.push_back(std::move(bytes));
         ASSERT_EQ(16U, ip_addressses.back().size()) << i;
       } else {  // Decimal groups
         std::vector<std::string> decimals_ascii = base::SplitString(
@@ -1350,7 +1360,7 @@ TEST_P(X509CertificateNameVerifyTest, VerifyHostname) {
                                             ip_addressses));
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          X509CertificateNameVerifyTest,
                          testing::ValuesIn(kNameVerifyTestData));
 
@@ -1390,7 +1400,7 @@ TEST_P(X509CertificatePublicKeyInfoTest, GetPublicKeyInfo) {
   EXPECT_EQ(data.expected_type, actual_type);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          X509CertificatePublicKeyInfoTest,
                          testing::ValuesIn(kPublicKeyInfoTestData));
 

@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "remoting/base/constants.h"
 
 namespace remoting {
@@ -68,19 +68,31 @@ void FrameProcessingTimeEstimator::StartFrame() {
 
 void FrameProcessingTimeEstimator::FinishFrame(
     const WebrtcVideoEncoder::EncodedFrame& frame) {
-  DCHECK(!start_time_.is_null());
-  base::TimeTicks now = Now();
+  base::TimeTicks end_time;
+  if (frame.stats) {
+    start_time_ = frame.stats->capture_started_time;
+    end_time = frame.stats->encode_ended_time;
+    DCHECK(!start_time_.is_null());
+    DCHECK(!end_time.is_null());
+  } else {
+    if (start_time_.is_null()) {
+      return;
+    }
+    end_time = Now();
+  }
+
   if (frame_finish_ticks_.size() == kFrameFinishTicksCount) {
     frame_finish_ticks_.pop_front();
   }
-  frame_finish_ticks_.push_back(now);
+  frame_finish_ticks_.push_back(end_time);
   DCHECK(frame_finish_ticks_.size() <= kFrameFinishTicksCount);
   if (frame.key_frame) {
-    key_frame_processing_us_.Record((now - start_time_).InMicroseconds());
+    key_frame_processing_us_.Record((end_time - start_time_).InMicroseconds());
     key_frame_size_.Record(frame.data.length());
     key_frame_count_++;
   } else {
-    delta_frame_processing_us_.Record((now - start_time_).InMicroseconds());
+    delta_frame_processing_us_.Record(
+        (end_time - start_time_).InMicroseconds());
     delta_frame_size_.Record(frame.data.length());
     delta_frame_count_++;
   }

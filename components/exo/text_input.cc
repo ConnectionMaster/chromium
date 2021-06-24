@@ -6,15 +6,17 @@
 
 #include <algorithm>
 
-#include "base/strings/utf_string_conversions.h"
+#include "ash/keyboard/ui/keyboard_ui_controller.h"
+#include "base/strings/string_piece.h"
+#include "components/exo/shell_surface_util.h"
 #include "components/exo/surface.h"
 #include "components/exo/wm_helper.h"
 #include "third_party/icu/source/common/unicode/uchar.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/ime/input_method.h"
+#include "ui/base/ime/utf_offset.h"
 #include "ui/events/event.h"
-#include "ui/keyboard/keyboard_controller.h"
 
 namespace exo {
 
@@ -28,20 +30,12 @@ ui::InputMethod* GetInputMethod(aura::Window* window) {
 
 }  // namespace
 
-size_t OffsetFromUTF8Offset(const base::StringPiece& text, uint32_t offset) {
-  return base::UTF8ToUTF16(text.substr(0, offset)).size();
-}
-
-size_t OffsetFromUTF16Offset(const base::StringPiece16& text, uint32_t offset) {
-  return base::UTF16ToUTF8(text.substr(0, offset)).size();
-}
-
 TextInput::TextInput(std::unique_ptr<Delegate> delegate)
     : delegate_(std::move(delegate)) {}
 
 TextInput::~TextInput() {
-  if (keyboard_controller_)
-    keyboard_controller_->RemoveObserver(this);
+  if (keyboard_ui_controller_)
+    keyboard_ui_controller_->RemoveObserver(this);
   if (input_method_)
     Deactivate();
 }
@@ -69,8 +63,8 @@ void TextInput::ShowVirtualKeyboardIfEnabled() {
 }
 
 void TextInput::HideVirtualKeyboard() {
-  if (keyboard_controller_)
-    keyboard_controller_->HideKeyboardByUser();
+  if (keyboard_ui_controller_)
+    keyboard_ui_controller_->HideKeyboardByUser();
   pending_vk_visible_ = false;
 }
 
@@ -79,7 +73,13 @@ void TextInput::Resync() {
     input_method_->OnCaretBoundsChanged(this);
 }
 
-void TextInput::SetSurroundingText(const base::string16& text,
+void TextInput::Reset() {
+  composition_ = ui::CompositionText();
+  if (input_method_)
+    input_method_->CancelComposition(this);
+}
+
+void TextInput::SetSurroundingText(const std::u16string& text,
                                    uint32_t cursor_pos,
                                    uint32_t anchor) {
   surrounding_text_ = text;
@@ -119,26 +119,48 @@ void TextInput::SetCompositionText(const ui::CompositionText& composition) {
   delegate_->SetCompositionText(composition);
 }
 
-void TextInput::ConfirmCompositionText() {
+uint32_t TextInput::ConfirmCompositionText(bool keep_selection) {
+  // TODO(b/134473433) Modify this function so that when keep_selection is
+  // true, the selection is not changed when text committed
+  if (keep_selection) {
+    NOTIMPLEMENTED_LOG_ONCE();
+  }
+  const uint32_t composition_text_length =
+      static_cast<uint32_t>(composition_.text.length());
   delegate_->Commit(composition_.text);
+  composition_ = ui::CompositionText();
+  return composition_text_length;
 }
 
 void TextInput::ClearCompositionText() {
+  if (composition_.text.empty())
+    return;
   composition_ = ui::CompositionText();
   delegate_->SetCompositionText(composition_);
 }
 
-void TextInput::InsertText(const base::string16& text) {
+void TextInput::InsertText(const std::u16string& text,
+                           InsertTextCursorBehavior cursor_behavior) {
+  // TODO(crbug.com/1155331): Handle |cursor_behavior| correctly.
   delegate_->Commit(text);
 }
 
 void TextInput::InsertChar(const ui::KeyEvent& event) {
-  base::char16 ch = event.GetCharacter();
+  char16_t ch = event.GetCharacter();
   if (u_isprint(ch)) {
-    InsertText(base::string16(1, ch));
+    InsertText(
+        std::u16string(1, ch),
+        ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
     return;
   }
-  delegate_->SendKey(event);
+  // TextInput is currently used only for Lacros, and this is the
+  // short term workaround not to duplicate KeyEvent there.
+  // This is what we do for ARC, which is being removed in the near
+  // future.
+  // TODO(fukino): Get rid of this, too, when the wl_keyboard::key
+  // and text_input::keysym events are handled properly in Lacros.
+  if (window_ && ConsumedByIme(window_, event))
+    delegate_->SendKey(event);
 }
 
 ui::TextInputType TextInput::GetTextInputType() const {
@@ -163,6 +185,11 @@ bool TextInput::CanComposeInline() const {
 
 gfx::Rect TextInput::GetCaretBounds() const {
   return caret_bounds_ + window_->GetBoundsInScreen().OffsetFromOrigin();
+}
+
+gfx::Rect TextInput::GetSelectionBoundingBox() const {
+  NOTIMPLEMENTED();
+  return gfx::Rect();
 }
 
 bool TextInput::GetCompositionCharacterBounds(uint32_t index,
@@ -212,23 +239,31 @@ bool TextInput::GetEditableSelectionRange(gfx::Range* range) const {
 bool TextInput::SetEditableSelectionRange(const gfx::Range& range) {
   if (surrounding_text_.size() < range.GetMax())
     return false;
-  delegate_->SetCursor(
-      gfx::Range(OffsetFromUTF16Offset(surrounding_text_, range.start()),
-                 OffsetFromUTF16Offset(surrounding_text_, range.end())));
+  auto start = ui::Utf8OffsetFromUtf16Offset(surrounding_text_, range.start());
+  if (!start)
+    return false;
+  auto end = ui::Utf8OffsetFromUtf16Offset(surrounding_text_, range.end());
+  if (!end)
+    return false;
+  delegate_->SetCursor(gfx::Range(*start, *end));
   return true;
 }
 
 bool TextInput::DeleteRange(const gfx::Range& range) {
   if (surrounding_text_.size() < range.GetMax())
     return false;
-  delegate_->DeleteSurroundingText(
-      gfx::Range(OffsetFromUTF16Offset(surrounding_text_, range.start()),
-                 OffsetFromUTF16Offset(surrounding_text_, range.end())));
+  auto start = ui::Utf8OffsetFromUtf16Offset(surrounding_text_, range.start());
+  if (!start)
+    return false;
+  auto end = ui::Utf8OffsetFromUtf16Offset(surrounding_text_, range.end());
+  if (!end)
+    return false;
+  delegate_->DeleteSurroundingText(gfx::Range(*start, *end));
   return true;
 }
 
 bool TextInput::GetTextFromRange(const gfx::Range& range,
-                                 base::string16* text) const {
+                                 std::u16string* text) const {
   gfx::Range text_range;
   if (!GetTextRange(&text_range) || !text_range.Contains(range))
     return false;
@@ -284,13 +319,18 @@ bool TextInput::ChangeTextDirectionAndLayoutAlignment(
 void TextInput::ExtendSelectionAndDelete(size_t before, size_t after) {
   if (!cursor_pos_)
     return;
-  uint32_t start =
+  size_t utf16_start =
       (cursor_pos_->GetMin() < before) ? 0 : (cursor_pos_->GetMin() - before);
-  uint32_t end =
+  size_t utf16_end =
       std::min(cursor_pos_->GetMax() + after, surrounding_text_.size());
-  delegate_->DeleteSurroundingText(
-      gfx::Range(OffsetFromUTF16Offset(surrounding_text_, start),
-                 OffsetFromUTF16Offset(surrounding_text_, end)));
+  auto start = ui::Utf8OffsetFromUtf16Offset(surrounding_text_, utf16_start);
+  if (!start)
+    return;
+  auto end = ui::Utf8OffsetFromUtf16Offset(surrounding_text_, utf16_end);
+  if (!end)
+    return;
+
+  delegate_->DeleteSurroundingText(gfx::Range(*start, *end));
 }
 
 void TextInput::EnsureCaretNotInRect(const gfx::Rect& rect) {}
@@ -311,7 +351,53 @@ bool TextInput::ShouldDoLearning() {
   return should_do_learning_;
 }
 
-void TextInput::OnKeyboardVisibilityStateChanged(bool is_visible) {
+bool TextInput::SetCompositionFromExistingText(
+    const gfx::Range& range,
+    const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) {
+  // TODO(https://crbug.com/952757): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+gfx::Range TextInput::GetAutocorrectRange() const {
+  // TODO(https://crbug.com/952757): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return gfx::Range();
+}
+
+gfx::Rect TextInput::GetAutocorrectCharacterBounds() const {
+  // TODO(https://crbug.com/952757): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return gfx::Rect();
+}
+
+// TODO(crbug.com/1091088) Implement setAutocorrectRange
+bool TextInput::SetAutocorrectRange(const gfx::Range& range) {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+absl::optional<ui::GrammarFragment> TextInput::GetGrammarFragment(
+    const gfx::Range& range) {
+  // TODO(https://crbug.com/1201454): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return absl::nullopt;
+}
+
+bool TextInput::ClearGrammarFragments(const gfx::Range& range) {
+  // TODO(https://crbug.com/1201454): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+bool TextInput::AddGrammarFragments(
+    const std::vector<ui::GrammarFragment>& fragments) {
+  // TODO(https://crbug.com/1201454): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+void TextInput::OnKeyboardVisibilityChanged(bool is_visible) {
   delegate_->OnVirtualKeyboardVisibilityChanged(is_visible);
 }
 
@@ -330,11 +416,12 @@ void TextInput::AttachInputMethod() {
   input_method_->SetFocusedTextInputClient(this);
   delegate_->Activated();
 
-  if (!keyboard_controller_ && keyboard::KeyboardController::HasInstance()) {
-    auto* keyboard_controller = keyboard::KeyboardController::Get();
-    if (keyboard_controller->IsEnabled()) {
-      keyboard_controller_ = keyboard_controller;
-      keyboard_controller_->AddObserver(this);
+  if (!keyboard_ui_controller_ &&
+      keyboard::KeyboardUIController::HasInstance()) {
+    auto* keyboard_ui_controller = keyboard::KeyboardUIController::Get();
+    if (keyboard_ui_controller->IsEnabled()) {
+      keyboard_ui_controller_ = keyboard_ui_controller;
+      keyboard_ui_controller_->AddObserver(this);
     }
   }
 

@@ -2,31 +2,38 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {getPropertyDescriptor, PropertyKind} from 'chrome://resources/js/cr.m.js';
+import {ArrayDataModel} from 'chrome://resources/js/cr/ui/array_data_model.m.js';
+import {List} from 'chrome://resources/js/cr/ui/list.m.js';
+import {ListSingleSelectionModel} from 'chrome://resources/js/cr/ui/list_single_selection_model.m.js';
+
+import {FileManagerDialogBase} from './file_manager_dialog_base.js';
+
+
 /**
  * DefaultTaskDialog contains a message, a list box, an ok button, and a
  * cancel button.
  * This dialog should be used as task picker for file operations.
  */
-cr.define('cr.filebrowser', () => {
   /**
    * Creates dialog in DOM tree.
-   *
-   * @param {HTMLElement} parentNode Node to be parent for this dialog.
-   * @constructor
-   * @extends {FileManagerDialogBase}
    */
-  function DefaultTaskDialog(parentNode) {
-    FileManagerDialogBase.call(this, parentNode);
+export class DefaultTaskDialog extends FileManagerDialogBase {
+  /**
+   * @param {HTMLElement} parentNode Node to be parent for this dialog.
+   */
+  constructor(parentNode) {
+    super(parentNode);
 
-    this.frame_.id = 'default-task-dialog';
+    this.frame.id = 'default-task-dialog';
 
-    this.list_ = new cr.ui.List();
+    this.list_ = new List();
     this.list_.id = 'default-tasks-list';
-    this.frame_.insertBefore(this.list_, this.text_.nextSibling);
+    this.frame.insertBefore(this.list_, this.text.nextSibling);
 
     this.selectionModel_ = this.list_.selectionModel =
-        new cr.ui.ListSingleSelectionModel();
-    this.dataModel_ = this.list_.dataModel = new cr.ui.ArrayDataModel([]);
+        new ListSingleSelectionModel();
+    this.dataModel_ = this.list_.dataModel = new ArrayDataModel([]);
 
     // List has max-height defined at css, so that list grows automatically,
     // but doesn't exceed predefined size.
@@ -36,7 +43,19 @@ cr.define('cr.filebrowser', () => {
     this.list_.addEventListener('click', this.onSelected_.bind(this));
     this.list_.addEventListener('change', this.onListChange_.bind(this));
 
+    /**
+     * RequestAnimationFrame id used for throllting the list scroll event
+     * listener.
+     * @private {?number}
+     */
+    this.listScrollRaf_ = null;
+    this.list_.addEventListener(
+        'scroll', this.onListScroll_.bind(this), {passive: true});
+
     this.initialFocusElement_ = this.list_;
+
+    /** @private {?function(*)} */
+    this.onSelectedItemCallback_ = null;
 
     const self = this;
 
@@ -47,13 +66,26 @@ cr.define('cr.filebrowser', () => {
     };
   }
 
-  DefaultTaskDialog.prototype = {__proto__: FileManagerDialogBase.prototype};
+  onListScroll_(event) {
+    if (this.listScrollRaf_ &&
+        !this.frame.classList.contains('scrollable-list')) {
+      return;
+    }
+
+    this.listScrollRaf_ = window.requestAnimationFrame(() => {
+      const atTheBottom = this.list_.scrollHeight - this.list_.scrollTop ===
+          this.list_.clientHeight;
+      this.frame.classList.toggle('bottom-shadow', !atTheBottom);
+
+      this.listScrollRaf_ = null;
+    });
+  }
 
   /**
    * Renders item for list.
    * @param {Object} item Item to render.
    */
-  DefaultTaskDialog.prototype.renderItem = function(item) {
+  renderItem(item) {
     const result = this.document_.createElement('li');
 
     const div = this.document_.createElement('div');
@@ -73,11 +105,14 @@ cr.define('cr.filebrowser', () => {
     // A11y - make it focusable and readable.
     result.setAttribute('tabindex', '-1');
 
-    cr.defineProperty(result, 'lead', cr.PropertyKind.BOOL_ATTR);
-    cr.defineProperty(result, 'selected', cr.PropertyKind.BOOL_ATTR);
+    Object.defineProperty(
+        result, 'lead', getPropertyDescriptor('lead', PropertyKind.BOOL_ATTR));
+    Object.defineProperty(
+        result, 'selected',
+        getPropertyDescriptor('selected', PropertyKind.BOOL_ATTR));
 
     return result;
-  };
+  }
 
   /**
    * Shows dialog.
@@ -86,15 +121,13 @@ cr.define('cr.filebrowser', () => {
    * @param {string} message Message in dialog caption.
    * @param {Array<Object>} items Items to render in the list.
    * @param {number} defaultIndex Item to select by default.
-   * @param {function(Object)} onSelectedItem Callback which is called when an
-   *     item is selected.
+   * @param {function(*)} onSelectedItem Callback which is called when an item
+   *     is selected.
    */
-  DefaultTaskDialog.prototype.showDefaultTaskDialog = function(
-      title, message, items, defaultIndex, onSelectedItem) {
+  showDefaultTaskDialog(title, message, items, defaultIndex, onSelectedItem) {
     this.onSelectedItemCallback_ = onSelectedItem;
 
-    const show = FileManagerDialogBase.prototype.showTitleAndTextDialog.call(
-        this, title, message);
+    const show = super.showTitleAndTextDialog(title, message);
 
     if (!show) {
       console.error('DefaultTaskDialog can\'t be shown.');
@@ -102,9 +135,9 @@ cr.define('cr.filebrowser', () => {
     }
 
     if (!message) {
-      this.text_.setAttribute('hidden', 'hidden');
+      this.text.setAttribute('hidden', 'hidden');
     } else {
-      this.text_.removeAttribute('hidden');
+      this.text.removeAttribute('hidden');
     }
 
     this.list_.startBatchUpdates();
@@ -112,47 +145,49 @@ cr.define('cr.filebrowser', () => {
     for (let i = 0; i < items.length; i++) {
       this.dataModel_.push(items[i]);
     }
+    this.frame.classList.toggle('scrollable-list', items.length > 6);
+    this.frame.classList.toggle('bottom-shadow', items.length > 6);
     this.selectionModel_.selectedIndex = defaultIndex;
     this.list_.endBatchUpdates();
-  };
+  }
 
   /**
    * List activation handler. Closes dialog and calls 'ok' callback.
    * @param {number} index Activated index.
    */
-  DefaultTaskDialog.prototype.activateItemAtIndex_ = function(index) {
+  activateItemAtIndex_(index) {
     this.hide();
     this.onSelectedItemCallback_(this.dataModel_.item(index));
-  };
+  }
 
   /**
    * Closes dialog and invokes callback with currently-selected item.
    */
-  DefaultTaskDialog.prototype.onSelected_ = function() {
+  onSelected_() {
     if (this.selectionModel_.selectedIndex !== -1) {
       this.activateItemAtIndex_(this.selectionModel_.selectedIndex);
     }
-  };
+  }
 
   /**
-   * Called when cr.ui.List triggers a change event, which means user
-   * focused a new item on the list. Used here to isue .focus() on
+   * Called when List triggers a change event, which means user
+   * focused a new item on the list. Used here to issue .focus() on
    * currently active item so ChromeVox can read it out.
-   * @param {!Event} event triggered by cr.ui.List.
+   * @param {!Event} event triggered by List.
    */
-  DefaultTaskDialog.prototype.onListChange_ = event => {
-    const list = /** @type {cr.ui.List} */ (event.target);
+  onListChange_(event) {
+    const list = /** @type {List} */ (event.target);
     const activeItem =
         list.getListItemByIndex(list.selectionModel_.selectedIndex);
     if (activeItem) {
       activeItem.focus();
     }
-  };
+  }
 
   /**
    * @override
    */
-  DefaultTaskDialog.prototype.onContainerKeyDown_ = function(event) {
+  onContainerKeyDown(event) {
     // Handle Escape.
     if (event.keyCode == 27) {
       this.hide();
@@ -161,7 +196,5 @@ cr.define('cr.filebrowser', () => {
       this.onSelected_();
       event.preventDefault();
     }
-  };
-
-  return {DefaultTaskDialog: DefaultTaskDialog};
-});
+  }
+}

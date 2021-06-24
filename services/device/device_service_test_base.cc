@@ -9,16 +9,17 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/task/post_task.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "base/task/thread_pool.h"
 #include "services/device/device_service.h"
 #include "services/device/public/cpp/geolocation/location_provider.h"
-#include "services/device/public/mojom/constants.mojom.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
-#include "services/service_manager/public/mojom/service_factory.mojom.h"
+#include "services/network/test/test_network_connection_tracker.h"
+
+#if defined(OS_MAC)
+#include "services/device/public/cpp/test/fake_geolocation_manager.h"
+#endif
 
 namespace device {
 
@@ -33,39 +34,49 @@ std::unique_ptr<DeviceService> CreateTestDeviceService(
     scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    service_manager::mojom::ServiceRequest request) {
-#if defined(OS_ANDROID)
-  return CreateDeviceService(
-      file_task_runner, io_task_runner, url_loader_factory,
-      kTestGeolocationApiKey, false, WakeLockContextCallback(),
-      base::BindRepeating(&GetCustomLocationProviderForTest), nullptr,
-      std::move(request));
-#else
-  return CreateDeviceService(
-      file_task_runner, io_task_runner, url_loader_factory,
-      kTestGeolocationApiKey,
-      base::BindRepeating(&GetCustomLocationProviderForTest),
-      std::move(request));
-#endif
+    mojo::PendingReceiver<mojom::DeviceService> receiver,
+    GeolocationManager* geolocation_manager) {
+  auto params = std::make_unique<DeviceServiceParams>();
+  params->file_task_runner = std::move(file_task_runner);
+  params->io_task_runner = std::move(io_task_runner);
+  params->url_loader_factory = std::move(url_loader_factory);
+  params->network_connection_tracker =
+      network::TestNetworkConnectionTracker::GetInstance();
+  params->geolocation_api_key = kTestGeolocationApiKey;
+  params->custom_location_provider_callback =
+      base::BindRepeating(&GetCustomLocationProviderForTest);
+  params->geolocation_manager = geolocation_manager;
+
+  return CreateDeviceService(std::move(params), std::move(receiver));
 }
 
 }  // namespace
 
 DeviceServiceTestBase::DeviceServiceTestBase()
-    : file_task_runner_(base::CreateSingleThreadTaskRunnerWithTraits(
+    : file_task_runner_(base::ThreadPool::CreateSingleThreadTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT})),
-      io_task_runner_(base::CreateSingleThreadTaskRunnerWithTraits(
+      io_task_runner_(base::ThreadPool::CreateSingleThreadTaskRunner(
           {base::TaskPriority::USER_VISIBLE})),
-      connector_(test_connector_factory_.CreateConnector()) {}
+      network_connection_tracker_(
+          network::TestNetworkConnectionTracker::CreateInstance()) {}
 
 DeviceServiceTestBase::~DeviceServiceTestBase() = default;
 
 void DeviceServiceTestBase::SetUp() {
+  GeolocationManager* geolocation_manager = nullptr;
+#if defined(OS_MAC)
+  fake_geolocation_manager_ = std::make_unique<FakeGeolocationManager>();
+  geolocation_manager = fake_geolocation_manager_.get();
+#endif
   service_ = CreateTestDeviceService(
       file_task_runner_, io_task_runner_,
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
           &test_url_loader_factory_),
-      test_connector_factory_.RegisterInstance(mojom::kServiceName));
+      service_remote_.BindNewPipeAndPassReceiver(), geolocation_manager);
+}
+
+void DeviceServiceTestBase::DestroyDeviceService() {
+  service_.reset();
 }
 
 }  // namespace device

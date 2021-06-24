@@ -9,10 +9,10 @@
 
 #include "base/macros.h"
 #include "base/observer_list.h"
-#include "chrome/browser/extensions/extension_action.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "extensions/browser/extension_function.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -46,15 +46,6 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
         content::WebContents* web_contents,
         content::BrowserContext* browser_context);
 
-    // Called when there is a change to the extension action's visibility.
-    virtual void OnExtensionActionVisibilityChanged(
-        const std::string& extension_id,
-        bool is_now_visible);
-
-    // Called when the page actions have been refreshed do to a possible change
-    // in count or visibility.
-    virtual void OnPageActionsUpdated(content::WebContents* web_contents);
-
     // Called when the ExtensionActionAPI is shutting down, giving observers a
     // chance to unregister themselves if there is not a definitive lifecycle.
     virtual void OnExtensionActionAPIShuttingDown();
@@ -76,17 +67,9 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
-  bool GetBrowserActionVisibility(const std::string& extension_id);
-  void SetBrowserActionVisibility(const std::string& extension_id,
-                                  bool visible);
-
   // Opens the popup for the given |extension| in the given |browser|'s window.
-  // If |grant_active_tab_permissions| is true, this grants the extension
-  // activeTab (so this should only be done if this is through a direct user
-  // action).
-  bool ShowExtensionActionPopup(const Extension* extension,
-                                Browser* browser,
-                                bool grant_active_tab_permissions);
+  bool ShowExtensionActionPopupForAPICall(const Extension* extension,
+                                          Browser* browser);
 
   // Notifies that there has been a change in the given |extension_action|.
   void NotifyChange(ExtensionAction* extension_action,
@@ -101,10 +84,6 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
   // Clears the values for all ExtensionActions for the tab associated with the
   // given |web_contents| (and signals that page actions changed).
   void ClearAllValuesForTab(content::WebContents* web_contents);
-
-  // Notifies that the current set of page actions for |web_contents| has
-  // changed, and signals the browser to update.
-  void NotifyPageActionsChanged(content::WebContents* web_contents);
 
   void set_prefs_for_testing(ExtensionPrefs* prefs) {
     extension_prefs_ = prefs;
@@ -143,7 +122,7 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
 // tabIds while browserAction's are optional, they have different internal
 // browser notification requirements, and not all functions are defined for all
 // APIs).
-class ExtensionActionFunction : public UIThreadExtensionFunction {
+class ExtensionActionFunction : public ExtensionFunction {
  public:
   static bool ParseCSSColorString(const std::string& color_string,
                                   SkColor* result);
@@ -264,6 +243,117 @@ class ExtensionActionGetBadgeBackgroundColorFunction
 };
 
 //
+// action.* aliases for supported action APIs.
+//
+
+class ActionSetIconFunction : public ExtensionActionSetIconFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.setIcon", ACTION_SETICON)
+
+ protected:
+  ~ActionSetIconFunction() override {}
+};
+
+class ActionGetPopupFunction : public ExtensionActionGetPopupFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.getPopup", ACTION_GETPOPUP)
+
+ protected:
+  ~ActionGetPopupFunction() override {}
+};
+
+class ActionSetPopupFunction : public ExtensionActionSetPopupFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.setPopup", ACTION_SETPOPUP)
+
+ protected:
+  ~ActionSetPopupFunction() override {}
+};
+
+class ActionGetTitleFunction : public ExtensionActionGetTitleFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.getTitle", ACTION_GETTITLE)
+
+ protected:
+  ~ActionGetTitleFunction() override {}
+};
+
+class ActionSetTitleFunction : public ExtensionActionSetTitleFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.setTitle", ACTION_SETTITLE)
+
+ protected:
+  ~ActionSetTitleFunction() override {}
+};
+
+class ActionGetBadgeTextFunction : public ExtensionActionGetBadgeTextFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.getBadgeText", ACTION_GETBADGETEXT)
+
+ protected:
+  ~ActionGetBadgeTextFunction() override {}
+};
+
+class ActionSetBadgeTextFunction : public ExtensionActionSetBadgeTextFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.setBadgeText", ACTION_SETBADGETEXT)
+
+ protected:
+  ~ActionSetBadgeTextFunction() override {}
+};
+
+class ActionGetBadgeBackgroundColorFunction
+    : public ExtensionActionGetBadgeBackgroundColorFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.getBadgeBackgroundColor",
+                             ACTION_GETBADGEBACKGROUNDCOLOR)
+
+ protected:
+  ~ActionGetBadgeBackgroundColorFunction() override {}
+};
+
+class ActionSetBadgeBackgroundColorFunction
+    : public ExtensionActionSetBadgeBackgroundColorFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.setBadgeBackgroundColor",
+                             ACTION_SETBADGEBACKGROUNDCOLOR)
+
+ protected:
+  ~ActionSetBadgeBackgroundColorFunction() override {}
+};
+
+class ActionEnableFunction : public ExtensionActionShowFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.enable", ACTION_ENABLE)
+
+ protected:
+  ~ActionEnableFunction() override {}
+};
+
+class ActionDisableFunction : public ExtensionActionHideFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.disable", ACTION_DISABLE)
+
+ protected:
+  ~ActionDisableFunction() override {}
+};
+
+class ActionGetUserSettingsFunction : public ExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("action.getUserSettings", ACTION_GETUSERSETTINGS)
+
+  ActionGetUserSettingsFunction();
+  ActionGetUserSettingsFunction(const ActionGetUserSettingsFunction&) = delete;
+  ActionGetUserSettingsFunction& operator=(
+      const ActionGetUserSettingsFunction&) = delete;
+
+  ResponseAction Run() override;
+
+ protected:
+  ~ActionGetUserSettingsFunction() override;
+};
+
+//
 // browserAction.* aliases for supported browserAction APIs.
 //
 
@@ -363,7 +453,7 @@ class BrowserActionDisableFunction : public ExtensionActionHideFunction {
   ~BrowserActionDisableFunction() override {}
 };
 
-class BrowserActionOpenPopupFunction : public UIThreadExtensionFunction,
+class BrowserActionOpenPopupFunction : public ExtensionFunction,
                                        public content::NotificationObserver {
  public:
   DECLARE_EXTENSION_FUNCTION("browserAction.openPopup",

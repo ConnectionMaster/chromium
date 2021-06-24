@@ -5,22 +5,29 @@
 /net/http/*.pins  text eol=lf
 
 # Force LF checkout for all source files
+*.bin binary
 *.c text eol=lf
 *.cc text eol=lf
 *.cpp text eol=lf
+*.csv text eol=lf
 *.grd   text eol=lf
 *.grdp   text eol=lf
 *.gn text eol=lf
 *.gni text eol=lf
 *.h text eol=lf
 *.html   text eol=lf
+*.idl text eol=lf
 *.in   text eol=lf
 *.inc   text eol=lf
 *.java   text eol=lf
 *.js   text eol=lf
 *.json   text eol=lf
+*.json5 text eol=lf
 *.md text eol=lf
 *.mm text eol=lf
+*.mojom text eol=lf
+*.pdf -diff
+*.proto text eol=lf
 *.sh text eol=lf
 *.sql   text eol=lf
 *.txt   text eol=lf
@@ -43,6 +50,7 @@ README   text eol=lf
 README.*   text eol=lf
 WATCHLISTS   text eol=lf
 VERSION   text eol=lf
+DIR_METADATA   text eol=lf
 
 # Skip Tricium by default on files in third_party.
 third_party/** -tricium

@@ -4,19 +4,17 @@
 
 package org.chromium.chrome.test.crash;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
-import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.ChromeSwitches;
-import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 
 /** Tests that intentionally crash in different ways.
  *
@@ -26,54 +24,37 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 public class IntentionalCrashTest {
     @Rule
-    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
-            new ChromeActivityTestRule<>(ChromeActivity.class);
+    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
 
     @DisabledTest
     @SmallTest
     @Test
     public void testRendererCrash() {
-        try {
-            mActivityTestRule.startMainActivityFromLauncher();
-            mActivityTestRule.loadUrl("chrome://crash");
-        } catch (InterruptedException e) {
-            Assert.fail(e.toString());
-        }
+        mActivityTestRule.startMainActivityFromLauncher();
+        mActivityTestRule.loadUrl("chrome://crash");
     }
 
     @DisabledTest
     @SmallTest
     @Test
     public void testBrowserCrash() {
-        try {
-            mActivityTestRule.startMainActivityFromLauncher();
-            mActivityTestRule.loadUrl("chrome://inducebrowsercrashforrealz");
-        } catch (InterruptedException e) {
-            Assert.fail(e.toString());
-        }
+        mActivityTestRule.startMainActivityFromLauncher();
+        mActivityTestRule.loadUrl("chrome://inducebrowsercrashforrealz");
     }
 
     @DisabledTest
     @SmallTest
     @Test
     public void testJavaCrash() {
-        try {
-            mActivityTestRule.startMainActivityFromLauncher();
-            mActivityTestRule.loadUrl("chrome://java-crash/");
-        } catch (InterruptedException e) {
-            Assert.fail(e.toString());
-        }
+        mActivityTestRule.startMainActivityFromLauncher();
+        mActivityTestRule.loadUrl("chrome://java-crash/");
     }
 
     @DisabledTest
     @SmallTest
     @Test
     public void testGpuCrash() {
-        try {
-            mActivityTestRule.startMainActivityFromLauncher();
-            mActivityTestRule.loadUrl("chrome://gpucrash");
-        } catch (InterruptedException e) {
-            Assert.fail(e.toString());
-        }
+        mActivityTestRule.startMainActivityFromLauncher();
+        mActivityTestRule.loadUrl("chrome://gpucrash");
     }
 }

@@ -2,24 +2,25 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file. */
 
-'use strict';
-/**
- * JavaScript for reset_password.html, served from chrome://reset-password/.
- */
-(function() {
+// Javascript for chrome://reset-password/ WebUI page.
 
-/** @type {mojom.ResetPasswordHandlerProxy} */
-let uiHandler;
+import 'chrome://resources/cr_elements/icons.m.js';
+import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
+import 'chrome://resources/polymer/v3_0/paper-styles/color.js';
 
-function initialize() {
-  uiHandler = mojom.ResetPasswordHandler.getProxy();
+import {$} from 'chrome://resources/js/util.m.js';
+
+import {ResetPasswordHandler, ResetPasswordHandlerRemote} from './reset_password.mojom-webui.js';
+
+/** @type {ResetPasswordHandlerRemote} */
+let pageHandler;
+
+document.addEventListener('DOMContentLoaded', function() {
+  pageHandler = ResetPasswordHandler.getRemote();
 
   /** @type {?HTMLElement} */
   const resetPasswordButton = $('reset-password-button');
   resetPasswordButton.addEventListener('click', function() {
-    uiHandler.handlePasswordReset();
+    pageHandler.handlePasswordReset();
   });
-}
-
-document.addEventListener('DOMContentLoaded', initialize);
-})();
+});

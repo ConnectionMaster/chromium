@@ -15,9 +15,10 @@ MediaStreamRequest::MediaStreamRequest(
     blink::MediaStreamRequestType request_type,
     const std::string& requested_audio_device_id,
     const std::string& requested_video_device_id,
-    blink::MediaStreamType audio_type,
-    blink::MediaStreamType video_type,
-    bool disable_local_echo)
+    blink::mojom::MediaStreamType audio_type,
+    blink::mojom::MediaStreamType video_type,
+    bool disable_local_echo,
+    bool request_pan_tilt_zoom_permission)
     : render_process_id(render_process_id),
       render_frame_id(render_frame_id),
       page_request_id(page_request_id),
@@ -29,6 +30,7 @@ MediaStreamRequest::MediaStreamRequest(
       audio_type(audio_type),
       video_type(video_type),
       disable_local_echo(disable_local_echo),
+      request_pan_tilt_zoom_permission(request_pan_tilt_zoom_permission),
       all_ancestors_have_same_origin(false) {}
 
 MediaStreamRequest::MediaStreamRequest(const MediaStreamRequest& other) =

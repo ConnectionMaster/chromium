@@ -1,6 +1,7 @@
 include_rules = [
   "-chrome",
-  "+chrome/browser/chromeos/input_method",
+  "+chrome/browser",
+  "+chrome/common",
   "+chrome/grit",
   "-content",
 ]
@@ -14,11 +15,6 @@ specific_include_rules = {
     "+chrome/test",
     "+content/public",
   ],
-  # TODO(mash): Fix. https://crbug.com/738531
-  "candidate_window_controller_impl\.cc": [
-    "+ash/shell.h",
-    "+ash/wm/window_util.h",
-  ],
 
   # TODO(erikwright): Bring this list to zero.
   # Do not add to the list of temporarily-allowed dependencies below,
@@ -27,18 +23,29 @@ specific_include_rules = {
     # TODO(erikwright): Much/all of language_preferences can/should be decoupled
     # from chrome/browser.
     "!chrome/browser/chromeos/language_preferences.h",
-    # TODO(stevenjb/shuchen): Fix this for Mash. https://crbug.com/756059
-    "+ui/keyboard/keyboard_controller.h",
   ],
 
   # For testing.
-  ".*(_browsertest|_unittest|_test_helper|)\.(h|cc)": [
+  ".*(_browsertest|_browsertests|_unittest|_test_helper)\.(h|cc)": [
     "+chrome/common",
     "+chrome/browser",
     "+chrome/test",
     "+content/public",
+    "+mojo/core/embedder/embedder.h",
   ],
   "xkeyboard_unittest\.cc": [
     "!content/public/test/test_browser_thread.h",
+  ],
+
+  # TODO: This should not be an allowed dep; see
+  # http://crbug.com/1148093 and
+  # http://b/173144152.
+  "tts_handler\.h": [
+    "!content/public/browser/tts_controller.h",
+  ],
+
+  # TODO: input method owners should audit this block.
+  "(input|ime).*\.(h|cc)": [
+    "+content/public/browser",
   ],
 }

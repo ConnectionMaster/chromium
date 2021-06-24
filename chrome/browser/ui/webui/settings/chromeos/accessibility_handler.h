@@ -6,14 +6,12 @@
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_CHROMEOS_ACCESSIBILITY_HANDLER_H_
 
 #include "base/macros.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
+#include "components/soda/soda_installer.h"
 
 namespace base {
 class ListValue;
-}
-
-namespace content {
-class WebUI;
 }
 
 class Profile;
@@ -21,9 +19,10 @@ class Profile;
 namespace chromeos {
 namespace settings {
 
-class AccessibilityHandler : public ::settings::SettingsPageUIHandler {
+class AccessibilityHandler : public ::settings::SettingsPageUIHandler,
+                             public speech::SodaInstaller::Observer {
  public:
-  explicit AccessibilityHandler(content::WebUI* webui);
+  explicit AccessibilityHandler(Profile* profile);
   ~AccessibilityHandler() override;
 
   // SettingsPageUIHandler implementation.
@@ -31,18 +30,45 @@ class AccessibilityHandler : public ::settings::SettingsPageUIHandler {
   void OnJavascriptAllowed() override {}
   void OnJavascriptDisallowed() override {}
 
+  // Callback which updates if startup sound is enabled. Visible for testing.
+  void HandleManageA11yPageReady(const base::ListValue* args);
+
  private:
-  // Callback for the messages to show settings for ChromeVox,
-  // Select To Speak, or Switch Access.
+  friend class AccessibilityHandlerTest;
+
+  // Callback for the messages to show settings for ChromeVox or
+  // Select To Speak.
   void HandleShowChromeVoxSettings(const base::ListValue* args);
   void HandleShowSelectToSpeakSettings(const base::ListValue* args);
-  void HandleShowSwitchAccessSettings(const base::ListValue* args);
-  void HandleGetStartupSoundEnabled(const base::ListValue* args);
   void HandleSetStartupSoundEnabled(const base::ListValue* args);
+  void HandleRecordSelectedShowShelfNavigationButtonsValue(
+      const base::ListValue* args);
+  void HandleShowChromeVoxTutorial(const base::ListValue* args);
 
   void OpenExtensionOptionsPage(const char extension_id[]);
 
+  void MaybeAddSodaInstallerObserver();
+
+  // SodaInstaller::Observer:
+  void OnSodaInstalled() override;
+  void OnSodaLanguagePackInstalled(
+      speech::LanguageCode language_code) override {}
+  void OnSodaProgress(int progress) override;
+  void OnSodaLanguagePackProgress(int language_progress,
+                                  speech::LanguageCode language_code) override {
+  }
+  void OnSodaError() override;
+  void OnSodaLanguagePackError(speech::LanguageCode language_code) override {}
+
   Profile* profile_;  // Weak pointer.
+
+  // Timer to record user changed value for the accessibility setting to turn
+  // shelf navigation buttons on in tablet mode. The metric is recorded with 10
+  // second delay to avoid overreporting when the user keeps toggling the
+  // setting value in the screen UI.
+  base::OneShotTimer a11y_nav_buttons_toggle_metrics_reporter_timer_;
+
+  base::WeakPtrFactory<AccessibilityHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AccessibilityHandler);
 };

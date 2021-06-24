@@ -10,7 +10,7 @@
 // A generic NTP tile view. Provides a title label and an image container on a
 // squircle-shaped background. Concrete subclasses of this are used to display
 // most visited tiles and shortcut tiles on NTP and other places.
-@interface NTPTileView : UIView
+@interface NTPTileView : UIView <UIPointerInteractionDelegate>
 
 // Container for the image view. Used in subclasses.
 @property(nonatomic, strong, readonly, nonnull) UIView* imageContainerView;
@@ -21,9 +21,6 @@
 // The view displaying the background image (squircle) for the tile image.
 @property(nonatomic, strong, readonly, nonnull)
     UIImageView* imageBackgroundView;
-
-// Image to be used as the image background. The default is the grey squircle.
-+ (nonnull UIImage*)backgroundImage;
 
 @end
 

@@ -8,21 +8,22 @@
 #include <utility>
 
 #include "base/android/jni_string.h"
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "chrome/browser/android/tab_android.h"
-#include "chrome/browser/infobars/infobar_service.h"
-#include "chrome/browser/ui/android/infobars/infobar_android.h"
+#include "chrome/browser/share/android/jni_headers/SendTabToSelfInfoBar_jni.h"
+#include "components/infobars/android/infobar_android.h"
+#include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "content/public/browser/web_contents.h"
-#include "jni/SendTabToSelfInfoBar_jni.h"
 
 namespace send_tab_to_self {
 
 SendTabToSelfInfoBar::SendTabToSelfInfoBar(
     std::unique_ptr<SendTabToSelfInfoBarDelegate> delegate)
-    : InfoBarAndroid(std::move(delegate)) {}
+    : infobars::InfoBarAndroid(std::move(delegate)) {}
 
 SendTabToSelfInfoBar::~SendTabToSelfInfoBar() = default;
 
@@ -31,7 +32,9 @@ void SendTabToSelfInfoBar::ProcessButton(int action) {
 }
 
 base::android::ScopedJavaLocalRef<jobject>
-SendTabToSelfInfoBar::CreateRenderInfoBar(JNIEnv* env) {
+SendTabToSelfInfoBar::CreateRenderInfoBar(
+    JNIEnv* env,
+    const ResourceIdMapper& resource_id_mapper) {
   return Java_SendTabToSelfInfoBar_create(env);
 }
 
@@ -43,9 +46,13 @@ void SendTabToSelfInfoBar::OnLinkClicked(
 }
 
 // static
-void SendTabToSelfInfoBar::ShowInfoBar(content::WebContents* web_contents,
-                                       SendTabToSelfInfoBarDelegate* delegate) {
-  NOTIMPLEMENTED();
+void SendTabToSelfInfoBar::ShowInfoBar(
+    content::WebContents* web_contents,
+    std::unique_ptr<SendTabToSelfInfoBarDelegate> delegate) {
+  infobars::ContentInfoBarManager* manager =
+      infobars::ContentInfoBarManager::FromWebContents(web_contents);
+  manager->AddInfoBar(
+      base::WrapUnique(new SendTabToSelfInfoBar(std::move(delegate))));
 }
 
 }  // namespace send_tab_to_self

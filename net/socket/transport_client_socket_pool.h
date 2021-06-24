@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstddef>
 #include <list>
 #include <map>
 #include <memory>
@@ -30,6 +29,7 @@
 #include "net/base/net_export.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/priority_queue.h"
+#include "net/base/proxy_server.h"
 #include "net/base/request_priority.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_handle.h"
@@ -39,10 +39,9 @@
 #include "net/socket/socket_tag.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/stream_socket.h"
-#include "net/ssl/ssl_config_service.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
-class DictionaryValue;
 namespace trace_event {
 class ProcessMemoryDump;
 }
@@ -52,6 +51,7 @@ namespace net {
 
 struct CommonConnectJobParams;
 struct NetLogSource;
+struct NetworkTrafficAnnotationTag;
 
 // TransportClientSocketPool establishes network connections through using
 // ConnectJobs, and maintains a list of idle persistent sockets available for
@@ -69,8 +69,19 @@ struct NetLogSource;
 class NET_EXPORT_PRIVATE TransportClientSocketPool
     : public ClientSocketPool,
       public NetworkChangeNotifier::IPAddressObserver,
-      public SSLConfigService::Observer {
+      public SSLClientContext::Observer {
  public:
+  // Reasons for closing sockets. Exposed here for testing.
+  static const char kCertDatabaseChanged[];
+  static const char kClosedConnectionReturnedToPool[];
+  static const char kDataReceivedUnexpectedly[];
+  static const char kIdleTimeLimitExpired[];
+  static const char kNetworkChanged[];
+  static const char kRemoteSideClosedConnection[];
+  static const char kSocketGenerationOutOfDate[];
+  static const char kSocketPoolDestroyed[];
+  static const char kSslConfigChanged[];
+
   using Flags = uint32_t;
 
   // Used to specify specific behavior for the ClientSocketPool.
@@ -83,17 +94,19 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
    public:
     // If |proxy_auth_callback| is null, proxy auth challenges will
     // result in an error.
-    Request(ClientSocketHandle* handle,
-            CompletionOnceCallback callback,
-            const ProxyAuthCallback& proxy_auth_callback,
-            RequestPriority priority,
-            const SocketTag& socket_tag,
-            RespectLimits respect_limits,
-            Flags flags,
-            scoped_refptr<SocketParams> socket_params,
-            const NetLogWithSource& net_log);
+    Request(
+        ClientSocketHandle* handle,
+        CompletionOnceCallback callback,
+        const ProxyAuthCallback& proxy_auth_callback,
+        RequestPriority priority,
+        const SocketTag& socket_tag,
+        RespectLimits respect_limits,
+        Flags flags,
+        scoped_refptr<SocketParams> socket_params,
+        const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
+        const NetLogWithSource& net_log);
 
-    virtual ~Request();
+    ~Request();
 
     ClientSocketHandle* handle() const { return handle_; }
     CompletionOnceCallback release_callback() { return std::move(callback_); }
@@ -105,6 +118,10 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     RespectLimits respect_limits() const { return respect_limits_; }
     Flags flags() const { return flags_; }
     SocketParams* socket_params() const { return socket_params_.get(); }
+    const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag()
+        const {
+      return proxy_annotation_tag_;
+    }
     const NetLogWithSource& net_log() const { return net_log_; }
     const SocketTag& socket_tag() const { return socket_tag_; }
     ConnectJob* job() const { return job_; }
@@ -117,16 +134,7 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     // request with a job.
     ConnectJob* ReleaseJob();
 
-    // TODO(eroman): Temporary until crbug.com/467797 is solved.
-    void CrashIfInvalid() const;
-
    private:
-    // TODO(eroman): Temporary until crbug.com/467797 is solved.
-    enum Liveness {
-      ALIVE = 0xCA11AB13,
-      DEAD = 0xDEADBEEF,
-    };
-
     ClientSocketHandle* const handle_;
     CompletionOnceCallback callback_;
     const ProxyAuthCallback proxy_auth_callback_;
@@ -134,12 +142,10 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     const RespectLimits respect_limits_;
     const Flags flags_;
     const scoped_refptr<SocketParams> socket_params_;
+    const absl::optional<NetworkTrafficAnnotationTag> proxy_annotation_tag_;
     const NetLogWithSource net_log_;
     const SocketTag socket_tag_;
     ConnectJob* job_;
-
-    // TODO(eroman): Temporary until crbug.com/467797 is solved.
-    Liveness liveness_ = ALIVE;
 
     DISALLOW_COPY_AND_ASSIGN(Request);
   };
@@ -150,9 +156,11 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     virtual ~ConnectJobFactory() {}
 
     virtual std::unique_ptr<ConnectJob> NewConnectJob(
+        ClientSocketPool::GroupId group_id,
+        scoped_refptr<ClientSocketPool::SocketParams> socket_params,
+        const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
         RequestPriority request_priority,
         SocketTag socket_tag,
-        scoped_refptr<SocketParams> socket_params,
         ConnectJob::Delegate* delegate) const = 0;
 
    private:
@@ -163,8 +171,9 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
       int max_sockets,
       int max_sockets_per_group,
       base::TimeDelta unused_idle_socket_timeout,
-      const CommonConnectJobParams* common_connect_job_params,
-      SSLConfigService* ssl_config_service);
+      const ProxyServer& proxy_server,
+      bool is_for_websockets,
+      const CommonConnectJobParams* common_connect_job_params);
 
   // Creates a socket pool with an alternative ConnectJobFactory, for use in
   // testing.
@@ -176,8 +185,9 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
       int max_sockets_per_group,
       base::TimeDelta unused_idle_socket_timeout,
       base::TimeDelta used_idle_socket_timeout,
+      const ProxyServer& proxy_server,
       std::unique_ptr<ConnectJobFactory> connect_job_factory,
-      SSLConfigService* ssl_config_service,
+      SSLClientContext* ssl_client_context,
       bool connect_backup_jobs_enabled);
 
   ~TransportClientSocketPool() override;
@@ -191,37 +201,42 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
   void RemoveHigherLayeredPool(HigherLayeredPool* higher_pool) override;
 
   // ClientSocketPool implementation:
-  int RequestSocket(const GroupId& group_id,
-                    scoped_refptr<SocketParams> params,
-                    RequestPriority priority,
-                    const SocketTag& socket_tag,
-                    RespectLimits respect_limits,
-                    ClientSocketHandle* handle,
-                    CompletionOnceCallback callback,
-                    const ProxyAuthCallback& proxy_auth_callback,
-                    const NetLogWithSource& net_log) override;
-  void RequestSockets(const GroupId& group_id,
-                      scoped_refptr<SocketParams> params,
-                      int num_sockets,
-                      const NetLogWithSource& net_log) override;
+  int RequestSocket(
+      const GroupId& group_id,
+      scoped_refptr<SocketParams> params,
+      const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
+      RequestPriority priority,
+      const SocketTag& socket_tag,
+      RespectLimits respect_limits,
+      ClientSocketHandle* handle,
+      CompletionOnceCallback callback,
+      const ProxyAuthCallback& proxy_auth_callback,
+      const NetLogWithSource& net_log) override;
+  void RequestSockets(
+      const GroupId& group_id,
+      scoped_refptr<SocketParams> params,
+      const absl::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
+      int num_sockets,
+      const NetLogWithSource& net_log) override;
   void SetPriority(const GroupId& group_id,
                    ClientSocketHandle* handle,
                    RequestPriority priority) override;
   void CancelRequest(const GroupId& group_id,
-                     ClientSocketHandle* handle) override;
+                     ClientSocketHandle* handle,
+                     bool cancel_connect_job) override;
   void ReleaseSocket(const GroupId& group_id,
                      std::unique_ptr<StreamSocket> socket,
                      int64_t group_generation) override;
-  void FlushWithError(int error) override;
-  void CloseIdleSockets() override;
-  void CloseIdleSocketsInGroup(const GroupId& group_id) override;
+  void FlushWithError(int error, const char* net_log_reason_utf8) override;
+  void CloseIdleSockets(const char* net_log_reason_utf8) override;
+  void CloseIdleSocketsInGroup(const GroupId& group_id,
+                               const char* net_log_reason_utf8) override;
   int IdleSocketCount() const override;
   size_t IdleSocketCountInGroup(const GroupId& group_id) const override;
   LoadState GetLoadState(const GroupId& group_id,
                          const ClientSocketHandle* handle) const override;
-  std::unique_ptr<base::DictionaryValue> GetInfoAsValue(
-      const std::string& name,
-      const std::string& type) const override;
+  base::Value GetInfoAsValue(const std::string& name,
+                             const std::string& type) const override;
   void DumpMemoryStats(
       base::trace_event::ProcessMemoryDump* pmd,
       const std::string& parent_dump_absolute_name) const override;
@@ -255,15 +270,19 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     return HasGroup(group_id);
   }
 
-  void RefreshGroupForTesting(const GroupId& group_id);
-
   static bool connect_backup_jobs_enabled();
   static bool set_connect_backup_jobs_enabled(bool enabled);
 
   // NetworkChangeNotifier::IPAddressObserver methods:
   void OnIPAddressChanged() override;
 
+  // SSLClientContext::Observer methods.
+  void OnSSLConfigChanged(bool is_cert_database_change) override;
+  void OnSSLConfigForServerChanged(const HostPortPair& server) override;
+
  private:
+  class ConnectJobFactoryImpl;
+
   // Entry for a persistent socket which became idle at time |start_time|.
   struct IdleSocket {
     IdleSocket() : socket(nullptr) {}
@@ -276,7 +295,10 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     // Note that a socket that has never been used before (like a preconnected
     // socket) may be used even with unread data.  This may be, e.g., a SPDY
     // SETTINGS frame.
-    bool IsUsable() const;
+    //
+    // If the socket is not usable, |net_log_reason_utf8| is set to a string
+    // indicating why the socket is not usable.
+    bool IsUsable(const char** net_log_reason_utf8) const;
 
     StreamSocket* socket;
     base::TimeTicks start_time;
@@ -312,8 +334,33 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
    public:
     using JobList = std::list<std::unique_ptr<ConnectJob>>;
 
+    struct BoundRequest {
+      BoundRequest();
+      BoundRequest(std::unique_ptr<ConnectJob> connect_job,
+                   std::unique_ptr<Request> request,
+                   int64_t generation);
+      BoundRequest(BoundRequest&& other);
+      BoundRequest& operator=(BoundRequest&& other);
+      ~BoundRequest();
+
+      std::unique_ptr<ConnectJob> connect_job;
+      std::unique_ptr<Request> request;
+
+      // Generation of |connect_job|. If it doesn't match the current
+      // generation, ConnectJob will be destroyed, and a new one created on
+      // completion.
+      int64_t generation;
+
+      // It's not safe to fail a request in a |CancelAllRequestsWithError| call
+      // while it's waiting on user input, as the request may have raw pointers
+      // to objects owned by |connect_job| that it could racily write to after
+      // |connect_job| is destroyed. Instead, just track an error in that case,
+      // and fail the request once the ConnectJob completes.
+      int pending_error;
+    };
+
     Group(const GroupId& group_id,
-          TransportClientSocketPool* client_socket_pool_base_helper);
+          TransportClientSocketPool* client_socket_pool);
     ~Group() override;
 
     // ConnectJob::Delegate methods:
@@ -413,15 +460,10 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     // callback, returns nullptr.
     const Request* BindRequestToConnectJob(ConnectJob* connect_job);
 
-    // Finds the request, if any, bound to |connect_job|, and returns it.
-    // Destroys the ConnectJob bound to the request, if there was one.
-    // |generation| is set to the group generation that ConnectJob belongs to.
-    // The pending error is written to |pending_error|, if
-    // SetPendingErrorForAllBoundRequests() was called, or OK, otherwise.
-    std::unique_ptr<Request> FindAndRemoveBoundRequestForConnectJob(
-        ConnectJob* connect_job,
-        int64_t* generation,
-        int* pending_error);
+    // Finds the request, if any, bound to |connect_job|, and returns the
+    // BoundRequest or absl::nullopt if there was none.
+    absl::optional<BoundRequest> FindAndRemoveBoundRequestForConnectJob(
+        ConnectJob* connect_job);
 
     // Finds the bound request, if any, corresponding to |client_socket_handle|
     // and returns it. Destroys the ConnectJob bound to the request, if there
@@ -455,31 +497,6 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     int64_t generation() const { return generation_; }
 
    private:
-    struct BoundRequest {
-      BoundRequest();
-      BoundRequest(std::unique_ptr<ConnectJob> connect_job,
-                   std::unique_ptr<Request> request,
-                   int64_t generation);
-      BoundRequest(BoundRequest&& other);
-      BoundRequest& operator=(BoundRequest&& other);
-      ~BoundRequest();
-
-      std::unique_ptr<ConnectJob> connect_job;
-      std::unique_ptr<Request> request;
-
-      // Generation of |connect_job|. If it doesn't match the current
-      // generation, ConnectJob will be destroyed, and a new one created on
-      // completion.
-      int64_t generation;
-
-      // It's not safe to fail a request in a |CancelAllRequestsWithError| call
-      // while it's waiting on user input, as the request may have raw pointers
-      // to objects owned by |connect_job| that it could racily write to after
-      // |connect_job| is destroyed. Instead, just track an error in that case,
-      // and fail the request once the ConnectJob completes.
-      int pending_error;
-    };
-
     // Returns the iterator's unbound request after removing it from
     // the queue. Expects the Group to pass SanityCheck() when called.
     std::unique_ptr<Request> RemoveUnboundRequest(
@@ -540,7 +557,7 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     void SanityCheck() const;
 
     const GroupId group_id_;
-    TransportClientSocketPool* const client_socket_pool_base_helper_;
+    TransportClientSocketPool* const client_socket_pool_;
 
     // Total number of ConnectJobs that have never been assigned to a Request.
     // Since jobs use late binding to requests, which ConnectJobs have or have
@@ -596,12 +613,10 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
       int max_sockets_per_group,
       base::TimeDelta unused_idle_socket_timeout,
       base::TimeDelta used_idle_socket_timeout,
+      const ProxyServer& proxy_server,
       std::unique_ptr<ConnectJobFactory> connect_job_factory,
-      SSLConfigService* ssl_config_service,
+      SSLClientContext* ssl_client_context,
       bool connect_backup_jobs_enabled);
-
-  // SSLConfigService::Observer methods.
-  void OnSSLConfigChanged() override;
 
   base::TimeDelta ConnectRetryInterval() const {
     // TODO(mbelshe): Make this tuned dynamically based on measured RTT.
@@ -630,7 +645,8 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
 
   // Closes all idle sockets if |force| is true.  Else, only closes idle
   // sockets that timed out or can't be reused.  Made public for testing.
-  void CleanupIdleSockets(bool force);
+  // |reason| must be non-empty when |force| is true.
+  void CleanupIdleSockets(bool force, const char* net_log_reason_utf8);
 
   // Closes one idle socket.  Picks the first one encountered.
   // TODO(willchan): Consider a better algorithm for doing this.  Perhaps we
@@ -647,7 +663,8 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
   // reused.
   void CleanupIdleSocketsInGroup(bool force,
                                  Group* group,
-                                 const base::TimeTicks& now);
+                                 const base::TimeTicks& now,
+                                 const char* net_log_reason_utf8);
 
   Group* GetOrCreateGroup(const GroupId& group_id);
   void RemoveGroup(const GroupId& group_id);
@@ -745,14 +762,20 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
   // this pool is stalled.
   void TryToCloseSocketsInLayeredPools();
 
-  // If the specified group exists, closes all idle sockets and cancels all
-  // unbound ConnectJobs associated with the group. Also increments the group's
-  // generation number, ensuring any currently existing handed out socket will
-  // be siletly closed when its returned to the socket pool. Bound ConnectJobs
-  // will only be destroyed on once they compelete, as they may be waiting on
-  // user input. No request (including bound ones) will be failed as a result of
-  // this call - instead, new ConnectJobs will be created.
-  void RefreshGroup(const GroupId& group_id);
+  // Closes all idle sockets and cancels all unbound ConnectJobs associated with
+  // |it->second|. Also increments the group's generation number, ensuring any
+  // currently existing handed out socket will be silently closed when it is
+  // returned to the socket pool. Bound ConnectJobs will only be destroyed on
+  // once they complete, as they may be waiting on user input. No request
+  // (including bound ones) will be failed as a result of this call - instead,
+  // new ConnectJobs will be created.
+  //
+  // The group may be removed if this leaves the group empty. The caller must
+  // call CheckForStalledSocketGroups() after all applicable groups have been
+  // refreshed.
+  void RefreshGroup(GroupMap::iterator it,
+                    const base::TimeTicks& now,
+                    const char* net_log_reason_utf8);
 
   GroupMap group_map_;
 
@@ -780,6 +803,8 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
   const base::TimeDelta unused_idle_socket_timeout_;
   const base::TimeDelta used_idle_socket_timeout_;
 
+  const ProxyServer proxy_server_;
+
   const std::unique_ptr<ConnectJobFactory> connect_job_factory_;
 
   // TODO(vandebo) Remove when backup jobs move to TransportClientSocketPool
@@ -789,9 +814,9 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
   // their idle sockets when it stalls.  Must be empty on destruction.
   std::set<HigherLayeredPool*> higher_pools_;
 
-  SSLConfigService* const ssl_config_service_;
+  SSLClientContext* const ssl_client_context_;
 
-  base::WeakPtrFactory<TransportClientSocketPool> weak_factory_;
+  base::WeakPtrFactory<TransportClientSocketPool> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TransportClientSocketPool);
 };

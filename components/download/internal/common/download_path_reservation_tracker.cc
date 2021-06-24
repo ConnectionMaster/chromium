@@ -11,21 +11,22 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/task/lazy_task_runner.h"
+#include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/post_task.h"
 #include "base/task_runner_util.h"
 #include "base/third_party/icu/icu_utf.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_item.h"
 #include "components/filename_generation/filename_generation.h"
 #include "net/base/filename_util.h"
@@ -57,14 +58,11 @@ const size_t kZoneIdentifierLength = sizeof(":Zone.Identifier") - 1;
 // Map of download path reservations. Each reserved path is associated with a
 // ReservationKey=DownloadItem*. This object is destroyed in |Revoke()| when
 // there are no more reservations.
-//
-// It is not an error, although undesirable, to have multiple DownloadItem*s
-// that are mapped to the same path. This can happen if a reservation is created
-// that is supposed to overwrite an existing reservation.
 ReservationMap* g_reservation_map = NULL;
 
-base::LazySequencedTaskRunner g_sequenced_task_runner =
-    LAZY_SEQUENCED_TASK_RUNNER_INITIALIZER({base::MayBlock()});
+base::LazyThreadPoolSequencedTaskRunner g_sequenced_task_runner =
+    LAZY_THREAD_POOL_SEQUENCED_TASK_RUNNER_INITIALIZER(
+        base::TaskTraits(base::MayBlock()));
 
 // Observes a DownloadItem for changes to its target path and state. Updates or
 // revokes associated download path reservations as necessary. Created, invoked
@@ -119,6 +117,22 @@ bool IsFileNameInUse(const base::FilePath& path) {
   if (DownloadCollectionBridge::FileNameExists(path.BaseName()))
     return true;
 #endif
+  return false;
+}
+
+// Returns true if the given path is in use by a path reservation,
+// and has a different key then the item arg. Called on the task runner returned
+// by DownloadPathReservationTracker::GetTaskRunner().
+bool IsAdditionalPathReserved(const base::FilePath& path, DownloadItem* item) {
+  if (!g_reservation_map)
+    return false;
+
+  for (ReservationMap::const_iterator iter = g_reservation_map->begin();
+       iter != g_reservation_map->end(); ++iter) {
+    if (iter->first != item && base::FilePath::CompareEqualIgnoreCase(
+                                   iter->second.value(), path.value()))
+      return true;
+  }
   return false;
 }
 
@@ -206,7 +220,6 @@ struct CreateReservationInfo {
   bool create_target_directory;
   base::Time start_time;
   DownloadPathReservationTracker::FilenameConflictAction conflict_action;
-  DownloadPathReservationTracker::ReservedPathCallback completion_callback;
 };
 
 // Check if |target_path| is writable.
@@ -238,6 +251,8 @@ PathValidationResult ResolveReservationConflicts(
                  : PathValidationResult::CONFLICT;
 
     case DownloadPathReservationTracker::OVERWRITE:
+      if (IsPathReserved(*target_path))
+        return PathValidationResult::CONFLICT;
       return PathValidationResult::SUCCESS;
 
     case DownloadPathReservationTracker::PROMPT:
@@ -310,8 +325,6 @@ PathValidationResult ValidatePathAndResolveConflicts(
 // - Returns the result of creating the path reservation.
 PathValidationResult CreateReservation(const CreateReservationInfo& info,
                                        base::FilePath* reserved_path) {
-  DCHECK(info.suggested_path.IsAbsolute());
-
   // Create a reservation map if one doesn't exist. It will be automatically
   // deleted when all the reservations are revoked.
   if (g_reservation_map == NULL)
@@ -383,7 +396,7 @@ void UpdateReservation(ReservationKey key, const base::FilePath& new_path) {
 // |key|.
 void RevokeReservation(ReservationKey key) {
   DCHECK(g_reservation_map != NULL);
-  DCHECK(base::ContainsKey(*g_reservation_map, key));
+  DCHECK(base::Contains(*g_reservation_map, key));
   g_reservation_map->erase(key);
   if (g_reservation_map->size() == 0) {
     // No more reservations. Delete map.
@@ -393,10 +406,10 @@ void RevokeReservation(ReservationKey key) {
 }
 
 void RunGetReservedPathCallback(
-    const DownloadPathReservationTracker::ReservedPathCallback& callback,
+    DownloadPathReservationTracker::ReservedPathCallback callback,
     const base::FilePath* reserved_path,
     PathValidationResult result) {
-  callback.Run(result, *reserved_path);
+  std::move(callback).Run(result, *reserved_path);
 }
 
 // Gets the path reserved in the global |g_reservation_map|. For content Uri,
@@ -480,7 +493,7 @@ void DownloadPathReservationTracker::GetReservedPath(
     const base::FilePath& fallback_directory,
     bool create_directory,
     FilenameConflictAction conflict_action,
-    const ReservedPathCallback& callback) {
+    ReservedPathCallback callback) {
   // Attach an observer to the download item so that we know when the target
   // path changes and/or the download is no longer active.
   new DownloadItemObserver(download_item);
@@ -498,13 +511,12 @@ void DownloadPathReservationTracker::GetReservedPath(
                                 fallback_directory,
                                 create_directory,
                                 download_item->GetStartTime(),
-                                conflict_action,
-                                callback};
+                                conflict_action};
 
   base::PostTaskAndReplyWithResult(
       GetTaskRunner().get(), FROM_HERE,
       base::BindOnce(&CreateReservation, info, reserved_path),
-      base::BindOnce(&RunGetReservedPathCallback, callback,
+      base::BindOnce(&RunGetReservedPathCallback, std::move(callback),
                      base::Owned(reserved_path)));
 }
 
@@ -518,6 +530,17 @@ bool DownloadPathReservationTracker::IsPathInUseForTesting(
 scoped_refptr<base::SequencedTaskRunner>
 DownloadPathReservationTracker::GetTaskRunner() {
   return g_sequenced_task_runner.Get();
+}
+
+// static
+void DownloadPathReservationTracker::CheckDownloadPathForExistingDownload(
+    const base::FilePath& target_path,
+    DownloadItem* download_item,
+    CheckDownloadPathCallback callback) {
+  base::PostTaskAndReplyWithResult(
+      GetTaskRunner().get(), FROM_HERE,
+      base::BindOnce(&IsAdditionalPathReserved, target_path, download_item),
+      std::move(callback));
 }
 
 }  // namespace download

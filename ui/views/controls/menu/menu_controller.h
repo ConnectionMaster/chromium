@@ -14,21 +14,23 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "ui/base/dragdrop/drag_drop_types.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/gfx/animation/throb_animation.h"
-#include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_delegate.h"
 #include "ui/views/widget/widget_observer.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "ui/views/controls/menu/menu_closure_animation_mac.h"
 #include "ui/views/controls/menu/menu_cocoa_watcher_mac.h"
 #endif
@@ -38,7 +40,7 @@ class OSExchangeData;
 }
 namespace views {
 
-class MenuButton;
+class Button;
 class MenuHostRootView;
 class MenuItemView;
 class MenuPreTargetHandler;
@@ -50,13 +52,13 @@ class ViewTracker;
 namespace internal {
 class MenuControllerDelegate;
 class MenuRunnerImpl;
-}
+}  // namespace internal
 
 namespace test {
 class MenuControllerTest;
 class MenuControllerTestApi;
 class MenuControllerUITest;
-}
+}  // namespace test
 
 // MenuController -------------------------------------------------------------
 
@@ -69,26 +71,26 @@ class VIEWS_EXPORT MenuController
       public WidgetObserver {
  public:
   // Enumeration of how the menu should exit.
-  enum ExitType {
+  enum class ExitType {
     // Don't exit.
-    EXIT_NONE,
+    kNone,
 
     // All menus, including nested, should be exited.
-    EXIT_ALL,
+    kAll,
 
     // Only the outermost menu should be exited.
-    EXIT_OUTERMOST,
+    kOutermost,
 
-    // This is set if the menu is being closed as the result of one of the menus
-    // being destroyed.
-    EXIT_DESTROYED
+    // the menu is being closed as the result of one of the menus being
+    // destroyed.
+    kDestroyed
   };
 
   // Types of comboboxes.
-  enum ComboboxType {
-    kNotACombobox,
-    kEditableCombobox,
-    kReadonlyCombobox,
+  enum class ComboboxType {
+    kNone,
+    kEditable,
+    kReadonly,
   };
 
   // If a menu is currently active, this returns the controller for it.
@@ -96,12 +98,13 @@ class VIEWS_EXPORT MenuController
 
   // Runs the menu at the specified location.
   void Run(Widget* parent,
-           MenuButton* button,
+           MenuButtonController* button_controller,
            MenuItemView* root,
            const gfx::Rect& bounds,
            MenuAnchorPosition position,
            bool context_menu,
-           bool is_nested_drag);
+           bool is_nested_drag,
+           gfx::NativeView native_view_for_gestures = nullptr);
 
   bool for_drop() const { return for_drop_; }
 
@@ -126,23 +129,28 @@ class VIEWS_EXPORT MenuController
   // WARNING: this may be NULL.
   Widget* owner() { return owner_; }
 
-  // Get the anchor position which is used to show this menu.
+  // Gets the most-current selected menu item, if any, including if the
+  // selection has not been committed yet.
+  views::MenuItemView* GetSelectedMenuItem() { return pending_state_.item; }
+
+  // Selects a menu-item and opens its sub-menu (if one exists) if not already
+  // so. Clears any selections within the submenu if it is already open.
+  void SelectItemAndOpenSubmenu(MenuItemView* item);
+
+  // Gets the anchor position which is used to show this menu.
   MenuAnchorPosition GetAnchorPosition() { return state_.anchor; }
 
   // Cancels the current Run. See ExitType for a description of what happens
   // with the various parameters.
   void Cancel(ExitType type);
 
-  // An alternative to Cancel(EXIT_ALL) that can be used with a OneShotTimer.
-  void CancelAll() { Cancel(EXIT_ALL); }
-
   // When is_nested_run() this will add a delegate to the stack. The most recent
   // delegate will be notified. It will be removed upon the exiting of the
   // nested menu. Ownership is not taken.
   void AddNestedDelegate(internal::MenuControllerDelegate* delegate);
 
-  // Returns the current exit type. This returns a value other than EXIT_NONE if
-  // the menu is being canceled.
+  // Returns the current exit type. This returns a value other than
+  // ExitType::kNone if the menu is being canceled.
   ExitType exit_type() const { return exit_type_; }
 
   // Returns the time from the event which closed the menu - or 0.
@@ -182,7 +190,8 @@ class VIEWS_EXPORT MenuController
   void OnDragEntered(SubmenuView* source, const ui::DropTargetEvent& event);
   int OnDragUpdated(SubmenuView* source, const ui::DropTargetEvent& event);
   void OnDragExited(SubmenuView* source);
-  int OnPerformDrop(SubmenuView* source, const ui::DropTargetEvent& event);
+  ui::mojom::DragOperation OnPerformDrop(SubmenuView* source,
+                                         const ui::DropTargetEvent& event);
 
   // Invoked from the scroll buttons of the MenuScrollViewContainer.
   void OnDragEnteredScrollButton(SubmenuView* source, bool is_up);
@@ -309,29 +318,26 @@ class VIEWS_EXPORT MenuController
   // Used by GetMenuPart to indicate the menu part at a particular location.
   struct MenuPart {
     // Type of part.
-    enum Type {
-      NONE,
-      MENU_ITEM,
-      SCROLL_UP,
-      SCROLL_DOWN
-    };
+    enum class Type { kNone, kMenuItem, kScrollUp, kScrollDown };
 
-    // Convenience for testing type == SCROLL_DOWN or type == SCROLL_UP.
-    bool is_scroll() const { return type == SCROLL_DOWN || type == SCROLL_UP; }
+    // Convenience for testing type == kScrollDown or type == kScrollUp.
+    bool is_scroll() const {
+      return type == Type::kScrollDown || type == Type::kScrollUp;
+    }
 
     // Type of part.
-    Type type = NONE;
+    Type type = Type::kNone;
 
-    // If type is MENU_ITEM, this is the menu item the mouse is over, otherwise
-    // this is NULL.
-    // NOTE: if type is MENU_ITEM and the mouse is not over a valid menu item
+    // If type is kMenuItem, this is the menu item the mouse is over, otherwise
+    // this is null.
+    // NOTE: if type is kMenuItem and the mouse is not over a valid menu item
     //       but is over a menu (for example, the mouse is over a separator or
-    //       empty menu), this is NULL and parent is the menu the mouse was
+    //       empty menu), this is null and parent is the menu the mouse was
     //       clicked on.
     MenuItemView* menu = nullptr;
 
-    // If type is MENU_ITEM but the mouse is not over a menu item this is the
-    // parent of the menu item the user clicked on. Otherwise this is NULL.
+    // If type is kMenuItem but the mouse is not over a menu item this is the
+    // parent of the menu item the user clicked on. Otherwise this is null.
     MenuItemView* parent = nullptr;
 
     // This is the submenu the mouse is over.
@@ -354,8 +360,8 @@ class VIEWS_EXPORT MenuController
                                  const ui::LocatedEvent* event);
   void StartDrag(SubmenuView* source, const gfx::Point& location);
 
-  // Key processing.
-  void OnKeyDown(ui::KeyboardCode key_code);
+  // Returns true if OnKeyPressed handled the key |event|.
+  bool OnKeyPressed(const ui::KeyEvent& event);
 
   // Creates a MenuController. See |for_drop_| member for details on |for_drop|.
   MenuController(bool for_drop, internal::MenuControllerDelegate* delegate);
@@ -363,12 +369,18 @@ class VIEWS_EXPORT MenuController
   ~MenuController() override;
 
   // Invokes AcceleratorPressed() on the hot tracked view if there is one.
-  // Returns true if AcceleratorPressed() was invoked.
-  bool SendAcceleratorToHotTrackedView();
+  // Returns true if AcceleratorPressed() was invoked. |event_flags| is the
+  // flags of the received key event.
+  bool SendAcceleratorToHotTrackedView(int event_flags);
 
   void UpdateInitialLocation(const gfx::Rect& bounds,
                              MenuAnchorPosition position,
                              bool context_menu);
+
+  // Returns the anchor position adjusted for RTL languages. For example,
+  // in RTL MenuAnchorPosition::kBubbleLeft is mapped to kBubbleRight.
+  static MenuAnchorPosition AdjustAnchorPositionForRtl(
+      MenuAnchorPosition position);
 
   // Invoked when the user accepts the selected item. This is only used
   // when blocking. This schedules the loop to quit.
@@ -542,15 +554,15 @@ class VIEWS_EXPORT MenuController
   // |match_function| is used to determine which menus match.
   SelectByCharDetails FindChildForMnemonic(
       MenuItemView* parent,
-      base::char16 key,
-      bool (*match_function)(MenuItemView* menu, base::char16 mnemonic));
+      char16_t key,
+      bool (*match_function)(MenuItemView* menu, char16_t mnemonic));
 
   // Selects or accepts the appropriate menu item based on |details|.
   void AcceptOrSelect(MenuItemView* parent, const SelectByCharDetails& details);
 
   // Selects by mnemonic, and if that doesn't work tries the first character of
   // the title.
-  void SelectByChar(base::char16 key);
+  void SelectByChar(char16_t key);
 
   // For Windows and Aura we repost an event which dismisses the |source| menu.
   // The menu may also be canceled depending on the target of the event. |event|
@@ -591,7 +603,7 @@ class VIEWS_EXPORT MenuController
   void SetExitType(ExitType type);
 
   // Performs the teardown of menus. This will notify the |delegate_|. If
-  // |exit_type_| is EXIT_ALL all nested runs will be exited.
+  // |exit_type_| is ExitType::kAll all nested runs will be exited.
   void ExitMenu();
 
   // Performs the teardown of the menu launched by Run(). The selected item is
@@ -612,7 +624,7 @@ class VIEWS_EXPORT MenuController
                              SelectionIncrementDirectionType direction);
 
   // Updates the current |hot_button_| and its hot tracked state.
-  void SetHotTrackedButton(Button* hot_button);
+  void SetHotTrackedButton(Button* new_hot_button);
 
   // Returns whether typing a new character will continue the existing prefix
   // selection. If this returns false, typing a new character will start a new
@@ -636,7 +648,7 @@ class VIEWS_EXPORT MenuController
   bool showing_ = false;
 
   // Indicates what to exit.
-  ExitType exit_type_ = EXIT_NONE;
+  ExitType exit_type_ = ExitType::kNone;
 
   // Whether we did a capture. We do a capture only if we're blocking and
   // the mouse was down when Run.
@@ -681,11 +693,16 @@ class VIEWS_EXPORT MenuController
 
   // Drop target.
   MenuItemView* drop_target_ = nullptr;
-  MenuDelegate::DropPosition drop_position_ = MenuDelegate::DROP_UNKNOWN;
+  MenuDelegate::DropPosition drop_position_ =
+      MenuDelegate::DropPosition::kUnknow;
 
   // Owner of child windows.
   // WARNING: this may be NULL.
   Widget* owner_ = nullptr;
+
+  // An optional NativeView to which gestures will be forwarded to if
+  // RunType::SEND_GESTURE_EVENTS_TO_OWNER is set.
+  gfx::NativeView native_view_for_gestures_ = nullptr;
 
   // Indicates a possible drag operation.
   bool possible_drag_ = false;
@@ -705,7 +722,7 @@ class VIEWS_EXPORT MenuController
   // continually processing whether we can drop, we cache the coordinates.
   bool valid_drop_coordinates_ = false;
   gfx::Point drop_pt_;
-  int last_drop_operation_ = MenuDelegate::DROP_UNKNOWN;
+  int last_drop_operation_ = ui::DragDropTypes::DRAG_NONE;
 
   // If true, we're in the middle of invoking ShowAt on a submenu.
   bool showing_submenu_ = false;
@@ -740,11 +757,11 @@ class VIEWS_EXPORT MenuController
   // location. Otherwise it will be null. This is used to ignore mouse move
   // events triggered by the menu opening, to avoid selecting the menu item
   // over the mouse.
-  base::Optional<gfx::Point> menu_open_mouse_loc_;
+  absl::optional<gfx::Point> menu_open_mouse_loc_;
 
   // Controls behavior differences between a combobox and other types of menu
   // (like a context menu).
-  ComboboxType combobox_type_ = kNotACombobox;
+  ComboboxType combobox_type_ = ComboboxType::kNone;
 
   // Whether the menu |owner_| needs gesture events. When set to true, the menu
   // will preserve the gesture events of the |owner_| and MenuController will
@@ -767,7 +784,7 @@ class VIEWS_EXPORT MenuController
   // A mask of the EventFlags for the mouse buttons currently pressed.
   int current_mouse_pressed_state_ = 0;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   std::unique_ptr<MenuClosureAnimationMac> menu_closure_animation_;
   std::unique_ptr<MenuCocoaWatcherMac> menu_cocoa_watcher_;
 #endif

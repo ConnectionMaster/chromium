@@ -5,14 +5,14 @@
 #ifndef SERVICES_AUDIO_PUBLIC_CPP_SOUNDS_SOUNDS_MANAGER_H_
 #define SERVICES_AUDIO_PUBLIC_CPP_SOUNDS_SOUNDS_MANAGER_H_
 
-#include <memory>
-
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/sequence_checker.h"
 #include "base/strings/string_piece.h"
 #include "base/time/time.h"
 #include "media/base/media_export.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "media/mojo/mojom/audio_stream_factory.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace audio {
 
@@ -23,7 +23,9 @@ class SoundsManager {
   typedef int SoundKey;
 
   // Creates a singleton instance of the SoundsManager.
-  static void Create(std::unique_ptr<service_manager::Connector> connector);
+  using StreamFactoryBinder = base::RepeatingCallback<void(
+      mojo::PendingReceiver<media::mojom::AudioStreamFactory>)>;
+  static void Create(StreamFactoryBinder stream_factory_binder);
 
   // Removes a singleton instance of the SoundsManager.
   static void Shutdown();

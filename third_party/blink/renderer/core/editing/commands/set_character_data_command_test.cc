@@ -6,6 +6,7 @@
 
 #include "third_party/blink/renderer/core/editing/commands/editing_state.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
+#include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_text_combine.h"
 
 namespace blink {
@@ -16,51 +17,53 @@ TEST_F(SetCharacterDataCommandTest, replaceTextWithSameLength) {
   SetBodyContent("<div contenteditable>This is a good test case</div>");
 
   SimpleEditCommand* command = MakeGarbageCollected<SetCharacterDataCommand>(
-      ToText(GetDocument().body()->firstChild()->firstChild()), 10, 4, "lame");
+      To<Text>(GetDocument().body()->firstChild()->firstChild()), 10, 4,
+      "lame");
 
   command->DoReapply();
   EXPECT_EQ(
       "This is a lame test case",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 
   command->DoUnapply();
   EXPECT_EQ(
       "This is a good test case",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 }
 
 TEST_F(SetCharacterDataCommandTest, replaceTextWithLongerText) {
   SetBodyContent("<div contenteditable>This is a good test case</div>");
 
   SimpleEditCommand* command = MakeGarbageCollected<SetCharacterDataCommand>(
-      ToText(GetDocument().body()->firstChild()->firstChild()), 10, 4, "lousy");
+      To<Text>(GetDocument().body()->firstChild()->firstChild()), 10, 4,
+      "lousy");
 
   command->DoReapply();
   EXPECT_EQ(
       "This is a lousy test case",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 
   command->DoUnapply();
   EXPECT_EQ(
       "This is a good test case",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 }
 
 TEST_F(SetCharacterDataCommandTest, replaceTextWithShorterText) {
   SetBodyContent("<div contenteditable>This is a good test case</div>");
 
   SimpleEditCommand* command = MakeGarbageCollected<SetCharacterDataCommand>(
-      ToText(GetDocument().body()->firstChild()->firstChild()), 10, 4, "meh");
+      To<Text>(GetDocument().body()->firstChild()->firstChild()), 10, 4, "meh");
 
   command->DoReapply();
   EXPECT_EQ(
       "This is a meh test case",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 
   command->DoUnapply();
   EXPECT_EQ(
       "This is a good test case",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 }
 
 TEST_F(SetCharacterDataCommandTest, insertTextIntoEmptyNode) {
@@ -70,66 +73,87 @@ TEST_F(SetCharacterDataCommandTest, insertTextIntoEmptyNode) {
       GetDocument().CreateEditingTextNode(""));
 
   SimpleEditCommand* command = MakeGarbageCollected<SetCharacterDataCommand>(
-      ToText(GetDocument().body()->firstChild()->firstChild()), 0, 0, "hello");
+      To<Text>(GetDocument().body()->firstChild()->firstChild()), 0, 0,
+      "hello");
 
   command->DoReapply();
   EXPECT_EQ(
       "hello",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 
   command->DoUnapply();
   EXPECT_EQ(
       "",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 }
 
 TEST_F(SetCharacterDataCommandTest, insertTextAtEndOfNonEmptyNode) {
   SetBodyContent("<div contenteditable>Hello</div>");
 
   SimpleEditCommand* command = MakeGarbageCollected<SetCharacterDataCommand>(
-      ToText(GetDocument().body()->firstChild()->firstChild()), 5, 0,
+      To<Text>(GetDocument().body()->firstChild()->firstChild()), 5, 0,
       ", world!");
 
   command->DoReapply();
   EXPECT_EQ(
       "Hello, world!",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 
   command->DoUnapply();
   EXPECT_EQ(
       "Hello",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 }
 
 TEST_F(SetCharacterDataCommandTest, replaceEntireNode) {
   SetBodyContent("<div contenteditable>Hello</div>");
 
   SimpleEditCommand* command = MakeGarbageCollected<SetCharacterDataCommand>(
-      ToText(GetDocument().body()->firstChild()->firstChild()), 0, 5, "Bye");
+      To<Text>(GetDocument().body()->firstChild()->firstChild()), 0, 5, "Bye");
 
   command->DoReapply();
   EXPECT_EQ(
       "Bye",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 
   command->DoUnapply();
   EXPECT_EQ(
       "Hello",
-      ToText(GetDocument().body()->firstChild()->firstChild())->wholeText());
+      To<Text>(GetDocument().body()->firstChild()->firstChild())->wholeText());
 }
 
 TEST_F(SetCharacterDataCommandTest, CombinedText) {
-  SetBodyContent(
-      "<div contenteditable style='writing-mode:vertical-lr; "
-      "-webkit-text-combine:horizontal' />");
+  InsertStyleElement(
+      "#sample {"
+      "text-combine-upright: all;"
+      "writing-mode:vertical-lr;"
+      "}");
+  SetBodyContent("<div contenteditable id=sample></div>");
 
-  Text* text_node = ToText(GetDocument().body()->firstChild()->appendChild(
+  const auto& sample_layout_object =
+      *To<LayoutBlockFlow>(GetElementById("sample")->GetLayoutObject());
+  auto* text_node = To<Text>(GetDocument().body()->firstChild()->appendChild(
       GetDocument().CreateEditingTextNode("")));
   UpdateAllLifecyclePhasesForTest();
 
   ASSERT_TRUE(text_node->GetLayoutObject());
-  ASSERT_TRUE(text_node->GetLayoutObject()->IsCombineText());
-  EXPECT_FALSE(ToLayoutTextCombine(text_node->GetLayoutObject())->IsCombined());
+  if (sample_layout_object.IsLayoutNGObject()) {
+    EXPECT_EQ(R"DUMP(
+LayoutNGBlockFlow DIV id="sample" (editable)
+  +--LayoutNGTextCombine (anonymous)
+  |  +--LayoutText #text ""
+)DUMP",
+              ToSimpleLayoutTree(sample_layout_object));
+  } else {
+    EXPECT_EQ(R"DUMP(
+LayoutBlockFlow DIV id="sample" (editable)
+  +--LayoutTextCombine #text ""
+)DUMP",
+              ToSimpleLayoutTree(sample_layout_object));
+    ASSERT_TRUE(text_node->GetLayoutObject()->IsCombineText());
+    EXPECT_FALSE(
+        To<LayoutTextCombine>(text_node->GetLayoutObject())->IsCombined());
+  }
 
   SimpleEditCommand* command =
       MakeGarbageCollected<SetCharacterDataCommand>(text_node, 0, 0, "text");
@@ -137,15 +161,45 @@ TEST_F(SetCharacterDataCommandTest, CombinedText) {
   UpdateAllLifecyclePhasesForTest();
 
   ASSERT_TRUE(text_node->GetLayoutObject());
-  ASSERT_TRUE(text_node->GetLayoutObject()->IsCombineText());
-  EXPECT_TRUE(ToLayoutTextCombine(text_node->GetLayoutObject())->IsCombined());
+  if (sample_layout_object.IsLayoutNGObject()) {
+    EXPECT_EQ(R"DUMP(
+LayoutNGBlockFlow DIV id="sample" (editable)
+  +--LayoutNGTextCombine (anonymous)
+  |  +--LayoutText #text "text"
+)DUMP",
+              ToSimpleLayoutTree(sample_layout_object));
+  } else {
+    EXPECT_EQ(R"DUMP(
+LayoutBlockFlow DIV id="sample" (editable)
+  +--LayoutTextCombine #text "text"
+)DUMP",
+              ToSimpleLayoutTree(sample_layout_object));
+    ASSERT_TRUE(text_node->GetLayoutObject()->IsCombineText());
+    EXPECT_TRUE(
+        To<LayoutTextCombine>(text_node->GetLayoutObject())->IsCombined());
+  }
 
   command->DoUnapply();
   UpdateAllLifecyclePhasesForTest();
 
   ASSERT_TRUE(text_node->GetLayoutObject());
-  ASSERT_TRUE(text_node->GetLayoutObject()->IsCombineText());
-  EXPECT_FALSE(ToLayoutTextCombine(text_node->GetLayoutObject())->IsCombined());
+  if (sample_layout_object.IsLayoutNGObject()) {
+    EXPECT_EQ(R"DUMP(
+LayoutNGBlockFlow DIV id="sample" (editable)
+  +--LayoutNGTextCombine (anonymous)
+  |  +--LayoutText #text ""
+)DUMP",
+              ToSimpleLayoutTree(sample_layout_object));
+  } else {
+    EXPECT_EQ(R"DUMP(
+LayoutBlockFlow DIV id="sample" (editable)
+  +--LayoutTextCombine #text ""
+)DUMP",
+              ToSimpleLayoutTree(sample_layout_object));
+    ASSERT_TRUE(text_node->GetLayoutObject()->IsCombineText());
+    EXPECT_FALSE(
+        To<LayoutTextCombine>(text_node->GetLayoutObject())->IsCombined());
+  }
 }
 
 }  // namespace blink

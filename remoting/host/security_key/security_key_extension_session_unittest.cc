@@ -6,14 +6,16 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/json/json_writer.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/timer/mock_timer.h"
 #include "base/values.h"
@@ -63,12 +65,16 @@ class TestClientStub : public protocol::ClientStub {
       const protocol::PairingResponse& pairing_response) override;
   void DeliverHostMessage(const protocol::ExtensionMessage& message) override;
   void SetVideoLayout(const protocol::VideoLayout& layout) override;
+  void SetTransportInfo(const protocol::TransportInfo& transport_info) override;
 
   // protocol::ClipboardStub implementation.
   void InjectClipboardEvent(const protocol::ClipboardEvent& event) override;
 
   // protocol::CursorShapeStub implementation.
   void SetCursorShape(const protocol::CursorShapeInfo& cursor_shape) override;
+
+  // protocol::KeyboardLayoutStub implementation.
+  void SetKeyboardLayout(const protocol::KeyboardLayout& layout) override;
 
   void WaitForDeliverHostMessage(base::TimeDelta max_timeout);
 
@@ -99,17 +105,23 @@ void TestClientStub::DeliverHostMessage(
 
 void TestClientStub::SetVideoLayout(const protocol::VideoLayout& layout) {}
 
+void TestClientStub::SetTransportInfo(
+    const protocol::TransportInfo& transport_info) {}
+
 void TestClientStub::InjectClipboardEvent(
     const protocol::ClipboardEvent& event) {}
 
 void TestClientStub::SetCursorShape(
     const protocol::CursorShapeInfo& cursor_shape) {}
 
+void TestClientStub::SetKeyboardLayout(const protocol::KeyboardLayout& layout) {
+}
+
 void TestClientStub::WaitForDeliverHostMessage(base::TimeDelta max_timeout) {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE, run_loop_->QuitClosure(), max_timeout);
   run_loop_->Run();
-  run_loop_.reset(new base::RunLoop);
+  run_loop_ = std::make_unique<base::RunLoop>();
 }
 
 void TestClientStub::CheckHostDataMessage(int id, const std::string& data) {
@@ -153,7 +165,8 @@ class SecurityKeyExtensionSessionTest : public testing::Test {
   void CreateSecurityKeyConnection();
 
  protected:
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
 
   // Object under test.
   std::unique_ptr<SecurityKeyExtensionSession> security_key_extension_session_;

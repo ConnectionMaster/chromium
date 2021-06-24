@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 
 #include "ash/app_list/test/app_list_test_helper.h"
+#include "ash/constants/ash_features.h"
 #include "ash/shell.h"
 #include "ash/shell_observer.h"
 #include "ash/system/network/network_observer.h"
@@ -18,9 +19,8 @@
 #include "ash/wm/window_util.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "chromeos/dbus/shill/shill_clients.h"
 #include "chromeos/network/network_handler.h"
-#include "services/ws/public/mojom/window_tree_constants.mojom.h"
-#include "services/ws/test_window_tree_client.h"
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/test_accelerator_target.h"
@@ -69,13 +69,9 @@ class AcceleratorTest : public AshTestBase, public OverviewObserver {
     AshTestBase::SetUp();
 
     Shell::Get()->overview_controller()->AddObserver(this);
-
-    chromeos::NetworkHandler::Initialize();
   }
 
   void TearDown() override {
-    chromeos::NetworkHandler::Shutdown();
-
     Shell::Get()->overview_controller()->RemoveObserver(this);
 
     AshTestBase::TearDown();
@@ -111,19 +107,6 @@ class AcceleratorTest : public AshTestBase, public OverviewObserver {
 
 // Tests a sample of accelerators.
 TEST_F(AcceleratorTest, Basic) {
-  // Test TAKE_SCREENSHOT and TAKE_PARTIAL_SCREENSHOT.
-  TestScreenshotDelegate* screenshot_delegate = GetScreenshotDelegate();
-  screenshot_delegate->set_can_take_screenshot(true);
-  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
-  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, false, false);
-  EXPECT_EQ(1, screenshot_delegate->handle_take_screenshot_count());
-  SendKeyPressSync(ui::VKEY_SNAPSHOT, false, false, false);
-  EXPECT_EQ(2, screenshot_delegate->handle_take_screenshot_count());
-  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, true, false);
-  EXPECT_EQ(2, screenshot_delegate->handle_take_screenshot_count());
-  // Press ESC to go out of the partial screenshot mode.
-  SendKeyPressSync(ui::VKEY_ESCAPE, false, false, false);
-
   // Test VOLUME_MUTE.
   base::UserActionTester user_action_tester;
   EXPECT_EQ(0, user_action_tester.GetActionCount("Accel_VolumeMute_F8"));
@@ -150,6 +133,137 @@ TEST_F(AcceleratorTest, Basic) {
 
   Shell::Get()->system_tray_notifier()->RemoveNetworkObserver(
       &network_observer);
+}
+
+// Tests full screenshot accelerators.
+TEST_F(AcceleratorTest, FullScreenshot) {
+  if (features::IsCaptureModeEnabled()) {
+    // Capture mode shortcuts and behavior are tested elsewhere.
+    return;
+  }
+
+  TestScreenshotDelegate* screenshot_delegate = GetScreenshotDelegate();
+  screenshot_delegate->set_can_take_screenshot(true);
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+
+  // Test TAKE_SCREENSHOT via crtl+overview key.
+  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, false, false);
+  EXPECT_EQ(1, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  screenshot_delegate->reset_all_screenshot_counts();
+
+  // Test TAKE_SCREENSHOT via PrtScn/Snapshot key.
+  SendKeyPressSync(ui::VKEY_SNAPSHOT, false, false, false);
+  EXPECT_EQ(1, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  screenshot_delegate->reset_all_screenshot_counts();
+}
+
+// Tests partial screenshot accelerators.
+TEST_F(AcceleratorTest, PartialScreenshot) {
+  if (features::IsCaptureModeEnabled()) {
+    // Capture mode shortcuts and behavior are tested elsewhere.
+    return;
+  }
+
+  ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
+  TestScreenshotDelegate* screenshot_delegate = GetScreenshotDelegate();
+  screenshot_delegate->set_can_take_screenshot(true);
+
+  // Test TAKE_PARTIAL_SCREENSHOT via ctrl+shift+overview key then exit with
+  // escape key.
+  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, true, false);
+  SendKeyPressSync(ui::VKEY_ESCAPE, false, false, false);
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  screenshot_delegate->reset_all_screenshot_counts();
+
+  // Test TAKE_PARTIAL_SCREENSHOT via alt+PrtScn key then exit with escape
+  // key.
+  SendKeyPressSync(ui::VKEY_SNAPSHOT, false, false, true);
+  SendKeyPressSync(ui::VKEY_ESCAPE, false, false, false);
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  screenshot_delegate->reset_all_screenshot_counts();
+
+  // Test TAKE_PARTIAL_SCREENSHOT via ctrl+shift+overview key then select
+  // a region to complete the screenshot.
+  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, true, false);
+  generator.MoveMouseTo(100, 100);
+  generator.PressLeftButton();
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  generator.MoveMouseTo(150, 150);
+  generator.ReleaseLeftButton();
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(1, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  EXPECT_EQ(gfx::Rect(100, 100, 50, 50), screenshot_delegate->last_rect());
+  screenshot_delegate->reset_all_screenshot_counts();
+
+  // Test TAKE_PARTIAL_SCREENSHOT via alt+PrtScn key then select a region
+  // to complete the screenshot.
+  SendKeyPressSync(ui::VKEY_SNAPSHOT, false, false, true);
+  generator.MoveMouseTo(100, 100);
+  generator.PressLeftButton();
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  generator.MoveMouseTo(150, 150);
+  generator.ReleaseLeftButton();
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(1, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  EXPECT_EQ(gfx::Rect(100, 100, 50, 50), screenshot_delegate->last_rect());
+  screenshot_delegate->reset_all_screenshot_counts();
+}
+
+// Tests window screenshot accelerators.
+TEST_F(AcceleratorTest, WindowScreenshot) {
+  if (features::IsCaptureModeEnabled()) {
+    // Capture mode shortcuts and behavior are tested elsewhere.
+    return;
+  }
+
+  TestScreenshotDelegate* screenshot_delegate = GetScreenshotDelegate();
+  screenshot_delegate->set_can_take_screenshot(true);
+
+  // Test TAKE_WINDOW_SCREENSHOT via ctrl+alt+overview then exit with
+  // escape key.
+  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, false, true);
+  SendKeyPressSync(ui::VKEY_ESCAPE, false, false, false);
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  EXPECT_EQ(nullptr, screenshot_delegate->GetSelectedWindowAndReset());
+  screenshot_delegate->reset_all_screenshot_counts();
+
+  // Test TAKE_WINDOW_SCREENSHOT via ctrl+alt+overview without an active
+  // window.
+  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, false, true);
+  SendKeyPressSync(ui::VKEY_RETURN, false, false, false);
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_window_screenshot_count());
+  EXPECT_EQ(nullptr, screenshot_delegate->GetSelectedWindowAndReset());
+  screenshot_delegate->reset_all_screenshot_counts();
+
+  // Test TAKE_WINDOW_SCREENSHOT via ctrl+alt+overview key then activate
+  // the window by pressing return/enter to complete the screenshot.
+  aura::Window* window =
+      CreateTestWindowInShellWithBounds(gfx::Rect(0, 0, 100, 100));
+  window->Show();
+  wm::ActivateWindow(window);
+  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP1, true, false, true);
+  SendKeyPressSync(ui::VKEY_RETURN, false, false, false);
+  EXPECT_EQ(0, screenshot_delegate->handle_take_screenshot_count());
+  EXPECT_EQ(0, screenshot_delegate->handle_take_partial_screenshot_count());
+  EXPECT_EQ(1, screenshot_delegate->handle_take_window_screenshot_count());
+  EXPECT_EQ(window, screenshot_delegate->GetSelectedWindowAndReset());
+  screenshot_delegate->reset_all_screenshot_counts();
 }
 
 // Tests a sample of the non-repeatable accelerators that need windows to be
@@ -184,11 +298,11 @@ TEST_F(AcceleratorTest, NonRepeatableNeedingWindowActions) {
   EXPECT_FALSE(wm::IsActiveWindow(window_2));
 
   // Test TOGGLE_FULLSCREEN.
-  wm::WindowState* active_window_state = wm::GetActiveWindowState();
+  WindowState* active_window_state = WindowState::ForActiveWindow();
   EXPECT_FALSE(active_window_state->IsFullscreen());
-  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP2, false, false, false);
+  SendKeyPressSync(ui::VKEY_ZOOM, false, false, false);
   EXPECT_TRUE(active_window_state->IsFullscreen());
-  SendKeyPressSync(ui::VKEY_MEDIA_LAUNCH_APP2, false, false, false);
+  SendKeyPressSync(ui::VKEY_ZOOM, false, false, false);
   EXPECT_FALSE(active_window_state->IsFullscreen());
 }
 
@@ -201,33 +315,6 @@ TEST_F(AcceleratorTest, ToggleAppList) {
   SendKeyPressSync(ui::VKEY_LWIN, false, false, false);
   base::RunLoop().RunUntilIdle();
   GetAppListTestHelper()->CheckVisibility(false);
-}
-
-// This is meant to exercise an end to end test of an accelerator that happens
-// *after* the remote client is given a chance to handle it.
-TEST_F(AcceleratorTest, PostAcceleratorWorks) {
-  // Register a post-accelerator. That is, an accelerator that is handled
-  // *after* the remote client (focused target) is given a chance.
-  ui::TestAcceleratorTarget test_target;
-  const ui::KeyboardCode accelerator_code = ui::VKEY_N;
-  const int accelerator_modifiers = ui::EF_CONTROL_DOWN;
-  Shell::Get()->accelerator_controller()->Register(
-      {ui::Accelerator(accelerator_code, accelerator_modifiers)}, &test_target);
-  std::unique_ptr<aura::Window> window = CreateTestWindow();
-  window->Focus();
-  ASSERT_TRUE(window->HasFocus());
-  GetEventGenerator()->PressKey(accelerator_code, accelerator_modifiers);
-
-  // The accelerator was not pressed yet (the KeyEvent was sent to the client,
-  // but the client hasn't responded).
-  EXPECT_EQ(0, test_target.accelerator_count());
-
-  EXPECT_TRUE(GetTestWindowTreeClient()->AckFirstEvent(
-      GetWindowTree(), ws::mojom::EventResult::UNHANDLED));
-
-  // The client didn't handle the event, so |test_target| should get the
-  // accelerator.
-  EXPECT_EQ(1, test_target.accelerator_count());
 }
 
 }  // namespace ash

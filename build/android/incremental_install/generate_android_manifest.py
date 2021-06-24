@@ -19,6 +19,7 @@ from xml.etree import ElementTree
 
 sys.path.append(os.path.join(os.path.dirname(__file__), os.path.pardir, 'gyp'))
 from util import build_utils
+from util import manifest_utils
 from util import resource_utils
 
 _INCREMENTAL_APP_NAME = 'org.chromium.incrementalinstall.BootstrapApplication'
@@ -36,7 +37,7 @@ _INCREMENTAL_INSTRUMENTATION_CLASSES = [
 
 def _AddNamespace(name):
   """Adds the android namespace prefix to the given identifier."""
-  return '{%s}%s' % (resource_utils.ANDROID_NAMESPACE, name)
+  return '{%s}%s' % (manifest_utils.ANDROID_NAMESPACE, name)
 
 
 def _ParseArgs(args):
@@ -68,7 +69,7 @@ def _CreateMetaData(parent, name, value):
 
 
 def _ProcessManifest(path, arsc_package_name, disable_isolated_processes):
-  doc, manifest_node, app_node = resource_utils.ParseAndroidManifest(path)
+  doc, manifest_node, app_node = manifest_utils.ParseManifest(path)
 
   # Ensure the manifest package matches that of the apk's arsc package
   # So that resource references resolve correctly. The actual manifest
@@ -96,9 +97,9 @@ def _ProcessManifest(path, arsc_package_name, disable_isolated_processes):
 
   ret = ElementTree.tostring(doc.getroot(), encoding='UTF-8')
   # Disable check for page-aligned native libraries.
-  ret = ret.replace('extractNativeLibs="false"', 'extractNativeLibs="true"')
+  ret = ret.replace(b'extractNativeLibs="false"', b'extractNativeLibs="true"')
   if disable_isolated_processes:
-    ret = ret.replace('isolatedProcess="true"', 'isolatedProcess="false"')
+    ret = ret.replace(b'isolatedProcess="true"', b'isolatedProcess="false"')
   return ret
 
 

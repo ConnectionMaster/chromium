@@ -4,24 +4,16 @@
 
 /** @fileoverview Runs the Polymer Print Preview interactive UI tests. */
 
-/** @const {string} Path to source root. */
-const ROOT_PATH = '../../../../../';
-
 // Polymer BrowserTest fixture.
-GEN_INCLUDE(
-    [ROOT_PATH + 'chrome/test/data/webui/polymer_interactive_ui_test.js']);
+GEN_INCLUDE(['//chrome/test/data/webui/polymer_interactive_ui_test.js']);
+
+GEN('#include "content/public/test/browser_test.h"');
+GEN('#include "build/build_config.h"');
 
 const PrintPreviewInteractiveUITest = class extends PolymerInteractiveUITest {
   /** @override */
   get browsePreload() {
     throw 'this is abstract and should be overriden by subclasses';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return PolymerTest.getLibraries(ROOT_PATH).concat([
-      ROOT_PATH + 'ui/webui/resources/js/assert.js',
-    ]);
   }
 
   // The name of the mocha suite. Should be overridden by subclasses.
@@ -35,53 +27,12 @@ const PrintPreviewInteractiveUITest = class extends PolymerInteractiveUITest {
   }
 };
 
-PrintPreviewPrintHeaderInteractiveTest =
+// eslint-disable-next-line no-var
+var PrintPreviewButtonStripInteractiveTest =
     class extends PrintPreviewInteractiveUITest {
   /** @override */
   get browsePreload() {
-    return 'chrome://print/new/header.html';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      ROOT_PATH + 'chrome/test/data/webui/settings/test_util.js',
-      'print_header_interactive_test.js',
-    ]);
-  }
-
-  /** @override */
-  get suiteName() {
-    return print_header_interactive_test.suiteName;
-  }
-};
-
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_FocusPrintOnReady DISABLED_FocusPrintOnReady');
-GEN('#else');
-GEN('#define MAYBE_FocusPrintOnReady FocusPrintOnReady');
-GEN('#endif');
-TEST_F(
-    'PrintPreviewPrintHeaderInteractiveTest', 'MAYBE_FocusPrintOnReady',
-    function() {
-      this.runMochaTest(
-          print_header_interactive_test.TestNames.FocusPrintOnReady);
-    });
-
-PrintPreviewButtonStripInteractiveTest =
-    class extends PrintPreviewInteractiveUITest {
-  /** @override */
-  get browsePreload() {
-    return 'chrome://print/new/button_strip.html';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      ROOT_PATH + 'chrome/test/data/webui/settings/test_util.js',
-      'button_strip_interactive_test.js',
-    ]);
+    return 'chrome://print/test_loader.html?module=print_preview/button_strip_interactive_test.js';
   }
 
   /** @override */
@@ -103,23 +54,13 @@ TEST_F(
           button_strip_interactive_test.TestNames.FocusPrintOnReady);
     });
 
-PrintPreviewDestinationDialogInteractiveTest =
+GEN('#if !defined(OS_CHROMEOS)');
+// eslint-disable-next-line no-var
+var PrintPreviewDestinationDialogInteractiveTest =
     class extends PrintPreviewInteractiveUITest {
   /** @override */
   get browsePreload() {
-    return 'chrome://print/new/destination_dialog.html';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      ROOT_PATH + 'chrome/test/data/webui/settings/test_util.js',
-      ROOT_PATH + 'ui/webui/resources/js/web_ui_listener_behavior.js',
-      '../test_browser_proxy.js',
-      'native_layer_stub.js',
-      'print_preview_test_utils.js',
-      'destination_dialog_interactive_test.js',
-    ]);
+    return 'chrome://print/test_loader.html?module=print_preview/destination_dialog_interactive_test.js';
   }
 
   /** @override */
@@ -128,45 +69,57 @@ PrintPreviewDestinationDialogInteractiveTest =
   }
 };
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_FocusSearchBox DISABLED_FocusSearchBox');
-GEN('#else');
-GEN('#define MAYBE_FocusSearchBox FocusSearchBox');
-GEN('#endif');
 TEST_F(
-    'PrintPreviewDestinationDialogInteractiveTest', 'MAYBE_FocusSearchBox',
+    'PrintPreviewDestinationDialogInteractiveTest', 'FocusSearchBox',
     function() {
       this.runMochaTest(
           destination_dialog_interactive_test.TestNames.FocusSearchBox);
     });
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_EscapeSearchBox DISABLED_EscapeSearchBox');
-GEN('#else');
-GEN('#define MAYBE_EscapeSearchBox EscapeSearchBox');
-GEN('#endif');
 TEST_F(
-    'PrintPreviewDestinationDialogInteractiveTest', 'MAYBE_EscapeSearchBox',
+    'PrintPreviewDestinationDialogInteractiveTest', 'EscapeSearchBox',
     function() {
       this.runMochaTest(
           destination_dialog_interactive_test.TestNames.EscapeSearchBox);
     });
+GEN('#else');
 
-PrintPreviewPagesSettingsTest = class extends PrintPreviewInteractiveUITest {
+// eslint-disable-next-line no-var
+var PrintPreviewDestinationDialogCrosInteractiveTest =
+    class extends PrintPreviewInteractiveUITest {
   /** @override */
   get browsePreload() {
-    return 'chrome://print/new/pages_settings.html';
+    return 'chrome://print/test_loader.html?module=print_preview/destination_dialog_cros_interactive_test.js';
   }
 
   /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      '../settings/test_util.js',
-      'print_preview_test_utils.js',
-      'pages_settings_test.js',
-    ]);
+  get suiteName() {
+    return destination_dialog_cros_interactive_test.suiteName;
+  }
+};
+
+TEST_F(
+    'PrintPreviewDestinationDialogCrosInteractiveTest', 'FocusSearchBox',
+    function() {
+      this.runMochaTest(
+          destination_dialog_cros_interactive_test.TestNames.FocusSearchBox);
+    });
+
+TEST_F(
+    'PrintPreviewDestinationDialogCrosInteractiveTest', 'EscapeSearchBox',
+    function() {
+      this.runMochaTest(
+          destination_dialog_cros_interactive_test.TestNames.EscapeSearchBox);
+    });
+GEN('#endif');
+
+
+// eslint-disable-next-line no-var
+var PrintPreviewPagesSettingsTest =
+    class extends PrintPreviewInteractiveUITest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://print/test_loader.html?module=print_preview/pages_settings_test.js';
   }
 
   /** @override */
@@ -175,56 +128,29 @@ PrintPreviewPagesSettingsTest = class extends PrintPreviewInteractiveUITest {
   }
 };
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_ClearInput DISABLED_ClearInput');
-GEN('#else');
-GEN('#define MAYBE_ClearInput ClearInput');
-GEN('#endif');
-TEST_F('PrintPreviewPagesSettingsTest', 'MAYBE_ClearInput', function() {
+TEST_F('PrintPreviewPagesSettingsTest', 'ClearInput', function() {
   this.runMochaTest(pages_settings_test.TestNames.ClearInput);
 });
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_InputNotDisabledOnValidityChange DISABLED_InputNotDisabledOnValidityChange');
-GEN('#else');
-GEN('#define MAYBE_InputNotDisabledOnValidityChange InputNotDisabledOnValidityChange');
-GEN('#endif');
 TEST_F(
-    'PrintPreviewPagesSettingsTest', 'MAYBE_InputNotDisabledOnValidityChange',
+    'PrintPreviewPagesSettingsTest', 'InputNotDisabledOnValidityChange',
     function() {
       this.runMochaTest(
           pages_settings_test.TestNames.InputNotDisabledOnValidityChange);
     });
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_EnterOnInputTriggersPrint DISABLED_EnterOnInputTriggersPrint');
-GEN('#else');
-GEN('#define MAYBE_EnterOnInputTriggersPrint EnterOnInputTriggersPrint');
-GEN('#endif');
 TEST_F(
-    'PrintPreviewPagesSettingsTest', 'MAYBE_EnterOnInputTriggersPrint',
-    function() {
+    'PrintPreviewPagesSettingsTest', 'EnterOnInputTriggersPrint', function() {
       this.runMochaTest(
           pages_settings_test.TestNames.EnterOnInputTriggersPrint);
     });
 
-PrintPreviewNumberSettingsSectionInteractiveTest =
+// eslint-disable-next-line no-var
+var PrintPreviewNumberSettingsSectionInteractiveTest =
     class extends PrintPreviewInteractiveUITest {
   /** @override */
   get browsePreload() {
-    return 'chrome://print/new/number_settings_section.html';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      '../settings/test_util.js',
-      'print_preview_test_utils.js',
-      'number_settings_section_interactive_test.js',
-    ]);
+    return 'chrome://print/test_loader.html?module=print_preview/number_settings_section_interactive_test.js';
   }
 
   /** @override */
@@ -233,34 +159,19 @@ PrintPreviewNumberSettingsSectionInteractiveTest =
   }
 };
 
-// Web UI interactive tests are flaky on Win10, see https://crbug.com/711256
-GEN('#if defined(OS_WIN)');
-GEN('#define MAYBE_BlurResetsEmptyInput DISABLED_BlurResetsEmptyInput');
-GEN('#else');
-GEN('#define MAYBE_BlurResetsEmptyInput BlurResetsEmptyInput');
-GEN('#endif');
 TEST_F(
-    'PrintPreviewNumberSettingsSectionInteractiveTest',
-    'MAYBE_BlurResetsEmptyInput', function() {
+    'PrintPreviewNumberSettingsSectionInteractiveTest', 'BlurResetsEmptyInput',
+    function() {
       this.runMochaTest(number_settings_section_interactive_test.TestNames
                             .BlurResetsEmptyInput);
     });
 
-PrintPreviewScalingSettingsInteractiveTest =
+// eslint-disable-next-line no-var
+var PrintPreviewScalingSettingsInteractiveTest =
     class extends PrintPreviewInteractiveUITest {
   /** @override */
   get browsePreload() {
-    return 'chrome://print/new/scaling_settings.html';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      ROOT_PATH + 'ui/webui/resources/js/util.js',
-      '../settings/test_util.js',
-      'print_preview_test_utils.js',
-      'scaling_settings_interactive_test.js',
-    ]);
+    return 'chrome://print/test_loader.html?module=print_preview/scaling_settings_interactive_test.js';
   }
 
   /** @override */
@@ -281,3 +192,23 @@ TEST_F(
       this.runMochaTest(
           scaling_settings_interactive_test.TestNames.AutoFocusInput);
     });
+
+GEN('#if defined(OS_CHROMEOS)');
+// eslint-disable-next-line no-var
+var PrintPreviewDestinationDropdownCrosTest =
+    class extends PrintPreviewInteractiveUITest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://print/test_loader.html?module=print_preview/destination_dropdown_cros_test.js';
+  }
+
+  /** @override */
+  get suiteName() {
+    return destination_dropdown_cros_test.suiteName;
+  }
+};
+
+TEST_F('PrintPreviewDestinationDropdownCrosTest', 'ClickCloses', function() {
+  this.runMochaTest(destination_dropdown_cros_test.TestNames.ClickCloses);
+});
+GEN('#endif');

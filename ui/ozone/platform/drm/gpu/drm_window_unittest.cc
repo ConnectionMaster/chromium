@@ -6,6 +6,7 @@
 
 #include <drm_fourcc.h>
 #include <stdint.h>
+#include <xf86drm.h>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -13,29 +14,30 @@
 #include "base/bind.h"
 #include "base/files/platform_file.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/task_environment.h"
+#include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "ui/gfx/gpu_fence.h"
+#include "ui/gfx/linux/gbm_buffer.h"
+#include "ui/gfx/linux/test/mock_gbm_device.h"
 #include "ui/gfx/presentation_feedback.h"
-#include "ui/ozone/common/linux/gbm_buffer.h"
 #include "ui/ozone/platform/drm/gpu/drm_device_generator.h"
 #include "ui/ozone/platform/drm/gpu/drm_device_manager.h"
 #include "ui/ozone/platform/drm/gpu/drm_framebuffer.h"
 #include "ui/ozone/platform/drm/gpu/hardware_display_controller.h"
 #include "ui/ozone/platform/drm/gpu/mock_drm_device.h"
-#include "ui/ozone/platform/drm/gpu/mock_gbm_device.h"
 #include "ui/ozone/platform/drm/gpu/screen_manager.h"
 #include "ui/ozone/public/surface_ozone_canvas.h"
 
 namespace {
 
 // Mode of size 6x4.
-const drmModeModeInfo kDefaultMode =
-    {0, 6, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, {'\0'}};
+const drmModeModeInfo kDefaultMode = {0, 6, 0, 0, 0, 0, 4,     0,
+                                      0, 0, 0, 0, 0, 0, {'\0'}};
 
 const gfx::AcceleratedWidget kDefaultWidgetHandle = 1;
 const uint32_t kDefaultCrtc = 1;
@@ -68,13 +70,12 @@ SkBitmap AllocateBitmap(const gfx::Size& size) {
 
 class DrmWindowTest : public testing::Test {
  public:
-  DrmWindowTest() {}
+  DrmWindowTest() = default;
 
   void SetUp() override;
   void TearDown() override;
 
-  void OnSubmission(gfx::SwapResult result,
-                    std::unique_ptr<gfx::GpuFence> out_fence) {
+  void OnSubmission(gfx::SwapResult result, gfx::GpuFenceHandle release_fence) {
     last_swap_buffers_result_ = result;
   }
 
@@ -84,7 +85,10 @@ class DrmWindowTest : public testing::Test {
   }
 
  protected:
-  std::unique_ptr<base::MessageLoop> message_loop_;
+  void InitializeDrmState(ui::MockDrmDevice* drm, bool is_atomic = true);
+
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
   scoped_refptr<ui::MockDrmDevice> drm_;
   std::unique_ptr<ui::ScreenManager> screen_manager_;
   std::unique_ptr<ui::DrmDeviceManager> drm_device_manager_;
@@ -94,6 +98,14 @@ class DrmWindowTest : public testing::Test {
   gfx::PresentationFeedback last_presentation_feedback_;
 
  private:
+  struct PlaneState {
+    std::vector<uint32_t> formats;
+  };
+
+  struct CrtcState {
+    std::vector<PlaneState> planes;
+  };
+
   DISALLOW_COPY_AND_ASSIGN(DrmWindowTest);
 };
 
@@ -101,15 +113,20 @@ void DrmWindowTest::SetUp() {
   on_swap_buffers_count_ = 0;
   last_swap_buffers_result_ = gfx::SwapResult::SWAP_FAILED;
 
-  message_loop_.reset(new base::MessageLoopForUI);
   auto gbm_device = std::make_unique<ui::MockGbmDevice>();
   drm_ = new ui::MockDrmDevice(std::move(gbm_device));
-  screen_manager_.reset(new ui::ScreenManager());
-  screen_manager_->AddDisplayController(drm_, kDefaultCrtc, kDefaultConnector);
-  screen_manager_->ConfigureDisplayController(
-      drm_, kDefaultCrtc, kDefaultConnector, gfx::Point(), kDefaultMode);
+  screen_manager_ = std::make_unique<ui::ScreenManager>();
 
-  drm_device_manager_.reset(new ui::DrmDeviceManager(nullptr));
+  InitializeDrmState(drm_.get());
+
+  screen_manager_->AddDisplayController(drm_, kDefaultCrtc, kDefaultConnector);
+  std::vector<ui::ScreenManager::ControllerConfigParams> controllers_to_enable;
+  controllers_to_enable.emplace_back(
+      1 /*display_id*/, drm_, kDefaultCrtc, kDefaultConnector, gfx::Point(),
+      std::make_unique<drmModeModeInfo>(kDefaultMode));
+  screen_manager_->ConfigureDisplayControllers(controllers_to_enable);
+
+  drm_device_manager_ = std::make_unique<ui::DrmDeviceManager>(nullptr);
 
   std::unique_ptr<ui::DrmWindow> window(new ui::DrmWindow(
       kDefaultWidgetHandle, drm_device_manager_.get(), screen_manager_.get()));
@@ -123,14 +140,117 @@ void DrmWindowTest::TearDown() {
   std::unique_ptr<ui::DrmWindow> window =
       screen_manager_->RemoveWindow(kDefaultWidgetHandle);
   window->Shutdown();
-  message_loop_.reset();
+}
+
+void DrmWindowTest::InitializeDrmState(ui::MockDrmDevice* drm, bool is_atomic) {
+  // A Sample of CRTC states.
+  std::vector<CrtcState> crtc_states = {
+      {
+          /* .planes = */
+          {{/* .formats = */ {DRM_FORMAT_XRGB8888}}},
+      },
+      {
+          /* .planes = */
+          {{/* .formats = */ {DRM_FORMAT_XRGB8888}}},
+      },
+  };
+
+  constexpr uint32_t kPlaneIdBase = 300;
+  constexpr uint32_t kInFormatsBlobPropIdBase = 400;
+
+  std::vector<ui::MockDrmDevice::CrtcProperties> crtc_properties(
+      crtc_states.size());
+  std::map<uint32_t, std::string> crtc_property_names = {
+      {1000, "ACTIVE"},
+      {1001, "MODE_ID"},
+  };
+
+  std::vector<ui::MockDrmDevice::ConnectorProperties> connector_properties(3);
+  std::map<uint32_t, std::string> connector_property_names = {
+      {2000, "CRTC_ID"},
+  };
+  for (size_t i = 0; i < connector_properties.size(); ++i) {
+    connector_properties[i].id = kDefaultConnector + i;
+    for (const auto& pair : connector_property_names) {
+      connector_properties[i].properties.push_back(
+          {/* .id = */ pair.first, /* .value = */ 0});
+    }
+  }
+
+  std::vector<ui::MockDrmDevice::PlaneProperties> plane_properties;
+  std::map<uint32_t, std::string> plane_property_names = {
+      // Add all required properties.
+      {3000, "CRTC_ID"},
+      {3001, "CRTC_X"},
+      {3002, "CRTC_Y"},
+      {3003, "CRTC_W"},
+      {3004, "CRTC_H"},
+      {3005, "FB_ID"},
+      {3006, "SRC_X"},
+      {3007, "SRC_Y"},
+      {3008, "SRC_W"},
+      {3009, "SRC_H"},
+      // Defines some optional properties we use for convenience.
+      {3010, "type"},
+      {3011, "IN_FORMATS"},
+  };
+
+  uint32_t plane_id = kPlaneIdBase;
+  uint32_t property_id = kInFormatsBlobPropIdBase;
+
+  for (size_t crtc_idx = 0; crtc_idx < crtc_states.size(); ++crtc_idx) {
+    crtc_properties[crtc_idx].id = kDefaultCrtc + crtc_idx;
+    for (const auto& pair : crtc_property_names) {
+      crtc_properties[crtc_idx].properties.push_back(
+          {/* .id = */ pair.first, /* .value = */ 0});
+    }
+
+    std::vector<ui::MockDrmDevice::PlaneProperties> crtc_plane_properties(
+        crtc_states[crtc_idx].planes.size());
+    for (size_t plane_idx = 0; plane_idx < crtc_states[crtc_idx].planes.size();
+         ++plane_idx) {
+      crtc_plane_properties[plane_idx].id = plane_id++;
+      crtc_plane_properties[plane_idx].crtc_mask = 1 << crtc_idx;
+
+      for (const auto& pair : plane_property_names) {
+        uint64_t value = 0;
+        if (pair.first == 3010) {
+          value =
+              plane_idx == 0 ? DRM_PLANE_TYPE_PRIMARY : DRM_PLANE_TYPE_OVERLAY;
+        } else if (pair.first == 3011) {
+          value = property_id++;
+          drm->SetPropertyBlob(ui::MockDrmDevice::AllocateInFormatsBlob(
+              value, crtc_states[crtc_idx].planes[plane_idx].formats,
+              std::vector<drm_format_modifier>()));
+        } else if (pair.first >= 3001 && pair.first <= 3009) {
+          value = 27;
+        }
+
+        crtc_plane_properties[plane_idx].properties.push_back(
+            {/* .id = */ pair.first, /* .value = */ value});
+      }
+    }
+
+    plane_properties.insert(plane_properties.end(),
+                            crtc_plane_properties.begin(),
+                            crtc_plane_properties.end());
+  }
+
+  std::map<uint32_t, std::string> property_names;
+  property_names.insert(crtc_property_names.begin(), crtc_property_names.end());
+  property_names.insert(connector_property_names.begin(),
+                        connector_property_names.end());
+  property_names.insert(plane_property_names.begin(),
+                        plane_property_names.end());
+  drm->InitializeState(crtc_properties, connector_properties, plane_properties,
+                       property_names, /*is_atomic=*/false);
 }
 
 TEST_F(DrmWindowTest, SetCursorImage) {
   const gfx::Size cursor_size(6, 4);
   screen_manager_->GetWindow(kDefaultWidgetHandle)
       ->SetCursor(std::vector<SkBitmap>(1, AllocateBitmap(cursor_size)),
-                  gfx::Point(4, 2), 0);
+                  gfx::Point(4, 2), base::TimeDelta());
 
   SkBitmap cursor;
   std::vector<sk_sp<SkSurface>> cursor_buffers = GetCursorBuffers(drm_);
@@ -156,16 +276,22 @@ TEST_F(DrmWindowTest, CheckCursorSurfaceAfterChangingDevice) {
   const gfx::Size cursor_size(6, 4);
   screen_manager_->GetWindow(kDefaultWidgetHandle)
       ->SetCursor(std::vector<SkBitmap>(1, AllocateBitmap(cursor_size)),
-                  gfx::Point(4, 2), 0);
+                  gfx::Point(4, 2), base::TimeDelta());
 
   // Add another device.
   auto gbm_device = std::make_unique<ui::MockGbmDevice>();
   scoped_refptr<ui::MockDrmDevice> drm =
       new ui::MockDrmDevice(std::move(gbm_device));
+  InitializeDrmState(drm.get());
+
   screen_manager_->AddDisplayController(drm, kDefaultCrtc, kDefaultConnector);
-  screen_manager_->ConfigureDisplayController(
-      drm, kDefaultCrtc, kDefaultConnector,
-      gfx::Point(0, kDefaultMode.vdisplay), kDefaultMode);
+
+  std::vector<ui::ScreenManager::ControllerConfigParams> controllers_to_enable;
+  controllers_to_enable.emplace_back(
+      2 /*display_id*/, drm, kDefaultCrtc, kDefaultConnector,
+      gfx::Point(0, kDefaultMode.vdisplay),
+      std::make_unique<drmModeModeInfo>(kDefaultMode));
+  screen_manager_->ConfigureDisplayControllers(controllers_to_enable);
 
   // Move window to the display on the new device.
   screen_manager_->GetWindow(kDefaultWidgetHandle)
@@ -183,8 +309,9 @@ TEST_F(DrmWindowTest, CheckDeathOnFailedSwap) {
 
   std::unique_ptr<ui::GbmBuffer> buffer = drm_->gbm_device()->CreateBuffer(
       DRM_FORMAT_XRGB8888, window_size, GBM_BO_USE_SCANOUT);
+  ASSERT_TRUE(buffer);
   scoped_refptr<ui::DrmFramebuffer> framebuffer =
-      ui::DrmFramebuffer::AddFramebuffer(drm_, buffer.get());
+      ui::DrmFramebuffer::AddFramebuffer(drm_, buffer.get(), window_size);
   ui::DrmOverlayPlane plane(framebuffer, nullptr);
 
   drm_->set_page_flip_expectation(false);

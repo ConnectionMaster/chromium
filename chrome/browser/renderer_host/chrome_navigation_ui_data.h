@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "chrome/common/prerender_types.h"
 #include "components/offline_pages/buildflags/buildflags.h"
 #include "components/offline_pages/core/request_header/offline_page_navigation_ui_data.h"
 #include "content/public/browser/navigation_ui_data.h"
@@ -21,7 +20,6 @@ class NavigationHandle;
 
 enum class WindowOpenDisposition;
 
-// PlzNavigate
 // Contains data that is passed from the UI thread to the IO thread at the
 // beginning of each navigation. The class is instantiated on the UI thread,
 // then a copy created using Clone is passed to the content::ResourceRequestInfo
@@ -32,15 +30,21 @@ class ChromeNavigationUIData : public content::NavigationUIData {
   explicit ChromeNavigationUIData(content::NavigationHandle* navigation_handle);
   ~ChromeNavigationUIData() override;
 
+  // Creates an instance of ChromeNavigationUIData associated with the given
+  // |web_contents| with the given |disposition|.
+  // If |is_using_https_as_default_scheme|, this is a typed main frame
+  // navigation where the omnibox used HTTPS as the default URL scheme because
+  // the user didn't type a scheme (e.g. they entered "example.com" and we
+  // are navigating to https://example.com).
   static std::unique_ptr<ChromeNavigationUIData> CreateForMainFrameNavigation(
       content::WebContents* web_contents,
       WindowOpenDisposition disposition,
-      int64_t data_reduction_proxy_page_id);
+      bool is_using_https_as_default_scheme);
 
   // Creates a new ChromeNavigationUIData that is a deep copy of the original.
   // Any changes to the original after the clone is created will not be
   // reflected in the clone.  All owned data members are deep copied.
-  std::unique_ptr<content::NavigationUIData> Clone() const override;
+  std::unique_ptr<content::NavigationUIData> Clone() override;
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   void SetExtensionNavigationUIData(
@@ -62,12 +66,12 @@ class ChromeNavigationUIData : public content::NavigationUIData {
   }
 #endif
   WindowOpenDisposition window_open_disposition() const { return disposition_; }
-  prerender::PrerenderMode prerender_mode() const { return prerender_mode_; }
+  bool is_no_state_prefetching() const { return is_no_state_prefetching_; }
   const std::string& prerender_histogram_prefix() {
     return prerender_histogram_prefix_;
   }
-  uint64_t data_reduction_proxy_page_id() const {
-    return data_reduction_proxy_page_id_;
+  bool is_using_https_as_default_scheme() const {
+    return is_using_https_as_default_scheme_;
   }
 
  private:
@@ -83,9 +87,14 @@ class ChromeNavigationUIData : public content::NavigationUIData {
 #endif
 
   WindowOpenDisposition disposition_;
-  prerender::PrerenderMode prerender_mode_ = prerender::NO_PRERENDER;
+  bool is_no_state_prefetching_ = false;
   std::string prerender_histogram_prefix_;
-  uint64_t data_reduction_proxy_page_id_ = 0;
+  // True if the navigation was initiated by typing in the omnibox but the typed
+  // text didn't have a scheme such as http or https (e.g. google.com), and
+  // https was used as the default scheme for the navigation. This is used by
+  // TypedNavigationUpgradeThrottle to determine if the navigation should be
+  // observed and fall back to using http scheme if necessary.
+  bool is_using_https_as_default_scheme_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeNavigationUIData);
 };

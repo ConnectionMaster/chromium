@@ -4,21 +4,30 @@
 
 #include "chrome/browser/ui/views/autofill/autofill_popup_base_view.h"
 
+#include <algorithm>
+#include <memory>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/autofill/popup_view_common.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/views/autofill/autofill_popup_view_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "components/strings/grit/components_strings.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/platform/ax_platform_node.h"
-#include "ui/base/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/gfx/skia_util.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/focus/focus_manager.h"
@@ -28,30 +37,40 @@ namespace autofill {
 
 int AutofillPopupBaseView::GetCornerRadius() {
   return ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
-      views::EMPHASIS_MEDIUM);
+      views::Emphasis::kMedium);
 }
 
-SkColor AutofillPopupBaseView::GetBackgroundColor() {
+SkColor AutofillPopupBaseView::GetBackgroundColor() const {
   return GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_MenuBackgroundColor);
+      ui::NativeTheme::kColorId_DropdownBackgroundColor);
 }
 
-SkColor AutofillPopupBaseView::GetSelectedBackgroundColor() {
+SkColor AutofillPopupBaseView::GetForegroundColor() const {
   return GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_FocusedHighlightedMenuItemBackgroundColor);
+      ui::NativeTheme::kColorId_DropdownForegroundColor);
 }
 
-SkColor AutofillPopupBaseView::GetFooterBackgroundColor() {
+SkColor AutofillPopupBaseView::GetSelectedBackgroundColor() const {
   return GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_HighlightedMenuItemBackgroundColor);
+      ui::NativeTheme::kColorId_DropdownSelectedBackgroundColor);
 }
 
-SkColor AutofillPopupBaseView::GetSeparatorColor() {
+SkColor AutofillPopupBaseView::GetSelectedForegroundColor() const {
+  return GetNativeTheme()->GetSystemColor(
+      ui::NativeTheme::kColorId_DropdownSelectedForegroundColor);
+}
+
+SkColor AutofillPopupBaseView::GetFooterBackgroundColor() const {
+  return GetNativeTheme()->GetSystemColor(
+      ui::NativeTheme::kColorId_BubbleFooterBackground);
+}
+
+SkColor AutofillPopupBaseView::GetSeparatorColor() const {
   return GetNativeTheme()->GetSystemColor(
       ui::NativeTheme::kColorId_MenuSeparatorColor);
 }
 
-SkColor AutofillPopupBaseView::GetWarningColor() {
+SkColor AutofillPopupBaseView::GetWarningColor() const {
   return GetNativeTheme()->GetSystemColor(
       ui::NativeTheme::kColorId_AlertSeverityHigh);
 }
@@ -59,9 +78,7 @@ SkColor AutofillPopupBaseView::GetWarningColor() {
 AutofillPopupBaseView::AutofillPopupBaseView(
     AutofillPopupViewDelegate* delegate,
     views::Widget* parent_widget)
-    : delegate_(delegate),
-      parent_widget_(parent_widget),
-      weak_ptr_factory_(this) {}
+    : delegate_(delegate), parent_widget_(parent_widget) {}
 
 AutofillPopupBaseView::~AutofillPopupBaseView() {
   if (delegate_) {
@@ -69,9 +86,11 @@ AutofillPopupBaseView::~AutofillPopupBaseView() {
 
     RemoveWidgetObservers();
   }
+
+  CHECK(!IsInObserverList());
 }
 
-void AutofillPopupBaseView::DoShow() {
+bool AutofillPopupBaseView::DoShow() {
   const bool initialize_widget = !GetWidget();
   if (initialize_widget) {
     // On Mac Cocoa browser, |parent_widget_| is null (the parent is not a
@@ -89,9 +108,9 @@ void AutofillPopupBaseView::DoShow() {
     params.parent = parent_widget_ ? parent_widget_->GetNativeView()
                                    : delegate_->container_view();
     // Ensure the bubble border is not painted on an opaque background.
-    params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
-    params.shadow_type = views::Widget::InitParams::SHADOW_TYPE_NONE;
-    widget->Init(params);
+    params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+    params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
+    widget->Init(std::move(params));
     widget->AddObserver(this);
 
     // No animation for popup appearance (too distracting).
@@ -101,18 +120,24 @@ void AutofillPopupBaseView::DoShow() {
   }
 
   GetWidget()->GetRootView()->SetBorder(CreateBorder());
-  DoUpdateBoundsAndRedrawPopup();
+  bool enough_height = DoUpdateBoundsAndRedrawPopup();
+  // If there is insufficient height, DoUpdateBoundsAndRedrawPopup() hides and
+  // thus deletes |this|. Hence, there is nothing else to do.
+  if (!enough_height)
+    return false;
   GetWidget()->Show();
 
   // Showing the widget can change native focus (which would result in an
   // immediate hiding of the popup). Only start observing after shown.
   if (initialize_widget)
     views::WidgetFocusManager::GetInstance()->AddFocusChangeListener(this);
+
+  return true;
 }
 
 void AutofillPopupBaseView::DoHide() {
   // The controller is no longer valid after it hides us.
-  delegate_ = NULL;
+  delegate_ = nullptr;
 
   RemoveWidgetObservers();
 
@@ -127,13 +152,44 @@ void AutofillPopupBaseView::DoHide() {
   }
 }
 
+void AutofillPopupBaseView::VisibilityChanged(View* starting_from,
+                                              bool is_visible) {
+  if (!is_visible) {
+    if (is_ax_menu_start_event_fired_) {
+      // Fire menu end event.
+      // The menu start event is delayed until the user
+      // navigates into the menu, otherwise some screen readers will ignore
+      // any focus events outside of the menu, including a focus event on
+      // the form control itself.
+      NotifyAccessibilityEvent(ax::mojom::Event::kMenuEnd, true);
+      GetViewAccessibility().EndPopupFocusOverride();
+    }
+    is_ax_menu_start_event_fired_ = false;
+  }
+}
+
+void AutofillPopupBaseView::NotifyAXSelection(View* selected_view) {
+  DCHECK(selected_view);
+  if (!is_ax_menu_start_event_fired_) {
+    // Fire the menu start event once, right before the first item is selected.
+    // By firing these and the matching kMenuEnd events, we are telling screen
+    // readers that the focus is only changing temporarily, and the screen
+    // reader will restore the focus back to the appropriate textfield when the
+    // menu closes.
+    NotifyAccessibilityEvent(ax::mojom::Event::kMenuStart, true);
+    is_ax_menu_start_event_fired_ = true;
+  }
+  selected_view->GetViewAccessibility().SetPopupFocusOverride();
+  selected_view->NotifyAccessibilityEvent(ax::mojom::Event::kSelection, true);
+}
+
 void AutofillPopupBaseView::OnWidgetBoundsChanged(views::Widget* widget,
                                                   const gfx::Rect& new_bounds) {
   DCHECK(widget == parent_widget_ || widget == GetWidget());
   if (widget != parent_widget_)
     return;
 
-  HideController();
+  HideController(PopupHidingReason::kWidgetChanged);
 }
 
 void AutofillPopupBaseView::OnWidgetDestroying(views::Widget* widget) {
@@ -151,7 +207,7 @@ void AutofillPopupBaseView::OnWidgetDestroying(views::Widget* widget) {
   // destruction (e.g., by attempting to remove observers).
   parent_widget_ = nullptr;
 
-  HideController();
+  HideController(PopupHidingReason::kWidgetChanged);
 }
 
 void AutofillPopupBaseView::RemoveWidgetObservers() {
@@ -162,123 +218,72 @@ void AutofillPopupBaseView::RemoveWidgetObservers() {
   views::WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(this);
 }
 
-void AutofillPopupBaseView::SetClipPath() {
+void AutofillPopupBaseView::UpdateClipPath() {
   SkRect local_bounds = gfx::RectToSkRect(GetLocalBounds());
   SkScalar radius = SkIntToScalar(GetCornerRadius());
   SkPath clip_path;
   clip_path.addRoundRect(local_bounds, radius, radius);
-  set_clip_path(clip_path);
+  SetClipPath(clip_path);
 }
 
-void AutofillPopupBaseView::DoUpdateBoundsAndRedrawPopup() {
-  gfx::Size size = GetPreferredSize();
+gfx::Rect AutofillPopupBaseView::GetWindowBounds() const {
+  views::Widget* widget = views::Widget::GetTopLevelWidgetForNativeView(
+      delegate()->container_view());
+  if (widget)
+    return widget->GetWindowBoundsInScreen();
+
+  // If the widget is null, simply return an empty rect. The most common reason
+  // to end up here is that the NativeView has been destroyed externally, which
+  // can happen at any time. This happens fairly commonly on Windows (e.g., at
+  // shutdown) in particular.
+  return gfx::Rect();
+}
+
+gfx::Rect AutofillPopupBaseView::GetContentAreaBounds() const {
+  content::WebContents* web_contents = delegate()->GetWebContents();
+  if (web_contents)
+    return web_contents->GetContainerBounds();
+
+  // If the |web_contents| is null, simply return an empty rect. The most common
+  // reason to end up here is that the |web_contents| has been destroyed
+  // externally, which can happen at any time. This happens fairly commonly on
+  // Windows (e.g., at shutdown) in particular.
+  return gfx::Rect();
+}
+
+bool AutofillPopupBaseView::DoUpdateBoundsAndRedrawPopup() {
+  gfx::Size preferred_size = GetPreferredSize();
+
   // When a bubble border is shown, the contents area (inside the shadow) is
   // supposed to be aligned with input element boundaries.
   gfx::Rect element_bounds = gfx::ToEnclosingRect(delegate()->element_bounds());
   element_bounds.Inset(/*horizontal=*/0, /*vertical=*/-kElementBorderPadding);
 
-  gfx::Rect popup_bounds = PopupViewCommon().CalculatePopupBounds(
-      size.width(), size.height(), element_bounds, delegate()->container_view(),
-      delegate()->IsRTL());
+  // At least one row of the popup should be shown in the bounds of the content
+  // area so that the user notices the presence of the popup.
+  int item_height =
+      children().size() > 0 ? children()[0]->GetPreferredSize().height() : 0;
+  if (!CanShowDropdownHere(item_height, GetContentAreaBounds(),
+                           element_bounds)) {
+    HideController(PopupHidingReason::kInsufficientSpace);
+    return false;
+  }
+
+  gfx::Rect popup_bounds = CalculatePopupBounds(
+      preferred_size, GetWindowBounds(), element_bounds, delegate()->IsRTL());
   // Account for the scroll view's border so that the content has enough space.
   popup_bounds.Inset(-GetWidget()->GetRootView()->border()->GetInsets());
   GetWidget()->SetBounds(popup_bounds);
 
   Layout();
-  SetClipPath();
+  UpdateClipPath();
   SchedulePaint();
+  return true;
 }
 
 void AutofillPopupBaseView::OnNativeFocusChanged(gfx::NativeView focused_now) {
   if (GetWidget() && GetWidget()->GetNativeView() != focused_now)
-    HideController();
-}
-
-void AutofillPopupBaseView::OnMouseCaptureLost() {
-  ClearSelection();
-}
-
-bool AutofillPopupBaseView::OnMouseDragged(const ui::MouseEvent& event) {
-  if (HitTestPoint(event.location())) {
-    SetSelection(event.location());
-
-    // We must return true in order to get future OnMouseDragged and
-    // OnMouseReleased events.
-    return true;
-  }
-
-  // If we move off of the popup, we lose the selection.
-  ClearSelection();
-  return false;
-}
-
-void AutofillPopupBaseView::OnMouseExited(const ui::MouseEvent& event) {
-  // There is no need to post a ClearSelection task if no row is selected.
-  if (!delegate_ || !delegate_->HasSelection())
-    return;
-
-  // Pressing return causes the cursor to hide, which will generate an
-  // OnMouseExited event. Pressing return should activate the current selection
-  // via AcceleratorPressed, so we need to let that run first.
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(&AutofillPopupBaseView::ClearSelection,
-                                weak_ptr_factory_.GetWeakPtr()));
-}
-
-void AutofillPopupBaseView::OnMouseMoved(const ui::MouseEvent& event) {
-  // A synthesized mouse move will be sent when the popup is first shown.
-  // Don't preview a suggestion if the mouse happens to be hovering there.
-#if defined(OS_WIN)
-  // TODO(rouslan): Use event.time_stamp() and ui::EventTimeForNow() when they
-  // become comparable. http://crbug.com/453559
-  if (base::Time::Now() - show_time_ <= base::TimeDelta::FromMilliseconds(50))
-    return;
-#else
-  if (event.flags() & ui::EF_IS_SYNTHESIZED)
-    return;
-#endif
-
-  if (HitTestPoint(event.location()))
-    SetSelection(event.location());
-  else
-    ClearSelection();
-}
-
-bool AutofillPopupBaseView::OnMousePressed(const ui::MouseEvent& event) {
-  return event.GetClickCount() == 1;
-}
-
-void AutofillPopupBaseView::OnMouseReleased(const ui::MouseEvent& event) {
-  // We only care about the left click.
-  if (event.IsOnlyLeftMouseButton() && HitTestPoint(event.location()))
-    AcceptSelection(event.location());
-}
-
-void AutofillPopupBaseView::OnGestureEvent(ui::GestureEvent* event) {
-  switch (event->type()) {
-    case ui::ET_GESTURE_TAP_DOWN:
-    case ui::ET_GESTURE_SCROLL_BEGIN:
-    case ui::ET_GESTURE_SCROLL_UPDATE:
-      if (HitTestPoint(event->location()))
-        SetSelection(event->location());
-      else
-        ClearSelection();
-      break;
-    case ui::ET_GESTURE_TAP:
-    case ui::ET_GESTURE_SCROLL_END:
-      if (HitTestPoint(event->location()))
-        AcceptSelection(event->location());
-      else
-        ClearSelection();
-      break;
-    case ui::ET_GESTURE_TAP_CANCEL:
-    case ui::ET_SCROLL_FLING_START:
-      ClearSelection();
-      break;
-    default:
-      return;
-  }
-  event->SetHandled();
+    HideController(PopupHidingReason::kFocusChanged);
 }
 
 void AutofillPopupBaseView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
@@ -292,47 +297,9 @@ void AutofillPopupBaseView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
       l10n_util::GetStringUTF16(IDS_AUTOFILL_POPUP_ACCESSIBLE_NODE_DATA));
 }
 
-void AutofillPopupBaseView::VisibilityChanged(View* starting_from,
-                                              bool is_visible) {
-  if (is_visible) {
-    // Announce that the suggestions are available before the pop up is open.
-    // The password generation pop up relies on this call.
-    ui::AXPlatformNode::OnInputSuggestionsAvailable();
-    // Fire these the first time a menu is visible. By firing these and the
-    // matching end events, we are telling screen readers that the focus
-    // is only changing temporarily, and the screen reader will restore the
-    // focus back to the appropriate textfield when the menu closes.
-    NotifyAccessibilityEvent(ax::mojom::Event::kMenuStart, true);
-  } else {
-    // TODO(https://crbug.com/848427) Only call if suggestions are actually no
-    // longer available. The suggestions could be hidden but still available, as
-    // is the case when the Escape key is pressed.
-    ui::AXPlatformNode::OnInputSuggestionsUnavailable();
-    NotifyAccessibilityEvent(ax::mojom::Event::kMenuEnd, true);
-  }
-}
-
-void AutofillPopupBaseView::SetSelection(const gfx::Point& point) {
+void AutofillPopupBaseView::HideController(PopupHidingReason reason) {
   if (delegate_)
-    delegate_->SetSelectionAtPoint(point);
-}
-
-void AutofillPopupBaseView::AcceptSelection(const gfx::Point& point) {
-  if (!delegate_)
-    return;
-
-  delegate_->SetSelectionAtPoint(point);
-  delegate_->AcceptSelectedLine();
-}
-
-void AutofillPopupBaseView::ClearSelection() {
-  if (delegate_)
-    delegate_->SelectionCleared();
-}
-
-void AutofillPopupBaseView::HideController() {
-  if (delegate_)
-    delegate_->Hide();
+    delegate_->Hide(reason);
   // This will eventually result in the deletion of |this|, as the delegate
   // will hide |this|. See |DoHide| above for an explanation on why the precise
   // timing of that deletion is tricky.
@@ -340,17 +307,29 @@ void AutofillPopupBaseView::HideController() {
 
 std::unique_ptr<views::Border> AutofillPopupBaseView::CreateBorder() {
   auto border = std::make_unique<views::BubbleBorder>(
-      views::BubbleBorder::NONE, views::BubbleBorder::SMALL_SHADOW,
+      views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW,
       SK_ColorWHITE);
   border->SetCornerRadius(GetCornerRadius());
   border->set_md_shadow_elevation(
       ChromeLayoutProvider::Get()->GetShadowElevationMetric(
-          views::EMPHASIS_MEDIUM));
+          views::Emphasis::kMedium));
   return border;
 }
 
 gfx::NativeView AutofillPopupBaseView::container_view() {
   return delegate_->container_view();
 }
+
+BEGIN_METADATA(AutofillPopupBaseView, views::WidgetDelegateView)
+ADD_READONLY_PROPERTY_METADATA(SkColor, BackgroundColor)
+ADD_READONLY_PROPERTY_METADATA(SkColor, ForegroundColor)
+ADD_READONLY_PROPERTY_METADATA(SkColor, SelectedBackgroundColor)
+ADD_READONLY_PROPERTY_METADATA(SkColor, SelectedForegroundColor)
+ADD_READONLY_PROPERTY_METADATA(SkColor, FooterBackgroundColor)
+ADD_READONLY_PROPERTY_METADATA(SkColor, SeparatorColor)
+ADD_READONLY_PROPERTY_METADATA(SkColor, WarningColor)
+ADD_READONLY_PROPERTY_METADATA(gfx::Rect, WindowBounds)
+ADD_READONLY_PROPERTY_METADATA(gfx::Rect, ContentAreaBounds)
+END_METADATA
 
 }  // namespace autofill

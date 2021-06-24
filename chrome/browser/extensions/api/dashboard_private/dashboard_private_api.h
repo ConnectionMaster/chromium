@@ -23,7 +23,7 @@ namespace extensions {
 class Extension;
 
 class DashboardPrivateShowPermissionPromptForDelegatedInstallFunction
-    : public UIThreadExtensionFunction,
+    : public ExtensionFunction,
       public WebstoreInstallHelper::Delegate {
  public:
   DECLARE_EXTENSION_FUNCTION(
@@ -55,8 +55,6 @@ class DashboardPrivateShowPermissionPromptForDelegatedInstallFunction
   ExtensionFunction::ResponseValue BuildResponse(
       api::dashboard_private::Result result,
       const std::string& error);
-  std::unique_ptr<base::ListValue> CreateResults(
-      api::dashboard_private::Result result) const;
 
   const Params::Details& details() const { return params_->details; }
 

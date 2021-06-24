@@ -7,14 +7,14 @@
 
 #include <string>
 
-#include "base/callback_forward.h"
+#include "base/callback.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "build/build_config.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if !BUILDFLAG(ENABLE_EXTENSIONS)
 #error "Extensions must be enabled"
@@ -40,9 +40,10 @@ class ManagementPolicy;
 class QuotaService;
 class RuntimeData;
 class ServiceWorkerManager;
-class SharedUserScriptMaster;
 class StateStore;
+class UserScriptManager;
 class ValueStoreFactory;
+enum class UnloadedExtensionReason;
 
 // ExtensionSystem manages the lifetime of many of the services used by the
 // extensions and apps system, and it handles startup and shutdown as needed.
@@ -52,7 +53,7 @@ class ExtensionSystem : public KeyedService {
  public:
   // A callback to be executed when InstallUpdate finishes.
   using InstallUpdateCallback =
-      base::OnceCallback<void(const base::Optional<CrxInstallError>& result)>;
+      base::OnceCallback<void(const absl::optional<CrxInstallError>& result)>;
 
   ExtensionSystem();
   ~ExtensionSystem() override;
@@ -67,7 +68,6 @@ class ExtensionSystem : public KeyedService {
   // These calls should occur after the profile IO data is initialized,
   // as extensions initialization depends on that.
   virtual void InitForRegularProfile(bool extensions_enabled) = 0;
-  virtual void InitForIncognitoProfile() = 0;
 
   // The ExtensionService is created at startup. ExtensionService is only
   // defined in Chrome.
@@ -85,8 +85,8 @@ class ExtensionSystem : public KeyedService {
   // The ServiceWorkerManager is created at startup.
   virtual ServiceWorkerManager* service_worker_manager() = 0;
 
-  // The SharedUserScriptMaster is created at startup.
-  virtual SharedUserScriptMaster* shared_user_script_master() = 0;
+  // The UserScriptManager is created at startup.
+  virtual UserScriptManager* user_script_manager() = 0;
 
   // The StateStore is created at startup.
   virtual StateStore* state_store() = 0;
@@ -115,7 +115,7 @@ class ExtensionSystem : public KeyedService {
   // asynchronously. |callback| is run on the calling thread once completed.
   virtual void RegisterExtensionWithRequestContexts(
       const Extension* extension,
-      const base::Closure& callback) {}
+      base::OnceClosure callback) {}
 
   // Called by the ExtensionService that lives in this system. Lets the
   // info map clean up its RequestContexts once all the listeners to the
@@ -126,6 +126,9 @@ class ExtensionSystem : public KeyedService {
 
   // Signaled when the extension system has completed its startup tasks.
   virtual const base::OneShotEvent& ready() const = 0;
+
+  // Whether the extension system is ready.
+  virtual bool is_ready() const = 0;
 
   // Returns the content verifier, if any.
   virtual ContentVerifier* content_verifier() = 0;
@@ -146,6 +149,11 @@ class ExtensionSystem : public KeyedService {
                              const base::FilePath& unpacked_dir,
                              bool install_immediately,
                              InstallUpdateCallback install_update_callback) = 0;
+
+  // Perform various actions depending on the Omaga attributes on the extension.
+  virtual void PerformActionBasedOnOmahaAttributes(
+      const std::string& extension_id,
+      const base::Value& attributes) = 0;
 
   // Attempts finishing installation of an update for an extension with the
   // specified id, when installation of that extension was previously delayed.

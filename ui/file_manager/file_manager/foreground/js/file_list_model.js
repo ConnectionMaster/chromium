@@ -2,10 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {EntryLocation} from '../../externs/entry_location.js';
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// #import {MetadataModel} from './metadata/metadata_model.js';
+// #import {FileType} from '../../common/js/file_type.js';
+// #import {strf, str, util} from '../../common/js/util.m.js';
+// #import {ArrayDataModel} from 'chrome://resources/js/cr/ui/array_data_model.m.js';
+// clang-format on
+
 /**
  * File list.
  */
-class FileListModel extends cr.ui.ArrayDataModel {
+/* #export */ class FileListModel extends cr.ui.ArrayDataModel {
   /** @param {!MetadataModel} metadataModel */
   constructor(metadataModel) {
     super([]);
@@ -76,6 +85,11 @@ class FileListModel extends cr.ui.ArrayDataModel {
    * @return {string} Localized string representation of file type.
    */
   static getFileTypeString(fileType) {
+    // Partitions on removable volumes are treated separately, they don't
+    // have translatable names.
+    if (fileType.type === 'partition') {
+      return fileType.subtype;
+    }
     if (fileType.subtype) {
       return strf(fileType.name, fileType.subtype);
     } else {
@@ -249,8 +263,8 @@ class FileListModel extends cr.ui.ArrayDataModel {
    * @override
    */
   replaceItem(oldItem, newItem) {
-    this.onRemoveEntryFromList_(oldItem);
-    this.onAddEntryToList_(newItem);
+    this.onRemoveEntryFromList_(/** @type {?Entry} */ (oldItem));
+    this.onAddEntryToList_(/** @type {?Entry} */ (newItem));
 
     cr.ui.ArrayDataModel.prototype.replaceItem.apply(this, arguments);
   }

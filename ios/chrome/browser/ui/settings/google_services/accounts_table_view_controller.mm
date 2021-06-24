@@ -5,36 +5,43 @@
 #import "ios/chrome/browser/ui/settings/google_services/accounts_table_view_controller.h"
 
 #import "base/mac/foundation_util.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#import "components/signin/ios/browser/features.h"
+#import "components/signin/public/identity_manager/identity_manager.h"
+#import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/driver/sync_service.h"
-#include "components/unified_consent/feature.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
+#include "ios/chrome/browser/main/browser.h"
 #import "ios/chrome/browser/signin/authentication_service.h"
 #include "ios/chrome/browser/signin/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/chrome_identity_service_observer_bridge.h"
 #include "ios/chrome/browser/signin/identity_manager_factory.h"
-#include "ios/chrome/browser/sync/profile_sync_service_factory.h"
-#import "ios/chrome/browser/sync/sync_observer_bridge.h"
 #include "ios/chrome/browser/sync/sync_setup_service.h"
 #include "ios/chrome/browser/sync/sync_setup_service_factory.h"
+#import "ios/chrome/browser/ui/alert_coordinator/action_sheet_coordinator.h"
 #import "ios/chrome/browser/ui/alert_coordinator/alert_coordinator.h"
-#import "ios/chrome/browser/ui/authentication/cells/account_control_item.h"
+#import "ios/chrome/browser/ui/authentication/authentication_ui_util.h"
 #import "ios/chrome/browser/ui/authentication/cells/table_view_account_item.h"
 #import "ios/chrome/browser/ui/authentication/resized_avatar_cache.h"
+#import "ios/chrome/browser/ui/authentication/signout_action_sheet_coordinator.h"
 #import "ios/chrome/browser/ui/commands/application_commands.h"
 #import "ios/chrome/browser/ui/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/ui/commands/show_signin_command.h"
 #import "ios/chrome/browser/ui/icons/chrome_icon.h"
-#import "ios/chrome/browser/ui/settings/cells/settings_text_item.h"
-#import "ios/chrome/browser/ui/settings/sync/sync_settings_table_view_controller.h"
+#import "ios/chrome/browser/ui/settings/google_services/accounts_table_view_controller_constants.h"
 #import "ios/chrome/browser/ui/settings/sync/utils/sync_util.h"
-#import "ios/chrome/browser/ui/signin_interaction/signin_interaction_coordinator.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_detail_text_item.h"
+#import "ios/chrome/browser/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_text_header_footer_item.h"
+#import "ios/chrome/browser/ui/table_view/cells/table_view_text_item.h"
 #import "ios/chrome/browser/ui/table_view/table_view_model.h"
+#import "ios/chrome/browser/ui/table_view/table_view_utils.h"
 #include "ios/chrome/browser/ui/ui_feature_flags.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
 #include "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/chrome_browser_provider.h"
@@ -43,21 +50,14 @@
 #import "ios/public/provider/chrome/browser/signin/chrome_identity_browser_opener.h"
 #import "ios/public/provider/chrome/browser/signin/chrome_identity_service.h"
 #import "net/base/mac/url_conversions.h"
-#import "services/identity/public/cpp/identity_manager.h"
-#import "services/identity/public/objc/identity_manager_observer_bridge.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
-NSString* const kSettingsAccountsTableViewId = @"kSettingsAccountsTableViewId";
-NSString* const kSettingsAccountsTableViewAddAccountCellId =
-    @"kSettingsAccountsTableViewAddAccountCellId";
-NSString* const kSettingsAccountsTableViewSignoutCellId =
-    @"kSettingsAccountsTableViewSignoutCellId";
-NSString* const kSettingsAccountsTableViewSyncCellId =
-    @"kSettingsAccountsTableViewSyncCellId";
+using signin_metrics::AccessPoint;
+using signin_metrics::PromoAction;
 
 namespace {
 
@@ -70,10 +70,21 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeAccount = kItemTypeEnumZero,
   ItemTypeAddAccount,
-  ItemTypeSync,
-  ItemTypeGoogleActivityControls,
+  // Provides sign out items used only for non-managed accounts.
   ItemTypeSignOut,
+  // Sign out item that clears Chrome data. Used for both managed
+  // and non-managed accounts.
+  ItemTypeSignOutAndClearData,
   ItemTypeHeader,
+  // Detailed description of the actions taken by sign out e.g. turning off sync
+  // and clearing Chrome data.
+  ItemTypeSignOutManagedAccountFooter,
+  // Detailed description of the actions taken by sign out, e.g. turning off
+  // sync.
+  ItemTypeSignOutNonManagedAccountFooter,
+  // Detailed description of the actions taken by sign out, e.g. turning off
+  // sync. Related to kSimplifySignOutIOS feature only.
+  ItemTypeSignOutSyncingFooter,
 };
 
 }  // namespace
@@ -82,11 +93,10 @@ typedef NS_ENUM(NSInteger, ItemType) {
     ChromeIdentityServiceObserver,
     ChromeIdentityBrowserOpener,
     IdentityManagerObserverBridgeDelegate,
-    SyncObserverModelBridge> {
-  ios::ChromeBrowserState* _browserState;  // weak
+    SignoutActionSheetCoordinatorDelegate> {
+  Browser* _browser;
   BOOL _closeSettingsOnAddAccount;
-  std::unique_ptr<SyncObserverBridge> _syncObserver;
-  std::unique_ptr<identity::IdentityManagerObserverBridge>
+  std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserver;
   // Modal alert for sign out.
   AlertCoordinator* _alertCoordinator;
@@ -96,7 +106,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Whether the view controller is currently being dismissed and new dismiss
   // requests should be ignored.
   BOOL _isBeingDismissed;
-  __weak UIViewController* _settingsDetails;
+  ios::DismissASMViewControllerBlock _dimissAccountDetailsViewControllerBlock;
   ResizedAvatarCache* _avatarCache;
   std::unique_ptr<ChromeIdentityServiceObserverBridge> _identityServiceObserver;
 
@@ -104,10 +114,14 @@ typedef NS_ENUM(NSInteger, ItemType) {
   NSDictionary<NSString*, TableViewItem*>* _identityMap;
 }
 
-// The SigninInteractionCoordinator that presents Sign In UI for the Accounts
-// Settings page.
-@property(nonatomic, strong)
-    SigninInteractionCoordinator* signinInteractionCoordinator;
+// Modal alert for confirming account removal.
+@property(nonatomic, strong) AlertCoordinator* removeAccountCoordinator;
+
+// Modal alert for sign out in experiment kSimplifySignOutIOS.
+@property(nonatomic, strong) SignoutActionSheetCoordinator* signoutCoordinator;
+
+// If YES, the UI elements are disabled.
+@property(nonatomic, assign) BOOL uiDisabled;
 
 // Stops observing browser state services. This is required during the shutdown
 // phase to avoid observing services for a browser state that is being killed.
@@ -118,40 +132,21 @@ typedef NS_ENUM(NSInteger, ItemType) {
 @implementation AccountsTableViewController
 
 @synthesize dispatcher = _dispatcher;
-@synthesize signinInteractionCoordinator = _signinInteractionCoordinator;
 
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState
-           closeSettingsOnAddAccount:(BOOL)closeSettingsOnAddAccount {
-  DCHECK(browserState);
-  DCHECK(!browserState->IsOffTheRecord());
-  UITableViewStyle style = base::FeatureList::IsEnabled(kSettingsRefresh)
-                               ? UITableViewStylePlain
-                               : UITableViewStyleGrouped;
-  self = [super initWithTableViewStyle:style
-                           appBarStyle:ChromeTableViewControllerStyleNoAppBar];
+- (instancetype)initWithBrowser:(Browser*)browser
+      closeSettingsOnAddAccount:(BOOL)closeSettingsOnAddAccount {
+  DCHECK(browser);
+  DCHECK(!browser->GetBrowserState()->IsOffTheRecord());
+
+  self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
-    _browserState = browserState;
+    _browser = browser;
     _closeSettingsOnAddAccount = closeSettingsOnAddAccount;
-    syncer::SyncService* syncService =
-        ProfileSyncServiceFactory::GetForBrowserState(_browserState);
-    if (!unified_consent::IsUnifiedConsentFeatureEnabled()) {
-      // When unified consent flag is enabled, the sync settings are available
-      // in the "Google Services and sync" settings.
-      _syncObserver.reset(new SyncObserverBridge(self, syncService));
-    }
     _identityManagerObserver =
-        std::make_unique<identity::IdentityManagerObserverBridge>(
-            IdentityManagerFactory::GetForBrowserState(_browserState), self);
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(willStartSwitchAccount)
-               name:kSwitchAccountWillStartNotification
-             object:nil];
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(didFinishSwitchAccount)
-               name:kSwitchAccountDidFinishNotification
-             object:nil];
+        std::make_unique<signin::IdentityManagerObserverBridge>(
+            IdentityManagerFactory::GetForBrowserState(
+                _browser->GetBrowserState()),
+            self);
     _avatarCache = [[ResizedAvatarCache alloc] init];
     _identityServiceObserver.reset(
         new ChromeIdentityServiceObserverBridge(self));
@@ -169,20 +164,35 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (void)stopBrowserStateServiceObservers {
   _identityManagerObserver.reset();
-  _syncObserver.reset();
 }
 
 #pragma mark - SettingsControllerProtocol
 
+- (void)reportDismissalUserAction {
+  base::RecordAction(base::UserMetricsAction("MobileAccountsSettingsClose"));
+}
+
+- (void)reportBackUserAction {
+  base::RecordAction(base::UserMetricsAction("MobileAccountsSettingsBack"));
+}
+
 - (void)settingsWillBeDismissed {
-  [self.signinInteractionCoordinator cancel];
   [_alertCoordinator stop];
+  _alertCoordinator = nil;
+  [self.signoutCoordinator stop];
+  self.signoutCoordinator = nil;
+  [self.removeAccountCoordinator stop];
+  self.removeAccountCoordinator = nil;
   [self stopBrowserStateServiceObservers];
+  _browser = nullptr;
 }
 
 #pragma mark - SettingsRootTableViewController
 
 - (void)reloadData {
+  if (!_browser)
+    return;
+
   if (![self authService] -> IsAuthenticated()) {
     // This accounts table view will be popped or dismissed when the user
     // is signed out. Avoid reloading it in that case as that would lead to an
@@ -193,6 +203,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
 }
 
 - (void)loadModel {
+  if (!_browser)
+    return;
+
   // Update the title with the name with the currently signed-in account.
   ChromeIdentity* authenticatedIdentity =
       [self authService] -> GetAuthenticatedIdentity();
@@ -219,14 +232,31 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [model addSectionWithIdentifier:SectionIdentifierAccounts];
   [model setHeader:[self header]
       forSectionWithIdentifier:SectionIdentifierAccounts];
-  identity::IdentityManager* identityManager =
-      IdentityManagerFactory::GetForBrowserState(_browserState);
+  signin::IdentityManager* identityManager =
+      IdentityManagerFactory::GetForBrowserState(_browser->GetBrowserState());
+
+  NSString* authenticatedEmail = [authenticatedIdentity userEmail];
   for (const auto& account : identityManager->GetAccountsWithRefreshTokens()) {
-    ChromeIdentity* identity = ios::GetChromeBrowserProvider()
-                                   ->GetChromeIdentityService()
-                                   ->GetIdentityWithGaiaID(account.gaia);
+    ios::ChromeIdentityService* identityService =
+        ios::GetChromeBrowserProvider()->GetChromeIdentityService();
+    ChromeIdentity* identity =
+        identityService->GetIdentityWithGaiaID(account.gaia);
+    if (!identity) {
+      // Ignore the case in which the identity is invalid at lookup time. This
+      // may be due to inconsistencies between the identity service and
+      // ProfileOAuth2TokenService.
+      continue;
+    }
+    // TODO(crbug.com/1081274): This re-ordering will be redundant once we
+    // apply ordering changes to the account reconciler.
     TableViewItem* item = [self accountItem:identity];
-    [model addItem:item toSectionWithIdentifier:SectionIdentifierAccounts];
+    if ([identity.userEmail isEqual:authenticatedEmail]) {
+      [model insertItem:item
+          inSectionWithIdentifier:SectionIdentifierAccounts
+                          atIndex:0];
+    } else {
+      [model addItem:item toSectionWithIdentifier:SectionIdentifierAccounts];
+    }
 
     [mutableIdentityMap setObject:item forKey:identity.gaiaID];
   }
@@ -235,21 +265,39 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [model addItem:[self addAccountItem]
       toSectionWithIdentifier:SectionIdentifierAccounts];
 
-  if (!unified_consent::IsUnifiedConsentFeatureEnabled()) {
-    // Sync and Google Activity section.
-    // When unified consent flag is enabled, those settings are available in
-    // the Google Services and sync settings.
-    [model addSectionWithIdentifier:SectionIdentifierSync];
-    [model addItem:[self syncItem]
-        toSectionWithIdentifier:SectionIdentifierSync];
-    [model addItem:[self googleActivityControlsItem]
-        toSectionWithIdentifier:SectionIdentifierSync];
-  }
-
   // Sign out section.
   [model addSectionWithIdentifier:SectionIdentifierSignOut];
-  [model addItem:[self signOutItem]
-      toSectionWithIdentifier:SectionIdentifierSignOut];
+  if (base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS)) {
+    [model addItem:[self signOutItem]
+        toSectionWithIdentifier:SectionIdentifierSignOut];
+  } else {
+    // Adds a signout option if the account is not managed.
+    if (![self authService]->IsAuthenticatedIdentityManaged()) {
+      [model addItem:[self signOutItem]
+          toSectionWithIdentifier:SectionIdentifierSignOut];
+    }
+    // Adds a signout and clear data option.
+    [model addItem:[self signOutAndClearDataItem]
+        toSectionWithIdentifier:SectionIdentifierSignOut];
+  }
+
+  // Adds a footer with signout explanation depending on the type of
+  // account whether managed or non-managed.
+  if (base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS)) {
+    SyncSetupService* syncSetupService =
+        SyncSetupServiceFactory::GetForBrowserState(
+            _browser->GetBrowserState());
+    if (syncSetupService->IsFirstSetupComplete()) {
+      [model setFooter:[self signOutSyncingFooterItem]
+          forSectionWithIdentifier:SectionIdentifierSignOut];
+    }
+  } else if ([self authService]->IsAuthenticatedIdentityManaged()) {
+    [model setFooter:[self signOutManagedAccountFooterItem]
+        forSectionWithIdentifier:SectionIdentifierSignOut];
+  } else {
+    [model setFooter:[self signOutNonManagedAccountFooterItem]
+        forSectionWithIdentifier:SectionIdentifierSignOut];
+  }
 }
 
 #pragma mark - Model objects
@@ -259,6 +307,34 @@ typedef NS_ENUM(NSInteger, ItemType) {
       [[TableViewTextHeaderFooterItem alloc] initWithType:ItemTypeHeader];
   header.text = l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_DESCRIPTION);
   return header;
+}
+
+- (TableViewLinkHeaderFooterItem*)signOutNonManagedAccountFooterItem {
+  DCHECK(!base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS));
+  TableViewLinkHeaderFooterItem* footer = [[TableViewLinkHeaderFooterItem alloc]
+      initWithType:ItemTypeSignOutNonManagedAccountFooter];
+  footer.text = l10n_util::GetNSString(
+      IDS_IOS_DISCONNECT_NON_MANAGED_ACCOUNT_FOOTER_INFO_MOBILE);
+  return footer;
+}
+
+- (TableViewLinkHeaderFooterItem*)signOutManagedAccountFooterItem {
+  DCHECK(!base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS));
+  TableViewLinkHeaderFooterItem* footer = [[TableViewLinkHeaderFooterItem alloc]
+      initWithType:ItemTypeSignOutManagedAccountFooter];
+  std::u16string hostedDomain = HostedDomainForPrimaryAccount(_browser);
+  footer.text = l10n_util::GetNSStringF(
+      IDS_IOS_DISCONNECT_MANAGED_ACCOUNT_FOOTER_INFO_MOBILE, hostedDomain);
+  return footer;
+}
+
+- (TableViewLinkHeaderFooterItem*)signOutSyncingFooterItem {
+  DCHECK(base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS));
+  TableViewLinkHeaderFooterItem* footer = [[TableViewLinkHeaderFooterItem alloc]
+      initWithType:ItemTypeSignOutSyncingFooter];
+  footer.text = l10n_util::GetNSString(
+      IDS_IOS_DISCONNECT_DIALOG_SYNCING_FOOTER_INFO_MOBILE);
+  return footer;
 }
 
 - (TableViewItem*)accountItem:(ChromeIdentity*)identity {
@@ -273,6 +349,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   item.image = [_avatarCache resizedAvatarForIdentity:identity];
   item.text = identity.userEmail;
   item.chromeIdentity = identity;
+  item.accessibilityIdentifier = identity.userEmail;
   item.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 }
 
@@ -282,88 +359,35 @@ typedef NS_ENUM(NSInteger, ItemType) {
   item.text =
       l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_ADD_ACCOUNT_BUTTON);
   item.accessibilityIdentifier = kSettingsAccountsTableViewAddAccountCellId;
-  item.image = [UIImage imageNamed:@"settings_accounts_add_account"];
-  return item;
-}
-
-- (TableViewItem*)syncItem {
-  AccountControlItem* item =
-      [[AccountControlItem alloc] initWithType:ItemTypeSync];
-  item.text = l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_SYNC_TITLE);
-  item.accessibilityIdentifier = kSettingsAccountsTableViewSyncCellId;
-  [self updateSyncItem:item];
-  item.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-  return item;
-}
-
-// Updates the sync item according to the sync status (in progress, sync error,
-// mdm error, sync disabled or sync enabled).
-- (void)updateSyncItem:(AccountControlItem*)syncItem {
-  SyncSetupService* syncSetupService =
-      SyncSetupServiceFactory::GetForBrowserState(_browserState);
-  if (!syncSetupService->HasFinishedInitialSetup()) {
-    syncItem.image = [UIImage imageNamed:@"settings_sync"];
-    syncItem.detailText =
-        l10n_util::GetNSString(IDS_IOS_SYNC_SETUP_IN_PROGRESS);
-    syncItem.shouldDisplayError = NO;
-    return;
-  }
-
-  ChromeIdentity* identity = [self authService] -> GetAuthenticatedIdentity();
-  if (!IsTransientSyncError(syncSetupService->GetSyncServiceState())) {
-    // Sync error.
-    syncItem.shouldDisplayError = YES;
-    NSString* errorMessage =
-        GetSyncErrorDescriptionForSyncSetupService(syncSetupService);
-    DCHECK(errorMessage);
-    syncItem.image = [UIImage imageNamed:@"settings_error"];
-    syncItem.detailText = errorMessage;
-  } else if ([self authService] -> HasCachedMDMErrorForIdentity(identity)) {
-    // MDM error.
-    syncItem.shouldDisplayError = YES;
-    syncItem.image = [UIImage imageNamed:@"settings_error"];
-    syncItem.detailText =
-        l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_SYNC_ERROR);
-  } else if (!syncSetupService->IsSyncEnabled()) {
-    // Sync disabled.
-    syncItem.shouldDisplayError = NO;
-    syncItem.image = [UIImage imageNamed:@"settings_sync"];
-    syncItem.detailText =
-        l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_SYNC_IS_OFF);
-  } else {
-    // Sync enabled.
-    syncItem.shouldDisplayError = NO;
-    syncItem.image = [UIImage imageNamed:@"settings_sync"];
-    syncItem.detailText =
-        l10n_util::GetNSStringF(IDS_IOS_SIGN_IN_TO_CHROME_SETTING_SYNCING,
-                                base::SysNSStringToUTF16([identity userEmail]));
-  }
-}
-
-- (TableViewItem*)googleActivityControlsItem {
-  AccountControlItem* item =
-      [[AccountControlItem alloc] initWithType:ItemTypeGoogleActivityControls];
-  item.text = l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_GOOGLE_TITLE);
-  item.detailText =
-      l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_GOOGLE_DESCRIPTION);
-  item.image = ios::GetChromeBrowserProvider()
-                   ->GetBrandedImageProvider()
-                   ->GetAccountsListActivityControlsImage();
-  item.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  item.image = [[UIImage imageNamed:@"settings_accounts_add_account"]
+      imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
   return item;
 }
 
 - (TableViewItem*)signOutItem {
-  TableViewDetailTextItem* item =
-      [[TableViewDetailTextItem alloc] initWithType:ItemTypeSignOut];
-  if (unified_consent::IsUnifiedConsentFeatureEnabled()) {
-    item.text =
-        l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_SIGN_OUT_TURN_OFF_SYNC);
+  TableViewTextItem* item =
+      [[TableViewTextItem alloc] initWithType:ItemTypeSignOut];
+  item.text =
+      l10n_util::GetNSString(IDS_IOS_DISCONNECT_DIALOG_CONTINUE_BUTTON_MOBILE);
+  if (base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS)) {
+    item.textColor = [UIColor colorNamed:kRedColor];
   } else {
-    item.text = l10n_util::GetNSString(IDS_IOS_OPTIONS_ACCOUNTS_SIGNOUT);
+    item.textColor = [UIColor colorNamed:kBlueColor];
   }
   item.accessibilityTraits |= UIAccessibilityTraitButton;
   item.accessibilityIdentifier = kSettingsAccountsTableViewSignoutCellId;
+  return item;
+}
+
+- (TableViewItem*)signOutAndClearDataItem {
+  TableViewTextItem* item =
+      [[TableViewTextItem alloc] initWithType:ItemTypeSignOutAndClearData];
+  item.text = l10n_util::GetNSString(
+      IDS_IOS_DISCONNECT_DIALOG_CONTINUE_AND_CLEAR_MOBILE);
+  item.textColor = [UIColor colorNamed:kRedColor];
+  item.accessibilityTraits |= UIAccessibilityTraitButton;
+  item.accessibilityIdentifier =
+      kSettingsAccountsTableViewSignoutAndClearDataCellId;
   return item;
 }
 
@@ -371,6 +395,12 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (void)tableView:(UITableView*)tableView
     didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  // If there is an operation in process that does not allow selecting a cell
+  // exit without performing the selection.
+  if (self.uiDisabled) {
+    return;
+  }
+
   [super tableView:tableView didSelectRowAtIndexPath:indexPath];
 
   NSInteger itemType = [self.tableViewModel itemTypeForIndexPath:indexPath];
@@ -381,21 +411,33 @@ typedef NS_ENUM(NSInteger, ItemType) {
           base::mac::ObjCCastStrict<TableViewAccountItem>(
               [self.tableViewModel itemAtIndexPath:indexPath]);
       DCHECK(item.chromeIdentity);
-      [self showAccountDetails:item.chromeIdentity];
+
+      UIView* itemView =
+          [[tableView cellForRowAtIndexPath:indexPath] contentView];
+      [self showAccountDetails:item.chromeIdentity itemView:itemView];
       break;
     }
-    case ItemTypeAddAccount:
+    case ItemTypeAddAccount: {
       [self showAddAccount];
       break;
-    case ItemTypeSync:
-      [self showSyncSettings];
+    }
+    case ItemTypeSignOut: {
+      UIView* itemView =
+          [[tableView cellForRowAtIndexPath:indexPath] contentView];
+      if (base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS)) {
+        [self showMICESignOutWithItemView:itemView];
+      } else {
+        [self showSignOutWithClearData:NO itemView:itemView];
+      }
       break;
-    case ItemTypeGoogleActivityControls:
-      [self showGoogleActivitySettings];
+    }
+    case ItemTypeSignOutAndClearData: {
+      DCHECK(!base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS));
+      UIView* itemView =
+          [[tableView cellForRowAtIndexPath:indexPath] contentView];
+      [self showSignOutWithClearData:YES itemView:itemView];
       break;
-    case ItemTypeSignOut:
-      [self showDisconnect];
-      break;
+    }
     default:
       break;
   }
@@ -403,114 +445,40 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
 }
 
-#pragma mark - SyncObserverModelBridge
-
-- (void)onSyncStateChanged {
-  if (![self authService] -> IsAuthenticated()) {
-    // Ignore sync state changed notification if signed out.
-    return;
-  }
-
-  NSIndexPath* index =
-      [self.tableViewModel indexPathForItemType:ItemTypeSync
-                              sectionIdentifier:SectionIdentifierSync];
-
-  TableViewModel* model = self.tableViewModel;
-  if ([model numberOfSections] > index.section &&
-      [model numberOfItemsInSection:index.section] > index.row) {
-    AccountControlItem* item = base::mac::ObjCCastStrict<AccountControlItem>(
-        [model itemAtIndexPath:index]);
-    [self updateSyncItem:item];
-    [self.tableView reloadRowsAtIndexPaths:@[ index ]
-                          withRowAnimation:UITableViewRowAnimationAutomatic];
-  }
-}
-
 #pragma mark - IdentityManagerObserverBridgeDelegate
 
 - (void)onEndBatchOfRefreshTokenStateChanges {
+  DCHECK(_browser) << "-onEndBatchOfRefreshTokenStateChanges called after "
+                      "-stopBrowserStateServiceObservers";
+
   [self reloadData];
+  if (![self authService] -> IsAuthenticated() &&
+                                 _dimissAccountDetailsViewControllerBlock) {
+    _dimissAccountDetailsViewControllerBlock(/*animated=*/YES);
+    _dimissAccountDetailsViewControllerBlock = nil;
+  }
+  // Only attempt to pop the top-most view controller once the account list
+  // has been dismissed.
   [self popViewIfSignedOut];
-  if (![self authService] -> IsAuthenticated() && _settingsDetails) {
-    [_settingsDetails dismissViewControllerAnimated:YES completion:nil];
-    _settingsDetails = nil;
-  }
-}
-
-#pragma mark - Sync and Activity Controls
-
-- (void)showSyncSettings {
-  if ([_alertCoordinator isVisible])
-    return;
-
-  if ([self authService]
-      -> ShowMDMErrorDialogForIdentity(
-          [self authService] -> GetAuthenticatedIdentity())) {
-    // If there is an MDM error for the synced identity, show it instead.
-    return;
-  }
-
-  SyncSettingsTableViewController* controllerToPush =
-      [[SyncSettingsTableViewController alloc]
-            initWithBrowserState:_browserState
-          allowSwitchSyncAccount:YES];
-  controllerToPush.dispatcher = self.dispatcher;
-  [self.navigationController pushViewController:controllerToPush animated:YES];
-}
-
-- (void)showGoogleActivitySettings {
-  if ([_alertCoordinator isVisible])
-    return;
-  base::RecordAction(base::UserMetricsAction(
-      "Signin_AccountSettings_GoogleActivityControlsClicked"));
-  UINavigationController* settingsDetails =
-      ios::GetChromeBrowserProvider()
-          ->GetChromeIdentityService()
-          ->CreateWebAndAppSettingDetailsController(
-              [self authService] -> GetAuthenticatedIdentity(), self);
-  UIImage* closeIcon = [ChromeIcon closeIcon];
-  SEL action = @selector(closeGoogleActivitySettings:);
-  [settingsDetails.topViewController navigationItem].leftBarButtonItem =
-      [ChromeIcon templateBarButtonItemWithImage:closeIcon
-                                          target:self
-                                          action:action];
-  [self presentViewController:settingsDetails animated:YES completion:nil];
-
-  // Keep a weak reference on the settings details, to be able to dismiss it
-  // when the primary account is removed.
-  _settingsDetails = settingsDetails;
-}
-
-- (void)closeGoogleActivitySettings:(id)sender {
-  DCHECK(_settingsDetails);
-  [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 #pragma mark - Authentication operations
 
 - (void)showAddAccount {
-  if ([_alertCoordinator isVisible])
-    return;
-
-  if (!self.signinInteractionCoordinator) {
-    self.signinInteractionCoordinator = [[SigninInteractionCoordinator alloc]
-        initWithBrowserState:_browserState
-                  dispatcher:self.dispatcher];
-  }
-
-  // |_authenticationOperationInProgress| is reset when the signin operation is
-  // completed.
+  DCHECK(!_alertCoordinator);
   _authenticationOperationInProgress = YES;
-  __weak AccountsTableViewController* weakSelf = self;
-  [self.signinInteractionCoordinator
-      addAccountWithAccessPoint:signin_metrics::AccessPoint::
-                                    ACCESS_POINT_SETTINGS
-                    promoAction:signin_metrics::PromoAction::
-                                    PROMO_ACTION_NO_SIGNIN_PROMO
-       presentingViewController:self.navigationController
-                     completion:^(BOOL success) {
-                       [weakSelf handleDidAddAccount:success];
-                     }];
+
+  __weak __typeof(self) weakSelf = self;
+  ShowSigninCommand* command = [[ShowSigninCommand alloc]
+      initWithOperation:AUTHENTICATION_OPERATION_ADD_ACCOUNT
+               identity:nil
+            accessPoint:AccessPoint::ACCESS_POINT_SETTINGS
+            promoAction:PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO
+               callback:^(BOOL success) {
+                 [weakSelf handleDidAddAccount:success];
+               }];
+  DCHECK(self.dispatcher);
+  [self.dispatcher showSignin:command baseViewController:self];
 }
 
 - (void)handleDidAddAccount:(BOOL)success {
@@ -520,97 +488,222 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
 }
 
-- (void)showAccountDetails:(ChromeIdentity*)identity {
-  if ([_alertCoordinator isVisible])
-    return;
-  UIViewController* accountDetails =
-      ios::GetChromeBrowserProvider()
-          ->GetChromeIdentityService()
-          ->CreateAccountDetailsController(identity, self);
-  if (!accountDetails) {
-    // Failed to create a new account details. Ignored.
-    return;
+- (void)showAccountDetails:(ChromeIdentity*)identity
+                  itemView:(UIView*)itemView {
+  DCHECK(!_alertCoordinator);
+  _alertCoordinator = [[ActionSheetCoordinator alloc]
+      initWithBaseViewController:self
+                         browser:_browser
+                           title:nil
+                         message:identity.userEmail
+                            rect:itemView.frame
+                            view:itemView];
+  __weak __typeof(self) weakSelf = self;
+  if (signin::IsSSOEditingEnabled()) {
+    [_alertCoordinator
+        addItemWithTitle:l10n_util::GetNSString(
+                             IDS_IOS_MANAGE_YOUR_GOOGLE_ACCOUNT_TITLE)
+                  action:^{
+                    [weakSelf handleManageGoogleAccountWithIdentity:identity];
+                  }
+                   style:UIAlertActionStyleDefault];
   }
-  [self presentViewController:accountDetails animated:YES completion:nil];
-
-  // Keep a weak reference on the account details, to be able to dismiss it
-  // when the primary account is removed.
-  _settingsDetails = accountDetails;
+  [_alertCoordinator
+      addItemWithTitle:l10n_util::GetNSString(
+                           IDS_IOS_REMOVE_GOOGLE_ACCOUNT_TITLE)
+                action:^{
+                  [weakSelf handleRemoveSecondaryAccountWithIdentity:identity];
+                }
+                 style:UIAlertActionStyleDestructive];
+  [_alertCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                               action:^() {
+                                 [weakSelf handleAlertCoordinatorCancel];
+                               }
+                                style:UIAlertActionStyleCancel];
+  [_alertCoordinator start];
 }
 
-- (void)showDisconnect {
-  if (_authenticationOperationInProgress || [_alertCoordinator isVisible] ||
+// Handles the manage Google account action from |_alertCoordinator|.
+// Action sheet created in |showAccountDetails:itemView:|
+- (void)handleManageGoogleAccountWithIdentity:(ChromeIdentity*)identity {
+  DCHECK(_alertCoordinator);
+  // |_alertCoordinator| should not be stopped, since the coordinator has been
+  // confirmed.
+  _alertCoordinator = nil;
+  _dimissAccountDetailsViewControllerBlock =
+      ios::GetChromeBrowserProvider()
+          ->GetChromeIdentityService()
+          ->PresentAccountDetailsController(identity, self,
+                                            /*animated=*/YES);
+}
+
+// Handles the secondary account remove action from |_alertCoordinator|.
+// Action sheet created in |showAccountDetails:itemView:|
+- (void)handleRemoveSecondaryAccountWithIdentity:(ChromeIdentity*)identity {
+  DCHECK(_alertCoordinator);
+  // |_alertCoordinator| should not be stopped, since the coordinator has been
+  // confirmed.
+  _alertCoordinator = nil;
+  DCHECK(!self.removeAccountCoordinator);
+  NSString* title =
+      l10n_util::GetNSStringF(IDS_IOS_REMOVE_ACCOUNT_ALERT_TITLE,
+                              base::SysNSStringToUTF16(identity.userEmail));
+  NSString* message =
+      l10n_util::GetNSString(IDS_IOS_REMOVE_ACCOUNT_CONFIRMATION_MESSAGE);
+  self.removeAccountCoordinator =
+      [[AlertCoordinator alloc] initWithBaseViewController:self
+                                                   browser:_browser
+                                                     title:title
+                                                   message:message];
+  __weak __typeof(self) weakSelf = self;
+  [self.removeAccountCoordinator
+      addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                action:^{
+                  weakSelf.removeAccountCoordinator = nil;
+                }
+                 style:UIAlertActionStyleCancel];
+  [self.removeAccountCoordinator
+      addItemWithTitle:l10n_util::GetNSString(IDS_IOS_REMOVE_ACCOUNT_LABEL)
+                action:^{
+                  [weakSelf removeSecondaryIdentity:identity];
+                }
+                 style:UIAlertActionStyleDestructive];
+  [self.removeAccountCoordinator start];
+}
+
+- (void)removeSecondaryIdentity:(ChromeIdentity*)identity {
+  DCHECK(self.removeAccountCoordinator);
+  self.removeAccountCoordinator = nil;
+  self.uiDisabled = YES;
+  ios::GetChromeBrowserProvider()->GetChromeIdentityService()->ForgetIdentity(
+      identity, ^(NSError* error) {
+        self.uiDisabled = NO;
+      });
+}
+
+- (void)showMICESignOutWithItemView:(UIView*)itemView {
+  DCHECK(!self.signoutCoordinator);
+  DCHECK(base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS));
+  if (_authenticationOperationInProgress ||
+      self != [self.navigationController topViewController]) {
+    // An action is already in progress, ignore user's request.
+    return;
+  }
+  self.signoutCoordinator = [[SignoutActionSheetCoordinator alloc]
+      initWithBaseViewController:self
+                         browser:_browser
+                            rect:itemView.frame
+                            view:itemView];
+  __weak AccountsTableViewController* weakSelf = self;
+  self.signoutCoordinator.completion = ^(BOOL success) {
+    if (success) {
+      [weakSelf handleAuthenticationOperationDidFinish];
+    }
+    [weakSelf.signoutCoordinator stop];
+    weakSelf.signoutCoordinator = nil;
+  };
+  self.signoutCoordinator.delegate = self;
+  [self.signoutCoordinator start];
+}
+
+- (void)showSignOutWithClearData:(BOOL)forceClearData
+                        itemView:(UIView*)itemView {
+  DCHECK(!_alertCoordinator);
+  DCHECK(!base::FeatureList::IsEnabled(signin::kSimplifySignOutIOS));
+  if (_authenticationOperationInProgress ||
       self != [self.navigationController topViewController]) {
     // An action is already in progress, ignore user's request.
     return;
   }
 
-  NSString* title = l10n_util::GetNSString(IDS_IOS_DISCONNECT_DIALOG_TITLE);
-  NSString* message =
-      l10n_util::GetNSString(IDS_IOS_DISCONNECT_DIALOG_INFO_MOBILE);
-  NSString* continueButtonTitle =
-      l10n_util::GetNSString(IDS_IOS_DISCONNECT_DIALOG_CONTINUE_BUTTON_MOBILE);
-  if ([self authService] -> IsAuthenticatedIdentityManaged()) {
-    identity::IdentityManager* identityManager =
-        IdentityManagerFactory::GetForBrowserState(_browserState);
-    base::Optional<AccountInfo> accountInfo =
-        identityManager->FindExtendedAccountInfoForAccount(
-            identityManager->GetPrimaryAccountInfo());
-    std::string hosted_domain = accountInfo.has_value()
-                                    ? accountInfo.value().hosted_domain
-                                    : std::string();
-    if (unified_consent::IsUnifiedConsentFeatureEnabled()) {
-      title =
-          l10n_util::GetNSString(IDS_IOS_MANAGED_DISCONNECT_DIALOG_TITLE_UNITY);
-      message =
-          l10n_util::GetNSStringF(IDS_IOS_MANAGED_DISCONNECT_DIALOG_INFO_UNITY,
-                                  base::UTF8ToUTF16(hosted_domain));
-      continueButtonTitle = l10n_util::GetNSString(
-          IDS_IOS_MANAGED_DISCONNECT_DIALOG_ACCEPT_UNITY);
-    } else {
-      title = l10n_util::GetNSString(IDS_IOS_MANAGED_DISCONNECT_DIALOG_TITLE);
-      message = l10n_util::GetNSStringF(IDS_IOS_MANAGED_DISCONNECT_DIALOG_INFO,
-                                        base::UTF8ToUTF16(hosted_domain));
-      continueButtonTitle =
-          l10n_util::GetNSString(IDS_IOS_MANAGED_DISCONNECT_DIALOG_ACCEPT);
-    }
-  } else if (unified_consent::IsUnifiedConsentFeatureEnabled()) {
-    title = l10n_util::GetNSString(IDS_IOS_DISCONNECT_DIALOG_TITLE_UNITY);
-    message =
-        l10n_util::GetNSString(IDS_IOS_DISCONNECT_DIALOG_INFO_MOBILE_UNITY);
-    continueButtonTitle = l10n_util::GetNSString(
-        IDS_IOS_DISCONNECT_DIALOG_CONTINUE_BUTTON_MOBILE);
-  }
-  _alertCoordinator =
-      [[AlertCoordinator alloc] initWithBaseViewController:self
-                                                     title:title
-                                                   message:message];
+  NSString* alertMessage = nil;
+  NSString* signOutTitle = nil;
+  UIAlertActionStyle actionStyle = UIAlertActionStyleDefault;
 
-  [_alertCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                               action:nil
-                                style:UIAlertActionStyleCancel];
+  if (forceClearData) {
+    alertMessage = l10n_util::GetNSString(
+        IDS_IOS_DISCONNECT_DESTRUCTIVE_DIALOG_INFO_MOBILE);
+    signOutTitle = l10n_util::GetNSString(
+        IDS_IOS_DISCONNECT_DIALOG_CONTINUE_AND_CLEAR_MOBILE);
+    actionStyle = UIAlertActionStyleDestructive;
+  } else {
+    alertMessage =
+        l10n_util::GetNSString(IDS_IOS_DISCONNECT_KEEP_DATA_DIALOG_INFO_MOBILE);
+    signOutTitle = l10n_util::GetNSString(
+        IDS_IOS_DISCONNECT_DIALOG_CONTINUE_BUTTON_MOBILE);
+    actionStyle = UIAlertActionStyleDefault;
+  }
+
+  _alertCoordinator =
+      [[ActionSheetCoordinator alloc] initWithBaseViewController:self
+                                                         browser:_browser
+                                                           title:nil
+                                                         message:alertMessage
+                                                            rect:itemView.frame
+                                                            view:itemView];
+
   __weak AccountsTableViewController* weakSelf = self;
-  [_alertCoordinator addItemWithTitle:continueButtonTitle
-                               action:^{
-                                 [weakSelf handleDisconnect];
+  [_alertCoordinator
+      addItemWithTitle:signOutTitle
+                action:^{
+                  [weakSelf handleSignOutWithForceClearData:forceClearData];
+                }
+                 style:actionStyle];
+  [_alertCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                               action:^() {
+                                 [weakSelf handleAlertCoordinatorCancel];
                                }
-                                style:UIAlertActionStyleDefault];
+                                style:UIAlertActionStyleCancel];
   [_alertCoordinator start];
 }
 
-- (void)handleDisconnect {
+- (void)handleSignOutWithForceClearData:(BOOL)forceClearData {
+  if (!_browser)
+    return;
+
+  // |_alertCoordinator| should not be stopped, since the coordinator has been
+  // confirmed.
+  DCHECK(_alertCoordinator);
+  _alertCoordinator = nil;
+
   AuthenticationService* authService = [self authService];
   if (authService->IsAuthenticated()) {
     _authenticationOperationInProgress = YES;
     [self preventUserInteraction];
-    authService->SignOut(signin_metrics::USER_CLICKED_SIGNOUT_SETTINGS, ^{
-      [self allowUserInteraction];
-      _authenticationOperationInProgress = NO;
-      [base::mac::ObjCCastStrict<SettingsNavigationController>(
-          self.navigationController)
-          popViewControllerOrCloseSettingsAnimated:YES];
-    });
+    __weak AccountsTableViewController* weakSelf = self;
+    authService->SignOut(
+        signin_metrics::USER_CLICKED_SIGNOUT_SETTINGS, forceClearData, ^{
+          // Metrics logging must occur before dismissing the currently
+          // presented view controller from |handleSignoutDidFinish|.
+          [weakSelf logSignoutMetricsWithForceClearData:forceClearData];
+          [weakSelf allowUserInteraction];
+          [weakSelf handleAuthenticationOperationDidFinish];
+        });
   }
+}
+
+// Logs the UMA metrics to record the data retention option selected by the user
+// on signout. If the account is managed the data will always be cleared.
+- (void)logSignoutMetricsWithForceClearData:(BOOL)forceClearData {
+  if (![self authService]->IsAuthenticatedIdentityManaged()) {
+    UMA_HISTOGRAM_BOOLEAN("Signin.UserRequestedWipeDataOnSignout",
+                          forceClearData);
+  }
+  if (forceClearData) {
+    base::RecordAction(base::UserMetricsAction(
+        "Signin_SignoutClearData_FromAccountListSettings"));
+  } else {
+    base::RecordAction(
+        base::UserMetricsAction("Signin_Signout_FromAccountListSettings"));
+  }
+}
+
+// Handles the cancel action for |_alertCoordinator|.
+- (void)handleAlertCoordinatorCancel {
+  DCHECK(_alertCoordinator);
+  // |_alertCoordinator| should not be stopped, since the coordinator has been
+  // cancelled.
+  _alertCoordinator = nil;
 }
 
 // Sets |_authenticationOperationInProgress| to NO and pops this accounts
@@ -622,6 +715,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
 }
 
 - (void)popViewIfSignedOut {
+  if (!_browser)
+    return;
+
   if ([self authService] -> IsAuthenticated()) {
     return;
   }
@@ -630,36 +726,38 @@ typedef NS_ENUM(NSInteger, ItemType) {
     // Don't pop this view based on intermediary values.
     return;
   }
-  [self dismissSelfAnimated:NO];
-}
-
-- (void)dismissSelfAnimated:(BOOL)animated {
   if (_isBeingDismissed) {
     return;
   }
   _isBeingDismissed = YES;
-  [self.signinInteractionCoordinator cancelAndDismiss];
-  [_alertCoordinator stop];
-  [self.navigationController popToViewController:self animated:NO];
-  [base::mac::ObjCCastStrict<SettingsNavigationController>(
-      self.navigationController)
-      popViewControllerOrCloseSettingsAnimated:animated];
+  void (^popAccountsTableViewController)() = ^() {
+    [base::mac::ObjCCastStrict<SettingsNavigationController>(
+        self.navigationController)
+        popViewControllerOrCloseSettingsAnimated:YES];
+  };
+  if (self.presentedViewController) {
+    // If |self| is presenting a view controller (like |_alertCoordinator|,
+    // |_removeAccountCoordinator| or the account detail view controller, it
+    // has to be dismissed before |self| can be poped from the navigation
+    // controller.
+    // This issue can be easily reproduced with EG tests, but not with Chrome
+    // app itself.
+    [self dismissViewControllerAnimated:NO
+                             completion:^{
+                               popAccountsTableViewController();
+                             }];
+  } else {
+    // Pops |self|.
+    popAccountsTableViewController();
+  }
 }
 
 #pragma mark - Access to authentication service
 
 - (AuthenticationService*)authService {
-  return AuthenticationServiceFactory::GetForBrowserState(_browserState);
-}
-
-#pragma mark - Switch accounts notifications
-
-- (void)willStartSwitchAccount {
-  _authenticationOperationInProgress = YES;
-}
-
-- (void)didFinishSwitchAccount {
-  [self handleAuthenticationOperationDidFinish];
+  DCHECK(_browser) << "-authService called after -settingsWillBeDismissed";
+  return AuthenticationServiceFactory::GetForBrowserState(
+      _browser->GetBrowserState());
 }
 
 #pragma mark - ChromeIdentityBrowserOpener
@@ -688,6 +786,20 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (void)chromeIdentityServiceWillBeDestroyed {
   _identityServiceObserver.reset();
+}
+
+#pragma mark - UIAdaptivePresentationControllerDelegate
+
+- (void)presentationControllerDidDismiss:
+    (UIPresentationController*)presentationController {
+  base::RecordAction(
+      base::UserMetricsAction("IOSAccountsSettingsCloseWithSwipe"));
+}
+
+#pragma mark - SignoutActionSheetCoordinatorDelegate
+
+- (void)didSelectSignoutDataRetentionStrategy {
+  _authenticationOperationInProgress = YES;
 }
 
 @end

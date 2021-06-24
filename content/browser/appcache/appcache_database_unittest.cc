@@ -10,7 +10,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
-#include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
 #include "content/browser/appcache/appcache_database.h"
 #include "content/browser/appcache/appcache_entry.h"
 #include "sql/database.h"
@@ -20,6 +20,7 @@
 #include "sql/test/test_helpers.h"
 #include "sql/transaction.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/sqlite/sqlite3.h"
 
 namespace {
@@ -30,9 +31,42 @@ const base::Time kZeroTime;
 
 namespace content {
 
-class AppCacheDatabaseTest {};
+class AppCacheDatabaseTest : public testing::Test {
+ public:
+  AppCacheDatabaseTest() {
+    appcache_require_origin_trial_feature_.InitAndDisableFeature(
+        blink::features::kAppCacheRequireOriginTrial);
+  }
 
-TEST(AppCacheDatabaseTest, LazyOpen) {
+  int64_t GetCacheManifestParserVersion(const content::AppCacheDatabase& db,
+                                        int64_t cache_id) {
+    static const char kSql[] =
+        "SELECT manifest_parser_version, cache_id FROM Caches "
+        "WHERE "
+        "cache_id = ?";
+    sql::Statement statement(db.db_->GetCachedStatement(SQL_FROM_HERE, kSql));
+    statement.BindInt64(0, cache_id);
+    EXPECT_TRUE(statement.Step());
+    return statement.ColumnInt64(0);
+  }
+
+  std::string GetCacheManifestScope(const content::AppCacheDatabase& db,
+                                    int64_t cache_id) {
+    static const char kSql[] =
+        "SELECT manifest_scope, cache_id FROM Caches "
+        "WHERE "
+        "cache_id = ?";
+    sql::Statement statement(db.db_->GetCachedStatement(SQL_FROM_HERE, kSql));
+    statement.BindInt64(0, cache_id);
+    EXPECT_TRUE(statement.Step());
+    return statement.ColumnString(0);
+  }
+
+ private:
+  base::test::ScopedFeatureList appcache_require_origin_trial_feature_;
+};
+
+TEST_F(AppCacheDatabaseTest, LazyOpen) {
   // Use an empty file path to use an in-memory sqlite database.
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
@@ -54,7 +88,7 @@ TEST(AppCacheDatabaseTest, LazyOpen) {
   EXPECT_TRUE(origins.empty());
 }
 
-TEST(AppCacheDatabaseTest, ReCreate) {
+TEST_F(AppCacheDatabaseTest, ReCreate) {
   // Real files on disk for this test.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
@@ -62,7 +96,7 @@ TEST(AppCacheDatabaseTest, ReCreate) {
   const base::FilePath kNestedDir = temp_dir.GetPath().AppendASCII("nested");
   const base::FilePath kOtherFile =  kNestedDir.AppendASCII("other_file");
   EXPECT_TRUE(base::CreateDirectory(kNestedDir));
-  EXPECT_EQ(3, base::WriteFile(kOtherFile, "foo", 3));
+  EXPECT_TRUE(base::WriteFile(kOtherFile, "foo"));
 
   AppCacheDatabase db(kDbFile);
   EXPECT_FALSE(db.LazyOpen(false));
@@ -86,7 +120,7 @@ TEST(AppCacheDatabaseTest, ReCreate) {
 // of run to completion. In release builds, errors the are delivered
 // to the consumer so  we can test the error handling of the consumer.
 // TODO: crbug/328576
-TEST(AppCacheDatabaseTest, QuickIntegrityCheck) {
+TEST_F(AppCacheDatabaseTest, QuickIntegrityCheck) {
   // Real files on disk for this test too, a corrupt database file.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
@@ -95,7 +129,7 @@ TEST(AppCacheDatabaseTest, QuickIntegrityCheck) {
 
   const base::FilePath kDbFile = mock_dir.AppendASCII("appcache.db");
   const base::FilePath kOtherFile = mock_dir.AppendASCII("other_file");
-  EXPECT_EQ(3, base::WriteFile(kOtherFile, "foo", 3));
+  EXPECT_TRUE(base::WriteFile(kOtherFile, "foo"));
 
   // First create a valid db file.
   {
@@ -121,7 +155,7 @@ TEST(AppCacheDatabaseTest, QuickIntegrityCheck) {
 }
 #endif  // NDEBUG
 
-TEST(AppCacheDatabaseTest, WasCorrutionDetected) {
+TEST_F(AppCacheDatabaseTest, WasCorrutionDetected) {
   // Real files on disk for this test too, a corrupt database file.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
@@ -148,7 +182,7 @@ TEST(AppCacheDatabaseTest, WasCorrutionDetected) {
   }
 }
 
-TEST(AppCacheDatabaseTest, ExperimentalFlags) {
+TEST_F(AppCacheDatabaseTest, ExperimentalFlags) {
   const char kExperimentFlagsKey[] = "ExperimentFlags";
   std::string kInjectedFlags("exp1,exp2");
 
@@ -158,7 +192,7 @@ TEST(AppCacheDatabaseTest, ExperimentalFlags) {
   const base::FilePath kDbFile = temp_dir.GetPath().AppendASCII("appcache.db");
   const base::FilePath kOtherFile =
       temp_dir.GetPath().AppendASCII("other_file");
-  EXPECT_EQ(3, base::WriteFile(kOtherFile, "foo", 3));
+  EXPECT_TRUE(base::WriteFile(kOtherFile, "foo"));
   EXPECT_TRUE(base::PathExists(kOtherFile));
 
   // Inject a non empty flags value, and verify it got there.
@@ -183,7 +217,7 @@ TEST(AppCacheDatabaseTest, ExperimentalFlags) {
   }
 }
 
-TEST(AppCacheDatabaseTest, EntryRecords) {
+TEST_F(AppCacheDatabaseTest, EntryRecords) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -270,7 +304,7 @@ TEST(AppCacheDatabaseTest, EntryRecords) {
   ASSERT_TRUE(expecter.SawExpectedErrors());
 }
 
-TEST(AppCacheDatabaseTest, CacheRecords) {
+TEST_F(AppCacheDatabaseTest, CacheRecords) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -289,6 +323,8 @@ TEST(AppCacheDatabaseTest, CacheRecords) {
   record.update_time = kZeroTime;
   record.cache_size = 100;
   record.padding_size = 10;
+  record.manifest_parser_version = 20;
+  record.manifest_scope = std::string("/foo/");
   EXPECT_TRUE(db.InsertCache(&record));
   EXPECT_FALSE(db.InsertCache(&record));
 
@@ -300,6 +336,8 @@ TEST(AppCacheDatabaseTest, CacheRecords) {
   EXPECT_TRUE(kZeroTime == record.update_time);
   EXPECT_EQ(100, record.cache_size);
   EXPECT_EQ(10, record.padding_size);
+  EXPECT_EQ(20, record.manifest_parser_version);
+  EXPECT_EQ("/foo/", record.manifest_scope);
 
   record = kZeroRecord;
   EXPECT_TRUE(db.FindCacheForGroup(1, &record));
@@ -309,6 +347,8 @@ TEST(AppCacheDatabaseTest, CacheRecords) {
   EXPECT_TRUE(kZeroTime == record.update_time);
   EXPECT_EQ(100, record.cache_size);
   EXPECT_EQ(10, record.padding_size);
+  EXPECT_EQ(20, record.manifest_parser_version);
+  EXPECT_EQ("/foo/", record.manifest_scope);
 
   EXPECT_TRUE(db.DeleteCache(1));
   EXPECT_FALSE(db.FindCache(1, &record));
@@ -319,7 +359,7 @@ TEST(AppCacheDatabaseTest, CacheRecords) {
   ASSERT_TRUE(expecter.SawExpectedErrors());
 }
 
-TEST(AppCacheDatabaseTest, GroupRecords) {
+TEST_F(AppCacheDatabaseTest, GroupRecords) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -439,6 +479,8 @@ TEST(AppCacheDatabaseTest, GroupRecords) {
   cache_record.group_id = 1;
   cache_record.online_wildcard = true;
   cache_record.update_time = kZeroTime;
+  cache_record.manifest_parser_version = 1;
+  cache_record.manifest_scope = std::string("/");
   EXPECT_TRUE(db.InsertCache(&cache_record));
 
   record = kZeroRecord;
@@ -450,7 +492,7 @@ TEST(AppCacheDatabaseTest, GroupRecords) {
   ASSERT_TRUE(expecter.SawExpectedErrors());
 }
 
-TEST(AppCacheDatabaseTest, GroupAccessAndEvictionTimes) {
+TEST_F(AppCacheDatabaseTest, GroupAccessAndEvictionTimes) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -462,7 +504,7 @@ TEST(AppCacheDatabaseTest, GroupAccessAndEvictionTimes) {
   const base::Time kDayTwo = kDayOne + base::TimeDelta::FromDays(1);
 
   // See that the methods behave as expected with an empty db.
-  // To accomodate lazy updating, for consistency, none of them fail
+  // To accommodate lazy updating, for consistency, none of them fail
   // given ids not found in the db.
   EXPECT_TRUE(db.UpdateEvictionTimes(1, kDayOne, kDayTwo));
   EXPECT_TRUE(db.UpdateLastAccessTime(1, kDayOne));
@@ -523,7 +565,7 @@ TEST(AppCacheDatabaseTest, GroupAccessAndEvictionTimes) {
   EXPECT_EQ(kDayTwo, record.last_access_time);
 }
 
-TEST(AppCacheDatabaseTest, NamespaceRecords) {
+TEST_F(AppCacheDatabaseTest, NamespaceRecords) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -574,7 +616,6 @@ TEST(AppCacheDatabaseTest, NamespaceRecords) {
   EXPECT_EQ(kFooOrigin, fallbacks[0].origin);
   EXPECT_EQ(kFooNameSpace1, fallbacks[0].namespace_.namespace_url);
   EXPECT_EQ(kFooFallbackEntry, fallbacks[0].namespace_.target_url);
-  EXPECT_FALSE(fallbacks[0].namespace_.is_pattern);
 
   fallbacks.clear();
   EXPECT_TRUE(db.FindNamespacesForCache(2, &intercepts, &fallbacks));
@@ -583,7 +624,6 @@ TEST(AppCacheDatabaseTest, NamespaceRecords) {
   EXPECT_EQ(kFooOrigin, fallbacks[0].origin);
   EXPECT_EQ(kFooNameSpace2, fallbacks[0].namespace_.namespace_url);
   EXPECT_EQ(kFooFallbackEntry, fallbacks[0].namespace_.target_url);
-  EXPECT_FALSE(fallbacks[0].namespace_.is_pattern);
 
   fallbacks.clear();
   EXPECT_TRUE(db.FindNamespacesForOrigin(kFooOrigin, &intercepts, &fallbacks));
@@ -592,12 +632,10 @@ TEST(AppCacheDatabaseTest, NamespaceRecords) {
   EXPECT_EQ(kFooOrigin, fallbacks[0].origin);
   EXPECT_EQ(kFooNameSpace1, fallbacks[0].namespace_.namespace_url);
   EXPECT_EQ(kFooFallbackEntry, fallbacks[0].namespace_.target_url);
-  EXPECT_FALSE(fallbacks[0].namespace_.is_pattern);
   EXPECT_EQ(2, fallbacks[1].cache_id);
   EXPECT_EQ(kFooOrigin, fallbacks[1].origin);
   EXPECT_EQ(kFooNameSpace2, fallbacks[1].namespace_.namespace_url);
   EXPECT_EQ(kFooFallbackEntry, fallbacks[1].namespace_.target_url);
-  EXPECT_FALSE(fallbacks[1].namespace_.is_pattern);
 
   EXPECT_TRUE(db.DeleteNamespacesForCache(1));
   fallbacks.clear();
@@ -607,39 +645,32 @@ TEST(AppCacheDatabaseTest, NamespaceRecords) {
   EXPECT_EQ(kFooOrigin, fallbacks[0].origin);
   EXPECT_EQ(kFooNameSpace2, fallbacks[0].namespace_.namespace_url);
   EXPECT_EQ(kFooFallbackEntry, fallbacks[0].namespace_.target_url);
-  EXPECT_FALSE(fallbacks[0].namespace_.is_pattern);
 
   // Two more records for the same cache in the Bar origin.
   record.cache_id = 3;
   record.origin = kBarOrigin;
   record.namespace_.namespace_url = kBarNameSpace1;
   record.namespace_.target_url = kBarFallbackEntry;
-  record.namespace_.is_pattern = true;
   EXPECT_TRUE(db.InsertNamespace(&record));
 
   record.cache_id = 3;
   record.origin = kBarOrigin;
   record.namespace_.namespace_url = kBarNameSpace2;
   record.namespace_.target_url = kBarFallbackEntry;
-  record.namespace_.is_pattern = true;
   EXPECT_TRUE(db.InsertNamespace(&record));
 
   fallbacks.clear();
   EXPECT_TRUE(db.FindNamespacesForCache(3, &intercepts, &fallbacks));
   EXPECT_EQ(2U, fallbacks.size());
-  EXPECT_TRUE(fallbacks[0].namespace_.is_pattern);
-  EXPECT_TRUE(fallbacks[1].namespace_.is_pattern);
 
   fallbacks.clear();
   EXPECT_TRUE(db.FindNamespacesForOrigin(kBarOrigin, &intercepts, &fallbacks));
   EXPECT_EQ(2U, fallbacks.size());
-  EXPECT_TRUE(fallbacks[0].namespace_.is_pattern);
-  EXPECT_TRUE(fallbacks[1].namespace_.is_pattern);
 
   ASSERT_TRUE(expecter.SawExpectedErrors());
 }
 
-TEST(AppCacheDatabaseTest, OnlineWhiteListRecords) {
+TEST_F(AppCacheDatabaseTest, OnlineSafeListRecords) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -648,45 +679,42 @@ TEST(AppCacheDatabaseTest, OnlineWhiteListRecords) {
   const GURL kFooNameSpace2("http://foo/namespace2");
   const GURL kBarNameSpace1("http://bar/namespace1");
 
-  const AppCacheDatabase::OnlineWhiteListRecord kZeroRecord;
-  AppCacheDatabase::OnlineWhiteListRecord record;
-  std::vector<AppCacheDatabase::OnlineWhiteListRecord> records;
+  const AppCacheDatabase::OnlineSafeListRecord kZeroRecord;
+  AppCacheDatabase::OnlineSafeListRecord record;
+  std::vector<AppCacheDatabase::OnlineSafeListRecord> records;
 
   // Behavior with an empty table
-  EXPECT_TRUE(db.FindOnlineWhiteListForCache(1, &records));
+  EXPECT_TRUE(db.FindOnlineSafeListForCache(1, &records));
   EXPECT_TRUE(records.empty());
-  EXPECT_TRUE(db.DeleteOnlineWhiteListForCache(1));
+  EXPECT_TRUE(db.DeleteOnlineSafeListForCache(1));
 
   record.cache_id = 1;
   record.namespace_url = kFooNameSpace1;
-  EXPECT_TRUE(db.InsertOnlineWhiteList(&record));
+  EXPECT_TRUE(db.InsertOnlineSafeList(&record));
   record.namespace_url = kFooNameSpace2;
-  record.is_pattern = true;
-  EXPECT_TRUE(db.InsertOnlineWhiteList(&record));
+  EXPECT_TRUE(db.InsertOnlineSafeList(&record));
   records.clear();
-  EXPECT_TRUE(db.FindOnlineWhiteListForCache(1, &records));
+  EXPECT_TRUE(db.FindOnlineSafeListForCache(1, &records));
   EXPECT_EQ(2U, records.size());
   EXPECT_EQ(1, records[0].cache_id);
   EXPECT_EQ(kFooNameSpace1, records[0].namespace_url);
-  EXPECT_FALSE(records[0].is_pattern);
   EXPECT_EQ(1, records[1].cache_id);
   EXPECT_EQ(kFooNameSpace2, records[1].namespace_url);
-  EXPECT_TRUE(records[1].is_pattern);
 
   record.cache_id = 2;
   record.namespace_url = kBarNameSpace1;
-  EXPECT_TRUE(db.InsertOnlineWhiteList(&record));
+  EXPECT_TRUE(db.InsertOnlineSafeList(&record));
   records.clear();
-  EXPECT_TRUE(db.FindOnlineWhiteListForCache(2, &records));
+  EXPECT_TRUE(db.FindOnlineSafeListForCache(2, &records));
   EXPECT_EQ(1U, records.size());
 
-  EXPECT_TRUE(db.DeleteOnlineWhiteListForCache(1));
+  EXPECT_TRUE(db.DeleteOnlineSafeListForCache(1));
   records.clear();
-  EXPECT_TRUE(db.FindOnlineWhiteListForCache(1, &records));
+  EXPECT_TRUE(db.FindOnlineSafeListForCache(1, &records));
   EXPECT_TRUE(records.empty());
 }
 
-TEST(AppCacheDatabaseTest, DeletableResponseIds) {
+TEST_F(AppCacheDatabaseTest, DeletableResponseIds) {
   const base::FilePath kEmptyPath;
   AppCacheDatabase db(kEmptyPath);
   EXPECT_TRUE(db.LazyOpen(true));
@@ -765,7 +793,7 @@ TEST(AppCacheDatabaseTest, DeletableResponseIds) {
   ASSERT_TRUE(expecter.SawExpectedErrors());
 }
 
-TEST(AppCacheDatabaseTest, OriginUsage) {
+TEST_F(AppCacheDatabaseTest, OriginUsage) {
   const GURL kManifestUrl("http://blah/manifest");
   const GURL kManifestUrl2("http://blah/manifest2");
   const url::Origin kOrigin = url::Origin::Create(kManifestUrl);
@@ -778,8 +806,6 @@ TEST(AppCacheDatabaseTest, OriginUsage) {
 
   std::vector<AppCacheDatabase::CacheRecord> cache_records;
   EXPECT_EQ(0, db.GetOriginUsage(kOrigin));
-  EXPECT_TRUE(db.FindCachesForOrigin(kOrigin, &cache_records));
-  EXPECT_TRUE(cache_records.empty());
 
   AppCacheDatabase::GroupRecord group_record;
   group_record.group_id = 1;
@@ -793,6 +819,8 @@ TEST(AppCacheDatabaseTest, OriginUsage) {
   cache_record.update_time = kZeroTime;
   cache_record.cache_size = 100;
   cache_record.padding_size = 1;
+  cache_record.manifest_parser_version = 1;
+  cache_record.manifest_scope = std::string("/");
   EXPECT_TRUE(db.InsertCache(&cache_record));
 
   EXPECT_EQ(101, db.GetOriginUsage(kOrigin));
@@ -825,12 +853,6 @@ TEST(AppCacheDatabaseTest, OriginUsage) {
 
   EXPECT_EQ(5001, db.GetOriginUsage(kOtherOrigin));
 
-  EXPECT_TRUE(db.FindCachesForOrigin(kOrigin, &cache_records));
-  EXPECT_EQ(2U, cache_records.size());
-  cache_records.clear();
-  EXPECT_TRUE(db.FindCachesForOrigin(kOtherOrigin, &cache_records));
-  EXPECT_EQ(1U, cache_records.size());
-
   std::map<url::Origin, int64_t> usage_map;
   EXPECT_TRUE(db.GetAllOriginUsage(&usage_map));
   EXPECT_EQ(2U, usage_map.size());
@@ -838,7 +860,59 @@ TEST(AppCacheDatabaseTest, OriginUsage) {
   EXPECT_EQ(5001, usage_map[kOtherOrigin]);
 }
 
-TEST(AppCacheDatabaseTest, UpgradeSchemaForVersionsWithoutSupportedMigrations) {
+TEST_F(AppCacheDatabaseTest, FindCachesForOrigin) {
+  const GURL kManifestUrl("http://blah/manifest");
+  const GURL kManifestUrl2("http://blah/manifest2");
+  const url::Origin kOrigin = url::Origin::Create(kManifestUrl);
+  const GURL kOtherOriginManifestUrl("http://other/manifest");
+  const url::Origin kOtherOrigin = url::Origin::Create(kOtherOriginManifestUrl);
+
+  const base::FilePath kEmptyPath;
+  AppCacheDatabase db(kEmptyPath);
+  EXPECT_TRUE(db.LazyOpen(true));
+
+  std::vector<AppCacheDatabase::CacheRecord> cache_records;
+  EXPECT_TRUE(db.FindCachesForOrigin(kOrigin, &cache_records));
+  EXPECT_TRUE(cache_records.empty());
+
+  // Create 2 Groups with the same origin, and 1 Group with a different origin.
+  AppCacheDatabase::GroupRecord group_record;
+  group_record.group_id = 1;
+  group_record.manifest_url = kManifestUrl;
+  group_record.origin = kOrigin;
+  EXPECT_TRUE(db.InsertGroup(&group_record));
+  group_record.group_id = 2;
+  group_record.manifest_url = kManifestUrl2;
+  group_record.origin = kOrigin;
+  EXPECT_TRUE(db.InsertGroup(&group_record));
+  group_record.group_id = 3;
+  group_record.manifest_url = kOtherOriginManifestUrl;
+  group_record.origin = kOtherOrigin;
+  EXPECT_TRUE(db.InsertGroup(&group_record));
+
+  // Add a Cache to each of the 3 Groups.
+  AppCacheDatabase::CacheRecord cache_record;
+  for (int i = 1; i < 4; ++i) {
+    cache_record.cache_id = i;
+    cache_record.group_id = i;
+    cache_record.online_wildcard = true;
+    cache_record.update_time = kZeroTime;
+    cache_record.cache_size = 100;
+    cache_record.padding_size = 1000;
+    cache_record.manifest_parser_version = 1;
+    cache_record.manifest_scope = std::string("/");
+    EXPECT_TRUE(db.InsertCache(&cache_record));
+  }
+
+  EXPECT_TRUE(db.FindCachesForOrigin(kOrigin, &cache_records));
+  EXPECT_EQ(2U, cache_records.size());
+  cache_records.clear();
+  EXPECT_TRUE(db.FindCachesForOrigin(kOtherOrigin, &cache_records));
+  EXPECT_EQ(1U, cache_records.size());
+}
+
+TEST_F(AppCacheDatabaseTest,
+       UpgradeSchemaForVersionsWithoutSupportedMigrations) {
   // Real file on disk for this test.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
@@ -868,11 +942,13 @@ TEST(AppCacheDatabaseTest, UpgradeSchemaForVersionsWithoutSupportedMigrations) {
   EXPECT_FALSE(db.db_->DoesColumnExist("Unused", "id"));
   EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "padding_size"));
   EXPECT_TRUE(db.db_->DoesColumnExist("Entries", "padding_size"));
-  EXPECT_EQ(8, db.meta_table_->GetVersionNumber());
-  EXPECT_EQ(8, db.meta_table_->GetCompatibleVersionNumber());
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "manifest_parser_version"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "manifest_scope"));
+  EXPECT_EQ(10, db.meta_table_->GetVersionNumber());
+  EXPECT_EQ(10, db.meta_table_->GetCompatibleVersionNumber());
 }
 
-TEST(AppCacheDatabaseTest, UpgradeSchemaFrom7to8) {
+TEST_F(AppCacheDatabaseTest, UpgradeSchemaFrom7) {
   // Real file on disk for this test.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
@@ -893,22 +969,29 @@ TEST(AppCacheDatabaseTest, UpgradeSchemaFrom7to8) {
         "CREATE TABLE Unused(id INTEGER PRIMARY KEY)";
     EXPECT_TRUE(db.Execute(kCreateUnusedTableSql));
 
-    // Include tables/columns that are needed to run the 7-to-8 backfill.
+    // Include tables/columns that are needed to run the 7-to-9 backfill.
     static const char kCreateGroupsSql[] =
         "CREATE TABLE Groups(group_id INTEGER PRIMARY KEY, manifest_url TEXT)";
     static const char kCreateCachesSql[] =
         "CREATE TABLE Caches(cache_id INTEGER PRIMARY KEY, group_id INTEGER)";
     static const char kCreateEntriesSql[] =
         "CREATE TABLE Entries(cache_id INTEGER, url TEXT, response_id INTEGER)";
+    static const char kCreateNamespacesSql[] =
+        "CREATE TABLE Namespaces(cache_id INTEGER, origin TEXT, type INTEGER,"
+        "namespace_url TEXT, target_url TEXT, is_pattern INTEGER)";
     EXPECT_TRUE(db.Execute(kCreateGroupsSql));
     EXPECT_TRUE(db.Execute(kCreateCachesSql));
     EXPECT_TRUE(db.Execute(kCreateEntriesSql));
+    EXPECT_TRUE(db.Execute(kCreateNamespacesSql));
 
     // Insert version 7 records (with 0 padding) to test the backfill.
     static const char kInsertGroupSql[] =
-        "INSERT INTO Groups (group_id, manifest_url) VALUES(1, 'manifest_url')";
+        "INSERT INTO Groups (group_id, manifest_url) VALUES "
+        " (1, 'manifest_url'),"
+        " (2, 'https://blah/manifest_url'),"
+        " (3, 'https://blah/foo/manifest_url')";
     static const char kInsertCacheSql[] =
-        "INSERT INTO Caches (cache_id, group_id) VALUES(1, 1)";
+        "INSERT INTO Caches (cache_id, group_id) VALUES(1, 1), (2, 2), (3, 3)";
     static const char kInsertEntrySql[] =
         "INSERT INTO Entries (cache_id, url, response_id) VALUES (1, 'url', 1)";
     EXPECT_TRUE(db.Execute(kInsertGroupSql));
@@ -921,6 +1004,8 @@ TEST(AppCacheDatabaseTest, UpgradeSchemaFrom7to8) {
   EXPECT_TRUE(db.db_->DoesColumnExist("Unused", "id"));
   EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "padding_size"));
   EXPECT_TRUE(db.db_->DoesColumnExist("Entries", "padding_size"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "manifest_parser_version"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "manifest_scope"));
 
   static const char kFindCacheSql[] =
       "SELECT padding_size, cache_id FROM Caches WHERE cache_id = 1";
@@ -938,6 +1023,173 @@ TEST(AppCacheDatabaseTest, UpgradeSchemaFrom7to8) {
 
   EXPECT_GE(cache_padding_size, 0);
   EXPECT_EQ(cache_padding_size, entry_padding_size);
+
+  EXPECT_EQ(GetCacheManifestParserVersion(db, 1), 0);
+  EXPECT_EQ(GetCacheManifestScope(db, 1), "/");
+  EXPECT_EQ(GetCacheManifestParserVersion(db, 2), 0);
+  EXPECT_EQ(GetCacheManifestScope(db, 2), "/");
+  EXPECT_EQ(GetCacheManifestParserVersion(db, 3), 0);
+  EXPECT_EQ(GetCacheManifestScope(db, 3), "/");
+}
+
+TEST_F(AppCacheDatabaseTest, UpgradeSchemaFrom8) {
+  // Real file on disk for this test.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath kDbFile =
+      temp_dir.GetPath().AppendASCII("upgrade8to9.db");
+
+  {
+    sql::Database db;
+    EXPECT_TRUE(db.Open(kDbFile));
+
+    sql::MetaTable meta_table;
+    EXPECT_TRUE(meta_table.Init(&db, 8, 8));
+
+    // Create a database with a table name that does not show up in the AppCache
+    // schema. Its persistence across the migration indicates that the migration
+    // did not nuke the database.
+    static const char kCreateUnusedTableSql[] =
+        "CREATE TABLE Unused(id INTEGER PRIMARY KEY)";
+    EXPECT_TRUE(db.Execute(kCreateUnusedTableSql));
+
+    // Include tables/columns that are needed to run the 8-to-9 backfill.
+    static const char kCreateGroupsSql[] =
+        "CREATE TABLE Groups(group_id INTEGER PRIMARY KEY, manifest_url TEXT)";
+    static const char kCreateCachesSql[] =
+        "CREATE TABLE Caches(cache_id INTEGER PRIMARY KEY, group_id INTEGER)";
+    static const char kCreateEntriesSql[] =
+        "CREATE TABLE Entries(cache_id INTEGER, url TEXT,"
+        "flags INTEGER, response_id INTEGER, response_size INTEGER,"
+        "padding_size INTEGER)";
+    static const char kCreateNamespacesSql[] =
+        "CREATE TABLE Namespaces(cache_id INTEGER, origin TEXT, type INTEGER,"
+        "namespace_url TEXT, target_url TEXT, is_pattern INTEGER)";
+    EXPECT_TRUE(db.Execute(kCreateGroupsSql));
+    EXPECT_TRUE(db.Execute(kCreateCachesSql));
+    EXPECT_TRUE(db.Execute(kCreateEntriesSql));
+    EXPECT_TRUE(db.Execute(kCreateNamespacesSql));
+
+    // Insert a version 8 record to test the backfill.
+    static const char kInsertGroupSql[] =
+        "INSERT INTO Groups (group_id, manifest_url) VALUES "
+        " (1, 'manifest_url'),"
+        " (2, 'https://blah/manifest_url'),"
+        " (3, 'https://blah/foo/manifest_url')";
+    static const char kInsertCacheSql[] =
+        "INSERT INTO Caches (cache_id, group_id) VALUES(1, 1), (2, 2), (3, 3)";
+    EXPECT_TRUE(db.Execute(kInsertGroupSql));
+    EXPECT_TRUE(db.Execute(kInsertCacheSql));
+  }
+
+  AppCacheDatabase db(kDbFile);
+  EXPECT_TRUE(db.LazyOpen(/*create_if_needed=*/false));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Unused", "id"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "manifest_parser_version"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "manifest_scope"));
+
+  EXPECT_EQ(GetCacheManifestParserVersion(db, 1), 0);
+  EXPECT_EQ(GetCacheManifestScope(db, 1), "/");
+  EXPECT_EQ(GetCacheManifestParserVersion(db, 2), 0);
+  EXPECT_EQ(GetCacheManifestScope(db, 2), "/");
+  EXPECT_EQ(GetCacheManifestParserVersion(db, 3), 0);
+  EXPECT_EQ(GetCacheManifestScope(db, 3), "/");
+}
+
+TEST_F(AppCacheDatabaseTest, UpgradeSchemaFrom9) {
+  // Real file on disk for this test.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath kDbFile =
+      temp_dir.GetPath().AppendASCII("upgrade9to10.db");
+
+  {
+    sql::Database db;
+    EXPECT_TRUE(db.Open(kDbFile));
+
+    sql::MetaTable meta_table;
+    EXPECT_TRUE(meta_table.Init(&db, 9, 9));
+
+    // Create a database with a table name that does not show up in the AppCache
+    // schema. Its persistence across the migration indicates that the migration
+    // did not nuke the database.
+    static const char kCreateUnusedTableSql[] =
+        "CREATE TABLE Unused(id INTEGER PRIMARY KEY)";
+    EXPECT_TRUE(db.Execute(kCreateUnusedTableSql));
+
+    static const char kCreateGroupsSql[] =
+        "CREATE TABLE Groups(group_id INTEGER PRIMARY KEY, origin TEXT,"
+        "manifest_url TEXT, creation_time INTEGER, last_access_time INTEGER,"
+        "last_full_update_check_time INTEGER,"
+        "first_evictalbe_error_time INTEGER)";
+    static const char kCreateCachesSql[] =
+        "CREATE TABLE Caches(cache_id INTEGER PRIMARY KEY, group_id INTEGER,"
+        "online_wildcard INTEGER, update_time INTEGER, cache_size INTEGER,"
+        "padding_size INTEGER, manifest_parser_version INTEGER,"
+        "manifest_scope TEXT)";
+    static const char kCreateEntriesSql[] =
+        "CREATE TABLE Entries(cache_id INTEGER, url TEXT,"
+        "flags INTEGER, response_id INTEGER, response_size INTEGER,"
+        "padding_size INTEGER)";
+    static const char kCreateNamespacesSql[] =
+        "CREATE TABLE Namespaces(cache_id INTEGER, origin TEXT, type INTEGER,"
+        "namespace_url TEXT, target_url TEXT, is_pattern INTEGER)";
+    EXPECT_TRUE(db.Execute(kCreateGroupsSql));
+    EXPECT_TRUE(db.Execute(kCreateCachesSql));
+    EXPECT_TRUE(db.Execute(kCreateEntriesSql));
+    EXPECT_TRUE(db.Execute(kCreateNamespacesSql));
+
+    static const char kInsertCacheSql[] =
+        "INSERT INTO Caches(cache_id, group_id) VALUES (1, 1)";
+    static const char kInsertGroupSql[] =
+        "INSERT INTO Groups (group_id, manifest_url) VALUES "
+        " (1, 'manifest_url')";
+    static const char kInsertEntrySql[] =
+        "INSERT INTO Entries (cache_id, url, response_id) VALUES (1, 'url', 1)";
+    static const char kInsertNamespaceSql[] =
+        "INSERT INTO Namespaces(cache_id, origin) VALUES (1, 'origin')";
+
+    EXPECT_TRUE(db.Execute(kInsertCacheSql));
+    EXPECT_TRUE(db.Execute(kInsertGroupSql));
+    EXPECT_TRUE(db.Execute(kInsertEntrySql));
+    EXPECT_TRUE(db.Execute(kInsertNamespaceSql));
+  }
+
+  AppCacheDatabase db(kDbFile);
+  EXPECT_TRUE(db.LazyOpen(/*create_if_needed=*/false));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Unused", "id"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Caches", "token_expires"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Groups", "token_expires"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Entries", "token_expires"));
+  EXPECT_TRUE(db.db_->DoesColumnExist("Namespaces", "token_expires"));
+
+  static const char kFindCacheSql[] =
+      "SELECT token_expires FROM Entries WHERE cache_id = 1";
+  sql::Statement find_cache_statement(
+      db.db_->GetUniqueStatement(kFindCacheSql));
+  EXPECT_TRUE(find_cache_statement.Step());
+  EXPECT_EQ(0, find_cache_statement.ColumnInt64(0));
+
+  static const char kFindGroupSql[] =
+      "SELECT token_expires FROM Entries WHERE cache_id = 1";
+  sql::Statement find_group_statement(
+      db.db_->GetUniqueStatement(kFindGroupSql));
+  EXPECT_TRUE(find_group_statement.Step());
+  EXPECT_EQ(0, find_group_statement.ColumnInt64(0));
+
+  static const char kFindEntrySql[] =
+      "SELECT token_expires FROM Entries WHERE cache_id = 1";
+  sql::Statement find_entry_statement(
+      db.db_->GetUniqueStatement(kFindEntrySql));
+  EXPECT_TRUE(find_entry_statement.Step());
+  EXPECT_EQ(0, find_entry_statement.ColumnInt64(0));
+
+  static const char kFindNamespaceSql[] =
+      "SELECT token_expires FROM Namespaces WHERE cache_id = 1";
+  sql::Statement find_namespace_statement(
+      db.db_->GetUniqueStatement(kFindNamespaceSql));
+  EXPECT_TRUE(find_namespace_statement.Step());
+  EXPECT_EQ(0, find_namespace_statement.ColumnInt64(0));
 }
 
 }  // namespace content

@@ -17,10 +17,8 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task_runner.h"
-#include "base/timer/timer.h"
-#include "chrome/browser/chromeos/policy/upload_job.h"
+#include "chrome/browser/chromeos/policy/uploading/upload_job.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
-#include "net/url_request/url_request_context_getter.h"
 #include "ui/snapshot/snapshot.h"
 #include "url/gurl.h"
 
@@ -78,7 +76,7 @@ class DeviceCommandScreenshotJob : public RemoteCommandJob,
     virtual void TakeSnapshot(
         gfx::NativeWindow window,
         const gfx::Rect& source_rect,
-        const ui::GrabWindowSnapshotAsyncPNGCallback& callback) = 0;
+        ui::GrabWindowSnapshotAsyncPNGCallback callback) = 0;
 
     // Creates a new fully configured instance of an UploadJob. This method
     // may be called any number of times.
@@ -134,7 +132,7 @@ class DeviceCommandScreenshotJob : public RemoteCommandJob,
   // The upload job instance that will upload the screenshots.
   std::unique_ptr<UploadJob> upload_job_;
 
-  base::WeakPtrFactory<DeviceCommandScreenshotJob> weak_ptr_factory_;
+  base::WeakPtrFactory<DeviceCommandScreenshotJob> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DeviceCommandScreenshotJob);
 };

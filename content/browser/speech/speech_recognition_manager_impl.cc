@@ -15,7 +15,6 @@
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
-#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "content/browser/browser_main_loop.h"
@@ -35,6 +34,7 @@
 #include "content/public/browser/speech_recognition_session_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/content_client.h"
 #include "media/audio/audio_device_description.h"
 #include "third_party/blink/public/mojom/speech/speech_recognition_error.mojom.h"
 #include "third_party/blink/public/mojom/speech/speech_recognition_result.mojom.h"
@@ -44,8 +44,6 @@
 #if defined(OS_ANDROID)
 #include "content/browser/speech/speech_recognizer_impl_android.h"
 #endif
-
-using base::Callback;
 
 namespace content {
 
@@ -195,10 +193,9 @@ void SpeechRecognitionManagerImpl::FrameDeletionObserver::ContentsObserver::
     RenderFrameDeleted(RenderFrameHost* render_frame_host) {
   auto iters = observed_frames_.equal_range(render_frame_host);
   for (auto it = iters.first; it != iters.second; ++it) {
-    base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO})
-        ->PostTask(FROM_HERE,
-                   base::BindOnce(parent_observer_->frame_deleted_callback_,
-                                  it->second));
+    GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(parent_observer_->frame_deleted_callback_, it->second));
   }
 
   observed_frames_.erase(iters.first, iters.second);
@@ -234,8 +231,7 @@ SpeechRecognitionManagerImpl::SpeechRecognitionManagerImpl(
       delegate_(GetContentClient()
                     ->browser()
                     ->CreateSpeechRecognitionManagerDelegate()),
-      requester_id_(next_requester_id_++),
-      weak_factory_(this) {
+      requester_id_(next_requester_id_++) {
   DCHECK(!g_speech_recognition_manager_impl);
   g_speech_recognition_manager_impl = this;
 
@@ -303,14 +299,13 @@ int SpeechRecognitionManagerImpl::CreateSession(
 
   // The deletion observer is owned by this class, so it's safe to use
   // Unretained.
-  base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI})
-      ->PostTask(
-          FROM_HERE,
-          base::BindOnce(&SpeechRecognitionManagerImpl::FrameDeletionObserver::
-                             CreateObserverForSession,
-                         base::Unretained(frame_deletion_observer_.get()),
-                         config.initial_context.render_process_id,
-                         config.initial_context.render_frame_id, session_id));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SpeechRecognitionManagerImpl::FrameDeletionObserver::
+                         CreateObserverForSession,
+                     base::Unretained(frame_deletion_observer_.get()),
+                     config.initial_context.render_process_id,
+                     config.initial_context.render_frame_id, session_id));
 
   return session_id;
 }
@@ -413,15 +408,14 @@ void SpeechRecognitionManagerImpl::AbortSession(int session_id) {
 
   // The deletion observer is owned by this class, so it's safe to use
   // Unretained.
-  base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI})
-      ->PostTask(
-          FROM_HERE,
-          base::BindOnce(&SpeechRecognitionManagerImpl::FrameDeletionObserver::
-                             RemoveObserverForSession,
-                         base::Unretained(frame_deletion_observer_.get()),
-                         iter->second->config.initial_context.render_process_id,
-                         iter->second->config.initial_context.render_frame_id,
-                         session_id));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SpeechRecognitionManagerImpl::FrameDeletionObserver::
+                         RemoveObserverForSession,
+                     base::Unretained(frame_deletion_observer_.get()),
+                     iter->second->config.initial_context.render_process_id,
+                     iter->second->config.initial_context.render_frame_id,
+                     session_id));
 
   AbortSessionImpl(session_id);
 }
@@ -453,6 +447,17 @@ void SpeechRecognitionManagerImpl::StopAudioCaptureForSession(int session_id) {
   if (iter == sessions_.end())
     return;
 
+  // The deletion observer is owned by this class, so it's safe to use
+  // Unretained.
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SpeechRecognitionManagerImpl::FrameDeletionObserver::
+                         RemoveObserverForSession,
+                     base::Unretained(frame_deletion_observer_.get()),
+                     iter->second->config.initial_context.render_process_id,
+                     iter->second->config.initial_context.render_frame_id,
+                     session_id));
+
   iter->second->ui.reset();
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
@@ -474,8 +479,10 @@ void SpeechRecognitionManagerImpl::OnRecognitionStart(int session_id) {
   auto iter = sessions_.find(session_id);
   if (iter->second->ui) {
     // Notify the UI that the devices are being used.
-    iter->second->ui->OnStarted(base::OnceClosure(), base::RepeatingClosure(),
-                                MediaStreamUIProxy::WindowIdCallback());
+    iter->second->ui->OnStarted(
+        base::OnceClosure(), MediaStreamUI::SourceCallback(),
+        MediaStreamUIProxy::WindowIdCallback(), /*label=*/std::string(),
+        /*screen_capture_ids=*/{}, MediaStreamUI::StateChangeCallback());
   }
 
   DCHECK_EQ(primary_session_id_, session_id);
@@ -601,8 +608,8 @@ void SpeechRecognitionManagerImpl::OnRecognitionEnd(int session_id) {
                                 EVENT_RECOGNITION_ENDED));
 }
 
-SpeechRecognitionSessionContext
-SpeechRecognitionManagerImpl::GetSessionContext(int session_id) const {
+SpeechRecognitionSessionContext SpeechRecognitionManagerImpl::GetSessionContext(
+    int session_id) {
   return GetSession(session_id)->context;
 }
 
@@ -730,7 +737,8 @@ void SpeechRecognitionManagerImpl::SessionStart(const Session& session) {
   } else {
     // From the ask_user=true path, use the selected device.
     DCHECK_EQ(1u, devices.size());
-    DCHECK_EQ(blink::MEDIA_DEVICE_AUDIO_CAPTURE, devices.front().type);
+    DCHECK_EQ(blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+              devices.front().type);
     device_id = devices.front().id;
   }
 
@@ -807,7 +815,7 @@ SpeechRecognitionManagerImpl::GetDelegateListener() const {
 }
 
 const SpeechRecognitionSessionConfig&
-SpeechRecognitionManagerImpl::GetSessionConfig(int session_id) const {
+SpeechRecognitionManagerImpl::GetSessionConfig(int session_id) {
   return GetSession(session_id)->config;
 }
 

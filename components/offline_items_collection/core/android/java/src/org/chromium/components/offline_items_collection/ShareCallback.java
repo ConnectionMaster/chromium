@@ -4,11 +4,11 @@
 
 package org.chromium.components.offline_items_collection;
 
-import android.support.annotation.Nullable;
+import androidx.annotation.Nullable;
 
 /**
- * This interface is a Java counterpart to the C++ base::Callback meant to be used in response
- * to {@link OfflineItemShareInfo} requests.
+ * This interface is a Java counterpart to the C++ offline_items_collection::ShareCallback meant to
+ * be used in response to {@link OfflineItemShareInfo} requests.
  */
 public interface ShareCallback {
     /**

@@ -14,11 +14,11 @@
 #include "base/memory/ref_counted.h"
 #include "content/browser/background_fetch/background_fetch_test_browser_context.h"
 #include "content/browser/background_fetch/background_fetch_test_service_worker.h"
-#include "content/browser/devtools/devtools_background_services_context.h"
-#include "content/common/service_worker/service_worker_types.h"
+#include "content/browser/devtools/devtools_background_services_context_impl.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/origin.h"
 
 namespace content {
@@ -74,19 +74,19 @@ class BackgroundFetchTestBase : public ::testing::Test {
   }
 
   // Returns the browser context that should be used for the tests.
-  BrowserContext* browser_context() { return &browser_context_; }
+  TestBrowserContext* browser_context() { return &browser_context_; }
 
   // Returns the once-initialized default storage partition to be used in tests.
   StoragePartition* storage_partition() { return storage_partition_; }
 
-  // Returns the origin that should be used for Background Fetch tests.
-  const url::Origin& origin() const { return origin_; }
+  // Returns the storage key that should be used for Background Fetch tests.
+  const blink::StorageKey& storage_key() const { return storage_key_; }
 
   // Returns the DevTools context for logging events.
-  scoped_refptr<DevToolsBackgroundServicesContext> devtools_context() const;
+  scoped_refptr<DevToolsBackgroundServicesContextImpl> devtools_context() const;
 
  protected:
-  TestBrowserThreadBundle thread_bundle_;  // Must be first member.
+  BrowserTaskEnvironment task_environment_;  // Must be first member.
 
  private:
   BackgroundFetchTestBrowserContext browser_context_;
@@ -95,7 +95,7 @@ class BackgroundFetchTestBase : public ::testing::Test {
 
   EmbeddedWorkerTestHelper embedded_worker_test_helper_;
 
-  url::Origin origin_;
+  blink::StorageKey storage_key_;
 
   StoragePartition* storage_partition_;
 

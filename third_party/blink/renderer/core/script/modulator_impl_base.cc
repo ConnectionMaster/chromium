@@ -3,21 +3,28 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/script/modulator_impl_base.h"
-
+#include "base/feature_list.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
 #include "third_party/blink/public/platform/task_type.h"
+#include "third_party/blink/renderer/bindings/core/v8/module_record.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_fetch_request.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_tree_linker.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_tree_linker_registry.h"
 #include "third_party/blink/renderer/core/script/dynamic_module_resolver.h"
 #include "third_party/blink/renderer/core/script/import_map.h"
+#include "third_party/blink/renderer/core/script/js_module_script.h"
 #include "third_party/blink/renderer/core/script/module_map.h"
 #include "third_party/blink/renderer/core/script/module_record_resolver_impl.h"
-#include "third_party/blink/renderer/core/script/module_script.h"
 #include "third_party/blink/renderer/core/script/parsed_specifier.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
@@ -47,42 +54,8 @@ bool ModulatorImplBase::IsScriptingDisabled() const {
   return !GetExecutionContext()->CanExecuteScripts(kAboutToExecuteScript);
 }
 
-bool ModulatorImplBase::BuiltInModuleInfraEnabled() const {
-  return RuntimeEnabledFeatures::BuiltInModuleInfraEnabled(
-      GetExecutionContext());
-}
-
-bool ModulatorImplBase::BuiltInModuleEnabled(
-    blink::layered_api::Module module) const {
-  DCHECK(BuiltInModuleInfraEnabled());
-  switch (module) {
-    case blink::layered_api::Module::kBlank:
-      return true;
-    case blink::layered_api::Module::kVirtualScroller:
-      return RuntimeEnabledFeatures::BuiltInModuleAllEnabled();
-    case blink::layered_api::Module::kKvStorage:
-      return RuntimeEnabledFeatures::BuiltInModuleAllEnabled() ||
-             RuntimeEnabledFeatures::BuiltInModuleKvStorageEnabled(
-                 GetExecutionContext());
-  }
-}
-
-void ModulatorImplBase::BuiltInModuleUseCount(
-    blink::layered_api::Module module) const {
-  DCHECK(BuiltInModuleInfraEnabled());
-  DCHECK(BuiltInModuleEnabled(module));
-  switch (module) {
-    case blink::layered_api::Module::kBlank:
-      break;
-    case blink::layered_api::Module::kVirtualScroller:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kBuiltInModuleVirtualScroller);
-      break;
-    case blink::layered_api::Module::kKvStorage:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kBuiltInModuleKvStorage);
-      break;
-  }
+mojom::blink::V8CacheOptions ModulatorImplBase::GetV8CacheOptions() const {
+  return GetExecutionContext()->GetV8CacheOptions();
 }
 
 // <specdef label="fetch-a-module-script-tree"
@@ -91,47 +64,29 @@ void ModulatorImplBase::BuiltInModuleUseCount(
 // href="https://html.spec.whatwg.org/C/#fetch-a-module-worker-script-tree">
 void ModulatorImplBase::FetchTree(
     const KURL& url,
+    ModuleType module_type,
     ResourceFetcher* fetch_client_settings_object_fetcher,
-    mojom::RequestContextType destination,
+    mojom::blink::RequestContextType context_type,
+    network::mojom::RequestDestination destination,
     const ScriptFetchOptions& options,
     ModuleScriptCustomFetchType custom_fetch_type,
     ModuleTreeClient* client) {
-  // <spec label="fetch-a-module-script-tree" step="2">Perform the internal
-  // module script graph fetching procedure given url, settings object,
-  // destination, options, settings object, visited set, "client", and with the
-  // top-level module fetch flag set. If the caller of this algorithm specified
-  // custom perform the fetch steps, pass those along as well.</spec>
-
-  // <spec label="fetch-a-module-worker-script-tree" step="3">Perform the
-  // internal module script graph fetching procedure given url, fetch client
-  // settings object, destination, options, module map settings object, visited
-  // set, "client", and with the top-level module fetch flag set. If the caller
-  // of this algorithm specified custom perform the fetch steps, pass those
-  // along as well.</spec>
-
-  ModuleTreeLinker::Fetch(url, fetch_client_settings_object_fetcher,
+  ModuleTreeLinker::Fetch(url, module_type,
+                          fetch_client_settings_object_fetcher, context_type,
                           destination, options, this, custom_fetch_type,
                           tree_linker_registry_, client);
-
-  // <spec label="fetch-a-module-script-tree" step="3">When the internal module
-  // script graph fetching procedure asynchronously completes with result,
-  // asynchronously complete this algorithm with result.</spec>
-
-  // <spec label="fetch-a-module-worker-script-tree" step="4">When the internal
-  // module script graph fetching procedure asynchronously completes with
-  // result, asynchronously complete this algorithm with result.</spec>
-
-  // Note: We delegate to ModuleTreeLinker to notify ModuleTreeClient.
 }
 
 void ModulatorImplBase::FetchDescendantsForInlineScript(
     ModuleScript* module_script,
     ResourceFetcher* fetch_client_settings_object_fetcher,
-    mojom::RequestContextType destination,
+    mojom::blink::RequestContextType context_type,
+    network::mojom::RequestDestination destination,
     ModuleTreeClient* client) {
   ModuleTreeLinker::FetchDescendantsForInlineScript(
-      module_script, fetch_client_settings_object_fetcher, destination, this,
-      ModuleScriptCustomFetchType::kNone, tree_linker_registry_, client);
+      module_script, fetch_client_settings_object_fetcher, context_type,
+      destination, this, ModuleScriptCustomFetchType::kNone,
+      tree_linker_registry_, client);
 }
 
 void ModulatorImplBase::FetchSingle(
@@ -144,8 +99,10 @@ void ModulatorImplBase::FetchSingle(
                                 level, custom_fetch_type, client);
 }
 
-ModuleScript* ModulatorImplBase::GetFetchedModuleScript(const KURL& url) {
-  return map_->GetFetchedModuleScript(url);
+ModuleScript* ModulatorImplBase::GetFetchedModuleScript(
+    const KURL& url,
+    ModuleType module_type) {
+  return map_->GetFetchedModuleScript(url, module_type);
 }
 
 // <specdef href="https://html.spec.whatwg.org/C/#resolve-a-module-specifier">
@@ -168,11 +125,11 @@ KURL ModulatorImplBase::ResolveModuleSpecifier(const String& specifier,
   // errors, but should be supressed (i.e. |logger| should be null) in normal
   // cases.
 
-  base::Optional<KURL> mapped_url;
+  absl::optional<KURL> mapped_url;
   if (import_map_) {
     String import_map_debug_message;
-    mapped_url =
-        import_map_->Resolve(parsed_specifier, &import_map_debug_message);
+    mapped_url = import_map_->Resolve(parsed_specifier, base_url,
+                                      &import_map_debug_message);
 
     // Output the resolution log. This is too verbose to be always shown, but
     // will be helpful for Web developers (and also Chromium developers) for
@@ -200,13 +157,6 @@ KURL ModulatorImplBase::ResolveModuleSpecifier(const String& specifier,
       return KURL();
 
     case ParsedSpecifier::Type::kBare:
-      // Allow |@std/x| specifiers if Layered API is enabled.
-      if (BuiltInModuleInfraEnabled()) {
-        if (parsed_specifier.GetImportMapKeyString().StartsWith("@std/")) {
-          return KURL("import:" + parsed_specifier.GetImportMapKeyString());
-        }
-      }
-
       // Reject bare specifiers as specced by the pre-ImportMap spec.
       if (failure_reason) {
         *failure_reason =
@@ -220,22 +170,50 @@ KURL ModulatorImplBase::ResolveModuleSpecifier(const String& specifier,
   }
 }
 
-void ModulatorImplBase::RegisterImportMap(const ImportMap* import_map) {
-  if (import_map_) {
-    // Only one import map is allowed.
-    // TODO(crbug.com/927119): Implement merging.
-    GetExecutionContext()->AddConsoleMessage(
-        mojom::ConsoleMessageSource::kOther, mojom::ConsoleMessageLevel::kError,
-        "Multiple import maps are not yet supported. https://crbug.com/927119");
+ScriptValue ModulatorImplBase::CreateTypeError(const String& message) const {
+  ScriptState::Scope scope(script_state_);
+  ScriptValue error(
+      script_state_->GetIsolate(),
+      V8ThrowException::CreateTypeError(script_state_->GetIsolate(), message));
+  return error;
+}
+
+ScriptValue ModulatorImplBase::CreateSyntaxError(const String& message) const {
+  ScriptState::Scope scope(script_state_);
+  ScriptValue error(script_state_->GetIsolate(),
+                    V8ThrowException::CreateSyntaxError(
+                        script_state_->GetIsolate(), message));
+  return error;
+}
+
+// <specdef href="https://wicg.github.io/import-maps/#register-an-import-map">
+void ModulatorImplBase::RegisterImportMap(const ImportMap* import_map,
+                                          ScriptValue error_to_rethrow) {
+  DCHECK(import_map);
+
+  // <spec step="7">If import map parse result’s error to rethrow is not null,
+  // then:</spec>
+  if (!error_to_rethrow.IsEmpty()) {
+    // <spec step="7.1">Report the exception given import map parse result’s
+    // error to rethrow. ...</spec>
+    if (!IsScriptingDisabled()) {
+      ScriptState::Scope scope(script_state_);
+      ModuleRecord::ReportException(script_state_, error_to_rethrow.V8Value());
+    }
+
+    // <spec step="7.2">Return.</spec>
     return;
   }
 
-  if (!BuiltInModuleInfraEnabled()) {
-    GetExecutionContext()->AddConsoleMessage(
-        mojom::ConsoleMessageSource::kOther, mojom::ConsoleMessageLevel::kError,
-        "Import maps are disabled when Layered API Infra is disabled.");
-    return;
-  }
+  // <spec step="8">Update element’s node document's import map with import map
+  // parse result’s import map.</spec>
+  //
+  // TODO(crbug.com/927119): Implement merging. Currently only one import map is
+  // allowed.
+
+  // Because the second and subsequent import maps are already rejected in
+  // ScriptLoader::PrepareScript(), this is called only once.
+  DCHECK(!import_map_);
   import_map_ = import_map;
 }
 
@@ -244,7 +222,7 @@ bool ModulatorImplBase::HasValidContext() {
 }
 
 void ModulatorImplBase::ResolveDynamically(
-    const String& specifier,
+    const ModuleRequest& module_request,
     const KURL& referrer_url,
     const ReferrerScriptInfo& referrer_info,
     ScriptPromiseResolver* resolver) {
@@ -256,48 +234,60 @@ void ModulatorImplBase::ResolveDynamically(
   }
   UseCounter::Count(GetExecutionContext(),
                     WebFeature::kDynamicImportModuleScript);
-  dynamic_module_resolver_->ResolveDynamically(specifier, referrer_url,
+  dynamic_module_resolver_->ResolveDynamically(module_request, referrer_url,
                                                referrer_info, resolver);
 }
 
 // <specdef href="https://html.spec.whatwg.org/C/#hostgetimportmetaproperties">
 ModuleImportMeta ModulatorImplBase::HostGetImportMetaProperties(
-    ModuleRecord record) const {
+    v8::Local<v8::Module> record) const {
   // <spec step="1">Let module script be moduleRecord.[[HostDefined]].</spec>
   const ModuleScript* module_script =
-      module_record_resolver_->GetHostDefined(record);
+      module_record_resolver_->GetModuleScriptFromModuleRecord(record);
   DCHECK(module_script);
 
-  // <spec step="2">Let urlString be module script's base URL,
+  // <spec step="3">Let urlString be module script's base URL,
   // serialized.</spec>
   String url_string = module_script->BaseURL().GetString();
 
-  // <spec step="3">Return « Record { [[Key]]: "url", [[Value]]: urlString }
+  // <spec step="4">Return « Record { [[Key]]: "url", [[Value]]: urlString }
   // ».</spec>
   return ModuleImportMeta(url_string);
 }
 
-ScriptValue ModulatorImplBase::InstantiateModule(ModuleRecord module_record) {
+ScriptValue ModulatorImplBase::InstantiateModule(
+    v8::Local<v8::Module> module_record,
+    const KURL& source_url) {
   UseCounter::Count(GetExecutionContext(),
                     WebFeature::kInstantiateModuleScript);
 
   ScriptState::Scope scope(script_state_);
-  return module_record.Instantiate(script_state_);
+  return ModuleRecord::Instantiate(script_state_, module_record, source_url);
 }
 
-Vector<Modulator::ModuleRequest>
-ModulatorImplBase::ModuleRequestsFromModuleRecord(ModuleRecord module_record) {
-  ScriptState::Scope scope(script_state_);
-  Vector<String> specifiers = module_record.ModuleRequests(script_state_);
-  Vector<TextPosition> positions =
-      module_record.ModuleRequestPositions(script_state_);
-  DCHECK_EQ(specifiers.size(), positions.size());
-  Vector<ModuleRequest> requests;
-  requests.ReserveInitialCapacity(specifiers.size());
-  for (wtf_size_t i = 0; i < specifiers.size(); ++i) {
-    requests.emplace_back(specifiers[i], positions[i]);
+ModuleType ModulatorImplBase::ModuleTypeFromRequest(
+    const ModuleRequest& module_request) const {
+  String module_type_string = module_request.GetModuleTypeString();
+  if (module_type_string.IsNull()) {
+    // Per https://github.com/whatwg/html/pull/5883, if no type assertion is
+    // provided then the import should be treated as a JavaScript module.
+    return ModuleType::kJavaScript;
+  } else if (base::FeatureList::IsEnabled(blink::features::kJSONModules) &&
+             module_type_string == "json") {
+    // Per https://github.com/whatwg/html/pull/5658, a "json" type assertion
+    // indicates that the import should be treated as a JSON module script.
+    return ModuleType::kJSON;
+  } else if (RuntimeEnabledFeatures::CSSModulesEnabled() &&
+             module_type_string == "css") {
+    // Per https://github.com/whatwg/html/pull/4898, a "css" type assertion
+    // indicates that the import should be treated as a CSS module script.
+    return ModuleType::kCSS;
+  } else {
+    // Per https://github.com/whatwg/html/pull/5883, if an unsupported type
+    // assertion is provided then the import should be treated as an error
+    // similar to an invalid module specifier.
+    return ModuleType::kInvalid;
   }
-  return requests;
 }
 
 void ModulatorImplBase::ProduceCacheModuleTreeTopLevel(
@@ -316,25 +306,32 @@ void ModulatorImplBase::ProduceCacheModuleTree(
     HeapHashSet<Member<const ModuleScript>>* discovered_set) {
   DCHECK(module_script);
 
+  v8::Isolate* isolate = GetScriptState()->GetIsolate();
+  v8::HandleScope scope(isolate);
+
   discovered_set->insert(module_script);
 
-  ModuleRecord record = module_script->Record();
-  DCHECK(!record.IsNull());
+  v8::Local<v8::Module> record = module_script->V8Module();
+  DCHECK(!record.IsEmpty());
 
   module_script->ProduceCache();
 
-  Vector<Modulator::ModuleRequest> child_specifiers =
-      ModuleRequestsFromModuleRecord(record);
+  Vector<ModuleRequest> child_specifiers =
+      ModuleRecord::ModuleRequests(GetScriptState(), record);
 
   for (const auto& module_request : child_specifiers) {
     KURL child_url =
         module_script->ResolveModuleSpecifier(module_request.specifier);
 
+    ModuleType child_module_type = ModuleTypeFromRequest(module_request);
+    CHECK_NE(child_module_type, ModuleType::kInvalid);
+
     CHECK(child_url.IsValid())
         << "ModuleScript::ResolveModuleSpecifier() impl must "
            "return a valid url.";
 
-    ModuleScript* child_module = GetFetchedModuleScript(child_url);
+    ModuleScript* child_module =
+        GetFetchedModuleScript(child_url, child_module_type);
     CHECK(child_module);
 
     if (discovered_set->Contains(child_module))
@@ -344,79 +341,7 @@ void ModulatorImplBase::ProduceCacheModuleTree(
   }
 }
 
-// <specdef href="https://html.spec.whatwg.org/C/#run-a-module-script">
-ScriptValue ModulatorImplBase::ExecuteModule(
-    ModuleScript* module_script,
-    CaptureEvalErrorFlag capture_error) {
-  // <spec step="1">If rethrow errors is not given, let it be false.</spec>
-
-  // <spec step="2">Let settings be the settings object of script.</spec>
-  //
-  // The settings object is |this|.
-
-  // <spec step="3">Check if we can run script with settings. If this returns
-  // "do not run" then return NormalCompletion(empty).</spec>
-  if (IsScriptingDisabled())
-    return ScriptValue();
-
-  // <spec step="4">Prepare to run script given settings.</spec>
-  //
-  // This is placed here to also cover ModuleRecord::ReportException().
-  ScriptState::Scope scope(script_state_);
-
-  // <spec step="5">Let evaluationStatus be null.</spec>
-  //
-  // |error| corresponds to "evaluationStatus of [[Type]]: throw".
-  ScriptValue error;
-
-  // <spec step="6">If script's error to rethrow is not null, ...</spec>
-  if (module_script->HasErrorToRethrow()) {
-    // <spec step="6">... then set evaluationStatus to Completion { [[Type]]:
-    // throw, [[Value]]: script's error to rethrow, [[Target]]: empty }.</spec>
-    error = module_script->CreateErrorToRethrow();
-  } else {
-    // <spec step="7">Otherwise:</spec>
-
-    // <spec step="7.1">Let record be script's record.</spec>
-    const ModuleRecord& record = module_script->Record();
-    CHECK(!record.IsNull());
-
-    // <spec step="7.2">Set evaluationStatus to record.Evaluate(). ...</spec>
-    error = record.Evaluate(script_state_);
-
-    // <spec step="7.2">... If Evaluate fails to complete as a result of the
-    // user agent aborting the running script, then set evaluationStatus to
-    // Completion { [[Type]]: throw, [[Value]]: a new "QuotaExceededError"
-    // DOMException, [[Target]]: empty }.</spec>
-
-    // [not specced] Store V8 code cache on successful evaluation.
-    if (error.IsEmpty()) {
-      TaskRunner()->PostTask(
-          FROM_HERE,
-          WTF::Bind(&ModulatorImplBase::ProduceCacheModuleTreeTopLevel,
-                    WrapWeakPersistent(this), WrapPersistent(module_script)));
-    }
-  }
-
-  // <spec step="8">If evaluationStatus is an abrupt completion, then:</spec>
-  if (!error.IsEmpty()) {
-    // <spec step="8.1">If rethrow errors is true, rethrow the exception given
-    // by evaluationStatus.[[Value]].</spec>
-    if (capture_error == CaptureEvalErrorFlag::kCapture)
-      return error;
-
-    // <spec step="8.2">Otherwise, report the exception given by
-    // evaluationStatus.[[Value]] for script.</spec>
-    ModuleRecord::ReportException(script_state_, error.V8Value());
-  }
-
-  // <spec step="9">Clean up after running script with settings.</spec>
-  //
-  // Implemented as the ScriptState::Scope destructor.
-  return ScriptValue();
-}
-
-void ModulatorImplBase::Trace(blink::Visitor* visitor) {
+void ModulatorImplBase::Trace(Visitor* visitor) const {
   visitor->Trace(script_state_);
   visitor->Trace(map_);
   visitor->Trace(tree_linker_registry_);

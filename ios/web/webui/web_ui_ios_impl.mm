@@ -7,13 +7,15 @@
 #include <stddef.h>
 
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/web_client.h"
 #include "ios/web/public/webui/web_ui_ios_controller.h"
 #include "ios/web/public/webui/web_ui_ios_controller_factory.h"
 #include "ios/web/public/webui/web_ui_ios_message_handler.h"
-#import "ios/web/web_state/web_state_impl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -21,27 +23,33 @@
 
 using web::WebUIIOSController;
 
+namespace {
+const char kCommandPrefix[] = "webui";
+}
+
 namespace web {
 
 // static
-base::string16 WebUIIOS::GetJavascriptCall(
+std::u16string WebUIIOS::GetJavascriptCall(
     const std::string& function_name,
     const std::vector<const base::Value*>& arg_list) {
-  base::string16 parameters;
+  std::u16string parameters;
   std::string json;
   for (size_t i = 0; i < arg_list.size(); ++i) {
     if (i > 0)
-      parameters += base::char16(',');
+      parameters += u',';
 
     base::JSONWriter::Write(*arg_list[i], &json);
     parameters += base::UTF8ToUTF16(json);
   }
-  return base::ASCIIToUTF16(function_name) + base::char16('(') + parameters +
-         base::char16(')') + base::char16(';');
+  return base::ASCIIToUTF16(function_name) + u'(' + parameters + u");";
 }
 
-WebUIIOSImpl::WebUIIOSImpl(WebStateImpl* web_state) : web_state_(web_state) {
+WebUIIOSImpl::WebUIIOSImpl(WebState* web_state) : web_state_(web_state) {
   DCHECK(web_state);
+  subscription_ = web_state->AddScriptCommandCallback(
+      base::BindRepeating(&WebUIIOSImpl::OnJsMessage, base::Unretained(this)),
+      kCommandPrefix);
 }
 
 WebUIIOSImpl::~WebUIIOSImpl() {
@@ -89,9 +97,47 @@ void WebUIIOSImpl::RejectJavascriptCallback(const base::Value& callback_id,
   ExecuteJavascript(GetJavascriptCall("cr.webUIResponse", args));
 }
 
+void WebUIIOSImpl::FireWebUIListener(
+    const std::string& event_name,
+    const std::vector<const base::Value*>& args) {
+  base::Value callback_arg(event_name);
+  std::vector<const base::Value*> modified_args;
+  modified_args.push_back(&callback_arg);
+  modified_args.insert(modified_args.end(), args.begin(), args.end());
+  ExecuteJavascript(
+      GetJavascriptCall("cr.webUIListenerCallback", modified_args));
+}
+
 void WebUIIOSImpl::RegisterMessageCallback(const std::string& message,
                                            const MessageCallback& callback) {
   message_callbacks_.insert(std::make_pair(message, callback));
+}
+
+void WebUIIOSImpl::OnJsMessage(const base::Value& message,
+                               const GURL& page_url,
+                               bool user_is_interacting,
+                               web::WebFrame* sender_frame) {
+  // Chrome message are only handled if sent from the main frame.
+  if (!sender_frame->IsMainFrame())
+    return;
+
+  web::URLVerificationTrustLevel trust_level =
+      web::URLVerificationTrustLevel::kNone;
+  const GURL current_url = web_state_->GetCurrentURL(&trust_level);
+  if (web::GetWebClient()->IsAppSpecificURL(current_url)) {
+    const std::string* message_content = message.FindStringKey("message");
+    if (!message_content) {
+      DLOG(WARNING) << "JS message parameter not found: message";
+      return;
+    }
+    const base::Value* arguments = message.FindListKey("arguments");
+    if (!arguments) {
+      DLOG(WARNING) << "JS message parameter not found: arguments";
+      return;
+    }
+    ProcessWebUIIOSMessage(current_url, *message_content,
+                           base::Value::AsListValue(*arguments));
+  }
 }
 
 void WebUIIOSImpl::ProcessWebUIIOSMessage(const GURL& source_url,
@@ -120,7 +166,7 @@ void WebUIIOSImpl::AddMessageHandler(
   handlers_.push_back(std::move(handler));
 }
 
-void WebUIIOSImpl::ExecuteJavascript(const base::string16& javascript) {
+void WebUIIOSImpl::ExecuteJavascript(const std::u16string& javascript) {
   web_state_->ExecuteJavaScript(javascript);
 }
 

@@ -26,15 +26,15 @@
 // AcceleratedTestView provides an NSView class that delegates drawing to a
 // ui::Compositor delegate, setting up the NSOpenGLContext as required.
 @interface AcceleratedTestView : NSView {
-  ui::Compositor* compositor_;
+  ui::Compositor* _compositor;
 }
 // Designated initializer.
-- (id)init;
+- (instancetype)init;
 - (void)setCompositor:(ui::Compositor*)compositor;
 @end
 
 @implementation AcceleratedTestView
-- (id)init {
+- (instancetype)init {
   // The frame will be resized when reparented into the window's view hierarchy.
   if ((self = [super initWithFrame:NSZeroRect])) {
     [self setWantsLayer:YES];
@@ -43,12 +43,12 @@
 }
 
 - (void)setCompositor:(ui::Compositor*)compositor {
-  compositor_ = compositor;
+  _compositor = compositor;
 }
 
 - (void)drawRect:(NSRect)rect {
-  DCHECK(compositor_) << "Drawing with no compositor set.";
-  compositor_->ScheduleFullRedraw();
+  DCHECK(_compositor) << "Drawing with no compositor set.";
+  _compositor->ScheduleFullRedraw();
 }
 @end
 
@@ -98,8 +98,7 @@ class TestAcceleratedWidgetMacNSView : public AcceleratedWidgetMacNSView {
 class TestCompositorHostMac : public TestCompositorHost, public AppKitHost {
  public:
   TestCompositorHostMac(const gfx::Rect& bounds,
-                        ui::ContextFactory* context_factory,
-                        ui::ContextFactoryPrivate* context_factory_private);
+                        ui::ContextFactory* context_factory);
   ~TestCompositorHostMac() override;
 
  private:
@@ -123,12 +122,10 @@ class TestCompositorHostMac : public TestCompositorHost, public AppKitHost {
 
 TestCompositorHostMac::TestCompositorHostMac(
     const gfx::Rect& bounds,
-    ui::ContextFactory* context_factory,
-    ui::ContextFactoryPrivate* context_factory_private)
+    ui::ContextFactory* context_factory)
     : bounds_(bounds),
-      compositor_(context_factory_private->AllocateFrameSinkId(),
+      compositor_(context_factory->AllocateFrameSinkId(),
                   context_factory,
-                  context_factory_private,
                   base::ThreadTaskRunnerHandle::Get(),
                   false /* enable_pixel_canvas */),
       window_(nil) {}
@@ -164,7 +161,7 @@ void TestCompositorHostMac::Show() {
   accelerated_widget_.SetNSView(test_accelerated_widget_nsview_.get());
   compositor_.SetAcceleratedWidget(accelerated_widget_.accelerated_widget());
   compositor_.SetScaleAndSize(1.0f, bounds_.size(),
-                              allocator_.GetCurrentLocalSurfaceIdAllocation());
+                              allocator_.GetCurrentLocalSurfaceId());
   [view setCompositor:&compositor_];
   [window_ setContentView:view];
   [window_ orderFront:nil];
@@ -177,10 +174,8 @@ ui::Compositor* TestCompositorHostMac::GetCompositor() {
 // static
 TestCompositorHost* TestCompositorHost::Create(
     const gfx::Rect& bounds,
-    ui::ContextFactory* context_factory,
-    ui::ContextFactoryPrivate* context_factory_private) {
-  return new TestCompositorHostMac(bounds, context_factory,
-                                   context_factory_private);
+    ui::ContextFactory* context_factory) {
+  return new TestCompositorHostMac(bounds, context_factory);
 }
 
 }  // namespace ui

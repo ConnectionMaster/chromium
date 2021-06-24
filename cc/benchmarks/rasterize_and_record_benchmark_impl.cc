@@ -8,16 +8,18 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 
 #include "base/timer/lap_timer.h"
 #include "base/values.h"
 #include "cc/layers/layer_impl.h"
 #include "cc/layers/picture_layer_impl.h"
+#include "cc/paint/display_item_list.h"
 #include "cc/raster/playback_image_provider.h"
 #include "cc/raster/raster_buffer_provider.h"
-#include "cc/trees/layer_tree_host_common.h"
 #include "cc/trees/layer_tree_host_impl.h"
 #include "cc/trees/layer_tree_impl.h"
+#include "skia/ext/legacy_display_globals.h"
 #include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -30,7 +32,7 @@ const int kDefaultRasterizeRepeatCount = 100;
 void RunBenchmark(RasterSource* raster_source,
                   ImageDecodeCache* image_decode_cache,
                   const gfx::Rect& content_rect,
-                  float contents_scale,
+                  const gfx::Vector2dF& contents_scale,
                   size_t repeat_count,
                   base::TimeDelta* min_time,
                   bool* is_solid_color) {
@@ -47,8 +49,8 @@ void RunBenchmark(RasterSource* raster_source,
                          base::TimeDelta::FromMilliseconds(kTimeLimitMillis),
                          kTimeCheckInterval);
     SkColor color = SK_ColorTRANSPARENT;
-    gfx::Rect layer_rect =
-        gfx::ScaleToEnclosingRect(content_rect, 1.f / contents_scale);
+    gfx::Rect layer_rect = gfx::ScaleToEnclosingRect(
+        content_rect, 1.f / contents_scale.x(), 1.f / contents_scale.y());
     *is_solid_color =
         raster_source->PerformSolidColorAnalysis(layer_rect, &color);
 
@@ -56,17 +58,17 @@ void RunBenchmark(RasterSource* raster_source,
       SkBitmap bitmap;
       bitmap.allocPixels(SkImageInfo::MakeN32Premul(content_rect.width(),
                                                     content_rect.height()));
-      SkCanvas canvas(bitmap);
+      SkCanvas canvas(bitmap, skia::LegacyDisplayGlobals::GetSkSurfaceProps());
 
       // Pass an empty settings to make sure that the decode cache is used to
       // replace all images.
-      base::Optional<PlaybackImageProvider::Settings> image_settings;
+      absl::optional<PlaybackImageProvider::Settings> image_settings;
       image_settings.emplace();
       image_settings->images_to_skip = {};
       image_settings->image_to_current_frame_index = {};
 
-      PlaybackImageProvider image_provider(image_decode_cache,
-                                           std::move(image_settings));
+      PlaybackImageProvider image_provider(
+          image_decode_cache, gfx::ColorSpace(), std::move(image_settings));
       RasterSource::PlaybackSettings settings;
       settings.image_provider = &image_provider;
 
@@ -95,7 +97,7 @@ class FixedInvalidationPictureLayerTilingClient
     return base_client_->CreateTile(info);
   }
 
-  gfx::Size CalculateTileSize(const gfx::Size& content_bounds) const override {
+  gfx::Size CalculateTileSize(const gfx::Size& content_bounds) override {
     return base_client_->CalculateTileSize(content_bounds);
   }
 
@@ -114,6 +116,22 @@ class FixedInvalidationPictureLayerTilingClient
 
   bool RequiresHighResToDraw() const override {
     return base_client_->RequiresHighResToDraw();
+  }
+
+  const PaintWorkletRecordMap& GetPaintWorkletRecords() const override {
+    return base_client_->GetPaintWorkletRecords();
+  }
+
+  bool IsDirectlyCompositedImage() const override {
+    return base_client_->IsDirectlyCompositedImage();
+  }
+
+  bool ScrollInteractionInProgress() const override {
+    return base_client_->ScrollInteractionInProgress();
+  }
+
+  bool DidCheckerboardQuad() const override {
+    return base_client_->DidCheckerboardQuad();
   }
 
  private:
@@ -142,11 +160,10 @@ RasterizeAndRecordBenchmarkImpl::~RasterizeAndRecordBenchmarkImpl() = default;
 
 void RasterizeAndRecordBenchmarkImpl::DidCompleteCommit(
     LayerTreeHostImpl* host) {
-  LayerTreeHostCommon::CallFunctionForEveryLayer(
-      host->active_tree(), [this](LayerImpl* layer) {
-        rasterize_results_.total_layers++;
-        layer->RunMicroBenchmark(this);
-      });
+  for (auto* layer : *host->active_tree()) {
+    rasterize_results_.total_layers++;
+    layer->RunMicroBenchmark(this);
+  }
 
   std::unique_ptr<base::DictionaryValue> result(new base::DictionaryValue());
   result->SetDouble("rasterize_time_ms",
@@ -164,6 +181,17 @@ void RasterizeAndRecordBenchmarkImpl::DidCompleteCommit(
   result->SetInteger("total_picture_layers_off_screen",
                      rasterize_results_.total_picture_layers_off_screen);
 
+  std::unique_ptr<base::DictionaryValue> lcd_text_pixels(
+      new base::DictionaryValue());
+  for (size_t i = 0; i < kLCDTextDisallowedReasonCount; i++) {
+    lcd_text_pixels->SetInteger(
+        LCDTextDisallowedReasonToString(
+            static_cast<LCDTextDisallowedReason>(i)),
+        rasterize_results_.visible_pixels_by_lcd_text_disallowed_reason[i]);
+  }
+  result->SetDictionary("visible_pixels_by_lcd_text_disallowed_reason",
+                        std::move(lcd_text_pixels));
+
   NotifyDone(std::move(result));
 }
 
@@ -177,6 +205,13 @@ void RasterizeAndRecordBenchmarkImpl::RunOnLayer(PictureLayerImpl* layer) {
     rasterize_results_.total_picture_layers_off_screen++;
     return;
   }
+
+  int text_pixels =
+      layer->GetRasterSource()->GetDisplayItemList()->AreaOfDrawText(
+          layer->visible_layer_rect());
+  rasterize_results_
+      .visible_pixels_by_lcd_text_disallowed_reason[static_cast<size_t>(
+          layer->lcd_text_disallowed_reason())] += text_pixels;
 
   FixedInvalidationPictureLayerTilingClient client(layer,
                                                    gfx::Rect(layer->bounds()));
@@ -204,7 +239,7 @@ void RasterizeAndRecordBenchmarkImpl::RunOnLayer(PictureLayerImpl* layer) {
     DCHECK(*it);
 
     gfx::Rect content_rect = (*it)->content_rect();
-    float contents_scale = (*it)->raster_transform().scale();
+    const gfx::Vector2dF& contents_scale = (*it)->raster_transform().scale();
 
     base::TimeDelta min_time;
     bool is_solid_color = false;
@@ -228,6 +263,7 @@ RasterizeAndRecordBenchmarkImpl::RasterizeResults::RasterizeResults()
     : pixels_rasterized(0),
       pixels_rasterized_with_non_solid_color(0),
       pixels_rasterized_as_opaque(0),
+      visible_pixels_by_lcd_text_disallowed_reason{0},
       total_layers(0),
       total_picture_layers(0),
       total_picture_layers_with_no_content(0),

@@ -11,7 +11,6 @@
 #include "base/macros.h"
 #include "media/base/android/android_util.h"
 #include "media/base/media_export.h"
-#include "media/base/player_tracker.h"
 
 namespace media {
 
@@ -21,10 +20,11 @@ namespace media {
 // Methods can be called on any thread. The registered callbacks can be fired
 // on any thread. The caller should make sure that the callbacks are posted to
 // the correct thread.
-//
-// TODO(xhwang): Remove PlayerTracker interface.
-class MEDIA_EXPORT MediaCryptoContext : public PlayerTracker {
+class MEDIA_EXPORT MediaCryptoContext {
  public:
+  MediaCryptoContext() = default;
+  virtual ~MediaCryptoContext() = default;
+
   // Notification called when MediaCrypto object is ready.
   // Parameters:
   // |media_crypto| - global reference to MediaCrypto object. |media_crypto| is
@@ -34,15 +34,12 @@ class MEDIA_EXPORT MediaCryptoContext : public PlayerTracker {
   //                                 Should be ignored if |media_crypto|
   //                                 contains null MediaCrypto object.
   using MediaCryptoReadyCB =
-      base::Callback<void(JavaObjectPtr media_crypto,
-                          bool requires_secure_video_codec)>;
-
-  MediaCryptoContext() {}
-  ~MediaCryptoContext() override {}
-
+      base::OnceCallback<void(JavaObjectPtr media_crypto,
+                              bool requires_secure_video_codec)>;
   virtual void SetMediaCryptoReadyCB(
-      const MediaCryptoReadyCB& media_crypto_ready_cb) = 0;
+      MediaCryptoReadyCB media_crypto_ready_cb) = 0;
 
+ private:
   DISALLOW_COPY_AND_ASSIGN(MediaCryptoContext);
 };
 

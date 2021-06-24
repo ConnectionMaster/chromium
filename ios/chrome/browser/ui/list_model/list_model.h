@@ -9,6 +9,14 @@
 
 @class ListItem;
 
+// A mediator that stores and retrieves collapsed state for given sections.
+@interface ListModelCollapsedMediator : NSObject
+// Sets collapsed state for given sectionKey.
+- (void)setSectionKey:(NSString*)sectionKey collapsed:(BOOL)collapsed;
+// Retrieves collapsed state for given sectionKey. Returns NO for unknown keys.
+- (BOOL)sectionKeyIsCollapsed:(NSString*)sectionKey;
+@end
+
 // Collapsable mode to use either the header cell or the first cell to collapse
 // sections in ListMode.
 typedef NS_ENUM(NSInteger, ListModelCollapsableMode) {
@@ -184,6 +192,11 @@ const NSInteger kItemTypeEnumZero = 100;
 // item is found.
 - (NSIndexPath*)indexPathForItemType:(NSInteger)itemType;
 
+// Returns index paths for all |itemType| in the section for
+// |sectionIdentifier|.
+- (NSArray<NSIndexPath*>*)indexPathsForItemType:(NSInteger)itemType
+                              sectionIdentifier:(NSInteger)sectionIdentifier;
+
 #pragma mark Query index paths from items
 
 // Returns whether |item| exists in section for |sectionIdentifier|.
@@ -205,6 +218,11 @@ const NSInteger kItemTypeEnumZero = 100;
 - (NSInteger)numberOfItemsInSection:(NSInteger)section;
 
 #pragma mark Collapsing methods.
+
+// Mediator that stores/retrieves collapsed section states. By default this
+// is a mediator that uses NSUserDefaults. States are stored in dictionary
+// available under a kListModelCollapsedKey key.
+@property(nonatomic, strong) ListModelCollapsedMediator* collapsableMediator;
 
 // The default value is ListModelCollapsableModeHeader.
 @property(nonatomic, assign) ListModelCollapsableMode collapsableMode;

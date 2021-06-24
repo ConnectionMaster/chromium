@@ -5,10 +5,11 @@
 #include "chrome/browser/ui/webui/metrics_handler.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/logging.h"
+#include "base/callback_helpers.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
+#include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -41,8 +42,8 @@ void MetricsHandler::RegisterMessages() {
       base::BindRepeating(&MetricsHandler::HandleRecordTime,
                           base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
-      "metricsHandler:logEventTime",
-      base::BindRepeating(&MetricsHandler::HandleLogEventTime,
+      "metricsHandler:recordMediumTime",
+      base::BindRepeating(&MetricsHandler::HandleRecordMediumTime,
                           base::Unretained(this)));
 }
 
@@ -118,29 +119,16 @@ void MetricsHandler::HandleRecordTime(const base::ListValue* args) {
   counter->AddTime(time_value);
 }
 
-void MetricsHandler::HandleLogEventTime(const base::ListValue* args) {
-  std::string event_name = base::UTF16ToUTF8(ExtractStringValue(args));
-  WebContents* tab = web_ui()->GetWebContents();
+void MetricsHandler::HandleRecordMediumTime(const base::ListValue* args) {
+  std::string histogram_name;
+  double value;
 
-  // Not all new tab pages get timed. In those cases, we don't have a
-  // new_tab_start_time_.
-  CoreTabHelper* core_tab_helper = CoreTabHelper::FromWebContents(tab);
-  if (core_tab_helper->new_tab_start_time().is_null())
-    return;
-
-  base::TimeDelta duration =
-      base::TimeTicks::Now() - core_tab_helper->new_tab_start_time();
-
-  if (event_name == "Tab.NewTabScriptStart") {
-    UMA_HISTOGRAM_TIMES("Tab.NewTabScriptStart", duration);
-  } else if (event_name == "Tab.NewTabDOMContentLoaded") {
-    UMA_HISTOGRAM_TIMES("Tab.NewTabDOMContentLoaded", duration);
-  } else if (event_name == "Tab.NewTabOnload") {
-    UMA_HISTOGRAM_TIMES("Tab.NewTabOnload", duration);
-    // The new tab page has finished loading; reset it.
-    CoreTabHelper* core_tab_helper = CoreTabHelper::FromWebContents(tab);
-    core_tab_helper->set_new_tab_start_time(base::TimeTicks());
-  } else {
+  if (!args->GetString(0, &histogram_name) || !args->GetDouble(1, &value) ||
+      value < 0) {
     NOTREACHED();
+    return;
   }
+
+  base::UmaHistogramMediumTimes(histogram_name,
+                                base::TimeDelta::FromMilliseconds(value));
 }

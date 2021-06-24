@@ -7,10 +7,11 @@
 
 #include <vector>
 
-#include "components/viz/common/presentation_feedback_map.h"
+#include "components/viz/common/frame_timing_details_map.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "services/viz/public/interfaces/compositing/compositor_frame_sink.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
 
 namespace viz {
 
@@ -19,16 +20,17 @@ class FakeCompositorFrameSinkClient : public mojom::CompositorFrameSinkClient {
   FakeCompositorFrameSinkClient();
   ~FakeCompositorFrameSinkClient() override;
 
-  mojom::CompositorFrameSinkClientPtr BindInterfacePtr();
+  mojo::PendingRemote<mojom::CompositorFrameSinkClient> BindInterfaceRemote();
 
   // mojom::CompositorFrameSinkClient implementation.
   void DidReceiveCompositorFrameAck(
-      const std::vector<ReturnedResource>& resources) override;
+      std::vector<ReturnedResource> resources) override;
   void OnBeginFrame(const BeginFrameArgs& args,
-                    const PresentationFeedbackMap& feedbacks) override;
-  void ReclaimResources(
-      const std::vector<ReturnedResource>& resources) override;
+                    const FrameTimingDetailsMap& timing_details) override;
+  void ReclaimResources(std::vector<ReturnedResource> resources) override;
   void OnBeginFramePausedChanged(bool paused) override;
+  void OnCompositorFrameTransitionDirectiveProcessed(
+      uint32_t sequence_id) override {}
 
   void clear_returned_resources() { returned_resources_.clear(); }
   const std::vector<ReturnedResource>& returned_resources() const {
@@ -36,11 +38,11 @@ class FakeCompositorFrameSinkClient : public mojom::CompositorFrameSinkClient {
   }
 
  private:
-  void InsertResources(const std::vector<ReturnedResource>& resources);
+  void InsertResources(std::vector<ReturnedResource> resources);
 
   std::vector<ReturnedResource> returned_resources_;
 
-  mojo::Binding<mojom::CompositorFrameSinkClient> binding_;
+  mojo::Receiver<mojom::CompositorFrameSinkClient> receiver_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeCompositorFrameSinkClient);
 };

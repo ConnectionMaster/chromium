@@ -4,6 +4,7 @@
 
 #include "extensions/browser/api/storage/settings_test_util.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -23,11 +24,8 @@ namespace settings_test_util {
 
 // Creates a kilobyte of data.
 std::unique_ptr<base::Value> CreateKilobyte() {
-  std::string kilobyte_string;
-  for (int i = 0; i < 1024; ++i) {
-    kilobyte_string += "a";
-  }
-  return std::unique_ptr<base::Value>(new base::Value(kilobyte_string));
+  std::string kilobyte_string(1024u, 'a');
+  return std::make_unique<base::Value>(std::move(kilobyte_string));
 }
 
 // Creates a megabyte of data.
@@ -47,9 +45,9 @@ static void AssignStorage(ValueStore** dst, ValueStore* src) {
 ValueStore* GetStorage(scoped_refptr<const Extension> extension,
                        settings_namespace::Namespace settings_namespace,
                        StorageFrontend* frontend) {
-  ValueStore* storage = NULL;
-  frontend->RunWithStorage(
-      extension, settings_namespace, base::Bind(&AssignStorage, &storage));
+  ValueStore* storage = nullptr;
+  frontend->RunWithStorage(extension, settings_namespace,
+                           base::BindOnce(&AssignStorage, &storage));
   content::RunAllTasksUntilIdle();
   return storage;
 }
@@ -102,12 +100,8 @@ scoped_refptr<const Extension> AddExtensionWithIdAndPermissions(
 
   std::string error;
   scoped_refptr<const Extension> extension(
-      Extension::Create(base::FilePath(),
-                        Manifest::INTERNAL,
-                        manifest,
-                        Extension::NO_FLAGS,
-                        id,
-                        &error));
+      Extension::Create(base::FilePath(), mojom::ManifestLocation::kInternal,
+                        manifest, Extension::NO_FLAGS, id, &error));
   DCHECK(extension.get());
   DCHECK(error.empty());
 

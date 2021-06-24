@@ -4,11 +4,12 @@
 
 #include "chrome/test/base/chrome_ash_test_base.h"
 
-#include "content/public/test/test_browser_thread_bundle.h"
+#include <memory>
 
-ChromeAshTestBase::ChromeAshTestBase() {
-  DestroyScopedTaskEnvironment();
-  thread_bundle_ = std::make_unique<content::TestBrowserThreadBundle>();
-}
+#include "content/public/test/browser_task_environment.h"
+
+ChromeAshTestBase::ChromeAshTestBase()
+    : ash::AshTestBase(std::unique_ptr<base::test::TaskEnvironment>(
+          std::make_unique<content::BrowserTaskEnvironment>())) {}
 
 ChromeAshTestBase::~ChromeAshTestBase() = default;

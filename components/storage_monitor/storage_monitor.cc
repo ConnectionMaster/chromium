@@ -4,9 +4,11 @@
 
 #include "components/storage_monitor/storage_monitor.h"
 
+#include <memory>
 #include <utility>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
+#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/storage_monitor/removable_storage_observer.h"
 #include "components/storage_monitor/transient_device_ids.h"
@@ -52,15 +54,9 @@ void StorageMonitor::ReceiverImpl::MarkInitialized() {
 }
 
 // static
-void StorageMonitor::Create(
-    std::unique_ptr<service_manager::Connector> connector) {
+void StorageMonitor::Create() {
   delete g_storage_monitor;
   g_storage_monitor = CreateInternal();
-  g_storage_monitor->connector_ = std::move(connector);
-}
-
-service_manager::Connector* StorageMonitor::GetConnector() {
-  return connector_.get();
 }
 
 // static
@@ -89,16 +85,16 @@ std::vector<StorageInfo> StorageMonitor::GetAllAvailableStorages() const {
   return results;
 }
 
-void StorageMonitor::EnsureInitialized(base::Closure callback) {
+void StorageMonitor::EnsureInitialized(base::OnceClosure callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (initialized_) {
     if (!callback.is_null())
-      callback.Run();
+      std::move(callback).Run();
     return;
   }
 
   if (!callback.is_null()) {
-    on_initialize_callbacks_.push_back(callback);
+    on_initialize_callbacks_.push_back(std::move(callback));
   }
 
   if (initializing_)
@@ -133,10 +129,10 @@ std::string StorageMonitor::GetDeviceIdForTransientId(
 
 void StorageMonitor::EjectDevice(
     const std::string& device_id,
-    base::Callback<void(EjectStatus)> callback) {
+    base::OnceCallback<void(EjectStatus)> callback) {
   // Platform-specific implementations will override this method to
   // perform actual device ejection.
-  callback.Run(EJECT_FAILURE);
+  std::move(callback).Run(EJECT_FAILURE);
 }
 
 StorageMonitor::StorageMonitor()
@@ -145,7 +141,7 @@ StorageMonitor::StorageMonitor()
       initializing_(false),
       initialized_(false),
       transient_device_ids_(new TransientDeviceIds) {
-  receiver_.reset(new ReceiverImpl(this));
+  receiver_ = std::make_unique<ReceiverImpl>(this);
 }
 
 StorageMonitor::~StorageMonitor() {
@@ -157,17 +153,15 @@ StorageMonitor::Receiver* StorageMonitor::receiver() const {
 
 void StorageMonitor::MarkInitialized() {
   initialized_ = true;
-  for (auto iter = on_initialize_callbacks_.begin();
-       iter != on_initialize_callbacks_.end(); ++iter) {
-    iter->Run();
-  }
+  for (auto& callback : on_initialize_callbacks_)
+    std::move(callback).Run();
   on_initialize_callbacks_.clear();
 }
 
 void StorageMonitor::ProcessAttach(const StorageInfo& info) {
   {
     base::AutoLock lock(storage_lock_);
-    if (base::ContainsKey(storage_map_, info.device_id())) {
+    if (base::Contains(storage_map_, info.device_id())) {
       // This can happen if our unique id scheme fails. Ignore the incoming
       // non-unique attachment.
       return;

@@ -9,23 +9,22 @@
 #include <stdint.h>
 
 #include <memory>
-#include <string>
 #include <vector>
 
-#include "base/containers/flat_map.h"
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "media/base/android/media_codec_bridge.h"
 #include "media/base/decoder_buffer.h"
-#include "media/gpu/android/avda_surface_bundle.h"
+#include "media/gpu/android/codec_surface_bundle.h"
 #include "media/gpu/android/device_info.h"
 #include "media/gpu/media_gpu_export.h"
 
 namespace media {
+class CodecWrapper;
 class CodecWrapperImpl;
 
 using CodecSurfacePair = std::pair<std::unique_ptr<MediaCodecBridge>,
-                                   scoped_refptr<AVDASurfaceBundle>>;
+                                   scoped_refptr<CodecSurfaceBundle>>;
 
 // A MediaCodec output buffer that can be released on any thread. Releasing a
 // CodecOutputBuffer implicitly discards all CodecOutputBuffers that
@@ -43,17 +42,36 @@ class MEDIA_GPU_EXPORT CodecOutputBuffer {
   // The size of the image.
   gfx::Size size() const { return size_; }
 
+  // Sets a callback that will be called when we're released to the surface.
+  // Will not be called if we're dropped.
+  void set_render_cb(base::OnceClosure render_cb) {
+    render_cb_ = std::move(render_cb);
+  }
+
+  // Note that you can't use the first ctor, since CodecWrapperImpl isn't
+  // defined here.  Use the second, and it'll be nullptr.
+  template <typename... Args>
+  static std::unique_ptr<CodecOutputBuffer> CreateForTesting(Args&&... args) {
+    // std::make_unique can't access the constructor.
+    return std::unique_ptr<CodecOutputBuffer>(
+        new CodecOutputBuffer(std::forward<Args>(args)...));
+  }
+
  private:
   // Let CodecWrapperImpl call the constructor.
   friend class CodecWrapperImpl;
   CodecOutputBuffer(scoped_refptr<CodecWrapperImpl> codec,
                     int64_t id,
-                    gfx::Size size);
+                    const gfx::Size& size);
+
+  // For testing, since CodecWrapperImpl isn't available.  Uses nullptr.
+  CodecOutputBuffer(int64_t id, const gfx::Size& size);
 
   scoped_refptr<CodecWrapperImpl> codec_;
   int64_t id_;
   bool was_rendered_ = false;
   gfx::Size size_;
+  base::OnceClosure render_cb_;
   DISALLOW_COPY_AND_ASSIGN(CodecOutputBuffer);
 };
 
@@ -71,7 +89,7 @@ class MEDIA_GPU_EXPORT CodecWrapper {
   // thread.
   //
   // OutputReleasedCB will be called with a bool indicating if CodecWrapper is
-  // currently draining or in the drained state.
+  // currently draining, is drained, or has run out of output buffers.
   //
   // If not null, then we will only release codec buffers without rendering
   // on |release_task_runner|, posting if needed.  This does not change where
@@ -103,23 +121,19 @@ class MEDIA_GPU_EXPORT CodecWrapper {
   // Releases all dequeued output buffers back to the codec without rendering.
   void DiscardOutputBuffers();
 
-  // Whether the codec supports Flush().
-  bool SupportsFlush(DeviceInfo* device_info) const;
-
   // Flushes the codec and discards all output buffers.
   bool Flush();
 
   // Sets the given surface and returns true on success.
-  bool SetSurface(scoped_refptr<AVDASurfaceBundle> surface_bundle);
+  bool SetSurface(scoped_refptr<CodecSurfaceBundle> surface_bundle);
 
   // Returns the surface bundle that the codec is currently configured with.
   // Returns null after TakeCodecSurfacePair() is called.
-  scoped_refptr<AVDASurfaceBundle> SurfaceBundle();
+  scoped_refptr<CodecSurfaceBundle> SurfaceBundle();
 
   // Queues |buffer| if the codec has an available input buffer.
   enum class QueueStatus { kOk, kError, kTryAgainLater, kNoKey };
-  QueueStatus QueueInputBuffer(const DecoderBuffer& buffer,
-                               const EncryptionScheme& encryption_scheme);
+  QueueStatus QueueInputBuffer(const DecoderBuffer& buffer);
 
   // Like MediaCodecBridge::DequeueOutputBuffer() but it outputs a
   // CodecOutputBuffer instead of an index. |*codec_buffer| must be null.

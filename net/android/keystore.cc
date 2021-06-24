@@ -9,8 +9,8 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
-#include "base/logging.h"
-#include "jni/AndroidKeyStore_jni.h"
+#include "base/check.h"
+#include "net/net_jni_headers/AndroidKeyStore_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;

@@ -11,7 +11,7 @@
 // Visual Studio needs at least one C++ file in project http://goo.gl/roro9
 
 namespace {
-base::AtExitManager* g_exit_manager = NULL;
+base::AtExitManager* g_exit_manager = nullptr;
 }
 
 // DLL Entry Point - This is necessary to initialize basic things like the
@@ -21,14 +21,15 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance,
                                LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
     g_exit_manager = new base::AtExitManager();
-    base::CommandLine::Init(0, NULL);
+    base::CommandLine::Init(0, nullptr);
     logging::LoggingSettings settings;
-    settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+    settings.logging_dest =
+        logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
     logging::InitLogging(settings);
   } else if (reason == DLL_PROCESS_DETACH) {
     base::CommandLine::Reset();
     delete g_exit_manager;
-    g_exit_manager = NULL;
+    g_exit_manager = nullptr;
   }
 
   return TRUE;

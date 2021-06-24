@@ -6,6 +6,7 @@
 #define SERVICES_AUDIO_GROUP_COORDINATOR_IMPL_H_
 
 #include "base/compiler_specific.h"
+#include "base/containers/contains.h"
 #include "base/no_destructor.h"
 
 #if DCHECK_IS_ON()
@@ -42,7 +43,7 @@ void GroupCoordinator<Member>::RegisterMember(
 
   const auto it = FindGroup(group_id);
   std::vector<Member*>& members = it->second.members;
-  DCHECK(!base::ContainsValue(members, member));
+  DCHECK(!base::Contains(members, member));
   members.push_back(member);
   DCHECK_INCREMENT_MUTATION_COUNT();
   DCHECK_REMEMBER_CURRENT_MUTATION_COUNT();
@@ -84,7 +85,7 @@ void GroupCoordinator<Member>::AddObserver(
   DCHECK(observer);
 
   std::vector<Observer*>& observers = FindGroup(group_id)->second.observers;
-  DCHECK(!base::ContainsValue(observers, observer));
+  DCHECK(!base::Contains(observers, observer));
   observers.push_back(observer);
   DCHECK_INCREMENT_MUTATION_COUNT();
 }

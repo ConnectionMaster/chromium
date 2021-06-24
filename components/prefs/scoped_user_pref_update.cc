@@ -4,7 +4,7 @@
 
 #include "components/prefs/scoped_user_pref_update.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "components/prefs/pref_notifier.h"
 #include "components/prefs/pref_service.h"
 
@@ -25,6 +25,12 @@ base::Value* ScopedUserPrefUpdateBase::GetValueOfType(base::Value::Type type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!value_)
     value_ = service_->GetMutableUserPref(path_, type);
+
+  // |value_| might be downcast to base::DictionaryValue or base::ListValue,
+  // side-stepping CHECKs built into base::Value. Thus we need to be certain
+  // that the type matches.
+  if (value_)
+    CHECK_EQ(value_->type(), type);
   return value_;
 }
 

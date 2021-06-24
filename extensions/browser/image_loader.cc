@@ -16,6 +16,7 @@
 #include "base/files/file_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/extensions_browser_client.h"
@@ -111,16 +112,16 @@ std::vector<SkBitmap> LoadResourceBitmaps(
     DCHECK(it->resource.relative_path().empty() ||
            extension->path() == it->resource.extension_root());
 
-    ComponentExtensionResourceInfo resource_info;
-    if (extension->location() == Manifest::COMPONENT) {
+    int resource_id = 0;
+    if (extension->location() == mojom::ManifestLocation::kComponent) {
       const extensions::ComponentExtensionResourceManager* manager =
           extensions::ExtensionsBrowserClient::Get()
               ->GetComponentExtensionResourceManager();
-      if (manager && manager->IsComponentExtensionResource(
-                         extension->path(), it->resource.relative_path(),
-                         &resource_info)) {
-        DCHECK(!resource_info.gzipped);
-        LoadResourceOnUIThread(resource_info.resource_id, &bitmaps[i]);
+      if (manager &&
+          manager->IsComponentExtensionResource(
+              extension->path(), it->resource.relative_path(), &resource_id)) {
+        DCHECK(!ui::ResourceBundle::GetSharedInstance().IsGzipped(resource_id));
+        LoadResourceOnUIThread(resource_id, &bitmaps[i]);
       }
     }
   }
@@ -211,9 +212,7 @@ std::vector<ImageLoader::LoadResult> LoadImagesBlocking(
 ////////////////////////////////////////////////////////////////////////////////
 // ImageLoader
 
-ImageLoader::ImageLoader()
-    : weak_ptr_factory_(this) {
-}
+ImageLoader::ImageLoader() {}
 
 ImageLoader::~ImageLoader() {
 }
@@ -265,7 +264,7 @@ void ImageLoader::LoadImagesAsync(
     const std::vector<ImageRepresentation>& info_list,
     ImageLoaderImageCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(LoadImagesBlocking, info_list,
                      LoadResourceBitmaps(extension, info_list)),
@@ -278,7 +277,7 @@ void ImageLoader::LoadImageFamilyAsync(
     const std::vector<ImageRepresentation>& info_list,
     ImageLoaderImageFamilyCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(LoadImagesBlocking, info_list,
                      LoadResourceBitmaps(extension, info_list)),

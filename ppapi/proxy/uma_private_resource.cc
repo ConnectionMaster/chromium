@@ -91,10 +91,9 @@ int32_t UMAPrivateResource::IsCrashReportingEnabled(
     return PP_ERROR_INPROGRESS;
   pending_callback_ = callback;
   Call<PpapiPluginMsg_UMA_IsCrashReportingEnabledReply>(
-      RENDERER,
-      PpapiHostMsg_UMA_IsCrashReportingEnabled(),
-      base::Bind(&UMAPrivateResource::OnPluginMsgIsCrashReportingEnabled,
-          this));
+      RENDERER, PpapiHostMsg_UMA_IsCrashReportingEnabled(),
+      base::BindOnce(&UMAPrivateResource::OnPluginMsgIsCrashReportingEnabled,
+                     this));
   return PP_OK_COMPLETIONPENDING;
 }
 
@@ -102,7 +101,7 @@ void UMAPrivateResource::OnPluginMsgIsCrashReportingEnabled(
     const ResourceMessageReplyParams& params) {
   if (TrackedCallback::IsPending(pending_callback_))
     pending_callback_->Run(params.result());
-  pending_callback_ = NULL;
+  pending_callback_.reset();
 }
 
 }  // namespace proxy

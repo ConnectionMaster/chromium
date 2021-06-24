@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/chromeos/ui_mode.gni")
 import("config.gni")
 if (is_clang) {
   import("//build/config/clang/clang.gni")
@@ -48,6 +49,11 @@ config("inside_blink") {
       "-Wno-implicit-float-conversion",
       "-Wno-implicit-int-conversion",
     ]
+
+    if (!is_chromeos_ash ||
+        default_toolchain != "//build/toolchain/cros:target") {
+      cflags += [ "-Wno-enum-float-conversion" ]
+    }
   }
 }
 
@@ -76,6 +82,8 @@ config("blink_pch") {
       cflags = [ "/FI$precompiled_header" ]
     } else if (is_mac) {
       precompiled_source = "//third_party/blink/renderer/build/mac/prefix.h"
+    } else if (is_linux) {
+      precompiled_source = "//third_party/blink/renderer/build/linux/prefix.h"
     }
   }
 }
@@ -119,14 +127,6 @@ config("config") {
         "-plugin-arg-blink-gc-plugin",
         "-Xclang",
         "dump-graph",
-      ]
-    }
-    if (blink_gc_plugin_option_warn_unneeded_finalizer) {
-      cflags += [
-        "-Xclang",
-        "-plugin-arg-blink-gc-plugin",
-        "-Xclang",
-        "warn-unneeded-finalizer",
       ]
     }
   }

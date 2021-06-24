@@ -4,27 +4,31 @@
 
 #include "chrome/browser/ui/webui/chromeos/multidevice_setup/multidevice_setup_localized_strings_provider.h"
 
+#include "ash/constants/ash_features.h"
+#include "base/feature_list.h"
 #include "base/no_destructor.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/chromeos/multidevice_setup/multidevice_setup_handler.h"
-#include "chrome/browser/ui/webui/localized_string.h"
+#include "chrome/browser/ui/webui/webui_util.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/multidevice_setup_resources.h"
 #include "chrome/grit/multidevice_setup_resources_map.h"
+#include "chrome/grit/oobe_resources.h"
 #include "chromeos/grit/chromeos_resources.h"
 #include "chromeos/services/multidevice_setup/public/cpp/url_provider.h"
-#include "chromeos/services/multidevice_setup/public/mojom/constants.mojom.h"
 #include "components/login/localized_values_builder.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/webui/web_ui_util.h"
+#include "ui/chromeos/devicetype_utils.h"
 
 namespace chromeos {
 
@@ -32,9 +36,9 @@ namespace multidevice_setup {
 
 namespace {
 
-const char kFootnoteMarker[] = "*";
+const char16_t kFootnoteMarker[] = u"*";
 
-constexpr LocalizedString kLocalizedStringsWithoutPlaceholders[] = {
+constexpr webui::LocalizedString kLocalizedStringsWithoutPlaceholders[] = {
     {"accept", IDS_MULTIDEVICE_SETUP_ACCEPT_LABEL},
     {"back", IDS_MULTIDEVICE_SETUP_BACK_LABEL},
     {"cancel", IDS_CANCEL},
@@ -47,8 +51,12 @@ constexpr LocalizedString kLocalizedStringsWithoutPlaceholders[] = {
      IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_MULTIPLE_DEVICE_HEADER},
     {"startSetupPageSingleDeviceHeader",
      IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_SINGLE_DEVICE_HEADER},
-    {"startSetupPageFeatureListHeader",
-     IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FEATURE_LIST_HEADER},
+    {"startSetupPageOfflineDeviceOption",
+     IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_OFFLINE_DEVICE_OPTION},
+    {"startSetupPageFeatureMirrorPhoneNotifications",
+     IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_MIRROR_PHONE_NOTIFICATIONS},
+    {"startSetupPageFeatureWifiSync",
+     IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_WIFI_SYNC},
     {"startSetupPageFeatureListInstallApps",
      IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_INSTALL_APPS_DESCRIPTION},
     {"startSetupPageFeatureListAddFeatures",
@@ -59,15 +67,17 @@ constexpr LocalizedString kLocalizedStringsWithoutPlaceholders[] = {
      IDS_MULTIDEVICE_SETUP_SETUP_SUCCEEDED_PAGE_MESSAGE},
     {"startSetupPageHeader", IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_HEADER},
     {"tryAgain", IDS_MULTIDEVICE_SETUP_TRY_AGAIN_LABEL},
+    {"dialogAccessibilityTitle",
+     IDS_MULTIDEVICE_SETUP_DIALOG_ACCESSIBILITY_TITLE},
 };
 
 struct LocalizedStringWithName {
   LocalizedStringWithName(const char* name,
-                          const base::string16& localized_string)
+                          const std::u16string& localized_string)
       : name(name), localized_string(localized_string) {}
 
   const char* name;
-  base::string16 localized_string;
+  std::u16string localized_string;
 };
 
 const std::vector<LocalizedStringWithName>&
@@ -76,11 +86,14 @@ GetLocalizedStringsWithPlaceholders() {
       localized_strings([] {
         std::vector<LocalizedStringWithName> localized_strings;
 
+        // TODO(crbug.com/964547): Refactor so that any change to these strings
+        // will surface in both the OOBE and post-OOBE UIs without having to
+        // adjust both localization calls separately.
         localized_strings.emplace_back(
             "startSetupPageMessage",
             l10n_util::GetStringFUTF16(
                 IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_MESSAGE,
-                base::ASCIIToUTF16(kFootnoteMarker),
+                ui::GetChromeOSDeviceName(), kFootnoteMarker,
                 base::UTF8ToUTF16(
                     chromeos::multidevice_setup::
                         GetBoardSpecificBetterTogetherSuiteLearnMoreUrl()
@@ -90,7 +103,13 @@ GetLocalizedStringsWithPlaceholders() {
             "startSetupPageFootnote",
             l10n_util::GetStringFUTF16(
                 IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FOOTNOTE,
-                base::ASCIIToUTF16(kFootnoteMarker)));
+                kFootnoteMarker));
+
+        localized_strings.emplace_back(
+            "startSetupPageFeatureListHeader",
+            l10n_util::GetStringFUTF16(
+                IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FEATURE_LIST_HEADER,
+                ui::GetChromeOSDeviceName()));
 
         localized_strings.emplace_back(
             "startSetupPageFeatureListAwm",
@@ -109,19 +128,56 @@ GetLocalizedStringsWithPlaceholders() {
 }  //  namespace
 
 void AddLocalizedStrings(content::WebUIDataSource* html_source) {
-  AddLocalizedStringsBulk(html_source, kLocalizedStringsWithoutPlaceholders,
-                          base::size(kLocalizedStringsWithoutPlaceholders));
+  html_source->AddLocalizedStrings(kLocalizedStringsWithoutPlaceholders);
+
+  html_source->AddBoolean(
+      "phoneHubEnabled",
+      base::FeatureList::IsEnabled(chromeos::features::kPhoneHub));
+
+  html_source->AddBoolean(
+      "wifiSyncEnabled",
+      base::FeatureList::IsEnabled(chromeos::features::kWifiSyncAndroid));
+
+  html_source->AddBoolean("newLayoutEnabled",
+                          chromeos::features::IsNewOobeLayoutEnabled());
 
   for (const auto& entry : GetLocalizedStringsWithPlaceholders())
     html_source->AddString(entry.name, entry.localized_string);
+
+  html_source->AddResourcePath("multidevice_setup.json",
+                               IDR_MULTIDEVICE_SETUP_ANIMATION);
+  html_source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::WorkerSrc, "worker-src blob: 'self';");
 }
 
 void AddLocalizedValuesToBuilder(::login::LocalizedValuesBuilder* builder) {
   for (const auto& entry : kLocalizedStringsWithoutPlaceholders)
     builder->Add(entry.name, entry.id);
 
-  for (const auto& entry : GetLocalizedStringsWithPlaceholders())
-    builder->Add(entry.name, entry.localized_string);
+  // TODO(crbug.com/964547): Refactor so that any change to these strings will
+  // surface in both the OOBE and post-OOBE UIs without having to adjust both
+  // localization calls separately.
+  builder->AddF(
+      "startSetupPageMessage", IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_MESSAGE,
+      ui::GetChromeOSDeviceName(), kFootnoteMarker,
+      base::UTF8ToUTF16(chromeos::multidevice_setup::
+                            GetBoardSpecificBetterTogetherSuiteLearnMoreUrl()
+                                .spec()));
+
+  builder->AddF("startSetupPageFeatureListHeader",
+                IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FEATURE_LIST_HEADER,
+                ui::GetChromeOSDeviceName());
+
+  builder->AddF("startSetupPageFootnote",
+                IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_FOOTNOTE,
+                kFootnoteMarker);
+
+  builder->AddF(
+      "startSetupPageFeatureListAwm",
+      IDS_MULTIDEVICE_SETUP_START_SETUP_PAGE_AWM_DESCRIPTION,
+      base::UTF8ToUTF16(
+          chromeos::multidevice_setup::GetBoardSpecificMessagesLearnMoreUrl()
+              .spec()));
 }
 
 }  // namespace multidevice_setup

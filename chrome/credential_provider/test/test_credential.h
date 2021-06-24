@@ -5,23 +5,20 @@
 #ifndef CHROME_CREDENTIAL_PROVIDER_TEST_TEST_CREDENTIAL_H_
 #define CHROME_CREDENTIAL_PROVIDER_TEST_TEST_CREDENTIAL_H_
 
-#include <memory>
-#include <string>
-
 #include <atlbase.h>
 #include <atlcom.h>
 #include <atlcomcli.h>
 #include <credentialprovider.h>
 
-#include "base/strings/string16.h"
+#include <memory>
+#include <string>
+
+#include "base/command_line.h"
+#include "base/strings/string_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "chrome/credential_provider/common/gcp_strings.h"
 #include "chrome/credential_provider/gaiacp/gaia_credential_base.h"
-#include "chrome/credential_provider/test/fake_gls_run_helper.h"
-
-namespace base {
-class CommandLine;
-}
+#include "chrome/credential_provider/test/gls_runner_test_base.h"
 
 namespace credential_provider {
 
@@ -35,19 +32,30 @@ class DECLSPEC_UUID("3710aa3a-13c7-44c2-bc38-09ba137804d8") ITestCredential
   virtual HRESULT STDMETHODCALLTYPE
   SetGlsEmailAddress(const std::string& email) = 0;
   virtual HRESULT STDMETHODCALLTYPE
-  SetGaiaIdOverride(const std::string& gaia_id) = 0;
+  SetGlsGaiaPassword(const std::string& gaia_password) = 0;
+  virtual HRESULT STDMETHODCALLTYPE
+  SetGaiaIdOverride(const std::string& gaia_id,
+                    bool ignore_expected_gaia_id) = 0;
+  virtual HRESULT STDMETHODCALLTYPE
+  SetGaiaFullNameOverride(const std::string& full_name) = 0;
   virtual HRESULT STDMETHODCALLTYPE WaitForGls() = 0;
   virtual HRESULT STDMETHODCALLTYPE
-  SetStartGlsEventName(const base::string16& event_name) = 0;
+  SetStartGlsEventName(const std::wstring& event_name) = 0;
+  virtual HRESULT STDMETHODCALLTYPE FailLoadingGaiaLogonStub() = 0;
+  virtual HRESULT STDMETHODCALLTYPE
+  UseRealGlsBaseCommandLine(bool use_real_gls_base_command_line) = 0;
   virtual BSTR STDMETHODCALLTYPE GetFinalUsername() = 0;
   virtual std::string STDMETHODCALLTYPE GetFinalEmail() = 0;
+  virtual bool STDMETHODCALLTYPE IsAuthenticationResultsEmpty() = 0;
   virtual BSTR STDMETHODCALLTYPE GetErrorText() = 0;
   virtual bool STDMETHODCALLTYPE AreCredentialsValid() = 0;
   virtual bool STDMETHODCALLTYPE CanAttemptWindowsLogon() = 0;
   virtual bool STDMETHODCALLTYPE IsWindowsPasswordValidForStoredUser() = 0;
-  virtual void STDMETHODCALLTYPE
-  SetWindowsPassword(const CComBSTR& windows_password) = 0;
   virtual bool STDMETHODCALLTYPE IsGlsRunning() = 0;
+  virtual bool STDMETHODCALLTYPE IsAdJoinedUser() = 0;
+  virtual bool STDMETHODCALLTYPE ContainsIsAdJoinedUser() = 0;
+  virtual base::CommandLine STDMETHODCALLTYPE GetTestGlsCommandline() = 0;
+  virtual std::string STDMETHODCALLTYPE GetShowTosFromCmdLine() = 0;
 };
 
 // Test implementation of an ICredentialProviderCredential backed by a Gaia
@@ -71,19 +79,27 @@ class ATL_NO_VTABLE CTestCredentialBase : public T, public ITestCredential {
   // ITestCredential.
   IFACEMETHODIMP SetDefaultExitCode(UiExitCodes default_exit_code) override;
   IFACEMETHODIMP SetGlsEmailAddress(const std::string& email) override;
-  IFACEMETHODIMP SetGaiaIdOverride(const std::string& gaia_id) override;
+  IFACEMETHODIMP SetGlsGaiaPassword(const std::string& gaia_password) override;
+  IFACEMETHODIMP SetGaiaIdOverride(const std::string& gaia_id,
+                                   bool ignore_expected_gaia_id) override;
+  IFACEMETHODIMP SetGaiaFullNameOverride(const std::string& full_name) override;
+  IFACEMETHODIMP FailLoadingGaiaLogonStub() override;
   IFACEMETHODIMP WaitForGls() override;
-  IFACEMETHODIMP SetStartGlsEventName(
-      const base::string16& event_name) override;
+  IFACEMETHODIMP SetStartGlsEventName(const std::wstring& event_name) override;
+  IFACEMETHODIMP UseRealGlsBaseCommandLine(
+      bool use_real_gls_base_command_line) override;
   BSTR STDMETHODCALLTYPE GetFinalUsername() override;
   std::string STDMETHODCALLTYPE GetFinalEmail() override;
+  bool STDMETHODCALLTYPE IsAuthenticationResultsEmpty() override;
   BSTR STDMETHODCALLTYPE GetErrorText() override;
   bool STDMETHODCALLTYPE AreCredentialsValid() override;
   bool STDMETHODCALLTYPE CanAttemptWindowsLogon() override;
   bool STDMETHODCALLTYPE IsWindowsPasswordValidForStoredUser() override;
-  void STDMETHODCALLTYPE
-  SetWindowsPassword(const CComBSTR& windows_password) override;
   bool STDMETHODCALLTYPE IsGlsRunning() override;
+  bool STDMETHODCALLTYPE IsAdJoinedUser() override;
+  bool STDMETHODCALLTYPE ContainsIsAdJoinedUser() override;
+  base::CommandLine STDMETHODCALLTYPE GetTestGlsCommandline() override;
+  std::string STDMETHODCALLTYPE GetShowTosFromCmdLine() override;
 
   void SignalGlsCompletion();
 
@@ -109,17 +125,23 @@ class ATL_NO_VTABLE CTestCredentialBase : public T, public ITestCredential {
       CGaiaCredentialBase::UIProcessInfo* uiprocinfo) override;
 
   // Overrides to directly save to a fake scoped user profile.
-  HRESULT ForkSaveAccountInfoStub(const base::Value& dict,
-                                  BSTR* status_text) override;
+  HRESULT ForkPerformPostSigninActionsStub(const base::Value& dict,
+                                           BSTR* status_text) override;
 
   UiExitCodes default_exit_code_ = kUiecSuccess;
   std::string gls_email_;
+  std::string gaia_password_;
   std::string gaia_id_override_;
+  std::string full_name_override_;
   base::WaitableEvent gls_done_;
   base::win::ScopedHandle process_continue_event_;
-  base::string16 start_gls_event_name_;
+  std::wstring start_gls_event_name_;
   CComBSTR error_text_;
   bool gls_process_started_ = false;
+  bool ignore_expected_gaia_id_ = false;
+  bool fail_loading_gaia_logon_stub_ = false;
+  std::string show_tos_command_line_;
+  bool use_real_gls_base_command_line_ = false;
 };
 
 template <class T>
@@ -139,14 +161,37 @@ HRESULT CTestCredentialBase<T>::SetDefaultExitCode(
 }
 
 template <class T>
+HRESULT CTestCredentialBase<T>::FailLoadingGaiaLogonStub() {
+  fail_loading_gaia_logon_stub_ = true;
+  return S_OK;
+}
+
+template <class T>
 HRESULT CTestCredentialBase<T>::SetGlsEmailAddress(const std::string& email) {
   gls_email_ = email;
   return S_OK;
 }
 
 template <class T>
-HRESULT CTestCredentialBase<T>::SetGaiaIdOverride(const std::string& gaia_id) {
+HRESULT CTestCredentialBase<T>::SetGlsGaiaPassword(
+    const std::string& gaia_password) {
+  gaia_password_ = gaia_password;
+  return S_OK;
+}
+
+template <class T>
+HRESULT CTestCredentialBase<T>::SetGaiaIdOverride(
+    const std::string& gaia_id,
+    bool ignore_expected_gaia_id) {
+  ignore_expected_gaia_id_ = ignore_expected_gaia_id;
   gaia_id_override_ = gaia_id;
+  return S_OK;
+}
+
+template <class T>
+HRESULT CTestCredentialBase<T>::SetGaiaFullNameOverride(
+    const std::string& full_name) {
+  full_name_override_ = full_name;
   return S_OK;
 }
 
@@ -160,7 +205,7 @@ HRESULT CTestCredentialBase<T>::WaitForGls() {
 
 template <class T>
 HRESULT CTestCredentialBase<T>::SetStartGlsEventName(
-    const base::string16& event_name) {
+    const std::wstring& event_name) {
   if (!start_gls_event_name_.empty())
     return HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER);
   start_gls_event_name_ = event_name;
@@ -170,6 +215,13 @@ HRESULT CTestCredentialBase<T>::SetStartGlsEventName(
 template <class T>
 BSTR CTestCredentialBase<T>::GetFinalUsername() {
   return this->get_username();
+}
+
+template <class T>
+bool CTestCredentialBase<T>::IsAuthenticationResultsEmpty() {
+  auto& results = this->get_authentication_results();
+
+  return !results || (results->is_dict() && results->DictEmpty());
 }
 
 template <class T>
@@ -184,6 +236,55 @@ std::string CTestCredentialBase<T>::GetFinalEmail() {
   if (!email_value)
     return std::string();
   return *email_value;
+}
+
+template <class T>
+bool CTestCredentialBase<T>::IsAdJoinedUser() {
+  auto& results = this->get_authentication_results();
+
+  if (!results)
+    return false;
+
+  const std::string* is_ad_joined_user =
+      results->FindStringKey(kKeyIsAdJoinedUser);
+
+  if (!is_ad_joined_user)
+    return false;
+  return base::CompareCaseInsensitiveASCII(*is_ad_joined_user, "true") == 0;
+}
+
+template <class T>
+bool CTestCredentialBase<T>::ContainsIsAdJoinedUser() {
+  auto& results = this->get_authentication_results();
+
+  if (!results)
+    return false;
+
+  const std::string* is_ad_joined_user =
+      results->FindStringKey(kKeyIsAdJoinedUser);
+
+  if (!is_ad_joined_user)
+    return false;
+  return true;
+}
+
+template <class T>
+std::string CTestCredentialBase<T>::GetShowTosFromCmdLine() {
+  return show_tos_command_line_;
+}
+
+template <class T>
+HRESULT CTestCredentialBase<T>::UseRealGlsBaseCommandLine(
+    bool use_real_gls_base_command_line) {
+  use_real_gls_base_command_line_ = use_real_gls_base_command_line;
+  return S_OK;
+}
+
+template <class T>
+base::CommandLine CTestCredentialBase<T>::GetTestGlsCommandline() {
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  T::GetGlsCommandline(&command_line);
+  return command_line;
 }
 
 template <class T>
@@ -208,12 +309,6 @@ bool CTestCredentialBase<T>::IsWindowsPasswordValidForStoredUser() {
 }
 
 template <class T>
-void CTestCredentialBase<T>::SetWindowsPassword(
-    const CComBSTR& windows_password) {
-  this->set_current_windows_password(windows_password);
-}
-
-template <class T>
 bool CTestCredentialBase<T>::IsGlsRunning() {
   return this->IsGaiaLogonStubRunning();
 }
@@ -226,8 +321,12 @@ void CTestCredentialBase<T>::SignalGlsCompletion() {
 template <class T>
 HRESULT CTestCredentialBase<T>::GetBaseGlsCommandline(
     base::CommandLine* command_line) {
-  return FakeGlsRunHelper::GetFakeGlsCommandline(
-      default_exit_code_, gls_email_, gaia_id_override_, start_gls_event_name_,
+  if (use_real_gls_base_command_line_)
+    return T::GetBaseGlsCommandline(command_line);
+
+  return GlsRunnerTestBase::GetFakeGlsCommandline(
+      default_exit_code_, gls_email_, gaia_id_override_, gaia_password_,
+      full_name_override_, start_gls_event_name_, ignore_expected_gaia_id_,
       command_line);
 }
 
@@ -236,6 +335,15 @@ HRESULT CTestCredentialBase<T>::ForkGaiaLogonStub(
     OSProcessManager* process_manager,
     const base::CommandLine& command_line,
     CGaiaCredentialBase::UIProcessInfo* uiprocinfo) {
+  // Record command_line parameter "show_tos" into global variable.
+  std::string gcpw_path =
+      command_line.GetSwitchValueASCII(kGcpwEndpointPathSwitch);
+  show_tos_command_line_ =
+      (gcpw_path.find("show_tos=1") != std::string::npos) ? "1" : "0";
+
+  if (fail_loading_gaia_logon_stub_)
+    return E_FAIL;
+
   HRESULT hr = T::ForkGaiaLogonStub(process_manager, command_line, uiprocinfo);
 
   if (SUCCEEDED(hr)) {
@@ -248,9 +356,11 @@ HRESULT CTestCredentialBase<T>::ForkGaiaLogonStub(
 }
 
 template <class T>
-HRESULT CTestCredentialBase<T>::ForkSaveAccountInfoStub(const base::Value& dict,
-                                                        BSTR* status_text) {
-  return CGaiaCredentialBase::SaveAccountInfo(dict);
+HRESULT CTestCredentialBase<T>::ForkPerformPostSigninActionsStub(
+    const base::Value& dict,
+    BSTR* status_text) {
+  return CGaiaCredentialBase::PerformPostSigninActions(
+      dict, /* com_initialized */ true);
 }
 
 template <class T>
@@ -287,7 +397,8 @@ void CTestCredentialBase<T>::DisplayErrorInUI(LONG status,
 }
 
 // This class is used to implement a test credential based off a fully
-// implemented CGaiaCredentialBase class.
+// implemented CGaiaCredentialBase class that does not expose
+// ICredentialProviderCredential2.
 template <class T>
 class ATL_NO_VTABLE CTestCredentialForBaseInherited
     : public CTestCredentialBase<T> {
@@ -301,7 +412,6 @@ class ATL_NO_VTABLE CTestCredentialForBaseInherited
   BEGIN_COM_MAP(CTestCredentialForBaseInherited)
   COM_INTERFACE_ENTRY(IGaiaCredential)
   COM_INTERFACE_ENTRY(ICredentialProviderCredential)
-  COM_INTERFACE_ENTRY(ICredentialProviderCredential2)
   COM_INTERFACE_ENTRY(ITestCredential)
   END_COM_MAP()
 };
@@ -312,30 +422,6 @@ CTestCredentialForBaseInherited<T>::CTestCredentialForBaseInherited() = default;
 template <class T>
 CTestCredentialForBaseInherited<T>::~CTestCredentialForBaseInherited() =
     default;
-
-template <class T>
-HRESULT CreateBaseInheritedCredential(
-    ICredentialProviderCredential** credential) {
-  return CComCreator<CComObject<testing::CTestCredentialForBaseInherited<T>>>::
-      CreateInstance(nullptr, IID_ICredentialProviderCredential,
-                     reinterpret_cast<void**>(credential));
-}
-
-template <class T>
-HRESULT CreateBaseInheritedCredentialWithProvider(
-    IGaiaCredentialProvider* provider,
-    IGaiaCredential** gaia_credential,
-    ICredentialProviderCredential** credential) {
-  HRESULT hr = CreateBaseInheritedCredential<T>(credential);
-  if (SUCCEEDED(hr)) {
-    hr = (*credential)
-             ->QueryInterface(IID_IGaiaCredential,
-                              reinterpret_cast<void**>(gaia_credential));
-    if (SUCCEEDED(hr))
-      hr = (*gaia_credential)->Initialize(provider);
-  }
-  return hr;
-}
 
 // This class is used to implement a test credential based off a fully
 // implemented CGaiaCredentialBase class. The additional InterfaceT parameter
@@ -369,30 +455,6 @@ CTestCredentialForInherited<T, InterfaceT>::CTestCredentialForInherited() =
 template <class T, class InterfaceT>
 CTestCredentialForInherited<T, InterfaceT>::~CTestCredentialForInherited() =
     default;
-
-template <class T, class InterfaceT>
-HRESULT CreateInheritedCredential(ICredentialProviderCredential** credential) {
-  return CComCreator<CComObject<testing::CTestCredentialForInherited<
-      T, InterfaceT>>>::CreateInstance(nullptr,
-                                       IID_ICredentialProviderCredential,
-                                       reinterpret_cast<void**>(credential));
-}
-
-template <class T, class InterfaceT>
-HRESULT CreateInheritedCredentialWithProvider(
-    IGaiaCredentialProvider* provider,
-    IGaiaCredential** gaia_credential,
-    ICredentialProviderCredential** credential) {
-  HRESULT hr = CreateInheritedCredential<T, InterfaceT>(credential);
-  if (SUCCEEDED(hr)) {
-    hr = (*credential)
-             ->QueryInterface(IID_IGaiaCredential,
-                              reinterpret_cast<void**>(gaia_credential));
-    if (SUCCEEDED(hr))
-      hr = (*gaia_credential)->Initialize(provider);
-  }
-  return hr;
-}
 
 }  // namespace testing
 }  // namespace credential_provider

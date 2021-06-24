@@ -5,13 +5,23 @@
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("mojom") {
-  sources = [
-    "constants.mojom",
-    "media_parser.mojom",
-  ]
+  sources = [ "media_parser.mojom" ]
 
   public_deps = [
-    "//media/mojo/interfaces",
+    "//media/mojo/mojom",
     "//mojo/public/mojom/base",
+  ]
+
+  cpp_typemaps = [
+    {
+      types = [
+        {
+          mojom = "chrome.mojom.AttachedImage"
+          cpp = "::metadata::AttachedImage"
+        },
+      ]
+      traits_headers = [ "media_parser_mojom_traits.h" ]
+      traits_sources = [ "media_parser_mojom_traits.cc" ]
+    },
   ]
 }

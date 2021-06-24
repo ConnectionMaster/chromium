@@ -5,6 +5,7 @@
 #ifndef GPU_COMMAND_BUFFER_COMMON_GPU_MEMORY_BUFFER_SUPPORT_H_
 #define GPU_COMMAND_BUFFER_COMMON_GPU_MEMORY_BUFFER_SUPPORT_H_
 
+#include "build/build_config.h"
 #include "gpu/gpu_export.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/size.h"
@@ -39,10 +40,6 @@ struct GpuMemoryBufferFormatSet {
 
 struct Capabilities;
 
-// Returns the GL internalformat that is compatible with |format|.
-GPU_EXPORT unsigned InternalFormatForGpuMemoryBufferFormat(
-    gfx::BufferFormat format);
-
 // Returns true if creating an image for a GpuMemoryBuffer with |format| is
 // supported by |capabilities|.
 GPU_EXPORT bool IsImageFromGpuMemoryBufferFormatSupported(
@@ -54,8 +51,23 @@ GPU_EXPORT bool IsImageSizeValidForGpuMemoryBufferFormat(
     const gfx::Size& size,
     gfx::BufferFormat format);
 
+// Returns true if |plane| is a valid plane index for |format|.
+GPU_EXPORT bool IsPlaneValidForGpuMemoryBufferFormat(gfx::BufferPlane plane,
+                                                     gfx::BufferFormat format);
+
+// Return the buffer format for |plane| of |format|. E.g, for the Y plane of
+// YUV_420_BIPLANAR, return R_8. Assumes IsPlaneValidForGpuMemoryBufferFormat
+// returns true for the provided arguments.
+GPU_EXPORT gfx::BufferFormat GetPlaneBufferFormat(gfx::BufferPlane plane,
+                                                  gfx::BufferFormat format);
+
 // Returns the texture target to use with native GpuMemoryBuffers.
 GPU_EXPORT uint32_t GetPlatformSpecificTextureTarget();
+
+#if defined(OS_MAC)
+// Set the texture target to use with MacOS native GpuMemoryBuffers.
+GPU_EXPORT void SetMacOSSpecificTextureTarget(uint32_t texture_target);
+#endif  // defined(OS_MAC)
 
 // Returns the texture target to be used for the given |usage| and |format|
 // based on |capabilities|.

@@ -1,554 +1,361 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2019 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @fileoverview Tests for shared Polymer elements. */
-
-/** @const {string} Path to source root. */
-const ROOT_PATH = '../../../../../';
+/** @fileoverview Tests for shared Polymer 3 elements. */
 
 // Polymer BrowserTest fixture.
-GEN_INCLUDE(
-    [ROOT_PATH + 'chrome/test/data/webui/polymer_browser_test_base.js']);
+GEN_INCLUDE(['//chrome/test/data/webui/polymer_browser_test_base.js']);
 
-/**
- * Test fixture for shared Polymer elements.
- * @constructor
- * @extends {PolymerTest}
- */
-function CrElementsBrowserTest() {}
+GEN('#include "chrome/browser/ui/ui_features.h"');
+GEN('#include "content/public/test/browser_test.h"');
+GEN('#include "build/chromeos_buildflags.h"');
 
-CrElementsBrowserTest.prototype = {
-  __proto__: PolymerTest.prototype,
-
-  /** @override */
-  extraLibraries: PolymerTest.getLibraries(ROOT_PATH).concat([
-    ROOT_PATH + 'ui/webui/resources/js/assert.js',
-  ]),
-
+/** Test fixture for shared Polymer 3 elements. */
+// eslint-disable-next-line no-var
+var CrElementsV3BrowserTest = class extends PolymerTest {
   /** @override */
   get browsePreload() {
-    throw 'this is abstract and should be overriden by subclasses';
-  },
+    return 'chrome://dummyurl';
+  }
 
   /** @override */
-  runAccessibilityChecks: true,
-
-  /** @override */
-  setUp: function() {
-    PolymerTest.prototype.setUp.call(this);
-    // We aren't loading the main document.
-    this.accessibilityAuditConfig.ignoreSelectors('humanLangMissing', 'html');
-  },
+  get webuiHost() {
+    return 'dummyurl';
+  }
 };
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsLazyRenderTest() {}
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-CrElementsLazyRenderTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsButtonV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat(
-      ['cr_lazy_render_tests.js']),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_button_tests.js';
+  }
 };
 
-TEST_F('CrElementsLazyRenderTest', 'All', function() {
+TEST_F('CrElementsButtonV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsProfileAvatarSelectorTest() {}
-
-CrElementsProfileAvatarSelectorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsContainerShadowBehaviorV3Test =
+    class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_profile_avatar_selector/' +
-      'cr_profile_avatar_selector.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_profile_avatar_selector_tests.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_container_shadow_behavior_test.js';
+  }
 };
 
-TEST_F('CrElementsProfileAvatarSelectorTest', 'All', function() {
-  cr_profile_avatar_selector.registerTests();
-  mocha.grep(cr_profile_avatar_selector.TestNames.Basic).run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsSearchFieldTest() {}
-
-CrElementsSearchFieldTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_search_field/cr_search_field.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_search_field_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsSearchFieldTest', 'All', function() {
+TEST_F('CrElementsContainerShadowBehaviorV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsToolbarSearchFieldTest() {}
 
-CrElementsToolbarSearchFieldTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsDialogV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_toolbar/cr_toolbar_search_field.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_toolbar_search_field_tests.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_dialog_test.js';
+  }
 };
 
-TEST_F('CrElementsToolbarSearchFieldTest', 'All', function() {
-  cr_toolbar_search_field.registerTests();
+TEST_F('CrElementsDialogV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsDrawerTest() {}
-
-CrElementsDrawerTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsDrawerV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_drawer/cr_drawer.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_drawer_tests.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_drawer_tests.js';
+  }
 };
 
-TEST_F('CrElementsDrawerTest', 'All', function() {
-  mocha.run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsScrollableBehaviorTest() {}
-
-CrElementsScrollableBehaviorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_scrollable_behavior.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_scrollable_behavior_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsScrollableBehaviorTest', 'All', function() {
-  mocha.run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsContainerShadowBehaviorTest() {}
-
-CrElementsContainerShadowBehaviorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_container_shadow_behavior.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_container_shadow_behavior_test.js',
-  ]),
-};
-
-TEST_F('CrElementsContainerShadowBehaviorTest', 'All', function() {
-  mocha.run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsPolicyIndicatorTest() {}
-
-CrElementsPolicyIndicatorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/policy/cr_policy_indicator.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_policy_strings.js',
-    'cr_policy_indicator_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsPolicyIndicatorTest', 'All', function() {
-  mocha.run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsPolicyIndicatorBehaviorTest() {}
-
-CrElementsPolicyIndicatorBehaviorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/policy/cr_policy_indicator_behavior.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_policy_strings.js',
-    'cr_policy_indicator_behavior_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsPolicyIndicatorBehaviorTest', 'All', function() {
-  mocha.run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsPolicyPrefIndicatorTest() {}
-
-CrElementsPolicyPrefIndicatorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/policy/cr_policy_pref_indicator.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'settings_private_test_constants.js',
-    'cr_policy_strings.js',
-    'cr_policy_pref_indicator_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsPolicyPrefIndicatorTest', 'All', function() {
-  mocha.run();
-});
-
-GEN('#if defined(OS_CHROMEOS)');
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsPolicyNetworkIndicatorTest() {}
-
-CrElementsPolicyNetworkIndicatorTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/policy/cr_policy_network_indicator.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_policy_strings.js',
-    'cr_policy_network_indicator_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsPolicyNetworkIndicatorTest', 'All', function() {
-  mocha.run();
-});
-
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsFingerprintProgressArcTest() {}
-
-CrElementsFingerprintProgressArcTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload: 'chrome://resources/cr_elements/chromeos/fingerprint/' +
-      'cr_fingerprint_progress_arc.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    'cr_fingerprint_progress_arc_tests.js',
-  ]),
-};
-
-TEST_F('CrElementsFingerprintProgressArcTest', 'All', function() {
-  mocha.run();
-});
-
+// https://crbug.com/1008122 - Flaky on Mac 10.10.
+GEN('#if defined(OS_MAC)');
+GEN('#define MAYBE_Drawer DISABLED_Drawer');
+GEN('#else');
+GEN('#define MAYBE_Drawer Drawer');
 GEN('#endif');
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsDialogTest() {}
-
-CrElementsDialogTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
-  /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_dialog/cr_dialog.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_dialog_test.js',
-  ]),
-};
-
-TEST_F('CrElementsDialogTest', 'All', function() {
+TEST_F('CrElementsDrawerV3Test', 'MAYBE_Drawer', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsSliderTest() {}
-
-CrElementsSliderTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsExpandButtonV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_slider/cr_slider.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_slider_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_expand_button_tests.js';
+  }
 };
 
-TEST_F('CrElementsSliderTest', 'All', function() {
+TEST_F('CrElementsExpandButtonV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsToastTest() {}
-
-CrElementsToastTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsFindShortcutBehaviorV3Test =
+    class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_toast/cr_toast.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    ROOT_PATH + 'chrome/test/data/webui/mock_timer.js',
-    'cr_toast_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/find_shortcut_behavior_test.js';
+  }
 };
 
-TEST_F('CrElementsToastTest', 'All', function() {
+TEST_F('CrElementsFindShortcutBehaviorV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsToastManagerTest() {}
-
-CrElementsToastManagerTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
+// eslint-disable-next-line no-var
+var CrElementsFingerprintProgressArcV3Test =
+    class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_fingerprint_progress_arc_tests.js';
+  }
 
   /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_toast/cr_toast_manager.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_toast_manager_test.js',
-  ]),
+  get commandLineSwitches() {
+    return [{switchName: 'enable-pixel-output-in-tests'}];
+  }
 };
 
-TEST_F('CrElementsToastManagerTest', 'All', function() {
+// https://crbug.com/1044390 - maybe flaky on Mac?
+GEN('#if defined(OS_MAC)');
+GEN('#define MAYBE_Fingerprint DISABLED_Fingerprint');
+GEN('#else');
+GEN('#define MAYBE_Fingerprint Fingerprint');
+GEN('#endif');
+
+TEST_F(
+    'CrElementsFingerprintProgressArcV3Test', 'MAYBE_Fingerprint', function() {
+      mocha.run();
+    });
+
+// eslint-disable-next-line no-var
+var CrElementsIconButtonV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_icon_button_tests.js';
+  }
+};
+
+TEST_F('CrElementsIconButtonV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsRadioButtonTest() {}
-
-CrElementsRadioButtonTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsLazyRenderV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_radio_button/cr_radio_button.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_radio_button_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_lazy_render_tests.js';
+  }
 };
 
-TEST_F('CrElementsRadioButtonTest', 'All', function() {
+TEST_F('CrElementsLazyRenderV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsRadioGroupTest() {}
-
-CrElementsRadioGroupTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsLinkRowV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_radio_group/cr_radio_group.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_radio_group_test.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_link_row_tests.js';
+  }
 };
 
-TEST_F('CrElementsRadioGroupTest', 'All', function() {
+TEST_F('CrElementsLinkRowV3Test', 'All', function() {
   mocha.run();
 });
 
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsIconButtonTest() {}
-
-CrElementsIconButtonTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsRadioButtonV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload:
-      'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_icon_button_tests.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_radio_button_test.js';
+  }
 };
 
-TEST_F('CrElementsIconButtonTest', 'All', function() {
+TEST_F('CrElementsRadioButtonV3Test', 'All', function() {
   mocha.run();
 });
 
-GEN('#if defined(OS_CHROMEOS)');
-/**
- * @constructor
- * @extends {CrElementsBrowserTest}
- */
-function CrElementsSearchableDropDownTest() {}
-
-CrElementsSearchableDropDownTest.prototype = {
-  __proto__: CrElementsBrowserTest.prototype,
-
+// eslint-disable-next-line no-var
+var CrElementsCardRadioButtonV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
-  browsePreload: 'chrome://resources/cr_elements/cr_searchable_drop_down/' +
-      'cr_searchable_drop_down.html',
-
-  /** @override */
-  extraLibraries: CrElementsBrowserTest.prototype.extraLibraries.concat([
-    '../settings/test_util.js',
-    'cr_searchable_drop_down_tests.js',
-  ]),
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_card_radio_button_test.js';
+  }
 };
 
-TEST_F('CrElementsSearchableDropDownTest', 'All', function() {
+TEST_F('CrElementsCardRadioButtonV3Test', 'All', function() {
+  mocha.run();
+});
+
+
+// eslint-disable-next-line no-var
+var CrElementsRadioGroupV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_radio_group_test.js';
+  }
+};
+
+TEST_F('CrElementsRadioGroupV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsScrollableBehaviorV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_scrollable_behavior_tests.js';
+  }
+};
+
+TEST_F('CrElementsScrollableBehaviorV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsSearchFieldV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_search_field_tests.js';
+  }
+};
+
+TEST_F('CrElementsSearchFieldV3Test', 'All', function() {
+  mocha.run();
+});
+
+GEN('#if BUILDFLAG(IS_CHROMEOS_ASH)');
+// eslint-disable-next-line no-var
+var CrElementsSearchableDropDownV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_searchable_drop_down_tests.js';
+  }
+};
+
+TEST_F('CrElementsSearchableDropDownV3Test', 'All', function() {
   mocha.run();
 });
 GEN('#endif');
 
-////////////////////////////////////////////////////////////////////////////////
-// View Manager Tests
-
-CrElementsViewManagerTest = class extends CrElementsBrowserTest {
+// eslint-disable-next-line no-var
+var CrElementsSliderV3Test = class extends CrElementsV3BrowserTest {
   /** @override */
   get browsePreload() {
-    return 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.html';
-  }
-
-  /** @override */
-  get extraLibraries() {
-    return super.extraLibraries.concat([
-      '../extensions/test_util.js',
-      'cr_view_manager_test.js',
-    ]);
-  }
-
-  /** @override */
-  get suiteName() {
-    return cr_view_manager_test.suiteName;
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_slider_test.js';
   }
 };
 
-TEST_F('CrElementsViewManagerTest', 'VisibilityTest', function() {
-  runMochaTest(this.suiteName, cr_view_manager_test.TestNames.Visibility);
+TEST_F('CrElementsSliderV3Test', 'All', function() {
+  mocha.run();
 });
 
-TEST_F('CrElementsViewManagerTest', 'EventFiringTest', function() {
-  runMochaTest(this.suiteName, cr_view_manager_test.TestNames.EventFiring);
+// eslint-disable-next-line no-var
+var CrElementsSplitterV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_splitter_test.js';
+  }
+};
+
+TEST_F('CrElementsSplitterV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsToastV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_toast_test.js';
+  }
+};
+
+TEST_F('CrElementsToastV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsToastManagerV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_toast_manager_test.js';
+  }
+};
+
+TEST_F('CrElementsToastManagerV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsViewManagerV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_view_manager_test.js';
+  }
+};
+
+TEST_F('CrElementsViewManagerV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsPolicyIndicatorV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_policy_indicator_tests.js';
+  }
+};
+
+TEST_F('CrElementsPolicyIndicatorV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsPolicyPrefIndicatorV3Test =
+    class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    // Preload a settings URL, so that the test can access settingsPrivate.
+    return 'chrome://settings/test_loader.html?module=cr_elements/cr_policy_pref_indicator_tests.js';
+  }
+};
+
+TEST_F('CrElementsPolicyPrefIndicatorV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsPolicyIndicatorBehaviorV3Test =
+    class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_policy_indicator_behavior_tests.js';
+  }
+};
+
+TEST_F('CrElementsPolicyIndicatorBehaviorV3Test', 'All', function() {
+  mocha.run();
+});
+
+// eslint-disable-next-line no-var
+var CrElementsLottieV3Test = class extends CrElementsV3BrowserTest {
+  /** @override */
+  get browsePreload() {
+    return 'chrome://test/test_loader.html?module=cr_elements/cr_lottie_tests.js';
+  }
+
+  /** @override */
+  get commandLineSwitches() {
+    return [{switchName: 'enable-pixel-output-in-tests'}];
+  }
+};
+
+TEST_F('CrElementsLottieV3Test', 'All', function() {
+  mocha.run();
 });

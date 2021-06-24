@@ -14,7 +14,7 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/threading/thread.h"
-#include "chrome/browser/chrome_notification_types.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/extensions/unpacked_installer.h"
@@ -24,18 +24,17 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_navigation_handle.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_contents_tester.h"
 #include "extensions/browser/extension_registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
 #endif
 
@@ -68,8 +67,8 @@ scoped_refptr<Extension> LoadExtension(const std::string& filename,
   std::unique_ptr<base::DictionaryValue> value = LoadManifestFile(path, error);
   if (!value)
     return nullptr;
-  return Extension::Create(path.DirName(), Manifest::UNPACKED, *value,
-                           Extension::NO_FLAGS, error);
+  return Extension::Create(path.DirName(), mojom::ManifestLocation::kUnpacked,
+                           *value, Extension::NO_FLAGS, error);
 }
 
 }  // namespace
@@ -77,14 +76,14 @@ scoped_refptr<Extension> LoadExtension(const std::string& filename,
 class UserScriptListenerTest : public testing::Test {
  public:
   UserScriptListenerTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP),
         profile_manager_(
             new TestingProfileManager(TestingBrowserProcess::GetGlobal())) {}
 
   void SetUp() override {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     user_manager_enabler_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::make_unique<chromeos::FakeChromeUserManager>());
+        std::make_unique<ash::FakeChromeUserManager>());
 #endif
     ASSERT_TRUE(profile_manager_->SetUp());
     profile_ = profile_manager_->CreateTestingProfile("test-profile");
@@ -134,7 +133,7 @@ class UserScriptListenerTest : public testing::Test {
     return throttle;
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   content::RenderViewHostTestEnabler rvh_test_enabler_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   UserScriptListener listener_;
@@ -142,7 +141,7 @@ class UserScriptListenerTest : public testing::Test {
   ExtensionService* service_ = nullptr;
   bool was_navigation_resumed_ = false;
   std::unique_ptr<content::WebContents> web_contents_;
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
 #endif
 };
@@ -158,11 +157,7 @@ TEST_F(UserScriptListenerTest, DelayAndUpdate) {
       CreateListenerNavigationThrottle(&handle);
   EXPECT_EQ(NavigationThrottle::DEFER, throttle->WillStartRequest());
 
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
-      content::Source<Profile>(profile_),
-      content::NotificationService::NoDetails());
-  base::RunLoop().RunUntilIdle();
+  listener_.TriggerUserScriptsReadyForTesting(profile_);
   EXPECT_TRUE(was_navigation_resumed_);
 }
 
@@ -182,11 +177,7 @@ TEST_F(UserScriptListenerTest, DelayAndUnload) {
   // listener that the user scripts have been updated.
   EXPECT_FALSE(was_navigation_resumed_);
 
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
-      content::Source<Profile>(profile_),
-      content::NotificationService::NoDetails());
-  base::RunLoop().RunUntilIdle();
+  listener_.TriggerUserScriptsReadyForTesting(profile_);
   EXPECT_TRUE(was_navigation_resumed_);
 }
 
@@ -233,23 +224,15 @@ TEST_F(UserScriptListenerTest, MultiProfile) {
 
   // When the first profile's user scripts are ready, the request should still
   // be blocked waiting for profile2.
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
-      content::Source<Profile>(profile_),
-      content::NotificationService::NoDetails());
-  base::RunLoop().RunUntilIdle();
+  listener_.TriggerUserScriptsReadyForTesting(profile_);
   EXPECT_FALSE(was_navigation_resumed_);
 
   // After profile2 is ready, the request should proceed.
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
-      content::Source<Profile>(profile2),
-      content::NotificationService::NoDetails());
-  base::RunLoop().RunUntilIdle();
+  listener_.TriggerUserScriptsReadyForTesting(profile2);
   EXPECT_TRUE(was_navigation_resumed_);
 }
 
-// Test when the script updated notification occurs before the throttle's
+// Test when the user scripts ready trigger occurs before the throttle's
 // WillStartRequest function is called.  This can occur when there are multiple
 // throttles.
 TEST_F(UserScriptListenerTest, ResumeBeforeStart) {
@@ -260,11 +243,7 @@ TEST_F(UserScriptListenerTest, ResumeBeforeStart) {
       listener_.CreateNavigationThrottle(&handle);
   ASSERT_TRUE(throttle);
 
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
-      content::Source<Profile>(profile_),
-      content::NotificationService::NoDetails());
-  base::RunLoop().RunUntilIdle();
+  listener_.TriggerUserScriptsReadyForTesting(profile_);
 
   ASSERT_EQ(content::NavigationThrottle::PROCEED, throttle->WillStartRequest());
 }

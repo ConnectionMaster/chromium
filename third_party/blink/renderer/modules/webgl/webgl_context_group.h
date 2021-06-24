@@ -39,6 +39,7 @@ class WebGLContextGroup final : public GarbageCollected<WebGLContextGroup>,
                                 public NameClient {
  public:
   WebGLContextGroup();
+  ~WebGLContextGroup() final = default;
 
   void AddContext(WebGLRenderingContextBase*);
 
@@ -60,7 +61,7 @@ class WebGLContextGroup final : public GarbageCollected<WebGLContextGroup>,
   // created, in order to validate itself.
   uint32_t NumberOfContextLosses() const;
 
-  void Trace(blink::Visitor* visitor) { visitor->Trace(contexts_); }
+  void Trace(Visitor* visitor) const { visitor->Trace(contexts_); }
   const char* NameInHeapSnapshot() const override {
     return "WebGLContextGroup";
   }

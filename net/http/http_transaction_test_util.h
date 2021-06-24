@@ -10,11 +10,11 @@
 #include <stdint.h>
 
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/io_buffer.h"
 #include "net/base/load_flags.h"
@@ -22,6 +22,7 @@
 #include "net/base/net_errors.h"
 #include "net/base/request_priority.h"
 #include "net/base/test_completion_callback.h"
+#include "net/base/transport_info.h"
 #include "net/disk_cache/disk_cache.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_request_info.h"
@@ -31,7 +32,6 @@
 
 namespace net {
 
-class HttpRequestHeaders;
 class IOBuffer;
 class SSLPrivateKey;
 class X509Certificate;
@@ -64,6 +64,10 @@ using MockTransactionHandler = void (*)(const HttpRequestInfo* request,
                                         std::string* response_headers,
                                         std::string* response_data);
 
+// Default TransportInfo suitable for most MockTransactions.
+// Describes a direct connection to (127.0.0.1, 80).
+TransportInfo DefaultTransportInfo();
+
 struct MockTransaction {
   const char* url;
   const char* method;
@@ -71,11 +75,17 @@ struct MockTransaction {
   base::Time request_time;
   const char* request_headers;
   int load_flags;
+  // Connection info passed to ConnectedCallback(), if any.
+  TransportInfo transport_info = DefaultTransportInfo();
   const char* status;
   const char* response_headers;
   // If |response_time| is unspecified, the current time will be used.
   base::Time response_time;
   const char* data;
+  // Any aliases for the requested URL, as read from DNS records. The alias
+  // chain order is preserved in reverse, from canonical name (i.e. address
+  // record name) through to query name.
+  std::vector<std::string> dns_aliases;
   int test_mode;
   MockTransactionHandler handler;
   MockTransactionReadHandler read_handler;
@@ -123,6 +133,7 @@ struct ScopedMockTransaction : MockTransaction {
 class MockHttpRequest : public HttpRequestInfo {
  public:
   explicit MockHttpRequest(const MockTransaction& t);
+  std::string CacheKey();
 };
 
 //-----------------------------------------------------------------------------
@@ -209,8 +220,6 @@ class MockNetworkTransaction
 
   void StopCaching() override;
 
-  bool GetFullRequestHeaders(HttpRequestHeaders* headers) const override;
-
   int64_t GetTotalReceivedBytes() const override;
 
   int64_t GetTotalSentBytes() const override;
@@ -233,17 +242,19 @@ class MockNetworkTransaction
       CreateHelper* create_helper) override;
 
   void SetBeforeNetworkStartCallback(
-      const BeforeNetworkStartCallback& callback) override;
+      BeforeNetworkStartCallback callback) override;
 
-  void SetBeforeHeadersSentCallback(
-      const BeforeHeadersSentCallback& callback) override;
+  void SetConnectedCallback(const ConnectedCallback& callback) override;
 
   void SetRequestHeadersCallback(RequestHeadersCallback callback) override {}
   void SetResponseHeadersCallback(ResponseHeadersCallback) override {}
+  void SetEarlyResponseHeadersCallback(ResponseHeadersCallback) override {}
 
   int ResumeNetworkStart() override;
 
   void GetConnectionAttempts(ConnectionAttempts* out) const override;
+
+  void CloseConnectionOnDestruction() override;
 
   CreateHelper* websocket_handshake_stream_create_helper() {
     return websocket_handshake_stream_create_helper_;
@@ -276,6 +287,7 @@ class MockNetworkTransaction
   MockTransactionReadHandler read_handler_;
   CreateHelper* websocket_handshake_stream_create_helper_;
   BeforeNetworkStartCallback before_network_start_callback_;
+  ConnectedCallback connected_callback_;
   base::WeakPtr<MockNetworkLayer> transaction_factory_;
   int64_t received_bytes_;
   int64_t sent_bytes_;
@@ -291,8 +303,7 @@ class MockNetworkTransaction
 
   CompletionOnceCallback resume_start_callback_;  // used for pause and restart.
 
-  base::WeakPtrFactory<MockNetworkTransaction> weak_factory_;
-
+  base::WeakPtrFactory<MockNetworkTransaction> weak_factory_{this};
 };
 
 class MockNetworkLayer : public HttpTransactionFactory,
@@ -363,6 +374,51 @@ class MockNetworkLayer : public HttpTransactionFactory,
 
 // read the transaction completely
 int ReadTransaction(HttpTransaction* trans, std::string* result);
+
+//-----------------------------------------------------------------------------
+// connected callback handler
+
+// Used for injecting ConnectedCallback instances in HttpTransaction.
+class ConnectedHandler {
+ public:
+  ConnectedHandler();
+  ~ConnectedHandler();
+
+  // Instances of this class are copyable and efficiently movable.
+  // WARNING: Do not move an instance to which a callback is bound.
+  ConnectedHandler(const ConnectedHandler&);
+  ConnectedHandler& operator=(const ConnectedHandler&);
+  ConnectedHandler(ConnectedHandler&&);
+  ConnectedHandler& operator=(ConnectedHandler&&);
+
+  // Returns a callback bound to this->OnConnected().
+  // The returned callback must not outlive this instance.
+  HttpTransaction::ConnectedCallback Callback() {
+    return base::BindRepeating(&ConnectedHandler::OnConnected,
+                               base::Unretained(this));
+  }
+
+  // Compatible with HttpTransaction::ConnectedCallback.
+  // Returns the last value passed to set_result(), if any, OK otherwise.
+  int OnConnected(const TransportInfo& info, CompletionOnceCallback callback);
+
+  // Returns the list of arguments with which OnConnected() was called.
+  // The arguments are listed in the same order as the calls were received.
+  const std::vector<TransportInfo>& transports() const { return transports_; }
+
+  // Sets the value to be returned by subsequent calls to OnConnected().
+  void set_result(int result) { result_ = result; }
+
+  // If true, runs the callback supplied to OnConnected asynchronously with
+  // `result_`. Otherwise, the callback is skipped and `result_` is returned
+  // directly.
+  void set_run_callback(bool run_callback) { run_callback_ = run_callback; }
+
+ private:
+  std::vector<TransportInfo> transports_;
+  int result_ = OK;
+  bool run_callback_ = false;
+};
 
 }  // namespace net
 

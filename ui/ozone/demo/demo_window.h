@@ -10,12 +10,12 @@
 #include "base/memory/weak_ptr.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
 namespace ui {
 
 class Event;
-class PlatformWindow;
 class Renderer;
 class RendererFactory;
 class WindowManager;
@@ -35,16 +35,19 @@ class DemoWindow : public PlatformWindowDelegate {
   void Quit();
 
   // PlatformWindowDelegate:
-  void OnBoundsChanged(const gfx::Rect& new_bounds) override;
+  void OnBoundsChanged(const BoundsChange& change) override;
   void OnDamageRect(const gfx::Rect& damaged_region) override;
   void DispatchEvent(Event* event) override;
   void OnCloseRequest() override;
   void OnClosed() override;
-  void OnWindowStateChanged(PlatformWindowState new_state) override;
+  void OnWindowStateChanged(PlatformWindowState old_state,
+                            PlatformWindowState new_state) override;
   void OnLostCapture() override;
   void OnAcceleratedWidgetAvailable(gfx::AcceleratedWidget widget) override;
+  void OnWillDestroyAcceleratedWidget() override {}
   void OnAcceleratedWidgetDestroyed() override;
   void OnActivationChanged(bool active) override;
+  void OnMouseEnter() override;
 
  private:
   // Since we pretend to have a GPU process, we should also pretend to
@@ -60,7 +63,7 @@ class DemoWindow : public PlatformWindowDelegate {
   std::unique_ptr<PlatformWindow> platform_window_;
   gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
 
-  base::WeakPtrFactory<DemoWindow> weak_ptr_factory_;
+  base::WeakPtrFactory<DemoWindow> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DemoWindow);
 };

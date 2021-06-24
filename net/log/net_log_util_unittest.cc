@@ -8,7 +8,9 @@
 #include <vector>
 
 #include "base/files/file_path.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/metrics/field_trial.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
@@ -17,7 +19,6 @@
 #include "net/log/net_log_source.h"
 #include "net/log/net_log_with_source.h"
 #include "net/log/test_net_log.h"
-#include "net/log/test_net_log_entry.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -28,45 +29,73 @@ namespace {
 
 // Make sure GetNetConstants doesn't crash.
 TEST(NetLogUtil, GetNetConstants) {
-  std::unique_ptr<base::Value> constants(GetNetConstants());
+  base::Value constants(GetNetConstants());
 }
 
 // Make sure GetNetInfo doesn't crash when called on contexts with and without
 // caches, and they have the same number of elements.
 TEST(NetLogUtil, GetNetInfo) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
 
   TestURLRequestContext context;
   HttpCache* http_cache = context.http_transaction_factory()->GetCache();
 
   // Get NetInfo when there's no cache backend (It's only created on first use).
   EXPECT_FALSE(http_cache->GetCurrentBackend());
-  std::unique_ptr<base::DictionaryValue> net_info_without_cache(
-      GetNetInfo(&context, NET_INFO_ALL_SOURCES));
+  base::Value net_info_without_cache(GetNetInfo(&context));
   EXPECT_FALSE(http_cache->GetCurrentBackend());
-  EXPECT_GT(net_info_without_cache->size(), 0u);
+  EXPECT_GT(net_info_without_cache.DictSize(), 0u);
 
-  // Fore creation of a cache backend, and get NetInfo again.
+  // Force creation of a cache backend, and get NetInfo again.
   disk_cache::Backend* backend = nullptr;
   EXPECT_EQ(OK, context.http_transaction_factory()->GetCache()->GetBackend(
                     &backend, TestCompletionCallback().callback()));
   EXPECT_TRUE(http_cache->GetCurrentBackend());
-  std::unique_ptr<base::DictionaryValue> net_info_with_cache(
-      GetNetInfo(&context, NET_INFO_ALL_SOURCES));
-  EXPECT_GT(net_info_with_cache->size(), 0u);
+  base::Value net_info_with_cache = GetNetInfo(&context);
+  EXPECT_GT(net_info_with_cache.DictSize(), 0u);
 
-  EXPECT_EQ(net_info_without_cache->size(), net_info_with_cache->size());
+  EXPECT_EQ(net_info_without_cache.DictSize(), net_info_with_cache.DictSize());
+}
+
+// Verify that active Field Trials are reflected.
+TEST(NetLogUtil, GetNetInfoIncludesFieldTrials) {
+  base::test::TaskEnvironment task_environment;
+
+  // Clear all Field Trials.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatureList(
+      std::make_unique<base::FeatureList>());
+
+  // Add and activate a new Field Trial.
+  base::FieldTrial* field_trial = base::FieldTrialList::FactoryGetFieldTrial(
+      "NewFieldTrial", 100, "Default", base::FieldTrial::ONE_TIME_RANDOMIZED,
+      nullptr);
+  field_trial->AppendGroup("Active", 100);
+  EXPECT_EQ(field_trial->group_name(), "Active");
+
+  TestURLRequestContext context;
+  base::Value net_info(GetNetInfo(&context));
+
+  // Verify that the returned information reflects the new trial.
+  ASSERT_TRUE(net_info.is_dict());
+  base::Value* trials = net_info.FindListPath("activeFieldTrialGroups");
+  ASSERT_NE(nullptr, trials);
+  const auto& trial_list = trials->GetList();
+  EXPECT_EQ(1u, trial_list.size());
+  std::string result;
+  EXPECT_TRUE(trial_list[0].GetAsString(&result));
+  EXPECT_EQ("NewFieldTrial:Active", result);
 }
 
 // Make sure CreateNetLogEntriesForActiveObjects works for requests from a
 // single URLRequestContext.
 TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsOneContext) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
 
   // Using same context for each iteration makes sure deleted requests don't
   // appear in the list, or result in crashes.
   TestURLRequestContext context(true);
-  NetLog net_log;
+  TestNetLog net_log;
   context.set_net_log(&net_log);
   context.Init();
   TestDelegate delegate;
@@ -79,10 +108,9 @@ TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsOneContext) {
     }
     std::set<URLRequestContext*> contexts;
     contexts.insert(&context);
-    TestNetLog test_net_log;
+    RecordingTestNetLog test_net_log;
     CreateNetLogEntriesForActiveObjects(contexts, test_net_log.GetObserver());
-    TestNetLogEntry::List entry_list;
-    test_net_log.GetEntries(&entry_list);
+    auto entry_list = test_net_log.GetEntries();
     ASSERT_EQ(num_requests, entry_list.size());
 
     for (size_t i = 0; i < num_requests; ++i) {
@@ -94,11 +122,11 @@ TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsOneContext) {
 // Make sure CreateNetLogEntriesForActiveObjects works with multiple
 // URLRequestContexts.
 TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsMultipleContexts) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
 
   TestDelegate delegate;
   for (size_t num_requests = 0; num_requests < 5; ++num_requests) {
-    NetLog net_log;
+    TestNetLog net_log;
     std::vector<std::unique_ptr<TestURLRequestContext>> contexts;
     std::vector<std::unique_ptr<URLRequest>> requests;
     std::set<URLRequestContext*> context_set;
@@ -111,11 +139,10 @@ TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsMultipleContexts) {
           contexts[i]->CreateRequest(GURL("about:hats"), DEFAULT_PRIORITY,
                                      &delegate, TRAFFIC_ANNOTATION_FOR_TESTS));
     }
-    TestNetLog test_net_log;
+    RecordingTestNetLog test_net_log;
     CreateNetLogEntriesForActiveObjects(context_set,
                                         test_net_log.GetObserver());
-    TestNetLogEntry::List entry_list;
-    test_net_log.GetEntries(&entry_list);
+    auto entry_list = test_net_log.GetEntries();
     ASSERT_EQ(num_requests, entry_list.size());
 
     for (size_t i = 0; i < num_requests; ++i) {

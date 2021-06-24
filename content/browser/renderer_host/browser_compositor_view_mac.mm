@@ -6,6 +6,8 @@
 
 #import <Cocoa/Cocoa.h>
 #include <stdint.h>
+
+#include <memory>
 #include <utility>
 
 #include "base/command_line.h"
@@ -13,17 +15,17 @@
 #include "base/lazy_instance.h"
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/features.h"
-#include "components/viz/common/surfaces/local_surface_id_allocation.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/browser/compositor/image_transport_factory.h"
-#include "content/browser/renderer_host/display_util.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/context_factory.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/accelerated_widget_mac/accelerated_widget_mac.h"
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
 #include "ui/base/layout.h"
 #include "ui/compositor/recyclable_compositor_mac.h"
-#include "ui/display/screen.h"
 #include "ui/gfx/geometry/dip_util.h"
+#include "ui/gfx/geometry/size_conversions.h"
 
 namespace content {
 
@@ -48,20 +50,21 @@ BrowserCompositorMac::BrowserCompositorMac(
     ui::AcceleratedWidgetMacNSView* accelerated_widget_mac_ns_view,
     BrowserCompositorMacClient* client,
     bool render_widget_host_is_hidden,
-    const display::Display& initial_display,
+    const display::DisplayList& initial_display_list,
     const viz::FrameSinkId& frame_sink_id)
     : client_(client),
       accelerated_widget_mac_ns_view_(accelerated_widget_mac_ns_view),
-      dfh_display_(initial_display),
+      display_list_(initial_display_list),
       weak_factory_(this) {
+  CHECK(display_list_.IsValidAndHasPrimaryAndCurrentDisplays());
   g_browser_compositors.Get().insert(this);
 
-  root_layer_.reset(new ui::Layer(ui::LAYER_SOLID_COLOR));
+  root_layer_ = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
   // Ensure that this layer draws nothing when it does not not have delegated
   // content (otherwise this solid color will be flashed during navigation).
   root_layer_->SetColor(SK_ColorTRANSPARENT);
-  delegated_frame_host_.reset(new DelegatedFrameHost(
-      frame_sink_id, this, true /* should_register_frame_sink_id */));
+  delegated_frame_host_ = std::make_unique<DelegatedFrameHost>(
+      frame_sink_id, this, true /* should_register_frame_sink_id */);
 
   SetRenderWidgetHostIsHidden(render_widget_host_is_hidden);
 }
@@ -87,9 +90,8 @@ DelegatedFrameHost* BrowserCompositorMac::GetDelegatedFrameHost() {
 bool BrowserCompositorMac::ForceNewSurfaceId() {
   dfh_local_surface_id_allocator_.GenerateId();
   delegated_frame_host_->EmbedSurface(
-      dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-          .local_surface_id(),
-      dfh_size_dip_, cc::DeadlinePolicy::UseExistingDeadline());
+      dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId(), dfh_size_dip_,
+      cc::DeadlinePolicy::UseExistingDeadline());
   return client_->OnBrowserCompositorSurfaceIdChanged();
 }
 
@@ -107,17 +109,6 @@ viz::FrameSinkId BrowserCompositorMac::GetRootFrameSinkId() {
   return viz::FrameSinkId();
 }
 
-void BrowserCompositorMac::DidCreateNewRendererCompositorFrameSink(
-    viz::mojom::CompositorFrameSinkClient* renderer_compositor_frame_sink) {
-  renderer_compositor_frame_sink_ = renderer_compositor_frame_sink;
-  delegated_frame_host_->DidCreateNewRendererCompositorFrameSink(
-      renderer_compositor_frame_sink_);
-}
-
-void BrowserCompositorMac::OnDidNotProduceFrame(const viz::BeginFrameAck& ack) {
-  delegated_frame_host_->DidNotProduceFrame(ack);
-}
-
 void BrowserCompositorMac::SetBackgroundColor(SkColor background_color) {
   background_color_ = background_color;
   if (recyclable_compositor_)
@@ -126,58 +117,80 @@ void BrowserCompositorMac::SetBackgroundColor(SkColor background_color) {
 
 bool BrowserCompositorMac::UpdateSurfaceFromNSView(
     const gfx::Size& new_size_dip,
-    const display::Display& new_display) {
-  if (new_size_dip == dfh_size_dip_ && new_display == dfh_display_)
-    return false;
+    const display::DisplayList& new_display_list) {
+  CHECK(new_display_list.IsValidAndHasPrimaryAndCurrentDisplays());
+
+  if (new_size_dip == dfh_size_dip_) {
+    if (new_display_list == display_list_)
+      return false;
+    if (new_display_list.GetCurrentDisplay() ==
+        display_list_.GetCurrentDisplay()) {
+      // Another display changed; no SurfaceId updates are needed here, but
+      // returning true instructs the caller to notify its RenderWidgetHostImpl.
+      // That will synchronize visual properties throughout the frame tree,
+      // updating cached screen info and events exposed by web platform APIs.
+      display_list_ = new_display_list;
+      return true;
+    }
+  }
 
   bool is_resize = !dfh_size_dip_.IsEmpty() && new_size_dip != dfh_size_dip_;
 
   bool needs_new_surface_id =
       new_size_dip != dfh_size_dip_ ||
-      new_display.device_scale_factor() != dfh_display_.device_scale_factor();
+      new_display_list.GetCurrentDisplay().device_scale_factor() !=
+          display_list_.GetCurrentDisplay().device_scale_factor();
 
-  dfh_display_ = new_display;
+  display_list_ = new_display_list;
   dfh_size_dip_ = new_size_dip;
-  dfh_size_pixels_ = gfx::ConvertSizeToPixel(dfh_display_.device_scale_factor(),
-                                             dfh_size_dip_);
+  const display::Display display = display_list_.GetCurrentDisplay();
+
+  // The device scale factor is always an integer, so the result here is also
+  // an integer.
+  dfh_size_pixels_ = gfx::ToRoundedSize(
+      gfx::ConvertSizeToPixels(dfh_size_dip_, display.device_scale_factor()));
   root_layer_->SetBounds(gfx::Rect(dfh_size_dip_));
 
   if (needs_new_surface_id) {
     dfh_local_surface_id_allocator_.GenerateId();
     delegated_frame_host_->EmbedSurface(
-        dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-            .local_surface_id(),
+        dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
         dfh_size_dip_, GetDeadlinePolicy(is_resize));
   }
 
   if (recyclable_compositor_) {
-    recyclable_compositor_->compositor()->SetDisplayColorSpace(
-        dfh_display_.color_space());
     recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
-                                          dfh_display_.device_scale_factor());
+                                          display.device_scale_factor(),
+                                          display.color_spaces());
   }
 
   return true;
 }
 
 void BrowserCompositorMac::UpdateSurfaceFromChild(
+    bool auto_resize_enabled,
     float new_device_scale_factor,
     const gfx::Size& new_size_in_pixels,
-    const viz::LocalSurfaceIdAllocation& child_local_surface_id_allocation) {
-  if (dfh_local_surface_id_allocator_.UpdateFromChild(
-          child_local_surface_id_allocation)) {
-    dfh_display_.set_device_scale_factor(new_device_scale_factor);
-    dfh_size_dip_ = gfx::ConvertSizeToDIP(dfh_display_.device_scale_factor(),
-                                          new_size_in_pixels);
-    dfh_size_pixels_ = new_size_in_pixels;
-    root_layer_->SetBounds(gfx::Rect(dfh_size_dip_));
-    if (recyclable_compositor_) {
-      recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
-                                            dfh_display_.device_scale_factor());
+    const viz::LocalSurfaceId& child_local_surface_id) {
+  if (dfh_local_surface_id_allocator_.UpdateFromChild(child_local_surface_id)) {
+    if (auto_resize_enabled) {
+      // TODO(crbug.com/1169312): Update RWHVMac's cached screen info similarly?
+      display::Display display = display_list_.GetCurrentDisplay();
+      display.set_device_scale_factor(new_device_scale_factor);
+      display_list_.UpdateDisplay(display);
+      // TODO(danakj): We should avoid lossy conversions to integer DIPs.
+      dfh_size_dip_ = gfx::ToFlooredSize(gfx::ConvertSizeToDips(
+          new_size_in_pixels, display.device_scale_factor()));
+      dfh_size_pixels_ = new_size_in_pixels;
+      root_layer_->SetBounds(gfx::Rect(dfh_size_dip_));
+      if (recyclable_compositor_) {
+        recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
+                                              display.device_scale_factor(),
+                                              display.color_spaces());
+      }
     }
     delegated_frame_host_->EmbedSurface(
-        dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-            .local_surface_id(),
+        dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
         dfh_size_dip_, GetDeadlinePolicy(true /* is_resize */));
   }
   client_->OnBrowserCompositorSurfaceIdChanged();
@@ -250,7 +263,6 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
   if (state_ == HasOwnCompositor) {
     recyclable_compositor_->widget()->ResetNSView();
     recyclable_compositor_->compositor()->SetRootLayer(nullptr);
-    recyclable_compositor_->InvalidateSurface();
     ui::RecyclableCompositorMacFactory::Get()->RecycleCompositor(
         std::move(recyclable_compositor_));
   }
@@ -261,7 +273,7 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
     // Don't transiently hide the DelegatedFrameHost because that can cause the
     // current frame to be inappropriately evicted.
     // https://crbug.com/897156
-    delegated_frame_host_->WasHidden();
+    delegated_frame_host_->WasHidden(DelegatedFrameHost::HiddenCause::kOther);
     return;
   }
 
@@ -275,13 +287,13 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
   if (new_state == HasOwnCompositor) {
     recyclable_compositor_ =
         ui::RecyclableCompositorMacFactory::Get()->CreateCompositor(
-            content::GetContextFactory(), content::GetContextFactoryPrivate());
+            content::GetContextFactory());
+    const display::Display display = display_list_.GetCurrentDisplay();
     recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
-                                          dfh_display_.device_scale_factor());
+                                          display.device_scale_factor(),
+                                          display.color_spaces());
     recyclable_compositor_->compositor()->SetRootLayer(root_layer_.get());
     recyclable_compositor_->compositor()->SetBackgroundColor(background_color_);
-    recyclable_compositor_->compositor()->SetDisplayColorSpace(
-        dfh_display_.color_space());
     recyclable_compositor_->widget()->SetNSView(
         accelerated_widget_mac_ns_view_);
     recyclable_compositor_->Unsuspend();
@@ -291,9 +303,8 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
   delegated_frame_host_->AttachToCompositor(GetCompositor());
   has_saved_frame_before_state_transition_ =
       delegated_frame_host_->HasSavedFrame();
-  delegated_frame_host_->WasShown(
-      GetRendererLocalSurfaceIdAllocation().local_surface_id(), dfh_size_dip_,
-      false /* record_presentation_time */);
+  delegated_frame_host_->WasShown(GetRendererLocalSurfaceId(), dfh_size_dip_,
+                                  {} /* record_tab_switch_time_request */);
 }
 
 // static
@@ -308,14 +319,6 @@ void BrowserCompositorMac::DisableRecyclingForShutdown() {
   }
 
   ui::RecyclableCompositorMacFactory::Get()->DisableRecyclingForShutdown();
-}
-
-void BrowserCompositorMac::SetNeedsBeginFrames(bool needs_begin_frames) {
-  delegated_frame_host_->SetNeedsBeginFrames(needs_begin_frames);
-}
-
-void BrowserCompositorMac::SetWantsAnimateOnlyBeginFrames() {
-  delegated_frame_host_->SetWantsAnimateOnlyBeginFrames();
 }
 
 void BrowserCompositorMac::TakeFallbackContentFrom(
@@ -339,16 +342,14 @@ SkColor BrowserCompositorMac::DelegatedFrameHostGetGutterColor() const {
   return client_->BrowserCompositorMacGetGutterColor();
 }
 
-void BrowserCompositorMac::OnBeginFrame(base::TimeTicks frame_time) {
-  client_->BrowserCompositorMacOnBeginFrame(frame_time);
-}
-
-void BrowserCompositorMac::OnFrameTokenChanged(uint32_t frame_token) {
-  client_->OnFrameTokenChanged(frame_token);
+void BrowserCompositorMac::OnFrameTokenChanged(
+    uint32_t frame_token,
+    base::TimeTicks activation_time) {
+  client_->OnFrameTokenChanged(frame_token, activation_time);
 }
 
 float BrowserCompositorMac::GetDeviceScaleFactor() const {
-  return dfh_display_.device_scale_factor();
+  return display_list_.GetCurrentDisplay().device_scale_factor();
 }
 
 void BrowserCompositorMac::InvalidateLocalSurfaceIdOnEviction() {
@@ -377,8 +378,7 @@ void BrowserCompositorMac::DidNavigate() {
       dfh_local_surface_id_allocator_.GenerateId();
     }
     delegated_frame_host_->EmbedSurface(
-        dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation()
-            .local_surface_id(),
+        dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
         dfh_size_dip_, cc::DeadlinePolicy::UseExistingDeadline());
     client_->OnBrowserCompositorSurfaceIdChanged();
   }
@@ -401,14 +401,12 @@ void BrowserCompositorMac::SetParentUiLayer(ui::Layer* new_parent_ui_layer) {
 }
 
 bool BrowserCompositorMac::ForceNewSurfaceForTesting() {
-  display::Display new_display(dfh_display_);
-  new_display.set_device_scale_factor(new_display.device_scale_factor() * 2.0f);
-  return UpdateSurfaceFromNSView(dfh_size_dip_, new_display);
-}
-
-void BrowserCompositorMac::GetRendererScreenInfo(
-    ScreenInfo* screen_info) const {
-  DisplayUtil::DisplayToScreenInfo(screen_info, dfh_display_);
+  display::DisplayList new_display_list(display_list_);
+  display::Display display = new_display_list.GetCurrentDisplay();
+  // TODO(crbug.com/1169312): Update RWHVMac's cached screen info similarly?
+  display.set_device_scale_factor(display.device_scale_factor() * 2.0f);
+  new_display_list.UpdateDisplay(display);
+  return UpdateSurfaceFromNSView(dfh_size_dip_, new_display_list);
 }
 
 viz::ScopedSurfaceIdAllocator
@@ -418,12 +416,11 @@ BrowserCompositorMac::GetScopedRendererSurfaceIdAllocator(
                                        std::move(allocation_task));
 }
 
-const viz::LocalSurfaceIdAllocation&
-BrowserCompositorMac::GetRendererLocalSurfaceIdAllocation() {
-  if (!dfh_local_surface_id_allocator_.HasValidLocalSurfaceIdAllocation())
+const viz::LocalSurfaceId& BrowserCompositorMac::GetRendererLocalSurfaceId() {
+  if (!dfh_local_surface_id_allocator_.HasValidLocalSurfaceId())
     dfh_local_surface_id_allocator_.GenerateId();
 
-  return dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceIdAllocation();
+  return dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId();
 }
 
 void BrowserCompositorMac::TransformPointToRootSurface(gfx::PointF* point) {

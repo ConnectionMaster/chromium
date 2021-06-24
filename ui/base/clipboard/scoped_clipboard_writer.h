@@ -2,12 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// This file declares the ScopedClipboardWriter class, a wrapper around
-// the Clipboard class which simplifies writing data to the system clipboard.
-// Upon deletion the class atomically writes all data to the clipboard,
-// avoiding any potential race condition with other processes that are also
-// writing to the system clipboard.
-
 #ifndef UI_BASE_CLIPBOARD_SCOPED_CLIPBOARD_WRITER_H_
 #define UI_BASE_CLIPBOARD_SCOPED_CLIPBOARD_WRITER_H_
 
@@ -15,9 +9,9 @@
 
 #include "base/component_export.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/clipboard/clipboard.h"
+#include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 
 namespace base {
 class Pickle;
@@ -25,33 +19,52 @@ class Pickle;
 
 namespace ui {
 
-// This class is a wrapper for |Clipboard| that handles packing data
-// into a Clipboard::ObjectMap.
-class COMPONENT_EXPORT(BASE_CLIPBOARD) ScopedClipboardWriter {
+// |ScopedClipboardWriter|:
+// - is a wrapper for |Clipboard|.
+// - simplifies writing data to the system clipboard.
+// - handles packing data into a Clipboard::ObjectMap.
+//
+// Upon deletion, the class atomically writes all data to the clipboard,
+// avoiding any potential race condition with other processes that are also
+// writing to the system clipboard.
+class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ScopedClipboardWriter {
  public:
   // Create an instance that is a simple wrapper around the clipboard of the
-  // given type.
-  explicit ScopedClipboardWriter(ClipboardType type);
+  // given buffer with an optional parameter indicating the source of the data.
+  // TODO(crbug.com/1103193): change its references to use
+  // DataTransferEndpoint, if possible.
+  explicit ScopedClipboardWriter(
+      ClipboardBuffer buffer,
+      std::unique_ptr<DataTransferEndpoint> src = nullptr);
 
   ~ScopedClipboardWriter();
 
   // Converts |text| to UTF-8 and adds it to the clipboard.
-  void WriteText(const base::string16& text);
+  void WriteText(const std::u16string& text);
 
   // Adds HTML to the clipboard.  The url parameter is optional, but especially
   // useful if the HTML fragment contains relative links.
-  void WriteHTML(const base::string16& markup, const std::string& source_url);
+  void WriteHTML(const std::u16string& markup, const std::string& source_url);
+
+  // Adds SVG to the clipboard.
+  void WriteSvg(const std::u16string& text);
 
   // Adds RTF to the clipboard.
   void WriteRTF(const std::string& rtf_data);
 
+  // Adds text/uri-list filenames to the clipboard.
+  // Security Note: This function is expected to be called only by exo in
+  // Chrome OS. It should not be called by renderers or any other untrusted
+  // party since any paths written to the clipboard can be read by renderers.
+  void WriteFilenames(const std::string& uri_list);
+
   // Adds a bookmark to the clipboard.
-  void WriteBookmark(const base::string16& bookmark_title,
+  void WriteBookmark(const std::u16string& bookmark_title,
                      const std::string& url);
 
   // Adds an html hyperlink (<a href>) to the clipboard. |anchor_text| and
   // |url| will be escaped as needed.
-  void WriteHyperlink(const base::string16& anchor_text,
+  void WriteHyperlink(const std::u16string& anchor_text,
                       const std::string& url);
 
   // Used by WebKit to determine whether WebKit wrote the clipboard last
@@ -61,25 +74,37 @@ class COMPONENT_EXPORT(BASE_CLIPBOARD) ScopedClipboardWriter {
   void WritePickledData(const base::Pickle& pickle,
                         const ClipboardFormatType& format);
 
-  // Adds custom data to clipboard.
-  void WriteData(const std::string& type, const std::string& data);
+  // Data is written to the system clipboard in the same order as WriteData
+  // calls are received.
+  void WriteData(const std::u16string& format, mojo_base::BigBuffer data);
 
   void WriteImage(const SkBitmap& bitmap);
+
+  // Mark the data to be written as confidential.
+  void MarkAsConfidential();
 
   // Removes all objects that would be written to the clipboard.
   void Reset();
 
-  void set_type(ClipboardType type) { type_ = type; }
-
  private:
   // We accumulate the data passed to the various targets in the |objects_|
-  // vector, and pass it to Clipboard::WriteObjects() during object destruction.
+  // vector, and pass it to Clipboard::WritePortableRepresentations() during
+  // object destruction.
   Clipboard::ObjectMap objects_;
 
+  std::vector<Clipboard::PlatformRepresentation> platform_representations_;
+
   // The type is set at construction, and can be changed before committing.
-  ClipboardType type_;
+  const ClipboardBuffer buffer_;
 
   SkBitmap bitmap_;
+
+  bool confidential_ = false;
+
+  // The source of the data written in ScopedClipboardWriter, nullptr means it's
+  // not set, or the source of the data can't be represented by
+  // DataTransferEndpoint.
+  std::unique_ptr<DataTransferEndpoint> data_src_;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedClipboardWriter);
 };
@@ -87,4 +112,3 @@ class COMPONENT_EXPORT(BASE_CLIPBOARD) ScopedClipboardWriter {
 }  // namespace ui
 
 #endif  // UI_BASE_CLIPBOARD_SCOPED_CLIPBOARD_WRITER_H_
-

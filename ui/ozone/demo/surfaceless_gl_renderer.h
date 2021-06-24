@@ -19,6 +19,8 @@ namespace ui {
 class OverlayCandidatesOzone;
 class PlatformWindowSurface;
 
+static const int kMaxLayers = 8;
+
 class SurfacelessGlRenderer : public RendererBase {
  public:
   SurfacelessGlRenderer(gfx::AcceleratedWidget widget,
@@ -32,8 +34,7 @@ class SurfacelessGlRenderer : public RendererBase {
 
  private:
   void RenderFrame();
-  void PostRenderFrameTask(gfx::SwapResult result,
-                           std::unique_ptr<gfx::GpuFence> gpu_fence);
+  void PostRenderFrameTask(gfx::SwapCompletionResult result);
   void OnPresentation(const gfx::PresentationFeedback& feedback);
 
   class BufferWrapper {
@@ -59,7 +60,8 @@ class SurfacelessGlRenderer : public RendererBase {
 
   std::unique_ptr<BufferWrapper> buffers_[2];
 
-  std::unique_ptr<BufferWrapper> overlay_buffers_[2];
+  std::unique_ptr<BufferWrapper> overlay_buffers_[kMaxLayers][2];
+  size_t overlay_cnt_ = 0;
   bool disable_primary_plane_ = false;
   gfx::Rect primary_plane_rect_;
   bool use_gpu_fences_ = false;
@@ -73,7 +75,7 @@ class SurfacelessGlRenderer : public RendererBase {
   scoped_refptr<gl::GLSurface> gl_surface_;
   scoped_refptr<gl::GLContext> context_;
 
-  base::WeakPtrFactory<SurfacelessGlRenderer> weak_ptr_factory_;
+  base::WeakPtrFactory<SurfacelessGlRenderer> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SurfacelessGlRenderer);
 };

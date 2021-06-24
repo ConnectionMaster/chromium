@@ -20,7 +20,9 @@
 
 #include "third_party/blink/renderer/core/svg/svg_path_element.h"
 
+#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_path.h"
 #include "third_party/blink/renderer/core/svg/svg_mpath_element.h"
 #include "third_party/blink/renderer/core/svg/svg_path_query.h"
 #include "third_party/blink/renderer/core/svg/svg_path_utilities.h"
@@ -29,7 +31,7 @@
 
 namespace blink {
 
-inline SVGPathElement::SVGPathElement(Document& document)
+SVGPathElement::SVGPathElement(Document& document)
     : SVGGeometryElement(svg_names::kPathTag, document),
       path_(MakeGarbageCollected<SVGAnimatedPath>(this,
                                                   svg_names::kDAttr,
@@ -37,21 +39,18 @@ inline SVGPathElement::SVGPathElement(Document& document)
   AddToPropertyMap(path_);
 }
 
-void SVGPathElement::Trace(blink::Visitor* visitor) {
+void SVGPathElement::Trace(Visitor* visitor) const {
   visitor->Trace(path_);
   SVGGeometryElement::Trace(visitor);
 }
-
-DEFINE_NODE_FACTORY(SVGPathElement)
 
 Path SVGPathElement::AttributePath() const {
   return path_->CurrentValue()->GetStylePath()->GetPath();
 }
 
 const StylePath* SVGPathElement::GetStylePath() const {
-  if (LayoutObject* layout_object = this->GetLayoutObject()) {
-    const StylePath* style_path = layout_object->StyleRef().SvgStyle().D();
-    if (style_path)
+  if (const ComputedStyle* style = GetComputedStyle()) {
+    if (const StylePath* style_path = style->D())
       return style_path;
     return StylePath::EmptyPath();
   }
@@ -62,18 +61,35 @@ float SVGPathElement::ComputePathLength() const {
   return GetStylePath()->length();
 }
 
+const SVGPathByteStream& SVGPathElement::PathByteStream() const {
+  return GetStylePath()->ByteStream();
+}
+
 Path SVGPathElement::AsPath() const {
   return GetStylePath()->GetPath();
 }
 
-float SVGPathElement::getTotalLength() {
-  GetDocument().UpdateStyleAndLayoutForNode(this);
+float SVGPathElement::getTotalLength(ExceptionState& exception_state) {
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
   return SVGPathQuery(PathByteStream()).GetTotalLength();
 }
 
-SVGPointTearOff* SVGPathElement::getPointAtLength(float length) {
-  GetDocument().UpdateStyleAndLayoutForNode(this);
-  SVGPathQuery path_query(PathByteStream());
+SVGPointTearOff* SVGPathElement::getPointAtLength(
+    float length,
+    ExceptionState& exception_state) {
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
+
+  EnsureComputedStyle();
+  const SVGPathByteStream& byte_stream = PathByteStream();
+  if (byte_stream.IsEmpty()) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      "The element's path is empty.");
+    return nullptr;
+  }
+
+  SVGPathQuery path_query(byte_stream);
   if (length < 0) {
     length = 0;
   } else {
@@ -85,14 +101,16 @@ SVGPointTearOff* SVGPathElement::getPointAtLength(float length) {
   return SVGPointTearOff::CreateDetached(point);
 }
 
-void SVGPathElement::SvgAttributeChanged(const QualifiedName& attr_name) {
+void SVGPathElement::SvgAttributeChanged(
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   if (attr_name == svg_names::kDAttr) {
     InvalidateMPathDependencies();
     GeometryPresentationAttributeChanged(attr_name);
     return;
   }
 
-  SVGGeometryElement::SvgAttributeChanged(attr_name);
+  SVGGeometryElement::SvgAttributeChanged(params);
 }
 
 void SVGPathElement::CollectStyleForPresentationAttribute(
@@ -101,11 +119,11 @@ void SVGPathElement::CollectStyleForPresentationAttribute(
     MutableCSSPropertyValueSet* style) {
   SVGAnimatedPropertyBase* property = PropertyFromAttribute(name);
   if (property == path_) {
-    SVGAnimatedPath* path = this->GetPath();
+    SVGAnimatedPath* path = GetPath();
     // If this is a <use> instance, return the referenced path to maximize
     // geometry sharing.
     if (const SVGElement* element = CorrespondingElement())
-      path = ToSVGPathElement(element)->GetPath();
+      path = To<SVGPathElement>(element)->GetPath();
     AddPropertyToPresentationAttributeStyle(style, property->CssPropertyId(),
                                             path->CssValue());
     return;
@@ -119,7 +137,7 @@ void SVGPathElement::InvalidateMPathDependencies() {
   // dependencies manually.
   if (SVGElementSet* dependencies = SetOfIncomingReferences()) {
     for (SVGElement* element : *dependencies) {
-      if (auto* mpath = ToSVGMPathElementOrNull(*element))
+      if (auto* mpath = DynamicTo<SVGMPathElement>(*element))
         mpath->TargetPathChanged();
     }
   }
@@ -139,7 +157,7 @@ void SVGPathElement::RemovedFrom(ContainerNode& root_parent) {
 
 FloatRect SVGPathElement::GetBBox() {
   // We want the exact bounds.
-  return SVGPathElement::AsPath().BoundingRect();
+  return SVGPathElement::AsPath().TightBoundingRect();
 }
 
 }  // namespace blink

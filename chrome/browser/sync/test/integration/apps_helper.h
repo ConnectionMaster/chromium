@@ -12,6 +12,8 @@
 #include "base/compiler_specific.h"
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
+#include "chrome/browser/web_applications/components/web_app_id.h"
+#include "chrome/browser/web_applications/components/web_application_info.h"
 #include "components/sync/model/string_ordinal.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
@@ -31,25 +33,33 @@ bool HasSameApps(Profile* profile1, Profile* profile2);
 // legacy packaged and platform).
 bool AllProfilesHaveSameApps() WARN_UNUSED_RESULT;
 
-// Installs the app for the given index to |profile|, and returns the extension
-// ID of the new app.
-std::string InstallApp(Profile* profile, int index);
+// Installs the hosted app for the given index to |profile|, and returns the
+// extension ID of the new app.
+std::string InstallHostedApp(Profile* profile, int index);
 
 // Installs the platform app for the given index to |profile|, and returns the
 // extension ID of the new app. Indices passed to this method should be distinct
 // from indices passed to InstallApp.
 std::string InstallPlatformApp(Profile* profile, int index);
 
-// Installs the app for the given index to all profiles (including the
+// Installs the hosted app for the given index to all profiles (including the
 // verifier), and returns the extension ID of the new app.
-std::string InstallAppForAllProfiles(int index);
+std::string InstallHostedAppForAllProfiles(int index);
+
+// Installs the web app for the given WebApplicationInfo and profile. This does
+// not download icons or run OS integration installs.
+web_app::AppId InstallWebApp(Profile* profile, const WebApplicationInfo& info);
 
 // Uninstalls the app for the given index from |profile|. Assumes that it was
 // previously installed.
 void UninstallApp(Profile* profile, int index);
 
-// Installs all pending synced apps for |profile|.
+// Installs all pending synced apps for |profile|, including waiting for the
+// App Service to settle.
 void InstallAppsPendingForSync(Profile* profile);
+
+// Waits for the App Service state for |profile| to settle.
+void WaitForAppService(Profile* profile);
 
 // Enables the app for the given index on |profile|.
 void EnableApp(Profile* profile, int index);
@@ -100,6 +110,8 @@ void CopyNTPOrdinals(Profile* source, Profile* destination, int index);
 // Fix any NTP icon collisions that are currently in |profile|.
 void FixNTPOrdinalCollisions(Profile* profile);
 
+// Wait for all the web app install and uninstall tasks to finish.
+void AwaitWebAppQuiescence(std::vector<Profile*> profiles);
 }  // namespace apps_helper
 
 // Checker to block for a set of profiles to have matching extensions lists. If
@@ -114,8 +126,7 @@ class AppsMatchChecker : public StatusChangeChecker,
   ~AppsMatchChecker() override;
 
   // StatusChangeChecker implementation.
-  std::string GetDebugMessage() const override;
-  bool IsExitConditionSatisfied() override;
+  bool IsExitConditionSatisfied(std::ostream* os) override;
 
   // extensions::ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* context,

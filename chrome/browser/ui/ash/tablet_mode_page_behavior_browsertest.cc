@@ -2,21 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/public/cpp/ash_switches.h"
+#include "ash/constants/ash_switches.h"
+#include "ash/public/cpp/tablet_mode.h"
+#include "ash/public/cpp/test/shell_test_api.h"
 #include "base/command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/browser_features.h"
-#include "chrome/browser/ui/ash/tablet_mode_client.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/web_preferences.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
 
 namespace {
 
@@ -39,27 +42,25 @@ class TabletModePageBehaviorTest : public InProcessBrowserTest {
   }
 
   void ToggleTabletMode() {
-    auto* tablet_mode_client = TabletModeClient::Get();
-    tablet_mode_client->OnTabletModeToggled(
-        !tablet_mode_client->tablet_mode_enabled());
+    ash::ShellTestApi().SetTabletModeEnabledForTest(!GetTabletModeEnabled());
   }
 
   bool GetTabletModeEnabled() const {
-    return TabletModeClient::Get()->tablet_mode_enabled();
+    return ash::TabletMode::Get()->InTabletMode();
   }
 
   content::WebContents* GetActiveWebContents(Browser* browser) const {
     return browser->tab_strip_model()->GetActiveWebContents();
   }
 
-  content::WebPreferences GetWebKitPreferences(
+  blink::web_pref::WebPreferences GetWebKitPreferences(
       content::WebContents* web_contents) const {
-    return web_contents->GetRenderViewHost()->GetWebkitPreferences();
+    return web_contents->GetOrCreateWebPreferences();
   }
 
   void ValidateWebPrefs(content::WebContents* web_contents,
                         bool tablet_mode_enabled) const {
-    const content::WebPreferences web_prefs =
+    const blink::web_pref::WebPreferences web_prefs =
         GetWebKitPreferences(web_contents);
     if (tablet_mode_enabled) {
       EXPECT_TRUE(web_prefs.double_tap_to_zoom_enabled);
@@ -115,14 +116,13 @@ IN_PROC_BROWSER_TEST_F(TabletModePageBehaviorTest,
 }
 
 IN_PROC_BROWSER_TEST_F(TabletModePageBehaviorTest, ExcludeInternalPages) {
-  constexpr char kSettingsUrl[] = "chrome://settings/";
-  AddTabAtIndexToBrowser(browser(), 0, GURL(kSettingsUrl),
+  AddTabAtIndexToBrowser(browser(), 0, GURL(chrome::kChromeUIVersionURL),
                          ui::PAGE_TRANSITION_LINK,
                          false /* check_navigation_success */);
   auto* web_contents = GetActiveWebContents(browser());
   ASSERT_TRUE(web_contents);
   EXPECT_STREQ(web_contents->GetLastCommittedURL().spec().c_str(),
-               kSettingsUrl);
+               chrome::kChromeUIVersionURL);
 
   // Now enable tablet mode, and expect that this internal page's web prefs
   // remain unaffected as if tablet mode is off.
@@ -139,10 +139,10 @@ IN_PROC_BROWSER_TEST_F(TabletModePageBehaviorTest, ExcludeHostedApps) {
       "test_browser_app", true /* trusted_source */, gfx::Rect(),
       browser()->profile(), true);
   params.initial_show_state = ui::SHOW_STATE_DEFAULT;
-  Browser* browser = new Browser(params);
+  Browser* browser = Browser::Create(params);
   AddBlankTabAndShow(browser);
 
-  ASSERT_TRUE(browser->is_app());
+  ASSERT_TRUE(browser->is_type_app());
   auto* web_contents = GetActiveWebContents(browser);
   ASSERT_TRUE(web_contents);
 
@@ -154,13 +154,13 @@ IN_PROC_BROWSER_TEST_F(TabletModePageBehaviorTest, ExcludeHostedApps) {
 }
 
 IN_PROC_BROWSER_TEST_F(TabletModePageBehaviorTest, ExcludeNTPs) {
-  AddTabAtIndexToBrowser(browser(), 0, GURL(chrome::kChromeSearchLocalNtpUrl),
+  AddTabAtIndexToBrowser(browser(), 0, GURL(chrome::kChromeUINewTabPageURL),
                          ui::PAGE_TRANSITION_LINK,
                          false /* check_navigation_success */);
   auto* web_contents = GetActiveWebContents(browser());
   ASSERT_TRUE(web_contents);
   EXPECT_STREQ(web_contents->GetLastCommittedURL().spec().c_str(),
-               chrome::kChromeSearchLocalNtpUrl);
+               chrome::kChromeUINewTabPageURL);
 
   // NTPs should not be affected in tablet mode.
   ToggleTabletMode();

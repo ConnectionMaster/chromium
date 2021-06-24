@@ -9,6 +9,7 @@
 
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/stl_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/platform_thread.h"
 #include "base/trace_event/trace_buffer.h"
@@ -62,10 +63,9 @@ void TraceEventAnalyzerTest::EndTracing() {
   base::WaitableEvent flush_complete_event(
       base::WaitableEvent::ResetPolicy::AUTOMATIC,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
-  base::trace_event::TraceLog::GetInstance()->Flush(
-      base::Bind(&TraceEventAnalyzerTest::OnTraceDataCollected,
-                 base::Unretained(this),
-                 base::Unretained(&flush_complete_event)));
+  base::trace_event::TraceLog::GetInstance()->Flush(base::BindRepeating(
+      &TraceEventAnalyzerTest::OnTraceDataCollected, base::Unretained(this),
+      base::Unretained(&flush_complete_event)));
   flush_complete_event.Wait();
   buffer_.Finish();
 }
@@ -102,7 +102,7 @@ TEST_F(TraceEventAnalyzerTest, TraceEvent) {
   event.arg_numbers["int"] = static_cast<double>(int_num);
   event.arg_numbers["double"] = double_num;
   event.arg_strings["string"] = str;
-  event.arg_values["dict"] = std::make_unique<base::DictionaryValue>();
+  event.arg_values["dict"] = base::Value(base::Value::Type::DICTIONARY);
 
   ASSERT_TRUE(event.HasNumberArg("false"));
   ASSERT_TRUE(event.HasNumberArg("true"));
@@ -120,9 +120,9 @@ TEST_F(TraceEventAnalyzerTest, TraceEvent) {
   EXPECT_EQ(double_num, event.GetKnownArgAsDouble("double"));
   EXPECT_STREQ(str, event.GetKnownArgAsString("string").c_str());
 
-  std::unique_ptr<base::Value> arg;
+  base::Value arg;
   EXPECT_TRUE(event.GetArgAsValue("dict", &arg));
-  EXPECT_EQ(base::Value::Type::DICTIONARY, arg->type());
+  EXPECT_EQ(base::Value::Type::DICTIONARY, arg.type());
 }
 
 TEST_F(TraceEventAnalyzerTest, QueryEventMember) {
@@ -407,7 +407,9 @@ TEST_F(TraceEventAnalyzerTest, StringPattern) {
   EXPECT_STREQ("no match", found[0]->name.c_str());
 }
 
-// Test that duration queries work.
+// Test that duration queries work. (BEGIN/END events aren't emitted by
+// Perfetto.)
+#if !BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
 TEST_F(TraceEventAnalyzerTest, BeginEndDuration) {
   ManualSetUp();
 
@@ -452,6 +454,7 @@ TEST_F(TraceEventAnalyzerTest, BeginEndDuration) {
   EXPECT_STREQ("name1", found[0]->name.c_str());
   EXPECT_STREQ("name3", found[1]->name.c_str());
 }
+#endif  // !BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
 
 // Test that duration queries work.
 TEST_F(TraceEventAnalyzerTest, CompleteDuration) {
@@ -494,7 +497,8 @@ TEST_F(TraceEventAnalyzerTest, CompleteDuration) {
   EXPECT_STREQ("name3", found[1]->name.c_str());
 }
 
-// Test AssociateBeginEndEvents
+// Test AssociateBeginEndEvents. (BEGIN/END events aren't emitted by Perfetto.)
+#if !BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
 TEST_F(TraceEventAnalyzerTest, BeginEndAssocations) {
   ManualSetUp();
 
@@ -518,8 +522,10 @@ TEST_F(TraceEventAnalyzerTest, BeginEndAssocations) {
   ASSERT_EQ(1u, found.size());
   EXPECT_STREQ("name2", found[0]->name.c_str());
 }
+#endif  // !BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
 
-// Test MergeAssociatedEventArgs
+// Test MergeAssociatedEventArgs. (BEGIN/END events aren't emitted by Perfetto.)
+#if !BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
 TEST_F(TraceEventAnalyzerTest, MergeAssociatedEventArgs) {
   ManualSetUp();
 
@@ -546,6 +552,7 @@ TEST_F(TraceEventAnalyzerTest, MergeAssociatedEventArgs) {
   EXPECT_TRUE(found[0]->GetArgAsString("arg", &arg_actual));
   EXPECT_STREQ(arg_string, arg_actual.c_str());
 }
+#endif  // !BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
 
 // Test AssociateAsyncBeginEndEvents
 TEST_F(TraceEventAnalyzerTest, AsyncBeginEndAssocations) {
@@ -582,17 +589,17 @@ TEST_F(TraceEventAnalyzerTest, AsyncBeginEndAssocationsWithSteps) {
 
   BeginTracing();
   {
-    TRACE_EVENT_ASYNC_STEP_INTO0("c", "n", 0xA, "s1");
-    TRACE_EVENT_ASYNC_END0("c", "n", 0xA);
-    TRACE_EVENT_ASYNC_BEGIN0("c", "n", 0xB);
-    TRACE_EVENT_ASYNC_BEGIN0("c", "n", 0xC);
-    TRACE_EVENT_ASYNC_STEP_PAST0("c", "n", 0xB, "s1");
-    TRACE_EVENT_ASYNC_STEP_INTO0("c", "n", 0xC, "s1");
-    TRACE_EVENT_ASYNC_STEP_INTO1("c", "n", 0xC, "s2", "a", 1);
-    TRACE_EVENT_ASYNC_END0("c", "n", 0xB);
-    TRACE_EVENT_ASYNC_END0("c", "n", 0xC);
-    TRACE_EVENT_ASYNC_BEGIN0("c", "n", 0xA);
-    TRACE_EVENT_ASYNC_STEP_INTO0("c", "n", 0xA, "s2");
+    TRACE_EVENT_ASYNC_STEP_INTO0("cat", "n", 0xA, "s1");
+    TRACE_EVENT_ASYNC_END0("cat", "n", 0xA);
+    TRACE_EVENT_ASYNC_BEGIN0("cat", "n", 0xB);
+    TRACE_EVENT_ASYNC_BEGIN0("cat", "n", 0xC);
+    TRACE_EVENT_ASYNC_STEP_PAST0("cat", "n", 0xB, "s1");
+    TRACE_EVENT_ASYNC_STEP_INTO0("cat", "n", 0xC, "s1");
+    TRACE_EVENT_ASYNC_STEP_INTO1("cat", "n", 0xC, "s2", "a", 1);
+    TRACE_EVENT_ASYNC_END0("cat", "n", 0xB);
+    TRACE_EVENT_ASYNC_END0("cat", "n", 0xC);
+    TRACE_EVENT_ASYNC_BEGIN0("cat", "n", 0xA);
+    TRACE_EVENT_ASYNC_STEP_INTO0("cat", "n", 0xA, "s2");
   }
   EndTracing();
 
@@ -948,13 +955,11 @@ TEST_F(TraceEventAnalyzerTest, ComplexArgument) {
   EXPECT_EQ("name", events[0]->name);
   EXPECT_TRUE(events[0]->HasArg("arg"));
 
-  std::unique_ptr<base::Value> arg;
+  base::Value arg;
   events[0]->GetArgAsValue("arg", &arg);
-  base::DictionaryValue* arg_dict;
-  EXPECT_TRUE(arg->GetAsDictionary(&arg_dict));
-  std::string property;
-  EXPECT_TRUE(arg_dict->GetString("property", &property));
-  EXPECT_EQ("value", property);
+  ASSERT_TRUE(arg.is_dict());
+  EXPECT_EQ(absl::optional<std::string>("value"),
+            base::OptionalFromPtr(arg.FindStringKey("property")));
 }
 
 }  // namespace trace_analyzer

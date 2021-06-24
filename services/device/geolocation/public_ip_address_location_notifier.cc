@@ -4,6 +4,8 @@
 
 #include "services/device/geolocation/public_ip_address_location_notifier.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/device/geolocation/wifi_data.h"
@@ -20,19 +22,20 @@ constexpr base::TimeDelta kNetworkChangeReactionDelay =
 
 PublicIpAddressLocationNotifier::PublicIpAddressLocationNotifier(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    network::NetworkConnectionTracker* network_connection_tracker,
     const std::string& api_key)
     : network_changed_since_last_request_(true),
       api_key_(api_key),
       url_loader_factory_(url_loader_factory),
-      network_traffic_annotation_tag_(nullptr),
-      weak_ptr_factory_(this) {
+      network_connection_tracker_(network_connection_tracker),
+      network_traffic_annotation_tag_(nullptr) {
   // Subscribe to notifications of changes in network configuration.
-  net::NetworkChangeNotifier::AddNetworkChangeObserver(this);
+  network_connection_tracker_->AddNetworkConnectionObserver(this);
 }
 
 PublicIpAddressLocationNotifier::~PublicIpAddressLocationNotifier() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  net::NetworkChangeNotifier::RemoveNetworkChangeObserver(this);
+  network_connection_tracker_->RemoveNetworkConnectionObserver(this);
 }
 
 void PublicIpAddressLocationNotifier::QueryNextPosition(
@@ -41,8 +44,8 @@ void PublicIpAddressLocationNotifier::QueryNextPosition(
     QueryNextPositionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  network_traffic_annotation_tag_.reset(
-      new net::PartialNetworkTrafficAnnotationTag(tag));
+  network_traffic_annotation_tag_ =
+      std::make_unique<net::PartialNetworkTrafficAnnotationTag>(tag);
   // If a network location request is in flight, wait.
   if (network_location_request_) {
     callbacks_.push_back(std::move(callback));
@@ -69,16 +72,16 @@ void PublicIpAddressLocationNotifier::QueryNextPosition(
   callbacks_.push_back(std::move(callback));
 }
 
-void PublicIpAddressLocationNotifier::OnNetworkChanged(
-    net::NetworkChangeNotifier::ConnectionType type) {
+void PublicIpAddressLocationNotifier::OnConnectionChanged(
+    network::mojom::ConnectionType type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Post a cancelable task to react to this network change after a reasonable
   // delay, so that we only react once if multiple network changes occur in a
   // short span of time.
   react_to_network_change_closure_.Reset(
-      base::Bind(&PublicIpAddressLocationNotifier::ReactToNetworkChange,
-                 base::Unretained(this)));
+      base::BindOnce(&PublicIpAddressLocationNotifier::ReactToNetworkChange,
+                     base::Unretained(this)));
   base::SequencedTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE, react_to_network_change_closure_.callback(),
       kNetworkChangeReactionDelay);
@@ -123,7 +126,7 @@ void PublicIpAddressLocationNotifier::OnNetworkLocationResponse(
     network_changed_since_last_request_ = true;
     DCHECK(!latest_geoposition_.has_value());
   } else {
-    latest_geoposition_ = base::make_optional(position);
+    latest_geoposition_ = absl::make_optional(position);
   }
   // Notify all clients.
   for (QueryNextPositionCallback& callback : callbacks_)

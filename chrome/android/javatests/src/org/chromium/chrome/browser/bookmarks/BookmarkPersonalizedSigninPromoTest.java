@@ -4,200 +4,134 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
-import static android.support.test.espresso.Espresso.onView;
-import static android.support.test.espresso.Espresso.pressBack;
-import static android.support.test.espresso.action.ViewActions.click;
-import static android.support.test.espresso.assertion.ViewAssertions.doesNotExist;
-import static android.support.test.espresso.assertion.ViewAssertions.matches;
-import static android.support.test.espresso.matcher.ViewMatchers.isDisplayed;
-import static android.support.test.espresso.matcher.ViewMatchers.withId;
+import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static junit.framework.Assert.assertEquals;
-import static junit.framework.Assert.assertFalse;
-import static junit.framework.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
-import android.accounts.Account;
-import android.content.Intent;
-import android.support.test.filters.LargeTest;
-import android.support.test.filters.MediumTest;
-import android.support.test.runner.intent.IntentCallback;
-import android.support.test.runner.intent.IntentMonitorRegistry;
+import android.app.Activity;
+import android.content.Context;
 
+import androidx.test.filters.MediumTest;
+
+import org.junit.After;
 import org.junit.Before;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.ChromeSwitches;
-import org.chromium.chrome.browser.signin.AccountSigninActivity;
-import org.chromium.chrome.browser.signin.SigninAccessPoint;
-import org.chromium.chrome.browser.signin.SigninPromoController;
-import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.signin.SyncConsentActivityLauncherImpl;
+import org.chromium.chrome.browser.signin.ui.SyncConsentActivityLauncher;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.components.signin.AccountManagerFacade;
-import org.chromium.components.signin.ProfileDataSource;
-import org.chromium.components.signin.test.util.AccountHolder;
-import org.chromium.components.signin.test.util.FakeAccountManagerDelegate;
-import org.chromium.content_public.browser.test.util.TestThreadUtils;
-import org.chromium.ui.test.util.UiDisableIf;
-
-import java.io.Closeable;
-import java.util.ArrayList;
-import java.util.List;
+import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.util.BookmarkTestRule;
+import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
+import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.metrics.SigninAccessPoint;
 
 /**
  * Tests for the personalized signin promo on the Bookmarks page.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@RetryOnFailure(message = "crbug.com/789531")
+@Batch(Batch.PER_CLASS)
 public class BookmarkPersonalizedSigninPromoTest {
-    private static final String TEST_ACCOUNT_NAME = "test@gmail.com";
-    private static final String TEST_FULL_NAME = "Test Account";
+    private final AccountManagerTestRule mAccountManagerTestRule = new AccountManagerTestRule();
+
+    private final BookmarkTestRule mBookmarkTestRule = new BookmarkTestRule();
+
+    @ClassRule
+    public static final ChromeTabbedActivityTestRule sActivityTestRule =
+            new ChromeTabbedActivityTestRule();
 
     @Rule
-    public final ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
-            new ChromeActivityTestRule<>(ChromeActivity.class);
+    public final BlankCTATabInitialStateRule mInitialStateRule =
+            new BlankCTATabInitialStateRule(sActivityTestRule, false);
 
-    private final FakeAccountManagerDelegate mAccountManagerDelegate =
-            new FakeAccountManagerDelegate(FakeAccountManagerDelegate.ENABLE_PROFILE_DATA_SOURCE);
+    // As bookmarks need the fake AccountManagerFacade in AccountManagerTestRule,
+    // BookmarkTestRule should be initialized after and destroyed before the
+    // AccountManagerTestRule.
+    @Rule
+    public final RuleChain chain =
+            RuleChain.outerRule(mAccountManagerTestRule).around(mBookmarkTestRule);
+
+    private final SyncConsentActivityLauncher mMockSyncConsentActivityLauncher =
+            mock(SyncConsentActivityLauncher.class);
 
     @Before
-    public void setUp() throws Exception {
-        AccountManagerFacade.overrideAccountManagerFacadeForTests(mAccountManagerDelegate);
-        mActivityTestRule.startMainActivityFromLauncher();
+    public void setUp() {
+        BookmarkPromoHeader.forcePromoStateForTests(
+                BookmarkPromoHeader.PromoState.PROMO_SIGNIN_PERSONALIZED);
+        SyncConsentActivityLauncherImpl.setLauncherForTest(mMockSyncConsentActivityLauncher);
+    }
+
+    @After
+    public void tearDown() {
+        SyncConsentActivityLauncherImpl.setLauncherForTest(null);
+        BookmarkPromoHeader.forcePromoStateForTests(null);
     }
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/789531")
-    public void testManualDismissPromo() throws Exception {
-        openBookmarkManager();
-        onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
-        onView(withId(R.id.signin_promo_close_button)).perform(click());
-        onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
-    }
-
-    @Test
-    @LargeTest
-    @DisableIf.Device(type = {UiDisableIf.TABLET}) // https://crbug.com/776405.
-    @DisabledTest(message = "crbug.com/789531")
-    public void testAutoDismissPromo() throws Exception {
-        int impressionCap = SigninPromoController.getMaxImpressionsBookmarksForTests();
-        for (int impression = 0; impression < impressionCap; impression++) {
-            openBookmarkManager();
-            onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
-            pressBack();
-        }
-        openBookmarkManager();
-        onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
+    public void testSigninButtonDefaultAccount() {
+        doNothing()
+                .when(SyncConsentActivityLauncherImpl.get())
+                .launchActivityForPromoDefaultFlow(any(Context.class), anyInt(), anyString());
+        CoreAccountInfo accountInfo =
+                mAccountManagerTestRule.addAccount(AccountManagerTestRule.TEST_ACCOUNT_EMAIL);
+        showBookmarkManagerAndCheckSigninPromoIsDisplayed();
+        onView(withId(R.id.signin_promo_signin_button)).perform(click());
+        verify(mMockSyncConsentActivityLauncher)
+                .launchActivityForPromoDefaultFlow(any(Activity.class),
+                        eq(SigninAccessPoint.BOOKMARK_MANAGER), eq(accountInfo.getEmail()));
     }
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/789531")
-    public void testSigninButtonDefaultAccount() throws Exception {
-        addTestAccount();
-        openBookmarkManager();
-        onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
-
-        final List<Intent> startedIntents;
-        try (IntentCallbackHelper helper = new IntentCallbackHelper()) {
-            onView(withId(R.id.signin_promo_signin_button)).perform(click());
-            startedIntents = helper.getStartedIntents();
-        }
-
-        assertEquals("Choosing to sign in with the default account should fire an intent!", 1,
-                startedIntents.size());
-        Intent expectedIntent = AccountSigninActivity.createIntentForConfirmationOnlySigninFlow(
-                mActivityTestRule.getActivity(), SigninAccessPoint.BOOKMARK_MANAGER,
-                TEST_ACCOUNT_NAME, true, true);
-        assertTrue(expectedIntent.filterEquals(startedIntents.get(0)));
+    public void testSigninButtonNotDefaultAccount() {
+        doNothing()
+                .when(SyncConsentActivityLauncherImpl.get())
+                .launchActivityForPromoChooseAccountFlow(any(Context.class), anyInt(), anyString());
+        CoreAccountInfo accountInfo =
+                mAccountManagerTestRule.addAccount(AccountManagerTestRule.TEST_ACCOUNT_EMAIL);
+        showBookmarkManagerAndCheckSigninPromoIsDisplayed();
+        onView(withId(R.id.signin_promo_choose_account_button)).perform(click());
+        verify(mMockSyncConsentActivityLauncher)
+                .launchActivityForPromoChooseAccountFlow(any(Activity.class),
+                        eq(SigninAccessPoint.BOOKMARK_MANAGER), eq(accountInfo.getEmail()));
     }
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/789531")
-    public void testSigninButtonNotDefaultAccount() throws Exception {
-        addTestAccount();
-        openBookmarkManager();
+    public void testSigninButtonNewAccount() {
+        doNothing()
+                .when(SyncConsentActivityLauncherImpl.get())
+                .launchActivityForPromoAddAccountFlow(any(Context.class), anyInt());
+        showBookmarkManagerAndCheckSigninPromoIsDisplayed();
+        onView(withId(R.id.signin_promo_signin_button)).perform(click());
+        verify(mMockSyncConsentActivityLauncher)
+                .launchActivityForPromoAddAccountFlow(
+                        any(Activity.class), eq(SigninAccessPoint.BOOKMARK_MANAGER));
+    }
+
+    private void showBookmarkManagerAndCheckSigninPromoIsDisplayed() {
+        mBookmarkTestRule.showBookmarkManager(sActivityTestRule.getActivity());
         onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
-
-        final List<Intent> startedIntents;
-        try (IntentCallbackHelper helper = new IntentCallbackHelper()) {
-            onView(withId(R.id.signin_promo_choose_account_button)).perform(click());
-            startedIntents = helper.getStartedIntents();
-        }
-
-        assertEquals("Choosing to sign in with another account should fire an intent!", 1,
-                startedIntents.size());
-        Intent expectedIntent = AccountSigninActivity.createIntentForDefaultSigninFlow(
-                mActivityTestRule.getActivity(), SigninAccessPoint.BOOKMARK_MANAGER, true);
-        assertTrue(expectedIntent.filterEquals(startedIntents.get(0)));
-    }
-
-    @Test
-    @MediumTest
-    @DisabledTest(message = "crbug.com/789531")
-    public void testSigninButtonNewAccount() throws Exception {
-        openBookmarkManager();
-        onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
-
-        final List<Intent> startedIntents;
-        try (IntentCallbackHelper helper = new IntentCallbackHelper()) {
-            onView(withId(R.id.signin_promo_signin_button)).perform(click());
-            startedIntents = helper.getStartedIntents();
-        }
-
-        assertFalse(
-                "Adding a new account should fire at least one intent!", startedIntents.isEmpty());
-        Intent expectedIntent = AccountSigninActivity.createIntentForAddAccountSigninFlow(
-                mActivityTestRule.getActivity(), SigninAccessPoint.BOOKMARK_MANAGER, true);
-        // Comparing only the first intent as AccountSigninActivity will fire an intent after
-        // starting the flow to add an account.
-        assertTrue(expectedIntent.filterEquals(startedIntents.get(0)));
-    }
-
-    private void openBookmarkManager() throws InterruptedException {
-        TestThreadUtils.runOnUiThreadBlocking(
-                () -> BookmarkUtils.showBookmarkManager(mActivityTestRule.getActivity()));
-    }
-
-    private void addTestAccount() {
-        Account account = AccountManagerFacade.createAccountFromName(TEST_ACCOUNT_NAME);
-        AccountHolder.Builder accountHolder = AccountHolder.builder(account).alwaysAccept(true);
-        mAccountManagerDelegate.addAccountHolderBlocking(accountHolder.build());
-        ProfileDataSource.ProfileData profileData =
-                new ProfileDataSource.ProfileData(TEST_ACCOUNT_NAME, null, TEST_FULL_NAME, null);
-        TestThreadUtils.runOnUiThreadBlocking(
-                () -> mAccountManagerDelegate.setProfileData(TEST_ACCOUNT_NAME, profileData));
-    }
-
-    private static class IntentCallbackHelper implements IntentCallback, Closeable {
-        private final List<Intent> mStartedIntents = new ArrayList<>();
-
-        public IntentCallbackHelper() {
-            IntentMonitorRegistry.getInstance().addIntentCallback(this);
-        }
-
-        @Override
-        public void onIntentSent(Intent intent) {
-            mStartedIntents.add(intent);
-        }
-
-        @Override
-        public void close() {
-            IntentMonitorRegistry.getInstance().removeIntentCallback(this);
-        }
-
-        public List<Intent> getStartedIntents() {
-            return mStartedIntents;
-        }
     }
 }

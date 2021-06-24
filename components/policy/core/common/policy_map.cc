@@ -8,24 +8,63 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/stl_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
+#include "components/policy/core/common/cloud/affiliation.h"
+#include "components/policy/core/common/policy_merger.h"
 #include "components/strings/grit/components_strings.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "ui/base/l10n/l10n_util.h"
 
 namespace policy {
+
+namespace {
+
+const std::u16string GetLocalizedString(
+    PolicyMap::Entry::L10nLookupFunction lookup,
+    const std::map<int, absl::optional<std::vector<std::u16string>>>&
+        localized_string_ids) {
+  std::u16string result = std::u16string();
+  std::u16string line_feed = u"\n";
+  for (const auto& string_pairs : localized_string_ids) {
+    if (string_pairs.second)
+      result += l10n_util::GetStringFUTF16(
+          string_pairs.first, string_pairs.second.value(), nullptr);
+    else
+      result += lookup.Run(string_pairs.first);
+    result += line_feed;
+  }
+  // Remove the trailing newline.
+  if (!result.empty() && result[result.length() - 1] == line_feed[0])
+    result.pop_back();
+  return result;
+}
+
+// Inserts additional user affiliation IDs to the existing set.
+base::flat_set<std::string> CombineIds(
+    const base::flat_set<std::string>& ids_first,
+    const base::flat_set<std::string>& ids_second) {
+  base::flat_set<std::string> combined_ids;
+  combined_ids.insert(ids_first.begin(), ids_first.end());
+  combined_ids.insert(ids_second.begin(), ids_second.end());
+  return combined_ids;
+}
+
+}  // namespace
+
 PolicyMap::Entry::Entry() = default;
 PolicyMap::Entry::Entry(
     PolicyLevel level,
     PolicyScope scope,
     PolicySource source,
-    std::unique_ptr<base::Value> value,
+    absl::optional<base::Value> value,
     std::unique_ptr<ExternalDataFetcher> external_data_fetcher)
     : level(level),
       scope(scope),
       source(source),
-      value(std::move(value)),
-      external_data_fetcher(std::move(external_data_fetcher)) {}
+      external_data_fetcher(std::move(external_data_fetcher)),
+      value_(std::move(value)) {}
 
 PolicyMap::Entry::~Entry() = default;
 
@@ -33,156 +72,199 @@ PolicyMap::Entry::Entry(Entry&&) noexcept = default;
 PolicyMap::Entry& PolicyMap::Entry::operator=(Entry&&) noexcept = default;
 
 PolicyMap::Entry PolicyMap::Entry::DeepCopy() const {
-  Entry copy;
-  copy.level = level;
-  copy.scope = scope;
-  copy.source = source;
-  if (value)
-    copy.value = value->CreateDeepCopy();
-  copy.error_strings_ = error_strings_;
-  copy.error_message_ids_ = error_message_ids_;
-  if (external_data_fetcher) {
-    copy.external_data_fetcher.reset(
-        new ExternalDataFetcher(*external_data_fetcher));
-  }
+  Entry copy(level, scope, source,
+             value_ ? absl::make_optional<base::Value>(value_->Clone())
+                    : absl::nullopt,
+             external_data_fetcher
+                 ? std::make_unique<ExternalDataFetcher>(*external_data_fetcher)
+                 : nullptr);
+  copy.ignored_ = ignored_;
+  copy.message_ids_ = message_ids_;
+  copy.is_default_value_ = is_default_value_;
+  copy.conflicts.reserve(conflicts.size());
   for (const auto& conflict : conflicts) {
-    copy.AddConflictingPolicy(conflict);
+    copy.AddConflictingPolicy(conflict.entry().DeepCopy());
   }
   return copy;
 }
 
+void PolicyMap::Entry::set_value(absl::optional<base::Value> val) {
+  value_ = std::move(val);
+}
+
 bool PolicyMap::Entry::has_higher_priority_than(
     const PolicyMap::Entry& other) const {
-  if (level != other.level)
-    return level > other.level;
-
-  if (scope != other.scope)
-    return scope > other.scope;
-
-  return source > other.source;
+  return std::tie(level, scope, source) >
+         std::tie(other.level, other.scope, other.source);
 }
 
 bool PolicyMap::Entry::Equals(const PolicyMap::Entry& other) const {
   bool conflicts_are_equal = conflicts.size() == other.conflicts.size();
   for (size_t i = 0; conflicts_are_equal && i < conflicts.size(); ++i)
-    conflicts_are_equal &= conflicts[i].Equals(other.conflicts[i]);
+    conflicts_are_equal &=
+        conflicts[i].entry().Equals(other.conflicts[i].entry());
 
-  return conflicts_are_equal && level == other.level && scope == other.scope &&
-         source == other.source &&  // Necessary for PolicyUIHandler observers.
-                                    // They have to update when sources change.
-         error_strings_ == other.error_strings_ &&
-         error_message_ids_ == other.error_message_ids_ &&
-         ((!value && !other.value) ||
-          (value && other.value && *value == *other.value)) &&
-         ExternalDataFetcher::Equals(external_data_fetcher.get(),
-                                     other.external_data_fetcher.get());
+  const bool equals =
+      conflicts_are_equal && level == other.level && scope == other.scope &&
+      source == other.source &&  // Necessary for PolicyUIHandler observers.
+                                 // They have to update when sources change.
+      message_ids_ == other.message_ids_ &&
+      is_default_value_ == other.is_default_value_ &&
+      ((!value_ && !other.value()) ||
+       (value_ && other.value() && *value_ == *other.value())) &&
+      ExternalDataFetcher::Equals(external_data_fetcher.get(),
+                                  other.external_data_fetcher.get());
+  return equals;
 }
 
-void PolicyMap::Entry::AddError(base::StringPiece error) {
-  base::StrAppend(&error_strings_, {error, "\n"});
+void PolicyMap::Entry::AddMessage(MessageType type, int message_id) {
+  message_ids_[type].emplace(message_id, absl::nullopt);
 }
 
-void PolicyMap::Entry::AddError(int message_id) {
-  error_message_ids_.insert(message_id);
+void PolicyMap::Entry::AddMessage(MessageType type,
+                                  int message_id,
+                                  std::vector<std::u16string>&& message_args) {
+  message_ids_[type].emplace(message_id, std::move(message_args));
 }
 
-void PolicyMap::Entry::AddConflictingPolicy(const Entry& conflict) {
-  Entry conflicted_policy_copy = conflict.DeepCopy();
-
-  for (const auto& conflict : conflicted_policy_copy.conflicts) {
-    AddConflictingPolicy(conflict);
+void PolicyMap::Entry::ClearMessage(MessageType type, int message_id) {
+  if (message_ids_.find(type) == message_ids_.end() ||
+      message_ids_[type].find(message_id) == message_ids_[type].end()) {
+    return;
   }
+  message_ids_[type].erase(message_id);
+  if (message_ids_[type].size() == 0)
+    message_ids_.erase(type);
+}
+
+void PolicyMap::Entry::AddConflictingPolicy(Entry&& conflict) {
+  // Move all of the newly conflicting Entry's conflicts into this Entry.
+  std::move(conflict.conflicts.begin(), conflict.conflicts.end(),
+            std::back_inserter(conflicts));
+
+  bool is_value_equal = (!this->value() && !conflict.value()) ||
+                        (this->value() && conflict.value() &&
+                         *this->value() == *conflict.value());
+
+  ConflictType type =
+      is_value_equal ? ConflictType::Supersede : ConflictType::Override;
+
+  // Clean up conflict Entry to ensure there's no duplication since entire Entry
+  // is moved and treated as a freshly constructed Entry.
+  conflict.ClearConflicts();
+  conflict.is_default_value_ = false;
+  conflict.message_ids_.clear();
 
   // Avoid conflict nesting
-  conflicted_policy_copy.conflicts.clear();
-  conflicted_policy_copy.error_message_ids_.clear();
-  conflicted_policy_copy.error_strings_.clear();
-  conflicts.push_back(std::move(conflicted_policy_copy));
+  conflicts.emplace_back(type, std::move(conflict));
 }
 
-base::string16 PolicyMap::Entry::GetLocalizedErrors(
+void PolicyMap::Entry::ClearConflicts() {
+  conflicts.clear();
+  ClearMessage(MessageType::kInfo, IDS_POLICY_CONFLICT_SAME_VALUE);
+  ClearMessage(MessageType::kWarning, IDS_POLICY_CONFLICT_DIFF_VALUE);
+}
+
+bool PolicyMap::Entry::HasMessage(MessageType type) const {
+  return message_ids_.find(type) != message_ids_.end();
+}
+
+std::u16string PolicyMap::Entry::GetLocalizedMessages(
+    MessageType type,
     L10nLookupFunction lookup) const {
-  base::string16 error_string = base::UTF8ToUTF16(error_strings_);
-  base::string16 line_feed = base::UTF8ToUTF16("\n");
-  for (int message_id : error_message_ids_) {
-    error_string += lookup.Run(message_id);
-    error_string += line_feed;
+  if (!HasMessage(type)) {
+    return std::u16string();
   }
-  // Remove the trailing newline.
-  if (!error_string.empty())
-    error_string.pop_back();
-  return error_string;
+  return GetLocalizedString(lookup, message_ids_.at(type));
 }
 
-bool PolicyMap::Entry::IsBlocked() const {
-  return error_message_ids_.find(IDS_POLICY_BLOCKED) !=
-         error_message_ids_.end();
+bool PolicyMap::Entry::ignored() const {
+  return ignored_;
+}
+
+void PolicyMap::Entry::SetIgnored() {
+  ignored_ = true;
 }
 
 void PolicyMap::Entry::SetBlocked() {
-  error_message_ids_.insert(IDS_POLICY_BLOCKED);
+  SetIgnored();
+  AddMessage(MessageType::kError, IDS_POLICY_BLOCKED);
 }
 
-PolicyMap::PolicyMap() {}
-
-PolicyMap::~PolicyMap() {
-  Clear();
+void PolicyMap::Entry::SetInvalid() {
+  SetIgnored();
+  AddMessage(MessageType::kError, IDS_POLICY_INVALID);
 }
+
+void PolicyMap::Entry::SetIgnoredByPolicyAtomicGroup() {
+  SetIgnored();
+  AddMessage(MessageType::kError, IDS_POLICY_IGNORED_BY_GROUP_MERGING);
+}
+
+bool PolicyMap::Entry::IsIgnoredByAtomicGroup() const {
+  return message_ids_.find(MessageType::kError) != message_ids_.end() &&
+         message_ids_.at(MessageType::kError)
+                 .find(IDS_POLICY_IGNORED_BY_GROUP_MERGING) !=
+             message_ids_.at(MessageType::kError).end();
+}
+
+void PolicyMap::Entry::SetIsDefaultValue() {
+  is_default_value_ = true;
+}
+
+bool PolicyMap::Entry::IsDefaultValue() const {
+  return is_default_value_;
+}
+
+PolicyMap::EntryConflict::EntryConflict() = default;
+PolicyMap::EntryConflict::EntryConflict(ConflictType type, Entry&& entry)
+    : conflict_type_(type), entry_(std::move(entry)) {}
+
+PolicyMap::EntryConflict::~EntryConflict() = default;
+
+PolicyMap::EntryConflict::EntryConflict(EntryConflict&&) noexcept = default;
+PolicyMap::EntryConflict& PolicyMap::EntryConflict::operator=(
+    EntryConflict&&) noexcept = default;
+
+void PolicyMap::EntryConflict::SetConflictType(ConflictType type) {
+  conflict_type_ = type;
+}
+
+PolicyMap::ConflictType PolicyMap::EntryConflict::conflict_type() const {
+  return conflict_type_;
+}
+
+const PolicyMap::Entry& PolicyMap::EntryConflict::entry() const {
+  return entry_;
+}
+
+PolicyMap::PolicyMap() = default;
+PolicyMap::PolicyMap(PolicyMap&&) noexcept = default;
+PolicyMap& PolicyMap::operator=(PolicyMap&&) noexcept = default;
+PolicyMap::~PolicyMap() = default;
 
 const PolicyMap::Entry* PolicyMap::Get(const std::string& policy) const {
   auto entry = map_.find(policy);
-  return entry != map_.end() && !entry->second.IsBlocked() ? &entry->second
-                                                           : nullptr;
+  return entry != map_.end() && !entry->second.ignored() ? &entry->second
+                                                         : nullptr;
 }
 
 PolicyMap::Entry* PolicyMap::GetMutable(const std::string& policy) {
   auto entry = map_.find(policy);
-  return entry != map_.end() && !entry->second.IsBlocked() ? &entry->second
-                                                           : nullptr;
+  return entry != map_.end() && !entry->second.ignored() ? &entry->second
+                                                         : nullptr;
 }
 
 const base::Value* PolicyMap::GetValue(const std::string& policy) const {
   auto entry = map_.find(policy);
-  return entry != map_.end() && !entry->second.IsBlocked()
-             ? entry->second.value.get()
-             : nullptr;
-}
-
-void PolicyMap::MergeListValues(const std::string& policy) {
-  auto entry = map_.find(policy);
-  if (entry == map_.end() || entry->second.conflicts.empty())
-    return;
-  base::ListValue value;
-  DCHECK(entry->second.value->is_list());
-  bool has_valid_sources = !entry->second.IsBlocked();
-  if (!entry->second.IsBlocked()) {
-    for (const auto& i : entry->second.value->GetList())
-      value.GetList().emplace_back(i.Clone());
-  }
-  for (const auto& source : entry->second.conflicts) {
-    if (!source.IsBlocked() && source.level == entry->second.level) {
-      // SKip user cloud policy because it could be from arbitrary domain.
-      if (source.scope == POLICY_SCOPE_USER &&
-          source.source == POLICY_SOURCE_CLOUD) {
-        continue;
-      }
-      for (const auto& i : source.value->GetList())
-        value.GetList().emplace_back(i.Clone());
-      has_valid_sources = true;
-    }
-  }
-  if (has_valid_sources) {
-    Set(policy, entry->second.level, POLICY_SCOPE_MERGED, POLICY_SOURCE_MERGED,
-        base::Value::ToUniquePtrValue(value.Clone()),
-        std::move(entry->second.external_data_fetcher));
-  }
+  return entry != map_.end() && !entry->second.ignored() ? entry->second.value()
+                                                         : nullptr;
 }
 
 base::Value* PolicyMap::GetMutableValue(const std::string& policy) {
   auto entry = map_.find(policy);
-  return entry != map_.end() && !entry->second.IsBlocked()
-             ? entry->second.value.get()
-             : nullptr;
+  return entry != map_.end() && !entry->second.ignored() ? entry->second.value()
+                                                         : nullptr;
 }
 
 const PolicyMap::Entry* PolicyMap::GetUntrusted(
@@ -201,7 +283,7 @@ void PolicyMap::Set(
     PolicyLevel level,
     PolicyScope scope,
     PolicySource source,
-    std::unique_ptr<base::Value> value,
+    absl::optional<base::Value> value,
     std::unique_ptr<ExternalDataFetcher> external_data_fetcher) {
   Entry entry(level, scope, source, std::move(value),
               std::move(external_data_fetcher));
@@ -212,12 +294,22 @@ void PolicyMap::Set(const std::string& policy, Entry entry) {
   map_[policy] = std::move(entry);
 }
 
-void PolicyMap::AddError(const std::string& policy, const std::string& error) {
-  map_[policy].AddError(error);
+void PolicyMap::AddMessage(const std::string& policy,
+                           MessageType type,
+                           int message_id) {
+  map_[policy].AddMessage(type, message_id);
 }
 
-void PolicyMap::AddError(const std::string& policy, int message_id) {
-  map_[policy].AddError(message_id);
+void PolicyMap::AddMessage(const std::string& policy,
+                           MessageType type,
+                           int message_id,
+                           std::vector<std::u16string>&& message_args) {
+  map_[policy].AddMessage(type, message_id, std::move(message_args));
+}
+
+bool PolicyMap::IsPolicyIgnoredByAtomicGroup(const std::string& policy) const {
+  const auto& entry = map_.find(policy);
+  return entry != map_.end() && entry->second.IsIgnoredByAtomicGroup();
 }
 
 void PolicyMap::SetSourceForAll(PolicySource source) {
@@ -226,17 +318,27 @@ void PolicyMap::SetSourceForAll(PolicySource source) {
   }
 }
 
+void PolicyMap::SetAllInvalid() {
+  for (auto& it : map_) {
+    it.second.SetInvalid();
+  }
+}
+
 void PolicyMap::Erase(const std::string& policy) {
   map_.erase(policy);
 }
 
+PolicyMap::iterator PolicyMap::EraseIt(const_iterator it) {
+  return map_.erase(it);
+}
+
 void PolicyMap::EraseMatching(
-    const base::Callback<bool(const const_iterator)>& filter) {
+    const base::RepeatingCallback<bool(const const_iterator)>& filter) {
   FilterErase(filter, true);
 }
 
 void PolicyMap::EraseNonmatching(
-    const base::Callback<bool(const const_iterator)>& filter) {
+    const base::RepeatingCallback<bool(const const_iterator)>& filter) {
   FilterErase(filter, false);
 }
 
@@ -244,48 +346,63 @@ void PolicyMap::Swap(PolicyMap* other) {
   map_.swap(other->map_);
 }
 
-void PolicyMap::CopyFrom(const PolicyMap& other) {
-  Clear();
-  for (const auto& it : other)
-    Set(it.first, it.second.DeepCopy());
-}
+PolicyMap PolicyMap::Clone() const {
+  PolicyMap clone;
+  for (const auto& it : map_)
+    clone.Set(it.first, it.second.DeepCopy());
 
-std::unique_ptr<PolicyMap> PolicyMap::DeepCopy() const {
-  std::unique_ptr<PolicyMap> copy(new PolicyMap());
-  copy->CopyFrom(*this);
-  return copy;
+  clone.SetUserAffiliationIds(user_affiliation_ids_);
+  clone.SetDeviceAffiliationIds(device_affiliation_ids_);
+
+  return clone;
 }
 
 void PolicyMap::MergeFrom(const PolicyMap& other) {
-  for (const auto& it : other) {
-    Entry* current_policy = GetMutableUntrusted(it.first);
-    auto other_policy = it.second.DeepCopy();
+  DCHECK_NE(this, &other);
+
+  for (const auto& policy_and_entry : other) {
+    Entry* current_policy = GetMutableUntrusted(policy_and_entry.first);
+    Entry other_policy = policy_and_entry.second.DeepCopy();
 
     if (!current_policy) {
-      Set(it.first, std::move(other_policy));
+      Set(policy_and_entry.first, std::move(other_policy));
       continue;
     }
 
-    auto& new_policy = other_policy.has_higher_priority_than(*current_policy)
-                           ? other_policy
-                           : *current_policy;
-    auto& conflict =
-        current_policy == &new_policy ? other_policy : *current_policy;
+    const bool other_is_higher_priority =
+        policy_and_entry.second.has_higher_priority_than(*current_policy);
 
-    bool overwriting_default_policy =
-        new_policy.source != conflict.source &&
-        conflict.source == POLICY_SOURCE_ENTERPRISE_DEFAULT;
+    Entry& higher_policy =
+        other_is_higher_priority ? other_policy : *current_policy;
+    Entry& conflicting_policy =
+        other_is_higher_priority ? *current_policy : other_policy;
+
+    const bool overwriting_default_policy =
+        higher_policy.source != conflicting_policy.source &&
+        conflicting_policy.source == POLICY_SOURCE_ENTERPRISE_DEFAULT;
     if (!overwriting_default_policy) {
-      new_policy.AddConflictingPolicy(conflict);
-      new_policy.AddError((current_policy->value &&
-                           it.second.value->Equals(current_policy->value.get()))
-                              ? IDS_POLICY_CONFLICT_SAME_VALUE
-                              : IDS_POLICY_CONFLICT_DIFF_VALUE);
+      current_policy->value() &&
+              *policy_and_entry.second.value() == *current_policy->value()
+          ? higher_policy.AddMessage(MessageType::kInfo,
+                                     IDS_POLICY_CONFLICT_SAME_VALUE)
+          : higher_policy.AddMessage(MessageType::kWarning,
+                                     IDS_POLICY_CONFLICT_DIFF_VALUE);
+      higher_policy.AddConflictingPolicy(std::move(conflicting_policy));
     }
 
-    if (current_policy != &new_policy)
-      Set(it.first, std::move(new_policy));
+    if (other_is_higher_priority)
+      *current_policy = std::move(other_policy);
   }
+
+  SetUserAffiliationIds(
+      CombineIds(GetUserAffiliationIds(), other.GetUserAffiliationIds()));
+  SetDeviceAffiliationIds(
+      CombineIds(GetDeviceAffiliationIds(), other.GetDeviceAffiliationIds()));
+}
+
+void PolicyMap::MergeValues(const std::vector<PolicyMerger*>& mergers) {
+  for (const auto* it : mergers)
+    it->Merge(&map_);
 }
 
 void PolicyMap::LoadFrom(const base::DictionaryValue* policies,
@@ -294,36 +411,8 @@ void PolicyMap::LoadFrom(const base::DictionaryValue* policies,
                          PolicySource source) {
   for (base::DictionaryValue::Iterator it(*policies); !it.IsAtEnd();
        it.Advance()) {
-    Set(it.key(), level, scope, source, it.value().CreateDeepCopy(), nullptr);
+    Set(it.key(), level, scope, source, it.value().Clone(), nullptr);
   }
-}
-
-void PolicyMap::GetDifferingKeys(const PolicyMap& other,
-                                 std::set<std::string>* differing_keys) const {
-  // Walk over the maps in lockstep, adding everything that is different.
-  auto iter_this(begin());
-  auto iter_other(other.begin());
-  while (iter_this != end() && iter_other != other.end()) {
-    const int diff = iter_this->first.compare(iter_other->first);
-    if (diff == 0) {
-      if (!iter_this->second.Equals(iter_other->second))
-        differing_keys->insert(iter_this->first);
-      ++iter_this;
-      ++iter_other;
-    } else if (diff < 0) {
-      differing_keys->insert(iter_this->first);
-      ++iter_this;
-    } else {
-      differing_keys->insert(iter_other->first);
-      ++iter_other;
-    }
-  }
-
-  // Add the remaining entries.
-  for (; iter_this != end(); ++iter_this)
-    differing_keys->insert(iter_this->first);
-  for (; iter_other != other.end(); ++iter_other)
-    differing_keys->insert(iter_other->first);
 }
 
 bool PolicyMap::Equals(const PolicyMap& other) const {
@@ -347,6 +436,14 @@ PolicyMap::const_iterator PolicyMap::end() const {
   return map_.end();
 }
 
+PolicyMap::iterator PolicyMap::begin() {
+  return map_.begin();
+}
+
+PolicyMap::iterator PolicyMap::end() {
+  return map_.end();
+}
+
 void PolicyMap::Clear() {
   map_.clear();
 }
@@ -359,7 +456,7 @@ bool PolicyMap::MapEntryEquals(const PolicyMap::PolicyMapType::value_type& a,
 }
 
 void PolicyMap::FilterErase(
-    const base::Callback<bool(const const_iterator)>& filter,
+    const base::RepeatingCallback<bool(const const_iterator)>& filter,
     bool deletion_value) {
   auto iter(map_.begin());
   while (iter != map_.end()) {
@@ -369,6 +466,28 @@ void PolicyMap::FilterErase(
       ++iter;
     }
   }
+}
+
+bool PolicyMap::IsUserAffiliated() const {
+  return IsAffiliated(user_affiliation_ids_, device_affiliation_ids_);
+}
+
+void PolicyMap::SetUserAffiliationIds(
+    const base::flat_set<std::string>& user_ids) {
+  user_affiliation_ids_ = {user_ids.begin(), user_ids.end()};
+}
+
+const base::flat_set<std::string>& PolicyMap::GetUserAffiliationIds() const {
+  return user_affiliation_ids_;
+}
+
+void PolicyMap::SetDeviceAffiliationIds(
+    const base::flat_set<std::string>& device_ids) {
+  device_affiliation_ids_ = {device_ids.begin(), device_ids.end()};
+}
+
+const base::flat_set<std::string>& PolicyMap::GetDeviceAffiliationIds() const {
+  return device_affiliation_ids_;
 }
 
 }  // namespace policy

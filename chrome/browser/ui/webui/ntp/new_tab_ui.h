@@ -5,10 +5,9 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_NTP_NEW_TAB_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_NTP_NEW_TAB_UI_H_
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
-#include "chrome/browser/ui/dark_mode_observer.h"
-#include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui_controller.h"
 
@@ -17,6 +16,7 @@ class Profile;
 
 namespace base {
 class DictionaryValue;
+class Value;
 }
 
 namespace user_prefs {
@@ -40,12 +40,12 @@ class NewTabUI : public content::WebUIController {
 
   // Adds "url", "title", and "direction" keys on incoming dictionary, setting
   // title as the url as a fallback on empty title.
-  static void SetUrlTitleAndDirection(base::DictionaryValue* dictionary,
-                                      const base::string16& title,
+  static void SetUrlTitleAndDirection(base::Value* dictionary,
+                                      const std::u16string& title,
                                       const GURL& gurl);
 
   // Adds "full_name" and "full_name_direction" keys on incoming dictionary.
-  static void SetFullNameAndDirection(const base::string16& full_name,
+  static void SetFullNameAndDirection(const std::u16string& full_name,
                                       base::DictionaryValue* dictionary);
 
  private:
@@ -55,17 +55,15 @@ class NewTabUI : public content::WebUIController {
     ~NewTabHTMLSource() override;
 
     // content::URLDataSource implementation.
-    std::string GetSource() const override;
+    std::string GetSource() override;
     void StartDataRequest(
-        const std::string& path,
-        const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
-        const content::URLDataSource::GotDataCallback& callback) override;
-    std::string GetMimeType(const std::string&) const override;
-    bool ShouldReplaceExistingSource() const override;
-    std::string GetContentSecurityPolicyScriptSrc() const override;
-    std::string GetContentSecurityPolicyStyleSrc() const override;
-    std::string GetContentSecurityPolicyImgSrc() const override;
-    std::string GetContentSecurityPolicyChildSrc() const override;
+        const GURL& url,
+        const content::WebContents::Getter& wc_getter,
+        content::URLDataSource::GotDataCallback callback) override;
+    std::string GetMimeType(const std::string&) override;
+    bool ShouldReplaceExistingSource() override;
+    std::string GetContentSecurityPolicy(
+        network::mojom::CSPDirectiveName directive) override;
 
    private:
     // Pointer back to the original profile.
@@ -74,15 +72,9 @@ class NewTabUI : public content::WebUIController {
     DISALLOW_COPY_AND_ASSIGN(NewTabHTMLSource);
   };
 
-  void OnDarkModeChanged(bool dark_mode);
-  void OnDefaultFontSizeChanged();
   void OnShowBookmarkBarChanged();
 
   Profile* GetProfile() const;
-
-  DarkModeObserver dark_mode_observer_;
-
-  PrefChangeRegistrar pref_change_registrar_;
 
   DISALLOW_COPY_AND_ASSIGN(NewTabUI);
 };

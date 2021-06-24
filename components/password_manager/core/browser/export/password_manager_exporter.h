@@ -13,7 +13,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequenced_task_runner.h"
-#include "base/time/time.h"
+#include "base/strings/string_piece.h"
 #include "components/password_manager/core/browser/ui/export_progress_status.h"
 
 namespace password_manager {
@@ -27,18 +27,15 @@ class CredentialProviderInterface;
 class PasswordManagerExporter {
  public:
   using ProgressCallback =
-      base::RepeatingCallback<void(password_manager::ExportProgressStatus,
-                                   const std::string&)>;
+      base::RepeatingCallback<void(ExportProgressStatus, const std::string&)>;
   using WriteCallback =
-      base::RepeatingCallback<int(const base::FilePath&, const char*, int)>;
-  using DeleteCallback =
-      base::RepeatingCallback<bool(const base::FilePath&, bool)>;
+      base::RepeatingCallback<bool(const base::FilePath&, base::StringPiece)>;
+  using DeleteCallback = base::RepeatingCallback<bool(const base::FilePath&)>;
   using SetPosixFilePermissionsCallback =
       base::RepeatingCallback<bool(const base::FilePath&, int)>;
 
   explicit PasswordManagerExporter(
-      password_manager::CredentialProviderInterface*
-          credential_provider_interface,
+      CredentialProviderInterface* credential_provider_interface,
       ProgressCallback on_progress);
   virtual ~PasswordManagerExporter();
 
@@ -58,15 +55,13 @@ class PasswordManagerExporter {
   virtual ExportProgressStatus GetProgressStatus();
 
   // Replace the function which writes to the filesystem with a custom action.
-  // The return value is -1 on error, otherwise the number of bytes written.
   void SetWriteForTesting(WriteCallback write_callback);
 
   // Replace the function which writes to the filesystem with a custom action.
-  // The return value is true when deleting successfully.
   void SetDeleteForTesting(DeleteCallback delete_callback);
 
   // Replace the function which sets file permissions on Posix with a custom
-  // action. The return values is true when successful.
+  // action.
   void SetSetPosixFilePermissionsForTesting(
       SetPosixFilePermissionsCallback set_permissions_callback);
 
@@ -115,10 +110,6 @@ class PasswordManagerExporter {
   // sent. It will be cleared once exporting is complete.
   base::FilePath destination_;
 
-  // The moment in time that we started reading and serialising the password
-  // list. Useful for metrics.
-  base::Time export_preparation_started_;
-
   // The function which does the actual writing. It should wrap
   // base::WriteFile, unless it's changed for testing purposes.
   WriteCallback write_function_;
@@ -136,7 +127,7 @@ class PasswordManagerExporter {
   // will dereference a WeakPtr to |*this|, which means they all need to run on
   // the same sequence.
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
-  base::WeakPtrFactory<PasswordManagerExporter> weak_factory_;
+  base::WeakPtrFactory<PasswordManagerExporter> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PasswordManagerExporter);
 };

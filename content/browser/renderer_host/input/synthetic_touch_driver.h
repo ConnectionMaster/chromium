@@ -9,14 +9,14 @@
 #include "base/macros.h"
 #include "content/browser/renderer_host/input/synthetic_pointer_driver.h"
 #include "content/common/content_export.h"
-#include "content/common/input/synthetic_web_input_event_builders.h"
+#include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 
 namespace content {
 
 class CONTENT_EXPORT SyntheticTouchDriver : public SyntheticPointerDriver {
  public:
   SyntheticTouchDriver();
-  explicit SyntheticTouchDriver(SyntheticWebTouchEvent touch_event);
+  explicit SyntheticTouchDriver(blink::SyntheticWebTouchEvent touch_event);
   ~SyntheticTouchDriver() override;
 
   void DispatchEvent(SyntheticGestureTarget* target,
@@ -32,7 +32,10 @@ class CONTENT_EXPORT SyntheticTouchDriver : public SyntheticPointerDriver {
       float width = 40.f,
       float height = 40.f,
       float rotation_angle = 0.f,
-      float force = 1.f,
+      float force = 0.5,
+      float tangential_pressure = 0.f,
+      int tilt_x = 0,
+      int tilt_y = 0,
       const base::TimeTicks& timestamp = base::TimeTicks::Now()) override;
   void Move(float x,
             float y,
@@ -41,7 +44,10 @@ class CONTENT_EXPORT SyntheticTouchDriver : public SyntheticPointerDriver {
             float width = 40.f,
             float height = 40.f,
             float rotation_angle = 0.f,
-            float force = 1.f) override;
+            float force = 0.5,
+            float tangential_pressure = 0.f,
+            int tilt_x = 0,
+            int tilt_y = 0) override;
   void Release(int index,
                SyntheticPointerActionParams::Button button =
                    SyntheticPointerActionParams::Button::LEFT,
@@ -61,7 +67,7 @@ class CONTENT_EXPORT SyntheticTouchDriver : public SyntheticPointerDriver {
   void ResetPointerIdIndexMap();
   int GetIndexFromMap(int value) const;
 
-  SyntheticWebTouchEvent touch_event_;
+  blink::SyntheticWebTouchEvent touch_event_;
   PointerIdIndexMap pointer_id_map_;
 
   DISALLOW_COPY_AND_ASSIGN(SyntheticTouchDriver);
@@ -69,4 +75,4 @@ class CONTENT_EXPORT SyntheticTouchDriver : public SyntheticPointerDriver {
 
 }  // namespace content
 
-#endif  // CONTENT_COMMON_INPUT_SYNTHETIC_TOUCH_DRIVER_H_
+#endif  // CONTENT_BROWSER_RENDERER_HOST_INPUT_SYNTHETIC_TOUCH_DRIVER_H_

@@ -11,8 +11,7 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/strings/string16.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,7 +20,7 @@
 #include "components/metrics/client_info.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
-#include "components/metrics/test_enabled_state_provider.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/prefs/testing_pref_service.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_prefs.h"
@@ -33,11 +32,12 @@
 #include "third_party/metrics_proto/extension_install.pb.h"
 #include "third_party/metrics_proto/system_profile.pb.h"
 
-using metrics::ExtensionInstallProto;
+using extensions::DictionaryBuilder;
 using extensions::Extension;
 using extensions::ExtensionBuilder;
 using extensions::Manifest;
-using extensions::DictionaryBuilder;
+using extensions::mojom::ManifestLocation;
+using metrics::ExtensionInstallProto;
 
 namespace {
 
@@ -45,7 +45,7 @@ void StoreNoClientInfoBackup(const metrics::ClientInfo& /* client_info */) {
 }
 
 std::unique_ptr<metrics::ClientInfo> ReturnNoBackup() {
-  return std::unique_ptr<metrics::ClientInfo>();
+  return nullptr;
 }
 
 class TestExtensionsMetricsProvider : public ExtensionsMetricsProvider {
@@ -97,7 +97,7 @@ class TestExtensionsMetricsProvider : public ExtensionsMetricsProvider {
 
   // Override GetClientID() to return a specific value on which test
   // expectations are based.
-  uint64_t GetClientID() override { return 0x3f1bfee9; }
+  uint64_t GetClientID() const override { return 0x3f1bfee9; }
 };
 
 }  // namespace
@@ -123,7 +123,7 @@ TEST(ExtensionsMetricsProvider, HashExtension) {
 // TestExtensionsMetricsProvider is encoded properly.
 TEST(ExtensionsMetricsProvider, SystemProtoEncoding) {
   metrics::SystemProfileProto system_profile;
-  base::test::ScopedTaskEnvironment task_environment;
+  base::test::TaskEnvironment task_environment;
   TestingProfileManager testing_profile_manager(
       TestingBrowserProcess::GetGlobal());
   ASSERT_TRUE(testing_profile_manager.SetUp());
@@ -132,8 +132,9 @@ TEST(ExtensionsMetricsProvider, SystemProtoEncoding) {
   metrics::MetricsService::RegisterPrefs(local_state.registry());
   std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager(
       metrics::MetricsStateManager::Create(
-          &local_state, &enabled_state_provider, base::string16(),
-          base::Bind(&StoreNoClientInfoBackup), base::Bind(&ReturnNoBackup)));
+          &local_state, &enabled_state_provider, std::wstring(),
+          base::BindRepeating(&StoreNoClientInfoBackup),
+          base::BindRepeating(&ReturnNoBackup)));
   TestExtensionsMetricsProvider extension_metrics(metrics_state_manager.get());
   extension_metrics.ProvideSystemProfileMetrics(&system_profile);
   ASSERT_EQ(2, system_profile.occupied_extension_bucket_size());
@@ -157,7 +158,7 @@ class ExtensionMetricsProviderInstallsTest
 
   ExtensionInstallProto ConstructProto(const Extension& extension) {
     return ExtensionsMetricsProvider::ConstructInstallProtoForTesting(
-        extension, prefs_, last_sample_time_);
+        extension, prefs_, last_sample_time_, profile());
   }
   std::vector<ExtensionInstallProto> GetInstallsForProfile() {
     return ExtensionsMetricsProvider::GetInstallsForProfileForTesting(
@@ -188,7 +189,9 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     // Test basic prototype construction. All fields should be present, except
     // disable reasons (which should be empty).
     scoped_refptr<const Extension> extension =
-        ExtensionBuilder("test").SetLocation(Manifest::INTERNAL).Build();
+        ExtensionBuilder("test")
+            .SetLocation(ManifestLocation::kInternal)
+            .Build();
     add_extension(extension.get());
     ExtensionInstallProto install = ConstructProto(*extension);
     EXPECT_TRUE(install.has_type());
@@ -248,7 +251,7 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     // as such.
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("app", ExtensionBuilder::Type::PLATFORM_APP)
-            .SetLocation(Manifest::INTERNAL)
+            .SetLocation(ManifestLocation::kInternal)
             .Build();
     add_extension(extension.get());
     ExtensionInstallProto install = ConstructProto(*extension);
@@ -258,7 +261,9 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
   {
     // Test the install location.
     scoped_refptr<const Extension> extension =
-        ExtensionBuilder("unpacked").SetLocation(Manifest::UNPACKED).Build();
+        ExtensionBuilder("unpacked")
+            .SetLocation(ManifestLocation::kUnpacked)
+            .Build();
     add_extension(extension.get());
     ExtensionInstallProto install = ConstructProto(*extension);
     EXPECT_EQ(ExtensionInstallProto::UNPACKED, install.install_location());
@@ -268,7 +273,7 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     // Test the extension action as a browser action.
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("browser_action")
-            .SetLocation(Manifest::INTERNAL)
+            .SetLocation(ManifestLocation::kInternal)
             .SetAction(ExtensionBuilder::ActionType::BROWSER_ACTION)
             .Build();
     add_extension(extension.get());
@@ -280,7 +285,7 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     // Test the extension action as a page action.
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("page_action")
-            .SetLocation(Manifest::INTERNAL)
+            .SetLocation(ManifestLocation::kInternal)
             .SetAction(ExtensionBuilder::ActionType::PAGE_ACTION)
             .Build();
     add_extension(extension.get());
@@ -292,7 +297,7 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     // Test the disable reasons field.
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("disable_reasons")
-            .SetLocation(Manifest::INTERNAL)
+            .SetLocation(ManifestLocation::kInternal)
             .Build();
     add_extension(extension.get());
     prefs()->SetExtensionDisabled(
@@ -315,6 +320,17 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
       EXPECT_EQ(ExtensionInstallProto::CORRUPTED,
                 install.disable_reasons().Get(1));
     }
+    // Adding additional disable reasons should result in all reasons being
+    // reported.
+    prefs()->AddDisableReason(
+        extension->id(),
+        extensions::disable_reason::DISABLE_REMOTELY_FOR_MALWARE);
+    {
+      ExtensionInstallProto install = ConstructProto(*extension);
+      ASSERT_EQ(3, install.disable_reasons_size());
+      EXPECT_EQ(ExtensionInstallProto::DISABLE_REMOTELY_FOR_MALWARE,
+                install.disable_reasons().Get(2));
+    }
   }
 
   {
@@ -324,7 +340,7 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
         .Set("scripts", extensions::ListBuilder().Append("script.js").Build());
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("event_page")
-            .SetLocation(Manifest::INTERNAL)
+            .SetLocation(ManifestLocation::kInternal)
             .MergeManifest(DictionaryBuilder()
                                .Set("background", background.Build())
                                .Build())
@@ -342,7 +358,7 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
         .Set("scripts", extensions::ListBuilder().Append("script.js").Build());
     scoped_refptr<const Extension> extension =
         ExtensionBuilder("persisent_background")
-            .SetLocation(Manifest::INTERNAL)
+            .SetLocation(ManifestLocation::kInternal)
             .MergeManifest(DictionaryBuilder()
                                .Set("background", background.Build())
                                .Build())
@@ -352,14 +368,28 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     EXPECT_EQ(ExtensionInstallProto::PERSISTENT_BACKGROUND_PAGE,
               install.background_script_type());
   }
+  {
+    // Test that service worker scripts are reported correctly.
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder("service worker")
+            .SetBackgroundContext(
+                ExtensionBuilder::BackgroundContext::SERVICE_WORKER)
+            .Build();
+    add_extension(extension.get());
+    ExtensionInstallProto install = ConstructProto(*extension);
+    EXPECT_EQ(ExtensionInstallProto::SERVICE_WORKER,
+              install.background_script_type());
+  }
 
   {
     // Test changing the blacklist state.
     scoped_refptr<const Extension> extension =
-        ExtensionBuilder("blacklist").SetLocation(Manifest::INTERNAL).Build();
+        ExtensionBuilder("blacklist")
+            .SetLocation(ManifestLocation::kInternal)
+            .Build();
     add_extension(extension.get());
-    prefs()->SetExtensionBlacklistState(
-        extension->id(), extensions::BLACKLISTED_SECURITY_VULNERABILITY);
+    prefs()->SetExtensionBlocklistState(
+        extension->id(), extensions::BLOCKLISTED_SECURITY_VULNERABILITY);
     ExtensionInstallProto install = ConstructProto(*extension);
     EXPECT_EQ(ExtensionInstallProto::BLACKLISTED_SECURITY_VULNERABILITY,
               install.blacklist_state());
@@ -369,7 +399,9 @@ TEST_F(ExtensionMetricsProviderInstallsTest, TestProtoConstruction) {
     // Test that the installed_in_this_sample_period boolean is correctly
     // reported.
     scoped_refptr<const Extension> extension =
-        ExtensionBuilder("installtime").SetLocation(Manifest::INTERNAL).Build();
+        ExtensionBuilder("installtime")
+            .SetLocation(ManifestLocation::kInternal)
+            .Build();
     add_extension(extension.get());
     set_last_sample_time(base::Time::Now() + base::TimeDelta::FromMinutes(60));
     ExtensionInstallProto install = ConstructProto(*extension);

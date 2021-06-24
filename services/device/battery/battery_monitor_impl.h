@@ -5,10 +5,9 @@
 #ifndef SERVICES_DEVICE_BATTERY_BATTERY_MONITOR_IMPL_H_
 #define SERVICES_DEVICE_BATTERY_BATTERY_MONITOR_IMPL_H_
 
-#include <memory>
-
 #include "base/macros.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "services/device/battery/battery_status_service.h"
 #include "services/device/public/mojom/battery_monitor.mojom.h"
 
@@ -16,7 +15,7 @@ namespace device {
 
 class BatteryMonitorImpl : public mojom::BatteryMonitor {
  public:
-  static void Create(mojom::BatteryMonitorRequest request);
+  static void Create(mojo::PendingReceiver<mojom::BatteryMonitor> receiver);
 
   BatteryMonitorImpl();
   ~BatteryMonitorImpl() override;
@@ -29,9 +28,8 @@ class BatteryMonitorImpl : public mojom::BatteryMonitor {
   void DidChange(const mojom::BatteryStatus& battery_status);
   void ReportStatus();
 
-  mojo::StrongBindingPtr<mojom::BatteryMonitor> binding_;
-  std::unique_ptr<BatteryStatusService::BatteryUpdateSubscription>
-      subscription_;
+  mojo::SelfOwnedReceiverRef<mojom::BatteryMonitor> receiver_;
+  base::CallbackListSubscription subscription_;
   QueryNextStatusCallback callback_;
   mojom::BatteryStatus status_;
   bool status_to_report_;

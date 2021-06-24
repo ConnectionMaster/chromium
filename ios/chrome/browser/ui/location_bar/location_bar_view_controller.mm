@@ -4,30 +4,38 @@
 
 #import "ios/chrome/browser/ui/location_bar/location_bar_view_controller.h"
 
+#include "base/bind.h"
 #include "base/ios/ios_util.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/sys_string_conversions.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/open_from_clipboard/clipboard_recent_content.h"
 #include "components/strings/grit/components_strings.h"
+#include "ios/chrome/browser/infobars/infobar_metrics_recorder.h"
+#import "ios/chrome/browser/ui/badges/badge_item.h"
 #import "ios/chrome/browser/ui/commands/activity_service_commands.h"
 #import "ios/chrome/browser/ui/commands/application_commands.h"
 #import "ios/chrome/browser/ui/commands/browser_commands.h"
 #import "ios/chrome/browser/ui/commands/infobar_commands.h"
 #import "ios/chrome/browser/ui/commands/load_query_commands.h"
+#import "ios/chrome/browser/ui/default_promo/default_browser_utils.h"
 #import "ios/chrome/browser/ui/fullscreen/fullscreen_animator.h"
 #import "ios/chrome/browser/ui/infobars/infobar_feature.h"
+#import "ios/chrome/browser/ui/location_bar/location_bar_constants.h"
 #include "ios/chrome/browser/ui/location_bar/location_bar_steady_view.h"
 #import "ios/chrome/browser/ui/orchestrator/location_bar_offset_provider.h"
 #include "ios/chrome/browser/ui/ui_feature_flags.h"
 #import "ios/chrome/browser/ui/util/named_guide.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/browser/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
+
+using base::UserMetricsAction;
 
 namespace {
 
@@ -37,11 +45,28 @@ typedef NS_ENUM(int, TrailingButtonState) {
   kVoiceSearchButton,
 };
 
+// FullScreen progress threshold in which to toggle between full screen on and
+// off mode for the badge view.
+const double kFullscreenProgressBadgeViewThreshold = 0.85;
+
+// Identifier for the omnibox embedded in this location bar as a scribble
+// element.
+const NSString* kScribbleOmniboxElementId = @"omnibox";
+
 }  // namespace
+
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+@interface LocationBarViewController (Scribble) <
+    UIIndirectScribbleInteractionDelegate>
+@end
+#endif  // defined(__IPHONE14_0)
 
 @interface LocationBarViewController ()
 // The injected edit view.
 @property(nonatomic, strong) UIView* editView;
+
+// The injected badge view.
+@property(nonatomic, strong) UIView* badgeView;
 
 // The view that displays current location when the omnibox is not focused.
 @property(nonatomic, strong) LocationBarSteadyView* locationBarSteadyView;
@@ -57,6 +82,15 @@ typedef NS_ENUM(int, TrailingButtonState) {
 // state of the share button if it's temporarily replaced by the voice search
 // icon (in iPad multitasking).
 @property(nonatomic, assign) BOOL shareButtonEnabled;
+
+// Stores whether the clipboard currently stores copied content.
+@property(nonatomic, assign) BOOL hasCopiedContent;
+// Stores the current content type in the clipboard. This is only valid if
+// |hasCopiedContent| is YES.
+@property(nonatomic, assign) ClipboardContentType copiedContentType;
+// Stores whether the cached clipboard state is currently being updated. See
+// |-updateCachedClipboardState| for more information.
+@property(nonatomic, assign) BOOL isUpdatingCachedClipboardState;
 
 // Starts voice search, updating the NamedGuide to be constrained to the
 // trailing button.
@@ -86,17 +120,6 @@ typedef NS_ENUM(int, TrailingButtonState) {
   self = [super init];
   if (self) {
     _locationBarSteadyView = [[LocationBarSteadyView alloc] init];
-
-    [_locationBarSteadyView.locationButton
-               addTarget:self
-                  action:@selector(locationBarSteadyViewTapped)
-        forControlEvents:UIControlEventTouchUpInside];
-
-    UILongPressGestureRecognizer* recognizer =
-        [[UILongPressGestureRecognizer alloc]
-            initWithTarget:self
-                    action:@selector(showLongPressMenu:)];
-    [_locationBarSteadyView.locationButton addGestureRecognizer:recognizer];
   }
   return self;
 }
@@ -106,6 +129,11 @@ typedef NS_ENUM(int, TrailingButtonState) {
   _editView = editView;
 }
 
+- (void)setBadgeView:(UIView*)badgeView {
+  DCHECK(!self.badgeView);
+  _badgeView = badgeView;
+}
+
 - (void)switchToEditing:(BOOL)editing {
   self.editView.hidden = !editing;
   self.locationBarSteadyView.hidden = editing;
@@ -113,16 +141,16 @@ typedef NS_ENUM(int, TrailingButtonState) {
 
 - (void)setIncognito:(BOOL)incognito {
   _incognito = incognito;
-  [self.locationBarSteadyView
-      setColorScheme:incognito
-                         ? [LocationBarSteadyViewColorScheme incognitoScheme]
-                         : [LocationBarSteadyViewColorScheme standardScheme]];
+  self.locationBarSteadyView.colorScheme =
+      incognito ? [LocationBarSteadyViewColorScheme incognitoScheme]
+                : [LocationBarSteadyViewColorScheme standardScheme];
 }
 
 - (void)setDispatcher:(id<ActivityServiceCommands,
                           BrowserCommands,
                           ApplicationCommands,
-                          LoadQueryCommands>)dispatcher {
+                          LoadQueryCommands,
+                          OmniboxCommands>)dispatcher {
   _dispatcher = dispatcher;
 }
 
@@ -164,6 +192,28 @@ typedef NS_ENUM(int, TrailingButtonState) {
 - (void)viewDidLoad {
   [super viewDidLoad];
 
+  DCHECK(self.badgeView) << "The badge view must be set at this point";
+  self.locationBarSteadyView.badgeView = self.badgeView;
+
+  [_locationBarSteadyView.locationButton
+             addTarget:self
+                action:@selector(locationBarSteadyViewTapped)
+      forControlEvents:UIControlEventTouchUpInside];
+
+  UILongPressGestureRecognizer* recognizer =
+      [[UILongPressGestureRecognizer alloc]
+          initWithTarget:self
+                  action:@selector(showLongPressMenu:)];
+  [_locationBarSteadyView.locationButton addGestureRecognizer:recognizer];
+
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+  if (@available(iOS 14, *)) {
+    UIIndirectScribbleInteraction* scribbleInteraction =
+        [[UIIndirectScribbleInteraction alloc] initWithDelegate:self];
+    [_locationBarSteadyView addInteraction:scribbleInteraction];
+  }
+#endif  // #if defined(__IPHONE_14_0)
+
   DCHECK(self.editView) << "The edit view must be set at this point";
 
   [self.view addSubview:self.editView];
@@ -174,11 +224,22 @@ typedef NS_ENUM(int, TrailingButtonState) {
   self.locationBarSteadyView.translatesAutoresizingMaskIntoConstraints = NO;
   AddSameConstraints(self.locationBarSteadyView, self.view);
 
+  [self updateTrailingButtonState];
   [self switchToEditing:NO];
+}
 
-  if (IsInfobarUIRebootEnabled()) {
-    [self updateInfobarButton];
-  }
+- (void)viewWillDisappear:(BOOL)animated {
+  [super viewWillDisappear:animated];
+
+  [NSNotificationCenter.defaultCenter
+      removeObserver:self
+                name:UIPasteboardChangedNotification
+              object:nil];
+
+  [NSNotificationCenter.defaultCenter
+      removeObserver:self
+                name:UIApplicationDidBecomeActiveNotification
+              object:nil];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
@@ -192,9 +253,10 @@ typedef NS_ENUM(int, TrailingButtonState) {
   CGFloat alphaValue = fmax((progress - 0.85) / 0.15, 0);
   CGFloat scaleValue = 0.79 + 0.21 * progress;
   self.locationBarSteadyView.trailingButton.alpha = alphaValue;
-  if (IsInfobarUIRebootEnabled()) {
-    self.locationBarSteadyView.leadingButton.alpha = alphaValue;
-  }
+  BOOL badgeViewShouldCollapse =
+      progress <= kFullscreenProgressBadgeViewThreshold;
+  [self.locationBarSteadyView
+      setFullScreenCollapsedMode:badgeViewShouldCollapse];
   self.locationBarSteadyView.transform =
       CGAffineTransformMakeScale(scaleValue, scaleValue);
 }
@@ -213,8 +275,10 @@ typedef NS_ENUM(int, TrailingButtonState) {
 
 #pragma mark - LocationBarConsumer
 
-- (void)updateLocationText:(NSString*)text {
-  [self.locationBarSteadyView setLocationLabelText:text];
+- (void)updateLocationText:(NSString*)string clipTail:(BOOL)clipTail {
+  [self.locationBarSteadyView setLocationLabelText:string];
+  self.locationBarSteadyView.locationLabel.lineBreakMode =
+      clipTail ? NSLineBreakByTruncatingTail : NSLineBreakByTruncatingHead;
 }
 
 - (void)updateLocationIcon:(UIImage*)icon
@@ -223,19 +287,16 @@ typedef NS_ENUM(int, TrailingButtonState) {
   self.locationBarSteadyView.securityLevelAccessibilityString = statusText;
 }
 
+// Updates display on the NTP. Note that this is only meaningful on iPad, where
+// the location bar is visible after scrolling the fakebox off the page. On
+// iPhone, the location bar is not shown on the NTP at all.
 - (void)updateForNTP:(BOOL)isNTP {
   if (isNTP) {
     // Display a fake "placeholder".
     NSString* placeholderString =
         l10n_util::GetNSString(IDS_OMNIBOX_EMPTY_HINT);
-    LocationBarSteadyViewColorScheme* scheme =
-        self.incognito ? [LocationBarSteadyViewColorScheme incognitoScheme]
-                       : [LocationBarSteadyViewColorScheme standardScheme];
-    UIColor* placeholderColor = scheme.placeholderColor;
-    self.locationBarSteadyView.locationLabel.attributedText = [
-        [NSAttributedString alloc]
-        initWithString:placeholderString
-            attributes:@{NSForegroundColorAttributeName : placeholderColor}];
+    [self.locationBarSteadyView
+        setLocationLabelPlaceholderText:placeholderString];
   }
   self.hideShareButtonWhileOnIncognitoNTP = isNTP;
 }
@@ -243,12 +304,8 @@ typedef NS_ENUM(int, TrailingButtonState) {
 - (void)setShareButtonEnabled:(BOOL)enabled {
   _shareButtonEnabled = enabled;
   if (self.trailingButtonState == kShareButton) {
-    self.locationBarSteadyView.trailingButton.enabled = enabled;
+    [self.locationBarSteadyView enableTrailingButton:enabled];
   }
-}
-
-- (void)displayInfobarButton:(BOOL)display {
-  self.locationBarSteadyView.leadingButton.hidden = !display;
 }
 
 #pragma mark - LocationBarAnimatee
@@ -279,6 +336,14 @@ typedef NS_ENUM(int, TrailingButtonState) {
 
 - (void)setSteadyViewFaded:(BOOL)hidden {
   self.locationBarSteadyView.alpha = hidden ? 0 : 1;
+}
+
+- (void)hideSteadyViewBadgeView {
+  [self.locationBarSteadyView displayBadgeView:NO animated:NO];
+}
+
+- (void)showSteadyViewBadgeView {
+  [self.locationBarSteadyView displayBadgeView:YES animated:NO];
 }
 
 - (void)setEditViewFaded:(BOOL)hidden {
@@ -323,9 +388,57 @@ typedef NS_ENUM(int, TrailingButtonState) {
   return targetOffset;
 }
 
+#pragma mark - UIIndirectScribbleInteractionDelegate
+
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+
+- (void)indirectScribbleInteraction:(UIIndirectScribbleInteraction*)interaction
+              requestElementsInRect:(CGRect)rect
+                         completion:
+                             (void (^)(NSArray<UIScribbleElementIdentifier>*
+                                           elements))completion
+    API_AVAILABLE(ios(14.0)) {
+  completion(@[ kScribbleOmniboxElementId ]);
+}
+
+- (BOOL)indirectScribbleInteraction:(UIIndirectScribbleInteraction*)interaction
+                   isElementFocused:
+                       (UIScribbleElementIdentifier)elementIdentifier
+    API_AVAILABLE(ios(14.0)) {
+  DCHECK(elementIdentifier == kScribbleOmniboxElementId);
+  return self.delegate.omniboxScribbleForwardingTarget.isFirstResponder;
+}
+
+- (CGRect)
+    indirectScribbleInteraction:(UIIndirectScribbleInteraction*)interaction
+                frameForElement:(UIScribbleElementIdentifier)elementIdentifier
+    API_AVAILABLE(ios(14.0)) {
+  DCHECK(elementIdentifier == kScribbleOmniboxElementId);
+
+  // Imitate the entire location bar being scribblable.
+  return self.view.bounds;
+}
+
+- (void)indirectScribbleInteraction:(UIIndirectScribbleInteraction*)interaction
+               focusElementIfNeeded:
+                   (UIScribbleElementIdentifier)elementIdentifier
+                     referencePoint:(CGPoint)focusReferencePoint
+                         completion:
+                             (void (^)(UIResponder<UITextInput>* focusedInput))
+                                 completion API_AVAILABLE(ios(14.0)) {
+  if (!self.delegate.omniboxScribbleForwardingTarget.isFirstResponder) {
+    [self.delegate locationBarRequestScribbleTargetFocus];
+  }
+
+  completion(self.delegate.omniboxScribbleForwardingTarget);
+}
+
+#endif  // defined(__IPHONE_14_0)
+
 #pragma mark - private
 
 - (void)locationBarSteadyViewTapped {
+  base::RecordAction(base::UserMetricsAction("MobileLocationBarTapped"));
   [self.delegate locationBarSteadyViewTapped];
 }
 
@@ -375,8 +488,9 @@ typedef NS_ENUM(int, TrailingButtonState) {
           forState:UIControlStateNormal];
       self.locationBarSteadyView.trailingButton.accessibilityLabel =
           l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_SHARE);
-      self.locationBarSteadyView.trailingButton.enabled =
-          self.shareButtonEnabled;
+      self.locationBarSteadyView.trailingButton.accessibilityIdentifier =
+          kOmniboxShareButtonIdentifier;
+      [self.locationBarSteadyView enableTrailingButton:self.shareButtonEnabled];
       break;
     };
     case kVoiceSearchButton: {
@@ -391,11 +505,13 @@ typedef NS_ENUM(int, TrailingButtonState) {
       [self.locationBarSteadyView.trailingButton
           setImage:
               [[UIImage imageNamed:@"location_bar_voice"]
-                  imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]
+                  imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
           forState:UIControlStateNormal];
       self.locationBarSteadyView.trailingButton.accessibilityLabel =
           l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_VOICE_SEARCH);
-      self.locationBarSteadyView.trailingButton.enabled = YES;
+      self.locationBarSteadyView.trailingButton.accessibilityIdentifier =
+          kOmniboxVoiceSearchButtonIdentifier;
+      [self.locationBarSteadyView enableTrailingButton:YES];
     }
   }
 }
@@ -410,19 +526,8 @@ typedef NS_ENUM(int, TrailingButtonState) {
 }
 
 - (void)startVoiceSearch {
-  if (base::ios::IsRunningOnIOS12OrLater()) {
-    [NamedGuide guideWithName:kVoiceSearchButtonGuide view:self.view]
-        .constrainedView = self.locationBarSteadyView.trailingButton;
-  } else {
-    // On iOS 11 and below, constraining the layout guide to a view instead of
-    // using frame freeze the app. The root cause wasn't found. See
-    // https://crbug.com/874017.
-    NamedGuide* voiceSearchGuide =
-        [NamedGuide guideWithName:kVoiceSearchButtonGuide view:self.view];
-    voiceSearchGuide.constrainedFrame = [voiceSearchGuide.owningView
-        convertRect:self.locationBarSteadyView.trailingButton.bounds
-           fromView:self.locationBarSteadyView.trailingButton];
-  }
+  [NamedGuide guideWithName:kVoiceSearchButtonGuide view:self.view]
+      .constrainedView = self.locationBarSteadyView.trailingButton;
   [self.dispatcher startVoiceSearch];
 }
 
@@ -430,38 +535,50 @@ typedef NS_ENUM(int, TrailingButtonState) {
 // The actual share dialog is opened by the dispatcher, only collect the metrics
 // here.
 - (void)shareButtonPressed {
-  base::RecordAction(base::UserMetricsAction("MobileToolbarShareMenu"));
+  RecordAction(UserMetricsAction("MobileToolbarShareMenu"));
+  [self.delegate recordShareButtonPressed];
 }
 
-// TODO(crbug.com/935804): Create constants variables for the magic numbers
-// being used here if/when this stops being temporary.
-- (void)updateInfobarButton {
-  DCHECK(IsInfobarUIRebootEnabled());
-  [self.locationBarSteadyView.leadingButton
-      setImage:[[UIImage imageNamed:@"infobar_passwords_icon"]
-                   imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
-      forState:UIControlStateNormal];
-  self.locationBarSteadyView.leadingButton.imageView.contentMode =
-      UIViewContentModeScaleToFill;
-  self.locationBarSteadyView.leadingButton.imageEdgeInsets =
-      UIEdgeInsetsMake(6, 6, 6, 6);
-
-  [self.locationBarSteadyView.leadingButton
-             addTarget:self.dispatcher
-                action:@selector(displayModalInfobar)
-      forControlEvents:UIControlEventTouchUpInside];
-  // Set as hidden as it should only be shown by |displayInfobarButton:|
-  self.locationBarSteadyView.leadingButton.hidden = YES;
-}
-
-- (void)setInfobarButtonStyleSelected:(BOOL)selected {
-  self.locationBarSteadyView.leadingButton.backgroundColor =
-      selected ? [UIColor colorWithWhite:0.80 alpha:1.0] : [UIColor clearColor];
-}
-
-- (void)setInfobarButtonStyleActive:(BOOL)active {
-  self.locationBarSteadyView.leadingButton.tintColor =
-      active ? self.locationBarSteadyView.tintColor : [UIColor lightGrayColor];
+// Updates the cached clipboard content type and calls |completion| when the
+// update process is finished.  If this is called while an update is already in
+// progress, it will return NO and the completion will never be called.
+// Otherwise, returns YES.
+- (BOOL)updateCachedClipboardStateWithCompletion:(void (^)(void))completion {
+  // Sometimes, checking the clipboard state itself causes the clipboard to
+  // emit a UIPasteboardChangedNotification, leading to an infinite loop. For
+  // now, just prevent re-checking the clipboard state, but hopefully this will
+  // be fixed in a future iOS version (see crbug.com/1049053 for crash details).
+  if (self.isUpdatingCachedClipboardState) {
+    return NO;
+  }
+  self.isUpdatingCachedClipboardState = YES;
+  self.hasCopiedContent = NO;
+  ClipboardRecentContent* clipboardRecentContent =
+      ClipboardRecentContent::GetInstance();
+  std::set<ClipboardContentType> desired_types;
+  desired_types.insert(ClipboardContentType::URL);
+  desired_types.insert(ClipboardContentType::Text);
+  desired_types.insert(ClipboardContentType::Image);
+  __weak __typeof(self) weakSelf = self;
+  clipboardRecentContent->HasRecentContentFromClipboard(
+      desired_types,
+      base::BindOnce(^(std::set<ClipboardContentType> matched_types) {
+        weakSelf.hasCopiedContent = !matched_types.empty();
+        if (weakSelf.searchByImageEnabled &&
+            matched_types.find(ClipboardContentType::Image) !=
+                matched_types.end()) {
+          weakSelf.copiedContentType = ClipboardContentType::Image;
+        } else if (matched_types.find(ClipboardContentType::URL) !=
+                   matched_types.end()) {
+          weakSelf.copiedContentType = ClipboardContentType::URL;
+        } else if (matched_types.find(ClipboardContentType::Text) !=
+                   matched_types.end()) {
+          weakSelf.copiedContentType = ClipboardContentType::Text;
+        }
+        weakSelf.isUpdatingCachedClipboardState = NO;
+        completion();
+      }));
+  return YES;
 }
 
 #pragma mark - UIMenu
@@ -470,67 +587,54 @@ typedef NS_ENUM(int, TrailingButtonState) {
   if (sender.state == UIGestureRecognizerStateBegan) {
     [self.locationBarSteadyView becomeFirstResponder];
 
-    // TODO(crbug.com/862583): Investigate why it's necessary to delay showing
-    // the editing menu in the omnibox until the next runloop. If it's not
-    // delayed by a runloop, the menu appears and is hidden again right away
-    // when it's the first time setting the first responder.
-    dispatch_async(dispatch_get_main_queue(), ^{
-      UIMenuController* menu = [UIMenuController sharedMenuController];
-      if (base::FeatureList::IsEnabled(kCopiedContentBehavior)) {
-        UIMenuItem* searchCopiedImage = [[UIMenuItem alloc]
-            initWithTitle:l10n_util::GetNSString((IDS_IOS_SEARCH_COPIED_IMAGE))
-                   action:@selector(searchCopiedImage:)];
-        UIMenuItem* visitCopiedLink = [[UIMenuItem alloc]
-            initWithTitle:l10n_util::GetNSString(IDS_IOS_VISIT_COPIED_LINK)
-                   action:@selector(visitCopiedLink:)];
-        UIMenuItem* searchCopiedText = [[UIMenuItem alloc]
-            initWithTitle:l10n_util::GetNSString(IDS_IOS_SEARCH_COPIED_TEXT)
-                   action:@selector(searchCopiedText:)];
-        [menu setMenuItems:@[
-          searchCopiedImage, visitCopiedLink, searchCopiedText
-        ]];
-      } else {
-        UIMenuItem* pasteAndGo = [[UIMenuItem alloc]
-            initWithTitle:l10n_util::GetNSString(IDS_IOS_PASTE_AND_GO)
-                   action:@selector(pasteAndGo:)];
-        [menu setMenuItems:@[ pasteAndGo ]];
-      }
+    UIMenuController* menu = [UIMenuController sharedMenuController];
+    RegisterEditMenuItem([[UIMenuItem alloc]
+        initWithTitle:l10n_util::GetNSString((IDS_IOS_SEARCH_COPIED_IMAGE))
+               action:@selector(searchCopiedImage:)]);
+    RegisterEditMenuItem([[UIMenuItem alloc]
+        initWithTitle:l10n_util::GetNSString(IDS_IOS_VISIT_COPIED_LINK)
+               action:@selector(visitCopiedLink:)]);
+    RegisterEditMenuItem([[UIMenuItem alloc]
+        initWithTitle:l10n_util::GetNSString(IDS_IOS_SEARCH_COPIED_TEXT)
+               action:@selector(searchCopiedText:)]);
 
+    BOOL updateSuccessful = [self updateCachedClipboardStateWithCompletion:^() {
+#if !defined(__IPHONE_13_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_13_0
       [menu setTargetRect:self.locationBarSteadyView.frame inView:self.view];
       [menu setMenuVisible:YES animated:YES];
-      // When we present the menu manually, it doesn't get focused by Voiceover.
-      // This notification forces voiceover to select the presented menu.
+#else
+      [menu showMenuFromView:self.view rect:self.locationBarSteadyView.frame];
+#endif
+      // When the menu is manually presented, it doesn't get focused by
+      // Voiceover. This notification forces voiceover to select the
+      // presented menu.
       UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
                                       menu);
-    });
+    }];
+    DCHECK(updateSuccessful);
   }
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-  if (action == @selector(copy:)) {
+  // Allow copying if the steady location bar is visible.
+  if (!self.locationBarSteadyView.hidden && action == @selector(copy:)) {
     return YES;
   }
 
-  // remove along with flag kCopiedContentBehavior
-  if (action == @selector(pasteAndGo:)) {
-    DCHECK(!base::FeatureList::IsEnabled(kCopiedContentBehavior));
-    return UIPasteboard.generalPasteboard.string.length > 0;
-  }
-
-  if (action == @selector(searchCopiedImage:) ||
-      action == @selector(visitCopiedLink:) ||
-      action == @selector(searchCopiedText:)) {
-    ClipboardRecentContent* clipboardRecentContent =
-        ClipboardRecentContent::GetInstance();
-    DCHECK(base::FeatureList::IsEnabled(kCopiedContentBehavior));
-    if (self.searchByImageEnabled &&
-        clipboardRecentContent->GetRecentImageFromClipboard().has_value()) {
+  BOOL isClipboardAction = action == @selector(searchCopiedImage:) ||
+                           action == @selector(visitCopiedLink:) ||
+                           action == @selector(searchCopiedText:);
+  if (self.locationBarSteadyView.isFirstResponder && isClipboardAction) {
+    if (!self.hasCopiedContent) {
+      return NO;
+    }
+    if (self.copiedContentType == ClipboardContentType::Image) {
       return action == @selector(searchCopiedImage:);
     }
-    if (clipboardRecentContent->GetRecentURLFromClipboard().has_value()) {
+    if (self.copiedContentType == ClipboardContentType::URL) {
       return action == @selector(visitCopiedLink:);
     }
-    if (clipboardRecentContent->GetRecentTextFromClipboard().has_value()) {
+    if (self.copiedContentType == ClipboardContentType::Text) {
       return action == @selector(searchCopiedText:);
     }
     return NO;
@@ -543,41 +647,55 @@ typedef NS_ENUM(int, TrailingButtonState) {
 }
 
 - (void)searchCopiedImage:(id)sender {
-  DCHECK(base::FeatureList::IsEnabled(kCopiedContentBehavior));
-  if (base::Optional<gfx::Image> optionalImage =
-          ClipboardRecentContent::GetInstance()
-              ->GetRecentImageFromClipboard()) {
-    UIImage* image = optionalImage.value().ToUIImage();
-    [self.dispatcher searchByImage:image];
-  }
+  RecordAction(
+      UserMetricsAction("Mobile.OmniboxContextMenu.SearchCopiedImage"));
+  ClipboardRecentContent::GetInstance()->GetRecentImageFromClipboard(
+      base::BindOnce(^(absl::optional<gfx::Image> optionalImage) {
+        if (!optionalImage) {
+          return;
+        }
+        UIImage* image = optionalImage.value().ToUIImage();
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self.dispatcher searchByImage:image];
+          [self.dispatcher cancelOmniboxEdit];
+        });
+      }));
 }
 
 - (void)visitCopiedLink:(id)sender {
-  [self pasteAndGo:sender];
+  // A search using clipboard link is activity that should indicate a user
+  // that would be interested in setting Chrome as the default browser.
+  LogLikelyInterestedDefaultBrowserUserActivity(DefaultPromoTypeGeneral);
+  [self.delegate locationBarVisitCopyLinkTapped];
+  ClipboardRecentContent::GetInstance()->GetRecentURLFromClipboard(
+      base::BindOnce(^(absl::optional<GURL> optionalURL) {
+        if (!optionalURL) {
+          return;
+        }
+        NSString* url = base::SysUTF8ToNSString(optionalURL.value().spec());
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self.dispatcher loadQuery:url immediately:YES];
+          [self.dispatcher cancelOmniboxEdit];
+        });
+      }));
 }
 
 - (void)searchCopiedText:(id)sender {
-  [self pasteAndGo:sender];
-}
-
-// Both actions are performed the same, but need to be enabled differently,
-// so we need two different selectors.
-- (void)pasteAndGo:(id)sender {
-  NSString* query;
-  if (base::FeatureList::IsEnabled(kCopiedContentBehavior)) {
-    ClipboardRecentContent* clipboardRecentContent =
-        ClipboardRecentContent::GetInstance();
-    if (base::Optional<GURL> optionalUrl =
-            clipboardRecentContent->GetRecentURLFromClipboard()) {
-      query = base::SysUTF8ToNSString(optionalUrl.value().spec());
-    } else if (base::Optional<base::string16> optionalText =
-                   clipboardRecentContent->GetRecentTextFromClipboard()) {
-      query = base::SysUTF16ToNSString(optionalText.value());
-    }
-  } else {
-    query = UIPasteboard.generalPasteboard.string;
-  }
-  [self.dispatcher loadQuery:query immediately:YES];
+  // A search using clipboard text is activity that should indicate a user
+  // that would be interested in setting Chrome as the default browser.
+  LogLikelyInterestedDefaultBrowserUserActivity(DefaultPromoTypeGeneral);
+  RecordAction(UserMetricsAction("Mobile.OmniboxContextMenu.SearchCopiedText"));
+  ClipboardRecentContent::GetInstance()->GetRecentTextFromClipboard(
+      base::BindOnce(^(absl::optional<std::u16string> optionalText) {
+        if (!optionalText) {
+          return;
+        }
+        NSString* query = base::SysUTF16ToNSString(optionalText.value());
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self.dispatcher loadQuery:query immediately:YES];
+          [self.dispatcher cancelOmniboxEdit];
+        });
+      }));
 }
 
 @end

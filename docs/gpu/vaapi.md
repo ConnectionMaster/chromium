@@ -14,9 +14,9 @@ ChromeOS is a downstream client via the [libva] package, with packaged backends
 for e.g. both [Intel] and [AMD].
 
 [VaAPI GitHub repository]: https://github.com/intel/libva
-[libva]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/master/x11-libs/libva/
-[Intel]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/master/x11-libs/libva-intel-driver/
-[AMD]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/master/media-libs/libva-amdgpu-driver/
+[libva]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/x11-libs/libva/
+[Intel]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/x11-libs/libva-intel-driver/
+[AMD]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/media-libs/libva-amdgpu-driver/
 
 ## Tracing VaAPI video decoding
 
@@ -141,7 +141,7 @@ As can be seen, `pkg` ~= `pp0` + `pp1` + 1W, this extra watt is the cost of all
 the associated silicon, e.g. bridges, bus controllers, caches, and the media
 processing engine.
 
-[`dump_intel_rapl_consumption`]: https://chromium.googlesource.com/chromiumos/platform2/+/master/power_manager/tools/dump_intel_rapl_consumption.cc
+[`dump_intel_rapl_consumption`]: https://chromium.googlesource.com/chromiumos/platform2/+/main/power_manager/tools/dump_intel_rapl_consumption.cc
 [video]: https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm
 [go/power-consumption-meas-in-intel]: http://go/power-consumption-meas-in-intel
 
@@ -160,7 +160,7 @@ and under Debian systems ([vainfo]). `vainfo` will try to load the appropriate
 backend driver for the system and/or GPUs and fail if it cannot find/load it.
 
 [libva-utils]: https://github.com/intel/libva-utils
-[media-video/libva-utils]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/master/media-video/libva-utils
+[media-video/libva-utils]: https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/media-video/libva-utils
 [vainfo]: https://packages.debian.org/sid/main/vainfo
 
 ### <a name="verify-vaapi"></a> Verify the VaAPI supports and/or uses a given codec
@@ -189,7 +189,7 @@ decoding backend:
 
 ### VaAPI on Linux
 
-This configuration is **unsupported** (see [docs/linux_hw_video_decode.md]), the
+This configuration is **unsupported** (see [docs/linux/hw_video_decode.md]), the
 following instructions are provided only as a reference for developers to test
 the code paths on a Linux machine.
 
@@ -204,12 +204,13 @@ At this point you should make sure the appropriate VA driver backend is working
 correctly; try running `vainfo` from the command line and verify no errors show
 up.
 
-To run Chromium using VaAPI two arguments are necessary:
-* `--ignore-gpu-blacklist`
+To run Chromium using VaAPI three arguments are necessary:
+* `--enable-features=VaapiVideoDecoder`
+* `--ignore-gpu-blocklist`
 * `--use-gl=desktop` or `--use-gl=egl`
 
 ```shell
-./out/gn/chrome --ignore-gpu-blacklist --use-gl=egl
+./out/gn/chrome --ignore-gpu-blocklist --use-gl=egl
 ```
 
 Note that you can set the environment variable `MESA_GLSL_CACHE_DISABLE=false`
@@ -223,6 +224,6 @@ non-sandboxed mode.
 Refer to the [previous section](#verify-vaapi) to verify support and use of
 the VaAPI.
 
-[docs/linux_hw_video_decode.md]: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux_hw_video_decode.md
-[Linux build setup]: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux_build_instructions.md
-[Setting up the build]: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux_build_instructions.md#setting-up-the-build
+[docs/linux/hw_video_decode.md]: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux/hw_video_decode.md
+[Linux build setup]: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux/build_instructions.md
+[Setting up the build]: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/linux/build_instructions.md#setting-up-the-build

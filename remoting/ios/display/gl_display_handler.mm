@@ -17,6 +17,7 @@
 #import "remoting/ios/display/gl_demo_screen.h"
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "remoting/client/chromoting_client_runtime.h"
@@ -53,7 +54,7 @@ class Core : public protocol::CursorShapeStub, public GlRendererDelegate {
   void OnSizeChanged(int width, int height) override;
 
   void OnFrameReceived(std::unique_ptr<webrtc::DesktopFrame> frame,
-                       const base::Closure& done);
+                       base::OnceClosure done);
   void CreateRendererContext(EAGLView* view);
   void DestroyRendererContext();
   void SetSurfaceSize(int width, int height);
@@ -97,10 +98,10 @@ Core::Core() : weak_factory_(this) {
   weak_ptr_ = weak_factory_.GetWeakPtr();
 
   // Do not bind GlRenderer::OnFrameReceived. |renderer_| is not ready yet.
-  owned_frame_consumer_.reset(new remoting::DualBufferFrameConsumer(
-      base::Bind(&Core::OnFrameReceived, weak_ptr_),
+  owned_frame_consumer_ = std::make_unique<remoting::DualBufferFrameConsumer>(
+      base::BindRepeating(&Core::OnFrameReceived, weak_ptr_),
       runtime_->display_task_runner(),
-      protocol::FrameConsumer::PixelFormat::FORMAT_RGBA));
+      protocol::FrameConsumer::PixelFormat::FORMAT_RGBA);
   frame_consumer_ = owned_frame_consumer_->GetWeakPtr();
 
   renderer_proxy_ =
@@ -166,9 +167,9 @@ std::unique_ptr<protocol::FrameConsumer> Core::GrabFrameConsumer() {
 }
 
 void Core::OnFrameReceived(std::unique_ptr<webrtc::DesktopFrame> frame,
-                           const base::Closure& done) {
+                           base::OnceClosure done) {
   DCHECK(runtime_->display_task_runner()->BelongsToCurrentThread());
-  renderer_->OnFrameReceived(std::move(frame), done);
+  renderer_->OnFrameReceived(std::move(frame), std::move(done));
 }
 
 void Core::OnFrameRendered() {

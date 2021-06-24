@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/sequence_manager/work_queue.h"
@@ -30,8 +32,8 @@ class MockObserver : public WorkQueueSets::Observer {
 class WorkQueueSetsTest : public testing::Test {
  public:
   void SetUp() override {
-    work_queue_sets_.reset(new WorkQueueSets("test", &mock_observer_,
-                                             SequenceManager::Settings()));
+    work_queue_sets_ = std::make_unique<WorkQueueSets>(
+        "test", &mock_observer_, SequenceManager::Settings());
   }
 
   void TearDown() override {
@@ -51,14 +53,14 @@ class WorkQueueSetsTest : public testing::Test {
   }
 
   Task FakeTaskWithEnqueueOrder(int enqueue_order) {
-    Task fake_task(PostedTask(BindOnce([] {}), FROM_HERE), TimeTicks(),
+    Task fake_task(PostedTask(nullptr, BindOnce([] {}), FROM_HERE), TimeTicks(),
                    EnqueueOrder(),
                    EnqueueOrder::FromIntForTesting(enqueue_order));
     return fake_task;
   }
 
   Task FakeNonNestableTaskWithEnqueueOrder(int enqueue_order) {
-    Task fake_task(PostedTask(BindOnce([] {}), FROM_HERE), TimeTicks(),
+    Task fake_task(PostedTask(nullptr, BindOnce([] {}), FROM_HERE), TimeTicks(),
                    EnqueueOrder(),
                    EnqueueOrder::FromIntForTesting(enqueue_order));
     fake_task.nestable = Nestable::kNonNestable;
@@ -329,6 +331,32 @@ TEST_F(WorkQueueSetsTest, PushNonNestableTaskToFront) {
 
   queue1->PushNonNestableTaskToFront(FakeNonNestableTaskWithEnqueueOrder(2));
   EXPECT_EQ(queue1, work_queue_sets_->GetOldestQueueInSet(set));
+}
+
+TEST_F(WorkQueueSetsTest, CollectSkippedOverLowerPriorityTasks) {
+  WorkQueue* queue1 = NewTaskQueue("queue1");
+  WorkQueue* queue2 = NewTaskQueue("queue2");
+  WorkQueue* queue3 = NewTaskQueue("queue3");
+
+  work_queue_sets_->ChangeSetIndex(queue1, 3);
+  work_queue_sets_->ChangeSetIndex(queue2, 2);
+  work_queue_sets_->ChangeSetIndex(queue3, 1);
+
+  queue1->Push(FakeTaskWithEnqueueOrder(1));
+  queue1->Push(FakeTaskWithEnqueueOrder(2));
+  queue2->Push(FakeTaskWithEnqueueOrder(3));
+  queue3->Push(FakeTaskWithEnqueueOrder(4));
+  queue3->Push(FakeTaskWithEnqueueOrder(5));
+  queue2->Push(FakeTaskWithEnqueueOrder(6));
+  queue1->Push(FakeTaskWithEnqueueOrder(7));
+
+  std::vector<const Task*> result;
+  work_queue_sets_->CollectSkippedOverLowerPriorityTasks(queue3, &result);
+
+  ASSERT_EQ(3u, result.size());
+  EXPECT_EQ(3u, result[0]->enqueue_order());  // The order here isn't important.
+  EXPECT_EQ(1u, result[1]->enqueue_order());
+  EXPECT_EQ(2u, result[2]->enqueue_order());
 }
 
 }  // namespace internal

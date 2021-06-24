@@ -7,8 +7,8 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/synchronization/lock.h"
@@ -139,7 +139,7 @@ class MidiTaskServiceTest : public ::testing::Test {
 
   void TearDown() override {
     thread_task_runner_handle_.reset();
-    task_runner_ = NULL;
+    task_runner_.reset();
   }
 
   scoped_refptr<base::TestSimpleTaskRunner> task_runner_;

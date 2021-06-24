@@ -9,20 +9,40 @@
 #include "base/command_line.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/tracing_buildflags.h"
 #include "build/build_config.h"
+#include "build/chromecast_buildflags.h"
 #include "components/tracing/common/tracing_switches.h"
+
+#if defined(OS_ANDROID)
+#include "base/android/build_info.h"  // nogncheck
+#endif
 
 namespace features {
 
-// Enables the perfetto tracing backend. For startup tracing, pass the
-// --enable-perfetto flag instead.
-const base::Feature kTracingPerfettoBackend{"TracingPerfettoBackend",
-                                            base::FEATURE_ENABLED_BY_DEFAULT};
+// Causes the BackgroundTracingManager to upload proto messages via UMA,
+// rather than JSON via the crash frontend.
+const base::Feature kBackgroundTracingProtoOutput{
+    "BackgroundTracingProtoOutput", base::FEATURE_ENABLED_BY_DEFAULT};
 
 // Runs the tracing service as an in-process browser service.
 const base::Feature kTracingServiceInProcess {
   "TracingServiceInProcess",
-#if defined(OS_ANDROID)
+#if defined(OS_ANDROID) || BUILDFLAG(IS_CHROMECAST)
+      base::FEATURE_ENABLED_BY_DEFAULT
+#else
+      base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+};
+
+const base::Feature kEnablePerfettoSystemTracing{
+    "EnablePerfettoSystemTracing", base::FEATURE_DISABLED_BY_DEFAULT};
+
+// Controls whether trace points are implemented using Perfetto's client library
+// (enabled) or legacy TraceLog (disabled).
+const base::Feature kEnablePerfettoClientApiProducer {
+  "EnablePerfettoClientApiProducer",
+#if BUILDFLAG(USE_PERFETTO_CLIENT_LIBRARY)
       base::FEATURE_ENABLED_BY_DEFAULT
 #else
       base::FEATURE_DISABLED_BY_DEFAULT
@@ -33,20 +53,17 @@ const base::Feature kTracingServiceInProcess {
 
 namespace tracing {
 
-bool TracingUsesPerfettoBackend() {
-  // This is checked early at startup, so feature list may not be initialized.
-  // So, for startup tracing cases there is no way to control the backend using
-  // feature list.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisablePerfetto)) {
-    return false;
+bool ShouldSetupSystemTracing() {
+#if defined(OS_ANDROID)
+  if (base::android::BuildInfo::GetInstance()->is_debug_android()) {
+    return true;
   }
-
+#endif  // defined(OS_ANDROID)
   if (base::FeatureList::GetInstance()) {
-    return base::FeatureList::IsEnabled(features::kTracingPerfettoBackend);
+    return base::FeatureList::IsEnabled(features::kEnablePerfettoSystemTracing);
   }
-
-  return true;
+  return features::kEnablePerfettoSystemTracing.default_state ==
+         base::FEATURE_ENABLED_BY_DEFAULT;
 }
 
 }  // namespace tracing

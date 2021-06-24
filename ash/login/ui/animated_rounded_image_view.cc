@@ -21,7 +21,8 @@ namespace {
 class SingleFrameImageDecoder
     : public AnimatedRoundedImageView::AnimationDecoder {
  public:
-  SingleFrameImageDecoder(const gfx::ImageSkia& image) : image_(image) {}
+  explicit SingleFrameImageDecoder(const gfx::ImageSkia& image)
+      : image_(image) {}
   ~SingleFrameImageDecoder() override = default;
 
   // AnimatedRoundedImageView::AnimationDecoder:
@@ -128,8 +129,8 @@ void AnimatedRoundedImageView::UpdateAnimationFrame() {
     // Schedule next frame update.
     update_frame_timer_.Start(
         FROM_HERE, frames_[active_frame_].duration,
-        base::BindRepeating(&AnimatedRoundedImageView::UpdateAnimationFrame,
-                            base::Unretained(this)));
+        base::BindOnce(&AnimatedRoundedImageView::UpdateAnimationFrame,
+                       base::Unretained(this)));
   }
 }
 

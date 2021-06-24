@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_CROSSCALL_PARAMS_H__
-#define SANDBOX_SRC_CROSSCALL_PARAMS_H__
+#ifndef SANDBOX_WIN_SRC_CROSSCALL_PARAMS_H_
+#define SANDBOX_WIN_SRC_CROSSCALL_PARAMS_H_
 
 #if !defined(SANDBOX_FUZZ_TARGET)
 #include <windows.h>
@@ -16,18 +16,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <memory>
-
 #include "base/macros.h"
 #include "sandbox/win/src/internal_types.h"
+#if !defined(SANDBOX_FUZZ_TARGET)
+#include "sandbox/win/src/sandbox_nt_types.h"
+#endif
+#include "sandbox/win/src/ipc_tags.h"
 #include "sandbox/win/src/sandbox_types.h"
-
-// Increases |value| until there is no need for padding given an int64_t
-// alignment. Returns the increased value.
-inline uint32_t Align(uint32_t value) {
-  uint32_t alignment = sizeof(int64_t);
-  return ((value + alignment - 1) / alignment) * alignment;
-}
 
 // This header is part of CrossCall: the sandbox inter-process communication.
 // This header defines the basic types used both in the client IPC and in the
@@ -48,6 +43,26 @@ inline uint32_t Align(uint32_t value) {
 // strings is not supported.
 
 namespace sandbox {
+
+// This is the list of all imported symbols from ntdll.dll.
+SANDBOX_INTERCEPT NtExports g_nt;
+
+namespace {
+
+// Increases |value| until there is no need for padding given an int64_t
+// alignment. Returns the increased value.
+inline uint32_t Align(uint32_t value) {
+  uint32_t alignment = sizeof(int64_t);
+  return ((value + alignment - 1) / alignment) * alignment;
+}
+
+inline void* memcpy_wrapper(void* dest, const void* src, size_t count) {
+  if (g_nt.memcpy)
+    return g_nt.memcpy(dest, src, count);
+  return memcpy(dest, src, count);
+}
+
+}  // namespace
 
 // max number of extended return parameters. See CrossCallReturn
 const size_t kExtendedReturnCount = 8;
@@ -112,7 +127,7 @@ struct CrossCallReturn {
 class CrossCallParams {
  public:
   // Returns the tag (ipc unique id) associated with this IPC.
-  uint32_t GetTag() const { return tag_; }
+  IpcTag GetTag() const { return tag_; }
 
   // Returns the beggining of the buffer where the IPC params can be stored.
   // prior to an IPC call
@@ -137,11 +152,11 @@ class CrossCallParams {
 
  protected:
   // constructs the IPC call params. Called only from the derived classes
-  CrossCallParams(uint32_t tag, uint32_t params_count)
+  CrossCallParams(IpcTag tag, uint32_t params_count)
       : tag_(tag), is_in_out_(0), params_count_(params_count) {}
 
  private:
-  uint32_t tag_;
+  IpcTag tag_;
   uint32_t is_in_out_;
   CrossCallReturn call_return;
   const uint32_t params_count_;
@@ -162,7 +177,7 @@ class CrossCallParams {
 // that NUMBER_PARAMS = 2 and a 32-bit build:
 //
 // [ tag                4 bytes]
-// [ IsOnOut            4 bytes]
+// [ IsInOut            4 bytes]
 // [ call return       52 bytes]
 // [ params count       4 bytes]
 // [ parameter 0 type   4 bytes]
@@ -190,15 +205,14 @@ template <size_t NUMBER_PARAMS, size_t BLOCK_SIZE>
 class ActualCallParams : public CrossCallParams {
  public:
   // constructor. Pass the ipc unique tag as input
-  explicit ActualCallParams(uint32_t tag)
-      : CrossCallParams(tag, NUMBER_PARAMS) {
+  explicit ActualCallParams(IpcTag tag) : CrossCallParams(tag, NUMBER_PARAMS) {
     param_info_[0].offset_ =
         static_cast<uint32_t>(parameters_ - reinterpret_cast<char*>(this));
   }
 
   // Testing-only constructor. Allows setting the |number_params| to a
   // wrong value.
-  ActualCallParams(uint32_t tag, uint32_t number_params)
+  ActualCallParams(IpcTag tag, uint32_t number_params)
       : CrossCallParams(tag, number_params) {
     param_info_[0].offset_ =
         static_cast<uint32_t>(parameters_ - reinterpret_cast<char*>(this));
@@ -243,7 +257,7 @@ class ActualCallParams : public CrossCallParams {
     // We might be touching user memory, this has to be done from inside a try
     // except.
     __try {
-      memcpy(dest, parameter_address, size);
+      memcpy_wrapper(dest, parameter_address, size);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
       return false;
     }
@@ -269,7 +283,7 @@ class ActualCallParams : public CrossCallParams {
   uint32_t GetSize() const { return param_info_[NUMBER_PARAMS].offset_; }
 
  protected:
-  ActualCallParams() : CrossCallParams(0, NUMBER_PARAMS) {}
+  ActualCallParams() : CrossCallParams(IpcTag::UNUSED, NUMBER_PARAMS) {}
 
  private:
   ParamInfo param_info_[NUMBER_PARAMS + 1];
@@ -284,4 +298,4 @@ static_assert(sizeof(ActualCallParams<3, 1024>) == 1024, "bad size buffer");
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_CROSSCALL_PARAMS_H__
+#endif  // SANDBOX_WIN_SRC_CROSSCALL_PARAMS_H_

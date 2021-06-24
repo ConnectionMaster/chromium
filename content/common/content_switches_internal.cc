@@ -14,9 +14,11 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/use_zoom_for_dsf_policy.h"
+#include "third_party/blink/public/mojom/v8_cache_options.mojom.h"
 
 #if defined(OS_ANDROID)
 #include "base/debug/debugger.h"
@@ -38,12 +40,12 @@ namespace {
 
 #if defined(OS_WIN)
 
-base::string16 ToNativeString(base::StringPiece string) {
-  return base::ASCIIToUTF16(string);
+std::wstring ToNativeString(base::StringPiece string) {
+  return base::ASCIIToWide(string);
 }
 
-std::string FromNativeString(base::StringPiece16 string) {
-  return base::UTF16ToASCII(string);
+std::string FromNativeString(base::WStringPiece string) {
+  return base::WideToASCII(string);
 }
 
 #else  // defined(OS_WIN)
@@ -86,11 +88,11 @@ blink::mojom::V8CacheOptions GetV8CacheOptions() {
 
 void WaitForDebugger(const std::string& label) {
 #if defined(OS_WIN)
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   std::string title = "Google Chrome";
-#else   // CHROMIUM_BUILD
+#else   // BUILDFLAG(CHROMIUM_BRANDING)
   std::string title = "Chromium";
-#endif  // CHROMIUM_BUILD
+#endif  // BUILDFLAG(CHROMIUM_BRANDING)
   title += " ";
   title += label;  // makes attaching to process easier
   std::string message = label;
@@ -125,7 +127,7 @@ std::vector<std::string> FeaturesFromSwitch(
     const base::CommandLine& command_line,
     const char* switch_name) {
   using NativeString = base::CommandLine::StringType;
-  using NativeStringPiece = base::BasicStringPiece<NativeString>;
+  using NativeStringPiece = base::CommandLine::StringPieceType;
 
   std::vector<std::string> features;
   if (!command_line.HasSwitch(switch_name))
@@ -143,7 +145,7 @@ std::vector<std::string> FeaturesFromSwitch(
     arg.remove_prefix(prefix.size());
     if (!IsStringASCII(arg))
       continue;
-    auto vals = SplitString(FromNativeString(arg.as_string()), ",",
+    auto vals = SplitString(FromNativeString(NativeString(arg)), ",",
                             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
     features.insert(features.end(), vals.begin(), vals.end());
   }

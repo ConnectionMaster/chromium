@@ -8,9 +8,9 @@
 #include <vulkan/vulkan.h>
 #include <utility>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "build/build_config.h"
-#include "gpu/vulkan/vulkan_export.h"
 
 #if defined(OS_POSIX)
 #include "base/files/scoped_file.h"
@@ -30,7 +30,7 @@ namespace gpu {
 // Note that handle transference depends on a handle type.
 // SYNC_FD handles that use copy transference, while reference transference is
 // used other handles types.
-class VULKAN_EXPORT SemaphoreHandle {
+class COMPONENT_EXPORT(VULKAN) SemaphoreHandle {
  public:
 #if defined(OS_POSIX)
   using PlatformHandle = base::ScopedFD;
@@ -51,7 +51,13 @@ class VULKAN_EXPORT SemaphoreHandle {
 
   VkExternalSemaphoreHandleTypeFlagBits vk_handle_type() { return type_; }
 
-  bool is_valid() const { return handle_.is_valid(); }
+  bool is_valid() const {
+#if defined(OS_WIN)
+    return handle_.IsValid();
+#else
+    return handle_.is_valid();
+#endif
+  }
 
   // Returns underlying platform-specific handle for the semaphore. is_valid()
   // becomes false after this function returns.

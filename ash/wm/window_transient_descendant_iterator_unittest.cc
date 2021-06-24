@@ -6,6 +6,7 @@
 
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/window_state.h"
+#include "base/bind.h"
 #include "ui/aura/window.h"
 #include "ui/wm/core/window_util.h"
 
@@ -83,7 +84,7 @@ TEST_F(WindowTransientDescendantIteratorTest, LinkedList) {
 
   int index = 0;
   std::string str;
-  for (auto* window : wm::GetTransientTreeIterator(windows[0].get())) {
+  for (auto* window : GetTransientTreeIterator(windows[0].get())) {
     EXPECT_EQ(windows[index].get(), window);
     str += window->GetName();
     ++index;
@@ -101,7 +102,7 @@ TEST_F(WindowTransientDescendantIteratorTest, Tree) {
   // match exactly the window order from the transient iterator.
   int index = 0;
   std::string str;
-  for (auto* window : wm::GetTransientTreeIterator(windows[0].get())) {
+  for (auto* window : GetTransientTreeIterator(windows[0].get())) {
     EXPECT_EQ(windows[index].get(), window);
     str += window->GetName();
     ++index;
@@ -118,7 +119,7 @@ TEST_F(WindowTransientDescendantIteratorTest, LinkedListWithPredicate) {
   auto predicate = [](aura::Window* w) { return w->GetName() == "C"; };
 
   std::string str;
-  for (auto* window : wm::GetTransientTreeIterator(
+  for (auto* window : GetTransientTreeIterator(
            windows[0].get(), base::BindRepeating(predicate))) {
     str += window->GetName();
   }
@@ -134,7 +135,7 @@ TEST_F(WindowTransientDescendantIteratorTest, TreeWithPredicate) {
   };
 
   std::string str;
-  for (auto* window : wm::GetTransientTreeIterator(
+  for (auto* window : GetTransientTreeIterator(
            windows[0].get(), base::BindRepeating(predicate))) {
     str += window->GetName();
   }

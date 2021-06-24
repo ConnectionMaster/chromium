@@ -8,7 +8,6 @@
 
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/no_destructor.h"
 #include "chromeos/components/multidevice/logging/logging.h"
 #include "chromeos/services/multidevice_setup/eligible_host_devices_provider.h"
 
@@ -29,12 +28,20 @@ HostStatusProviderImpl::Factory*
     HostStatusProviderImpl::Factory::test_factory_ = nullptr;
 
 // static
-HostStatusProviderImpl::Factory* HostStatusProviderImpl::Factory::Get() {
-  if (test_factory_)
-    return test_factory_;
+std::unique_ptr<HostStatusProvider> HostStatusProviderImpl::Factory::Create(
+    EligibleHostDevicesProvider* eligible_host_devices_provider,
+    HostBackendDelegate* host_backend_delegate,
+    HostVerifier* host_verifier,
+    device_sync::DeviceSyncClient* device_sync_client) {
+  if (test_factory_) {
+    return test_factory_->CreateInstance(eligible_host_devices_provider,
+                                         host_backend_delegate, host_verifier,
+                                         device_sync_client);
+  }
 
-  static base::NoDestructor<Factory> factory;
-  return factory.get();
+  return base::WrapUnique(new HostStatusProviderImpl(
+      eligible_host_devices_provider, host_backend_delegate, host_verifier,
+      device_sync_client));
 }
 
 // static
@@ -44,17 +51,6 @@ void HostStatusProviderImpl::Factory::SetFactoryForTesting(
 }
 
 HostStatusProviderImpl::Factory::~Factory() = default;
-
-std::unique_ptr<HostStatusProvider>
-HostStatusProviderImpl::Factory::BuildInstance(
-    EligibleHostDevicesProvider* eligible_host_devices_provider,
-    HostBackendDelegate* host_backend_delegate,
-    HostVerifier* host_verifier,
-    device_sync::DeviceSyncClient* device_sync_client) {
-  return base::WrapUnique(new HostStatusProviderImpl(
-      eligible_host_devices_provider, host_backend_delegate, host_verifier,
-      device_sync_client));
-}
 
 HostStatusProviderImpl::HostStatusProviderImpl(
     EligibleHostDevicesProvider* eligible_host_devices_provider,
@@ -66,12 +62,13 @@ HostStatusProviderImpl::HostStatusProviderImpl(
       host_verifier_(host_verifier),
       device_sync_client_(device_sync_client),
       current_status_and_device_(mojom::HostStatus::kNoEligibleHosts,
-                                 base::nullopt /* host_device */) {
+                                 absl::nullopt /* host_device */) {
   host_backend_delegate_->AddObserver(this);
   host_verifier_->AddObserver(this);
   device_sync_client_->AddObserver(this);
 
-  CheckForUpdatedStatusAndNotifyIfChanged();
+  CheckForUpdatedStatusAndNotifyIfChanged(
+      /*force_notify_host_status_change=*/false);
   RecordMultiDeviceHostStatus(current_status_and_device_.host_status());
 }
 
@@ -87,36 +84,48 @@ HostStatusProviderImpl::GetHostWithStatus() const {
 }
 
 void HostStatusProviderImpl::OnHostChangedOnBackend() {
-  CheckForUpdatedStatusAndNotifyIfChanged();
+  CheckForUpdatedStatusAndNotifyIfChanged(
+      /*force_notify_host_status_change=*/false);
 }
 
 void HostStatusProviderImpl::OnPendingHostRequestChange() {
-  CheckForUpdatedStatusAndNotifyIfChanged();
+  CheckForUpdatedStatusAndNotifyIfChanged(
+      /*force_notify_host_status_change=*/false);
 }
 
 void HostStatusProviderImpl::OnHostVerified() {
-  CheckForUpdatedStatusAndNotifyIfChanged();
+  CheckForUpdatedStatusAndNotifyIfChanged(
+      /*force_notify_host_status_change=*/false);
 }
 
 void HostStatusProviderImpl::OnNewDevicesSynced() {
-  CheckForUpdatedStatusAndNotifyIfChanged();
+  CheckForUpdatedStatusAndNotifyIfChanged(
+      /*force_notify_host_status_change=*/true);
 }
 
-void HostStatusProviderImpl::CheckForUpdatedStatusAndNotifyIfChanged() {
+void HostStatusProviderImpl::CheckForUpdatedStatusAndNotifyIfChanged(
+    bool force_notify_host_status_change) {
   HostStatusWithDevice current_status_and_device = GetCurrentStatus();
-  if (current_status_and_device == current_status_and_device_)
+  if (current_status_and_device == current_status_and_device_) {
+    if (force_notify_host_status_change) {
+      // If the RemoteDevice the host device references has changed, but not its
+      // contents, fire a host status change. Note that since the status doesn't
+      // actually change, neither logging nor metric collection should occur.
+      NotifyHostStatusChange(current_status_and_device_.host_status(),
+                             current_status_and_device_.host_device());
+    }
     return;
+  }
 
   PA_LOG(VERBOSE) << "HostStatusProviderImpl::"
                   << "CheckForUpdatedStatusAndNotifyIfChanged(): Host status "
                   << "changed. New status: "
                   << current_status_and_device.host_status() << ", Old status: "
                   << current_status_and_device_.host_status()
-                  << ", Host device "
-                  << "ID: "
+                  << ", Host device: "
                   << (current_status_and_device.host_device()
                           ? current_status_and_device.host_device()
-                                ->GetTruncatedDeviceIdForLogs()
+                                ->GetInstanceIdDeviceIdForLogs()
                           : "[no host]");
 
   current_status_and_device_ = current_status_and_device;
@@ -150,11 +159,11 @@ HostStatusProviderImpl::GetCurrentStatus() {
   if (!eligible_host_devices_provider_->GetEligibleHostDevices().empty()) {
     return HostStatusWithDevice(
         mojom::HostStatus::kEligibleHostExistsButNoHostSet,
-        base::nullopt /* host_device */);
+        absl::nullopt /* host_device */);
   }
 
   return HostStatusWithDevice(mojom::HostStatus::kNoEligibleHosts,
-                              base::nullopt /* host_device */);
+                              absl::nullopt /* host_device */);
 }
 
 }  // namespace multidevice_setup

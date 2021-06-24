@@ -4,7 +4,7 @@
 
 package org.chromium.chrome.browser.gcore;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -21,7 +21,7 @@ public class MockConnectedTaskTest {
     private MockConnectedTask<MockChromeGoogleApiClient> mTask;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         mClient = new MockChromeGoogleApiClient();
         mTask = new MockConnectedTask<>(mClient);
     }

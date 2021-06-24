@@ -98,6 +98,10 @@ The format to create the disk image in.  Valid values for I<format> are:
      - UDRO - uncompressed, read-only; extension I<.dmg>
      - UDRW - uncompressed, read-write; extension I<.dmg>
      - UDSP - uncompressed, read-write, sparse; extension I<.sparseimage>
+     - ULFO - LZFSE/LZVN-compressed, read-only; extension I<.dmg>;
+              create and use on 10.11 ("El Capitan") and later only
+     - ULMO - LZMA-compressed, read-only; extension I<.dmg>;
+              create and use on 10.15 ("Catalina") and later only
 
 UDZO is the default format.
 
@@ -154,11 +158,11 @@ or to use formatted text, prepare a resource and use L<--resource>.
 =item B<--resource> I<file>
 
 A resource file to merge into I<target-image>.  If I<format> is UDZO, UDBZ,
-or UDRO, the disk image will be flattened to a single-fork file that contains
-the resource but may be freely transferred without any special encodings.
-I<file> must be in a format suitable for L<Rez(1)>.  See L<Rez(1)> for a
-description of the format, and L<hdiutil(1)> for a discussion on flattened
-disk images.  B<--resource> may appear multiple times.
+UDRO, ULFO, or ULMO, the disk image will be flattened to a single-fork file
+that contains the resource but may be freely transferred without any special
+encodings.  I<file> must be in a format suitable for L<Rez(1)>.  See
+L<Rez(1)> for a description of the format, and L<hdiutil(1)> for a discussion
+on flattened disk images.  B<--resource> may appear multiple times.
 
 This option is useful for adding license agreements and other messages
 to disk images.
@@ -567,8 +571,9 @@ push(@gCleanup,
 # treated as the volume root itself.  rsync will do this by default, if no
 # trailing '/' is present.  With a trailing '/', $sourceFolder becomes
 # $tempRoot, instead of becoming an entry in $tempRoot.
-if(command($gConfig{'cmd_rsync'}, '-aC', '--include', '*.so',
- '--copy-unsafe-links', $sourceFolder.($sourceFile?'':'/'),$tempRoot) != 0) {
+if(command($gConfig{'cmd_rsync'}, '--archive', '--copy-unsafe-links',
+           '--cvs-exclude', '--include=*.so',
+           $sourceFolder.($sourceFile?'':'/'), $tempRoot) != 0) {
   cleanupDie('rsync failed');
 }
 
@@ -598,8 +603,9 @@ if($gConfig{'create_directly'}) {
 }
 
 if(defined($iconFile)) {
-  if(command($gConfig{'cmd_rsync'}, '-aC', '--include', '*.so',
-   '--copy-unsafe-links', $iconFile, $tempRoot.'/.VolumeIcon.icns') != 0) {
+  if(command($gConfig{'cmd_rsync'}, '--archive', '--copy-unsafe-links',
+             '--cvs-exclude', '--include=*.so',
+             $iconFile, $tempRoot.'/.VolumeIcon.icns') != 0) {
     cleanupDie('rsync failed for volume icon');
   }
 
@@ -898,8 +904,10 @@ sub copyFiles($@) {
       $success = commandInternal('symlink', $source, $target);
     }
     else {
-      $success = !command($gConfig{'cmd_rsync'}, '-aC', '--include', '*.so',
-                          '--copy-unsafe-links', $source, $target);
+      $success = !command($gConfig{'cmd_rsync'}, '--archive',
+                          '--copy-unsafe-links', '--cvs-exclude',
+                          '--include=*.so',
+                          $source, $target);
     }
     if(!$success) {
       cleanupDie('copyFiles failed for method '.$method);
@@ -1163,8 +1171,9 @@ sub diskImageMaker($$$$$$$$) {
       # the volume is mounted, copy the files.  --copy-unsafe-links is
       # unnecessary since it was used to copy everything to the staging
       # area.  There can be no more unsafe links.
-      if(command($gConfig{'cmd_rsync'}, '-aC', '--include', '*.so',
-       $source.'/',$partitionMountPoint) != 0) {
+      if(command($gConfig{'cmd_rsync'}, '--archive', '--cvs-exclude',
+                 '--include=*.so',
+                 $source.'/', $partitionMountPoint) != 0) {
         cleanupDie('rsync to new volume failed');
       }
 
@@ -1319,7 +1328,8 @@ sub hdidMountImage($@) {
 sub isFormatReadOnly($) {
   my($format);
   ($format) = @_;
-  return $format eq 'UDZO' || $format eq 'UDBZ' || $format eq 'UDRO';
+  return $format eq 'UDZO' || $format eq 'UDBZ' || $format eq 'UDRO' ||
+         $format eq 'ULFO' || $format eq 'ULMO';
 }
 
 # licenseMaker($text, $resource)

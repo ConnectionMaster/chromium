@@ -7,20 +7,19 @@
 #include "apps/launcher.h"
 #include "base/bind.h"
 #include "base/logging.h"
-#include "chrome/browser/prerender/prerender_contents.h"
+#include "chrome/browser/prefetch/no_state_prefetch/chrome_no_state_prefetch_contents_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
 #include "components/navigation_interception/intercept_navigation_throttle.h"
 #include "components/navigation_interception/navigation_params.h"
+#include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/guest_mode.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_set.h"
-#include "net/url_request/url_request.h"
 
 using content::BrowserThread;
 using content::WebContents;
@@ -38,16 +37,17 @@ bool LaunchAppWithUrl(const scoped_refptr<const Extension> app,
 
   // Redirect top-level navigations only. This excludes iframes and webviews
   // in particular.
-  if (content::GuestMode::IsCrossProcessFrameGuest(source)) {
-    DVLOG(1) << "Cancel redirection: source is a inner WebContents";
+  if (source->IsInnerWebContentsForGuest()) {
+    DVLOG(1) << "Cancel redirection: source is a guest inner WebContents";
     return false;
   }
 
-  // If prerendering, don't launch the app but abort the navigation.
-  prerender::PrerenderContents* prerender_contents =
-      prerender::PrerenderContents::FromWebContents(source);
-  if (prerender_contents) {
-    prerender_contents->Destroy(prerender::FINAL_STATUS_NAVIGATION_INTERCEPTED);
+  // If no-state prefetching, don't launch the app but abort the navigation.
+  prerender::NoStatePrefetchContents* no_state_prefetch_contents =
+      prerender::ChromeNoStatePrefetchContentsDelegate::FromWebContents(source);
+  if (no_state_prefetch_contents) {
+    no_state_prefetch_contents->Destroy(
+        prerender::FINAL_STATUS_NAVIGATION_INTERCEPTED);
     return true;
   }
 
@@ -89,12 +89,12 @@ PlatformAppNavigationRedirector::MaybeCreateThrottleFor(
     return nullptr;
   }
 
-  // Never redirect URLs to apps in incognito. Technically, apps are not
-  // supported in incognito, but that may change in future.
+  // Redirect URLs to apps only in regular mode. Technically, apps are not
+  // supported in incognito and guest modes, but that may change in future.
   // See crbug.com/240879, which tracks incognito support for v2 apps.
   Profile* profile = Profile::FromBrowserContext(browser_context);
-  if (profile->GetProfileType() == Profile::INCOGNITO_PROFILE) {
-    DVLOG(1) << "Skip redirection: unsupported in incognito";
+  if (profile->IsOffTheRecord()) {
+    DVLOG(1) << "Skip redirection: unsupported in incognito and guest modes";
     return nullptr;
   }
 
@@ -115,7 +115,8 @@ PlatformAppNavigationRedirector::MaybeCreateThrottleFor(
                << "):" << handler->id;
       return std::make_unique<
           navigation_interception::InterceptNavigationThrottle>(
-          handle, base::Bind(&LaunchAppWithUrl, extension_ref, handler->id),
+          handle,
+          base::BindRepeating(&LaunchAppWithUrl, extension_ref, handler->id),
           navigation_interception::SynchronyMode::kSync);
     }
   }

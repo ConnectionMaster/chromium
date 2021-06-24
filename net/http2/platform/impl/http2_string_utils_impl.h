@@ -8,56 +8,17 @@
 #include <sstream>
 #include <utility>
 
+#include "base/strings/abseil_string_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "net/base/escape.h"
 #include "net/base/hex_utils.h"
-#include "net/third_party/quiche/src/http2/platform/api/http2_export.h"
-#include "net/third_party/quiche/src/http2/platform/api/http2_string.h"
-#include "net/third_party/quiche/src/http2/platform/api/http2_string_piece.h"
+#include "net/third_party/quiche/src/common/quiche_text_utils.h"
 
 namespace http2 {
 
-template <typename... Args>
-inline Http2String Http2StrCatImpl(const Args&... args) {
-  std::ostringstream oss;
-  int dummy[] = {1, (oss << args, 0)...};
-  static_cast<void>(dummy);
-  return oss.str();
-}
-
-template <typename... Args>
-inline void Http2StrAppendImpl(Http2String* output, Args... args) {
-  output->append(Http2StrCatImpl(args...));
-}
-
-template <typename... Args>
-inline Http2String Http2StringPrintfImpl(const Args&... args) {
-  return base::StringPrintf(std::forward<const Args&>(args)...);
-}
-
-inline Http2String Http2HexEncodeImpl(const void* bytes, size_t size) {
-  return base::HexEncode(bytes, size);
-}
-
-inline Http2String Http2HexDecodeImpl(Http2StringPiece data) {
-  return net::HexDecode(data);
-}
-
-inline Http2String Http2HexDumpImpl(Http2StringPiece data) {
-  return net::HexDump(data);
-}
-
-inline Http2String Http2HexEscapeImpl(Http2StringPiece data) {
-  return net::EscapeQueryParamValue(data, false);
-}
-
-template <typename Number>
-inline Http2String Http2HexImpl(Number number) {
-  std::stringstream str;
-  str << std::hex << number;
-  return str.str();
+inline std::string Http2HexDumpImpl(absl::string_view data) {
+  return quiche::QuicheTextUtils::HexDump(data);
 }
 
 }  // namespace http2

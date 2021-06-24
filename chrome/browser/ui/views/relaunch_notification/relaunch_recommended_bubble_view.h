@@ -15,7 +15,6 @@ class Browser;
 
 namespace views {
 class Button;
-class Label;
 class Widget;
 }  // namespace views
 
@@ -34,38 +33,25 @@ class RelaunchRecommendedBubbleView : public LocationBarBubbleDelegateView {
 
   // LocationBarBubbleDelegateView:
   bool Accept() override;
-  bool Close() override;
-  int GetDialogButtons() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  base::string16 GetWindowTitle() const override;
+  std::u16string GetWindowTitle() const override;
   bool ShouldShowCloseButton() const override;
-  gfx::ImageSkia GetWindowIcon() override;
-  bool ShouldShowWindowIcon() const override;
-  int GetHeightForWidth(int width) const override;
-  void Layout() override;
+  ui::ImageModel GetWindowIcon() override;
 
  protected:
   // LocationBarBubbleDelegateView:
   void Init() override;
-  gfx::Size CalculatePreferredSize() const override;
   void VisibilityChanged(views::View* starting_from, bool is_visible) override;
 
  private:
   RelaunchRecommendedBubbleView(views::Button* anchor_button,
-                                const gfx::Point& anchor_point,
                                 base::Time detection_time,
                                 base::RepeatingClosure on_accept);
 
   // Invoked when the timer fires to refresh the title text.
   void UpdateWindowTitle();
 
-  static constexpr int kTitleIconSize = 20;
-
   // A callback run if the user accepts the prompt to relaunch the browser.
   base::RepeatingClosure on_accept_;
-
-  // The label containing the body text of the bubble.
-  views::Label* body_label_;
 
   // Timer that schedules title refreshes.
   RelaunchRecommendedTimer relaunch_recommended_timer_;

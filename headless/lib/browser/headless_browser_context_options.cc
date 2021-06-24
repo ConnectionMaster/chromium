@@ -12,7 +12,7 @@ namespace headless {
 namespace {
 
 template <class T>
-const T& ReturnOverriddenValue(const base::Optional<T>& value,
+const T& ReturnOverriddenValue(const absl::optional<T>& value,
                                const T& default_value) {
   return value ? *value : default_value;
 }
@@ -70,20 +70,11 @@ bool HeadlessBrowserContextOptions::block_new_web_contents() const {
                                browser_options_->block_new_web_contents);
 }
 
-base::RepeatingCallback<void(WebPreferences*)>
+base::RepeatingCallback<void(blink::web_pref::WebPreferences*)>
 HeadlessBrowserContextOptions::override_web_preferences_callback() const {
   return ReturnOverriddenValue(
       override_web_preferences_callback_,
       browser_options_->override_web_preferences_callback);
-}
-
-const ProtocolHandlerMap& HeadlessBrowserContextOptions::protocol_handlers()
-    const {
-  return protocol_handlers_;
-}
-
-ProtocolHandlerMap HeadlessBrowserContextOptions::TakeProtocolHandlers() {
-  return std::move(protocol_handlers_);
 }
 
 gfx::FontRenderParams::Hinting

@@ -5,28 +5,9 @@
  */
 
 /**
- * Prints output.
- * @param {String} src - Where the message is coming from.
- * @param {String} txt - The text to print.
- */
-function output(src, txt) {
-  // Handle DOMException:
-  if (txt.message) {
-    txt = txt.message;
-  }
-  txt = src + ': ' + txt;
-  if (window.domAutomationController) {
-    window.domAutomationController.send(txt);
-  } else {
-    txt += ' window.domAutomationController not found.';
-  }
-  console.log(txt);
-}
-
-/**
  * Installs the payment handler.
  */
-function install() {  // eslint-disable-line no-unused-vars
+function install() { // eslint-disable-line no-unused-vars
   if (!navigator.serviceWorker) {
     output('install()', 'ServiceWorker API not found.');
     return;
@@ -53,11 +34,11 @@ function install() {  // eslint-disable-line no-unused-vars
               }
 
               registration.paymentManager.instruments
-                  .set('123456', {name: 'Echo Pay', method: 'basic-card'})
+                  .set(
+                      '123456',
+                      {name: 'Echo Pay', method: window.location.href})
                   .then(() => {
-                    output(
-                        'instruments.set()',
-                        'Payment handler installed.');
+                    output('instruments.set()', 'Payment handler installed.');
                   })
                   .catch((error) => {
                     output('instruments.set()', error);

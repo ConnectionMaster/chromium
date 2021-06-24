@@ -101,7 +101,7 @@ class VR_UI_EXPORT Ui : public UiInterface,
       const CapturingStateModel& potential_capturing) override;
   void ShowExitVrPrompt(UiUnsupportedMode reason) override;
   void SetSpeechRecognitionEnabled(bool enabled) override;
-  void SetRecognitionResult(const base::string16& result) override;
+  void SetRecognitionResult(const std::u16string& result) override;
   void SetHasOrCanRequestRecordAudioPermission(
       bool has_or_can_request_record_audio) override;
   void OnSpeechRecognitionStateChanged(int new_state) override;
@@ -142,7 +142,7 @@ class VR_UI_EXPORT Ui : public UiInterface,
                                            float height_percentage) override;
   void SetDialogLocation(float x, float y) override;
   void SetDialogFloating(bool floating) override;
-  void ShowPlatformToast(const base::string16& text) override;
+  void ShowPlatformToast(const std::u16string& text) override;
   void CancelPlatformToast() override;
 
   void OnPause() override;
@@ -234,7 +234,7 @@ class VR_UI_EXPORT Ui : public UiInterface,
   std::unique_ptr<TextInputDelegate> text_input_delegate_;
   std::unique_ptr<AudioDelegate> audio_delegate_;
 
-  base::WeakPtrFactory<Ui> weak_ptr_factory_;
+  base::WeakPtrFactory<Ui> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(Ui);
 };

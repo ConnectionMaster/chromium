@@ -4,13 +4,35 @@
 
 #include "components/search_engines/template_url_data.h"
 
+#include "base/check.h"
 #include "base/guid.h"
 #include "base/i18n/case_conversion.h"
-#include "base/logging.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/memory_usage_estimator.h"
 #include "base/values.h"
+
+namespace {
+
+// Returns a GUID used for sync, which is random except for prepopulated search
+// engines. The latter benefit from using a deterministic GUID, to make sure
+// sync doesn't incur in duplicates for prepopulated engines.
+std::string GenerateGUID(int prepopulate_id) {
+  // IDs above 1000 are reserved for distribution custom engines.
+  if (prepopulate_id <= 0 || prepopulate_id > 1000)
+    return base::GenerateGUID();
+
+  // We compute a GUID deterministically given |prepopulate_id|, using an
+  // arbitrary base GUID.
+  std::string guid =
+      base::StringPrintf("485bf7d3-0215-45af-87dc-538868%06d", prepopulate_id);
+  DCHECK(base::IsValidGUID(guid));
+  return guid;
+}
+
+}  // namespace
 
 TemplateURLData::TemplateURLData()
     : safe_for_autoreplace(false),
@@ -19,16 +41,20 @@ TemplateURLData::TemplateURLData()
       last_modified(base::Time::Now()),
       last_visited(base::Time()),
       created_by_policy(false),
+      created_from_play_api(false),
       usage_count(0),
       prepopulate_id(0),
       sync_guid(base::GenerateGUID()),
-      keyword_(base::ASCIIToUTF16("dummy")),
+      keyword_(u"dummy"),
       url_("x") {}
 
 TemplateURLData::TemplateURLData(const TemplateURLData& other) = default;
 
-TemplateURLData::TemplateURLData(const base::string16& name,
-                                 const base::string16& keyword,
+TemplateURLData& TemplateURLData::operator=(const TemplateURLData& other) =
+    default;
+
+TemplateURLData::TemplateURLData(const std::u16string& name,
+                                 const std::u16string& keyword,
                                  base::StringPiece search_url,
                                  base::StringPiece suggest_url,
                                  base::StringPiece image_url,
@@ -58,13 +84,14 @@ TemplateURLData::TemplateURLData(const base::string16& name,
       date_created(base::Time()),
       last_modified(base::Time()),
       created_by_policy(false),
+      created_from_play_api(false),
       usage_count(0),
       prepopulate_id(prepopulate_id),
-      sync_guid(base::GenerateGUID()) {
+      sync_guid(GenerateGUID(prepopulate_id)) {
   SetShortName(name);
   SetKeyword(keyword);
-  SetURL(search_url.as_string());
-  input_encodings.push_back(encoding.as_string());
+  SetURL(std::string(search_url));
+  input_encodings.push_back(std::string(encoding));
   for (size_t i = 0; i < alternate_urls_list.GetSize(); ++i) {
     std::string alternate_url;
     alternate_urls_list.GetString(i, &alternate_url);
@@ -73,16 +100,15 @@ TemplateURLData::TemplateURLData(const base::string16& name,
   }
 }
 
-TemplateURLData::~TemplateURLData() {
-}
+TemplateURLData::~TemplateURLData() = default;
 
-void TemplateURLData::SetShortName(const base::string16& short_name) {
+void TemplateURLData::SetShortName(const std::u16string& short_name) {
   // Remove tabs, carriage returns, and the like, as they can corrupt
   // how the short name is displayed.
   short_name_ = base::CollapseWhitespace(short_name, true);
 }
 
-void TemplateURLData::SetKeyword(const base::string16& keyword) {
+void TemplateURLData::SetKeyword(const std::u16string& keyword) {
   DCHECK(!keyword.empty());
 
   // Case sensitive keyword matching is confusing. As such, we force all
@@ -95,6 +121,10 @@ void TemplateURLData::SetKeyword(const base::string16& keyword) {
 void TemplateURLData::SetURL(const std::string& url) {
   DCHECK(!url.empty());
   url_ = url;
+}
+
+void TemplateURLData::GenerateSyncGUID() {
+  sync_guid = GenerateGUID(prepopulate_id);
 }
 
 size_t TemplateURLData::EstimateMemoryUsage() const {

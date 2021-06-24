@@ -6,9 +6,10 @@
 
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 
-#include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "third_party/skia/include/core/SkMatrix.h"
 
 namespace gfx {
 
@@ -42,11 +43,19 @@ RRectF::RRectF(float x,
                float lower_right_x,
                float lower_right_y,
                float lower_left_x,
-               float lower_left_y)
-    : RRectF(x, y, width, height, upper_left_x, upper_left_y) {
-  SetCornerRadii(RRectF::Corner::kUpperRight, upper_right_x, upper_right_y);
-  SetCornerRadii(RRectF::Corner::kLowerRight, lower_right_x, lower_right_y);
-  SetCornerRadii(RRectF::Corner::kLowerLeft, lower_left_x, lower_left_y);
+               float lower_left_y) {
+  SkVector radii[4] = {
+      {upper_left_x, upper_left_y},
+      {upper_right_x, upper_right_y},
+      {lower_right_x, lower_right_y},
+      {lower_left_x, lower_left_y},
+  };
+  skrrect_.setRectRadii(SkRect::MakeXYWH(x, y, width, height), radii);
+  if (IsEmpty()) {
+    // Make sure that empty rects are created fully empty, not with some
+    // non-zero dimensions.
+    skrrect_ = SkRRect::MakeEmpty();
+  }
 }
 
 gfx::Vector2dF RRectF::GetSimpleRadii() const {
@@ -56,8 +65,9 @@ gfx::Vector2dF RRectF::GetSimpleRadii() const {
 }
 
 float RRectF::GetSimpleRadius() const {
-  DCHECK(GetType() <= Type::kSingle);
+  DCHECK(GetType() <= Type::kOval);
   SkPoint result = skrrect_.getSimpleRadii();
+  DCHECK_EQ(result.x(), result.y());
   return result.x();
 }
 
@@ -75,6 +85,10 @@ RRectF::Type RRectF::GetType() const {
       }
       return Type::kSimple;
     case SkRRect::kOval_Type:
+      rad = skrrect_.getSimpleRadii();
+      if (rad.x() == rad.y()) {
+        return Type::kSingle;
+      }
       return Type::kOval;
     case SkRRect::kNinePatch_Type:
     case SkRRect::kComplex_Type:
@@ -118,7 +132,7 @@ void RRectF::Scale(float x_scale, float y_scale) {
     skrrect_ = SkRRect::MakeEmpty();
     return;
   }
-  SkMatrix scale = SkMatrix::MakeScale(x_scale, y_scale);
+  SkMatrix scale = SkMatrix::Scale(x_scale, y_scale);
   SkRRect result;
   bool success = skrrect_.transform(scale, &result);
   DCHECK(success);

@@ -6,6 +6,7 @@
 
 #include <initializer_list>
 
+#include "services/network/public/mojom/cors.mojom-blink.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_initiator_type_names.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
@@ -45,6 +46,22 @@ bool IsPreflightError(network::mojom::CorsError error_code) {
     default:
       return false;
   }
+}
+
+StringView ShortAddressSpace(network::mojom::IPAddressSpace space) {
+  switch (space) {
+    case network::mojom::IPAddressSpace::kUnknown:
+      return "unknown";
+    case network::mojom::IPAddressSpace::kPublic:
+      return "public";
+    case network::mojom::IPAddressSpace::kPrivate:
+      return "private";
+    case network::mojom::IPAddressSpace::kLocal:
+      return "local";
+  }
+
+  NOTREACHED() << "Invalid IPAddressSpace enum value: " << space;
+  return "invalid";
 }
 
 }  // namespace
@@ -91,6 +108,11 @@ String GetErrorString(const network::CorsErrorStatus& status,
       break;
     case CorsError::kInvalidResponse:
       builder.Append("The response is invalid.");
+      break;
+    case CorsError::kInsecurePrivateNetwork:
+      Append(builder, {"The request client is not a secure context and the "
+                       "resource is in more-private address space `",
+                       ShortAddressSpace(status.resource_address_space), "`."});
       break;
     case CorsError::kWildcardOriginNotAllowed:
     case CorsError::kPreflightWildcardOriginNotAllowed:

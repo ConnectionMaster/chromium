@@ -4,6 +4,7 @@
 
 #include "net/cert/x509_util_win.h"
 
+#include "base/logging.h"
 #include "crypto/scoped_capi_types.h"
 #include "crypto/sha2.h"
 #include "net/cert/x509_certificate.h"
@@ -36,8 +37,7 @@ scoped_refptr<X509Certificate> CreateX509CertificateFromCertContexts(
     return nullptr;
   bssl::UniquePtr<CRYPTO_BUFFER> cert_handle(
       X509Certificate::CreateCertBufferFromBytes(
-          reinterpret_cast<const char*>(os_cert->pbCertEncoded),
-          os_cert->cbCertEncoded));
+          base::make_span(os_cert->pbCertEncoded, os_cert->cbCertEncoded)));
   if (!cert_handle)
     return nullptr;
   std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates;
@@ -46,9 +46,8 @@ scoped_refptr<X509Certificate> CreateX509CertificateFromCertContexts(
         !os_intermediate->cbCertEncoded)
       return nullptr;
     bssl::UniquePtr<CRYPTO_BUFFER> intermediate_cert_handle(
-        X509Certificate::CreateCertBufferFromBytes(
-            reinterpret_cast<const char*>(os_intermediate->pbCertEncoded),
-            os_intermediate->cbCertEncoded));
+        X509Certificate::CreateCertBufferFromBytes(base::make_span(
+            os_intermediate->pbCertEncoded, os_intermediate->cbCertEncoded)));
     if (!intermediate_cert_handle)
       return nullptr;
     intermediates.push_back(std::move(intermediate_cert_handle));

@@ -2,16 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+#include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/platform/testing/histogram_tester.h"
 
 namespace blink {
-
-enum PassiveForcedListenerResultType {
-  kPreventDefaultNotCalled,
-  kDocumentLevelTouchPreventDefaultCalled
-};
 
 class EventTargetTest : public RenderingTest {
  public:
@@ -19,36 +14,74 @@ class EventTargetTest : public RenderingTest {
   ~EventTargetTest() override = default;
 };
 
-TEST_F(EventTargetTest, PreventDefaultNotCalled) {
+TEST_F(EventTargetTest, UseCountPassiveTouchEventListener) {
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kPassiveTouchEventListener));
   GetDocument().GetSettings()->SetScriptEnabled(true);
-  HistogramTester histogram_tester;
-  GetDocument().GetFrame()->GetScriptController().ExecuteScriptInMainWorld(
-      "window.addEventListener('touchstart', function(e) {}, {});"
-      "window.dispatchEvent(new TouchEvent('touchstart', "
-      "{cancelable: "
-      "false}));");
-
-  histogram_tester.ExpectTotalCount("Event.PassiveForcedEventDispatchCancelled",
-                                    1);
-  histogram_tester.ExpectUniqueSample(
-      "Event.PassiveForcedEventDispatchCancelled", kPreventDefaultNotCalled, 1);
+  ClassicScript::CreateUnspecifiedScript(
+      ScriptSourceCode("window.addEventListener('touchstart', function() {}, "
+                       "{passive: true});"))
+      ->RunScript(GetDocument().domWindow());
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kPassiveTouchEventListener));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kNonPassiveTouchEventListener));
 }
 
-TEST_F(EventTargetTest, PreventDefaultCalled) {
+TEST_F(EventTargetTest, UseCountNonPassiveTouchEventListener) {
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kNonPassiveTouchEventListener));
   GetDocument().GetSettings()->SetScriptEnabled(true);
-  HistogramTester histogram_tester;
-  GetDocument().GetFrame()->GetScriptController().ExecuteScriptInMainWorld(
-      "window.addEventListener('touchstart', function(e) "
-      "{e.preventDefault();}, {});"
-      "window.dispatchEvent(new TouchEvent('touchstart', "
-      "{cancelable: "
-      "false}));");
+  ClassicScript::CreateUnspecifiedScript(
+      ScriptSourceCode("window.addEventListener('touchstart', function() {}, "
+                       "{passive: false});"))
+      ->RunScript(GetDocument().domWindow());
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kNonPassiveTouchEventListener));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kPassiveTouchEventListener));
+}
 
-  histogram_tester.ExpectTotalCount("Event.PassiveForcedEventDispatchCancelled",
-                                    1);
-  histogram_tester.ExpectUniqueSample(
-      "Event.PassiveForcedEventDispatchCancelled",
-      kDocumentLevelTouchPreventDefaultCalled, 1);
+TEST_F(EventTargetTest, UseCountPassiveTouchEventListenerPassiveNotSpecified) {
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kPassiveTouchEventListener));
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  ClassicScript::CreateUnspecifiedScript(
+      ScriptSourceCode("window.addEventListener('touchstart', function() {});"))
+      ->RunScript(GetDocument().domWindow());
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kPassiveTouchEventListener));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kNonPassiveTouchEventListener));
+}
+
+TEST_F(EventTargetTest, UseCountBeforematch) {
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kBeforematchHandlerRegistered));
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  ClassicScript::CreateUnspecifiedScript(ScriptSourceCode(R"HTML(
+                       const element = document.createElement('div');
+                       document.body.appendChild(element);
+                       element.addEventListener('beforematch', () => {});
+                      )HTML"))
+      ->RunScript(GetDocument().domWindow());
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kBeforematchHandlerRegistered));
+}
+
+TEST_F(EventTargetTest, UseCountAbortSignal) {
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kAddEventListenerWithAbortSignal));
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  ClassicScript::CreateUnspecifiedScript(ScriptSourceCode(R"HTML(
+                       const element = document.createElement('div');
+                       const ac = new AbortController();
+                       element.addEventListener(
+                         'test', () => {}, {signal: ac.signal});
+                      )HTML"))
+      ->RunScript(GetDocument().domWindow());
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kAddEventListenerWithAbortSignal));
 }
 
 }  // namespace blink

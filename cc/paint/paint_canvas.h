@@ -8,6 +8,7 @@
 #include "base/compiler_specific.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
+#include "cc/paint/node_id.h"
 #include "cc/paint/paint_export.h"
 #include "cc/paint/paint_image.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -17,12 +18,16 @@ namespace printing {
 class MetafileSkia;
 }  // namespace printing
 
+namespace paint_preview {
+class PaintPreviewTracker;
+}  // namespace paint_preview
+
 namespace cc {
 class SkottieWrapper;
 class PaintFlags;
 class PaintOpBuffer;
 
-struct NodeHolder;
+enum class UsePaintCache { kDisabled = 0, kEnabled };
 
 using PaintRecord = PaintOpBuffer;
 
@@ -51,6 +56,10 @@ class CC_PAINT_EXPORT PaintCanvas {
   // recording or not, so could be simplified or removed.
   virtual SkImageInfo imageInfo() const = 0;
 
+  virtual void* accessTopLayerPixels(SkImageInfo* info,
+                                     size_t* rowBytes,
+                                     SkIPoint* origin = nullptr) = 0;
+
   // TODO(enne): It would be nice to get rid of flush() entirely, as it
   // doesn't really make sense for recording.  However, this gets used by
   // PaintCanvasVideoRenderer which takes a PaintCanvas to paint both
@@ -69,8 +78,12 @@ class CC_PAINT_EXPORT PaintCanvas {
   virtual void translate(SkScalar dx, SkScalar dy) = 0;
   virtual void scale(SkScalar sx, SkScalar sy) = 0;
   virtual void rotate(SkScalar degrees) = 0;
+  // TODO(aaronhk): crbug.com/1153330 deprecate these in favor of the SkM44
+  // versions.
   virtual void concat(const SkMatrix& matrix) = 0;
   virtual void setMatrix(const SkMatrix& matrix) = 0;
+  virtual void concat(const SkM44& matrix) = 0;
+  virtual void setMatrix(const SkM44& matrix) = 0;
 
   virtual void clipRect(const SkRect& rect,
                         SkClipOp op,
@@ -98,10 +111,17 @@ class CC_PAINT_EXPORT PaintCanvas {
 
   virtual void clipPath(const SkPath& path,
                         SkClipOp op,
-                        bool do_anti_alias) = 0;
-  void clipPath(const SkPath& path, SkClipOp op) { clipPath(path, op, false); }
+                        bool do_anti_alias,
+                        UsePaintCache) = 0;
+  void clipPath(const SkPath& path, SkClipOp op, bool do_anti_alias) {
+    clipPath(path, op, do_anti_alias, UsePaintCache::kEnabled);
+  }
+  void clipPath(const SkPath& path, SkClipOp op) {
+    clipPath(path, op, /*do_anti_alias=*/false, UsePaintCache::kEnabled);
+  }
   void clipPath(const SkPath& path, bool do_anti_alias) {
-    clipPath(path, SkClipOp::kIntersect, do_anti_alias);
+    clipPath(path, SkClipOp::kIntersect, do_anti_alias,
+             UsePaintCache::kEnabled);
   }
 
   virtual SkRect getLocalClipBounds() const = 0;
@@ -130,25 +150,33 @@ class CC_PAINT_EXPORT PaintCanvas {
                              SkScalar rx,
                              SkScalar ry,
                              const PaintFlags& flags) = 0;
-  virtual void drawPath(const SkPath& path, const PaintFlags& flags) = 0;
+  virtual void drawPath(const SkPath& path,
+                        const PaintFlags& flags,
+                        UsePaintCache) = 0;
+  void drawPath(const SkPath& path, const PaintFlags& flags) {
+    drawPath(path, flags, UsePaintCache::kEnabled);
+  }
   virtual void drawImage(const PaintImage& image,
                          SkScalar left,
                          SkScalar top,
+                         const SkSamplingOptions&,
                          const PaintFlags* flags) = 0;
   void drawImage(const PaintImage& image, SkScalar left, SkScalar top) {
-    drawImage(image, left, top, nullptr);
+    drawImage(image, left, top, SkSamplingOptions(), nullptr);
   }
-
-  enum SrcRectConstraint {
-    kStrict_SrcRectConstraint = SkCanvas::kStrict_SrcRectConstraint,
-    kFast_SrcRectConstraint = SkCanvas::kFast_SrcRectConstraint,
-  };
 
   virtual void drawImageRect(const PaintImage& image,
                              const SkRect& src,
                              const SkRect& dst,
+                             const SkSamplingOptions&,
                              const PaintFlags* flags,
-                             SrcRectConstraint constraint) = 0;
+                             SkCanvas::SrcRectConstraint constraint) = 0;
+  void drawImageRect(const PaintImage& image,
+                     const SkRect& src,
+                     const SkRect& dst,
+                     SkCanvas::SrcRectConstraint constraint) {
+    drawImageRect(image, src, dst, SkSamplingOptions(), nullptr, constraint);
+  }
 
   // Draws the frame of the |skottie| animation specified by the normalized time
   // t [0->first frame..1->last frame] at the destination bounds given by |dst|
@@ -165,16 +193,16 @@ class CC_PAINT_EXPORT PaintCanvas {
   virtual void drawTextBlob(sk_sp<SkTextBlob> blob,
                             SkScalar x,
                             SkScalar y,
-                            const PaintFlags& flags,
-                            const NodeHolder& holder) = 0;
+                            NodeId node_id,
+                            const PaintFlags& flags) = 0;
 
   // Unlike SkCanvas::drawPicture, this only plays back the PaintRecord and does
   // not add an additional clip.  This is closer to SkPicture::playback.
   virtual void drawPicture(sk_sp<const PaintRecord> record) = 0;
 
   virtual bool isClipEmpty() const = 0;
-  virtual bool isClipRect() const = 0;
-  virtual const SkMatrix& getTotalMatrix() const = 0;
+  virtual SkMatrix getTotalMatrix() const = 0;
+  virtual SkM44 getLocalToDevice() const = 0;
 
   // Used for printing
   enum class AnnotationType {
@@ -189,12 +217,22 @@ class CC_PAINT_EXPORT PaintCanvas {
   void SetPrintingMetafile(printing::MetafileSkia* metafile) {
     metafile_ = metafile;
   }
+  paint_preview::PaintPreviewTracker* GetPaintPreviewTracker() const {
+    return tracker_;
+  }
+  void SetPaintPreviewTracker(paint_preview::PaintPreviewTracker* tracker) {
+    tracker_ = tracker;
+  }
 
   // Subclasses can override to handle custom data.
   virtual void recordCustomData(uint32_t id) {}
 
+  // Used for marked content in PDF files.
+  virtual void setNodeId(int) = 0;
+
  private:
   printing::MetafileSkia* metafile_ = nullptr;
+  paint_preview::PaintPreviewTracker* tracker_ = nullptr;
 };
 
 class CC_PAINT_EXPORT PaintCanvasAutoRestore {

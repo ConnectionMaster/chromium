@@ -17,25 +17,27 @@ constexpr char kCredentialTypeKey[] = "type";
 }  // namespace
 
 // static
-base::Optional<PublicKeyCredentialDescriptor>
+absl::optional<PublicKeyCredentialDescriptor>
 PublicKeyCredentialDescriptor::CreateFromCBORValue(const cbor::Value& cbor) {
   if (!cbor.is_map()) {
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   const cbor::Value::MapValue& map = cbor.GetMap();
   auto type = map.find(cbor::Value(kCredentialTypeKey));
   if (type == map.end() || !type->second.is_string() ||
       type->second.GetString() != kPublicKey)
-    return base::nullopt;
+    return absl::nullopt;
 
   auto id = map.find(cbor::Value(kCredentialIdKey));
   if (id == map.end() || !id->second.is_bytestring())
-    return base::nullopt;
+    return absl::nullopt;
 
   return PublicKeyCredentialDescriptor(CredentialType::kPublicKey,
                                        id->second.GetBytestring());
 }
+
+PublicKeyCredentialDescriptor::PublicKeyCredentialDescriptor() = default;
 
 PublicKeyCredentialDescriptor::PublicKeyCredentialDescriptor(
     CredentialType credential_type,
@@ -71,11 +73,17 @@ PublicKeyCredentialDescriptor& PublicKeyCredentialDescriptor::operator=(
 
 PublicKeyCredentialDescriptor::~PublicKeyCredentialDescriptor() = default;
 
-cbor::Value PublicKeyCredentialDescriptor::ConvertToCBOR() const {
+bool PublicKeyCredentialDescriptor::operator==(
+    const PublicKeyCredentialDescriptor& other) const {
+  return credential_type_ == other.credential_type_ && id_ == other.id_ &&
+         transports_ == other.transports_;
+}
+
+cbor::Value AsCBOR(const PublicKeyCredentialDescriptor& desc) {
   cbor::Value::MapValue cbor_descriptor_map;
-  cbor_descriptor_map[cbor::Value(kCredentialIdKey)] = cbor::Value(id_);
+  cbor_descriptor_map[cbor::Value(kCredentialIdKey)] = cbor::Value(desc.id());
   cbor_descriptor_map[cbor::Value(kCredentialTypeKey)] =
-      cbor::Value(CredentialTypeToString(credential_type_));
+      cbor::Value(CredentialTypeToString(desc.credential_type()));
   return cbor::Value(std::move(cbor_descriptor_map));
 }
 

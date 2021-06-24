@@ -55,10 +55,6 @@ class AssemblyProgram {
   // Traverses RVAs in |abs32_visitor| and |rel32_visitor| to precompute Labels.
   void PrecomputeLabels(RvaVisitor* abs32_visitor, RvaVisitor* rel32_visitor);
 
-  // Removes underused Labels. Thresholds used (0 = no trimming) is
-  // architecture-dependent.
-  void TrimLabels();
-
   void UnassignIndexes();
   void DefaultAssignIndexes();
   void AssignRemainingIndexes();
@@ -78,7 +74,7 @@ class AssemblyProgram {
  private:
   static const int kLabelLowerLimit;
 
-  // Looks up a label or creates a new one.  Might return NULL.
+  // Looks up a label or creates a new one.  Might return nullptr.
   Label* FindLabel(RVA rva, RVAToLabel* labels);
 
   const ExecutableType kind_;

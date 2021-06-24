@@ -5,17 +5,22 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 
 #include <memory>
+
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/web/web_plugin.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
+#include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_plugin_element.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 
 namespace blink {
 
@@ -23,10 +28,9 @@ class ElementTest : public EditingTestBase {};
 
 TEST_F(ElementTest, SupportsFocus) {
   Document& document = GetDocument();
-  DCHECK(IsHTMLHtmlElement(document.documentElement()));
+  DCHECK(IsA<HTMLHtmlElement>(document.documentElement()));
   document.setDesignMode("on");
-  document.View()->UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kTest);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(document.documentElement()->SupportsFocus())
       << "<html> with designMode=on should be focusable.";
 }
@@ -61,19 +65,19 @@ TEST_F(ElementTest,
 
   // Insert a new <div> above the sticky. This will dirty layout and invalidate
   // the sticky constraints.
-  writer->SetInnerHTMLFromString(
-      "<div style='height: 100px; width: 700px;'></div>");
+  writer->setInnerHTML("<div style='height: 100px; width: 700px;'></div>");
   EXPECT_EQ(DocumentLifecycle::kVisualUpdatePending,
             document.Lifecycle().GetState());
 
   // Requesting the bounding client rect should cause both layout and
   // compositing inputs clean to be run, and the sticky result shouldn't change.
   bounding_client_rect = sticky->getBoundingClientRect();
-  EXPECT_EQ(DocumentLifecycle::kCompositingInputsClean,
-            document.Lifecycle().GetState());
-  EXPECT_FALSE(sticky->GetLayoutBoxModelObject()
-                   ->Layer()
-                   ->NeedsCompositingInputsUpdate());
+  EXPECT_EQ(DocumentLifecycle::kLayoutClean, document.Lifecycle().GetState());
+  if (!RuntimeEnabledFeatures::CompositeAfterPaintEnabled()) {
+    EXPECT_TRUE(sticky->GetLayoutBoxModelObject()
+                    ->Layer()
+                    ->NeedsCompositingInputsUpdate());
+  }
   EXPECT_EQ(0, bounding_client_rect->top());
   EXPECT_EQ(25, bounding_client_rect->left());
 }
@@ -106,33 +110,33 @@ TEST_F(ElementTest, OffsetTopAndLeftCorrectForStickyElementsAfterInsertion) {
 
   // Insert a new <div> above the sticky. This will dirty layout and invalidate
   // the sticky constraints.
-  writer->SetInnerHTMLFromString(
-      "<div style='height: 100px; width: 700px;'></div>");
+  writer->setInnerHTML("<div style='height: 100px; width: 700px;'></div>");
   EXPECT_EQ(DocumentLifecycle::kVisualUpdatePending,
             document.Lifecycle().GetState());
 
   // Requesting either offset should cause both layout and compositing inputs
   // clean to be run, and the sticky result shouldn't change.
   EXPECT_EQ(scroller->scrollTop(), sticky->OffsetTop());
-  EXPECT_EQ(DocumentLifecycle::kCompositingInputsClean,
-            document.Lifecycle().GetState());
-  EXPECT_FALSE(sticky->GetLayoutBoxModelObject()
-                   ->Layer()
-                   ->NeedsCompositingInputsUpdate());
+  EXPECT_EQ(DocumentLifecycle::kLayoutClean, document.Lifecycle().GetState());
+  if (!RuntimeEnabledFeatures::CompositeAfterPaintEnabled()) {
+    EXPECT_TRUE(sticky->GetLayoutBoxModelObject()
+                    ->Layer()
+                    ->NeedsCompositingInputsUpdate());
+  }
 
   // Dirty layout again, since |OffsetTop| will have cleaned it.
-  writer->SetInnerHTMLFromString(
-      "<div style='height: 100px; width: 700px;'></div>");
+  writer->setInnerHTML("<div style='height: 100px; width: 700px;'></div>");
   EXPECT_EQ(DocumentLifecycle::kVisualUpdatePending,
             document.Lifecycle().GetState());
 
   // Again requesting an offset should cause layout and compositing to be clean.
   EXPECT_EQ(scroller->scrollLeft() + 25, sticky->OffsetLeft());
-  EXPECT_EQ(DocumentLifecycle::kCompositingInputsClean,
-            document.Lifecycle().GetState());
-  EXPECT_FALSE(sticky->GetLayoutBoxModelObject()
-                   ->Layer()
-                   ->NeedsCompositingInputsUpdate());
+  EXPECT_EQ(DocumentLifecycle::kLayoutClean, document.Lifecycle().GetState());
+  if (!RuntimeEnabledFeatures::CompositeAfterPaintEnabled()) {
+    EXPECT_TRUE(sticky->GetLayoutBoxModelObject()
+                    ->Layer()
+                    ->NeedsCompositingInputsUpdate());
+  }
 }
 
 TEST_F(ElementTest, BoundsInViewportCorrectForStickyElementsAfterInsertion) {
@@ -164,21 +168,53 @@ TEST_F(ElementTest, BoundsInViewportCorrectForStickyElementsAfterInsertion) {
 
   // Insert a new <div> above the sticky. This will dirty layout and invalidate
   // the sticky constraints.
-  writer->SetInnerHTMLFromString(
-      "<div style='height: 100px; width: 700px;'></div>");
+  writer->setInnerHTML("<div style='height: 100px; width: 700px;'></div>");
   EXPECT_EQ(DocumentLifecycle::kVisualUpdatePending,
             document.Lifecycle().GetState());
 
   // Requesting the bounds in viewport should cause both layout and compositing
   // inputs clean to be run, and the sticky result shouldn't change.
   bounds_in_viewport = sticky->BoundsInViewport();
-  EXPECT_EQ(DocumentLifecycle::kCompositingInputsClean,
-            document.Lifecycle().GetState());
-  EXPECT_FALSE(sticky->GetLayoutBoxModelObject()
-                   ->Layer()
-                   ->NeedsCompositingInputsUpdate());
+  EXPECT_EQ(DocumentLifecycle::kLayoutClean, document.Lifecycle().GetState());
+  if (!RuntimeEnabledFeatures::CompositeAfterPaintEnabled()) {
+    EXPECT_TRUE(sticky->GetLayoutBoxModelObject()
+                    ->Layer()
+                    ->NeedsCompositingInputsUpdate());
+  }
   EXPECT_EQ(0, bounds_in_viewport.Y());
   EXPECT_EQ(25, bounds_in_viewport.X());
+}
+
+TEST_F(ElementTest, OutlineRectsIncludesImgChildren) {
+  Document& document = GetDocument();
+  SetBodyContent(R"HTML(
+    <a id='link' href=''><img id='image' width='220' height='147'></a>
+  )HTML");
+
+  Element* a = document.getElementById("link");
+  Element* img = document.getElementById("image");
+
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(img);
+
+  // The a element should include the image in computing its bounds.
+  IntRect img_bounds_in_viewport = img->BoundsInViewport();
+  EXPECT_EQ(220, img_bounds_in_viewport.Width());
+  EXPECT_EQ(147, img_bounds_in_viewport.Height());
+  LOG(INFO) << "img_bounds_in_viewport: " << img_bounds_in_viewport;
+
+  Vector<IntRect> a_outline_rects = a->OutlineRectsInVisualViewport();
+  EXPECT_EQ(2u, a_outline_rects.size());
+
+  IntRect a_outline_rect;
+  for (auto& r : a_outline_rects) {
+    a_outline_rect.Unite(r);
+    LOG(INFO) << "r: " << r;
+    LOG(INFO) << "a_outline_rect: " << a_outline_rect;
+  }
+
+  EXPECT_EQ(img_bounds_in_viewport.Width(), a_outline_rect.Width());
+  EXPECT_EQ(img_bounds_in_viewport.Height(), a_outline_rect.Height());
 }
 
 TEST_F(ElementTest, StickySubtreesAreTrackedCorrectly) {
@@ -219,8 +255,7 @@ TEST_F(ElementTest, StickySubtreesAreTrackedCorrectly) {
   // ensure that the sticky subtree update behavior survives forking.
   document.getElementById("child")->SetInlineStyleProperty(
       CSSPropertyID::kWebkitRubyPosition, CSSValueID::kAfter);
-  document.View()->UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kTest);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(DocumentLifecycle::kPaintClean, document.Lifecycle().GetState());
 
   EXPECT_EQ(RubyPosition::kBefore, outer_sticky->StyleRef().GetRubyPosition());
@@ -242,8 +277,7 @@ TEST_F(ElementTest, StickySubtreesAreTrackedCorrectly) {
   // fork it's StyleRareInheritedData to maintain the sticky subtree bit.
   document.getElementById("outerSticky")
       ->SetInlineStyleProperty(CSSPropertyID::kPosition, CSSValueID::kStatic);
-  document.View()->UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kTest);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(DocumentLifecycle::kPaintClean, document.Lifecycle().GetState());
 
   EXPECT_FALSE(outer_sticky->StyleRef().SubtreeIsSticky());
@@ -462,6 +496,72 @@ TEST_F(ElementTest, OptionElementDisplayNoneComputedStyle) {
   EXPECT_FALSE(document.getElementById("option")->GetComputedStyle());
   EXPECT_FALSE(document.getElementById("inner-group")->GetComputedStyle());
   EXPECT_FALSE(document.getElementById("inner-option")->GetComputedStyle());
+}
+
+// A fake plugin which will assert that script is allowed in Destroy.
+class ScriptOnDestroyPlugin : public GarbageCollected<ScriptOnDestroyPlugin>,
+                              public WebPlugin {
+ public:
+  bool Initialize(WebPluginContainer* container) override {
+    container_ = container;
+    return true;
+  }
+  void Destroy() override {
+    destroy_called_ = true;
+    ASSERT_FALSE(ScriptForbiddenScope::IsScriptForbidden());
+  }
+  WebPluginContainer* Container() const override { return container_; }
+
+  void UpdateAllLifecyclePhases(DocumentUpdateReason) override {}
+  void Paint(cc::PaintCanvas*, const gfx::Rect&) override {}
+  void UpdateGeometry(const gfx::Rect&,
+                      const gfx::Rect&,
+                      const gfx::Rect&,
+                      bool) override {}
+  void UpdateFocus(bool, mojom::blink::FocusType) override {}
+  void UpdateVisibility(bool) override {}
+  WebInputEventResult HandleInputEvent(const WebCoalescedInputEvent&,
+                                       ui::Cursor*) override {
+    return {};
+  }
+  void DidReceiveResponse(const WebURLResponse&) override {}
+  void DidReceiveData(const char* data, size_t data_length) override {}
+  void DidFinishLoading() override {}
+  void DidFailLoading(const WebURLError&) override {}
+
+  void Trace(Visitor*) const {}
+
+  bool DestroyCalled() const { return destroy_called_; }
+
+ private:
+  WebPluginContainer* container_;
+  bool destroy_called_ = false;
+};
+
+TEST_F(ElementTest, CreateAndAttachShadowRootSuspendsPluginDisposal) {
+  Document& document = GetDocument();
+  SetBodyContent(R"HTML(
+    <div id=target>
+      <embed id=plugin type=application/x-blink-text-plugin></embed>
+    </div>
+  )HTML");
+
+  // Set the plugin element up to have the ScriptOnDestroy plugin.
+  auto* plugin_element =
+      DynamicTo<HTMLPlugInElement>(document.getElementById("plugin"));
+  ASSERT_TRUE(plugin_element);
+
+  auto* plugin = MakeGarbageCollected<ScriptOnDestroyPlugin>();
+  auto* plugin_container =
+      MakeGarbageCollected<WebPluginContainerImpl>(*plugin_element, plugin);
+  plugin->Initialize(plugin_container);
+  plugin_element->SetEmbeddedContentView(plugin_container);
+
+  // Now create a shadow root on target, which should cause the plugin to be
+  // destroyed. Test passes if we pass the script forbidden check in the plugin.
+  auto* target = document.getElementById("target");
+  target->CreateUserAgentShadowRoot();
+  ASSERT_TRUE(plugin->DestroyCalled());
 }
 
 }  // namespace blink

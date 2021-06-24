@@ -26,9 +26,10 @@ class ShelfWindowWatcherItemDelegate : public ShelfItemDelegate {
   void ItemSelected(std::unique_ptr<ui::Event> event,
                     int64_t display_id,
                     ShelfLaunchSource source,
-                    ItemSelectedCallback callback) override;
-  void GetContextMenuItems(int64_t display_id,
-                           GetContextMenuItemsCallback callback) override;
+                    ItemSelectedCallback callback,
+                    const ItemFilterPredicate& filter_predicate) override;
+  void GetContextMenu(int64_t display_id,
+                      GetContextMenuCallback callback) override;
   void ExecuteCommand(bool from_context_menu,
                       int64_t command_id,
                       int32_t event_flags,

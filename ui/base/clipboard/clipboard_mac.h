@@ -17,12 +17,16 @@
 
 namespace ui {
 
-class COMPONENT_EXPORT(BASE_CLIPBOARD) ClipboardMac : public Clipboard {
+class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac : public Clipboard {
  private:
-  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, ReadImageRetina);
-  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, ReadImageNonRetina);
-  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, EmptyImage);
-  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, PDFImage);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, ReadImageRetina_Bitmap);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, ReadImageNonRetina_Bitmap);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, EmptyImage_Bitmap);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, PDFImage_Bitmap);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, ReadImageRetina_Png);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, ReadImageNonRetina_Png);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, EmptyImage_Png);
+  FRIEND_TEST_ALL_PREFIXES(ClipboardMacTest, PDFImage_Png);
   friend class Clipboard;
 
   ClipboardMac();
@@ -30,36 +34,73 @@ class COMPONENT_EXPORT(BASE_CLIPBOARD) ClipboardMac : public Clipboard {
 
   // Clipboard overrides:
   void OnPreShutdown() override;
-  uint64_t GetSequenceNumber(ClipboardType type) const override;
+  DataTransferEndpoint* GetSource(ClipboardBuffer buffer) const override;
+  uint64_t GetSequenceNumber(ClipboardBuffer buffer) const override;
   bool IsFormatAvailable(const ClipboardFormatType& format,
-                         ClipboardType type) const override;
-  void Clear(ClipboardType type) override;
-  void ReadAvailableTypes(ClipboardType type,
-                          std::vector<base::string16>* types,
-                          bool* contains_filenames) const override;
-  void ReadText(ClipboardType type, base::string16* result) const override;
-  void ReadAsciiText(ClipboardType type, std::string* result) const override;
-  void ReadHTML(ClipboardType type,
-                base::string16* markup,
+                         ClipboardBuffer buffer,
+                         const DataTransferEndpoint* data_dst) const override;
+  bool IsMarkedByOriginatorAsConfidential() const override;
+  void MarkAsConfidential() override;
+  void Clear(ClipboardBuffer buffer) override;
+  void ReadAvailableTypes(ClipboardBuffer buffer,
+                          const DataTransferEndpoint* data_dst,
+                          std::vector<std::u16string>* types) const override;
+  std::vector<std::u16string> ReadAvailablePlatformSpecificFormatNames(
+      ClipboardBuffer buffer,
+      const DataTransferEndpoint* data_dst) const override;
+  void ReadText(ClipboardBuffer buffer,
+                const DataTransferEndpoint* data_dst,
+                std::u16string* result) const override;
+  void ReadAsciiText(ClipboardBuffer buffer,
+                     const DataTransferEndpoint* data_dst,
+                     std::string* result) const override;
+  void ReadHTML(ClipboardBuffer buffer,
+                const DataTransferEndpoint* data_dst,
+                std::u16string* markup,
                 std::string* src_url,
                 uint32_t* fragment_start,
                 uint32_t* fragment_end) const override;
-  void ReadRTF(ClipboardType type, std::string* result) const override;
-  SkBitmap ReadImage(ClipboardType type, NSPasteboard* pb) const;
-  SkBitmap ReadImage(ClipboardType type) const override;
-  void ReadCustomData(ClipboardType clipboard_type,
-                      const base::string16& type,
-                      base::string16* result) const override;
-  void ReadBookmark(base::string16* title, std::string* url) const override;
+  void ReadSvg(ClipboardBuffer buffer,
+               const DataTransferEndpoint* data_dst,
+               std::u16string* result) const override;
+  void ReadRTF(ClipboardBuffer buffer,
+               const DataTransferEndpoint* data_dst,
+               std::string* result) const override;
+  void ReadPng(ClipboardBuffer buffer,
+               const DataTransferEndpoint* data_dst,
+               ReadPngCallback callback) const override;
+  void ReadImage(ClipboardBuffer buffer,
+                 const DataTransferEndpoint* data_dst,
+                 ReadImageCallback callback) const override;
+  void ReadCustomData(ClipboardBuffer buffer,
+                      const std::u16string& type,
+                      const DataTransferEndpoint* data_dst,
+                      std::u16string* result) const override;
+  void ReadFilenames(ClipboardBuffer buffer,
+                     const DataTransferEndpoint* data_dst,
+                     std::vector<ui::FileInfo>* result) const override;
+  void ReadBookmark(const DataTransferEndpoint* data_dst,
+                    std::u16string* title,
+                    std::string* url) const override;
   void ReadData(const ClipboardFormatType& format,
+                const DataTransferEndpoint* data_dst,
                 std::string* result) const override;
-  void WriteObjects(ClipboardType type, const ObjectMap& objects) override;
+  void WritePortableRepresentations(
+      ClipboardBuffer buffer,
+      const ObjectMap& objects,
+      std::unique_ptr<DataTransferEndpoint> data_src) override;
+  void WritePlatformRepresentations(
+      ClipboardBuffer buffer,
+      std::vector<Clipboard::PlatformRepresentation> platform_representations,
+      std::unique_ptr<DataTransferEndpoint> data_src) override;
   void WriteText(const char* text_data, size_t text_len) override;
   void WriteHTML(const char* markup_data,
                  size_t markup_len,
                  const char* url_data,
                  size_t url_len) override;
+  void WriteSvg(const char* markup_data, size_t markup_len) override;
   void WriteRTF(const char* rtf_data, size_t data_len) override;
+  void WriteFilenames(std::vector<ui::FileInfo> filenames) override;
   void WriteBookmark(const char* title_data,
                      size_t title_len,
                      const char* url_data,
@@ -69,6 +110,11 @@ class COMPONENT_EXPORT(BASE_CLIPBOARD) ClipboardMac : public Clipboard {
   void WriteData(const ClipboardFormatType& format,
                  const char* data_data,
                  size_t data_len) override;
+
+  std::vector<uint8_t> ReadPngInternal(ClipboardBuffer buffer,
+                                       NSPasteboard* pasteboard) const;
+  SkBitmap ReadImageInternal(ClipboardBuffer buffer,
+                             NSPasteboard* pasteboard) const;
 
   DISALLOW_COPY_AND_ASSIGN(ClipboardMac);
 };

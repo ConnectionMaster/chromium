@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that styles sidebar pane does not leak any LiveLocations.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
       <style>
@@ -66,7 +66,7 @@
 
   function countLiveLocations() {
     var locationsCount = 0;
-    var modelInfos = Bindings.cssWorkspaceBinding._modelToInfo.valuesArray();
+    var modelInfos = Bindings.cssWorkspaceBinding._modelToInfo.values();
     for (var modelInfo of modelInfos)
       locationsCount += modelInfo._locations.valuesArray().length;
     return locationsCount;

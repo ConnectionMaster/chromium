@@ -7,7 +7,7 @@
 
 #include "base/macros.h"
 #include "net/third_party/quiche/src/quic/platform/api/quic_export.h"
-#include "net/third_party/quiche/src/quic/platform/api/quic_string_piece.h"
+#include "third_party/abseil-cpp/absl/strings/string_view.h"
 
 namespace quic {
 
@@ -17,11 +17,11 @@ class QUIC_EXPORT_PRIVATE QuicHostnameUtilsImpl {
   //  (1) disallow IP addresses;
   //  (2) check that the hostname contains valid characters only; and
   //  (3) contains at least one dot.
-  static bool IsValidSNI(QuicStringPiece sni);
+  static bool IsValidSNI(absl::string_view sni);
 
   // Convert hostname to lowercase and remove the trailing '.'.
   // WARNING: mutates |hostname| in place and returns |hostname|.
-  static std::string NormalizeHostname(QuicStringPiece hostname);
+  static std::string NormalizeHostname(absl::string_view hostname);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(QuicHostnameUtilsImpl);

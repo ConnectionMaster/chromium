@@ -4,7 +4,7 @@
 
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs_factory.h"
 
-#include "chrome/browser/chromeos/arc/arc_util.h"
+#include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
@@ -51,8 +51,7 @@ ArcAppListPrefsFactory::ArcAppListPrefsFactory()
   DependsOn(NotificationDisplayServiceFactory::GetInstance());
 }
 
-ArcAppListPrefsFactory::~ArcAppListPrefsFactory() {
-}
+ArcAppListPrefsFactory::~ArcAppListPrefsFactory() = default;
 
 KeyedService* ArcAppListPrefsFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
@@ -71,10 +70,9 @@ KeyedService* ArcAppListPrefsFactory::BuildServiceInstanceFor(
 
   auto* arc_service_manager = arc::ArcServiceManager::Get();
   if (!arc_service_manager)
-    return nullptr;
+    return nullptr;  // ARC is not supported
 
-  return ArcAppListPrefs::Create(
-      profile, arc_service_manager->arc_bridge_service()->app());
+  return ArcAppListPrefs::Create(profile);
 }
 
 content::BrowserContext* ArcAppListPrefsFactory::GetBrowserContextToUse(

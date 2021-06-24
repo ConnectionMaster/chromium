@@ -25,10 +25,10 @@
 
 #include "third_party/blink/renderer/platform/geometry/length.h"
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/platform/geometry/blend.h"
 #include "third_party/blink/renderer/platform/geometry/calculation_value.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 
 namespace blink {
 
@@ -36,9 +36,12 @@ class CalculationValueHandleMap {
   USING_FAST_MALLOC(CalculationValueHandleMap);
 
  public:
-  CalculationValueHandleMap() : index_(1) {}
+  CalculationValueHandleMap() = default;
+  CalculationValueHandleMap(const CalculationValueHandleMap&) = delete;
+  CalculationValueHandleMap& operator=(const CalculationValueHandleMap&) =
+      delete;
 
-  int insert(scoped_refptr<CalculationValue> calc_value) {
+  int insert(scoped_refptr<const CalculationValue> calc_value) {
     DCHECK(index_);
     // FIXME calc(): https://bugs.webkit.org/show_bug.cgi?id=80489
     // This monotonically increasing handle generation scheme is potentially
@@ -56,14 +59,14 @@ class CalculationValueHandleMap {
     map_.erase(index);
   }
 
-  CalculationValue& Get(int index) {
+  const CalculationValue& Get(int index) {
     DCHECK(map_.Contains(index));
     return *map_.at(index);
   }
 
   void DecrementRef(int index) {
     DCHECK(map_.Contains(index));
-    CalculationValue* value = map_.at(index);
+    const CalculationValue* value = map_.at(index);
     if (value->HasOneRef()) {
       // Force the CalculationValue destructor early to avoid a potential
       // recursive call inside HashMap remove().
@@ -75,10 +78,8 @@ class CalculationValueHandleMap {
   }
 
  private:
-  int index_;
-  HashMap<int, scoped_refptr<CalculationValue>> map_;
-
-  DISALLOW_COPY_AND_ASSIGN(CalculationValueHandleMap);
+  int index_ = 1;
+  HashMap<int, scoped_refptr<const CalculationValue>> map_;
 };
 
 static CalculationValueHandleMap& CalcHandles() {
@@ -86,7 +87,7 @@ static CalculationValueHandleMap& CalcHandles() {
   return handle_map;
 }
 
-Length::Length(scoped_refptr<CalculationValue> calc)
+Length::Length(scoped_refptr<const CalculationValue> calc)
     : quirk_(false), type_(kCalculated), is_float_(false) {
   int_value_ = CalcHandles().insert(std::move(calc));
 }
@@ -96,14 +97,8 @@ Length Length::BlendMixedTypes(const Length& from,
                                ValueRange range) const {
   DCHECK(from.IsSpecified());
   DCHECK(IsSpecified());
-  PixelsAndPercent from_pixels_and_percent = from.GetPixelsAndPercent();
-  PixelsAndPercent to_pixels_and_percent = GetPixelsAndPercent();
-  const float pixels = blink::Blend(from_pixels_and_percent.pixels,
-                                    to_pixels_and_percent.pixels, progress);
-  const float percent = blink::Blend(from_pixels_and_percent.percent,
-                                     to_pixels_and_percent.percent, progress);
   return Length(
-      CalculationValue::Create(PixelsAndPercent(pixels, percent), range));
+      AsCalculationValue()->Blend(*from.AsCalculationValue(), progress, range));
 }
 
 Length Length::BlendSameTypes(const Length& from,
@@ -133,33 +128,39 @@ PixelsAndPercent Length::GetPixelsAndPercent() const {
   }
 }
 
+scoped_refptr<const CalculationValue> Length::AsCalculationValue() const {
+  if (IsCalculated())
+    return &GetCalculationValue();
+  return CalculationValue::Create(GetPixelsAndPercent(), kValueRangeAll);
+}
+
 Length Length::SubtractFromOneHundredPercent() const {
-  PixelsAndPercent result = GetPixelsAndPercent();
-  result.pixels = -result.pixels;
-  result.percent = 100 - result.percent;
-  if (result.pixels && result.percent)
-    return Length(CalculationValue::Create(result, kValueRangeAll));
-  if (result.percent)
-    return Length::Percent(result.percent);
-  return Length::Fixed(result.pixels);
+  if (IsPercent())
+    return Length::Percent(100 - Value());
+  DCHECK(IsSpecified());
+  scoped_refptr<const CalculationValue> result =
+      AsCalculationValue()->SubtractFromOneHundredPercent();
+  if (result->IsExpression() ||
+      (result->Pixels() != 0 && result->Percent() != 0)) {
+    return Length(std::move(result));
+  }
+  if (result->Percent())
+    return Length::Percent(result->Percent());
+  return Length::Fixed(result->Pixels());
 }
 
 Length Length::Zoom(double factor) const {
   switch (GetType()) {
     case kFixed:
       return Length::Fixed(GetFloatValue() * factor);
-    case kCalculated: {
-      PixelsAndPercent result = GetPixelsAndPercent();
-      result.pixels *= factor;
-      return Length(CalculationValue::Create(
-          result, GetCalculationValue().GetValueRange()));
-    }
+    case kCalculated:
+      return Length(GetCalculationValue().Zoom(factor));
     default:
       return *this;
   }
 }
 
-CalculationValue& Length::GetCalculationValue() const {
+const CalculationValue& Length::GetCalculationValue() const {
   DCHECK(IsCalculated());
   return CalcHandles().Get(CalculationHandle());
 }
@@ -192,7 +193,6 @@ struct SameSizeAsLength {
   int32_t value;
   int32_t meta_data;
 };
-static_assert(sizeof(Length) == sizeof(SameSizeAsLength),
-              "length should stay small");
+ASSERT_SIZE(Length, SameSizeAsLength);
 
 }  // namespace blink

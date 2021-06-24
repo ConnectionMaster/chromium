@@ -36,7 +36,7 @@ class TestCreditCardSaveManager : public CreditCardSaveManager {
 
   void set_show_save_prompt(bool show_save_prompt);
 
-  void set_upload_request_card_number(const base::string16& credit_card_number);
+  void set_upload_request_card_number(const std::u16string& credit_card_number);
 
  private:
   void OnDidUploadCard(AutofillClient::PaymentsRpcResult result,
@@ -45,9 +45,6 @@ class TestCreditCardSaveManager : public CreditCardSaveManager {
   bool credit_card_upload_enabled_ = false;
   bool credit_card_was_uploaded_ = false;
 
-  FRIEND_TEST_ALL_PREFIXES(
-      CreditCardSaveManagerTest,
-      UploadCreditCard_NumLegacyStrikesLoggedOnUploadNotSuccess);
   FRIEND_TEST_ALL_PREFIXES(CreditCardSaveManagerTest,
                            UploadCreditCard_NumStrikesLoggedOnUploadNotSuccess);
 

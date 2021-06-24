@@ -7,7 +7,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
-#include "chrome/browser/chromeos/login/users/default_user_image/default_user_images.h"
+#include "chrome/browser/ash/login/users/default_user_image/default_user_images.h"
 #include "chrome/common/url_constants.h"
 #include "components/account_id/account_id.h"
 #include "components/user_manager/known_user.h"
@@ -20,6 +20,7 @@
 #include "ui/gfx/codec/png_codec.h"
 #include "url/third_party/mozilla/url_parse.h"
 
+namespace chromeos {
 namespace {
 
 // URL parameter specifying frame index.
@@ -147,8 +148,7 @@ scoped_refptr<base::RefCountedMemory> GetUserImageInternal(
     }
     if (user->HasDefaultImage()) {
       return LoadUserImageFrameForScaleFactor(
-          chromeos::default_user_image::kDefaultImageResourceIDs
-              [user->image_index()],
+          default_user_image::kDefaultImageResourceIDs[user->image_index()],
           frame, scale_factor);
     }
     NOTREACHED() << "User with custom image missing data bytes";
@@ -161,8 +161,6 @@ scoped_refptr<base::RefCountedMemory> GetUserImageInternal(
 
 }  // namespace
 
-namespace chromeos {
-
 // Static.
 scoped_refptr<base::RefCountedMemory> UserImageSource::GetUserImage(
     const AccountId& account_id) {
@@ -173,23 +171,25 @@ UserImageSource::UserImageSource() {}
 
 UserImageSource::~UserImageSource() {}
 
-std::string UserImageSource::GetSource() const {
+std::string UserImageSource::GetSource() {
   return chrome::kChromeUIUserImageHost;
 }
 
 void UserImageSource::StartDataRequest(
-    const std::string& path,
-    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
-    const content::URLDataSource::GotDataCallback& callback) {
+    const GURL& url,
+    const content::WebContents::Getter& wc_getter,
+    content::URLDataSource::GotDataCallback callback) {
+  // TODO(crbug/1009127): Make sure |url| matches
+  // |chrome::kChromeUIUserImageURL| now that |url| is available.
+  const std::string path = content::URLDataSource::URLToRequestPath(url);
   std::string email;
   int frame = -1;
-  GURL url(chrome::kChromeUIUserImageURL + path);
   ParseRequest(url, &email, &frame);
   const AccountId account_id(AccountId::FromUserEmail(email));
-  callback.Run(GetUserImageInternal(account_id, frame));
+  std::move(callback).Run(GetUserImageInternal(account_id, frame));
 }
 
-std::string UserImageSource::GetMimeType(const std::string& path) const {
+std::string UserImageSource::GetMimeType(const std::string& path) {
   // We need to explicitly return a mime type, otherwise if the user tries to
   // drag the image they get no extension.
   return "image/png";

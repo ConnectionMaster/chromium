@@ -1,6 +1,8 @@
 # Copyright 2014 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
+import time
+
 from telemetry.internal.actions import page_action
 from telemetry.page import shared_page_state
 
@@ -26,11 +28,18 @@ class ToughFastScrollingPage(rendering_story.RenderingStory):
         extra_browser_args=extra_browser_args)
 
   def RunPageInteractions(self, action_runner):
+    start = time.time()
     with action_runner.CreateGestureInteraction('ScrollAction'):
-      action_runner.ScrollPage(
-          direction='down',
-          speed_in_pixels_per_second=self.SPEED_IN_PIXELS_PER_SECOND,
-          synthetic_gesture_source=self.SYNTHETIC_GESTURE_SOURCE)
+      direction = 'down'
+      # Some of the metrics the benchmark reports require the scroll to run for
+      # a few seconds (5+). Therefore, scroll the page for long enough that
+      # these metrics are accurately reported.
+      while time.time() - start < 15:
+        action_runner.ScrollPage(
+            direction=direction,
+            speed_in_pixels_per_second=self.SPEED_IN_PIXELS_PER_SECOND,
+            synthetic_gesture_source=self.SYNTHETIC_GESTURE_SOURCE)
+        direction = 'up' if direction == 'down' else 'down'
 
 
 class ScrollingText5000Page(ToughFastScrollingPage):
@@ -43,6 +52,7 @@ class ScrollingText10000Page(ToughFastScrollingPage):
   BASE_NAME = 'text_10000_pixels_per_second'
   URL = 'file://../tough_scrolling_cases/text.html'
   SPEED_IN_PIXELS_PER_SECOND = 10000
+  TAGS = ToughFastScrollingPage.TAGS + [story_tags.REPRESENTATIVE_MOBILE]
 
 
 class ScrollingText20000Page(ToughFastScrollingPage):
@@ -170,6 +180,10 @@ class ScrollingCanvas5000Page(ToughFastScrollingPage):
   BASE_NAME = 'canvas_05000_pixels_per_second'
   URL = 'file://../tough_scrolling_cases/canvas.html'
   SPEED_IN_PIXELS_PER_SECOND = 5000
+  TAGS = ToughFastScrollingPage.TAGS + [
+    story_tags.REPRESENTATIVE_MOBILE,
+    story_tags.REPRESENTATIVE_MAC_DESKTOP
+  ]
 
 
 class ScrollingCanvas10000Page(ToughFastScrollingPage):
@@ -206,4 +220,3 @@ class ScrollingCanvas90000Page(ToughFastScrollingPage):
   BASE_NAME = 'canvas_90000_pixels_per_second'
   URL = 'file://../tough_scrolling_cases/canvas.html'
   SPEED_IN_PIXELS_PER_SECOND = 90000
-  TAGS = ToughFastScrollingPage.TAGS + [story_tags.REPRESENTATIVE_WIN_DESKTOP]

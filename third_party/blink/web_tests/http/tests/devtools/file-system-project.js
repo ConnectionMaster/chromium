@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Tests file system project.\n`);
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('bindings_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadTestModule('bindings_test_runner');
   await TestRunner.showPanel('sources');
 
   function fileSystemUISourceCodes() {
@@ -27,7 +27,7 @@
 
     function didRequestContent(content, contentEncoded) {
       TestRunner.addResult('Highlighter type: ' + uiSourceCode.mimeType());
-      TestRunner.addResult('UISourceCode content: ' + content);
+      TestRunner.addResult('UISourceCode content: ' + content.content);
       callback();
     }
   }
@@ -174,7 +174,7 @@
 
         dir.addFile('bar.js', '');
         InspectorFrontendHost.events.dispatchEventToListeners(
-            InspectorFrontendHostAPI.Events.FileSystemFilesChangedAddedRemoved,
+            Host.InspectorFrontendHostAPI.Events.FileSystemFilesChangedAddedRemoved,
             {changed: [], added: ['/var/www4/html/bar.js'], removed: []});
 
         TestRunner.addResult('-- File added externally --');

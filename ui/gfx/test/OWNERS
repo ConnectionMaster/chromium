@@ -1,2 +1,3 @@
-# Testing support for Linux implementation of FontRenderParams.
-per-file fontconfig_util_linux.*=derat@chromium.org
+# Fonts and fallback fonts.
+per-file font*=etienneb@chromium.org
+per-file font*=robliao@chromium.org

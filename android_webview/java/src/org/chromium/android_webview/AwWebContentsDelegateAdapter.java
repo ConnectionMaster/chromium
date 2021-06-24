@@ -17,7 +17,6 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.webkit.URLUtil;
 import android.widget.FrameLayout;
-
 import org.chromium.base.Callback;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.ThreadUtils;
@@ -25,6 +24,7 @@ import org.chromium.base.task.AsyncTask;
 import org.chromium.content_public.browser.InvalidateTypes;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.content_public.common.ResourceRequestBody;
+import org.chromium.url.GURL;
 
 /**
  * Adapts the AwWebContentsDelegate interface to the AwContentsClient interface.
@@ -53,11 +53,6 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     public void setContainerView(View containerView) {
         mContainerView = containerView;
         mContainerView.setClickable(true);
-    }
-
-    @Override
-    public void onLoadProgressChanged(int progress) {
-        mContentsClient.getCallbackHelper().postOnProgressChanged(progress);
     }
 
     @Override
@@ -158,12 +153,12 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     @Override
-    public void onUpdateUrl(String url) {
+    public void onUpdateUrl(GURL url) {
         // TODO: implement
     }
 
     @Override
-    public void openNewTab(String url, String extraHeaders, ResourceRequestBody postData,
+    public void openNewTab(GURL url, String extraHeaders, ResourceRequestBody postData,
             int disposition, boolean isRendererInitiated) {
         // This is only called in chrome layers.
         assert false;
@@ -226,7 +221,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
                 }
                 mCompleted = true;
                 if (results == null) {
-                    nativeFilesSelectedInChooser(
+                    AwWebContentsDelegateJni.get().filesSelectedInChooser(
                             processId, renderId, modeFlags, null, null);
                     return;
                 }
@@ -268,6 +263,11 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     @Override
     public void exitFullscreenModeForTab() {
         exitFullscreen();
+    }
+
+    @Override
+    public int getDisplayMode() {
+        return mAwContents.getDisplayMode();
     }
 
     @Override
@@ -313,9 +313,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     @Override
-    public boolean shouldBlockMediaRequest(String url) {
+    public boolean shouldBlockMediaRequest(GURL url) {
         return mAwSettings != null
-                ? mAwSettings.getBlockNetworkLoads() && URLUtil.isNetworkUrl(url) : true;
+                ? mAwSettings.getBlockNetworkLoads() && URLUtil.isNetworkUrl(url.getSpec())
+                : true;
     }
 
     private static class GetDisplayNameTask extends AsyncTask<String[]> {
@@ -348,7 +349,8 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
 
         @Override
         protected void onPostExecute(String[] result) {
-            nativeFilesSelectedInChooser(mProcessId, mRenderId, mModeFlags, mFilePaths, result);
+            AwWebContentsDelegateJni.get().filesSelectedInChooser(
+                    mProcessId, mRenderId, mModeFlags, mFilePaths, result);
         }
 
         /**

@@ -7,7 +7,6 @@
 
 #include <string>
 
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/string_piece.h"
 #include "components/viz/service/viz_service_export.h"
@@ -67,11 +66,6 @@ enum PositionSource {
 enum AAMode {
   NO_AA = 0,
   USE_AA = 1,
-};
-
-enum SwizzleMode {
-  NO_SWIZZLE = 0,
-  DO_SWIZZLE = 1,
 };
 
 enum PremultipliedAlphaMode {
@@ -135,10 +129,6 @@ enum YUVAlphaTextureMode {
 enum ColorConversionMode {
   // No color conversion is performed.
   COLOR_CONVERSION_MODE_NONE,
-  // Conversion is done directly from input RGB space (or YUV space if
-  // applicable) to output RGB space, via a 3D texture represented as a 2D
-  // texture.
-  COLOR_CONVERSION_MODE_LUT,
   // Conversion is done analytically in the shader.
   COLOR_CONVERSION_MODE_SHADER,
 };
@@ -239,7 +229,6 @@ class VIZ_SERVICE_EXPORT FragmentShader {
   // Settings that are modified by sub-classes.
   AAMode aa_mode_ = NO_AA;
   bool has_varying_alpha_ = false;
-  SwizzleMode swizzle_mode_ = NO_SWIZZLE;
   PremultipliedAlphaMode premultiply_alpha_mode_ = PREMULTIPLIED_ALPHA;
   FragColorMode frag_color_mode_ = FRAG_COLOR_MODE_DEFAULT;
   InputColorSource input_color_type_ = INPUT_COLOR_SOURCE_RGBA_TEXTURE;
@@ -317,10 +306,6 @@ class VIZ_SERVICE_EXPORT FragmentShader {
   // The resource offset and multiplier to adjust for bit depth.
   int resource_multiplier_location_ = -1;
   int resource_offset_location_ = -1;
-
-  // LUT YUV to color-converted RGB.
-  int lut_texture_location_ = -1;
-  int lut_size_location_ = -1;
 
  private:
   friend class Program;

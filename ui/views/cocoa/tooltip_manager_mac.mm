@@ -5,11 +5,12 @@
 #include "ui/views/cocoa/tooltip_manager_mac.h"
 
 #include "base/no_destructor.h"
+#import "components/remote_cocoa/app_shim/bridged_content_view.h"
+#import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "ui/base/cocoa/cocoa_base_utils.h"
 #include "ui/gfx/font_list.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
-#import "ui/views_bridge_mac/bridged_content_view.h"
-#import "ui/views_bridge_mac/bridged_native_widget_impl.h"
+#include "ui/gfx/platform_font_mac.h"
 
 namespace {
 
@@ -21,7 +22,7 @@ const int kTooltipMaxWidthPixels = 250;
 namespace views {
 
 TooltipManagerMac::TooltipManagerMac(
-    views_bridge_mac::mojom::BridgedNativeWidget* bridge)
+    remote_cocoa::mojom::NativeWidgetNSWindow* bridge)
     : bridge_(bridge) {}
 
 TooltipManagerMac::~TooltipManagerMac() {
@@ -32,8 +33,10 @@ int TooltipManagerMac::GetMaxWidth(const gfx::Point& location) const {
 }
 
 const gfx::FontList& TooltipManagerMac::GetFontList() const {
-  static base::NoDestructor<gfx::FontList> font_list(
-      []() { return gfx::Font([NSFont toolTipsFontOfSize:0]); }());
+  static base::NoDestructor<gfx::FontList> font_list([]() {
+    return gfx::Font(new gfx::PlatformFontMac(
+        gfx::PlatformFontMac::SystemFontType::kToolTip));
+  }());
   return *font_list;
 }
 

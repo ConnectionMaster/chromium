@@ -6,12 +6,14 @@
 
 #include "base/command_line.h"
 #include "content/browser/media/media_internals_handler.h"
-#include "content/grit/content_resources.h"
+#include "content/browser/resources/media/grit/media_internals_resources.h"
+#include "content/browser/resources/media/grit/media_internals_resources_map.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
+#include "media/base/media_switches.h"
 
 namespace content {
 namespace {
@@ -20,11 +22,10 @@ WebUIDataSource* CreateMediaInternalsHTMLSource() {
   WebUIDataSource* source =
       WebUIDataSource::Create(kChromeUIMediaInternalsHost);
 
-  source->SetJsonPath("strings.js");
-
-  source->AddResourcePath("media_internals.js", IDR_MEDIA_INTERNALS_JS);
-  source->SetDefaultResource(IDR_MEDIA_INTERNALS_HTML);
-  source->UseGzip();
+  source->UseStringsJs();
+  source->AddResourcePaths(
+      base::make_span(kMediaInternalsResources, kMediaInternalsResourcesSize));
+  source->SetDefaultResource(IDR_MEDIA_INTERNALS_MEDIA_INTERNALS_HTML);
   return source;
 }
 

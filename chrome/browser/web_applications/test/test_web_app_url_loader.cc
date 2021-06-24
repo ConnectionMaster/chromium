@@ -5,7 +5,7 @@
 #include "chrome/browser/web_applications/test/test_web_app_url_loader.h"
 
 #include "base/callback.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/threading/thread_task_runner_handle.h"
 
 namespace web_app {
@@ -26,8 +26,12 @@ void TestWebAppUrlLoader::ProcessLoadUrlRequests() {
     std::tie(url, callback) = std::move(pending_requests_.front());
     pending_requests_.pop();
 
-    DCHECK(base::ContainsKey(next_result_map_, url));
-    auto result = next_result_map_[url];
+    DCHECK(base::Contains(next_result_map_, url));
+
+    const UrlResponses& url_responses = next_result_map_[url];
+    DCHECK_EQ(1u, url_responses.results.size());
+
+    Result result = url_responses.results.front();
     next_result_map_.erase(url);
 
     std::move(callback).Run(result);
@@ -35,24 +39,53 @@ void TestWebAppUrlLoader::ProcessLoadUrlRequests() {
 }
 
 void TestWebAppUrlLoader::SetNextLoadUrlResult(const GURL& url, Result result) {
-  DCHECK(!base::ContainsKey(next_result_map_, url)) << url;
-  next_result_map_[url] = result;
+  AddNextLoadUrlResults(url, {result});
+}
+
+void TestWebAppUrlLoader::AddNextLoadUrlResults(
+    const GURL& url,
+    const std::vector<Result>& results) {
+  DCHECK(!base::Contains(next_result_map_, url)) << url;
+  UrlResponses& responses = next_result_map_[url];
+
+  for (Result result : results)
+    responses.results.push(result);
 }
 
 void TestWebAppUrlLoader::LoadUrl(const GURL& url,
                                   content::WebContents* web_contents,
+                                  UrlComparison url_comparison,
                                   ResultCallback callback) {
   if (should_save_requests_) {
     pending_requests_.emplace(url, std::move(callback));
     return;
   }
 
-  DCHECK(base::ContainsKey(next_result_map_, url)) << url;
-  auto result = next_result_map_[url];
-  next_result_map_.erase(url);
+  DCHECK(base::Contains(next_result_map_, url)) << url;
+  UrlResponses& responses = next_result_map_[url];
+  DCHECK(!responses.results.empty());
+
+  Result result = responses.results.front();
+  responses.results.pop();
+
+  if (responses.results.empty())
+    next_result_map_.erase(url);
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), result));
 }
+
+void TestWebAppUrlLoader::SetPrepareForLoadResultLoaded() {
+  AddPrepareForLoadResults({WebAppUrlLoader::Result::kUrlLoaded});
+}
+
+void TestWebAppUrlLoader::AddPrepareForLoadResults(
+    const std::vector<Result>& results) {
+  AddNextLoadUrlResults(GURL(url::kAboutBlankURL), results);
+}
+
+TestWebAppUrlLoader::UrlResponses::UrlResponses() = default;
+
+TestWebAppUrlLoader::UrlResponses::~UrlResponses() = default;
 
 }  // namespace web_app

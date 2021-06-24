@@ -21,7 +21,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
-#include "base/optional.h"
 #include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event_watcher.h"
@@ -32,13 +31,12 @@
 #include "content/public/browser/plugin_service.h"
 #include "content/public/common/pepper_plugin_info.h"
 #include "ipc/ipc_channel_handle.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace content {
-class BrowserContext;
 class PluginServiceFilter;
-class ResourceContext;
 struct PepperPluginInfo;
 
 class CONTENT_EXPORT PluginServiceImpl : public PluginService {
@@ -55,7 +53,6 @@ class CONTENT_EXPORT PluginServiceImpl : public PluginService {
                           std::vector<std::string>* actual_mime_types) override;
   bool GetPluginInfo(int render_process_id,
                      int render_frame_id,
-                     ResourceContext* context,
                      const GURL& url,
                      const url::Origin& main_frame_origin,
                      const std::string& mime_type,
@@ -65,7 +62,7 @@ class CONTENT_EXPORT PluginServiceImpl : public PluginService {
                      std::string* actual_mime_type) override;
   bool GetPluginInfoByPath(const base::FilePath& plugin_path,
                            WebPluginInfo* info) override;
-  base::string16 GetPluginDisplayNameByPath(
+  std::u16string GetPluginDisplayNameByPath(
       const base::FilePath& path) override;
   void GetPlugins(GetPluginsCallback callback) override;
   const PepperPluginInfo* GetRegisteredPpapiPluginInfo(
@@ -90,24 +87,20 @@ class CONTENT_EXPORT PluginServiceImpl : public PluginService {
   // is NULL. Must be called on the IO thread.
   PpapiPluginProcessHost* FindOrStartPpapiPluginProcess(
       int render_process_id,
+      const url::Origin& embedder_origin,
       const base::FilePath& plugin_path,
       const base::FilePath& profile_data_directory,
-      const base::Optional<url::Origin>& origin_lock);
-  PpapiPluginProcessHost* FindOrStartPpapiBrokerProcess(
-      int render_process_id, const base::FilePath& plugin_path);
+      const absl::optional<url::Origin>& origin_lock);
 
   // Opens a channel to a plugin process for the given mime type, starting
   // a new plugin process if necessary.  This must be called on the IO thread
   // or else a deadlock can occur.
   void OpenChannelToPpapiPlugin(int render_process_id,
+                                const url::Origin& embedder_origin,
                                 const base::FilePath& plugin_path,
                                 const base::FilePath& profile_data_directory,
-                                const base::Optional<url::Origin>& origin_lock,
+                                const absl::optional<url::Origin>& origin_lock,
                                 PpapiPluginProcessHost::PluginClient* client);
-  void OpenChannelToPpapiBroker(int render_process_id,
-                                int render_frame_id,
-                                const base::FilePath& path,
-                                PpapiPluginProcessHost::BrokerClient* client);
 
   // Used to monitor plugin stability.
   void RegisterPluginCrash(const base::FilePath& plugin_path);
@@ -123,9 +116,6 @@ class CONTENT_EXPORT PluginServiceImpl : public PluginService {
   // Pulled out of the air, seems reasonable.
   static constexpr int kDefaultMaxPpapiProcessesPerProfile = 15;
 
-  // Helper for recording URLs to UKM.
-  static void RecordBrokerUsage(int render_process_id, int render_frame_id);
-
   // Creates the PluginServiceImpl object, but doesn't actually build the plugin
   // list yet.  It's generated lazily.
   PluginServiceImpl();
@@ -137,9 +127,7 @@ class CONTENT_EXPORT PluginServiceImpl : public PluginService {
   PpapiPluginProcessHost* FindPpapiPluginProcess(
       const base::FilePath& plugin_path,
       const base::FilePath& profile_data_directory,
-      const base::Optional<url::Origin>& origin_lock);
-  PpapiPluginProcessHost* FindPpapiBrokerProcess(
-      const base::FilePath& broker_path);
+      const absl::optional<url::Origin>& origin_lock);
 
   void RegisterPepperPlugins();
 
@@ -147,7 +135,7 @@ class CONTENT_EXPORT PluginServiceImpl : public PluginService {
 
   int max_ppapi_processes_per_profile_ = kDefaultMaxPpapiProcessesPerProfile;
 
-  // Weak pointer; outlives us.
+  // Weak pointer; set during the startup on UI thread and must outlive us.
   PluginServiceFilter* filter_;
 
   // Used to load plugins from disk.

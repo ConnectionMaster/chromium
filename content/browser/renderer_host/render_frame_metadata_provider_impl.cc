@@ -13,9 +13,7 @@ RenderFrameMetadataProviderImpl::RenderFrameMetadataProviderImpl(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
     FrameTokenMessageQueue* frame_token_message_queue)
     : task_runner_(task_runner),
-      frame_token_message_queue_(frame_token_message_queue),
-      render_frame_metadata_observer_client_binding_(this),
-      weak_factory_(this) {}
+      frame_token_message_queue_(frame_token_message_queue) {}
 
 RenderFrameMetadataProviderImpl::~RenderFrameMetadataProviderImpl() = default;
 
@@ -28,44 +26,69 @@ void RenderFrameMetadataProviderImpl::RemoveObserver(Observer* observer) {
 }
 
 void RenderFrameMetadataProviderImpl::Bind(
-    mojom::RenderFrameMetadataObserverClientRequest client_request,
-    mojom::RenderFrameMetadataObserverPtr observer) {
-  render_frame_metadata_observer_ptr_ = std::move(observer);
-  render_frame_metadata_observer_client_binding_.Close();
-  render_frame_metadata_observer_client_binding_.Bind(std::move(client_request),
-                                                      task_runner_);
+    mojo::PendingReceiver<cc::mojom::RenderFrameMetadataObserverClient>
+        client_receiver,
+    mojo::PendingRemote<cc::mojom::RenderFrameMetadataObserver> observer) {
+  render_frame_metadata_observer_remote_.reset();
+  render_frame_metadata_observer_remote_.Bind(std::move(observer));
+  render_frame_metadata_observer_client_receiver_.reset();
+  render_frame_metadata_observer_client_receiver_.Bind(
+      std::move(client_receiver), task_runner_);
 
-  if (pending_report_all_frame_submission_.has_value()) {
-    ReportAllFrameSubmissionsForTesting(*pending_report_all_frame_submission_);
-    pending_report_all_frame_submission_.reset();
+  // Reset on disconnect so that pending state will be correctly stored and
+  // later forwarded in the case of a renderer crash.
+  render_frame_metadata_observer_remote_.reset_on_disconnect();
+#if defined(OS_ANDROID)
+  if (pending_report_all_root_scrolls_.has_value()) {
+    ReportAllRootScrolls(*pending_report_all_root_scrolls_);
+    pending_report_all_root_scrolls_.reset();
+  }
+#endif
+  if (pending_report_all_frame_submission_for_testing_.has_value()) {
+    ReportAllFrameSubmissionsForTesting(
+        *pending_report_all_frame_submission_for_testing_);
+    pending_report_all_frame_submission_for_testing_.reset();
   }
 }
 
-void RenderFrameMetadataProviderImpl::ReportAllFrameSubmissionsForTesting(
-    bool enabled) {
-  if (!render_frame_metadata_observer_ptr_) {
-    pending_report_all_frame_submission_ = enabled;
+#if defined(OS_ANDROID)
+void RenderFrameMetadataProviderImpl::ReportAllRootScrolls(bool enabled) {
+  if (!render_frame_metadata_observer_remote_) {
+    pending_report_all_root_scrolls_ = enabled;
     return;
   }
 
-  render_frame_metadata_observer_ptr_->ReportAllFrameSubmissionsForTesting(
+  render_frame_metadata_observer_remote_->ReportAllRootScrolls(enabled);
+}
+#endif
+
+void RenderFrameMetadataProviderImpl::ReportAllFrameSubmissionsForTesting(
+    bool enabled) {
+  if (!render_frame_metadata_observer_remote_) {
+    pending_report_all_frame_submission_for_testing_ = enabled;
+    return;
+  }
+
+  render_frame_metadata_observer_remote_->ReportAllFrameSubmissionsForTesting(
       enabled);
 }
 
 const cc::RenderFrameMetadata&
-RenderFrameMetadataProviderImpl::LastRenderFrameMetadata() const {
+RenderFrameMetadataProviderImpl::LastRenderFrameMetadata() {
   return last_render_frame_metadata_;
 }
 
 void RenderFrameMetadataProviderImpl::
     OnRenderFrameMetadataChangedAfterActivation(
-        cc::RenderFrameMetadata metadata) {
+        cc::RenderFrameMetadata metadata,
+        base::TimeTicks activation_time) {
   last_render_frame_metadata_ = std::move(metadata);
   for (Observer& observer : observers_)
-    observer.OnRenderFrameMetadataChangedAfterActivation();
+    observer.OnRenderFrameMetadataChangedAfterActivation(activation_time);
 }
 
-void RenderFrameMetadataProviderImpl::OnFrameTokenFrameSubmissionForTesting() {
+void RenderFrameMetadataProviderImpl::OnFrameTokenFrameSubmissionForTesting(
+    base::TimeTicks activation_time) {
   for (Observer& observer : observers_)
     observer.OnRenderFrameSubmission();
 }
@@ -81,9 +104,8 @@ void RenderFrameMetadataProviderImpl::OnRenderFrameMetadataChanged(
   for (Observer& observer : observers_)
     observer.OnRenderFrameMetadataChangedBeforeActivation(metadata);
 
-  if (metadata.local_surface_id_allocation !=
-      last_local_surface_id_allocation_) {
-    last_local_surface_id_allocation_ = metadata.local_surface_id_allocation;
+  if (metadata.local_surface_id != last_local_surface_id_) {
+    last_local_surface_id_ = metadata.local_surface_id;
     for (Observer& observer : observers_)
       observer.OnLocalSurfaceIdChanged(metadata);
   }
@@ -108,5 +130,13 @@ void RenderFrameMetadataProviderImpl::OnFrameSubmissionForTesting(
                                       OnFrameTokenFrameSubmissionForTesting,
                                   weak_factory_.GetWeakPtr()));
 }
+
+#if defined(OS_ANDROID)
+void RenderFrameMetadataProviderImpl::OnRootScrollOffsetChanged(
+    const gfx::Vector2dF& root_scroll_offset) {
+  for (Observer& observer : observers_)
+    observer.OnRootScrollOffsetChanged(root_scroll_offset);
+}
+#endif
 
 }  // namespace content

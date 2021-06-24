@@ -30,12 +30,11 @@ class AutofillKeyboardAccessoryView
   ~AutofillKeyboardAccessoryView() override;
 
   // Implementation of AutofillKeyboardAccessoryAdapter::AccessoryView.
-  void Initialize(unsigned int animation_duration_millis,
-                  bool should_limit_label_width) override;
+  bool Initialize() override;
   void Hide() override;
   void Show() override;
-  void ConfirmDeletion(const base::string16& confirmation_title,
-                       const base::string16& confirmation_body,
+  void ConfirmDeletion(const std::u16string& confirmation_title,
+                       const std::u16string& confirmation_body,
                        base::OnceClosure confirm_deletion) override;
 
   // --------------------------------------------------------------------------

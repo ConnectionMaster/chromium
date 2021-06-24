@@ -135,11 +135,6 @@ bool Supported(const base::FilePath& input_file) {
       result = true;
       break;
 
-    case courgette::EXE_ELF_32_ARM:
-      format = "ELF 32 ARM";
-      result = true;
-      break;
-
     case courgette::EXE_WIN_32_X64:
       format = "Windows 64 PE";
       result = true;
@@ -406,10 +401,11 @@ int main(int argc, const char* argv[]) {
 
   logging::LoggingSettings settings;
   if (command_line.HasSwitch("nologfile")) {
-    settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+    settings.logging_dest =
+        logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   } else {
     settings.logging_dest = logging::LOG_TO_ALL;
-    settings.log_file = FILE_PATH_LITERAL("courgette.log");
+    settings.log_file_path = FILE_PATH_LITERAL("courgette.log");
   }
   (void)logging::InitLogging(settings);
   logging::SetMinLogLevel(logging::LOG_VERBOSE);

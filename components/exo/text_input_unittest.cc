@@ -4,6 +4,7 @@
 
 #include "components/exo/text_input.h"
 
+#include <memory>
 #include <string>
 
 #include "base/strings/utf_string_conversions.h"
@@ -34,7 +35,7 @@ class MockTextInputDelegate : public TextInput::Delegate {
   MOCK_METHOD0(Deactivated, void());
   MOCK_METHOD1(OnVirtualKeyboardVisibilityChanged, void(bool));
   MOCK_METHOD1(SetCompositionText, void(const ui::CompositionText&));
-  MOCK_METHOD1(Commit, void(const base::string16&));
+  MOCK_METHOD1(Commit, void(const std::u16string&));
   MOCK_METHOD1(SetCursor, void(const gfx::Range&));
   MOCK_METHOD1(DeleteSurroundingText, void(const gfx::Range&));
   MOCK_METHOD1(SendKey, void(const ui::KeyEvent&));
@@ -48,7 +49,7 @@ class MockTextInputDelegate : public TextInput::Delegate {
 
 class TestingInputMethodObserver : public ui::InputMethodObserver {
  public:
-  TestingInputMethodObserver(ui::InputMethod* input_method)
+  explicit TestingInputMethodObserver(ui::InputMethod* input_method)
       : input_method_(input_method) {
     input_method_->AddObserver(this);
   }
@@ -119,12 +120,13 @@ class TextInputTest : public test::ExoTestBase {
     return surface_->window()->GetHost()->GetInputMethod();
   }
 
-  void SetCompositionText(const std::string& utf8) {
+  void SetCompositionText(const std::u16string& utf16) {
     ui::CompositionText t;
-    t.text = base::UTF8ToUTF16(utf8);
+    t.text = utf16;
     t.selection = gfx::Range(1u);
     t.ime_text_spans.push_back(
-        ui::ImeTextSpan(0, t.text.size(), ui::ImeTextSpan::Thickness::kThick));
+        ui::ImeTextSpan(ui::ImeTextSpan::Type::kComposition, 0, t.text.size(),
+                        ui::ImeTextSpan::Thickness::kThick));
     EXPECT_CALL(*delegate(), SetCompositionText(t)).Times(1);
     text_input()->SetCompositionText(t);
   }
@@ -164,10 +166,11 @@ TEST_F(TextInputTest, ShowVirtualKeyboardIfEnabled) {
 
   EXPECT_CALL(observer, OnShowVirtualKeyboardIfEnabled)
       .WillOnce(testing::Invoke(
-          [this]() { text_input()->OnKeyboardVisibilityStateChanged(true); }));
+          [this]() { text_input()->OnKeyboardVisibilityChanged(true); }));
   EXPECT_CALL(*delegate(), OnVirtualKeyboardVisibilityChanged(true)).Times(1);
   text_input()->ShowVirtualKeyboardIfEnabled();
 
+  EXPECT_CALL(observer, OnTextInputStateChanged(nullptr)).Times(1);
   EXPECT_CALL(*delegate(), Deactivated).Times(1);
   text_input()->Deactivate();
 }
@@ -181,7 +184,7 @@ TEST_F(TextInputTest, ShowVirtualKeyboardIfEnabledBeforeActivated) {
   EXPECT_CALL(observer, OnTextInputStateChanged(text_input())).Times(1);
   EXPECT_CALL(observer, OnShowVirtualKeyboardIfEnabled)
       .WillOnce(testing::Invoke(
-          [this]() { text_input()->OnKeyboardVisibilityStateChanged(true); }));
+          [this]() { text_input()->OnKeyboardVisibilityChanged(true); }));
   EXPECT_CALL(*delegate(), Activated).Times(1);
   EXPECT_CALL(*delegate(), OnVirtualKeyboardVisibilityChanged(true)).Times(1);
   text_input()->Activate(surface());
@@ -236,39 +239,74 @@ TEST_F(TextInputTest, CaretBounds) {
 }
 
 TEST_F(TextInputTest, CompositionText) {
-  SetCompositionText("composition");
+  SetCompositionText(u"composition");
 
   ui::CompositionText empty;
   EXPECT_CALL(*delegate(), SetCompositionText(empty)).Times(1);
   text_input()->ClearCompositionText();
 }
 
-TEST_F(TextInputTest, CommitCompositionText) {
-  SetCompositionText("composition");
+TEST_F(TextInputTest, CompositionTextEmpty) {
+  SetCompositionText(u"");
 
-  EXPECT_CALL(*delegate(), Commit(base::UTF8ToUTF16("composition"))).Times(1);
-  text_input()->ConfirmCompositionText();
+  EXPECT_CALL(*delegate(), SetCompositionText(_)).Times(0);
+  text_input()->ClearCompositionText();
+}
+
+TEST_F(TextInputTest, CommitCompositionText) {
+  SetCompositionText(u"composition");
+
+  EXPECT_CALL(*delegate(), Commit(std::u16string(u"composition"))).Times(1);
+  const uint32_t composition_text_length =
+      text_input()->ConfirmCompositionText(/*keep_selection=*/false);
+  EXPECT_EQ(composition_text_length, static_cast<uint32_t>(11));
+  testing::Mock::VerifyAndClearExpectations(delegate());
+
+  // Second call should be the empty commit string.
+  EXPECT_EQ(0u, text_input()->ConfirmCompositionText(/*keep_selection=*/false));
+}
+
+TEST_F(TextInputTest, ResetCompositionText) {
+  SetCompositionText(u"composition");
+
+  text_input()->Reset();
+  EXPECT_EQ(0u, text_input()->ConfirmCompositionText(/*keep_selection=*/false));
 }
 
 TEST_F(TextInputTest, Commit) {
-  base::string16 s = base::ASCIIToUTF16("commit text");
+  std::u16string s = u"commit text";
 
   EXPECT_CALL(*delegate(), Commit(s)).Times(1);
-  text_input()->InsertText(s);
+  text_input()->InsertText(
+      s, ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
 }
 
 TEST_F(TextInputTest, InsertChar) {
+  text_input()->Activate(surface());
+
   ui::KeyEvent ev(ui::ET_KEY_PRESSED, ui::VKEY_RETURN, 0);
 
   EXPECT_CALL(*delegate(), SendKey(testing::Ref(ev))).Times(1);
   text_input()->InsertChar(ev);
 }
 
+TEST_F(TextInputTest, InsertCharCtrlV) {
+  text_input()->Activate(surface());
+
+  // CTRL+V is interpreted as non-IME consumed KeyEvent, so should
+  // not be sent.
+  ui::KeyEvent ev(ui::ET_KEY_PRESSED, ui::VKEY_V, ui::EF_CONTROL_DOWN);
+  EXPECT_CALL(*delegate(), SendKey(_)).Times(0);
+  text_input()->InsertChar(ev);
+}
+
 TEST_F(TextInputTest, InsertCharNormalKey) {
-  base::char16 ch = 'x';
+  text_input()->Activate(surface());
+
+  char16_t ch = 'x';
   ui::KeyEvent ev(ch, ui::VKEY_X, ui::DomCode::NONE, 0);
 
-  EXPECT_CALL(*delegate(), Commit(base::string16(1, ch))).Times(1);
+  EXPECT_CALL(*delegate(), Commit(std::u16string(1, ch))).Times(1);
   EXPECT_CALL(*delegate(), SendKey(_)).Times(0);
   text_input()->InsertChar(ev);
 }
@@ -278,10 +316,10 @@ TEST_F(TextInputTest, SurroundingText) {
   EXPECT_FALSE(text_input()->GetTextRange(&range));
   EXPECT_FALSE(text_input()->GetCompositionTextRange(&range));
   EXPECT_FALSE(text_input()->GetEditableSelectionRange(&range));
-  base::string16 got_text;
+  std::u16string got_text;
   EXPECT_FALSE(text_input()->GetTextFromRange(gfx::Range(0, 1), &got_text));
 
-  base::string16 text = base::UTF8ToUTF16("surrounding\xE3\x80\x80text");
+  std::u16string text = u"surrounding\u3000text";
   text_input()->SetSurroundingText(text, 11, 12);
 
   EXPECT_TRUE(text_input()->GetTextRange(&range));
@@ -299,7 +337,7 @@ TEST_F(TextInputTest, SurroundingText) {
   text_input()->ExtendSelectionAndDelete(0, 0);
 
   size_t composition_size = std::string("composition").size();
-  SetCompositionText("composition");
+  SetCompositionText(u"composition");
   EXPECT_TRUE(text_input()->GetCompositionTextRange(&range));
   EXPECT_EQ(gfx::Range(11, 11 + composition_size).ToString(), range.ToString());
   EXPECT_TRUE(text_input()->GetTextRange(&range));
@@ -310,27 +348,27 @@ TEST_F(TextInputTest, SurroundingText) {
 }
 
 TEST_F(TextInputTest, GetTextRange) {
-  base::string16 text = base::UTF8ToUTF16("surrounding text");
+  std::u16string text = u"surrounding text";
   text_input()->SetSurroundingText(text, 11, 12);
 
-  SetCompositionText("composition");
+  SetCompositionText(u"composition");
 
   const struct {
     gfx::Range range;
-    std::string expected;
+    std::u16string expected;
   } kTestCases[] = {
-      {gfx::Range(0, 3), "sur"},
-      {gfx::Range(10, 13), "gco"},
-      {gfx::Range(10, 23), "gcompositiont"},
-      {gfx::Range(12, 15), "omp"},
-      {gfx::Range(12, 23), "ompositiont"},
-      {gfx::Range(22, 25), "tex"},
+      {gfx::Range(0, 3), u"sur"},
+      {gfx::Range(10, 13), u"gco"},
+      {gfx::Range(10, 23), u"gcompositiont"},
+      {gfx::Range(12, 15), u"omp"},
+      {gfx::Range(12, 23), u"ompositiont"},
+      {gfx::Range(22, 25), u"tex"},
   };
   for (auto& c : kTestCases) {
-    base::string16 result;
+    std::u16string result;
     EXPECT_TRUE(text_input()->GetTextFromRange(c.range, &result))
         << c.range.ToString();
-    EXPECT_EQ(base::UTF8ToUTF16(c.expected), result) << c.range.ToString();
+    EXPECT_EQ(c.expected, result) << c.range.ToString();
   }
 }
 

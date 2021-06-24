@@ -4,18 +4,11 @@
 
 #include "media/base/decoder_buffer.h"
 
+#include <sstream>
+
 #include "base/debug/alias.h"
 
 namespace media {
-
-// Allocates a block of memory which is padded for use with the SIMD
-// optimizations used by FFmpeg.
-static uint8_t* AllocateFFmpegSafeBlock(size_t size) {
-  uint8_t* const block = reinterpret_cast<uint8_t*>(base::AlignedAlloc(
-      size + DecoderBuffer::kPaddingSize, DecoderBuffer::kAlignmentSize));
-  memset(block + size, 0, DecoderBuffer::kPaddingSize);
-  return block;
-}
 
 DecoderBuffer::DecoderBuffer(size_t size)
     : size_(size), side_data_size_(0), is_key_frame_(false) {
@@ -46,6 +39,12 @@ DecoderBuffer::DecoderBuffer(const uint8_t* data,
   memcpy(side_data_.get(), side_data, side_data_size_);
 }
 
+DecoderBuffer::DecoderBuffer(std::unique_ptr<uint8_t[]> data, size_t size)
+    : data_(std::move(data)),
+      size_(size),
+      side_data_size_(0),
+      is_key_frame_(false) {}
+
 DecoderBuffer::DecoderBuffer(std::unique_ptr<UnalignedSharedMemory> shm,
                              size_t size)
     : size_(size),
@@ -62,37 +61,14 @@ DecoderBuffer::DecoderBuffer(
       is_key_frame_(false) {}
 
 DecoderBuffer::~DecoderBuffer() {
-  // TODO(crbug.com/794740). As a lot of the crashes have |side_data_size_|
-  // == 0 yet |side_data| is not null, check that here hoping to get better
-  // minidumps. This check verifies that size == 0 and |side_data_| is null,
-  // or size != 0 and |side_data_| not null. Also alias several of the
-  // objects values to ensure they get saved in the minidump.
-  size_t size = size_;
-  base::debug::Alias(&size);
-  uint8_t* data = data_.get();
-  base::debug::Alias(&data);
-  size_t side_data_size = side_data_size_;
-  base::debug::Alias(&side_data_size);
-  uint8_t* side_data = side_data_.get();
-  base::debug::Alias(&side_data);
-  void* data_at_initialize = data_at_initialize_;
-  base::debug::Alias(&data_at_initialize);
-
-  uint32_t destruction = destruction_;
-  base::debug::Alias(&destruction);
-  CHECK_NE(destruction_, 0xAAAAAAAA);
-  destruction_ = 0xAAAAAAAA;
-
-  CHECK_EQ(!!side_data_size_, !!side_data_);
   data_.reset();
   side_data_.reset();
 }
 
 void DecoderBuffer::Initialize() {
-  data_.reset(AllocateFFmpegSafeBlock(size_));
-  data_at_initialize_ = data_.get();
+  data_.reset(new uint8_t[size_]);
   if (side_data_size_ > 0)
-    side_data_.reset(AllocateFFmpegSafeBlock(side_data_size_));
+    side_data_.reset(new uint8_t[side_data_size_]);
 }
 
 // static
@@ -116,11 +92,27 @@ scoped_refptr<DecoderBuffer> DecoderBuffer::CopyFrom(const uint8_t* data,
 }
 
 // static
-scoped_refptr<DecoderBuffer> DecoderBuffer::FromSharedMemoryHandle(
-    const base::SharedMemoryHandle& handle,
+scoped_refptr<DecoderBuffer> DecoderBuffer::FromArray(
+    std::unique_ptr<uint8_t[]> data,
+    size_t size) {
+  CHECK(data);
+  return base::WrapRefCounted(new DecoderBuffer(std::move(data), size));
+}
+
+// static
+scoped_refptr<DecoderBuffer> DecoderBuffer::FromSharedMemoryRegion(
+    base::subtle::PlatformSharedMemoryRegion region,
     off_t offset,
     size_t size) {
-  auto shm = std::make_unique<UnalignedSharedMemory>(handle, size, true);
+  // TODO(crbug.com/795291): when clients have converted to using
+  // base::ReadOnlySharedMemoryRegion the ugly mode check below will no longer
+  // be necessary.
+  auto shm = std::make_unique<UnalignedSharedMemory>(
+      std::move(region), size,
+      region.GetMode() ==
+              base::subtle::PlatformSharedMemoryRegion::Mode::kReadOnly
+          ? true
+          : false);
   if (size == 0 || !shm->MapAt(offset, size))
     return nullptr;
   return base::WrapRefCounted(new DecoderBuffer(std::move(shm), size));
@@ -172,21 +164,27 @@ bool DecoderBuffer::MatchesForTesting(const DecoderBuffer& buffer) const {
                           : true;
 }
 
-std::string DecoderBuffer::AsHumanReadableString() const {
+std::string DecoderBuffer::AsHumanReadableString(bool verbose) const {
   if (end_of_stream())
     return "EOS";
 
   std::ostringstream s;
-  s << "timestamp=" << timestamp_.InMicroseconds()
-    << " duration=" << duration_.InMicroseconds() << " size=" << size_
-    << " side_data_size=" << side_data_size_
-    << " is_key_frame=" << is_key_frame_
-    << " encrypted=" << (decrypt_config_ != NULL) << " discard_padding (us)=("
-    << discard_padding_.first.InMicroseconds() << ", "
-    << discard_padding_.second.InMicroseconds() << ")";
 
-  if (decrypt_config_)
-    s << " decrypt=" << (*decrypt_config_);
+  s << "{timestamp=" << timestamp_.InMicroseconds()
+    << " duration=" << duration_.InMicroseconds() << " size=" << size_
+    << " is_key_frame=" << is_key_frame_
+    << " encrypted=" << (decrypt_config_ != nullptr);
+
+  if (verbose) {
+    s << " side_data_size=" << side_data_size_ << " discard_padding (us)=("
+      << discard_padding_.first.InMicroseconds() << ", "
+      << discard_padding_.second.InMicroseconds() << ")";
+
+    if (decrypt_config_)
+      s << " decrypt_config=" << (*decrypt_config_);
+  }
+
+  s << "}";
 
   return s.str();
 }
@@ -200,7 +198,7 @@ void DecoderBuffer::CopySideDataFrom(const uint8_t* side_data,
                                      size_t side_data_size) {
   if (side_data_size > 0) {
     side_data_size_ = side_data_size;
-    side_data_.reset(AllocateFFmpegSafeBlock(side_data_size_));
+    side_data_.reset(new uint8_t[side_data_size_]);
     memcpy(side_data_.get(), side_data, side_data_size_);
   } else {
     side_data_.reset();

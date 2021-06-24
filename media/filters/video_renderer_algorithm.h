@@ -103,7 +103,7 @@ class MEDIA_EXPORT VideoRendererAlgorithm {
   // time of the frame based on previous frames or the value of
   // VideoFrameMetadata::FRAME_DURATION if no previous frames, so that
   // EffectiveFramesQueued() is relatively accurate immediately after this call.
-  void EnqueueFrame(const scoped_refptr<VideoFrame>& frame);
+  void EnqueueFrame(scoped_refptr<VideoFrame> frame);
 
   // Removes all frames from the |frame_queue_| and clears predictors.  The
   // algorithm will be as if freshly constructed after this call.  By default
@@ -149,6 +149,8 @@ class MEDIA_EXPORT VideoRendererAlgorithm {
     return frame_queue_.back().end_time;
   }
 
+  const VideoFrame& last_frame() const { return *frame_queue_.back().frame; }
+
   // Current render interval.
   base::TimeDelta render_interval() const { return render_interval_; }
 
@@ -181,7 +183,7 @@ class MEDIA_EXPORT VideoRendererAlgorithm {
 
   // Metadata container for enqueued frames.  See |frame_queue_| below.
   struct ReadyFrame {
-    ReadyFrame(const scoped_refptr<VideoFrame>& frame);
+    ReadyFrame(scoped_refptr<VideoFrame> frame);
     ReadyFrame(const ReadyFrame& other);
     ~ReadyFrame();
 
@@ -264,6 +266,9 @@ class MEDIA_EXPORT VideoRendererAlgorithm {
   // |start_time|.
   base::TimeDelta CalculateAbsoluteDriftForFrame(base::TimeTicks deadline_min,
                                                  int frame_index) const;
+
+  // Returns the index of the first usable frame or -1 if no usable frames.
+  int FindFirstGoodFrame() const;
 
   // Updates |effective_frames_queued_| which is typically called far more
   // frequently (~4x) than the value changes.  This must be called whenever

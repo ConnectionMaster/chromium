@@ -92,14 +92,13 @@ TEST_F(ExtensionHooksDelegateTest, MessagingSanityChecks) {
   SendMessageTester tester(ipc_message_sender(), script_context(), 0,
                            "extension");
 
-  const bool kExpectIncludeTlsChannelId = false;
-  tester.TestConnect("", "", self_target, kExpectIncludeTlsChannelId);
+  tester.TestConnect("", "", self_target);
 
   constexpr char kStandardMessage[] = R"({"data":"hello"})";
   tester.TestSendMessage("{data: 'hello'}", kStandardMessage, self_target,
-                         false, SendMessageTester::CLOSED);
+                         SendMessageTester::CLOSED);
   tester.TestSendMessage("{data: 'hello'}, function() {}", kStandardMessage,
-                         self_target, false, SendMessageTester::OPEN);
+                         self_target, SendMessageTester::OPEN);
 
   tester.TestSendRequest("{data: 'hello'}", kStandardMessage, self_target,
                          SendMessageTester::CLOSED);
@@ -117,8 +116,8 @@ TEST_F(ExtensionHooksDelegateTest, SendRequestDisabled) {
   // extension with an event page).
   scoped_refptr<const Extension> extension =
       ExtensionBuilder("foo")
-          .SetBackgroundPage(ExtensionBuilder::BackgroundPage::EVENT)
-          .SetLocation(Manifest::UNPACKED)
+          .SetBackgroundContext(ExtensionBuilder::BackgroundContext::EVENT_PAGE)
+          .SetLocation(mojom::ManifestLocation::kUnpacked)
           .Build();
   RegisterExtension(extension);
 
@@ -235,6 +234,65 @@ TEST_F(ExtensionHooksDelegateTest, RuntimeAliasesCorrupted) {
       "(function() { chrome.extension.sendMessage; })";
   RunFunctionOnGlobal(FunctionFromString(context, kTouchExtensionSendMessage),
                       context, 0, nullptr);
+}
+
+// Ensure that HandleGetURL allows extension URLs and doesn't allow arbitrary
+// non-extension URLs. Very similar to RuntimeHooksDeligateTest that tests a
+// similar function.
+TEST_F(ExtensionHooksDelegateTest, GetURL) {
+  v8::HandleScope handle_scope(isolate());
+  v8::Local<v8::Context> context = MainContext();
+
+  auto get_url = [this, context](const char* args, const GURL& expected_url) {
+    SCOPED_TRACE(base::StringPrintf("Args: `%s`", args));
+    constexpr char kGetUrlTemplate[] =
+        "(function() { return chrome.extension.getURL(%s); })";
+    v8::Local<v8::Function> get_url =
+        FunctionFromString(context, base::StringPrintf(kGetUrlTemplate, args));
+    v8::Local<v8::Value> url = RunFunction(get_url, context, 0, nullptr);
+    ASSERT_FALSE(url.IsEmpty());
+    ASSERT_TRUE(url->IsString());
+    EXPECT_EQ(expected_url.spec(), gin::V8ToString(isolate(), url));
+  };
+
+  get_url("''", extension()->url());
+  get_url("'foo'", extension()->GetResourceURL("foo"));
+  get_url("'/foo'", extension()->GetResourceURL("foo"));
+  get_url("'https://www.google.com'",
+          GURL(extension()->url().spec() + "https://www.google.com"));
+}
+
+class ExtensionHooksDelegateMV3Test : public ExtensionHooksDelegateTest {
+ public:
+  ExtensionHooksDelegateMV3Test() = default;
+  ~ExtensionHooksDelegateMV3Test() override = default;
+
+  scoped_refptr<const Extension> BuildExtension() override {
+    return ExtensionBuilder("foo")
+        .SetManifestKey("manifest_version", 3)
+        .Build();
+  }
+};
+
+TEST_F(ExtensionHooksDelegateMV3Test, AliasesArentAvailableInMV3) {
+  v8::HandleScope handle_scope(isolate());
+  v8::Local<v8::Context> context = MainContext();
+
+  auto script_to_value = [context](base::StringPiece source) {
+    return V8ToString(V8ValueFromScriptSource(context, source), context);
+  };
+
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.connect"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.connectNative"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.onConnect"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.onConnectExternal"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.onMessage"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.onMessageExternal"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.onRequest"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.onRequestExternal"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.sendNativeMessage"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.sendMessage"));
+  EXPECT_EQ("undefined", script_to_value("chrome.extension.sendRequest"));
 }
 
 }  // namespace extensions

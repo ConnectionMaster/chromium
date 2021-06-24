@@ -5,8 +5,10 @@
 package org.chromium.chrome.browser.ntp;
 
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -79,12 +81,12 @@ public class ForeignSessionHelper {
      * Represents synced foreign tab.
      */
     static class ForeignSessionTab {
-        public final String url;
+        public final GURL url;
         public final String title;
         public final long timestamp;
         public final int id;
 
-        private ForeignSessionTab(String url, String title, long timestamp, int id) {
+        private ForeignSessionTab(GURL url, String title, long timestamp, int id) {
             this.url = url;
             this.title = title;
             this.timestamp = timestamp;
@@ -111,7 +113,7 @@ public class ForeignSessionHelper {
 
     @CalledByNative
     private static void pushTab(
-            ForeignSessionWindow window, String url, String title, long timestamp, int sessionId) {
+            ForeignSessionWindow window, GURL url, String title, long timestamp, int sessionId) {
         ForeignSessionTab tab = new ForeignSessionTab(url, title, timestamp, sessionId);
         window.tabs.add(tab);
     }
@@ -121,7 +123,7 @@ public class ForeignSessionHelper {
      * @param profile Profile that will be used for syncing.
      */
     public ForeignSessionHelper(Profile profile) {
-        mNativeForeignSessionHelper = nativeInit(profile);
+        mNativeForeignSessionHelper = ForeignSessionHelperJni.get().init(profile);
     }
 
     /**
@@ -129,7 +131,7 @@ public class ForeignSessionHelper {
      */
     public void destroy() {
         assert mNativeForeignSessionHelper != 0;
-        nativeDestroy(mNativeForeignSessionHelper);
+        ForeignSessionHelperJni.get().destroy(mNativeForeignSessionHelper);
         mNativeForeignSessionHelper = 0;
     }
 
@@ -137,14 +139,14 @@ public class ForeignSessionHelper {
      * @return {@code True} iff Tab sync is enabled.
      */
     boolean isTabSyncEnabled() {
-        return nativeIsTabSyncEnabled(mNativeForeignSessionHelper);
+        return ForeignSessionHelperJni.get().isTabSyncEnabled(mNativeForeignSessionHelper);
     }
 
     /**
      * Force a sync for sessions.
      */
     void triggerSessionSync() {
-        nativeTriggerSessionSync(mNativeForeignSessionHelper);
+        ForeignSessionHelperJni.get().triggerSessionSync(mNativeForeignSessionHelper);
     }
 
     /**
@@ -152,7 +154,8 @@ public class ForeignSessionHelper {
      * @param callback The callback to be invoked.
      */
     void setOnForeignSessionCallback(ForeignSessionCallback callback) {
-        nativeSetOnForeignSessionCallback(mNativeForeignSessionHelper, callback);
+        ForeignSessionHelperJni.get().setOnForeignSessionCallback(
+                mNativeForeignSessionHelper, callback);
     }
 
     /**
@@ -164,7 +167,8 @@ public class ForeignSessionHelper {
             return null;
         }
         List<ForeignSession> result = new ArrayList<ForeignSession>();
-        boolean received = nativeGetForeignSessions(mNativeForeignSessionHelper, result);
+        boolean received = ForeignSessionHelperJni.get().getForeignSessions(
+                mNativeForeignSessionHelper, result);
         if (!received) {
             result = null;
         }
@@ -182,8 +186,8 @@ public class ForeignSessionHelper {
      */
     boolean openForeignSessionTab(Tab tab, ForeignSession session,
             ForeignSessionTab foreignTab, int windowOpenDisposition) {
-        return nativeOpenForeignSessionTab(mNativeForeignSessionHelper, tab, session.tag,
-                foreignTab.id, windowOpenDisposition);
+        return ForeignSessionHelperJni.get().openForeignSessionTab(mNativeForeignSessionHelper, tab,
+                session.tag, foreignTab.id, windowOpenDisposition);
     }
 
     /**
@@ -194,29 +198,31 @@ public class ForeignSessionHelper {
      * @param session Session to be deleted.
      */
     void deleteForeignSession(ForeignSession session) {
-        nativeDeleteForeignSession(mNativeForeignSessionHelper, session.tag);
+        ForeignSessionHelperJni.get().deleteForeignSession(
+                mNativeForeignSessionHelper, session.tag);
     }
 
     /**
      * Enable invalidations for sessions sync related datatypes.
      */
     public void setInvalidationsForSessionsEnabled(boolean enabled) {
-        nativeSetInvalidationsForSessionsEnabled(mNativeForeignSessionHelper, enabled);
+        ForeignSessionHelperJni.get().setInvalidationsForSessionsEnabled(
+                mNativeForeignSessionHelper, enabled);
     }
 
-    private static native long nativeInit(Profile profile);
-    private static native void nativeDestroy(long nativeForeignSessionHelper);
-    private static native boolean nativeIsTabSyncEnabled(long nativeForeignSessionHelper);
-    private static native void nativeTriggerSessionSync(long nativeForeignSessionHelper);
-    private static native void nativeSetOnForeignSessionCallback(
-            long nativeForeignSessionHelper, ForeignSessionCallback callback);
-    private static native boolean nativeGetForeignSessions(long nativeForeignSessionHelper,
-            List<ForeignSession> resultSessions);
-    private static native boolean nativeOpenForeignSessionTab(
-            long nativeForeignSessionHelper, Tab tab, String sessionTag, int tabId,
-            int disposition);
-    private static native void nativeDeleteForeignSession(
-            long nativeForeignSessionHelper, String sessionTag);
-    private static native void nativeSetInvalidationsForSessionsEnabled(
-            long nativeForeignSessionHelper, boolean enabled);
+    @NativeMethods
+    interface Natives {
+        long init(Profile profile);
+        void destroy(long nativeForeignSessionHelper);
+        boolean isTabSyncEnabled(long nativeForeignSessionHelper);
+        void triggerSessionSync(long nativeForeignSessionHelper);
+        void setOnForeignSessionCallback(
+                long nativeForeignSessionHelper, ForeignSessionCallback callback);
+        boolean getForeignSessions(
+                long nativeForeignSessionHelper, List<ForeignSession> resultSessions);
+        boolean openForeignSessionTab(long nativeForeignSessionHelper, Tab tab, String sessionTag,
+                int tabId, int disposition);
+        void deleteForeignSession(long nativeForeignSessionHelper, String sessionTag);
+        void setInvalidationsForSessionsEnabled(long nativeForeignSessionHelper, boolean enabled);
+    }
 }

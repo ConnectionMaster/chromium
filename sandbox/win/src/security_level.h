@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_SECURITY_LEVEL_H_
-#define SANDBOX_SRC_SECURITY_LEVEL_H_
+#ifndef SANDBOX_WIN_SRC_SECURITY_LEVEL_H_
+#define SANDBOX_WIN_SRC_SECURITY_LEVEL_H_
 
 #include <stdint.h>
 
@@ -58,6 +58,14 @@ enum IntegrityLevel {
 //                             |              | Authent-users  |          |
 //                             |              | User           |          |
 // ----------------------------|--------------|----------------|----------|
+// USER_RESTRICTED_NON_ADMIN   | Users        | All except:    | Traverse |
+//                             | Everyone     | Users          |          |
+//                             | Interactive  | Everyone       |          |
+//                             | Local        | Interactive    |          |
+//                             | Authent-users| Local          |          |
+//                             | User         | Authent-users  |          |
+//                             |              | User           |          |
+// ----------------------------|--------------|----------------|----------|
 // USER_NON_ADMIN              | None         | All except:    | Traverse |
 //                             |              | Users          |          |
 //                             |              | Everyone       |          |
@@ -86,6 +94,7 @@ enum TokenLevel {
   USER_RESTRICTED,
   USER_LIMITED,
   USER_INTERACTIVE,
+  USER_RESTRICTED_NON_ADMIN,
   USER_NON_ADMIN,
   USER_RESTRICTED_SAME_ACCESS,
   USER_UNPROTECTED,
@@ -278,6 +287,16 @@ const MitigationFlags MITIGATION_IMAGE_LOAD_PREFER_SYS32 = 0x00100000;
 const MitigationFlags MITIGATION_RESTRICT_INDIRECT_BRANCH_PREDICTION =
     0x00200000;
 
+// Turns off CET for the process. This allows chrome.exe to
+// be turned 'on' using IFEO or through build settings but children we know to
+// have issues can be turned off. Corresponds to
+// PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_ALWAYS_OFF.
+const MitigationFlags MITIGATION_CET_DISABLED = 0x00400000;
+
+// Enable KTM component mitigation. When enabled, it locks down all function
+// calls to consume the kernel transaction manager.
+const MitigationFlags MITIGATION_KTM_COMPONENT = 0x00800000;
+
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_SECURITY_LEVEL_H_
+#endif  // SANDBOX_WIN_SRC_SECURITY_LEVEL_H_

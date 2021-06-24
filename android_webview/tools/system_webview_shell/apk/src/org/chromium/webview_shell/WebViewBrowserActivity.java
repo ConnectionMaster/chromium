@@ -13,6 +13,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
@@ -25,8 +26,6 @@ import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
 import android.provider.Browser;
-import android.support.v7.app.AppCompatActivity;
-import android.support.v7.widget.Toolbar;
 import android.util.SparseArray;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -37,21 +36,28 @@ import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
-import android.webkit.TracingConfig;
-import android.webkit.TracingController;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.chromium.base.ApiCompatibilityUtils;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
+import androidx.webkit.TracingConfig;
+import androidx.webkit.TracingController;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewClientCompat;
+import androidx.webkit.WebViewFeature;
+
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.PackageManagerUtils;
 import org.chromium.base.StrictModeContext;
 
 import java.io.File;
@@ -116,6 +122,10 @@ public class WebViewBrowserActivity extends AppCompatActivity {
     // look up the request in order to grant the approprate permissions.
     private SparseArray<PermissionRequest> mPendingRequests = new SparseArray<PermissionRequest>();
     private int mNextRequestKey;
+
+    // Permit any number of slashes, since chromium seems to canonicalize bad values.
+    private static final Pattern FILE_ANDROID_ASSET_PATTERN =
+            Pattern.compile("^file:///android_(asset|res)/.*");
 
     // Work around our wonky API by wrapping a geo permission prompt inside a regular
     // PermissionRequest.
@@ -228,9 +238,70 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Enables StrictMode to catch as much as reasonable. This selectively disables some StrictMode
+     * policies for some devices, as some manufacturers modify the Android framework in such a
+     * way as to unavoidably violate StrictMode (ex. the platform code which opens the 3-dots menu
+     * is not controlled by WebView or by WebView shell browser).
+     */
+    private void enableStrictMode() {
+        String manufacturer = Build.MANUFACTURER.toLowerCase(Locale.US);
+
+        StrictMode.ThreadPolicy.Builder threadPolicyBuilder =
+                new StrictMode.ThreadPolicy.Builder().detectAll().penaltyLog().penaltyDeath();
+
+        if (manufacturer.equals("samsung")) {
+            // See crbug.com/1056368, Samsung device has an internal method
+            // "android.util.GeneralUtil#isSupportedGloveModeInternal", which reads file and
+            // violates strict mode policy. This method is called when showing the dropdown menu
+            // after user clicks the 3-dots menu. However this showing code is part of Android
+            // framework and not controlled by this app, so we need to permit disk read for the UI
+            // thread.
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskReads();
+            // See crbug.com/1082701 and https://crbug.com/1090841#c38, Samsung device uses OEM
+            // specific clipboard API, which will need to read the disk on UI thread. This app can't
+            // control it because it is in the framework. We need to permit disk write for the UI
+            // thread.
+            //
+            // Also: https://crbug.com/1090841#c31
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskWrites();
+        } else if (manufacturer.equals("htc")) {
+            // https://crbug.com/1090841#c30
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskReads();
+        } else if (manufacturer.equals("huawei")) {
+            // https://crbug.com/1090841#c32
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskReads();
+        } else if (manufacturer.equals("lge")) {
+            // https://crbug.com/1090841#c33
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskReads();
+            // https://crbug.com/1198139
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskWrites();
+        } else if (manufacturer.equals("oneplus")) {
+            // https://crbug.com/1090841#c37
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskReads();
+        } else if (manufacturer.equals("oppo")) {
+            // https://crbug.com/1177779
+            threadPolicyBuilder = threadPolicyBuilder.permitDiskReads();
+        }
+        StrictMode.setThreadPolicy(threadPolicyBuilder.build());
+
+        // Omissions:
+        // * detectCleartextNetwork() to permit testing http:// URLs
+        // * detectFileUriExposure() to permit testing file:// URLs
+        // * detectLeakedClosableObjects() because of drag and drop (https://crbug.com/1090841#c40)
+        StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder()
+                .detectActivityLeaks()
+                .detectLeakedRegistrationObjects()
+                .detectLeakedSqlLiteObjects()
+                .penaltyLog()
+                .penaltyDeath()
+                .build());
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ContextUtils.initApplicationContext(getApplicationContext());
         WebView.setWebContentsDebuggingEnabled(true);
         setContentView(R.layout.activity_webview_browser);
         setSupportActionBar((Toolbar) findViewById(R.id.browser_toolbar));
@@ -244,21 +315,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         });
         findViewById(R.id.btn_load_url).setOnClickListener((view) -> loadUrlFromUrlBar(view));
 
-        StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder()
-                .detectAll()
-                .penaltyLog()
-                .penaltyDeath()
-                .build());
-        // Conspicuously omitted: detectCleartextNetwork() and detectFileUriExposure() to permit
-        // http:// and file:// origins.
-        StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder()
-                .detectActivityLeaks()
-                .detectLeakedClosableObjects()
-                .detectLeakedRegistrationObjects()
-                .detectLeakedSqlLiteObjects()
-                .penaltyLog()
-                .penaltyDeath()
-                .build());
+        enableStrictMode();
 
         createAndInitializeWebView();
 
@@ -325,6 +382,11 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         WebView webview = new WebView(this);
         WebSettings settings = webview.getSettings();
         initializeSettings(settings);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // Third party cookies are off by default on L+;
+            // turn them on for consistency with normal browsers.
+            CookieManager.getInstance().setAcceptThirdPartyCookies(webview, true);
+        }
 
         Matcher matcher = WEBVIEW_VERSION_PATTERN.matcher(settings.getUserAgentString());
         if (matcher.find()) {
@@ -335,7 +397,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         getSupportActionBar().setTitle(getResources().getString(R.string.title_activity_browser));
         getSupportActionBar().setSubtitle(mWebViewVersion);
 
-        webview.setWebViewClient(new WebViewClient() {
+        webview.setWebViewClient(new WebViewClientCompat() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 setUrlFail(false);
@@ -350,9 +412,12 @@ public class WebViewBrowserActivity extends AppCompatActivity {
             @SuppressWarnings("deprecation") // because we support api level 19 and up.
             @Override
             public boolean shouldOverrideUrlLoading(WebView webView, String url) {
-                // "about:" and "chrome:" schemes are internal to Chromium;
-                // don't want these to be dispatched to other apps.
-                if (url.startsWith("about:") || url.startsWith("chrome:")) {
+                // Treat some URLs as internal, always open them in the WebView:
+                // * about: scheme URIs
+                // * chrome:// scheme URIs
+                // * file:///android_asset/ or file:///android_res/ URIs
+                if (url.startsWith("about:") || url.startsWith("chrome://")
+                        || FILE_ANDROID_ASSET_PATTERN.matcher(url).matches()) {
                     return false;
                 }
                 return startBrowsingIntent(WebViewBrowserActivity.this, url);
@@ -509,77 +574,111 @@ public class WebViewBrowserActivity extends AppCompatActivity {
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.main_menu, menu);
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.TRACING_CONTROLLER_BASIC_USAGE)) {
             menu.findItem(R.id.menu_enable_tracing).setEnabled(false);
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+            menu.findItem(R.id.menu_force_dark_off).setEnabled(false);
+            menu.findItem(R.id.menu_force_dark_auto).setEnabled(false);
+            menu.findItem(R.id.menu_force_dark_on).setEnabled(false);
         }
         return true;
     }
 
     @Override
     public boolean onPrepareOptionsMenu(Menu menu) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.TRACING_CONTROLLER_BASIC_USAGE)) {
             menu.findItem(R.id.menu_enable_tracing).setChecked(mEnableTracing);
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+            int forceDarkState = WebSettingsCompat.getForceDark(mWebView.getSettings());
+            switch (forceDarkState) {
+                case WebSettingsCompat.FORCE_DARK_OFF:
+                    menu.findItem(R.id.menu_force_dark_off).setChecked(true);
+                    break;
+                case WebSettingsCompat.FORCE_DARK_AUTO:
+                    menu.findItem(R.id.menu_force_dark_auto).setChecked(true);
+                    break;
+                case WebSettingsCompat.FORCE_DARK_ON:
+                    menu.findItem(R.id.menu_force_dark_on).setChecked(true);
+                    break;
+            }
         }
         return true;
     }
 
     @Override
-    @SuppressLint("NewApi") // TracingController related methods require API level 28.
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch(item.getItemId()) {
-            case R.id.menu_reset_webview:
-                if (mWebView != null) {
-                    ViewGroup container = getContainer();
-                    container.removeView(mWebView);
-                    mWebView.destroy();
-                    mWebView = null;
-                }
-                createAndInitializeWebView();
-                return true;
-            case R.id.menu_clear_cache:
-                if (mWebView != null) {
-                    mWebView.clearCache(true);
-                }
-                return true;
-            case R.id.menu_enable_tracing:
-                mEnableTracing = !mEnableTracing;
-                item.setChecked(mEnableTracing);
+        int itemId = item.getItemId();
+        if (itemId == R.id.menu_reload_webview) {
+            if (mWebView != null) mWebView.reload();
+        } else if (itemId == R.id.menu_reset_webview) {
+            if (mWebView != null) {
+                ViewGroup container = getContainer();
+                container.removeView(mWebView);
+                mWebView.destroy();
+                mWebView = null;
+            }
+            createAndInitializeWebView();
+            return true;
+        } else if (itemId == R.id.menu_clear_cache) {
+            if (mWebView != null) {
+                mWebView.clearCache(true);
+            }
+            return true;
+        } else if (itemId == R.id.menu_enable_tracing) {
+            mEnableTracing = !mEnableTracing;
+            item.setChecked(mEnableTracing);
 
-                // TODO(laisminchillo): replace this with AndroidX's TracingController
-                TracingController tracingController = TracingController.getInstance();
-                if (mEnableTracing) {
-                    tracingController.start(
-                            new TracingConfig.Builder()
-                                    .addCategories(TracingConfig.CATEGORIES_WEB_DEVELOPER)
-                                    .setTracingMode(TracingConfig.RECORD_CONTINUOUSLY)
-                                    .build());
-                } else {
-                    try (StrictModeContext unused = StrictModeContext.allowDiskWrites()) {
-                        String outFileName = getFilesDir() + "/webview_tracing.json";
-                        try {
-                            tracingController.stop(new TracingLogger(outFileName, this),
-                                    Executors.newSingleThreadExecutor());
-                        } catch (FileNotFoundException e) {
-                            throw new RuntimeException(e);
-                        }
+            TracingController tracingController = TracingController.getInstance();
+            if (mEnableTracing) {
+                tracingController.start(
+                        new TracingConfig.Builder()
+                                .addCategories(TracingConfig.CATEGORIES_WEB_DEVELOPER)
+                                .setTracingMode(TracingConfig.RECORD_CONTINUOUSLY)
+                                .build());
+            } else {
+                try (StrictModeContext ignored = StrictModeContext.allowDiskWrites()) {
+                    String outFileName = getFilesDir() + "/webview_tracing.json";
+                    try {
+                        tracingController.stop(new TracingLogger(outFileName, this),
+                                Executors.newSingleThreadExecutor());
+                    } catch (FileNotFoundException e) {
+                        throw new RuntimeException(e);
                     }
                 }
-                return true;
-            case R.id.start_animation_activity:
-                startActivity(new Intent(this, WebViewAnimationTestActivity.class));
-                return true;
-            case R.id.menu_print:
-                PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
-                String jobName = "WebViewShell document";
-                PrintDocumentAdapter printAdapter = mWebView.createPrintDocumentAdapter(jobName);
-                printManager.print(jobName, printAdapter, new PrintAttributes.Builder().build());
-                return true;
-            case R.id.menu_about:
-                about();
-                hideKeyboard(mUrlBar);
-                return true;
-            default:
-                break;
+            }
+            return true;
+        } else if (itemId == R.id.menu_force_dark_off) {
+            WebSettingsCompat.setForceDark(
+                    mWebView.getSettings(), WebSettingsCompat.FORCE_DARK_OFF);
+            item.setChecked(true);
+            return true;
+        } else if (itemId == R.id.menu_force_dark_auto) {
+            WebSettingsCompat.setForceDark(
+                    mWebView.getSettings(), WebSettingsCompat.FORCE_DARK_AUTO);
+            item.setChecked(true);
+            return true;
+        } else if (itemId == R.id.menu_force_dark_on) {
+            WebSettingsCompat.setForceDark(mWebView.getSettings(), WebSettingsCompat.FORCE_DARK_ON);
+            item.setChecked(true);
+            return true;
+        } else if (itemId == R.id.start_animation_activity) {
+            startActivity(new Intent(this, WebViewAnimationTestActivity.class));
+            return true;
+        } else if (itemId == R.id.menu_print) {
+            PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+            String jobName = "WebViewShell document";
+            PrintDocumentAdapter printAdapter = mWebView.createPrintDocumentAdapter(jobName);
+            printManager.print(jobName, printAdapter, new PrintAttributes.Builder().build());
+            return true;
+        } else if (itemId == R.id.menu_about) {
+            about();
+            hideKeyboard(mUrlBar);
+            return true;
+        } else if (itemId == R.id.menu_devui) {
+            launchWebViewDevUI();
+            return true;
         }
         return super.onOptionsItemSelected(item);
     }
@@ -590,7 +689,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
     private void initializeSettings(WebSettings settings) {
         File appcache = null;
         File geolocation = null;
-        try (StrictModeContext ctx = StrictModeContext.allowDiskWrites()) {
+        try (StrictModeContext ignored = StrictModeContext.allowDiskWrites()) {
             appcache = getDir("appcache", 0);
             geolocation = getDir("geolocation", 0);
         }
@@ -605,6 +704,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         settings.setGeolocationEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(true);
 
         // Default layout behavior for chrome on android.
         settings.setUseWideViewPort(true);
@@ -632,6 +732,31 @@ public class WebViewBrowserActivity extends AppCompatActivity {
                 .create();
         dialog.show();
         dialog.getWindow().setLayout(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
+    }
+
+    private void launchWebViewDevUI() {
+        PackageInfo currentWebViewPackage = WebViewPackageHelper.getCurrentWebViewPackage(this);
+        if (currentWebViewPackage == null) {
+            Log.e(TAG, "Couldn't find current WebView package");
+            Toast.makeText(this, "WebView package isn't found", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String currentWebViewPackageName = currentWebViewPackage.packageName;
+        Intent intent = new Intent("com.android.webview.SHOW_DEV_UI");
+        intent.setPackage(currentWebViewPackageName);
+
+        // Check if the intent is resolved, i.e current WebView package has a developer UI that
+        // responds to "com.android.webview.SHOW_DEV_UI" action.
+        List<ResolveInfo> intentResolveInfo = getPackageManager().queryIntentActivities(intent, 0);
+        if (intentResolveInfo.size() > 0) {
+            startActivity(intent);
+        } else {
+            Log.e(TAG,
+                    "Couldn't launch developer UI from current WebView package: "
+                            + currentWebViewPackage);
+            Toast.makeText(this, "No DevTools in " + currentWebViewPackageName, Toast.LENGTH_LONG)
+                    .show();
+        }
     }
 
     // Returns true is a method has no arguments and returns either a boolean or a String.
@@ -662,9 +787,11 @@ public class WebViewBrowserActivity extends AppCompatActivity {
     }
 
     private void setUrlFail(boolean fail) {
-        mUrlBar.setTextColor(fail ?
-            ApiCompatibilityUtils.getColor(getResources(), R.color.url_error_color) :
-            ApiCompatibilityUtils.getColor(getResources(), R.color.url_color));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            mUrlBar.setTextAppearance(fail ? R.style.UrlTextError : R.style.UrlText);
+        } else {
+            mUrlBar.setTextAppearance(this, fail ? R.style.UrlTextError : R.style.UrlText);
+        }
     }
 
     /**
@@ -703,7 +830,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         // check if there is a specialized app that had registered itself
         // for this kind of an intent.
         Matcher m = BROWSER_URI_SCHEMA.matcher(url);
-        if (m.matches() && !isSpecializedHandlerAvailable(context, intent)) {
+        if (m.matches() && !isSpecializedHandlerAvailable(intent)) {
             return false;
         }
         // Sanitize the Intent, ensuring web pages can not bypass browser
@@ -737,10 +864,9 @@ public class WebViewBrowserActivity extends AppCompatActivity {
     /**
      * Search for intent handlers that are specific to the scheme of the URL in the intent.
      */
-    private static boolean isSpecializedHandlerAvailable(Context context, Intent intent) {
-        PackageManager pm = context.getPackageManager();
-        List<ResolveInfo> handlers = pm.queryIntentActivities(intent,
-                PackageManager.GET_RESOLVED_FILTER);
+    private static boolean isSpecializedHandlerAvailable(Intent intent) {
+        List<ResolveInfo> handlers = PackageManagerUtils.queryIntentActivities(
+                intent, PackageManager.GET_RESOLVED_FILTER);
         if (handlers == null || handlers.size() == 0) {
             return false;
         }

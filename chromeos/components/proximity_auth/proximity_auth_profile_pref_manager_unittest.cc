@@ -10,10 +10,8 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/test/scoped_feature_list.h"
 #include "chromeos/components/proximity_auth/proximity_auth_local_state_pref_manager.h"
 #include "chromeos/components/proximity_auth/proximity_auth_pref_names.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/services/multidevice_setup/public/cpp/fake_multidevice_setup_client.h"
 #include "chromeos/services/multidevice_setup/public/cpp/prefs.h"
 #include "components/prefs/testing_pref_service.h"
@@ -28,11 +26,6 @@ const char kUserEmail[] = "testuser@example.com";
 
 const int64_t kPromotionCheckTimestampMs1 = 1111111111L;
 const int64_t kPromotionCheckTimestampMs2 = 2222222222L;
-
-const ProximityAuthPrefManager::ProximityThreshold kProximityThreshold1 =
-    ProximityAuthPrefManager::ProximityThreshold::kFar;
-const ProximityAuthPrefManager::ProximityThreshold kProximityThreshold2 =
-    ProximityAuthPrefManager::ProximityThreshold::kVeryFar;
 
 }  //  namespace
 
@@ -87,14 +80,6 @@ TEST_F(ProximityAuthProfilePrefManagerTest, PromotionShownCount) {
   EXPECT_EQ(2, pref_manager_->GetPromotionShownCount());
 }
 
-TEST_F(ProximityAuthProfilePrefManagerTest, ProximityThreshold) {
-  EXPECT_EQ(1, pref_manager_->GetProximityThreshold());
-  pref_manager_->SetProximityThreshold(kProximityThreshold1);
-  EXPECT_EQ(kProximityThreshold1, pref_manager_->GetProximityThreshold());
-  pref_manager_->SetProximityThreshold(kProximityThreshold2);
-  EXPECT_EQ(kProximityThreshold2, pref_manager_->GetProximityThreshold());
-}
-
 TEST_F(ProximityAuthProfilePrefManagerTest, IsChromeOSLoginEnabled) {
   EXPECT_FALSE(pref_manager_->IsChromeOSLoginEnabled());
 
@@ -122,16 +107,12 @@ TEST_F(ProximityAuthProfilePrefManagerTest, SyncsToLocalPrefOnChange) {
 
   profile_pref_manager.SetIsChromeOSLoginEnabled(true);
   profile_pref_manager.SetIsEasyUnlockEnabled(true);
-  profile_pref_manager.SetProximityThreshold(kProximityThreshold1);
   EXPECT_TRUE(local_pref_manager.IsChromeOSLoginEnabled());
-  EXPECT_EQ(kProximityThreshold1, local_pref_manager.GetProximityThreshold());
 
   profile_pref_manager.SetIsChromeOSLoginEnabled(false);
   profile_pref_manager.SetIsEasyUnlockEnabled(false);
-  profile_pref_manager.SetProximityThreshold(kProximityThreshold2);
   EXPECT_FALSE(local_pref_manager.IsChromeOSLoginEnabled());
   EXPECT_FALSE(local_pref_manager.IsEasyUnlockEnabled());
-  EXPECT_EQ(kProximityThreshold2, local_pref_manager.GetProximityThreshold());
 
   // Test changing the kEasyUnlockAllowed pref value directly (e.g. through
   // enterprise policy).

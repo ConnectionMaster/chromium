@@ -8,8 +8,8 @@
 
 #include "cc/paint/filter_operation.h"
 
+#include "base/cxx17_backports.h"
 #include "base/numerics/ranges.h"
-#include "base/stl_util.h"
 #include "base/trace_event/traced_value.h"
 #include "base/values.h"
 #include "cc/base/math_util.h"
@@ -59,7 +59,7 @@ FilterOperation::FilterOperation(FilterType type, float amount)
 
 FilterOperation::FilterOperation(FilterType type,
                                  float amount,
-                                 SkBlurImageFilter::TileMode tile_mode)
+                                 SkTileMode tile_mode)
     : type_(type),
       amount_(amount),
       outer_threshold_(0),
@@ -353,10 +353,8 @@ gfx::Rect MapRectInternal(const FilterOperation& op,
       // Mapping a blur forward requires an outset (negative inset) because a
       // smaller source rectangle gets blurred to a larger destination
       // rectangle.
-      // TODO(916583): Fix this function for reverse mapping:
-      // float sign = (direction == SkImageFilter::kForward_MapDirection) ? -1.0
-      // : 1.0;
-      float sign = -1.0;
+      float sign =
+          (direction == SkImageFilter::kForward_MapDirection) ? -1.0 : 1.0;
       float spread_x = std::abs(spread.x()) * sign;
       float spread_y = std::abs(spread.y()) * sign;
       gfx::RectF result(rect);

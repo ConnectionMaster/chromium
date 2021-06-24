@@ -22,14 +22,30 @@ namespace content_settings {
 // This class stores the properties related to a website setting.
 class WebsiteSettingsInfo {
  public:
-  enum SyncStatus { SYNCABLE, UNSYNCABLE };
+  enum SyncStatus {
+    // The setting will be synced.
+    SYNCABLE,
+    // The setting is stored locally.
+    UNSYNCABLE
+  };
 
-  enum LossyStatus { LOSSY, NOT_LOSSY };
+  enum LossyStatus {
+    // This marks the setting as "lossy". There is no strict time guarantee on
+    // when a lossy setting will be persisted to permanent storage when it is
+    // modified.
+    LOSSY,
+    // Changes to the setting will be persisted immediately.
+    NOT_LOSSY
+  };
 
   enum ScopingType {
     // Settings scoped to the domain of the requesting frame by default.
     // Embedded settings can be stored.
     COOKIES_SCOPE,
+
+    // Storage access specific scoped that is scoped to the pair of requesting
+    // and embedding origin.
+    STORAGE_ACCESS_SCOPE,
 
     // Settings scoped to a single origin (generally either the requesting
     // origin or the top level origin of a frame) for a request. Embedded
@@ -41,14 +57,6 @@ class WebsiteSettingsInfo {
     // exceptions are allowed. This should only be used after careful thought.
     // Allowing embedded exceptions requires much more complicated UI.
     SINGLE_ORIGIN_WITH_EMBEDDED_EXCEPTIONS_SCOPE,
-
-    // Settings scoped to the combination of the origin of the requesting
-    // frame and the origin of the top level frame by default.
-    //
-    // This is deprecated with Permission Delegation and should not be used.
-    // Specifically, UI (e.g. prompts, page actions, etc.) should generally only
-    // change settings for the top level origin and not for embedded origins.
-    REQUESTING_ORIGIN_AND_TOP_LEVEL_ORIGIN_SCOPE
   };
 
   enum IncognitoBehavior {
@@ -81,7 +89,7 @@ class WebsiteSettingsInfo {
 
   uint32_t GetPrefRegistrationFlags() const;
 
-  bool SupportsEmbeddedExceptions() const;
+  bool SupportsSecondaryPattern() const;
 
   ScopingType scoping_type() const { return scoping_type_; }
   IncognitoBehavior incognito_behavior() const { return incognito_behavior_; }

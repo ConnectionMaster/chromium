@@ -8,28 +8,31 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "components/viz/service/viz_service_export.h"
-#include "services/viz/privileged/interfaces/compositing/frame_sink_video_capture.mojom.h"
+#include "services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom.h"
 
 namespace viz {
 
 // Represents an in-flight frame delivery to the consumer. Its main purpose is
 // to proxy callbacks from the consumer back to the relevant capturer
 // components owned and operated by FrameSinkVideoCapturerImpl.
-class VIZ_SERVICE_EXPORT InFlightFrameDelivery
+class VIZ_SERVICE_EXPORT InFlightFrameDelivery final
     : public mojom::FrameSinkVideoConsumerFrameCallbacks {
  public:
-  InFlightFrameDelivery(base::OnceClosure post_delivery_callback,
-                        base::OnceCallback<void(double)> feedback_callback);
+  InFlightFrameDelivery(
+      base::OnceClosure post_delivery_callback,
+      base::OnceCallback<void(const media::VideoCaptureFeedback&)>
+          feedback_callback);
 
   ~InFlightFrameDelivery() final;
 
   // mojom::FrameSinkVideoConsumerFrameCallbacks implementation:
   void Done() final;
-  void ProvideFeedback(double utilization) final;
+  void ProvideFeedback(const media::VideoCaptureFeedback&) final;
 
  private:
   base::OnceClosure post_delivery_callback_;
-  base::OnceCallback<void(double)> feedback_callback_;
+  base::OnceCallback<void(const media::VideoCaptureFeedback&)>
+      feedback_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(InFlightFrameDelivery);
 };

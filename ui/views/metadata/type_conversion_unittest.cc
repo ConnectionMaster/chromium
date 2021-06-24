@@ -1,28 +1,24 @@
-// Copyright 2019 The Chromium Authors. All rights reserved.
+// Copyright 2021 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "ui/views/metadata/type_conversion.h"
 
-#include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
-#include "ui/gfx/geometry/rect.h"
+#include "ui/views/controls/button/button.h"
+#include "ui/views/controls/focus_ring.h"
 
-namespace TC = views::metadata;
+using ViewsTypeConversionTest = PlatformTest;
 
-using TypeConversionTest = PlatformTest;
+TEST_F(ViewsTypeConversionTest, CheckIsSerializable) {
+  // Test types with no explicit or aliased converters.
+  EXPECT_FALSE(ui::metadata::TypeConverter<
+               views::Button::PressedCallback>::IsSerializable());
+  EXPECT_FALSE(
+      ui::metadata::TypeConverter<views::FocusRing*>::IsSerializable());
 
-TEST_F(TypeConversionTest, TestConversion_IntToString) {
-  int from_int = 5;
-  base::string16 to_string = TC::Convert<int, base::string16>(from_int);
-
-  EXPECT_EQ(to_string, base::ASCIIToUTF16("5"));
-}
-
-TEST_F(TypeConversionTest, TestConversion_StringToInt) {
-  base::string16 from_string = base::ASCIIToUTF16("10");
-  int to_int = TC::Convert<base::string16, int>(from_string);
-
-  EXPECT_EQ(to_int, 10);
+  // Test absl::optional type.
+  EXPECT_FALSE(ui::metadata::TypeConverter<
+               absl::optional<views::FocusRing*>>::IsSerializable());
 }

@@ -5,7 +5,7 @@
 #include "components/subresource_filter/content/browser/async_document_subresource_filter_test_utils.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -41,7 +41,7 @@ void TestActivationStateCallbackReceiver::Callback(
   ++callback_count_;
   last_activation_state_ = activation_state;
   if (quit_closure_)
-    quit_closure_.Run();
+    std::move(quit_closure_).Run();
 }
 
 }  // namespace testing

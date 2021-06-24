@@ -14,10 +14,11 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_multi_source_observation.h"
 #include "ui/aura/aura_export.h"
 #include "ui/aura/client/capture_delegate.h"
 #include "ui/aura/env_observer.h"
+#include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/events/event_constants.h"
@@ -26,6 +27,7 @@
 #include "ui/events/fraction_of_time_without_user_input_recorder.h"
 #include "ui/events/gestures/gesture_recognizer.h"
 #include "ui/events/gestures/gesture_types.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/native_widget_types.h"
 
@@ -38,8 +40,6 @@ class TouchEvent;
 }
 
 namespace aura {
-class Env;
-class MusMouseLocationUpdater;
 class TestScreen;
 class WindowTargeter;
 class WindowTreeHost;
@@ -58,13 +58,8 @@ class AURA_EXPORT WindowEventDispatcher : public ui::EventProcessor,
                                           public WindowObserver,
                                           public EnvObserver {
  public:
-  // |are_events_in_pixels| indicates if events are
-  // received in pixels. If |are_events_in_pixels| is false, events are
-  // received in DIPs.
-  WindowEventDispatcher(WindowTreeHost* host, bool are_events_in_pixels);
+  explicit WindowEventDispatcher(WindowTreeHost* host);
   ~WindowEventDispatcher() override;
-
-  bool are_events_in_pixels() const { return are_events_in_pixels_; }
 
   // Stops dispatching/synthesizing mouse events.
   void Shutdown();
@@ -111,7 +106,7 @@ class AURA_EXPORT WindowEventDispatcher : public ui::EventProcessor,
   virtual void ProcessedTouchEvent(uint32_t unique_event_id,
                                    Window* window,
                                    ui::EventResult result,
-                                   bool is_source_touch_event_set_non_blocking);
+                                   bool is_source_touch_event_set_blocking);
 
   // These methods are used to defer the processing of mouse/touch events
   // related to resize. A client (typically a RenderWidgetHostViewAura) can call
@@ -161,7 +156,6 @@ class AURA_EXPORT WindowEventDispatcher : public ui::EventProcessor,
     ~ObserverNotifier();
 
    private:
-    Env* env_;
     WindowEventDispatcher* dispatcher_;
 
     DISALLOW_COPY_AND_ASSIGN(ObserverNotifier);
@@ -220,7 +214,6 @@ class AURA_EXPORT WindowEventDispatcher : public ui::EventProcessor,
   void ReleaseNativeCapture() override;
 
   // Overridden from ui::EventProcessor:
-  ui::EventTarget* GetInitialEventTarget(ui::Event* event) override;
   ui::EventTarget* GetRootForEvent(ui::Event* event) override;
   void OnEventProcessingStarted(ui::Event* event) override;
   void OnEventProcessingFinished(ui::Event* event) override;
@@ -288,15 +281,10 @@ class AURA_EXPORT WindowEventDispatcher : public ui::EventProcessor,
                                                  ui::GestureEvent* event);
   ui::EventDispatchDetails PreDispatchTouchEvent(Window* target,
                                                  ui::TouchEvent* event);
-  ui::EventDispatchDetails PreDispatchKeyEvent(ui::KeyEvent* event);
-
-  // Comes from host_->window()->env(). Cached as it's needed in the destructor
-  // and at that time the window has been deleted.
-  Env* env_;
+  ui::EventDispatchDetails PreDispatchKeyEvent(Window* target,
+                                               ui::KeyEvent* event);
 
   WindowTreeHost* host_;
-
-  const bool are_events_in_pixels_;
 
   Window* mouse_pressed_handler_ = nullptr;
   Window* mouse_moved_handler_ = nullptr;
@@ -325,9 +313,8 @@ class AURA_EXPORT WindowEventDispatcher : public ui::EventProcessor,
   // Set when dispatching a held event.
   ui::LocatedEvent* dispatching_held_event_ = nullptr;
 
-  ScopedObserver<aura::Window, aura::WindowObserver> observer_manager_;
-
-  std::unique_ptr<MusMouseLocationUpdater> mus_mouse_location_updater_;
+  base::ScopedMultiSourceObservation<aura::Window, aura::WindowObserver>
+      observation_manager_{this};
 
   // The default EventTargeter for WindowEventDispatcher generated events.
   std::unique_ptr<WindowTargeter> event_targeter_;

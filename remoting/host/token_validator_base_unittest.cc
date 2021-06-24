@@ -4,6 +4,7 @@
 
 #include "remoting/host/token_validator_base.h"
 
+#include <memory>
 #include <vector>
 
 #include "base/atomic_sequence_num.h"
@@ -31,7 +32,8 @@ std::unique_ptr<net::FakeClientCertIdentity> CreateFakeCert(
       &rsa_private_key, &cert_der);
 
   scoped_refptr<net::X509Certificate> cert =
-      net::X509Certificate::CreateFromBytes(cert_der.data(), cert_der.size());
+      net::X509Certificate::CreateFromBytes(
+          base::as_bytes(base::make_span(cert_der)));
   if (!cert)
     return nullptr;
 
@@ -110,7 +112,7 @@ void TokenValidatorBaseTest::SetUp() {
   config.token_url = GURL(kTokenUrl);
   config.token_validation_url = GURL(kTokenValidationUrl);
   config.token_validation_cert_issuer = kTokenValidationCertIssuer;
-  token_validator_.reset(new TestTokenValidator(config));
+  token_validator_ = std::make_unique<TestTokenValidator>(config);
 }
 
 TEST_F(TokenValidatorBaseTest, TestSelectCertificate) {

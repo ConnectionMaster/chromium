@@ -49,15 +49,16 @@ class TabbedPaneAccessibilityMacTest : public WidgetTest {
     WidgetTest::SetUp();
     widget_ = CreateTopLevelPlatformWidget();
     widget_->SetBounds(gfx::Rect(50, 50, 100, 100));
-    tabbed_pane_ = new TabbedPane();
-    tabbed_pane_->SetSize(gfx::Size(100, 100));
+    auto tabbed_pane = std::make_unique<TabbedPane>();
+    tabbed_pane->SetSize(gfx::Size(100, 100));
 
     // Create two tabs and position/size them.
-    tabbed_pane_->AddTab(base::ASCIIToUTF16("Tab 1"), new View());
-    tabbed_pane_->AddTab(base::ASCIIToUTF16("Tab 2"), new View());
-    tabbed_pane_->Layout();
+    tabbed_pane->AddTab(u"Tab 1", std::make_unique<View>());
+    tabbed_pane->AddTab(u"Tab 2", std::make_unique<View>());
+    tabbed_pane->Layout();
 
-    widget_->GetContentsView()->AddChildView(tabbed_pane_);
+    tabbed_pane_ =
+        widget_->GetContentsView()->AddChildView(std::move(tabbed_pane));
     widget_->Show();
   }
 
@@ -66,8 +67,8 @@ class TabbedPaneAccessibilityMacTest : public WidgetTest {
     WidgetTest::TearDown();
   }
 
-  Tab* GetTabAt(int index) {
-    return static_cast<Tab*>(tabbed_pane_->tab_strip_->child_at(index));
+  Tab* GetTabAt(size_t index) {
+    return static_cast<Tab*>(tabbed_pane_->tab_strip_->children()[index]);
   }
 
   id<NSAccessibility> A11yElementAtPoint(const gfx::Point& point) {
@@ -77,7 +78,7 @@ class TabbedPaneAccessibilityMacTest : public WidgetTest {
         accessibilityHitTest:ns_point]);
   }
 
-  gfx::Point TabCenterPoint(int index) {
+  gfx::Point TabCenterPoint(size_t index) {
     return GetTabAt(index)->GetBoundsInScreen().CenterPoint();
   }
 
@@ -117,7 +118,7 @@ TEST_F(TabbedPaneAccessibilityMacTest, AttributesMatchAppKit) {
 
   // Compare the value attribute against native Cocoa and check it matches up
   // with whether tabs are actually selected.
-  for (int i : {0, 1}) {
+  for (size_t i : {0, 1}) {
     NSNumber* cocoa_value = GetLegacyA11yAttributeValue(
         cocoa_tabs[i], NSAccessibilityValueAttribute);
     // Verify that only the second tab is selected.

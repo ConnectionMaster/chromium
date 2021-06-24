@@ -7,20 +7,18 @@
 
 #include <memory>
 
+#include "ash/public/cpp/tablet_mode_observer.h"
 #include "ash/shelf/shelf_observer.h"
 #include "ash/system/screen_layout_observer.h"
 #include "ash/system/tray/time_to_click_recorder.h"
 #include "ash/system/tray/tray_bubble_base.h"
-#include "ash/wm/tablet_mode/tablet_mode_observer.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/time/time.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/views/widget/widget_observer.h"
 #include "ui/wm/public/activation_change_observer.h"
-
-namespace ui {
-class LayerOwner;
-}  // namespace ui
 
 namespace views {
 class Widget;
@@ -36,16 +34,16 @@ class UnifiedSystemTrayView;
 // Shows the bubble on the constructor, and closes the bubble on the destructor.
 // It is possible that the bubble widget is closed on deactivation. In such
 // case, this class calls UnifiedSystemTray::CloseBubble() to delete itself.
-class UnifiedSystemTrayBubble : public TrayBubbleBase,
-                                public ash::ScreenLayoutObserver,
-                                public views::WidgetObserver,
-                                public ShelfObserver,
-                                public ::wm::ActivationChangeObserver,
-                                public TimeToClickRecorder::Delegate,
-                                public TabletModeObserver {
+class ASH_EXPORT UnifiedSystemTrayBubble
+    : public TrayBubbleBase,
+      public ScreenLayoutObserver,
+      public views::WidgetObserver,
+      public ShelfObserver,
+      public ::wm::ActivationChangeObserver,
+      public TimeToClickRecorder::Delegate,
+      public TabletModeObserver {
  public:
-
-  explicit UnifiedSystemTrayBubble(UnifiedSystemTray* tray, bool show_by_click);
+  explicit UnifiedSystemTrayBubble(UnifiedSystemTray* tray);
   ~UnifiedSystemTrayBubble() override;
 
   // Return the bounds of the bubble in the screen.
@@ -54,33 +52,59 @@ class UnifiedSystemTrayBubble : public TrayBubbleBase,
   // True if the bubble is active.
   bool IsBubbleActive() const;
 
-  // Activate the system tray bubble.
-  void ActivateBubble();
+  // Collapse the message center bubble.
+  void CollapseMessageCenter();
 
-  // Close the bubble immediately.
-  void CloseNow();
+  // Expand the message center bubble.
+  void ExpandMessageCenter();
+
+  // Ensure the bubble is collapsed.
+  void EnsureCollapsed();
 
   // Ensure the bubble is expanded.
   void EnsureExpanded();
 
+  // Set the state to collapsed without animation.
+  void CollapseWithoutAnimating();
+
   // Show audio settings detailed view.
   void ShowAudioDetailedView();
+
+  // Show network settings detailed view.
+  void ShowNetworkDetailedView(bool force);
 
   // Update bubble bounds and focus if necessary.
   void UpdateBubble();
 
-  // Update layer transform during expand / collapse animation. During
-  // animation, the height of the view changes, but resizing of the bubble is
-  // performance bottleneck. This method makes use of layer transform to avoid
-  // resizing of the bubble during animation.
-  void UpdateTransform();
+  // Return the maximum height available for both the system tray and
+  // the message center.
+  int CalculateMaxHeight() const;
+
+  // Return the current visible height of the tray, even when partially
+  // collapsed / expanded.
+  int GetCurrentTrayHeight() const;
+
+  // Relinquish focus and transfer it to the message center widget.
+  bool FocusOut(bool reverse);
+
+  // Inform UnifiedSystemTrayView of focus being acquired.
+  void FocusEntered(bool reverse);
+
+  // Called when the message center widget is activated.
+  void OnMessageCenterActivated();
+
+  // Fire a notification that an accessibility event has occured on this object.
+  void NotifyAccessibilityEvent(ax::mojom::Event event, bool send_native_event);
+
+  // Whether the bubble is currently showing audio details view.
+  bool ShowingAudioDetailedView() const;
 
   // TrayBubbleBase:
   TrayBackgroundView* GetTray() const override;
   TrayBubbleView* GetBubbleView() const override;
   views::Widget* GetBubbleWidget() const override;
 
-  // ash::ScreenLayoutObserver:
+  // ScreenLayoutObserver:
   void OnDisplayConfigurationChanged() override;
 
   // views::WidgetObserver:
@@ -101,14 +125,19 @@ class UnifiedSystemTrayBubble : public TrayBubbleBase,
   // ShelfObserver:
   void OnAutoHideStateChanged(ShelfAutoHideState new_state) override;
 
+  UnifiedSystemTrayView* unified_view() { return unified_view_; }
+
+  UnifiedSystemTrayController* controller_for_test() {
+    return controller_.get();
+  }
+
  private:
-  friend class UnifiedSystemTrayTestApi;
+  friend class SystemTrayTestApi;
 
   void UpdateBubbleBounds();
 
-  // Create / destroy background blur layer that is used during animation.
-  void CreateBlurLayerForAnimation();
-  void DestroyBlurLayerForAnimation();
+  // Called when the tray animation is finished.
+  void OnAnimationFinished();
 
   // Set visibility of bubble frame border. Used for disabling the border during
   // animation.
@@ -131,18 +160,11 @@ class UnifiedSystemTrayBubble : public TrayBubbleBase,
   // PreTargetHandler of |unified_view_| to record TimeToClick metrics. Owned.
   std::unique_ptr<TimeToClickRecorder> time_to_click_recorder_;
 
-  // The time the bubble is created. If the bubble is not created by button
-  // click (|show_by_click| in ctor is false), it is not set.
-  base::Optional<base::TimeTicks> time_shown_by_click_;
-
-  // Background blur layer that is used during animation.
-  std::unique_ptr<ui::LayerOwner> blur_layer_;
+  // The time the bubble is created.
+  absl::optional<base::TimeTicks> time_opened_;
 
   TrayBubbleView* bubble_view_ = nullptr;
   UnifiedSystemTrayView* unified_view_ = nullptr;
-
- private:
-  int CalculateMaxHeight() const;
 
   DISALLOW_COPY_AND_ASSIGN(UnifiedSystemTrayBubble);
 };

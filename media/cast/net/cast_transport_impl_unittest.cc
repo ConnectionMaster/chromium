@@ -11,7 +11,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/test/simple_test_tick_clock.h"
@@ -47,10 +47,10 @@ class FakePacketSender : public PacketTransport {
  public:
   FakePacketSender() : paused_(false), packets_sent_(0), bytes_sent_(0) {}
 
-  bool SendPacket(PacketRef packet, const base::Closure& cb) final {
+  bool SendPacket(PacketRef packet, base::OnceClosure cb) final {
     if (paused_) {
       stored_packet_ = packet;
-      callback_ = cb;
+      callback_ = std::move(cb);
       return false;
     }
     ++packets_sent_;
@@ -60,16 +60,15 @@ class FakePacketSender : public PacketTransport {
 
   int64_t GetBytesSent() final { return bytes_sent_; }
 
-  void StartReceiving(
-      const PacketReceiverCallbackWithStatus& packet_receiver) final {}
+  void StartReceiving(PacketReceiverCallbackWithStatus packet_receiver) final {}
 
   void StopReceiving() final {}
 
   void SetPaused(bool paused) {
     paused_ = paused;
     if (!paused && stored_packet_.get()) {
-      SendPacket(stored_packet_, callback_);
-      callback_.Run();
+      SendPacket(stored_packet_, base::OnceClosure());
+      std::move(callback_).Run();
     }
   }
 
@@ -77,7 +76,7 @@ class FakePacketSender : public PacketTransport {
 
  private:
   bool paused_;
-  base::Closure callback_;
+  base::OnceClosure callback_;
   PacketRef stored_packet_;
   int packets_sent_;
   int64_t bytes_sent_;
@@ -154,10 +153,10 @@ class TransportClient : public CastTransport::Client {
 
 void CastTransportImplTest::InitWithoutLogging() {
   transport_ = new FakePacketSender();
-  transport_sender_.reset(
-      new CastTransportImpl(&testing_clock_, base::TimeDelta(),
-                            std::make_unique<TransportClient>(nullptr),
-                            base::WrapUnique(transport_), task_runner_));
+  transport_sender_ = std::make_unique<CastTransportImpl>(
+      &testing_clock_, base::TimeDelta(),
+      std::make_unique<TransportClient>(nullptr), base::WrapUnique(transport_),
+      task_runner_);
   task_runner_->RunTasks();
 }
 
@@ -168,20 +167,20 @@ void CastTransportImplTest::InitWithOptions() {
   options->SetInteger("pacer_target_burst_size", 20);
   options->SetInteger("pacer_max_burst_size", 100);
   transport_ = new FakePacketSender();
-  transport_sender_.reset(
-      new CastTransportImpl(&testing_clock_, base::TimeDelta(),
-                            std::make_unique<TransportClient>(nullptr),
-                            base::WrapUnique(transport_), task_runner_));
+  transport_sender_ = std::make_unique<CastTransportImpl>(
+      &testing_clock_, base::TimeDelta(),
+      std::make_unique<TransportClient>(nullptr), base::WrapUnique(transport_),
+      task_runner_);
   transport_sender_->SetOptions(*options);
   task_runner_->RunTasks();
 }
 
 void CastTransportImplTest::InitWithLogging() {
   transport_ = new FakePacketSender();
-  transport_sender_.reset(new CastTransportImpl(
+  transport_sender_ = std::make_unique<CastTransportImpl>(
       &testing_clock_, base::TimeDelta::FromMilliseconds(10),
       std::make_unique<TransportClient>(this), base::WrapUnique(transport_),
-      task_runner_));
+      task_runner_);
   task_runner_->RunTasks();
 }
 

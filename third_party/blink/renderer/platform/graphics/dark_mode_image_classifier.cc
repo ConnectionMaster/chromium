@@ -1,15 +1,22 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2019 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/platform/graphics/dark_mode_image_classifier.h"
 
-#include "base/rand_util.h"
-#include "third_party/blink/renderer/platform/geometry/int_rect.h"
-#include "third_party/blink/renderer/platform/graphics/darkmode/darkmode_classifier.h"
-#include "third_party/skia/include/utils/SkNullCanvas.h"
+#include <set>
 
+#include "base/memory/singleton.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/renderer/platform/geometry/int_size.h"
+#include "third_party/blink/renderer/platform/graphics/darkmode/darkmode_classifier.h"
+
+namespace blink {
 namespace {
+
+// Decision tree lower and upper thresholds for grayscale and color images.
+const float kLowColorCountThreshold[2] = {0.8125, 0.015137};
+const float kHighColorCountThreshold[2] = {1, 0.025635};
 
 bool IsColorGray(const SkColor& color) {
   return abs(static_cast<int>(SkColorGetR(color)) -
@@ -23,125 +30,96 @@ bool IsColorTransparent(const SkColor& color) {
   return (SkColorGetA(color) < 128);
 }
 
-const int kPixelsToSample = 1000;
-const int kBlocksCount1D = 10;
-const int kMinImageSizeForClassification1D = 24;
+const int kMaxSampledPixels = 1000;
+const int kMaxBlocks = 10;
 const float kMinOpaquePixelPercentageForForeground = 0.2;
-
-// Decision tree lower and upper thresholds for grayscale and color images.
-const float kLowColorCountThreshold[2] = {0.8125, 0.015137};
-const float kHighColorCountThreshold[2] = {1, 0.025635};
 
 }  // namespace
 
-namespace blink {
+DarkModeImageClassifier::DarkModeImageClassifier() = default;
 
-DarkModeImageClassifier::DarkModeImageClassifier()
-    : pixels_to_sample_(kPixelsToSample) {}
+DarkModeImageClassifier::~DarkModeImageClassifier() = default;
 
-DarkModeClassification DarkModeImageClassifier::ClassifyBitmapImageForDarkMode(
-    Image& image,
-    const FloatRect& src_rect) {
-  std::vector<SkColor> sampled_pixels;
-  if (src_rect.Width() < kMinImageSizeForClassification1D ||
-      src_rect.Height() < kMinImageSizeForClassification1D)
-    return DarkModeClassification::kApplyDarkModeFilter;
+DarkModeResult DarkModeImageClassifier::Classify(const SkPixmap& pixmap,
+                                                 const SkIRect& src) const {
+  // Empty pixmap or |src| out of bounds cannot be classified.
+  SkIRect bounds = pixmap.bounds();
+  if (src.isEmpty() || bounds.isEmpty() || !bounds.contains(src) ||
+      !pixmap.addr())
+    return DarkModeResult::kDoNotApplyFilter;
 
-  std::vector<float> features;
-  if (!ComputeImageFeatures(image, src_rect, &features, &sampled_pixels)) {
-    // TODO(https://crbug.com/945434): Do not cache the classification when
-    // the correct resource is not loaded
-    image.SetShouldCacheDarkModeClassification(sampled_pixels.size() != 0);
-    return DarkModeClassification::kDoNotApplyDarkModeFilter;
-  }
+  auto features_or_null = GetFeatures(pixmap, src);
+  if (!features_or_null)
+    return DarkModeResult::kDoNotApplyFilter;
 
-  return ClassifyImage(features);
+  return ClassifyWithFeatures(features_or_null.value());
 }
 
-// This function computes a single feature vector based on a sample set of image
-// pixels. Please refer to |GetSamples| function for description of the sampling
-// method, and |GetFeatures| function for description of the features.
-bool DarkModeImageClassifier::ComputeImageFeatures(
-    Image& image,
-    const FloatRect& src_rect,
-    std::vector<float>* features,
-    std::vector<SkColor>* sampled_pixels) {
-  SkBitmap bitmap;
-  if (!GetBitmap(image, src_rect, &bitmap))
-    return false;
-
+absl::optional<DarkModeImageClassifier::Features>
+DarkModeImageClassifier::GetFeatures(const SkPixmap& pixmap,
+                                     const SkIRect& src) const {
+  DCHECK(!pixmap.bounds().isEmpty());
   float transparency_ratio;
   float background_ratio;
-  if (pixels_to_sample_ > src_rect.Width() * src_rect.Height())
-    pixels_to_sample_ = src_rect.Width() * src_rect.Height();
-  GetSamples(bitmap, sampled_pixels, &transparency_ratio, &background_ratio);
+  std::vector<SkColor> sampled_pixels;
+  GetSamples(pixmap, src, &sampled_pixels, &transparency_ratio,
+             &background_ratio);
   // TODO(https://crbug.com/945434): Investigate why an incorrect resource is
   // loaded and how we can fetch the correct resource. This condition will
   // prevent going further with the rest of the classification logic.
-  if (sampled_pixels->size() == 0)
-    return false;
+  if (sampled_pixels.size() == 0)
+    return absl::nullopt;
 
-  GetFeatures(*sampled_pixels, transparency_ratio, background_ratio, features);
-  return true;
-}
-
-bool DarkModeImageClassifier::GetBitmap(Image& image,
-                                        const FloatRect& src_rect,
-                                        SkBitmap* bitmap) {
-  DCHECK(image.IsBitmapImage());
-  if (!src_rect.Width() || !src_rect.Height())
-    return false;
-
-  SkScalar sx = SkFloatToScalar(src_rect.X());
-  SkScalar sy = SkFloatToScalar(src_rect.Y());
-  SkScalar sw = SkFloatToScalar(src_rect.Width());
-  SkScalar sh = SkFloatToScalar(src_rect.Height());
-  SkRect src = {sx, sy, sx + sw, sy + sh};
-  SkRect dest = {0, 0, sw, sh};
-  bitmap->allocPixels(SkImageInfo::MakeN32(static_cast<int>(src_rect.Width()),
-                                           static_cast<int>(src_rect.Height()),
-                                           kPremul_SkAlphaType));
-  SkCanvas canvas(*bitmap);
-  canvas.clear(SK_ColorTRANSPARENT);
-  canvas.drawImageRect(image.PaintImageForCurrentFrame().GetSkImage(), src,
-                       dest, nullptr);
-  return true;
+  return ComputeFeatures(sampled_pixels, transparency_ratio, background_ratio);
 }
 
 // Extracts sample pixels from the image. The image is separated into uniformly
 // distributed blocks through its width and height, each block is sampled, and
 // checked to see if it seems to be background or foreground.
-void DarkModeImageClassifier::GetSamples(const SkBitmap& bitmap,
+void DarkModeImageClassifier::GetSamples(const SkPixmap& pixmap,
+                                         const SkIRect& src,
                                          std::vector<SkColor>* sampled_pixels,
                                          float* transparency_ratio,
-                                         float* background_ratio) {
-  int pixels_per_block = pixels_to_sample_ / (kBlocksCount1D * kBlocksCount1D);
+                                         float* background_ratio) const {
+  DCHECK(!src.isEmpty());
 
+  int num_sampled_pixels =
+      std::min(kMaxSampledPixels, src.width() * src.height());
+  int num_blocks_x = std::min(kMaxBlocks, src.width());
+  int num_blocks_y = std::min(kMaxBlocks, src.height());
+  int pixels_per_block = num_sampled_pixels / (num_blocks_x * num_blocks_y);
   int transparent_pixels = 0;
   int opaque_pixels = 0;
   int blocks_count = 0;
 
-  std::vector<int> horizontal_grid(kBlocksCount1D + 1);
-  std::vector<int> vertical_grid(kBlocksCount1D + 1);
-  for (int block = 0; block <= kBlocksCount1D; block++) {
-    horizontal_grid[block] = static_cast<int>(
-        round(block * bitmap.width() / static_cast<float>(kBlocksCount1D)));
-    vertical_grid[block] = static_cast<int>(
-        round(block * bitmap.height() / static_cast<float>(kBlocksCount1D)));
+  std::vector<int> horizontal_grid(num_blocks_x + 1);
+  std::vector<int> vertical_grid(num_blocks_y + 1);
+
+  float block_width = static_cast<float>(src.width()) / num_blocks_x;
+  float block_height = static_cast<float>(src.height()) / num_blocks_y;
+
+  for (int block = 0; block <= num_blocks_x; block++) {
+    horizontal_grid[block] =
+        src.x() + static_cast<int>(round(block_width * block));
+  }
+  for (int block = 0; block <= num_blocks_y; block++) {
+    vertical_grid[block] =
+        src.y() + static_cast<int>(round(block_height * block));
   }
 
   sampled_pixels->clear();
-  std::vector<IntRect> foreground_blocks;
+  std::vector<SkIRect> foreground_blocks;
 
-  for (int y = 0; y < kBlocksCount1D; y++) {
-    for (int x = 0; x < kBlocksCount1D; x++) {
-      IntRect block(horizontal_grid[x], vertical_grid[y],
-                    horizontal_grid[x + 1] - horizontal_grid[x],
-                    vertical_grid[y + 1] - vertical_grid[y]);
+  for (int y = 0; y < num_blocks_y; y++) {
+    for (int x = 0; x < num_blocks_x; x++) {
+      SkIRect block =
+          SkIRect::MakeXYWH(horizontal_grid[x], vertical_grid[y],
+                            horizontal_grid[x + 1] - horizontal_grid[x],
+                            vertical_grid[y + 1] - vertical_grid[y]);
 
       std::vector<SkColor> block_samples;
       int block_transparent_pixels;
-      GetBlockSamples(bitmap, block, pixels_per_block, &block_samples,
+      GetBlockSamples(pixmap, block, pixels_per_block, &block_samples,
                       &block_transparent_pixels);
       opaque_pixels += static_cast<int>(block_samples.size());
       transparent_pixels += block_transparent_pixels;
@@ -165,32 +143,25 @@ void DarkModeImageClassifier::GetSamples(const SkBitmap& bitmap,
 // Returns the opaque sampled pixels, and the number of transparent
 // sampled pixels.
 void DarkModeImageClassifier::GetBlockSamples(
-    const SkBitmap& bitmap,
-    const IntRect& block,
+    const SkPixmap& pixmap,
+    const SkIRect& block,
     const int required_samples_count,
     std::vector<SkColor>* sampled_pixels,
-    int* transparent_pixels_count) {
+    int* transparent_pixels_count) const {
   *transparent_pixels_count = 0;
 
-  int x1 = block.X();
-  int y1 = block.Y();
-  int x2 = block.MaxX();
-  int y2 = block.MaxY();
-  DCHECK(x1 < bitmap.width());
-  DCHECK(y1 < bitmap.height());
-  DCHECK(x2 <= bitmap.width());
-  DCHECK(y2 <= bitmap.height());
+  DCHECK(pixmap.bounds().contains(block));
 
   sampled_pixels->clear();
 
   int cx = static_cast<int>(
-      ceil(static_cast<float>(x2 - x1) / sqrt(required_samples_count)));
+      ceil(static_cast<float>(block.width()) / sqrt(required_samples_count)));
   int cy = static_cast<int>(
-      ceil(static_cast<float>(y2 - y1) / sqrt(required_samples_count)));
+      ceil(static_cast<float>(block.height()) / sqrt(required_samples_count)));
 
-  for (int y = y1; y < y2; y += cy) {
-    for (int x = x1; x < x2; x += cx) {
-      SkColor new_sample = bitmap.getColor(x, y);
+  for (int y = block.y(); y < block.bottom(); y += cy) {
+    for (int x = block.x(); x < block.right(); x += cx) {
+      SkColor new_sample = pixmap.getColor(x, y);
       if (IsColorTransparent(new_sample))
         (*transparent_pixels_count)++;
       else
@@ -199,18 +170,10 @@ void DarkModeImageClassifier::GetBlockSamples(
   }
 }
 
-// This function computes a single feature vector from a sample set of image
-// pixels. The current features are:
-// 0: 1 if color, 0 if grayscale.
-// 1: Ratio of the number of bucketed colors used in the image to all
-//    possiblities. Color buckets are represented with 4 bits per color channel.
-// 2: Ratio of transparent area to the whole image.
-// 3: Ratio of the background area to the whole image.
-void DarkModeImageClassifier::GetFeatures(
+DarkModeImageClassifier::Features DarkModeImageClassifier::ComputeFeatures(
     const std::vector<SkColor>& sampled_pixels,
     const float transparency_ratio,
-    const float background_ratio,
-    std::vector<float>* features) {
+    const float background_ratio) const {
   int samples_count = static_cast<int>(sampled_pixels.size());
 
   // Is image grayscale.
@@ -223,37 +186,33 @@ void DarkModeImageClassifier::GetFeatures(
                              ? ColorMode::kColor
                              : ColorMode::kGrayscale;
 
-  features->resize(4);
+  DarkModeImageClassifier::Features features;
+  features.is_colorful = color_mode == ColorMode::kColor;
+  features.color_buckets_ratio =
+      ComputeColorBucketsRatio(sampled_pixels, color_mode);
+  features.transparency_ratio = transparency_ratio;
+  features.background_ratio = background_ratio;
 
-  // Feature 0: Is Colorful?
-  (*features)[0] = color_mode == ColorMode::kColor;
-
-  // Feature 1: Color Buckets Ratio.
-  (*features)[1] = ComputeColorBucketsRatio(sampled_pixels, color_mode);
-
-  // Feature 2: Transparency Ratio
-  (*features)[2] = transparency_ratio;
-
-  // Feature 3: Background Ratio.
-  (*features)[3] = background_ratio;
+  return features;
 }
 
 float DarkModeImageClassifier::ComputeColorBucketsRatio(
     const std::vector<SkColor>& sampled_pixels,
-    const ColorMode color_mode) {
-  std::set<unsigned> buckets;
+    const ColorMode color_mode) const {
+  std::set<uint16_t> buckets;
+
   // If image is in color, use 4 bits per color channel, otherwise 4 bits for
   // illumination.
   if (color_mode == ColorMode::kColor) {
     for (const SkColor& sample : sampled_pixels) {
-      unsigned bucket = ((SkColorGetR(sample) >> 4) << 8) +
+      uint16_t bucket = ((SkColorGetR(sample) >> 4) << 8) +
                         ((SkColorGetG(sample) >> 4) << 4) +
                         ((SkColorGetB(sample) >> 4));
       buckets.insert(bucket);
     }
   } else {
     for (const SkColor& sample : sampled_pixels) {
-      unsigned illumination =
+      uint16_t illumination =
           (SkColorGetR(sample) * 5 + SkColorGetG(sample) * 3 +
            SkColorGetB(sample) * 2) /
           10;
@@ -268,44 +227,48 @@ float DarkModeImageClassifier::ComputeColorBucketsRatio(
          max_buckets[color_mode == ColorMode::kColor];
 }
 
-DarkModeClassification DarkModeImageClassifier::ClassifyImageUsingDecisionTree(
-    const std::vector<float>& features) {
-  DCHECK_EQ(features.size(), 4u);
-
-  int is_color = features[0] > 0;
-  float color_count_ratio = features[1];
-  float low_color_count_threshold = kLowColorCountThreshold[is_color];
-  float high_color_count_threshold = kHighColorCountThreshold[is_color];
-
-  // Very few colors means it's not a photo, apply the filter.
-  if (color_count_ratio < low_color_count_threshold)
-    return DarkModeClassification::kApplyDarkModeFilter;
-
-  // Too many colors means it's probably photorealistic, do not apply it.
-  if (color_count_ratio > high_color_count_threshold)
-    return DarkModeClassification::kDoNotApplyDarkModeFilter;
-
-  // In-between, decision tree cannot give a precise result.
-  return DarkModeClassification::kNotClassified;
-}
-
-DarkModeClassification DarkModeImageClassifier::ClassifyImage(
-    const std::vector<float>& features) {
-  DCHECK_EQ(features.size(), 4u);
-
-  DarkModeClassification result = ClassifyImageUsingDecisionTree(features);
+DarkModeResult DarkModeImageClassifier::ClassifyWithFeatures(
+    const Features& features) const {
+  DarkModeResult result = ClassifyUsingDecisionTree(features);
 
   // If decision tree cannot decide, we use a neural network to decide whether
   // to filter or not based on all the features.
-  if (result == DarkModeClassification::kNotClassified) {
+  if (result == DarkModeResult::kNotClassified) {
     darkmode_tfnative_model::FixedAllocations nn_temp;
     float nn_out;
-    darkmode_tfnative_model::Inference(&features[0], &nn_out, &nn_temp);
-    result = nn_out > 0 ? DarkModeClassification::kApplyDarkModeFilter
-                        : DarkModeClassification::kDoNotApplyDarkModeFilter;
+
+    // The neural network expects these features to be in a specific order
+    // within float array. Do not change the order here without also changing
+    // the neural network code!
+    float feature_list[]{
+        features.is_colorful ? 1.0f : 0.0f, features.color_buckets_ratio,
+        features.transparency_ratio, features.background_ratio};
+
+    darkmode_tfnative_model::Inference(feature_list, &nn_out, &nn_temp);
+    result = nn_out > 0 ? DarkModeResult::kApplyFilter
+                        : DarkModeResult::kDoNotApplyFilter;
   }
 
   return result;
+}
+
+DarkModeResult DarkModeImageClassifier::ClassifyUsingDecisionTree(
+    const DarkModeImageClassifier::Features& features) const {
+  float low_color_count_threshold =
+      kLowColorCountThreshold[features.is_colorful];
+  float high_color_count_threshold =
+      kHighColorCountThreshold[features.is_colorful];
+
+  // Very few colors means it's not a photo, apply the filter.
+  if (features.color_buckets_ratio < low_color_count_threshold)
+    return DarkModeResult::kApplyFilter;
+
+  // Too many colors means it's probably photorealistic, do not apply it.
+  if (features.color_buckets_ratio > high_color_count_threshold)
+    return DarkModeResult::kDoNotApplyFilter;
+
+  // In-between, decision tree cannot give a precise result.
+  return DarkModeResult::kNotClassified;
 }
 
 }  // namespace blink

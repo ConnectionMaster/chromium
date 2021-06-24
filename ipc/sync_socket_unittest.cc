@@ -28,6 +28,7 @@
 
 #define IPC_MESSAGE_IMPL
 #include "ipc/ipc_message_macros.h"
+#include "ipc/ipc_message_start.h"
 
 #define IPC_MESSAGE_START TestMsgStart
 
@@ -57,8 +58,7 @@ const size_t kHelloStringLength = base::size(kHelloString);
 // messages from the client.
 class SyncSocketServerListener : public IPC::Listener {
  public:
-  SyncSocketServerListener() : chan_(NULL) {
-  }
+  SyncSocketServerListener() : chan_(nullptr) {}
 
   void Init(IPC::Channel* chan) {
     chan_ = chan;

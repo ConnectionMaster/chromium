@@ -20,6 +20,8 @@
 #include "third_party/blink/renderer/core/svg/svg_fe_displacement_map_element.h"
 
 #include "third_party/blink/renderer/core/svg/graphics/filters/svg_filter_builder.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_number.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_string.h"
 #include "third_party/blink/renderer/core/svg/svg_enumeration_map.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
@@ -35,8 +37,7 @@ const SVGEnumerationMap& GetEnumerationMap<ChannelSelectorType>() {
   return entries;
 }
 
-inline SVGFEDisplacementMapElement::SVGFEDisplacementMapElement(
-    Document& document)
+SVGFEDisplacementMapElement::SVGFEDisplacementMapElement(Document& document)
     : SVGFilterPrimitiveStandardAttributes(svg_names::kFEDisplacementMapTag,
                                            document),
       scale_(MakeGarbageCollected<SVGAnimatedNumber>(this,
@@ -61,7 +62,7 @@ inline SVGFEDisplacementMapElement::SVGFEDisplacementMapElement(
   AddToPropertyMap(y_channel_selector_);
 }
 
-void SVGFEDisplacementMapElement::Trace(blink::Visitor* visitor) {
+void SVGFEDisplacementMapElement::Trace(Visitor* visitor) const {
   visitor->Trace(scale_);
   visitor->Trace(in1_);
   visitor->Trace(in2_);
@@ -70,18 +71,18 @@ void SVGFEDisplacementMapElement::Trace(blink::Visitor* visitor) {
   SVGFilterPrimitiveStandardAttributes::Trace(visitor);
 }
 
-DEFINE_NODE_FACTORY(SVGFEDisplacementMapElement)
-
 bool SVGFEDisplacementMapElement::SetFilterEffectAttribute(
     FilterEffect* effect,
     const QualifiedName& attr_name) {
   FEDisplacementMap* displacement_map = static_cast<FEDisplacementMap*>(effect);
-  if (attr_name == svg_names::kXChannelSelectorAttr)
+  if (attr_name == svg_names::kXChannelSelectorAttr) {
     return displacement_map->SetXChannelSelector(
-        x_channel_selector_->CurrentValue()->EnumValue());
-  if (attr_name == svg_names::kYChannelSelectorAttr)
+        x_channel_selector_->CurrentEnumValue());
+  }
+  if (attr_name == svg_names::kYChannelSelectorAttr) {
     return displacement_map->SetYChannelSelector(
-        y_channel_selector_->CurrentValue()->EnumValue());
+        y_channel_selector_->CurrentEnumValue());
+  }
   if (attr_name == svg_names::kScaleAttr)
     return displacement_map->SetScale(scale_->CurrentValue()->Value());
 
@@ -90,7 +91,8 @@ bool SVGFEDisplacementMapElement::SetFilterEffectAttribute(
 }
 
 void SVGFEDisplacementMapElement::SvgAttributeChanged(
-    const QualifiedName& attr_name) {
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   if (attr_name == svg_names::kXChannelSelectorAttr ||
       attr_name == svg_names::kYChannelSelectorAttr ||
       attr_name == svg_names::kScaleAttr) {
@@ -105,7 +107,7 @@ void SVGFEDisplacementMapElement::SvgAttributeChanged(
     return;
   }
 
-  SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(attr_name);
+  SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(params);
 }
 
 FilterEffect* SVGFEDisplacementMapElement::Build(
@@ -119,9 +121,8 @@ FilterEffect* SVGFEDisplacementMapElement::Build(
   DCHECK(input2);
 
   auto* effect = MakeGarbageCollected<FEDisplacementMap>(
-      filter, x_channel_selector_->CurrentValue()->EnumValue(),
-      y_channel_selector_->CurrentValue()->EnumValue(),
-      scale_->CurrentValue()->Value());
+      filter, x_channel_selector_->CurrentEnumValue(),
+      y_channel_selector_->CurrentEnumValue(), scale_->CurrentValue()->Value());
   FilterEffectVector& input_effects = effect->InputEffects();
   input_effects.ReserveCapacity(2);
   input_effects.push_back(input1);

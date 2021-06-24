@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that uncaught promise rejections are logged into console.\n`);
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
   await TestRunner.evaluateInPagePromise(`
       var tested = 0;
@@ -97,22 +97,12 @@
       }
   `);
 
-  ConsoleTestRunner.addConsoleViewSniffer(checkConsoleMessages, true);
-  Common.console.showPromise();
-
-  checkConsoleMessages();
-
-  function checkConsoleMessages() {
-    TestRunner.evaluateInPage('runNextPromiseTest()', callback);
-
-    function callback(result) {
-      if (!result)
-        ConsoleTestRunner.expandConsoleMessages(dump);
-    }
+  while (await TestRunner.evaluateInPagePromise('runNextPromiseTest()')) {
+      // Run all the test cases until there are no more.
   }
 
-  function dump() {
-    ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
-    TestRunner.completeTest();
-  }
+  ConsoleTestRunner.expandConsoleMessages(async () => {
+      await ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
+      TestRunner.completeTest();
+  });
 })();

@@ -6,8 +6,10 @@
 
 #include "base/containers/flat_set.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/chromeos_buildflags.h"
 #include "content/browser/browser_main_loop.h"
-#include "content/browser/media/hardware_key_media_controller.h"
+#include "content/browser/media/active_media_session_controller.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "media/base/media_switches.h"
 #include "services/media_session/public/cpp/test/test_media_controller.h"
@@ -15,6 +17,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/media_keys_listener.h"
+
+// Disable on CrOS because MediaKeysListenerManager is disabled.
+#if !BUILDFLAG(IS_CHROMEOS_LACROS)
 
 namespace content {
 
@@ -46,7 +51,7 @@ class MockMediaKeysListener : public ui::MediaKeysListener {
       delegate_->OnMediaKeysAccelerator(accelerator);
   }
 
-  bool IsWatching(ui::KeyboardCode key_code) {
+  bool IsWatching(ui::KeyboardCode key_code) const {
     return key_codes_.contains(key_code);
   }
 
@@ -108,24 +113,24 @@ class MediaKeysListenerManagerImplTest : public ContentBrowserTest {
         std::move(listener));
 
     media_controller_ = std::make_unique<TestMediaController>();
-    media_keys_listener_manager_->hardware_key_media_controller_for_testing()
+    media_keys_listener_manager_->active_media_session_controller_for_testing()
         ->SetMediaControllerForTesting(
-            media_controller_->CreateMediaControllerPtr());
+            media_controller_->CreateMediaControllerRemote());
 
     ContentBrowserTest::SetUpOnMainThread();
   }
 
   void SetMediaSessionInfo(MediaSessionInfoPtr session_info) {
-    media_keys_listener_manager_->hardware_key_media_controller_for_testing()
+    media_keys_listener_manager_->active_media_session_controller_for_testing()
         ->MediaSessionInfoChanged(std::move(session_info));
   }
   void SetSupportedMediaSessionActions(
       const std::vector<MediaSessionAction>& actions) {
-    media_keys_listener_manager_->hardware_key_media_controller_for_testing()
+    media_keys_listener_manager_->active_media_session_controller_for_testing()
         ->MediaSessionActionsChanged(actions);
   }
   void FlushForTesting() {
-    media_keys_listener_manager_->hardware_key_media_controller_for_testing()
+    media_keys_listener_manager_->active_media_session_controller_for_testing()
         ->FlushForTesting();
   }
 
@@ -145,8 +150,8 @@ class MediaKeysListenerManagerImplTest : public ContentBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest, PressPlayPauseKey) {
-  // Tell the HardwareKeyMediaController that there is media playing that can be
-  // paused.
+  // Tell the ActiveMediaSessionController that there is media playing that can
+  // be paused.
   {
     MediaSessionInfoPtr session_info(MediaSessionInfo::New());
     session_info->playback_state = MediaPlaybackState::kPlaying;
@@ -167,8 +172,8 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest, PressPlayPauseKey) {
   EXPECT_EQ(1, media_controller()->suspend_count());
   EXPECT_EQ(0, media_controller()->resume_count());
 
-  // Tell the HardwareKeyMediaController that the media is now paused and can be
-  // played.
+  // Tell the ActiveMediaSessionController that the media is now paused and can
+  // be played.
   {
     MediaSessionInfoPtr session_info(MediaSessionInfo::New());
     session_info->playback_state = MediaPlaybackState::kPaused;
@@ -194,8 +199,8 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_NEXT_TRACK));
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_PREV_TRACK));
 
-  // Tell the HardwareKeyMediaController that there is media playing that can be
-  // paused.
+  // Tell the ActiveMediaSessionController that there is media playing that can
+  // be paused.
   {
     MediaSessionInfoPtr session_info(MediaSessionInfo::New());
     session_info->playback_state = MediaPlaybackState::kPlaying;
@@ -229,7 +234,7 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_NEXT_TRACK));
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_PREV_TRACK));
 
-  // Disable media key handling for the HardwareKeyMediaController.
+  // Disable media key handling for the ActiveMediaSessionController.
   media_keys_listener_manager()->DisableInternalMediaKeyHandling();
 
   // We should no longer be listening for key input.
@@ -238,7 +243,7 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_NEXT_TRACK));
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_PREV_TRACK));
 
-  // Re-enable media key handling for the HardwareKeyMediaController.
+  // Re-enable media key handling for the ActiveMediaSessionController.
   media_keys_listener_manager()->EnableInternalMediaKeyHandling();
 
   // We should now be listening for the correct media keys.
@@ -247,7 +252,7 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_NEXT_TRACK));
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_PREV_TRACK));
 
-  // Have a different delegate besides the HardwareKeyMediaController request
+  // Have a different delegate besides the ActiveMediaSessionController request
   // keys.
   MockMediaKeysListenerDelegate delegate;
   media_keys_listener_manager()->StartWatchingMediaKey(
@@ -263,13 +268,13 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
   media_keys_listener_manager()->StopWatchingMediaKey(ui::VKEY_MEDIA_PLAY_PAUSE,
                                                       &delegate);
 
-  // We should now be listening for the HardwareKeyMediaController's keys.
+  // We should now be listening for the ActiveMediaSessionController's keys.
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_PLAY_PAUSE));
   EXPECT_TRUE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_STOP));
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_NEXT_TRACK));
   EXPECT_FALSE(media_keys_listener()->IsWatching(ui::VKEY_MEDIA_PREV_TRACK));
 
-  // Tell the HardwareKeyMediaController there is no longer an active session.
+  // Tell the ActiveMediaSessionController there is no longer an active session.
   SetMediaSessionInfo(nullptr);
   SetSupportedMediaSessionActions({});
 
@@ -281,9 +286,9 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
 }
 
 IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
-                       OtherDelegatesPreemptHardwareKeyMediaController) {
-  // Tell the HardwareKeyMediaController that there is media playing that can be
-  // paused or sent to the next track.
+                       OtherDelegatesPreemptActiveMediaSessionController) {
+  // Tell the ActiveMediaSessionController that there is media playing that can
+  // be paused or sent to the next track.
   {
     MediaSessionInfoPtr session_info(MediaSessionInfo::New());
     session_info->playback_state = MediaPlaybackState::kPlaying;
@@ -332,3 +337,5 @@ IN_PROC_BROWSER_TEST_F(MediaKeysListenerManagerImplTest,
 }
 
 }  // namespace content
+
+#endif  // !BUILDFLAG(IS_CHROMEOS_LACROS)

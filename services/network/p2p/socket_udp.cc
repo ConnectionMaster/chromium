@@ -5,9 +5,9 @@
 #include "services/network/p2p/socket_udp.h"
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -102,8 +102,8 @@ P2PSocketUdp::PendingPacket::PendingPacket(const PendingPacket& other) =
 P2PSocketUdp::PendingPacket::~PendingPacket() = default;
 
 P2PSocketUdp::P2PSocketUdp(Delegate* Delegate,
-                           mojom::P2PSocketClientPtr client,
-                           mojom::P2PSocketRequest socket,
+                           mojo::PendingRemote<mojom::P2PSocketClient> client,
+                           mojo::PendingReceiver<mojom::P2PSocket> socket,
                            P2PMessageThrottler* throttler,
                            net::NetLog* net_log,
                            const DatagramServerSocketFactory& socket_factory)
@@ -113,8 +113,8 @@ P2PSocketUdp::P2PSocketUdp(Delegate* Delegate,
       socket_factory_(socket_factory) {}
 
 P2PSocketUdp::P2PSocketUdp(Delegate* Delegate,
-                           mojom::P2PSocketClientPtr client,
-                           mojom::P2PSocketRequest socket,
+                           mojo::PendingRemote<mojom::P2PSocketClient> client,
+                           mojo::PendingReceiver<mojom::P2PSocket> socket,
                            P2PMessageThrottler* throttler,
                            net::NetLog* net_log)
     : P2PSocketUdp(Delegate,
@@ -129,7 +129,8 @@ P2PSocketUdp::~P2PSocketUdp() = default;
 void P2PSocketUdp::Init(const net::IPEndPoint& local_address,
                         uint16_t min_port,
                         uint16_t max_port,
-                        const P2PHostAndIPEndPoint& remote_address) {
+                        const P2PHostAndIPEndPoint& remote_address,
+                        const net::NetworkIsolationKey& network_isolation_key) {
   DCHECK(!socket_);
   DCHECK((min_port == 0 && max_port == 0) || min_port > 0);
   DCHECK_LE(min_port, max_port);
@@ -209,7 +210,7 @@ bool P2PSocketUdp::HandleReadResult(int result) {
     std::vector<int8_t> data(recv_buffer_->data(),
                              recv_buffer_->data() + result);
 
-    if (!base::ContainsKey(connected_peers_, recv_address_)) {
+    if (!base::Contains(connected_peers_, recv_address_)) {
       P2PSocket::StunMessageType type;
       bool stun = GetStunPacketType(reinterpret_cast<uint8_t*>(&*data.begin()),
                                     data.size(), &type);
@@ -247,7 +248,7 @@ bool P2PSocketUdp::DoSend(const PendingPacket& packet) {
   // messages to that peer and they are throttled using the |throttler_|. This
   // has to be done here instead of Send() to ensure P2PMsg_OnSendComplete
   // messages are sent in correct order.
-  if (!base::ContainsKey(connected_peers_, packet.to)) {
+  if (!base::Contains(connected_peers_, packet.to)) {
     P2PSocket::StunMessageType type = P2PSocket::StunMessageType();
     bool stun =
         GetStunPacketType(reinterpret_cast<const uint8_t*>(packet.data->data()),
@@ -271,8 +272,8 @@ bool P2PSocketUdp::DoSend(const PendingPacket& packet) {
     }
   }
 
-  TRACE_EVENT_ASYNC_STEP_INTO1("p2p", "Send", packet.id, "UdpAsyncSendTo",
-                               "size", packet.size);
+  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("p2p", "UdpAsyncSendTo", packet.id, "size",
+                                    packet.size);
   // Don't try to set DSCP in following conditions,
   // 1. If the outgoing packet is set to DSCP_NO_CHANGE
   // 2. If no change in DSCP value from last packet
@@ -295,14 +296,14 @@ bool P2PSocketUdp::DoSend(const PendingPacket& packet) {
   cricket::ApplyPacketOptions(
       reinterpret_cast<uint8_t*>(packet.data->data()), packet.size,
       packet.packet_options.packet_time_params, send_time_us);
-  auto callback_binding =
-      base::Bind(&P2PSocketUdp::OnSend, base::Unretained(this), packet.id,
-                 packet.packet_options.packet_id, send_time_us / 1000);
+  auto callback_binding = base::BindRepeating(
+      &P2PSocketUdp::OnSend, base::Unretained(this), packet.id,
+      packet.packet_options.packet_id, send_time_us / 1000);
 
   // TODO(crbug.com/656607): Pass traffic annotation after DatagramSocketServer
   // is updated.
   int result = socket_->SendTo(packet.data.get(), packet.size, packet.to,
-                               callback_binding);
+                               base::BindOnce(callback_binding));
 
   // sendto() may return an error, e.g. if we've received an ICMP Destination
   // Unreachable message. When this happens try sending the same packet again,
@@ -357,7 +358,8 @@ bool P2PSocketUdp::HandleSendResult(uint64_t packet_id,
                                     int32_t transport_sequence_number,
                                     int64_t send_time_ms,
                                     int result) {
-  TRACE_EVENT_ASYNC_END1("p2p", "Send", packet_id, "result", result);
+  TRACE_EVENT_NESTABLE_ASYNC_END0("p2p", "UdpAsyncSendTo", packet_id);
+  TRACE_EVENT_NESTABLE_ASYNC_END1("p2p", "Send", packet_id, "result", result);
   if (result < 0) {
     ReportSocketError(result, "WebRTC.ICE.UdpSocketWriteErrorCode");
 

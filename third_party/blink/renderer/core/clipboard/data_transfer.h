@@ -25,14 +25,17 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CLIPBOARD_DATA_TRANSFER_H_
 
 #include <memory>
+
+#include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/renderer/core/clipboard/data_object.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
-#include "third_party/blink/renderer/core/page/drag_actions.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/geometry/int_point.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom-blink-forward.h"
 
 namespace blink {
 
@@ -50,12 +53,11 @@ enum class DataTransferAccessPolicy;
 
 // Used for drag and drop and copy/paste.
 // Drag and Drop:
-// http://www.whatwg.org/specs/web-apps/current-work/multipage/dnd.html
+// https://html.spec.whatwg.org/multipage/dnd.html
 // Clipboard API (copy/paste):
-// http://dev.w3.org/2006/webapi/clipops/clipops.html
+// https://w3c.github.io/clipboard-apis/
 class CORE_EXPORT DataTransfer final : public ScriptWrappable,
                                        public DataObject::Observer {
-  USING_GARBAGE_COLLECTED_MIXIN(DataTransfer);
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -72,23 +74,19 @@ class CORE_EXPORT DataTransfer final : public ScriptWrappable,
                               DataTransferAccessPolicy,
                               DataObject*);
 
-  explicit DataTransfer(DataTransferType,
-                        DataTransferAccessPolicy,
-                        DataObject*);
+  DataTransfer(DataTransferType, DataTransferAccessPolicy, DataObject*);
   ~DataTransfer() override;
 
   bool IsForCopyAndPaste() const { return transfer_type_ == kCopyAndPaste; }
   bool IsForDragAndDrop() const { return transfer_type_ == kDragAndDrop; }
 
-  String dropEffect() const {
-    return DropEffectIsUninitialized() ? "none" : drop_effect_;
+  AtomicString dropEffect() const {
+    return DropEffectIsInitialized() ? drop_effect_ : "none";
   }
-  void setDropEffect(const String&);
-  bool DropEffectIsUninitialized() const {
-    return drop_effect_ == "uninitialized";
-  }
-  String effectAllowed() const { return effect_allowed_; }
-  void setEffectAllowed(const String&);
+  void setDropEffect(const AtomicString&);
+  bool DropEffectIsInitialized() const { return !drop_effect_.IsNull(); }
+  AtomicString effectAllowed() const { return effect_allowed_; }
+  void setEffectAllowed(const AtomicString&);
 
   void clearData(const String& type = String());
   String getData(const String& type) const;
@@ -126,12 +124,10 @@ class CORE_EXPORT DataTransfer final : public ScriptWrappable,
   // anyway.
   bool CanSetDragImage() const;
 
-  DragOperation SourceOperation() const;
-  DragOperation DestinationOperation() const;
-  void SetSourceOperation(DragOperation);
-  void SetDestinationOperation(DragOperation);
-
-  bool HasDropZoneType(const String&);
+  DragOperationsMask SourceOperation() const;
+  ui::mojom::blink::DragOperation DestinationOperation() const;
+  void SetSourceOperation(DragOperationsMask);
+  void SetDestinationOperation(ui::mojom::blink::DragOperation);
 
   DataTransferItemList* items();
 
@@ -149,16 +145,15 @@ class CORE_EXPORT DataTransfer final : public ScriptWrappable,
   // |paint_offset| is the offset from the origin of the dragged
   // object of the PaintRecordBuilder.
   static std::unique_ptr<DragImage> CreateDragImageForFrame(
-      const LocalFrame&,
+      LocalFrame&,
       float,
-      RespectImageOrientationEnum,
       const FloatSize& css_size,
       const FloatPoint& paint_offset,
       PaintRecordBuilder&,
       const PropertyTreeState&);
-  static std::unique_ptr<DragImage> NodeImage(const LocalFrame&, Node&);
+  static std::unique_ptr<DragImage> NodeImage(LocalFrame&, Node&);
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
   void setDragImage(ImageResourceContent*, Node*, const IntPoint&);
@@ -172,8 +167,8 @@ class CORE_EXPORT DataTransfer final : public ScriptWrappable,
   // Instead of using this member directly, prefer to use the can*() methods
   // above.
   DataTransferAccessPolicy policy_;
-  String drop_effect_;
-  String effect_allowed_;
+  AtomicString drop_effect_;
+  AtomicString effect_allowed_;
   DataTransferType transfer_type_;
   Member<DataObject> data_object_;
 
@@ -183,10 +178,6 @@ class CORE_EXPORT DataTransfer final : public ScriptWrappable,
   Member<ImageResourceContent> drag_image_;
   Member<Node> drag_image_element_;
 };
-
-DragOperation ConvertDropZoneOperationToDragOperation(
-    const String& drag_operation);
-String ConvertDragOperationToDropZoneOperation(DragOperation);
 
 }  // namespace blink
 

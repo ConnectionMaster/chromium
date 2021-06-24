@@ -7,7 +7,6 @@
 
 #include "base/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "ui/display/display_export.h"
 #include "ui/gfx/icc_profile.h"
 
@@ -42,11 +41,16 @@ class DISPLAY_EXPORT ColorProfileReader {
   gfx::ColorSpace GetDisplayColorSpace(int64_t id) const;
 
  private:
-  typedef std::map<base::string16, base::string16> DeviceToPathMap;
-  typedef std::map<base::string16, std::string> DeviceToDataMap;
+  typedef std::map<std::wstring, std::wstring> DeviceToPathMap;
+  typedef std::map<std::wstring, std::string> DeviceToDataMap;
 
-  // Enumerate displays and return a map to their ICC profile path.
-  static DeviceToPathMap BuildDeviceToPathMap();
+  // Enumerate displays and return a map to their ICC profile path. This
+  // needs to be run off of the main thread.
+  static ColorProfileReader::DeviceToPathMap
+  BuildDeviceToPathMapOnBackgroundThread();
+
+  // Called on the main thread when the device paths have been retrieved
+  void BuildDeviceToPathMapCompleted(DeviceToPathMap new_device_to_path_map);
 
   // Do the actual reading from the filesystem. This needs to be run off of the
   // main thread.
@@ -57,13 +61,10 @@ class DISPLAY_EXPORT ColorProfileReader {
   void ReadProfilesCompleted(DeviceToDataMap device_to_data_map);
 
   Client* const client_ = nullptr;
-  // Set to true once profiles have been read at least once, to avoid
-  // histogramming the default value.
-  bool has_read_profiles_ = false;
   bool update_in_flight_ = false;
   DeviceToPathMap device_to_path_map_;
   std::map<int64_t, gfx::ICCProfile> display_id_to_profile_map_;
-  base::WeakPtrFactory<ColorProfileReader> weak_factory_;
+  base::WeakPtrFactory<ColorProfileReader> weak_factory_{this};
 };
 
 }  // namespace win

@@ -12,7 +12,7 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string_number_conversions.h"
@@ -124,15 +124,15 @@ std::string DecryptSampleAES(const std::string& key,
 // We only support AES-CBC at this time.
 // For the purpose of these tests, the key id is also used as the actual key.
 std::string DecryptBuffer(const StreamParserBuffer& buffer,
-                          const EncryptionScheme& scheme) {
-  EXPECT_TRUE(scheme.is_encrypted());
-  EXPECT_TRUE(scheme.mode() == EncryptionScheme::CIPHER_MODE_AES_CBC);
+                          EncryptionScheme scheme) {
+  EXPECT_EQ(scheme, EncryptionScheme::kCbcs);
 
   // Audio streams use whole block full sample encryption (so pattern = {0,0}),
   // so only the video stream uses pattern decryption. |has_pattern| is only
   // used by DecryptSampleAES(), which assumes a {1,9} pattern if
   // |has_pattern| = true.
-  bool has_pattern = scheme.pattern() == EncryptionPattern(1, 9);
+  bool has_pattern =
+      buffer.decrypt_config()->encryption_pattern() == EncryptionPattern(1, 9);
 
   std::string key;
   EXPECT_TRUE(
@@ -164,6 +164,7 @@ class Mp2tStreamParserTest : public testing::Test {
         config_count_(0),
         audio_frame_count_(0),
         video_frame_count_(0),
+        has_audio_(true),
         has_video_(true),
         audio_min_dts_(kNoDecodeTimestamp()),
         audio_max_dts_(kNoDecodeTimestamp()),
@@ -175,7 +176,7 @@ class Mp2tStreamParserTest : public testing::Test {
         current_video_config_(),
         capture_buffers(false) {
     bool has_sbr = false;
-    parser_.reset(new Mp2tStreamParser(has_sbr));
+    parser_.reset(new Mp2tStreamParser({"avc1.64001e", "mp3", "aac"}, has_sbr));
   }
 
  protected:
@@ -185,6 +186,7 @@ class Mp2tStreamParserTest : public testing::Test {
   int config_count_;
   int audio_frame_count_;
   int video_frame_count_;
+  bool has_audio_;
   bool has_video_;
   DecodeTimestamp audio_min_dts_;
   DecodeTimestamp audio_max_dts_;
@@ -256,7 +258,7 @@ class Mp2tStreamParserTest : public testing::Test {
         EXPECT_TRUE(false);
       }
     }
-    EXPECT_TRUE(found_audio_track);
+    EXPECT_EQ(has_audio_, found_audio_track);
     EXPECT_EQ(has_video_, found_video_track);
     config_count_++;
     return true;
@@ -384,7 +386,9 @@ TEST_F(Mp2tStreamParserTest, UnalignedAppend17) {
   InitializeParser();
   ParseMpeg2TsFile("bear-1280x720.ts", 17);
   parser_->Flush();
+  EXPECT_EQ(audio_frame_count_, 119);
   EXPECT_EQ(video_frame_count_, 82);
+
   // This stream has no mid-stream configuration change.
   EXPECT_EQ(config_count_, 1);
   EXPECT_EQ(segment_count_, 1);
@@ -395,7 +399,9 @@ TEST_F(Mp2tStreamParserTest, UnalignedAppend512) {
   InitializeParser();
   ParseMpeg2TsFile("bear-1280x720.ts", 512);
   parser_->Flush();
+  EXPECT_EQ(audio_frame_count_, 119);
   EXPECT_EQ(video_frame_count_, 82);
+
   // This stream has no mid-stream configuration change.
   EXPECT_EQ(config_count_, 1);
   EXPECT_EQ(segment_count_, 1);
@@ -405,6 +411,7 @@ TEST_F(Mp2tStreamParserTest, AppendAfterFlush512) {
   InitializeParser();
   ParseMpeg2TsFile("bear-1280x720.ts", 512);
   parser_->Flush();
+  EXPECT_EQ(audio_frame_count_, 119);
   EXPECT_EQ(video_frame_count_, 82);
   EXPECT_EQ(config_count_, 1);
   EXPECT_EQ(segment_count_, 1);
@@ -412,6 +419,7 @@ TEST_F(Mp2tStreamParserTest, AppendAfterFlush512) {
   ResetStats();
   ParseMpeg2TsFile("bear-1280x720.ts", 512);
   parser_->Flush();
+  EXPECT_EQ(audio_frame_count_, 119);
   EXPECT_EQ(video_frame_count_, 82);
   EXPECT_EQ(config_count_, 1);
   EXPECT_EQ(segment_count_, 1);
@@ -462,6 +470,22 @@ TEST_F(Mp2tStreamParserTest, AudioInPrivateStream1) {
   EXPECT_EQ(segment_count_, 1);
 }
 
+// Checks the allowed_codecs argument filters streams using disallowed codecs.
+TEST_F(Mp2tStreamParserTest, DisableAudioStream) {
+  // Reset the parser with no audio codec allowed.
+  parser_.reset(new Mp2tStreamParser({"avc1.64001e"}, true));
+  has_audio_ = false;
+
+  InitializeParser();
+  ParseMpeg2TsFile("bear-1280x720.ts", 512);
+  parser_->Flush();
+  EXPECT_EQ(audio_frame_count_, 0);
+  EXPECT_EQ(video_frame_count_, 82);
+
+  // There should be a single configuration, with no audio.
+  EXPECT_EQ(config_count_, 1);
+}
+
 #if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
 TEST_F(Mp2tStreamParserTest, HLSSampleAES) {
   std::vector<std::string> decrypted_video_buffers;
@@ -472,7 +496,7 @@ TEST_F(Mp2tStreamParserTest, HLSSampleAES) {
   parser_->Flush();
   EncryptionScheme video_encryption_scheme =
       current_video_config_.encryption_scheme();
-  EXPECT_TRUE(video_encryption_scheme.is_encrypted());
+  EXPECT_NE(video_encryption_scheme, EncryptionScheme::kUnencrypted);
   for (const auto& buffer : video_buffer_capture_) {
     std::string decrypted_video_buffer =
         DecryptBuffer(*buffer.get(), video_encryption_scheme);
@@ -480,14 +504,14 @@ TEST_F(Mp2tStreamParserTest, HLSSampleAES) {
   }
   EncryptionScheme audio_encryption_scheme =
       current_audio_config_.encryption_scheme();
-  EXPECT_TRUE(audio_encryption_scheme.is_encrypted());
+  EXPECT_NE(audio_encryption_scheme, EncryptionScheme::kUnencrypted);
   for (const auto& buffer : audio_buffer_capture_) {
     std::string decrypted_audio_buffer =
         DecryptBuffer(*buffer.get(), audio_encryption_scheme);
     decrypted_audio_buffers.push_back(decrypted_audio_buffer);
   }
 
-  parser_.reset(new Mp2tStreamParser(false));
+  parser_.reset(new Mp2tStreamParser({"avc1.64001e", "mp3", "aac"}, false));
   ResetStats();
   InitializeParser();
   video_buffer_capture_.clear();
@@ -495,7 +519,7 @@ TEST_F(Mp2tStreamParserTest, HLSSampleAES) {
   ParseMpeg2TsFile("bear-1280x720-hls.ts", 2048);
   parser_->Flush();
   video_encryption_scheme = current_video_config_.encryption_scheme();
-  EXPECT_FALSE(video_encryption_scheme.is_encrypted());
+  EXPECT_EQ(video_encryption_scheme, EncryptionScheme::kUnencrypted);
   // Skip the last buffer, which may be truncated.
   for (size_t i = 0; i + 1 < video_buffer_capture_.size(); i++) {
     const auto& buffer = video_buffer_capture_[i];
@@ -504,7 +528,7 @@ TEST_F(Mp2tStreamParserTest, HLSSampleAES) {
     EXPECT_EQ(decrypted_video_buffers[i], unencrypted_video_buffer);
   }
   audio_encryption_scheme = current_audio_config_.encryption_scheme();
-  EXPECT_FALSE(audio_encryption_scheme.is_encrypted());
+  EXPECT_EQ(audio_encryption_scheme, EncryptionScheme::kUnencrypted);
   for (size_t i = 0; i + 1 < audio_buffer_capture_.size(); i++) {
     const auto& buffer = audio_buffer_capture_[i];
     std::string unencrypted_audio_buffer(
@@ -519,10 +543,10 @@ TEST_F(Mp2tStreamParserTest, PrepareForHLSSampleAES) {
   parser_->Flush();
   EncryptionScheme video_encryption_scheme =
       current_video_config_.encryption_scheme();
-  EXPECT_TRUE(video_encryption_scheme.is_encrypted());
+  EXPECT_NE(video_encryption_scheme, EncryptionScheme::kUnencrypted);
   EncryptionScheme audio_encryption_scheme =
       current_audio_config_.encryption_scheme();
-  EXPECT_TRUE(audio_encryption_scheme.is_encrypted());
+  EXPECT_NE(audio_encryption_scheme, EncryptionScheme::kUnencrypted);
 }
 
 #endif

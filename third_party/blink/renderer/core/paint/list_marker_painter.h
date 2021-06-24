@@ -5,15 +5,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_LIST_MARKER_PAINTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_LIST_MARKER_PAINTER_H_
 
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
 struct PaintInfo;
 class ComputedStyle;
-class IntRect;
 class LayoutListMarker;
 class LayoutObject;
+class LayoutRect;
 
 class ListMarkerPainter {
   STACK_ALLOCATED();
@@ -27,7 +27,7 @@ class ListMarkerPainter {
   static void PaintSymbol(const PaintInfo&,
                           const LayoutObject*,
                           const ComputedStyle&,
-                          const IntRect&);
+                          const LayoutRect&);
 
  private:
   const LayoutListMarker& layout_list_marker_;

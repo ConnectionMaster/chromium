@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CONTENT_BROWSER_ACCESSIBILITY_ACCESSIBILITY_TREE_SEARCH_H_
-#define CONTENT_BROWSER_ACCESSIBILITY_ACCESSIBILITY_TREE_SEARCH_H_
+#ifndef CONTENT_BROWSER_ACCESSIBILITY_ONE_SHOT_ACCESSIBILITY_TREE_SEARCH_H_
+#define CONTENT_BROWSER_ACCESSIBILITY_ONE_SHOT_ACCESSIBILITY_TREE_SEARCH_H_
 
 #include <stddef.h>
 
@@ -23,9 +23,9 @@ class BrowserAccessibilityManager;
 typedef bool (*AccessibilityMatchPredicate)(BrowserAccessibility* start_element,
                                             BrowserAccessibility* this_element);
 
-#define DECLARE_ACCESSIBILITY_PREDICATE(PredicateName)    \
-  bool PredicateName(BrowserAccessibility* start_element, \
-                     BrowserAccessibility* this_element)
+#define DECLARE_ACCESSIBILITY_PREDICATE(PredicateName)                   \
+  CONTENT_EXPORT bool PredicateName(BrowserAccessibility* start_element, \
+                                    BrowserAccessibility* this_element)
 
 DECLARE_ACCESSIBILITY_PREDICATE(AccessibilityArticlePredicate);
 DECLARE_ACCESSIBILITY_PREDICATE(AccessibilityBlockquotePredicate);
@@ -111,15 +111,17 @@ class CONTENT_EXPORT OneShotAccessibilityTreeSearch {
   // If true, wraps to the last element.
   void SetCanWrapToLastElement(bool can_wrap_to_last_element);
 
-  // If true, only considers nodes that aren't invisible or offscreen.
-  void SetVisibleOnly(bool visible_only);
+  // If true, only considers nodes that aren't offscreen.
+  // Programmatically hidden elements are always skipped.
+  void SetOnscreenOnly(bool onscreen_only);
 
   // Restricts the matches to only nodes where |text| is found as a
   // substring of any of that node's accessible text, including its
   // name, description, or value. Case-insensitive.
   void SetSearchText(const std::string& text);
 
-  // Restricts the matches to only those that satisfy all predicates.
+  // Restricts the matches to only those that satisfy at least one of the
+  // predicates.
   void AddPredicate(AccessibilityMatchPredicate predicate);
 
   //
@@ -142,7 +144,7 @@ class CONTENT_EXPORT OneShotAccessibilityTreeSearch {
   int result_limit_;
   bool immediate_descendants_only_;
   bool can_wrap_to_last_element_;
-  bool visible_only_;
+  bool onscreen_only_;
   std::string search_text_;
 
   std::vector<AccessibilityMatchPredicate> predicates_;
@@ -155,4 +157,4 @@ class CONTENT_EXPORT OneShotAccessibilityTreeSearch {
 
 }  // namespace content
 
-#endif  // CONTENT_BROWSER_ACCESSIBILITY_ACCESSIBILITY_TREE_SEARCH_H_
+#endif  // CONTENT_BROWSER_ACCESSIBILITY_ONE_SHOT_ACCESSIBILITY_TREE_SEARCH_H_

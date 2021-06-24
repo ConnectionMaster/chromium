@@ -4,29 +4,36 @@
 
 #include "chrome/browser/pdf/pdf_extension_test_util.h"
 
-#include "chrome/grit/component_extension_resources.h"
 #include "content/public/test/browser_test_utils.h"
-#include "ui/base/resource/resource_bundle.h"
+#include "testing/gtest/include/gtest/gtest.h"
 
 namespace pdf_extension_test_util {
 
-bool EnsurePDFHasLoaded(content::WebContents* web_contents) {
-  std::string scripting_api_js =
-      ui::ResourceBundle::GetSharedInstance()
-          .GetRawDataResource(IDR_PDF_PDF_SCRIPTING_API_JS)
-          .as_string();
-  CHECK(content::ExecuteScript(web_contents, scripting_api_js));
-
+testing::AssertionResult EnsurePDFHasLoaded(
+    const content::ToRenderFrameHost& frame) {
   bool load_success = false;
-  CHECK(content::ExecuteScriptAndExtractBool(
-      web_contents,
-      "var scriptingAPI = new PDFScriptingAPI(window, "
-      "    document.getElementsByTagName('embed')[0]);"
-      "scriptingAPI.setLoadCallback(function(success) {"
-      "  window.domAutomationController.send(success);"
-      "});",
-      &load_success));
-  return load_success;
+  if (!content::ExecuteScriptAndExtractBool(
+          frame,
+          "window.addEventListener('message', event => {"
+          "  if (event.origin !=="
+          "          'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai') {"
+          "    return;"
+          "  }"
+          "  if (event.data.type === 'documentLoaded') {"
+          "    window.domAutomationController.send("
+          "        event.data.load_state === 'success');"
+          "  } else if (event.data.type === 'passwordPrompted') {"
+          "    window.domAutomationController.send(true);"
+          "  }"
+          "});"
+          "document.getElementsByTagName('embed')[0].postMessage("
+          "    {type: 'initialize'});",
+          &load_success)) {
+    return testing::AssertionFailure()
+           << "Cannot communicate with PDF extension.";
+  }
+  return load_success ? testing::AssertionSuccess()
+                      : (testing::AssertionFailure() << "Load failed.");
 }
 
 }  // namespace pdf_extension_test_util

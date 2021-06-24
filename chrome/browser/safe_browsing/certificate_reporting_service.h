@@ -138,8 +138,7 @@ class CertificateReportingService : public KeyedService {
     size_t inflight_report_count_for_testing() const;
     BoundedReportList* GetQueueForTesting() const;
     // Sets a closure that is called when there are no more inflight reports.
-    void SetClosureWhenNoInflightReportsForTesting(
-        const base::Closure& closure);
+    void SetClosureWhenNoInflightReportsForTesting(base::OnceClosure closure);
 
    private:
     void SendInternal(const Report& report);
@@ -164,9 +163,9 @@ class CertificateReportingService : public KeyedService {
 
     std::map<int, Report> inflight_reports_;
 
-    base::Closure no_in_flight_reports_;
+    base::OnceClosure no_in_flight_reports_;
 
-    base::WeakPtrFactory<Reporter> weak_factory_;
+    base::WeakPtrFactory<Reporter> weak_factory_{this};
 
     DISALLOW_COPY_AND_ASSIGN(Reporter);
   };
@@ -183,7 +182,7 @@ class CertificateReportingService : public KeyedService {
       size_t max_queued_report_count,
       base::TimeDelta max_report_age,
       base::Clock* clock,
-      const base::Callback<void()>& reset_callback);
+      const base::RepeatingClosure& reset_callback);
 
   ~CertificateReportingService() override;
 
@@ -219,11 +218,10 @@ class CertificateReportingService : public KeyedService {
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   std::unique_ptr<Reporter> reporter_;
 
-  // Subscription for state changes. When this subscription is notified, it
+  // Subscription for state changes. When the callback is notified, it
   // means SafeBrowsingService is enabled/disabled or one of the preferences
   // related to it is changed.
-  std::unique_ptr<base::CallbackList<void(void)>::Subscription>
-      safe_browsing_state_subscription_;
+  base::CallbackListSubscription safe_browsing_state_subscription_;
 
   // Maximum number of reports to be queued for retry.
   const size_t max_queued_report_count_;
@@ -236,7 +234,7 @@ class CertificateReportingService : public KeyedService {
   base::Clock* const clock_;
 
   // Called when the service is reset. Used for testing.
-  base::Callback<void()> reset_callback_;
+  base::RepeatingClosure reset_callback_;
 
   // Encryption parameters.
   uint8_t* server_public_key_;

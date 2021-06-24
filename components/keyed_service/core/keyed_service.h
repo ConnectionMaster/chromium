@@ -13,7 +13,15 @@
 // Two-phase shutdown allows keyed services to have a first pass shutdown phase
 // where they drop references. Not all services will need this, so there's a
 // default implementation. Only once every service has been given a chance to
-// drop references are services deleted.
+// drop references are services deleted. In a service's destructor the service
+// should *not* request other services from their factories via the relevant
+// Context object (e.g., Profile), as the association between that Context
+// object and its keyed services is dropped after the shutdown phase.
+// Shutdown of KeyedServices is generally initiated by the embedder's
+// destruction of Profile (or analogous object).
+// CAVEAT: Not all embedders destroy the Profiles (or Profile analogs) as part
+// of embedder shutdown, so it is not guaranteed that the keyed service shutdown
+// process will run at shutdown of a given embedder.
 class KEYED_SERVICE_EXPORT KeyedService {
  public:
   KeyedService();
@@ -22,6 +30,8 @@ class KEYED_SERVICE_EXPORT KeyedService {
   virtual ~KeyedService();
 
   // The first pass is to call Shutdown on a KeyedService.
+  // Shutdown will be called automatically for you. Don't directly invoke this
+  // unless you have a specific reason and understand the implications.
   virtual void Shutdown();
 
  private:

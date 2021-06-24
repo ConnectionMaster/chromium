@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env vpython
 # Copyright 2017 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -14,8 +14,8 @@
   * Example usage:
 
   gn gen out/coverage \\
-      --args='use_clang_coverage=true is_component_build=false \\
-              dcheck_always_on=true'
+      --args="use_clang_coverage=true is_component_build=false\\
+              is_debug=false dcheck_always_on=true"
   gclient runhooks
   python tools/code_coverage/coverage.py crypto_unittests url_unittests \\
       -b out/coverage -o out/report -c 'out/coverage/crypto_unittests' \\
@@ -49,7 +49,7 @@
     <corpus_dir> - directory containing samples files for this format.
 
   To learn more about generating code coverage reports for fuzz targets, see
-  https://chromium.googlesource.com/chromium/src/+/master/testing/libfuzzer/efficient_fuzzer.md#Code-Coverage
+  https://chromium.googlesource.com/chromium/src/+/main/testing/libfuzzer/efficient_fuzzer.md#Code-Coverage
 
   * Sample workflow for running Blink web tests:
 
@@ -62,7 +62,7 @@
   For more options, please refer to tools/code_coverage/coverage.py -h.
 
   For an overview of how code coverage works in Chromium, please refer to
-  https://chromium.googlesource.com/chromium/src/+/master/docs/code_coverage.md
+  https://chromium.googlesource.com/chromium/src/+/main/docs/testing/code_coverage.md
 """
 
 from __future__ import print_function
@@ -74,17 +74,17 @@ import json
 import logging
 import multiprocessing
 import os
+import platform
 import re
 import shlex
 import shutil
 import subprocess
-import urllib2
+import six
 
-sys.path.append(
-    os.path.join(
-        os.path.dirname(__file__), os.path.pardir, os.path.pardir, 'tools',
-        'clang', 'scripts'))
-from update import LLVM_BUILD_DIR
+if six.PY2:
+  from urllib2 import urlopen
+else:
+  from urllib.request import urlopen
 
 sys.path.append(
     os.path.join(
@@ -93,16 +93,18 @@ sys.path.append(
 from collections import defaultdict
 
 import coverage_utils
-import update_clang_coverage_tools
 
 # Absolute path to the code coverage tools binary. These paths can be
 # overwritten by user specified coverage tool paths.
-LLVM_BIN_DIR = os.path.join(LLVM_BUILD_DIR, 'bin')
+# Absolute path to the root of the checkout.
+SRC_ROOT_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                             os.path.pardir, os.path.pardir)
+LLVM_BIN_DIR = os.path.join(
+    os.path.join(SRC_ROOT_PATH, 'third_party', 'llvm-build', 'Release+Asserts'),
+    'bin')
 LLVM_COV_PATH = os.path.join(LLVM_BIN_DIR, 'llvm-cov')
 LLVM_PROFDATA_PATH = os.path.join(LLVM_BIN_DIR, 'llvm-profdata')
 
-# Absolute path to the root of the checkout.
-SRC_ROOT_PATH = None
 
 # Build directory, the value is parsed from command line arguments.
 BUILD_DIR = None
@@ -143,11 +145,10 @@ FILE_BUG_MESSAGE = (
     'If it persists, please file a bug with the command you used, git revision '
     'and args.gn config here: '
     'https://bugs.chromium.org/p/chromium/issues/entry?'
-    'components=Tools%3ECodeCoverage')
+    'components=Infra%3ETest%3ECodeCoverage')
 
 # String to replace with actual llvm profile path.
 LLVM_PROFILE_FILE_PATH_SUBSTITUTION = '<llvm_profile_file_path>'
-
 
 def _ConfigureLLVMCoverageTools(args):
   """Configures llvm coverage tools."""
@@ -158,13 +159,20 @@ def _ConfigureLLVMCoverageTools(args):
     LLVM_COV_PATH = os.path.join(llvm_bin_dir, 'llvm-cov')
     LLVM_PROFDATA_PATH = os.path.join(llvm_bin_dir, 'llvm-profdata')
   else:
-    update_clang_coverage_tools.DownloadCoverageToolsIfNeeded()
+    subprocess.check_call([
+        'python', 'tools/clang/scripts/update.py', '--package', 'coverage_tools'
+    ])
+
+  if coverage_utils.GetHostPlatform() == 'win':
+    LLVM_COV_PATH += '.exe'
+    LLVM_PROFDATA_PATH += '.exe'
 
   coverage_tools_exist = (
       os.path.exists(LLVM_COV_PATH) and os.path.exists(LLVM_PROFDATA_PATH))
   assert coverage_tools_exist, ('Cannot find coverage tools, please make sure '
                                 'both \'%s\' and \'%s\' exist.') % (
                                     LLVM_COV_PATH, LLVM_PROFDATA_PATH)
+
 
 def _GetPathWithLLVMSymbolizerDir():
   """Add llvm-symbolizer directory to path for symbolized stacks."""
@@ -185,24 +193,33 @@ def _GetTargetOS():
   return build_args['target_os'] if 'target_os' in build_args else ''
 
 
+def _IsAndroid():
+  """Returns true if the target_os specified in args.gn file is android"""
+  return _GetTargetOS() == 'android'
+
+
 def _IsIOS():
   """Returns true if the target_os specified in args.gn file is ios"""
   return _GetTargetOS() == 'ios'
 
 
+def _GeneratePerFileLineByLineCoverageInFormat(binary_paths, profdata_file_path,
+                                               filters, ignore_filename_regex,
+                                               output_format):
+  """Generates per file line-by-line coverage in html or text using
+  'llvm-cov show'.
 
-def _GeneratePerFileLineByLineCoverageInHtml(binary_paths, profdata_file_path,
-                                             filters, ignore_filename_regex):
-  """Generates per file line-by-line coverage in html using 'llvm-cov show'.
-
-  For a file with absolute path /a/b/x.cc, a html report is generated as:
-  OUTPUT_DIR/coverage/a/b/x.cc.html. An index html file is also generated as:
-  OUTPUT_DIR/index.html.
+  For a file with absolute path /a/b/x.cc, a html/txt report is generated as:
+  OUTPUT_DIR/coverage/a/b/x.cc.[html|txt]. For html format, an index html file
+  is also generated as: OUTPUT_DIR/index.html.
 
   Args:
     binary_paths: A list of paths to the instrumented binaries.
     profdata_file_path: A path to the profdata file.
     filters: A list of directories and files to get coverage for.
+    ignore_filename_regex: A regular expression for skipping source code files
+                           with certain file paths.
+    output_format: The output format of generated report files.
   """
   # llvm-cov show [options] -instr-profile PROFILE BIN [-object BIN,...]
   # [[-object BIN]] [SOURCES]
@@ -210,8 +227,10 @@ def _GeneratePerFileLineByLineCoverageInHtml(binary_paths, profdata_file_path,
   # and the rest are specified as keyword argument.
   logging.debug('Generating per file line by line coverage reports using '
                 '"llvm-cov show" command.')
+
   subprocess_cmd = [
-      LLVM_COV_PATH, 'show', '-format=html',
+      LLVM_COV_PATH, 'show', '-format={}'.format(output_format),
+      '-compilation-dir={}'.format(BUILD_DIR),
       '-output-dir={}'.format(OUTPUT_DIR),
       '-instr-profile={}'.format(profdata_file_path), binary_paths[0]
   ]
@@ -285,8 +304,11 @@ def _BuildTargets(targets, jobs_count):
                 default value is derived based on CPUs availability.
   """
   logging.info('Building %s.', str(targets))
+  autoninja = 'autoninja'
+  if coverage_utils.GetHostPlatform() == 'win':
+    autoninja += '.bat'
 
-  subprocess_cmd = ['autoninja', '-C', BUILD_DIR]
+  subprocess_cmd = [autoninja, '-C', BUILD_DIR]
   if jobs_count is not None:
     subprocess_cmd.append('-j' + str(jobs_count))
 
@@ -325,7 +347,7 @@ def _GetTargetProfDataPathsByExecutingCommands(targets, commands):
     output_file_path = os.path.join(_GetLogsDirectoryPath(), output_file_name)
 
     profdata_file_path = None
-    for _ in xrange(MERGE_RETRIES):
+    for _ in range(MERGE_RETRIES):
       logging.info('Running command: "%s", the output is redirected to "%s".',
                    command, output_file_path)
 
@@ -341,6 +363,12 @@ def _GetTargetProfDataPathsByExecutingCommands(targets, commands):
       profraw_file_paths = []
       if _IsIOS():
         profraw_file_paths = [_GetProfrawDataFileByParsingOutput(output)]
+      elif _IsAndroid():
+        android_coverage_dir = os.path.join(BUILD_DIR, 'coverage')
+        for r, _, files in os.walk(android_coverage_dir):
+          for f in files:
+            if f.endswith(PROFRAW_FILE_EXTENSION):
+              profraw_file_paths.append(os.path.join(r, f))
       else:
         for file_or_dir in os.listdir(report_root_dir):
           if file_or_dir.endswith(PROFRAW_FILE_EXTENSION):
@@ -387,6 +415,13 @@ def _GetEnvironmentVars(profraw_file_path):
   return env
 
 
+def _SplitCommand(command):
+  """Split a command string into parts in a platform-specific way."""
+  if coverage_utils.GetHostPlatform() == 'win':
+    return command.split()
+  return shlex.split(command)
+
+
 def _ExecuteCommand(target, command, output_file_path):
   """Runs a single command and generates a profraw data file."""
   # Per Clang "Source-based Code Coverage" doc:
@@ -421,11 +456,10 @@ def _ExecuteCommand(target, command, output_file_path):
   try:
     # Some fuzz targets or tests may write into stderr, redirect it as well.
     with open(output_file_path, 'wb') as output_file_handle:
-      subprocess.check_call(
-          shlex.split(command),
-          stdout=output_file_handle,
-          stderr=subprocess.STDOUT,
-          env=_GetEnvironmentVars(expected_profraw_file_path))
+      subprocess.check_call(_SplitCommand(command),
+                            stdout=output_file_handle,
+                            stderr=subprocess.STDOUT,
+                            env=_GetEnvironmentVars(expected_profraw_file_path))
   except subprocess.CalledProcessError as e:
     logging.warning('Command: "%s" exited with non-zero return code.', command)
 
@@ -461,11 +495,10 @@ def _ExecuteIOSCommand(command, output_file_path):
 
   try:
     with open(output_file_path, 'wb') as output_file_handle:
-      subprocess.check_call(
-          shlex.split(command),
-          stdout=output_file_handle,
-          stderr=subprocess.STDOUT,
-          env=_GetEnvironmentVars(iossim_profraw_file_path))
+      subprocess.check_call(_SplitCommand(command),
+                            stdout=output_file_handle,
+                            stderr=subprocess.STDOUT,
+                            env=_GetEnvironmentVars(iossim_profraw_file_path))
   except subprocess.CalledProcessError as e:
     # iossim emits non-zero return code even if tests run successfully, so
     # ignore the return code.
@@ -556,7 +589,6 @@ def _CreateTargetProfDataFileFromProfRawFiles(target, profraw_file_paths):
         LLVM_PROFDATA_PATH, 'merge', '-o', profdata_file_path, '-sparse=true'
     ]
     subprocess_cmd.extend(profraw_file_paths)
-
     output = subprocess.check_output(subprocess_cmd)
     logging.debug('Merge output: %s', output)
   except subprocess.CalledProcessError as error:
@@ -579,8 +611,12 @@ def _GeneratePerFileCoverageSummary(binary_paths, profdata_file_path, filters,
   # and the rest are specified as keyword argument.
   logging.debug('Generating per-file code coverage summary using "llvm-cov '
                 'export -summary-only" command.')
+  for path in binary_paths:
+    if not os.path.exists(path):
+      logging.error("Binary %s does not exist", path)
   subprocess_cmd = [
       LLVM_COV_PATH, 'export', '-summary-only',
+      '-compilation-dir={}'.format(BUILD_DIR),
       '-instr-profile=' + profdata_file_path, binary_paths[0]
   ]
   subprocess_cmd.extend(
@@ -593,7 +629,7 @@ def _GeneratePerFileCoverageSummary(binary_paths, profdata_file_path, filters,
   export_output = subprocess.check_output(subprocess_cmd)
 
   # Write output on the disk to be used by code coverage bot.
-  with open(_GetSummaryFilePath(), 'w') as f:
+  with open(_GetSummaryFilePath(), 'wb') as f:
     f.write(export_output)
 
   return export_output
@@ -631,7 +667,7 @@ def _GetBinaryPath(command):
   """
   xvfb_script_name = os.extsep.join(['xvfb', 'py'])
 
-  command_parts = shlex.split(command)
+  command_parts = _SplitCommand(command)
   if os.path.basename(command_parts[0]) == 'python':
     assert os.path.basename(command_parts[1]) == xvfb_script_name, (
         'This tool doesn\'t understand the command: "%s".' % command)
@@ -647,12 +683,16 @@ def _GetBinaryPath(command):
     app_name = os.path.splitext(os.path.basename(app_path))[0]
     return os.path.join(app_path, app_name)
 
+  if coverage_utils.GetHostPlatform() == 'win' \
+     and not command_parts[0].endswith('.exe'):
+    return command_parts[0] + '.exe'
+
   return command_parts[0]
 
 
 def _IsIOSCommand(command):
   """Returns true if command is used to run tests on iOS platform."""
-  return os.path.basename(shlex.split(command)[0]) == 'iossim'
+  return os.path.basename(_SplitCommand(command)[0]) == 'iossim'
 
 
 def _VerifyTargetExecutablesAreInBuildDirectory(commands):
@@ -684,9 +724,10 @@ def _ValidateCurrentPlatformIsSupported():
   else:
     current_platform = coverage_utils.GetHostPlatform()
 
-  assert current_platform in [
-      'linux', 'mac', 'chromeos', 'ios'
-  ], ('Coverage is only supported on linux, mac, chromeos and ios.')
+  supported_platforms = ['android', 'chromeos', 'ios', 'linux', 'mac', 'win']
+  assert current_platform in supported_platforms, ('Coverage is only'
+                                                   'supported on %s' %
+                                                   supported_platforms)
 
 
 def _GetBuildArgs():
@@ -741,8 +782,8 @@ def _VerifyPathsAndReturnAbsolutes(paths):
 
 def _GetBinaryPathsFromTargets(targets, build_dir):
   """Return binary paths from target names."""
-  # FIXME: Derive output binary from target build definitions rather than
-  # assuming that it is always the same name.
+  # TODO(crbug.com/899974): Derive output binary from target build definitions
+  # rather than assuming that it is always the same name.
   binary_paths = []
   for target in targets:
     binary_path = os.path.join(build_dir, target)
@@ -761,19 +802,40 @@ def _GetBinaryPathsFromTargets(targets, build_dir):
 
 def _GetCommandForWebTests(arguments):
   """Return command to run for blink web tests."""
+  cpu_count = multiprocessing.cpu_count()
+  if sys.platform == 'win32':
+    # TODO(crbug.com/1190269) - we can't use more than 56
+    # cores on Windows or Python3 may hang.
+    cpu_count = min(cpu_count, 56)
+  cpu_count = max(1, cpu_count // 2)
+
   command_list = [
       'python', 'testing/xvfb.py', 'python',
       'third_party/blink/tools/run_web_tests.py',
       '--additional-driver-flag=--no-sandbox',
       '--additional-env-var=LLVM_PROFILE_FILE=%s' %
       LLVM_PROFILE_FILE_PATH_SUBSTITUTION,
-      '--child-processes=%d' % max(1, int(multiprocessing.cpu_count() / 2)),
-      '--disable-breakpad', '--no-show-results', '--skip-failing-tests',
+      '--child-processes=%d' % cpu_count, '--disable-breakpad',
+      '--no-show-results', '--skip-failing-tests',
       '--target=%s' % os.path.basename(BUILD_DIR), '--time-out-ms=30000'
   ]
   if arguments.strip():
     command_list.append(arguments)
   return ' '.join(command_list)
+
+
+def _GetBinaryPathsForAndroid(targets):
+  """Return binary paths used when running android tests."""
+  # TODO(crbug.com/899974): Implement approach that doesn't assume .so file is
+  # based on the target's name.
+  android_binaries = set()
+  for target in targets:
+    so_library_path = os.path.join(BUILD_DIR, 'lib.unstripped',
+                                   'lib%s__library.so' % target)
+    if os.path.exists(so_library_path):
+      android_binaries.add(so_library_path)
+
+  return list(android_binaries)
 
 
 def _GetBinaryPathForWebTests():
@@ -908,6 +970,13 @@ def _ParseCommandArguments():
       '\'autoninja -h\' for more details.')
 
   arg_parser.add_argument(
+      '--format',
+      type=str,
+      default='html',
+      help='Output format of the "llvm-cov show" command. The supported '
+      'formats are "text" and "html".')
+
+  arg_parser.add_argument(
       '-v',
       '--verbose',
       action='store_true',
@@ -929,18 +998,18 @@ def _ParseCommandArguments():
 
 def Main():
   """Execute tool commands."""
+
+  # Change directory to source root to aid in relative paths calculations.
+  os.chdir(SRC_ROOT_PATH)
+
   # Setup coverage binaries even when script is called with empty params. This
   # is used by coverage bot for initial setup.
   if len(sys.argv) == 1:
-    update_clang_coverage_tools.DownloadCoverageToolsIfNeeded()
+    subprocess.check_call([
+        'python', 'tools/clang/scripts/update.py', '--package', 'coverage_tools'
+    ])
     print(__doc__)
     return
-
-  # Change directory to source root to aid in relative paths calculations.
-  global SRC_ROOT_PATH
-  SRC_ROOT_PATH = coverage_utils.GetFullPath(
-      os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir))
-  os.chdir(SRC_ROOT_PATH)
 
   args = _ParseCommandArguments()
   coverage_utils.ConfigureLogging(verbose=args.verbose, log_file=args.log_file)
@@ -996,25 +1065,38 @@ def Main():
     profdata_file_path = args.profdata_file
     binary_paths = _GetBinaryPathsFromTargets(args.targets, args.build_dir)
 
-  # DEVELOPER_DIR needs to be set when Xcode isn't in a standard location
-  # and xcode-select wasn't run.  This path needs to be set prior to calling
-  # otool which happens on mac in coverage_utils.GetSharedLibraries().
-  _SetMacXcodePath()
+  # If the checkout uses the hermetic xcode binaries, then otool must be
+  # directly invoked. The indirection via /usr/bin/otool won't work unless
+  # there's an actual system install of Xcode.
+  otool_path = None
+  if sys.platform == 'darwin':
+    hermetic_otool_path = os.path.join(
+        SRC_ROOT_PATH, 'build', 'mac_files', 'xcode_binaries', 'Contents',
+        'Developer', 'Toolchains', 'XcodeDefault.xctoolchain', 'usr', 'bin',
+        'otool')
+    if os.path.exists(hermetic_otool_path):
+      otool_path = hermetic_otool_path
 
-  binary_paths.extend(
-      coverage_utils.GetSharedLibraries(binary_paths, BUILD_DIR))
+  if _IsAndroid():
+    binary_paths = _GetBinaryPathsForAndroid(args.targets)
+  elif sys.platform.startswith('linux') or sys.platform.startswith('darwin'):
+    binary_paths.extend(
+        coverage_utils.GetSharedLibraries(binary_paths, BUILD_DIR, otool_path))
 
-  logging.info('Generating code coverage report in html (this can take a while '
-               'depending on size of target!).')
+  assert args.format == 'html' or args.format == 'text', (
+      '%s is not a valid output format for "llvm-cov show". Only "text" and '
+      '"html" formats are supported.' % (args.format))
+  logging.info('Generating code coverage report in %s (this can take a while '
+               'depending on size of target!).' % (args.format))
   per_file_summary_data = _GeneratePerFileCoverageSummary(
       binary_paths, profdata_file_path, absolute_filter_paths,
       args.ignore_filename_regex)
-  _GeneratePerFileLineByLineCoverageInHtml(binary_paths, profdata_file_path,
-                                           absolute_filter_paths,
-                                           args.ignore_filename_regex)
+  _GeneratePerFileLineByLineCoverageInFormat(
+      binary_paths, profdata_file_path, absolute_filter_paths,
+      args.ignore_filename_regex, args.format)
   component_mappings = None
   if not args.no_component_view:
-    component_mappings = json.load(urllib2.urlopen(COMPONENT_MAPPING_URL))
+    component_mappings = json.load(urlopen(COMPONENT_MAPPING_URL))
 
   # Call prepare here.
   processor = coverage_utils.CoverageReportPostProcessor(
@@ -1025,7 +1107,8 @@ def Main():
       no_file_view=args.no_file_view,
       component_mappings=component_mappings)
 
-  processor.PrepareHtmlReport()
+  if args.format == 'html':
+    processor.PrepareHtmlReport()
 
 
 if __name__ == '__main__':

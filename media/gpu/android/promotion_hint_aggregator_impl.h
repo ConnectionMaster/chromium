@@ -5,8 +5,6 @@
 #ifndef MEDIA_GPU_ANDROID_PROMOTION_HINT_AGGREGATOR_IMPL_H_
 #define MEDIA_GPU_ANDROID_PROMOTION_HINT_AGGREGATOR_IMPL_H_
 
-#include <memory>
-
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -41,7 +39,7 @@ class MEDIA_GPU_EXPORT PromotionHintAggregatorImpl
   // Number of frames which were promotable in a row.
   int consecutive_promotable_frames_ = 0;
 
-  base::WeakPtrFactory<PromotionHintAggregatorImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<PromotionHintAggregatorImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PromotionHintAggregatorImpl);
 };

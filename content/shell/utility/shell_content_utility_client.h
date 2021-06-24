@@ -18,17 +18,15 @@ class ShellContentUtilityClient : public ContentUtilityClient {
   ~ShellContentUtilityClient() override;
 
   // ContentUtilityClient:
-  void UtilityThreadStarted() override;
-  bool HandleServiceRequest(
-      const std::string& service_name,
-      service_manager::mojom::ServiceRequest request) override;
+  void ExposeInterfacesToBrowser(mojo::BinderMap* binders) override;
+  void RegisterIOThreadServices(mojo::ServiceFactory& services) override;
   void RegisterNetworkBinders(
       service_manager::BinderRegistry* registry) override;
-  void RegisterAudioBinders(service_manager::BinderRegistry* registry) override;
 
  private:
   std::unique_ptr<NetworkServiceTestHelper> network_service_test_helper_;
   std::unique_ptr<AudioServiceTestHelper> audio_service_test_helper_;
+  bool register_sandbox_status_helper_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(ShellContentUtilityClient);
 };

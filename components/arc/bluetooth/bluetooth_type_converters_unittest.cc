@@ -11,8 +11,8 @@
 
 #include "base/values.h"
 #include "device/bluetooth/bluetooth_gatt_service.h"
-#include "device/bluetooth/bluetooth_uuid.h"
 #include "device/bluetooth/bluez/bluetooth_service_attribute_value_bluez.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -230,7 +230,7 @@ TEST(BluetoothTypeConverterTest, ConvertMojoSequenceAttributeToBlueZAttribute) {
     sequence_mojo->sequence.push_back(std::move(value_channel));
   }
   sequence_mojo->type_size = sequence_mojo->sequence.size();
-  sequence_mojo->value = base::nullopt;
+  sequence_mojo->value = absl::nullopt;
 
   auto sequence_blue_z =
       sequence_mojo.To<bluez::BluetoothServiceAttributeValueBlueZ>();
@@ -264,7 +264,7 @@ TEST(BluetoothTypeConverterTest,
   auto mojo = arc::mojom::BluetoothSdpAttribute::New();
   mojo->type = bluez::BluetoothServiceAttributeValueBlueZ::UINT;
   mojo->type_size = static_cast<uint32_t>(sizeof(uint32_t));
-  mojo->value = base::nullopt;
+  mojo->value = absl::nullopt;
 
   auto blue_z = mojo.To<bluez::BluetoothServiceAttributeValueBlueZ>();
 
@@ -280,7 +280,7 @@ TEST(BluetoothTypeConverterTest,
   auto mojo = arc::mojom::BluetoothSdpAttribute::New();
   mojo->type = bluez::BluetoothServiceAttributeValueBlueZ::SEQUENCE;
   mojo->type_size = 0;
-  mojo->value = base::nullopt;
+  mojo->value = absl::nullopt;
 
   auto blue_z = mojo.To<bluez::BluetoothServiceAttributeValueBlueZ>();
 

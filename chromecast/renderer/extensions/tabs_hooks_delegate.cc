@@ -8,7 +8,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/strings/stringprintf.h"
 #include "content/public/renderer/v8_value_converter.h"
 #include "extensions/common/api/messaging/message.h"
 #include "extensions/common/extension.h"
@@ -70,16 +69,15 @@ RequestResult TabsHooksDelegate::HandleRequest(
   if (!handler)
     return RequestResult(RequestResult::NOT_HANDLED);
 
-  std::string error;
-  std::vector<v8::Local<v8::Value>> parsed_arguments;
-  if (!signature->ParseArgumentsToV8(context, *arguments, refs,
-                                     &parsed_arguments, &error)) {
+  APISignature::V8ParseResult parse_result =
+      signature->ParseArgumentsToV8(context, *arguments, refs);
+  if (!parse_result.succeeded()) {
     RequestResult result(RequestResult::INVALID_INVOCATION);
-    result.error = std::move(error);
+    result.error = std::move(*parse_result.error);
     return result;
   }
 
-  return (this->*handler)(script_context, parsed_arguments);
+  return (this->*handler)(script_context, *parse_result.arguments);
 }
 
 RequestResult TabsHooksDelegate::HandleSendRequest(
@@ -104,7 +102,7 @@ RequestResult TabsHooksDelegate::HandleSendRequest(
 
   messaging_service_->SendOneTimeMessage(
       script_context, MessageTarget::ForTab(tab_id, messaging_util::kNoFrameId),
-      messaging_util::kSendRequestChannel, false, *message, response_callback);
+      messaging_util::kSendRequestChannel, *message, response_callback);
 
   return RequestResult(RequestResult::HANDLED);
 }
@@ -139,7 +137,7 @@ RequestResult TabsHooksDelegate::HandleSendMessage(
 
   messaging_service_->SendOneTimeMessage(
       script_context, MessageTarget::ForTab(tab_id, options.frame_id),
-      messaging_util::kSendMessageChannel, false, *message, response_callback);
+      messaging_util::kSendMessageChannel, *message, response_callback);
 
   return RequestResult(RequestResult::HANDLED);
 }
@@ -160,7 +158,7 @@ RequestResult TabsHooksDelegate::HandleConnect(
 
   gin::Handle<GinPort> port = messaging_service_->Connect(
       script_context, MessageTarget::ForTab(tab_id, options.frame_id),
-      options.channel_name, false);
+      options.channel_name);
   DCHECK(!port.IsEmpty());
 
   RequestResult result(RequestResult::HANDLED);

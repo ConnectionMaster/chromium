@@ -20,10 +20,10 @@ source_set("metrics_private") {
   ]
 
   deps = [
+    "//components/variations",
+    "//extensions/browser/api",
     "//extensions/common/api",
   ]
 
-  public_deps = [
-    "//extensions/browser:browser_sources",
-  ]
+  public_deps = [ "//extensions/browser:browser_sources" ]
 }

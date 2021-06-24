@@ -33,23 +33,23 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/network/encoded_form_data.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
+#include "third_party/blink/renderer/platform/wtf/uuid.h"
 
 namespace blink {
 
 static int64_t GenerateSequenceNumber() {
   // Initialize to the current time to reduce the likelihood of generating
   // identifiers that overlap with those from past/future browser sessions.
-  static int64_t next = static_cast<int64_t>(CurrentTime() * 1000000.0);
+  static int64_t next =
+      static_cast<int64_t>(base::Time::Now().ToDoubleT() * 1000000.0);
   return ++next;
 }
 
 HistoryItem::HistoryItem()
     : item_sequence_number_(GenerateSequenceNumber()),
       document_sequence_number_(GenerateSequenceNumber()),
-      scroll_restoration_type_(kScrollRestorationAuto) {}
+      app_history_key_(WTF::CreateCanonicalUUIDString()),
+      app_history_id_(WTF::CreateCanonicalUUIDString()) {}
 
 HistoryItem::~HistoryItem() = default;
 
@@ -82,26 +82,26 @@ void HistoryItem::SetReferrer(const Referrer& referrer) {
 
 void HistoryItem::SetVisualViewportScrollOffset(const ScrollOffset& offset) {
   if (!view_state_)
-    view_state_ = base::make_optional<ViewState>();
+    view_state_ = absl::make_optional<ViewState>();
   view_state_->visual_viewport_scroll_offset_ = offset;
 }
 
 void HistoryItem::SetScrollOffset(const ScrollOffset& offset) {
   if (!view_state_)
-    view_state_ = base::make_optional<ViewState>();
+    view_state_ = absl::make_optional<ViewState>();
   view_state_->scroll_offset_ = offset;
 }
 
 void HistoryItem::SetPageScaleFactor(float scale_factor) {
   if (!view_state_)
-    view_state_ = base::make_optional<ViewState>();
+    view_state_ = absl::make_optional<ViewState>();
   view_state_->page_scale_factor_ = scale_factor;
 }
 
 void HistoryItem::SetScrollAnchorData(
     const ScrollAnchorData& scroll_anchor_data) {
   if (!view_state_)
-    view_state_ = base::make_optional<ViewState>();
+    view_state_ = absl::make_optional<ViewState>();
   view_state_->scroll_anchor_data_ = scroll_anchor_data;
 }
 
@@ -149,12 +149,16 @@ EncodedFormData* HistoryItem::FormData() {
   return form_data_.get();
 }
 
+void HistoryItem::SetAppHistoryState(
+    scoped_refptr<SerializedScriptValue> value) {
+  app_history_state_ = std::move(value);
+}
+
 ResourceRequest HistoryItem::GenerateResourceRequest(
     mojom::FetchCacheMode cache_mode) {
   ResourceRequest request(url_string_);
-  // TODO(domfarolino): Stop storing ResourceRequest's generated referrer as a
-  // header and instead use a separate member. See https://crbug.com/850813.
-  request.SetHttpReferrer(referrer_);
+  request.SetReferrerString(referrer_.referrer);
+  request.SetReferrerPolicy(referrer_.referrer_policy);
   request.SetCacheMode(cache_mode);
   if (form_data_) {
     request.SetHttpMethod(http_names::kPOST);
@@ -165,7 +169,7 @@ ResourceRequest HistoryItem::GenerateResourceRequest(
   return request;
 }
 
-void HistoryItem::Trace(blink::Visitor* visitor) {
+void HistoryItem::Trace(Visitor* visitor) const {
   visitor->Trace(document_state_);
 }
 

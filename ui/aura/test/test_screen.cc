@@ -6,16 +6,15 @@
 
 #include <stdint.h>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "build/build_config.h"
 #include "ui/aura/env.h"
-#include "ui/aura/mus/window_tree_client.h"
-#include "ui/aura/mus/window_tree_host_mus.h"
-#include "ui/aura/mus/window_tree_host_mus_init_params.h"
-#include "ui/aura/test/mus/window_tree_client_test_api.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/ime/input_method.h"
+#include "ui/compositor/compositor.h"
+#include "ui/display/display_transform.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/native_widget_types.h"
@@ -33,31 +32,22 @@ bool IsRotationPortrait(display::Display::Rotation rotation) {
 }  // namespace
 
 // static
-TestScreen* TestScreen::Create(const gfx::Size& size,
-                               WindowTreeClient* window_tree_client) {
+TestScreen* TestScreen::Create(const gfx::Size& size) {
   const gfx::Size kDefaultSize(800, 600);
   // Use (0,0) because the desktop aura tests are executed in
   // native environment where the display's origin is (0,0).
-  return new TestScreen(gfx::Rect(size.IsEmpty() ? kDefaultSize : size),
-                        window_tree_client);
+  return new TestScreen(gfx::Rect(size.IsEmpty() ? kDefaultSize : size));
 }
 
 TestScreen::~TestScreen() {
   delete host_;
 }
 
-WindowTreeHost* TestScreen::CreateHostForPrimaryDisplay(Env* env) {
+WindowTreeHost* TestScreen::CreateHostForPrimaryDisplay() {
   DCHECK(!host_);
-  if (window_tree_client_) {
-    host_ =
-        new WindowTreeHostMus(CreateInitParamsForTopLevel(window_tree_client_));
-    host_->SetBoundsInPixels(gfx::Rect(GetPrimaryDisplay().GetSizeInPixel()));
-  } else {
-    host_ = WindowTreeHost::Create(ui::PlatformWindowInitProperties{gfx::Rect(
-                                       GetPrimaryDisplay().GetSizeInPixel())},
-                                   env)
-                .release();
-  }
+  ui::PlatformWindowInitProperties properties(
+      gfx::Rect(GetPrimaryDisplay().GetSizeInPixel()));
+  host_ = WindowTreeHost::Create(std::move(properties)).release();
   // Some tests don't correctly manage window focus/activation states.
   // Makes sure InputMethod is default focused so that IME basics can work.
   host_->GetInputMethod()->OnFocus();
@@ -69,17 +59,23 @@ WindowTreeHost* TestScreen::CreateHostForPrimaryDisplay(Env* env) {
   return host_;
 }
 
-void TestScreen::SetDeviceScaleFactor(float device_scale_factor) {
+void TestScreen::SetDeviceScaleFactor(float device_scale_factor,
+                                      bool resize_host) {
   display::Display display(GetPrimaryDisplay());
   gfx::Rect bounds_in_pixel(display.GetSizeInPixel());
   display.SetScaleAndBounds(device_scale_factor, bounds_in_pixel);
   display_list().UpdateDisplay(display);
-  host_->OnHostResizedInPixels(bounds_in_pixel.size());
+  if (resize_host)
+    host_->OnHostResizedInPixels(bounds_in_pixel.size());
 }
 
-void TestScreen::SetColorSpace(const gfx::ColorSpace& color_space) {
+void TestScreen::SetColorSpace(const gfx::ColorSpace& color_space,
+                               float sdr_white_level) {
   display::Display display(GetPrimaryDisplay());
-  display.set_color_space(color_space);
+  gfx::DisplayColorSpaces display_color_spaces(color_space,
+                                               gfx::BufferFormat::RGBA_8888);
+  display_color_spaces.SetSDRWhiteLevel(sdr_white_level);
+  display.set_color_spaces(display_color_spaces);
   display_list().UpdateDisplay(display);
 }
 
@@ -94,7 +90,7 @@ void TestScreen::SetDisplayRotation(display::Display::Rotation rotation) {
   display.set_rotation(rotation);
   display.SetScaleAndBounds(display.device_scale_factor(), new_bounds);
   display_list().UpdateDisplay(display);
-  host_->SetRootTransform(GetRotationTransform() * GetUIScaleTransform());
+  host_->SetRootTransform(GetUIScaleTransform() * GetRotationTransform());
 }
 
 void TestScreen::SetUIScale(float ui_scale) {
@@ -105,7 +101,7 @@ void TestScreen::SetUIScale(float ui_scale) {
       gfx::ScaleRect(gfx::RectF(bounds_in_pixel), 1.0f / ui_scale));
   display.SetScaleAndBounds(display.device_scale_factor(), new_bounds);
   display_list().UpdateDisplay(display);
-  host_->SetRootTransform(GetRotationTransform() * GetUIScaleTransform());
+  host_->SetRootTransform(GetUIScaleTransform() * GetRotationTransform());
 }
 
 void TestScreen::SetWorkAreaInsets(const gfx::Insets& insets) {
@@ -115,26 +111,9 @@ void TestScreen::SetWorkAreaInsets(const gfx::Insets& insets) {
 }
 
 gfx::Transform TestScreen::GetRotationTransform() const {
-  gfx::Transform rotate;
-  display::Display display(GetPrimaryDisplay());
-  switch (display.rotation()) {
-    case display::Display::ROTATE_0:
-      break;
-    case display::Display::ROTATE_90:
-      rotate.Translate(display.bounds().height(), 0);
-      rotate.Rotate(90);
-      break;
-    case display::Display::ROTATE_270:
-      rotate.Translate(0, display.bounds().width());
-      rotate.Rotate(270);
-      break;
-    case display::Display::ROTATE_180:
-      rotate.Translate(display.bounds().width(), display.bounds().height());
-      rotate.Rotate(180);
-      break;
-  }
-
-  return rotate;
+  display::Display display = GetPrimaryDisplay();
+  return display::CreateRotationTransform(display.rotation(),
+                                          gfx::SizeF(display.size()));
 }
 
 gfx::Transform TestScreen::GetUIScaleTransform() const {
@@ -162,10 +141,7 @@ void TestScreen::OnWindowDestroying(Window* window) {
 }
 
 gfx::Point TestScreen::GetCursorScreenPoint() {
-  // This may be hit during shutdown, after |host_| has been destroyed.
-  return host_ && host_->window()
-             ? host_->window()->env()->last_mouse_location()
-             : gfx::Point();
+  return Env::GetInstance()->last_mouse_location();
 }
 
 bool TestScreen::IsWindowUnderCursor(gfx::NativeWindow window) {
@@ -178,14 +154,22 @@ gfx::NativeWindow TestScreen::GetWindowAtScreenPoint(const gfx::Point& point) {
   return host_->window()->GetEventHandlerForPoint(point);
 }
 
+gfx::NativeWindow TestScreen::GetLocalProcessWindowAtPoint(
+    const gfx::Point& point,
+    const std::set<gfx::NativeWindow>& ignore) {
+  return nullptr;
+}
+
 display::Display TestScreen::GetDisplayNearestWindow(
     gfx::NativeWindow window) const {
   return GetPrimaryDisplay();
 }
 
-TestScreen::TestScreen(const gfx::Rect& screen_bounds,
-                       WindowTreeClient* window_tree_client)
-    : host_(nullptr), ui_scale_(1.0f), window_tree_client_(window_tree_client) {
+std::string TestScreen::GetCurrentWorkspace() {
+  return {};
+}
+
+TestScreen::TestScreen(const gfx::Rect& screen_bounds) {
   static int64_t synthesized_display_id = 2000;
   display::Display display(synthesized_display_id++);
   display.SetScaleAndBounds(1.0f, screen_bounds);

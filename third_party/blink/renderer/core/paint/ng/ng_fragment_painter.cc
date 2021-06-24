@@ -5,66 +5,70 @@
 #include "third_party/blink/renderer/core/paint/ng/ng_fragment_painter.h"
 
 #include "third_party/blink/renderer/core/layout/ng/ng_outline_utils.h"
-#include "third_party/blink/renderer/core/layout/ng/ng_physical_fragment.h"
-#include "third_party/blink/renderer/core/paint/ng/ng_paint_fragment.h"
 #include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context_state_saver.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
 void NGFragmentPainter::PaintOutline(const PaintInfo& paint_info,
-                                     const LayoutPoint& paint_offset) {
-  DCHECK(ShouldPaintSelfOutline(paint_info.phase));
+                                     const PhysicalOffset& paint_offset,
+                                     const ComputedStyle& style_to_use) {
+  const NGPhysicalBoxFragment& fragment = PhysicalFragment();
+  DCHECK(NGOutlineUtils::HasPaintedOutline(style_to_use, fragment.GetNode()));
+  Vector<PhysicalRect> outline_rects;
+  fragment.AddSelfOutlineRects(
+      paint_offset, style_to_use.OutlineRectsShouldIncludeBlockVisualOverflow(),
+      &outline_rects);
 
-  if (!NGOutlineUtils::HasPaintedOutline(paint_fragment_.Style(),
-                                         paint_fragment_.GetNode()))
-    return;
-
-  Vector<LayoutRect> outline_rects;
-  paint_fragment_.AddSelfOutlineRect(
-      &outline_rects, paint_offset,
-      paint_fragment_.GetLayoutObject()
-          ->OutlineRectsShouldIncludeBlockVisualOverflow());
   if (outline_rects.IsEmpty())
     return;
 
+  const DisplayItemClient& display_item_client = GetDisplayItemClient();
   if (DrawingRecorder::UseCachedDrawingIfPossible(
-          paint_info.context, paint_fragment_, paint_info.phase))
+          paint_info.context, display_item_client, paint_info.phase))
     return;
 
-  DrawingRecorder recorder(paint_info.context, paint_fragment_,
-                           paint_info.phase);
-  PaintOutlineRects(paint_info, outline_rects, paint_fragment_.Style());
+  IntRect visual_rect =
+      PixelSnappedIntRect(UnionRectEvenIfEmpty(outline_rects));
+  visual_rect.Inflate(style_to_use.OutlineOutsetExtent());
+  DrawingRecorder recorder(paint_info.context, display_item_client,
+                           paint_info.phase, visual_rect);
+  PaintOutlineRects(paint_info, outline_rects, style_to_use);
 }
 
-void NGFragmentPainter::AddPDFURLRectIfNeeded(const PaintInfo& paint_info,
-                                              const LayoutPoint& paint_offset) {
-  DCHECK(paint_info.IsPrinting());
+void NGFragmentPainter::AddURLRectIfNeeded(const PaintInfo& paint_info,
+                                           const PhysicalOffset& paint_offset) {
+  DCHECK(paint_info.ShouldAddUrlMetadata());
 
   // TODO(layout-dev): Should use break token when NG has its own tree building.
-  if (paint_fragment_.GetLayoutObject()->IsElementContinuation() ||
-      !paint_fragment_.GetNode() || !paint_fragment_.GetNode()->IsLink() ||
-      paint_fragment_.Style().Visibility() != EVisibility::kVisible)
+  const NGPhysicalBoxFragment& fragment = PhysicalFragment();
+  if (fragment.GetLayoutObject()->IsElementContinuation() ||
+      fragment.Style().Visibility() != EVisibility::kVisible)
     return;
 
-  KURL url = ToElement(paint_fragment_.GetNode())->HrefURL();
+  Node* node = fragment.GetNode();
+  if (!node || !node->IsLink())
+    return;
+
+  KURL url = To<Element>(node)->HrefURL();
   if (!url.IsValid())
     return;
 
-  IntRect rect = paint_fragment_.VisualRect();
+  auto outline_rects = fragment.GetLayoutObject()->OutlineRects(
+      paint_offset, NGOutlineType::kIncludeBlockVisualOverflow);
+  IntRect rect = PixelSnappedIntRect(UnionRect(outline_rects));
   if (rect.IsEmpty())
     return;
 
-  const NGPhysicalFragment& fragment = paint_fragment_.PhysicalFragment();
+  const DisplayItemClient& display_item_client = GetDisplayItemClient();
   if (DrawingRecorder::UseCachedDrawingIfPossible(
-          paint_info.context, paint_fragment_,
+          paint_info.context, display_item_client,
           DisplayItem::kPrintedContentPDFURLRect))
     return;
 
-  DrawingRecorder recorder(paint_info.context, paint_fragment_,
+  DrawingRecorder recorder(paint_info.context, display_item_client,
                            DisplayItem::kPrintedContentPDFURLRect);
 
   Document& document = fragment.GetLayoutObject()->GetDocument();
@@ -76,25 +80,6 @@ void NGFragmentPainter::AddPDFURLRectIfNeeded(const PaintInfo& paint_info,
     return;
   }
   paint_info.context.SetURLForRect(url, rect);
-}
-
-bool NGFragmentPainter::ShouldRecordHitTestData(
-    const PaintInfo& paint_info,
-    const NGPhysicalFragment& fragment) {
-  // Hit test display items are only needed for compositing. This flag is used
-  // for for printing and drag images which do not need hit testing.
-  if (paint_info.GetGlobalPaintFlags() & kGlobalPaintFlattenCompositingLayers)
-    return false;
-
-  // If an object is not visible, it does not participate in hit testing.
-  if (fragment.Style().Visibility() != EVisibility::kVisible)
-    return false;
-
-  auto touch_action = fragment.EffectiveAllowedTouchAction();
-  if (touch_action == TouchAction::kTouchActionAuto)
-    return false;
-
-  return true;
 }
 
 }  // namespace blink

@@ -11,7 +11,8 @@
 #include <string>
 
 #include "base/time/time.h"
-#include "cc/scheduler/compositor_timing_history.h"
+#include "cc/metrics/compositor_timing_history.h"
+#include "cc/metrics/dropped_frame_counter.h"
 #include "cc/scheduler/scheduler.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -45,6 +46,7 @@ class FakeCompositorTimingHistory : public CompositorTimingHistory {
   void SetPrepareTilesDurationEstimate(base::TimeDelta duration);
   void SetActivateDurationEstimate(base::TimeDelta duration);
   void SetDrawDurationEstimate(base::TimeDelta duration);
+  void SetBeginMainFrameSentTime(base::TimeTicks time);
 
   base::TimeDelta BeginMainFrameQueueDurationCriticalEstimate() const override;
   base::TimeDelta BeginMainFrameQueueDurationNotCriticalEstimate()
@@ -83,7 +85,9 @@ class TestScheduler : public Scheduler {
       const SchedulerSettings& scheduler_settings,
       int layer_tree_host_id,
       base::SingleThreadTaskRunner* task_runner,
-      std::unique_ptr<CompositorTimingHistory> compositor_timing_history);
+      std::unique_ptr<CompositorTimingHistory> compositor_timing_history,
+      CompositorFrameReportingController* compositor_frame_reporting_controller,
+      power_scheduler::PowerModeArbiter* arbiter);
   TestScheduler(const TestScheduler&) = delete;
 
   TestScheduler& operator=(const TestScheduler&) = delete;

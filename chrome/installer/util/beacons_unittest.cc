@@ -12,6 +12,7 @@
 #include "base/threading/platform_thread.h"
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
+#include "build/branding_buildflags.h"
 #include "chrome/install_static/install_details.h"
 #include "chrome/install_static/install_modes.h"
 #include "chrome/install_static/test/scoped_install_details.h"
@@ -31,7 +32,7 @@ namespace installer_util {
 class BeaconTest : public ::testing::TestWithParam<
                        ::testing::tuple<BeaconType, BeaconScope, bool>> {
  protected:
-  static const base::char16 kBeaconName[];
+  static const wchar_t kBeaconName[];
 
   BeaconTest()
       : beacon_type_(::testing::get<0>(GetParam())),
@@ -63,10 +64,10 @@ class BeaconTest : public ::testing::TestWithParam<
 };
 
 // static
-const base::char16 BeaconTest::kBeaconName[] = L"TestBeacon";
+const wchar_t BeaconTest::kBeaconName[] = L"TestBeacon";
 
 // Nothing in the regsitry, so the beacon should not exist.
-TEST_P(BeaconTest, GetNonExistant) {
+TEST_P(BeaconTest, GetNonExistent) {
   ASSERT_TRUE(beacon()->Get().is_null());
 }
 
@@ -105,9 +106,9 @@ TEST_P(BeaconTest, Location) {
       install_static::InstallDetails::Get();
   HKEY right_root = system_install() ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
   HKEY wrong_root = system_install() ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
-  base::string16 right_key;
-  base::string16 wrong_key;
-  base::string16 value_name;
+  std::wstring right_key;
+  std::wstring wrong_key;
+  std::wstring value_name;
 
   if (beacon_scope() == BeaconScope::PER_INSTALL || !system_install()) {
     value_name = kBeaconName;
@@ -120,14 +121,17 @@ TEST_P(BeaconTest, Location) {
     wrong_key = install_details.GetClientStateKeyPath();
   }
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   // Keys should not exist in the wrong root or in the right root but wrong key.
-  ASSERT_FALSE(base::win::RegKey(wrong_root, right_key.c_str(),
-                                 KEY_READ).Valid()) << right_key;
-  ASSERT_FALSE(base::win::RegKey(wrong_root, wrong_key.c_str(),
-                                 KEY_READ).Valid()) << wrong_key;
-  ASSERT_FALSE(base::win::RegKey(right_root, wrong_key.c_str(),
-                                 KEY_READ).Valid()) << wrong_key;
+  ASSERT_FALSE(
+      base::win::RegKey(wrong_root, right_key.c_str(), KEY_READ).Valid())
+      << right_key;
+  ASSERT_FALSE(
+      base::win::RegKey(wrong_root, wrong_key.c_str(), KEY_READ).Valid())
+      << wrong_key;
+  ASSERT_FALSE(
+      base::win::RegKey(right_root, wrong_key.c_str(), KEY_READ).Valid())
+      << wrong_key;
 #else
   // The tests above are skipped for Chromium builds because they fail for two
   // reasons:
@@ -222,7 +226,7 @@ TEST_P(DefaultBrowserBeaconTest, All) {
   ASSERT_FALSE(first_not_default->Get().is_null());
 }
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 // Stable supports user and system levels.
 INSTANTIATE_TEST_SUITE_P(
     Stable,
@@ -247,13 +251,13 @@ INSTANTIATE_TEST_SUITE_P(
     DefaultBrowserBeaconTest,
     testing::Combine(testing::Values(install_static::CANARY_INDEX),
                      testing::Values("user")));
-#else   // GOOGLE_CHROME_BUILD
+#else   // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 // Chromium supports user and system levels.
 INSTANTIATE_TEST_SUITE_P(
     Chromium,
     DefaultBrowserBeaconTest,
     testing::Combine(testing::Values(install_static::CHROMIUM_INDEX),
                      testing::Values("user", "system")));
-#endif  // GOOGLE_CHROME_BUILD
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 }  // namespace installer_util

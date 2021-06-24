@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -131,6 +132,9 @@ class DisassemblerElf : public Disassembler {
   elf::Elf32_Half segments_count_ = 0;
   const typename Traits::Elf_Phdr* segments_ = nullptr;
 
+  // Bit fields to store the role each section may play.
+  std::vector<int> section_judgements_;
+
   // Translator between offsets and RVAs.
   AddressTranslator translator_;
 
@@ -175,7 +179,8 @@ class DisassemblerElfIntel : public DisassemblerElf<Traits> {
 
  private:
   // Sorted file offsets of rel32 locations.
-  std::vector<offset_t> rel32_locations_;
+  // Using std::deque to reduce peak memory footprint.
+  std::deque<offset_t> rel32_locations_;
 
   DISALLOW_COPY_AND_ASSIGN(DisassemblerElfIntel);
 };

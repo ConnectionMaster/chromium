@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #import "ios/chrome/browser/ui/fullscreen/fullscreen_model_observer.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 
@@ -79,11 +79,11 @@ void FullscreenModel::AnimationEndedWithProgress(CGFloat progress) {
 }
 
 void FullscreenModel::SetCollapsedToolbarHeight(CGFloat height) {
-  if (AreCGFloatsEqual(collapsed_toolbar_height_, height))
+  if (AreCGFloatsEqual(GetCollapsedToolbarHeight(), height))
     return;
   DCHECK_GE(height, 0.0);
   collapsed_toolbar_height_ = height;
-  ResetForNavigation();
+  base_offset_ = NAN;
   ScopedIncrementer toolbar_height_incrementer(&observer_callback_count_);
   for (auto& observer : observers_) {
     observer.FullscreenModelToolbarHeightsUpdated(this);
@@ -91,15 +91,15 @@ void FullscreenModel::SetCollapsedToolbarHeight(CGFloat height) {
 }
 
 CGFloat FullscreenModel::GetCollapsedToolbarHeight() const {
-  return collapsed_toolbar_height_;
+  return GetFreezeToolbarHeight() ? 0 : collapsed_toolbar_height_;
 }
 
 void FullscreenModel::SetExpandedToolbarHeight(CGFloat height) {
-  if (AreCGFloatsEqual(expanded_toolbar_height_, height))
+  if (AreCGFloatsEqual(GetExpandedToolbarHeight(), height))
     return;
   DCHECK_GE(height, 0.0);
   expanded_toolbar_height_ = height;
-  ResetForNavigation();
+  base_offset_ = NAN;
   ScopedIncrementer toolbar_height_incrementer(&observer_callback_count_);
   for (auto& observer : observers_) {
     observer.FullscreenModelToolbarHeightsUpdated(this);
@@ -107,7 +107,7 @@ void FullscreenModel::SetExpandedToolbarHeight(CGFloat height) {
 }
 
 CGFloat FullscreenModel::GetExpandedToolbarHeight() const {
-  return expanded_toolbar_height_;
+  return GetFreezeToolbarHeight() ? 0 : expanded_toolbar_height_;
 }
 
 void FullscreenModel::SetBottomToolbarHeight(CGFloat height) {
@@ -115,7 +115,7 @@ void FullscreenModel::SetBottomToolbarHeight(CGFloat height) {
     return;
   DCHECK_GE(height, 0.0);
   bottom_toolbar_height_ = height;
-  ResetForNavigation();
+  base_offset_ = NAN;
   ScopedIncrementer toolbar_height_incrementer(&observer_callback_count_);
   for (auto& observer : observers_) {
     observer.FullscreenModelToolbarHeightsUpdated(this);
@@ -180,7 +180,13 @@ void FullscreenModel::SetScrollViewIsScrolling(bool scrolling) {
   if (scrolling_ == scrolling)
     return;
   scrolling_ = scrolling;
-  if (!scrolling_) {
+  if (scrolling_) {
+    // Notify observers that the scroll event has begun.
+    ScopedIncrementer scroll_started_incrementer(&observer_callback_count_);
+    for (auto& observer : observers_) {
+      observer.FullscreenModelScrollEventStarted(this);
+    }
+  } else {
     // Stop ignoring the current scroll.
     ignoring_current_scroll_ = false;
     // Notify observers that the scroll event has ended.
@@ -208,11 +214,13 @@ void FullscreenModel::SetScrollViewIsDragging(bool dragging) {
     return;
   dragging_ = dragging;
   if (dragging_) {
-    ScopedIncrementer scroll_started_incrementer(&observer_callback_count_);
-    for (auto& observer : observers_) {
-      observer.FullscreenModelScrollEventStarted(this);
-    }
+    // Update the base offset for each new scroll event.
     UpdateBaseOffset();
+    // Re-rendering events are ignored during scrolls since disabling the model
+    // mid-scroll leads to choppy animations.  If the content was re-rendered
+    // to be too short to collapse the toolbars, the model should be disabled
+    // to prevent the subsequent scroll.
+    UpdateDisabledCounterForContentHeight();
   }
 }
 
@@ -239,6 +247,22 @@ UIEdgeInsets FullscreenModel::GetWebViewSafeAreaInsets() const {
   return safe_area_insets_;
 }
 
+void FullscreenModel::SetFreezeToolbarHeight(bool freeze_toolbar_height) {
+  if (freeze_toolbar_height_ == freeze_toolbar_height) {
+    return;
+  }
+  freeze_toolbar_height_ = freeze_toolbar_height;
+  base_offset_ = NAN;
+  ScopedIncrementer toolbar_height_incrementer(&observer_callback_count_);
+  for (auto& observer : observers_) {
+    observer.FullscreenModelToolbarHeightsUpdated(this);
+  }
+}
+
+bool FullscreenModel::GetFreezeToolbarHeight() const {
+  return freeze_toolbar_height_;
+}
+
 FullscreenModel::ScrollAction FullscreenModel::ActionForScrollFromOffset(
     CGFloat from_offset) const {
   // Update the base offset but don't recalculate progress if:
@@ -257,13 +281,19 @@ FullscreenModel::ScrollAction FullscreenModel::ActionForScrollFromOffset(
   // Ignore if:
   // - explicitly requested via IgnoreRemainderOfCurrentScroll(),
   // - the scroll is a bounce-up animation at the top,
-  // - the scroll is attempting to scroll content up when it already fits.
+  // - the scroll is attempting to scroll content up when it already fits,
+  // - the scroll is attempting to scroll past the bottom of the content when
+  //   the scroll view is being resized (the rebound scroll animation
+  //   interferes with the frame resizing).
   bool scrolling_content_down = y_content_offset_ - from_offset < 0.0;
   bool scrolling_past_top = y_content_offset_ <= -top_inset_;
   bool content_fits = content_height_ <= scroll_view_height_ - top_inset_;
+  bool scrolling_past_bottom =
+      y_content_offset_ + scroll_view_height_ + top_inset_ >= content_height_;
   if (ignoring_current_scroll_ ||
       (scrolling_past_top && !scrolling_content_down) ||
-      (content_fits && !scrolling_content_down)) {
+      (content_fits && !scrolling_content_down) ||
+      (resizes_scroll_view_ && scrolling_past_bottom)) {
     return ScrollAction::kIgnore;
   }
 
@@ -283,13 +313,19 @@ void FullscreenModel::UpdateProgress() {
 }
 
 void FullscreenModel::UpdateDisabledCounterForContentHeight() {
+  // Sometimes the content size and scroll view sizes are updated mid-scroll
+  // such that the scroll view height is updated before the content is re-
+  // rendered, causing the model to be disabled.  These changes should be
+  // ignored while the content is scrolling.
+  if (scrolling_)
+    return;
   // The model should be disabled when the content fits.
   CGFloat disabling_threshold = scroll_view_height_;
   if (resizes_scroll_view_) {
-    // When the FullscreenProvider is disabled, the scroll view can sometimes be
+    // When Smooth Scrolling is disabled, the scroll view can sometimes be
     // resized to account for the viewport insets after the page has been
     // rendered, so account for the maximum toolbar insets in the threshold.
-    disabling_threshold += expanded_toolbar_height_ + bottom_toolbar_height_;
+    disabling_threshold += GetExpandedToolbarHeight() + bottom_toolbar_height_;
   } else {
     // After reloads, pages whose viewports fit the screen are sometimes resized
     // to account for the safe area insets.  Adding these to the threshold helps

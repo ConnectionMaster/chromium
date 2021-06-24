@@ -13,17 +13,16 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/scoped_observer.h"
-#include "chrome/browser/chromeos/arc/arc_session_manager.h"
-#include "components/arc/common/intent_helper.mojom.h"
+#include "base/scoped_multi_source_observation.h"
+#include "chrome/browser/ash/arc/session/arc_session_manager_observer.h"
+#include "chrome/browser/profiles/profile_manager_observer.h"
 #include "components/arc/intent_helper/arc_intent_helper_observer.h"
+#include "components/arc/mojom/intent_helper.mojom-forward.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
-#include "content/public/browser/notification_source.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class Profile;
 
@@ -37,7 +36,6 @@ class BrowserContext;
 
 namespace extensions {
 class Extension;
-class ExtensionRegistry;
 namespace api {
 namespace app_runtime {
 struct ActionData;
@@ -75,25 +73,23 @@ struct NoteTakingAppInfo {
   std::string name;
 
   // Either an extension ID (in the case of a Chrome app) or a package name (in
-  // the case of an Android app).
+  // the case of an Android app) or a web app ID (in the case of a web app).
   std::string app_id;
 
   // True if this is the preferred note-taking app.
   bool preferred;
 
   // Whether the app supports taking notes on Chrome OS lock screen. Note that
-  // this ability is guarded by enable-lock-screen-apps feature flag, and
-  // whitelisted to Keep apps.
+  // this ability is guarded by enable-lock-screen-apps feature flag, and is
+  // currently restricted to Keep apps.
   NoteTakingLockScreenSupport lock_screen_support;
 };
 
-using NoteTakingAppInfos = std::vector<NoteTakingAppInfo>;
-
 // Singleton class used to launch a note-taking app.
 class NoteTakingHelper : public arc::ArcIntentHelperObserver,
-                         public arc::ArcSessionManager::Observer,
-                         public content::NotificationObserver,
-                         public extensions::ExtensionRegistryObserver {
+                         public arc::ArcSessionManagerObserver,
+                         public extensions::ExtensionRegistryObserver,
+                         public ProfileManagerObserver {
  public:
   // Interface for observing changes to the list of available apps.
   class Observer {
@@ -130,13 +126,17 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
     NO_APP_SPECIFIED = 6,
     // No Android or Chrome apps were available.
     NO_APPS_AVAILABLE = 7,
+    // A web app was launched successfully.
+    WEB_APP_SUCCESS = 8,
+    // The requested web app was unavailable.
+    WEB_APP_MISSING = 9,
     // This value must remain last and should be incremented when a new reason
     // is inserted.
-    MAX = 8,
+    MAX = 10,
   };
 
   // Callback used to launch a Chrome app.
-  using LaunchChromeAppCallback = base::Callback<void(
+  using LaunchChromeAppCallback = base::RepeatingCallback<void(
       content::BrowserContext* context,
       const extensions::Extension*,
       std::unique_ptr<extensions::api::app_runtime::ActionData>,
@@ -149,6 +149,9 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
   // Chrome app.
   static const char kDevKeepExtensionId[];
   static const char kProdKeepExtensionId[];
+  // Web app IDs for testing and development versions of note-taking web apps.
+  static const char kNoteTakingWebAppIdTest[];
+  static const char kNoteTakingWebAppIdDev[];
 
   // Names of histograms.
   static const char kPreferredLaunchResultHistogramName[];
@@ -170,12 +173,12 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
-  // Returns a list of available note-taking apps.
+  // Returns a list of available note-taking apps, in the order they should be
+  // shown in UI.
   std::vector<NoteTakingAppInfo> GetAvailableApps(Profile* profile);
 
-  // Returns the preferred app info, if the preferred app exists and is a Chrome
-  // app.
-  std::unique_ptr<NoteTakingAppInfo> GetPreferredChromeAppInfo(
+  // Returns info for the preferred lock screen app, if it exists.
+  std::unique_ptr<NoteTakingAppInfo> GetPreferredLockScreenAppInfo(
       Profile* profile);
 
   // Sets the preferred note-taking app. |app_id| is a value from a
@@ -197,10 +200,14 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
   void LaunchAppForNewNote(Profile* profile, const base::FilePath& path);
 
   // arc::ArcIntentHelperObserver:
-  void OnIntentFiltersUpdated() override;
+  void OnIntentFiltersUpdated(
+      const absl::optional<std::string>& package_name) override;
 
-  // arc::ArcSessionManager::Observer:
+  // arc::ArcSessionManagerObserver:
   void OnArcPlayStoreEnabledChanged(bool enabled) override;
+
+  // ProfileManagerObserver:
+  void OnProfileAdded(Profile* profile) override;
 
   // Sets the profile which supports note taking apps on the lock screen.
   void SetProfileWithEnabledLockScreenApps(Profile* profile);
@@ -210,28 +217,27 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
   }
 
  private:
-  // The state of app ID whitelist cache (used for determining the state of
-  // note-taking apps whtielisted for the lock screen).
-  enum class AppWhitelistState {
-    // The whitelist value has not yet been determined.
+  // The state of the allowed app ID cache (used for determining the state of
+  // note-taking apps allowed on the lock screen).
+  enum class AllowedAppListState {
+    // The allowed apps have not yet been determined.
     kUndetermined,
-    // The app ID whitelist does not exist in the profile.
-    kNoAppWhitelist,
-    // The app ID whitelist exists in the profile.
-    kAppsWhitelisted
+    // No app ID restriction exists in the profile.
+    kAllAppsAllowed,
+    // A list of allowed app IDs exists in the profile.
+    kAllowedAppsListed
   };
 
   NoteTakingHelper();
   ~NoteTakingHelper() override;
 
-  // Returns true if |extension| is a whitelisted note-taking app and false
-  // otherwise.
-  bool IsWhitelistedChromeApp(const extensions::Extension* extension) const;
+  // Returns whether |app_id| has been explicitly allowed as a note-taking app
+  // by command-line or default. |app_id| is a Chrome app or web app ID.
+  bool IsAllowedApp(const std::string& app_id) const;
 
-  // Queries and returns all installed and enabled whitelisted Chrome
-  // note-taking apps for |profile|.
-  std::vector<const extensions::Extension*> GetChromeApps(
-      Profile* profile) const;
+  // Queries and returns the app IDs of note-taking Chrome/web apps that are
+  // installed, enabled, and allowed for |profile|.
+  std::vector<std::string> GetNoteTakingAppIds(Profile* profile) const;
 
   // Requests a list of Android note-taking apps from ARC.
   void UpdateAndroidApps();
@@ -246,11 +252,6 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
                                  const std::string& app_id,
                                  const base::FilePath& path);
 
-  // content::NotificationObserver:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
-
   // extensions::ExtensionRegistryObserver:
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const extensions::Extension* extension) override;
@@ -259,21 +260,21 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
                            extensions::UnloadedExtensionReason reason) override;
   void OnShutdown(extensions::ExtensionRegistry* registry) override;
 
-  // Determines the state of the |app|'s support for lock screen note taking.
-  // |profile| - The profile in which the app is installed.
-  NoteTakingLockScreenSupport GetLockScreenSupportForChromeApp(
+  // Determines the state of the app's support for lock screen note taking using
+  // installation information from |profile|.
+  NoteTakingLockScreenSupport GetLockScreenSupportForAppId(
       Profile* profile,
-      const extensions::Extension* app);
+      const std::string& app_id);
 
-  // Called when kNoteTakingAppsLockScreenWhitelist pref changes for
+  // Called when kNoteTakingAppsLockScreenAllowlist pref changes for
   // |profile_with_enabled_lock_screen_apps_|.
   void OnAllowedNoteTakingAppsChanged();
 
-  // Updates the cached whitelist of note-taking apps allowed on the lock
-  // screen - it sets |lock_screen_whitelist_state_|  and
-  // |lock_screen_apps_allowed_by_policy_| to values appropriate for the current
+  // Updates the cached list of note-taking apps allowed on the lock screen - it
+  // sets |allowed_lock_screen_apps_state_|  and
+  // |allowed_lock_screen_apps_by_policy_| to values appropriate for the current
   // |profile_with_enabled_lock_screen_apps_| state.
-  void UpdateLockScreenAppsWhitelistState();
+  void UpdateAllowedLockScreenAppsList();
 
   // True iff Play Store is enabled (i.e. per the checkbox on the settings
   // page). Note that ARC may not be fully started yet when this is true, but it
@@ -287,46 +288,46 @@ class NoteTakingHelper : public arc::ArcIntentHelperObserver,
   // Callback used to launch Chrome apps. Can be overridden for tests.
   LaunchChromeAppCallback launch_chrome_app_callback_;
 
-  // Extension IDs of whitelisted (but not necessarily installed) Chrome
-  // note-taking apps in the order in which they're chosen if the user hasn't
+  // IDs of allowed (but not necessarily installed) Chrome apps or web apps for
+  // note-taking, in the order in which they're chosen if the user hasn't
   // expressed a preference.
-  std::vector<extensions::ExtensionId> whitelisted_chrome_app_ids_;
+  std::vector<std::string> allowed_app_ids_;
 
   // Cached information about available Android note-taking apps.
-  NoteTakingAppInfos android_apps_;
+  std::vector<NoteTakingAppInfo> android_apps_;
 
   // Tracks ExtensionRegistry observation for different profiles.
-  ScopedObserver<extensions::ExtensionRegistry,
-                 extensions::ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedMultiSourceObservation<extensions::ExtensionRegistry,
+                                     extensions::ExtensionRegistryObserver>
+      extension_registry_observations_{this};
+  // TODO (crbug.com/1185678): Also track web app installs/uninstalls.
 
   // The profile for which lock screen apps are enabled,
   Profile* profile_with_enabled_lock_screen_apps_ = nullptr;
 
-  // The current AppWhitelistState for lock screen note taking in
-  // |profile_with_enabled_lock_screen_apps_|. If kAppsWhitelisted,
-  // |lock_screen_apps_allowed_by_policy_| should contain the set of whitelisted
+  // The current AllowedAppListState for lock screen note taking in
+  // |profile_with_enabled_lock_screen_apps_|. If kAllowedAppsListed,
+  // |lock_screen_apps_allowed_by_policy_| should contain the set of allowed
   // app IDs.
-  AppWhitelistState lock_screen_whitelist_state_ =
-      AppWhitelistState::kUndetermined;
+  AllowedAppListState allowed_lock_screen_apps_state_ =
+      AllowedAppListState::kUndetermined;
 
-  // If |lock_screen_whitelist_state_| is kAppsWhitelisted, contains all app
-  // IDs that are allowed to handle new-note action on the lock screen. The set
-  // should only be used for apps from |profile_with_enabled_lock_screen_apps_|
-  // and when |lock_screen_whitelist_state_| equals kAppsWhitelisted.
-  std::set<std::string> lock_screen_apps_allowed_by_policy_;
+  // If |allowed_lock_screen_apps_state_| is kAllowedAppsListed, contains all
+  // app IDs that are allowed to handle new-note action on the lock screen. The
+  // set should only be used for apps from
+  // |profile_with_enabled_lock_screen_apps_| and when
+  // |allowed_lock_screen_apps_state_| equals kAllowedAppsListed.
+  std::set<std::string> allowed_lock_screen_apps_by_policy_;
 
-  // Tracks kNoteTakingAppsLockScreenWhitelist pref for the profile for which
+  // Tracks kNoteTakingAppsLockScreenAllowlist pref for the profile for which
   // lock screen apps are enabled.
   PrefChangeRegistrar pref_change_registrar_;
 
   base::ObserverList<Observer>::Unchecked observers_;
 
-  content::NotificationRegistrar registrar_;
-
   std::unique_ptr<NoteTakingControllerClient> note_taking_controller_client_;
 
-  base::WeakPtrFactory<NoteTakingHelper> weak_ptr_factory_;
+  base::WeakPtrFactory<NoteTakingHelper> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(NoteTakingHelper);
 };

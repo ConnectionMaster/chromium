@@ -12,7 +12,6 @@
 #include "base/macros.h"
 #include "chrome/browser/media_galleries/media_galleries_dialog_controller.h"
 #include "ui/views/context_menu_controller.h"
-#include "ui/views/controls/button/button.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace views {
@@ -27,7 +26,6 @@ class MediaGalleryCheckboxView;
 // The media galleries configuration view for Views. It will immediately show
 // upon construction.
 class MediaGalleriesDialogViews : public MediaGalleriesDialog,
-                                  public views::ButtonListener,
                                   public views::ContextMenuController,
                                   public views::DialogDelegate {
  public:
@@ -35,40 +33,29 @@ class MediaGalleriesDialogViews : public MediaGalleriesDialog,
       MediaGalleriesDialogController* controller);
   ~MediaGalleriesDialogViews() override;
 
-  // MediaGalleriesDialog implementation:
+  // MediaGalleriesDialog:
   void UpdateGalleries() override;
 
-  // views::DialogDelegate implementation:
-  base::string16 GetWindowTitle() const override;
-  bool ShouldShowCloseButton() const override;
-  void DeleteDelegate() override;
+  // views::DialogDelegate:
   views::Widget* GetWidget() override;
   const views::Widget* GetWidget() const override;
   views::View* GetContentsView() override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
   bool IsDialogButtonEnabled(ui::DialogButton button) const override;
-  ui::ModalType GetModalType() const override;
-  views::View* CreateExtraView() override;
-  bool Cancel() override;
-  bool Accept() override;
 
-  // views::ButtonListener implementation:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
-
-  // views::ContextMenuController implementation:
+  // views::ContextMenuController:
   void ShowContextMenuForViewImpl(views::View* source,
                                   const gfx::Point& point,
                                   ui::MenuSourceType source_type) override;
 
  private:
+  friend class MediaGalleriesDialogTest;
   FRIEND_TEST_ALL_PREFIXES(MediaGalleriesDialogTest, InitializeCheckboxes);
-  FRIEND_TEST_ALL_PREFIXES(MediaGalleriesDialogTest, ToggleCheckboxes);
   FRIEND_TEST_ALL_PREFIXES(MediaGalleriesDialogTest, UpdateAdds);
   FRIEND_TEST_ALL_PREFIXES(MediaGalleriesDialogTest, ForgetDeletes);
 
-  typedef std::map<MediaGalleryPrefId, MediaGalleryCheckboxView*> CheckboxMap;
+  using CheckboxMap = std::map<MediaGalleryPrefId, MediaGalleryCheckboxView*>;
 
-  // MediaGalleriesDialog implementation:
+  // MediaGalleriesDialog:
   void AcceptDialogForTesting() override;
 
   void InitChildViews();
@@ -87,6 +74,10 @@ class MediaGalleriesDialogViews : public MediaGalleriesDialog,
   // Whether |controller_| has a valid WebContents or not.
   // In unit tests, it may not.
   bool ControllerHasWebContents() const;
+
+  // Called when a button is pressed; does common preamble, then runs the
+  // supplied closure to execute the specific details of the particular button.
+  void ButtonPressed(base::RepeatingClosure closure);
 
   // Callback for MenuRunner.
   void OnMenuClosed();

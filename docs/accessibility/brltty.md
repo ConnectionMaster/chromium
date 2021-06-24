@@ -4,7 +4,7 @@ Chrome OS uses the open-source [BRLTTY](http://mielke.cc/brltty/)
 library to provide support for refreshable braille displays.
 
 We typically ship with a stable release build of BRLTTY plus some
-cherry-picked patches.
+permanent or cherry-picked patches.
 
 ## Updating BRLTTY or adding a patch
 
@@ -24,6 +24,14 @@ in developer mode, and $BOARD is your Chromebook's board name.
 The BRLTTY files can be found in this directory:
 
 ```third_party/chromiumos-overlay/app-accessibility/brltty```
+
+###Major release
+
+You'll first want to rename all files to the new major release. For example, brltty-5.6.ebuild and remove all revision symlinks (see below).
+
+###Revision release
+
+A revision release is the same release build of brltty, but with additional patches.
 
 The first thing you'll need to do is edit the ebuild symlink to change the
 revision number. The real file is something like brltty-5.4.ebuild,
@@ -57,8 +65,8 @@ To upload a change, use repo, something like this:
 ```
 repo start <branch_name> .
 git commit -a
-  BUG=chromium:12345
-  TEST=Write what you tested here
+  Bug: chromium:12345
+  Test: Write what you tested here
 repo upload .
 ```
 
@@ -82,7 +90,6 @@ order to update Brltty, you will need to first get started with GCS.
 If you follow the alternative cli workflow, you should have the ability to
 list the Chrome OS GCS bucket:
 
-
 ```gsutil ls gs://chromeos-localmirror/```
 
 for example:
@@ -101,7 +108,6 @@ You can do this via ```gsutil cp```.
 
 After copying, you will likely want the package to be world readable:
 
-    
 ```
 gsutil acl ch -u AllUsers:R gs://chromeos-localmirror/distfiles/brltty-5.6.tar.gz
 
@@ -112,6 +118,11 @@ gsutil acl ch -u AllUsers:R gs://chromeos-localmirror/distfiles/brltty-5.6.tar.g
 Next, you will need to uprev the ebuild. Do this by renaming all files from the previous version to the new one.
 E.g.
 Brltty-5.4.ebuild -> brltty-5.6.ebuild
+
+Start a build with your changes by doing
+
+emerge brltty
+(or emerge{$BOARD} brltty).
 
 Note: Manifest has various checksums computed based on the release you uploaded to GCS. Each of these will need to be replaced/updated.
 
@@ -125,10 +136,68 @@ Will ensure you find the right release. You can then checkout that release via
 
 ```Git checkout tags/<tag_name>```
 
+Finally apply each of the *.patch files to this tag of brltty.
+
+This is more or less straightforward. If conflicts arise, it is useful to list
+commits to the file containing the conflict
+
+```git log --oneline <file>```
+
+then understanding the history since the last release. If the patch is already
+upstreamed, you can remove it from the Chrome OS repo.
+
+### Chrome side changes
+
+Chrome communicates with brltty using libbrlapi.
+libbrlapi resides at //third_party/libbrlapi.
+
+Chrome loads this library dynamically and hard-codes the expected version of the api so in
+chrome/browser/extensions/api/braille_display_private/braille_controller_brlapi.cc
+
+which should match up with the header in
+third_party/libbrlapi/brlapi.h.
+
+During uppreving, if brltty increments its api version, it will be necessary to update the header for libbrlapi, as well as incrementing the supported api version of the libbrlapi shared object.
+
+First, grab the generated header from your Chrome OS build above.
+cp <chromeos root>/build/$BOARD/usr/include/brlapi.h <chrome_root>/third_party/libbrlapi/brlapi.h
+
+This header contains the specific socket path for Chrome OS which differs from brltty defaults.
+
+Next, ensure the version in
+chrome/browser/extensions/api/braille_display_private/braille_controller_brlapi.cc
+
+matches the one in the new brltty.
+
+#### ChromeVox
+ChromeVox keeps a list of bluetooth braille display names
+(search for bluetooth_display_manager.js).
+
+Within the brltty sources (as of 6.3), one can find all bluetooth display names
+in:
+brltty/Programs/bluetooth_names.c
+
 ### Testing
 
-Once you have a build deployed on a machine, here are a few useful things
-to check:
+Firstly, try to test against brltty on linux. This involves building brltty at
+the proposed stable release and fully patching all of our changes from Chrome
+OS.
+
+You would do something like:
+
+```
+./autogen
+./configure
+make
+./run-brltty -n
+```
+
+This will launch brltty (in the foreground and not as a daemon).
+
+Any connected displays should automatically work.
+
+Next, once you have a build deployed on a Chrome OS machine, here are a few
+useful things to check:
 * Routing keys within a text field
 * Routing keys on a link
 * Basic braille output
@@ -139,3 +208,23 @@ to check:
 start
 
 Try to test with at least two displays.
+###Debugging
+
+In the event things don't go well (such as no braille appearing on the display),
+you may find it helpful to:
+
+1. examine chrome logging
+
+/var/log/chrome
+
+Look for any errors in *brl* related files. For example, a new release of
+libbrlapi could require additional so versions be added to our loader.
+
+2. modify the way in which brltty gets run.
+
+In particular, look at the invokation of the minijail in
+
+third_party/chromiumos-overlay/app-accessibility/brltty/files/brltty
+
+You may want to add the '-l debug' flag to the brltty call and redirect stderr/stdout to a file.
+... brltty -n ... -l debug,server,usb,brldrv ... > /tmp/brltty_errors 2>&1

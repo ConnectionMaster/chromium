@@ -9,10 +9,10 @@
 
 #include <limits>
 
+#include "base/cxx17_backports.h"
 #include "base/memory/platform_shared_memory_region.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/writable_shared_memory_region.h"
-#include "base/stl_util.h"
 #include "mojo/core/dispatcher.h"
 #include "mojo/core/platform_shared_memory_mapping.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -45,8 +45,8 @@ void RevalidateCreateOptions(
 
 class SharedBufferDispatcherTest : public testing::Test {
  public:
-  SharedBufferDispatcherTest() {}
-  ~SharedBufferDispatcherTest() override {}
+  SharedBufferDispatcherTest() = default;
+  ~SharedBufferDispatcherTest() override = default;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SharedBufferDispatcherTest);

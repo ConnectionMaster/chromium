@@ -4,10 +4,11 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
-#include "base/logging.h"
+#include <string>
+
+#include "base/check.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/sys_string_conversions.h"
 #include "net/base/net_string_util.h"
@@ -35,7 +36,7 @@ bool CharsetToCFStringEncoding(const char* charset,
 // by base::kCodepageLatin1 (which is const char[]) in net_string_util_icu.cc.
 const char* const kCharsetLatin1 = "ISO-8859-1";
 
-bool ConvertToUtf8(const std::string& text,
+bool ConvertToUtf8(base::StringPiece text,
                    const char* charset,
                    std::string* output) {
   CFStringEncoding encoding;
@@ -52,28 +53,28 @@ bool ConvertToUtf8(const std::string& text,
   return true;
 }
 
-bool ConvertToUtf8AndNormalize(const std::string& text,
+bool ConvertToUtf8AndNormalize(base::StringPiece text,
                                const char* charset,
                                std::string* output) {
   DCHECK(false) << "Not implemented yet.";
   return false;
 }
 
-bool ConvertToUTF16(const std::string& text,
+bool ConvertToUTF16(base::StringPiece text,
                     const char* charset,
-                    base::string16* output) {
+                    std::u16string* output) {
   DCHECK(false) << "Not implemented yet.";
   return false;
 }
 
-bool ConvertToUTF16WithSubstitutions(const std::string& text,
+bool ConvertToUTF16WithSubstitutions(base::StringPiece text,
                                      const char* charset,
-                                     base::string16* output) {
+                                     std::u16string* output) {
   DCHECK(false) << "Not implemented yet.";
   return false;
 }
 
-bool ToUpper(const base::string16& str, base::string16* output) {
+bool ToUpper(base::StringPiece16 str, std::u16string* output) {
   base::ScopedCFTypeRef<CFStringRef> cfstring(base::SysUTF16ToCFStringRef(str));
   base::ScopedCFTypeRef<CFMutableStringRef> mutable_cfstring(
       CFStringCreateMutableCopy(kCFAllocatorDefault, 0, cfstring.get()));

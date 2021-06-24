@@ -8,11 +8,11 @@
 #import "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
 #include "base/timer/timer.h"
+#import "components/remote_cocoa/app_shim/views_scrollbar_bridge.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/views/controls/scrollbar/scroll_bar.h"
 #include "ui/views/views_export.h"
-#import "ui/views_bridge_mac/views_scrollbar_bridge.h"
 
 namespace views {
 
@@ -24,6 +24,8 @@ class VIEWS_EXPORT CocoaScrollBar : public ScrollBar,
                                     public ui::ImplicitAnimationObserver,
                                     public gfx::AnimationDelegate {
  public:
+  METADATA_HEADER(CocoaScrollBar);
+
   explicit CocoaScrollBar(bool horizontal);
   ~CocoaScrollBar() override;
 
@@ -37,6 +39,7 @@ class VIEWS_EXPORT CocoaScrollBar : public ScrollBar,
   void OnScrollerStyleChanged() override;
 
   // View:
+  bool GetCanProcessEventsWithinSubtree() const override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnMouseReleased(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
@@ -57,6 +60,9 @@ class VIEWS_EXPORT CocoaScrollBar : public ScrollBar,
 
   // Returns true if the opacity is 0.0.
   bool IsScrollbarFullyHidden() const;
+
+  // Get the parameters for painting.
+  ui::NativeTheme::ExtraParams GetPainterParams() const;
 
  protected:
   // ScrollBar:

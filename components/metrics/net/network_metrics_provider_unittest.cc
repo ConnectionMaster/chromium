@@ -12,21 +12,21 @@
 #include "base/run_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/metrics_proto/system_profile.pb.h"
 
-#if defined(OS_CHROMEOS)
-#include "chromeos/dbus/dbus_thread_manager.h"
-#include "chromeos/network/network_handler.h"
-#endif  // OS_CHROMEOS
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chromeos/network/network_handler_test_helper.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 #if defined(OS_IOS)
-#include "ios/web/public/test/test_web_thread_bundle.h"
-using TestThreadBundle = web::TestWebThreadBundle;
+#include "ios/web/public/test/web_task_environment.h"
+using MetricsTaskEnvironment = web::WebTaskEnvironment;
 #else  // !defined(OS_IOS)
-#include "content/public/test/test_browser_thread_bundle.h"
-using TestThreadBundle = content::TestBrowserThreadBundle;
+#include "content/public/test/browser_task_environment.h"
+using MetricsTaskEnvironment = content::BrowserTaskEnvironment;
 #endif  // defined(OS_IOS)
 
 namespace metrics {
@@ -35,25 +35,14 @@ class NetworkMetricsProviderTest : public testing::Test {
  public:
  protected:
   NetworkMetricsProviderTest()
-      : test_thread_bundle_(TestThreadBundle::IO_MAINLOOP) {}
+      : task_environment_(MetricsTaskEnvironment::IO_MAINLOOP) {}
   ~NetworkMetricsProviderTest() override {}
 
-  void SetUp() override {
-#if defined(OS_CHROMEOS)
-    chromeos::DBusThreadManager::Initialize();
-    chromeos::NetworkHandler::Initialize();
-#endif  // OS_CHROMEOS
-  }
-
-  void TearDown() override {
-#if defined(OS_CHROMEOS)
-    chromeos::NetworkHandler::Shutdown();
-    chromeos::DBusThreadManager::Shutdown();
-#endif  // OS_CHROMEOS
-  }
-
  private:
-  TestThreadBundle test_thread_bundle_;
+  MetricsTaskEnvironment task_environment_;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  chromeos::NetworkHandlerTestHelper network_handler_test_helper_;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   DISALLOW_COPY_AND_ASSIGN(NetworkMetricsProviderTest);
 };

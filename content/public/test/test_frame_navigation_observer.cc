@@ -4,8 +4,8 @@
 
 #include "content/public/test/test_frame_navigation_observer.h"
 
-#include "content/browser/frame_host/navigation_entry_impl.h"
-#include "content/browser/frame_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/navigation_entry_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_thread.h"
@@ -28,7 +28,8 @@ TestFrameNavigationObserver::TestFrameNavigationObserver(
       frame_tree_node_id_(ToRenderFrameHostImpl(adapter)->GetFrameTreeNodeId()),
       navigation_started_(false),
       has_committed_(false),
-      wait_for_commit_(false) {
+      wait_for_commit_(false),
+      last_navigation_succeeded_(false) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 }
 
@@ -52,8 +53,8 @@ void TestFrameNavigationObserver::WaitForCommit() {
 
 void TestFrameNavigationObserver::DidStartNavigation(
     NavigationHandle* navigation_handle) {
-  if (!navigation_handle->IsSameDocument() &&
-      navigation_handle->GetFrameTreeNodeId() == frame_tree_node_id_) {
+  last_navigation_succeeded_ = false;
+  if (navigation_handle->GetFrameTreeNodeId() == frame_tree_node_id_) {
     navigation_started_ = true;
     has_committed_ = false;
   }
@@ -64,6 +65,7 @@ void TestFrameNavigationObserver::DidFinishNavigation(
   if (!navigation_started_)
     return;
 
+  last_navigation_succeeded_ = !navigation_handle->IsErrorPage();
   if (!navigation_handle->HasCommitted() ||
       navigation_handle->IsErrorPage() ||
       navigation_handle->GetFrameTreeNodeId() != frame_tree_node_id_) {

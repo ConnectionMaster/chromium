@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SANDBOX_SRC_PROCESS_THREAD_POLICY_H_
-#define SANDBOX_SRC_PROCESS_THREAD_POLICY_H_
+#ifndef SANDBOX_WIN_SRC_PROCESS_THREAD_POLICY_H_
+#define SANDBOX_WIN_SRC_PROCESS_THREAD_POLICY_H_
 
 #include <stdint.h>
 
 #include <string>
 
-#include "base/strings/string16.h"
 #include "sandbox/win/src/crosscall_server.h"
 #include "sandbox/win/src/policy_low_level.h"
 #include "sandbox/win/src/sandbox_policy.h"
@@ -71,9 +70,9 @@ class ProcessPolicy {
   // 'current_dir' : The CWD with which to spawn the child process.
   static DWORD CreateProcessWAction(EvalResult eval_result,
                                     const ClientInfo& client_info,
-                                    const base::string16& app_name,
-                                    const base::string16& command_line,
-                                    const base::string16& current_dir,
+                                    const std::wstring& app_name,
+                                    const std::wstring& command_line,
+                                    const std::wstring& current_dir,
                                     PROCESS_INFORMATION* process_info);
 
   // Processes a 'CreateThread()' request from the target.
@@ -89,4 +88,4 @@ class ProcessPolicy {
 
 }  // namespace sandbox
 
-#endif  // SANDBOX_SRC_PROCESS_THREAD_POLICY_H_
+#endif  // SANDBOX_WIN_SRC_PROCESS_THREAD_POLICY_H_

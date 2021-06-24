@@ -13,74 +13,62 @@
 #include "ash/wm/overview/overview_delegate.h"
 #include "ash/wm/overview/overview_observer.h"
 #include "ash/wm/overview/overview_session.h"
+#include "ash/wm/overview/overview_types.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
 #include "ui/aura/window_occlusion_tracker.h"
+#include "ui/views/widget/widget.h"
 
 namespace ash {
+
+class OverviewWallpaperController;
 
 // Manages a overview session which displays an overview of all windows and
 // allows selecting a window to activate it.
 class ASH_EXPORT OverviewController : public OverviewDelegate,
                                       public ::wm::ActivationChangeObserver {
  public:
-  enum class AnimationCompleteReason {
-    kCompleted,
-    kCanceled,
-  };
-
   OverviewController();
   ~OverviewController() override;
 
-  // Returns true if selecting windows in an overview is enabled. This is false
-  // at certain times, such as when the lock screen is visible.
-  static bool CanSelect();
+  // Starts/Ends overview with |type|. Returns true if enter or exit overview
+  // successful. Depending on |type| the enter/exit animation will look
+  // different.
+  bool StartOverview(
+      OverviewEnterExitType type = OverviewEnterExitType::kNormal);
+  bool EndOverview(OverviewEnterExitType type = OverviewEnterExitType::kNormal);
 
-  // Attempts to toggle overview mode and returns true if successful (showing
-  // overview would be unsuccessful if there are no windows to show). Depending
-  // on |type| the enter/exit animation will look different.
-  bool ToggleOverview(OverviewSession::EnterExitOverviewType type =
-                          OverviewSession::EnterExitOverviewType::kNormal);
+  // Returns true if overview mode is active.
+  bool InOverviewSession() const;
 
-  // Returns true if window selection mode is active.
-  bool IsSelecting() const;
-
-  // Returns true if overview has been shutdown, but is still animating to the
-  // end state ui.
-  bool IsCompletingShutdownAnimations();
-
-  // Moves the current selection by |increment| items. Positive values of
-  // |increment| move the selection forward, negative values move it backward.
-  void IncrementSelection(int increment);
+  // Moves the current selection forward or backward.
+  void IncrementSelection(bool forward);
 
   // Accepts current selection if any. Returns true if a selection was made,
   // false otherwise.
   bool AcceptSelection();
 
-  // Called when the overview button tray has been long pressed. Enters
-  // splitview mode if the active window is snappable. Also enters overview mode
-  // if device is not currently in overview mode.
-  // TODO(sammiequon): Move this function to SplitViewController.
-  void OnOverviewButtonTrayLongPressed(const gfx::Point& event_location);
-
   // Returns true if we're in start-overview animation.
   bool IsInStartAnimation();
+
+  // Returns true if overview has been shutdown, but is still animating to the
+  // end state ui.
+  bool IsCompletingShutdownAnimations() const;
 
   // Pause or unpause the occlusion tracker. Resets the unpause delay if we were
   // already in the process of unpausing.
   void PauseOcclusionTracker();
-  void UnpauseOcclusionTracker(int delay);
+  void UnpauseOcclusionTracker(base::TimeDelta delay);
 
   void AddObserver(OverviewObserver* observer);
   void RemoveObserver(OverviewObserver* observer);
 
-  // Post a task to update the shadow and mask of overview windows.
-  void DelayedUpdateMaskAndShadow();
+  // Post a task to update the shadow and rounded corners of overview windows.
+  void DelayedUpdateRoundedCornersAndShadow();
 
   // OverviewDelegate:
-  void OnSelectionEnded() override;
   void AddExitAnimationObserver(
       std::unique_ptr<DelayedAnimationObserver> animation) override;
   void RemoveAndDestroyExitAnimationObserver(
@@ -97,43 +85,43 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
   void OnWindowActivated(ActivationReason reason,
                          aura::Window* gained_active,
                          aura::Window* lost_active) override {}
-  void OnAttemptToReactivateWindow(aura::Window* request_active,
-                                   aura::Window* actual_active) override;
 
   OverviewSession* overview_session() { return overview_session_.get(); }
 
-  void set_occlusion_pause_duration_for_end_ms_for_test(int duration) {
-    occlusion_pause_duration_for_end_ms_ = duration;
+  OverviewWallpaperController* overview_wallpaper_controller() {
+    return overview_wallpaper_controller_.get();
+  }
+
+  void set_occlusion_pause_duration_for_end_for_test(base::TimeDelta duration) {
+    occlusion_pause_duration_for_end_ = duration;
   }
   void set_delayed_animation_task_delay_for_test(base::TimeDelta delta) {
     delayed_animation_task_delay_ = delta;
   }
-
-  // Returns wallpaper blur status for testing.
-  bool HasBlurForTest() const;
-  bool HasBlurAnimationForTest() const;
 
   // Gets the windows list that are shown in the overview windows grids if the
   // overview mode is active for testing.
   std::vector<aura::Window*> GetWindowsListInOverviewGridsForTest();
 
  private:
-  class OverviewBlurController;
   friend class OverviewSessionTest;
-  FRIEND_TEST_ALL_PREFIXES(TabletModeControllerTest,
-                           DisplayDisconnectionDuringOverview);
 
-  // There is no need to blur or unblur the wallpaper for tests.
-  static void SetDoNotChangeWallpaperBlurForTests();
+  // Toggle overview mode. Depending on |type| the enter/exit animation will
+  // look different.
+  void ToggleOverview(
+      OverviewEnterExitType type = OverviewEnterExitType::kNormal);
 
-  // Dispatched when window selection begins.
-  void OnSelectionStarted();
+  // Returns true if it's possible to enter or exit overview mode in the current
+  // configuration. This can be false at certain times, such as when the lock
+  // screen is visible we can't overview mode.
+  bool CanEnterOverview();
+  bool CanEndOverview(OverviewEnterExitType type);
 
   void OnStartingAnimationComplete(bool canceled);
   void OnEndingAnimationComplete(bool canceled);
   void ResetPauser();
 
-  void UpdateMaskAndShadow();
+  void UpdateRoundedCornersAndShadow();
 
   // Collection of DelayedAnimationObserver objects that own widgets that may be
   // still animating after overview mode ends. If shell needs to shut down while
@@ -144,17 +132,21 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
   // notify shell that the starting animations have been completed.
   std::vector<std::unique_ptr<DelayedAnimationObserver>> start_animations_;
 
+  // Indicates that overview shall gain focus when the starting animations have
+  // completed.
+  bool should_focus_overview_ = false;
+
   std::unique_ptr<aura::WindowOcclusionTracker::ScopedPause>
       occlusion_tracker_pauser_;
 
   std::unique_ptr<OverviewSession> overview_session_;
-  base::Time last_selection_time_;
+  base::Time last_overview_session_time_;
 
-  int occlusion_pause_duration_for_end_ms_;
+  base::TimeDelta occlusion_pause_duration_for_end_;
 
-  // Handles blurring of the wallpaper when entering or exiting overview mode.
-  // Animates the blurring if necessary.
-  std::unique_ptr<OverviewBlurController> overview_blur_controller_;
+  // Handles blurring and dimming of the wallpaper when entering or exiting
+  // overview mode. Animates the blurring and dimming if necessary.
+  std::unique_ptr<OverviewWallpaperController> overview_wallpaper_controller_;
 
   base::CancelableOnceClosure reset_pauser_task_;
 
@@ -165,7 +157,9 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
 
   base::ObserverList<OverviewObserver> observers_;
 
-  base::WeakPtrFactory<OverviewController> weak_ptr_factory_;
+  std::unique_ptr<views::Widget::PaintAsActiveLock> paint_as_active_lock_;
+
+  base::WeakPtrFactory<OverviewController> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(OverviewController);
 };

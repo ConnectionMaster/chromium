@@ -9,8 +9,13 @@
 #include <utility>
 
 #include "ash/assistant/ui/assistant_ui_constants.h"
-#include "ash/public/cpp/app_list/app_list_config.h"
+#include "ash/assistant/ui/assistant_view_delegate.h"
+#include "ash/assistant/util/resource_util.h"
+#include "base/bind.h"
+#include "base/strings/utf_string_conversions.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/views/background.h"
@@ -22,32 +27,27 @@ namespace ash {
 
 namespace {
 
+using assistant::util::ResourceLinkType;
+
+// Appearance.
 constexpr SkColor kBackgroundColor = SK_ColorWHITE;
 constexpr SkColor kFocusColor = SkColorSetA(gfx::kGoogleGrey900, 0x14);
 constexpr SkColor kStrokeColor = SkColorSetA(gfx::kGoogleGrey900, 0x24);
 constexpr SkColor kTextColor = gfx::kGoogleGrey700;
 constexpr int kStrokeWidthDip = 1;
 constexpr int kIconMarginDip = 8;
+constexpr int kIconSizeDip = 16;
 constexpr int kChipPaddingDip = 16;
 constexpr int kPreferredHeightDip = 32;
 
 }  // namespace
 
-// Params ----------------------------------------------------------------------
-
-SuggestionChipView::Params::Params() = default;
-
-SuggestionChipView::Params::~Params() = default;
-
 // SuggestionChipView ----------------------------------------------------------
 
-SuggestionChipView::SuggestionChipView(const Params& params,
-                                       views::ButtonListener* listener)
-    : Button(listener),
-      icon_view_(new views::ImageView()),
-      text_view_(new views::Label()) {
-  SetFocusBehavior(FocusBehavior::ALWAYS);
-  InitLayout(params);
+SuggestionChipView::SuggestionChipView(AssistantViewDelegate* delegate,
+                                       const AssistantSuggestion& suggestion)
+    : delegate_(delegate), suggestion_id_(suggestion.id) {
+  InitLayout(suggestion);
 }
 
 SuggestionChipView::~SuggestionChipView() = default;
@@ -65,45 +65,65 @@ void SuggestionChipView::ChildVisibilityChanged(views::View* child) {
   // When icon visibility is modified we need to update layout padding.
   if (child == icon_view_) {
     const int padding_left_dip =
-        icon_view_->visible() ? kIconMarginDip : kChipPaddingDip;
+        icon_view_->GetVisible() ? kIconMarginDip : kChipPaddingDip;
     layout_manager_->set_inside_border_insets(
         gfx::Insets(0, padding_left_dip, 0, kChipPaddingDip));
   }
   PreferredSizeChanged();
 }
 
-void SuggestionChipView::InitLayout(const Params& params) {
-  // Layout padding differs depending on icon visibility.
-  const int padding_left_dip = params.icon ? kIconMarginDip : kChipPaddingDip;
+void SuggestionChipView::InitLayout(const AssistantSuggestion& suggestion) {
+  const std::u16string text = base::UTF8ToUTF16(suggestion.text);
+
+  // Accessibility.
+  SetAccessibleName(text);
+
+  // Focus.
+  // Note that we don't install the default focus ring as we use custom
+  // highlighting instead.
+  SetFocusBehavior(FocusBehavior::ALWAYS);
+  SetInstallFocusRingOnFocus(false);
+
+  // Layout.
+  // Note that padding differs depending on icon visibility.
+  const int padding_left_dip =
+      suggestion.icon_url.is_empty() ? kChipPaddingDip : kIconMarginDip;
 
   layout_manager_ = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,
       gfx::Insets(0, padding_left_dip, 0, kChipPaddingDip), kIconMarginDip));
 
   layout_manager_->set_cross_axis_alignment(
-      views::BoxLayout::CrossAxisAlignment::CROSS_AXIS_ALIGNMENT_CENTER);
+      views::BoxLayout::CrossAxisAlignment::kCenter);
 
   // Icon.
-  const int icon_size =
-      app_list::AppListConfig::instance().suggestion_chip_icon_dimension();
-  icon_view_->SetImageSize(gfx::Size(icon_size, icon_size));
-  icon_view_->SetPreferredSize(gfx::Size(icon_size, icon_size));
+  icon_view_ = AddChildView(std::make_unique<views::ImageView>());
+  icon_view_->SetImageSize(gfx::Size(kIconSizeDip, kIconSizeDip));
+  icon_view_->SetPreferredSize(gfx::Size(kIconSizeDip, kIconSizeDip));
 
-  if (params.icon)
-    icon_view_->SetImage(params.icon.value());
-  else
+  const GURL& url = suggestion.icon_url;
+  if (assistant::util::IsResourceLinkType(url, ResourceLinkType::kIcon)) {
+    // Handle local images.
+    icon_view_->SetImage(assistant::util::CreateVectorIcon(url, kIconSizeDip));
+  } else if (!suggestion.icon_url.is_empty()) {
+    // Handle remote images.
+    delegate_->DownloadImage(url, base::BindOnce(&SuggestionChipView::SetIcon,
+                                                 weak_factory_.GetWeakPtr()));
+  } else {
+    // Only hide the view if we have neither a local or a remote image. In the
+    // case of a remote image, this prevents layout jank that would otherwise
+    // occur if we updated the view visibility only after the image downloaded.
     icon_view_->SetVisible(false);
-
-  AddChildView(icon_view_);
+  }
 
   // Text.
+  text_view_ = AddChildView(std::make_unique<views::Label>());
   text_view_->SetAutoColorReadabilityEnabled(false);
   text_view_->SetEnabledColor(kTextColor);
   text_view_->SetSubpixelRenderingEnabled(false);
   text_view_->SetFontList(
-      ash::assistant::ui::GetDefaultFontList().DeriveWithSizeDelta(1));
-  SetText(params.text);
-  AddChildView(text_view_);
+      assistant::ui::GetDefaultFontList().DeriveWithSizeDelta(1));
+  SetText(text);
 }
 
 void SuggestionChipView::OnPaintBackground(gfx::Canvas* canvas) {
@@ -148,15 +168,22 @@ bool SuggestionChipView::OnKeyPressed(const ui::KeyEvent& event) {
 
 void SuggestionChipView::SetIcon(const gfx::ImageSkia& icon) {
   icon_view_->SetImage(icon);
-  icon_view_->SetVisible(true);
+  icon_view_->SetVisible(!icon.isNull());
 }
 
-void SuggestionChipView::SetText(const base::string16& text) {
+gfx::ImageSkia SuggestionChipView::GetIcon() const {
+  return icon_view_->GetImage();
+}
+
+void SuggestionChipView::SetText(const std::u16string& text) {
   text_view_->SetText(text);
 }
 
-const base::string16& SuggestionChipView::GetText() const {
-  return text_view_->text();
+const std::u16string& SuggestionChipView::GetText() const {
+  return text_view_->GetText();
 }
+
+BEGIN_METADATA(SuggestionChipView, views::Button)
+END_METADATA
 
 }  // namespace ash

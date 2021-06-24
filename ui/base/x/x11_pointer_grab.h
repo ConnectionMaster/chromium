@@ -5,24 +5,26 @@
 #ifndef UI_BASE_X_X11_POINTER_GRAB_H_
 #define UI_BASE_X_X11_POINTER_GRAB_H_
 
-#include "ui/base/x/ui_base_x_export.h"
-#include "ui/gfx/x/x11_types.h"
-
-typedef unsigned long Cursor;
+#include "base/component_export.h"
+#include "ui/gfx/x/xproto.h"
 
 namespace ui {
 
+class X11Cursor;
+
 // Grabs the pointer. It is unnecessary to ungrab the pointer prior to grabbing
 // it.
-UI_BASE_X_EXPORT int GrabPointer(XID window,
-                                 bool owner_events,
-                                 ::Cursor cursor);
+COMPONENT_EXPORT(UI_BASE_X)
+x11::GrabStatus GrabPointer(x11::Window window,
+                            bool owner_events,
+                            scoped_refptr<ui::X11Cursor> cursor);
 
 // Sets the cursor to use for the duration of the active pointer grab.
-UI_BASE_X_EXPORT void ChangeActivePointerGrabCursor(::Cursor cursor);
+COMPONENT_EXPORT(UI_BASE_X)
+void ChangeActivePointerGrabCursor(scoped_refptr<ui::X11Cursor> cursor);
 
 // Ungrabs the pointer.
-UI_BASE_X_EXPORT void UngrabPointer();
+COMPONENT_EXPORT(UI_BASE_X) void UngrabPointer();
 
 }  // namespace ui
 

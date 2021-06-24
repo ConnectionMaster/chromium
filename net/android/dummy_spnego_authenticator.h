@@ -8,7 +8,6 @@
 #include <jni.h>
 #include <stdint.h>
 
-#include <cstdint>
 #include <list>
 #include <string>
 
@@ -137,6 +136,9 @@ class DummySpnegoAuthenticator {
 };
 
 }  // namespace android
+
+using MockAuthLibrary = android::DummySpnegoAuthenticator;
+
 }  // namespace net
 
 #endif  // NET_ANDROID_DUMMY_SPNEGO_AUTHENTICATOR_H_

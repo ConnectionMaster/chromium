@@ -39,8 +39,6 @@ namespace blink {
 // so HTMLElement's createLayoutObject doesn't need to know about it.
 class HTMLWBRElement final : public HTMLElement {
  public:
-  DECLARE_NODE_FACTORY(HTMLWBRElement);
-
   explicit HTMLWBRElement(Document&);
 
  private:
@@ -49,4 +47,4 @@ class HTMLWBRElement final : public HTMLElement {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_WBR_ELEMENT_H_

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "components/ui_devtools/DOM.h"
 #include "components/ui_devtools/devtools_export.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_widget_types.h"
@@ -19,19 +20,43 @@ namespace ui_devtools {
 
 class UIElementDelegate;
 
-namespace protocol {
-template <typename T>
-class Array;
-}
-
 // UIElement type.
 enum UIElementType { WINDOW, WIDGET, VIEW, ROOT, FRAMESINK, SURFACE };
 
 class UI_DEVTOOLS_EXPORT UIElement {
  public:
+  struct UI_DEVTOOLS_EXPORT UIProperty {
+    UIProperty(std::string name, std::string value)
+        : name_(name), value_(value) {}
+
+    std::string name_;
+    std::string value_;
+  };
+  struct UI_DEVTOOLS_EXPORT ClassProperties {
+    ClassProperties(std::string name, std::vector<UIProperty> properties);
+    ClassProperties(const ClassProperties& copy);
+    ~ClassProperties();
+
+    std::string class_name_;
+    std::vector<UIProperty> properties_;
+  };
+
+  struct UI_DEVTOOLS_EXPORT Source {
+    Source(std::string path, int line);
+
+    std::string path_;
+    int line_;
+  };
+
   using UIElements = std::vector<UIElement*>;
 
+  UIElement(const UIElement&) = delete;
+  UIElement& operator=(const UIElement&) = delete;
   virtual ~UIElement();
+
+  // resets node ids to 0 so that they are reusable
+  static void ResetNodeId();
+
   int node_id() const { return node_id_; }
   std::string GetTypeName() const;
   UIElement* parent() const { return parent_; }
@@ -42,6 +67,13 @@ class UI_DEVTOOLS_EXPORT UIElement {
   bool is_updating() const { return is_updating_; }
   void set_is_updating(bool is_updating) { is_updating_ = is_updating; }
   void set_owns_children(bool owns_children) { owns_children_ = owns_children; }
+  int GetBaseStylesheetId() const { return base_stylesheet_id_; }
+  void SetBaseStylesheetId(int id) { base_stylesheet_id_ = id; }
+
+  // Gets/sets whether the element has sent its stylesheet header to the
+  // frontend.
+  bool header_sent() const { return header_sent_; }
+  void set_header_sent() { header_sent_ = true; }
 
   using ElementCompare = bool (*)(const UIElement*, const UIElement*);
 
@@ -71,14 +103,19 @@ class UI_DEVTOOLS_EXPORT UIElement {
   template <class T>
   int FindUIElementIdForBackendElement(T* element) const;
 
-  // Returns properties' names and values.
-  virtual std::vector<std::pair<std::string, std::string>> GetCustomProperties()
-      const = 0;
+  // Returns properties grouped by the class they are from.
+  virtual std::vector<ClassProperties> GetCustomPropertiesForMatchedStyle()
+      const;
 
   virtual void GetBounds(gfx::Rect* bounds) const = 0;
   virtual void SetBounds(const gfx::Rect& bounds) = 0;
   virtual void GetVisible(bool* visible) const = 0;
   virtual void SetVisible(bool visible) = 0;
+
+  // Set this element's property values according to |text|.
+  // |text| is the string passed in through StyleDeclarationEdit::text from
+  // the frontend.
+  virtual bool SetPropertiesFromString(const std::string& text);
 
   // If element exists, returns its associated native window and its screen
   // bounds. Otherwise, returns null and empty bounds.
@@ -87,18 +124,31 @@ class UI_DEVTOOLS_EXPORT UIElement {
 
   // Returns a list of interleaved keys and values of attributes to be displayed
   // on the element in the dev tools hierarchy view.
-  virtual std::unique_ptr<protocol::Array<std::string>> GetAttributes()
-      const = 0;
+  virtual std::vector<std::string> GetAttributes() const = 0;
 
   template <typename BackingT, typename T>
   static BackingT* GetBackingElement(const UIElement* element) {
     return T::From(element);
   }
 
+  // Called from PageAgent to repaint Views for Debug Bounds Rectangles
+  virtual void PaintRect() const {}
+
+  // Called in the constructor to initialize the element's sources.
+  virtual void InitSources() {}
+
+  // Get the sources for the element.
+  std::vector<Source> GetSources();
+
+  virtual bool DispatchMouseEvent(protocol::DOM::MouseEvent* event);
+
+  virtual bool DispatchKeyEvent(protocol::DOM::KeyEvent* event);
+
  protected:
   UIElement(const UIElementType type,
             UIElementDelegate* delegate,
             UIElement* parent);
+  void AddSource(std::string path, int line);
 
  private:
   const int node_id_;
@@ -108,8 +158,9 @@ class UI_DEVTOOLS_EXPORT UIElement {
   UIElementDelegate* delegate_;
   bool is_updating_ = false;
   bool owns_children_ = true;
-
-  DISALLOW_COPY_AND_ASSIGN(UIElement);
+  int base_stylesheet_id_;
+  bool header_sent_ = false;
+  std::vector<Source> sources_;
 };
 
 }  // namespace ui_devtools

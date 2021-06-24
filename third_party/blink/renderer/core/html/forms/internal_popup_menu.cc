@@ -5,17 +5,21 @@
 #include "third_party/blink/renderer/core/html/forms/internal_popup_menu.h"
 
 #include "build/build_config.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
-#include "third_party/blink/public/platform/web_mouse_event.h"
 #include "third_party/blink/renderer/core/css/css_font_selector.h"
+#include "third_party/blink/renderer/core/css/css_value_id_mappings.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
+#include "third_party/blink/renderer/core/css/style_request.h"
+#include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/html/forms/chooser_resource_loader.h"
 #include "third_party/blink/renderer/core/html/forms/html_opt_group_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
@@ -23,13 +27,16 @@
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
+#include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page_popup.h"
+#include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/platform/fonts/font_selector.h"
 #include "third_party/blink/renderer/platform/fonts/font_selector_client.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
+#include "ui/base/ui_base_features.h"
 
 namespace blink {
 
@@ -44,28 +51,54 @@ const char* FontStyleToString(FontSelectionValue slope) {
 }
 
 const char* TextTransformToString(ETextTransform transform) {
-  switch (transform) {
-    case ETextTransform::kCapitalize:
-      return "capitalize";
-    case ETextTransform::kUppercase:
-      return "uppercase";
-    case ETextTransform::kLowercase:
-      return "lowercase";
-    case ETextTransform::kNone:
-      return "none";
+  return getValueName(PlatformEnumToCSSValueID(transform));
+}
+
+const String SerializeComputedStyleForProperty(const ComputedStyle& style,
+                                               CSSPropertyID id) {
+  const CSSProperty& property = CSSProperty::Get(id);
+  const CSSValue* value =
+      property.CSSValueFromComputedStyle(style, nullptr, false);
+  return String::Format("%s : %s;\n", property.GetPropertyName(),
+                        value->CssText().Utf8().c_str());
+}
+
+ScrollbarPart ScrollbarPartFromPseudoId(PseudoId id) {
+  switch (id) {
+    case kPseudoIdScrollbar:
+      return kScrollbarBGPart;
+    case kPseudoIdScrollbarThumb:
+      return kThumbPart;
+    case kPseudoIdScrollbarTrack:
+    case kPseudoIdScrollbarTrackPiece:
+      return kBackTrackPart;
+    default:
+      break;
   }
-  NOTREACHED();
-  return "";
+  return kNoPart;
+}
+
+scoped_refptr<const ComputedStyle> StyleForHoveredScrollbarPart(
+    HTMLSelectElement& element,
+    const ComputedStyle* style,
+    Scrollbar* scrollbar,
+    PseudoId target_id) {
+  ScrollbarPart part = ScrollbarPartFromPseudoId(target_id);
+  if (part == kNoPart)
+    return nullptr;
+  scrollbar->SetHoveredPart(part);
+  scoped_refptr<const ComputedStyle> part_style =
+      element.UncachedStyleForPseudoElement(
+          StyleRequest(target_id, To<CustomScrollbar>(scrollbar), part, style));
+  return part_style;
 }
 
 }  // anonymous namespace
 
 class PopupMenuCSSFontSelector : public CSSFontSelector,
                                  private FontSelectorClient {
-  USING_GARBAGE_COLLECTED_MIXIN(PopupMenuCSSFontSelector);
-
  public:
-  PopupMenuCSSFontSelector(Document*, CSSFontSelector*);
+  PopupMenuCSSFontSelector(Document&, CSSFontSelector*);
   ~PopupMenuCSSFontSelector() override;
 
   // We don't override willUseFontData() for now because the old PopupListBox
@@ -73,16 +106,16 @@ class PopupMenuCSSFontSelector : public CSSFontSelector,
   scoped_refptr<FontData> GetFontData(const FontDescription&,
                                       const AtomicString&) override;
 
-  void Trace(Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
-  void FontsNeedUpdate(FontSelector*) override;
+  void FontsNeedUpdate(FontSelector*, FontInvalidationReason) override;
 
   Member<CSSFontSelector> owner_font_selector_;
 };
 
 PopupMenuCSSFontSelector::PopupMenuCSSFontSelector(
-    Document* document,
+    Document& document,
     CSSFontSelector* owner_font_selector)
     : CSSFontSelector(document), owner_font_selector_(owner_font_selector) {
   owner_font_selector_->RegisterForInvalidationCallbacks(this);
@@ -96,11 +129,12 @@ scoped_refptr<FontData> PopupMenuCSSFontSelector::GetFontData(
   return owner_font_selector_->GetFontData(description, name);
 }
 
-void PopupMenuCSSFontSelector::FontsNeedUpdate(FontSelector* font_selector) {
-  DispatchInvalidationCallbacks();
+void PopupMenuCSSFontSelector::FontsNeedUpdate(FontSelector* font_selector,
+                                               FontInvalidationReason reason) {
+  DispatchInvalidationCallbacks(reason);
 }
 
-void PopupMenuCSSFontSelector::Trace(Visitor* visitor) {
+void PopupMenuCSSFontSelector::Trace(Visitor* visitor) const {
   visitor->Trace(owner_font_selector_);
   CSSFontSelector::Trace(visitor);
   FontSelectorClient::Trace(visitor);
@@ -120,15 +154,16 @@ class InternalPopupMenu::ItemIterationContext {
         is_in_group_(false),
         buffer_(buffer) {
     DCHECK(buffer_);
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
     // On other platforms, the <option> background color is the same as the
     // <select> background color. On Linux, that makes the <option>
     // background color very dark, so by default, try to use a lighter
     // background color for <option>s.
-    if (LayoutTheme::GetTheme().SystemColor(CSSValueID::kButtonface) ==
+    if (LayoutTheme::GetTheme().SystemColor(CSSValueID::kButtonface,
+                                            style.UsedColorScheme()) ==
         background_color_) {
-      background_color_ =
-          LayoutTheme::GetTheme().SystemColor(CSSValueID::kMenu);
+      background_color_ = LayoutTheme::GetTheme().SystemColor(
+          CSSValueID::kMenu, style.UsedColorScheme());
     }
 #endif
   }
@@ -202,11 +237,6 @@ class InternalPopupMenu::ItemIterationContext {
 
 // ----------------------------------------------------------------
 
-InternalPopupMenu* InternalPopupMenu::Create(ChromeClient* chrome_client,
-                                             HTMLSelectElement& owner_element) {
-  return MakeGarbageCollected<InternalPopupMenu>(chrome_client, owner_element);
-}
-
 InternalPopupMenu::InternalPopupMenu(ChromeClient* chrome_client,
                                      HTMLSelectElement& owner_element)
     : chrome_client_(chrome_client),
@@ -218,7 +248,7 @@ InternalPopupMenu::~InternalPopupMenu() {
   DCHECK(!popup_);
 }
 
-void InternalPopupMenu::Trace(Visitor* visitor) {
+void InternalPopupMenu::Trace(Visitor* visitor) const {
   visitor->Trace(chrome_client_);
   visitor->Trace(owner_element_);
   PopupMenu::Trace(visitor);
@@ -229,16 +259,55 @@ void InternalPopupMenu::WriteDocument(SharedBuffer* data) {
   // When writing the document, we ensure the ComputedStyle of the select
   // element's items (see AddElementStyle). This requires a style-clean tree.
   // See Element::EnsureComputedStyle for further explanation.
-  owner_element.GetDocument().UpdateStyleAndLayoutTree();
+  DCHECK(!owner_element.GetDocument().NeedsLayoutTreeUpdate());
   IntRect anchor_rect_in_screen = chrome_client_->ViewportToScreen(
       owner_element.VisibleBoundsInVisualViewport(),
       owner_element.GetDocument().View());
 
-  float scale_factor = chrome_client_->WindowToViewportScalar(1.f);
+  float scale_factor = chrome_client_->WindowToViewportScalar(
+      owner_element.GetDocument().GetFrame(), 1.f);
   PagePopupClient::AddString(
       "<!DOCTYPE html><head><meta charset='UTF-8'><style>\n", data);
-  data->Append(Platform::Current()->GetDataResource("pickerCommon.css"));
-  data->Append(Platform::Current()->GetDataResource("listPicker.css"));
+
+  LayoutObject* owner_layout = owner_element.GetLayoutObject();
+
+  std::pair<PseudoId, const String> targets[] = {
+      {kPseudoIdScrollbar, "select::-webkit-scrollbar"},
+      {kPseudoIdScrollbarThumb, "select::-webkit-scrollbar-thumb"},
+      {kPseudoIdScrollbarTrack, "select::-webkit-scrollbar-track"},
+      {kPseudoIdScrollbarTrackPiece, "select::-webkit-scrollbar-track-piece"},
+      {kPseudoIdScrollbarCorner, "select::-webkit-scrollbar-corner"}};
+
+  Scrollbar* temp_scrollbar = nullptr;
+  const LayoutBox* box = owner_element.InnerElement().GetLayoutBox();
+  if (box && box->GetScrollableArea()) {
+    if (ScrollableArea* scrollable = box->GetScrollableArea()) {
+      temp_scrollbar = MakeGarbageCollected<CustomScrollbar>(
+          scrollable, kVerticalScrollbar, &owner_element.InnerElement());
+    }
+  }
+  for (auto target : targets) {
+    if (const ComputedStyle* style =
+            owner_layout->GetCachedPseudoElementStyle(target.first)) {
+      AppendOwnerElementPseudoStyles(target.second, data, *style);
+    }
+    // For Pseudo-class styles, Style should be calculated via that status.
+    if (temp_scrollbar) {
+      scoped_refptr<const ComputedStyle> part_style =
+          StyleForHoveredScrollbarPart(owner_element,
+                                       owner_element.GetComputedStyle(),
+                                       temp_scrollbar, target.first);
+      if (part_style) {
+        AppendOwnerElementPseudoStyles(target.second + ":hover", data,
+                                       *part_style);
+      }
+    }
+  }
+  if (temp_scrollbar)
+    temp_scrollbar->DisconnectFromScrollableArea();
+
+  data->Append(ChooserResourceLoader::GetPickerCommonStyleSheet());
+  data->Append(ChooserResourceLoader::GetListPickerStyleSheet());
   if (!RuntimeEnabledFeatures::ForceTallerSelectPopupEnabled())
     PagePopupClient::AddString("@media (any-pointer:coarse) {", data);
   int padding = static_cast<int>(roundf(4 * scale_factor));
@@ -271,13 +340,13 @@ void InternalPopupMenu::WriteDocument(SharedBuffer* data) {
   const HeapVector<Member<HTMLElement>>& items = owner_element.GetListItems();
   for (; context.list_index_ < items.size(); ++context.list_index_) {
     Element& child = *items[context.list_index_];
-    if (!IsHTMLOptGroupElement(child.parentNode()))
+    if (!IsA<HTMLOptGroupElement>(child.parentNode()))
       context.FinishGroupIfNecessary();
-    if (auto* option = ToHTMLOptionElementOrNull(child))
+    if (auto* option = DynamicTo<HTMLOptionElement>(child))
       AddOption(context, *option);
-    else if (auto* optgroup = ToHTMLOptGroupElementOrNull(child))
+    else if (auto* optgroup = DynamicTo<HTMLOptGroupElement>(child))
       AddOptGroup(context, *optgroup);
-    else if (auto* hr = ToHTMLHRElementOrNull(child))
+    else if (auto* hr = DynamicTo<HTMLHRElement>(child))
       AddSeparator(context, *hr);
   }
   context.FinishGroupIfNecessary();
@@ -293,8 +362,9 @@ void InternalPopupMenu::WriteDocument(SharedBuffer* data) {
                      : owner_element.ClientPaddingLeft().ToDouble(),
               data);
   PagePopupClient::AddString("};\n", data);
-  data->Append(Platform::Current()->GetDataResource("pickerCommon.js"));
-  data->Append(Platform::Current()->GetDataResource("listPicker.js"));
+  data->Append(ChooserResourceLoader::GetPickerCommonJS());
+  data->Append(ChooserResourceLoader::GetListPickerJS());
+
   PagePopupClient::AddString("</script></body>\n", data);
 }
 
@@ -412,11 +482,32 @@ void InternalPopupMenu::AddSeparator(ItemIterationContext& context,
   PagePopupClient::AddString("},\n", data);
 }
 
-void InternalPopupMenu::SelectFontsFromOwnerDocument(Document& document) {
+void InternalPopupMenu::AppendOwnerElementPseudoStyles(
+    const String& target,
+    SharedBuffer* data,
+    const ComputedStyle& style) {
+  PagePopupClient::AddString(target + "{ \n", data);
+
+  const CSSPropertyID serialize_targets[] = {
+      CSSPropertyID::kDisplay,        CSSPropertyID::kBackgroundColor,
+      CSSPropertyID::kWidth,          CSSPropertyID::kBorderBottom,
+      CSSPropertyID::kBorderLeft,     CSSPropertyID::kBorderRight,
+      CSSPropertyID::kBorderTop,      CSSPropertyID::kBorderRadius,
+      CSSPropertyID::kBackgroundClip, CSSPropertyID::kBoxShadow};
+
+  for (CSSPropertyID id : serialize_targets) {
+    PagePopupClient::AddString(SerializeComputedStyleForProperty(style, id),
+                               data);
+  }
+
+  PagePopupClient::AddString("}\n", data);
+}
+
+CSSFontSelector* InternalPopupMenu::CreateCSSFontSelector(
+    Document& popup_document) {
   Document& owner_document = OwnerElement().GetDocument();
-  document.GetStyleEngine().SetFontSelector(
-      MakeGarbageCollected<PopupMenuCSSFontSelector>(
-          &document, owner_document.GetStyleEngine().GetFontSelector()));
+  return MakeGarbageCollected<PopupMenuCSSFontSelector>(
+      popup_document, owner_document.GetStyleEngine().GetFontSelector());
 }
 
 void InternalPopupMenu::SetValueAndClosePopup(int num_value,
@@ -476,6 +567,10 @@ Element& InternalPopupMenu::OwnerElement() {
   return *owner_element_;
 }
 
+ChromeClient& InternalPopupMenu::GetChromeClient() {
+  return *chrome_client_;
+}
+
 Locale& InternalPopupMenu::GetLocale() {
   return Locale::DefaultLocale();
 }
@@ -502,20 +597,16 @@ void InternalPopupMenu::Hide() {
 }
 
 void InternalPopupMenu::UpdateFromElement(UpdateReason) {
-  if (needs_update_)
-    return;
   needs_update_ = true;
-  OwnerElement()
-      .GetDocument()
-      .GetTaskRunner(TaskType::kUserInteraction)
-      ->PostTask(FROM_HERE,
-                 WTF::Bind(&InternalPopupMenu::Update, WrapPersistent(this)));
 }
 
-void InternalPopupMenu::Update() {
-  if (!popup_ || !owner_element_)
+AXObject* InternalPopupMenu::PopupRootAXObject() const {
+  return popup_ ? popup_->RootAXObject() : nullptr;
+}
+
+void InternalPopupMenu::Update(bool force_update) {
+  if (!popup_ || !owner_element_ || (!needs_update_ && !force_update))
     return;
-  OwnerElement().GetDocument().UpdateStyleAndLayoutTree();
   // disconnectClient() might have been called.
   if (!owner_element_)
     return;
@@ -536,13 +627,13 @@ void InternalPopupMenu::Update() {
   const HeapVector<Member<HTMLElement>>& items = owner_element_->GetListItems();
   for (; context.list_index_ < items.size(); ++context.list_index_) {
     Element& child = *items[context.list_index_];
-    if (!IsHTMLOptGroupElement(child.parentNode()))
+    if (!IsA<HTMLOptGroupElement>(child.parentNode()))
       context.FinishGroupIfNecessary();
-    if (auto* option = ToHTMLOptionElementOrNull(child))
+    if (auto* option = DynamicTo<HTMLOptionElement>(child))
       AddOption(context, *option);
-    else if (auto* optgroup = ToHTMLOptGroupElementOrNull(child))
+    else if (auto* optgroup = DynamicTo<HTMLOptGroupElement>(child))
       AddOptGroup(context, *optgroup);
-    else if (auto* hr = ToHTMLHRElementOrNull(child))
+    else if (auto* hr = DynamicTo<HTMLHRElement>(child))
       AddSeparator(context, *hr);
   }
   context.FinishGroupIfNecessary();

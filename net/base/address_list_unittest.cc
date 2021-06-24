@@ -4,13 +4,16 @@
 
 #include "net/base/address_list.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_util.h"
 #include "base/sys_byteorder.h"
 #include "net/base/ip_address.h"
 #include "net/base/sockaddr_storage.h"
 #include "net/base/sys_addrinfo.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using ::testing::ElementsAre;
 
 namespace net {
 namespace {
@@ -36,11 +39,11 @@ TEST(AddressListTest, Canonical) {
   // Copy the addrinfo struct into an AddressList object and
   // make sure it seems correct.
   AddressList addrlist1 = AddressList::CreateFromAddrinfo(&ai);
-  EXPECT_EQ("canonical.bar.com", addrlist1.canonical_name());
+  EXPECT_EQ("canonical.bar.com", addrlist1.GetCanonicalName());
 
   // Copy the AddressList to another one.
   AddressList addrlist2 = addrlist1;
-  EXPECT_EQ("canonical.bar.com", addrlist2.canonical_name());
+  EXPECT_EQ("canonical.bar.com", addrlist2.GetCanonicalName());
 }
 
 TEST(AddressListTest, CreateFromAddrinfo) {
@@ -129,11 +132,123 @@ TEST(AddressListTest, CreateFromIPAddressList) {
     ip_list.push_back(ip_address);
   }
 
-  AddressList test_list = AddressList::CreateFromIPAddressList(ip_list,
-                                                               kCanonicalName);
+  // Wrap the canonical name in an alias vector.
+  std::vector<std::string> aliases({kCanonicalName});
+
+  AddressList test_list =
+      AddressList::CreateFromIPAddressList(ip_list, std::move(aliases));
   std::string canonical_name;
-  EXPECT_EQ(kCanonicalName, test_list.canonical_name());
+  EXPECT_EQ(kCanonicalName, test_list.GetCanonicalName());
   EXPECT_EQ(base::size(tests), test_list.size());
+}
+
+TEST(AddressListTest, GetCanonicalNameWhenUnset) {
+  const IPAddress kAddress(1, 2, 3, 4);
+  const IPEndPoint kEndpoint(kAddress, 0);
+  AddressList addrlist(kEndpoint);
+
+  EXPECT_TRUE(addrlist.dns_aliases().empty());
+  EXPECT_EQ(addrlist.GetCanonicalName(), "");
+}
+
+TEST(AddressListTest, SetDefaultCanonicalNameThenSetDnsAliases) {
+  const IPAddress kAddress(1, 2, 3, 4);
+  const IPEndPoint kEndpoint(kAddress, 0);
+  AddressList addrlist(kEndpoint);
+
+  addrlist.SetDefaultCanonicalName();
+
+  EXPECT_EQ(addrlist.GetCanonicalName(), "1.2.3.4");
+  EXPECT_THAT(addrlist.dns_aliases(), ElementsAre("1.2.3.4"));
+
+  std::vector<std::string> aliases({"alias1", "alias2", "alias3"});
+  addrlist.SetDnsAliases(std::move(aliases));
+
+  // Setting the aliases after setting the default canonical name
+  // replaces the default canonical name.
+  EXPECT_EQ(addrlist.GetCanonicalName(), "alias1");
+  EXPECT_THAT(addrlist.dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3"));
+}
+
+TEST(AddressListTest, SetDefaultCanonicalNameThenAppendDnsAliases) {
+  const IPAddress kAddress(1, 2, 3, 4);
+  const IPEndPoint kEndpoint(kAddress, 0);
+  AddressList addrlist(kEndpoint);
+
+  addrlist.SetDefaultCanonicalName();
+
+  EXPECT_EQ(addrlist.GetCanonicalName(), "1.2.3.4");
+  EXPECT_THAT(addrlist.dns_aliases(), ElementsAre("1.2.3.4"));
+
+  std::vector<std::string> aliases({"alias1", "alias2", "alias3"});
+  addrlist.AppendDnsAliases(std::move(aliases));
+
+  // Appending the aliases after setting the default canonical name
+  // does not replace the default canonical name.
+  EXPECT_EQ(addrlist.GetCanonicalName(), "1.2.3.4");
+  EXPECT_THAT(addrlist.dns_aliases(),
+              ElementsAre("1.2.3.4", "alias1", "alias2", "alias3"));
+}
+
+TEST(AddressListTest, DnsAliases) {
+  const IPAddress kAddress(1, 2, 3, 4);
+  const IPEndPoint kEndpoint(kAddress, 0);
+  std::vector<std::string> aliases({"alias1", "alias2", "alias3"});
+  AddressList addrlist(kEndpoint, std::move(aliases));
+
+  EXPECT_EQ(addrlist.GetCanonicalName(), "alias1");
+  EXPECT_THAT(addrlist.dns_aliases(),
+              ElementsAre("alias1", "alias2", "alias3"));
+
+  std::vector<std::string> more_aliases({"alias4", "alias5", "alias6"});
+  addrlist.AppendDnsAliases(std::move(more_aliases));
+
+  EXPECT_EQ(addrlist.GetCanonicalName(), "alias1");
+  EXPECT_THAT(
+      addrlist.dns_aliases(),
+      ElementsAre("alias1", "alias2", "alias3", "alias4", "alias5", "alias6"));
+
+  std::vector<std::string> new_aliases({"alias7", "alias8", "alias9"});
+  addrlist.SetDnsAliases(std::move(new_aliases));
+
+  EXPECT_EQ(addrlist.GetCanonicalName(), "alias7");
+  EXPECT_THAT(addrlist.dns_aliases(),
+              ElementsAre("alias7", "alias8", "alias9"));
+}
+
+TEST(AddressListTest, DeduplicatesEmptyAddressList) {
+  AddressList empty;
+  empty.Deduplicate();
+  EXPECT_EQ(empty.size(), 0u);
+}
+
+TEST(AddressListTest, DeduplicatesSingletonAddressList) {
+  AddressList singleton;
+  singleton.push_back(IPEndPoint());
+  singleton.Deduplicate();
+  EXPECT_THAT(singleton.endpoints(), ElementsAre(IPEndPoint()));
+}
+
+TEST(AddressListTest, DeduplicatesLongerAddressList) {
+  AddressList several;
+  several.endpoints() = {IPEndPoint(IPAddress(0, 0, 0, 1), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 2), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 2), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 3), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 2), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 1), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 2), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 3), 0),
+                         IPEndPoint(IPAddress(0, 0, 0, 2), 0)};
+  several.Deduplicate();
+
+  // Deduplication should preserve the order of the first instances
+  // of the unique addresses.
+  EXPECT_THAT(several.endpoints(),
+              ElementsAre(IPEndPoint(IPAddress(0, 0, 0, 1), 0),
+                          IPEndPoint(IPAddress(0, 0, 0, 2), 0),
+                          IPEndPoint(IPAddress(0, 0, 0, 3), 0)));
 }
 
 }  // namespace

@@ -4,10 +4,9 @@
 
 #include "components/password_manager/core/browser/generation/password_requirements_spec_fetcher_impl.h"
 
-#include "base/logging.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "components/autofill/core/browser/proto/password_requirements.pb.h"
 #include "components/autofill/core/browser/proto/password_requirements_shard.pb.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -207,8 +206,8 @@ TEST(PasswordRequirementsSpecFetcherTest, FetchData) {
     SCOPED_TRACE(test.test_name);
     base::HistogramTester histogram_tester;
 
-    base::test::ScopedTaskEnvironment environment(
-        base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+    base::test::TaskEnvironment environment(
+        base::test::TaskEnvironment::TimeSource::MOCK_TIME);
     network::TestURLLoaderFactory loader_factory;
     loader_factory.AddResponse(test.requested_url, test.response_content,
                                test.response_status);
@@ -262,8 +261,8 @@ TEST(PasswordRequirementsSpecFetcherTest, FetchDataInterleaved) {
     (*shard.mutable_specs())["b.com"].set_min_length(18);
     shard.SerializeToString(&serialized_shard);
 
-    base::test::ScopedTaskEnvironment environment(
-        base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME);
+    base::test::TaskEnvironment environment(
+        base::test::TaskEnvironment::TimeSource::MOCK_TIME);
     network::TestURLLoaderFactory loader_factory;
 
     // Target into which data will be written by the callback.
@@ -315,7 +314,7 @@ TEST(PasswordRequirementsSpecFetcherTest, FetchDataInterleaved) {
 // In case of incognito mode, we won't have a URL loader factory.
 // Test that an empty spec is returned by the spec fetcher in this case.
 TEST(PasswordRequirementsSpecFetcherTest, FetchDataWithoutURLLoaderFactory) {
-  base::test::ScopedTaskEnvironment environment;
+  base::test::TaskEnvironment environment;
 
   // Target into which data will be written by the callback.
   PasswordRequirementsSpec received_spec;

@@ -26,22 +26,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_PENDING_IMAGE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_PENDING_IMAGE_H_
 
-#include "third_party/blink/renderer/core/css/css_image_generator_value.h"
-#include "third_party/blink/renderer/core/css/css_image_set_value.h"
-#include "third_party/blink/renderer/core/css/css_image_value.h"
-#include "third_party/blink/renderer/core/css/css_paint_value.h"
 #include "third_party/blink/renderer/core/style/style_image.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
 
+class CSSValue;
 class ImageResourceObserver;
 
 // StylePendingImage is a placeholder StyleImage that is entered into the
 // ComputedStyle during style resolution, in order to avoid loading images that
-// are not referenced by the final style.  They should never exist in a
-// ComputedStyle after it has been returned from the style selector.
+// are not referenced by the final style.  They should only exist in a
+// ComputedStyle for non-rendered elements created with EnsureComputedStyle or
+// display:contents.
 class StylePendingImage final : public StyleImage {
  public:
   explicit StylePendingImage(const CSSValue& value)
@@ -53,27 +51,13 @@ class StylePendingImage final : public StyleImage {
 
   CSSValue* CssValue() const override { return value_; }
 
-  CSSValue* ComputedCSSValue() const override {
-    NOTREACHED();
-    return nullptr;
-  }
+  CSSValue* ComputedCSSValue(const ComputedStyle& style,
+                             bool allow_visited_style) const override;
 
-  CSSImageValue* CssImageValue() const {
-    return DynamicTo<CSSImageValue>(value_.Get());
-  }
-  CSSPaintValue* CssPaintValue() const {
-    return DynamicTo<CSSPaintValue>(value_.Get());
-  }
-  CSSImageGeneratorValue* CssImageGeneratorValue() const {
-    return DynamicTo<CSSImageGeneratorValue>(value_.Get());
-  }
-  CSSImageSetValue* CssImageSetValue() const {
-    return DynamicTo<CSSImageSetValue>(value_.Get());
-  }
-
-  FloatSize ImageSize(const Document&,
-                      float /*multiplier*/,
-                      const LayoutSize& /*defaultObjectSize*/) const override {
+  bool IsAccessAllowed(String&) const override { return true; }
+  FloatSize ImageSize(float,
+                      const FloatSize&,
+                      RespectImageOrientationEnum) const override {
     return FloatSize();
   }
   bool HasIntrinsicSize() const override { return true; }
@@ -90,7 +74,7 @@ class StylePendingImage final : public StyleImage {
     return false;
   }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(value_);
     StyleImage::Trace(visitor);
   }
@@ -98,8 +82,6 @@ class StylePendingImage final : public StyleImage {
  private:
   bool IsEqual(const StyleImage& other) const override;
 
-  // TODO(sashab): Replace this with <const CSSValue> once Member<>
-  // supports const types.
   Member<CSSValue> value_;
 };
 
@@ -118,4 +100,4 @@ inline bool StylePendingImage::IsEqual(const StyleImage& other) const {
 }
 
 }  // namespace blink
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_PENDING_IMAGE_H_

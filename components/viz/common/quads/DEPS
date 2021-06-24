@@ -8,8 +8,9 @@ include_rules = [
 
   "+gpu/command_buffer/common",
   "+third_party/skia",
-  "+ui/gl/dc_renderer_layer_params.h",
+  "+ui/gfx/video_types.h",
   "+ui/latency",
+  "+gpu/ipc/common/vulkan_ycbcr_info.h",
 ]
 
 specific_include_rules = {
@@ -18,5 +19,8 @@ specific_include_rules = {
   ],
   ".*_unittest\.cc": [
     "+cc/test",
+  ],
+  "yuv_video_draw_quad.*": [
+    "+ui/gfx/hdr_metadata.h",
   ],
 }

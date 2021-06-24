@@ -6,10 +6,10 @@
 
 #include "base/bind.h"
 #include "base/feature_list.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace feature_engagement {
 
@@ -28,10 +28,10 @@ class NeverAvailabilityModelTest : public ::testing::Test {
 
  protected:
   NeverAvailabilityModel availability_model_;
-  base::Optional<bool> success_;
+  absl::optional<bool> success_;
 
  private:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(NeverAvailabilityModelTest);
 };
@@ -39,9 +39,9 @@ class NeverAvailabilityModelTest : public ::testing::Test {
 }  // namespace
 
 TEST_F(NeverAvailabilityModelTest, ShouldNeverHaveData) {
-  EXPECT_EQ(base::nullopt,
+  EXPECT_EQ(absl::nullopt,
             availability_model_.GetAvailability(kAvailabilityTestFeatureFoo));
-  EXPECT_EQ(base::nullopt,
+  EXPECT_EQ(absl::nullopt,
             availability_model_.GetAvailability(kAvailabilityTestFeatureBar));
 
   availability_model_.Initialize(
@@ -50,9 +50,9 @@ TEST_F(NeverAvailabilityModelTest, ShouldNeverHaveData) {
       14u);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_EQ(base::nullopt,
+  EXPECT_EQ(absl::nullopt,
             availability_model_.GetAvailability(kAvailabilityTestFeatureFoo));
-  EXPECT_EQ(base::nullopt,
+  EXPECT_EQ(absl::nullopt,
             availability_model_.GetAvailability(kAvailabilityTestFeatureBar));
 }
 

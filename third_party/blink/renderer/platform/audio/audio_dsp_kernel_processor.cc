@@ -37,8 +37,10 @@ namespace blink {
 // setNumberOfChannels() may later be called if the object is not yet in an
 // "initialized" state.
 AudioDSPKernelProcessor::AudioDSPKernelProcessor(float sample_rate,
-                                                 unsigned number_of_channels)
-    : AudioProcessor(sample_rate, number_of_channels), has_just_reset_(true) {}
+                                                 unsigned number_of_channels,
+                                                 unsigned render_quantum_frames)
+    : AudioProcessor(sample_rate, number_of_channels, render_quantum_frames),
+      has_just_reset_(true) {}
 
 void AudioDSPKernelProcessor::Initialize() {
   if (IsInitialized())
@@ -70,8 +72,6 @@ void AudioDSPKernelProcessor::Process(const AudioBus* source,
                                       uint32_t frames_to_process) {
   DCHECK(source);
   DCHECK(destination);
-  if (!source || !destination)
-    return;
 
   if (!IsInitialized()) {
     destination->Zero();
@@ -80,12 +80,8 @@ void AudioDSPKernelProcessor::Process(const AudioBus* source,
 
   MutexTryLocker try_locker(process_lock_);
   if (try_locker.Locked()) {
-    bool channel_count_matches =
-        source->NumberOfChannels() == destination->NumberOfChannels() &&
-        source->NumberOfChannels() == kernels_.size();
-    DCHECK(channel_count_matches);
-    if (!channel_count_matches)
-      return;
+    DCHECK_EQ(source->NumberOfChannels(), destination->NumberOfChannels());
+    DCHECK_EQ(source->NumberOfChannels(), kernels_.size());
 
     for (unsigned i = 0; i < kernels_.size(); ++i)
       kernels_[i]->Process(source->Channel(i)->Data(),
@@ -134,8 +130,7 @@ void AudioDSPKernelProcessor::SetNumberOfChannels(unsigned number_of_channels) {
     return;
 
   DCHECK(!IsInitialized());
-  if (!IsInitialized())
-    number_of_channels_ = number_of_channels;
+  number_of_channels_ = number_of_channels;
 }
 
 bool AudioDSPKernelProcessor::RequiresTailProcessing() const {

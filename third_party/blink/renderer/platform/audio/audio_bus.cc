@@ -34,17 +34,20 @@
 #include <memory>
 #include <utility>
 
+#include "base/ranges/algorithm.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/audio_file_reader.h"
 #include "third_party/blink/renderer/platform/audio/denormal_disabler.h"
 #include "third_party/blink/renderer/platform/audio/sinc_resampler.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
-#include "third_party/blink/renderer/platform/shared_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "ui/base/resource/scale_factor.h"
 
 namespace blink {
 
-using namespace vector_math;
+using vector_math::Vadd;
+using vector_math::Vsma;
 
 const unsigned kMaxBusChannels = 32;
 
@@ -63,10 +66,11 @@ AudioBus::AudioBus(unsigned number_of_channels, uint32_t length, bool allocate)
   channels_.ReserveInitialCapacity(number_of_channels);
 
   for (unsigned i = 0; i < number_of_channels; ++i) {
-    std::unique_ptr<AudioChannel> channel =
-        allocate ? std::make_unique<AudioChannel>(length)
-                 : std::make_unique<AudioChannel>(nullptr, length);
-    channels_.push_back(std::move(channel));
+    if (allocate) {
+      channels_.emplace_back(length);
+    } else {
+      channels_.emplace_back(nullptr, length);
+    }
   }
 
   layout_ = kLayoutCanonical;  // for now this is the only layout we define
@@ -87,13 +91,13 @@ void AudioBus::ResizeSmaller(uint32_t new_length) {
   if (new_length <= length_)
     length_ = new_length;
 
-  for (unsigned i = 0; i < channels_.size(); ++i)
-    channels_[i]->ResizeSmaller(new_length);
+  for (AudioChannel& channel : channels_)
+    channel.ResizeSmaller(new_length);
 }
 
 void AudioBus::Zero() {
-  for (unsigned i = 0; i < channels_.size(); ++i)
-    channels_[i]->Zero();
+  for (AudioChannel& channel : channels_)
+    channel.Zero();
 }
 
 AudioChannel* AudioBus::ChannelByType(unsigned channel_type) {
@@ -215,7 +219,7 @@ scoped_refptr<AudioBus> AudioBus::CreateBufferFromRange(
 float AudioBus::MaxAbsValue() const {
   float max = 0.0f;
   for (unsigned i = 0; i < NumberOfChannels(); ++i) {
-    const AudioChannel* channel = this->Channel(i);
+    const AudioChannel* channel = Channel(i);
     max = std::max(max, channel->MaxAbsValue());
   }
 
@@ -491,7 +495,7 @@ void AudioBus::CopyWithGainFrom(const AudioBus& source_bus, float gain) {
     return;
   }
 
-  unsigned number_of_channels = this->NumberOfChannels();
+  unsigned number_of_channels = NumberOfChannels();
   DCHECK_LE(number_of_channels, kMaxBusChannels);
   if (number_of_channels > kMaxBusChannels)
     return;
@@ -526,8 +530,8 @@ void AudioBus::CopyWithGainFrom(const AudioBus& source_bus, float gain) {
   } else {
     for (unsigned channel_index = 0; channel_index < number_of_channels;
          ++channel_index) {
-      Vsmul(sources[channel_index], 1, &gain, destinations[channel_index], 1,
-            frames_to_process);
+      vector_math::Vsmul(sources[channel_index], 1, &gain,
+                         destinations[channel_index], 1, frames_to_process);
     }
   }
 }
@@ -561,7 +565,8 @@ void AudioBus::CopyWithSampleAccurateGainValuesFrom(
     if (source_bus.NumberOfChannels() == NumberOfChannels())
       source = source_bus.Channel(channel_index)->Data();
     float* destination = Channel(channel_index)->MutableData();
-    Vmul(source, 1, gain_values, 1, destination, 1, number_of_gain_values);
+    vector_math::Vmul(source, 1, gain_values, 1, destination, 1,
+                      number_of_gain_values);
   }
 }
 
@@ -667,16 +672,12 @@ scoped_refptr<AudioBus> AudioBus::CreateByMixingToMono(
 }
 
 bool AudioBus::IsSilent() const {
-  for (size_t i = 0; i < channels_.size(); ++i) {
-    if (!channels_[i]->IsSilent())
-      return false;
-  }
-  return true;
+  return base::ranges::all_of(channels_, &AudioChannel::IsSilent);
 }
 
 void AudioBus::ClearSilentFlag() {
-  for (size_t i = 0; i < channels_.size(); ++i)
-    channels_[i]->ClearSilentFlag();
+  for (AudioChannel& channel : channels_)
+    channel.ClearSilentFlag();
 }
 
 scoped_refptr<AudioBus> DecodeAudioFileData(const char* data, size_t size) {
@@ -686,9 +687,9 @@ scoped_refptr<AudioBus> DecodeAudioFileData(const char* data, size_t size) {
   return nullptr;
 }
 
-scoped_refptr<AudioBus> AudioBus::GetDataResource(const char* name,
+scoped_refptr<AudioBus> AudioBus::GetDataResource(int resource_id,
                                                   float sample_rate) {
-  const WebData& resource = Platform::Current()->GetDataResource(name);
+  const WebData& resource = Platform::Current()->GetDataResource(resource_id);
   if (resource.IsEmpty())
     return nullptr;
 

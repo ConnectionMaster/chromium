@@ -13,6 +13,7 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/ppapi/ppapi_test.h"
 #include "components/nacl/common/nacl_switches.h"
+#include "content/public/test/browser_test.h"
 
 #if defined(OS_WIN)
 #include "base/win/windows_version.h"
@@ -65,12 +66,12 @@ class NaClGdbTest : public PPAPINaClNewlibTest {
 
     EXPECT_TRUE(base::ReadFileToString(mock_nacl_gdb_file, &content));
     EXPECT_STREQ("PASS", content.c_str());
-    EXPECT_TRUE(base::DeleteFile(mock_nacl_gdb_file, false));
+    EXPECT_TRUE(base::DeleteFile(mock_nacl_gdb_file));
 
     content.clear();
     EXPECT_TRUE(base::ReadFileToString(script_, &content));
     EXPECT_STREQ("PASS", content.c_str());
-    EXPECT_TRUE(base::DeleteFile(script_, false));
+    EXPECT_TRUE(base::DeleteFile(script_));
   }
 
  private:
@@ -78,7 +79,8 @@ class NaClGdbTest : public PPAPINaClNewlibTest {
 };
 
 // Fails on the ASAN test bot. See http://crbug.com/122219
-#if defined(ADDRESS_SANITIZER)
+// Flaky on Linux and CrOS test bots. See http://crbug.com/1126321
+#if defined(ADDRESS_SANITIZER) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 #define MAYBE_Empty DISABLED_Empty
 #else
 #define MAYBE_Empty Empty

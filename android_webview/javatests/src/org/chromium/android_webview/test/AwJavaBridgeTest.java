@@ -5,8 +5,9 @@
 package org.chromium.android_webview.test;
 
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
 import android.webkit.JavascriptInterface;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -34,7 +35,7 @@ public class AwJavaBridgeTest {
     private static final int MAX_IDLE_INSTANCES = 1;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         mTestContainerView = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
     }
 
@@ -66,8 +67,7 @@ public class AwJavaBridgeTest {
         }
 
         AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(
-                () -> awContents.addJavascriptInterface(new Test(), "test"));
+        AwActivityTestRule.addJavascriptInterfaceOnUiThread(awContents, new Test(), "test");
 
         mActivityTestRule.loadDataSync(
                 awContents, mContentsClient.getOnPageFinishedHelper(), html, "text/html", false);
@@ -107,10 +107,8 @@ public class AwJavaBridgeTest {
             private int mValue;
         }
 
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            awContents1.addJavascriptInterface(new Test(1), "test");
-            awContents2.addJavascriptInterface(new Test(2), "test");
-        });
+        AwActivityTestRule.addJavascriptInterfaceOnUiThread(awContents1, new Test(1), "test");
+        AwActivityTestRule.addJavascriptInterfaceOnUiThread(awContents2, new Test(2), "test");
         final String html = "<html>Hello World</html>";
         mActivityTestRule.loadDataSync(
                 awContents1, mContentsClient.getOnPageFinishedHelper(), html, "text/html", false);
@@ -143,8 +141,7 @@ public class AwJavaBridgeTest {
             private int mValue;
         }
 
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(
-                () -> awContents1.addJavascriptInterface(new Test(1), "test"));
+        AwActivityTestRule.addJavascriptInterfaceOnUiThread(awContents1, new Test(1), "test");
         final String html = "<html>Hello World</html>";
         mActivityTestRule.loadDataSync(
                 awContents1, mContentsClient.getOnPageFinishedHelper(), html, "text/html", false);
@@ -158,8 +155,7 @@ public class AwJavaBridgeTest {
         final AwContents awContents2 = view2.getAwContents();
         AwActivityTestRule.enableJavaScriptOnUiThread(awContents2);
 
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(
-                () -> awContents2.addJavascriptInterface(new Test(2), "test"));
+        AwActivityTestRule.addJavascriptInterfaceOnUiThread(awContents2, new Test(2), "test");
         mActivityTestRule.loadDataSync(
                 awContents2, client2.getOnPageFinishedHelper(), html, "text/html", false);
 

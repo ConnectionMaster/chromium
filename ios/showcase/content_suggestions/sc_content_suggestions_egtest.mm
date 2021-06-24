@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <EarlGrey/EarlGrey.h>
-
 #include "base/ios/ios_util.h"
 #include "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/ui/content_suggestions/cells/content_suggestions_learn_more_item.h"
-#include "ios/chrome/browser/ui/util/ui_util.h"
+#import "ios/chrome/browser/ui/content_suggestions/content_suggestions_constants.h"
+#import "ios/chrome/browser/ui/ntp/new_tab_page_constants.h"
 #include "ios/chrome/grit/ios_strings.h"
-#import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/showcase/content_suggestions/sc_content_suggestions_data_source.h"
 #import "ios/showcase/test/showcase_eg_utils.h"
 #import "ios/showcase/test/showcase_test_case.h"
+#import "ios/testing/earl_grey/earl_grey_test.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -22,10 +19,10 @@
 namespace {
 // Returns a text label beginning with |text|.
 id<GREYMatcher> TextBeginsWith(NSString* text) {
-  MatchesBlock matches = ^BOOL(id element) {
+  GREYMatchesBlock matches = ^BOOL(id element) {
     return [[element text] hasPrefix:text];
   };
-  DescribeToBlock describe = ^void(id<GREYDescription> description) {
+  GREYDescribeToBlock describe = ^void(id<GREYDescription> description) {
     [description
         appendText:[NSString stringWithFormat:@"beginsWithText('%@')", text]];
   };
@@ -44,7 +41,8 @@ GREYElementInteraction* CellWithMatcher(id<GREYMatcher> matcher) {
       selectElementWithMatcher:grey_allOf(matcher, grey_sufficientlyVisible(),
                                           nil)]
          usingSearchAction:grey_scrollInDirection(kGREYDirectionDown, 150)
-      onElementWithMatcher:chrome_test_util::ContentSuggestionCollectionView()];
+      onElementWithMatcher:grey_accessibilityID(
+                               kContentSuggestionsCollectionIdentifier)];
 }
 
 // Select the cell with the |ID| by scrolling the collection.
@@ -60,25 +58,19 @@ GREYElementInteraction* CellWithID(NSString* ID) {
 
 @implementation SCContentSuggestionsTestCase
 
-// Per crbug.com/845186, Disable flakey iPad Retina tests that are limited
-// to iOS 10.2.
-+ (NSArray*)testInvocations {
-#if TARGET_IPHONE_SIMULATOR
-  if (IsIPadIdiom() && !base::ios::IsRunningOnOrLater(10, 3, 0))
-    return @[];
-#endif  // TARGET_IPHONE_SIMULATOR
-  return [super testInvocations];
-}
-
 // Tests launching ContentSuggestionsViewController.
 - (void)testLaunch {
   showcase_utils::Open(@"ContentSuggestionsViewController");
   NSString* section_header = [l10n_util::GetNSStringWithFixup(
       IDS_NTP_ARTICLE_SUGGESTIONS_SECTION_HEADER) uppercaseString];
-  [CellWithMatcher(chrome_test_util::StaticTextWithAccessibilityLabel(
-      section_header)) assertWithMatcher:grey_notNil()];
-  [CellWithMatcher(chrome_test_util::ButtonWithAccessibilityLabelId(
-      IDS_IOS_CONTENT_SUGGESTIONS_FOOTER_TITLE))
+  [CellWithMatcher(
+      grey_allOf(grey_accessibilityLabel(section_header),
+                 grey_accessibilityTrait(UIAccessibilityTraitStaticText), nil))
+      assertWithMatcher:grey_notNil()];
+  [CellWithMatcher(
+      grey_allOf(grey_accessibilityLabel(l10n_util::GetNSStringWithFixup(
+                     IDS_IOS_CONTENT_SUGGESTIONS_FOOTER_TITLE)),
+                 grey_accessibilityTrait(UIAccessibilityTraitButton), nil))
       assertWithMatcher:grey_interactable()];
   showcase_utils::Close();
 }
@@ -86,8 +78,7 @@ GREYElementInteraction* CellWithID(NSString* ID) {
 // Tests the opening of a suggestion item by tapping on it.
 - (void)testOpenItem {
   showcase_utils::Open(@"ContentSuggestionsViewController");
-  [CellWithID([SCContentSuggestionsDataSource titleFirstSuggestion])
-      performAction:grey_tap()];
+  [CellWithID(@"Title of the first suggestions") performAction:grey_tap()];
 
   [[EarlGrey
       selectElementWithMatcher:TextBeginsWith(@"openPageForItemAtIndexPath:")]
@@ -103,7 +94,7 @@ GREYElementInteraction* CellWithID(NSString* ID) {
 - (void)testSwipeToDismiss {
   showcase_utils::Open(@"ContentSuggestionsViewController");
 
-  [CellWithID([SCContentSuggestionsDataSource titleFirstSuggestion])
+  [CellWithID(@"Title of the first suggestions")
       performAction:grey_swipeFastInDirection(kGREYDirectionLeft)];
 
   [[EarlGrey
@@ -114,11 +105,11 @@ GREYElementInteraction* CellWithID(NSString* ID) {
                                           @"protocol_alerter_done")]
       performAction:grey_tap()];
 
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(
-                                              [SCContentSuggestionsDataSource
-                                                  titleFirstSuggestion]),
-                                          grey_sufficientlyVisible(), nil)]
+  id<GREYMatcher> firstSuggestion =
+      grey_allOf(grey_accessibilityID(@"Title of the first suggestions"),
+                 grey_sufficientlyVisible(), nil);
+
+  [[EarlGrey selectElementWithMatcher:firstSuggestion]
       assertWithMatcher:grey_nil()];
 
   showcase_utils::Close();
@@ -127,7 +118,7 @@ GREYElementInteraction* CellWithID(NSString* ID) {
 // Tests that long pressing an item starts a context menu.
 - (void)testLongPressItem {
   showcase_utils::Open(@"ContentSuggestionsViewController");
-  [CellWithID([SCContentSuggestionsDataSource titleFirstSuggestion])
+  [CellWithID(@"Title of the first suggestions")
       performAction:grey_longPress()];
 
   [[EarlGrey
@@ -144,14 +135,17 @@ GREYElementInteraction* CellWithID(NSString* ID) {
 }
 
 // Tests that tapping the "Learn More" item opens the help center.
-- (void)testTapLearnMore {
+// TODO(crbug.com/1100819): Re-enable this test.
+- (void)FLAKY_testTapLearnMore {
   showcase_utils::Open(@"ContentSuggestionsViewController");
-  [CellWithID([ContentSuggestionsLearnMoreItem accessibilityIdentifier])
-      performAction:grey_tap()];
+  [CellWithID(kContentSuggestionsLearnMoreIdentifier) performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          StaticTextWithAccessibilityLabel(
-                                              @"handleLearnMoreTapped")]
+  [[EarlGrey
+      selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(
+                                              @"handleLearnMoreTapped"),
+                                          grey_accessibilityTrait(
+                                              UIAccessibilityTraitStaticText),
+                                          nil)]
       assertWithMatcher:grey_sufficientlyVisible()];
 
   [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(

@@ -5,10 +5,11 @@
 #ifndef CONTENT_BROWSER_DOWNLOAD_DRAG_DOWNLOAD_UTIL_H_
 #define CONTENT_BROWSER_DOWNLOAD_DRAG_DOWNLOAD_UTIL_H_
 
+#include <string>
+
 #include "base/files/file.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/string16.h"
 #include "content/browser/download/drag_download_file.h"
 #include "ui/base/dragdrop/download_file_interface.h"
 
@@ -29,8 +30,8 @@ namespace content {
 // appropriately.
 // For example, we can have
 //   text/plain:example.txt:http://example.com/example.txt
-bool ParseDownloadMetadata(const base::string16& metadata,
-                           base::string16* mime_type,
+bool ParseDownloadMetadata(const std::u16string& metadata,
+                           std::u16string* mime_type,
                            base::FilePath* file_name,
                            GURL* url);
 
@@ -42,7 +43,8 @@ CONTENT_EXPORT base::File CreateFileForDrop(base::FilePath* file_path);
 // Implementation of DownloadFileObserver to finalize the download process.
 class PromiseFileFinalizer : public ui::DownloadFileObserver {
  public:
-  explicit PromiseFileFinalizer(DragDownloadFile* drag_file_downloader);
+  explicit PromiseFileFinalizer(
+      std::unique_ptr<DragDownloadFile> drag_file_downloader);
 
   // DownloadFileObserver methods.
   void OnDownloadCompleted(const base::FilePath& file_path) override;
@@ -54,7 +56,7 @@ class PromiseFileFinalizer : public ui::DownloadFileObserver {
  private:
   void Cleanup();
 
-  scoped_refptr<DragDownloadFile> drag_file_downloader_;
+  std::unique_ptr<DragDownloadFile> drag_file_downloader_;
 
   DISALLOW_COPY_AND_ASSIGN(PromiseFileFinalizer);
 };

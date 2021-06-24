@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_POLICY_WEBUSB_ALLOW_DEVICES_FOR_URLS_POLICY_HANDLER_H_
 
 #include "base/macros.h"
+#include "build/chromeos_buildflags.h"
 #include "components/policy/core/browser/configuration_policy_handler.h"
 
 class PrefValueMap;
@@ -18,7 +19,11 @@ class PolicyMap;
 class WebUsbAllowDevicesForUrlsPolicyHandler
     : public SchemaValidatingPolicyHandler {
  public:
-  explicit WebUsbAllowDevicesForUrlsPolicyHandler(Schema schema);
+  explicit WebUsbAllowDevicesForUrlsPolicyHandler(const Schema& schema);
+  WebUsbAllowDevicesForUrlsPolicyHandler(
+      const WebUsbAllowDevicesForUrlsPolicyHandler&) = delete;
+  WebUsbAllowDevicesForUrlsPolicyHandler& operator=(
+      const WebUsbAllowDevicesForUrlsPolicyHandler&) = delete;
   ~WebUsbAllowDevicesForUrlsPolicyHandler() override;
 
   // ConfigurationPolicyHandler implementation:
@@ -26,9 +31,6 @@ class WebUsbAllowDevicesForUrlsPolicyHandler
                            PolicyErrorMap* error) override;
   void ApplyPolicySettings(const PolicyMap& policies,
                            PrefValueMap* prefs) override;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(WebUsbAllowDevicesForUrlsPolicyHandler);
 };
 
 }  // namespace policy

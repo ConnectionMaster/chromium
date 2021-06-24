@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 
 #include "media/gpu/vp8_decoder.h"
+
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "media/base/limits.h"
 
 namespace media {
@@ -31,10 +34,11 @@ bool VP8Decoder::Flush() {
   return true;
 }
 
-void VP8Decoder::SetStream(int32_t id,
-                           const uint8_t* ptr,
-                           size_t size,
-                           const DecryptConfig* decrypt_config) {
+void VP8Decoder::SetStream(int32_t id, const DecoderBuffer& decoder_buffer) {
+  const uint8_t* ptr = decoder_buffer.data();
+  const size_t size = decoder_buffer.data_size();
+  const DecryptConfig* decrypt_config = decoder_buffer.decrypt_config();
+
   DCHECK(ptr);
   DCHECK(size);
   if (decrypt_config) {
@@ -93,7 +97,7 @@ VP8Decoder::DecodeResult VP8Decoder::Decode() {
       last_decoded_stream_id_ = stream_id_;
       size_change_failure_counter_ = 0;
 
-      return kAllocateNewSurfaces;
+      return kConfigChange;
     }
 
     state_ = kDecoding;
@@ -166,6 +170,18 @@ bool VP8Decoder::DecodeAndOutputCurrentFrame(scoped_refptr<VP8Picture> pic) {
 
 gfx::Size VP8Decoder::GetPicSize() const {
   return pic_size_;
+}
+
+gfx::Rect VP8Decoder::GetVisibleRect() const {
+  return gfx::Rect(pic_size_);
+}
+
+VideoCodecProfile VP8Decoder::GetProfile() const {
+  return VP8PROFILE_ANY;
+}
+
+uint8_t VP8Decoder::GetBitDepth() const {
+  return 8u;
 }
 
 size_t VP8Decoder::GetRequiredNumOfPictures() const {

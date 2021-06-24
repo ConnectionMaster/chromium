@@ -43,7 +43,6 @@ DECLARE_SVG_ENUM_MAP(SVGTextPathSpacingType);
 class SVGTextPathElement final : public SVGTextContentElement,
                                  public SVGURIReference {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(SVGTextPathElement);
 
  public:
   // Forward declare enumerations in the W3C naming scheme, for IDL generation.
@@ -56,9 +55,8 @@ class SVGTextPathElement final : public SVGTextContentElement,
     kTextpathSpacingtypeExact = kSVGTextPathSpacingExact
   };
 
-  DECLARE_NODE_FACTORY(SVGTextPathElement);
-
   explicit SVGTextPathElement(Document&);
+  ~SVGTextPathElement() override;
 
   SVGAnimatedLength* startOffset() const { return start_offset_.Get(); }
   SVGAnimatedEnumeration<SVGTextPathMethodType>* method() {
@@ -68,18 +66,16 @@ class SVGTextPathElement final : public SVGTextContentElement,
     return spacing_.Get();
   }
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
-  ~SVGTextPathElement() override;
-
   void ClearResourceReferences();
 
   void BuildPendingResource() override;
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;
   void RemovedFrom(ContainerNode&) override;
 
-  void SvgAttributeChanged(const QualifiedName&) override;
+  void SvgAttributeChanged(const SvgAttributeChangedParams&) override;
 
   LayoutObject* CreateLayoutObject(const ComputedStyle&, LegacyLayout) override;
   bool LayoutObjectIsNeeded(const ComputedStyle&) const override;

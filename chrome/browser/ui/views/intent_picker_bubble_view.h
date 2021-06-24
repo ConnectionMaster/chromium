@@ -12,11 +12,14 @@
 #include "base/macros.h"
 #include "chrome/browser/apps/intent_helper/apps_navigation_types.h"
 #include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
-#include "chrome/services/app_service/public/mojom/types.mojom.h"
+#include "components/services/app_service/public/mojom/types.mojom-forward.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/gfx/image/image.h"
-#include "ui/views/controls/button/button.h"
+#include "ui/views/animation/ink_drop_state.h"
+#include "url/origin.h"
 
 namespace content {
 class WebContents;
@@ -32,6 +35,7 @@ class Event;
 }  // namespace ui
 
 class IntentPickerLabelButton;
+class PageActionIconView;
 
 // A bubble that displays a list of applications (icons and names), after the
 // list the UI displays a checkbox to allow the user remember the selection and
@@ -55,46 +59,52 @@ class IntentPickerLabelButton;
 //   |     [Use app] [Stay in Chrome] |
 //   +--------------------------------+
 
-class IntentPickerBubbleView : public LocationBarBubbleDelegateView,
-                               public views::ButtonListener {
+class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
  public:
+  METADATA_HEADER(IntentPickerBubbleView);
+
   using AppInfo = apps::IntentPickerAppInfo;
 
+  IntentPickerBubbleView(views::View* anchor_view,
+                         PageActionIconView* icon_view,
+                         PageActionIconType icon_type,
+                         std::vector<AppInfo> app_info,
+                         IntentPickerResponse intent_picker_cb,
+                         content::WebContents* web_contents,
+                         bool show_stay_in_chrome,
+                         bool show_remember_selection,
+                         const absl::optional<url::Origin>& initiating_origin);
   ~IntentPickerBubbleView() override;
-  static views::Widget* ShowBubble(views::View* anchor_view,
-                                   content::WebContents* web_contents,
-                                   std::vector<AppInfo> app_info,
-                                   bool show_stay_in_chrome,
-                                   bool show_remember_selection,
-                                   IntentPickerResponse intent_picker_cb);
-  static std::unique_ptr<IntentPickerBubbleView> CreateBubbleView(
+
+  static views::Widget* ShowBubble(
+      views::View* anchor_view,
+      PageActionIconView* icon_view,
+      PageActionIconType icon_type,
+      content::WebContents* web_contents,
       std::vector<AppInfo> app_info,
       bool show_stay_in_chrome,
       bool show_remember_selection,
-      IntentPickerResponse intent_picker_cb,
-      content::WebContents* web_contents);
+      const absl::optional<url::Origin>& initiating_origin,
+      IntentPickerResponse intent_picker_cb);
   static IntentPickerBubbleView* intent_picker_bubble() {
     return intent_picker_bubble_;
   }
   static void CloseCurrentBubble();
 
-  const std::vector<AppInfo>& GetAppInfoForTesting() const { return app_info_; }
-
   // LocationBarBubbleDelegateView overrides:
-  bool Accept() override;
-  bool Cancel() override;
-  bool Close() override;
   bool ShouldShowCloseButton() const override;
+
+  PageActionIconType icon_type() const { return icon_type_; }
 
  protected:
   // LocationBarBubbleDelegateView overrides:
-  base::string16 GetWindowTitle() const override;
-  bool IsDialogButtonEnabled(ui::DialogButton button) const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
+  std::u16string GetWindowTitle() const override;
   void CloseBubble() override;
 
  private:
   friend class IntentPickerBubbleViewTest;
+  friend class IntentPickerBubbleViewBrowserTest;
+  friend class IntentPickerBubbleViewBrowserTestChromeOS;
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, NullIcons);
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, NonNullIcons);
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, LabelsPtrVectorSize);
@@ -104,33 +114,79 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView,
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, ChromeNotInCandidates);
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, StayInChromeTest);
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, WebContentsTiedToBubble);
-  IntentPickerBubbleView(std::vector<AppInfo> app_info,
-                         IntentPickerResponse intent_picker_cb,
-                         content::WebContents* web_contents,
-                         bool show_display_in_chrome);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, WindowTitle);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, ButtonLabels);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTest,
+                           DoubleClickOpensApp);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           BubblePopOut);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           OutOfScopeDoesNotShowBubble);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           PWAOnlyShowBubble);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           NotLinkDoesNotShowBubble);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           DismissBubble);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           ShowBubbleTwice);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           PushStateLoadingTest);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           PushStateURLChangeTest);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           ReloadAfterInstall);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           StayInChromePWAOnly);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           StayInChromeARCOnly);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           ARCAndPWACandidateLaunchPWA);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           ARCAndPWACandidateLaunchARC);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewBrowserTestChromeOS,
+                           StayInChromeARCAndPWA);
+
+  static std::unique_ptr<IntentPickerBubbleView> CreateBubbleViewForTesting(
+      views::View* anchor_view,
+      PageActionIconView* icon_view,
+      PageActionIconType icon_type,
+      std::vector<AppInfo> app_info,
+      bool show_stay_in_chrome,
+      bool show_remember_selection,
+      const absl::optional<url::Origin>& initiating_origin,
+      IntentPickerResponse intent_picker_cb,
+      content::WebContents* web_contents);
+
+  const std::vector<AppInfo>& app_info_for_testing() const { return app_info_; }
 
   // views::BubbleDialogDelegateView overrides:
   void OnWidgetDestroying(views::Widget* widget) override;
 
-  // views::ButtonListener overrides:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
+  void AppButtonPressed(size_t index, const ui::Event& event);
 
-  // Similar to ButtonPressed, except this controls the up/down/right/left input
-  // while focusing on the |scroll_view_|.
-  void ArrowButtonPressed(int index);
+  // Similar to AppButtonPressed, except this controls the up/down/right/left
+  // input while focusing on the |scroll_view_|.
+  void ArrowButtonPressed(size_t index);
 
   // ui::EventHandler overrides:
   void OnKeyEvent(ui::KeyEvent* event) override;
 
-  void Initialize(bool show_remember_selection);
+  void Initialize();
+
+  void OnDialogAccepted();
+  void OnDialogCancelled();
+  void OnDialogClosed();
 
   // Retrieves the IntentPickerLabelButton* contained at position |index| from
   // the internal ScrollView.
   IntentPickerLabelButton* GetIntentPickerLabelButtonAt(size_t index);
-  void RunCallback(const std::string& launch_name,
-                   apps::mojom::AppType app_type,
-                   apps::IntentPickerCloseReason close_reason,
-                   bool should_persist);
+
+  // Runs |intent_picker_cb_| and closes the current bubble view.
+  void RunCallbackAndCloseBubble(const std::string& launch_name,
+                                 apps::PickerEntryType entry_type,
+                                 apps::IntentPickerCloseReason close_reason,
+                                 bool should_persist);
 
   // Returns true if this picker has candidates for the user to choose from, and
   // false otherwise. For instance, if Chrome was the only app candidate
@@ -146,13 +202,16 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView,
 
   // Set the new app selection, use the |event| (if provided) to show a more
   // accurate ripple effect w.r.t. the user's input.
-  void SetSelectedAppIndex(int index, const ui::Event* event);
+  void SetSelectedAppIndex(size_t index, const ui::Event* event);
 
   // Calculate the next app to select given the current selection and |delta|.
   size_t CalculateNextAppIndex(int delta);
 
   // Updates whether the persistence checkbox is enabled or not.
   void UpdateCheckboxState();
+
+  // Clears the current bubble and updates the icon.
+  void ClearBubbleView();
 
   gfx::ImageSkia GetAppImageForTesting(size_t index);
   views::InkDropState GetInkDropStateForTesting(size_t);
@@ -166,14 +225,26 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView,
   // Pre-select the first app on the list.
   size_t selected_app_tag_ = 0;
 
-  views::ScrollView* scroll_view_;
+  views::ScrollView* scroll_view_ = nullptr;
 
   std::vector<AppInfo> app_info_;
 
-  views::Checkbox* remember_selection_checkbox_;
+  views::Checkbox* remember_selection_checkbox_ = nullptr;
 
-  // Tells whether or not 'Stay in Chrome' should be enabled as an option.
+  // Tells whether 'Stay in Chrome' button should be shown or hidden.
   const bool show_stay_in_chrome_;
+
+  // Whether 'Remember my choice' checkbox should be shown or hidden.
+  const bool show_remember_selection_;
+
+  // The corresponding icon view shown in the omnibox.
+  PageActionIconView* icon_view_;
+
+  // The type of the icon shown in the omnibox.
+  const PageActionIconType icon_type_;
+
+  // The origin initiating this picker.
+  const absl::optional<url::Origin> initiating_origin_;
 
   DISALLOW_COPY_AND_ASSIGN(IntentPickerBubbleView);
 };

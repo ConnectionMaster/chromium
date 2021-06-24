@@ -6,8 +6,8 @@
 
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/format_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -300,6 +300,16 @@ TEST(IPAddressTest, IsPubliclyRoutableIPv6) {
     EXPECT_TRUE(address.AssignFromIPLiteral(test.address));
     EXPECT_EQ(!test.is_reserved, address.IsPubliclyRoutable());
   }
+}
+
+TEST(IPAddressTest, ConsiderLoopbackIPToBePubliclyRoutableForTestingMethod) {
+  IPAddress address;
+  EXPECT_TRUE(address.AssignFromIPLiteral("127.0.0.1"));
+  ASSERT_TRUE(address.IsValid());
+  EXPECT_FALSE(address.IsPubliclyRoutable());
+
+  IPAddress::ConsiderLoopbackIPToBePubliclyRoutableForTesting();
+  EXPECT_TRUE(address.IsPubliclyRoutable());
 }
 
 TEST(IPAddressTest, IsZero) {
@@ -648,6 +658,35 @@ TEST(IPAddressTest, IPAddressStartsWith) {
   uint8_t ipv6_prefix5[] = {42, 0, 20, 80, 64, 12, 12, 9, 0,
                             0,  0, 0,  0,  0,  0,  0,  10};
   EXPECT_FALSE(IPAddressStartsWith(ipv6_address, ipv6_prefix5));
+}
+
+TEST(IPAddressTest, IsLinkLocal) {
+  const char* kPositive[] = {
+      "169.254.0.0",
+      "169.254.100.1",
+      "169.254.100.1",
+      "::ffff:169.254.0.0",
+      "::ffff:169.254.100.1",
+      "fe80::1",
+      "fe81::1",
+  };
+
+  for (const char* literal : kPositive) {
+    IPAddress ip_address;
+    ASSERT_TRUE(ip_address.AssignFromIPLiteral(literal));
+    EXPECT_TRUE(ip_address.IsLinkLocal()) << literal;
+  }
+
+  const char* kNegative[] = {
+      "170.254.0.0",        "169.255.0.0",        "::169.254.0.0",
+      "::fffe:169.254.0.0", "::ffff:169.255.0.0", "fec0::1",
+  };
+
+  for (const char* literal : kNegative) {
+    IPAddress ip_address;
+    ASSERT_TRUE(ip_address.AssignFromIPLiteral(literal));
+    EXPECT_FALSE(ip_address.IsLinkLocal()) << literal;
+  }
 }
 
 }  // anonymous namespace

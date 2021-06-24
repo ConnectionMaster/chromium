@@ -14,14 +14,15 @@
 
 #include "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
-#include "content/browser/frame_host/popup_menu_helper_mac.h"
+#include "content/browser/renderer_host/popup_menu_helper_mac.h"
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"
 #include "content/browser/web_contents/web_contents_view.h"
 #include "content/common/content_export.h"
-#include "content/common/drag_event_source_info.h"
+#include "content/common/web_contents_ns_view_bridge.mojom.h"
 #include "content/public/browser/visibility.h"
-#include "content/public/common/web_contents_ns_view_bridge.mojom.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "third_party/blink/public/mojom/choosers/popup_menu.mojom.h"
 #import "ui/base/cocoa/views_hostable.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -30,7 +31,6 @@
 
 namespace content {
 class RenderWidgetHostViewMac;
-class WebContentsNSViewBridge;
 class WebContentsImpl;
 class WebContentsViewDelegate;
 class WebContentsViewMac;
@@ -40,6 +40,10 @@ namespace gfx {
 class Vector2d;
 }
 
+namespace remote_cocoa {
+class WebContentsNSViewBridge;
+}  // remote_cocoa
+
 namespace content {
 
 // Mac-specific implementation of the WebContentsView. It owns an NSView that
@@ -47,7 +51,7 @@ namespace content {
 class WebContentsViewMac : public WebContentsView,
                            public RenderViewHostDelegateView,
                            public PopupMenuHelper::Delegate,
-                           public mojom::WebContentsNSViewClient,
+                           public remote_cocoa::mojom::WebContentsNSViewHost,
                            public ui::ViewsHostableView {
  public:
   // The corresponding WebContentsImpl is passed in the constructor, and manages
@@ -61,8 +65,7 @@ class WebContentsViewMac : public WebContentsView,
   gfx::NativeView GetNativeView() const override;
   gfx::NativeView GetContentNativeView() const override;
   gfx::NativeWindow GetTopLevelNativeWindow() const override;
-  void GetContainerBounds(gfx::Rect* out) const override;
-  void SizeContents(const gfx::Size& size) override;
+  gfx::Rect GetContainerBounds() const override;
   void Focus() override;
   void SetInitialFocus() override;
   void StoreFocus() override;
@@ -70,15 +73,12 @@ class WebContentsViewMac : public WebContentsView,
   void FocusThroughTabTraversal(bool reverse) override;
   DropData* GetDropData() const override;
   gfx::Rect GetViewBounds() const override;
-  void CreateView(const gfx::Size& initial_size,
-                  gfx::NativeView context) override;
+  void CreateView(gfx::NativeView context) override;
   RenderWidgetHostViewBase* CreateViewForWidget(
-      RenderWidgetHost* render_widget_host,
-      bool is_guest_view_hack) override;
+      RenderWidgetHost* render_widget_host) override;
   RenderWidgetHostViewBase* CreateViewForChildWidget(
       RenderWidgetHost* render_widget_host) override;
-  void SetPageTitle(const base::string16& title) override;
-  void RenderViewCreated(RenderViewHost* host) override;
+  void SetPageTitle(const std::u16string& title) override;
   void RenderViewReady() override;
   void RenderViewHostChanged(RenderViewHost* old_host,
                              RenderViewHost* new_host) override;
@@ -87,25 +87,27 @@ class WebContentsViewMac : public WebContentsView,
 
   // RenderViewHostDelegateView:
   void StartDragging(const DropData& drop_data,
-                     blink::WebDragOperationsMask allowed_operations,
+                     blink::DragOperationsMask allowed_operations,
                      const gfx::ImageSkia& image,
                      const gfx::Vector2d& image_offset,
-                     const DragEventSourceInfo& event_info,
+                     const blink::mojom::DragEventSourceInfo& event_info,
                      RenderWidgetHostImpl* source_rwh) override;
-  void UpdateDragCursor(blink::WebDragOperation operation) override;
+  void UpdateDragCursor(ui::mojom::DragOperation operation) override;
   void GotFocus(RenderWidgetHostImpl* render_widget_host) override;
+  void LostFocus(RenderWidgetHostImpl* render_widget_host) override;
   void TakeFocus(bool reverse) override;
   void ShowContextMenu(RenderFrameHost* render_frame_host,
                        const ContextMenuParams& params) override;
-  void ShowPopupMenu(RenderFrameHost* render_frame_host,
-                     const gfx::Rect& bounds,
-                     int item_height,
-                     double item_font_size,
-                     int selected_item,
-                     const std::vector<MenuItem>& items,
-                     bool right_aligned,
-                     bool allow_multiple_selection) override;
-  void HidePopupMenu() override;
+  void ShowPopupMenu(
+      RenderFrameHost* render_frame_host,
+      mojo::PendingRemote<blink::mojom::PopupMenuClient> popup_client,
+      const gfx::Rect& bounds,
+      int item_height,
+      double item_font_size,
+      int selected_item,
+      std::vector<blink::mojom::MenuItemPtr> menu_items,
+      bool right_aligned,
+      bool allow_multiple_selection) override;
 
   // PopupMenuHelper::Delegate:
   void OnMenuClosed() override;
@@ -118,6 +120,7 @@ class WebContentsViewMac : public WebContentsView,
   void ViewsHostableMakeFirstResponder() override;
   void ViewsHostableSetParentAccessible(
       gfx::NativeViewAccessible parent_accessibility_element) override;
+  gfx::NativeViewAccessible ViewsHostableGetParentAccessible() override;
   gfx::NativeViewAccessible ViewsHostableGetAccessibilityElement() override;
 
   // A helper method for closing the tab in the
@@ -129,26 +132,28 @@ class WebContentsViewMac : public WebContentsView,
   WebDragDest* drag_dest() const { return drag_dest_.get(); }
 
   using RenderWidgetHostViewCreateFunction =
-      RenderWidgetHostViewMac* (*)(RenderWidgetHost*, bool);
+      RenderWidgetHostViewMac* (*)(RenderWidgetHost*);
 
   // Used to override the creation of RenderWidgetHostViews in tests.
   CONTENT_EXPORT static void InstallCreateHookForTests(
       RenderWidgetHostViewCreateFunction create_render_widget_host_view);
 
  private:
-  WebContentsViewCocoa* cocoa_view() const;
+  WebContentsViewCocoa* GetInProcessNSView() const;
 
-  // mojom::WebContentsNSViewClient:
+  // remote_cocoa::mojom::WebContentsNSViewHost:
   void OnMouseEvent(bool motion, bool exited) override;
-  void OnBecameFirstResponder(mojom::SelectionDirection direction) override;
-  void OnWindowVisibilityChanged(mojom::Visibility visibility) override;
+  void OnBecameFirstResponder(
+      remote_cocoa::mojom::SelectionDirection direction) override;
+  void OnWindowVisibilityChanged(
+      remote_cocoa::mojom::Visibility visibility) override;
   void SetDropData(const DropData& drop_data) override;
-  bool DraggingEntered(mojom::DraggingInfoPtr dragging_info,
+  bool DraggingEntered(remote_cocoa::mojom::DraggingInfoPtr dragging_info,
                        uint32_t* out_result) override;
   void DraggingExited() override;
-  bool DraggingUpdated(mojom::DraggingInfoPtr dragging_info,
+  bool DraggingUpdated(remote_cocoa::mojom::DraggingInfoPtr dragging_info,
                        uint32_t* out_result) override;
-  bool PerformDragOperation(mojom::DraggingInfoPtr dragging_info,
+  bool PerformDragOperation(remote_cocoa::mojom::DraggingInfoPtr dragging_info,
                             bool* out_result) override;
   bool DragPromisedFileTo(const base::FilePath& file_path,
                           const DropData& drop_data,
@@ -158,12 +163,12 @@ class WebContentsViewMac : public WebContentsView,
                const gfx::PointF& local_point,
                const gfx::PointF& screen_point) override;
 
-  // mojom::WebContentsNSViewClient, synchronous methods:
-  void DraggingEntered(mojom::DraggingInfoPtr dragging_info,
+  // remote_cocoa::mojom::WebContentsNSViewHost, synchronous methods:
+  void DraggingEntered(remote_cocoa::mojom::DraggingInfoPtr dragging_info,
                        DraggingEnteredCallback callback) override;
-  void DraggingUpdated(mojom::DraggingInfoPtr dragging_info,
+  void DraggingUpdated(remote_cocoa::mojom::DraggingInfoPtr dragging_info,
                        DraggingUpdatedCallback callback) override;
-  void PerformDragOperation(mojom::DraggingInfoPtr dragging_info,
+  void PerformDragOperation(remote_cocoa::mojom::DraggingInfoPtr dragging_info,
                             PerformDragOperationCallback callback) override;
   void DragPromisedFileTo(const base::FilePath& file_path,
                           const DropData& drop_data,
@@ -207,12 +212,14 @@ class WebContentsViewMac : public WebContentsView,
   // The WebContentsViewCocoa that lives in the NSView hierarchy in this
   // process. This is always non-null, even when the view is being displayed
   // in another process.
-  std::unique_ptr<WebContentsNSViewBridge> ns_view_bridge_local_;
+  std::unique_ptr<remote_cocoa::WebContentsNSViewBridge>
+      in_process_ns_view_bridge_;
 
   // Mojo bindings for an out of process instance of this NSView.
-  mojom::WebContentsNSViewBridgeAssociatedPtr ns_view_bridge_remote_;
-  mojo::AssociatedBinding<mojom::WebContentsNSViewClient>
-      ns_view_client_binding_;
+  mojo::AssociatedRemote<remote_cocoa::mojom::WebContentsNSView>
+      remote_ns_view_;
+  mojo::AssociatedReceiver<remote_cocoa::mojom::WebContentsNSViewHost>
+      remote_ns_view_host_receiver_{this};
 
   // Used by CloseTabAfterEventTrackingIfNeeded.
   base::WeakPtrFactory<WebContentsViewMac> deferred_close_weak_ptr_factory_;

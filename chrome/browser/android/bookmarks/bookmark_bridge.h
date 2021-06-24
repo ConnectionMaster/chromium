@@ -5,14 +5,25 @@
 #ifndef CHROME_BROWSER_ANDROID_BOOKMARKS_BOOKMARK_BRIDGE_H_
 #define CHROME_BROWSER_ANDROID_BOOKMARKS_BOOKMARK_BRIDGE_H_
 
+#include <memory>
+#include <set>
+#include <string>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_weak_ref.h"
 #include "base/compiler_specific.h"
+#include "base/guid.h"
 #include "base/macros.h"
+#include "base/scoped_observation.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/android/bookmarks/partner_bookmarks_shim.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_observer.h"
+#include "chrome/browser/reading_list/android/reading_list_manager.h"
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/bookmarks/common/android/bookmark_id.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "url/android/gurl_android.h"
 
 namespace bookmarks {
 class BookmarkModel;
@@ -26,21 +37,33 @@ class Profile;
 // bookmark page. This fetches the bookmarks, title, urls, folder
 // hierarchy.
 class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
-                        public PartnerBookmarksShim::Observer {
+                       public PartnerBookmarksShim::Observer,
+                       public ReadingListManager::Observer,
+                       public ProfileObserver {
  public:
   BookmarkBridge(JNIEnv* env,
                  const base::android::JavaRef<jobject>& obj,
                  const base::android::JavaRef<jobject>& j_profile);
   void Destroy(JNIEnv*, const base::android::JavaParamRef<jobject>&);
 
+  jlong GetBookmarkIdForWebContents(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& jweb_contents,
+      jboolean only_editable);
+
   bool IsDoingExtensiveChanges(JNIEnv* env,
                                const base::android::JavaParamRef<jobject>& obj);
 
-  jboolean IsEditBookmarksEnabled(
+  jboolean IsEditBookmarksEnabled(JNIEnv* env);
+
+  void LoadEmptyPartnerBookmarkShimForTesting(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
 
-  void LoadEmptyPartnerBookmarkShimForTesting(
+  // Loads a fake partner bookmarks shim for testing.
+  // This is used in BookmarkBridgeTest.java.
+  void LoadFakePartnerBookmarkShimForTesting(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
 
@@ -49,11 +72,6 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
       const base::android::JavaParamRef<jobject>& obj,
       jlong id,
       jint type);
-
-  void GetPermanentNodeIDs(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      const base::android::JavaParamRef<jobject>& j_result_obj);
 
   void GetTopLevelFolderParentIDs(
       JNIEnv* env,
@@ -89,12 +107,14 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
 
+  base::android::ScopedJavaLocalRef<jobject> GetPartnerFolderId(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
   void GetChildIDs(JNIEnv* env,
                    const base::android::JavaParamRef<jobject>& obj,
                    jlong id,
                    jint type,
-                   jboolean get_folders,
-                   jboolean get_bookmarks,
                    const base::android::JavaParamRef<jobject>& j_result_obj);
 
   jint GetChildCount(JNIEnv* env,
@@ -108,6 +128,12 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
       jlong id,
       jint type,
       jint index);
+
+  void ReorderChildren(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& j_bookmark_id_obj,
+      jlongArray arr);
 
   // Get the number of bookmarks in the sub tree of the specified bookmark node.
   // The specified node must be of folder type.
@@ -126,7 +152,7 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
                       const base::android::JavaParamRef<jobject>& obj,
                       jlong id,
                       jint type,
-                      const base::android::JavaParamRef<jstring>& url);
+                      const base::android::JavaParamRef<jobject>& url);
 
   bool DoesBookmarkExist(JNIEnv* env,
                          const base::android::JavaParamRef<jobject>& obj,
@@ -186,7 +212,23 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
       const base::android::JavaParamRef<jobject>& j_parent_id_obj,
       jint index,
       const base::android::JavaParamRef<jstring>& j_title,
-      const base::android::JavaParamRef<jstring>& j_url);
+      const base::android::JavaParamRef<jobject>& j_url);
+
+  base::android::ScopedJavaLocalRef<jobject> AddToReadingList(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jstring>& j_title,
+      const base::android::JavaParamRef<jobject>& j_url);
+
+  base::android::ScopedJavaLocalRef<jobject> GetReadingListItem(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& j_url);
+
+  void SetReadStatus(JNIEnv* env,
+                     const base::android::JavaParamRef<jobject>& obj,
+                     const base::android::JavaParamRef<jobject>& j_url,
+                     jboolean j_read);
 
   void Undo(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
 
@@ -196,7 +238,13 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
   void EndGroupingUndos(JNIEnv* env,
                         const base::android::JavaParamRef<jobject>& obj);
 
-  base::string16 GetTitle(const bookmarks::BookmarkNode* node) const;
+  bool IsBookmarked(JNIEnv* env,
+                    const base::android::JavaParamRef<jobject>& gurl);
+
+  std::u16string GetTitle(const bookmarks::BookmarkNode* node) const;
+
+  // ProfileObserver override
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
  private:
   ~BookmarkBridge() override;
@@ -233,15 +281,15 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
   void BookmarkModelBeingDeleted(bookmarks::BookmarkModel* model) override;
   void BookmarkNodeMoved(bookmarks::BookmarkModel* model,
                          const bookmarks::BookmarkNode* old_parent,
-                         int old_index,
+                         size_t old_index,
                          const bookmarks::BookmarkNode* new_parent,
-                         int new_index) override;
+                         size_t new_index) override;
   void BookmarkNodeAdded(bookmarks::BookmarkModel* model,
                          const bookmarks::BookmarkNode* parent,
-                         int index) override;
+                         size_t index) override;
   void BookmarkNodeRemoved(bookmarks::BookmarkModel* model,
                            const bookmarks::BookmarkNode* parent,
-                           int old_index,
+                           size_t old_index,
                            const bookmarks::BookmarkNode* node,
                            const std::set<GURL>& removed_urls) override;
   void BookmarkAllUserNodesRemoved(bookmarks::BookmarkModel* model,
@@ -260,6 +308,12 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
   void PartnerShimLoaded(PartnerBookmarksShim* shim) override;
   void ShimBeingDeleted(PartnerBookmarksShim* shim) override;
 
+  // Override ReadingListManager::Observer
+  void ReadingListLoaded() override;
+  void ReadingListChanged() override;
+
+  void DestroyJavaObject();
+
   Profile* profile_;
   JavaObjectWeakGlobalRef weak_java_ref_;
   bookmarks::BookmarkModel* bookmark_model_;  // weak
@@ -271,6 +325,12 @@ class BookmarkBridge : public bookmarks::BaseBookmarkModelObserver,
   // Information about the Partner bookmarks (must check for IsLoaded()).
   // This is owned by profile.
   PartnerBookmarksShim* partner_bookmarks_shim_;
+
+  // Holds reading list data. A keyed service owned by the profile.
+  ReadingListManager* reading_list_manager_;
+
+  // Observes the profile destruction and creation.
+  base::ScopedObservation<Profile, ProfileObserver> profile_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BookmarkBridge);
 };

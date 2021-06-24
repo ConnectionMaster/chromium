@@ -5,12 +5,12 @@
 #include "chrome/browser/sync_file_system/drive_backend/remote_to_local_syncer.h"
 
 #include <map>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -28,8 +28,9 @@
 #include "chrome/browser/sync_file_system/syncable_file_system_util.h"
 #include "components/drive/drive_uploader.h"
 #include "components/drive/service/fake_drive_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "google_apis/drive/drive_api_error_codes.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/leveldatabase/leveldb_chrome.h"
 
@@ -50,7 +51,7 @@ class RemoteToLocalSyncerTest : public testing::Test {
   typedef FakeRemoteChangeProcessor::URLToFileChangesMap URLToFileChangesMap;
 
   RemoteToLocalSyncerTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP) {}
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP) {}
   ~RemoteToLocalSyncerTest() override {}
 
   void SetUp() override {
@@ -63,24 +64,22 @@ class RemoteToLocalSyncerTest : public testing::Test {
     std::unique_ptr<drive::DriveUploaderInterface> drive_uploader(
         new drive::DriveUploader(fake_drive_service.get(),
                                  base::ThreadTaskRunnerHandle::Get().get(),
-                                 nullptr));
-    fake_drive_helper_.reset(
-        new FakeDriveServiceHelper(fake_drive_service.get(),
-                                   drive_uploader.get(),
-                                   kSyncRootFolderTitle));
-    remote_change_processor_.reset(new FakeRemoteChangeProcessor);
+                                 mojo::NullRemote()));
+    fake_drive_helper_ = std::make_unique<FakeDriveServiceHelper>(
+        fake_drive_service.get(), drive_uploader.get(), kSyncRootFolderTitle);
+    remote_change_processor_ = std::make_unique<FakeRemoteChangeProcessor>();
 
-    context_.reset(new SyncEngineContext(
+    context_ = std::make_unique<SyncEngineContext>(
         std::move(fake_drive_service), std::move(drive_uploader),
         nullptr /* task_logger */, base::ThreadTaskRunnerHandle::Get(),
-        base::ThreadTaskRunnerHandle::Get()));
+        base::ThreadTaskRunnerHandle::Get());
     context_->SetRemoteChangeProcessor(remote_change_processor_.get());
 
     RegisterSyncableFileSystem();
 
-    sync_task_manager_.reset(new SyncTaskManager(
+    sync_task_manager_ = std::make_unique<SyncTaskManager>(
         base::WeakPtr<SyncTaskManager::Client>(), 10 /* max_parallel_task */,
-        base::ThreadTaskRunnerHandle::Get()));
+        base::ThreadTaskRunnerHandle::Get());
     sync_task_manager_->Initialize(SYNC_STATUS_OK);
   }
 
@@ -99,8 +98,8 @@ class RemoteToLocalSyncerTest : public testing::Test {
     sync_task_manager_->ScheduleSyncTask(
         FROM_HERE, std::unique_ptr<SyncTask>(initializer),
         SyncTaskManager::PRIORITY_MED,
-        base::Bind(&RemoteToLocalSyncerTest::DidInitializeMetadataDatabase,
-                   base::Unretained(this), initializer, &status));
+        base::BindOnce(&RemoteToLocalSyncerTest::DidInitializeMetadataDatabase,
+                       base::Unretained(this), initializer, &status));
 
     base::RunLoop().RunUntilIdle();
     EXPECT_EQ(SYNC_STATUS_OK, status);
@@ -229,7 +228,7 @@ class RemoteToLocalSyncerTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   base::ScopedTempDir database_dir_;
   std::unique_ptr<leveldb::Env> in_memory_env_;
 

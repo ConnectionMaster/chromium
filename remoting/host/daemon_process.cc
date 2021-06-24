@@ -5,15 +5,17 @@
 #include "remoting/host/daemon_process.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/base/constants.h"
@@ -172,11 +174,11 @@ void DaemonProcess::CloseDesktopSession(int terminal_id) {
 DaemonProcess::DaemonProcess(
     scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
     scoped_refptr<AutoThreadTaskRunner> io_task_runner,
-    const base::Closure& stopped_callback)
+    base::OnceClosure stopped_callback)
     : caller_task_runner_(caller_task_runner),
       io_task_runner_(io_task_runner),
       next_terminal_id_(0),
-      stopped_callback_(stopped_callback),
+      stopped_callback_(std::move(stopped_callback)),
       status_monitor_(new HostStatusMonitor()),
       current_process_stats_("DaemonProcess") {
   DCHECK(caller_task_runner->BelongsToCurrentThread());
@@ -262,17 +264,8 @@ void DaemonProcess::CrashNetworkProcess(const base::Location& location) {
 void DaemonProcess::Initialize() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  const base::CommandLine* command_line =
-      base::CommandLine::ForCurrentProcess();
-  // Get the name of the host configuration file.
-  base::FilePath default_config_dir = remoting::GetConfigDir();
-  base::FilePath config_path = default_config_dir.Append(
-      kDefaultHostConfigFile);
-  if (command_line->HasSwitch(kHostConfigSwitchName)) {
-    config_path = command_line->GetSwitchValuePath(kHostConfigSwitchName);
-  }
-  config_watcher_.reset(new ConfigFileWatcher(
-      caller_task_runner(), io_task_runner(), config_path));
+  config_watcher_ = std::make_unique<ConfigFileWatcher>(
+      caller_task_runner(), io_task_runner(), GetConfigPath());
   config_watcher_->Watch(this);
   host_event_logger_ =
       HostEventLogger::Create(status_monitor_, kApplicationName);
@@ -286,8 +279,8 @@ void DaemonProcess::Stop() {
 
   OnWorkerProcessStopped();
 
-  if (!stopped_callback_.is_null()) {
-    base::ResetAndReturn(&stopped_callback_).Run();
+  if (stopped_callback_) {
+    std::move(stopped_callback_).Run();
   }
 }
 
@@ -298,28 +291,28 @@ bool DaemonProcess::WasTerminalIdAllocated(int terminal_id) {
 void DaemonProcess::OnAccessDenied(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnAccessDenied(jid);
 }
 
 void DaemonProcess::OnClientAuthenticated(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnClientAuthenticated(jid);
 }
 
 void DaemonProcess::OnClientConnected(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnClientConnected(jid);
 }
 
 void DaemonProcess::OnClientDisconnected(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnClientDisconnected(jid);
 }
 
@@ -339,21 +332,21 @@ void DaemonProcess::OnClientRouteChange(const std::string& jid,
   CHECK(local_ip.empty() || local_ip.IsValid());
   parsed_route.local_address = net::IPEndPoint(local_ip, route.local_port);
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnClientRouteChange(jid, channel_name, parsed_route);
 }
 
 void DaemonProcess::OnHostStarted(const std::string& xmpp_login) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnStart(xmpp_login);
 }
 
 void DaemonProcess::OnHostShutdown() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  for (auto& observer : status_observers_)
+  for (auto& observer : status_monitor_->observers())
     observer.OnShutdown();
 }
 
@@ -395,6 +388,19 @@ void DaemonProcess::StopProcessStatsReport() {
 void DaemonProcess::OnProcessStats(
     const protocol::AggregatedProcessResourceUsage& usage) {
   SendToNetwork(new ChromotingAnyToNetworkMsg_ReportProcessStats(usage));
+}
+
+base::FilePath DaemonProcess::GetConfigPath() {
+  base::FilePath config_path;
+  const base::CommandLine* command_line =
+      base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(kHostConfigSwitchName)) {
+    config_path = command_line->GetSwitchValuePath(kHostConfigSwitchName);
+  } else {
+    base::FilePath default_config_dir = remoting::GetConfigDir();
+    config_path = default_config_dir.Append(kDefaultHostConfigFile);
+  }
+  return config_path;
 }
 
 }  // namespace remoting

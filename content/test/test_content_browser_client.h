@@ -20,14 +20,19 @@ class TestContentBrowserClient : public ContentBrowserClient {
  public:
   TestContentBrowserClient();
   ~TestContentBrowserClient() override;
+
+  static TestContentBrowserClient* GetInstance();
+
+  void set_application_locale(const std::string& locale) {
+    application_locale_ = locale;
+  }
+
+  // ContentBrowserClient:
   base::FilePath GetDefaultDownloadDirectory() override;
   GeneratedCodeCacheSettings GetGeneratedCodeCacheSettings(
       content::BrowserContext* context) override;
-  void GetQuotaSettings(
-      content::BrowserContext* context,
-      content::StoragePartition* partition,
-      storage::OptionalQuotaSettingsCallback callback) override;
-  std::string GetUserAgent() const override;
+  std::string GetUserAgent() override;
+  std::string GetApplicationLocale() override;
 #if defined(OS_ANDROID)
   void GetAdditionalMappedFilesForChildProcess(
       const base::CommandLine& command_line,
@@ -38,6 +43,8 @@ class TestContentBrowserClient : public ContentBrowserClient {
  private:
   // Temporary directory for GetDefaultDownloadDirectory.
   base::ScopedTempDir download_dir_;
+  std::string application_locale_;
+  static TestContentBrowserClient* instance_;
 
   DISALLOW_COPY_AND_ASSIGN(TestContentBrowserClient);
 };

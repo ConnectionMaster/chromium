@@ -5,18 +5,25 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 
 #include <memory>
+
 #include "base/auto_reset.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
-#include "third_party/blink/renderer/platform/graphics/logging_canvas.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_display_item.h"
+#include "third_party/blink/renderer/platform/graphics/paint/ignore_paint_timing_scope.h"
+#include "third_party/blink/renderer/platform/graphics/paint/paint_chunk_subset.h"
+#include "third_party/blink/renderer/platform/graphics/paint/paint_under_invalidation_checker.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 
 namespace blink {
 
 PaintController::PaintController(Usage usage)
     : usage_(usage),
-      current_paint_artifact_(PaintArtifact::Empty()),
-      new_display_item_list_(0) {
+      current_paint_artifact_(usage == kMultiplePaints
+                                  ? base::MakeRefCounted<PaintArtifact>()
+                                  : nullptr),
+      new_paint_artifact_(base::MakeRefCounted<PaintArtifact>()),
+      paint_chunker_(new_paint_artifact_->PaintChunks()) {
   // frame_first_paints_ should have one null frame since the beginning, so
   // that PaintController is robust even if it paints outside of BeginFrame
   // and EndFrame cycles. It will also enable us to combine the first paint
@@ -26,9 +33,71 @@ PaintController::PaintController(Usage usage)
 }
 
 PaintController::~PaintController() {
-  // New display items should be committed before PaintController is destroyed,
-  // except for transient paint controllers.
-  DCHECK(usage_ == kTransient || new_display_item_list_.IsEmpty());
+#if DCHECK_IS_ON()
+  if (usage_ == kMultiplePaints) {
+    // New display items should have been committed.
+    DCHECK(new_paint_artifact_->IsEmpty());
+    // And the committed_ flag should have been cleared by FinishCycle().
+    DCHECK(!committed_);
+  }
+#endif
+}
+
+void PaintController::EnsureChunk() {
+  if (paint_chunker_.EnsureChunk())
+    CheckNewChunk();
+}
+
+void PaintController::RecordHitTestData(const DisplayItemClient& client,
+                                        const IntRect& rect,
+                                        TouchAction touch_action,
+                                        bool blocking_wheel) {
+  if (rect.IsEmpty())
+    return;
+  // In CompositeAfterPaint, we ensure a paint chunk for correct composited
+  // hit testing. In pre-CompositeAfterPaint, this is unnecessary, except that
+  // there is special touch action, and that we have a non-root effect so that
+  // PaintChunksToCcLayer will emit paint operations for filters.
+  if (!RuntimeEnabledFeatures::CompositeAfterPaintEnabled() &&
+      touch_action == TouchAction::kAuto && !blocking_wheel &&
+      CurrentPaintChunkProperties().Effect().IsRoot())
+    return;
+
+  PaintChunk::Id id(client, DisplayItem::kHitTest, current_fragment_);
+  ValidateNewChunkId(id);
+  if (paint_chunker_.AddHitTestDataToCurrentChunk(id, rect, touch_action,
+                                                  blocking_wheel))
+    CheckNewChunk();
+}
+
+void PaintController::RecordScrollHitTestData(
+    const DisplayItemClient& client,
+    DisplayItem::Type type,
+    const TransformPaintPropertyNode* scroll_translation,
+    const IntRect& rect) {
+  PaintChunk::Id id(client, type, current_fragment_);
+  ValidateNewChunkId(id);
+  paint_chunker_.CreateScrollHitTestChunk(id, scroll_translation, rect);
+  CheckNewChunk();
+}
+
+void PaintController::RecordSelection(
+    absl::optional<PaintedSelectionBound> start,
+    absl::optional<PaintedSelectionBound> end) {
+  DCHECK(RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
+  DCHECK(start.has_value() || end.has_value());
+  paint_chunker_.AddSelectionToCurrentChunk(start, end);
+}
+
+void PaintController::SetPossibleBackgroundColor(
+    const DisplayItemClient& client,
+    Color color,
+    uint64_t area) {
+  PaintChunk::Id id(client, DisplayItem::kBoxDecorationBackground,
+                    current_fragment_);
+  ValidateNewChunkId(id);
+  if (paint_chunker_.ProcessBackgroundColorCandidate(id, color, area))
+    CheckNewChunk();
 }
 
 bool PaintController::UseCachedItemIfPossible(const DisplayItemClient& client,
@@ -36,20 +105,19 @@ bool PaintController::UseCachedItemIfPossible(const DisplayItemClient& client,
   if (usage_ == kTransient)
     return false;
 
-  if (DisplayItemConstructionIsDisabled())
+  if (ShouldInvalidateDisplayItemForBenchmark())
     return false;
 
   if (!ClientCacheIsValid(client))
     return false;
 
-  if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled() &&
-      IsCheckingUnderInvalidation()) {
+  if (IsCheckingUnderInvalidation()) {
     // We are checking under-invalidation of a subsequence enclosing this
     // display item. Let the client continue to actually paint the display item.
     return false;
   }
 
-  size_t cached_item =
+  auto cached_item =
       FindCachedItem(DisplayItem::Id(client, type, current_fragment_));
   if (cached_item == kNotFound) {
     // See FindOutOfOrderCachedItemForward() for explanation of the situation.
@@ -57,13 +125,6 @@ bool PaintController::UseCachedItemIfPossible(const DisplayItemClient& client,
   }
 
   ++num_cached_new_items_;
-  EnsureNewDisplayItemListInitialCapacity();
-  // Visual rect can change without needing invalidation of the client, e.g.
-  // when ancestor clip changes. Update the visual rect to the current value.
-  current_paint_artifact_->GetDisplayItemList()[cached_item].UpdateVisualRect();
-  if (!RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled())
-    ProcessNewItem(MoveItemFromCurrentListToNewList(cached_item));
-
   next_item_to_match_ = cached_item + 1;
   // Items before |next_item_to_match_| have been copied so we don't need to
   // index them.
@@ -71,15 +132,14 @@ bool PaintController::UseCachedItemIfPossible(const DisplayItemClient& client,
     next_item_to_index_ = next_item_to_match_;
 
   if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled()) {
-    if (!IsCheckingUnderInvalidation()) {
-      under_invalidation_checking_begin_ = cached_item;
-      under_invalidation_checking_end_ = cached_item + 1;
-      under_invalidation_message_prefix_ = "";
-    }
+    EnsureUnderInvalidationChecker().WouldUseCachedItem(cached_item);
     // Return false to let the painter actually paint. We will check if the new
     // painting is the same as the cached one.
     return false;
   }
+
+  ProcessNewItem(new_paint_artifact_->GetDisplayItemList().AppendByMoving(
+      current_paint_artifact_->GetDisplayItemList()[cached_item]));
 
   return true;
 }
@@ -89,27 +149,35 @@ bool PaintController::UseCachedSubsequenceIfPossible(
   if (usage_ == kTransient)
     return false;
 
-  if (DisplayItemConstructionIsDisabled() || SubsequenceCachingIsDisabled())
+  if (ShouldInvalidateSubsequenceForBenchmark())
     return false;
 
   if (!ClientCacheIsValid(client))
     return false;
 
-  if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled() &&
-      IsCheckingUnderInvalidation()) {
+  if (IsCheckingUnderInvalidation()) {
     // We are checking under-invalidation of an ancestor subsequence enclosing
     // this one. The ancestor subsequence is supposed to have already "copied",
     // so we should let the client continue to actually paint the descendant
     // subsequences without "copying".
+    ++num_cached_new_subsequences_;
     return false;
   }
 
-  SubsequenceMarkers* markers = GetSubsequenceMarkers(client);
-  if (!markers) {
+  wtf_size_t subsequence_index = GetSubsequenceIndex(client);
+  if (subsequence_index == kNotFound)
     return false;
-  }
 
-  if (current_paint_artifact_->GetDisplayItemList()[markers->start]
+  const auto& markers = current_subsequences_.tree[subsequence_index];
+  DCHECK_EQ(markers.client, &client);
+  wtf_size_t start_item_index =
+      current_paint_artifact_->PaintChunks()[markers.start_chunk_index]
+          .begin_index;
+  wtf_size_t end_item_index =
+      current_paint_artifact_->PaintChunks()[markers.end_chunk_index - 1]
+          .end_index;
+  if (end_item_index > start_item_index &&
+      current_paint_artifact_->GetDisplayItemList()[start_item_index]
           .IsTombstone()) {
     // The subsequence has already been copied, indicating that the same client
     // created multiple subsequences. If DCHECK_IS_ON(), then we should have
@@ -119,129 +187,130 @@ bool PaintController::UseCachedSubsequenceIfPossible(
     return false;
   }
 
-  EnsureNewDisplayItemListInitialCapacity();
-
-  if (next_item_to_match_ == markers->start) {
+  if (next_item_to_match_ == start_item_index) {
     // We are matching new and cached display items sequentially. Skip the
     // subsequence for later sequential matching of individual display items.
-    next_item_to_match_ = markers->end;
+    next_item_to_match_ = end_item_index;
     // Items before |next_item_to_match_| have been copied so we don't need to
     // index them.
     if (next_item_to_match_ > next_item_to_index_)
       next_item_to_index_ = next_item_to_match_;
   }
 
-  num_cached_new_items_ += markers->end - markers->start;
+  num_cached_new_items_ += end_item_index - start_item_index;
   ++num_cached_new_subsequences_;
 
   if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled()) {
-    DCHECK(!IsCheckingUnderInvalidation());
-    under_invalidation_checking_begin_ = markers->start;
-    under_invalidation_checking_end_ = markers->end;
-    under_invalidation_message_prefix_ =
-        "(In cached subsequence for " + client.DebugName() + ")";
+    EnsureUnderInvalidationChecker().WouldUseCachedSubsequence(client);
     // Return false to let the painter actually paint. We will check if the new
     // painting is the same as the cached one.
     return false;
   }
 
-  size_t start = BeginSubsequence();
-  CopyCachedSubsequence(markers->start, markers->end);
-  EndSubsequence(client, start);
+  AppendSubsequenceByMoving(client, subsequence_index,
+                            markers.start_chunk_index, markers.end_chunk_index);
   return true;
 }
 
-PaintController::SubsequenceMarkers* PaintController::GetSubsequenceMarkers(
-    const DisplayItemClient& client) {
-  auto result = current_cached_subsequences_.find(&client);
-  if (result == current_cached_subsequences_.end())
+wtf_size_t PaintController::GetSubsequenceIndex(
+    const DisplayItemClient& client) const {
+  auto result = current_subsequences_.map.find(&client);
+  if (result == current_subsequences_.map.end())
+    return kNotFound;
+  DCHECK_EQ(&client, current_subsequences_.tree[result->value].client);
+  return result->value;
+}
+
+const PaintController::SubsequenceMarkers*
+PaintController::GetSubsequenceMarkers(const DisplayItemClient& client) const {
+  wtf_size_t index = GetSubsequenceIndex(client);
+  if (index == kNotFound)
     return nullptr;
-  return &result->value;
+  return &current_subsequences_.tree[index];
 }
 
-size_t PaintController::BeginSubsequence() {
+wtf_size_t PaintController::BeginSubsequence(const DisplayItemClient& client) {
   // Force new paint chunk which is required for subsequence caching.
-  new_paint_chunks_.ForceNewChunk();
-  return new_display_item_list_.size();
+  SetWillForceNewChunk(true);
+  new_subsequences_.tree.push_back(SubsequenceMarkers{&client, NumNewChunks()});
+  return new_subsequences_.tree.size() - 1;
 }
 
-void PaintController::EndSubsequence(const DisplayItemClient& client,
-                                     size_t start) {
-  size_t end = new_display_item_list_.size();
+void PaintController::EndSubsequence(wtf_size_t subsequence_index) {
+  auto& markers = new_subsequences_.tree[subsequence_index];
 
-  if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled() &&
-      IsCheckingUnderInvalidation()) {
-    SubsequenceMarkers* markers = GetSubsequenceMarkers(client);
-    if (!markers && start != end) {
-      ShowSequenceUnderInvalidationError(
-          "under-invalidation : unexpected subsequence", client, start, end);
-      CHECK(false);
-    }
-    if (markers && markers->end - markers->start != end - start) {
-      ShowSequenceUnderInvalidationError(
-          "under-invalidation: new subsequence wrong length", client, start,
-          end);
-      CHECK(false);
-    }
+  if (IsCheckingUnderInvalidation()) {
+    under_invalidation_checker_->WillEndSubsequence(*markers.client,
+                                                    markers.start_chunk_index);
   }
 
-  if (start == end) {
-    // Omit the empty subsequence. The forcing-new-chunk flag set by
-    // BeginSubsequence() still applies, but this not a big deal because empty
-    // subsequences are not common. Also we should not clear the flag because
-    // there might be unhandled flag that was set before this empty subsequence.
+  wtf_size_t end_chunk_index = NumNewChunks();
+  if (markers.start_chunk_index == end_chunk_index) {
+    // Omit the empty subsequence. The WillForceNewChunk flag set in
+    // BeginSubsequence() still applies, but it's useful to reduce churns of
+    // raster invalidation and compositing when the subsequence switches between
+    // empty and non-empty.
+    new_subsequences_.tree.pop_back();
     return;
   }
 
   // Force new paint chunk which is required for subsequence caching.
-  new_paint_chunks_.ForceNewChunk();
+  SetWillForceNewChunk(true);
 
-  DCHECK(!new_cached_subsequences_.Contains(&client))
-      << "Multiple subsequences for client: " << client.DebugName();
+#if DCHECK_IS_ON()
+  DCHECK(!new_subsequences_.map.Contains(markers.client))
+      << "Multiple subsequences for client: " << markers.client->DebugName();
 
-  new_cached_subsequences_.insert(&client, SubsequenceMarkers(start, end));
+  // Check tree integrity.
+  if (subsequence_index > 0) {
+    DCHECK_GE(markers.start_chunk_index,
+              new_subsequences_.tree[subsequence_index - 1].end_chunk_index);
+  }
+  for (auto i = subsequence_index + 1; i < new_subsequences_.tree.size(); i++) {
+    auto& child_markers = new_subsequences_.tree[i];
+    DCHECK_GE(child_markers.start_chunk_index, markers.start_chunk_index);
+    DCHECK_LE(child_markers.end_chunk_index, end_chunk_index);
+  }
+#endif
+
+  new_subsequences_.map.insert(markers.client, subsequence_index);
+  markers.end_chunk_index = end_chunk_index;
+}
+
+void PaintController::CheckNewItem(DisplayItem& display_item) {
+  if (usage_ == kTransient)
+    return;
+
+#if DCHECK_IS_ON()
+  if (display_item.IsCacheable()) {
+    auto& new_display_item_list = new_paint_artifact_->GetDisplayItemList();
+    auto index = FindItemFromIdIndexMap(display_item.GetId(),
+                                        new_display_item_id_index_map_,
+                                        new_display_item_list);
+    if (index != kNotFound) {
+      ShowDebugData();
+      NOTREACHED() << "DisplayItem " << display_item.AsDebugString().Utf8()
+                   << " has duplicated id with previous "
+                   << new_display_item_list[index].AsDebugString().Utf8()
+                   << " (index=" << index << ")";
+    }
+    AddToIdIndexMap(display_item.GetId(), new_display_item_list.size() - 1,
+                    new_display_item_id_index_map_);
+  }
+#endif
+
+  if (IsCheckingUnderInvalidation())
+    under_invalidation_checker_->CheckNewItem();
 }
 
 void PaintController::ProcessNewItem(DisplayItem& display_item) {
-  DCHECK(!construction_disabled_);
-
   if (IsSkippingCache() && usage_ == kMultiplePaints) {
     display_item.Client().Invalidate(PaintInvalidationReason::kUncacheable);
     display_item.SetUncacheable();
   }
 
-  bool chunk_added = new_paint_chunks_.IncrementDisplayItemIndex(display_item);
-
-#if DCHECK_IS_ON()
-  if (chunk_added && CurrentPaintChunk().is_cacheable) {
-    AddToIndicesByClientMap(CurrentPaintChunk().id.client,
-                            new_paint_chunks_.LastChunkIndex(),
-                            new_paint_chunk_indices_by_client_);
-  }
-
-  if (usage_ == kMultiplePaints && display_item.IsCacheable()) {
-    size_t index = FindMatchingItemFromIndex(
-        display_item.GetId(), new_display_item_indices_by_client_,
-        new_display_item_list_);
-    if (index != kNotFound) {
-      ShowDebugData();
-      NOTREACHED()
-          << "DisplayItem " << display_item.AsDebugString().Utf8().data()
-          << " has duplicated id with previous "
-          << new_display_item_list_[index].AsDebugString().Utf8().data()
-          << " (index=" << index << ")";
-    }
-    AddToIndicesByClientMap(display_item.Client(),
-                            new_display_item_list_.size() - 1,
-                            new_display_item_indices_by_client_);
-  }
-#else  // DCHECK_IS_ON()
-  std::ignore = chunk_added;
-#endif
-
-  if (usage_ == kMultiplePaints &&
-      RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled())
-    CheckUnderInvalidation();
+  if (paint_chunker_.IncrementDisplayItemIndex(display_item))
+    CheckNewChunk();
 
   if (!frame_first_paints_.back().first_painted && display_item.IsDrawing() &&
       // Here we ignore all document-background paintings because we don't
@@ -252,31 +321,42 @@ void PaintController::ProcessNewItem(DisplayItem& display_item) {
       display_item.DrawsContent()) {
     SetFirstPainted();
   }
+
+  CheckNewItem(display_item);
 }
 
-DisplayItem& PaintController::MoveItemFromCurrentListToNewList(size_t index) {
-  return new_display_item_list_.AppendByMoving(
-      current_paint_artifact_->GetDisplayItemList()[index]);
+void PaintController::CheckNewChunk() {
+#if DCHECK_IS_ON()
+  auto& chunks = new_paint_artifact_->PaintChunks();
+  if (chunks.back().is_cacheable) {
+    AddToIdIndexMap(chunks.back().id, chunks.size() - 1,
+                    new_paint_chunk_id_index_map_);
+  }
+#endif
+
+  if (IsCheckingUnderInvalidation())
+    under_invalidation_checker_->CheckNewChunk();
 }
 
-void PaintController::InvalidateAll() {
-  DCHECK(!RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
-  InvalidateAllInternal();
-}
-
-void PaintController::InvalidateAllInternal() {
-  // TODO(wangxianzhu): Rename this to InvalidateAllForTesting() for CAP.
-  // Can only be called during layout/paintInvalidation, not during painting.
-  DCHECK(new_display_item_list_.IsEmpty());
-  current_paint_artifact_ = PaintArtifact::Empty();
-  current_cached_subsequences_.clear();
+void PaintController::InvalidateAllForTesting() {
+  CheckNoNewPaint();
+  current_paint_artifact_ = base::MakeRefCounted<PaintArtifact>();
+  current_subsequences_.map.clear();
+  current_subsequences_.tree.clear();
   cache_is_all_invalid_ = true;
 }
 
-bool PaintController::CacheIsAllInvalid() const {
-  DCHECK(!RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
-  DCHECK(!cache_is_all_invalid_ || current_paint_artifact_->IsEmpty());
-  return cache_is_all_invalid_;
+void PaintController::UpdateCurrentPaintChunkProperties(
+    const PaintChunk::Id* id,
+    const PropertyTreeStateOrAlias& properties) {
+  if (id) {
+    PaintChunk::Id id_with_fragment(*id, current_fragment_);
+    ValidateNewChunkId(id_with_fragment);
+    paint_chunker_.UpdateCurrentPaintChunkProperties(&id_with_fragment,
+                                                     properties);
+  } else {
+    paint_chunker_.UpdateCurrentPaintChunkProperties(nullptr, properties);
+  }
 }
 
 bool PaintController::ClientCacheIsValid(
@@ -289,40 +369,30 @@ bool PaintController::ClientCacheIsValid(
   return client.IsValid();
 }
 
-size_t PaintController::FindMatchingItemFromIndex(
+wtf_size_t PaintController::FindItemFromIdIndexMap(
     const DisplayItem::Id& id,
-    const IndicesByClientMap& display_item_indices_by_client,
+    const IdIndexMap& display_item_id_index_map,
     const DisplayItemList& list) {
-  IndicesByClientMap::const_iterator it =
-      display_item_indices_by_client.find(&id.client);
-  if (it == display_item_indices_by_client.end())
+  auto it = display_item_id_index_map.find(IdAsHashKey(id));
+  if (it == display_item_id_index_map.end())
     return kNotFound;
 
-  const Vector<size_t>& indices = it->value;
-  for (size_t index : indices) {
-    const DisplayItem& existing_item = list[index];
-    if (existing_item.IsTombstone())
-      continue;
-    DCHECK(existing_item.Client() == id.client);
-    if (id == existing_item.GetId())
-      return index;
-  }
-
-  return kNotFound;
+  wtf_size_t index = it->value;
+  const DisplayItem& existing_item = list[index];
+  if (existing_item.IsTombstone())
+    return kNotFound;
+  DCHECK_EQ(existing_item.GetId(), id);
+  return index;
 }
 
-void PaintController::AddToIndicesByClientMap(const DisplayItemClient& client,
-                                              size_t index,
-                                              IndicesByClientMap& map) {
-  auto it = map.find(&client);
-  auto& indices =
-      it == map.end()
-          ? map.insert(&client, Vector<size_t>()).stored_value->value
-          : it->value;
-  indices.push_back(index);
+void PaintController::AddToIdIndexMap(const DisplayItem::Id& id,
+                                      wtf_size_t index,
+                                      IdIndexMap& map) {
+  DCHECK(!map.Contains(IdAsHashKey(id)));
+  map.insert(IdAsHashKey(id), index);
 }
 
-size_t PaintController::FindCachedItem(const DisplayItem::Id& id) {
+wtf_size_t PaintController::FindCachedItem(const DisplayItem::Id& id) {
   DCHECK(ClientCacheIsValid(id.client));
 
   if (next_item_to_match_ <
@@ -343,9 +413,9 @@ size_t PaintController::FindCachedItem(const DisplayItem::Id& id) {
     }
   }
 
-  size_t found_index =
-      FindMatchingItemFromIndex(id, out_of_order_item_indices_,
-                                current_paint_artifact_->GetDisplayItemList());
+  wtf_size_t found_index =
+      FindItemFromIdIndexMap(id, out_of_order_item_id_index_map_,
+                             current_paint_artifact_->GetDisplayItemList());
   if (found_index != kNotFound) {
 #if DCHECK_IS_ON()
     ++num_out_of_order_matches_;
@@ -357,9 +427,9 @@ size_t PaintController::FindCachedItem(const DisplayItem::Id& id) {
 }
 
 // Find forward for the item and index all skipped indexable items.
-size_t PaintController::FindOutOfOrderCachedItemForward(
+wtf_size_t PaintController::FindOutOfOrderCachedItemForward(
     const DisplayItem::Id& id) {
-  for (size_t i = next_item_to_index_;
+  for (auto i = next_item_to_index_;
        i < current_paint_artifact_->GetDisplayItemList().size(); ++i) {
     const DisplayItem& item = current_paint_artifact_->GetDisplayItemList()[i];
     if (item.IsTombstone())
@@ -371,106 +441,107 @@ size_t PaintController::FindOutOfOrderCachedItemForward(
       return i;
     }
     if (item.IsCacheable()) {
+#if DCHECK_IS_ON()
       ++num_indexed_items_;
-      AddToIndicesByClientMap(item.Client(), i, out_of_order_item_indices_);
+#endif
+      AddToIdIndexMap(item.GetId(), i, out_of_order_item_id_index_map_);
       next_item_to_index_ = i + 1;
     }
   }
 
+#if DCHECK_IS_ON()
   // The display item newly appears while the client is not invalidated. The
   // situation alone (without other kinds of under-invalidations) won't corrupt
   // rendering, but causes AddItemToIndexIfNeeded() for all remaining display
   // item, which is not the best for performance. In this case, the caller
   // should fall back to repaint the display item.
   if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled()) {
-#if DCHECK_IS_ON()
-    ShowDebugData();
-#endif
     // Ensure our paint invalidation tests don't trigger the less performant
     // situation which should be rare.
     DLOG(WARNING) << "Can't find cached display item: " << id;
+    ShowDebugData();
   }
+#endif
   return kNotFound;
 }
 
-// Copies a cached subsequence from current list to the new list.
-// When paintUnderInvaldiationCheckingEnabled() we'll not actually
-// copy the subsequence, but mark the begin and end of the subsequence for
-// under-invalidation checking.
-void PaintController::CopyCachedSubsequence(size_t begin_index,
-                                            size_t end_index) {
+void PaintController::AppendSubsequenceByMoving(const DisplayItemClient& client,
+                                                wtf_size_t subsequence_index,
+                                                wtf_size_t start_chunk_index,
+                                                wtf_size_t end_chunk_index) {
+#if DCHECK_IS_ON()
   DCHECK(!RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled());
-
-  const DisplayItem* cached_item =
-      &current_paint_artifact_->GetDisplayItemList()[begin_index];
-
-  auto* cached_chunk =
-      current_paint_artifact_->FindChunkByDisplayItemIndex(begin_index);
-  DCHECK(cached_chunk != current_paint_artifact_->PaintChunks().end());
-  auto properties_before_subsequence =
-      new_paint_chunks_.CurrentPaintChunkProperties();
-  UpdateCurrentPaintChunkPropertiesUsingIdWithFragment(
-      cached_chunk->id, cached_chunk->properties.GetPropertyTreeState());
-
-  for (size_t current_index = begin_index; current_index < end_index;
-       ++current_index) {
-    cached_item = &current_paint_artifact_->GetDisplayItemList()[current_index];
-    SECURITY_CHECK(!cached_item->IsTombstone());
-#if DCHECK_IS_ON()
-    DCHECK(cached_item->Client().IsAlive());
+  DCHECK_EQ(&client, current_subsequences_.tree[subsequence_index].client);
+  DCHECK_GT(end_chunk_index, start_chunk_index);
+  auto properties_before_subsequence = CurrentPaintChunkProperties();
 #endif
 
-    if (current_index == cached_chunk->end_index) {
-      ++cached_chunk;
-      DCHECK(cached_chunk != current_paint_artifact_->PaintChunks().end());
-      new_paint_chunks_.ForceNewChunk();
-      UpdateCurrentPaintChunkPropertiesUsingIdWithFragment(
-          cached_chunk->id, cached_chunk->properties.GetPropertyTreeState());
-    }
+  auto new_start_chunk_index = NumNewChunks();
+  auto new_subsequence_index = BeginSubsequence(client);
+
+  auto& current_chunks = current_paint_artifact_->PaintChunks();
+  for (auto chunk_index = start_chunk_index; chunk_index < end_chunk_index;
+       ++chunk_index) {
+    auto& cached_chunk = current_chunks[chunk_index];
+    ValidateNewChunkId(cached_chunk.id);
+    paint_chunker_.AppendByMoving(std::move(cached_chunk));
+    CheckNewChunk();
+  }
+
+  auto& new_display_item_list = new_paint_artifact_->GetDisplayItemList();
+#if DCHECK_IS_ON()
+  wtf_size_t new_item_start_index = new_display_item_list.size();
+#endif
+  new_display_item_list.AppendSubsequenceByMoving(
+      current_paint_artifact_->GetDisplayItemList(),
+      current_chunks[start_chunk_index].begin_index,
+      current_chunks[end_chunk_index - 1].end_index);
 
 #if DCHECK_IS_ON()
-    // Visual rect change should not happen in a cached subsequence.
-    // However, because of different method of pixel snapping in different
-    // paths, there are false positives. Just log an error.
-    if (cached_item->VisualRect() != cached_item->Client().VisualRect()) {
-      DLOG(ERROR) << "Visual rect changed in a cached subsequence: "
-                  << cached_item->Client().DebugName()
-                  << " old=" << cached_item->VisualRect()
-                  << " new=" << cached_item->Client().VisualRect();
-    }
+  for (auto& item : new_display_item_list.ItemsInRange(
+           new_item_start_index, new_display_item_list.size())) {
+    DCHECK(!item.IsTombstone());
+    DCHECK(!item.IsCacheable() || ClientCacheIsValid(item.Client()));
+    CheckNewItem(item);
+  }
 #endif
 
-    ProcessNewItem(MoveItemFromCurrentListToNewList(current_index));
-    DCHECK((!CurrentPaintChunk().is_cacheable && !cached_chunk->is_cacheable) ||
-           CurrentPaintChunk().Matches(*cached_chunk));
+  // Keep descendant subsequence entries.
+  for (wtf_size_t i = subsequence_index + 1;
+       i < current_subsequences_.tree.size(); i++) {
+    auto& markers = current_subsequences_.tree[i];
+    if (markers.start_chunk_index >= end_chunk_index)
+      break;
+    DCHECK(!new_subsequences_.map.Contains(markers.client))
+        << "Multiple subsequences for client: " << markers.client->DebugName();
+    new_subsequences_.map.insert(markers.client, new_subsequences_.tree.size());
+    new_subsequences_.tree.push_back(SubsequenceMarkers{
+        markers.client,
+        markers.start_chunk_index + new_start_chunk_index - start_chunk_index,
+        markers.end_chunk_index + new_start_chunk_index - start_chunk_index,
+        /*is_moved_from_cached_subsequence*/ true});
+    ++num_cached_new_subsequences_;
   }
 
-  if (RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled()) {
-    under_invalidation_checking_end_ = end_index;
-    DCHECK(IsCheckingUnderInvalidation());
-  } else {
-    // Restore properties and force new chunk for any trailing display items
-    // after the cached subsequence without new properties.
-    new_paint_chunks_.ForceNewChunk();
-    UpdateCurrentPaintChunkProperties(base::nullopt,
-                                      properties_before_subsequence);
-  }
-}
+  EndSubsequence(new_subsequence_index);
+  new_subsequences_.tree[new_subsequence_index]
+      .is_moved_from_cached_subsequence = true;
 
-void PaintController::ResetCurrentListIndices() {
-  next_item_to_match_ = 0;
-  next_item_to_index_ = 0;
-  under_invalidation_checking_begin_ = 0;
-  under_invalidation_checking_end_ = 0;
+#if DCHECK_IS_ON()
+  DCHECK_EQ(properties_before_subsequence, CurrentPaintChunkProperties());
+#endif
 }
 
 DISABLE_CFI_PERF
 void PaintController::CommitNewDisplayItems() {
-  TRACE_EVENT2("blink,benchmark", "PaintController::commitNewDisplayItems",
-               "current_display_list_size",
-               (int)current_paint_artifact_->GetDisplayItemList().size(),
-               "num_non_cached_new_items",
-               (int)new_display_item_list_.size() - num_cached_new_items_);
+  TRACE_EVENT2(
+      "blink,benchmark", "PaintController::commitNewDisplayItems",
+      "current_display_list_size",
+      current_paint_artifact_
+          ? current_paint_artifact_->GetDisplayItemList().size()
+          : 0,
+      "num_non_cached_new_items",
+      new_paint_artifact_->GetDisplayItemList().size() - num_cached_new_items_);
 
   if (usage_ == kMultiplePaints)
     UpdateUMACounts();
@@ -478,232 +549,159 @@ void PaintController::CommitNewDisplayItems() {
   num_cached_new_items_ = 0;
   num_cached_new_subsequences_ = 0;
 #if DCHECK_IS_ON()
-  new_display_item_indices_by_client_.clear();
-  new_paint_chunk_indices_by_client_.clear();
+  new_display_item_id_index_map_.clear();
+  new_paint_chunk_id_index_map_.clear();
 #endif
 
   cache_is_all_invalid_ = false;
   committed_ = true;
 
-  new_cached_subsequences_.swap(current_cached_subsequences_);
-  new_cached_subsequences_.clear();
+  under_invalidation_checker_.reset();
 
-  // The new list will not be appended to again so we can release unused memory.
-  new_display_item_list_.ShrinkToFit();
+  DCHECK_EQ(new_subsequences_.map.size(), new_subsequences_.tree.size());
+  current_subsequences_.map.clear();
+  current_subsequences_.tree.clear();
+  std::swap(current_subsequences_, new_subsequences_);
 
-  current_paint_artifact_ =
-      PaintArtifact::Create(std::move(new_display_item_list_),
-                            new_paint_chunks_.ReleasePaintChunks());
+  current_paint_artifact_ = std::move(new_paint_artifact_);
+  if (usage_ == kMultiplePaints) {
+    new_paint_artifact_ = base::MakeRefCounted<PaintArtifact>(
+        current_paint_artifact_->GetDisplayItemList().size(),
+        current_paint_artifact_->PaintChunks().size());
+    paint_chunker_.ResetChunks(&new_paint_artifact_->PaintChunks());
+  } else {
+    new_paint_artifact_ = nullptr;
+    paint_chunker_.ResetChunks(nullptr);
+  }
 
-  ResetCurrentListIndices();
-  out_of_order_item_indices_.clear();
+  next_item_to_match_ = 0;
+  next_item_to_index_ = 0;
+  out_of_order_item_id_index_map_.clear();
 
-  // We'll allocate the initial buffer when we start the next paint.
-  new_display_item_list_ = DisplayItemList(0);
-
-  num_indexed_items_ = 0;
 #if DCHECK_IS_ON()
+  num_indexed_items_ = 0;
   num_sequential_matches_ = 0;
   num_out_of_order_matches_ = 0;
 #endif
 }
 
 void PaintController::FinishCycle() {
-  if (usage_ == kTransient)
+  if (usage_ == kTransient || !committed_)
     return;
 
+  CheckNoNewPaint();
+  committed_ = false;
+
+  // Validate display item clients that have validly cached subsequence or
+  // display items in this PaintController.
+  for (auto& item : current_subsequences_.tree) {
+    if (item.is_moved_from_cached_subsequence) {
+      // We don't need to validate the client of a cached subsequence, because
+      // it should be already valid. See http://crbug.com/1050090 for more
+      // details.
+      DCHECK(!item.client->IsCacheable() || ClientCacheIsValid(*item.client));
+      continue;
+    }
+    if (item.client->IsCacheable())
+      item.client->Validate();
+  }
+  for (wtf_size_t i = 0; i < current_paint_artifact_->PaintChunks().size();
+       i++) {
+    auto& chunk = current_paint_artifact_->PaintChunks()[i];
+    chunk.client_is_just_created = false;
+    const auto& client = chunk.id.client;
+    if (chunk.is_moved_from_cached_subsequence) {
+      // We don't need to validate the clients of paint chunks and display
+      // items that are moved from a cached subsequence, because they should be
+      // already valid. See http://crbug.com/1050090 for more details.
 #if DCHECK_IS_ON()
-  DCHECK(new_display_item_list_.IsEmpty());
-  DCHECK(new_paint_chunks_.IsInInitialState());
+      DCHECK(!chunk.is_cacheable || ClientCacheIsValid(client));
+      for (const auto& item : current_paint_artifact_->DisplayItemsInChunk(i))
+        DCHECK(!item.IsCacheable() || ClientCacheIsValid(item.Client()));
 #endif
-
-  if (committed_) {
-    committed_ = false;
-
-    // Validate display item clients that have validly cached subsequence or
-    // display items in this PaintController.
-    for (auto& item : current_cached_subsequences_) {
-      if (item.key->IsCacheable())
-        item.key->Validate();
+      continue;
     }
-    for (const auto& item : current_paint_artifact_->GetDisplayItemList()) {
-      const auto& client = item.Client();
-      client.ClearPartialInvalidationVisualRect();
-      if (client.IsCacheable())
-        client.Validate();
-    }
-    for (const auto& chunk : current_paint_artifact_->PaintChunks()) {
-      if (chunk.id.client.IsCacheable())
-        chunk.id.client.Validate();
+    if (client.IsCacheable())
+      client.Validate();
+
+    for (const auto& item : current_paint_artifact_->DisplayItemsInChunk(i)) {
+      if (item.Client().IsCacheable())
+        item.Client().Validate();
     }
   }
 
-  current_paint_artifact_->FinishCycle();
-
 #if DCHECK_IS_ON()
-  if (VLOG_IS_ON(2)) {
-    LOG(ERROR) << "PaintController::FinishCycle() done";
+  if (VLOG_IS_ON(1)) {
+    VLOG(1) << "PaintController::FinishCycle() completed";
     if (VLOG_IS_ON(3))
-      ShowDebugDataWithRecords();
-    else
+      ShowDebugDataWithPaintRecords();
+    else if (VLOG_IS_ON(2))
       ShowDebugData();
+    else if (VLOG_IS_ON(1))
+      ShowCompactDebugData();
   }
 #endif
-}
-
-void PaintController::ClearPropertyTreeChangedStateTo(
-    const PropertyTreeState& to) {
-  DCHECK(RuntimeEnabledFeatures::BlinkGenPropertyTreesEnabled());
-
-  // Calling |ClearChangedTo| for every chunk is O(|property nodes|^2) and
-  // could be optimized by caching which nodes that have already been cleared.
-  for (const auto& chunk : current_paint_artifact_->PaintChunks()) {
-    chunk.properties.Transform().ClearChangedTo(&to.Transform());
-    chunk.properties.Clip().ClearChangedTo(&to.Clip());
-    chunk.properties.Effect().ClearChangedTo(&to.Effect());
-  }
 }
 
 size_t PaintController::ApproximateUnsharedMemoryUsage() const {
+  CheckNoNewPaint();
+
   size_t memory_usage = sizeof(*this);
 
-  // Memory outside this class due to current_paint_artifact_.
-  memory_usage += current_paint_artifact_->ApproximateUnsharedMemoryUsage();
+  // Memory outside this class due to paint artifacts.
+  if (current_paint_artifact_)
+    memory_usage += current_paint_artifact_->ApproximateUnsharedMemoryUsage();
+  if (new_paint_artifact_)
+    memory_usage += new_paint_artifact_->ApproximateUnsharedMemoryUsage();
 
   // External objects, shared with the embedder, such as PaintRecord, should be
   // excluded to avoid double counting. It is the embedder's responsibility to
   // count such objects.
 
-  // Memory outside this class due to new_display_item_list_.
-  DCHECK(new_display_item_list_.IsEmpty());
-  memory_usage += new_display_item_list_.MemoryUsageInBytes();
-
-  // Memory outside this class due to current_cached_subsequences_ and
-  // new_cached_subsequences_.
-  memory_usage += current_cached_subsequences_.Capacity() *
-                  sizeof(*current_cached_subsequences_.begin());
-  DCHECK(new_cached_subsequences_.IsEmpty());
-  memory_usage += new_cached_subsequences_.Capacity() *
-                  sizeof(*new_cached_subsequences_.begin());
+  // Memory outside this class due to current_subsequences_ and
+  // new_subsequences_.
+  memory_usage += current_subsequences_.map.Capacity() *
+                  sizeof(decltype(current_subsequences_.map)::value_type);
+  memory_usage += current_subsequences_.tree.CapacityInBytes();
+  DCHECK(new_subsequences_.map.IsEmpty());
+  memory_usage += new_subsequences_.map.Capacity() *
+                  sizeof(decltype(new_subsequences_.map)::value_type);
+  memory_usage += new_subsequences_.tree.CapacityInBytes();
 
   return memory_usage;
 }
 
-void PaintController::AppendDebugDrawingAfterCommit(
-    sk_sp<const PaintRecord> record,
-    const PropertyTreeState& property_tree_state) {
-  DCHECK(!RuntimeEnabledFeatures::CompositeAfterPaintEnabled());
-  DCHECK(new_display_item_list_.IsEmpty());
-  current_paint_artifact_->AppendDebugDrawing(record, property_tree_state);
-}
-
-void PaintController::ShowUnderInvalidationError(
-    const char* reason,
-    const DisplayItem& new_item,
-    const DisplayItem* old_item) const {
-  LOG(ERROR) << under_invalidation_message_prefix_ << " " << reason;
-#if DCHECK_IS_ON()
-  LOG(ERROR) << "New display item: " << new_item.AsDebugString();
-  LOG(ERROR) << "Old display item: "
-             << (old_item ? old_item->AsDebugString() : "None");
-  LOG(ERROR) << "See http://crbug.com/619103.";
-
-  const PaintRecord* new_record = nullptr;
-  if (new_item.IsDrawing()) {
-    new_record =
-        static_cast<const DrawingDisplayItem&>(new_item).GetPaintRecord().get();
-  }
-  const PaintRecord* old_record = nullptr;
-  if (old_item->IsDrawing()) {
-    old_record = static_cast<const DrawingDisplayItem*>(old_item)
-                     ->GetPaintRecord()
-                     .get();
-  }
-  LOG(INFO) << "new record:\n"
-            << (new_record ? RecordAsDebugString(*new_record).Utf8().data()
-                           : "None");
-  LOG(INFO) << "old record:\n"
-            << (old_record ? RecordAsDebugString(*old_record).Utf8().data()
-                           : "None");
-
-  ShowDebugData();
-#else
-  LOG(ERROR) << "Run a build with DCHECK on to get more details.";
-  LOG(ERROR) << "See http://crbug.com/619103.";
-#endif
-}
-
-void PaintController::ShowSequenceUnderInvalidationError(
-    const char* reason,
-    const DisplayItemClient& client,
-    int start,
-    int end) {
-  LOG(ERROR) << under_invalidation_message_prefix_ << " " << reason;
-  LOG(ERROR) << "Subsequence client: " << client.DebugName();
-#if DCHECK_IS_ON()
-  ShowDebugData();
-#else
-  LOG(ERROR) << "Run a build with DCHECK on to get more details.";
-#endif
-  LOG(ERROR) << "See http://crbug.com/619103.";
-}
-
-void PaintController::CheckUnderInvalidation() {
-  DCHECK_EQ(usage_, kMultiplePaints);
+PaintUnderInvalidationChecker&
+PaintController::EnsureUnderInvalidationChecker() {
   DCHECK(RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled());
-
-  if (!IsCheckingUnderInvalidation())
-    return;
-
-  if (IsSkippingCache()) {
-    // We allow cache skipping and temporary under-invalidation in cached
-    // subsequences. See the usage of DisplayItemCacheSkipper in BoxPainter.
-    under_invalidation_checking_end_ = 0;
-    // Match the remaining display items in the subsequence normally.
-    next_item_to_match_ = next_item_to_index_ =
-        under_invalidation_checking_begin_;
-    return;
+  if (!under_invalidation_checker_) {
+    under_invalidation_checker_ =
+        std::make_unique<PaintUnderInvalidationChecker>(*this);
   }
+  return *under_invalidation_checker_;
+}
 
-  const DisplayItem& new_item = new_display_item_list_.Last();
-  size_t old_item_index = under_invalidation_checking_begin_;
-  DisplayItem* old_item =
-      old_item_index < current_paint_artifact_->GetDisplayItemList().size()
-          ? &current_paint_artifact_->GetDisplayItemList()[old_item_index]
-          : nullptr;
-
-  if (!old_item || !new_item.Equals(*old_item)) {
-    // If we ever skipped reporting any under-invalidations, report the earliest
-    // one.
-    ShowUnderInvalidationError(
-        "under-invalidation: display item changed",
-        new_display_item_list_.Last(),
-        &current_paint_artifact_
-             ->GetDisplayItemList()[under_invalidation_checking_begin_]);
-    CHECK(false);
+bool PaintController::IsCheckingUnderInvalidation() const {
+  if (under_invalidation_checker_) {
+    DCHECK(RuntimeEnabledFeatures::PaintUnderInvalidationCheckingEnabled());
+    return under_invalidation_checker_->IsChecking();
   }
-
-  // Discard the forced repainted display item and move the cached item into
-  // new_display_item_list_. This is to align with the
-  // non-under-invalidation-checking path to empty the original cached slot,
-  // leaving only disappeared or invalidated display items in the old list after
-  // painting.
-  new_display_item_list_.RemoveLast();
-  MoveItemFromCurrentListToNewList(old_item_index);
-
-  ++under_invalidation_checking_begin_;
+  return false;
 }
 
 void PaintController::SetFirstPainted() {
-  frame_first_paints_.back().first_painted = true;
+  if (!IgnorePaintTimingScope::IgnoreDepth())
+    frame_first_paints_.back().first_painted = true;
 }
 
 void PaintController::SetTextPainted() {
-  frame_first_paints_.back().text_painted = true;
+  if (!IgnorePaintTimingScope::IgnoreDepth())
+    frame_first_paints_.back().text_painted = true;
 }
 
 void PaintController::SetImagePainted() {
-  frame_first_paints_.back().image_painted = true;
+  if (!IgnorePaintTimingScope::IgnoreDepth())
+    frame_first_paints_.back().image_painted = true;
 }
 
 void PaintController::BeginFrame(const void* frame) {
@@ -717,44 +715,39 @@ FrameFirstPaint PaintController::EndFrame(const void* frame) {
   return result;
 }
 
-#if DCHECK_IS_ON()
-void PaintController::CheckDuplicatePaintChunkId(const PaintChunk::Id& id) {
-  if (IsSkippingCache())
+void PaintController::ValidateNewChunkId(const PaintChunk::Id& id) {
+  if (IsSkippingCache()) {
+    if (usage_ == kMultiplePaints)
+      id.client.Invalidate(PaintInvalidationReason::kUncacheable);
     return;
+  }
 
+#if DCHECK_IS_ON()
   if (DisplayItem::IsForeignLayerType(id.type))
     return;
 
-  auto it = new_paint_chunk_indices_by_client_.find(&id.client);
-  if (it != new_paint_chunk_indices_by_client_.end()) {
-    const auto& indices = it->value;
-    for (auto index : indices) {
-      const auto& chunk = new_paint_chunks_.PaintChunkAt(index);
-      if (chunk.id == id) {
-        ShowDebugData();
-        NOTREACHED() << "New paint chunk id " << id
-                     << " has duplicated id with previous chuck " << chunk;
-      }
-    }
+  auto it = new_paint_chunk_id_index_map_.find(IdAsHashKey(id));
+  if (it != new_paint_chunk_id_index_map_.end()) {
+    ShowDebugData();
+    NOTREACHED() << "New paint chunk id " << id
+                 << " has duplicated id with previous chuck "
+                 << new_paint_artifact_->PaintChunks()[it->value];
   }
-}
 #endif
+}
 
 size_t PaintController::sum_num_items_ = 0;
 size_t PaintController::sum_num_cached_items_ = 0;
-size_t PaintController::sum_num_indexed_items_ = 0;
 size_t PaintController::sum_num_subsequences_ = 0;
 size_t PaintController::sum_num_cached_subsequences_ = 0;
-size_t PaintController::sum_num_paint_chunks_ = 0;
+bool PaintController::disable_uma_reporting_ = false;
 
 void PaintController::UpdateUMACounts() {
   DCHECK_EQ(usage_, kMultiplePaints);
-  sum_num_items_ += new_display_item_list_.size();
+  sum_num_items_ += new_paint_artifact_->GetDisplayItemList().size();
   sum_num_cached_items_ += num_cached_new_items_;
-  sum_num_indexed_items_ += num_indexed_items_;
-  sum_num_subsequences_ += new_cached_subsequences_.size();
+  sum_num_subsequences_ += new_subsequences_.tree.size();
   sum_num_cached_subsequences_ += num_cached_new_subsequences_;
-  sum_num_paint_chunks_ += new_paint_chunks_.LastChunkIndex() + 1;
 }
 
 void PaintController::UpdateUMACountsOnFullyCached() {
@@ -762,39 +755,75 @@ void PaintController::UpdateUMACountsOnFullyCached() {
   int num_items = GetDisplayItemList().size();
   sum_num_items_ += num_items;
   sum_num_cached_items_ += num_items;
-  // Don't change sum_num_indexed_items_.
 
-  int num_subsequences = current_cached_subsequences_.size();
+  int num_subsequences = current_subsequences_.tree.size();
   sum_num_subsequences_ += num_subsequences;
   sum_num_cached_subsequences_ += num_subsequences;
-
-  sum_num_paint_chunks_ += PaintChunks().size();
 }
 
 void PaintController::ReportUMACounts() {
-  if (sum_num_items_ == 0)
+  if (sum_num_items_ == 0 || disable_uma_reporting_)
     return;
 
   UMA_HISTOGRAM_PERCENTAGE("Blink.Paint.CachedItemPercentage",
                            sum_num_cached_items_ * 100 / sum_num_items_);
-  UMA_HISTOGRAM_PERCENTAGE("Blink.Paint.IndexedItemPercentage",
-                           sum_num_indexed_items_ * 100 / sum_num_items_);
-  UMA_HISTOGRAM_COUNTS_100000("Blink.Paint.NumDisplayItems", sum_num_items_);
   if (sum_num_subsequences_) {
     UMA_HISTOGRAM_PERCENTAGE(
         "Blink.Paint.CachedSubsequencePercentage",
         sum_num_cached_subsequences_ * 100 / sum_num_subsequences_);
-    UMA_HISTOGRAM_COUNTS_10000("Blink.Paint.NumSubsequences",
-                               sum_num_subsequences_);
   }
-  UMA_HISTOGRAM_COUNTS_10000("Blink.Paint.NumPaintChunks",
-                             sum_num_paint_chunks_);
   sum_num_items_ = 0;
   sum_num_cached_items_ = 0;
-  sum_num_indexed_items_ = 0;
   sum_num_subsequences_ = 0;
   sum_num_cached_subsequences_ = 0;
-  sum_num_paint_chunks_ = 0;
+}
+
+bool PaintController::ShouldInvalidateDisplayItemForBenchmark() {
+  if (benchmark_mode_ == PaintBenchmarkMode::kCachingDisabled)
+    return true;
+
+  // For kPartialInvalidation, invalidate one out of every
+  // |kInvalidateDisplayItemInterval| display items for the micro benchmark of
+  // record time with partial invalidation.
+  constexpr int kInvalidateDisplayItemInterval = 8;
+  return benchmark_mode_ == PaintBenchmarkMode::kPartialInvalidation &&
+         !(partial_invalidation_display_item_count_++ %
+           kInvalidateDisplayItemInterval);
+}
+
+bool PaintController::ShouldInvalidateSubsequenceForBenchmark() {
+  if (benchmark_mode_ == PaintBenchmarkMode::kCachingDisabled ||
+      benchmark_mode_ == PaintBenchmarkMode::kSubsequenceCachingDisabled)
+    return true;
+
+  // Similar to the ShouldInvalidateDisplayItemsForBenchmark(), but for
+  // subsequences.
+  constexpr int kInvalidateSubsequenceInterval = 2;
+  return benchmark_mode_ == PaintBenchmarkMode::kPartialInvalidation &&
+         !(partial_invalidation_subsequence_count_++ %
+           kInvalidateSubsequenceInterval);
+}
+
+void PaintController::SetBenchmarkMode(PaintBenchmarkMode mode) {
+  DCHECK(new_paint_artifact_->IsEmpty());
+  benchmark_mode_ = mode;
+  if (mode == PaintBenchmarkMode::kPartialInvalidation) {
+    partial_invalidation_display_item_count_ = 0;
+    partial_invalidation_subsequence_count_ = 0;
+  } else if (mode == PaintBenchmarkMode::kSmallInvalidation) {
+    auto& subsequences = current_subsequences_.tree;
+    if (subsequences.size()) {
+      // Invalidate the clients of the middle subsequence and its ancestors.
+      wtf_size_t middle_index = subsequences.size() / 2;
+      const auto& middle_markers = subsequences[middle_index];
+      for (wtf_size_t i = 0; i <= middle_index; i++) {
+        const auto& markers = subsequences[i];
+        DCHECK_LE(markers.start_chunk_index, middle_markers.start_chunk_index);
+        if (markers.end_chunk_index >= middle_markers.end_chunk_index)
+          markers.client->Invalidate();
+      }
+    }
+  }
 }
 
 }  // namespace blink

@@ -18,12 +18,8 @@ cdm::FileIO* CdmAuxiliaryHelper::CreateCdmFileIO(cdm::FileIOClient* client) {
   return nullptr;
 }
 
-cdm::CdmProxy* CdmAuxiliaryHelper::CreateCdmProxy(cdm::CdmProxyClient* client) {
-  return nullptr;
-}
-
-int CdmAuxiliaryHelper::GetCdmProxyCdmId() {
-  return CdmContext::kInvalidCdmId;
+url::Origin CdmAuxiliaryHelper::GetCdmOrigin() {
+  return url::Origin();
 }
 
 cdm::Buffer* CdmAuxiliaryHelper::CreateCdmBuffer(size_t capacity) {
@@ -52,5 +48,11 @@ void CdmAuxiliaryHelper::ChallengePlatform(const std::string& service_id,
 void CdmAuxiliaryHelper::GetStorageId(uint32_t version, StorageIdCB callback) {
   std::move(callback).Run(version, std::vector<uint8_t>());
 }
+
+#if defined(OS_WIN)
+void CdmAuxiliaryHelper::GetCdmOriginId(GetCdmOriginIdCB callback) {
+  std::move(callback).Run(base::UnguessableToken::Null());
+}
+#endif  // defined(OS_WIN)
 
 }  // namespace media

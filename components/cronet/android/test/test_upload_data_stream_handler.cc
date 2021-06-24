@@ -11,8 +11,8 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/bind.h"
+#include "components/cronet/android/cronet_tests_jni_headers/TestUploadDataStreamHandler_jni.h"
 #include "components/cronet/android/test/cronet_test_util.h"
-#include "jni/TestUploadDataStreamHandler_jni.h"
 #include "net/base/net_errors.h"
 #include "net/log/net_log_with_source.h"
 
@@ -114,8 +114,8 @@ void TestUploadDataStreamHandler::InitOnNetworkThread() {
   read_buffer_ = nullptr;
   bytes_read_ = 0;
   int res = upload_data_stream_->Init(
-      base::Bind(&TestUploadDataStreamHandler::OnInitCompleted,
-                 base::Unretained(this)),
+      base::BindOnce(&TestUploadDataStreamHandler::OnInitCompleted,
+                     base::Unretained(this)),
       net::NetLogWithSource());
   JNIEnv* env = base::android::AttachCurrentThread();
   cronet::Java_TestUploadDataStreamHandler_onInitCalled(
@@ -135,8 +135,8 @@ void TestUploadDataStreamHandler::ReadOnNetworkThread() {
 
   int bytes_read = upload_data_stream_->Read(
       read_buffer_.get(), kReadBufferSize,
-      base::Bind(&TestUploadDataStreamHandler::OnReadCompleted,
-                 base::Unretained(this)));
+      base::BindOnce(&TestUploadDataStreamHandler::OnReadCompleted,
+                     base::Unretained(this)));
   if (bytes_read == net::OK) {
     bytes_read_ = bytes_read;
     NotifyJavaReadCompleted();

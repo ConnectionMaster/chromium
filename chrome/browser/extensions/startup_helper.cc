@@ -5,24 +5,21 @@
 #include "chrome/browser/extensions/startup_helper.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/initialize_extensions_client.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/common/service_manager_connection.h"
 #include "extensions/browser/extension_file_task_runner.h"
 #include "extensions/browser/sandboxed_unpacker.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/verifier_formats.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 using content::BrowserThread;
 
@@ -91,42 +88,36 @@ class ValidateCrxHelper : public SandboxedUnpackerClient {
         success_(false) {}
 
   bool success() const { return success_; }
-  const base::string16& error() const { return error_; }
+  const std::u16string& error() const { return error_; }
 
   void Start() {
-    std::unique_ptr<::service_manager::Connector> connector =
-        content::ServiceManagerConnection::GetForProcess()
-            ->GetConnector()
-            ->Clone();
     GetExtensionFileTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(&ValidateCrxHelper::StartOnBlockingThread,
-                                  this, std::move(connector)));
+        FROM_HERE,
+        base::BindOnce(&ValidateCrxHelper::StartOnBlockingThread, this));
   }
 
  protected:
   ~ValidateCrxHelper() override {}
 
-  void OnUnpackSuccess(
-      const base::FilePath& temp_dir,
-      const base::FilePath& extension_root,
-      std::unique_ptr<base::DictionaryValue> original_manifest,
-      const Extension* extension,
-      const SkBitmap& install_icon,
-      const base::Optional<int>& dnr_ruleset_checksum) override {
+  void OnUnpackSuccess(const base::FilePath& temp_dir,
+                       const base::FilePath& extension_root,
+                       std::unique_ptr<base::DictionaryValue> original_manifest,
+                       const Extension* extension,
+                       const SkBitmap& install_icon,
+                       declarative_net_request::RulesetInstallPrefs
+                           ruleset_install_prefs) override {
     DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
     success_ = true;
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
-        base::BindOnce(&ValidateCrxHelper::FinishOnUIThread, this));
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&ValidateCrxHelper::FinishOnUIThread, this));
   }
 
   void OnUnpackFailure(const CrxInstallError& error) override {
     DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
     success_ = false;
     error_ = error.message();
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
-        base::BindOnce(&ValidateCrxHelper::FinishOnUIThread, this));
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&ValidateCrxHelper::FinishOnUIThread, this));
   }
 
   void FinishOnUIThread() {
@@ -134,12 +125,10 @@ class ValidateCrxHelper : public SandboxedUnpackerClient {
     std::move(quit_closure_).Run();
   }
 
-  void StartOnBlockingThread(
-      std::unique_ptr<service_manager::Connector> connector) {
+  void StartOnBlockingThread() {
     DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
     auto unpacker = base::MakeRefCounted<SandboxedUnpacker>(
-        std::move(connector), Manifest::INTERNAL,
-        0, /* no special creation flags */
+        mojom::ManifestLocation::kInternal, 0, /* no special creation flags */
         temp_dir_, GetExtensionFileTaskRunner().get(), this);
     unpacker->StartWithCrx(crx_file_);
   }
@@ -157,7 +146,7 @@ class ValidateCrxHelper : public SandboxedUnpackerClient {
   bool success_;
 
   // If the unpacking wasn't successful, this contains an error message.
-  base::string16 error_;
+  std::u16string error_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ValidateCrxHelper);

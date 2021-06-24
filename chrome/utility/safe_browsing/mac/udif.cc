@@ -10,13 +10,15 @@
 #include <uuid/uuid.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
+#include "base/cxx17_backports.h"
 #include "base/logging.h"
 #include "base/mac/foundation_util.h"
 #include "base/mac/scoped_cftyperef.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_math.h"
-#include "base/stl_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/utility/safe_browsing/mac/convert_big_endian.h"
 #include "chrome/utility/safe_browsing/mac/read_stream.h"
@@ -76,7 +78,7 @@ struct UDIFResourceFile {
 
   uint8_t  reserved2[40];
 
-  UDIFChecksum master_checksum;
+  UDIFChecksum main_checksum;
 
   uint32_t image_variant;
   uint64_t sector_count;
@@ -108,7 +110,7 @@ static void ConvertBigEndian(UDIFResourceFile* file) {
   ConvertBigEndian(&file->plist_length);
   ConvertBigEndian(&file->code_signature_offset);
   ConvertBigEndian(&file->code_signature_length);
-  ConvertBigEndian(&file->master_checksum);
+  ConvertBigEndian(&file->main_checksum);
   ConvertBigEndian(&file->image_variant);
   ConvertBigEndian(&file->sector_count);
   // Reserved fields are skipped.
@@ -629,8 +631,8 @@ bool UDIFPartitionReadStream::Read(uint8_t* buffer,
     // A chunk stream may exist if the last read from this chunk was partial,
     // or if the stream was Seek()ed.
     if (!chunk_stream_) {
-      chunk_stream_.reset(
-          new UDIFBlockChunkReadStream(stream_, block_size_, chunk));
+      chunk_stream_ = std::make_unique<UDIFBlockChunkReadStream>(
+          stream_, block_size_, chunk);
     }
     DCHECK_EQ(chunk, chunk_stream_->chunk());
 
@@ -710,8 +712,8 @@ off_t UDIFPartitionReadStream::Seek(off_t offset, int whence) {
   }
 
   if (!chunk_stream_ || chunk != chunk_stream_->chunk()) {
-    chunk_stream_.reset(
-        new UDIFBlockChunkReadStream(stream_, block_size_, chunk));
+    chunk_stream_ =
+        std::make_unique<UDIFBlockChunkReadStream>(stream_, block_size_, chunk);
   }
   current_chunk_ = chunk_number;
   if (chunk_stream_->Seek(

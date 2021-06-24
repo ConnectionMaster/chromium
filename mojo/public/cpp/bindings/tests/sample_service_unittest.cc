@@ -9,6 +9,10 @@
 #include <string>
 #include <utility>
 
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/tests/bindings_test_base.h"
 #include "mojo/public/interfaces/bindings/tests/sample_service.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -62,7 +66,7 @@ FooPtr MakeFoo() {
     options.capacity_num_bytes = 1024;
     mojo::ScopedDataPipeProducerHandle producer;
     mojo::ScopedDataPipeConsumerHandle consumer;
-    mojo::CreateDataPipe(&options, &producer, &consumer);
+    mojo::CreateDataPipe(&options, producer, consumer);
     input_streams[i] = std::move(consumer);
     output_streams[i] = std::move(producer);
   }
@@ -80,7 +84,7 @@ FooPtr MakeFoo() {
                   std::move(extra_bars), std::move(data),
                   std::move(pipe.handle1), std::move(input_streams),
                   std::move(output_streams), std::move(array_of_array_of_bools),
-                  base::nullopt, base::nullopt);
+                  absl::nullopt, absl::nullopt);
 }
 
 // Check that the given |Foo| is identical to the one made by |MakeFoo()|.
@@ -197,7 +201,7 @@ void Print(int depth, const char* name, const std::vector<T>& array) {
 template <typename T>
 void Print(int depth,
            const char* name,
-           const base::Optional<std::vector<T>>& array) {
+           const absl::optional<std::vector<T>>& array) {
   if (array)
     Print(depth, name, *array);
   else
@@ -247,7 +251,7 @@ class ServiceImpl : public Service {
  public:
   void Frobinate(FooPtr foo,
                  BazOptions baz,
-                 PortPtr port,
+                 mojo::PendingRemote<Port> pending_port,
                  Service::FrobinateCallback callback) override {
     // Users code goes here to handle the incoming Frobinate message.
 
@@ -257,6 +261,7 @@ class ServiceImpl : public Service {
       CheckFoo(*foo);
     EXPECT_EQ(BazOptions::EXTRA, baz);
 
+    mojo::Remote<Port> port(std::move(pending_port));
     if (g_dump_message_as_text) {
       // Also dump the Foo structure and all of its members.
       std::cout << "Frobinate:" << std::endl;
@@ -268,7 +273,7 @@ class ServiceImpl : public Service {
     std::move(callback).Run(5);
   }
 
-  void GetPort(mojo::InterfaceRequest<Port> port_request) override {}
+  void GetPort(mojo::PendingReceiver<Port> receiver) override {}
 };
 
 class ServiceProxyImpl : public ServiceProxy {
@@ -322,9 +327,8 @@ TEST_P(BindingsSampleTest, Basic) {
   FooPtr foo = MakeFoo();
   CheckFoo(*foo);
 
-  PortPtr port;
   service->Frobinate(std::move(foo), Service::BazOptions::EXTRA,
-                     std::move(port), Service::FrobinateCallback());
+                     mojo::NullRemote(), Service::FrobinateCallback());
 
   delete service;
 }

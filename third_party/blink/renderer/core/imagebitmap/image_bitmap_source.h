@@ -5,14 +5,14 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_IMAGEBITMAP_IMAGE_BITMAP_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_IMAGEBITMAP_IMAGE_BITMAP_SOURCE_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
 #include "third_party/blink/renderer/platform/geometry/int_size.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -25,13 +25,15 @@ class CORE_EXPORT ImageBitmapSource {
  public:
   virtual IntSize BitmapSourceSize() const { return IntSize(); }
   virtual ScriptPromise CreateImageBitmap(ScriptState*,
-                                          EventTarget&,
-                                          base::Optional<IntRect>,
-                                          const ImageBitmapOptions*);
+                                          absl::optional<IntRect>,
+                                          const ImageBitmapOptions*,
+                                          ExceptionState&);
 
   virtual bool IsBlob() const { return false; }
 
-  static ScriptPromise FulfillImageBitmap(ScriptState*, ImageBitmap*);
+  static ScriptPromise FulfillImageBitmap(ScriptState*,
+                                          ImageBitmap*,
+                                          ExceptionState&);
 
  protected:
   virtual ~ImageBitmapSource() = default;
@@ -39,4 +41,4 @@ class CORE_EXPORT ImageBitmapSource {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_IMAGEBITMAP_IMAGE_BITMAP_SOURCE_H_

@@ -5,7 +5,7 @@
 #include "chrome/browser/media/router/providers/cast/dual_media_sink_service.h"
 
 #include "base/bind.h"
-#include "chrome/browser/media/router/test/test_helper.h"
+#include "chrome/browser/media/router/test/provider_test_helpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -16,11 +16,15 @@ class DualMediaSinkServiceTest : public testing::Test {
   DualMediaSinkServiceTest() {
     auto cast_media_sink_service = std::make_unique<MockCastMediaSinkService>();
     auto dial_media_sink_service = std::make_unique<MockDialMediaSinkService>();
+    auto cast_app_discovery_service =
+        std::make_unique<MockCastAppDiscoveryService>();
     cast_media_sink_service_ = cast_media_sink_service.get();
     dial_media_sink_service_ = dial_media_sink_service.get();
+    cast_app_discovery_service_ = cast_app_discovery_service.get();
     dual_media_sink_service_ = std::unique_ptr<DualMediaSinkService>(
         new DualMediaSinkService(std::move(cast_media_sink_service),
-                                 std::move(dial_media_sink_service)));
+                                 std::move(dial_media_sink_service),
+                                 std::move(cast_app_discovery_service)));
   }
 
   ~DualMediaSinkServiceTest() override = default;
@@ -42,6 +46,7 @@ class DualMediaSinkServiceTest : public testing::Test {
  private:
   MockCastMediaSinkService* cast_media_sink_service_;
   MockDialMediaSinkService* dial_media_sink_service_;
+  MockCastAppDiscoveryService* cast_app_discovery_service_;
   std::unique_ptr<DualMediaSinkService> dual_media_sink_service_;
 };
 
@@ -59,10 +64,10 @@ TEST_F(DualMediaSinkServiceTest, AddSinksDiscoveredCallback) {
   std::string dial_provider_name = "dial";
   MediaSinkInternal dial_sink1;
   dial_sink1.set_sink(MediaSink("dial_sink1", "", SinkIconType::GENERIC,
-                                MediaRouteProviderId::EXTENSION));
+                                MediaRouteProviderId::DIAL));
   MediaSinkInternal dial_sink2;
   dial_sink2.set_sink(MediaSink("dial_sink2", "", SinkIconType::GENERIC,
-                                MediaRouteProviderId::EXTENSION));
+                                MediaRouteProviderId::DIAL));
 
   sink_map[dial_provider_name] = {dial_sink1, dial_sink2};
 
@@ -74,12 +79,12 @@ TEST_F(DualMediaSinkServiceTest, AddSinksDiscoveredCallback) {
   EXPECT_EQ(sink_map, dual_media_sink_service()->current_sinks());
 
   // |this| no longer receive updates.
-  subscription.reset();
+  subscription = {};
 
   std::string cast_provider_name = "cast";
   MediaSinkInternal cast_sink;
   cast_sink.set_sink(MediaSink("cast_sink", "", SinkIconType::CAST,
-                               MediaRouteProviderId::EXTENSION));
+                               MediaRouteProviderId::CAST));
   sink_map[cast_provider_name] = {cast_sink};
   EXPECT_CALL(*this, OnSinksDiscovered(testing::_, testing::_)).Times(0);
   dual_media_sink_service()->OnSinksDiscovered(cast_provider_name,

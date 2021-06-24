@@ -13,7 +13,6 @@
 #include "media/base/limits.h"
 #include "ui/gfx/ipc/geometry/gfx_param_traits.h"
 #include "ui/gfx/ipc/gfx_param_traits.h"
-#include "ui/gfx/ipc/skia/gfx_skia_param_traits.h"
 
 using media::AudioParameters;
 using media::AudioLatency;
@@ -42,7 +41,7 @@ bool ParamTraits<AudioParameters>::Read(const base::Pickle* m,
   int sample_rate, frames_per_buffer, channels, effects;
   std::vector<media::Point> mic_positions;
   AudioLatency::LatencyType latency_tag;
-  base::Optional<media::AudioParameters::HardwareCapabilities>
+  absl::optional<media::AudioParameters::HardwareCapabilities>
       hardware_capabilities;
 
   if (!ReadParam(m, iter, &format) || !ReadParam(m, iter, &channel_layout) ||
@@ -112,28 +111,6 @@ struct ParamTraits<media::EncryptionPattern> {
                    param_type* r);
   static void Log(const param_type& p, std::string* l);
 };
-
-void ParamTraits<media::EncryptionScheme>::Write(base::Pickle* m,
-                                                 const param_type& p) {
-  WriteParam(m, p.mode());
-  WriteParam(m, p.pattern());
-}
-
-bool ParamTraits<media::EncryptionScheme>::Read(const base::Pickle* m,
-                                                base::PickleIterator* iter,
-                                                param_type* r) {
-  media::EncryptionScheme::CipherMode mode;
-  media::EncryptionPattern pattern;
-  if (!ReadParam(m, iter, &mode) || !ReadParam(m, iter, &pattern))
-    return false;
-  *r = media::EncryptionScheme(mode, pattern);
-  return true;
-}
-
-void ParamTraits<media::EncryptionScheme>::Log(const param_type& p,
-                                               std::string* l) {
-  l->append(base::StringPrintf("<EncryptionScheme>"));
-}
 
 void ParamTraits<media::EncryptionPattern>::Write(base::Pickle* m,
                                                   const param_type& p) {

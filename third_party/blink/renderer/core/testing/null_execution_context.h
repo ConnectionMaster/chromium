@@ -7,23 +7,22 @@
 
 #include <memory>
 #include "base/single_thread_task_runner.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/source_location.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
+#include "third_party/blink/renderer/core/inspector/inspector_audits_issue.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 
 namespace blink {
 
-class NullExecutionContext
-    : public GarbageCollectedFinalized<NullExecutionContext>,
-      public SecurityContext,
-      public ExecutionContext {
-  USING_GARBAGE_COLLECTED_MIXIN(NullExecutionContext);
-
+class NullExecutionContext : public GarbageCollected<NullExecutionContext>,
+                             public ExecutionContext {
  public:
   NullExecutionContext();
+  ~NullExecutionContext() override;
 
   void SetURL(const KURL& url) { url_ = url; }
 
@@ -40,42 +39,38 @@ class NullExecutionContext
 
   EventTarget* ErrorEventTarget() override { return nullptr; }
 
-  bool TasksNeedPause() override { return tasks_need_pause_; }
-  void SetTasksNeedPause(bool flag) { tasks_need_pause_ = flag; }
-
-  void DidUpdateSecurityOrigin() override {}
-  SecurityContext& GetSecurityContext() override { return *this; }
-  DOMTimerCoordinator* Timers() override { return nullptr; }
-  const base::UnguessableToken& GetAgentClusterID() const final {
-    return base::UnguessableToken::Null();
-  }
-
-  void AddConsoleMessage(ConsoleMessage*) override {}
+  void AddConsoleMessageImpl(ConsoleMessage*,
+                             bool discard_duplicates) override {}
+  void AddInspectorIssue(mojom::blink::InspectorIssueInfoPtr) override {}
+  void AddInspectorIssue(AuditsIssue) override {}
   void ExceptionThrown(ErrorEvent*) override {}
 
-  void SetIsSecureContext(bool);
-  bool IsSecureContext(String& error_message) const override;
-
-  void SetUpSecurityContext();
+  void SetUpSecurityContextForTesting();
 
   ResourceFetcher* Fetcher() const override { return nullptr; }
-
+  bool CrossOriginIsolatedCapability() const override { return false; }
+  bool DirectSocketCapability() const override { return false; }
   FrameOrWorkerScheduler* GetScheduler() override;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(TaskType) override;
 
-  using SecurityContext::GetSecurityOrigin;
-  using SecurityContext::GetContentSecurityPolicy;
+  void CountUse(mojom::WebFeature) override {}
 
-  void Trace(blink::Visitor* visitor) override {
-    SecurityContext::Trace(visitor);
-    ExecutionContext::Trace(visitor);
+  const BrowserInterfaceBrokerProxy& GetBrowserInterfaceBroker() const override;
+
+  ExecutionContextToken GetExecutionContextToken() const final {
+    return token_;
   }
 
  private:
-  bool tasks_need_pause_;
-  bool is_secure_context_;
-
   KURL url_;
+
+  // A dummy scheduler to ensure that the callers of
+  // ExecutionContext::GetScheduler don't have to check for whether it's null or
+  // not.
+  std::unique_ptr<FrameOrWorkerScheduler> scheduler_;
+
+  // A fake token identifying this execution context.
+  const LocalFrameToken token_;
 };
 
 }  // namespace blink

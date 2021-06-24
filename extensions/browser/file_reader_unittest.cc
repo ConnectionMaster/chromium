@@ -5,12 +5,12 @@
 #include "extensions/browser/file_reader.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "components/crx_file/id_util.h"
 #include "extensions/common/extension_paths.h"
 #include "extensions/common/extension_resource.h"
@@ -23,7 +23,7 @@ class FileReaderTest : public testing::Test {
   FileReaderTest() {}
 
  private:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(FileReaderTest);
 };
@@ -35,7 +35,7 @@ class Receiver {
         file_reader_(new FileReader(
             resource,
             FileReader::OptionalFileSequenceTask(),
-            base::Bind(&Receiver::DidReadFile, base::Unretained(this)))) {}
+            base::BindOnce(&Receiver::DidReadFile, base::Unretained(this)))) {}
 
   void Run() {
     file_reader_->Start();
@@ -86,7 +86,7 @@ TEST_F(FileReaderTest, BiggerFile) {
   RunBasicTest("bigfile");
 }
 
-TEST_F(FileReaderTest, NonExistantFile) {
+TEST_F(FileReaderTest, NonExistentFile) {
   base::FilePath path;
   base::PathService::Get(DIR_TEST_DATA, &path);
   std::string extension_id = crx_file::id_util::GenerateId("test");

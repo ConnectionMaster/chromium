@@ -25,9 +25,10 @@
 #include "content/public/browser/render_process_host_factory.h"
 #include "ipc/ipc_test_sink.h"
 #include "media/media_buildflags.h"
-#include "mojo/public/cpp/bindings/associated_interface_ptr.h"
-#include "services/service_manager/public/cpp/identity.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "net/base/network_isolation_key.h"
 
 #if defined(OS_ANDROID)
 #include "content/public/browser/android/child_process_importance.h"
@@ -51,9 +52,11 @@ class StoragePartition;
 // IPC messages are sent into the message sink for inspection by tests.
 class MockRenderProcessHost : public RenderProcessHost {
  public:
-  using InterfaceBinder = base::Callback<void(mojo::ScopedMessagePipeHandle)>;
+  using InterfaceBinder =
+      base::RepeatingCallback<void(mojo::ScopedMessagePipeHandle)>;
 
-  explicit MockRenderProcessHost(BrowserContext* browser_context);
+  explicit MockRenderProcessHost(BrowserContext* browser_context,
+                                 bool is_for_guests_only = false);
   ~MockRenderProcessHost() override;
 
   // Provides access to all IPC messages that would have been sent to the
@@ -67,6 +70,13 @@ class MockRenderProcessHost : public RenderProcessHost {
   void SimulateCrash();
   void SimulateRenderProcessExit(base::TerminationStatus termination_status,
                                  int exit_code);
+
+  using CreateNetworkFactoryCallback = base::RepeatingCallback<void(
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+      int process_id,
+      mojo::PendingRemote<network::mojom::URLLoaderFactory> original_factory)>;
+  static void SetNetworkFactory(
+      const CreateNetworkFactoryCallback& url_loader_factory_callback);
 
   // RenderProcessHost implementation (public portion).
   bool Init() override;
@@ -82,15 +92,15 @@ class MockRenderProcessHost : public RenderProcessHost {
   unsigned int GetFrameDepth() override;
   bool GetIntersectsViewport() override;
   bool IsForGuestsOnly() override;
-  RendererAudioOutputStreamFactoryContext*
-  GetRendererAudioOutputStreamFactoryContext() override;
+  bool IsJitDisabled() override;
   void OnMediaStreamAdded() override;
   void OnMediaStreamRemoved() override;
   void OnForegroundServiceWorkerAdded() override;
   void OnForegroundServiceWorkerRemoved() override;
   StoragePartition* GetStoragePartition() override;
-  virtual void AddWord(const base::string16& word);
+  virtual void AddWord(const std::u16string& word);
   bool Shutdown(int exit_code) override;
+  bool ShutdownRequested() override;
   bool FastShutdownIfPossible(size_t page_count,
                               bool skip_unload_handlers) override;
   bool FastShutdownStarted() override;
@@ -100,14 +110,16 @@ class MockRenderProcessHost : public RenderProcessHost {
   bool IsInitializedAndNotDead() override;
   void SetBlocked(bool blocked) override;
   bool IsBlocked() override;
-  std::unique_ptr<base::CallbackList<void(bool)>::Subscription>
-  RegisterBlockStateChangedCallback(
-      const base::RepeatingCallback<void(bool)>& cb) override;
+  base::CallbackListSubscription RegisterBlockStateChangedCallback(
+      const BlockStateChangedCallback& cb) override;
   void Cleanup() override;
   void AddPendingView() override;
   void RemovePendingView() override;
   void AddPriorityClient(PriorityClient* priority_client) override;
   void RemovePriorityClient(PriorityClient* priority_client) override;
+  void SetPriorityOverride(bool foreground) override;
+  bool HasPriorityOverride() override;
+  void ClearPriorityOverride() override;
 #if defined(OS_ANDROID)
   ChildProcessImportance GetEffectiveImportance() override;
   void DumpProcessStack() override;
@@ -122,47 +134,97 @@ class MockRenderProcessHost : public RenderProcessHost {
   void FilterURL(bool empty_allowed, GURL* url) override;
   void EnableAudioDebugRecordings(const base::FilePath& file) override;
   void DisableAudioDebugRecordings() override;
-  void SetEchoCanceller3(
-      bool enable,
-      base::OnceCallback<void(bool, const std::string&)> callback) override;
   WebRtcStopRtpDumpCallback StartRtpDump(
       bool incoming,
       bool outgoing,
-      const WebRtcRtpPacketCallback& packet_callback) override;
-  void EnableWebRtcEventLogOutput(int lid, int output_period_ms) override;
-  void DisableWebRtcEventLogOutput(int lid) override;
-  void BindInterface(const std::string& interface_name,
-                     mojo::ScopedMessagePipeHandle interface_pipe) override;
-  const service_manager::Identity& GetChildIdentity() override;
+      WebRtcRtpPacketCallback packet_callback) override;
+  void BindReceiver(mojo::GenericPendingReceiver receiver) override;
   std::unique_ptr<base::PersistentMemoryAllocator> TakeMetricsAllocator()
       override;
-  const base::TimeTicks& GetInitTimeForNavigationMetrics() override;
+  const base::TimeTicks& GetLastInitTime() override;
   bool IsProcessBackgrounded() override;
   size_t GetKeepAliveRefCount() const;
-  void IncrementKeepAliveRefCount(KeepAliveClientType) override;
-  void DecrementKeepAliveRefCount(KeepAliveClientType) override;
+  void IncrementKeepAliveRefCount() override;
+  void DecrementKeepAliveRefCount() override;
   void DisableKeepAliveRefCount() override;
   bool IsKeepAliveRefCountDisabled() override;
-  void Resume() override;
   mojom::Renderer* GetRendererInterface() override;
   void CreateURLLoaderFactory(
-      const base::Optional<url::Origin>& origin,
-      network::mojom::TrustedURLLoaderHeaderClientPtrInfo header_client,
-      network::mojom::URLLoaderFactoryRequest request) override;
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+      network::mojom::URLLoaderFactoryParamsPtr params) override;
 
-  void SetIsNeverSuitableForReuse() override;
   bool MayReuseHost() override;
   bool IsUnused() override;
   void SetIsUsed() override;
 
   bool HostHasNotBeenUsed() override;
-  void LockToOrigin(const IsolationContext& isolation_context,
-                    const GURL& lock_url) override;
-  void BindCacheStorage(blink::mojom::CacheStorageRequest request,
-                        const url::Origin& origin) override;
-  void BindIndexedDB(blink::mojom::IDBFactoryRequest request,
-                     const url::Origin& origin) override;
-  void CleanupCorbExceptionForPluginUponDestruction() override;
+  void SetProcessLock(const IsolationContext& isolation_context,
+                      const ProcessLock& process_lock) override;
+  bool IsProcessLockedToSiteForTesting() override;
+  void CancelAllProcessShutdownDelays() override {}
+  void BindCacheStorage(
+      const network::CrossOriginEmbedderPolicy&,
+      mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>,
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::CacheStorage> receiver) override;
+  void BindFileSystemManager(
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::FileSystemManager> receiver)
+      override {}
+  void BindFileSystemAccessManager(
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::FileSystemAccessManager> receiver)
+      override {}
+  void BindIndexedDB(
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) override;
+  void BindBucketManagerHost(
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::BucketManagerHost> receiver)
+      override {}
+  void BindRestrictedCookieManagerForServiceWorker(
+      const url::Origin& origin,
+      mojo::PendingReceiver<network::mojom::RestrictedCookieManager> receiver)
+      override {}
+  void BindVideoDecodePerfHistory(
+      mojo::PendingReceiver<media::mojom::VideoDecodePerfHistory> receiver)
+      override {}
+  void BindQuotaManagerHost(
+      int render_frame_id,
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::QuotaManagerHost> receiver) override {
+  }
+  void CreateLockManager(
+      int render_frame_id,
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::LockManager> receiver) override {}
+  void CreateOneShotSyncService(
+      mojo::PendingReceiver<blink::mojom::OneShotBackgroundSyncService>
+          receiver) override {}
+  void CreatePeriodicSyncService(
+      mojo::PendingReceiver<blink::mojom::PeriodicBackgroundSyncService>
+          receiver) override {}
+  void CreatePermissionService(
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::PermissionService> receiver)
+      override {}
+  void CreatePaymentManagerForOrigin(
+      const url::Origin& origin,
+      mojo::PendingReceiver<payments::mojom::PaymentManager> receiver)
+      override {}
+  void CreateNotificationService(
+      int render_frame_id,
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::NotificationService> receiver)
+      override {}
+  void CreateWebSocketConnector(
+      const url::Origin& origin,
+      mojo::PendingReceiver<blink::mojom::WebSocketConnector> receiver)
+      override {}
+
+  void CleanupNetworkServicePluginExceptionsUponDestruction() override;
+  std::string GetInfoForBrowserContextDestructionCrashReporting() override;
+  void WriteIntoTrace(perfetto::TracedValue context) override;
 
   // IPC::Sender via RenderProcessHost.
   bool Send(IPC::Message* msg) override;
@@ -170,16 +232,6 @@ class MockRenderProcessHost : public RenderProcessHost {
   // IPC::Listener via RenderProcessHost.
   bool OnMessageReceived(const IPC::Message& msg) override;
   void OnChannelConnected(int32_t peer_pid) override;
-
-  // Attaches the factory object so we can remove this object in its destructor
-  // and prevent MockRenderProcessHostFacotry from deleting it.
-  void SetFactory(const MockRenderProcessHostFactory* factory) {
-    factory_ = factory;
-  }
-
-  void set_is_for_guests_only(bool is_for_guests_only) {
-    is_for_guests_only_ = is_for_guests_only;
-  }
 
   void set_is_process_backgrounded(bool is_process_backgrounded) {
     is_process_backgrounded_ = is_process_backgrounded;
@@ -193,10 +245,8 @@ class MockRenderProcessHost : public RenderProcessHost {
                                 const InterfaceBinder& binder);
 
   void OverrideRendererInterfaceForTesting(
-      std::unique_ptr<mojo::AssociatedInterfacePtr<mojom::Renderer>>
+      std::unique_ptr<mojo::AssociatedRemote<mojom::Renderer>>
           renderer_interface);
-
-  void OverrideURLLoaderFactory(network::mojom::URLLoaderFactory* factory);
 
   bool is_renderer_locked_to_site() const {
     return is_renderer_locked_to_site_;
@@ -210,33 +260,30 @@ class MockRenderProcessHost : public RenderProcessHost {
   // Stores IPC messages that would have been sent to the renderer.
   IPC::TestSink sink_;
   int bad_msg_count_;
-  const MockRenderProcessHostFactory* factory_;
   int id_;
   bool has_connection_;
   BrowserContext* browser_context_;
-  base::ObserverList<RenderProcessHostObserver>::Unchecked observers_;
+  base::ObserverList<RenderProcessHostObserver> observers_;
 
   base::flat_set<PriorityClient*> priority_clients_;
   int prev_routing_id_;
   base::IDMap<IPC::Listener*> listeners_;
+  bool shutdown_requested_;
   bool fast_shutdown_started_;
   bool deletion_callback_called_;
   bool is_for_guests_only_;
-  bool is_never_suitable_for_reuse_;
   bool is_process_backgrounded_;
   bool is_unused_;
   base::Process process;
   int keep_alive_ref_count_;
   int foreground_service_worker_count_;
-  std::unique_ptr<mojo::AssociatedInterfacePtr<mojom::Renderer>>
-      renderer_interface_;
+  std::unique_ptr<mojo::AssociatedRemote<mojom::Renderer>> renderer_interface_;
   std::map<std::string, InterfaceBinder> binder_overrides_;
-  service_manager::Identity child_identity_;
   bool is_renderer_locked_to_site_ = false;
-  network::mojom::URLLoaderFactory* url_loader_factory_;
-  blink::mojom::CacheStorageRequest cache_storage_request_;
-  blink::mojom::IDBFactoryRequest idb_factory_request_;
-  base::WeakPtrFactory<MockRenderProcessHost> weak_ptr_factory_;
+  std::unique_ptr<network::mojom::URLLoaderFactory> url_loader_factory_;
+  mojo::PendingReceiver<blink::mojom::CacheStorage> cache_storage_receiver_;
+  mojo::PendingReceiver<blink::mojom::IDBFactory> idb_factory_receiver_;
+  base::WeakPtrFactory<MockRenderProcessHost> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MockRenderProcessHost);
 };
@@ -248,11 +295,10 @@ class MockRenderProcessHostFactory : public RenderProcessHostFactory {
 
   RenderProcessHost* CreateRenderProcessHost(
       BrowserContext* browser_context,
-      SiteInstance* site_instance) const override;
+      SiteInstance* site_instance) override;
 
-  // Removes the given MockRenderProcessHost from the MockRenderProcessHost list
-  // without deleting it. When a test deletes a MockRenderProcessHost, we need
-  // to remove it from |processes_| to prevent it from being deleted twice.
+  // Removes the given MockRenderProcessHost from the MockRenderProcessHost
+  // list.
   void Remove(MockRenderProcessHost* host) const;
 
   // Retrieve the current list of mock processes.

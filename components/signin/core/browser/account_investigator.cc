@@ -9,15 +9,14 @@
 
 #include "base/base64.h"
 #include "base/hash/sha1.h"
-#include "base/logging.h"
 #include "base/time/time.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/signin_metrics.h"
-#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/google_service_auth_error.h"
-#include "services/identity/public/cpp/accounts_in_cookie_jar_info.h"
 
 using base::Time;
 using base::TimeDelta;
@@ -36,6 +35,24 @@ bool AreSame(const CoreAccountInfo& info, const ListedAccount& account) {
   return info.account_id == account.id;
 }
 
+// Returns the extended info for the primary account (no consent required) if
+// available.
+AccountInfo GetExtendedAccountInfo(signin::IdentityManager* identity_manager) {
+  CoreAccountId account_id =
+      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+  if (account_id.empty())
+    return AccountInfo();
+  return identity_manager->FindExtendedAccountInfoByAccountId(account_id);
+}
+
+// Returns true if there is primary account (no consent required) but no
+// extended info, yet.
+bool WaitingForExtendedInfo(signin::IdentityManager* identity_manager) {
+  if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin))
+    return false;
+  return GetExtendedAccountInfo(identity_manager).IsEmpty();
+}
+
 }  // namespace
 
 const TimeDelta AccountInvestigator::kPeriodicReportingInterval =
@@ -43,7 +60,7 @@ const TimeDelta AccountInvestigator::kPeriodicReportingInterval =
 
 AccountInvestigator::AccountInvestigator(
     PrefService* pref_service,
-    identity::IdentityManager* identity_manager)
+    signin::IdentityManager* identity_manager)
     : pref_service_(pref_service), identity_manager_(identity_manager) {}
 
 AccountInvestigator::~AccountInvestigator() {}
@@ -57,8 +74,11 @@ void AccountInvestigator::RegisterPrefs(PrefRegistrySimple* registry) {
 
 void AccountInvestigator::Initialize() {
   identity_manager_->AddObserver(this);
-  previously_authenticated_ = identity_manager_->HasPrimaryAccount();
+  previously_authenticated_ =
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSync);
 
+  // TODO(crbug.com/1121923): Refactor to use signin::PersistentRepeatingTimer
+  // instead.
   Time previous = Time::FromDoubleT(
       pref_service_->GetDouble(prefs::kGaiaCookiePeriodicReportTime));
   if (previous.is_null())
@@ -74,7 +94,7 @@ void AccountInvestigator::Shutdown() {
 }
 
 void AccountInvestigator::OnAccountsInCookieUpdated(
-    const identity::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
+    const signin::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
     const GoogleServiceAuthError& error) {
   if (error != GoogleServiceAuthError::AuthErrorNone()) {
     // If we are pending periodic reporting, leave the flag set, and we will
@@ -95,7 +115,8 @@ void AccountInvestigator::OnAccountsInCookieUpdated(
   const std::string old_hash(pref_service_->GetString(prefs::kGaiaCookieHash));
   const std::string new_hash(
       HashAccounts(signed_in_accounts, signed_out_accounts));
-  const bool currently_authenticated = identity_manager_->HasPrimaryAccount();
+  const bool currently_authenticated =
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSync);
   if (old_hash != new_hash) {
     SharedCookieJarReport(signed_in_accounts, signed_out_accounts, Time::Now(),
                           ReportingType::ON_CHANGE);
@@ -111,10 +132,16 @@ void AccountInvestigator::OnAccountsInCookieUpdated(
   // be a change, which means we will report a stable age of 0. This also
   // guarantees that on a fresh install we always have a cookie changed pref.
   if (periodic_pending_) {
-    DoPeriodicReport(signed_in_accounts, signed_out_accounts);
+    TryPeriodicReport();
   }
 
   previously_authenticated_ = currently_authenticated;
+}
+
+void AccountInvestigator::OnExtendedAccountInfoUpdated(
+    const AccountInfo& info) {
+  if (periodic_pending_)
+    TryPeriodicReport();
 }
 
 // static
@@ -132,16 +159,16 @@ std::string AccountInvestigator::HashAccounts(
     const std::vector<ListedAccount>& signed_in_accounts,
     const std::vector<ListedAccount>& signed_out_accounts) {
   std::vector<std::string> sorted_ids(signed_in_accounts.size());
-  std::transform(std::begin(signed_in_accounts), std::end(signed_in_accounts),
-                 std::back_inserter(sorted_ids),
-                 [](const ListedAccount& account) {
-                   return std::string(kSignedInHashPrefix) + account.id;
-                 });
-  std::transform(std::begin(signed_out_accounts), std::end(signed_out_accounts),
-                 std::back_inserter(sorted_ids),
-                 [](const ListedAccount& account) {
-                   return std::string(kSignedOutHashPrefix) + account.id;
-                 });
+  std::transform(
+      std::begin(signed_in_accounts), std::end(signed_in_accounts),
+      std::back_inserter(sorted_ids), [](const ListedAccount& account) {
+        return std::string(kSignedInHashPrefix) + account.id.ToString();
+      });
+  std::transform(
+      std::begin(signed_out_accounts), std::end(signed_out_accounts),
+      std::back_inserter(sorted_ids), [](const ListedAccount& account) {
+        return std::string(kSignedOutHashPrefix) + account.id.ToString();
+      });
   std::sort(sorted_ids.begin(), sorted_ids.end());
   std::ostringstream stream;
   std::copy(sorted_ids.begin(), sorted_ids.end(),
@@ -194,7 +221,8 @@ AccountRelation AccountInvestigator::DiscernRelation(
 void AccountInvestigator::TryPeriodicReport() {
   auto accounts_in_cookie_jar_info =
       identity_manager_->GetAccountsInCookieJar();
-  if (accounts_in_cookie_jar_info.accounts_are_fresh) {
+  if (accounts_in_cookie_jar_info.accounts_are_fresh &&
+      !WaitingForExtendedInfo(identity_manager_)) {
     DoPeriodicReport(accounts_in_cookie_jar_info.signed_in_accounts,
                      accounts_in_cookie_jar_info.signed_out_accounts);
   } else {
@@ -207,6 +235,16 @@ void AccountInvestigator::DoPeriodicReport(
     const std::vector<ListedAccount>& signed_out_accounts) {
   SharedCookieJarReport(signed_in_accounts, signed_out_accounts, Time::Now(),
                         ReportingType::PERIODIC);
+
+  // Report extra metrics only for signed-in accounts that are split by the
+  // primary account type.
+  if (identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+    const bool is_syncing =
+        identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSync);
+    AccountInfo info = GetExtendedAccountInfo(identity_manager_);
+    signin_metrics::LogSignedInCookiesCountsPerPrimaryAccountType(
+        signed_in_accounts.size(), is_syncing, info.IsManaged());
+  }
 
   periodic_pending_ = false;
   pref_service_->SetDouble(prefs::kGaiaCookiePeriodicReportTime,
@@ -232,7 +270,7 @@ void AccountInvestigator::SharedCookieJarReport(
   signin_metrics::LogCookieJarCounts(signed_in_count, signed_out_count,
                                      signed_in_count + signed_out_count, type);
 
-  if (identity_manager_->HasPrimaryAccount()) {
+  if (identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
     SignedInAccountRelationReport(signed_in_accounts, signed_out_accounts,
                                   type);
   }
@@ -248,7 +286,8 @@ void AccountInvestigator::SignedInAccountRelationReport(
     const std::vector<ListedAccount>& signed_out_accounts,
     ReportingType type) {
   signin_metrics::LogAccountRelation(
-      DiscernRelation(identity_manager_->GetPrimaryAccountInfo(),
-                      signed_in_accounts, signed_out_accounts),
+      DiscernRelation(
+          identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSync),
+          signed_in_accounts, signed_out_accounts),
       type);
 }

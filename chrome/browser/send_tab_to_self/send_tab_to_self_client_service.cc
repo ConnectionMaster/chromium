@@ -8,9 +8,12 @@
 #include <string>
 #include <vector>
 
-#include "base/logging.h"
+#include "build/build_config.h"
+#include "chrome/browser/send_tab_to_self/desktop_notification_handler.h"
 #include "chrome/browser/send_tab_to_self/receiving_ui_handler.h"
 #include "chrome/browser/send_tab_to_self/receiving_ui_handler_registry.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_toolbar_button_controller.h"
+#include "components/send_tab_to_self/features.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 
 namespace send_tab_to_self {
@@ -20,6 +23,8 @@ SendTabToSelfClientService::SendTabToSelfClientService(
     SendTabToSelfModel* model) {
   model_ = model;
   model_->AddObserver(this);
+
+  profile_ = profile;
 
   SetupHandlerRegistry(profile);
 }
@@ -37,7 +42,33 @@ void SendTabToSelfClientService::SendTabToSelfModelLoaded() {
 void SendTabToSelfClientService::EntriesAddedRemotely(
     const std::vector<const SendTabToSelfEntry*>& new_entries) {
   for (const std::unique_ptr<ReceivingUiHandler>& handler : GetHandlers()) {
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_MAC) || \
+    defined(OS_WIN)
+    // Only respond to notifications corresponding to this service's profile
+    // for these OSes; mobile does not have a Profile.
+    // Cast note: on desktop, handlers are guaranteed to be the derived class
+    // DesktopNotificationHandlers outside of test code; see
+    // ReceivingUiHandlerRegistry::InstantiatePlatformSpecificHandlers().
+    // If modifying this code, modify the method in the unittest as well.
+    // TODO(skare): ReceivingUiHandler should be able to filter at its level,
+    // or the registry should not be a singleton so we don't need to filter at
+    // all. This narrow patch is less risky, but we should make a larger change.
+    if (base::FeatureList::IsEnabled(kSendTabToSelfV2)) {
+      auto* button_controller =
+          static_cast<SendTabToSelfToolbarButtonController*>(handler.get());
+      if (button_controller && button_controller->profile() == profile_) {
+        handler->DisplayNewEntries(new_entries);
+      }
+    } else {
+      auto* desktop_handler =
+          static_cast<DesktopNotificationHandler*>(handler.get());
+      if (desktop_handler && desktop_handler->GetProfile() == profile_) {
+        handler->DisplayNewEntries(new_entries);
+      }
+    }
+#else
     handler->DisplayNewEntries(new_entries);
+#endif
   }
 }
 

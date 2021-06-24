@@ -9,7 +9,9 @@
 
 #include "base/callback_forward.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/desktop_media_id.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 #include "ui/gfx/native_widget_types.h"
 #include "url/gurl.h"
 
@@ -29,9 +31,10 @@ struct CONTENT_EXPORT MediaStreamRequest {
                      blink::MediaStreamRequestType request_type,
                      const std::string& requested_audio_device_id,
                      const std::string& requested_video_device_id,
-                     blink::MediaStreamType audio_type,
-                     blink::MediaStreamType video_type,
-                     bool disable_local_echo);
+                     blink::mojom::MediaStreamType audio_type,
+                     blink::mojom::MediaStreamType video_type,
+                     bool disable_local_echo,
+                     bool request_pan_tilt_zoom_permission);
 
   MediaStreamRequest(const MediaStreamRequest& other);
 
@@ -68,14 +71,17 @@ struct CONTENT_EXPORT MediaStreamRequest {
   std::string requested_video_device_id;
 
   // Flag to indicate if the request contains audio.
-  blink::MediaStreamType audio_type;
+  blink::mojom::MediaStreamType audio_type;
 
   // Flag to indicate if the request contains video.
-  blink::MediaStreamType video_type;
+  blink::mojom::MediaStreamType video_type;
 
   // Flag for desktop or tab share to indicate whether to prevent the captured
   // audio being played out locally.
   bool disable_local_echo;
+
+  // Flag to indicate whether the request is for PTZ use.
+  bool request_pan_tilt_zoom_permission;
 
   // True if all ancestors of the requesting frame have the same origin.
   bool all_ancestors_have_same_origin;
@@ -86,20 +92,34 @@ struct CONTENT_EXPORT MediaStreamRequest {
 // when MediaStream access is approved using MediaResponseCallback.
 class MediaStreamUI {
  public:
+  using SourceCallback =
+      base::RepeatingCallback<void(const DesktopMediaID& media_id)>;
+  using StateChangeCallback = base::RepeatingCallback<void(
+      const DesktopMediaID& media_id,
+      blink::mojom::MediaStreamStateChange new_state)>;
+
   virtual ~MediaStreamUI() {}
 
   // Called when MediaStream capturing is started. Chrome layer can call |stop|
-  // to stop the stream, or |source| to change the source of the stream.
+  // to stop the stream, or |source| to change the source of the stream, or
+  // |state_change| to pause/unpause the stream.
   // Returns the platform-dependent window ID for the UI, or 0 if not
   // applicable.
-  virtual gfx::NativeViewId OnStarted(base::OnceClosure stop,
-                                      base::RepeatingClosure source) = 0;
+  virtual gfx::NativeViewId OnStarted(
+      base::OnceClosure stop,
+      SourceCallback source,
+      const std::string& label,
+      std::vector<DesktopMediaID> screen_capture_ids,
+      StateChangeCallback state_change) = 0;
+
+  virtual void OnDeviceStopped(const std::string& label,
+                               const DesktopMediaID& media_id) = 0;
 };
 
 // Callback used return results of media access requests.
 using MediaResponseCallback =
     base::OnceCallback<void(const blink::MediaStreamDevices& devices,
-                            blink::MediaStreamRequestResult result,
+                            blink::mojom::MediaStreamRequestResult result,
                             std::unique_ptr<MediaStreamUI> ui)>;
 }  // namespace content
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2017 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -7,8 +7,7 @@
 
 See //tools/binary_size/README.md for example usage.
 
-Note: this tool will perform gclient sync/git checkout on your local repo if
-you don't use the --cloud option.
+Note: this tool will perform gclient sync/git checkout on your local repo.
 """
 
 import atexit
@@ -18,7 +17,6 @@ from contextlib import contextmanager
 import distutils.spawn
 import json
 import logging
-import multiprocessing
 import os
 import re
 import shutil
@@ -38,8 +36,9 @@ _RESOURCE_SIZES_PATH = os.path.join(
     _SRC_ROOT, 'build', 'android', 'resource_sizes.py')
 _LLVM_TOOLS_DIR = os.path.join(
     _SRC_ROOT, 'third_party', 'llvm-build', 'Release+Asserts', 'bin')
-_DOWNLOAD_OBJDUMP_PATH = os.path.join(
-    _SRC_ROOT, 'tools', 'clang', 'scripts', 'download_objdump.py')
+_CLANG_UPDATE_PATH = os.path.join(_SRC_ROOT, 'tools', 'clang', 'scripts',
+                                  'update.py')
+_GN_PATH = os.path.join(_SRC_ROOT, 'third_party', 'depot_tools', 'gn')
 
 
 _DiffResult = collections.namedtuple('DiffResult', ['name', 'value', 'units'])
@@ -128,20 +127,27 @@ class ResourceSizesDiff(BaseDiff):
   _AGGREGATE_SECTIONS = (
       'InstallBreakdown', 'Breakdown', 'MainLibInfo', 'Uncompressed')
 
-  def __init__(self, apk_name, filename='results-chart.json'):
-    self._apk_name = apk_name
+  def __init__(self, filename='results-chart.json', include_sections=None):
     self._diff = None  # Set by |ProduceDiff()|
     self._filename = filename
+    self._include_sections = include_sections
     super(ResourceSizesDiff, self).__init__('Resource Sizes Diff')
 
   @property
   def summary_stat(self):
-    for section_name, results in self._diff.iteritems():
+    for section_name, results in self._diff.items():
       for subsection_name, value, units in results:
         if 'normalized' in subsection_name:
           full_name = '{} {}'.format(section_name, subsection_name)
           return _DiffResult(full_name, value, units)
     raise Exception('Could not find "normalized" in: ' + repr(self._diff))
+
+  def CombinedSizeChangeForSection(self, section):
+    for subsection_name, value, _ in self._diff[section]:
+      if 'Combined' in subsection_name:
+        return value
+    raise Exception('Could not find "Combined" in: ' +
+                    repr(self._diff[section]))
 
   def DetailedResults(self):
     return self._ResultLines()
@@ -150,7 +156,7 @@ class ResourceSizesDiff(BaseDiff):
     footer_lines = [
         '',
         'For an explanation of these metrics, see:',
-        ('https://chromium.googlesource.com/chromium/src/+/master/docs/speed/'
+        ('https://chromium.googlesource.com/chromium/src/+/main/docs/speed/'
          'binary_size/metrics.md#Metrics-for-Android')]
     return self._ResultLines(
         include_sections=ResourceSizesDiff._SUMMARY_SECTIONS) + footer_lines
@@ -159,8 +165,10 @@ class ResourceSizesDiff(BaseDiff):
     before = self._LoadResults(before_dir)
     after = self._LoadResults(after_dir)
     self._diff = collections.defaultdict(list)
-    for section, section_dict in after.iteritems():
-      for subsection, v in section_dict.iteritems():
+    for section, section_dict in after.items():
+      if self._include_sections and section not in self._include_sections:
+        continue
+      for subsection, v in section_dict.items():
         # Ignore entries when resource_sizes.py chartjson format has changed.
         if (section not in before or
             subsection not in before[section] or
@@ -177,7 +185,7 @@ class ResourceSizesDiff(BaseDiff):
   def _ResultLines(self, include_sections=None):
     """Generates diff lines for the specified sections (defaults to all)."""
     section_lines = collections.defaultdict(list)
-    for section_name, section_results in self._diff.iteritems():
+    for section_name, section_results in self._diff.items():
       if not include_sections or section_name in include_sections:
         subsection_lines = []
         section_sum = 0
@@ -210,7 +218,7 @@ class ResourceSizesDiff(BaseDiff):
     charts = chartjson['charts']
     # Older versions of resource_sizes.py prefixed the apk onto section names.
     ret = {}
-    for section, section_dict in charts.iteritems():
+    for section, section_dict in charts.items():
       section_no_target = re.sub(r'^.*_', '', section)
       ret[section_no_target] = section_dict
     return ret
@@ -220,12 +228,9 @@ class _BuildHelper(object):
   """Helper class for generating and building targets."""
   def __init__(self, args):
     self.clean = args.clean
-    self.cloud = args.cloud
     self.enable_chrome_android_internal = args.enable_chrome_android_internal
     self.extra_gn_args_str = args.gn_args
     self.apply_patch = args.extra_rev
-    self.max_jobs = args.max_jobs
-    self.max_load_average = args.max_load_average
     self.output_directory = args.output_directory
     self.target = args.target
     self.target_os = args.target_os
@@ -233,60 +238,66 @@ class _BuildHelper(object):
     self._SetDefaults()
     self.is_bundle = 'minimal' in self.target
 
-  @property
-  def abs_apk_path(self):
-    return os.path.join(self.output_directory, self.apk_path)
+  def _MaybeAddGoogleSuffix(self, path):
+    if self.IsTrichrome() and '_google' in self.target:
+      return path.replace('.', 'Google.', 1)
+    return path
 
   @property
-  def abs_mapping_path(self):
-    return os.path.join(self.output_directory, self.mapping_path)
+  def abs_apk_paths(self):
+    return [os.path.join(self.output_directory, x) for x in self.apk_paths]
+
+  @property
+  def abs_mapping_paths(self):
+    def to_mapping_path(p):
+      return p.replace('.minimal.apks', '.aab') + '.mapping'
+
+    return [to_mapping_path(x) for x in self.abs_apk_paths]
 
   @property
   def apk_name(self):
     # my_great_apk -> MyGreat.apk
     apk_name = ''.join(s.title() for s in self.target.split('_')[:-1]) + '.apk'
     if self.is_bundle:
-      # my_great_minimal_apks -> MyGreatMinimal.apk -> MyGreat.minimal.apks
+      # trichrome_minimal_apks->TrichromeMinimal.apk->Trichrome.minimal.apks
       apk_name = apk_name.replace('Minimal.apk', '.minimal.apks')
     return apk_name.replace('Webview', 'WebView')
 
   @property
-  def apk_path(self):
-    return os.path.join('apks', self.apk_name)
+  def supersize_input(self):
+    if self.IsTrichrome():
+      return self._MaybeAddGoogleSuffix(
+          os.path.join(self.output_directory, 'apks', 'Trichrome.ssargs'))
+    return self.abs_apk_paths[0]
 
   @property
-  def mapping_path(self):
-    if self.is_bundle:
-      return self.apk_path.replace('.minimal.apks', '.aab') + '.mapping'
-    else:
-      return self.apk_path + '.mapping'
+  def apk_paths(self):
+    if self.IsTrichrome():
+      ret = [
+          os.path.join('apks', 'TrichromeChrome.minimal.apks'),
+          os.path.join('apks', 'TrichromeWebView.minimal.apks'),
+          os.path.join('apks', 'TrichromeLibrary.apk'),
+      ]
+      return [self._MaybeAddGoogleSuffix(x) for x in ret]
+
+    return [os.path.join('apks', self.apk_name)]
 
   @property
   def main_lib_path(self):
-    # Cannot extract this from GN because --cloud needs to work without GN.
+    # TODO(agrieve): Could maybe extract from .apk or GN?
     if self.IsLinux():
       return 'chrome'
-    if 'monochrome' in self.target:
-      ret = 'lib.unstripped/libmonochrome_base.so'
+    if 'monochrome' in self.target or 'trichrome' in self.target:
+      ret = 'lib.unstripped/libmonochrome.so'
+    elif 'webview' in self.target:
+      ret = 'lib.unstripped/libwebviewchromium.so'
     else:
-      ret = 'lib.unstripped/libchrome_base.so'
-    # Maintain support for measuring non-bundle apks.
-    if not self.is_bundle:
-      ret = ret.replace('_base', '')
+      ret = 'lib.unstripped/libchrome.so'
     return ret
 
   @property
   def abs_main_lib_path(self):
     return os.path.join(self.output_directory, self.main_lib_path)
-
-  @property
-  def builder_url(self):
-    url = 'https://build.chromium.org/p/chromium.perf/builders/%s%%20Builder'
-    return url % self.target_os.title()
-
-  @property
-  def download_bucket(self):
-    return 'gs://chrome-perf/%s Builder/' % self.target_os.title()
 
   @property
   def map_file_path(self):
@@ -299,10 +310,18 @@ class _BuildHelper(object):
     return self.apk_name + '.size'
 
   def _SetDefaults(self):
-    has_goma_dir = os.path.exists(os.path.join(os.path.expanduser('~'), 'goma'))
-    self.use_goma = self.use_goma or has_goma_dir
-    self.max_load_average = (self.max_load_average or
-                             str(multiprocessing.cpu_count()))
+    if self.use_goma:
+      try:
+        goma_is_running = not subprocess.call(['goma_ctl', 'status'],
+                                              stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL)
+        self.use_goma = self.use_goma and goma_is_running
+      except Exception:
+        # goma_ctl not in PATH.
+        self.use_goma = False
+
+      if not self.use_goma:
+        logging.warning('GOMA not running. Setting use_goma=false.')
 
     has_internal = os.path.exists(
         os.path.join(os.path.dirname(_SRC_ROOT), 'src-internal'))
@@ -318,39 +337,36 @@ class _BuildHelper(object):
           'is_cfi=false generate_linker_map=true ' + self.extra_gn_args_str)
     self.extra_gn_args_str = ' ' + self.extra_gn_args_str.strip()
 
-    if not self.max_jobs:
-      if self.use_goma:
-        self.max_jobs = '10000'
-      elif has_internal:
-        self.max_jobs = '500'
-      else:
-        self.max_jobs = '50'
-
     if not self.target:
       if self.IsLinux():
         self.target = 'chrome'
       elif self.enable_chrome_android_internal:
-        self.target = 'monochrome_minimal_apks'
+        self.target = 'trichrome_google_minimal_apks'
       else:
-        self.target = 'monochrome_public_minimal_apks'
+        self.target = 'trichrome_minimal_apks'
 
   def _GenGnCmd(self):
     gn_args = 'is_official_build=true'
+    gn_args += ' android_channel="stable"'
     # Variables often become unused when experimenting with macros to reduce
     # size, so don't fail on warnings.
     gn_args += ' treat_warnings_as_errors=false'
+    # Speed things up a bit by skipping lint & errorprone.
+    gn_args += ' disable_android_lint=true'
+    # Down from default of 2 to speed up compile and use less disk.
+    # Compiles need at least symbol_level=1 for pak allowlist to work.
+    gn_args += ' symbol_level=1'
+    gn_args += ' use_errorprone_java_compiler=false'
     gn_args += ' use_goma=%s' % str(self.use_goma).lower()
     gn_args += ' target_os="%s"' % self.target_os
     if self.IsAndroid():
       gn_args += (' enable_chrome_android_internal=%s' %
                   str(self.enable_chrome_android_internal).lower())
     gn_args += self.extra_gn_args_str
-    return ['gn', 'gen', self.output_directory, '--args=%s' % gn_args]
+    return [_GN_PATH, 'gen', self.output_directory, '--args=%s' % gn_args]
 
   def _GenNinjaCmd(self):
-    cmd = ['ninja', '-C', self.output_directory]
-    cmd += ['-j', self.max_jobs] if self.max_jobs else []
-    cmd += ['-l', self.max_load_average] if self.max_load_average else []
+    cmd = ['autoninja', '-C', self.output_directory]
     cmd += [self.target]
     return cmd
 
@@ -359,37 +375,35 @@ class _BuildHelper(object):
     logging.info('Building %s within %s (this might take a while).',
                  self.target, os.path.relpath(self.output_directory))
     if self.clean:
-      _RunCmd(['gn', 'clean', self.output_directory])
-    retcode = _RunCmd(
-        self._GenGnCmd(), verbose=True, exit_on_failure=False)[1]
+      _RunCmd([_GN_PATH, 'clean', self.output_directory], cwd=_SRC_ROOT)
+    retcode = _RunCmd(self._GenGnCmd(),
+                      cwd=_SRC_ROOT,
+                      verbose=True,
+                      exit_on_failure=False)[1]
     if retcode:
       return retcode
     return _RunCmd(
         self._GenNinjaCmd(), verbose=True, exit_on_failure=False)[1]
 
-  def DownloadUrl(self, rev):
-    return self.download_bucket + 'full-build-linux_%s.zip' % rev
-
   def IsAndroid(self):
     return self.target_os == 'android'
+
+  def IsTrichrome(self):
+    return 'trichrome' in self.target
 
   def IsLinux(self):
     return self.target_os == 'linux'
 
-  def IsCloud(self):
-    return self.cloud
-
 
 class _BuildArchive(object):
   """Class for managing a directory with build results and build metadata."""
-  def __init__(self, rev, base_archive_dir, build, subrepo, slow_options,
-               save_unstripped):
+
+  def __init__(self, rev, base_archive_dir, build, subrepo, save_unstripped):
     self.build = build
     self.dir = os.path.join(base_archive_dir, rev)
     metadata_path = os.path.join(self.dir, 'metadata.txt')
     self.rev = rev
     self.metadata = _Metadata([self], build, metadata_path, subrepo)
-    self._slow_options = slow_options
     self._save_unstripped = save_unstripped
 
   def ArchiveBuildResults(self, supersize_path, tool_prefix=None):
@@ -397,8 +411,10 @@ class _BuildArchive(object):
     logging.info('Saving build results to: %s', self.dir)
     _EnsureDirsExist(self.dir)
     if self.build.IsAndroid():
-      self._ArchiveFile(self.build.abs_apk_path)
-      self._ArchiveFile(self.build.abs_mapping_path)
+      for path in self.build.abs_apk_paths:
+        self._ArchiveFile(path)
+      for path in self.build.abs_mapping_paths:
+        self._ArchiveFile(path)
       self._ArchiveResourceSizes()
     self._ArchiveSizeFile(supersize_path, tool_prefix)
     if self._save_unstripped:
@@ -421,12 +437,18 @@ class _BuildArchive(object):
     return os.path.join(self.dir, self.build.size_name)
 
   def _ArchiveResourceSizes(self):
-    cmd = [_RESOURCE_SIZES_PATH, self.build.abs_apk_path,'--output-dir',
-           self.dir, '--chartjson']
-    if not self.build.IsCloud():
-      cmd += ['--chromium-output-dir', self.build.output_directory]
-    if self._slow_options:
-      cmd += ['--estimate-patch-size', '--dump-static-initializers']
+    cmd = [
+        _RESOURCE_SIZES_PATH, '--output-dir', self.dir, '--chartjson',
+        '--chromium-output-dir', self.build.output_directory
+    ]
+    if self.build.IsTrichrome():
+      get_apk = lambda t: next(x for x in self.build.abs_apk_paths if t in x)
+      cmd += ['--trichrome-chrome', get_apk('Chrome')]
+      cmd += ['--trichrome-webview', get_apk('WebView')]
+      cmd += ['--trichrome-library', get_apk('Library')]
+      cmd += [self.build.apk_name]
+    else:
+      cmd += [self.build.abs_apk_paths[0]]
     _RunCmd(cmd)
 
   def _ArchiveFile(self, filename):
@@ -435,34 +457,29 @@ class _BuildArchive(object):
     shutil.copy(filename, self.dir)
 
   def _ArchiveSizeFile(self, supersize_path, tool_prefix):
-    existing_size_file = self.build.abs_apk_path + '.size'
-    if os.path.exists(existing_size_file):
-      logging.info('Found existing .size file')
-      shutil.copy(existing_size_file, self.archived_size_path)
+    supersize_cmd = [supersize_path, 'archive', self.archived_size_path]
+    if self.build.IsAndroid():
+      supersize_cmd += [
+          '-f', self.build.supersize_input, '--aux-elf-file',
+          self.build.abs_main_lib_path
+      ]
     else:
-      supersize_cmd = [supersize_path, 'archive', self.archived_size_path,
-                       '--elf-file', self.build.abs_main_lib_path]
-      if tool_prefix:
-        supersize_cmd += ['--tool-prefix', tool_prefix]
-      if self.build.IsCloud():
-        supersize_cmd += ['--no-source-paths']
-      else:
-        supersize_cmd += ['--output-directory', self.build.output_directory]
-      if self.build.IsAndroid():
-        supersize_cmd += ['-f', self.build.abs_apk_path]
-      logging.info('Creating .size file')
-      _RunCmd(supersize_cmd)
+      supersize_cmd += ['--elf-file', self.build.abs_main_lib_path]
+    supersize_cmd += ['--output-directory', self.build.output_directory]
+    if tool_prefix:
+      supersize_cmd += ['--tool-prefix', tool_prefix]
+    logging.info('Creating .size file')
+    _RunCmd(supersize_cmd)
 
 
 class _DiffArchiveManager(object):
   """Class for maintaining BuildArchives and their related diff artifacts."""
-  def __init__(self, revs, archive_dir, diffs, build, subrepo, slow_options,
-               save_unstripped):
+
+  def __init__(self, revs, archive_dir, diffs, build, subrepo, save_unstripped):
     self.archive_dir = archive_dir
     self.build = build
     self.build_archives = [
-        _BuildArchive(rev, archive_dir, build, subrepo, slow_options,
-                      save_unstripped)
+        _BuildArchive(rev, archive_dir, build, subrepo, save_unstripped)
         for rev in revs
     ]
     self.diffs = diffs
@@ -498,7 +515,7 @@ class _DiffArchiveManager(object):
     logging.info('See detailed diff results here: %s',
                  os.path.relpath(diff_path))
 
-  def GenerateHtmlReport(self, before_id, after_id):
+  def GenerateHtmlReport(self, before_id, after_id, is_internal=False):
     """Generate HTML report given two build archives."""
     before = self.build_archives[before_id]
     after = self.build_archives[after_id]
@@ -510,21 +527,38 @@ class _DiffArchiveManager(object):
       return
 
     supersize_path = os.path.join(_BINARY_SIZE_DIR, 'supersize')
+    report_path = os.path.join(diff_path, 'diff.sizediff')
 
-    report_path = os.path.join(diff_path, 'diff.ndjson')
+    supersize_cmd = [
+        supersize_path, 'save_diff', before.archived_size_path,
+        after.archived_size_path, report_path
+    ]
 
-    supersize_cmd = [supersize_path, 'html_report', '--diff-with',
-      before.archived_size_path,
-      after.archived_size_path,
-      report_path]
-
-    logging.info('Creating HTML report')
-
+    logging.info('Creating .sizediff')
     _RunCmd(supersize_cmd)
+    oneoffs_dir = 'oneoffs'
+    visibility = '-a public-read '
+    if is_internal:
+      oneoffs_dir = 'private-oneoffs'
+      visibility = ''
 
-    logging.info('View using a local server via: %s start_server %s',
-      os.path.relpath(supersize_path),
-      os.path.relpath(report_path))
+    unique_name = '{}_{}.sizediff'.format(before.rev, after.rev)
+    msg = (
+        '\n=====================\n'
+        'Saved locally to {local}. To view, upload to '
+        'https://chrome-supersize.firebaseapp.com/viewer.html.\n'
+        'To share, run:\n'
+        '> gsutil.py cp {visibility}{local} '
+        'gs://chrome-supersize/{oneoffs_dir}/{unique_name}\n\n'
+        'Then view it at https://chrome-supersize.firebaseapp.com/viewer.html'
+        '?load_url=https://storage.googleapis.com/chrome-supersize/'
+        '{oneoffs_dir}/{unique_name}'
+        '\n=====================\n')
+    msg = msg.format(local=os.path.relpath(report_path),
+                     unique_name=unique_name,
+                     visibility=visibility,
+                     oneoffs_dir=oneoffs_dir)
+    logging.info(msg)
 
   def Summarize(self):
     path = os.path.join(self.archive_dir, 'last_diff_summary.txt')
@@ -585,14 +619,12 @@ class _DiffArchiveManager(object):
 class _Metadata(object):
 
   def __init__(self, archives, build, path, subrepo):
-    self.is_cloud = build.IsCloud()
     self.data = {
       'revs': [a.rev for a in archives],
       'apply_patch': build.apply_patch,
       'archive_dirs': [a.dir for a in archives],
       'target': build.target,
       'target_os': build.target_os,
-      'is_cloud': build.IsCloud(),
       'subrepo': subrepo,
       'path': path,
       'gn_args': {
@@ -618,7 +650,7 @@ def _EnsureDirsExist(path):
     os.makedirs(path)
 
 
-def _RunCmd(cmd, verbose=False, exit_on_failure=True):
+def _RunCmd(cmd, cwd=None, verbose=False, exit_on_failure=True):
   """Convenience function for running commands.
 
   Args:
@@ -637,7 +669,12 @@ def _RunCmd(cmd, verbose=False, exit_on_failure=True):
   if verbose:
     proc_stdout, proc_stderr = sys.stdout, subprocess.STDOUT
 
-  proc = subprocess.Popen(cmd, stdout=proc_stdout, stderr=proc_stderr)
+  # pylint: disable=unexpected-keyword-arg
+  proc = subprocess.Popen(cmd,
+                          cwd=cwd,
+                          stdout=proc_stdout,
+                          stderr=proc_stderr,
+                          encoding='utf-8')
   stdout, stderr = proc.communicate()
 
   if proc.returncode and exit_on_failure:
@@ -737,8 +774,8 @@ def _ValidateRevs(rev, reference_rev, subrepo, extra_rev):
 
 
 def _VerifyUserAccepts(message):
-  print message + ' Do you want to proceed? [y/n]'
-  if raw_input('> ').lower() != 'y':
+  print(message + ' Do you want to proceed? [y/n]')
+  if input('> ').lower() != 'y':
     sys.exit()
 
 
@@ -756,95 +793,8 @@ def _Die(s, *args):
   sys.exit(1)
 
 
-def _DownloadBuildArtifacts(archive, build, supersize_path, depot_tools_path):
-  """Download artifacts from arm32 chromium perf builder."""
-  if depot_tools_path:
-    gsutil_path = os.path.join(depot_tools_path, 'gsutil.py')
-  else:
-    gsutil_path = distutils.spawn.find_executable('gsutil.py')
-
-  if not gsutil_path:
-    _Die('gsutil.py not found, please provide path to depot_tools via '
-         '--depot-tools-path or add it to your PATH')
-
-  download_dir = tempfile.mkdtemp(dir=_SRC_ROOT)
-  try:
-    _DownloadAndArchive(
-        gsutil_path, archive, download_dir, build, supersize_path)
-  finally:
-    shutil.rmtree(download_dir)
-
-
-def _DownloadAndArchive(gsutil_path, archive, dl_dir, build, supersize_path):
-  # Wraps gsutil calls and returns stdout + stderr.
-  def gsutil_cmd(args, fail_msg=None):
-    fail_msg = fail_msg or ''
-    proc = subprocess.Popen([gsutil_path] + args, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
-    output = proc.communicate()[0].rstrip()
-    if proc.returncode or not output:
-      _Die(fail_msg + ' Process output:\n%s' % output)
-    return output
-
-  # Fails if gsutil isn't configured.
-  gsutil_cmd(['version'],
-             'gsutil error. Please file a bug in Tools>BinarySize.')
-  dl_dst = os.path.join(dl_dir, archive.rev)
-  logging.info('Downloading build artifacts for %s', archive.rev)
-
-  # Fails if archive isn't found.
-  output = gsutil_cmd(['stat', build.DownloadUrl(archive.rev)],
-      'Unexpected error while downloading %s. It may no longer exist on the '
-      'server or it may not have been uploaded yet (check %s). Otherwise, you '
-      'may not have the correct access permissions.' % (
-      build.DownloadUrl(archive.rev), build.builder_url))
-  size = re.search(r'Content-Length:\s+([0-9]+)', output).group(1)
-  logging.info('File size: %s', _ReadableBytes(int(size)))
-
-  # Download archive. Any failures here are unexpected.
-  gsutil_cmd(['cp', build.DownloadUrl(archive.rev), dl_dst])
-
-  # Files needed for supersize and resource_sizes. Paths relative to out dir.
-  to_extract = [build.main_lib_path, build.map_file_path, 'args.gn']
-  if build.IsAndroid():
-    to_extract += ['build_vars.txt', build.apk_path,
-                   build.mapping_path, build.apk_path + '.size']
-  extract_dir = dl_dst + '_' + 'unzipped'
-  logging.info('Extracting build artifacts')
-  with zipfile.ZipFile(dl_dst, 'r') as z:
-    dl_out = _ExtractFiles(to_extract, extract_dir, z)
-    build.output_directory, output_directory = dl_out, build.output_directory
-    archive.ArchiveBuildResults(supersize_path)
-    build.output_directory = output_directory
-
-
-def _ReadableBytes(b):
-  val = b
-  units = ['Bytes','KB', 'MB', 'GB']
-  for unit in units:
-    if val < 1024:
-      return '%.2f %s' % (val, unit)
-    val /= 1024.0
-  else:
-    return '%d %s' % (b, 'Bytes')
-
-
-def _ExtractFiles(to_extract, dst, z):
-  """Extract a list of files. Returns the common prefix of the extracted files.
-
-  Paths in |to_extract| should be relative to the output directory.
-  """
-  zipped_paths = z.namelist()
-  output_dir = os.path.commonprefix(zipped_paths)
-  for f in to_extract:
-    path = os.path.join(output_dir, f)
-    if path in zipped_paths:
-      z.extract(path, path=dst)
-  return os.path.join(dst, output_dir)
-
-
 def _WriteToFile(logfile, s, *args, **kwargs):
-  if isinstance(s, basestring):
+  if isinstance(s, str):
     data = s.format(*args, **kwargs) + '\n'
   else:
     data = '\n'.join(s) + '\n'
@@ -867,9 +817,9 @@ def _TmpCopyBinarySizeDir():
     shutil.copytree(_BINARY_SIZE_DIR, bs_dir)
     # We also copy the tools supersize needs, but only if they exist.
     tool_prefix = None
-    if os.path.exists(_DOWNLOAD_OBJDUMP_PATH):
+    if os.path.exists(_CLANG_UPDATE_PATH):
       if not os.path.exists(os.path.join(_LLVM_TOOLS_DIR, 'llvm-readelf')):
-        _RunCmd([_DOWNLOAD_OBJDUMP_PATH])
+        _RunCmd([_CLANG_UPDATE_PATH, '--package=objdump'])
       tools_dir = os.path.join(bs_dir, 'bintools')
       tool_prefix = os.path.join(tools_dir, 'llvm-')
       shutil.copytree(_LLVM_TOOLS_DIR, tools_dir)
@@ -912,29 +862,17 @@ def main():
                       action='store_true',
                       help='Build/download all revs from --reference-rev to '
                            'rev and diff the contiguous revisions.')
-  parser.add_argument('--include-slow-options',
-                      action='store_true',
-                      help='Run some extra steps that take longer to complete. '
-                           'This includes apk-patch-size estimation and '
-                           'static-initializer counting.')
-  parser.add_argument('--cloud',
-                      action='store_true',
-                      help='Download build artifacts from perf builders '
-                      '(Googlers only).')
   parser.add_argument('--single',
                       action='store_true',
                       help='Sets --reference-rev=rev.')
   parser.add_argument('--unstripped',
                       action='store_true',
                       help='Save the unstripped native library when archiving.')
-  parser.add_argument('--depot-tools-path',
-                      help='Custom path to depot tools. Needed for --cloud if '
-                           'depot tools isn\'t in your PATH.')
-  parser.add_argument('--subrepo',
-                      help='Specify a subrepo directory to use. Implies '
-                           '--no-gclient. All git commands will be executed '
-                           'from the subrepo directory. Does not work with '
-                           '--cloud.')
+  parser.add_argument(
+      '--subrepo',
+      help='Specify a subrepo directory to use. Implies '
+      '--no-gclient. All git commands will be executed '
+      'from the subrepo directory.')
   parser.add_argument('--no-gclient',
                       action='store_true',
                       help='Do not perform gclient sync steps.')
@@ -952,13 +890,6 @@ def main():
                            ', and Ninja/GN output.')
 
   build_group = parser.add_argument_group('build arguments')
-  build_group.add_argument('-j',
-                           dest='max_jobs',
-                           help='Run N jobs in parallel.')
-  build_group.add_argument('-l',
-                           dest='max_load_average',
-                           help='Do not start new jobs if the load average is '
-                           'greater than N.')
   build_group.add_argument('--no-goma',
                            action='store_false',
                            dest='use_goma',
@@ -983,8 +914,8 @@ def main():
                            help='Allow downstream targets to be built.')
   build_group.add_argument('--target',
                            help='GN target to build. Linux default: chrome. '
-                           'Android default: monochrome_public_minimal_apks or '
-                           'monochrome_minimal_apks (depending on '
+                           'Android default: trichrome_minimal_apks or '
+                           'trichrome_google_minimal_apks (depending on '
                            '--enable-chrome-android-internal).')
   if len(sys.argv) == 1:
     parser.print_help()
@@ -994,20 +925,11 @@ def main():
   log_level = logging.DEBUG if args.verbose else logging.INFO
   logging.basicConfig(level=log_level,
                       format='%(levelname).1s %(relativeCreated)6d %(message)s')
-  build = _BuildHelper(args)
-  if build.IsCloud():
-    if args.subrepo:
-      parser.error('--subrepo doesn\'t work with --cloud')
-    if build.IsLinux():
-      parser.error('--target-os linux doesn\'t work with --cloud because map '
-                   'files aren\'t generated by builders (crbug.com/716209).')
-    if args.extra_rev:
-      parser.error('--apply-patch doesn\'t work with --cloud')
 
+  build = _BuildHelper(args)
   subrepo = args.subrepo or _SRC_ROOT
-  if not build.IsCloud():
-    _EnsureDirectoryClean(subrepo)
-    _SetRestoreFunc(subrepo)
+  _EnsureDirectoryClean(subrepo)
+  _SetRestoreFunc(subrepo)
 
   if build.IsLinux():
     _VerifyUserAccepts('Linux diffs have known deficiencies (crbug/717550).')
@@ -1021,47 +943,39 @@ def main():
     supersize_path, tool_prefix = paths
     diffs = [NativeDiff(build.size_name, supersize_path)]
     if build.IsAndroid():
-      diffs +=  [
-          ResourceSizesDiff(build.apk_name)
-      ]
+      diffs += [ResourceSizesDiff()]
     diff_mngr = _DiffArchiveManager(revs, args.archive_directory, diffs, build,
-                                    subrepo, args.include_slow_options,
-                                    args.unstripped)
+                                    subrepo, args.unstripped)
     consecutive_failures = 0
     i = 0
     for i, archive in enumerate(diff_mngr.build_archives):
       if archive.Exists():
-        step = 'download' if build.IsCloud() else 'build'
-        logging.info('Found matching metadata for %s, skipping %s step.',
-                     archive.rev, step)
+        logging.info('Found matching metadata for %s, skipping build step.',
+                     archive.rev)
       else:
-        if build.IsCloud():
-          _DownloadBuildArtifacts(
-              archive, build, supersize_path, args.depot_tools_path)
+        build_failure = _SyncAndBuild(archive, build, subrepo, args.no_gclient,
+                                      args.extra_rev)
+        if build_failure:
+          logging.info(
+              'Build failed for %s, diffs using this rev will be skipped.',
+              archive.rev)
+          consecutive_failures += 1
+          if len(diff_mngr.build_archives) <= 2:
+            _Die('Stopping due to build failure.')
+          elif consecutive_failures > _ALLOWED_CONSECUTIVE_FAILURES:
+            _Die('%d builds failed in a row, last failure was %s.',
+                 consecutive_failures, archive.rev)
         else:
-          build_failure = _SyncAndBuild(archive, build, subrepo,
-                                        args.no_gclient, args.extra_rev)
-          if build_failure:
-            logging.info(
-                'Build failed for %s, diffs using this rev will be skipped.',
-                archive.rev)
-            consecutive_failures += 1
-            if len(diff_mngr.build_archives) <= 2:
-              _Die('Stopping due to build failure.')
-            elif consecutive_failures > _ALLOWED_CONSECUTIVE_FAILURES:
-              _Die('%d builds failed in a row, last failure was %s.',
-                   consecutive_failures, archive.rev)
-          else:
-            archive.ArchiveBuildResults(supersize_path, tool_prefix)
-            consecutive_failures = 0
+          archive.ArchiveBuildResults(supersize_path, tool_prefix)
+          consecutive_failures = 0
 
       if i != 0:
         diff_mngr.MaybeDiff(i - 1, i)
 
-    diff_mngr.GenerateHtmlReport(0, i)
+    diff_mngr.GenerateHtmlReport(
+        0, i, is_internal=args.enable_chrome_android_internal)
     diff_mngr.Summarize()
 
 
 if __name__ == '__main__':
   sys.exit(main())
-

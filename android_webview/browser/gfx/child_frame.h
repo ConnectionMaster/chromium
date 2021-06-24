@@ -8,10 +8,12 @@
 #include <memory>
 #include <vector>
 
-#include "android_webview/browser/gfx/compositor_id.h"
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
+#include "components/viz/common/surfaces/surface_id.h"
 #include "content/public/browser/android/synchronous_compositor.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/transform.h"
 
@@ -29,27 +31,38 @@ class ChildFrame {
  public:
   ChildFrame(
       scoped_refptr<content::SynchronousCompositor::FrameFuture> frame_future,
-      const CompositorID& compositor_id,
+      const viz::FrameSinkId& frame_sink_id,
       const gfx::Size& viewport_size_for_tile_priority,
       const gfx::Transform& transform_for_tile_priority,
       bool offscreen_pre_raster,
-      CopyOutputRequestQueue copy_requests);
+      float device_scale_factor,
+      CopyOutputRequestQueue copy_requests,
+      bool did_invalidate);
   ~ChildFrame();
 
   // Helper to move frame from |frame_future| to |frame|.
   void WaitOnFutureIfNeeded();
+  viz::SurfaceId GetSurfaceId() const;
 
   // The frame is either in |frame_future| or |frame|. It's illegal if both
   // are non-null.
   scoped_refptr<content::SynchronousCompositor::FrameFuture> frame_future;
   uint32_t layer_tree_frame_sink_id = 0u;
   std::unique_ptr<viz::CompositorFrame> frame;
+  absl::optional<viz::HitTestRegionList> hit_test_region_list;
   // The id of the compositor this |frame| comes from.
-  const CompositorID compositor_id;
+  const viz::FrameSinkId frame_sink_id;
+  // Local surface id of the frame. Invalid if |frame| is null.
+  viz::LocalSurfaceId local_surface_id;
   const gfx::Size viewport_size_for_tile_priority;
   const gfx::Transform transform_for_tile_priority;
   const bool offscreen_pre_raster;
+  const float device_scale_factor;
+
   CopyOutputRequestQueue copy_requests;
+
+  // Used for metrics, indicates that we invalidated for this frame.
+  const bool did_invalidate;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ChildFrame);

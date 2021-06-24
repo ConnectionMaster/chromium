@@ -7,8 +7,6 @@
 
 #include <windows.h>
 
-#include <string>
-
 #include "base/component_export.h"
 #include "ui/base/ime/win/input_method_win_base.h"
 
@@ -33,6 +31,7 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) InputMethodWinTSF
   void OnCaretBoundsChanged(const TextInputClient* client) override;
   void CancelComposition(const TextInputClient* client) override;
   void DetachTextInputClient(TextInputClient* client) override;
+  bool IsInputLocaleCJK() const override;
   bool IsCandidatePopupOpen() const override;
 
   // Overridden from InputMethodBase:
@@ -40,12 +39,12 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) InputMethodWinTSF
                                  TextInputClient* focused) override;
   void OnDidChangeFocusedClient(TextInputClient* focused_before,
                                 TextInputClient* focused) override;
+  void ShowVirtualKeyboardIfEnabled() override;
 
  private:
-  class TSFEventObserver;
-
-  // Asks the client to confirm current composition text.
   void ConfirmCompositionText();
+
+  class TSFEventObserver;
 
   // TSF event router and observer.
   std::unique_ptr<TSFEventObserver> tsf_event_observer_;

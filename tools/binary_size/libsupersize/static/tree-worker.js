@@ -40,7 +40,6 @@ const _PATH_SEP = '/';
 const _NAMES_TO_FLAGS = Object.freeze({
   hot: _FLAGS.HOT,
   generated: _FLAGS.GENERATED_SOURCE,
-  coverage: _FLAGS.COVERAGE,
   uncompressed: _FLAGS.UNCOMPRESSED,
 });
 
@@ -137,15 +136,15 @@ class TreeBuilder {
    * @param {(symbolNode: TreeNode) => boolean} options.filterTest Called to see
    * if a symbol should be included. If a symbol fails the test, it will not be
    * attached to the tree.
-   * @param {(symbolNode: TreeNode) => boolean} options.highlightTest Called to
-   * see if a symbol should be highlighted.
+   * @param {boolean} options.methodCountMode Whether we're in "method count"
+   * mode.
    * @param {string} options.sep Path seperator used to find parent names.
    * @param {Meta} options.meta Metadata associated with this tree.
    */
   constructor(options) {
     this._getPath = options.getPath;
     this._filterTest = options.filterTest;
-    this._highlightTest = options.highlightTest;
+    this._methodCountMode = options.methodCountMode;
     this._sep = options.sep || _PATH_SEP;
     this._meta = options.meta;
 
@@ -153,7 +152,7 @@ class TreeBuilder {
     this.rootNode = createNode({
       idPath: this._sep,
       shortNameIndex: 0,
-      type: this._containerType(this._sep),
+      type: this._artifactType(this._sep),
     });
     /** @type {Map<string, TreeNode>} Cache for directory nodes */
     this._parents = new Map();
@@ -185,7 +184,7 @@ class TreeBuilder {
       const {parent} = node;
 
       // Track the size of `lastBiggestType` for comparisons.
-      let [containerType, lastBiggestType] = parent.type;
+      let [artifactType, lastBiggestType] = parent.type;
       let lastBiggestSize = 0;
       const lastBiggestStats = parent.childStats[lastBiggestType];
       if (lastBiggestStats) {
@@ -195,13 +194,12 @@ class TreeBuilder {
       for (const [type, stat] of additionalStats) {
         let parentStat = parent.childStats[type];
         if (parentStat == null) {
-          parentStat = {size: 0, count: 0, highlight: 0};
+          parentStat = {size: 0, count: 0};
           parent.childStats[type] = parentStat;
         }
 
         parentStat.size += stat.size;
         parentStat.count += stat.count;
-        parentStat.highlight += stat.highlight;
 
         const absSize = Math.abs(parentStat.size);
         if (absSize > lastBiggestSize) {
@@ -210,7 +208,7 @@ class TreeBuilder {
         }
       }
 
-      parent.type = `${containerType}${lastBiggestType}`;
+      parent.type = `${artifactType}${lastBiggestType}`;
       parent.size += additionalSize;
       parent.flags |= additionalFlags;
       node = parent;
@@ -219,22 +217,18 @@ class TreeBuilder {
 
   /**
    * Merges dex method symbols such as "Controller#get" and "Controller#set"
-   * into containers, based on the class of the dex methods.
+   * into artifacts, based on the class of the dex methods.
    * @param {TreeNode} node
    */
   _joinDexMethodClasses(node) {
+    const isFileNode = node.type[0] === _ARTIFACT_TYPES.FILE;
     const hasDex = node.childStats[_DEX_SYMBOL_TYPE] ||
         node.childStats[_DEX_METHOD_SYMBOL_TYPE];
-    if (!hasDex || !node.children) return node;
+    const isNoPath = node.idPath === "";
+    if (!isFileNode || !hasDex || isNoPath || !node.children) return node;
 
-    if (node.type[0] !== _CONTAINER_TYPES.FILE) {
-      for (const child of node.children) {
-        this._joinDexMethodClasses(child);
-      }
-      return node;
-    }
     /** @type {Map<string, TreeNode>} */
-    const javaClassContainers = new Map();
+    const javaClassArtifacts = new Map();
     /** @type {TreeNode[]} */
     const otherSymbols = [];
 
@@ -243,7 +237,9 @@ class TreeBuilder {
       // Java classes are denoted with a "#", such as "LogoView#onDraw"
       // Except for some older .ndjson files, which didn't do this for fields.
       const splitIndex = childNode.idPath.lastIndexOf('#');
-      const isClassNode = childNode.idPath.indexOf(' ') == -1;
+      // No return type / field type means it's a class node.
+      const isClassNode = childNode.idPath.indexOf(
+          ' ', childNode.shortNameIndex) == -1;
       const hasClassPrefix = isClassNode || splitIndex != -1;
 
       if (hasClassPrefix) {
@@ -262,16 +258,16 @@ class TreeBuilder {
           }
         }
 
-        let classNode = javaClassContainers.get(classIdPath);
+        let classNode = javaClassArtifacts.get(classIdPath);
         if (!classNode) {
           classNode = createNode({
             idPath: classIdPath,
             srcPath: node.srcPath,
             component: node.component,
             shortNameIndex: shortNameIndex,
-            type: _CONTAINER_TYPES.JAVA_CLASS,
+            type: _ARTIFACT_TYPES.JAVA_CLASS,
           });
-          javaClassContainers.set(classIdPath, classNode);
+          javaClassArtifacts.set(classIdPath, classNode);
         }
 
         // Adjust the dex method's short name so it starts after the "#"
@@ -285,11 +281,11 @@ class TreeBuilder {
     }
 
     node.children = otherSymbols;
-    for (const containerNode of javaClassContainers.values()) {
+    for (const artifactNode of javaClassArtifacts.values()) {
       // Delay setting the parent until here so that `_attachToParent`
       // doesn't add method stats twice
-      containerNode.parent = node;
-      node.children.push(containerNode);
+      artifactNode.parent = node;
+      node.children.push(artifactNode);
     }
     return node;
   }
@@ -336,17 +332,17 @@ class TreeBuilder {
   }
 
   /**
-   * Returns the container type for a parent node.
+   * Returns the artifact type for a parent node.
    * @param {string} childIdPath
    * @private
    */
-  _containerType(childIdPath) {
+  _artifactType(childIdPath) {
     const useAlternateType =
       childIdPath.lastIndexOf(this._sep) > childIdPath.lastIndexOf(_PATH_SEP);
     if (useAlternateType) {
-      return _CONTAINER_TYPES.COMPONENT;
+      return _ARTIFACT_TYPES.COMPONENT;
     } else {
-      return _CONTAINER_TYPES.DIRECTORY;
+      return _ARTIFACT_TYPES.DIRECTORY;
     }
   }
 
@@ -378,7 +374,7 @@ class TreeBuilder {
         parentNode = createNode({
           idPath: parentPath,
           shortNameIndex: lastIndexOf(parentPath, this._sep) + 1,
-          type: this._containerType(childNode.idPath),
+          type: this._artifactType(childNode.idPath),
         });
         this._parents.set(parentPath, parentNode);
       }
@@ -407,7 +403,7 @@ class TreeBuilder {
       srcPath,
       component,
       shortNameIndex: lastIndexOf(idPath, this._sep) + 1,
-      type: _CONTAINER_TYPES.FILE,
+      type: _ARTIFACT_TYPES.FILE,
     });
     const defaultCount = diffMode ? 0 : 1;
     // build child nodes for this file's symbols and attach to self
@@ -418,6 +414,12 @@ class TreeBuilder {
       const flags = _KEYS.FLAGS in symbol ? symbol[_KEYS.FLAGS] : 0;
       const numAliases =
           _KEYS.NUM_ALIASES in symbol ? symbol[_KEYS.NUM_ALIASES] : 1;
+
+      // Skip methods that have changed in size but not count when in
+      // "method count" mode.
+      if (this._methodCountMode && count === 0) {
+        continue;
+      }
 
       const symbolNode = createNode({
         // Join file path to symbol name with a ":"
@@ -433,14 +435,10 @@ class TreeBuilder {
           [type]: {
             size,
             count,
-            highlight: 0,
           },
         },
       });
 
-      if (this._highlightTest(symbolNode)) {
-        symbolNode.childStats[type].highlight = size;
-      }
       if (this._filterTest(symbolNode)) {
         this._attachToParent(symbolNode, fileNode);
       }
@@ -508,7 +506,7 @@ class TreeBuilder {
       path = idPath.split(this._splitter);
     }
 
-    // If the path is empty, it refers to the _NO_NAME container.
+    // If the path is empty, it refers to the _NO_NAME artifact.
     if (path[0] === '') {
       path.unshift(_NO_NAME);
     }
@@ -645,8 +643,7 @@ function parseOptions(options) {
   const url = params.get('load_url');
   const groupBy = params.get('group_by') || 'source_path';
   const methodCountMode = params.has('method_count');
-  const filterGeneratedFiles = params.has('generated_filter');
-  const flagToHighlight = _NAMES_TO_FLAGS[params.get('highlight')];
+  const flagToFilter = _NAMES_TO_FLAGS[params.get('flag_filter')];
 
   let minSymbolSize = Number(params.get('min_size'));
   if (Number.isNaN(minSymbolSize)) {
@@ -684,9 +681,9 @@ function parseOptions(options) {
     filters.push(s => typeFilter.has(s.type));
   }
 
-  // Only show generated files
-  if (filterGeneratedFiles) {
-    filters.push(s => hasFlag(_FLAGS.GENERATED_SOURCE, s));
+  // Only show symbols with attached flag
+  if (flagToFilter) {
+    filters.push(s => hasFlag(flagToFilter, s));
   }
 
   // Search symbol names using regex
@@ -715,15 +712,7 @@ function parseOptions(options) {
     return filters.every(fn => fn(symbolNode));
   }
 
-  /** @type {(symbolNode: TreeNode) => boolean} */
-  let highlightTest;
-  if (flagToHighlight) {
-    highlightTest = symbolNode => hasFlag(flagToHighlight, symbolNode);
-  } else {
-    highlightTest = () => false;
-  }
-
-  return {groupBy, filterTest, highlightTest, url};
+  return {groupBy, filterTest, url, methodCountMode};
 }
 
 /** @type {TreeBuilder | null} */
@@ -735,12 +724,11 @@ const fetcher = new DataFetcher('data.ndjson');
  * @param {string} groupBy Sets how the tree is grouped.
  * @param {(symbolNode: TreeNode) => boolean} filterTest Filter function that
  * each symbol is tested against
- * @param {(symbolNode: TreeNode) => boolean} highlightTest Filter function that
- * each symbol's flags are tested against
+ * @param {boolean} methodCountMode
  * @param {(msg: TreeProgress) => void} onProgress
  * @returns {Promise<TreeProgress>}
  */
-async function buildTree(groupBy, filterTest, highlightTest, onProgress) {
+async function buildTree(groupBy, filterTest, methodCountMode, onProgress) {
   /** @type {Meta | null} Object from the first line of the data file */
   let meta = null;
 
@@ -774,6 +762,7 @@ async function buildTree(groupBy, filterTest, highlightTest, onProgress) {
       root: builder.formatNode(data.root || builder.rootNode),
       percent,
       diffMode: meta && meta.diff_mode,
+      isMultiContainer: false,
     };
     if (data.error) {
       message.error = data.error.message;
@@ -804,7 +793,7 @@ async function buildTree(groupBy, filterTest, highlightTest, onProgress) {
         builder = new TreeBuilder({
           getPath: getPathMap[groupBy],
           filterTest,
-          highlightTest,
+          methodCountMode,
           sep: groupBy === 'component' ? '>' : _PATH_SEP,
           meta,
         });
@@ -838,7 +827,7 @@ async function buildTree(groupBy, filterTest, highlightTest, onProgress) {
 const actions = {
   /** @param {{input:string|null,options:string}} param0 */
   load({input, options}) {
-    const {groupBy, filterTest, highlightTest, url} = parseOptions(options);
+    const {groupBy, filterTest, url, methodCountMode} = parseOptions(options);
     if (input === 'from-url://' && url) {
       // Display the data from the `load_url` query parameter
       console.info('Displaying data from', url);
@@ -848,10 +837,11 @@ const actions = {
       fetcher.setInput(input);
     }
 
-    return buildTree(groupBy, filterTest, highlightTest, progress => {
-      // @ts-ignore
-      self.postMessage(progress);
-    });
+    return buildTree(
+        groupBy, filterTest, methodCountMode, progress => {
+          // @ts-ignore
+          self.postMessage(progress);
+        });
   },
   /** @param {string} path */
   async open(path) {

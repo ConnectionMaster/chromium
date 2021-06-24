@@ -6,16 +6,10 @@ module network.mojom;
 
 import "mojo/public/mojom/base/time.mojom";
 import "services/network/public/mojom/address_list.mojom";
-import "services/network/public/mojom/ip_address.mojom";
 import "services/network/public/mojom/ip_endpoint.mojom";
+import "services/network/public/mojom/network_isolation_key.mojom";
 import "services/network/public/mojom/network_param.mojom";
-import "services/network/public/mojom/url_loader.mojom";
-
-// A single entry from a HOSTS file.
-struct DnsHost {
-  string hostname;
-  IPAddress address;
-};
+import "services/network/public/mojom/url_request.mojom";
 
 // An HTTPS server to send DNS queries to, per the DNS Queries over HTTPS spec.
 // spec:  https://tools.ietf.org/html/draft-ietf-doh-dns-over-https-12
@@ -26,6 +20,30 @@ struct DnsOverHttpsServer {
   // Whether to use POST to do DNS lookups. Otherwise, GET is used. See spec
   // for more details.
   bool use_post = false;
+};
+
+// The secure DNS mode specifies what types of lookups (secure/insecure) should
+// be performed and in what order when resolving a specific query. This is
+// an expanded version of net::SecureDnsMode that includes representation of an
+// optional SecureDnsMode. Needed because Mojo does not support optional enums.
+enum OptionalSecureDnsMode {
+  NO_OVERRIDE,
+  OFF,
+  AUTOMATIC,
+  SECURE,
+};
+
+// This enum corresponds to net::SecureDnsMode.
+enum SecureDnsMode {
+  OFF,
+  AUTOMATIC,
+  SECURE,
+};
+
+// This enum corresponds to net::SecureDnsPolicy
+enum SecureDnsPolicy {
+  ALLOW,
+  DISABLE,
 };
 
 // Overridable DNS configuration values for host resolution. All fields default
@@ -47,23 +65,14 @@ struct DnsConfigOverrides {
   // is less than |ndots|.
   array<string>? search;
 
-  // Entries from a HOSTS file. This array is intended for serialization to/from
-  // a lookup map, so unlike the source data from actual HOSTS files, each entry
-  // should represent a unique host query key (|hostname| and AddressFamily).
-  array<DnsHost>? hosts;
-
   // Whether suffix search should be performed for multi-label names.
   Tristate append_to_multi_label_name = Tristate.NO_OVERRIDE;
-
-  // Whether source port randomization is required. This uses additional
-  // resources on some platforms.
-  Tristate randomize_ports = Tristate.NO_OVERRIDE;
 
   // Minimum number of dots before global resolution precedes |search|.
   int8 ndots = -1;  // -1 for no override.
 
   // Time between retransmissions, see res_state.retrans.
-  mojo_base.mojom.TimeDelta? timeout;
+  mojo_base.mojom.TimeDelta? fallback_period;
 
   // Maximum number of attempts, see res_state.retry.
   int32 attempts = -1;  // -1 for no override.
@@ -79,6 +88,33 @@ struct DnsConfigOverrides {
   // List of servers to query over HTTPS, queried in order
   // (https://tools.ietf.org/id/draft-ietf-doh-dns-over-https-12.txt).
   array<DnsOverHttpsServer>? dns_over_https_servers;
+
+  // The SecureDnsMode to use when resolving queries. If set, it overrides
+  // the resolver's current configured mode, and can in turn be overridden by
+  // ResolveHostParameters.secure_dns_policy.
+  OptionalSecureDnsMode secure_dns_mode = OptionalSecureDnsMode.NO_OVERRIDE;
+
+  // Whether automatic upgrade to DNS over HTTPS servers is permitted.
+  Tristate allow_dns_over_https_upgrade = Tristate.NO_OVERRIDE;
+
+  // List of providers to exclude from upgrade mapping. See the
+  // mapping in net/dns/dns_util.cc for provider ids.
+  array<string>? disabled_upgrade_providers;
+
+  // Whether to clear data read from the system HOSTS file.
+  bool clear_hosts = false;
+};
+
+// Host resolution error info.
+struct ResolveErrorInfo {
+  // Underlying network error code. See net/base/net_error_list.h for error
+  // descriptions.
+  int32 error;
+
+  // Whether |error| came from a DNS-over-HTTPS lookup. This will be false if
+  // the answer was obtained from the cache or if |error| is net::OK since this
+  // field is intended to identify secure DNS *network* failures.
+  bool is_secure_network_error = false;
 };
 
 // Control handle used to control outstanding NetworkContext::ResolveHost
@@ -103,14 +139,20 @@ interface ResolveHostHandle {
 // implementation that allows overriding just expected result types.
 interface ResolveHostClient {
   // Called on completion of a resolve host request. Results are a network error
-  // code, and on success (network error code OK) and when results are in
-  // address form, an AddressList.
+  // code, additional error info, and on success (result == OK,
+  // resolve_error_info.error == OK) and when results are in address form, an
+  // AddressList. The error code in |resolve_error_info.error| should be used
+  // when detailed error information is needed, whereas the error code in
+  // |result| should be used when less specific error information (i.e. OK vs
+  // ERR_NAME_NOT_RESOLVED) is sufficient.
   //
   // Always called last to signal completion of the ResolveHost() request.
   // Unless the ResolveHostClient is closed, this method will always be called
   // exactly once, and afterwards, no more methods in the interface will be
   // called.
-  OnComplete(int32 result, AddressList? resolved_addresses);
+  OnComplete(int32 result,
+             ResolveErrorInfo resolve_error_info,
+             AddressList? resolved_addresses);
 
   // One or more On...Results() methods may be called when non-address results
   // are available. Always called before OnComplete().
@@ -128,6 +170,7 @@ enum DnsQueryType {
   TXT,
   PTR,
   SRV,
+  HTTPS,
 };
 
 // Parameter-grouping struct for additional optional parameters for
@@ -170,12 +213,27 @@ struct ResolveHostParameters {
   // literals, etc.
   Source source = Source.ANY;
 
-  // If |false|, results will not come from the host cache.
-  bool allow_cached_response = true;
+  // Cache usage mode for ResolveHostRequest. Values corresponding to
+  // HostResolver::ResolveHostParameters::CacheUsage
+  enum CacheUsage {
+    // Results may come from the host cache if non-stale.
+    ALLOWED,
+
+    // Results may come from the host cache even if stale (by expiration or
+    // network changes).
+    STALE_ALLOWED,
+
+    // Results will not come from the host cache.
+    DISALLOWED,
+  };
+
+  // Indicates what DNS cache entries, if any, can be used to provide a
+  // response.
+  CacheUsage cache_usage = CacheUsage.ALLOWED;
 
   // If set, the outstanding request can be controlled, eg cancelled, via the
   // handle.
-  ResolveHostHandle&? control_handle;
+  pending_receiver<ResolveHostHandle>? control_handle;
 
   // If |true|, requests that the resolver include AddressList::canonical_name
   // in the results. If the resolver can do so without significant performance
@@ -192,6 +250,9 @@ struct ResolveHostParameters {
   // will receive special logging/observer treatment, and
   // ResolveHostClient::OnComplete will not receive any addresses.
   bool is_speculative = false;
+
+  // Controls the resolver's Secure DNS behavior for this request.
+  SecureDnsPolicy secure_dns_policy = SecureDnsPolicy.ALLOW;
 };
 
 // Response interface used to receive notifications from
@@ -229,6 +290,12 @@ interface HostResolver {
   // error code, and on success (network error code OK), an AddressList. All
   // results are sent via the passed |response_client|.
   //
+  // |network_isolation_key| specifies what NetworkIsolationKey to use as an
+  // index into the host cache. This both allows a URLLoader created with the
+  // same NetworkIsolationKey to access the host cache entry populated by a
+  // call to the HostResolver, and prevents the result from being leaked to
+  // URLLoaders made using a different NetworkIsolationKey.
+  //
   // Additional optional parameters may be set using |optional_parameters|. If
   // unset, reasonable defaults will be used, equivalent to using a
   // ResolveHostParameters struct without changing any fields from their default
@@ -241,8 +308,9 @@ interface HostResolver {
   // NetworkContext are destroyed. Such requests will receive ERR_FAILED via
   // |response_client|.
   ResolveHost(HostPortPair host,
+              NetworkIsolationKey network_isolation_key,
               ResolveHostParameters? optional_parameters,
-              ResolveHostClient response_client);
+              pending_remote<ResolveHostClient> response_client);
 
   // Starts a listener to watch for updates to a multicast DNS result. Result is
   // a network error code indicating the success of starting the listener. On
@@ -253,19 +321,21 @@ interface HostResolver {
   // notifications if the HostResolver or parent NetworkContext are destroyed.
   MdnsListen(HostPortPair host,
              DnsQueryType query_type,
-             MdnsListenClient response_client) => (int32 result);
+             pending_remote<MdnsListenClient> response_client)
+      => (int32 result);
 };
 
 // A client interface that subscribes to DNS config change events from
 // DnsConfigChangeManager.
 interface DnsConfigChangeManagerClient {
-  // Notifies that a potential change has been detected in the DNS settings of
-  // the system that may affect results of host resolution.
-  OnSystemDnsConfigChanged();
+  // Notifies that a potential change has been detected in the DNS configuration
+  // that may affect results of host resolution. May be a change in system DNS
+  // settings or effective changes added on top by Chrome net code.
+  OnDnsConfigChanged();
 };
 
 // An interface that broadcasts DNS config change events.
 interface DnsConfigChangeManager {
   // Requests to receive notification when there is a DNS config change.
-  RequestNotifications(DnsConfigChangeManagerClient client_ptr);
+  RequestNotifications(pending_remote<DnsConfigChangeManagerClient> client);
 };

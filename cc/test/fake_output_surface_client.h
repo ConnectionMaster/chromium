@@ -14,16 +14,17 @@ class FakeOutputSurfaceClient : public viz::OutputSurfaceClient {
   FakeOutputSurfaceClient() = default;
 
   void SetNeedsRedrawRect(const gfx::Rect& damage_rect) override {}
-  void DidReceiveSwapBuffersAck() override;
+  void DidReceiveSwapBuffersAck(const gfx::SwapTimings& timings,
+                                gfx::GpuFenceHandle release_fence) override;
   void DidReceiveTextureInUseResponses(
       const gpu::TextureInUseResponses& responses) override {}
   void DidReceiveCALayerParams(
       const gfx::CALayerParams& ca_layer_params) override {}
   void DidSwapWithSize(const gfx::Size& pixel_size) override {}
-  void DidFinishLatencyInfo(
-      const std::vector<ui::LatencyInfo>& latency_info) override {}
   void DidReceivePresentationFeedback(
       const gfx::PresentationFeedback& feedback) override {}
+  void DidReceiveReleasedOverlays(
+      const std::vector<gpu::Mailbox>& released_overlays) override {}
 
   int swap_count() { return swap_count_; }
 

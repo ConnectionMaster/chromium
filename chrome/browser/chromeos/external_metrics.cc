@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "ash/constants/ash_switches.h"
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/metrics/histogram.h"
@@ -18,15 +19,12 @@
 #include "base/metrics/statistics_recorder.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "chrome/browser/metrics/chromeos_metrics_provider.h"
-#include "chromeos/constants/chromeos_switches.h"
 #include "components/metrics/serialization/metric_sample.h"
 #include "components/metrics/serialization/serialization_utils.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-
-using content::BrowserThread;
 
 namespace chromeos {
 
@@ -50,14 +48,13 @@ bool CheckLinearValues(const std::string& name, int maximum) {
   return CheckValues(name, 1, maximum, maximum + 1);
 }
 
-// The file from which externally-reported metrics are read.
-constexpr char kEventsFilePath[] = "/var/lib/metrics/uma-events";
-
 // Default interval between externally-reported metrics being collected.
 constexpr base::TimeDelta kDefaultCollectionInterval =
     base::TimeDelta::FromSeconds(30);
 
 }  // namespace
+
+constexpr char ExternalMetrics::kEventsFilePath[];
 
 ExternalMetrics::ExternalMetrics()
     : uma_events_file_(kEventsFilePath),
@@ -95,8 +92,8 @@ void ExternalMetrics::RecordActionUI(const std::string& action_string) {
 }
 
 void ExternalMetrics::RecordAction(const std::string& action) {
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&ExternalMetrics::RecordActionUI, this, action));
 }
 
@@ -105,8 +102,8 @@ void ExternalMetrics::RecordCrashUI(const std::string& crash_kind) {
 }
 
 void ExternalMetrics::RecordCrash(const std::string& crash_kind) {
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&ExternalMetrics::RecordCrashUI, this, crash_kind));
 }
 
@@ -135,6 +132,14 @@ void ExternalMetrics::RecordLinearHistogram(
 void ExternalMetrics::RecordSparseHistogram(
     const metrics::MetricSample& sample) {
   CHECK_EQ(metrics::MetricSample::SPARSE_HISTOGRAM, sample.type());
+  // We suspect a chromeos process reports a metric as regular and then later as
+  // a sparse enum histogram. See https://crbug.com/1173221
+  base::HistogramBase* histogram =
+      base::StatisticsRecorder::FindHistogram(sample.name());
+  if (histogram && histogram->GetHistogramType() != base::SPARSE_HISTOGRAM) {
+    LOG(FATAL) << "crbug.com/1173221 name " << sample.name() << " "
+               << sample.ToString();
+  }
   base::UmaHistogramSparse(sample.name(), sample.sample());
 }
 
@@ -176,7 +181,7 @@ void ExternalMetrics::CollectEventsAndReschedule() {
 }
 
 void ExternalMetrics::ScheduleCollector() {
-  base::PostDelayedTaskWithTraits(
+  base::ThreadPool::PostDelayedTask(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&chromeos::ExternalMetrics::CollectEventsAndReschedule,
                      this),

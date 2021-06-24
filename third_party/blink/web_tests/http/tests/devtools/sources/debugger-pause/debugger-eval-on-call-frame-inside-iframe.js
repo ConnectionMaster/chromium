@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Test that evaluation on call frame works across all inspected windows in the call stack.\n`);
-  await TestRunner.loadModule('console_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.loadHTML(`
       <iframe id="iframe"></iframe>
@@ -62,14 +62,14 @@
 
   async function step2(callFrames) {
     await TestRunner.addSnifferPromise(Sources.CallStackSidebarPane.prototype, '_updatedForTest');
-    SourcesTestRunner.captureStackTrace(callFrames);
+    await SourcesTestRunner.captureStackTrace(callFrames);
     TestRunner.addResult('\n=== Evaluating on iframe ===');
     evaluateInConsoleAndDump(step3);
   }
 
   function step3() {
-    var pane = self.runtime.sharedInstance(Sources.CallStackSidebarPane);
-    pane._list.selectItem(pane._list._model.at(1));
+    var pane = Sources.CallStackSidebarPane.instance();
+    pane._selectNextCallFrameOnStack();
     TestRunner.deprecatedRunAfterPendingDispatches(step4);
   }
 

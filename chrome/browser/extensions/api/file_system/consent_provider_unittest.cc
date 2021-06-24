@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/api/file_system/consent_provider.h"
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
@@ -13,13 +14,13 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
-#include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/api/file_system/file_system_delegate.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
@@ -28,6 +29,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 using extensions::file_system_api::ConsentProvider;
+using extensions::mojom::ManifestLocation;
 using file_manager::Volume;
 
 namespace extensions {
@@ -52,9 +54,9 @@ class TestingConsentProviderDelegate
     is_auto_launched_ = is_auto_launched;
   }
 
-  // Sets a whitelisted components list with a single id.
-  void SetComponentWhitelist(const std::string& extension_id) {
-    whitelisted_component_id_ = extension_id;
+  // Sets an allowlisted components list with a single id.
+  void SetComponentAllowlist(const std::string& extension_id) {
+    allowlisted_component_id_ = extension_id;
   }
 
   int show_dialog_counter() const { return show_dialog_counter_; }
@@ -62,14 +64,13 @@ class TestingConsentProviderDelegate
 
  private:
   // ConsentProvider::DelegateInterface overrides:
-  void ShowDialog(
-      const extensions::Extension& extension,
-      content::RenderFrameHost* host,
-      const base::WeakPtr<Volume>& volume,
-      bool writable,
-      const ConsentProvider::ShowDialogCallback& callback) override {
+  void ShowDialog(const extensions::Extension& extension,
+                  content::RenderFrameHost* host,
+                  const base::WeakPtr<Volume>& volume,
+                  bool writable,
+                  ConsentProvider::ShowDialogCallback callback) override {
     ++show_dialog_counter_;
-    callback.Run(dialog_button_);
+    std::move(callback).Run(dialog_button_);
   }
 
   void ShowNotification(const extensions::Extension& extension,
@@ -82,20 +83,20 @@ class TestingConsentProviderDelegate
     return is_auto_launched_;
   }
 
-  bool IsWhitelistedComponent(const extensions::Extension& extension) override {
-    return whitelisted_component_id_.compare(extension.id()) == 0;
+  bool IsAllowlistedComponent(const extensions::Extension& extension) override {
+    return allowlisted_component_id_.compare(extension.id()) == 0;
   }
 
   bool HasRequestDownloadsPermission(const Extension& extension) override {
     return extension.permissions_data()->HasAPIPermission(
-        APIPermission::kFileSystemRequestDownloads);
+        mojom::APIPermissionID::kFileSystemRequestDownloads);
   }
 
   int show_dialog_counter_;
   int show_notification_counter_;
   ui::DialogButton dialog_button_;
   bool is_auto_launched_;
-  std::string whitelisted_component_id_;
+  std::string allowlisted_component_id_;
 
   DISALLOW_COPY_AND_ASSIGN(TestingConsentProviderDelegate);
 };
@@ -113,10 +114,10 @@ class FileSystemApiConsentProviderTest : public testing::Test {
   FileSystemApiConsentProviderTest() {}
 
   void SetUp() override {
-    testing_pref_service_.reset(new TestingPrefServiceSimple);
+    testing_pref_service_ = std::make_unique<TestingPrefServiceSimple>();
     TestingBrowserProcess::GetGlobal()->SetLocalState(
         testing_pref_service_.get());
-    user_manager_ = new chromeos::FakeChromeUserManager;
+    user_manager_ = new ash::FakeChromeUserManager;
     scoped_user_manager_enabler_ =
         std::make_unique<user_manager::ScopedUserManager>(
             base::WrapUnique(user_manager_));
@@ -134,20 +135,19 @@ class FileSystemApiConsentProviderTest : public testing::Test {
  protected:
   base::WeakPtr<Volume> volume_;
   std::unique_ptr<TestingPrefServiceSimple> testing_pref_service_;
-  chromeos::FakeChromeUserManager*
-      user_manager_;  // Owned by the scope enabler.
+  ash::FakeChromeUserManager* user_manager_;  // Owned by the scope enabler.
   std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_enabler_;
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<Volume> download_volume_;
 };
 
 TEST_F(FileSystemApiConsentProviderTest, ForNonKioskApps) {
-  // Component apps are not granted unless they are whitelisted.
+  // Component apps are not granted unless they are allowlisted.
   {
     scoped_refptr<const Extension> component_extension(
         ExtensionBuilder("Test", ExtensionBuilder::Type::PLATFORM_APP)
-            .SetLocation(Manifest::COMPONENT)
+            .SetLocation(ManifestLocation::kComponent)
             .Build());
     TestingConsentProviderDelegate delegate;
     ConsentProvider provider(&delegate);
@@ -155,23 +155,23 @@ TEST_F(FileSystemApiConsentProviderTest, ForNonKioskApps) {
               FileSystemDelegate::kGrantNone);
   }
 
-  // Whitelisted component apps are instantly granted access without asking
+  // Allowlisted component apps are instantly granted access without asking
   // user.
   {
-    scoped_refptr<const Extension> whitelisted_component_extension(
+    scoped_refptr<const Extension> allowlisted_component_extension(
         ExtensionBuilder("Test", ExtensionBuilder::Type::PLATFORM_APP)
-            .SetLocation(Manifest::COMPONENT)
+            .SetLocation(ManifestLocation::kComponent)
             .Build());
     TestingConsentProviderDelegate delegate;
-    delegate.SetComponentWhitelist(whitelisted_component_extension->id());
+    delegate.SetComponentAllowlist(allowlisted_component_extension->id());
     ConsentProvider provider(&delegate);
-    EXPECT_EQ(provider.GetGrantVolumesMode(*whitelisted_component_extension),
+    EXPECT_EQ(provider.GetGrantVolumesMode(*allowlisted_component_extension),
               FileSystemDelegate::kGrantAll);
 
     ConsentProvider::Consent result = ConsentProvider::CONSENT_IMPOSSIBLE;
-    provider.RequestConsent(*whitelisted_component_extension.get(), nullptr,
+    provider.RequestConsent(*allowlisted_component_extension.get(), nullptr,
                             volume_, true /* writable */,
-                            base::Bind(&OnConsentReceived, &result));
+                            base::BindOnce(&OnConsentReceived, &result));
     base::RunLoop().RunUntilIdle();
 
     EXPECT_EQ(0, delegate.show_dialog_counter());
@@ -179,25 +179,25 @@ TEST_F(FileSystemApiConsentProviderTest, ForNonKioskApps) {
     EXPECT_EQ(ConsentProvider::CONSENT_GRANTED, result);
   }
 
-  // Whitelisted extensions are instantly granted downloads access without
+  // Allowlisted extensions are instantly granted downloads access without
   // asking user.
   {
-    scoped_refptr<const Extension> whitelisted_extension(
+    scoped_refptr<const Extension> allowlisted_extension(
         ExtensionBuilder("Test", ExtensionBuilder::Type::PLATFORM_APP)
-            .SetLocation(Manifest::COMPONENT)
+            .SetLocation(ManifestLocation::kComponent)
             .AddPermission("fileSystem.requestDownloads")
             .Build());
     TestingConsentProviderDelegate delegate;
     ConsentProvider provider(&delegate);
-    EXPECT_EQ(provider.GetGrantVolumesMode(*whitelisted_extension),
+    EXPECT_EQ(provider.GetGrantVolumesMode(*allowlisted_extension),
               FileSystemDelegate::kGrantPerVolume);
     EXPECT_FALSE(
-        provider.IsGrantableForVolume(*whitelisted_extension, volume_));
-    EXPECT_TRUE(provider.IsGrantableForVolume(*whitelisted_extension,
+        provider.IsGrantableForVolume(*allowlisted_extension, volume_));
+    EXPECT_TRUE(provider.IsGrantableForVolume(*allowlisted_extension,
                                               download_volume_->AsWeakPtr()));
 
     ConsentProvider::Consent result = ConsentProvider::CONSENT_IMPOSSIBLE;
-    provider.RequestConsent(*whitelisted_extension.get(), nullptr,
+    provider.RequestConsent(*allowlisted_extension.get(), nullptr,
                             download_volume_->AsWeakPtr(), true /* writable */,
                             base::BindRepeating(&OnConsentReceived, &result));
     base::RunLoop().RunUntilIdle();
@@ -242,7 +242,7 @@ TEST_F(FileSystemApiConsentProviderTest, ForKioskApps) {
     ConsentProvider::Consent result = ConsentProvider::CONSENT_IMPOSSIBLE;
     provider.RequestConsent(*auto_launch_kiosk_app.get(), nullptr, volume_,
                             true /* writable */,
-                            base::Bind(&OnConsentReceived, &result));
+                            base::BindOnce(&OnConsentReceived, &result));
     base::RunLoop().RunUntilIdle();
 
     EXPECT_EQ(0, delegate.show_dialog_counter());
@@ -271,7 +271,7 @@ TEST_F(FileSystemApiConsentProviderTest, ForKioskApps) {
     ConsentProvider::Consent result = ConsentProvider::CONSENT_IMPOSSIBLE;
     provider.RequestConsent(*manual_launch_kiosk_app.get(), nullptr, volume_,
                             true /* writable */,
-                            base::Bind(&OnConsentReceived, &result));
+                            base::BindOnce(&OnConsentReceived, &result));
     base::RunLoop().RunUntilIdle();
 
     EXPECT_EQ(1, delegate.show_dialog_counter());
@@ -291,7 +291,7 @@ TEST_F(FileSystemApiConsentProviderTest, ForKioskApps) {
     ConsentProvider::Consent result = ConsentProvider::CONSENT_IMPOSSIBLE;
     provider.RequestConsent(*manual_launch_kiosk_app.get(), nullptr, volume_,
                             true /* writable */,
-                            base::Bind(&OnConsentReceived, &result));
+                            base::BindOnce(&OnConsentReceived, &result));
     base::RunLoop().RunUntilIdle();
 
     EXPECT_EQ(1, delegate.show_dialog_counter());

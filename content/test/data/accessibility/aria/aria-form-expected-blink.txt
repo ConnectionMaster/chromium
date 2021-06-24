@@ -1,2 +1,5 @@
 rootWebArea
-++form
+++genericContainer ignored
+++++genericContainer ignored
+++++++form
+++++++++genericContainer ignored

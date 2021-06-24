@@ -5,9 +5,9 @@
 (async function() {
   TestRunner.addResult(
       `Tests that editing sourcecode which is referred by multiple stylesheets (via sourceURL comment) updates all stylesheets.\n`);
-  await TestRunner.loadModule('elements_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('bindings_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadTestModule('bindings_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.loadHTML(`
       <div id="inspected">Inspected node</div>
@@ -47,6 +47,7 @@
 
   async function checkHeadersContent(expected) {
     var contents = await Promise.all(headers.map(header => header.requestContent()));
+    contents = contents.map(c => c.content);
     contents.push(uiSourceCode.workingCopy());
     var dedup = new Set(contents);
     if (dedup.size !== 1) {
@@ -55,6 +56,6 @@
       return;
     }
     TestRunner.addResult('Both headers and uiSourceCode content:');
-    TestRunner.addResult(dedup.firstValue());
+    TestRunner.addResult(dedup.size ? dedup.values().next().value : null);
   }
 })();

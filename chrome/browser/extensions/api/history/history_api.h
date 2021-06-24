@@ -10,23 +10,17 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/values.h"
 #include "chrome/common/extensions/api/history.h"
+#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_function.h"
 
 class Profile;
-
-namespace base {
-class ListValue;
-}
-
-namespace history {
-class HistoryService;
-}
 
 namespace extensions {
 
@@ -51,11 +45,12 @@ class HistoryEventRouter : public history::HistoryServiceObserver {
   void DispatchEvent(Profile* profile,
                      events::HistogramValue histogram_value,
                      const std::string& event_name,
-                     std::unique_ptr<base::ListValue> event_args);
+                     std::vector<base::Value> event_args);
 
   Profile* profile_;
-  ScopedObserver<history::HistoryService, history::HistoryServiceObserver>
-      history_service_observer_;
+  base::ScopedObservation<history::HistoryService,
+                          history::HistoryServiceObserver>
+      history_service_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HistoryEventRouter);
 };
@@ -93,7 +88,7 @@ template <>
 void BrowserContextKeyedAPIFactory<HistoryAPI>::DeclareFactoryDependencies();
 
 // Base class for history function APIs.
-class HistoryFunction : public UIThreadExtensionFunction {
+class HistoryFunction : public ExtensionFunction {
  protected:
   ~HistoryFunction() override {}
 
@@ -129,9 +124,7 @@ class HistoryGetVisitsFunction : public HistoryFunctionWithCallback {
   ResponseAction Run() override;
 
   // Callback for the history function to provide results.
-  void QueryComplete(bool success,
-                     const history::URLRow& url_row,
-                     const history::VisitVector& visits);
+  void QueryComplete(history::QueryURLResult result);
 };
 
 class HistorySearchFunction : public HistoryFunctionWithCallback {
@@ -145,7 +138,7 @@ class HistorySearchFunction : public HistoryFunctionWithCallback {
   ResponseAction Run() override;
 
   // Callback for the history function to provide results.
-  void SearchComplete(history::QueryResults* results);
+  void SearchComplete(history::QueryResults results);
 };
 
 class HistoryAddUrlFunction : public HistoryFunction {

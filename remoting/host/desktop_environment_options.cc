@@ -7,8 +7,8 @@
 #include <string>
 #include <utility>
 
-#include "base/optional.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if defined(OS_WIN)
 #include "remoting/host/win/evaluate_d3d.h"
@@ -79,6 +79,22 @@ void DesktopEnvironmentOptions::set_enable_user_interface(bool enabled) {
   enable_user_interface_ = enabled;
 }
 
+bool DesktopEnvironmentOptions::enable_notifications() const {
+  return enable_notifications_;
+}
+
+void DesktopEnvironmentOptions::set_enable_notifications(bool enabled) {
+  enable_notifications_ = enabled;
+}
+
+bool DesktopEnvironmentOptions::terminate_upon_input() const {
+  return terminate_upon_input_;
+}
+
+void DesktopEnvironmentOptions::set_terminate_upon_input(bool enabled) {
+  terminate_upon_input_ = enabled;
+}
+
 bool DesktopEnvironmentOptions::enable_file_transfer() const {
   return enable_file_transfer_;
 }
@@ -90,14 +106,13 @@ void DesktopEnvironmentOptions::set_enable_file_transfer(bool enabled) {
 void DesktopEnvironmentOptions::ApplySessionOptions(
     const SessionOptions& options) {
 #if defined(OS_WIN)
-  base::Optional<bool> directx_capturer =
-      options.GetBool("DirectX-Capturer");
+  absl::optional<bool> directx_capturer = options.GetBool("DirectX-Capturer");
   if (directx_capturer) {
     desktop_capture_options_.set_allow_directx_capturer(*directx_capturer);
   }
 #endif
   // This field is for test purpose. Usually it should not be set to false.
-  base::Optional<bool> detect_updated_region =
+  absl::optional<bool> detect_updated_region =
       options.GetBool("Detect-Updated-Region");
   if (detect_updated_region) {
     desktop_capture_options_.set_detect_updated_region(*detect_updated_region);

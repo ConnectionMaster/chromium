@@ -15,21 +15,35 @@ FragmentData::RareData::RareData() : unique_id(NewUniqueObjectId()) {}
 FragmentData::RareData::~RareData() = default;
 
 void FragmentData::DestroyTail() {
-  while (next_fragment_) {
-    // Take the following (next-next) fragment, clearing
-    // |next_fragment_->next_fragment_|.
-    std::unique_ptr<FragmentData> next =
-        std::move(next_fragment_->next_fragment_);
-    // Point |next_fragment_| to the following fragment and destroy
-    // the current |next_fragment_|.
-    next_fragment_ = std::move(next);
+  if (!rare_data_)
+    return;
+  // Take next_fragment_ which clears it in this fragment.
+  std::unique_ptr<FragmentData> next = std::move(rare_data_->next_fragment_);
+  while (next && next->rare_data_) {
+    // Take next_fragment_ which clears it in that fragment, and the assignment
+    // deletes the previous |next|.
+    next = std::move(next->rare_data_->next_fragment_);
   }
+  // The last |next| will be deleted on return.
 }
 
 FragmentData& FragmentData::EnsureNextFragment() {
-  if (!next_fragment_)
-    next_fragment_ = std::make_unique<FragmentData>();
-  return *next_fragment_.get();
+  if (!NextFragment())
+    EnsureRareData().next_fragment_ = std::make_unique<FragmentData>();
+  return *rare_data_->next_fragment_;
+}
+
+FragmentData& FragmentData::LastFragment() {
+  for (FragmentData* fragment = this;;) {
+    FragmentData* next = fragment->NextFragment();
+    if (!next)
+      return *fragment;
+    fragment = next;
+  }
+}
+
+const FragmentData& FragmentData::LastFragment() const {
+  return const_cast<FragmentData*>(this)->LastFragment();
 }
 
 FragmentData::RareData& FragmentData::EnsureRareData() {
@@ -43,7 +57,7 @@ void FragmentData::SetLayer(std::unique_ptr<PaintLayer> layer) {
     EnsureRareData().layer = std::move(layer);
 }
 
-const TransformPaintPropertyNode& FragmentData::PreTransform() const {
+const TransformPaintPropertyNodeOrAlias& FragmentData::PreTransform() const {
   if (const auto* properties = PaintProperties()) {
     if (const auto* transform = properties->Transform()) {
       DCHECK(transform->Parent());
@@ -53,7 +67,8 @@ const TransformPaintPropertyNode& FragmentData::PreTransform() const {
   return LocalBorderBoxProperties().Transform();
 }
 
-const TransformPaintPropertyNode& FragmentData::PostScrollTranslation() const {
+const TransformPaintPropertyNodeOrAlias& FragmentData::PostScrollTranslation()
+    const {
   if (const auto* properties = PaintProperties()) {
     if (properties->TransformIsolationNode())
       return *properties->TransformIsolationNode();
@@ -67,7 +82,7 @@ const TransformPaintPropertyNode& FragmentData::PostScrollTranslation() const {
   return LocalBorderBoxProperties().Transform();
 }
 
-const ClipPaintPropertyNode& FragmentData::PreClip() const {
+const ClipPaintPropertyNodeOrAlias& FragmentData::PreClip() const {
   if (const auto* properties = PaintProperties()) {
     if (const auto* clip = properties->ClipPathClip()) {
       // SPv1 composited clip-path has an alternative clip tree structure.
@@ -89,7 +104,7 @@ const ClipPaintPropertyNode& FragmentData::PreClip() const {
   return LocalBorderBoxProperties().Clip();
 }
 
-const ClipPaintPropertyNode& FragmentData::PostOverflowClip() const {
+const ClipPaintPropertyNodeOrAlias& FragmentData::PostOverflowClip() const {
   if (const auto* properties = PaintProperties()) {
     if (properties->ClipIsolationNode())
       return *properties->ClipIsolationNode();
@@ -101,7 +116,7 @@ const ClipPaintPropertyNode& FragmentData::PostOverflowClip() const {
   return LocalBorderBoxProperties().Clip();
 }
 
-const EffectPaintPropertyNode& FragmentData::PreEffect() const {
+const EffectPaintPropertyNodeOrAlias& FragmentData::PreEffect() const {
   if (const auto* properties = PaintProperties()) {
     if (const auto* effect = properties->Effect()) {
       DCHECK(effect->Parent());
@@ -115,7 +130,7 @@ const EffectPaintPropertyNode& FragmentData::PreEffect() const {
   return LocalBorderBoxProperties().Effect();
 }
 
-const EffectPaintPropertyNode& FragmentData::PreFilter() const {
+const EffectPaintPropertyNodeOrAlias& FragmentData::PreFilter() const {
   if (const auto* properties = PaintProperties()) {
     if (const auto* filter = properties->Filter()) {
       DCHECK(filter->Parent());
@@ -125,7 +140,8 @@ const EffectPaintPropertyNode& FragmentData::PreFilter() const {
   return LocalBorderBoxProperties().Effect();
 }
 
-const EffectPaintPropertyNode& FragmentData::PostIsolationEffect() const {
+const EffectPaintPropertyNodeOrAlias& FragmentData::PostIsolationEffect()
+    const {
   if (const auto* properties = PaintProperties()) {
     if (properties->EffectIsolationNode())
       return *properties->EffectIsolationNode();
@@ -138,7 +154,7 @@ void FragmentData::InvalidateClipPathCache() {
     return;
 
   rare_data_->is_clip_path_cache_valid = false;
-  rare_data_->clip_path_bounding_box = base::nullopt;
+  rare_data_->clip_path_bounding_box = absl::nullopt;
   rare_data_->clip_path_path = nullptr;
 }
 
@@ -149,37 +165,15 @@ void FragmentData::SetClipPathCache(const IntRect& bounding_box,
   rare_data_->clip_path_path = std::move(path);
 }
 
-template <typename Rect, typename PaintOffsetFunction>
-static void MapRectBetweenFragment(
-    const FragmentData& from_fragment,
-    const FragmentData& to_fragment,
-    const PaintOffsetFunction& paint_offset_function,
-    Rect& rect) {
-  if (&from_fragment == &to_fragment)
-    return;
-  const auto& from_transform =
-      from_fragment.LocalBorderBoxProperties().Transform();
-  const auto& to_transform = to_fragment.LocalBorderBoxProperties().Transform();
-  rect.MoveBy(paint_offset_function(from_fragment.PaintOffset()));
-  GeometryMapper::SourceToDestinationRect(from_transform, to_transform, rect);
-  rect.MoveBy(-paint_offset_function(to_fragment.PaintOffset()));
-}
-
 void FragmentData::MapRectToFragment(const FragmentData& fragment,
                                      IntRect& rect) const {
-  MapRectBetweenFragment(
-      *this, fragment,
-      [](const LayoutPoint& paint_offset) {
-        return RoundedIntPoint(paint_offset);
-      },
-      rect);
-}
-
-void FragmentData::MapRectToFragment(const FragmentData& fragment,
-                                     LayoutRect& rect) const {
-  MapRectBetweenFragment(
-      *this, fragment,
-      [](const LayoutPoint& paint_offset) { return paint_offset; }, rect);
+  if (this == &fragment)
+    return;
+  const auto& from_transform = LocalBorderBoxProperties().Transform();
+  const auto& to_transform = fragment.LocalBorderBoxProperties().Transform();
+  rect.MoveBy(RoundedIntPoint(PaintOffset()));
+  GeometryMapper::SourceToDestinationRect(from_transform, to_transform, rect);
+  rect.MoveBy(-RoundedIntPoint(fragment.PaintOffset()));
 }
 
 }  // namespace blink

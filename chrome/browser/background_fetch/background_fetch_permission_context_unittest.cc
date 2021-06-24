@@ -51,8 +51,7 @@ class BackgroundFetchPermissionContextTest
         HostContentSettingsMapFactory::GetForProfile(profile());
     ASSERT_TRUE(host_content_settings_map);
     host_content_settings_map->SetContentSettingDefaultScope(
-        url /* primary_url*/, url /* secondary_url*/, content_type,
-        std::string() /* resource_identifier */, setting);
+        url /* primary_url*/, url /* secondary_url*/, content_type, setting);
   }
 
  private:
@@ -69,18 +68,18 @@ TEST_F(BackgroundFetchPermissionContextTest, TestOutcomeAllowWithFrame) {
             CONTENT_SETTING_ALLOW);
 }
 
-// Test that Background Fetch permission is "allow" when queried from a worker
+// Test that Background Fetch permission is "prompt" when queried from a worker
 // context, if the Automatic Downloads content setting is set to
 // CONTENT_SETTING_ALLOW.
 TEST_F(BackgroundFetchPermissionContextTest, TestOutcomeAllowWithoutFrame) {
   GURL url("https://example.com");
-  SetContentSetting(url, CONTENT_SETTINGS_TYPE_AUTOMATIC_DOWNLOADS,
+  SetContentSetting(url, ContentSettingsType::AUTOMATIC_DOWNLOADS,
                     CONTENT_SETTING_ALLOW);
 
   BackgroundFetchPermissionContext permission_context(profile());
 
   EXPECT_EQ(GetPermissonStatus(url, &permission_context, /*with_frame =*/false),
-            CONTENT_SETTING_ALLOW);
+            CONTENT_SETTING_ASK);
 }
 
 // Test that Background Fetch permission is "deny" when queried from a worker
@@ -88,7 +87,7 @@ TEST_F(BackgroundFetchPermissionContextTest, TestOutcomeAllowWithoutFrame) {
 // CONTENT_SETTING_BLOCK.
 TEST_F(BackgroundFetchPermissionContextTest, TestOutcomeDenyWithoutFrame) {
   GURL url("https://example.com");
-  SetContentSetting(url, CONTENT_SETTINGS_TYPE_AUTOMATIC_DOWNLOADS,
+  SetContentSetting(url, ContentSettingsType::AUTOMATIC_DOWNLOADS,
                     CONTENT_SETTING_BLOCK);
 
   BackgroundFetchPermissionContext permission_context(profile());
@@ -104,7 +103,7 @@ TEST_F(BackgroundFetchPermissionContextTest, TestOutcomePromptWithoutFrame) {
   ASSERT_TRUE(host_content_settings_map);
 
   GURL url("https://example.com");
-  SetContentSetting(url, CONTENT_SETTINGS_TYPE_AUTOMATIC_DOWNLOADS,
+  SetContentSetting(url, ContentSettingsType::AUTOMATIC_DOWNLOADS,
                     CONTENT_SETTING_ASK);
 
   BackgroundFetchPermissionContext permission_context(profile());

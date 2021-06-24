@@ -6,20 +6,21 @@
 
 #include <memory>
 
-#include "base/logging.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/connector.h"
 #include "services/service_manager/public/cpp/constants.h"
 #include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/cpp/service_binding.h"
+#include "services/service_manager/public/cpp/service_receiver.h"
 #include "services/service_manager/public/mojom/service.mojom.h"
 #include "services/service_manager/public/mojom/service_manager.mojom.h"
 #include "services/service_manager/service_manager.h"
 #include "services/service_manager/tests/service_manager/test_manifests.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace service_manager {
 namespace {
@@ -30,8 +31,9 @@ constexpr uint32_t kTestTargetPid2 = 8910;
 
 class TestListener : public mojom::ServiceManagerListener {
  public:
-  explicit TestListener(mojom::ServiceManagerListenerRequest request)
-      : binding_(this, std::move(request)) {}
+  explicit TestListener(
+      mojo::PendingReceiver<mojom::ServiceManagerListener> receiver)
+      : receiver_(this, std::move(receiver)) {}
   ~TestListener() override = default;
 
   void WaitForInit() { wait_for_init_loop_.Run(); }
@@ -63,10 +65,10 @@ class TestListener : public mojom::ServiceManagerListener {
   void OnServicePIDReceived(const Identity& identity, uint32_t pid) override {}
 
  private:
-  mojo::Binding<mojom::ServiceManagerListener> binding_;
+  mojo::Receiver<mojom::ServiceManagerListener> receiver_;
   base::RunLoop wait_for_init_loop_;
 
-  base::Optional<base::RunLoop> wait_for_start_loop_;
+  absl::optional<base::RunLoop> wait_for_start_loop_;
   Identity* wait_for_start_identity_ = nullptr;
   uint32_t* wait_for_start_pid_ = nullptr;
 
@@ -75,18 +77,18 @@ class TestListener : public mojom::ServiceManagerListener {
 
 class TestTargetService : public Service {
  public:
-  explicit TestTargetService(mojom::ServiceRequest request)
-      : binding_(this, std::move(request)) {}
+  explicit TestTargetService(mojo::PendingReceiver<mojom::Service> receiver)
+      : receiver_(this, std::move(receiver)) {}
   ~TestTargetService() override = default;
 
-  Connector* connector() { return binding_.GetConnector(); }
+  Connector* connector() { return receiver_.GetConnector(); }
 
   // Tells the Service Manager this instance wants to die, and waits for ack.
   // When this returns, we can be sure the Service Manager is no longer keeping
   // this instance's Identity reserved and we may reuse it (modulo a new
   // globally unique ID) for another instance.
   void QuitGracefullyAndWait() {
-    binding_.RequestClose();
+    receiver_.RequestClose();
     wait_for_disconnect_loop_.Run();
   }
 
@@ -94,7 +96,7 @@ class TestTargetService : public Service {
   // Service:
   void OnDisconnected() override { wait_for_disconnect_loop_.Quit(); }
 
-  ServiceBinding binding_;
+  ServiceReceiver receiver_;
   base::RunLoop wait_for_disconnect_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(TestTargetService);
@@ -103,37 +105,39 @@ class TestTargetService : public Service {
 class ServiceManagerListenerTest : public testing::Test, public Service {
  public:
   ServiceManagerListenerTest()
-      : service_manager_(nullptr, GetTestManifests()) {}
-
+      : service_manager_(GetTestManifests(),
+                         ServiceManager::ServiceExecutablePolicy::kSupported) {}
   ~ServiceManagerListenerTest() override = default;
 
-  Connector* connector() { return service_binding_.GetConnector(); }
+  Connector* connector() { return service_receiver_.GetConnector(); }
 
   void SetUp() override {
-    service_binding_.Bind(
+    service_receiver_.Bind(
         RegisterServiceInstance(kTestServiceName, kTestSelfPid));
 
-    mojom::ServiceManagerPtr service_manager;
-    connector()->BindInterface(mojom::kServiceName, &service_manager);
+    mojo::Remote<mojom::ServiceManager> service_manager;
+    connector()->Connect(mojom::kServiceName,
+                         service_manager.BindNewPipeAndPassReceiver());
 
-    mojom::ServiceManagerListenerPtr listener_proxy;
-    listener_ =
-        std::make_unique<TestListener>(mojo::MakeRequest(&listener_proxy));
+    mojo::PendingRemote<mojom::ServiceManagerListener> listener_proxy;
+    listener_ = std::make_unique<TestListener>(
+        listener_proxy.InitWithNewPipeAndPassReceiver());
     service_manager->AddListener(std::move(listener_proxy));
     listener_->WaitForInit();
   }
 
-  mojom::ServiceRequest RegisterServiceInstance(const std::string& service_name,
-                                                uint32_t fake_pid) {
-    mojom::ServicePtr proxy;
-    mojom::ServiceRequest request = mojo::MakeRequest(&proxy);
-    mojom::PIDReceiverPtr pid_receiver;
+  mojo::PendingReceiver<mojom::Service> RegisterServiceInstance(
+      const std::string& service_name,
+      uint32_t fake_pid) {
+    mojo::PendingRemote<mojom::Service> service;
+    auto receiver = service.InitWithNewPipeAndPassReceiver();
+    mojo::Remote<mojom::ProcessMetadata> metadata;
     service_manager_.RegisterService(
         Identity(service_name, kSystemInstanceGroup, base::Token{},
                  base::Token::CreateRandom()),
-        std::move(proxy), mojo::MakeRequest(&pid_receiver));
-    pid_receiver->SetPID(fake_pid);
-    return request;
+        std::move(service), metadata.BindNewPipeAndPassReceiver());
+    metadata->SetPID(fake_pid);
+    return receiver;
   }
 
   void WaitForServiceStarted(Identity* out_identity, uint32_t* out_pid) {
@@ -141,9 +145,9 @@ class ServiceManagerListenerTest : public testing::Test, public Service {
   }
 
  private:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   ServiceManager service_manager_;
-  ServiceBinding service_binding_{this};
+  ServiceReceiver service_receiver_{this};
   std::unique_ptr<TestListener> listener_;
 
   DISALLOW_COPY_AND_ASSIGN(ServiceManagerListenerTest);

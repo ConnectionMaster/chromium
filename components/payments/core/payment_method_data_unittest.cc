@@ -14,24 +14,16 @@ namespace payments {
 TEST(PaymentMethodData, FromDictionaryValueSuccess_SupportedMethodsString) {
   PaymentMethodData expected;
   expected.supported_method = "basic-card";
-  expected.data =
-      "{\"supportedNetworks\":[\"mastercard\"],"
-      "\"supportedTypes\":[\"debit\",\"credit\"]}";
+  expected.data = "{\"supportedNetworks\":[\"mastercard\"]}";
   expected.supported_networks.push_back("mastercard");
-  expected.supported_types.insert(autofill::CreditCard::CARD_TYPE_DEBIT);
-  expected.supported_types.insert(autofill::CreditCard::CARD_TYPE_CREDIT);
 
   base::DictionaryValue method_data_dict;
   method_data_dict.SetString("supportedMethods", "basic-card");
-  auto data_dict = std::make_unique<base::DictionaryValue>();
-  auto supported_networks_list = std::make_unique<base::ListValue>();
-  supported_networks_list->AppendString("mastercard");
-  data_dict->Set("supportedNetworks", std::move(supported_networks_list));
-  auto supported_types_list = std::make_unique<base::ListValue>();
-  supported_types_list->AppendString("debit");
-  supported_types_list->AppendString("credit");
-  data_dict->Set("supportedTypes", std::move(supported_types_list));
-  method_data_dict.Set("data", std::move(data_dict));
+  base::DictionaryValue data_dict;
+  base::ListValue supported_networks_list;
+  supported_networks_list.AppendString("mastercard");
+  data_dict.SetKey("supportedNetworks", std::move(supported_networks_list));
+  method_data_dict.SetKey("data", std::move(data_dict));
 
   PaymentMethodData actual;
   EXPECT_TRUE(actual.FromDictionaryValue(method_data_dict));
@@ -48,15 +40,17 @@ TEST(PaymentMethodData, FromDictionaryValueFailure) {
   EXPECT_FALSE(actual.FromDictionaryValue(method_data_dict));
 
   // The value in the supported methods list must be a string.
-  auto supported_methods_list1 = std::make_unique<base::ListValue>();
-  supported_methods_list1->AppendInteger(13);
-  method_data_dict.Set("supportedMethods", std::move(supported_methods_list1));
+  base::ListValue supported_methods_list1;
+  supported_methods_list1.AppendInteger(13);
+  method_data_dict.SetKey("supportedMethods",
+                          std::move(supported_methods_list1));
   EXPECT_FALSE(actual.FromDictionaryValue(method_data_dict));
 
   // The value in the supported methods list must be a non-empty string.
-  auto supported_methods_list2 = std::make_unique<base::ListValue>();
-  supported_methods_list2->AppendString("");
-  method_data_dict.Set("supportedMethods", std::move(supported_methods_list2));
+  base::ListValue supported_methods_list2;
+  supported_methods_list2.AppendString("");
+  method_data_dict.SetKey("supportedMethods",
+                          std::move(supported_methods_list2));
   EXPECT_FALSE(actual.FromDictionaryValue(method_data_dict));
 
   // The value in the supported methods must be a string.
@@ -99,13 +93,6 @@ TEST(PaymentMethodData, Equality) {
   method_data2.supported_networks = supported_networks2;
   EXPECT_NE(method_data1, method_data2);
   method_data2.supported_networks = supported_networks1;
-  EXPECT_EQ(method_data1, method_data2);
-
-  method_data1.supported_types = {autofill::CreditCard::CARD_TYPE_UNKNOWN};
-  EXPECT_NE(method_data1, method_data2);
-  method_data2.supported_types = {autofill::CreditCard::CARD_TYPE_DEBIT};
-  EXPECT_NE(method_data1, method_data2);
-  method_data2.supported_types = method_data1.supported_types;
   EXPECT_EQ(method_data1, method_data2);
 }
 

@@ -44,7 +44,7 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramerVisitorInterface {
                          spdy::SpdyStreamId parent_stream_id,
                          bool exclusive,
                          bool fin,
-                         spdy::SpdyHeaderBlock headers,
+                         spdy::Http2HeaderBlock headers,
                          base::TimeTicks recv_first_byte_time) = 0;
 
   // Called when a data frame header is received.
@@ -101,7 +101,7 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramerVisitorInterface {
   // Called when a PUSH_PROMISE frame has been parsed.
   virtual void OnPushPromise(spdy::SpdyStreamId stream_id,
                              spdy::SpdyStreamId promised_stream_id,
-                             spdy::SpdyHeaderBlock headers) = 0;
+                             spdy::Http2HeaderBlock headers) = 0;
 
   // Called when an ALTSVC frame has been parsed.
   virtual void OnAltSvc(
@@ -147,8 +147,8 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramer
   void set_debug_visitor(spdy::SpdyFramerDebugVisitorInterface* debug_visitor);
 
   // spdy::SpdyFramerVisitorInterface
-  void OnError(
-      http2::Http2DecoderAdapter::SpdyFramerError spdy_framer_error) override;
+  void OnError(http2::Http2DecoderAdapter::SpdyFramerError spdy_framer_error,
+               std::string detailed_error) override;
   void OnHeaders(spdy::SpdyStreamId stream_id,
                  bool has_priority,
                  int weight,
@@ -181,7 +181,7 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramer
                      spdy::SpdyStreamId promised_stream_id,
                      bool end) override;
   void OnAltSvc(spdy::SpdyStreamId stream_id,
-                base::StringPiece origin,
+                absl::string_view origin,
                 const spdy::SpdyAltSvcWireFormat::AlternativeServiceVector&
                     altsvc_vector) override;
   void OnDataFrameHeader(spdy::SpdyStreamId stream_id,
@@ -192,6 +192,8 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramer
                   spdy::SpdyStreamId parent_stream_id,
                   int weight,
                   bool exclusive) override {}
+  void OnPriorityUpdate(spdy::SpdyStreamId prioritized_stream_id,
+                        absl::string_view priority_field_value) override {}
   bool OnUnknownFrame(spdy::SpdyStreamId stream_id,
                       uint8_t frame_type) override;
 
@@ -232,15 +234,17 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramer
 
   int frames_received() const { return frames_received_; }
 
-  // Returns the estimate of dynamically allocated memory in bytes.
-  size_t EstimateMemoryUsage() const;
+  // Updates the maximum size of the header encoder compression table.
+  void UpdateHeaderEncoderTableSize(uint32_t value);
+  // Returns the maximum size of the header encoder compression table.
+  uint32_t header_encoder_table_size() const;
 
  private:
   spdy::SpdyFramer spdy_framer_;
   http2::Http2DecoderAdapter deframer_;
   BufferedSpdyFramerVisitorInterface* visitor_;
 
-  int frames_received_;
+  int frames_received_ = 0;
 
   // Collection of fields from control frames that we need to
   // buffer up from the spdy framer.
@@ -248,16 +252,16 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramer
     ControlFrameFields();
 
     spdy::SpdyFrameType type;
-    spdy::SpdyStreamId stream_id;
-    spdy::SpdyStreamId associated_stream_id;
-    spdy::SpdyStreamId promised_stream_id;
-    bool has_priority;
-    spdy::SpdyPriority priority;
-    int weight;
-    spdy::SpdyStreamId parent_stream_id;
-    bool exclusive;
-    bool fin;
-    bool unidirectional;
+    spdy::SpdyStreamId stream_id = 0U;
+    spdy::SpdyStreamId associated_stream_id = 0U;
+    spdy::SpdyStreamId promised_stream_id = 0U;
+    bool has_priority = false;
+    spdy::SpdyPriority priority = 0U;
+    int weight = 0;
+    spdy::SpdyStreamId parent_stream_id = 0U;
+    bool exclusive = false;
+    bool fin = false;
+    bool unidirectional = false;
     base::TimeTicks recv_first_byte_time;
   };
   std::unique_ptr<ControlFrameFields> control_frame_fields_;
@@ -267,9 +271,6 @@ class NET_EXPORT_PRIVATE BufferedSpdyFramer
     spdy::SpdyStreamId last_accepted_stream_id;
     spdy::SpdyErrorCode error_code;
     std::string debug_data;
-
-    // Returns the estimate of dynamically allocated memory in bytes.
-    size_t EstimateMemoryUsage() const;
   };
   std::unique_ptr<GoAwayFields> goaway_fields_;
 

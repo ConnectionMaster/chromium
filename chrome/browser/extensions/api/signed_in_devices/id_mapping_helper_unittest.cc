@@ -8,18 +8,36 @@
 #include <string>
 
 #include "base/guid.h"
+#include "base/time/time.h"
 #include "base/values.h"
-#include "components/sync/device_info/device_info.h"
+#include "components/sync/protocol/sync_enums.pb.h"
+#include "components/sync_device_info/device_info.h"
+#include "components/sync_device_info/device_info_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using syncer::DeviceInfo;
 
+namespace {
+std::unique_ptr<DeviceInfo> CreateDevice(const std::string& guid,
+                                         const std::string& name,
+                                         const std::string& device_id) {
+  return std::make_unique<DeviceInfo>(
+      guid, name, "chrome_version", "user_agent",
+      sync_pb::SyncEnums_DeviceType_TYPE_LINUX, device_id, "manufacturer",
+      "model", "full_hardware_class", base::Time(),
+      syncer::DeviceInfoUtil::GetPulseInterval(),
+      /*send_tab_to_self_receiving_enabled=*/true,
+      /*sharing_info=*/absl::nullopt, /*paask_info=*/absl::nullopt,
+      /*fcm_registration_token=*/std::string(),
+      /*interested_data_types=*/syncer::ModelTypeSet());
+}
+}  // namespace
+
 namespace extensions {
-bool VerifyDictionary(
-    const std::string& path,
-    const std::string& expected_value,
-    const base::DictionaryValue& dictionary) {
+bool VerifyDictionary(const std::string& path,
+                      const std::string& expected_value,
+                      const base::DictionaryValue& dictionary) {
   std::string out;
   if (dictionary.GetString(path, &out)) {
     return (out == expected_value);
@@ -31,13 +49,10 @@ bool VerifyDictionary(
 TEST(IdMappingHelperTest, SetIdsForDevices) {
   std::vector<std::unique_ptr<DeviceInfo>> devices;
 
-  devices.push_back(std::make_unique<DeviceInfo>(
-      base::GenerateGUID(), "abc Device", "XYZ v1", "XYZ SyncAgent v1",
-      sync_pb::SyncEnums_DeviceType_TYPE_LINUX, "device_id1"));
-
-  devices.push_back(std::make_unique<DeviceInfo>(
-      base::GenerateGUID(), "def Device", "XYZ v1", "XYZ SyncAgent v1",
-      sync_pb::SyncEnums_DeviceType_TYPE_LINUX, "device_id2"));
+  devices.push_back(
+      CreateDevice(base::GenerateGUID(), "abc Device", "device_id1"));
+  devices.push_back(
+      CreateDevice(base::GenerateGUID(), "def Device", "device_id2"));
 
   base::DictionaryValue dictionary;
 
@@ -52,9 +67,8 @@ TEST(IdMappingHelperTest, SetIdsForDevices) {
   EXPECT_NE(public_id1, public_id2);
 
   // Now add a third device.
-  devices.push_back(std::make_unique<DeviceInfo>(
-      base::GenerateGUID(), "ghi Device", "XYZ v1", "XYZ SyncAgent v1",
-      sync_pb::SyncEnums_DeviceType_TYPE_LINUX, "device_id3"));
+  devices.push_back(
+      CreateDevice(base::GenerateGUID(), "ghi Device", "device_id3"));
 
   CreateMappingForUnmappedDevices(devices, &dictionary);
 
@@ -73,6 +87,6 @@ TEST(IdMappingHelperTest, SetIdsForDevices) {
   EXPECT_TRUE(VerifyDictionary(public_id2, devices[1]->guid(), dictionary));
   EXPECT_TRUE(VerifyDictionary(public_id3, devices[2]->guid(), dictionary));
 
-  EXPECT_EQ(dictionary.size(), 3U);
+  EXPECT_EQ(dictionary.DictSize(), 3U);
 }
 }  // namespace extensions

@@ -8,7 +8,6 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
 #include "base/threading/thread_checker.h"
 #include "media/audio/audio_device_description.h"
@@ -16,6 +15,7 @@
 #include "media/audio/mock_audio_manager.h"
 #include "media/base/audio_parameters.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -31,7 +31,7 @@ class AudioSystemCallbackExpectations {
   AudioSystem::OnAudioParamsCallback GetAudioParamsCallback(
       const base::Location& location,
       base::OnceClosure on_cb_received,
-      const base::Optional<AudioParameters>& expected_params);
+      const absl::optional<AudioParameters>& expected_params);
 
   AudioSystem::OnBoolCallback GetBoolCallback(const base::Location& location,
                                               base::OnceClosure on_cb_received,
@@ -45,20 +45,20 @@ class AudioSystemCallbackExpectations {
   AudioSystem::OnInputDeviceInfoCallback GetInputDeviceInfoCallback(
       const base::Location& location,
       base::OnceClosure on_cb_received,
-      const base::Optional<AudioParameters>& expected_input,
-      const base::Optional<std::string>& expected_associated_device_id);
+      const absl::optional<AudioParameters>& expected_input,
+      const absl::optional<std::string>& expected_associated_device_id);
 
   AudioSystem::OnDeviceIdCallback GetDeviceIdCallback(
       const base::Location& location,
       base::OnceClosure on_cb_received,
-      const base::Optional<std::string>& expected_id);
+      const absl::optional<std::string>& expected_id);
 
  private:
   // Methods to verify correctness of received data.
   void OnAudioParams(const std::string& from_here,
                      base::OnceClosure on_cb_received,
-                     const base::Optional<AudioParameters>& expected,
-                     const base::Optional<AudioParameters>& received);
+                     const absl::optional<AudioParameters>& expected,
+                     const absl::optional<AudioParameters>& received);
 
   void OnBool(const std::string& from_here,
               base::OnceClosure on_cb_received,
@@ -74,15 +74,15 @@ class AudioSystemCallbackExpectations {
   void OnInputDeviceInfo(
       const std::string& from_here,
       base::OnceClosure on_cb_received,
-      const base::Optional<AudioParameters>& expected_input,
-      const base::Optional<std::string>& expected_associated_device_id,
-      const base::Optional<AudioParameters>& input,
-      const base::Optional<std::string>& associated_device_id);
+      const absl::optional<AudioParameters>& expected_input,
+      const absl::optional<std::string>& expected_associated_device_id,
+      const absl::optional<AudioParameters>& input,
+      const absl::optional<std::string>& associated_device_id);
 
   void OnDeviceId(const std::string& from_here,
                   base::OnceClosure on_cb_received,
-                  const base::Optional<std::string>& expected_id,
-                  const base::Optional<std::string>& result_id);
+                  const absl::optional<std::string>& expected_id,
+                  const absl::optional<std::string>& result_id);
 
   THREAD_CHECKER(thread_checker_);
   DISALLOW_COPY_AND_ASSIGN(AudioSystemCallbackExpectations);
@@ -119,11 +119,11 @@ class AudioSystemTestTemplate : public T {
     };
 
     audio_manager()->SetInputDeviceDescriptionsCallback(
-        base::Bind(get_device_descriptions,
-                   base::Unretained(&input_device_descriptions_)));
+        base::BindRepeating(get_device_descriptions,
+                            base::Unretained(&input_device_descriptions_)));
     audio_manager()->SetOutputDeviceDescriptionsCallback(
-        base::Bind(get_device_descriptions,
-                   base::Unretained(&output_device_descriptions_)));
+        base::BindRepeating(get_device_descriptions,
+                            base::Unretained(&output_device_descriptions_)));
   }
 
  protected:
@@ -160,7 +160,7 @@ TYPED_TEST_P(AudioSystemTestTemplate, GetInputStreamParametersNoDevice) {
       AudioDeviceDescription::kDefaultDeviceId,
       this->expectations_.GetAudioParamsCallback(
           FROM_HERE, wait_loop.QuitClosure(),
-          base::Optional<AudioParameters>()));
+          absl::optional<AudioParameters>()));
   wait_loop.Run();
 }
 
@@ -190,7 +190,7 @@ TYPED_TEST_P(AudioSystemTestTemplate,
       AudioDeviceDescription::kDefaultDeviceId,
       this->expectations_.GetAudioParamsCallback(
           FROM_HERE, wait_loop.QuitClosure(),
-          base::Optional<AudioParameters>()));
+          absl::optional<AudioParameters>()));
   wait_loop.Run();
 }
 
@@ -201,7 +201,7 @@ TYPED_TEST_P(AudioSystemTestTemplate,
   this->audio_system()->GetOutputStreamParameters(
       "non-default-device-id", this->expectations_.GetAudioParamsCallback(
                                    FROM_HERE, wait_loop.QuitClosure(),
-                                   base::Optional<AudioParameters>()));
+                                   absl::optional<AudioParameters>()));
   wait_loop.Run();
 }
 
@@ -304,9 +304,9 @@ TYPED_TEST_P(AudioSystemTestTemplate, GetOutputDeviceDescriptions) {
 TYPED_TEST_P(AudioSystemTestTemplate, GetAssociatedOutputDeviceID) {
   const std::string associated_id("associated_id");
   this->audio_manager()->SetAssociatedOutputDeviceIDCallback(
-      base::Bind([](const std::string& result,
-                    const std::string&) -> std::string { return result; },
-                 associated_id));
+      base::BindRepeating([](const std::string& result, const std::string&)
+                              -> std::string { return result; },
+                          associated_id));
 
   base::RunLoop wait_loop;
   this->audio_system()->GetAssociatedOutputDeviceID(
@@ -321,16 +321,16 @@ TYPED_TEST_P(AudioSystemTestTemplate, GetInputDeviceInfoNoAssociation) {
       "non-default-device-id",
       this->expectations_.GetInputDeviceInfoCallback(
           FROM_HERE, wait_loop.QuitClosure(), this->input_params_,
-          base::Optional<std::string>()));
+          absl::optional<std::string>()));
   wait_loop.Run();
 }
 
 TYPED_TEST_P(AudioSystemTestTemplate, GetInputDeviceInfoWithAssociation) {
   const std::string associated_id("associated_id");
   this->audio_manager()->SetAssociatedOutputDeviceIDCallback(
-      base::Bind([](const std::string& result,
-                    const std::string&) -> std::string { return result; },
-                 associated_id));
+      base::BindRepeating([](const std::string& result, const std::string&)
+                              -> std::string { return result; },
+                          associated_id));
 
   base::RunLoop wait_loop;
   this->audio_system()->GetInputDeviceInfo(

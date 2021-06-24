@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/predictors/loading_predictor_config.h"
+
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/net/prediction_options.h"
-#include "chrome/browser/predictors/loading_predictor_config.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace predictors {
@@ -22,7 +23,7 @@ class LoadingPredictorConfigTest : public testing::Test {
   Profile* profile() { return &profile_; }
 
  private:
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   TestingProfile profile_;
 };
 
@@ -56,15 +57,29 @@ TEST_F(LoadingPredictorConfigTest, FeatureEnabledAndPrefDisabled) {
   EXPECT_FALSE(IsPreconnectAllowed(profile()));
 }
 
-TEST_F(LoadingPredictorConfigTest, OffTheRecordProfile) {
+TEST_F(LoadingPredictorConfigTest, IncognitoProfile) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(predictors::kSpeculativePreconnectFeature);
   SetPreference(chrome_browser_net::NETWORK_PREDICTION_ALWAYS);
-  Profile* incognito = profile()->GetOffTheRecordProfile();
+  Profile* incognito =
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
 
   EXPECT_TRUE(IsPreconnectFeatureEnabled());
   EXPECT_FALSE(IsLoadingPredictorEnabled(incognito));
   EXPECT_TRUE(IsPreconnectAllowed(incognito));
+}
+
+TEST_F(LoadingPredictorConfigTest, NonPrimaryOffTheRecordProfile) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(predictors::kSpeculativePreconnectFeature);
+  SetPreference(chrome_browser_net::NETWORK_PREDICTION_ALWAYS);
+  Profile* otr_profile = profile()->GetOffTheRecordProfile(
+      Profile::OTRProfileID::CreateUniqueForTesting(),
+      /*create_if_needed=*/true);
+
+  EXPECT_TRUE(IsPreconnectFeatureEnabled());
+  EXPECT_FALSE(IsLoadingPredictorEnabled(otr_profile));
+  EXPECT_TRUE(IsPreconnectAllowed(otr_profile));
 }
 
 }  // namespace predictors

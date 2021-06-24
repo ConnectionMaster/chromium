@@ -31,20 +31,14 @@
 #include "third_party/blink/renderer/core/html/parser/html_document_parser.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
 SpeculationsPumpSession::SpeculationsPumpSession(unsigned& nesting_level)
     : NestingLevelIncrementer(nesting_level),
-      start_time_(CurrentTime()),
       processed_element_tokens_(0) {}
 
 SpeculationsPumpSession::~SpeculationsPumpSession() = default;
-
-inline double SpeculationsPumpSession::ElapsedTime() const {
-  return CurrentTime() - start_time_;
-}
 
 void SpeculationsPumpSession::AddedElementTokens(size_t count) {
   processed_element_tokens_ += count;
@@ -53,48 +47,27 @@ void SpeculationsPumpSession::AddedElementTokens(size_t count) {
 HTMLParserScheduler::HTMLParserScheduler(
     HTMLDocumentParser* parser,
     scoped_refptr<base::SingleThreadTaskRunner> loading_task_runner)
-    : parser_(parser),
-      loading_task_runner_(std::move(loading_task_runner)),
-      is_paused_with_active_timer_(false) {}
+    : parser_(parser), loading_task_runner_(std::move(loading_task_runner)) {}
 
 HTMLParserScheduler::~HTMLParserScheduler() = default;
 
-void HTMLParserScheduler::Trace(Visitor* visitor) {
+void HTMLParserScheduler::Trace(Visitor* visitor) const {
   visitor->Trace(parser_);
 }
 
 bool HTMLParserScheduler::IsScheduledForUnpause() const {
-  return is_paused_with_active_timer_ ||
-         cancellable_continue_parse_task_handle_.IsActive();
+  return cancellable_continue_parse_task_handle_.IsActive();
 }
 
 void HTMLParserScheduler::ScheduleForUnpause() {
-  DCHECK(!is_paused_with_active_timer_);
   cancellable_continue_parse_task_handle_ =
       PostCancellableTask(*loading_task_runner_, FROM_HERE,
                           WTF::Bind(&HTMLParserScheduler::ContinueParsing,
                                     WrapWeakPersistent(this)));
 }
 
-void HTMLParserScheduler::Pause() {
-  DCHECK(!is_paused_with_active_timer_);
-  if (!cancellable_continue_parse_task_handle_.IsActive())
-    return;
-  is_paused_with_active_timer_ = true;
-  cancellable_continue_parse_task_handle_.Cancel();
-}
-
-void HTMLParserScheduler::Unpause() {
-  DCHECK(!cancellable_continue_parse_task_handle_.IsActive());
-  if (!is_paused_with_active_timer_)
-    return;
-  is_paused_with_active_timer_ = false;
-  ScheduleForUnpause();
-}
-
 void HTMLParserScheduler::Detach() {
   cancellable_continue_parse_task_handle_.Cancel();
-  is_paused_with_active_timer_ = false;
 }
 
 inline bool HTMLParserScheduler::ShouldYield(
@@ -103,7 +76,8 @@ inline bool HTMLParserScheduler::ShouldYield(
   if (ThreadScheduler::Current()->ShouldYieldForHighPriorityWork())
     return true;
 
-  const double kParserTimeLimit = 0.5;
+  const base::TimeDelta kParserTimeLimit =
+      base::TimeDelta::FromMilliseconds(500);
   if (session.ElapsedTime() > kParserTimeLimit)
     return true;
 
@@ -130,11 +104,6 @@ bool HTMLParserScheduler::YieldIfNeeded(const SpeculationsPumpSession& session,
   }
 
   return false;
-}
-
-void HTMLParserScheduler::ForceUnpauseAfterYield() {
-  DCHECK(!cancellable_continue_parse_task_handle_.IsActive());
-  is_paused_with_active_timer_ = true;
 }
 
 void HTMLParserScheduler::ContinueParsing() {

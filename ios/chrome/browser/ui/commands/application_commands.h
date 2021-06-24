@@ -7,27 +7,36 @@
 
 #import <Foundation/Foundation.h>
 
-#import "ios/chrome/browser/ui/commands/browsing_data_commands.h"
+#include "ios/public/provider/chrome/browser/user_feedback/user_feedback_sender.h"
 
+class GURL;
 @class OpenNewTabCommand;
 @class ShowSigninCommand;
 @class StartVoiceSearchCommand;
 @class UIViewController;
+namespace syncer {
+enum class KeyRetrievalTriggerForUMA;
+}  // namespace syncer
 
 // This protocol groups commands that are part of ApplicationCommands, but
 // may also be forwarded directly to a settings navigation controller.
 @protocol ApplicationSettingsCommands
 
-// Shows the accounts settings UI, presenting from |baseViewController|.
+// TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
+// Shows the accounts settings UI, presenting from |baseViewController|. If
+// |baseViewController| is nil BVC will be used as presenterViewController.
 - (void)showAccountsSettingsFromViewController:
     (UIViewController*)baseViewController;
 
+// TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
 // Shows the Google services settings UI, presenting from |baseViewController|.
+// If |baseViewController| is nil BVC will be used as presenterViewController.
 - (void)showGoogleServicesSettingsFromViewController:
     (UIViewController*)baseViewController;
 
 // TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
-// Shows the sync settings UI, presenting from |baseViewController|.
+// Shows the Sync settings UI, presenting from |baseViewController|.
+// If |baseViewController| is nil BVC will be used as presenterViewController.
 - (void)showSyncSettingsFromViewController:
     (UIViewController*)baseViewController;
 
@@ -41,12 +50,22 @@
 - (void)showSavedPasswordsSettingsFromViewController:
     (UIViewController*)baseViewController;
 
+// Shows the list of saved passwords in the settings. Automatically starts
+// password check.
+- (void)showSavedPasswordsSettingsAndStartPasswordCheckFromViewController:
+    (UIViewController*)baseViewController;
+
 // Shows the list of profiles (addresess) in the settings.
 - (void)showProfileSettingsFromViewController:
     (UIViewController*)baseViewController;
 
 // Shows the list of credit cards in the settings.
 - (void)showCreditCardSettingsFromViewController:
+    (UIViewController*)baseViewController;
+
+// Shows the settings page informing the user how to set Chrome as the default
+// browser.
+- (void)showDefaultBrowserSettingsFromViewController:
     (UIViewController*)baseViewController;
 
 @end
@@ -58,9 +77,7 @@
 // object that implements the methods in this protocol should be able to forward
 // ApplicationSettingsCommands to the settings view controller if necessary.
 
-@protocol ApplicationCommands<NSObject,
-                              ApplicationSettingsCommands,
-                              BrowsingDataCommands>
+@protocol ApplicationCommands <NSObject, ApplicationSettingsCommands>
 
 // Dismisses all modal dialogs.
 - (void)dismissModalDialogs;
@@ -68,6 +85,25 @@
 // TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
 // Shows the Settings UI, presenting from |baseViewController|.
 - (void)showSettingsFromViewController:(UIViewController*)baseViewController;
+
+// TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
+// Shows the advanced sign-in settings.
+- (void)showAdvancedSigninSettingsFromViewController:
+    (UIViewController*)baseViewController;
+
+- (void)showLocationPermissionsFromViewController:
+    (UIViewController*)baseViewController;
+
+// Presents the Trusted Vault reauth dialog.
+// |baseViewController| presents the sign-in.
+// |retrievalTrigger| UI elements where the trusted vault reauth has been
+// triggered.
+- (void)
+    showTrustedVaultReauthenticationFromViewController:
+        (UIViewController*)baseViewController
+                                      retrievalTrigger:
+                                          (syncer::KeyRetrievalTriggerForUMA)
+                                              retrievalTrigger;
 
 // Starts a voice search on the current BVC.
 - (void)startVoiceSearch;
@@ -84,8 +120,13 @@
 // Prepare to show the TabSwitcher UI.
 - (void)prepareTabSwitcher;
 
-// Shows the TabSwitcher UI.
-- (void)displayTabSwitcher;
+// Shows the TabSwitcher UI. When the thumb strip is enabled, shows the
+// TabSwitcher UI, specifically in its grid layout.
+- (void)displayTabSwitcherInGridLayout;
+
+// Same as displayTabSwitcherInGridLayout, but also force tab switcher to
+// regular tabs page.
+- (void)displayRegularTabSwitcherInGridLayout;
 
 // TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
 // Shows the Autofill Settings UI, presenting from |baseViewController|.
@@ -94,7 +135,16 @@
 
 // Shows the Report an Issue UI, presenting from |baseViewController|.
 - (void)showReportAnIssueFromViewController:
-    (UIViewController*)baseViewController;
+            (UIViewController*)baseViewController
+                                     sender:(UserFeedbackSender)sender;
+
+// Shows the Report an Issue UI, presenting from |baseViewController|, using
+// |specificProductData| for additional product data to be sent in the report.
+- (void)
+    showReportAnIssueFromViewController:(UIViewController*)baseViewController
+                                 sender:(UserFeedbackSender)sender
+                    specificProductData:(NSDictionary<NSString*, NSString*>*)
+                                            specificProductData;
 
 // Opens the |command| URL in a new tab.
 // TODO(crbug.com/907527): Check if it is possible to merge it with the
@@ -107,11 +157,22 @@
     baseViewController:(UIViewController*)baseViewController;
 
 // TODO(crbug.com/779791) : Do not pass baseViewController through dispatcher.
-// Shows the Add Account UI, presenting from |baseViewController|.
-- (void)showAddAccountFromViewController:(UIViewController*)baseViewController;
+// Shows the consistency promo UI that allows users to sign in to Chrome using
+// the default accounts on the device.
+// Redirects to |url| when the sign-in flow is complete.
+- (void)showConsistencyPromoFromViewController:
+            (UIViewController*)baseViewController
+                                           URL:(const GURL&)url;
+
+// Shows a notification with the signed-in user account.
+- (void)showSigninAccountNotificationFromViewController:
+    (UIViewController*)baseViewController;
 
 // Sets whether the UI is displaying incognito content.
 - (void)setIncognitoContentVisible:(BOOL)incognitoContentVisible;
+
+// Open a new window with |userActivity|
+- (void)openNewWindowWithActivity:(NSUserActivity*)userActivity;
 
 @end
 

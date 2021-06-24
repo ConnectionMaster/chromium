@@ -7,6 +7,7 @@
 #include "base/mac/foundation_util.h"
 #import "base/mac/mac_util.h"
 #include "base/mac/scoped_cftyperef.h"
+#include "base/notreached.h"
 
 namespace ui {
 
@@ -214,21 +215,21 @@ bool ClipboardUtil::URLsAndTitlesFromPasteboard(NSPasteboard* pboard,
 }
 
 // static
-NSPasteboard* ClipboardUtil::PasteboardFromType(ui::ClipboardType type) {
-  NSString* type_string = nil;
-  switch (type) {
-    case ui::CLIPBOARD_TYPE_COPY_PASTE:
-      type_string = NSGeneralPboard;
+NSPasteboard* ClipboardUtil::PasteboardFromBuffer(ClipboardBuffer buffer) {
+  NSString* buffer_type = nil;
+  switch (buffer) {
+    case ClipboardBuffer::kCopyPaste:
+      buffer_type = NSGeneralPboard;
       break;
-    case ui::CLIPBOARD_TYPE_DRAG:
-      type_string = NSDragPboard;
+    case ClipboardBuffer::kDrag:
+      buffer_type = NSDragPboard;
       break;
-    case ui::CLIPBOARD_TYPE_SELECTION:
+    case ClipboardBuffer::kSelection:
       NOTREACHED();
       break;
   }
 
-  return [NSPasteboard pasteboardWithName:type_string];
+  return [NSPasteboard pasteboardWithName:buffer_type];
 }
 
 // static

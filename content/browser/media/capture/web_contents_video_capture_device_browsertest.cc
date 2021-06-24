@@ -8,8 +8,8 @@
 
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/test/pixel_test_utils.h"
 #include "components/viz/common/features.h"
 #include "content/browser/media/capture/content_capture_device_browsertest_base.h"
@@ -22,6 +22,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/shell/browser/shell.h"
 #include "media/base/video_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -144,9 +145,8 @@ class WebContentsVideoCaptureDeviceBrowserTest
       // Wait for at least the minimum capture period before checking for more
       // captured frames.
       base::RunLoop run_loop;
-      base::PostDelayedTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                                      run_loop.QuitClosure(),
-                                      GetMinCapturePeriod());
+      GetUIThreadTaskRunner({})->PostDelayedTask(
+          FROM_HERE, run_loop.QuitClosure(), GetMinCapturePeriod());
       run_loop.Run();
     }
   }
@@ -172,8 +172,9 @@ class WebContentsVideoCaptureDeviceBrowserTest
 
   std::unique_ptr<FrameSinkVideoCaptureDevice> CreateDevice() final {
     auto* const main_frame = shell()->web_contents()->GetMainFrame();
-    return std::make_unique<WebContentsVideoCaptureDevice>(
-        main_frame->GetProcess()->GetID(), main_frame->GetRoutingID());
+    const GlobalRenderFrameHostId id(main_frame->GetProcess()->GetID(),
+                                     main_frame->GetRoutingID());
+    return std::make_unique<WebContentsVideoCaptureDevice>(id);
   }
 
   void WaitForFirstFrame() final { WaitForFrameWithColor(SK_ColorBLACK); }
@@ -189,18 +190,17 @@ IN_PROC_BROWSER_TEST_F(WebContentsVideoCaptureDeviceBrowserTest,
   NavigateToInitialDocument();
 
   auto* const main_frame = shell()->web_contents()->GetMainFrame();
-  const auto render_process_id = main_frame->GetProcess()->GetID();
-  const auto render_frame_id = main_frame->GetRoutingID();
   const auto capture_params = SnapshotCaptureParams();
 
+  const GlobalRenderFrameHostId id(main_frame->GetProcess()->GetID(),
+                                   main_frame->GetRoutingID());
   // Delete the WebContents instance and the Shell. This makes the
   // render_frame_id invalid.
   shell()->web_contents()->Close();
-  ASSERT_FALSE(RenderFrameHost::FromID(render_process_id, render_frame_id));
+  ASSERT_FALSE(RenderFrameHost::FromID(id));
 
   // Create the device.
-  auto device = std::make_unique<WebContentsVideoCaptureDevice>(
-      render_process_id, render_frame_id);
+  auto device = std::make_unique<WebContentsVideoCaptureDevice>(id);
   // Running the pending UI tasks should cause the device to realize the
   // WebContents is gone.
   RunUntilIdle();
@@ -320,9 +320,8 @@ IN_PROC_BROWSER_TEST_F(WebContentsVideoCaptureDeviceBrowserTest,
   // frames were queued because the device should be suspended.
   ChangePageContentColor(SK_ColorGREEN);
   base::RunLoop run_loop;
-  base::PostDelayedTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                                  run_loop.QuitClosure(),
-                                  base::TimeDelta::FromSeconds(5));
+  GetUIThreadTaskRunner({})->PostDelayedTask(FROM_HERE, run_loop.QuitClosure(),
+                                             base::TimeDelta::FromSeconds(5));
   run_loop.Run();
   EXPECT_FALSE(HasCapturedFramesInQueue());
 
@@ -374,12 +373,12 @@ class WebContentsVideoCaptureDeviceBrowserTestP
   }
 };
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH) || defined(OS_ANDROID)
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     WebContentsVideoCaptureDeviceBrowserTestP,
     testing::Combine(
-        // Note: On ChromeOS, software compositing is not an option.
+        // Note: On ChromeOS and Android, software compositing is not an option.
         testing::Values(false /* GPU-accelerated compositing */),
         testing::Values(false /* variable aspect ratio */,
                         true /* fixed aspect ratio */),
@@ -387,7 +386,7 @@ INSTANTIATE_TEST_SUITE_P(
                         true /* page contains a cross-site iframe */)));
 #else
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     WebContentsVideoCaptureDeviceBrowserTestP,
     testing::Combine(
         testing::Values(false /* GPU-accelerated compositing */,
@@ -396,14 +395,21 @@ INSTANTIATE_TEST_SUITE_P(
                         true /* fixed aspect ratio */),
         testing::Values(false /* page has only a main frame */,
                         true /* page contains a cross-site iframe */)));
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 // Tests that the device successfully captures a series of content changes,
 // whether the browser is running with software compositing or GPU-accelerated
 // compositing, whether the WebContents is visible/hidden or occluded/unoccluded
 // and whether the main document contains a cross-site iframe.
+
+// Fails on LACROS for Chrome OS and linux. http://crbug.com/1108205
+#if BUILDFLAG(IS_CHROMEOS_LACROS) || defined(OS_LINUX) || defined(OS_CHROMEOS)
+#define MAYBE_CapturesContentChanges DISABLED_CapturesContentChanges
+#else
+#define MAYBE_CapturesContentChanges CapturesContentChanges
+#endif
 IN_PROC_BROWSER_TEST_P(WebContentsVideoCaptureDeviceBrowserTestP,
-                       CapturesContentChanges) {
+                       MAYBE_CapturesContentChanges) {
   SCOPED_TRACE(testing::Message()
                << "Test parameters: "
                << (IsSoftwareCompositingTest() ? "Software Compositing"

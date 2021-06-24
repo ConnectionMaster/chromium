@@ -9,7 +9,9 @@ import android.content.Context;
 
 import org.chromium.webapk.shell_apk.HostBrowserLauncher;
 import org.chromium.webapk.shell_apk.HostBrowserLauncherParams;
+import org.chromium.webapk.shell_apk.HostBrowserUtils;
 import org.chromium.webapk.shell_apk.TransparentLauncherActivity;
+import org.chromium.webapk.shell_apk.WebApkUtils;
 
 /**
  * UI-less activity which launches host browser. Relaunches itself if the android.intent.action.MAIN
@@ -22,7 +24,9 @@ public class H2OTransparentLauncherActivity extends TransparentLauncherActivity 
             return;
         }
 
-        boolean shouldLaunchSplash = H2OLauncher.shouldIntentLaunchSplashActivity(params);
+        WebApkUtils.grantUriPermissionToHostBrowserIfShare(getApplicationContext(), params);
+
+        boolean shouldLaunchSplash = HostBrowserUtils.shouldIntentLaunchSplashActivity(params);
         if (relaunchIfNeeded(params, shouldLaunchSplash)) {
             return;
         }
@@ -35,12 +39,12 @@ public class H2OTransparentLauncherActivity extends TransparentLauncherActivity 
             // new activity stack.
             Context appContext = getApplicationContext();
             H2OLauncher.copyIntentExtrasAndLaunch(appContext, getIntent(),
-                    params.getSelectedShareTargetActivityClassName(),
+                    params.getSelectedShareTargetActivityClassName(), params.getLaunchTimeMs(),
                     new ComponentName(appContext, SplashActivity.class));
             return;
         }
 
-        HostBrowserLauncher.launch(getApplicationContext(), params);
+        HostBrowserLauncher.launch(this, params);
     }
 
     /**
@@ -57,12 +61,13 @@ public class H2OTransparentLauncherActivity extends TransparentLauncherActivity 
         ComponentName relaunchComponent = null;
         if (shouldLaunchSplash) {
             // Relaunch if H2OOpaqueMainActivity is disabled.
-            if (!H2OOpaqueMainActivity.checkComponentEnabled(appContext)) {
+            if (!H2OOpaqueMainActivity.checkComponentEnabled(
+                        appContext, params.isNewStyleWebApk())) {
                 relaunchComponent = new ComponentName(appContext, H2OMainActivity.class);
             }
         } else {
             // Relaunch if H2OMainActivity is disabled.
-            if (!H2OMainActivity.checkComponentEnabled(appContext)) {
+            if (!H2OMainActivity.checkComponentEnabled(appContext, params.isNewStyleWebApk())) {
                 relaunchComponent = new ComponentName(appContext, SplashActivity.class);
             }
         }
@@ -72,7 +77,8 @@ public class H2OTransparentLauncherActivity extends TransparentLauncherActivity 
         }
 
         H2OLauncher.copyIntentExtrasAndLaunch(getApplicationContext(), getIntent(),
-                params.getSelectedShareTargetActivityClassName(), relaunchComponent);
+                params.getSelectedShareTargetActivityClassName(), -1 /* launchTimeMs */,
+                relaunchComponent);
         return true;
     }
 }

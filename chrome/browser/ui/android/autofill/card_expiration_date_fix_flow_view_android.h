@@ -10,8 +10,7 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
-#include "memory"
+#include "components/autofill/core/browser/ui/payments/card_expiration_date_fix_flow_view.h"
 
 namespace content {
 class WebContents;
@@ -19,30 +18,35 @@ class WebContents;
 
 namespace autofill {
 
-class CardExpirationDateFixFlowViewDelegateMobile;
+class CardExpirationDateFixFlowController;
 
-class CardExpirationDateFixFlowViewAndroid {
+class CardExpirationDateFixFlowViewAndroid
+    : public CardExpirationDateFixFlowView {
  public:
   CardExpirationDateFixFlowViewAndroid(
-      std::unique_ptr<CardExpirationDateFixFlowViewDelegateMobile> delegate,
+      CardExpirationDateFixFlowController* controller,
       content::WebContents* web_contents);
-
-  ~CardExpirationDateFixFlowViewAndroid();
 
   void OnUserAccept(JNIEnv* env,
                     const base::android::JavaParamRef<jobject>& obj,
                     const base::android::JavaParamRef<jstring>& month,
                     const base::android::JavaParamRef<jstring>& year);
+  void OnUserDismiss(JNIEnv* env,
+                     const base::android::JavaParamRef<jobject>& obj);
   void PromptDismissed(JNIEnv* env,
                        const base::android::JavaParamRef<jobject>& obj);
 
-  void Show();
+  // CardExpirationDateFixFlowView implementation.
+  void Show() override;
+  void ControllerGone() override;
 
  private:
+  ~CardExpirationDateFixFlowViewAndroid() override;
+
   // The corresponding java object.
   base::android::ScopedJavaGlobalRef<jobject> java_object_;
 
-  std::unique_ptr<CardExpirationDateFixFlowViewDelegateMobile> delegate_;
+  CardExpirationDateFixFlowController* controller_;
 
   content::WebContents* web_contents_;
 

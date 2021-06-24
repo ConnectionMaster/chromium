@@ -4,23 +4,33 @@
 
 #include "chrome/updater/configurator.h"
 
-#include <utility>
+#include "base/numerics/ranges.h"
+#include "base/rand_util.h"
 #include "base/version.h"
 #include "build/build_config.h"
-#include "chrome/updater/patcher.h"
+#include "chrome/updater/activity.h"
+#include "chrome/updater/constants.h"
+#include "chrome/updater/crx_downloader_factory.h"
+#include "chrome/updater/external_constants.h"
+#include "chrome/updater/policy/service.h"
 #include "chrome/updater/prefs.h"
-#include "chrome/updater/unzipper.h"
-#include "chrome/updater/updater_constants.h"
+#include "chrome/updater/updater_scope.h"
 #include "components/prefs/pref_service.h"
 #include "components/update_client/network.h"
+#include "components/update_client/patch/in_process_patcher.h"
 #include "components/update_client/patcher.h"
 #include "components/update_client/protocol_handler.h"
+#include "components/update_client/unzip/in_process_unzipper.h"
 #include "components/update_client/unzipper.h"
 #include "components/version_info/version_info.h"
 #include "url/gurl.h"
 
 #if defined(OS_WIN)
 #include "chrome/updater/win/net/network.h"
+#endif
+
+#if defined(OS_MAC)
+#include "chrome/updater/mac/net/network.h"
 #endif
 
 namespace {
@@ -33,14 +43,25 @@ const int kDelayOneHour = kDelayOneMinute * 60;
 
 namespace updater {
 
-Configurator::Configurator()
-    : pref_service_(CreatePrefService()),
-      unzip_factory_(base::MakeRefCounted<UnzipperFactory>()),
-      patch_factory_(base::MakeRefCounted<PatcherFactory>()) {}
+Configurator::Configurator(scoped_refptr<UpdaterPrefs> prefs)
+    : prefs_(prefs),
+      policy_service_(PolicyService::Create()),
+      external_constants_(CreateExternalConstants()),
+      activity_data_service_(
+          std::make_unique<ActivityDataService>(GetUpdaterScope())),
+      unzip_factory_(
+          base::MakeRefCounted<update_client::InProcessUnzipperFactory>()),
+      patch_factory_(
+          base::MakeRefCounted<update_client::InProcessPatcherFactory>()) {}
 Configurator::~Configurator() = default;
 
-int Configurator::InitialDelay() const {
-  return 0;
+double Configurator::InitialDelay() const {
+  return base::RandDouble() * external_constants_->InitialDelay();
+}
+
+int Configurator::ServerKeepAliveSeconds() const {
+  return base::ClampToRange(external_constants_->ServerKeepAliveSeconds(), 1,
+                            kServerKeepAliveSeconds);
 }
 
 int Configurator::NextCheckDelay() const {
@@ -56,7 +77,7 @@ int Configurator::UpdateDelay() const {
 }
 
 std::vector<GURL> Configurator::UpdateUrl() const {
-  return std::vector<GURL>{GURL(kUpdaterJSONDefaultUrl)};
+  return external_constants_->UpdateURL();
 }
 
 std::vector<GURL> Configurator::PingUrl() const {
@@ -98,14 +119,19 @@ std::string Configurator::GetDownloadPreference() const {
 
 scoped_refptr<update_client::NetworkFetcherFactory>
 Configurator::GetNetworkFetcherFactory() {
-#if defined(OS_WIN)
-  if (!network_fetcher_factory_) {
-    network_fetcher_factory_ = base::MakeRefCounted<NetworkFetcherFactory>();
-  }
+  if (!network_fetcher_factory_)
+    network_fetcher_factory_ =
+        base::MakeRefCounted<NetworkFetcherFactory>(GetPolicyService());
   return network_fetcher_factory_;
-#else
-  return nullptr;
-#endif
+}
+
+scoped_refptr<update_client::CrxDownloaderFactory>
+Configurator::GetCrxDownloaderFactory() {
+  if (!crx_downloader_factory_) {
+    crx_downloader_factory_ =
+        updater::MakeCrxDownloaderFactory(GetNetworkFetcherFactory());
+  }
+  return crx_downloader_factory_;
 }
 
 scoped_refptr<update_client::UnzipperFactory>
@@ -130,28 +156,20 @@ bool Configurator::EnabledBackgroundDownloader() const {
 }
 
 bool Configurator::EnabledCupSigning() const {
-  return true;
+  return external_constants_->UseCUP();
 }
 
 PrefService* Configurator::GetPrefService() const {
-  return pref_service_.get();
+  return prefs_->GetPrefService();
 }
 
 update_client::ActivityDataService* Configurator::GetActivityDataService()
     const {
-  return nullptr;
+  return activity_data_service_.get();
 }
 
 bool Configurator::IsPerUserInstall() const {
   return true;
-}
-
-std::vector<uint8_t> Configurator::GetRunActionKeyHash() const {
-  return {};
-}
-
-std::string Configurator::GetAppGuid() const {
-  return {};
 }
 
 std::unique_ptr<update_client::ProtocolHandlerFactory>
@@ -159,9 +177,8 @@ Configurator::GetProtocolHandlerFactory() const {
   return std::make_unique<update_client::ProtocolHandlerFactoryJSON>();
 }
 
-update_client::RecoveryCRXElevator Configurator::GetRecoveryCRXElevator()
-    const {
-  return {};
+scoped_refptr<PolicyService> Configurator::GetPolicyService() const {
+  return policy_service_;
 }
 
 }  // namespace updater

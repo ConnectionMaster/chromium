@@ -11,9 +11,9 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/task_runner.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/threading/thread_restrictions.h"
 #include "third_party/skia/include/core/SkImage.h"
-#include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/skia_util.h"
 
@@ -28,9 +28,8 @@ namespace {
 void Resize(const gfx::ImageSkia image,
             const gfx::Size& target_size,
             WallpaperLayout layout,
-            SkBitmap* resized_bitmap_out,
-            base::TaskRunner* task_runner) {
-  DCHECK(task_runner->RunsTasksInCurrentSequence());
+            SkBitmap* resized_bitmap_out) {
+  base::AssertLongCPUWorkAllowed();
 
   SkBitmap orig_bitmap = *image.bitmap();
   SkBitmap new_bitmap = orig_bitmap;
@@ -71,10 +70,10 @@ void Resize(const gfx::ImageSkia image,
 
           if (vertical_ratio > horizontal_ratio) {
             cropped_size = gfx::Size(
-                gfx::ToRoundedInt(new_width / vertical_ratio), orig_height);
+                base::ClampRound(new_width / vertical_ratio), orig_height);
           } else {
             cropped_size = gfx::Size(
-                orig_width, gfx::ToRoundedInt(new_height / horizontal_ratio));
+                orig_width, base::ClampRound(new_height / horizontal_ratio));
           }
           wallpaper_rect.ClampToCenteredSize(cropped_size);
           SkBitmap sub_image;
@@ -111,8 +110,7 @@ WallpaperResizer::WallpaperResizer(const gfx::ImageSkia& image,
       original_image_id_(GetImageId(image_)),
       target_size_(target_size),
       wallpaper_info_(wallpaper_info),
-      task_runner_(std::move(task_runner)),
-      weak_ptr_factory_(this) {
+      task_runner_(std::move(task_runner)) {
   image_.MakeThreadSafe();
 }
 
@@ -124,11 +122,11 @@ void WallpaperResizer::StartResize() {
   SkBitmap* resized_bitmap = new SkBitmap;
   if (!task_runner_->PostTaskAndReply(
           FROM_HERE,
-          base::Bind(&Resize, image_, target_size_, wallpaper_info_.layout,
-                     resized_bitmap, base::RetainedRef(task_runner_)),
-          base::Bind(&WallpaperResizer::OnResizeFinished,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     base::Owned(resized_bitmap)))) {
+          base::BindOnce(&Resize, image_, target_size_, wallpaper_info_.layout,
+                         resized_bitmap),
+          base::BindOnce(&WallpaperResizer::OnResizeFinished,
+                         weak_ptr_factory_.GetWeakPtr(),
+                         base::Owned(resized_bitmap)))) {
     LOG(WARNING) << "PostSequencedWorkerTask failed. "
                  << "Wallpaper may not be resized.";
   }

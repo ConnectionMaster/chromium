@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "ash/accelerators/key_hold_detector.h"
-#include "ash/accessibility/accessibility_controller.h"
+#include "ash/accessibility/accessibility_controller_impl.h"
 #include "ash/shell.h"
 #include "ui/events/event.h"
 
@@ -28,10 +28,10 @@ void SpokenFeedbackToggler::SetEnabled(bool enabled) {
 
 // static
 std::unique_ptr<ui::EventHandler> SpokenFeedbackToggler::CreateHandler() {
+  // Uses `new` due to private constructor.
   std::unique_ptr<KeyHoldDetector::Delegate> delegate(
       new SpokenFeedbackToggler());
-  return std::unique_ptr<ui::EventHandler>(
-      new KeyHoldDetector(std::move(delegate)));
+  return std::make_unique<KeyHoldDetector>(std::move(delegate));
 }
 
 bool SpokenFeedbackToggler::ShouldProcessEvent(
@@ -52,10 +52,10 @@ bool SpokenFeedbackToggler::ShouldStopEventPropagation() const {
 void SpokenFeedbackToggler::OnKeyHold(const ui::KeyEvent* event) {
   if (!toggled_) {
     toggled_ = true;
-    AccessibilityController* controller =
+    AccessibilityControllerImpl* controller =
         Shell::Get()->accessibility_controller();
-    controller->SetSpokenFeedbackEnabled(!controller->spoken_feedback_enabled(),
-                                         A11Y_NOTIFICATION_SHOW);
+    controller->SetSpokenFeedbackEnabled(
+        !controller->spoken_feedback().enabled(), A11Y_NOTIFICATION_SHOW);
   }
 }
 

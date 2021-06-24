@@ -7,15 +7,16 @@
 #include <stddef.h>
 
 #include <memory>
+#include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/values.h"
 #include "components/crash/core/browser/crashes_ui_util.h"
-#include "components/grit/components_resources.h"
+#include "components/grit/dev_ui_components_resources.h"
 #include "components/strings/grit/components_chromium_strings.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/version_info/version_info.h"
@@ -24,8 +25,8 @@
 #include "ios/chrome/browser/crash_report/crash_upload_list.h"
 #include "ios/chrome/browser/metrics/ios_chrome_metrics_service_accessor.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
-#include "ios/web/public/web_ui_ios_data_source.h"
 #include "ios/web/public/webui/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios_data_source.h"
 #include "ios/web/public/webui/web_ui_ios_message_handler.h"
 
 namespace {
@@ -34,19 +35,23 @@ web::WebUIIOSDataSource* CreateCrashesUIHTMLSource() {
   web::WebUIIOSDataSource* source =
       web::WebUIIOSDataSource::Create(kChromeUICrashesHost);
 
-  for (size_t i = 0; i < crash::kCrashesUILocalizedStringsCount; ++i) {
+  for (size_t i = 0; i < crash_reporter::kCrashesUILocalizedStringsCount; ++i) {
     source->AddLocalizedString(
-        crash::kCrashesUILocalizedStrings[i].name,
-        crash::kCrashesUILocalizedStrings[i].resource_id);
+        crash_reporter::kCrashesUILocalizedStrings[i].name,
+        crash_reporter::kCrashesUILocalizedStrings[i].resource_id);
   }
 
-  source->AddLocalizedString(crash::kCrashesUIShortProductName,
+  source->AddLocalizedString(crash_reporter::kCrashesUIShortProductName,
                              IDS_IOS_SHORT_PRODUCT_NAME);
 
-  source->SetJsonPath("strings.js");
-  source->AddResourcePath(crash::kCrashesUICrashesJS, IDR_CRASH_CRASHES_JS);
+  source->UseStringsJs();
+  source->AddResourcePath(crash_reporter::kCrashesUICrashesJS,
+                          IDR_CRASH_CRASHES_JS);
+  source->AddResourcePath(crash_reporter::kCrashesUICrashesCSS,
+                          IDR_CRASH_CRASHES_CSS);
+  source->AddResourcePath(crash_reporter::kCrashesUISadTabSVG,
+                          IDR_CRASH_SADTAB_SVG);
   source->SetDefaultResource(IDR_CRASH_CRASHES_HTML);
-  source->UseGzip();
   return source;
 }
 
@@ -96,7 +101,7 @@ void CrashesDOMHandler::RegisterMessages() {
   upload_list_->Load(base::BindOnce(&CrashesDOMHandler::OnUploadListAvailable,
                                     base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
-      crash::kCrashesUIRequestCrashList,
+      crash_reporter::kCrashesUIRequestCrashList,
       base::BindRepeating(&CrashesDOMHandler::HandleRequestCrashes,
                           base::Unretained(this)));
 }
@@ -108,8 +113,8 @@ void CrashesDOMHandler::HandleRequestCrashes(const base::ListValue* args) {
       UpdateUI();
   } else {
     list_available_ = false;
-    upload_list_->Load(base::Bind(&CrashesDOMHandler::OnUploadListAvailable,
-                                  base::Unretained(this)));
+    upload_list_->Load(base::BindOnce(&CrashesDOMHandler::OnUploadListAvailable,
+                                      base::Unretained(this)));
   }
 }
 
@@ -124,22 +129,23 @@ void CrashesDOMHandler::UpdateUI() {
       IOSChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled();
   base::ListValue crash_list;
   if (crash_reporting_enabled)
-    crash::UploadListToValue(upload_list_.get(), &crash_list);
-  base::Value enabled(crash_reporting_enabled);
-  base::Value dynamic_backend(false);
-  base::Value manual_uploads(false);
-  base::Value version(version_info::GetVersionNumber());
-  base::Value os_string(base::SysInfo::OperatingSystemName() + " " +
-                        base::SysInfo::OperatingSystemVersion());
+    crash_reporter::UploadListToValue(upload_list_.get(), &crash_list);
+
+  base::Value result(base::Value::Type::DICTIONARY);
+  result.SetBoolPath("enabled", crash_reporting_enabled);
+  result.SetBoolPath("dynamicBackend", false);
+  result.SetBoolPath("manualUploads", false);
+  result.SetPath("crashes", std::move(crash_list));
+  result.SetStringPath("version", version_info::GetVersionNumber());
+  result.SetStringPath("os", base::SysInfo::OperatingSystemName() + " " +
+                                 base::SysInfo::OperatingSystemVersion());
+
+  base::Value event_name(crash_reporter::kCrashesUIUpdateCrashList);
 
   std::vector<const base::Value*> args;
-  args.push_back(&enabled);
-  args.push_back(&dynamic_backend);
-  args.push_back(&manual_uploads);
-  args.push_back(&crash_list);
-  args.push_back(&version);
-  args.push_back(&os_string);
-  web_ui()->CallJavascriptFunction(crash::kCrashesUIUpdateCrashList, args);
+  args.push_back(&event_name);
+  args.push_back(&result);
+  web_ui()->CallJavascriptFunction("cr.webUIListenerCallback", args);
 }
 
 }  // namespace
@@ -150,10 +156,11 @@ void CrashesDOMHandler::UpdateUI() {
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-CrashesUI::CrashesUI(web::WebUIIOS* web_ui) : web::WebUIIOSController(web_ui) {
+CrashesUI::CrashesUI(web::WebUIIOS* web_ui, const std::string& host)
+    : web::WebUIIOSController(web_ui, host) {
   web_ui->AddMessageHandler(std::make_unique<CrashesDOMHandler>());
 
   // Set up the chrome://crashes/ source.
-  web::WebUIIOSDataSource::Add(ios::ChromeBrowserState::FromWebUIIOS(web_ui),
+  web::WebUIIOSDataSource::Add(ChromeBrowserState::FromWebUIIOS(web_ui),
                                CreateCrashesUIHTMLSource());
 }

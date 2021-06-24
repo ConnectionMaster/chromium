@@ -13,29 +13,32 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/download_core_service_impl.h"
 #include "chrome/browser/download/download_history.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ssl/security_state_tab_helper.h"
+#include "chrome/browser/ssl/tls_deprecation_test_utils.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/download/public/common/mock_download_item.h"
 #include "components/history/core/browser/download_row.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/test/mock_download_manager.h"
+#include "content/public/test/navigation_simulator.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "testing/gmock_mutant.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-using download::MockDownloadItem;
 using content::MockDownloadManager;
+using download::MockDownloadItem;
 using history::HistoryService;
+using testing::_;
 using testing::AnyNumber;
 using testing::Assign;
-using testing::CreateFunctor;
 using testing::Return;
+using testing::ReturnRef;
 using testing::ReturnRefOfCopy;
 using testing::SaveArg;
-using testing::_;
 
 namespace {
 
@@ -97,8 +100,6 @@ class DownloadUIControllerTest : public ChromeRenderViewHostTestHarness {
   // delegate results in the DownloadItem* being stored in |notified_item_|.
   std::unique_ptr<DownloadUIController::Delegate> GetTestDelegate();
 
-  DownloadOfflineContentProvider* GetDownloadProvider() { return nullptr; }
-
   MockDownloadManager* manager() { return manager_.get(); }
 
   // Returns the DownloadManager::Observer registered by a test case. This is
@@ -111,10 +112,10 @@ class DownloadUIControllerTest : public ChromeRenderViewHostTestHarness {
   download::DownloadItem* notified_item() { return notified_item_; }
 
   // DownloadHistory performs a query of existing downloads when it is first
-  // instantiated. This method returns the completion callback for that query.
-  // It can be used to inject history downloads.
-  const HistoryService::DownloadQueryCallback& history_query_callback() const {
-    return history_adapter_->download_query_callback_;
+  // instantiated. This method returns a pointer to the completion callback
+  // for that query. It can be used to inject history downloads.
+  HistoryService::DownloadQueryCallback* history_query_callback() {
+    return &(history_adapter_->download_query_callback_);
   }
 
   // DownloadManager::Observer registered by DownloadHistory.
@@ -134,8 +135,8 @@ class DownloadUIControllerTest : public ChromeRenderViewHostTestHarness {
 
    private:
     void QueryDownloads(
-        const HistoryService::DownloadQueryCallback& callback) override {
-      download_query_callback_ = callback;
+        HistoryService::DownloadQueryCallback callback) override {
+      download_query_callback_ = std::move(callback);
     }
 
     void UpdateDownload(const history::DownloadRow& data,
@@ -164,16 +165,15 @@ DownloadUIControllerTest::TestingDownloadCoreServiceFactory(
 }
 
 DownloadUIControllerTest::DownloadUIControllerTest()
-    : download_history_manager_observer_(NULL),
-      manager_observer_(NULL),
-      notified_item_(NULL),
-      notified_item_receiver_factory_(&notified_item_) {
-}
+    : download_history_manager_observer_(nullptr),
+      manager_observer_(nullptr),
+      notified_item_(nullptr),
+      notified_item_receiver_factory_(&notified_item_) {}
 
 void DownloadUIControllerTest::SetUp() {
   ChromeRenderViewHostTestHarness::SetUp();
 
-  manager_.reset(new testing::StrictMock<MockDownloadManager>());
+  manager_ = std::make_unique<testing::StrictMock<MockDownloadManager>>();
   EXPECT_CALL(*manager_, IsManagerInitialized()).Times(AnyNumber());
   EXPECT_CALL(*manager_, AddObserver(_))
       .WillOnce(SaveArg<0>(&download_history_manager_observer_));
@@ -274,8 +274,7 @@ DownloadUIControllerTest::GetTestDelegate() {
 // a non-empty path.  I.e. once the download target has been determined.
 TEST_F(DownloadUIControllerTest, DownloadUIController_NotifyBasic) {
   std::unique_ptr<MockDownloadItem> item(CreateMockInProgressDownload());
-  DownloadUIController controller(manager(), GetTestDelegate(),
-                                  GetDownloadProvider());
+  DownloadUIController controller(manager(), GetTestDelegate());
   EXPECT_CALL(*item, GetTargetFilePath())
       .WillOnce(ReturnRefOfCopy(base::FilePath()));
 
@@ -297,8 +296,7 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_NotifyBasic) {
 // A download that's created in an interrupted state should also be displayed.
 TEST_F(DownloadUIControllerTest, DownloadUIController_NotifyBasic_Interrupted) {
   std::unique_ptr<MockDownloadItem> item = CreateMockInProgressDownload();
-  DownloadUIController controller(manager(), GetTestDelegate(),
-                                  GetDownloadProvider());
+  DownloadUIController controller(manager(), GetTestDelegate());
   EXPECT_CALL(*item, GetState())
       .WillRepeatedly(Return(download::DownloadItem::INTERRUPTED));
 
@@ -312,8 +310,7 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_NotifyBasic_Interrupted) {
 // additional OnDownloadUpdated() notification.
 TEST_F(DownloadUIControllerTest, DownloadUIController_NotifyReadyOnCreate) {
   std::unique_ptr<MockDownloadItem> item(CreateMockInProgressDownload());
-  DownloadUIController controller(manager(), GetTestDelegate(),
-                                  GetDownloadProvider());
+  DownloadUIController controller(manager(), GetTestDelegate());
 
   ASSERT_TRUE(manager_observer());
   manager_observer()->OnDownloadCreated(manager(), item.get());
@@ -322,12 +319,11 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_NotifyReadyOnCreate) {
 
 // The UI shouldn't be notified of downloads that were restored from history.
 TEST_F(DownloadUIControllerTest, DownloadUIController_HistoryDownload) {
-  DownloadUIController controller(manager(), GetTestDelegate(),
-                                  GetDownloadProvider());
+  DownloadUIController controller(manager(), GetTestDelegate());
   // DownloadHistory should already have been created. It performs a query of
   // existing downloads upon creation. We'll use the callback to inject a
   // history download.
-  ASSERT_FALSE(history_query_callback().is_null());
+  ASSERT_FALSE(history_query_callback()->is_null());
 
   // download_history_manager_observer is the DownloadManager::Observer
   // registered by the DownloadHistory. DownloadHistory relies on the
@@ -335,10 +331,9 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_HistoryDownload) {
   // from history.
   ASSERT_TRUE(download_history_manager_observer());
 
-  std::unique_ptr<std::vector<history::DownloadRow>> history_downloads;
-  history_downloads.reset(new std::vector<history::DownloadRow>());
-  history_downloads->push_back(history::DownloadRow());
-  history_downloads->front().id = 1;
+  std::vector<history::DownloadRow> history_downloads;
+  history_downloads.push_back(history::DownloadRow());
+  history_downloads.front().id = 1;
 
   std::vector<GURL> url_chain;
   GURL url;
@@ -362,18 +357,20 @@ TEST_F(DownloadUIControllerTest, DownloadUIController_HistoryDownload) {
     // is called, we need to first invoke the OnDownloadCreated callback for
     // DownloadHistory before returning the DownloadItem since that's the
     // sequence of events expected by DownloadHistory.
-    base::Closure history_on_created_callback =
-        base::Bind(&content::DownloadManager::Observer::OnDownloadCreated,
-                   base::Unretained(download_history_manager_observer()),
-                   manager(),
-                   item.get());
+    content::DownloadManager::Observer* observer =
+        download_history_manager_observer();
+    MockDownloadManager* download_manager = manager();
+    MockDownloadItem* download_item = item.get();
     EXPECT_CALL(*manager(), MockCreateDownloadItem(_))
-        .WillOnce(testing::DoAll(testing::InvokeWithoutArgs(CreateFunctor(
-                                     history_on_created_callback)),
-                                 Return(item.get())));
+        .WillOnce(testing::DoAll(
+            testing::InvokeWithoutArgs(
+                [observer, download_manager, download_item]() {
+                  observer->OnDownloadCreated(download_manager, download_item);
+                }),
+            Return(item.get())));
     EXPECT_CALL(mock_function, Call());
 
-    history_query_callback().Run(std::move(history_downloads));
+    std::move(*history_query_callback()).Run(std::move(history_downloads));
     mock_function.Call();
   }
 

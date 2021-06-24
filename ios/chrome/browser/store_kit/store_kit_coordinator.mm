@@ -7,16 +7,17 @@
 #import <StoreKit/StoreKit.h>
 #import <UIKit/UIKit.h>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/metrics/histogram_macros.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
-@interface StoreKitCoordinator ()<SKStoreProductViewControllerDelegate> {
-  SKStoreProductViewController* _viewController;
-}
+@interface StoreKitCoordinator () <SKStoreProductViewControllerDelegate>
+// StoreKitViewController to present. Set as a weak reference so it only exists
+// while its being presented by baseViewController.
+@property(nonatomic, weak) SKStoreProductViewController* viewController;
 @end
 
 @implementation StoreKitCoordinator
@@ -27,26 +28,43 @@
 - (void)start {
   DCHECK(self.iTunesProductParameters
              [SKStoreProductParameterITunesItemIdentifier]);
-  // StoreKit shouldn't be launched, if there is one already presented or if
-  // there is another view presented by the base view controller.
-  if (_viewController || self.baseViewController.presentedViewController)
+  // StoreKit shouldn't be launched, if there is one already presented.
+  if (self.viewController)
     return;
-  _viewController = [[SKStoreProductViewController alloc] init];
-  _viewController.delegate = self;
-  [_viewController
+  SKStoreProductViewController* viewController =
+      [[SKStoreProductViewController alloc] init];
+  viewController.delegate = self;
+  [viewController
       loadProductWithParameters:self.iTunesProductParameters
                 completionBlock:^(BOOL result, NSError* _Nullable error) {
                   UMA_HISTOGRAM_BOOLEAN("IOS.StoreKitLoadedSuccessfully",
                                         result);
                 }];
-  [self.baseViewController presentViewController:_viewController
+  [self.baseViewController presentViewController:viewController
                                         animated:YES
                                       completion:nil];
+  self.viewController = viewController;
 }
 
 - (void)stop {
-  [self.baseViewController dismissViewControllerAnimated:YES completion:nil];
-  _viewController = nil;
+  // Do not call -dismissViewControllerAnimated:completion: on
+  // |self.baseViewController|, since the receiver of the method can be
+  // dismissed if there is no presented view controller. On iOS 12
+  // SKStoreProductViewControllerDelegate is responsible for dismissing
+  // SKStoreProductViewController. On iOS 13.0 OS dismisses
+  // SKStoreProductViewController after calling -productViewControllerDidFinish:
+  // On iOS 13.2 OS dismisses SKStoreProductViewController before calling
+  // -productViewControllerDidFinish: Calling
+  // -dismissViewControllerAnimated:completion: on |self.baseViewController| on
+  // iOS 13.2 will dismiss base view controller and break the application UI.
+  // According to SKStoreProductViewController documentation the delegate is
+  // responsible for calling deprecated dismissModalViewControllerAnimated: so
+  // the documentation is clearly outdated and this code should be resilient to
+  // different SKStoreProductViewController behavior without relying on iOS
+  // version check (see crbug.com/1027058).
+  [self.viewController dismissViewControllerAnimated:YES completion:nil];
+
+  self.viewController = nil;
 }
 
 #pragma mark - StoreKitLauncher

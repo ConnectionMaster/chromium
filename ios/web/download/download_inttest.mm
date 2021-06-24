@@ -14,7 +14,6 @@
 #import "ios/web/public/test/navigation_test_util.h"
 #import "ios/web/public/test/web_test_with_web_state.h"
 #import "ios/web/public/web_client.h"
-#import "ios/web/public/web_state/web_state.h"
 #include "net/http/http_request_headers.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
@@ -59,8 +58,13 @@ std::unique_ptr<net::test_server::HttpResponse> GetDownloadResponse(
 // DownloadTask integration tests.
 class DownloadTest : public WebTestWithWebState {
  protected:
-  DownloadTest() : delegate_(download_controller()) {
-    server_.RegisterRequestHandler(base::Bind(&GetDownloadResponse));
+  DownloadTest() = default;
+
+  void SetUp() override {
+    WebTestWithWebState::SetUp();
+    delegate_ =
+        std::make_unique<FakeDownloadControllerDelegate>(download_controller());
+    server_.RegisterRequestHandler(base::BindRepeating(&GetDownloadResponse));
   }
 
   DownloadController* download_controller() {
@@ -69,7 +73,7 @@ class DownloadTest : public WebTestWithWebState {
 
  protected:
   net::EmbeddedTestServer server_;
-  FakeDownloadControllerDelegate delegate_;
+  std::unique_ptr<FakeDownloadControllerDelegate> delegate_;
 };
 
 // Tests sucessfull download flow.
@@ -81,12 +85,12 @@ TEST_F(DownloadTest, SucessfullDownload) {
 
   // Wait until download task is created.
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForDownloadTimeout, ^{
-    return !delegate_.alive_download_tasks().empty();
+    return !delegate_->alive_download_tasks().empty();
   }));
-  ASSERT_EQ(1U, delegate_.alive_download_tasks().size());
+  ASSERT_EQ(1U, delegate_->alive_download_tasks().size());
 
   // Verify the initial state of the download task.
-  DownloadTask* task = delegate_.alive_download_tasks()[0].second.get();
+  DownloadTask* task = delegate_->alive_download_tasks()[0].second.get();
   ASSERT_TRUE(task);
   EXPECT_TRUE(task->GetIndentifier());
   EXPECT_EQ(url, task->GetOriginalUrl());
@@ -96,8 +100,6 @@ TEST_F(DownloadTest, SucessfullDownload) {
   EXPECT_EQ(-1, task->GetPercentComplete());
   EXPECT_EQ(kContentDisposition, task->GetContentDisposition());
   EXPECT_EQ(kMimeType, task->GetMimeType());
-  EXPECT_TRUE(ui::PageTransitionTypeIncludingQualifiersIs(
-      task->GetTransitionType(), ui::PageTransition::PAGE_TRANSITION_TYPED));
   EXPECT_EQ("download.test", base::UTF16ToUTF8(task->GetSuggestedFilename()));
 
   // Start the download task and wait for completion.

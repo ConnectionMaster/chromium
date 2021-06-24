@@ -5,8 +5,6 @@
 #ifndef MEDIA_CAST_CAST_ENVIRONMENT_H_
 #define MEDIA_CAST_CAST_ENVIRONMENT_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/single_thread_task_runner.h"
@@ -44,11 +42,11 @@ class CastEnvironment : public base::RefCountedThreadSafe<CastEnvironment> {
   // the target thread may already have a Quit message in its queue.
   bool PostTask(ThreadId identifier,
                 const base::Location& from_here,
-                const base::Closure& task);
+                base::OnceClosure task);
 
   bool PostDelayedTask(ThreadId identifier,
                        const base::Location& from_here,
-                       const base::Closure& task,
+                       base::OnceClosure task,
                        base::TimeDelta delay);
 
   bool CurrentlyOn(ThreadId identifier);

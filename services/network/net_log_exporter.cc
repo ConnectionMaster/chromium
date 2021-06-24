@@ -12,12 +12,11 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/values.h"
-#include "mojo/public/cpp/bindings/type_converter.h"
 #include "net/log/file_net_log_observer.h"
 #include "net/log/net_log_util.h"
 #include "net/url_request/url_request_context.h"
-#include "services/network/net_log_capture_mode_type_converter.h"
 #include "services/network/network_context.h"
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/network_switches.h"
@@ -42,7 +41,7 @@ NetLogExporter::~NetLogExporter() {
 
 void NetLogExporter::Start(base::File destination,
                            base::Value extra_constants,
-                           mojom::NetLogCaptureMode capture_mode,
+                           net::NetLogCaptureMode capture_mode,
                            uint64_t max_file_size,
                            StartCallback callback) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
@@ -58,14 +57,11 @@ void NetLogExporter::Start(base::File destination,
   // be carefully controlled.
   destination_ = std::move(destination);
 
-  net::NetLogCaptureMode net_capture_mode =
-      mojo::ConvertTo<net::NetLogCaptureMode>(capture_mode);
-
   state_ = STATE_WAITING_DIR;
   static_assert(kUnlimitedFileSize == net::FileNetLogObserver::kNoLimit,
                 "Inconsistent unbounded size constants");
   if (max_file_size != kUnlimitedFileSize) {
-    base::PostTaskWithTraitsAndReplyWithResult(
+    base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
         base::BindOnce(&NetLogExporter::CreateScratchDir,
@@ -74,11 +70,11 @@ void NetLogExporter::Start(base::File destination,
         // Note: this a static method which takes a weak pointer as an argument,
         // so it will run if |this| is deleted.
         base::BindOnce(&NetLogExporter::StartWithScratchDirOrCleanup,
-                       AsWeakPtr(), std::move(extra_constants),
-                       net_capture_mode, max_file_size, std::move(callback)));
+                       AsWeakPtr(), std::move(extra_constants), capture_mode,
+                       max_file_size, std::move(callback)));
   } else {
-    StartWithScratchDir(std::move(extra_constants), net_capture_mode,
-                        max_file_size, std::move(callback), base::FilePath());
+    StartWithScratchDir(std::move(extra_constants), capture_mode, max_file_size,
+                        std::move(callback), base::FilePath());
   }
 }
 
@@ -94,13 +90,13 @@ void NetLogExporter::Stop(base::Value polled_data_value,
     return;
   }
 
-  std::unique_ptr<base::DictionaryValue> net_info = net::GetNetInfo(
-      network_context_->url_request_context(), net::NET_INFO_ALL_SOURCES);
+  base::Value net_info =
+      net::GetNetInfo(network_context_->url_request_context());
   if (polled_data)
-    net_info->MergeDictionary(polled_data);
+    net_info.MergeDictionary(polled_data);
 
   file_net_observer_->StopObserving(
-      std::move(net_info),
+      base::Value::ToUniquePtrValue(std::move(net_info)),
       base::BindOnce([](StopCallback sc) { std::move(sc).Run(net::OK); },
                      std::move(callback)));
   file_net_observer_ = nullptr;
@@ -116,7 +112,7 @@ void NetLogExporter::CloseFileOffThread(base::File file) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   if (file.IsValid()) {
-    base::PostTaskWithTraits(
+    base::ThreadPool::PostTask(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
         base::BindOnce([](base::File f) { f.Close(); }, std::move(file)));
@@ -151,17 +147,12 @@ void NetLogExporter::StartWithScratchDirOrCleanup(
   } else if (!scratch_dir_path.empty()) {
     // An NetLogExporter got destroyed while it was trying to create a scratch
     // dir.
-    base::PostTaskWithTraits(
+    base::ThreadPool::PostTask(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
-        base::BindOnce(
-            [](const base::FilePath& dir) {
-              // The delete is non-recursive (2nd argument false) since the
-              // only time this is invoked the directory is expected to be
-              // empty.
-              base::DeleteFile(dir, false);
-            },
-            scratch_dir_path));
+        // The delete is non-recursive since the only time this is invoked is
+        // when the directory is expected to be empty.
+        base::BindOnce(base::GetDeleteFileCallback(), scratch_dir_path));
   }
 }
 
@@ -185,19 +176,21 @@ void NetLogExporter::StartWithScratchDir(
 
   state_ = STATE_RUNNING;
 
-  std::unique_ptr<base::DictionaryValue> constants = net::GetNetConstants();
+  std::unique_ptr<base::DictionaryValue> constants =
+      base::DictionaryValue::From(
+          base::Value::ToUniquePtrValue(net::GetNetConstants()));
 
   if (extra_constants)
     constants->MergeDictionary(extra_constants);
 
   if (max_file_size != kUnlimitedFileSize) {
     file_net_observer_ = net::FileNetLogObserver::CreateBoundedPreExisting(
-        scratch_dir_path, std::move(destination_), max_file_size,
+        scratch_dir_path, std::move(destination_), max_file_size, capture_mode,
         std::move(constants));
   } else {
     DCHECK(scratch_dir_path.empty());
     file_net_observer_ = net::FileNetLogObserver::CreateUnboundedPreExisting(
-        std::move(destination_), std::move(constants));
+        std::move(destination_), capture_mode, std::move(constants));
   }
 
   // There might not be a NetworkService object e.g. on iOS; in that case
@@ -213,7 +206,7 @@ void NetLogExporter::StartWithScratchDir(
   }
 
   file_net_observer_->StartObserving(
-      network_context_->url_request_context()->net_log(), capture_mode);
+      network_context_->url_request_context()->net_log());
   std::move(callback).Run(net::OK);
 }
 

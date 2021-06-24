@@ -4,9 +4,10 @@
 
 #include "components/offline_pages/core/prefetch/get_operation_request.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "components/offline_pages/core/prefetch/prefetch_proto_utils.h"
 #include "components/offline_pages/core/prefetch/prefetch_request_fetcher.h"
 #include "components/offline_pages/core/prefetch/prefetch_server_urls.h"
@@ -51,6 +52,10 @@ void GetOperationRequest::OnCompleted(
 
   std::move(callback_).Run(PrefetchRequestStatus::kSuccess,
                            assigned_operation_name, pages);
+}
+
+PrefetchRequestFinishedCallback GetOperationRequest::GetCallbackForTesting() {
+  return std::move(callback_);
 }
 
 }  // namespace offline_pages

@@ -5,8 +5,6 @@
 #ifndef MEDIA_CDM_CDM_CONTEXT_REF_IMPL_H_
 #define MEDIA_CDM_CDM_CONTEXT_REF_IMPL_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread_checker.h"
@@ -17,7 +15,7 @@ namespace media {
 
 class ContentDecryptionModule;
 
-class MEDIA_EXPORT CdmContextRefImpl : public CdmContextRef {
+class MEDIA_EXPORT CdmContextRefImpl final : public CdmContextRef {
  public:
   explicit CdmContextRefImpl(scoped_refptr<ContentDecryptionModule> cdm);
   ~CdmContextRefImpl() final;

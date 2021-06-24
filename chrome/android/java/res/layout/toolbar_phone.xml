@@ -19,13 +19,15 @@
         android:src="@drawable/btn_toolbar_home"
         android:contentDescription="@string/accessibility_toolbar_btn_home"
         android:visibility="gone"
-        app:tint="@color/standard_mode_tint" />
+        app:tint="@color/default_icon_color_tint_list" />
 
     <org.chromium.chrome.browser.omnibox.LocationBarPhone
         android:id="@+id/location_bar"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_gravity="top" />
+        android:layout_gravity="top"
+        android:paddingStart="@dimen/location_bar_lateral_padding"
+        android:paddingEnd="@dimen/location_bar_lateral_padding"/>
 
     <LinearLayout android:id="@+id/toolbar_buttons"
         android:orientation="horizontal"
@@ -34,11 +36,11 @@
         android:layout_gravity="top|end" >
 
         <ViewStub
-            android:id="@+id/experimental_button_stub"
-            android:inflatedId="@+id/experimental_toolbar_button"
-            android:layout="@layout/experimental_toolbar_button"
+            android:id="@+id/optional_button_stub"
+            android:inflatedId="@+id/optional_toolbar_button"
+            android:layout="@layout/optional_toolbar_button"
             style="@style/ToolbarButton"
-            android:paddingStart="8dp"
+            android:paddingStart="@dimen/toolbar_phone_optional_button_padding"
             android:visibility="gone" />
 
         <org.chromium.chrome.browser.toolbar.top.ToggleTabStackButton
@@ -46,7 +48,9 @@
             style="@style/ToolbarButton"
             android:paddingStart="8dp"
             android:layout_gravity="top"
-            android:contentDescription="@string/accessibility_toolbar_btn_tabswitcher_toggle_default" />
+            android:contentDescription="@string/accessibility_toolbar_btn_tabswitcher_toggle_default"
+            app:menuMaxWidth="@dimen/tab_switcher_menu_width"
+            app:menuVerticalOverlapAnchor="false" />
 
         <include layout="@layout/menu_button"/>
 

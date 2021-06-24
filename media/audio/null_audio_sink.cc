@@ -4,6 +4,8 @@
 
 #include "media/audio/null_audio_sink.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
@@ -18,7 +20,7 @@ NullAudioSink::NullAudioSink(
     : initialized_(false),
       started_(false),
       playing_(false),
-      callback_(NULL),
+      callback_(nullptr),
       task_runner_(task_runner) {}
 
 NullAudioSink::~NullAudioSink() = default;
@@ -26,7 +28,7 @@ NullAudioSink::~NullAudioSink() = default;
 void NullAudioSink::Initialize(const AudioParameters& params,
                                RenderCallback* callback) {
   DCHECK(!started_);
-  fake_worker_.reset(new FakeAudioWorker(task_runner_, params));
+  fake_worker_ = std::make_unique<FakeAudioWorker>(task_runner_, params);
   fixed_data_delay_ = FakeAudioWorker::ComputeFakeOutputDelay(params);
   audio_bus_ = AudioBus::Create(params);
   callback_ = callback;
@@ -71,6 +73,8 @@ void NullAudioSink::Pause() {
   fake_worker_->Stop();
   playing_ = false;
 }
+
+void NullAudioSink::Flush() {}
 
 bool NullAudioSink::SetVolume(double volume) {
   // Audio is always muted.
@@ -117,7 +121,7 @@ void NullAudioSink::CallRender(base::TimeTicks ideal_time,
 
 void NullAudioSink::StartAudioHashForTesting() {
   DCHECK(!initialized_);
-  audio_hash_.reset(new AudioHash());
+  audio_hash_ = std::make_unique<AudioHash>();
 }
 
 std::string NullAudioSink::GetAudioHashForTesting() {

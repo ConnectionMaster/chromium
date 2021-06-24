@@ -10,7 +10,7 @@
 #include <string>
 
 #include "base/macros.h"
-#include "components/crash/content/app/crash_reporter_client.h"
+#include "components/crash/core/app/crash_reporter_client.h"
 
 namespace chromecast {
 
@@ -23,10 +23,10 @@ class CastCrashReporterClient : public crash_reporter::CrashReporterClient {
 
   // crash_reporter::CrashReporterClient implementation:
   bool EnableBreakpadForProcess(const std::string& process_type) override;
-  bool HandleCrashDump(const char* crashdump_filename) override;
+  bool HandleCrashDump(const char* crashdump_filename,
+                       uint64_t crash_pid) override;
 
  private:
-  static const char* GetProcessType();
   static uint64_t GetProcessStartTime();
 
   DISALLOW_COPY_AND_ASSIGN(CastCrashReporterClient);

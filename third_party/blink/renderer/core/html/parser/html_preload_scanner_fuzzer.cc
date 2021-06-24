@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
 #include "third_party/blink/renderer/core/css/media_values_cached.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
 #include "third_party/blink/renderer/core/html/parser/html_document_parser.h"
@@ -40,7 +41,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   FuzzedDataProvider fuzzed_data(data, size);
 
   HTMLParserOptions options;
-  options.script_enabled = fuzzed_data.ConsumeBool();
+  options.scripting_flag = fuzzed_data.ConsumeBool();
 
   std::unique_ptr<CachedDocumentParameters> document_parameters =
       CachedDocumentParametersForFuzzing(fuzzed_data);
@@ -56,12 +57,12 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   media_data.device_pixel_ratio = 2.0;
   media_data.color_bits_per_component = 24;
   media_data.monochrome_bits_per_component = 0;
-  media_data.primary_pointer_type = kPointerTypeFine;
+  media_data.primary_pointer_type = mojom::blink::PointerType::kPointerFineType;
   media_data.default_font_size = 16;
   media_data.three_d_enabled = true;
   media_data.media_type = media_type_names::kScreen;
   media_data.strict_mode = true;
-  media_data.display_mode = kWebDisplayModeBrowser;
+  media_data.display_mode = blink::mojom::DisplayMode::kBrowser;
 
   MockResourcePreloader preloader;
 
@@ -71,7 +72,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
           TokenPreloadScanner::ScannerType::kMainDocument);
 
   TextResourceDecoderForFuzzing decoder(fuzzed_data);
-  CString bytes = fuzzed_data.ConsumeRemainingBytes();
+  std::string bytes = fuzzed_data.ConsumeRemainingBytes();
   String decoded_bytes = decoder.Decode(bytes.data(), bytes.length());
   scanner->AppendToEnd(decoded_bytes);
   bool has_csp_meta_tag_unused = false;

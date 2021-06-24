@@ -6,29 +6,26 @@
 
 #include <memory>
 #include <utility>
+
 #include "base/bind.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom-blink.h"
 #include "third_party/blink/public/mojom/blob/blob_registry.mojom-blink.h"
 #include "third_party/blink/public/platform/file_path_conversion.h"
-#include "third_party/blink/public/platform/interface_provider.h"
 #include "third_party/blink/renderer/platform/blob/blob_bytes_provider.h"
 #include "third_party/blink/renderer/platform/blob/testing/fake_blob_registry.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
-#include "third_party/blink/renderer/platform/uuid.h"
+#include "third_party/blink/renderer/platform/wtf/uuid.h"
 
 namespace blink {
 
 using mojom::blink::Blob;
-using mojom::blink::BlobPtr;
 using mojom::blink::BlobRegistry;
-using mojom::blink::BlobRegistryPtr;
-using mojom::blink::BlobRegistryRequest;
-using mojom::blink::BlobRequest;
 using mojom::blink::DataElement;
 using mojom::blink::DataElementBlob;
 using mojom::blink::DataElementBytes;
@@ -45,21 +42,21 @@ struct ExpectedElement {
 
   static ExpectedElement EmbeddedBytes(Vector<uint8_t> embedded_data) {
     uint64_t size = embedded_data.size();
-    return ExpectedElement{DataElement::NewBytes(
-        DataElementBytes::New(size, std::move(embedded_data), nullptr))};
+    return ExpectedElement{DataElement::NewBytes(DataElementBytes::New(
+        size, std::move(embedded_data), mojo::NullRemote()))};
   }
 
   static ExpectedElement LargeBytes(Vector<uint8_t> data) {
     uint64_t size = data.size();
     return ExpectedElement{DataElement::NewBytes(DataElementBytes::New(
-                               size, base::nullopt, nullptr)),
+                               size, absl::nullopt, mojo::NullRemote())),
                            String(), std::move(data)};
   }
 
   static ExpectedElement File(const String& path,
                               uint64_t offset,
                               uint64_t length,
-                              WTF::Time time) {
+                              base::Time time) {
     return ExpectedElement{DataElement::NewFile(
         DataElementFile::New(WebStringToFilePath(path), offset, length, time))};
   }
@@ -67,7 +64,7 @@ struct ExpectedElement {
   static ExpectedElement FileFilesystem(const KURL& url,
                                         uint64_t offset,
                                         uint64_t length,
-                                        WTF::Time time) {
+                                        base::Time time) {
     return ExpectedElement{DataElement::NewFileFilesystem(
         DataElementFilesystemURL::New(url, offset, length, time))};
   }
@@ -75,9 +72,9 @@ struct ExpectedElement {
   static ExpectedElement Blob(const String& uuid,
                               uint64_t offset,
                               uint64_t length) {
-    return ExpectedElement{
-        DataElement::NewBlob(DataElementBlob::New(nullptr, offset, length)),
-        uuid};
+    return ExpectedElement{DataElement::NewBlob(DataElementBlob::New(
+                               mojo::NullRemote(), offset, length)),
+                           uuid};
   }
 };
 
@@ -85,9 +82,11 @@ struct ExpectedElement {
 
 class BlobDataHandleTest : public testing::Test {
  public:
-  BlobDataHandleTest() : blob_registry_binding_(&mock_blob_registry_) {
-    blob_registry_binding_.Bind(MakeRequest(&blob_registry_ptr_));
-    BlobDataHandle::SetBlobRegistryForTesting(blob_registry_ptr_.get());
+  BlobDataHandleTest()
+      : blob_registry_receiver_(
+            &mock_blob_registry_,
+            blob_registry_remote_.BindNewPipeAndPassReceiver()) {
+    BlobDataHandle::SetBlobRegistryForTesting(blob_registry_remote_.get());
   }
 
   ~BlobDataHandleTest() override {
@@ -123,7 +122,7 @@ class BlobDataHandleTest : public testing::Test {
     test_blob_ =
         BlobDataHandle::Create(std::move(test_data), large_test_data_.size());
 
-    blob_registry_ptr_.FlushForTesting();
+    blob_registry_remote_.FlushForTesting();
     ASSERT_EQ(2u, mock_blob_registry_.registrations.size());
     empty_blob_uuid_ = mock_blob_registry_.registrations[0].uuid;
     test_blob_uuid_ = mock_blob_registry_.registrations[1].uuid;
@@ -131,7 +130,7 @@ class BlobDataHandleTest : public testing::Test {
   }
 
   void TearDown() override {
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     Platform::UnsetMainThreadTaskRunnerForTesting();
   }
 
@@ -147,8 +146,8 @@ class BlobDataHandleTest : public testing::Test {
     EXPECT_EQ(type, handle->GetType());
     EXPECT_EQ(is_single_unknown_size_file, handle->IsSingleUnknownSizeFile());
 
-    blob_registry_ptr_.FlushForTesting();
-    EXPECT_EQ(0u, mock_blob_registry_.binding_requests.size());
+    blob_registry_remote_.FlushForTesting();
+    EXPECT_EQ(0u, mock_blob_registry_.owned_receivers.size());
     ASSERT_EQ(1u, mock_blob_registry_.registrations.size());
     auto& reg = mock_blob_registry_.registrations[0];
     EXPECT_EQ(handle->Uuid(), reg.uuid);
@@ -166,15 +165,15 @@ class BlobDataHandleTest : public testing::Test {
 
         base::RunLoop loop;
         Vector<uint8_t> received_bytes;
-        mojom::blink::BytesProviderPtr actual_data(
+        mojo::Remote<mojom::blink::BytesProvider> actual_data(
             std::move(actual->get_bytes()->data));
-        actual_data->RequestAsReply(base::BindOnce(
-            [](base::Closure quit_closure, Vector<uint8_t>* bytes_out,
+        actual_data->RequestAsReply(WTF::Bind(
+            [](base::RepeatingClosure quit_closure, Vector<uint8_t>* bytes_out,
                const Vector<uint8_t>& bytes) {
               *bytes_out = bytes;
               quit_closure.Run();
             },
-            loop.QuitClosure(), &received_bytes));
+            loop.QuitClosure(), WTF::Unretained(&received_bytes)));
         loop.Run();
         if (expected->get_bytes()->embedded_data)
           EXPECT_EQ(expected->get_bytes()->embedded_data, received_bytes);
@@ -204,9 +203,10 @@ class BlobDataHandleTest : public testing::Test {
 
         base::RunLoop loop;
         String received_uuid;
-        mojom::blink::BlobPtr blob(std::move(actual->get_blob()->blob));
+        mojo::Remote<mojom::blink::Blob> blob(
+            std::move(actual->get_blob()->blob));
         blob->GetInternalUUID(base::BindOnce(
-            [](base::Closure quit_closure, String* uuid_out,
+            [](base::RepeatingClosure quit_closure, String* uuid_out,
                const String& uuid) {
               *uuid_out = uuid;
               quit_closure.Run();
@@ -220,10 +220,10 @@ class BlobDataHandleTest : public testing::Test {
   }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   FakeBlobRegistry mock_blob_registry_;
-  BlobRegistryPtr blob_registry_ptr_;
-  mojo::Binding<BlobRegistry> blob_registry_binding_;
+  mojo::Remote<BlobRegistry> blob_registry_remote_;
+  mojo::Receiver<BlobRegistry> blob_registry_receiver_;
 
   // Significantly less than BlobData's kMaxConsolidatedItemSizeInBytes.
   Vector<uint8_t> small_test_data_;
@@ -244,8 +244,8 @@ TEST_F(BlobDataHandleTest, CreateEmpty) {
   EXPECT_EQ(0u, handle->size());
   EXPECT_FALSE(handle->IsSingleUnknownSizeFile());
 
-  blob_registry_ptr_.FlushForTesting();
-  EXPECT_EQ(0u, mock_blob_registry_.binding_requests.size());
+  blob_registry_remote_.FlushForTesting();
+  EXPECT_EQ(0u, mock_blob_registry_.owned_receivers.size());
   ASSERT_EQ(1u, mock_blob_registry_.registrations.size());
   const auto& reg = mock_blob_registry_.registrations[0];
   EXPECT_EQ(handle->Uuid(), reg.uuid);
@@ -264,7 +264,7 @@ TEST_F(BlobDataHandleTest, CreateFromEmptyData) {
 }
 
 TEST_F(BlobDataHandleTest, CreateFromUUID) {
-  String kUuid = CreateCanonicalUUIDString();
+  String kUuid = WTF::CreateCanonicalUUIDString();
   String kType = "content/type";
   uint64_t kSize = 1234;
 
@@ -275,18 +275,18 @@ TEST_F(BlobDataHandleTest, CreateFromUUID) {
   EXPECT_EQ(kSize, handle->size());
   EXPECT_FALSE(handle->IsSingleUnknownSizeFile());
 
-  blob_registry_ptr_.FlushForTesting();
+  blob_registry_remote_.FlushForTesting();
   EXPECT_EQ(0u, mock_blob_registry_.registrations.size());
-  ASSERT_EQ(1u, mock_blob_registry_.binding_requests.size());
-  EXPECT_EQ(kUuid, mock_blob_registry_.binding_requests[0].uuid);
+  ASSERT_EQ(1u, mock_blob_registry_.owned_receivers.size());
+  EXPECT_EQ(kUuid, mock_blob_registry_.owned_receivers[0].uuid);
 }
 
 TEST_F(BlobDataHandleTest, CreateFromEmptyElements) {
   auto data = std::make_unique<BlobData>();
   data->AppendBytes(small_test_data_.data(), 0);
   data->AppendBlob(empty_blob_, 0, 0);
-  data->AppendFile("path", 0, 0, 0.0);
-  data->AppendFileSystemURL(NullURL(), 0, 0, 0.0);
+  data->AppendFile("path", 0, 0, base::Time::UnixEpoch());
+  data->AppendFileSystemURL(NullURL(), 0, 0, base::Time::UnixEpoch());
 
   TestCreateBlob(std::move(data), {});
 }
@@ -360,18 +360,17 @@ TEST_F(BlobDataHandleTest, CreateFromMergedSmallAndLargeBytes) {
 }
 
 TEST_F(BlobDataHandleTest, CreateFromFileAndFileSystemURL) {
-  double timestamp1 = CurrentTime();
-  double timestamp2 = timestamp1 + 1;
+  base::Time timestamp1 = base::Time::Now();
+  base::Time timestamp2 = timestamp1 + base::TimeDelta::FromSeconds(1);
   KURL url(NullURL(), "http://example.com/");
   auto data = std::make_unique<BlobData>();
   data->AppendFile("path", 4, 32, timestamp1);
   data->AppendFileSystemURL(url, 15, 876, timestamp2);
 
   Vector<ExpectedElement> expected_elements;
+  expected_elements.push_back(ExpectedElement::File("path", 4, 32, timestamp1));
   expected_elements.push_back(
-      ExpectedElement::File("path", 4, 32, WTF::Time::FromDoubleT(timestamp1)));
-  expected_elements.push_back(ExpectedElement::FileFilesystem(
-      url, 15, 876, WTF::Time::FromDoubleT(timestamp2)));
+      ExpectedElement::FileFilesystem(url, 15, 876, timestamp2));
 
   TestCreateBlob(std::move(data), std::move(expected_elements));
 }
@@ -379,18 +378,18 @@ TEST_F(BlobDataHandleTest, CreateFromFileAndFileSystemURL) {
 TEST_F(BlobDataHandleTest, CreateFromFileWithUnknownSize) {
   Vector<ExpectedElement> expected_elements;
   expected_elements.push_back(
-      ExpectedElement::File("path", 0, uint64_t(-1), WTF::Time()));
+      ExpectedElement::File("path", 0, uint64_t(-1), base::Time()));
 
   TestCreateBlob(BlobData::CreateForFileWithUnknownSize("path"),
                  std::move(expected_elements));
 }
 
 TEST_F(BlobDataHandleTest, CreateFromFilesystemFileWithUnknownSize) {
-  double timestamp = CurrentTime();
+  base::Time timestamp = base::Time::Now();
   KURL url(NullURL(), "http://example.com/");
   Vector<ExpectedElement> expected_elements;
-  expected_elements.push_back(ExpectedElement::FileFilesystem(
-      url, 0, uint64_t(-1), WTF::Time::FromDoubleT(timestamp)));
+  expected_elements.push_back(
+      ExpectedElement::FileFilesystem(url, 0, uint64_t(-1), timestamp));
 
   TestCreateBlob(
       BlobData::CreateForFileSystemURLWithUnknownSize(url, timestamp),

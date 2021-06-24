@@ -9,12 +9,13 @@
 #include <memory>
 #include <vector>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/memory/ref_counted.h"
 #include "net/base/net_export.h"
 #include "net/cert/internal/certificate_policies.h"
 #include "net/cert/internal/parse_certificate.h"
 #include "net/der/input.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/boringssl/src/include/openssl/base.h"
 
 namespace net {
@@ -229,6 +230,19 @@ class NET_EXPORT ParsedCertificate
     return inhibit_any_policy_;
   }
 
+  // Returns the AuthorityKeyIdentifier extension, or nullopt if there wasn't
+  // one.
+  const absl::optional<ParsedAuthorityKeyIdentifier>& authority_key_identifier()
+      const {
+    return authority_key_identifier_;
+  }
+
+  // Returns the SubjectKeyIdentifier extension, or nullopt if there wasn't
+  // one.
+  const absl::optional<der::Input>& subject_key_identifier() const {
+    return subject_key_identifier_;
+  }
+
   // Returns a map of all the extensions in the certificate.
   const ExtensionsMap& extensions() const { return extensions_; }
 
@@ -316,6 +330,12 @@ class NET_EXPORT ParsedCertificate
   // Inhibit Any Policy extension.
   bool has_inhibit_any_policy_ = false;
   uint8_t inhibit_any_policy_;
+
+  // AuthorityKeyIdentifier extension.
+  absl::optional<ParsedAuthorityKeyIdentifier> authority_key_identifier_;
+
+  // SubjectKeyIdentifier extension.
+  absl::optional<der::Input> subject_key_identifier_;
 
   // All of the extensions.
   ExtensionsMap extensions_;

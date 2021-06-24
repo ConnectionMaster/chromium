@@ -4,7 +4,7 @@
 
 package org.chromium.android_webview.test;
 
-import android.support.test.filters.SmallTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Rule;
@@ -28,7 +28,8 @@ public class StandaloneAwQuotaManagerBridgeTest {
     @SmallTest
     public void testStartup() throws Exception {
         // AwQuotaManager should run without any issue.
-        AwQuotaManagerBridge.Origins origins = AwQuotaManagerBridgeTestUtil.getOrigins();
+        AwQuotaManagerBridge.Origins origins = AwQuotaManagerBridgeTestUtil.getOrigins(
+                mActivityTestRule.getAwBrowserContext().getQuotaManagerBridge());
         Assert.assertEquals(origins.mOrigins.length, 0);
         Assert.assertEquals(AwContents.getNativeInstanceCount(), 0);
     }

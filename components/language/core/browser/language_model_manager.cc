@@ -11,7 +11,6 @@ namespace language {
 LanguageModelManager::LanguageModelManager(PrefService* prefs,
                                            const std::string& ui_lang)
     : primary_model_type_(ModelType::BASELINE) {
-  // TODO(crbug.com/855192): put code to add UI language to the blacklist here.
 }
 
 LanguageModelManager::~LanguageModelManager() {}
@@ -29,9 +28,4 @@ void LanguageModelManager::SetPrimaryModel(ModelType type) {
 LanguageModel* LanguageModelManager::GetPrimaryModel() const {
   return models_.at(primary_model_type_).get();
 }
-
-LanguageModel* LanguageModelManager::GetModel(ModelType type) const {
-  return models_.at(type).get();
-}
-
 }  // namespace language

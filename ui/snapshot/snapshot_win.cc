@@ -15,6 +15,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/skia_util.h"
 #include "ui/snapshot/snapshot.h"
 #include "ui/snapshot/snapshot_aura.h"
 
@@ -24,7 +25,7 @@ namespace {
 // Without that flag PrintWindow may not correctly capture what's actually
 // onscreen.
 bool UseAuraSnapshot() {
-  return (base::win::GetVersion() < base::win::VERSION_WIN8_1);
+  return (base::win::GetVersion() < base::win::Version::WIN8_1);
 }
 
 }  // namespace
@@ -65,7 +66,7 @@ bool GrabHwndSnapshot(HWND window_handle,
                      snapshot_bounds_in_window.y());
 
   // Clear the region of the bitmap outside the clip rect to white.
-  SkCanvas image_canvas(bitmap);
+  SkCanvas image_canvas(bitmap, SkSurfaceProps{});
   SkPaint paint;
   paint.setColor(SK_ColorWHITE);
 
@@ -125,39 +126,38 @@ bool GrabWindowSnapshot(gfx::NativeWindow window_handle,
 
 void GrabWindowSnapshotAsync(gfx::NativeWindow window,
                              const gfx::Rect& source_rect,
-                             const GrabWindowSnapshotAsyncCallback& callback) {
+                             GrabWindowSnapshotAsyncCallback callback) {
   if (UseAuraSnapshot()) {
-    GrabWindowSnapshotAsyncAura(window, source_rect, callback);
+    GrabWindowSnapshotAsyncAura(window, source_rect, std::move(callback));
     return;
   }
   gfx::Image image;
   GrabWindowSnapshot(window, source_rect, &image);
-  callback.Run(image);
+  std::move(callback).Run(image);
 }
 
 void GrabViewSnapshotAsync(gfx::NativeView view,
                            const gfx::Rect& source_rect,
-                           const GrabWindowSnapshotAsyncCallback& callback) {
+                           GrabWindowSnapshotAsyncCallback callback) {
   if (UseAuraSnapshot()) {
-    GrabWindowSnapshotAsyncAura(view, source_rect, callback);
+    GrabWindowSnapshotAsyncAura(view, source_rect, std::move(callback));
     return;
   }
   NOTIMPLEMENTED();
-  callback.Run(gfx::Image());
+  std::move(callback).Run(gfx::Image());
 }
 
-void GrabWindowSnapshotAndScaleAsync(
-    gfx::NativeWindow window,
-    const gfx::Rect& source_rect,
-    const gfx::Size& target_size,
-    const GrabWindowSnapshotAsyncCallback& callback) {
+void GrabWindowSnapshotAndScaleAsync(gfx::NativeWindow window,
+                                     const gfx::Rect& source_rect,
+                                     const gfx::Size& target_size,
+                                     GrabWindowSnapshotAsyncCallback callback) {
   if (UseAuraSnapshot()) {
     GrabWindowSnapshotAndScaleAsyncAura(window, source_rect, target_size,
-                                        callback);
+                                        std::move(callback));
     return;
   }
   NOTIMPLEMENTED();
-  callback.Run(gfx::Image());
+  std::move(callback).Run(gfx::Image());
 }
 
 }  // namespace ui

@@ -14,6 +14,7 @@
 
 #include "absl/container/internal/raw_hash_set.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -22,10 +23,13 @@
 #include <numeric>
 #include <random>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/base/attributes.h"
+#include "absl/base/config.h"
 #include "absl/base/internal/cycleclock.h"
 #include "absl/base/internal/raw_logging.h"
 #include "absl/container/internal/container_memory.h"
@@ -35,6 +39,7 @@
 #include "absl/strings/string_view.h"
 
 namespace absl {
+ABSL_NAMESPACE_BEGIN
 namespace container_internal {
 
 struct RawHashSetTestOnlyAccess {
@@ -46,11 +51,10 @@ struct RawHashSetTestOnlyAccess {
 
 namespace {
 
-using ::testing::DoubleNear;
 using ::testing::ElementsAre;
+using ::testing::Eq;
 using ::testing::Ge;
 using ::testing::Lt;
-using ::testing::Optional;
 using ::testing::Pair;
 using ::testing::UnorderedElementsAre;
 
@@ -73,8 +77,14 @@ TEST(Util, GrowthAndCapacity) {
   for (size_t growth = 0; growth < 10000; ++growth) {
     SCOPED_TRACE(growth);
     size_t capacity = NormalizeCapacity(GrowthToLowerboundCapacity(growth));
-    // The capacity is large enough for `growth`
+    // The capacity is large enough for `growth`.
     EXPECT_THAT(CapacityToGrowth(capacity), Ge(growth));
+    // For (capacity+1) < kWidth, growth should equal capacity.
+    if (capacity + 1 < Group::kWidth) {
+      EXPECT_THAT(CapacityToGrowth(capacity), Eq(capacity));
+    } else {
+      EXPECT_THAT(CapacityToGrowth(capacity), Lt(capacity));
+    }
     if (growth != 0 && capacity > 1) {
       // There is no smaller capacity that works.
       EXPECT_THAT(CapacityToGrowth(capacity / 2), Lt(growth));
@@ -216,7 +226,7 @@ TEST(Batch, DropDeletes) {
   }
   ConvertDeletedToEmptyAndFullToDeleted(ctrl.data(), kCapacity);
   ASSERT_EQ(ctrl[kCapacity], kSentinel);
-  for (size_t i = 0; i < kCapacity + 1 + kGroupWidth; ++i) {
+  for (size_t i = 0; i < kCapacity + kGroupWidth; ++i) {
     ctrl_t expected = pattern[i % (kCapacity + 1) % pattern.size()];
     if (i == kCapacity) expected = kSentinel;
     if (expected == kDeleted) expected = kEmpty;
@@ -248,24 +258,43 @@ TEST(Group, CountLeadingEmptyOrDeleted) {
   }
 }
 
-struct IntPolicy {
-  using slot_type = int64_t;
-  using key_type = int64_t;
-  using init_type = int64_t;
+template <class T>
+struct ValuePolicy {
+  using slot_type = T;
+  using key_type = T;
+  using init_type = T;
 
-  static void construct(void*, int64_t* slot, int64_t v) { *slot = v; }
-  static void destroy(void*, int64_t*) {}
-  static void transfer(void*, int64_t* new_slot, int64_t* old_slot) {
-    *new_slot = *old_slot;
+  template <class Allocator, class... Args>
+  static void construct(Allocator* alloc, slot_type* slot, Args&&... args) {
+    absl::allocator_traits<Allocator>::construct(*alloc, slot,
+                                                 std::forward<Args>(args)...);
   }
 
-  static int64_t& element(slot_type* slot) { return *slot; }
+  template <class Allocator>
+  static void destroy(Allocator* alloc, slot_type* slot) {
+    absl::allocator_traits<Allocator>::destroy(*alloc, slot);
+  }
 
-  template <class F>
-  static auto apply(F&& f, int64_t x) -> decltype(std::forward<F>(f)(x, x)) {
-    return std::forward<F>(f)(x, x);
+  template <class Allocator>
+  static void transfer(Allocator* alloc, slot_type* new_slot,
+                       slot_type* old_slot) {
+    construct(alloc, new_slot, std::move(*old_slot));
+    destroy(alloc, old_slot);
+  }
+
+  static T& element(slot_type* slot) { return *slot; }
+
+  template <class F, class... Args>
+  static decltype(absl::container_internal::DecomposeValue(
+      std::declval<F>(), std::declval<Args>()...))
+  apply(F&& f, Args&&... args) {
+    return absl::container_internal::DecomposeValue(
+        std::forward<F>(f), std::forward<Args>(args)...);
   }
 };
+
+using IntPolicy = ValuePolicy<int64_t>;
+using Uint8Policy = ValuePolicy<uint8_t>;
 
 class StringPolicy {
   template <class F, class K, class V,
@@ -343,7 +372,32 @@ struct IntTable
     : raw_hash_set<IntPolicy, container_internal::hash_default_hash<int64_t>,
                    std::equal_to<int64_t>, std::allocator<int64_t>> {
   using Base = typename IntTable::raw_hash_set;
-  IntTable() {}
+  using Base::Base;
+};
+
+struct Uint8Table
+    : raw_hash_set<Uint8Policy, container_internal::hash_default_hash<uint8_t>,
+                   std::equal_to<uint8_t>, std::allocator<uint8_t>> {
+  using Base = typename Uint8Table::raw_hash_set;
+  using Base::Base;
+};
+
+template <typename T>
+struct CustomAlloc : std::allocator<T> {
+  CustomAlloc() {}
+
+  template <typename U>
+  CustomAlloc(const CustomAlloc<U>& other) {}
+
+  template<class U> struct rebind {
+    using other = CustomAlloc<U>;
+  };
+};
+
+struct CustomAllocIntTable
+    : raw_hash_set<IntPolicy, container_internal::hash_default_hash<int64_t>,
+                   std::equal_to<int64_t>, CustomAlloc<int64_t>> {
+  using Base = typename CustomAllocIntTable::raw_hash_set;
   using Base::Base;
 };
 
@@ -373,6 +427,13 @@ TEST(Table, EmptyFunctorOptimization) {
     size_t growth_left;
     void* infoz;
   };
+  struct MockTableInfozDisabled {
+    void* ctrl;
+    void* slots;
+    size_t size;
+    size_t capacity;
+    size_t growth_left;
+  };
   struct StatelessHash {
     size_t operator()(absl::string_view) const { return 0; }
   };
@@ -380,69 +441,33 @@ TEST(Table, EmptyFunctorOptimization) {
     size_t dummy;
   };
 
-  EXPECT_EQ(
-      sizeof(MockTable),
-      sizeof(
-          raw_hash_set<StringPolicy, StatelessHash,
-                       std::equal_to<absl::string_view>, std::allocator<int>>));
+  if (std::is_empty<HashtablezInfoHandle>::value) {
+    EXPECT_EQ(sizeof(MockTableInfozDisabled),
+              sizeof(raw_hash_set<StringPolicy, StatelessHash,
+                                  std::equal_to<absl::string_view>,
+                                  std::allocator<int>>));
 
-  EXPECT_EQ(
-      sizeof(MockTable) + sizeof(StatefulHash),
-      sizeof(
-          raw_hash_set<StringPolicy, StatefulHash,
-                       std::equal_to<absl::string_view>, std::allocator<int>>));
+    EXPECT_EQ(sizeof(MockTableInfozDisabled) + sizeof(StatefulHash),
+              sizeof(raw_hash_set<StringPolicy, StatefulHash,
+                                  std::equal_to<absl::string_view>,
+                                  std::allocator<int>>));
+  } else {
+    EXPECT_EQ(sizeof(MockTable),
+              sizeof(raw_hash_set<StringPolicy, StatelessHash,
+                                  std::equal_to<absl::string_view>,
+                                  std::allocator<int>>));
+
+    EXPECT_EQ(sizeof(MockTable) + sizeof(StatefulHash),
+              sizeof(raw_hash_set<StringPolicy, StatefulHash,
+                                  std::equal_to<absl::string_view>,
+                                  std::allocator<int>>));
+  }
 }
 
 TEST(Table, Empty) {
   IntTable t;
   EXPECT_EQ(0, t.size());
   EXPECT_TRUE(t.empty());
-}
-
-#ifdef __GNUC__
-template <class T>
-ABSL_ATTRIBUTE_ALWAYS_INLINE inline void DoNotOptimize(const T& v) {
-  asm volatile("" : : "r,m"(v) : "memory");
-}
-#endif
-
-TEST(Table, Prefetch) {
-  IntTable t;
-  t.emplace(1);
-  // Works for both present and absent keys.
-  t.prefetch(1);
-  t.prefetch(2);
-
-  // Do not run in debug mode, when prefetch is not implemented, or when
-  // sanitizers are enabled.
-#if defined(NDEBUG) && defined(__GNUC__) && !defined(ADDRESS_SANITIZER) && \
-    !defined(MEMORY_SANITIZER) && !defined(THREAD_SANITIZER) &&            \
-    !defined(UNDEFINED_BEHAVIOR_SANITIZER)
-  const auto now = [] { return absl::base_internal::CycleClock::Now(); };
-
-  // Make size enough to not fit in L2 cache (16.7 Mb)
-  static constexpr int size = 1 << 22;
-  for (int i = 0; i < size; ++i) t.insert(i);
-
-  int64_t no_prefetch = 0, prefetch = 0;
-  for (int iter = 0; iter < 10; ++iter) {
-    int64_t time = now();
-    for (int i = 0; i < size; ++i) {
-      DoNotOptimize(t.find(i));
-    }
-    no_prefetch += now() - time;
-
-    time = now();
-    for (int i = 0; i < size; ++i) {
-      t.prefetch(i + 20);
-      DoNotOptimize(t.find(i));
-    }
-    prefetch += now() - time;
-  }
-
-  // no_prefetch is at least 30% slower.
-  EXPECT_GE(1.0 * no_prefetch / prefetch, 1.3);
-#endif
 }
 
 TEST(Table, LookupEmpty) {
@@ -522,6 +547,37 @@ TEST(Table, InsertCollisionAndFindAfterDelete) {
     }
   }
   EXPECT_TRUE(t.empty());
+}
+
+TEST(Table, InsertWithinCapacity) {
+  IntTable t;
+  t.reserve(10);
+  const size_t original_capacity = t.capacity();
+  const auto addr = [&](int i) {
+    return reinterpret_cast<uintptr_t>(&*t.find(i));
+  };
+  // Inserting an element does not change capacity.
+  t.insert(0);
+  EXPECT_THAT(t.capacity(), original_capacity);
+  const uintptr_t original_addr_0 = addr(0);
+  // Inserting another element does not rehash.
+  t.insert(1);
+  EXPECT_THAT(t.capacity(), original_capacity);
+  EXPECT_THAT(addr(0), original_addr_0);
+  // Inserting lots of duplicate elements does not rehash.
+  for (int i = 0; i < 100; ++i) {
+    t.insert(i % 10);
+  }
+  EXPECT_THAT(t.capacity(), original_capacity);
+  EXPECT_THAT(addr(0), original_addr_0);
+  // Inserting a range of duplicate elements does not rehash.
+  std::vector<int> dup_range;
+  for (int i = 0; i < 100; ++i) {
+    dup_range.push_back(i % 10);
+  }
+  t.insert(dup_range.begin(), dup_range.end());
+  EXPECT_THAT(t.capacity(), original_capacity);
+  EXPECT_THAT(addr(0), original_addr_0);
 }
 
 TEST(Table, LazyEmplace) {
@@ -873,7 +929,8 @@ TEST(Table, EraseMaintainsValidIterator) {
 std::vector<int64_t> CollectBadMergeKeys(size_t N) {
   static constexpr int kGroupSize = Group::kWidth - 1;
 
-  auto topk_range = [](size_t b, size_t e, IntTable* t) -> std::vector<int64_t> {
+  auto topk_range = [](size_t b, size_t e,
+                       IntTable* t) -> std::vector<int64_t> {
     for (size_t i = b; i != e; ++i) {
       t->emplace(i);
     }
@@ -1027,8 +1084,8 @@ using ProbeStatsPerSize = std::map<size_t, ProbeStats>;
 // 1. Create new table and reserve it to keys.size() * 2
 // 2. Insert all keys xored with seed
 // 3. Collect ProbeStats from final table.
-ProbeStats CollectProbeStatsOnKeysXoredWithSeed(const std::vector<int64_t>& keys,
-                                                size_t num_iters) {
+ProbeStats CollectProbeStatsOnKeysXoredWithSeed(
+    const std::vector<int64_t>& keys, size_t num_iters) {
   const size_t reserve_size = keys.size() * 2;
 
   ProbeStats stats;
@@ -1062,7 +1119,7 @@ ProbeStats CollectProbeStatsOnKeysXoredWithSeed(const std::vector<int64_t>& keys
 
 ExpectedStats XorSeedExpectedStats() {
   constexpr bool kRandomizesInserts =
-#if NDEBUG
+#ifdef NDEBUG
       false;
 #else   // NDEBUG
       true;
@@ -1156,7 +1213,7 @@ ProbeStats CollectProbeStatsOnLinearlyTransformedKeys(
 
 ExpectedStats LinearTransformExpectedStats() {
   constexpr bool kRandomizesInserts =
-#if NDEBUG
+#ifdef NDEBUG
       false;
 #else   // NDEBUG
       true;
@@ -1346,37 +1403,31 @@ TEST(Table, ConstructFromInitList) {
 
 TEST(Table, CopyConstruct) {
   IntTable t;
-  t.max_load_factor(.321f);
   t.emplace(0);
   EXPECT_EQ(1, t.size());
   {
     IntTable u(t);
     EXPECT_EQ(1, u.size());
-    EXPECT_EQ(t.max_load_factor(), u.max_load_factor());
     EXPECT_THAT(*u.find(0), 0);
   }
   {
     IntTable u{t};
     EXPECT_EQ(1, u.size());
-    EXPECT_EQ(t.max_load_factor(), u.max_load_factor());
     EXPECT_THAT(*u.find(0), 0);
   }
   {
     IntTable u = t;
     EXPECT_EQ(1, u.size());
-    EXPECT_EQ(t.max_load_factor(), u.max_load_factor());
     EXPECT_THAT(*u.find(0), 0);
   }
 }
 
 TEST(Table, CopyConstructWithAlloc) {
   StringTable t;
-  t.max_load_factor(.321f);
   t.emplace("a", "b");
   EXPECT_EQ(1, t.size());
   StringTable u(t, Alloc<std::pair<std::string, std::string>>());
   EXPECT_EQ(1, u.size());
-  EXPECT_EQ(t.max_load_factor(), u.max_load_factor());
   EXPECT_THAT(*u.find("a"), Pair("a", "b"));
 }
 
@@ -1394,88 +1445,68 @@ TEST(Table, AllocWithExplicitCtor) {
 TEST(Table, MoveConstruct) {
   {
     StringTable t;
-    t.max_load_factor(.321f);
-    const float lf = t.max_load_factor();
     t.emplace("a", "b");
     EXPECT_EQ(1, t.size());
 
     StringTable u(std::move(t));
     EXPECT_EQ(1, u.size());
-    EXPECT_EQ(lf, u.max_load_factor());
     EXPECT_THAT(*u.find("a"), Pair("a", "b"));
   }
   {
     StringTable t;
-    t.max_load_factor(.321f);
-    const float lf = t.max_load_factor();
     t.emplace("a", "b");
     EXPECT_EQ(1, t.size());
 
     StringTable u{std::move(t)};
     EXPECT_EQ(1, u.size());
-    EXPECT_EQ(lf, u.max_load_factor());
     EXPECT_THAT(*u.find("a"), Pair("a", "b"));
   }
   {
     StringTable t;
-    t.max_load_factor(.321f);
-    const float lf = t.max_load_factor();
     t.emplace("a", "b");
     EXPECT_EQ(1, t.size());
 
     StringTable u = std::move(t);
     EXPECT_EQ(1, u.size());
-    EXPECT_EQ(lf, u.max_load_factor());
     EXPECT_THAT(*u.find("a"), Pair("a", "b"));
   }
 }
 
 TEST(Table, MoveConstructWithAlloc) {
   StringTable t;
-  t.max_load_factor(.321f);
-  const float lf = t.max_load_factor();
   t.emplace("a", "b");
   EXPECT_EQ(1, t.size());
   StringTable u(std::move(t), Alloc<std::pair<std::string, std::string>>());
   EXPECT_EQ(1, u.size());
-  EXPECT_EQ(lf, u.max_load_factor());
   EXPECT_THAT(*u.find("a"), Pair("a", "b"));
 }
 
 TEST(Table, CopyAssign) {
   StringTable t;
-  t.max_load_factor(.321f);
   t.emplace("a", "b");
   EXPECT_EQ(1, t.size());
   StringTable u;
   u = t;
   EXPECT_EQ(1, u.size());
-  EXPECT_EQ(t.max_load_factor(), u.max_load_factor());
   EXPECT_THAT(*u.find("a"), Pair("a", "b"));
 }
 
 TEST(Table, CopySelfAssign) {
   StringTable t;
-  t.max_load_factor(.321f);
-  const float lf = t.max_load_factor();
   t.emplace("a", "b");
   EXPECT_EQ(1, t.size());
   t = *&t;
   EXPECT_EQ(1, t.size());
-  EXPECT_EQ(lf, t.max_load_factor());
   EXPECT_THAT(*t.find("a"), Pair("a", "b"));
 }
 
 TEST(Table, MoveAssign) {
   StringTable t;
-  t.max_load_factor(.321f);
-  const float lf = t.max_load_factor();
   t.emplace("a", "b");
   EXPECT_EQ(1, t.size());
   StringTable u;
   u = std::move(t);
   EXPECT_EQ(1, u.size());
-  EXPECT_EQ(lf, u.max_load_factor());
   EXPECT_THAT(*u.find("a"), Pair("a", "b"));
 }
 
@@ -1708,6 +1739,38 @@ TEST(Table, Merge) {
   EXPECT_THAT(t2, UnorderedElementsAre(Pair("0", "~0")));
 }
 
+TEST(Table, IteratorEmplaceConstructibleRequirement) {
+  struct Value {
+    explicit Value(absl::string_view view) : value(view) {}
+    std::string value;
+
+    bool operator==(const Value& other) const { return value == other.value; }
+  };
+  struct H {
+    size_t operator()(const Value& v) const {
+      return absl::Hash<std::string>{}(v.value);
+    }
+  };
+
+  struct Table : raw_hash_set<ValuePolicy<Value>, H, std::equal_to<Value>,
+                              std::allocator<Value>> {
+    using Base = typename Table::raw_hash_set;
+    using Base::Base;
+  };
+
+  std::string input[3]{"A", "B", "C"};
+
+  Table t(std::begin(input), std::end(input));
+  EXPECT_THAT(t, UnorderedElementsAre(Value{"A"}, Value{"B"}, Value{"C"}));
+
+  input[0] = "D";
+  input[1] = "E";
+  input[2] = "F";
+  t.insert(std::begin(input), std::end(input));
+  EXPECT_THAT(t, UnorderedElementsAre(Value{"A"}, Value{"B"}, Value{"C"},
+                                      Value{"D"}, Value{"E"}, Value{"F"}));
+}
+
 TEST(Nodes, EmptyNodeType) {
   using node_type = StringTable::node_type;
   node_type n;
@@ -1719,9 +1782,9 @@ TEST(Nodes, EmptyNodeType) {
 }
 
 TEST(Nodes, ExtractInsert) {
-  constexpr char k0[] = "Very long std::string zero.";
-  constexpr char k1[] = "Very long std::string one.";
-  constexpr char k2[] = "Very long std::string two.";
+  constexpr char k0[] = "Very long string zero.";
+  constexpr char k1[] = "Very long string one.";
+  constexpr char k2[] = "Very long string two.";
   StringTable t = {{k0, ""}, {k1, ""}, {k2, ""}};
   EXPECT_THAT(t,
               UnorderedElementsAre(Pair(k0, ""), Pair(k1, ""), Pair(k2, "")));
@@ -1762,6 +1825,26 @@ TEST(Nodes, ExtractInsert) {
   EXPECT_FALSE(node);
 }
 
+TEST(Nodes, HintInsert) {
+  IntTable t = {1, 2, 3};
+  auto node = t.extract(1);
+  EXPECT_THAT(t, UnorderedElementsAre(2, 3));
+  auto it = t.insert(t.begin(), std::move(node));
+  EXPECT_THAT(t, UnorderedElementsAre(1, 2, 3));
+  EXPECT_EQ(*it, 1);
+  EXPECT_FALSE(node);
+
+  node = t.extract(2);
+  EXPECT_THAT(t, UnorderedElementsAre(1, 3));
+  // reinsert 2 to make the next insert fail.
+  t.insert(2);
+  EXPECT_THAT(t, UnorderedElementsAre(1, 2, 3));
+  it = t.insert(t.begin(), std::move(node));
+  EXPECT_EQ(*it, 2);
+  // The node was not emptied by the insert call.
+  EXPECT_TRUE(node);
+}
+
 IntTable MakeSimpleTable(size_t size) {
   IntTable t;
   while (t.size() < size) t.insert(t.size());
@@ -1785,7 +1868,7 @@ TEST(Table, IterationOrderChangesByInstance) {
 
     std::vector<IntTable> tables;
     bool found_difference = false;
-    for (int i = 0; !found_difference && i < 500; ++i) {
+    for (int i = 0; !found_difference && i < 5000; ++i) {
       tables.push_back(MakeSimpleTable(size));
       found_difference = OrderOfIteration(tables.back()) != reference;
     }
@@ -1799,7 +1882,7 @@ TEST(Table, IterationOrderChangesByInstance) {
 
 TEST(Table, IterationOrderChangesOnRehash) {
   std::vector<IntTable> garbage;
-  for (int i = 0; i < 500; ++i) {
+  for (int i = 0; i < 5000; ++i) {
     auto t = MakeSimpleTable(20);
     const auto reference = OrderOfIteration(t);
     // Force rehash to the same size.
@@ -1844,11 +1927,50 @@ TEST(TableDeathTest, EraseOfEndAsserts) {
 
   IntTable t;
   // Extra simple "regexp" as regexp support is highly varied across platforms.
-  constexpr char kDeathMsg[] = "it != end";
+  constexpr char kDeathMsg[] = "Invalid operation on iterator";
   EXPECT_DEATH_IF_SUPPORTED(t.erase(t.end()), kDeathMsg);
 }
 
+#if defined(ABSL_INTERNAL_HASHTABLEZ_SAMPLE)
 TEST(RawHashSamplerTest, Sample) {
+  // Enable the feature even if the prod default is off.
+  SetHashtablezEnabled(true);
+  SetHashtablezSampleParameter(100);
+
+  auto& sampler = HashtablezSampler::Global();
+  size_t start_size = 0;
+  std::unordered_set<const HashtablezInfo*> preexisting_info;
+  start_size += sampler.Iterate([&](const HashtablezInfo& info) {
+    preexisting_info.insert(&info);
+    ++start_size;
+  });
+
+  std::vector<IntTable> tables;
+  for (int i = 0; i < 1000000; ++i) {
+    tables.emplace_back();
+    tables.back().insert(1);
+    tables.back().insert(i % 5);
+  }
+  size_t end_size = 0;
+  std::unordered_map<size_t, int> observed_checksums;
+  end_size += sampler.Iterate([&](const HashtablezInfo& info) {
+    if (preexisting_info.count(&info) == 0) {
+      observed_checksums[info.hashes_bitwise_xor.load(
+          std::memory_order_relaxed)]++;
+    }
+    ++end_size;
+  });
+
+  EXPECT_NEAR((end_size - start_size) / static_cast<double>(tables.size()),
+              0.01, 0.005);
+  EXPECT_EQ(observed_checksums.size(), 5);
+  for (const auto& [_, count] : observed_checksums) {
+    EXPECT_NEAR((100 * count) / static_cast<double>(tables.size()), 0.2, 0.05);
+  }
+}
+#endif  // ABSL_INTERNAL_HASHTABLEZ_SAMPLE
+
+TEST(RawHashSamplerTest, DoNotSampleCustomAllocators) {
   // Enable the feature even if the prod default is off.
   SetHashtablezEnabled(true);
   SetHashtablezSampleParameter(100);
@@ -1857,7 +1979,7 @@ TEST(RawHashSamplerTest, Sample) {
   size_t start_size = 0;
   start_size += sampler.Iterate([&](const HashtablezInfo&) { ++start_size; });
 
-  std::vector<IntTable> tables;
+  std::vector<CustomAllocIntTable> tables;
   for (int i = 0; i < 1000000; ++i) {
     tables.emplace_back();
     tables.back().insert(1);
@@ -1866,10 +1988,10 @@ TEST(RawHashSamplerTest, Sample) {
   end_size += sampler.Iterate([&](const HashtablezInfo&) { ++end_size; });
 
   EXPECT_NEAR((end_size - start_size) / static_cast<double>(tables.size()),
-              0.01, 0.005);
+              0.00, 0.001);
 }
 
-#ifdef ADDRESS_SANITIZER
+#ifdef ABSL_HAVE_ADDRESS_SANITIZER
 TEST(Sanitizer, PoisoningUnused) {
   IntTable t;
   t.reserve(5);
@@ -1893,8 +2015,39 @@ TEST(Sanitizer, PoisoningOnErase) {
   t.erase(0);
   EXPECT_TRUE(__asan_address_is_poisoned(&v));
 }
-#endif  // ADDRESS_SANITIZER
+#endif  // ABSL_HAVE_ADDRESS_SANITIZER
+
+TEST(Table, AlignOne) {
+  // We previously had a bug in which we were copying a control byte over the
+  // first slot when alignof(value_type) is 1. We test repeated
+  // insertions/erases and verify that the behavior is correct.
+  Uint8Table t;
+  std::unordered_set<uint8_t> verifier;  // NOLINT
+
+  // Do repeated insertions/erases from the table.
+  for (int64_t i = 0; i < 100000; ++i) {
+    SCOPED_TRACE(i);
+    const uint8_t u = (i * -i) & 0xFF;
+    auto it = t.find(u);
+    auto verifier_it = verifier.find(u);
+    if (it == t.end()) {
+      ASSERT_EQ(verifier_it, verifier.end());
+      t.insert(u);
+      verifier.insert(u);
+    } else {
+      ASSERT_NE(verifier_it, verifier.end());
+      t.erase(it);
+      verifier.erase(verifier_it);
+    }
+  }
+
+  EXPECT_EQ(t.size(), verifier.size());
+  for (uint8_t u : t) {
+    EXPECT_EQ(verifier.count(u), 1);
+  }
+}
 
 }  // namespace
 }  // namespace container_internal
+ABSL_NAMESPACE_END
 }  // namespace absl

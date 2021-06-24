@@ -9,7 +9,6 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/extensions/api/tabs/tabs_constants.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/window_controller.h"
@@ -23,7 +22,7 @@
 
 namespace windows_util {
 
-bool GetBrowserFromWindowID(UIThreadExtensionFunction* function,
+bool GetBrowserFromWindowID(ExtensionFunction* function,
                             int window_id,
                             extensions::WindowController::TypeFilter filter,
                             Browser** browser,
@@ -68,7 +67,7 @@ bool GetBrowserFromWindowID(UIThreadExtensionFunction* function,
   return true;
 }
 
-bool CanOperateOnWindow(const UIThreadExtensionFunction* function,
+bool CanOperateOnWindow(const ExtensionFunction* function,
                         const extensions::WindowController* controller,
                         extensions::WindowController::TypeFilter filter) {
   if (filter && !controller->MatchesFilter(filter))
@@ -89,8 +88,9 @@ bool CanOperateOnWindow(const UIThreadExtensionFunction* function,
     return false;
 
   Profile* profile = Profile::FromBrowserContext(function->browser_context());
-  return profile->HasOffTheRecordProfile() &&
-         profile->GetOffTheRecordProfile() == controller->profile();
+  return profile->HasPrimaryOTRProfile() &&
+         profile->GetPrimaryOTRProfile(/*create_if_needed=*/true) ==
+             controller->profile();
 }
 
 }  // namespace windows_util

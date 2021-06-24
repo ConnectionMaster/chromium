@@ -21,7 +21,7 @@ MockBluetoothDevice::MockBluetoothDevice(MockBluetoothAdapter* adapter,
                                          bool connected)
     : BluetoothDevice(adapter),
       bluetooth_class_(bluetooth_class),
-      name_(name ? base::Optional<std::string>(name) : base::nullopt),
+      name_(name ? absl::optional<std::string>(name) : absl::nullopt),
       address_(address),
       connected_(connected) {
   ON_CALL(*this, GetBluetoothClass())
@@ -88,13 +88,13 @@ BluetoothRemoteGattService* MockBluetoothDevice::GetMockService(
   return nullptr;
 }
 
-void MockBluetoothDevice::PushPendingCallback(const base::Closure& callback) {
-  pending_callbacks_.push(callback);
+void MockBluetoothDevice::PushPendingCallback(base::OnceClosure callback) {
+  pending_callbacks_.push(std::move(callback));
 }
 
 void MockBluetoothDevice::RunPendingCallbacks() {
   while (!pending_callbacks_.empty()) {
-    pending_callbacks_.front().Run();
+    std::move(pending_callbacks_.front()).Run();
     pending_callbacks_.pop();
   }
 }

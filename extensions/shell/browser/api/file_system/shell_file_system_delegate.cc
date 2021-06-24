@@ -7,8 +7,9 @@
 #include "apps/saved_files_service.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "extensions/browser/api/file_system/saved_files_service_interface.h"
+#include "extensions/browser/extension_function.h"
 
 namespace extensions {
 
@@ -22,7 +23,7 @@ base::FilePath ShellFileSystemDelegate::GetDefaultDirectory() {
 }
 
 bool ShellFileSystemDelegate::ShowSelectFileDialog(
-    scoped_refptr<UIThreadExtensionFunction> extension_function,
+    scoped_refptr<ExtensionFunction> extension_function,
     ui::SelectFileDialog::Type type,
     const base::FilePath& default_path,
     const ui::SelectFileDialog::FileTypeInfo* file_types,
@@ -39,14 +40,14 @@ bool ShellFileSystemDelegate::ShowSelectFileDialog(
 
 void ShellFileSystemDelegate::ConfirmSensitiveDirectoryAccess(
     bool has_write_permission,
-    const base::string16& app_name,
+    const std::u16string& app_name,
     content::WebContents* web_contents,
-    const base::Closure& on_accept,
-    const base::Closure& on_cancel) {
+    base::OnceClosure on_accept,
+    base::OnceClosure on_cancel) {
   NOTIMPLEMENTED();
 
   // Run the cancel callback by default.
-  on_cancel.Run();
+  std::move(on_cancel).Run();
 }
 
 int ShellFileSystemDelegate::GetDescriptionIdForAcceptType(

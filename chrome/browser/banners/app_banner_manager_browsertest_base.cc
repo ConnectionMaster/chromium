@@ -18,6 +18,9 @@ void AppBannerManagerBrowserTestBase::SetUpOnMainThread() {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   InProcessBrowserTest::SetUpOnMainThread();
+
+  os_hooks_suppress_ =
+      web_app::OsIntegrationManager::ScopedSuppressOsHooksForTesting();
 }
 
 GURL AppBannerManagerBrowserTestBase::GetBannerURL() {

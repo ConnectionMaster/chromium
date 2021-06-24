@@ -4,8 +4,8 @@
 
 #include "components/keyed_service/core/refcounted_keyed_service_factory.h"
 
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check.h"
+#include "base/containers/contains.h"
 #include "components/keyed_service/core/dependency_manager.h"
 #include "components/keyed_service/core/refcounted_keyed_service.h"
 
@@ -82,7 +82,7 @@ RefcountedKeyedServiceFactory::GetServiceForContext(void* context,
 scoped_refptr<RefcountedKeyedService> RefcountedKeyedServiceFactory::Associate(
     void* context,
     scoped_refptr<RefcountedKeyedService> service) {
-  DCHECK(!base::ContainsKey(mapping_, context));
+  DCHECK(!base::Contains(mapping_, context));
   auto iterator = mapping_.emplace(context, std::move(service)).first;
   return iterator->second;
 }
@@ -118,7 +118,7 @@ void RefcountedKeyedServiceFactory::SetEmptyTestingFactory(void* context) {
 }
 
 bool RefcountedKeyedServiceFactory::HasTestingFactory(void* context) {
-  return base::ContainsKey(testing_factories_, context);
+  return base::Contains(testing_factories_, context);
 }
 
 void RefcountedKeyedServiceFactory::CreateServiceNow(void* context) {

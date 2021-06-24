@@ -5,31 +5,34 @@
 #include "content/public/test/browsing_data_remover_test_util.h"
 
 #include "base/bind.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread_task_runner_handle.h"
 
 namespace content {
 
 BrowsingDataRemoverCompletionObserver::BrowsingDataRemoverCompletionObserver(
     BrowsingDataRemover* remover)
-    : observer_(this),
+    : observation_(this),
       origin_task_runner_(base::ThreadTaskRunnerHandle::Get()) {
-  observer_.Add(remover);
+  observation_.Observe(remover);
 }
 
 BrowsingDataRemoverCompletionObserver::
     ~BrowsingDataRemoverCompletionObserver() {}
 
 void BrowsingDataRemoverCompletionObserver::BlockUntilCompletion() {
-  base::ThreadPool::GetInstance()->FlushAsyncForTesting(base::BindOnce(
+  base::ThreadPoolInstance::Get()->FlushAsyncForTesting(base::BindOnce(
       &BrowsingDataRemoverCompletionObserver::FlushForTestingComplete,
       base::Unretained(this)));
   run_loop_.Run();
 }
 
-void BrowsingDataRemoverCompletionObserver::OnBrowsingDataRemoverDone() {
+void BrowsingDataRemoverCompletionObserver::OnBrowsingDataRemoverDone(
+    uint64_t failed_data_types) {
   browsing_data_remover_done_ = true;
-  observer_.RemoveAll();
+  failed_data_types_ = failed_data_types;
+  DCHECK(observation_.IsObserving());
+  observation_.Reset();
   QuitRunLoopWhenTasksComplete();
 }
 
@@ -60,9 +63,9 @@ BrowsingDataRemoverCompletionInhibitor::BrowsingDataRemoverCompletionInhibitor(
       origin_task_runner_(base::ThreadTaskRunnerHandle::Get()) {
   DCHECK(remover);
   remover_->SetWouldCompleteCallbackForTesting(
-      base::Bind(&BrowsingDataRemoverCompletionInhibitor::
-                     OnBrowsingDataRemoverWouldComplete,
-                 base::Unretained(this)));
+      base::BindRepeating(&BrowsingDataRemoverCompletionInhibitor::
+                              OnBrowsingDataRemoverWouldComplete,
+                          base::Unretained(this)));
 }
 
 BrowsingDataRemoverCompletionInhibitor::
@@ -74,12 +77,12 @@ void BrowsingDataRemoverCompletionInhibitor::Reset() {
   if (!remover_)
     return;
   remover_->SetWouldCompleteCallbackForTesting(
-      base::Callback<void(const base::Closure&)>());
+      base::RepeatingCallback<void(base::OnceClosure)>());
   remover_ = nullptr;
 }
 
 void BrowsingDataRemoverCompletionInhibitor::BlockUntilNearCompletion() {
-  base::ThreadPool::GetInstance()->FlushAsyncForTesting(base::BindOnce(
+  base::ThreadPoolInstance::Get()->FlushAsyncForTesting(base::BindOnce(
       &BrowsingDataRemoverCompletionInhibitor::FlushForTestingComplete,
       base::Unretained(this)));
   run_loop_->Run();
@@ -90,14 +93,13 @@ void BrowsingDataRemoverCompletionInhibitor::BlockUntilNearCompletion() {
 
 void BrowsingDataRemoverCompletionInhibitor::ContinueToCompletion() {
   DCHECK(!continue_to_completion_callback_.is_null());
-  continue_to_completion_callback_.Run();
-  continue_to_completion_callback_.Reset();
+  std::move(continue_to_completion_callback_).Run();
 }
 
 void BrowsingDataRemoverCompletionInhibitor::OnBrowsingDataRemoverWouldComplete(
-    const base::Closure& continue_to_completion) {
+    base::OnceClosure continue_to_completion) {
   DCHECK(continue_to_completion_callback_.is_null());
-  continue_to_completion_callback_ = continue_to_completion;
+  continue_to_completion_callback_ = std::move(continue_to_completion);
   browsing_data_remover_would_complete_done_ = true;
   QuitRunLoopWhenTasksComplete();
 }

@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/tab_modal_confirm_dialog_browsertest.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
@@ -15,6 +18,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
@@ -26,12 +30,12 @@ MockTabModalConfirmDialogDelegate::MockTabModalConfirmDialogDelegate(
 
 MockTabModalConfirmDialogDelegate::~MockTabModalConfirmDialogDelegate() {}
 
-base::string16 MockTabModalConfirmDialogDelegate::GetTitle() {
-  return base::string16();
+std::u16string MockTabModalConfirmDialogDelegate::GetTitle() {
+  return std::u16string();
 }
 
-base::string16 MockTabModalConfirmDialogDelegate::GetDialogMessage() {
-  return base::string16();
+std::u16string MockTabModalConfirmDialogDelegate::GetDialogMessage() {
+  return std::u16string();
 }
 
 void MockTabModalConfirmDialogDelegate::OnAccepted() {
@@ -50,17 +54,19 @@ void MockTabModalConfirmDialogDelegate::OnClosed() {
 }
 
 TabModalConfirmDialogTest::TabModalConfirmDialogTest()
-    : delegate_(NULL),
-      dialog_(NULL),
+    : delegate_(nullptr),
+      dialog_(nullptr),
       accepted_count_(0),
       canceled_count_(0),
       closed_count_(0) {}
 
 void TabModalConfirmDialogTest::SetUpOnMainThread() {
-  delegate_ = new MockTabModalConfirmDialogDelegate(
+  auto delegate = std::make_unique<MockTabModalConfirmDialogDelegate>(
       browser()->tab_strip_model()->GetActiveWebContents(), this);
+  delegate_ = delegate.get();
   dialog_ = TabModalConfirmDialog::Create(
-      delegate_, browser()->tab_strip_model()->GetActiveWebContents());
+      std::move(delegate),
+      browser()->tab_strip_model()->GetActiveWebContents());
   content::RunAllPendingInMessageLoop();
 }
 

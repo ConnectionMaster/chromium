@@ -9,9 +9,11 @@
 
 #include "base/files/file_path.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/strings/nullable_string16.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
@@ -22,7 +24,7 @@
 #include "ipc/ipc_message_attachment_set.h"
 #include "ipc/ipc_mojo_param_traits.h"
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
 #include "ipc/mach_port_mac.h"
 #endif
 
@@ -36,7 +38,8 @@
 #endif
 
 #if defined(OS_FUCHSIA)
-#include "ipc/handle_fuchsia.h"
+#include "base/fuchsia/fuchsia_logging.h"
+#include "ipc/handle_attachment_fuchsia.h"
 #endif
 
 #if defined(OS_ANDROID)
@@ -78,7 +81,7 @@ void LogBytes(const std::vector<CharType>& data, std::string* out) {
 
 bool ReadValue(const base::Pickle* m,
                base::PickleIterator* iter,
-               std::unique_ptr<base::Value>* value,
+               base::Value* value,
                int recursion);
 
 void WriteValue(base::Pickle* m, const base::Value* value, int recursion) {
@@ -94,17 +97,12 @@ void WriteValue(base::Pickle* m, const base::Value* value, int recursion) {
     case base::Value::Type::NONE:
       break;
     case base::Value::Type::BOOLEAN: {
-      bool val;
-      result = value->GetAsBoolean(&val);
-      DCHECK(result);
-      WriteParam(m, val);
+      WriteParam(m, value->GetBool());
       break;
     }
     case base::Value::Type::INTEGER: {
-      int val;
-      result = value->GetAsInteger(&val);
-      DCHECK(result);
-      WriteParam(m, val);
+      DCHECK(value->is_int());
+      WriteParam(m, value->GetInt());
       break;
     }
     case base::Value::Type::DOUBLE: {
@@ -130,7 +128,7 @@ void WriteValue(base::Pickle* m, const base::Value* value, int recursion) {
       const base::DictionaryValue* dict =
           static_cast<const base::DictionaryValue*>(value);
 
-      WriteParam(m, base::checked_cast<int>(dict->size()));
+      WriteParam(m, base::checked_cast<int>(dict->DictSize()));
 
       for (base::DictionaryValue::Iterator it(*dict); !it.IsAtEnd();
            it.Advance()) {
@@ -142,16 +140,11 @@ void WriteValue(base::Pickle* m, const base::Value* value, int recursion) {
     case base::Value::Type::LIST: {
       const base::ListValue* list = static_cast<const base::ListValue*>(value);
       WriteParam(m, base::checked_cast<int>(list->GetSize()));
-      for (const auto& entry : *list) {
+      for (const auto& entry : list->GetList()) {
         WriteValue(m, &entry, recursion + 1);
       }
       break;
     }
-
-    // TODO(crbug.com/859477): Remove after root cause is found.
-    default:
-      CHECK(false);
-      break;
   }
 }
 
@@ -165,15 +158,17 @@ bool ReadDictionaryValue(const base::Pickle* m,
   if (!ReadParam(m, iter, &size))
     return false;
 
-  for (int i = 0; i < size; ++i) {
-    std::string key;
-    std::unique_ptr<base::Value> subval;
-    if (!ReadParam(m, iter, &key) ||
-        !ReadValue(m, iter, &subval, recursion + 1))
+  std::vector<base::Value::LegacyDictStorage::value_type> entries;
+  entries.resize(size);
+  for (auto& entry : entries) {
+    entry.second = std::make_unique<base::Value>();
+    if (!ReadParam(m, iter, &entry.first) ||
+        !ReadValue(m, iter, entry.second.get(), recursion + 1))
       return false;
-    value->SetWithoutPathExpansion(key, std::move(subval));
   }
 
+  *value =
+      base::DictionaryValue(base::Value::LegacyDictStorage(std::move(entries)));
   return true;
 }
 
@@ -187,19 +182,19 @@ bool ReadListValue(const base::Pickle* m,
   if (!ReadParam(m, iter, &size))
     return false;
 
-  for (int i = 0; i < size; ++i) {
-    std::unique_ptr<base::Value> subval;
+  base::Value::ListStorage list_storage;
+  list_storage.resize(size);
+  for (base::Value& subval : list_storage) {
     if (!ReadValue(m, iter, &subval, recursion + 1))
       return false;
-    value->Set(i, std::move(subval));
   }
-
+  *value = base::ListValue(std::move(list_storage));
   return true;
 }
 
 bool ReadValue(const base::Pickle* m,
                base::PickleIterator* iter,
-               std::unique_ptr<base::Value>* value,
+               base::Value* value,
                int recursion) {
   if (recursion > kMaxRecursionDepth) {
     LOG(ERROR) << "Max recursion depth hit in ReadValue.";
@@ -210,63 +205,66 @@ bool ReadValue(const base::Pickle* m,
   if (!ReadParam(m, iter, &type))
     return false;
 
+  constexpr int kMinValueType = static_cast<int>(base::Value::Type::NONE);
+  constexpr int kMaxValueType = static_cast<int>(base::Value::Type::LIST);
+  if (type > kMaxValueType || type < kMinValueType)
+    return false;
+
   switch (static_cast<base::Value::Type>(type)) {
     case base::Value::Type::NONE:
-      *value = std::make_unique<base::Value>();
+      *value = base::Value();
       break;
     case base::Value::Type::BOOLEAN: {
       bool val;
       if (!ReadParam(m, iter, &val))
         return false;
-      *value = std::make_unique<base::Value>(val);
+      *value = base::Value(val);
       break;
     }
     case base::Value::Type::INTEGER: {
       int val;
       if (!ReadParam(m, iter, &val))
         return false;
-      *value = std::make_unique<base::Value>(val);
+      *value = base::Value(val);
       break;
     }
     case base::Value::Type::DOUBLE: {
       double val;
       if (!ReadParam(m, iter, &val))
         return false;
-      *value = std::make_unique<base::Value>(val);
+      *value = base::Value(val);
       break;
     }
     case base::Value::Type::STRING: {
       std::string val;
       if (!ReadParam(m, iter, &val))
         return false;
-      *value = std::make_unique<base::Value>(std::move(val));
+      *value = base::Value(std::move(val));
       break;
     }
     case base::Value::Type::BINARY: {
-      const char* data;
-      int length;
-      if (!iter->ReadData(&data, &length))
+      base::span<const uint8_t> data;
+      if (!iter->ReadData(&data))
         return false;
-      *value = base::Value::CreateWithCopiedBuffer(data, length);
+      *value = base::Value(data);
       break;
     }
     case base::Value::Type::DICTIONARY: {
       base::DictionaryValue val;
       if (!ReadDictionaryValue(m, iter, &val, recursion))
         return false;
-      *value = std::make_unique<base::Value>(std::move(val));
+      *value = std::move(val);
       break;
     }
     case base::Value::Type::LIST: {
       base::ListValue val;
       if (!ReadListValue(m, iter, &val, recursion))
         return false;
-      *value = std::make_unique<base::Value>(std::move(val));
+      *value = std::move(val);
       break;
     }
     default:
-      // TODO(crbug.com/859477): Remove after root cause is found.
-      CHECK(false);
+      NOTREACHED();
       return false;
   }
 
@@ -355,8 +353,8 @@ void ParamTraits<unsigned int>::Log(const param_type& p, std::string* l) {
   l->append(base::NumberToString(p));
 }
 
-#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_FUCHSIA) || \
-    (defined(OS_ANDROID) && defined(ARCH_CPU_64_BITS))
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
+    defined(OS_FUCHSIA) || (defined(OS_ANDROID) && defined(ARCH_CPU_64_BITS))
 void ParamTraits<long>::Log(const param_type& p, std::string* l) {
   l->append(base::NumberToString(p));
 }
@@ -403,9 +401,26 @@ void ParamTraits<std::string>::Log(const param_type& p, std::string* l) {
   l->append(p);
 }
 
-void ParamTraits<base::string16>::Log(const param_type& p, std::string* l) {
+void ParamTraits<std::u16string>::Log(const param_type& p, std::string* l) {
   l->append(base::UTF16ToUTF8(p));
 }
+
+#if defined(OS_WIN)
+bool ParamTraits<std::wstring>::Read(const base::Pickle* m,
+                                     base::PickleIterator* iter,
+                                     param_type* r) {
+  base::StringPiece16 piece16;
+  if (!iter->ReadStringPiece16(&piece16))
+    return false;
+
+  *r = base::AsWString(piece16);
+  return true;
+}
+
+void ParamTraits<std::wstring>::Log(const param_type& p, std::string* l) {
+  l->append(base::WideToUTF8(p));
+}
+#endif
 
 void ParamTraits<std::vector<char>>::Write(base::Pickle* m,
                                            const param_type& p) {
@@ -624,6 +639,136 @@ void ParamTraits<base::ScopedFD>::Log(const param_type& p, std::string* l) {
 }
 #endif  // defined(OS_POSIX) || defined(OS_FUCHSIA)
 
+#if defined(OS_WIN)
+void ParamTraits<base::win::ScopedHandle>::Write(base::Pickle* m,
+                                                 const param_type& p) {
+  const bool valid = p.IsValid();
+  WriteParam(m, valid);
+  if (!valid)
+    return;
+
+  HandleWin handle(p.Get());
+  WriteParam(m, handle);
+}
+
+bool ParamTraits<base::win::ScopedHandle>::Read(const base::Pickle* m,
+                                                base::PickleIterator* iter,
+                                                param_type* r) {
+  r->Close();
+
+  bool valid;
+  if (!ReadParam(m, iter, &valid))
+    return false;
+  if (!valid)
+    return true;
+
+  HandleWin handle;
+  if (!ReadParam(m, iter, &handle))
+    return false;
+
+  r->Set(handle.get_handle());
+  return true;
+}
+
+void ParamTraits<base::win::ScopedHandle>::Log(const param_type& p,
+                                               std::string* l) {
+  l->append(base::StringPrintf("ScopedHandle(%p)", p.Get()));
+}
+#endif  // defined(OS_WIN)
+
+#if defined(OS_FUCHSIA)
+void ParamTraits<zx::vmo>::Write(base::Pickle* m, const param_type& p) {
+  // This serialization must be kept in sync with
+  // nacl_message_scanner.cc:WriteHandle().
+  const bool valid = p.is_valid();
+  WriteParam(m, valid);
+
+  if (!valid)
+    return;
+
+  if (!m->WriteAttachment(new internal::HandleAttachmentFuchsia(
+          std::move(const_cast<param_type&>(p))))) {
+    NOTREACHED();
+  }
+}
+
+bool ParamTraits<zx::vmo>::Read(const base::Pickle* m,
+                                base::PickleIterator* iter,
+                                param_type* r) {
+  r->reset();
+
+  bool valid;
+  if (!ReadParam(m, iter, &valid))
+    return false;
+
+  if (!valid)
+    return true;
+
+  scoped_refptr<base::Pickle::Attachment> attachment;
+  if (!m->ReadAttachment(iter, &attachment))
+    return false;
+
+  if (static_cast<MessageAttachment*>(attachment.get())->GetType() !=
+      MessageAttachment::Type::FUCHSIA_HANDLE) {
+    return false;
+  }
+
+  *r = zx::vmo(static_cast<internal::HandleAttachmentFuchsia*>(attachment.get())
+                   ->Take());
+  return true;
+}
+
+void ParamTraits<zx::vmo>::Log(const param_type& p, std::string* l) {
+  l->append("ZirconVMO");
+}
+
+void ParamTraits<zx::channel>::Write(base::Pickle* m, const param_type& p) {
+  // This serialization must be kept in sync with
+  // nacl_message_scanner.cc:WriteHandle().
+  const bool valid = p.is_valid();
+  WriteParam(m, valid);
+
+  if (!valid)
+    return;
+
+  if (!m->WriteAttachment(new internal::HandleAttachmentFuchsia(
+          std::move(const_cast<param_type&>(p))))) {
+    NOTREACHED();
+  }
+}
+
+bool ParamTraits<zx::channel>::Read(const base::Pickle* m,
+                                    base::PickleIterator* iter,
+                                    param_type* r) {
+  r->reset();
+
+  bool valid;
+  if (!ReadParam(m, iter, &valid))
+    return false;
+
+  if (!valid)
+    return true;
+
+  scoped_refptr<base::Pickle::Attachment> attachment;
+  if (!m->ReadAttachment(iter, &attachment))
+    return false;
+
+  if (static_cast<MessageAttachment*>(attachment.get())->GetType() !=
+      MessageAttachment::Type::FUCHSIA_HANDLE) {
+    return false;
+  }
+
+  *r = zx::channel(
+      static_cast<internal::HandleAttachmentFuchsia*>(attachment.get())
+          ->Take());
+  return true;
+}
+
+void ParamTraits<zx::channel>::Log(const param_type& p, std::string* l) {
+  l->append("ZirconChannel");
+}
+#endif  // defined(OS_FUCHSIA)
+
 #if defined(OS_ANDROID)
 void ParamTraits<base::android::ScopedHardwareBufferHandle>::Write(
     base::Pickle* m,
@@ -696,155 +841,6 @@ void ParamTraits<base::android::ScopedHardwareBufferHandle>::Log(
                                p.get()));
 }
 #endif  // defined(OS_ANDROID)
-
-void ParamTraits<base::SharedMemoryHandle>::Write(base::Pickle* m,
-                                                  const param_type& p) {
-  // This serialization must be kept in sync with
-  // nacl_message_scanner.cc:WriteHandle().
-  const bool valid = p.IsValid();
-  WriteParam(m, valid);
-
-  if (!valid)
-    return;
-
-#if defined(OS_WIN)
-  HandleWin handle_win(p.GetHandle());
-  WriteParam(m, handle_win);
-#elif defined(OS_FUCHSIA)
-  HandleFuchsia handle_fuchsia(p.GetHandle());
-  WriteParam(m, handle_fuchsia);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-  MachPortMac mach_port_mac(p.GetMemoryObject());
-  WriteParam(m, mach_port_mac);
-#elif defined(OS_POSIX)
-#if defined(OS_ANDROID)
-  WriteParam(m, p.IsReadOnly());
-
-  // Ensure the region is read-only before sending it through IPC.
-  if (p.IsReadOnly()) {
-    if (!p.IsRegionReadOnly()) {
-      LOG(ERROR) << "Sending unsealed read-only region through IPC";
-      p.SetRegionReadOnly();
-    }
-  }
-#endif
-  if (p.OwnershipPassesToIPC()) {
-    if (!m->WriteAttachment(new internal::PlatformFileAttachment(
-            base::ScopedFD(p.GetHandle()))))
-      NOTREACHED();
-  } else {
-    if (!m->WriteAttachment(
-            new internal::PlatformFileAttachment(p.GetHandle())))
-      NOTREACHED();
-  }
-#endif
-
-#if (defined(OS_MACOSX) && !defined(OS_IOS)) || defined(OS_WIN)
-  // If the caller intended to pass ownership to the IPC stack, release a
-  // reference.
-  if (p.OwnershipPassesToIPC())
-    p.Close();
-#endif
-
-  DCHECK(!p.GetGUID().is_empty());
-  WriteParam(m, p.GetGUID());
-  WriteParam(m, static_cast<uint64_t>(p.GetSize()));
-}
-
-bool ParamTraits<base::SharedMemoryHandle>::Read(const base::Pickle* m,
-                                                 base::PickleIterator* iter,
-                                                 param_type* r) {
-  *r = base::SharedMemoryHandle();
-
-  bool valid;
-  if (!ReadParam(m, iter, &valid))
-    return false;
-  if (!valid)
-    return true;
-
-#if defined(OS_WIN)
-  HandleWin handle_win;
-  if (!ReadParam(m, iter, &handle_win))
-    return false;
-#elif defined(OS_FUCHSIA)
-  HandleFuchsia handle_fuchsia;
-  if (!ReadParam(m, iter, &handle_fuchsia))
-    return false;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-  MachPortMac mach_port_mac;
-  if (!ReadParam(m, iter, &mach_port_mac))
-    return false;
-#elif defined(OS_POSIX)
-#if defined(OS_ANDROID)
-  bool is_read_only = false;
-  if (!ReadParam(m, iter, &is_read_only))
-    return false;
-#endif
-  scoped_refptr<base::Pickle::Attachment> attachment;
-  if (!m->ReadAttachment(iter, &attachment))
-    return false;
-
-  if (static_cast<MessageAttachment*>(attachment.get())->GetType() !=
-      MessageAttachment::Type::PLATFORM_FILE) {
-    return false;
-  }
-#endif
-
-  base::UnguessableToken guid;
-  uint64_t size;
-  if (!ReadParam(m, iter, &guid) || !ReadParam(m, iter, &size) ||
-      !base::IsValueInRangeForNumericType<size_t>(size)) {
-    return false;
-  }
-
-#if defined(OS_WIN)
-  *r = base::SharedMemoryHandle(handle_win.get_handle(),
-                                static_cast<size_t>(size), guid);
-#elif defined(OS_FUCHSIA)
-  *r = base::SharedMemoryHandle(handle_fuchsia.get_handle(),
-                                static_cast<size_t>(size), guid);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-  *r = base::SharedMemoryHandle(mach_port_mac.get_mach_port(),
-                                static_cast<size_t>(size), guid);
-#elif defined(OS_POSIX)
-  *r = base::SharedMemoryHandle(
-      base::FileDescriptor(
-          static_cast<internal::PlatformFileAttachment*>(attachment.get())
-              ->TakePlatformFile(),
-          true),
-      static_cast<size_t>(size), guid);
-#endif
-
-#if defined(OS_ANDROID)
-  if (is_read_only)
-    r->SetReadOnly();
-#endif
-
-  return true;
-}
-
-void ParamTraits<base::SharedMemoryHandle>::Log(const param_type& p,
-                                                std::string* l) {
-#if defined(OS_WIN)
-  l->append("HANDLE: ");
-  LogParam(p.GetHandle(), l);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-  l->append("Mach port: ");
-  LogParam(p.GetMemoryObject(), l);
-#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
-  l->append("FD: ");
-  LogParam(p.GetHandle(), l);
-#endif
-
-  l->append("GUID: ");
-  LogParam(p.GetGUID(), l);
-  l->append("size: ");
-  LogParam(static_cast<uint64_t>(p.GetSize()), l);
-#if defined(OS_ANDROID)
-  l->append("read-only: ");
-  LogParam(p.IsReadOnly(), l);
-#endif
-}
 
 void ParamTraits<base::ReadOnlySharedMemoryRegion>::Write(base::Pickle* m,
                                                           const param_type& p) {
@@ -947,10 +943,9 @@ void ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Write(
   HandleWin handle_win(h.Get());
   WriteParam(m, handle_win);
 #elif defined(OS_FUCHSIA)
-  zx::handle h = const_cast<param_type&>(p).PassPlatformHandle();
-  HandleFuchsia handle_fuchsia(h.get());
-  WriteParam(m, handle_fuchsia);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+  zx::vmo vmo = const_cast<param_type&>(p).PassPlatformHandle();
+  WriteParam(m, vmo);
+#elif defined(OS_MAC)
   base::mac::ScopedMachSendRight h =
       const_cast<param_type&>(p).PassPlatformHandle();
   MachPortMac mach_port_mac(h.get());
@@ -999,12 +994,12 @@ bool ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Read(
   *r = base::subtle::PlatformSharedMemoryRegion::Take(
       base::win::ScopedHandle(handle_win.get_handle()), mode, size, guid);
 #elif defined(OS_FUCHSIA)
-  HandleFuchsia handle_fuchsia;
-  if (!ReadParam(m, iter, &handle_fuchsia))
+  zx::vmo vmo;
+  if (!ReadParam(m, iter, &vmo))
     return false;
-  *r = base::subtle::PlatformSharedMemoryRegion::Take(
-      zx::vmo(handle_fuchsia.get_handle()), mode, size, guid);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+  *r = base::subtle::PlatformSharedMemoryRegion::Take(std::move(vmo), mode,
+                                                      size, guid);
+#elif defined(OS_MAC)
   MachPortMac mach_port_mac;
   if (!ReadParam(m, iter, &mach_port_mac))
     return false;
@@ -1064,7 +1059,7 @@ void ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Log(
 #elif defined(OS_WIN)
   l->append("Handle: ");
   LogParam(p.GetPlatformHandle(), l);
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
   l->append("Mach port: ");
   LogParam(p.GetPlatformHandle(), l);
 #elif defined(OS_ANDROID)
@@ -1185,32 +1180,20 @@ void ParamTraits<base::ListValue>::Log(const param_type& p, std::string* l) {
   l->append(json);
 }
 
-void ParamTraits<base::NullableString16>::Write(base::Pickle* m,
-                                                const param_type& p) {
-  WriteParam(m, p.string());
-  WriteParam(m, p.is_null());
+void ParamTraits<base::Value>::Write(base::Pickle* m, const param_type& p) {
+  WriteValue(m, &p, 0);
 }
 
-bool ParamTraits<base::NullableString16>::Read(const base::Pickle* m,
-                                               base::PickleIterator* iter,
-                                               param_type* r) {
-  base::string16 string;
-  if (!ReadParam(m, iter, &string))
-    return false;
-  bool is_null;
-  if (!ReadParam(m, iter, &is_null))
-    return false;
-  *r = base::NullableString16(string, is_null);
-  return true;
+bool ParamTraits<base::Value>::Read(const base::Pickle* m,
+                                    base::PickleIterator* iter,
+                                    param_type* r) {
+  return ReadValue(m, iter, r, 0);
 }
 
-void ParamTraits<base::NullableString16>::Log(const param_type& p,
-                                              std::string* l) {
-  l->append("(");
-  LogParam(p.string(), l);
-  l->append(", ");
-  LogParam(p.is_null(), l);
-  l->append(")");
+void ParamTraits<base::Value>::Log(const param_type& p, std::string* l) {
+  std::string json;
+  base::JSONWriter::Write(p, &json);
+  l->append(json);
 }
 
 void ParamTraits<base::File::Info>::Write(base::Pickle* m,

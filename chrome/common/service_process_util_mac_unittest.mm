@@ -6,6 +6,8 @@
 
 #import <Foundation/Foundation.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
@@ -14,15 +16,15 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/mac/mac_util.h"
 #include "base/mac/scoped_nsobject.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/process/launch.h"
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread.h"
 #include "chrome/common/mac/launchd.h"
 #include "chrome/common/mac/mock_launchd.h"
-#include "mojo/public/cpp/platform/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 class ServiceProcessStateFileManipulationTest : public ::testing::Test {
@@ -45,25 +47,22 @@ class ServiceProcessStateFileManipulationTest : public ::testing::Test {
 
   void SetUp() override {
     base::Thread::Options options;
-    options.message_loop_type = base::MessageLoop::TYPE_IO;
-    ASSERT_TRUE(io_thread_.StartWithOptions(options));
+    options.message_pump_type = base::MessagePumpType::IO;
+    ASSERT_TRUE(io_thread_.StartWithOptions(std::move(options)));
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     ASSERT_TRUE(MockLaunchd::MakeABundle(GetTempDirPath(), "Test",
                                          &bundle_path_, &executable_path_));
-    // If using a Mach Mojo channel, set up MockLaunchd as a service.
-    bool as_service =
-        base::FeatureList::IsEnabled(mojo::features::kMojoChannelMac);
-    mock_launchd_.reset(new MockLaunchd(executable_path_, loop_.task_runner(),
-                                        run_loop_.QuitClosure(), false,
-                                        as_service));
-    scoped_launchd_instance_.reset(
-        new Launchd::ScopedInstance(mock_launchd_.get()));
+    mock_launchd_ = std::make_unique<MockLaunchd>(
+        executable_path_, task_environment_.GetMainThreadTaskRunner(),
+        run_loop_.QuitClosure(), true);
+    scoped_launchd_instance_ =
+        std::make_unique<Launchd::ScopedInstance>(mock_launchd_.get());
     ASSERT_TRUE(service_process_state_.Initialize());
     ASSERT_TRUE(service_process_state_.SignalReady(
-        io_thread_.task_runner().get(), base::Closure()));
-    loop_.task_runner()->PostDelayedTask(FROM_HERE,
-                                         run_loop_.QuitWhenIdleClosure(),
-                                         TestTimeouts::action_max_timeout());
+        io_thread_.task_runner().get(), base::OnceClosure()));
+    task_environment_.GetMainThreadTaskRunner()->PostDelayedTask(
+        FROM_HERE, run_loop_.QuitWhenIdleClosure(),
+        TestTimeouts::action_max_timeout());
   }
 
   const MockLaunchd* mock_launchd() const { return mock_launchd_.get(); }
@@ -80,7 +79,8 @@ class ServiceProcessStateFileManipulationTest : public ::testing::Test {
 
  private:
   base::ScopedTempDir temp_dir_;
-  base::MessageLoopForUI loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
   base::RunLoop run_loop_;
   base::Thread io_thread_;
   base::FilePath executable_path_, bundle_path_;
@@ -90,7 +90,7 @@ class ServiceProcessStateFileManipulationTest : public ::testing::Test {
 };
 
 void DeleteFunc(const base::FilePath& file) {
-  EXPECT_TRUE(base::DeleteFile(file, true));
+  EXPECT_TRUE(base::DeletePathRecursively(file));
 }
 
 void MoveFunc(const base::FilePath& from, const base::FilePath& to) {
@@ -180,7 +180,7 @@ TEST_F(ServiceProcessStateFileManipulationTest, TrashBundle) {
   ASSERT_TRUE(mock_launchd()->delete_called());
   std::string path(base::SysNSStringToUTF8([trashed_url_ path]));
   base::FilePath file_path(path);
-  ASSERT_TRUE(base::DeleteFile(file_path, true));
+  ASSERT_TRUE(base::DeletePathRecursively(file_path));
 }
 
 TEST_F(ServiceProcessStateFileManipulationTest, ChangeAttr) {

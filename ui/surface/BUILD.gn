@@ -2,15 +2,13 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/jumbo.gni")
 import("//build/config/ui.gni")
 
-jumbo_component("surface") {
+component("surface") {
   sources = [
     "surface_export.h",
     "transport_dib.cc",
     "transport_dib.h",
-    "transport_dib_win.cc",
   ]
 
   configs += [ "//third_party/khronos:khronos_headers" ]
@@ -25,8 +23,4 @@ jumbo_component("surface") {
     "//ui/gfx/geometry",
     "//ui/gl",
   ]
-
-  if (is_posix) {
-    sources += [ "transport_dib_posix.cc" ]
-  }
 }

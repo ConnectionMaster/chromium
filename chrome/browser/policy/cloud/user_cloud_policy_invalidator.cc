@@ -11,17 +11,28 @@
 #include "base/time/default_clock.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/invalidation/deprecated_profile_invalidation_provider_factory.h"
+#include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
 #include "components/invalidation/impl/profile_invalidation_provider.h"
+#include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_manager.h"
 #include "content/public/browser/notification_source.h"
+
+namespace {
+
+invalidation::ProfileInvalidationProvider* GetInvalidationProvider(
+    Profile* profile) {
+  return invalidation::ProfileInvalidationProviderFactory::GetForProfile(
+      profile);
+}
+
+}  // namespace
 
 namespace policy {
 
 UserCloudPolicyInvalidator::UserCloudPolicyInvalidator(
     Profile* profile,
     CloudPolicyManager* policy_manager)
-    : CloudPolicyInvalidator(GetPolicyType(),
+    : CloudPolicyInvalidator(PolicyInvalidationScope::kUser,
                              policy_manager->core(),
                              base::ThreadTaskRunnerHandle::Get(),
                              base::DefaultClock::GetInstance(),
@@ -41,18 +52,6 @@ UserCloudPolicyInvalidator::UserCloudPolicyInvalidator(
                  content::Source<Profile>(profile));
 }
 
-// static
-enterprise_management::DeviceRegisterRequest::Type
-UserCloudPolicyInvalidator::GetPolicyType() {
-#if defined(OS_CHROMEOS)
-  return enterprise_management::DeviceRegisterRequest::USER;
-#elif defined(OS_ANDROID)
-  return enterprise_management::DeviceRegisterRequest::ANDROID_BROWSER;
-#else
-  return enterprise_management::DeviceRegisterRequest::BROWSER;
-#endif
-}
-
 void UserCloudPolicyInvalidator::Shutdown() {
   CloudPolicyInvalidator::Shutdown();
 }
@@ -65,10 +64,11 @@ void UserCloudPolicyInvalidator::Observe(
   // service can safely be initialized.
   DCHECK_EQ(chrome::NOTIFICATION_PROFILE_ADDED, type);
   invalidation::ProfileInvalidationProvider* invalidation_provider =
-      invalidation::DeprecatedProfileInvalidationProviderFactory::GetForProfile(
-          profile_);
-  if (invalidation_provider)
-    Initialize(invalidation_provider->GetInvalidationService());
+      GetInvalidationProvider(profile_);
+  if (!invalidation_provider)
+    return;
+  Initialize(invalidation_provider->GetInvalidationServiceForCustomSender(
+      policy::kPolicyFCMInvalidationSenderID));
 }
 
 }  // namespace policy

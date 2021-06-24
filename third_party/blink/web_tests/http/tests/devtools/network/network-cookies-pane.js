@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests cookie pane rendering in Network panel\n`);
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
   await TestRunner.showPanel('network');
 
   function run() {
@@ -16,7 +16,8 @@
     requestFoo.setResourceType(types.XHR);
     requestFoo.setRequestIdForTest('foo');
     requestFoo.setRequestHeaders([{name: 'Cookie', value: 'mycookie=myvalue;myother=myvalue2'}]);
-    panel._showRequest(requestFoo);
+    panel._onRequestSelected({data: requestFoo});
+    panel._showRequestPanel();
     panel._networkItemView._selectTab('cookies');
 
     // Ensure this runs after all Promise.resolve

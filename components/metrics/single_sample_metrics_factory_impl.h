@@ -2,15 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_METRICS_SINGLE_VALUE_HISTOGRAM_FACTORY_IMPL_H_
-#define COMPONENTS_METRICS_SINGLE_VALUE_HISTOGRAM_FACTORY_IMPL_H_
+#ifndef COMPONENTS_METRICS_SINGLE_SAMPLE_METRICS_FACTORY_IMPL_H_
+#define COMPONENTS_METRICS_SINGLE_SAMPLE_METRICS_FACTORY_IMPL_H_
 
 #include <string>
 
 #include "base/metrics/single_sample_metrics.h"
 #include "base/threading/thread_local.h"
-#include "components/metrics/public/interfaces/single_sample_metrics.mojom.h"
+#include "components/metrics/public/mojom/single_sample_metrics.mojom.h"
 #include "components/metrics/single_sample_metrics.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 namespace metrics {
 
@@ -61,11 +62,12 @@ class SingleSampleMetricsFactoryImpl : public base::SingleSampleMetricsFactory {
   CreateProviderCB create_provider_cb_;
 
   // Per thread storage slot for the mojo provider.
-  base::ThreadLocalPointer<mojom::SingleSampleMetricsProviderPtr> provider_tls_;
+  base::ThreadLocalPointer<mojo::Remote<mojom::SingleSampleMetricsProvider>>
+      provider_tls_;
 
   DISALLOW_COPY_AND_ASSIGN(SingleSampleMetricsFactoryImpl);
 };
 
 }  // namespace metrics
 
-#endif  // COMPONENTS_METRICS_SINGLE_VALUE_HISTOGRAM_FACTORY_IMPL_H_
+#endif  // COMPONENTS_METRICS_SINGLE_SAMPLE_METRICS_FACTORY_IMPL_H_

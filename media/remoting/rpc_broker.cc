@@ -14,22 +14,23 @@ namespace remoting {
 
 namespace {
 
-std::ostream& operator<<(std::ostream& out, const pb::RpcMessage& message) {
+std::ostream& operator<<(std::ostream& out,
+                         const openscreen::cast::RpcMessage& message) {
   out << "handle=" << message.handle() << ", proc=" << message.proc();
   switch (message.rpc_oneof_case()) {
-    case pb::RpcMessage::kIntegerValue:
+    case openscreen::cast::RpcMessage::kIntegerValue:
       out << ", integer_value=" << message.integer_value();
       break;
-    case pb::RpcMessage::kInteger64Value:
+    case openscreen::cast::RpcMessage::kInteger64Value:
       out << ", integer64_value=" << message.integer64_value();
       break;
-    case pb::RpcMessage::kDoubleValue:
+    case openscreen::cast::RpcMessage::kDoubleValue:
       out << ", double_value=" << message.double_value();
       break;
-    case pb::RpcMessage::kBooleanValue:
+    case openscreen::cast::RpcMessage::kBooleanValue:
       out << ", boolean_value=" << message.boolean_value();
       break;
-    case pb::RpcMessage::kStringValue:
+    case openscreen::cast::RpcMessage::kStringValue:
       out << ", string_value=" << message.string_value();
       break;
     default:
@@ -42,9 +43,7 @@ std::ostream& operator<<(std::ostream& out, const pb::RpcMessage& message) {
 }  // namespace
 
 RpcBroker::RpcBroker(const SendMessageCallback& send_message_cb)
-    : next_handle_(kFirstHandle),
-      send_message_cb_(send_message_cb),
-      weak_factory_(this) {}
+    : next_handle_(kFirstHandle), send_message_cb_(send_message_cb) {}
 
 RpcBroker::~RpcBroker() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -72,7 +71,7 @@ void RpcBroker::UnregisterMessageReceiverCallback(int handle) {
 }
 
 void RpcBroker::ProcessMessageFromRemote(
-    std::unique_ptr<pb::RpcMessage> message) {
+    std::unique_ptr<openscreen::cast::RpcMessage> message) {
   DCHECK(message);
   DCHECK(thread_checker_.CalledOnValidThread());
   VLOG(3) << __func__ << ": " << *message;
@@ -84,7 +83,8 @@ void RpcBroker::ProcessMessageFromRemote(
   entry->second.Run(std::move(message));
 }
 
-void RpcBroker::SendMessageToRemote(std::unique_ptr<pb::RpcMessage> message) {
+void RpcBroker::SendMessageToRemote(
+    std::unique_ptr<openscreen::cast::RpcMessage> message) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(message);
   VLOG(3) << __func__ << ": " << *message;

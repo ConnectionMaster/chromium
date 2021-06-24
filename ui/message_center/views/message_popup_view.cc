@@ -4,21 +4,18 @@
 
 #include "ui/message_center/views/message_popup_view.h"
 
-#include "base/feature_list.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
-#include "ui/aura/window.h"
-#include "ui/aura/window_targeter.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/compositor/layer.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
-#include "ui/message_center/public/cpp/features.h"
 #include "ui/message_center/public/cpp/message_center_constants.h"
 #include "ui/message_center/views/message_popup_collection.h"
 #include "ui/message_center/views/message_view.h"
-#include "ui/message_center/views/message_view_context_menu_controller.h"
 #include "ui/message_center/views/message_view_factory.h"
-#include "ui/message_center/views/popup_alignment_delegate.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/widget/widget.h"
 
@@ -26,37 +23,30 @@
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ui/aura/window.h"
+#include "ui/aura/window_targeter.h"
+#endif
+
 namespace message_center {
 
 MessagePopupView::MessagePopupView(const Notification& notification,
-                                   PopupAlignmentDelegate* alignment_delegate,
                                    MessagePopupCollection* popup_collection)
     : message_view_(MessageViewFactory::Create(notification)),
-      alignment_delegate_(alignment_delegate),
       popup_collection_(popup_collection),
       a11y_feedback_on_init_(
           notification.rich_notification_data()
               .should_make_spoken_feedback_for_popup_updates) {
-#if !defined(OS_CHROMEOS)
-  if (!base::FeatureList::IsEnabled(message_center::kNewStyleNotifications)) {
-    context_menu_controller_ =
-        std::make_unique<MessageViewContextMenuController>();
-    message_view_->set_context_menu_controller(context_menu_controller_.get());
-  }
-#endif
-
   SetLayoutManager(std::make_unique<views::FillLayout>());
 
   if (!message_view_->IsManuallyExpandedOrCollapsed())
     message_view_->SetExpanded(message_view_->IsAutoExpandingAllowed());
   AddChildView(message_view_);
-  set_notify_enter_exit_on_child(true);
+  SetNotifyEnterExitOnChild(true);
 }
 
-MessagePopupView::MessagePopupView(PopupAlignmentDelegate* alignment_delegate,
-                                   MessagePopupCollection* popup_collection)
+MessagePopupView::MessagePopupView(MessagePopupCollection* popup_collection)
     : message_view_(nullptr),
-      alignment_delegate_(alignment_delegate),
       popup_collection_(popup_collection),
       a11y_feedback_on_init_(false) {
   SetLayoutManager(std::make_unique<views::FillLayout>());
@@ -77,13 +67,22 @@ void MessagePopupView::UpdateContents(const Notification& notification) {
           .should_make_spoken_feedback_for_popup_updates) {
     ui::AXNodeData new_data;
     message_view_->GetAccessibleNodeData(&new_data);
-    if (old_data.GetStringAttribute(ax::mojom::StringAttribute::kName) !=
-        new_data.GetStringAttribute(ax::mojom::StringAttribute::kName))
+
+    const std::string& new_name =
+        new_data.GetStringAttribute(ax::mojom::StringAttribute::kName);
+    const std::string& old_name =
+        old_data.GetStringAttribute(ax::mojom::StringAttribute::kName);
+    if (new_name.empty()) {
+      new_data.SetNameFrom(ax::mojom::NameFrom::kAttributeExplicitlyEmpty);
+      return;
+    }
+
+    if (old_name != new_name)
       NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
   }
 }
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
 float MessagePopupView::GetOpacity() const {
   if (!IsWidgetValid())
     return 0.f;
@@ -113,20 +112,22 @@ void MessagePopupView::AutoCollapse() {
 
 void MessagePopupView::Show() {
   views::Widget::InitParams params(views::Widget::InitParams::TYPE_POPUP);
+  params.z_order = ui::ZOrderLevel::kFloatingWindow;
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   // Make the widget explicitly activatable as TYPE_POPUP is not activatable by
   // default but we need focus for the inline reply textarea.
-  params.activatable = views::Widget::InitParams::ACTIVATABLE_YES;
-  params.keep_on_top = true;
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-  params.opacity = views::Widget::InitParams::OPAQUE_WINDOW;
+  params.activatable = views::Widget::InitParams::Activatable::kYes;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kOpaque;
 #else
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
 #endif
   params.delegate = this;
   views::Widget* widget = new views::Widget();
-  alignment_delegate_->ConfigureWidgetInitParamsForContainer(widget, &params);
+  popup_collection_->ConfigureWidgetInitParamsForContainer(widget, &params);
   widget->set_focus_on_creation(false);
-  widget->AddObserver(this);
+  observation_.Observe(widget);
 
 #if defined(OS_WIN)
   // We want to ensure that this toast always goes to the native desktop,
@@ -136,9 +137,9 @@ void MessagePopupView::Show() {
     params.native_widget = new views::DesktopNativeWidgetAura(widget);
 #endif
 
-  widget->Init(params);
+  widget->Init(std::move(params));
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // On Chrome OS, this widget is shown in the shelf container. It means this
   // widget would inherit the parent's window targeter (ShelfWindowTarget) by
   // default. But it is not good for popup. So we override it with the normal
@@ -183,10 +184,6 @@ void MessagePopupView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
   node_data->role = ax::mojom::Role::kAlertDialog;
 }
 
-const char* MessagePopupView::GetClassName() const {
-  return "MessagePopupView";
-}
-
 void MessagePopupView::OnDisplayChanged() {
   OnWorkAreaChanged();
 }
@@ -199,10 +196,16 @@ void MessagePopupView::OnWorkAreaChanged() {
   if (!native_view)
     return;
 
-  if (alignment_delegate_->RecomputeAlignment(
+  if (popup_collection_->RecomputeAlignment(
           display::Screen::GetScreen()->GetDisplayNearestView(native_view))) {
     popup_collection_->ResetBounds();
   }
+}
+
+void MessagePopupView::OnFocus() {
+  // This view is just a container, so advance focus to the underlying
+  // MessageView.
+  GetFocusManager()->SetFocusedView(message_view_);
 }
 
 void MessagePopupView::OnWidgetActivationChanged(views::Widget* widget,
@@ -211,8 +214,16 @@ void MessagePopupView::OnWidgetActivationChanged(views::Widget* widget,
   popup_collection_->Update();
 }
 
+void MessagePopupView::OnWidgetDestroyed(views::Widget* widget) {
+  DCHECK(observation_.IsObservingSource(widget));
+  observation_.Reset();
+}
+
 bool MessagePopupView::IsWidgetValid() const {
   return GetWidget() && !GetWidget()->IsClosed();
 }
+
+BEGIN_METADATA(MessagePopupView, views::WidgetDelegateView)
+END_METADATA
 
 }  // namespace message_center

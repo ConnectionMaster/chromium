@@ -9,8 +9,8 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/containers/contains.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/time/time.h"
 #include "media/audio/audio_logging.h"
 #include "media/audio/audio_manager.h"
@@ -31,9 +31,9 @@ AudioOutputDispatcherImpl::AudioOutputDispatcherImpl(
                    close_delay,
                    this,
                    &AudioOutputDispatcherImpl::CloseAllIdleStreams),
-      audio_stream_id_(0),
-      weak_factory_(this) {
+      audio_stream_id_(0) {
   DCHECK(audio_manager->GetTaskRunner()->BelongsToCurrentThread());
+  audio_manager->AddOutputDeviceChangeListener(this);
 }
 
 AudioOutputDispatcherImpl::~AudioOutputDispatcherImpl() {
@@ -47,6 +47,8 @@ AudioOutputDispatcherImpl::~AudioOutputDispatcherImpl() {
   // Close all idle streams immediately.  The |close_timer_| will handle
   // invalidating any outstanding tasks upon its destruction.
   CloseAllIdleStreams();
+
+  audio_manager()->RemoveOutputDeviceChangeListener(this);
 
   // All idle physical streams must have been closed during shutdown.
   CHECK(idle_streams_.empty());
@@ -88,7 +90,7 @@ bool AudioOutputDispatcherImpl::StartStream(
   double volume = 0;
   stream_proxy->GetVolume(&volume);
   physical_stream->SetVolume(volume);
-  DCHECK(base::ContainsKey(audio_logs_, physical_stream));
+  DCHECK(base::Contains(audio_logs_, physical_stream));
   AudioLog* const audio_log = audio_logs_[physical_stream].get();
   audio_log->OnSetVolume(volume);
   physical_stream->Start(callback);
@@ -115,7 +117,7 @@ void AudioOutputDispatcherImpl::StreamVolumeSet(AudioOutputProxy* stream_proxy,
   if (it != proxy_to_physical_map_.end()) {
     AudioOutputStream* physical_stream = it->second;
     physical_stream->SetVolume(volume);
-    DCHECK(base::ContainsKey(audio_logs_, physical_stream));
+    DCHECK(base::Contains(audio_logs_, physical_stream));
     audio_logs_[physical_stream]->OnSetVolume(volume);
   }
 }
@@ -129,6 +131,21 @@ void AudioOutputDispatcherImpl::CloseStream(AudioOutputProxy* stream_proxy) {
   // cycle time when streams are opened and closed repeatedly.
   CloseIdleStreams(std::max(idle_proxies_, static_cast<size_t>(1)));
   close_timer_.Reset();
+}
+
+// There is nothing to flush since the phsyical stream is removed during
+// StopStream().
+void AudioOutputDispatcherImpl::FlushStream(AudioOutputProxy* stream_proxy) {}
+
+void AudioOutputDispatcherImpl::OnDeviceChange() {
+  DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
+
+  // We don't want to end up reusing streams which were opened for the wrong
+  // default device. We need to post this task so it runs after device changes
+  // have been sent to all listeners and they've had time to close streams.
+  audio_manager()->GetTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&AudioOutputDispatcherImpl::CloseAllIdleStreams,
+                                weak_factory_.GetWeakPtr()));
 }
 
 bool AudioOutputDispatcherImpl::HasOutputProxies() const {
@@ -184,7 +201,7 @@ void AudioOutputDispatcherImpl::CloseIdleStreams(size_t keep_alive) {
 void AudioOutputDispatcherImpl::StopPhysicalStream(AudioOutputStream* stream) {
   DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
   stream->Stop();
-  DCHECK(base::ContainsKey(audio_logs_, stream));
+  DCHECK(base::Contains(audio_logs_, stream));
   audio_logs_[stream]->OnStopped();
   idle_streams_.push_back(stream);
   close_timer_.Reset();

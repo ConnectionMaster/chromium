@@ -8,9 +8,9 @@
  */
 
 Polymer({
-  is: 'app-downloading',
+  is: 'app-downloading-element',
 
-  behaviors: [I18nBehavior, OobeDialogHostBehavior],
+  behaviors: [OobeI18nBehavior, OobeDialogHostBehavior, LoginScreenBehavior],
 
   properties: {
     numOfApps: Number,
@@ -20,26 +20,95 @@ Polymer({
       type: Boolean,
       computed: 'hasSingleApp_(numOfApps)',
     },
+
+    /**
+     * Whether new OOBE layout is enabled.
+     *
+     * @type {boolean}
+     */
+    newLayoutEnabled_: {
+      type: Boolean,
+      value() {
+        return loadTimeData.valueExists('newLayoutEnabled') &&
+            loadTimeData.getBoolean('newLayoutEnabled');
+      }
+    },
+
+    pluralTitleVisible_: {
+      type: Boolean,
+      value: false,
+    },
+
+    singularTitleVisible_: {
+      type: Boolean,
+      value: false,
+    },
   },
 
-  focus: function() {
-    this.$['app-downloading-dialog'].focus();
+  ready() {
+    this.initializeLoginScreen('AppDownloadingScreen', {
+      resetAllowed: true,
+    });
+  },
+
+  /** Initial UI State for screen */
+  getOobeUIInitialState() {
+    return OOBE_UI_STATE.ONBOARDING;
+  },
+
+  /**
+   * Returns the control which should receive initial focus.
+   */
+  get defaultControl() {
+    return this.$['app-downloading-dialog'];
+  },
+
+  /*
+   * Executed on language change.
+   */
+  updateLocalizedContent() {
+    this.i18nUpdateLocale();
+  },
+
+  /** Called when dialog is shown */
+  onBeforeShow(data) {
+    this.numOfApps = data.numOfApps;
+    if (!this.newLayoutEnabled_) {
+      this.singularTitleVisible_ = this.hasSingleApp_(this.numOfApps);
+      this.pluralTitleVisible_ = !this.hasSingleApp_(this.numOfApps);
+    }
+    if (this.$.video && !this.newLayoutEnabled_) {
+      this.$.video.play();
+    }
+    if (this.$.downloadingApps && this.newLayoutEnabled_) {
+      this.$.downloadingApps.setPlay(true);
+    }
+  },
+
+  /** Called when dialog is hidden */
+  onBeforeHide() {
+    if (this.$.video && !this.newLayoutEnabled_) {
+      this.$.video.pause();
+    }
+    if (this.$.downloadingApps && this.newLayoutEnabled_) {
+      this.$.downloadingApps.setPlay(false);
+    }
   },
 
   /** @private */
-  onContinue_: function() {
-    chrome.send(
-        'login.AppDownloadingScreen.userActed',
-        ['appDownloadingContinueSetup']);
+  onContinue_() {
+    this.userActed('appDownloadingContinueSetup');
   },
 
   /** @private */
-  hasSingleApp_: function(numOfApps) {
+  hasSingleApp_(numOfApps) {
     return numOfApps === 1;
   },
 
   /** @private */
-  getDialogTitleA11yString_: function(numOfApps) {
+  getDialogTitleA11yString_(numOfApps) {
+    if (this.newLayoutEnabled_)
+      return this.i18n('appDownloadingScreenTitle');
     if (this.hasSingleApp_(numOfApps)) {
       return this.i18n('appDownloadingScreenTitleSingular');
     } else {

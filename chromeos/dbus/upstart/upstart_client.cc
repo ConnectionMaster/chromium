@@ -4,7 +4,11 @@
 
 #include "chromeos/dbus/upstart/upstart_client.h"
 
+#include <utility>
+
 #include "base/bind.h"
+#include "base/callback_helpers.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "chromeos/dbus/upstart/fake_upstart_client.h"
 #include "dbus/bus.h"
@@ -23,20 +27,22 @@ constexpr char kStopMethod[] = "Stop";
 
 constexpr char kUpstartJobsPath[] = "/com/ubuntu/Upstart/jobs/";
 constexpr char kAuthPolicyJob[] = "authpolicyd";
-constexpr char kKerberosJob[] = "kerberosd";
 constexpr char kMediaAnalyticsJob[] = "rtanalytics";
 // "wilco_5fdtc_5fdispatcher" below refers to the "wilco_dtc_dispatcher" upstart
 // job. Upstart escapes characters that aren't valid in D-Bus object paths
 // using underscore as the escape character, followed by the character code in
 // hex.
 constexpr char kWilcoDtcDispatcherJob[] = "wilco_5fdtc_5fdispatcher";
+// "arc_2ddata_2dsnapshotd" below refers to the "arc-data-snapshotd" upstart
+// job. Upstart escapes characters that aren't valid in D-Bus object paths using
+// underscore as the escape character, followed by the character code in hex.
+constexpr char kArcDataSnapshotdJob[] = "arc_2ddata_2dsnapshotd";
 
 UpstartClient* g_instance = nullptr;
 
 class UpstartClientImpl : public UpstartClient {
  public:
-  explicit UpstartClientImpl(dbus::Bus* bus)
-      : bus_(bus), weak_ptr_factory_(this) {}
+  explicit UpstartClientImpl(dbus::Bus* bus) : bus_(bus) {}
 
   ~UpstartClientImpl() override = default;
 
@@ -48,21 +54,25 @@ class UpstartClientImpl : public UpstartClient {
   }
 
   void StopJob(const std::string& job,
+               const std::vector<std::string>& upstart_env,
                VoidDBusMethodCallback callback) override {
-    CallJobMethod(job, kStopMethod, {}, std::move(callback));
+    CallJobMethod(job, kStopMethod, upstart_env, std::move(callback));
   }
 
   void StartAuthPolicyService() override {
-    StartJob(kAuthPolicyJob, {}, EmptyVoidDBusMethodCallback());
+    StartJob(kAuthPolicyJob, {}, base::DoNothing());
   }
 
   void RestartAuthPolicyService() override {
-    CallJobMethod(kAuthPolicyJob, kRestartMethod, {},
-                  EmptyVoidDBusMethodCallback());
+    CallJobMethod(kAuthPolicyJob, kRestartMethod, {}, base::DoNothing());
   }
 
-  void StartKerberosService(VoidDBusMethodCallback callback) override {
-    StartJob(kKerberosJob, {}, std::move(callback));
+  void StartLacrosChrome(const std::vector<std::string>& upstart_env) override {
+    // TODO(lacros): Remove logging.
+    StartJob("lacros_2dchrome", upstart_env, base::BindOnce([](bool result) {
+               LOG(WARNING) << (result ? "success" : "fail")
+                            << " starting lacros-chrome";
+             }));
   }
 
   void StartMediaAnalytics(const std::vector<std::string>& upstart_env,
@@ -74,12 +84,14 @@ class UpstartClientImpl : public UpstartClient {
     CallJobMethod(kMediaAnalyticsJob, kRestartMethod, {}, std::move(callback));
   }
 
+  using UpstartClient::StopJob;
+
   void StopMediaAnalytics() override {
-    StopJob(kMediaAnalyticsJob, EmptyVoidDBusMethodCallback());
+    StopJob(kMediaAnalyticsJob, {}, base::DoNothing());
   }
 
   void StopMediaAnalytics(VoidDBusMethodCallback callback) override {
-    StopJob(kMediaAnalyticsJob, std::move(callback));
+    StopJob(kMediaAnalyticsJob, {}, std::move(callback));
   }
 
   void StartWilcoDtcService(VoidDBusMethodCallback callback) override {
@@ -87,7 +99,16 @@ class UpstartClientImpl : public UpstartClient {
   }
 
   void StopWilcoDtcService(VoidDBusMethodCallback callback) override {
-    StopJob(kWilcoDtcDispatcherJob, std::move(callback));
+    StopJob(kWilcoDtcDispatcherJob, {}, std::move(callback));
+  }
+
+  void StartArcDataSnapshotd(const std::vector<std::string>& upstart_env,
+                             VoidDBusMethodCallback callback) override {
+    StartJob(kArcDataSnapshotdJob, upstart_env, std::move(callback));
+  }
+
+  void StopArcDataSnapshotd(VoidDBusMethodCallback callback) override {
+    StopJob(kArcDataSnapshotdJob, {}, std::move(callback));
   }
 
  private:
@@ -115,7 +136,7 @@ class UpstartClientImpl : public UpstartClient {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<UpstartClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<UpstartClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(UpstartClientImpl);
 };

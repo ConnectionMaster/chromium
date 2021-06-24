@@ -11,8 +11,8 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/optional.h"
 #include "base/strings/string_piece.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "media/base/audio_bus.h"
@@ -21,6 +21,7 @@
 #include "services/audio/test/fake_consumer.h"
 #include "services/audio/test/fake_loopback_group_member.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace audio {
 namespace {
@@ -200,7 +201,7 @@ class SnooperNodeTest : public testing::TestWithParam<InputAndOutputParams> {
     group_member_->SetVolume(kSourceVolume);
 
     node_.emplace(input_params(), output_params());
-    group_member_->StartSnooping(node(), Snoopable::SnoopingMode::kDeferred);
+    group_member_->StartSnooping(node());
 
     consumer_.emplace(output_params().channels(),
                       output_params().sample_rate());
@@ -221,7 +222,7 @@ class SnooperNodeTest : public testing::TestWithParam<InputAndOutputParams> {
     // |bus|. Don't do this check if there is already a test failure, and this
     // would just keep spamming the test output.
     if (!HasFailure()) {
-      const base::Optional<base::TimeTicks> suggestion =
+      const absl::optional<base::TimeTicks> suggestion =
           node_->SuggestLatestRenderTime(bus->frames());
       if (suggestion) {
         EXPECT_LE(output_time, *suggestion)
@@ -295,9 +296,9 @@ class SnooperNodeTest : public testing::TestWithParam<InputAndOutputParams> {
   double max_relative_error_ = 0.0;
 
   // The pipeline from source to consumer.
-  base::Optional<FakeLoopbackGroupMember> group_member_;
-  base::Optional<SnooperNode> node_;
-  base::Optional<FakeConsumer> consumer_;
+  absl::optional<FakeLoopbackGroupMember> group_member_;
+  absl::optional<SnooperNode> node_;
+  absl::optional<FakeConsumer> consumer_;
 };
 
 // The skew test here is generating 10 seconds of audio per iteration, with
@@ -335,7 +336,8 @@ TEST_P(SnooperNodeTest, MAYBE_ContinuousAudioFlowAdaptsToSkew) {
            (output_skew * output_delay().InSecondsF())) *
           output_params().sample_rate();
       const double frames_in_one_millisecond =
-          output_params().sample_rate() / 1000.0;
+          output_params().sample_rate() /
+          double{base::Time::kMillisecondsPerSecond};
       EXPECT_NEAR(expected_end_of_silence_position,
                   consumer()->FindEndOfSilence(0, 0),
                   frames_in_one_millisecond);
@@ -415,7 +417,7 @@ TEST_P(SnooperNodeTest, HandlesMissingInput) {
   const int output_frames_in_one_second = output_params().sample_rate();
   const int output_frames_in_a_quarter_second = output_frames_in_one_second / 4;
   const int output_frames_in_20_milliseconds =
-      output_frames_in_one_second * 20 / 1000;
+      output_frames_in_one_second * 20 / base::Time::kMillisecondsPerSecond;
   int output_silence_position =
       ((kInputAdvanceTime + output_delay()).InSecondsF() + 1.0) *
       output_params().sample_rate();
@@ -572,7 +574,7 @@ TEST_P(SnooperNodeTest, SuggestsRenderTimes) {
   // further details.) The suggestion should also not be too far in the past.
   const base::TimeTicks first_input_time = task_runner()->NowTicks();
   group_member()->RenderMoreAudio(first_input_time);
-  const base::Optional<base::TimeTicks> first_suggestion =
+  const absl::optional<base::TimeTicks> first_suggestion =
       node()->SuggestLatestRenderTime(output_params().frames_per_buffer());
   ASSERT_TRUE(first_suggestion);
   const base::TimeTicks time_at_end_of_input =
@@ -601,7 +603,7 @@ TEST_P(SnooperNodeTest, SuggestsRenderTimes) {
             i * input_params().frames_per_buffer() /
             static_cast<double>(input_params().sample_rate()));
     group_member()->RenderMoreAudio(next_input_time);
-    const base::Optional<base::TimeTicks> next_suggestion =
+    const absl::optional<base::TimeTicks> next_suggestion =
         node()->SuggestLatestRenderTime(output_params().frames_per_buffer());
     ASSERT_TRUE(next_suggestion);
     const base::TimeTicks time_at_end_of_input =
@@ -623,7 +625,7 @@ double MapTimeOffsetToATone(base::TimeDelta offset) {
   constexpr double kMaxFrequency = 2000;
   constexpr int kNumToneSteps = 10;
 
-  const int64_t step_number = offset / (kTestDuration / kNumToneSteps);
+  const int64_t step_number = offset.IntDiv(kTestDuration / kNumToneSteps);
   const double t = static_cast<double>(step_number) / kNumToneSteps;
   return kMinFrequency + t * (kMaxFrequency - kMinFrequency);
 }
@@ -752,7 +754,7 @@ InputAndOutputParams MakeParams(media::ChannelLayout input_channel_layout,
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     SnooperNodeTest,
     testing::Values(MakeParams(media::CHANNEL_LAYOUT_STEREO,
                                48000,

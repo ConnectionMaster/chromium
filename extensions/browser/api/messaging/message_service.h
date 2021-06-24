@@ -117,6 +117,9 @@ class MessageService : public BrowserContextKeyedAPI,
                  const PortContext& port_context,
                  bool force_close);
 
+  // Returns the number of open channels for test.
+  size_t GetChannelCountForTest() { return channels_.size(); }
+
   base::WeakPtr<MessagePort::ChannelDelegate> GetChannelDelegate() {
     return weak_factory_.GetWeakPtr();
   }
@@ -248,7 +251,7 @@ class MessageService : public BrowserContextKeyedAPI,
   PendingChannelMap pending_incognito_channels_;
   PendingLazyContextChannelMap pending_lazy_context_channels_;
 
-  base::WeakPtrFactory<MessageService> weak_factory_;
+  base::WeakPtrFactory<MessageService> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MessageService);
 };

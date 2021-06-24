@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "base/callback_helpers.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/navigation_handle.h"
@@ -23,12 +22,14 @@ ScreenOrientationDelegate* ScreenOrientationProvider::delegate_ = nullptr;
 ScreenOrientationProvider::ScreenOrientationProvider(WebContents* web_contents)
     : WebContentsObserver(web_contents),
       lock_applied_(false),
-      bindings_(web_contents, this) {}
+      receivers_(web_contents,
+                 this,
+                 content::WebContentsFrameReceiverSetPassKey()) {}
 
 ScreenOrientationProvider::~ScreenOrientationProvider() = default;
 
 void ScreenOrientationProvider::LockOrientation(
-    blink::WebScreenOrientationLockType orientation,
+    device::mojom::ScreenOrientationLockType orientation,
     LockOrientationCallback callback) {
   // Cancel any pending lock request.
   NotifyLockResult(ScreenOrientationLockResult::
@@ -43,15 +44,14 @@ void ScreenOrientationProvider::LockOrientation(
   }
 
   if (delegate_->FullScreenRequired(web_contents())) {
-    RenderViewHostImpl* rvhi =
-        static_cast<RenderViewHostImpl*>(web_contents()->GetRenderViewHost());
+    RenderViewHostImpl* rvhi = static_cast<RenderViewHostImpl*>(
+        web_contents()->GetMainFrame()->GetRenderViewHost());
     if (!rvhi) {
       NotifyLockResult(ScreenOrientationLockResult::
                            SCREEN_ORIENTATION_LOCK_RESULT_ERROR_CANCELED);
       return;
     }
-    if (!static_cast<WebContentsImpl*>(web_contents())
-             ->IsFullscreenForCurrentTab()) {
+    if (!static_cast<WebContentsImpl*>(web_contents())->IsFullscreen()) {
       NotifyLockResult(
           ScreenOrientationLockResult::
               SCREEN_ORIENTATION_LOCK_RESULT_ERROR_FULLSCREEN_REQUIRED);
@@ -59,9 +59,9 @@ void ScreenOrientationProvider::LockOrientation(
     }
   }
 
-  if (orientation == blink::kWebScreenOrientationLockNatural) {
+  if (orientation == device::mojom::ScreenOrientationLockType::NATURAL) {
     orientation = GetNaturalLockType();
-    if (orientation == blink::kWebScreenOrientationLockDefault) {
+    if (orientation == device::mojom::ScreenOrientationLockType::DEFAULT) {
       // We are in a broken state, let's pretend we got canceled.
       NotifyLockResult(ScreenOrientationLockResult::
                            SCREEN_ORIENTATION_LOCK_RESULT_ERROR_CANCELED);
@@ -110,7 +110,7 @@ void ScreenOrientationProvider::OnOrientationChange() {
 void ScreenOrientationProvider::NotifyLockResult(
     ScreenOrientationLockResult result) {
   if (!pending_callback_.is_null())
-    base::ResetAndReturn(&pending_callback_).Run(result);
+    std::move(pending_callback_).Run(result);
 
   pending_lock_orientation_.reset();
 }
@@ -141,7 +141,7 @@ void ScreenOrientationProvider::DidToggleFullscreenModeForTab(
 
 void ScreenOrientationProvider::DidFinishNavigation(
     NavigationHandle* navigation_handle) {
-  if (!navigation_handle->IsInMainFrame() ||
+  if (!navigation_handle->IsInPrimaryMainFrame() ||
       !navigation_handle->HasCommitted() ||
       navigation_handle->IsSameDocument()) {
     return;
@@ -149,74 +149,76 @@ void ScreenOrientationProvider::DidFinishNavigation(
   UnlockOrientation();
 }
 
-blink::WebScreenOrientationLockType
+device::mojom::ScreenOrientationLockType
 ScreenOrientationProvider::GetNaturalLockType() const {
-  RenderWidgetHost* rwh = web_contents()->GetRenderViewHost()->GetWidget();
+  RenderWidgetHost* rwh =
+      web_contents()->GetMainFrame()->GetRenderViewHost()->GetWidget();
   if (!rwh)
-    return blink::kWebScreenOrientationLockDefault;
+    return device::mojom::ScreenOrientationLockType::DEFAULT;
 
-  ScreenInfo screen_info;
+  display::ScreenInfo screen_info;
   rwh->GetScreenInfo(&screen_info);
 
   switch (screen_info.orientation_type) {
-    case SCREEN_ORIENTATION_VALUES_PORTRAIT_PRIMARY:
-    case SCREEN_ORIENTATION_VALUES_PORTRAIT_SECONDARY:
+    case display::mojom::ScreenOrientation::kPortraitPrimary:
+    case display::mojom::ScreenOrientation::kPortraitSecondary:
       if (screen_info.orientation_angle == 0 ||
           screen_info.orientation_angle == 180) {
-        return blink::kWebScreenOrientationLockPortraitPrimary;
+        return device::mojom::ScreenOrientationLockType::PORTRAIT_PRIMARY;
       }
-      return blink::kWebScreenOrientationLockLandscapePrimary;
-    case SCREEN_ORIENTATION_VALUES_LANDSCAPE_PRIMARY:
-    case SCREEN_ORIENTATION_VALUES_LANDSCAPE_SECONDARY:
+      return device::mojom::ScreenOrientationLockType::LANDSCAPE_PRIMARY;
+    case display::mojom::ScreenOrientation::kLandscapePrimary:
+    case display::mojom::ScreenOrientation::kLandscapeSecondary:
       if (screen_info.orientation_angle == 0 ||
           screen_info.orientation_angle == 180) {
-        return blink::kWebScreenOrientationLockLandscapePrimary;
+        return device::mojom::ScreenOrientationLockType::LANDSCAPE_PRIMARY;
       }
-      return blink::kWebScreenOrientationLockPortraitPrimary;
+      return device::mojom::ScreenOrientationLockType::PORTRAIT_PRIMARY;
     default:
       break;
   }
 
   NOTREACHED();
-  return blink::kWebScreenOrientationLockDefault;
+  return device::mojom::ScreenOrientationLockType::DEFAULT;
 }
 
 bool ScreenOrientationProvider::LockMatchesCurrentOrientation(
-    blink::WebScreenOrientationLockType lock) {
-  RenderWidgetHost* rwh = web_contents()->GetRenderViewHost()->GetWidget();
+    device::mojom::ScreenOrientationLockType lock) {
+  RenderWidgetHost* rwh =
+      web_contents()->GetMainFrame()->GetRenderViewHost()->GetWidget();
   if (!rwh)
     return false;
 
-  ScreenInfo screen_info;
+  display::ScreenInfo screen_info;
   rwh->GetScreenInfo(&screen_info);
 
   switch (lock) {
-    case blink::kWebScreenOrientationLockPortraitPrimary:
+    case device::mojom::ScreenOrientationLockType::PORTRAIT_PRIMARY:
       return screen_info.orientation_type ==
-             SCREEN_ORIENTATION_VALUES_PORTRAIT_PRIMARY;
-    case blink::kWebScreenOrientationLockPortraitSecondary:
+             display::mojom::ScreenOrientation::kPortraitPrimary;
+    case device::mojom::ScreenOrientationLockType::PORTRAIT_SECONDARY:
       return screen_info.orientation_type ==
-             SCREEN_ORIENTATION_VALUES_PORTRAIT_SECONDARY;
-    case blink::kWebScreenOrientationLockLandscapePrimary:
+             display::mojom::ScreenOrientation::kPortraitSecondary;
+    case device::mojom::ScreenOrientationLockType::LANDSCAPE_PRIMARY:
       return screen_info.orientation_type ==
-             SCREEN_ORIENTATION_VALUES_LANDSCAPE_PRIMARY;
-    case blink::kWebScreenOrientationLockLandscapeSecondary:
+             display::mojom::ScreenOrientation::kLandscapePrimary;
+    case device::mojom::ScreenOrientationLockType::LANDSCAPE_SECONDARY:
       return screen_info.orientation_type ==
-             SCREEN_ORIENTATION_VALUES_LANDSCAPE_SECONDARY;
-    case blink::kWebScreenOrientationLockLandscape:
+             display::mojom::ScreenOrientation::kLandscapeSecondary;
+    case device::mojom::ScreenOrientationLockType::LANDSCAPE:
       return screen_info.orientation_type ==
-                 SCREEN_ORIENTATION_VALUES_LANDSCAPE_PRIMARY ||
+                 display::mojom::ScreenOrientation::kLandscapePrimary ||
              screen_info.orientation_type ==
-                 SCREEN_ORIENTATION_VALUES_LANDSCAPE_SECONDARY;
-    case blink::kWebScreenOrientationLockPortrait:
+                 display::mojom::ScreenOrientation::kLandscapeSecondary;
+    case device::mojom::ScreenOrientationLockType::PORTRAIT:
       return screen_info.orientation_type ==
-                 SCREEN_ORIENTATION_VALUES_PORTRAIT_PRIMARY ||
+                 display::mojom::ScreenOrientation::kPortraitPrimary ||
              screen_info.orientation_type ==
-                 SCREEN_ORIENTATION_VALUES_PORTRAIT_SECONDARY;
-    case blink::kWebScreenOrientationLockAny:
+                 display::mojom::ScreenOrientation::kPortraitSecondary;
+    case device::mojom::ScreenOrientationLockType::ANY:
       return true;
-    case blink::kWebScreenOrientationLockNatural:
-    case blink::kWebScreenOrientationLockDefault:
+    case device::mojom::ScreenOrientationLockType::NATURAL:
+    case device::mojom::ScreenOrientationLockType::DEFAULT:
       NOTREACHED();
       return false;
   }

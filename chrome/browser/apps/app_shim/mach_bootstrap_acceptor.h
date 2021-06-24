@@ -6,9 +6,9 @@
 #define CHROME_BROWSER_APPS_APP_SHIM_MACH_BOOTSTRAP_ACCEPTOR_H_
 
 #include <memory>
+#include <string>
 
 #include "base/mac/dispatch_source_mach.h"
-#include "base/macros.h"
 #include "base/process/process_handle.h"
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
@@ -29,12 +29,17 @@ class MachBootstrapAcceptor {
     // Mach port it provided in |endpoint|.
     virtual void OnClientConnected(mojo::PlatformChannelEndpoint endpoint,
                                    base::ProcessId peer_pid) = 0;
+
+    // Called when there is an error creating the server channel.
+    virtual void OnServerChannelCreateError() = 0;
   };
 
   // Initializes the server by specifying the |name_fragment|, which will be
   // appended to the running process's bundle identifier, to be published in
   // the bootstrap server.
   MachBootstrapAcceptor(const std::string& name_fragment, Delegate* delegate);
+  MachBootstrapAcceptor(const MachBootstrapAcceptor&) = delete;
+  MachBootstrapAcceptor& operator=(const MachBootstrapAcceptor&) = delete;
   ~MachBootstrapAcceptor();
 
   // Creates a Mach receive port and publishes a send right to it in the system
@@ -47,6 +52,8 @@ class MachBootstrapAcceptor {
   void Stop();
 
  private:
+  friend class MachBootstrapAcceptorTest;
+
   // Called by |dispatch_source_| when a Mach message is ready to be received
   // on |endpoint_|.
   void HandleRequest();
@@ -57,8 +64,6 @@ class MachBootstrapAcceptor {
   Delegate* delegate_;
   mojo::PlatformChannelServerEndpoint endpoint_;
   std::unique_ptr<base::DispatchSourceMach> dispatch_source_;
-
-  DISALLOW_COPY_AND_ASSIGN(MachBootstrapAcceptor);
 };
 
 }  // namespace apps

@@ -43,12 +43,17 @@ class MockDiskMountManager : public DiskMountManager {
                     const std::vector<std::string>&,
                     MountType,
                     MountAccessMode));
-  MOCK_METHOD3(UnmountPath,
-               void(const std::string&,
-                    UnmountOptions,
-                    DiskMountManager::UnmountPathCallback));
+  MOCK_METHOD2(UnmountPath,
+               void(const std::string&, DiskMountManager::UnmountPathCallback));
   MOCK_METHOD1(RemountAllRemovableDrives, void(MountAccessMode));
-  MOCK_METHOD1(FormatMountedDevice, void(const std::string&));
+  MOCK_METHOD3(FormatMountedDevice,
+               void(const std::string&,
+                    FormatFileSystemType,
+                    const std::string&));
+  MOCK_METHOD3(SinglePartitionFormatDevice,
+               void(const std::string&,
+                    FormatFileSystemType,
+                    const std::string&));
   MOCK_METHOD2(RenameMountedDevice,
                void(const std::string&, const std::string&));
   MOCK_METHOD2(UnmountDeviceRecursively,
@@ -69,8 +74,10 @@ class MockDiskMountManager : public DiskMountManager {
   // Sets up default results for mock methods.
   void SetupDefaultReplies();
 
-  // Creates a fake disk entry for the mounted device. This function is
-  // primarily for StorageMonitorTest.
+  // Creates a fake disk entry for the mounted device.
+  void CreateDiskEntryForMountDevice(std::unique_ptr<Disk> disk);
+
+  // Creates a fake disk entry for the mounted device.
   void CreateDiskEntryForMountDevice(
       const DiskMountManager::MountPointInfo& mount_info,
       const std::string& device_id,
@@ -114,7 +121,7 @@ class MockDiskMountManager : public DiskMountManager {
   void NotifyDiskChanged(DiskEvent event, const Disk* disk);
 
   // The list of observers.
-  base::ObserverList<DiskMountManager::Observer>::Unchecked observers_;
+  base::ObserverList<DiskMountManager::Observer> observers_;
 
   // The list of disks found.
   DiskMountManager::DiskMap disks_;

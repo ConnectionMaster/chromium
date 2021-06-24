@@ -2,22 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <EarlGrey/EarlGrey.h>
-
 #include <memory>
 
 #include "base/ios/ios_util.h"
 #include "base/strings/stringprintf.h"
-#include "ios/chrome/browser/ui/util/ui_util.h"
-#import "ios/chrome/test/app/chrome_test_util.h"
-#include "ios/chrome/test/app/history_test_util.h"
-#include "ios/chrome/test/app/navigation_test_util.h"
-#import "ios/chrome/test/app/web_view_interaction_test_util.h"
+#include "components/omnibox/common/omnibox_features.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/chrome_test_case.h"
-#include "ios/chrome/test/scoped_block_popups_pref.h"
+#include "ios/chrome/test/earl_grey/scoped_block_popups_pref.h"
+#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
+#import "ios/testing/earl_grey/earl_grey_test.h"
 #include "ios/web/public/test/http_server/html_response_provider.h"
 #import "ios/web/public/test/http_server/http_server.h"
 #include "ios/web/public/test/http_server/http_server_util.h"
@@ -27,8 +22,6 @@
 #error "This file requires ARC support."
 #endif
 
-using chrome_test_util::GetOriginalBrowserState;
-using chrome_test_util::TapWebViewElementWithId;
 using web::test::HttpServer;
 
 namespace {
@@ -113,10 +106,27 @@ class CacheTestResponseProvider : public web::DataResponseProvider {
 }  // namespace
 
 // Tests the browser cache behavior when navigating to cached pages.
-@interface CacheTestCase : ChromeTestCase
+@interface CacheTestCase : WebHttpServerChromeTestCase
 @end
 
 @implementation CacheTestCase
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config;
+
+  // Features are enabled or disabled based on the name of the test that is
+  // running. This is done because it is inefficient to use
+  // ensureAppLaunchedWithConfiguration for each test.
+  if ([self isRunningTest:@selector
+            (testCachingBehaviorOnSelectOmniboxSuggestion)]) {
+    // Explicitly disable feature OnDeviceHeadProviderNonIncognito, whose delay
+    // (i.e. http://shortn/_o7kPJvU8ac) will otherwise cause flakiness for this
+    // test in build iphone-device (crbug.com/1153136).
+    config.features_disabled.push_back(
+        omnibox::kOnDeviceHeadProviderNonIncognito);
+  }
+  return config;
+}
 
 // Tests caching behavior on navigate back and page reload. Navigate back should
 // use the cached page. Page reload should use cache-control in the request
@@ -135,25 +145,26 @@ class CacheTestResponseProvider : public web::DataResponseProvider {
 
   // 1st hit to server. Verify that the server has the correct hit count.
   [ChromeEarlGrey loadURL:cacheTestFirstPageURL];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 1"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 1"];
 
   // Navigate to another page. 2nd hit to server.
-  GREYAssert(chrome_test_util::TapWebViewElementWithId(kCacheTestLinkID),
-             @"Failed to tap %s", kCacheTestLinkID);
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 2"];
+  [ChromeEarlGrey
+      tapWebStateElementWithID:[NSString
+                                   stringWithUTF8String:kCacheTestLinkID]];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 2"];
 
   // Navigate back. This should not hit the server. Verify the page has been
   // loaded from cache. The serverHitCounter will remain the same.
   [ChromeEarlGrey goBack];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 1"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 1"];
 
   // Reload page. 3rd hit to server. Verify that page reload causes the
   // hitCounter to show updated value.
   [ChromeEarlGrey reload];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 3"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 3"];
 
   // Verify that page reload causes Cache-Control value to be sent with request.
-  [ChromeEarlGrey waitForWebViewContainingText:"cacheControl: max-age=0"];
+  [ChromeEarlGrey waitForWebStateContainingText:"cacheControl: max-age=0"];
 }
 
 // Tests caching behavior when opening new tab. New tab should not use the
@@ -168,23 +179,23 @@ class CacheTestResponseProvider : public web::DataResponseProvider {
 
   // 1st hit to server. Verify title and hitCount.
   [ChromeEarlGrey loadURL:cacheTestFirstPageURL];
-  [ChromeEarlGrey waitForWebViewContainingText:"First Page"];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 1"];
+  [ChromeEarlGrey waitForWebStateContainingText:"First Page"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 1"];
 
   // 2nd hit to server. Verify hitCount.
   [ChromeEarlGrey loadURL:cacheTestThirdPageURL];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 2"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 2"];
 
   // Open the first page in a new tab. Verify that cache was not used. Must
   // first allow popups.
-  ScopedBlockPopupsPref prefSetter(CONTENT_SETTING_ALLOW,
-                                   GetOriginalBrowserState());
-  GREYAssert(chrome_test_util::TapWebViewElementWithId(kCacheTestLinkID),
-             @"Failed to tap %s", kCacheTestLinkID);
+  ScopedBlockPopupsPref prefSetter(CONTENT_SETTING_ALLOW);
+  [ChromeEarlGrey
+      tapWebStateElementWithID:[NSString
+                                   stringWithUTF8String:kCacheTestLinkID]];
   [ChromeEarlGrey waitForMainTabCount:2];
   [ChromeEarlGrey waitForPageToFinishLoading];
-  [ChromeEarlGrey waitForWebViewContainingText:"First Page"];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 3"];
+  [ChromeEarlGrey waitForWebStateContainingText:"First Page"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 3"];
 }
 
 // Tests that cache is not used when selecting omnibox suggested website, even
@@ -192,33 +203,34 @@ class CacheTestResponseProvider : public web::DataResponseProvider {
 - (void)testCachingBehaviorOnSelectOmniboxSuggestion {
   // TODO(crbug.com/753098): Re-enable this test on iPad once grey_typeText
   // works.
-  if (IsIPadIdiom()) {
+  if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_DISABLED(@"Test disabled on iPad.");
   }
 
   web::test::SetUpHttpServer(std::make_unique<CacheTestResponseProvider>());
 
   // Clear the history to ensure expected omnibox autocomplete results.
-  GREYAssertTrue(chrome_test_util::ClearBrowsingHistory(),
-                 @"Clearing Browsing History timed out");
+  [ChromeEarlGrey clearBrowsingHistory];
 
   const GURL cacheTestFirstPageURL =
       HttpServer::MakeUrl(kCacheTestFirstPageURL);
 
   // 1st hit to server. Verify title and hitCount.
   [ChromeEarlGrey loadURL:cacheTestFirstPageURL];
-  [ChromeEarlGrey waitForWebViewContainingText:"First Page"];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 1"];
+  [ChromeEarlGrey waitForWebStateContainingText:"First Page"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 1"];
 
   // Type a search into omnnibox and select the first suggestion (second row)
   [ChromeEarlGreyUI focusOmniboxAndType:@"cachetestfirstpage"];
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(@"omnibox suggestion 1")]
+      selectElementWithMatcher:grey_allOf(grey_accessibilityID(
+                                              @"omnibox suggestion 1"),
+                                          grey_sufficientlyVisible(), nil)]
       performAction:grey_tap()];
 
   // Verify title and hitCount. Cache should not be used.
-  [ChromeEarlGrey waitForWebViewContainingText:"First Page"];
-  [ChromeEarlGrey waitForWebViewContainingText:"serverHitCounter: 2"];
+  [ChromeEarlGrey waitForWebStateContainingText:"First Page"];
+  [ChromeEarlGrey waitForWebStateContainingText:"serverHitCounter: 2"];
 }
 
 @end

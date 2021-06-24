@@ -14,7 +14,10 @@
 namespace bluez {
 
 class BluetoothAdapterClient;
+class BluetoothAdminPolicyClient;
 class BluetoothAgentManagerClient;
+class BluetoothBatteryClient;
+class BluetoothDebugManagerClient;
 class BluetoothDeviceClient;
 class BluetoothGattCharacteristicClient;
 class BluetoothGattDescriptorClient;
@@ -22,8 +25,6 @@ class BluetoothGattManagerClient;
 class BluetoothGattServiceClient;
 class BluetoothInputClient;
 class BluetoothLEAdvertisingManagerClient;
-class BluetoothMediaClient;
-class BluetoothMediaTransportClient;
 class BluetoothProfileManagerClient;
 
 // The bundle of all D-Bus clients used in DBusThreadManager. The bundle
@@ -41,6 +42,10 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDBusClientBundle {
     return bluetooth_adapter_client_.get();
   }
 
+  BluetoothAdminPolicyClient* bluetooth_admin_policy_client() {
+    return bluetooth_admin_policy_client_.get();
+  }
+
   BluetoothLEAdvertisingManagerClient*
   bluetooth_le_advertising_manager_client() {
     return bluetooth_le_advertising_manager_client_.get();
@@ -48,6 +53,14 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDBusClientBundle {
 
   BluetoothAgentManagerClient* bluetooth_agent_manager_client() {
     return bluetooth_agent_manager_client_.get();
+  }
+
+  BluetoothDebugManagerClient* bluetooth_debug_manager_client() {
+    return bluetooth_debug_manager_client_.get();
+  }
+
+  BluetoothBatteryClient* bluetooth_battery_client() {
+    return bluetooth_battery_client_.get();
   }
 
   BluetoothDeviceClient* bluetooth_device_client() {
@@ -74,14 +87,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDBusClientBundle {
     return bluetooth_input_client_.get();
   }
 
-  BluetoothMediaClient* bluetooth_media_client() {
-    return bluetooth_media_client_.get();
-  }
-
-  BluetoothMediaTransportClient* bluetooth_media_transport_client() {
-    return bluetooth_media_transport_client_.get();
-  }
-
   BluetoothProfileManagerClient* bluetooth_profile_manager_client() {
     return bluetooth_profile_manager_client_.get();
   }
@@ -100,9 +105,12 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDBusClientBundle {
   bool use_fakes_;
 
   std::unique_ptr<BluetoothAdapterClient> bluetooth_adapter_client_;
+  std::unique_ptr<BluetoothAdminPolicyClient> bluetooth_admin_policy_client_;
   std::unique_ptr<BluetoothLEAdvertisingManagerClient>
       bluetooth_le_advertising_manager_client_;
   std::unique_ptr<BluetoothAgentManagerClient> bluetooth_agent_manager_client_;
+  std::unique_ptr<BluetoothBatteryClient> bluetooth_battery_client_;
+  std::unique_ptr<BluetoothDebugManagerClient> bluetooth_debug_manager_client_;
   std::unique_ptr<BluetoothDeviceClient> bluetooth_device_client_;
   std::unique_ptr<BluetoothGattCharacteristicClient>
       bluetooth_gatt_characteristic_client_;
@@ -111,9 +119,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDBusClientBundle {
   std::unique_ptr<BluetoothGattManagerClient> bluetooth_gatt_manager_client_;
   std::unique_ptr<BluetoothGattServiceClient> bluetooth_gatt_service_client_;
   std::unique_ptr<BluetoothInputClient> bluetooth_input_client_;
-  std::unique_ptr<BluetoothMediaClient> bluetooth_media_client_;
-  std::unique_ptr<BluetoothMediaTransportClient>
-      bluetooth_media_transport_client_;
   std::unique_ptr<BluetoothProfileManagerClient>
       bluetooth_profile_manager_client_;
 

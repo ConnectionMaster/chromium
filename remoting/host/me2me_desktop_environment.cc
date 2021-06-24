@@ -4,6 +4,7 @@
 
 #include "remoting/host/me2me_desktop_environment.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/logging.h"
@@ -63,6 +64,7 @@ Me2MeDesktopEnvironment::CreateScreenControls() {
 std::string Me2MeDesktopEnvironment::GetCapabilities() const {
   std::string capabilities;
   capabilities += protocol::kRateLimitResizeRequests;
+
   if (InputInjector::SupportsTouchEvents()) {
     capabilities += " ";
     capabilities += protocol::kTouchEventsCapability;
@@ -84,6 +86,11 @@ std::string Me2MeDesktopEnvironment::GetCapabilities() const {
   }
 #endif  // defined(OS_WIN)
 
+#if defined(OS_LINUX)
+  capabilities += " ";
+  capabilities += protocol::kRemoteOpenUrlCapability;
+#endif  // defined(OS_LINUX)
+
   return capabilities;
 }
 
@@ -92,14 +99,12 @@ Me2MeDesktopEnvironment::Me2MeDesktopEnvironment(
     scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    ui::SystemInputInjectorFactory* system_input_injector_factory,
     base::WeakPtr<ClientSessionControl> client_session_control,
     const DesktopEnvironmentOptions& options)
     : BasicDesktopEnvironment(caller_task_runner,
                               video_capture_task_runner,
                               input_task_runner,
                               ui_task_runner,
-                              system_input_injector_factory,
                               client_session_control,
                               options) {
   DCHECK(caller_task_runner->BelongsToCurrentThread());
@@ -131,9 +136,9 @@ bool Me2MeDesktopEnvironment::InitializeSecurity(
 
   // Otherwise, if the session is shared with the local user start monitoring
   // the local input and create the in-session UI.
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   bool want_user_interface = false;
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
   // Don't try to display any UI on top of the system's login screen as this
   // is rejected by the Window Server on OS X 10.7.4, and prevents the
   // capturer from working (http://crbug.com/140984).
@@ -162,8 +167,8 @@ bool Me2MeDesktopEnvironment::InitializeSecurity(
 #else
     disconnect_window_ = HostWindow::CreateDisconnectWindow();
 #endif
-    disconnect_window_.reset(new HostWindowProxy(
-        caller_task_runner(), ui_task_runner(), std::move(disconnect_window_)));
+    disconnect_window_ = std::make_unique<HostWindowProxy>(
+        caller_task_runner(), ui_task_runner(), std::move(disconnect_window_));
     disconnect_window_->Start(client_session_control);
   }
 
@@ -174,13 +179,11 @@ Me2MeDesktopEnvironmentFactory::Me2MeDesktopEnvironmentFactory(
     scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    ui::SystemInputInjectorFactory* system_input_injector_factory)
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner)
     : BasicDesktopEnvironmentFactory(caller_task_runner,
                                      video_capture_task_runner,
                                      input_task_runner,
-                                     ui_task_runner,
-                                     system_input_injector_factory) {}
+                                     ui_task_runner) {}
 
 Me2MeDesktopEnvironmentFactory::~Me2MeDesktopEnvironmentFactory() {
 }
@@ -191,10 +194,10 @@ std::unique_ptr<DesktopEnvironment> Me2MeDesktopEnvironmentFactory::Create(
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
   std::unique_ptr<Me2MeDesktopEnvironment> desktop_environment(
-      new Me2MeDesktopEnvironment(
-          caller_task_runner(), video_capture_task_runner(),
-          input_task_runner(), ui_task_runner(),
-          system_input_injector_factory(), client_session_control, options));
+      new Me2MeDesktopEnvironment(caller_task_runner(),
+                                  video_capture_task_runner(),
+                                  input_task_runner(), ui_task_runner(),
+                                  client_session_control, options));
   if (!desktop_environment->InitializeSecurity(client_session_control)) {
     return nullptr;
   }

@@ -4,12 +4,14 @@
 
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_object_proxy.h"
 
+#include <utility>
+
 #include "third_party/blink/renderer/core/workers/threaded_worklet_messaging_proxy.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_global_scope.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_messaging_proxy.h"
 #include "third_party/blink/renderer/modules/webaudio/cross_thread_audio_worklet_processor_info.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
 
@@ -26,12 +28,13 @@ void AudioWorkletObjectProxy::DidCreateWorkerGlobalScope(
     WorkerOrWorkletGlobalScope* global_scope) {
   global_scope_ = To<AudioWorkletGlobalScope>(global_scope);
   global_scope_->SetSampleRate(context_sample_rate_);
+  global_scope_->SetObjectProxy(*this);
 }
 
-void AudioWorkletObjectProxy::DidEvaluateModuleScript(bool success) {
+void AudioWorkletObjectProxy::SynchronizeProcessorInfoList() {
   DCHECK(global_scope_);
 
-  if (!success || global_scope_->NumberOfRegisteredDefinitions() == 0)
+  if (global_scope_->NumberOfRegisteredDefinitions() == 0)
     return;
 
   std::unique_ptr<Vector<CrossThreadAudioWorkletProcessorInfo>>
@@ -42,12 +45,12 @@ void AudioWorkletObjectProxy::DidEvaluateModuleScript(bool success) {
     return;
 
   PostCrossThreadTask(
-      *GetParentExecutionContextTaskRunners()->Get(TaskType::kInternalMedia),
+      *GetParentExecutionContextTaskRunners()->Get(TaskType::kInternalLoading),
       FROM_HERE,
-      CrossThreadBind(
+      CrossThreadBindOnce(
           &AudioWorkletMessagingProxy::SynchronizeWorkletProcessorInfoList,
           GetAudioWorkletMessagingProxyWeakPtr(),
-          WTF::Passed(std::move(processor_info_list))));
+          std::move(processor_info_list)));
 }
 
 void AudioWorkletObjectProxy::WillDestroyWorkerGlobalScope() {
@@ -56,8 +59,7 @@ void AudioWorkletObjectProxy::WillDestroyWorkerGlobalScope() {
 
 CrossThreadWeakPersistent<AudioWorkletMessagingProxy>
 AudioWorkletObjectProxy::GetAudioWorkletMessagingProxyWeakPtr() {
-  return static_cast<AudioWorkletMessagingProxy*>(
-      MessagingProxyWeakPtr().Get());
+  return DownCast<AudioWorkletMessagingProxy>(MessagingProxyWeakPtr());
 }
 
 }  // namespace blink

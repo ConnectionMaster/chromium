@@ -17,9 +17,9 @@
 namespace net {
 class CertVerifier;
 class CTPolicyEnforcer;
-class CTVerifier;
 class DrainableIOBuffer;
 class GrowableIOBuffer;
+class SSLClientContext;
 class SSLServerContext;
 class SSLSocket;
 class TransportSecurityState;
@@ -63,9 +63,30 @@ class SslHmacChannelAuthenticator : public ChannelAuthenticator {
 
   // ChannelAuthenticator interface.
   void SecureAndAuthenticate(std::unique_ptr<P2PStreamSocket> socket,
-                             const DoneCallback& done_callback) override;
+                             DoneCallback done_callback) override;
 
  private:
+  class P2PStreamSocketAdapter;
+
+  // P2PStreamSocketAdater outlives the SslHmacChannelAuthenticator, but SSL
+  // sockets must not outlive their context structures. SslSocketContext bundles
+  // them together for convenience.
+  struct SslSocketContext {
+    SslSocketContext();
+    SslSocketContext(SslSocketContext&&);
+    ~SslSocketContext();
+    SslSocketContext& operator=(SslSocketContext&&);
+
+    // Used in the SERVER mode only.
+    std::unique_ptr<net::SSLServerContext> server_context;
+
+    // Used in the CLIENT mode only.
+    std::unique_ptr<net::TransportSecurityState> transport_security_state;
+    std::unique_ptr<net::CertVerifier> cert_verifier;
+    std::unique_ptr<net::CTPolicyEnforcer> ct_policy_enforcer;
+    std::unique_ptr<net::SSLClientContext> client_context;
+  };
+
   SslHmacChannelAuthenticator(const std::string& auth_key);
 
   bool is_ssl_server();
@@ -90,15 +111,11 @@ class SslHmacChannelAuthenticator : public ChannelAuthenticator {
   // Used in the SERVER mode only.
   std::string local_cert_;
   scoped_refptr<RsaKeyPair> local_key_pair_;
-  std::unique_ptr<net::SSLServerContext> server_context_;
 
   // Used in the CLIENT mode only.
   std::string remote_cert_;
-  std::unique_ptr<net::TransportSecurityState> transport_security_state_;
-  std::unique_ptr<net::CertVerifier> cert_verifier_;
-  std::unique_ptr<net::CTVerifier> ct_verifier_;
-  std::unique_ptr<net::CTPolicyEnforcer> ct_policy_enforcer_;
 
+  SslSocketContext socket_context_;
   std::unique_ptr<net::SSLSocket> socket_;
   DoneCallback done_callback_;
 

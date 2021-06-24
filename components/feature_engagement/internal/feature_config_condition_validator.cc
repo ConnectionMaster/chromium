@@ -8,13 +8,15 @@
 #include <string>
 #include <vector>
 
+#include "base/check.h"
+#include "base/containers/contains.h"
 #include "base/feature_list.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "components/feature_engagement/internal/availability_model.h"
-#include "components/feature_engagement/internal/configuration.h"
 #include "components/feature_engagement/internal/display_lock_controller.h"
 #include "components/feature_engagement/internal/event_model.h"
 #include "components/feature_engagement/internal/proto/feature_event.pb.h"
+#include "components/feature_engagement/public/configuration.h"
 #include "components/feature_engagement/public/feature_list.h"
 
 namespace feature_engagement {
@@ -80,7 +82,7 @@ void FeatureConfigConditionValidator::NotifyIsShowing(
       DCHECK(config.session_rate_impact.affected_features.has_value());
       for (const std::string& feature_name :
            config.session_rate_impact.affected_features.value()) {
-        DCHECK(base::ContainsValue(all_feature_names, feature_name));
+        DCHECK(base::Contains(all_feature_names, feature_name));
         ++times_shown_for_feature_[feature_name];
       }
       break;
@@ -99,33 +101,8 @@ bool FeatureConfigConditionValidator::EventConfigMeetsConditions(
     const EventConfig& event_config,
     const EventModel& event_model,
     uint32_t current_day) const {
-  const Event* event = event_model.GetEvent(event_config.name);
-
-  // If no events are found, the requirement must be met with 0 elements.
-  // Also, if the window is 0 days, there will never be any events.
-  if (event == nullptr || event_config.window == 0u)
-    return event_config.comparator.MeetsCriteria(0u);
-
-  DCHECK(event_config.window >= 0);
-
-  // A window of N=0:  Nothing should be counted.
-  // A window of N=1:  |current_day| should be counted.
-  // A window of N=2+: |current_day| plus |N-1| more days should be counted.
-  uint32_t oldest_accepted_day = current_day - event_config.window + 1;
-
-  // Cap |oldest_accepted_day| to UNIX epoch.
-  if (event_config.window > current_day)
-    oldest_accepted_day = 0u;
-
-  // Calculate the number of events within the window.
-  uint32_t event_count = 0;
-  for (const auto& event_day : event->events()) {
-    if (event_day.day() < oldest_accepted_day)
-      continue;
-
-    event_count += event_day.count();
-  }
-
+  uint32_t event_count = event_model.GetEventCount(
+      event_config.name, current_day, event_config.window);
   return event_config.comparator.MeetsCriteria(event_count);
 }
 
@@ -137,7 +114,7 @@ bool FeatureConfigConditionValidator::AvailabilityMeetsConditions(
   if (comparator.type == ANY)
     return true;
 
-  base::Optional<uint32_t> availability_day =
+  absl::optional<uint32_t> availability_day =
       availability_model.GetAvailability(feature);
   if (!availability_day.has_value())
     return false;

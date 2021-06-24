@@ -5,6 +5,7 @@
 #ifndef UI_GL_INIT_GL_INITIALIZER_H_
 #define UI_GL_INIT_GL_INITIALIZER_H_
 
+#include "ui/gl/buildflags.h"
 #include "ui/gl/gl_implementation.h"
 
 namespace gl {
@@ -12,15 +13,19 @@ namespace init {
 
 // Performs platform dependent one-off GL initialization, calling into the
 // appropriate GLSurface code to initialize it. To perform one-off GL
-// initialization you should use InitializeGLOneOff() or for tests possibly
-// InitializeGLOneOffImplementation() instead.
+// initialization you should use InitializeGLOneOff() or
+// InitializeStaticGLBindingsOneOff() +
+// InitializeGLNoExtensionsOneOff(). For tests possibly
+// InitializeStaticGLBindingsImplementation() +
+// InitializeGLOneOffPlatformImplementation() instead.
 bool InitializeGLOneOffPlatform();
 
 // Initializes a particular GL implementation.
-bool InitializeStaticGLBindings(GLImplementation implementation);
+bool InitializeStaticGLBindings(GLImplementationParts implementation);
 
-// Initializes debug logging wrappers for GL bindings.
-void InitializeDebugGLBindings();
+#if BUILDFLAG(USE_STATIC_ANGLE)
+bool InitializeStaticANGLEEGL();
+#endif  // BUILDFLAG(USE_STATIC_ANGLE)
 
 // Clears GL bindings for all implementations supported by platform.
 void ShutdownGLPlatform();

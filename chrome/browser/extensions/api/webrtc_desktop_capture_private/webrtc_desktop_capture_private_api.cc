@@ -11,11 +11,9 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/api/tabs.h"
 #include "chrome/common/extensions/api/webrtc_desktop_capture_private.h"
-#include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/origin_util.h"
 #include "net/base/url_util.h"
+#include "services/network/public/cpp/is_potentially_trustworthy.h"
 
 namespace extensions {
 
@@ -35,17 +33,18 @@ WebrtcDesktopCapturePrivateChooseDesktopMediaFunction::
     ~WebrtcDesktopCapturePrivateChooseDesktopMediaFunction() {
 }
 
-bool WebrtcDesktopCapturePrivateChooseDesktopMediaFunction::RunAsync() {
+ExtensionFunction::ResponseAction
+WebrtcDesktopCapturePrivateChooseDesktopMediaFunction::Run() {
   using Params =
       extensions::api::webrtc_desktop_capture_private::ChooseDesktopMedia
           ::Params;
   EXTENSION_FUNCTION_VALIDATE(args_->GetSize() > 0);
 
   EXTENSION_FUNCTION_VALIDATE(args_->GetInteger(0, &request_id_));
-  DesktopCaptureRequestsRegistry::GetInstance()->AddRequest(
-      render_frame_host()->GetProcess()->GetID(), request_id_, this);
+  DesktopCaptureRequestsRegistry::GetInstance()->AddRequest(source_process_id(),
+                                                            request_id_, this);
 
-  args_->Remove(0, NULL);
+  args_->EraseListIter(args_->GetList().begin());
 
   std::unique_ptr<Params> params = Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(params.get());
@@ -55,26 +54,24 @@ bool WebrtcDesktopCapturePrivateChooseDesktopMediaFunction::RunAsync() {
       params->request.guest_render_frame_id);
 
   if (!rfh) {
-    error_ = kTargetNotFoundError;
-    return false;
+    return RespondNow(Error(kTargetNotFoundError));
   }
 
   GURL origin = rfh->GetLastCommittedURL().GetOrigin();
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           ::switches::kAllowHttpScreenCapture) &&
-      !content::IsOriginSecure(origin)) {
-    error_ = kUrlNotSecure;
-    return false;
+      !network::IsUrlPotentiallyTrustworthy(origin)) {
+    return RespondNow(Error(kUrlNotSecure));
   }
-  base::string16 target_name = base::UTF8ToUTF16(
-      content::IsOriginSecure(origin) ? net::GetHostAndOptionalPort(origin)
-                                      : origin.spec());
+  std::u16string target_name =
+      base::UTF8ToUTF16(network::IsUrlPotentiallyTrustworthy(origin)
+                            ? net::GetHostAndOptionalPort(origin)
+                            : origin.spec());
 
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(rfh);
   if (!web_contents) {
-    error_ = kTargetNotFoundError;
-    return false;
+    return RespondNow(Error(kTargetNotFoundError));
   }
 
   using Sources = std::vector<api::desktop_capture::DesktopCaptureSourceType>;

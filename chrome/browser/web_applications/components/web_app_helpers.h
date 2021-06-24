@@ -7,12 +7,14 @@
 
 #include <string>
 
+#include "chrome/browser/web_applications/components/web_app_id.h"
+#include "chrome/browser/web_applications/components/web_application_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
 class GURL;
+class Profile;
 
 namespace web_app {
-
-// App ID matches Extension ID.
-using AppId = std::string;
 
 // Compute a deterministic name based on the URL. We use this pseudo name
 // as a key to store window location per application URLs in Browser and
@@ -21,10 +23,6 @@ std::string GenerateApplicationNameFromURL(const GURL& url);
 
 // Compute a deterministic name based on an apps's id.
 std::string GenerateApplicationNameFromAppId(const AppId& app_id);
-
-// Compute a name for Focus Mode, using counter;
-// TODO(crbug.com/943194): Move this method to Focus Mode specific file.
-std::string GenerateApplicationNameForFocusMode();
 
 // Extracts the application id from the app name.
 AppId GetAppIdFromApplicationName(const std::string& app_name);
@@ -43,11 +41,32 @@ AppId GetAppIdFromApplicationName(const std::string& app_name);
 // bookmark URL.
 //
 // App ID and App Key match Extension ID and Extension Key for migration.
+
+// Deprecated. Please use GenerateAppId instead.
 AppId GenerateAppIdFromURL(const GURL& url);
+
+// Generate App id using manfiest_id, if null, use start_url instead.
+AppId GenerateAppId(const absl::optional<std::string>& manifest_id,
+                    const GURL& start_url);
+std::string GenerateAppIdUnhashed(
+    const absl::optional<std::string>& manifest_id,
+    const GURL& start_url);
+
+AppId GenerateAppIdFromManifest(const blink::Manifest& manifest);
 std::string GenerateAppKeyFromURL(const GURL& url);
 
-// Returns whether the given |app_url| is a valid bookmark app url.
+// Returns whether the given |app_url| is a valid web app url.
 bool IsValidWebAppUrl(const GURL& app_url);
+
+// Returns whether the given |app_url| is a valid extension url.
+bool IsValidExtensionUrl(const GURL& app_url);
+
+// Searches for the first locally installed app id in the registry for which
+// the |url| is in scope. If |window_only| is specified, only apps that
+// open in app windows will be considered.
+absl::optional<AppId> FindInstalledAppWithUrlInScope(Profile* profile,
+                                                     const GURL& url,
+                                                     bool window_only = false);
 
 }  // namespace web_app
 

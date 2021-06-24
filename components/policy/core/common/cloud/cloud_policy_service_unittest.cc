@@ -4,9 +4,11 @@
 
 #include "components/policy/core/common/cloud/cloud_policy_service.h"
 
+#include <memory>
+
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
@@ -51,7 +53,7 @@ TEST_F(CloudPolicyServiceTest, PolicyUpdateSuccess) {
 
   // After |store_| initializes, credentials and other meta data should be
   // transferred to |client_|.
-  store_.policy_.reset(new em::PolicyData());
+  store_.policy_ = std::make_unique<em::PolicyData>();
   store_.policy_->set_request_token("fake token");
   store_.policy_->set_device_id("fake client id");
   store_.policy_->set_timestamp(32);
@@ -84,8 +86,8 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicySuccess) {
 
   // Trigger a fetch on the client.
   EXPECT_CALL(client_, FetchPolicy()).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 
   // Client responds, push policy to store.
   em::PolicyFetchResponse policy;
@@ -98,7 +100,7 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicySuccess) {
   EXPECT_EQ(12345, store_.invalidation_version());
 
   // Store reloads policy, callback gets triggered.
-  store_.policy_.reset(new em::PolicyData());
+  store_.policy_ = std::make_unique<em::PolicyData>();
   store_.policy_->set_request_token("token");
   store_.policy_->set_device_id("device-id");
   EXPECT_CALL(*this, OnPolicyRefresh(true)).Times(1);
@@ -111,8 +113,8 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicyNotRegistered) {
 
   EXPECT_CALL(client_, FetchPolicy()).Times(0);
   EXPECT_CALL(*this, OnPolicyRefresh(false)).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 }
 
 TEST_F(CloudPolicyServiceTest, RefreshPolicyClientError) {
@@ -123,8 +125,8 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicyClientError) {
 
   // Trigger a fetch on the client.
   EXPECT_CALL(client_, FetchPolicy()).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 
   // Client responds with an error, which should trigger the callback.
   client_.SetStatus(DM_STATUS_REQUEST_FAILED);
@@ -140,8 +142,8 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicyStoreError) {
 
   // Trigger a fetch on the client.
   EXPECT_CALL(client_, FetchPolicy()).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 
   // Client responds, push policy to store.
   em::PolicyFetchResponse policy;
@@ -163,13 +165,13 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicyConcurrent) {
 
   // Trigger a fetch on the client.
   EXPECT_CALL(client_, FetchPolicy()).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 
   // Triggering another policy refresh should generate a new fetch request.
   EXPECT_CALL(client_, FetchPolicy()).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 
   // Client responds, push policy to store.
   em::PolicyFetchResponse policy;
@@ -180,8 +182,8 @@ TEST_F(CloudPolicyServiceTest, RefreshPolicyConcurrent) {
 
   // Trigger another policy fetch.
   EXPECT_CALL(client_, FetchPolicy()).Times(1);
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 
   // The store finishing the first load should not generate callbacks.
   EXPECT_CALL(*this, OnPolicyRefresh(_)).Times(0);
@@ -200,8 +202,8 @@ TEST_F(CloudPolicyServiceTest, UnregisterSucceeds) {
   EXPECT_CALL(client_, Unregister());
   EXPECT_CALL(*this, OnUnregister(true));
 
-  service_.Unregister(base::Bind(&CloudPolicyServiceTest::OnUnregister,
-                                 base::Unretained(this)));
+  service_.Unregister(base::BindOnce(&CloudPolicyServiceTest::OnUnregister,
+                                     base::Unretained(this)));
   client_.NotifyRegistrationStateChanged();
 }
 
@@ -209,8 +211,8 @@ TEST_F(CloudPolicyServiceTest, UnregisterFailsOnClientError) {
   EXPECT_CALL(client_, Unregister());
   EXPECT_CALL(*this, OnUnregister(false));
 
-  service_.Unregister(base::Bind(&CloudPolicyServiceTest::OnUnregister,
-                                 base::Unretained(this)));
+  service_.Unregister(base::BindOnce(&CloudPolicyServiceTest::OnUnregister,
+                                     base::Unretained(this)));
   client_.NotifyClientError();
 }
 
@@ -218,22 +220,22 @@ TEST_F(CloudPolicyServiceTest, UnregisterRevokesAllOnGoingPolicyRefreshes) {
   EXPECT_CALL(client_, Unregister());
   EXPECT_CALL(*this, OnPolicyRefresh(false)).Times(2);
 
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
-  service_.Unregister(base::Bind(&CloudPolicyServiceTest::OnUnregister,
-                                 base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
+  service_.Unregister(base::BindOnce(&CloudPolicyServiceTest::OnUnregister,
+                                     base::Unretained(this)));
 }
 
 TEST_F(CloudPolicyServiceTest, RefreshPolicyFailsWhenUnregistering) {
   EXPECT_CALL(client_, Unregister());
   EXPECT_CALL(*this, OnPolicyRefresh(false));
 
-  service_.Unregister(base::Bind(&CloudPolicyServiceTest::OnUnregister,
-                                 base::Unretained(this)));
-  service_.RefreshPolicy(base::Bind(&CloudPolicyServiceTest::OnPolicyRefresh,
-                                    base::Unretained(this)));
+  service_.Unregister(base::BindOnce(&CloudPolicyServiceTest::OnUnregister,
+                                     base::Unretained(this)));
+  service_.RefreshPolicy(base::BindOnce(
+      &CloudPolicyServiceTest::OnPolicyRefresh, base::Unretained(this)));
 }
 
 TEST_F(CloudPolicyServiceTest, StoreAlreadyInitialized) {

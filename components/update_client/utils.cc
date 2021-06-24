@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <utility>
 
 #include "base/callback.h"
 #include "base/files/file_path.h"
@@ -41,19 +43,24 @@ bool IsHttpServerError(int status_code) {
 }
 
 bool DeleteFileAndEmptyParentDirectory(const base::FilePath& filepath) {
-  if (!base::DeleteFile(filepath, false))
+  if (!base::DeleteFile(filepath))
     return false;
 
   const base::FilePath dirname(filepath.DirName());
   if (!base::IsDirectoryEmpty(dirname))
     return true;
 
-  return base::DeleteFile(dirname, false);
+  return base::DeleteFile(dirname);
 }
 
 std::string GetCrxComponentID(const CrxComponent& component) {
-  const std::string result = crx_file::id_util::GenerateIdFromHash(
-      &component.pk_hash[0], component.pk_hash.size());
+  return component.app_id.empty() ? GetCrxIdFromPublicKeyHash(component.pk_hash)
+                                  : component.app_id;
+}
+
+std::string GetCrxIdFromPublicKeyHash(const std::vector<uint8_t>& pk_hash) {
+  const std::string result =
+      crx_file::id_util::GenerateIdFromHash(&pk_hash[0], pk_hash.size());
   DCHECK(crx_file::id_util::IdIsValid(result));
   return result;
 }
@@ -66,14 +73,20 @@ bool VerifyFileHash256(const base::FilePath& filepath,
     return false;
   }
 
-  base::MemoryMappedFile mmfile;
-  if (!mmfile.Initialize(filepath))
-    return false;
-
-  uint8_t actual_hash[crypto::kSHA256Length] = {0};
   std::unique_ptr<crypto::SecureHash> hasher(
       crypto::SecureHash::Create(crypto::SecureHash::SHA256));
-  hasher->Update(mmfile.data(), mmfile.length());
+
+  int64_t file_size = 0;
+  if (!base::GetFileSize(filepath, &file_size))
+    return false;
+  if (file_size > 0) {
+    base::MemoryMappedFile mmfile;
+    if (!mmfile.Initialize(filepath))
+      return false;
+    hasher->Update(mmfile.data(), mmfile.length());
+  }
+
+  uint8_t actual_hash[crypto::kSHA256Length] = {0};
   hasher->Finish(actual_hash, sizeof(actual_hash));
 
   return memcmp(actual_hash, &expected_hash[0], sizeof(actual_hash)) == 0;
@@ -117,9 +130,9 @@ bool IsValidInstallerAttributeName(const std::string& name) {
   return IsValidInstallerAttributePart(name, "-_", 1, 256);
 }
 
-// Returns true if the |value| parameter matches ^[-.,;+_=a-zA-Z0-9]{0,256}$ .
+// Returns true if the |value| parameter matches ^[-.,;+_=$a-zA-Z0-9]{0,256}$ .
 bool IsValidInstallerAttributeValue(const std::string& value) {
-  return IsValidInstallerAttributePart(value, "-.,;+_=", 0, 256);
+  return IsValidInstallerAttributePart(value, "-.,;+_=$", 0, 256);
 }
 
 bool IsValidInstallerAttribute(const InstallerAttribute& attr) {
@@ -143,21 +156,17 @@ CrxInstaller::Result InstallFunctionWrapper(
 // TODO(cpu): add a specific attribute check to a component json that the
 // extension unpacker will reject, so that a component cannot be installed
 // as an extension.
-std::unique_ptr<base::DictionaryValue> ReadManifest(
-    const base::FilePath& unpack_path) {
+base::Value ReadManifest(const base::FilePath& unpack_path) {
   base::FilePath manifest =
       unpack_path.Append(FILE_PATH_LITERAL("manifest.json"));
   if (!base::PathExists(manifest))
-    return std::unique_ptr<base::DictionaryValue>();
+    return base::Value();
   JSONFileValueDeserializer deserializer(manifest);
   std::string error;
   std::unique_ptr<base::Value> root = deserializer.Deserialize(nullptr, &error);
   if (!root)
-    return std::unique_ptr<base::DictionaryValue>();
-  if (!root->is_dict())
-    return std::unique_ptr<base::DictionaryValue>();
-  return std::unique_ptr<base::DictionaryValue>(
-      static_cast<base::DictionaryValue*>(root.release()));
+    return base::Value();
+  return base::Value::FromUniquePtrValue(std::move(root));
 }
 
 }  // namespace update_client

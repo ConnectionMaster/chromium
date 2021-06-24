@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CONTENT_TEST_TEST_FRAME_NAVIGATION_OBSERVER_H_
-#define CONTENT_TEST_TEST_FRAME_NAVIGATION_OBSERVER_H_
+#ifndef CONTENT_PUBLIC_TEST_TEST_FRAME_NAVIGATION_OBSERVER_H_
+#define CONTENT_PUBLIC_TEST_TEST_FRAME_NAVIGATION_OBSERVER_H_
 
 #include "base/macros.h"
 #include "base/run_loop.h"
@@ -35,6 +35,8 @@ class TestFrameNavigationObserver : public WebContentsObserver {
   // associated FrameTreeNode has committed.
   void WaitForCommit();
 
+  bool last_navigation_succeeded() const { return last_navigation_succeeded_; }
+
  private:
   // WebContentsObserver
   void DidStartNavigation(NavigationHandle* navigation_handle) override;
@@ -54,8 +56,11 @@ class TestFrameNavigationObserver : public WebContentsObserver {
   // of the document.
   bool wait_for_commit_;
 
+  // True if the last navigation succeeded.
+  bool last_navigation_succeeded_;
+
   // Saved parameters from NavigationHandle.
-  base::Optional<ui::PageTransition> transition_type_;
+  absl::optional<ui::PageTransition> transition_type_;
   GURL last_committed_url_;
 
   // The RunLoop used to spin the message loop.
@@ -66,4 +71,4 @@ class TestFrameNavigationObserver : public WebContentsObserver {
 
 }  // namespace content
 
-#endif  // CONTENT_TEST_TEST_FRAME_NAVIGATION_OBSERVER_H_
+#endif  // CONTENT_PUBLIC_TEST_TEST_FRAME_NAVIGATION_OBSERVER_H_

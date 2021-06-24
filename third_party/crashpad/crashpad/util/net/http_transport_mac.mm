@@ -52,13 +52,11 @@ NSString* UserAgentString() {
 
   // CFNetwork would use the main bundle’s CFBundleName, or the main
   // executable’s filename if none.
-  user_agent = AppendEscapedFormat(
-      user_agent, @"%@", [NSString stringWithUTF8String:PACKAGE_NAME]);
+  user_agent = AppendEscapedFormat(user_agent, @"%@", @PACKAGE_NAME);
 
   // CFNetwork would use the main bundle’s CFBundleVersion, or the string
   // “(unknown version)” if none.
-  user_agent = AppendEscapedFormat(
-      user_agent, @"/%@", [NSString stringWithUTF8String:PACKAGE_VERSION]);
+  user_agent = AppendEscapedFormat(user_agent, @"/%@", @PACKAGE_VERSION);
 
   // Expected to be CFNetwork.
   NSBundle* nsurl_bundle = [NSBundle bundleForClass:[NSURLRequest class]];
@@ -78,10 +76,8 @@ NSString* UserAgentString() {
   if (uname(&os) != 0) {
     PLOG(WARNING) << "uname";
   } else {
-    user_agent = AppendEscapedFormat(
-        user_agent, @" %@", [NSString stringWithUTF8String:os.sysname]);
-    user_agent = AppendEscapedFormat(
-        user_agent, @"/%@", [NSString stringWithUTF8String:os.release]);
+    user_agent = AppendEscapedFormat(user_agent, @" %@", @(os.sysname));
+    user_agent = AppendEscapedFormat(user_agent, @"/%@", @(os.release));
 
     // CFNetwork just uses the equivalent of os.machine to obtain the native
     // (kernel) architecture. Here, give the process’ architecture as well as
@@ -91,12 +87,14 @@ NSString* UserAgentString() {
     NSString* arch = @"i386";
 #elif defined(ARCH_CPU_X86_64)
     NSString* arch = @"x86_64";
+#elif defined(ARCH_CPU_ARM64)
+    NSString* arch = @"arm64";
 #else
 #error Port
 #endif
     user_agent = AppendEscapedFormat(user_agent, @" (%@", arch);
 
-    NSString* machine = [NSString stringWithUTF8String:os.machine];
+    NSString* machine = @(os.machine);
     if (![machine isEqualToString:arch]) {
       user_agent = AppendEscapedFormat(user_agent, @"; %@", machine);
     }

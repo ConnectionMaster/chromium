@@ -5,57 +5,56 @@
 #ifndef CHROME_BROWSER_UI_STARTUP_STARTUP_BROWSER_CREATOR_H_
 #define CHROME_BROWSER_UI_STARTUP_STARTUP_BROWSER_CREATOR_H_
 
+#include <memory>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/gtest_prod_util.h"
-#include "base/macros.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/startup/startup_types.h"
 
 class Browser;
 class GURL;
+class LaunchModeRecorder;
 class PrefRegistrySimple;
 
 namespace base {
 class CommandLine;
 }
 
+namespace web_app {
+FORWARD_DECLARE_TEST(WebAppEngagementBrowserTest, CommandLineTab);
+FORWARD_DECLARE_TEST(WebAppEngagementBrowserTest, CommandLineWindow);
+}  // namespace web_app
+
 // class containing helpers for BrowserMain to spin up a new instance and
 // initialize the profile.
 class StartupBrowserCreator {
  public:
-  // The type of page to be shown in a tab when the user is being welcomed back
-  // to Chrome.
-  enum class WelcomeBackPage {
-    kNone,
-#if defined(OS_WIN)
-    // chrome://welcome-win10/ if Chrome's default browser UX may be shown;
-    // otherwise, see kWelcomeStandard.
-    kWelcomeWin10,
-#endif
-    // chrome://welcome/ if sign-in is allowed; otherwise, none.
-    kWelcomeStandard,
-  };
-
   typedef std::vector<Profile*> Profiles;
 
   StartupBrowserCreator();
+  StartupBrowserCreator(const StartupBrowserCreator&) = delete;
+  StartupBrowserCreator& operator=(const StartupBrowserCreator&) = delete;
   ~StartupBrowserCreator();
 
   // Adds a url to be opened during first run. This overrides the standard
   // tabs shown at first run.
   void AddFirstRunTab(const GURL& url);
 
+#if defined(OS_WIN)
   // Configures the instance to include the specified "welcome back" page in a
   // tab before other tabs (e.g., those from session restore). This is used for
   // specific launches via retention experiments for which no URLs are provided
   // on the command line. No "welcome back" page is shown to supervised users.
-  void set_welcome_back_page(WelcomeBackPage welcome_back_page) {
+  void set_welcome_back_page(bool welcome_back_page) {
     welcome_back_page_ = welcome_back_page;
   }
-  WelcomeBackPage welcome_back_page() const { return welcome_back_page_; }
+  bool welcome_back_page() const { return welcome_back_page_; }
+#endif  // defined(OS_WIN)
 
   // This function is equivalent to ProcessCommandLine but should only be
   // called during actual process startup.
@@ -88,36 +87,40 @@ class StartupBrowserCreator {
   // implies that the directory of the executable should be used.
   // |process_startup| indicates whether this is the first browser.
   // |is_first_run| indicates that this is a new profile.
+  // If |launch_mode_recorder| is non null, and a browser is launched, a launch
+  // mode histogram will be recorded.
   bool LaunchBrowser(const base::CommandLine& command_line,
                      Profile* profile,
                      const base::FilePath& cur_dir,
                      chrome::startup::IsProcessStartup is_process_startup,
-                     chrome::startup::IsFirstRun is_first_run);
+                     chrome::startup::IsFirstRun is_first_run,
+                     std::unique_ptr<LaunchModeRecorder> launch_mode_recorder);
 
-  // When called the first time, reads the value of the preference kWasRestarted
-  // and resets it to false. Subsequent calls return the value which was read
-  // the first time.
+  // Launch browser for `last_opened_profiles` if it's not empty. Otherwise,
+  // launch browser for `last_used_profile`. Return false if any browser is
+  // failed to be launched. Otherwise, return true.
+  bool LaunchBrowserForLastProfiles(const base::CommandLine& command_line,
+                                    const base::FilePath& cur_dir,
+                                    bool process_startup,
+                                    Profile* last_used_profile,
+                                    const Profiles& last_opened_profiles);
+
+  // If Incognito or Guest mode are requested by policy or command line returns
+  // the appropriate private browsing profile. Otherwise returns |profile|.
+  Profile* GetPrivateProfileIfRequested(const base::CommandLine& command_line,
+                                        Profile* profile);
+
+  // Returns true during browser process startup if the previous browser was
+  // restarted. This only returns true before the first StartupBrowserCreator
+  // destructs. WasRestarted() will update prefs::kWasRestarted to false, but
+  // caches the value of kWasRestarted until StartupBrowserCreator's
+  // dtor is called. After the dtor is called, this function returns the value
+  // of the preference which is expected to be false as per above.
   static bool WasRestarted();
 
   static SessionStartupPref GetSessionStartupPref(
       const base::CommandLine& command_line,
-      Profile* profile);
-
-  void set_is_default_browser_dialog_suppressed(bool new_value) {
-    is_default_browser_dialog_suppressed_ = new_value;
-  }
-
-  bool is_default_browser_dialog_suppressed() const {
-    return is_default_browser_dialog_suppressed_;
-  }
-
-  void set_show_main_browser_window(bool show_main_browser_window) {
-    show_main_browser_window_ = show_main_browser_window;
-  }
-
-  bool show_main_browser_window() const {
-    return show_main_browser_window_;
-  }
+      const Profile* profile);
 
   // For faking that no profiles have been launched yet.
   static void ClearLaunchedProfilesForTesting();
@@ -125,33 +128,51 @@ class StartupBrowserCreator {
   static void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
+#if defined(OS_MAC)
+  // Searches for web apps to handle `urls` and prompts the user to pick one.
+  // Runs `on_urls_unhandled_cb` (either synchronously or asynchronously) if no
+  // web app is found or selected to open `urls`.
+  static void MaybeHandleProfileAgnosticUrls(
+      const std::vector<GURL>& urls,
+      base::OnceClosure on_urls_unhandled_cb);
+#endif
+
  private:
   friend class CloudPrintProxyPolicyTest;
   friend class CloudPrintProxyPolicyStartupTest;
   friend class StartupBrowserCreatorImpl;
   // TODO(crbug.com/642442): Remove this when first_run_tabs gets refactored.
   friend class StartupTabProviderImpl;
+  FRIEND_TEST_ALL_PREFIXES(BrowserTest, AppIdSwitch);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
                            ReadingWasRestartedAfterNormalStart);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
                            ReadingWasRestartedAfterRestart);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest, UpdateWithTwoProfiles);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest, LastUsedProfileActivated);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           ValidNotificationLaunchId);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           InvalidNotificationLaunchId);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest, OpenAppShortcutNoPref);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest, OpenAppShortcutTabPref);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           OpenAppShortcutWindowPref);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest, OpenAppUrlShortcut);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserWithRealWebAppTest,
+                           LastUsedProfilesWithRealWebApp);
+  FRIEND_TEST_ALL_PREFIXES(web_app::WebAppEngagementBrowserTest,
+                           CommandLineTab);
+  FRIEND_TEST_ALL_PREFIXES(web_app::WebAppEngagementBrowserTest,
+                           CommandLineWindow);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           LastUsedProfilesWithWebApp);
 
   bool ProcessCmdLineImpl(const base::CommandLine& command_line,
                           const base::FilePath& cur_dir,
                           bool process_startup,
                           Profile* last_used_profile,
                           const Profiles& last_opened_profiles);
-
-  // Launch browser for |last_opened_profiles| if it's not empty. Otherwise,
-  // launch browser for |last_used_profile|. Return false if any browser is
-  // failed to be launched. Otherwise, return true.
-  bool LaunchBrowserForLastProfiles(const base::CommandLine& command_line,
-                                    const base::FilePath& cur_dir,
-                                    bool process_startup,
-                                    Profile* last_used_profile,
-                                    const Profiles& last_opened_profiles);
 
   // Launch the |last_used_profile| with the full command line, and the other
   // |last_opened_profiles| without the URLs to launch. Return false if any
@@ -164,12 +185,6 @@ class StartupBrowserCreator {
       chrome::startup::IsFirstRun is_first_run,
       Profile* last_used_profile,
       const Profiles& last_opened_profiles);
-
-  // Returns the list of URLs to open from the command line.
-  static std::vector<GURL> GetURLsFromCommandLine(
-      const base::CommandLine& command_line,
-      const base::FilePath& cur_dir,
-      Profile* profile);
 
   // This function performs command-line handling and is invoked only after
   // start up (for example when we get a start request for another process).
@@ -188,6 +203,16 @@ class StartupBrowserCreator {
       Profile* profile,
       Profile::CreateStatus status);
 
+  // TODO(crbug/1213171): Move web-app functionality to its own file.
+  // The startup launch logic that is shared between ProcessCmdLineImpl()
+  // and web_app::MaybeLaunchProtocolHandlerWebApp().
+  bool StartupLaunchAfterProtocolHandler(const base::CommandLine& command_line,
+                                         const base::FilePath& cur_dir,
+                                         Profile* privacy_safe_profile,
+                                         bool process_startup,
+                                         Profile* last_used_profile,
+                                         const Profiles& last_opened_profiles);
+
   // Returns true once a profile was activated. Used by the
   // StartupBrowserCreatorTest.LastUsedProfileActivated test.
   static bool ActivatedProfile();
@@ -195,17 +220,10 @@ class StartupBrowserCreator {
   // Additional tabs to open during first run.
   std::vector<GURL> first_run_tabs_;
 
+#if defined(OS_WIN)
   // The page to be shown in a tab when welcoming a user back to Chrome.
-  WelcomeBackPage welcome_back_page_ = WelcomeBackPage::kNone;
-
-  // True if the set-as-default dialog has been explicitly suppressed.
-  // This information is used to allow the default browser prompt to show on
-  // first-run when the dialog has been suppressed.
-  bool is_default_browser_dialog_suppressed_;
-
-  // Whether the browser window should be shown immediately after it has been
-  // created. Default is true.
-  bool show_main_browser_window_;
+  bool welcome_back_page_ = false;
+#endif  // defined(OS_WIN)
 
   // True if we have already read and reset the preference kWasRestarted. (A
   // member variable instead of a static variable inside WasRestarted because
@@ -213,9 +231,12 @@ class StartupBrowserCreator {
   static bool was_restarted_read_;
 
   static bool in_synchronous_profile_launch_;
-
-  DISALLOW_COPY_AND_ASSIGN(StartupBrowserCreator);
 };
+
+// Returns the list of URLs to open from the command line.
+std::vector<GURL> GetURLsFromCommandLine(const base::CommandLine& command_line,
+                                         const base::FilePath& cur_dir,
+                                         Profile* profile);
 
 // Returns true if |profile| has exited uncleanly and has not been launched
 // after the unclean exit.
@@ -223,17 +244,23 @@ bool HasPendingUncleanExit(Profile* profile);
 
 // Returns the path that contains the profile that should be loaded on process
 // startup.
-base::FilePath GetStartupProfilePath(const base::FilePath& user_data_dir,
-                                     const base::CommandLine& command_line);
+// When the profile picker is shown on startup, this returns the Guest profile
+// path. On Mac, the startup profile path is also used to open URLs at startup,
+// bypassing the profile picker, because the profile picker does not support it.
+// TODO(https://crbug.com/1155158): Remove this parameter once the picker
+// supports opening URLs.
+base::FilePath GetStartupProfilePath(const base::FilePath& cur_dir,
+                                     const base::CommandLine& command_line,
+                                     bool ignore_profile_picker);
 
-#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
+#if !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_ANDROID)
 // Returns the profile that should be loaded on process startup. This is either
 // the profile returned by GetStartupProfilePath, or the guest profile if the
 // above profile is locked. The guest profile denotes that we should open the
 // user manager. Returns null if the above profile cannot be opened. In case of
 // opening the user manager, returns null if either the guest profile or the
 // system profile cannot be opened.
-Profile* GetStartupProfile(const base::FilePath& user_data_dir,
+Profile* GetStartupProfile(const base::FilePath& cur_dir,
                            const base::CommandLine& command_line);
 
 // Returns the profile that should be loaded on process startup when
@@ -241,6 +268,6 @@ Profile* GetStartupProfile(const base::FilePath& user_data_dir,
 // guest profile means the caller should open the user manager. This may return
 // null if neither any profile nor the user manager can be opened.
 Profile* GetFallbackStartupProfile();
-#endif  // !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_ANDROID)
 
 #endif  // CHROME_BROWSER_UI_STARTUP_STARTUP_BROWSER_CREATOR_H_

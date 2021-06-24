@@ -26,7 +26,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "minidump/minidump_extensions.h"
 #include "minidump/minidump_stream_writer.h"
 #include "minidump/minidump_writable.h"
@@ -88,7 +87,8 @@ class MinidumpModuleCodeViewRecordPDBLinkWriter
 
 //! \brief The writer for a CodeViewRecordPDB20 object in a minidump file.
 //!
-//! Most users will want MinidumpModuleCodeViewRecordPDB70Writer instead.
+//! Most users will want MinidumpModuleCodeViewRecordPDB70Writer or
+//! MinidumpModuleCodeViewRecordBuildIDWriter instead.
 class MinidumpModuleCodeViewRecordPDB20Writer final
     : public internal::MinidumpModuleCodeViewRecordPDBLinkWriter<
           CodeViewRecordPDB20> {
@@ -136,6 +136,26 @@ class MinidumpModuleCodeViewRecordPDB70Writer final
   DISALLOW_COPY_AND_ASSIGN(MinidumpModuleCodeViewRecordPDB70Writer);
 };
 
+//! \brief The writer for a CodeViewRecordBuildID object in a minidump file.
+class MinidumpModuleCodeViewRecordBuildIDWriter final
+    : public MinidumpModuleCodeViewRecordWriter {
+ public:
+  MinidumpModuleCodeViewRecordBuildIDWriter();
+  ~MinidumpModuleCodeViewRecordBuildIDWriter() override;
+
+  //! \brief Sets the build ID used for symbol lookup.
+  void SetBuildID(const std::vector<uint8_t>& build_id);
+
+ private:
+  // MinidumpWritable:
+  size_t SizeOfObject() override;
+  bool WriteObject(FileWriterInterface* file_writer) override;
+
+  std::vector<uint8_t> build_id_;
+
+  DISALLOW_COPY_AND_ASSIGN(MinidumpModuleCodeViewRecordBuildIDWriter);
+};
+
 //! \brief The writer for an IMAGE_DEBUG_MISC object in a minidump file.
 //!
 //! Most users will want MinidumpModuleCodeViewRecordPDB70Writer instead.
@@ -168,7 +188,7 @@ class MinidumpModuleMiscDebugRecordWriter final
  private:
   IMAGE_DEBUG_MISC image_debug_misc_;
   std::string data_;
-  base::string16 data_utf16_;
+  std::u16string data_utf16_;
 
   DISALLOW_COPY_AND_ASSIGN(MinidumpModuleMiscDebugRecordWriter);
 };

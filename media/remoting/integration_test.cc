@@ -12,45 +12,24 @@
 namespace media {
 namespace remoting {
 
-namespace {
-
 constexpr int kAppendTimeSec = 1;
-
-class TestRendererFactory final : public PipelineTestRendererFactory {
- public:
-  explicit TestRendererFactory(
-      std::unique_ptr<PipelineTestRendererFactory> renderer_factory)
-      : default_renderer_factory_(std::move(renderer_factory)) {}
-  ~TestRendererFactory() override = default;
-
-  // PipelineTestRendererFactory implementation.
-  std::unique_ptr<Renderer> CreateRenderer(
-      CreateVideoDecodersCB prepend_video_decoders_cb,
-      CreateAudioDecodersCB prepend_audio_decoders_cb) override {
-    std::unique_ptr<Renderer> renderer_impl =
-        default_renderer_factory_->CreateRenderer(prepend_video_decoders_cb,
-                                                  prepend_audio_decoders_cb);
-    return std::make_unique<End2EndTestRenderer>(std::move(renderer_impl));
-  }
-
- private:
-  std::unique_ptr<PipelineTestRendererFactory> default_renderer_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestRendererFactory);
-};
-
-}  // namespace
 
 class MediaRemotingIntegrationTest : public testing::Test,
                                      public PipelineIntegrationTestBase {
  public:
   MediaRemotingIntegrationTest() {
-    std::unique_ptr<PipelineTestRendererFactory> factory =
-        std::move(renderer_factory_);
-    renderer_factory_.reset(new TestRendererFactory(std::move(factory)));
+    SetCreateRendererCB(base::BindRepeating(
+        &MediaRemotingIntegrationTest::CreateEnd2EndTestRenderer,
+        base::Unretained(this)));
   }
 
  private:
+  std::unique_ptr<Renderer> CreateEnd2EndTestRenderer(
+      absl::optional<RendererType> renderer_type) {
+    return std::make_unique<End2EndTestRenderer>(
+        this->CreateDefaultRenderer(renderer_type));
+  }
+
   DISALLOW_COPY_AND_ASSIGN(MediaRemotingIntegrationTest);
 };
 

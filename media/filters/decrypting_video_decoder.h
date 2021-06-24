@@ -10,13 +10,15 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
+#include "media/base/callback_registry.h"
 #include "media/base/cdm_context.h"
 #include "media/base/decryptor.h"
 #include "media/base/video_decoder.h"
 #include "media/base/video_decoder_config.h"
 
 namespace base {
-class SingleThreadTaskRunner;
+class SequencedTaskRunner;
 }
 
 namespace media {
@@ -32,21 +34,22 @@ class MediaLog;
 class MEDIA_EXPORT DecryptingVideoDecoder : public VideoDecoder {
  public:
   DecryptingVideoDecoder(
-      const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
+      const scoped_refptr<base::SequencedTaskRunner>& task_runner,
       MediaLog* media_log);
   ~DecryptingVideoDecoder() override;
 
+  bool SupportsDecryption() const override;
+
   // VideoDecoder implementation.
-  std::string GetDisplayName() const override;
+  VideoDecoderType GetDecoderType() const override;
   void Initialize(const VideoDecoderConfig& config,
                   bool low_delay,
                   CdmContext* cdm_context,
-                  const InitCB& init_cb,
+                  InitCB init_cb,
                   const OutputCB& output_cb,
                   const WaitingCB& waiting_cb) override;
-  void Decode(scoped_refptr<DecoderBuffer> buffer,
-              const DecodeCB& decode_cb) override;
-  void Reset(const base::Closure& closure) override;
+  void Decode(scoped_refptr<DecoderBuffer> buffer, DecodeCB decode_cb) override;
+  void Reset(base::OnceClosure closure) override;
 
   static const char kDecoderName[];
 
@@ -70,12 +73,10 @@ class MEDIA_EXPORT DecryptingVideoDecoder : public VideoDecoder {
   void DecodePendingBuffer();
 
   // Callback for Decryptor::DecryptAndDecodeVideo().
-  void DeliverFrame(Decryptor::Status status,
-                    const scoped_refptr<VideoFrame>& frame);
+  void DeliverFrame(Decryptor::Status status, scoped_refptr<VideoFrame> frame);
 
-  // Callback for the |decryptor_| to notify this object that a new key has been
-  // added.
-  void OnKeyAdded();
+  // Callback for the CDM to notify |this|.
+  void OnCdmContextEvent(CdmContext::Event event);
 
   // Reset decoder and call |reset_cb_|.
   void DoReset();
@@ -85,15 +86,17 @@ class MEDIA_EXPORT DecryptingVideoDecoder : public VideoDecoder {
   void CompleteWaitingForDecryptionKey();
 
   // Set in constructor.
-  scoped_refptr<base::SingleThreadTaskRunner> const task_runner_;
+  scoped_refptr<base::SequencedTaskRunner> const task_runner_;
   MediaLog* const media_log_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   State state_ = kUninitialized;
 
   InitCB init_cb_;
   OutputCB output_cb_;
   DecodeCB decode_cb_;
-  base::Closure reset_cb_;
+  base::OnceClosure reset_cb_;
   WaitingCB waiting_cb_;
 
   VideoDecoderConfig config_;
@@ -114,8 +117,10 @@ class MEDIA_EXPORT DecryptingVideoDecoder : public VideoDecoder {
   // clear content, we want to ensure this decoder remains used.
   bool support_clear_content_ = false;
 
-  base::WeakPtr<DecryptingVideoDecoder> weak_this_;
-  base::WeakPtrFactory<DecryptingVideoDecoder> weak_factory_;
+  // To keep the CdmContext event callback registered.
+  std::unique_ptr<CallbackRegistration> event_cb_registration_;
+
+  base::WeakPtrFactory<DecryptingVideoDecoder> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DecryptingVideoDecoder);
 };

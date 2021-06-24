@@ -4,12 +4,11 @@
 
 #include "ash/accelerators/pre_target_accelerator_handler.h"
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/wm/window_state.h"
+#include "base/containers/contains.h"
 #include "base/feature_list.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "media/base/media_switches.h"
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -24,7 +23,7 @@ namespace {
 bool IsSystemKey(ui::KeyboardCode key_code) {
   switch (key_code) {
     case ui::VKEY_ASSISTANT:
-    case ui::VKEY_MEDIA_LAUNCH_APP2:  // Fullscreen button.
+    case ui::VKEY_ZOOM:               // Fullscreen button.
     case ui::VKEY_MEDIA_LAUNCH_APP1:  // Overview button.
     case ui::VKEY_BRIGHTNESS_DOWN:
     case ui::VKEY_BRIGHTNESS_UP:
@@ -34,10 +33,17 @@ bool IsSystemKey(ui::KeyboardCode key_code) {
     case ui::VKEY_VOLUME_DOWN:
     case ui::VKEY_VOLUME_UP:
     case ui::VKEY_POWER:
+    case ui::VKEY_SLEEP:
+    case ui::VKEY_PRIVACY_SCREEN_TOGGLE:
       return true;
     case ui::VKEY_MEDIA_NEXT_TRACK:
+    case ui::VKEY_MEDIA_PAUSE:
+    case ui::VKEY_MEDIA_PLAY:
     case ui::VKEY_MEDIA_PLAY_PAUSE:
     case ui::VKEY_MEDIA_PREV_TRACK:
+    case ui::VKEY_MEDIA_STOP:
+    case ui::VKEY_OEM_103:  // KEYCODE_MEDIA_REWIND
+    case ui::VKEY_OEM_104:  // KEYCODE_MEDIA_FAST_FORWARD
       return base::FeatureList::IsEnabled(media::kHardwareMediaKeyHandling);
     default:
       return false;
@@ -56,7 +62,6 @@ bool PreTargetAcceleratorHandler::ProcessAccelerator(
   aura::Window* target = static_cast<aura::Window*>(key_event.target());
   // Callers should never supply null.
   DCHECK(target);
-  RecordSearchKeyStats(accelerator);
   // Special hardware keys like brightness and volume are handled in
   // special way. However, some windows can override this behavior
   // (e.g. Chrome v1 apps by default and Chrome v2 apps with
@@ -73,33 +78,13 @@ bool PreTargetAcceleratorHandler::ProcessAccelerator(
   return Shell::Get()->accelerator_controller()->Process(accelerator);
 }
 
-void PreTargetAcceleratorHandler::RecordSearchKeyStats(
-    const ui::Accelerator& accelerator) {
-  if (accelerator.IsCmdDown()) {
-    if (search_key_state_ == RELEASED) {
-      search_key_state_ = PRESSED;
-      search_key_pressed_timestamp_ = base::TimeTicks::Now();
-    }
-
-    if (accelerator.key_code() != ui::KeyboardCode::VKEY_COMMAND &&
-        search_key_state_ == PRESSED) {
-      search_key_state_ = RECORDED;
-      UMA_HISTOGRAM_TIMES(
-          "Keyboard.Shortcuts.CrosSearchKeyDelay",
-          base::TimeTicks::Now() - search_key_pressed_timestamp_);
-    }
-  } else {
-    search_key_state_ = RELEASED;
-  }
-}
-
 bool PreTargetAcceleratorHandler::CanConsumeSystemKeys(
     aura::Window* target,
     const ui::KeyEvent& event) {
   // Uses the top level window so if the target is a web contents window the
   // containing parent window will be checked for the property.
   aura::Window* top_level = ::wm::GetToplevelWindow(target);
-  return top_level && wm::GetWindowState(top_level)->CanConsumeSystemKeys();
+  return top_level && WindowState::Get(top_level)->CanConsumeSystemKeys();
 }
 
 bool PreTargetAcceleratorHandler::ShouldProcessAcceleratorNow(
@@ -113,10 +98,10 @@ bool PreTargetAcceleratorHandler::ShouldProcessAcceleratorNow(
   if (accelerator.IsCmdDown())
     return true;
 
-  if (base::ContainsValue(Shell::GetAllRootWindows(), target))
+  if (base::Contains(Shell::GetAllRootWindows(), target))
     return true;
 
-  AcceleratorController* accelerator_controller =
+  AcceleratorControllerImpl* accelerator_controller =
       Shell::Get()->accelerator_controller();
 
   // Reserved accelerators (such as Power button) always have a priority.
@@ -126,7 +111,7 @@ bool PreTargetAcceleratorHandler::ShouldProcessAcceleratorNow(
   // A full screen window has a right to handle all key events including the
   // reserved ones.
   aura::Window* top_level = ::wm::GetToplevelWindow(target);
-  if (top_level && wm::GetWindowState(top_level)->IsFullscreen()) {
+  if (top_level && WindowState::Get(top_level)->IsFullscreen()) {
     // On ChromeOS, fullscreen windows are either browser or apps, which
     // send key events to a web content first, then will process keys
     // if the web content didn't consume them.

@@ -2,35 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "base/bind.h"
-#include "base/run_loop.h"
-#include "base/stl_util.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/test/scoped_task_environment.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "components/invalidation/impl/fake_invalidation_state_tracker.h"
+#include "base/test/task_environment.h"
 #include "components/invalidation/impl/fcm_invalidation_listener.h"
-#include "components/invalidation/impl/json_unsafe_parser.h"
-#include "components/invalidation/impl/per_user_topic_registration_manager.h"
-#include "components/invalidation/impl/push_client_channel.h"
-#include "components/invalidation/impl/unacked_invalidation_set_test_util.h"
+#include "components/invalidation/impl/per_user_topic_subscription_manager.h"
 #include "components/invalidation/public/invalidation_util.h"
 #include "components/invalidation/public/invalidator_state.h"
-#include "components/invalidation/public/object_id_invalidation_map.h"
 #include "components/invalidation/public/topic_invalidation_map.h"
-#include "google/cacheinvalidation/include/types.h"
-#include "jingle/notifier/listener/fake_push_client.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace syncer {
+namespace invalidation {
 
 namespace {
-
-using invalidation::ObjectId;
 
 const char kPayload1[] = "payload1";
 const char kPayload2[] = "payload2";
@@ -42,6 +33,14 @@ class TestFCMSyncNetworkChannel : public FCMSyncNetworkChannel {
  public:
   void StartListening() override {}
   void StopListening() override {}
+
+  void RequestDetailedStatus(
+      const base::RepeatingCallback<void(const base::DictionaryValue&)>&
+          callback) override {}
+
+  using FCMSyncNetworkChannel::DeliverIncomingMessage;
+  using FCMSyncNetworkChannel::DeliverToken;
+  using FCMSyncNetworkChannel::NotifyChannelStateChange;
 };
 
 // Fake delegate that keeps track of invalidation counts, payloads,
@@ -50,7 +49,7 @@ class FakeDelegate : public FCMInvalidationListener::Delegate {
  public:
   explicit FakeDelegate(FCMInvalidationListener* listener)
       : state_(TRANSIENT_INVALIDATION_ERROR) {}
-  ~FakeDelegate() override {}
+  ~FakeDelegate() override = default;
 
   size_t GetInvalidationCount(const Topic& topic) const {
     auto it = invalidations_.find(topic);
@@ -111,8 +110,8 @@ class FakeDelegate : public FCMInvalidationListener::Delegate {
 
   void AcknowledgeAll(const Topic& topic) {
     List& list = invalidations_[topic];
-    for (auto it = list.begin(); it != list.end(); ++it) {
-      it->Acknowledge();
+    for (Invalidation& invalidation : list) {
+      invalidation.Acknowledge();
     }
   }
 
@@ -136,7 +135,7 @@ class FakeDelegate : public FCMInvalidationListener::Delegate {
   void OnInvalidate(const TopicInvalidationMap& invalidation_map) override {
     TopicSet topics = invalidation_map.GetTopics();
     for (const auto& topic : topics) {
-      const SingleObjectInvalidationSet& incoming =
+      const SingleTopicInvalidationSet& incoming =
           invalidation_map.ForTopic(topic);
       List& list = invalidations_[topic];
       list.insert(list.end(), incoming.begin(), incoming.end());
@@ -157,19 +156,23 @@ class FakeDelegate : public FCMInvalidationListener::Delegate {
   DropMap dropped_invalidations_map_;
 };
 
-class MockRegistrationManager : public PerUserTopicRegistrationManager {
+class MockSubscriptionManager : public PerUserTopicSubscriptionManager {
  public:
-  MockRegistrationManager()
-      : PerUserTopicRegistrationManager(
-            nullptr /* identity_provider */,
-            nullptr /* pref_service */,
-            nullptr /* loader_factory */,
-            base::BindRepeating(&syncer::JsonUnsafeParser::Parse),
-            "fake_sender_id") {}
-  ~MockRegistrationManager() override {}
-  MOCK_METHOD2(UpdateRegisteredTopics,
-               void(const TopicSet& topics, const std::string& token));
+  MockSubscriptionManager()
+      : PerUserTopicSubscriptionManager(nullptr /* identity_provider */,
+                                        nullptr /* pref_service */,
+                                        nullptr /* loader_factory */,
+                                        "fake_sender_id",
+                                        false) {
+    ON_CALL(*this, LookupSubscribedPublicTopicByPrivateTopic)
+        .WillByDefault(testing::ReturnArg<0>());
+  }
+  ~MockSubscriptionManager() override = default;
+  MOCK_METHOD2(UpdateSubscribedTopics,
+               void(const Topics& topics, const std::string& token));
   MOCK_METHOD0(Init, void());
+  MOCK_CONST_METHOD1(LookupSubscribedPublicTopicByPrivateTopic,
+                     absl::optional<Topic>(const std::string& private_topic));
 };
 
 class FCMInvalidationListenerTest : public testing::Test {
@@ -186,22 +189,19 @@ class FCMInvalidationListenerTest : public testing::Test {
   void SetUp() override {
     StartListener();
 
-    registred_topics_.insert(kBookmarksTopic_);
-    registred_topics_.insert(kPreferencesTopic_);
-    listener_.UpdateRegisteredTopics(registred_topics_);
+    Topics initial_topics;
+    initial_topics.emplace(kBookmarksTopic_, TopicMetadata{false});
+    initial_topics.emplace(kPreferencesTopic_, TopicMetadata{true});
+    listener_.UpdateInterestedTopics(initial_topics);
   }
 
   void TearDown() override {}
 
   void StartListener() {
-    std::unique_ptr<MockRegistrationManager> mock_registration_manager =
-        std::make_unique<MockRegistrationManager>();
-    registration_manager_ = mock_registration_manager.get();
-    listener_.Start(&fake_delegate_, std::move(mock_registration_manager));
-  }
-
-  void StopClient() {
-    listener_.StopForTest();
+    auto mock_subscription_manager =
+        std::make_unique<MockSubscriptionManager>();
+    subscription_manager_ = mock_subscription_manager.get();
+    listener_.Start(&fake_delegate_, std::move(mock_subscription_manager));
   }
 
   size_t GetInvalidationCount(const Topic& topic) const {
@@ -244,26 +244,17 @@ class FCMInvalidationListenerTest : public testing::Test {
     fake_delegate_.AcknowledgeAll(topic);
   }
 
-  TopicSet GetRegisteredTopics() const {
-    return listener_.GetRegisteredIdsForTest();
-  }
-
-  void RegisterAndFireInvalidate(const Topic& topic,
-                                 const std::string version,
-                                 const std::string& payload) {
-    FireInvalidate(topic, version, payload);
-  }
-
   void FireInvalidate(const Topic& topic,
-                      const std::string version,
+                      int64_t version,
                       const std::string& payload) {
-    listener_.Invalidate(payload, topic, topic, version);
+    fcm_sync_network_channel_->DeliverIncomingMessage(payload, topic, topic,
+                                                      version);
   }
 
   void EnableNotifications() {
     fcm_sync_network_channel_->NotifyChannelStateChange(
         FcmChannelState::ENABLED);
-    listener_.InformTokenReceived("token");
+    fcm_sync_network_channel_->DeliverToken("token");
   }
 
   void DisableNotifications(FcmChannelState state) {
@@ -275,17 +266,13 @@ class FCMInvalidationListenerTest : public testing::Test {
   const Topic kExtensionsTopic_;
   const Topic kAppsTopic_;
 
-  TopicSet registred_topics_;
-
  private:
-  base::test::ScopedTaskEnvironment task_environment_;
-  FCMSyncNetworkChannel* fcm_sync_network_channel_;
-  MockRegistrationManager* registration_manager_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
+  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
+  TestFCMSyncNetworkChannel* fcm_sync_network_channel_;
+  MockSubscriptionManager* subscription_manager_;
 
  protected:
-  // A derrived test needs direct access to this.
-  FakeInvalidationStateTracker fake_tracker_;
-
   // Tests need to access these directly.
   FCMInvalidationListener listener_;
 
@@ -300,8 +287,7 @@ class FCMInvalidationListenerTest : public testing::Test {
 TEST_F(FCMInvalidationListenerTest, InvalidateNoPayload) {
   const Topic& topic = kBookmarksTopic_;
 
-  RegisterAndFireInvalidate(topic, base::NumberToString(kVersion1),
-                            std::string());
+  FireInvalidate(topic, kVersion1, std::string());
 
   ASSERT_EQ(1U, GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
@@ -315,8 +301,7 @@ TEST_F(FCMInvalidationListenerTest, InvalidateNoPayload) {
 TEST_F(FCMInvalidationListenerTest, InvalidateEmptyPayload) {
   const Topic& topic = kBookmarksTopic_;
 
-  RegisterAndFireInvalidate(topic, base::NumberToString(kVersion1),
-                            std::string());
+  FireInvalidate(topic, kVersion1, std::string());
 
   ASSERT_EQ(1U, GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
@@ -329,7 +314,7 @@ TEST_F(FCMInvalidationListenerTest, InvalidateEmptyPayload) {
 TEST_F(FCMInvalidationListenerTest, InvalidateWithPayload) {
   const Topic& topic = kPreferencesTopic_;
 
-  RegisterAndFireInvalidate(topic, base::NumberToString(kVersion1), kPayload1);
+  FireInvalidate(topic, kVersion1, kPayload1);
 
   ASSERT_EQ(1U, GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
@@ -343,7 +328,7 @@ TEST_F(FCMInvalidationListenerTest, ManyInvalidations_NoDrop) {
   const Topic& topic = kPreferencesTopic_;
   int64_t initial_version = kVersion1;
   for (int64_t i = initial_version; i < initial_version + kRepeatCount; ++i) {
-    RegisterAndFireInvalidate(topic, base::NumberToString(i), kPayload1);
+    FireInvalidate(topic, i, kPayload1);
   }
   ASSERT_EQ(static_cast<size_t>(kRepeatCount), GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
@@ -351,23 +336,22 @@ TEST_F(FCMInvalidationListenerTest, ManyInvalidations_NoDrop) {
   EXPECT_EQ(initial_version + kRepeatCount - 1, GetVersion(topic));
 }
 
-// Fire an invalidation for an unregistered object topic with a payload.  It
-// should still be processed, and both the payload and the version should be
-// updated.
+// Fire an invalidation for an unregistered topic with a payload. It should
+// still be processed, and both the payload and the version should be updated.
 TEST_F(FCMInvalidationListenerTest, InvalidateBeforeRegistration_Simple) {
   const Topic kUnregisteredId = "unregistered";
   const Topic& topic = kUnregisteredId;
-  TopicSet topics;
-  topics.insert(topic);
+  Topics topics;
+  topics.emplace(topic, TopicMetadata{false});
 
   EXPECT_EQ(0U, GetInvalidationCount(topic));
 
-  FireInvalidate(topic, base::NumberToString(kVersion1), kPayload1);
+  FireInvalidate(topic, kVersion1, kPayload1);
 
   ASSERT_EQ(0U, GetInvalidationCount(topic));
 
   EnableNotifications();
-  listener_.UpdateRegisteredTopics(topics);
+  listener_.UpdateInterestedTopics(topics);
 
   ASSERT_EQ(1U, GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
@@ -375,25 +359,25 @@ TEST_F(FCMInvalidationListenerTest, InvalidateBeforeRegistration_Simple) {
   EXPECT_EQ(kPayload1, GetPayload(topic));
 }
 
-// Fire ten invalidations before an object registers.  Some invalidations will
+// Fire ten invalidations before an topics registers.  Some invalidations will
 // be dropped an replaced with an unknown version invalidation.
 TEST_F(FCMInvalidationListenerTest, InvalidateBeforeRegistration_Drop) {
   const int kRepeatCount =
       UnackedInvalidationSet::kMaxBufferedInvalidations + 1;
   const Topic kUnregisteredId("unregistered");
   const Topic& topic = kUnregisteredId;
-  TopicSet topics;
-  topics.insert(topic);
+  Topics topics;
+  topics.emplace(topic, TopicMetadata{false});
 
   EXPECT_EQ(0U, GetInvalidationCount(topic));
 
   int64_t initial_version = kVersion1;
   for (int64_t i = initial_version; i < initial_version + kRepeatCount; ++i) {
-    FireInvalidate(topic, base::NumberToString(i), kPayload1);
+    FireInvalidate(topic, i, kPayload1);
   }
 
   EnableNotifications();
-  listener_.UpdateRegisteredTopics(topics);
+  listener_.UpdateInterestedTopics(topics);
 
   ASSERT_EQ(UnackedInvalidationSet::kMaxBufferedInvalidations,
             GetInvalidationCount(topic));
@@ -404,14 +388,14 @@ TEST_F(FCMInvalidationListenerTest, InvalidateBeforeRegistration_Drop) {
 TEST_F(FCMInvalidationListenerTest, InvalidateVersion) {
   const Topic& topic = kPreferencesTopic_;
 
-  RegisterAndFireInvalidate(topic, base::NumberToString(kVersion2), kPayload2);
+  FireInvalidate(topic, kVersion2, kPayload2);
 
   ASSERT_EQ(1U, GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
   EXPECT_EQ(kVersion2, GetVersion(topic));
   EXPECT_EQ(kPayload2, GetPayload(topic));
 
-  FireInvalidate(topic, base::NumberToString(kVersion1), kPayload1);
+  FireInvalidate(topic, kVersion1, kPayload1);
 
   ASSERT_EQ(2U, GetInvalidationCount(topic));
   ASSERT_FALSE(IsUnknownVersion(topic));
@@ -422,14 +406,14 @@ TEST_F(FCMInvalidationListenerTest, InvalidateVersion) {
 
 // Test a simple scenario for multiple IDs.
 TEST_F(FCMInvalidationListenerTest, InvalidateMultipleIds) {
-  RegisterAndFireInvalidate(kBookmarksTopic_, "3", std::string());
+  FireInvalidate(kBookmarksTopic_, 3, std::string());
   ASSERT_EQ(1U, GetInvalidationCount(kBookmarksTopic_));
   ASSERT_FALSE(IsUnknownVersion(kBookmarksTopic_));
   EXPECT_EQ(3, GetVersion(kBookmarksTopic_));
   EXPECT_EQ("", GetPayload(kBookmarksTopic_));
 
   // kExtensionId is not registered, so the invalidation should not get through.
-  FireInvalidate(kExtensionsTopic_, "2", std::string());
+  FireInvalidate(kExtensionsTopic_, 2, std::string());
   ASSERT_EQ(0U, GetInvalidationCount(kExtensionsTopic_));
 }
 
@@ -444,43 +428,6 @@ TEST_F(FCMInvalidationListenerTest, ReEnableNotifications) {
   EXPECT_EQ(INVALIDATIONS_ENABLED, GetInvalidatorState());
 }
 
-// A variant of FCMInvalidationListenerTest that starts with some initial
-// state.  We make not attempt to abstract away the contents of this state.  The
-// tests that make use of this harness depend on its implementation details.
-class FCMInvalidationListenerTest_WithInitialState
-    : public FCMInvalidationListenerTest {
- public:
-  void SetUp() override {
-    UnackedInvalidationSet bm_state(ConvertTopicToId(kBookmarksTopic_));
-    UnackedInvalidationSet ext_state(ConvertTopicToId(kExtensionsTopic_));
-
-    Invalidation bm_unknown =
-        Invalidation::InitUnknownVersion(ConvertTopicToId(kBookmarksTopic_));
-    Invalidation bm_v100 =
-        Invalidation::Init(ConvertTopicToId(kBookmarksTopic_), 100, "hundred");
-    bm_state.Add(bm_unknown);
-    bm_state.Add(bm_v100);
-
-    Invalidation ext_v10 =
-        Invalidation::Init(ConvertTopicToId(kExtensionsTopic_), 10, "ten");
-    Invalidation ext_v20 =
-        Invalidation::Init(ConvertTopicToId(kExtensionsTopic_), 20, "twenty");
-    ext_state.Add(ext_v10);
-    ext_state.Add(ext_v20);
-
-    initial_state.insert(
-        std::make_pair(ConvertTopicToId(kBookmarksTopic_), bm_state));
-    initial_state.insert(
-        std::make_pair(ConvertTopicToId(kExtensionsTopic_), ext_state));
-
-    fake_tracker_.SetSavedInvalidations(initial_state);
-
-    FCMInvalidationListenerTest::SetUp();
-  }
-
-  UnackedInvalidationsMap initial_state;
-};
-
 }  // namespace
 
-}  // namespace syncer
+}  // namespace invalidation

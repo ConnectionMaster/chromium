@@ -6,10 +6,11 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/threading/simple_thread.h"
-#include "base/threading/thread_restrictions.h"
 #include "base/trace_event/trace_event.h"
 
 namespace cc {
@@ -17,8 +18,7 @@ namespace cc {
 SingleThreadTaskGraphRunner::SingleThreadTaskGraphRunner()
     : lock_(),
       has_ready_to_run_tasks_cv_(&lock_),
-      has_namespaces_with_finished_running_tasks_cv_(&lock_),
-      shutdown_(false) {
+      has_namespaces_with_finished_running_tasks_cv_(&lock_) {
   has_ready_to_run_tasks_cv_.declare_only_used_while_idle();
 }
 
@@ -27,8 +27,8 @@ SingleThreadTaskGraphRunner::~SingleThreadTaskGraphRunner() = default;
 void SingleThreadTaskGraphRunner::Start(
     const std::string& thread_name,
     const base::SimpleThread::Options& thread_options) {
-  thread_.reset(
-      new base::DelegateSimpleThread(this, thread_name, thread_options));
+  thread_ = std::make_unique<base::DelegateSimpleThread>(this, thread_name,
+                                                         thread_options);
   thread_->StartAsync();
 }
 
@@ -83,8 +83,6 @@ void SingleThreadTaskGraphRunner::WaitForTasksToFinishRunning(
 
   {
     base::AutoLock lock(lock_);
-    // http://crbug.com/902823
-    base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_wait;
 
     auto* task_namespace = work_queue_.GetNamespaceForToken(token);
 
@@ -132,8 +130,6 @@ void SingleThreadTaskGraphRunner::Run() {
 bool SingleThreadTaskGraphRunner::RunTaskWithLockAcquired() {
   TRACE_EVENT0("toplevel",
                "SingleThreadTaskGraphRunner::RunTaskWithLockAcquired");
-
-  lock_.AssertAcquired();
 
   // Find the first category with any tasks to run. This task graph runner
   // treats categories as an additional priority.

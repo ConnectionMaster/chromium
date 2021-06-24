@@ -7,14 +7,20 @@
 #include "base/json/json_reader.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace chrome_browser_net {
 namespace {
 
-// Tests for the --log-net-log command line flag.
-class LogNetLogTest : public InProcessBrowserTest {
+// Test fixture for running tests with --log-net-log, and a parameterized value
+// for --net-log-capture-mode.
+//
+// Asserts that a netlog file was created, appears valid, and stripped cookies
+// in accordance to the --net-log-capture-mode flag.
+class LogNetLogTest : public InProcessBrowserTest,
+                      public testing::WithParamInterface<const char*> {
  public:
   LogNetLogTest() = default;
 
@@ -24,12 +30,18 @@ class LogNetLogTest : public InProcessBrowserTest {
 
     command_line->AppendSwitchPath(network::switches::kLogNetLog,
                                    net_log_path_);
+
+    if (GetParam()) {
+      command_line->AppendSwitchASCII(network::switches::kNetLogCaptureMode,
+                                      GetParam());
+    }
   }
 
   void TearDownInProcessBrowserTestFixture() override { VerifyNetLog(); }
 
  private:
-  // Verify that the netlog file was written and appears to be well formed.
+  // Verify that the netlog file was written, appears to be well formed, and
+  // includes the requested level of data.
   void VerifyNetLog() {
     // Read the netlog from disk.
     std::string file_contents;
@@ -47,12 +59,26 @@ class LogNetLogTest : public InProcessBrowserTest {
     // Ensure it has a "constants" property.
     base::DictionaryValue* constants;
     ASSERT_TRUE(main->GetDictionary("constants", &constants));
-    ASSERT_FALSE(constants->empty());
+    ASSERT_FALSE(constants->DictEmpty());
 
     // Ensure it has an "events" property.
     base::ListValue* events;
     ASSERT_TRUE(main->GetList("events", &events));
     ASSERT_FALSE(events->empty());
+
+    // Verify that cookies were stripped when the --net-log-capture-mode flag
+    // was omitted, and not stripped when it was given a value of
+    // IncludeSensitive
+    bool include_cookies =
+        GetParam() && base::StringPiece(GetParam()) == "IncludeSensitive";
+
+    if (include_cookies) {
+      EXPECT_TRUE(file_contents.find("Set-Cookie: name=Good;Max-Age=3600") !=
+                  std::string::npos);
+    } else {
+      EXPECT_TRUE(file_contents.find("Set-Cookie: [22 bytes were stripped]") !=
+                  std::string::npos);
+    }
   }
 
   base::FilePath net_log_path_;
@@ -61,11 +87,14 @@ class LogNetLogTest : public InProcessBrowserTest {
   DISALLOW_COPY_AND_ASSIGN(LogNetLogTest);
 };
 
-IN_PROC_BROWSER_TEST_F(LogNetLogTest, Basic) {
-  // Do an action that will result in the output of netlog events. This isn't
-  // strictly necessary since there is other networking that will happen
-  // implicitly to generate events.
-  ui_test_utils::NavigateToURL(browser(), GURL("http://127.0.0.1/foo"));
+INSTANTIATE_TEST_SUITE_P(All,
+                         LogNetLogTest,
+                         ::testing::Values(nullptr, "IncludeSensitive"));
+
+IN_PROC_BROWSER_TEST_P(LogNetLogTest, Basic) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL url(embedded_test_server()->GetURL("/set_cookie_header.html"));
+  ui_test_utils::NavigateToURL(browser(), url);
 }
 
 }  // namespace

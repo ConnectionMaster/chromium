@@ -1,4 +1,4 @@
 include_rules = [
-  "+device/base",
-  "+device/usb",
+  "+services/device/public",
+  "+services/service_manager/public",
 ]

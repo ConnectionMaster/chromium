@@ -76,12 +76,12 @@ static void NamedPropertyGetter(const AtomicString& name,
 
 static void NamedPropertyQuery(
     const AtomicString& name, const v8::PropertyCallbackInfo<v8::Integer>& info) {
-  const CString& name_in_utf8 = name.Utf8();
+  const std::string& name_in_utf8 = name.Utf8();
   ExceptionState exception_state(
       info.GetIsolate(),
       ExceptionState::kGetterContext,
       "TestSpecialOperationsNotEnumerable",
-      name_in_utf8.data());
+      name_in_utf8.c_str());
 
   TestSpecialOperationsNotEnumerable* impl = V8TestSpecialOperationsNotEnumerable::ToImpl(info.Holder());
 
@@ -302,16 +302,6 @@ v8::Local<v8::Object> V8TestSpecialOperationsNotEnumerable::FindInstanceInProtot
 TestSpecialOperationsNotEnumerable* V8TestSpecialOperationsNotEnumerable::ToImplWithTypeCheck(
     v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return HasInstance(value, isolate) ? ToImpl(v8::Local<v8::Object>::Cast(value)) : nullptr;
-}
-
-TestSpecialOperationsNotEnumerable* NativeValueTraits<TestSpecialOperationsNotEnumerable>::NativeValue(
-    v8::Isolate* isolate, v8::Local<v8::Value> value, ExceptionState& exception_state) {
-  TestSpecialOperationsNotEnumerable* native_value = V8TestSpecialOperationsNotEnumerable::ToImplWithTypeCheck(isolate, value);
-  if (!native_value) {
-    exception_state.ThrowTypeError(ExceptionMessages::FailedToConvertJSValue(
-        "TestSpecialOperationsNotEnumerable"));
-  }
-  return native_value;
 }
 
 }  // namespace blink

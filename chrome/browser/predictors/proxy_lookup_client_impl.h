@@ -7,11 +7,15 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/optional.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "services/network/public/mojom/proxy_lookup_client.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class GURL;
+
+namespace net {
+class NetworkIsolationKey;
+}
 
 namespace network {
 namespace mojom {
@@ -30,6 +34,7 @@ class ProxyLookupClientImpl : public network::mojom::ProxyLookupClient {
   // Starts the proxy lookup for |url|. |callback| is called when the proxy
   // lookup is completed or when an error occurs.
   ProxyLookupClientImpl(const GURL& url,
+                        const net::NetworkIsolationKey& network_isolation_key,
                         ProxyLookupCallback callback,
                         network::mojom::NetworkContext* network_context);
   // Cancels the request if it hasn't been completed yet.
@@ -38,10 +43,10 @@ class ProxyLookupClientImpl : public network::mojom::ProxyLookupClient {
   // network::mojom::ProxyLookupClient:
   void OnProxyLookupComplete(
       int32_t net_error,
-      const base::Optional<net::ProxyInfo>& proxy_info) override;
+      const absl::optional<net::ProxyInfo>& proxy_info) override;
 
  private:
-  mojo::Binding<network::mojom::ProxyLookupClient> binding_;
+  mojo::Receiver<network::mojom::ProxyLookupClient> receiver_{this};
   ProxyLookupCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(ProxyLookupClientImpl);

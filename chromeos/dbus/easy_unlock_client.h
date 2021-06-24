@@ -5,6 +5,7 @@
 #ifndef CHROMEOS_DBUS_EASY_UNLOCK_CLIENT_H_
 #define CHROMEOS_DBUS_EASY_UNLOCK_CLIENT_H_
 
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
@@ -142,7 +143,7 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) EasyUnlockClient : public DBusClient {
 
   // Factory function, creates a new instance and returns ownership.
   // For normal usage, access the singleton via DBusThreadManager::Get().
-  static EasyUnlockClient* Create();
+  static std::unique_ptr<EasyUnlockClient> Create();
 
  protected:
   // Create() should be used instead.
@@ -153,5 +154,11 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) EasyUnlockClient : public DBusClient {
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::EasyUnlockClient;
+}
 
 #endif  // CHROMEOS_DBUS_EASY_UNLOCK_CLIENT_H_

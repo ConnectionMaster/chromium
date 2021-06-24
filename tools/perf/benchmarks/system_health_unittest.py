@@ -17,7 +17,7 @@ from py_utils import discover
 
 def _GetAllSystemHealthBenchmarks():
   all_perf_benchmarks = discover.DiscoverClasses(
-      path_util.GetPerfBenchmarksDir(), path_util.GetPerfDir(),
+      path_util.GetOfficialBenchmarksDir(), path_util.GetPerfDir(),
       benchmark_module.Benchmark,
       index_by_class_name=True).values()
   return [b for b in all_perf_benchmarks if
@@ -29,12 +29,17 @@ class TestSystemHealthBenchmarks(unittest.TestCase):
   def testNamePrefix(self):
     for b in _GetAllSystemHealthBenchmarks():
       self.assertTrue(
-          b.Name().startswith('system_health.'),
+          b.Name().startswith('system_health.')
+          or b.Name().startswith('UNSCHEDULED_system_health.'),
           '%r must have name starting with "system_health." prefix' % b)
 
   def testSystemHealthStorySetIsUsed(self):
     for b in _GetAllSystemHealthBenchmarks():
+      if b is system_health_benchmark.WebLayerStartupSystemHealthBenchmark:
+        continue
       if b is system_health_benchmark.WebviewStartupSystemHealthBenchmark:
+        continue
+      if b is system_health_benchmark.PCScanSystemHealthBenchmark:
         continue
       self.assertIsInstance(
           b().CreateStorySet(None),

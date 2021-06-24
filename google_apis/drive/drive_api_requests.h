@@ -24,32 +24,38 @@
 #include "google_apis/drive/drive_api_parser.h"
 #include "google_apis/drive/drive_api_url_generator.h"
 #include "google_apis/drive/drive_common_callbacks.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 
 namespace google_apis {
 
 // Callback used for requests that the server returns TeamDrive data
 // formatted into JSON value.
-typedef base::Callback<void(DriveApiErrorCode error,
-                            std::unique_ptr<TeamDriveList> entry)>
-    TeamDriveListCallback;
+using TeamDriveListCallback =
+    base::OnceCallback<void(DriveApiErrorCode error,
+                            std::unique_ptr<TeamDriveList> entry)>;
 
 // Callback used for requests that the server returns FileList data
 // formatted into JSON value.
-typedef base::Callback<void(DriveApiErrorCode error,
-                            std::unique_ptr<FileList> entry)>
+typedef base::OnceCallback<void(DriveApiErrorCode error,
+                                std::unique_ptr<FileList> entry)>
     FileListCallback;
 
+// DEPRECATED: Please use ChangeListOnceCallback instead
 // Callback used for requests that the server returns ChangeList data
 // formatted into JSON value.
-typedef base::Callback<void(DriveApiErrorCode error,
-                            std::unique_ptr<ChangeList> entry)>
-    ChangeListCallback;
+using ChangeListCallback =
+    base::OnceCallback<void(DriveApiErrorCode error,
+                            std::unique_ptr<ChangeList> entry)>;
+
+using ChangeListOnceCallback =
+    base::OnceCallback<void(DriveApiErrorCode error,
+                            std::unique_ptr<ChangeList> entry)>;
 
 // Callback used for requests that the server returns StartToken data
 // formatted into JSON value.
 using StartPageTokenCallback =
-    base::RepeatingCallback<void(DriveApiErrorCode error,
-                                 std::unique_ptr<StartPageToken> entry)>;
+    base::OnceCallback<void(DriveApiErrorCode error,
+                            std::unique_ptr<StartPageToken> entry)>;
 
 namespace drive {
 
@@ -136,16 +142,13 @@ class DriveApiPartialFieldRequest : public UrlFetchRequestBase {
 template<class DataType>
 class DriveApiDataRequest : public DriveApiPartialFieldRequest {
  public:
-  typedef base::Callback<void(DriveApiErrorCode error,
-                              std::unique_ptr<DataType> data)>
-      Callback;
+  using Callback = base::OnceCallback<void(DriveApiErrorCode error,
+                                           std::unique_ptr<DataType> data)>;
 
   // |callback| is called when the request finishes either by success or by
   // failure. On success, a JSON Value object is passed. It must not be null.
-  DriveApiDataRequest(RequestSender* sender, const Callback& callback)
-      : DriveApiPartialFieldRequest(sender),
-        callback_(callback),
-        weak_ptr_factory_(this) {
+  DriveApiDataRequest(RequestSender* sender, Callback callback)
+      : DriveApiPartialFieldRequest(sender), callback_(std::move(callback)) {
     DCHECK(!callback_.is_null());
   }
   ~DriveApiDataRequest() override {}
@@ -153,7 +156,7 @@ class DriveApiDataRequest : public DriveApiPartialFieldRequest {
  protected:
   // UrlFetchRequestBase overrides.
   void ProcessURLFetchResults(
-      const network::ResourceResponseHead* response_head,
+      const network::mojom::URLResponseHead* response_head,
       base::FilePath response_file,
       std::string response_body) override {
     DriveApiErrorCode error = GetErrorCode();
@@ -175,7 +178,7 @@ class DriveApiDataRequest : public DriveApiPartialFieldRequest {
   }
 
   void RunCallbackOnPrematureFailure(DriveApiErrorCode error) override {
-    callback_.Run(error, std::unique_ptr<DataType>());
+    std::move(callback_).Run(error, std::unique_ptr<DataType>());
   }
 
  private:
@@ -189,15 +192,15 @@ class DriveApiDataRequest : public DriveApiPartialFieldRequest {
   void OnDataParsed(DriveApiErrorCode error, std::unique_ptr<DataType> value) {
     if (!value)
       error = DRIVE_PARSE_ERROR;
-    callback_.Run(error, std::move(value));
+    std::move(callback_).Run(error, std::move(value));
     OnProcessURLFetchResultsComplete();
   }
 
-  const Callback callback_;
+  Callback callback_;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<DriveApiDataRequest> weak_ptr_factory_;
+  base::WeakPtrFactory<DriveApiDataRequest> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DriveApiDataRequest);
 };
@@ -211,7 +214,7 @@ class FilesGetRequest : public DriveApiDataRequest<FileResource> {
  public:
   FilesGetRequest(RequestSender* sender,
                   const DriveApiUrlGenerator& url_generator,
-                  const FileResourceCallback& callback);
+                  FileResourceCallback callback);
   ~FilesGetRequest() override;
 
   // Required parameter.
@@ -253,7 +256,7 @@ class FilesInsertRequest : public DriveApiDataRequest<FileResource> {
  public:
   FilesInsertRequest(RequestSender* sender,
                      const DriveApiUrlGenerator& url_generator,
-                     const FileResourceCallback& callback);
+                     FileResourceCallback callback);
   ~FilesInsertRequest() override;
 
   // Optional parameter
@@ -322,7 +325,7 @@ class FilesPatchRequest : public DriveApiDataRequest<FileResource> {
  public:
   FilesPatchRequest(RequestSender* sender,
                     const DriveApiUrlGenerator& url_generator,
-                    const FileResourceCallback& callback);
+                    FileResourceCallback callback);
   ~FilesPatchRequest() override;
 
   // Required parameter.
@@ -403,7 +406,7 @@ class FilesCopyRequest : public DriveApiDataRequest<FileResource> {
   // Upon completion, |callback| will be called. |callback| must not be null.
   FilesCopyRequest(RequestSender* sender,
                    const DriveApiUrlGenerator& url_generator,
-                   const FileResourceCallback& callback);
+                   FileResourceCallback callback);
   ~FilesCopyRequest() override;
 
   // Required parameter.
@@ -460,7 +463,7 @@ class TeamDriveListRequest : public DriveApiDataRequest<TeamDriveList> {
  public:
   TeamDriveListRequest(RequestSender* sender,
                        const DriveApiUrlGenerator& url_generator,
-                       const TeamDriveListCallback& callback);
+                       TeamDriveListCallback callback);
   ~TeamDriveListRequest() override;
 
   // Optional parameter
@@ -495,7 +498,7 @@ class StartPageTokenRequest : public DriveApiDataRequest<StartPageToken> {
  public:
   StartPageTokenRequest(RequestSender* sender,
                         const DriveApiUrlGenerator& url_generator,
-                        const StartPageTokenCallback& callback);
+                        StartPageTokenCallback callback);
   ~StartPageTokenRequest() override;
 
   // Optional parameter
@@ -527,7 +530,7 @@ class FilesListRequest : public DriveApiDataRequest<FileList> {
  public:
   FilesListRequest(RequestSender* sender,
                    const DriveApiUrlGenerator& url_generator,
-                   const FileListCallback& callback);
+                   FileListCallback callback);
   ~FilesListRequest() override;
 
   // Optional parameter
@@ -573,8 +576,7 @@ class FilesListRequest : public DriveApiDataRequest<FileList> {
 // This class implements 2)'s request.
 class FilesListNextPageRequest : public DriveApiDataRequest<FileList> {
  public:
-  FilesListNextPageRequest(RequestSender* sender,
-                           const FileListCallback& callback);
+  FilesListNextPageRequest(RequestSender* sender, FileListCallback callback);
   ~FilesListNextPageRequest() override;
 
   const GURL& next_link() const { return next_link_; }
@@ -599,7 +601,7 @@ class FilesDeleteRequest : public EntryActionRequest {
  public:
   FilesDeleteRequest(RequestSender* sender,
                      const DriveApiUrlGenerator& url_generator,
-                     const EntryActionCallback& callback);
+                     EntryActionCallback callback);
   ~FilesDeleteRequest() override;
 
   // Required parameter.
@@ -630,7 +632,7 @@ class FilesTrashRequest : public DriveApiDataRequest<FileResource> {
  public:
   FilesTrashRequest(RequestSender* sender,
                     const DriveApiUrlGenerator& url_generator,
-                    const FileResourceCallback& callback);
+                    FileResourceCallback callback);
   ~FilesTrashRequest() override;
 
   // Required parameter.
@@ -660,7 +662,7 @@ class AboutGetRequest : public DriveApiDataRequest<AboutResource> {
  public:
   AboutGetRequest(RequestSender* sender,
                   const DriveApiUrlGenerator& url_generator,
-                  const AboutResourceCallback& callback);
+                  AboutResourceCallback callback);
   ~AboutGetRequest() override;
 
  protected:
@@ -685,7 +687,7 @@ class ChangesListRequest : public DriveApiDataRequest<ChangeList> {
  public:
   ChangesListRequest(RequestSender* sender,
                      const DriveApiUrlGenerator& url_generator,
-                     const ChangeListCallback& callback);
+                     ChangeListCallback callback);
   ~ChangesListRequest() override;
 
   // Optional parameter
@@ -736,7 +738,7 @@ class ChangesListRequest : public DriveApiDataRequest<ChangeList> {
 class ChangesListNextPageRequest : public DriveApiDataRequest<ChangeList> {
  public:
   ChangesListNextPageRequest(RequestSender* sender,
-                             const ChangeListCallback& callback);
+                             ChangeListCallback callback);
   ~ChangesListNextPageRequest() override;
 
   const GURL& next_link() const { return next_link_; }
@@ -761,7 +763,7 @@ class ChildrenInsertRequest : public EntryActionRequest {
  public:
   ChildrenInsertRequest(RequestSender* sender,
                         const DriveApiUrlGenerator& url_generator,
-                        const EntryActionCallback& callback);
+                        EntryActionCallback callback);
   ~ChildrenInsertRequest() override;
 
   // Required parameter.
@@ -799,7 +801,7 @@ class ChildrenDeleteRequest : public EntryActionRequest {
   // |callback| must not be null.
   ChildrenDeleteRequest(RequestSender* sender,
                         const DriveApiUrlGenerator& url_generator,
-                        const EntryActionCallback& callback);
+                        EntryActionCallback callback);
   ~ChildrenDeleteRequest() override;
 
   // Required parameter.
@@ -841,7 +843,7 @@ class InitiateUploadNewFileRequest : public InitiateUploadRequestBase {
                                int64_t content_length,
                                const std::string& parent_resource_id,
                                const std::string& title,
-                               const InitiateUploadCallback& callback);
+                               InitiateUploadCallback callback);
   ~InitiateUploadNewFileRequest() override;
 
   // Optional parameters.
@@ -896,7 +898,7 @@ class InitiateUploadExistingFileRequest : public InitiateUploadRequestBase {
                                     int64_t content_length,
                                     const std::string& resource_id,
                                     const std::string& etag,
-                                    const InitiateUploadCallback& callback);
+                                    InitiateUploadCallback callback);
   ~InitiateUploadExistingFileRequest() override;
 
   // Optional parameters.
@@ -944,8 +946,8 @@ class InitiateUploadExistingFileRequest : public InitiateUploadRequestBase {
 };
 
 // Callback used for ResumeUpload() and GetUploadStatus().
-typedef base::Callback<void(const UploadRangeResponse& response,
-                            std::unique_ptr<FileResource> new_resource)>
+typedef base::OnceCallback<void(const UploadRangeResponse& response,
+                                std::unique_ptr<FileResource> new_resource)>
     UploadRangeCallback;
 
 //============================ ResumeUploadRequest ===========================
@@ -962,8 +964,8 @@ class ResumeUploadRequest : public ResumeUploadRequestBase {
                       int64_t content_length,
                       const std::string& content_type,
                       const base::FilePath& local_file_path,
-                      const UploadRangeCallback& callback,
-                      const ProgressCallback& progress_callback);
+                      UploadRangeCallback callback,
+                      ProgressCallback progress_callback);
   ~ResumeUploadRequest() override;
 
  protected:
@@ -972,7 +974,7 @@ class ResumeUploadRequest : public ResumeUploadRequestBase {
                               std::unique_ptr<base::Value> value) override;
 
  private:
-  const UploadRangeCallback callback_;
+  UploadRangeCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(ResumeUploadRequest);
 };
@@ -987,7 +989,7 @@ class GetUploadStatusRequest : public GetUploadStatusRequestBase {
   GetUploadStatusRequest(RequestSender* sender,
                          const GURL& upload_url,
                          int64_t content_length,
-                         const UploadRangeCallback& callback);
+                         UploadRangeCallback callback);
   ~GetUploadStatusRequest() override;
 
  protected:
@@ -996,7 +998,7 @@ class GetUploadStatusRequest : public GetUploadStatusRequestBase {
                               std::unique_ptr<base::Value> value) override;
 
  private:
-  const UploadRangeCallback callback_;
+  UploadRangeCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(GetUploadStatusRequest);
 };
@@ -1020,8 +1022,8 @@ class MultipartUploadNewFileDelegate : public MultipartUploadRequestBase {
                                  const base::FilePath& local_file_path,
                                  const Properties& properties,
                                  const DriveApiUrlGenerator& url_generator,
-                                 const FileResourceCallback& callback,
-                                 const ProgressCallback& progress_callback);
+                                 FileResourceCallback callback,
+                                 ProgressCallback progress_callback);
   ~MultipartUploadNewFileDelegate() override;
 
  protected:
@@ -1045,21 +1047,20 @@ class MultipartUploadExistingFileDelegate : public MultipartUploadRequestBase {
   // |title| should be set.
   // See also the comments of MultipartUploadRequestBase for more details
   // about the other parameters.
-  MultipartUploadExistingFileDelegate(
-      base::SequencedTaskRunner* task_runner,
-      const std::string& title,
-      const std::string& resource_id,
-      const std::string& parent_resource_id,
-      const std::string& content_type,
-      int64_t content_length,
-      const base::Time& modified_date,
-      const base::Time& last_viewed_by_me_date,
-      const base::FilePath& local_file_path,
-      const std::string& etag,
-      const Properties& properties,
-      const DriveApiUrlGenerator& url_generator,
-      const FileResourceCallback& callback,
-      const ProgressCallback& progress_callback);
+  MultipartUploadExistingFileDelegate(base::SequencedTaskRunner* task_runner,
+                                      const std::string& title,
+                                      const std::string& resource_id,
+                                      const std::string& parent_resource_id,
+                                      const std::string& content_type,
+                                      int64_t content_length,
+                                      const base::Time& modified_date,
+                                      const base::Time& last_viewed_by_me_date,
+                                      const base::FilePath& local_file_path,
+                                      const std::string& etag,
+                                      const Properties& properties,
+                                      const DriveApiUrlGenerator& url_generator,
+                                      FileResourceCallback callback,
+                                      ProgressCallback progress_callback);
   ~MultipartUploadExistingFileDelegate() override;
 
  protected:
@@ -1087,9 +1088,9 @@ class DownloadFileRequest : public DownloadFileRequestBase {
                       const DriveApiUrlGenerator& url_generator,
                       const std::string& resource_id,
                       const base::FilePath& output_file_path,
-                      const DownloadActionCallback& download_action_callback,
+                      DownloadActionCallback download_action_callback,
                       const GetContentCallback& get_content_callback,
-                      const ProgressCallback& progress_callback);
+                      ProgressCallback progress_callback);
   ~DownloadFileRequest() override;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadFileRequest);
@@ -1119,7 +1120,7 @@ class PermissionsInsertRequest : public EntryActionRequest {
   // See https://developers.google.com/drive/v2/reference/permissions/insert.
   PermissionsInsertRequest(RequestSender* sender,
                            const DriveApiUrlGenerator& url_generator,
-                           const EntryActionCallback& callback);
+                           EntryActionCallback callback);
   ~PermissionsInsertRequest() override;
 
   void set_id(const std::string& id) { id_ = id; }
@@ -1156,12 +1157,12 @@ class SingleBatchableDelegateRequest : public UrlFetchRequestBase {
   GURL GetURL() const override;
   std::string GetRequestType() const override;
   std::vector<std::string> GetExtraRequestHeaders() const override;
-  void Prepare(const PrepareCallback& callback) override;
+  void Prepare(PrepareCallback callback) override;
   bool GetContentData(std::string* upload_content_type,
                       std::string* upload_content) override;
   void RunCallbackOnPrematureFailure(DriveApiErrorCode code) override;
   void ProcessURLFetchResults(
-      const network::ResourceResponseHead* response_head,
+      const network::mojom::URLResponseHead* response_head,
       base::FilePath response_file,
       std::string response_body) override;
   void OnUploadProgress(int64_t current, int64_t total);
@@ -1169,7 +1170,7 @@ class SingleBatchableDelegateRequest : public UrlFetchRequestBase {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<SingleBatchableDelegateRequest> weak_ptr_factory_;
+  base::WeakPtrFactory<SingleBatchableDelegateRequest> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SingleBatchableDelegateRequest);
 };
@@ -1216,7 +1217,7 @@ class BatchUploadRequest : public UrlFetchRequestBase {
   const DriveApiUrlGenerator& url_generator() const { return url_generator_; }
 
   // UrlFetchRequestBase overrides.
-  void Prepare(const PrepareCallback& callback) override;
+  void Prepare(PrepareCallback callback) override;
   void Cancel() override;
   GURL GetURL() const override;
   std::string GetRequestType() const override;
@@ -1224,7 +1225,7 @@ class BatchUploadRequest : public UrlFetchRequestBase {
   bool GetContentData(std::string* upload_content_type,
                       std::string* upload_content) override;
   void ProcessURLFetchResults(
-      const network::ResourceResponseHead* response_head,
+      const network::mojom::URLResponseHead* response_head,
       base::FilePath response_file,
       std::string response_body) override;
   void RunCallbackOnPrematureFailure(DriveApiErrorCode code) override;
@@ -1266,7 +1267,7 @@ class BatchUploadRequest : public UrlFetchRequestBase {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<BatchUploadRequest> weak_ptr_factory_;
+  base::WeakPtrFactory<BatchUploadRequest> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BatchUploadRequest);
 };

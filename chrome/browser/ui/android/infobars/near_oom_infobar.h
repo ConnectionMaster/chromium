@@ -8,7 +8,7 @@
 #include "base/android/jni_android.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
-#include "chrome/browser/ui/android/infobars/infobar_android.h"
+#include "components/infobars/android/infobar_android.h"
 
 namespace content {
 class WebContents;
@@ -19,7 +19,7 @@ class InterventionDelegate;
 // Communicates to the user about the intervention performed by the browser to
 // limit the page's memory usage. See NearOomInfoBar.java for UI specifics, and
 // NearOomMessageDelegate for behavior specifics.
-class NearOomInfoBar : public InfoBarAndroid {
+class NearOomInfoBar : public infobars::InfoBarAndroid {
  public:
   ~NearOomInfoBar() override;
 
@@ -30,9 +30,10 @@ class NearOomInfoBar : public InfoBarAndroid {
  private:
   explicit NearOomInfoBar(InterventionDelegate* delegate);
 
-  // InfoBarAndroid:
+  // infobars::InfoBarAndroid:
   base::android::ScopedJavaLocalRef<jobject> CreateRenderInfoBar(
-      JNIEnv* env) override;
+      JNIEnv* env,
+      const ResourceIdMapper& resource_id_mapper) override;
   void OnLinkClicked(JNIEnv* env,
                      const base::android::JavaParamRef<jobject>& obj) override;
   void ProcessButton(int action) override;

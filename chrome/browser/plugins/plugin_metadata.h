@@ -11,9 +11,13 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/version.h"
+#include "ppapi/buildflags/buildflags.h"
 #include "url/gurl.h"
+
+#if !BUILDFLAG(ENABLE_PLUGINS)
+#error "Plugins should be enabled"
+#endif
 
 namespace content {
 struct WebPluginInfo;
@@ -27,6 +31,9 @@ class PluginMetadata {
     SECURITY_STATUS_OUT_OF_DATE,
     SECURITY_STATUS_REQUIRES_AUTHORIZATION,
     SECURITY_STATUS_FULLY_TRUSTED,
+    // Similar to SECURITY_STATUS_OUT_OF_DATE, but with no hope of updating and
+    // running. This is distinct to allow for separate UI treatment.
+    SECURITY_STATUS_DEPRECATED,
   };
 
   // Used by about:plugins to disable Reader plugin when internal PDF viewer is
@@ -43,11 +50,11 @@ class PluginMetadata {
   static const char kGoogleEarthGroupName[];
 
   PluginMetadata(const std::string& identifier,
-                 const base::string16& name,
+                 const std::u16string& name,
                  bool url_for_display,
                  const GURL& plugin_url,
                  const GURL& help_url,
-                 const base::string16& group_name_matcher,
+                 const std::u16string& group_name_matcher,
                  const std::string& language,
                  bool plugin_is_deprecated);
   ~PluginMetadata();
@@ -56,7 +63,7 @@ class PluginMetadata {
   const std::string& identifier() const { return identifier_; }
 
   // Human-readable name of the plugin.
-  const base::string16& name() const { return name_; }
+  const std::u16string& name() const { return name_; }
 
   // If |url_for_display| is false, |plugin_url| is the URL of the download page
   // for the plugin, which should be opened in a new tab. If it is true,
@@ -102,8 +109,8 @@ class PluginMetadata {
   };
 
   std::string identifier_;
-  base::string16 name_;
-  base::string16 group_name_matcher_;
+  std::u16string name_;
+  std::u16string group_name_matcher_;
   bool url_for_display_;
   GURL plugin_url_;
   GURL help_url_;

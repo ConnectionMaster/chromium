@@ -30,13 +30,17 @@
 
 #include "third_party/blink/renderer/core/html/forms/form_data.h"
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_file_usvstring.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/form_controller.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/network/form_data_encoder.h"
 #include "third_party/blink/renderer/platform/wtf/text/line_ending.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -46,14 +50,15 @@ namespace blink {
 namespace {
 
 class FormDataIterationSource final
-    : public PairIterable<String, FormDataEntryValue>::IterationSource {
+    : public PairIterable<String,
+                          Member<V8FormDataEntryValue>>::IterationSource {
  public:
   FormDataIterationSource(FormData* form_data)
       : form_data_(form_data), current_(0) {}
 
   bool Next(ScriptState* script_state,
             String& name,
-            FormDataEntryValue& value,
+            Member<V8FormDataEntryValue>& value,
             ExceptionState& exception_state) override {
     if (current_ >= form_data_->size())
       return false;
@@ -61,17 +66,18 @@ class FormDataIterationSource final
     const FormData::Entry& entry = *form_data_->Entries()[current_++];
     name = entry.name();
     if (entry.IsString()) {
-      value.SetUSVString(entry.Value());
+      value = MakeGarbageCollected<V8FormDataEntryValue>(entry.Value());
     } else {
       DCHECK(entry.isFile());
-      value.SetFile(entry.GetFile());
+      value = MakeGarbageCollected<V8FormDataEntryValue>(entry.GetFile());
     }
     return true;
   }
 
-  void Trace(Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(form_data_);
-    PairIterable<String, FormDataEntryValue>::IterationSource::Trace(visitor);
+    PairIterable<String, Member<V8FormDataEntryValue>>::IterationSource::Trace(
+        visitor);
   }
 
  private:
@@ -99,7 +105,6 @@ FormData* FormData::Create(HTMLFormElement* form,
                            ExceptionState& exception_state) {
   FormData* form_data = form->ConstructEntryList(nullptr, UTF8Encoding());
   if (!form_data) {
-    DCHECK(RuntimeEnabledFeatures::FormDataEventEnabled());
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
                                       "The form is constructing entry list.");
     return nullptr;
@@ -110,7 +115,7 @@ FormData* FormData::Create(HTMLFormElement* form,
   return MakeGarbageCollected<FormData>(*form_data);
 }
 
-void FormData::Trace(Visitor* visitor) {
+void FormData::Trace(Visitor* visitor) const {
   visitor->Trace(entries_);
   ScriptWrappable::Trace(visitor);
 }
@@ -141,32 +146,32 @@ void FormData::deleteEntry(const String& name) {
   }
 }
 
-void FormData::get(const String& name, FormDataEntryValue& result) {
+V8FormDataEntryValue* FormData::get(const String& name) {
   for (const auto& entry : Entries()) {
     if (entry->name() == name) {
       if (entry->IsString()) {
-        result.SetUSVString(entry->Value());
+        return MakeGarbageCollected<V8FormDataEntryValue>(entry->Value());
       } else {
         DCHECK(entry->isFile());
-        result.SetFile(entry->GetFile());
+        return MakeGarbageCollected<V8FormDataEntryValue>(entry->GetFile());
       }
-      return;
     }
   }
+  return nullptr;
 }
 
-HeapVector<FormDataEntryValue> FormData::getAll(const String& name) {
-  HeapVector<FormDataEntryValue> results;
+HeapVector<Member<V8FormDataEntryValue>> FormData::getAll(const String& name) {
+  HeapVector<Member<V8FormDataEntryValue>> results;
 
   for (const auto& entry : Entries()) {
     if (entry->name() != name)
       continue;
-    FormDataEntryValue value;
+    V8FormDataEntryValue* value;
     if (entry->IsString()) {
-      value.SetUSVString(entry->Value());
+      value = MakeGarbageCollected<V8FormDataEntryValue>(entry->Value());
     } else {
       DCHECK(entry->isFile());
-      value.SetFile(entry->GetFile());
+      value = MakeGarbageCollected<V8FormDataEntryValue>(entry->GetFile());
     }
     results.push_back(value);
   }
@@ -226,7 +231,7 @@ void FormData::AppendFromElement(const String& name, const String& value) {
       MakeGarbageCollected<Entry>(Normalize(name), Normalize(value)));
 }
 
-CString FormData::Encode(const String& string) const {
+std::string FormData::Encode(const String& string) const {
   return encoding_.Encode(string, WTF::kEntitiesForUnencodables);
 }
 
@@ -289,8 +294,7 @@ scoped_refptr<EncodedFormData> FormData::EncodeMultiPartFormData() {
         content_type = "application/octet-stream";
       else
         content_type = entry->GetBlob()->type();
-      FormDataEncoder::AddContentTypeToMultiPartHeader(header,
-                                                       content_type.Latin1());
+      FormDataEncoder::AddContentTypeToMultiPartHeader(header, content_type);
     }
 
     FormDataEncoder::FinishMultiPartHeader(header);
@@ -302,14 +306,14 @@ scoped_refptr<EncodedFormData> FormData::EncodeMultiPartFormData() {
         auto* file = To<File>(entry->GetBlob());
         // Do not add the file if the path is empty.
         if (!file->GetPath().IsEmpty())
-          form_data->AppendFile(file->GetPath());
+          form_data->AppendFile(file->GetPath(), file->LastModifiedTime());
       } else {
         form_data->AppendBlob(entry->GetBlob()->Uuid(),
                               entry->GetBlob()->GetBlobDataHandle());
       }
     } else {
-      CString encoded_value = Encode(entry->Value());
-      form_data->AppendData(encoded_value.data(), encoded_value.length());
+      std::string encoded_value = Encode(entry->Value());
+      form_data->AppendData(encoded_value.c_str(), encoded_value.length());
     }
     form_data->AppendData("\r\n", 2);
   }
@@ -319,7 +323,7 @@ scoped_refptr<EncodedFormData> FormData::EncodeMultiPartFormData() {
   return form_data;
 }
 
-PairIterable<String, FormDataEntryValue>::IterationSource*
+PairIterable<String, Member<V8FormDataEntryValue>>::IterationSource*
 FormData::StartIteration(ScriptState*, ExceptionState&) {
   return MakeGarbageCollected<FormDataIterationSource>(this);
 }
@@ -340,7 +344,7 @@ FormData::Entry::Entry(const String& name, Blob* blob, const String& filename)
       << "'name' should be a USVString.";
 }
 
-void FormData::Entry::Trace(Visitor* visitor) {
+void FormData::Entry::Trace(Visitor* visitor) const {
   visitor->Trace(blob_);
 }
 
@@ -360,8 +364,8 @@ File* FormData::Entry::GetFile() const {
   String filename = filename_;
   if (filename.IsNull())
     filename = "blob";
-  return File::Create(filename, CurrentTimeMS(),
-                      GetBlob()->GetBlobDataHandle());
+  return MakeGarbageCollected<File>(filename, base::Time::Now(),
+                                    GetBlob()->GetBlobDataHandle());
 }
 
 void FormData::AppendToControlState(FormControlState& state) const {

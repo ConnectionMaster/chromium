@@ -11,11 +11,10 @@
 #include <string>
 
 #include "base/android/scoped_java_ref.h"
-#include "base/macros.h"
-#include "base/optional.h"
 #include "chrome/browser/notifications/displayed_notifications_dispatch_callback.h"
 #include "chrome/browser/notifications/notification_common.h"
 #include "chrome/browser/notifications/notification_platform_bridge.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace user_prefs {
 class PrefRegistrySyncable;
@@ -36,6 +35,10 @@ class PrefRegistrySyncable;
 class NotificationPlatformBridgeAndroid : public NotificationPlatformBridge {
  public:
   NotificationPlatformBridgeAndroid();
+  NotificationPlatformBridgeAndroid(const NotificationPlatformBridgeAndroid&) =
+      delete;
+  NotificationPlatformBridgeAndroid& operator=(
+      const NotificationPlatformBridgeAndroid&) = delete;
   ~NotificationPlatformBridgeAndroid() override;
 
   // Called by the Java implementation when the notification has been clicked.
@@ -43,6 +46,7 @@ class NotificationPlatformBridgeAndroid : public NotificationPlatformBridge {
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& java_object,
       const base::android::JavaParamRef<jstring>& java_notification_id,
+      jint java_notification_type,
       const base::android::JavaParamRef<jstring>& java_origin,
       const base::android::JavaParamRef<jstring>& java_scope_url,
       const base::android::JavaParamRef<jstring>& java_profile_id,
@@ -64,6 +68,7 @@ class NotificationPlatformBridgeAndroid : public NotificationPlatformBridge {
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& java_object,
       const base::android::JavaParamRef<jstring>& java_notification_id,
+      jint java_notification_type,
       const base::android::JavaParamRef<jstring>& java_origin,
       const base::android::JavaParamRef<jstring>& java_profile_id,
       jboolean incognito,
@@ -100,11 +105,11 @@ class NotificationPlatformBridgeAndroid : public NotificationPlatformBridge {
     RegeneratedNotificationInfo();
     RegeneratedNotificationInfo(
         const GURL& service_worker_scope,
-        const base::Optional<std::string>& webapk_package);
+        const absl::optional<std::string>& webapk_package);
     ~RegeneratedNotificationInfo();
 
     GURL service_worker_scope;
-    base::Optional<std::string> webapk_package;
+    absl::optional<std::string> webapk_package;
   };
 
   // Mapping of notification id to renegerated notification info.
@@ -114,8 +119,6 @@ class NotificationPlatformBridgeAndroid : public NotificationPlatformBridge {
       regenerated_notification_infos_;
 
   base::android::ScopedJavaGlobalRef<jobject> java_object_;
-
-  DISALLOW_COPY_AND_ASSIGN(NotificationPlatformBridgeAndroid);
 };
 
 #endif  // CHROME_BROWSER_NOTIFICATIONS_NOTIFICATION_PLATFORM_BRIDGE_ANDROID_H_

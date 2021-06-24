@@ -6,11 +6,11 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/macros.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/trace_config.h"
 #include "base/trace_event/trace_config_memory_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 namespace trace_event {
@@ -31,7 +31,7 @@ const char kCustomTraceConfigString[] =
     "\"event_filters\":["
     "{"
     "\"excluded_categories\":[\"unfiltered_cat\"],"
-    "\"filter_args\":{\"event_name_whitelist\":[\"a snake\",\"a dog\"]},"
+    "\"filter_args\":{\"event_name_allowlist\":[\"a snake\",\"a dog\"]},"
     "\"filter_predicate\":\"event_whitelist_predicate\","
     "\"included_categories\":[\"*\"]"
     "}"
@@ -341,26 +341,22 @@ TEST(TraceConfigTest, TraceConfigFromDict) {
   EXPECT_FALSE(tc.IsArgumentFilterEnabled());
   EXPECT_STREQ("", tc.ToCategoryFilterString().c_str());
 
-  std::unique_ptr<Value> default_value(
-      JSONReader::ReadDeprecated(kDefaultTraceConfigString));
-  DCHECK(default_value);
-  const DictionaryValue* default_dict = nullptr;
-  bool is_dict = default_value->GetAsDictionary(&default_dict);
-  DCHECK(is_dict);
-  TraceConfig default_tc(*default_dict);
+  absl::optional<Value> default_value =
+      JSONReader::Read(kDefaultTraceConfigString);
+  ASSERT_TRUE(default_value);
+  ASSERT_TRUE(default_value->is_dict());
+  TraceConfig default_tc(*default_value);
   EXPECT_STREQ(kDefaultTraceConfigString, default_tc.ToString().c_str());
   EXPECT_EQ(RECORD_UNTIL_FULL, default_tc.GetTraceRecordMode());
   EXPECT_FALSE(default_tc.IsSystraceEnabled());
   EXPECT_FALSE(default_tc.IsArgumentFilterEnabled());
   EXPECT_STREQ("", default_tc.ToCategoryFilterString().c_str());
 
-  std::unique_ptr<Value> custom_value(
-      JSONReader::ReadDeprecated(kCustomTraceConfigString));
-  DCHECK(custom_value);
-  const DictionaryValue* custom_dict = nullptr;
-  is_dict = custom_value->GetAsDictionary(&custom_dict);
-  DCHECK(is_dict);
-  TraceConfig custom_tc(*custom_dict);
+  absl::optional<Value> custom_value =
+      JSONReader::Read(kCustomTraceConfigString);
+  ASSERT_TRUE(custom_value);
+  ASSERT_TRUE(custom_value->is_dict());
+  TraceConfig custom_tc(*custom_value);
   std::string custom_tc_str = custom_tc.ToString();
   EXPECT_TRUE(custom_tc_str == kCustomTraceConfigString ||
               custom_tc_str ==
@@ -385,7 +381,7 @@ TEST(TraceConfigTest, TraceConfigFromValidString) {
       "\"event_filters\":["
       "{"
       "\"excluded_categories\":[\"unfiltered_cat\"],"
-      "\"filter_args\":{\"event_name_whitelist\":[\"a snake\",\"a dog\"]},"
+      "\"filter_args\":{\"event_name_allowlist\":[\"a snake\",\"a dog\"]},"
       "\"filter_predicate\":\"event_whitelist_predicate\","
       "\"included_categories\":[\"*\"]"
       "}"
@@ -439,14 +435,14 @@ TEST(TraceConfigTest, TraceConfigFromValidString) {
   EXPECT_EQ(1u, event_filter.category_filter().excluded_categories().size());
   EXPECT_STREQ("unfiltered_cat",
                event_filter.category_filter().excluded_categories()[0].c_str());
-  EXPECT_TRUE(event_filter.filter_args());
+  EXPECT_FALSE(event_filter.filter_args().is_none());
 
   std::string json_out;
-  base::JSONWriter::Write(*event_filter.filter_args(), &json_out);
+  base::JSONWriter::Write(event_filter.filter_args(), &json_out);
   EXPECT_STREQ(json_out.c_str(),
-               "{\"event_name_whitelist\":[\"a snake\",\"a dog\"]}");
+               "{\"event_name_allowlist\":[\"a snake\",\"a dog\"]}");
   std::unordered_set<std::string> filter_values;
-  EXPECT_TRUE(event_filter.GetArgAsSet("event_name_whitelist", &filter_values));
+  EXPECT_TRUE(event_filter.GetArgAsSet("event_name_allowlist", &filter_values));
   EXPECT_EQ(2u, filter_values.size());
   EXPECT_EQ(1u, filter_values.count("a snake"));
   EXPECT_EQ(1u, filter_values.count("a dog"));
@@ -678,6 +674,26 @@ TEST(TraceConfigTest, LegacyStringToMemoryDumpConfig) {
       static_cast<uint32_t>(TraceConfig::MemoryDumpConfig::HeapProfiler::
                                 kDefaultBreakdownThresholdBytes),
       tc.memory_dump_config().heap_profiler_options.breakdown_threshold_bytes);
+}
+
+TEST(TraceConfigTest, SystraceEventsSerialization) {
+  TraceConfig tc(MemoryDumpManager::kTraceCategory, "");
+  tc.EnableSystrace();
+  EXPECT_EQ(0U, tc.systrace_events().size());
+  tc.EnableSystraceEvent("power");            // As a events category
+  tc.EnableSystraceEvent("timer:tick_stop");  // As an event
+  EXPECT_EQ(2U, tc.systrace_events().size());
+
+  const TraceConfig tc1(MemoryDumpManager::kTraceCategory,
+                        tc.ToTraceOptionsString());
+  EXPECT_EQ(2U, tc1.systrace_events().size());
+  EXPECT_TRUE(tc1.systrace_events().count("power"));
+  EXPECT_TRUE(tc1.systrace_events().count("timer:tick_stop"));
+
+  const TraceConfig tc2(tc.ToString());
+  EXPECT_EQ(2U, tc2.systrace_events().size());
+  EXPECT_TRUE(tc2.systrace_events().count("power"));
+  EXPECT_TRUE(tc2.systrace_events().count("timer:tick_stop"));
 }
 
 }  // namespace trace_event

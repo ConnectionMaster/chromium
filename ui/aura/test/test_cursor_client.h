@@ -12,6 +12,7 @@
 
 namespace ui {
 class KeyEvent;
+enum class CursorSize;
 }
 
 namespace aura {
@@ -34,6 +35,7 @@ class TestCursorClient : public aura::client::CursorClient {
   // Overridden from aura::client::CursorClient:
   void SetCursor(gfx::NativeCursor cursor) override;
   gfx::NativeCursor GetCursor() const override;
+  void SetCursorForced(gfx::NativeCursor cursor) override;
   void ShowCursor() override;
   void HideCursor() override;
   void SetCursorSize(ui::CursorSize cursor_size) override;

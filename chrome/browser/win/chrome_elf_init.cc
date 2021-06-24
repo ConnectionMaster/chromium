@@ -9,29 +9,24 @@
 #include "base/bind.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/post_task.h"
 #include "base/win/registry.h"
+#include "chrome/chrome_elf/chrome_elf_constants.h"
+#include "chrome/chrome_elf/dll_hash/dll_hash.h"
+#include "chrome/chrome_elf/third_party_dlls/public_api.h"
 #include "chrome/common/chrome_version.h"
 #include "chrome/install_static/install_util.h"
-#include "chrome_elf/blacklist/blacklist.h"
-#include "chrome_elf/chrome_elf_constants.h"
-#include "chrome_elf/dll_hash/dll_hash.h"
 #include "components/variations/variations_associated_data.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_features.h"
-#include "services/service_manager/sandbox/features.h"
+#include "sandbox/policy/features.h"
 
 const char kBrowserBlacklistTrialName[] = "BrowserBlacklist";
 const char kBrowserBlacklistTrialDisabledGroupName[] = "NoBlacklist";
 
 namespace {
-
-// How long to wait, in seconds, before reporting for the second (and last
-// time), what dlls were blocked from the browser process.
-const int kBlacklistReportingDelaySec = 600;
 
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
@@ -63,37 +58,49 @@ enum BlacklistSetupEventType {
 };
 
 void RecordBlacklistSetupEvent(BlacklistSetupEventType blacklist_setup_event) {
-  UMA_HISTOGRAM_ENUMERATION("Blacklist.Setup",
-                            blacklist_setup_event,
-                            BLACKLIST_SETUP_EVENT_MAX);
+  base::UmaHistogramEnumeration("ChromeElf.Beacon.SetupStatus",
+                                blacklist_setup_event,
+                                BLACKLIST_SETUP_EVENT_MAX);
 }
 
-// Report which DLLs were prevented from being loaded.
-void ReportSuccessfulBlocks() {
-  // Figure out how many dlls were blocked.
-  int num_blocked_dlls = 0;
-  blacklist::SuccessfullyBlocked(NULL, &num_blocked_dlls);
-
-  if (num_blocked_dlls == 0)
-    return;
-
-  // Now retrieve the list of blocked dlls.
-  std::vector<const wchar_t*> blocked_dlls(num_blocked_dlls);
-  blacklist::SuccessfullyBlocked(&blocked_dlls[0], &num_blocked_dlls);
-
-  // Send up the hashes of the blocked dlls via UMA.
-  for (size_t i = 0; i < blocked_dlls.size(); ++i) {
-    std::string dll_name_utf8;
-    base::WideToUTF8(blocked_dlls[i], wcslen(blocked_dlls[i]), &dll_name_utf8);
-    int uma_hash = DllNameToHash(dll_name_utf8);
-
-    base::UmaHistogramSparse("Blacklist.Blocked", uma_hash);
-  }
-}
-
-base::string16 GetBeaconRegistryPath() {
+std::wstring GetBeaconRegistryPath() {
   return install_static::GetRegistryPath().append(
       blacklist::kRegistryBeaconKeyName);
+}
+
+// This enum is used to define the buckets for an enumerated UMA histogram.
+// Hence,
+//   (a) existing enumerated constants should never be deleted or reordered, and
+//   (b) new constants should only be appended in front of EXTENSIONPOINT_MAX.
+enum ExtensionPointEnableState {
+  // Extension point mitigation disabled due to presence of legacy IME.
+  EXTENSIONPOINT_DISABLED_IME,
+
+  // Extension point mitigation enabled.
+  EXTENSIONPOINT_ENABLED,
+
+  // Always keep this at the end.
+  EXTENSIONPOINT_MAX,
+};
+
+void RecordExtensionPointsEnableState(ExtensionPointEnableState enable_state) {
+  base::UmaHistogramEnumeration("ChromeElf.ExtensionPoint.EnableState",
+                                enable_state, EXTENSIONPOINT_MAX);
+}
+
+ExtensionPointEnableState GetExtensionPointsEnableState() {
+  // Legacy IMEs can be detected as HKLs that have a file name.
+  int list_size = GetKeyboardLayoutList(0, nullptr);
+  if (list_size != 0) {
+    std::vector<HKL> hkl_list(list_size);
+    if (GetKeyboardLayoutList(list_size, hkl_list.data()) == list_size) {
+      for (auto* hkl : hkl_list) {
+        if (ImmGetIMEFileName(hkl, nullptr, 0) != 0)
+          return EXTENSIONPOINT_DISABLED_IME;
+      }
+    }
+  }
+  return EXTENSIONPOINT_ENABLED;
 }
 
 }  // namespace
@@ -108,28 +115,19 @@ void InitializeChromeElf() {
     BrowserBlacklistBeaconSetup();
   }
 
-  // Report all successful blacklist interceptions.
-  ReportSuccessfulBlocks();
-
-  // Schedule another task to report all successful interceptions later.
-  // This time delay should be long enough to catch any dlls that attempt to
-  // inject after Chrome has started up.
-  base::PostDelayedTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
-      base::BindOnce(&ReportSuccessfulBlocks),
-      base::TimeDelta::FromSeconds(kBlacklistReportingDelaySec));
-
   // Make sure the early finch emergency "off switch" for
   // sandbox::MITIGATION_EXTENSION_POINT_DISABLE is set properly in reg.
   // Note: the very existence of this key signals elf to not enable
   // this mitigation on browser next start.
-  const base::string16 finch_path(install_static::GetRegistryPath().append(
+  const std::wstring finch_path(install_static::GetRegistryPath().append(
       elf_sec::kRegSecurityFinchKeyName));
   base::win::RegKey finch_security_registry_key(HKEY_CURRENT_USER,
                                                 finch_path.c_str(), KEY_READ);
 
+  RecordExtensionPointsEnableState(GetExtensionPointsEnableState());
+
   if (base::FeatureList::IsEnabled(
-          service_manager::features::kWinSboxDisableExtensionPoints)) {
+          sandbox::policy::features::kWinSboxDisableExtensionPoints)) {
     if (finch_security_registry_key.Valid())
       finch_security_registry_key.DeleteKey(L"");
   } else {
@@ -155,7 +153,7 @@ void BrowserBlacklistBeaconSetup() {
 
   if (blacklist_state == blacklist::BLACKLIST_ENABLED) {
     // The blacklist setup didn't crash, so we report if it was enabled or not.
-    if (blacklist::IsBlacklistInitialized()) {
+    if (IsThirdPartyInitialized()) {
       RecordBlacklistSetupEvent(BLACKLIST_SETUP_RAN_SUCCESSFULLY);
     } else {
       // The only way for the blacklist to be enabled, but not fully
@@ -169,7 +167,8 @@ void BrowserBlacklistBeaconSetup() {
     DWORD attempt_count = 0;
     blacklist_registry_key.ReadValueDW(blacklist::kBeaconAttemptCount,
                                        &attempt_count);
-    UMA_HISTOGRAM_COUNTS_100("Blacklist.RetryAttempts.Success", attempt_count);
+    base::UmaHistogramCounts100("ChromeElf.Beacon.RetryAttemptsBeforeSuccess",
+                                attempt_count);
   } else if (blacklist_state == blacklist::BLACKLIST_SETUP_FAILED) {
     // We can set the state to disabled without checking that the maximum number
     // of attempts was exceeded because blacklist.cc has already done this.
@@ -181,7 +180,7 @@ void BrowserBlacklistBeaconSetup() {
   }
 
   // Find the last recorded blacklist version.
-  base::string16 blacklist_version;
+  std::wstring blacklist_version;
   blacklist_registry_key.ReadValue(blacklist::kBeaconVersion,
                                    &blacklist_version);
 

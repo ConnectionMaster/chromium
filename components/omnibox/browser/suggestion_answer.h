@@ -12,7 +12,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 #ifdef OS_ANDROID
@@ -125,6 +125,10 @@ class SuggestionAnswer {
    public:
     TextField();
     ~TextField();
+    TextField(const TextField&);
+    TextField(TextField&&) noexcept;
+    TextField& operator=(const TextField&);
+    TextField& operator=(TextField&&) noexcept;
 
     // Parses |field_json| dictionary and populates |text_field| with the
     // contents.  If any of the required elements is missing, returns false and
@@ -132,7 +136,7 @@ class SuggestionAnswer {
     static bool ParseTextField(const base::Value& field_json,
                                TextField* text_field);
 
-    const base::string16& text() const { return text_; }
+    const std::u16string& text() const { return text_; }
     int type() const { return type_; }
     TextStyle style() const { return style_; }
     void set_style(TextStyle style) { style_ = style; }
@@ -146,7 +150,7 @@ class SuggestionAnswer {
     size_t EstimateMemoryUsage() const;
 
    private:
-    base::string16 text_;
+    std::u16string text_;
     int type_ = -1;
     bool has_num_lines_ = false;
     int num_lines_ = 1;
@@ -162,7 +166,9 @@ class SuggestionAnswer {
    public:
     ImageLine();
     explicit ImageLine(const ImageLine& line);
+    ImageLine(ImageLine&&) noexcept;
     ImageLine& operator=(const ImageLine& line);
+    ImageLine& operator=(ImageLine&&) noexcept;
     ~ImageLine();
 
     // Parses dictionary |line_json| and populates |image_line| with the
@@ -191,7 +197,7 @@ class SuggestionAnswer {
 
     // Returns a string appropriate for use as a readable representation of the
     // content of this line.
-    base::string16 AccessibleText() const;
+    std::u16string AccessibleText() const;
 
     // Estimates dynamic memory usage.
     // See base/trace_event/memory_usage_estimator.h for more info.
@@ -204,8 +210,8 @@ class SuggestionAnswer {
    private:
     TextFields text_fields_;
     int num_text_lines_;
-    base::Optional<TextField> additional_text_;
-    base::Optional<TextField> status_text_;
+    absl::optional<TextField> additional_text_;
+    absl::optional<TextField> status_text_;
     GURL image_url_;
 
     FRIEND_TEST_ALL_PREFIXES(SuggestionAnswerTest, DifferentValuesAreUnequal);
@@ -213,14 +219,16 @@ class SuggestionAnswer {
 
   SuggestionAnswer();
   SuggestionAnswer(const SuggestionAnswer& answer);
+  SuggestionAnswer(SuggestionAnswer&&) noexcept;
   SuggestionAnswer& operator=(const SuggestionAnswer& answer);
+  SuggestionAnswer& operator=(SuggestionAnswer&&) noexcept;
   ~SuggestionAnswer();
 
   // Parses dictionary |answer_json| and fills a SuggestionAnswer containing the
   // contents. Returns true on success. If the supplied data is not well formed
   // or is missing required elements, returns false instead.
   static bool ParseAnswer(const base::Value& answer_json,
-                          const base::string16& answer_type_str,
+                          const std::u16string& answer_type_str,
                           SuggestionAnswer* answer);
 
   const GURL& image_url() const { return image_url_; }
@@ -244,17 +252,28 @@ class SuggestionAnswer {
   // For new answers, replace old answer text types with appropriate new types.
   void InterpretTextTypes();
 
+  // Some types of matches (answers for dictionary definitions, e.g.) do not
+  // follow the common rules for reversing lines.
+  bool IsExceptedFromLineReversal() const;
+
+  // Logs which answer type was used (if any) at the time a user used the
+  // omnibox to go somewhere.
+  static void LogAnswerUsed(const absl::optional<SuggestionAnswer>& answer);
+
 #ifdef OS_ANDROID
   base::android::ScopedJavaLocalRef<jobject> CreateJavaObject() const;
 #endif
 
  private:
+  static const char kAnswerUsedUmaHistogramName[];
+
   GURL image_url_;
   ImageLine first_line_;
   ImageLine second_line_;
   int type_ = -1;
 
   FRIEND_TEST_ALL_PREFIXES(SuggestionAnswerTest, DifferentValuesAreUnequal);
+  FRIEND_TEST_ALL_PREFIXES(SuggestionAnswerTest, LogAnswerUsed);
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_SUGGESTION_ANSWER_H_

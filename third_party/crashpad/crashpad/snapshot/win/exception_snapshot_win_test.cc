@@ -17,13 +17,11 @@
 #include <string>
 
 #include "base/files/file_path.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "client/crashpad_client.h"
 #include "gtest/gtest.h"
 #include "snapshot/win/process_snapshot_win.h"
 #include "test/errors.h"
-#include "test/gtest_disabled.h"
 #include "test/test_paths.h"
 #include "test/win/child_launcher.h"
 #include "util/file/file_io.h"
@@ -103,7 +101,12 @@ class CrashingDelegate : public ExceptionHandlerServer::Delegate {
     // Verify the exception happened at the expected location with a bit of
     // slop space to allow for reading the current PC before the exception
     // happens. See TestCrashingChild().
+#if !defined(NDEBUG)
+    // Debug build is likely not optimized and contains more instructions.
+    constexpr uint64_t kAllowedOffset = 200;
+#else
     constexpr uint64_t kAllowedOffset = 100;
+#endif
     EXPECT_GT(snapshot.Exception()->ExceptionAddress(), break_near_);
     EXPECT_LT(snapshot.Exception()->ExceptionAddress(),
               break_near_ + kAllowedOffset);
@@ -176,7 +179,7 @@ TEST(ExceptionSnapshotWinTest, MAYBE_ChildCrash) {
 #if defined(ARCH_CPU_64_BITS)
 TEST(ExceptionSnapshotWinTest, ChildCrashWOW64) {
   if (!TestPaths::Has32BitBuildArtifacts()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   TestCrashingChild(TestPaths::Architecture::k32Bit);
@@ -214,6 +217,9 @@ class SimulateDelegate : public ExceptionHandlerServer::Delegate {
     // ASan instrumentation inserts more instructions between the expected
     // location and what's reported. https://crbug.com/845011.
     constexpr uint64_t kAllowedOffset = 500;
+#elif !defined(NDEBUG)
+    // Debug build is likely not optimized and contains more instructions.
+    constexpr uint64_t kAllowedOffset = 200;
 #else
     constexpr uint64_t kAllowedOffset = 100;
 #endif
@@ -293,7 +299,7 @@ TEST(SimulateCrash, MAYBE_ChildDumpWithoutCrashing) {
 #if defined(ARCH_CPU_64_BITS)
 TEST(SimulateCrash, ChildDumpWithoutCrashingWOW64) {
   if (!TestPaths::Has32BitBuildArtifacts()) {
-    DISABLED_TEST();
+    GTEST_SKIP();
   }
 
   TestDumpWithoutCrashingChild(TestPaths::Architecture::k32Bit);

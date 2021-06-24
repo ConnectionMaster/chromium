@@ -13,7 +13,6 @@
 
 #include "base/base_switches.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
@@ -21,6 +20,7 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/time/time.h"
 #include "base/win/win_util.h"
+#include "chrome/chrome_cleaner/buildflags.h"
 #include "chrome/chrome_cleaner/constants/chrome_cleaner_switches.h"
 #include "chrome/chrome_cleaner/crash/crash_reporter.h"
 #include "chrome/chrome_cleaner/os/disk_util.h"
@@ -43,8 +43,12 @@ namespace {
 
 // Switches to propagate to the sandbox target process.
 const char* kSwitchesToPropagate[] = {
-    kEnableCrashReportingSwitch, kExecutionModeSwitch,
-    kExtendedSafeBrowsingEnabledSwitch, switches::kTestChildProcess,
+    kEnableCrashReportingSwitch,
+    kExecutionModeSwitch,
+    kExtendedSafeBrowsingEnabledSwitch,
+    switches::kTestChildProcess,
+    kTestingSwitch,
+    kTestLoggingPathSwitch,
 };
 
 std::map<SandboxType, base::Process>* g_target_processes = nullptr;  // Leaked.
@@ -110,7 +114,7 @@ scoped_refptr<sandbox::TargetPolicy> GetSandboxPolicy(
                       sandbox::TargetPolicy::FAKE_USER_GDI_INIT, nullptr);
   CHECK_EQ(sandbox::SBOX_ALL_OK, sandbox_result);
 
-#if !defined(CHROME_CLEANER_OFFICIAL_BUILD)
+#if !BUILDFLAG(IS_OFFICIAL_CHROME_CLEANER_BUILD)
   base::FilePath product_path;
   GetAppDataProductDirectory(&product_path);
   if (!product_path.value().empty()) {
@@ -122,7 +126,7 @@ scoped_refptr<sandbox::TargetPolicy> GetSandboxPolicy(
     LOG_IF(ERROR, sandbox_result != sandbox::SBOX_ALL_OK)
         << "Failed to give the target process access to the product directory";
   }
-#endif  // CHROME_CLEANER_OFFICIAL_BUILD
+#endif
 
   policy->SetLockdownDefaultDacl();
 
@@ -167,7 +171,7 @@ ResultCode SandboxTargetHooks::TargetStartedWithHighPrivileges() {
 
 SandboxType SandboxProcessType() {
   // This should only be called by children processes.
-  DCHECK(sandbox::SandboxFactory::GetTargetServices() != nullptr);
+  DCHECK(sandbox::SandboxFactory::GetTargetServices());
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   int val = -1;
@@ -253,7 +257,7 @@ ResultCode StartSandboxTarget(const base::CommandLine& sandbox_command_line,
           base::WaitableEvent::InitialState::NOT_SIGNALED);
   command_line.AppendSwitchNative(
       chrome_cleaner::kInitDoneNotifierSwitch,
-      base::NumberToString16(
+      base::NumberToWString(
           base::win::HandleToUint32(init_done_event->handle())));
   policy->AddHandleToShare(init_done_event->handle());
 
@@ -276,8 +280,9 @@ ResultCode StartSandboxTarget(const base::CommandLine& sandbox_command_line,
       &last_win_error, &temp_process_info);
   if (sandbox_result != sandbox::SBOX_ALL_OK) {
     LOG(DFATAL) << "Failed to spawn sandbox target: " << sandbox_result
-                << " , last sandbox warning : " << last_sbox_warning
-                << " , last windows error: " << last_win_error;
+                << ", last sandbox warning: " << last_sbox_warning
+                << ", last windows error: "
+                << logging::SystemErrorCodeToString(last_win_error);
     return RESULT_CODE_FAILED_TO_START_SANDBOX_PROCESS;
   }
 
@@ -318,10 +323,21 @@ ResultCode StartSandboxTarget(const base::CommandLine& sandbox_command_line,
       DWORD exit_code = -1;
       BOOL result = ::GetExitCodeProcess(process_handle.Handle(), &exit_code);
       DCHECK(result);
-      LOG(ERROR)
-          << "Sandboxed process exited before signaling it was initialized, "
-             "exit code: "
-          << exit_code;
+      // Windows error codes such as 0xC0000005 and 0xC0000409 are much easier
+      // to recognize and differentiate in hex.
+      if (static_cast<int>(exit_code) < -100) {
+        LOG(ERROR)
+            << "Sandboxed process exited before signaling it was initialized, "
+               "exit code: 0x"
+            << std::hex << exit_code;
+      } else {
+        // Print other error codes as a signed integer so that small negative
+        // numbers are also recognizable.
+        LOG(ERROR)
+            << "Sandboxed process exited before signaling it was initialized, "
+               "exit code: "
+            << static_cast<int>(exit_code);
+      }
     } else {
       PLOG(ERROR) << "::WaitForMultipleObjects returned an unexpected error, "
                   << wait_result;

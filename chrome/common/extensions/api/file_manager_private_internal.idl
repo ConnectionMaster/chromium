@@ -23,6 +23,9 @@ namespace fileManagerPrivateInternal {
   callback GetCustomActionsCallback = void(fileSystemProvider.Action[] actions);
   callback ComputeChecksumCallback = void(DOMString checksum);
   callback GetMimeTypeCallback = void(DOMString result);
+  callback GetContentMimeTypeCallback = void(DOMString result);
+  callback GetContentMetadataCallback = void(
+      fileManagerPrivate.MediaMetadata result);
   callback ExecuteTaskCallback = void(fileManagerPrivate.TaskResult result);
   callback GetFileTasksCallback = void(fileManagerPrivate.FileTask[] tasks);
   callback GetUrlCallback = void(DOMString url);
@@ -39,6 +42,8 @@ namespace fileManagerPrivateInternal {
   callback InstallLinuxPackageCallback =
       void(fileManagerPrivate.InstallLinuxPackageResponse response);
   callback GetThumbnailCallback = void(DOMString ThumbnailDataUrl);
+  callback BooleanCallback = void(boolean result);
+  callback GetVolumeRootCallback = void(EntryDescription rootDir);
 
   interface Functions {
     static void resolveIsolatedEntries(DOMString[] urls,
@@ -62,10 +67,14 @@ namespace fileManagerPrivateInternal {
                                 ComputeChecksumCallback callback);
     static void getMimeType(DOMString url,
                             GetMimeTypeCallback callback);
+    static void getContentMimeType(DOMString blobUUID,
+                                   GetContentMimeTypeCallback callback);
+    static void getContentMetadata(DOMString blobUUID,
+                                   DOMString mimeType,
+                                   boolean includeImages,
+                                   GetContentMetadataCallback callback);
     static void pinDriveFile(DOMString url,
                              boolean pin,
-                             SimpleCallback callback);
-    static void ensureFileDownloaded(DOMString url,
                              SimpleCallback callback);
     static void executeTask(DOMString taskId,
                             DOMString[] urls,
@@ -77,16 +86,6 @@ namespace fileManagerPrivateInternal {
     static void getFileTasks(DOMString[] urls,
                              GetFileTasksCallback callback);
     static void getDownloadUrl(DOMString url, GetUrlCallback callback);
-    static void requestDriveShare(DOMString url,
-                                fileManagerPrivate.DriveShareType shareType,
-                                SimpleCallback callback);
-    static void setEntryTag(DOMString url,
-                            fileManagerPrivate.EntryTagVisibility visibility,
-                            DOMString key,
-                            DOMString value,
-                            SimpleCallback callback);
-    static void cancelFileTransfers(DOMString[] urls,
-                                    optional SimpleCallback callback);
     static void startCopy(DOMString url,
                           DOMString parentUrl,
                           DOMString newName,
@@ -95,13 +94,17 @@ namespace fileManagerPrivateInternal {
                              DOMString[] urls,
                              DOMString destName,
                              ZipSelectionCallback callback);
+    static void cancelZip(DOMString parentUrl, DOMString destName);
     static void validatePathNameLength(
         DOMString parentUrl,
         DOMString name,
         ValidatePathNameLengthCallback callback);
     static void getDirectorySize(DOMString url,
                                  GetDirectorySizeCallback callback);
+    static void getVolumeRoot(fileManagerPrivate.GetVolumeRootOptions options,
+                              GetVolumeRootCallback callback);
     static void getRecentFiles(fileManagerPrivate.SourceRestriction restriction,
+                               fileManagerPrivate.RecentFileType file_type,
                                GetRecentFilesCallback callback);
     static void sharePathsWithCrostini(DOMString vmName, DOMString[] urls,
                                        boolean persist,
@@ -115,8 +118,24 @@ namespace fileManagerPrivateInternal {
                                     GetLinuxPackageInfoCallback callback);
     static void installLinuxPackage(DOMString url,
                                     InstallLinuxPackageCallback callback);
-    static void getThumbnail(DOMString url,
-                             boolean cropToSquare,
-                             GetThumbnailCallback callback);
+    static void importCrostiniImage(DOMString url);
+    static void getDriveThumbnail(DOMString url,
+                                  boolean cropToSquare,
+                                  GetThumbnailCallback callback);
+    static void getPdfThumbnail(DOMString url,
+                                long width,
+                                long height,
+                                GetThumbnailCallback callback);
+    static void getArcDocumentsProviderThumbnail(DOMString url,
+                                                 long widthHint,
+                                                 long heightHint,
+                                                 GetThumbnailCallback callback);
+    static void sharesheetHasTargets(DOMString[] urls, BooleanCallback callback);
+    static void invokeSharesheet(
+        DOMString[] urls,
+        fileManagerPrivate.SharesheetLaunchSource launchSource,
+        SimpleCallback callback);
+    static void toggleAddedToHoldingSpace(DOMString[] urls, boolean add,
+                                          optional SimpleCallback callback);
   };
 };

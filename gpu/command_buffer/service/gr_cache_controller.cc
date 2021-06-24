@@ -7,11 +7,17 @@
 #include <chrono>
 
 #include "base/bind.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
+#include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_context.h"
 
 namespace gpu {
 namespace raster {
+
+GrCacheController::GrCacheController(SharedContextState* context_state)
+    : context_state_(context_state),
+      task_runner_(base::ThreadTaskRunnerHandle::Get()) {}
 
 GrCacheController::GrCacheController(
     SharedContextState* context_state,
@@ -65,7 +71,21 @@ void GrCacheController::PurgeGrCache(uint64_t idle_id) {
   }
 
   context_state_->set_need_context_state_reset(true);
+
+  // Force Skia to check fences to determine what can be freed.
+  context_state_->gr_context()->checkAsyncWorkCompletion();
   context_state_->gr_context()->freeGpuResources();
+
+  // Skia may have released resources, but the driver may not process that
+  // without a flush.
+  if (context_state_->GrContextIsGL()) {
+    auto* api = gl::g_current_gl_context;
+    api->glFlushFn();
+  }
+
+  // Skia store VkPipeline cache only on demand. We do it when we're idle idle
+  // as it might take time.
+  context_state_->StoreVkPipelineCacheIfNeeded();
 }
 
 }  // namespace raster

@@ -13,9 +13,10 @@
 #include "base/component_export.h"
 #include "base/containers/flat_set.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "device/fido/authenticator_supported_options.h"
 #include "device/fido/fido_constants.h"
+#include "device/fido/fido_types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device {
 
@@ -23,46 +24,48 @@ namespace device {
 // versions, options, AAGUID(Authenticator Attestation GUID), other
 // authenticator device information.
 // https://fidoalliance.org/specs/fido-v2.0-rd-20170927/fido-client-to-authenticator-protocol-v2.0-rd-20170927.html#authenticatorGetInfo
-class COMPONENT_EXPORT(DEVICE_FIDO) AuthenticatorGetInfoResponse {
+struct COMPONENT_EXPORT(DEVICE_FIDO) AuthenticatorGetInfoResponse {
  public:
   AuthenticatorGetInfoResponse(base::flat_set<ProtocolVersion> versions,
+                               base::flat_set<Ctap2Version> in_ctap2_version,
                                base::span<const uint8_t, kAaguidLength> aaguid);
   AuthenticatorGetInfoResponse(AuthenticatorGetInfoResponse&& that);
   AuthenticatorGetInfoResponse& operator=(AuthenticatorGetInfoResponse&& other);
   ~AuthenticatorGetInfoResponse();
 
-  AuthenticatorGetInfoResponse& SetMaxMsgSize(uint32_t max_msg_size);
-  AuthenticatorGetInfoResponse& SetPinProtocols(
-      std::vector<uint8_t> pin_protocols);
-  AuthenticatorGetInfoResponse& SetExtensions(
-      std::vector<std::string> extensions);
-  AuthenticatorGetInfoResponse& SetOptions(
-      const AuthenticatorSupportedOptions& options);
+  static std::vector<uint8_t> EncodeToCBOR(
+      const AuthenticatorGetInfoResponse& response);
 
-  const base::flat_set<ProtocolVersion>& versions() const { return versions_; }
-  const std::array<uint8_t, kAaguidLength>& aaguid() const { return aaguid_; }
-  const base::Optional<uint32_t>& max_msg_size() const { return max_msg_size_; }
-  const base::Optional<std::vector<uint8_t>>& pin_protocol() const {
-    return pin_protocols_;
-  }
-  const base::Optional<std::vector<std::string>>& extensions() const {
-    return extensions_;
-  }
-  const AuthenticatorSupportedOptions& options() const { return options_; }
+  // Returns true if there is a Ctap2Version in |ctap2_versions| greater or
+  // equal to |ctap2_version|.
+  bool SupportsAtLeast(Ctap2Version ctap2_version) const;
+
+  base::flat_set<ProtocolVersion> versions;
+  base::flat_set<Ctap2Version> ctap2_versions;
+  std::array<uint8_t, kAaguidLength> aaguid;
+  absl::optional<uint32_t> max_msg_size;
+  absl::optional<uint32_t> max_credential_count_in_list;
+  absl::optional<uint32_t> max_credential_id_length;
+  absl::optional<base::flat_set<PINUVAuthProtocol>> pin_protocols;
+  absl::optional<std::vector<std::string>> extensions;
+  std::vector<int32_t> algorithms = {
+      static_cast<int32_t>(CoseAlgorithmIdentifier::kEs256),
+  };
+  absl::optional<uint32_t> max_serialized_large_blob_array;
+  absl::optional<uint32_t> remaining_discoverable_credentials;
+  absl::optional<bool> force_pin_change;
+  absl::optional<uint32_t> min_pin_length;
+
+  // max_cred_blob_length is the maximum size credBlob that the authenticator
+  // supports per credential, or nullopt if credBlob is not supported. If
+  // present, this value will be >= 32.
+  absl::optional<uint32_t> max_cred_blob_length;
+
+  AuthenticatorSupportedOptions options;
 
  private:
-  base::flat_set<ProtocolVersion> versions_;
-  std::array<uint8_t, kAaguidLength> aaguid_;
-  base::Optional<uint32_t> max_msg_size_;
-  base::Optional<std::vector<uint8_t>> pin_protocols_;
-  base::Optional<std::vector<std::string>> extensions_;
-  AuthenticatorSupportedOptions options_;
-
   DISALLOW_COPY_AND_ASSIGN(AuthenticatorGetInfoResponse);
 };
-
-COMPONENT_EXPORT(DEVICE_FIDO)
-std::vector<uint8_t> EncodeToCBOR(const AuthenticatorGetInfoResponse& response);
 
 }  // namespace device
 

@@ -8,11 +8,16 @@
 #include <stdint.h>
 
 #include "base/macros.h"
+#include "base/memory/scoped_refptr.h"
 #include "extensions/browser/api/execute_code_function.h"
 #include "extensions/browser/api/web_contents_capture_client.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/guest_view/web_view/web_ui/web_ui_url_fetcher.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
+
+namespace base {
+class TaskRunner;
+}
 
 // WARNING: WebViewInternal could be loaded in an unblessed context, thus any
 // new APIs must extend WebViewInternalExtensionFunction or
@@ -20,7 +25,7 @@
 // abuse by normal renderer processes.
 namespace extensions {
 
-class WebViewInternalExtensionFunction : public UIThreadExtensionFunction {
+class WebViewInternalExtensionFunction : public ExtensionFunction {
  public:
   WebViewInternalExtensionFunction() {}
 
@@ -42,15 +47,22 @@ class WebViewInternalCaptureVisibleRegionFunction
  protected:
   ~WebViewInternalCaptureVisibleRegionFunction() override {}
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
+  void GetQuotaLimitHeuristics(QuotaLimitHeuristics* heuristics) const override;
 
  private:
   // extensions::WebContentsCaptureClient:
-  bool IsScreenshotEnabled() const override;
+  ScreenshotAccess GetScreenshotAccess(
+      content::WebContents* web_contents) const override;
   bool ClientAllowsTransparency() override;
   void OnCaptureSuccess(const SkBitmap& bitmap) override;
   void OnCaptureFailure(CaptureResult result) override;
+
+  void EncodeBitmapOnWorkerThread(
+      scoped_refptr<base::TaskRunner> reply_task_runner,
+      const SkBitmap& bitmap);
+  void OnBitmapEncodedOnUIThread(bool success, std::string base64_result);
 
   std::string GetErrorMessage(CaptureResult result);
 
@@ -69,7 +81,7 @@ class WebViewInternalNavigateFunction
  protected:
   ~WebViewInternalNavigateFunction() override {}
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalNavigateFunction);
@@ -86,6 +98,7 @@ class WebViewInternalExecuteCodeFunction
   // Initialize |details_| if it hasn't already been.
   InitResult Init() override;
   bool ShouldInsertCSS() const override;
+  bool ShouldRemoveCSS() const override;
   bool CanExecuteScriptOnPage(std::string* error) override;
   // Guarded by a process ID check.
   extensions::ScriptExecutor* GetScriptExecutor(std::string* error) final;
@@ -143,8 +156,7 @@ class WebViewInternalInsertCSSFunction
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalInsertCSSFunction);
 };
 
-class WebViewInternalAddContentScriptsFunction
-    : public UIThreadExtensionFunction {
+class WebViewInternalAddContentScriptsFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("webViewInternal.addContentScripts",
                              WEBVIEWINTERNAL_ADDCONTENTSCRIPTS)
@@ -160,8 +172,7 @@ class WebViewInternalAddContentScriptsFunction
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalAddContentScriptsFunction);
 };
 
-class WebViewInternalRemoveContentScriptsFunction
-    : public UIThreadExtensionFunction {
+class WebViewInternalRemoveContentScriptsFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("webViewInternal.removeContentScripts",
                              WEBVIEWINTERNAL_REMOVECONTENTSCRIPTS)
@@ -171,7 +182,7 @@ class WebViewInternalRemoveContentScriptsFunction
  protected:
   ~WebViewInternalRemoveContentScriptsFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
  private:
@@ -187,7 +198,7 @@ class WebViewInternalSetNameFunction : public WebViewInternalExtensionFunction {
  protected:
   ~WebViewInternalSetNameFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetNameFunction);
@@ -204,7 +215,7 @@ class WebViewInternalSetAllowTransparencyFunction
  protected:
   ~WebViewInternalSetAllowTransparencyFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetAllowTransparencyFunction);
@@ -221,7 +232,7 @@ class WebViewInternalSetAllowScalingFunction
  protected:
   ~WebViewInternalSetAllowScalingFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetAllowScalingFunction);
@@ -236,7 +247,7 @@ class WebViewInternalSetZoomFunction : public WebViewInternalExtensionFunction {
  protected:
   ~WebViewInternalSetZoomFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetZoomFunction);
@@ -251,7 +262,7 @@ class WebViewInternalGetZoomFunction : public WebViewInternalExtensionFunction {
  protected:
   ~WebViewInternalGetZoomFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalGetZoomFunction);
@@ -268,7 +279,7 @@ class WebViewInternalSetZoomModeFunction
  protected:
   ~WebViewInternalSetZoomModeFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetZoomModeFunction);
@@ -285,7 +296,7 @@ class WebViewInternalGetZoomModeFunction
  protected:
   ~WebViewInternalGetZoomModeFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalGetZoomModeFunction);
@@ -304,7 +315,7 @@ class WebViewInternalFindFunction : public WebViewInternalExtensionFunction {
   ~WebViewInternalFindFunction() override;
 
  private:
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalFindFunction);
@@ -321,7 +332,7 @@ class WebViewInternalStopFindingFunction
  protected:
   ~WebViewInternalStopFindingFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalStopFindingFunction);
@@ -338,7 +349,7 @@ class WebViewInternalLoadDataWithBaseUrlFunction
  protected:
   ~WebViewInternalLoadDataWithBaseUrlFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalLoadDataWithBaseUrlFunction);
@@ -353,7 +364,7 @@ class WebViewInternalGoFunction : public WebViewInternalExtensionFunction {
  protected:
   ~WebViewInternalGoFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalGoFunction);
@@ -368,7 +379,7 @@ class WebViewInternalReloadFunction : public WebViewInternalExtensionFunction {
  protected:
   ~WebViewInternalReloadFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalReloadFunction);
@@ -385,7 +396,7 @@ class WebViewInternalSetPermissionFunction
  protected:
   ~WebViewInternalSetPermissionFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetPermissionFunction);
@@ -402,7 +413,7 @@ class WebViewInternalOverrideUserAgentFunction
  protected:
   ~WebViewInternalOverrideUserAgentFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalOverrideUserAgentFunction);
@@ -417,7 +428,7 @@ class WebViewInternalStopFunction : public WebViewInternalExtensionFunction {
  protected:
   ~WebViewInternalStopFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalStopFunction);
@@ -434,7 +445,7 @@ class WebViewInternalSetAudioMutedFunction
  protected:
   ~WebViewInternalSetAudioMutedFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetAudioMutedFunction);
@@ -451,7 +462,7 @@ class WebViewInternalIsAudioMutedFunction
  protected:
   ~WebViewInternalIsAudioMutedFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalIsAudioMutedFunction);
@@ -468,7 +479,7 @@ class WebViewInternalGetAudioStateFunction
  protected:
   ~WebViewInternalGetAudioStateFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalGetAudioStateFunction);
@@ -485,7 +496,7 @@ class WebViewInternalTerminateFunction
  protected:
   ~WebViewInternalTerminateFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalTerminateFunction);
@@ -502,7 +513,7 @@ class WebViewInternalClearDataFunction
  protected:
   ~WebViewInternalClearDataFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
  private:
@@ -530,7 +541,7 @@ class WebViewInternalSetSpatialNavigationEnabledFunction
  protected:
   ~WebViewInternalSetSpatialNavigationEnabledFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalSetSpatialNavigationEnabledFunction);
@@ -547,7 +558,7 @@ class WebViewInternalIsSpatialNavigationEnabledFunction
  protected:
   ~WebViewInternalIsSpatialNavigationEnabledFunction() override;
 
-  // UIThreadExtensionFunction:
+  // ExtensionFunction:
   ResponseAction Run() override;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewInternalIsSpatialNavigationEnabledFunction);

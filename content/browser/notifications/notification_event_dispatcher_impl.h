@@ -6,6 +6,8 @@
 #define CONTENT_BROWSER_NOTIFICATIONS_NOTIFICATION_EVENT_DISPATCHER_IMPL_H_
 
 #include <map>
+#include <string>
+#include <utility>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
@@ -13,6 +15,8 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/notification_database_data.h"
 #include "content/public/browser/notification_event_dispatcher.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/mojom/notifications/notification_service.mojom.h"
 
 namespace content {
@@ -29,8 +33,8 @@ class CONTENT_EXPORT NotificationEventDispatcherImpl
       BrowserContext* browser_context,
       const std::string& notification_id,
       const GURL& origin,
-      const base::Optional<int>& action_index,
-      const base::Optional<base::string16>& reply,
+      const absl::optional<int>& action_index,
+      const absl::optional<std::u16string>& reply,
       NotificationDispatchCompleteCallback dispatch_complete_callback) override;
   void DispatchNotificationCloseEvent(
       BrowserContext* browser_context,
@@ -51,7 +55,8 @@ class CONTENT_EXPORT NotificationEventDispatcherImpl
   // non-persistent notification identified by |notification_id|.
   void RegisterNonPersistentNotificationListener(
       const std::string& notification_id,
-      blink::mojom::NonPersistentNotificationListenerPtr event_listener_ptr);
+      mojo::PendingRemote<blink::mojom::NonPersistentNotificationListener>
+          event_listener_remote);
 
  private:
   friend class NotificationEventDispatcherImplTest;
@@ -74,7 +79,8 @@ class CONTENT_EXPORT NotificationEventDispatcherImpl
       const std::string& notification_id);
 
   // Notification Id -> listener.
-  std::map<std::string, blink::mojom::NonPersistentNotificationListenerPtr>
+  std::map<std::string,
+           mojo::Remote<blink::mojom::NonPersistentNotificationListener>>
       non_persistent_notification_listeners_;
 
   DISALLOW_COPY_AND_ASSIGN(NotificationEventDispatcherImpl);

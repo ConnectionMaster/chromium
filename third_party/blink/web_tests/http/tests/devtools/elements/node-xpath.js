@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests node xPath construction\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.navigatePromise('resources/node-xpath.xhtml');
 
@@ -36,7 +36,8 @@
 
   function dumpNodeData(node, prefix) {
     var result = prefix + '\'' + node.nodeName() + '\':\'' + node.nodeValue() + '\' - \'' +
-        Elements.DOMPath.xPath(node, true) + '\'';
+        Elements.DOMPath.xPath(node, true) + '\' - \'' +
+        Elements.DOMPath.xPath(node, false) + '\'';
     TestRunner.addResult(result.replace(/\r?\n/g, '\\n'));
   }
 })();

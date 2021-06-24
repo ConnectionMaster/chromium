@@ -28,20 +28,41 @@ namespace blink {
 
 const char UserMediaController::kSupplementName[] = "UserMediaController";
 
-UserMediaController::UserMediaController(
-    LocalFrame& frame,
-    std::unique_ptr<UserMediaClient> client)
-    : Supplement<LocalFrame>(frame), client_(std::move(client)) {}
-
-void UserMediaController::Trace(blink::Visitor* visitor) {
-  Supplement<LocalFrame>::Trace(visitor);
+UserMediaController* UserMediaController::From(LocalDOMWindow* window) {
+  auto* controller =
+      Supplement<LocalDOMWindow>::From<UserMediaController>(window);
+  if (!controller) {
+    controller = MakeGarbageCollected<UserMediaController>(window);
+    Supplement<LocalDOMWindow>::ProvideTo(*window, controller);
+  }
+  return controller;
 }
 
-void ProvideUserMediaTo(LocalFrame& frame,
-                        std::unique_ptr<UserMediaClient> client) {
-  UserMediaController::ProvideTo(
-      frame,
-      MakeGarbageCollected<UserMediaController>(frame, std::move(client)));
+UserMediaController::UserMediaController(LocalDOMWindow* window)
+    : Supplement<LocalDOMWindow>(*window),
+      ExecutionContextLifecycleObserver(window) {}
+
+void UserMediaController::Trace(Visitor* visitor) const {
+  Supplement<LocalDOMWindow>::Trace(visitor);
+  ExecutionContextLifecycleObserver::Trace(visitor);
+  visitor->Trace(client_);
+}
+
+UserMediaClient* UserMediaController::Client() {
+  auto* window = To<LocalDOMWindow>(GetExecutionContext());
+  if (!client_ && window) {
+    DCHECK(window->GetFrame());
+    client_ = MakeGarbageCollected<UserMediaClient>(
+        window->GetFrame(), window->GetTaskRunner(TaskType::kInternalMedia));
+  }
+
+  return client_;
+}
+
+void UserMediaController::ContextDestroyed() {
+  if (!client_)
+    return;
+  client_->ContextDestroyed();
 }
 
 }  // namespace blink

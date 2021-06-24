@@ -5,6 +5,7 @@
 #include "media/cast/net/udp_transport_impl.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,7 +14,7 @@
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "media/cast/net/cast_transport_config.h"
 #include "media/cast/net/udp_packet_pipe.h"
 #include "media/cast/test/utility/net_utility.h"
@@ -39,7 +40,7 @@ class MockPacketReceiver final : public UdpTransportReceiver {
   // UdpTransportReceiver implementation.
   void OnPacketReceived(const std::vector<uint8_t>& packet) override {
     EXPECT_GT(packet.size(), 0u);
-    packet_.reset(new Packet(packet));
+    packet_ = std::make_unique<Packet>(packet);
     packet_callback_.Run();
   }
 
@@ -58,8 +59,8 @@ class MockPacketReceiver final : public UdpTransportReceiver {
 };
 
 void SendPacket(UdpTransportImpl* transport, Packet packet) {
-  base::Closure cb;
-  transport->SendPacket(new base::RefCountedData<Packet>(packet), cb);
+  transport->SendPacket(new base::RefCountedData<Packet>(packet),
+                        base::OnceClosure());
 }
 
 static void UpdateCastTransportStatus(CastTransportStatus status) {
@@ -71,28 +72,25 @@ static void UpdateCastTransportStatus(CastTransportStatus status) {
 class UdpTransportImplTest : public ::testing::Test {
  public:
   UdpTransportImplTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::IO) {
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::IO) {
     net::IPEndPoint free_local_port1 = test::GetFreeLocalPort();
     net::IPEndPoint free_local_port2 = test::GetFreeLocalPort();
 
     send_transport_ = std::make_unique<UdpTransportImpl>(
-        nullptr, scoped_task_environment_.GetMainThreadTaskRunner(),
-        free_local_port1, free_local_port2,
-        base::BindRepeating(&UpdateCastTransportStatus));
+        task_environment_.GetMainThreadTaskRunner(), free_local_port1,
+        free_local_port2, base::BindRepeating(&UpdateCastTransportStatus));
     send_transport_->SetSendBufferSize(65536);
 
     recv_transport_ = std::make_unique<UdpTransportImpl>(
-        nullptr, scoped_task_environment_.GetMainThreadTaskRunner(),
-        free_local_port2, free_local_port1,
-        base::BindRepeating(&UpdateCastTransportStatus));
+        task_environment_.GetMainThreadTaskRunner(), free_local_port2,
+        free_local_port1, base::BindRepeating(&UpdateCastTransportStatus));
     recv_transport_->SetSendBufferSize(65536);
   }
 
   ~UdpTransportImplTest() override = default;
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   std::unique_ptr<UdpTransportImpl> send_transport_;
 
@@ -116,7 +114,6 @@ TEST_F(UdpTransportImplTest, PacketSenderSendAndReceive) {
   recv_transport_->StartReceiving(
       packet_receiver_on_receiver.packet_receiver());
 
-  base::Closure cb;
   SendPacket(send_transport_.get(), packet);
   run_loop.Run();
   std::unique_ptr<Packet> received_packet =
@@ -143,9 +140,12 @@ TEST_F(UdpTransportImplTest, UdpTransportSendAndReceive) {
   recv_transport_->StartReceiving(
       packet_receiver_on_receiver.packet_receiver());
 
-  mojo::DataPipe data_pipe(5);
-  send_transport_->StartSending(std::move(data_pipe.consumer_handle));
-  UdpPacketPipeWriter writer(std::move(data_pipe.producer_handle));
+  mojo::ScopedDataPipeProducerHandle producer_handle;
+  mojo::ScopedDataPipeConsumerHandle consumer_handle;
+  ASSERT_EQ(mojo::CreateDataPipe(5, producer_handle, consumer_handle),
+            MOJO_RESULT_OK);
+  send_transport_->StartSending(std::move(consumer_handle));
+  UdpPacketPipeWriter writer(std::move(producer_handle));
   base::MockCallback<base::OnceClosure> done_callback;
   EXPECT_CALL(done_callback, Run()).Times(1);
   writer.Write(new base::RefCountedData<Packet>(packet), done_callback.Get());

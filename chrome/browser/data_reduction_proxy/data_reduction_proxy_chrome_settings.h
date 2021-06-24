@@ -6,10 +6,8 @@
 #define CHROME_BROWSER_DATA_REDUCTION_PROXY_DATA_REDUCTION_PROXY_CHROME_SETTINGS_H_
 
 #include <memory>
-#include <string>
 
 #include "base/macros.h"
-#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_request_options.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_settings.h"
 #include "components/keyed_service/core/keyed_service.h"
 
@@ -18,27 +16,18 @@ class Profile;
 
 namespace base {
 class SequencedTaskRunner;
-class SingleThreadTaskRunner;
 }  // namespace base
 
-namespace content {
-class NavigationHandle;
-}
-
 namespace data_reduction_proxy {
-class DataReductionProxyData;
-class DataReductionProxyIOData;
 class DataStore;
 }  // namespace data_reduction_proxy
 
-namespace net {
-class URLRequestContextGetter;
+namespace subresource_redirect {
+class OriginRobotsRulesCache;
 }
 
-namespace network {
-class SharedURLLoaderFactory;
-}
-
+class HttpsImageCompressionInfoBarDecider;
+class LitePagesServiceBypassDecider;
 class PrefService;
 
 // Data reduction proxy settings class suitable for use with a Chrome browser.
@@ -63,7 +52,7 @@ class DataReductionProxyChromeSettings
 
   // Constructs a settings object. Construction and destruction must happen on
   // the UI thread.
-  DataReductionProxyChromeSettings();
+  explicit DataReductionProxyChromeSettings(bool is_off_the_record_profile);
 
   // Destructs the settings object.
   ~DataReductionProxyChromeSettings() override;
@@ -71,33 +60,29 @@ class DataReductionProxyChromeSettings
   // Overrides KeyedService::Shutdown:
   void Shutdown() override;
 
-  // Initialize the settings object with the given io_data, prefs services,
-  // request context getter, URL loader factory, data store, ui task runner, and
-  // db task runner.
+  // Initialize the settings object with the given profile, data store, and db
+  // task runner.
   void InitDataReductionProxySettings(
-      data_reduction_proxy::DataReductionProxyIOData* io_data,
-      PrefService* profile_prefs,
-      net::URLRequestContextGetter* request_context_getter,
       Profile* profile,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       std::unique_ptr<data_reduction_proxy::DataStore> store,
-      const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
       const scoped_refptr<base::SequencedTaskRunner>& db_task_runner);
-
-  // Gets the client type for the data reduction proxy.
-  static data_reduction_proxy::Client GetClient();
 
   // Public for testing.
   void MigrateDataReductionProxyOffProxyPrefs(PrefService* prefs);
 
-  void SetIgnoreLongTermBlackListRules(
-      bool ignore_long_term_black_list_rules) override;
+  HttpsImageCompressionInfoBarDecider*
+  https_image_compression_infobar_decider() {
+    return https_image_compression_infobar_decider_.get();
+  }
 
-  // Builds an instance of DataReductionProxyData from the given |handle| and
-  // |headers|.
-  std::unique_ptr<data_reduction_proxy::DataReductionProxyData>
-  CreateDataFromNavigationHandle(content::NavigationHandle* handle,
-                                 const net::HttpResponseHeaders* headers);
+  LitePagesServiceBypassDecider* litepages_service_bypass_decider() const {
+    return litepages_service_bypass_decider_.get();
+  }
+
+  subresource_redirect::OriginRobotsRulesCache* origin_robots_rules_cache()
+      const {
+    return origin_robots_rules_cache_.get();
+  }
 
  private:
   // Helper method for migrating the Data Reduction Proxy away from using the
@@ -105,6 +90,20 @@ class DataReductionProxyChromeSettings
   // migration action taken.
   ProxyPrefMigrationResult MigrateDataReductionProxyOffProxyPrefsHelper(
       PrefService* prefs);
+
+  // Maintains the decider for this profile that decides whether to show infobar
+  // before triggering https image compression.
+  std::unique_ptr<HttpsImageCompressionInfoBarDecider>
+      https_image_compression_infobar_decider_;
+
+  // Maintains the decider for this profile to contain logic for LitePages
+  // service bypass.
+  std::unique_ptr<LitePagesServiceBypassDecider>
+      litepages_service_bypass_decider_;
+
+  // Maintains the cache of robots rules.
+  std::unique_ptr<subresource_redirect::OriginRobotsRulesCache>
+      origin_robots_rules_cache_;
 
   // Null before InitDataReductionProxySettings is called.
   Profile* profile_;

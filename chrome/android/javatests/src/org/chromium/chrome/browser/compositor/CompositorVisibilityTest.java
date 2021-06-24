@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.compositor;
 
+import android.content.res.Resources;
 import android.graphics.Rect;
-import android.os.Build;
-import android.support.test.filters.SmallTest;
 import android.view.SurfaceView;
 import android.view.View;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -17,9 +18,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.MinAndroidSdkLevel;
-import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.ui.resources.ResourceManager;
@@ -29,7 +29,6 @@ import org.chromium.ui.resources.ResourceManager;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@MinAndroidSdkLevel(Build.VERSION_CODES.LOLLIPOP)
 public class CompositorVisibilityTest {
     @Rule
     public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
@@ -59,7 +58,7 @@ public class CompositorVisibilityTest {
         public void loadPersitentTextureDataIfNeeded() {}
 
         @Override
-        public int getBrowserControlsBackgroundColor() {
+        public int getBrowserControlsBackgroundColor(Resources res) {
             return 0;
         }
 

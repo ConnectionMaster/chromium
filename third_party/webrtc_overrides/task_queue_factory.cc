@@ -7,9 +7,10 @@
 #include "base/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/message_loop/timer_slack.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "build/build_config.h"
 #include "third_party/webrtc/api/task_queue/task_queue_base.h"
 #include "third_party/webrtc/api/task_queue/task_queue_factory.h"
@@ -19,8 +20,10 @@ namespace {
 class WebrtcTaskQueue final : public webrtc::TaskQueueBase {
  public:
   explicit WebrtcTaskQueue(const base::TaskTraits& traits)
-      : task_runner_(base::CreateSequencedTaskRunnerWithTraits(traits)),
-        is_active_(new base::RefCountedData<bool>(true)) {
+      : task_runner_(base::ThreadPool::CreateSequencedTaskRunner(traits)),
+        is_active_(new base::RefCountedData<bool>(true)),
+        suspend_timer_slack_(traits.priority() !=
+                             base::TaskPriority::BEST_EFFORT) {
     DCHECK(task_runner_);
   }
 
@@ -35,10 +38,18 @@ class WebrtcTaskQueue final : public webrtc::TaskQueueBase {
   static void RunTask(WebrtcTaskQueue* task_queue,
                       scoped_refptr<base::RefCountedData<bool>> is_active,
                       std::unique_ptr<webrtc::QueuedTask> task);
+  static void ResumeAndRunTask(
+      WebrtcTaskQueue* task_queue,
+      scoped_refptr<base::RefCountedData<bool>> is_active,
+      std::unique_ptr<webrtc::QueuedTask> task);
 
   const scoped_refptr<base::SequencedTaskRunner> task_runner_;
   // Value of |is_active_| is checked and set on |task_runner_|.
   const scoped_refptr<base::RefCountedData<bool>> is_active_;
+
+  // If true, this task runner suspends timer slack while any delay tasks are
+  // outstanding.
+  const bool suspend_timer_slack_;
 };
 
 void Deactivate(scoped_refptr<base::RefCountedData<bool>> is_active,
@@ -73,6 +84,15 @@ void WebrtcTaskQueue::RunTask(
   }
 }
 
+void WebrtcTaskQueue::ResumeAndRunTask(
+    WebrtcTaskQueue* task_queue,
+    scoped_refptr<base::RefCountedData<bool>> is_active,
+    std::unique_ptr<webrtc::QueuedTask> task) {
+  base::ResumeLudicrousTimerSlack();
+
+  RunTask(task_queue, std::move(is_active), std::move(task));
+}
+
 void WebrtcTaskQueue::PostTask(std::unique_ptr<webrtc::QueuedTask> task) {
   // Posted Task might outlive this, but access to this is guarded by
   // ref-counted |is_active_| flag.
@@ -86,11 +106,20 @@ void WebrtcTaskQueue::PostDelayedTask(std::unique_ptr<webrtc::QueuedTask> task,
                                       uint32_t milliseconds) {
   // Posted Task might outlive this, but access to this is guarded by
   // ref-counted |is_active_| flag.
-  task_runner_->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&WebrtcTaskQueue::RunTask, base::Unretained(this),
-                     is_active_, std::move(task)),
-      base::TimeDelta::FromMilliseconds(milliseconds));
+  if (suspend_timer_slack_) {
+    base::SuspendLudicrousTimerSlack();
+    task_runner_->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&WebrtcTaskQueue::ResumeAndRunTask,
+                       base::Unretained(this), is_active_, std::move(task)),
+        base::TimeDelta::FromMilliseconds(milliseconds));
+  } else {
+    task_runner_->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&WebrtcTaskQueue::RunTask, base::Unretained(this),
+                       is_active_, std::move(task)),
+        base::TimeDelta::FromMilliseconds(milliseconds));
+  }
 }
 
 base::TaskTraits TaskQueuePriority2Traits(
@@ -106,7 +135,6 @@ base::TaskTraits TaskQueuePriority2Traits(
 #else
       return {base::TaskPriority::HIGHEST};
 #endif
-      break;
     case webrtc::TaskQueueFactory::Priority::LOW:
       return {base::MayBlock(), base::TaskPriority::BEST_EFFORT};
     case webrtc::TaskQueueFactory::Priority::NORMAL:

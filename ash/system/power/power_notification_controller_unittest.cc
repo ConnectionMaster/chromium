@@ -9,6 +9,8 @@
 #include <string>
 
 #include "ash/test/ash_test_base.h"
+#include "base/logging.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chromeos/dbus/power_manager/power_supply_properties.pb.h"
 #include "ui/message_center/fake_message_center.h"
 
@@ -79,8 +81,9 @@ class PowerNotificationControllerTest : public AshTestBase {
   // AshTestBase:
   void SetUp() override {
     AshTestBase::SetUp();
-    message_center_.reset(new MockMessageCenter());
-    controller_.reset(new PowerNotificationController(message_center_.get()));
+    message_center_ = std::make_unique<MockMessageCenter>();
+    controller_ =
+        std::make_unique<PowerNotificationController>(message_center_.get());
   }
 
   void TearDown() override {
@@ -259,6 +262,39 @@ TEST_F(PowerNotificationControllerTest,
   EXPECT_TRUE(MaybeShowUsbChargerNotification(full_proto));
   EXPECT_EQ(1, message_center()->add_count());
   EXPECT_EQ(1, message_center()->remove_count());
+}
+
+TEST_F(PowerNotificationControllerTest,
+       MaybeShowUsbChargerNotification_NoBattery) {
+  // Notification does not show when powered by AC (including high-power
+  // USB PD.
+  PowerSupplyProperties ac_connected = DefaultPowerSupplyProperties();
+  ac_connected.set_external_power(
+      power_manager::PowerSupplyProperties_ExternalPower_AC);
+  ac_connected.set_battery_state(
+      power_manager::PowerSupplyProperties_BatteryState_NOT_PRESENT);
+  ac_connected.set_preferred_minimum_external_power(60.0);
+  EXPECT_FALSE(MaybeShowUsbChargerNotification(ac_connected));
+  EXPECT_EQ(0, message_center()->add_count());
+  EXPECT_EQ(0, message_center()->remove_count());
+
+  // Notification shows when powered by low-power USB.
+  PowerSupplyProperties usb_connected = DefaultPowerSupplyProperties();
+  usb_connected.set_external_power(
+      power_manager::PowerSupplyProperties_ExternalPower_USB);
+  usb_connected.set_battery_state(
+      power_manager::PowerSupplyProperties_BatteryState_NOT_PRESENT);
+  usb_connected.set_preferred_minimum_external_power(60.0);
+  EXPECT_TRUE(MaybeShowUsbChargerNotification(usb_connected));
+  EXPECT_EQ(1, message_center()->add_count());
+  EXPECT_EQ(0, message_center()->remove_count());
+  auto* notification =
+      message_center()->FindVisibleNotificationById("usb-charger");
+  ASSERT_TRUE(notification);
+  EXPECT_TRUE(notification->never_timeout());
+  EXPECT_FALSE(notification->pinned());
+  EXPECT_NE(std::string::npos, notification->message().find(u"60W"))
+      << notification->message();
 }
 
 TEST_F(PowerNotificationControllerTest, MaybeShowDualRoleNotification) {

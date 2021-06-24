@@ -26,18 +26,21 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_VALUE_POOL_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_VALUE_POOL_H_
 
-#include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/types/pass_key.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/css/css_color_value.h"
+#include "third_party/blink/renderer/core/css/css_color.h"
 #include "third_party/blink/renderer/core/css/css_custom_ident_value.h"
+#include "third_party/blink/renderer/core/css/css_cyclic_variable_value.h"
 #include "third_party/blink/renderer/core/css/css_font_family_value.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
 #include "third_party/blink/renderer/core/css/css_inherited_value.h"
+#include "third_party/blink/renderer/core/css/css_initial_color_value.h"
 #include "third_party/blink/renderer/core/css/css_initial_value.h"
 #include "third_party/blink/renderer/core/css/css_invalid_variable_value.h"
-#include "third_party/blink/renderer/core/css/css_primitive_value.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
+#include "third_party/blink/renderer/core/css/css_revert_value.h"
 #include "third_party/blink/renderer/core/css/css_unset_value.h"
 #include "third_party/blink/renderer/core/css/css_value_list.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
@@ -46,15 +49,16 @@
 
 namespace blink {
 
-class CORE_EXPORT CSSValuePool
-    : public GarbageCollectedFinalized<CSSValuePool> {
-
+class CORE_EXPORT CSSValuePool final : public GarbageCollected<CSSValuePool> {
  public:
+  using PassKey = base::PassKey<CSSValuePool>;
+
   // TODO(sashab): Make all the value pools store const CSSValues.
   static const int kMaximumCacheableIntegerValue = 255;
-  using CSSColorValue = cssvalue::CSSColorValue;
+  using CSSColor = cssvalue::CSSColor;
   using CSSUnsetValue = cssvalue::CSSUnsetValue;
-  using ColorValueCache = HeapHashMap<unsigned, Member<CSSColorValue>>;
+  using CSSRevertValue = cssvalue::CSSRevertValue;
+  using ColorValueCache = HeapHashMap<unsigned, Member<CSSColor>>;
   static const unsigned kMaximumColorCacheSize = 512;
   using FontFaceValueCache =
       HeapHashMap<AtomicString, Member<const CSSValueList>>;
@@ -62,17 +66,24 @@ class CORE_EXPORT CSSValuePool
   using FontFamilyValueCache = HeapHashMap<String, Member<CSSFontFamilyValue>>;
 
   CSSValuePool();
+  CSSValuePool(const CSSValuePool&) = delete;
+  CSSValuePool& operator=(const CSSValuePool&) = delete;
 
   // Cached individual values.
-  CSSColorValue* TransparentColor() { return color_transparent_; }
-  CSSColorValue* WhiteColor() { return color_white_; }
-  CSSColorValue* BlackColor() { return color_black_; }
+  CSSColor* TransparentColor() { return color_transparent_; }
+  CSSColor* WhiteColor() { return color_white_; }
+  CSSColor* BlackColor() { return color_black_; }
   CSSInheritedValue* InheritedValue() { return inherited_value_; }
   CSSInitialValue* InitialValue() { return initial_value_; }
   CSSUnsetValue* UnsetValue() { return unset_value_; }
+  CSSRevertValue* RevertValue() { return revert_value_; }
   CSSInvalidVariableValue* InvalidVariableValue() {
     return invalid_variable_value_;
   }
+  CSSCyclicVariableValue* CyclicVariableValue() {
+    return cyclic_variable_value_;
+  }
+  CSSInitialColorValue* InitialColorValue() { return initial_color_value_; }
 
   // Vector caches.
   CSSIdentifierValue* IdentifierCacheValue(CSSValueID ident) {
@@ -82,25 +93,28 @@ class CORE_EXPORT CSSValuePool
                                               CSSIdentifierValue* css_value) {
     return identifier_value_cache_[static_cast<int>(ident)] = css_value;
   }
-  CSSPrimitiveValue* PixelCacheValue(int int_value) {
+  CSSNumericLiteralValue* PixelCacheValue(int int_value) {
     return pixel_value_cache_[int_value];
   }
-  CSSPrimitiveValue* SetPixelCacheValue(int int_value,
-                                        CSSPrimitiveValue* css_value) {
+  CSSNumericLiteralValue* SetPixelCacheValue(
+      int int_value,
+      CSSNumericLiteralValue* css_value) {
     return pixel_value_cache_[int_value] = css_value;
   }
-  CSSPrimitiveValue* PercentCacheValue(int int_value) {
+  CSSNumericLiteralValue* PercentCacheValue(int int_value) {
     return percent_value_cache_[int_value];
   }
-  CSSPrimitiveValue* SetPercentCacheValue(int int_value,
-                                          CSSPrimitiveValue* css_value) {
+  CSSNumericLiteralValue* SetPercentCacheValue(
+      int int_value,
+      CSSNumericLiteralValue* css_value) {
     return percent_value_cache_[int_value] = css_value;
   }
-  CSSPrimitiveValue* NumberCacheValue(int int_value) {
+  CSSNumericLiteralValue* NumberCacheValue(int int_value) {
     return number_value_cache_[int_value];
   }
-  CSSPrimitiveValue* SetNumberCacheValue(int int_value,
-                                         CSSPrimitiveValue* css_value) {
+  CSSNumericLiteralValue* SetNumberCacheValue(
+      int int_value,
+      CSSNumericLiteralValue* css_value) {
     return number_value_cache_[int_value] = css_value;
   }
 
@@ -123,26 +137,29 @@ class CORE_EXPORT CSSValuePool
     return font_face_value_cache_.insert(string, nullptr);
   }
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   // Cached individual values.
   Member<CSSInheritedValue> inherited_value_;
   Member<CSSInitialValue> initial_value_;
   Member<CSSUnsetValue> unset_value_;
+  Member<CSSRevertValue> revert_value_;
   Member<CSSInvalidVariableValue> invalid_variable_value_;
-  Member<CSSColorValue> color_transparent_;
-  Member<CSSColorValue> color_white_;
-  Member<CSSColorValue> color_black_;
+  Member<CSSCyclicVariableValue> cyclic_variable_value_;
+  Member<CSSInitialColorValue> initial_color_value_;
+  Member<CSSColor> color_transparent_;
+  Member<CSSColor> color_white_;
+  Member<CSSColor> color_black_;
 
   // Vector caches.
   HeapVector<Member<CSSIdentifierValue>, numCSSValueKeywords>
       identifier_value_cache_;
-  HeapVector<Member<CSSPrimitiveValue>, kMaximumCacheableIntegerValue + 1>
+  HeapVector<Member<CSSNumericLiteralValue>, kMaximumCacheableIntegerValue + 1>
       pixel_value_cache_;
-  HeapVector<Member<CSSPrimitiveValue>, kMaximumCacheableIntegerValue + 1>
+  HeapVector<Member<CSSNumericLiteralValue>, kMaximumCacheableIntegerValue + 1>
       percent_value_cache_;
-  HeapVector<Member<CSSPrimitiveValue>, kMaximumCacheableIntegerValue + 1>
+  HeapVector<Member<CSSNumericLiteralValue>, kMaximumCacheableIntegerValue + 1>
       number_value_cache_;
 
   // Hash map caches.
@@ -151,11 +168,10 @@ class CORE_EXPORT CSSValuePool
   FontFamilyValueCache font_family_value_cache_;
 
   friend CORE_EXPORT CSSValuePool& CssValuePool();
-  DISALLOW_COPY_AND_ASSIGN(CSSValuePool);
 };
 
 CORE_EXPORT CSSValuePool& CssValuePool();
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_VALUE_POOL_H_

@@ -4,6 +4,9 @@
 
 #include "media/webrtc/webrtc_switches.h"
 
+#include "base/command_line.h"
+#include "build/build_config.h"
+
 namespace switches {
 
 // Override the default minimum starting volume of the Automatic Gain Control
@@ -17,15 +20,29 @@ const char kAgcStartupMinVolume[] = "agc-startup-min-volume";
 
 namespace features {
 
-// Enables running WebRTC Audio Processing in the audio service, rather than
-// in the renderer process. Should be combined with running the audio service
-// out of the browser process, except for when testing locally.
-const base::Feature kWebRtcApmInAudioService{"WebRtcApmInAudioService",
-                                             base::FEATURE_DISABLED_BY_DEFAULT};
+// When enabled we will tell WebRTC that we want to use the
+// Windows.Graphics.Capture API based DesktopCapturer, if it is available.
+const base::Feature kWebRtcAllowWgcDesktopCapturer{
+    "AllowWgcDesktopCapturer", base::FEATURE_DISABLED_BY_DEFAULT};
+
+// Enables multichannel capture audio to be processed without downmixing in the
+// WebRTC audio processing module.
+const base::Feature kWebRtcEnableCaptureMultiChannelApm{
+    "WebRtcEnableCaptureMultiChannelApm", base::FEATURE_ENABLED_BY_DEFAULT};
+
+// Kill-switch allowing deactivation of the support for 48 kHz internal
+// processing in the WebRTC audio processing module when running on an ARM
+// platform.
+const base::Feature kWebRtcAllow48kHzProcessingOnArm{
+    "WebRtcAllow48kHzProcessingOnArm", base::FEATURE_ENABLED_BY_DEFAULT};
 
 // Enables the WebRTC Agc2 digital adaptation with WebRTC Agc1 analog
 // adaptation. Feature for http://crbug.com/873650. Is sent to WebRTC.
 const base::Feature kWebRtcHybridAgc{"WebRtcHybridAgc",
                                      base::FEATURE_DISABLED_BY_DEFAULT};
+
+// Enables and configures the clipping control in the WebRTC analog AGC.
+const base::Feature kWebRtcAnalogAgcClippingControl{
+    "WebRtcAnalogAgcClippingControl", base::FEATURE_DISABLED_BY_DEFAULT};
 
 }  // namespace features

@@ -12,8 +12,6 @@
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/stl_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "chromeos/dbus/shill/fake_sms_client.h"
@@ -37,13 +35,11 @@ class SMSReceiveHandler {
  public:
   SMSReceiveHandler(dbus::ObjectProxy* object_proxy,
                     SMSClient::GetAllCallback callback)
-      : callback_(std::move(callback)),
-        sms_received_(false),
-        weak_ptr_factory_(this) {
+      : callback_(std::move(callback)), sms_received_(false) {
     property_set_ = std::make_unique<dbus::PropertySet>(
         object_proxy, modemmanager::kModemManager1SmsInterface,
-        base::Bind(&SMSReceiveHandler::OnPropertyChanged,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindRepeating(&SMSReceiveHandler::OnPropertyChanged,
+                            weak_ptr_factory_.GetWeakPtr()));
     property_set_->RegisterProperty(SMSClient::kSMSPropertyState, &state_);
     property_set_->ConnectSignals();
     property_set_->Get(&state_, dbus::PropertySet::GetCallback());
@@ -64,10 +60,10 @@ class SMSReceiveHandler {
       return;
 
     if (number_.is_valid() && text_.is_valid() && timestamp_.is_valid()) {
-      base::DictionaryValue sms;
-      sms.SetString(SMSClient::kSMSPropertyNumber, number_.value());
-      sms.SetString(SMSClient::kSMSPropertyText, text_.value());
-      sms.SetString(SMSClient::kSMSPropertyTimestamp, timestamp_.value());
+      base::Value sms(base::Value::Type::DICTIONARY);
+      sms.SetStringKey(SMSClient::kSMSPropertyNumber, number_.value());
+      sms.SetStringKey(SMSClient::kSMSPropertyText, text_.value());
+      sms.SetStringKey(SMSClient::kSMSPropertyTimestamp, timestamp_.value());
       // Move |callback_| to the task to ensure that |callback_| is only called
       // once. Since |callback_| may destruct this object, schedule it to the
       // task runner to run after this method returns.
@@ -94,7 +90,7 @@ class SMSReceiveHandler {
   dbus::Property<std::string> text_;
   dbus::Property<std::string> timestamp_;
   std::unique_ptr<dbus::PropertySet> property_set_;
-  base::WeakPtrFactory<SMSReceiveHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<SMSReceiveHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SMSReceiveHandler);
 };
@@ -105,7 +101,7 @@ class SMSReceiveHandler {
 // DBusThreadManager instance.
 class SMSClientImpl : public SMSClient {
  public:
-  explicit SMSClientImpl(dbus::Bus* bus) : bus_(bus), weak_ptr_factory_(this) {}
+  explicit SMSClientImpl(dbus::Bus* bus) : bus_(bus) {}
   ~SMSClientImpl() override = default;
 
   // Calls GetAll method.  |callback| is called after the method call succeeds.
@@ -122,7 +118,7 @@ class SMSClientImpl : public SMSClient {
  private:
   void OnSMSReceived(const dbus::ObjectPath& object_path,
                      GetAllCallback callback,
-                     const base::DictionaryValue& sms) {
+                     const base::Value& sms) {
     sms_receive_handlers_.erase(object_path);
     std::move(callback).Run(sms);
   }
@@ -134,7 +130,7 @@ class SMSClientImpl : public SMSClient {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<SMSClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<SMSClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SMSClientImpl);
 };

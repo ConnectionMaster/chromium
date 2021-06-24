@@ -16,6 +16,7 @@
 #include "ios/web/public/browser_state.h"
 #include "net/url_request/url_request_job_factory.h"
 
+class BrowserStatePolicyConnector;
 class ChromeBrowserStateIOData;
 class PrefProxyConfigTracker;
 class PrefService;
@@ -34,8 +35,6 @@ class PrefServiceSyncable;
 namespace web {
 class WebUIIOS;
 }
-
-namespace ios {
 
 enum class ChromeBrowserStateType {
   REGULAR_BROWSER_STATE,
@@ -77,12 +76,12 @@ class ChromeBrowserState : public web::BrowserState {
   // ChromeBrowserState, if one exists.
   virtual void DestroyOffTheRecordChromeBrowserState() = 0;
 
+  // Retrieves a pointer to the BrowserStatePolicyConnector that manages policy
+  // for this BrowserState. May return nullptr if policy is disabled.
+  virtual BrowserStatePolicyConnector* GetPolicyConnector() = 0;
+
   // Retrieves a pointer to the PrefService that manages the preferences.
   virtual PrefService* GetPrefs() = 0;
-
-  // Retrieves a pointer to the PrefService that manages the preferences
-  // for OffTheRecord browser states.
-  virtual PrefService* GetOffTheRecordPrefs() = 0;
 
   // Allows access to ChromeBrowserStateIOData without going through
   // ResourceContext that is not compiled on iOS. This method must be called on
@@ -100,7 +99,7 @@ class ChromeBrowserState : public web::BrowserState {
   // Be aware that theoretically it is possible that |completion| will be
   // invoked after the Profile instance has been destroyed.
   virtual void ClearNetworkingHistorySince(base::Time time,
-                                           const base::Closure& completion) = 0;
+                                           base::OnceClosure completion) = 0;
 
   // Returns an identifier of the browser state for debugging.
   std::string GetDebugName();
@@ -113,11 +112,6 @@ class ChromeBrowserState : public web::BrowserState {
   // GetRequestContext(). Should only be called once.
   virtual net::URLRequestContextGetter* CreateRequestContext(
       ProtocolHandlerMap* protocol_handlers) = 0;
-
-  // Creates a isolated net::URLRequestContextGetter. Should only be called once
-  // per partition_path per browser state object.
-  virtual net::URLRequestContextGetter* CreateIsolatedRequestContext(
-      const base::FilePath& partition_path) = 0;
 
   // web::BrowserState
   net::URLRequestContextGetter* GetRequestContext() override;
@@ -137,7 +131,5 @@ class ChromeBrowserState : public web::BrowserState {
 
   DISALLOW_COPY_AND_ASSIGN(ChromeBrowserState);
 };
-
-}  // namespace ios
 
 #endif  // IOS_CHROME_BROWSER_BROWSER_STATE_CHROME_BROWSER_STATE_H_

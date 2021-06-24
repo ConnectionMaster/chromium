@@ -6,6 +6,7 @@
 
 #include <unicode/uscript.h>
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/fonts/character_range.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_test_utilities.h"
@@ -21,7 +22,6 @@ class ShapeResultViewTest : public testing::Test {
   void SetUp() override {
     font_description.SetComputedSize(12.0);
     font = Font(font_description);
-    font.Update(nullptr);
   }
 
   void TearDown() override {}
@@ -30,6 +30,22 @@ class ShapeResultViewTest : public testing::Test {
   FontDescription font_description;
   Font font;
 };
+
+// http://crbug.com/1221008
+TEST_F(ShapeResultViewTest,
+       ExpandRangeToIncludePartialGlyphsWithCombiningCharacter) {
+  String string(u"abc\u0E35\u0E35\u0E35\u0E35");
+  HarfBuzzShaper shaper(string);
+  scoped_refptr<const ShapeResult> result =
+      shaper.Shape(&font, TextDirection::kLtr);
+  scoped_refptr<const ShapeResultView> view = ShapeResultView::Create(
+      result.get(), result->StartIndex(), result->EndIndex());
+  unsigned from = 0;
+  unsigned end = string.length();
+  view->ExpandRangeToIncludePartialGlyphs(&from, &end);
+  EXPECT_EQ(0u, from);
+  EXPECT_EQ(string.length(), end);
+}
 
 TEST_F(ShapeResultViewTest, LatinSingleView) {
   String string =
@@ -126,6 +142,47 @@ TEST_F(ShapeResultViewTest, ArabicSingleView) {
   EXPECT_EQ(last_glyphs.size(), 3u);
 }
 
+TEST_F(ShapeResultViewTest, PreviousSafeToBreak) {
+  String string =
+      u"\u0028\u05D1\u0029\u0020\u05D4\u05D1\u05DC\u0020\u05D0\u05DE\u05E8"
+      u"\u0020\u05E2\u05DC\u0020"
+      u"\u05D3\u05D1\u05E8\u05D9\u0020\u05D4\u05D1\u05DC\u05D9\u0020\u05D4"
+      u"\u05E2\u05D5\u05DC\u05DD\u002C"
+      u"\u0020\u05D5\u05E1\u05DE\u05DA\u0020\u05D4\u05B2\u05D1\u05B5\u05DC"
+      u"\u0020\u05D0\u05DC\u0020\u05D4"
+      u"\u05D1\u05DC\u05D9\u05DD\u0020\u05D5\u05D0\u05DD\u0020\u05DC\u05D0"
+      u"\u0020\u05D9\u05DE\u05E6\u05D0"
+      u"\u0020\u05DE\u05D4\u05E9\u05DE\u05D5\u05EA\u0020\u05E9\u05D4\u05DD"
+      u"\u0020\u05E2\u05DC\u0020\u05DE"
+      u"\u05E9\u05E7\u05DC\u0020\u05D0\u05E8\u05E5\u0020\u05E9\u05D9\u05E9"
+      u"\u05EA\u05E0\u05D4\u0020\u05D7"
+      u"\u05D5\u05E5\u0020\u05DE\u05B5\u05D7\u05B2\u05D3\u05B7\u05E8\u0020"
+      u"\u05DE\u05B4\u05E9\u05B0\u05C1"
+      u"\u05DB\u05B8\u05D1\u05B0\u05DA\u05B8\u0020\u0028\u05E9\u05DE\u05D5"
+      u"\u05EA\u0020\u05D6\u05F3\u003A"
+      u"\u05DB\u05F4\u05D7\u0029";
+  TextDirection direction = TextDirection::kRtl;
+  HarfBuzzShaper shaper(string);
+  const RunSegmenter::RunSegmenterRange range = {
+      51, 131, USCRIPT_HEBREW, blink::OrientationIterator::kOrientationKeep,
+      blink::FontFallbackPriority::kText};
+  scoped_refptr<ShapeResult> shape_result =
+      shaper.Shape(&font, direction, 51, 131, range);
+
+  unsigned start_offset = 59;
+  unsigned end_offset = 118;
+  scoped_refptr<const ShapeResultView> result_view =
+      ShapeResultView::Create(shape_result.get(), start_offset, end_offset);
+  scoped_refptr<ShapeResult> result = result_view->CreateShapeResult();
+
+  unsigned offset = end_offset;
+  do {
+    unsigned safe = result_view->PreviousSafeToBreakOffset(offset);
+    unsigned cached_safe = result->CachedPreviousSafeToBreakOffset(offset);
+    EXPECT_EQ(safe, cached_safe);
+  } while (--offset > start_offset);
+}
+
 TEST_F(ShapeResultViewTest, LatinMultiRun) {
   TextDirection direction = TextDirection::kLtr;
   HarfBuzzShaper shaper_a(To16Bit("hello", 5));
@@ -135,7 +192,8 @@ TEST_F(ShapeResultViewTest, LatinMultiRun) {
 
   // Combine four separate results into a single one to ensure we have a result
   // with multiple runs: "hello world!"
-  scoped_refptr<ShapeResult> result = ShapeResult::Create(&font, 0, direction);
+  scoped_refptr<ShapeResult> result =
+      ShapeResult::Create(&font, 0, 0, direction);
   shaper_a.Shape(&font, direction)->CopyRange(0u, 5u, result.get());
   shaper_b.Shape(&font, direction)->CopyRange(0u, 2u, result.get());
   shaper_c.Shape(&font, direction)->CopyRange(0u, 4u, result.get());
@@ -177,7 +235,7 @@ TEST_F(ShapeResultViewTest, LatinMultiRun) {
                                  static_cast<void*>(&reference_glyphs));
 
   scoped_refptr<ShapeResult> composite_copy =
-      ShapeResult::Create(&font, 0, direction);
+      ShapeResult::Create(&font, 0, 0, direction);
   result->CopyRange(0, 8, composite_copy.get());
   result->CopyRange(7, 8, composite_copy.get());
   result->CopyRange(10, 11, composite_copy.get());
@@ -192,16 +250,6 @@ TEST_F(ShapeResultViewTest, LatinMultiRun) {
   EXPECT_TRUE(
       CompareResultGlyphs(composite_copy_glyphs, reference_glyphs, 0u, 16u));
   EXPECT_EQ(composite_view->Width(), composite_copy->Width());
-
-  // Rounding of x and width may be off by ~0.1 on Mac.
-  float tolerance = 0.1f;
-  EXPECT_NEAR(composite_view->Bounds().X(), composite_copy->Bounds().X(),
-              tolerance);
-  EXPECT_NEAR(composite_view->Bounds().Width(),
-              composite_copy->Bounds().Width(), tolerance);
-  EXPECT_EQ(composite_view->Bounds().Y(), composite_copy->Bounds().Y());
-  EXPECT_EQ(composite_view->Bounds().Height(),
-            composite_copy->Bounds().Height());
 }
 
 TEST_F(ShapeResultViewTest, LatinCompositeView) {
@@ -226,7 +274,7 @@ TEST_F(ShapeResultViewTest, LatinCompositeView) {
   // TODO(layout-dev): Arguably both should be updated to renumber the first
   // result as well but some callers depend on the existing behavior.
   scoped_refptr<ShapeResult> composite_copy =
-      ShapeResult::Create(&font, 0, direction);
+      ShapeResult::Create(&font, 0, 0, direction);
   result->CopyRange(14, 23, composite_copy.get());
   result->CopyRange(33, 55, composite_copy.get());
   result->CopyRange(4, 5, composite_copy.get());
@@ -255,7 +303,6 @@ TEST_F(ShapeResultViewTest, LatinCompositeView) {
   EXPECT_EQ(composite_glyphs.size(), 36u);
   EXPECT_TRUE(CompareResultGlyphs(composite_glyphs, reference_glyphs, 0u, 22u));
   EXPECT_EQ(composite_view->Width(), composite_copy->Width());
-  EXPECT_EQ(composite_view->Bounds(), composite_copy->Bounds());
 }
 
 TEST_F(ShapeResultViewTest, MixedScriptsCompositeView) {
@@ -278,7 +325,7 @@ TEST_F(ShapeResultViewTest, MixedScriptsCompositeView) {
   // reference_result data might use different fonts, resulting in different
   // glyph ids and metrics.
   scoped_refptr<ShapeResult> composite_copy =
-      ShapeResult::Create(&font, 0, direction);
+      ShapeResult::Create(&font, 0, 0, direction);
   result_a->CopyRange(0, 22, composite_copy.get());
   result_b->CopyRange(0, 7, composite_copy.get());
   EXPECT_EQ(composite_copy->NumCharacters(), reference_result->NumCharacters());
@@ -301,18 +348,6 @@ TEST_F(ShapeResultViewTest, MixedScriptsCompositeView) {
   EXPECT_TRUE(CompareResultGlyphs(composite_glyphs, reference_glyphs, 0u,
                                   reference_glyphs.size()));
   EXPECT_EQ(composite_view->Width(), composite_copy->Width());
-
-  // Rounding of x may be off by ~0.1 on Mac.
-  float tolerance = 0.1f;
-  EXPECT_NEAR(composite_view->Bounds().X(), composite_copy->Bounds().X(),
-              tolerance);
-  // The rounding for the x/width might be off slightly for composite views.
-  tolerance = composite_view->Bounds().Width() / 10;
-  EXPECT_NEAR(composite_view->Bounds().Width(),
-              composite_copy->Bounds().Width(), tolerance);
-  EXPECT_EQ(composite_view->Bounds().Y(), composite_copy->Bounds().Y());
-  EXPECT_EQ(composite_view->Bounds().Height(),
-            composite_copy->Bounds().Height());
 }
 
 TEST_F(ShapeResultViewTest, TrimEndOfView) {
@@ -332,6 +367,22 @@ TEST_F(ShapeResultViewTest, TrimEndOfView) {
       ShapeResultView::Create(view1.get(), 5, 19);
   EXPECT_EQ(view2->NumCharacters(), 14u);
   EXPECT_EQ(view2->NumGlyphs(), 14u);
+}
+
+TEST_F(ShapeResultViewTest, MarkerAndTrailingSpace) {
+  String string = u"\u2067\u2022\u0020";
+  TextDirection direction = TextDirection::kRtl;
+  LayoutUnit symbol_width = LayoutUnit(7);
+  scoped_refptr<const ShapeResult> result =
+      ShapeResult::CreateForSpaces(&font, direction, 1, 2, symbol_width);
+
+  ShapeResultView::Segment segment = {result.get(), 1, 2};
+  auto shape_result_view = ShapeResultView::Create(&segment, 1);
+  scoped_refptr<ShapeResult> shape_result =
+      shape_result_view->CreateShapeResult();
+
+  Vector<CharacterRange> ranges;
+  shape_result->IndividualCharacterRanges(&ranges);
 }
 
 }  // namespace blink

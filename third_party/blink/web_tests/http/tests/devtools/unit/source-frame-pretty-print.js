@@ -5,8 +5,13 @@
 (async function() {
   TestRunner.addResult(`Tests that Source Frame can pretty print\n`);
   await TestRunner.loadModule('source_frame');
+  await TestRunner.loadLegacyModule('source_frame');
   var sourceFrame = new SourceFrame.SourceFrame(async function() {
-    return `var theContent = something; if (thisIsOnSameLine) { itShouldBeMovedToAnotherLine(); } thenPretty();`;
+    return {
+      content: `var theContent = something; if (thisIsOnSameLine) { itShouldBeMovedToAnotherLine(); } thenPretty();`,
+      error: null,
+      isEncoded: false,
+    };
   });
   sourceFrame.setHighlighterType('text/javascript');
   sourceFrame.setCanPrettyPrint(true);

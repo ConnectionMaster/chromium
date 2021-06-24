@@ -7,7 +7,7 @@
 
 #include "base/macros.h"
 #include "content/public/browser/devtools_frontend_host.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "third_party/blink/public/mojom/devtools/devtools_frontend.mojom.h"
 
 namespace content {
@@ -22,15 +22,15 @@ class DevToolsFrontendHostImpl : public DevToolsFrontendHost,
       const HandleMessageCallback& handle_message_callback);
   ~DevToolsFrontendHostImpl() override;
 
-  void BadMessageRecieved() override;
+  void BadMessageReceived() override;
 
  private:
   // blink::mojom::DevToolsFrontendHost implementation.
-  void DispatchEmbedderMessage(const std::string& message) override;
+  void DispatchEmbedderMessage(base::Value message) override;
 
   WebContents* web_contents_;
   HandleMessageCallback handle_message_callback_;
-  mojo::AssociatedBinding<blink::mojom::DevToolsFrontendHost> binding_;
+  mojo::AssociatedReceiver<blink::mojom::DevToolsFrontendHost> receiver_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DevToolsFrontendHostImpl);
 };

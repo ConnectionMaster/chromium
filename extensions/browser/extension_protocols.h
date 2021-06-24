@@ -10,12 +10,11 @@
 
 #include "base/callback.h"
 #include "base/memory/ref_counted.h"
-#include "net/url_request/url_request_job_factory.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
 namespace base {
 class FilePath;
-class Time;
 }
 
 namespace content {
@@ -27,24 +26,10 @@ class HttpResponseHeaders;
 }
 
 namespace extensions {
-class InfoMap;
 
 using ExtensionProtocolTestHandler =
-    base::Callback<void(base::FilePath* directory_path,
-                        base::FilePath* relative_path)>;
-
-// Builds HTTP headers for an extension request. Hashes the time to avoid
-// exposing the exact user installation time of the extension.
-scoped_refptr<net::HttpResponseHeaders> BuildHttpHeaders(
-    const std::string& content_security_policy,
-    bool send_cors_header,
-    const base::Time& last_modified_time);
-
-// Creates the handlers for the chrome-extension:// scheme. Pass true for
-// |is_incognito| only for incognito profiles and not for Chrome OS guest mode
-// profiles.
-std::unique_ptr<net::URLRequestJobFactory::ProtocolHandler>
-CreateExtensionProtocolHandler(bool is_incognito, InfoMap* extension_info_map);
+    base::RepeatingCallback<void(base::FilePath* directory_path,
+                                 base::FilePath* relative_path)>;
 
 // Allows tests to set a special handler for chrome-extension:// urls. Note
 // that this goes through all the normal security checks; it's essentially a
@@ -53,10 +38,26 @@ void SetExtensionProtocolTestHandler(ExtensionProtocolTestHandler* handler);
 
 // Creates a new network::mojom::URLLoaderFactory implementation suitable for
 // handling navigation requests to extension URLs.
-std::unique_ptr<network::mojom::URLLoaderFactory>
+mojo::PendingRemote<network::mojom::URLLoaderFactory>
 CreateExtensionNavigationURLLoaderFactory(
     content::BrowserContext* browser_context,
+    ukm::SourceIdObj ukm_source_id,
     bool is_web_view_request);
+
+// Creates a new network::mojom::URLLoaderFactory implementation suitable for
+// handling dedicated/shared worker main script requests initiated by the
+// browser process to extension URLs.
+mojo::PendingRemote<network::mojom::URLLoaderFactory>
+CreateExtensionWorkerMainResourceURLLoaderFactory(
+    content::BrowserContext* browser_context);
+
+// Creates a new network::mojom::URLLoaderFactory implementation suitable for
+// handling service worker main/imported script requests initiated by the
+// browser process to extension URLs when PlzServiceWorker is enabled or during
+// service worker update check.
+mojo::PendingRemote<network::mojom::URLLoaderFactory>
+CreateExtensionServiceWorkerScriptURLLoaderFactory(
+    content::BrowserContext* browser_context);
 
 // Creates a network::mojom::URLLoaderFactory implementation suitable for
 // handling subresource requests for extension URLs for the frame identified by
@@ -65,8 +66,10 @@ CreateExtensionNavigationURLLoaderFactory(
 // requests to extension URLs, such as for the service worker script when
 // starting a service worker. In that case, render_frame_id will be
 // MSG_ROUTING_NONE.
-std::unique_ptr<network::mojom::URLLoaderFactory>
+mojo::PendingRemote<network::mojom::URLLoaderFactory>
 CreateExtensionURLLoaderFactory(int render_process_id, int render_frame_id);
+
+void EnsureExtensionURLLoaderFactoryShutdownNotifierFactoryBuilt();
 
 }  // namespace extensions
 

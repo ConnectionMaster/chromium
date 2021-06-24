@@ -11,10 +11,10 @@
 #include "base/macros.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/nacl/common/buildflags.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/public/common/main_function_params.h"
-#include "ui/aura/window_tree_host_observer.h"
 
 class PrefService;
 
@@ -27,14 +27,12 @@ namespace extensions {
 class DesktopController;
 class ShellBrowserContext;
 class ShellBrowserMainDelegate;
-class ShellDeviceClient;
 class ShellExtensionsClient;
 class ShellExtensionsBrowserClient;
 class ShellExtensionSystem;
-class ShellOAuth2TokenService;
 class ShellUpdateQueryParamsDelegate;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 class ShellAudioController;
 class ShellNetworkController;
 #endif
@@ -52,11 +50,12 @@ class ShellBrowserMainParts : public content::BrowserMainParts {
 
   // BrowserMainParts overrides.
   int PreEarlyInitialization() override;
-  void PreMainMessageLoopStart() override;
-  void PostMainMessageLoopStart() override;
+  void PreCreateMainMessageLoop() override;
+  void PostCreateMainMessageLoop() override;
   int PreCreateThreads() override;
-  void PreMainMessageLoopRun() override;
-  bool MainMessageLoopRun(int* result_code) override;
+  int PreMainMessageLoopRun() override;
+  void WillRunMainMessageLoop(
+      std::unique_ptr<base::RunLoop>& run_loop) override;
   void PostMainMessageLoopRun() override;
   void PostDestroyThreads() override;
 
@@ -64,7 +63,7 @@ class ShellBrowserMainParts : public content::BrowserMainParts {
   // Initializes the ExtensionSystem.
   void InitExtensionSystem();
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<ShellNetworkController> network_controller_;
 #endif
 
@@ -72,18 +71,16 @@ class ShellBrowserMainParts : public content::BrowserMainParts {
   std::unique_ptr<PrefService> local_state_;
   std::unique_ptr<PrefService> user_pref_service_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<ShellAudioController> audio_controller_;
 #endif
 
   // The DesktopController outlives ExtensionSystem and context-keyed services.
   std::unique_ptr<DesktopController> desktop_controller_;
 
-  std::unique_ptr<ShellDeviceClient> device_client_;
   std::unique_ptr<ShellExtensionsClient> extensions_client_;
   std::unique_ptr<ShellExtensionsBrowserClient> extensions_browser_client_;
   std::unique_ptr<ShellUpdateQueryParamsDelegate> update_query_params_delegate_;
-  std::unique_ptr<ShellOAuth2TokenService> oauth2_token_service_;
 
   // Owned by the KeyedService system.
   ShellExtensionSystem* extension_system_;

@@ -7,16 +7,16 @@
 #include <memory>
 #include <string>
 
-#if defined(OS_WIN)
-#include <windows.h>
-#endif
-
 #include "base/bind.h"
+#include "base/callback_list.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
-#include "base/task/post_task.h"
+#include "base/trace_event/trace_event.h"
+#include "base/types/strong_alias.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/chrome_notification_types.h"
@@ -26,9 +26,7 @@
 #include "chrome/browser/metrics/thread_watcher.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/buildflags.h"
-#include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/language/core/browser/pref_names.h"
@@ -48,24 +46,30 @@
 #include "chrome/browser/ui/browser_window.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/settings/cros_settings.h"
 #include "chrome/browser/chromeos/boot_times_recorder.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/power_policy_controller.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
+#include "ui/aura/env.h"
 #endif
 
-#if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
-#include "chrome/browser/ui/user_manager.h"
+#if !defined(OS_ANDROID) && !BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ui/profile_picker.h"
 #endif
 
 #if defined(OS_WIN)
 #include "base/win/win_util.h"
-#include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
+#endif
+
+#if BUILDFLAG(ENABLE_SESSION_SERVICE)
+#include "chrome/browser/sessions/session_data_service.h"
+#include "chrome/browser/sessions/session_data_service_factory.h"
 #endif
 
 namespace chrome {
+
 namespace {
 
 #if !defined(OS_ANDROID)
@@ -88,15 +92,21 @@ bool AreAllBrowsersCloseable() {
   }
   return true;
 }
+
+base::RepeatingCallbackList<void(bool)>& GetClosingAllBrowsersCallbackList() {
+  static base::NoDestructor<base::RepeatingCallbackList<void(bool)>>
+      callback_list;
+  return *callback_list;
+}
 #endif  // !defined(OS_ANDROID)
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 // Sets kApplicationLocale in |local_state| for the login screen on the next
 // application start, if it is forced to a specific value due to enterprise
 // policy or the owner's locale.  Returns true if any pref has been modified.
 bool SetLocaleForNextStart(PrefService* local_state) {
   // If a policy mandates the login screen locale, use it.
-  chromeos::CrosSettings* cros_settings = chromeos::CrosSettings::Get();
+  ash::CrosSettings* cros_settings = ash::CrosSettings::Get();
   const base::ListValue* login_screen_locales = nullptr;
   std::string login_screen_locale;
   if (cros_settings->GetList(chromeos::kDeviceLoginScreenLocales,
@@ -126,6 +136,46 @@ bool SetLocaleForNextStart(PrefService* local_state) {
 bool g_send_stop_request_to_session_manager = false;
 #endif
 
+#if !defined(OS_ANDROID)
+using IgnoreUnloadHandlers =
+    base::StrongAlias<class IgnoreUnloadHandlersTag, bool>;
+
+void AttemptRestartInternal(IgnoreUnloadHandlers ignore_unload_handlers) {
+  // TODO(beng): Can this use ProfileManager::GetLoadedProfiles instead?
+  // TODO(crbug.com/1205798): Unset SaveSessionState if the restart fails.
+  for (auto* browser : *BrowserList::GetInstance()) {
+    browser->profile()->SaveSessionState();
+#if BUILDFLAG(ENABLE_SESSION_SERVICE)
+    auto* session_data_service =
+        SessionDataServiceFactory::GetForProfile(browser->profile());
+    if (session_data_service)
+      session_data_service->SetForceKeepSessionState();
+#endif
+  }
+
+  PrefService* pref_service = g_browser_process->local_state();
+  pref_service->SetBoolean(prefs::kWasRestarted, true);
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  chromeos::BootTimesRecorder::Get()->set_restart_requested();
+
+  DCHECK(!g_send_stop_request_to_session_manager);
+  // Make sure we don't send stop request to the session manager.
+  g_send_stop_request_to_session_manager = false;
+  // Run exit process in clean stack.
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&ExitIgnoreUnloadHandlers));
+#else
+  // Set the flag to restore state after the restart.
+  pref_service->SetBoolean(prefs::kRestartLastSessionOnShutdown, true);
+  if (ignore_unload_handlers)
+    ExitIgnoreUnloadHandlers();
+  else
+    AttemptExit();
+#endif
+}
+#endif  // !defined(OS_ANDROID)
+
 }  // namespace
 
 #if !defined(OS_ANDROID)
@@ -138,15 +188,14 @@ void MarkAsCleanShutdown() {
 
 void AttemptExitInternal(bool try_to_quit_application) {
   // On Mac, the platform-specific part handles setting this.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
   if (try_to_quit_application)
     browser_shutdown::SetTryingToQuit(true);
 #endif
 
-  content::NotificationService::current()->Notify(
-      NOTIFICATION_CLOSE_ALL_BROWSERS_REQUEST,
-      content::NotificationService::AllSources(),
-      content::NotificationService::NoDetails());
+#if !defined(OS_ANDROID)
+  OnClosingAllBrowsers(true);
+#endif
 
   g_browser_process->platform_part()->AttemptExit(try_to_quit_application);
 }
@@ -186,7 +235,7 @@ void CloseAllBrowsers() {
     return;
   }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   chromeos::BootTimesRecorder::Get()->AddLogoutTimeMarker(
       "StartedClosingWindows", false);
 #endif
@@ -197,7 +246,7 @@ void CloseAllBrowsers() {
 #endif  // !defined(OS_ANDROID)
 
 void AttemptUserExit() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   VLOG(1) << "AttemptUserExit";
   chromeos::BootTimesRecorder::Get()->AddLogoutTimeMarker("LogoutStarted",
                                                           false);
@@ -219,60 +268,23 @@ void AttemptUserExit() {
   // Reset the restart bit that might have been set in cancelled restart
   // request.
 #if !defined(OS_ANDROID)
-  UserManager::Hide();
+  ProfilePicker::Hide();
 #endif
   PrefService* pref_service = g_browser_process->local_state();
   pref_service->SetBoolean(prefs::kRestartLastSessionOnShutdown, false);
   AttemptExitInternal(false);
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 }
 
 // The Android implementation is in application_lifetime_android.cc
 #if !defined(OS_ANDROID)
 void AttemptRestart() {
-#if defined(OS_WIN)
-  // On Windows, Breakpad will upload crash reports if the breakpad pipe name
-  // environment variable is defined. So we undefine this environment variable
-  // before restarting, as the restarted processes will inherit their
-  // environment variables from ours, thus suppressing crash uploads.
-  if (!ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled()) {
-    HMODULE exe_module = GetModuleHandle(kBrowserProcessExecutableName);
-    if (exe_module) {
-      typedef void (__cdecl *ClearBreakpadPipeEnvVar)();
-      ClearBreakpadPipeEnvVar clear = reinterpret_cast<ClearBreakpadPipeEnvVar>(
-          GetProcAddress(exe_module, "ClearBreakpadPipeEnvironmentVariable"));
-      if (clear)
-        clear();
-    }
-  }
-#endif  // defined(OS_WIN)
-
-  // TODO(beng): Can this use ProfileManager::GetLoadedProfiles instead?
-  for (auto* browser : *BrowserList::GetInstance())
-    content::BrowserContext::SaveSessionState(browser->profile());
-
-  PrefService* pref_service = g_browser_process->local_state();
-  pref_service->SetBoolean(prefs::kWasRestarted, true);
-
-#if defined(OS_CHROMEOS)
-  chromeos::BootTimesRecorder::Get()->set_restart_requested();
-
-  DCHECK(!g_send_stop_request_to_session_manager);
-  // Make sure we don't send stop request to the session manager.
-  g_send_stop_request_to_session_manager = false;
-  // Run exit process in clean stack.
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                           base::BindOnce(&ExitIgnoreUnloadHandlers));
-#else
-  // Set the flag to restore state after the restart.
-  pref_service->SetBoolean(prefs::kRestartLastSessionOnShutdown, true);
-  AttemptExit();
-#endif
+  AttemptRestartInternal(IgnoreUnloadHandlers(false));
 }
 #endif  // !defined(OS_ANDROID)
 
 void AttemptRelaunch() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   chromeos::PowerManagerClient::Get()->RequestRestart(
       power_manager::REQUEST_RESTART_OTHER, "Chrome relaunch");
   // If running the Chrome OS build, but we're not on the device, fall through.
@@ -280,8 +292,19 @@ void AttemptRelaunch() {
   AttemptRestart();
 }
 
+#if !defined(OS_ANDROID)
+void RelaunchIgnoreUnloadHandlers() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  chromeos::PowerManagerClient::Get()->RequestRestart(
+      power_manager::REQUEST_RESTART_OTHER, "Chrome relaunch");
+  // If running the Chrome OS build, but we're not on the device, fall through.
+#endif
+  AttemptRestartInternal(IgnoreUnloadHandlers(true));
+}
+#endif
+
 void AttemptExit() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // On ChromeOS, user exit and system exits are the same.
   AttemptUserExit();
 #else
@@ -304,19 +327,31 @@ void ExitIgnoreUnloadHandlers() {
   // We always mark exit cleanly.
   MarkAsCleanShutdown();
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Disable window occlusion tracking on exit before closing all browser
+  // windows to make shutdown faster. Note that the occlusion tracking is
+  // paused indefinitely. It is okay do so on Chrome OS because there is
+  // no way to abort shutdown and go back to user sessions at this point.
+  DCHECK(aura::Env::HasInstance());
+  aura::Env::GetInstance()->PauseWindowOcclusionTracking();
+
   // On ChromeOS ExitIgnoreUnloadHandlers() is used to handle SIGTERM.
   // In this case, AreAllBrowsersCloseable()
   // can be false in following cases. a) power-off b) signout from
   // screen locker.
-  if (!AreAllBrowsersCloseable())
-    browser_shutdown::OnShutdownStarting(browser_shutdown::END_SESSION);
-  else
-    browser_shutdown::OnShutdownStarting(browser_shutdown::BROWSER_EXIT);
-#endif
+  browser_shutdown::OnShutdownStarting(
+      AreAllBrowsersCloseable() ? browser_shutdown::ShutdownType::kBrowserExit
+                                : browser_shutdown::ShutdownType::kEndSession);
+#else   // BUILDFLAG(IS_CHROMEOS_ASH)
+  // For desktop browsers, always perform a silent exit.
+  browser_shutdown::OnShutdownStarting(
+      browser_shutdown::ShutdownType::kSilentExit);
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // !defined(OS_ANDROID)
   AttemptExitInternal(true);
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 bool IsAttemptingShutdown() {
   return g_send_stop_request_to_session_manager;
 }
@@ -330,10 +365,12 @@ void SessionEnding() {
 
   // EndSession is invoked once per frame. Only do something the first time.
   static bool already_ended = false;
-  // We may get called in the middle of shutdown, e.g. http://crbug.com/70852
-  // In this case, do nothing.
-  if (already_ended || !content::NotificationService::current())
+  // We may get called in the middle of shutdown, e.g. https://crbug.com/70852
+  // and https://crbug.com/1187418.  In this case, do nothing.
+  if (already_ended || !content::NotificationService::current() ||
+      !g_browser_process) {
     return;
+  }
   already_ended = true;
 
   // ~ShutdownWatcherHelper uses IO (it joins a thread). We'll only trigger that
@@ -347,7 +384,8 @@ void SessionEnding() {
   ShutdownWatcherHelper shutdown_watcher;
   shutdown_watcher.Arm(base::TimeDelta::FromSeconds(90));
 
-  browser_shutdown::OnShutdownStarting(browser_shutdown::END_SESSION);
+  browser_shutdown::OnShutdownStarting(
+      browser_shutdown::ShutdownType::kEndSession);
 
   // In a clean shutdown, browser_shutdown::OnShutdownStarting sets
   // g_shutdown_type, and browser_shutdown::ShutdownPreThreadsStop calls
@@ -356,10 +394,7 @@ void SessionEnding() {
   // Instead, here we call RecordShutdownInfoPrefs to record the shutdown info.
   browser_shutdown::RecordShutdownInfoPrefs();
 
-  content::NotificationService::current()->Notify(
-      NOTIFICATION_CLOSE_ALL_BROWSERS_REQUEST,
-      content::NotificationService::AllSources(),
-      content::NotificationService::NoDetails());
+  OnClosingAllBrowsers(true);
 
   // Write important data first.
   g_browser_process->EndSession();
@@ -367,6 +402,7 @@ void SessionEnding() {
 #if defined(OS_WIN)
   base::win::SetShouldCrashOnProcessDetach(false);
 #endif
+
   // On Windows 7 and later, the system will consider the process ripe for
   // termination as soon as it hides or destroys its windows. Since any
   // execution past that point will be non-deterministically cut short, we
@@ -387,6 +423,16 @@ void OnAppExiting() {
     return;
   notified = true;
   HandleAppExitingForPlatform();
+}
+
+void OnClosingAllBrowsers(bool closing) {
+  GetClosingAllBrowsersCallbackList().Notify(closing);
+}
+
+base::CallbackListSubscription AddClosingAllBrowsersCallback(
+    base::RepeatingCallback<void(bool)> closing_all_browsers_callback) {
+  return GetClosingAllBrowsersCallbackList().Add(
+      std::move(closing_all_browsers_callback));
 }
 #endif  // !defined(OS_ANDROID)
 

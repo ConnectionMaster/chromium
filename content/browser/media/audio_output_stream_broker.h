@@ -16,9 +16,11 @@
 #include "content/browser/renderer_host/media/audio_output_stream_observer_impl.h"
 #include "content/common/content_export.h"
 #include "media/base/audio_parameters.h"
-#include "media/mojo/interfaces/audio_output_stream.mojom.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
-#include "services/audio/public/mojom/stream_factory.mojom.h"
+#include "media/mojo/mojom/audio_output_stream.mojom.h"
+#include "media/mojo/mojom/audio_stream_factory.mojom.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 namespace content {
 
@@ -34,21 +36,22 @@ class CONTENT_EXPORT AudioOutputStreamBroker final : public AudioStreamBroker {
       const std::string& output_device_id,
       const media::AudioParameters& params,
       const base::UnguessableToken& group_id,
-      const base::Optional<base::UnguessableToken>& processing_id,
       DeleterCallback deleter,
-      media::mojom::AudioOutputStreamProviderClientPtr client);
+      mojo::PendingRemote<media::mojom::AudioOutputStreamProviderClient>
+          client);
 
   ~AudioOutputStreamBroker() final;
 
   // Creates the stream.
-  void CreateStream(audio::mojom::StreamFactory* factory) final;
+  void CreateStream(media::mojom::AudioStreamFactory* factory) final;
 
  private:
   using DisconnectReason =
       media::mojom::AudioOutputStreamObserver::DisconnectReason;
 
-  void StreamCreated(media::mojom::AudioOutputStreamPtr stream,
-                     media::mojom::ReadWriteAudioDataPipePtr data_pipe);
+  void StreamCreated(
+      mojo::PendingRemote<media::mojom::AudioOutputStream> stream,
+      media::mojom::ReadWriteAudioDataPipePtr data_pipe);
   void ObserverBindingLost(uint32_t reason, const std::string& description);
   void Cleanup(DisconnectReason reason);
   bool AwaitingCreated() const;
@@ -58,22 +61,21 @@ class CONTENT_EXPORT AudioOutputStreamBroker final : public AudioStreamBroker {
   const std::string output_device_id_;
   const media::AudioParameters params_;
   const base::UnguessableToken group_id_;
-  const base::Optional<base::UnguessableToken> processing_id_;
 
   // Set while CreateStream() has been called, but not StreamCreated().
   base::TimeTicks stream_creation_start_time_;
 
   DeleterCallback deleter_;
 
-  media::mojom::AudioOutputStreamProviderClientPtr client_;
+  mojo::Remote<media::mojom::AudioOutputStreamProviderClient> client_;
 
   AudioOutputStreamObserverImpl observer_;
-  mojo::AssociatedBinding<media::mojom::AudioOutputStreamObserver>
-      observer_binding_;
+  mojo::AssociatedReceiver<media::mojom::AudioOutputStreamObserver>
+      observer_receiver_;
 
   DisconnectReason disconnect_reason_ = DisconnectReason::kDocumentDestroyed;
 
-  base::WeakPtrFactory<AudioOutputStreamBroker> weak_ptr_factory_;
+  base::WeakPtrFactory<AudioOutputStreamBroker> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AudioOutputStreamBroker);
 };

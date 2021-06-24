@@ -4,14 +4,14 @@
 
 #include "ios/chrome/browser/infobars/infobar_manager_impl.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
 #include "ios/chrome/browser/infobars/infobar_utils.h"
-#include "ios/web/public/navigation_item.h"
-#include "ios/web/public/navigation_manager.h"
-#import "ios/web/public/web_state/navigation_context.h"
-#import "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/navigation/navigation_context.h"
+#include "ios/web/public/navigation/navigation_item.h"
+#include "ios/web/public/navigation/navigation_manager.h"
+#import "ios/web/public/web_state.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -33,7 +33,8 @@ infobars::InfoBarDelegate::NavigationDetails CreateNavigationDetails(
   navigation_details.is_reload =
       ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_RELOAD);
   navigation_details.is_redirect = ui::PageTransitionIsRedirect(transition);
-
+  navigation_details.is_form_submission =
+      ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_FORM_SUBMIT);
   return navigation_details;
 }
 
@@ -60,11 +61,6 @@ int InfoBarManagerImpl::GetActiveEntryID() {
   web::NavigationItem* visible_item =
       web_state_->GetNavigationManager()->GetVisibleItem();
   return visible_item ? visible_item->GetUniqueID() : 0;
-}
-
-std::unique_ptr<infobars::InfoBar> InfoBarManagerImpl::CreateConfirmInfoBar(
-    std::unique_ptr<ConfirmInfoBarDelegate> delegate) {
-  return ::CreateConfirmInfoBar(std::move(delegate));
 }
 
 void InfoBarManagerImpl::DidFinishNavigation(

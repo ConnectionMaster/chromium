@@ -13,12 +13,14 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/threading/sequence_bound.h"
 #include "net/http/http_status_code.h"
-#include "remoting/ios/facade/host_info.h"
+#include "remoting/proto/remoting/v1/directory_messages.pb.h"
 
 namespace remoting {
 
-class HostListFetcher;
+class DirectoryServiceClient;
+class ProtobufHttpStatus;
 
 // |HostListService| is the centralized place to retrieve the current signed in
 // user's host list.
@@ -36,17 +38,13 @@ class HostListService {
   enum class FetchFailureReason {
     NETWORK_ERROR,
     AUTH_ERROR,
-    REQUEST_ERROR,
+    UNKNOWN_ERROR,
   };
 
   struct FetchFailureInfo {
     FetchFailureReason reason;
-    // error_code is only used if the reason is |REQUEST_ERROR|.
-    int error_code;
     std::string localized_description;
   };
-
-  using CallbackSubscription = base::CallbackList<void()>::Subscription;
 
   // Returns the singleton instance.
   static HostListService* GetInstance();
@@ -54,11 +52,11 @@ class HostListService {
   ~HostListService();
 
   // Registers callback to be called when the host list state is changed.
-  std::unique_ptr<CallbackSubscription> RegisterHostListStateCallback(
+  base::CallbackListSubscription RegisterHostListStateCallback(
       const base::RepeatingClosure& callback);
 
   // Registers callback to be called when the host list has failed to fetch.
-  std::unique_ptr<CallbackSubscription> RegisterFetchFailureCallback(
+  base::CallbackListSubscription RegisterFetchFailureCallback(
       const base::RepeatingClosure& callback);
 
   // Start a request to fetch the host list. Calls either the host list state
@@ -67,7 +65,7 @@ class HostListService {
 
   // Returns the host list. Returns an empty vector if the host list state is
   // not |FETCHED|.
-  const std::vector<remoting::HostInfo>& hosts() const { return hosts_; }
+  const std::vector<apis::v1::HostInfo>& hosts() const { return hosts_; }
 
   State state() const { return state_; }
 
@@ -77,41 +75,40 @@ class HostListService {
     return last_fetch_failure_.get();
   }
 
-  // Allow creating instace for each test so that states don't get carried over.
-  static std::unique_ptr<HostListService> CreateInstanceForTesting();
-
-  void SetHostListFetcherForTesting(std::unique_ptr<HostListFetcher> fetcher);
-
  private:
   friend class base::NoDestructor<HostListService>;
-  friend std::unique_ptr<HostListService> std::make_unique<HostListService>();
+  friend class HostListServiceTest;
 
   HostListService();
+
+  // For test.
+  explicit HostListService(
+      base::SequenceBound<DirectoryServiceClient> directory_client);
+
+  void Init();
 
   // Changes the host list state and notifies callbacks.
   void SetState(State state);
 
-  void StartHostListFetch(const std::string& access_token);
-
-  void HandleHostListResult(int responseCode,
-                            const std::vector<remoting::HostInfo>& hostlist);
-
-  void HandleFetchFailure(FetchFailureReason reason, int error_code);
+  void HandleHostListResult(
+      const ProtobufHttpStatus& status,
+      std::unique_ptr<apis::v1::GetHostListResponse> response);
+  void HandleFetchFailure(const ProtobufHttpStatus& status);
 
   void OnUserUpdated(bool is_user_signed_in);
 
   id user_update_observer_;
 
-  base::CallbackList<void()> host_list_state_callbacks_;
-  base::CallbackList<void()> fetch_failure_callbacks_;
+  base::RepeatingClosureList host_list_state_callbacks_;
+  base::RepeatingClosureList fetch_failure_callbacks_;
 
-  std::unique_ptr<HostListFetcher> host_list_fetcher_;
+  base::SequenceBound<DirectoryServiceClient> directory_client_;
 
-  std::vector<remoting::HostInfo> hosts_;
+  std::vector<apis::v1::HostInfo> hosts_;
   State state_ = State::NOT_FETCHED;
   std::unique_ptr<FetchFailureInfo> last_fetch_failure_;
 
-  base::WeakPtrFactory<HostListService> weak_factory_;
+  base::WeakPtrFactory<HostListService> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(HostListService);
 };
 

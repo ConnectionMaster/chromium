@@ -4,8 +4,7 @@
 
 var newTabUrls = [
   'chrome://newtab/',
-  // The tab URL will be redirected to the Local New Tab Page if
-  // features::kUseGoogleLocalNtp is not enabled.
+  // The tab URL for the Local New Tab Page.
   'chrome-search://local-ntp/local-ntp.html',
 ];
 
@@ -19,10 +18,11 @@ function testExecuteScriptInNewTab() {
     chrome.tabs.onUpdated.removeListener(listener);
     chrome.tabs.executeScript(tab.id, {file: 'script.js'}, function() {
       chrome.test.assertTrue(!!chrome.runtime.lastError);
+      const lastErrorMessage = chrome.runtime.lastError.message;
       chrome.test.assertTrue(
-          chrome.runtime.lastError.message.indexOf(
-              'Cannot access contents of') != -1,
-          chrome.runtime.lastError.message);
+          lastErrorMessage.indexOf('Cannot access contents of') != -1 ||
+              lastErrorMessage.indexOf('Cannot access a chrome:// URL') != -1,
+          lastErrorMessage);
       chrome.test.succeed();
     });
   });

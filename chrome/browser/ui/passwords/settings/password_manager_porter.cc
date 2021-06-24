@@ -4,14 +4,17 @@
 
 #include "chrome/browser/ui/passwords/settings/password_manager_porter.h"
 
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/password_manager/password_store_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -19,6 +22,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/password_manager/core/browser/export/password_manager_exporter.h"
+#include "components/password_manager/core/browser/import/csv_password_sequence.h"
 #include "components/password_manager/core/browser/password_store.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
@@ -27,7 +31,6 @@
 #include "url/gurl.h"
 
 #if defined(OS_WIN)
-#include "base/strings/string16.h"
 #endif
 
 namespace {
@@ -52,8 +55,8 @@ base::FilePath GetDefaultFilepathForPasswordFile(
   base::FilePath default_path;
   base::PathService::Get(chrome::DIR_USER_DOCUMENTS, &default_path);
 #if defined(OS_WIN)
-  base::string16 file_name =
-      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_DEFAULT_EXPORT_FILENAME);
+  std::wstring file_name = base::UTF8ToWide(
+      l10n_util::GetStringUTF8(IDS_PASSWORD_MANAGER_DEFAULT_EXPORT_FILENAME));
 #else
   std::string file_name =
       l10n_util::GetStringUTF8(IDS_PASSWORD_MANAGER_DEFAULT_EXPORT_FILENAME);
@@ -68,7 +71,7 @@ class PasswordImportConsumer {
   explicit PasswordImportConsumer(Profile* profile);
 
   void ConsumePassword(password_manager::PasswordImporter::Result result,
-                       const std::vector<autofill::PasswordForm>& forms);
+                       password_manager::CSVPasswordSequence seq);
 
  private:
   Profile* profile_;
@@ -82,7 +85,7 @@ PasswordImportConsumer::PasswordImportConsumer(Profile* profile)
 
 void PasswordImportConsumer::ConsumePassword(
     password_manager::PasswordImporter::Result result,
-    const std::vector<autofill::PasswordForm>& forms) {
+    password_manager::CSVPasswordSequence seq) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   UMA_HISTOGRAM_ENUMERATION(
@@ -92,16 +95,19 @@ void PasswordImportConsumer::ConsumePassword(
   if (result != password_manager::PasswordImporter::SUCCESS)
     return;
 
-  UMA_HISTOGRAM_COUNTS_1M("PasswordManager.ImportedPasswordsPerUserInCSV",
-                          forms.size());
   scoped_refptr<password_manager::PasswordStore> store(
       PasswordStoreFactory::GetForProfile(profile_,
                                           ServiceAccessType::EXPLICIT_ACCESS));
-  if (store) {
-    for (const autofill::PasswordForm& form : forms)
-      store->AddLogin(form);
+  for (const auto& pwd : seq) {
+    if (store)
+      store->AddLogin(pwd.ParseValid());
   }
+  // TODO(crbug.com/1025510): Should the length of |seq| be reported if
+  // |store| is null?
+  UMA_HISTOGRAM_COUNTS_1M("PasswordManager.ImportedPasswordsPerUserInCSV",
+                          std::distance(seq.begin(), seq.end()));
 }
+
 }  // namespace
 
 PasswordManagerPorter::PasswordManagerPorter(
@@ -111,7 +117,7 @@ PasswordManagerPorter::PasswordManagerPorter(
     : credential_provider_interface_(credential_provider_interface),
       on_export_progress_callback_(on_export_progress_callback) {}
 
-PasswordManagerPorter::~PasswordManagerPorter() {}
+PasswordManagerPorter::~PasswordManagerPorter() = default;
 
 bool PasswordManagerPorter::Store() {
   // In unittests a null WebContents means: "Abort creating the file Selector."
@@ -158,6 +164,13 @@ void PasswordManagerPorter::Load() {
   DCHECK(web_contents_);
   PresentFileSelector(web_contents_,
                       PasswordManagerPorter::Type::PASSWORD_IMPORT);
+}
+
+void PasswordManagerPorter::ImportPasswordsFromPathForTesting(
+    const base::FilePath& path,
+    Profile* profile) {
+  base::AutoReset<Profile*> reset(&profile_, profile);
+  ImportPasswordsFromPath(path);
 }
 
 void PasswordManagerPorter::PresentFileSelector(
@@ -230,8 +243,8 @@ void PasswordManagerPorter::ImportPasswordsFromPath(
   std::unique_ptr<PasswordImportConsumer> form_consumer(
       new PasswordImportConsumer(profile_));
   password_manager::PasswordImporter::Import(
-      path, base::Bind(&PasswordImportConsumer::ConsumePassword,
-                       std::move(form_consumer)));
+      path, base::BindOnce(&PasswordImportConsumer::ConsumePassword,
+                           std::move(form_consumer)));
 }
 
 void PasswordManagerPorter::ExportPasswordsToPath(const base::FilePath& path) {

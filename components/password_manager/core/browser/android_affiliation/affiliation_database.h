@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/time/time.h"
 #include "components/password_manager/core/browser/android_affiliation/affiliation_utils.h"
 #include "components/password_manager/core/browser/sql_table_builder.h"
 
@@ -56,14 +55,6 @@ class AffiliationDatabase {
   // Removes the stored equivalence class and branding information, if any,
   // containing |facet_uri|.
   void DeleteAffiliationsAndBrandingForFacetURI(const FacetURI& facet_uri);
-
-  // Removes stored equivalence classes and branding information that were last
-  // updated before the |cutoff_threshold|.
-  void DeleteAffiliationsAndBrandingOlderThan(
-      const base::Time& cutoff_threshold);
-
-  // Removes all records from all tables of the database.
-  void DeleteAllAffiliationsAndBranding();
 
   // Stores the equivalence class and branding information defined by
   // |affiliated_facets| to the DB and returns true unless it has a non-empty

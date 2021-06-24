@@ -57,7 +57,6 @@ class CRLSetPolicy : public ComponentInstallerPolicy {
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
-  std::vector<std::string> GetMimeTypes() const override;
 
   DISALLOW_COPY_AND_ASSIGN(CRLSetPolicy);
 };
@@ -65,8 +64,7 @@ class CRLSetPolicy : public ComponentInstallerPolicy {
 // Registers a CRLSet component with |cus|. On a new CRLSet update, the default
 // Network Service, returned by content::GetNetworkService(), will be updated
 // with the new CRLSet.
-void RegisterCRLSetComponent(ComponentUpdateService* cus,
-                             const base::FilePath& user_data_dir);
+void RegisterCRLSetComponent(ComponentUpdateService* cus);
 
 }  // namespace component_updater
 

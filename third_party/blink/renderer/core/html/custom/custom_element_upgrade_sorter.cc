@@ -9,20 +9,12 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/html_link_element.h"
-#include "third_party/blink/renderer/core/html/imports/html_import_child.h"
-#include "third_party/blink/renderer/core/html/imports/html_import_loader.h"
 
 namespace blink {
 
 CustomElementUpgradeSorter::CustomElementUpgradeSorter()
     : elements_(MakeGarbageCollected<HeapHashSet<Member<Element>>>()),
       parent_child_map_(MakeGarbageCollected<ParentChildMap>()) {}
-
-static HTMLLinkElement* GetLinkElementForImport(const Document& import) {
-  if (HTMLImportLoader* loader = import.ImportLoader())
-    return loader->FirstImport()->Link();
-  return nullptr;
-}
 
 CustomElementUpgradeSorter::AddResult
 CustomElementUpgradeSorter::AddToParentChildMap(Node* parent, Node* child) {
@@ -46,17 +38,6 @@ void CustomElementUpgradeSorter::Add(Element* element) {
        n = parent, parent = parent->ParentOrShadowHostNode()) {
     if (AddToParentChildMap(parent, n) == kParentAlreadyExistsInMap)
       break;
-
-    // Create parent-child link between <link rel="import"> and its imported
-    // document so that the content of the imported document be visited as if
-    // the imported document were inserted in the link element.
-    if (auto* document = DynamicTo<Document>(parent)) {
-      Element* link = GetLinkElementForImport(*document);
-      if (!link ||
-          AddToParentChildMap(link, parent) == kParentAlreadyExistsInMap)
-        break;
-      parent = link;
-    }
   }
 }
 
@@ -65,8 +46,9 @@ void CustomElementUpgradeSorter::Visit(HeapVector<Member<Element>>* result,
                                        const ChildSet::iterator& it) {
   if (it == children.end())
     return;
-  if (it->Get()->IsElementNode() && elements_->Contains(ToElement(*it)))
-    result->push_back(ToElement(*it));
+  auto* element = DynamicTo<Element>(it->Get());
+  if (element && elements_->Contains(element))
+    result->push_back(*element);
   Sorted(result, *it);
   children.erase(it);
 }
@@ -86,8 +68,8 @@ void CustomElementUpgradeSorter::Sorted(HeapVector<Member<Element>>* result,
 
   // TODO(dominicc): When custom elements are used in UA shadow
   // roots, expand this to include UA shadow roots.
-  ShadowRoot* shadow_root =
-      parent->IsElementNode() ? ToElement(parent)->AuthorShadowRoot() : nullptr;
+  auto* element = DynamicTo<Element>(parent);
+  ShadowRoot* shadow_root = element ? element->AuthorShadowRoot() : nullptr;
   if (shadow_root)
     Visit(result, *children, children->find(shadow_root));
 

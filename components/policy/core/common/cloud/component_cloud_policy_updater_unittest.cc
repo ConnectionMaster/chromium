@@ -11,16 +11,15 @@
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/optional.h"
 #include "base/sequenced_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/component_cloud_policy_store.h"
 #include "components/policy/core/common/cloud/external_policy_data_fetcher.h"
-#include "components/policy/core/common/cloud/policy_builder.h"
 #include "components/policy/core/common/cloud/resource_cache.h"
+#include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/core/common/policy_map.h"
@@ -34,6 +33,7 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace em = enterprise_management;
@@ -80,7 +80,7 @@ class ComponentCloudPolicyUpdaterTest : public testing::Test {
   std::unique_ptr<em::PolicyFetchResponse> CreateResponse();
 
   const PolicyNamespace kTestPolicyNS{POLICY_DOMAIN_EXTENSIONS, kTestExtension};
-  base::test::ScopedTaskEnvironment task_env_;
+  base::test::TaskEnvironment task_env_;
   std::unique_ptr<ComponentCloudPolicyStore> store_;
   MockComponentCloudPolicyStoreDelegate store_delegate_;
   network::TestURLLoaderFactory loader_factory_;
@@ -91,12 +91,11 @@ class ComponentCloudPolicyUpdaterTest : public testing::Test {
  private:
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<ResourceCache> cache_;
-  std::unique_ptr<ExternalPolicyDataFetcherBackend> fetcher_backend_;
   std::string public_key_;
 };
 
 ComponentCloudPolicyUpdaterTest::ComponentCloudPolicyUpdaterTest()
-    : task_env_(base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME) {
+    : task_env_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
   builder_.SetDefaultSigningKey();
   builder_.policy_data().set_policy_type(
       dm_protocol::kChromeExtensionPolicyType);
@@ -108,33 +107,30 @@ ComponentCloudPolicyUpdaterTest::ComponentCloudPolicyUpdaterTest()
 
   PolicyMap& policy = expected_bundle_.Get(kTestPolicyNS);
   policy.Set("Name", POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-             POLICY_SOURCE_CLOUD, std::make_unique<base::Value>("disabled"),
-             nullptr);
+             POLICY_SOURCE_CLOUD, base::Value("disabled"), nullptr);
   policy.Set("Second", POLICY_LEVEL_RECOMMENDED, POLICY_SCOPE_USER,
-             POLICY_SOURCE_CLOUD, std::make_unique<base::Value>("maybe"),
-             nullptr);
+             POLICY_SOURCE_CLOUD, base::Value("maybe"), nullptr);
 }
 
 void ComponentCloudPolicyUpdaterTest::SetUp() {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
   cache_ = std::make_unique<ResourceCache>(temp_dir_.GetPath(),
                                            task_env_.GetMainThreadTaskRunner(),
-                                           /* max_cache_size */ base::nullopt);
+                                           /* max_cache_size */ absl::nullopt);
   store_ = std::make_unique<ComponentCloudPolicyStore>(
       &store_delegate_, cache_.get(), dm_protocol::kChromeExtensionPolicyType,
       POLICY_SOURCE_CLOUD);
-  store_->SetCredentials(PolicyBuilder::GetFakeAccountIdForTesting(),
-                         PolicyBuilder::kFakeToken,
+  store_->SetCredentials(PolicyBuilder::kFakeUsername,
+                         PolicyBuilder::kFakeGaiaId, PolicyBuilder::kFakeToken,
                          PolicyBuilder::kFakeDeviceId, public_key_,
                          PolicyBuilder::kFakePublicKeyVersion);
   auto url_loader_factory =
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
           &loader_factory_);
-  fetcher_backend_ = std::make_unique<ExternalPolicyDataFetcherBackend>(
-      std::move(url_loader_factory));
   updater_ = std::make_unique<ComponentCloudPolicyUpdater>(
       task_env_.GetMainThreadTaskRunner(),
-      fetcher_backend_->CreateFrontend(task_env_.GetMainThreadTaskRunner()),
+      std::make_unique<ExternalPolicyDataFetcher>(
+          std::move(url_loader_factory), task_env_.GetMainThreadTaskRunner()),
       store_.get());
   ASSERT_EQ(store_->policy().end(), store_->policy().begin());
 }

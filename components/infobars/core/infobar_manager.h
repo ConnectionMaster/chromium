@@ -14,9 +14,8 @@
 #include "base/observer_list.h"
 #include "components/infobars/core/infobar_delegate.h"
 
-class ConfirmInfoBarDelegate;
 class GURL;
-class InfoBarUiTest;
+class TestInfoBar;
 
 namespace infobars {
 
@@ -101,10 +100,6 @@ class InfoBarManager {
   // Returns the active entry ID.
   virtual int GetActiveEntryID() = 0;
 
-  // Returns a confirm infobar that owns |delegate|.
-  virtual std::unique_ptr<infobars::InfoBar> CreateConfirmInfoBar(
-      std::unique_ptr<ConfirmInfoBarDelegate> delegate) = 0;
-
   // Opens a URL according to the specified |disposition|.
   virtual void OpenURL(const GURL& url, WindowOpenDisposition disposition) = 0;
 
@@ -114,7 +109,7 @@ class InfoBarManager {
   }
 
  private:
-  friend class ::InfoBarUiTest;
+  friend class ::TestInfoBar;
 
   // InfoBars associated with this InfoBarManager.  We own these pointers.
   // However, this is not a vector of unique_ptr, because we don't delete the
@@ -126,7 +121,6 @@ class InfoBarManager {
   void RemoveInfoBarInternal(InfoBar* infobar, bool animate);
 
   InfoBars infobars_;
-  bool infobars_enabled_ = true;
   bool animations_enabled_ = true;
 
   base::ObserverList<Observer, true>::Unchecked observer_list_;

@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "components/prefs/pref_observer.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -34,6 +34,12 @@ class MockPrefService : public TestingPrefServiceSimple {
   MOCK_METHOD2(RemovePrefObserver, void(const std::string&, PrefObserver*));
 };
 
+// Due to overloads, base::DoNothing() cannot be passed directly to
+// PrefChangeRegistrar::Add() as it is convertible to all callbacks.
+base::RepeatingClosure DoNothingClosure() {
+  return base::DoNothing();
+}
+
 }  // namespace
 
 class PrefChangeRegistrarTest : public testing::Test {
@@ -44,8 +50,6 @@ class PrefChangeRegistrarTest : public testing::Test {
  protected:
   void SetUp() override;
 
-  base::Closure observer() const { return base::DoNothing(); }
-
   MockPrefService* service() const { return service_.get(); }
 
  private:
@@ -53,7 +57,7 @@ class PrefChangeRegistrarTest : public testing::Test {
 };
 
 void PrefChangeRegistrarTest::SetUp() {
-  service_.reset(new MockPrefService());
+  service_ = std::make_unique<MockPrefService>();
 }
 
 TEST_F(PrefChangeRegistrarTest, AddAndRemove) {
@@ -65,8 +69,8 @@ TEST_F(PrefChangeRegistrarTest, AddAndRemove) {
               AddPrefObserver(Eq(std::string("test.pref.1")), &registrar));
   EXPECT_CALL(*service(),
               AddPrefObserver(Eq(std::string("test.pref.2")), &registrar));
-  registrar.Add("test.pref.1", observer());
-  registrar.Add("test.pref.2", observer());
+  registrar.Add("test.pref.1", DoNothingClosure());
+  registrar.Add("test.pref.2", DoNothingClosure());
   EXPECT_FALSE(registrar.IsEmpty());
 
   // Test removing.
@@ -91,7 +95,7 @@ TEST_F(PrefChangeRegistrarTest, AutoRemove) {
   // Setup of auto-remove.
   EXPECT_CALL(*service(),
               AddPrefObserver(Eq(std::string("test.pref.1")), &registrar));
-  registrar.Add("test.pref.1", observer());
+  registrar.Add("test.pref.1", DoNothingClosure());
   Mock::VerifyAndClearExpectations(service());
   EXPECT_FALSE(registrar.IsEmpty());
 
@@ -108,8 +112,8 @@ TEST_F(PrefChangeRegistrarTest, RemoveAll) {
               AddPrefObserver(Eq(std::string("test.pref.1")), &registrar));
   EXPECT_CALL(*service(),
               AddPrefObserver(Eq(std::string("test.pref.2")), &registrar));
-  registrar.Add("test.pref.1", observer());
-  registrar.Add("test.pref.2", observer());
+  registrar.Add("test.pref.1", DoNothingClosure());
+  registrar.Add("test.pref.2", DoNothingClosure());
   Mock::VerifyAndClearExpectations(service());
 
   EXPECT_CALL(*service(),
@@ -127,7 +131,7 @@ TEST_F(PrefChangeRegistrarTest, RemoveAll) {
 class ObserveSetOfPreferencesTest : public testing::Test {
  public:
   void SetUp() override {
-    pref_service_.reset(new TestingPrefServiceSimple);
+    pref_service_ = std::make_unique<TestingPrefServiceSimple>();
     PrefRegistrySimple* registry = pref_service_->registry();
     registry->RegisterStringPref(kHomePage, "http://google.com");
     registry->RegisterBooleanPref(kHomePageIsNewTabPage, false);
@@ -136,10 +140,9 @@ class ObserveSetOfPreferencesTest : public testing::Test {
 
   PrefChangeRegistrar* CreatePrefChangeRegistrar() {
     PrefChangeRegistrar* pref_set = new PrefChangeRegistrar();
-    base::Closure callback = base::DoNothing();
     pref_set->Init(pref_service_.get());
-    pref_set->Add(kHomePage, callback);
-    pref_set->Add(kHomePageIsNewTabPage, callback);
+    pref_set->Add(kHomePage, DoNothingClosure());
+    pref_set->Add(kHomePageIsNewTabPage, DoNothingClosure());
     return pref_set;
   }
 
@@ -175,9 +178,9 @@ TEST_F(ObserveSetOfPreferencesTest, Observe) {
   using testing::Mock;
 
   PrefChangeRegistrar pref_set;
-  PrefChangeRegistrar::NamedChangeCallback callback = base::Bind(
-      &ObserveSetOfPreferencesTest::OnPreferenceChanged,
-      base::Unretained(this));
+  PrefChangeRegistrar::NamedChangeCallback callback =
+      base::BindRepeating(&ObserveSetOfPreferencesTest::OnPreferenceChanged,
+                          base::Unretained(this));
   pref_set.Init(pref_service_.get());
   pref_set.Add(kHomePage, callback);
   pref_set.Add(kHomePageIsNewTabPage, callback);

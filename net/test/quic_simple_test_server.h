@@ -6,7 +6,9 @@
 #define NET_TEST_QUIC_SIMPLE_TEST_SERVER_H_
 
 #include <string>
+#include <vector>
 
+#include "net/third_party/quiche/src/spdy/core/spdy_header_block.h"
 #include "url/gurl.h"
 
 namespace net {
@@ -19,6 +21,13 @@ class QuicSimpleTestServer {
   // Shuts down the server dispatcher, which results in sending ConnectionClose
   // frames to all connected clients.
   static void ShutdownDispatcherForTesting();
+
+  // Add a response to `path` with Early Hints.
+  static void AddResponseWithEarlyHints(
+      const std::string& path,
+      const spdy::Http2HeaderBlock& response_headers,
+      const std::string& response_body,
+      const std::vector<spdy::Http2HeaderBlock>& early_hints);
 
   // Returns example.com
   static const std::string GetDomain();
@@ -43,6 +52,7 @@ class QuicSimpleTestServer {
   static const std::string GetHelloStatus();
   static const std::string GetHelloHeaderName();
   static const std::string GetHelloHeaderValue();
+  static const std::string GetCombinedHeaderName();
   static const std::string GetHelloTrailerName();
   static const std::string GetHelloTrailerValue();
 

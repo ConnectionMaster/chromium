@@ -15,7 +15,7 @@
 
 #include "base/atomic_sequence_num.h"
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/condition_variable.h"
@@ -338,7 +338,7 @@ class GPU_EXPORT SyncPointManager {
   // Map of sequence id to order data.
   OrderDataMap order_data_map_;
 
-  uint32_t next_sequence_id_ = 1;
+  SequenceId::Generator sequence_id_generator_;
 
   mutable base::Lock lock_;
 

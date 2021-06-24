@@ -4,20 +4,24 @@
 
 #include "chrome/renderer/net/available_offline_content_helper.h"
 
+#include <utility>
+
 #include "base/base64.h"
 #include "base/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_value_converter.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/common/available_offline_content.mojom.h"
 #include "components/error_page/common/net_error_info.h"
-#include "content/public/common/service_names.mojom.h"
 #include "content/public/renderer/render_thread.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+#include "third_party/blink/public/platform/platform.h"
 
 namespace {
 
@@ -30,9 +34,9 @@ using chrome::mojom::AvailableContentType;
 // characters. Additionally, javascript needs UTF16 strings. So we instead
 // encode to UTF16, and then store that data as base64.
 std::string ConvertToUTF16Base64(const std::string& text) {
-  base::string16 text_utf16 = base::UTF8ToUTF16(text);
+  std::u16string text_utf16 = base::UTF8ToUTF16(text);
   std::string utf16_bytes;
-  for (base::char16 c : text_utf16) {
+  for (char16_t c : text_utf16) {
     utf16_bytes.push_back(static_cast<char>(c >> 8));
     utf16_bytes.push_back(static_cast<char>(c & 0xff));
   }
@@ -58,6 +62,8 @@ base::Value AvailableContentToValue(const AvailableOfflineContentPtr& content) {
                base::Value(ConvertToUTF16Base64(content->attribution)));
   value.SetKey("thumbnail_data_uri",
                base::Value(content->thumbnail_data_uri.spec()));
+  value.SetKey("favicon_data_uri",
+               base::Value(content->favicon_data_uri.spec()));
   value.SetKey("content_type",
                base::Value(static_cast<int>(content->content_type)));
   return value;
@@ -67,7 +73,7 @@ base::Value AvailableContentListToValue(
     const std::vector<AvailableOfflineContentPtr>& content_list) {
   base::Value value(base::Value::Type::LIST);
   for (const auto& content : content_list) {
-    value.GetList().push_back(AvailableContentToValue(content));
+    value.Append(AvailableContentToValue(content));
   }
   return value;
 }
@@ -78,6 +84,11 @@ void RecordSuggestionPresented(
     UMA_HISTOGRAM_ENUMERATION("Net.ErrorPageCounts.SuggestionPresented",
                               item->content_type);
   }
+}
+
+AvailableOfflineContentHelper::Binder& GetBinderOverride() {
+  static base::NoDestructor<AvailableOfflineContentHelper::Binder> binder;
+  return *binder;
 }
 
 }  // namespace
@@ -103,9 +114,22 @@ void AvailableOfflineContentHelper::FetchAvailableContent(
 bool AvailableOfflineContentHelper::BindProvider() {
   if (provider_)
     return true;
-  content::RenderThread::Get()->GetConnector()->BindInterface(
-      content::mojom::kBrowserServiceName, &provider_);
-  return !!provider_;
+
+  auto receiver = provider_.BindNewPipeAndPassReceiver();
+  const auto& binder_override = GetBinderOverride();
+  if (binder_override) {
+    binder_override.Run(std::move(receiver));
+    return true;
+  }
+
+  blink::Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
+      std::move(receiver));
+  return true;
+}
+
+// static
+void AvailableOfflineContentHelper::OverrideBinderForTesting(Binder binder) {
+  GetBinderOverride() = std::move(binder);
 }
 
 void AvailableOfflineContentHelper::LaunchItem(const std::string& id,
@@ -162,9 +186,10 @@ void AvailableOfflineContentHelper::AvailableContentReceived(
                             &json);
   }
   std::move(callback).Run(list_visible_by_prefs, json);
-  // We don't need to retain the thumbnail here, so free up some memory.
+  // We don't need to retain the visuals here, so free up some memory.
   for (const AvailableOfflineContentPtr& item : fetched_content_) {
     item->thumbnail_data_uri = GURL();
+    item->favicon_data_uri = GURL();
   }
 }
 

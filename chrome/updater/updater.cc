@@ -4,124 +4,181 @@
 
 #include "chrome/updater/updater.h"
 
+#include <algorithm>
 #include <iterator>
-#include <memory>
-#include <string>
-#include <utility>
-#include <vector>
 
 #include "base/at_exit.h"
-#include "base/callback_forward.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/memory/scoped_refptr.h"
-#include "base/message_loop/message_loop.h"
-#include "base/optional.h"
-#include "base/run_loop.h"
-#include "base/stl_util.h"
-#include "base/task/post_task.h"
-#include "base/task/thread_pool/initialization_util.h"
-#include "base/task/thread_pool/thread_pool.h"
-#include "base/task_runner.h"
-#include "base/threading/platform_thread.h"
-#include "base/threading/thread_restrictions.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "base/time/time.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/task/single_thread_task_executor.h"
+#include "build/build_config.h"
+#include "chrome/updater/app/app.h"
+#include "chrome/updater/app/app_install.h"
+#include "chrome/updater/app/app_uninstall.h"
+#include "chrome/updater/app/app_update.h"
+#include "chrome/updater/app/app_wake.h"
 #include "chrome/updater/configurator.h"
+#include "chrome/updater/constants.h"
 #include "chrome/updater/crash_client.h"
 #include "chrome/updater/crash_reporter.h"
-#include "chrome/updater/updater_constants.h"
+#include "chrome/updater/updater_scope.h"
 #include "chrome/updater/updater_version.h"
 #include "chrome/updater/util.h"
 #include "components/crash/core/common/crash_key.h"
-#include "components/prefs/pref_service.h"
-#include "components/update_client/crx_update_item.h"
-#include "components/update_client/update_client.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
+#if defined(OS_WIN)
+#include "chrome/updater/app/server/win/server.h"
+#include "chrome/updater/app/server/win/service_main.h"
+#endif
+
+#if defined(OS_MAC)
+#include "chrome/updater/app/server/mac/server.h"
+#endif
+
+// Instructions For Windows.
+// - To install only the updater, run "updatersetup.exe" from the build out dir.
+// - To install Chrome and the updater, do the same but use the --app-id:
+//    updatersetup.exe --app-id={8A69D345-D564-463c-AFF1-A69D9E530F96}
+// - To uninstall, run "updater.exe --uninstall" from its install directory,
+// which is under %LOCALAPPDATA%\Google\GoogleUpdater, or from the |out|
+// directory of the build.
+// - To debug, append the following arguments to any updater command line:
+//    --enable-logging --vmodule=*/chrome/updater/*=2.
+// - To run the `updater --install` from the `out` directory of the build,
+//   use --install-from-out-dir command line switch in addition to other
+//   arguments for --install.
 
 namespace updater {
-
 namespace {
 
-// For now, use the Flash CRX for testing.
-// CRX id is mimojjlkmoijpicakmndhoigimigcmbb.
-const uint8_t mimo_hash[] = {0xc8, 0xce, 0x99, 0xba, 0xce, 0x89, 0xf8, 0x20,
-                             0xac, 0xd3, 0x7e, 0x86, 0x8c, 0x86, 0x2c, 0x11,
-                             0xb9, 0x40, 0xc5, 0x55, 0xaf, 0x08, 0x63, 0x70,
-                             0x54, 0xf9, 0x56, 0xd3, 0xe7, 0x88, 0xba, 0x8c};
-
-void ThreadPoolStart() {
-  base::ThreadPool::Create("Updater");
-  const auto thread_pool_init_params =
-      std::make_unique<base::ThreadPool::InitParams>(
-          base::SchedulerWorkerPoolParams(
-              base::RecommendedMaxNumberOfThreadsInPool(3, 8, 0.1, 0),
-              base::TimeDelta::FromSeconds(30)),
-          base::SchedulerWorkerPoolParams(
-              base::RecommendedMaxNumberOfThreadsInPool(8, 32, 0.3, 0),
-              base::TimeDelta::FromSeconds(30)));
-  base::ThreadPool::GetInstance()->Start(*thread_pool_init_params);
-}
-
-void ThreadPoolStop() {
-  base::ThreadPool::GetInstance()->Shutdown();
-}
-
-void QuitLoop(base::OnceClosure quit_closure) {
-  std::move(quit_closure).Run();
-}
-
-class Observer : public update_client::UpdateClient::Observer {
- public:
-  explicit Observer(scoped_refptr<update_client::UpdateClient> update_client)
-      : update_client_(update_client) {}
-
-  // Overrides for update_client::UpdateClient::Observer.
-  void OnEvent(Events event, const std::string& id) override {
-    update_client::CrxUpdateItem item;
-    update_client_->GetCrxUpdateState(id, &item);
-  }
-
- private:
-  scoped_refptr<update_client::UpdateClient> update_client_;
-  DISALLOW_COPY_AND_ASSIGN(Observer);
-};
-
 // The log file is created in DIR_LOCAL_APP_DATA or DIR_APP_DATA.
-void InitLogging(const base::CommandLine& command_line) {
+void InitLogging(UpdaterScope updater_scope) {
   logging::LoggingSettings settings;
-  base::FilePath log_dir;
-  GetProductDataDirectory(&log_dir);
-  const auto log_file = log_dir.Append(FILE_PATH_LITERAL("updater.log"));
-  settings.log_file = log_file.value().c_str();
+  const absl::optional<base::FilePath> log_dir =
+      GetBaseDirectory(updater_scope);
+  if (!log_dir) {
+    LOG(ERROR) << "Error getting base dir.";
+    return;
+  }
+  const auto log_file = log_dir->Append(FILE_PATH_LITERAL("updater.log"));
+  settings.log_file_path = log_file.value().c_str();
   settings.logging_dest = logging::LOG_TO_ALL;
   logging::InitLogging(settings);
   logging::SetLogItems(true,    // enable_process_id
                        true,    // enable_thread_id
                        true,    // enable_timestamp
                        false);  // enable_tickcount
-  VLOG(1) << "Log file " << settings.log_file;
 }
 
-void InitializeUpdaterMain() {
-  crash_reporter::InitializeCrashKeys();
+void ReinitializeLoggingAfterCrashHandler(UpdaterScope updater_scope) {
+  // Initializing the logging more than two times is not supported. In this
+  // case, logging has been initialized once in the updater main, and the
+  // the second time by the crash handler.
+  // Reinitializing the log is not possible if the vlog switch is
+  // already present on the command line. The code in this function relies
+  // on undocumented behavior of the logging object, and it could break.
+  base::CommandLine::ForCurrentProcess()->RemoveSwitch(kLoggingModuleSwitch);
+  InitLogging(updater_scope);
+}
 
+void InitializeCrashReporting(UpdaterScope updater_scope) {
+  crash_reporter::InitializeCrashKeys();
   static crash_reporter::CrashKeyString<16> crash_key_process_type(
       "process_type");
   crash_key_process_type.Set("updater");
-
-  if (CrashClient::GetInstance()->InitializeCrashReporting()) {
+  if (CrashClient::GetInstance()->InitializeCrashReporting(updater_scope))
     VLOG(1) << "Crash reporting initialized.";
-  } else {
+  else
     VLOG(1) << "Crash reporting is not available.";
-  }
-  StartCrashReporter(UPDATER_VERSION_STRING);
-
-  ThreadPoolStart();
+  StartCrashReporter(updater_scope, kUpdaterVersion);
 }
 
-void TerminateUpdaterMain() {
-  ThreadPoolStop();
+int HandleUpdaterCommands(UpdaterScope updater_scope,
+                          const base::CommandLine* command_line) {
+  // Used for unit test purposes. There is no need to run with a crash handler.
+  if (command_line->HasSwitch(kTestSwitch))
+    return 0;
+
+  // Start the crash handler as early as possible.
+  if (command_line->HasSwitch(kCrashHandlerSwitch)) {
+    const int retval = CrashReporterMain();
+
+    // The crash handler mutates the logging object, so the updater process
+    // stops logging to the log file.
+    ReinitializeLoggingAfterCrashHandler(updater_scope);
+    return retval;
+  }
+
+  InitializeCrashReporting(updater_scope);
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
+
+  if (command_line->HasSwitch(kCrashMeSwitch)) {
+    // Records a backtrace in the log, crashes the program, saves a crash dump,
+    // and reports the crash.
+    CHECK(false) << "--crash-me was used.";
+  }
+
+  if (command_line->HasSwitch(kServerSwitch)) {
+#if defined(OS_WIN)
+    // By design, Windows uses a leaky singleton server for its RPC server.
+    return AppServerSingletonInstance()->Run();
+#else
+    return MakeAppServer()->Run();
+#endif
+  }
+
+  if (command_line->HasSwitch(kUpdateSwitch))
+    return MakeAppUpdate()->Run();
+
+#if defined(OS_WIN)
+  if (command_line->HasSwitch(kComServiceSwitch))
+    return ServiceMain::RunComService(command_line);
+#endif  // OS_WIN
+
+  if (command_line->HasSwitch(kInstallSwitch) ||
+      command_line->HasSwitch(kTagSwitch)) {
+    return MakeAppInstall()->Run();
+  }
+
+  if (command_line->HasSwitch(kUninstallSwitch) ||
+      command_line->HasSwitch(kUninstallSelfSwitch) ||
+      command_line->HasSwitch(kUninstallIfUnusedSwitch)) {
+    return MakeAppUninstall()->Run();
+  }
+
+  if (command_line->HasSwitch(kWakeSwitch)) {
+    return MakeAppWake()->Run();
+  }
+
+  VLOG(1) << "Unknown command line switch.";
+  return -1;
+}
+
+// Returns the string literal corresponding to an updater command, which
+// is present on the updater process command line. Returns an empty string
+// if the command is not found.
+const char* GetUpdaterCommand(const base::CommandLine* command_line) {
+  // Contains the literals which are associated with specific updater commands.
+  const char* commands[] = {
+      kComServiceSwitch,
+      kCrashHandlerSwitch,
+      kInstallSwitch,
+      kServerSwitch,
+      kTagSwitch,
+      kTestSwitch,
+      kUninstallIfUnusedSwitch,
+      kUninstallSelfSwitch,
+      kUninstallSwitch,
+      kUpdateSwitch,
+      kWakeSwitch,
+  };
+  const char** it = std::find_if(
+      std::begin(commands), std::end(commands),
+      [command_line](auto cmd) { return command_line->HasSwitch(cmd); });
+  return it != std::end(commands) ? *it : "";
 }
 
 }  // namespace
@@ -131,75 +188,18 @@ int UpdaterMain(int argc, const char* const* argv) {
   base::AtExitManager exit_manager;
 
   base::CommandLine::Init(argc, argv);
-  const auto* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(kTestSwitch))
-    return 0;
+  const base::CommandLine* command_line =
+      base::CommandLine::ForCurrentProcess();
 
-  InitLogging(*command_line);
+  const UpdaterScope updater_scope = GetUpdaterScope();
+  InitLogging(updater_scope);
 
-  if (command_line->HasSwitch(kCrashHandlerSwitch)) {
-    return CrashReporterMain();
-  }
-
-  InitializeUpdaterMain();
-
-  if (command_line->HasSwitch(kCrashMeSwitch)) {
-    int* ptr = nullptr;
-    return *ptr;
-  }
-
-  base::MessageLoopForUI message_loop;
-  base::RunLoop runloop;
-  DCHECK(base::ThreadTaskRunnerHandle::IsSet());
-
-  auto config = base::MakeRefCounted<Configurator>();
-
-  {
-    base::ScopedDisallowBlocking no_blocking_allowed;
-
-    auto update_client = update_client::UpdateClientFactory(config);
-
-    Observer observer(update_client);
-    update_client->AddObserver(&observer);
-
-    const std::vector<std::string> ids = {"mimojjlkmoijpicakmndhoigimigcmbb"};
-    update_client->Update(
-        ids,
-        base::BindOnce(
-            [](const std::vector<std::string>& ids)
-                -> std::vector<base::Optional<update_client::CrxComponent>> {
-              update_client::CrxComponent component;
-              component.name = "mimo";
-              component.pk_hash.assign(std::begin(mimo_hash),
-                                       std::end(mimo_hash));
-              component.version = base::Version("0.0");
-              component.requires_network_encryption = false;
-              return {component};
-            }),
-        true,
-        base::BindOnce(
-            [](base::OnceClosure closure, update_client::Error error) {
-              base::ThreadTaskRunnerHandle::Get()->PostTask(
-                  FROM_HERE, base::BindOnce(&QuitLoop, std::move(closure)));
-            },
-            runloop.QuitWhenIdleClosure()));
-
-    runloop.Run();
-
-    update_client->RemoveObserver(&observer);
-    update_client = nullptr;
-  }
-
-  {
-    base::RunLoop runloop;
-    config->GetPrefService()->CommitPendingWrite(base::BindOnce(
-        [](base::OnceClosure quit_closure) { std::move(quit_closure).Run(); },
-        runloop.QuitWhenIdleClosure()));
-    runloop.Run();
-  }
-
-  TerminateUpdaterMain();
-  return 0;
+  VLOG(1) << "Version " << kUpdaterVersion
+          << ", command line: " << command_line->GetCommandLineString();
+  const int retval = HandleUpdaterCommands(updater_scope, command_line);
+  DVLOG(1) << __func__ << " (--" << GetUpdaterCommand(command_line) << ")"
+           << " returned " << retval << ".";
+  return retval;
 }
 
 }  // namespace updater

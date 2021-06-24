@@ -11,7 +11,7 @@
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
 #include "ios/chrome/browser/suggestions/suggestions_service_factory.h"
-#include "ios/web/public/url_data_source_ios.h"
+#include "ios/web/public/webui/url_data_source_ios.h"
 
 namespace suggestions {
 
@@ -26,7 +26,7 @@ class SuggestionsSourceWrapper : public web::URLDataSourceIOS {
   std::string GetSource() const override;
   void StartDataRequest(
       const std::string& path,
-      const web::URLDataSourceIOS::GotDataCallback& callback) override;
+      web::URLDataSourceIOS::GotDataCallback callback) override;
   std::string GetMimeType(const std::string& path) const override;
 
  private:
@@ -49,8 +49,8 @@ std::string SuggestionsSourceWrapper::GetSource() const {
 
 void SuggestionsSourceWrapper::StartDataRequest(
     const std::string& path,
-    const web::URLDataSourceIOS::GotDataCallback& callback) {
-  suggestions_source_.StartDataRequest(path, callback);
+    web::URLDataSourceIOS::GotDataCallback callback) {
+  suggestions_source_.StartDataRequest(path, std::move(callback));
 }
 
 std::string SuggestionsSourceWrapper::GetMimeType(
@@ -60,10 +60,9 @@ std::string SuggestionsSourceWrapper::GetMimeType(
 
 }  // namespace
 
-SuggestionsUI::SuggestionsUI(web::WebUIIOS* web_ui)
-    : web::WebUIIOSController(web_ui) {
-  ios::ChromeBrowserState* browser_state =
-      ios::ChromeBrowserState::FromWebUIIOS(web_ui);
+SuggestionsUI::SuggestionsUI(web::WebUIIOS* web_ui, const std::string& host)
+    : web::WebUIIOSController(web_ui, host) {
+  ChromeBrowserState* browser_state = ChromeBrowserState::FromWebUIIOS(web_ui);
   web::URLDataSourceIOS::Add(
       browser_state,
       new SuggestionsSourceWrapper(

@@ -15,15 +15,15 @@
 #include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/strings/string_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_com_initializer.h"
 #include "chrome/chrome_cleaner/engines/common/registry_util.h"
 #include "chrome/chrome_cleaner/engines/target/sandboxed_test_helpers.h"
 #include "chrome/chrome_cleaner/os/pre_fetched_paths.h"
 #include "chrome/chrome_cleaner/os/task_scheduler.h"
-#include "chrome/chrome_cleaner/strings/string16_embedded_nulls.h"
 #include "chrome/chrome_cleaner/strings/string_test_helpers.h"
+#include "chrome/chrome_cleaner/strings/wstring_embedded_nulls.h"
 #include "chrome/chrome_cleaner/test/test_native_reg_util.h"
 #include "chrome/chrome_cleaner/test/test_util.h"
 #include "components/chrome_cleaner/test/test_name_helper.h"
@@ -79,16 +79,16 @@ class TestChildProcess : public SandboxChildProcess {
 
   base::FilePath windows_directory() const { return windows_directory_; }
 
-  base::string16 temp_key_path() const { return temp_key_path_; }
+  std::wstring temp_key_path() const { return temp_key_path_; }
 
-  base::string16 temp_key_full_path() const { return temp_key_full_path_; }
+  std::wstring temp_key_full_path() const { return temp_key_full_path_; }
 
  private:
   ~TestChildProcess() override = default;
 
   base::FilePath windows_directory_;
-  base::string16 temp_key_path_;
-  base::string16 temp_key_full_path_;
+  std::wstring temp_key_path_;
+  std::wstring temp_key_full_path_;
 };
 
 scoped_refptr<TestChildProcess> SetupSandboxedChildProcess() {
@@ -97,6 +97,46 @@ scoped_refptr<TestChildProcess> SetupSandboxedChildProcess() {
   if (!child_process->Initialize())
     return base::MakeRefCounted<TestChildProcess>(nullptr);
   return child_process;
+}
+
+MULTIPROCESS_TEST_MAIN(GetFileAttributesTest) {
+  auto child_process = SetupSandboxedChildProcess();
+  if (!child_process)
+    return 1;
+
+  scoped_refptr<EngineRequestsProxy> proxy(
+      child_process->GetEngineRequestsProxy());
+
+  uint32_t attributes;
+  EXPECT_EQ(INVALID_FILE_PATH,
+            proxy->GetFileAttributes(base::FilePath(), &attributes));
+
+  EXPECT_EQ(NULL_DATA_HANDLE, proxy->GetFileAttributes(
+                                  child_process->windows_directory(), nullptr));
+
+  EXPECT_EQ(uint32_t{ERROR_SUCCESS},
+            proxy->GetFileAttributes(child_process->windows_directory(),
+                                     &attributes));
+
+  return ::testing::Test::HasNonfatalFailure();
+}
+
+MULTIPROCESS_TEST_MAIN(GetFileAttributesNoHangs) {
+  auto child_process = SetupSandboxedChildProcess();
+  if (!child_process)
+    return 1;
+
+  child_process->UnbindRequestsRemotes();
+
+  scoped_refptr<EngineRequestsProxy> proxy(
+      child_process->GetEngineRequestsProxy());
+
+  uint32_t attributes;
+  EXPECT_EQ(INTERNAL_ERROR,
+            proxy->GetFileAttributes(child_process->windows_directory(),
+                                     &attributes));
+
+  return ::testing::Test::HasNonfatalFailure();
 }
 
 MULTIPROCESS_TEST_MAIN(GetKnownFolderPath) {
@@ -147,7 +187,7 @@ MULTIPROCESS_TEST_MAIN(GetKnownFolderPathNoHangs) {
   if (!child_process)
     return 1;
 
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
@@ -189,7 +229,7 @@ MULTIPROCESS_TEST_MAIN(GetProcessesNoHangs) {
   auto child_process = SetupSandboxedChildProcess();
   if (!child_process)
     return 1;
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
@@ -274,7 +314,7 @@ MULTIPROCESS_TEST_MAIN(GetTasksNoHangs) {
   auto child_process = SetupSandboxedChildProcess();
   if (!child_process)
     return 1;
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
@@ -316,7 +356,7 @@ MULTIPROCESS_TEST_MAIN(GetProcessImagePathNoHangs) {
   auto child_process = SetupSandboxedChildProcess();
   if (!child_process)
     return 1;
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
@@ -336,7 +376,7 @@ MULTIPROCESS_TEST_MAIN(GetLoadedModules) {
 
   EXPECT_FALSE(proxy->GetLoadedModules(::GetCurrentProcessId(), nullptr));
 
-  std::vector<base::string16> module_names;
+  std::vector<std::wstring> module_names;
   if (!proxy->GetLoadedModules(::GetCurrentProcessId(), &module_names)) {
     LOG(ERROR) << "Failed to get loaded modules for current process";
     return 1;
@@ -358,7 +398,7 @@ MULTIPROCESS_TEST_MAIN(GetLoadedModulesNoHangs) {
   auto child_process = SetupSandboxedChildProcess();
   if (!child_process)
     return 1;
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
@@ -378,7 +418,7 @@ MULTIPROCESS_TEST_MAIN(GetProcessCommandLine) {
 
   EXPECT_FALSE(proxy->GetProcessCommandLine(::GetCurrentProcessId(), nullptr));
 
-  base::string16 retrieved_cmd;
+  std::wstring retrieved_cmd;
   if (!proxy->GetProcessCommandLine(::GetCurrentProcessId(), &retrieved_cmd)) {
     LOG(ERROR) << "Failed to get command line for the current process";
     return 1;
@@ -397,11 +437,11 @@ MULTIPROCESS_TEST_MAIN(GetProcessCommandLineNoHangs) {
   auto child_process = SetupSandboxedChildProcess();
   if (!child_process)
     return 1;
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
-  base::string16 cmd;
+  std::wstring cmd;
   EXPECT_FALSE(proxy->GetProcessCommandLine(::GetCurrentProcessId(), &cmd));
 
   return ::testing::Test::HasNonfatalFailure();
@@ -441,7 +481,7 @@ MULTIPROCESS_TEST_MAIN(GetUserInfoFromSIDNoHangs) {
   auto child_process = SetupSandboxedChildProcess();
   if (!child_process)
     return 1;
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
@@ -463,7 +503,7 @@ MULTIPROCESS_TEST_MAIN(OpenReadOnlyRegistry) {
 
   // TODO(joenotcharles): Test with all predefined keys and combinations of
   // WOW64 flags.
-  const base::string16 fake_key_name = L"fake/key/I/just/made";
+  const std::wstring fake_key_name = L"fake/key/I/just/made";
   HANDLE reg_handle;
   uint32_t result = proxy->OpenReadOnlyRegistry(
       HKEY_LOCAL_MACHINE, fake_key_name, KEY_READ, &reg_handle);
@@ -479,7 +519,7 @@ MULTIPROCESS_TEST_MAIN(OpenReadOnlyRegistry) {
     return 1;
   }
 
-  result = proxy->OpenReadOnlyRegistry(HKEY_LOCAL_MACHINE, base::string16(),
+  result = proxy->OpenReadOnlyRegistry(HKEY_LOCAL_MACHINE, std::wstring(),
                                        KEY_READ, &reg_handle);
   if (reg_handle == INVALID_HANDLE_VALUE) {
     LOG(ERROR) << std::hex
@@ -514,13 +554,13 @@ MULTIPROCESS_TEST_MAIN(OpenReadOnlyRegistryNoHangs) {
   HANDLE reg_handle;
   EXPECT_EQ(
       SandboxErrorCode::NULL_ROOT_KEY,
-      proxy->OpenReadOnlyRegistry(nullptr, base::string16(), 0, &reg_handle));
+      proxy->OpenReadOnlyRegistry(nullptr, std::wstring(), 0, &reg_handle));
 
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   EXPECT_EQ(
       SandboxErrorCode::INTERNAL_ERROR,
-      proxy->OpenReadOnlyRegistry(nullptr, base::string16(), 0, &reg_handle));
+      proxy->OpenReadOnlyRegistry(nullptr, std::wstring(), 0, &reg_handle));
 
   return ::testing::Test::HasNonfatalFailure();
 }
@@ -553,8 +593,8 @@ MULTIPROCESS_TEST_MAIN(NtOpenReadOnlyRegistry) {
   HANDLE reg_handle;
   result = proxy->NtOpenReadOnlyRegistry(
       root_handle,
-      String16EmbeddedNulls(nonexistent_key_with_nulls.data(),
-                            nonexistent_key_with_nulls.size()),
+      WStringEmbeddedNulls(nonexistent_key_with_nulls.data(),
+                           nonexistent_key_with_nulls.size()),
       KEY_READ, &reg_handle);
   if (reg_handle != INVALID_HANDLE_VALUE) {
     LOG(ERROR) << "Got a valid handle when trying to open a fake key.";
@@ -572,7 +612,7 @@ MULTIPROCESS_TEST_MAIN(NtOpenReadOnlyRegistry) {
   std::vector<wchar_t> key_with_nulls = CreateVectorWithNulls(kKeyWithNulls);
   result = proxy->NtOpenReadOnlyRegistry(
       root_handle,
-      String16EmbeddedNulls(key_with_nulls.data(), key_with_nulls.size()),
+      WStringEmbeddedNulls(key_with_nulls.data(), key_with_nulls.size()),
       KEY_READ, &reg_handle);
   if (reg_handle == INVALID_HANDLE_VALUE) {
     LOG(ERROR) << std::hex << "Failed to get a valid registry handle for "
@@ -591,8 +631,8 @@ MULTIPROCESS_TEST_MAIN(NtOpenReadOnlyRegistry) {
                                                 key_with_nulls.end() - 1);
   result = proxy->NtOpenReadOnlyRegistry(
       root_handle,
-      String16EmbeddedNulls(truncated_key_with_nulls.data(),
-                            truncated_key_with_nulls.size()),
+      WStringEmbeddedNulls(truncated_key_with_nulls.data(),
+                           truncated_key_with_nulls.size()),
       KEY_READ, &reg_handle);
   if (reg_handle != INVALID_HANDLE_VALUE) {
     LOG(ERROR) << "Got a valid registry handle for "
@@ -611,14 +651,14 @@ MULTIPROCESS_TEST_MAIN(NtOpenReadOnlyRegistry) {
   }
 
   // Test with absolute path.
-  base::string16 temp_key_full_path = child_process->temp_key_full_path();
+  std::wstring temp_key_full_path = child_process->temp_key_full_path();
   std::vector<wchar_t> full_path(temp_key_full_path.begin(),
                                  temp_key_full_path.end());
   full_path.push_back(L'\\');
   full_path.insert(full_path.end(), key_with_nulls.begin(),
                    key_with_nulls.end());
   result = proxy->NtOpenReadOnlyRegistry(
-      nullptr, String16EmbeddedNulls(full_path.data(), full_path.size()),
+      nullptr, WStringEmbeddedNulls(full_path.data(), full_path.size()),
       KEY_READ, &reg_handle);
   if (reg_handle == INVALID_HANDLE_VALUE) {
     LOG(ERROR) << std::hex << "Failed to get a valid registry handle for "
@@ -638,16 +678,16 @@ MULTIPROCESS_TEST_MAIN(NtOpenReadOnlyRegistryNoHangs) {
   scoped_refptr<EngineRequestsProxy> proxy(
       child_process->GetEngineRequestsProxy());
 
-  base::string16 too_long(std::numeric_limits<int16_t>::max() + 1, '0');
+  std::wstring too_long(std::numeric_limits<int16_t>::max() + 1, '0');
   HANDLE reg_handle;
   EXPECT_EQ(SandboxErrorCode::INVALID_SUBKEY_STRING,
             proxy->NtOpenReadOnlyRegistry(
-                nullptr, String16EmbeddedNulls(too_long), 0, &reg_handle));
+                nullptr, WStringEmbeddedNulls(too_long), 0, &reg_handle));
 
-  child_process->UnbindRequestsPtrs();
+  child_process->UnbindRequestsRemotes();
 
   EXPECT_EQ(SandboxErrorCode::INTERNAL_ERROR,
-            proxy->NtOpenReadOnlyRegistry(nullptr, String16EmbeddedNulls(), 0,
+            proxy->NtOpenReadOnlyRegistry(nullptr, WStringEmbeddedNulls(), 0,
                                           &reg_handle));
 
   return ::testing::Test::HasNonfatalFailure();
@@ -684,7 +724,7 @@ class EngineRequestsProxyTest
 };
 
 TEST_P(EngineRequestsProxyTest, TestRequest) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
 
   // Create resources that tests running in the sandbox will not have access to
   // create for themselves, even before calling LowerToken.
@@ -724,7 +764,9 @@ INSTANTIATE_TEST_SUITE_P(
     Success,
     EngineRequestsProxyTest,
     testing::Combine(testing::Values(0),
-                     testing::Values("GetKnownFolderPath",
+                     testing::Values("GetFileAttributesTest",
+                                     "GetFileAttributesNoHangs",
+                                     "GetKnownFolderPath",
                                      "GetKnownFolderPathNoHangs",
                                      "GetProcesses",
                                      "GetProcessesNoHangs",

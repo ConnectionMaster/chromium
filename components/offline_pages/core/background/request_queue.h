@@ -9,7 +9,6 @@
 
 #include <memory>
 #include <set>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -30,7 +29,6 @@
 namespace offline_pages {
 
 class CleanupTaskFactory;
-class ClientPolicyController;
 class RequestQueueStore;
 
 // Class responsible for managing save page requests.
@@ -130,7 +128,6 @@ class RequestQueue : public TaskQueue::Delegate {
   // callbacks.
   void PickNextRequest(
       OfflinerPolicy* policy,
-      ClientPolicyController* policy_controller,
       PickRequestTask::RequestPickedCallback picked_callback,
       PickRequestTask::RequestNotPickedCallback not_picked_callback,
       PickRequestTask::RequestCountCallback request_count_callback,
@@ -169,7 +166,7 @@ class RequestQueue : public TaskQueue::Delegate {
   std::unique_ptr<CleanupTaskFactory> cleanup_factory_;
 
   // Allows us to pass a weak pointer to callbacks.
-  base::WeakPtrFactory<RequestQueue> weak_ptr_factory_;
+  base::WeakPtrFactory<RequestQueue> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RequestQueue);
 };

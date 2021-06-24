@@ -9,11 +9,12 @@
 #include "base/bind.h"
 #include "base/environment.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
+#include "build/build_config.h"
 #include "media/audio/audio_device_description.h"
 #include "media/audio/audio_device_info_accessor_for_tests.h"
 #include "media/audio/audio_io.h"
@@ -33,9 +34,9 @@ using ::testing::NotNull;
 
 namespace media {
 
-ACTION_P4(CheckCountAndPostQuitTask, count, limit, loop, closure) {
+ACTION_P4(CheckCountAndPostQuitTask, count, limit, task_runner, closure) {
   if (++*count >= limit) {
-    loop->task_runner()->PostTask(FROM_HERE, closure);
+    task_runner->PostTask(FROM_HERE, closure);
   }
 }
 
@@ -113,7 +114,8 @@ class WriteToFileAudioSink : public AudioInputStream::AudioInputCallback {
 class MacAudioInputTest : public testing::Test {
  protected:
   MacAudioInputTest()
-      : message_loop_(base::MessageLoop::TYPE_UI),
+      : task_environment_(
+            base::test::SingleThreadTaskEnvironment::MainThreadType::UI),
         audio_manager_(AudioManager::CreateForTesting(
             std::make_unique<TestAudioThread>())) {
     // Wait for the AudioManager to finish any initialization on the audio loop.
@@ -123,8 +125,14 @@ class MacAudioInputTest : public testing::Test {
   ~MacAudioInputTest() override { audio_manager_->Shutdown(); }
 
   bool InputDevicesAvailable() {
+#if defined(OS_MAC) && defined(ARCH_CPU_ARM64)
+    // TODO(crbug.com/1128458): macOS on ARM64 says it has devices, but won't
+    // let any of them be opened or listed.
+    return false;
+#else
     return AudioDeviceInfoAccessorForTests(audio_manager_.get())
         .HasAudioInputDevices();
+#endif
   }
 
   // Convenience method which creates a default AudioInputStream object using
@@ -137,7 +145,8 @@ class MacAudioInputTest : public testing::Test {
         AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
                         CHANNEL_LAYOUT_STEREO, fs, samples_per_packet),
         AudioDeviceDescription::kDefaultDeviceId,
-        base::Bind(&MacAudioInputTest::OnLogMessage, base::Unretained(this)));
+        base::BindRepeating(&MacAudioInputTest::OnLogMessage,
+                            base::Unretained(this)));
     EXPECT_TRUE(ais);
     return ais;
   }
@@ -151,14 +160,15 @@ class MacAudioInputTest : public testing::Test {
         AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY, channel_layout,
                         fs, samples_per_packet),
         AudioDeviceDescription::kDefaultDeviceId,
-        base::Bind(&MacAudioInputTest::OnLogMessage, base::Unretained(this)));
+        base::BindRepeating(&MacAudioInputTest::OnLogMessage,
+                            base::Unretained(this)));
     EXPECT_TRUE(ais);
     return ais;
   }
 
   void OnLogMessage(const std::string& message) { log_message_ = message; }
 
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<AudioManager> audio_manager_;
   std::string log_message_;
 };
@@ -174,7 +184,7 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamCreateAndClose) {
 TEST_F(MacAudioInputTest, AUAudioInputStreamOpenAndClose) {
   ABORT_AUDIO_TEST_IF_NOT(InputDevicesAvailable());
   AudioInputStream* ais = CreateDefaultAudioInputStream();
-  EXPECT_TRUE(ais->Open());
+  EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
   ais->Close();
 }
 
@@ -182,7 +192,7 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamOpenAndClose) {
 TEST_F(MacAudioInputTest, AUAudioInputStreamOpenStartAndClose) {
   ABORT_AUDIO_TEST_IF_NOT(InputDevicesAvailable());
   AudioInputStream* ais = CreateDefaultAudioInputStream();
-  EXPECT_TRUE(ais->Open());
+  EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
   MockAudioInputCallback sink;
   ais->Start(&sink);
   ais->Close();
@@ -192,7 +202,7 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamOpenStartAndClose) {
 TEST_F(MacAudioInputTest, AUAudioInputStreamOpenStartStopAndClose) {
   ABORT_AUDIO_TEST_IF_NOT(InputDevicesAvailable());
   AudioInputStream* ais = CreateDefaultAudioInputStream();
-  EXPECT_TRUE(ais->Open());
+  EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
   MockAudioInputCallback sink;
   ais->Start(&sink);
   ais->Stop();
@@ -207,7 +217,7 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamVerifyMonoRecording) {
 
   // Create an audio input stream which records in mono.
   AudioInputStream* ais = CreateAudioInputStream(CHANNEL_LAYOUT_MONO);
-  EXPECT_TRUE(ais->Open());
+  EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
 
   MockAudioInputCallback sink;
 
@@ -217,8 +227,9 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamVerifyMonoRecording) {
   base::RunLoop run_loop;
   EXPECT_CALL(sink, OnData(NotNull(), _, _))
       .Times(AtLeast(10))
-      .WillRepeatedly(CheckCountAndPostQuitTask(&count, 10, &message_loop_,
-                                                run_loop.QuitClosure()));
+      .WillRepeatedly(CheckCountAndPostQuitTask(
+          &count, 10, task_environment_.GetMainThreadTaskRunner(),
+          run_loop.QuitClosure()));
   ais->Start(&sink);
   run_loop.Run();
   ais->Stop();
@@ -235,7 +246,7 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamVerifyStereoRecording) {
 
   // Create an audio input stream which records in stereo.
   AudioInputStream* ais = CreateAudioInputStream(CHANNEL_LAYOUT_STEREO);
-  EXPECT_TRUE(ais->Open());
+  EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
 
   MockAudioInputCallback sink;
 
@@ -252,8 +263,9 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamVerifyStereoRecording) {
   base::RunLoop run_loop;
   EXPECT_CALL(sink, OnData(NotNull(), _, _))
       .Times(AtLeast(10))
-      .WillRepeatedly(CheckCountAndPostQuitTask(&count, 10, &message_loop_,
-                                                run_loop.QuitClosure()));
+      .WillRepeatedly(CheckCountAndPostQuitTask(
+          &count, 10, task_environment_.GetMainThreadTaskRunner(),
+          run_loop.QuitClosure()));
   ais->Start(&sink);
   run_loop.Run();
   ais->Stop();
@@ -274,7 +286,7 @@ TEST_F(MacAudioInputTest, DISABLED_AUAudioInputStreamRecordToFile) {
 
   int fs = static_cast<int>(AUAudioInputStream::HardwareSampleRate());
   AudioInputStream* ais = CreateDefaultAudioInputStream();
-  EXPECT_TRUE(ais->Open());
+  EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
 
   fprintf(stderr, "               File name  : %s\n", file_name);
   fprintf(stderr, "               Sample rate: %d\n", fs);

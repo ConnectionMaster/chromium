@@ -5,7 +5,8 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_EXTENSIONS_EXTENSIONS_INTERNALS_SOURCE_H_
 #define CHROME_BROWSER_UI_WEBUI_EXTENSIONS_EXTENSIONS_INTERNALS_SOURCE_H_
 
-#include "base/macros.h"
+#include <string>
+
 #include "content/public/browser/url_data_source.h"
 
 class Profile;
@@ -15,15 +16,18 @@ class Profile;
 class ExtensionsInternalsSource : public content::URLDataSource {
  public:
   explicit ExtensionsInternalsSource(Profile* profile);
+  ExtensionsInternalsSource(const ExtensionsInternalsSource&) = delete;
+  ExtensionsInternalsSource& operator=(const ExtensionsInternalsSource&) =
+      delete;
   ~ExtensionsInternalsSource() override;
 
   // content::URLDataSource:
-  std::string GetSource() const override;
-  std::string GetMimeType(const std::string& path) const override;
+  std::string GetSource() override;
+  std::string GetMimeType(const std::string& path) override;
   void StartDataRequest(
-      const std::string& path,
-      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
-      const content::URLDataSource::GotDataCallback& callback) override;
+      const GURL& url,
+      const content::WebContents::Getter& wc_getter,
+      content::URLDataSource::GotDataCallback callback) override;
 
   // Simpler interface to generate string output, without needing to
   // call StartDataRequest.
@@ -31,8 +35,6 @@ class ExtensionsInternalsSource : public content::URLDataSource {
 
  private:
   Profile* const profile_;
-
-  DISALLOW_COPY_AND_ASSIGN(ExtensionsInternalsSource);
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_EXTENSIONS_EXTENSIONS_INTERNALS_SOURCE_H_

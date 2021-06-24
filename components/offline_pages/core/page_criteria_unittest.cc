@@ -6,7 +6,6 @@
 
 #include "base/bind.h"
 #include "components/offline_pages/core/client_namespace_constants.h"
-#include "components/offline_pages/core/client_policy_controller.h"
 #include "components/offline_pages/core/offline_page_item.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -25,8 +24,6 @@ GURL TestURLWithFragment() {
 }
 
 class PageCriteriaTest : public testing::Test {
- protected:
-  ClientPolicyController policy_controller_;
 };
 
 TEST_F(PageCriteriaTest, MeetsCriteria_Url) {
@@ -36,13 +33,13 @@ TEST_F(PageCriteriaTest, MeetsCriteria_Url) {
   OfflinePageItem item;
 
   item.url = TestURLWithFragment();
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.url = TestURL();
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.url = OtherURL();
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_UrlWithFragment) {
@@ -52,13 +49,13 @@ TEST_F(PageCriteriaTest, MeetsCriteria_UrlWithFragment) {
   OfflinePageItem item;
 
   item.url = TestURLWithFragment();
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.url = TestURL();
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.url = OtherURL();
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_ExcludeTabBoundPages) {
@@ -67,13 +64,13 @@ TEST_F(PageCriteriaTest, MeetsCriteria_ExcludeTabBoundPages) {
 
   OfflinePageItem item;
   item.client_id.name_space = kLastNNamespace;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id.name_space = "";
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id.name_space = kDownloadNamespace;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_PagesForTabId) {
@@ -83,17 +80,17 @@ TEST_F(PageCriteriaTest, MeetsCriteria_PagesForTabId) {
   OfflinePageItem item;
   item.client_id.id = "0";
   item.client_id.name_space = kLastNNamespace;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   // Namespace not restricted to tab.
   item.client_id.id = "1";
   item.client_id.name_space = kDownloadNamespace;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   // Different tab id.
   item.client_id.id = "1";
   item.client_id.name_space = kLastNNamespace;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_SupportedByDownloads) {
@@ -102,26 +99,40 @@ TEST_F(PageCriteriaTest, MeetsCriteria_SupportedByDownloads) {
 
   OfflinePageItem item;
   item.client_id.name_space = kDownloadNamespace;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item.client_id));
 
   item.client_id.name_space = kLastNNamespace;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item.client_id));
 }
 
-TEST_F(PageCriteriaTest, MeetsCriteria_RemovedOnCacheReset) {
+TEST_F(PageCriteriaTest, MeetsCriteria_PersistentLifetime) {
   PageCriteria criteria;
-  criteria.removed_on_cache_reset = true;
+  criteria.lifetime_type = LifetimeType::PERSISTENT;
+
+  OfflinePageItem item;
+  item.client_id.name_space = kDownloadNamespace;
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item.client_id));
+
+  item.client_id.name_space = kLastNNamespace;
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item.client_id));
+}
+
+TEST_F(PageCriteriaTest, MeetsCriteria_TemporaryLifetime) {
+  PageCriteria criteria;
+  criteria.lifetime_type = LifetimeType::TEMPORARY;
 
   OfflinePageItem item;
   item.client_id.name_space = kLastNNamespace;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item.client_id));
 
   item.client_id.name_space = kDownloadNamespace;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item.client_id));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_FileSize) {
@@ -130,13 +141,13 @@ TEST_F(PageCriteriaTest, MeetsCriteria_FileSize) {
 
   OfflinePageItem item;
   item.file_size = 123;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.file_size = 124;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.file_size = 0;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_Digest) {
@@ -145,99 +156,100 @@ TEST_F(PageCriteriaTest, MeetsCriteria_Digest) {
 
   OfflinePageItem item;
   item.digest = "abc";
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.digest = "";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.digest = "def";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_Namespaces) {
   PageCriteria criteria;
-  criteria.client_namespaces = {"namespace1"};
+  criteria.client_namespaces = std::vector<std::string>{"namespace1"};
 
   OfflinePageItem item;
   item.client_id.name_space = "namespace1";
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item.client_id));
 
   item.client_id.name_space = "namespace2";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item.client_id));
 
   item.client_id.name_space = "";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item.client_id));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item.client_id));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_MultipleNamespaces) {
   PageCriteria criteria;
-  criteria.client_namespaces = {"namespace1", "foobar1"};
+  criteria.client_namespaces =
+      std::vector<std::string>{"namespace1", "foobar1"};
 
   OfflinePageItem item;
   item.client_id.name_space = "namespace1";
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id.name_space = "foobar1";
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id.name_space = "namespace";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id.name_space = "foobar";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id.name_space = "";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_ClientId) {
   PageCriteria criteria;
-  criteria.client_ids = {ClientId("namespace1", "id")};
+  criteria.client_ids = std::vector<ClientId>{ClientId("namespace1", "id")};
 
   OfflinePageItem item;
   item.client_id = ClientId("namespace1", "id");
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace2", "id");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace1", "id2");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId();
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_MultipleClientId) {
   PageCriteria criteria;
-  criteria.client_ids = {ClientId("namespace1", "id"),
-                         ClientId("namespace2", "id"),
-                         ClientId("namespace3", "id3")};
+  criteria.client_ids = std::vector<ClientId>{ClientId("namespace1", "id"),
+                                              ClientId("namespace2", "id"),
+                                              ClientId("namespace3", "id3")};
 
   OfflinePageItem item;
   item.client_id = ClientId("namespace1", "id");
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace2", "id");
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace3", "id3");
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace", "i");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace", "");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("name", "id");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace", "foo");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_Guid) {
@@ -246,16 +258,16 @@ TEST_F(PageCriteriaTest, MeetsCriteria_Guid) {
 
   OfflinePageItem item;
   item.client_id = ClientId("namespace", "abc");
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace2", "abc");
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId("namespace", "abcd");
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.client_id = ClientId();
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_RequestOrigin) {
@@ -264,25 +276,38 @@ TEST_F(PageCriteriaTest, MeetsCriteria_RequestOrigin) {
 
   OfflinePageItem item;
   item.request_origin = "abc";
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.request_origin = "abcd";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 
   item.request_origin = "";
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 TEST_F(PageCriteriaTest, MeetsCriteria_OfflineId) {
   PageCriteria criteria;
-  criteria.offline_id = 5;
+  criteria.offline_ids = std::vector<int64_t>{1, 5};
 
   OfflinePageItem item;
   item.offline_id = 5;
-  EXPECT_TRUE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
 
   item.offline_id = 4;
-  EXPECT_FALSE(MeetsCriteria(policy_controller_, criteria, item));
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
+}
+
+TEST_F(PageCriteriaTest, MeetsCriteria_AdditionalCriteria) {
+  PageCriteria criteria;
+  criteria.additional_criteria = base::BindRepeating(
+      [](const OfflinePageItem& item) { return item.offline_id == 5; });
+
+  OfflinePageItem item;
+  item.offline_id = 5;
+  EXPECT_TRUE(MeetsCriteria(criteria, item));
+
+  item.offline_id = 4;
+  EXPECT_FALSE(MeetsCriteria(criteria, item));
 }
 
 }  // namespace

@@ -8,14 +8,12 @@
 #include <windows.h>
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/strings/string16.h"
 #include "chrome/chrome_cleaner/constants/uws_id.h"
 #include "chrome/chrome_cleaner/engines/broker/cleaner_engine_requests_impl.h"
 #include "chrome/chrome_cleaner/engines/broker/engine_cleanup_results_impl.h"
@@ -24,11 +22,14 @@
 #include "chrome/chrome_cleaner/engines/broker/engine_scan_results_impl.h"
 #include "chrome/chrome_cleaner/engines/broker/interface_metadata_observer.h"
 #include "chrome/chrome_cleaner/engines/common/engine_result_codes.h"
-#include "chrome/chrome_cleaner/interfaces/engine_sandbox.mojom.h"
 #include "chrome/chrome_cleaner/ipc/mojo_task_runner.h"
 #include "chrome/chrome_cleaner/ipc/sandbox.h"
+#include "chrome/chrome_cleaner/mojom/engine_sandbox.mojom.h"
 #include "chrome/chrome_cleaner/pup_data/pup_data.h"
 #include "chrome/chrome_cleaner/settings/settings_types.h"
+#include "chrome/chrome_cleaner/zip_archiver/zip_archiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 
 namespace chrome_cleaner {
@@ -85,11 +86,11 @@ class EngineClient : public base::RefCountedThreadSafe<EngineClient> {
   // client.
   uint32_t ScanningWatchdogTimeoutInSeconds() const;
 
-  mojom::EngineCommandsPtr* engine_commands_ptr() const {
-    return engine_commands_ptr_.get();
+  mojo::Remote<mojom::EngineCommands>* engine_commands_remote() const {
+    return engine_commands_.get();
   }
 
-  // Posts a task to the mojo thread to bind an EngineCommandsPtr to |pipe|.
+  // Posts a task to the mojo thread to bind an EngineCommands remote to |pipe|.
   // |error_handler| will be called for errors on this connection.
   //
   // TODO(joenotcharles): When the EngineClient interface is updated to be
@@ -105,7 +106,7 @@ class EngineClient : public base::RefCountedThreadSafe<EngineClient> {
   // could happen during shutdown when ScannerImpl has been deleted but
   // EngineClient is still being kept alive because a StartScanAsync task
   // that's still queued has a reference to it.)
-  virtual void PostBindEngineCommandsPtr(mojo::ScopedMessagePipeHandle pipe);
+  virtual void PostBindEngineCommandsRemote(mojo::ScopedMessagePipeHandle pipe);
 
   using FoundUwSCallback = EngineScanResultsImpl::FoundUwSCallback;
   using DoneCallback = EngineScanResultsImpl::DoneCallback;
@@ -159,12 +160,12 @@ class EngineClient : public base::RefCountedThreadSafe<EngineClient> {
   using StartCleanupCallback = mojom::EngineCommands::StartCleanupCallback;
   using FinalizeCallback = mojom::EngineCommands::FinalizeCallback;
 
-  void BindEngineCommandsPtr(mojo::ScopedMessagePipeHandle pipe,
-                             base::OnceClosure error_handler);
+  void BindEngineCommandsRemote(mojo::ScopedMessagePipeHandle pipe,
+                                base::OnceClosure error_handler);
 
   void InitializeReadOnlyCallbacks();
-  bool InitializeCleaningCallbacks(const std::vector<UwSId>& enabled_uws);
-  bool InitializeQuarantine(std::unique_ptr<SandboxedZipArchiver>* archiver);
+  bool InitializeCleaningCallbacks();
+  bool InitializeQuarantine(std::unique_ptr<ZipArchiver>* archiver);
 
   // TODO(joenotcharles): When the synchronous Initialize method is removed,
   // rename this to Initialize and name the public accessor PostInitialize.
@@ -210,7 +211,7 @@ class EngineClient : public base::RefCountedThreadSafe<EngineClient> {
 
   // Proxy object that implements the EngineCommands interface by sending the
   // commands over IPC to the sandbox target process.
-  std::unique_ptr<mojom::EngineCommandsPtr> engine_commands_ptr_;
+  std::unique_ptr<mojo::Remote<mojom::EngineCommands>> engine_commands_;
 
   // Handler for scan results returned over the Mojo pipe.
   std::unique_ptr<EngineScanResultsImpl> scan_results_impl_;
@@ -228,6 +229,9 @@ class EngineClient : public base::RefCountedThreadSafe<EngineClient> {
   // Handler for cleaning requests from the sandbox that have to run outside the
   // sandbox.
   std::unique_ptr<CleanerEngineRequestsImpl> sandbox_cleaner_requests_;
+
+  // Allow tests overwrite the archiver used.
+  std::unique_ptr<ZipArchiver> archiver_for_testing_;
 
   // Keep track of if this cleaning requires a reboot to be fully completed.
   bool needs_reboot_ = false;

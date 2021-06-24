@@ -10,29 +10,29 @@
 #include "android_webview/browser/aw_content_browser_client.h"
 #include "android_webview/browser/aw_contents.h"
 #include "android_webview/browser/renderer_host/aw_render_view_host_ext.h"
+#include "android_webview/browser_jni_headers/AwSettings_jni.h"
 #include "android_webview/common/aw_content_client.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/macros.h"
-#include "base/no_destructor.h"
 #include "base/supports_user_data.h"
+#include "components/viz/common/features.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/renderer_preferences_util.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/web_preferences.h"
-#include "jni/AwSettings_jni.h"
 #include "net/http/http_util.h"
-#include "services/network/public/cpp/features.h"
-#include "third_party/blink/public/mojom/renderer_preferences.mojom.h"
+#include "services/network/public/mojom/network_context.mojom.h"
+#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom.h"
 
 using base::android::ConvertJavaStringToUTF16;
 using base::android::ConvertUTF8ToJavaString;
 using base::android::JavaParamRef;
 using base::android::ScopedJavaLocalRef;
-using content::WebPreferences;
+using blink::web_pref::WebPreferences;
 
 namespace android_webview {
 
@@ -43,6 +43,9 @@ void PopulateFixedWebPreferences(WebPreferences* web_prefs) {
   web_prefs->should_clear_document_background = false;
   web_prefs->viewport_meta_enabled = true;
   web_prefs->picture_in_picture_enabled = false;
+  web_prefs->disable_accelerated_small_canvases = true;
+  // WebView has historically not adjusted font scale for text autosizing.
+  web_prefs->device_scale_adjustment = 1.0;
 }
 
 const void* const kAwSettingsUserDataKey = &kAwSettingsUserDataKey;
@@ -72,6 +75,8 @@ AwSettings::AwSettings(JNIEnv* env,
       renderer_prefs_initialized_(false),
       javascript_can_open_windows_automatically_(false),
       allow_third_party_cookies_(false),
+      allow_file_access_(false),
+      is_dark_mode_(false),
       aw_settings_(env, obj) {
   web_contents->SetUserData(kAwSettingsUserDataKey,
                             std::make_unique<AwSettingsUserData>(this));
@@ -84,7 +89,7 @@ AwSettings::~AwSettings() {
 
   JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jobject> scoped_obj = aw_settings_.get(env);
-  if (scoped_obj.is_null())
+  if (!scoped_obj)
     return;
   Java_AwSettings_nativeAwSettingsGone(env, scoped_obj,
                                        reinterpret_cast<intptr_t>(this));
@@ -132,7 +137,7 @@ void AwSettings::UpdateEverything() {
   JNIEnv* env = base::android::AttachCurrentThread();
   CHECK(env);
   ScopedJavaLocalRef<jobject> scoped_obj = aw_settings_.get(env);
-  if (scoped_obj.is_null())
+  if (!scoped_obj)
     return;
   // Grab the lock and call UpdateEverythingLocked.
   Java_AwSettings_updateEverything(env, scoped_obj);
@@ -149,6 +154,7 @@ void AwSettings::UpdateEverythingLocked(JNIEnv* env,
   UpdateOffscreenPreRasterLocked(env, obj);
   UpdateWillSuppressErrorStateLocked(env, obj);
   UpdateCookiePolicyLocked(env, obj);
+  UpdateAllowFileAccessLocked(env, obj);
 }
 
 void AwSettings::UpdateUserAgentLocked(JNIEnv* env,
@@ -158,11 +164,12 @@ void AwSettings::UpdateUserAgentLocked(JNIEnv* env,
 
   ScopedJavaLocalRef<jstring> str =
       Java_AwSettings_getUserAgentLocked(env, obj);
-  bool ua_overidden = str.obj() != NULL;
+  bool ua_overidden = !!str;
 
   if (ua_overidden) {
     std::string override = base::android::ConvertJavaStringToUTF8(str);
-    web_contents()->SetUserAgentOverride(override, true);
+    web_contents()->SetUserAgentOverride(
+        blink::UserAgentOverride::UserAgentOnly(override), true);
   }
 
   content::NavigationController& controller = web_contents()->GetController();
@@ -179,11 +186,7 @@ void AwSettings::UpdateWebkitPreferencesLocked(
   if (!render_view_host_ext)
     return;
 
-  content::RenderViewHost* render_view_host =
-      web_contents()->GetRenderViewHost();
-  if (!render_view_host)
-    return;
-  render_view_host->OnWebkitPreferencesChanged();
+  web_contents()->OnWebPreferencesChanged();
 }
 
 void AwSettings::UpdateInitialPageScaleLocked(
@@ -234,12 +237,10 @@ void AwSettings::UpdateRendererPreferencesLocked(
     return;
 
   bool update_prefs = false;
-  blink::mojom::RendererPreferences* prefs =
-      web_contents()->GetMutableRendererPrefs();
+  blink::RendererPreferences* prefs = web_contents()->GetMutableRendererPrefs();
 
   if (!renderer_prefs_initialized_) {
     content::UpdateFontRendererPreferencesFromSystemSettings(prefs);
-    content::UpdateFocusRingPreferencesFromSystemSettings(prefs);
     renderer_prefs_initialized_ = true;
     update_prefs = true;
   }
@@ -250,20 +251,20 @@ void AwSettings::UpdateRendererPreferencesLocked(
     update_prefs = true;
   }
 
-  content::RenderViewHost* host = web_contents()->GetRenderViewHost();
-  if (update_prefs && host)
-    host->SyncRendererPrefs();
+  if (update_prefs)
+    web_contents()->SyncRendererPrefs();
 
-  if (update_prefs &&
-      base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+  if (update_prefs) {
     // make sure to update accept languages when the network service is enabled
     AwBrowserContext* aw_browser_context =
         AwBrowserContext::FromWebContents(web_contents());
     // AndroidWebview does not use per-site storage partitions.
     content::StoragePartition* storage_partition =
-        content::BrowserContext::GetDefaultStoragePartition(aw_browser_context);
+        aw_browser_context->GetDefaultStoragePartition();
+    std::string expanded_language_list =
+        net::HttpUtil::ExpandLanguageList(prefs->accept_languages);
     storage_partition->GetNetworkContext()->SetAcceptLanguage(
-        net::HttpUtil::ExpandLanguageList(prefs->accept_languages));
+        net::HttpUtil::GenerateAcceptLanguageHeader(expanded_language_list));
   }
 }
 
@@ -286,6 +287,14 @@ void AwSettings::UpdateOffscreenPreRasterLocked(
   }
 }
 
+void AwSettings::UpdateAllowFileAccessLocked(JNIEnv* env,
+                                             const JavaParamRef<jobject>& obj) {
+  if (!web_contents())
+    return;
+
+  allow_file_access_ = Java_AwSettings_getAllowFileAccess(env, obj);
+}
+
 void AwSettings::RenderViewHostChanged(content::RenderViewHost* old_host,
                                        content::RenderViewHost* new_host) {
   DCHECK_EQ(new_host, web_contents()->GetRenderViewHost());
@@ -301,7 +310,7 @@ void AwSettings::PopulateWebPreferences(WebPreferences* web_prefs) {
   JNIEnv* env = base::android::AttachCurrentThread();
   CHECK(env);
   ScopedJavaLocalRef<jobject> scoped_obj = aw_settings_.get(env);
-  if (scoped_obj.is_null())
+  if (!scoped_obj)
     return;
   // Grab the lock and call PopulateWebPreferencesLocked.
   Java_AwSettings_populateWebPreferences(env, scoped_obj,
@@ -332,27 +341,27 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
     render_view_host_ext->SetTextZoomFactor(text_size_percent / 100.0f);
   }
 
-  web_prefs->standard_font_family_map[content::kCommonScript] =
+  web_prefs->standard_font_family_map[blink::web_pref::kCommonScript] =
       ConvertJavaStringToUTF16(
           Java_AwSettings_getStandardFontFamilyLocked(env, obj));
 
-  web_prefs->fixed_font_family_map[content::kCommonScript] =
+  web_prefs->fixed_font_family_map[blink::web_pref::kCommonScript] =
       ConvertJavaStringToUTF16(
           Java_AwSettings_getFixedFontFamilyLocked(env, obj));
 
-  web_prefs->sans_serif_font_family_map[content::kCommonScript] =
+  web_prefs->sans_serif_font_family_map[blink::web_pref::kCommonScript] =
       ConvertJavaStringToUTF16(
           Java_AwSettings_getSansSerifFontFamilyLocked(env, obj));
 
-  web_prefs->serif_font_family_map[content::kCommonScript] =
+  web_prefs->serif_font_family_map[blink::web_pref::kCommonScript] =
       ConvertJavaStringToUTF16(
           Java_AwSettings_getSerifFontFamilyLocked(env, obj));
 
-  web_prefs->cursive_font_family_map[content::kCommonScript] =
+  web_prefs->cursive_font_family_map[blink::web_pref::kCommonScript] =
       ConvertJavaStringToUTF16(
           Java_AwSettings_getCursiveFontFamilyLocked(env, obj));
 
-  web_prefs->fantasy_font_family_map[content::kCommonScript] =
+  web_prefs->fantasy_font_family_map[blink::web_pref::kCommonScript] =
       ConvertJavaStringToUTF16(
           Java_AwSettings_getFantasyFontFamilyLocked(env, obj));
 
@@ -397,7 +406,8 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
   web_prefs->plugins_enabled = false;
 
   web_prefs->application_cache_enabled =
-      Java_AwSettings_getAppCacheEnabledLocked(env, obj);
+      Java_AwSettings_getAppCacheEnabledLocked(env, obj) &&
+      content::StoragePartition::IsAppCacheEnabled();
 
   web_prefs->local_storage_enabled =
       Java_AwSettings_getDomStorageEnabledLocked(env, obj);
@@ -425,8 +435,8 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
 
   web_prefs->autoplay_policy =
       Java_AwSettings_getMediaPlaybackRequiresUserGestureLocked(env, obj)
-          ? content::AutoplayPolicy::kUserGestureRequired
-          : content::AutoplayPolicy::kNoUserGestureRequired;
+          ? blink::mojom::AutoplayPolicy::kUserGestureRequired
+          : blink::mojom::AutoplayPolicy::kNoUserGestureRequired;
 
   ScopedJavaLocalRef<jstring> url =
       Java_AwSettings_getDefaultVideoPosterURLLocked(env, obj);
@@ -437,7 +447,6 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
   // Please see the corresponding Blink settings for bug references.
   web_prefs->support_deprecated_target_density_dpi = support_quirks;
   web_prefs->use_legacy_background_size_shorthand_behavior = support_quirks;
-  web_prefs->viewport_meta_layout_size_quirk = support_quirks;
   web_prefs->viewport_meta_merge_content_quirk = support_quirks;
   web_prefs->viewport_meta_non_user_scalable_quirk = support_quirks;
   web_prefs->viewport_meta_zero_values_quirk = support_quirks;
@@ -456,18 +465,9 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
   bool enable_supported_hardware_accelerated_features =
       Java_AwSettings_getEnableSupportedHardwareAcceleratedFeaturesLocked(env,
                                                                           obj);
-
-  bool accelerated_2d_canvas_enabled_by_switch =
-      web_prefs->accelerated_2d_canvas_enabled;
-  web_prefs->accelerated_2d_canvas_enabled = true;
-  if (!accelerated_2d_canvas_enabled_by_switch ||
-      !enable_supported_hardware_accelerated_features) {
-    // Any canvas smaller than this will fallback to software. Abusing this
-    // slightly to turn canvas off without changing
-    // accelerated_2d_canvas_enabled, which also affects compositing mode.
-    // Using 100M instead of max int to avoid overflows.
-    web_prefs->minimum_accelerated_2d_canvas_size = 100 * 1000 * 1000;
-  }
+  web_prefs->accelerated_2d_canvas_enabled =
+      web_prefs->accelerated_2d_canvas_enabled &&
+      enable_supported_hardware_accelerated_features;
   // Always allow webgl. Webview always requires access to the GPU even if
   // it only does software draws. WebGL will not show up in software draw so
   // there is no more brokenness for user. This makes it easier for apps that
@@ -506,30 +506,66 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
   web_prefs->scroll_top_left_interop_enabled =
       Java_AwSettings_getScrollTopLeftInteropEnabledLocked(env, obj);
 
+  web_prefs->allow_mixed_content_upgrades =
+      Java_AwSettings_getAllowMixedContentAutoupgradesLocked(env, obj);
+
   switch (Java_AwSettings_getForceDarkModeLocked(env, obj)) {
     case ForceDarkMode::FORCE_DARK_OFF:
-      web_prefs->force_dark_mode_enabled = false;
+      is_dark_mode_ = false;
       break;
     case ForceDarkMode::FORCE_DARK_ON:
-      web_prefs->force_dark_mode_enabled = true;
+      is_dark_mode_ = true;
       break;
     case ForceDarkMode::FORCE_DARK_AUTO: {
       AwContents* contents = AwContents::FromWebContents(web_contents());
-      web_prefs->force_dark_mode_enabled =
-          contents && contents->GetViewTreeForceDarkState();
+      is_dark_mode_ = contents && contents->GetViewTreeForceDarkState();
       break;
     }
   }
+  web_prefs->preferred_color_scheme =
+      is_dark_mode_ ? blink::mojom::PreferredColorScheme::kDark
+                    : blink::mojom::PreferredColorScheme::kLight;
+  if (is_dark_mode_) {
+    switch (Java_AwSettings_getForceDarkBehaviorLocked(env, obj)) {
+      case ForceDarkBehavior::FORCE_DARK_ONLY: {
+        web_prefs->preferred_color_scheme =
+            blink::mojom::PreferredColorScheme::kLight;
+        web_prefs->force_dark_mode_enabled = true;
+        break;
+      }
+      case ForceDarkBehavior::MEDIA_QUERY_ONLY: {
+        web_prefs->preferred_color_scheme =
+            blink::mojom::PreferredColorScheme::kDark;
+        web_prefs->force_dark_mode_enabled = false;
+        break;
+      }
+      // Blink's behavior is that if the preferred color scheme matches the
+      // supported color scheme, then force dark will be disabled, otherwise
+      // the preferred color scheme will be reset to 'light'. Therefore
+      // when enabling force dark, we also set the preferred color scheme to
+      // dark so that dark themed content will be preferred over force
+      // darkening.
+      case ForceDarkBehavior::PREFER_MEDIA_QUERY_OVER_FORCE_DARK: {
+        web_prefs->preferred_color_scheme =
+            blink::mojom::PreferredColorScheme::kDark;
+        web_prefs->force_dark_mode_enabled = true;
+        break;
+      }
+    }
+  } else {
+    web_prefs->preferred_color_scheme =
+        blink::mojom::PreferredColorScheme::kLight;
+    web_prefs->force_dark_mode_enabled = false;
+  }
+}
+
+bool AwSettings::IsDarkMode(JNIEnv* env,
+                                 const JavaParamRef<jobject>& obj) {
+  return is_dark_mode_;
 }
 
 bool AwSettings::GetAllowFileAccess() {
-  // TODO(timvolodine): cache this lazily on update, crbug.com/949590
-  JNIEnv* env = base::android::AttachCurrentThread();
-  CHECK(env);
-  ScopedJavaLocalRef<jobject> scoped_obj = aw_settings_.get(env);
-  if (scoped_obj.is_null())
-    return true;
-  return Java_AwSettings_getAllowFileAccess(env, scoped_obj);
+  return allow_file_access_;
 }
 
 static jlong JNI_AwSettings_Init(JNIEnv* env,

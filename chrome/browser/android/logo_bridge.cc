@@ -12,15 +12,14 @@
 #include "base/android/jni_string.h"
 #include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "chrome/android/chrome_jni_headers/LogoBridge_jni.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_android.h"
 #include "chrome/browser/search_provider_logos/logo_service_factory.h"
 #include "components/search_provider_logos/logo_observer.h"
 #include "components/search_provider_logos/logo_service.h"
 #include "content/public/browser/storage_partition.h"
-#include "jni/LogoBridge_jni.h"
 #include "net/http/http_status_code.h"
-#include "services/network/public/cpp/resource_response_info.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -38,7 +37,7 @@ namespace {
 
 ScopedJavaLocalRef<jobject> JNI_LogoBridge_MakeJavaLogo(
     JNIEnv* env,
-    const SkBitmap* bitmap,
+    const SkBitmap& bitmap,
     const GURL& on_click_url,
     const std::string& alt_text,
     const GURL& animated_url) {
@@ -68,7 +67,7 @@ ScopedJavaLocalRef<jobject> JNI_LogoBridge_ConvertLogoToJavaObject(
     return ScopedJavaLocalRef<jobject>();
 
   return JNI_LogoBridge_MakeJavaLogo(
-      env, &logo->image, GURL(logo->metadata.on_click_url),
+      env, logo->image, GURL(logo->metadata.on_click_url),
       logo->metadata.alt_text, GURL(logo->metadata.animated_url));
 }
 
@@ -96,6 +95,14 @@ class LogoObserverAndroid : public search_provider_logos::LogoObserver {
                                       from_cache);
   }
 
+  void OnCachedLogoRevalidated() override {
+    if (!logo_bridge_)
+      return;
+
+    JNIEnv* env = base::android::AttachCurrentThread();
+    Java_LogoObserver_onCachedLogoRevalidated(env, j_logo_observer_);
+  }
+
   void OnObserverRemoved() override { delete this; }
 
  private:
@@ -118,7 +125,7 @@ static jlong JNI_LogoBridge_Init(JNIEnv* env,
 }
 
 LogoBridge::LogoBridge(const JavaRef<jobject>& j_profile)
-    : logo_service_(nullptr), weak_ptr_factory_(this) {
+    : logo_service_(nullptr) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
   DCHECK(profile);
 

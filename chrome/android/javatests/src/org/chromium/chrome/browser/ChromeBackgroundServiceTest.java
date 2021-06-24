@@ -4,40 +4,48 @@
 
 package org.chromium.chrome.browser;
 
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
+
 import android.content.Context;
-import android.support.test.filters.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import com.google.android.gms.gcm.TaskParams;
 
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.Mockito;
 
-import org.chromium.base.ContextUtils;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.RetryOnFailure;
-import org.chromium.chrome.browser.ntp.snippets.SnippetsLauncher;
+import org.chromium.chrome.browser.background_sync.BackgroundSyncBackgroundTaskScheduler;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.components.background_task_scheduler.BackgroundTaskScheduler;
+import org.chromium.components.background_task_scheduler.BackgroundTaskSchedulerFactory;
+import org.chromium.components.background_task_scheduler.TaskIds;
+import org.chromium.components.background_task_scheduler.TaskInfo;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 
 /**
  * Tests {@link ChromeBackgroundService}.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@RetryOnFailure
 public class ChromeBackgroundServiceTest {
-    private BackgroundSyncLauncher mSyncLauncher;
-    private SnippetsLauncher mSnippetsLauncher;
     private MockTaskService mTaskService;
 
-    static class MockTaskService extends ChromeBackgroundService {
+    class MockTaskService extends ChromeBackgroundServiceImpl {
         private boolean mDidLaunchBrowser;
         private boolean mDidCallOnPersistentSchedulerWakeUp;
         private boolean mDidCallOnBrowserUpgraded;
+
+        @Mock
+        private BackgroundTaskScheduler mTaskScheduler;
 
         @Override
         protected void launchBrowser(Context context, String tag) {
@@ -45,20 +53,7 @@ public class ChromeBackgroundServiceTest {
         }
 
         @Override
-        protected void snippetsOnPersistentSchedulerWakeUp() {
-            mDidCallOnPersistentSchedulerWakeUp = true;
-        }
-
-        @Override
-        protected void snippetsOnBrowserUpgraded() {
-            mDidCallOnBrowserUpgraded = true;
-        }
-
-        @Override
         protected void rescheduleBackgroundSyncTasksOnUpgrade() {}
-
-        @Override
-        protected void rescheduleOfflinePages() {}
 
         // Posts an assertion task to the UI thread. Since this is only called after the call
         // to onRunTask, it will be enqueued after any possible call to launchBrowser, and we
@@ -75,30 +70,26 @@ public class ChromeBackgroundServiceTest {
                         mDidCallOnBrowserUpgraded);
             });
         }
+
+        protected void setUpMocks() {
+            mTaskScheduler = Mockito.mock(BackgroundTaskScheduler.class);
+            BackgroundTaskSchedulerFactory.setSchedulerForTesting(mTaskScheduler);
+            doReturn(true).when(mTaskScheduler).schedule(any(Context.class), any(TaskInfo.class));
+        }
+
+        protected void checkBackgroundTaskSchedulerInvocation(int taskId) {
+            PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT, () -> {
+                verify(mTaskScheduler)
+                        .schedule(any(Context.class),
+                                argThat(taskInfo -> taskInfo.getTaskId() == taskId));
+            });
+        }
     }
 
     @Before
-    public void setUp() throws Exception {
-        BackgroundSyncLauncher.setGCMEnabled(false);
-        RecordHistogram.setDisabledForTests(true);
-        mSyncLauncher = BackgroundSyncLauncher.create();
-        mSnippetsLauncher = SnippetsLauncher.create();
+    public void setUp() {
         mTaskService = new MockTaskService();
-    }
-
-    @After
-    public void tearDown() throws Exception {
-        RecordHistogram.setDisabledForTests(false);
-    }
-
-    private void deleteSyncLauncherInstance() {
-        mSyncLauncher.destroy();
-        mSyncLauncher = null;
-    }
-
-    private void deleteSnippetsLauncherInstance() {
-        mSnippetsLauncher.destroy();
-        mSnippetsLauncher = null;
+        mTaskService.setUpMocks();
     }
 
     private void startOnRunTaskAndVerify(
@@ -110,96 +101,15 @@ public class ChromeBackgroundServiceTest {
     @Test
     @SmallTest
     @Feature({"BackgroundSync"})
-    public void testBackgroundSyncNoLaunchBrowserWhenInstanceExists() {
-        startOnRunTaskAndVerify(BackgroundSyncLauncher.TASK_TAG, false, false);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"BackgroundSync"})
-    public void testBackgroundSyncLaunchBrowserWhenInstanceDoesNotExist() {
-        deleteSyncLauncherInstance();
-        startOnRunTaskAndVerify(BackgroundSyncLauncher.TASK_TAG, true, false);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsFetchWifiNoLaunchBrowserWhenInstanceExists() {
-        startOnRunTaskAndVerify(SnippetsLauncher.TASK_TAG_WIFI, false, true);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsFetchFallbackNoLaunchBrowserWhenInstanceExists() {
-        startOnRunTaskAndVerify(SnippetsLauncher.TASK_TAG_FALLBACK, false, true);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsFetchWifiLaunchBrowserWhenInstanceDoesNotExist() {
-        deleteSnippetsLauncherInstance();
-        startOnRunTaskAndVerify(SnippetsLauncher.TASK_TAG_WIFI, true, true);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsFetchFallbackLaunchBrowserWhenInstanceDoesNotExist() {
-        deleteSnippetsLauncherInstance();
-        startOnRunTaskAndVerify(SnippetsLauncher.TASK_TAG_FALLBACK, true, true);
+    public void testBackgroundSyncRescheduleWhenTaskRuns() {
+        mTaskService.onRunTask(new TaskParams(BackgroundSyncBackgroundTaskScheduler.TASK_TAG));
+        mTaskService.checkBackgroundTaskSchedulerInvocation(
+                TaskIds.BACKGROUND_SYNC_ONE_SHOT_JOB_ID);
     }
 
     private void startOnInitializeTasksAndVerify(
             boolean shouldStart, boolean shouldCallOnBrowserUpgraded) {
         mTaskService.onInitializeTasks();
         mTaskService.checkExpectations(shouldStart, false, shouldCallOnBrowserUpgraded);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsNoRescheduleWithoutPrefWhenInstanceExists() {
-        startOnInitializeTasksAndVerify(
-                /*shouldStart=*/false, /*shouldCallOnBrowserUpgraded=*/false);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsNoRescheduleWithoutPrefWhenInstanceDoesNotExist() {
-        deleteSnippetsLauncherInstance();
-        startOnInitializeTasksAndVerify(
-                /*shouldStart=*/false, /*shouldCallOnBrowserUpgraded=*/false);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsRescheduleWithPrefWhenInstanceExists() {
-        // Set the pref indicating that fetching was scheduled before.
-        ContextUtils.getAppSharedPreferences()
-                .edit()
-                .putBoolean(SnippetsLauncher.PREF_IS_SCHEDULED, true)
-                .apply();
-
-        startOnInitializeTasksAndVerify(
-                /*shouldStart=*/false, /*shouldCallOnBrowserUpgraded=*/true);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"NTPSnippets"})
-    public void testNTPSnippetsRescheduleAndLaunchBrowserWithPrefWhenInstanceDoesNotExist() {
-        deleteSnippetsLauncherInstance();
-        // Set the pref indicating that fetching was scheduled before.
-        ContextUtils.getAppSharedPreferences()
-                .edit()
-                .putBoolean(SnippetsLauncher.PREF_IS_SCHEDULED, true)
-                .apply();
-
-        startOnInitializeTasksAndVerify(/*shouldStart=*/true, /*shouldCallOnBrowserUpgraded=*/true);
     }
 }

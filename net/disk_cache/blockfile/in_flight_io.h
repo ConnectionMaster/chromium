@@ -7,14 +7,14 @@
 
 #include <set>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 
 namespace base {
-class TaskRunner;
+class SequencedTaskRunner;
 }  // namespace base
 
 namespace disk_cache {
@@ -129,7 +129,7 @@ class InFlightIO {
   typedef std::set<scoped_refptr<BackgroundIO> > IOList;
 
   IOList io_list_;  // List of pending, in-flight io operations.
-  scoped_refptr<base::TaskRunner> callback_task_runner_;
+  scoped_refptr<base::SequencedTaskRunner> callback_task_runner_;
 
   bool running_;  // True after the first posted operation completes.
 #if DCHECK_IS_ON()

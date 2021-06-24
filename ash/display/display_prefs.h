@@ -7,23 +7,16 @@
 
 #include <stdint.h>
 #include <array>
-#include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/session/session_observer.h"
-#include "ash/shell_observer.h"
-#include "base/optional.h"
+#include "ash/public/cpp/session/session_observer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "ui/display/display.h"
 #include "ui/display/display_layout.h"
 
-class PrefRegistry;
 class PrefRegistrySimple;
 class PrefService;
-
-namespace base {
-class Value;
-}
 
 namespace gfx {
 class Point;
@@ -40,21 +33,13 @@ class DisplayPrefsTest;
 
 // Manages display preference settings. Settings are stored in the local state
 // for the session.
-class ASH_EXPORT DisplayPrefs : public ShellObserver, public SessionObserver {
+class ASH_EXPORT DisplayPrefs : public SessionObserver {
  public:
-  // Returns a dictionary of display pref values stored in PrefService.
-  // See chrome/browser/ui/ash/ash_shell_init.cc for details.
-  static std::unique_ptr<base::Value> GetInitialDisplayPrefsFromPrefService(
-      PrefService* pref_service);
   // Registers the prefs associated with display settings.
   static void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
-  static void RegisterForeignPrefs(PrefRegistry* registry);
 
-  explicit DisplayPrefs(std::unique_ptr<base::Value> initial_prefs);
+  explicit DisplayPrefs(PrefService* local_state);
   ~DisplayPrefs() override;
-
-  // ShellObserver
-  void OnLocalStatePrefServiceInitialized(PrefService* pref_service) override;
 
   // SessionObserver:
   void OnFirstSessionStarted() override;
@@ -82,11 +67,7 @@ class ASH_EXPORT DisplayPrefs : public ShellObserver, public SessionObserver {
   // Stores the given |mixed_params| for tests. Clears stored parameters if
   // |mixed_params| is null.
   void StoreDisplayMixedMirrorModeParamsForTest(
-      const base::Optional<display::MixedMirrorModeParams>& mixed_params);
-
-  // Class wrapping a PrefService and a dictionary of initial pref values to use
-  // until OnLocalStatePrefServiceInitialized is called.
-  class LocalState;
+      const absl::optional<display::MixedMirrorModeParams>& mixed_params);
 
  protected:
   friend class DisplayPrefsTest;
@@ -94,11 +75,8 @@ class ASH_EXPORT DisplayPrefs : public ShellObserver, public SessionObserver {
   // Loads display preferences from |local_state_|.
   void LoadDisplayPreferences();
 
-  // Constructs a LocalState instance with |pref_service| for testing.
-  void SetPrefServiceForTest(PrefService* pref_service);
-
  private:
-  std::unique_ptr<LocalState> local_state_;
+  PrefService* local_state_;  // Non-owned and must out-live this.
   bool store_requested_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(DisplayPrefs);

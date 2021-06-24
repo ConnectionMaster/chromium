@@ -8,8 +8,8 @@
 #include <set>
 
 #include "base/auto_reset.h"
+#include "base/check_op.h"
 #include "base/ios/block_types.h"
-#include "base/logging.h"
 #import "base/mac/foundation_util.h"
 
 #include "base/mac/scoped_cftyperef.h"
@@ -18,7 +18,9 @@
 #include "components/url_formatter/url_fixer.h"
 #include "ios/chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
+#import "ios/chrome/browser/main/browser.h"
 #import "ios/chrome/browser/system_flags.h"
+#import "ios/chrome/browser/ui/alert_coordinator/action_sheet_coordinator.h"
 #import "ios/chrome/browser/ui/bookmarks/bookmark_folder_view_controller.h"
 #import "ios/chrome/browser/ui/bookmarks/bookmark_mediator.h"
 #import "ios/chrome/browser/ui/bookmarks/bookmark_model_bridge_observer.h"
@@ -26,18 +28,21 @@
 #import "ios/chrome/browser/ui/bookmarks/bookmark_utils_ios.h"
 #import "ios/chrome/browser/ui/bookmarks/cells/bookmark_parent_folder_item.h"
 #import "ios/chrome/browser/ui/bookmarks/cells/bookmark_text_field_item.h"
+#import "ios/chrome/browser/ui/commands/browser_commands.h"
 #import "ios/chrome/browser/ui/icons/chrome_icon.h"
 #import "ios/chrome/browser/ui/image_util/image_util.h"
 #import "ios/chrome/browser/ui/keyboard/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_styler.h"
+#import "ios/chrome/browser/ui/table_view/table_view_utils.h"
+#include "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/browser/ui/util/rtl_geometry.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #include "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/chrome_browser_provider.h"
-#import "ios/public/provider/chrome/browser/ui/text_field_styling.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
@@ -71,19 +76,15 @@ typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeInvalidURLFooter,
 };
 
-// The text color for the invalid URL label.
-const CGFloat kInvalidURLTextColor = 0xEA4335;
-
 // Estimated Table Row height.
 const CGFloat kEstimatedTableRowHeight = 50;
 // Estimated TableSection Footer height.
 const CGFloat kEstimatedTableSectionFooterHeight = 40;
 }  // namespace
 
-@interface BookmarkEditViewController ()<BookmarkFolderViewControllerDelegate,
-                                         BookmarkModelBridgeObserver,
-                                         BookmarkTextFieldItemDelegate,
-                                         TextFieldValidation> {
+@interface BookmarkEditViewController () <BookmarkFolderViewControllerDelegate,
+                                          BookmarkModelBridgeObserver,
+                                          BookmarkTextFieldItemDelegate> {
   // Flag to ignore bookmark model changes notifications.
   BOOL _ignoresBookmarkModelChanges;
 
@@ -107,7 +108,12 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 // Redefined to be readwrite.
 @property(nonatomic, strong) BookmarkFolderViewController* folderViewController;
 
-@property(nonatomic, assign) ios::ChromeBrowserState* browserState;
+@property(nonatomic, assign) Browser* browser;
+
+@property(nonatomic, assign) ChromeBrowserState* browserState;
+
+// Dispatcher for sending commands.
+@property(nonatomic, readonly, weak) id<BrowserCommands> dispatcher;
 
 // Cancel button item in navigation bar.
 @property(nonatomic, strong) UIBarButtonItem* cancelItem;
@@ -122,6 +128,9 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 
 // YES if the URL item is displaying a valid URL.
 @property(nonatomic, assign) BOOL displayingValidURL;
+
+// The action sheet coordinator, if one is currently being shown.
+@property(nonatomic, strong) ActionSheetCoordinator* actionSheetCoordinator;
 
 // Reports the changes to the delegate, that has the responsibility to save the
 // bookmark.
@@ -165,6 +174,7 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 @synthesize displayingValidURL = _displayingValidURL;
 @synthesize folder = _folder;
 @synthesize folderViewController = _folderViewController;
+@synthesize browser = _browser;
 @synthesize browserState = _browserState;
 @synthesize cancelItem = _cancelItem;
 @synthesize doneItem = _doneItem;
@@ -175,30 +185,44 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 #pragma mark - Lifecycle
 
 - (instancetype)initWithBookmark:(const BookmarkNode*)bookmark
-                    browserState:(ios::ChromeBrowserState*)browserState {
+                         browser:(Browser*)browser {
   DCHECK(bookmark);
-  DCHECK(browserState);
-  self = [super initWithTableViewStyle:UITableViewStylePlain
-                           appBarStyle:ChromeTableViewControllerStyleNoAppBar];
+  DCHECK(browser);
+  UITableViewStyle style = base::FeatureList::IsEnabled(kSettingsRefresh)
+                               ? ChromeTableViewStyle()
+                               : UITableViewStylePlain;
+  self = [super initWithStyle:style];
   if (self) {
     DCHECK(!bookmark->is_folder());
-    DCHECK(!browserState->IsOffTheRecord());
+
+    // Browser may be OTR, which is why the original browser state is being
+    // explicitly requested.
+    _browser = browser;
+    _browserState = browser->GetBrowserState()->GetOriginalChromeBrowserState();
+
     _bookmark = bookmark;
     _bookmarkModel =
-        ios::BookmarkModelFactory::GetForBrowserState(browserState);
+        ios::BookmarkModelFactory::GetForBrowserState(_browserState);
 
-    _folder = bookmark->parent();
+    _folder = _bookmark->parent();
 
     // Set up the bookmark model oberver.
     _modelBridge.reset(
         new bookmarks::BookmarkModelBridge(self, _bookmarkModel));
 
-    _browserState = browserState;
+    // TODO(crbug.com/1045047): Use HandlerForProtocol after commands protocol
+    // clean up.
+    _dispatcher =
+        static_cast<id<BrowserCommands>>(_browser->GetCommandDispatcher());
   }
   return self;
 }
 
 - (void)dealloc {
+  [self shutdown];
+}
+
+- (void)shutdown {
   _folderViewController.delegate = nil;
 }
 
@@ -215,9 +239,6 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
       kEstimatedTableSectionFooterHeight;
   self.view.accessibilityIdentifier = kBookmarkEditViewContainerIdentifier;
 
-  // Add a tableFooterView in order to disable separators at the bottom of the
-  // tableView.
-  self.tableView.tableFooterView = [[UIView alloc] init];
   [self.tableView
       setSeparatorInset:UIEdgeInsetsMake(0, kBookmarkCellHorizontalLeadingInset,
                                          0, 0)];
@@ -235,10 +256,9 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
   self.cancelItem = cancelItem;
 
   UIBarButtonItem* doneItem = [[UIBarButtonItem alloc]
-      initWithTitle:l10n_util::GetNSString(IDS_IOS_BOOKMARK_DONE_BUTTON)
-              style:UIBarButtonItemStylePlain
-             target:self
-             action:@selector(save)];
+      initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                           target:self
+                           action:@selector(save)];
   doneItem.accessibilityIdentifier =
       kBookmarkEditNavigationBarDoneButtonIdentifier;
   self.navigationItem.rightBarButtonItem = doneItem;
@@ -256,12 +276,15 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
       initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                            target:nil
                            action:nil];
+  deleteButton.tintColor = [UIColor colorNamed:kRedColor];
 
-  deleteButton.tintColor = [UIColor redColor];
-  // Setting the image to nil will cause the default shadowImage to be used,
-  // we need to create a new one.
-  [self.navigationController.toolbar setShadowImage:[UIImage new]
-                                 forToolbarPosition:UIBarPositionAny];
+  if (!base::FeatureList::IsEnabled(kSettingsRefresh)) {
+    // Setting the image to nil will cause the default shadowImage to be used,
+    // we need to create a new one.
+    [self.navigationController.toolbar setShadowImage:[UIImage new]
+                                   forToolbarPosition:UIBarPositionAny];
+  }
+
   [self setToolbarItems:@[ spaceButton, deleteButton, spaceButton ]
                animated:NO];
 
@@ -320,9 +343,10 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
     [self.delegate bookmarkEditorWillCommitTitleOrUrlChange:self];
   }
 
-  bookmark_utils_ios::CreateOrUpdateBookmarkWithUndoToast(
-      self.bookmark, [self inputBookmarkName], url, self.folder,
-      self.bookmarkModel, self.browserState);
+  [self.dispatcher showSnackbarMessage:
+                       bookmark_utils_ios::CreateOrUpdateBookmarkWithUndoToast(
+                           self.bookmark, [self inputBookmarkName], url,
+                           self.folder, self.bookmarkModel, self.browserState)];
 }
 
 - (void)changeFolder:(const BookmarkNode*)folder {
@@ -334,7 +358,7 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 }
 
 - (void)dismiss {
-  [self.view resignFirstResponder];
+  [self.view endEditing:YES];
 
   // Dismiss this controller.
   [self.delegate bookmarkEditorWantsDismissal:self];
@@ -422,8 +446,9 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
       // removes the current node.
       nodes.insert(self.bookmark);
     }
-    bookmark_utils_ios::DeleteBookmarksWithUndoToast(nodes, self.bookmarkModel,
-                                                     self.browserState);
+    [self.dispatcher
+        showSnackbarMessage:bookmark_utils_ios::DeleteBookmarksWithUndoToast(
+                                nodes, self.bookmarkModel, self.browserState)];
     self.bookmark = nil;
   }
   [self.delegate bookmarkEditorWantsDismissal:self];
@@ -441,7 +466,8 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
                allowsNewFolders:YES
                     editedNodes:editedNodes
                    allowsCancel:NO
-                 selectedFolder:self.folder];
+                 selectedFolder:self.folder
+                        browser:_browser];
   folderViewController.delegate = self;
   self.folderViewController = folderViewController;
   self.folderViewController.navigationItem.largeTitleDisplayMode =
@@ -462,6 +488,9 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 #pragma mark - BookmarkTextFieldItemDelegate
 
 - (void)textDidChangeForItem:(BookmarkTextFieldItem*)item {
+  if (@available(iOS 13, *)) {
+    self.modalInPresentation = YES;
+  }
   [self updateSaveButtonState];
   if (self.displayingValidURL != [self inputURLIsValid]) {
     self.displayingValidURL = [self inputURLIsValid];
@@ -490,17 +519,6 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
 - (BOOL)textFieldShouldReturn:(UITextField*)textField {
   [textField resignFirstResponder];
   return YES;
-}
-
-#pragma mark - TextFieldValidation
-
-- (NSString*)validationErrorForTextField:(id<TextFieldStyling>)field {
-  [self updateSaveButtonState];
-  if ([self inputURLIsValid]) {
-    return nil;
-  } else {
-    return l10n_util::GetNSString(IDS_IOS_BOOKMARK_URL_FIELD_VALIDATION_FAILED);
-  }
 }
 
 #pragma mark - UITableViewDataSource
@@ -541,7 +559,7 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
         base::mac::ObjCCastStrict<UITableViewHeaderFooterView>(footerView);
     headerFooterView.textLabel.font =
         [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    headerFooterView.textLabel.textColor = UIColorFromRGB(kInvalidURLTextColor);
+    headerFooterView.textLabel.textColor = [UIColor colorNamed:kRedColor];
   }
   return footerView;
 }
@@ -571,6 +589,12 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
   [self.navigationController popViewControllerAnimated:YES];
   self.folderViewController.delegate = nil;
   self.folderViewController = nil;
+}
+
+- (void)folderPickerDidDismiss:(BookmarkFolderViewController*)folderPicker {
+  self.folderViewController.delegate = nil;
+  self.folderViewController = nil;
+  [self dismiss];
 }
 
 #pragma mark - BookmarkModelBridgeObserver
@@ -627,6 +651,58 @@ const CGFloat kEstimatedTableSectionFooterHeight = 40;
   }
 
   [self.delegate bookmarkEditorWantsDismissal:self];
+}
+
+#pragma mark - UIAdaptivePresentationControllerDelegate
+
+- (void)presentationControllerDidAttemptToDismiss:
+    (UIPresentationController*)presentationController {
+  self.actionSheetCoordinator = [[ActionSheetCoordinator alloc]
+      initWithBaseViewController:self
+                         browser:_browser
+                           title:nil
+                         message:nil
+                   barButtonItem:self.cancelItem];
+
+  __weak __typeof(self) weakSelf = self;
+  [self.actionSheetCoordinator
+      addItemWithTitle:l10n_util::GetNSString(
+                           IDS_IOS_VIEW_CONTROLLER_DISMISS_SAVE_CHANGES)
+                action:^{
+                  [weakSelf save];
+                }
+                 style:UIAlertActionStyleDefault];
+  [self.actionSheetCoordinator
+      addItemWithTitle:l10n_util::GetNSString(
+                           IDS_IOS_VIEW_CONTROLLER_DISMISS_DISCARD_CHANGES)
+                action:^{
+                  [weakSelf cancel];
+                }
+                 style:UIAlertActionStyleDestructive];
+  [self.actionSheetCoordinator
+      addItemWithTitle:l10n_util::GetNSString(
+                           IDS_IOS_VIEW_CONTROLLER_DISMISS_CANCEL_CHANGES)
+                action:^{
+                  weakSelf.navigationItem.leftBarButtonItem.enabled = YES;
+                  weakSelf.navigationItem.rightBarButtonItem.enabled = YES;
+                }
+                 style:UIAlertActionStyleCancel];
+
+  self.navigationItem.leftBarButtonItem.enabled = NO;
+  self.navigationItem.rightBarButtonItem.enabled = NO;
+  [self.actionSheetCoordinator start];
+}
+
+- (void)presentationControllerWillDismiss:
+    (UIPresentationController*)presentationController {
+  // Resign first responder if trying to dismiss the VC so the keyboard doesn't
+  // linger until the VC dismissal has completed.
+  [self.view endEditing:YES];
+}
+
+- (void)presentationControllerDidDismiss:
+    (UIPresentationController*)presentationController {
+  [self dismiss];
 }
 
 #pragma mark - UIResponder

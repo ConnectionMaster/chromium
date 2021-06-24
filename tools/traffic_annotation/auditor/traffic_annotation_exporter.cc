@@ -7,12 +7,14 @@
 #include <ctime>
 
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "third_party/libxml/chromium/libxml_utils.h"
+#include "third_party/libxml/chromium/xml_reader.h"
+#include "third_party/libxml/chromium/xml_writer.h"
 #include "third_party/protobuf/src/google/protobuf/text_format.h"
 #include "tools/traffic_annotation/auditor/traffic_annotation_auditor.h"
 
@@ -31,6 +33,16 @@ const base::FilePath kAnnotationsXmlPath =
         .Append(FILE_PATH_LITERAL("traffic_annotation"))
         .Append(FILE_PATH_LITERAL("summary"))
         .Append(FILE_PATH_LITERAL("annotations.xml"));
+
+const base::FilePath kGroupingXmlPath =
+    base::FilePath(FILE_PATH_LITERAL("tools"))
+        .Append(FILE_PATH_LITERAL("traffic_annotation"))
+        .Append(FILE_PATH_LITERAL("summary"))
+        .Append(FILE_PATH_LITERAL("grouping.xml"));
+
+const base::FilePath kChromeVersionPath =
+    base::FilePath(FILE_PATH_LITERAL("chrome"))
+        .Append(FILE_PATH_LITERAL("VERSION"));
 
 // Extracts annotation id from a line of XML. Expects to have the line in the
 // following format: <... id="..." .../>
@@ -60,6 +72,23 @@ void ExtractXMLItems(const std::string& serialized_xml,
   }
 }
 
+// Parses the contents of the chrome/VERSION file, which contains the current
+// chrome version. Returns the number on the MAJOR=... line, i.e. the milestone
+// number.
+//
+// If parsing fails, returns -1.
+int GetMajorVersion(const std::string& version_file_contents) {
+  static const char prefix[] = "MAJOR=";
+  size_t pos = version_file_contents.find(prefix);
+  if (pos == std::string::npos)
+    return -1;
+  int version = 0;
+  base::StringToInt(
+      base::StringPiece(version_file_contents.c_str() + pos + strlen(prefix)),
+      &version);
+  return version > 0 ? version : -1;
+}
+
 }  // namespace
 
 TrafficAnnotationExporter::ArchivedAnnotation::ArchivedAnnotation()
@@ -78,7 +107,7 @@ TrafficAnnotationExporter::TrafficAnnotationExporter(
     : source_path_(source_path), modified_(false) {
   all_supported_platforms_.push_back("linux");
   all_supported_platforms_.push_back("windows");
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   current_platform_ = "linux";
 #elif defined(OS_WIN)
   current_platform_ = "windows";
@@ -91,6 +120,21 @@ TrafficAnnotationExporter::TrafficAnnotationExporter(
 TrafficAnnotationExporter::~TrafficAnnotationExporter() = default;
 
 bool TrafficAnnotationExporter::LoadAnnotationsXML() {
+  std::string version_file_contents;
+  base::FilePath version_file_path =
+      base::MakeAbsoluteFilePath(source_path_.Append(kChromeVersionPath));
+  if (!base::ReadFileToString(version_file_path, &version_file_contents)) {
+    LOG(ERROR) << "Could not load '" << source_path_.Append(kChromeVersionPath)
+               << "'.";
+    return false;
+  }
+  current_milestone_ = GetMajorVersion(version_file_contents);
+  if (current_milestone_ <= 0) {
+    LOG(ERROR) << "Failed to parse '" << source_path_.Append(kChromeVersionPath)
+               << "'.";
+    return false;
+  }
+
   archive_.clear();
   XmlReader reader;
   if (!reader.LoadFile(
@@ -154,6 +198,13 @@ bool TrafficAnnotationExporter::LoadAnnotationsXML() {
 
     all_ok &= reader.NodeAttribute("file_path", &item.file_path);
 
+    std::string added_in_str;
+    if (reader.NodeAttribute("added_in_milestone", &added_in_str)) {
+      base::StringToInt(added_in_str, &item.added_in_milestone);
+    } else {
+      item.added_in_milestone = -1;
+    }
+
     if (!all_ok) {
       LOG(ERROR) << "Unexpected format in annotations.xml.";
       break;
@@ -185,7 +236,7 @@ void TrafficAnnotationExporter::UpdateAnnotations(
     int content_hash_code = annotation.GetContentHashCode();
     // If annotation unique id is already in the imported annotations list,
     // check if other fields have changed.
-    if (base::ContainsKey(archive_, annotation.proto.unique_id())) {
+    if (base::Contains(archive_, annotation.proto.unique_id())) {
       ArchivedAnnotation* current = &archive_[annotation.proto.unique_id()];
 
       // Check second id.
@@ -197,7 +248,7 @@ void TrafficAnnotationExporter::UpdateAnnotations(
       }
 
       // Check platform.
-      if (!base::ContainsValue(current->os_list, current_platform_)) {
+      if (!base::Contains(current->os_list, current_platform_)) {
         current->os_list.push_back(current_platform_);
         modified_ = true;
       }
@@ -223,6 +274,7 @@ void TrafficAnnotationExporter::UpdateAnnotations(
         new_item.second_id_hash_code = annotation.second_id_hash_code;
       new_item.content_hash_code = content_hash_code;
       new_item.os_list = all_supported_platforms_;
+      new_item.added_in_milestone = current_milestone_;
       if (annotation.type != AnnotationInstance::Type::ANNOTATION_COMPLETE) {
         annotation.GetSemanticsFieldNumbers(&new_item.semantics_fields);
         annotation.GetPolicyFieldNumbers(&new_item.policy_fields);
@@ -236,10 +288,10 @@ void TrafficAnnotationExporter::UpdateAnnotations(
 
   // If a none-reserved annotation is removed from current platform, update it.
   for (auto& item : archive_) {
-    if (base::ContainsValue(item.second.os_list, current_platform_) &&
+    if (base::Contains(item.second.os_list, current_platform_) &&
         item.second.content_hash_code != -1 &&
-        !base::ContainsKey(current_platform_hashcodes,
-                           item.second.unique_id_hash_code)) {
+        !base::Contains(current_platform_hashcodes,
+                        item.second.unique_id_hash_code)) {
       base::Erase(item.second.os_list, current_platform_);
       modified_ = true;
     }
@@ -247,7 +299,7 @@ void TrafficAnnotationExporter::UpdateAnnotations(
 
   // If there is a new reserved id, add it.
   for (const auto& item : reserved_ids) {
-    if (!base::ContainsKey(archive_, item.second)) {
+    if (!base::Contains(archive_, item.second)) {
       ArchivedAnnotation new_item;
       new_item.unique_id_hash_code = item.first;
       new_item.os_list = all_supported_platforms_;
@@ -283,6 +335,9 @@ std::string TrafficAnnotationExporter::GenerateSerializedXML() const {
   for (const auto& item : archive_) {
     writer.StartElement("item");
     writer.AddAttribute("id", item.first);
+    writer.AddAttribute("added_in_milestone",
+                        base::NumberToString(item.second.added_in_milestone));
+
     writer.AddAttribute(
         "hash_code", base::StringPrintf("%i", item.second.unique_id_hash_code));
     writer.AddAttribute("type", base::StringPrintf("%i", item.second.type));
@@ -364,7 +419,7 @@ void TrafficAnnotationExporter::CheckArchivedAnnotations(
   // Check for annotation hash code duplications.
   std::map<int, std::string> used_codes;
   for (auto& item : archive_) {
-    if (base::ContainsKey(used_codes, item.second.unique_id_hash_code)) {
+    if (base::Contains(used_codes, item.second.unique_id_hash_code)) {
       AuditorResult error(AuditorResult::Type::ERROR_HASH_CODE_COLLISION);
       error.AddDetail(used_codes[item.second.unique_id_hash_code]);
       error.AddDetail(item.first);
@@ -387,7 +442,7 @@ void TrafficAnnotationExporter::CheckArchivedAnnotations(
   // Check that listed OSes are valid.
   for (const auto& pair : archive_) {
     for (const auto& os : pair.second.os_list) {
-      if (!base::ContainsValue(all_supported_platforms_, os)) {
+      if (!base::Contains(all_supported_platforms_, os)) {
         AuditorResult error(AuditorResult::Type::ERROR_INVALID_OS,
                             std::string(), kAnnotationsXmlPath.MaybeAsASCII(),
                             AuditorResult::kNoCodeLineSpecified);
@@ -395,6 +450,18 @@ void TrafficAnnotationExporter::CheckArchivedAnnotations(
         error.AddDetail(pair.first);
         errors->push_back(std::move(error));
       }
+    }
+  }
+
+  // Check for consistency of "added_in_milestone" attribute.
+  for (const auto& pair : archive_) {
+    if (pair.second.added_in_milestone < 62) {
+      AuditorResult error(AuditorResult::Type::ERROR_INVALID_ADDED_IN,
+                          std::string(), kAnnotationsXmlPath.MaybeAsASCII(),
+                          AuditorResult::kNoCodeLineSpecified);
+      error.AddDetail(base::NumberToString(pair.second.added_in_milestone));
+      error.AddDetail(pair.first);
+      errors->push_back(std::move(error));
     }
   }
 }
@@ -463,7 +530,7 @@ std::string TrafficAnnotationExporter::GetXMLDifferences(
   }
 
   for (const std::string& id : old_keys) {
-    if (base::ContainsKey(new_items, id) && old_items[id] != new_items[id]) {
+    if (base::Contains(new_items, id) && old_items[id] != new_items[id]) {
       message +=
           base::StringPrintf("\n\tUpdate line: '%s' --> '%s'",
                              old_items[id].c_str(), new_items[id].c_str());
@@ -479,7 +546,8 @@ bool TrafficAnnotationExporter::GetOtherPlatformsAnnotationIDs(
     return false;
 
   ids->clear();
-  for (const std::pair<std::string, ArchivedAnnotation>& item : archive_) {
+  for (const std::pair<const std::string, ArchivedAnnotation>& item :
+       archive_) {
     if (item.second.deprecation_date.empty() &&
         !MatchesCurrentPlatform(item.second))
       ids->push_back(item.first);

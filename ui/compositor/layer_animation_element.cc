@@ -24,12 +24,6 @@ namespace ui {
 
 namespace {
 
-// The factor by which duration is scaled up or down when using
-// ScopedAnimationDurationScaleMode.
-const int kSlowDurationScaleMultiplier = 4;
-const int kFastDurationScaleDivisor = 4;
-const int kNonZeroDurationScaleDivisor = 20;
-
 // Pause -----------------------------------------------------------------------
 class Pause : public LayerAnimationElement {
  public:
@@ -269,6 +263,83 @@ class ColorTransition : public LayerAnimationElement {
   DISALLOW_COPY_AND_ASSIGN(ColorTransition);
 };
 
+// ClipRectTransition ----------------------------------------------------------
+
+class ClipRectTransition : public LayerAnimationElement {
+ public:
+  ClipRectTransition(const gfx::Rect& target, base::TimeDelta duration)
+      : LayerAnimationElement(CLIP, duration), target_(target) {}
+  ~ClipRectTransition() override {}
+
+ protected:
+  std::string DebugName() const override { return "ClipRectTransition"; }
+  void OnStart(LayerAnimationDelegate* delegate) override {
+    start_ = delegate->GetClipRectForAnimation();
+  }
+
+  bool OnProgress(double t, LayerAnimationDelegate* delegate) override {
+    delegate->SetClipRectFromAnimation(
+        gfx::Tween::RectValueBetween(t, start_, target_),
+        PropertyChangeReason::FROM_ANIMATION);
+    return true;
+  }
+
+  void OnGetTarget(TargetValue* target) const override {
+    target->clip_rect = target_;
+  }
+
+  void OnAbort(LayerAnimationDelegate* delegate) override {}
+
+ private:
+  gfx::Rect start_;
+  const gfx::Rect target_;
+
+  DISALLOW_COPY_AND_ASSIGN(ClipRectTransition);
+};
+
+// RoundedCornersTransition ----------------------------------------------------
+
+class RoundedCornersTransition : public LayerAnimationElement {
+ public:
+  RoundedCornersTransition(const gfx::RoundedCornersF& target,
+                           base::TimeDelta duration)
+      : LayerAnimationElement(ROUNDED_CORNERS, duration), target_(target) {}
+  ~RoundedCornersTransition() override = default;
+
+ protected:
+  std::string DebugName() const override { return "RoundedCornersTransition"; }
+  void OnStart(LayerAnimationDelegate* delegate) override {
+    start_ = delegate->GetRoundedCornersForAnimation();
+  }
+
+  bool OnProgress(double t, LayerAnimationDelegate* delegate) override {
+    delegate->SetRoundedCornersFromAnimation(
+        gfx::RoundedCornersF(
+            gfx::Tween::FloatValueBetween(t, start_.upper_left(),
+                                          target_.upper_left()),
+            gfx::Tween::FloatValueBetween(t, start_.upper_right(),
+                                          target_.upper_right()),
+            gfx::Tween::FloatValueBetween(t, start_.lower_right(),
+                                          target_.lower_right()),
+            gfx::Tween::FloatValueBetween(t, start_.lower_left(),
+                                          target_.lower_left())),
+        PropertyChangeReason::FROM_ANIMATION);
+    return true;
+  }
+
+  void OnGetTarget(TargetValue* target) const override {
+    target->rounded_corners = target_;
+  }
+
+  void OnAbort(LayerAnimationDelegate* delegate) override {}
+
+ private:
+  gfx::RoundedCornersF start_;
+  gfx::RoundedCornersF target_;
+
+  DISALLOW_COPY_AND_ASSIGN(RoundedCornersTransition);
+};
+
 // ThreadedLayerAnimationElement -----------------------------------------------
 
 class ThreadedLayerAnimationElement : public LayerAnimationElement {
@@ -376,12 +447,12 @@ class ThreadedOpacityTransition : public ThreadedLayerAnimationElement {
   }
 
   std::unique_ptr<cc::KeyframeModel> CreateCCKeyframeModel() override {
-    std::unique_ptr<cc::AnimationCurve> animation_curve(
+    std::unique_ptr<gfx::AnimationCurve> animation_curve(
         new FloatAnimationCurveAdapter(tween_type(), start_, target_,
                                        duration()));
     std::unique_ptr<cc::KeyframeModel> keyframe_model(cc::KeyframeModel::Create(
         std::move(animation_curve), keyframe_model_id(), animation_group_id(),
-        cc::TargetProperty::OPACITY));
+        cc::KeyframeModel::TargetPropertyId(cc::TargetProperty::OPACITY)));
     return keyframe_model;
   }
 
@@ -446,12 +517,12 @@ class ThreadedTransformTransition : public ThreadedLayerAnimationElement {
   }
 
   std::unique_ptr<cc::KeyframeModel> CreateCCKeyframeModel() override {
-    std::unique_ptr<cc::AnimationCurve> animation_curve(
+    std::unique_ptr<gfx::AnimationCurve> animation_curve(
         new TransformAnimationCurveAdapter(tween_type(), start_, target_,
                                            duration()));
     std::unique_ptr<cc::KeyframeModel> keyframe_model(cc::KeyframeModel::Create(
         std::move(animation_curve), keyframe_model_id(), animation_group_id(),
-        cc::TargetProperty::TRANSFORM));
+        cc::KeyframeModel::TargetPropertyId(cc::TargetProperty::TRANSFORM)));
     return keyframe_model;
   }
 
@@ -487,8 +558,10 @@ LayerAnimationElement::TargetValue::TargetValue(
       visibility(delegate ? delegate->GetVisibilityForAnimation() : false),
       brightness(delegate ? delegate->GetBrightnessForAnimation() : 0.0f),
       grayscale(delegate ? delegate->GetGrayscaleForAnimation() : 0.0f),
-      color(delegate ? delegate->GetColorForAnimation() : SK_ColorTRANSPARENT) {
-}
+      color(delegate ? delegate->GetColorForAnimation() : SK_ColorTRANSPARENT),
+      clip_rect(delegate ? delegate->GetClipRectForAnimation() : gfx::Rect()),
+      rounded_corners(delegate ? delegate->GetRoundedCornersForAnimation()
+                               : gfx::RoundedCornersF()) {}
 
 // LayerAnimationElement -------------------------------------------------------
 
@@ -500,10 +573,7 @@ LayerAnimationElement::LayerAnimationElement(AnimatableProperties properties,
       tween_type_(gfx::Tween::LINEAR),
       keyframe_model_id_(cc::AnimationIdProvider::NextKeyframeModelId()),
       animation_group_id_(0),
-      last_progressed_fraction_(0.0),
-      animation_metrics_reporter_(nullptr),
-      start_frame_number_(0),
-      weak_ptr_factory_(this) {}
+      last_progressed_fraction_(0.0) {}
 
 LayerAnimationElement::LayerAnimationElement(
     const LayerAnimationElement& element)
@@ -513,13 +583,9 @@ LayerAnimationElement::LayerAnimationElement(
       tween_type_(element.tween_type_),
       keyframe_model_id_(cc::AnimationIdProvider::NextKeyframeModelId()),
       animation_group_id_(element.animation_group_id_),
-      last_progressed_fraction_(element.last_progressed_fraction_),
-      animation_metrics_reporter_(nullptr),
-      start_frame_number_(0),
-      weak_ptr_factory_(this) {}
+      last_progressed_fraction_(element.last_progressed_fraction_) {}
 
-LayerAnimationElement::~LayerAnimationElement() {
-}
+LayerAnimationElement::~LayerAnimationElement() = default;
 
 void LayerAnimationElement::Start(LayerAnimationDelegate* delegate,
                                   int animation_group_id) {
@@ -528,8 +594,6 @@ void LayerAnimationElement::Start(LayerAnimationDelegate* delegate,
   animation_group_id_ = animation_group_id;
   last_progressed_fraction_ = 0.0;
   OnStart(delegate);
-  if (delegate)
-    start_frame_number_ = delegate->GetFrameNumber();
   RequestEffectiveStart(delegate);
   first_frame_ = false;
 }
@@ -552,7 +616,7 @@ bool LayerAnimationElement::Progress(base::TimeTicks now,
 
   base::TimeDelta elapsed = now - effective_start_time_;
   if ((duration_ > base::TimeDelta()) && (elapsed < duration_))
-    t = elapsed.InMillisecondsF() / duration_.InMillisecondsF();
+    t = elapsed / duration_;
   base::WeakPtr<LayerAnimationElement> alive(weak_ptr_factory_.GetWeakPtr());
   need_draw = OnProgress(gfx::Tween::CalculateValue(tween_type_, t), delegate);
   if (!alive)
@@ -583,29 +647,12 @@ bool LayerAnimationElement::IsFinished(base::TimeTicks time,
 }
 
 bool LayerAnimationElement::ProgressToEnd(LayerAnimationDelegate* delegate) {
-  const int frame_number = delegate ? delegate->GetFrameNumber() : 0;
-  if (first_frame_) {
+  if (first_frame_)
     OnStart(delegate);
-    start_frame_number_ = frame_number;
-  }
+
   base::WeakPtr<LayerAnimationElement> alive(weak_ptr_factory_.GetWeakPtr());
   bool need_draw = OnProgress(1.0, delegate);
 
-  int end_frame_number = frame_number;
-  if (animation_metrics_reporter_ && end_frame_number > start_frame_number_ &&
-      !duration_.is_zero()) {
-    base::TimeDelta elapsed = base::TimeTicks::Now() - effective_start_time_;
-    if (elapsed >= duration_) {
-      int smoothness = 100;
-      const float kFrameInterval =
-          base::Time::kMillisecondsPerSecond / delegate->GetRefreshRate();
-      const float actual_duration =
-          (end_frame_number - start_frame_number_) * kFrameInterval;
-      if (duration_.InMillisecondsF() - actual_duration >= kFrameInterval)
-        smoothness = 100 * (actual_duration / duration_.InMillisecondsF());
-      animation_metrics_reporter_->Report(smoothness);
-    }
-  }
   if (!alive)
     return need_draw;
   last_progressed_fraction_ = 1.0;
@@ -698,6 +745,12 @@ std::string LayerAnimationElement::AnimatablePropertiesToString(
         case COLOR:
           str.append("COLOR");
           break;
+        case CLIP:
+          str.append("CLIP");
+          break;
+        case ROUNDED_CORNERS:
+          str.append("ROUNDED_CORNERS");
+          break;
         case SENTINEL:
           NOTREACHED();
           break;
@@ -711,21 +764,10 @@ std::string LayerAnimationElement::AnimatablePropertiesToString(
 // static
 base::TimeDelta LayerAnimationElement::GetEffectiveDuration(
     const base::TimeDelta& duration) {
-  switch (ScopedAnimationDurationScaleMode::duration_scale_mode()) {
-    case ScopedAnimationDurationScaleMode::NORMAL_DURATION:
-      return duration;
-    case ScopedAnimationDurationScaleMode::FAST_DURATION:
-      return duration / kFastDurationScaleDivisor;
-    case ScopedAnimationDurationScaleMode::SLOW_DURATION:
-      return duration * kSlowDurationScaleMultiplier;
-    case ScopedAnimationDurationScaleMode::NON_ZERO_DURATION:
-      return duration / kNonZeroDurationScaleDivisor;
-    case ScopedAnimationDurationScaleMode::ZERO_DURATION:
-      return base::TimeDelta();
-    default:
-      NOTREACHED();
-      return base::TimeDelta();
-  }
+  if (ScopedAnimationDurationScaleMode::duration_multiplier() == 0)
+    return base::TimeDelta();
+
+  return duration * ScopedAnimationDurationScaleMode::duration_multiplier();
 }
 
 // static
@@ -791,6 +833,19 @@ std::unique_ptr<LayerAnimationElement>
 LayerAnimationElement::CreateColorElement(SkColor color,
                                           base::TimeDelta duration) {
   return std::make_unique<ColorTransition>(color, duration);
+}
+
+std::unique_ptr<LayerAnimationElement>
+LayerAnimationElement::CreateClipRectElement(const gfx::Rect& clip_rect,
+                                             base::TimeDelta duration) {
+  return std::make_unique<ClipRectTransition>(clip_rect, duration);
+}
+
+std::unique_ptr<LayerAnimationElement>
+LayerAnimationElement::CreateRoundedCornersElement(
+    const gfx::RoundedCornersF& rounded_corners,
+    base::TimeDelta duration) {
+  return std::make_unique<RoundedCornersTransition>(rounded_corners, duration);
 }
 
 }  // namespace ui

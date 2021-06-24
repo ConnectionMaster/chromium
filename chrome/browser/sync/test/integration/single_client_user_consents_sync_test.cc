@@ -5,15 +5,17 @@
 #include <stdint.h>
 
 #include "base/macros.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/consent_auditor/consent_auditor_factory.h"
-#include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
 #include "chrome/browser/sync/test/integration/single_client_status_change_checker.h"
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
+#include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "components/consent_auditor/consent_auditor.h"
 #include "components/sync/driver/sync_driver_switches.h"
 #include "components/sync/protocol/user_consent_specifics.pb.h"
+#include "content/public/test/browser_test.h"
 
 using consent_auditor::ConsentStatus;
 using consent_auditor::Feature;
@@ -25,20 +27,14 @@ using SyncConsent = sync_pb::UserConsentTypes::SyncConsent;
 
 namespace {
 
-std::string GetAccountId() {
-#if defined(OS_CHROMEOS)
-  // TODO(vitaliii): Unify the two, because it takes ages to debug and
-  // impossible to discover otherwise.
-  return "user@gmail.com";
-#else
-  return "gaia_id_for_user_gmail.com";
-#endif
+CoreAccountId GetAccountId() {
+  return CoreAccountId("gaia_id_for_user_gmail.com");
 }
 
 class UserConsentEqualityChecker : public SingleClientStatusChangeChecker {
  public:
   UserConsentEqualityChecker(
-      syncer::ProfileSyncService* service,
+      syncer::SyncServiceImpl* service,
       FakeServer* fake_server,
       std::vector<UserConsentSpecifics> expected_specifics)
       : SingleClientStatusChangeChecker(service), fake_server_(fake_server) {
@@ -48,7 +44,8 @@ class UserConsentEqualityChecker : public SingleClientStatusChangeChecker {
     }
   }
 
-  bool IsExitConditionSatisfied() override {
+  bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting server side USER_CONSENTS to match expected.";
     std::vector<SyncEntity> entities =
         fake_server_->GetSyncEntitiesByModelType(syncer::USER_CONSENTS);
 
@@ -66,7 +63,7 @@ class UserConsentEqualityChecker : public SingleClientStatusChangeChecker {
     for (const SyncEntity& entity : entities) {
       UserConsentSpecifics server_specifics = entity.specifics().user_consent();
       auto iter = expected_specifics_.find(server_specifics.consent_case());
-      EXPECT_TRUE(expected_specifics_.end() != iter);
+      EXPECT_NE(expected_specifics_.end(), iter);
       if (expected_specifics_.end() == iter) {
         return false;
       }
@@ -75,10 +72,6 @@ class UserConsentEqualityChecker : public SingleClientStatusChangeChecker {
     }
 
     return true;
-  }
-
-  std::string GetDebugMessage() const override {
-    return "Waiting server side USER_CONSENTS to match expected.";
   }
 
  private:
@@ -93,9 +86,8 @@ class UserConsentEqualityChecker : public SingleClientStatusChangeChecker {
 
 class SingleClientUserConsentsSyncTest : public SyncTest {
  public:
-  SingleClientUserConsentsSyncTest() : SyncTest(SINGLE_CLIENT) {
-    DisableVerifier();
-  }
+  SingleClientUserConsentsSyncTest() : SyncTest(SINGLE_CLIENT) {}
+  ~SingleClientUserConsentsSyncTest() override = default;
 
   bool ExpectUserConsents(
       std::vector<UserConsentSpecifics> expected_specifics) {
@@ -103,9 +95,6 @@ class SingleClientUserConsentsSyncTest : public SyncTest {
                                       expected_specifics)
         .Wait();
   }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(SingleClientUserConsentsSyncTest);
 };
 
 IN_PROC_BROWSER_TEST_F(SingleClientUserConsentsSyncTest, ShouldSubmit) {
@@ -117,7 +106,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientUserConsentsSyncTest, ShouldSubmit) {
       ConsentAuditorFactory::GetForProfile(GetProfile(0));
   UserConsentSpecifics specifics;
   specifics.mutable_sync_consent()->set_confirmation_grd_id(1);
-  specifics.set_account_id(GetAccountId());
+  specifics.set_account_id(GetAccountId().ToString());
 
   SyncConsent sync_consent;
   sync_consent.set_confirmation_grd_id(1);
@@ -134,7 +123,7 @@ IN_PROC_BROWSER_TEST_F(
   specifics.mutable_sync_consent()->set_confirmation_grd_id(1);
   // Account id may be compared to the synced account, thus, we need them to
   // match.
-  specifics.set_account_id(GetAccountId());
+  specifics.set_account_id(GetAccountId().ToString());
 
   ASSERT_TRUE(SetupSync());
   consent_auditor::ConsentAuditor* consent_service =
@@ -162,10 +151,10 @@ IN_PROC_BROWSER_TEST_F(SingleClientUserConsentsSyncTest,
 
   UserConsentSpecifics specifics1;
   *specifics1.mutable_sync_consent() = consent1;
-  specifics1.set_account_id(GetAccountId());
+  specifics1.set_account_id(GetAccountId().ToString());
   UserConsentSpecifics specifics2;
   *specifics2.mutable_sync_consent() = consent2;
-  specifics2.set_account_id(GetAccountId());
+  specifics2.set_account_id(GetAccountId().ToString());
 
   // Set up the clients (profiles), but do *not* set up Sync yet.
   ASSERT_TRUE(SetupClients());
@@ -188,7 +177,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientUserConsentsSyncTest,
 
 // ChromeOS does not support late signin after profile creation, so the test
 // below does not apply, at least in the current form.
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 IN_PROC_BROWSER_TEST_F(SingleClientUserConsentsSyncTest,
                        ShouldSubmitIfSignedInAlthoughFullSyncNotEnabled) {
   // We avoid calling SetupSync(), because we don't want to turn on full sync,
@@ -217,9 +206,9 @@ IN_PROC_BROWSER_TEST_F(SingleClientUserConsentsSyncTest,
   expected_sync_consent->set_status(UserConsentTypes::GIVEN);
   // Account id may be compared to the synced account, thus, we need them to
   // match.
-  specifics.set_account_id(GetAccountId());
+  specifics.set_account_id(GetAccountId().ToString());
   EXPECT_TRUE(ExpectUserConsents({specifics}));
 }
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace

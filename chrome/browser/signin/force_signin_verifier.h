@@ -6,9 +6,9 @@
 #define CHROME_BROWSER_SIGNIN_FORCE_SIGNIN_VERIFIER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "google_apis/gaia/google_service_auth_error.h"
@@ -17,15 +17,15 @@
 
 class Profile;
 
-namespace identity {
+namespace base {
+class FilePath;
+}
+
+namespace signin {
 class IdentityManager;
 class PrimaryAccountAccessTokenFetcher;
 struct AccessTokenInfo;
-}  // namespace identity
-
-extern const char kForceSigninVerificationMetricsName[];
-extern const char kForceSigninVerificationSuccessTimeMetricsName[];
-extern const char kForceSigninVerificationFailureTimeMetricsName[];
+}  // namespace signin
 
 // ForceSigninVerifier will verify profile's auth token when profile is loaded
 // into memory by the first time via gaia server. It will retry on any transient
@@ -33,11 +33,12 @@ extern const char kForceSigninVerificationFailureTimeMetricsName[];
 class ForceSigninVerifier
     : public network::NetworkConnectionTracker::NetworkConnectionObserver {
  public:
-  explicit ForceSigninVerifier(Profile* profile);
+  explicit ForceSigninVerifier(Profile* profile,
+                               signin::IdentityManager* identity_manager);
   ~ForceSigninVerifier() override;
 
   void OnAccessTokenFetchComplete(GoogleServiceAuthError error,
-                                  identity::AccessTokenInfo token_info);
+                                  signin::AccessTokenInfo token_info);
 
   // override network::NetworkConnectionTracker::NetworkConnectionObserver
   void OnConnectionChanged(network::mojom::ConnectionType type) override;
@@ -54,7 +55,6 @@ class ForceSigninVerifier
   //   - There is no on going verification.
   //   - There is network connection.
   //   - The profile has signed in.
-  //
   void SendRequest();
 
   // Send the request if |network_type| is not CONNECTION_NONE and
@@ -65,23 +65,27 @@ class ForceSigninVerifier
   bool ShouldSendRequest();
 
   virtual void CloseAllBrowserWindows();
+  void OnCloseBrowsersSuccess(const base::FilePath& profile_path);
 
-  identity::PrimaryAccountAccessTokenFetcher* GetAccessTokenFetcherForTesting();
+  signin::PrimaryAccountAccessTokenFetcher* GetAccessTokenFetcherForTesting();
   net::BackoffEntry* GetBackoffEntryForTesting();
   base::OneShotTimer* GetOneShotTimerForTesting();
 
  private:
-  std::unique_ptr<identity::PrimaryAccountAccessTokenFetcher>
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
       access_token_fetcher_;
 
   // Indicates whether the verification is finished successfully or with a
   // persistent error.
-  bool has_token_verified_;
+  bool has_token_verified_ = false;
   net::BackoffEntry backoff_entry_;
   base::OneShotTimer backoff_request_timer_;
   base::TimeTicks creation_time_;
 
-  identity::IdentityManager* identity_manager_;
+  Profile* profile_ = nullptr;
+  signin::IdentityManager* identity_manager_ = nullptr;
+
+  base::WeakPtrFactory<ForceSigninVerifier> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ForceSigninVerifier);
 };

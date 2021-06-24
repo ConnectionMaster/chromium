@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-#include "base/strings/string16.h"
 
 namespace blink {
 class WebDocument;
@@ -16,22 +15,19 @@ class WebDocument;
 
 namespace autofill {
 
-class TestPasswordGenerationAgent;
+class PasswordGenerationAgent;
 
-void SetNotBlacklistedMessage(TestPasswordGenerationAgent* generation_agent,
-                              const char* form_str);
-void SetAccountCreationFormsDetectedMessage(TestPasswordGenerationAgent* agent,
-                                            blink::WebDocument document,
-                                            int form_index,
-                                            int field_index);
-
-void SetAccountCreationFormsDetectedMessageForUnownedInputs(
-    TestPasswordGenerationAgent* generation_agent,
-    blink::WebDocument document);
+// Sets that automatic generation available with |generation_agent| for fields
+// |new_password_id| and |cofirm_password_id| which are in document |document|.
+void SetFoundFormEligibleForGeneration(
+    PasswordGenerationAgent* generation_agent,
+    blink::WebDocument document,
+    const char* new_password_id,
+    const char* cofirm_password_id);
 
 std::string CreateScriptToRegisterListeners(
     const char* const element_name,
-    std::vector<base::string16>* variables_to_check);
+    std::vector<std::u16string>* variables_to_check);
 
 }  // namespace autofill
 

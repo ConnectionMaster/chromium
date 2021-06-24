@@ -5,13 +5,19 @@
 #ifndef UI_VIEWS_WINDOW_NON_CLIENT_VIEW_H_
 #define UI_VIEWS_WINDOW_NON_CLIENT_VIEW_H_
 
+#include <memory>
+
 #include "base/macros.h"
+#include "build/build_config.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_targeter_delegate.h"
 
 namespace views {
 
 class ClientView;
+enum class CloseRequestResult;
 
 ////////////////////////////////////////////////////////////////////////////////
 // NonClientFrameView
@@ -23,8 +29,7 @@ class ClientView;
 class VIEWS_EXPORT NonClientFrameView : public View,
                                         public ViewTargeterDelegate {
  public:
-  // Internal class name.
-  static const char kViewClassName[];
+  METADATA_HEADER(NonClientFrameView);
 
   enum {
     // Various edges of the frame border have a 1 px shadow along their edges;
@@ -36,6 +41,9 @@ class VIEWS_EXPORT NonClientFrameView : public View,
     kClientEdgeThickness = 1,
   };
 
+  NonClientFrameView();
+  NonClientFrameView(const NonClientFrameView&) = delete;
+  NonClientFrameView& operator=(const NonClientFrameView&) = delete;
   ~NonClientFrameView() override;
 
   // Used to determine if the frame should be painted as active. Keyed off the
@@ -56,60 +64,52 @@ class VIEWS_EXPORT NonClientFrameView : public View,
 
   // Returns the bounds (in this View's parent's coordinates) that the client
   // view should be laid out within.
-  virtual gfx::Rect GetBoundsForClientView() const = 0;
+  virtual gfx::Rect GetBoundsForClientView() const;
 
   virtual gfx::Rect GetWindowBoundsForClientBounds(
-      const gfx::Rect& client_bounds) const = 0;
+      const gfx::Rect& client_bounds) const;
 
   // Gets the clip mask (in this View's parent's coordinates) that should be
   // applied to the client view. Returns false if no special clip should be
   // used.
   virtual bool GetClientMask(const gfx::Size& size, SkPath* mask) const;
 
+#if defined(OS_WIN)
+  // Returns the point in screen physical coordinates at which the system menu
+  // should be opened.
+  virtual gfx::Point GetSystemMenuScreenPixelLocation() const;
+#endif
+
   // This function must ask the ClientView to do a hittest.  We don't do this in
   // the parent NonClientView because that makes it more difficult to calculate
   // hittests for regions that are partially obscured by the ClientView, e.g.
   // HTSYSMENU.
   // Return value is one of the windows HT constants (see ui/base/hit_test.h).
-  virtual int NonClientHitTest(const gfx::Point& point) = 0;
+  virtual int NonClientHitTest(const gfx::Point& point);
 
   // Used to make the hosting widget shaped (non-rectangular). For a
   // rectangular window do nothing. For a shaped window update |window_mask|
   // accordingly. |size| is the size of the widget.
-  virtual void GetWindowMask(const gfx::Size& size, SkPath* window_mask) = 0;
-  virtual void ResetWindowControls() = 0;
-  virtual void UpdateWindowIcon() = 0;
-  virtual void UpdateWindowTitle() = 0;
+  virtual void GetWindowMask(const gfx::Size& size, SkPath* window_mask) {}
+  virtual void ResetWindowControls() {}
+  virtual void UpdateWindowIcon() {}
+  virtual void UpdateWindowTitle() {}
 
   // Whether the widget can be resized or maximized has changed.
-  virtual void SizeConstraintsChanged() = 0;
-
-  // The widget's activation state has changed to |active|.
-  virtual void ActivationChanged(bool active);
+  virtual void SizeConstraintsChanged() {}
 
   // View:
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
-  const char* GetClassName() const override;
-  void OnNativeThemeChanged(const ui::NativeTheme* theme) override;
-
- protected:
-  NonClientFrameView();
-
-  // ViewTargeterDelegate:
-  bool DoesIntersectRect(const View* target,
-                         const gfx::Rect& rect) const override;
-
-  void set_active_state_override(bool* active_state_override) {
-    active_state_override_ = active_state_override;
-  }
+  void OnThemeChanged() override;
+  void Layout() override;
 
  private:
-  // Used to force ShouldPaintAsActive() to treat the active state a particular
-  // way.  This is normally null; when non-null, its value will override the
-  // normal "active" value computed by the function.
-  bool* active_state_override_ = nullptr;
-
-  DISALLOW_COPY_AND_ASSIGN(NonClientFrameView);
+#if defined(OS_WIN)
+  // Returns the y coordinate, in local coordinates, at which the system menu
+  // should be opened.  Since this is in DIP, it does not include the 1 px
+  // offset into the caption area; the caller will take care of this.
+  virtual int GetSystemMenuY() const;
+#endif
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -117,10 +117,11 @@ class VIEWS_EXPORT NonClientFrameView : public View,
 //
 //  The NonClientView is the logical root of all Views contained within a
 //  Window, except for the RootView which is its parent and of which it is the
-//  sole child. The NonClientView has two children, the NonClientFrameView which
+//  sole child. The NonClientView has one child, the NonClientFrameView which
 //  is responsible for painting and responding to events from the non-client
-//  portions of the window, and the ClientView, which is responsible for the
-//  same for the client area of the window:
+//  portions of the window, and for forwarding events to its child, the
+//  ClientView, which is responsible for the same for the client area of the
+//  window:
 //
 //  +- views::Widget ------------------------------------+
 //  | +- views::RootView ------------------------------+ |
@@ -131,29 +132,24 @@ class VIEWS_EXPORT NonClientFrameView : public View,
 //  | | | | << of the non-client areas of a     >> | | | |
 //  | | | | << views::Widget.                   >> | | | |
 //  | | | |                                        | | | |
-//  | | | +----------------------------------------+ | | |
-//  | | | +- views::ClientView or subclass --------+ | | |
-//  | | | |                                        | | | |
-//  | | | | << all painting and event receiving >> | | | |
-//  | | | | << of the client areas of a         >> | | | |
-//  | | | | << views::Widget.                   >> | | | |
-//  | | | |                                        | | | |
+//  | | | | +- views::ClientView or subclass ----+ | | | |
+//  | | | | |                                    | | | | |
+//  | | | | | << all painting and event       >> | | | | |
+//  | | | | | << receiving of the client      >> | | | | |
+//  | | | | | << areas of a views::Widget.    >> | | | | |
+//  | | | | +----------------------------------+ | | | | |
 //  | | | +----------------------------------------+ | | |
 //  | | +--------------------------------------------+ | |
 //  | +------------------------------------------------+ |
 //  +----------------------------------------------------+
 //
-// The NonClientFrameView and ClientView are siblings because due to theme
-// changes the NonClientFrameView may be replaced with different
-// implementations (e.g. during the switch from DWM/Aero-Glass to Vista Basic/
-// Classic rendering).
-//
 class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
  public:
-  // Internal class name.
-  static const char kViewClassName[];
+  METADATA_HEADER(NonClientView);
 
-  NonClientView();
+  explicit NonClientView(ClientView* client_view);
+  NonClientView(const NonClientView&) = delete;
+  NonClientView& operator=(const NonClientView&) = delete;
   ~NonClientView() override;
 
   // Returns the current NonClientFrameView instance, or NULL if
@@ -161,14 +157,13 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
   NonClientFrameView* frame_view() const { return frame_view_.get(); }
 
   // Replaces the current NonClientFrameView (if any) with the specified one.
-  void SetFrameView(NonClientFrameView* frame_view);
+  void SetFrameView(std::unique_ptr<NonClientFrameView> frame_view);
 
   // Replaces the current |overlay_view_| (if any) with the specified one.
   void SetOverlayView(View* view);
 
-  // Returns true if the ClientView determines that the containing window can be
-  // closed, false otherwise.
-  bool CanClose();
+  // Returned value signals whether the ClientView can be closed.
+  CloseRequestResult OnWindowCloseRequested();
 
   // Called by the containing Window when it is closed.
   void WindowClosing();
@@ -208,17 +203,9 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
 
   // Get/Set client_view property.
   ClientView* client_view() const { return client_view_; }
-  void set_client_view(ClientView* client_view) {
-    client_view_ = client_view;
-  }
-
-  // Layout just the frame view. This is necessary on Windows when non-client
-  // metrics such as the position of the window controls changes independently
-  // of a window resize message.
-  void LayoutFrameView();
 
   // Set the accessible name of this view.
-  void SetAccessibleName(const base::string16& name);
+  void SetAccessibleName(const std::u16string& name);
 
   // NonClientView, View overrides:
   gfx::Size CalculatePreferredSize() const override;
@@ -226,8 +213,6 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
   gfx::Size GetMaximumSize() const override;
   void Layout() override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
-  const char* GetClassName() const override;
-
   views::View* GetTooltipHandlerForPoint(const gfx::Point& point) override;
 
  protected:
@@ -242,7 +227,7 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
   // A ClientView object or subclass, responsible for sizing the contents view
   // of the window, hit testing and perhaps other tasks depending on the
   // implementation.
-  ClientView* client_view_ = nullptr;
+  ClientView* const client_view_;
 
   // The NonClientFrameView that renders the non-client portions of the window.
   // This object is not owned by the view hierarchy because it can be replaced
@@ -254,11 +239,19 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
   View* overlay_view_ = nullptr;
 
   // The accessible name of this view.
-  base::string16 accessible_name_;
-
-  DISALLOW_COPY_AND_ASSIGN(NonClientView);
+  std::u16string accessible_name_;
 };
 
+BEGIN_VIEW_BUILDER(VIEWS_EXPORT, NonClientFrameView, View)
+END_VIEW_BUILDER
+
+BEGIN_VIEW_BUILDER(VIEWS_EXPORT, NonClientView, View)
+VIEW_BUILDER_VIEW_PROPERTY(NonClientFrameView, FrameView)
+END_VIEW_BUILDER
+
 }  // namespace views
+
+DEFINE_VIEW_BUILDER(VIEWS_EXPORT, NonClientFrameView)
+DEFINE_VIEW_BUILDER(VIEWS_EXPORT, NonClientView)
 
 #endif  // UI_VIEWS_WINDOW_NON_CLIENT_VIEW_H_

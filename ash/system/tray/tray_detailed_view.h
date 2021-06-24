@@ -21,6 +21,8 @@ struct VectorIcon;
 namespace views {
 class BoxLayout;
 class Button;
+class ImageView;
+class Label;
 class ProgressBar;
 class ScrollView;
 class Separator;
@@ -34,8 +36,7 @@ class ScrollBorder;
 class TriView;
 
 class ASH_EXPORT TrayDetailedView : public views::View,
-                                    public ViewClickListener,
-                                    public views::ButtonListener {
+                                    public ViewClickListener {
  public:
   explicit TrayDetailedView(DetailedViewDelegate* delegate);
   ~TrayDetailedView() override;
@@ -44,14 +45,12 @@ class ASH_EXPORT TrayDetailedView : public views::View,
   // Don't override this --- override HandleViewClicked.
   void OnViewClicked(views::View* sender) final;
 
-  // views::ButtonListener:
-  // Don't override this --- override HandleButtonPressed.
-  void ButtonPressed(views::Button* sender, const ui::Event& event) final;
-
  protected:
   // views::View:
   void Layout() override;
   int GetHeightForWidth(int width) const override;
+  const char* GetClassName() const override;
+  void OnThemeChanged() override;
 
   // Exposes the layout manager of this view to give control to subclasses.
   views::BoxLayout* box_layout() { return box_layout_; }
@@ -67,23 +66,41 @@ class ASH_EXPORT TrayDetailedView : public views::View,
 
   // Adds a targetable row to |scroll_content_| containing |icon| and |text|.
   HoverHighlightView* AddScrollListItem(const gfx::VectorIcon& icon,
-                                        const base::string16& text);
+                                        const std::u16string& text);
+
+  // Add a child view to the scroll list.
+  void AddScrollListChild(std::unique_ptr<views::View> child);
 
   // Adds a targetable row to |scroll_content_| containing |icon|, |text|, and a
   // checkbox. |checked| determines whether the checkbox is checked or not.
-  HoverHighlightView* AddScrollListCheckableItem(const gfx::VectorIcon& icon,
-                                                 const base::string16& text,
-                                                 bool checked);
+  // |enterprise_managed| determines whether or not there will be an enterprise
+  // managed icon for that item.
+  HoverHighlightView* AddScrollListCheckableItem(
+      const gfx::VectorIcon& icon,
+      const std::u16string& text,
+      bool checked,
+      bool enterprise_managed = false);
 
   // Adds a targetable row to |scroll_content_| containing |text| and a
   // checkbox. |checked| determines whether the checkbox is checked or not.
-  HoverHighlightView* AddScrollListCheckableItem(const base::string16& text,
-                                                 bool checked);
+  // |enterprise_managed| determines whether or not there will be an enterprise
+  // managed icon for that item.
+  HoverHighlightView* AddScrollListCheckableItem(
+      const std::u16string& text,
+      bool checked,
+      bool enterprise_managed = false);
 
-  // Adds connected sub label to the |view| with appropriate style.
+  // Adds connected sub label to the |view| with appropriate style and updates
+  // accessibility label.
   void SetupConnectedScrollListItem(HoverHighlightView* view);
 
-  // Adds connecting sub label to the |view| with appropriate style.
+  // Adds connected sub label with the device's battery percentage to the |view|
+  // with appropriate style and updates accessibility label.
+  void SetupConnectedScrollListItem(HoverHighlightView* view,
+                                    absl::optional<uint8_t> battery_percentage);
+
+  // Adds connecting sub label to the |view| with appropriate style and updates
+  // accessibility label.
   void SetupConnectingScrollListItem(HoverHighlightView* view);
 
   // Adds a sticky sub header to |scroll_content_| containing |icon| and a text
@@ -105,9 +122,11 @@ class ASH_EXPORT TrayDetailedView : public views::View,
   // Helper functions which create and return the settings and help buttons,
   // respectively, used in the material design top-most header row. The caller
   // assumes ownership of the returned buttons.
-  views::Button* CreateInfoButton(int info_accessible_name_id);
-  views::Button* CreateSettingsButton(int setting_accessible_name_id);
-  views::Button* CreateHelpButton();
+  views::Button* CreateInfoButton(views::Button::PressedCallback callback,
+                                  int info_accessible_name_id);
+  views::Button* CreateSettingsButton(views::Button::PressedCallback callback,
+                                      int setting_accessible_name_id);
+  views::Button* CreateHelpButton(views::Button::PressedCallback callback);
 
   // Create a horizontal separator line to be drawn between rows in a detailed
   // view above the sub-header rows. Caller takes ownership of the returned
@@ -127,10 +146,6 @@ class ASH_EXPORT TrayDetailedView : public views::View,
   // Overridden to handle clicks on subclass-specific views.
   virtual void HandleViewClicked(views::View* view);
 
-  // Overridden to handle button presses on subclass-specific buttons.
-  virtual void HandleButtonPressed(views::Button* sender,
-                                   const ui::Event& event);
-
   // Creates and adds subclass-specific buttons to the title row.
   virtual void CreateExtraTitleRowButtons();
 
@@ -138,18 +153,22 @@ class ASH_EXPORT TrayDetailedView : public views::View,
   void TransitionToMainView();
 
   DetailedViewDelegate* const delegate_;
-  views::BoxLayout* box_layout_;
-  views::ScrollView* scroller_;
-  views::View* scroll_content_;
-  views::ProgressBar* progress_bar_;
+  views::BoxLayout* box_layout_ = nullptr;
+  views::ScrollView* scroller_ = nullptr;
+  views::View* scroll_content_ = nullptr;
+  views::ProgressBar* progress_bar_ = nullptr;
 
-  ScrollBorder* scroll_border_;  // Weak reference
+  ScrollBorder* scroll_border_ = nullptr;  // Weak reference
 
   // The container view for the top-most title row in material design.
-  TriView* tri_view_;
+  TriView* tri_view_ = nullptr;
 
   // The back button that appears in the material design title row. Not owned.
-  views::Button* back_button_;
+  views::Button* back_button_ = nullptr;
+
+  views::Label* sub_header_label_ = nullptr;
+  views::ImageView* sub_header_image_view_ = nullptr;
+  const gfx::VectorIcon* sub_header_icon_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(TrayDetailedView);
 };

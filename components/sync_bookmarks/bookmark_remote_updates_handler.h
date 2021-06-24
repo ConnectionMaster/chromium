@@ -6,10 +6,10 @@
 #define COMPONENTS_SYNC_BOOKMARKS_BOOKMARK_REMOTE_UPDATES_HANDLER_H_
 
 #include <map>
-#include <string>
 #include <vector>
 
-#include "components/sync/engine/non_blocking_sync_common.h"
+#include "components/sync/base/unique_position.h"
+#include "components/sync/engine/commit_and_get_updates_types.h"
 #include "components/sync_bookmarks/synced_bookmark_tracker.h"
 
 namespace bookmarks {
@@ -44,6 +44,11 @@ class BookmarkRemoteUpdatesHandler {
   static std::vector<const syncer::UpdateResponseData*> ReorderUpdatesForTest(
       const syncer::UpdateResponseDataList* updates);
 
+  static size_t ComputeChildNodeIndexForTest(
+      const bookmarks::BookmarkNode* parent,
+      const syncer::UniquePosition& unique_position,
+      const SyncedBookmarkTracker* bookmark_tracker);
+
  private:
   // Reorders incoming updates such that parent creation is before child
   // creation and child deletion is before parent deletion, and deletions should
@@ -51,6 +56,15 @@ class BookmarkRemoteUpdatesHandler {
   // |updates|.
   static std::vector<const syncer::UpdateResponseData*> ReorderUpdates(
       const syncer::UpdateResponseDataList* updates);
+
+  // Returns the tracked entity that should be affected by a remote change, or
+  // null if there is none (e.g. indicating a remote creation).
+  // |should_ignore_update| must not be null and it can be marked as true if the
+  // function reports that the update should not be processed further (e.g. it
+  // is invalid).
+  const SyncedBookmarkTracker::Entity* DetermineLocalTrackedEntityToUpdate(
+      const syncer::EntityData& update_entity,
+      bool* should_ignore_update);
 
   // Given a remote update entity, it returns the parent bookmark node of the
   // corresponding node. It returns null if the parent node cannot be found.
@@ -63,9 +77,10 @@ class BookmarkRemoteUpdatesHandler {
   //    ignored.
   // 3. Otherwise, a new node is created in the local bookmark model and
   //    registered in |bookmark_tracker_|.
-  // Returns true if a new bookmark has been registered in the
-  // |bookmark_tracker_|, false otherwise.
-  bool ProcessCreate(const syncer::UpdateResponseData& update);
+  //
+  // Returns the newly tracked entity or null if the creation failed.
+  const SyncedBookmarkTracker::Entity* ProcessCreate(
+      const syncer::UpdateResponseData& update);
 
   // Processes a remote update of a bookmark node. |update| must not be a
   // deletion, and the server_id must be already tracked, otherwise, it is a
@@ -96,6 +111,12 @@ class BookmarkRemoteUpdatesHandler {
   // Recursively removes the entities corresponding to |node| and its children
   // from |bookmark_tracker_|.
   void RemoveEntityAndChildrenFromTracker(const bookmarks::BookmarkNode* node);
+
+  // Initiate reupload for the update with |entity_data|. |tracked_entity| must
+  // not be nullptr.
+  void ReuploadEntityIfNeeded(
+      const syncer::EntityData& entity_data,
+      const SyncedBookmarkTracker::Entity* tracked_entity);
 
   bookmarks::BookmarkModel* const bookmark_model_;
   favicon::FaviconService* const favicon_service_;

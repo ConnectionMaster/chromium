@@ -10,23 +10,24 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
-#include "chrome/common/search.mojom.h"
 #include "chrome/common/search/instant_types.h"
 #include "chrome/common/search/ntp_logging_events.h"
+#include "chrome/common/search/search.mojom.h"
 #include "chrome/renderer/instant_restricted_id_cache.h"
 #include "components/ntp_tiles/ntp_tile_impression.h"
 #include "components/omnibox/common/omnibox_focus_state.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "content/public/renderer/render_frame_observer_tracker.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 // The renderer-side implementation of the embeddedSearch API (see
 // https://www.chromium.org/embeddedsearch).
 class SearchBox : public content::RenderFrameObserver,
                   public content::RenderFrameObserverTracker<SearchBox>,
-                  public chrome::mojom::EmbeddedSearchClient {
+                  public search::mojom::EmbeddedSearchClient {
  public:
   // Helper class for GenerateImageURLFromTransientURL() to adapt SearchBox's
   // instance, thereby allow mocking for unit tests.
@@ -34,8 +35,8 @@ class SearchBox : public content::RenderFrameObserver,
    public:
     IconURLHelper();
     virtual ~IconURLHelper();
-    // Retruns view id for validating icon URL.
-    virtual int GetViewID() const = 0;
+    // Returns main frame id for validating icon URL.
+    virtual int GetMainFrameID() const = 0;
     // Returns the page URL string for |rid|, or empty string for invalid |rid|.
     virtual std::string GetURLStringFromRestrictedID(InstantRestrictedID rid)
         const = 0;
@@ -47,17 +48,15 @@ class SearchBox : public content::RenderFrameObserver,
   // Sends LogEvent to the browser.
   void LogEvent(NTPLoggingEventType event);
 
+  // Sends LogSuggestionEventWithValue to the browser.
+  void LogSuggestionEventWithValue(NTPSuggestionsLoggingEventType event,
+                                   int data);
+
   // Sends LogMostVisitedImpression to the browser.
   void LogMostVisitedImpression(const ntp_tiles::NTPTileImpression& impression);
 
   // Sends LogMostVisitedNavigation to the browser.
   void LogMostVisitedNavigation(const ntp_tiles::NTPTileImpression& impression);
-
-  // Sends ChromeIdentityCheck to the browser.
-  void CheckIsUserSignedInToChromeAs(const base::string16& identity);
-
-  // Sends HistorySyncCheck to the browser.
-  void CheckIsUserSyncingHistory();
 
   // Sends DeleteMostVisitedItem to the browser.
   void DeleteMostVisitedItem(InstantRestrictedID most_visited_item_id);
@@ -92,10 +91,8 @@ class SearchBox : public content::RenderFrameObserver,
   bool GetMostVisitedItemWithID(InstantRestrictedID most_visited_item_id,
                                 InstantMostVisitedItem* item) const;
 
-  // Sends PasteAndOpenDropdown to the browser.
-  void Paste(const base::string16& text);
-
-  const ThemeBackgroundInfo& GetThemeBackgroundInfo() const;
+  // Will return null if the theme info hasn't been set yet.
+  const NtpTheme* GetNtpTheme() const;
 
   // Sends FocusOmnibox(OMNIBOX_FOCUS_INVISIBLE) to the browser.
   void StartCapturingKeyStrokes();
@@ -111,6 +108,12 @@ class SearchBox : public content::RenderFrameObserver,
 
   // Returns true if the most visited items are custom links.
   bool IsCustomLinks() const;
+
+  // Returns true if most visited is enabled instead of custom links.
+  bool IsUsingMostVisited() const;
+
+  // Returns true if the shortcuts are visible and not hidden by the user.
+  bool AreShortcutsVisible() const;
 
   // Sends AddCustomLink to the browser.
   void AddCustomLink(const GURL& url, const std::string& title);
@@ -132,6 +135,12 @@ class SearchBox : public content::RenderFrameObserver,
   // Sends ResetCustomLinks to the browser.
   void ResetCustomLinks();
 
+  // Sends ToggleMostVisitedOrCustomLinks to the browser.
+  void ToggleMostVisitedOrCustomLinks();
+
+  // Sends ToggleShortcutsVisibility to the browser.
+  void ToggleShortcutsVisibility(bool do_notify);
+
   // Attempts to fix obviously invalid URLs. Uses the "https" scheme unless
   // otherwise specified. Returns the fixed URL if valid, otherwise returns an
   // empty string.
@@ -139,12 +148,11 @@ class SearchBox : public content::RenderFrameObserver,
 
   // Updates the NTP custom background preferences, sometimes this includes
   // image attributions.
-  void SetCustomBackgroundURL(const GURL& background_url);
-  void SetCustomBackgroundURLWithAttributions(
-      const GURL& background_url,
-      const std::string& attribution_line_1,
-      const std::string& attribution_line_2,
-      const GURL& action_url);
+  void SetCustomBackgroundInfo(const GURL& background_url,
+                               const std::string& attribution_line_1,
+                               const std::string& attribution_line_2,
+                               const GURL& action_url,
+                               const std::string& collection_id);
 
   // Let the user select a local file for the NTP background.
   void SelectLocalBackgroundImage();
@@ -166,28 +174,48 @@ class SearchBox : public content::RenderFrameObserver,
   // Opts the user out of receiving search suggestions.
   void OptOutOfSearchSuggestions();
 
+  // Applies the default theme.
+  void ApplyDefaultTheme();
+
+  // Applies autogenerated theme for the given color.
+  void ApplyAutogeneratedTheme(SkColor color);
+
+  // Reverts applied theme changes.
+  void RevertThemeChanges();
+
+  // Confirms applied theme changes.
+  void ConfirmThemeChanges();
+
+  // Called when a user dismisses a promo.
+  void BlocklistPromo(const std::string& promo_id);
+
+  // Handles navigation to the chrome://extensions page by calling the browser
+  // to do the navigation.
+  void OpenExtensionsPage(double button,
+                          bool alt_key,
+                          bool ctrl_key,
+                          bool meta_key,
+                          bool shift_key);
+
   bool is_focused() const { return is_focused_; }
   bool is_input_in_progress() const { return is_input_in_progress_; }
   bool is_key_capture_enabled() const { return is_key_capture_enabled_; }
 
  private:
   // Overridden from content::RenderFrameObserver:
-  void DidCommitProvisionalLoad(bool is_same_document_navigation,
-                                ui::PageTransition transition) override;
+  void DidCommitProvisionalLoad(ui::PageTransition transition) override;
   void OnDestruct() override;
 
-  // Overridden from chrome::mojom::EmbeddedSearchClient:
+  // Overridden from search::mojom::EmbeddedSearchClient:
   void SetPageSequenceNumber(int page_seq_no) override;
   void FocusChanged(OmniboxFocusState new_focus_state,
                     OmniboxFocusChangeReason reason) override;
-  void MostVisitedChanged(const std::vector<InstantMostVisitedItem>& items,
-                          bool is_custom_links) override;
+  void MostVisitedInfoChanged(
+      const InstantMostVisitedInfo& most_visited_info) override;
   void SetInputInProgress(bool input_in_progress) override;
-  void ThemeChanged(const ThemeBackgroundInfo& theme_info) override;
+  void ThemeChanged(const NtpTheme& theme) override;
+  void LocalBackgroundSelected() override;
 
-  void HistorySyncCheckResult(bool sync_history);
-  void ChromeIdentityCheckResult(const base::string16& identity,
-                                 bool identity_match);
   void AddCustomLinkResult(bool success);
   void UpdateCustomLinkResult(bool success);
   void DeleteCustomLinkResult(bool success);
@@ -196,8 +224,9 @@ class SearchBox : public content::RenderFrameObserver,
   GURL GetURLForMostVisitedItem(InstantRestrictedID item_id) const;
 
   // The connection to the EmbeddedSearch service in the browser process.
-  chrome::mojom::EmbeddedSearchAssociatedPtr embedded_search_service_;
-  mojo::AssociatedBinding<chrome::mojom::EmbeddedSearchClient> binding_;
+  mojo::AssociatedRemote<search::mojom::EmbeddedSearch>
+      embedded_search_service_;
+  mojo::AssociatedReceiver<search::mojom::EmbeddedSearchClient> receiver_{this};
 
   // Whether it's legal to execute JavaScript in |render_frame()|.
   // This class may want to execute JS in response to IPCs (via the
@@ -217,12 +246,13 @@ class SearchBox : public content::RenderFrameObserver,
   bool is_input_in_progress_;
   bool is_key_capture_enabled_;
   InstantRestrictedIDCache<InstantMostVisitedItem> most_visited_items_cache_;
+  // Use |most_visited_items_cache_| instead of |most_visited_info_.items| when
+  // comparing most visited items.
+  InstantMostVisitedInfo most_visited_info_;
   bool has_received_most_visited_;
-  // True if the most visited items are custom links.
-  bool is_custom_links_ = false;
-  ThemeBackgroundInfo theme_info_;
+  absl::optional<NtpTheme> theme_;
 
-  base::WeakPtrFactory<SearchBox> weak_ptr_factory_;
+  base::WeakPtrFactory<SearchBox> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SearchBox);
 };

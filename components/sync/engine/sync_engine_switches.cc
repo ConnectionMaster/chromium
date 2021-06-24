@@ -6,14 +6,6 @@
 
 namespace switches {
 
-// TODO(crbug.com/657130): Sync integration tests depend on the precommit get
-// updates because invalidations aren't working for them. Therefore, they pass
-// the command line switch to enable this feature. Once sync integrations test
-// support invalidation, this should be removed.
-// Enables feature to perform GetUpdate requests before every commit.
-const char kSyncEnableGetUpdatesBeforeCommit[] =
-    "sync-enable-get-update-before-commits";
-
 const base::Feature kSyncResetPollIntervalOnStart{
     "SyncResetPollIntervalOnStart", base::FEATURE_DISABLED_BY_DEFAULT};
 
@@ -25,8 +17,13 @@ const base::Feature kSyncResetPollIntervalOnStart{
 const base::Feature kSyncUseScryptForNewCustomPassphrases{
     "SyncUseScryptForNewCustomPassphrases", base::FEATURE_ENABLED_BY_DEFAULT};
 
-// Enable USS implementation of Nigori datatype.
-const base::Feature kSyncUSSNigori{"SyncUSSNigori",
-                                   base::FEATURE_DISABLED_BY_DEFAULT};
+const base::Feature kSyncTriggerFullKeystoreMigration{
+    "SyncTriggerFullKeystoreMigration", base::FEATURE_ENABLED_BY_DEFAULT};
+
+// Causes Sync to ignore updates encrypted with keys that have been missing for
+// too long from this client; Sync will proceed normally as if those updates
+// didn't exist.
+const base::Feature kIgnoreSyncEncryptionKeysLongMissing{
+    "IgnoreSyncEncryptionKeysLongMissing", base::FEATURE_DISABLED_BY_DEFAULT};
 
 }  // namespace switches

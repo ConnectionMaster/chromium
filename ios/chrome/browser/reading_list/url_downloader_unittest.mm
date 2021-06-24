@@ -7,17 +7,18 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #import "base/test/ios/wait_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "components/reading_list/core/offline_url_utils.h"
 #include "ios/chrome/browser/chrome_paths.h"
 #include "ios/chrome/browser/dom_distiller/distiller_viewer.h"
 #include "ios/chrome/browser/reading_list/offline_url_utils.h"
 #include "ios/chrome/browser/reading_list/reading_list_distiller_page.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -29,10 +30,15 @@
 
 namespace {
 
+const char kDistilledHtmlContent[] = "html";
+const char kDistilledPdfContent[] = "123456789";
+const char kBadImageUrl[] = "http://image/bad";
+const char kGoodImageUrl[] = "http://image/good";
+
 class DistillerViewerTest : public dom_distiller::DistillerViewerInterface {
  public:
   DistillerViewerTest(const GURL& url,
-                      const DistillationFinishedCallback& callback,
+                      DistillationFinishedCallback callback,
                       reading_list::ReadingListDistillerPageDelegate* delegate,
                       const std::string& html,
                       const GURL& redirect_url,
@@ -40,8 +46,13 @@ class DistillerViewerTest : public dom_distiller::DistillerViewerInterface {
       : dom_distiller::DistillerViewerInterface(nil) {
     std::vector<ImageInfo> images;
     ImageInfo image;
-    image.url = GURL("http://image");
-    image.data = "image";
+
+    image.url = GURL(kBadImageUrl);
+    image.data = "BADIMAGE";
+    images.push_back(image);
+
+    image.url = GURL(kGoodImageUrl);
+    image.data = "GIF87a...GIFDATA";
     images.push_back(image);
 
     if (redirect_url.is_valid()) {
@@ -50,18 +61,20 @@ class DistillerViewerTest : public dom_distiller::DistillerViewerInterface {
     if (!mime_type.empty()) {
       delegate->DistilledPageHasMimeType(url, mime_type);
     }
-    callback.Run(url, html, images, "title");
+    std::move(callback).Run(url, html, images, "title");
   }
 
   void OnArticleReady(
       const dom_distiller::DistilledArticleProto* article_proto) override {}
 
   void SendJavaScript(const std::string& buffer) override {}
+
+  std::string GetCspNonce() override { return std::string(); }
 };
 
 void RemoveOfflineFilesDirectory(base::FilePath base_directory) {
-  base::DeleteFile(reading_list::OfflineRootDirectoryPath(base_directory),
-                   true);
+  base::DeletePathRecursively(
+      reading_list::OfflineRootDirectoryPath(base_directory));
 }
 
 }  // namespace
@@ -76,11 +89,11 @@ class MockURLDownloader : public URLDownloader {
                       nullptr,
                       path,
                       std::move(url_loader_factory),
-                      base::Bind(&MockURLDownloader::OnEndDownload,
-                                 base::Unretained(this)),
-                      base::Bind(&MockURLDownloader::OnEndRemove,
-                                 base::Unretained(this))),
-        html_("html") {}
+                      base::BindRepeating(&MockURLDownloader::OnEndDownload,
+                                          base::Unretained(this)),
+                      base::BindRepeating(&MockURLDownloader::OnEndRemove,
+                                          base::Unretained(this))),
+        html_(kDistilledHtmlContent) {}
 
   void ClearCompletionTrackers() {
     downloaded_files_.clear();
@@ -120,7 +133,8 @@ class MockURLDownloader : public URLDownloader {
     saved_size_ = 0;
     distiller_.reset(new DistillerViewerTest(
         url,
-        base::Bind(&URLDownloader::DistillerCallback, base::Unretained(this)),
+        base::BindRepeating(&URLDownloader::DistillerCallback,
+                            base::Unretained(this)),
         this, html_, redirect_url_, mime_type_));
   }
 
@@ -131,9 +145,24 @@ class MockURLDownloader : public URLDownloader {
                      int64_t size,
                      const std::string& title) {
     downloaded_files_.push_back(url);
-    // Saved data is the string "html" and an image with data "image".
-    EXPECT_EQ(size, 9);
+
     EXPECT_EQ(distilled_url, redirect_url_);
+
+    std::string distilled_content;
+
+    base::ReadFileToString(reading_list::OfflineURLAbsolutePathFromRelativePath(
+                               base_directory_, distilled_path),
+                           &distilled_content);
+
+    // PDF will download just the single file without any processing.
+    if (distilled_path.MatchesExtension((".pdf"))) {
+      EXPECT_EQ(distilled_content, kDistilledPdfContent);
+    } else {
+      // Check that the image with the bad mime-type was dropped
+      EXPECT_EQ(distilled_content.find(kDistilledHtmlContent), 0UL);
+      EXPECT_EQ(distilled_content.find(kBadImageUrl), std::string::npos);
+      EXPECT_NE(distilled_content.find(kGoodImageUrl), std::string::npos);
+    }
   }
 
   void OnEndRemove(const GURL& url, bool success) {
@@ -165,7 +194,7 @@ class URLDownloaderTest : public PlatformTest {
   }
 
  protected:
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::WeakWrapperSharedURLLoaderFactory>
@@ -224,11 +253,11 @@ TEST_F(URLDownloaderTest, SingleDownloadPDF) {
   task_environment_.RunUntilIdle();
 
   auto* pending_request = test_url_loader_factory_.GetPendingRequest(0);
-  auto response_info = network::CreateResourceResponseHead(net::HTTP_OK);
-  response_info.mime_type = "application/pdf";
+  auto response_info = network::CreateURLResponseHead(net::HTTP_OK);
+  response_info->mime_type = "application/pdf";
   test_url_loader_factory_.SimulateResponseForPendingRequest(
       pending_request->request.url, network::URLLoaderCompletionStatus(net::OK),
-      response_info, std::string("123456789"));
+      std::move(response_info), std::string(kDistilledPdfContent));
 
   // Wait for all asynchronous tasks to complete.
   task_environment_.RunUntilIdle();
@@ -253,7 +282,7 @@ TEST_F(URLDownloaderTest, DownloadAndRemove) {
   // Wait for all asynchronous tasks to complete.
   task_environment_.RunUntilIdle();
 
-  ASSERT_TRUE(!base::ContainsValue(downloader_->downloaded_files_, url));
+  ASSERT_TRUE(!base::Contains(downloader_->downloaded_files_, url));
   ASSERT_EQ(1ul, downloader_->downloaded_files_.size());
   ASSERT_EQ(1ul, downloader_->removed_files_.size());
   ASSERT_FALSE(downloader_->CheckExistenceOfOfflineURLPagePath(url));
@@ -272,8 +301,8 @@ TEST_F(URLDownloaderTest, DownloadAndRemoveAndRedownload) {
   // Wait for all asynchronous tasks to complete.
   task_environment_.RunUntilIdle();
 
-  ASSERT_TRUE(base::ContainsValue(downloader_->downloaded_files_, url));
-  ASSERT_TRUE(base::ContainsValue(downloader_->removed_files_, url));
+  ASSERT_TRUE(base::Contains(downloader_->downloaded_files_, url));
+  ASSERT_TRUE(base::Contains(downloader_->removed_files_, url));
   ASSERT_TRUE(downloader_->CheckExistenceOfOfflineURLPagePath(url));
 }
 

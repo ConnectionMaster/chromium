@@ -13,10 +13,15 @@
 #include "base/threading/platform_thread.h"
 #include "content/public/renderer/render_thread_observer.h"
 #include "content/public/renderer/worker_thread.h"
+#include "extensions/common/activation_sequence.h"
+#include "extensions/common/extension_id.h"
+#include "extensions/common/mojom/event_router.mojom.h"
 #include "ipc/ipc_sync_message_filter.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 
 namespace base {
 class ListValue;
+class SingleThreadTaskRunner;
 }
 
 namespace content {
@@ -31,6 +36,7 @@ struct ExtensionMsg_ExternalConnectionInfo;
 namespace extensions {
 class NativeExtensionBindingsSystem;
 class ScriptContext;
+class ServiceWorkerData;
 class V8SchemaRegistry;
 struct Message;
 struct PortId;
@@ -40,7 +46,9 @@ struct PortId;
 // two:
 // 1) A content::WorkerThreadMessageFilter, so that we can receive IPC directly
 // on worker thread.
-// 2) A content::ThreadSafeSender, so we can safely send IPC from worker thread.
+// 2) A thread-safe version of IPC::Sender, so we can safely send IPC from
+// worker thread (this TODO formerly referred to content::ThreadSafeSender
+// which no longer exists).
 class WorkerThreadDispatcher : public content::RenderThreadObserver,
                                public IPC::Sender {
  public:
@@ -52,6 +60,7 @@ class WorkerThreadDispatcher : public content::RenderThreadObserver,
   static NativeExtensionBindingsSystem* GetBindingsSystem();
   static V8SchemaRegistry* GetV8SchemaRegistry();
   static ScriptContext* GetScriptContext();
+  static ServiceWorkerData* GetServiceWorkerData();
 
   void Init(content::RenderThread* render_thread);
 
@@ -60,7 +69,8 @@ class WorkerThreadDispatcher : public content::RenderThreadObserver,
 
   void AddWorkerData(
       int64_t service_worker_version_id,
-      ScriptContext* context,
+      ActivationSequence activation_sequence,
+      ScriptContext* script_context,
       std::unique_ptr<NativeExtensionBindingsSystem> bindings_system);
   void RemoveWorkerData(int64_t service_worker_version_id);
 
@@ -77,14 +87,74 @@ class WorkerThreadDispatcher : public content::RenderThreadObserver,
   // content::RenderThreadObserver:
   bool OnControlMessageReceived(const IPC::Message& message) override;
 
+  // Updates bindings of all Service Workers for |extension_id|, after extension
+  // permission update.
+  // Returns whether or not the update request was successfully issued to
+  // each Service Workers.
+  bool UpdateBindingsForWorkers(const ExtensionId& extension_id);
+
+  // Posts mojom::EventRouter::AddListenerForServiceWorker to the IO thread to
+  // call it with GetEventRouterOnIO().
+  void SendAddEventListener(const std::string& extension_id,
+                            const GURL& scope,
+                            const std::string& event_name,
+                            int64_t service_worker_version_id,
+                            int worker_thread_id);
+
+  // Posts mojom::EventRouter::AddLazyListenerForServiceWorker to the IO thread
+  // to call it with GetEventRouterOnIO().
+  void SendAddEventLazyListener(const std::string& extension_id,
+                                const GURL& scope,
+                                const std::string& event_name);
+
+  // Posts mojom::EventRouter::AddFilteredListenerForServiceWorker to the IO
+  // thread to call it with GetEventRouterOnIO().
+  void SendAddEventFilteredListener(const std::string& extension_id,
+                                    const GURL& scope,
+                                    const std::string& event_name,
+                                    int64_t service_worker_version_id,
+                                    int worker_thread_id,
+                                    base::Value filter,
+                                    bool add_lazy_listener);
+
+  // Posts mojom::EventRouter::RemoveListenerForServiceWorker to the IO thread
+  // to call it with GetEventRouterOnIO().
+  void SendRemoveEventListener(const std::string& extension_id,
+                               const GURL& scope,
+                               const std::string& event_name,
+                               int64_t service_worker_version_id,
+                               int worker_thread_id);
+
+  // Posts mojom::EventRouter::RemoveLazyListenerForServiceWorker to the IO
+  // thread to call it with GetEventRouterOnIO().
+  void SendRemoveEventLazyListener(const std::string& extension_id,
+                                   const GURL& scope,
+                                   const std::string& event_name);
+
+  // Posts mojom::EventRouter::RemoveFilteredListenerForServiceWorker to the IO
+  // thread to call it with GetEventRouterOnIO().
+  void SendRemoveEventFilteredListener(const std::string& extension_id,
+                                       const GURL& scope,
+                                       const std::string& event_name,
+                                       int64_t service_worker_version_id,
+                                       int worker_thread_id,
+                                       base::Value filter,
+                                       bool remove_lazy_listener);
+
+  // NOTE: This must be called on the IO thread because it can call
+  // SyncMessageFilter::GetRemoteAssociatedInterface() which must be called on
+  // the IO thread.
+  mojom::EventRouter* GetEventRouterOnIO();
+
  private:
   static bool HandlesMessageOnWorkerThread(const IPC::Message& message);
   static void ForwardIPC(int worker_thread_id, const IPC::Message& message);
+  static void UpdateBindingsOnWorkerThread(const ExtensionId& extension_id);
 
   void OnMessageReceivedOnWorkerThread(int worker_thread_id,
                                        const IPC::Message& message);
 
-  base::TaskRunner* GetTaskRunnerFor(int worker_thread_id);
+  bool PostTaskToWorkerThread(int worker_thread_id, base::OnceClosure task);
 
   // IPC handlers.
   void OnResponseWorker(int worker_thread_id,
@@ -113,6 +183,8 @@ class WorkerThreadDispatcher : public content::RenderThreadObserver,
   using IDToTaskRunnerMap = std::map<base::PlatformThreadId, base::TaskRunner*>;
   IDToTaskRunnerMap task_runner_map_;
   base::Lock task_runner_map_lock_;
+  scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
+  mojo::AssociatedRemote<mojom::EventRouter> event_router_remote_;
 
   DISALLOW_COPY_AND_ASSIGN(WorkerThreadDispatcher);
 };

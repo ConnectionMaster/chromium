@@ -6,12 +6,11 @@
 #include "base/macros.h"
 #include "chrome/browser/sync/test/integration/await_match_status_change_checker.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
-#include "chrome/browser/sync/test/integration/feature_toggler.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
-#include "components/sync/driver/profile_sync_service.h"
-#include "components/sync/driver/sync_driver_switches.h"
+#include "components/sync/driver/sync_service_impl.h"
 #include "components/sync/test/fake_server/fake_server.h"
+#include "content/public/test/browser_test.h"
 
 namespace {
 
@@ -21,24 +20,23 @@ using extensions_helper::GetInstalledExtensions;
 using extensions_helper::InstallExtension;
 using extensions_helper::InstallExtensionForAllProfiles;
 
-class SingleClientExtensionsSyncTest : public FeatureToggler, public SyncTest {
+class SingleClientExtensionsSyncTest : public SyncTest {
  public:
-  SingleClientExtensionsSyncTest()
-      : FeatureToggler(switches::kSyncPseudoUSSExtensions),
-        SyncTest(SINGLE_CLIENT) {}
+  SingleClientExtensionsSyncTest() : SyncTest(SINGLE_CLIENT) {}
+  ~SingleClientExtensionsSyncTest() override = default;
 
-  ~SingleClientExtensionsSyncTest() override {}
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(SingleClientExtensionsSyncTest);
+  bool UseVerifier() override {
+    // TODO(crbug.com/1137717): rewrite tests to not use verifier profile.
+    return true;
+  }
 };
 
-IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, StartWithNoExtensions) {
+IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, StartWithNoExtensions) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest,
                        StartWithSomeExtensions) {
   ASSERT_TRUE(SetupClients());
 
@@ -52,7 +50,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest,
   ASSERT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, InstallSomeExtensions) {
+IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, InstallSomeExtensions) {
   ASSERT_TRUE(SetupSync());
 
   const int kNumExtensions = 5;
@@ -67,19 +65,24 @@ IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, InstallSomeExtensions) {
 
 // Helper function for waiting to see the extension count in a profile
 // become a specific number.
-static bool ExtensionCountCheck(Profile* profile, size_t expected_count) {
-  return GetInstalledExtensions(profile).size() == expected_count;
+static bool ExtensionCountCheck(Profile* profile,
+                                size_t expected_count,
+                                std::ostream* os) {
+  const size_t actual_count = GetInstalledExtensions(profile).size();
+  *os << "Waiting for profile to have " << expected_count
+      << " extensions; actual count " << actual_count;
+  return actual_count == expected_count;
 }
 
 // Tests the case of an uninstall from the server conflicting with a local
 // modification, which we expect to be resolved in favor of the uninstall.
-IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
+IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
   ASSERT_TRUE(SetupClients());
 
   // Start with an extension installed, and setup sync.
   InstallExtensionForAllProfiles(0);
   ASSERT_TRUE(SetupSync());
-  EXPECT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
+  ASSERT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
 
   // Simulate a delete at the server.
   std::vector<sync_pb::SyncEntity> server_extensions =
@@ -93,25 +96,18 @@ IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
 
   // Modify the extension in the local profile to cause a conflict.
   DisableExtension(GetProfile(0), 0);
-  EXPECT_EQ(1u, GetInstalledExtensions(GetProfile(0)).size());
+  ASSERT_EQ(1u, GetInstalledExtensions(GetProfile(0)).size());
 
-  // Trigger sync, and expect the extension to remain uninstalled at the server
-  // and get uninstalled locally.
-  const syncer::ModelTypeSet kExtensionsType(syncer::EXTENSIONS);
-  TriggerSyncForModelTypes(0, kExtensionsType);
+  // Expect the extension to get uninstalled locally.
+  AwaitMatchStatusChangeChecker checker(base::BindRepeating(
+      &ExtensionCountCheck, GetProfile(0), /*expected_count=*/0u));
+  EXPECT_TRUE(checker.Wait());
+  EXPECT_TRUE(GetInstalledExtensions(GetProfile(0)).empty());
+
+  // Expect the extension to remain uninstalled at the server.
   server_extensions =
       GetFakeServer()->GetSyncEntitiesByModelType(syncer::EXTENSIONS);
   EXPECT_EQ(0ul, server_extensions.size());
-
-  AwaitMatchStatusChangeChecker checker(
-      base::Bind(&ExtensionCountCheck, GetProfile(0), 0u),
-      "Waiting for profile to have no extensions");
-  EXPECT_TRUE(checker.Wait());
-  EXPECT_TRUE(GetInstalledExtensions(GetProfile(0)).empty());
 }
-
-INSTANTIATE_TEST_SUITE_P(USS,
-                         SingleClientExtensionsSyncTest,
-                         ::testing::Values(false, true));
 
 }  // namespace

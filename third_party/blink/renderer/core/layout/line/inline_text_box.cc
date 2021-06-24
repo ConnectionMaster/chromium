@@ -38,6 +38,7 @@
 #include "third_party/blink/renderer/platform/fonts/character_range.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
@@ -51,8 +52,7 @@ struct SameSizeAsInlineTextBox : public InlineBox {
   void* pointers[2];
 };
 
-static_assert(sizeof(InlineTextBox) == sizeof(SameSizeAsInlineTextBox),
-              "InlineTextBox should stay small");
+ASSERT_SIZE(InlineTextBox, SameSizeAsInlineTextBox);
 
 typedef WTF::HashMap<const InlineTextBox*, LayoutRect> InlineTextBoxOverflowMap;
 static InlineTextBoxOverflowMap* g_text_boxes_with_overflow;
@@ -93,6 +93,14 @@ void InlineTextBox::SetLogicalOverflowRect(const LayoutRect& rect) {
   if (!g_text_boxes_with_overflow)
     g_text_boxes_with_overflow = new InlineTextBoxOverflowMap;
   g_text_boxes_with_overflow->Set(this, rect);
+}
+
+PhysicalRect InlineTextBox::PhysicalOverflowRect() const {
+  LayoutRect overflow_rect = LogicalOverflowRect();
+  if (!IsHorizontal())
+    overflow_rect = overflow_rect.TransposedRect();
+  FlipForWritingMode(overflow_rect);
+  return PhysicalRectToBeNoop(overflow_rect);
 }
 
 void InlineTextBox::Move(const LayoutSize& delta) {
@@ -430,23 +438,22 @@ bool InlineTextBox::IsLineBreak() const {
 }
 
 bool InlineTextBox::NodeAtPoint(HitTestResult& result,
-                                const HitTestLocation& location_in_container,
-                                const LayoutPoint& accumulated_offset,
+                                const HitTestLocation& hit_test_location,
+                                const PhysicalOffset& accumulated_offset,
                                 LayoutUnit /* lineTop */,
                                 LayoutUnit /*lineBottom*/) {
   if (IsLineBreak() || truncation_ == kCFullTruncation)
     return false;
 
-  LayoutPoint box_origin = PhysicalLocation();
-  box_origin.MoveBy(accumulated_offset);
-  LayoutRect rect(box_origin, Size());
+  PhysicalOffset box_origin = PhysicalLocation();
+  box_origin += accumulated_offset;
+  PhysicalRect rect(box_origin, Size());
   if (VisibleToHitTestRequest(result.GetHitTestRequest()) &&
-      location_in_container.Intersects(rect)) {
+      hit_test_location.Intersects(rect)) {
     GetLineLayoutItem().UpdateHitTestResult(
-        result, FlipForWritingMode(location_in_container.Point() -
-                                   ToLayoutSize(accumulated_offset)));
+        result, hit_test_location.Point() - accumulated_offset);
     if (result.AddNodeToListBasedTestResult(GetLineLayoutItem().GetNode(),
-                                            location_in_container,
+                                            hit_test_location,
                                             rect) == kStopHitTesting)
       return true;
   }
@@ -484,7 +491,7 @@ bool InlineTextBox::GetEmphasisMarkPosition(
 }
 
 void InlineTextBox::Paint(const PaintInfo& paint_info,
-                          const LayoutPoint& paint_offset,
+                          const PhysicalOffset& paint_offset,
                           LayoutUnit /*lineTop*/,
                           LayoutUnit /*lineBottom*/) const {
   InlineTextBoxPainter(*this).Paint(paint_info, paint_offset);
@@ -501,34 +508,32 @@ void InlineTextBox::SelectionStartEnd(int& s_pos, int& e_pos) const {
   e_pos = std::min(static_cast<int>(status.end) - start_, (int)len_);
 }
 
-void InlineTextBox::PaintDocumentMarker(GraphicsContext& pt,
-                                        const LayoutPoint& box_origin,
+void InlineTextBox::PaintDocumentMarker(const PaintInfo& paint_info,
+                                        const PhysicalOffset& box_origin,
                                         const DocumentMarker& marker,
                                         const ComputedStyle& style,
                                         const Font& font,
                                         bool grammar) const {
-  InlineTextBoxPainter(*this).PaintDocumentMarker(pt, box_origin, marker, style,
-                                                  font, grammar);
+  InlineTextBoxPainter(*this).PaintDocumentMarker(paint_info, box_origin,
+                                                  marker, style, font, grammar);
 }
 
-void InlineTextBox::PaintTextMatchMarkerForeground(
-    const PaintInfo& paint_info,
-    const LayoutPoint& box_origin,
-    const TextMatchMarker& marker,
-    const ComputedStyle& style,
-    const Font& font) const {
-  InlineTextBoxPainter(*this).PaintTextMatchMarkerForeground(
-      paint_info, box_origin, marker, style, font);
+void InlineTextBox::PaintTextMarkerForeground(const PaintInfo& paint_info,
+                                              const PhysicalOffset& box_origin,
+                                              const TextMarkerBase& marker,
+                                              const ComputedStyle& style,
+                                              const Font& font) const {
+  InlineTextBoxPainter(*this).PaintTextMarkerForeground(paint_info, box_origin,
+                                                        marker, style, font);
 }
 
-void InlineTextBox::PaintTextMatchMarkerBackground(
-    const PaintInfo& paint_info,
-    const LayoutPoint& box_origin,
-    const TextMatchMarker& marker,
-    const ComputedStyle& style,
-    const Font& font) const {
-  InlineTextBoxPainter(*this).PaintTextMatchMarkerBackground(
-      paint_info, box_origin, marker, style, font);
+void InlineTextBox::PaintTextMarkerBackground(const PaintInfo& paint_info,
+                                              const PhysicalOffset& box_origin,
+                                              const TextMarkerBase& marker,
+                                              const ComputedStyle& style,
+                                              const Font& font) const {
+  InlineTextBoxPainter(*this).PaintTextMarkerBackground(paint_info, box_origin,
+                                                        marker, style, font);
 }
 
 int InlineTextBox::CaretMinOffset() const {
@@ -695,7 +700,7 @@ String InlineTextBox::GetText() const {
   return GetLineLayoutItem().GetText().Substring(Start(), Len());
 }
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 void InlineTextBox::DumpBox(StringBuilder& string_inlinetextbox) const {
   String value = GetText();
@@ -711,7 +716,7 @@ void InlineTextBox::DumpBox(StringBuilder& string_inlinetextbox) const {
   while (string_inlinetextbox.length() < kLayoutObjectCharacterOffset)
     string_inlinetextbox.Append(' ');
   string_inlinetextbox.AppendFormat("(%d,%d) \"%s\"", Start(), Start() + Len(),
-                                    value.Utf8().data());
+                                    value.Utf8().c_str());
 }
 
 #endif

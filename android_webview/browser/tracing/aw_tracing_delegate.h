@@ -23,6 +23,13 @@ class AwTracingDelegate : public content::TracingDelegate {
   // content::TracingDelegate implementation:
   std::unique_ptr<content::TraceUploader> GetTraceUploader(
       scoped_refptr<network::SharedURLLoaderFactory> factory) override;
+  bool IsAllowedToBeginBackgroundScenario(
+      const content::BackgroundTracingConfig& config,
+      bool requires_anonymized_data) override;
+  bool IsAllowedToEndBackgroundScenario(
+      const content::BackgroundTracingConfig& config,
+      bool requires_anonymized_data,
+      bool is_crash_scenario) override;
   std::unique_ptr<base::DictionaryValue> GenerateMetadataDict() override;
 };
 

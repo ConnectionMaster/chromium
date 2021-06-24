@@ -39,13 +39,16 @@ FORWARD_DECLARE_TEST(AppCacheDatabaseTest, GroupRecords);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, GroupAccessAndEvictionTimes);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, LazyOpen);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, ExperimentalFlags);
-FORWARD_DECLARE_TEST(AppCacheDatabaseTest, OnlineWhiteListRecords);
+FORWARD_DECLARE_TEST(AppCacheDatabaseTest, OnlineSafeListRecords);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, ReCreate);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, DeletableResponseIds);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, OriginUsage);
+FORWARD_DECLARE_TEST(AppCacheDatabaseTest, FindCachesForOrigin);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest,
                      UpgradeSchemaForVersionsWithoutSupportedMigrations);
-FORWARD_DECLARE_TEST(AppCacheDatabaseTest, UpgradeSchemaFrom7to8);
+FORWARD_DECLARE_TEST(AppCacheDatabaseTest, UpgradeSchemaFrom7);
+FORWARD_DECLARE_TEST(AppCacheDatabaseTest, UpgradeSchemaFrom8);
+FORWARD_DECLARE_TEST(AppCacheDatabaseTest, UpgradeSchemaFrom9);
 FORWARD_DECLARE_TEST(AppCacheDatabaseTest, WasCorrutionDetected);
 class AppCacheDatabaseTest;
 class AppCacheStorageImplTest;
@@ -65,22 +68,23 @@ class CONTENT_EXPORT AppCacheDatabase {
     base::Time last_access_time;
     base::Time last_full_update_check_time;
     base::Time first_evictable_error_time;
+    base::Time token_expires;
   };
 
   struct CONTENT_EXPORT CacheRecord {
-    CacheRecord()
-        : cache_id(0),
-          group_id(0),
-          online_wildcard(false),
-          cache_size(0),
-          padding_size(0) {}
+    CacheRecord();
+    CacheRecord(const CacheRecord& other);
+    ~CacheRecord();
 
-    int64_t cache_id;
-    int64_t group_id;
-    bool online_wildcard;
+    int64_t cache_id = 0;
+    int64_t group_id = 0;
+    bool online_wildcard = false;
     base::Time update_time;
-    int64_t cache_size;  // the sum of all response sizes in this cache
-    int64_t padding_size;  // the sum of all padding sizes in this cache
+    int64_t cache_size = 0;    // the sum of all response sizes in this cache
+    int64_t padding_size = 0;  // the sum of all padding sizes in this cache
+    int64_t manifest_parser_version = -1;
+    std::string manifest_scope;
+    base::Time token_expires;
   };
 
   struct EntryRecord {
@@ -97,6 +101,7 @@ class CONTENT_EXPORT AppCacheDatabase {
     int64_t response_id;
     int64_t response_size;
     int64_t padding_size;  // space added to obfuscate quota used by this entry
+    base::Time token_expires;
   };
 
   struct CONTENT_EXPORT NamespaceRecord {
@@ -106,16 +111,16 @@ class CONTENT_EXPORT AppCacheDatabase {
     int64_t cache_id;
     url::Origin origin;
     AppCacheNamespace namespace_;
+    base::Time token_expires;
   };
 
   using NamespaceRecordVector = std::vector<NamespaceRecord>;
 
-  struct OnlineWhiteListRecord {
-    OnlineWhiteListRecord() : cache_id(0), is_pattern(false) {}
+  struct OnlineSafeListRecord {
+    OnlineSafeListRecord() : cache_id(0) {}
 
     int64_t cache_id;
     GURL namespace_url;
-    bool is_pattern;
   };
 
   explicit AppCacheDatabase(const base::FilePath& path);
@@ -142,8 +147,8 @@ class CONTENT_EXPORT AppCacheDatabase {
   bool InsertGroup(const GroupRecord* record);
   bool DeleteGroup(int64_t group_id);
 
-  // The access and eviction time update methods do not fail when
-  // given invalid group_ids. The return value only indicates whether
+  // The access, eviction time, and manifest version/scope update methods do not
+  // fail when given invalid group_ids. The return value only indicates whether
   // the database is functioning.
   bool UpdateLastAccessTime(int64_t group_id, base::Time last_access_time);
   bool LazyUpdateLastAccessTime(int64_t group_id, base::Time last_access_time);
@@ -172,11 +177,11 @@ class CONTENT_EXPORT AppCacheDatabase {
                      int additional_flags);
   bool FindResponseIdsForCacheAsVector(int64_t cache_id,
                                        std::vector<int64_t>* response_ids) {
-    return FindResponseIdsForCacheHelper(cache_id, response_ids, NULL);
+    return FindResponseIdsForCacheHelper(cache_id, response_ids, nullptr);
   }
   bool FindResponseIdsForCacheAsSet(int64_t cache_id,
                                     std::set<int64_t>* response_ids) {
-    return FindResponseIdsForCacheHelper(cache_id, NULL, response_ids);
+    return FindResponseIdsForCacheHelper(cache_id, nullptr, response_ids);
   }
 
   bool FindNamespacesForOrigin(const url::Origin& origin,
@@ -190,12 +195,12 @@ class CONTENT_EXPORT AppCacheDatabase {
   bool InsertNamespace(const NamespaceRecord* record);
   bool DeleteNamespacesForCache(int64_t cache_id);
 
-  bool FindOnlineWhiteListForCache(int64_t cache_id,
-                                   std::vector<OnlineWhiteListRecord>* records);
-  bool InsertOnlineWhiteList(const OnlineWhiteListRecord* record);
-  bool InsertOnlineWhiteListRecords(
-      const std::vector<OnlineWhiteListRecord>& records);
-  bool DeleteOnlineWhiteListForCache(int64_t cache_id);
+  bool FindOnlineSafeListForCache(int64_t cache_id,
+                                  std::vector<OnlineSafeListRecord>* records);
+  bool InsertOnlineSafeList(const OnlineSafeListRecord* record);
+  bool InsertOnlineSafeListRecords(
+      const std::vector<OnlineSafeListRecord>& records);
+  bool DeleteOnlineSafeListForCache(int64_t cache_id);
 
   bool GetDeletableResponseIds(std::vector<int64_t>* response_ids,
                                int64_t max_rowid,
@@ -203,11 +208,15 @@ class CONTENT_EXPORT AppCacheDatabase {
   bool InsertDeletableResponseIds(const std::vector<int64_t>& response_ids);
   bool DeleteDeletableResponseIds(const std::vector<int64_t>& response_ids);
 
+  void SetOriginTrialRequired(bool req) { is_origin_trial_required_ = req; }
+
   // So our callers can wrap operations in transactions.
   sql::Database* db_connection() {
     LazyOpen(true);
     return db_.get();
   }
+
+  bool HasValidOriginTrialToken(CacheRecord* record);
 
  private:
   bool RunCachedStatementWithIds(sql::StatementID statement_id,
@@ -229,8 +238,8 @@ class CONTENT_EXPORT AppCacheDatabase {
       NamespaceRecordVector* fallbacks);
   void ReadNamespaceRecord(
       const sql::Statement* statement, NamespaceRecord* record);
-  void ReadOnlineWhiteListRecord(
-      const sql::Statement& statement, OnlineWhiteListRecord* record);
+  void ReadOnlineSafeListRecord(const sql::Statement& statement,
+                                OnlineSafeListRecord* record);
 
   // Database creation
   bool LazyOpen(bool create_if_needed);
@@ -254,6 +263,7 @@ class CONTENT_EXPORT AppCacheDatabase {
   bool is_disabled_;
   bool is_recreating_;
   bool was_corruption_detected_;
+  bool is_origin_trial_required_ = false;
 
   friend class content::AppCacheDatabaseTest;
   friend class content::AppCacheStorageImplTest;
@@ -268,14 +278,16 @@ class CONTENT_EXPORT AppCacheDatabase {
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, LazyOpen);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, ExperimentalFlags);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest,
-                           OnlineWhiteListRecords);
+                           OnlineSafeListRecords);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, ReCreate);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, DeletableResponseIds);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, OriginUsage);
+  FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, FindCachesForOrigin);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest,
                            UpgradeSchemaForVersionsWithoutSupportedMigrations);
-  FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest,
-                           UpgradeSchemaFrom7to8);
+  FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, UpgradeSchemaFrom7);
+  FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, UpgradeSchemaFrom8);
+  FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, UpgradeSchemaFrom9);
   FRIEND_TEST_ALL_PREFIXES(content::AppCacheDatabaseTest, WasCorrutionDetected);
 
   DISALLOW_COPY_AND_ASSIGN(AppCacheDatabase);

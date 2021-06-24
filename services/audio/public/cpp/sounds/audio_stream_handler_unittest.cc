@@ -8,18 +8,18 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/test/test_message_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/simple_sources.h"
 #include "media/audio/test_audio_thread.h"
 #include "media/base/channel_layout.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/audio/public/cpp/output_device.h"
 #include "services/audio/public/cpp/sounds/test_data.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -31,16 +31,9 @@ class AudioStreamHandlerTest : public testing::Test {
   AudioStreamHandlerTest() = default;
   ~AudioStreamHandlerTest() override = default;
 
-  void SetUp() override {
-    service_manager::mojom::ConnectorRequest connector_request;
-    connector_ = service_manager::Connector::Create(&connector_request);
-  }
-
   void SetObserverForTesting(AudioStreamHandler::TestObserver* observer) {
     AudioStreamHandler::SetObserverForTesting(observer);
   }
-
-  std::unique_ptr<service_manager::Connector> connector_;
 
  private:
   base::TestMessageLoop message_loop_;
@@ -53,8 +46,8 @@ TEST_F(AudioStreamHandlerTest, Play) {
   std::unique_ptr<AudioStreamHandler> audio_stream_handler;
 
   SetObserverForTesting(&observer);
-  audio_stream_handler.reset(
-      new AudioStreamHandler(std::move(connector_), data));
+  audio_stream_handler =
+      std::make_unique<AudioStreamHandler>(base::DoNothing(), data);
 
   ASSERT_TRUE(audio_stream_handler->IsInitialized());
   EXPECT_EQ(base::TimeDelta::FromMicroseconds(20u),
@@ -78,8 +71,8 @@ TEST_F(AudioStreamHandlerTest, ConsecutivePlayRequests) {
   std::unique_ptr<AudioStreamHandler> audio_stream_handler;
 
   SetObserverForTesting(&observer);
-  audio_stream_handler.reset(
-      new AudioStreamHandler(std::move(connector_), data));
+  audio_stream_handler =
+      std::make_unique<AudioStreamHandler>(base::DoNothing(), data);
 
   ASSERT_TRUE(audio_stream_handler->IsInitialized());
   EXPECT_EQ(base::TimeDelta::FromMicroseconds(20u),
@@ -108,8 +101,7 @@ TEST_F(AudioStreamHandlerTest, ConsecutivePlayRequests) {
 TEST_F(AudioStreamHandlerTest, BadWavDataDoesNotInitialize) {
   // The class members and SetUp() will be ignored for this test. Create a
   // handler on the stack with some bad WAV data.
-  AudioStreamHandler handler(std::move(connector_),
-                             "RIFF1234WAVEjunkjunkjunkjunk");
+  AudioStreamHandler handler(base::DoNothing(), "RIFF1234WAVEjunkjunkjunkjunk");
   EXPECT_FALSE(handler.IsInitialized());
   EXPECT_FALSE(handler.Play());
   EXPECT_EQ(base::TimeDelta(), handler.duration());

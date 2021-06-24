@@ -3,10 +3,12 @@
 // found in the LICENSE file.
 
 #include "cc/test/fake_output_surface_client.h"
+#include "ui/gfx/gpu_fence_handle.h"
 
 namespace cc {
 
-void FakeOutputSurfaceClient::DidReceiveSwapBuffersAck() {
+void FakeOutputSurfaceClient::DidReceiveSwapBuffersAck(const gfx::SwapTimings&,
+                                                       gfx::GpuFenceHandle) {
   swap_count_++;
 }
 

@@ -13,7 +13,8 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
-#include "extensions/common/view_type.h"
+#include "extensions/common/mojom/view_type.mojom.h"
+#include "extensions/common/view_type_util.h"
 #include "extensions/renderer/bindings/api_signature.h"
 #include "extensions/renderer/extension_frame_helper.h"
 #include "extensions/renderer/extensions_renderer_client.h"
@@ -21,6 +22,7 @@
 #include "extensions/renderer/message_target.h"
 #include "extensions/renderer/messaging_util.h"
 #include "extensions/renderer/native_renderer_messaging_service.h"
+#include "extensions/renderer/runtime_hooks_delegate.h"
 #include "extensions/renderer/script_context.h"
 #include "gin/converter.h"
 #include "gin/dictionary.h"
@@ -145,16 +147,15 @@ RequestResult ExtensionHooksDelegate::HandleRequest(
                                                 arguments);
   }
 
-  std::string error;
-  std::vector<v8::Local<v8::Value>> parsed_arguments;
-  if (!signature->ParseArgumentsToV8(context, *arguments, refs,
-                                     &parsed_arguments, &error)) {
+  APISignature::V8ParseResult parse_result =
+      signature->ParseArgumentsToV8(context, *arguments, refs);
+  if (!parse_result.succeeded()) {
     RequestResult result(RequestResult::INVALID_INVOCATION);
-    result.error = std::move(error);
+    result.error = std::move(*parse_result.error);
     return result;
   }
 
-  return (this->*handler)(script_context, parsed_arguments);
+  return (this->*handler)(script_context, *parse_result.arguments);
 }
 
 void ExtensionHooksDelegate::InitializeTemplate(
@@ -230,7 +231,7 @@ RequestResult ExtensionHooksDelegate::HandleSendRequest(
 
   messaging_service_->SendOneTimeMessage(
       script_context, MessageTarget::ForExtension(target_id),
-      messaging_util::kSendRequestChannel, false, *message, response_callback);
+      messaging_util::kSendRequestChannel, *message, response_callback);
 
   return RequestResult(RequestResult::HANDLED);
 }
@@ -238,17 +239,10 @@ RequestResult ExtensionHooksDelegate::HandleSendRequest(
 RequestResult ExtensionHooksDelegate::HandleGetURL(
     ScriptContext* script_context,
     const std::vector<v8::Local<v8::Value>>& arguments) {
-  DCHECK_EQ(1u, arguments.size());
-  DCHECK(arguments[0]->IsString());
-  DCHECK(script_context->extension());
-
-  std::string path = gin::V8ToString(script_context->isolate(), arguments[0]);
-
-  RequestResult result(RequestResult::HANDLED);
-  result.return_value =
-      gin::StringToV8(script_context->isolate(),
-                      script_context->extension()->GetResourceURL(path).spec());
-  return result;
+  // We call a static implementation here rather using an alias due to not being
+  // able to remove the extension.json GetURL entry, as it is used for generated
+  // documentation and api feature lists some other methods refer to.
+  return RuntimeHooksDelegate::GetURL(script_context, arguments);
 }
 
 APIBindingHooks::RequestResult ExtensionHooksDelegate::HandleGetViews(
@@ -257,7 +251,7 @@ APIBindingHooks::RequestResult ExtensionHooksDelegate::HandleGetViews(
   const Extension* extension = script_context->extension();
   DCHECK(extension);
 
-  ViewType view_type = VIEW_TYPE_INVALID;
+  mojom::ViewType view_type = mojom::ViewType::kInvalid;
   int window_id = extension_misc::kUnknownWindowId;
   int tab_id = extension_misc::kUnknownTabId;
 
@@ -309,7 +303,7 @@ RequestResult ExtensionHooksDelegate::HandleGetExtensionTabs(
   const Extension* extension = script_context->extension();
   DCHECK(extension);
 
-  ViewType view_type = VIEW_TYPE_TAB_CONTENTS;
+  mojom::ViewType view_type = mojom::ViewType::kTabContents;
   int window_id = extension_misc::kUnknownWindowId;
   int tab_id = extension_misc::kUnknownTabId;
 

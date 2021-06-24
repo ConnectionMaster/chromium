@@ -2,28 +2,28 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//third_party/protobuf/proto_library.gni")
+
+proto_library("proto") {
+  sources = [
+    "certificate_transparency.proto",
+    "certificate_transparency_config.proto",
+    "ct_timestamp.proto",
+  ]
+}
+
 static_library("certificate_transparency") {
   sources = [
     "chrome_ct_policy_enforcer.cc",
     "chrome_ct_policy_enforcer.h",
     "chrome_require_ct_delegate.cc",
     "chrome_require_ct_delegate.h",
+    "ct_features.cc",
+    "ct_features.h",
     "ct_known_logs.cc",
     "ct_known_logs.h",
-    "features.cc",
-    "features.h",
-    "log_dns_client.cc",
-    "log_dns_client.h",
     "pref_names.cc",
     "pref_names.h",
-    "single_tree_tracker.cc",
-    "single_tree_tracker.h",
-    "sth_distributor.cc",
-    "sth_distributor.h",
-    "sth_observer.h",
-    "sth_reporter.h",
-    "tree_state_tracker.cc",
-    "tree_state_tracker.h",
   ]
 
   deps = [
@@ -36,6 +36,8 @@ static_library("certificate_transparency") {
     "//net",
     "//url",
   ]
+
+  public_deps = [ ":proto" ]
 }
 
 source_set("unit_tests") {
@@ -44,12 +46,6 @@ source_set("unit_tests") {
     "chrome_ct_policy_enforcer_unittest.cc",
     "chrome_require_ct_delegate_unittest.cc",
     "ct_known_logs_unittest.cc",
-    "log_dns_client_unittest.cc",
-    "mock_log_dns_traffic.cc",
-    "mock_log_dns_traffic.h",
-    "single_tree_tracker_unittest.cc",
-    "sth_distributor_unittest.cc",
-    "tree_state_tracker_unittest.cc",
   ]
   deps = [
     ":certificate_transparency",

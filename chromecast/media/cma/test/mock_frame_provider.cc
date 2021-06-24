@@ -9,7 +9,7 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "chromecast/media/cma/base/decoder_buffer_base.h"
+#include "chromecast/media/api/decoder_buffer_base.h"
 #include "chromecast/media/cma/test/frame_generator_for_test.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/decoder_buffer.h"
@@ -41,7 +41,7 @@ void MockFrameProvider::SetDelayFlush(bool delay_flush) {
   delay_flush_ = delay_flush;
 }
 
-void MockFrameProvider::Read(const ReadCB& read_cb) {
+void MockFrameProvider::Read(ReadCB read_cb) {
   bool delayed = delayed_task_pattern_[pattern_idx_];
   pattern_idx_ = (pattern_idx_ + 1) % delayed_task_pattern_.size();
 
@@ -49,25 +49,25 @@ void MockFrameProvider::Read(const ReadCB& read_cb) {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(&MockFrameProvider::DoRead, base::Unretained(this),
-                       read_cb),
+                       std::move(read_cb)),
         base::TimeDelta::FromMilliseconds(1));
   } else {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE, base::BindOnce(&MockFrameProvider::DoRead,
-                                  base::Unretained(this), read_cb));
+                                  base::Unretained(this), std::move(read_cb)));
   }
 }
 
-void MockFrameProvider::Flush(const base::Closure& flush_cb) {
+void MockFrameProvider::Flush(base::OnceClosure flush_cb) {
   if (delay_flush_) {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, flush_cb, base::TimeDelta::FromMilliseconds(10));
+        FROM_HERE, std::move(flush_cb), base::TimeDelta::FromMilliseconds(10));
   } else {
-    flush_cb.Run();
+    std::move(flush_cb).Run();
   }
 }
 
-void MockFrameProvider::DoRead(const ReadCB& read_cb) {
+void MockFrameProvider::DoRead(ReadCB read_cb) {
   bool has_config = frame_generator_->HasDecoderConfig();
 
   scoped_refptr<DecoderBufferBase> buffer(frame_generator_->Generate());
@@ -81,20 +81,18 @@ void MockFrameProvider::DoRead(const ReadCB& read_cb) {
     gfx::Size natural_size(640, 480);
     video_config = ::media::VideoDecoderConfig(
         ::media::kCodecH264, ::media::VIDEO_CODEC_PROFILE_UNKNOWN,
-        ::media::PIXEL_FORMAT_YV12, ::media::VideoColorSpace(),
-        ::media::VIDEO_ROTATION_0, coded_size, visible_rect, natural_size,
-        ::media::EmptyExtraData(), ::media::Unencrypted());
+        ::media::VideoDecoderConfig::AlphaMode::kIsOpaque,
+        ::media::VideoColorSpace(), ::media::kNoTransformation, coded_size,
+        visible_rect, natural_size, ::media::EmptyExtraData(),
+        ::media::EncryptionScheme::kUnencrypted);
 
     audio_config = ::media::AudioDecoderConfig(
-      ::media::kCodecAAC,
-      ::media::kSampleFormatS16,
-      ::media::CHANNEL_LAYOUT_STEREO,
-      44100,
-      ::media::EmptyExtraData(),
-      ::media::Unencrypted());
+        ::media::kCodecAAC, ::media::kSampleFormatS16,
+        ::media::CHANNEL_LAYOUT_STEREO, 44100, ::media::EmptyExtraData(),
+        ::media::EncryptionScheme::kUnencrypted);
   }
 
-  read_cb.Run(buffer, audio_config, video_config);
+  std::move(read_cb).Run(buffer, audio_config, video_config);
 }
 
 }  // namespace media

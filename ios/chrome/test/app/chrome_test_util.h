@@ -1,3 +1,4 @@
+
 // Copyright 2016 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -5,18 +6,17 @@
 #ifndef IOS_CHROME_TEST_APP_CHROME_TEST_UTIL_H_
 #define IOS_CHROME_TEST_APP_CHROME_TEST_UTIL_H_
 
+#include "base/compiler_specific.h"
 #import "base/ios/block_types.h"
 #import "ios/chrome/browser/ui/commands/browser_commands.h"
-#import "ios/web/public/web_state/web_state.h"
-
-namespace ios {
-class ChromeBrowserState;
-}
 
 @protocol ApplicationCommands;
-@class DeviceSharingManager;
+class Browser;
+class ChromeBrowserState;
 @class MainController;
 @class NewTabPageController;
+@class SceneController;
+@class SceneState;
 @class UIViewController;
 
 namespace chrome_test_util {
@@ -24,52 +24,45 @@ namespace chrome_test_util {
 // Returns the main controller.
 MainController* GetMainController();
 
-// Returns the DeviceSharingManager object.
-DeviceSharingManager* GetDeviceSharingManager();
+// Returns the foreground, active scene.
+SceneState* GetForegroundActiveScene();
 
-// Returns the |NewTabPageController| of the current tab if the current tab is
-// a new tab and nil otherwise.
-NewTabPageController* GetCurrentNewTabPageController();
+// Returns the foreground, active scene controller.
+SceneController* GetForegroundActiveSceneController();
 
-// Returns the current WebState.
-web::WebState* GetCurrentWebState();
+// Returns the number of regular Browsers for the default profile.
+NSUInteger RegularBrowserCount();
 
 // Returns the current, non-incognito ChromeBrowserState.
-ios::ChromeBrowserState* GetOriginalBrowserState();
+ChromeBrowserState* GetOriginalBrowserState();
 
 // Returns the current incognito ChromeBrowserState
-ios::ChromeBrowserState* GetCurrentIncognitoBrowserState();
+ChromeBrowserState* GetCurrentIncognitoBrowserState();
 
-// Returns the number of key commands currently registered with the main BVC.
-NSUInteger GetRegisteredKeyCommandsCount();
-
-// Returns the dispatcher for the main BVC.
-// TODO(crbug.com/738881): Use DispatcherForActiveBrowserViewController()
-// instead.
-id<BrowserCommands> BrowserCommandDispatcherForMainBVC();
+// Returns the browser for the main interface.
+Browser* GetMainBrowser();
 
 // Returns the active view controller.
 // NOTE: It is preferred to not directly access the active view controller if
 // possible.
 UIViewController* GetActiveViewController();
 
-// Returns the dispatcher for the active BrowserViewController. If the
-// BrowserViewController isn't presented, returns nil.
-id<ApplicationCommands, BrowserCommands>
-DispatcherForActiveBrowserViewController();
+// Returns the dispatcher for the active Browser.
+id<ApplicationCommands, BrowserCommands> HandlerForActiveBrowser();
 
 // Removes all presented infobars.
 void RemoveAllInfoBars();
 
-// Dismisses all presented views and modal dialogs.
-void ClearPresentedState();
+// Dismisses all presented views and modal dialogs. |completion| is invoked when
+// all the views are dismissed.
+void ClearPresentedState(ProceduralBlock completion);
 
 // Sets the value of a boolean local state pref.
 // TODO(crbug.com/647022): Clean up other tests that use this helper function.
 void SetBooleanLocalStatePref(const char* pref_name, bool value);
 
 // Sets the value of a boolean user pref in the given browser state.
-void SetBooleanUserPref(ios::ChromeBrowserState* browser_state,
+void SetBooleanUserPref(ChromeBrowserState* browser_state,
                         const char* pref_name,
                         bool value);
 

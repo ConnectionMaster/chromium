@@ -4,7 +4,6 @@
 
 #include <stddef.h>
 
-#include "base/stl_util.h"
 #include "ui/base/ime/chromeos/ime_keyboard.h"
 
 namespace chromeos {
@@ -37,6 +36,7 @@ const char *kAltGrLayoutIds[] = {
   "es(cat)",
   "fi",
   "fr",
+  "fr(oss)",
   "gb(dvorak)",
   "gb(extd)",
   "gr",
@@ -64,8 +64,7 @@ ImeKeyboard::ImeKeyboard()
     : caps_lock_is_enabled_(false) {
 }
 
-ImeKeyboard::~ImeKeyboard() {
-}
+ImeKeyboard::~ImeKeyboard() = default;
 
 void ImeKeyboard::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
@@ -96,16 +95,16 @@ bool ImeKeyboard::CapsLockIsEnabled() {
 }
 
 bool ImeKeyboard::IsISOLevel5ShiftAvailable() const {
-  for (size_t i = 0; i < base::size(kISOLevel5ShiftLayoutIds); ++i) {
-    if (last_layout_ == kISOLevel5ShiftLayoutIds[i])
+  for (const auto* id : kISOLevel5ShiftLayoutIds) {
+    if (last_layout_ == id)
       return true;
   }
   return false;
 }
 
 bool ImeKeyboard::IsAltGrAvailable() const {
-  for (size_t i = 0; i < base::size(kAltGrLayoutIds); ++i) {
-    if (last_layout_ == kAltGrLayoutIds[i])
+  for (const auto* id : kAltGrLayoutIds) {
+    if (last_layout_ == id)
       return true;
   }
   return false;

@@ -4,9 +4,9 @@
 
 #include "chrome/browser/printing/background_printing_manager.h"
 
+#include "base/containers/contains.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/printing/print_job.h"
@@ -152,7 +152,7 @@ std::set<content::WebContents*> BackgroundPrintingManager::CurrentContentSet() {
 
 bool BackgroundPrintingManager::HasPrintPreviewDialog(
     WebContents* preview_dialog) {
-  return base::ContainsKey(printing_contents_map_, preview_dialog);
+  return base::Contains(printing_contents_map_, preview_dialog);
 }
 
 BackgroundPrintingManager::PrintingContents::PrintingContents() = default;

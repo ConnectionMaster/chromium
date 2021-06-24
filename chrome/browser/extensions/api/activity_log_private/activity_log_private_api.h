@@ -9,13 +9,16 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_ACTIVITY_LOG_PRIVATE_ACTIVITY_LOG_PRIVATE_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_ACTIVITY_LOG_PRIVATE_ACTIVITY_LOG_PRIVATE_API_H_
 
-#include "base/macros.h"
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "base/synchronization/lock.h"
 #include "chrome/browser/extensions/activity_log/activity_actions.h"
 #include "chrome/browser/extensions/activity_log/activity_log.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/extension_function.h"
 
 namespace extensions {
 
@@ -27,15 +30,17 @@ class ActivityLogAPI : public BrowserContextKeyedAPI,
                        public EventRouter::Observer {
  public:
   explicit ActivityLogAPI(content::BrowserContext* context);
-  ~ActivityLogAPI() override;
+  ActivityLogAPI(const ActivityLogAPI&) = delete;
+  ActivityLogAPI& operator=(const ActivityLogAPI&) = delete;
+  ~ActivityLogAPI() override = default;
 
   // BrowserContextKeyedAPI implementation.
   static BrowserContextKeyedAPIFactory<ActivityLogAPI>* GetFactoryInstance();
 
   void Shutdown() override;
 
-  // Lookup whether the extension ID is whitelisted.
-  static bool IsExtensionWhitelisted(const std::string& extension_id);
+  // Lookup whether the extension ID is allowlisted.
+  static bool IsExtensionAllowlisted(const std::string& extension_id);
 
  private:
   friend class BrowserContextKeyedAPIFactory<ActivityLogAPI>;
@@ -54,9 +59,7 @@ class ActivityLogAPI : public BrowserContextKeyedAPI,
 
   content::BrowserContext* browser_context_;
   ActivityLog* activity_log_;
-  bool initialized_;
-
-  DISALLOW_COPY_AND_ASSIGN(ActivityLogAPI);
+  bool initialized_ = false;
 };
 
 template <>
@@ -65,7 +68,7 @@ void
 
 // The implementation of activityLogPrivate.getExtensionActivities
 class ActivityLogPrivateGetExtensionActivitiesFunction
-    : public ChromeAsyncExtensionFunction {
+    : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("activityLogPrivate.getExtensionActivities",
                              ACTIVITYLOGPRIVATE_GETEXTENSIONACTIVITIES)
@@ -74,7 +77,7 @@ class ActivityLogPrivateGetExtensionActivitiesFunction
   ~ActivityLogPrivateGetExtensionActivitiesFunction() override {}
 
   // ExtensionFunction:
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
  private:
   void OnLookupCompleted(
@@ -82,8 +85,7 @@ class ActivityLogPrivateGetExtensionActivitiesFunction
 };
 
 // The implementation of activityLogPrivate.deleteActivities
-class ActivityLogPrivateDeleteActivitiesFunction
-    : public UIThreadExtensionFunction {
+class ActivityLogPrivateDeleteActivitiesFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("activityLogPrivate.deleteActivities",
                              ACTIVITYLOGPRIVATE_DELETEACTIVITIES)
@@ -97,7 +99,7 @@ class ActivityLogPrivateDeleteActivitiesFunction
 
 // The implementation of activityLogPrivate.deleteActivitiesByExtension
 class ActivityLogPrivateDeleteActivitiesByExtensionFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("activityLogPrivate.deleteActivitiesByExtension",
                              ACTIVITYLOGPRIVATE_DELETEACTIVITIESBYEXTENSION)
@@ -110,8 +112,7 @@ class ActivityLogPrivateDeleteActivitiesByExtensionFunction
 };
 
 // The implementation of activityLogPrivate.deleteDatabase
-class ActivityLogPrivateDeleteDatabaseFunction
-    : public UIThreadExtensionFunction {
+class ActivityLogPrivateDeleteDatabaseFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("activityLogPrivate.deleteDatabase",
                              ACTIVITYLOGPRIVATE_DELETEDATABASE)
@@ -124,7 +125,7 @@ class ActivityLogPrivateDeleteDatabaseFunction
 };
 
 // The implementation of activityLogPrivate.deleteUrls
-class ActivityLogPrivateDeleteUrlsFunction : public UIThreadExtensionFunction {
+class ActivityLogPrivateDeleteUrlsFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("activityLogPrivate.deleteUrls",
                              ACTIVITYLOGPRIVATE_DELETEURLS)

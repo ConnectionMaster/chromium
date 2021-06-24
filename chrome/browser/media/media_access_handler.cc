@@ -9,8 +9,8 @@
 
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
-#include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 
 bool MediaAccessHandler::IsInsecureCapturingInProgress(int render_process_id,
                                                        int render_frame_id) {
@@ -40,9 +40,10 @@ void MediaAccessHandler::CheckDevicesAndRunCallback(
   // TODO(grunell): The invalid state result should be changed to a new denied
   // result + a dcheck to ensure at least one of audio or video types is
   // capture.
-  blink::MediaStreamRequestResult result =
-      (audio_allowed || video_allowed) ? blink::MEDIA_DEVICE_NO_HARDWARE
-                                       : blink::MEDIA_DEVICE_INVALID_STATE;
+  blink::mojom::MediaStreamRequestResult result =
+      (audio_allowed || video_allowed)
+          ? blink::mojom::MediaStreamRequestResult::NO_HARDWARE
+          : blink::mojom::MediaStreamRequestResult::INVALID_STATE;
 
   // Get the exact audio or video device if an id is specified.
   // We only set any error result here and before running the callback change
@@ -66,19 +67,18 @@ void MediaAccessHandler::CheckDevicesAndRunCallback(
     }
   }
 
-  Profile* profile =
-      Profile::FromBrowserContext(web_contents->GetBrowserContext());
-
   // If either or both audio and video devices were requested but not
   // specified by id, get the default devices.
   if (get_default_audio_device || get_default_video_device) {
-    MediaCaptureDevicesDispatcher::GetInstance()->GetDefaultDevicesForProfile(
-        profile, get_default_audio_device, get_default_video_device, &devices);
+    MediaCaptureDevicesDispatcher::GetInstance()
+        ->GetDefaultDevicesForBrowserContext(
+            web_contents->GetBrowserContext(), get_default_audio_device,
+            get_default_video_device, &devices);
   }
 
   std::unique_ptr<content::MediaStreamUI> ui;
   if (!devices.empty()) {
-    result = blink::MEDIA_DEVICE_OK;
+    result = blink::mojom::MediaStreamRequestResult::OK;
     ui = MediaCaptureDevicesDispatcher::GetInstance()
              ->GetMediaStreamCaptureIndicator()
              ->RegisterMediaStream(web_contents, devices);

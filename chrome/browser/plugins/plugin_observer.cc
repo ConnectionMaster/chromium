@@ -13,9 +13,8 @@
 #include "build/build_config.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/infobars/infobar_service.h"
+#include "chrome/browser/infobars/simple_alert_infobar_creator.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
-#include "chrome/browser/plugins/flash_download_interception.h"
 #include "chrome/browser/plugins/plugin_finder.h"
 #include "chrome/browser/plugins/plugin_infobar_delegates.h"
 #include "chrome/browser/plugins/plugin_installer.h"
@@ -25,19 +24,25 @@
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog_delegate.h"
 #include "chrome/common/buildflags.h"
-#include "chrome/common/render_messages.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/component_updater/component_updater_service.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/infobars/core/simple_alert_infobar_delegate.h"
+#include "components/download/public/common/download_url_parameters.h"
+#include "components/infobars/content/content_infobar_manager.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/child_process_security_policy.h"
+#include "content/public/browser/download_manager.h"
 #include "content/public/browser/plugin_service.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/webplugininfo.h"
+#include "extensions/browser/guest_view/web_view/web_view_guest.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "ppapi/buildflags/buildflags.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -49,84 +54,32 @@ class PluginObserver::PluginPlaceholderHost : public PluginInstallerObserver {
  public:
   PluginPlaceholderHost(
       PluginObserver* observer,
-      base::string16 plugin_name,
+      std::u16string plugin_name,
       PluginInstaller* installer,
-      chrome::mojom::PluginRendererPtr plugin_renderer_interface)
+      mojo::PendingRemote<chrome::mojom::PluginRenderer> plugin_renderer_remote)
       : PluginInstallerObserver(installer),
         observer_(observer),
-        plugin_renderer_interface_(std::move(plugin_renderer_interface)) {
-    plugin_renderer_interface_.set_connection_error_handler(
-        base::Bind(&PluginObserver::RemovePluginPlaceholderHost,
-                   base::Unretained(observer_), this));
+        plugin_renderer_remote_(std::move(plugin_renderer_remote)) {
+    plugin_renderer_remote_.set_disconnect_handler(
+        base::BindOnce(&PluginObserver::RemovePluginPlaceholderHost,
+                       base::Unretained(observer_), this));
     DCHECK(installer);
   }
 
   void DownloadFinished() override {
-    plugin_renderer_interface_->FinishedDownloading();
+    plugin_renderer_remote_->FinishedDownloading();
   }
 
  private:
   PluginObserver* observer_;
-  chrome::mojom::PluginRendererPtr plugin_renderer_interface_;
-};
-
-class PluginObserver::ComponentObserver
-    : public update_client::UpdateClient::Observer {
- public:
-  using Events = update_client::UpdateClient::Observer::Events;
-  ComponentObserver(PluginObserver* observer,
-                    const std::string& component_id,
-                    chrome::mojom::PluginRendererPtr plugin_renderer_interface)
-      : observer_(observer),
-        component_id_(component_id),
-        plugin_renderer_interface_(std::move(plugin_renderer_interface)) {
-    plugin_renderer_interface_.set_connection_error_handler(
-        base::Bind(&PluginObserver::RemoveComponentObserver,
-                   base::Unretained(observer_), this));
-    g_browser_process->component_updater()->AddObserver(this);
-  }
-
-  ~ComponentObserver() override {
-    g_browser_process->component_updater()->RemoveObserver(this);
-  }
-
-  void OnEvent(Events event, const std::string& id) override {
-    // TODO(lukasza): https://crbug.com/760637: |routing_id_| might live in a
-    // different process than the RenderViewHost - need to track and use
-    // placeholder's process when calling Send below.
-
-    if (id != component_id_)
-      return;
-    switch (event) {
-      case Events::COMPONENT_UPDATED:
-        plugin_renderer_interface_->UpdateSuccess();
-        observer_->RemoveComponentObserver(this);
-        break;
-      case Events::COMPONENT_UPDATE_FOUND:
-        plugin_renderer_interface_->UpdateDownloading();
-        break;
-      case Events::COMPONENT_NOT_UPDATED:
-      case Events::COMPONENT_UPDATE_ERROR:
-        plugin_renderer_interface_->UpdateFailure();
-        observer_->RemoveComponentObserver(this);
-        break;
-      default:
-        // No message to send.
-        break;
-    }
-  }
-
- private:
-  PluginObserver* observer_;
-  std::string component_id_;
-  chrome::mojom::PluginRendererPtr plugin_renderer_interface_;
-  DISALLOW_COPY_AND_ASSIGN(ComponentObserver);
+  mojo::Remote<chrome::mojom::PluginRenderer> plugin_renderer_remote_;
 };
 
 PluginObserver::PluginObserver(content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      plugin_host_bindings_(web_contents, this),
-      weak_ptr_factory_(this) {}
+      plugin_host_receivers_(web_contents,
+                             this,
+                             content::WebContentsFrameReceiverSetPassKey()) {}
 
 PluginObserver::~PluginObserver() {
 }
@@ -135,9 +88,9 @@ void PluginObserver::PluginCrashed(const base::FilePath& plugin_path,
                                    base::ProcessId plugin_pid) {
   DCHECK(!plugin_path.value().empty());
 
-  base::string16 plugin_name =
+  std::u16string plugin_name =
       PluginService::GetInstance()->GetPluginDisplayNameByPath(plugin_path);
-  base::string16 infobar_text;
+  std::u16string infobar_text;
 #if defined(OS_WIN)
   // Find out whether the plugin process is still alive.
   // Note: Although the chances are slim, it is possible that after the plugin
@@ -176,26 +129,24 @@ void PluginObserver::PluginCrashed(const base::FilePath& plugin_path,
 #endif
 
   ReloadPluginInfoBarDelegate::Create(
-      InfoBarService::FromWebContents(web_contents()),
-      &web_contents()->GetController(),
-      infobar_text);
+      infobars::ContentInfoBarManager::FromWebContents(web_contents()),
+      &web_contents()->GetController(), infobar_text);
 }
 
 // static
 void PluginObserver::CreatePluginObserverInfoBar(
-    InfoBarService* infobar_service,
-    const base::string16& plugin_name) {
-  SimpleAlertInfoBarDelegate::Create(
-      infobar_service,
+    infobars::ContentInfoBarManager* infobar_manager,
+    const std::u16string& plugin_name) {
+  CreateSimpleAlertInfoBar(
+      infobar_manager,
       infobars::InfoBarDelegate::PLUGIN_OBSERVER_INFOBAR_DELEGATE,
       &kExtensionCrashedIcon,
       l10n_util::GetStringFUTF16(IDS_PLUGIN_INITIALIZATION_ERROR_PROMPT,
-                                 plugin_name),
-      true);
+                                 plugin_name));
 }
 
 void PluginObserver::BlockedOutdatedPlugin(
-    chrome::mojom::PluginRendererPtr plugin_renderer,
+    mojo::PendingRemote<chrome::mojom::PluginRenderer> plugin_renderer,
     const std::string& identifier) {
   PluginFinder* finder = PluginFinder::GetInstance();
   // Find plugin to update.
@@ -208,28 +159,11 @@ void PluginObserver::BlockedOutdatedPlugin(
         std::move(plugin_placeholder);
 
     OutdatedPluginInfoBarDelegate::Create(
-        InfoBarService::FromWebContents(web_contents()), installer,
-        std::move(plugin));
+        infobars::ContentInfoBarManager::FromWebContents(web_contents()),
+        installer, std::move(plugin));
   } else {
     NOTREACHED();
   }
-}
-
-void PluginObserver::BlockedComponentUpdatedPlugin(
-    chrome::mojom::PluginRendererPtr plugin_renderer,
-    const std::string& identifier) {
-  auto component_observer = std::make_unique<ComponentObserver>(
-      this, identifier, std::move(plugin_renderer));
-  component_observers_[component_observer.get()] =
-      std::move(component_observer);
-  g_browser_process->component_updater()->GetOnDemandUpdater().OnDemandUpdate(
-      identifier, component_updater::OnDemandUpdater::Priority::FOREGROUND,
-      component_updater::Callback());
-}
-
-void PluginObserver::RemoveComponentObserver(
-    ComponentObserver* component_observer) {
-  component_observers_.erase(component_observer);
 }
 
 void PluginObserver::RemovePluginPlaceholderHost(
@@ -240,17 +174,81 @@ void PluginObserver::RemovePluginPlaceholderHost(
 void PluginObserver::ShowFlashPermissionBubble() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  FlashDownloadInterception::InterceptFlashDownloadNavigation(
-      web_contents(), web_contents()->GetLastCommittedURL());
+  // TODO(tommycli): This is a no-op now. Delete this method in a followup.
 }
 
 void PluginObserver::CouldNotLoadPlugin(const base::FilePath& plugin_path) {
   g_browser_process->GetMetricsServicesManager()->OnPluginLoadingError(
       plugin_path);
-  base::string16 plugin_name =
+  std::u16string plugin_name =
       PluginService::GetInstance()->GetPluginDisplayNameByPath(plugin_path);
-  CreatePluginObserverInfoBar(InfoBarService::FromWebContents(web_contents()),
-                              plugin_name);
+  CreatePluginObserverInfoBar(
+      infobars::ContentInfoBarManager::FromWebContents(web_contents()),
+      plugin_name);
+}
+
+void PluginObserver::OpenPDF(const GURL& url) {
+  // WebViews should never trigger PDF downloads.
+  if (extensions::WebViewGuest::FromWebContents(web_contents()))
+    return;
+
+  content::RenderFrameHost* render_frame_host =
+      plugin_host_receivers_.GetCurrentTargetFrame();
+
+  if (!content::ChildProcessSecurityPolicy::GetInstance()->CanRequestURL(
+          render_frame_host->GetRoutingID(), url)) {
+    return;
+  }
+
+  content::Referrer referrer = content::Referrer::SanitizeForRequest(
+      url, content::Referrer(web_contents()->GetURL(),
+                             network::mojom::ReferrerPolicy::kDefault));
+
+#if BUILDFLAG(ENABLE_PLUGINS)
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("pdf_plugin_placeholder", R"(
+        semantics {
+          sender: "PDF Plugin Placeholder"
+          description:
+            "When the PDF Viewer is unavailable, a placeholder is shown for "
+            "embedded PDFs. This placeholder allows the user to download and "
+            "open the PDF file via a button."
+          trigger:
+            "The user clicks the 'View PDF' button in the PDF placeholder."
+          data: "None."
+          destination: WEBSITE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This feature can be disabled via 'Download PDF files instead of "
+            "automatically opening them in Chrome' in settings under content. "
+            "The feature is disabled by default."
+          chrome_policy {
+            AlwaysOpenPdfExternally {
+              AlwaysOpenPdfExternally: false
+            }
+          }
+        })");
+  std::unique_ptr<download::DownloadUrlParameters> params =
+      std::make_unique<download::DownloadUrlParameters>(
+          url, render_frame_host->GetRenderViewHost()->GetProcess()->GetID(),
+          render_frame_host->GetRoutingID(), traffic_annotation);
+  params->set_referrer(referrer.url);
+  params->set_referrer_policy(
+      content::Referrer::ReferrerPolicyForUrlRequest(referrer.policy));
+
+  web_contents()->GetBrowserContext()->GetDownloadManager()->DownloadUrl(
+      std::move(params));
+
+#else   // !BUILDFLAG(ENABLE_PLUGINS)
+  content::OpenURLParams open_url_params(
+      url, referrer, WindowOpenDisposition::CURRENT_TAB,
+      ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+  // On Android, PDFs downloaded with a user gesture are auto-opened.
+  open_url_params.user_gesture = true;
+  web_contents()->OpenURL(open_url_params);
+#endif  // BUILDFLAG(ENABLE_PLUGINS)
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(PluginObserver)

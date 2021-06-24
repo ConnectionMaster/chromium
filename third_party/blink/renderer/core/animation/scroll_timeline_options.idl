@@ -14,10 +14,8 @@ enum ScrollDirection {
 enum ScrollTimelineAutoKeyword { "auto" };
 
 dictionary ScrollTimelineOptions {
-        Element? scrollSource = null;
+        Element? scrollSource;
         ScrollDirection orientation = "block";
-        DOMString startScrollOffset = "auto";
-        DOMString endScrollOffset = "auto";
+        sequence<ScrollTimelineOffset> scrollOffsets = [];
         (double or ScrollTimelineAutoKeyword) timeRange = "auto";
-        FillMode fill = "none";
 };

@@ -79,13 +79,23 @@ void ArcImeBridgeImpl::SendConfirmCompositionText() {
   ime_instance->ConfirmCompositionText();
 }
 
-void ArcImeBridgeImpl::SendInsertText(const base::string16& text) {
+void ArcImeBridgeImpl::SendSelectionRange(const gfx::Range& selection_range) {
+  auto* ime_instance =
+      ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(), SetSelectionText);
+  if (!ime_instance)
+    return;
+
+  ime_instance->SetSelectionText(selection_range);
+}
+
+void ArcImeBridgeImpl::SendInsertText(const std::u16string& text,
+                                      int new_cursor_position) {
   auto* ime_instance =
       ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(), InsertText);
   if (!ime_instance)
     return;
 
-  ime_instance->InsertText(base::UTF16ToUTF8(text));
+  ime_instance->InsertText(base::UTF16ToUTF8(text), new_cursor_position);
 }
 
 void ArcImeBridgeImpl::SendExtendSelectionAndDelete(
@@ -107,6 +117,16 @@ void ArcImeBridgeImpl::SendOnKeyboardAppearanceChanging(
     return;
 
   ime_instance->OnKeyboardAppearanceChanging(new_bounds, is_available);
+}
+
+void ArcImeBridgeImpl::SendSetComposingRegion(
+    const gfx::Range& composing_range) {
+  auto* ime_instance =
+      ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(), SetComposingRegion);
+  if (!ime_instance)
+    return;
+
+  ime_instance->SetComposingRegion(composing_range);
 }
 
 void ArcImeBridgeImpl::OnTextInputTypeChanged(
@@ -141,8 +161,18 @@ void ArcImeBridgeImpl::OnCursorRectChangedWithSurroundingText(
       is_screen_coordinates);
 }
 
-void ArcImeBridgeImpl::RequestHideIme() {
-  delegate_->RequestHideIme();
+void ArcImeBridgeImpl::RequestHideImeDeprecated() {
+  DVLOG(1) << "RequestHideIme is deprecated.";
+}
+
+void ArcImeBridgeImpl::ShouldEnableKeyEventForwarding(
+    ShouldEnableKeyEventForwardingCallback callback) {
+  std::move(callback).Run(delegate_->ShouldEnableKeyEventForwarding());
+}
+
+void ArcImeBridgeImpl::SendKeyEvent(std::unique_ptr<ui::KeyEvent> key_event,
+                                    SendKeyEventCallback callback) {
+  delegate_->SendKeyEvent(std::move(key_event), std::move(callback));
 }
 
 }  // namespace arc

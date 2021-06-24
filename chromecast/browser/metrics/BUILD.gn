@@ -6,10 +6,10 @@ import("//chromecast/chromecast.gni")
 
 cast_source_set("metrics") {
   sources = [
+    "cast_browser_metrics.cc",
+    "cast_browser_metrics.h",
     "cast_metrics_prefs.cc",
     "cast_metrics_prefs.h",
-    "cast_metrics_service_client.cc",
-    "cast_metrics_service_client.h",
     "cast_stability_metrics_provider.cc",
     "cast_stability_metrics_provider.h",
   ]
@@ -18,10 +18,11 @@ cast_source_set("metrics") {
     "//base",
     "//base:i18n",
     "//chromecast/base",
-    "//chromecast/base:cast_sys_info",
+    "//chromecast/base:cast_sys_info_util",
     "//chromecast/base:cast_version",
+    "//chromecast/metrics",
     "//components/metrics",
-    "//components/metrics:gpu",
+    "//components/metrics:content",
     "//components/metrics:net",
     "//components/metrics:ui",
     "//components/prefs",
@@ -31,7 +32,7 @@ cast_source_set("metrics") {
     "//third_party/metrics_proto",
   ]
 
-  if (is_linux) {
+  if (is_linux || is_chromeos) {
     sources += [
       "external_metrics.cc",
       "external_metrics.h",

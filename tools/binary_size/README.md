@@ -16,17 +16,23 @@ Bugs and feature requests are tracked in crbug under:
 
 Per-Milestone Binary Size Breakdowns:
 
- * https://storage.googleapis.com/chrome-supersize/index.html
+ * https://chrome-supersize.firebaseapp.com/chrome-supersize/index.html
+
+Guide to dealing with chrome-perf size alerts:
+
+ * [//docs/speed/apk_size_regressions.md](/docs/speed/apk_size_regressions.md)
 
 [TOC]
 
 ## Binary Size Trybot (android-binary-size)
 
  * Introduced October 2018 as a mandatory CQ bot.
- * Example builds: https://ci.chromium.org/p/chromium/builders/luci.chromium.try/android-binary-size
- * Provides size per-patch size analysis via `resource_sizes.py` and SuperSize.
- * Forces a `Binary-Size:` footer to be present for commits that are larger than
-   16KiB (autorollers exempted).
+ * Documented [here](/docs/speed/binary_size/android_binary_size_trybot.md).
+
+## Binary Size Gerrit Plugin
+
+ * Introduced February 2020 to surface results from android-binary-size.
+ * Documented [here](/docs/speed/binary_size/android_binary_size_trybot.md).
 
 ## resource_sizes.py
 
@@ -36,7 +42,7 @@ Per-Milestone Binary Size Breakdowns:
    [chromeperf](https://chromeperf.appspot.com/report) under
    `Test suite="resource_sizes ($APK)"`.
  * Metrics reported by this tool are described in
-   [//docs/speed/binary_size/metrics.md](../../docs/speed/binary_size/metrics.md).
+   [//docs/speed/binary_size/metrics.md](/docs/speed/binary_size/metrics.md).
 
 ## SuperSize
 
@@ -95,7 +101,7 @@ Supports Android and Linux (although Linux
 ##### Pak Symbols (.pak.nontranslated and .pak.translations)
 
 1. Grit creates a mapping between numeric id and textual id for grd files.
-   * A side effect of pak whitelist generation is a mapping of `.cc` to numeric
+   * A side effect of pak allowlist generation is a mapping of `.cc` to numeric
      id.
    * A complete per-apk mapping of numeric id to textual id is stored in the
      `output_dir/size-info` dir.
@@ -217,11 +223,6 @@ Collect size information and dump it into a `.size` file.
 **Note:** Refer to
 [diagnose_bloat.py](https://cs.chromium.org/search/?q=file:diagnose_bloat.py+gn_args)
 for list of GN args to build a Release binary (or just use the tool with --single).
-
-**Googlers:** If you just want a `.size` for a commit on master:
-
-    GIT_REV="HEAD~200"
-    tools/binary_size/diagnose_bloat.py --single --cloud --unstripped $GIT_REV
 ***
 
 Example Usage:
@@ -239,7 +240,7 @@ tools/binary_size/supersize archive chrome.size --elf-file out/Release/chrome -v
 ### Usage: html_report
 
 Creates an `.ndjson` (newline-delimited JSON) file that the
-[SuperSize viewer](https://storage.googleapis.com/chrome-supersize/viewer.html)
+[SuperSize viewer](https://chrome-supersize.firebaseapp.com/viewer.html)
 is able to load.
 
 Example Usage:
@@ -327,8 +328,6 @@ and Linux (although Linux symbol diffs have issues, as noted below).
 
 1. Builds multiple revisions using release GN args.
    * Default is to build just two revisions (before & after commit)
-   * Rather than building, can fetch build artifacts and `.size` files from perf
-     bots (`--cloud`)
 1. Measures all outputs using `resource_size.py` and `supersize`.
 1. Saves & displays a breakdown of the difference in binary sizes.
 
@@ -344,14 +343,11 @@ tools/binary_size/diagnose_bloat.py HEAD --enable-chrome-android-internal -v
 # Build and diff monochrome_public_apk HEAD^ and HEAD without is_official_build.
 tools/binary_size/diagnose_bloat.py HEAD --gn-args="is_official_build=false" -v
 
-# Diff BEFORE_REV and AFTER_REV using build artifacts downloaded from perf bots.
-tools/binary_size/diagnose_bloat.py AFTER_REV --reference-rev BEFORE_REV --cloud -v
-
-# Fetch a .size, libmonochrome.so, and MonochromePublic.apk from perf bots (Googlers only):
-tools/binary_size/diagnose_bloat.py AFTER_REV --cloud --unstripped --single
-
 # Build and diff all contiguous revs in range BEFORE_REV..AFTER_REV for src/v8.
 tools/binary_size/diagnose_bloat.py AFTER_REV --reference-rev BEFORE_REV --subrepo v8 --all -v
+
+# Build and diff system_webview_apk HEAD^ and HEAD with arsc obfucstion disabled.
+tools/binary_size/diagnose_bloat.py HEAD --target system_webview_apk --gn-args enable_arsc_obfuscation=false
 
 # Display detailed usage info (there are many options).
 tools/binary_size/diagnose_bloat.py -h

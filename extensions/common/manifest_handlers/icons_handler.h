@@ -26,10 +26,10 @@ struct IconsInfo : public Extension::ManifestData {
   // Get an extension icon as a resource or URL.
   static ExtensionResource GetIconResource(
       const Extension* extension,
-      int size,
+      int size_in_px,
       ExtensionIconSet::MatchType match_type);
   static GURL GetIconURL(const Extension* extension,
-                         int size,
+                         int size_in_px,
                          ExtensionIconSet::MatchType match_type);
 };
 
@@ -39,7 +39,7 @@ class IconsHandler : public ManifestHandler {
   IconsHandler();
   ~IconsHandler() override;
 
-  bool Parse(Extension* extension, base::string16* error) override;
+  bool Parse(Extension* extension, std::u16string* error) override;
   bool Validate(const Extension* extension,
                 std::string* error,
                 std::vector<InstallWarning>* warnings) const override;

@@ -47,6 +47,8 @@ Status UnzipSoleFile(const base::FilePath& unzip_dir,
 Status NotifyCommandListenersBeforeCommand(Session* session,
                                            const std::string& command_name);
 
+double ConvertCentimeterToInch(double centimeter);
+
 // Functions to get an optional value of the given type from a dictionary.
 // Each function has three different outcomes:
 // * Value exists and is of right type:
@@ -81,6 +83,14 @@ bool GetOptionalString(const base::DictionaryValue* dict,
                        base::StringPiece path,
                        std::string* out_value,
                        bool* has_value = nullptr);
+bool GetOptionalDictionary(const base::DictionaryValue* dict,
+                           base::StringPiece path,
+                           const base::DictionaryValue** out_value,
+                           bool* has_value = nullptr);
+bool GetOptionalList(const base::DictionaryValue* dict,
+                     base::StringPiece path,
+                     const base::ListValue** out_value,
+                     bool* has_value = nullptr);
 // Handles "safe integer" mentioned in W3C spec,
 // https://www.w3.org/TR/webdriver/#dfn-maximum-safe-integer.
 bool GetOptionalSafeInt(const base::DictionaryValue* dict,
@@ -91,5 +101,12 @@ bool GetOptionalSafeInt(const base::DictionaryValue* dict,
 bool SetSafeInt(base::DictionaryValue* dict,
                 const base::StringPiece path,
                 int64_t in_value_64);
+
+// Provides WindowHandle to WebView method to maintain consistency across
+// ChromeDriver.
+std::string WebViewIdToWindowHandle(const std::string& web_view_id);
+
+bool WindowHandleToWebViewId(const std::string& window_handle,
+                             std::string* web_view_id);
 
 #endif  // CHROME_TEST_CHROMEDRIVER_UTIL_H_

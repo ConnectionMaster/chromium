@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_PERMISSIONS_PERMISSIONS_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_PERMISSIONS_PERMISSIONS_API_H_
 
-#include <string>
-
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
@@ -16,7 +14,7 @@
 namespace extensions {
 
 // chrome.permissions.contains
-class PermissionsContainsFunction : public UIThreadExtensionFunction {
+class PermissionsContainsFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("permissions.contains", PERMISSIONS_CONTAINS)
 
@@ -28,7 +26,7 @@ class PermissionsContainsFunction : public UIThreadExtensionFunction {
 };
 
 // chrome.permissions.getAll
-class PermissionsGetAllFunction : public UIThreadExtensionFunction {
+class PermissionsGetAllFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("permissions.getAll", PERMISSIONS_GETALL)
 
@@ -40,7 +38,7 @@ class PermissionsGetAllFunction : public UIThreadExtensionFunction {
 };
 
 // chrome.permissions.remove
-class PermissionsRemoveFunction : public UIThreadExtensionFunction {
+class PermissionsRemoveFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("permissions.remove", PERMISSIONS_REMOVE)
 
@@ -52,7 +50,7 @@ class PermissionsRemoveFunction : public UIThreadExtensionFunction {
 };
 
 // chrome.permissions.request
-class PermissionsRequestFunction : public UIThreadExtensionFunction {
+class PermissionsRequestFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("permissions.request", PERMISSIONS_REQUEST)
 

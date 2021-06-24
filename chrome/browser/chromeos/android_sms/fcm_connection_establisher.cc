@@ -8,7 +8,6 @@
 
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
 #include "chromeos/components/multidevice/logging/logging.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -55,15 +54,15 @@ FcmConnectionEstablisher::InFlightMessage::InFlightMessage(
 
 FcmConnectionEstablisher::FcmConnectionEstablisher(
     std::unique_ptr<base::OneShotTimer> retry_timer)
-    : retry_timer_(std::move(retry_timer)), weak_ptr_factory_(this) {}
+    : retry_timer_(std::move(retry_timer)) {}
 FcmConnectionEstablisher::~FcmConnectionEstablisher() = default;
 
 void FcmConnectionEstablisher::EstablishConnection(
     const GURL& url,
     ConnectionMode connection_mode,
     content::ServiceWorkerContext* service_worker_context) {
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::IO},
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
           &FcmConnectionEstablisher::SendMessageToServiceWorkerWithRetries,
           weak_ptr_factory_.GetWeakPtr(), url,
@@ -74,8 +73,8 @@ void FcmConnectionEstablisher::EstablishConnection(
 void FcmConnectionEstablisher::TearDownConnection(
     const GURL& url,
     content::ServiceWorkerContext* service_worker_context) {
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::IO},
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
           &FcmConnectionEstablisher::SendMessageToServiceWorkerWithRetries,
           weak_ptr_factory_.GetWeakPtr(), url, MessageType::kStop,

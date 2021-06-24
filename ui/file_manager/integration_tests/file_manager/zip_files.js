@@ -1,7 +1,11 @@
 // Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-'use strict';
+
+import {addEntries, ENTRIES, getCaller, pending, repeatUntil, RootPath, sendTestMessage, wait, waitForAppWindow} from '../test_util.js';
+import {testcase} from '../testcase.js';
+
+import {remoteCall, setupAndWaitUntilReady} from './background.js';
 
 /**
  * Returns the expected file list row entries after opening (unzipping) the
@@ -117,6 +121,29 @@ testcase.zipFileOpenDownloads = async () => {
 };
 
 /**
+ * Tests that Files app's zip implementation notify FileTasks when mounted.
+ */
+testcase.zipNotifyFileTasks = async () => {
+  await sendTestMessage({
+    name: 'expectFileTask',
+    fileNames: [ENTRIES.zipArchive.targetPath],
+    openType: 'launch'
+  });
+
+  // Open Files app on Downloads containing a zip file.
+  const appId = await setupAndWaitUntilReady(
+      RootPath.DOWNLOADS, [ENTRIES.zipArchive], []);
+
+  // Open the zip file.
+  chrome.test.assertTrue(
+      !!await remoteCall.callRemoteTestUtil('openFile', appId, ['archive.zip']),
+      'openFile failed');
+
+  // Wait for the zip archive to mount.
+  await remoteCall.waitForElement(appId, `[scan-completed="archive.zip"]`);
+};
+
+/**
  * Tests zip file, with absolute paths, open (aka unzip) from Downloads.
  */
 testcase.zipFileOpenDownloadsWithAbsolutePaths = async () => {
@@ -177,8 +204,10 @@ testcase.zipFileOpenDownloadsEncryptedCancelPassphrase = async () => {
 
   const passphraseCloseScript = `
       function clickClose() {
-        let dialog = document.querySelector("passphrase-dialog");
-        dialog.shadowRoot.querySelector("#cancelButton").click();
+        HTMLImports.whenReady(() => {
+          let dialog = document.querySelector("passphrase-dialog");
+          dialog.shadowRoot.querySelector("#cancelButton").click();
+        });
       }
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", clickClose);
@@ -194,6 +223,7 @@ testcase.zipFileOpenDownloadsEncryptedCancelPassphrase = async () => {
     });
   };
 
+  let passphraseCloseCount = 0;
   const waitForAllPassphraseWindowsClosed = () => {
     const caller = getCaller();
 
@@ -207,18 +237,27 @@ testcase.zipFileOpenDownloadsEncryptedCancelPassphrase = async () => {
       'windowUrl': zipArchiverPassphraseDialogUrl
     };
 
+    let lastWindowId;
     return repeatUntil(async () => {
       const windowCount = await sendTestMessage(passphraseWindowCountCommand);
       if (windowCount == 0) {
+        lastWindowId = 'none';
         return true;
       }
 
       const windowId = await sendTestMessage(getPassphraseWindowIdCommand);
       if (windowId == 'none') {
+        lastWindowId = 'none';
         return true;
       }
 
-      await cancelPassphraseDialog(windowId);
+      // Track the last window id to ensure that only one attempt is made to
+      // cancel a passphrase dialog.
+      if (windowId != lastWindowId) {
+        await cancelPassphraseDialog(windowId);
+        passphraseCloseCount++;
+      }
+      lastWindowId = windowId;
       return pending(caller, 'waitForAllPassphraseWindowsClosed');
     });
   };
@@ -243,15 +282,19 @@ testcase.zipFileOpenDownloadsEncryptedCancelPassphrase = async () => {
   const files = getUnzippedFileListRowEntriesEncrypted();
   await remoteCall.waitForFiles(appId, files, {'ignoreLastModifiedTime': true});
 
-  // Select the text file in the ZIP file.
-  chrome.test.assertTrue(
-      !!await remoteCall.callRemoteTestUtil('selectFile', appId, ['text.txt']),
-      'selectFile failed');
+  const selectAndOpenFile = async () => {
+    // Select the text file in the ZIP file.
+    chrome.test.assertTrue(
+        !!await remoteCall.callRemoteTestUtil(
+            'selectFile', appId, ['text.txt']),
+        'selectFile failed');
 
-  // Press the Enter key.
-  chrome.test.assertTrue(
-      !!await remoteCall.callRemoteTestUtil('fakeKeyDown', appId, key),
-      'fakeKeyDown failed');
+    // Press the Enter key.
+    chrome.test.assertTrue(
+        !!await remoteCall.callRemoteTestUtil('fakeKeyDown', appId, key),
+        'fakeKeyDown failed');
+  };
+  selectAndOpenFile();
 
   // Wait for the external passphrase dialog window to appear.
   await waitForAppWindow(zipArchiverPassphraseDialogUrl);
@@ -262,6 +305,23 @@ testcase.zipFileOpenDownloadsEncryptedCancelPassphrase = async () => {
       !!await waitForAllPassphraseWindowsClosed(),
       'waitForAllPassphraseWindowsClosed failed');
 
+  for (let i = 0; i < 2; i++) {
+    selectAndOpenFile();
+
+    // Wait for a bit to see if any windows show up. One might appear on the
+    // second attempt to open a file, but given interactions with other
+    // components, we can't be sure.
+    await wait(500);
+
+    // Close any dialogs that show up by pressing the 'Cancel' button.
+    chrome.test.assertTrue(
+        !!await waitForAllPassphraseWindowsClosed(),
+        'waitForAllPassphraseWindowsClosed failed');
+  }
+
+  chrome.test.assertTrue(
+      passphraseCloseCount <= 2, 'passphrase window shown too many times');
+
   // Check: the zip file content should still be shown.
   const files2 = getUnzippedFileListRowEntriesEncrypted();
   await remoteCall.waitForFiles(appId, files, {'ignoreLastModifiedTime': true});
@@ -271,13 +331,11 @@ testcase.zipFileOpenDownloadsEncryptedCancelPassphrase = async () => {
  * Tests zip file open (aka unzip) from Google Drive.
  */
 testcase.zipFileOpenDrive = async () => {
-  if (await sendTestMessage({name: 'getDriveFsEnabled'}) === 'true') {
-    await sendTestMessage({
-      name: 'expectFileTask',
-      fileNames: [ENTRIES.zipArchive.targetPath],
-      openType: 'launch'
-    });
-  }
+  await sendTestMessage({
+    name: 'expectFileTask',
+    fileNames: [ENTRIES.zipArchive.targetPath],
+    openType: 'launch'
+  });
 
   // Open Files app on Drive containing a zip file.
   const appId =
@@ -362,6 +420,43 @@ function getZipSelectionFileListRowEntries() {
 }
 
 /**
+ * Tests that trying to zip a file fails.
+ */
+testcase.zipCannotZipFile = async () => {
+  // Open Files app on Downloads containing ENTRIES.photos.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DOWNLOADS, [ENTRIES.photos], []);
+
+  // Select the file.
+  chrome.test.assertTrue(
+      !!await remoteCall.callRemoteTestUtil('selectFile', appId, ['photos']),
+      'selectFile failed');
+
+  // Right click the selected file.
+  chrome.test.assertTrue(
+      !!await remoteCall.callRemoteTestUtil(
+          'fakeMouseRightClick', appId, ['.table-row[selected]']),
+      'fakeMouseRightClick failed');
+
+  // Wait for the context menu to appear.
+  await remoteCall.waitForElement(appId, '#file-context-menu:not([hidden])');
+
+  // Click 'Zip selection' menu command.
+  const zip = '[command="#zip-selection"]';
+  chrome.test.assertTrue(
+      !!await remoteCall.callRemoteTestUtil('fakeMouseClick', appId, [zip]),
+      'fakeMouseClick failed');
+
+  // Check: a zip error message should appear.
+  const element =
+      await remoteCall.waitForElement(appId, ['#progress-panel', '#no_zip']);
+  chrome.test.assertEq(
+      'Cannot zip selection: Not implemented yet',
+      element.attributes['primary-text']);
+};
+
+
+/**
  * Tests creating a zip file on Downloads.
  */
 testcase.zipCreateFileDownloads = async () => {
@@ -404,13 +499,11 @@ testcase.zipCreateFileDownloads = async () => {
  * Tests creating a zip file on Drive.
  */
 testcase.zipCreateFileDrive = async () => {
-  if (await sendTestMessage({name: 'getDriveFsEnabled'}) === 'true') {
-    await sendTestMessage({
-      name: 'expectFileTask',
-      fileNames: [ENTRIES.photos.targetPath],
-      openType: 'launch'
-    });
-  }
+  await sendTestMessage({
+    name: 'expectFileTask',
+    fileNames: [ENTRIES.photos.targetPath],
+    openType: 'launch'
+  });
 
   // Open Files app on Drive containing ENTRIES.photos.
   const appId =

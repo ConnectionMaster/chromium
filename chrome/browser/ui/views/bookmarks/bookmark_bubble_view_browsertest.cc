@@ -6,6 +6,7 @@
 
 #include "base/command_line.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -16,8 +17,9 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
-#include "services/identity/public/cpp/identity_test_utils.h"
-#include "ui/views/window/dialog_client_view.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "content/public/test/browser_test.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
 class BookmarkBubbleViewBrowserTest : public DialogBrowserTest {
  public:
@@ -25,33 +27,28 @@ class BookmarkBubbleViewBrowserTest : public DialogBrowserTest {
 
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
-#if !defined(OS_CHROMEOS)
-    identity::IdentityManager* identity_manager =
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+    signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(browser()->profile());
     if (name == "bookmark_details") {
-      identity::ClearPrimaryAccount(
-          identity_manager, identity::ClearPrimaryAccountPolicy::DEFAULT);
+      signin::ClearPrimaryAccount(identity_manager);
     } else {
       constexpr char kTestUserEmail[] = "testuser@gtest.com";
-      identity::MakePrimaryAccountAvailable(identity_manager, kTestUserEmail);
+      signin::MakePrimaryAccountAvailable(identity_manager, kTestUserEmail,
+                                          signin::ConsentLevel::kSync);
     }
 #endif
 
     const GURL url = GURL("https://www.google.com");
-    const base::string16 title = base::ASCIIToUTF16("Title");
+    const std::u16string title = u"Title";
     bookmarks::BookmarkModel* bookmark_model =
         BookmarkModelFactory::GetForBrowserContext(browser()->profile());
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
     bookmarks::AddIfNotBookmarked(bookmark_model, url, title);
     browser()->window()->ShowBookmarkBubble(url, true);
 
-    if (name == "ios_promotion") {
-      BookmarkBubbleView::bookmark_bubble()
-          ->GetWidget()
-          ->client_view()
-          ->AsDialogClientView()
-          ->AcceptWindow();
-    }
+    if (name == "ios_promotion")
+      BookmarkBubbleView::bookmark_bubble()->AcceptDialog();
   }
 
  private:
@@ -59,7 +56,7 @@ class BookmarkBubbleViewBrowserTest : public DialogBrowserTest {
 };
 
 // ChromeOS is always signed in.
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewBrowserTest,
                        InvokeUi_bookmark_details) {
   ShowAndVerifyUi();

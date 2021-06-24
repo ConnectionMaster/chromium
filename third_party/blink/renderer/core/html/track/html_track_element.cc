@@ -26,19 +26,20 @@
 #include "third_party/blink/renderer/core/html/track/html_track_element.h"
 
 #include "third_party/blink/public/platform/task_type.h"
+#include "third_party/blink/renderer/core/css/css_style_sheet.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/html/cross_origin_attribute.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/html/track/loadable_text_track.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 #define TRACK_LOG_LEVEL 3
 
 namespace blink {
-
-using namespace html_names;
 
 static String UrlForLoggingTrack(const KURL& url) {
   static const unsigned kMaximumURLLengthForLogging = 128;
@@ -48,24 +49,15 @@ static String UrlForLoggingTrack(const KURL& url) {
   return url.GetString().Substring(0, kMaximumURLLengthForLogging) + "...";
 }
 
-inline HTMLTrackElement::HTMLTrackElement(Document& document)
-    : HTMLElement(kTrackTag, document),
+HTMLTrackElement::HTMLTrackElement(Document& document)
+    : HTMLElement(html_names::kTrackTag, document),
       load_timer_(document.GetTaskRunner(TaskType::kNetworking),
                   this,
                   &HTMLTrackElement::LoadTimerFired) {
   DVLOG(TRACK_LOG_LEVEL) << "HTMLTrackElement - " << (void*)this;
 }
 
-DEFINE_NODE_FACTORY(HTMLTrackElement)
-
 HTMLTrackElement::~HTMLTrackElement() = default;
-
-const AttrNameToTrustedType& HTMLTrackElement::GetCheckedAttributeTypes()
-    const {
-  DEFINE_STATIC_LOCAL(AttrNameToTrustedType, attribute_map,
-                      ({{"src", SpecificTrustedType::kTrustedURL}}));
-  return attribute_map;
-}
 
 Node::InsertionNotificationRequest HTMLTrackElement::InsertedInto(
     ContainerNode& insertion_point) {
@@ -82,21 +74,22 @@ Node::InsertionNotificationRequest HTMLTrackElement::InsertedInto(
 }
 
 void HTMLTrackElement::RemovedFrom(ContainerNode& insertion_point) {
-  if (!parentNode() && IsHTMLMediaElement(insertion_point))
-    ToHTMLMediaElement(insertion_point).DidRemoveTrackElement(this);
+  auto* html_media_element = DynamicTo<HTMLMediaElement>(insertion_point);
+  if (html_media_element && !parentNode())
+    html_media_element->DidRemoveTrackElement(this);
   HTMLElement::RemovedFrom(insertion_point);
 }
 
 void HTMLTrackElement::ParseAttribute(
     const AttributeModificationParams& params) {
   const QualifiedName& name = params.name;
-  if (name == kSrcAttr) {
+  if (name == html_names::kSrcAttr) {
     ScheduleLoad();
 
     // 4.8.10.12.3 Sourcing out-of-band text tracks
     // As the kind, label, and srclang attributes are set, changed, or removed,
     // the text track must update accordingly...
-  } else if (name == kKindAttr) {
+  } else if (name == html_names::kKindAttr) {
     AtomicString lower_case_value = params.new_value.LowerASCII();
     // 'missing value default' ("subtitles")
     if (lower_case_value.IsNull())
@@ -106,11 +99,11 @@ void HTMLTrackElement::ParseAttribute(
       lower_case_value = TextTrack::MetadataKeyword();
 
     track()->SetKind(lower_case_value);
-  } else if (name == kLabelAttr) {
+  } else if (name == html_names::kLabelAttr) {
     track()->SetLabel(params.new_value);
-  } else if (name == kSrclangAttr) {
+  } else if (name == html_names::kSrclangAttr) {
     track()->SetLanguage(params.new_value);
-  } else if (name == kIdAttr) {
+  } else if (name == html_names::kIdAttr) {
     track()->SetId(params.new_value);
   }
 
@@ -122,7 +115,7 @@ const AtomicString& HTMLTrackElement::kind() {
 }
 
 void HTMLTrackElement::setKind(const AtomicString& kind) {
-  setAttribute(kKindAttr, kind);
+  setAttribute(html_names::kKindAttr, kind);
 }
 
 LoadableTextTrack* HTMLTrackElement::EnsureTrack() {
@@ -138,7 +131,7 @@ TextTrack* HTMLTrackElement::track() {
 }
 
 bool HTMLTrackElement::IsURLAttribute(const Attribute& attribute) const {
-  return attribute.GetName() == kSrcAttr ||
+  return attribute.GetName() == html_names::kSrcAttr ||
          HTMLElement::IsURLAttribute(attribute);
 }
 
@@ -164,7 +157,7 @@ void HTMLTrackElement::ScheduleLoad() {
 
   // 4. Run the remainder of these steps in parallel, allowing whatever caused
   // these steps to run to continue.
-  load_timer_.StartOneShot(TimeDelta(), FROM_HERE);
+  load_timer_.StartOneShot(base::TimeDelta(), FROM_HERE);
 
   // 5. Top: Await a stable state. The synchronous section consists of the
   // following steps. (The steps in the synchronous section are marked with [X])
@@ -176,7 +169,7 @@ void HTMLTrackElement::LoadTimerFired(TimerBase*) {
   DVLOG(TRACK_LOG_LEVEL) << "loadTimerFired";
 
   // 7. [X] Let URL be the track URL of the track element.
-  KURL url = GetNonEmptyURLAttribute(kSrcAttr);
+  KURL url = GetNonEmptyURLAttribute(html_names::kSrcAttr);
 
   // Whenever a track element has its src attribute set, changed,
   // or removed, the user agent must immediately empty the
@@ -191,7 +184,7 @@ void HTMLTrackElement::LoadTimerFired(TimerBase*) {
     return;
 
   if (track_)
-    track_->RemoveAllCues();
+    track_->Reset();
 
   url_ = url;
 
@@ -219,20 +212,23 @@ void HTMLTrackElement::LoadTimerFired(TimerBase*) {
   if (loader_)
     loader_->CancelLoad();
 
-  loader_ = TextTrackLoader::Create(*this, GetDocument());
+  loader_ =
+      MakeGarbageCollected<TextTrackLoader, TextTrackLoaderClient&, Document&>(
+          *this, GetDocument());
   if (!loader_->Load(url_, GetCrossOriginAttributeValue(cors_mode)))
     DidCompleteLoad(kFailure);
 }
 
 bool HTMLTrackElement::CanLoadUrl(const KURL& url) {
   HTMLMediaElement* parent = MediaElement();
-  if (!parent)
+  if (!parent || !GetExecutionContext())
     return false;
 
   if (url.IsEmpty())
     return false;
 
-  if (!GetDocument().GetContentSecurityPolicy()->AllowMediaFromSource(url)) {
+  if (!GetExecutionContext()->GetContentSecurityPolicy()->AllowMediaFromSource(
+          url)) {
     DVLOG(TRACK_LOG_LEVEL) << "canLoadUrl(" << UrlForLoggingTrack(url)
                            << ") -> rejected by Content Security Policy";
     return false;
@@ -286,6 +282,13 @@ void HTMLTrackElement::NewCuesAvailable(TextTrackLoader* loader) {
   HeapVector<Member<TextTrackCue>> new_cues;
   loader_->GetNewCues(new_cues);
 
+  HeapVector<Member<CSSStyleSheet>> new_sheets;
+  loader_->GetNewStyleSheets(new_sheets);
+
+  if (!new_sheets.IsEmpty()) {
+    track_->SetCSSStyleSheets(std::move(new_sheets));
+  }
+
   track_->AddListOfCues(new_cues);
 }
 
@@ -334,15 +337,13 @@ const AtomicString& HTMLTrackElement::MediaElementCrossOriginAttribute() const {
 }
 
 HTMLMediaElement* HTMLTrackElement::MediaElement() const {
-  Element* parent = parentElement();
-  if (IsHTMLMediaElement(parent))
-    return ToHTMLMediaElement(parent);
-  return nullptr;
+  return DynamicTo<HTMLMediaElement>(parentElement());
 }
 
-void HTMLTrackElement::Trace(Visitor* visitor) {
+void HTMLTrackElement::Trace(Visitor* visitor) const {
   visitor->Trace(track_);
   visitor->Trace(loader_);
+  visitor->Trace(load_timer_);
   HTMLElement::Trace(visitor);
 }
 

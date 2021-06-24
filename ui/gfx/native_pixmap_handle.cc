@@ -6,9 +6,10 @@
 
 #include <utility>
 
+#include "base/logging.h"
 #include "build/build_config.h"
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 #include <drm_fourcc.h>
 #include "base/posix/eintr_wrapper.h"
 #endif
@@ -20,29 +21,29 @@
 
 namespace gfx {
 
-#if defined(OS_LINUX)
-static_assert(NativePixmapPlane::kNoModifier == DRM_FORMAT_MOD_INVALID,
-              "gfx::NativePixmapPlane::kNoModifier should be an alias for"
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+static_assert(NativePixmapHandle::kNoModifier == DRM_FORMAT_MOD_INVALID,
+              "gfx::NativePixmapHandle::kNoModifier should be an alias for"
               "DRM_FORMAT_MOD_INVALID");
 #endif
 
-NativePixmapPlane::NativePixmapPlane()
-    : stride(0), offset(0), size(0), modifier(0) {}
+NativePixmapPlane::NativePixmapPlane() : stride(0), offset(0), size(0) {}
 
 NativePixmapPlane::NativePixmapPlane(int stride,
                                      int offset,
-                                     uint64_t size,
-#if defined(OS_LINUX)
-                                     base::ScopedFD fd,
+                                     uint64_t size
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+                                     ,
+                                     base::ScopedFD fd
 #elif defined(OS_FUCHSIA)
-                                     zx::vmo vmo,
+                                     ,
+                                     zx::vmo vmo
 #endif
-                                     uint64_t modifier)
+                                     )
     : stride(stride),
       offset(offset),
-      size(size),
-      modifier(modifier)
-#if defined(OS_LINUX)
+      size(size)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
       ,
       fd(std::move(fd))
 #elif defined(OS_FUCHSIA)
@@ -70,7 +71,7 @@ NativePixmapHandle& NativePixmapHandle::operator=(NativePixmapHandle&& other) =
 NativePixmapHandle CloneHandleForIPC(const NativePixmapHandle& handle) {
   NativePixmapHandle clone;
   for (auto& plane : handle.planes) {
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
     DCHECK(plane.fd.is_valid());
     base::ScopedFD fd_dup(HANDLE_EINTR(dup(plane.fd.get())));
     if (!fd_dup.is_valid()) {
@@ -78,20 +79,34 @@ NativePixmapHandle CloneHandleForIPC(const NativePixmapHandle& handle) {
       return NativePixmapHandle();
     }
     clone.planes.emplace_back(plane.stride, plane.offset, plane.size,
-                              std::move(fd_dup), plane.modifier);
+                              std::move(fd_dup));
 #elif defined(OS_FUCHSIA)
     zx::vmo vmo_dup;
-    zx_status_t status = plane.vmo.duplicate(ZX_RIGHT_DUPLICATE, &vmo_dup);
-    if (status != ZX_OK) {
-      ZX_DLOG(ERROR, status) << "zx_handle_duplicate";
-      return NativePixmapHandle();
+    // VMO may be set to NULL for pixmaps that cannot be mapped.
+    if (plane.vmo) {
+      zx_status_t status = plane.vmo.duplicate(ZX_RIGHT_SAME_RIGHTS, &vmo_dup);
+      if (status != ZX_OK) {
+        ZX_DLOG(ERROR, status) << "zx_handle_duplicate";
+        return NativePixmapHandle();
+      }
     }
     clone.planes.emplace_back(plane.stride, plane.offset, plane.size,
-                              std::move(vmo_dup), plane.modifier);
+                              std::move(vmo_dup));
 #else
 #error Unsupported OS
 #endif
   }
+
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  clone.modifier = handle.modifier;
+#endif
+
+#if defined(OS_FUCHSIA)
+  clone.buffer_collection_id = handle.buffer_collection_id;
+  clone.buffer_index = handle.buffer_index;
+  clone.ram_coherency = handle.ram_coherency;
+#endif
+
   return clone;
 }
 

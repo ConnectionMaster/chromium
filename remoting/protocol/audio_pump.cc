@@ -8,9 +8,10 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "media/base/audio_bus.h"
@@ -147,7 +148,7 @@ void AudioPump::Core::Start() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   audio_source_->Start(
-      base::Bind(&Core::EncodeAudioPacket, base::Unretained(this)));
+      base::BindRepeating(&Core::EncodeAudioPacket, base::Unretained(this)));
 }
 
 void AudioPump::Core::Pause(bool pause) {
@@ -227,13 +228,12 @@ AudioPump::AudioPump(
     std::unique_ptr<AudioSource> audio_source,
     std::unique_ptr<AudioEncoder> audio_encoder,
     AudioStub* audio_stub)
-    : audio_task_runner_(audio_task_runner),
-      audio_stub_(audio_stub),
-      weak_factory_(this) {
+    : audio_task_runner_(audio_task_runner), audio_stub_(audio_stub) {
   DCHECK(audio_stub_);
 
-  core_.reset(new Core(weak_factory_.GetWeakPtr(), std::move(audio_source),
-                       std::move(audio_encoder)));
+  core_ =
+      std::make_unique<Core>(weak_factory_.GetWeakPtr(),
+                             std::move(audio_source), std::move(audio_encoder));
 
   audio_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&Core::Start, base::Unretained(core_.get())));
@@ -258,8 +258,8 @@ void AudioPump::SendAudioPacket(std::unique_ptr<AudioPacket> packet, int size) {
   DCHECK(packet);
 
   audio_stub_->ProcessAudioPacket(
-      std::move(packet),
-      base::Bind(&AudioPump::OnPacketSent, weak_factory_.GetWeakPtr(), size));
+      std::move(packet), base::BindOnce(&AudioPump::OnPacketSent,
+                                        weak_factory_.GetWeakPtr(), size));
 }
 
 void AudioPump::OnPacketSent(int size) {

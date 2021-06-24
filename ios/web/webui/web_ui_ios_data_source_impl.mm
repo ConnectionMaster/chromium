@@ -44,10 +44,9 @@ class WebUIIOSDataSourceImpl::InternalDataSource : public URLDataSourceIOS {
   std::string GetMimeType(const std::string& path) const override {
     return parent_->GetMimeType(path);
   }
-  void StartDataRequest(
-      const std::string& path,
-      const URLDataSourceIOS::GotDataCallback& callback) override {
-    return parent_->StartDataRequest(path, callback);
+  void StartDataRequest(const std::string& path,
+                        URLDataSourceIOS::GotDataCallback callback) override {
+    return parent_->StartDataRequest(path, std::move(callback));
   }
   bool ShouldReplaceExistingSource() const override {
     return parent_->replace_existing_source_;
@@ -55,10 +54,6 @@ class WebUIIOSDataSourceImpl::InternalDataSource : public URLDataSourceIOS {
   bool AllowCaching() const override { return false; }
   bool ShouldDenyXFrameOptions() const override {
     return parent_->deny_xframe_options_;
-  }
-  bool IsGzipped(const std::string& path) const override {
-    return parent_->use_gzip_ &&
-           (parent_->json_path_.empty() || path != parent_->json_path_);
   }
 
  private:
@@ -76,7 +71,7 @@ WebUIIOSDataSourceImpl::WebUIIOSDataSourceImpl(const std::string& source_name)
 WebUIIOSDataSourceImpl::~WebUIIOSDataSourceImpl() {}
 
 void WebUIIOSDataSourceImpl::AddString(const std::string& name,
-                                       const base::string16& value) {
+                                       const std::u16string& value) {
   localized_strings_.SetString(name, value);
   replacements_[name] = base::UTF16ToUTF8(value);
 }
@@ -101,12 +96,19 @@ void WebUIIOSDataSourceImpl::AddLocalizedStrings(
                                               &replacements_);
 }
 
+void WebUIIOSDataSourceImpl::AddLocalizedStrings(
+    base::span<const webui::LocalizedString> strings) {
+  for (const auto& str : strings) {
+    AddLocalizedString(str.name, str.id);
+  }
+}
+
 void WebUIIOSDataSourceImpl::AddBoolean(const std::string& name, bool value) {
   localized_strings_.SetBoolean(name, value);
 }
 
-void WebUIIOSDataSourceImpl::SetJsonPath(const std::string& path) {
-  json_path_ = path;
+void WebUIIOSDataSourceImpl::UseStringsJs() {
+  use_strings_js_ = true;
 }
 
 void WebUIIOSDataSourceImpl::AddResourcePath(const std::string& path,
@@ -120,10 +122,6 @@ void WebUIIOSDataSourceImpl::SetDefaultResource(int resource_id) {
 
 void WebUIIOSDataSourceImpl::DisableDenyXFrameOptions() {
   deny_xframe_options_ = false;
-}
-
-void WebUIIOSDataSourceImpl::UseGzip() {
-  use_gzip_ = true;
 }
 
 const ui::TemplateReplacements* WebUIIOSDataSourceImpl::GetReplacements()
@@ -167,30 +165,35 @@ void WebUIIOSDataSourceImpl::EnsureLoadTimeDataDefaultsAdded() {
 
 void WebUIIOSDataSourceImpl::StartDataRequest(
     const std::string& path,
-    const URLDataSourceIOS::GotDataCallback& callback) {
+    URLDataSourceIOS::GotDataCallback callback) {
   EnsureLoadTimeDataDefaultsAdded();
 
-  if (!json_path_.empty() && path == json_path_) {
-    SendLocalizedStringsAsJSON(callback);
-    return;
+  if (use_strings_js_) {
+    bool from_js_module = path == "strings.m.js";
+    if (from_js_module || path == "strings.js") {
+      SendLocalizedStringsAsJSON(std::move(callback), from_js_module);
+      return;
+    }
   }
 
-  int resource_id = default_resource_;
-  std::map<std::string, int>::iterator result;
-  result = path_to_idr_map_.find(path);
-  if (result != path_to_idr_map_.end())
-    resource_id = result->second;
+  int resource_id = PathToIdrOrDefault(path);
   DCHECK_NE(resource_id, -1);
   scoped_refptr<base::RefCountedMemory> response(
       GetWebClient()->GetDataResourceBytes(resource_id));
-  callback.Run(response);
+  std::move(callback).Run(response);
 }
 
 void WebUIIOSDataSourceImpl::SendLocalizedStringsAsJSON(
-    const URLDataSourceIOS::GotDataCallback& callback) {
+    URLDataSourceIOS::GotDataCallback callback,
+    bool from_js_module) {
   std::string template_data;
-  webui::AppendJsonJS(&localized_strings_, &template_data);
-  callback.Run(base::RefCountedString::TakeString(&template_data));
+  webui::AppendJsonJS(&localized_strings_, &template_data, from_js_module);
+  std::move(callback).Run(base::RefCountedString::TakeString(&template_data));
+}
+
+int WebUIIOSDataSourceImpl::PathToIdrOrDefault(const std::string& path) const {
+  auto it = path_to_idr_map_.find(path);
+  return it == path_to_idr_map_.end() ? default_resource_ : it->second;
 }
 
 }  // namespace web

@@ -8,12 +8,10 @@
 #include <stddef.h>
 
 #include "base/compiler_specific.h"
-#include "base/macros.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 #include "components/omnibox/browser/in_memory_url_index_types.h"
 
-class AutocompleteInput;
 struct AutocompleteMatch;
 
 // This class is a base class for the history autocomplete providers and
@@ -21,11 +19,6 @@ struct AutocompleteMatch;
 class HistoryProvider : public AutocompleteProvider {
  public:
   void DeleteMatch(const AutocompleteMatch& match) override;
-
-  // Returns true if inline autocompletion should be prevented for URL-like
-  // input.  This method returns true if input.prevent_inline_autocomplete()
-  // is true or the input text contains trailing whitespace.
-  static bool PreventInlineAutocomplete(const AutocompleteInput& input);
 
   // Fill and return an ACMatchClassifications structure given the |matches|
   // to highlight.
@@ -41,16 +34,17 @@ class HistoryProvider : public AutocompleteProvider {
 
   ~HistoryProvider() override;
 
+  HistoryProvider(const HistoryProvider&) = delete;
+  HistoryProvider& operator=(const HistoryProvider&) = delete;
+
   // Finds and removes the match from the current collection of matches and
   // backing data.
   void DeleteMatchFromMatches(const AutocompleteMatch& match);
 
-  AutocompleteProviderClient* client() { return client_; }
+  AutocompleteProviderClient* client() const { return client_; }
 
  private:
   AutocompleteProviderClient* client_;
-
-  DISALLOW_COPY_AND_ASSIGN(HistoryProvider);
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_HISTORY_PROVIDER_H_

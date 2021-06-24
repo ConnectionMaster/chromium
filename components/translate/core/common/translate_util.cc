@@ -4,21 +4,29 @@
 
 #include "components/translate/core/common/translate_util.h"
 
-#include <stddef.h>
-#include <algorithm>
-#include <set>
-#include <vector>
+#include <string>
 
 #include "base/command_line.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
-#include "components/language/core/common/locale_util.h"
+#include "base/metrics/field_trial_params.h"
 #include "components/translate/core/common/translate_switches.h"
-#include "url/gurl.h"
 
 namespace translate {
 
+namespace {
+
+// Parameter for TranslateSubFrames feature to determine whether language
+// detection should include the sub frames (or just the main frame).
+const char kDetectLanguageInSubFrames[] = "detect_language_in_sub_frames";
+
+}  // namespace
+
 const char kSecurityOrigin[] = "https://translate.googleapis.com/";
+
+const base::Feature kTranslateSubFrames{"TranslateSubFrames",
+                                        base::FEATURE_DISABLED_BY_DEFAULT};
+
+const base::Feature kTFLiteLanguageDetectionEnabled{
+    "TFLiteLanguageDetectionEnabled", base::FEATURE_DISABLED_BY_DEFAULT};
 
 GURL GetTranslateSecurityOrigin() {
   std::string security_origin(kSecurityOrigin);
@@ -28,6 +36,25 @@ GURL GetTranslateSecurityOrigin() {
         command_line->GetSwitchValueASCII(switches::kTranslateSecurityOrigin);
   }
   return GURL(security_origin);
+}
+
+bool IsSubFrameTranslationEnabled() {
+  return base::FeatureList::IsEnabled(kTranslateSubFrames);
+}
+
+bool IsSubFrameLanguageDetectionEnabled() {
+  return base::FeatureList::IsEnabled(kTranslateSubFrames) &&
+         base::GetFieldTrialParamByFeatureAsBool(
+             kTranslateSubFrames, kDetectLanguageInSubFrames, true);
+}
+
+bool IsTFLiteLanguageDetectionEnabled() {
+  return base::FeatureList::IsEnabled(kTFLiteLanguageDetectionEnabled);
+}
+
+float GetTFLiteLanguageDetectionThreshold() {
+  return base::GetFieldTrialParamByFeatureAsDouble(
+      kTFLiteLanguageDetectionEnabled, "reliability_threshold", .7);
 }
 
 }  // namespace translate

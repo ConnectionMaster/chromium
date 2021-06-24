@@ -4,19 +4,23 @@
 
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/test/integration/apps_helper.h"
 #include "chrome/browser/sync/test/integration/extension_settings_helper.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
-#include "chrome/browser/sync/test/integration/feature_toggler.h"
-#include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "components/sync/driver/sync_driver_switches.h"
+#include "content/public/test/browser_test.h"
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_features.h"
+#include "chrome/browser/sync/test/integration/os_sync_test.h"
+#endif
 
 namespace {
 
-using apps_helper::InstallAppForAllProfiles;
+using apps_helper::InstallHostedAppForAllProfiles;
 using extension_settings_helper::AllExtensionSettingsSameAsVerifier;
 using extension_settings_helper::SetExtensionSettings;
 using extension_settings_helper::SetExtensionSettingsForAllProfiles;
@@ -60,16 +64,15 @@ void MutateSomeSettings(
   }
 }
 
-class TwoClientExtensionSettingsAndAppSettingsSyncTest : public FeatureToggler,
-                                                         public SyncTest {
+class TwoClientExtensionSettingsAndAppSettingsSyncTest : public SyncTest {
  public:
-  TwoClientExtensionSettingsAndAppSettingsSyncTest()
-      : FeatureToggler(switches::kSyncPseudoUSSExtensionSettings),
-        SyncTest(TWO_CLIENT) {}
-  ~TwoClientExtensionSettingsAndAppSettingsSyncTest() override {}
+  TwoClientExtensionSettingsAndAppSettingsSyncTest() : SyncTest(TWO_CLIENT) {}
+  ~TwoClientExtensionSettingsAndAppSettingsSyncTest() override = default;
 
- private:
-  DISALLOW_COPY_AND_ASSIGN(TwoClientExtensionSettingsAndAppSettingsSyncTest);
+  bool UseVerifier() override {
+    // TODO(crbug.com/1137735): rewrite tests to not use verifier.
+    return true;
+  }
 };
 
 // For three independent extensions:
@@ -184,7 +187,7 @@ testing::AssertionResult StartWithDifferentSettingsTest(
   return testing::AssertionSuccess();
 }
 
-IN_PROC_BROWSER_TEST_P(TwoClientExtensionSettingsAndAppSettingsSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientExtensionSettingsAndAppSettingsSyncTest,
                        ExtensionsStartWithSameSettings) {
   ASSERT_TRUE(SetupClients());
   ASSERT_PRED3(StartWithSameSettingsTest, InstallExtensionForAllProfiles(0),
@@ -192,14 +195,15 @@ IN_PROC_BROWSER_TEST_P(TwoClientExtensionSettingsAndAppSettingsSyncTest,
                InstallExtensionForAllProfiles(2));
 }
 
-IN_PROC_BROWSER_TEST_P(TwoClientExtensionSettingsAndAppSettingsSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientExtensionSettingsAndAppSettingsSyncTest,
                        AppsStartWithSameSettings) {
   ASSERT_TRUE(SetupClients());
-  ASSERT_PRED3(StartWithSameSettingsTest, InstallAppForAllProfiles(0),
-               InstallAppForAllProfiles(1), InstallAppForAllProfiles(2));
+  ASSERT_PRED3(StartWithSameSettingsTest, InstallHostedAppForAllProfiles(0),
+               InstallHostedAppForAllProfiles(1),
+               InstallHostedAppForAllProfiles(2));
 }
 
-IN_PROC_BROWSER_TEST_P(TwoClientExtensionSettingsAndAppSettingsSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientExtensionSettingsAndAppSettingsSyncTest,
                        ExtensionsStartWithDifferentSettings) {
   ASSERT_TRUE(SetupClients());
   ASSERT_PRED3(
@@ -207,15 +211,45 @@ IN_PROC_BROWSER_TEST_P(TwoClientExtensionSettingsAndAppSettingsSyncTest,
       InstallExtensionForAllProfiles(1), InstallExtensionForAllProfiles(2));
 }
 
-IN_PROC_BROWSER_TEST_P(TwoClientExtensionSettingsAndAppSettingsSyncTest,
+IN_PROC_BROWSER_TEST_F(TwoClientExtensionSettingsAndAppSettingsSyncTest,
                        AppsStartWithDifferentSettings) {
   ASSERT_TRUE(SetupClients());
-  ASSERT_PRED3(StartWithDifferentSettingsTest, InstallAppForAllProfiles(0),
-               InstallAppForAllProfiles(1), InstallAppForAllProfiles(2));
+  ASSERT_PRED3(
+      StartWithDifferentSettingsTest, InstallHostedAppForAllProfiles(0),
+      InstallHostedAppForAllProfiles(1), InstallHostedAppForAllProfiles(2));
 }
 
-INSTANTIATE_TEST_SUITE_P(USS,
-                         TwoClientExtensionSettingsAndAppSettingsSyncTest,
-                         ::testing::Values(false, true));
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+// Tests for SplitSettingsSync, which uses a different ModelTypeController for
+// syncer::APP_SETTINGS.
+class TwoClientAppSettingsOsSyncTest : public OsSyncTest {
+ public:
+  TwoClientAppSettingsOsSyncTest() : OsSyncTest(TWO_CLIENT) {}
+  ~TwoClientAppSettingsOsSyncTest() override = default;
+
+  bool UseVerifier() override {
+    // TODO(crbug.com/1137735): rewrite tests to not use verifier.
+    return true;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(TwoClientAppSettingsOsSyncTest,
+                       AppsStartWithSameSettings) {
+  ASSERT_TRUE(chromeos::features::IsSplitSettingsSyncEnabled());
+  ASSERT_TRUE(SetupClients());
+  ASSERT_PRED3(StartWithSameSettingsTest, InstallHostedAppForAllProfiles(0),
+               InstallHostedAppForAllProfiles(1),
+               InstallHostedAppForAllProfiles(2));
+}
+
+IN_PROC_BROWSER_TEST_F(TwoClientAppSettingsOsSyncTest,
+                       AppsStartWithDifferentSettings) {
+  ASSERT_TRUE(chromeos::features::IsSplitSettingsSyncEnabled());
+  ASSERT_TRUE(SetupClients());
+  ASSERT_PRED3(
+      StartWithDifferentSettingsTest, InstallHostedAppForAllProfiles(0),
+      InstallHostedAppForAllProfiles(1), InstallHostedAppForAllProfiles(2));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace

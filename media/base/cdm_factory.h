@@ -20,8 +20,8 @@ namespace media {
 // Callback used when CDM is created. |error_message| only used if
 // ContentDecryptionModule is null (i.e. CDM can't be created).
 using CdmCreatedCB =
-    base::Callback<void(const scoped_refptr<ContentDecryptionModule>&,
-                        const std::string& error_message)>;
+    base::OnceCallback<void(const scoped_refptr<ContentDecryptionModule>&,
+                            const std::string& error_message)>;
 
 struct CdmConfig;
 
@@ -34,13 +34,12 @@ class MEDIA_EXPORT CdmFactory {
   // asynchronously.
   virtual void Create(
       const std::string& key_system,
-      const url::Origin& security_origin,
       const CdmConfig& cdm_config,
       const SessionMessageCB& session_message_cb,
       const SessionClosedCB& session_closed_cb,
       const SessionKeysChangeCB& session_keys_change_cb,
       const SessionExpirationUpdateCB& session_expiration_update_cb,
-      const CdmCreatedCB& cdm_created_cb) = 0;
+      CdmCreatedCB cdm_created_cb) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CdmFactory);

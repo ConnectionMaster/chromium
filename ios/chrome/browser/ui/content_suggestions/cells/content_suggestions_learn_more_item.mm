@@ -4,13 +4,16 @@
 
 #import "ios/chrome/browser/ui/content_suggestions/cells/content_suggestions_learn_more_item.h"
 
-#include "base/logging.h"
+#import <MaterialComponents/MaterialPalettes.h>
+#import <MaterialComponents/MaterialTypography.h>
+
+#include "base/check_op.h"
+#import "ios/chrome/browser/ui/content_suggestions/content_suggestions_constants.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #include "ios/chrome/common/string_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #include "ios/chrome/grit/ios_strings.h"
-#import "ios/third_party/material_components_ios/src/components/Palettes/src/MaterialPalettes.h"
-#import "ios/third_party/material_components_ios/src/components/Typography/src/MaterialTypography.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -21,7 +24,6 @@ namespace {
 const CGFloat kLabelLineSpacing = 4;
 const CGFloat kTopLabelMargin = 24;
 const CGFloat kBottomLabelMargin = 8;
-const int kLinkColorRGB = 0x5595FE;
 }
 
 #pragma mark - ContentSuggestionsLearnMoreItem
@@ -42,7 +44,7 @@ const int kLinkColorRGB = 0x5595FE;
 - (void)configureCell:(ContentSuggestionsLearnMoreCell*)cell {
   [super configureCell:cell];
   [cell setText:[self text]];
-  cell.accessibilityIdentifier = [[self class] accessibilityIdentifier];
+  cell.accessibilityIdentifier = kContentSuggestionsLearnMoreIdentifier;
 }
 
 - (NSString*)text {
@@ -53,10 +55,6 @@ const int kLinkColorRGB = 0x5595FE;
 - (CGFloat)cellHeightForWidth:(CGFloat)width {
   return [ContentSuggestionsLearnMoreCell heightForWidth:width
                                                 withText:[self text]];
-}
-
-+ (NSString*)accessibilityIdentifier {
-  return @"Learn more";
 }
 
 @end
@@ -113,28 +111,20 @@ const int kLinkColorRGB = 0x5595FE;
   label.numberOfLines = 0;
   label.textColor = [[MDCPalette greyPalette] tint700];
   label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-  NSRange linkRange;
-  NSString* strippedText = ParseStringWithLink(text, &linkRange);
-  DCHECK_NE(NSNotFound, static_cast<NSInteger>(linkRange.location));
-  DCHECK_NE(0u, linkRange.length);
-
-  NSMutableAttributedString* attributedText =
-      [[NSMutableAttributedString alloc] initWithString:strippedText];
-
-  // Sets the styling to mimic a link.
-  UIColor* linkColor = UIColorFromRGB(kLinkColorRGB, 1.0);
-  [attributedText addAttribute:NSForegroundColorAttributeName
-                         value:linkColor
-                         range:linkRange];
 
   // Sets the line spacing on the attributed string.
-  NSInteger strLength = [strippedText length];
   NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
   [style setLineSpacing:kLabelLineSpacing];
-  [attributedText addAttribute:NSParagraphStyleAttributeName
-                         value:style
-                         range:NSMakeRange(0, strLength)];
 
+  NSDictionary* textAttributes = @{
+    NSParagraphStyleAttributeName : style,
+  };
+  // Sets the styling to mimic a link.
+  NSDictionary* linkAttributes =
+      @{NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor]};
+
+  NSAttributedString* attributedText =
+      AttributedStringFromStringWithLink(text, textAttributes, linkAttributes);
   [label setAttributedText:attributedText];
 }
 

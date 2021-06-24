@@ -6,6 +6,7 @@
 
 #include "base/command_line.h"
 #include "content/browser/webrtc/webrtc_content_browsertest_base.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/test_utils.h"
@@ -74,7 +75,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcConstraintsBrowserTest,
                                               user_media().min_frame_rate,
                                               user_media().max_frame_rate);
   DVLOG(1) << "Calling getUserMedia: " << call;
-  NavigateToURL(shell(), url);
+  EXPECT_TRUE(NavigateToURL(shell(), url));
   ExecuteJavascriptAndWaitForOk(call);
 }
 

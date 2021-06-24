@@ -5,7 +5,7 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "chrome/browser/profile_resetter/profile_reset_report.pb.h"
 #include "chrome/browser/profile_resetter/reset_report_uploader.h"
 #include "content/public/browser/browser_context.h"
@@ -80,18 +80,19 @@ void ResetReportUploader::DispatchReportInternal(
 
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = GetClientReportUrl(kResetReportUrl);
-  resource_request->load_flags = net::LOAD_DO_NOT_SEND_COOKIES |
-                                 net::LOAD_DO_NOT_SAVE_COOKIES |
-                                 net::LOAD_DISABLE_CACHE;
+  resource_request->load_flags = net::LOAD_DISABLE_CACHE;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   resource_request->method = "POST";
   std::unique_ptr<network::SimpleURLLoader> simple_url_loader =
       network::SimpleURLLoader::Create(std::move(resource_request),
                                        traffic_annotation);
+  network::SimpleURLLoader* const simple_url_loader_ptr =
+      simple_url_loader.get();
   simple_url_loader->AttachStringForUpload(request_data,
                                            "application/octet-stream");
   auto it = simple_url_loaders_.insert(simple_url_loaders_.begin(),
                                        std::move(simple_url_loader));
-  it->get()->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+  simple_url_loader_ptr->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
       url_loader_factory_.get(),
       base::BindOnce(&ResetReportUploader::OnSimpleLoaderComplete,
                      base::Unretained(this), std::move(it)));

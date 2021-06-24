@@ -4,10 +4,12 @@
 
 #include "extensions/shell/common/switches.h"
 
+#include "build/chromeos_buildflags.h"
+
 namespace extensions {
 namespace switches {
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 // Allow roaming in the cellular network.
 const char kAppShellAllowRoaming[] = "app-shell-allow-roaming";
 
@@ -18,13 +20,9 @@ const char kAppShellHostWindowSize[] = "app-shell-host-window-size";
 const char kAppShellPreferredNetwork[] = "app-shell-preferred-network";
 #endif
 
-// Refresh token for identity API calls for the current user. Used for testing.
-const char kAppShellRefreshToken[] = "app-shell-refresh-token";
-
-// User email address of the current user.
-const char kAppShellUser[] = "app-shell-user";
-
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
 // The directory breakpad should store minidumps in.
 const char kCrashDumpsDir[] = "crash-dumps-dir";
 

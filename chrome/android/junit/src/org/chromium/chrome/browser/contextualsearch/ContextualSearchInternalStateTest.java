@@ -35,13 +35,13 @@ public class ContextualSearchInternalStateTest {
         }
 
         @Override
-        public void showContextualSearchTapUi() {
+        public void showContextualSearchResolvingUi() {
             mDidShow = true;
-            stubForWorkOnState(InternalState.SHOW_FULL_TAP_UI);
+            stubForWorkOnState(InternalState.SHOW_RESOLVING_UI);
         }
 
         @Override
-        public void showContextualSearchLongpressUi() {
+        public void showContextualSearchLiteralSearchUi() {
             mDidShow = true;
         }
 
@@ -131,11 +131,11 @@ public class ContextualSearchInternalStateTest {
     }
 
     private void mocksForTap() {
-        when(mMockedPolicy.shouldPreviousTapResolve()).thenReturn(true);
+        when(mMockedPolicy.shouldPreviousGestureResolve()).thenReturn(true);
     }
 
     private void mocksForNonResolvingTap() {
-        when(mMockedPolicy.shouldPreviousTapResolve()).thenReturn(false);
+        when(mMockedPolicy.shouldPreviousGestureResolve()).thenReturn(false);
     }
 
     private void mocksForLongpress() {
@@ -156,7 +156,7 @@ public class ContextualSearchInternalStateTest {
         mocksForLongpress();
         mInternalStateController.enter(InternalState.LONG_PRESS_RECOGNIZED);
         assertFalse("A Resolve should not be done on Long-press!", mHandlerStub.didResolve());
-        assertThat(mInternalStateController.getState(), is(InternalState.SHOWING_LONGPRESS_SEARCH));
+        assertThat(mInternalStateController.getState(), is(InternalState.SHOWING_LITERAL_SEARCH));
     }
 
     @Test

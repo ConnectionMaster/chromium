@@ -8,11 +8,11 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "chrome/chrome_cleaner/engines/broker/engine_client_mock.h"
 #include "chrome/chrome_cleaner/engines/common/engine_result_codes.h"
@@ -182,7 +182,7 @@ class ScannerImplTest : public ::testing::Test {
   }
 
   TestPUPData test_pup_data_;
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   scoped_refptr<StrictMockEngineClient> mock_engine_client_{
       base::MakeRefCounted<StrictMockEngineClient>()};

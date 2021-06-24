@@ -5,15 +5,13 @@
 #ifndef MOJO_CORE_PORTS_PORT_H_
 #define MOJO_CORE_PORTS_PORT_H_
 
-#include <map>
 #include <memory>
-#include <set>
+#include <queue>
 #include <utility>
 #include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/synchronization/lock.h"
 #include "mojo/core/ports/event.h"
 #include "mojo/core/ports/message_queue.h"
@@ -109,14 +107,32 @@ class Port : public base::RefCountedThreadSafe<Port> {
   PortName peer_port_name;
 
   // The next available sequence number to use for outgoing user message events
-  // originating from any slot on this port.
+  // originating from this port.
   uint64_t next_sequence_num_to_send;
+
+  // The largest acknowledged user message event sequence number.
+  uint64_t last_sequence_num_acknowledged;
+
+  // The interval for which acknowledge requests will be sent. A value of N will
+  // cause an acknowledge request for |last_sequence_num_acknowledged| + N when
+  // initially set and on received acknowledge. This means that the lower bound
+  // for unread or in-transit messages is |next_sequence_num_to_send| -
+  // |last_sequence_num_acknowledged| + |sequence_number_acknowledge_interval|.
+  // If zero, no acknowledge requests are sent.
+  uint64_t sequence_num_acknowledge_interval;
 
   // The sequence number of the last message this Port should ever expect to
   // receive in its lifetime. May be used to determine that a proxying port is
   // ready to be destroyed or that a receiving port's conjugate has been closed
   // and we know the sequence number of the last message it sent.
   uint64_t last_sequence_num_to_receive;
+
+  // The sequence number of the message for which this Port should send an
+  // acknowledge message. In the buffering state, holds the acknowledge request
+  // value that is forwarded to the peer on transition to proxying.
+  // This is zero in any port that's never received an acknowledge request, and
+  // in proxies that have forwarded a stored acknowledge.
+  uint64_t sequence_num_to_acknowledge;
 
   // The queue of incoming user messages received by this Port. Only non-empty
   // for buffering or receiving Ports. When a buffering port enters the proxying
@@ -135,6 +151,11 @@ class Port : public base::RefCountedThreadSafe<Port> {
   // in the interim.
   std::unique_ptr<std::pair<NodeName, ScopedEvent>> send_on_proxy_removal;
 
+  // Arbitrary user data attached to the Port. In practice, Mojo uses this to
+  // stash an observer interface which can be notified about various Port state
+  // changes.
+  scoped_refptr<UserData> user_data;
+
   // Indicates that this (proxying) Port has received acknowledgement that no
   // new user messages will be routed to it. If |true|, the proxy will be
   // removed once it has received and forwarded all sequenced messages up to and
@@ -145,44 +166,15 @@ class Port : public base::RefCountedThreadSafe<Port> {
   // non-zero cyclic routing distance) receiving Port has been closed.
   bool peer_closed;
 
-  // The next available slot ID to allocate for a new slot on this port.
-  SlotId last_allocated_slot_id = kDefaultSlotId;
-
-  // Structure for status related to a single slot of this port.
-  struct Slot {
-    Slot();
-    Slot(const Slot&);
-    ~Slot();
-
-    // Indicates that the slot can signal the embedder about available messages.
-    bool can_signal = true;
-
-    // Indicates that the peer slot for this slot is closed.
-    bool peer_closed = false;
-
-    // The last sequence number expected for this slot to receive if the peer is
-    // closed.
-    uint64_t last_sequence_num_to_receive = 0;
-
-    // The last sequence number sent on this slot. Will always be less than
-    // the Port's own |next_sequence_num_to_send|.
-    uint64_t last_sequence_num_sent = 0;
-
-    // Arbitrary user data attached to the Slot. In practice, Mojo uses this to
-    // stash an observer interface which can be notified about various Slot
-    // state changes.
-    scoped_refptr<UserData> user_data;
-  };
-
-  // Status information for each slot on this port.
-  std::map<SlotId, Slot> slots;
+  // Indicates that this Port lost its peer unexpectedly (e.g. via process death
+  // rather than receiving an ObserveClosure event). In this case
+  // |peer_closed| will be true but |last_sequence_num_to_receive| cannot be
+  // known. Such ports will continue to make message available until their
+  // message queue is empty.
+  bool peer_lost_unexpectedly;
 
   Port(uint64_t next_sequence_num_to_send,
        uint64_t next_sequence_num_to_receive);
-
-  Slot* GetSlot(SlotId slot_id);
-  SlotId AllocateSlot();
-  bool AddSlotFromPeer(SlotId peer_slot_id);
 
   void AssertLockAcquired() {
 #if DCHECK_IS_ON()

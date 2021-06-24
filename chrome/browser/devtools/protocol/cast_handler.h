@@ -9,11 +9,12 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/devtools/protocol/cast.h"
-#include "chrome/browser/media/router/issues_observer.h"
-#include "chrome/browser/media/router/presentation/presentation_service_delegate_impl.h"
 #include "chrome/browser/ui/media_router/query_result_manager.h"
+#include "components/media_router/browser/issues_observer.h"
+#include "components/media_router/common/mojom/media_router.mojom.h"
 
 namespace content {
 class WebContents;
@@ -21,6 +22,7 @@ class WebContents;
 
 namespace media_router {
 class MediaRouter;
+class StartPresentationContext;
 }  // namespace media_router
 
 class CastHandler : public protocol::Cast::Backend,
@@ -53,8 +55,9 @@ class CastHandler : public protocol::Cast::Backend,
   // Constructor that does not wire the handler to a dispatcher. Used in tests.
   explicit CastHandler(content::WebContents* web_contents);
 
-  // Initializes the handler if it hasn't been initialized yet.
-  void EnsureInitialized();
+  // Initializes the handler if it hasn't been initialized yet. Returns
+  // Response::Success() if initialization succeeds, otherwise an error.
+  protocol::Response EnsureInitialized();
 
   void StartPresentation(
       const std::string& sink_name,
@@ -69,7 +72,10 @@ class CastHandler : public protocol::Cast::Backend,
       const media_router::MediaSink::Id& sink_id) const;
 
   void StartObservingForSinks(protocol::Maybe<std::string> presentation_url);
-  void StartObservingForIssues();
+
+  // Sends a notification that sinks (or their associated routes) have been
+  // updated.
+  void SendSinkUpdate();
 
   void OnTabMirroringStarted(
       std::unique_ptr<StartTabMirroringCallback> callback,
@@ -96,9 +102,7 @@ class CastHandler : public protocol::Cast::Backend,
 
   std::unique_ptr<protocol::Cast::Frontend> frontend_;
 
-  bool initialized_ = false;
-
-  base::WeakPtrFactory<CastHandler> weak_factory_;
+  base::WeakPtrFactory<CastHandler> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CastHandler);
 };

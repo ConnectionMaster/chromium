@@ -2,6 +2,7 @@
 <html dir="$i18n{textdirection}" lang="$i18n{language}">
 <head>
   <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fff">
   <meta name="viewport" content="width=device-width, initial-scale=1.0,
                                  maximum-scale=1.0, user-scalable=no">
@@ -9,10 +10,13 @@
   <link rel="stylesheet" href="../../../components/security_interstitials/core/common/resources/interstitial_core.css">
   <link rel="stylesheet" href="../../../components/security_interstitials/core/common/resources/interstitial_common.css">
   <link rel="stylesheet" href="neterror.css">
-  <script src="../../../components/security_interstitials/core/common/resources/interstitial_common.js"></script>
-  <script src="../../../components/security_interstitials/core/common/resources/interstitial_mobile_nav.js"></script>
   <script src="neterror.js"></script>
+  <script src="../../../components/security_interstitials/core/common/resources/interstitial_mobile_nav.js"></script>
   <script src="offline.js"></script>
+  <script src="offline-sprite-definitions.js"></script>
+  <if expr="is_ios">
+    <script src="error_page_controller_ios.js"></script>
+  </if>
 </head>
 <body id="t" style="font-family: $i18n{fontfamily}; font-size: $i18n{fontsize}">
   <div id="main-frame-error" class="interstitial-wrapper">
@@ -48,7 +52,6 @@
             </div>
           </div>
         </div>
-        <div id="diagnose-frame" class="hidden"></div>
         <div id="download-links-wrapper" class="hidden">
           <div id="download-link-wrapper">
             <a id="download-link" class="link-button"
@@ -61,6 +64,15 @@
                 jsselect="downloadButton" jscontent="disabledMsg">
             </div>
           </div>
+        </div>
+        <div id="save-page-for-later-button" class="hidden">
+          <a class="link-button" onclick="savePageLaterClick()"
+            jsselect="savePageLater" jscontent="savePageMsg">
+          </a>
+        </div>
+        <div id="cancel-save-page-button" class="hidden"
+          onclick="cancelSavePageClick()" jsselect="savePageLater"
+          jsvalues=".innerHTML:cancelMsg">
         </div>
         <div id="offline-content-list" class="list-hidden" hidden>
           <div id="offline-content-list-visibility-card"
@@ -90,10 +102,9 @@
       <div id="control-buttons" hidden>
         <button id="reload-button"
             class="blue-button text-button"
-            onclick="trackClick(this.trackingId);
-                     reloadButtonClick(this.url);"
+            onclick="reloadButtonClick(this.url);"
             jsselect="reloadButton"
-            jsvalues=".url:reloadUrl; .trackingId:reloadTrackingId"
+            jsvalues=".url:reloadUrl"
             jscontent="msg"></button>
         <button id="download-button"
             class="blue-button text-button"
@@ -101,17 +112,6 @@
             jsselect="downloadButton"
             jscontent="msg" jsvalues=".disabledText:disabledMsg">
         </button>
-        <div id="save-page-for-later-button" class="hidden">
-          <a class="link-button" onclick="savePageLaterClick()"
-            jsselect="savePageLater"
-            jscontent="savePageMsg">
-          </a>
-        </div>
-        <div id="cancel-save-page-button" class="hidden"
-          onclick="cancelSavePageClick()"
-          jsselect="savePageLater"
-          jsvalues=".innerHTML:cancelMsg">
-        </div>
       </div>
       <button id="details-button" class="secondary-button text-button small-link"
          onclick="detailsButtonClick(); toggleHelpBox()" jscontent="details"

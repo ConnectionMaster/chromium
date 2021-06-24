@@ -28,9 +28,9 @@ void SubresourceFilterObserverManager::RemoveObserver(
 
 void SubresourceFilterObserverManager::NotifySafeBrowsingChecksComplete(
     content::NavigationHandle* navigation_handle,
-    const SubresourceFilterObserver::SafeBrowsingCheckResults& results) {
+    const SubresourceFilterSafeBrowsingClient::CheckResult& result) {
   for (auto& observer : observers_) {
-    observer.OnSafeBrowsingChecksComplete(navigation_handle, results);
+    observer.OnSafeBrowsingChecksComplete(navigation_handle, result);
   }
 }
 
@@ -44,17 +44,16 @@ void SubresourceFilterObserverManager::NotifyPageActivationComputed(
 
 void SubresourceFilterObserverManager::NotifySubframeNavigationEvaluated(
     content::NavigationHandle* navigation_handle,
-    LoadPolicy load_policy,
-    bool is_ad_subframe) {
+    LoadPolicy load_policy) {
   for (auto& observer : observers_)
-    observer.OnSubframeNavigationEvaluated(navigation_handle, load_policy,
-                                           is_ad_subframe);
+    observer.OnSubframeNavigationEvaluated(navigation_handle, load_policy);
 }
 
-void SubresourceFilterObserverManager::NotifyAdSubframeDetected(
-    content::RenderFrameHost* render_frame_host) {
+void SubresourceFilterObserverManager::NotifyIsAdSubframeChanged(
+    content::RenderFrameHost* render_frame_host,
+    bool is_ad_subframe) {
   for (auto& observer : observers_)
-    observer.OnAdSubframeDetected(render_frame_host);
+    observer.OnIsAdSubframeChanged(render_frame_host, is_ad_subframe);
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(SubresourceFilterObserverManager)

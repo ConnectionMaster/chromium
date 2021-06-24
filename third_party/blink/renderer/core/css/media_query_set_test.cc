@@ -6,6 +6,7 @@
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/media_list.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -28,9 +29,9 @@ static void TestMediaQuery(MediaQuerySetTestCase test,
     output.Append(", ");
   }
   if (test.output)
-    ASSERT_STREQ(test.output, output.ToString().Ascii().data());
+    ASSERT_EQ(test.output, output.ToString());
   else
-    ASSERT_STREQ(test.input, output.ToString().Ascii().data());
+    ASSERT_EQ(test.input, output.ToString());
 }
 
 TEST(MediaQuerySetTest, Basic) {
@@ -49,7 +50,7 @@ TEST(MediaQuerySetTest, Basic) {
       {"not screen and (color)", nullptr},
       {"only screen and (color)", nullptr},
       {"screen and (color), projection and (color)", nullptr},
-      {"aural and (device-aspect-ratio: 16/9)", nullptr},
+      {"aural and (device-aspect-ratio: 16 / 9)", nullptr},
       {"speech and (min-device-width: 800px)", nullptr},
       {"example", nullptr},
       {"screen and (max-weight: 3kg) and (color), (monochrome)",
@@ -58,16 +59,15 @@ TEST(MediaQuerySetTest, Basic) {
       {"(example, all,), speech", "not all, speech"},
       {"&test, screen", "not all, screen"},
       {"print and (min-width: 25cm)", nullptr},
-      {"screen and (min-width: 400px) and (max-width: 700px)",
-       "screen and (max-width: 700px) and (min-width: 400px)"},
+      {"screen and (min-width: 400px) and (max-width: 700px)", nullptr},
       {"screen and (device-width: 800px)", nullptr},
       {"screen and (device-height: 60em)", nullptr},
       {"screen and (device-height: 60rem)", nullptr},
       {"screen and (device-height: 60ch)", nullptr},
-      {"screen and (device-aspect-ratio: 16/9)", nullptr},
+      {"screen and (device-aspect-ratio: 16 / 9)", nullptr},
       {"(device-aspect-ratio: 16.0/9.0)", "not all"},
-      {"(device-aspect-ratio: 16/ 9)", "(device-aspect-ratio: 16/9)"},
-      {"(device-aspect-ratio: 16/\r9)", "(device-aspect-ratio: 16/9)"},
+      {"(device-aspect-ratio: 16/ 9)", "(device-aspect-ratio: 16 / 9)"},
+      {"(device-aspect-ratio: 16/\r9)", "(device-aspect-ratio: 16 / 9)"},
       {"all and (color)", "(color)"},
       {"all and (min-color: 1)", "(min-color: 1)"},
       {"all and (min-color: 1.0)", "not all"},
@@ -184,7 +184,35 @@ TEST(MediaQuerySetTest, Basic) {
 
   for (unsigned i = 0; test_cases[i].input; ++i) {
     scoped_refptr<MediaQuerySet> query_set =
-        MediaQuerySet::Create(test_cases[i].input);
+        MediaQuerySet::Create(test_cases[i].input, nullptr);
+    TestMediaQuery(test_cases[i], *query_set);
+  }
+}
+
+TEST(MediaQuerySetTest, BehindRuntimeFlag) {
+  ScopedForcedColorsForTest forced_colors_flag(false);
+  ScopedMediaQueryNavigationControlsForTest navigation_controls_flag(false);
+  ScopedCSSFoldablesForTest foldables_flag(false);
+  ScopedDevicePostureForTest device_posture_flag(false);
+
+  // The first string represents the input string, the second string represents
+  // the output string.
+  MediaQuerySetTestCase test_cases[] = {
+      {"(forced-colors)", "not all"},
+      {"(navigation-controls)", "not all"},
+      {"(screen-spanning)", "not all"},
+      {"(device-posture)", "not all"},
+      {"(shape: rect)", "not all"},
+      {"(forced-colors: none)", "not all"},
+      {"(navigation-controls: none)", "not all"},
+      {"(screen-spanning:none)", "not all"},
+      {"(device-posture:none)", "not all"},
+      {nullptr, nullptr}  // Do not remove the terminator line.
+  };
+
+  for (unsigned i = 0; test_cases[i].input; ++i) {
+    scoped_refptr<MediaQuerySet> query_set =
+        MediaQuerySet::Create(test_cases[i].input, nullptr);
     TestMediaQuery(test_cases[i], *query_set);
   }
 }

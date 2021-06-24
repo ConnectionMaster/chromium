@@ -13,6 +13,8 @@
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
 #include "net/dns/dns_hosts.h"
+#include "net/dns/public/dns_over_https_server_config.h"
+#include "net/dns/public/secure_dns_mode.h"
 
 namespace base {
 class Value;
@@ -20,20 +22,23 @@ class Value;
 
 namespace net {
 
-// Default to 1 second timeout (before exponential backoff).
-constexpr base::TimeDelta kDnsDefaultTimeout = base::TimeDelta::FromSeconds(1);
+constexpr base::TimeDelta kDnsDefaultFallbackPeriod =
+    base::TimeDelta::FromSeconds(1);
 
 // DnsConfig stores configuration of the system resolver.
 struct NET_EXPORT DnsConfig {
   DnsConfig();
   DnsConfig(const DnsConfig& other);
   DnsConfig(DnsConfig&& other);
+  explicit DnsConfig(std::vector<IPEndPoint> nameservers);
   ~DnsConfig();
 
   DnsConfig& operator=(const DnsConfig& other);
   DnsConfig& operator=(DnsConfig&& other);
 
   bool Equals(const DnsConfig& d) const;
+  bool operator==(const DnsConfig& d) const;
+  bool operator!=(const DnsConfig& d) const;
 
   bool EqualsIgnoreHosts(const DnsConfig& d) const;
 
@@ -41,21 +46,19 @@ struct NET_EXPORT DnsConfig {
 
   // Returns a Value representation of |this|. For performance reasons, the
   // Value only contains the number of hosts rather than the full list.
-  std::unique_ptr<base::Value> ToValue() const;
+  base::Value ToValue() const;
 
-  bool IsValid() const { return !nameservers.empty(); }
-
-  struct NET_EXPORT DnsOverHttpsServerConfig {
-    DnsOverHttpsServerConfig(const std::string& server_template, bool use_post);
-
-    bool operator==(const DnsOverHttpsServerConfig& other) const;
-
-    std::string server_template;
-    bool use_post;
-  };
+  bool IsValid() const {
+    return !nameservers.empty() || !dns_over_https_servers.empty();
+  }
 
   // List of name server addresses.
   std::vector<IPEndPoint> nameservers;
+
+  // Status of system DNS-over-TLS (DoT).
+  bool dns_over_tls_active;
+  std::string dns_over_tls_hostname;
+
   // Suffix search list; used on first lookup when number of dots in given name
   // is less than |ndots|.
   std::vector<std::string> search;
@@ -70,18 +73,20 @@ struct NET_EXPORT DnsConfig {
   // True, except on Windows where it can be configured.
   bool append_to_multi_label_name;
 
-  // Indicates that source port randomization is required. This uses additional
-  // resources on some platforms.
-  bool randomize_ports;
-
   // Resolver options; see man resolv.conf.
 
   // Minimum number of dots before global resolution precedes |search|.
   int ndots;
   // Time between retransmissions, see res_state.retrans.
-  base::TimeDelta timeout;
+  // Used by Chrome as the initial transaction attempt fallback period (before
+  // exponential backoff and dynamic period determination based on previous
+  // attempts.)
+  base::TimeDelta fallback_period;
   // Maximum number of attempts, see res_state.retry.
   int attempts;
+  // Maximum number of times a DoH server is attempted per attempted per DNS
+  // transaction. This is separate from the global failure limit.
+  int doh_attempts;
   // Round robin entries in |nameservers| for subsequent requests.
   bool rotate;
 
@@ -93,6 +98,21 @@ struct NET_EXPORT DnsConfig {
   // List of servers to query over HTTPS, queried in order
   // (https://tools.ietf.org/id/draft-ietf-doh-dns-over-https-12.txt).
   std::vector<DnsOverHttpsServerConfig> dns_over_https_servers;
+
+  // The default SecureDnsMode to use when resolving queries. It can be
+  // overridden for individual requests (such as requests to resolve a DoH
+  // server hostname) using |HostResolver::ResolveHostParameters::
+  // secure_dns_mode_override|.
+  SecureDnsMode secure_dns_mode;
+
+  // If set to |true|, we will attempt to upgrade the user's DNS configuration
+  // to use DoH server(s) operated by the same provider(s) when the user is
+  // in AUTOMATIC mode and has not pre-specified DoH servers.
+  bool allow_dns_over_https_upgrade;
+
+  // List of providers to exclude from upgrade mapping. See the
+  // mapping in net/dns/dns_util.cc for provider ids.
+  std::vector<std::string> disabled_upgrade_providers;
 };
 
 }  // namespace net

@@ -14,12 +14,12 @@
 
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "base/values.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/rect.h"
@@ -27,7 +27,6 @@
 namespace extensions {
 
 class ExtensionPrefs;
-class ExtensionRegistry;
 
 // A cache for persisted geometry of app windows, both to not have to wait
 // for IO when creating a new window, and to not cause IO on every window
@@ -52,7 +51,6 @@ class AppWindowGeometryCache : public KeyedService,
     // BrowserContextKeyedServiceFactory
     KeyedService* BuildServiceInstanceFor(
         content::BrowserContext* context) const override;
-    bool ServiceIsNULLWhileTesting() const override;
     content::BrowserContext* GetBrowserContextToUse(
         content::BrowserContext* context) const override;
   };
@@ -148,8 +146,8 @@ class AppWindowGeometryCache : public KeyedService,
   base::TimeDelta sync_delay_;
 
   // Listen to extension load, unloaded notifications.
-  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   base::ObserverList<Observer>::Unchecked observers_;
 };

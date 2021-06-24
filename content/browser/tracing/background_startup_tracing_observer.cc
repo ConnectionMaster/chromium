@@ -5,7 +5,6 @@
 #include "content/browser/tracing/background_startup_tracing_observer.h"
 
 #include "base/bind.h"
-#include "base/task/post_task.h"
 #include "components/tracing/common/trace_startup_config.h"
 #include "content/browser/tracing/background_tracing_rule.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -25,8 +24,9 @@ class PreferenceManagerImpl
   }
 
   bool GetBackgroundStartupTracingEnabled() const override {
-    return tracing::TraceStartupConfig::GetInstance()
-        ->GetBackgroundStartupTracingEnabled();
+    return tracing::TraceStartupConfig::GetInstance()->IsEnabled() &&
+           tracing::TraceStartupConfig::GetInstance()->GetSessionOwner() ==
+               tracing::TraceStartupConfig::SessionOwner::kBackgroundTracing;
   }
 };
 
@@ -65,9 +65,10 @@ void BackgroundStartupTracingObserver::OnScenarioActivated(
     return;
   const BackgroundTracingRule* startup_rule = FindStartupRuleInConfig(*config);
   DCHECK(startup_rule);
+
   // Post task to avoid reentrancy.
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
           &BackgroundTracingManagerImpl::OnRuleTriggered,
           base::Unretained(BackgroundTracingManagerImpl::GetInstance()),
@@ -94,13 +95,23 @@ BackgroundStartupTracingObserver::IncludeStartupConfigIfNeeded(
       preferences_->GetBackgroundStartupTracingEnabled();
 
   const BackgroundTracingRule* startup_rule = nullptr;
-  if (config)
+  if (config) {
     startup_rule = FindStartupRuleInConfig(*config);
+  }
+
   // Reset the flag if startup tracing was enabled again in current session.
   if (startup_rule) {
     preferences_->SetBackgroundStartupTracingEnabled(true);
   } else {
     preferences_->SetBackgroundStartupTracingEnabled(false);
+  }
+
+  // If we're preemptive tracing then OnScenarioActivated() would just
+  // immediately finalize tracing, rather than starting it.
+  if (config &&
+      (config->tracing_mode() == BackgroundTracingConfigImpl::PREEMPTIVE)) {
+    enabled_in_current_session_ = false;
+    return config;
   }
 
   // If enabled in current session and startup rule already exists, then do not

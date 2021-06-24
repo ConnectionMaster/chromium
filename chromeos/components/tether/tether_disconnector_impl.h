@@ -7,14 +7,12 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chromeos/components/tether/tether_disconnector.h"
 #include "chromeos/components/tether/tether_session_completion_logger.h"
-#include "chromeos/network/network_handler_callbacks.h"
 
 namespace chromeos {
 
@@ -39,19 +37,18 @@ class TetherDisconnectorImpl : public TetherDisconnector {
 
   void DisconnectFromNetwork(
       const std::string& tether_network_guid,
-      const base::Closure& success_callback,
-      const network_handler::StringResultCallback& error_callback,
+      base::OnceClosure success_callback,
+      StringErrorCallback error_callback,
       const TetherSessionCompletionLogger::SessionCompletionReason&
           session_completion_reason) override;
 
  private:
   friend class TetherDisconnectorImplTest;
 
-  void DisconnectActiveWifiConnection(
-      const std::string& tether_network_guid,
-      const std::string& wifi_network_guid,
-      const base::Closure& success_callback,
-      const network_handler::StringResultCallback& error_callback);
+  void DisconnectActiveWifiConnection(const std::string& tether_network_guid,
+                                      const std::string& wifi_network_guid,
+                                      base::OnceClosure success_callback,
+                                      StringErrorCallback error_callback);
 
   ActiveHost* active_host_;
   WifiHotspotDisconnector* wifi_hotspot_disconnector_;
@@ -60,7 +57,7 @@ class TetherDisconnectorImpl : public TetherDisconnector {
   DeviceIdTetherNetworkGuidMap* device_id_tether_network_guid_map_;
   TetherSessionCompletionLogger* tether_session_completion_logger_;
 
-  base::WeakPtrFactory<TetherDisconnectorImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<TetherDisconnectorImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TetherDisconnectorImpl);
 };

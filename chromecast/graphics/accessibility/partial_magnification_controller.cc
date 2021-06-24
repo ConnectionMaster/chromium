@@ -11,7 +11,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/events/event.h"
-#include "ui/events/event_constants.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/shadow_value.h"
 #include "ui/gfx/skia_paint_util.h"
 #include "ui/views/widget/widget.h"
@@ -202,6 +202,7 @@ PartialMagnificationController::PartialMagnificationController(
 PartialMagnificationController::~PartialMagnificationController() {
   CloseMagnifierWindow();
   root_window_->RemovePreTargetHandler(this);
+  CHECK(!views::WidgetObserver::IsInObserverList());
 }
 
 void PartialMagnificationController::SetEnabled(bool enabled) {
@@ -308,12 +309,12 @@ void PartialMagnificationController::CreateMagnifierWindow(
   host_widget_ = new views::Widget;
   views::Widget::InitParams params(
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-  params.activatable = views::Widget::InitParams::ACTIVATABLE_NO;
+  params.activatable = views::Widget::InitParams::Activatable::kNo;
   params.accept_events = false;
   params.bounds = GetBounds(mouse);
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.parent = root_window;
-  host_widget_->Init(params);
+  host_widget_->Init(std::move(params));
   host_widget_->set_focus_on_creation(false);
   host_widget_->Show();
 

@@ -23,10 +23,15 @@ namespace test {
 class TestTokenStorage;
 
 // An OAuthTokenGetter implementation for testing that runs the authentication
-// flow on the console and caches the access token until it's no longer valid.
+// flow on the console.
+// If the account is allowlisted to use 1P scope with consent page then it will
+// store the refresh token, otherwise it will just cache the access token, which
+// will expire in ~1h.
 class TestOAuthTokenGetter final : public OAuthTokenGetter {
  public:
   static constexpr char kSwitchNameAuthCode[] = "auth-code";
+
+  static bool IsServiceAccount(const std::string& email);
 
   // |token_storage| must outlive |this|.
   explicit TestOAuthTokenGetter(TestTokenStorage* token_storage);
@@ -44,15 +49,25 @@ class TestOAuthTokenGetter final : public OAuthTokenGetter {
   void CallWithToken(TokenCallback on_access_token) override;
   void InvalidateCache() override;
 
+  base::WeakPtr<TestOAuthTokenGetter> GetWeakPtr();
+
  private:
   std::unique_ptr<OAuthTokenGetter> CreateFromIntermediateCredentials(
       const std::string& auth_code,
       const OAuthTokenGetter::CredentialsUpdatedCallback&
           on_credentials_update);
+  std::unique_ptr<OAuthTokenGetter> CreateWithRefreshToken(
+      const std::string& refresh_token,
+      const std::string& email);
+
+  void OnCredentialsUpdate(const std::string& user_email,
+                           const std::string& refresh_token);
 
   void OnAccessToken(OAuthTokenGetter::Status status,
                      const std::string& user_email,
                      const std::string& access_token);
+
+  void RunAuthenticationDoneCallbacks();
 
   std::unique_ptr<network::TransitionalURLLoaderFactoryOwner>
       url_loader_factory_owner_;
@@ -61,7 +76,7 @@ class TestOAuthTokenGetter final : public OAuthTokenGetter {
   bool is_authenticating_ = false;
   base::queue<base::OnceClosure> on_authentication_done_;
 
-  base::WeakPtrFactory<TestOAuthTokenGetter> weak_factory_;
+  base::WeakPtrFactory<TestOAuthTokenGetter> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(TestOAuthTokenGetter);
 };
 

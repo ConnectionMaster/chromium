@@ -6,8 +6,9 @@
 #define UI_BASE_BASE_WINDOW_H_
 
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "build/build_config.h"
-#include "ui/base/ui_base_types.h"  // WindowShowState
+#include "ui/base/ui_base_types.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace gfx {
@@ -18,7 +19,7 @@ namespace ui {
 
 // Provides an interface to perform actions on windows, and query window
 // state.
-class UI_BASE_EXPORT BaseWindow {
+class COMPONENT_EXPORT(UI_BASE) BaseWindow {
  public:
   // Returns true if the window is currently the active/focused window.
   virtual bool IsActive() const = 0;
@@ -88,12 +89,11 @@ class UI_BASE_EXPORT BaseWindow {
   // Set |flash| to true to initiate flashing, false to stop flashing.
   virtual void FlashFrame(bool flash) = 0;
 
-  // Returns true if a window is set to be always on top.
-  virtual bool IsAlwaysOnTop() const = 0;
+  // Returns the z-order level of the window.
+  virtual ZOrderLevel GetZOrderLevel() const = 0;
 
-  // If set to true, the window will stay on top of other windows which do not
-  // have this flag enabled.
-  virtual void SetAlwaysOnTop(bool always_on_top) = 0;
+  // Sets the z-order level of the window.
+  virtual void SetZOrderLevel(ZOrderLevel order) = 0;
 };
 
 }  // namespace ui

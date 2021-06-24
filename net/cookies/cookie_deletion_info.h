@@ -8,9 +8,10 @@
 #include <set>
 #include <string>
 
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_constants.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace net {
 
@@ -87,9 +88,19 @@ struct NET_EXPORT CookieDeletionInfo {
   // |creation_range| AND the |cookie| name is equal to |name|, etc. then true
   // will be returned. If not false.
   //
+  // |params.access_semantics| is the access semantics mode of the cookie at the
+  // time of the attempted match. This is used to determine whether the cookie
+  // matches a particular URL based on effective SameSite mode. (But the value
+  // should not matter because the CookieOptions used for this check includes
+  // all cookies for a URL regardless of SameSite).
+  //
+  // |params.delegate_treats_url_as_trustworthy| should be set to true if |url|
+  // was granted access to secure cookies by the CookieAccessDelegate.
+  //
   // All members are used. See comments above other members for specifics
   // about how checking is done for that value.
-  bool Matches(const CanonicalCookie& cookie) const;
+  bool Matches(const CanonicalCookie& cookie,
+               const CookieAccessParams& params) const;
 
   // See comment above for TimeRange::Contains() for more info.
   TimeRange creation_range;
@@ -99,17 +110,14 @@ struct NET_EXPORT CookieDeletionInfo {
   SessionControl session_control = SessionControl::IGNORE_CONTROL;
 
   // If has a value then cookie.Host() must equal |host|.
-  base::Optional<std::string> host;
+  absl::optional<std::string> host;
 
   // If has a value then cookie.Name() must equal |name|.
-  base::Optional<std::string> name;
+  absl::optional<std::string> name;
 
   // If has a value then will match if the cookie being evaluated would be
   // included for a request of |url|.
-  base::Optional<GURL> url;
-
-  // Only used for |url| comparison.
-  CookieOptions cookie_options;
+  absl::optional<GURL> url;
 
   // If this is not empty then any cookie with a domain/ip contained in this
   // will be deleted (assuming other fields match).
@@ -130,7 +138,7 @@ struct NET_EXPORT CookieDeletionInfo {
   std::set<std::string> domains_and_ips_to_ignore;
 
   // Used only for testing purposes.
-  base::Optional<std::string> value_for_testing;
+  absl::optional<std::string> value_for_testing;
 };
 
 }  // namespace net

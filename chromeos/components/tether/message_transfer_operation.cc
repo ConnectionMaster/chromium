@@ -8,6 +8,7 @@
 #include <set>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "chromeos/components/multidevice/logging/logging.h"
 #include "chromeos/components/tether/message_wrapper.h"
 #include "chromeos/components/tether/timer_factory.h"
@@ -93,8 +94,7 @@ MessageTransferOperation::MessageTransferOperation(
       device_sync_client_(device_sync_client),
       secure_channel_client_(secure_channel_client),
       connection_priority_(connection_priority),
-      timer_factory_(std::make_unique<TimerFactory>()),
-      weak_ptr_factory_(this) {}
+      timer_factory_(std::make_unique<TimerFactory>()) {}
 
 MessageTransferOperation::~MessageTransferOperation() {
   // If initialization never occurred, devices were never registered.
@@ -116,6 +116,15 @@ void MessageTransferOperation::Initialize() {
   if (initialized_) {
     return;
   }
+
+  absl::optional<multidevice::RemoteDeviceRef> local_device =
+      device_sync_client_->GetLocalDeviceMetadata();
+  if (!local_device) {
+    PA_LOG(ERROR) << "MessageTransferOperation::" << __func__
+                  << ": Local device unexpectedly null.";
+    return;
+  }
+
   initialized_ = true;
 
   // Store the message type for this connection as a private field. This is
@@ -133,14 +142,15 @@ void MessageTransferOperation::Initialize() {
         std::make_unique<ConnectionAttemptDelegate>(
             this, remote_device,
             secure_channel_client_->ListenForConnectionFromDevice(
-                remote_device, *device_sync_client_->GetLocalDeviceMetadata(),
-                kTetherFeature, connection_priority_));
+                remote_device, *local_device, kTetherFeature,
+                secure_channel::ConnectionMedium::kBluetoothLowEnergy,
+                connection_priority_));
   }
 }
 
 void MessageTransferOperation::OnMessageReceived(const std::string& device_id,
                                                  const std::string& payload) {
-  base::Optional<multidevice::RemoteDeviceRef> remote_device =
+  absl::optional<multidevice::RemoteDeviceRef> remote_device =
       GetRemoteDevice(device_id);
   if (!remote_device) {
     // If the device from which the message has been received does not
@@ -172,8 +182,8 @@ void MessageTransferOperation::UnregisterDevice(
 
   remote_device_to_connection_attempt_delegate_map_.erase(remote_device);
 
-  if (base::ContainsKey(remote_device_to_client_channel_observer_map_,
-                        remote_device)) {
+  if (base::Contains(remote_device_to_client_channel_observer_map_,
+                     remote_device)) {
     remote_device_to_client_channel_observer_map_.erase(remote_device);
   }
 
@@ -184,8 +194,8 @@ void MessageTransferOperation::UnregisterDevice(
 int MessageTransferOperation::SendMessageToDevice(
     multidevice::RemoteDeviceRef remote_device,
     std::unique_ptr<MessageWrapper> message_wrapper) {
-  DCHECK(base::ContainsKey(remote_device_to_client_channel_observer_map_,
-                           remote_device));
+  DCHECK(base::Contains(remote_device_to_client_channel_observer_map_,
+                        remote_device));
   int sequence_number = next_message_sequence_number_++;
   bool success =
       remote_device_to_client_channel_observer_map_[remote_device]
@@ -255,8 +265,8 @@ void MessageTransferOperation::StartTimerForDevice(
                                       timer_factory_->CreateOneShotTimer());
   remote_device_to_timer_map_[remote_device]->Start(
       FROM_HERE, base::TimeDelta::FromSeconds(timeout_seconds),
-      base::Bind(&MessageTransferOperation::OnTimeout,
-                 weak_ptr_factory_.GetWeakPtr(), remote_device));
+      base::BindOnce(&MessageTransferOperation::OnTimeout,
+                     weak_ptr_factory_.GetWeakPtr(), remote_device));
 }
 
 void MessageTransferOperation::StopTimerForDeviceIfRunning(
@@ -278,14 +288,14 @@ void MessageTransferOperation::OnTimeout(
   UnregisterDevice(remote_device);
 }
 
-base::Optional<multidevice::RemoteDeviceRef>
+absl::optional<multidevice::RemoteDeviceRef>
 MessageTransferOperation::GetRemoteDevice(const std::string& device_id) {
   for (auto& remote_device : remote_devices_) {
     if (remote_device.GetDeviceId() == device_id)
       return remote_device;
   }
 
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 void MessageTransferOperation::SetTimerFactoryForTest(

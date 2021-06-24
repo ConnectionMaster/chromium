@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "chromeos/services/secure_channel/fake_client_connection_parameters.h"
 #include "chromeos/services/secure_channel/fake_connection_delegate.h"
 #include "chromeos/services/secure_channel/fake_pending_connection_request_delegate.h"
@@ -76,7 +76,7 @@ class SecureChannelPendingBleConnectionRequestBaseTest : public testing::Test {
         test_pending_ble_connection_request_.get()));
   }
 
-  const base::Optional<
+  const absl::optional<
       PendingConnectionRequestDelegate::FailedConnectionReason>&
   GetFailedConnectionReason() {
     return fake_pending_connection_request_delegate_
@@ -84,7 +84,7 @@ class SecureChannelPendingBleConnectionRequestBaseTest : public testing::Test {
             test_pending_ble_connection_request_->GetRequestId());
   }
 
-  const base::Optional<mojom::ConnectionAttemptFailureReason>&
+  const absl::optional<mojom::ConnectionAttemptFailureReason>&
   GetConnectionAttemptFailureReason() const {
     return fake_client_connection_parameters_->failure_reason();
   }

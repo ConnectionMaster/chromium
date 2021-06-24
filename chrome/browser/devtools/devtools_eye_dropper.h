@@ -12,6 +12,7 @@
 #include "components/viz/host/client_frame_sink_video_capturer.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
 namespace blink {
@@ -21,21 +22,21 @@ class WebMouseEvent;
 class DevToolsEyeDropper : public content::WebContentsObserver,
                            public viz::mojom::FrameSinkVideoConsumer {
  public:
-  typedef base::Callback<void(int, int, int, int)> EyeDropperCallback;
+  typedef base::RepeatingCallback<void(int, int, int, int)> EyeDropperCallback;
 
   DevToolsEyeDropper(content::WebContents* web_contents,
                      EyeDropperCallback callback);
   ~DevToolsEyeDropper() override;
 
  private:
-  void AttachToHost(content::RenderWidgetHost* host);
+  void AttachToHost(content::RenderFrameHost* host);
   void DetachFromHost();
 
   // content::WebContentsObserver.
-  void RenderViewCreated(content::RenderViewHost* host) override;
-  void RenderViewDeleted(content::RenderViewHost* host) override;
-  void RenderViewHostChanged(content::RenderViewHost* old_host,
-                             content::RenderViewHost* new_host) override;
+  void RenderFrameCreated(content::RenderFrameHost* host) override;
+  void RenderFrameDeleted(content::RenderFrameHost* host) override;
+  void RenderFrameHostChanged(content::RenderFrameHost* old_host,
+                              content::RenderFrameHost* new_host) override;
 
   void ResetFrame();
   void FrameUpdated(const SkBitmap&);
@@ -47,17 +48,19 @@ class DevToolsEyeDropper : public content::WebContentsObserver,
       base::ReadOnlySharedMemoryRegion data,
       ::media::mojom::VideoFrameInfoPtr info,
       const gfx::Rect& content_rect,
-      viz::mojom::FrameSinkVideoConsumerFrameCallbacksPtr callbacks) override;
+      mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumerFrameCallbacks>
+          callbacks) override;
   void OnStopped() override;
+  void OnLog(const std::string& /*message*/) override {}
 
   EyeDropperCallback callback_;
   SkBitmap frame_;
-  int last_cursor_x_;
-  int last_cursor_y_;
+  int last_cursor_x_ = -1;
+  int last_cursor_y_ = -1;
   content::RenderWidgetHost::MouseEventCallback mouse_event_callback_;
-  content::RenderWidgetHost* host_;
+  content::RenderWidgetHost* host_ = nullptr;
   std::unique_ptr<viz::ClientFrameSinkVideoCapturer> video_capturer_;
-  base::WeakPtrFactory<DevToolsEyeDropper> weak_factory_;
+  base::WeakPtrFactory<DevToolsEyeDropper> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DevToolsEyeDropper);
 };

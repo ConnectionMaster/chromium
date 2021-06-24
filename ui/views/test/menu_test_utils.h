@@ -5,9 +5,13 @@
 #ifndef UI_VIEWS_TEST_MENU_TEST_UTILS_H_
 #define UI_VIEWS_TEST_MENU_TEST_UTILS_H_
 
+#include <utility>
+
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/views/controls/menu/menu_delegate.h"
+#include "ui/views/test/test_views_delegate.h"
 
 namespace views {
 
@@ -38,9 +42,10 @@ class TestMenuDelegate : public MenuDelegate {
                        ui::MenuSourceType source_type) override;
   void ExecuteCommand(int id) override;
   void OnMenuClosed(MenuItemView* menu) override;
-  int OnPerformDrop(MenuItemView* menu,
-                    DropPosition position,
-                    const ui::DropTargetEvent& event) override;
+  ui::mojom::DragOperation OnPerformDrop(
+      MenuItemView* menu,
+      DropPosition position,
+      const ui::DropTargetEvent& event) override;
   int GetDragOperations(MenuItemView* sender) override;
   void WriteDragData(MenuItemView* sender, OSExchangeData* data) override;
   void WillHideMenu(MenuItemView* menu) override;
@@ -106,6 +111,27 @@ class MenuControllerTestApi {
 // On platforms without menu closure animations, these do nothing.
 void DisableMenuClosureAnimations();
 void WaitForMenuClosureAnimation();
+
+// An implementation of TestViewsDelegate which overrides ReleaseRef in order to
+// call a provided callback.
+class ReleaseRefTestViewsDelegate : public TestViewsDelegate {
+ public:
+  ReleaseRefTestViewsDelegate();
+  ReleaseRefTestViewsDelegate(const ReleaseRefTestViewsDelegate&) = delete;
+  ReleaseRefTestViewsDelegate& operator=(const ReleaseRefTestViewsDelegate&) =
+      delete;
+  ~ReleaseRefTestViewsDelegate() override;
+
+  void set_release_ref_callback(base::RepeatingClosure release_ref_callback) {
+    release_ref_callback_ = std::move(release_ref_callback);
+  }
+
+  // TestViewsDelegate:
+  void ReleaseRef() override;
+
+ private:
+  base::RepeatingClosure release_ref_callback_;
+};
 
 }  // namespace test
 }  // namespace views

@@ -53,8 +53,20 @@ TEST(FrameBufferPool, BasicFunctionality) {
   memset(alpha, 0, kBufferSize);
 
   // This will release all memory since we're in the shutdown state.
-  frame_release_cb.Run();
+  std::move(frame_release_cb).Run();
   EXPECT_EQ(0u, pool->get_pool_size_for_testing());
+}
+
+TEST(FrameBufferPool, ForceAllocationError) {
+  base::TestMessageLoop message_loop;
+  scoped_refptr<FrameBufferPool> pool = new FrameBufferPool();
+  pool->force_allocation_error_for_testing();
+
+  void* priv1 = nullptr;
+  uint8_t* buf1 = pool->GetFrameBuffer(kBufferSize, &priv1);
+  ASSERT_FALSE(priv1);
+  ASSERT_FALSE(buf1);
+  pool->Shutdown();
 }
 
 TEST(FrameBufferPool, DeferredDestruction) {
@@ -74,7 +86,7 @@ TEST(FrameBufferPool, DeferredDestruction) {
   auto frame_release_cb = pool->CreateFrameCallback(priv1);
   pool->ReleaseFrameBuffer(priv1);
   priv1 = buf1 = nullptr;
-  frame_release_cb.Run();
+  std::move(frame_release_cb).Run();
 
   // Frame buffers should not be immediately deleted upon return.
   EXPECT_EQ(3u, pool->get_pool_size_for_testing());
@@ -87,7 +99,7 @@ TEST(FrameBufferPool, DeferredDestruction) {
   frame_release_cb = pool->CreateFrameCallback(priv2);
   pool->ReleaseFrameBuffer(priv2);
   priv2 = buf2 = nullptr;
-  frame_release_cb.Run();
+  std::move(frame_release_cb).Run();
   EXPECT_EQ(3u, pool->get_pool_size_for_testing());
 
   test_clock.Advance(
@@ -97,7 +109,7 @@ TEST(FrameBufferPool, DeferredDestruction) {
   frame_release_cb = pool->CreateFrameCallback(priv3);
   pool->ReleaseFrameBuffer(priv3);
   priv3 = buf3 = nullptr;
-  frame_release_cb.Run();
+  std::move(frame_release_cb).Run();
   EXPECT_EQ(1u, pool->get_pool_size_for_testing());
 
   pool->Shutdown();

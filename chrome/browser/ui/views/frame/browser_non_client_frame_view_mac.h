@@ -16,7 +16,10 @@ namespace views {
 class Label;
 }
 
-@class FullscreenToolbarControllerViews;
+@class FullscreenToolbarController;
+
+class CaptionButtonPlaceholderContainer;
+class WindowControlsOverlayInputRoutingMac;
 
 class BrowserNonClientFrameViewMac : public BrowserNonClientFrameView {
  public:
@@ -28,12 +31,15 @@ class BrowserNonClientFrameViewMac : public BrowserNonClientFrameView {
   void OnFullscreenStateChanged() override;
   bool CaptionButtonsOnLeadingEdge() const override;
   gfx::Rect GetBoundsForTabStripRegion(
-      const views::View* tabstrip) const override;
+      const gfx::Size& tabstrip_minimum_size) const override;
   int GetTopInset(bool restored) const override;
   int GetThemeBackgroundXInset() const override;
-  void UpdateFullscreenTopUI(bool needs_check_tab_fullscreen) override;
+  void UpdateFullscreenTopUI() override;
   bool ShouldHideTopUIForFullscreen() const override;
   void UpdateThrobber(bool running) override;
+  void PaintAsActiveChanged() override;
+  void UpdateFrameColor() override;
+  void OnThemeChanged() override;
 
   // views::NonClientFrameView:
   gfx::Rect GetBoundsForClientView() const override;
@@ -45,9 +51,11 @@ class BrowserNonClientFrameViewMac : public BrowserNonClientFrameView {
   void UpdateWindowTitle() override;
   void SizeConstraintsChanged() override;
   void UpdateMinimumSize() override;
+  void WindowControlsOverlayEnabledChanged() override;
 
   // views::View:
   gfx::Size GetMinimumSize() const override;
+  void AddedToWidget() override;
 
  protected:
   // views::View:
@@ -57,12 +65,27 @@ class BrowserNonClientFrameViewMac : public BrowserNonClientFrameView {
  private:
   FRIEND_TEST_ALL_PREFIXES(BrowserNonClientFrameViewMacTest,
                            GetCenteredTitleBounds);
+  FRIEND_TEST_ALL_PREFIXES(BrowserNonClientFrameViewMacTest,
+                           GetWebAppFrameToolbarAvailableBounds);
+  FRIEND_TEST_ALL_PREFIXES(BrowserNonClientFrameViewMacTest,
+                           GetCaptionButtonPlaceholderBounds);
 
   static gfx::Rect GetCenteredTitleBounds(int frame_width,
                                           int frame_height,
                                           int left_inset_x,
                                           int right_inset_x,
                                           int title_width);
+
+  static gfx::Rect GetWebAppFrameToolbarAvailableBounds(
+      bool is_rtl,
+      const gfx::Size& frame,
+      int y,
+      int caption_button_container_width);
+  static gfx::Rect GetCaptionButtonPlaceholderBounds(bool is_rtl,
+                                                     const gfx::Size& frame,
+                                                     int y,
+                                                     int width,
+                                                     int extra_padding);
 
   void PaintThemedFrame(gfx::Canvas* canvas);
 
@@ -71,13 +94,36 @@ class BrowserNonClientFrameViewMac : public BrowserNonClientFrameView {
   // Calculate the y offset the top UI needs to shift down due to showing the
   // slide down menu bar at the very top in full screen.
   int TopUIFullscreenYOffset() const;
+  void LayoutTitleBarForWebApp();
+  void LayoutWindowControlsOverlay();
+
+  void UpdateCaptionButtonPlaceholderContainerBackground();
+
+  void AddRoutingForWindowControlsOverlayViews();
 
   // Used to keep track of the update of kShowFullscreenToolbar preference.
   BooleanPrefMember show_fullscreen_toolbar_;
 
   views::Label* window_title_ = nullptr;
 
-  base::scoped_nsobject<FullscreenToolbarControllerViews>
+  // A placeholder container that lies on top of the traffic lights to indicate
+  // NonClientArea. Only for PWAs with window controls overlay display override.
+  CaptionButtonPlaceholderContainer* caption_button_placeholder_container_ =
+      nullptr;
+
+  // PWAs with window controls overlay display override covers the browser
+  // window with WebContentsViewCocoa natively even if the views::view 'looks'
+  // right and so events end up in the client area.
+  // WindowControlsOverlayInputRoutingMac overlays a NSView the non client
+  // area so events can be routed to the right view in the non client area. Two
+  // separate WindowControlsOverlayInputRoutingMac instances are needed
+  // since there are two dis jointed areas of non client area.
+  std::unique_ptr<WindowControlsOverlayInputRoutingMac>
+      caption_buttons_overlay_input_routing_view_;
+  std::unique_ptr<WindowControlsOverlayInputRoutingMac>
+      web_app_frame_toolbar_overlay_routing_view_;
+
+  base::scoped_nsobject<FullscreenToolbarController>
       fullscreen_toolbar_controller_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserNonClientFrameViewMac);

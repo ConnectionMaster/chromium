@@ -9,7 +9,6 @@
 #include <sstream>
 #include <vector>
 
-#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -102,7 +101,7 @@ bool SocketPermissionData::Check(const APIPermission::CheckParam* param) const {
 }
 
 std::unique_ptr<base::Value> SocketPermissionData::ToValue() const {
-  return std::unique_ptr<base::Value>(new base::Value(GetAsString()));
+  return std::make_unique<base::Value>(GetAsString());
 }
 
 bool SocketPermissionData::FromValue(const base::Value* value) {

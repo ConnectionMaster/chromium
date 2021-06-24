@@ -11,7 +11,6 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "chrome/browser/ui/webui/print_preview/printer_handler.h"
 #include "extensions/browser/api/printer_provider/printer_provider_api.h"
 
@@ -48,11 +47,11 @@ class ExtensionPrinterHandler : public PrinterHandler {
 
   // PrinterHandler implementation:
   void Reset() override;
-  void StartGetPrinters(const AddedPrintersCallback& added_printers_callback,
+  void StartGetPrinters(AddedPrintersCallback added_printers_callback,
                         GetPrintersDoneCallback done_callback) override;
   void StartGetCapability(const std::string& destination_id,
                           GetCapabilityCallback callback) override;
-  void StartPrint(const base::string16& job_title,
+  void StartPrint(const std::u16string& job_title,
                   base::Value settings,
                   scoped_refptr<base::RefCountedMemory> print_data,
                   PrintCallback callback) override;
@@ -83,7 +82,7 @@ class ExtensionPrinterHandler : public PrinterHandler {
   // Methods used as wrappers to callbacks for extensions::PrinterProviderAPI
   // methods, primarily so the callbacks can be bound to this class' weak ptr.
   // They just propagate results to callbacks passed to them.
-  void WrapGetPrintersCallback(const AddedPrintersCallback& callback,
+  void WrapGetPrintersCallback(AddedPrintersCallback callback,
                                const base::ListValue& printers,
                                bool done);
   void WrapGetCapabilityCallback(GetCapabilityCallback callback,
@@ -93,7 +92,7 @@ class ExtensionPrinterHandler : public PrinterHandler {
                                   const base::DictionaryValue& printer_info);
 
   void OnUsbDevicesEnumerated(
-      const AddedPrintersCallback& callback,
+      AddedPrintersCallback callback,
       std::vector<device::mojom::UsbDeviceInfoPtr> devices);
 
   Profile* const profile_;
@@ -102,7 +101,7 @@ class ExtensionPrinterHandler : public PrinterHandler {
   std::unique_ptr<PwgRasterConverter> pwg_raster_converter_;
   int pending_enumeration_count_ = 0;
 
-  base::WeakPtrFactory<ExtensionPrinterHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<ExtensionPrinterHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionPrinterHandler);
 };

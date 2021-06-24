@@ -24,10 +24,10 @@
 #include "ipc/ipc_channel_handle.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_sender.h"
-#include "mojo/public/cpp/bindings/associated_interface_ptr.h"
-#include "mojo/public/cpp/bindings/associated_interface_request.h"
+#include "mojo/public/cpp/bindings/generic_pending_associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
-#include "mojo/public/cpp/bindings/thread_safe_interface_ptr.h"
+#include "mojo/public/cpp/bindings/shared_remote.h"
 
 #if defined(OS_POSIX)
 #include <sys/types.h>
@@ -89,7 +89,7 @@ class COMPONENT_EXPORT(IPC) Channel : public Sender {
   class COMPONENT_EXPORT(IPC) AssociatedInterfaceSupport {
    public:
     using GenericAssociatedInterfaceFactory =
-        base::Callback<void(mojo::ScopedInterfaceEndpointHandle)>;
+        base::RepeatingCallback<void(mojo::ScopedInterfaceEndpointHandle)>;
 
     virtual ~AssociatedInterfaceSupport() {}
 
@@ -105,38 +105,29 @@ class COMPONENT_EXPORT(IPC) Channel : public Sender {
         const GenericAssociatedInterfaceFactory& factory) = 0;
 
     // Requests an associated interface from the remote endpoint.
-    virtual void GetGenericRemoteAssociatedInterface(
-        const std::string& name,
-        mojo::ScopedInterfaceEndpointHandle handle) = 0;
+    virtual void GetRemoteAssociatedInterface(
+        mojo::GenericPendingAssociatedReceiver receiver) = 0;
 
     // Template helper to add an interface factory to this channel.
     template <typename Interface>
-    using AssociatedInterfaceFactory =
-        base::Callback<void(mojo::AssociatedInterfaceRequest<Interface>)>;
+    using AssociatedReceiverFactory = base::RepeatingCallback<void(
+        mojo::PendingAssociatedReceiver<Interface>)>;
     template <typename Interface>
     void AddAssociatedInterface(
-        const AssociatedInterfaceFactory<Interface>& factory) {
+        const AssociatedReceiverFactory<Interface>& factory) {
       AddGenericAssociatedInterface(
           Interface::Name_,
-          base::Bind(&BindAssociatedInterfaceRequest<Interface>, factory));
-    }
-
-    // Template helper to request a remote associated interface.
-    template <typename Interface>
-    void GetRemoteAssociatedInterface(
-        mojo::AssociatedInterfacePtr<Interface>* proxy) {
-      auto request = mojo::MakeRequest(proxy);
-      GetGenericRemoteAssociatedInterface(
-          Interface::Name_, request.PassHandle());
+          base::BindRepeating(&BindPendingAssociatedReceiver<Interface>,
+                              factory));
     }
 
    private:
     template <typename Interface>
-    static void BindAssociatedInterfaceRequest(
-        const AssociatedInterfaceFactory<Interface>& factory,
+    static void BindPendingAssociatedReceiver(
+        const AssociatedReceiverFactory<Interface>& factory,
         mojo::ScopedInterfaceEndpointHandle handle) {
       factory.Run(
-          mojo::AssociatedInterfaceRequest<Interface>(std::move(handle)));
+          mojo::PendingAssociatedReceiver<Interface>(std::move(handle)));
     }
   };
 
@@ -245,7 +236,7 @@ class COMPONENT_EXPORT(IPC) Channel : public Sender {
   static std::string GenerateUniqueRandomChannelID();
 #endif
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   // Sandboxed processes live in a PID namespace, so when sending the IPC hello
   // message from client to server we need to send the PID from the global
   // PID namespace.

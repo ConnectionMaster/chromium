@@ -21,6 +21,8 @@ class WindowEventTarget;
 
 namespace content {
 
+class DirectManipulationHelper;
+class DirectManipulationBrowserTestBase;
 class DirectManipulationUnitTest;
 
 // DirectManipulationEventHandler receives status update and gesture events from
@@ -33,16 +35,20 @@ class DirectManipulationEventHandler
               Microsoft::WRL::RuntimeClassFlags<
                   Microsoft::WRL::RuntimeClassType::ClassicCom>,
               Microsoft::WRL::FtmBase,
-              IDirectManipulationViewportEventHandler>> {
+              IDirectManipulationViewportEventHandler,
+              IDirectManipulationInteractionEventHandler>> {
  public:
-  explicit DirectManipulationEventHandler(ui::WindowEventTarget* event_target);
+  DirectManipulationEventHandler(ui::WindowEventTarget* event_target);
 
   // Return true if viewport_size_in_pixels_ changed.
   bool SetViewportSizeInPixels(const gfx::Size& viewport_size_in_pixels);
 
   void SetDeviceScaleFactor(float device_scale_factor);
 
+  void SetDirectManipulationHelper(DirectManipulationHelper* helper);
+
  private:
+  friend class DirectManipulationBrowserTestBase;
   friend DirectManipulationUnitTest;
 
   // DirectManipulationEventHandler();
@@ -64,6 +70,11 @@ class DirectManipulationEventHandler
   OnContentUpdated(_In_ IDirectManipulationViewport* viewport,
                    _In_ IDirectManipulationContent* content) override;
 
+  HRESULT STDMETHODCALLTYPE
+  OnInteraction(_In_ IDirectManipulationViewport2* viewport,
+                _In_ DIRECTMANIPULATION_INTERACTION_TYPE interaction) override;
+
+  DirectManipulationHelper* helper_ = nullptr;
   ui::WindowEventTarget* event_target_ = nullptr;
   float device_scale_factor_ = 1.0f;
   float last_scale_ = 1.0f;

@@ -26,9 +26,10 @@
 #include "chromecast/chromecast_buildflags.h"
 #include "chromecast/common/cast_resource_delegate.h"
 #include "chromecast/common/global_descriptors.h"
+#include "chromecast/gpu/cast_content_gpu_client.h"
 #include "chromecast/renderer/cast_content_renderer_client.h"
 #include "chromecast/utility/cast_content_utility_client.h"
-#include "components/crash/content/app/crash_reporter_client.h"
+#include "components/crash/core/app/crash_reporter_client.h"
 #include "components/crash/core/common/crash_key.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/common/content_switches.h"
@@ -39,20 +40,20 @@
 #include "chromecast/app/android/cast_crash_reporter_client_android.h"
 #include "chromecast/app/android/crash_handler.h"
 #include "ui/base/resource/resource_bundle_android.h"
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
 #include "chromecast/app/linux/cast_crash_reporter_client.h"
-#include "services/service_manager/sandbox/switches.h"
-#endif  // defined(OS_LINUX)
+#include "sandbox/policy/switches.h"
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 namespace {
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 chromecast::CastCrashReporterClient* GetCastCrashReporter() {
   static base::NoDestructor<chromecast::CastCrashReporterClient>
       crash_reporter_client;
   return crash_reporter_client.get();
 }
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 #if defined(OS_ANDROID)
 const int kMaxCrashFiles = 10;
@@ -71,7 +72,8 @@ bool CastMainDelegate::BasicStartupComplete(int* exit_code) {
   RegisterPathProvider();
 
   logging::LoggingSettings settings;
-  settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+  settings.logging_dest =
+      logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
 #if defined(OS_ANDROID)
   const base::CommandLine* command_line(base::CommandLine::ForCurrentProcess());
   std::string process_type =
@@ -80,8 +82,9 @@ bool CastMainDelegate::BasicStartupComplete(int* exit_code) {
   if (process_type.empty()) {
     base::FilePath log_file;
     base::PathService::Get(FILE_CAST_ANDROID_LOG, &log_file);
-    settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
-    settings.log_file = log_file.value().c_str();
+    settings.logging_dest =
+        logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
+    settings.log_file_path = log_file.value().c_str();
     settings.delete_old = logging::DELETE_OLD_LOG_FILE;
   }
 #endif  // defined(OS_ANDROID)
@@ -122,19 +125,18 @@ bool CastMainDelegate::BasicStartupComplete(int* exit_code) {
                           crash_files.end(), newest_first);
         for (auto file = crash_files.begin() + kMaxCrashFiles;
              file != crash_files.end(); ++file) {
-          base::DeleteFile(*file, false);
+          base::DeleteFile(*file);
         }
       }
     }
   }
 #endif  // defined(OS_ANDROID)
-
-  content::SetContentClient(&content_client_);
   return false;
 }
 
 void CastMainDelegate::PreSandboxStartup() {
-#if defined(ARCH_CPU_ARM_FAMILY) && (defined(OS_ANDROID) || defined(OS_LINUX))
+#if defined(ARCH_CPU_ARM_FAMILY) && \
+    (defined(OS_ANDROID) || defined(OS_LINUX) || defined(OS_CHROMEOS))
   // Create an instance of the CPU class to parse /proc/cpuinfo and cache the
   // results. This data needs to be cached when file-reading is still allowed,
   // since base::CPU expects to be callable later, when file-reading is no
@@ -154,13 +156,13 @@ void CastMainDelegate::PreSandboxStartup() {
     base::FilePath log_file;
     base::PathService::Get(FILE_CAST_ANDROID_LOG, &log_file);
     chromecast::CrashHandler::Initialize(process_type, log_file);
-#elif defined(OS_LINUX)
-    crash_reporter::SetCrashReporterClient(GetCastCrashReporter());
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
+  crash_reporter::SetCrashReporterClient(GetCastCrashReporter());
 
-    if (process_type != service_manager::switches::kZygoteProcess) {
-      CastCrashReporterClient::InitCrashReporter(process_type);
-    }
-#endif  // defined(OS_LINUX)
+  if (process_type != switches::kZygoteProcess) {
+    CastCrashReporterClient::InitCrashReporter(process_type);
+  }
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
     crash_reporter::InitializeCrashKeys();
   }
@@ -178,13 +180,19 @@ int CastMainDelegate::RunProcess(
   // Note: Android must handle running its own browser process.
   // See ChromeMainDelegateAndroid::RunProcess.
   browser_runner_ = content::BrowserMainRunner::Create();
-  return browser_runner_->Initialize(main_function_params);
+  int exit_code = browser_runner_->Initialize(main_function_params);
+  // On Android we do not run BrowserMain(), so the above initialization of a
+  // BrowserMainRunner is all we want to occur. Return >= 0 to avoid running
+  // BrowserMain, while preserving any error codes > 0.
+  if (exit_code > 0)
+    return exit_code;
+  return 0;
 #else
   return -1;
 #endif  // defined(OS_ANDROID)
 }
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 void CastMainDelegate::ZygoteForked() {
   const base::CommandLine* command_line(base::CommandLine::ForCurrentProcess());
   bool enable_crash_reporter = !command_line->HasSwitch(
@@ -195,7 +203,7 @@ void CastMainDelegate::ZygoteForked() {
     CastCrashReporterClient::InitCrashReporter(process_type);
   }
 }
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 bool CastMainDelegate::ShouldCreateFeatureList() {
   return false;
@@ -212,8 +220,13 @@ void CastMainDelegate::PostEarlyInitialization(bool is_running_tests) {
   CHECK(base::CreateDirectory(home_dir));
 #endif  // !defined(OS_ANDROID)
 
-  // The |FieldTrialList| is a dependency of the feature list.
-  field_trial_list_ = std::make_unique<base::FieldTrialList>(nullptr);
+  // The |FieldTrialList| is a dependency of the feature list. In tests, it
+  // gets constructed as part of the test suite.
+  if (is_running_tests) {
+    DCHECK(base::FieldTrialList::GetInstance());
+  } else {
+    field_trial_list_ = std::make_unique<base::FieldTrialList>(nullptr);
+  }
 
   // Initialize the base::FeatureList and the PrefService (which it depends on),
   // so objects initialized after this point can use features from
@@ -232,10 +245,12 @@ void CastMainDelegate::InitializeResourceBundle() {
   base::MemoryMappedFile::Region pak_region;
   if (pak_fd >= 0) {
     pak_region = global_descriptors->GetRegion(kAndroidPakDescriptor);
-    ui::ResourceBundle::InitSharedInstanceWithPakFileRegion(base::File(pak_fd),
-                                                            pak_region);
+
+    base::File android_pak_file(pak_fd);
+    ui::ResourceBundle::InitSharedInstanceWithPakFileRegion(
+        android_pak_file.Duplicate(), pak_region);
     ui::ResourceBundle::GetSharedInstance().AddDataPackFromFileRegion(
-        base::File(pak_fd), pak_region, ui::SCALE_FACTOR_100P);
+        std::move(android_pak_file), pak_region, ui::SCALE_FACTOR_100P);
     return;
   } else {
     pak_fd = base::android::OpenApkAsset("assets/cast_shell.pak", &pak_region);
@@ -268,12 +283,21 @@ void CastMainDelegate::InitializeResourceBundle() {
 #endif  // defined(OS_ANDROID)
 }
 
+content::ContentClient* CastMainDelegate::CreateContentClient() {
+  return &content_client_;
+}
+
 content::ContentBrowserClient* CastMainDelegate::CreateContentBrowserClient() {
   DCHECK(!cast_feature_list_creator_);
   cast_feature_list_creator_ = std::make_unique<CastFeatureListCreator>();
   browser_client_ =
       CastContentBrowserClient::Create(cast_feature_list_creator_.get());
   return browser_client_.get();
+}
+
+content::ContentGpuClient* CastMainDelegate::CreateContentGpuClient() {
+  gpu_client_ = CastContentGpuClient::Create();
+  return gpu_client_.get();
 }
 
 content::ContentRendererClient*

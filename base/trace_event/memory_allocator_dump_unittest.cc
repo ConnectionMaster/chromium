@@ -7,7 +7,6 @@
 #include <stdint.h>
 
 #include "base/format_macros.h"
-#include "base/strings/stringprintf.h"
 #include "base/trace_event/memory_allocator_dump_guid.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "base/trace_event/process_memory_dump.h"
@@ -21,7 +20,6 @@ using testing::ElementsAre;
 using testing::Eq;
 using testing::ByRef;
 using testing::IsEmpty;
-using testing::Contains;
 
 namespace base {
 namespace trace_event {
@@ -62,7 +60,7 @@ void CheckString(const MemoryAllocatorDump* dump,
                  const char* expected_units,
                  const std::string& expected_value) {
   MemoryAllocatorDump::Entry expected(name, expected_units, expected_value);
-  EXPECT_THAT(dump->entries(), Contains(Eq(ByRef(expected))));
+  EXPECT_THAT(dump->entries(), testing::Contains(Eq(ByRef(expected))));
 }
 
 void CheckScalar(const MemoryAllocatorDump* dump,
@@ -70,7 +68,7 @@ void CheckScalar(const MemoryAllocatorDump* dump,
                  const char* expected_units,
                  uint64_t expected_value) {
   MemoryAllocatorDump::Entry expected(name, expected_units, expected_value);
-  EXPECT_THAT(dump->entries(), Contains(Eq(ByRef(expected))));
+  EXPECT_THAT(dump->entries(), testing::Contains(Eq(ByRef(expected))));
 }
 
 }  // namespace

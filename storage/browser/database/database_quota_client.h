@@ -11,8 +11,11 @@
 #include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
-#include "storage/browser/quota/quota_client.h"
+#include "base/thread_annotations.h"
+#include "components/services/storage/public/cpp/origin_quota_client.h"
+#include "storage/browser/quota/quota_client_type.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 #include "url/origin.h"
 
@@ -20,35 +23,39 @@ namespace storage {
 
 class DatabaseTracker;
 
-// A QuotaClient implementation to integrate WebSQLDatabases
-// with the quota  management system. This interface is used
-// on the IO thread by the quota manager.
+// Integrates WebSQL databases with the quota management system.
+//
+// This interface is used on the IO thread by the quota manager.
 class COMPONENT_EXPORT(STORAGE_BROWSER) DatabaseQuotaClient
-    : public storage::QuotaClient {
+    : public OriginQuotaClient {
  public:
-  DatabaseQuotaClient(scoped_refptr<DatabaseTracker> tracker);
+  explicit DatabaseQuotaClient(DatabaseTracker& tracker);
+
+  DatabaseQuotaClient(const DatabaseQuotaClient&) = delete;
+  DatabaseQuotaClient& operator=(const DatabaseQuotaClient&) = delete;
+
   ~DatabaseQuotaClient() override;
 
-  // QuotaClient method overrides
-  ID id() const override;
-  void OnQuotaManagerDestroyed() override;
+  // OriginQuotaClient method overrides.
   void GetOriginUsage(const url::Origin& origin,
                       blink::mojom::StorageType type,
-                      GetUsageCallback callback) override;
+                      GetOriginUsageCallback callback) override;
   void GetOriginsForType(blink::mojom::StorageType type,
-                         GetOriginsCallback callback) override;
+                         GetOriginsForTypeCallback callback) override;
   void GetOriginsForHost(blink::mojom::StorageType type,
                          const std::string& host,
-                         GetOriginsCallback callback) override;
+                         GetOriginsForHostCallback callback) override;
   void DeleteOriginData(const url::Origin& origin,
                         blink::mojom::StorageType type,
-                        DeletionCallback callback) override;
-  bool DoesSupport(blink::mojom::StorageType type) const override;
+                        DeleteOriginDataCallback callback) override;
+  void PerformStorageCleanup(blink::mojom::StorageType type,
+                             PerformStorageCleanupCallback callback) override;
 
  private:
-  scoped_refptr<DatabaseTracker> db_tracker_;  // only used on its sequence
+  SEQUENCE_CHECKER(sequence_checker_);
 
-  DISALLOW_COPY_AND_ASSIGN(DatabaseQuotaClient);
+  // Reference use is safe here because the DatabaseTracker owns this.
+  DatabaseTracker& db_tracker_ GUARDED_BY_CONTEXT(sequence_checker_);
 };
 
 }  // namespace storage

@@ -5,18 +5,22 @@
 #include "components/autofill/core/browser/autofill_data_util.h"
 
 #include <algorithm>
+#include <iterator>
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/i18n/char_iterator.h"
-#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/autofill/core/browser/autofill_country.h"
-#include "components/autofill/core/browser/autofill_profile.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "build/branding_buildflags.h"
+#include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/autofill/core/browser/webdata/autofill_table.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/strings/grit/components_strings.h"
@@ -26,7 +30,13 @@
 namespace autofill {
 namespace data_util {
 
+using bit_field_type_groups::kAddress;
+using bit_field_type_groups::kEmail;
+using bit_field_type_groups::kName;
+using bit_field_type_groups::kPhone;
+
 namespace {
+
 // Mappings from Chrome card networks to Payment Request API basic card payment
 // spec networks and icons. Note that "generic" is not in the spec.
 // https://w3c.github.io/webpayments-methods-card/#method-id
@@ -42,14 +52,11 @@ const PaymentRequestData kPaymentRequestData[]{
     {autofill::kMasterCard, "mastercard", IDR_AUTOFILL_CC_MASTERCARD,
      IDS_AUTOFILL_CC_MASTERCARD},
     {autofill::kMirCard, "mir", IDR_AUTOFILL_CC_MIR, IDS_AUTOFILL_CC_MIR},
+    {autofill::kTroyCard, "troy", IDR_AUTOFILL_CC_TROY, IDS_AUTOFILL_CC_TROY},
     {autofill::kUnionPay, "unionpay", IDR_AUTOFILL_CC_UNIONPAY,
      IDS_AUTOFILL_CC_UNION_PAY},
     {autofill::kVisaCard, "visa", IDR_AUTOFILL_CC_VISA, IDS_AUTOFILL_CC_VISA},
 };
-
-const PaymentRequestData kGooglePayBrandingRequestData = {
-    "googlePay", "googlePay", IDR_AUTOFILL_GOOGLE_PAY,
-    IDS_AUTOFILL_CC_GOOGLE_PAY};
 
 const PaymentRequestData kGenericPaymentRequestData = {
     autofill::kGenericCard, "generic", IDR_AUTOFILL_CC_GENERIC,
@@ -74,24 +81,23 @@ const char* const family_name_prefixes[] = {"d'", "de",  "del", "den", "der",
 // The common and non-ambiguous CJK surnames (last names) that have more than
 // one character.
 const char* common_cjk_multi_char_surnames[] = {
-  // Korean, taken from the list of surnames:
-  // https://ko.wikipedia.org/wiki/%ED%95%9C%EA%B5%AD%EC%9D%98_%EC%84%B1%EC%94%A8_%EB%AA%A9%EB%A1%9D
-  "남궁", "사공", "서문", "선우", "제갈", "황보", "독고", "망절",
+    // Korean, taken from the list of surnames:
+    // https://ko.wikipedia.org/wiki/%ED%95%9C%EA%B5%AD%EC%9D%98_%EC%84%B1%EC%94%A8_%EB%AA%A9%EB%A1%9D
+    "남궁", "사공", "서문", "선우", "제갈", "황보", "독고", "망절",
 
-  // Chinese, taken from the top 10 Chinese 2-character surnames:
-  // https://zh.wikipedia.org/wiki/%E8%A4%87%E5%A7%93#.E5.B8.B8.E8.A6.8B.E7.9A.84.E8.A4.87.E5.A7.93
-  // Simplified Chinese (mostly mainland China)
-  "欧阳", "令狐", "皇甫", "上官", "司徒", "诸葛", "司马", "宇文", "呼延", "端木",
-  // Traditional Chinese (mostly Taiwan)
-  "張簡", "歐陽", "諸葛", "申屠", "尉遲", "司馬", "軒轅", "夏侯"
-};
+    // Chinese, taken from the top 10 Chinese 2-character surnames:
+    // https://zh.wikipedia.org/wiki/%E8%A4%87%E5%A7%93#.E5.B8.B8.E8.A6.8B.E7.9A.84.E8.A4.87.E5.A7.93
+    // Simplified Chinese (mostly mainland China)
+    "欧阳", "令狐", "皇甫", "上官", "司徒", "诸葛", "司马", "宇文", "呼延",
+    "端木",
+    // Traditional Chinese (mostly Taiwan)
+    "張簡", "歐陽", "諸葛", "申屠", "尉遲", "司馬", "軒轅", "夏侯"};
 
 // All Korean surnames that have more than one character, even the
 // rare/ambiguous ones.
 const char* korean_multi_char_surnames[] = {
-  "강전", "남궁", "독고", "동방", "망절", "사공", "서문", "선우",
-  "소봉", "어금", "장곡", "제갈", "황목", "황보"
-};
+    "강전", "남궁", "독고", "동방", "망절", "사공", "서문",
+    "선우", "소봉", "어금", "장곡", "제갈", "황목", "황보"};
 
 // Returns true if |set| contains |element|, modulo a final period.
 bool ContainsString(const char* const set[],
@@ -101,7 +107,7 @@ bool ContainsString(const char* const set[],
     return false;
 
   base::StringPiece16 trimmed_element =
-      base::TrimString(element, base::ASCIIToUTF16("."), base::TRIM_ALL);
+      base::TrimString(element, u".", base::TRIM_ALL);
 
   for (size_t i = 0; i < set_size; ++i) {
     if (base::LowerCaseEqualsASCII(trimmed_element, set[i]))
@@ -139,9 +145,10 @@ void StripSuffixes(std::vector<base::StringPiece16>* name_tokens) {
 // Find whether |name| starts with any of the strings from the array
 // |prefixes|. The returned value is the length of the prefix found, or 0 if
 // none is found.
-size_t StartsWithAny(base::StringPiece16 name, const char** prefixes,
+size_t StartsWithAny(base::StringPiece16 name,
+                     const char** prefixes,
                      size_t prefix_count) {
-  base::string16 buffer;
+  std::u16string buffer;
   for (size_t i = 0; i < prefix_count; i++) {
     buffer.clear();
     base::UTF8ToUTF16(prefixes[i], strlen(prefixes[i]), &buffer);
@@ -178,8 +185,7 @@ bool IsHangulCharacter(UChar32 c) {
 // characters or spaces. |name| should already be confirmed to be a CJK name, as
 // per |IsCJKName()|.
 bool IsHangulName(base::StringPiece16 name) {
-  for (base::i18n::UTF16CharIterator iter(name.data(), name.length());
-       !iter.end(); iter.Advance()) {
+  for (base::i18n::UTF16CharIterator iter(name); !iter.end(); iter.Advance()) {
     UChar32 c = iter.get();
     if (!IsHangulCharacter(c) && !base::IsUnicodeWhitespace(c)) {
       return false;
@@ -225,22 +231,108 @@ bool SplitCJKName(const std::vector<base::StringPiece16>& name_tokens,
           1, StartsWithAny(name, common_cjk_multi_char_surnames,
                            base::size(common_cjk_multi_char_surnames)));
     }
-    parts->family = name.substr(0, surname_length).as_string();
-    parts->given = name.substr(surname_length).as_string();
+    parts->family = std::u16string(name.substr(0, surname_length));
+    parts->given = std::u16string(name.substr(surname_length));
     return true;
   }
   if (name_tokens.size() == 2) {
     // The user entered a space between the two name parts. This makes our job
     // easier. Family name first, given name second.
-    parts->family = name_tokens[0].as_string();
-    parts->given = name_tokens[1].as_string();
+    parts->family = std::u16string(name_tokens[0]);
+    parts->given = std::u16string(name_tokens[1]);
     return true;
   }
   // We don't know what to do if there are more than 2 tokens.
   return false;
 }
 
+void AddGroupToBitmask(uint32_t* group_bitmask, ServerFieldType type) {
+  const FieldTypeGroup group =
+      AutofillType(AutofillType(type).GetStorableType()).group();
+  switch (group) {
+    case autofill::FieldTypeGroup::kName:
+      *group_bitmask |= kName;
+      break;
+    case autofill::FieldTypeGroup::kAddressHome:
+      *group_bitmask |= kAddress;
+      break;
+    case autofill::FieldTypeGroup::kEmail:
+      *group_bitmask |= kEmail;
+      break;
+    case autofill::FieldTypeGroup::kPhoneHome:
+      *group_bitmask |= kPhone;
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
+
+bool ContainsName(uint32_t groups) {
+  return groups & kName;
+}
+
+bool ContainsAddress(uint32_t groups) {
+  return groups & kAddress;
+}
+
+bool ContainsEmail(uint32_t groups) {
+  return groups & kEmail;
+}
+
+bool ContainsPhone(uint32_t groups) {
+  return groups & kPhone;
+}
+
+uint32_t DetermineGroups(const FormStructure& form) {
+  uint32_t group_bitmask = 0;
+  for (const auto& field : form) {
+    ServerFieldType type = field->Type().GetStorableType();
+    AddGroupToBitmask(&group_bitmask, type);
+  }
+  return group_bitmask;
+}
+
+uint32_t DetermineGroups(const std::vector<ServerFieldType>& types) {
+  uint32_t group_bitmask = 0;
+  for (const auto& type : types) {
+    AddGroupToBitmask(&group_bitmask, type);
+  }
+  return group_bitmask;
+}
+
+bool IsSupportedFormType(uint32_t groups) {
+  return ContainsAddress(groups) ||
+         ContainsName(groups) + ContainsEmail(groups) + ContainsPhone(groups) >=
+             2;
+}
+
+std::string GetSuffixForProfileFormType(uint32_t bitmask) {
+  switch (bitmask) {
+    case kAddress | kEmail | kPhone:
+    case kName | kAddress | kEmail | kPhone:
+      return ".AddressPlusEmailPlusPhone";
+    case kAddress | kPhone:
+    case kName | kAddress | kPhone:
+      return ".AddressPlusPhone";
+    case kAddress | kEmail:
+    case kName | kAddress | kEmail:
+      return ".AddressPlusEmail";
+    case kAddress:
+    case kName | kAddress:
+      return ".AddressOnly";
+    case kEmail | kPhone:
+    case kName | kEmail | kPhone:
+    case kName | kEmail:
+    case kName | kPhone:
+      return ".ContactOnly";
+    case kPhone:
+      return ".PhoneOnly";
+    default:
+      return ".Other";
+  }
+}
 
 std::string TruncateUTF8(const std::string& data) {
   std::string trimmed_value;
@@ -269,13 +361,12 @@ bool IsCJKName(base::StringPiece16 name) {
   // well.
   //
   // The middle dot is used as a separator for foreign names in Japanese.
-  static const base::char16 kKatakanaMiddleDot = u'\u30FB';
+  static const char16_t kKatakanaMiddleDot = u'\u30FB';
   // A (common?) typo for 'KATAKANA MIDDLE DOT' (U+30FB).
-  static const base::char16 kMiddleDot = u'\u00B7';
+  static const char16_t kMiddleDot = u'\u00B7';
   bool previous_was_cjk = false;
   size_t word_count = 0;
-  for (base::i18n::UTF16CharIterator iter(name.data(), name.length());
-       !iter.end(); iter.Advance()) {
+  for (base::i18n::UTF16CharIterator iter(name); !iter.end(); iter.Advance()) {
     UChar32 c = iter.get();
     const bool is_cjk = IsCJKCharacter(c);
     if (!is_cjk && !base::IsUnicodeWhitespace(c) && c != kKatakanaMiddleDot &&
@@ -291,13 +382,13 @@ bool IsCJKName(base::StringPiece16 name) {
 }
 
 NameParts SplitName(base::StringPiece16 name) {
-  static const base::char16 kWordSeparators[] = {
-    u' ', // ASCII space.
-    u',', // ASCII comma.
-    u'\u3000', // 'IDEOGRAPHIC SPACE' (U+3000).
-    u'\u30FB', // 'KATAKANA MIDDLE DOT' (U+30FB).
-    u'\u00B7', // 'MIDDLE DOT' (U+00B7).
-    u'\0' // End of string.
+  static const char16_t kWordSeparators[] = {
+      u' ',       // ASCII space.
+      u',',       // ASCII comma.
+      u'\u3000',  // 'IDEOGRAPHIC SPACE' (U+3000).
+      u'\u30FB',  // 'KATAKANA MIDDLE DOT' (U+30FB).
+      u'\u00B7',  // 'MIDDLE DOT' (U+00B7).
+      u'\0'       // End of string.
   };
   std::vector<base::StringPiece16> name_tokens = base::SplitStringPiece(
       name, kWordSeparators, base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
@@ -320,13 +411,13 @@ NameParts SplitName(base::StringPiece16 name) {
 
   if (name_tokens.empty()) {
     // Bad things have happened; just assume the whole thing is a given name.
-    parts.given = name.as_string();
+    parts.given = std::u16string(name);
     return parts;
   }
 
   // Only one token, assume given name.
   if (name_tokens.size() == 1) {
-    parts.given = name_tokens[0].as_string();
+    parts.given = std::u16string(name_tokens[0]);
     return parts;
   }
 
@@ -344,22 +435,22 @@ NameParts SplitName(base::StringPiece16 name) {
 
   std::vector<base::StringPiece16> family_tokens(reverse_family_tokens.rbegin(),
                                                  reverse_family_tokens.rend());
-  parts.family = base::JoinString(family_tokens, base::ASCIIToUTF16(" "));
+  parts.family = base::JoinString(family_tokens, u" ");
 
   // Take the last remaining token as the middle name (if there are at least 2
   // tokens).
   if (name_tokens.size() >= 2) {
-    parts.middle = name_tokens.back().as_string();
+    parts.middle = std::u16string(name_tokens.back());
     name_tokens.pop_back();
   }
 
   // Remainder is given name.
-  parts.given = base::JoinString(name_tokens, base::ASCIIToUTF16(" "));
+  parts.given = base::JoinString(name_tokens, u" ");
 
   return parts;
 }
 
-base::string16 JoinNameParts(base::StringPiece16 given,
+std::u16string JoinNameParts(base::StringPiece16 given,
                              base::StringPiece16 middle,
                              base::StringPiece16 family) {
   // First Middle Last
@@ -383,67 +474,11 @@ base::string16 JoinNameParts(base::StringPiece16 given,
   return base::JoinString(full_name, base::ASCIIToUTF16(separator));
 }
 
-bool ProfileMatchesFullName(base::StringPiece16 full_name,
-                            const autofill::AutofillProfile& profile) {
-  const base::string16 kSpace = base::ASCIIToUTF16(" ");
-  const base::string16 kPeriodSpace = base::ASCIIToUTF16(". ");
-
-  // First Last
-  base::string16 candidate = profile.GetRawInfo(autofill::NAME_FIRST) + kSpace +
-                             profile.GetRawInfo(autofill::NAME_LAST);
-  if (!full_name.compare(candidate)) {
-    return true;
-  }
-
-  // First Middle Last
-  candidate = profile.GetRawInfo(autofill::NAME_FIRST) + kSpace +
-              profile.GetRawInfo(autofill::NAME_MIDDLE) + kSpace +
-              profile.GetRawInfo(autofill::NAME_LAST);
-  if (!full_name.compare(candidate)) {
-    return true;
-  }
-
-  // First M Last
-  candidate = profile.GetRawInfo(autofill::NAME_FIRST) + kSpace +
-              profile.GetRawInfo(autofill::NAME_MIDDLE_INITIAL) + kSpace +
-              profile.GetRawInfo(autofill::NAME_LAST);
-  if (!full_name.compare(candidate)) {
-    return true;
-  }
-
-  // First M. Last
-  candidate = profile.GetRawInfo(autofill::NAME_FIRST) + kSpace +
-              profile.GetRawInfo(autofill::NAME_MIDDLE_INITIAL) + kPeriodSpace +
-              profile.GetRawInfo(autofill::NAME_LAST);
-  if (!full_name.compare(candidate)) {
-    return true;
-  }
-
-  // Last First
-  candidate = profile.GetRawInfo(autofill::NAME_LAST) + kSpace +
-              profile.GetRawInfo(autofill::NAME_FIRST);
-  if (!full_name.compare(candidate)) {
-    return true;
-  }
-
-  // LastFirst
-  candidate = profile.GetRawInfo(autofill::NAME_LAST) +
-              profile.GetRawInfo(autofill::NAME_FIRST);
-  if (!full_name.compare(candidate)) {
-    return true;
-  }
-
-  return false;
-}
-
 const PaymentRequestData& GetPaymentRequestData(
     const std::string& issuer_network) {
   for (const PaymentRequestData& data : kPaymentRequestData) {
     if (issuer_network == data.issuer_network)
       return data;
-  }
-  if (issuer_network == kGooglePayBrandingRequestData.issuer_network) {
-    return kGooglePayBrandingRequestData;
   }
   return kGenericPaymentRequestData;
 }
@@ -458,6 +493,16 @@ const char* GetIssuerNetworkForBasicCardIssuerNetwork(
   return kGenericPaymentRequestData.issuer_network;
 }
 
+bool IsValidBasicCardIssuerNetwork(
+    const std::string& basic_card_issuer_network) {
+  auto* it = std::find_if(
+      std::begin(kPaymentRequestData), std::end(kPaymentRequestData),
+      [basic_card_issuer_network](const auto& data) {
+        return data.basic_card_issuer_network == basic_card_issuer_network;
+      });
+  return it != std::end(kPaymentRequestData);
+}
+
 bool IsValidCountryCode(const std::string& country_code) {
   if (country_code.size() != 2)
     return false;
@@ -465,7 +510,7 @@ bool IsValidCountryCode(const std::string& country_code) {
   return re2::RE2::FullMatch(country_code, "^[A-Z]{2}$");
 }
 
-bool IsValidCountryCode(const base::string16& country_code) {
+bool IsValidCountryCode(const std::u16string& country_code) {
   return IsValidCountryCode(base::UTF16ToUTF8(country_code));
 }
 

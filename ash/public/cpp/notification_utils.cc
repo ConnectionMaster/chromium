@@ -11,15 +11,15 @@ namespace ash {
 
 std::unique_ptr<message_center::Notification> CreateSystemNotification(
     const std::string& notification_id,
-    const base::string16& title,
-    const base::string16& message,
+    const std::u16string& title,
+    const std::u16string& message,
     const std::string& system_component_id,
     const base::RepeatingClosure& click_callback) {
   DCHECK(!click_callback.is_null());
   std::unique_ptr<message_center::Notification> notification =
       CreateSystemNotification(
           message_center::NOTIFICATION_TYPE_SIMPLE, notification_id, title,
-          message, base::string16() /* display_source */, GURL(),
+          message, std::u16string() /* display_source */, GURL(),
           message_center::NotifierId(
               message_center::NotifierType::SYSTEM_COMPONENT,
               system_component_id),
@@ -34,18 +34,18 @@ std::unique_ptr<message_center::Notification> CreateSystemNotification(
 std::unique_ptr<message_center::Notification> CreateSystemNotification(
     message_center::NotificationType type,
     const std::string& id,
-    const base::string16& title,
-    const base::string16& message,
-    const base::string16& display_source,
+    const std::u16string& title,
+    const std::u16string& message,
+    const std::u16string& display_source,
     const GURL& origin_url,
     const message_center::NotifierId& notifier_id,
     const message_center::RichNotificationData& optional_fields,
     scoped_refptr<message_center::NotificationDelegate> delegate,
     const gfx::VectorIcon& small_image,
-    message_center::SystemNotificationWarningLevel color_type) {
+    message_center::SystemNotificationWarningLevel warning_level) {
   DCHECK_EQ(message_center::NotifierType::SYSTEM_COMPONENT, notifier_id.type);
   SkColor color = kSystemNotificationColorNormal;
-  switch (color_type) {
+  switch (warning_level) {
     case message_center::SystemNotificationWarningLevel::NORMAL:
       color = kSystemNotificationColorNormal;
       break;
@@ -60,6 +60,7 @@ std::unique_ptr<message_center::Notification> CreateSystemNotification(
       type, id, title, message, gfx::Image(), display_source, origin_url,
       notifier_id, optional_fields, delegate);
   notification->set_accent_color(color);
+  notification->set_system_notification_warning_level(warning_level);
   if (!small_image.is_empty())
     notification->set_vector_small_image(small_image);
   return notification;

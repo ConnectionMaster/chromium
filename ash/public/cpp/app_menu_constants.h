@@ -16,7 +16,7 @@ namespace ash {
 // Context Menu launch. Delay deprecating these because it will disrupt
 // histograms. https://crbug.com/854433
 enum CommandId {
-  // Used by LauncherContextMenu.
+  // Used by ShelfContextMenu.
   MENU_OPEN_NEW = 0,
   MENU_CLOSE = 1,
   MENU_PIN = 2,
@@ -34,7 +34,14 @@ enum CommandId {
   CROSTINI_USE_LOW_DENSITY = 10,
   CROSTINI_USE_HIGH_DENSITY = 11,
 
-  // Used by AppContextMenu.
+  // Allow reordering of shelf items with the keyboard. Only used for shelf.
+  SWAP_WITH_NEXT = 12,
+  SWAP_WITH_PREVIOUS = 13,
+
+  // Used by ShelfContextMenu.
+  LAUNCH_TYPE_TABBED_WINDOW = 20,
+
+  // Used by AppContextMenu and/or ShelfContextMenu.
   LAUNCH_NEW = 100,
   TOGGLE_PIN = 101,
   SHOW_APP_INFO = 102,
@@ -44,23 +51,41 @@ enum CommandId {
   APP_CONTEXT_MENU_NEW_WINDOW = 106,
   APP_CONTEXT_MENU_NEW_INCOGNITO_WINDOW = 107,
   INSTALL = 108,
+  SETTINGS = 109,
   USE_LAUNCH_TYPE_COMMAND_START = 200,
   USE_LAUNCH_TYPE_PINNED = USE_LAUNCH_TYPE_COMMAND_START,
   USE_LAUNCH_TYPE_REGULAR = 201,
   USE_LAUNCH_TYPE_FULLSCREEN = 202,
   USE_LAUNCH_TYPE_WINDOW = 203,
+  USE_LAUNCH_TYPE_TABBED_WINDOW = 204,
   USE_LAUNCH_TYPE_COMMAND_END,
 
   // Range of command ids reserved for launching app shortcuts from context
-  // menu for Android app. Used by AppContextMenu and LauncherContextMenu.
+  // menu for Android app. Used by AppContextMenu and ShelfContextMenu.
   LAUNCH_APP_SHORTCUT_FIRST = 1000,
   LAUNCH_APP_SHORTCUT_LAST = 1999,
 
-  // Command for stopping an app, or stopping a VM via an associated app. Used
-  // by AppContextMenu and LauncherContextMenu.
-  STOP_APP = 2000,
+  // Command for shutting down a VM associated with an App. Used by
+  // AppContextMenu and ShelfContextMenu.
+  SHUTDOWN_GUEST_OS = 2000,
+
+  // Range of command IDs reserved for shelf app menu items when there are
+  // multiple instances of the same app.
+  APP_MENU_ITEM_ID_FIRST = 3000,
+  APP_MENU_ITEM_ID_LAST = 3999,
+
+  // Reserved range for extension/app custom menus as defined by
+  //   IDC_EXTENSIONS_CONTEXT_CUSTOM_FIRST
+  //   IDC_EXTENSIONS_CONTEXT_CUSTOM_LAST
+  // in chrome/app/chrome_command_ids.h and used in ContextMenuMatcher.
+  EXTENSIONS_CONTEXT_CUSTOM_FIRST = 49000,
+  EXTENSIONS_CONTEXT_CUSTOM_LAST = 50000,
+
   COMMAND_ID_COUNT
 };
+
+// The size of app context menu items' icons.
+constexpr int kAppContextMenuIconSize = 20;
 
 // Minimum padding for children of NotificationMenuView in dips.
 constexpr int kNotificationHorizontalPadding = 16;

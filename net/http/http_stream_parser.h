@@ -57,14 +57,6 @@ class NET_EXPORT_PRIVATE HttpStreamParser {
                    const NetLogWithSource& net_log);
   virtual ~HttpStreamParser();
 
-  // Sets whether or not HTTP/0.9 is only allowed on default ports. It's not
-  // allowed, by default.
-  void set_http_09_on_non_default_ports_enabled(
-      bool http_09_on_non_default_ports_enabled) {
-    http_09_on_non_default_ports_enabled_ =
-        http_09_on_non_default_ports_enabled;
-  }
-
   // These functions implement the interface described in HttpStream with
   // some additional functionality
   int SendRequest(const std::string& request_line,
@@ -102,7 +94,13 @@ class NET_EXPORT_PRIVATE HttpStreamParser {
 
   int64_t sent_bytes() const { return sent_bytes_; }
 
-  base::TimeTicks response_start_time() { return response_start_time_; }
+  base::TimeTicks first_response_start_time() const {
+    return first_response_start_time_;
+  }
+  base::TimeTicks non_informational_response_start_time() const {
+    return non_informational_response_start_time_;
+  }
+  base::TimeTicks first_early_hints_time() { return first_early_hints_time_; }
 
   void GetSSLInfo(SSLInfo* ssl_info);
 
@@ -220,9 +218,6 @@ class NET_EXPORT_PRIVATE HttpStreamParser {
   // |request_headers_| if the body was merged with the headers.
   int request_headers_length_;
 
-  // True if HTTP/0.9 should be permitted on non-default ports.
-  bool http_09_on_non_default_ports_enabled_;
-
   // Temporary buffer for reading.
   scoped_refptr<GrowableIOBuffer> read_buf_;
 
@@ -248,9 +243,25 @@ class NET_EXPORT_PRIVATE HttpStreamParser {
   // HttpResponseBodyDrainer is used.
   HttpResponseInfo* response_;
 
-  // Time at which the first bytes of the header response are about to be
-  // parsed.
-  base::TimeTicks response_start_time_;
+  // Time at which the first bytes of the first header response including
+  // informational responses (1xx) are about to be parsed. This corresponds to
+  // |LoadTimingInfo::receive_headers_start|. See also comments there.
+  base::TimeTicks first_response_start_time_;
+
+  // Time at which the first bytes of the current header response are about to
+  // be parsed. This is reset every time new response headers including
+  // non-informational responses (1xx) are parsed.
+  base::TimeTicks current_response_start_time_;
+
+  // Time at which the first byte of the non-informational header response
+  // (non-1xx) are about to be parsed. This corresponds to
+  // |LoadTimingInfo::receive_non_informational_headers_start|. See also
+  // comments there.
+  base::TimeTicks non_informational_response_start_time_;
+
+  // Time at which the first 103 Early Hints response is received. This
+  // corresponds to |LoadTimingInfo::first_early_hints_time|.
+  base::TimeTicks first_early_hints_time_;
 
   // Indicates the content length.  If this value is less than zero
   // (and chunked_decoder_ is null), then we must read until the server
@@ -303,7 +314,7 @@ class NET_EXPORT_PRIVATE HttpStreamParser {
 
   MutableNetworkTrafficAnnotationTag traffic_annotation_;
 
-  base::WeakPtrFactory<HttpStreamParser> weak_ptr_factory_;
+  base::WeakPtrFactory<HttpStreamParser> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HttpStreamParser);
 };

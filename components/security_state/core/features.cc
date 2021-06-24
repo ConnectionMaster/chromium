@@ -7,12 +7,13 @@
 namespace security_state {
 namespace features {
 
-const base::Feature kMarkHttpAsFeature{"MarkHttpAs",
-                                       base::FEATURE_ENABLED_BY_DEFAULT};
-const char kMarkHttpAsFeatureParameterName[] = "treatment";
-const char kMarkHttpAsParameterDangerous[] = "dangerous";
-const char kMarkHttpAsParameterWarningAndDangerousOnFormEdits[] =
-    "warning-and-dangerous-on-form-edits";
+const base::Feature kSafetyTipUI{"SafetyTip", base::FEATURE_ENABLED_BY_DEFAULT};
+
+const base::Feature kSafetyTipUIForSimplifiedDomainDisplay{
+    "SafetyTipForSimplifiedDomainDisplay", base::FEATURE_DISABLED_BY_DEFAULT};
+
+const base::Feature kSafetyTipUIOnDelayedWarning{
+    "SafetyTipUIOnDelayedWarning", base::FEATURE_DISABLED_BY_DEFAULT};
 
 }  // namespace features
 }  // namespace security_state

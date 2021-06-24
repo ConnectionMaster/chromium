@@ -11,11 +11,16 @@
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 
 namespace signin {
+class IdentityManager;
+}
+
+namespace signin {
 class AccountReconcilorDelegate;
 }
 
 class AccountReconcilor;
 class Profile;
+class SigninClient;
 
 // Singleton that owns all AccountReconcilors and associates them with
 // Profiles. Listens for the Profile's destruction notification and cleans up.
@@ -28,6 +33,10 @@ class AccountReconcilorFactory : public BrowserContextKeyedServiceFactory {
 
   // Returns an instance of the factory singleton.
   static AccountReconcilorFactory* GetInstance();
+
+  // BrowserContextKeyedServiceFactory:
+  void RegisterProfilePrefs(
+      user_prefs::PrefRegistrySyncable* registry) override;
 
  private:
   friend struct base::DefaultSingletonTraits<AccountReconcilorFactory>;

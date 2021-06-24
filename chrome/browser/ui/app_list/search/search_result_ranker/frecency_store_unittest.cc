@@ -7,7 +7,6 @@
 #include "chrome/browser/ui/app_list/search/search_result_ranker/app_launch_predictor_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/protobuf/src/google/protobuf/stubs/mathutil.h"
 
 using testing::_;
 using testing::Contains;
@@ -51,7 +50,8 @@ FrecencyStoreProto MakeTestingProto() {
 }
 
 MATCHER_P(ScoreEq, score, "") {
-  return google::protobuf::MathUtil::AlmostEquals(arg.last_score, score);
+  static float kTolerance = 1e-5;
+  return abs(arg.last_score - score) < kTolerance;
 }
 
 MATCHER_P(IdNe, id, "") {
@@ -132,14 +132,15 @@ TEST(FrecencyStoreTest, CleanupOnOverflow) {
   FrecencyStore store(5, 0.9999f);
 
   // |value_limit_| is 5, so cleanups should occur at 10, 20, ..., 50 values.
-  for (int i = 0; i < 50; i++) {
+  for (int i = 0; i <= 50; i++) {
     store.Update(std::to_string(i));
   }
 
-  // A cleanup just happened, so we should have only 45-49 stored.
-  EXPECT_THAT(store.GetAll(),
-              UnorderedElementsAre(Pair("45", _), Pair("46", _), Pair("47", _),
-                                   Pair("48", _), Pair("49", _)));
+  // A cleanup just happened, so we should have only 45-50 stored. This is six
+  // values because the cleanup happens before inserting the new value.
+  EXPECT_THAT(store.GetAll(), UnorderedElementsAre(
+                                  Pair("45", _), Pair("46", _), Pair("47", _),
+                                  Pair("48", _), Pair("49", _), Pair("50", _)));
 }
 
 TEST(FrecencyStoreTest, RenameValue) {
@@ -234,7 +235,7 @@ TEST(FrecencyStoreTest, GetIdGetsCorrectId) {
 
 TEST(FrecencyStoreTest, InvalidGetIdReturnsNullopt) {
   FrecencyStore store(100, 0.5f);
-  EXPECT_EQ(store.GetId("not found"), base::nullopt);
+  EXPECT_EQ(store.GetId("not found"), absl::nullopt);
 }
 
 TEST(FrecencyStoreTest, GetAllGetsAll) {

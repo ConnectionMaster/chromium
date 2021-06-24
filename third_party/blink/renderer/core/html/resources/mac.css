@@ -3,6 +3,12 @@
  * found in the LICENSE file.
  */
 
+/* This sheet is appended to html.css before parsing which means the selectors
+   below are in the default html namespace:
+
+   @namespace "http://www.w3.org/1999/xhtml"
+*/
+
 select, input[type="color" i][list] {
     /* TODO(tkent): Use ButtonFace and border same as buttons. */
     background-color: #f8f8f8;
@@ -29,4 +35,13 @@ button {
     border-width: 1px;
     /* Fixed padding provided by ThemeMac::ControlPadding() - 1px for broder */
     padding: 1px 7px 2px;
+}
+
+:-internal-spatial-navigation-interest {
+    outline: auto 5px -webkit-focus-ring-color;
+    box-shadow: none !important
+}
+
+:focus-visible {
+    outline: auto 5px -webkit-focus-ring-color
 }

@@ -7,10 +7,18 @@
 
 #include <string>
 
-#include "base/strings/string16.h"
 
-class Profile;
 class ProfileDownloader;
+
+namespace signin {
+class IdentityManager;
+}  // namespace signin
+
+namespace network {
+namespace mojom {
+class URLLoaderFactory;
+}  // namespace mojom
+}  // namespace network
 
 // Reports on success or failure of Profile download. It is OK to delete the
 // |ProfileImageDownloader| instance in any of these handlers.
@@ -39,13 +47,11 @@ class ProfileDownloaderDelegate {
   // cached URL.
   virtual std::string GetCachedPictureURL() const = 0;
 
-  // Returns the browser profile associated with this download request.
-  virtual Profile* GetBrowserProfile() = 0;
+  // Returns the IdentityManager associated with this download request.
+  virtual signin::IdentityManager* GetIdentityManager() = 0;
 
-  // Returns true if the profile download is taking place before the user has
-  // signed in. This can happen for example on Android and will trigger some
-  // additional fetches since some information is not yet available.
-  virtual bool IsPreSignin() const = 0;
+  // Returns the URLLoaderFactory to use for this download request.
+  virtual network::mojom::URLLoaderFactory* GetURLLoaderFactory() = 0;
 
   // Called when the profile download has completed successfully. Delegate can
   // query the downloader for the picture and full name.

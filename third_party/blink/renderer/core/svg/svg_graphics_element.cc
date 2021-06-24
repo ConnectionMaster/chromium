@@ -22,12 +22,15 @@
 #include "third_party/blink/renderer/core/svg/svg_graphics_element.h"
 
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_transform_list.h"
 #include "third_party/blink/renderer/core/svg/svg_element_rare_data.h"
 #include "third_party/blink/renderer/core/svg/svg_matrix_tear_off.h"
 #include "third_party/blink/renderer/core/svg/svg_rect_tear_off.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
 
 namespace blink {
@@ -46,15 +49,16 @@ SVGGraphicsElement::SVGGraphicsElement(const QualifiedName& tag_name,
 
 SVGGraphicsElement::~SVGGraphicsElement() = default;
 
-void SVGGraphicsElement::Trace(blink::Visitor* visitor) {
+void SVGGraphicsElement::Trace(Visitor* visitor) const {
   visitor->Trace(transform_);
   SVGElement::Trace(visitor);
   SVGTests::Trace(visitor);
 }
 
 static bool IsViewportElement(const Element& element) {
-  return (IsSVGSVGElement(element) || IsSVGSymbolElement(element) ||
-          IsSVGForeignObjectElement(element) || IsSVGImageElement(element));
+  return (IsA<SVGSVGElement>(element) || IsA<SVGSymbolElement>(element) ||
+          IsA<SVGForeignObjectElement>(element) ||
+          IsA<SVGImageElement>(element));
 }
 
 AffineTransform SVGGraphicsElement::ComputeCTM(
@@ -65,12 +69,11 @@ AffineTransform SVGGraphicsElement::ComputeCTM(
 
   for (const Element* current_element = this; current_element && !done;
        current_element = current_element->ParentOrShadowHostElement()) {
-    if (!current_element->IsSVGElement())
+    auto* svg_element = DynamicTo<SVGElement>(current_element);
+    if (!svg_element)
       break;
 
-    ctm = ToSVGElement(current_element)
-              ->LocalCoordinateSpaceTransform(mode)
-              .Multiply(ctm);
+    ctm = svg_element->LocalCoordinateSpaceTransform(mode).Multiply(ctm);
 
     switch (mode) {
       case kNearestViewportScope:
@@ -90,14 +93,16 @@ AffineTransform SVGGraphicsElement::ComputeCTM(
 }
 
 SVGMatrixTearOff* SVGGraphicsElement::getCTM() {
-  GetDocument().UpdateStyleAndLayoutForNode(this);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
 
   return MakeGarbageCollected<SVGMatrixTearOff>(
       ComputeCTM(kNearestViewportScope));
 }
 
 SVGMatrixTearOff* SVGGraphicsElement::getScreenCTM() {
-  GetDocument().UpdateStyleAndLayoutForNode(this);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
 
   return MakeGarbageCollected<SVGMatrixTearOff>(ComputeCTM(kScreenScope));
 }
@@ -115,16 +120,23 @@ void SVGGraphicsElement::CollectStyleForPresentationAttribute(
   SVGElement::CollectStyleForPresentationAttribute(name, value, style);
 }
 
+AffineTransform SVGGraphicsElement::LocalCoordinateSpaceTransform(
+    CTMScope) const {
+  return CalculateTransform(kIncludeMotionTransform);
+}
+
 AffineTransform* SVGGraphicsElement::AnimateMotionTransform() {
   return EnsureSVGRareData()->AnimateMotionTransform();
 }
 
-void SVGGraphicsElement::SvgAttributeChanged(const QualifiedName& attr_name) {
+void SVGGraphicsElement::SvgAttributeChanged(
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   // Reattach so the isValid() check will be run again during layoutObject
   // creation.
   if (SVGTests::IsKnownAttribute(attr_name)) {
     SVGElement::InvalidationGuard invalidation_guard(this);
-    LazyReattachIfAttached();
+    SetForceReattachLayoutTree();
     return;
   }
 
@@ -142,14 +154,14 @@ void SVGGraphicsElement::SvgAttributeChanged(const QualifiedName& attr_name) {
     return;
   }
 
-  SVGElement::SvgAttributeChanged(attr_name);
+  SVGElement::SvgAttributeChanged(params);
 }
 
 SVGElement* SVGGraphicsElement::nearestViewportElement() const {
   for (Element* current = ParentOrShadowHostElement(); current;
        current = current->ParentOrShadowHostElement()) {
     if (IsViewportElement(*current))
-      return ToSVGElement(current);
+      return To<SVGElement>(current);
   }
 
   return nullptr;
@@ -160,7 +172,7 @@ SVGElement* SVGGraphicsElement::farthestViewportElement() const {
   for (Element* current = ParentOrShadowHostElement(); current;
        current = current->ParentOrShadowHostElement()) {
     if (IsViewportElement(*current))
-      farthest = ToSVGElement(current);
+      farthest = To<SVGElement>(current);
   }
   return farthest;
 }
@@ -171,12 +183,16 @@ FloatRect SVGGraphicsElement::GetBBox() {
 }
 
 SVGRectTearOff* SVGGraphicsElement::getBBoxFromJavascript() {
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kJavaScript);
 
   // FIXME: Eventually we should support getBBox for detached elements.
   FloatRect boundingBox;
-  if (GetLayoutObject())
+  if (const auto* layout_object = GetLayoutObject()) {
     boundingBox = GetBBox();
+
+    if (layout_object->IsSVGText() || layout_object->IsSVGInline())
+      UseCounter::Count(GetDocument(), WebFeature::kGetBBoxForText);
+  }
   return SVGRectTearOff::CreateDetached(boundingBox);
 }
 

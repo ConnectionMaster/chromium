@@ -6,13 +6,14 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/view.h"
 #include "ui/views/view_model.h"
@@ -35,7 +36,10 @@ struct CommonTestData {
 
 class StackedTabStripLayoutTest : public testing::Test {
  public:
-  StackedTabStripLayoutTest() {}
+  StackedTabStripLayoutTest() = default;
+  StackedTabStripLayoutTest(const StackedTabStripLayoutTest&) = delete;
+  StackedTabStripLayoutTest& operator=(const StackedTabStripLayoutTest&) =
+      delete;
 
  protected:
   void Reset(StackedTabStripLayout* layout,
@@ -51,9 +55,9 @@ class StackedTabStripLayoutTest : public testing::Test {
       PrepareChildViewsFromString(data.start_bounds);
     else
       PrepareChildViewsFromString(data.expected_bounds);
-    layout_.reset(new StackedTabStripLayout(
-                     gfx::Size(data.tab_size, 10), data.tab_overlap,
-                     data.stacked_offset, 4, &view_model_));
+    layout_ = std::make_unique<StackedTabStripLayout>(
+        gfx::Size(data.tab_size, 10), data.tab_overlap, data.stacked_offset, 4,
+        &view_model_);
     if (data.start_bounds.empty()) {
       PrepareChildViewsFromString(data.expected_bounds);
       layout_->Reset(data.initial_x, data.width, data.pinned_tab_count,
@@ -126,14 +130,12 @@ class StackedTabStripLayoutTest : public testing::Test {
     return view_model_.ideal_bounds(index).x();
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<StackedTabStripLayout> layout_;
   views::ViewModel view_model_;
 
  private:
   views::View view_;
-
-  DISALLOW_COPY_AND_ASSIGN(StackedTabStripLayoutTest);
 };
 
 // Random data.
@@ -609,8 +611,8 @@ TEST_F(StackedTabStripLayoutTest, MoveTab) {
 TEST_F(StackedTabStripLayoutTest, IsStacked) {
   // A single tab with enough space should never be stacked.
   PrepareChildViews(1);
-  layout_.reset(
-      new StackedTabStripLayout(gfx::Size(100, 10), 10, 2, 4, &view_model_));
+  layout_ = std::make_unique<StackedTabStripLayout>(gfx::Size(100, 10), 10, 2,
+                                                    4, &view_model_);
   Reset(layout_.get(), 0, 400, 0, 0);
   EXPECT_FALSE(layout_->IsStacked(0));
 
@@ -630,8 +632,8 @@ TEST_F(StackedTabStripLayoutTest, IsStacked) {
 TEST_F(StackedTabStripLayoutTest, SetXAndPinnedCount) {
   // Verifies we don't crash when transitioning to all pinned tabs.
   PrepareChildViews(1);
-  layout_.reset(
-      new StackedTabStripLayout(gfx::Size(100, 10), 10, 2, 4, &view_model_));
+  layout_ = std::make_unique<StackedTabStripLayout>(gfx::Size(100, 10), 10, 2,
+                                                    4, &view_model_);
   Reset(layout_.get(), 0, 400, 0, 0);
   layout_->SetXAndPinnedCount(0, 1);
 }

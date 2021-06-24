@@ -69,21 +69,16 @@ static_assert(
 TestArrayBuffer* V8ArrayBuffer::ToImpl(v8::Local<v8::Object> object) {
   DCHECK(object->IsArrayBuffer());
   v8::Local<v8::ArrayBuffer> v8buffer = object.As<v8::ArrayBuffer>();
-  if (v8buffer->IsExternal()) {
+  if (auto script_wrappable = ToScriptWrappable(object)) {
     const WrapperTypeInfo* wrapper_type = ToWrapperTypeInfo(object);
     CHECK(wrapper_type);
     CHECK_EQ(wrapper_type->gin_embedder, gin::kEmbedderBlink);
-    return ToScriptWrappable(object)->ToImpl<TestArrayBuffer>();
+    return script_wrappable->ToImpl<TestArrayBuffer>();
   }
 
   // Transfer the ownership of the allocated memory to an ArrayBuffer without
   // copying.
-  v8::ArrayBuffer::Contents v8_contents = v8buffer->Externalize();
-  WTF::ArrayBufferContents::DataHandle data(v8_contents.Data(),
-                                            v8_contents.ByteLength(),
-                                            v8_contents.Deleter(),
-                                            v8_contents.DeleterData());
-  WTF::ArrayBufferContents contents(std::move(data), WTF::ArrayBufferContents::kNotShared);
+  ArrayBufferContents contents(v8buffer->GetBackingStore());
   TestArrayBuffer* buffer = TestArrayBuffer::Create(contents);
   v8::Local<v8::Object> associatedWrapper = buffer->AssociateWithWrapper(v8::Isolate::GetCurrent(), buffer->GetWrapperTypeInfo(), object);
   DCHECK(associatedWrapper == object);
@@ -94,16 +89,6 @@ TestArrayBuffer* V8ArrayBuffer::ToImpl(v8::Local<v8::Object> object) {
 TestArrayBuffer* V8ArrayBuffer::ToImplWithTypeCheck(
     v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return value->IsArrayBuffer() ? ToImpl(v8::Local<v8::Object>::Cast(value)) : nullptr;
-}
-
-TestArrayBuffer* NativeValueTraits<TestArrayBuffer>::NativeValue(
-    v8::Isolate* isolate, v8::Local<v8::Value> value, ExceptionState& exception_state) {
-  TestArrayBuffer* native_value = V8ArrayBuffer::ToImplWithTypeCheck(isolate, value);
-  if (!native_value) {
-    exception_state.ThrowTypeError(ExceptionMessages::FailedToConvertJSValue(
-        "ArrayBuffer"));
-  }
-  return native_value;
 }
 
 }  // namespace blink

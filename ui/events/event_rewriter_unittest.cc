@@ -9,7 +9,9 @@
 #include <set>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -109,15 +111,15 @@ class TestConstantEventRewriterOld : public EventRewriter {
 // EVENT_REWRITE_DISPATCH_ANOTHER.
 class TestStateMachineEventRewriterOld : public EventRewriter {
  public:
-  TestStateMachineEventRewriterOld() : last_rewritten_event_(0), state_(0) {}
+  TestStateMachineEventRewriterOld()
+      : last_rewritten_event_(nullptr), state_(0) {}
   void AddRule(int from_state,
                EventType from_type,
                int to_state,
                EventType to_type,
                EventRewriteStatus to_status) {
     RewriteResult r = {to_state, to_type, to_status};
-    rules_.insert(std::pair<RewriteCase, RewriteResult>(
-        RewriteCase(from_state, from_type), r));
+    rules_.emplace(RewriteCase(from_state, from_type), r);
   }
   EventRewriteStatus RewriteEvent(
       const Event& event,

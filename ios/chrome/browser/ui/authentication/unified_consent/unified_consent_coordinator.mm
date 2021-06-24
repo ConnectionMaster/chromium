@@ -4,7 +4,11 @@
 
 #include "ios/chrome/browser/ui/authentication/unified_consent/unified_consent_coordinator.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "ios/chrome/browser/browser_state/chrome_browser_state.h"
+#import "ios/chrome/browser/main/browser.h"
+#import "ios/chrome/browser/signin/authentication_service.h"
+#import "ios/chrome/browser/signin/authentication_service_factory.h"
 #import "ios/chrome/browser/ui/authentication/unified_consent/identity_chooser/identity_chooser_coordinator.h"
 #import "ios/chrome/browser/ui/authentication/unified_consent/identity_chooser/identity_chooser_coordinator_delegate.h"
 #import "ios/chrome/browser/ui/authentication/unified_consent/unified_consent_mediator.h"
@@ -15,8 +19,9 @@
 #error "This file requires ARC support."
 #endif
 
-@interface UnifiedConsentCoordinator ()<IdentityChooserCoordinatorDelegate,
-                                        UnifiedConsentViewControllerDelegate>
+@interface UnifiedConsentCoordinator () <IdentityChooserCoordinatorDelegate,
+                                         UnifiedConsentMediatorDelegate,
+                                         UnifiedConsentViewControllerDelegate>
 
 // Unified consent mediator.
 @property(nonatomic, strong) UnifiedConsentMediator* unifiedConsentMediator;
@@ -28,24 +33,40 @@
 // Identity chooser coordinator.
 @property(nonatomic, strong)
     IdentityChooserCoordinator* identityChooserCoordinator;
+// Authentication Service for the user's signed-in state.
+@property(nonatomic, assign) AuthenticationService* authenticationService;
 
 @end
 
 @implementation UnifiedConsentCoordinator
 
-- (instancetype)init {
-  self = [super init];
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser {
+  self = [super initWithBaseViewController:nil browser:browser];
   if (self) {
     _unifiedConsentViewController = [[UnifiedConsentViewController alloc] init];
     _unifiedConsentViewController.delegate = self;
+
+    _authenticationService = AuthenticationServiceFactory::GetForBrowserState(
+        browser->GetBrowserState());
     _unifiedConsentMediator = [[UnifiedConsentMediator alloc]
-        initWithUnifiedConsentViewController:_unifiedConsentViewController];
+        initWithUnifiedConsentViewController:_unifiedConsentViewController
+                       authenticationService:_authenticationService
+                                 prefService:browser->GetBrowserState()
+                                                 ->GetPrefs()];
+    _unifiedConsentMediator.delegate = self;
   }
   return self;
 }
 
 - (void)start {
   [self.unifiedConsentMediator start];
+}
+
+- (void)stop {
+  [self.identityChooserCoordinator stop];
+  [self.unifiedConsentMediator disconnect];
+  self.unifiedConsentMediator = nil;
 }
 
 - (void)scrollToBottom {
@@ -87,11 +108,20 @@
 // Opens the identity chooser dialog with an animation from |point|.
 - (void)showIdentityChooserDialogWithPoint:(CGPoint)point {
   self.identityChooserCoordinator = [[IdentityChooserCoordinator alloc]
-      initWithBaseViewController:self.unifiedConsentViewController];
+      initWithBaseViewController:self.unifiedConsentViewController
+                         browser:self.browser];
   self.identityChooserCoordinator.delegate = self;
   self.identityChooserCoordinator.origin = point;
   [self.identityChooserCoordinator start];
   self.identityChooserCoordinator.selectedIdentity = self.selectedIdentity;
+}
+
+#pragma mark - UnifiedConsentViewMediatorDelegate
+
+- (void)unifiedConsentViewMediatorDelegateNeedPrimaryButtonUpdate:
+    (UnifiedConsentMediator*)mediator {
+  DCHECK_EQ(self.unifiedConsentMediator, mediator);
+  [self.delegate unifiedConsentCoordinatorNeedPrimaryButtonUpdate:self];
 }
 
 #pragma mark - UnifiedConsentViewControllerDelegate
@@ -101,6 +131,9 @@
   if (!self.autoOpenIdentityPicker)
     return;
 
+  // The identity picker should not open a second time, to avoid opening it
+  // again after the merge/clear data dialog disappears.
+  self.autoOpenIdentityPicker = NO;
   CGFloat midX = CGRectGetMidX(self.unifiedConsentViewController.view.bounds);
   CGFloat midY = CGRectGetMidY(self.unifiedConsentViewController.view.bounds);
   CGPoint point = CGPointMake(midX, midY);
@@ -109,15 +142,21 @@
 
 - (void)unifiedConsentViewControllerDidTapSettingsLink:
     (UnifiedConsentViewController*)controller {
+  if (self.isUIDisabled) {
+    return;
+  }
   DCHECK_EQ(self.unifiedConsentViewController, controller);
   DCHECK(!self.settingsLinkWasTapped);
   self.settingsLinkWasTapped = YES;
   [self.delegate unifiedConsentCoordinatorDidTapSettingsLink:self];
 }
 
-- (void)unifiedConsentViewControllerDidTapIdentityPickerView:
+- (void)unifiedConsentViewControllerDidTapIdentityButtonControl:
             (UnifiedConsentViewController*)controller
-                                                     atPoint:(CGPoint)point {
+                                                        atPoint:(CGPoint)point {
+  if (self.isUIDisabled) {
+    return;
+  }
   DCHECK_EQ(self.unifiedConsentViewController, controller);
   [self showIdentityChooserDialogWithPoint:point];
 }
@@ -133,6 +172,7 @@
 - (void)identityChooserCoordinatorDidClose:
     (IdentityChooserCoordinator*)coordinator {
   CHECK_EQ(self.identityChooserCoordinator, coordinator);
+  [self.identityChooserCoordinator stop];
   self.identityChooserCoordinator.delegate = nil;
   self.identityChooserCoordinator = nil;
 }

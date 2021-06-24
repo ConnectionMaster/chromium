@@ -5,9 +5,10 @@
 #ifndef CONTENT_BROWSER_DISPLAY_CUTOUT_DISPLAY_CUTOUT_HOST_IMPL_H_
 #define CONTENT_BROWSER_DISPLAY_CUTOUT_DISPLAY_CUTOUT_HOST_IMPL_H_
 
-#include "content/public/browser/web_contents_binding_set.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_contents_receiver_set.h"
 #include "third_party/blink/public/mojom/page/display_cutout.mojom.h"
+#include "ui/gfx/geometry/insets.h"
 
 namespace content {
 
@@ -27,7 +28,6 @@ class DisplayCutoutHostImpl : public blink::mojom::DisplayCutoutHost {
   // Called by WebContents when various events occur.
   void DidAcquireFullscreen(RenderFrameHost* rfh);
   void DidExitFullscreen();
-  void DidStartNavigation(NavigationHandle* navigation_handle);
   void DidFinishNavigation(NavigationHandle* navigation_handle);
   void RenderFrameDeleted(RenderFrameHost* rfh);
   void RenderFrameCreated(RenderFrameHost* rfh);
@@ -39,6 +39,7 @@ class DisplayCutoutHostImpl : public blink::mojom::DisplayCutoutHost {
  private:
   // Stores the data for a pending UKM event.
   struct PendingUKMEvent {
+    ukm::SourceId source_id;
     bool is_main_frame;
     blink::mojom::ViewportFit applied_value;
     blink::mojom::ViewportFit supplied_value;
@@ -80,8 +81,8 @@ class DisplayCutoutHostImpl : public blink::mojom::DisplayCutoutHost {
   // Stores a map of RenderFrameHosts and their current viewport fit values.
   std::map<RenderFrameHost*, blink::mojom::ViewportFit> values_;
 
-  // Holds WebContents associated mojo bindings.
-  WebContentsFrameBindingSet<blink::mojom::DisplayCutoutHost> bindings_;
+  // Holds WebContents associated mojo receivers.
+  WebContentsFrameReceiverSet<blink::mojom::DisplayCutoutHost> receivers_;
 
   // Weak pointer to the owning |WebContentsImpl| instance.
   WebContentsImpl* web_contents_impl_;

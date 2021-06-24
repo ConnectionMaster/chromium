@@ -12,11 +12,11 @@
 #include "chrome/browser/android/contextualsearch/contextual_search_context.h"
 #include "chrome/browser/android/contextualsearch/contextual_search_delegate.h"
 #include "components/contextual_search/content/browser/contextual_search_js_api_handler.h"
-#include "components/contextual_search/content/common/contextual_search_js_api_service.mojom.h"
+#include "components/contextual_search/content/common/mojom/contextual_search_js_api_service.mojom.h"
 
 // Manages the native extraction and request logic for Contextual Search,
 // and interacts with the Java ContextualSearchManager for UX.
-// Most of the work is done by the associated ContextualSearchDelegate.
+// Most of the work is done by the associated |ContextualSearchDelegate|.
 class ContextualSearchManager
     : public contextual_search::ContextualSearchJsApiHandler {
  public:
@@ -48,24 +48,14 @@ class ContextualSearchManager
       const base::android::JavaParamRef<jobject>& j_contextual_search_context,
       const base::android::JavaParamRef<jobject>& j_base_web_contents);
 
-  // Gets the target language for translation purposes.
-  base::android::ScopedJavaLocalRef<jstring> GetTargetLanguage(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj);
-
-  // Gets the accept-languages preference string.
-  base::android::ScopedJavaLocalRef<jstring> GetAcceptLanguages(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj);
-
-  // Whitelists the given |j_url| for injection of the Contextual Search
+  // Allowlists the given |j_url| for injection of the Contextual Search
   // JavaScript API.  EnableContextualSearchJsApiForWebContents must also be
   // called with the WebContents that will host the page in the Overlay.
   // This method should be called when the URL navigation starts so the
   // JavaScript API can be established before the page executes.
   // The given URL is stored for future reference when ShouldEnableJsApi is
   // called by a Renderer through mojo.
-  void WhitelistContextualSearchJsApiUrl(
+  void AllowlistContextualSearchJsApiUrl(
       JNIEnv* env,
       jobject obj,
       const base::android::JavaParamRef<jstring>& j_url);
@@ -74,7 +64,7 @@ class ContextualSearchManager
   // This method should be called at least once for this Overlay Panel, and
   // before any page loads in the Overlay so that the Contextual Search
   // JavaScript API can be injected into the Overlay Panel.
-  // WhitelistContextualSearchJsApiUrl must also be called for every URL
+  // AllowlistContextualSearchJsApiUrl must also be called for every URL
   // that will be loaded, in order for the JavaScript API to be enabled for that
   // URL.
   void EnableContextualSearchJsApiForWebContents(
@@ -104,7 +94,7 @@ class ContextualSearchManager
   // selection is available.
   void OnTextSurroundingSelectionAvailable(
       const std::string& encoding,
-      const base::string16& surrounding_text,
+      const std::u16string& surrounding_text,
       size_t start_offset,
       size_t end_offset);
 

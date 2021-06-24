@@ -24,7 +24,7 @@ std::unique_ptr<extensions::MenuItem::Id> GetParentId(
     bool is_off_the_record,
     const MenuItem::ExtensionKey& key) {
   if (!property.parent_id)
-    return std::unique_ptr<extensions::MenuItem::Id>();
+    return nullptr;
 
   std::unique_ptr<extensions::MenuItem::Id> parent_id(
       new extensions::MenuItem::Id(is_off_the_record, key));
@@ -77,7 +77,7 @@ bool CreateMenuItem(const PropertyWithEnumT& create_properties,
     return false;
   }
 
-  if (!is_webview && BackgroundInfo::HasLazyBackgroundPage(extension) &&
+  if (!is_webview && BackgroundInfo::HasLazyContext(extension) &&
       create_properties.onclick.get()) {
     *error = kOnclickDisallowedError;
     return false;
@@ -99,7 +99,8 @@ bool CreateMenuItem(const PropertyWithEnumT& create_properties,
   }
 
   if (contexts.Contains(MenuItem::BROWSER_ACTION) ||
-      contexts.Contains(MenuItem::PAGE_ACTION)) {
+      contexts.Contains(MenuItem::PAGE_ACTION) ||
+      contexts.Contains(MenuItem::ACTION)) {
     // Action items are not allowed for <webview>.
     if (!extension->is_extension() || is_webview) {
       *error = kActionNotAllowedError;

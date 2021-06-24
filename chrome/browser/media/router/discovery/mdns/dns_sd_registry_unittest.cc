@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "chrome/browser/media/router/discovery/mdns/dns_sd_registry.h"
 #include "chrome/browser/media/router/discovery/mdns/dns_sd_delegate.h"
 #include "chrome/browser/media/router/discovery/mdns/dns_sd_device_lister.h"
@@ -14,7 +16,7 @@ namespace media_router {
 
 class MockDnsSdDeviceLister : public DnsSdDeviceLister {
  public:
-  MockDnsSdDeviceLister() : DnsSdDeviceLister(NULL, NULL, "") {}
+  MockDnsSdDeviceLister() : DnsSdDeviceLister(nullptr, nullptr, "") {}
   ~MockDnsSdDeviceLister() override {}
 
   MOCK_METHOD0(Discover, void());
@@ -22,7 +24,7 @@ class MockDnsSdDeviceLister : public DnsSdDeviceLister {
 
 class TestDnsSdRegistry : public DnsSdRegistry {
  public:
-  TestDnsSdRegistry() : DnsSdRegistry(NULL), delegate_(NULL) {}
+  TestDnsSdRegistry() : DnsSdRegistry(nullptr), delegate_(nullptr) {}
   ~TestDnsSdRegistry() override {}
 
   MockDnsSdDeviceLister* GetListerForService(const std::string& service_type) {
@@ -75,7 +77,7 @@ class DnsSdRegistryTest : public testing::Test {
   ~DnsSdRegistryTest() override {}
 
   void SetUp() override {
-    registry_.reset(new TestDnsSdRegistry());
+    registry_ = std::make_unique<TestDnsSdRegistry>();
     registry_->AddObserver(&observer_);
   }
 

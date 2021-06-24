@@ -12,7 +12,7 @@ the constructors for that object in platform order.
 Example Output: ./ui/ozone/generate_constructor_list.py \
                     --platform test \
                     --platform dri \
-                    --export OZONE_EXPORT \
+                    --export OZONE \
                     --namespace ui \
                     --typename OzonePlatform \
                     --include '"ui/ozone/ozone_platform.h"'
@@ -40,17 +40,20 @@ Example Output: ./ui/ozone/generate_constructor_list.py \
     &ui::CreateOzonePlatformDri,
   };
 
-  template class OZONE_EXPORT PlatformObject<ui::OzonePlatform>;
+  template class COMPONENT_EXPORT(OZONE) PlatformObject<ui::OzonePlatform>;
 
   }  // namespace ui
 """
 
+try:
+    from StringIO import StringIO  # for Python 2
+except ImportError:
+    from io import StringIO  # for Python 3
 import optparse
 import os
 import collections
 import re
 import sys
-import string
 
 
 def GetTypedefName(typename):
@@ -68,7 +71,7 @@ def GetConstructorName(typename, platform):
   This is just "Create" + typename + platform.
   """
 
-  return 'Create' + typename + string.capitalize(platform)
+  return 'Create' + typename + platform.capitalize()
 
 
 def GenerateConstructorList(out, namespace, export, typenames, platforms,
@@ -129,7 +132,8 @@ def GenerateConstructorList(out, namespace, export, typenames, platforms,
 
   # Exported template instantiation.
   for typename in typenames:
-    out.write('template class %(export)s PlatformObject<%(typename)s>;\n'
+    out.write('template class COMPONENT_EXPORT(%(export)s)' \
+              ' PlatformObject<%(typename)s>;\n'
               % {'export': export, 'typename': typename})
   out.write('\n')
 
@@ -140,7 +144,7 @@ def GenerateConstructorList(out, namespace, export, typenames, platforms,
 def main(argv):
   parser = optparse.OptionParser()
   parser.add_option('--namespace', default='ozone')
-  parser.add_option('--export', default='OZONE_EXPORT')
+  parser.add_option('--export', default='OZONE')
   parser.add_option('--platform_list')
   parser.add_option('--output_cc')
   parser.add_option('--include', action='append', default=[])
@@ -162,12 +166,14 @@ def main(argv):
     sys.exit(1)
 
   # Write to standard output or file specified by --output_cc.
-  out_cc = sys.stdout
+  out_cc = getattr(sys.stdout, 'buffer', sys.stdout)
   if options.output_cc:
     out_cc = open(options.output_cc, 'wb')
 
-  GenerateConstructorList(out_cc, options.namespace, options.export,
+  out_cc_str = StringIO()
+  GenerateConstructorList(out_cc_str, options.namespace, options.export,
                           typenames, platforms, includes, usings)
+  out_cc.write(out_cc_str.getvalue().encode('utf-8'))
 
   if options.output_cc:
     out_cc.close()

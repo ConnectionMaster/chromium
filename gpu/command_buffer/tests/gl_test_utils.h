@@ -78,6 +78,14 @@ class GLTestHelper {
                           const uint8_t* color,
                           const uint8_t* mask);
 
+  static bool CheckPixels(GLint x,
+                          GLint y,
+                          GLsizei width,
+                          GLsizei height,
+                          GLint tolerance,
+                          const std::vector<uint8_t>& expected,
+                          const uint8_t* mask);
+
   // Uses ReadPixels to save an area of the current FBO/Backbuffer.
   static bool SaveBackbufferAsBMP(const char* filename, int width, int height);
 
@@ -94,10 +102,10 @@ class GpuCommandBufferTestEGL {
   GpuCommandBufferTestEGL();
   ~GpuCommandBufferTestEGL();
 
-  // Reinitialize GL to the EGLGLES2 implementation if it is available and not
-  // the current initialized GL implementation. Return true on sucess, false
+  // Reinitialize GL to an EGL implementation if it is available and not
+  // the current initialized GL implementation. Return true on success, false
   // otherwise.
-  bool InitializeEGLGLES2(int width, int height);
+  bool InitializeEGL(int width, int height);
 
   // Restore the default GL implementation.
   void RestoreGLDefault();
@@ -112,7 +120,7 @@ class GpuCommandBufferTestEGL {
     return gfx::HasExtension(gl_extensions_, extension);
   }
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   // Create GLImageNativePixmap filled in with the given pixels.
   scoped_refptr<gl::GLImageNativePixmap> CreateGLImageNativePixmap(
       gfx::BufferFormat format,

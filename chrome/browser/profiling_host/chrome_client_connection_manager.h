@@ -5,12 +5,12 @@
 #ifndef CHROME_BROWSER_PROFILING_HOST_CHROME_CLIENT_CONNECTION_MANAGER_H_
 #define CHROME_BROWSER_PROFILING_HOST_CHROME_CLIENT_CONNECTION_MANAGER_H_
 
-#include "components/heap_profiling/client_connection_manager.h"
+#include "components/heap_profiling/multi_process/client_connection_manager.h"
 
 namespace heap_profiling {
 
 // This class overrides ClientConnectionManager in order to prevent incognito
-// renderers from being profiled.
+// and guest mode renderers from being profiled.
 // Like ClientConnectionManager, this class must only be constructed/accessed
 // from the UI thread.
 class ChromeClientConnectionManager : public ClientConnectionManager {

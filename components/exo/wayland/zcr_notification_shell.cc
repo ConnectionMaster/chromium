@@ -12,11 +12,12 @@
 
 #include "base/atomic_sequence_num.h"
 #include "base/bind.h"
-#include "base/optional.h"
+#include "base/strings/stringprintf.h"
 #include "components/exo/notification.h"
 #include "components/exo/notification_surface.h"
 #include "components/exo/notification_surface_manager.h"
 #include "components/exo/wayland/server_util.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace exo {
 namespace wayland {
@@ -43,7 +44,7 @@ class WaylandNotificationShellNotification {
                                        const std::string& notification_id,
                                        const std::vector<std::string>& buttons,
                                        wl_resource* resource)
-      : resource_(resource), weak_ptr_factory_(this) {
+      : resource_(resource) {
     notification_ = std::make_unique<Notification>(
         title, message, display_source, notification_id,
         kNotificationShellNotifierId, buttons,
@@ -61,7 +62,7 @@ class WaylandNotificationShellNotification {
     wl_client_flush(wl_resource_get_client(resource_));
   }
 
-  void OnClick(const base::Optional<int>& button_index) {
+  void OnClick(const absl::optional<int>& button_index) {
     int32_t index = button_index ? *button_index : -1;
     zcr_notification_shell_notification_v1_send_clicked(resource_, index);
     wl_client_flush(wl_resource_get_client(resource_));
@@ -70,7 +71,8 @@ class WaylandNotificationShellNotification {
   wl_resource* const resource_;
   std::unique_ptr<Notification> notification_;
 
-  base::WeakPtrFactory<WaylandNotificationShellNotification> weak_ptr_factory_;
+  base::WeakPtrFactory<WaylandNotificationShellNotification> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(WaylandNotificationShellNotification);
 };

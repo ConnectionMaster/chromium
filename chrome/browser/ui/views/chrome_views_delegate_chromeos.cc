@@ -4,12 +4,13 @@
 
 #include "chrome/browser/ui/views/chrome_views_delegate.h"
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/accelerators.h"
 #include "ash/shell.h"
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/task/current_thread.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "ui/base/ui_base_features.h"
+#include "chrome/browser/ui/ash/chrome_capture_mode_delegate.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 
@@ -18,7 +19,7 @@ namespace {
 void ProcessAcceleratorNow(const ui::Accelerator& accelerator) {
   // TODO(afakhry): See if we need here to send the accelerator to the
   // FocusManager of the active window in a follow-up CL.
-  ash::Shell::Get()->accelerator_controller()->Process(accelerator);
+  ash::AcceleratorController::Get()->Process(accelerator);
 }
 
 }  // namespace
@@ -26,19 +27,9 @@ void ProcessAcceleratorNow(const ui::Accelerator& accelerator) {
 views::ViewsDelegate::ProcessMenuAcceleratorResult
 ChromeViewsDelegate::ProcessAcceleratorWhileMenuShowing(
     const ui::Accelerator& accelerator) {
-  DCHECK(base::MessageLoopCurrentForUI::IsSet());
+  DCHECK(base::CurrentUIThread::IsSet());
 
-  // Early return because mash chrome does not have access to ash::Shell
-  if (features::IsMultiProcessMash())
-    return views::ViewsDelegate::ProcessMenuAcceleratorResult::LEAVE_MENU_OPEN;
-
-  ash::AcceleratorController* accelerator_controller =
-      ash::Shell::Get()->accelerator_controller();
-
-  accelerator_controller->accelerator_history()->StoreCurrentAccelerator(
-      accelerator);
-  if (accelerator_controller->ShouldCloseMenuAndRepostAccelerator(
-          accelerator)) {
+  if (ash::AcceleratorController::Get()->OnMenuAccelerator(accelerator)) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE, base::BindOnce(ProcessAcceleratorNow, accelerator));
     return views::ViewsDelegate::ProcessMenuAcceleratorResult::CLOSE_MENU;
@@ -48,8 +39,14 @@ ChromeViewsDelegate::ProcessAcceleratorWhileMenuShowing(
   return views::ViewsDelegate::ProcessMenuAcceleratorResult::LEAVE_MENU_OPEN;
 }
 
-views::NonClientFrameView* ChromeViewsDelegate::CreateDefaultNonClientFrameView(
-    views::Widget* widget) {
+bool ChromeViewsDelegate::ShouldCloseMenuIfMouseCaptureLost() const {
+  // Menu closes unless an ongoing screen capture session is underway.
+  return !(ash::features::IsCaptureModeEnabled() &&
+           ChromeCaptureModeDelegate::Get()->is_session_active());
+}
+
+std::unique_ptr<views::NonClientFrameView>
+ChromeViewsDelegate::CreateDefaultNonClientFrameView(views::Widget* widget) {
   return ash::Shell::Get()->CreateDefaultNonClientFrameView(widget);
 }
 
@@ -63,12 +60,6 @@ void ChromeViewsDelegate::AdjustSavedWindowPlacementChromeOS(
   bounds->AdjustToFit(display.work_area());
 }
 
-views::Widget::InitParams::WindowOpacity
-ChromeViewsDelegate::GetOpacityForInitParams(
-    const views::Widget::InitParams& params) {
-  return views::Widget::InitParams::TRANSLUCENT_WINDOW;
-}
-
 views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
     views::Widget::InitParams* params,
     views::internal::NativeWidgetDelegate* delegate) {
@@ -78,13 +69,12 @@ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
   if (params->context)
     params->context = params->context->GetRootWindow();
 
-  // Classic ash requires a parent or a context that it can use to look up a
-  // root window to find a WindowParentingClient. Mash handles window parenting
-  // inside ash, see ash::CreateAndParentTopLevelWindow().
-  if (!features::IsUsingWindowService() && !params->parent && !params->context)
+  // Ash requires a parent or a context that it can use to look up a root window
+  // to find a WindowParentingClient.
+  if (!params->parent && !params->context)
     params->context = ash::Shell::GetRootWindowForNewWindows();
 
   // By returning null Widget creates the default NativeWidget implementation,
-  // which for chromeos is NativeWidgetAura.
+  // which for Chrome OS is NativeWidgetAura.
   return nullptr;
 }

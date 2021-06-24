@@ -6,9 +6,9 @@
 
 #include <utility>
 
-#include "ash/new_window_controller.h"
-#include "ash/shell.h"
+#include "ash/public/cpp/new_window_delegate.h"
 #include "base/bind.h"
+#include "base/logging.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "extensions/common/constants.h"
@@ -35,8 +35,7 @@ void OnExported(const std::string& interface_name,
 }  // namespace
 
 UrlHandlerServiceProvider::UrlHandlerServiceProvider()
-    : allowed_url_schemes_(std::cbegin(kUrlSchemes), std::cend(kUrlSchemes)),
-      weak_ptr_factory_(this) {}
+    : allowed_url_schemes_(std::cbegin(kUrlSchemes), std::cend(kUrlSchemes)) {}
 
 UrlHandlerServiceProvider::~UrlHandlerServiceProvider() = default;
 
@@ -47,7 +46,7 @@ void UrlHandlerServiceProvider::Start(
       chromeos::kUrlHandlerServiceOpenUrlMethod,
       base::BindRepeating(&UrlHandlerServiceProvider::OpenUrl,
                           weak_ptr_factory_.GetWeakPtr()),
-      base::BindRepeating(&OnExported));
+      base::BindOnce(&OnExported));
 }
 
 bool UrlHandlerServiceProvider::UrlAllowed(const GURL& gurl) const {
@@ -62,21 +61,28 @@ void UrlHandlerServiceProvider::OpenUrl(
   std::string url;
   if (!reader.PopString(&url)) {
     LOG(ERROR) << "Method call lacks URL: " << method_call->ToString();
-    response_sender.Run(dbus::ErrorResponse::FromMethodCall(
-        method_call, DBUS_ERROR_INVALID_ARGS, "No URL string arg"));
+    std::move(response_sender)
+        .Run(dbus::ErrorResponse::FromMethodCall(
+            method_call, DBUS_ERROR_INVALID_ARGS, "No URL string arg"));
     return;
   }
+
+  VLOG(1) << "Got request to open url";
 
   const GURL gurl(url);
   if (!UrlAllowed(gurl)) {
-    response_sender.Run(dbus::ErrorResponse::FromMethodCall(
-        method_call, DBUS_ERROR_FAILED, "Invalid URL"));
+    VLOG(1) << "Url is not allowed";
+    std::move(response_sender)
+        .Run(dbus::ErrorResponse::FromMethodCall(method_call, DBUS_ERROR_FAILED,
+                                                 "Invalid URL"));
     return;
   }
 
-  ash::Shell::Get()->new_window_controller()->NewTabWithUrl(
+  VLOG(1) << "Opening url now";
+
+  NewWindowDelegate::GetInstance()->NewTabWithUrl(
       gurl, false /* from_user_interaction */);
-  response_sender.Run(dbus::Response::FromMethodCall(method_call));
+  std::move(response_sender).Run(dbus::Response::FromMethodCall(method_call));
 }
 
 }  // namespace ash

@@ -11,6 +11,7 @@
 #include "base/macros.h"
 #include "components/content_settings/core/browser/content_settings_observable_provider.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
 #include "url/gurl.h"
 
 class InstalledWebappProvider : public content_settings::ObservableProvider {
@@ -25,20 +26,20 @@ class InstalledWebappProvider : public content_settings::ObservableProvider {
   // ProviderInterface implementations.
   std::unique_ptr<content_settings::RuleIterator> GetRuleIterator(
       ContentSettingsType content_type,
-      const content_settings::ResourceIdentifier& resource_identifier,
       bool incognito) const override;
 
   bool SetWebsiteSetting(
       const ContentSettingsPattern& primary_pattern,
       const ContentSettingsPattern& secondary_pattern,
       ContentSettingsType content_type,
-      const content_settings::ResourceIdentifier& resource_identifier,
-      base::Value* value) override;
+      std::unique_ptr<base::Value>&& value,
+      const content_settings::ContentSettingConstraints& constraints = {})
+      override;
 
   void ClearAllContentSettingsRules(ContentSettingsType content_type) override;
   void ShutdownOnUIThread() override;
 
-  void Notify();
+  void Notify(ContentSettingsType content_type);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(InstalledWebappProvider);

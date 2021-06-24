@@ -5,8 +5,6 @@
 #ifndef CONTENT_PUBLIC_BROWSER_PRESENTATION_SCREEN_AVAILABILITY_LISTENER_H_
 #define CONTENT_PUBLIC_BROWSER_PRESENTATION_SCREEN_AVAILABILITY_LISTENER_H_
 
-#include <string>
-
 #include "content/common/content_export.h"
 #include "third_party/blink/public/mojom/presentation/presentation.mojom.h"
 #include "url/gurl.h"
@@ -23,7 +21,7 @@ class CONTENT_EXPORT PresentationScreenAvailabilityListener {
   // Returns the screen availability URL associated with this listener.
   // Empty string means this object is listening for screen availability
   // for "1-UA" mode, i.e. offscreen tab rendering.
-  virtual GURL GetAvailabilityUrl() const = 0;
+  virtual GURL GetAvailabilityUrl() = 0;
 
   // Called when screen availability for the associated Presentation URL has
   // changed to |availability|.

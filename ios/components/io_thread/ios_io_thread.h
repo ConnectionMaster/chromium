@@ -19,7 +19,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "components/prefs/pref_member.h"
-#include "ios/web/public/web_thread_delegate.h"
+#include "ios/web/public/thread/web_thread_delegate.h"
 #include "net/base/network_change_notifier.h"
 #include "net/http/http_network_session.h"
 
@@ -29,9 +29,7 @@ class PrefService;
 namespace net {
 class CTPolicyEnforcer;
 class CertVerifier;
-class ChannelIDService;
 class CookieStore;
-class CTVerifier;
 class HostResolver;
 class HttpAuthHandlerFactory;
 class HttpAuthPreferences;
@@ -99,18 +97,17 @@ class IOSIOThread : public web::WebThreadDelegate {
     std::unique_ptr<net::NetworkDelegate> system_network_delegate;
     std::unique_ptr<net::HostResolver> host_resolver;
     std::unique_ptr<net::CertVerifier> cert_verifier;
-    // The ChannelIDService must outlive the HttpTransactionFactory.
-    std::unique_ptr<net::ChannelIDService> system_channel_id_service;
     // This TransportSecurityState doesn't load or save any state. It's only
     // used to enforce pinning for system requests and will only use built-in
     // pins.
     std::unique_ptr<net::TransportSecurityState> transport_security_state;
-    std::unique_ptr<net::CTVerifier> cert_transparency_verifier;
     std::unique_ptr<net::SSLConfigService> ssl_config_service;
     std::unique_ptr<net::HttpAuthPreferences> http_auth_preferences;
     std::unique_ptr<net::HttpAuthHandlerFactory> http_auth_handler_factory;
     std::unique_ptr<net::HttpServerProperties> http_server_properties;
-    std::unique_ptr<net::ProxyResolutionService> system_proxy_resolution_service;
+    std::unique_ptr<net::ProxyResolutionService>
+        system_proxy_resolution_service;
+    std::unique_ptr<net::QuicContext> quic_context;
     std::unique_ptr<net::HttpNetworkSession> system_http_network_session;
     std::unique_ptr<net::HttpTransactionFactory>
         system_http_transaction_factory;
@@ -217,4 +214,4 @@ class IOSIOThread : public web::WebThreadDelegate {
 
 }  // namespace io_thread
 
-#endif  // IOS_COMPONENTS_IO_THREAD_IO_THREAD_H_
+#endif  // IOS_COMPONENTS_IO_THREAD_IOS_IO_THREAD_H_

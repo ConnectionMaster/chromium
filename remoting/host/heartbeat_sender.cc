@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2019 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -13,98 +13,241 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringize_macros.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/system/sys_info.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "net/base/network_interfaces.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "remoting/base/constants.h"
 #include "remoting/base/logging.h"
+#include "remoting/base/protobuf_http_client.h"
+#include "remoting/base/protobuf_http_request.h"
+#include "remoting/base/protobuf_http_request_config.h"
+#include "remoting/base/protobuf_http_status.h"
+#include "remoting/base/service_urls.h"
+#include "remoting/host/host_config.h"
 #include "remoting/host/host_details.h"
 #include "remoting/host/server_log_entry_host.h"
-#include "remoting/signaling/iq_sender.h"
-#include "remoting/signaling/server_log_entry.h"
-#include "remoting/signaling/signal_strategy.h"
+#include "remoting/signaling/ftl_signal_strategy.h"
 #include "remoting/signaling/signaling_address.h"
-#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
-#include "third_party/libjingle_xmpp/xmpp/constants.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
-#ifdef ERROR
-#undef ERROR  // Defined by windows.h
+#if defined(OS_WIN)
+#include "base/strings/utf_string_conversions.h"
+
+// Needed for GetComputerNameExW/ComputerNameDnsFullyQualified.
+#include <windows.h>
 #endif
-
-using jingle_xmpp::QName;
-using jingle_xmpp::XmlElement;
 
 namespace remoting {
 
 namespace {
 
-const char kHeartbeatQueryTag[] = "heartbeat";
-const char kHostIdAttr[] = "hostid";
-const char kHostVersionTag[] = "host-version";
-const char kHeartbeatSignatureTag[] = "signature";
-const char kSequenceIdAttr[] = "sequence-id";
-const char kHostOfflineReasonAttr[] = "host-offline-reason";
-const char kHostOperatingSystemNameTag[] = "host-os-name";
-const char kHostOperatingSystemVersionTag[] = "host-os-version";
+constexpr char kHeartbeatPath[] = "/v1/directory:heartbeat";
 
-const char kErrorTag[] = "error";
-const char kNotFoundTag[] = "item-not-found";
+constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation("heartbeat_sender",
+                                        R"(
+        semantics {
+          sender: "Chrome Remote Desktop"
+          description:
+            "Sends heartbeat data to the Chrome Remote Desktop backend so that "
+            "the client knows about the presence of the host."
+          trigger:
+            "Starting a Chrome Remote Desktop host."
+          data:
+            "Chrome Remote Desktop Host ID and some non-PII information about "
+            "the host system such as the Chrome Remote Desktop version and the "
+            "OS version."
+          destination: OTHER
+          destination_other: "Chrome Remote Desktop directory service"
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This request cannot be stopped in settings, but will not be sent "
+            "if the user does not use Chrome Remote Desktop."
+          policy_exception_justification:
+            "Not implemented."
+        })");
 
-const char kHeartbeatResultTag[] = "heartbeat-result";
-const char kSetIntervalTag[] = "set-interval";
-const char kExpectedSequenceIdTag[] = "expected-sequence-id";
-
-constexpr base::TimeDelta kDefaultHeartbeatInterval =
-    base::TimeDelta::FromMinutes(5);
+constexpr base::TimeDelta kMinimumHeartbeatInterval =
+    base::TimeDelta::FromMinutes(3);
 constexpr base::TimeDelta kHeartbeatResponseTimeout =
     base::TimeDelta::FromSeconds(30);
-constexpr base::TimeDelta kResendDelay = base::TimeDelta::FromSeconds(10);
 constexpr base::TimeDelta kResendDelayOnHostNotFound =
     base::TimeDelta::FromSeconds(10);
+constexpr base::TimeDelta kResendDelayOnUnauthenticated =
+    base::TimeDelta::FromSeconds(10);
 
-const int kMaxResendOnHostNotFoundCount = 12;  // 2 minutes (12 x 10 seconds).
-const int kMaxHeartbeatTimeouts = 2;
+constexpr int kMaxResendOnHostNotFoundCount =
+    12;  // 2 minutes (12 x 10 seconds).
+constexpr int kMaxResendOnUnauthenticatedCount =
+    6;  // 1 minute (10 x 6 seconds).
+
+const net::BackoffEntry::Policy kBackoffPolicy = {
+    // Number of initial errors (in sequence) to ignore before applying
+    // exponential back-off rules.
+    0,
+
+    // Initial delay for exponential back-off in ms. (10s)
+    10000,
+
+    // Factor by which the waiting time will be multiplied.
+    2,
+
+    // Fuzzing percentage. ex: 10% will spread requests randomly
+    // between 90%-100% of the calculated time.
+    0.5,
+
+    // Maximum amount of time we are willing to delay our request in ms. (10m)
+    600000,
+
+    // Time to keep an entry from being discarded even when it
+    // has no significant state, -1 to never discard.
+    -1,
+
+    // Starts with initial delay.
+    false,
+};
+
+std::string GetHostname() {
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag
+// switch of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  return net::GetHostName();
+#elif defined(OS_WIN)
+  wchar_t buffer[MAX_PATH] = {0};
+  DWORD size = MAX_PATH;
+  if (!::GetComputerNameExW(ComputerNameDnsFullyQualified, buffer, &size)) {
+    PLOG(ERROR) << "GetComputerNameExW failed";
+    return std::string();
+  }
+  std::string hostname;
+  if (!base::WideToUTF8(buffer, size, &hostname)) {
+    LOG(ERROR) << "Failed to convert from Wide to UTF8";
+    return std::string();
+  }
+  return hostname;
+#else
+  return std::string();
+#endif
+}
 
 }  // namespace
 
+class HeartbeatSender::HeartbeatClientImpl final
+    : public HeartbeatSender::HeartbeatClient {
+ public:
+  explicit HeartbeatClientImpl(
+      OAuthTokenGetter* oauth_token_getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+  ~HeartbeatClientImpl() override;
+
+  void Heartbeat(std::unique_ptr<apis::v1::HeartbeatRequest> request,
+                 HeartbeatResponseCallback callback) override;
+  void CancelPendingRequests() override;
+
+ private:
+  ProtobufHttpClient http_client_;
+  DISALLOW_COPY_AND_ASSIGN(HeartbeatClientImpl);
+};
+
+HeartbeatSender::HeartbeatClientImpl::HeartbeatClientImpl(
+    OAuthTokenGetter* oauth_token_getter,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : http_client_(ServiceUrls::GetInstance()->remoting_server_endpoint(),
+                   oauth_token_getter,
+                   url_loader_factory) {}
+
+HeartbeatSender::HeartbeatClientImpl::~HeartbeatClientImpl() = default;
+
+void HeartbeatSender::HeartbeatClientImpl::Heartbeat(
+    std::unique_ptr<apis::v1::HeartbeatRequest> request,
+    HeartbeatResponseCallback callback) {
+  std::string host_offline_reason =
+      request->has_host_offline_reason()
+          ? (" host_offline_reason: " + request->host_offline_reason())
+          : "";
+  HOST_LOG << "Sending outgoing heartbeat." << host_offline_reason;
+
+  auto request_config =
+      std::make_unique<ProtobufHttpRequestConfig>(kTrafficAnnotation);
+  request_config->path = kHeartbeatPath;
+  request_config->request_message = std::move(request);
+  auto http_request =
+      std::make_unique<ProtobufHttpRequest>(std::move(request_config));
+  http_request->SetTimeoutDuration(kHeartbeatResponseTimeout);
+  http_request->SetResponseCallback(std::move(callback));
+  http_client_.ExecuteRequest(std::move(http_request));
+}
+
+void HeartbeatSender::HeartbeatClientImpl::CancelPendingRequests() {
+  http_client_.CancelPendingRequests();
+}
+
+// end of HeartbeatSender::HeartbeatClientImpl
+
 HeartbeatSender::HeartbeatSender(
-    const base::Closure& on_heartbeat_successful_callback,
-    const base::Closure& on_unknown_host_id_error,
+    Delegate* delegate,
     const std::string& host_id,
     SignalStrategy* signal_strategy,
-    const scoped_refptr<const RsaKeyPair>& host_key_pair,
-    const std::string& directory_bot_jid)
-    : on_heartbeat_successful_callback_(on_heartbeat_successful_callback),
-      on_unknown_host_id_error_(on_unknown_host_id_error),
+    OAuthTokenGetter* oauth_token_getter,
+    Observer* observer,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    bool is_googler)
+    : delegate_(delegate),
       host_id_(host_id),
       signal_strategy_(signal_strategy),
-      host_key_pair_(host_key_pair),
-      directory_bot_jid_(directory_bot_jid),
-      interval_(kDefaultHeartbeatInterval) {
+      client_(std::make_unique<HeartbeatClientImpl>(oauth_token_getter,
+                                                    url_loader_factory)),
+      oauth_token_getter_(oauth_token_getter),
+      observer_(observer),
+      backoff_(&kBackoffPolicy) {
+  DCHECK(delegate_);
   DCHECK(signal_strategy_);
-  DCHECK(host_key_pair_.get());
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK(observer_);
 
   signal_strategy_->AddListener(this);
-
-  // Start heartbeats if the |signal_strategy_| is already connected.
   OnSignalStrategyStateChange(signal_strategy_->GetState());
+  is_googler_ = is_googler;
 }
 
 HeartbeatSender::~HeartbeatSender() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   signal_strategy_->RemoveListener(this);
 }
 
-void HeartbeatSender::OnSignalStrategyStateChange(SignalStrategy::State state) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  if (state == SignalStrategy::CONNECTED) {
-    DCHECK(!iq_sender_);
-    iq_sender_ = std::make_unique<IqSender>(signal_strategy_);
+void HeartbeatSender::SetHostOfflineReason(
+    const std::string& host_offline_reason,
+    const base::TimeDelta& timeout,
+    base::OnceCallback<void(bool success)> ack_callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(!host_offline_reason_ack_callback_);
+
+  host_offline_reason_ = host_offline_reason;
+  host_offline_reason_ack_callback_ = std::move(ack_callback);
+  host_offline_reason_timeout_timer_.Start(
+      FROM_HERE, timeout, this, &HeartbeatSender::OnHostOfflineReasonTimeout);
+  if (signal_strategy_->GetState() == SignalStrategy::State::CONNECTED) {
     SendHeartbeat();
-  } else if (state == SignalStrategy::DISCONNECTED) {
-    request_.reset();
-    iq_sender_.reset();
-    timer_.AbandonAndStop();
+  }
+}
+
+void HeartbeatSender::OnSignalStrategyStateChange(SignalStrategy::State state) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  switch (state) {
+    case SignalStrategy::State::CONNECTED:
+      SendHeartbeat();
+      break;
+    case SignalStrategy::State::DISCONNECTED:
+      client_->CancelPendingRequests();
+      heartbeat_timer_.AbandonAndStop();
+      break;
+    default:
+      // Do nothing
+      break;
   }
 }
 
@@ -114,12 +257,14 @@ bool HeartbeatSender::OnSignalStrategyIncomingStanza(
 }
 
 void HeartbeatSender::OnHostOfflineReasonTimeout() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(host_offline_reason_ack_callback_);
 
   std::move(host_offline_reason_ack_callback_).Run(false);
 }
 
 void HeartbeatSender::OnHostOfflineReasonAck() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!host_offline_reason_ack_callback_) {
     DCHECK(!host_offline_reason_timeout_timer_.IsRunning());
     return;
@@ -131,62 +276,40 @@ void HeartbeatSender::OnHostOfflineReasonAck() {
   std::move(host_offline_reason_ack_callback_).Run(true);
 }
 
-void HeartbeatSender::SetHostOfflineReason(
-    const std::string& host_offline_reason,
-    const base::TimeDelta& timeout,
-    const base::Callback<void(bool success)>& ack_callback) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!host_offline_reason_ack_callback_);
-
-  host_offline_reason_ = host_offline_reason;
-  host_offline_reason_ack_callback_ = ack_callback;
-  host_offline_reason_timeout_timer_.Start(
-      FROM_HERE, timeout, this, &HeartbeatSender::OnHostOfflineReasonTimeout);
-  if (signal_strategy_->GetState() == SignalStrategy::CONNECTED) {
-    // Drop timer or pending heartbeat and send a new heartbeat immediately.
-    request_.reset();
-    timer_.AbandonAndStop();
-
-    SendHeartbeat();
-  }
-}
-
 void HeartbeatSender::SendHeartbeat() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  VLOG(1) << "Sending heartbeat stanza to " << directory_bot_jid_;
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (iq_sender_) {
-    DCHECK_EQ(signal_strategy_->GetState(), SignalStrategy::CONNECTED);
-    request_ = iq_sender_->SendIq(
-        jingle_xmpp::STR_SET, directory_bot_jid_, CreateHeartbeatMessage(),
-        base::Bind(&HeartbeatSender::OnResponse, base::Unretained(this)));
-  } else {
-    DCHECK_EQ(signal_strategy_->GetState(), SignalStrategy::DISCONNECTED);
+  if (signal_strategy_->GetState() != SignalStrategy::State::CONNECTED) {
+    LOG(WARNING) << "Not sending heartbeat because the signal strategy is not "
+                    "connected.";
+    return;
   }
 
-  if (request_) {
-    request_->SetTimeout(kHeartbeatResponseTimeout);
-  } else {
-    // If we failed to send a new heartbeat, call into the handler to determine
-    // whether to retry later or disconnect.
-    OnResponse(nullptr, nullptr);
-  }
-  ++sequence_id_;
+  VLOG(1) << "About to send heartbeat.";
+
+  // Drop previous heartbeat and timer so that it doesn't interfere with the
+  // current one.
+  client_->CancelPendingRequests();
+  heartbeat_timer_.AbandonAndStop();
+
+  client_->Heartbeat(
+      CreateHeartbeatRequest(),
+      base::BindOnce(&HeartbeatSender::OnResponse, base::Unretained(this)));
+  observer_->OnHeartbeatSent();
 }
 
-void HeartbeatSender::OnResponse(IqRequest* request,
-                                 const jingle_xmpp::XmlElement* response) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+void HeartbeatSender::OnResponse(
+    const ProtobufHttpStatus& status,
+    std::unique_ptr<apis::v1::HeartbeatResponse> response) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  HeartbeatResult result = ProcessResponse(response);
-
-  if (result == HeartbeatResult::SUCCESS) {
-    heartbeat_succeeded_ = true;
-    failed_heartbeat_count_ = 0;
+  if (status.ok()) {
+    backoff_.Reset();
 
     // Notify listener of the first successful heartbeat.
-    if (on_heartbeat_successful_callback_) {
-      std::move(on_heartbeat_successful_callback_).Run();
+    if (!initial_heartbeat_sent_) {
+      delegate_->OnFirstHeartbeatSuccessful();
+      initial_heartbeat_sent_ = true;
     }
 
     // Notify caller of SetHostOfflineReason that we got an ack and don't
@@ -195,23 +318,19 @@ void HeartbeatSender::OnResponse(IqRequest* request,
       OnHostOfflineReasonAck();
       return;
     }
+
+    if (response->has_remote_command()) {
+      LOG(WARNING) << "Remote command ignored: " << response->remote_command();
+    }
   } else {
-    failed_heartbeat_count_++;
+    LOG(ERROR) << "Heartbeat failed. Error code: "
+               << static_cast<int>(status.error_code()) << ", "
+               << status.error_message();
+    backoff_.InformOfRequest(false);
   }
 
-  if (result == HeartbeatResult::TIMEOUT) {
-    timed_out_heartbeats_count_++;
-    if (timed_out_heartbeats_count_ >= kMaxHeartbeatTimeouts) {
-      LOG(ERROR) << "Heartbeat timed out. Reconnecting XMPP.";
-      timed_out_heartbeats_count_ = 0;
-      // SignalingConnector will reconnect SignalStrategy.
-      signal_strategy_->Disconnect();
-      return;
-    }
-
+  if (status.error_code() == ProtobufHttpStatus::Code::DEADLINE_EXCEEDED) {
     LOG(ERROR) << "Heartbeat timed out.";
-  } else {
-    timed_out_heartbeats_count_ = 0;
   }
 
   // If the host was registered immediately before it sends a heartbeat,
@@ -219,165 +338,75 @@ void HeartbeatSender::OnResponse(IqRequest* request,
   // host ID in the heartbeat. So even if all of the first few heartbeats
   // get a "host ID not found" error, that's not a good enough reason to
   // exit.
-  if (result == HeartbeatResult::INVALID_HOST_ID &&
-      (heartbeat_succeeded_ ||
-       (failed_heartbeat_count_ > kMaxResendOnHostNotFoundCount))) {
-    on_unknown_host_id_error_.Run();
+  if (status.error_code() == ProtobufHttpStatus::Code::NOT_FOUND &&
+      (initial_heartbeat_sent_ ||
+       (backoff_.failure_count() > kMaxResendOnHostNotFoundCount))) {
+    delegate_->OnHostNotFound();
     return;
   }
 
-  // Response can be received only while signaling connection is active, so we
-  // should be able to schedule next message.
-  DCHECK_EQ(signal_strategy_->GetState(), SignalStrategy::CONNECTED);
+  if (status.error_code() == ProtobufHttpStatus::Code::UNAUTHENTICATED) {
+    oauth_token_getter_->InvalidateCache();
+    if (backoff_.failure_count() > kMaxResendOnUnauthenticatedCount) {
+      delegate_->OnAuthFailed();
+      return;
+    }
+  }
 
   // Calculate delay before sending the next message.
   base::TimeDelta delay;
-  switch (result) {
-    case HeartbeatResult::SUCCESS:
-      delay = interval_;
+  switch (status.error_code()) {
+    case ProtobufHttpStatus::Code::OK:
+      delay = base::TimeDelta::FromSeconds(response->set_interval_seconds());
+      if (delay < kMinimumHeartbeatInterval) {
+        LOG(WARNING) << "Received suspicious set_interval_seconds: " << delay
+                     << ". Using minimum interval: "
+                     << kMinimumHeartbeatInterval;
+        delay = kMinimumHeartbeatInterval;
+      }
       break;
-
-    case HeartbeatResult::INVALID_HOST_ID:
+    case ProtobufHttpStatus::Code::NOT_FOUND:
       delay = kResendDelayOnHostNotFound;
       break;
-
-    case HeartbeatResult::SET_SEQUENCE_ID:
-      if (failed_heartbeat_count_ == 1 && !heartbeat_succeeded_) {
-        // Send next heartbeat immediately after receiving the first
-        // set-sequence-id response. Repeated set-sequence-id responses are
-        // unexpected, and therefore are handled as errors to avoid overloading
-        // the server when it malfunctions.
-        delay = base::TimeDelta();
-        break;
-      }
-      // Fall through to handle other cases as errors.
-      FALLTHROUGH;
-    case HeartbeatResult::TIMEOUT:
-    case HeartbeatResult::ERROR:
-      delay = pow(2.0, failed_heartbeat_count_) * (1 + base::RandDouble()) *
-              kResendDelay;
+    case ProtobufHttpStatus::Code::UNAUTHENTICATED:
+      delay = kResendDelayOnUnauthenticated;
+      break;
+    default:
+      delay = backoff_.GetTimeUntilRelease();
+      LOG(ERROR) << "Heartbeat failed due to unexpected error. Will retry in "
+                 << delay;
       break;
   }
 
-  timer_.Start(FROM_HERE, delay, this, &HeartbeatSender::SendHeartbeat);
+  heartbeat_timer_.Start(FROM_HERE, delay, this,
+                         &HeartbeatSender::SendHeartbeat);
 }
 
-HeartbeatSender::HeartbeatResult HeartbeatSender::ProcessResponse(
-    const jingle_xmpp::XmlElement* response) {
-  if (!response) {
-    return HeartbeatResult::TIMEOUT;
-  }
+std::unique_ptr<apis::v1::HeartbeatRequest>
+HeartbeatSender::CreateHeartbeatRequest() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  std::string type = response->Attr(jingle_xmpp::QN_TYPE);
-  if (type == jingle_xmpp::STR_ERROR) {
-    const XmlElement* error_element =
-        response->FirstNamed(QName(jingle_xmpp::NS_CLIENT, kErrorTag));
-    if (error_element &&
-        error_element->FirstNamed(QName(jingle_xmpp::NS_STANZA, kNotFoundTag))) {
-      LOG(ERROR) << "Received error: Host ID not found";
-      return HeartbeatResult::INVALID_HOST_ID;
-    }
-    LOG(ERROR) << "Received error in response to heartbeat: "
-               << response->Str();
-
-    return HeartbeatResult::ERROR;
-  }
-
-  // This method must only be called for error or result stanzas.
-  DCHECK_EQ(std::string(jingle_xmpp::STR_RESULT), type);
-
-  const XmlElement* result_element =
-      response->FirstNamed(QName(kChromotingXmlNamespace, kHeartbeatResultTag));
-  if (result_element) {
-    const XmlElement* set_interval_element =
-        result_element->FirstNamed(QName(kChromotingXmlNamespace,
-                                         kSetIntervalTag));
-    if (set_interval_element) {
-      const std::string& interval_str = set_interval_element->BodyText();
-      int interval_seconds;
-      if (!base::StringToInt(interval_str, &interval_seconds) ||
-          interval_seconds <= 0) {
-        LOG(ERROR) << "Received invalid set-interval: "
-                   << set_interval_element->Str();
-      } else {
-        interval_ = base::TimeDelta::FromSeconds(interval_seconds);
-      }
-    }
-
-    const XmlElement* expected_sequence_id_element =
-        result_element->FirstNamed(QName(kChromotingXmlNamespace,
-                                         kExpectedSequenceIdTag));
-    if (expected_sequence_id_element) {
-      // The sequence ID sent in the previous heartbeat was not what the server
-      // expected, so send another heartbeat with the expected sequence ID.
-      const std::string& expected_sequence_id_str =
-          expected_sequence_id_element->BodyText();
-      int expected_sequence_id;
-      if (!base::StringToInt(expected_sequence_id_str, &expected_sequence_id)) {
-        LOG(ERROR) << "Received invalid " << kExpectedSequenceIdTag << ": " <<
-            expected_sequence_id_element->Str();
-
-        return HeartbeatResult::ERROR;
-      }
-
-      sequence_id_ = expected_sequence_id;
-      return HeartbeatResult::SET_SEQUENCE_ID;
-    }
-  }
-
-  return HeartbeatResult::SUCCESS;
-}
-
-std::unique_ptr<XmlElement> HeartbeatSender::CreateHeartbeatMessage() {
-  // Create heartbeat stanza.
-  std::unique_ptr<XmlElement> heartbeat(
-      new XmlElement(QName(kChromotingXmlNamespace, kHeartbeatQueryTag)));
-  heartbeat->AddAttr(QName(kChromotingXmlNamespace, kHostIdAttr), host_id_);
-  heartbeat->AddAttr(QName(kChromotingXmlNamespace, kSequenceIdAttr),
-                     base::NumberToString(sequence_id_));
+  auto heartbeat = std::make_unique<apis::v1::HeartbeatRequest>();
+  heartbeat->set_tachyon_id(signal_strategy_->GetLocalAddress().id());
+  heartbeat->set_host_id(host_id_);
   if (!host_offline_reason_.empty()) {
-    heartbeat->AddAttr(
-        QName(kChromotingXmlNamespace, kHostOfflineReasonAttr),
-        host_offline_reason_);
+    heartbeat->set_host_offline_reason(host_offline_reason_);
   }
-  heartbeat->AddElement(CreateSignature().release());
-  // Append host version.
-  std::unique_ptr<XmlElement> version_tag(
-      new XmlElement(QName(kChromotingXmlNamespace, kHostVersionTag)));
-  version_tag->AddText(STRINGIZE(VERSION));
-  heartbeat->AddElement(version_tag.release());
-  // If we have not recorded a heartbeat success, continue sending host OS info.
-  if (!heartbeat_succeeded_) {
-    // Append host OS name.
-    std::unique_ptr<XmlElement> os_name_tag(new XmlElement(
-        QName(kChromotingXmlNamespace, kHostOperatingSystemNameTag)));
-    os_name_tag->AddText(GetHostOperatingSystemName());
-    heartbeat->AddElement(os_name_tag.release());
-    // Append host OS version.
-    std::unique_ptr<XmlElement> os_version_tag(new XmlElement(
-        QName(kChromotingXmlNamespace, kHostOperatingSystemVersionTag)));
-    os_version_tag->AddText(GetHostOperatingSystemVersion());
-    heartbeat->AddElement(os_version_tag.release());
+  heartbeat->set_host_version(STRINGIZE(VERSION));
+  heartbeat->set_host_os_name(GetHostOperatingSystemName());
+  heartbeat->set_host_os_version(GetHostOperatingSystemVersion());
+  heartbeat->set_host_cpu_type(base::SysInfo::OperatingSystemArchitecture());
+  heartbeat->set_is_initial_heartbeat(!initial_heartbeat_sent_);
+
+  // Only set the hostname if the user's email is @google.com.
+  if (is_googler_) {
+    std::string hostname = GetHostname();
+    if (!hostname.empty()) {
+      heartbeat->set_hostname(hostname);
+    }
   }
-  // Append log message (which isn't signed).
-  std::unique_ptr<XmlElement> log(ServerLogEntry::MakeStanza());
-  std::unique_ptr<ServerLogEntry> log_entry(MakeLogEntryForHeartbeat());
-  AddHostFieldsToLogEntry(log_entry.get());
-  log->AddElement(log_entry->ToStanza().release());
-  heartbeat->AddElement(log.release());
+
   return heartbeat;
-}
-
-std::unique_ptr<XmlElement> HeartbeatSender::CreateSignature() {
-  std::unique_ptr<XmlElement> signature_tag(
-      new XmlElement(QName(kChromotingXmlNamespace, kHeartbeatSignatureTag)));
-
-  std::string message = signal_strategy_->GetLocalAddress().jid() + ' ' +
-                        base::NumberToString(sequence_id_);
-  std::string signature(host_key_pair_->SignMessage(message));
-  signature_tag->AddText(signature);
-
-  return signature_tag;
 }
 
 }  // namespace remoting

@@ -75,8 +75,8 @@ class NegotiatingAuthenticatorTest : public AuthenticatorTestBase {
     client_auth_config.pairing_secret = client_paired_secret;
     bool pairing_expected = pairing_registry_.get() != nullptr;
     client_auth_config.fetch_secret_callback =
-        base::Bind(&NegotiatingAuthenticatorTest::FetchSecret,
-                   client_interactive_pin, pairing_expected);
+        base::BindRepeating(&NegotiatingAuthenticatorTest::FetchSecret,
+                            client_interactive_pin, pairing_expected);
     client_as_negotiating_authenticator_ = new NegotiatingClientAuthenticator(
         kClientJid, kHostJid, client_auth_config);
     client_.reset(client_as_negotiating_authenticator_);
@@ -142,8 +142,9 @@ class NegotiatingAuthenticatorTest : public AuthenticatorTestBase {
     StreamConnectionTester tester(host_socket_.get(), client_socket_.get(),
                                   kMessageSize, kMessages);
 
-    tester.Start();
-    base::RunLoop().Run();
+    base::RunLoop run_loop;
+    tester.Start(run_loop.QuitClosure());
+    run_loop.Run();
     tester.CheckResults();
   }
 

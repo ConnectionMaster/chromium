@@ -4,10 +4,114 @@
 
 #include "chrome/browser/ui/views/media_router/cast_dialog_metrics.h"
 
+#include "base/metrics/histogram_macros.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/common/pref_names.h"
+#include "components/media_router/common/pref_names.h"
+#include "components/prefs/pref_service.h"
+
 namespace media_router {
 
-CastDialogMetrics::CastDialogMetrics(const base::Time& initialization_time)
-    : initialization_time_(initialization_time) {}
+namespace {
+
+DialogActivationLocationAndCastMode GetActivationLocationAndCastMode(
+    MediaRouterDialogOpenOrigin activation_location,
+    MediaCastMode cast_mode,
+    bool is_icon_pinned) {
+  switch (activation_location) {
+    case MediaRouterDialogOpenOrigin::TOOLBAR:
+      if (is_icon_pinned) {
+        switch (cast_mode) {
+          case MediaCastMode::PRESENTATION:
+            return DialogActivationLocationAndCastMode::
+                kPinnedIconAndPresentation;
+          case MediaCastMode::TAB_MIRROR:
+            return DialogActivationLocationAndCastMode::kPinnedIconAndTabMirror;
+          case MediaCastMode::DESKTOP_MIRROR:
+            return DialogActivationLocationAndCastMode::
+                kPinnedIconAndDesktopMirror;
+          case MediaCastMode::LOCAL_FILE:
+            return DialogActivationLocationAndCastMode::kPinnedIconAndLocalFile;
+        }
+      } else {
+        switch (cast_mode) {
+          case MediaCastMode::PRESENTATION:
+            return DialogActivationLocationAndCastMode::
+                kEphemeralIconAndPresentation;
+          case MediaCastMode::TAB_MIRROR:
+            return DialogActivationLocationAndCastMode::
+                kEphemeralIconAndTabMirror;
+          case MediaCastMode::DESKTOP_MIRROR:
+            return DialogActivationLocationAndCastMode::
+                kEphemeralIconAndDesktopMirror;
+          case MediaCastMode::LOCAL_FILE:
+            return DialogActivationLocationAndCastMode::
+                kEphemeralIconAndLocalFile;
+        }
+      }
+      break;
+    case MediaRouterDialogOpenOrigin::CONTEXTUAL_MENU:
+      switch (cast_mode) {
+        case MediaCastMode::PRESENTATION:
+          return DialogActivationLocationAndCastMode::
+              kContextMenuAndPresentation;
+        case MediaCastMode::TAB_MIRROR:
+          return DialogActivationLocationAndCastMode::kContextMenuAndTabMirror;
+        case MediaCastMode::DESKTOP_MIRROR:
+          return DialogActivationLocationAndCastMode::
+              kContextMenuAndDesktopMirror;
+        case MediaCastMode::LOCAL_FILE:
+          return DialogActivationLocationAndCastMode::kContextMenuAndLocalFile;
+      }
+      break;
+    case MediaRouterDialogOpenOrigin::PAGE:
+      switch (cast_mode) {
+        case MediaCastMode::PRESENTATION:
+          return DialogActivationLocationAndCastMode::kPageAndPresentation;
+        case MediaCastMode::TAB_MIRROR:
+          return DialogActivationLocationAndCastMode::kPageAndTabMirror;
+        case MediaCastMode::DESKTOP_MIRROR:
+          return DialogActivationLocationAndCastMode::kPageAndDesktopMirror;
+        case MediaCastMode::LOCAL_FILE:
+          return DialogActivationLocationAndCastMode::kPageAndLocalFile;
+      }
+      break;
+    case MediaRouterDialogOpenOrigin::APP_MENU:
+      switch (cast_mode) {
+        case MediaCastMode::PRESENTATION:
+          return DialogActivationLocationAndCastMode::kAppMenuAndPresentation;
+        case MediaCastMode::TAB_MIRROR:
+          return DialogActivationLocationAndCastMode::kAppMenuAndTabMirror;
+        case MediaCastMode::DESKTOP_MIRROR:
+          return DialogActivationLocationAndCastMode::kAppMenuAndDesktopMirror;
+        case MediaCastMode::LOCAL_FILE:
+          return DialogActivationLocationAndCastMode::kAppMenuAndLocalFile;
+      }
+      break;
+    // |OVERFLOW_MENU| refers to extension icons hidden in the app menu. That
+    // mode is no longer available for the Cast toolbar icon.
+    case MediaRouterDialogOpenOrigin::OVERFLOW_MENU:
+    case MediaRouterDialogOpenOrigin::TOTAL_COUNT:
+      break;
+  }
+  NOTREACHED();
+  return DialogActivationLocationAndCastMode::kMaxValue;
+}
+
+}  // namespace
+
+CastDialogMetrics::CastDialogMetrics(
+    const base::Time& initialization_time,
+    MediaRouterDialogOpenOrigin activation_location,
+    Profile* profile)
+    : initialization_time_(initialization_time),
+      activation_location_(activation_location),
+      is_icon_pinned_(
+          profile->GetPrefs()->GetBoolean(::prefs::kShowCastIconInToolbar)) {
+  MediaRouterMetrics::RecordIconStateAtDialogOpen(is_icon_pinned_);
+  MediaRouterMetrics::RecordCloudPrefAtDialogOpen(
+      profile->GetPrefs()->GetBoolean(prefs::kMediaRouterEnableCloudServices));
+}
 
 CastDialogMetrics::~CastDialogMetrics() = default;
 
@@ -28,7 +132,8 @@ void CastDialogMetrics::OnPaint(const base::Time& paint_time) {
 }
 
 void CastDialogMetrics::OnStartCasting(const base::Time& start_time,
-                                       int selected_sink_index) {
+                                       int selected_sink_index,
+                                       MediaCastMode cast_mode) {
   DCHECK(!sinks_load_time_.is_null());
   MediaRouterMetrics::RecordStartRouteDeviceIndex(selected_sink_index);
   if (!first_action_recorded_) {
@@ -36,6 +141,7 @@ void CastDialogMetrics::OnStartCasting(const base::Time& start_time,
                                                        sinks_load_time_);
   }
   MaybeRecordFirstAction(MediaRouterUserAction::START_LOCAL);
+  MaybeRecordActivationLocationAndCastMode(cast_mode);
 }
 
 void CastDialogMetrics::OnStopCasting(bool is_local_route) {
@@ -67,6 +173,17 @@ void CastDialogMetrics::MaybeRecordFirstAction(MediaRouterUserAction action) {
     return;
   MediaRouterMetrics::RecordMediaRouterInitialUserAction(action);
   first_action_recorded_ = true;
+}
+
+void CastDialogMetrics::MaybeRecordActivationLocationAndCastMode(
+    MediaCastMode cast_mode) {
+  if (activation_location_and_cast_mode_recorded_)
+    return;
+  UMA_HISTOGRAM_ENUMERATION(
+      "MediaRouter.Ui.Dialog.ActivationLocationAndCastMode",
+      GetActivationLocationAndCastMode(activation_location_, cast_mode,
+                                       is_icon_pinned_));
+  activation_location_and_cast_mode_recorded_ = true;
 }
 
 }  // namespace media_router

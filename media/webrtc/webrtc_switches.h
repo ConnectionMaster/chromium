@@ -19,9 +19,19 @@ COMPONENT_EXPORT(MEDIA_WEBRTC) extern const char kAgcStartupMinVolume[];
 namespace features {
 
 COMPONENT_EXPORT(MEDIA_WEBRTC)
-extern const base::Feature kWebRtcApmInAudioService;
+extern const base::Feature kWebRtcAllowWgcDesktopCapturer;
+
+COMPONENT_EXPORT(MEDIA_WEBRTC)
+extern const base::Feature kWebRtcEnableCaptureMultiChannelApm;
+
+COMPONENT_EXPORT(MEDIA_WEBRTC)
+extern const base::Feature kWebRtcAllow48kHzProcessingOnArm;
+
 COMPONENT_EXPORT(MEDIA_WEBRTC)
 extern const base::Feature kWebRtcHybridAgc;
+
+COMPONENT_EXPORT(MEDIA_WEBRTC)
+extern const base::Feature kWebRtcAnalogAgcClippingControl;
 
 }  // namespace features
 

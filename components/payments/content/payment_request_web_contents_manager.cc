@@ -6,8 +6,9 @@
 
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "components/payments/content/content_payment_request_delegate.h"
+#include "components/payments/content/payment_manifest_web_data_service.h"
 #include "components/payments/content/payment_request.h"
 #include "components/payments/content/payment_request_display_manager.h"
 #include "content/public/browser/navigation_handle.h"
@@ -28,13 +29,12 @@ PaymentRequestWebContentsManager::GetOrCreateForWebContents(
 
 void PaymentRequestWebContentsManager::CreatePaymentRequest(
     content::RenderFrameHost* render_frame_host,
-    content::WebContents* web_contents,
     std::unique_ptr<ContentPaymentRequestDelegate> delegate,
-    mojo::InterfaceRequest<payments::mojom::PaymentRequest> request,
+    mojo::PendingReceiver<payments::mojom::PaymentRequest> receiver,
     PaymentRequest::ObserverForTest* observer_for_testing) {
   auto new_request = std::make_unique<PaymentRequest>(
-      render_frame_host, web_contents, std::move(delegate), this,
-      delegate->GetDisplayManager(), std::move(request), observer_for_testing);
+      render_frame_host, std::move(delegate), /*manager=*/this,
+      delegate->GetDisplayManager(), std::move(receiver), observer_for_testing);
   PaymentRequest* request_ptr = new_request.get();
   payment_requests_.insert(std::make_pair(request_ptr, std::move(new_request)));
 }
@@ -56,9 +56,29 @@ void PaymentRequestWebContentsManager::DidStartNavigation(
   }
 }
 
-void PaymentRequestWebContentsManager::DestroyRequest(PaymentRequest* request) {
+void PaymentRequestWebContentsManager::RenderFrameDeleted(
+    content::RenderFrameHost* render_frame_host) {
+  const auto render_frame_host_id = render_frame_host->GetGlobalId();
+  // Two passes to avoid modifying the |payment_requests_| map while iterating
+  // over it.
+  std::vector<PaymentRequest*> obsolete;
+  for (auto& it : payment_requests_) {
+    if (it.second->initiator_frame_routing_id() == render_frame_host_id) {
+      obsolete.push_back(it.first);
+    }
+  }
+  for (auto* request : obsolete) {
+    request->RenderFrameDeleted(render_frame_host);
+  }
+}
+
+void PaymentRequestWebContentsManager::DestroyRequest(
+    base::WeakPtr<PaymentRequest> request) {
+  if (!request)
+    return;
+
   request->HideIfNecessary();
-  payment_requests_.erase(request);
+  payment_requests_.erase(request.get());
 }
 
 PaymentRequestWebContentsManager::PaymentRequestWebContentsManager(

@@ -28,6 +28,8 @@ class Location;
 
 namespace media {
 
+struct VideoCaptureDeviceInfo;
+
 // Extension of VideoCaptureDevice to create and manipulate Blackmagic devices.
 // Creates a reference counted |decklink_capture_delegate_| that does all the
 // DeckLink SDK configuration and capture work while holding a weak reference to
@@ -39,14 +41,7 @@ class CAPTURE_EXPORT VideoCaptureDeviceDeckLinkMac : public VideoCaptureDevice {
   // exactly which capture format they want, we enumerate as many cameras as
   // capture formats.
   static void EnumerateDevices(
-      VideoCaptureDeviceDescriptors* device_descriptors);
-
-  // Gets the supported formats of a particular device attached to the system,
-  // identified by |device|. Formats are retrieved from the DeckLink SDK.
-  // Following the enumeration, each camera will have only one capability.
-  static void EnumerateDeviceCapabilities(
-      const VideoCaptureDeviceDescriptor& descriptor,
-      VideoCaptureFormats* supported_formats);
+      std::vector<VideoCaptureDeviceInfo>* devices_info);
 
   explicit VideoCaptureDeviceDeckLinkMac(
       const VideoCaptureDeviceDescriptor& descriptor);
@@ -57,7 +52,9 @@ class CAPTURE_EXPORT VideoCaptureDeviceDeckLinkMac : public VideoCaptureDevice {
   void OnIncomingCapturedData(const uint8_t* data,
                               size_t length,
                               const VideoCaptureFormat& frame_format,
+                              const gfx::ColorSpace& color_space,
                               int rotation,  // Clockwise.
+                              bool flip_y,
                               base::TimeTicks reference_time,
                               base::TimeDelta timestamp);
 

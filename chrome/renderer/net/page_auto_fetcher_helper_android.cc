@@ -8,15 +8,19 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "content/public/common/service_names.mojom.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
-#include "services/service_manager/public/cpp/connector.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/common/browser_interface_broker_proxy.h"
 
 PageAutoFetcherHelper::PageAutoFetcherHelper(content::RenderFrame* render_frame)
     : render_frame_(render_frame) {}
 PageAutoFetcherHelper::~PageAutoFetcherHelper() = default;
+
+void PageAutoFetcherHelper::OnCommitLoad() {
+  // Make sure we don't try to re-use the same mojo interface for more than one
+  // page. Otherwise, the browser side will use the old page's URL.
+  fetcher_.reset();
+}
 
 void PageAutoFetcherHelper::TrySchedule(
     bool user_requested,
@@ -48,7 +52,7 @@ void PageAutoFetcherHelper::CancelSchedule() {
 bool PageAutoFetcherHelper::Bind() {
   if (fetcher_)
     return true;
-  render_frame_->GetRemoteInterfaces()->GetInterface(
-      mojo::MakeRequest(&fetcher_));
+  render_frame_->GetBrowserInterfaceBroker()->GetInterface(
+      fetcher_.BindNewPipeAndPassReceiver());
   return fetcher_.is_bound();
 }

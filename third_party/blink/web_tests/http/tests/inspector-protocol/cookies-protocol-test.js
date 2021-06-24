@@ -2,9 +2,7 @@
   var {page, session, dp} = await testRunner.startBlank(
       `Tests that cookies are set, updated and removed.`);
 
-  async function logCookies(success) {
-    if (success !== undefined)
-      testRunner.log('Success: ' + success);
+  async function logCookies() {
     var data = (await dp.Network.getAllCookies()).result;
     testRunner.log('Num of cookies ' + data.cookies.length);
     data.cookies.sort((a, b) => a.name.localeCompare(b.name));
@@ -27,7 +25,9 @@
   async function setCookie(cookie) {
     testRunner.log('Setting Cookie');
     var response = await dp.Network.setCookie(cookie);
-    await logCookies(response.result.success);
+    if (response.error)
+      testRunner.log(`setCookie failed: ${response.error.message}`);
+    await logCookies();
   }
 
   async function deleteCookie(cookie) {
@@ -133,6 +133,18 @@
 
     deleteAllCookies,
 
+    async function invalidCookieSourceScheme() {
+      await setCookie({url: 'http://127.0.0.1', name: 'foo', value: 'bar10', sourceScheme: "SomeInvalidValue"});
+    },
+
+    deleteAllCookies,
+
+    async function invalidCookieSourcePort() {
+      await setCookie({url: 'http://127.0.0.1', name: 'foo', value: 'bar10', sourcePort: -1234});
+    },
+
+    deleteAllCookies,
+
     async function secureCookieAdd() {
       await setCookie({url: 'http://127.0.0.1', secure: true, name: 'foo', value: 'bar'});
     },
@@ -166,6 +178,12 @@
                         {name: 'cookie6', value: '.domain', domain: '.chromium.org', path: '/path' },
                         {name: 'cookie7', value: 'domain', domain: 'www.chromium.org', path: '/path' },
                         {name: 'cookie8', value: 'url-based', url: 'https://www.chromium.org/foo' }]);
+    },
+
+    deleteAllCookies,
+
+    async function setCookiesWithInvalidCookie() {
+      await setCookies([{url: '', name: 'foo', value: 'bar1'}]);
     },
 
     deleteAllCookies,

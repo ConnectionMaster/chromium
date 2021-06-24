@@ -9,10 +9,10 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/stl_util.h"
 #include "base/task_runner_util.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "remoting/host/security_key/security_key_message.h"
@@ -37,7 +37,7 @@ class SecurityKeyMessageWriterImplTest : public testing::Test {
   std::string ReadMessage(int payload_length_bytes);
 
   // Called back once the read operation has completed.
-  void OnReadComplete(const base::Closure& done_callback,
+  void OnReadComplete(base::OnceClosure done_callback,
                       const std::string& result);
 
  protected:
@@ -82,15 +82,16 @@ std::string SecurityKeyMessageWriterImplTest::ReadMessage(
 }
 
 void SecurityKeyMessageWriterImplTest::OnReadComplete(
-    const base::Closure& done_callback,
+    base::OnceClosure done_callback,
     const std::string& result) {
   message_result_ = result;
-  done_callback.Run();
+  std::move(done_callback).Run();
 }
 
 void SecurityKeyMessageWriterImplTest::SetUp() {
   ASSERT_TRUE(MakePipe(&read_file_, &write_file_));
-  writer_.reset(new SecurityKeyMessageWriterImpl(std::move(write_file_)));
+  writer_ =
+      std::make_unique<SecurityKeyMessageWriterImpl>(std::move(write_file_));
 }
 
 void SecurityKeyMessageWriterImplTest::WriteMessageToOutput(
@@ -99,19 +100,20 @@ void SecurityKeyMessageWriterImplTest::WriteMessageToOutput(
   base::Thread reader_thread("ReaderThread");
 
   base::Thread::Options options;
-  options.message_loop_type = base::MessageLoop::TYPE_IO;
-  reader_thread.StartWithOptions(options);
+  options.message_pump_type = base::MessagePumpType::IO;
+  reader_thread.StartWithOptions(std::move(options));
 
   // Used to block until the read complete callback is triggered.
-  base::MessageLoopForIO message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment(
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO);
   base::RunLoop run_loop;
 
   ASSERT_TRUE(base::PostTaskAndReplyWithResult(
       reader_thread.task_runner().get(), FROM_HERE,
-      base::Bind(&SecurityKeyMessageWriterImplTest::ReadMessage,
-                 base::Unretained(this), payload.size()),
-      base::Bind(&SecurityKeyMessageWriterImplTest::OnReadComplete,
-                 base::Unretained(this), run_loop.QuitClosure())));
+      base::BindOnce(&SecurityKeyMessageWriterImplTest::ReadMessage,
+                     base::Unretained(this), payload.size()),
+      base::BindOnce(&SecurityKeyMessageWriterImplTest::OnReadComplete,
+                     base::Unretained(this), run_loop.QuitClosure())));
 
   if (payload.size()) {
     ASSERT_TRUE(writer_->WriteMessageWithPayload(kTestMessageType, payload));

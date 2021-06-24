@@ -7,7 +7,7 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
@@ -16,19 +16,17 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "content/browser/media/session/media_session_impl.h"
-#include "content/public/common/service_manager_connection.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/browser/media_session_service.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
-#include "content/public/test/test_service_manager_context.h"
 #include "content/test/test_web_contents.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/channel_layout.h"
 #include "media/base/media_log.h"
 #include "media/base/media_switches.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/media_session/public/cpp/features.h"
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
-#include "services/media_session/public/mojom/constants.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace {
@@ -42,22 +40,15 @@ using media_session::mojom::AudioFocusRequestStatePtr;
 // integer/string values.
 class MediaInternalsTestBase {
  public:
-  MediaInternalsTestBase() = default;
-  virtual ~MediaInternalsTestBase() = default;
-
-  void SetUpServiceManager() {
+  MediaInternalsTestBase() {
     scoped_feature_list_.InitAndEnableFeature(
         media_session::features::kMediaSessionService);
-
-    service_manager_context_ =
-        std::make_unique<content::TestServiceManagerContext>();
   }
-
-  void TearDownServiceManager() { service_manager_context_.reset(); }
+  virtual ~MediaInternalsTestBase() = default;
 
  protected:
   // Extracts and deserializes the JSON update data; merges into |update_data_|.
-  virtual void UpdateCallbackImpl(const base::string16& update) {
+  virtual void UpdateCallbackImpl(const std::u16string& update) {
     // Each update string looks like "<JavaScript Function Name>({<JSON>});"
     // or for video capabilities: "<JavaScript Function Name>([{<JSON>}]);".
     // In the second case we will be able to extract the dictionary if it is the
@@ -116,7 +107,6 @@ class MediaInternalsTestBase {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<content::TestServiceManagerContext> service_manager_context_;
 };
 
 }  // namespace
@@ -129,20 +119,18 @@ class MediaInternalsVideoCaptureDeviceTest : public testing::Test,
                                              public MediaInternalsTestBase {
  public:
   MediaInternalsVideoCaptureDeviceTest()
-      : update_cb_(base::Bind(
+      : update_cb_(base::BindRepeating(
             &MediaInternalsVideoCaptureDeviceTest::UpdateCallbackImpl,
             base::Unretained(this))) {
-    SetUpServiceManager();
     media_internals()->AddUpdateCallback(update_cb_);
   }
 
   ~MediaInternalsVideoCaptureDeviceTest() override {
     media_internals()->RemoveUpdateCallback(update_cb_);
-    TearDownServiceManager();
   }
 
  protected:
-  const content::TestBrowserThreadBundle thread_bundle_;
+  const content::BrowserTaskEnvironment task_environment_;
   MediaInternals::UpdateCallback update_cb_;
 };
 
@@ -178,11 +166,11 @@ TEST_F(MediaInternalsVideoCaptureDeviceTest,
   media::VideoCaptureDeviceDescriptor descriptor;
   descriptor.device_id = "dummy";
   descriptor.set_display_name("dummy");
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   descriptor.capture_api = media::VideoCaptureApi::MACOSX_AVFOUNDATION;
 #elif defined(OS_WIN)
   descriptor.capture_api = media::VideoCaptureApi::WIN_DIRECT_SHOW;
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
   descriptor.device_id = "/dev/dummy";
   descriptor.capture_api = media::VideoCaptureApi::LINUX_V4L2_SINGLE_PLANE;
 #elif defined(OS_ANDROID)
@@ -200,7 +188,7 @@ TEST_F(MediaInternalsVideoCaptureDeviceTest,
   media_internals()->UpdateVideoCaptureDeviceCapabilities(
       descriptors_and_formats);
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   ExpectString("id", "/dev/dummy");
 #else
   ExpectString("id", "dummy");
@@ -209,11 +197,11 @@ TEST_F(MediaInternalsVideoCaptureDeviceTest,
   base::ListValue expected_list;
   expected_list.AppendString(media::VideoCaptureFormat::ToString(format_hd));
   ExpectListOfStrings("formats", expected_list);
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   ExpectString("captureApi", "V4L2 SPLANE");
 #elif defined(OS_WIN)
   ExpectString("captureApi", "Direct Show");
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   ExpectString("captureApi", "AV Foundation");
 #elif defined(OS_ANDROID)
   ExpectString("captureApi", "Camera API2 Legacy");
@@ -225,19 +213,18 @@ class MediaInternalsAudioLogTest
       public testing::TestWithParam<media::AudioLogFactory::AudioComponent> {
  public:
   MediaInternalsAudioLogTest()
-      : update_cb_(base::Bind(&MediaInternalsAudioLogTest::UpdateCallbackImpl,
-                              base::Unretained(this))),
+      : update_cb_(
+            base::BindRepeating(&MediaInternalsAudioLogTest::UpdateCallbackImpl,
+                                base::Unretained(this))),
         test_params_(MakeAudioParams()),
         test_component_(GetParam()),
         audio_log_(media_internals()->CreateAudioLog(test_component_,
                                                      kTestComponentID)) {
-    SetUpServiceManager();
     media_internals()->AddUpdateCallback(update_cb_);
   }
 
   virtual ~MediaInternalsAudioLogTest() {
     media_internals()->RemoveUpdateCallback(update_cb_);
-    TearDownServiceManager();
   }
 
  protected:
@@ -255,7 +242,7 @@ class MediaInternalsAudioLogTest
     return params;
   }
 
-  const content::TestBrowserThreadBundle thread_bundle_;
+  const content::BrowserTaskEnvironment task_environment_;
 };
 
 TEST_P(MediaInternalsAudioLogTest, AudioLogCreateStartStopErrorClose) {
@@ -321,8 +308,8 @@ INSTANTIATE_TEST_SUITE_P(
 namespace {
 
 // Test page titles.
-const char kTestTitle1[] = "Test Title 1";
-const char kTestTitle2[] = "Test Title 2";
+const char16_t kTestTitle1[] = u"Test Title 1";
+const char16_t kTestTitle2[] = u"Test Title 2";
 
 }  // namespace
 
@@ -334,28 +321,25 @@ class MediaInternalsAudioFocusTest : public RenderViewHostTestHarness,
 
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
-    SetUpServiceManager();
 
     update_cb_ =
         base::BindRepeating(&MediaInternalsAudioFocusTest::UpdateCallbackImpl,
                             base::Unretained(this));
     run_loop_ = std::make_unique<base::RunLoop>();
 
-    content::ServiceManagerConnection::GetForProcess()
-        ->GetConnector()
-        ->BindInterface(media_session::mojom::kServiceName, &audio_focus_ptr_);
+    GetMediaSessionService().BindAudioFocusManager(
+        audio_focus_.BindNewPipeAndPassReceiver());
 
     content::MediaInternals::GetInstance()->AddUpdateCallback(update_cb_);
   }
 
   void TearDown() override {
     content::MediaInternals::GetInstance()->RemoveUpdateCallback(update_cb_);
-    TearDownServiceManager();
     RenderViewHostTestHarness::TearDown();
   }
 
  protected:
-  void UpdateCallbackImpl(const base::string16& update) override {
+  void UpdateCallbackImpl(const std::u16string& update) override {
     base::AutoLock auto_lock(lock_);
     MediaInternalsTestBase::UpdateCallbackImpl(update);
     call_count_++;
@@ -395,7 +379,7 @@ class MediaInternalsAudioFocusTest : public RenderViewHostTestHarness,
 
     {
       base::AutoLock auto_lock(lock_);
-      if (!update_data_.empty() && call_count_ == wanted_call_count_)
+      if (!update_data_.DictEmpty() && call_count_ == wanted_call_count_)
         return;
     }
 
@@ -405,14 +389,14 @@ class MediaInternalsAudioFocusTest : public RenderViewHostTestHarness,
   std::string GetRequestIdForTopFocusRequest() {
     std::string result;
 
-    audio_focus_ptr_->GetFocusRequests(base::BindOnce(
+    audio_focus_->GetFocusRequests(base::BindOnce(
         [](std::string* out, std::vector<AudioFocusRequestStatePtr> requests) {
           DCHECK(!requests.empty());
           *out = requests.back()->request_id.value().ToString();
         },
         &result));
 
-    audio_focus_ptr_.FlushForTesting();
+    audio_focus_.FlushForTesting();
     return result;
   }
 
@@ -425,14 +409,13 @@ class MediaInternalsAudioFocusTest : public RenderViewHostTestHarness,
   base::Lock lock_;
   std::unique_ptr<base::RunLoop> run_loop_;
 
-  media_session::mojom::AudioFocusManagerPtr audio_focus_ptr_;
+  mojo::Remote<media_session::mojom::AudioFocusManager> audio_focus_;
 };
 
 TEST_F(MediaInternalsAudioFocusTest, AudioFocusStateIsUpdated) {
   // Create a test media session and request audio focus.
   std::unique_ptr<WebContents> web_contents1 = CreateTestWebContents();
-  static_cast<TestWebContents*>(web_contents1.get())
-      ->SetTitle(base::UTF8ToUTF16(kTestTitle1));
+  static_cast<TestWebContents*>(web_contents1.get())->SetTitle(kTestTitle1);
   MediaSessionImpl* media_session1 = MediaSessionImpl::Get(web_contents1.get());
   media_session1->RequestSystemAudioFocus(AudioFocusType::kGain);
   WaitForCallbackCount(1);
@@ -454,8 +437,7 @@ TEST_F(MediaInternalsAudioFocusTest, AudioFocusStateIsUpdated) {
 
   // Create another media session.
   std::unique_ptr<WebContents> web_contents2 = CreateTestWebContents();
-  static_cast<TestWebContents*>(web_contents2.get())
-      ->SetTitle(base::UTF8ToUTF16(kTestTitle2));
+  static_cast<TestWebContents*>(web_contents2.get())->SetTitle(kTestTitle2);
   MediaSessionImpl* media_session2 = MediaSessionImpl::Get(web_contents2.get());
   media_session2->RequestSystemAudioFocus(
       AudioFocusType::kGainTransientMayDuck);

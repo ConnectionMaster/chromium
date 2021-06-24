@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
@@ -11,11 +13,10 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/android/chrome_jni_headers/ConnectivityChecker_jni.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_android.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "content/public/browser/storage_partition.h"
-#include "jni/ConnectivityChecker_jni.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -121,9 +122,8 @@ ConnectivityChecker::ConnectivityChecker(
     const GURL& url,
     const base::TimeDelta& timeout,
     const base::android::JavaRef<jobject>& java_callback)
-    : shared_url_loader_factory_(
-          content::BrowserContext::GetDefaultStoragePartition(profile)
-              ->GetURLLoaderFactoryForBrowserProcess()),
+    : shared_url_loader_factory_(profile->GetDefaultStoragePartition()
+                                     ->GetURLLoaderFactoryForBrowserProcess()),
       url_(url),
       timeout_(timeout),
       java_callback_(java_callback),
@@ -132,18 +132,15 @@ ConnectivityChecker::ConnectivityChecker(
 void ConnectivityChecker::StartAsyncCheck() {
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = url_;
-  request->allow_credentials = false;
+  request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   request->load_flags = net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE;
-  // TODO(https://crbug.com/808498): Re-add data use measurement once
-  // SimpleURLLoader supports it.
-  // ID=data_use_measurement::DataUseUserData::FEEDBACK_UPLOADER
   url_loader_ = network::SimpleURLLoader::Create(std::move(request),
                                                  NO_TRAFFIC_ANNOTATION_YET);
   url_loader_->DownloadHeadersOnly(
       shared_url_loader_factory_.get(),
       base::BindOnce(&ConnectivityChecker::OnURLLoadComplete,
                      base::Unretained(this)));
-  expiration_timer_.reset(new base::OneShotTimer());
+  expiration_timer_ = std::make_unique<base::OneShotTimer>();
   expiration_timer_->Start(FROM_HERE, timeout_, this,
                            &ConnectivityChecker::OnTimeout);
 }

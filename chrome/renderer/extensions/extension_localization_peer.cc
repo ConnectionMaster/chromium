@@ -19,23 +19,6 @@
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 
-namespace {
-
-class StringData final : public content::RequestPeer::ReceivedData {
- public:
-  explicit StringData(const std::string& data) : data_(data) {}
-
-  const char* payload() override { return data_.data(); }
-  int length() override { return data_.size(); }
-
- private:
-  const std::string data_;
-
-  DISALLOW_COPY_AND_ASSIGN(StringData);
-};
-
-}  // namespace
-
 ExtensionLocalizationPeer::DataPipeState::DataPipeState()
     : source_watcher_(FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::MANUAL),
       destination_watcher_(FROM_HERE,
@@ -44,7 +27,7 @@ ExtensionLocalizationPeer::DataPipeState::DataPipeState()
 ExtensionLocalizationPeer::DataPipeState::~DataPipeState() = default;
 
 ExtensionLocalizationPeer::ExtensionLocalizationPeer(
-    std::unique_ptr<content::RequestPeer> peer,
+    scoped_refptr<blink::WebRequestPeer> peer,
     IPC::Sender* message_sender,
     const GURL& request_url)
     : original_peer_(std::move(peer)),
@@ -55,9 +38,9 @@ ExtensionLocalizationPeer::~ExtensionLocalizationPeer() {
 }
 
 // static
-std::unique_ptr<content::RequestPeer>
+scoped_refptr<blink::WebRequestPeer>
 ExtensionLocalizationPeer::CreateExtensionLocalizationPeer(
-    std::unique_ptr<content::RequestPeer> peer,
+    scoped_refptr<blink::WebRequestPeer> peer,
     IPC::Sender* message_sender,
     const std::string& mime_type,
     const GURL& request_url) {
@@ -66,7 +49,7 @@ ExtensionLocalizationPeer::CreateExtensionLocalizationPeer(
   return (request_url.SchemeIs(extensions::kExtensionScheme) &&
           base::StartsWith(mime_type, "text/css",
                            base::CompareCase::INSENSITIVE_ASCII))
-             ? base::WrapUnique(new ExtensionLocalizationPeer(
+             ? base::WrapRefCounted(new ExtensionLocalizationPeer(
                    std::move(peer), message_sender, request_url))
              : std::move(peer);
 }
@@ -78,14 +61,15 @@ void ExtensionLocalizationPeer::OnUploadProgress(uint64_t position,
 
 bool ExtensionLocalizationPeer::OnReceivedRedirect(
     const net::RedirectInfo& redirect_info,
-    const network::ResourceResponseInfo& info) {
+    network::mojom::URLResponseHeadPtr head,
+    std::vector<std::string>*) {
   NOTREACHED();
   return false;
 }
 
 void ExtensionLocalizationPeer::OnReceivedResponse(
-    const network::ResourceResponseInfo& info) {
-  response_info_ = info;
+    network::mojom::URLResponseHeadPtr head) {
+  response_head_ = std::move(head);
 }
 
 void ExtensionLocalizationPeer::OnStartLoadingResponseBody(
@@ -99,10 +83,6 @@ void ExtensionLocalizationPeer::OnStartLoadingResponseBody(
       base::BindRepeating(&ExtensionLocalizationPeer::OnReadableBody,
                           base::Unretained(this)));
   data_pipe_state_.source_watcher_.ArmOrNotify();
-}
-
-void ExtensionLocalizationPeer::OnReceivedData(std::unique_ptr<ReceivedData>) {
-  NOTREACHED();
 }
 
 void ExtensionLocalizationPeer::OnTransferSizeUpdated(int transfer_size_diff) {
@@ -134,10 +114,6 @@ void ExtensionLocalizationPeer::OnCompletedRequest(
 
   // We've sent all the body to the peer. Complete the request.
   CompleteRequest();
-}
-
-scoped_refptr<base::TaskRunner> ExtensionLocalizationPeer::GetTaskRunner() {
-  return original_peer_->GetTaskRunner();
 }
 
 void ExtensionLocalizationPeer::OnReadableBody(
@@ -192,7 +168,7 @@ void ExtensionLocalizationPeer::StartSendingBody() {
 
   mojo::ScopedDataPipeConsumerHandle consumer_to_send;
   MojoResult result = mojo::CreateDataPipe(
-      nullptr, &data_pipe_state_.destination_handle_, &consumer_to_send);
+      nullptr, data_pipe_state_.destination_handle_, consumer_to_send);
   if (result != MOJO_RESULT_OK) {
     completion_status_ =
         network::URLLoaderCompletionStatus(net::ERR_INSUFFICIENT_RESOURCES);
@@ -201,7 +177,7 @@ void ExtensionLocalizationPeer::StartSendingBody() {
     return;
   }
 
-  original_peer_->OnReceivedResponse(response_info_);
+  original_peer_->OnReceivedResponse(std::move(response_head_));
   original_peer_->OnStartLoadingResponseBody(std::move(consumer_to_send));
 
   data_pipe_state_.destination_watcher_.Watch(

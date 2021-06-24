@@ -7,27 +7,12 @@
 #include <stdio.h>
 #include <sys/utsname.h>
 
+#include "base/cpu.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "sandbox/sandbox_buildflags.h"
-
-#if BUILDFLAG(USE_SECCOMP_BPF)
-#include "sandbox/linux/seccomp-bpf/sandbox_bpf.h"
-#endif
+#include "build/build_config.h"
 
 namespace {
-
-enum AndroidSeccompStatus {
-  // DETECTION_FAILED was formerly used when probing for seccomp was done
-  // out-of-process. There does not appear to be a gain in doing so, as
-  // explained in the comment in DetectSeccomp(). This enum remains for
-  // historical reasons.
-  DETECTION_FAILED_OBSOLETE,  // The process crashed during detection.
-
-  NOT_SUPPORTED,     // Kernel has no seccomp support.
-  SUPPORTED,         // Kernel has seccomp support.
-  LAST_STATUS
-};
 
 // Reports the kernel version obtained from uname.
 void ReportKernelVersion() {
@@ -45,27 +30,26 @@ void ReportKernelVersion() {
   }
 }
 
-// Reports whether the system supports PR_SET_SECCOMP.
-void ReportSeccompStatus() {
-#if BUILDFLAG(USE_SECCOMP_BPF)
-  bool prctl_supported = sandbox::SandboxBPF::SupportsSeccompSandbox(
-      sandbox::SandboxBPF::SeccompLevel::SINGLE_THREADED);
-#else
-  bool prctl_supported = false;
+// Per the comment in base/cpu.cc's ParseProcCpu(), unfortunately there is not
+// a universally reliable way to examine the CPU part information for all
+// cores, so the sampling effect of data collection via UMA will have to
+// suffice.
+void ReportArmCpu() {
+#if defined(ARCH_CPU_ARM_FAMILY)
+  base::CPU cpu;
+
+  // Compose the implementer (8 bits) and the part number (12 bits) into a
+  // single 20-bit number that can be recorded via UMA.
+  uint32_t composed = cpu.implementer();
+  composed <<= 12;
+  composed |= cpu.part_number();
+  base::UmaHistogramSparse("Android.ArmCpuPart", composed);
 #endif
-
-  UMA_HISTOGRAM_ENUMERATION("Android.SeccompStatus.Prctl",
-                            prctl_supported ? SUPPORTED : NOT_SUPPORTED,
-                            LAST_STATUS);
-
-  // Probing for the seccomp syscall can provoke kernel panics in certain LGE
-  // devices. For now, this data will not be collected. In the future, this
-  // should detect SeccompLevel::MULTI_THREADED. http://crbug.com/478478
 }
 
 }  // namespace
 
 void ReportSeccompSupport() {
   ReportKernelVersion();
-  ReportSeccompStatus();
+  ReportArmCpu();
 }

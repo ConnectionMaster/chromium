@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_tree.h"
 
@@ -35,7 +36,7 @@ ax::mojom::Role GetInterestingTableRole(unsigned char byte) {
     case 10:
       return ax::mojom::Role::kGenericContainer;
     case 11:
-      return ax::mojom::Role::kIgnored;
+      return ax::mojom::Role::kNone;
     case 12:
       return ax::mojom::Role::kLayoutTable;
     case 13:
@@ -79,13 +80,14 @@ ax::mojom::IntAttribute GetInterestingTableAttribute(unsigned char byte) {
 // These will be no-ops if the node is not part of a complete
 // table. We don't care about any of the results, we just want
 // to make sure none of these crash or hang.
-void TestTableAPIs(ui::AXNode* node) {
+void TestTableAPIs(const ui::AXNode* node) {
   ignore_result(node->IsTable());
   ignore_result(node->GetTableColCount());
   ignore_result(node->GetTableRowCount());
   ignore_result(node->GetTableAriaColCount());
   ignore_result(node->GetTableAriaRowCount());
   ignore_result(node->GetTableCellCount());
+  ignore_result(node->GetTableCaption());
   for (int i = 0; i < 8; i++)
     ignore_result(node->GetTableCellFromIndex(i));
   for (int i = 0; i < 3; i++)
@@ -96,15 +98,27 @@ void TestTableAPIs(ui::AXNode* node) {
   // crash. Normally |ids| is an out argument only, but
   // there's no reason we shouldn't be able to pass a vector
   // that was previously used by another call.
-  std::vector<int32_t> ids;
+  std::vector<ui::AXNodeID> ids;
   for (int i = 0; i < 3; i++) {
-    node->GetTableColHeaderNodeIds(i, &ids);
-    node->GetTableRowHeaderNodeIds(i, &ids);
+    std::vector<ui::AXNodeID> col_header_node_ids =
+        node->GetTableColHeaderNodeIds(i);
+    ids.insert(ids.end(), col_header_node_ids.begin(),
+               col_header_node_ids.end());
+
+    std::vector<ui::AXNodeID> row_header_node_ids =
+        node->GetTableRowHeaderNodeIds(i);
+    ids.insert(ids.end(), row_header_node_ids.begin(),
+               row_header_node_ids.end());
   }
-  node->GetTableUniqueCellIds(&ids);
+  std::vector<ui::AXNodeID> unique_cell_ids = node->GetTableUniqueCellIds();
+  ids.insert(ids.end(), unique_cell_ids.begin(), unique_cell_ids.end());
+
   ignore_result(node->IsTableRow());
   ignore_result(node->GetTableRowRowIndex());
-
+#if defined(OS_APPLE)
+  ignore_result(node->IsTableColumn());
+  ignore_result(node->GetTableColColIndex());
+#endif
   ignore_result(node->IsTableCellOrHeader());
   ignore_result(node->GetTableCellIndex());
   ignore_result(node->GetTableCellColIndex());
@@ -113,14 +127,20 @@ void TestTableAPIs(ui::AXNode* node) {
   ignore_result(node->GetTableCellRowSpan());
   ignore_result(node->GetTableCellAriaColIndex());
   ignore_result(node->GetTableCellAriaRowIndex());
-  node->GetTableCellColHeaderNodeIds(&ids);
-  node->GetTableCellRowHeaderNodeIds(&ids);
+  std::vector<ui::AXNodeID> cell_col_header_node_ids =
+      node->GetTableCellColHeaderNodeIds();
+  ids.insert(ids.end(), cell_col_header_node_ids.begin(),
+             cell_col_header_node_ids.end());
+  std::vector<ui::AXNodeID> cell_row_header_node_ids =
+      node->GetTableCellRowHeaderNodeIds();
+  ids.insert(ids.end(), cell_row_header_node_ids.begin(),
+             cell_row_header_node_ids.end());
   std::vector<ui::AXNode*> headers;
   node->GetTableCellColHeaders(&headers);
   node->GetTableCellRowHeaders(&headers);
 
-  for (int i = 0; i < node->child_count(); i++)
-    TestTableAPIs(node->children()[i]);
+  for (const auto* child : node->children())
+    TestTableAPIs(child);
 }
 
 // Entry point for LibFuzzer.

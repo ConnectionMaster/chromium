@@ -2,14 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_SPELLCHECK_RENDERER_SPELLCHECK_PANEL_H
-#define COMPONENTS_SPELLCHECK_RENDERER_SPELLCHECK_PANEL_H
+#ifndef COMPONENTS_SPELLCHECK_RENDERER_SPELLCHECK_PANEL_H_
+#define COMPONENTS_SPELLCHECK_RENDERER_SPELLCHECK_PANEL_H_
 
 #include "base/macros.h"
 #include "components/spellcheck/common/spellcheck_panel.mojom.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
 #include "content/public/renderer/render_frame_observer.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "third_party/blink/public/platform/web_spell_check_panel_host_client.h"
 
@@ -40,18 +42,18 @@ class SpellCheckPanel : public content::RenderFrameObserver,
   void UpdateSpellingUIWithMisspelledWord(
       const blink::WebString& word) override;
 
-  // Binds browser requests for the frame SpellCheckPanel interface.
-  void SpellCheckPanelRequest(
-      spellcheck::mojom::SpellCheckPanelRequest request);
+  // Binds browser receivers for the frame SpellCheckPanel interface.
+  void SpellCheckPanelReceiver(
+      mojo::PendingReceiver<spellcheck::mojom::SpellCheckPanel> receiver);
 
   // spellcheck::mojom::SpellCheckPanel:
   void ToggleSpellPanel(bool visible) override;
   void AdvanceToNextMisspelling() override;
 
-  spellcheck::mojom::SpellCheckPanelHostPtr GetSpellCheckPanelHost();
+  mojo::Remote<spellcheck::mojom::SpellCheckPanelHost> GetSpellCheckPanelHost();
 
-  // SpellCheckPanel bindings.
-  mojo::BindingSet<spellcheck::mojom::SpellCheckPanel> bindings_;
+  // SpellCheckPanel receivers.
+  mojo::ReceiverSet<spellcheck::mojom::SpellCheckPanel> receivers_;
 
   // True if the browser is showing the spelling panel.
   bool spelling_panel_visible_;
@@ -61,4 +63,4 @@ class SpellCheckPanel : public content::RenderFrameObserver,
   DISALLOW_COPY_AND_ASSIGN(SpellCheckPanel);
 };
 
-#endif
+#endif  // COMPONENTS_SPELLCHECK_RENDERER_SPELLCHECK_PANEL_H_

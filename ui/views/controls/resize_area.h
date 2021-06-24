@@ -5,7 +5,6 @@
 #ifndef UI_VIEWS_CONTROLS_RESIZE_AREA_H_
 #define UI_VIEWS_CONTROLS_RESIZE_AREA_H_
 
-#include <string>
 
 #include "base/macros.h"
 #include "ui/views/view.h"
@@ -17,13 +16,12 @@ class ResizeAreaDelegate;
 // An invisible area that acts like a horizontal resizer.
 class VIEWS_EXPORT ResizeArea : public View {
  public:
-  static const char kViewClassName[];
+  METADATA_HEADER(ResizeArea);
 
   explicit ResizeArea(ResizeAreaDelegate* delegate);
   ~ResizeArea() override;
 
   // views::View:
-  const char* GetClassName() const override;
   gfx::NativeCursor GetCursor(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;

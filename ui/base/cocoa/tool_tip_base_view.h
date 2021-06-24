@@ -7,19 +7,20 @@
 
 #import <AppKit/AppKit.h>
 
+#include "base/component_export.h"
 #import "ui/base/cocoa/base_view.h"
 
 // An NSiew that allows tooltip text to be set at the current mouse location. It
 // can take effect immediately, but won't appear unless the tooltip delay has
 // elapsed.
-UI_BASE_EXPORT
+COMPONENT_EXPORT(UI_BASE)
 @interface ToolTipBaseView : BaseView {
  @private
   // These are part of the magic tooltip code from WebKit's WebHTMLView:
-  id trackingRectOwner_;  // (not retained)
-  void* trackingRectUserData_;
-  NSTrackingRectTag lastToolTipTag_;
-  base::scoped_nsobject<NSString> toolTip_;
+  id _trackingRectOwner;  // (not retained)
+  void* _trackingRectUserData;
+  NSTrackingRectTag _lastToolTipTag;
+  base::scoped_nsobject<NSString> _toolTip;
 }
 
 // Set the current tooltip. It is the responsibility of the caller to set a nil

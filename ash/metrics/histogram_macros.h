@@ -15,32 +15,32 @@
 
 #define UMA_HISTOGRAM_PERCENTAGE_IN_TABLET(name, ...) \
   do {                                                \
-    if (ash::IsInTabletMode())                        \
+    if (ash::InTabletMode())                          \
       UMA_HISTOGRAM_PERCENTAGE(name, __VA_ARGS__);    \
   } while (0)
 
-#define UMA_HISTOGRAM_PERCENTAGE_IN_SPLITVIEW(name, ...) \
-  do {                                                   \
-    if (ash::IsInSplitView())                            \
-      UMA_HISTOGRAM_PERCENTAGE(name, __VA_ARGS__);       \
+#define UMA_HISTOGRAM_PERCENTAGE_IN_SPLITVIEW(in_split_view, name, ...) \
+  do {                                                                  \
+    if (in_split_view)                                                  \
+      UMA_HISTOGRAM_PERCENTAGE(name, __VA_ARGS__);                      \
   } while (0)
 
-#define UMA_HISTOGRAM_PERCENTAGE_IN_TABLET_NON_SPLITVIEW(name, ...) \
-  do {                                                              \
-    if (ash::IsInTabletMode() && !ash::IsInSplitView())             \
-      UMA_HISTOGRAM_PERCENTAGE(name, __VA_ARGS__);                  \
+#define UMA_HISTOGRAM_PERCENTAGE_IN_TABLET_NON_SPLITVIEW(in_split_view, name, \
+                                                         ...)                 \
+  do {                                                                        \
+    if (ash::InTabletMode() && !in_split_view)                                \
+      UMA_HISTOGRAM_PERCENTAGE(name, __VA_ARGS__);                            \
   } while (0)
 
 #define UMA_HISTOGRAM_PERCENTAGE_IN_CLAMSHELL(name, ...) \
   do {                                                   \
-    if (!ash::IsInTabletMode())                          \
+    if (!ash::InTabletMode())                            \
       UMA_HISTOGRAM_PERCENTAGE(name, __VA_ARGS__);       \
   } while (0)
 
 namespace ash {
 
-ASH_EXPORT bool IsInTabletMode();
-ASH_EXPORT bool IsInSplitView();
+ASH_EXPORT bool InTabletMode();
 
 }  // namespace ash
 

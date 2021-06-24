@@ -9,14 +9,14 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/feature_list.h"
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/feature_engagement/internal/availability_model_impl.h"
 #include "components/feature_engagement/internal/display_lock_controller.h"
@@ -50,6 +50,7 @@ void RegisterFeatureConfig(EditableConfiguration* configuration,
   config.valid = valid;
   config.used.name = feature.name + std::string("_used");
   config.trigger.name = feature.name + std::string("_trigger");
+  config.trigger.storage = 1u;
   config.tracking_only = tracking_only;
   configuration->SetConfiguration(&feature, config);
 }
@@ -84,8 +85,8 @@ class TestTrackerInMemoryEventStore : public InMemoryEventStore {
   explicit TestTrackerInMemoryEventStore(bool load_should_succeed)
       : load_should_succeed_(load_should_succeed) {}
 
-  void Load(const OnLoadedCallback& callback) override {
-    HandleLoadResult(callback, load_should_succeed_);
+  void Load(OnLoadedCallback callback) override {
+    HandleLoadResult(std::move(callback), load_should_succeed_);
   }
 
   void WriteEvent(const Event& event) override {
@@ -150,9 +151,9 @@ class TestTrackerAvailabilityModel : public AvailabilityModel {
 
   void SetIsReady(bool ready) { ready_ = ready; }
 
-  base::Optional<uint32_t> GetAvailability(
+  absl::optional<uint32_t> GetAvailability(
       const base::Feature& feature) const override {
-    return base::nullopt;
+    return absl::nullopt;
   }
 
  private:
@@ -218,11 +219,11 @@ class TrackerImplTest : public ::testing::Test {
         std::make_unique<TestTrackerDisplayLockController>();
     display_lock_controller_ = display_lock_controller.get();
 
-    tracker_.reset(new TrackerImpl(
+    tracker_ = std::make_unique<TrackerImpl>(
         std::move(event_model), std::move(availability_model),
         std::move(configuration), std::move(display_lock_controller),
         std::make_unique<OnceConditionValidator>(),
-        std::make_unique<TestTimeProvider>()));
+        std::make_unique<TestTimeProvider>());
   }
 
   void VerifyEventTriggerEvents(const base::Feature& feature, uint32_t count) {
@@ -415,7 +416,7 @@ class TrackerImplTest : public ::testing::Test {
 
   virtual bool ShouldAvailabilityStoreBeReady() { return true; }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<TrackerImpl> tracker_;
   TestTrackerInMemoryEventStore* event_store_;
   TestTrackerAvailabilityModel* availability_model_;
@@ -678,46 +679,79 @@ TEST_F(TrackerImplTest, TestTrackingOnlyTriggering) {
   base::RunLoop().RunUntilIdle();
   base::UserActionTester user_action_tester;
 
-  // Tracking only kTrackerTestFeatureBaz should never be shown, but should be
-  // counted.
-  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBaz));
-  VerifyEventTriggerEvents(kTrackerTestFeatureBaz, 1u);
-  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureFoo));
-  VerifyEventTriggerEvents(kTrackerTestFeatureFoo, 0u);
-  VerifyUserActionsTriggerChecks(user_action_tester, 1, 0, 1, 0);
-  VerifyUserActionsTriggered(user_action_tester, 0, 0, 0, 0);
-  VerifyUserActionsNotTriggered(user_action_tester, 1, 0, 0, 0);
-  VerifyUserActionsWouldHaveTriggered(user_action_tester, 0, 0, 1, 0);
-  VerifyUserActionsDismissed(user_action_tester, 0);
-  VerifyHistograms(true, 0, 1, 0, false, 0, 0, 0, true, 0, 0, 1, false, 0, 0,
-                   0);
-
-  // While in-product help is currently showing, even in a tracking only
-  // setting, no other features should be shown.
-  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureFoo));
-  VerifyEventTriggerEvents(kTrackerTestFeatureFoo, 0);
-  VerifyUserActionsTriggerChecks(user_action_tester, 2, 0, 1, 0);
-  VerifyUserActionsTriggered(user_action_tester, 0, 0, 0, 0);
-  VerifyUserActionsNotTriggered(user_action_tester, 2, 0, 0, 0);
-  VerifyUserActionsWouldHaveTriggered(user_action_tester, 0, 0, 1, 0);
-  VerifyUserActionsDismissed(user_action_tester, 0);
-  VerifyHistograms(true, 0, 2, 0, false, 0, 0, 0, true, 0, 0, 1, false, 0, 0,
-                   0);
-
-  // After dismissing the current in-product help, that feature can not be shown
-  // again, but a different feature should.
-  tracker_->Dismissed(kTrackerTestFeatureBaz);
-  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBaz));
-  VerifyEventTriggerEvents(kTrackerTestFeatureBaz, 1u);
+  // When another feature is showing, tracking only features should not trigger.
   EXPECT_TRUE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureFoo));
   VerifyEventTriggerEvents(kTrackerTestFeatureFoo, 1u);
-  VerifyUserActionsTriggerChecks(user_action_tester, 3, 0, 2, 0);
+  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBaz));
+  VerifyEventTriggerEvents(kTrackerTestFeatureBaz, 0u);
+  VerifyUserActionsTriggerChecks(user_action_tester, 1, 0, 1, 0);
   VerifyUserActionsTriggered(user_action_tester, 1, 0, 0, 0);
-  VerifyUserActionsNotTriggered(user_action_tester, 2, 0, 1, 0);
-  VerifyUserActionsWouldHaveTriggered(user_action_tester, 0, 0, 1, 0);
-  VerifyUserActionsDismissed(user_action_tester, 1);
-  VerifyHistograms(true, 1, 2, 0, false, 0, 0, 0, true, 0, 1, 1, false, 0, 0,
+  VerifyUserActionsNotTriggered(user_action_tester, 0, 0, 1, 0);
+  VerifyUserActionsWouldHaveTriggered(user_action_tester, 0, 0, 0, 0);
+  VerifyUserActionsDismissed(user_action_tester, 0);
+  VerifyHistograms(true, 1, 0, 0, false, 0, 0, 0, true, 0, 1, 0, false, 0, 0,
                    0);
+
+  // Now verify tracking only kTrackerTestFeatureBaz would have triggered and is
+  // immediately be dismissed.
+  tracker_->Dismissed(kTrackerTestFeatureFoo);
+  VerifyUserActionsDismissed(user_action_tester, 1);
+  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBaz));
+  VerifyEventTriggerEvents(kTrackerTestFeatureBaz, 1u);
+  VerifyUserActionsTriggerChecks(user_action_tester, 1, 0, 2, 0);
+  VerifyUserActionsTriggered(user_action_tester, 1, 0, 0, 0);
+  VerifyUserActionsNotTriggered(user_action_tester, 0, 0, 1, 0);
+  VerifyUserActionsWouldHaveTriggered(user_action_tester, 0, 0, 1, 0);
+  VerifyUserActionsDismissed(user_action_tester, 2);
+  VerifyHistograms(true, 1, 0, 0, false, 0, 0, 0, true, 0, 1, 1, false, 0, 0,
+                   0);
+
+  // Other in-product help is should be showable after a tracking only feature
+  // would have been triggered, because nothing is currently showing.
+  EXPECT_TRUE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBar));
+  VerifyEventTriggerEvents(kTrackerTestFeatureBar, 1u);
+  VerifyUserActionsTriggerChecks(user_action_tester, 1, 1, 2, 0);
+  VerifyUserActionsTriggered(user_action_tester, 1, 1, 0, 0);
+  VerifyUserActionsNotTriggered(user_action_tester, 0, 0, 1, 0);
+  VerifyUserActionsWouldHaveTriggered(user_action_tester, 0, 0, 1, 0);
+  VerifyUserActionsDismissed(user_action_tester, 2);
+  VerifyHistograms(true, 1, 0, 0, true, 1, 0, 0, true, 0, 1, 1, false, 0, 0, 0);
+}
+
+TEST_F(TrackerImplTest, TestHasEverTriggered) {
+  // Ensure all initialization is finished.
+  StoringInitializedCallback callback;
+  tracker_->AddOnInitializedCallback(base::BindOnce(
+      &StoringInitializedCallback::OnInitialized, base::Unretained(&callback)));
+  base::RunLoop().RunUntilIdle();
+  base::UserActionTester user_action_tester;
+
+  // All the features should not be triggered yet.
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureFoo, false));
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureBar, false));
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureBaz, false));
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureQux, false));
+
+  // For triggered features, has ever triggered from storage should returns
+  // true, as the storage is set to 1.
+  EXPECT_TRUE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureFoo));
+  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBar));
+  VerifyEventTriggerEvents(kTrackerTestFeatureFoo, 1u);
+  VerifyEventTriggerEvents(kTrackerTestFeatureBar, 0u);
+  EXPECT_TRUE(tracker_->HasEverTriggered(kTrackerTestFeatureFoo, false));
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureBar, false));
+  tracker_->Dismissed(kTrackerTestFeatureFoo);
+
+  // For tracking only feature, the event will still get recorded even
+  // ShouldTriggerHelpUI returns false.
+  EXPECT_FALSE(tracker_->ShouldTriggerHelpUI(kTrackerTestFeatureBaz));
+  VerifyEventTriggerEvents(kTrackerTestFeatureBaz, 1u);
+  EXPECT_TRUE(tracker_->HasEverTriggered(kTrackerTestFeatureBaz, false));
+
+  // If |from_window| = true, HasEverTriggered will always returns false as
+  // window size is 0 in test configurations.
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureFoo, true));
+  EXPECT_FALSE(tracker_->HasEverTriggered(kTrackerTestFeatureBaz, true));
 }
 
 TEST_F(TrackerImplTest, TestWouldTriggerInspection) {

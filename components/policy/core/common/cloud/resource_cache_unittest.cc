@@ -10,7 +10,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/single_thread_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
@@ -51,13 +51,13 @@ class ResourceCacheTest : public testing::Test {
 
   void TearDown() override { task_environment_.RunUntilIdle(); }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
 };
 
 TEST_F(ResourceCacheTest, StoreAndLoad) {
   ResourceCache cache(temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get(),
-                      /* max_cache_size */ base::nullopt);
+                      /* max_cache_size */ absl::nullopt);
 
   // No data initially.
   std::string data;
@@ -146,7 +146,7 @@ TEST_F(ResourceCacheTest, StoreAndLoad) {
 
 TEST_F(ResourceCacheTest, FilterSubkeys) {
   ResourceCache cache(temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get(),
-                      /* max_cache_size */ base::nullopt);
+                      /* max_cache_size */ absl::nullopt);
 
   // Store some data.
   EXPECT_FALSE(cache.Store(kKey1, kSubA, kData0).empty());
@@ -166,7 +166,7 @@ TEST_F(ResourceCacheTest, FilterSubkeys) {
   EXPECT_EQ(kData0, contents[kSubC]);
 
   // Filter some subkeys.
-  cache.FilterSubkeys(kKey1, base::Bind(&Matches, kSubA));
+  cache.FilterSubkeys(kKey1, base::BindRepeating(&Matches, kSubA));
 
   // Check the contents of kKey1 again.
   cache.LoadAllSubkeys(kKey1, &contents);

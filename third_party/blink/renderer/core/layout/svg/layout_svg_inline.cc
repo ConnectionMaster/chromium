@@ -22,24 +22,28 @@
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_inline.h"
 
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_cursor.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_inline_text.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_container.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_text.h"
 #include "third_party/blink/renderer/core/layout/svg/line/svg_inline_flow_box.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
-#include "third_party/blink/renderer/core/layout/svg/svg_resources_cache.h"
+#include "third_party/blink/renderer/core/paint/compositing/compositing_reason_finder.h"
 #include "third_party/blink/renderer/core/svg/svg_a_element.h"
 
 namespace blink {
 
 bool LayoutSVGInline::IsChildAllowed(LayoutObject* child,
                                      const ComputedStyle& style) const {
+  NOT_DESTROYED();
   if (child->IsText())
     return SVGLayoutSupport::IsLayoutableTextNode(child);
 
-  if (IsSVGAElement(*GetNode())) {
+  if (IsA<SVGAElement>(*GetNode())) {
     Node* child_node = child->GetNode();
     // Disallow direct descendant 'a'.
-    if (child_node && IsSVGAElement(*child_node))
+    if (child_node && IsA<SVGAElement>(*child_node))
       return false;
   }
 
@@ -54,111 +58,156 @@ LayoutSVGInline::LayoutSVGInline(Element* element) : LayoutInline(element) {
 }
 
 InlineFlowBox* LayoutSVGInline::CreateInlineFlowBox() {
+  NOT_DESTROYED();
   InlineFlowBox* box = new SVGInlineFlowBox(LineLayoutItem(this));
   box->SetHasVirtualLogicalHeight();
   return box;
 }
 
-FloatRect LayoutSVGInline::ObjectBoundingBox() const {
-  if (const LayoutSVGText* text_root =
-          LayoutSVGText::LocateLayoutSVGTextAncestor(this))
-    return text_root->ObjectBoundingBox();
+bool LayoutSVGInline::IsObjectBoundingBoxValid() const {
+  if (IsInLayoutNGInlineFormattingContext()) {
+    NGInlineCursor cursor;
+    cursor.MoveToIncludingCulledInline(*this);
+    return cursor.IsNotNull();
+  }
+  return FirstLineBox();
+}
 
-  return FloatRect();
+FloatRect LayoutSVGInline::ObjectBoundingBox() const {
+  NOT_DESTROYED();
+  FloatRect bounds;
+  if (IsInLayoutNGInlineFormattingContext()) {
+    NGInlineCursor cursor;
+    for (cursor.MoveToIncludingCulledInline(*this); cursor;
+         cursor.MoveToNextForSameLayoutObject()) {
+      const NGFragmentItem& item = *cursor.CurrentItem();
+      if (item.Type() == NGFragmentItem::kSvgText)
+        bounds.Unite(item.ObjectBoundingBox());
+    }
+    return bounds;
+  }
+  for (InlineFlowBox* box : *LineBoxes())
+    bounds.Unite(FloatRect(box->FrameRect()));
+  return bounds;
 }
 
 FloatRect LayoutSVGInline::StrokeBoundingBox() const {
-  if (const LayoutSVGText* text_root =
-          LayoutSVGText::LocateLayoutSVGTextAncestor(this))
-    return text_root->StrokeBoundingBox();
-
-  return FloatRect();
+  NOT_DESTROYED();
+  if (!IsObjectBoundingBoxValid())
+    return FloatRect();
+  return SVGLayoutSupport::ExtendTextBBoxWithStroke(*this, ObjectBoundingBox());
 }
 
 FloatRect LayoutSVGInline::VisualRectInLocalSVGCoordinates() const {
-  if (const LayoutSVGText* text_root =
-          LayoutSVGText::LocateLayoutSVGTextAncestor(this))
-    return text_root->VisualRectInLocalSVGCoordinates();
-
-  return FloatRect();
+  NOT_DESTROYED();
+  if (!IsObjectBoundingBoxValid())
+    return FloatRect();
+  return SVGLayoutSupport::ComputeVisualRectForText(*this, ObjectBoundingBox());
 }
 
-LayoutRect LayoutSVGInline::VisualRectInDocument(VisualRectFlags flags) const {
+PhysicalRect LayoutSVGInline::VisualRectInDocument(
+    VisualRectFlags flags) const {
+  NOT_DESTROYED();
   return SVGLayoutSupport::VisualRectInAncestorSpace(*this, *View(), flags);
 }
 
 void LayoutSVGInline::MapLocalToAncestor(const LayoutBoxModelObject* ancestor,
                                          TransformState& transform_state,
                                          MapCoordinatesFlags flags) const {
+  NOT_DESTROYED();
   SVGLayoutSupport::MapLocalToAncestor(this, ancestor, transform_state, flags);
-}
-
-const LayoutObject* LayoutSVGInline::PushMappingToContainer(
-    const LayoutBoxModelObject* ancestor_to_stop_at,
-    LayoutGeometryMap& geometry_map) const {
-  return SVGLayoutSupport::PushMappingToContainer(this, ancestor_to_stop_at,
-                                                  geometry_map);
 }
 
 void LayoutSVGInline::AbsoluteQuads(Vector<FloatQuad>& quads,
                                     MapCoordinatesFlags mode) const {
-  const LayoutSVGText* text_root =
-      LayoutSVGText::LocateLayoutSVGTextAncestor(this);
-  if (!text_root)
+  NOT_DESTROYED();
+  if (IsInLayoutNGInlineFormattingContext()) {
+    NGInlineCursor cursor;
+    for (cursor.MoveToIncludingCulledInline(*this); cursor;
+         cursor.MoveToNextForSameLayoutObject()) {
+      const NGFragmentItem& item = *cursor.CurrentItem();
+      if (item.Type() == NGFragmentItem::kSvgText) {
+        quads.push_back(
+            LocalToAbsoluteQuad(SVGLayoutSupport::ExtendTextBBoxWithStroke(
+                                    *this, item.ObjectBoundingBox()),
+                                mode));
+      }
+    }
     return;
-
-  FloatRect text_bounding_box = text_root->StrokeBoundingBox();
+  }
   for (InlineFlowBox* box : *LineBoxes()) {
+    FloatRect box_rect(box->FrameRect());
     quads.push_back(LocalToAbsoluteQuad(
-        FloatRect(text_bounding_box.X() + box->X().ToFloat(),
-                  text_bounding_box.Y() + box->Y().ToFloat(),
-                  box->LogicalWidth().ToFloat(),
-                  box->LogicalHeight().ToFloat()),
-        mode));
+        SVGLayoutSupport::ExtendTextBBoxWithStroke(*this, box_rect), mode));
   }
 }
 
 void LayoutSVGInline::WillBeDestroyed() {
-  SVGResourcesCache::ClientDestroyed(*this);
-  SVGResources::ClearClipPathFilterMask(ToSVGElement(*GetNode()), Style());
-  SVGResources::ClearPaints(ToSVGElement(*GetNode()), Style());
+  NOT_DESTROYED();
+  SVGResources::ClearClipPathFilterMask(To<SVGElement>(*GetNode()), Style());
+  SVGResources::ClearPaints(To<SVGElement>(*GetNode()), Style());
   LayoutInline::WillBeDestroyed();
 }
 
 void LayoutSVGInline::StyleDidChange(StyleDifference diff,
                                      const ComputedStyle* old_style) {
-  // Since layout depends on the bounds of the filter, we need to force layout
-  // when the filter changes.
-  if (diff.FilterChanged())
-    SetNeedsLayout(layout_invalidation_reason::kStyleChange);
+  NOT_DESTROYED();
+  LayoutInline::StyleDidChange(diff, old_style);
 
   if (diff.NeedsFullLayout())
     SetNeedsBoundariesUpdate();
 
-  LayoutInline::StyleDidChange(diff, old_style);
-  SVGResources::UpdateClipPathFilterMask(ToSVGElement(*GetNode()), old_style,
+  SVGResources::UpdateClipPathFilterMask(To<SVGElement>(*GetNode()), old_style,
                                          StyleRef());
-  SVGResources::UpdatePaints(ToSVGElement(*GetNode()), old_style, StyleRef());
-  SVGResourcesCache::ClientStyleChanged(*this, diff, StyleRef());
+  SVGResources::UpdatePaints(To<SVGElement>(*GetNode()), old_style, StyleRef());
+
+  if (!Parent())
+    return;
+  if (diff.CompositingReasonsChanged())
+    SVGLayoutSupport::NotifySVGRootOfChangedCompositingReasons(this);
+  if (diff.HasDifference())
+    LayoutSVGResourceContainer::StyleChanged(*this, diff);
 }
 
 void LayoutSVGInline::AddChild(LayoutObject* child,
                                LayoutObject* before_child) {
+  NOT_DESTROYED();
   LayoutInline::AddChild(child, before_child);
-  SVGResourcesCache::ClientWasAddedToTree(*child, child->StyleRef());
-
-  if (LayoutSVGText* text_layout_object =
-          LayoutSVGText::LocateLayoutSVGTextAncestor(this))
-    text_layout_object->SubtreeChildWasAdded();
+  LayoutSVGText::NotifySubtreeStructureChanged(
+      this, layout_invalidation_reason::kChildChanged);
 }
 
 void LayoutSVGInline::RemoveChild(LayoutObject* child) {
-  SVGResourcesCache::ClientWillBeRemovedFromTree(*child);
-
-  if (LayoutSVGText* text_layout_object =
-          LayoutSVGText::LocateLayoutSVGTextAncestor(this))
-    text_layout_object->SubtreeChildWillBeRemoved();
+  NOT_DESTROYED();
+  LayoutSVGText::NotifySubtreeStructureChanged(
+      this, layout_invalidation_reason::kChildChanged);
   LayoutInline::RemoveChild(child);
+}
+
+void LayoutSVGInline::InsertedIntoTree() {
+  NOT_DESTROYED();
+  LayoutInline::InsertedIntoTree();
+  LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
+                                                                         false);
+  if (StyleRef().HasSVGEffect())
+    SetNeedsPaintPropertyUpdate();
+  if (CompositingReasonFinder::DirectReasonsForSVGChildPaintProperties(*this) !=
+      CompositingReason::kNone) {
+    SVGLayoutSupport::NotifySVGRootOfChangedCompositingReasons(this);
+  }
+}
+
+void LayoutSVGInline::WillBeRemovedFromTree() {
+  NOT_DESTROYED();
+  LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
+                                                                         false);
+  if (StyleRef().HasSVGEffect())
+    SetNeedsPaintPropertyUpdate();
+  LayoutInline::WillBeRemovedFromTree();
+  if (CompositingReasonFinder::DirectReasonsForSVGChildPaintProperties(*this) !=
+      CompositingReason::kNone) {
+    SVGLayoutSupport::NotifySVGRootOfChangedCompositingReasons(this);
+  }
 }
 
 }  // namespace blink

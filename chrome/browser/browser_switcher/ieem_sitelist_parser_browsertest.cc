@@ -9,6 +9,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/test/browser_test.h"
 #include "services/data_decoder/public/cpp/safe_xml_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -20,8 +21,7 @@ void OnXmlParsed(base::RepeatingClosure quit_run_loop,
                  ParsedXml expected,
                  ParsedXml actual) {
   base::ScopedClosureRunner runner(std::move(quit_run_loop));
-  EXPECT_EQ(expected.sitelist, actual.sitelist);
-  EXPECT_EQ(expected.greylist, actual.greylist);
+  EXPECT_EQ(expected.rules, actual.rules);
   EXPECT_EQ(expected.error.has_value(), actual.error.has_value());
   if (expected.error.has_value() && actual.error.has_value())
     EXPECT_EQ(*expected.error, *actual.error);
@@ -40,21 +40,17 @@ class IeemSitelistParserTest : public InProcessBrowserTest {
  public:
   IeemSitelistParserTest() = default;
   ~IeemSitelistParserTest() override = default;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(IeemSitelistParserTest);
 };
 
 IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, BadXml) {
-  TestParseXml("", ParsedXml({}, {}, "Invalid XML: bad content"));
-  TestParseXml("thisisnotxml", ParsedXml({}, {}, "Invalid XML: bad content"));
+  TestParseXml("", ParsedXml({}, "Invalid XML: bad content"));
+  TestParseXml("thisisnotxml", ParsedXml({}, "Invalid XML: bad content"));
 }
 
 IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, BadXmlParsed) {
-  TestParseXml("<bogus></bogus>",
-               ParsedXml({}, {}, "Invalid XML root element"));
+  TestParseXml("<bogus></bogus>", ParsedXml({}, "Invalid XML root element"));
   TestParseXml("<rules version=\"424\"><unknown></unknown></rules>",
-               ParsedXml({}, {}, base::nullopt));
+               ParsedXml({}, absl::nullopt));
 }
 
 IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V1OnlyBogusElements) {
@@ -64,7 +60,7 @@ IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V1OnlyBogusElements) {
       "</more><emie><domain>ignoretoo.com<path>/ignored_path</path>"
       "</domain></emie><domain>onemoreignored.com</domain>"
       "<path>/ignore_outside_of_domain></path></unknown></rules>";
-  TestParseXml(xml, ParsedXml({}, {}, base::nullopt));
+  TestParseXml(xml, ParsedXml({}, absl::nullopt));
 }
 
 IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V1Full) {
@@ -135,7 +131,7 @@ IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V1Full) {
       "!yes.com/actuallyno",
       "!no.com",
   };
-  TestParseXml(xml, ParsedXml(std::move(expected_sitelist), {}, base::nullopt));
+  TestParseXml(xml, ParsedXml(std::move(expected_sitelist), absl::nullopt));
 }
 
 IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V2Full) {
@@ -154,7 +150,7 @@ IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V2Full) {
       "</somethings></site><!-- good sites --> <site url=\"www.cpandl.com\">"
       "<compat-mode>IE8Enterprise</compat-mode><open-in>MSEdge</open-in></site>"
       "<site url=\"contoso.com\"><compat-mode>default</compat-mode><open-in>"
-      "none</open-in></site><site url=\"relecloud.com\"/><site "
+      "None</open-in></site><site url=\"relecloud.com\"/><site "
       "url=\"relecloud.com/about\"><compat-mode>IE8Enterprise</compat-mode>"
       "</site></site-list><!-- trailing gibberish <trailing><site "
       "url=\"ignore after site list!\">  <compat-mode>IE8Enterprise\""
@@ -164,7 +160,7 @@ IN_PROC_BROWSER_TEST_F(IeemSitelistParserTest, V2Full) {
       "!google.com",  "!good.site",     "www.cpandl.com",
       "!contoso.com", "!relecloud.com", "!relecloud.com/about",
   };
-  TestParseXml(xml, ParsedXml(std::move(expected_sitelist), {}, base::nullopt));
+  TestParseXml(xml, ParsedXml(std::move(expected_sitelist), absl::nullopt));
 }
 
 }  // namespace browser_switcher

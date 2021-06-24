@@ -36,19 +36,20 @@
 #include <limits>
 #include <memory>
 
+#include "base/cxx17_backports.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
 #include "third_party/blink/renderer/platform/wtf/date_math.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "ui/base/ui_base_features.h"
 
 namespace blink {
 
 std::unique_ptr<Locale> Locale::Create(const String& locale) {
-  return std::make_unique<LocaleICU>(locale.Utf8().data());
+  return std::make_unique<LocaleICU>(locale.Utf8());
 }
 
-LocaleICU::LocaleICU(const char* locale)
+LocaleICU::LocaleICU(const std::string& locale)
     : locale_(locale),
       number_format_(nullptr),
       short_date_format_(nullptr),
@@ -105,7 +106,7 @@ void LocaleICU::InitializeLocaleData() {
   did_create_decimal_format_ = true;
   UErrorCode status = U_ZERO_ERROR;
   number_format_ =
-      unum_open(UNUM_DECIMAL, nullptr, 0, locale_.data(), nullptr, &status);
+      unum_open(UNUM_DECIMAL, nullptr, 0, locale_.c_str(), nullptr, &status);
   if (!U_SUCCESS(status))
     return;
 
@@ -141,7 +142,7 @@ UDateFormat* LocaleICU::OpenDateFormat(UDateFormatStyle time_style,
                                        UDateFormatStyle date_style) const {
   const UChar kGmtTimezone[3] = {'G', 'M', 'T'};
   UErrorCode status = U_ZERO_ERROR;
-  return udat_open(time_style, date_style, locale_.data(), kGmtTimezone,
+  return udat_open(time_style, date_style, locale_.c_str(), kGmtTimezone,
                    base::size(kGmtTimezone), nullptr, -1, &status);
 }
 
@@ -155,7 +156,7 @@ UDateFormat* LocaleICU::OpenDateFormatForStandAloneMonthLabels(
   const UChar kMonthPattern[4] = {'L', 'L', 'L', 'L'};
   UErrorCode status = U_ZERO_ERROR;
   UDateFormat* formatter =
-      udat_open(UDAT_PATTERN, UDAT_PATTERN, locale_.data(), nullptr, -1,
+      udat_open(UDAT_PATTERN, UDAT_PATTERN, locale_.c_str(), nullptr, -1,
                 kMonthPattern, is_short ? 3 : 4, &status);
   udat_setContext(formatter, UDISPCTX_CAPITALIZATION_FOR_STANDALONE, &status);
   DCHECK(U_SUCCESS(status));
@@ -167,12 +168,12 @@ static String GetDateFormatPattern(const UDateFormat* date_format) {
     return g_empty_string;
 
   UErrorCode status = U_ZERO_ERROR;
-  int32_t length = udat_toPattern(date_format, TRUE, nullptr, 0, &status);
+  int32_t length = udat_toPattern(date_format, true, nullptr, 0, &status);
   if (status != U_BUFFER_OVERFLOW_ERROR || !length)
     return g_empty_string;
   StringBuffer<UChar> buffer(length);
   status = U_ZERO_ERROR;
-  udat_toPattern(date_format, TRUE, buffer.Characters(), length, &status);
+  udat_toPattern(date_format, true, buffer.Characters(), length, &status);
   if (U_FAILURE(status))
     return g_empty_string;
   return String::Adopt(buffer);
@@ -249,7 +250,7 @@ void LocaleICU::InitializeCalendar() {
                        UCAL_SUNDAY;
 
   week_day_short_labels_ = CreateLabelVector(
-      short_date_format_, UDAT_SHORT_WEEKDAYS, UCAL_SUNDAY, 7);
+      short_date_format_, UDAT_NARROW_WEEKDAYS, UCAL_SUNDAY, 7);
   if (!week_day_short_labels_)
     week_day_short_labels_ = CreateFallbackWeekDayShortLabels();
 }
@@ -287,7 +288,7 @@ unsigned LocaleICU::FirstDayOfWeek() {
 
 bool LocaleICU::IsRTL() {
   UErrorCode status = U_ZERO_ERROR;
-  return uloc_getCharacterOrientation(locale_.data(), &status) ==
+  return uloc_getCharacterOrientation(locale_.c_str(), &status) ==
          ULOC_LAYOUT_RTL;
 }
 
@@ -372,14 +373,14 @@ String LocaleICU::MonthFormat() {
     return month_format_;
   // Gets a format for "MMMM" because Windows API always provides formats for
   // "MMMM" in some locales.
-  month_format_ = GetFormatForSkeleton(locale_.data(), "yyyyMMMM");
+  month_format_ = GetFormatForSkeleton(locale_.c_str(), "yyyyMMMM");
   return month_format_;
 }
 
 String LocaleICU::ShortMonthFormat() {
   if (!short_month_format_.IsNull())
     return short_month_format_;
-  short_month_format_ = GetFormatForSkeleton(locale_.data(), "yyyyMMM");
+  short_month_format_ = GetFormatForSkeleton(locale_.c_str(), "yyyyMMM");
   return short_month_format_;
 }
 

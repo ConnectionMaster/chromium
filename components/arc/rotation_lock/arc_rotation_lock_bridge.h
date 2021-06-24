@@ -6,10 +6,10 @@
 #define COMPONENTS_ARC_ROTATION_LOCK_ARC_ROTATION_LOCK_BRIDGE_H_
 
 #include "ash/display/screen_orientation_controller.h"
-#include "ash/wm/tablet_mode/tablet_mode_observer.h"
+#include "ash/public/cpp/tablet_mode_observer.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
-#include "components/arc/common/rotation_lock.mojom.h"
+#include "components/arc/mojom/rotation_lock.mojom.h"
 #include "components/arc/session/connection_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
 
@@ -33,6 +33,8 @@ class ArcRotationLockBridge
   // or nullptr if the browser |context| is not allowed to use ARC.
   static ArcRotationLockBridge* GetForBrowserContext(
       content::BrowserContext* context);
+  static ArcRotationLockBridge* GetForBrowserContextForTesting(
+      content::BrowserContext* context);
 
   ArcRotationLockBridge(content::BrowserContext* context,
                         ArcBridgeService* bridge_service);
@@ -45,8 +47,7 @@ class ArcRotationLockBridge
   void OnUserRotationLockChanged() override;
 
   // ash::TabletModeObserver:
-  void OnTabletModeStarted() override;
-  void OnTabletModeEnded() override;
+  void OnTabletPhysicalStateChanged() override;
 
  private:
   void SendRotationLockState();

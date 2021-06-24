@@ -6,16 +6,17 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "base/check.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
+#include "chrome/android/chrome_jni_headers/SearchGeolocationDisclosureTabHelper_jni.h"
+#include "chrome/browser/android/omnibox/geolocation_header.h"
 #include "chrome/browser/android/search_permissions/search_geolocation_disclosure_infobar_delegate.h"
 #include "chrome/browser/android/search_permissions/search_permissions_service.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/permissions/permission_manager.h"
-#include "chrome/browser/permissions/permission_result.h"
+#include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
@@ -24,14 +25,14 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/permissions/permission_manager.h"
+#include "components/permissions/permission_result.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/variations/variations_associated_data.h"
 #include "content/public/browser/web_contents.h"
-#include "jni/GeolocationHeader_jni.h"
-#include "jni/SearchGeolocationDisclosureTabHelper_jni.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 #include "url/origin.h"
 
@@ -144,15 +145,14 @@ void SearchGeolocationDisclosureTabHelper::MaybeShowDisclosureForValidUrl(
   RecordPreDisclosureMetrics(gurl);
 
   // Only show disclosure if the DSE geolocation setting is on.
-  if (PermissionManager::Get(GetProfile())
-          ->GetPermissionStatus(CONTENT_SETTINGS_TYPE_GEOLOCATION, gurl, gurl)
+  if (PermissionManagerFactory::GetForProfile(GetProfile())
+          ->GetPermissionStatus(ContentSettingsType::GEOLOCATION, gurl, gurl)
           .content_setting != CONTENT_SETTING_ALLOW) {
     return;
   }
 
   // Check that the Chrome app has geolocation permission.
-  JNIEnv* env = base::android::AttachCurrentThread();
-  if (!Java_GeolocationHeader_hasGeolocationPermission(env))
+  if (!HasGeolocationPermission())
     return;
 
   // All good, let's show the disclosure and increment the shown count.
@@ -160,7 +160,11 @@ void SearchGeolocationDisclosureTabHelper::MaybeShowDisclosureForValidUrl(
       TemplateURLServiceFactory::GetForProfile(GetProfile());
   const TemplateURL* template_url =
       template_url_service->GetDefaultSearchProvider();
-  base::string16 search_engine_name = template_url->short_name();
+  // ShouldShowDisclosureForNavigation() checked explicitly that the default
+  // search |template_url| was non-null, and ShouldShowDisclosureForAPIAccess()
+  // would have also seen an empty DSE origin if it were.
+  DCHECK(template_url);
+  std::u16string search_engine_name = template_url->short_name();
   SearchGeolocationDisclosureInfoBarDelegate::Create(web_contents(), gurl,
                                                      search_engine_name);
   shown_count++;
@@ -182,7 +186,7 @@ bool SearchGeolocationDisclosureTabHelper::ShouldShowDisclosureForAPIAccess(
   if (gIgnoreUrlChecksForTesting)
     return true;
 
-  return service->IsPermissionControlledByDSE(CONTENT_SETTINGS_TYPE_GEOLOCATION,
+  return service->IsPermissionControlledByDSE(ContentSettingsType::GEOLOCATION,
                                               url::Origin::Create(gurl));
 }
 
@@ -202,8 +206,7 @@ bool SearchGeolocationDisclosureTabHelper::ShouldShowDisclosureForNavigation(
   const TemplateURL* template_url =
       template_url_service->GetDefaultSearchProvider();
   return template_url &&
-         template_url->HasGoogleBaseURLs(
-             UIThreadSearchTermsData(GetProfile())) &&
+         template_url->HasGoogleBaseURLs(UIThreadSearchTermsData()) &&
          template_url_service->IsSearchResultsPageFromDefaultSearchProvider(
              gurl);
 }
@@ -215,8 +218,7 @@ void SearchGeolocationDisclosureTabHelper::RecordPreDisclosureMetrics(
           prefs::kSearchGeolocationPreDisclosureMetricsRecorded)) {
     ContentSetting status =
         HostContentSettingsMapFactory::GetForProfile(GetProfile())
-            ->GetContentSetting(gurl, gurl, CONTENT_SETTINGS_TYPE_GEOLOCATION,
-                                std::string());
+            ->GetContentSetting(gurl, gurl, ContentSettingsType::GEOLOCATION);
 
     UMA_HISTOGRAM_BOOLEAN("GeolocationDisclosure.PreDisclosureDSESetting",
                           status == CONTENT_SETTING_ALLOW);
@@ -233,8 +235,7 @@ void SearchGeolocationDisclosureTabHelper::RecordPostDisclosureMetrics(
           prefs::kSearchGeolocationPostDisclosureMetricsRecorded)) {
     ContentSetting status =
         HostContentSettingsMapFactory::GetForProfile(GetProfile())
-            ->GetContentSetting(gurl, gurl, CONTENT_SETTINGS_TYPE_GEOLOCATION,
-                                std::string());
+            ->GetContentSetting(gurl, gurl, ContentSettingsType::GEOLOCATION);
 
     UMA_HISTOGRAM_BOOLEAN("GeolocationDisclosure.PostDisclosureDSESetting",
                           status == CONTENT_SETTING_ALLOW);

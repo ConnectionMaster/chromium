@@ -6,24 +6,14 @@
 
 #include <utility>
 
-#include "base/logging.h"
-#include "services/metrics/public/mojom/constants.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "base/notreached.h"
 
 namespace ukm {
 
-MojoUkmRecorder::MojoUkmRecorder(mojom::UkmRecorderInterfacePtr interface)
-    : interface_(std::move(interface)), weak_factory_(this) {}
+MojoUkmRecorder::MojoUkmRecorder(
+    mojo::PendingRemote<mojom::UkmRecorderInterface> interface)
+    : interface_(std::move(interface)) {}
 MojoUkmRecorder::~MojoUkmRecorder() = default;
-
-// static
-std::unique_ptr<MojoUkmRecorder> MojoUkmRecorder::Create(
-    service_manager::Connector* connector) {
-  ukm::mojom::UkmRecorderInterfacePtr interface;
-  connector->BindInterface(metrics::mojom::kMetricsServiceName,
-                           mojo::MakeRequest(&interface));
-  return std::make_unique<MojoUkmRecorder>(std::move(interface));
-}
 
 base::WeakPtr<MojoUkmRecorder> MojoUkmRecorder::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
@@ -33,7 +23,9 @@ void MojoUkmRecorder::UpdateSourceURL(SourceId source_id, const GURL& url) {
   interface_->UpdateSourceURL(source_id, url.spec());
 }
 
-void MojoUkmRecorder::UpdateAppURL(SourceId source_id, const GURL& url) {
+void MojoUkmRecorder::UpdateAppURL(SourceId source_id,
+                                   const GURL& url,
+                                   const AppType app_type) {
   NOTREACHED();
 }
 
@@ -45,6 +37,10 @@ void MojoUkmRecorder::RecordNavigation(
 
 void MojoUkmRecorder::AddEntry(mojom::UkmEntryPtr entry) {
   interface_->AddEntry(std::move(entry));
+}
+
+void MojoUkmRecorder::MarkSourceForDeletion(ukm::SourceId source_id) {
+  NOTREACHED();
 }
 
 }  // namespace ukm

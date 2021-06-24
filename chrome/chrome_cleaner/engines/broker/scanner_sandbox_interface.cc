@@ -15,7 +15,6 @@
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/path_service.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_handle.h"
@@ -30,44 +29,12 @@
 #include "sandbox/win/src/nt_internals.h"
 #include "sandbox/win/src/win_utils.h"
 
-// Redefine NT_ERROR and STATUS_INVALID_INFO_CLASS here. Can't use the system
-// header <ntdef.h> as it conflicts with sandbox/win/src/nt_internals.h.
-#define NT_ERROR(Status) ((((ULONG)(Status)) >> 30) == 3)
-
-#define STATUS_INVALID_INFO_CLASS ((NTSTATUS)0xC0000003L)
-
 namespace chrome_cleaner_sandbox {
 
 namespace {
 
 using chrome_cleaner::SandboxErrorCode;
 using KnownFolder = chrome_cleaner::mojom::KnownFolder;
-
-// For the structure documentation, see
-// https://msdn.microsoft.com/en-us/library/windows/desktop/aa813741(v=vs.85).aspx
-// Can't use the system header <Winternl.h> as it conflicts with
-// sandbox/win/src/nt_internals.h.
-typedef struct _RTL_USER_PROCESS_PARAMETERS {
-  BYTE Reserved1[16];
-  PVOID Reserved2[10];
-  UNICODE_STRING ImagePathName;
-  UNICODE_STRING CommandLine;
-} RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
-
-// Partial definition from
-// https://msdn.microsoft.com/en-us/library/windows/desktop/aa813706(v=vs.85).aspx
-// Cannot use the definition from sandbox/win/src/nt_internals.h as it doesn't
-// contain ProcessParameters field.
-// TODO(veranika): Fix the definition from nt_internals.h and use it instead of
-// this custom one.
-typedef struct _PEB {
-  BYTE Reserved1[2];
-  BYTE BeingDebugged;
-  BYTE Reserved2[1];
-  PVOID Reserved3[2];
-  PVOID Ldr;
-  PRTL_USER_PROCESS_PARAMETERS ProcessParameters;
-} PEB, *PPEB;
 
 bool SandboxKnownFolderIdToPathServiceKey(KnownFolder folder_id,
                                           int* path_service_key) {
@@ -86,33 +53,6 @@ bool SandboxKnownFolderIdToPathServiceKey(KnownFolder folder_id,
       return true;
     default:
       LOG(ERROR) << "Unknown SandboxKnownFolderId given, " << folder_id;
-  }
-  return false;
-}
-
-uint32_t ValidateFileForReading(const base::FilePath& file_name) {
-  if (file_name.value().empty()) {
-    LOG(ERROR) << "File path cannot be empty";
-    return SandboxErrorCode::NULL_FILE_NAME;
-  }
-  if (!file_name.IsAbsolute()) {
-    LOG(ERROR) << "File path must be absolute, received "
-               << chrome_cleaner::SanitizePath(file_name);
-    return SandboxErrorCode::RELATIVE_PATH_NOT_ALLOWED;
-  }
-  return ERROR_SUCCESS;
-}
-
-bool IsFilePresentLocally(const base::FilePath& file_name) {
-  DWORD file_attributes = ::GetFileAttributes(file_name.value().c_str());
-  if (file_attributes != INVALID_FILE_ATTRIBUTES &&
-      !(file_attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) &&
-      !(file_attributes & FILE_ATTRIBUTE_RECALL_ON_OPEN)) {
-    return true;
-  }
-  if (file_attributes != INVALID_FILE_ATTRIBUTES) {
-    PLOG(ERROR) << "Failed to get attributes: "
-                << chrome_cleaner::SanitizePath(file_name);
   }
   return false;
 }
@@ -140,7 +80,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE ProcessHandle,
 // Returns true on success.
 bool GetCommandLineUsingProcessInformation(base::ProcessId pid,
                                            bool* feature_available,
-                                           base::string16* process_cmd) {
+                                           std::wstring* process_cmd) {
   DCHECK(feature_available);
   DCHECK(process_cmd);
   *feature_available = true;
@@ -195,8 +135,17 @@ bool GetCommandLineUsingProcessInformation(base::ProcessId pid,
   // of null terminating characters.
   PUNICODE_STRING command_line =
       reinterpret_cast<PUNICODE_STRING>(buffer.data());
-  size_t max_data_length = bytes_read - sizeof(UNICODE_STRING);
 
+  // NtQueryInformationProcess can return a buffer filled with 0's (for example
+  // when querying LsaIso.exe, an Isolated User Mode process). When we cast a
+  // buffer of 0's to a UNICODE_STRING struct, all members including the Buffer
+  // pointer becomed 0.
+  if (command_line->Buffer == nullptr) {
+    LOG(ERROR) << "Invalid command line buffer";
+    return false;
+  }
+
+  size_t max_data_length = bytes_read - sizeof(UNICODE_STRING);
   if (command_line->Length % sizeof(WCHAR) ||
       command_line->Length > max_data_length) {
     LOG(ERROR) << "Invalid command line length";
@@ -233,7 +182,7 @@ bool ReadStructFromProcess(HANDLE process, LPCVOID base_address, T* dest) {
 // GetCommandLineUsingProcessInformation instead whenever possible.
 // IMPORTANT: get security review when changing this function. Or better yet,
 // move it to its own sandbox process.
-bool GetCommandLineLegacy(base::ProcessId pid, base::string16* process_cmd) {
+bool GetCommandLineLegacy(base::ProcessId pid, std::wstring* process_cmd) {
   DCHECK(process_cmd);
 
   base::win::ScopedHandle process(
@@ -297,10 +246,9 @@ bool GetCommandLineLegacy(base::ProcessId pid, base::string16* process_cmd) {
 uint32_t SandboxFindFirstFile(const base::FilePath& file_name,
                               LPWIN32_FIND_DATAW lpFindFileData,
                               HANDLE* handle) {
-  uint32_t validation_result = ValidateFileForReading(file_name);
-  if (validation_result != ERROR_SUCCESS) {
+  if (!chrome_cleaner::ValidateSandboxFilePath(file_name)) {
     *handle = INVALID_HANDLE_VALUE;
-    return validation_result;
+    return SandboxErrorCode::INVALID_FILE_PATH;
   }
 
   chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
@@ -309,17 +257,29 @@ uint32_t SandboxFindFirstFile(const base::FilePath& file_name,
   if (*handle == INVALID_HANDLE_VALUE)
     return GetLastError();
 
+  // Skip remote files.
+  if (!chrome_cleaner::IsLocalFileAttributes(
+          lpFindFileData->dwFileAttributes)) {
+    uint32_t found_next_result = SandboxFindNextFile(*handle, lpFindFileData);
+    if (found_next_result != ERROR_SUCCESS) {
+      SandboxFindClose(*handle);
+      *handle = INVALID_HANDLE_VALUE;
+      return found_next_result;
+    }
+  }
+
   return 0;
 }
 
 uint32_t SandboxFindNextFile(HANDLE hFindFile,
                              LPWIN32_FIND_DATAW lpFindFileData) {
   chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
-  if (::FindNextFile(hFindFile, lpFindFileData) == FALSE) {
-    return GetLastError();
+  // Return the first local file found.
+  while (::FindNextFile(hFindFile, lpFindFileData)) {
+    if (chrome_cleaner::IsLocalFileAttributes(lpFindFileData->dwFileAttributes))
+      return 0;
   }
-
-  return 0;
+  return GetLastError();
 }
 
 uint32_t SandboxFindClose(HANDLE hFindFile) {
@@ -328,6 +288,26 @@ uint32_t SandboxFindClose(HANDLE hFindFile) {
     return GetLastError();
   }
   return 0;
+}
+
+uint32_t SandboxGetFileAttributes(const base::FilePath& file_name,
+                                  uint32_t* attributes) {
+  DCHECK(attributes);
+  if (!chrome_cleaner::ValidateSandboxFilePath(file_name)) {
+    *attributes = INVALID_FILE_ATTRIBUTES;
+    return SandboxErrorCode::INVALID_FILE_PATH;
+  }
+
+  chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
+  *attributes = ::GetFileAttributes(file_name.value().c_str());
+  if (*attributes == INVALID_FILE_ATTRIBUTES)
+    return ::GetLastError();
+  // Pretend remote files don't exist.
+  if (!chrome_cleaner::IsLocalFileAttributes(*attributes)) {
+    *attributes = INVALID_FILE_ATTRIBUTES;
+    return ERROR_FILE_NOT_FOUND;
+  }
+  return ERROR_SUCCESS;
 }
 
 bool SandboxGetKnownFolderPath(KnownFolder folder_id,
@@ -376,7 +356,7 @@ bool SandboxGetTasks(
 
   std::unique_ptr<chrome_cleaner::TaskScheduler> task_scheduler(
       chrome_cleaner::TaskScheduler::CreateInstance());
-  std::vector<base::string16> registered_task_names;
+  std::vector<std::wstring> registered_task_names;
   if (!task_scheduler->GetTaskNameList(&registered_task_names)) {
     LOG(ERROR) << "Failed to enumerate scheduled tasks.";
     return false;
@@ -405,7 +385,7 @@ bool SandboxGetProcessImagePath(base::ProcessId pid,
   if (!process.IsValid())
     return false;
 
-  base::string16 image_path_str;
+  std::wstring image_path_str;
   if (!chrome_cleaner::GetProcessExecutablePath(process.Get(), &image_path_str))
     return false;
 
@@ -414,7 +394,7 @@ bool SandboxGetProcessImagePath(base::ProcessId pid,
 }
 
 bool SandboxGetLoadedModules(base::ProcessId pid,
-                             std::set<base::string16>* module_names) {
+                             std::set<std::wstring>* module_names) {
   if (!module_names)
     return false;
 
@@ -436,7 +416,7 @@ bool SandboxGetLoadedModules(base::ProcessId pid,
 }
 
 bool SandboxGetProcessCommandLine(base::ProcessId pid,
-                                  base::string16* command_line) {
+                                  std::wstring* command_line) {
   if (!command_line)
     return false;
 
@@ -487,7 +467,7 @@ bool SandboxGetUserInfoFromSID(
 
 base::win::ScopedHandle SandboxOpenReadOnlyFile(const base::FilePath& file_name,
                                                 uint32_t dwFlagsAndAttributes) {
-  if (ValidateFileForReading(file_name) != ERROR_SUCCESS) {
+  if (!chrome_cleaner::ValidateSandboxFilePath(file_name)) {
     return base::win::ScopedHandle(INVALID_HANDLE_VALUE);
   }
 
@@ -507,7 +487,7 @@ base::win::ScopedHandle SandboxOpenReadOnlyFile(const base::FilePath& file_name,
 
   chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
 
-  if (!IsFilePresentLocally(file_name))
+  if (!chrome_cleaner::IsFilePresentLocally(file_name))
     return base::win::ScopedHandle(INVALID_HANDLE_VALUE);
 
   // Don't lock this file when opening it and allow other processes to do
@@ -540,7 +520,7 @@ base::win::ScopedHandle SandboxOpenReadOnlyFile(const base::FilePath& file_name,
 }
 
 uint32_t SandboxOpenReadOnlyRegistry(HANDLE root_key,
-                                     const base::string16& sub_key,
+                                     const std::wstring& sub_key,
                                      uint32_t dw_access,
                                      HKEY* registry_handle) {
   if (registry_handle == nullptr) {
@@ -582,7 +562,7 @@ uint32_t SandboxOpenReadOnlyRegistry(HANDLE root_key,
 
 uint32_t SandboxNtOpenReadOnlyRegistry(
     HANDLE root_key,
-    const chrome_cleaner::String16EmbeddedNulls& sub_key,
+    const chrome_cleaner::WStringEmbeddedNulls& sub_key,
     uint32_t dw_access,
     HANDLE* registry_handle) {
   if (registry_handle == nullptr) {

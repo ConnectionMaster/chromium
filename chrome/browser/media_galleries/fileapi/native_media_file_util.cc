@@ -8,23 +8,24 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/sequenced_task_runner.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
 #include "base/task_runner_util.h"
 #include "chrome/browser/media_galleries/fileapi/media_path_filter.h"
-#include "components/services/filesystem/public/interfaces/types.mojom.h"
+#include "components/services/filesystem/public/mojom/types.mojom.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/io_buffer.h"
 #include "net/base/mime_sniffer.h"
 #include "storage/browser/blob/shareable_file_reference.h"
-#include "storage/browser/fileapi/file_system_context.h"
-#include "storage/browser/fileapi/file_system_operation_context.h"
-#include "storage/browser/fileapi/native_file_util.h"
+#include "storage/browser/file_system/file_system_context.h"
+#include "storage/browser/file_system/file_system_operation_context.h"
+#include "storage/browser/file_system/native_file_util.h"
 #include "url/gurl.h"
 
 namespace {
@@ -39,7 +40,8 @@ base::File::Error IsMediaHeader(const char* buf, size_t length) {
     return base::File::FILE_ERROR_SECURITY;
 
   std::string mime_type;
-  if (!net::SniffMimeTypeFromLocalData(buf, length, &mime_type))
+  if (!net::SniffMimeTypeFromLocalData(base::StringPiece(buf, length),
+                                       &mime_type))
     return base::File::FILE_ERROR_SECURITY;
 
   if (base::StartsWith(mime_type, "image/", base::CompareCase::SENSITIVE) ||
@@ -58,11 +60,11 @@ void DidOpenSnapshot(storage::AsyncFileUtil::CreateOrOpenCallback callback,
                      base::File file) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   if (!file.IsValid()) {
-    std::move(callback).Run(std::move(file), base::Closure());
+    std::move(callback).Run(std::move(file), base::OnceClosure());
     return;
   }
   std::move(callback).Run(std::move(file),
-                          base::Bind(&HoldFileRef, std::move(file_ref)));
+                          base::BindOnce(&HoldFileRef, std::move(file_ref)));
 }
 
 }  // namespace
@@ -213,7 +215,7 @@ void NativeMediaFileUtil::CreatedSnapshotFileForCreateOrOpen(
     scoped_refptr<storage::ShareableFileReference> file_ref) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   if (result != base::File::FILE_OK) {
-    std::move(callback).Run(base::File(), base::Closure());
+    std::move(callback).Run(base::File(), base::OnceClosure());
     return;
   }
   base::PostTaskAndReplyWithResult(
@@ -234,8 +236,7 @@ void NativeMediaFileUtil::CreateOrOpen(
   if (file_flags & ~(base::File::FLAG_OPEN |
                      base::File::FLAG_READ |
                      base::File::FLAG_WRITE_ATTRIBUTES)) {
-    std::move(callback).Run(base::File(base::File::FILE_ERROR_SECURITY),
-                            base::Closure());
+    std::move(callback).Run(base::File(base::File::FILE_ERROR_SECURITY), base::OnceClosure());
     return;
   }
   scoped_refptr<base::SequencedTaskRunner> task_runner = context->task_runner();
@@ -535,9 +536,8 @@ void NativeMediaFileUtil::Core::GetFileInfoOnTaskRunnerThread(
   base::File::Info file_info;
   base::File::Error error =
       GetFileInfoSync(context.get(), url, &file_info, NULL);
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::IO},
-      base::BindOnce(std::move(callback), error, file_info));
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), error, file_info));
 }
 
 void NativeMediaFileUtil::Core::ReadDirectoryOnTaskRunnerThread(
@@ -548,9 +548,9 @@ void NativeMediaFileUtil::Core::ReadDirectoryOnTaskRunnerThread(
   DCHECK(IsOnTaskRunnerThread(context.get()));
   EntryList entry_list;
   base::File::Error error = ReadDirectorySync(context.get(), url, &entry_list);
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                           base::BindOnce(std::move(callback), error,
-                                          entry_list, false /* has_more */));
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), error, entry_list,
+                                false /* has_more */));
 }
 
 void NativeMediaFileUtil::Core::CreateSnapshotFileOnTaskRunnerThread(
@@ -564,9 +564,9 @@ void NativeMediaFileUtil::Core::CreateSnapshotFileOnTaskRunnerThread(
   scoped_refptr<storage::ShareableFileReference> file_ref;
   base::File::Error error = CreateSnapshotFileSync(
       context.get(), url, &file_info, &platform_path, &file_ref);
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                           base::BindOnce(std::move(callback), error, file_info,
-                                          platform_path, file_ref));
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), error, file_info,
+                                platform_path, file_ref));
 }
 
 base::File::Error NativeMediaFileUtil::Core::GetFileInfoSync(

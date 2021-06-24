@@ -27,10 +27,6 @@ class SigninGlobalError : public GlobalErrorWithStandardBubble,
   // Returns true if there is an authentication error.
   bool HasError();
 
-  // Shows re-authentication UI to the user in an attempt to fix the error.
-  // The re-authentication UI will be shown in |browser|.
-  void AttemptToFixError(Browser* browser);
-
  private:
   FRIEND_TEST_ALL_PREFIXES(SigninGlobalErrorTest, Basic);
   FRIEND_TEST_ALL_PREFIXES(SigninGlobalErrorTest, AuthStatusEnumerateAllErrors);
@@ -41,13 +37,13 @@ class SigninGlobalError : public GlobalErrorWithStandardBubble,
   // GlobalErrorWithStandardBubble:
   bool HasMenuItem() override;
   int MenuItemCommandID() override;
-  base::string16 MenuItemLabel() override;
+  std::u16string MenuItemLabel() override;
   void ExecuteMenuItem(Browser* browser) override;
   bool HasBubbleView() override;
-  base::string16 GetBubbleViewTitle() override;
-  std::vector<base::string16> GetBubbleViewMessages() override;
-  base::string16 GetBubbleViewAcceptButtonLabel() override;
-  base::string16 GetBubbleViewCancelButtonLabel() override;
+  std::u16string GetBubbleViewTitle() override;
+  std::vector<std::u16string> GetBubbleViewMessages() override;
+  std::u16string GetBubbleViewAcceptButtonLabel() override;
+  std::u16string GetBubbleViewCancelButtonLabel() override;
   void OnBubbleViewDidClose(Browser* browser) override;
   void BubbleViewAcceptButtonPressed(Browser* browser) override;
   void BubbleViewCancelButtonPressed(Browser* browser) override;

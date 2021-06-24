@@ -6,14 +6,13 @@
 
 #include <memory>
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/test_chrome_web_ui_controller_factory.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
-#include "ui/base/ui_base_features.h"
 #include "url/gurl.h"
 
 // NOTE: ChromeKeyboardUITest is not used with the Window Service.
@@ -27,10 +26,8 @@ class ChromeKeyboardUITest : public ChromeRenderViewHostTestHarness {
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-    if (::features::IsUsingWindowService())
-      return;
     chrome_keyboard_controller_client_ =
-        ChromeKeyboardControllerClient::CreateForTest(nullptr /* connector */);
+        ChromeKeyboardControllerClient::CreateForTest();
     chrome_keyboard_ui_ = std::make_unique<ChromeKeyboardUI>(profile());
   }
 
@@ -51,8 +48,6 @@ class ChromeKeyboardUITest : public ChromeRenderViewHostTestHarness {
 // Ensure ChromeKeyboardContentsDelegate is successfully constructed and has
 // a valid aura::Window after calling LoadKeyboardWindow().
 TEST_F(ChromeKeyboardUITest, ChromeKeyboardContentsDelegate) {
-  if (::features::IsUsingWindowService())
-    return;
   aura::Window* window =
       chrome_keyboard_ui_->LoadKeyboardWindow(base::DoNothing());
   EXPECT_TRUE(window);

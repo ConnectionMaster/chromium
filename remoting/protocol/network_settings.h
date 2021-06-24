@@ -7,9 +7,6 @@
 
 #include <stdint.h>
 
-#include <string>
-
-#include "base/logging.h"
 #include "base/time/time.h"
 #include "remoting/protocol/port_range.h"
 
@@ -64,4 +61,4 @@ struct NetworkSettings {
 }  // namespace protocol
 }  // namespace remoting
 
-#endif  // REMOTING_HOST_NETWORK_SETTINGS_H_
+#endif  // REMOTING_PROTOCOL_NETWORK_SETTINGS_H_

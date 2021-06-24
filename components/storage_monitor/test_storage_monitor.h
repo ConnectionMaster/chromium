@@ -10,9 +10,11 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/storage_monitor/storage_monitor.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/mtp_manager.mojom.h"
 #endif
 
@@ -47,11 +49,11 @@ class TestStorageMonitor : public StorageMonitor {
 #if defined(OS_WIN)
   bool GetMTPStorageInfoFromDeviceId(
       const std::string& storage_device_id,
-      base::string16* device_location,
-      base::string16* storage_object_id) const override;
+      std::wstring* device_location,
+      std::wstring* storage_object_id) const override;
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   device::mojom::MtpManager* media_transfer_protocol_manager() override;
 #endif
 
@@ -59,7 +61,7 @@ class TestStorageMonitor : public StorageMonitor {
 
   void EjectDevice(
       const std::string& device_id,
-      base::Callback<void(StorageMonitor::EjectStatus)> callback) override;
+      base::OnceCallback<void(StorageMonitor::EjectStatus)> callback) override;
 
   const std::string& ejected_device() const { return ejected_device_; }
 
@@ -77,8 +79,8 @@ class TestStorageMonitor : public StorageMonitor {
   // Paths considered for testing purposes to be on removable storage.
   std::vector<base::FilePath> removable_paths_;
 
-#if defined(OS_CHROMEOS)
-  device::mojom::MtpManagerPtr media_transfer_protocol_manager_;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  mojo::Remote<device::mojom::MtpManager> media_transfer_protocol_manager_;
 #endif
 };
 

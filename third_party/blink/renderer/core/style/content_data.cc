@@ -24,35 +24,16 @@
 
 #include <memory>
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
-#include "third_party/blink/renderer/core/layout/layout_counter.h"
+#include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/layout_image_resource.h"
 #include "third_party/blink/renderer/core/layout/layout_image_resource_style_image.h"
+#include "third_party/blink/renderer/core/layout/layout_object_factory.h"
 #include "third_party/blink/renderer/core/layout/layout_quote.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 
 namespace blink {
-
-ContentData* ContentData::Create(StyleImage* image) {
-  return MakeGarbageCollected<ImageContentData>(image);
-}
-
-ContentData* ContentData::Create(const String& text) {
-  return MakeGarbageCollected<TextContentData>(text);
-}
-
-ContentData* ContentData::Create(std::unique_ptr<CounterContent> counter) {
-  return MakeGarbageCollected<CounterContentData>(std::move(counter));
-}
-
-ContentData* ContentData::Create(QuoteType quote) {
-  return MakeGarbageCollected<QuoteContentData>(quote);
-}
-
-ContentData* ContentData::CreateAltText(const String& text) {
-  return MakeGarbageCollected<AltTextContentData>(text);
-}
 
 ContentData* ContentData::Clone() const {
   ContentData* result = CloneInternal();
@@ -68,15 +49,17 @@ ContentData* ContentData::Clone() const {
   return result;
 }
 
-void ContentData::Trace(blink::Visitor* visitor) {
+void ContentData::Trace(Visitor* visitor) const {
   visitor->Trace(next_);
 }
 
-LayoutObject* ImageContentData::CreateLayoutObject(PseudoElement& pseudo,
-                                                   ComputedStyle& pseudo_style,
-                                                   LegacyLayout) const {
+LayoutObject* ImageContentData::CreateLayoutObject(
+    PseudoElement& pseudo,
+    const ComputedStyle& pseudo_style,
+    LegacyLayout) const {
   LayoutImage* image = LayoutImage::CreateAnonymous(pseudo);
-  image->SetPseudoStyle(&pseudo_style);
+  bool match_parent_size = image_ && image_->IsGeneratedImage();
+  image->SetPseudoElementStyle(&pseudo_style, match_parent_size);
   if (image_) {
     image->SetImageResource(
         MakeGarbageCollected<LayoutImageResourceStyleImage>(image_.Get()));
@@ -86,23 +69,24 @@ LayoutObject* ImageContentData::CreateLayoutObject(PseudoElement& pseudo,
   return image;
 }
 
-void ImageContentData::Trace(blink::Visitor* visitor) {
+void ImageContentData::Trace(Visitor* visitor) const {
   visitor->Trace(image_);
   ContentData::Trace(visitor);
 }
 
-LayoutObject* TextContentData::CreateLayoutObject(PseudoElement& pseudo,
-                                                  ComputedStyle& pseudo_style,
-                                                  LegacyLayout legacy) const {
+LayoutObject* TextContentData::CreateLayoutObject(
+    PseudoElement& pseudo,
+    const ComputedStyle& pseudo_style,
+    LegacyLayout legacy) const {
   LayoutObject* layout_object =
       LayoutTextFragment::CreateAnonymous(pseudo, text_.Impl(), legacy);
-  layout_object->SetPseudoStyle(&pseudo_style);
+  layout_object->SetPseudoElementStyle(&pseudo_style);
   return layout_object;
 }
 
 LayoutObject* AltTextContentData::CreateLayoutObject(
     PseudoElement& pseudo,
-    ComputedStyle& pseudo_style,
+    const ComputedStyle& pseudo_style,
     LegacyLayout) const {
   // Does not require a layout object. Calling site should first check
   // IsAltContentData() before calling this method.
@@ -112,19 +96,36 @@ LayoutObject* AltTextContentData::CreateLayoutObject(
 
 LayoutObject* CounterContentData::CreateLayoutObject(
     PseudoElement& pseudo,
-    ComputedStyle& pseudo_style,
-    LegacyLayout) const {
-  LayoutObject* layout_object = new LayoutCounter(pseudo, *counter_);
-  layout_object->SetPseudoStyle(&pseudo_style);
+    const ComputedStyle& pseudo_style,
+    LegacyLayout legacy) const {
+  LayoutObject* layout_object =
+      LayoutObjectFactory::CreateCounter(pseudo, *this, legacy);
+  layout_object->SetPseudoElementStyle(&pseudo_style);
   return layout_object;
 }
 
-LayoutObject* QuoteContentData::CreateLayoutObject(PseudoElement& pseudo,
-                                                   ComputedStyle& pseudo_style,
-                                                   LegacyLayout) const {
+void CounterContentData::Trace(Visitor* visitor) const {
+  visitor->Trace(tree_scope_);
+  ContentData::Trace(visitor);
+}
+
+LayoutObject* QuoteContentData::CreateLayoutObject(
+    PseudoElement& pseudo,
+    const ComputedStyle& pseudo_style,
+    LegacyLayout legacy) const {
   LayoutObject* layout_object = new LayoutQuote(pseudo, quote_);
-  layout_object->SetPseudoStyle(&pseudo_style);
+  if (legacy == LegacyLayout::kForce)
+    layout_object->SetForceLegacyLayout();
+  layout_object->SetPseudoElementStyle(&pseudo_style);
   return layout_object;
+}
+
+LayoutObject* NoneContentData::CreateLayoutObject(
+    PseudoElement& pseudo,
+    const ComputedStyle& pseudo_style,
+    LegacyLayout) const {
+  NOTREACHED();
+  return nullptr;
 }
 
 }  // namespace blink

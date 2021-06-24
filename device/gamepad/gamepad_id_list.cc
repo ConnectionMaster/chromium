@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <iterator>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 
 namespace device {
 
@@ -16,6 +16,11 @@ namespace {
 static base::LazyInstance<GamepadIdList>::Leaky g_singleton =
     LAZY_INSTANCE_INITIALIZER;
 
+// Information about all game input devices known to Chrome, including
+// unsupported devices. Must be sorted by vendor and product ID.
+//
+// When recording metrics for connected gamepads, vendor and product IDs will
+// only be recorded for devices that are in kGamepadInfo.
 constexpr struct GamepadInfo {
   uint16_t vendor;
   uint16_t product;
@@ -33,6 +38,7 @@ constexpr struct GamepadInfo {
     {0x0111, 0x1417, kXInputTypeNone},
     {0x0111, 0x1419, kXInputTypeNone},
     {0x0111, 0x1420, kXInputTypeNone},
+    {0x0111, 0x1431, kXInputTypeNone},
     {0x0113, 0xf900, kXInputTypeNone},
     // Creative Technology, Ltd
     {0x041e, 0x1003, kXInputTypeNone},
@@ -74,14 +80,19 @@ constexpr struct GamepadInfo {
     {0x045e, 0x02a1, kXInputTypeXbox360},
     {0x045e, 0x02d1, kXInputTypeXboxOne},
     {0x045e, 0x02dd, kXInputTypeXboxOne},
-    {0x045e, 0x02e0, kXInputTypeXboxOne},
+    {0x045e, 0x02e0, kXInputTypeNone},
     {0x045e, 0x02e3, kXInputTypeXboxOne},
     {0x045e, 0x02e6, kXInputTypeXbox360},
     {0x045e, 0x02ea, kXInputTypeXboxOne},
-    {0x045e, 0x02fd, kXInputTypeXboxOne},
+    {0x045e, 0x02fd, kXInputTypeNone},
     {0x045e, 0x02ff, kXInputTypeXboxOne},
     {0x045e, 0x0719, kXInputTypeXbox360},
-    {0x045e, 0x0b0a, kXInputTypeXbox360},
+    {0x045e, 0x0b00, kXInputTypeXboxOne},
+    {0x045e, 0x0b05, kXInputTypeNone},
+    {0x045e, 0x0b0a, kXInputTypeXboxOne},
+    {0x045e, 0x0b0c, kXInputTypeNone},
+    {0x045e, 0x0b12, kXInputTypeXboxOne},
+    {0x045e, 0x0b13, kXInputTypeNone},
     // Logitech, Inc.
     {0x046d, 0xc208, kXInputTypeNone},
     {0x046d, 0xc209, kXInputTypeNone},
@@ -131,9 +142,13 @@ constexpr struct GamepadInfo {
     {0x054c, 0x05c5, kXInputTypeNone},
     {0x054c, 0x09cc, kXInputTypeNone},
     {0x054c, 0x0ba0, kXInputTypeNone},
+    {0x054c, 0x0ce6, kXInputTypeNone},
     // Elecom Co., Ltd
     {0x056e, 0x2003, kXInputTypeNone},
     {0x056e, 0x2004, kXInputTypeXbox360},
+    {0x056e, 0x200f, kXInputTypeNone},
+    {0x056e, 0x2010, kXInputTypeNone},
+    {0x056e, 0x2013, kXInputTypeXbox360},
     // Nintendo Co., Ltd
     {0x057e, 0x0306, kXInputTypeNone},
     {0x057e, 0x0330, kXInputTypeNone},
@@ -154,8 +169,6 @@ constexpr struct GamepadInfo {
     {0x0583, 0xb031, kXInputTypeNone},
     // Vetronix Corp.
     {0x05a0, 0x3232, kXInputTypeNone},
-    // Apple, Inc.
-    {0x05ac, 0x3232, kXInputTypeNone},
     // Genesys Logic, Inc.
     {0x05e3, 0x0596, kXInputTypeNone},
     // InterAct, Inc.
@@ -257,6 +270,8 @@ constexpr struct GamepadInfo {
     // NVIDIA Corp.
     {0x0955, 0x7210, kXInputTypeNone},
     {0x0955, 0x7214, kXInputTypeNone},
+    // Broadcom Corp.
+    {0x0a5c, 0x8502, kXInputTypeNone},
     // ASUSTek Computer, Inc.
     {0x0b05, 0x4500, kXInputTypeNone},
     // Play.com, Inc.
@@ -363,6 +378,7 @@ constexpr struct GamepadInfo {
     {0x0f0d, 0x008a, kXInputTypeNone},
     {0x0f0d, 0x008b, kXInputTypeNone},
     {0x0f0d, 0x0090, kXInputTypeNone},
+    {0x0f0d, 0x00c1, kXInputTypeNone},
     {0x0f0d, 0x00ee, kXInputTypeNone},
     // Jess Technology Co., Ltd
     {0x0f30, 0x010b, kXInputTypeXbox},
@@ -382,6 +398,8 @@ constexpr struct GamepadInfo {
     {0x1038, 0x1412, kXInputTypeNone},
     {0x1038, 0x1418, kXInputTypeNone},
     {0x1038, 0x1420, kXInputTypeNone},
+    {0x1038, 0x1430, kXInputTypeXbox360},
+    {0x1038, 0x1431, kXInputTypeXbox360},
     {0x1080, 0x0009, kXInputTypeNone},
     // Betop
     {0x11c0, 0x5213, kXInputTypeNone},
@@ -450,6 +468,7 @@ constexpr struct GamepadInfo {
     {0x18d1, 0x9400, kXInputTypeNone},
     // Lab126, Inc.
     {0x1949, 0x0402, kXInputTypeNone},
+    {0x1949, 0x041a, kXInputTypeXbox360},
     // Gampaq Co.Ltd
     {0x19fa, 0x0607, kXInputTypeNone},
     // ACRUX
@@ -582,6 +601,7 @@ constexpr struct GamepadInfo {
     {0x2dc8, 0x3820, kXInputTypeNone},
     {0x2dc8, 0x9001, kXInputTypeNone},
     {0x2dfa, 0x0001, kXInputTypeNone},
+    {0x2e95, 0x7725, kXInputTypeNone},
     {0x3767, 0x0101, kXInputTypeXbox},
     {0x3820, 0x0009, kXInputTypeNone},
     {0x4c50, 0x5453, kXInputTypeNone},
@@ -636,12 +656,40 @@ XInputType GamepadIdList::GetXInputType(uint16_t vendor_id,
   return entry ? entry->xtype : kXInputTypeNone;
 }
 
-GamepadId GamepadIdList::GetGamepadId(uint16_t vendor_id,
+GamepadId GamepadIdList::GetGamepadId(base::StringPiece product_name,
+                                      uint16_t vendor_id,
                                       uint16_t product_id) const {
   const auto* entry = GetGamepadInfo(vendor_id, product_id);
-  // The ID value combines the vendor and product IDs.
-  return entry ? static_cast<GamepadId>((vendor_id << 16) | product_id)
-               : GamepadId::kUnknownGamepad;
+  if (entry) {
+    // The ID value combines the vendor and product IDs.
+    return static_cast<GamepadId>((vendor_id << 16) | product_id);
+  }
+  // Special cases for devices which don't report a valid vendor ID.
+  if (vendor_id == 0x0 && product_id == 0x0 &&
+      product_name == "Lic Pro Controller") {
+    return GamepadId::kPowerALicPro;
+  }
+  return GamepadId::kUnknownGamepad;
+}
+
+std::pair<uint16_t, uint16_t> GamepadIdList::GetDeviceIdsFromGamepadId(
+    GamepadId gamepad_id) const {
+  // For most devices, the vendor/product ID pair is unique to a single gamepad
+  // model. The GamepadId for these devices contains the 16-bit vendor and
+  // product IDs packed into a 32-bit value. Some devices use duplicate or
+  // invalid vendor and product IDs and are assigned "fake" GamepadIds that are
+  // not derived from the vendor and product IDs.
+
+  // Handle devices that have been assigned fake GamepadId values.
+  if (gamepad_id == GamepadId::kPowerALicPro)
+    return {0, 0};
+
+  // Handle devices that use packed vendor/product GamepadId values.
+  auto vendor_and_product = static_cast<uint32_t>(gamepad_id);
+  const uint16_t vendor_id = vendor_and_product >> 16;
+  const uint16_t product_id = vendor_and_product & 0xffff;
+  DCHECK(GetGamepadInfo(vendor_id, product_id));
+  return {vendor_id, product_id};
 }
 
 std::vector<std::tuple<uint16_t, uint16_t, XInputType>>

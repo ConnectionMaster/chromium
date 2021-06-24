@@ -10,6 +10,7 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/result_catcher.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -47,7 +48,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, I18NUpdate) {
       embedded_test_server()->GetURL("/extensions/test_file.html"));
   EXPECT_TRUE(catcher.GetNextResult());
 
-  base::string16 title;
+  std::u16string title;
   ui_test_utils::GetCurrentTabTitle(browser(), &title);
   EXPECT_EQ(std::string("FIRSTMESSAGE"), base::UTF16ToUTF8(title));
 

@@ -20,8 +20,6 @@ namespace media {
 
 const int kDefaultSlewTimeMs = 15;
 
-const char* GetAudioContentTypeName(const AudioContentType type);
-
 class DecoderBufferBase;
 
 // Input handle to the sink. All methods (including constructor and destructor)
@@ -101,7 +99,6 @@ class AudioSinkAndroid {
   virtual bool primary() const = 0;
   virtual std::string device_id() const = 0;
   virtual AudioContentType content_type() const = 0;
-  virtual const char* GetContentTypeName() const = 0;
 };
 
 // Implementation of "managed" AudioSinkAndroid* object that is
@@ -122,6 +119,7 @@ class ManagedAudioSink {
   // the manager. If a valid instance existed on entry it is removed from the
   // manager and deleted before creating the new one.
   void Reset(Delegate* delegate,
+             int num_channels,
              int samples_per_second,
              bool primary,
              const std::string& device_id,

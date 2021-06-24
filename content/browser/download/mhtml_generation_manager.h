@@ -6,13 +6,10 @@
 
 #include <stdint.h>
 
-#include <memory>
-#include <set>
-#include <string>
-
 #include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/process/process.h"
+#include "content/public/browser/mhtml_generation_result.h"
 #include "content/public/common/mhtml_generation_params.h"
 
 namespace content {
@@ -29,16 +26,11 @@ class MHTMLGenerationManager {
  public:
   static MHTMLGenerationManager* GetInstance();
 
-  // GenerateMHTMLCallback is called to report completion and status of MHTML
-  // generation.  On success |file_size| indicates the size of the
-  // generated file.  On failure |file_size| is -1.
-  using GenerateMHTMLCallback = base::OnceCallback<void(int64_t file_size)>;
-
   // Instructs the RenderFrames in |web_contents| to generate a MHTML
   // representation of the current page.
   void SaveMHTML(WebContents* web_contents,
                  const MHTMLGenerationParams& params,
-                 GenerateMHTMLCallback callback);
+                 MHTMLGenerationResult::GenerateMHTMLCallback callback);
 
  private:
   friend struct base::DefaultSingletonTraits<MHTMLGenerationManager>;

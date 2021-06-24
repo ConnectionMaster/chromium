@@ -6,7 +6,6 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
 #include "components/offline_pages/core/prefetch/prefetch_dispatcher.h"
 #include "components/offline_pages/core/prefetch/prefetch_importer.h"
 #include "components/offline_pages/core/prefetch/prefetch_types.h"
@@ -49,8 +48,7 @@ ImportCompletedTask::ImportCompletedTask(
       prefetch_store_(prefetch_store),
       prefetch_importer_(prefetch_importer),
       offline_id_(offline_id),
-      success_(success),
-      weak_ptr_factory_(this) {}
+      success_(success) {}
 
 ImportCompletedTask::~ImportCompletedTask() {}
 

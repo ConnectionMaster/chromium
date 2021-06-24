@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_VIZ_TEST_TEST_GPU_MEMORY_BUFFER_MANAGER_H_
 #define COMPONENTS_VIZ_TEST_TEST_GPU_MEMORY_BUFFER_MANAGER_H_
 
+#include <map>
 #include <memory>
 
 #include "base/macros.h"
@@ -33,15 +34,26 @@ class TestGpuMemoryBufferManager : public gpu::GpuMemoryBufferManager {
       const gfx::Size& size,
       gfx::BufferFormat format,
       gfx::BufferUsage usage,
-      gpu::SurfaceHandle surface_handle) override;
+      gpu::SurfaceHandle surface_handle,
+      base::WaitableEvent* shutdown_event) override;
   void SetDestructionSyncToken(gfx::GpuMemoryBuffer* buffer,
                                const gpu::SyncToken& sync_token) override;
+  void CopyGpuMemoryBufferAsync(
+      gfx::GpuMemoryBufferHandle buffer_handle,
+      base::UnsafeSharedMemoryRegion memory_region,
+      base::OnceCallback<void(bool)> callback) override;
+  bool CopyGpuMemoryBufferSync(
+      gfx::GpuMemoryBufferHandle buffer_handle,
+      base::UnsafeSharedMemoryRegion memory_region) override;
 
  private:
+  // This class is called by multiple threads at the same time. Hold this lock
+  // for the duration of all member functions, to ensure consistency.
+  // https://crbug.com/690588, https://crbug.com/859020
+  base::Lock lock_;
+
   // Buffers allocated by this manager.
   int last_gpu_memory_buffer_id_ = 1000;
-  // Use of |buffers_| must be protected by the lock.
-  base::Lock buffers_lock_;
   std::map<int, gfx::GpuMemoryBuffer*> buffers_;
 
   // Parent information for child managers.

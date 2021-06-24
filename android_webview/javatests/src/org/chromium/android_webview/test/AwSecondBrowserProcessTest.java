@@ -46,7 +46,7 @@ public class AwSecondBrowserProcessTest {
     private int mSecondBrowserServicePid;
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         stopSecondBrowserProcess(false);
     }
 
@@ -105,11 +105,11 @@ public class AwSecondBrowserProcessTest {
         Assert.assertNotNull(context.startService(intent));
         Assert.assertTrue(context.bindService(intent, mConnection, 0));
         Assert.assertTrue(mSecondBrowserProcessLatch.await(
-                AwActivityTestRule.WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+                AwActivityTestRule.SCALED_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         mSecondBrowserProcessLatch = null;
     }
 
-    private void stopSecondBrowserProcess(boolean sync) throws Exception {
+    private void stopSecondBrowserProcess(boolean sync) {
         if (mSecondBrowserServicePid <= 0) return;
         Assert.assertTrue(isSecondBrowserServiceRunning());
         // Note that using killProcess ensures that the service record gets removed
@@ -129,6 +129,7 @@ public class AwSecondBrowserProcessTest {
         // runOnMainSync does not catch RuntimeExceptions, they just terminate the test.
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             try {
+                AwTestContainerView.installDrawFnFunctionTable(/*useVulkan=*/false);
                 AwBrowserProcess.start();
                 success[0] = true;
             } catch (RuntimeException e) {

@@ -15,15 +15,11 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace policy {
 
 namespace {
-
-constexpr char kUMADeviceIsIdle[] =
-    "Enterprise.RemoteCommand.RemoteSession.DeviceIsIdle";
-constexpr char kUMAIdlenessOverride[] =
-    "Enterprise.RemoteCommand.RemoteSession.IdlenessOverride";
 
 // Job parameters fields:
 
@@ -31,6 +27,9 @@ constexpr char kUMAIdlenessOverride[] =
 // to proceed. If absent / equal to 0, job will proceed regardless of user
 // activity.
 const char kIdlenessCutoffFieldName[] = "idlenessCutoffSec";
+
+// Regulates if remote session should be terminated upon any local input event.
+const char kTerminateUponInputFieldName[] = "terminateUponInput";
 
 // Result payload fields:
 
@@ -53,9 +52,9 @@ class DeviceCommandStartCRDSessionJob::ResultPayload
     : public RemoteCommandJob::ResultPayload {
  public:
   ResultPayload(ResultCode result_code,
-                const base::Optional<std::string>& access_code,
-                const base::Optional<base::TimeDelta>& time_delta,
-                const base::Optional<std::string>& error_message);
+                const absl::optional<std::string>& access_code,
+                const absl::optional<base::TimeDelta>& time_delta,
+                const absl::optional<std::string>& error_message);
   ~ResultPayload() override {}
 
   static std::unique_ptr<ResultPayload> CreateSuccessPayload(
@@ -75,9 +74,9 @@ class DeviceCommandStartCRDSessionJob::ResultPayload
 
 DeviceCommandStartCRDSessionJob::ResultPayload::ResultPayload(
     ResultCode result_code,
-    const base::Optional<std::string>& access_code,
-    const base::Optional<base::TimeDelta>& time_delta,
-    const base::Optional<std::string>& error_message) {
+    const absl::optional<std::string>& access_code,
+    const absl::optional<base::TimeDelta>& time_delta,
+    const absl::optional<std::string>& error_message) {
   base::Value value(base::Value::Type::DICTIONARY);
   value.SetKey(kResultCodeFieldName, base::Value(result_code));
   if (error_message && !error_message.value().empty())
@@ -95,16 +94,16 @@ std::unique_ptr<DeviceCommandStartCRDSessionJob::ResultPayload>
 DeviceCommandStartCRDSessionJob::ResultPayload::CreateSuccessPayload(
     const std::string& access_code) {
   return std::make_unique<ResultPayload>(ResultCode::SUCCESS, access_code,
-                                         base::nullopt /*time_delta*/,
-                                         base::nullopt /* error_message */);
+                                         absl::nullopt /*time_delta*/,
+                                         absl::nullopt /* error_message */);
 }
 
 std::unique_ptr<DeviceCommandStartCRDSessionJob::ResultPayload>
 DeviceCommandStartCRDSessionJob::ResultPayload::CreateNonIdlePayload(
     const base::TimeDelta& time_delta) {
   return std::make_unique<ResultPayload>(
-      ResultCode::FAILURE_NOT_IDLE, base::nullopt /* access_code */, time_delta,
-      base::nullopt /* error_message */);
+      ResultCode::FAILURE_NOT_IDLE, absl::nullopt /* access_code */, time_delta,
+      absl::nullopt /* error_message */);
 }
 
 std::unique_ptr<DeviceCommandStartCRDSessionJob::ResultPayload>
@@ -114,8 +113,8 @@ DeviceCommandStartCRDSessionJob::ResultPayload::CreateErrorPayload(
   DCHECK(result_code != ResultCode::SUCCESS);
   DCHECK(result_code != ResultCode::FAILURE_NOT_IDLE);
   return std::make_unique<ResultPayload>(
-      result_code, base::nullopt /* access_code */,
-      base::nullopt /*time_delta*/, error_message);
+      result_code, absl::nullopt /* access_code */,
+      absl::nullopt /*time_delta*/, error_message);
 }
 
 std::unique_ptr<std::string>
@@ -125,9 +124,7 @@ DeviceCommandStartCRDSessionJob::ResultPayload::Serialize() {
 
 DeviceCommandStartCRDSessionJob::DeviceCommandStartCRDSessionJob(
     Delegate* crd_host_delegate)
-    : delegate_(crd_host_delegate),
-      terminate_session_attemtpted_(false),
-      weak_factory_(this) {}
+    : delegate_(crd_host_delegate), terminate_session_attemtpted_(false) {}
 
 DeviceCommandStartCRDSessionJob::~DeviceCommandStartCRDSessionJob() {}
 
@@ -138,8 +135,7 @@ DeviceCommandStartCRDSessionJob::GetType() const {
 
 bool DeviceCommandStartCRDSessionJob::ParseCommandPayload(
     const std::string& command_payload) {
-  std::unique_ptr<base::Value> root(
-      base::JSONReader().ReadToValueDeprecated(command_payload));
+  absl::optional<base::Value> root(base::JSONReader::Read(command_payload));
   if (!root)
     return false;
   if (!root->is_dict())
@@ -152,6 +148,14 @@ bool DeviceCommandStartCRDSessionJob::ParseCommandPayload(
         base::TimeDelta::FromSeconds(idleness_cutoff_value->GetInt());
   } else {
     idleness_cutoff_ = base::TimeDelta::FromSeconds(0);
+  }
+
+  base::Value* terminate_upon_input_value = root->FindKeyOfType(
+      kTerminateUponInputFieldName, base::Value::Type::BOOLEAN);
+  if (terminate_upon_input_value) {
+    terminate_upon_input_ = terminate_upon_input_value->GetBool();
+  } else {
+    terminate_upon_input_ = false;
   }
 
   return true;
@@ -199,9 +203,6 @@ void DeviceCommandStartCRDSessionJob::RunImpl(
 
   bool device_is_idle = delegate_->GetIdlenessPeriod() >= idleness_cutoff_;
 
-  UMA_HISTOGRAM_BOOLEAN(kUMADeviceIsIdle, device_is_idle);
-  UMA_HISTOGRAM_BOOLEAN(kUMAIdlenessOverride, idleness_cutoff_.is_zero());
-
   if (!device_is_idle) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE, base::BindOnce(std::move(failed_callback_),
@@ -220,19 +221,8 @@ void DeviceCommandStartCRDSessionJob::RunImpl(
 void DeviceCommandStartCRDSessionJob::OnOAuthTokenReceived(
     const std::string& token) {
   oauth_token_ = token;
-  delegate_->FetchICEConfig(
-      oauth_token_,
-      base::BindOnce(&DeviceCommandStartCRDSessionJob::OnICEConfigReceived,
-                     weak_factory_.GetWeakPtr()),
-      base::BindOnce(&DeviceCommandStartCRDSessionJob::FinishWithError,
-                     weak_factory_.GetWeakPtr()));
-}
-
-void DeviceCommandStartCRDSessionJob::OnICEConfigReceived(
-    base::Value ice_config) {
-  ice_config_ = std::move(ice_config);
   delegate_->StartCRDHostAndGetCode(
-      oauth_token_, std::move(ice_config_),
+      oauth_token_, terminate_upon_input_,
       base::BindOnce(&DeviceCommandStartCRDSessionJob::OnAccessCodeReceived,
                      weak_factory_.GetWeakPtr()),
       base::BindOnce(&DeviceCommandStartCRDSessionJob::FinishWithError,

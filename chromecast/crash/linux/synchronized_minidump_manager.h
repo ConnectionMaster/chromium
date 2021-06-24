@@ -92,6 +92,13 @@ class SynchronizedMinidumpManager {
   // Returns true on success, false on error.
   bool IncrementNumDumpsInCurrentPeriod();
 
+  // Decrement the number of dumps in the current ratelimit period.
+  // Returns true on success, false on error.
+  bool DecrementNumDumpsInCurrentPeriod();
+
+  // Start a new rate-limit period, thus allowing crash uploads to proceed.
+  void ResetRateLimitPeriod();
+
   // Returns true when dumps uploaded in current rate limit period is less than
   // |kRatelimitPeriodMaxDumps|. Resets rate limit period if period time has
   // elapsed.

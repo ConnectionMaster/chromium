@@ -53,7 +53,7 @@ void shell_surface_set_transient(wl_client* client,
                                  int y,
                                  uint32_t flags) {
   ShellSurface* shell_surface = GetUserDataAs<ShellSurface>(resource);
-  if (shell_surface->enabled())
+  if (shell_surface->GetEnabled())
     return;
 
   if (flags & WL_SHELL_SURFACE_TRANSIENT_INACTIVE) {
@@ -70,7 +70,7 @@ void shell_surface_set_fullscreen(wl_client* client,
                                   uint32_t framerate,
                                   wl_resource* output_resource) {
   ShellSurface* shell_surface = GetUserDataAs<ShellSurface>(resource);
-  if (shell_surface->enabled())
+  if (shell_surface->GetEnabled())
     return;
 
   shell_surface->SetEnabled(true);
@@ -92,7 +92,7 @@ void shell_surface_set_maximized(wl_client* client,
                                  wl_resource* resource,
                                  wl_resource* output_resource) {
   ShellSurface* shell_surface = GetUserDataAs<ShellSurface>(resource);
-  if (shell_surface->enabled())
+  if (shell_surface->GetEnabled())
     return;
 
   shell_surface->SetEnabled(true);
@@ -103,7 +103,7 @@ void shell_surface_set_title(wl_client* client,
                              wl_resource* resource,
                              const char* title) {
   GetUserDataAs<ShellSurface>(resource)->SetTitle(
-      base::string16(base::UTF8ToUTF16(title)));
+      std::u16string(base::UTF8ToUTF16(title)));
 }
 
 void shell_surface_set_class(wl_client* client,
@@ -125,7 +125,7 @@ const struct wl_shell_surface_interface shell_surface_implementation = {
 uint32_t HandleShellSurfaceConfigureCallback(
     wl_resource* resource,
     const gfx::Size& size,
-    ash::mojom::WindowStateType state_type,
+    chromeos::WindowStateType state_type,
     bool resizing,
     bool activated,
     const gfx::Vector2d& origin_offset) {
@@ -156,8 +156,8 @@ void shell_get_shell_surface(wl_client* client,
   shell_surface->SetEnabled(false);
 
   shell_surface->set_configure_callback(
-      base::Bind(&HandleShellSurfaceConfigureCallback,
-                 base::Unretained(shell_surface_resource)));
+      base::BindRepeating(&HandleShellSurfaceConfigureCallback,
+                          base::Unretained(shell_surface_resource)));
 
   shell_surface->set_surface_destroyed_callback(base::BindOnce(
       &wl_resource_destroy, base::Unretained(shell_surface_resource)));

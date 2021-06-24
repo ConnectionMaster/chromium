@@ -11,10 +11,11 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/sync/driver/sync_driver_switches.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 class SyncPromoUITest : public testing::Test {
@@ -34,7 +35,7 @@ class SyncPromoUITest : public testing::Test {
         switches::kDisableSync);
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
 
  private:
@@ -51,7 +52,7 @@ TEST_F(SyncPromoUITest, ShouldShowSyncPromoSyncDisabled) {
 // Verifies that ShouldShowSyncPromo returns true if all conditions to
 // show the promo are met.
 TEST_F(SyncPromoUITest, ShouldShowSyncPromoSyncEnabled) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // No sync promo on CrOS.
   EXPECT_FALSE(SyncPromoUI::ShouldShowSyncPromo(profile_.get()));
 #else

@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ui/views/payments/payment_request_browsertest_base.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_ids.h"
-#include "components/autofill/core/browser/autofill_profile.h"
 #include "components/autofill/core/browser/autofill_test_utils.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/controls/label.h"
@@ -21,22 +23,14 @@ class PaymentRequestShowPromiseTest : public PaymentRequestBrowserTestBase {
   PaymentRequestShowPromiseTest() {}
   ~PaymentRequestShowPromiseTest() override {}
 
-  // Installs the payment handler for "basic-card" that responds to
-  // "paymentrequest" events by echoing back the "total" object.
-  void InstallEchoPaymentHandlerForBasicCard() {
+  // Installs the payment handler for window.location.href payment method that
+  // responds to "paymentrequest" events by echoing back the "total" object.
+  void InstallEchoPaymentHandler() {
     std::string contents;
     ASSERT_TRUE(content::ExecuteScriptAndExtractString(
         GetActiveWebContents(), "install();", &contents));
-    ASSERT_EQ(contents, "instruments.set(): Payment handler installed.");
-  }
-
-  // Allows to skip UI into payment handler for "basic-card".
-  void EnalbeSkipUIForForBasicCard() {
-    std::vector<PaymentRequest*> requests =
-        GetPaymentRequests(GetActiveWebContents());
-    ASSERT_EQ(1U, requests.size());
-    requests.front()
-        ->set_skip_ui_for_non_url_payment_method_identifiers_for_test();
+    ASSERT_EQ(contents, "instruments.set(): Payment handler installed.")
+        << contents;
   }
 
   // Shows the browser payment sheet.
@@ -46,7 +40,10 @@ class PaymentRequestShowPromiseTest : public PaymentRequestBrowserTestBase {
                                  DialogEvent::SPEC_DONE_UPDATING,
                                  DialogEvent::PROCESSING_SPINNER_HIDDEN,
                                  DialogEvent::DIALOG_OPENED});
-    ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "buy();"));
+    // The boolean "true" makes the payment method be the URL of the webpage,
+    // which is necessary because service workers cannot use "basic-card"
+    // payment method (the default payment method of the test page).
+    ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "buy(true);"));
     WaitForObservedEvent();
     EXPECT_TRUE(web_modal::WebContentsModalDialogManager::FromWebContents(
                     GetActiveWebContents())
@@ -63,10 +60,10 @@ class PaymentRequestShowPromiseTest : public PaymentRequestBrowserTestBase {
   void ExpectNoDisplayItems() {
     views::View* view = dialog_view()->GetViewByID(
         static_cast<int>(DialogViewID::ORDER_SUMMARY_LINE_ITEM_1));
-    EXPECT_TRUE(!view || !view->visible() ||
-                static_cast<views::Label*>(view)->text().empty())
+    EXPECT_TRUE(!view || !view->GetVisible() ||
+                static_cast<views::Label*>(view)->GetText().empty())
         << "Found unexpected display item: "
-        << static_cast<views::Label*>(view)->text();
+        << static_cast<views::Label*>(view)->GetText();
   }
 
   // Verifies that the shipping address section does not display any warning
@@ -74,10 +71,10 @@ class PaymentRequestShowPromiseTest : public PaymentRequestBrowserTestBase {
   void ExpectNoShippingWarningMessage() {
     views::View* view = dialog_view()->GetViewByID(
         static_cast<int>(DialogViewID::WARNING_LABEL));
-    if (!view || !view->visible())
+    if (!view || !view->GetVisible())
       return;
 
-    EXPECT_EQ(base::string16(), static_cast<views::Label*>(view)->text());
+    EXPECT_EQ(std::u16string(), static_cast<views::Label*>(view)->GetText());
   }
 
   // Verifies that the shipping address section has |expected_message| in the
@@ -124,27 +121,9 @@ class PaymentRequestShowPromiseTest : public PaymentRequestBrowserTestBase {
   DISALLOW_COPY_AND_ASSIGN(PaymentRequestShowPromiseTest);
 };
 
-IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, DigitalGoods) {
-  NavigateTo("/show_promise/digital_goods.html");
-  InstallEchoPaymentHandlerForBasicCard();
-  ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "create();"));
-  ShowBrowserPaymentSheet();
-
-  EXPECT_TRUE(IsPayButtonEnabled());
-
-  OpenOrderSummaryScreen();
-
-  ExpectTotal("$1.00");
-
-  ClickOnBackArrow();
-  Pay();
-
-  ExpectBodyContains({R"({"currency":"USD","value":"1.00"})"});
-}
-
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, SingleOptionShipping) {
   NavigateTo("/show_promise/single_option_shipping.html");
-  InstallEchoPaymentHandlerForBasicCard();
+  InstallEchoPaymentHandler();
   AddAutofillProfile(autofill::test::GetFullProfile());
   AddAutofillProfile(autofill::test::GetFullProfile2());
   ShowBrowserPaymentSheet();
@@ -181,7 +160,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, SingleOptionShipping) {
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
                        SingleOptionShippingWithUpdate) {
   NavigateTo("/show_promise/single_option_shipping_with_update.html");
-  InstallEchoPaymentHandlerForBasicCard();
+  InstallEchoPaymentHandler();
   AddAutofillProfile(autofill::test::GetFullProfile());
   AddAutofillProfile(autofill::test::GetFullProfile2());
   ShowBrowserPaymentSheet();
@@ -217,7 +196,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
 
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, CannotShipError) {
   NavigateTo("/show_promise/us_only_shipping.html");
-  InstallEchoPaymentHandlerForBasicCard();
+  InstallEchoPaymentHandler();
   AddAutofillProfile(autofill::test::GetFullCanadianProfile());
   ShowBrowserPaymentSheet();
 
@@ -245,10 +224,10 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, CannotShipError) {
 }
 
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, SkipUI) {
+  base::HistogramTester histogram_tester;
   NavigateTo("/show_promise/digital_goods.html");
-  InstallEchoPaymentHandlerForBasicCard();
+  InstallEchoPaymentHandler();
   ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "create();"));
-  EnalbeSkipUIForForBasicCard();
   ResetEventWaiterForSequence(
       {DialogEvent::PROCESSING_SPINNER_SHOWN,
        DialogEvent::PROCESSING_SPINNER_HIDDEN, DialogEvent::SPEC_DONE_UPDATING,
@@ -258,10 +237,21 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, SkipUI) {
   WaitForObservedEvent();
 
   ExpectBodyContains({R"({"currency":"USD","value":"1.00"})"});
+
+  // The initial total in digital_goods.js is 99.99 while the final total is
+  // 1.00. Verify that transaction amount metrics are recorded only once and
+  // with final total rather than the initial one. The final total falls into
+  // micro transaction category.
+  constexpr uint32_t kMicroTransaction = 1;
+  histogram_tester.ExpectUniqueSample(
+      "PaymentRequest.TransactionAmount.Triggered", kMicroTransaction, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PaymentRequest.TransactionAmount.Completed", kMicroTransaction, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, Reject) {
   NavigateTo("/show_promise/reject.html");
+  InstallEchoPaymentHandler();
   ResetEventWaiterForSequence(
       {DialogEvent::PROCESSING_SPINNER_SHOWN, DialogEvent::DIALOG_CLOSED});
   ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "buy();"));
@@ -272,6 +262,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, Reject) {
 
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, Timeout) {
   NavigateTo("/show_promise/timeout.html");
+  InstallEchoPaymentHandler();
   ResetEventWaiterForSequence(
       {DialogEvent::PROCESSING_SPINNER_SHOWN, DialogEvent::DIALOG_CLOSED});
   ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "buy();"));
@@ -280,8 +271,9 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, Timeout) {
   ExpectBodyContains({R"(AbortError)"});
 }
 
+// Disabled for being flaky. crbug.com/1116607
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
-                       UnsupportedPaymentMethod) {
+                       DISABLED_UnsupportedPaymentMethod) {
   NavigateTo("/show_promise/unsupported.html");
   ResetEventWaiterForSequence(
       {DialogEvent::PROCESSING_SPINNER_SHOWN,
@@ -297,6 +289,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
 
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, InvalidDetails) {
   NavigateTo("/show_promise/invalid_details.html");
+  InstallEchoPaymentHandler();
   ResetEventWaiterForSequence(
       {DialogEvent::PROCESSING_SPINNER_SHOWN, DialogEvent::DIALOG_CLOSED});
   ASSERT_TRUE(content::ExecuteScript(GetActiveWebContents(), "buy();"));
@@ -308,7 +301,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest, InvalidDetails) {
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
                        ResolveWithEmptyDictionary) {
   NavigateTo("/show_promise/resolve_with_empty_dictionary.html");
-  InstallEchoPaymentHandlerForBasicCard();
+  InstallEchoPaymentHandler();
   AddAutofillProfile(autofill::test::GetFullProfile());
   ShowBrowserPaymentSheet();
 
@@ -317,10 +310,8 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
   OpenOrderSummaryScreen();
 
   ExpectTotal("$3.00");
-  EXPECT_EQ(base::ASCIIToUTF16("$1.00"),
-            GetLabelText(DialogViewID::ORDER_SUMMARY_LINE_ITEM_1));
-  EXPECT_EQ(base::ASCIIToUTF16("$1.00"),
-            GetLabelText(DialogViewID::ORDER_SUMMARY_LINE_ITEM_2));
+  EXPECT_EQ(u"$1.00", GetLabelText(DialogViewID::ORDER_SUMMARY_LINE_ITEM_1));
+  EXPECT_EQ(u"$1.00", GetLabelText(DialogViewID::ORDER_SUMMARY_LINE_ITEM_2));
 
   ClickOnBackArrow();
   OpenShippingAddressSectionScreen();
@@ -337,7 +328,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
 IN_PROC_BROWSER_TEST_F(PaymentRequestShowPromiseTest,
                        ResolveWithEmptyListsOfItems) {
   NavigateTo("/show_promise/resolve_with_empty_lists.html");
-  InstallEchoPaymentHandlerForBasicCard();
+  InstallEchoPaymentHandler();
   AddAutofillProfile(autofill::test::GetFullProfile());
   ShowBrowserPaymentSheet();
 

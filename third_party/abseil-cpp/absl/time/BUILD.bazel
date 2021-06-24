@@ -14,15 +14,17 @@
 # limitations under the License.
 #
 
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load(
     "//absl:copts/configure_copts.bzl",
     "ABSL_DEFAULT_COPTS",
+    "ABSL_DEFAULT_LINKOPTS",
     "ABSL_TEST_COPTS",
 )
 
 package(default_visibility = ["//visibility:public"])
 
-licenses(["notice"])  # Apache 2.0
+licenses(["notice"])
 
 cc_library(
     name = "time",
@@ -41,9 +43,12 @@ cc_library(
         "time.h",
     ],
     copts = ABSL_DEFAULT_COPTS,
+    features = ["-no_undefined"],
+    linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         "//absl/base",
         "//absl/base:core_headers",
+        "//absl/base:raw_logging_internal",
         "//absl/numeric:int128",
         "//absl/strings",
         "//absl/time/internal/cctz:civil_time",
@@ -60,12 +65,14 @@ cc_library(
     ],
     hdrs = ["internal/test_util.h"],
     copts = ABSL_DEFAULT_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
         "//absl/time:__pkg__",
     ],
     deps = [
         ":time",
-        "//absl/base",
+        "//absl/base:config",
+        "//absl/base:raw_logging_internal",
         "//absl/time/internal/cctz:time_zone",
         "@com_google_googletest//:gtest",
     ],
@@ -82,12 +89,13 @@ cc_test(
         "time_zone_test.cc",
     ],
     copts = ABSL_TEST_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
     deps = [
         ":test_util",
         ":time",
-        "//absl/base",
         "//absl/base:config",
         "//absl/base:core_headers",
+        "//absl/numeric:int128",
         "//absl/time/internal/cctz:time_zone",
         "@com_google_googletest//:gtest_main",
     ],
@@ -103,6 +111,7 @@ cc_test(
         "time_benchmark.cc",
     ],
     copts = ABSL_TEST_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
     tags = [
         "benchmark",
     ],
@@ -111,6 +120,7 @@ cc_test(
         ":time",
         "//absl/base",
         "//absl/base:core_headers",
+        "//absl/flags:flag",
         "//absl/hash",
         "@com_github_google_benchmark//:benchmark_main",
     ],

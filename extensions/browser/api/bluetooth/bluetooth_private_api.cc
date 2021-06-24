@@ -6,13 +6,17 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/lazy_instance.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
+#include "base/time/time.h"
+#include "build/chromeos_buildflags.h"
 #include "components/device_event_log/device_event_log.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
@@ -21,8 +25,14 @@
 #include "extensions/browser/api/bluetooth/bluetooth_api.h"
 #include "extensions/browser/api/bluetooth/bluetooth_api_pairing_delegate.h"
 #include "extensions/browser/api/bluetooth/bluetooth_event_router.h"
+#include "extensions/common/api/bluetooth.h"
 #include "extensions/common/api/bluetooth_private.h"
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "device/bluetooth/chromeos/bluetooth_utils.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+namespace bt = extensions::api::bluetooth;
 namespace bt_private = extensions::api::bluetooth_private;
 namespace SetDiscoveryFilter = bt_private::SetDiscoveryFilter;
 
@@ -33,9 +43,87 @@ static base::LazyInstance<BrowserContextKeyedAPIFactory<BluetoothPrivateAPI>>::
 
 namespace {
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+device::BluetoothTransport GetBluetoothTransport(bt::Transport transport) {
+  switch (transport) {
+    case bt::Transport::TRANSPORT_CLASSIC:
+      return device::BLUETOOTH_TRANSPORT_CLASSIC;
+    case bt::Transport::TRANSPORT_LE:
+      return device::BLUETOOTH_TRANSPORT_LE;
+    case bt::Transport::TRANSPORT_DUAL:
+      return device::BLUETOOTH_TRANSPORT_DUAL;
+    default:
+      return device::BLUETOOTH_TRANSPORT_INVALID;
+  }
+}
+
+bool IsActualConnectionFailure(bt_private::ConnectResultType result) {
+  DCHECK(result != bt_private::CONNECT_RESULT_TYPE_SUCCESS);
+
+  switch (result) {
+    case bt_private::CONNECT_RESULT_TYPE_INPROGRESS:
+    case bt_private::CONNECT_RESULT_TYPE_AUTHCANCELED:
+    case bt_private::CONNECT_RESULT_TYPE_AUTHREJECTED:
+      // The connection is not a failure if it's still in progress, the user
+      // canceled auth, or the user entered incorrect auth details.
+      return false;
+    default:
+      return true;
+  }
+}
+
+absl::optional<device::ConnectionFailureReason> GetConnectionFailureReason(
+    bt_private::ConnectResultType result) {
+  DCHECK(IsActualConnectionFailure(result));
+
+  switch (result) {
+    case bt_private::CONNECT_RESULT_TYPE_NONE:
+      return device::ConnectionFailureReason::kSystemError;
+    case bt_private::CONNECT_RESULT_TYPE_AUTHFAILED:
+      return device::ConnectionFailureReason::kAuthFailed;
+    case bt_private::CONNECT_RESULT_TYPE_AUTHTIMEOUT:
+      return device::ConnectionFailureReason::kAuthTimeout;
+    case bt_private::CONNECT_RESULT_TYPE_FAILED:
+      return device::ConnectionFailureReason::kFailed;
+    case bt_private::CONNECT_RESULT_TYPE_UNKNOWNERROR:
+      return device::ConnectionFailureReason::kUnknownConnectionError;
+    case bt_private::CONNECT_RESULT_TYPE_UNSUPPORTEDDEVICE:
+      return device::ConnectionFailureReason::kUnsupportedDevice;
+    default:
+      return device::ConnectionFailureReason::kUnknownError;
+  }
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
 std::string GetListenerId(const EventListenerInfo& details) {
   return !details.extension_id.empty() ? details.extension_id
                                        : details.listener_url.host();
+}
+
+bt_private::ConnectResultType DeviceConnectErrorToConnectResult(
+    device::BluetoothDevice::ConnectErrorCode error_code) {
+  switch (error_code) {
+    case device::BluetoothDevice::ERROR_AUTH_CANCELED:
+      return bt_private::CONNECT_RESULT_TYPE_AUTHCANCELED;
+    case device::BluetoothDevice::ERROR_AUTH_FAILED:
+      return bt_private::CONNECT_RESULT_TYPE_AUTHFAILED;
+    case device::BluetoothDevice::ERROR_AUTH_REJECTED:
+      return bt_private::CONNECT_RESULT_TYPE_AUTHREJECTED;
+    case device::BluetoothDevice::ERROR_AUTH_TIMEOUT:
+      return bt_private::CONNECT_RESULT_TYPE_AUTHTIMEOUT;
+    case device::BluetoothDevice::ERROR_FAILED:
+      return bt_private::CONNECT_RESULT_TYPE_FAILED;
+    case device::BluetoothDevice::ERROR_INPROGRESS:
+      return bt_private::CONNECT_RESULT_TYPE_INPROGRESS;
+    case device::BluetoothDevice::ERROR_UNKNOWN:
+      return bt_private::CONNECT_RESULT_TYPE_UNKNOWNERROR;
+    case device::BluetoothDevice::ERROR_UNSUPPORTED_DEVICE:
+      return bt_private::CONNECT_RESULT_TYPE_UNSUPPORTEDDEVICE;
+    case device::BluetoothDevice::NUM_CONNECT_ERROR_CODES:
+      NOTREACHED();
+      break;
+  }
+  return bt_private::CONNECT_RESULT_TYPE_NONE;
 }
 
 }  // namespace
@@ -191,20 +279,20 @@ void BluetoothPrivateSetAdapterStateFunction::DoWork(
     Respond(NoArguments());
 }
 
-base::Closure
+base::OnceClosure
 BluetoothPrivateSetAdapterStateFunction::CreatePropertySetCallback(
     const std::string& property_name) {
   BLUETOOTH_LOG(DEBUG) << "Set property succeeded: " << property_name;
-  return base::Bind(
+  return base::BindOnce(
       &BluetoothPrivateSetAdapterStateFunction::OnAdapterPropertySet, this,
       property_name);
 }
 
-base::Closure
+base::OnceClosure
 BluetoothPrivateSetAdapterStateFunction::CreatePropertyErrorCallback(
     const std::string& property_name) {
   BLUETOOTH_LOG(DEBUG) << "Set property failed: " << property_name;
-  return base::Bind(
+  return base::BindOnce(
       &BluetoothPrivateSetAdapterStateFunction::OnAdapterPropertyError, this,
       property_name);
 }
@@ -244,7 +332,7 @@ void BluetoothPrivateSetAdapterStateFunction::SendError() {
   replacements[0] = base::JoinString(failed_vector, ", ");
   std::string error = base::ReplaceStringPlaceholders(kSetAdapterPropertyError,
                                                       replacements, nullptr);
-  Respond(Error(error));
+  Respond(Error(std::move(error)));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -333,10 +421,10 @@ void BluetoothPrivateDisconnectAllFunction::DoWork(
   }
 
   device->Disconnect(
-      base::Bind(&BluetoothPrivateDisconnectAllFunction::OnSuccessCallback,
-                 this),
-      base::Bind(&BluetoothPrivateDisconnectAllFunction::OnErrorCallback, this,
-                 adapter, params_->device_address));
+      base::BindOnce(&BluetoothPrivateDisconnectAllFunction::OnSuccessCallback,
+                     this),
+      base::BindOnce(&BluetoothPrivateDisconnectAllFunction::OnErrorCallback,
+                     this, adapter, params_->device_address));
 }
 
 void BluetoothPrivateDisconnectAllFunction::OnSuccessCallback() {
@@ -376,10 +464,10 @@ void BluetoothPrivateForgetDeviceFunction::DoWork(
   }
 
   device->Forget(
-      base::Bind(&BluetoothPrivateForgetDeviceFunction::OnSuccessCallback,
-                 this),
-      base::Bind(&BluetoothPrivateForgetDeviceFunction::OnErrorCallback, this,
-                 adapter, params_->device_address));
+      base::BindOnce(&BluetoothPrivateForgetDeviceFunction::OnSuccessCallback,
+                     this),
+      base::BindOnce(&BluetoothPrivateForgetDeviceFunction::OnErrorCallback,
+                     this, adapter, params_->device_address));
 }
 
 void BluetoothPrivateForgetDeviceFunction::OnSuccessCallback() {
@@ -428,16 +516,20 @@ void BluetoothPrivateSetDiscoveryFilterFunction::DoWork(
         break;
     }
 
-    discovery_filter.reset(new device::BluetoothDiscoveryFilter(transport));
+    discovery_filter =
+        std::make_unique<device::BluetoothDiscoveryFilter>(transport);
 
     if (df_param.uuids.get()) {
-      std::vector<device::BluetoothUUID> uuids;
       if (df_param.uuids->as_string.get()) {
-        discovery_filter->AddUUID(
+        device::BluetoothDiscoveryFilter::DeviceInfoFilter device_filter;
+        device_filter.uuids.insert(
             device::BluetoothUUID(*df_param.uuids->as_string));
+        discovery_filter->AddDeviceFilter(std::move(device_filter));
       } else if (df_param.uuids->as_strings.get()) {
         for (const auto& iter : *df_param.uuids->as_strings) {
-          discovery_filter->AddUUID(device::BluetoothUUID(iter));
+          device::BluetoothDiscoveryFilter::DeviceInfoFilter device_filter;
+          device_filter.uuids.insert(device::BluetoothUUID(iter));
+          discovery_filter->AddDeviceFilter(std::move(device_filter));
         }
       }
     }
@@ -453,10 +545,10 @@ void BluetoothPrivateSetDiscoveryFilterFunction::DoWork(
       ->event_router()
       ->SetDiscoveryFilter(
           std::move(discovery_filter), adapter.get(), GetExtensionId(),
-          base::Bind(
+          base::BindOnce(
               &BluetoothPrivateSetDiscoveryFilterFunction::OnSuccessCallback,
               this),
-          base::Bind(
+          base::BindOnce(
               &BluetoothPrivateSetDiscoveryFilterFunction::OnErrorCallback,
               this));
 }
@@ -501,49 +593,19 @@ void BluetoothPrivateConnectFunction::DoWork(
           ->GetPairingDelegate(GetExtensionId());
   device->Connect(
       pairing_delegate,
-      base::Bind(&BluetoothPrivateConnectFunction::OnSuccessCallback, this),
-      base::Bind(&BluetoothPrivateConnectFunction::OnErrorCallback, this));
+      base::BindOnce(&BluetoothPrivateConnectFunction::OnConnect, this));
 }
 
-void BluetoothPrivateConnectFunction::OnSuccessCallback() {
+void BluetoothPrivateConnectFunction::OnConnect(
+    absl::optional<device::BluetoothDevice::ConnectErrorCode> error_code) {
+  if (error_code.has_value()) {
+    // Set the result type and respond with true (success).
+    Respond(ArgumentList(bt_private::Connect::Results::Create(
+        DeviceConnectErrorToConnectResult(error_code.value()))));
+    return;
+  }
   Respond(ArgumentList(bt_private::Connect::Results::Create(
       bt_private::CONNECT_RESULT_TYPE_SUCCESS)));
-}
-
-void BluetoothPrivateConnectFunction::OnErrorCallback(
-    device::BluetoothDevice::ConnectErrorCode error) {
-  bt_private::ConnectResultType result = bt_private::CONNECT_RESULT_TYPE_NONE;
-  switch (error) {
-    case device::BluetoothDevice::ERROR_AUTH_CANCELED:
-      result = bt_private::CONNECT_RESULT_TYPE_AUTHCANCELED;
-      break;
-    case device::BluetoothDevice::ERROR_AUTH_FAILED:
-      result = bt_private::CONNECT_RESULT_TYPE_AUTHFAILED;
-      break;
-    case device::BluetoothDevice::ERROR_AUTH_REJECTED:
-      result = bt_private::CONNECT_RESULT_TYPE_AUTHREJECTED;
-      break;
-    case device::BluetoothDevice::ERROR_AUTH_TIMEOUT:
-      result = bt_private::CONNECT_RESULT_TYPE_AUTHTIMEOUT;
-      break;
-    case device::BluetoothDevice::ERROR_FAILED:
-      result = bt_private::CONNECT_RESULT_TYPE_FAILED;
-      break;
-    case device::BluetoothDevice::ERROR_INPROGRESS:
-      result = bt_private::CONNECT_RESULT_TYPE_INPROGRESS;
-      break;
-    case device::BluetoothDevice::ERROR_UNKNOWN:
-      result = bt_private::CONNECT_RESULT_TYPE_UNKNOWNERROR;
-      break;
-    case device::BluetoothDevice::ERROR_UNSUPPORTED_DEVICE:
-      result = bt_private::CONNECT_RESULT_TYPE_UNSUPPORTEDDEVICE;
-      break;
-    case device::BluetoothDevice::NUM_CONNECT_ERROR_CODES:
-      NOTREACHED();
-      break;
-  }
-  // Set the result type and respond with true (success).
-  Respond(ArgumentList(bt_private::Connect::Results::Create(result)));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -576,19 +638,103 @@ void BluetoothPrivatePairFunction::DoWork(
     return;
   }
 
-  device->Pair(
-      pairing_delegate,
-      base::Bind(&BluetoothPrivatePairFunction::OnSuccessCallback, this),
-      base::Bind(&BluetoothPrivatePairFunction::OnErrorCallback, this));
+  device->Pair(pairing_delegate,
+               base::BindOnce(&BluetoothPrivatePairFunction::OnPair, this));
 }
 
-void BluetoothPrivatePairFunction::OnSuccessCallback() {
+void BluetoothPrivatePairFunction::OnPair(
+    absl::optional<device::BluetoothDevice::ConnectErrorCode> error_code) {
+  if (error_code.has_value()) {
+    Respond(Error(kPairingFailed));
+    return;
+  }
   Respond(NoArguments());
 }
 
-void BluetoothPrivatePairFunction::OnErrorCallback(
-    device::BluetoothDevice::ConnectErrorCode error) {
-  Respond(Error(kPairingFailed));
+////////////////////////////////////////////////////////////////////////////////
+
+BluetoothPrivateRecordPairingFunction::BluetoothPrivateRecordPairingFunction() =
+    default;
+
+BluetoothPrivateRecordPairingFunction::
+    ~BluetoothPrivateRecordPairingFunction() = default;
+
+bool BluetoothPrivateRecordPairingFunction::CreateParams() {
+  params_ = bt_private::RecordPairing::Params::Create(*args_);
+  return params_ != nullptr;
+}
+
+void BluetoothPrivateRecordPairingFunction::DoWork(
+    scoped_refptr<device::BluetoothAdapter> adapter) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  bt_private::ConnectResultType result = params_->result;
+  bool success = (result == bt_private::CONNECT_RESULT_TYPE_SUCCESS);
+
+  // Only emit metrics if this is a success or a true connection failure.
+  if (success || IsActualConnectionFailure(result)) {
+    device::RecordPairingResult(
+        success ? absl::nullopt : GetConnectionFailureReason(result),
+        GetBluetoothTransport(params_->transport),
+        base::TimeDelta::FromMilliseconds(params_->pairing_duration_ms));
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  Respond(NoArguments());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+BluetoothPrivateRecordReconnectionFunction::
+    BluetoothPrivateRecordReconnectionFunction() = default;
+
+BluetoothPrivateRecordReconnectionFunction::
+    ~BluetoothPrivateRecordReconnectionFunction() = default;
+
+bool BluetoothPrivateRecordReconnectionFunction::CreateParams() {
+  params_ = bt_private::RecordReconnection::Params::Create(*args_);
+  return params_ != nullptr;
+}
+
+void BluetoothPrivateRecordReconnectionFunction::DoWork(
+    scoped_refptr<device::BluetoothAdapter> adapter) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  bt_private::ConnectResultType result = params_->result;
+  bool success = (result == bt_private::CONNECT_RESULT_TYPE_SUCCESS);
+
+  // Only emit metrics if this is a success or a true connection failure.
+  if (success || IsActualConnectionFailure(result)) {
+    device::RecordUserInitiatedReconnectionAttemptResult(
+        success ? absl::nullopt : GetConnectionFailureReason(result),
+        device::BluetoothUiSurface::kSettings);
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  Respond(NoArguments());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+BluetoothPrivateRecordDeviceSelectionFunction::
+    BluetoothPrivateRecordDeviceSelectionFunction() = default;
+
+BluetoothPrivateRecordDeviceSelectionFunction::
+    ~BluetoothPrivateRecordDeviceSelectionFunction() = default;
+
+bool BluetoothPrivateRecordDeviceSelectionFunction::CreateParams() {
+  params_ = bt_private::RecordDeviceSelection::Params::Create(*args_);
+  return params_ != nullptr;
+}
+
+void BluetoothPrivateRecordDeviceSelectionFunction::DoWork(
+    scoped_refptr<device::BluetoothAdapter> adapter) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  device::RecordDeviceSelectionDuration(
+      base::TimeDelta::FromMilliseconds(params_->selection_duration_ms),
+      device::BluetoothUiSurface::kSettings, params_->was_paired,
+      GetBluetoothTransport(params_->transport));
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  Respond(NoArguments());
 }
 
 ////////////////////////////////////////////////////////////////////////////////

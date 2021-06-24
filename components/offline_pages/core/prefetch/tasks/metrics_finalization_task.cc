@@ -10,6 +10,7 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
@@ -113,7 +114,7 @@ void CountEntriesInEachState(sql::Database* db) {
       "SELECT state, COUNT (*) FROM prefetch_items GROUP BY state";
   sql::Statement statement(db->GetCachedStatement(SQL_FROM_HERE, kSql));
   while (statement.Step()) {
-    base::Optional<PrefetchItemState> state =
+    absl::optional<PrefetchItemState> state =
         ToPrefetchItemState(statement.ColumnInt(0));
     if (!state)
       continue;
@@ -191,7 +192,7 @@ bool ReportMetricsAndFinalizeSync(sql::Database* db) {
 }  // namespace
 
 MetricsFinalizationTask::MetricsFinalizationTask(PrefetchStore* prefetch_store)
-    : prefetch_store_(prefetch_store), weak_factory_(this) {}
+    : prefetch_store_(prefetch_store) {}
 
 MetricsFinalizationTask::~MetricsFinalizationTask() {}
 

@@ -10,16 +10,21 @@
 #include "base/auto_reset.h"
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/apps/app_service/app_launch_params.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/app_service/browser_app_launcher.h"
+#include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/devtools/devtools_window.h"
@@ -30,8 +35,8 @@
 #include "chrome/browser/renderer_context_menu/render_view_context_menu.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
-#include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/webui/print_preview/print_preview_ui.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #include "chrome/common/chrome_switches.h"
@@ -43,9 +48,11 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/host_zoom_map.h"
+#include "content/public/browser/overlay_window.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
@@ -64,8 +71,8 @@
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/mock_user_manager.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/login/users/mock_user_manager.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "components/user_manager/scoped_user_manager.h"
@@ -96,30 +103,40 @@ class PlatformAppContextMenu : public RenderViewContextMenu {
 
 // This class keeps track of tabs as they are added to the browser. It will be
 // "done" (i.e. won't block on Wait()) once |observations| tabs have been added.
-class TabsAddedNotificationObserver
-    : public content::WindowedNotificationObserver {
+class TabsAddedNotificationObserver : public TabStripModelObserver {
  public:
-  explicit TabsAddedNotificationObserver(size_t observations)
-      : content::WindowedNotificationObserver(
-            chrome::NOTIFICATION_TAB_ADDED,
-            content::NotificationService::AllSources()),
-        observations_(observations) {}
-
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override {
-    observed_tabs_.push_back(content::Details<WebContents>(details).ptr());
-    if (observed_tabs_.size() == observations_)
-      content::WindowedNotificationObserver::Observe(type, source, details);
+  TabsAddedNotificationObserver(Browser* browser, size_t observations)
+      : observations_(observations) {
+    browser->tab_strip_model()->AddObserver(this);
   }
+  TabsAddedNotificationObserver(const TabsAddedNotificationObserver&) = delete;
+  TabsAddedNotificationObserver& operator=(
+      const TabsAddedNotificationObserver&) = delete;
+  ~TabsAddedNotificationObserver() override = default;
+
+  // TabStripModelObserver:
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override {
+    if (change.type() != TabStripModelChange::kInserted)
+      return;
+
+    for (auto& tab : change.GetInsert()->contents)
+      observed_tabs_.push_back(tab.contents);
+
+    if (observed_tabs_.size() >= observations_)
+      run_loop_.Quit();
+  }
+
+  void Wait() { run_loop_.Run(); }
 
   const std::vector<content::WebContents*>& tabs() { return observed_tabs_; }
 
  private:
+  base::RunLoop run_loop_;
   size_t observations_;
   std::vector<content::WebContents*> observed_tabs_;
-
-  DISALLOW_COPY_AND_ASSIGN(TabsAddedNotificationObserver);
 };
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
@@ -134,7 +151,7 @@ class ScopedPreviewTestDelegate : printing::PrintPreviewUI::TestDelegate {
   }
 
   // PrintPreviewUI::TestDelegate implementation.
-  void DidGetPreviewPageCount(int page_count) override {
+  void DidGetPreviewPageCount(uint32_t page_count) override {
     total_page_count_ = page_count;
   }
 
@@ -160,15 +177,15 @@ class ScopedPreviewTestDelegate : printing::PrintPreviewUI::TestDelegate {
   gfx::Size dialog_size() { return dialog_size_; }
 
  private:
-  int total_page_count_ = 1;
-  int rendered_page_count_ = 0;
+  uint32_t total_page_count_ = 1;
+  uint32_t rendered_page_count_ = 0;
   base::RunLoop* run_loop_ = nullptr;
   gfx::Size dialog_size_;
 };
 
 #endif  // ENABLE_PRINT_PREVIEW
 
-#if !defined(OS_CHROMEOS) && !defined(OS_WIN)
+#if !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_WIN)
 bool CopyTestDataAndGetTestFilePath(const base::FilePath& test_data_file,
                                     const base::FilePath& temp_dir,
                                     const char* filename,
@@ -181,7 +198,7 @@ bool CopyTestDataAndGetTestFilePath(const base::FilePath& test_data_file,
   *file_path = path;
   return true;
 }
-#endif  // !defined(OS_CHROMEOS) && !defined(OS_WIN)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH) && !defined(OS_WIN)
 
 class PlatformAppWithFileBrowserTest : public PlatformAppBrowserTest {
  public:
@@ -210,6 +227,30 @@ class PlatformAppWithFileBrowserTest : public PlatformAppBrowserTest {
         extension_name, *base::CommandLine::ForCurrentProcess());
   }
 
+  void RunPlatformAppTestWithFiles(const std::string& extension_name,
+                                   const std::string& test_file) {
+    extensions::ResultCatcher catcher;
+
+    base::FilePath test_doc(test_data_dir_.AppendASCII(test_file));
+    base::FilePath file_path = test_doc.NormalizePathSeparators();
+
+    base::FilePath extension_path = test_data_dir_.AppendASCII(extension_name);
+    const extensions::Extension* extension = LoadExtension(extension_path);
+    ASSERT_TRUE(extension);
+
+    apps::mojom::FilePathsPtr launch_files = apps::mojom::FilePaths::New();
+    launch_files->file_paths.push_back(file_path);
+    apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+        ->LaunchAppWithFiles(
+            extension->id(), apps::mojom::LaunchContainer::kLaunchContainerNone,
+            apps::GetEventFlags(
+                apps::mojom::LaunchContainer::kLaunchContainerNone,
+                WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                true /* preferred_container */),
+            apps::mojom::LaunchSource::kFromTest, std::move(launch_files));
+    ASSERT_TRUE(catcher.GetNextResult());
+  }
+
  private:
   bool RunPlatformAppTestWithCommandLine(
       const std::string& extension_name,
@@ -217,19 +258,21 @@ class PlatformAppWithFileBrowserTest : public PlatformAppBrowserTest {
     extensions::ResultCatcher catcher;
 
     base::FilePath extension_path = test_data_dir_.AppendASCII(extension_name);
-    const extensions::Extension* extension =
-        LoadExtensionWithFlags(extension_path, ExtensionBrowserTest::kFlagNone);
+    const extensions::Extension* extension = LoadExtension(extension_path);
     if (!extension) {
       message_ = "Failed to load extension.";
       return false;
     }
 
-    AppLaunchParams params(
-        browser()->profile(), extension, extensions::LAUNCH_CONTAINER_NONE,
-        WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST);
+    apps::AppLaunchParams params(
+        extension->id(), apps::mojom::LaunchContainer::kLaunchContainerNone,
+        WindowOpenDisposition::NEW_WINDOW,
+        apps::mojom::AppLaunchSource::kSourceTest);
     params.command_line = command_line;
     params.current_directory = test_data_dir_;
-    OpenApplication(params);
+    apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+        ->BrowserAppLauncher()
+        ->LaunchAppWithParams(std::move(params));
 
     if (!catcher.GetNextResult()) {
       message_ = catcher.message();
@@ -248,7 +291,7 @@ class PlatformAppWithFileBrowserTest : public PlatformAppBrowserTest {
 };
 
 const char kChromiumURL[] = "http://chromium.org";
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 const char kTestFilePath[] = "platform_apps/launch_files/test.txt";
 #endif
 
@@ -265,13 +308,16 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, CreateAndCloseAppWindow) {
 
 // Tests that platform apps received the "launch" event when launched.
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, OnLaunchedEvent) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/launch")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/launch",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 // Tests that platform apps cannot use certain disabled window properties, but
 // can override them and then use them.
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, DisabledWindowProperties) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/disabled_window_properties"))
+  ASSERT_TRUE(RunExtensionTest("platform_apps/disabled_window_properties",
+                               {.launch_as_platform_app = true}))
       << message_;
 }
 
@@ -283,8 +329,8 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, EmptyContextMenu) {
   WebContents* web_contents = GetFirstAppWindowWebContents();
   ASSERT_TRUE(web_contents);
   content::ContextMenuParams params;
-  std::unique_ptr<PlatformAppContextMenu> menu;
-  menu.reset(new PlatformAppContextMenu(web_contents->GetMainFrame(), params));
+  auto menu = std::make_unique<PlatformAppContextMenu>(
+      web_contents->GetMainFrame(), params);
   menu->Init();
   ASSERT_TRUE(menu->HasCommandWithId(IDC_CONTENT_CONTEXT_INSPECTELEMENT));
   ASSERT_TRUE(
@@ -302,8 +348,8 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenu) {
   WebContents* web_contents = GetFirstAppWindowWebContents();
   ASSERT_TRUE(web_contents);
   content::ContextMenuParams params;
-  std::unique_ptr<PlatformAppContextMenu> menu;
-  menu.reset(new PlatformAppContextMenu(web_contents->GetMainFrame(), params));
+  auto menu = std::make_unique<PlatformAppContextMenu>(
+      web_contents->GetMainFrame(), params);
   menu->Init();
   int first_extensions_command_id =
       ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0);
@@ -331,8 +377,8 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, InstalledAppWithContextMenu) {
   WebContents* web_contents = GetFirstAppWindowWebContents();
   ASSERT_TRUE(web_contents);
   content::ContextMenuParams params;
-  std::unique_ptr<PlatformAppContextMenu> menu;
-  menu.reset(new PlatformAppContextMenu(web_contents->GetMainFrame(), params));
+  auto menu = std::make_unique<PlatformAppContextMenu>(
+      web_contents->GetMainFrame(), params);
   menu->Init();
   int extensions_custom_id =
       ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0);
@@ -347,7 +393,14 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, InstalledAppWithContextMenu) {
   ASSERT_FALSE(menu->HasCommandWithId(IDC_CONTENT_CONTEXT_UNDO));
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenuTextField) {
+// Flaky on Mac10.13 Tests (dbg). See https://crbug.com/1155013
+#if defined(OS_MAC)
+#define MAYBE_AppWithContextMenuTextField DISABLED_AppWithContextMenuTextField
+#else
+#define MAYBE_AppWithContextMenuTextField AppWithContextMenuTextField
+#endif
+IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
+                       MAYBE_AppWithContextMenuTextField) {
   LoadAndLaunchPlatformApp("context_menu", "Launched");
 
   // The context_menu app has one context menu item. This, along with a
@@ -356,8 +409,8 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenuTextField) {
   ASSERT_TRUE(web_contents);
   content::ContextMenuParams params;
   params.is_editable = true;
-  std::unique_ptr<PlatformAppContextMenu> menu;
-  menu.reset(new PlatformAppContextMenu(web_contents->GetMainFrame(), params));
+  auto menu = std::make_unique<PlatformAppContextMenu>(
+      web_contents->GetMainFrame(), params);
   menu->Init();
   int extensions_custom_id =
       ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0);
@@ -380,9 +433,9 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenuSelection) {
   WebContents* web_contents = GetFirstAppWindowWebContents();
   ASSERT_TRUE(web_contents);
   content::ContextMenuParams params;
-  params.selection_text = base::ASCIIToUTF16("Hello World");
-  std::unique_ptr<PlatformAppContextMenu> menu;
-  menu.reset(new PlatformAppContextMenu(web_contents->GetMainFrame(), params));
+  params.selection_text = u"Hello World";
+  auto menu = std::make_unique<PlatformAppContextMenu>(
+      web_contents->GetMainFrame(), params);
   menu->Init();
   int extensions_custom_id =
       ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0);
@@ -405,8 +458,8 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenuClicked) {
   ASSERT_TRUE(web_contents);
   content::ContextMenuParams params;
   params.page_url = GURL("http://foo.bar");
-  std::unique_ptr<PlatformAppContextMenu> menu;
-  menu.reset(new PlatformAppContextMenu(web_contents->GetMainFrame(), params));
+  auto menu = std::make_unique<PlatformAppContextMenu>(
+      web_contents->GetMainFrame(), params);
   menu->Init();
   int extensions_custom_id =
       ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0);
@@ -420,11 +473,14 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenuClicked) {
   ASSERT_TRUE(onclicked_listener.WaitUntilSatisfied());
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, DisallowNavigation) {
-  TabsAddedNotificationObserver observer(1);
+// https://crbug.com/1155013
+IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, DISABLED_DisallowNavigation) {
+  TabsAddedNotificationObserver observer(browser(), 1);
 
   ASSERT_TRUE(StartEmbeddedTestServer());
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/navigation")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/navigation",
+                               {.launch_as_platform_app = true}))
+      << message_;
 
   observer.Wait();
   ASSERT_EQ(1U, observer.tabs().size());
@@ -436,42 +492,52 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
   // The test will try to open in app urls and external urls via clicking links
   // and window.open(). Only the external urls should succeed in opening tabs.
   const size_t kExpectedNumberOfTabs = 2u;
-  TabsAddedNotificationObserver observer(kExpectedNumberOfTabs);
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/background_page_navigation"))
+  TabsAddedNotificationObserver observer(browser(), kExpectedNumberOfTabs);
+  ASSERT_TRUE(RunExtensionTest("platform_apps/background_page_navigation",
+                               {.launch_as_platform_app = true}))
       << message_;
   observer.Wait();
   ASSERT_EQ(kExpectedNumberOfTabs, observer.tabs().size());
-  content::WaitForLoadStop(observer.tabs()[kExpectedNumberOfTabs - 1]);
+  EXPECT_FALSE(
+      content::WaitForLoadStop(observer.tabs()[kExpectedNumberOfTabs - 1]));
   EXPECT_EQ(GURL(kChromiumURL),
             observer.tabs()[kExpectedNumberOfTabs - 1]->GetURL());
-  content::WaitForLoadStop(observer.tabs()[kExpectedNumberOfTabs - 2]);
+  EXPECT_FALSE(
+      content::WaitForLoadStop(observer.tabs()[kExpectedNumberOfTabs - 2]));
   EXPECT_EQ(GURL(kChromiumURL),
             observer.tabs()[kExpectedNumberOfTabs - 2]->GetURL());
 }
 
 // Failing on some Win and Linux buildbots.  See crbug.com/354425.
-#if defined(OS_WIN) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 #define MAYBE_Iframes DISABLED_Iframes
 #else
 #define MAYBE_Iframes Iframes
 #endif
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, MAYBE_Iframes) {
   ASSERT_TRUE(StartEmbeddedTestServer());
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/iframes")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/iframes",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 // Tests that localStorage and WebSQL are disabled for platform apps.
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, DisallowStorage) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/storage")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/storage",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, Restrictions) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/restrictions")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/restrictions",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 // Tests that extensions can't use platform-app-only APIs.
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, PlatformAppsOnly) {
-  ASSERT_TRUE(RunExtensionTestIgnoreManifestWarnings("platform_apps/apps_only"))
+  ASSERT_TRUE(RunExtensionTest("platform_apps/apps_only", {},
+                               {.ignore_manifest_warnings = true}))
       << message_;
 }
 
@@ -498,7 +564,9 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, Isolation) {
 
   // Let the platform app request the same URL, and make sure that it doesn't
   // see the cookie.
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/isolation")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/isolation",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 // See crbug.com/248441
@@ -543,7 +611,14 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, MAYBE_ExtensionWindowingApis) {
 
 // ChromeOS does not support passing arguments on the command line, so the tests
 // that rely on this functionality are disabled.
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+// Tests that launch data is sent through if the file extension matches.
+IN_PROC_BROWSER_TEST_F(PlatformAppWithFileBrowserTest,
+                       LaunchFilesWithFileExtension) {
+  RunPlatformAppTestWithFiles("platform_apps/launch_file_by_extension",
+                              kTestFilePath);
+}
+
 // Tests that command line parameters get passed through to platform apps
 // via launchData correctly when launching with a file.
 // TODO(benwells/jeremya): tests need a way to specify a handler ID.
@@ -569,12 +644,12 @@ IN_PROC_BROWSER_TEST_F(PlatformAppWithFileBrowserTest,
       << message_;
 }
 
-// Tests that launch data is sent through to a whitelisted extension if the file
-// extension matches.
+// Tests that launch data is sent through to an allowlisted extension if the
+// file extension matches.
 IN_PROC_BROWSER_TEST_F(PlatformAppWithFileBrowserTest,
-                       LaunchWhiteListedExtensionWithFile) {
+                       LaunchAllowListedExtensionWithFile) {
   ASSERT_TRUE(RunPlatformAppTestWithFileInTestDataDir(
-      "platform_apps/launch_whitelisted_ext_with_file", kTestFilePath))
+      "platform_apps/launch_allowlisted_ext_with_file", kTestFilePath))
       << message_;
 }
 
@@ -727,7 +802,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppWithFileBrowserTest, LaunchWithNothing) {
 }
 
 // Test that platform apps can use the chrome.fileSystem.getDisplayPath
-// function to get the native file system path of a file they are launched with.
+// function to get the File System Access path of a file they are launched with.
 IN_PROC_BROWSER_TEST_F(PlatformAppWithFileBrowserTest, GetDisplayPath) {
   ASSERT_TRUE(RunPlatformAppTestWithFileInTestDataDir(
       "platform_apps/get_display_path", kTestFilePath))
@@ -746,32 +821,33 @@ IN_PROC_BROWSER_TEST_F(PlatformAppWithFileBrowserTest, LaunchNewFile) {
       << message_;
 }
 
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, OpenLink) {
   ASSERT_TRUE(StartEmbeddedTestServer());
-  content::WindowedNotificationObserver observer(
-      chrome::NOTIFICATION_TAB_ADDED,
-      content::Source<content::WebContentsDelegate>(browser()));
+  ui_test_utils::TabAddedWaiter tab_added_waiter(browser());
   LoadAndLaunchPlatformApp("open_link", "Launched");
-  observer.Wait();
+  tab_added_waiter.Wait();
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
 }
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, MutationEventsDisabled) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/mutation_events")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/mutation_events",
+                               {.launch_as_platform_app = true}))
+      << message_;
 }
 
 // This appears to be unreliable.
 // TODO(stevenjb): Investigate and enable
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) || defined(OS_WIN) || \
-    defined(OS_MACOSX)
+#if (defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)) || defined(OS_WIN) || \
+    defined(OS_MAC)
 #define MAYBE_AppWindowRestoreState DISABLED_AppWindowRestoreState
 #else
 #define MAYBE_AppWindowRestoreState AppWindowRestoreState
 #endif
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, MAYBE_AppWindowRestoreState) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/restore_state"));
+  ASSERT_TRUE(RunExtensionTest("platform_apps/restore_state",
+                               {.launch_as_platform_app = true}));
 }
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
@@ -863,9 +939,12 @@ void PlatformAppDevToolsBrowserTest::RunTestWithDevTools(const char* name,
     content::WindowedNotificationObserver app_loaded_observer(
         content::NOTIFICATION_LOAD_COMPLETED_MAIN_FRAME,
         content::NotificationService::AllSources());
-    OpenApplication(AppLaunchParams(
-        browser()->profile(), extension, LAUNCH_CONTAINER_NONE,
-        WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+    apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+        ->BrowserAppLauncher()
+        ->LaunchAppWithParams(apps::AppLaunchParams(
+            extension->id(), LaunchContainer::kLaunchContainerNone,
+            WindowOpenDisposition::NEW_WINDOW,
+            apps::mojom::AppLaunchSource::kSourceTest));
     app_loaded_observer.Wait();
     window = GetFirstAppWindow();
     ASSERT_TRUE(window);
@@ -889,7 +968,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppDevToolsBrowserTest, ReOpenedWithURL) {
 
 // Test that showing a permission request as a constrained window works and is
 // correctly parented.
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_ConstrainedWindowRequest DISABLED_ConstrainedWindowRequest
 #else
 // TODO(sail): Enable this on other platforms once http://crbug.com/95455 is
@@ -1009,9 +1088,12 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
   ASSERT_TRUE(should_install.seen());
 
   ExtensionTestMessageListener launched_listener("Launched", false);
-  OpenApplication(AppLaunchParams(
-      browser()->profile(), extension, LAUNCH_CONTAINER_NONE,
-      WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+  apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+      ->BrowserAppLauncher()
+      ->LaunchAppWithParams(apps::AppLaunchParams(
+          extension->id(), LaunchContainer::kLaunchContainerNone,
+          WindowOpenDisposition::NEW_WINDOW,
+          apps::mojom::AppLaunchSource::kSourceTest));
 
   ASSERT_TRUE(launched_listener.WaitUntilSatisfied());
 }
@@ -1031,9 +1113,12 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, PRE_ComponentAppBackgroundPage) {
   ASSERT_TRUE(extension);
 
   ExtensionTestMessageListener launched_listener("Launched", false);
-  OpenApplication(AppLaunchParams(
-      browser()->profile(), extension, LAUNCH_CONTAINER_NONE,
-      WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+  apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+      ->BrowserAppLauncher()
+      ->LaunchAppWithParams(apps::AppLaunchParams(
+          extension->id(), LaunchContainer::kLaunchContainerNone,
+          WindowOpenDisposition::NEW_WINDOW,
+          apps::mojom::AppLaunchSource::kSourceTest));
 
   ASSERT_TRUE(launched_listener.WaitUntilSatisfied());
   ASSERT_FALSE(should_not_install.seen());
@@ -1069,9 +1154,12 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, ComponentAppBackgroundPage) {
   ASSERT_TRUE(should_install.seen());
 
   ExtensionTestMessageListener launched_listener("Launched", false);
-  OpenApplication(AppLaunchParams(
-      browser()->profile(), extension, LAUNCH_CONTAINER_NONE,
-      WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+  apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+      ->BrowserAppLauncher()
+      ->LaunchAppWithParams(apps::AppLaunchParams(
+          extension->id(), LaunchContainer::kLaunchContainerNone,
+          WindowOpenDisposition::NEW_WINDOW,
+          apps::mojom::AppLaunchSource::kSourceTest));
 
   ASSERT_TRUE(launched_listener.WaitUntilSatisfied());
 }
@@ -1094,9 +1182,12 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
 
   {
     ExtensionTestMessageListener launched_listener("Launched", false);
-    OpenApplication(AppLaunchParams(
-        browser()->profile(), extension, LAUNCH_CONTAINER_NONE,
-        WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+    apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+        ->BrowserAppLauncher()
+        ->LaunchAppWithParams(apps::AppLaunchParams(
+            extension->id(), LaunchContainer::kLaunchContainerNone,
+            WindowOpenDisposition::NEW_WINDOW,
+            apps::mojom::AppLaunchSource::kSourceTest));
     ASSERT_TRUE(launched_listener.WaitUntilSatisfied());
   }
 
@@ -1144,7 +1235,9 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, DISABLED_WebContentsHasFocus) {
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
                        WindowDotPrintShouldBringUpPrintPreview) {
   ScopedPreviewTestDelegate preview_delegate;
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/print_api")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/print_api",
+                               {.launch_as_platform_app = true}))
+      << message_;
   preview_delegate.WaitUntilPreviewIsReady();
 }
 
@@ -1152,14 +1245,16 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
                        DISABLED_ClosingWindowWhilePrintingShouldNotCrash) {
   ScopedPreviewTestDelegate preview_delegate;
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/print_api")) << message_;
+  ASSERT_TRUE(RunExtensionTest("platform_apps/print_api",
+                               {.launch_as_platform_app = true}))
+      << message_;
   preview_delegate.WaitUntilPreviewIsReady();
   GetFirstAppWindow()->GetBaseWindow()->Close();
 }
 
 #endif  // ENABLE_PRINT_PREVIEW
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 
 class PlatformAppIncognitoBrowserTest : public PlatformAppBrowserTest,
                                         public AppWindowRegistry::Observer {
@@ -1186,7 +1281,7 @@ class PlatformAppIncognitoBrowserTest : public PlatformAppBrowserTest,
 };
 
 // Seen to fail repeatedly on CrOS; crbug.com/774011.
-#ifndef OS_CHROMEOS
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 #define MAYBE_IncognitoComponentApp IncognitoComponentApp
 #else
 #define MAYBE_IncognitoComponentApp DISABLED_IncognitoComponentApp
@@ -1195,10 +1290,11 @@ class PlatformAppIncognitoBrowserTest : public PlatformAppBrowserTest,
 IN_PROC_BROWSER_TEST_F(PlatformAppIncognitoBrowserTest,
                        MAYBE_IncognitoComponentApp) {
   // Get the file manager app.
-  const Extension* file_manager = extension_service()->GetExtensionById(
-      "hhaomjibdihmijegdhdafkllkbggdgoj", false);
+  const Extension* file_manager = extension_registry()->GetExtensionById(
+      "hhaomjibdihmijegdhdafkllkbggdgoj", ExtensionRegistry::ENABLED);
   ASSERT_TRUE(file_manager != NULL);
-  Profile* incognito_profile = profile()->GetOffTheRecordProfile();
+  Profile* incognito_profile =
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
   ASSERT_TRUE(incognito_profile != NULL);
 
   // Wait until the file manager has had a chance to register its listener
@@ -1214,12 +1310,15 @@ IN_PROC_BROWSER_TEST_F(PlatformAppIncognitoBrowserTest,
   AppWindowRegistry* registry = AppWindowRegistry::Get(incognito_profile);
   ASSERT_TRUE(registry != NULL);
   registry->AddObserver(this);
+  apps::AppServiceProxyFactory::GetForProfile(incognito_profile)
+      ->Launch(file_manager->id(),
+               apps::GetEventFlags(
+                   apps::mojom::LaunchContainer::kLaunchContainerWindow,
+                   WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                   true /* prefer_container */),
+               apps::mojom::LaunchSource::kFromTest);
 
-  OpenApplication(CreateAppLaunchParamsUserContainer(
-      incognito_profile, file_manager,
-      WindowOpenDisposition::NEW_FOREGROUND_TAB, extensions::SOURCE_TEST));
-
-  while (!base::ContainsKey(opener_app_ids_, file_manager->id())) {
+  while (!base::Contains(opener_app_ids_, file_manager->id())) {
     content::RunAllPendingInMessageLoop();
   }
 }
@@ -1227,6 +1326,8 @@ IN_PROC_BROWSER_TEST_F(PlatformAppIncognitoBrowserTest,
 class RestartDeviceTest : public PlatformAppBrowserTest {
  public:
   RestartDeviceTest() = default;
+  RestartDeviceTest(const RestartDeviceTest&) = delete;
+  RestartDeviceTest& operator=(const RestartDeviceTest&) = delete;
   ~RestartDeviceTest() override = default;
 
   // PlatformAppBrowserTest overrides
@@ -1237,7 +1338,7 @@ class RestartDeviceTest : public PlatformAppBrowserTest {
   void SetUpOnMainThread() override {
     PlatformAppBrowserTest::SetUpOnMainThread();
 
-    mock_user_manager_ = new chromeos::MockUserManager;
+    mock_user_manager_ = new ash::MockUserManager;
     user_manager_enabler_ = std::make_unique<user_manager::ScopedUserManager>(
         base::WrapUnique(mock_user_manager_));
 
@@ -1247,7 +1348,7 @@ class RestartDeviceTest : public PlatformAppBrowserTest {
         .WillRepeatedly(testing::Return(true));
     EXPECT_CALL(*mock_user_manager_, GetLoggedInUsers())
         .WillRepeatedly(testing::Invoke(mock_user_manager_,
-                                        &chromeos::MockUserManager::GetUsers));
+                                        &ash::MockUserManager::GetUsers));
   }
 
   void TearDownOnMainThread() override {
@@ -1264,10 +1365,8 @@ class RestartDeviceTest : public PlatformAppBrowserTest {
   }
 
  private:
-  chromeos::MockUserManager* mock_user_manager_ = nullptr;
+  ash::MockUserManager* mock_user_manager_ = nullptr;
   std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
-
-  DISALLOW_COPY_AND_ASSIGN(RestartDeviceTest);
 };
 
 // Tests that chrome.runtime.restart would request device restart in
@@ -1288,7 +1387,7 @@ IN_PROC_BROWSER_TEST_F(RestartDeviceTest, Restart) {
   EXPECT_EQ(1, num_request_restart_calls());
 }
 
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 // Test that when an application is uninstalled and re-install it does not have
 // access to the previously set data.
@@ -1355,15 +1454,18 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWindowIframe) {
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, NewWindowWithNonExistingFile) {
   ASSERT_TRUE(
-      RunPlatformAppTest("platform_apps/new_window_with_non_existing_file"));
+      RunExtensionTest("platform_apps/new_window_with_non_existing_file",
+                       {.launch_as_platform_app = true}));
 }
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, SandboxedLocalFile) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/sandboxed_local_file"));
+  ASSERT_TRUE(RunExtensionTest("platform_apps/sandboxed_local_file",
+                               {.launch_as_platform_app = true}));
 }
 
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, NewWindowAboutBlank) {
-  ASSERT_TRUE(RunPlatformAppTest("platform_apps/new_window_about_blank"));
+  ASSERT_TRUE(RunExtensionTest("platform_apps/new_window_about_blank",
+                               {.launch_as_platform_app = true}));
 }
 
 // Test that an app window sees the synthetic wheel events of a touchpad pinch.
@@ -1389,13 +1491,20 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
   const gfx::Point pinch_position(contents_rect.width() / 2,
                                   contents_rect.height() / 2);
   content::SimulateGesturePinchSequence(web_contents, pinch_position, 1.23,
-                                        blink::kWebGestureDeviceTouchpad);
+                                        blink::WebGestureDevice::kTouchpad);
 
   ASSERT_TRUE(synthetic_wheel_listener.WaitUntilSatisfied());
 }
 
+// TODO(crbug.com/961017): Fix memory leaks in tests and re-enable on LSAN.
+#if defined(LEAK_SANITIZER)
+#define MAYBE_PictureInPicture DISABLED_PictureInPicture
+#else
+#define MAYBE_PictureInPicture PictureInPicture
+#endif
+
 // Tests that platform apps can enter and exit Picture-in-Picture.
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, PictureInPicture) {
+IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, MAYBE_PictureInPicture) {
   LoadAndLaunchPlatformApp("picture_in_picture", "Launched");
 
   WebContents* web_contents = GetFirstAppWindowWebContents();

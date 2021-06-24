@@ -1,267 +1,574 @@
-# Copyright 2013 The Chromium Authors. All rights reserved.
+# Copyright 2019 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
+
+from __future__ import print_function
+
+import inspect
+import itertools
+import os
+import re
+import sys
 import unittest
 
-from gpu_tests import test_expectations
+if sys.version_info[0] == 2:
+  import mock
+else:
+  import unittest.mock as mock
 
-class StubPlatform(object):
-  def __init__(self, os_name, os_version_name=None):
-    self.os_name = os_name
-    self.os_version_name = os_version_name
+import gpu_project_config
 
-  def GetOSName(self):
-    return self.os_name
+from gpu_tests import gpu_helper
+from gpu_tests import gpu_integration_test
+from gpu_tests import pixel_integration_test
+from gpu_tests import pixel_test_pages
+from gpu_tests import webgl_conformance_integration_test
+from gpu_tests import webgl_test_util
 
-  def GetOSVersionName(self):
-    return self.os_version_name
+from py_utils import discover
+from py_utils import tempfile_ext
+
+from typ import expectations_parser
+from typ import json_results
+
+OS_CONDITIONS = ['win', 'mac', 'android']
+GPU_CONDITIONS = [
+    'amd',
+    'arm',
+    'broadcom',
+    'hisilicon',
+    'intel',
+    'imagination',
+    'nvidia',
+    'qualcomm',
+    'vivante',
+]
+WIN_CONDITIONS = ['xp', 'vista', 'win7', 'win8', 'win10']
+MAC_CONDITIONS = [
+    'leopard',
+    'snowleopard',
+    'lion',
+    'mountainlion',
+    'mavericks',
+    'yosemite',
+    'sierra',
+    'highsierra',
+    'mojave',
+]
+ANDROID_CONDITIONS = [
+    'android-lollipop',
+    'android-marshmallow',
+    'anroid-nougat',
+    'android-oreo',
+    'android-pie',
+    'android-10',
+    'android-kitkat',
+]
+GENERIC_CONDITIONS = OS_CONDITIONS + GPU_CONDITIONS
+
+VALID_BUG_REGEXES = [
+    re.compile(r'crbug\.com\/\d+'),
+    re.compile(r'crbug\.com\/angleproject\/\d+'),
+    re.compile(r'crbug\.com\/swiftshader\/\d+'),
+    re.compile(r'skbug\.com\/\d+'),
+]
+
+_map_specific_to_generic = {sos: 'win' for sos in WIN_CONDITIONS}
+_map_specific_to_generic.update({sos: 'mac' for sos in MAC_CONDITIONS})
+_map_specific_to_generic.update({sos: 'android' for sos in ANDROID_CONDITIONS})
+_map_specific_to_generic['debug-x64'] = 'debug'
+_map_specific_to_generic['release-x64'] = 'release'
+
+_get_generic = lambda tags: set(
+    [_map_specific_to_generic.get(tag, tag) for tag in tags])
+
+ResultType = json_results.ResultType
+
+INTEL_DRIVER_VERSION_SCHEMA = '''
+The version format of Intel graphics driver is AA.BB.CCC.DDDD.
+DDDD(old schema) or CCC.DDDD(new schema) is the build number. That is,
+indicates the actual driver number. The comparison between old schema
+and new schema is NOT valid. In such a condition the only comparison
+operator that returns true is "not equal".
+
+AA.BB: You are free to specify the real number here, but they are meaningless
+when comparing two version numbers. Usually it's okay to leave it to "0.0".
+
+CCC: It's necessary for new schema. Regarding to old schema, you can specify
+the real number or any number less than 100 in order to differentiate from
+new schema.
+
+DDDD: It's always meaningful. It must not be "0" under old schema.
+
+Legal: "24.20.100.7000", "0.0.100.7000", "0.0.0.7000", "0.0.100.0"
+Illegal: "24.0.0.0", "24.20.0.0", "0.0.99.0"
+'''
 
 
-class StubBrowser(object):
-  def __init__(self, platform, browser_type=None):
-    self.platform = platform
-    self.browser_type = browser_type
-
-
-class SampleExpectationSubclass(test_expectations.Expectation):
-  def __init__(self, expectation, pattern, conditions=None, bug=None):
-    self.valid_condition_matched = False
-    self.valid_condition_unmatched = False
-    super(SampleExpectationSubclass, self).__init__(
-      expectation, pattern, conditions=conditions, bug=bug)
-
-  def ParseCondition(self, condition):
-    if condition == 'valid_condition_matched':
-      self.valid_condition_matched = True
-    elif condition == 'valid_condition_unmatched':
-      self.valid_condition_unmatched = True
-    else:
-      super(SampleExpectationSubclass, self).ParseCondition(condition)
-
-
-class SampleTestExpectations(test_expectations.TestExpectations):
-  def __init__(self, url_prefixes=None, is_asan=False):
-    super(SampleTestExpectations, self).__init__(
-      url_prefixes=url_prefixes, is_asan=is_asan)
-
-  def CreateExpectation(self, expectation, url_pattern, conditions=None,
-                        bug=None):
-    return SampleExpectationSubclass(expectation, url_pattern,
-                                     conditions=conditions, bug=bug)
-
-  def SetExpectations(self):
-    self.Fail('page1.html', ['win', 'mac'], bug=123)
-    self.Fail('page2.html', ['vista'], bug=123)
-    self.Fail('page3.html', bug=123)
-    self.Fail('page4.*', bug=123)
-    self.Fail('Pages.page_6')
-    self.Fail('page7.html', ['mountainlion'])
-    self.Fail('page8.html', ['mavericks'])
-    self.Fail('page9.html', ['yosemite'])
-    # Test browser conditions.
-    self.Fail('page10.html', ['android', 'android-webview-instrumentation'],
-              bug=456)
-    # Test user defined conditions.
-    self.Fail('page11.html', ['win', 'valid_condition_matched'])
-    self.Fail('page12.html', ['win', 'valid_condition_unmatched'])
-    # Test file:// scheme.
-    self.Fail('conformance/attribs/page13.html')
-    # Test file:// scheme on Windows.
-    self.Fail('conformance/attribs/page14.html', ['win'])
-    # Explicitly matched paths have precedence over wildcards.
-    self.Fail('conformance/glsl/*')
-    self.Skip('conformance/glsl/page15.html')
-    # Test ASAN expectations.
-    self.Fail('page16.html', ['mac', 'asan'])
-    self.Fail('page17.html', ['mac', 'no_asan'])
-    # Explicitly specified ASAN expectations should not collide.
-    self.Skip('page18.html', ['mac', 'asan'])
-    self.Fail('page18.html', ['mac', 'no_asan'])
-
-  def _ExpectationAppliesToTest(
-      self, expectation, browser, test_url, test_name):
-    if not super(SampleTestExpectations, self)._ExpectationAppliesToTest(
-        expectation, browser, test_url, test_name):
+def check_intel_driver_version(version):
+  ver_list = version.split('.')
+  if len(ver_list) != 4:
+    return False
+  for ver in ver_list:
+    if not ver.isdigit():
       return False
-    # These tests can probably be expressed more tersely, but that
-    # would reduce readability.
-    if (not expectation.valid_condition_matched and
-        not expectation.valid_condition_unmatched):
+  if int(ver_list[2]) < 100 and ver_list[3] == '0':
+    return False
+  return True
+
+
+def _MapGpuDevicesToVendors(tag_sets):
+  for tag_set in tag_sets:
+    if any(gpu in tag_set for gpu in GPU_CONDITIONS):
+      _map_specific_to_generic.update({
+          t[0]: t[1]
+          for t in itertools.permutations(tag_set, 2)
+          if t[0].startswith(t[1] + '-')
+      })
+      break
+
+
+# No good way to reduce the number of return statements to the required level
+# without harming readability.
+# pylint: disable=too-many-return-statements,too-many-branches
+def _IsDriverTagDuplicated(driver_tag1, driver_tag2):
+  if driver_tag1 == driver_tag2:
+    return True
+
+  match = gpu_helper.MatchDriverTag(driver_tag1)
+  tag1 = (match.group(1), match.group(2), match.group(3))
+  match = gpu_helper.MatchDriverTag(driver_tag2)
+  tag2 = (match.group(1), match.group(2), match.group(3))
+  if not tag1[0] == tag2[0]:
+    return False
+
+  operation1, version1 = tag1[1:]
+  operation2, version2 = tag2[1:]
+  if operation1 == 'ne':
+    return not (operation2 == 'eq' and version1 == version2)
+  elif operation2 == 'ne':
+    return not (operation1 == 'eq' and version1 == version2)
+  elif operation1 == 'eq':
+    return gpu_helper.EvaluateVersionComparison(version1, operation2, version2)
+  elif operation2 == 'eq':
+    return gpu_helper.EvaluateVersionComparison(version2, operation1, version1)
+
+  if operation1 == 'ge' or operation1 == 'gt':
+    if operation2 == 'ge' or operation2 == 'gt':
       return True
-    return expectation.valid_condition_matched
+  elif operation1 == 'le' or operation1 == 'lt':
+    if operation2 == 'le' or operation2 == 'lt':
+      return True
 
-class FailingAbsoluteTestExpectations(test_expectations.TestExpectations):
-  def CreateExpectation(self, expectation, url_pattern, conditions=None,
-                        bug=None):
-    return SampleExpectationSubclass(expectation, url_pattern,
-                                     conditions=conditions, bug=bug)
+  if operation1 == 'ge':
+    if operation2 == 'le':
+      return not gpu_helper.EvaluateVersionComparison(version1, 'gt', version2)
+    elif operation2 == 'lt':
+      return not gpu_helper.EvaluateVersionComparison(version1, 'ge', version2)
+  elif operation1 == 'gt':
+    return not gpu_helper.EvaluateVersionComparison(version1, 'ge', version2)
+  elif operation1 == 'le':
+    if operation2 == 'ge':
+      return not gpu_helper.EvaluateVersionComparison(version1, 'lt', version2)
+    elif operation2 == 'gt':
+      return not gpu_helper.EvaluateVersionComparison(version1, 'le', version2)
+  elif operation1 == 'lt':
+    return not gpu_helper.EvaluateVersionComparison(version1, 'le', version2)
+  else:
+    assert False
+# pylint: enable=too-many-return-statements,too-many-branches
 
-  def SetExpectations(self):
-    self.Fail('http://test.com/page5.html', bug=123)
 
-class TestExpectationsTest(unittest.TestCase):
-  def setUpHelper(self, is_asan=False):
-    self.expectations = SampleTestExpectations(url_prefixes=[
-      'third_party/webgl/src/sdk/tests/',
-      'content/test/data/gpu'], is_asan=is_asan)
+def _DoTagsConflict(t1, t2):
+  if gpu_helper.MatchDriverTag(t1):
+    return not _IsDriverTagDuplicated(t1, t2)
+  else:
+    return (t1 != t2 and t1 != _map_specific_to_generic.get(t2, t2)
+            and t2 != _map_specific_to_generic.get(t1, t1))
 
-  def setUp(self):
-    self.setUpHelper()
 
-  def assertExpectationEquals(self, expected, url, platform=StubPlatform(''),
-                              browser_type=None):
-    self.assertExpectationEqualsForName(
-      expected, url, '', platform=platform, browser_type=browser_type)
+def _ExtractUnitTestTestExpectations(file_name):
+  file_name = os.path.join(
+      os.path.dirname(os.path.abspath(__file__)), '..', 'unittest_data',
+      'test_expectations', file_name)
+  test_expectations_list = []
+  with open(file_name, 'r') as test_data:
+    test_expectations = ''
+    reach_end = False
+    while not reach_end:
+      line = test_data.readline()
+      if line:
+        line = line.strip()
+        if line:
+          test_expectations += line + '\n'
+          continue
+      else:
+        reach_end = True
 
-  def assertExpectationEqualsForName(
-      self, expected, url, name, platform=StubPlatform(''), browser_type=None):
-    self.expectations.ClearExpectationsCacheForTesting()
-    result = self.expectations.GetExpectationForTest(
-      StubBrowser(platform, browser_type=browser_type), url, name)
-    self.assertEquals(expected, result)
+      if test_expectations:
+        test_expectations_list.append(test_expectations)
+        test_expectations = ''
 
-  # Tests with no expectations should always return 'pass'
-  def testNoExpectations(self):
-    url = 'http://test.com/page0.html'
-    self.assertExpectationEquals('pass', url, StubPlatform('win'))
+  assert test_expectations_list
+  return test_expectations_list
 
-  # Tests with expectations for an OS should only return them when running on
-  # that OS
-  def testOSExpectations(self):
-    url = 'http://test.com/page1.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('win'))
-    self.assertExpectationEquals('fail', url, StubPlatform('mac'))
-    self.assertExpectationEquals('pass', url, StubPlatform('linux'))
 
-  # Tests with expectations for an OS version should only return them when
-  # running on that OS version
-  def testOSVersionExpectations(self):
-    url = 'http://test.com/page2.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('win', 'vista'))
-    self.assertExpectationEquals('pass', url, StubPlatform('win', 'win7'))
+def CheckTestExpectationsAreForExistingTests(unittest_testcase,
+                                             test_class,
+                                             mock_options,
+                                             test_names=None):
+  test_names = test_names or [
+      args[0] for args in test_class.GenerateGpuTests(mock_options)
+  ]
+  expectations_file = test_class.ExpectationsFiles()[0]
+  with open(expectations_file, 'r') as f:
+    test_expectations = expectations_parser.TestExpectations()
+    test_expectations.parse_tagged_list(f.read(), f.name)
+    broke_expectations = '\n'.join([
+        "\t- {0}:{1}: Expectation with pattern '{2}' does not match"
+        " any tests in the {3} test suite".format(f.name, exp.lineno, exp.test,
+                                                  test_class.Name())
+        for exp in test_expectations.check_for_broken_expectations(test_names)
+    ])
+    unittest_testcase.assertEqual(
+        broke_expectations, '',
+        'The following expectations were found to not apply to any tests in '
+        'the %s test suite:\n%s' % (test_class.Name(), broke_expectations))
 
-  # Tests with non-conditional expectations should always return that
-  # expectation regardless of OS or OS version
-  def testConditionlessExpectations(self):
-    url = 'http://test.com/page3.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('win'))
-    self.assertExpectationEquals('fail', url, StubPlatform('mac', 'lion'))
-    self.assertExpectationEquals('fail', url, StubPlatform('linux'))
 
-  # Expectations with wildcard characters should return for matching patterns
-  def testWildcardExpectations(self):
-    url = 'http://test.com/page4.html'
-    url_js = 'http://test.com/page4.js'
-    self.assertExpectationEquals('fail', url, StubPlatform('win'))
-    self.assertExpectationEquals('fail', url_js, StubPlatform('win'))
+def CheckTestExpectationPatternsForConflicts(expectations, file_name):
+  test_expectations = expectations_parser.TestExpectations()
+  test_expectations.parse_tagged_list(
+      expectations, file_name=file_name, tags_conflict=_DoTagsConflict)
+  _MapGpuDevicesToVendors(test_expectations.tag_sets)
+  return test_expectations.check_test_expectations_patterns_for_conflicts()
 
-  # Absolute URLs in expectations are no longer allowed.
-  def testAbsoluteExpectationsAreForbidden(self):
-    with self.assertRaises(ValueError):
-      FailingAbsoluteTestExpectations()
 
-  # Expectations can be set against test names as well as urls
-  def testTestNameExpectations(self):
-    self.assertExpectationEqualsForName(
-      'fail', 'http://test.com/page6.html', 'Pages.page_6')
+def _FindTestCases():
+  test_cases = []
+  for start_dir in gpu_project_config.CONFIG.start_dirs:
+    # Note we deliberately only scan the integration tests as a
+    # workaround for http://crbug.com/1195465 .
+    modules_to_classes = discover.DiscoverClasses(
+        start_dir,
+        gpu_project_config.CONFIG.top_level_dir,
+        base_class=gpu_integration_test.GpuIntegrationTest,
+        pattern='*_integration_test.py')
+    test_cases.extend(modules_to_classes.values())
+  return test_cases
 
-  # Verify version-specific Mac expectations.
-  def testMacVersionExpectations(self):
-    url = 'http://test.com/page7.html'
-    self.assertExpectationEquals('fail', url,
-                                 StubPlatform('mac', 'mountainlion'))
-    self.assertExpectationEquals('pass', url,
-                                 StubPlatform('mac', 'mavericks'))
-    self.assertExpectationEquals('pass', url,
-                                 StubPlatform('mac', 'yosemite'))
-    url = 'http://test.com/page8.html'
-    self.assertExpectationEquals('pass', url,
-                                 StubPlatform('mac', 'mountainlion'))
-    self.assertExpectationEquals('fail', url,
-                                 StubPlatform('mac', 'mavericks'))
-    self.assertExpectationEquals('pass', url,
-                                 StubPlatform('mac', 'yosemite'))
-    url = 'http://test.com/page9.html'
-    self.assertExpectationEquals('pass', url,
-                                 StubPlatform('mac', 'mountainlion'))
-    self.assertExpectationEquals('pass', url,
-                                 StubPlatform('mac', 'mavericks'))
-    self.assertExpectationEquals('fail', url,
-                                 StubPlatform('mac', 'yosemite'))
 
-  # Test browser type conditions.
-  def testBrowserTypeConditions(self):
-    url = 'http://test.com/page10.html'
-    self.assertExpectationEquals('pass', url, StubPlatform('android'),
-                                 browser_type='android-content-shell')
-    self.assertExpectationEquals('fail', url, StubPlatform('android'),
-                                 browser_type='android-webview-instrumentation')
+class GpuTestExpectationsValidation(unittest.TestCase):
+  def testNoConflictsInGpuTestExpectations(self):
+    webgl_conformance_test_class = (
+        webgl_conformance_integration_test.WebGLConformanceIntegrationTest)
+    errors = ''
+    for test_case in _FindTestCases():
+      if 'gpu_tests.gpu_integration_test_unittest' not in test_case.__module__:
+        for webgl_version in range(
+            1, 2 + (test_case == webgl_conformance_test_class)):
+          _ = list(
+              test_case.GenerateGpuTests(
+                  gpu_helper.GetMockArgs(
+                      webgl_version=('%d.0.0' % webgl_version))))
+          if test_case.ExpectationsFiles():
+            with open(test_case.ExpectationsFiles()[0]) as f:
+              errors += CheckTestExpectationPatternsForConflicts(
+                  f.read(), os.path.basename(f.name))
+    self.assertEqual(errors, '')
 
-  # Tests with user-defined conditions.
-  def testUserDefinedConditions(self):
-    url = 'http://test.com/page11.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('win'))
-    url = 'http://test.com/page12.html'
-    self.assertExpectationEquals('pass', url, StubPlatform('win'))
+  def testExpectationsFilesCanBeParsed(self):
+    webgl_conformance_test_class = (
+        webgl_conformance_integration_test.WebGLConformanceIntegrationTest)
+    for test_case in _FindTestCases():
+      if 'gpu_tests.gpu_integration_test_unittest' not in test_case.__module__:
+        for webgl_version in range(
+            1, 2 + (test_case == webgl_conformance_test_class)):
+          _ = list(
+              test_case.GenerateGpuTests(
+                  gpu_helper.GetMockArgs(
+                      webgl_version=('%d.0.0' % webgl_version))))
+          if test_case.ExpectationsFiles():
+            with open(test_case.ExpectationsFiles()[0]) as f:
+              test_expectations = expectations_parser.TestExpectations()
+              ret, err = test_expectations.parse_tagged_list(f.read(), f.name)
+              self.assertEqual(
+                  ret, 0,
+                  'Error parsing %s:\n\t%s' % (os.path.basename(f.name), err))
 
-  # The file:// scheme is treated specially by Telemetry; it's
-  # translated into an HTTP request against localhost. Expectations
-  # against it must continue to work.
-  def testFileScheme(self):
-    url = 'file://conformance/attribs/page13.html'
-    self.assertExpectationEquals('fail', url)
+  def testWebglTestPathsExist(self):
+    def _CheckWebglConformanceTestPathIsValid(pattern):
+      if not 'WebglExtension_' in pattern:
+        full_path = os.path.normpath(
+            os.path.join(webgl_test_util.conformance_path, pattern))
+        self.assertTrue(os.path.exists(full_path))
 
-  # Telemetry uses backslashes in its file:// URLs on Windows.
-  def testFileSchemeOnWindows(self):
-    url = 'file://conformance\\attribs\\page14.html'
-    self.assertExpectationEquals('pass', url)
-    self.assertExpectationEquals('fail', url, StubPlatform('win'))
+    webgl_test_class = (
+        webgl_conformance_integration_test.WebGLConformanceIntegrationTest)
+    for webgl_version in range(1, 3):
+      _ = list(
+          webgl_test_class.GenerateGpuTests(
+              gpu_helper.GetMockArgs(webgl_version='%d.0.0' % webgl_version)))
+      with open(webgl_test_class.ExpectationsFiles()[0], 'r') as f:
+        expectations = expectations_parser.TestExpectations()
+        expectations.parse_tagged_list(f.read())
+        for pattern, _ in expectations.individual_exps.items():
+          _CheckWebglConformanceTestPathIsValid(pattern)
 
-  def testExplicitPathsHavePrecedenceOverWildcards(self):
-    url = 'http://test.com/conformance/glsl/page00.html'
-    self.assertExpectationEquals('fail', url)
-    url = 'http://test.com/conformance/glsl/page15.html'
-    self.assertExpectationEquals('skip', url)
+  def testForBrokenWebglExtensionExpectations(self):
+    webgl_test_class = (
+        webgl_conformance_integration_test.WebGLConformanceIntegrationTest)
+    for webgl_version in range(1, 3):
+      tests = [
+          test[0] for test in webgl_test_class.GenerateGpuTests(
+              gpu_helper.GetMockArgs(webgl_version='%d.0.0' % webgl_version))
+      ]
+      with open(webgl_test_class.ExpectationsFiles()[0], 'r') as f:
+        expectations = expectations_parser.TestExpectations()
+        expectations.parse_tagged_list(f.read())
 
-  def testQueryArgsAreStrippedFromFileURLs(self):
-    url = 'file://conformance/glsl/page15.html?webglVersion=2'
-    self.assertExpectationEquals('skip', url)
+        # remove non webgl extension expectations
+        for test in list(expectations.individual_exps.keys()):
+          if not test.lower().startswith('webglextension'):
+            expectations.individual_exps.pop(test)
+        for test in list(expectations.glob_exps.keys()):
+          if not test.lower().startswith('webglextension'):
+            expectations.glob_exps.pop(test)
 
-  def testURLPrefixesAreStripped(self):
-    self.assertExpectationEqualsForName(
-      'skip',
-      'third_party/webgl/src/sdk/tests/conformance/glsl/page15.html',
-      'Page15')
-    self.assertExpectationEqualsForName(
-      'fail',
-      'third_party/webgl/src/sdk/tests/conformance/glsl/foo.html',
-      'Foo')
-    # Test exact and wildcard matches on Windows.
-    self.assertExpectationEqualsForName(
-      'skip',
-      'third_party\\webgl\\src\\sdk\\tests\\conformance\\glsl\\page15.html',
-      'Page15',
-      StubPlatform('win'))
-    self.assertExpectationEqualsForName(
-      'fail',
-      'third_party\\webgl\\src\\sdk\\tests\\conformance\\glsl\\foo.html',
-      'Foo',
-      StubPlatform('win'))
+        broken_expectations = expectations.check_for_broken_expectations(tests)
+        msg = ''
+        for ununsed_pattern in set([e.test for e in broken_expectations]):
+          msg += ("Expectations with pattern '{0}' in {1} do not apply to any "
+                  "webgl version {2} extension tests\n".format(
+                      ununsed_pattern, os.path.basename(f.name), webgl_version))
+        self.assertEqual(msg, '')
 
-  def testCaseInsensitivity(self):
-    url = 'http://test.com/page1.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('Win'))
-    url = 'http://test.com/page2.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('Win', 'Vista'))
-    url = 'http://test.com/page10.html'
-    self.assertExpectationEquals('fail', url, StubPlatform('android'),
-                                 browser_type='Android-Webview-Instrumentation')
+  def testForBrokenPixelTestExpectations(self):
+    pixel_test_names = []
+    for _, method in inspect.getmembers(
+        pixel_test_pages.PixelTestPages, predicate=inspect.isfunction):
+      pixel_test_names.extend([
+          p.name for p in method(pixel_integration_test.PixelIntegrationTest.
+                                 test_base_name)
+      ])
+    CheckTestExpectationsAreForExistingTests(
+        self, pixel_integration_test.PixelIntegrationTest,
+        gpu_helper.GetMockArgs(), pixel_test_names)
 
-  def testASANExpectations(self):
-    url16 = 'page16.html'
-    url18 = 'page18.html'
-    self.assertExpectationEquals('pass', url16, StubPlatform('mac'))
-    self.assertExpectationEquals('fail', url18, StubPlatform('mac'))
-    self.setUpHelper(is_asan=True)
-    self.assertExpectationEquals('fail', url16, StubPlatform('mac'))
-    self.assertExpectationEquals('skip', url18, StubPlatform('mac'))
+  def testForBrokenGpuTestExpectations(self):
+    options = gpu_helper.GetMockArgs()
+    for test_case in _FindTestCases():
+      if 'gpu_tests.gpu_integration_test_unittest' not in test_case.__module__:
+        if (test_case.Name() not in ('pixel', 'webgl_conformance')
+            and test_case.ExpectationsFiles()):
+          CheckTestExpectationsAreForExistingTests(self, test_case, options)
+
+  def testExpectationBugValidity(self):
+    expectation_dir = os.path.join(os.path.dirname(__file__),
+                                   'test_expectations')
+    for expectation_file in os.listdir(expectation_dir):
+      with open(os.path.join(expectation_dir, expectation_file)) as f:
+        content = f.read()
+      list_parser = expectations_parser.TaggedTestListParser(content)
+      for expectation in list_parser.expectations:
+        reason = expectation.reason
+        if not reason:
+          continue
+        if not any(r.match(reason) for r in VALID_BUG_REGEXES):
+          self.fail('Bug string "%s" in expectation file %s is either not in a '
+                    'recognized format or references an unknown project.' %
+                    (reason, expectation_file))
+
+  def testWebglTestExpectationsForDriverTags(self):
+    webgl_conformance_test_class = (
+        webgl_conformance_integration_test.WebGLConformanceIntegrationTest)
+    expectations_driver_tags = set()
+    for webgl_version in range(1, 3):
+      _ = list(
+          webgl_conformance_test_class.GenerateGpuTests(
+              gpu_helper.GetMockArgs(webgl_version=('%d.0.0' % webgl_version))))
+      with open(webgl_conformance_test_class.ExpectationsFiles()[0], 'r') as f:
+        parser = expectations_parser.TestExpectations()
+        parser.parse_tagged_list(f.read(), f.name)
+        driver_tag_set = set()
+        for tag_set in parser.tag_sets:
+          if gpu_helper.MatchDriverTag(list(tag_set)[0]):
+            for tag in tag_set:
+              match = gpu_helper.MatchDriverTag(tag)
+              self.assertIsNotNone(match)
+              if match.group(1) == 'intel':
+                self.assertTrue(check_intel_driver_version(match.group(3)))
+
+            self.assertSetEqual(driver_tag_set, set())
+            driver_tag_set = tag_set
+          else:
+            for tag in tag_set:
+              self.assertIsNone(gpu_helper.MatchDriverTag(tag))
+        expectations_driver_tags |= driver_tag_set
+
+    self.assertEqual(gpu_helper.ExpectationsDriverTags(),
+                     expectations_driver_tags)
+
+
+class TestGpuTestExpectationsValidators(unittest.TestCase):
+  def testConflictInTestExpectationsWithGpuDriverTags(self):
+    failed_test_expectations = _ExtractUnitTestTestExpectations(
+        'failed_test_expectations_with_driver_tags.txt')
+    self.assertTrue(
+        all(
+            CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                     'test.txt')
+            for test_expectations in failed_test_expectations))
+
+  def testNoConflictInTestExpectationsWithGpuDriverTags(self):
+    passed_test_expectations = _ExtractUnitTestTestExpectations(
+        'passed_test_expectations_with_driver_tags.txt')
+    for test_expectations in passed_test_expectations:
+      errors = CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                        'test.txt')
+      self.assertFalse(errors)
+
+  def testConflictsBetweenAngleAndNonAngleConfigurations(self):
+    test_expectations = '''
+    # tags: [ android ]
+    # tags: [ android-nexus-5x ]
+    # tags: [ opengles ]
+    # results: [ RetryOnFailure Skip ]
+    [ android android-nexus-5x ] a/b/c/d [ RetryOnFailure ]
+    [ android opengles ] a/b/c/d [ Skip ]
+    '''
+    errors = CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                      'test.txt')
+    self.assertTrue(errors)
+
+  def testConflictBetweenTestExpectationsWithOsNameAndOSVersionTags(self):
+    test_expectations = '''# tags: [ mac win linux xp ]
+    # tags: [ intel amd nvidia ]
+    # tags: [ debug release ]
+    # results: [ Failure Skip ]
+    [ intel xp ] a/b/c/d [ Failure ]
+    [ intel win debug ] a/b/c/d [ Skip ]
+    '''
+    errors = CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                      'test.txt')
+    self.assertTrue(errors)
+
+  def testNoConflictBetweenOsVersionTags(self):
+    test_expectations = '''# tags: [ mac win linux xp win7 ]
+    # tags: [ intel amd nvidia ]
+    # tags: [ debug release ]
+    # results: [ Failure Skip ]
+    [ intel win7 ] a/b/c/d [ Failure ]
+    [ intel xp debug ] a/b/c/d [ Skip ]
+    '''
+    errors = CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                      'test.txt')
+    self.assertFalse(errors)
+
+  def testConflictBetweenGpuVendorAndGpuDeviceIdTags(self):
+    test_expectations = '''# tags: [ mac win linux xp win7 ]
+    # tags: [ intel amd nvidia nvidia-0x01 nvidia-0x02 ]
+    # tags: [ debug release ]
+    # results: [ Failure Skip ]
+    [ nvidia-0x01 ] a/b/c/d [ Failure ]
+    [ nvidia debug ] a/b/c/d [ Skip ]
+    '''
+    errors = CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                      'test.txt')
+    self.assertTrue(errors)
+
+  def testNoConflictBetweenGpuDeviceIdTags(self):
+    test_expectations = '''# tags: [ mac win linux xp win7 ]
+    # tags: [ intel amd nvidia nvidia-0x01 nvidia-0x02 ]
+    # tags: [ debug release ]
+    # results: [ Failure Skip ]
+    [ nvidia-0x01 win7 ] a/b/c/d [ Failure ]
+    [ nvidia-0x02 win7 debug ] a/b/c/d [ Skip ]
+    [ nvidia win debug ] a/b/c/* [ Skip ]
+    '''
+    errors = CheckTestExpectationPatternsForConflicts(test_expectations,
+                                                      'test.txt')
+    self.assertFalse(errors)
+
+  def testFoundBrokenExpectations(self):
+    test_expectations = ('# tags: [ mac ]\n'
+                         '# results: [ Failure ]\n'
+                         '[ mac ] a/b/d [ Failure ]\n'
+                         'a/c/* [ Failure ]\n')
+    options = gpu_helper.GetMockArgs()
+    test_class = gpu_integration_test.GpuIntegrationTest
+    with tempfile_ext.NamedTemporaryFile(mode='w') as expectations_file,    \
+         mock.patch.object(
+             test_class, 'GenerateGpuTests', return_value=[('a/b/c', ())]), \
+         mock.patch.object(
+             test_class,
+             'ExpectationsFiles', return_value=[expectations_file.name]):
+      expectations_file.write(test_expectations)
+      expectations_file.close()
+      with self.assertRaises(AssertionError) as context:
+        CheckTestExpectationsAreForExistingTests(self, test_class, options)
+      self.assertIn(
+          'The following expectations were found to not apply'
+          ' to any tests in the GpuIntegrationTest test suite',
+          str(context.exception))
+      self.assertIn(
+          '4: Expectation with pattern \'a/c/*\' does not match'
+          ' any tests in the GpuIntegrationTest test suite',
+          str(context.exception))
+      self.assertIn(
+          '3: Expectation with pattern \'a/b/d\' does not match'
+          ' any tests in the GpuIntegrationTest test suite',
+          str(context.exception))
+
+
+def testDriverVersionComparision(self):
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'eq',
+                                           '24.20.100.7000'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100', 'ne', '24.20.100.7000'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'gt', '24.20.100'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000a', 'gt',
+                                           '24.20.100.7000'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'lt',
+                                           '24.20.100.7001'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'lt',
+                                           '24.20.200.6000'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'lt',
+                                           '25.30.100.6000', 'linux', 'intel'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'gt',
+                                           '25.30.100.6000', 'win', 'intel'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.101.6000', 'gt',
+                                           '25.30.100.7000', 'win', 'intel'))
+  self.assertFalse(
+      gpu_helper.EvaluateVersionComparison('24.20.99.7000', 'gt',
+                                           '24.20.100.7000', 'win', 'intel'))
+  self.assertFalse(
+      gpu_helper.EvaluateVersionComparison('24.20.99.7000', 'lt',
+                                           '24.20.100.7000', 'win', 'intel'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.99.7000', 'ne',
+                                           '24.20.100.7000', 'win', 'intel'))
+  self.assertFalse(
+      gpu_helper.EvaluateVersionComparison('24.20.100', 'lt', '24.20.100.7000',
+                                           'win', 'intel'))
+  self.assertFalse(
+      gpu_helper.EvaluateVersionComparison('24.20.100', 'gt', '24.20.100.7000',
+                                           'win', 'intel'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100', 'ne', '24.20.100.7000',
+                                           'win', 'intel'))
+  self.assertTrue(
+      gpu_helper.EvaluateVersionComparison('24.20.100.7000', 'eq',
+                                           '25.20.100.7000', 'win', 'intel'))
+
+
+if __name__ == '__main__':
+  unittest.main(verbosity=2)

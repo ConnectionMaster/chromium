@@ -7,10 +7,11 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -73,7 +74,7 @@ class ReloadCacheControlBrowserTest : public ContentBrowserTest {
     // a registered HandleFileRequest for "content/test/data".
     // Because the handler is registered as the first handler, MonitorHandler
     // is needed to capture all requests.
-    embedded_test_server()->RegisterRequestMonitor(base::Bind(
+    embedded_test_server()->RegisterRequestMonitor(base::BindRepeating(
         &ReloadCacheControlBrowserTest::MonitorRequestHandler,
         base::Unretained(this)));
 
@@ -185,13 +186,13 @@ IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest,
   // Open a page served by the service worker.
   EXPECT_TRUE(NavigateToURL(
       shell(), embedded_test_server()->GetURL("/service_worker/empty.html")));
-  EXPECT_EQ(base::UTF8ToUTF16("Title"), shell()->web_contents()->GetTitle());
+  EXPECT_EQ(u"Title", shell()->web_contents()->GetTitle());
 
   // Reload from the browser. The page is still controlled by the service
   // worker.
   ReloadBlockUntilNavigationsComplete(shell(), 1);
   EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
-  EXPECT_EQ(base::UTF8ToUTF16("Title"), shell()->web_contents()->GetTitle());
+  EXPECT_EQ(u"Title", shell()->web_contents()->GetTitle());
 }
 
 // Reloading with ReloadType::BYPASSING_CACHE should bypass service workers.
@@ -206,12 +207,12 @@ IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest,
   // Open a page served by the service worker.
   EXPECT_TRUE(NavigateToURL(
       shell(), embedded_test_server()->GetURL("/service_worker/empty.html")));
-  EXPECT_EQ(base::UTF8ToUTF16("Title"), shell()->web_contents()->GetTitle());
+  EXPECT_EQ(u"Title", shell()->web_contents()->GetTitle());
 
   // Reload from the browser with pressing shift key. It bypasses the service
   // worker.
   ReloadBypassingCacheBlockUntilNavigationsComplete(shell(), 1);
-  EXPECT_EQ(base::UTF8ToUTF16("ServiceWorker test - empty page"),
+  EXPECT_EQ(u"ServiceWorker test - empty page",
             shell()->web_contents()->GetTitle());
 }
 

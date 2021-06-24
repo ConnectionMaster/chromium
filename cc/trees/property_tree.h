@@ -8,16 +8,22 @@
 #include <stddef.h>
 
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
+#include "base/memory/weak_ptr.h"
 #include "cc/base/synced_property.h"
 #include "cc/cc_export.h"
-#include "cc/layers/layer_sticky_position_constraint.h"
+#include "cc/input/scroll_snap_data.h"
+#include "cc/paint/element_id.h"
 #include "cc/paint/filter_operations.h"
-#include "cc/trees/element_id.h"
-#include "cc/trees/mutator_host_client.h"
+#include "cc/trees/mutator_host.h"
+#include "cc/trees/sticky_position_constraint.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/scroll_offset.h"
 #include "ui/gfx/transform.h"
@@ -26,7 +32,7 @@ namespace base {
 namespace trace_event {
 class TracedValue;
 }
-}
+}  // namespace base
 
 namespace viz {
 class CopyOutputRequest;
@@ -36,10 +42,9 @@ namespace cc {
 
 class LayerTreeImpl;
 class RenderSurfaceImpl;
-class ScrollState;
 struct ClipNode;
 struct EffectNode;
-struct ScrollAndScaleSet;
+struct CompositorCommitData;
 struct ScrollNode;
 struct TransformNode;
 struct TransformCachedNodeData;
@@ -53,12 +58,7 @@ class CC_EXPORT PropertyTree {
  public:
   PropertyTree();
   PropertyTree(const PropertyTree& other) = delete;
-
-  // These C++ special member functions cannot be implicit inline because
-  // they are exported by CC_EXPORT. They will be instantiated in every
-  // compilation units that included this header, and compilation can fail
-  // because T may be incomplete.
-  virtual ~PropertyTree();
+  ~PropertyTree();
   PropertyTree<T>& operator=(const PropertyTree<T>&);
 
   // Property tree node starts from index 0. See equivalent constants in
@@ -67,7 +67,9 @@ class CC_EXPORT PropertyTree {
   static const int kRootNodeId = 0;
   static const int kSecondaryRootNodeId = 1;
 
+#if DCHECK_IS_ON()
   bool operator==(const PropertyTree<T>& other) const;
+#endif
 
   int Insert(const T& tree_node, int parent_id);
 
@@ -89,7 +91,7 @@ class CC_EXPORT PropertyTree {
   void clear();
   size_t size() const { return nodes_.size(); }
 
-  virtual void set_needs_update(bool needs_update) {
+  void set_needs_update(bool needs_update) {
     needs_update_ = needs_update;
   }
   bool needs_update() const { return needs_update_; }
@@ -123,10 +125,12 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
   // compilation units that included this header, and compilation can fail
   // because TransformCachedNodeData may be incomplete.
   TransformTree(const TransformTree&) = delete;
-  ~TransformTree() final;
+  ~TransformTree();
   TransformTree& operator=(const TransformTree&);
 
+#if DCHECK_IS_ON()
   bool operator==(const TransformTree& other) const;
+#endif
 
   static const int kContentsRootNodeId = 1;
 
@@ -137,42 +141,17 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
   TransformNode* FindNodeFromElementId(ElementId id);
   bool OnTransformAnimated(ElementId element_id,
                            const gfx::Transform& transform);
-  // Computes the change of basis transform from node |source_id| to |dest_id|.
-  // This is used by scroll children to compute transform from their scroll
-  // parent space (source) to their parent space (destination) and it can atmost
-  // be a translation. This function assumes that the path from source to
-  // destination has only translations. So, it should not be called when there
-  // can be intermediate 3d transforms but the end result is a translation.
-  bool ComputeTranslation(int source_id,
-                          int dest_id,
-                          gfx::Transform* transform) const;
-
   void ResetChangeTracking();
   // Updates the parent, target, and screen space transforms and snapping.
   void UpdateTransforms(int id);
-  void UpdateTransformChanged(TransformNode* node,
-                              TransformNode* parent_node,
-                              TransformNode* source_node);
+  void UpdateTransformChanged(TransformNode* node, TransformNode* parent_node);
   void UpdateNodeAndAncestorsAreAnimatedOrInvertible(
       TransformNode* node,
       TransformNode* parent_node);
+  void UpdateNodeOrAncestorsWillChangeTransform(TransformNode* node,
+                                                TransformNode* parent_node);
 
-  void set_needs_update(bool needs_update) final;
-
-  // A TransformNode's source_to_parent value is used to account for the fact
-  // that fixed-position layers are positioned by Blink wrt to their layer tree
-  // parent (their "source"), but are parented in the transform tree by their
-  // fixed-position container. This value needs to be updated on main-thread
-  // property trees (for position changes initiated by Blink), but not on the
-  // compositor thread (since the offset from a node corresponding to a
-  // fixed-position layer to its fixed-position container is unaffected by
-  // compositor-driven effects).
-  void set_source_to_parent_updates_allowed(bool allowed) {
-    source_to_parent_updates_allowed_ = allowed;
-  }
-  bool source_to_parent_updates_allowed() const {
-    return source_to_parent_updates_allowed_;
-  }
+  void set_needs_update(bool needs_update);
 
   // We store the page scale factor on the transform tree so that it can be
   // easily be retrieved and updated in UpdatePageScale.
@@ -186,9 +165,8 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
   }
   float device_scale_factor() const { return device_scale_factor_; }
 
-  void SetRootTransformsAndScales(float device_scale_factor,
-                                  float page_scale_factor_for_root,
-                                  const gfx::Transform& device_transform);
+  void SetRootScaleAndTransform(float device_scale_factor,
+                                const gfx::Transform& device_transform);
   float device_transform_scale_factor() const {
     return device_transform_scale_factor_;
   }
@@ -220,7 +198,10 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
     return cached_data_;
   }
 
-  StickyPositionNodeData* StickyPositionData(int node_id);
+  const StickyPositionNodeData* GetStickyPositionData(int node_id) const {
+    return const_cast<TransformTree*>(this)->MutableStickyPositionData(node_id);
+  }
+  StickyPositionNodeData& EnsureStickyPositionData(int node_id);
 
   // Computes the combined transform between |source_id| and |dest_id|. These
   // two nodes must be on the same ancestor chain.
@@ -240,6 +221,8 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
   // |anc_id|.
   bool IsDescendant(int desc_id, int anc_id) const;
 
+  StickyPositionNodeData* MutableStickyPositionData(int node_id);
+  gfx::Vector2dF StickyPositionOffset(TransformNode* node);
   void UpdateLocalTransform(TransformNode* node);
   void UpdateScreenSpaceTransform(TransformNode* node,
                                   TransformNode* parent_node);
@@ -250,9 +233,7 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
   void UpdateNodeAndAncestorsHaveIntegerTranslations(
       TransformNode* node,
       TransformNode* parent_node);
-  bool NeedsSourceToParentUpdate(TransformNode* node);
 
-  bool source_to_parent_updates_allowed_;
   // When to_screen transform has perspective, the transform node's sublayer
   // scale is calculated using page scale factor, device scale factor and the
   // scale factor of device transform. So we need to store them explicitly.
@@ -266,7 +247,7 @@ class CC_EXPORT TransformTree final : public PropertyTree<TransformNode> {
 
 struct StickyPositionNodeData {
   int scroll_ancestor;
-  LayerStickyPositionConstraint constraints;
+  StickyPositionConstraint constraints;
 
   // In order to properly compute the sticky offset, we need to know if we have
   // any sticky ancestors both between ourselves and our containing block and
@@ -290,7 +271,9 @@ struct StickyPositionNodeData {
 
 class CC_EXPORT ClipTree final : public PropertyTree<ClipNode> {
  public:
+#if DCHECK_IS_ON()
   bool operator==(const ClipTree& other) const;
+#endif
 
   static const int kViewportNodeId = 1;
 
@@ -301,10 +284,13 @@ class CC_EXPORT ClipTree final : public PropertyTree<ClipNode> {
 class CC_EXPORT EffectTree final : public PropertyTree<EffectNode> {
  public:
   EffectTree();
-  ~EffectTree() final;
+  ~EffectTree();
 
   EffectTree& operator=(const EffectTree& from);
+
+#if DCHECK_IS_ON()
   bool operator==(const EffectTree& other) const;
+#endif
 
   static const int kContentsRootNodeId = 1;
 
@@ -319,10 +305,14 @@ class CC_EXPORT EffectTree final : public PropertyTree<EffectNode> {
   EffectNode* FindNodeFromElementId(ElementId id);
   bool OnOpacityAnimated(ElementId id, float opacity);
   bool OnFilterAnimated(ElementId id, const FilterOperations& filters);
+  bool OnBackdropFilterAnimated(ElementId id,
+                                const FilterOperations& backdrop_filters);
 
   void UpdateEffects(int id);
 
   void UpdateEffectChanged(EffectNode* node, EffectNode* parent_node);
+
+  void UpdateHasFilters(EffectNode* node, EffectNode* parent_node);
 
   void AddCopyRequest(int node_id,
                       std::unique_ptr<viz::CopyOutputRequest> request);
@@ -338,9 +328,6 @@ class CC_EXPORT EffectTree final : public PropertyTree<EffectNode> {
   // surface.
   int LowestCommonAncestorWithRenderSurface(int id_1, int id_2) const;
 
-  void AddMaskLayerId(int id);
-  const std::vector<int>& mask_layer_ids() const { return mask_layer_ids_; }
-
   RenderSurfaceImpl* GetRenderSurface(int id) {
     return render_surfaces_[id].get();
   }
@@ -348,8 +335,6 @@ class CC_EXPORT EffectTree final : public PropertyTree<EffectNode> {
   const RenderSurfaceImpl* GetRenderSurface(int id) const {
     return render_surfaces_[id].get();
   }
-
-  void UpdateRenderSurfaces(LayerTreeImpl* layer_tree_impl);
 
   bool ContributesToDrawnSurface(int id);
 
@@ -381,25 +366,43 @@ class CC_EXPORT EffectTree final : public PropertyTree<EffectNode> {
   void UpdateIsDrawn(EffectNode* node, EffectNode* parent_node);
   void UpdateBackfaceVisibility(EffectNode* node, EffectNode* parent_node);
   void UpdateHasMaskingChild(EffectNode* node, EffectNode* parent_node);
+  void UpdateOnlyDrawsVisibleContent(EffectNode* node, EffectNode* parent_node);
 
   // Stores copy requests, keyed by node id.
   std::unordered_multimap<int, std::unique_ptr<viz::CopyOutputRequest>>
       copy_requests_;
 
-  // Unsorted list of all mask layer ids that effect nodes refer to.
-  std::vector<int> mask_layer_ids_;
-
   // Indexed by node id.
   std::vector<std::unique_ptr<RenderSurfaceImpl>> render_surfaces_;
+};
+
+// These callbacks are called in the main thread to notify changes of scroll
+// information in the compositor thread during commit.
+class ScrollCallbacks {
+ public:
+  // Called after the composited scroll offset changed.
+  virtual void DidScroll(ElementId scroll_element_id,
+                         const gfx::ScrollOffset&,
+                         const absl::optional<TargetSnapAreaElementIds>&) = 0;
+  // Called after the hidden status of composited scrollbars changed. Note that
+  // |scroll_element_id| is the element id of the scroll not of the scrollbars.
+  virtual void DidChangeScrollbarsHidden(ElementId scroll_element_id,
+                                         bool hidden) = 0;
+
+ protected:
+  virtual ~ScrollCallbacks() {}
 };
 
 class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
  public:
   ScrollTree();
-  ~ScrollTree() final;
+  ~ScrollTree();
 
   ScrollTree& operator=(const ScrollTree& from);
+
+#if DCHECK_IS_ON()
   bool operator==(const ScrollTree& other) const;
+#endif
 
   void clear();
 
@@ -416,9 +419,11 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
   int CurrentlyScrollingNodeId() const;
 #endif
   void set_currently_scrolling_node(int scroll_node_id);
+  int currently_scrolling_node() const { return currently_scrolling_node_id_; }
   gfx::Transform ScreenSpaceTransform(int scroll_node_id) const;
 
-  gfx::Vector2dF ClampScrollToMaxScrollOffset(ScrollNode* node, LayerTreeImpl*);
+  gfx::Vector2dF ClampScrollToMaxScrollOffset(const ScrollNode& node,
+                                              LayerTreeImpl*);
 
   // Returns the current scroll offset. On the main thread this would return the
   // value for the LayerTree while on the impl thread this is the current value
@@ -440,9 +445,12 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
   // Collects deltas for scroll changes on the impl thread that need to be
   // reported to the main thread during the main frame. As such, should only be
   // called on the impl thread side PropertyTrees.
-  void CollectScrollDeltas(ScrollAndScaleSet* scroll_info,
-                           ElementId inner_viewport_scroll_element_id,
-                           bool use_fractional_deltas);
+  void CollectScrollDeltas(
+      CompositorCommitData* commit_data,
+      ElementId inner_viewport_scroll_element_id,
+      bool use_fractional_deltas,
+      const base::flat_map<ElementId, TargetSnapAreaElementIds>&
+          snapped_elements);
 
   // Applies deltas sent in the previous main frame onto the impl thread state.
   // Should only be called on the impl thread side PropertyTrees.
@@ -451,7 +459,8 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
   // Pushes scroll updates from the ScrollTree on the main thread onto the
   // impl thread associated state.
   void PushScrollUpdatesFromMainThread(PropertyTrees* main_property_trees,
-                                       LayerTreeImpl* sync_tree);
+                                       LayerTreeImpl* sync_tree,
+                                       bool use_fractional_deltas);
 
   // Pushes scroll updates from the ScrollTree on the pending tree onto the
   // active tree associated state.
@@ -460,6 +469,7 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
 
   void SetBaseScrollOffset(ElementId id,
                            const gfx::ScrollOffset& scroll_offset);
+  // Returns true if the scroll offset is changed.
   bool SetScrollOffset(ElementId id, const gfx::ScrollOffset& scroll_offset);
   void SetScrollOffsetClobberActiveValue(ElementId id) {
     GetOrCreateSyncedScrollOffset(id)->set_clobber_active_value();
@@ -470,10 +480,9 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
                                       const gfx::Vector2dF& delta);
   const gfx::ScrollOffset GetScrollOffsetBaseForTesting(ElementId id) const;
   const gfx::ScrollOffset GetScrollOffsetDeltaForTesting(ElementId id) const;
-  void CollectScrollDeltasForTesting();
+  void CollectScrollDeltasForTesting(bool use_fractional_deltas = false);
 
-  void DistributeScroll(ScrollNode* scroll_node, ScrollState* scroll_state);
-  gfx::Vector2dF ScrollBy(ScrollNode* scroll_node,
+  gfx::Vector2dF ScrollBy(const ScrollNode& scroll_node,
                           const gfx::Vector2dF& scroll,
                           LayerTreeImpl* layer_tree_impl);
   gfx::ScrollOffset ClampScrollOffsetToLimits(
@@ -489,7 +498,25 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
   ScrollNode* FindNodeFromElementId(ElementId id);
   const ScrollNode* FindNodeFromElementId(ElementId id) const;
 
+  void SetScrollCallbacks(base::WeakPtr<ScrollCallbacks> callbacks);
+
+  void NotifyDidScroll(
+      ElementId scroll_element_id,
+      const gfx::ScrollOffset& scroll_offset,
+      const absl::optional<TargetSnapAreaElementIds>& snap_target_ids);
+  void NotifyDidChangeScrollbarsHidden(ElementId scroll_element_id,
+                                       bool hidden);
+
+  // A composited scroll node is a scroll node that has an associated composited
+  // layer, otherwise the scroll node corresponds to a scroller that requires
+  // repainting.
+  bool IsComposited(const ScrollNode& node) const;
+
  private:
+  // ScrollTree doesn't use the needs_update flag.
+  using PropertyTree::needs_update;
+  using PropertyTree::set_needs_update;
+
   using ScrollOffsetMap = base::flat_map<ElementId, gfx::ScrollOffset>;
   using SyncedScrollOffsetMap =
       base::flat_map<ElementId, scoped_refptr<SyncedScrollOffset>>;
@@ -504,45 +531,33 @@ class CC_EXPORT ScrollTree final : public PropertyTree<ScrollNode> {
   ScrollOffsetMap scroll_offset_map_;
   SyncedScrollOffsetMap synced_scroll_offset_map_;
 
+  base::WeakPtr<ScrollCallbacks> callbacks_;
+
   SyncedScrollOffset* GetOrCreateSyncedScrollOffset(ElementId id);
   gfx::ScrollOffset PullDeltaForMainThread(SyncedScrollOffset* scroll_offset,
                                            bool use_fractional_deltas);
 };
 
+constexpr int kInvalidUpdateNumber = -1;
+
 struct AnimationScaleData {
-  // Variable used to invalidate cached animation scale data when transform tree
+  // Variable used to invalidate cached maximum scale data when transform tree
   // updates.
-  int update_number;
+  int update_number = kInvalidUpdateNumber;
 
-  // The maximum scale that this node's |to_target| transform will have during
-  // current animations, considering only scales at keyframes not incuding the
-  // starting keyframe of each animation.
-  float combined_maximum_animation_target_scale;
+  // The maximum scale that this node's |to_screen| transform will have during
+  // current animations of this node and its ancestors, or the current scale of
+  // this node's |to_screen| transform if there are no animations.
+  float maximum_to_screen_scale = kInvalidScale;
 
-  // The maximum scale that this node's |to_target| transform will have during
-  // current animations, considering only the starting scale of each animation.
-  float combined_starting_animation_scale;
+  // Whether |maximum_to_screen_scale| is affected by any animation of this
+  // node or its ancestors. A scale animation having maximum scale of 1 is
+  // treated as not affecting |maximum_to_screen_scale|.
+  bool affected_by_animation_scale = false;
 
-  bool to_screen_has_scale_animation;
-
-  AnimationScaleData() {
-    update_number = -1;
-    combined_maximum_animation_target_scale = 0.f;
-    combined_starting_animation_scale = 0.f;
-    to_screen_has_scale_animation = false;
-  }
-};
-
-struct CombinedAnimationScale {
-  float maximum_animation_scale;
-  float starting_animation_scale;
-
-  CombinedAnimationScale(float maximum, float starting)
-      : maximum_animation_scale(maximum), starting_animation_scale(starting) {}
-  bool operator==(const CombinedAnimationScale& other) const {
-    return maximum_animation_scale == other.maximum_animation_scale &&
-           starting_animation_scale == other.starting_animation_scale;
-  }
+  // Whether |maximum_to_screen_scale| is affected by any non-calculatable
+  // scale.
+  bool affected_by_invalid_scale = false;
 };
 
 struct DrawTransforms {
@@ -571,17 +586,12 @@ struct DrawTransforms {
 };
 
 struct DrawTransformData {
-  int update_number;
-  int target_id;
-
-  DrawTransforms transforms;
+  int update_number = kInvalidUpdateNumber;
+  int target_id = EffectTree::kInvalidNodeId;
 
   // TODO(sunxd): Move screen space transforms here if it can improve
   // performance.
-  DrawTransformData()
-      : update_number(-1),
-        target_id(EffectTree::kInvalidNodeId),
-        transforms(gfx::Transform(), gfx::Transform()) {}
+  DrawTransforms transforms{gfx::Transform(), gfx::Transform()};
 };
 
 struct ConditionalClip {
@@ -590,10 +600,8 @@ struct ConditionalClip {
 };
 
 struct ClipRectData {
-  int target_id;
+  int target_id = ClipTree::kInvalidNodeId;
   ConditionalClip clip;
-
-  ClipRectData() : target_id(-1) {}
 };
 
 struct PropertyTreesCachedData {
@@ -611,8 +619,11 @@ class CC_EXPORT PropertyTrees final {
   PropertyTrees(const PropertyTrees& other) = delete;
   ~PropertyTrees();
 
-  bool operator==(const PropertyTrees& other) const;
   PropertyTrees& operator=(const PropertyTrees& from);
+
+#if DCHECK_IS_ON()
+  bool operator==(const PropertyTrees& other) const;
+#endif
 
   // These maps allow mapping directly from a compositor element id to the
   // respective property node. This will eventually allow simplifying logic in
@@ -629,7 +640,6 @@ class CC_EXPORT PropertyTrees final {
   ClipTree clip_tree;
   ScrollTree scroll_tree;
   bool needs_rebuild;
-  bool can_adjust_raster_scales;
   // Change tracking done on property trees needs to be preserved across commits
   // (when they are not rebuild). We cache a global bool which stores whether
   // we did any change tracking so that we can skip copying the change status
@@ -654,12 +664,9 @@ class CC_EXPORT PropertyTrees final {
                                  const PropertyAnimationState& mask,
                                  const PropertyAnimationState& state,
                                  bool check_node_existence);
-  void AnimationScalesChanged(ElementId element_id,
-                              float maximum_scale,
-                              float starting_scale);
+  void MaximumAnimationScaleChanged(ElementId element_id, float maximum_scale);
   void SetInnerViewportContainerBoundsDelta(gfx::Vector2dF bounds_delta);
   void SetOuterViewportContainerBoundsDelta(gfx::Vector2dF bounds_delta);
-  void SetInnerViewportScrollBoundsDelta(gfx::Vector2dF bounds_delta);
   void UpdateChangeTracking();
   void PushChangeTrackingTo(PropertyTrees* tree);
   void ResetAllChangeTracking();
@@ -667,23 +674,27 @@ class CC_EXPORT PropertyTrees final {
   gfx::Vector2dF inner_viewport_container_bounds_delta() const {
     return inner_viewport_container_bounds_delta_;
   }
-
+  gfx::Vector2dF inner_viewport_scroll_bounds_delta() const {
+    // Inner viewport scroll bounds are always the same as outer viewport
+    // container bounds.
+    return outer_viewport_container_bounds_delta_;
+  }
   gfx::Vector2dF outer_viewport_container_bounds_delta() const {
     return outer_viewport_container_bounds_delta_;
   }
 
-  gfx::Vector2dF inner_viewport_scroll_bounds_delta() const {
-    return inner_viewport_scroll_bounds_delta_;
-  }
-
   std::unique_ptr<base::trace_event::TracedValue> AsTracedValue() const;
+  void AsValueInto(base::trace_event::TracedValue* value) const;
   std::string ToString() const;
 
-  CombinedAnimationScale GetAnimationScales(int transform_node_id,
-                                            LayerTreeImpl* layer_tree_impl);
-  void SetAnimationScalesForTesting(int transform_id,
-                                    float maximum_animation_scale,
-                                    float starting_animation_scale);
+  bool AnimationScaleCacheIsInvalid(int transform_id) const;
+  float MaximumAnimationToScreenScale(int transform_id);
+  bool AnimationAffectedByInvalidScale(int transform_id);
+
+  void SetMaximumAnimationToScreenScaleForTesting(
+      int transform_id,
+      float maximum_scale,
+      bool affected_by_invalid_scale);
 
   bool GetToTarget(int transform_id,
                    int effect_id,
@@ -700,10 +711,13 @@ class CC_EXPORT PropertyTrees final {
 
   ClipRectData* FetchClipRectFromCache(int clip_id, int target_id);
 
+  bool HasElement(ElementId element_id) const;
+
  private:
   gfx::Vector2dF inner_viewport_container_bounds_delta_;
   gfx::Vector2dF outer_viewport_container_bounds_delta_;
-  gfx::Vector2dF inner_viewport_scroll_bounds_delta_;
+
+  const AnimationScaleData& GetAnimationScaleData(int transform_id);
 
   // GetDrawTransforms may change the value of cached_data_.
   DrawTransforms& GetDrawTransforms(int transform_id, int effect_id) const;

@@ -38,7 +38,7 @@ namespace WaitForRoundTrip = api::test::WaitForRoundTrip;
 TestExtensionFunction::~TestExtensionFunction() {}
 
 bool TestExtensionFunction::PreRunValidation(std::string* error) {
-  if (!UIThreadExtensionFunction::PreRunValidation(error))
+  if (!ExtensionFunction::PreRunValidation(error))
     return false;
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kTestType)) {
     *error = kNotTestProcessError;
@@ -79,7 +79,7 @@ ExtensionFunction::ResponseAction TestLogFunction::Run() {
   return RespondNow(NoArguments());
 }
 
-TestSendMessageFunction::TestSendMessageFunction() : waiting_(false) {}
+TestSendMessageFunction::TestSendMessageFunction() = default;
 
 ExtensionFunction::ResponseAction TestSendMessageFunction::Run() {
   std::unique_ptr<PassMessage::Params> params(
@@ -92,11 +92,12 @@ ExtensionFunction::ResponseAction TestSendMessageFunction::Run() {
       extensions::NOTIFICATION_EXTENSION_TEST_MESSAGE,
       content::Source<TestSendMessageFunction>(this),
       content::Details<std::pair<std::string, bool*>>(&details));
-  // If the listener is not intending to respond, or has already responded,
-  // finish the function.
+  // If none of the listeners intend to respond, or one has already responded,
+  // finish the function. We always reply to the message, even if it's just an
+  // empty string.
   if (!listener_will_respond || response_.get()) {
     if (!response_) {
-      response_ = OneArgument(std::make_unique<base::Value>(std::string()));
+      response_ = OneArgument(base::Value(std::string()));
     }
     return RespondNow(std::move(response_));
   }
@@ -105,11 +106,11 @@ ExtensionFunction::ResponseAction TestSendMessageFunction::Run() {
   return RespondLater();
 }
 
-TestSendMessageFunction::~TestSendMessageFunction() {}
+TestSendMessageFunction::~TestSendMessageFunction() = default;
 
 void TestSendMessageFunction::Reply(const std::string& message) {
   DCHECK(!response_);
-  response_ = OneArgument(std::make_unique<base::Value>(message));
+  response_ = OneArgument(base::Value(message));
   if (waiting_)
     Respond(std::move(response_));
 }
@@ -129,7 +130,7 @@ void TestGetConfigFunction::set_test_config_state(
 }
 
 TestGetConfigFunction::TestConfigState::TestConfigState()
-    : config_state_(NULL) {}
+    : config_state_(nullptr) {}
 
 // static
 TestGetConfigFunction::TestConfigState*
@@ -143,8 +144,8 @@ ExtensionFunction::ResponseAction TestGetConfigFunction::Run() {
   TestConfigState* test_config_state = TestConfigState::GetInstance();
   if (!test_config_state->config_state())
     return RespondNow(Error(kNoTestConfigDataError));
-  return RespondNow(
-      OneArgument(test_config_state->config_state()->CreateDeepCopy()));
+  return RespondNow(OneArgument(base::Value::FromUniquePtrValue(
+      test_config_state->config_state()->CreateDeepCopy())));
 }
 
 TestWaitForRoundTripFunction::~TestWaitForRoundTripFunction() {}
@@ -152,8 +153,7 @@ TestWaitForRoundTripFunction::~TestWaitForRoundTripFunction() {}
 ExtensionFunction::ResponseAction TestWaitForRoundTripFunction::Run() {
   std::unique_ptr<WaitForRoundTrip::Params> params(
       WaitForRoundTrip::Params::Create(*args_));
-  return RespondNow(
-      OneArgument(std::make_unique<base::Value>(params->message)));
+  return RespondNow(OneArgument(base::Value(params->message)));
 }
 
 }  // namespace extensions

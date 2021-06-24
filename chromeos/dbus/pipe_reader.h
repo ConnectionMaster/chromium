@@ -14,7 +14,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class TaskRunner;
@@ -38,7 +38,7 @@ namespace chromeos {
 class COMPONENT_EXPORT(CHROMEOS_DBUS) PipeReader {
  public:
   using CompletionCallback =
-      base::OnceCallback<void(base::Optional<std::string> data)>;
+      base::OnceCallback<void(absl::optional<std::string> data)>;
 
   explicit PipeReader(const scoped_refptr<base::TaskRunner>& task_runner);
   ~PipeReader();
@@ -67,7 +67,7 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) PipeReader {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<PipeReader> weak_ptr_factory_;
+  base::WeakPtrFactory<PipeReader> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PipeReader);
 };

@@ -11,7 +11,7 @@
 #include "base/mac/mac_logging.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/strings/sys_string_conversions.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "device/base/features.h"
 #include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/fido_constants.h"
@@ -54,12 +54,13 @@ const std::vector<uint8_t> kUserId = {10, 11, 12, 13, 14, 15};
 // credentials in the non-legacy keychain that are tagged with the keychain
 // access group used in this test.
 base::ScopedCFTypeRef<CFMutableDictionaryRef> BaseQuery() {
-  base::ScopedCFTypeRef<CFMutableDictionaryRef> query(
-      CFDictionaryCreateMutable(kCFAllocatorDefault, 0, nullptr, nullptr));
+  base::ScopedCFTypeRef<CFMutableDictionaryRef> query(CFDictionaryCreateMutable(
+      kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+      &kCFTypeDictionaryValueCallBacks));
   CFDictionarySetValue(query, kSecClass, kSecClassKey);
   base::ScopedCFTypeRef<CFStringRef> access_group_ref(
       base::SysUTF8ToCFStringRef(kKeychainAccessGroup));
-  CFDictionarySetValue(query, kSecAttrAccessGroup, access_group_ref.release());
+  CFDictionarySetValue(query, kSecAttrAccessGroup, access_group_ref);
   CFDictionarySetValue(query, kSecAttrNoLegacy, @YES);
   CFDictionarySetValue(query, kSecReturnAttributes, @YES);
   CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitAll);
@@ -130,15 +131,15 @@ class BrowsingDataDeletionTest : public testing::Test {
 
   std::unique_ptr<TouchIdAuthenticator> MakeAuthenticator(
       std::string profile_metadata_secret) {
-    return TouchIdAuthenticator::CreateForTesting(
-        kKeychainAccessGroup, std::move(profile_metadata_secret));
+    return TouchIdAuthenticator::Create(
+        {kKeychainAccessGroup, std::move(profile_metadata_secret)});
   }
 
   bool MakeCredential() { return MakeCredential(authenticator_.get()); }
 
   bool MakeCredential(TouchIdAuthenticator* authenticator) {
     TestCallbackReceiver<CtapDeviceResponseCode,
-                         base::Optional<AuthenticatorMakeCredentialResponse>>
+                         absl::optional<AuthenticatorMakeCredentialResponse>>
         callback_receiver;
     authenticator->MakeCredential(MakeRequest(), callback_receiver.callback());
     callback_receiver.WaitForCallback();
@@ -160,7 +161,7 @@ class BrowsingDataDeletionTest : public testing::Test {
         .CountCredentials(base::Time(), base::Time::Max());
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::unique_ptr<TouchIdAuthenticator> authenticator_;
 };
 

@@ -11,9 +11,10 @@
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view_android.h"
-#include "content/public/common/context_menu_params.h"
-#include "jni/SelectionPopupControllerImpl_jni.h"
-#include "third_party/blink/public/web/web_context_menu_data.h"
+#include "content/public/android/content_jni_headers/SelectionPopupControllerImpl_jni.h"
+#include "content/public/browser/context_menu_params.h"
+#include "third_party/blink/public/common/context_menu_data/edit_flags.h"
+#include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/gfx/geometry/point_conversions.h"
 
 using base::android::AttachCurrentThread;
@@ -21,7 +22,6 @@ using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
 using base::android::JavaParamRef;
 using base::android::ScopedJavaLocalRef;
-using blink::WebContextMenuData;
 
 namespace content {
 
@@ -133,14 +133,16 @@ void SelectionPopupController::OnSelectionEvent(
       selection_rect.right(), selection_rect.bottom());
 }
 
-void SelectionPopupController::OnDragUpdate(const gfx::PointF& position) {
+void SelectionPopupController::OnDragUpdate(
+    const ui::TouchSelectionDraggable::Type type,
+    const gfx::PointF& position) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_obj_.get(env);
   if (obj.is_null())
     return;
 
-  Java_SelectionPopupControllerImpl_onDragUpdate(env, obj, position.x(),
-                                                 position.y());
+  Java_SelectionPopupControllerImpl_onDragUpdate(
+      env, obj, static_cast<int>(type), position.x(), position.y());
 }
 
 void SelectionPopupController::OnSelectionChanged(const std::string& text) {
@@ -179,11 +181,12 @@ bool SelectionPopupController::ShowSelectionMenu(
     return false;
 
   const bool can_select_all =
-      !!(params.edit_flags & WebContextMenuData::kCanSelectAll);
+      !!(params.edit_flags & blink::ContextMenuDataEditFlags::kCanSelectAll);
   const bool can_edit_richly =
-      !!(params.edit_flags & WebContextMenuData::kCanEditRichly);
+      !!(params.edit_flags & blink::ContextMenuDataEditFlags::kCanEditRichly);
   const bool is_password_type =
-      params.input_field_type == WebContextMenuData::kInputFieldTypePassword;
+      params.input_field_type ==
+      blink::mojom::ContextMenuDataInputFieldType::kPassword;
   const ScopedJavaLocalRef<jstring> jselected_text =
       ConvertUTF16ToJavaString(env, params.selection_text);
   const bool should_suggest = params.source_type == ui::MENU_SOURCE_TOUCH ||

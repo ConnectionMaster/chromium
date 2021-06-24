@@ -31,11 +31,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CORE_INITIALIZER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CORE_INITIALIZER_H_
 
+#include <memory>
+
 #include "base/macros.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+
+namespace display {
+struct ScreenInfos;
+}
+
+namespace mojo {
+class BinderMap;
+}
 
 namespace blink {
 
@@ -51,13 +60,10 @@ class PictureInPictureController;
 class Settings;
 class ShadowRoot;
 class WebLocalFrameClient;
-class WebLayerTreeView;
 class WebMediaPlayer;
 class WebMediaPlayerClient;
 class WebMediaPlayerSource;
 class WebRemotePlaybackClient;
-class WebViewClient;
-class WorkerClients;
 
 class CORE_EXPORT CoreInitializer {
   USING_FAST_MALLOC(CoreInitializer);
@@ -77,15 +83,13 @@ class CORE_EXPORT CoreInitializer {
 
   // Called on startup to register Mojo interfaces that for control messages,
   // e.g. messages that are not routed to a specific frame.
-  virtual void RegisterInterfaces(service_manager::BinderRegistry&) = 0;
+  virtual void RegisterInterfaces(mojo::BinderMap&) = 0;
   // Methods defined in CoreInitializer and implemented by ModulesInitializer to
   // bypass the inverted dependency from core/ to modules/.
   // Mojo Interfaces registered with LocalFrame
   virtual void InitLocalFrame(LocalFrame&) const = 0;
   // Supplements installed on a frame using ChromeClient
   virtual void InstallSupplements(LocalFrame&) const = 0;
-  virtual void ProvideLocalFileSystemToWorker(WorkerClients&) const = 0;
-  virtual void ProvideIndexedDBClientToWorker(WorkerClients&) const = 0;
   virtual MediaControls* CreateMediaControls(HTMLMediaElement&,
                                              ShadowRoot&) const = 0;
   virtual PictureInPictureController* CreatePictureInPictureController(
@@ -107,13 +111,13 @@ class CORE_EXPORT CoreInitializer {
       WebLocalFrameClient*,
       HTMLMediaElement&,
       const WebMediaPlayerSource&,
-      WebMediaPlayerClient*,
-      WebLayerTreeView*) const = 0;
+      WebMediaPlayerClient*) const = 0;
 
   virtual WebRemotePlaybackClient* CreateWebRemotePlaybackClient(
       HTMLMediaElement&) const = 0;
 
-  virtual void ProvideModulesToPage(Page&, WebViewClient*) const = 0;
+  virtual void ProvideModulesToPage(Page&,
+                                    const SessionStorageNamespaceId&) const = 0;
   virtual void ForceNextWebGLContextCreationToFail() const = 0;
 
   virtual void CollectAllGarbageForAnimationAndPaintWorkletForTesting()
@@ -122,6 +126,20 @@ class CORE_EXPORT CoreInitializer {
   virtual void CloneSessionStorage(
       Page* clone_from_page,
       const SessionStorageNamespaceId& clone_to_namespace) = 0;
+
+  // Evicts the cached data of Session Storage. Called after dispatching a
+  // document unload or freeze event to avoid reusing old data in the cache in
+  // case the same renderer process is reused after the session storage has been
+  // modified by another renderer process. (Eg: Back navigation from a
+  // prerendered page.)
+  virtual void EvictSessionStorageCachedData(Page*) = 0;
+
+  virtual void DidChangeManifest(LocalFrame&) = 0;
+  virtual void NotifyOrientationChanged(LocalFrame&) = 0;
+  // Called with an updated set of ScreenInfos for a local root frame
+  // during a visual property update.
+  virtual void DidUpdateScreens(LocalFrame& frame,
+                                const display::ScreenInfos&) = 0;
 
  protected:
   // CoreInitializer is only instantiated by subclass ModulesInitializer.

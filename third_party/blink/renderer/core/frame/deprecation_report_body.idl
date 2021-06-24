@@ -5,12 +5,13 @@
 // https://wicg.github.io/reporting/#deprecation-report
 
 [
-    NoInterfaceObject
+    LegacyNoInterfaceObject
 ] interface DeprecationReportBody : ReportBody {
   readonly attribute DOMString id;
-  readonly attribute Date? anticipatedRemoval;
+  [CallWith=ScriptState] readonly attribute object? anticipatedRemoval;
   readonly attribute DOMString message;
   readonly attribute DOMString? sourceFile;
   readonly attribute unsigned long? lineNumber;
   readonly attribute unsigned long? columnNumber;
+  [CallWith=ScriptState] object toJSON();
 };

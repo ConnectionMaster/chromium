@@ -9,19 +9,31 @@
 
 #include "base/callback_list.h"
 #include "components/download/public/common/download_item.h"
-#include "components/safe_browsing/proto/csd.pb.h"
+#include "components/safe_browsing/core/proto/csd.pb.h"
 #include "net/cert/x509_certificate.h"
 
 namespace safe_browsing {
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 enum class DownloadCheckResult {
-  UNKNOWN,
-  SAFE,
-  DANGEROUS,
-  UNCOMMON,
-  DANGEROUS_HOST,
-  POTENTIALLY_UNWANTED,
-  WHITELISTED_BY_POLICY,
+  UNKNOWN = 0,
+  SAFE = 1,
+  DANGEROUS = 2,
+  UNCOMMON = 3,
+  DANGEROUS_HOST = 4,
+  POTENTIALLY_UNWANTED = 5,
+  ALLOWLISTED_BY_POLICY = 6,
+  ASYNC_SCANNING = 7,
+  BLOCKED_PASSWORD_PROTECTED = 8,
+  BLOCKED_TOO_LARGE = 9,
+  SENSITIVE_CONTENT_WARNING = 10,
+  SENSITIVE_CONTENT_BLOCK = 11,
+  DEEP_SCANNED_SAFE = 12,
+  PROMPT_FOR_SCANNING = 13,
+  BLOCKED_UNSUPPORTED_FILE_TYPE = 14,
+  DANGEROUS_ACCOUNT_COMPROMISE = 15,
+  kMaxValue = DANGEROUS_ACCOUNT_COMPROMISE,
 };
 
 // Enum to keep track why a particular download verdict was chosen.
@@ -29,8 +41,8 @@ enum class DownloadCheckResult {
 enum DownloadCheckResultReason {
   REASON_INVALID_URL = 0,
   REASON_SB_DISABLED = 1,
-  REASON_WHITELISTED_URL = 2,
-  REASON_WHITELISTED_REFERRER = 3,
+  REASON_ALLOWLISTED_URL = 2,
+  REASON_ALLOWLISTED_REFERRER = 3,
   REASON_INVALID_REQUEST_PROTO = 4,
   REASON_SERVER_PING_FAILED = 5,
   REASON_INVALID_RESPONSE_PROTO = 6,
@@ -50,12 +62,20 @@ enum DownloadCheckResultReason {
   REASON_DOWNLOAD_DANGEROUS_HOST = 20,
   REASON_DOWNLOAD_POTENTIALLY_UNWANTED = 21,
   REASON_UNSUPPORTED_URL_SCHEME = 22,
-  REASON_MANUAL_BLACKLIST = 23,
+  REASON_MANUAL_BLOCKLIST = 23,
   REASON_LOCAL_FILE = 24,
   REASON_REMOTE_FILE = 25,
   REASON_SAMPLED_UNSUPPORTED_FILE = 26,
   REASON_VERDICT_UNKNOWN = 27,
   REASON_DOWNLOAD_DESTROYED = 28,
+  REASON_BLOCKED_PASSWORD_PROTECTED = 29,
+  REASON_BLOCKED_TOO_LARGE = 30,
+  REASON_SENSITIVE_CONTENT_WARNING = 31,
+  REASON_SENSITIVE_CONTENT_BLOCK = 32,
+  REASON_DEEP_SCANNED_SAFE = 33,
+  REASON_ADVANCED_PROTECTION_PROMPT = 34,
+  REASON_BLOCKED_UNSUPPORTED_FILE_TYPE = 35,
+  REASON_DOWNLOAD_DANGEROUS_ACCOUNT_COMPROMISE = 36,
   REASON_MAX  // Always add new values before this one.
 };
 
@@ -64,65 +84,66 @@ enum DownloadCheckResultReason {
 // be mixed together based on their values).
 enum SBStatsType {
   DOWNLOAD_URL_CHECKS_TOTAL,
-  DOWNLOAD_URL_CHECKS_CANCELED,
+  DEPRECATED_DOWNLOAD_URL_CHECKS_CANCELED,
   DOWNLOAD_URL_CHECKS_MALWARE,
 
-  DOWNLOAD_HASH_CHECKS_TOTAL,
-  DOWNLOAD_HASH_CHECKS_MALWARE,
+  DEPRECATED_DOWNLOAD_HASH_CHECKS_TOTAL,
+  DEPRECATED_DOWNLOAD_HASH_CHECKS_MALWARE,
 
   // Memory space for histograms is determined by the max.
   // ALWAYS ADD NEW VALUES BEFORE THIS ONE.
   DOWNLOAD_CHECKS_MAX
 };
 
-enum WhitelistType {
-  NO_WHITELIST_MATCH,
-  URL_WHITELIST,
-  SIGNATURE_WHITELIST,
-  WHITELIST_TYPE_MAX
+enum AllowlistType {
+  NO_ALLOWLIST_MATCH,
+  URL_ALLOWLIST,
+  SIGNATURE_ALLOWLIST,
+  ALLOWLIST_TYPE_MAX
 };
 
 // Callback type which is invoked once the download request is done.
-typedef base::Callback<void(DownloadCheckResult)> CheckDownloadCallback;
+typedef base::OnceCallback<void(DownloadCheckResult)> CheckDownloadCallback;
 
-// A type of callback run on the main thread when a ClientDownloadRequest has
+// Callback type which is invoked once the download request is done. This is
+// used in cases where asynchronous scanning is allowed, so the callback is
+// triggered multiple times (once when asynchronous scanning begins, once when
+// the final result is ready).
+typedef base::RepeatingCallback<void(DownloadCheckResult)>
+    CheckDownloadRepeatingCallback;
+
+// Callbacks run on the main thread when a ClientDownloadRequest has
 // been formed for a download, or when one has not been formed for a supported
 // download.
-typedef base::Callback<void(download::DownloadItem*,
-                            const ClientDownloadRequest*)>
-    ClientDownloadRequestCallback;
+using ClientDownloadRequestCallbackList =
+    base::RepeatingCallbackList<void(download::DownloadItem*,
+                                     const ClientDownloadRequest*)>;
+using ClientDownloadRequestCallback =
+    ClientDownloadRequestCallbackList::CallbackType;
 
-// A list of ClientDownloadRequest callbacks.
-typedef base::CallbackList<void(download::DownloadItem*,
-                                const ClientDownloadRequest*)>
-    ClientDownloadRequestCallbackList;
+// Callbacks run on the main thread when a FileSystemAccessWriteRequest has been
+// formed for a write operation.
+using FileSystemAccessWriteRequestCallbackList =
+    base::RepeatingCallbackList<void(const ClientDownloadRequest*)>;
+using FileSystemAccessWriteRequestCallback =
+    FileSystemAccessWriteRequestCallbackList::CallbackType;
 
-// A subscription to a registered ClientDownloadRequest callback.
-typedef std::unique_ptr<ClientDownloadRequestCallbackList::Subscription>
-    ClientDownloadRequestSubscription;
-
-// A type of callback run on the main thread when a PPAPI
-// ClientDownloadRequest has been formed for a download.
-typedef base::Callback<void(const ClientDownloadRequest*)>
-    PPAPIDownloadRequestCallback;
-
-// A list of PPAPI ClientDownloadRequest callbacks.
-typedef base::CallbackList<void(const ClientDownloadRequest*)>
-    PPAPIDownloadRequestCallbackList;
-
-// A subscription to a registered PPAPI ClientDownloadRequest callback.
-typedef std::unique_ptr<PPAPIDownloadRequestCallbackList::Subscription>
-    PPAPIDownloadRequestSubscription;
-
-void RecordCountOfWhitelistedDownload(WhitelistType type);
+// Callbacks run on the main thread when a PPAPI ClientDownloadRequest has been
+// formed for a download.
+using PPAPIDownloadRequestCallbackList =
+    base::RepeatingCallbackList<void(const ClientDownloadRequest*)>;
+using PPAPIDownloadRequestCallback =
+    PPAPIDownloadRequestCallbackList::CallbackType;
 
 // Given a certificate and its immediate issuer certificate, generates the
-// list of strings that need to be checked against the download whitelist to
-// determine whether the certificate is whitelisted.
-void GetCertificateWhitelistStrings(
+// list of strings that need to be checked against the download allowlist to
+// determine whether the certificate is allowlisted.
+void GetCertificateAllowlistStrings(
     const net::X509Certificate& certificate,
     const net::X509Certificate& issuer,
-    std::vector<std::string>* whitelist_strings);
+    std::vector<std::string>* allowlist_strings);
+
+GURL GetFileSystemAccessDownloadUrl(const GURL& frame_url);
 
 }  // namespace safe_browsing
 

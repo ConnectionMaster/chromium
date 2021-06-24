@@ -13,6 +13,7 @@
 
 #include "base/component_export.h"
 #include "base/macros.h"
+#include "base/values.h"
 #include "chromeos/dbus/shill/shill_device_client.h"
 
 namespace chromeos {
@@ -34,71 +35,45 @@ class COMPONENT_EXPORT(SHILL_CLIENT) FakeShillDeviceClient
       const dbus::ObjectPath& device_path,
       ShillPropertyChangedObserver* observer) override;
   void GetProperties(const dbus::ObjectPath& device_path,
-                     const DictionaryValueCallback& callback) override;
+                     DBusMethodCallback<base::Value> callback) override;
   void SetProperty(const dbus::ObjectPath& device_path,
                    const std::string& name,
                    const base::Value& value,
-                   const base::Closure& callback,
-                   const ErrorCallback& error_callback) override;
+                   base::OnceClosure callback,
+                   ErrorCallback error_callback) override;
   void ClearProperty(const dbus::ObjectPath& device_path,
                      const std::string& name,
                      VoidDBusMethodCallback callback) override;
   void RequirePin(const dbus::ObjectPath& device_path,
                   const std::string& pin,
                   bool require,
-                  const base::Closure& callback,
-                  const ErrorCallback& error_callback) override;
+                  base::OnceClosure callback,
+                  ErrorCallback error_callback) override;
   void EnterPin(const dbus::ObjectPath& device_path,
                 const std::string& pin,
-                const base::Closure& callback,
-                const ErrorCallback& error_callback) override;
+                base::OnceClosure callback,
+                ErrorCallback error_callback) override;
   void UnblockPin(const dbus::ObjectPath& device_path,
                   const std::string& puk,
                   const std::string& pin,
-                  const base::Closure& callback,
-                  const ErrorCallback& error_callback) override;
+                  base::OnceClosure callback,
+                  ErrorCallback error_callback) override;
   void ChangePin(const dbus::ObjectPath& device_path,
                  const std::string& old_pin,
                  const std::string& new_pin,
-                 const base::Closure& callback,
-                 const ErrorCallback& error_callback) override;
+                 base::OnceClosure callback,
+                 ErrorCallback error_callback) override;
   void Register(const dbus::ObjectPath& device_path,
                 const std::string& network_id,
-                const base::Closure& callback,
-                const ErrorCallback& error_callback) override;
-  void SetCarrier(const dbus::ObjectPath& device_path,
-                  const std::string& carrier,
-                  const base::Closure& callback,
-                  const ErrorCallback& error_callback) override;
+                base::OnceClosure callback,
+                ErrorCallback error_callback) override;
   void Reset(const dbus::ObjectPath& device_path,
-             const base::Closure& callback,
-             const ErrorCallback& error_callback) override;
-  void PerformTDLSOperation(const dbus::ObjectPath& device_path,
-                            const std::string& operation,
-                            const std::string& peer,
-                            const StringCallback& callback,
-                            const ErrorCallback& error_callback) override;
-  void AddWakeOnPacketConnection(const dbus::ObjectPath& device_path,
-                                 const net::IPEndPoint& ip_endpoint,
-                                 const base::Closure& callback,
-                                 const ErrorCallback& error_callback) override;
-  void AddWakeOnPacketOfTypes(const dbus::ObjectPath& device_path,
-                              const std::vector<std::string>& types,
-                              const base::Closure& callback,
-                              const ErrorCallback& error_callback) override;
-  void RemoveWakeOnPacketConnection(
-      const dbus::ObjectPath& device_path,
-      const net::IPEndPoint& ip_endpoint,
-      const base::Closure& callback,
-      const ErrorCallback& error_callback) override;
-  void RemoveWakeOnPacketOfTypes(const dbus::ObjectPath& device_path,
-                                 const std::vector<std::string>& types,
-                                 const base::Closure& callback,
-                                 const ErrorCallback& error_callback) override;
-  void RemoveAllWakeOnPacketConnections(
-      const dbus::ObjectPath& device_path,
-      const base::Closure& callback,
-      const ErrorCallback& error_callback) override;
+             base::OnceClosure callback,
+             ErrorCallback error_callback) override;
+  void SetUsbEthernetMacAddressSource(const dbus::ObjectPath& device_path,
+                                      const std::string& source,
+                                      base::OnceClosure callback,
+                                      ErrorCallback error_callback) override;
 
   ShillDeviceClient::TestInterface* GetTestInterface() override;
 
@@ -113,11 +88,16 @@ class COMPONENT_EXPORT(SHILL_CLIENT) FakeShillDeviceClient
                          const base::Value& value,
                          bool notify_changed) override;
   std::string GetDevicePathForType(const std::string& type) override;
-  void SetTDLSBusyCount(int count) override;
-  void SetTDLSState(const std::string& state) override;
   void SetSimLocked(const std::string& device_path, bool locked) override;
   void AddCellularFoundNetwork(const std::string& device_path) override;
+  void SetUsbEthernetMacAddressSourceError(
+      const std::string& device_path,
+      const std::string& error_name) override;
+  void SetSimulateUninhibitScanning(bool simulate_uninhibit_scanning) override;
+  void SetPropertyChangeDelay(
+      absl::optional<base::TimeDelta> time_delay) override;
 
+  static const char kSimPuk[];
   static const char kDefaultSimPin[];
   static const int kSimPinRetryCount;
 
@@ -136,7 +116,7 @@ class COMPONENT_EXPORT(SHILL_CLIENT) FakeShillDeviceClient
   bool SimTryPin(const std::string& device_path, const std::string& pin);
   bool SimTryPuk(const std::string& device_path, const std::string& pin);
   void PassStubDeviceProperties(const dbus::ObjectPath& device_path,
-                                const DictionaryValueCallback& callback) const;
+                                DBusMethodCallback<base::Value> callback) const;
 
   // Posts a task to run a void callback with status code |result|.
   void PostVoidCallback(VoidDBusMethodCallback callback, bool result);
@@ -146,8 +126,8 @@ class COMPONENT_EXPORT(SHILL_CLIENT) FakeShillDeviceClient
   void SetPropertyInternal(const dbus::ObjectPath& device_path,
                            const std::string& name,
                            const base::Value& value,
-                           const base::Closure& callback,
-                           const ErrorCallback& error_callback,
+                           base::OnceClosure callback,
+                           ErrorCallback error_callback,
                            bool notify_changed);
 
   void NotifyObserversPropertyChanged(const dbus::ObjectPath& device_path,
@@ -155,37 +135,37 @@ class COMPONENT_EXPORT(SHILL_CLIENT) FakeShillDeviceClient
   base::Value* GetDeviceProperties(const std::string& device_path);
   PropertyObserverList& GetObserverList(const dbus::ObjectPath& device_path);
 
+  void SimulateUninhibitScanning(const dbus::ObjectPath& device_path);
+  void StopUninhibitScanning(const dbus::ObjectPath& device_path);
+
   // Dictionary of <device_name, Dictionary>.
-  base::DictionaryValue stub_devices_;
+  base::Value stub_devices_{base::Value::Type::DICTIONARY};
+
   // Observer list for each device.
   std::map<dbus::ObjectPath, std::unique_ptr<PropertyObserverList>>
       observer_list_;
 
-  // Number of times to return InProgress for TDLS. Set to -1 to emulate
-  // TDLS failure.
-  int initial_tdls_busy_count_;
-
-  // Current TDLS busy count.
-  int tdls_busy_count_;
-
-  // Fake state for TDLS.
-  std::string tdls_state_;
-
-  // Wake on packet connections for each device.
-  std::map<dbus::ObjectPath, std::set<net::IPEndPoint>>
-      wake_on_packet_connections_;
-
-  // Wake on packet types for each device. The string types in the value set
-  // correspond to "Wake on WiFi Packet Type Constants." in
-  // third_party/cros_system_api/dbus/shill/dbus-constants.h.
-  std::map<dbus::ObjectPath, std::set<std::string>> wake_on_packet_types_;
-
   // Current SIM PIN per device path.
   std::map<std::string, std::string> sim_pin_;
 
+  // Error names for SetUsbEthernetMacAddressSource error callback for each
+  // device. Error callback must not be called if error name is not present or
+  // empty.
+  std::map<std::string, std::string>
+      set_usb_ethernet_mac_address_source_error_names_;
+
+  // When true, this class will simulate the inhibit flow by setting the
+  // Scanning property to true, then false. This mimics the behavior of Shill
+  // during normal operation.
+  bool simulate_uninhibit_scanning_ = true;
+
+  // When set, causes SetProperty call to return immediately and delay the value
+  // change by given amount.
+  absl::optional<base::TimeDelta> property_change_delay_;
+
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<FakeShillDeviceClient> weak_ptr_factory_;
+  base::WeakPtrFactory<FakeShillDeviceClient> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FakeShillDeviceClient);
 };

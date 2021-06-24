@@ -9,18 +9,20 @@
 
 #include "base/base64.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
-#include "chrome/browser/chromeos/login/demo_mode/demo_setup_controller.h"
-#include "chrome/browser/chromeos/login/ui/fake_login_display_host.h"
-#include "chrome/browser/chromeos/login/wizard_controller.h"
+#include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
+#include "chrome/browser/ash/login/ui/fake_login_display_host.h"
+#include "chrome/browser/ash/login/wizard_controller.h"
+#include "chrome/browser/ui/webui/chromeos/login/demo_preferences_screen_handler.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/scoped_browser_locale.h"
@@ -28,8 +30,7 @@
 #include "chromeos/system/fake_statistics_provider.h"
 #include "chromeos/system/statistics_provider.h"
 #include "content/public/browser/browser_task_traits.h"
-#include "content/public/browser/resource_request_info.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -52,9 +53,8 @@ class TestDataReceiver {
 
   void OnDataReceived(scoped_refptr<base::RefCountedMemory> bytes) {
     data_received_ = true;
-    data_ = base::StringPiece(reinterpret_cast<const char*>(bytes->front()),
-                              bytes->size())
-                .as_string();
+    data_ = std::string(base::StringPiece(
+        reinterpret_cast<const char*>(bytes->front()), bytes->size()));
   }
 
  private:
@@ -92,11 +92,7 @@ class ChromeOSTermsTest : public testing::Test {
     if (!base::CreateDirectory(dir))
       return false;
 
-    if (base::WriteFile(dir.AppendASCII("terms.html"), locale.c_str(),
-                        locale.length()) != static_cast<int>(locale.length())) {
-      return false;
-    }
-    return true;
+    return base::WriteFile(dir.AppendASCII("terms.html"), locale);
   }
 
   // Creates directory for the given |locale| that contains privacy_policy.pdf.
@@ -106,11 +102,7 @@ class ChromeOSTermsTest : public testing::Test {
     if (!base::CreateDirectory(dir))
       return false;
 
-    if (base::WriteFile(dir.AppendASCII("privacy_policy.pdf"), locale.c_str(),
-                        locale.length()) != static_cast<int>(locale.length())) {
-      return false;
-    }
-    return true;
+    return base::WriteFile(dir.AppendASCII("privacy_policy.pdf"), locale);
   }
 
   // Sets device region in VPD.
@@ -122,12 +114,14 @@ class ChromeOSTermsTest : public testing::Test {
   // Starts data request with the |request_url|.
   void StartRequest(const std::string& request_url,
                     TestDataReceiver* data_receiver) {
-    content::ResourceRequestInfo::WebContentsGetter wc_getter;
+    content::WebContents::Getter wc_getter;
     tested_html_source_->StartDataRequest(
-        request_url, std::move(wc_getter),
-        base::BindRepeating(&TestDataReceiver::OnDataReceived,
-                            base::Unretained(data_receiver)));
-    test_browser_thread_bundle_.RunUntilIdle();
+        GURL(base::StrCat(
+            {"chrome://", chrome::kChromeUITermsHost, "/", request_url})),
+        std::move(wc_getter),
+        base::BindOnce(&TestDataReceiver::OnDataReceived,
+                       base::Unretained(data_receiver)));
+    task_environment_.RunUntilIdle();
   }
 
   const base::FilePath& PreinstalledOfflineResourcesPath() {
@@ -138,7 +132,7 @@ class ChromeOSTermsTest : public testing::Test {
   base::ScopedTempDir preinstalled_offline_resources_dir_;
   base::FilePath arc_tos_dir_;
 
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   chromeos::system::ScopedFakeStatisticsProvider statistics_provider_;
 
@@ -176,10 +170,9 @@ class DemoModeChromeOSTermsTest : public ChromeOSTermsTest {
 
     // Simulate Demo Mode setup.
     chromeos::DBusThreadManager::Initialize();
-    fake_login_display_host_ =
-        std::make_unique<chromeos::FakeLoginDisplayHost>();
+    fake_login_display_host_ = std::make_unique<ash::FakeLoginDisplayHost>();
     fake_login_display_host_->StartWizard(
-        chromeos::OobeScreen::SCREEN_OOBE_DEMO_PREFERENCES);
+        chromeos::DemoPreferencesScreenView::kScreenId);
     fake_login_display_host_->GetWizardController()
         ->SimulateDemoModeSetupForTesting();
     fake_login_display_host_->GetWizardController()
@@ -230,7 +223,7 @@ class DemoModeChromeOSTermsTest : public ChromeOSTermsTest {
   }
 
  private:
-  std::unique_ptr<chromeos::FakeLoginDisplayHost> fake_login_display_host_;
+  std::unique_ptr<ash::FakeLoginDisplayHost> fake_login_display_host_;
 
   DISALLOW_COPY_AND_ASSIGN(DemoModeChromeOSTermsTest);
 };

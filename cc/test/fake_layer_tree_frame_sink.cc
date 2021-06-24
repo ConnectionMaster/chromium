@@ -5,6 +5,7 @@
 #include "cc/test/fake_layer_tree_frame_sink.h"
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "cc/trees/layer_tree_frame_sink_client.h"
@@ -37,8 +38,7 @@ FakeLayerTreeFrameSink::FakeLayerTreeFrameSink(
     : LayerTreeFrameSink(std::move(context_provider),
                          std::move(worker_context_provider),
                          base::ThreadTaskRunnerHandle::Get(),
-                         nullptr),
-      weak_ptr_factory_(this) {
+                         nullptr) {
   gpu_memory_buffer_manager_ =
       context_provider_ ? &test_gpu_memory_buffer_manager_ : nullptr;
 }
@@ -81,19 +81,19 @@ void FakeLayerTreeFrameSink::SubmitCompositorFrame(
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void FakeLayerTreeFrameSink::DidNotProduceFrame(const viz::BeginFrameAck& ack) {
-}
+void FakeLayerTreeFrameSink::DidNotProduceFrame(const viz::BeginFrameAck& ack,
+                                                FrameSkippedReason reason) {}
 
 void FakeLayerTreeFrameSink::DidAllocateSharedBitmap(
-    mojo::ScopedSharedBufferHandle buffer,
+    base::ReadOnlySharedMemoryRegion region,
     const viz::SharedBitmapId& id) {
-  DCHECK(!base::ContainsValue(shared_bitmaps_, id));
+  DCHECK(!base::Contains(shared_bitmaps_, id));
   shared_bitmaps_.push_back(id);
 }
 
 void FakeLayerTreeFrameSink::DidDeleteSharedBitmap(
     const viz::SharedBitmapId& id) {
-  DCHECK(base::ContainsValue(shared_bitmaps_, id));
+  DCHECK(base::Contains(shared_bitmaps_, id));
   base::Erase(shared_bitmaps_, id);
 }
 
@@ -108,8 +108,14 @@ void FakeLayerTreeFrameSink::ReturnResourcesHeldByParent() {
     for (const auto& resource : resources_held_by_parent_)
       resources.push_back(resource.ToReturnedResource());
     resources_held_by_parent_.clear();
-    client_->ReclaimResources(resources);
+    client_->ReclaimResources(std::move(resources));
   }
+}
+
+void FakeLayerTreeFrameSink::NotifyDidPresentCompositorFrame(
+    uint32_t frame_token,
+    const viz::FrameTimingDetails& details) {
+  client_->DidPresentCompositorFrame(frame_token, details);
 }
 
 }  // namespace cc

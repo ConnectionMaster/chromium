@@ -9,76 +9,125 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/callback.h"
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
+#include "base/observer_list_types.h"
 #include "chrome/browser/ui/app_list/search/mixer.h"
+#include "chrome/browser/ui/app_list/search/ranking/launch_data.h"
 
-class AppListControllerDelegate;
-class AppListModelUpdater;
 class ChromeSearchResult;
-class Profile;
+
+namespace ash {
+enum class AppListSearchResultType;
+}
 
 namespace app_list {
 
-class AppSearchResultRanker;
-class RecurrenceRanker;
 class SearchProvider;
 enum class RankingItemType;
+
+// Common types used throughout result ranking.
+
+// The type of a particular result.
+using ResultType = ash::AppListSearchResultType;
+// The type of a search provider as a whole. This is currently just the 'main'
+// ResultType returned by the provider.
+using ProviderType = ash::AppListSearchResultType;
+
+using Results = std::vector<std::unique_ptr<ChromeSearchResult>>;
+using ResultsMap = base::flat_map<ProviderType, Results>;
 
 // Controller that collects query from given SearchBoxModel, dispatches it
 // to all search providers, then invokes the mixer to mix and to publish the
 // results to the given SearchResults UI model.
+//
+// // TODO(crbug.com/1199206): The SearchController is being reimplemented with
+// a different ranking system. Once this reimplementation is finished, this pure
+// virtual class can be removed and replaced with SearchControllerImplNew.
 class SearchController {
  public:
-  SearchController(AppListModelUpdater* model_updater,
-                   AppListControllerDelegate* list_controller,
-                   Profile* profile);
-  virtual ~SearchController();
+  using ResultsChangedCallback =
+      base::RepeatingCallback<void(ash::AppListSearchResultType)>;
 
-  void Start(const base::string16& query);
-  void ViewClosing();
+  class Observer : public base::CheckedObserver {
+   public:
+    // Called whenever results are added to the launcher, as a result of
+    // zero-state or from a user query. This will be called multiple times per
+    // query because launcher results arrive incrementally.
+    //
+    // Observers should not store the ChromeSearchResult* pointers or post them
+    // to another sequence because they may be invalidated.
+    virtual void OnResultsAdded(
+        const std::u16string& query,
+        const std::vector<const ChromeSearchResult*>& results) {}
 
-  void OpenResult(ChromeSearchResult* result, int event_flags);
-  void InvokeResultAction(ChromeSearchResult* result,
-                          int action_index,
-                          int event_flags);
+    // Called whenever old results are cleared. This occurs whenever a new
+    // search is started.
+    virtual void OnResultsCleared() {}
+  };
+
+  virtual ~SearchController() {}
+
+  virtual void InitializeRankers() = 0;
+
+  virtual void Start(const std::u16string& query) = 0;
+  // TODO(crbug.com/1199206): We should rename this to AppListClosing for
+  // consistency with AppListShown.
+  virtual void ViewClosing() = 0;
+
+  virtual void OpenResult(ChromeSearchResult* result, int event_flags) = 0;
+  virtual void InvokeResultAction(ChromeSearchResult* result,
+                                  int action_index) = 0;
 
   // Adds a new mixer group. See Mixer::AddGroup.
-  size_t AddGroup(size_t max_results, double multiplier, double boost);
+  virtual size_t AddGroup(size_t max_results) = 0;
 
   // Takes ownership of |provider| and associates it with given mixer group.
-  void AddProvider(size_t group_id, std::unique_ptr<SearchProvider> provider);
+  virtual void AddProvider(size_t group_id,
+                           std::unique_ptr<SearchProvider> provider) = 0;
 
-  ChromeSearchResult* FindSearchResult(const std::string& result_id);
-  ChromeSearchResult* GetResultByTitleForTest(const std::string& title);
+  // Update the controller with the given results. Used only if the categorical
+  // search feature flag is enabled.
+  virtual void SetResults(ash::AppListSearchResultType provider_type,
+                          Results results) = 0;
 
-  // Set a |RecurrenceRanker| to tweak search results.
-  void SetRecurrenceRanker(std::unique_ptr<RecurrenceRanker> ranker);
+  virtual ChromeSearchResult* FindSearchResult(
+      const std::string& result_id) = 0;
+  virtual ChromeSearchResult* GetResultByTitleForTest(
+      const std::string& title) = 0;
 
   // Sends training signal to each |providers_|
-  void Train(const std::string& id, RankingItemType type);
+  virtual void Train(LaunchData&& launch_data) = 0;
 
-  // Get the app search result ranker owned by this object.
-  AppSearchResultRanker* GetSearchResultRanker();
+  // Invoked when the app list is shown.
+  virtual void AppListShown() = 0;
 
- private:
-  // Invoked when the search results are changed.
-  void OnResultsChanged();
+  // Gets the length of the most recent query.
+  // TODO(crbug.com/1199206): This should be replaced with calls to
+  // get_query().size().
+  virtual int GetLastQueryLength() const = 0;
 
-  bool dispatching_query_ = false;
+  // TODO(crbug.com/1199206): This is unused and can be deleted.
+  // Called when items in the results list have been on screen for some amount
+  // of time, or the user clicked a search result.
+  virtual void OnSearchResultsImpressionMade(
+      const std::u16string& trimmed_query,
+      const ash::SearchResultIdWithPositionIndices& results,
+      int launched_index) = 0;
 
-  // If true, the search results are shown on the launcher start page.
-  bool query_for_recommendation_ = false;
+  virtual void AddObserver(Observer* observer) = 0;
+  virtual void RemoveObserver(Observer* observer) = 0;
 
-  using Providers = std::vector<std::unique_ptr<SearchProvider>>;
-  Providers providers_;
-  std::unique_ptr<Mixer> mixer_;
-  std::unique_ptr<AppSearchResultRanker> ranker_;
-  AppListControllerDelegate* list_controller_;
+  virtual std::u16string get_query() = 0;
 
-  DISALLOW_COPY_AND_ASSIGN(SearchController);
+  virtual base::Time session_start() = 0;
+
+  virtual void set_results_changed_callback_for_test(
+      ResultsChangedCallback callback) = 0;
 };
 
 }  // namespace app_list

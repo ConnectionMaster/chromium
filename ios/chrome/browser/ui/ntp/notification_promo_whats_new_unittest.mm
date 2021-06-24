@@ -15,6 +15,7 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/variations/variations_associated_data.h"
+#include "ios/chrome/browser/notification_promo.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
 #include "ios/public/provider/chrome/browser/images/branded_image_icon_types.h"
 #include "testing/platform_test.h"
@@ -33,9 +34,8 @@ class NotificationPromoWhatsNewTest : public PlatformTest {
   NotificationPromoWhatsNewTest()
       : promo_(&local_state_),
         action_callback_(
-            base::Bind(&NotificationPromoWhatsNewTest::OnUserAction,
-                       base::Unretained(this))),
-        field_trial_list_(new base::FieldTrialList(NULL)) {
+            base::BindRepeating(&NotificationPromoWhatsNewTest::OnUserAction,
+                                base::Unretained(this))) {
     ios::NotificationPromo::RegisterPrefs(local_state_.registry());
     local_state_.registry()->RegisterInt64Pref(metrics::prefs::kInstallDate, 0);
     base::AddActionCallback(action_callback_);
@@ -77,9 +77,10 @@ class NotificationPromoWhatsNewTest : public PlatformTest {
     field_trial_params["seconds_since_install"] = seconds_since_install;
     field_trial_params["max_seconds_since_install"] = max_seconds_since_install;
 
-    variations::AssociateVariationParams("IOSNTPPromotion", "Group1",
-                                         field_trial_params);
-    base::FieldTrialList::CreateFieldTrial("IOSNTPPromotion", "Group1");
+    variations::AssociateVariationParams(ios::kNTPPromoFinchExperiment,
+                                         "Group1", field_trial_params);
+    base::FieldTrialList::CreateFieldTrial(ios::kNTPPromoFinchExperiment,
+                                           "Group1");
 
     promo_.Init();
   }
@@ -107,7 +108,8 @@ class NotificationPromoWhatsNewTest : public PlatformTest {
       EXPECT_EQ(icon, promo_.icon());
   }
 
-  void OnUserAction(const std::string& user_action) {
+  void OnUserAction(const std::string& user_action,
+                    base::TimeTicks action_time) {
     user_action_count_map_[user_action]++;
   }
 
@@ -120,9 +122,6 @@ class NotificationPromoWhatsNewTest : public PlatformTest {
   NotificationPromoWhatsNew promo_;
   base::ActionCallback action_callback_;
   std::map<std::string, int> user_action_count_map_;
-
- private:
-  std::unique_ptr<base::FieldTrialList> field_trial_list_;
 };
 
 // Test that a command-based, valid promo is shown with the correct text.

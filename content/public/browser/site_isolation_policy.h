@@ -5,6 +5,7 @@
 #ifndef CONTENT_PUBLIC_BROWSER_SITE_ISOLATION_POLICY_H_
 #define CONTENT_PUBLIC_BROWSER_SITE_ISOLATION_POLICY_H_
 
+#include <string>
 #include <vector>
 
 #include "base/gtest_prod_util.h"
@@ -12,12 +13,6 @@
 #include "base/strings/string_piece_forward.h"
 #include "content/common/content_export.h"
 #include "url/origin.h"
-
-namespace network {
-namespace mojom {
-class URLLoaderFactoryParams;
-}
-}  // namespace network
 
 namespace content {
 
@@ -33,46 +28,55 @@ class CONTENT_EXPORT SiteIsolationPolicy {
   // Returns true if every site should be placed in a dedicated process.
   static bool UseDedicatedProcessesForAllSites();
 
-  // Populates CORB-related (Cross-Origin Read Blocking related) parts of the
-  // URLLoaderFactoryParams depending on the current Site Isolation policy.
-  static void PopulateURLLoaderFactoryParamsPtrForCORB(
-      network::mojom::URLLoaderFactoryParams* params);
-
   // Returns true if isolated origins feature is enabled.
   static bool AreIsolatedOriginsEnabled();
+
+  // Returns true if strict origin isolation is enabled. Controls whether site
+  // isolation uses origins instead of scheme and eTLD+1.
+  static bool IsStrictOriginIsolationEnabled();
 
   // Returns true if error page isolation is enabled.
   static bool IsErrorPageIsolationEnabled(bool in_main_frame);
 
-  // Returns true if the PDF compositor should be enabled to allow out-of-
-  // process iframes (OOPIF's) to print properly.
-  static bool ShouldPdfCompositorBeEnabledForOopifs();
-
   // Returns true if isolated origins may be added at runtime in response
-  // to hints such as users typing in a password or (in the future) an origin
-  // opting itself into isolation via a header.
+  // to hints such as users typing in a password or sites serving headers like
+  // Cross-Origin-Opener-Policy.
   static bool AreDynamicIsolatedOriginsEnabled();
 
-  // Returns the origins to isolate.  See also AreIsolatedOriginsEnabled.
-  // This list applies globally to the whole browser in all profiles.
-  static std::vector<url::Origin> GetIsolatedOrigins();
+  // Returns true if isolated origins preloaded with the browser should be
+  // applied.  For example, this is used to apply memory limits to preloaded
+  // isolated origins on Android.
+  static bool ArePreloadedIsolatedOriginsEnabled();
 
-  // Records metrics about which site isolation command-line flags are present,
-  // and sets up a timer to keep recording them every 24 hours.  This should be
-  // called once on browser startup.
-  static void StartRecordingSiteIsolationFlagUsage();
+  // Returns true if the "Origin-Agent-Cluster" header should result in a
+  // separate process for isolated origins.  This is used to turn off opt-in
+  // origin isolation on low-memory Android devices.
+  static bool IsProcessIsolationForOriginAgentClusterEnabled();
 
-  // Parses |arg| into a list of origins.
-  static std::vector<url::Origin> ParseIsolatedOrigins(base::StringPiece arg);
+  // Returns true if the OriginAgentCluster header will be respected.
+  static bool IsOriginAgentClusterEnabled();
+
+  // Returns true if Cross-Origin-Opener-Policy headers may be used as
+  // heuristics for turning on site isolation.
+  static bool IsSiteIsolationForCOOPEnabled();
+
+  // Return true if sites that were isolated due to COOP headers should be
+  // persisted across restarts.
+  static bool ShouldPersistIsolatedCOOPSites();
+
+  // Applies isolated origins from all available sources, including the
+  // command-line switch, field trials, enterprise policy, and the embedder.
+  // See also AreIsolatedOriginsEnabled. These origins apply globally to the
+  // whole browser in all profiles.  This should be called once on browser
+  // startup.
+  static void ApplyGlobalIsolatedOrigins();
 
  private:
   SiteIsolationPolicy();  // Not instantiable.
 
   // Gets isolated origins from cmdline and/or from field trial param.
-  static std::vector<url::Origin> GetIsolatedOriginsFromEnvironment();
-
-  // Records metrics about which site isolation command-line flags are present.
-  static void RecordSiteIsolationFlagUsage();
+  static std::string GetIsolatedOriginsFromCommandLine();
+  static std::string GetIsolatedOriginsFromFieldTrial();
 
   DISALLOW_COPY_AND_ASSIGN(SiteIsolationPolicy);
 };

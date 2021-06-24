@@ -8,17 +8,21 @@
 #include <mach/mach.h>
 #include <sys/event.h>
 
+#include <memory>
+
 #include "base/debug/activity_tracker.h"
 #include "base/files/scoped_file.h"
 #include "base/mac/dispatch_source_mach.h"
 #include "base/mac/mac_util.h"
 #include "base/mac/mach_logging.h"
 #include "base/mac/scoped_dispatch_object.h"
-#include "base/optional.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
+#include "base/time/time_override.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 
@@ -46,7 +50,8 @@ void WaitableEvent::Reset() {
   PeekPort(receive_right_->Name(), true);
 }
 
-void WaitableEvent::Signal() {
+// NO_THREAD_SAFETY_ANALYSIS: Runtime dependent locking.
+void WaitableEvent::Signal() NO_THREAD_SAFETY_ANALYSIS {
   // If using the slow watch-list, copy the watchers to a local. After
   // mach_msg(), the event object may be deleted by an awoken thread.
   const bool use_slow_path = UseSlowWatchList(policy_);
@@ -65,7 +70,7 @@ void WaitableEvent::Signal() {
     slow_watch_list->lock.Acquire();
 
     if (!slow_watch_list->list.empty()) {
-      watch_list.reset(new std::list<OnceClosure>());
+      watch_list = std::make_unique<std::list<OnceClosure>>();
       std::swap(*watch_list, slow_watch_list->list);
     }
   }
@@ -103,24 +108,23 @@ bool WaitableEvent::IsSignaled() {
 }
 
 void WaitableEvent::Wait() {
-  bool result = TimedWaitUntil(TimeTicks::Max());
+  bool result = TimedWait(TimeDelta::Max());
   DCHECK(result) << "TimedWait() should never fail with infinite timeout";
 }
 
 bool WaitableEvent::TimedWait(const TimeDelta& wait_delta) {
-  return TimedWaitUntil(TimeTicks::Now() + wait_delta);
-}
+  if (wait_delta <= TimeDelta())
+    return IsSignaled();
 
-bool WaitableEvent::TimedWaitUntil(const TimeTicks& end_time) {
   // Record the event that this thread is blocking upon (for hang diagnosis) and
   // consider blocked for scheduling purposes. Ignore this for non-blocking
   // WaitableEvents.
-  Optional<debug::ScopedEventWaitActivity> event_activity;
-  Optional<internal::ScopedBlockingCallWithBaseSyncPrimitives>
+  absl::optional<debug::ScopedEventWaitActivity> event_activity;
+  absl::optional<internal::ScopedBlockingCallWithBaseSyncPrimitives>
       scoped_blocking_call;
   if (waiting_is_blocking_) {
     event_activity.emplace(this);
-    scoped_blocking_call.emplace(BlockingType::MAY_BLOCK);
+    scoped_blocking_call.emplace(FROM_HERE, BlockingType::MAY_BLOCK);
   }
 
   mach_msg_empty_rcv_t msg{};
@@ -128,7 +132,7 @@ bool WaitableEvent::TimedWaitUntil(const TimeTicks& end_time) {
 
   mach_msg_option_t options = MACH_RCV_MSG;
 
-  if (!end_time.is_max())
+  if (!wait_delta.is_max())
     options |= MACH_RCV_TIMEOUT | MACH_RCV_INTERRUPT;
 
   mach_msg_size_t rcv_size = sizeof(msg);
@@ -139,21 +143,33 @@ bool WaitableEvent::TimedWaitUntil(const TimeTicks& end_time) {
     rcv_size = 0;
   }
 
-  kern_return_t kr;
-  mach_msg_timeout_t timeout = MACH_MSG_TIMEOUT_NONE;
-  do {
-    if (!end_time.is_max()) {
-      timeout = std::max<int64_t>(
-          0, (end_time - TimeTicks::Now()).InMillisecondsRoundedUp());
-    }
+  // TimeTicks takes care of overflow but we special case is_max() nonetheless
+  // to avoid invoking TimeTicksNowIgnoringOverride() unnecessarily (same for
+  // the increment step of the for loop if the condition variable returns
+  // early). Ref: https://crbug.com/910524#c7
+  const TimeTicks end_time =
+      wait_delta.is_max() ? TimeTicks::Max()
+                          : subtle::TimeTicksNowIgnoringOverride() + wait_delta;
+  // Fake |kr| value to boostrap the for loop.
+  kern_return_t kr = MACH_RCV_INTERRUPTED;
+  for (mach_msg_timeout_t timeout = wait_delta.is_max()
+                                        ? MACH_MSG_TIMEOUT_NONE
+                                        : wait_delta.InMillisecondsRoundedUp();
+       // If the thread is interrupted during mach_msg(), the system call will
+       // be restarted. However, the libsyscall wrapper does not adjust the
+       // timeout by the amount of time already waited. Using MACH_RCV_INTERRUPT
+       // will instead return from mach_msg(), so that the call can be retried
+       // with an adjusted timeout.
+       kr == MACH_RCV_INTERRUPTED;
+       timeout =
+           end_time.is_max()
+               ? MACH_MSG_TIMEOUT_NONE
+               : std::max<int64_t>(
+                     0, (end_time - subtle::TimeTicksNowIgnoringOverride())
+                            .InMillisecondsRoundedUp())) {
     kr = mach_msg(&msg.header, options, 0, rcv_size, receive_right_->Name(),
                   timeout, MACH_PORT_NULL);
-    // If the thread is interrupted during mach_msg(), the system call
-    // will be restarted. However, the libsyscall wrapper does not adjust
-    // the timeout by the amount of time already waited.
-    // Using MACH_RCV_INTERRUPT will instead return from mach_msg(),
-    // so that the call can be retried with an adjusted timeout.
-  } while (kr == MACH_RCV_INTERRUPTED);
+  }
 
   if (kr == KERN_SUCCESS) {
     return true;
@@ -179,7 +195,7 @@ bool WaitableEvent::UseSlowWatchList(ResetPolicy policy) {
 size_t WaitableEvent::WaitMany(WaitableEvent** raw_waitables, size_t count) {
   DCHECK(count) << "Cannot wait on no events";
   internal::ScopedBlockingCallWithBaseSyncPrimitives scoped_blocking_call(
-      BlockingType::MAY_BLOCK);
+      FROM_HERE, BlockingType::MAY_BLOCK);
   // Record an event (the first) that this thread is blocking upon.
   debug::ScopedEventWaitActivity event_activity(raw_waitables[0]);
 

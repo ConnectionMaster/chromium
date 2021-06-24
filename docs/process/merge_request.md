@@ -28,10 +28,10 @@ possible that changes may miss branch date and require a merge post branch.
 **Merge**: any change that is cherry picked from trunk to a release branch.
 
 Please read overview of [Chrome Release
-Cycle](https://chromium.googlesource.com/chromium/src.git/+/master/docs/process/release_cycle.md)
+Cycle](https://chromium.googlesource.com/chromium/src.git/+/main/docs/process/release_cycle.md)
 to understand in detail how the Chrome release cycle works and understand key
 release concepts and terminology. Please read [Defining Release
-Blockers](https://chromium.googlesource.com/chromium/src.git/+/master/docs/process/release_blockers.md)
+Blockers](https://chromium.googlesource.com/chromium/src.git/+/main/docs/process/release_blockers.md)
 to understand how issues/bugs are categorized as release blocking.
 List of schedule and release owners can be found at [Chrome
 Calendar](https://chromepmo.appspot.com/calendar) (Googlers only, opening to all in the near future).
@@ -86,6 +86,10 @@ fix is low complexity.
 Security bugs should be consulted with [chrome-security@](chrome-security@google.com)
 to determine criticality.
 
+If it is unclear whether the severity of the issue meets the bar for merging
+consult with the [TPM](https://chromiumdash.appspot.com/schedule) and your
+manager.
+
 This table below provides key dates and phases as an example, for M61 release.
 
 Key Event  | Date
@@ -133,6 +137,9 @@ Merge-Approved-[Milestone-Number] label. Please merge
 **immediately after**. Please note that if change is not
 merged in time after approval, it can be rejected.
 
+To perform the merge see [How to merge a change to a release
+branch](https://www.chromium.org/developers/how-tos/drover).
+
 If merge is rejected, “Merge-Rejected” label will be
 applied. If you think it’s important to consider the
 change for merge and does not meet the criteria above,
@@ -150,3 +157,10 @@ automated process to take effect.
 
 Manual merge reviews will be performed by release
 owners and TPMs.
+
+## Merge Process
+
+Once the merge has been approved, please see
+[How to merge a change to a release
+branch](https://sites.google.com/a/chromium.org/dev/developers/how-tos/drover)
+for technical details on performing the merge.

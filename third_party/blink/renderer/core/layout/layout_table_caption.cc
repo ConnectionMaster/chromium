@@ -29,24 +29,28 @@ LayoutTableCaption::LayoutTableCaption(Element* element)
 LayoutTableCaption::~LayoutTableCaption() = default;
 
 LayoutUnit LayoutTableCaption::ContainingBlockLogicalWidthForContent() const {
+  NOT_DESTROYED();
   LayoutBlock* cb = ContainingBlock();
   return cb->LogicalWidth();
 }
 
 void LayoutTableCaption::InsertedIntoTree() {
+  NOT_DESTROYED();
   LayoutBlockFlow::InsertedIntoTree();
 
   Table()->AddCaption(this);
 }
 
 void LayoutTableCaption::WillBeRemovedFromTree() {
+  NOT_DESTROYED();
   LayoutBlockFlow::WillBeRemovedFromTree();
 
   Table()->RemoveCaption(this);
 }
 
 LayoutTable* LayoutTableCaption::Table() const {
-  return ToLayoutTable(Parent());
+  NOT_DESTROYED();
+  return To<LayoutTable>(Parent());
 }
 
 }  // namespace blink

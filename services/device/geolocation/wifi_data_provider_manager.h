@@ -15,13 +15,10 @@
 #ifndef SERVICES_DEVICE_GEOLOCATION_WIFI_DATA_PROVIDER_MANAGER_H_
 #define SERVICES_DEVICE_GEOLOCATION_WIFI_DATA_PROVIDER_MANAGER_H_
 
-#include <set>
-
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "services/device/geolocation/wifi_data.h"
 
@@ -47,7 +44,7 @@ class WifiDataProviderManager {
   // Resets the factory function to the default.
   static void ResetFactoryForTesting();
 
-  typedef base::Closure WifiDataUpdateCallback;
+  typedef base::RepeatingClosure WifiDataUpdateCallback;
 
   // Registers a callback, which will be run whenever new data is available.
   // Instantiates the singleton if necessary, and always returns it.
@@ -64,6 +61,8 @@ class WifiDataProviderManager {
   // value indicates whether this is all the data the provider could ever
   // obtain.
   bool GetData(WifiData* data);
+
+  void ForceRescan();
 
  private:
   // Private constructor and destructor, callers access singleton through

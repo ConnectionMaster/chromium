@@ -8,7 +8,7 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "content/public/common/context_menu_params.h"
+#include "content/public/browser/context_menu_params.h"
 
 class ContextMenuContentType;
 
@@ -21,11 +21,6 @@ class ContextMenuContentTypeFactory {
   static std::unique_ptr<ContextMenuContentType> Create(
       content::WebContents* web_contents,
       const content::ContextMenuParams& params);
-
-  // Sets the chrome specific url checker for internal resources.
-  // This is exposed for tests.
-  static void SetInternalResourcesURLChecker(
-      ContextMenuContentType* content_type);
 
  private:
   ContextMenuContentTypeFactory();

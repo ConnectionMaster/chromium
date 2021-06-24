@@ -6,7 +6,7 @@
 
 #include <vector>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "ui/gl/gl_context.h"
@@ -15,6 +15,7 @@
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_switches.h"
 #include "ui/gl/gl_version_info.h"
+#include "ui/gl/shader_tracking.h"
 
 namespace gl {
 
@@ -24,9 +25,6 @@ static CurrentGL* g_no_context_current_gl = nullptr;
 // If the null draw bindings are currently enabled.
 // TODO: Consider adding a new GLApi that no-ops these functions
 static bool g_null_draw_bindings_enabled = false;
-
-// If the GL debug bindings are enabled.
-static bool g_debug_bindings_enabled = false;
 
 namespace {
 
@@ -228,14 +226,6 @@ void ClearBindingsGL() {
   }
 }
 
-void InitializeDebugGLBindingsGL() {
-  g_debug_bindings_enabled = true;
-}
-
-bool GetDebugGLBindingsInitializedGL() {
-  return g_debug_bindings_enabled;
-}
-
 bool SetNullDrawGLBindingsEnabled(bool enabled) {
   bool old_value = g_null_draw_bindings_enabled;
   g_null_draw_bindings_enabled = enabled;
@@ -257,9 +247,7 @@ GLApi::GLApi() {
 GLApi::~GLApi() {
 }
 
-GLApiBase::GLApiBase()
-    : driver_(NULL) {
-}
+GLApiBase::GLApiBase() : driver_(nullptr) {}
 
 GLApiBase::~GLApiBase() {
 }
@@ -322,7 +310,8 @@ void RealGLApi::glTexImage2DFn(GLenum target,
 
   // TODO(yizhou): Check if cubemap, 3d texture or texture2d array has the same
   // bug on intel mac.
-  if (gl_workarounds_.reset_teximage2d_base_level && target == GL_TEXTURE_2D) {
+  if (!version_->is_angle && gl_workarounds_.reset_teximage2d_base_level &&
+      target == GL_TEXTURE_2D) {
     GLint base_level = 0;
     GLApiBase::glGetTexParameterivFn(target, GL_TEXTURE_BASE_LEVEL,
                                      &base_level);
@@ -361,6 +350,33 @@ void RealGLApi::glTexStorage2DEXTFn(GLenum target,
   GLenum gl_internal_format = GetInternalFormat(version_.get(), internalformat);
   GLApiBase::glTexStorage2DEXTFn(target, levels, gl_internal_format, width,
                                  height);
+}
+
+void RealGLApi::glTexStorageMem2DEXTFn(GLenum target,
+                                       GLsizei levels,
+                                       GLenum internalformat,
+                                       GLsizei width,
+                                       GLsizei height,
+                                       GLuint memory,
+                                       GLuint64 offset) {
+  internalformat = GetInternalFormat(version_.get(), internalformat);
+  GLApiBase::glTexStorageMem2DEXTFn(target, levels, internalformat, width,
+                                    height, memory, offset);
+}
+
+void RealGLApi::glTexStorageMemFlags2DANGLEFn(GLenum target,
+                                              GLsizei levels,
+                                              GLenum internalformat,
+                                              GLsizei width,
+                                              GLsizei height,
+                                              GLuint memory,
+                                              GLuint64 offset,
+                                              GLbitfield createFlags,
+                                              GLbitfield usageFlags) {
+  internalformat = GetInternalFormat(version_.get(), internalformat);
+  GLApiBase::glTexStorageMemFlags2DANGLEFn(target, levels, internalformat,
+                                           width, height, memory, offset,
+                                           createFlags, usageFlags);
 }
 
 void RealGLApi::glRenderbufferStorageEXTFn(GLenum target,
@@ -416,9 +432,9 @@ void RealGLApi::glClearColorFn(GLclampf red,
                                GLclampf green,
                                GLclampf blue,
                                GLclampf alpha) {
-  if (gl_workarounds_.clear_to_zero_or_one_broken && (1 == red || 0 == red) &&
-      (1 == green || 0 == green) && (1 == blue || 0 == blue) &&
-      (1 == alpha || 0 == alpha)) {
+  if (!version_->is_angle && gl_workarounds_.clear_to_zero_or_one_broken &&
+      (1 == red || 0 == red) && (1 == green || 0 == green) &&
+      (1 == blue || 0 == blue) && (1 == alpha || 0 == alpha)) {
     if (1 == alpha)
       alpha = 2;
     else
@@ -467,6 +483,33 @@ void RealGLApi::glDepthRangeFn(GLclampd z_near, GLclampd z_far) {
   }
 }
 
+void RealGLApi::glUseProgramFn(GLuint program) {
+  ShaderTracking* shader_tracking = ShaderTracking::GetInstance();
+  if (shader_tracking) {
+    std::vector<char> buffers[2];
+    char* strings[2] = {nullptr, nullptr};
+    if (program) {
+      // The following only works with ANGLE backend because ANGLE makes sure
+      // a program's shaders are not actually deleted and source can still be
+      // queried even if glDeleteShaders() has been called on them.
+
+      // Also, in theory, different shaders can be attached to the program
+      // after the last link, but for now, ignore such corner case patterns.
+      GLsizei count = 0;
+      GLuint shaders[2] = {0};
+      glGetAttachedShadersFn(program, 2, &count, shaders);
+      for (GLsizei ii = 0; ii < std::min(2, count); ++ii) {
+        buffers[ii].resize(ShaderTracking::kMaxShaderSize);
+        glGetShaderSourceFn(shaders[ii], ShaderTracking::kMaxShaderSize,
+                            nullptr, buffers[ii].data());
+        strings[ii] = buffers[ii].data();
+      }
+    }
+    shader_tracking->SetShaders(strings[0], strings[1]);
+  }
+  GLApiBase::glUseProgramFn(program);
+}
+
 void RealGLApi::InitializeFilteredExtensionsIfNeeded() {
   DCHECK(disabled_exts_.size());
   if (filtered_exts_.size())
@@ -485,7 +528,7 @@ void RealGLApi::InitializeFilteredExtensionsIfNeeded() {
       const char* gl_extension = reinterpret_cast<const char*>(
           GLApiBase::glGetStringiFn(GL_EXTENSIONS, i));
       DCHECK(gl_extension);
-      if (!base::ContainsValue(disabled_exts_, gl_extension))
+      if (!base::Contains(disabled_exts_, gl_extension))
         filtered_exts_.push_back(gl_extension);
     }
     filtered_exts_str_ = base::JoinString(filtered_exts_, " ");
@@ -519,9 +562,9 @@ void RealGLApi::set_version(std::unique_ptr<GLVersionInfo> version) {
 TraceGLApi::~TraceGLApi() {
 }
 
-DebugGLApi::DebugGLApi(GLApi* gl_api) : gl_api_(gl_api) {}
+LogGLApi::LogGLApi(GLApi* gl_api) : gl_api_(gl_api) {}
 
-DebugGLApi::~DebugGLApi() {}
+LogGLApi::~LogGLApi() {}
 
 NoContextGLApi::NoContextGLApi() {
 }

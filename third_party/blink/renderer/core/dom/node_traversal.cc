@@ -47,14 +47,10 @@ Node* NodeTraversal::NextIncludingPseudo(const Node& current,
                                          const Node* stay_within) {
   if (Node* next = current.PseudoAwareFirstChild())
     return next;
-  if (current == stay_within)
-    return nullptr;
-  if (Node* next = current.PseudoAwareNextSibling())
-    return next;
-  for (Node& parent : AncestorsOf(current)) {
-    if (parent == stay_within)
+  for (Node& node : InclusiveAncestorsOf(current)) {
+    if (node == stay_within)
       return nullptr;
-    if (Node* next = parent.PseudoAwareNextSibling())
+    if (Node* next = node.PseudoAwareNextSibling())
       return next;
   }
   return nullptr;
@@ -63,14 +59,10 @@ Node* NodeTraversal::NextIncludingPseudo(const Node& current,
 Node* NodeTraversal::NextIncludingPseudoSkippingChildren(
     const Node& current,
     const Node* stay_within) {
-  if (current == stay_within)
-    return nullptr;
-  if (Node* next = current.PseudoAwareNextSibling())
-    return next;
-  for (Node& parent : AncestorsOf(current)) {
-    if (parent == stay_within)
+  for (Node& node : InclusiveAncestorsOf(current)) {
+    if (node == stay_within)
       return nullptr;
-    if (Node* next = parent.PseudoAwareNextSibling())
+    if (Node* next = node.PseudoAwareNextSibling())
       return next;
   }
   return nullptr;
@@ -106,10 +98,9 @@ Node* NodeTraversal::LastWithin(const ContainerNode& current) {
 }
 
 Node& NodeTraversal::LastWithinOrSelf(Node& current) {
+  auto* curr_node = DynamicTo<ContainerNode>(current);
   Node* last_descendant =
-      current.IsContainerNode()
-          ? NodeTraversal::LastWithin(ToContainerNode(current))
-          : nullptr;
+      curr_node ? NodeTraversal::LastWithin(*curr_node) : nullptr;
   return last_descendant ? *last_descendant : current;
 }
 
@@ -125,17 +116,25 @@ Node* NodeTraversal::Previous(const Node& current, const Node* stay_within) {
   return current.parentNode();
 }
 
-Node* NodeTraversal::PreviousSkippingChildren(const Node& current,
-                                              const Node* stay_within) {
-  if (current == stay_within)
-    return nullptr;
-  if (current.previousSibling())
-    return current.previousSibling();
-  for (Node& parent : AncestorsOf(current)) {
-    if (parent == stay_within)
+Node* NodeTraversal::PreviousAbsoluteSiblingIncludingPseudo(
+    const Node& current,
+    const Node* stay_within) {
+  for (Node& iter : InclusiveAncestorsOf(current)) {
+    if (iter == stay_within)
       return nullptr;
-    if (parent.previousSibling())
-      return parent.previousSibling();
+    if (Node* result = iter.PseudoAwarePreviousSibling())
+      return result;
+  }
+  return nullptr;
+}
+
+Node* NodeTraversal::PreviousAbsoluteSibling(const Node& current,
+                                             const Node* stay_within) {
+  for (Node& node : InclusiveAncestorsOf(current)) {
+    if (node == stay_within)
+      return nullptr;
+    if (Node* prev = node.previousSibling())
+      return prev;
   }
   return nullptr;
 }

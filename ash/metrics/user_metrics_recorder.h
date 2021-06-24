@@ -16,12 +16,9 @@
 
 namespace ash {
 
-namespace mojom {
-enum class DictationToggleSource;
-}  // namespace mojom
-
 class DemoSessionMetricsRecorder;
 class DesktopTaskSwitchMetricRecorder;
+enum class DictationToggleSource;
 class PointerMetricsRecorder;
 
 // User Metrics Recorder provides a repeating callback (RecordPeriodicMetrics)
@@ -37,16 +34,16 @@ class ASH_EXPORT UserMetricsRecorder {
 
   virtual ~UserMetricsRecorder();
 
-  // Record interesting user clicks on tray on lock and login screens.
+  // Record user clicks on tray on lock, login screens and in OOBE.
   static void RecordUserClickOnTray(
       LoginMetricsRecorder::TrayClickTarget target);
 
-  // Record interesting user clicks on shelf buttons on lock and login screens.
+  // Record user clicks on shelf buttons on lock, login screens and in OOBE.
   static void RecordUserClickOnShelfButton(
       LoginMetricsRecorder::ShelfButtonClickTarget target);
 
   // Record the method used to activate dictation.
-  static void RecordUserToggleDictation(mojom::DictationToggleSource source);
+  static void RecordUserToggleDictation(DictationToggleSource source);
 
   // Records an Ash owned user action.
   void RecordUserMetricsAction(UserMetricsAction action);

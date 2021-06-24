@@ -60,6 +60,7 @@ class DefaultSearchManager {
   static const char kAlternateURLs[];
   static const char kCreatedByPolicy[];
   static const char kDisabledByPolicy[];
+  static const char kCreatedFromPlayAPI[];
 
   enum Source {
     // Default search engine chosen either from prepopulated engines set for
@@ -74,7 +75,8 @@ class DefaultSearchManager {
     FROM_POLICY,
   };
 
-  typedef base::Callback<void(const TemplateURLData*, Source)> ObserverCallback;
+  using ObserverCallback =
+      base::RepeatingCallback<void(const TemplateURLData*, Source)>;
 
   DefaultSearchManager(PrefService* pref_service,
                        const ObserverCallback& change_observer);
@@ -97,6 +99,11 @@ class DefaultSearchManager {
   // that Default Search is explicitly disabled. |source|, if not NULL, will be
   // filled in with the source of the result.
   const TemplateURLData* GetDefaultSearchEngine(Source* source) const;
+
+  // Returns a pointer to the highest-ranking search provider while ignoring
+  // any extension-provided search engines.
+  std::unique_ptr<TemplateURLData> GetDefaultSearchEngineIgnoringExtensions()
+      const;
 
   // Gets the source of the current Default Search Engine value.
   Source GetDefaultSearchEngineSource() const;

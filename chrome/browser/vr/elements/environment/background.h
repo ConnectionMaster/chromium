@@ -6,8 +6,8 @@
 #define CHROME_BROWSER_VR_ELEMENTS_ENVIRONMENT_BACKGROUND_H_
 
 #include "chrome/browser/vr/elements/ui_element.h"
-#include "chrome/browser/vr/gl_bindings.h"
 #include "chrome/browser/vr/renderers/base_quad_renderer.h"
+#include "device/vr/gl_bindings.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 
 class SkBitmap;
@@ -71,9 +71,9 @@ class Background : public UiElement {
   void CreateBackgroundTexture();
   void CreateGradientTextures();
 
-  void NotifyClientFloatAnimated(float value,
-                                 int target_property_id,
-                                 cc::KeyframeModel* keyframe_model) override;
+  void OnFloatAnimated(const float& value,
+                       int target_property_id,
+                       gfx::KeyframeModel* keyframe_model) override;
 
   std::unique_ptr<SkBitmap> initialization_bitmap_;
   std::unique_ptr<SkBitmap> initialization_normal_gradient_bitmap_;

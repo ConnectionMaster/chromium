@@ -1,42 +1,49 @@
 {
   "layers": [
     {
-      "name": "LayoutView #document",
-      "bounds": [800, 600],
-      "drawsContent": false,
-      "backgroundColor": "#FFFFFF"
-    },
-    {
-      "name": "Scrolling Layer",
-      "bounds": [800, 600],
-      "drawsContent": false
-    },
-    {
       "name": "Scrolling Contents Layer",
       "bounds": [800, 600],
       "contentsOpaque": true,
-      "backgroundColor": "#FFFFFF",
-      "paintInvalidations": [
-        {
-          "object": "InlineTextBox 'Passed'",
-          "rect": [8, 112, 44, 35],
-          "reason": "appeared"
-        },
-        {
-          "object": "InlineTextBox 'Test'",
-          "rect": [8, 112, 44, 35],
-          "reason": "appeared"
-        },
-        {
-          "object": "InlineTextBox 'Failed'",
-          "rect": [8, 112, 40, 35],
-          "reason": "disappeared"
-        },
-        {
-          "object": "InlineTextBox 'Test'",
-          "rect": [8, 112, 40, 35],
-          "reason": "disappeared"
-        }
+      "backgroundColor": "#FFFFFF"
+    },
+    {
+      "name": "LayoutNGBlockFlow DIV id='t'",
+      "bounds": [80, 69],
+      "transform": 1
+    },
+    {
+      "name": "ContentsLayer for Vertical Scrollbar Layer",
+      "position": [65, 0],
+      "bounds": [15, 69],
+      "transform": 1
+    },
+    {
+      "name": "Scrolling Contents Layer",
+      "bounds": [65, 198],
+      "invalidations": [
+        [0, 162, 44, 36]
+      ],
+      "transform": 2
+    }
+  ],
+  "transforms": [
+    {
+      "id": 1,
+      "transform": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [8, 78, 0, 1]
+      ]
+    },
+    {
+      "id": 2,
+      "parent": 1,
+      "transform": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, -128, 0, 1]
       ]
     }
   ]

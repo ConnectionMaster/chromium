@@ -12,13 +12,14 @@
 
 #include "base/macros.h"
 #include "content/browser/appcache/appcache_update_job.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
 #include "net/base/io_buffer.h"
 #include "services/network/public/cpp/net_adapters.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/cpp/resource_response.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 
 namespace net {
 class HttpResponseInfo;
@@ -26,15 +27,13 @@ class HttpResponseInfo;
 
 namespace content {
 
-class URLLoaderFactoryGetter;
-
 // URLLoaderClient subclass for the UpdateRequestBase class. Provides
 // functionality to update the AppCache using functionality provided by the
 // network URL loader.
 class AppCacheUpdateJob::UpdateURLLoaderRequest
     : public network::mojom::URLLoaderClient {
  public:
-  UpdateURLLoaderRequest(URLLoaderFactoryGetter* loader_factory_getter,
+  UpdateURLLoaderRequest(base::WeakPtr<StoragePartitionImpl> partition,
                          const GURL& url,
                          int buffer_size,
                          URLFetcher* fetcher);
@@ -66,7 +65,7 @@ class AppCacheUpdateJob::UpdateURLLoaderRequest
   void SetSiteForCookies(const GURL& site_for_cookies);
 
   // Sets the origin of the context which initiated the request.
-  void SetInitiator(const base::Optional<url::Origin>& initiator);
+  void SetInitiator(const absl::optional<url::Origin>& initiator);
 
   // Get all response headers, as a HttpResponseHeaders object.  See comments
   // in HttpResponseHeaders class as to the format of the data.
@@ -76,6 +75,10 @@ class AppCacheUpdateJob::UpdateURLLoaderRequest
   // may only be called once the delegate's OnResponseStarted method has been
   // called.  For non-HTTP requests, this method returns -1.
   int GetResponseCode() const;
+
+  // Fetch the X-AppCache-Allowed response header and return the scope based
+  // on the header.
+  std::string GetAppCacheAllowedHeader() const;
 
   // Get the HTTP response info in its entirety.
   const net::HttpResponseInfo& GetResponseInfo() const;
@@ -89,17 +92,27 @@ class AppCacheUpdateJob::UpdateURLLoaderRequest
   // Returns net::ERR_ABORTED or any applicable net error.
   int Cancel();
 
+  // Set fetch metadata headers ( only `Sec-Fetch-Dest` for now ) for secure
+  // resources.
+  // TODO(lyf): Remove this function after moving `Sec-Fetch-Dest` to the
+  // network service.
+  void SetFetchMetadataHeaders() {
+    if (GetURL().SchemeIsCryptographic())
+      request_.headers.SetHeader("Sec-Fetch-Dest", "empty");
+  }
+
   // network::mojom::URLLoaderClient implementation.
   // These methods are called by the network loader.
+  void OnReceiveEarlyHints(network::mojom::EarlyHintsPtr early_hints) override;
   void OnReceiveResponse(
-      const network::ResourceResponseHead& response_head) override;
+      network::mojom::URLResponseHeadPtr response_head) override;
   void OnReceiveRedirect(
       const net::RedirectInfo& redirect_info,
-      const network::ResourceResponseHead& response_head) override;
+      network::mojom::URLResponseHeadPtr response_head) override;
   void OnUploadProgress(int64_t current_position,
                         int64_t total_size,
                         OnUploadProgressCallback ack_callback) override;
-  void OnReceiveCachedMetadata(const std::vector<uint8_t>& data) override;
+  void OnReceiveCachedMetadata(mojo_base::BigBuffer data) override;
   void OnTransferSizeUpdated(int32_t transfer_size_diff) override;
   void OnStartLoadingResponseBody(
       mojo::ScopedDataPipeConsumerHandle body) override;
@@ -115,19 +128,18 @@ class AppCacheUpdateJob::UpdateURLLoaderRequest
   void MaybeStartReading();
 
   URLFetcher* fetcher_;
-  // Used to retrieve the network URLLoader interface to issue network
-  // requests
-  scoped_refptr<URLLoaderFactoryGetter> loader_factory_getter_;
+  // |partition_| is used to get the network URLLoader.
+  base::WeakPtr<StoragePartitionImpl> partition_;
 
   network::ResourceRequest request_;
-  network::ResourceResponseHead response_;
+  network::mojom::URLResponseHeadPtr response_;
   network::URLLoaderCompletionStatus response_status_;
   // Response details.
   std::unique_ptr<net::HttpResponseInfo> http_response_info_;
   // Binds the URLLoaderClient interface to the channel.
-  mojo::Binding<network::mojom::URLLoaderClient> client_binding_;
+  mojo::Receiver<network::mojom::URLLoaderClient> client_receiver_{this};
   // The network URL loader.
-  network::mojom::URLLoaderPtr url_loader_;
+  mojo::Remote<network::mojom::URLLoader> url_loader_;
   // Caller buffer size.
   int buffer_size_;
   // The mojo data pipe.

@@ -10,6 +10,9 @@
 
 #include "base/time/time.h"
 #include "net/base/net_export.h"
+#include "net/base/network_isolation_key.h"
+#include "net/reporting/reporting_endpoint.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace base {
@@ -37,7 +40,21 @@ struct NET_EXPORT ReportingReport {
     MAX
   };
 
-  ReportingReport(const GURL& url,
+  enum class Status {
+    // Report has been queued but no attempt has been made to deliver it yet.
+    QUEUED,
+
+    // There is an ongoing attempt to upload this report.
+    PENDING,
+
+    // Deletion of this report was requested while it was pending, so it should
+    // be removed after the attempted upload completes.
+    DOOMED,
+  };
+
+  // TODO(chlily): Remove |attempts| argument as it is (almost?) always 0.
+  ReportingReport(const NetworkIsolationKey& network_isolation_key,
+                  const GURL& url,
                   const std::string& user_agent,
                   const std::string& group,
                   const std::string& type,
@@ -45,12 +62,26 @@ struct NET_EXPORT ReportingReport {
                   int depth,
                   base::TimeTicks queued,
                   int attempts);
+
+  // Records metrics about report outcome.
   ~ReportingReport();
+
+  // Bundles together the NIK, origin of the report URL, and group name.
+  // This is not exactly the same as the group key of the endpoint that the
+  // report will be delivered to. The origin may differ if the endpoint is
+  // configured for a superdomain of the report's origin. The NIK and group name
+  // will be the same.
+  ReportingEndpointGroupKey GetGroupKey() const;
 
   static void RecordReportDiscardedForNoURLRequestContext();
   static void RecordReportDiscardedForNoReportingService();
 
-  void RecordOutcome(base::TimeTicks now);
+  // Whether the report is part of an ongoing delivery attempt.
+  bool IsUploadPending() const;
+
+  // The NIK of the request that triggered this report. (Not included in the
+  // delivered report.)
+  NetworkIsolationKey network_isolation_key;
 
   // The URL of the document that triggered the report. (Included in the
   // delivered report.)
@@ -82,10 +113,9 @@ struct NET_EXPORT ReportingReport {
   // attempt. (Not included in the delivered report.)
   int attempts = 0;
 
-  Outcome outcome;
+  Outcome outcome = Outcome::UNKNOWN;
 
- private:
-  bool recorded_outcome;
+  Status status = Status::QUEUED;
 
   DISALLOW_COPY_AND_ASSIGN(ReportingReport);
 };

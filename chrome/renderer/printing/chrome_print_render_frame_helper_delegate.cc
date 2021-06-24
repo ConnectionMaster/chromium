@@ -9,12 +9,11 @@
 #include "base/command_line.h"
 #include "base/strings/string_util.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/prerender.mojom.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/renderer/prerender/prerender_helper.h"
 #include "content/public/renderer/render_frame.h"
 #include "extensions/buildflags/buildflags.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_element.h"
 #include "third_party/blink/public/web/web_local_frame.h"
@@ -22,7 +21,7 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/common/extensions/extension_constants.h"
 #include "extensions/common/constants.h"
-#include "extensions/renderer/guest_view/mime_handler_view/mime_handler_view_container_base.h"
+#include "extensions/renderer/guest_view/mime_handler_view/post_message_support.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 ChromePrintRenderFrameHelperDelegate::ChromePrintRenderFrameHelperDelegate() =
@@ -30,17 +29,6 @@ ChromePrintRenderFrameHelperDelegate::ChromePrintRenderFrameHelperDelegate() =
 
 ChromePrintRenderFrameHelperDelegate::~ChromePrintRenderFrameHelperDelegate() =
     default;
-
-bool ChromePrintRenderFrameHelperDelegate::CancelPrerender(
-    content::RenderFrame* render_frame) {
-  if (!prerender::PrerenderHelper::IsPrerendering(render_frame))
-    return false;
-
-  chrome::mojom::PrerenderCancelerPtr canceler;
-  render_frame->GetRemoteInterfaces()->GetInterface(&canceler);
-  canceler->CancelPrerenderForPrinting();
-  return true;
-}
 
 // Return the PDF object element if |frame| is the out of process PDF extension.
 blink::WebElement ChromePrintRenderFrameHelperDelegate::GetPdfElement(
@@ -53,10 +41,14 @@ blink::WebElement ChromePrintRenderFrameHelperDelegate::GetPdfElement(
       url.host_piece() == extension_misc::kPdfExtensionId;
   if (inside_print_preview || inside_pdf_extension) {
     // <object> with id="plugin" is created in
-    // chrome/browser/resources/pdf/pdf_viewer.js.
-    auto plugin_element = frame->GetDocument().GetElementById("plugin");
-    if (!plugin_element.IsNull()) {
-      return plugin_element;
+    // chrome/browser/resources/pdf/pdf_viewer_base.js.
+    auto viewer_element = frame->GetDocument().GetElementById("viewer");
+    if (!viewer_element.IsNull() && !viewer_element.ShadowRoot().IsNull()) {
+      auto plugin_element =
+          viewer_element.ShadowRoot().QuerySelector("#plugin");
+      if (!plugin_element.IsNull()) {
+        return plugin_element;
+      }
     }
     NOTREACHED();
   }
@@ -72,22 +64,22 @@ bool ChromePrintRenderFrameHelperDelegate::IsPrintPreviewEnabled() {
 bool ChromePrintRenderFrameHelperDelegate::OverridePrint(
     blink::WebLocalFrame* frame) {
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-  if (!frame->GetDocument().IsPluginDocument())
-    return false;
-
-  std::vector<extensions::MimeHandlerViewContainerBase*> mime_handlers =
-      extensions::MimeHandlerViewContainerBase::FromRenderFrame(
-          content::RenderFrame::FromWebFrame(frame));
-  if (!mime_handlers.empty()) {
+  auto* post_message_support =
+      extensions::PostMessageSupport::FromWebLocalFrame(frame);
+  if (post_message_support) {
     // This message is handled in chrome/browser/resources/pdf/pdf_viewer.js and
     // instructs the PDF plugin to print. This is to make window.print() on a
     // PDF plugin document correctly print the PDF. See
     // https://crbug.com/448720.
     base::DictionaryValue message;
     message.SetString("type", "print");
-    mime_handlers.front()->PostMessageFromValue(message);
+    post_message_support->PostMessageFromValue(message);
     return true;
   }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
   return false;
+}
+
+bool ChromePrintRenderFrameHelperDelegate::ShouldGenerateTaggedPDF() {
+  return true;
 }

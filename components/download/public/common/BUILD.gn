@@ -37,20 +37,21 @@ component("public") {
     "download_item_factory.h",
     "download_item_impl.h",
     "download_item_impl_delegate.h",
+    "download_item_rename_handler.h",
+    "download_item_rename_progress_update.h",
     "download_job.h",
     "download_job_factory.h",
     "download_path_reservation_tracker.h",
-    "download_request_handle_interface.h",
     "download_response_handler.h",
     "download_save_info.cc",
     "download_save_info.h",
+    "download_schedule.cc",
+    "download_schedule.h",
     "download_source.h",
     "download_start_observer.h",
     "download_stats.h",
     "download_task_runner.h",
     "download_ukm_helper.h",
-    "download_url_loader_factory_getter.h",
-    "download_url_loader_factory_getter_impl.h",
     "download_url_parameters.cc",
     "download_url_parameters.h",
     "download_utils.h",
@@ -58,6 +59,7 @@ component("public") {
     "input_stream.cc",
     "input_stream.h",
     "parallel_download_configs.h",
+    "quarantine_connection.h",
     "rate_estimator.h",
     "resume_mode.h",
     "simple_download_manager.h",
@@ -65,21 +67,26 @@ component("public") {
     "stream_handle_input_stream.h",
     "url_download_handler_factory.h",
     "url_download_request_handle.h",
+    "url_loader_factory_provider.h",
   ]
 
   configs += [ ":components_download_implementation" ]
 
   public_deps = [
     ":interfaces",
+    "//base",
     "//components/download/network",
     "//components/download/public/background_service:public",
+    "//components/enterprise/common/proto:download_item_reroute_info_proto",
+    "//components/services/quarantine/public/mojom",
+    "//mojo/public/cpp/bindings",
     "//services/network/public/cpp",
   ]
 
   deps = [
-    "//base",
     "//components/download/database",
     "//components/download/internal/common:internal",
+    "//components/services/quarantine:quarantine",
     "//crypto",
     "//net",
     "//services/metrics/public/cpp:metrics_cpp",
@@ -92,6 +99,10 @@ component("public") {
     "//components/download/internal/common:internal",
     "//components/download/database",
   ]
+
+  if (is_win && is_component_build) {
+    ldflags = [ "/IGNORE:4217" ]
+  }
 }
 
 if (is_android) {
@@ -100,7 +111,8 @@ if (is_android) {
 
     deps = [
       "//base:base_java",
-      "//third_party/android_deps:com_android_support_support_annotations_java",
+      "//components/download/internal/common:internal_java",
+      "//third_party/androidx:androidx_annotation_annotation_java",
     ]
   }
 
@@ -113,9 +125,7 @@ if (is_android) {
 }
 
 mojom("interfaces") {
-  sources = [
-    "download_stream.mojom",
-  ]
+  sources = [ "download_stream.mojom" ]
 
   export_class_attribute = "COMPONENTS_DOWNLOAD_EXPORT"
   export_define = "COMPONENTS_DOWNLOAD_IMPLEMENTATION=1"
@@ -134,20 +144,22 @@ source_set("test_support") {
     "mock_download_item_impl.h",
     "mock_input_stream.cc",
     "mock_input_stream.h",
+    "mock_simple_download_manager.cc",
+    "mock_simple_download_manager.h",
   ]
 
   public_deps = [
     ":public",
     "//base",
+    "//components/download/database",
     "//net",
+    "//services/service_manager/public/cpp:cpp",
     "//testing/gmock",
     "//url",
   ]
 
   if (is_android) {
-    deps = [
-      "//components/download/internal/common:internal_java",
-    ]
+    deps = [ "//components/download/internal/common:internal_java" ]
   }
 }
 
@@ -156,6 +168,7 @@ source_set("unit_tests") {
 
   sources = [
     "auto_resumption_handler_unittest.cc",
+    "download_schedule_unittest.cc",
   ]
 
   deps = [

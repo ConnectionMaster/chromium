@@ -5,7 +5,7 @@
 #include "components/autofill/core/browser/payments/autofill_credit_card_filling_infobar_delegate_mobile.h"
 
 #include "build/build_config.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/grit/components_scaled_resources.h"
@@ -27,11 +27,9 @@ AutofillCreditCardFillingInfoBarDelegateMobile::
 #if defined(OS_IOS)
       card_label_(card.NetworkAndLastFourDigits()),
 #else
-      card_label_(base::string16(kMidlineEllipsis) + card.LastFourDigits()),
+      card_label_(std::u16string(kMidlineEllipsis) + card.LastFourDigits()),
 #endif
-      card_sub_label_(card.AbbreviatedExpirationDateForDisplay(
-          !features::
-              IsAutofillSaveCardDialogUnlabeledExpirationDateEnabled())) {
+      card_sub_label_(card.AbbreviatedExpirationDateForDisplay(false)) {
 }
 
 AutofillCreditCardFillingInfoBarDelegateMobile::
@@ -48,7 +46,7 @@ int AutofillCreditCardFillingInfoBarDelegateMobile::GetIconId() const {
   return IDR_INFOBAR_AUTOFILL_CC;
 }
 
-base::string16 AutofillCreditCardFillingInfoBarDelegateMobile::GetMessageText()
+std::u16string AutofillCreditCardFillingInfoBarDelegateMobile::GetMessageText()
     const {
 #if defined(OS_ANDROID)
   return l10n_util::GetStringUTF16(
@@ -80,11 +78,11 @@ AutofillCreditCardFillingInfoBarDelegateMobile::GetIdentifier() const {
   return AUTOFILL_CREDIT_CARD_FILLING_INFOBAR_DELEGATE_ANDROID;
 }
 
-base::string16 AutofillCreditCardFillingInfoBarDelegateMobile::GetButtonLabel(
+std::u16string AutofillCreditCardFillingInfoBarDelegateMobile::GetButtonLabel(
     InfoBarButton button) const {
   return l10n_util::GetStringUTF16(
       button == BUTTON_OK ? IDS_AUTOFILL_CREDIT_CARD_FILLING_INFOBAR_ACCEPT
-                          : IDS_NO_THANKS);
+                          : IDS_AUTOFILL_CREDIT_CARD_FILLING_INFOBAR_NO_THANKS);
 }
 
 void AutofillCreditCardFillingInfoBarDelegateMobile::LogUserAction(

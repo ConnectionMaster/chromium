@@ -27,6 +27,7 @@
 
 #include "third_party/blink/renderer/core/clipboard/clipboard_mime_types.h"
 #include "third_party/blink/renderer/core/clipboard/data_object.h"
+#include "third_party/blink/renderer/core/clipboard/data_transfer.h"
 #include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
@@ -53,7 +54,6 @@
 #include "third_party/blink/renderer/core/editing/visible_units.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
@@ -65,6 +65,7 @@
 #include "third_party/blink/renderer/core/html/html_span_element.h"
 #include "third_party/blink/renderer/core/html/html_table_cell_element.h"
 #include "third_party/blink/renderer/core/html/html_ulist_element.h"
+#include "third_party/blink/renderer/core/html/image_document.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html_element_factory.h"
 #include "third_party/blink/renderer/core/html_names.h"
@@ -74,14 +75,13 @@
 #include "third_party/blink/renderer/core/layout/layout_table_cell.h"
 #include "third_party/blink/renderer/core/svg/svg_image_element.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
 
 namespace blink {
-
-using namespace html_names;
 
 namespace {
 
@@ -92,29 +92,6 @@ std::ostream& operator<<(std::ostream& os, PositionMoveType type) {
   DCHECK_GE(it, std::begin(kTexts)) << "Unknown PositionMoveType value";
   DCHECK_LT(it, std::end(kTexts)) << "Unknown PositionMoveType value";
   return os << *it;
-}
-
-InputEvent::EventCancelable InputTypeIsCancelable(
-    InputEvent::InputType input_type) {
-  using InputType = InputEvent::InputType;
-  switch (input_type) {
-    case InputType::kInsertText:
-    case InputType::kInsertLineBreak:
-    case InputType::kInsertParagraph:
-    case InputType::kInsertCompositionText:
-    case InputType::kInsertReplacementText:
-    case InputType::kDeleteWordBackward:
-    case InputType::kDeleteWordForward:
-    case InputType::kDeleteSoftLineBackward:
-    case InputType::kDeleteSoftLineForward:
-    case InputType::kDeleteHardLineBackward:
-    case InputType::kDeleteHardLineForward:
-    case InputType::kDeleteContentBackward:
-    case InputType::kDeleteContentForward:
-      return InputEvent::EventCancelable::kNotCancelable;
-    default:
-      return InputEvent::EventCancelable::kIsCancelable;
-  }
 }
 
 UChar WhitespaceRebalancingCharToAppend(const String& string,
@@ -176,6 +153,11 @@ bool NeedsLayoutTreeUpdate(const PositionInFlatTree& position) {
 // for the purposes of editing.
 bool IsAtomicNode(const Node* node) {
   return node && (!node->hasChildren() || EditingIgnoresContent(*node));
+}
+
+bool IsAtomicNodeInFlatTree(const Node* node) {
+  return node && (!FlatTreeTraversal::HasChildren(*node) ||
+                  EditingIgnoresContent(*node));
 }
 
 template <typename Traversal>
@@ -350,11 +332,9 @@ bool IsNodeFullyContained(const EphemeralRange& range, const Node& node) {
 
 // TODO(editing-dev): We should implement real version which refers
 // "user-select" CSS property.
-// TODO(editing-dev): We should make |SelectionAdjuster| to use this funciton
-// instead of |isSelectionBondary()|.
 bool IsUserSelectContain(const Node& node) {
-  return IsHTMLTextAreaElement(node) || IsHTMLInputElement(node) ||
-         IsHTMLSelectElement(node);
+  return IsA<HTMLTextAreaElement>(node) || IsA<HTMLInputElement>(node) ||
+         IsA<HTMLSelectElement>(node);
 }
 
 enum EditableLevel { kEditable, kRichlyEditable };
@@ -423,8 +403,10 @@ bool IsEditableElement(const Node& node) {
       return true;
   }
 
-  if (auto* element = ToElementOrNull(const_cast<Node*>(&node)))
-    return EqualIgnoringASCIICase(element->getAttribute(kRoleAttr), "textbox");
+  if (auto* element = DynamicTo<Element>(&node)) {
+    return EqualIgnoringASCIICase(
+        element->FastGetAttribute(html_names::kRoleAttr), "textbox");
+  }
 
   return false;
 }
@@ -437,14 +419,14 @@ bool IsRootEditableElement(const Node& node) {
 }
 
 Element* RootEditableElement(const Node& node) {
-  const Node* result = nullptr;
+  const Element* result = nullptr;
   for (const Node* n = &node; n && HasEditableStyle(*n); n = n->parentNode()) {
-    if (n->IsElementNode())
-      result = n;
+    if (auto* element = DynamicTo<Element>(n))
+      result = element;
     if (node.GetDocument().body() == n)
       break;
   }
-  return ToElement(const_cast<Node*>(result));
+  return const_cast<Element*>(result);
 }
 
 ContainerNode* HighestEditableRoot(const Position& position) {
@@ -455,14 +437,14 @@ ContainerNode* HighestEditableRoot(const Position& position) {
   if (!highest_root)
     return nullptr;
 
-  if (IsHTMLBodyElement(*highest_root))
+  if (IsA<HTMLBodyElement>(*highest_root))
     return highest_root;
 
   ContainerNode* node = highest_root->parentNode();
   while (node) {
     if (HasEditableStyle(*node))
       highest_root = node;
-    if (IsHTMLBodyElement(*node))
+    if (IsA<HTMLBodyElement>(*node))
       break;
     node = node->parentNode();
   }
@@ -566,12 +548,15 @@ static PositionTemplate<Strategy> NextVisuallyDistinctCandidateAlgorithm(
   PositionIteratorAlgorithm<Strategy> p(position);
   const PositionTemplate<Strategy> downstream_start =
       MostForwardCaretPosition(position);
+  const PositionTemplate<Strategy> upstream_start =
+      MostBackwardCaretPosition(position);
 
   p.Increment();
   while (!p.AtEnd()) {
     PositionTemplate<Strategy> candidate = p.ComputePosition();
     if (IsVisuallyEquivalentCandidate(candidate) &&
-        MostForwardCaretPosition(candidate) != downstream_start)
+        MostForwardCaretPosition(candidate) != downstream_start &&
+        MostBackwardCaretPosition(candidate) != upstream_start)
       return candidate;
 
     p.Increment();
@@ -630,12 +615,15 @@ PositionTemplate<Strategy> PreviousVisuallyDistinctCandidateAlgorithm(
   PositionIteratorAlgorithm<Strategy> p(position);
   PositionTemplate<Strategy> downstream_start =
       MostForwardCaretPosition(position);
+  const PositionTemplate<Strategy> upstream_start =
+      MostBackwardCaretPosition(position);
 
   p.Decrement();
   while (!p.AtStart()) {
     PositionTemplate<Strategy> candidate = p.ComputePosition();
     if (IsVisuallyEquivalentCandidate(candidate) &&
-        MostForwardCaretPosition(candidate) != downstream_start)
+        MostForwardCaretPosition(candidate) != downstream_start &&
+        MostBackwardCaretPosition(candidate) != upstream_start)
       return candidate;
 
     p.Decrement();
@@ -802,9 +790,10 @@ int FindNextBoundaryOffset(const String& str, int current) {
 int PreviousGraphemeBoundaryOf(const Node& node, int current) {
   // TODO(yosin): Need to support grapheme crossing |Node| boundary.
   DCHECK_GE(current, 0);
-  if (current <= 1 || !node.IsTextNode())
+  auto* text_node = DynamicTo<Text>(node);
+  if (current <= 1 || !text_node)
     return current - 1;
-  const String& text = ToText(node).data();
+  const String& text = text_node->data();
   // TODO(yosin): Replace with DCHECK for out-of-range request.
   if (static_cast<unsigned>(current) > text.length())
     return current - 1;
@@ -816,19 +805,21 @@ static int PreviousBackwardDeletionOffsetOf(const Node& node, int current) {
   DCHECK_GE(current, 0);
   if (current <= 1)
     return 0;
-  if (!node.IsTextNode())
+  auto* text_node = DynamicTo<Text>(node);
+  if (!text_node)
     return current - 1;
 
-  const String& text = ToText(node).data();
+  const String& text = text_node->data();
   DCHECK_LT(static_cast<unsigned>(current - 1), text.length());
   return FindNextBoundaryOffset<BackspaceStateMachine>(text, current);
 }
 
 int NextGraphemeBoundaryOf(const Node& node, int current) {
   // TODO(yosin): Need to support grapheme crossing |Node| boundary.
-  if (!node.IsTextNode())
+  auto* text_node = DynamicTo<Text>(node);
+  if (!text_node)
     return current + 1;
-  const String& text = ToText(node).data();
+  const String& text = text_node->data();
   const int length = text.length();
   DCHECK_LE(current, length);
   if (current >= length - 1)
@@ -975,9 +966,7 @@ template <typename Strategy>
 Element* EnclosingBlockAlgorithm(const PositionTemplate<Strategy>& position,
                                  EditingBoundaryCrossingRule rule) {
   Node* enclosing_node = EnclosingNodeOfType(position, IsEnclosingBlock, rule);
-  return enclosing_node && enclosing_node->IsElementNode()
-             ? ToElement(enclosing_node)
-             : nullptr;
+  return DynamicTo<Element>(enclosing_node);
 }
 
 Element* EnclosingBlock(const Position& position,
@@ -992,11 +981,11 @@ Element* EnclosingBlock(const PositionInFlatTree& position,
 
 Element* EnclosingBlockFlowElement(const Node& node) {
   if (IsBlockFlowElement(node))
-    return const_cast<Element*>(&ToElement(node));
+    return const_cast<Element*>(To<Element>(&node));
 
   for (Node& runner : NodeTraversal::AncestorsOf(node)) {
-    if (IsBlockFlowElement(runner) || IsHTMLBodyElement(runner))
-      return ToElement(&runner);
+    if (IsBlockFlowElement(runner) || IsA<HTMLBodyElement>(runner))
+      return To<Element>(&runner);
   }
   return nullptr;
 }
@@ -1073,7 +1062,7 @@ static Element* TableElementJustBeforeAlgorithm(
       MostBackwardCaretPosition(visible_position.DeepEquivalent()));
   if (IsDisplayInsideTable(upstream.AnchorNode()) &&
       upstream.AtLastEditingPositionForNode())
-    return ToElement(upstream.AnchorNode());
+    return To<Element>(upstream.AnchorNode());
 
   return nullptr;
 }
@@ -1088,12 +1077,19 @@ Element* TableElementJustBefore(
       visible_position);
 }
 
+Element* EnclosingTableCell(const Position& p) {
+  return To<Element>(EnclosingNodeOfType(p, IsTableCell));
+}
+Element* EnclosingTableCell(const PositionInFlatTree& p) {
+  return To<Element>(EnclosingNodeOfType(p, IsTableCell));
+}
+
 Element* TableElementJustAfter(const VisiblePosition& visible_position) {
   Position downstream(
       MostForwardCaretPosition(visible_position.DeepEquivalent()));
   if (IsDisplayInsideTable(downstream.AnchorNode()) &&
       downstream.AtFirstEditingPositionForNode())
-    return ToElement(downstream.AnchorNode());
+    return To<Element>(downstream.AnchorNode());
 
   return nullptr;
 }
@@ -1119,31 +1115,51 @@ Position PositionAfterNode(const Node& node) {
 }
 
 bool IsHTMLListElement(const Node* n) {
-  return (n && (IsHTMLUListElement(*n) || IsHTMLOListElement(*n) ||
-                IsHTMLDListElement(*n)));
+  return (n && (IsA<HTMLUListElement>(*n) || IsA<HTMLOListElement>(*n) ||
+                IsA<HTMLDListElement>(*n)));
 }
 
 bool IsListItem(const Node* n) {
-  return n && n->GetLayoutObject() && n->GetLayoutObject()->IsListItem();
+  return n && n->GetLayoutObject() &&
+         n->GetLayoutObject()->IsListItemIncludingNG();
+}
+
+bool IsListItemTag(const Node* n) {
+  return n && (n->HasTagName(html_names::kLiTag) ||
+               n->HasTagName(html_names::kDdTag) ||
+               n->HasTagName(html_names::kDtTag));
+}
+
+bool IsListElementTag(const Node* n) {
+  return n && (n->HasTagName(html_names::kUlTag) ||
+               n->HasTagName(html_names::kOlTag) ||
+               n->HasTagName(html_names::kDlTag));
 }
 
 bool IsPresentationalHTMLElement(const Node* node) {
-  if (!node->IsHTMLElement())
+  const auto* element = DynamicTo<HTMLElement>(node);
+  if (!element)
     return false;
 
-  const HTMLElement& element = ToHTMLElement(*node);
-  return element.HasTagName(kUTag) || element.HasTagName(kSTag) ||
-         element.HasTagName(kStrikeTag) || element.HasTagName(kITag) ||
-         element.HasTagName(kEmTag) || element.HasTagName(kBTag) ||
-         element.HasTagName(kStrongTag);
+  return element->HasTagName(html_names::kUTag) ||
+         element->HasTagName(html_names::kSTag) ||
+         element->HasTagName(html_names::kStrikeTag) ||
+         element->HasTagName(html_names::kITag) ||
+         element->HasTagName(html_names::kEmTag) ||
+         element->HasTagName(html_names::kBTag) ||
+         element->HasTagName(html_names::kStrongTag);
 }
 
 Element* AssociatedElementOf(const Position& position) {
   Node* node = position.AnchorNode();
-  if (!node || node->IsElementNode())
-    return ToElement(node);
+  if (!node)
+    return nullptr;
+
+  if (auto* element = DynamicTo<Element>(node))
+    return element;
+
   ContainerNode* parent = NodeTraversal::Parent(*node);
-  return parent && parent->IsElementNode() ? ToElement(parent) : nullptr;
+  return DynamicTo<Element>(parent);
 }
 
 Element* EnclosingElementWithTag(const Position& p,
@@ -1153,9 +1169,9 @@ Element* EnclosingElementWithTag(const Position& p,
 
   ContainerNode* root = HighestEditableRoot(p);
   for (Node& runner : NodeTraversal::InclusiveAncestorsOf(*p.AnchorNode())) {
-    if (!runner.IsElementNode())
+    auto* ancestor = DynamicTo<Element>(runner);
+    if (!ancestor)
       continue;
-    Element* ancestor = ToElement(&runner);
     if (root && !HasEditableStyle(*ancestor))
       continue;
     if (ancestor->HasTagName(tag_name))
@@ -1243,21 +1259,21 @@ Element* EnclosingAnchorElement(const Position& p) {
 }
 
 bool IsDisplayInsideTable(const Node* node) {
-  return node && node->GetLayoutObject() && IsHTMLTableElement(node);
+  return node && node->GetLayoutObject() && IsA<HTMLTableElement>(node);
 }
 
 bool IsTableCell(const Node* node) {
   DCHECK(node);
   LayoutObject* r = node->GetLayoutObject();
-  return r ? r->IsTableCell() : IsHTMLTableCellElement(*node);
+  return r ? r->IsTableCell() : IsA<HTMLTableCellElement>(*node);
 }
 
 HTMLElement* CreateDefaultParagraphElement(Document& document) {
   switch (document.GetFrame()->GetEditor().DefaultParagraphSeparator()) {
     case EditorParagraphSeparator::kIsDiv:
-      return HTMLDivElement::Create(document);
+      return MakeGarbageCollected<HTMLDivElement>(document);
     case EditorParagraphSeparator::kIsP:
-      return HTMLParagraphElement::Create(document);
+      return MakeGarbageCollected<HTMLParagraphElement>(document);
   }
 
   NOTREACHED();
@@ -1265,12 +1281,13 @@ HTMLElement* CreateDefaultParagraphElement(Document& document) {
 }
 
 bool IsTabHTMLSpanElement(const Node* node) {
-  if (!IsHTMLSpanElement(node))
+  if (!IsA<HTMLSpanElement>(node))
     return false;
   const Node* const first_child = NodeTraversal::FirstChild(*node);
-  if (!first_child || !first_child->IsTextNode())
+  auto* first_child_text_node = DynamicTo<Text>(first_child);
+  if (!first_child_text_node)
     return false;
-  if (!ToText(first_child)->data().Contains('\t'))
+  if (!first_child_text_node->data().Contains('\t'))
     return false;
   // TODO(editing-dev): Hoist the call of UpdateStyleAndLayoutTree to callers.
   // See crbug.com/590369 for details.
@@ -1286,15 +1303,15 @@ bool IsTabHTMLSpanElementTextNode(const Node* node) {
 
 HTMLSpanElement* TabSpanElement(const Node* node) {
   return IsTabHTMLSpanElementTextNode(node)
-             ? ToHTMLSpanElement(node->parentNode())
+             ? To<HTMLSpanElement>(node->parentNode())
              : nullptr;
 }
 
 static HTMLSpanElement* CreateTabSpanElement(Document& document,
                                              Text* tab_text_node) {
   // Make the span to hold the tab.
-  HTMLSpanElement* span_element = HTMLSpanElement::Create(document);
-  span_element->setAttribute(kStyleAttr, "white-space:pre");
+  auto* span_element = MakeGarbageCollected<HTMLSpanElement>(document);
+  span_element->setAttribute(html_names::kStyleAttr, "white-space:pre");
 
   // Add tab text to that span.
   if (!tab_text_node)
@@ -1314,65 +1331,123 @@ HTMLSpanElement* CreateTabSpanElement(Document& document) {
   return CreateTabSpanElement(document, nullptr);
 }
 
+// Returns user-select:contain boundary element of specified position.
+// Because of we've not yet implemented "user-select:contain", we consider
+// following elements having "user-select:contain"
+//  - root editable
+//  - inner editor of text control (<input> and <textarea>)
+// Note: inner editor of readonly text control isn't content editable.
+// TODO(yosin): We should handle elements with "user-select:contain".
+// See http:/crbug.com/658129
+static Element* UserSelectContainBoundaryOf(const Position& position) {
+  if (auto* text_control = EnclosingTextControl(position)) {
+    // for <input readonly>. See http://crbug.com/185089
+    return text_control->InnerEditorElement();
+  }
+  // Note: Until we implement "user-select:contain", we treat root editable
+  // element and text control as having "user-select:contain".
+  if (Element* editable = RootEditableElementOf(position))
+    return editable;
+  return nullptr;
+}
+
 PositionWithAffinity PositionRespectingEditingBoundary(
     const Position& position,
-    const LayoutPoint& local_point,
-    Node* target_node) {
-  if (!target_node->GetLayoutObject())
+    const HitTestResult& hit_test_result) {
+  Node* target_node = hit_test_result.InnerPossiblyPseudoNode();
+  DCHECK(target_node);
+  const LayoutObject* target_object = target_node->GetLayoutObject();
+  if (!target_object)
     return PositionWithAffinity();
 
-  LayoutPoint selection_end_point = local_point;
-  Element* editable_element = RootEditableElementOf(position);
+  Element* editable_element = UserSelectContainBoundaryOf(position);
+  if (!editable_element || editable_element->contains(target_node))
+    return hit_test_result.GetPosition();
 
-  if (editable_element && !editable_element->contains(target_node)) {
-    if (!editable_element->GetLayoutObject())
-      return PositionWithAffinity();
+  const LayoutObject* editable_object = editable_element->GetLayoutObject();
+  if (!editable_object)
+    return PositionWithAffinity();
 
-    FloatPoint absolute_point = target_node->GetLayoutObject()->LocalToAbsolute(
-        FloatPoint(selection_end_point));
-    selection_end_point = LayoutPoint(
-        editable_element->GetLayoutObject()->AbsoluteToLocal(absolute_point));
-    target_node = editable_element;
-  }
+  // TODO(yosin): Is this kIgnoreTransforms correct here?
+  PhysicalOffset selection_end_point = hit_test_result.LocalPoint();
+  PhysicalOffset absolute_point = target_object->LocalToAbsolutePoint(
+      selection_end_point, kIgnoreTransforms);
+  selection_end_point =
+      editable_object->AbsoluteToLocalPoint(absolute_point, kIgnoreTransforms);
+  target_object = editable_object;
+  // TODO(kojii): Support fragment-based |PositionForPoint|. LayoutObject-based
+  // |PositionForPoint| may not work if NG block fragmented.
+  return target_object->PositionForPoint(selection_end_point);
+}
 
-  return target_node->GetLayoutObject()->PositionForPoint(selection_end_point);
+PositionWithAffinity AdjustForEditingBoundary(
+    const PositionWithAffinity& position_with_affinity) {
+  if (position_with_affinity.IsNull())
+    return position_with_affinity;
+  const Position& position = position_with_affinity.GetPosition();
+  const Node& node = *position.ComputeContainerNode();
+  if (HasEditableStyle(node))
+    return position_with_affinity;
+  // TODO(yosin): Once we fix |MostBackwardCaretPosition()| to handle
+  // positions other than |kOffsetInAnchor|, we don't need to use
+  // |adjusted_position|, e.g. <outer><inner contenteditable> with position
+  // before <inner> vs. outer@0[1].
+  // [1] editing/selection/click-outside-editable-div.html
+  const Position& adjusted_position = HasEditableStyle(*position.AnchorNode())
+                                          ? position.ToOffsetInAnchor()
+                                          : position;
+  const Position& forward =
+      MostForwardCaretPosition(adjusted_position, kCanCrossEditingBoundary);
+  if (HasEditableStyle(*forward.ComputeContainerNode()))
+    return PositionWithAffinity(forward);
+  const Position& backward =
+      MostBackwardCaretPosition(adjusted_position, kCanCrossEditingBoundary);
+  if (HasEditableStyle(*backward.ComputeContainerNode()))
+    return PositionWithAffinity(backward);
+  return PositionWithAffinity(adjusted_position,
+                              position_with_affinity.Affinity());
+}
+
+PositionWithAffinity AdjustForEditingBoundary(const Position& position) {
+  return AdjustForEditingBoundary(PositionWithAffinity(position));
 }
 
 Position ComputePositionForNodeRemoval(const Position& position,
                                        const Node& node) {
   if (position.IsNull())
     return position;
+  Node* container_node;
+  Node* anchor_node;
   switch (position.AnchorType()) {
-    case PositionAnchorType::kBeforeChildren:
-      if (!node.IsShadowIncludingInclusiveAncestorOf(
-              position.ComputeContainerNode())) {
+    case PositionAnchorType::kAfterChildren:
+      container_node = position.ComputeContainerNode();
+      if (!container_node ||
+          !node.IsShadowIncludingInclusiveAncestorOf(*container_node)) {
         return position;
       }
       return Position::InParentBeforeNode(node);
-    case PositionAnchorType::kAfterChildren:
-      if (!node.IsShadowIncludingInclusiveAncestorOf(
-              position.ComputeContainerNode())) {
-        return position;
-      }
-      return Position::InParentAfterNode(node);
     case PositionAnchorType::kOffsetInAnchor:
-      if (position.ComputeContainerNode() == node.parentNode() &&
+      container_node = position.ComputeContainerNode();
+      if (container_node == node.parentNode() &&
           static_cast<unsigned>(position.OffsetInContainerNode()) >
               node.NodeIndex()) {
-        return Position(position.ComputeContainerNode(),
-                        position.OffsetInContainerNode() - 1);
+        return Position(container_node, position.OffsetInContainerNode() - 1);
       }
-      if (!node.IsShadowIncludingInclusiveAncestorOf(
-              position.ComputeContainerNode())) {
+      if (!container_node ||
+          !node.IsShadowIncludingInclusiveAncestorOf(*container_node)) {
         return position;
       }
       return Position::InParentBeforeNode(node);
     case PositionAnchorType::kAfterAnchor:
-      if (!node.IsShadowIncludingInclusiveAncestorOf(position.AnchorNode()))
+      anchor_node = position.AnchorNode();
+      if (!anchor_node ||
+          !node.IsShadowIncludingInclusiveAncestorOf(*anchor_node))
         return position;
-      return Position::InParentAfterNode(node);
+      return Position::InParentBeforeNode(node);
     case PositionAnchorType::kBeforeAnchor:
-      if (!node.IsShadowIncludingInclusiveAncestorOf(position.AnchorNode()))
+      anchor_node = position.AnchorNode();
+      if (!anchor_node ||
+          !node.IsShadowIncludingInclusiveAncestorOf(*anchor_node))
         return position;
       return Position::InParentBeforeNode(node);
   }
@@ -1381,19 +1456,20 @@ Position ComputePositionForNodeRemoval(const Position& position,
 }
 
 bool IsMailHTMLBlockquoteElement(const Node* node) {
-  if (!node || !node->IsHTMLElement())
+  const auto* element = DynamicTo<HTMLElement>(*node);
+  if (!element)
     return false;
 
-  const HTMLElement& element = ToHTMLElement(*node);
-  return element.HasTagName(kBlockquoteTag) &&
-         element.getAttribute("type") == "cite";
+  return element->HasTagName(html_names::kBlockquoteTag) &&
+         element->getAttribute("type") == "cite";
 }
 
 bool ElementCannotHaveEndTag(const Node& node) {
-  if (!node.IsHTMLElement())
+  auto* html_element = DynamicTo<HTMLElement>(node);
+  if (!html_element)
     return false;
 
-  return !ToHTMLElement(node).ShouldSerializeEndTag();
+  return !html_element->ShouldSerializeEndTag();
 }
 
 // FIXME: indexForVisiblePosition and visiblePositionForIndex use TextIterators
@@ -1494,6 +1570,33 @@ VisiblePosition VisiblePositionForIndex(int index, ContainerNode* scope) {
   return CreateVisiblePosition(range.StartPosition());
 }
 
+template <typename Strategy>
+bool AreSameRangesAlgorithm(Node* node,
+                            const PositionTemplate<Strategy>& start_position,
+                            const PositionTemplate<Strategy>& end_position) {
+  DCHECK(node);
+  const EphemeralRange range =
+      CreateVisibleSelection(
+          SelectionInDOMTree::Builder().SelectAllChildren(*node).Build())
+          .ToNormalizedEphemeralRange();
+  return ToPositionInDOMTree(start_position) == range.StartPosition() &&
+         ToPositionInDOMTree(end_position) == range.EndPosition();
+}
+
+bool AreSameRanges(Node* node,
+                   const Position& start_position,
+                   const Position& end_position) {
+  return AreSameRangesAlgorithm<EditingStrategy>(node, start_position,
+                                                 end_position);
+}
+
+bool AreSameRanges(Node* node,
+                   const PositionInFlatTree& start_position,
+                   const PositionInFlatTree& end_position) {
+  return AreSameRangesAlgorithm<EditingInFlatTreeStrategy>(node, start_position,
+                                                           end_position);
+}
+
 bool IsRenderedAsNonInlineTableImageOrHR(const Node* node) {
   if (!node)
     return false;
@@ -1505,16 +1608,21 @@ bool IsRenderedAsNonInlineTableImageOrHR(const Node* node) {
 }
 
 bool IsNonTableCellHTMLBlockElement(const Node* node) {
-  if (!node->IsHTMLElement())
+  const auto* element = DynamicTo<HTMLElement>(node);
+  if (!element)
     return false;
 
-  const HTMLElement& element = ToHTMLElement(*node);
-  return element.HasTagName(kListingTag) || element.HasTagName(kOlTag) ||
-         element.HasTagName(kPreTag) || element.HasTagName(kTableTag) ||
-         element.HasTagName(kUlTag) || element.HasTagName(kXmpTag) ||
-         element.HasTagName(kH1Tag) || element.HasTagName(kH2Tag) ||
-         element.HasTagName(kH3Tag) || element.HasTagName(kH4Tag) ||
-         element.HasTagName(kH5Tag);
+  return element->HasTagName(html_names::kListingTag) ||
+         element->HasTagName(html_names::kOlTag) ||
+         element->HasTagName(html_names::kPreTag) ||
+         element->HasTagName(html_names::kTableTag) ||
+         element->HasTagName(html_names::kUlTag) ||
+         element->HasTagName(html_names::kXmpTag) ||
+         element->HasTagName(html_names::kH1Tag) ||
+         element->HasTagName(html_names::kH2Tag) ||
+         element->HasTagName(html_names::kH3Tag) ||
+         element->HasTagName(html_names::kH4Tag) ||
+         element->HasTagName(html_names::kH5Tag);
 }
 
 bool IsBlockFlowElement(const Node& node) {
@@ -1525,9 +1633,9 @@ bool IsBlockFlowElement(const Node& node) {
 
 bool IsInPasswordField(const Position& position) {
   TextControlElement* text_control = EnclosingTextControl(position);
-  return IsHTMLInputElement(text_control) &&
-         ToHTMLInputElement(text_control)->type() ==
-             input_type_names::kPassword;
+  auto* html_input_element = DynamicTo<HTMLInputElement>(text_control);
+  return html_input_element &&
+         html_input_element->type() == input_type_names::kPassword;
 }
 
 // If current position is at grapheme boundary, return 0; otherwise, return the
@@ -1559,14 +1667,24 @@ wtf_size_t ComputeDistanceToRightGraphemeBoundary(const Position& position) {
 }
 
 FloatQuad LocalToAbsoluteQuadOf(const LocalCaretRect& caret_rect) {
-  return caret_rect.layout_object->LocalToAbsoluteQuad(
-      FloatRect(caret_rect.rect));
+  return caret_rect.layout_object->LocalRectToAbsoluteQuad(caret_rect.rect);
+}
+
+InputEvent::EventCancelable InputTypeIsCancelable(
+    InputEvent::InputType input_type) {
+  using InputType = InputEvent::InputType;
+  switch (input_type) {
+    case InputType::kInsertCompositionText:
+      return InputEvent::EventCancelable::kNotCancelable;
+    default:
+      return InputEvent::EventCancelable::kIsCancelable;
+  }
 }
 
 const StaticRangeVector* TargetRangesForInputEvent(const Node& node) {
   // TODO(editing-dev): The use of UpdateStyleAndLayout
   // needs to be audited. see http://crbug.com/590369 for more details.
-  node.GetDocument().UpdateStyleAndLayout();
+  node.GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   if (!HasRichlyEditableStyle(node))
     return nullptr;
   const EphemeralRange& range =
@@ -1684,14 +1802,14 @@ static scoped_refptr<Image> ImageFromNode(const Node& node) {
     return nullptr;
 
   if (layout_object->IsCanvas()) {
-    return ToHTMLCanvasElement(const_cast<Node&>(node))
-        .Snapshot(kFrontBuffer, kPreferNoAcceleration);
+    return To<HTMLCanvasElement>(const_cast<Node&>(node))
+        .Snapshot(kFrontBuffer);
   }
 
   if (!layout_object->IsImage())
     return nullptr;
 
-  const LayoutImage& layout_image = ToLayoutImage(*layout_object);
+  const auto& layout_image = To<LayoutImage>(*layout_object);
   const ImageResourceContent* const cached_image = layout_image.CachedImage();
   if (!cached_image || cached_image->ErrorOccurred())
     return nullptr;
@@ -1701,25 +1819,26 @@ static scoped_refptr<Image> ImageFromNode(const Node& node) {
 AtomicString GetUrlStringFromNode(const Node& node) {
   // TODO(editing-dev): This should probably be reconciled with
   // HitTestResult::absoluteImageURL.
-  if (IsHTMLImageElement(node) || IsHTMLInputElement(node))
-    return ToHTMLElement(node).getAttribute(kSrcAttr);
-  if (IsSVGImageElement(node))
-    return ToSVGElement(node).ImageSourceURL();
-  if (IsHTMLEmbedElement(node) || IsHTMLObjectElement(node) ||
-      IsHTMLCanvasElement(node))
-    return ToHTMLElement(node).ImageSourceURL();
+  if (IsA<HTMLImageElement>(node) || IsA<HTMLInputElement>(node))
+    return To<HTMLElement>(node).FastGetAttribute(html_names::kSrcAttr);
+  if (IsA<SVGImageElement>(node))
+    return To<SVGElement>(node).ImageSourceURL();
+  if (IsA<HTMLEmbedElement>(node) || IsA<HTMLObjectElement>(node) ||
+      IsA<HTMLCanvasElement>(node))
+    return To<HTMLElement>(node).ImageSourceURL();
   return AtomicString();
 }
 
-void WriteImageNodeToClipboard(const Node& node, const String& title) {
+void WriteImageNodeToClipboard(SystemClipboard& system_clipboard,
+                               const Node& node,
+                               const String& title) {
   const scoped_refptr<Image> image = ImageFromNode(node);
   if (!image.get())
     return;
   const KURL url_string = node.GetDocument().CompleteURL(
       StripLeadingAndTrailingHTMLSpaces(GetUrlStringFromNode(node)));
-  SystemClipboard::GetInstance().WriteImageWithTag(image.get(), url_string,
-                                                   title);
-  SystemClipboard::GetInstance().CommitWrite();
+  system_clipboard.WriteImageWithTag(image.get(), url_string, title);
+  system_clipboard.CommitWrite();
 }
 
 Element* FindEventTargetFrom(LocalFrame& frame,
@@ -1735,14 +1854,14 @@ Element* FindEventTargetFrom(LocalFrame& frame,
 HTMLImageElement* ImageElementFromImageDocument(const Document* document) {
   if (!document)
     return nullptr;
-  if (!document->IsImageDocument())
+  if (!IsA<ImageDocument>(document))
     return nullptr;
 
   const HTMLElement* const body = document->body();
   if (!body)
     return nullptr;
 
-  return ToHTMLImageElementOrNull(body->firstChild());
+  return DynamicTo<HTMLImageElement>(body->firstChild());
 }
 
 }  // namespace blink

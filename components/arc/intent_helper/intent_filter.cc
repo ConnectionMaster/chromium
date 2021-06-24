@@ -4,11 +4,14 @@
 
 #include "components/arc/intent_helper/intent_filter.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/strings/string_util.h"
-#include "components/arc/common/intent_helper.mojom.h"
+#include "components/arc/intent_helper/intent_constants.h"
+#include "components/arc/mojom/intent_helper.mojom.h"
+#include "components/services/app_service/public/cpp/intent_util.h"
 #include "url/gurl.h"
 
 namespace arc {
@@ -18,9 +21,37 @@ IntentFilter::IntentFilter(IntentFilter&& other) = default;
 
 IntentFilter::IntentFilter(
     const std::string& package_name,
+    std::vector<std::string> actions,
     std::vector<IntentFilter::AuthorityEntry> authorities,
-    std::vector<IntentFilter::PatternMatcher> paths)
-    : package_name_(package_name), authorities_(std::move(authorities)) {
+    std::vector<IntentFilter::PatternMatcher> paths,
+    std::vector<std::string> schemes,
+    std::vector<std::string> mime_types)
+    : package_name_(package_name),
+      actions_(std::move(actions)),
+      authorities_(std::move(authorities)),
+      schemes_(std::move(schemes)),
+      mime_types_(std::move(mime_types)) {
+  // In order to register a path we need to have at least one authority.
+  if (!authorities_.empty())
+    paths_ = std::move(paths);
+}
+
+IntentFilter::IntentFilter(
+    const std::string& package_name,
+    const std::string& activity_name,
+    const std::string& activity_label,
+    std::vector<std::string> actions,
+    std::vector<IntentFilter::AuthorityEntry> authorities,
+    std::vector<IntentFilter::PatternMatcher> paths,
+    std::vector<std::string> schemes,
+    std::vector<std::string> mime_types)
+    : package_name_(package_name),
+      activity_name_(activity_name),
+      activity_label_(activity_label),
+      actions_(std::move(actions)),
+      authorities_(std::move(authorities)),
+      schemes_(std::move(schemes)),
+      mime_types_(std::move(mime_types)) {
   // In order to register a path we need to have at least one authority.
   if (!authorities_.empty())
     paths_ = std::move(paths);
@@ -38,6 +69,15 @@ bool IntentFilter::Match(const GURL& url) const {
   // match code really only implements the matchData part of the android
   // IntentFilter class.
   if (!url.SchemeIsHTTPOrHTTPS()) {
+    return false;
+  }
+
+  // Don't return match for filters for sharing.
+  if (std::any_of(actions_.begin(), actions_.end(),
+                  [](const std::string action) {
+                    return action == kIntentActionSend ||
+                           action == kIntentActionSendMultiple;
+                  })) {
     return false;
   }
 
@@ -145,92 +185,10 @@ bool IntentFilter::PatternMatcher::Match(const std::string& str) const {
       return base::StartsWith(str, pattern_,
                               base::CompareCase::INSENSITIVE_ASCII);
     case mojom::PatternType::PATTERN_SIMPLE_GLOB:
-      return MatchGlob(str);
+      return apps_util::MatchGlob(str, pattern_);
   }
 
   return false;
-}
-
-// Transcribed from android's PatternMatcher#matchPattern.
-bool IntentFilter::PatternMatcher::MatchGlob(const std::string& str) const {
-#define GET_CHAR(s, i) ((UNLIKELY(i >= s.length())) ? '\0' : s[i])
-
-  const size_t NP = pattern_.length();
-  const size_t NS = str.length();
-  if (NP == 0) {
-    return NS == 0;
-  }
-  size_t ip = 0, is = 0;
-  char nextChar = GET_CHAR(pattern_, 0);
-  while (ip < NP && is < NS) {
-    char c = nextChar;
-    ++ip;
-    nextChar = GET_CHAR(pattern_, ip);
-    const bool escaped = (c == '\\');
-    if (escaped) {
-      c = nextChar;
-      ++ip;
-      nextChar = GET_CHAR(pattern_, ip);
-    }
-    if (nextChar == '*') {
-      if (!escaped && c == '.') {
-        if (ip >= (NP - 1)) {
-          // At the end with a pattern match
-          return true;
-        }
-        ++ip;
-        nextChar = GET_CHAR(pattern_, ip);
-        // Consume everything until the next char in the pattern is found.
-        if (nextChar == '\\') {
-          ++ip;
-          nextChar = GET_CHAR(pattern_, ip);
-        }
-        do {
-          if (GET_CHAR(str, is) == nextChar) {
-            break;
-          }
-          ++is;
-        } while (is < NS);
-        if (is == NS) {
-          // Next char in the pattern didn't exist in the match.
-          return false;
-        }
-        ++ip;
-        nextChar = GET_CHAR(pattern_, ip);
-        ++is;
-      } else {
-        // Consume only characters matching the one before '*'.
-        do {
-          if (GET_CHAR(str, is) != c) {
-            break;
-          }
-          ++is;
-        } while (is < NS);
-        ++ip;
-        nextChar = GET_CHAR(pattern_, ip);
-      }
-    } else {
-      if (c != '.' && GET_CHAR(str, is) != c)
-        return false;
-      ++is;
-    }
-  }
-
-  if (ip >= NP && is >= NS) {
-    // Reached the end of both strings
-    return true;
-  }
-
-  // One last check: we may have finished the match string, but still have a
-  // '.*' at the end of the pattern, which is still a match.
-  if (ip == NP - 2 && GET_CHAR(pattern_, ip) == '.' &&
-      GET_CHAR(pattern_, ip + 1) == '*') {
-    return true;
-  }
-
-  return false;
-
-#undef GET_CHAR
 }
 
 }  // namespace arc

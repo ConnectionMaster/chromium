@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/time/clock.h"
 #include "components/reading_list/core/proto/reading_list.pb.h"
 #include "components/reading_list/core/reading_list_model_impl.h"
@@ -24,8 +24,7 @@ ReadingListStore::ReadingListStore(
     std::unique_ptr<syncer::ModelTypeChangeProcessor> change_processor)
     : ReadingListModelStorage(std::move(change_processor)),
       create_store_callback_(std::move(create_store_callback)),
-      pending_transaction_count_(0),
-      weak_ptr_factory_(this) {}
+      pending_transaction_count_(0) {}
 
 ReadingListStore::~ReadingListStore() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -95,7 +94,7 @@ void ReadingListStore::SaveEntry(const ReadingListEntry& entry) {
 
   std::unique_ptr<syncer::EntityData> entity_data(new syncer::EntityData());
   *entity_data->specifics.mutable_reading_list() = *pb_entry_sync;
-  entity_data->non_unique_name = pb_entry_sync->entry_id();
+  entity_data->name = pb_entry_sync->entry_id();
 
   change_processor()->Put(entry.URL().spec(), std::move(entity_data),
                           batch_->GetMetadataChangeList());
@@ -114,7 +113,7 @@ void ReadingListStore::RemoveEntry(const ReadingListEntry& entry) {
 }
 
 void ReadingListStore::OnDatabaseLoad(
-    const base::Optional<syncer::ModelError>& error,
+    const absl::optional<syncer::ModelError>& error,
     std::unique_ptr<syncer::ModelTypeStore::RecordList> entries) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (error) {
@@ -149,7 +148,7 @@ void ReadingListStore::OnDatabaseLoad(
 }
 
 void ReadingListStore::OnReadAllMetadata(
-    const base::Optional<syncer::ModelError>& error,
+    const absl::optional<syncer::ModelError>& error,
     std::unique_ptr<syncer::MetadataBatch> metadata_batch) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (error) {
@@ -160,12 +159,12 @@ void ReadingListStore::OnReadAllMetadata(
 }
 
 void ReadingListStore::OnDatabaseSave(
-    const base::Optional<syncer::ModelError>& error) {
+    const absl::optional<syncer::ModelError>& error) {
   return;
 }
 
 void ReadingListStore::OnStoreCreated(
-    const base::Optional<syncer::ModelError>& error,
+    const absl::optional<syncer::ModelError>& error,
     std::unique_ptr<syncer::ModelTypeStore> store) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (error) {
@@ -197,7 +196,7 @@ ReadingListStore::CreateMetadataChangeList() {
 // Durable storage writes, if not able to combine all change atomically, should
 // save the metadata after the data changes, so that this merge will be re-
 // driven by sync if is not completely saved during the current run.
-base::Optional<syncer::ModelError> ReadingListStore::MergeSyncData(
+absl::optional<syncer::ModelError> ReadingListStore::MergeSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_data) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -245,7 +244,7 @@ base::Optional<syncer::ModelError> ReadingListStore::MergeSyncData(
       DCHECK(CompareEntriesForSync(specifics, *entry_sync_pb));
       auto entity_data = std::make_unique<syncer::EntityData>();
       *(entity_data->specifics.mutable_reading_list()) = *entry_sync_pb;
-      entity_data->non_unique_name = entry_sync_pb->entry_id();
+      entity_data->name = entry_sync_pb->entry_id();
 
       // TODO(crbug.com/666232): Investigate if there is a risk of sync
       // ping-pong.
@@ -268,7 +267,7 @@ base::Optional<syncer::ModelError> ReadingListStore::MergeSyncData(
 
     auto entity_data = std::make_unique<syncer::EntityData>();
     *(entity_data->specifics.mutable_reading_list()) = *entry_pb;
-    entity_data->non_unique_name = entry_pb->entry_id();
+    entity_data->name = entry_pb->entry_id();
 
     change_processor()->Put(entry_pb->entry_id(), std::move(entity_data),
                             metadata_change_list.get());
@@ -283,7 +282,7 @@ base::Optional<syncer::ModelError> ReadingListStore::MergeSyncData(
 // |metadata_change_list| in case when some of the data changes are filtered
 // out, or even be empty in case when a commit confirmation is processed and
 // only the metadata needs to persisted.
-base::Optional<syncer::ModelError> ReadingListStore::ApplySyncChanges(
+absl::optional<syncer::ModelError> ReadingListStore::ApplySyncChanges(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_changes) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -332,7 +331,7 @@ base::Optional<syncer::ModelError> ReadingListStore::ApplySyncChanges(
         DCHECK(CompareEntriesForSync(specifics, *entry_sync_pb));
         auto entity_data = std::make_unique<syncer::EntityData>();
         *(entity_data->specifics.mutable_reading_list()) = *entry_sync_pb;
-        entity_data->non_unique_name = entry_sync_pb->entry_id();
+        entity_data->name = entry_sync_pb->entry_id();
 
         // TODO(crbug.com/666232): Investigate if there is a risk of sync
         // ping-pong.
@@ -381,7 +380,7 @@ void ReadingListStore::AddEntryToBatch(syncer::MutableDataBatch* batch,
 
   std::unique_ptr<syncer::EntityData> entity_data(new syncer::EntityData());
   *(entity_data->specifics.mutable_reading_list()) = *entry_pb;
-  entity_data->non_unique_name = entry_pb->entry_id();
+  entity_data->name = entry_pb->entry_id();
 
   batch->Put(entry_pb->entry_id(), std::move(entity_data));
 }

@@ -5,8 +5,10 @@
 #include "third_party/blink/renderer/core/html/forms/form_data.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_file_usvstring.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
 #include "third_party/blink/renderer/core/html/forms/form_controller.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
@@ -22,7 +24,7 @@ FormData* Deserialize(const Vector<String>& strings) {
 }  // namespace
 
 TEST(FormDataTest, append) {
-  FormData* fd = FormData::Create(UTF8Encoding());
+  auto* fd = MakeGarbageCollected<FormData>(UTF8Encoding());
   fd->append("test\n1", "value\n1");
   fd->append("test\r2", nullptr, "filename");
 
@@ -35,7 +37,7 @@ TEST(FormDataTest, append) {
 }
 
 TEST(FormDataTest, AppendFromElement) {
-  FormData* fd = FormData::Create(UTF8Encoding());
+  auto* fd = MakeGarbageCollected<FormData>(UTF8Encoding());
   fd->AppendFromElement("Atomic\nNumber", 1);
   fd->AppendFromElement("Periodic\nTable", nullptr);
   fd->AppendFromElement("Noble\nGas", "He\rNe\nAr\r\nKr");
@@ -53,13 +55,12 @@ TEST(FormDataTest, AppendFromElement) {
 }
 
 TEST(FormDataTest, get) {
-  FormData* fd = FormData::Create(UTF8Encoding());
+  auto* fd = MakeGarbageCollected<FormData>(UTF8Encoding());
   fd->append("name1", "value1");
 
-  FileOrUSVString result;
-  fd->get("name1", result);
-  EXPECT_TRUE(result.IsUSVString());
-  EXPECT_EQ("value1", result.GetAsUSVString());
+  V8UnionFileOrUSVString* result = fd->get("name1");
+  EXPECT_TRUE(result->IsUSVString());
+  EXPECT_EQ("value1", result->GetAsUSVString());
 
   const FormData::Entry& entry = *fd->Entries()[0];
   EXPECT_EQ("name1", entry.name());
@@ -67,19 +68,19 @@ TEST(FormDataTest, get) {
 }
 
 TEST(FormDataTest, getAll) {
-  FormData* fd = FormData::Create(UTF8Encoding());
+  auto* fd = MakeGarbageCollected<FormData>(UTF8Encoding());
   fd->append("name1", "value1");
 
-  HeapVector<FormDataEntryValue> results = fd->getAll("name1");
+  const HeapVector<Member<V8FormDataEntryValue>>& results = fd->getAll("name1");
   EXPECT_EQ(1u, results.size());
-  EXPECT_TRUE(results[0].IsUSVString());
-  EXPECT_EQ("value1", results[0].GetAsUSVString());
+  EXPECT_TRUE(results[0]->IsUSVString());
+  EXPECT_EQ("value1", results[0]->GetAsUSVString());
 
   EXPECT_EQ(1u, fd->size());
 }
 
 TEST(FormDataTest, has) {
-  FormData* fd = FormData::Create(UTF8Encoding());
+  auto* fd = MakeGarbageCollected<FormData>(UTF8Encoding());
   fd->append("name1", "value1");
 
   EXPECT_TRUE(fd->has("name1"));
@@ -99,7 +100,7 @@ TEST(FormDataTest, AppendToControlState) {
   {
     auto* fd = MakeGarbageCollected<FormData>();
     fd->append("n1", "string");
-    fd->AppendFromElement("n1", File::Create("/etc/hosts"));
+    fd->AppendFromElement("n1", MakeGarbageCollected<File>("/etc/hosts"));
     FormControlState state;
     fd->AppendToControlState(state);
 

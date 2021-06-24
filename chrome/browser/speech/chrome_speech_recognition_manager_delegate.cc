@@ -8,7 +8,6 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/task/post_task.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -27,6 +26,7 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/extension_service.h"
 #include "extensions/browser/view_type_utils.h"
+#include "extensions/common/mojom/view_type.mojom.h"
 #endif
 
 using content::BrowserThread;
@@ -101,10 +101,9 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRecognitionIsAllowed(
 
   // Check that the render frame type is appropriate, and whether or not we
   // need to request permission from the user.
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
-      base::BindOnce(&CheckRenderFrameType, std::move(callback),
-                     render_process_id, render_frame_id));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&CheckRenderFrameType, std::move(callback),
+                                render_process_id, render_frame_id));
 }
 
 content::SpeechRecognitionEventListener*
@@ -139,8 +138,8 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
     // This happens for extensions. Manifest should be checked for permission.
     allowed = true;
     check_permission = false;
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(std::move(callback), check_permission, allowed));
     return;
   }
@@ -148,13 +147,13 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   WebContents* web_contents =
       WebContents::FromRenderFrameHost(render_frame_host);
-  extensions::ViewType view_type = extensions::GetViewType(web_contents);
+  extensions::mojom::ViewType view_type = extensions::GetViewType(web_contents);
 
-  if (view_type == extensions::VIEW_TYPE_TAB_CONTENTS ||
-      view_type == extensions::VIEW_TYPE_APP_WINDOW ||
-      view_type == extensions::VIEW_TYPE_COMPONENT ||
-      view_type == extensions::VIEW_TYPE_EXTENSION_POPUP ||
-      view_type == extensions::VIEW_TYPE_EXTENSION_BACKGROUND_PAGE) {
+  if (view_type == extensions::mojom::ViewType::kTabContents ||
+      view_type == extensions::mojom::ViewType::kAppWindow ||
+      view_type == extensions::mojom::ViewType::kComponent ||
+      view_type == extensions::mojom::ViewType::kExtensionPopup ||
+      view_type == extensions::mojom::ViewType::kExtensionBackgroundPage) {
     // If it is a tab, we can check for permission. For apps, this means
     // manifest would be checked for permission.
     allowed = true;
@@ -166,8 +165,8 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
   check_permission = true;
 #endif
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(std::move(callback), check_permission, allowed));
 }
 

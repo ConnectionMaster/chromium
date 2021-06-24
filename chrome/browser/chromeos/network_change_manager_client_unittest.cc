@@ -8,14 +8,12 @@
 
 #include <string>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_split.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/power_manager_client.h"
-#include "chromeos/dbus/shill/shill_service_client.h"
-#include "chromeos/network/network_handler.h"
+#include "chromeos/network/network_handler_test_helper.h"
 #include "chromeos/network/network_state.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_change_notifier_posix.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -73,7 +71,6 @@ TEST(NetworkChangeManagerClientTest, ConnectionTypeFromShill) {
   TypeMapping type_mappings[] = {
       {shill::kTypeEthernet, "", NetworkChangeNotifier::CONNECTION_ETHERNET},
       {shill::kTypeWifi, "", NetworkChangeNotifier::CONNECTION_WIFI},
-      {shill::kTypeWimax, "", NetworkChangeNotifier::CONNECTION_4G},
       {"unknown type", "unknown technology",
        NetworkChangeNotifier::CONNECTION_UNKNOWN},
       {shill::kTypeCellular, shill::kNetworkTechnology1Xrtt,
@@ -110,23 +107,20 @@ TEST(NetworkChangeManagerClientTest, ConnectionTypeFromShill) {
 TEST(NetworkChangeManagerClientTest,
      NetworkChangeNotifierConnectionTypeUpdated) {
   // Create a NetworkChangeNotifier with a non-NONE connection type.
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<net::NetworkChangeNotifierPosix> network_change_notifier(
       static_cast<net::NetworkChangeNotifierPosix*>(
-          net::NetworkChangeNotifier::Create()));
+          net::NetworkChangeNotifier::CreateIfNeeded().release()));
   network_change_notifier->OnConnectionChanged(
       net::NetworkChangeNotifier::CONNECTION_UNKNOWN);
   EXPECT_EQ(net::NetworkChangeNotifier::CONNECTION_UNKNOWN,
             net::NetworkChangeNotifier::GetConnectionType());
 
-  // Initialize DBus and clear services so NetworkHandler thinks we're offline.
-  DBusThreadManager::Initialize();
+  // Initialize DBus clients and clear services so NetworkHandler thinks we're
+  // offline.
   PowerManagerClient::InitializeFake();
-  NetworkHandler::Initialize();
-  DBusThreadManager::Get()
-      ->GetShillServiceClient()
-      ->GetTestInterface()
-      ->ClearServices();
+  NetworkHandlerTestHelper network_handler_test_helper;
+  network_handler_test_helper.service_test()->ClearServices();
 
   auto client = std::make_unique<NetworkChangeManagerClient>(
       network_change_notifier.get());
@@ -139,9 +133,7 @@ TEST(NetworkChangeManagerClientTest,
             net::NetworkChangeNotifier::GetConnectionType());
 
   client.reset();
-  NetworkHandler::Shutdown();
   PowerManagerClient::Shutdown();
-  DBusThreadManager::Shutdown();
 }
 
 class NetworkChangeManagerClientUpdateTest : public testing::Test {
@@ -150,10 +142,8 @@ class NetworkChangeManagerClientUpdateTest : public testing::Test {
   ~NetworkChangeManagerClientUpdateTest() override = default;
 
   void SetUp() override {
-    network_change_notifier_.reset(net::NetworkChangeNotifier::Create());
-    DBusThreadManager::Initialize();
+    network_change_notifier_ = net::NetworkChangeNotifier::CreateIfNeeded();
     PowerManagerClient::InitializeFake();
-    NetworkHandler::Initialize();
     proxy_ = std::make_unique<NetworkChangeManagerClient>(
         static_cast<net::NetworkChangeNotifierPosix*>(
             network_change_notifier_.get()));
@@ -161,9 +151,7 @@ class NetworkChangeManagerClientUpdateTest : public testing::Test {
 
   void TearDown() override {
     proxy_.reset();
-    NetworkHandler::Shutdown();
     PowerManagerClient::Shutdown();
-    DBusThreadManager::Shutdown();
     network_change_notifier_.reset();
   }
 
@@ -201,7 +189,9 @@ class NetworkChangeManagerClientUpdateTest : public testing::Test {
         base::SplitString(default_network_state.dns_servers, ",",
                           base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
     base::ListValue dns_servers_value;
-    dns_servers_value.AppendStrings(dns_servers);
+    for (const std::string& server : dns_servers)
+      dns_servers_value.Append(server);
+
     ipv4_properties.SetKey(shill::kNameServersProperty,
                            std::move(dns_servers_value));
     default_network_.IPConfigPropertiesChanged(ipv4_properties);
@@ -217,7 +207,8 @@ class NetworkChangeManagerClientUpdateTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
+  NetworkHandlerTestHelper network_handler_test_helper_;
   NetworkState default_network_;
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
   std::unique_ptr<NetworkChangeManagerClient> proxy_;

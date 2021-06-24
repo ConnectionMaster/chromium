@@ -7,16 +7,11 @@
 
 #include <stddef.h>
 
-#include <map>
-#include <string>
-
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "components/infobars/core/infobar_container.h"
-
-class InfoBarAndroid;
 
 class InfoBarContainerAndroid : public infobars::InfoBarContainer {
  public:
@@ -40,10 +35,6 @@ class InfoBarContainerAndroid : public infobars::InfoBarContainer {
   void PlatformSpecificRemoveInfoBar(infobars::InfoBar* infobar) override;
   void PlatformSpecificReplaceInfoBar(infobars::InfoBar* old_infobar,
                                       infobars::InfoBar* new_infobar) override;
-
-  // Create the Java equivalent of |android_bar| and add it to the java
-  // container.
-  void AttachJavaInfoBar(InfoBarAndroid* android_bar);
 
   // We're owned by the java infobar, need to use a weak ref so it can destroy
   // us.

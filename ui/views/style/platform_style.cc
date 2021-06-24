@@ -5,35 +5,25 @@
 #include "ui/views/style/platform_style.h"
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/range/range.h"
-#include "ui/gfx/shadow_value.h"
 #include "ui/gfx/utf16_indexing.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/background.h"
+#include "ui/views/buildflags.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/label_button_border.h"
 #include "ui/views/controls/focusable_border.h"
 #include "ui/views/controls/scrollbar/scroll_bar_views.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #include "ui/views/controls/scrollbar/overlay_scroll_bar.h"
-#elif defined(OS_LINUX)
-#define DESKTOP_LINUX
 #endif
 
 namespace views {
-namespace {
 
-#if !defined(DESKTOP_LINUX)
-// Default text and shadow colors for STYLE_BUTTON.
-const SkColor kStyleButtonTextColor = SK_ColorBLACK;
-const SkColor kStyleButtonShadowColor = SK_ColorWHITE;
-#endif
-
-}  // namespace
-
-#if defined(OS_WIN) || defined(OS_CHROMEOS)
+#if defined(OS_WIN)
 const bool PlatformStyle::kIsOkButtonLeading = true;
 #else
 const bool PlatformStyle::kIsOkButtonLeading = false;
@@ -44,29 +34,38 @@ const bool PlatformStyle::kIsOkButtonLeading = false;
 const float PlatformStyle::kFocusHaloThickness = 2.f;
 const float PlatformStyle::kFocusHaloInset = -1.f;
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
 
 const int PlatformStyle::kMinLabelButtonWidth = 70;
 const int PlatformStyle::kMinLabelButtonHeight = 33;
 const bool PlatformStyle::kDialogDefaultButtonCanBeCancel = true;
 const bool PlatformStyle::kSelectWordOnRightClick = false;
 const bool PlatformStyle::kSelectAllOnRightClickWhenUnfocused = false;
-const Button::NotifyAction PlatformStyle::kMenuNotifyActivationAction =
-    Button::NOTIFY_ON_RELEASE;
 const Button::KeyClickAction PlatformStyle::kKeyClickActionOnSpace =
-    Button::CLICK_ON_KEY_RELEASE;
+    Button::KeyClickAction::kOnKeyRelease;
 const bool PlatformStyle::kReturnClicksFocusedControl = true;
 const bool PlatformStyle::kTableViewSupportsKeyboardNavigationByCell = true;
 const bool PlatformStyle::kTreeViewSelectionPaintsEntireRow = false;
 const bool PlatformStyle::kUseRipples = true;
-const bool PlatformStyle::kTextfieldScrollsToStartOnFocusChange = false;
 const bool PlatformStyle::kTextfieldUsesDragCursorWhenDraggable = true;
-const bool PlatformStyle::kPreferFocusRings = false;
 const bool PlatformStyle::kInactiveWidgetControlsAppearDisabled = false;
+const View::FocusBehavior PlatformStyle::kDefaultFocusBehavior =
+    View::FocusBehavior::ALWAYS;
+
+// Linux clips bubble windows that extend outside their parent window
+// bounds.
+const bool PlatformStyle::kAdjustBubbleIfOffscreen =
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+    false;
+#else
+    true;
+#endif
 
 // static
 std::unique_ptr<ScrollBar> PlatformStyle::CreateScrollBar(bool is_horizontal) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
   return std::make_unique<OverlayScrollBar>(is_horizontal);
 #else
   return std::make_unique<ScrollBarViews>(is_horizontal);
@@ -77,7 +76,7 @@ std::unique_ptr<ScrollBar> PlatformStyle::CreateScrollBar(bool is_horizontal) {
 void PlatformStyle::OnTextfieldEditFailed() {}
 
 // static
-gfx::Range PlatformStyle::RangeToDeleteBackwards(const base::string16& text,
+gfx::Range PlatformStyle::RangeToDeleteBackwards(const std::u16string& text,
                                                  size_t cursor_position) {
   // Delete one code point, which may be two UTF-16 words.
   size_t previous_grapheme_index =
@@ -85,24 +84,10 @@ gfx::Range PlatformStyle::RangeToDeleteBackwards(const base::string16& text,
   return gfx::Range(cursor_position, previous_grapheme_index);
 }
 
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 
-#if !defined(DESKTOP_LINUX)
-// static
-void PlatformStyle::ApplyLabelButtonTextStyle(
-    Label* label,
-    ButtonColorByState* color_by_state) {
-  ButtonColorByState& colors = *color_by_state;
-  colors[Button::STATE_NORMAL] = kStyleButtonTextColor;
-  colors[Button::STATE_HOVERED] = kStyleButtonTextColor;
-  colors[Button::STATE_PRESSED] = kStyleButtonTextColor;
-
-  label->SetShadows(gfx::ShadowValues(
-      1, gfx::ShadowValue(gfx::Vector2d(0, 1), 0, kStyleButtonShadowColor)));
-}
-#endif
-
-#if !defined(DESKTOP_LINUX)
+#if !BUILDFLAG(ENABLE_DESKTOP_AURA) || \
+    (!defined(OS_LINUX) && !defined(OS_CHROMEOS))
 // static
 std::unique_ptr<Border> PlatformStyle::CreateThemedLabelButtonBorder(
     LabelButton* button) {

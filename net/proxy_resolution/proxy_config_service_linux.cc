@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <map>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -28,6 +29,7 @@
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/timer/timer.h"
 #include "net/base/proxy_server.h"
@@ -39,6 +41,23 @@
 namespace net {
 
 namespace {
+
+// This turns all rules with a hostname into wildcard matches, which will
+// match not just the indicated hostname but also any hostname that ends with
+// it.
+void RewriteRulesForSuffixMatching(ProxyBypassRules* out) {
+  // Prepend a wildcard (*) to any hostname based rules, provided it isn't an IP
+  // address.
+  for (size_t i = 0; i < out->rules().size(); ++i) {
+    if (!out->rules()[i]->IsHostnamePatternRule())
+      continue;
+
+    const SchemeHostPortMatcherHostnamePatternRule* prev_rule =
+        static_cast<const SchemeHostPortMatcherHostnamePatternRule*>(
+            out->rules()[i].get());
+    out->ReplaceRule(i, prev_rule->GenerateSuffixMatchingRule());
+  }
+}
 
 // Given a proxy hostname from a setting, returns that hostname with
 // an appropriate proxy server scheme prefix.
@@ -83,7 +102,7 @@ std::string FixupProxyHostScheme(ProxyServer::Scheme scheme,
 }
 
 ProxyConfigWithAnnotation GetConfigOrDirect(
-    const base::Optional<ProxyConfigWithAnnotation>& optional_config) {
+    const absl::optional<ProxyConfigWithAnnotation>& optional_config) {
   if (optional_config)
     return optional_config.value();
 
@@ -124,7 +143,7 @@ bool ProxyConfigServiceLinux::Delegate::GetProxyFromEnvVar(
                                      result_server);
 }
 
-base::Optional<ProxyConfigWithAnnotation>
+absl::optional<ProxyConfigWithAnnotation>
 ProxyConfigServiceLinux::Delegate::GetConfigFromEnv() {
   ProxyConfig config;
 
@@ -195,12 +214,13 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromEnv() {
     return !no_proxy.empty()
                ? ProxyConfigWithAnnotation(
                      config, NetworkTrafficAnnotationTag(traffic_annotation_))
-               : base::Optional<ProxyConfigWithAnnotation>();
+               : absl::optional<ProxyConfigWithAnnotation>();
   }
   // Note that this uses "suffix" matching. So a bypass of "google.com"
   // is understood to mean a bypass of "*google.com".
-  config.proxy_rules().bypass_rules.ParseFromString(
-      no_proxy, ProxyBypassRules::ParseFormat::kHostnameSuffixMatching);
+  config.proxy_rules().bypass_rules.ParseFromString(no_proxy);
+  RewriteRulesForSuffixMatching(&config.proxy_rules().bypass_rules);
+
   return ProxyConfigWithAnnotation(
       config, NetworkTrafficAnnotationTag(traffic_annotation_));
 }
@@ -381,9 +401,7 @@ class SettingGetterImplGSettings
     return false;
   }
 
-  ProxyBypassRules::ParseFormat GetBypassListFormat() override {
-    return ProxyBypassRules::ParseFormat::kDefault;
-  }
+  bool UseSuffixMatching() override { return false; }
 
  private:
   bool GetStringByPath(GSettings* client,
@@ -600,7 +618,7 @@ class SettingGetterImplKDE : public ProxyConfigServiceLinux::SettingGetter {
 
     constexpr base::TaskTraits kTraits = {base::TaskPriority::USER_VISIBLE,
                                           base::MayBlock()};
-    file_task_runner_ = base::CreateSequencedTaskRunnerWithTraits(kTraits);
+    file_task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(kTraits);
 
     // The initial read is done on the current thread, not
     // |file_task_runner_|, since we will need to have it for
@@ -635,8 +653,9 @@ class SettingGetterImplKDE : public ProxyConfigServiceLinux::SettingGetter {
     }
     notify_delegate_ = delegate;
     inotify_watcher_ = base::FileDescriptorWatcher::WatchReadable(
-        inotify_fd_, base::Bind(&SettingGetterImplKDE::OnChangeNotification,
-                                base::Unretained(this)));
+        inotify_fd_,
+        base::BindRepeating(&SettingGetterImplKDE::OnChangeNotification,
+                            base::Unretained(this)));
     // Simulate a change to avoid possibly losing updates before this point.
     OnChangeNotification();
     return true;
@@ -673,9 +692,7 @@ class SettingGetterImplKDE : public ProxyConfigServiceLinux::SettingGetter {
 
   bool BypassListIsReversed() override { return reversed_bypass_list_; }
 
-  ProxyBypassRules::ParseFormat GetBypassListFormat() override {
-    return ProxyBypassRules::ParseFormat::kHostnameSuffixMatching;
-  }
+  bool UseSuffixMatching() override { return true; }
 
  private:
   void ResetCachedSettings() {
@@ -809,6 +826,7 @@ class SettingGetterImplKDE : public ProxyConfigServiceLinux::SettingGetter {
       ResolveIndirect(PROXY_HTTP_HOST);
       ResolveIndirect(PROXY_HTTPS_HOST);
       ResolveIndirect(PROXY_FTP_HOST);
+      ResolveIndirect(PROXY_SOCKS_HOST);
       ResolveIndirectList(PROXY_IGNORE_HOSTS);
     }
     if (auto_no_pac_) {
@@ -1022,7 +1040,7 @@ bool ProxyConfigServiceLinux::Delegate::GetProxyFromSettings(
   return false;
 }
 
-base::Optional<ProxyConfigWithAnnotation>
+absl::optional<ProxyConfigWithAnnotation>
 ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
   ProxyConfig config;
 
@@ -1030,7 +1048,7 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
   if (!setting_getter_->GetString(SettingGetter::PROXY_MODE, &mode)) {
     // We expect this to always be set, so if we don't see it then we probably
     // have a gsettings problem, and so we don't have a valid proxy config.
-    return base::nullopt;
+    return absl::nullopt;
   }
   if (mode == "none") {
     // Specifically specifies no proxy.
@@ -1049,7 +1067,7 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
           pac_url_str = "file://" + pac_url_str;
         GURL pac_url(pac_url_str);
         if (!pac_url.is_valid())
-          return base::nullopt;
+          return absl::nullopt;
         config.set_pac_url(pac_url);
         return ProxyConfigWithAnnotation(
             config, NetworkTrafficAnnotationTag(traffic_annotation_));
@@ -1062,7 +1080,7 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
 
   if (mode != "manual") {
     // Mode is unrecognized.
-    return base::nullopt;
+    return absl::nullopt;
   }
   bool use_http_proxy;
   if (setting_getter_->GetBool(SettingGetter::PROXY_USE_HTTP_PROXY,
@@ -1126,7 +1144,7 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
 
   if (config.proxy_rules().empty()) {
     // Manual mode but we couldn't parse any rules.
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   // Check for authentication, just so we can warn.
@@ -1141,16 +1159,19 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
   }
 
   // Now the bypass list.
-  auto format = setting_getter_->GetBypassListFormat();
-
   std::vector<std::string> ignore_hosts_list;
   config.proxy_rules().bypass_rules.Clear();
   if (setting_getter_->GetStringList(SettingGetter::PROXY_IGNORE_HOSTS,
                                      &ignore_hosts_list)) {
     for (const auto& rule : ignore_hosts_list) {
-      config.proxy_rules().bypass_rules.AddRuleFromString(rule, format);
+      config.proxy_rules().bypass_rules.AddRuleFromString(rule);
     }
   }
+
+  if (setting_getter_->UseSuffixMatching()) {
+    RewriteRulesForSuffixMatching(&config.proxy_rules().bypass_rules);
+  }
+
   // Note that there are no settings with semantics corresponding to
   // bypass of local names in GNOME. In KDE, "<local>" is supported
   // as a hostname rule.
@@ -1164,8 +1185,8 @@ ProxyConfigServiceLinux::Delegate::GetConfigFromSettings() {
 
 ProxyConfigServiceLinux::Delegate::Delegate(
     std::unique_ptr<base::Environment> env_var_getter,
-    base::Optional<std::unique_ptr<SettingGetter>> setting_getter,
-    base::Optional<NetworkTrafficAnnotationTag> traffic_annotation)
+    absl::optional<std::unique_ptr<SettingGetter>> setting_getter,
+    absl::optional<NetworkTrafficAnnotationTag> traffic_annotation)
     : env_var_getter_(std::move(env_var_getter)) {
   if (traffic_annotation) {
     traffic_annotation_ =
@@ -1197,7 +1218,8 @@ ProxyConfigServiceLinux::Delegate::Delegate(
     case base::nix::DESKTOP_ENVIRONMENT_KDE3:
     case base::nix::DESKTOP_ENVIRONMENT_KDE4:
     case base::nix::DESKTOP_ENVIRONMENT_KDE5:
-      setting_getter_.reset(new SettingGetterImplKDE(env_var_getter_.get()));
+      setting_getter_ =
+          std::make_unique<SettingGetterImplKDE>(env_var_getter_.get());
       break;
     case base::nix::DESKTOP_ENVIRONMENT_XFCE:
     case base::nix::DESKTOP_ENVIRONMENT_OTHER:
@@ -1227,7 +1249,7 @@ void ProxyConfigServiceLinux::Delegate::SetUpAndFetchInitialConfig(
   // cached_config_, where GetLatestProxyConfig() running on the main TaskRunner
   // will expect to find it. This is safe to do because we return
   // before this ProxyConfigServiceLinux is passed on to
-  // the ProxyResolutionService.
+  // the ConfiguredProxyResolutionService.
 
   // Note: It would be nice to prioritize environment variables
   // and only fall back to gsettings if env vars were unset. But
@@ -1235,7 +1257,7 @@ void ProxyConfigServiceLinux::Delegate::SetUpAndFetchInitialConfig(
   // does so even if the proxy mode is set to auto, which would
   // mislead us.
 
-  cached_config_ = base::nullopt;
+  cached_config_ = absl::nullopt;
   if (setting_getter_ && setting_getter_->Init(glib_task_runner)) {
     cached_config_ = GetConfigFromSettings();
   }
@@ -1331,7 +1353,7 @@ void ProxyConfigServiceLinux::Delegate::OnCheckProxyConfigSettings() {
   scoped_refptr<base::SequencedTaskRunner> required_loop =
       setting_getter_->GetNotificationTaskRunner();
   DCHECK(!required_loop.get() || required_loop->RunsTasksInCurrentSequence());
-  base::Optional<ProxyConfigWithAnnotation> new_config =
+  absl::optional<ProxyConfigWithAnnotation> new_config =
       GetConfigFromSettings();
 
   // See if it is different from what we had before.
@@ -1352,7 +1374,7 @@ void ProxyConfigServiceLinux::Delegate::OnCheckProxyConfigSettings() {
 }
 
 void ProxyConfigServiceLinux::Delegate::SetNewProxyConfig(
-    const base::Optional<ProxyConfigWithAnnotation>& new_config) {
+    const absl::optional<ProxyConfigWithAnnotation>& new_config) {
   DCHECK(main_task_runner_->RunsTasksInCurrentSequence());
   VLOG(1) << "Proxy configuration changed";
   cached_config_ = new_config;
@@ -1389,8 +1411,8 @@ void ProxyConfigServiceLinux::Delegate::OnDestroy() {
 
 ProxyConfigServiceLinux::ProxyConfigServiceLinux()
     : delegate_(new Delegate(base::Environment::Create(),
-                             base::nullopt,
-                             base::nullopt)) {}
+                             absl::nullopt,
+                             absl::nullopt)) {}
 
 ProxyConfigServiceLinux::~ProxyConfigServiceLinux() {
   delegate_->PostDestroyTask();
@@ -1400,7 +1422,7 @@ ProxyConfigServiceLinux::ProxyConfigServiceLinux(
     std::unique_ptr<base::Environment> env_var_getter,
     const NetworkTrafficAnnotationTag& traffic_annotation)
     : delegate_(new Delegate(std::move(env_var_getter),
-                             base::nullopt,
+                             absl::nullopt,
                              traffic_annotation)) {}
 
 ProxyConfigServiceLinux::ProxyConfigServiceLinux(

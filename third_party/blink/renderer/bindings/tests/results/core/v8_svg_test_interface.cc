@@ -17,7 +17,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_configuration.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/html/custom/v0_custom_element_processing_stack.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -86,10 +85,8 @@ static void TypeAttributeSetter(
 
   SVGTestInterface* impl = V8SVGTestInterface::ToImpl(holder);
 
-  V0CustomElementProcessingStack::CallbackDeliveryScope delivery_scope;
-
   // Prepare the value to be set.
-  V8StringResource<> cpp_value = v8_value;
+  V8StringResource<> cpp_value{ v8_value };
   if (!cpp_value.Prepare())
     return;
 
@@ -113,10 +110,6 @@ void V8SVGTestInterface::TypeAttributeSetterCallback(
   svg_test_interface_v8_internal::TypeAttributeSetter(v8_value, info);
 }
 
-static constexpr V8DOMConfiguration::AccessorConfiguration kV8SVGTestInterfaceAccessors[] = {
-    { "type", V8SVGTestInterface::TypeAttributeGetterCallback, V8SVGTestInterface::TypeAttributeSetterCallback, V8PrivateProperty::kNoCachedAccessor, static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAlwaysCallGetter, V8DOMConfiguration::kAllWorlds },
-};
-
 static void InstallV8SVGTestInterfaceTemplate(
     v8::Isolate* isolate,
     const DOMWrapperWorld& world,
@@ -132,9 +125,14 @@ static void InstallV8SVGTestInterfaceTemplate(
   ALLOW_UNUSED_LOCAL(prototype_template);
 
   // Register IDL constants, attributes and operations.
+  static constexpr V8DOMConfiguration::AccessorConfiguration
+  kAccessorConfigurations[] = {
+      { "type", V8SVGTestInterface::TypeAttributeGetterCallback, V8SVGTestInterface::TypeAttributeSetterCallback, static_cast<unsigned>(V8PrivateProperty::CachedAccessor::kNone), static_cast<v8::PropertyAttribute>(v8::None), V8DOMConfiguration::kOnPrototype, V8DOMConfiguration::kCheckHolder, V8DOMConfiguration::kCheckAccess, V8DOMConfiguration::kCheckAccess, V8DOMConfiguration::kHasSideEffect, V8DOMConfiguration::kAllWorlds },
+  };
   V8DOMConfiguration::InstallAccessors(
       isolate, world, instance_template, prototype_template, interface_template,
-      signature, kV8SVGTestInterfaceAccessors, base::size(kV8SVGTestInterfaceAccessors));
+      signature, kAccessorConfigurations,
+      base::size(kAccessorConfigurations));
 
   // Custom signature
 
@@ -178,16 +176,6 @@ v8::Local<v8::Object> V8SVGTestInterface::FindInstanceInPrototypeChain(
 SVGTestInterface* V8SVGTestInterface::ToImplWithTypeCheck(
     v8::Isolate* isolate, v8::Local<v8::Value> value) {
   return HasInstance(value, isolate) ? ToImpl(v8::Local<v8::Object>::Cast(value)) : nullptr;
-}
-
-SVGTestInterface* NativeValueTraits<SVGTestInterface>::NativeValue(
-    v8::Isolate* isolate, v8::Local<v8::Value> value, ExceptionState& exception_state) {
-  SVGTestInterface* native_value = V8SVGTestInterface::ToImplWithTypeCheck(isolate, value);
-  if (!native_value) {
-    exception_state.ThrowTypeError(ExceptionMessages::FailedToConvertJSValue(
-        "SVGTestInterface"));
-  }
-  return native_value;
 }
 
 }  // namespace blink

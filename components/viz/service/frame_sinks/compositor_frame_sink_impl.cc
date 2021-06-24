@@ -7,25 +7,25 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "ui/gfx/overlay_transform.h"
 
 namespace viz {
 
 CompositorFrameSinkImpl::CompositorFrameSinkImpl(
     FrameSinkManagerImpl* frame_sink_manager,
     const FrameSinkId& frame_sink_id,
-    mojom::CompositorFrameSinkRequest request,
-    mojom::CompositorFrameSinkClientPtr client)
+    mojo::PendingReceiver<mojom::CompositorFrameSink> receiver,
+    mojo::PendingRemote<mojom::CompositorFrameSinkClient> client)
     : compositor_frame_sink_client_(std::move(client)),
-      compositor_frame_sink_binding_(this, std::move(request)),
+      compositor_frame_sink_receiver_(this, std::move(receiver)),
       support_(std::make_unique<CompositorFrameSinkSupport>(
           compositor_frame_sink_client_.get(),
           frame_sink_manager,
           frame_sink_id,
-          false /* is_root */,
-          true /* needs_sync_points */)) {
-  compositor_frame_sink_binding_.set_connection_error_handler(
+          false /* is_root */)) {
+  compositor_frame_sink_receiver_.set_disconnect_handler(
       base::BindOnce(&CompositorFrameSinkImpl::OnClientConnectionLost,
                      base::Unretained(this)));
 }
@@ -43,8 +43,10 @@ void CompositorFrameSinkImpl::SetWantsAnimateOnlyBeginFrames() {
 void CompositorFrameSinkImpl::SubmitCompositorFrame(
     const LocalSurfaceId& local_surface_id,
     CompositorFrame frame,
-    base::Optional<HitTestRegionList> hit_test_region_list,
+    absl::optional<HitTestRegionList> hit_test_region_list,
     uint64_t submit_time) {
+  // Non-root surface frames should not have display transform hint.
+  DCHECK_EQ(gfx::OVERLAY_TRANSFORM_NONE, frame.metadata.display_transform_hint);
   SubmitCompositorFrameInternal(local_surface_id, std::move(frame),
                                 std::move(hit_test_region_list), submit_time,
                                 SubmitCompositorFrameSyncCallback());
@@ -53,7 +55,7 @@ void CompositorFrameSinkImpl::SubmitCompositorFrame(
 void CompositorFrameSinkImpl::SubmitCompositorFrameSync(
     const LocalSurfaceId& local_surface_id,
     CompositorFrame frame,
-    base::Optional<HitTestRegionList> hit_test_region_list,
+    absl::optional<HitTestRegionList> hit_test_region_list,
     uint64_t submit_time,
     SubmitCompositorFrameSyncCallback callback) {
   SubmitCompositorFrameInternal(local_surface_id, std::move(frame),
@@ -64,7 +66,7 @@ void CompositorFrameSinkImpl::SubmitCompositorFrameSync(
 void CompositorFrameSinkImpl::SubmitCompositorFrameInternal(
     const LocalSurfaceId& local_surface_id,
     CompositorFrame frame,
-    base::Optional<HitTestRegionList> hit_test_region_list,
+    absl::optional<HitTestRegionList> hit_test_region_list,
     uint64_t submit_time,
     mojom::CompositorFrameSink::SubmitCompositorFrameSyncCallback callback) {
   const auto result = support_->MaybeSubmitCompositorFrame(
@@ -77,8 +79,8 @@ void CompositorFrameSinkImpl::SubmitCompositorFrameInternal(
       CompositorFrameSinkSupport::GetSubmitResultAsString(result);
   DLOG(ERROR) << "SubmitCompositorFrame failed for " << local_surface_id
               << " because " << reason;
-  compositor_frame_sink_binding_.CloseWithReason(static_cast<uint32_t>(result),
-                                                 reason);
+  compositor_frame_sink_receiver_.ResetWithReason(static_cast<uint32_t>(result),
+                                                  reason);
   OnClientConnectionLost();
 }
 
@@ -88,18 +90,23 @@ void CompositorFrameSinkImpl::DidNotProduceFrame(
 }
 
 void CompositorFrameSinkImpl::DidAllocateSharedBitmap(
-    mojo::ScopedSharedBufferHandle buffer,
+    base::ReadOnlySharedMemoryRegion region,
     const SharedBitmapId& id) {
-  if (!support_->DidAllocateSharedBitmap(std::move(buffer), id)) {
+  if (!support_->DidAllocateSharedBitmap(std::move(region), id)) {
     DLOG(ERROR) << "DidAllocateSharedBitmap failed for duplicate "
                 << "SharedBitmapId";
-    compositor_frame_sink_binding_.Close();
+    compositor_frame_sink_receiver_.reset();
     OnClientConnectionLost();
   }
 }
 
 void CompositorFrameSinkImpl::DidDeleteSharedBitmap(const SharedBitmapId& id) {
   support_->DidDeleteSharedBitmap(id);
+}
+
+void CompositorFrameSinkImpl::InitializeCompositorFrameSinkType(
+    mojom::CompositorFrameSinkType type) {
+  support_->InitializeCompositorFrameSinkType(type);
 }
 
 void CompositorFrameSinkImpl::OnClientConnectionLost() {

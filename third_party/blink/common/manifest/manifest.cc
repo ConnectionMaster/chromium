@@ -17,6 +17,10 @@ bool Manifest::ImageResource::operator==(
   return src == other.src && type == other.type && sizes == other.sizes;
 }
 
+Manifest::ShortcutItem::ShortcutItem() = default;
+
+Manifest::ShortcutItem::~ShortcutItem() = default;
+
 Manifest::ShareTargetParams::ShareTargetParams() = default;
 
 Manifest::ShareTargetParams::~ShareTargetParams() = default;
@@ -29,23 +33,22 @@ Manifest::RelatedApplication::RelatedApplication() = default;
 
 Manifest::RelatedApplication::~RelatedApplication() = default;
 
-Manifest::Manifest()
-    : display(blink::kWebDisplayModeUndefined),
-      orientation(blink::kWebScreenOrientationLockDefault),
-      prefer_related_applications(false) {}
+Manifest::Manifest() = default;
 
 Manifest::Manifest(const Manifest& other) = default;
 
 Manifest::~Manifest() = default;
 
 bool Manifest::IsEmpty() const {
-  return name.is_null() && short_name.is_null() && start_url.is_empty() &&
-         display == blink::kWebDisplayModeUndefined &&
-         orientation == blink::kWebScreenOrientationLockDefault &&
-         icons.empty() && !share_target.has_value() &&
-         related_applications.empty() && !prefer_related_applications &&
-         !theme_color && !background_color && splash_screen_url.is_empty() &&
-         gcm_sender_id.is_null() && scope.is_empty();
+  return !name && !short_name && !id && start_url.is_empty() &&
+         display == blink::mojom::DisplayMode::kUndefined &&
+         display_override.empty() &&
+         orientation == device::mojom::ScreenOrientationLockType::DEFAULT &&
+         icons.empty() && shortcuts.empty() && !share_target.has_value() &&
+         related_applications.empty() && file_handlers.empty() &&
+         !prefer_related_applications && !theme_color && !background_color &&
+         !gcm_sender_id && scope.is_empty() && protocol_handlers.empty() &&
+         url_handlers.empty() && !note_taking.has_value() && !isolated_storage;
 }
 
 }  // namespace blink

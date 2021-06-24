@@ -2,33 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <EarlGrey/EarlGrey.h>
 #import <Foundation/Foundation.h>
 #import <XCTest/XCTest.h>
 
 #import "base/strings/sys_string_conversions.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
-#import "ios/chrome/test/app/chrome_test_util.h"
-#import "ios/chrome/test/app/tab_test_util.h"
-#import "ios/chrome/test/app/web_view_interaction_test_util.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/testing/earl_grey/earl_grey_test.h"
 #include "ios/web/public/test/element_selector.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
-using chrome_test_util::GetCurrentWebState;
-using chrome_test_util::TapWebViewElementWithIdInIframe;
-
 namespace {
-// Directory containing the |kLogoPagePath| and |kLogoPageImageSourcePath|
-// resources.
-const char kServerFilesDir[] = "ios/testing/data/http_server_files/";
-
 // Id of the "Start Logging" button.
 NSString* const kStartLoggingButtonId = @"start-logging";
 // Id of the "Stop Logging" button.
@@ -105,8 +96,6 @@ ElementSelector* StartLoggingButton() {
 
 - (void)setUp {
   [super setUp];
-  self.testServer->ServeFilesFromSourceDirectory(
-      base::FilePath(kServerFilesDir));
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
 }
 
@@ -114,17 +103,17 @@ ElementSelector* StartLoggingButton() {
 - (void)testStartStopLogging {
   [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
 
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
 
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kStartLoggingButtonId];
 
   ElementSelector* stopLoggingButton = [ElementSelector
       selectorWithElementID:base::SysNSStringToUTF8(kStopLoggingButtonId)];
-  [ChromeEarlGrey waitForWebViewContainingElement:stopLoggingButton];
+  [ChromeEarlGrey waitForWebStateContainingElement:stopLoggingButton];
 
-  [ChromeEarlGrey tapWebViewElementWithID:kStopLoggingButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kStopLoggingButtonId];
 
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
 }
 
 // Tests that log messages from a page's main frame are displayed.
@@ -132,37 +121,36 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
 
   // Start logging.
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey tapWebStateElementWithID:kStartLoggingButtonId];
 
   // Open console test page.
   [ChromeEarlGrey openNewTab];
   const GURL consoleTestsURL = self.testServer->GetURL(kConsolePage);
   [ChromeEarlGrey loadURL:consoleTestsURL];
   std::string debugButtonID = base::SysNSStringToUTF8(kDebugMessageButtonId);
-  [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:debugButtonID]];
+  [ChromeEarlGrey waitForWebStateContainingElement:
+                      [ElementSelector selectorWithElementID:debugButtonID]];
 
   // Log messages.
-  [ChromeEarlGrey tapWebViewElementWithID:kDebugMessageButtonId];
-  [ChromeEarlGrey tapWebViewElementWithID:kErrorMessageButtonId];
-  [ChromeEarlGrey tapWebViewElementWithID:kInfoMessageButtonId];
-  [ChromeEarlGrey tapWebViewElementWithID:kLogMessageButtonId];
-  [ChromeEarlGrey tapWebViewElementWithID:kWarningMessageButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kDebugMessageButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kErrorMessageButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kInfoMessageButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kLogMessageButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kWarningMessageButtonId];
 
-  chrome_test_util::SelectTabAtIndexInCurrentMode(0);
+  [ChromeEarlGrey selectTabAtIndex:0];
   // Validate messages and labels are displayed.
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kErrorMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kErrorMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kInfoMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kInfoMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kLogMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kLogMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kWarningMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kWarningMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kErrorMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kErrorMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kInfoMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kInfoMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kLogMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kLogMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kWarningMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kWarningMessageText];
 }
 
 // Tests that log messages from an iframe are displayed.
@@ -170,8 +158,8 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
 
   // Start logging.
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey tapWebStateElementWithID:kStartLoggingButtonId];
 
   // Open console test page.
   [ChromeEarlGrey openNewTab];
@@ -179,42 +167,36 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:consoleTestsURL];
 
   std::string debugButtonID = base::SysNSStringToUTF8(kDebugMessageButtonId);
-  [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:debugButtonID]];
+  [ChromeEarlGrey waitForWebStateContainingElement:
+                      [ElementSelector selectorWithElementID:debugButtonID]];
 
   // Log messages.
-  GREYAssertTrue(TapWebViewElementWithIdInIframe(debugButtonID),
-                 @"Failed to tap debug button.");
+  [ChromeEarlGrey tapWebStateElementInIFrameWithID:debugButtonID];
 
   std::string errorButtonID = base::SysNSStringToUTF8(kErrorMessageButtonId);
-  GREYAssertTrue(TapWebViewElementWithIdInIframe(errorButtonID),
-                 @"Failed to tap error button.");
+  [ChromeEarlGrey tapWebStateElementInIFrameWithID:errorButtonID];
 
   std::string infoButtonID = base::SysNSStringToUTF8(kInfoMessageButtonId);
-  GREYAssertTrue(TapWebViewElementWithIdInIframe(infoButtonID),
-                 @"Failed to tap info button.");
+  [ChromeEarlGrey tapWebStateElementInIFrameWithID:infoButtonID];
 
   std::string logButtonID = base::SysNSStringToUTF8(kLogMessageButtonId);
-  GREYAssertTrue(TapWebViewElementWithIdInIframe(logButtonID),
-                 @"Failed to tap log button.");
+  [ChromeEarlGrey tapWebStateElementInIFrameWithID:logButtonID];
 
   std::string warnButtonID = base::SysNSStringToUTF8(kWarningMessageButtonId);
-  GREYAssertTrue(TapWebViewElementWithIdInIframe(warnButtonID),
-                 @"Failed to tap warn button.");
+  [ChromeEarlGrey tapWebStateElementInIFrameWithID:warnButtonID];
 
-  chrome_test_util::SelectTabAtIndexInCurrentMode(0);
+  [ChromeEarlGrey selectTabAtIndex:0];
   // Validate messages and labels are displayed.
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kIFrameDebugMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kErrorMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kIFrameErrorMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kInfoMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kIFrameInfoMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kLogMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kIFrameLogMessageText];
-  [ChromeEarlGrey waitForWebViewContainingText:kWarningMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kIFrameWarningMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kIFrameDebugMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kErrorMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kIFrameErrorMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kInfoMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kIFrameInfoMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kLogMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kIFrameLogMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kWarningMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kIFrameWarningMessageText];
 }
 
 // Tests that log messages are correctly displayed from multiple tabs.
@@ -222,8 +204,8 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
 
   // Start logging.
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey tapWebStateElementWithID:kStartLoggingButtonId];
 
   // Open console test page.
   [ChromeEarlGrey openNewTab];
@@ -231,31 +213,31 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:consoleTestsURL];
   std::string logButtonID = base::SysNSStringToUTF8(kLogMessageButtonId);
   [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:logButtonID]];
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:logButtonID]];
 
   // Log a message and verify it is displayed.
-  [ChromeEarlGrey tapWebViewElementWithID:kDebugMessageButtonId];
-  chrome_test_util::SelectTabAtIndexInCurrentMode(0);
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageText];
+  [ChromeEarlGrey tapWebStateElementWithID:kDebugMessageButtonId];
+  [ChromeEarlGrey selectTabAtIndex:0];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageText];
 
   // Open console test page again.
   [ChromeEarlGrey openNewTab];
   [ChromeEarlGrey loadURL:consoleTestsURL];
   [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:logButtonID]];
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:logButtonID]];
 
   // Log another message and verify it is displayed.
-  [ChromeEarlGrey tapWebViewElementWithID:kLogMessageButtonId];
-  chrome_test_util::SelectTabAtIndexInCurrentMode(0);
-  [ChromeEarlGrey waitForWebViewContainingText:kLogMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kLogMessageText];
+  [ChromeEarlGrey tapWebStateElementWithID:kLogMessageButtonId];
+  [ChromeEarlGrey selectTabAtIndex:0];
+  [ChromeEarlGrey waitForWebStateContainingText:kLogMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kLogMessageText];
 
   // Ensure the log from the first tab still exists.
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageText];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageText];
 }
 
 // Tests that messages are cleared after stopping logging.
@@ -263,8 +245,8 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
 
   // Start logging.
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey tapWebStateElementWithID:kStartLoggingButtonId];
 
   // Open console test page.
   [ChromeEarlGrey openNewTab];
@@ -272,20 +254,20 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:consoleTestsURL];
   std::string logButtonID = base::SysNSStringToUTF8(kLogMessageButtonId);
   [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:logButtonID]];
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:logButtonID]];
 
   // Log a message and verify it is displayed.
-  [ChromeEarlGrey tapWebViewElementWithID:kDebugMessageButtonId];
-  chrome_test_util::SelectTabAtIndexInCurrentMode(0);
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageText];
+  [ChromeEarlGrey tapWebStateElementWithID:kDebugMessageButtonId];
+  [ChromeEarlGrey selectTabAtIndex:0];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageText];
 
   // Stop logging.
-  [ChromeEarlGrey tapWebViewElementWithID:kStopLoggingButtonId];
+  [ChromeEarlGrey tapWebStateElementWithID:kStopLoggingButtonId];
   // Ensure message was cleared.
-  [ChromeEarlGrey waitForWebViewNotContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewNotContainingText:kDebugMessageText];
+  [ChromeEarlGrey waitForWebStateNotContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateNotContainingText:kDebugMessageText];
 }
 
 // Tests that messages are cleared after a page reload.
@@ -293,8 +275,8 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
 
   // Start logging.
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
+  [ChromeEarlGrey waitForWebStateContainingElement:StartLoggingButton()];
+  [ChromeEarlGrey tapWebStateElementWithID:kStartLoggingButtonId];
 
   // Open console test page.
   [ChromeEarlGrey openNewTab];
@@ -302,45 +284,20 @@ ElementSelector* StartLoggingButton() {
   [ChromeEarlGrey loadURL:consoleTestsURL];
   std::string logButtonID = base::SysNSStringToUTF8(kLogMessageButtonId);
   [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:logButtonID]];
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:logButtonID]];
 
   // Log a message and verify it is displayed.
-  [ChromeEarlGrey tapWebViewElementWithID:kDebugMessageButtonId];
-  chrome_test_util::SelectTabAtIndexInCurrentMode(0);
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewContainingText:kDebugMessageText];
+  [ChromeEarlGrey tapWebStateElementWithID:kDebugMessageButtonId];
+  [ChromeEarlGrey selectTabAtIndex:0];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateContainingText:kDebugMessageText];
 
   // Reload page.
   [ChromeEarlGrey reload];
   // Ensure message was cleared.
-  [ChromeEarlGrey waitForWebViewNotContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewNotContainingText:kDebugMessageText];
-}
-
-// Tests that messages are cleared for a tab which is closed.
-- (void)testMessagesClearedOnTabClosure {
-  [ChromeEarlGrey loadURL:GURL(kChromeUIInspectURL)];
-
-  // Start logging.
-  [ChromeEarlGrey waitForWebViewContainingElement:StartLoggingButton()];
-  [ChromeEarlGrey tapWebViewElementWithID:kStartLoggingButtonId];
-
-  // Open console test page.
-  [ChromeEarlGrey openNewTab];
-  const GURL consoleTestsURL = self.testServer->GetURL(kConsolePage);
-  [ChromeEarlGrey loadURL:consoleTestsURL];
-  std::string debugButtonID = base::SysNSStringToUTF8(kDebugMessageButtonId);
-  [ChromeEarlGrey
-      waitForWebViewContainingElement:[ElementSelector
-                                          selectorWithElementID:debugButtonID]];
-
-  [ChromeEarlGrey tapWebViewElementWithID:kDebugMessageButtonId];
-  [ChromeEarlGrey closeCurrentTab];
-
-  // Validate message and label are not displayed.
-  [ChromeEarlGrey waitForWebViewNotContainingText:kDebugMessageLabel];
-  [ChromeEarlGrey waitForWebViewNotContainingText:kDebugMessageText];
+  [ChromeEarlGrey waitForWebStateNotContainingText:kDebugMessageLabel];
+  [ChromeEarlGrey waitForWebStateNotContainingText:kDebugMessageText];
 }
 
 @end

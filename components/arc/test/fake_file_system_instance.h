@@ -16,8 +16,10 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
-#include "components/arc/common/file_system.mojom.h"
-#include "storage/browser/fileapi/watcher_manager.h"
+#include "components/arc/mojom/file_system.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "storage/browser/file_system/watcher_manager.h"
 
 namespace arc {
 
@@ -39,6 +41,12 @@ namespace arc {
 // - GetChildDocuments()
 // - GetRecentDocuments()
 // - GetRoots()
+// - GetRootSize()
+// - DeleteDocument()
+// - RenameDocument()
+// - CreateDocument()
+// - CopyDocument()
+// - MoveDocument()
 // Fake documents for those functions can be set up by AddDocument() and fake
 // roots for those functions can be set up by AddRoot().
 //
@@ -54,6 +62,18 @@ namespace arc {
 class FakeFileSystemInstance : public mojom::FileSystemInstance {
  public:
   // Specification of a fake file available to content URL based methods.
+  using GetLastChangeTimeCallback =
+      base::RepeatingCallback<base::Time(const base::FilePath& path)>;
+
+  // TODO(risan): Consider if this is really needed, and whether we should just
+  // use the simpler option by using the original directory as is.
+  // The path for the top level directory considered in MediaStore.
+  static constexpr base::FilePath::CharType kFakeAndroidPath[] =
+      FILE_PATH_LITERAL("/android/path");
+
+  // Expected size in OpenThumbnail calls.
+  static constexpr gfx::Size kDefaultThumbnailSize = gfx::Size(360, 360);
+
   struct File {
     enum class Seekable {
       NO,
@@ -75,12 +95,27 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
     // Whether this file is seekable or not.
     Seekable seekable;
 
+    // Override of |content| length in bytes.
+    absl::optional<int64_t> size_override;
+
+    // The thumbnail of a file, which can be read by OpenThumbnail().
+    std::string thumbnail_content;
+
     File(const std::string& url,
          const std::string& content,
          const std::string& mime_type,
          Seekable seekable);
+    File(const std::string& url,
+         const std::string& content,
+         const std::string& mime_type,
+         Seekable seekable,
+         int64_t size_override);
     File(const File& that);
     ~File();
+
+    size_t size() const {
+      return size_override ? *size_override : content.size();
+    }
   };
 
   // Specification of a fake document available to documents provider based
@@ -109,6 +144,19 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
     // in file_system.mojom stops using uint64.
     uint64_t last_modified;
 
+    // Flag indicating that a document is deletable.
+    bool supports_delete;
+
+    // Flag indicating that a document can be renamed.
+    bool supports_rename;
+
+    // Flag indicating that a document is a directory that supports creation of
+    // new files within it.
+    bool dir_supports_create;
+
+    // Flag indicating that a document supports openDocumentThumbnail() call.
+    bool supports_thumbnail;
+
     Document(const std::string& authority,
              const std::string& document_id,
              const std::string& parent_document_id,
@@ -116,6 +164,17 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
              const std::string& mime_type,
              int64_t size,
              uint64_t last_modified);
+    Document(const std::string& authority,
+             const std::string& document_id,
+             const std::string& parent_document_id,
+             const std::string& display_name,
+             const std::string& mime_type,
+             int64_t size,
+             uint64_t last_modified,
+             bool supports_delete,
+             bool supports_rename,
+             bool dir_supports_create,
+             bool supports_thumbnail);
     Document(const Document& that);
     ~Document();
   };
@@ -135,10 +194,18 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
     // Title of this root.
     std::string title;
 
+    // Available bytes in this root.
+    int64_t available_bytes;
+
+    // Capacity bytes in this root.
+    int64_t capacity_bytes;
+
     Root(const std::string& authority,
          const std::string& root_id,
          const std::string& document_id,
-         const std::string& title);
+         const std::string& title,
+         int64_t available_bytes,
+         int64_t capacity_bytes);
     Root(const Root& that);
     ~Root();
   };
@@ -161,6 +228,20 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
   // Adds a root accessible by document provider based methods.
   void AddRoot(const Root& root);
 
+  // Fake the GetLastChangedTime implementation.
+  void SetGetLastChangeTimeCallback(GetLastChangeTimeCallback ctime_callback);
+
+  // Sets the path for the top level cros directory considered in MediaStore.
+  // TODO(risan): Consider to not use this (if we go without different android
+  // path approach). Another possibility to consider is probably to bind mount
+  // the directory in the caller test and do android_path conversion for the
+  // caller? In any case, this we don't want cros to be exposed to this instance
+  // that lives under Android.
+  void SetCrosDir(const base::FilePath& cros_dir);
+
+  // Sets the initial media store content.
+  void SetMediaStore(const std::map<base::FilePath, base::Time>& media_store);
+
   // Triggers watchers installed to a document.
   void TriggerWatchers(const std::string& authority,
                        const std::string& document_id,
@@ -180,6 +261,9 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
                       const std::string& root_document_id,
                       const base::FilePath& path);
 
+  // Returns true if there is a root with the given authority and root_id.
+  bool RootExists(const std::string& authority, const std::string& root_id);
+
   // Returns a document with the given authority and document_id.
   Document GetDocument(const std::string& authority,
                        const std::string& document_id);
@@ -196,6 +280,19 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
   // Returns the content written to the FD returned by OpenFileToWrite(), up to
   // |bytes| bytes.
   std::string GetFileContent(const std::string& url, size_t bytes);
+
+  // For clearing the list of handled requests
+  void clear_handled_requests() { handled_url_requests_.clear(); }
+
+  // For validating the url requests in testing.
+  const std::vector<mojom::OpenUrlsRequestPtr>& handledUrlRequests() const {
+    return handled_url_requests_;
+  }
+
+  // Returns the content of the fake media store index.
+  const std::map<base::FilePath, base::Time>& GetMediaStore() const {
+    return media_store_;
+  }
 
   // mojom::FileSystemInstance:
   void AddWatcher(const std::string& authority,
@@ -215,6 +312,9 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
                           const std::string& root_id,
                           GetRecentDocumentsCallback callback) override;
   void GetRoots(GetRootsCallback callback) override;
+  void GetRootSize(const std::string& authority,
+                   const std::string& root_id,
+                   GetRootSizeCallback callback) override;
   void DeleteDocument(const std::string& authority,
                       const std::string& document_id,
                       DeleteDocumentCallback callback) override;
@@ -236,17 +336,28 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
                     const std::string& source_parent_document_id,
                     const std::string& target_parent_document_id,
                     MoveDocumentCallback callback) override;
-  void InitDeprecated(mojom::FileSystemHostPtr host) override;
-  void Init(mojom::FileSystemHostPtr host, InitCallback callback) override;
+  void InitDeprecated(mojo::PendingRemote<mojom::FileSystemHost> host) override;
+  void Init(mojo::PendingRemote<mojom::FileSystemHost> host,
+            InitCallback callback) override;
   void OpenFileToRead(const std::string& url,
                       OpenFileToReadCallback callback) override;
   void OpenFileToWrite(const std::string& url,
                        OpenFileToWriteCallback callback) override;
+  void OpenThumbnail(const std::string& url,
+                     const gfx::Size& size_hint,
+                     OpenThumbnailCallback callback) override;
   void RemoveWatcher(int64_t watcher_id,
                      RemoveWatcherCallback callback) override;
   void RequestMediaScan(const std::vector<std::string>& paths) override;
+  void RequestFileRemovalScan(
+      const std::vector<std::string>& directory_paths) override;
+  void ReindexDirectory(const std::string& directory_path) override;
   void OpenUrlsWithPermission(mojom::OpenUrlsRequestPtr request,
                               OpenUrlsWithPermissionCallback callback) override;
+  void OpenUrlsWithPermissionAndWindowInfo(
+      mojom::OpenUrlsRequestPtr request,
+      mojom::WindowInfoPtr window_info,
+      OpenUrlsWithPermissionCallback callback) override;
 
  private:
   // A pair of an authority and a document ID which identifies the location
@@ -274,11 +385,14 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
   // read by calling GetFileContent() with the passed |url|.
   base::ScopedFD CreateStreamFileDescriptorToWrite(const std::string& url);
 
+  // Returns the cros file path for |android_path|.
+  base::FilePath GetCrosPath(const base::FilePath& android_path) const;
+
   THREAD_CHECKER(thread_checker_);
 
   base::ScopedTempDir temp_dir_;
 
-  mojom::FileSystemHostPtr host_;
+  mojo::Remote<mojom::FileSystemHost> host_remote_;
 
   // Mapping from a content URL to a file.
   std::map<std::string, File> files_;
@@ -297,8 +411,11 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
   // Mapping from a document key to its child documents.
   std::map<DocumentKey, std::vector<DocumentKey>> child_documents_;
 
-  // Mapping from a root to its recent documents.
+  // Mapping from a root key to its recent documents.
   std::map<RootKey, std::vector<Document>> recent_documents_;
+
+  // Mapping from a root key to a root.
+  std::map<RootKey, Root> roots_;
 
   // Mapping from a document key to its watchers.
   std::map<DocumentKey, std::set<int64_t>> document_to_watchers_;
@@ -306,8 +423,20 @@ class FakeFileSystemInstance : public mojom::FileSystemInstance {
   // Mapping from a watcher ID to a document key.
   std::map<int64_t, DocumentKey> watcher_to_document_;
 
+  // List of all OpenUrlsRequests made to the fake_file_system_instance
+  std::vector<mojom::OpenUrlsRequestPtr> handled_url_requests_;
+
   // List of roots added by AddRoot().
-  std::vector<Root> roots_;
+  std::vector<Root> roots_list_;
+
+  // Fake MediaStore database index.
+  std::map<base::FilePath, base::Time> media_store_;
+
+  // Fake GetLastChangedTime function callback.
+  GetLastChangeTimeCallback ctime_callback_;
+
+  // The path for the top level cros directory considered in MediaStore.
+  base::FilePath cros_dir_;
 
   int64_t next_watcher_id_ = 1;
   int get_child_documents_count_ = 0;

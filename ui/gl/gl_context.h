@@ -5,6 +5,7 @@
 #ifndef UI_GL_GL_CONTEXT_H_
 #define UI_GL_GL_CONTEXT_H_
 
+#include <map>
 #include <memory>
 #include <string>
 
@@ -12,10 +13,12 @@
 #include "base/cancelable_callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/synchronization/cancellation_flag.h"
+#include "base/memory/weak_ptr.h"
+#include "base/synchronization/atomic_flag.h"
 #include "build/build_config.h"
 #include "ui/gfx/extension_set.h"
 #include "ui/gl/gl_export.h"
+#include "ui/gl/gl_implementation_wrapper.h"
 #include "ui/gl/gl_share_group.h"
 #include "ui/gl/gl_state_restorer.h"
 #include "ui/gl/gl_workarounds.h"
@@ -36,9 +39,10 @@ class GLContextVirtual;
 namespace gl {
 
 struct CurrentGL;
-class DebugGLApi;
+class LogGLApi;
 struct DriverGL;
 class GLApi;
+class GLFence;
 class GLSurface;
 class GPUTiming;
 class GPUTimingClient;
@@ -65,20 +69,48 @@ enum ContextPriority {
   ContextPriorityHigh
 };
 
-struct GLContextAttribs {
-  GpuPreference gpu_preference = PreferIntegratedGpu;
+struct GL_EXPORT GLContextAttribs {
+  GLContextAttribs();
+  GLContextAttribs(const GLContextAttribs& other);
+  GLContextAttribs(GLContextAttribs&& other);
+  ~GLContextAttribs();
+
+  GLContextAttribs& operator=(const GLContextAttribs& other);
+  GLContextAttribs& operator=(GLContextAttribs&& other);
+
+  GpuPreference gpu_preference = GpuPreference::kLowPower;
   bool bind_generates_resource = true;
   bool webgl_compatibility_context = false;
   bool global_texture_share_group = false;
+  bool global_semaphore_share_group = false;
   bool robust_resource_initialization = false;
   bool robust_buffer_access = false;
   int client_major_es_version = 3;
   int client_minor_es_version = 0;
+  bool can_skip_validation = false;
+
+  // If true, and if supported (for EGL, this requires the robustness
+  // extension), set the reset notification strategy to lose context on reset.
+  // This setting can be changed independently of robust_buffer_access.
+  // (True by default to match previous behavior.)
+  bool lose_context_on_reset = true;
+
+  // If true, EGL_ANGLE_external_context_and_surface extension will be used to
+  // create ANGLE context from the current native EGL context.
+  bool angle_create_from_external_context = false;
+
+  // If true, an ANGLE external context will be created with
+  // EGL_EXTERNAL_CONTEXT_SAVE_STATE_ANGLE is true, so when ReleaseCurrent is
+  // called, ANGLE will restore the GL state of the native EGL context to the
+  // state when MakeCurrent was previously called.
+  bool angle_restore_external_context_state = false;
+
   ContextPriority context_priority = ContextPriorityMedium;
 };
 
 // Encapsulates an OpenGL context, hiding platform specific management.
-class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
+class GL_EXPORT GLContext : public base::RefCounted<GLContext>,
+                            public base::SupportsWeakPtr<GLContext> {
  public:
   explicit GLContext(GLShareGroup* share_group);
 
@@ -103,7 +135,7 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
                           const GLContextAttribs& attribs) = 0;
 
   // Makes the GL context and a surface current on the current thread.
-  virtual bool MakeCurrent(GLSurface* surface) = 0;
+  bool MakeCurrent(GLSurface* surface);
 
   // Releases this GL context and surface as current on the current thread.
   virtual void ReleaseCurrent(GLSurface* surface) = 0;
@@ -144,6 +176,10 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
   // (For an Android work-around only).
   virtual void SetUnbindFboOnMakeCurrent();
 
+  // Indicate that the context has become visible/invisible. This can be due to
+  // tab-switching, window minimization, etc.
+  virtual void SetVisibility(bool visibility) {}
+
   // Returns whether the current context supports the named extension. The
   // context must be current.
   bool HasExtension(const char* name);
@@ -159,7 +195,12 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
   // Returns the last GLContext made current, virtual or real.
   static GLContext* GetCurrent();
 
-  virtual bool WasAllocatedUsingRobustnessExtension();
+  // Returns the 'sticky' value of glGetGraphicsResetStatus, if available.
+  // 'sticky' implies that if glGetGraphicsResetStatus ever returns a value
+  // other than GL_NO_ERROR, that value is returned until the context is
+  // destroyed.
+  // The context must be current.
+  unsigned int CheckStickyGraphicsResetStatus();
 
   // Make this context current when used for context virtualization.
   bool MakeVirtuallyCurrent(GLContext* virtual_context, GLSurface* surface);
@@ -199,7 +240,7 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
   // context is made current.
   void DirtyVirtualContextState();
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Create a fence for all work submitted to this context so far, and return a
   // monotonically increasing handle to it. This returned handle never needs to
   // be freed. This method is used to create backpressure to throttle GL work
@@ -243,9 +284,18 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
   // Returns the last real (non-virtual) GLContext made current.
   static GLContext* GetRealCurrent();
 
+  virtual bool MakeCurrentImpl(GLSurface* surface) = 0;
+  virtual unsigned int CheckStickyGraphicsResetStatusImpl();
   virtual void ResetExtensions() = 0;
 
-  GLApi* gl_api() { return gl_api_.get(); }
+  GLApi* gl_api() { return gl_api_wrapper_->api(); }
+
+#if defined(OS_APPLE)
+  // Child classes are responsible for calling DestroyBackpressureFences during
+  // their destruction while a context is current.
+  bool HasBackpressureFences() const;
+  void DestroyBackpressureFences();
+#endif
 
  private:
   friend class base::RefCounted<GLContext>;
@@ -267,9 +317,8 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
   bool static_bindings_initialized_ = false;
   bool dynamic_bindings_initialized_ = false;
   std::unique_ptr<DriverGL> driver_gl_;
-  std::unique_ptr<GLApi> gl_api_;
-  std::unique_ptr<TraceGLApi> trace_gl_api_;
-  std::unique_ptr<DebugGLApi> debug_gl_api_;
+
+  std::unique_ptr<GL_IMPL_WRAPPER_TYPE(GL)> gl_api_wrapper_;
   std::unique_ptr<CurrentGL> current_gl_;
 
   // Copy of the real API (if one was created) for dynamic initialization
@@ -280,6 +329,14 @@ class GL_EXPORT GLContext : public base::RefCounted<GLContext> {
   bool state_dirtied_externally_ = false;
   std::unique_ptr<GLStateRestorer> state_restorer_;
   std::unique_ptr<GLVersionInfo> version_info_;
+  // This bit allows us to avoid virtual context state restoration in the case
+  // where this underlying context becomes lost.  https://crbug.com/1061442
+  bool context_lost_ = false;
+
+#if defined(OS_APPLE)
+  std::map<uint64_t, std::unique_ptr<GLFence>> backpressure_fences_;
+  uint64_t next_backpressure_fence_ = 0;
+#endif
 
   DISALLOW_COPY_AND_ASSIGN(GLContext);
 };

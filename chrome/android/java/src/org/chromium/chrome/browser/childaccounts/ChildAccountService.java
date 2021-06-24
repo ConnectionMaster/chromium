@@ -7,14 +7,23 @@ package org.chromium.chrome.browser.childaccounts;
 import android.accounts.Account;
 import android.app.Activity;
 
-import org.chromium.base.Callback;
+import androidx.annotation.MainThread;
+import androidx.annotation.NonNull;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.base.task.PostTask;
 import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.signin.AccountManagerFacade.ChildAccountStatusListener;
+import org.chromium.components.signin.AccountManagerFacadeProvider;
+import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.ChildAccountStatus;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 import org.chromium.ui.base.WindowAndroid;
+
+import java.util.List;
 
 /**
  * This class serves as a simple interface for querying the child account information. It has a
@@ -35,50 +44,55 @@ public class ChildAccountService {
     }
 
     /**
-     * Checks for the presence of child accounts on the device.
+     * Checks the child account status on device.
      *
-     * @param callback A callback which will be called with a @ChildAccountStatus.Status value.
+     * Since child accounts cannot share a device, the listener will be invoked with the status
+     * {@link ChildAccountStatus#NOT_CHILD} if there are no accounts or more than one account on
+     * device. If there is a single account on device, the listener will be passed to
+     * {@link AccountManagerFacade#checkChildAccountStatus} to check the child account status of
+     * the account.
+     *
+     * It should be safe to invoke this method before the native library is initialized (after
+     * AccountManagerFacade is set).
+     *
+     * @param accounts The list of accounts on device.
+     * @param listener The listener is called when the {@link ChildAccountStatus.Status} is ready.
      */
-    public static void checkChildAccountStatus(final Callback<Integer> callback) {
+    @MainThread
+    public static void checkChildAccountStatus(
+            @NonNull List<Account> accounts, @NonNull ChildAccountStatusListener listener) {
         ThreadUtils.assertOnUiThread();
-        final AccountManagerFacade accountManager = AccountManagerFacade.get();
-        accountManager.tryGetGoogleAccounts(accounts -> {
-            if (accounts.size() != 1) {
-                // Child accounts can't share a device.
-                callback.onResult(ChildAccountStatus.NOT_CHILD);
-            } else {
-                accountManager.checkChildAccountStatus(accounts.get(0), callback);
+        if (accounts.size() == 1) {
+            // Child accounts can't share a device.
+            AccountManagerFacadeProvider.getInstance().checkChildAccountStatus(
+                    accounts.get(0), listener);
+        } else {
+            listener.onStatusReady(ChildAccountStatus.NOT_CHILD);
+        }
+    }
+
+    @VisibleForTesting
+    @CalledByNative
+    static void reauthenticateChildAccount(
+            WindowAndroid windowAndroid, String accountName, final long nativeOnFailureCallback) {
+        ThreadUtils.assertOnUiThread();
+        final Activity activity = windowAndroid.getActivity().get();
+        if (activity == null) {
+            PostTask.postTask(UiThreadTaskTraits.DEFAULT, () -> {
+                ChildAccountServiceJni.get().onReauthenticationFailed(nativeOnFailureCallback);
+            });
+            return;
+        }
+        Account account = AccountUtils.createAccountFromName(accountName);
+        AccountManagerFacadeProvider.getInstance().updateCredentials(account, activity, success -> {
+            if (!success) {
+                ChildAccountServiceJni.get().onReauthenticationFailed(nativeOnFailureCallback);
             }
         });
     }
 
-    /**
-     * Set a callback to be called the next time a child account status change is received
-     * @param callback the callback to be called when the status changes.
-     */
-    public static void listenForStatusChange(Callback<Boolean> callback) {
-        nativeListenForChildStatusReceived(callback);
+    @NativeMethods
+    interface Natives {
+        void onReauthenticationFailed(long onFailureCallbackPtr);
     }
-
-    @CalledByNative
-    private static void reauthenticateChildAccount(
-            WindowAndroid windowAndroid, String accountName, final long nativeCallback) {
-        ThreadUtils.assertOnUiThread();
-
-        Activity activity = windowAndroid.getActivity().get();
-        if (activity == null) {
-            PostTask.postTask(UiThreadTaskTraits.DEFAULT,
-                    () -> nativeOnReauthenticationResult(nativeCallback, false));
-            return;
-        }
-
-        Account account = AccountManagerFacade.createAccountFromName(accountName);
-        AccountManagerFacade.get().updateCredentials(account, activity,
-                result -> nativeOnReauthenticationResult(nativeCallback, result));
-    }
-
-    private static native void nativeListenForChildStatusReceived(Callback<Boolean> callback);
-
-    private static native void nativeOnReauthenticationResult(
-            long callbackPtr, boolean reauthSuccessful);
 }

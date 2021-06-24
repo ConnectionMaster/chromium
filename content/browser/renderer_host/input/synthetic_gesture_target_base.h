@@ -5,9 +5,11 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_INPUT_SYNTHETIC_GESTURE_TARGET_BASE_H_
 #define CONTENT_BROWSER_RENDERER_HOST_INPUT_SYNTHETIC_GESTURE_TARGET_BASE_H_
 
+#include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "content/browser/renderer_host/input/synthetic_gesture_target.h"
+#include "ui/gfx/geometry/point_f.h"
 
 namespace ui {
 class LatencyInfo;
@@ -55,14 +57,14 @@ class SyntheticGestureTargetBase : public SyntheticGestureTarget {
   int GetMouseWheelMinimumGranularity() const override;
 
   void WaitForTargetAck(SyntheticGestureParams::GestureType type,
-                        SyntheticGestureParams::GestureSourceType source,
+                        content::mojom::GestureSourceType source,
                         base::OnceClosure callback) const override;
 
  protected:
   RenderWidgetHostImpl* render_widget_host() const { return host_; }
 
  private:
-  bool PointIsWithinContents(int x, int y) const;
+  bool PointIsWithinContents(gfx::PointF point) const;
 
   RenderWidgetHostImpl* host_;
 

@@ -32,7 +32,7 @@ bool FileModificationTime(const base::FilePath& path, timespec* mtime) {
     return false;
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   *mtime = st.st_mtimespec;
 #elif defined(OS_ANDROID)
   // This is needed to compile with traditional NDK headers.
@@ -76,7 +76,7 @@ bool MoveFileOrDirectory(const base::FilePath& source,
 bool IsRegularFile(const base::FilePath& path) {
   struct stat st;
   if (lstat(path.value().c_str(), &st) != 0) {
-    PLOG(ERROR) << "stat " << path.value();
+    PLOG_IF(ERROR, errno != ENOENT) << "stat " << path.value();
     return false;
   }
   return S_ISREG(st.st_mode);
@@ -86,11 +86,11 @@ bool IsDirectory(const base::FilePath& path, bool allow_symlinks) {
   struct stat st;
   if (allow_symlinks) {
     if (stat(path.value().c_str(), &st) != 0) {
-      PLOG(ERROR) << "stat " << path.value();
+      PLOG_IF(ERROR, errno != ENOENT) << "stat " << path.value();
       return false;
     }
   } else if (lstat(path.value().c_str(), &st) != 0) {
-    PLOG(ERROR) << "lstat " << path.value();
+    PLOG_IF(ERROR, errno != ENOENT) << "lstat " << path.value();
     return false;
   }
   return S_ISDIR(st.st_mode);

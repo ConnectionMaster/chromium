@@ -21,12 +21,13 @@
 
 using extensions::Extension;
 using extensions::Manifest;
+using extensions::mojom::ManifestLocation;
 
 namespace extension_test_util {
 
 scoped_refptr<Extension> LoadManifestUnchecked(const std::string& dir,
                                                const std::string& test_file,
-                                               Manifest::Location location,
+                                               ManifestLocation location,
                                                int extra_flags,
                                                const std::string& id,
                                                std::string* error) {
@@ -37,9 +38,10 @@ scoped_refptr<Extension> LoadManifestUnchecked(const std::string& dir,
              .AppendASCII(test_file);
 
   JSONFileValueDeserializer deserializer(path);
-  std::unique_ptr<base::Value> result = deserializer.Deserialize(NULL, error);
+  std::unique_ptr<base::Value> result =
+      deserializer.Deserialize(nullptr, error);
   if (!result)
-    return NULL;
+    return nullptr;
   const base::DictionaryValue* dict;
   CHECK(result->GetAsDictionary(&dict));
 
@@ -50,7 +52,7 @@ scoped_refptr<Extension> LoadManifestUnchecked(const std::string& dir,
 
 scoped_refptr<Extension> LoadManifestUnchecked(const std::string& dir,
                                                const std::string& test_file,
-                                               Manifest::Location location,
+                                               ManifestLocation location,
                                                int extra_flags,
                                                std::string* error) {
   return LoadManifestUnchecked(
@@ -59,7 +61,7 @@ scoped_refptr<Extension> LoadManifestUnchecked(const std::string& dir,
 
 scoped_refptr<Extension> LoadManifest(const std::string& dir,
                                       const std::string& test_file,
-                                      Manifest::Location location,
+                                      ManifestLocation location,
                                       int extra_flags) {
   std::string error;
   scoped_refptr<Extension> extension =
@@ -72,7 +74,8 @@ scoped_refptr<Extension> LoadManifest(const std::string& dir,
 scoped_refptr<Extension> LoadManifest(const std::string& dir,
                                       const std::string& test_file,
                                       int extra_flags) {
-  return LoadManifest(dir, test_file, Manifest::INVALID_LOCATION, extra_flags);
+  return LoadManifest(dir, test_file, ManifestLocation::kInvalidLocation,
+                      extra_flags);
 }
 
 scoped_refptr<Extension> LoadManifestStrict(const std::string& dir,
@@ -83,12 +86,6 @@ scoped_refptr<Extension> LoadManifestStrict(const std::string& dir,
 scoped_refptr<Extension> LoadManifest(const std::string& dir,
                                       const std::string& test_file) {
   return LoadManifest(dir, test_file, Extension::NO_FLAGS);
-}
-
-void SetGalleryURL(const GURL& new_url) {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  command_line->AppendSwitchASCII(switches::kAppsGalleryURL, new_url.spec());
-  extensions::ExtensionsClient::Get()->InitializeWebStoreUrls(command_line);
 }
 
 void SetGalleryUpdateURL(const GURL& new_url) {

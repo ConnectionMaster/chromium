@@ -9,8 +9,10 @@
 #include <string>
 
 #include "base/macros.h"
-#include "build/build_config.h"
 #include "content/public/utility/content_utility_client.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/system/message_pipe.h"
+#include "services/service_manager/public/mojom/service.mojom.h"
 
 namespace chromecast {
 namespace shell {
@@ -19,14 +21,16 @@ class CastContentUtilityClient : public content::ContentUtilityClient {
  public:
   static std::unique_ptr<CastContentUtilityClient> Create();
 
-  CastContentUtilityClient() {}
+  CastContentUtilityClient();
 
-#if !defined(OS_FUCHSIA)
-  // content::ContentUtilityClient implementation:
-  bool HandleServiceRequest(
+  // cast::ContentUtilityClient:
+  bool HandleServiceRequestDeprecated(
       const std::string& service_name,
-      service_manager::mojom::ServiceRequest request) override;
-#endif  // !defined(OS_FUCHSIA)
+      mojo::ScopedMessagePipeHandle service_pipe) override;
+
+  virtual bool HandleServiceRequest(
+      const std::string& service_name,
+      mojo::PendingReceiver<service_manager::mojom::Service> receiver);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CastContentUtilityClient);

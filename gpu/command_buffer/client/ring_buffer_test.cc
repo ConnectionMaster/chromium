@@ -11,9 +11,9 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/message_loop/message_loop.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "gpu/command_buffer/client/cmd_buffer_helper.h"
 #include "gpu/command_buffer/service/command_buffer_direct.h"
 #include "gpu/command_buffer/service/mocks.h"
@@ -85,13 +85,11 @@ class BaseRingBufferTest : public testing::Test {
 
   std::unique_ptr<int8_t[]> buffer_;
   int8_t* buffer_start_;
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 
-#ifndef _MSC_VER
 const unsigned int BaseRingBufferTest::kBaseOffset;
 const unsigned int BaseRingBufferTest::kBufferSize;
-#endif
 
 // Test fixture for RingBuffer test - Creates a RingBuffer, using a
 // CommandBufferHelper with a mock AsyncAPIInterface for its interface (calling

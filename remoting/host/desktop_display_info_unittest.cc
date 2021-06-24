@@ -5,6 +5,7 @@
 #include "remoting/host/desktop_display_info.h"
 
 #include "base/location.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace remoting {
@@ -20,7 +21,7 @@ class DesktopDisplayInfoTest : public testing::Test {
     display->dpi = 96;
     display->bpp = 24;
     display->is_default = false;
-    info_.AddDisplay(display);
+    info_.AddDisplay(std::unique_ptr<DisplayGeometry>(display));
   }
 
   void VerifyDisplayOffset(const base::Location& from_here,
@@ -82,8 +83,13 @@ TEST_F(DesktopDisplayInfoTest, DualDisplayLeft) {
   AddDisplay(0, 0, 500, 400);
   AddDisplay(-300, 0, 300, 200);
 
+#if defined(OS_APPLE)
+  VerifyDisplayOffset(FROM_HERE, 0, 0, 0);
+  VerifyDisplayOffset(FROM_HERE, 1, -300, 0);
+#else
   VerifyDisplayOffset(FROM_HERE, 0, 300, 0);
   VerifyDisplayOffset(FROM_HERE, 1, 0, 0);
+#endif  // defined(OS_APPLE)
 }
 
 // +---------o------------+
@@ -95,8 +101,13 @@ TEST_F(DesktopDisplayInfoTest, DualDisplayLeft_ReverseOrder) {
   AddDisplay(-300, 0, 300, 200);
   AddDisplay(0, 0, 500, 400);
 
+#if defined(OS_APPLE)
+  VerifyDisplayOffset(FROM_HERE, 0, -300, 0);
+  VerifyDisplayOffset(FROM_HERE, 1, 0, 0);
+#else
   VerifyDisplayOffset(FROM_HERE, 0, 0, 0);
   VerifyDisplayOffset(FROM_HERE, 1, 300, 0);
+#endif  // defined(OS_APPLE)
 }
 
 // +---------o------------+
@@ -109,9 +120,15 @@ TEST_F(DesktopDisplayInfoTest, TripleDisplayMiddle) {
   AddDisplay(0, 0, 500, 400);  // Default display.
   AddDisplay(500, 50, 400, 350);
 
+#if defined(OS_APPLE)
+  VerifyDisplayOffset(FROM_HERE, 0, -300, 0);
+  VerifyDisplayOffset(FROM_HERE, 1, 0, 0);
+  VerifyDisplayOffset(FROM_HERE, 2, 500, 50);
+#else
   VerifyDisplayOffset(FROM_HERE, 0, 0, 0);
   VerifyDisplayOffset(FROM_HERE, 1, 300, 0);
   VerifyDisplayOffset(FROM_HERE, 2, 800, 50);
+#endif  // defined(OS_APPLE)
 }
 
 //  x         o-----------+            - 0
@@ -128,9 +145,15 @@ TEST_F(DesktopDisplayInfoTest, Multimon3) {
   AddDisplay(300, 400, 600, 450);
   AddDisplay(-300, 350, 300, 200);
 
+#if defined(OS_APPLE)
+  VerifyDisplayOffset(FROM_HERE, 0, 0, 0);
+  VerifyDisplayOffset(FROM_HERE, 1, 300, 400);
+  VerifyDisplayOffset(FROM_HERE, 2, -300, 350);
+#else
   VerifyDisplayOffset(FROM_HERE, 0, 300, 0);
   VerifyDisplayOffset(FROM_HERE, 1, 600, 400);
   VerifyDisplayOffset(FROM_HERE, 2, 0, 350);
+#endif  // defined(OS_APPLE)
 }
 
 //  x                     +-------+               -- -50
@@ -159,6 +182,16 @@ TEST_F(DesktopDisplayInfoTest, Multimon7) {
   AddDisplay(70, 100, 65, 20);
   AddDisplay(0, 0, 80, 55);  // Default display.
 
+#if defined(OS_APPLE)
+  // Relative to display 6.
+  VerifyDisplayOffset(FROM_HERE, 0, 80, -10);
+  VerifyDisplayOffset(FROM_HERE, 1, 60, -50);
+  VerifyDisplayOffset(FROM_HERE, 2, -70, 40);
+  VerifyDisplayOffset(FROM_HERE, 3, 135, 50);
+  VerifyDisplayOffset(FROM_HERE, 4, -40, -20);
+  VerifyDisplayOffset(FROM_HERE, 5, 70, 100);
+  VerifyDisplayOffset(FROM_HERE, 6, 0, 0);
+#else
   VerifyDisplayOffset(FROM_HERE, 0, 150, 40);
   VerifyDisplayOffset(FROM_HERE, 1, 130, 0);
   VerifyDisplayOffset(FROM_HERE, 2, 0, 90);
@@ -166,6 +199,7 @@ TEST_F(DesktopDisplayInfoTest, Multimon7) {
   VerifyDisplayOffset(FROM_HERE, 4, 30, 30);
   VerifyDisplayOffset(FROM_HERE, 5, 140, 150);
   VerifyDisplayOffset(FROM_HERE, 6, 70, 50);
+#endif  // defined(OS_APPLE)
 }
 
 }  // namespace remoting

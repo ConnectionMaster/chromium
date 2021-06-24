@@ -25,7 +25,7 @@ BufferingConfig::~BufferingConfig() {
 
 BufferingState::BufferingState(const std::string& stream_id,
                                const scoped_refptr<BufferingConfig>& config,
-                               const base::Closure& state_changed_cb,
+                               const base::RepeatingClosure& state_changed_cb,
                                const HighLevelBufferCB& high_level_buffer_cb)
     : stream_id_(stream_id),
       config_(config),
@@ -130,7 +130,7 @@ BufferingState::State BufferingState::GetBufferLevelState() const {
   }
 
   base::TimeDelta buffer_duration = buffered_time_ - media_time_;
-  if (buffer_duration < config_->low_level())
+  if (buffer_duration <= config_->low_level())
     return kLowLevel;
   if (buffer_duration >= config_->high_level())
     return kHighLevel;

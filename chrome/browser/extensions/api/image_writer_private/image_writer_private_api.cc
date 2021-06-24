@@ -4,16 +4,16 @@
 
 #include "chrome/browser/extensions/api/image_writer_private/image_writer_private_api.h"
 
+#include <utility>
+
 #include "base/bind.h"
-#include "base/logging.h"
 #include "base/task/post_task.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_messages.h"
 #include "chrome/browser/extensions/api/image_writer_private/operation_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/render_process_host.h"
 #include "extensions/browser/api/file_handlers/app_file_handler_util.h"
 
 namespace image_writer_api = extensions::api::image_writer_private;
@@ -26,9 +26,10 @@ ImageWriterPrivateBaseFunction::~ImageWriterPrivateBaseFunction() {}
 
 void ImageWriterPrivateBaseFunction::OnComplete(bool success,
                                                 const std::string& error) {
-  if (!success)
-    error_ = error;
-  SendResponse(success);
+  if (success)
+    Respond(NoArguments());
+  else
+    Respond(Error(error));
 }
 
 ImageWriterPrivateWriteFromUrlFunction::
@@ -39,12 +40,13 @@ ImageWriterPrivateWriteFromUrlFunction::
     ~ImageWriterPrivateWriteFromUrlFunction() {
 }
 
-bool ImageWriterPrivateWriteFromUrlFunction::RunAsync() {
-#if defined(OS_CHROMEOS)
-  if (GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled) ||
-      GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageReadOnly)) {
-    error_ = image_writer::error::kDeviceWriteError;
-    return false;
+ExtensionFunction::ResponseAction
+ImageWriterPrivateWriteFromUrlFunction::Run() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  Profile* profile = Profile::FromBrowserContext(browser_context());
+  if (profile->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled) ||
+      profile->GetPrefs()->GetBoolean(prefs::kExternalStorageReadOnly)) {
+    return RespondNow(Error(image_writer::error::kDeviceWriteError));
   }
 #endif
   std::unique_ptr<image_writer_api::WriteFromUrl::Params> params(
@@ -52,22 +54,20 @@ bool ImageWriterPrivateWriteFromUrlFunction::RunAsync() {
   EXTENSION_FUNCTION_VALIDATE(params.get());
 
   GURL url(params->image_url);
-  if (!url.is_valid()) {
-    error_ = image_writer::error::kUrlInvalid;
-    return false;
-  }
+  if (!url.is_valid())
+    return RespondNow(Error(image_writer::error::kUrlInvalid));
 
   std::string hash;
   if (params->options.get() && params->options->image_hash.get()) {
     hash = *params->options->image_hash;
   }
 
-  image_writer::OperationManager::Get(GetProfile())
+  image_writer::OperationManager::Get(browser_context())
       ->StartWriteFromUrl(
           extension_id(), url, hash, params->storage_unit_id,
           base::BindOnce(&ImageWriterPrivateWriteFromUrlFunction::OnComplete,
                          this));
-  return true;
+  return RespondLater();
 }
 
 ImageWriterPrivateWriteFromFileFunction::
@@ -78,12 +78,13 @@ ImageWriterPrivateWriteFromFileFunction::
     ~ImageWriterPrivateWriteFromFileFunction() {
 }
 
-bool ImageWriterPrivateWriteFromFileFunction::RunAsync() {
-#if defined(OS_CHROMEOS)
-  if (GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled) ||
-      GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageReadOnly)) {
-    error_ = image_writer::error::kDeviceWriteError;
-    return false;
+ExtensionFunction::ResponseAction
+ImageWriterPrivateWriteFromFileFunction::Run() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  Profile* profile = Profile::FromBrowserContext(browser_context());
+  if (profile->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled) ||
+      profile->GetPrefs()->GetBoolean(prefs::kExternalStorageReadOnly)) {
+    return RespondNow(Error(image_writer::error::kDeviceWriteError));
   }
 #endif
   std::string filesystem_name;
@@ -96,17 +97,19 @@ bool ImageWriterPrivateWriteFromFileFunction::RunAsync() {
 
   base::FilePath path;
 
+  std::string error;
   if (!extensions::app_file_handler_util::ValidateFileEntryAndGetPath(
-          filesystem_name, filesystem_path,
-          render_frame_host()->GetProcess()->GetID(), &path, &error_))
-    return false;
+          filesystem_name, filesystem_path, source_process_id(), &path,
+          &error)) {
+    return RespondNow(Error(std::move(error)));
+  }
 
-  image_writer::OperationManager::Get(GetProfile())
+  image_writer::OperationManager::Get(browser_context())
       ->StartWriteFromFile(
           extension_id(), path, storage_unit_id,
           base::BindOnce(&ImageWriterPrivateWriteFromFileFunction::OnComplete,
                          this));
-  return true;
+  return RespondLater();
 }
 
 ImageWriterPrivateCancelWriteFunction::ImageWriterPrivateCancelWriteFunction() {
@@ -116,13 +119,13 @@ ImageWriterPrivateCancelWriteFunction::
     ~ImageWriterPrivateCancelWriteFunction() {
 }
 
-bool ImageWriterPrivateCancelWriteFunction::RunAsync() {
-  image_writer::OperationManager::Get(GetProfile())
+ExtensionFunction::ResponseAction ImageWriterPrivateCancelWriteFunction::Run() {
+  image_writer::OperationManager::Get(browser_context())
       ->CancelWrite(
           extension_id(),
           base::BindOnce(&ImageWriterPrivateCancelWriteFunction::OnComplete,
                          this));
-  return true;
+  return RespondLater();
 }
 
 ImageWriterPrivateDestroyPartitionsFunction::
@@ -133,12 +136,13 @@ ImageWriterPrivateDestroyPartitionsFunction::
     ~ImageWriterPrivateDestroyPartitionsFunction() {
 }
 
-bool ImageWriterPrivateDestroyPartitionsFunction::RunAsync() {
-#if defined(OS_CHROMEOS)
-  if (GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled) ||
-      GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageReadOnly)) {
-    error_ = image_writer::error::kDeviceWriteError;
-    return false;
+ExtensionFunction::ResponseAction
+ImageWriterPrivateDestroyPartitionsFunction::Run() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  Profile* profile = Profile::FromBrowserContext(browser_context());
+  if (profile->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled) ||
+      profile->GetPrefs()->GetBoolean(prefs::kExternalStorageReadOnly)) {
+    return RespondNow(Error(image_writer::error::kDeviceWriteError));
   }
 
 #endif
@@ -146,12 +150,12 @@ bool ImageWriterPrivateDestroyPartitionsFunction::RunAsync() {
       image_writer_api::DestroyPartitions::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params.get());
 
-  image_writer::OperationManager::Get(GetProfile())
+  image_writer::OperationManager::Get(browser_context())
       ->DestroyPartitions(
           extension_id(), params->storage_unit_id,
           base::BindOnce(
               &ImageWriterPrivateDestroyPartitionsFunction::OnComplete, this));
-  return true;
+  return RespondLater();
 }
 
 ImageWriterPrivateListRemovableStorageDevicesFunction::
@@ -162,30 +166,31 @@ ImageWriterPrivateListRemovableStorageDevicesFunction::
   ~ImageWriterPrivateListRemovableStorageDevicesFunction() {
 }
 
-bool ImageWriterPrivateListRemovableStorageDevicesFunction::RunAsync() {
-#if defined(OS_CHROMEOS)
-  if (GetProfile()->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled)) {
+ExtensionFunction::ResponseAction
+ImageWriterPrivateListRemovableStorageDevicesFunction::Run() {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  Profile* profile = Profile::FromBrowserContext(browser_context());
+  if (profile->GetPrefs()->GetBoolean(prefs::kExternalStorageDisabled)) {
     // Return an empty device list.
     OnDeviceListReady(base::MakeRefCounted<StorageDeviceList>());
-    return true;
+    return AlreadyResponded();
   }
 #endif
   RemovableStorageProvider::GetAllDevices(base::BindOnce(
       &ImageWriterPrivateListRemovableStorageDevicesFunction::OnDeviceListReady,
       this));
-  return true;
+  return RespondLater();
 }
 
 void ImageWriterPrivateListRemovableStorageDevicesFunction::OnDeviceListReady(
     scoped_refptr<StorageDeviceList> device_list) {
   const bool success = device_list.get() != nullptr;
   if (success) {
-    results_ = image_writer_api::ListRemovableStorageDevices::Results::Create(
-        device_list->data);
-    SendResponse(true);
+    Respond(ArgumentList(
+        image_writer_api::ListRemovableStorageDevices::Results::Create(
+            device_list->data)));
   } else {
-    error_ = image_writer::error::kDeviceListError;
-    SendResponse(false);
+    Respond(Error(image_writer::error::kDeviceListError));
   }
 }
 

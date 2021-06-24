@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests live edit feature.\n`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.addScriptTag('resources/edit-me.js');
   await TestRunner.addScriptTag('resources/edit-me-2.js');
@@ -45,53 +45,6 @@
       }
     },
 
-    function testLiveEditWhenPaused(next) {
-      SourcesTestRunner.showScriptSource(
-          'edit-me-when-paused.js', didShowScriptSource);
-
-      async function didShowScriptSource(sourceFrame) {
-        SourcesTestRunner.waitUntilPaused(paused);
-        var result = await TestRunner.evaluateInPageRemoteObject('f1()');
-        TestRunner.assertEquals(
-            '3', result.description, 'edited function returns wrong result');
-        next();
-      }
-
-      function paused(callFrames) {
-        replaceInSource(
-            panel.visibleView, 'return 1;', 'return 2;\n\n\n\n',
-            didEditScriptSource);
-      }
-
-      function didEditScriptSource() {
-        SourcesTestRunner.resumeExecution();
-      }
-    },
-
-    function testNoCrashWhenOnlyOneFunctionOnStack(next) {
-      SourcesTestRunner.showScriptSource(
-          'edit-me-when-paused.js', didShowScriptSource);
-
-      function didShowScriptSource(sourceFrame) {
-        SourcesTestRunner.waitUntilPaused(paused);
-        TestRunner.evaluateInPage('setTimeout(f1, 0)');
-      }
-
-      function paused(callFrames) {
-        SourcesTestRunner.captureStackTrace(callFrames);
-        replaceInSource(
-            panel.visibleView, 'debugger;', 'debugger;\n', didEditScriptSource);
-      }
-
-      function didEditScriptSource() {
-        SourcesTestRunner.resumeExecution(
-            SourcesTestRunner.waitUntilPaused.bind(
-                SourcesTestRunner,
-                SourcesTestRunner.resumeExecution.bind(
-                    SourcesTestRunner, next)));
-      }
-    },
-
     function testBreakpointsUpdated(next) {
       var testSourceFrame;
       SourcesTestRunner.showScriptSource('edit-me.js', didShowScriptSource);
@@ -101,7 +54,7 @@
         await SourcesTestRunner.waitUntilDebuggerPluginLoaded(sourceFrame);
         SourcesTestRunner.waitDebuggerPluginBreakpoints(sourceFrame)
             .then(breakpointAdded);
-        SourcesTestRunner.setBreakpoint(sourceFrame, 2, '', true);
+        await SourcesTestRunner.setBreakpoint(sourceFrame, 2, '', true);
       }
 
       function breakpointAdded() {
@@ -132,7 +85,7 @@
         await SourcesTestRunner.waitUntilDebuggerPluginLoaded(sourceFrame);
         SourcesTestRunner.waitDebuggerPluginBreakpoints(testSourceFrame)
             .then(breakpointAdded);
-        SourcesTestRunner.setBreakpoint(sourceFrame, 2, '', true);
+        await SourcesTestRunner.setBreakpoint(sourceFrame, 2, '', true);
       }
 
       function breakpointAdded() {

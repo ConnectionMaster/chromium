@@ -10,22 +10,29 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+
+#include <memory>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/containers/stack_container.h"
 #include "base/debug/alias.h"
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/rand_util.h"
+#include "base/task/current_thread.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "net/base/features.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
@@ -50,12 +57,12 @@
 #include "base/strings/utf_string_conversions.h"
 #endif  // defined(OS_ANDROID)
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
 // This was needed to debug crbug.com/640281.
 // TODO(zhongyi): Remove once the bug is resolved.
 #include <dlfcn.h>
 #include <pthread.h>
-#endif  // defined(OS_MACOSX) && !defined(OS_IOS)
+#endif  // defined(OS_MAC)
 
 namespace net {
 
@@ -69,38 +76,7 @@ const int kActivityMonitorMinimumSamplesForThroughputEstimate = 2;
 const base::TimeDelta kActivityMonitorMsThreshold =
     base::TimeDelta::FromMilliseconds(100);
 
-#if defined(OS_MACOSX)
-// When enabling multicast using setsockopt(IP_MULTICAST_IF) MacOS
-// requires passing IPv4 address instead of interface index. This function
-// resolves IPv4 address by interface index. The |address| is returned in
-// network order.
-int GetIPv4AddressFromIndex(int socket, uint32_t index, uint32_t* address) {
-  if (!index) {
-    *address = htonl(INADDR_ANY);
-    return OK;
-  }
-
-  sockaddr_in* result = nullptr;
-
-  ifreq ifr;
-  ifr.ifr_addr.sa_family = AF_INET;
-  if (!if_indextoname(index, ifr.ifr_name))
-    return MapSystemError(errno);
-  int rv = ioctl(socket, SIOCGIFADDR, &ifr);
-  if (rv == -1)
-    return MapSystemError(errno);
-  result = reinterpret_cast<sockaddr_in*>(&ifr.ifr_addr);
-
-  if (!result)
-    return ERR_ADDRESS_INVALID;
-
-  *address = result->sin_addr.s_addr;
-  return OK;
-}
-
-#endif  // OS_MACOSX
-
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
 
 // On OSX the file descriptor is guarded to detect the cause of
 // crbug.com/640281. guarded API is supported only on newer versions of OSX,
@@ -166,7 +142,7 @@ const unsigned int GUARD_DUP = 1u << 1;
 
 const guardid_t kSocketFdGuard = 0xD712BC0BC9A4EAD4;
 
-#endif  // defined(OS_MACOSX) && !defined(OS_IOS)
+#endif  // defined(OS_MAC)
 
 int GetSocketFDHash(int fd) {
   return fd ^ 1595649551;
@@ -196,14 +172,14 @@ UDPSocketPosix::UDPSocketPosix(DatagramSocket::BindType bind_type,
       write_async_timer_running_(false),
       write_async_outstanding_(0),
       read_buf_len_(0),
-      recv_from_address_(NULL),
+      recv_from_address_(nullptr),
       write_buf_len_(0),
       net_log_(NetLogWithSource::Make(net_log, NetLogSourceType::UDP_SOCKET)),
       bound_network_(NetworkChangeNotifier::kInvalidNetworkHandle),
-      experimental_recv_optimization_enabled_(false),
-      weak_factory_(this) {
-  net_log_.BeginEvent(NetLogEventType::SOCKET_ALIVE,
-                      source.ToEventParametersCallback());
+      always_update_bytes_received_(base::FeatureList::IsEnabled(
+          features::kUdpSocketPosixAlwaysUpdateBytesReceived)),
+      experimental_recv_optimization_enabled_(false) {
+  net_log_.BeginEventReferencingSource(NetLogEventType::SOCKET_ALIVE, source);
 }
 
 UDPSocketPosix::~UDPSocketPosix() {
@@ -216,14 +192,18 @@ int UDPSocketPosix::Open(AddressFamily address_family) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK_EQ(socket_, kInvalidSocket);
 
+  auto owned_socket_count = TryAcquireGlobalUDPSocketCount();
+  if (owned_socket_count.empty())
+    return ERR_INSUFFICIENT_RESOURCES;
+
   addr_family_ = ConvertAddressFamily(address_family);
   socket_ = CreatePlatformSocket(addr_family_, SOCK_DGRAM, 0);
   if (socket_ == kInvalidSocket)
     return MapSystemError(errno);
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-  PCHECK(change_fdguard_np(socket_, NULL, 0, &kSocketFdGuard,
-                           GUARD_CLOSE | GUARD_DUP, NULL) == 0);
-#endif  // defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
+  PCHECK(change_fdguard_np(socket_, nullptr, 0, &kSocketFdGuard,
+                           GUARD_CLOSE | GUARD_DUP, nullptr) == 0);
+#endif  // defined(OS_MAC)
   socket_hash_ = GetSocketFDHash(socket_);
   if (!base::SetNonBlocking(socket_)) {
     const int err = MapSystemError(errno);
@@ -232,10 +212,12 @@ int UDPSocketPosix::Open(AddressFamily address_family) {
   }
   if (tag_ != SocketTag())
     tag_.Apply(socket_);
+
+  owned_socket_count_ = std::move(owned_socket_count);
   return OK;
 }
 
-void UDPSocketPosix::ActivityMonitor::Increment(uint32_t bytes) {
+void UDPSocketPosix::ReceivedActivityMonitor::Increment(uint32_t bytes) {
   if (!bytes)
     return;
   bool timer_running = timer_.IsRunning();
@@ -252,23 +234,23 @@ void UDPSocketPosix::ActivityMonitor::Increment(uint32_t bytes) {
   }
   if (!timer_running) {
     timer_.Start(FROM_HERE, kActivityMonitorMsThreshold, this,
-                 &UDPSocketPosix::ActivityMonitor::OnTimerFired);
+                 &UDPSocketPosix::ReceivedActivityMonitor::OnTimerFired);
   }
 }
 
-void UDPSocketPosix::ActivityMonitor::Update() {
+void UDPSocketPosix::ReceivedActivityMonitor::Update() {
   if (!bytes_)
     return;
-  NetworkActivityMonitorIncrement(bytes_);
+  activity_monitor::IncrementBytesReceived(bytes_);
   bytes_ = 0;
 }
 
-void UDPSocketPosix::ActivityMonitor::OnClose() {
+void UDPSocketPosix::ReceivedActivityMonitor::OnClose() {
   timer_.Stop();
   Update();
 }
 
-void UDPSocketPosix::ActivityMonitor::OnTimerFired() {
+void UDPSocketPosix::ReceivedActivityMonitor::OnTimerFired() {
   increments_ = 0;
   if (!bytes_) {
     // Can happen if the socket has been idle and have had no
@@ -280,28 +262,20 @@ void UDPSocketPosix::ActivityMonitor::OnTimerFired() {
   Update();
 }
 
-void UDPSocketPosix::SentActivityMonitor::NetworkActivityMonitorIncrement(
-    uint32_t bytes) {
-  NetworkActivityMonitor::GetInstance()->IncrementBytesSent(bytes);
-}
-
-void UDPSocketPosix::ReceivedActivityMonitor::NetworkActivityMonitorIncrement(
-    uint32_t bytes) {
-  NetworkActivityMonitor::GetInstance()->IncrementBytesReceived(bytes);
-}
-
 void UDPSocketPosix::Close() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  owned_socket_count_.Reset();
 
   if (socket_ == kInvalidSocket)
     return;
 
   // Zero out any pending read/write callback state.
-  read_buf_ = NULL;
+  read_buf_.reset();
   read_buf_len_ = 0;
   read_callback_.Reset();
-  recv_from_address_ = NULL;
-  write_buf_ = NULL;
+  recv_from_address_ = nullptr;
+  write_buf_.reset();
   write_buf_len_ = 0;
   write_callback_.Reset();
   send_to_address_.reset();
@@ -314,11 +288,18 @@ void UDPSocketPosix::Close() {
   // Verify that |socket_| hasn't been corrupted. Needed to debug
   // crbug.com/906005.
   CHECK_EQ(socket_hash_, GetSocketFDHash(socket_));
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
+  // Attempt to clear errors on the socket so that they are not returned by
+  // close(). See https://crbug.com/1151048.
+  // TODO(ricea): Remove this if it doesn't work, or when the OS bug is fixed.
+  int value = 0;
+  socklen_t value_len = sizeof(value);
+  HANDLE_EINTR(getsockopt(socket_, SOL_SOCKET, SO_ERROR, &value, &value_len));
+
   PCHECK(IGNORE_EINTR(guarded_close_np(socket_, &kSocketFdGuard)) == 0);
 #else
   PCHECK(IGNORE_EINTR(close(socket_)) == 0);
-#endif  // defined(OS_MACOSX) && !defined(OS_IOS)
+#endif  // defined(OS_MAC)
 
   socket_ = kInvalidSocket;
   addr_family_ = 0;
@@ -326,7 +307,6 @@ void UDPSocketPosix::Close() {
   tag_ = SocketTag();
 
   write_async_timer_.Stop();
-  sent_activity_monitor_.OnClose();
   received_activity_monitor_.OnClose();
 }
 
@@ -364,9 +344,9 @@ int UDPSocketPosix::GetLocalAddress(IPEndPoint* address) const {
     if (!address->FromSockAddr(storage.addr, storage.addr_len))
       return ERR_ADDRESS_INVALID;
     local_address_ = std::move(address);
-    net_log_.AddEvent(
-        NetLogEventType::UDP_LOCAL_ADDRESS,
-        CreateNetLogUDPConnectCallback(local_address_.get(), bound_network_));
+    net_log_.AddEvent(NetLogEventType::UDP_LOCAL_ADDRESS, [&] {
+      return CreateNetLogUDPConnectParams(*local_address_, bound_network_);
+    });
   }
 
   *address = *local_address_;
@@ -376,7 +356,7 @@ int UDPSocketPosix::GetLocalAddress(IPEndPoint* address) const {
 int UDPSocketPosix::Read(IOBuffer* buf,
                          int buf_len,
                          CompletionOnceCallback callback) {
-  return RecvFrom(buf, buf_len, NULL, std::move(callback));
+  return RecvFrom(buf, buf_len, nullptr, std::move(callback));
 }
 
 int UDPSocketPosix::RecvFrom(IOBuffer* buf,
@@ -394,12 +374,12 @@ int UDPSocketPosix::RecvFrom(IOBuffer* buf,
   if (nread != ERR_IO_PENDING)
     return nread;
 
-  if (!base::MessageLoopCurrentForIO::Get()->WatchFileDescriptor(
+  if (!base::CurrentIOThread::Get()->WatchFileDescriptor(
           socket_, true, base::MessagePumpForIO::WATCH_READ,
           &read_socket_watcher_, &read_watcher_)) {
     PLOG(ERROR) << "WatchFileDescriptor failed on read";
     int result = MapSystemError(errno);
-    LogRead(result, NULL, 0, NULL);
+    LogRead(result, nullptr, 0, nullptr);
     return result;
   }
 
@@ -415,7 +395,7 @@ int UDPSocketPosix::Write(
     int buf_len,
     CompletionOnceCallback callback,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
-  return SendToOrWrite(buf, buf_len, NULL, std::move(callback));
+  return SendToOrWrite(buf, buf_len, nullptr, std::move(callback));
 }
 
 int UDPSocketPosix::SendTo(IOBuffer* buf,
@@ -439,12 +419,12 @@ int UDPSocketPosix::SendToOrWrite(IOBuffer* buf,
   if (result != ERR_IO_PENDING)
     return result;
 
-  if (!base::MessageLoopCurrentForIO::Get()->WatchFileDescriptor(
+  if (!base::CurrentIOThread::Get()->WatchFileDescriptor(
           socket_, true, base::MessagePumpForIO::WATCH_WRITE,
           &write_socket_watcher_, &write_watcher_)) {
     DVPLOG(1) << "WatchFileDescriptor failed on write";
     int result = MapSystemError(errno);
-    LogWrite(result, NULL, NULL);
+    LogWrite(result, nullptr, nullptr);
     return result;
   }
 
@@ -452,7 +432,7 @@ int UDPSocketPosix::SendToOrWrite(IOBuffer* buf,
   write_buf_len_ = buf_len;
   DCHECK(!send_to_address_.get());
   if (address) {
-    send_to_address_.reset(new IPEndPoint(*address));
+    send_to_address_ = std::make_unique<IPEndPoint>(*address);
   }
   write_callback_ = std::move(callback);
   return ERR_IO_PENDING;
@@ -460,8 +440,9 @@ int UDPSocketPosix::SendToOrWrite(IOBuffer* buf,
 
 int UDPSocketPosix::Connect(const IPEndPoint& address) {
   DCHECK_NE(socket_, kInvalidSocket);
-  net_log_.BeginEvent(NetLogEventType::UDP_CONNECT,
-                      CreateNetLogUDPConnectCallback(&address, bound_network_));
+  net_log_.BeginEvent(NetLogEventType::UDP_CONNECT, [&] {
+    return CreateNetLogUDPConnectParams(address, bound_network_);
+  });
   int rv = SetMulticastOptions();
   if (rv != OK)
     return rv;
@@ -502,7 +483,7 @@ int UDPSocketPosix::InternalConnect(const IPEndPoint& address) {
   if (rv < 0)
     return MapSystemError(errno);
 
-  remote_address_.reset(new IPEndPoint(address));
+  remote_address_ = std::make_unique<IPEndPoint>(address);
   return rv;
 }
 
@@ -645,13 +626,13 @@ int UDPSocketPosix::SetDoNotFragment() {
 }
 
 void UDPSocketPosix::SetMsgConfirm(bool confirm) {
-#if !defined(OS_MACOSX) && !defined(OS_IOS)
+#if !defined(OS_APPLE)
   if (confirm) {
     sendto_flags_ |= MSG_CONFIRM;
   } else {
     sendto_flags_ &= ~MSG_CONFIRM;
   }
-#endif  // !defined(OS_MACOSX) && !defined(OS_IOS)
+#endif  // !defined(OS_APPLE)
 }
 
 int UDPSocketPosix::AllowAddressReuse() {
@@ -666,7 +647,7 @@ int UDPSocketPosix::SetBroadcast(bool broadcast) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   int value = broadcast ? 1 : 0;
   int rv;
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // SO_REUSEPORT on OSX permits multiple processes to each receive
   // UDP multicast or broadcast datagrams destined for the bound
   // port.
@@ -676,7 +657,7 @@ int UDPSocketPosix::SetBroadcast(bool broadcast) {
   rv = setsockopt(socket_, SOL_SOCKET, SO_REUSEPORT, &value, sizeof(value));
   if (rv != 0)
     return MapSystemError(errno);
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_APPLE)
   rv = setsockopt(socket_, SOL_SOCKET, SO_BROADCAST, &value, sizeof(value));
 
   return rv == 0 ? OK : MapSystemError(errno);
@@ -740,9 +721,9 @@ void UDPSocketPosix::DidCompleteRead() {
   int result =
       InternalRecvFrom(read_buf_.get(), read_buf_len_, recv_from_address_);
   if (result != ERR_IO_PENDING) {
-    read_buf_ = NULL;
+    read_buf_.reset();
     read_buf_len_ = 0;
-    recv_from_address_ = NULL;
+    recv_from_address_ = nullptr;
     bool ok = read_socket_watcher_.StopWatchingFileDescriptor();
     DCHECK(ok);
     DoReadCallback(result);
@@ -765,12 +746,14 @@ void UDPSocketPosix::LogRead(int result,
 
     IPEndPoint address;
     bool is_address_valid = address.FromSockAddr(addr, addr_len);
-    net_log_.AddEvent(NetLogEventType::UDP_BYTES_RECEIVED,
-                      CreateNetLogUDPDataTranferCallback(
-                          result, bytes, is_address_valid ? &address : NULL));
+    NetLogUDPDataTransfer(net_log_, NetLogEventType::UDP_BYTES_RECEIVED, result,
+                          bytes, is_address_valid ? &address : nullptr);
   }
 
-  received_activity_monitor_.Increment(result);
+  if (always_update_bytes_received_)
+    activity_monitor::IncrementBytesReceived(result);
+  else
+    received_activity_monitor_.Increment(result);
 }
 
 void UDPSocketPosix::DidCompleteWrite() {
@@ -778,7 +761,7 @@ void UDPSocketPosix::DidCompleteWrite() {
       InternalSendTo(write_buf_.get(), write_buf_len_, send_to_address_.get());
 
   if (result != ERR_IO_PENDING) {
-    write_buf_ = NULL;
+    write_buf_.reset();
     write_buf_len_ = 0;
     send_to_address_.reset();
     write_socket_watcher_.StopWatchingFileDescriptor();
@@ -795,12 +778,9 @@ void UDPSocketPosix::LogWrite(int result,
   }
 
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(
-        NetLogEventType::UDP_BYTES_SENT,
-        CreateNetLogUDPDataTranferCallback(result, bytes, address));
+    NetLogUDPDataTransfer(net_log_, NetLogEventType::UDP_BYTES_SENT, result,
+                          bytes, address);
   }
-
-  sent_activity_monitor_.Increment(result);
 }
 
 int UDPSocketPosix::InternalRecvFrom(IOBuffer* buf,
@@ -820,63 +800,68 @@ int UDPSocketPosix::InternalRecvFromConnectedSocket(IOBuffer* buf,
                                                     IPEndPoint* address) {
   DCHECK(is_connected_);
   DCHECK(remote_address_);
-  int bytes_transferred;
-  bytes_transferred = HANDLE_EINTR(read(socket_, buf->data(), buf_len));
   int result;
-
+  int bytes_transferred = HANDLE_EINTR(read(socket_, buf->data(), buf_len));
   if (bytes_transferred < 0) {
     result = MapSystemError(errno);
+    if (result == ERR_IO_PENDING) {
+      return result;
+    }
   } else if (bytes_transferred == buf_len) {
+    // NB: recv(..., MSG_TRUNC) would be a more reliable way to do this on
+    // Linux, but isn't supported by POSIX.
     result = ERR_MSG_TOO_BIG;
   } else {
     result = bytes_transferred;
-    if (address)
+    if (address) {
       *address = *remote_address_.get();
+    }
   }
 
-  if (result != ERR_IO_PENDING) {
-    SockaddrStorage sock_addr;
-    bool success =
+  SockaddrStorage sock_addr;
+  bool success =
         remote_address_->ToSockAddr(sock_addr.addr, &sock_addr.addr_len);
     DCHECK(success);
     LogRead(result, buf->data(), sock_addr.addr_len, sock_addr.addr);
-  }
   return result;
 }
 
 int UDPSocketPosix::InternalRecvFromNonConnectedSocket(IOBuffer* buf,
                                                        int buf_len,
                                                        IPEndPoint* address) {
-  int bytes_transferred;
-
-  struct iovec iov = {};
-  iov.iov_base = buf->data();
-  iov.iov_len = buf_len;
-
-  struct msghdr msg = {};
-  msg.msg_iov = &iov;
-  msg.msg_iovlen = 1;
-
   SockaddrStorage storage;
-  msg.msg_name = storage.addr;
-  msg.msg_namelen = storage.addr_len;
-
-  bytes_transferred = HANDLE_EINTR(recvmsg(socket_, &msg, 0));
-  storage.addr_len = msg.msg_namelen;
+  struct iovec iov = {
+      .iov_base = buf->data(),
+      .iov_len = static_cast<size_t>(buf_len),
+  };
+  struct msghdr msg = {
+      .msg_name = storage.addr,
+      .msg_namelen = storage.addr_len,
+      .msg_iov = &iov,
+      .msg_iovlen = 1,
+  };
   int result;
-  if (bytes_transferred >= 0) {
-    if (msg.msg_flags & MSG_TRUNC) {
-      result = ERR_MSG_TOO_BIG;
-    } else {
-      result = bytes_transferred;
-      if (address && !address->FromSockAddr(storage.addr, storage.addr_len))
-        result = ERR_ADDRESS_INVALID;
+  int bytes_transferred = HANDLE_EINTR(recvmsg(socket_, &msg, 0));
+  if (bytes_transferred < 0) {
+    result = MapSystemError(errno);
+    if (result == ERR_IO_PENDING) {
+      return result;
     }
   } else {
-    result = MapSystemError(errno);
+    storage.addr_len = msg.msg_namelen;
+    if (msg.msg_flags & MSG_TRUNC) {
+      // NB: recvfrom(..., MSG_TRUNC, ...) would be a simpler way to do this on
+      // Linux, but isn't supported by POSIX.
+      result = ERR_MSG_TOO_BIG;
+    } else if (address &&
+               !address->FromSockAddr(storage.addr, storage.addr_len)) {
+      result = ERR_ADDRESS_INVALID;
+    } else {
+      result = bytes_transferred;
+    }
   }
-  if (result != ERR_IO_PENDING)
-    LogRead(result, buf->data(), storage.addr_len, storage.addr);
+
+  LogRead(result, buf->data(), storage.addr_len, storage.addr);
   return result;
 }
 
@@ -886,12 +871,12 @@ int UDPSocketPosix::InternalSendTo(IOBuffer* buf,
   SockaddrStorage storage;
   struct sockaddr* addr = storage.addr;
   if (!address) {
-    addr = NULL;
+    addr = nullptr;
     storage.addr_len = 0;
   } else {
     if (!address->ToSockAddr(storage.addr, &storage.addr_len)) {
       int result = ERR_ADDRESS_INVALID;
-      LogWrite(result, NULL, NULL);
+      LogWrite(result, nullptr, nullptr);
       return result;
     }
   }
@@ -938,17 +923,9 @@ int UDPSocketPosix::SetMulticastOptions() {
   if (multicast_interface_ != 0) {
     switch (addr_family_) {
       case AF_INET: {
-#if defined(OS_MACOSX)
-        ip_mreq mreq = {};
-        int error = GetIPv4AddressFromIndex(socket_, multicast_interface_,
-                                            &mreq.imr_interface.s_addr);
-        if (error != OK)
-          return error;
-#else   //  defined(OS_MACOSX)
         ip_mreqn mreq = {};
         mreq.imr_ifindex = multicast_interface_;
         mreq.imr_address.s_addr = htonl(INADDR_ANY);
-#endif  //  !defined(OS_MACOSX)
         int rv = setsockopt(socket_, IPPROTO_IP, IP_MULTICAST_IF,
                             reinterpret_cast<const char*>(&mreq), sizeof(mreq));
         if (rv)
@@ -980,10 +957,10 @@ int UDPSocketPosix::DoBind(const IPEndPoint& address) {
   if (rv == 0)
     return OK;
   int last_error = errno;
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (last_error == EINVAL)
     return ERR_ADDRESS_IN_USE;
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
   if (last_error == EADDRNOTAVAIL)
     return ERR_ADDRESS_IN_USE;
 #endif
@@ -1011,18 +988,9 @@ int UDPSocketPosix::JoinGroup(const IPAddress& group_address) const {
     case IPAddress::kIPv4AddressSize: {
       if (addr_family_ != AF_INET)
         return ERR_ADDRESS_INVALID;
-
-#if defined(OS_MACOSX)
-      ip_mreq mreq = {};
-      int error = GetIPv4AddressFromIndex(socket_, multicast_interface_,
-                                          &mreq.imr_interface.s_addr);
-      if (error != OK)
-        return error;
-#else
       ip_mreqn mreq = {};
       mreq.imr_ifindex = multicast_interface_;
       mreq.imr_address.s_addr = htonl(INADDR_ANY);
-#endif
       memcpy(&mreq.imr_multiaddr, group_address.bytes().data(),
              IPAddress::kIPv4AddressSize);
       int rv = setsockopt(socket_, IPPROTO_IP, IP_ADD_MEMBERSHIP,
@@ -1326,14 +1294,13 @@ void UDPSocketPosix::FlushPending() {
 
 // TODO(ckrasic) Sad face.  Do this lazily because many tests exploded
 // otherwise.  |threading_and_tasks.md| advises to instantiate a
-// |base::test::ScopedTaskEnvironment| in the test, implementing that
+// |base::test::TaskEnvironment| in the test, implementing that
 // for all tests that might exercise QUIC is too daunting.  Also, in
 // some tests it seemed like following the advice just broke in other
 // ways.
 base::SequencedTaskRunner* UDPSocketPosix::GetTaskRunner() {
-  if (task_runner_ == nullptr) {
-    task_runner_ = CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
-  }
+  if (task_runner_ == nullptr)
+    task_runner_ = base::ThreadPool::CreateSequencedTaskRunner({});
   return task_runner_.get();
 }
 
@@ -1385,7 +1352,7 @@ void UDPSocketPosix::DidSendBuffers(SendResult send_result) {
     it = buffers.cbegin();
     for (int i = 0; i < write_count; i++, it++) {
       auto& buffer = *it;
-      LogWrite(buffer->length(), buffer->data(), NULL);
+      LogWrite(buffer->length(), buffer->data(), nullptr);
       written_bytes_ += buffer->length();
     }
     // Return written buffers to pool
@@ -1416,7 +1383,7 @@ void UDPSocketPosix::DidSendBuffers(SendResult send_result) {
     if (!WatchFileDescriptor()) {
       DVPLOG(1) << "WatchFileDescriptor failed on write";
       last_async_result_ = MapSystemError(errno);
-      LogWrite(last_async_result_, NULL, NULL);
+      LogWrite(last_async_result_, nullptr, nullptr);
     } else {
       last_async_result_ = 0;
     }
@@ -1467,7 +1434,7 @@ void UDPSocketPosix::StopWatchingFileDescriptor() {
 }
 
 bool UDPSocketPosix::InternalWatchFileDescriptor() {
-  return base::MessageLoopCurrentForIO::Get()->WatchFileDescriptor(
+  return base::CurrentIOThread::Get()->WatchFileDescriptor(
       socket_, true, base::MessagePumpForIO::WATCH_WRITE,
       &write_socket_watcher_, write_async_watcher_.get());
 }
@@ -1491,6 +1458,19 @@ int UDPSocketPosix::ResetWrittenBytes() {
   int bytes = written_bytes_;
   written_bytes_ = 0;
   return bytes;
+}
+
+int UDPSocketPosix::SetIOSNetworkServiceType(int ios_network_service_type) {
+  if (ios_network_service_type == 0) {
+    return OK;
+  }
+#if defined(OS_IOS)
+  if (setsockopt(socket_, SOL_SOCKET, SO_NET_SERVICE_TYPE,
+                 &ios_network_service_type, sizeof(ios_network_service_type))) {
+    return MapSystemError(errno);
+  }
+#endif  // defined(OS_IOS)
+  return OK;
 }
 
 }  // namespace net

@@ -11,7 +11,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "content/browser/frame_host/render_frame_host_factory.h"
+#include "content/browser/renderer_host/render_frame_host_factory.h"
 
 namespace content {
 
@@ -29,14 +29,15 @@ class TestRenderFrameHostFactory : public RenderFrameHostFactory {
   // RenderFrameHostFactory implementation.
   std::unique_ptr<RenderFrameHostImpl> CreateRenderFrameHost(
       SiteInstance* site_instance,
-      RenderViewHostImpl* render_view_host,
+      scoped_refptr<RenderViewHostImpl> render_view_host,
       RenderFrameHostDelegate* delegate,
       FrameTree* frame_tree,
       FrameTreeNode* frame_tree_node,
       int32_t routing_id,
-      int32_t widget_routing_id,
-      bool hidden,
-      bool renderer_initiated_creation) override;
+      mojo::PendingAssociatedRemote<mojom::Frame> frame_remote,
+      const blink::LocalFrameToken& frame_token,
+      bool renderer_initiated_creation,
+      RenderFrameHostImpl::LifecycleStateImpl lifecycle_state) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(TestRenderFrameHostFactory);

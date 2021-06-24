@@ -4,34 +4,76 @@
 
 #include "fuchsia/engine/context_provider_main.h"
 
+#include <lib/sys/cpp/component_context.h>
+#include <lib/sys/cpp/outgoing_directory.h>
+#include <lib/sys/inspect/cpp/component.h>
+
+#include "base/command_line.h"
+#include "base/fuchsia/process_context.h"
 #include "base/fuchsia/scoped_service_binding.h"
-#include "base/fuchsia/service_directory.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
+#include "base/task/single_thread_task_executor.h"
+#include "components/version_info/version_info.h"
+#include "fuchsia/base/feedback_registration.h"
+#include "fuchsia/base/init_logging.h"
+#include "fuchsia/base/inspect.h"
 #include "fuchsia/base/lifecycle_impl.h"
 #include "fuchsia/engine/context_provider_impl.h"
-#include "fuchsia/engine/legacy_context_provider_bridge.h"
+
+namespace {
+
+// This must match the value in web_instance_host.cc
+constexpr char kCrashProductName[] = "FuchsiaWebEngine";
+// TODO(https://fxbug.dev/51490): Use a programmatic mechanism to obtain this.
+constexpr char kComponentUrl[] =
+    "fuchsia-pkg://fuchsia.com/web_engine#meta/context_provider.cmx";
+
+std::string GetVersionString() {
+  std::string version_string = version_info::GetVersionNumber();
+#if !defined(OFFICIAL_BUILD)
+  version_string += " (built at " + version_info::GetLastChange() + ")";
+#endif  // !defined(OFFICIAL_BUILD)
+  return version_string;
+}
+
+}  // namespace
 
 int ContextProviderMain() {
-  base::MessageLoopForUI message_loop;
-  base::fuchsia::ServiceDirectory* const directory =
-      base::fuchsia::ServiceDirectory::GetDefault();
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
+
+  cr_fuchsia::RegisterProductDataForCrashReporting(kComponentUrl,
+                                                   kCrashProductName);
+
+  if (!cr_fuchsia::InitLoggingFromCommandLine(
+          *base::CommandLine::ForCurrentProcess())) {
+    return 1;
+  }
+
+  LOG(INFO) << "Starting WebEngine " << GetVersionString();
 
   ContextProviderImpl context_provider;
-  base::fuchsia::ScopedServiceBinding<fuchsia::web::ContextProvider> binding(
+
+  // Publish the ContextProvider and Debug services.
+  sys::OutgoingDirectory* const directory =
+      base::ComponentContextForProcess()->outgoing().get();
+  base::ScopedServiceBinding<fuchsia::web::ContextProvider> binding(
       directory, &context_provider);
+  base::ScopedServiceBinding<fuchsia::web::Debug> debug_binding(
+      directory->debug_dir(), &context_provider);
 
-  fuchsia::web::ContextProviderPtr fuchsia_context_provider;
-  fidl::Binding<fuchsia::web::ContextProvider> fuchsia_binding(
-      &context_provider, fuchsia_context_provider.NewRequest());
-  LegacyContextProviderBridge legacy_context_provider(
-      std::move(fuchsia_context_provider));
-  base::fuchsia::ScopedServiceBinding<chromium::web::ContextProvider>
-      legacy_binding(directory, &legacy_context_provider);
+  // Publish version information for this component to Inspect.
+  sys::ComponentInspector inspect(base::ComponentContextForProcess());
+  cr_fuchsia::PublishVersionInfoToInspect(&inspect);
 
+  // Publish the Lifecycle service, used by the framework to request that the
+  // service terminate.
   base::RunLoop run_loop;
   cr_fuchsia::LifecycleImpl lifecycle(directory, run_loop.QuitClosure());
+
+  // Serve outgoing directory only after publishing all services.
+  directory->ServeFromStartupInfo();
 
   run_loop.Run();
 

@@ -4,19 +4,18 @@
 
 #include "chrome/browser/download/download_ui_controller.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/callback.h"
 #include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_shelf.h"
+#include "chrome/browser/download/download_stats.h"
 #include "chrome/browser/ssl/security_state_tab_helper.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/download/public/common/download_item.h"
 #include "components/security_state/core/security_state.h"
 #include "content/public/browser/download_item_utils.h"
@@ -24,15 +23,19 @@
 #include "content/public/browser/web_contents_delegate.h"
 
 #if defined(OS_ANDROID)
-#include "chrome/browser/android/download/download_controller_base.h"
+#include "chrome/browser/download/android/download_controller.h"
+#include "chrome/browser/download/android/download_controller_base.h"
 #else
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/browser/download/notification/download_notification_manager.h"
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 namespace {
 
@@ -112,27 +115,23 @@ void DownloadShelfUIControllerDelegate::OnNewDownloadReady(
 DownloadUIController::Delegate::~Delegate() {
 }
 
-DownloadUIController::DownloadUIController(
-    content::DownloadManager* manager,
-    std::unique_ptr<Delegate> delegate,
-    DownloadOfflineContentProvider* provider)
-    : download_notifier_(manager, this),
-      delegate_(std::move(delegate)),
-      download_provider_(provider) {
+DownloadUIController::DownloadUIController(content::DownloadManager* manager,
+                                           std::unique_ptr<Delegate> delegate)
+    : download_notifier_(manager, this), delegate_(std::move(delegate)) {
 #if defined(OS_ANDROID)
   if (!delegate_)
-    delegate_.reset(new AndroidUIControllerDelegate());
-#elif defined(OS_CHROMEOS)
+    delegate_ = std::make_unique<AndroidUIControllerDelegate>();
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   if (!delegate_) {
     // The Profile is guaranteed to be valid since DownloadUIController is owned
     // by DownloadService, which in turn is a profile keyed service.
-    delegate_.reset(new DownloadNotificationManager(
-        Profile::FromBrowserContext(manager->GetBrowserContext())));
+    delegate_ = std::make_unique<DownloadNotificationManager>(
+        Profile::FromBrowserContext(manager->GetBrowserContext()));
   }
-#else  // defined(OS_CHROMEOS)
+#else   // BUILDFLAG(IS_CHROMEOS_ASH)
   if (!delegate_) {
-    delegate_.reset(new DownloadShelfUIControllerDelegate(
-        Profile::FromBrowserContext(manager->GetBrowserContext())));
+    delegate_ = std::make_unique<DownloadShelfUIControllerDelegate>(
+        Profile::FromBrowserContext(manager->GetBrowserContext()));
   }
 #endif  // defined(OS_ANDROID)
 }
@@ -157,7 +156,17 @@ void DownloadUIController::OnDownloadCreated(content::DownloadManager* manager,
       UMA_HISTOGRAM_ENUMERATION("Security.SecurityLevel.DownloadStarted",
                                 security_state_tab_helper->GetSecurityLevel(),
                                 security_state::SECURITY_LEVEL_COUNT);
+      UMA_HISTOGRAM_ENUMERATION(
+          "Security.SafetyTips.DownloadStarted",
+          security_state_tab_helper->GetVisibleSecurityState()
+              ->safety_tip_info.status);
     }
+  }
+
+  if (web_contents) {
+    // TODO(crbug.com/1179196): Add test for this metric.
+    RecordDownloadStartPerProfileType(
+        Profile::FromBrowserContext(web_contents->GetBrowserContext()));
   }
 
   // SavePackage downloads are created in a state where they can be shown in the
@@ -179,10 +188,12 @@ void DownloadUIController::OnDownloadUpdated(content::DownloadManager* manager,
       item->GetState() != download::DownloadItem::CANCELLED)
     return;
 
-#if !defined(OS_ANDROID)
   content::WebContents* web_contents =
       content::DownloadItemUtils::GetWebContents(item);
   if (web_contents) {
+#if defined(OS_ANDROID)
+    DownloadController::CloseTabIfEmpty(web_contents, item);
+#else
     Browser* browser = chrome::FindBrowserWithWebContents(web_contents);
     // If the download occurs in a new tab, and it's not a save page
     // download (started before initial navigation completed) close it.
@@ -196,14 +207,12 @@ void DownloadUIController::OnDownloadUpdated(content::DownloadManager* manager,
         !item->IsSavePackageDownload()) {
       web_contents->Close();
     }
+#endif  // defined(OS_ANDROID)
   }
-#endif
 
   if (item->GetState() == download::DownloadItem::CANCELLED)
     return;
 
   DownloadItemModel(item).SetWasUINotified(true);
   delegate_->OnNewDownloadReady(item);
-  if (download_provider_)
-    download_provider_->OnDownloadStarted(item);
 }

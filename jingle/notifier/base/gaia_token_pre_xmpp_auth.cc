@@ -6,9 +6,9 @@
 
 #include <algorithm>
 
+#include "base/containers/contains.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "third_party/libjingle_xmpp/xmpp/constants.h"
 #include "third_party/libjingle_xmpp/xmpp/saslcookiemechanism.h"
 #include "third_party/webrtc/rtc_base/socket_address.h"
@@ -101,8 +101,8 @@ std::string GaiaTokenPreXmppAuth::GetAuthMechanism() const {
 
 std::string GaiaTokenPreXmppAuth::ChooseBestSaslMechanism(
     const std::vector<std::string> & mechanisms, bool encrypted) {
-  return base::ContainsValue(mechanisms, auth_mechanism_) ? auth_mechanism_
-                                                          : std::string();
+  return base::Contains(mechanisms, auth_mechanism_) ? auth_mechanism_
+                                                     : std::string();
 }
 
 jingle_xmpp::SaslMechanism* GaiaTokenPreXmppAuth::CreateSaslMechanism(

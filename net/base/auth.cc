@@ -11,29 +11,25 @@ AuthChallengeInfo::AuthChallengeInfo() : is_proxy(false) {
 
 AuthChallengeInfo::AuthChallengeInfo(const AuthChallengeInfo& other) = default;
 
-bool AuthChallengeInfo::operator==(const AuthChallengeInfo& that) const {
-  return (is_proxy == that.is_proxy && challenger == that.challenger &&
-          scheme == that.scheme && realm == that.realm);
-}
-
-bool AuthChallengeInfo::operator!=(const AuthChallengeInfo& that) const {
-  return !(*this == that);
+bool AuthChallengeInfo::MatchesExceptPath(
+    const AuthChallengeInfo& other) const {
+  return (is_proxy == other.is_proxy && challenger == other.challenger &&
+          scheme == other.scheme && realm == other.realm &&
+          challenge == other.challenge);
 }
 
 AuthChallengeInfo::~AuthChallengeInfo() = default;
 
 AuthCredentials::AuthCredentials() = default;
 
-AuthCredentials::AuthCredentials(const base::string16& username,
-                                 const base::string16& password)
-    : username_(username),
-      password_(password) {
-}
+AuthCredentials::AuthCredentials(const std::u16string& username,
+                                 const std::u16string& password)
+    : username_(username), password_(password) {}
 
 AuthCredentials::~AuthCredentials() = default;
 
-void AuthCredentials::Set(const base::string16& username,
-                          const base::string16& password) {
+void AuthCredentials::Set(const std::u16string& username,
+                          const std::u16string& password) {
   username_ = username;
   password_ = password;
 }

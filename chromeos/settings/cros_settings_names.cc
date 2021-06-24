@@ -11,19 +11,16 @@ const char kCrosSettingsPrefix[] = "cros.";
 // All cros.accounts.* settings are stored in SignedSettings.
 const char kAccountsPrefAllowGuest[] = "cros.accounts.allowBWSI";
 const char kAccountsPrefAllowNewUser[] = "cros.accounts.allowGuest";
-const char kAccountsPrefShowUserNamesOnSignIn[]
-    = "cros.accounts.showUserNamesOnSignIn";
+const char kAccountsPrefShowUserNamesOnSignIn[] =
+    "cros.accounts.showUserNamesOnSignIn";
 const char kAccountsPrefUsers[] = "cros.accounts.users";
 const char kAccountsPrefEphemeralUsersEnabled[] =
     "cros.accounts.ephemeralUsersEnabled";
 const char kAccountsPrefDeviceLocalAccounts[] =
     "cros.accounts.deviceLocalAccounts";
-const char kAccountsPrefDeviceLocalAccountsKeyId[] =
-    "id";
-const char kAccountsPrefDeviceLocalAccountsKeyType[] =
-    "type";
-const char kAccountsPrefDeviceLocalAccountsKeyKioskAppId[] =
-    "kiosk_app_id";
+const char kAccountsPrefDeviceLocalAccountsKeyId[] = "id";
+const char kAccountsPrefDeviceLocalAccountsKeyType[] = "type";
+const char kAccountsPrefDeviceLocalAccountsKeyKioskAppId[] = "kiosk_app_id";
 const char kAccountsPrefDeviceLocalAccountsKeyKioskAppUpdateURL[] =
     "kiosk_app_update_url";
 const char kAccountsPrefDeviceLocalAccountsKeyArcKioskPackage[] =
@@ -34,6 +31,11 @@ const char kAccountsPrefDeviceLocalAccountsKeyArcKioskAction[] =
     "arc_kiosk_action";
 const char kAccountsPrefDeviceLocalAccountsKeyArcKioskDisplayName[] =
     "arc_kiosk_display_name";
+const char kAccountsPrefDeviceLocalAccountsKeyWebKioskUrl[] = "web_kiosk_url";
+const char kAccountsPrefDeviceLocalAccountsKeyWebKioskTitle[] =
+    "web_kiosk_title";
+const char kAccountsPrefDeviceLocalAccountsKeyWebKioskIconUrl[] =
+    "web_kiosk_icon_url";
 const char kAccountsPrefDeviceLocalAccountAutoLoginId[] =
     "cros.accounts.deviceLocalAccountAutoLoginId";
 const char kAccountsPrefDeviceLocalAccountAutoLoginDelay[] =
@@ -42,8 +44,6 @@ const char kAccountsPrefDeviceLocalAccountAutoLoginBailoutEnabled[] =
     "cros.accounts.deviceLocalAccountAutoLoginBailoutEnabled";
 const char kAccountsPrefDeviceLocalAccountPromptForNetworkWhenOffline[] =
     "cros.accounts.deviceLocalAccountPromptForNetworkWhenOffline";
-const char kAccountsPrefSupervisedUsersEnabled[] =
-    "cros.accounts.supervisedUsersEnabled";
 const char kAccountsPrefTransferSAMLCookies[] =
     "cros.accounts.transferSAMLCookies";
 
@@ -51,6 +51,11 @@ const char kAccountsPrefTransferSAMLCookies[] =
 // user sign-in flow.
 const char kAccountsPrefLoginScreenDomainAutoComplete[] =
     "cros.accounts.login_screen_domain_auto_complete";
+
+// A boolean pref indicating whether all Family Link accounts are allowed on the
+// device additionally to the accounts listed in |kAccountsPrefUsers| pref.
+const char kAccountsPrefFamilyLinkAccountsAllowed[] =
+    "cros.accounts.family_link_allowed";
 
 // All cros.signed.* settings are stored in SignedSettings.
 const char kSignedDataRoamingEnabled[] = "cros.signed.data_roaming_enabled";
@@ -83,6 +88,9 @@ const char kStatsReportingPref[] = "cros.metrics.reportingEnabled";
 
 const char kReleaseChannel[] = "cros.system.releaseChannel";
 const char kReleaseChannelDelegated[] = "cros.system.releaseChannelDelegated";
+const char kReleaseLtsTag[] = "cros.system.releaseLtsTag";
+const char kDeviceChannelDowngradeBehavior[] =
+    "cros.system.channelDowngradeBehavior";
 
 // A boolean pref that indicates whether OS & firmware version info should be
 // reported along with device policy requests.
@@ -102,6 +110,24 @@ const char kReportDeviceBoardStatus[] =
 // A boolean pref that indicates whether the state of the dev mode switch at
 // boot should be reported along with device policy requests.
 const char kReportDeviceBootMode[] = "cros.device_status.report_boot_mode";
+
+// A boolean pref that determines whether the device CPU information should be
+// included in status reports to the device management server.
+const char kReportDeviceCpuInfo[] = "cros.device_status.report_cpu_info";
+
+// A boolean pref that determines whether the device timezone information should
+// be included in status reports to the device management server.
+const char kReportDeviceTimezoneInfo[] =
+    "cros.device_status.report_timezone_info";
+
+// A boolean pref that determines whether the device memory information should
+// be included in status reports to the device management server.
+const char kReportDeviceMemoryInfo[] = "cros.device_status.report_memory_info";
+
+// A boolean pref that determines whether the device backlight information
+// should be included in status reports to the device management server.
+const char kReportDeviceBacklightInfo[] =
+    "cros.device_status.report_backlight_info";
 
 // A boolean pref that indicates whether the current location should be reported
 // along with device policy requests.
@@ -136,6 +162,16 @@ const char kReportDeviceHardwareStatus[] =
 const char kReportDeviceSessionStatus[] =
     "cros.device_status.report_session_status";
 
+// Determines whether the device reports display and graphics statuses to the
+// device_management server.
+const char kReportDeviceGraphicsStatus[] =
+    "cros.device_status.report_graphics_status";
+
+// Determines whether the device reports crash report information to the device
+// management server.
+const char kReportDeviceCrashReportInfo[] =
+    "cros.device_status.report_crash_report_info";
+
 // Determines whether the device reports os update status (update status,
 // new platform version and new required platform version of the auto
 // launched kiosk app).
@@ -150,6 +186,35 @@ const char kReportRunningKioskApp[] =
 // How frequently device status reports are uploaded, in milliseconds.
 const char kReportUploadFrequency[] =
     "cros.device_status.report_upload_frequency";
+
+// A boolean pref that indicates whether user app information and activity times
+// should be recorded and reported along with device policy requests.
+const char kReportDeviceAppInfo[] = "cros.device_status.report_device_app_info";
+
+// A boolean pref that determines whether the device Bluetooth information
+// should be included in status reports to the device management server.
+const char kReportDeviceBluetoothInfo[] =
+    "cros.device_status.report_device_bluetooth_info";
+
+// A boolean pref that determines whether the device fan information should be
+// included in status reports to the device management server.
+const char kReportDeviceFanInfo[] = "cros.device_status.report_device_fan_info";
+
+// A boolean pref that determines whether the device's VPD information should be
+// included in status reports to the device management server.
+const char kReportDeviceVpdInfo[] = "cros.device_status.report_device_vpd_info";
+
+// A boolean pref that determines whether the device's system information should
+// be included in status reports to the device management server.
+const char kReportDeviceSystemInfo[] =
+    "cros.device_status.report_device_system_info";
+
+// A boolean pref that determines whether the user's print job history is
+// reported.
+const char kReportDevicePrintJobs[] = "cros.device_status.report_print_jobs";
+
+// A boolean pref that determines whether the login/logout events are reported.
+const char kReportDeviceLoginLogout[] = "cros.reporting.report_login_logout";
 
 // Determines whether heartbeats should be sent to the policy service via
 // the GCM channel.
@@ -172,9 +237,9 @@ const char kPolicyMissingMitigationMode[] =
 const char kAllowRedeemChromeOsRegistrationOffers[] =
     "cros.echo.allow_redeem_chrome_os_registration_offers";
 
-// A list pref storing the flags that need to be applied to the browser upon
-// start-up.
-const char kStartUpFlags[] = "cros.startup_flags";
+// A list pref storing the feature flags (in the chrome://flags sense) that
+// should to be applied at the login screen.
+const char kFeatureFlags[] = "cros.feature_flags";
 
 // A string pref for the restrict parameter to be appended to the Variations URL
 // when pinging the Variations server.
@@ -266,12 +331,6 @@ const char kDeviceQuirksDownloadEnabled[] =
 const char kLoginVideoCaptureAllowedUrls[] =
     "cros.device.login_video_capture_allowed_urls";
 
-// A list pref storing the apps or extensions to install on the login page. It
-// is a list of strings, each string contains an extension ID and an update URL,
-// delimited by a semicolon. This preference is set by an admin policy.
-const char kDeviceLoginScreenExtensions[] =
-    "cros.device.login_screen_extensions";
-
 // A list pref specifying the locales allowed on the login screen. Currently
 // only the first value is used, as the single locale allowed on the login
 // screen.
@@ -280,6 +339,16 @@ const char kDeviceLoginScreenLocales[] = "cros.device_login_screen_locales";
 // A list pref containing the input method IDs allowed on the login screen.
 const char kDeviceLoginScreenInputMethods[] =
     "cros.device_login_screen_input_methods";
+
+// A boolean pref that indicates whether the system information is forcedly
+// shown (or hidden) on the login screen.
+const char kDeviceLoginScreenSystemInfoEnforced[] =
+    "cros.device_login_screen_system_info_enforced";
+
+// A boolean pref that indicates whether to show numeric keyboard for entering
+// password or not.
+const char kDeviceShowNumericKeyboardForPassword[] =
+    "cros.device_show_numeric_keyboard_for_password";
 
 // A boolean pref that matches enable-per-user-time-zone chrome://flags value.
 const char kPerUserTimezoneEnabled[] = "cros.flags.per_user_timezone_enabled";
@@ -306,25 +375,29 @@ const char kFineGrainedTimeZoneResolveEnabled[] =
 const char kDeviceOffHours[] = "cros.device_off_hours";
 
 // An enum specifying the access policy device printers should observe.
-const char kDeviceNativePrintersAccessMode[] =
-    "cros.device.native_printers_access_mode";
+const char kDevicePrintersAccessMode[] = "cros.device.printers_access_mode";
 // A list of strings representing device printer ids for which access is
 // restricted.
-const char kDeviceNativePrintersBlacklist[] =
-    "cros.device.native_printers_blacklist";
+const char kDevicePrintersBlocklist[] = "cros.device.printers_blocklist";
 // A list of strings representing the list of device printer ids which are
 // accessible.
-const char kDeviceNativePrintersWhitelist[] =
-    "cros.device.native_printers_whitelist";
+const char kDevicePrintersAllowlist[] = "cros.device.printers_allowlist";
 
 // A dictionary containing parameters controlling the TPM firmware update
 // functionality.
 const char kTPMFirmwareUpdateSettings[] = "cros.tpm_firmware_update_settings";
 
-// String indicating what is the minimum version of Chrome required to
-// allow user sign in. If the string is empty or blank no restrictions will
-// be applied.
-const char kMinimumRequiredChromeVersion[] = "cros.min_version.chrome";
+// A dictionary containing a list of entries in JSON form representing the
+// minimum version of Chrome OS along with warning times required to allow user
+// sign in or stay in session. If the list is empty no restrictions will be
+// applied.
+const char kDeviceMinimumVersion[] = "cros.device.min_version";
+
+// String shown on the update required dialog on the the login screen containing
+// return instructions from the device administrator. It is shown when update
+// is required but the device has reached auto update expiration.
+const char kDeviceMinimumVersionAueMessage[] =
+    "cros.device.min_version_aue_message";
 
 // String indicating what name should be advertised for casting to.
 // If the string is empty or blank the system name will be used.
@@ -365,8 +438,10 @@ const char kDeviceUnaffiliatedCrostiniAllowed[] =
 // A boolean pref that indicates whether PluginVm is allowed to run on this
 // device.
 const char kPluginVmAllowed[] = "cros.device.plugin_vm_allowed";
-// A string pref that specifies PluginVm license key for this device.
-const char kPluginVmLicenseKey[] = "cros.device.plugin_vm_license_key";
+
+// A boolean pref that indicates whether Borealis is allowed to run on this
+// device.
+const char kBorealisAllowedForDevice[] = "cros.device.borealis_allowed";
 
 // An enum pref specifying the case when device needs to reboot on user sign
 // out.
@@ -379,4 +454,62 @@ const char kDeviceWilcoDtcAllowed[] = "cros.device.wilco_dtc_allowed";
 // An enum pref that specifies the device dock MAC address source.
 const char kDeviceDockMacAddressSource[] =
     "cros.device.device_dock_mac_address_source";
+
+// A dictionary pref that mandates the recurring schedule for update checks. The
+// schedule is followed even if the device is suspended, however, it's not
+// respected when the device is shutdown.
+const char kDeviceScheduledUpdateCheck[] =
+    "cros.device.device_scheduled_update_check";
+
+// An enum pref that configures the operation mode of the built-in 2nd factor
+// authenticator.
+const char kDeviceSecondFactorAuthenticationMode[] =
+    "cros.device.device_second_factor_authentication_mode";
+
+// A boolean pref specifying if the device is allowed to powerwash.
+const char kDevicePowerwashAllowed[] = "cros.device.device_powerwash_allowed";
+
+// A list pref storing URL patterns that are allowed for device attestation
+// during SAML authentication.
+extern const char kDeviceWebBasedAttestationAllowedUrls[] =
+    "cros.device.device_web_based_attestation_allowed_urls";
+
+// A dictionary containing parameters controlling the availability of
+// System-proxy service and the web proxy credentials for system services
+// connecting through System-proxy.
+const char kSystemProxySettings[] = "cros.system_proxy_settings";
+const char kSystemProxySettingsKeyEnabled[] = "system_proxy_enabled";
+const char kSystemProxySettingsKeySystemServicesUsername[] =
+    "system_services_username";
+const char kSystemProxySettingsKeySystemServicesPassword[] =
+    "system_services_password";
+const char kSystemProxySettingsKeyAuthSchemes[] =
+    "policy_credentials_auth_schemes";
+
+// An enum pref that indicates whether adb sideloading is allowed on this device
+const char kDeviceCrostiniArcAdbSideloadingAllowed[] =
+    "cros.device.crostini_arc_adb_sideloading_allowed";
+
+// A boolean pref controlling showing the low disk space notification.
+const char kDeviceShowLowDiskSpaceNotification[] =
+    "cros.device.show_low_disk_space_notification";
+
+// Boolean pref indicating whether data access is enabled for
+// Thunderbolt/USB4 peripherals. Enabling this pref disables the data access
+// protection and will allow the aforementioned peripheral devices to be fully
+// connected via PCIe tunneling.
+const char kDevicePeripheralDataAccessEnabled[] =
+    "cros.device.peripheral_data_access_enabled";
+
+// A list of dictionaries indicating USB devices that may be used by chrome.usb.
+const char kUsbDetachableAllowlist[] = "cros.device.usb_detachable_allowlist";
+const char kUsbDetachableAllowlistKeyVid[] = "vid";
+const char kUsbDetachableAllowlistKeyPid[] = "pid";
+
+// A list pref storing bluetooth service UUIDs allowed to connect.
+const char kDeviceAllowedBluetoothServices[] =
+    "cros.device.allowed_bluetooth_services";
+
+// A dictionary pref specifying the recurring schedule for device reboot.
+const char kDeviceScheduledReboot[] = "cros.device.device_scheduled_reboot";
 }  // namespace chromeos

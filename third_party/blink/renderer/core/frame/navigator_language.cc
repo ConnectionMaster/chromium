@@ -6,6 +6,7 @@
 
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/platform/language.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -30,16 +31,25 @@ Vector<String> ParseAndSanitize(const String& accept_languages) {
   return languages;
 }
 
-NavigatorLanguage::NavigatorLanguage(ExecutionContext* context)
-    : context_(context) {}
+NavigatorLanguage::NavigatorLanguage(ExecutionContext* execution_context)
+    : execution_context_(execution_context) {}
 
 AtomicString NavigatorLanguage::language() {
-  return AtomicString(languages().front());
+  if (RuntimeEnabledFeatures::NavigatorLanguageInInsecureContextEnabled() ||
+      (execution_context_ && execution_context_->IsSecureContext())) {
+    return AtomicString(languages().front());
+  }
+  return AtomicString();
 }
 
 const Vector<String>& NavigatorLanguage::languages() {
-  EnsureUpdatedLanguage();
-  return languages_;
+  if (RuntimeEnabledFeatures::NavigatorLanguageInInsecureContextEnabled() ||
+      (execution_context_ && execution_context_->IsSecureContext())) {
+    EnsureUpdatedLanguage();
+    return languages_;
+  }
+  DEFINE_STATIC_LOCAL(const Vector<String>, empty_vector, {});
+  return empty_vector;
 }
 
 AtomicString NavigatorLanguage::SerializeLanguagesForClientHintHeader() {
@@ -72,7 +82,8 @@ void NavigatorLanguage::SetLanguagesForTesting(const String& languages) {
 void NavigatorLanguage::EnsureUpdatedLanguage() {
   if (languages_dirty_) {
     String accept_languages_override;
-    probe::ApplyAcceptLanguageOverride(context_, &accept_languages_override);
+    probe::ApplyAcceptLanguageOverride(execution_context_,
+                                       &accept_languages_override);
 
     if (!accept_languages_override.IsNull()) {
       languages_ = ParseAndSanitize(accept_languages_override);
@@ -84,8 +95,8 @@ void NavigatorLanguage::EnsureUpdatedLanguage() {
   }
 }
 
-void NavigatorLanguage::Trace(blink::Visitor* visitor) {
-  visitor->Trace(context_);
+void NavigatorLanguage::Trace(Visitor* visitor) const {
+  visitor->Trace(execution_context_);
 }
 
 }  // namespace blink

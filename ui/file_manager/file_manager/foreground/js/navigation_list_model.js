@@ -2,16 +2,34 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {FolderShortcutsDataModel} from './folder_shortcuts_data_model.m.js';
+// #import {DirectoryModel} from './directory_model.m.js';
+// #import {AndroidAppListModel} from './android_app_list_model.m.js';
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// #import {FilesAppEntry, FakeEntry} from '../../externs/files_app_entry_interfaces.js';
+// #import {VolumeInfo} from '../../externs/volume_info.js';
+// #import {TrashRootEntry} from '../../common/js/trash.js';
+// #import {util, str} from '../../common/js/util.m.js';
+// #import {FakeEntryImpl, VolumeEntry, EntryList} from '../../common/js/files_app_entry_types.js';
+// #import {assertNotReached} from 'chrome://resources/js/assert.m.js';
+// #import {VolumeManagerCommon} from '../../common/js/volume_manager_types.m.js';
+// #import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+// #import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+// clang-format on
+
 /**
  * @enum {string}
  */
-const NavigationModelItemType = {
+/* #export */ const NavigationModelItemType = {
   SHORTCUT: 'shortcut',
   VOLUME: 'volume',
   RECENT: 'recent',
   CROSTINI: 'crostini',
   ENTRY_LIST: 'entry-list',
   DRIVE: 'drive',
+  ANDROID_APP: 'android-app',
+  TRASH: 'trash',
 };
 
 /**
@@ -23,19 +41,21 @@ const NavigationModelItemType = {
  *                  its children).
  *      - REMOVABLE: Archives, MTPs, Media Views and Removables.
  *      - CLOUD: Drive and FSPs.
+ *      - ANDROID_APPS: ANDROID picker apps.
  * @enum {string}
  */
-const NavigationSection = {
+/* #export */ const NavigationSection = {
   TOP: 'top',
   MY_FILES: 'my_files',
   REMOVABLE: 'removable',
   CLOUD: 'cloud',
+  ANDROID_APPS: 'android_apps',
 };
 
 /**
  * Base item of NavigationListModel. Should not be created directly.
  */
-class NavigationModelItem {
+/* #export */ class NavigationModelItem {
   /**
    * @param {string} label
    * @param {NavigationModelItemType} type
@@ -84,7 +104,7 @@ class NavigationModelItem {
 /**
  * Item of NavigationListModel for shortcuts.
  */
-class NavigationModelShortcutItem extends NavigationModelItem {
+/* #export */ class NavigationModelShortcutItem extends NavigationModelItem {
   /**
    * @param {string} label Label.
    * @param {!DirectoryEntry} entry Entry. Cannot be null.
@@ -100,9 +120,30 @@ class NavigationModelShortcutItem extends NavigationModelItem {
 }
 
 /**
+ * Item of NavigationListModel for Android apps.
+ */
+/* #export */ class NavigationModelAndroidAppItem extends NavigationModelItem {
+  /**
+   * @param {!chrome.fileManagerPrivate.AndroidApp} androidApp Android app.
+   *     Cannot be null.
+   */
+  constructor(androidApp) {
+    super(androidApp.name, NavigationModelItemType.ANDROID_APP);
+
+    /** @private {!chrome.fileManagerPrivate.AndroidApp} */
+    this.androidApp_ = androidApp;
+  }
+
+  /** @return {!chrome.fileManagerPrivate.AndroidApp} */
+  get androidApp() {
+    return this.androidApp_;
+  }
+}
+
+/**
  * Item of NavigationListModel for volumes.
  */
-class NavigationModelVolumeItem extends NavigationModelItem {
+/* #export */ class NavigationModelVolumeItem extends NavigationModelItem {
   /**
    * @param {string} label Label.
    * @param {!VolumeInfo} volumeInfo Volume info for the volume. Cannot be null.
@@ -123,7 +164,7 @@ class NavigationModelVolumeItem extends NavigationModelItem {
 /**
  * Item of NavigationListModel for a fake item such as Recent or Linux files.
  */
-class NavigationModelFakeItem extends NavigationModelItem {
+/* #export */ class NavigationModelFakeItem extends NavigationModelItem {
   /**
    * @param {string} label Label on the menu button.
    * @param {NavigationModelItemType} type
@@ -142,16 +183,18 @@ class NavigationModelFakeItem extends NavigationModelItem {
 /**
  * A navigation list model. This model combines multiple models.
  */
-class NavigationListModel extends cr.EventTarget {
+/* #export */ class NavigationListModel extends cr.EventTarget {
   /**
    * @param {!VolumeManager} volumeManager VolumeManager instance.
-   * @param {(!cr.ui.ArrayDataModel|!FolderShortcutsDataModel)}
-   *     shortcutListModel The list of folder shortcut.
+   * @param {!FolderShortcutsDataModel} shortcutListModel The list of folder
+   *     shortcut.
    * @param {NavigationModelFakeItem} recentModelItem Recent folder.
    * @param {!DirectoryModel} directoryModel
+   * @param {!AndroidAppListModel} androidAppListModel
    */
   constructor(
-      volumeManager, shortcutListModel, recentModelItem, directoryModel) {
+      volumeManager, shortcutListModel, recentModelItem, directoryModel,
+      androidAppListModel) {
     super();
 
     /**
@@ -161,7 +204,7 @@ class NavigationListModel extends cr.EventTarget {
     this.volumeManager_ = volumeManager;
 
     /**
-     * @private {(!cr.ui.ArrayDataModel|!FolderShortcutsDataModel)}
+     * @private {!FolderShortcutsDataModel}
      * @const
      */
     this.shortcutListModel_ = shortcutListModel;
@@ -179,11 +222,22 @@ class NavigationListModel extends cr.EventTarget {
     this.directoryModel_ = directoryModel;
 
     /**
+     * @private {!AndroidAppListModel}
+     */
+    this.androidAppListModel_ = androidAppListModel;
+
+    /**
      * Root folder for crostini Linux files.
      * This field will be modified when crostini is enabled/disabled.
      * @private {NavigationModelFakeItem}
      */
     this.linuxFilesItem_ = null;
+
+    /**
+     * Root folder for trash.
+     * @private {NavigationModelFakeItem}
+     */
+    this.trashItem_ = null;
 
     /**
      * NavigationModel for MyFiles, since DirectoryTree expect it to be always
@@ -199,16 +253,6 @@ class NavigationListModel extends cr.EventTarget {
      * @private {!Map<string, !NavigationModelFakeItem>}
      */
     this.removableModels_ = new Map();
-
-    /**
-     * True when MyFiles should be a volume and Downloads just a plain folder
-     * inside it. When false MyFiles is an EntryList, which means UI only type,
-     * which contains Downloads as a child volume.
-     * @private {boolean}
-     */
-    this.myFilesVolumeEnabled_ =
-        loadTimeData.valueExists('MY_FILES_VOLUME_ENABLED') &&
-        loadTimeData.getBoolean('MY_FILES_VOLUME_ENABLED');
 
     /**
      * All root navigation items in display order.
@@ -233,7 +277,7 @@ class NavigationListModel extends cr.EventTarget {
      * @enum {number}
      * @const
      */
-    const ListType = {VOLUME_LIST: 1, SHORTCUT_LIST: 2};
+    const ListType = {VOLUME_LIST: 1, SHORTCUT_LIST: 2, ANDROID_APP_LIST: 3};
     Object.freeze(ListType);
 
     // Generates this.volumeList_ and this.shortcutList_ from the models.
@@ -249,6 +293,11 @@ class NavigationListModel extends cr.EventTarget {
           /** @type {!Entry} */ (this.shortcutListModel_.item(i));
       const volumeInfo = this.volumeManager_.getVolumeInfo(shortcutEntry);
       this.shortcutList_.push(entryToModelItem(shortcutEntry));
+    }
+
+    this.androidAppList_ = [];
+    for (let i = 0; i < this.androidAppListModel_.length(); i++) {
+      this.androidAppList_.push(this.androidAppListModel_.item(i));
     }
 
     // Reorder volumes, shortcuts, and optional items for initial display.
@@ -287,7 +336,7 @@ class NavigationListModel extends cr.EventTarget {
         for (let i = 0; i < this.shortcutList_.length; i++) {
           permutation.push(i + this.volumeList_.length);
         }
-      } else {
+      } else if (listType == ListType.SHORTCUT_LIST) {
         // Build the shortcutList.
 
         // volumeList part has not been changed, so the permutation should be
@@ -338,6 +387,11 @@ class NavigationListModel extends cr.EventTarget {
         }
 
         this.shortcutList_ = newList;
+      } else if (listType == ListType.ANDROID_APP_LIST) {
+        this.androidAppList_ = [];
+        for (let i = 0; i < this.androidAppListModel_.length(); i++) {
+          this.androidAppList_.push(this.androidAppListModel_.item(i));
+        }
       }
 
       // Reorder items after permutation.
@@ -345,8 +399,8 @@ class NavigationListModel extends cr.EventTarget {
 
       // Dispatch permuted event.
       const permutedEvent = new Event('permuted');
-      permutedEvent.newLength =
-          this.volumeList_.length + this.shortcutList_.length;
+      permutedEvent.newLength = this.volumeList_.length +
+          this.shortcutList_.length + this.androidAppList_.length;
       permutedEvent.permutation = permutation;
       this.dispatchEvent(permutedEvent);
     };
@@ -355,6 +409,8 @@ class NavigationListModel extends cr.EventTarget {
         'permuted', permutedHandler.bind(this, ListType.VOLUME_LIST));
     this.shortcutListModel_.addEventListener(
         'permuted', permutedHandler.bind(this, ListType.SHORTCUT_LIST));
+    this.androidAppListModel_.addEventListener(
+        'permuted', permutedHandler.bind(this, ListType.ANDROID_APP_LIST));
 
     // 'change' event is just ignored, because it is not fired neither in
     // the folder shortcut list nor in the volume info list.
@@ -452,6 +508,7 @@ class NavigationListModel extends cr.EventTarget {
         case VolumeManagerCommon.VolumeType.DRIVE:
         case VolumeManagerCommon.VolumeType.MEDIA_VIEW:
         case VolumeManagerCommon.VolumeType.DOCUMENTS_PROVIDER:
+        case VolumeManagerCommon.VolumeType.SMB:
           if (!volumeIndexes[volumeType]) {
             volumeIndexes[volumeType] = [i];
           } else {
@@ -496,7 +553,7 @@ class NavigationListModel extends cr.EventTarget {
       for (const removable of removableVolumes) {
         // Partitions on the same physical device share device path and drive
         // label. Create keys using these two identifiers.
-        let key = removable.volumeInfo.devicePath + '/' +
+        const key = removable.volumeInfo.devicePath + '/' +
             removable.volumeInfo.driveLabel;
         if (!removableGroups.has(key)) {
           // New key, so create a new array to hold partitions.
@@ -509,19 +566,48 @@ class NavigationListModel extends cr.EventTarget {
       return removableGroups;
     };
 
+    /**
+     * Creates a model item for a Recent view whose contents are filtered by
+     * their file types.
+     * @param {string} label
+     * @param {chrome.fileManagerPrivate.RecentFileType} fileType
+     * @param {VolumeManagerCommon.RootType} rootType
+     * @return {!NavigationModelFakeItem}
+     */
+    const createFilteredRecentModelItem = (label, fileType, rootType) => {
+      const entry = /** @type {!FakeEntry} */ (Object.assign(
+          Object.create(FakeEntryImpl.prototype), this.recentModelItem_.entry));
+      entry.recentFileType = fileType;
+      entry.rootType = rootType;
+      return new NavigationModelFakeItem(
+          label, NavigationModelItemType.RECENT, entry);
+    };
+
     // Items as per required order.
     this.navigationItems_ = [];
 
+    // If "Recents" are enabled, then the Unified Media Views
+    // (crbug.com/1033531), which are based on top of the "Recents"
+    // feature, are also added to the directory tree.
     if (this.recentModelItem_) {
       this.navigationItems_.push(this.recentModelItem_);
+      if (!util.isRecentsFilterEnabled()) {
+        // Unified Media View (Images, Videos and Audio).
+        this.navigationItems_.push(createFilteredRecentModelItem(
+            str('MEDIA_VIEW_AUDIO_ROOT_LABEL'),
+            chrome.fileManagerPrivate.RecentFileType.AUDIO,
+            VolumeManagerCommon.RootType.RECENT_AUDIO));
+        this.navigationItems_.push(createFilteredRecentModelItem(
+            str('MEDIA_VIEW_IMAGES_ROOT_LABEL'),
+            chrome.fileManagerPrivate.RecentFileType.IMAGE,
+            VolumeManagerCommon.RootType.RECENT_IMAGES));
+        this.navigationItems_.push(createFilteredRecentModelItem(
+            str('MEDIA_VIEW_VIDEOS_ROOT_LABEL'),
+            chrome.fileManagerPrivate.RecentFileType.VIDEO,
+            VolumeManagerCommon.RootType.RECENT_VIDEOS));
+      }
     }
 
-    // Media View (Images, Videos and Audio).
-    for (const mediaView of getVolumes(
-             VolumeManagerCommon.VolumeType.MEDIA_VIEW)) {
-      this.navigationItems_.push(mediaView);
-      mediaView.section = NavigationSection.TOP;
-    }
     // Shortcuts.
     for (const shortcut of this.shortcutList_) {
       this.navigationItems_.push(shortcut);
@@ -529,39 +615,27 @@ class NavigationListModel extends cr.EventTarget {
 
     let myFilesEntry, myFilesModel;
     if (!this.myFilesModel_) {
-      if (this.myFilesVolumeEnabled_) {
-        // When MyFilesVolume is enabled we use the Downloads volume to be the
-        // MyFiles volume.
-        const myFilesVolumeModel =
-            getSingleVolume(VolumeManagerCommon.VolumeType.DOWNLOADS);
-        if (myFilesVolumeModel) {
-          myFilesEntry = new VolumeEntry(myFilesVolumeModel.volumeInfo);
-          myFilesModel = new NavigationModelFakeItem(
-              str('MY_FILES_ROOT_LABEL'), NavigationModelItemType.ENTRY_LIST,
-              myFilesEntry);
-          this.myFilesModel_ = myFilesModel;
-        } else {
-          // When MyFilesVolume isn't available we create a empty EntryList to
-          // be MyFiles to be able to display Linux or Play volumes. However we
-          // don't save it back to this.MyFilesModel_ so it's always re-created.
-          myFilesEntry = new EntryList(
-              str('MY_FILES_ROOT_LABEL'),
-              VolumeManagerCommon.RootType.MY_FILES);
-          myFilesModel = new NavigationModelFakeItem(
-              myFilesEntry.label, NavigationModelItemType.ENTRY_LIST,
-              myFilesEntry);
-        }
+      // When MyFilesVolume is enabled we use the Downloads volume to be the
+      // MyFiles volume.
+      const myFilesVolumeModel =
+          getSingleVolume(VolumeManagerCommon.VolumeType.DOWNLOADS);
+      if (myFilesVolumeModel) {
+        myFilesEntry = new VolumeEntry(myFilesVolumeModel.volumeInfo);
+        myFilesModel = new NavigationModelFakeItem(
+            str('MY_FILES_ROOT_LABEL'), NavigationModelItemType.ENTRY_LIST,
+            myFilesEntry);
+        myFilesModel.section = NavigationSection.MY_FILES;
+        this.myFilesModel_ = myFilesModel;
       } else {
-        // Here is the initial version for MyFiles, which is only an entry in JS
-        // to be displayed in the DirectoryTree, cotaining Downloads, Linux and
-        // Play files volumes.
+        // When MyFiles volume isn't available we create a empty EntryList to
+        // be MyFiles to be able to display Linux or Play volumes. However we
+        // don't save it back to this.MyFilesModel_ so it's always re-created.
         myFilesEntry = new EntryList(
             str('MY_FILES_ROOT_LABEL'), VolumeManagerCommon.RootType.MY_FILES);
         myFilesModel = new NavigationModelFakeItem(
             myFilesEntry.label, NavigationModelItemType.ENTRY_LIST,
             myFilesEntry);
         myFilesModel.section = NavigationSection.MY_FILES;
-        this.myFilesModel_ = myFilesModel;
       }
     } else {
       myFilesEntry = this.myFilesModel_.entry;
@@ -569,22 +643,6 @@ class NavigationListModel extends cr.EventTarget {
     }
     this.directoryModel_.setMyFiles(myFilesEntry);
     this.navigationItems_.push(myFilesModel);
-
-    // Add Downloads to My Files.
-    if (!this.myFilesVolumeEnabled_) {
-      const downloadsVolume =
-          getSingleVolume(VolumeManagerCommon.VolumeType.DOWNLOADS);
-      if (downloadsVolume) {
-        // Only add volume if MyFiles doesn't have it yet.
-        if (myFilesEntry.findIndexByVolumeInfo(downloadsVolume.volumeInfo) ===
-            -1) {
-          myFilesEntry.addEntry(new VolumeEntry(downloadsVolume.volumeInfo));
-        }
-      } else {
-        myFilesEntry.removeByVolumeType(
-            VolumeManagerCommon.VolumeType.DOWNLOADS);
-      }
-    }
 
     // Add Android to My Files.
     const androidVolume =
@@ -633,6 +691,22 @@ class NavigationListModel extends cr.EventTarget {
       this.fakeDriveItem_.section = NavigationSection.CLOUD;
     }
 
+    // Add Trash.
+    if (loadTimeData.getBoolean('FILES_TRASH_ENABLED')) {
+      if (!this.trashItem_) {
+        this.trashItem_ = new NavigationModelFakeItem(
+            str('TRASH_ROOT_LABEL'), NavigationModelItemType.TRASH,
+            new TrashRootEntry(this.volumeManager_));
+      }
+      this.navigationItems_.push(this.trashItem_);
+    }
+
+    // Add SMB.
+    for (const provided of getVolumes(VolumeManagerCommon.VolumeType.SMB)) {
+      this.navigationItems_.push(provided);
+      provided.section = NavigationSection.CLOUD;
+    }
+
     // Add FSP.
     for (const provided of getVolumes(
              VolumeManagerCommon.VolumeType.PROVIDED)) {
@@ -650,7 +724,8 @@ class NavigationListModel extends cr.EventTarget {
     // Add REMOVABLE volumes and partitions.
     const removableModels = new Map();
     for (const [devicePath, removableGroup] of groupRemovables().entries()) {
-      if (removableGroup.length == 1) {
+      if (removableGroup.length == 1 &&
+          !util.isSinglePartitionFormatEnabled()) {
         // Add unpartitioned removable device as a regular volume.
         this.navigationItems_.push(removableGroup[0]);
         removableGroup[0].section = NavigationSection.REMOVABLE;
@@ -670,7 +745,8 @@ class NavigationListModel extends cr.EventTarget {
             removableGroup[0].volumeInfo.driveLabel :
             /*default*/ 'External Drive';
         removableEntry = new EntryList(
-            rootLabel, VolumeManagerCommon.RootType.REMOVABLE, devicePath);
+            rootLabel, VolumeManagerCommon.RootType.REMOVABLE,
+            removableGroup[0].volumeInfo.devicePath);
         removableModel = new NavigationModelFakeItem(
             removableEntry.label, NavigationModelItemType.ENTRY_LIST,
             removableEntry);
@@ -713,6 +789,12 @@ class NavigationListModel extends cr.EventTarget {
     for (const volume of otherVolumes) {
       this.navigationItems_.push(volume);
       volume.section = NavigationSection.REMOVABLE;
+    }
+
+    for (const androidApp of this.androidAppList_) {
+      const androidAppItem = new NavigationModelAndroidAppItem(androidApp);
+      androidAppItem.section = NavigationSection.ANDROID_APPS;
+      this.navigationItems_.push(androidAppItem);
     }
   }
 

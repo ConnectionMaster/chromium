@@ -5,7 +5,6 @@
 #ifndef IOS_CHROME_BROWSER_GOOGLE_GOOGLE_LOGO_SERVICE_H_
 #define IOS_CHROME_BROWSER_GOOGLE_GOOGLE_LOGO_SERVICE_H_
 
-#include <memory>
 
 #include "components/search_provider_logos/logo_common.h"
 #include "components/search_provider_logos/logo_service_impl.h"
@@ -24,7 +23,7 @@ class GoogleLogoService : public search_provider_logos::LogoServiceImpl {
  public:
   GoogleLogoService(
       TemplateURLService* template_url_service,
-      identity::IdentityManager* identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~GoogleLogoService() override;
 

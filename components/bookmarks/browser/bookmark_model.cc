@@ -11,13 +11,16 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/check_op.h"
+#include "base/guid.h"
 #include "base/i18n/string_compare.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "components/bookmarks/browser/bookmark_expanded_state_tracker.h"
+#include "components/bookmarks/browser/bookmark_load_details.h"
 #include "components/bookmarks/browser/bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node_data.h"
 #include "components/bookmarks/browser/bookmark_storage.h"
@@ -46,11 +49,6 @@ BookmarkNode* AsMutable(const BookmarkNode* node) {
   return const_cast<BookmarkNode*>(node);
 }
 
-// Helper to get a mutable permanent bookmark node.
-BookmarkPermanentNode* AsMutable(const BookmarkPermanentNode* node) {
-  return const_cast<BookmarkPermanentNode*>(node);
-}
-
 // Comparator used when sorting permanent nodes. Nodes that are initially
 // visible are sorted before nodes that are initially hidden.
 class VisibilityComparator {
@@ -62,10 +60,8 @@ class VisibilityComparator {
                   const std::unique_ptr<BookmarkNode>& n2) {
     DCHECK(n1->is_permanent_node());
     DCHECK(n2->is_permanent_node());
-    bool n1_visible = client_->IsPermanentNodeVisible(
-        static_cast<BookmarkPermanentNode*>(n1.get()));
-    bool n2_visible = client_->IsPermanentNodeVisible(
-        static_cast<BookmarkPermanentNode*>(n2.get()));
+    bool n1_visible = client_->IsPermanentNodeVisibleWhenEmpty(n1->type());
+    bool n2_visible = client_->IsPermanentNodeVisibleWhenEmpty(n2->type());
     return n1_visible != n2_visible && n1_visible;
   }
 
@@ -108,7 +104,7 @@ class EmptyUndoDelegate : public BookmarkUndoDelegate {
   void SetUndoProvider(BookmarkUndoProvider* provider) override {}
   void OnBookmarkNodeRemoved(BookmarkModel* model,
                              const BookmarkNode* parent,
-                             int index,
+                             size_t index,
                              std::unique_ptr<BookmarkNode> node) override {}
 
   DISALLOW_COPY_AND_ASSIGN(EmptyUndoDelegate);
@@ -120,7 +116,10 @@ class EmptyUndoDelegate : public BookmarkUndoDelegate {
 
 BookmarkModel::BookmarkModel(std::unique_ptr<BookmarkClient> client)
     : client_(std::move(client)),
-      owned_root_(std::make_unique<BookmarkNode>(GURL())),
+      owned_root_(std::make_unique<BookmarkNode>(
+          /*id=*/0,
+          base::GUID::ParseLowercase(BookmarkNode::kRootNodeGuid),
+          GURL())),
       root_(owned_root_.get()),
       observers_(base::ObserverListPolicy::EXISTING_ONLY),
       empty_undo_delegate_(std::make_unique<EmptyUndoDelegate>()) {
@@ -129,6 +128,8 @@ BookmarkModel::BookmarkModel(std::unique_ptr<BookmarkClient> client)
 }
 
 BookmarkModel::~BookmarkModel() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   for (BookmarkModelObserver& observer : observers_)
     observer.BookmarkModelBeingDeleted(this);
 
@@ -139,11 +140,9 @@ BookmarkModel::~BookmarkModel() {
   }
 }
 
-void BookmarkModel::Load(
-    PrefService* pref_service,
-    const base::FilePath& profile_path,
-    const scoped_refptr<base::SequencedTaskRunner>& io_task_runner,
-    const scoped_refptr<base::SequencedTaskRunner>& ui_task_runner) {
+void BookmarkModel::Load(PrefService* pref_service,
+                         const base::FilePath& profile_path) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // If the store is non-null, it means Load was already invoked. Load should
   // only be invoked once.
   DCHECK(!store_);
@@ -151,24 +150,31 @@ void BookmarkModel::Load(
   expanded_state_tracker_ =
       std::make_unique<BookmarkExpandedStateTracker>(this, pref_service);
 
-  store_ = std::make_unique<BookmarkStorage>(this, profile_path,
-                                             io_task_runner.get());
-  // Creating ModelLoader schedules the load on |io_task_runner|.
+  store_ = std::make_unique<BookmarkStorage>(this, profile_path);
+  // Creating ModelLoader schedules the load on a backend task runner.
   model_loader_ = ModelLoader::Create(
-      profile_path.Append(kBookmarksFileName), io_task_runner.get(),
+      profile_path.Append(kBookmarksFileName),
       std::make_unique<BookmarkLoadDetails>(client_.get()),
-      base::BindOnce(&BookmarkModel::DoneLoading, weak_factory_.GetWeakPtr()));
+      base::BindOnce(&BookmarkModel::DoneLoading, AsWeakPtr()));
+}
+
+scoped_refptr<ModelLoader> BookmarkModel::model_loader() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return model_loader_;
 }
 
 void BookmarkModel::AddObserver(BookmarkModelObserver* observer) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   observers_.AddObserver(observer);
 }
 
 void BookmarkModel::RemoveObserver(BookmarkModelObserver* observer) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   observers_.RemoveObserver(observer);
 }
 
 void BookmarkModel::BeginExtensiveChanges() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (++extensive_changes_ == 1) {
     for (BookmarkModelObserver& observer : observers_)
       observer.ExtensiveBookmarkChangesBeginning(this);
@@ -176,6 +182,7 @@ void BookmarkModel::BeginExtensiveChanges() {
 }
 
 void BookmarkModel::EndExtensiveChanges() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   --extensive_changes_;
   DCHECK_GE(extensive_changes_, 0);
   if (extensive_changes_ == 0) {
@@ -185,23 +192,30 @@ void BookmarkModel::EndExtensiveChanges() {
 }
 
 void BookmarkModel::BeginGroupedChanges() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (BookmarkModelObserver& observer : observers_)
     observer.GroupedBookmarkChangesBeginning(this);
 }
 
 void BookmarkModel::EndGroupedChanges() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (BookmarkModelObserver& observer : observers_)
     observer.GroupedBookmarkChangesEnded(this);
 }
 
 void BookmarkModel::Remove(const BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(loaded_);
   DCHECK(node);
   DCHECK(!is_root_node(node));
   const BookmarkNode* parent = node->parent();
   DCHECK(parent);
-  int index = parent->GetIndexOf(node);
-  DCHECK_NE(-1, index);
+  size_t index = static_cast<size_t>(parent->GetIndexOf(node));
+  DCHECK_NE(static_cast<size_t>(-1), index);
+
+  // Removing a permanent node is problematic and can cause crashes elsewhere
+  // that are difficult to trace back.
+  CHECK(!is_permanent_node(node)) << "for type " << node->type();
 
   for (BookmarkModelObserver& observer : observers_)
     observer.OnWillRemoveBookmarks(this, parent, index, node);
@@ -209,7 +223,7 @@ void BookmarkModel::Remove(const BookmarkNode* node) {
   std::set<GURL> removed_urls;
   std::unique_ptr<BookmarkNode> owned_node =
       url_index_->Remove(AsMutable(node), &removed_urls);
-  RemoveNode(owned_node.get());
+  RemoveNodeFromIndexRecursive(owned_node.get());
 
   if (store_)
     store_->ScheduleSave();
@@ -222,6 +236,8 @@ void BookmarkModel::Remove(const BookmarkNode* node) {
 }
 
 void BookmarkModel::RemoveAllUserBookmarks() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(loaded_);
   std::set<GURL> removed_urls;
   struct RemoveNodeData {
     const BookmarkNode* parent;
@@ -238,17 +254,17 @@ void BookmarkModel::RemoveAllUserBookmarks() {
   // its immediate children. For removing all non permanent nodes just remove
   // all children of non-root permanent nodes.
   {
-    for (int i = 0; i < root_->child_count(); ++i) {
-      const BookmarkNode* permanent_node = root_->GetChild(i);
-
-      if (!client_->CanBeEditedByUser(permanent_node))
+    for (const auto& permanent_node : root_->children()) {
+      if (!client_->CanBeEditedByUser(permanent_node.get()))
         continue;
 
-      for (int j = permanent_node->child_count() - 1; j >= 0; --j) {
+      for (int j = static_cast<int>(permanent_node->children().size() - 1);
+           j >= 0; --j) {
         std::unique_ptr<BookmarkNode> node = url_index_->Remove(
-            AsMutable(permanent_node->GetChild(j)), &removed_urls);
-        RemoveNode(node.get());
-        removed_node_data_list.push_back({permanent_node, j, std::move(node)});
+            permanent_node->children()[j].get(), &removed_urls);
+        RemoveNodeFromIndexRecursive(node.get());
+        removed_node_data_list.push_back(
+            {permanent_node.get(), j, std::move(node)});
       }
     }
   }
@@ -270,21 +286,17 @@ void BookmarkModel::RemoveAllUserBookmarks() {
 
 void BookmarkModel::Move(const BookmarkNode* node,
                          const BookmarkNode* new_parent,
-                         int index) {
-  if (!loaded_ || !node || !IsValidIndex(new_parent, index, true) ||
-      is_root_node(new_parent) || is_permanent_node(node)) {
-    NOTREACHED();
-    return;
-  }
-
-  if (new_parent->HasAncestor(node)) {
-    // Can't make an ancestor of the node be a child of the node.
-    NOTREACHED();
-    return;
-  }
+                         size_t index) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(loaded_);
+  DCHECK(node);
+  DCHECK(IsValidIndex(new_parent, index, true));
+  DCHECK(!is_root_node(new_parent));
+  DCHECK(!is_permanent_node(node));
+  DCHECK(!new_parent->HasAncestor(node));
 
   const BookmarkNode* old_parent = node->parent();
-  int old_index = old_parent->GetIndexOf(node);
+  size_t old_index = old_parent->GetIndexOf(node);
 
   if (old_parent == new_parent &&
       (index == old_index || index == old_index + 1)) {
@@ -299,7 +311,7 @@ void BookmarkModel::Move(const BookmarkNode* node,
 
   BookmarkNode* mutable_old_parent = AsMutable(old_parent);
   std::unique_ptr<BookmarkNode> owned_node =
-      mutable_old_parent->Remove(AsMutable(node));
+      mutable_old_parent->Remove(old_index);
   BookmarkNode* mutable_new_parent = AsMutable(new_parent);
   mutable_new_parent->Add(std::move(owned_node), index);
 
@@ -312,18 +324,14 @@ void BookmarkModel::Move(const BookmarkNode* node,
 
 void BookmarkModel::Copy(const BookmarkNode* node,
                          const BookmarkNode* new_parent,
-                         int index) {
-  if (!loaded_ || !node || !IsValidIndex(new_parent, index, true) ||
-      is_root_node(new_parent) || is_permanent_node(node)) {
-    NOTREACHED();
-    return;
-  }
-
-  if (new_parent->HasAncestor(node)) {
-    // Can't make an ancestor of the node be a child of the node.
-    NOTREACHED();
-    return;
-  }
+                         size_t index) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(loaded_);
+  DCHECK(node);
+  DCHECK(IsValidIndex(new_parent, index, true));
+  DCHECK(!is_root_node(new_parent));
+  DCHECK(!is_permanent_node(node));
+  DCHECK(!new_parent->HasAncestor(node));
 
   SetDateFolderModified(new_parent, Time::Now());
   BookmarkNodeData drag_data(node);
@@ -336,23 +344,18 @@ void BookmarkModel::Copy(const BookmarkNode* node,
 }
 
 const gfx::Image& BookmarkModel::GetFavicon(const BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(node);
   if (node->favicon_state() == BookmarkNode::INVALID_FAVICON) {
     BookmarkNode* mutable_node = AsMutable(node);
-    LoadFavicon(mutable_node, client_->PreferTouchIcon()
-                                  ? favicon_base::IconType::kTouchIcon
-                                  : favicon_base::IconType::kFavicon);
+    LoadFavicon(mutable_node);
   }
   return node->favicon();
 }
 
-favicon_base::IconType BookmarkModel::GetFaviconType(const BookmarkNode* node) {
-  DCHECK(node);
-  return node->favicon_type();
-}
-
 void BookmarkModel::SetTitle(const BookmarkNode* node,
-                             const base::string16& title) {
+                             const std::u16string& title) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(node);
 
   if (node->GetTitle() == title)
@@ -370,10 +373,10 @@ void BookmarkModel::SetTitle(const BookmarkNode* node,
   // add it back. Only do this for URL nodes. A directory node can have its
   // title changed but should be excluded from the index.
   if (node->is_url())
-    index_->Remove(node);
-  AsMutable(node)->SetTitle(title);
+    titled_url_index_->Remove(node);
+  url_index_->SetTitle(AsMutable(node), title);
   if (node->is_url())
-    index_->Add(node);
+    titled_url_index_->Add(node);
 
   if (store_)
     store_->ScheduleSave();
@@ -383,7 +386,9 @@ void BookmarkModel::SetTitle(const BookmarkNode* node,
 }
 
 void BookmarkModel::SetURL(const BookmarkNode* node, const GURL& url) {
-  DCHECK(node && !node->is_folder());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(node);
+  DCHECK(!node->is_folder());
 
   if (node->url() == url)
     return;
@@ -395,9 +400,11 @@ void BookmarkModel::SetURL(const BookmarkNode* node, const GURL& url) {
   for (BookmarkModelObserver& observer : observers_)
     observer.OnWillChangeBookmarkNode(this, node);
 
-  index_->Remove(mutable_node);
+  // The title index doesn't support changing the URL, instead we remove then
+  // add it back.
+  titled_url_index_->Remove(mutable_node);
   url_index_->SetUrl(mutable_node, url);
-  AddNodeToIndexRecursive(mutable_node);
+  titled_url_index_->Add(mutable_node);
 
   if (store_)
     store_->ScheduleSave();
@@ -409,6 +416,8 @@ void BookmarkModel::SetURL(const BookmarkNode* node, const GURL& url) {
 void BookmarkModel::SetNodeMetaInfo(const BookmarkNode* node,
                                     const std::string& key,
                                     const std::string& value) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   std::string old_value;
   if (node->GetMetaInfo(key, &old_value) && old_value == value)
     return;
@@ -426,6 +435,8 @@ void BookmarkModel::SetNodeMetaInfo(const BookmarkNode* node,
 void BookmarkModel::SetNodeMetaInfoMap(
     const BookmarkNode* node,
     const BookmarkNode::MetaInfoMap& meta_info_map) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   const BookmarkNode::MetaInfoMap* old_meta_info_map = node->GetMetaInfoMap();
   if ((!old_meta_info_map && meta_info_map.empty()) ||
       (old_meta_info_map && meta_info_map == *old_meta_info_map))
@@ -444,6 +455,8 @@ void BookmarkModel::SetNodeMetaInfoMap(
 
 void BookmarkModel::DeleteNodeMetaInfo(const BookmarkNode* node,
                                        const std::string& key) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   const BookmarkNode::MetaInfoMap* meta_info_map = node->GetMetaInfoMap();
   if (!meta_info_map || meta_info_map->find(key) == meta_info_map->end())
     return;
@@ -459,24 +472,14 @@ void BookmarkModel::DeleteNodeMetaInfo(const BookmarkNode* node,
 }
 
 void BookmarkModel::AddNonClonedKey(const std::string& key) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   non_cloned_keys_.insert(key);
-}
-
-void BookmarkModel::SetNodeSyncTransactionVersion(
-    const BookmarkNode* node,
-    int64_t sync_transaction_version) {
-  DCHECK(client_->CanSyncNode(node));
-
-  if (sync_transaction_version == node->sync_transaction_version())
-    return;
-
-  AsMutable(node)->set_sync_transaction_version(sync_transaction_version);
-  if (store_)
-    store_->ScheduleSave();
 }
 
 void BookmarkModel::OnFaviconsChanged(const std::set<GURL>& page_urls,
                                       const GURL& icon_url) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   if (!loaded_)
     return;
 
@@ -508,7 +511,9 @@ void BookmarkModel::OnFaviconsChanged(const std::set<GURL>& page_urls,
 }
 
 void BookmarkModel::SetDateAdded(const BookmarkNode* node, Time date_added) {
-  DCHECK(node && !is_permanent_node(node));
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(node);
+  DCHECK(!is_permanent_node(node));
 
   if (node->date_added() == date_added)
     return;
@@ -526,12 +531,16 @@ void BookmarkModel::SetDateAdded(const BookmarkNode* node, Time date_added) {
 
 void BookmarkModel::GetNodesByURL(const GURL& url,
                                   std::vector<const BookmarkNode*>* nodes) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   if (url_index_)
     url_index_->GetNodesByUrl(url, nodes);
 }
 
 const BookmarkNode* BookmarkModel::GetMostRecentlyAddedUserNodeForURL(
     const GURL& url) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   std::vector<const BookmarkNode*> nodes;
   GetNodesByURL(url, &nodes);
   std::sort(nodes.begin(), nodes.end(), &MoreRecentlyAdded);
@@ -546,81 +555,87 @@ const BookmarkNode* BookmarkModel::GetMostRecentlyAddedUserNodeForURL(
 }
 
 bool BookmarkModel::HasBookmarks() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return url_index_ && url_index_->HasBookmarks();
 }
 
 bool BookmarkModel::HasNoUserCreatedBookmarksOrFolders() {
-  return bookmark_bar_node_->empty() && other_node_->empty() &&
-         mobile_node_->empty();
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return bookmark_bar_node_->children().empty() &&
+         other_node_->children().empty() && mobile_node_->children().empty();
 }
 
 bool BookmarkModel::IsBookmarked(const GURL& url) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return url_index_ && url_index_->IsBookmarked(url);
 }
 
 void BookmarkModel::GetBookmarks(std::vector<UrlAndTitle>* bookmarks) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (url_index_)
     url_index_->GetBookmarks(bookmarks);
 }
 
-const BookmarkNode* BookmarkModel::AddFolder(const BookmarkNode* parent,
-                                             int index,
-                                             const base::string16& title) {
-  return AddFolderWithMetaInfo(parent, index, title, nullptr);
-}
-const BookmarkNode* BookmarkModel::AddFolderWithMetaInfo(
+const BookmarkNode* BookmarkModel::AddFolder(
     const BookmarkNode* parent,
-    int index,
-    const base::string16& title,
-    const BookmarkNode::MetaInfoMap* meta_info) {
-  if (!loaded_ || is_root_node(parent) || !IsValidIndex(parent, index, true)) {
-    // Can't add to the root.
-    NOTREACHED();
-    return nullptr;
-  }
+    size_t index,
+    const std::u16string& title,
+    const BookmarkNode::MetaInfoMap* meta_info,
+    absl::optional<base::Time> creation_time,
+    absl::optional<base::GUID> guid) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(loaded_);
+  DCHECK(parent);
+  DCHECK(parent->is_folder());
+  DCHECK(!is_root_node(parent));
+  DCHECK(IsValidIndex(parent, index, true));
+  DCHECK(!guid || guid->is_valid());
 
-  std::unique_ptr<BookmarkNode> new_node =
-      std::make_unique<BookmarkNode>(generate_next_node_id(), GURL());
-  new_node->set_date_folder_modified(Time::Now());
+  const base::Time provided_creation_time_or_now =
+      creation_time.value_or(Time::Now());
+
+  auto new_node = std::make_unique<BookmarkNode>(
+      generate_next_node_id(), guid.value_or(base::GUID::GenerateRandomV4()),
+      GURL());
+  new_node->set_date_added(provided_creation_time_or_now);
+  new_node->set_date_folder_modified(provided_creation_time_or_now);
   // Folders shouldn't have line breaks in their titles.
   new_node->SetTitle(title);
-  new_node->set_type(BookmarkNode::FOLDER);
   if (meta_info)
     new_node->SetMetaInfoMap(*meta_info);
 
   return AddNode(AsMutable(parent), index, std::move(new_node));
 }
 
-const BookmarkNode* BookmarkModel::AddURL(const BookmarkNode* parent,
-                                          int index,
-                                          const base::string16& title,
-                                          const GURL& url) {
-  return AddURLWithCreationTimeAndMetaInfo(parent, index, title, url,
-                                           Time::Now(), nullptr);
-}
-
-const BookmarkNode* BookmarkModel::AddURLWithCreationTimeAndMetaInfo(
+const BookmarkNode* BookmarkModel::AddURL(
     const BookmarkNode* parent,
-    int index,
-    const base::string16& title,
+    size_t index,
+    const std::u16string& title,
     const GURL& url,
-    const Time& creation_time,
-    const BookmarkNode::MetaInfoMap* meta_info) {
-  if (!loaded_ || !url.is_valid() || is_root_node(parent) ||
-      !IsValidIndex(parent, index, true)) {
-    NOTREACHED();
-    return nullptr;
-  }
+    const BookmarkNode::MetaInfoMap* meta_info,
+    absl::optional<base::Time> creation_time,
+    absl::optional<base::GUID> guid) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(loaded_);
+  DCHECK(url.is_valid());
+  DCHECK(parent);
+  DCHECK(parent->is_folder());
+  DCHECK(!is_root_node(parent));
+  DCHECK(IsValidIndex(parent, index, true));
+  DCHECK(!guid || guid->is_valid());
+
+  const base::Time provided_creation_time_or_now =
+      creation_time.value_or(Time::Now());
 
   // Syncing may result in dates newer than the last modified date.
-  if (creation_time > parent->date_folder_modified())
-    SetDateFolderModified(parent, creation_time);
+  if (provided_creation_time_or_now > parent->date_folder_modified())
+    SetDateFolderModified(parent, provided_creation_time_or_now);
 
-  std::unique_ptr<BookmarkNode> new_node =
-      std::make_unique<BookmarkNode>(generate_next_node_id(), url);
+  auto new_node = std::make_unique<BookmarkNode>(
+      generate_next_node_id(), guid.value_or(base::GUID::GenerateRandomV4()),
+      url);
   new_node->SetTitle(title);
-  new_node->set_date_added(creation_time);
-  new_node->set_type(BookmarkNode::URL);
+  new_node->set_date_added(provided_creation_time_or_now);
   if (meta_info)
     new_node->SetMetaInfoMap(*meta_info);
 
@@ -628,10 +643,11 @@ const BookmarkNode* BookmarkModel::AddURLWithCreationTimeAndMetaInfo(
 }
 
 void BookmarkModel::SortChildren(const BookmarkNode* parent) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(client_->CanBeEditedByUser(parent));
 
   if (!parent || !parent->is_folder() || is_root_node(parent) ||
-      parent->child_count() <= 1) {
+      parent->children().size() <= 1) {
     return;
   }
 
@@ -643,8 +659,7 @@ void BookmarkModel::SortChildren(const BookmarkNode* parent) {
   if (U_FAILURE(error))
     collator.reset(nullptr);
   BookmarkNode* mutable_parent = AsMutable(parent);
-  std::sort(mutable_parent->children().begin(),
-            mutable_parent->children().end(),
+  std::sort(mutable_parent->children_.begin(), mutable_parent->children_.end(),
             SortComparator(collator.get()));
 
   if (store_)
@@ -657,10 +672,11 @@ void BookmarkModel::SortChildren(const BookmarkNode* parent) {
 void BookmarkModel::ReorderChildren(
     const BookmarkNode* parent,
     const std::vector<const BookmarkNode*>& ordered_nodes) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(client_->CanBeEditedByUser(parent));
 
   // Ensure that all children in |parent| are in |ordered_nodes|.
-  DCHECK_EQ(static_cast<size_t>(parent->child_count()), ordered_nodes.size());
+  DCHECK_EQ(parent->children().size(), ordered_nodes.size());
   for (const BookmarkNode* node : ordered_nodes)
     DCHECK_EQ(parent, node->parent());
 
@@ -675,11 +691,11 @@ void BookmarkModel::ReorderChildren(
     std::vector<std::unique_ptr<BookmarkNode>> new_children(
         ordered_nodes.size());
     BookmarkNode* mutable_parent = AsMutable(parent);
-    for (auto& child : mutable_parent->children()) {
+    for (auto& child : mutable_parent->children_) {
       size_t new_location = order[child.get()];
       new_children[new_location] = std::move(child);
     }
-    mutable_parent->children().swap(new_children);
+    mutable_parent->children_.swap(new_children);
 
     if (store_)
       store_->ScheduleSave();
@@ -691,6 +707,7 @@ void BookmarkModel::ReorderChildren(
 
 void BookmarkModel::SetDateFolderModified(const BookmarkNode* parent,
                                           const Time time) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(parent);
   AsMutable(parent)->set_date_folder_modified(time);
 
@@ -699,102 +716,85 @@ void BookmarkModel::SetDateFolderModified(const BookmarkNode* parent,
 }
 
 void BookmarkModel::ResetDateFolderModified(const BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   SetDateFolderModified(node, Time());
 }
 
-void BookmarkModel::GetBookmarksMatching(const base::string16& text,
-                                         size_t max_count,
-                                         std::vector<TitledUrlMatch>* matches) {
-  GetBookmarksMatching(text, max_count,
-                       query_parser::MatchingAlgorithm::DEFAULT, matches);
-}
-
-void BookmarkModel::GetBookmarksMatching(
-    const base::string16& text,
+std::vector<TitledUrlMatch> BookmarkModel::GetBookmarksMatching(
+    const std::u16string& query,
     size_t max_count,
     query_parser::MatchingAlgorithm matching_algorithm,
-    std::vector<TitledUrlMatch>* matches) {
-  if (!loaded_)
-    return;
+    bool match_ancestor_titles) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  index_->GetResultsMatching(text, max_count, matching_algorithm, matches);
+  if (!loaded_)
+    return {};
+
+  return titled_url_index_->GetResultsMatching(
+      query, max_count, matching_algorithm, match_ancestor_titles);
 }
 
 void BookmarkModel::ClearStore() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   store_.reset();
 }
 
-void BookmarkModel::SetPermanentNodeVisible(BookmarkNode::Type type,
-                                            bool value) {
-  BookmarkPermanentNode* node = AsMutable(PermanentNode(type));
-  node->set_visible(value || client_->IsPermanentNodeVisible(node));
-}
-
-const BookmarkPermanentNode* BookmarkModel::PermanentNode(
-    BookmarkNode::Type type) {
-  DCHECK(loaded_);
-  switch (type) {
-    case BookmarkNode::BOOKMARK_BAR:
-      return bookmark_bar_node_;
-    case BookmarkNode::OTHER_NODE:
-      return other_node_;
-    case BookmarkNode::MOBILE:
-      return mobile_node_;
-    default:
-      NOTREACHED();
-      return nullptr;
-  }
-}
-
 void BookmarkModel::RestoreRemovedNode(const BookmarkNode* parent,
-                                       int index,
+                                       size_t index,
                                        std::unique_ptr<BookmarkNode> node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   BookmarkNode* node_ptr = node.get();
   AddNode(AsMutable(parent), index, std::move(node));
 
   // We might be restoring a folder node that have already contained a set of
   // child nodes. We need to notify all of them.
-  NotifyNodeAddedForAllDescendents(node_ptr);
+  NotifyNodeAddedForAllDescendants(node_ptr);
 }
 
-void BookmarkModel::NotifyNodeAddedForAllDescendents(const BookmarkNode* node) {
-  for (int i = 0; i < node->child_count(); ++i) {
+void BookmarkModel::NotifyNodeAddedForAllDescendants(const BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  for (size_t i = 0; i < node->children().size(); ++i) {
     for (BookmarkModelObserver& observer : observers_)
       observer.BookmarkNodeAdded(this, node, i);
-    NotifyNodeAddedForAllDescendents(node->GetChild(i));
+    NotifyNodeAddedForAllDescendants(node->children()[i].get());
   }
 }
 
-void BookmarkModel::RemoveNode(BookmarkNode* node) {
+void BookmarkModel::RemoveNodeFromIndexRecursive(BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(loaded_);
   DCHECK(!is_permanent_node(node));
 
   if (node->is_url())
-    index_->Remove(node);
+    titled_url_index_->Remove(node);
 
   CancelPendingFaviconLoadRequests(node);
 
   // Recurse through children.
-  for (int i = node->child_count() - 1; i >= 0; --i)
-    RemoveNode(node->GetChild(i));
+  for (size_t i = node->children().size(); i > 0; --i)
+    RemoveNodeFromIndexRecursive(node->children()[i - 1].get());
 }
 
 void BookmarkModel::DoneLoading(std::unique_ptr<BookmarkLoadDetails> details) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(details);
   DCHECK(!loaded_);
 
   next_node_id_ = details->max_id();
   if (details->computed_checksum() != details->stored_checksum() ||
-      details->ids_reassigned()) {
+      details->ids_reassigned() || details->guids_reassigned()) {
     // If bookmarks file changed externally, the IDs may have changed
     // externally. In that case, the decoder may have reassigned IDs to make
     // them unique. So when the file has changed externally, we should save the
-    // bookmarks file to persist new IDs.
+    // bookmarks file to persist such changes. The same applies if new GUIDs
+    // have been assigned to bookmarks.
     if (store_)
       store_->ScheduleSave();
   }
 
-  index_ = details->owned_index();
+  titled_url_index_ = details->owned_index();
   url_index_ = details->url_index();
   root_ = details->root_node();
   // See declaration for details on why |owned_root_| is reset.
@@ -803,15 +803,14 @@ void BookmarkModel::DoneLoading(std::unique_ptr<BookmarkLoadDetails> details) {
   other_node_ = details->other_folder_node();
   mobile_node_ = details->mobile_folder_node();
 
-  index_->SetNodeSorter(std::make_unique<TypedCountSorter>(client_.get()));
+  titled_url_index_->SetNodeSorter(
+      std::make_unique<TypedCountSorter>(client_.get()));
   // Sorting the permanent nodes has to happen on the main thread, so we do it
   // here, after loading completes.
-  std::stable_sort(root_->children().begin(), root_->children().end(),
+  std::stable_sort(root_->children_.begin(), root_->children_.end(),
                    VisibilityComparator(client_.get()));
 
   root_->SetMetaInfoMap(details->model_meta_info_map());
-  root_->set_sync_transaction_version(
-      details->model_sync_transaction_version());
 
   loaded_ = true;
   client_->DecodeBookmarkSyncMetadata(
@@ -826,8 +825,10 @@ void BookmarkModel::DoneLoading(std::unique_ptr<BookmarkLoadDetails> details) {
 }
 
 BookmarkNode* BookmarkModel::AddNode(BookmarkNode* parent,
-                                     int index,
+                                     size_t index,
                                      std::unique_ptr<BookmarkNode> node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   BookmarkNode* node_ptr = node.get();
   url_index_->Add(parent, index, std::move(node));
 
@@ -842,45 +843,49 @@ BookmarkNode* BookmarkModel::AddNode(BookmarkNode* parent,
   return node_ptr;
 }
 
-void BookmarkModel::AddNodeToIndexRecursive(BookmarkNode* node) {
+void BookmarkModel::AddNodeToIndexRecursive(const BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // TODO(crbug.com/1143246): add a DCHECK to validate that all nodes have
+  // unique GUID when it is guaranteed.
+
   if (node->is_url())
-    index_->Add(node);
-  for (int i = 0; i < node->child_count(); ++i)
-    AddNodeToIndexRecursive(node->GetChild(i));
+    titled_url_index_->Add(node);
+
+  for (const auto& child : node->children())
+    AddNodeToIndexRecursive(child.get());
 }
 
 bool BookmarkModel::IsValidIndex(const BookmarkNode* parent,
-                                 int index,
+                                 size_t index,
                                  bool allow_end) {
-  return (parent && parent->is_folder() &&
-          (index >= 0 && (index < parent->child_count() ||
-                          (allow_end && index == parent->child_count()))));
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return parent && parent->is_folder() &&
+         (index < parent->children().size() ||
+          (allow_end && index == parent->children().size()));
 }
 
 void BookmarkModel::OnFaviconDataAvailable(
     BookmarkNode* node,
-    favicon_base::IconType icon_type,
     const favicon_base::FaviconImageResult& image_result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(node);
+
   node->set_favicon_load_task_id(base::CancelableTaskTracker::kBadTaskId);
   node->set_favicon_state(BookmarkNode::LOADED_FAVICON);
   if (!image_result.image.IsEmpty()) {
-    node->set_favicon_type(icon_type);
     node->set_favicon(image_result.image);
     node->set_icon_url(image_result.icon_url);
     FaviconLoaded(node);
-  } else if (icon_type == favicon_base::IconType::kTouchIcon) {
-    // Couldn't load the touch icon, fallback to the regular favicon.
-    DCHECK(client_->PreferTouchIcon());
-    LoadFavicon(node, favicon_base::IconType::kFavicon);
   } else {
     // No favicon available, but we still notify observers.
     FaviconLoaded(node);
   }
 }
 
-void BookmarkModel::LoadFavicon(BookmarkNode* node,
-                                favicon_base::IconType icon_type) {
+void BookmarkModel::LoadFavicon(BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   if (node->is_folder())
     return;
 
@@ -889,23 +894,21 @@ void BookmarkModel::LoadFavicon(BookmarkNode* node,
   base::CancelableTaskTracker::TaskId taskId =
       client_->GetFaviconImageForPageURL(
           node->url(),
-          icon_type,
-          base::Bind(
-              &BookmarkModel::OnFaviconDataAvailable,
-              base::Unretained(this),
-              node,
-              icon_type),
+          base::BindOnce(&BookmarkModel::OnFaviconDataAvailable,
+                         base::Unretained(this), node),
           &cancelable_task_tracker_);
   if (taskId != base::CancelableTaskTracker::kBadTaskId)
     node->set_favicon_load_task_id(taskId);
 }
 
 void BookmarkModel::FaviconLoaded(const BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (BookmarkModelObserver& observer : observers_)
     observer.BookmarkNodeFaviconChanged(this, node);
 }
 
 void BookmarkModel::CancelPendingFaviconLoadRequests(BookmarkNode* node) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (node->favicon_load_task_id() != base::CancelableTaskTracker::kBadTaskId) {
     cancelable_task_tracker_.TryCancel(node->favicon_load_task_id());
     node->set_favicon_load_task_id(base::CancelableTaskTracker::kBadTaskId);
@@ -913,17 +916,20 @@ void BookmarkModel::CancelPendingFaviconLoadRequests(BookmarkNode* node) {
 }
 
 int64_t BookmarkModel::generate_next_node_id() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(loaded_);
   return next_node_id_++;
 }
 
 void BookmarkModel::SetUndoDelegate(BookmarkUndoDelegate* undo_delegate) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   undo_delegate_ = undo_delegate;
   if (undo_delegate_)
     undo_delegate_->SetUndoProvider(this);
 }
 
 BookmarkUndoDelegate* BookmarkModel::undo_delegate() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return undo_delegate_ ? undo_delegate_ : empty_undo_delegate_.get();
 }
 

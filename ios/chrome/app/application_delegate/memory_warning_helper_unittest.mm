@@ -6,10 +6,10 @@
 
 #include "base/bind.h"
 #include "base/memory/memory_pressure_listener.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
-#import "ios/chrome/browser/metrics/previous_session_info.h"
+#import "components/previous_session_info/previous_session_info.h"
 #include "testing/platform_test.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -25,8 +25,10 @@ class MemoryWarningHelperTest : public PlatformTest {
     // Set up |memory_pressure_listener_| to invoke |OnMemoryPressure| which
     // will store the memory pressure level sent to the callback in
     // |memory_pressure_level_| so that tests can verify the level is correct.
-    memory_pressure_listener_.reset(new base::MemoryPressureListener(base::Bind(
-        &MemoryWarningHelperTest::OnMemoryPressure, base::Unretained(this))));
+    memory_pressure_listener_.reset(new base::MemoryPressureListener(
+        FROM_HERE,
+        base::BindRepeating(&MemoryWarningHelperTest::OnMemoryPressure,
+                            base::Unretained(this))));
     memory_pressure_level_ =
         base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_MODERATE;
   }
@@ -52,7 +54,7 @@ class MemoryWarningHelperTest : public PlatformTest {
   void RunMessageLoop() { run_loop_.Run(); }
 
  private:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   base::RunLoop run_loop_;
   base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level_;
   std::unique_ptr<base::MemoryPressureListener> memory_pressure_listener_;
@@ -85,7 +87,7 @@ TEST_F(MemoryWarningHelperTest, VerifyApplicationDidReceiveMemoryWarning) {
 }
 
 // Invokes applicationDidReceiveMemoryWarning and verifies the flags (i.e.
-// breakpad_helper and NSUserDefaults) are set.
+// crash_helper and NSUserDefaults) are set.
 TEST_F(MemoryWarningHelperTest, VerifyHelperDidSetMemoryWarningFlags) {
   // Setup.
   [[PreviousSessionInfo sharedInstance] beginRecordingCurrentSession];

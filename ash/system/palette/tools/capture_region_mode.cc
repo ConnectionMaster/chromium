@@ -4,12 +4,12 @@
 
 #include "ash/system/palette/tools/capture_region_mode.h"
 
+#include "ash/public/cpp/toast_data.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/system/palette/palette_ids.h"
-#include "ash/system/toast/toast_data.h"
-#include "ash/system/toast/toast_manager.h"
+#include "ash/system/toast/toast_manager_impl.h"
 #include "ash/utility/screenshot_controller.h"
 #include "base/bind.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -24,7 +24,7 @@ const int kToastDurationMs = 2500;
 }  // namespace
 
 CaptureRegionMode::CaptureRegionMode(Delegate* delegate)
-    : CommonPaletteTool(delegate), weak_factory_(this) {}
+    : CommonPaletteTool(delegate) {}
 
 CaptureRegionMode::~CaptureRegionMode() = default;
 
@@ -43,9 +43,10 @@ const gfx::VectorIcon& CaptureRegionMode::GetActiveTrayIcon() const {
 void CaptureRegionMode::OnEnable() {
   CommonPaletteTool::OnEnable();
 
-  ToastData toast(kToastId, l10n_util::GetStringUTF16(
-                                IDS_ASH_STYLUS_TOOLS_CAPTURE_REGION_TOAST),
-                  kToastDurationMs, base::Optional<base::string16>());
+  ToastData toast(
+      kToastId,
+      l10n_util::GetStringUTF16(IDS_ASH_STYLUS_TOOLS_CAPTURE_REGION_TOAST),
+      kToastDurationMs, absl::optional<std::u16string>());
   Shell::Get()->toast_manager()->Show(toast);
 
   auto* screenshot_controller = Shell::Get()->screenshot_controller();

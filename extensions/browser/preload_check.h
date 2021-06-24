@@ -6,11 +6,11 @@
 #define EXTENSIONS_BROWSER_PRELOAD_CHECK_H_
 
 #include <set>
+#include <string>
 
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/string16.h"
 
 namespace extensions {
 
@@ -24,8 +24,8 @@ class PreloadCheck {
   // insert or remove values as necessary.
   enum Error {
     NONE,
-    BLACKLISTED_ID,
-    BLACKLISTED_UNKNOWN,
+    BLOCKLISTED_ID,
+    BLOCKLISTED_UNKNOWN,
     DISALLOWED_BY_POLICY,
     WEBGL_NOT_SUPPORTED,
     WINDOW_SHAPE_NOT_SUPPORTED,
@@ -42,7 +42,7 @@ class PreloadCheck {
   virtual void Start(ResultCallback callback) = 0;
 
   // Subclasses may provide an error message.
-  virtual base::string16 GetErrorMessage() const;
+  virtual std::u16string GetErrorMessage() const;
 
   const Extension* extension() { return extension_.get(); }
 

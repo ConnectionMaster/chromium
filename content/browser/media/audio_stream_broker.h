@@ -11,18 +11,12 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "content/common/content_export.h"
-#include "content/common/media/renderer_audio_input_stream_factory.mojom.h"
-#include "media/mojo/interfaces/audio_input_stream.mojom.h"
-#include "media/mojo/interfaces/audio_output_stream.mojom.h"
-#include "services/audio/public/mojom/audio_processing.mojom.h"
-
-namespace audio {
-namespace mojom {
-class StreamFactory;
-}
-}  // namespace audio
+#include "media/mojo/mojom/audio_input_stream.mojom.h"
+#include "media/mojo/mojom/audio_output_stream.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/mojom/media/renderer_audio_input_stream_factory.mojom.h"
 
 namespace base {
 class UnguessableToken;
@@ -31,6 +25,9 @@ class UnguessableToken;
 namespace media {
 class AudioParameters;
 class UserInputMonitorBase;
+namespace mojom {
+class AudioStreamFactory;
+}
 }
 
 namespace content {
@@ -68,7 +65,7 @@ class CONTENT_EXPORT AudioStreamBroker {
   AudioStreamBroker(int render_process_id, int render_frame_id);
   virtual ~AudioStreamBroker();
 
-  virtual void CreateStream(audio::mojom::StreamFactory* factory) = 0;
+  virtual void CreateStream(media::mojom::AudioStreamFactory* factory) = 0;
 
   // Thread-safe utility that notifies the process host identified by
   // |render_process_id| of a started stream to ensure that the renderer is not
@@ -105,9 +102,8 @@ class CONTENT_EXPORT AudioStreamBrokerFactory {
       uint32_t shared_memory_count,
       media::UserInputMonitorBase* user_input_monitor,
       bool enable_agc,
-      audio::mojom::AudioProcessingConfigPtr processing_config,
       AudioStreamBroker::DeleterCallback deleter,
-      mojom::RendererAudioInputStreamFactoryClientPtr
+      mojo::PendingRemote<blink::mojom::RendererAudioInputStreamFactoryClient>
           renderer_factory_client) = 0;
 
   virtual std::unique_ptr<AudioStreamBroker> CreateAudioLoopbackStreamBroker(
@@ -118,7 +114,7 @@ class CONTENT_EXPORT AudioStreamBrokerFactory {
       uint32_t shared_memory_count,
       bool mute_source,
       AudioStreamBroker::DeleterCallback deleter,
-      mojom::RendererAudioInputStreamFactoryClientPtr
+      mojo::PendingRemote<blink::mojom::RendererAudioInputStreamFactoryClient>
           renderer_factory_client) = 0;
 
   virtual std::unique_ptr<AudioStreamBroker> CreateAudioOutputStreamBroker(
@@ -128,9 +124,9 @@ class CONTENT_EXPORT AudioStreamBrokerFactory {
       const std::string& output_device_id,
       const media::AudioParameters& params,
       const base::UnguessableToken& group_id,
-      const base::Optional<base::UnguessableToken>& processing_id,
       AudioStreamBroker::DeleterCallback deleter,
-      media::mojom::AudioOutputStreamProviderClientPtr client) = 0;
+      mojo::PendingRemote<media::mojom::AudioOutputStreamProviderClient>
+          client) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(AudioStreamBrokerFactory);

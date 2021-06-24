@@ -4,6 +4,9 @@
 
 #include "media/base/media.h"
 
+#include <stdint.h>
+#include <limits>
+
 #include "base/allocator/buildflags.h"
 #include "base/command_line.h"
 #include "base/macros.h"
@@ -12,10 +15,6 @@
 #include "media/base/media_switches.h"
 #include "media/media_buildflags.h"
 #include "third_party/libyuv/include/libyuv.h"
-
-#if defined(OS_ANDROID)
-#include "base/android/build_info.h"
-#endif
 
 #if BUILDFLAG(ENABLE_FFMPEG)
 #include "third_party/ffmpeg/ffmpeg_features.h"  // nogncheck
@@ -45,7 +44,7 @@ class MediaInitializer {
 
 #if BUILDFLAG(USE_ALLOCATOR_SHIM)
     // Remove allocation limit from ffmpeg, so calls go down to shim layer.
-    av_max_alloc(0);
+    av_max_alloc(std::numeric_limits<size_t>::max());
 #endif  // BUILDFLAG(USE_ALLOCATOR_SHIM)
 
 #endif  // BUILDFLAG(ENABLE_FFMPEG)
@@ -98,11 +97,6 @@ void EnablePlatformDecoderSupport() {
 
 bool HasPlatformDecoderSupport() {
   return GetMediaInstance()->has_platform_decoder_support();
-}
-
-bool PlatformHasOpusSupport() {
-  return base::android::BuildInfo::GetInstance()->sdk_int() >=
-         base::android::SDK_VERSION_LOLLIPOP;
 }
 #endif  // defined(OS_ANDROID)
 

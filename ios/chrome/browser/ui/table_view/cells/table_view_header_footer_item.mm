@@ -4,7 +4,7 @@
 
 #import "ios/chrome/browser/ui/table_view/cells/table_view_header_footer_item.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_styler.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -25,14 +25,9 @@
   DCHECK([headerFooter class] == self.cellClass);
   headerFooter.accessibilityTraits = self.accessibilityTraits;
   headerFooter.accessibilityIdentifier = self.accessibilityIdentifier;
-  // Use the styler tableViewSectionHeaderBlurEffect if available, if not use
-  // the styler tableViewBackgroundColor (as a performance optimization) if
+  // Use the styler tableViewBackgroundColor (as a performance optimization) if
   // available.
-  if (styler.tableViewSectionHeaderBlurEffect) {
-    UIVisualEffectView* visualEffect = [[UIVisualEffectView alloc]
-        initWithEffect:styler.tableViewSectionHeaderBlurEffect];
-    headerFooter.backgroundView = visualEffect;
-  } else if (styler.tableViewBackgroundColor) {
+  if (styler.tableViewBackgroundColor) {
     UIView* backgroundView = [[UIView alloc] init];
     backgroundView.backgroundColor = styler.tableViewBackgroundColor;
     headerFooter.backgroundView = backgroundView;

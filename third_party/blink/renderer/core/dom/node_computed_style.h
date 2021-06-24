@@ -28,30 +28,29 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
 #include "third_party/blink/renderer/core/dom/node.h"
-#include "third_party/blink/renderer/core/dom/v0_insertion_point.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 
 namespace blink {
 
-inline const ComputedStyle* Node::GetComputedStyle() const {
-  return MutableComputedStyle();
+inline ComputedStyle* Node::MutableComputedStyleForEditingDeprecated() const {
+  return const_cast<ComputedStyle*>(GetComputedStyle());
 }
 
-inline ComputedStyle* Node::MutableComputedStyle() const {
+inline const ComputedStyle* Node::GetComputedStyle() const {
   if (IsElementNode()) {
-    return HasRareData()
-               ? data_.rare_data_->GetNodeRenderingData()->GetComputedStyle()
-               : data_.node_layout_data_->GetComputedStyle();
+    return HasRareData() ? DataAsNodeRareData()
+                               ->GetNodeRenderingData()
+                               ->GetComputedStyle()
+                         : DataAsNodeRenderingData()->GetComputedStyle();
   }
   // Text nodes and Document.
   if (LayoutObject* layout_object = GetLayoutObject())
-    return layout_object->MutableStyle();
+    return layout_object->Style();
   return nullptr;
 }
 
 inline const ComputedStyle* Node::ParentComputedStyle() const {
-  if (!CanParticipateInFlatTree())
-    return nullptr;
+  DCHECK(IsElementNode() || IsTextNode());
   ContainerNode* parent = LayoutTreeBuilderTraversal::Parent(*this);
   if (parent && parent->ChildrenCanHaveStyle()) {
     const ComputedStyle* parent_style = parent->GetComputedStyle();

@@ -11,14 +11,16 @@
 #include <string>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/string_piece.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_export.h"
 #include "net/dns/public/dns_protocol.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/boringssl/src/include/openssl/sha.h"
 
 namespace net {
 
@@ -30,17 +32,13 @@ class NET_EXPORT RecordRdata {
  public:
   virtual ~RecordRdata() {}
 
-  // Return true if |data| represents RDATA in the wire format with a valid size
-  // for the give |type|.
+  // Return true if `data` represents RDATA in the wire format with a valid size
+  // for the give `type`. Always returns true for unrecognized `type`s as the
+  // size is never known to be invalid.
   static bool HasValidSize(const base::StringPiece& data, uint16_t type);
 
   virtual bool IsEqual(const RecordRdata* other) const = 0;
   virtual uint16_t Type() const = 0;
-
- protected:
-  RecordRdata();
-
-  DISALLOW_COPY_AND_ASSIGN(RecordRdata);
 };
 
 // SRV record format (http://www.ietf.org/rfc/rfc2782.txt):
@@ -134,7 +132,7 @@ class NET_EXPORT_PRIVATE CnameRecordRdata : public RecordRdata {
   bool IsEqual(const RecordRdata* other) const override;
   uint16_t Type() const override;
 
-  std::string cname() const { return cname_; }
+  const std::string& cname() const { return cname_; }
 
  private:
   CnameRecordRdata();
@@ -228,7 +226,7 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
  public:
   class NET_EXPORT_PRIVATE Opt {
    public:
-    static const size_t kHeaderSize = 4;  // sizeof(code) + sizeof(size)
+    static constexpr size_t kHeaderSize = 4;  // sizeof(code) + sizeof(size)
 
     Opt(uint16_t code, base::StringPiece data);
 
@@ -245,7 +243,11 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
   static const uint16_t kType = dns_protocol::kTypeOPT;
 
   OptRecordRdata();
+  OptRecordRdata(OptRecordRdata&& other);
   ~OptRecordRdata() override;
+
+  OptRecordRdata& operator=(OptRecordRdata&& other);
+
   static std::unique_ptr<OptRecordRdata> Create(const base::StringPiece& data,
                                                 const DnsRecordParser& parser);
   bool IsEqual(const RecordRdata* other) const override;
@@ -256,11 +258,91 @@ class NET_EXPORT_PRIVATE OptRecordRdata : public RecordRdata {
   const std::vector<Opt>& opts() const { return opts_; }
   void AddOpt(const Opt& opt);
 
+  // Add all Opts from |other| to |this|.
+  void AddOpts(const OptRecordRdata& other);
+
+  bool ContainsOptCode(uint16_t opt_code) const;
+
  private:
   std::vector<Opt> opts_;
   std::vector<char> buf_;
 
   DISALLOW_COPY_AND_ASSIGN(OptRecordRdata);
+};
+
+// This class parses and serializes the INTEGRITY DNS record.
+//
+// This RR was invented for a preliminary HTTPSSVC experiment. See the public
+// design doc:
+// https://docs.google.com/document/d/14eCqVyT_3MSj7ydqNFl1Yl0yg1fs6g24qmYUUdi5V-k/edit?usp=sharing
+//
+// The wire format of INTEGRITY records consists of a U16-prefixed nonce
+// followed by |kDigestLen| bytes, which should be equal to the SHA256 hash of
+// the nonce contents.
+class NET_EXPORT IntegrityRecordRdata : public RecordRdata {
+ public:
+  static constexpr uint16_t kType = dns_protocol::kExperimentalTypeIntegrity;
+
+  static constexpr size_t kDigestLen = SHA256_DIGEST_LENGTH;
+
+  using Nonce = std::vector<uint8_t>;
+  using Digest = std::array<uint8_t, kDigestLen>;
+
+  IntegrityRecordRdata() = delete;
+  // Constructs a new record, computing the digest value from |nonce|.
+  explicit IntegrityRecordRdata(Nonce nonce);
+  IntegrityRecordRdata(IntegrityRecordRdata&&);
+  IntegrityRecordRdata(const IntegrityRecordRdata&);
+  ~IntegrityRecordRdata() override;
+
+  IntegrityRecordRdata& operator=(const IntegrityRecordRdata&) = default;
+  IntegrityRecordRdata& operator=(IntegrityRecordRdata&&) = default;
+
+  // RecordRdata:
+  bool IsEqual(const RecordRdata* other) const override;
+  uint16_t Type() const override;
+
+  // Attempts to parse an INTEGRITY record from |data|. Never returns nullptr.
+  // The caller can check the intactness of the record with |IsIntact()|.
+  static std::unique_ptr<IntegrityRecordRdata> Create(
+      const base::StringPiece& data);
+
+  // Generate an integrity record with a random nonce and corresponding digest.
+  // Postcondition: |IsIntact()| is true.
+  static IntegrityRecordRdata Random();
+
+  // Serialize |this| using the INTEGRITY wire format. Returns |absl::nullopt|
+  // when |!IsIntact()|.
+  absl::optional<std::vector<uint8_t>> Serialize() const;
+
+  // Precondition: |IsIntact()|.
+  const Nonce& nonce() const {
+    CHECK(is_intact_);
+    return nonce_;
+  }
+
+  // Precondition: |IsIntact()|.
+  const Digest& digest() const {
+    CHECK(is_intact_);
+    return digest_;
+  }
+
+  // To be considered intact, this record must have parsed successfully (if
+  // parsed by |Create()|) and the digest must match the hash of the nonce.
+  bool IsIntact() const { return is_intact_; }
+
+ private:
+  IntegrityRecordRdata(Nonce nonce_, Digest digest_, size_t rdata_len);
+
+  static Digest Hash(const Nonce& nonce);
+
+  // Returns the exact number of bytes a record constructed from |nonce| would
+  // occupy when serialized.
+  static size_t LengthForSerialization(const Nonce& nonce);
+
+  Nonce nonce_;
+  Digest digest_;
+  bool is_intact_;
 };
 
 }  // namespace net

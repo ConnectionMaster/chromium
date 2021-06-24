@@ -5,14 +5,16 @@
 #include <stddef.h>
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/layers/content_layer_client.h"
 #include "cc/layers/picture_layer.h"
 #include "cc/paint/display_item_list.h"
 #include "cc/paint/paint_flags.h"
 #include "cc/paint/paint_op_buffer.h"
 #include "cc/test/layer_tree_pixel_test.h"
+#include "cc/test/test_layer_tree_frame_sink.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
-#include "components/viz/test/test_layer_tree_frame_sink.h"
+#include "components/viz/test/buildflags.h"
 #include "gpu/command_buffer/client/raster_interface.h"
 
 #if !defined(OS_ANDROID)
@@ -20,57 +22,20 @@
 namespace cc {
 namespace {
 
-enum RasterMode {
-  PARTIAL_ONE_COPY,
-  FULL_ONE_COPY,
-  PARTIAL_GPU,
-  FULL_GPU,
-  PARTIAL_GPU_LOW_BIT_DEPTH,
-  FULL_GPU_LOW_BIT_DEPTH,
-  PARTIAL_BITMAP,
-  FULL_BITMAP,
-};
-
-class LayerTreeHostTilesPixelTest : public LayerTreePixelTest {
+class LayerTreeHostTilesPixelTest
+    : public LayerTreePixelTest,
+      public ::testing::WithParamInterface<RasterTestConfig> {
  protected:
+  LayerTreeHostTilesPixelTest() : LayerTreePixelTest(renderer_type()) {
+    set_raster_type(GetParam().raster_type);
+  }
+
+  viz::RendererType renderer_type() const { return GetParam().renderer_type; }
+
   void InitializeSettings(LayerTreeSettings* settings) override {
     LayerTreePixelTest::InitializeSettings(settings);
-    switch (raster_mode_) {
-      case PARTIAL_ONE_COPY:
-        settings->use_zero_copy = false;
-        settings->use_partial_raster = true;
-        break;
-      case FULL_ONE_COPY:
-        settings->use_zero_copy = false;
-        settings->use_partial_raster = false;
-        break;
-      case PARTIAL_BITMAP:
-        settings->use_partial_raster = true;
-        break;
-      case FULL_BITMAP:
-        settings->use_partial_raster = false;
-        break;
-      case PARTIAL_GPU:
-        settings->gpu_rasterization_forced = true;
-        settings->use_partial_raster = true;
-        break;
-      case FULL_GPU:
-        settings->gpu_rasterization_forced = true;
-        settings->use_partial_raster = false;
-        break;
-      case PARTIAL_GPU_LOW_BIT_DEPTH:
-        settings->gpu_rasterization_forced = true;
-        settings->use_partial_raster = true;
-        settings->use_rgba_4444 = true;
-        settings->unpremultiply_and_dither_low_bit_depth_tiles = true;
-        break;
-      case FULL_GPU_LOW_BIT_DEPTH:
-        settings->gpu_rasterization_forced = true;
-        settings->use_partial_raster = false;
-        settings->use_rgba_4444 = true;
-        settings->unpremultiply_and_dither_low_bit_depth_tiles = true;
-        break;
-    }
+
+    settings->use_partial_raster = use_partial_raster_;
   }
 
   void BeginTest() override {
@@ -84,36 +49,21 @@ class LayerTreeHostTilesPixelTest : public LayerTreePixelTest {
     target->RequestCopyOfOutput(CreateCopyOutputRequest());
   }
 
-  void RunRasterPixelTest(bool threaded,
-                          RasterMode mode,
-                          scoped_refptr<Layer> content_root,
-                          base::FilePath file_name) {
-    raster_mode_ = mode;
+  void WillPrepareTilesOnThread(LayerTreeHostImpl* host_impl) override {
+    // Issue a GL finish before preparing tiles to ensure resources become
+    // available for use in a timely manner. Needed for the one-copy path.
+    viz::RasterContextProvider* context_provider =
+        host_impl->layer_tree_frame_sink()->worker_context_provider();
+    if (!context_provider)
+      return;
 
-    PixelTestType test_type = PIXEL_TEST_SOFTWARE;
-    switch (mode) {
-      case PARTIAL_ONE_COPY:
-      case FULL_ONE_COPY:
-      case PARTIAL_GPU:
-      case FULL_GPU:
-      case PARTIAL_GPU_LOW_BIT_DEPTH:
-      case FULL_GPU_LOW_BIT_DEPTH:
-        test_type = PIXEL_TEST_GL;
-        break;
-      case PARTIAL_BITMAP:
-      case FULL_BITMAP:
-        test_type = PIXEL_TEST_SOFTWARE;
-    }
-
-    if (threaded)
-      RunPixelTest(test_type, content_root, file_name);
-    else
-      RunSingleThreadedPixelTest(test_type, content_root, file_name);
+    viz::RasterContextProvider::ScopedRasterContextLock lock(context_provider);
+    lock.RasterInterface()->Finish();
   }
 
   base::FilePath ref_file_;
   std::unique_ptr<SkBitmap> result_bitmap_;
-  RasterMode raster_mode_;
+  bool use_partial_raster_ = false;
 };
 
 class BlueYellowClient : public ContentLayerClient {
@@ -121,9 +71,8 @@ class BlueYellowClient : public ContentLayerClient {
   explicit BlueYellowClient(const gfx::Size& size)
       : size_(size), blue_top_(true) {}
 
-  gfx::Rect PaintableRegion() override { return gfx::Rect(size_); }
-  scoped_refptr<DisplayItemList> PaintContentsToDisplayList(
-      PaintingControlSetting painting_status) override {
+  gfx::Rect PaintableRegion() const override { return gfx::Rect(size_); }
+  scoped_refptr<DisplayItemList> PaintContentsToDisplayList() override {
     auto display_list = base::MakeRefCounted<DisplayItemList>();
 
     display_list->StartPaint();
@@ -151,7 +100,6 @@ class BlueYellowClient : public ContentLayerClient {
   }
 
   bool FillsBoundsCompletely() const override { return true; }
-  size_t GetApproximateUnsharedMemoryUsage() const override { return 0; }
 
   void set_blue_top(bool b) { blue_top_ = b; }
 
@@ -194,100 +142,257 @@ class LayerTreeHostTilesTestPartialInvalidation
     }
   }
 
-  void WillPrepareTilesOnThread(LayerTreeHostImpl* host_impl) override {
-    // Issue a GL finish before preparing tiles to ensure resources become
-    // available for use in a timely manner. Needed for the one-copy path.
-    viz::RasterContextProvider* context_provider =
-        host_impl->layer_tree_frame_sink()->worker_context_provider();
-    if (!context_provider)
-      return;
-
-    viz::RasterContextProvider::ScopedRasterContextLock lock(context_provider);
-    lock.RasterInterface()->Finish();
-  }
-
  protected:
   BlueYellowClient client_;
   scoped_refptr<PictureLayer> picture_layer_;
 };
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       PartialRaster_SingleThread_OneCopy) {
-  RunRasterPixelTest(
-      false, PARTIAL_ONE_COPY, picture_layer_,
-      base::FilePath(FILE_PATH_LITERAL("blue_yellow_partial_flipped.png")));
-}
+class PrimaryColorClient : public ContentLayerClient {
+ public:
+  explicit PrimaryColorClient(const gfx::Size& size) : size_(size) {}
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       FullRaster_SingleThread_OneCopy) {
-  RunRasterPixelTest(
-      false, FULL_ONE_COPY, picture_layer_,
-      base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
-}
+  gfx::Rect PaintableRegion() const override { return gfx::Rect(size_); }
+  scoped_refptr<DisplayItemList> PaintContentsToDisplayList() override {
+    // When painted, the DisplayItemList should produce blocks of red, green,
+    // and blue to test primary color reproduction.
+    auto display_list = base::MakeRefCounted<DisplayItemList>();
 
-// Flaky on Linux TSAN. https://crbug.com/707711
-#if defined(OS_LINUX) && defined(THREAD_SANITIZER)
-#define MAYBE_PartialRaster_MultiThread_OneCopy \
-  DISABLED_PartialRaster_MultiThread_OneCopy
+    display_list->StartPaint();
+
+    int w = size_.width() / 3;
+    gfx::Rect red_rect(0, 0, w, size_.height());
+    gfx::Rect green_rect(w, 0, w, size_.height());
+    gfx::Rect blue_rect(w * 2, 0, w, size_.height());
+
+    PaintFlags flags;
+    flags.setStyle(PaintFlags::kFill_Style);
+
+    flags.setColor(SK_ColorRED);
+    display_list->push<DrawRectOp>(gfx::RectToSkRect(red_rect), flags);
+    flags.setColor(SK_ColorGREEN);
+    display_list->push<DrawRectOp>(gfx::RectToSkRect(green_rect), flags);
+    flags.setColor(SK_ColorBLUE);
+    display_list->push<DrawRectOp>(gfx::RectToSkRect(blue_rect), flags);
+
+    display_list->EndPaintOfUnpaired(PaintableRegion());
+    display_list->Finalize();
+    return display_list;
+  }
+
+  bool FillsBoundsCompletely() const override { return true; }
+
+ private:
+  gfx::Size size_;
+};
+
+class LayerTreeHostTilesTestRasterColorSpace
+    : public LayerTreeHostTilesPixelTest {
+ public:
+  LayerTreeHostTilesTestRasterColorSpace()
+      : client_(gfx::Size(150, 150)),
+        picture_layer_(PictureLayer::Create(&client_)) {
+    picture_layer_->SetBounds(gfx::Size(150, 150));
+    picture_layer_->SetIsDrawable(true);
+  }
+
+  void SetColorSpace(const gfx::ColorSpace& color_space) {
+    color_space_ = color_space;
+  }
+
+  void WillBeginTest() override {
+    LayerTreeHostTilesPixelTest::WillBeginTest();
+    DCHECK(color_space_.IsValid());
+    layer_tree_host()->SetDisplayColorSpaces(
+        gfx::DisplayColorSpaces(color_space_));
+  }
+
+  void DidCommitAndDrawFrame() override {
+    if (layer_tree_host()->SourceFrameNumber() == 1) {
+      Finish();
+      DoReadback();
+    }
+  }
+
+ protected:
+  PrimaryColorClient client_;
+  scoped_refptr<PictureLayer> picture_layer_;
+  gfx::ColorSpace color_space_;
+};
+
+std::vector<RasterTestConfig> const kTestCases = {
+    {viz::RendererType::kSoftware, TestRasterType::kBitmap},
+#if BUILDFLAG(ENABLE_GL_BACKEND_TESTS)
+    {viz::RendererType::kGL, TestRasterType::kOneCopy},
+    {viz::RendererType::kGL, TestRasterType::kGpu},
+    {viz::RendererType::kSkiaGL, TestRasterType::kOneCopy},
+    {viz::RendererType::kSkiaGL, TestRasterType::kGpu},
+#endif  // BUILDFLAG(ENABLE_GL_BACKEND_TESTS)
+#if BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
+    {viz::RendererType::kSkiaVk, TestRasterType::kOop},
+#endif  // BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
+#if BUILDFLAG(ENABLE_DAWN_BACKEND_TESTS)
+    {viz::RendererType::kSkiaDawn, TestRasterType::kOop},
+#endif  // BUILDFLAG(ENABLE_DAWN_BACKEND_TESTS)
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         LayerTreeHostTilesTestPartialInvalidation,
+                         ::testing::ValuesIn(kTestCases),
+                         ::testing::PrintToStringParamName());
+
+#if BUILDFLAG(IS_CHROMEOS_ASH) || defined(MEMORY_SANITIZER) || \
+    defined(ADDRESS_SANITIZER) || defined(OS_FUCHSIA)
+// TODO(crbug.com/1045521): Flakes on all slower bots.
+#define MAYBE_PartialRaster DISABLED_PartialRaster
 #else
-#define MAYBE_PartialRaster_MultiThread_OneCopy \
-  PartialRaster_MultiThread_OneCopy
+#define MAYBE_PartialRaster PartialRaster
 #endif
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       MAYBE_PartialRaster_MultiThread_OneCopy) {
-  RunRasterPixelTest(
-      true, PARTIAL_ONE_COPY, picture_layer_,
+TEST_P(LayerTreeHostTilesTestPartialInvalidation, MAYBE_PartialRaster) {
+  use_partial_raster_ = true;
+  RunSingleThreadedPixelTest(
+      picture_layer_,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_partial_flipped.png")));
 }
+#undef MAYBE_PartialRaster
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       FullRaster_MultiThread_OneCopy) {
-  RunRasterPixelTest(
-      true, FULL_ONE_COPY, picture_layer_,
+TEST_P(LayerTreeHostTilesTestPartialInvalidation, FullRaster) {
+  RunSingleThreadedPixelTest(
+      picture_layer_,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
 }
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       PartialRaster_SingleThread_Software) {
-  RunRasterPixelTest(
-      false, PARTIAL_BITMAP, picture_layer_,
+std::vector<RasterTestConfig> const kTestCasesMultiThread = {
+#if BUILDFLAG(ENABLE_GL_BACKEND_TESTS)
+    {viz::RendererType::kGL, TestRasterType::kOneCopy},
+    {viz::RendererType::kSkiaGL, TestRasterType::kOneCopy},
+#endif  // BUILDFLAG(ENABLE_GL_BACKEND_TESTS)
+#if BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
+    // TODO(rivr): Switch this to one copy raster once is is supported for
+    // Vulkan in these tests.
+    {viz::RendererType::kSkiaVk, TestRasterType::kOop},
+#endif  // BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
+#if BUILDFLAG(ENABLE_DAWN_BACKEND_TESTS)
+    {viz::RendererType::kSkiaDawn, TestRasterType::kOop},
+#endif  // BUILDFLAG(ENABLE_DAWN_BACKEND_TESTS)
+};
+
+using LayerTreeHostTilesTestPartialInvalidationMultiThread =
+    LayerTreeHostTilesTestPartialInvalidation;
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         LayerTreeHostTilesTestPartialInvalidationMultiThread,
+                         ::testing::ValuesIn(kTestCasesMultiThread),
+                         ::testing::PrintToStringParamName());
+
+// kTestCasesMultiThread is empty on some platforms.
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
+    LayerTreeHostTilesTestPartialInvalidationMultiThread);
+
+#if (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(THREAD_SANITIZER)
+// Flaky on Linux TSAN. https://crbug.com/707711
+#define MAYBE_PartialRaster DISABLED_PartialRaster
+#elif BUILDFLAG(IS_CHROMEOS_ASH) || defined(MEMORY_SANITIZER) || \
+    defined(ADDRESS_SANITIZER) || defined(OS_FUCHSIA)
+// TODO(crbug.com/1045521): Flakes on all slower bots.
+#define MAYBE_PartialRaster DISABLED_PartialRaster
+#else
+#define MAYBE_PartialRaster PartialRaster
+#endif
+TEST_P(LayerTreeHostTilesTestPartialInvalidationMultiThread,
+       MAYBE_PartialRaster) {
+  use_partial_raster_ = true;
+  RunPixelTest(
+      picture_layer_,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_partial_flipped.png")));
 }
+#undef MAYBE_PartialRaster
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       FulllRaster_SingleThread_Software) {
-  RunRasterPixelTest(
-      false, FULL_BITMAP, picture_layer_,
-      base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
+TEST_P(LayerTreeHostTilesTestPartialInvalidationMultiThread, FullRaster) {
+  RunPixelTest(picture_layer_,
+               base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
 }
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       PartialRaster_SingleThread_GpuRaster) {
-  RunRasterPixelTest(
-      false, PARTIAL_GPU, picture_layer_,
-      base::FilePath(FILE_PATH_LITERAL("blue_yellow_partial_flipped.png")));
+INSTANTIATE_TEST_SUITE_P(All,
+                         LayerTreeHostTilesTestRasterColorSpace,
+                         ::testing::ValuesIn(kTestCases),
+                         ::testing::PrintToStringParamName());
+
+// These tests verify that no artifacts are introduced when the color space for
+// rasterization doesn't contain the primary colors of sRGB.
+// See crbug.com/1073962 for more details.
+TEST_P(LayerTreeHostTilesTestRasterColorSpace, sRGB) {
+  SetColorSpace(gfx::ColorSpace::CreateSRGB());
+
+  RunPixelTest(picture_layer_,
+               base::FilePath(FILE_PATH_LITERAL("primary_colors.png")));
 }
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       FullRaster_SingleThread_GpuRaster) {
-  RunRasterPixelTest(
-      false, FULL_GPU, picture_layer_,
-      base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
+TEST_P(LayerTreeHostTilesTestRasterColorSpace, GenericRGB) {
+  SetColorSpace(gfx::ColorSpace(gfx::ColorSpace::PrimaryID::APPLE_GENERIC_RGB,
+                                gfx::ColorSpace::TransferID::GAMMA18));
+
+  RunPixelTest(picture_layer_,
+               base::FilePath(FILE_PATH_LITERAL("primary_colors.png")));
 }
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       PartialRaster_SingleThread_GpuRaster_LowBitDepth) {
-  RunRasterPixelTest(false, PARTIAL_GPU_LOW_BIT_DEPTH, picture_layer_,
-                     base::FilePath(FILE_PATH_LITERAL(
-                         "blue_yellow_partial_flipped_dither.png")));
+TEST_P(LayerTreeHostTilesTestRasterColorSpace, CustomColorSpace) {
+  // Create a color space with a different blue point.
+  SkColorSpacePrimaries primaries;
+  skcms_Matrix3x3 to_XYZD50;
+  primaries.fRX = 0.640f;
+  primaries.fRY = 0.330f;
+  primaries.fGX = 0.300f;
+  primaries.fGY = 0.600f;
+  primaries.fBX = 0.130f;
+  primaries.fBY = 0.080f;
+  primaries.fWX = 0.3127f;
+  primaries.fWY = 0.3290f;
+  primaries.toXYZD50(&to_XYZD50);
+  SetColorSpace(gfx::ColorSpace::CreateCustom(
+      to_XYZD50, gfx::ColorSpace::TransferID::IEC61966_2_1));
+
+  RunPixelTest(picture_layer_,
+               base::FilePath(FILE_PATH_LITERAL("primary_colors.png")));
 }
 
-TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       FullRaster_SingleThread_GpuRaster_LowBitDepth) {
-  RunRasterPixelTest(
-      false, FULL_GPU_LOW_BIT_DEPTH, picture_layer_,
+// This test doesn't work on Vulkan because on our hardware we can't render to
+// RGBA4444 format using either SwiftShader or native Vulkan. See
+// crbug.com/987278 for details.
+// TODO(crbug.com/1151490) : Re-enable after this is supported for OOPR.
+#if BUILDFLAG(ENABLE_GL_BACKEND_TESTS)
+class LayerTreeHostTilesTestPartialInvalidationLowBitDepth
+    : public LayerTreeHostTilesTestPartialInvalidation {
+ protected:
+  void InitializeSettings(LayerTreeSettings* settings) override {
+    LayerTreeHostTilesPixelTest::InitializeSettings(settings);
+    settings->use_rgba_4444 = true;
+    settings->unpremultiply_and_dither_low_bit_depth_tiles = true;
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    LayerTreeHostTilesTestPartialInvalidationLowBitDepth,
+    ::testing::Values(
+        RasterTestConfig{viz::RendererType::kSkiaGL, TestRasterType::kGpu},
+        RasterTestConfig{viz::RendererType::kGL, TestRasterType::kGpu}),
+    ::testing::PrintToStringParamName());
+
+TEST_P(LayerTreeHostTilesTestPartialInvalidationLowBitDepth,
+       DISABLED_PartialRaster) {
+  use_partial_raster_ = true;
+  RunSingleThreadedPixelTest(picture_layer_,
+                             base::FilePath(FILE_PATH_LITERAL(
+                                 "blue_yellow_partial_flipped_dither.png")));
+}
+
+TEST_P(LayerTreeHostTilesTestPartialInvalidationLowBitDepth,
+       DISABLED_FullRaster) {
+  RunSingleThreadedPixelTest(
+      picture_layer_,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped_dither.png")));
 }
+#endif  // BUILDFLAG(ENABLE_GL_BACKEND_TESTS)
 
 }  // namespace
 }  // namespace cc

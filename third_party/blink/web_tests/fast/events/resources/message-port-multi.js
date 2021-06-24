@@ -18,7 +18,9 @@ channel.port1.postMessage("two ports", [channel2.port1, channel2.port2]);
 
 // Now test various failure cases
 shouldThrow('channel.port1.postMessage("same port", [channel.port1])', '"DataCloneError: Failed to execute \'postMessage\' on \'MessagePort\': Port at index 0 contains the source port."');
-shouldThrow('channel.port1.postMessage("null port", [channel3.port1, null, channel3.port2])', '"TypeError: Failed to execute \'postMessage\' on \'MessagePort\': Value at index 1 is an untransferable \'null\' value."');
+shouldThrow(
+    'channel.port1.postMessage("null port", [channel3.port1, null, channel3.port2])',
+    '"TypeError: Failed to execute \'postMessage\' on \'MessagePort\': Failed to convert value to \'object\'."');
 shouldThrow('channel.port1.postMessage("notAPort", [channel3.port1, {}, channel3.port2])', '"TypeError: Failed to execute \'postMessage\' on \'MessagePort\': Value at index 1 does not have a transferable type."');
 shouldThrow('channel.port1.postMessage("duplicate port", [channel3.port1, channel3.port1])', '"DataCloneError: Failed to execute \'postMessage\' on \'MessagePort\': Message port at index 1 is a duplicate of an earlier port."');
 // Should be OK to send channel3.port1 (should not have been disentangled by the previous failed calls).
@@ -73,16 +75,6 @@ function testTransfers() {
           testPassed("Sending Function object has thrown " + e);
         else
           testFailed("Sending Function object should throw a DataCloneError, got: " + e);
-    }
-    try {
-        var err = new Error();
-        channel0.port1.postMessage({id:"error-object", error:err, port:c4.port1}, [c4.port1]);
-        testFailed("Sending Error object should throw");
-    } catch(e) {
-        if (e.code == DOMException.DATA_CLONE_ERR)
-          testPassed("Sending Error object has thrown " + e);
-        else
-          testPassed("Sending Error object should throw a DataCloneError, got: " + e);
     }
     c4.port1.postMessage("Should succeed");
     channel0.port1.postMessage({id:"done"});

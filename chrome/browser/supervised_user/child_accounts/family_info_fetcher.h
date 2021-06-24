@@ -12,16 +12,17 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
-#include "services/identity/public/cpp/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 
 namespace base {
 class DictionaryValue;
 class ListValue;
 }
 
-namespace identity {
+namespace signin {
+struct AccessTokenInfo;
 class PrimaryAccountAccessTokenFetcher;
-}
+}  // namespace signin
 
 namespace network {
 class SimpleURLLoader;
@@ -33,10 +34,11 @@ class SharedURLLoaderFactory;
 // family members and their properties.
 class FamilyInfoFetcher {
  public:
-  enum ErrorCode {
-    TOKEN_ERROR,    // Failed to get OAuth2 token.
-    NETWORK_ERROR,  // Network failure.
-    SERVICE_ERROR,  // Service returned an error or malformed reply.
+  enum class ErrorCode : int {
+    kSuccess = 0,
+    kTokenError,    // Failed to get OAuth2 token.
+    kNetworkError,  // Network failure.
+    kServiceError   // Service returned an error or malformed reply.
   };
   // Note: If you add or update an entry, also update |kFamilyMemberRoleStrings|
   // in the .cc file.
@@ -84,7 +86,7 @@ class FamilyInfoFetcher {
   // methods below. |consumer| must outlive us.
   FamilyInfoFetcher(
       Consumer* consumer,
-      identity::IdentityManager* identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~FamilyInfoFetcher();
 
@@ -104,7 +106,7 @@ class FamilyInfoFetcher {
 
  private:
   void OnAccessTokenFetchComplete(GoogleServiceAuthError error,
-                                  identity::AccessTokenInfo access_token_info);
+                                  signin::AccessTokenInfo access_token_info);
 
   void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
 
@@ -121,12 +123,12 @@ class FamilyInfoFetcher {
   void FamilyMembersFetched(const std::string& response);
 
   Consumer* consumer_;
-  const std::string primary_account_id_;
-  identity::IdentityManager* identity_manager_;
+  const CoreAccountId primary_account_id_;
+  signin::IdentityManager* identity_manager_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   std::string request_path_;
-  std::unique_ptr<identity::PrimaryAccountAccessTokenFetcher>
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
       access_token_fetcher_;
   std::string access_token_;
   bool access_token_expired_;

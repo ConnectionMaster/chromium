@@ -26,10 +26,12 @@ struct CommandsInfo : public Extension::ManifestData {
   // Get*Command[s] in CommandService).
   std::unique_ptr<Command> browser_action_command;
   std::unique_ptr<Command> page_action_command;
+  std::unique_ptr<Command> action_command;
   CommandMap named_commands;
 
   static const Command* GetBrowserActionCommand(const Extension* extension);
   static const Command* GetPageActionCommand(const Extension* extension);
+  static const Command* GetActionCommand(const Extension* extension);
   static const CommandMap* GetNamedCommands(const Extension* extension);
 };
 
@@ -39,7 +41,7 @@ class CommandsHandler : public ManifestHandler {
   CommandsHandler();
   ~CommandsHandler() override;
 
-  bool Parse(Extension* extension, base::string16* error) override;
+  bool Parse(Extension* extension, std::u16string* error) override;
   bool AlwaysParseForType(Manifest::Type type) const override;
 
  private:

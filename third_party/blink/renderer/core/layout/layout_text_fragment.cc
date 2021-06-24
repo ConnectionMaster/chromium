@@ -81,6 +81,7 @@ LayoutTextFragment* LayoutTextFragment::CreateAnonymous(PseudoElement& pseudo,
 }
 
 void LayoutTextFragment::WillBeDestroyed() {
+  NOT_DESTROYED();
   if (is_remaining_text_layout_object_ && first_letter_pseudo_element_)
     first_letter_pseudo_element_->ClearRemainingTextLayoutObject();
   first_letter_pseudo_element_ = nullptr;
@@ -88,26 +89,28 @@ void LayoutTextFragment::WillBeDestroyed() {
 }
 
 scoped_refptr<StringImpl> LayoutTextFragment::CompleteText() const {
+  NOT_DESTROYED();
   Text* text = AssociatedTextNode();
   return text ? text->DataImpl() : ContentString();
 }
 
 void LayoutTextFragment::SetContentString(StringImpl* str) {
+  NOT_DESTROYED();
   content_string_ = str;
-  SetText(str);
+  SetTextIfNeeded(str);
 }
 
 scoped_refptr<StringImpl> LayoutTextFragment::OriginalText() const {
+  NOT_DESTROYED();
   scoped_refptr<StringImpl> result = CompleteText();
   if (!result)
     return nullptr;
   return result->Substring(Start(), FragmentLength());
 }
 
-void LayoutTextFragment::SetText(scoped_refptr<StringImpl> text,
-                                 bool force,
-                                 bool avoid_layout_and_only_paint) {
-  LayoutText::SetText(std::move(text), force, avoid_layout_and_only_paint);
+void LayoutTextFragment::TextDidChange() {
+  NOT_DESTROYED();
+  LayoutText::TextDidChange();
 
   start_ = 0;
   fragment_length_ = TextLength();
@@ -121,24 +124,37 @@ void LayoutTextFragment::SetText(scoped_refptr<StringImpl> text,
   }
 }
 
+// Unlike |ForceSetText()|, this function is used for updating first-letter part
+// or remaining part.
 void LayoutTextFragment::SetTextFragment(scoped_refptr<StringImpl> text,
                                          unsigned start,
                                          unsigned length) {
-  LayoutText::SetText(std::move(text), false);
+  NOT_DESTROYED();
+  // Note, we have to call |LayoutText::TextDidChange()| here because, if we
+  // use our version we will, potentially, screw up the first-letter settings
+  // where we only use portions of the string.
+  if (!Equal(GetText().Impl(), text.get())) {
+    SetTextInternal(std::move(text));
+    LayoutText::TextDidChange();
+  }
 
   start_ = start;
   fragment_length_ = length;
 }
 
 void LayoutTextFragment::TransformText() {
-  // Note, we have to call LayoutText::setText here because, if we use our
-  // version we will, potentially, screw up the first-letter settings where
+  NOT_DESTROYED();
+  // Note, we have to call LayoutText::TextDidChange()| here because, if we use
+  // our version we will, potentially, screw up the first-letter settings where
   // we only use portions of the string.
-  if (scoped_refptr<StringImpl> text_to_transform = OriginalText())
-    LayoutText::SetText(std::move(text_to_transform), true);
+  if (scoped_refptr<StringImpl> text_to_transform = OriginalText()) {
+    SetTextInternal(std::move(text_to_transform));
+    LayoutText::TextDidChange();
+  }
 }
 
 UChar LayoutTextFragment::PreviousCharacter() const {
+  NOT_DESTROYED();
   if (Start()) {
     StringImpl* original = CompleteText().get();
     if (original && Start() <= original->length())
@@ -151,6 +167,7 @@ UChar LayoutTextFragment::PreviousCharacter() const {
 // If this is the layoutObject for a first-letter pseudoNode then we have to
 // look at the node for the remaining text to find our content.
 Text* LayoutTextFragment::AssociatedTextNode() const {
+  NOT_DESTROYED();
   Node* node = GetFirstLetterPseudoElement();
   if (is_remaining_text_layout_object_ || !node) {
     // If we don't have a node, then we aren't part of a first-letter pseudo
@@ -163,18 +180,18 @@ Text* LayoutTextFragment::AssociatedTextNode() const {
   if (!node)
     return nullptr;
 
-  if (node->IsFirstLetterPseudoElement()) {
-    FirstLetterPseudoElement* pseudo = ToFirstLetterPseudoElement(node);
+  if (auto* pseudo = DynamicTo<FirstLetterPseudoElement>(node)) {
     LayoutObject* next_layout_object =
         FirstLetterPseudoElement::FirstLetterTextLayoutObject(*pseudo);
     if (!next_layout_object)
       return nullptr;
     node = next_layout_object->GetNode();
   }
-  return (node && node->IsTextNode()) ? ToText(node) : nullptr;
+  return DynamicTo<Text>(node);
 }
 
 LayoutText* LayoutTextFragment::GetFirstLetterPart() const {
+  NOT_DESTROYED();
   if (!is_remaining_text_layout_object_)
     return nullptr;
   // Node: We assume first letter pseudo element has only one child and it
@@ -184,11 +201,13 @@ LayoutText* LayoutTextFragment::GetFirstLetterPart() const {
   LayoutObject* const child = first_letter_container->SlowFirstChild();
   CHECK(child->IsText());
   DCHECK_EQ(child, first_letter_container->SlowLastChild());
-  return ToLayoutTextFragment(child);
+  return To<LayoutTextFragment>(child);
 }
 
-void LayoutTextFragment::UpdateHitTestResult(HitTestResult& result,
-                                             const LayoutPoint& point) const {
+void LayoutTextFragment::UpdateHitTestResult(
+    HitTestResult& result,
+    const PhysicalOffset& point) const {
+  NOT_DESTROYED();
   if (result.InnerNode())
     return;
 
@@ -202,6 +221,7 @@ void LayoutTextFragment::UpdateHitTestResult(HitTestResult& result,
 }
 
 Position LayoutTextFragment::PositionForCaretOffset(unsigned offset) const {
+  NOT_DESTROYED();
   // TODO(layout-dev): Make the following DCHECK always enabled after we
   // properly support 'text-transform' changing text length.
 #if DCHECK_IS_ON()
@@ -216,10 +236,11 @@ Position LayoutTextFragment::PositionForCaretOffset(unsigned offset) const {
   return Position(node, Start() + clamped_offset);
 }
 
-base::Optional<unsigned> LayoutTextFragment::CaretOffsetForPosition(
+absl::optional<unsigned> LayoutTextFragment::CaretOffsetForPosition(
     const Position& position) const {
+  NOT_DESTROYED();
   if (position.IsNull() || position.AnchorNode() != AssociatedTextNode())
-    return base::nullopt;
+    return absl::nullopt;
   unsigned dom_offset;
   if (position.IsBeforeAnchor()) {
     dom_offset = 0;
@@ -232,7 +253,7 @@ base::Optional<unsigned> LayoutTextFragment::CaretOffsetForPosition(
     dom_offset = position.OffsetInContainerNode();
   }
   if (dom_offset < Start() || dom_offset > Start() + FragmentLength())
-    return base::nullopt;
+    return absl::nullopt;
   return dom_offset - Start();
 }
 

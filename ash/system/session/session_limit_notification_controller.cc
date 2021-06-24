@@ -6,7 +6,7 @@
 
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/resources/vector_icons/vector_icons.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/system/model/session_length_limit_model.h"
@@ -87,18 +87,18 @@ void SessionLimitNotificationController::UpdateNotification() {
   data.should_make_spoken_feedback_for_popup_updates =
       (model_->limit_state() != last_limit_state_);
   std::unique_ptr<message_center::Notification> notification =
-      ash::CreateSystemNotification(
+      CreateSystemNotification(
           message_center::NOTIFICATION_TYPE_SIMPLE, kNotificationId,
           ComposeNotificationTitle(),
           l10n_util::GetStringUTF16(
               IDS_ASH_STATUS_TRAY_NOTIFICATION_SESSION_LENGTH_LIMIT_MESSAGE),
-          base::string16() /* display_source */, GURL(),
+          std::u16string() /* display_source */, GURL(),
           message_center::NotifierId(
               message_center::NotifierType::SYSTEM_COMPONENT,
               kNotifierSessionLengthTimeout),
           data, nullptr /* delegate */, kNotificationTimerIcon,
-          message_center::SystemNotificationWarningLevel::NORMAL);
-  notification->SetSystemPriority();
+          message_center::SystemNotificationWarningLevel::WARNING);
+  notification->set_pinned(true);
   if (message_center->FindVisibleNotificationById(kNotificationId)) {
     message_center->UpdateNotification(kNotificationId,
                                        std::move(notification));
@@ -108,7 +108,7 @@ void SessionLimitNotificationController::UpdateNotification() {
   has_notification_been_shown_ = true;
 }
 
-base::string16 SessionLimitNotificationController::ComposeNotificationTitle()
+std::u16string SessionLimitNotificationController::ComposeNotificationTitle()
     const {
   return l10n_util::GetStringFUTF16(
       IDS_ASH_STATUS_TRAY_NOTIFICATION_SESSION_LENGTH_LIMIT_TITLE,

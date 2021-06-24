@@ -1,7 +1,5 @@
 #include "rar.hpp"
 
-namespace third_party_unrar {
-
 void HashValue::Init(HASH_TYPE Type)
 {
   HashValue::Type=Type;
@@ -32,8 +30,8 @@ bool HashValue::operator == (const HashValue &cmp)
 {
   if (Type==HASH_NONE || cmp.Type==HASH_NONE)
     return true;
-  if ((Type==HASH_RAR14 && cmp.Type==HASH_RAR14) || 
-      (Type==HASH_CRC32 && cmp.Type==HASH_CRC32))
+  if (Type==HASH_RAR14 && cmp.Type==HASH_RAR14 || 
+      Type==HASH_CRC32 && cmp.Type==HASH_CRC32)
     return CRC32==cmp.CRC32;
   if (Type==HASH_BLAKE2 && cmp.Type==HASH_BLAKE2)
     return memcmp(Digest,cmp.Digest,sizeof(Digest))==0;
@@ -55,7 +53,7 @@ DataHash::DataHash()
 DataHash::~DataHash()
 {
 #ifdef RAR_SMP
-  DestroyThreadPool(ThPool);
+  delete ThPool;
 #endif
   cleandata(&CurCRC32, sizeof(CurCRC32));
   if (blake2ctx!=NULL)
@@ -96,7 +94,7 @@ void DataHash::Update(const void *Data,size_t DataSize)
   {
 #ifdef RAR_SMP
     if (MaxThreads>1 && ThPool==NULL)
-      ThPool=CreateThreadPool();
+      ThPool=new ThreadPool(BLAKE2_THREADS_NUMBER);
     blake2ctx->ThPool=ThPool;
     blake2ctx->MaxThreads=MaxThreads;
 #endif
@@ -135,5 +133,3 @@ bool DataHash::Cmp(HashValue *CmpValue,byte *Key)
     ConvertHashToMAC(&Final,Key);
   return Final==*CmpValue;
 }
-
-}  // namespace third_party_unrar

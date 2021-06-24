@@ -6,7 +6,7 @@
   TestRunner.addResult(
       `Tests that evaluating an expression with an exception in the console provide correct exception information.\n`);
 
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
 
   ConsoleTestRunner.evaluateInConsole('\
@@ -20,8 +20,8 @@
         }\n\
         boo();', afterEvaluate);
 
-  function afterEvaluate() {
-    ConsoleTestRunner.dumpConsoleMessages();
+  async function afterEvaluate() {
+    await ConsoleTestRunner.dumpConsoleMessages();
     var viewMessages = Console.ConsoleView.instance()._visibleViewMessages;
     var uiMessage = viewMessages[viewMessages.length - 1];
     var message = uiMessage.consoleMessage();

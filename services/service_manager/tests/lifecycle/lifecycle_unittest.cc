@@ -14,15 +14,17 @@
 #include "base/no_destructor.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "build/build_config.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/constants.h"
 #include "services/service_manager/public/cpp/identity.h"
 #include "services/service_manager/public/cpp/manifest.h"
 #include "services/service_manager/public/cpp/manifest_builder.h"
 #include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/cpp/service_binding.h"
+#include "services/service_manager/public/cpp/service_receiver.h"
 #include "services/service_manager/public/cpp/test/test_service_manager.h"
 #include "services/service_manager/public/mojom/constants.mojom.h"
 #include "services/service_manager/public/mojom/service_manager.mojom.h"
@@ -57,18 +59,33 @@ const std::vector<Manifest>& GetTestManifests() {
            .Build(),
        ManifestBuilder()
            .WithServiceName(kTestAppName)
+           .WithOptions(ManifestOptionsBuilder()
+                            .WithExecutionMode(
+                                Manifest::ExecutionMode::kStandaloneExecutable)
+                            .WithSandboxType("none")
+                            .Build())
            .ExposeCapability(
                kTestLifecycleControlCapability,
                Manifest::InterfaceList<test::mojom::LifecycleControl>())
            .Build(),
        ManifestBuilder()
            .WithServiceName(kTestParentName)
+           .WithOptions(ManifestOptionsBuilder()
+                            .WithExecutionMode(
+                                Manifest::ExecutionMode::kStandaloneExecutable)
+                            .WithSandboxType("none")
+                            .Build())
            .ExposeCapability(kTestParentCapability,
                              Manifest::InterfaceList<test::mojom::Parent>())
            .RequireCapability(kTestAppName, kTestLifecycleControlCapability)
            .Build(),
        ManifestBuilder()
            .WithServiceName(kTestPackageName)
+           .WithOptions(ManifestOptionsBuilder()
+                            .WithExecutionMode(
+                                Manifest::ExecutionMode::kStandaloneExecutable)
+                            .WithSandboxType("none")
+                            .Build())
            .ExposeCapability(
                kTestLifecycleControlCapability,
                Manifest::InterfaceList<test::mojom::LifecycleControl>())
@@ -101,9 +118,9 @@ struct Instance {
 
 class InstanceState : public mojom::ServiceManagerListener {
  public:
-  InstanceState(mojom::ServiceManagerListenerRequest request,
+  InstanceState(mojo::PendingReceiver<mojom::ServiceManagerListener> receiver,
                 base::OnceClosure on_init_complete)
-      : binding_(this, std::move(request)),
+      : receiver_(this, std::move(receiver)),
         on_init_complete_(std::move(on_init_complete)),
         on_destruction_(destruction_loop_.QuitClosure()) {}
   ~InstanceState() override {}
@@ -171,7 +188,7 @@ class InstanceState : public mojom::ServiceManagerListener {
   // The initial set of instances.
   std::map<std::string, Instance> initial_instances_;
 
-  mojo::Binding<mojom::ServiceManagerListener> binding_;
+  mojo::Receiver<mojom::ServiceManagerListener> receiver_;
   base::OnceClosure on_init_complete_;
 
   // Set when the client wants to wait for this object to track the destruction
@@ -188,7 +205,7 @@ class LifecycleTest : public testing::Test {
  public:
   LifecycleTest()
       : test_service_manager_(GetTestManifests()),
-        test_service_binding_(
+        test_service_receiver_(
             &test_service_,
             test_service_manager_.RegisterInstance(
                 Identity{kTestName, kSystemInstanceGroup, base::Token{},
@@ -196,7 +213,7 @@ class LifecycleTest : public testing::Test {
 
   ~LifecycleTest() override {}
 
-  Connector* connector() { return test_service_binding_.GetConnector(); }
+  Connector* connector() { return test_service_receiver_.GetConnector(); }
 
  protected:
   void SetUp() override {
@@ -211,9 +228,10 @@ class LifecycleTest : public testing::Test {
     return !base::CommandLine::ForCurrentProcess()->HasSwitch("single-process");
   }
 
-  test::mojom::LifecycleControlPtr ConnectTo(const std::string& name) {
-    test::mojom::LifecycleControlPtr lifecycle;
-    connector()->BindInterface(name, &lifecycle);
+  mojo::Remote<test::mojom::LifecycleControl> ConnectTo(
+      const std::string& name) {
+    mojo::Remote<test::mojom::LifecycleControl> lifecycle;
+    connector()->BindInterface(name, lifecycle.BindNewPipeAndPassReceiver());
     PingPong(lifecycle.get());
     return lifecycle;
   }
@@ -228,35 +246,36 @@ class LifecycleTest : public testing::Test {
 
  private:
   std::unique_ptr<InstanceState> TrackInstances() {
-    mojom::ServiceManagerPtr service_manager;
-    connector()->BindInterface(service_manager::mojom::kServiceName,
-                               &service_manager);
-    mojom::ServiceManagerListenerPtr listener;
+    mojo::Remote<mojom::ServiceManager> service_manager;
+    connector()->Connect(service_manager::mojom::kServiceName,
+                         service_manager.BindNewPipeAndPassReceiver());
+    mojo::PendingRemote<mojom::ServiceManagerListener> listener;
     base::RunLoop loop;
-    InstanceState* state =
-        new InstanceState(MakeRequest(&listener), loop.QuitClosure());
+    InstanceState* state = new InstanceState(
+        listener.InitWithNewPipeAndPassReceiver(), loop.QuitClosure());
     service_manager->AddListener(std::move(listener));
     loop.Run();
     return base::WrapUnique(state);
   }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   TestServiceManager test_service_manager_;
   Service test_service_;
-  ServiceBinding test_service_binding_;
+  ServiceReceiver test_service_receiver_;
   std::unique_ptr<InstanceState> instances_;
 
   DISALLOW_COPY_AND_ASSIGN(LifecycleTest);
 };
 
 TEST_F(LifecycleTest, Standalone_GracefulQuit) {
-  test::mojom::LifecycleControlPtr lifecycle = ConnectTo(kTestAppName);
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle =
+      ConnectTo(kTestAppName);
 
   EXPECT_TRUE(instances()->HasInstanceForName(kTestAppName));
   EXPECT_EQ(1u, instances()->GetNewInstanceCount());
 
   base::RunLoop loop;
-  lifecycle.set_connection_error_handler(loop.QuitClosure());
+  lifecycle.set_disconnect_handler(loop.QuitClosure());
   lifecycle->GracefulQuit();
   loop.Run();
 
@@ -271,13 +290,14 @@ TEST_F(LifecycleTest, Standalone_Crash) {
     return;
   }
 
-  test::mojom::LifecycleControlPtr lifecycle = ConnectTo(kTestAppName);
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle =
+      ConnectTo(kTestAppName);
 
   EXPECT_TRUE(instances()->HasInstanceForName(kTestAppName));
   EXPECT_EQ(1u, instances()->GetNewInstanceCount());
 
   base::RunLoop loop;
-  lifecycle.set_connection_error_handler(loop.QuitClosure());
+  lifecycle.set_disconnect_handler(loop.QuitClosure());
   lifecycle->Crash();
   loop.Run();
 
@@ -287,13 +307,14 @@ TEST_F(LifecycleTest, Standalone_Crash) {
 }
 
 TEST_F(LifecycleTest, Standalone_CloseServiceManagerConnection) {
-  test::mojom::LifecycleControlPtr lifecycle = ConnectTo(kTestAppName);
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle =
+      ConnectTo(kTestAppName);
 
   EXPECT_TRUE(instances()->HasInstanceForName(kTestAppName));
   EXPECT_EQ(1u, instances()->GetNewInstanceCount());
 
   base::RunLoop loop;
-  lifecycle.set_connection_error_handler(loop.QuitClosure());
+  lifecycle.set_disconnect_handler(loop.QuitClosure());
   lifecycle->CloseServiceManagerConnection();
 
   instances()->WaitForInstanceDestruction();
@@ -303,7 +324,8 @@ TEST_F(LifecycleTest, Standalone_CloseServiceManagerConnection) {
 }
 
 TEST_F(LifecycleTest, PackagedApp_GracefulQuit) {
-  test::mojom::LifecycleControlPtr lifecycle = ConnectTo(kTestPackageAppNameA);
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle =
+      ConnectTo(kTestPackageAppNameA);
 
   // There should be two new instances - one for the app and one for the package
   // that vended it.
@@ -312,7 +334,7 @@ TEST_F(LifecycleTest, PackagedApp_GracefulQuit) {
   EXPECT_EQ(2u, instances()->GetNewInstanceCount());
 
   base::RunLoop loop;
-  lifecycle.set_connection_error_handler(loop.QuitClosure());
+  lifecycle.set_disconnect_handler(loop.QuitClosure());
   lifecycle->GracefulQuit();
   loop.Run();
 
@@ -328,7 +350,8 @@ TEST_F(LifecycleTest, PackagedApp_Crash) {
     return;
   }
 
-  test::mojom::LifecycleControlPtr lifecycle = ConnectTo(kTestPackageAppNameA);
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle =
+      ConnectTo(kTestPackageAppNameA);
 
   // There should be two new instances - one for the app and one for the package
   // that vended it.
@@ -337,7 +360,7 @@ TEST_F(LifecycleTest, PackagedApp_Crash) {
   EXPECT_EQ(2u, instances()->GetNewInstanceCount());
 
   base::RunLoop loop;
-  lifecycle.set_connection_error_handler(loop.QuitClosure());
+  lifecycle.set_disconnect_handler(loop.QuitClosure());
   lifecycle->Crash();
   loop.Run();
 
@@ -355,11 +378,11 @@ TEST_F(LifecycleTest, PackagedApp_CrashCrashesOtherProvidedApp) {
     return;
   }
 
-  test::mojom::LifecycleControlPtr lifecycle_a =
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle_a =
       ConnectTo(kTestPackageAppNameA);
-  test::mojom::LifecycleControlPtr lifecycle_b =
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle_b =
       ConnectTo(kTestPackageAppNameB);
-  test::mojom::LifecycleControlPtr lifecycle_package =
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle_package =
       ConnectTo(kTestPackageName);
 
   // There should be three instances, one for each packaged app and the package
@@ -373,9 +396,9 @@ TEST_F(LifecycleTest, PackagedApp_CrashCrashesOtherProvidedApp) {
   base::RunLoop loop;
   base::RepeatingClosure quit_on_last = base::BarrierClosure(
       static_cast<int>(instance_count), loop.QuitClosure());
-  lifecycle_a.set_connection_error_handler(quit_on_last);
-  lifecycle_b.set_connection_error_handler(quit_on_last);
-  lifecycle_package.set_connection_error_handler(quit_on_last);
+  lifecycle_a.set_disconnect_handler(quit_on_last);
+  lifecycle_b.set_disconnect_handler(quit_on_last);
+  lifecycle_package.set_disconnect_handler(quit_on_last);
 
   // Now crash one of the packaged apps.
   lifecycle_a->Crash();
@@ -391,11 +414,11 @@ TEST_F(LifecycleTest, PackagedApp_CrashCrashesOtherProvidedApp) {
 // When a single package provides multiple apps out of one process, crashing one
 // app crashes all.
 TEST_F(LifecycleTest, PackagedApp_GracefulQuitPackageQuitsAll) {
-  test::mojom::LifecycleControlPtr lifecycle_a =
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle_a =
       ConnectTo(kTestPackageAppNameA);
-  test::mojom::LifecycleControlPtr lifecycle_b =
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle_b =
       ConnectTo(kTestPackageAppNameB);
-  test::mojom::LifecycleControlPtr lifecycle_package =
+  mojo::Remote<test::mojom::LifecycleControl> lifecycle_package =
       ConnectTo(kTestPackageName);
 
   // There should be three instances, one for each packaged app and the package
@@ -409,9 +432,9 @@ TEST_F(LifecycleTest, PackagedApp_GracefulQuitPackageQuitsAll) {
   base::RunLoop loop;
   base::RepeatingClosure quit_on_last = base::BarrierClosure(
       static_cast<int>(instance_count), loop.QuitClosure());
-  lifecycle_a.set_connection_error_handler(quit_on_last);
-  lifecycle_b.set_connection_error_handler(quit_on_last);
-  lifecycle_package.set_connection_error_handler(quit_on_last);
+  lifecycle_a.set_disconnect_handler(quit_on_last);
+  lifecycle_b.set_disconnect_handler(quit_on_last);
+  lifecycle_package.set_disconnect_handler(quit_on_last);
 
   // Now quit the package. All the packaged apps should close.
   lifecycle_package->GracefulQuit();

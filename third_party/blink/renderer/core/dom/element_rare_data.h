@@ -39,13 +39,13 @@
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/dom/space_split_string.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_definition.h"
-#include "third_party/blink/renderer/core/html/custom/v0_custom_element_definition.h"
 #include "third_party/blink/renderer/core/intersection_observer/element_intersection_observer_data.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
 namespace blink {
 
+class ContainerQueryEvaluator;
 class Element;
 class HTMLElement;
 class ResizeObservation;
@@ -58,6 +58,7 @@ class ElementRareData : public NodeRareData {
 
   void SetPseudoElement(PseudoId, PseudoElement*);
   PseudoElement* GetPseudoElement(PseudoId) const;
+  PseudoElementData::PseudoElementVector GetPseudoElements() const;
 
   void SetTabIndexExplicitly() {
     SetElementFlag(ElementFlags::kTabIndexWasSetExplicitly, true);
@@ -80,6 +81,11 @@ class ElementRareData : public NodeRareData {
     shadow_root_ = &shadow_root;
   }
 
+  EditContext* GetEditContext() const { return edit_context_.Get(); }
+  void SetEditContext(EditContext* edit_context) {
+    edit_context_ = edit_context;
+  }
+
   NamedNodeMap* AttributeMap() const { return attribute_map_.Get(); }
   void SetAttributeMap(NamedNodeMap* attribute_map) {
     attribute_map_ = attribute_map;
@@ -91,15 +97,11 @@ class ElementRareData : public NodeRareData {
   }
 
   void SetPart(DOMTokenList* part) {
-    if (!RuntimeEnabledFeatures::CSSPartPseudoElementEnabled())
-      return;
     part_ = part;
   }
   DOMTokenList* GetPart() const { return part_.Get(); }
 
   void SetPartNamesMap(const AtomicString part_names) {
-    if (!RuntimeEnabledFeatures::CSSPartPseudoElementEnabled())
-      return;
     if (!part_names_map_) {
       part_names_map_.reset(new NamesMap());
     }
@@ -129,13 +131,6 @@ class ElementRareData : public NodeRareData {
   bool HasPseudoElements() const;
   void ClearPseudoElements();
 
-  void V0SetCustomElementDefinition(V0CustomElementDefinition* definition) {
-    v0_custom_element_definition_ = definition;
-  }
-  V0CustomElementDefinition* GetV0CustomElementDefinition() const {
-    return v0_custom_element_definition_.Get();
-  }
-
   void SetCustomElementDefinition(CustomElementDefinition* definition) {
     custom_element_definition_ = definition;
   }
@@ -147,6 +142,9 @@ class ElementRareData : public NodeRareData {
   void SetDidAttachInternals() { did_attach_internals_ = true; }
   bool DidAttachInternals() const { return did_attach_internals_; }
   ElementInternals& EnsureElementInternals(HTMLElement& target);
+  const ElementInternals* GetElementInternals() const {
+    return element_internals_;
+  }
 
   void SetStyleShouldForceLegacyLayout(bool force) {
     style_should_force_legacy_layout_ = force;
@@ -160,6 +158,8 @@ class ElementRareData : public NodeRareData {
   bool ShouldForceLegacyLayoutForChild() const {
     return should_force_legacy_layout_for_child_;
   }
+  bool HasUndoStack() const { return has_undo_stack_; }
+  void SetHasUndoStack(bool value) { has_undo_stack_ = value; }
 
   AccessibleNode* GetAccessibleNode() const { return accessible_node_.Get(); }
   AccessibleNode* EnsureAccessibleNode(Element* owner_element) {
@@ -195,22 +195,26 @@ class ElementRareData : public NodeRareData {
   }
   ResizeObserverDataMap& EnsureResizeObserverData();
 
-  DisplayLockContext* EnsureDisplayLockContext(Element* element,
-                                               ExecutionContext* context) {
+  DisplayLockContext* EnsureDisplayLockContext(Element* element) {
     if (!display_lock_context_) {
-      display_lock_context_ =
-          MakeGarbageCollected<DisplayLockContext>(element, context);
+      display_lock_context_ = MakeGarbageCollected<DisplayLockContext>(element);
     }
     return display_lock_context_.Get();
   }
   DisplayLockContext* GetDisplayLockContext() const {
     return display_lock_context_;
   }
+  ContainerQueryEvaluator* GetContainerQueryEvaluator() const {
+    return container_query_evaluator_;
+  }
+  void SetContainerQueryEvaluator(ContainerQueryEvaluator* evaluator) {
+    container_query_evaluator_ = evaluator;
+  }
 
   const AtomicString& GetNonce() const { return nonce_; }
   void SetNonce(const AtomicString& nonce) { nonce_ = nonce; }
 
-  void TraceAfterDispatch(blink::Visitor*);
+  void TraceAfterDispatch(blink::Visitor*) const;
 
  private:
   ScrollOffset saved_layer_scroll_offset_;
@@ -218,6 +222,7 @@ class ElementRareData : public NodeRareData {
 
   Member<DatasetDOMStringMap> dataset_;
   Member<ShadowRoot> shadow_root_;
+  Member<EditContext> edit_context_;
   Member<DOMTokenList> class_list_;
   Member<DOMTokenList> part_;
   std::unique_ptr<NamesMap> part_names_map_;
@@ -230,8 +235,6 @@ class ElementRareData : public NodeRareData {
   Member<ElementIntersectionObserverData> intersection_observer_data_;
   Member<ResizeObserverDataMap> resize_observer_data_;
 
-  // TODO(davaajav):remove this field when v0 custom elements are deprecated
-  Member<V0CustomElementDefinition> v0_custom_element_definition_;
   Member<CustomElementDefinition> custom_element_definition_;
   AtomicString is_value_;
   Member<ElementInternals> element_internals_;
@@ -240,10 +243,12 @@ class ElementRareData : public NodeRareData {
 
   Member<AccessibleNode> accessible_node_;
 
-  WeakMember<DisplayLockContext> display_lock_context_;
+  Member<DisplayLockContext> display_lock_context_;
+  Member<ContainerQueryEvaluator> container_query_evaluator_;
   bool did_attach_internals_ = false;
   bool should_force_legacy_layout_for_child_ = false;
   bool style_should_force_legacy_layout_ = false;
+  bool has_undo_stack_ = false;
 };
 
 inline LayoutSize DefaultMinimumSizeForResizing() {
@@ -276,6 +281,13 @@ inline PseudoElement* ElementRareData::GetPseudoElement(
   if (!pseudo_element_data_)
     return nullptr;
   return pseudo_element_data_->GetPseudoElement(pseudo_id);
+}
+
+inline PseudoElementData::PseudoElementVector
+ElementRareData::GetPseudoElements() const {
+  if (!pseudo_element_data_)
+    return {};
+  return pseudo_element_data_->GetPseudoElements();
 }
 
 }  // namespace blink

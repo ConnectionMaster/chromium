@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Checks the FunctionCall with no closing event processed properly.\n`);
-  await TestRunner.loadModule('performance_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
   await TestRunner.showPanel('timeline');
 
   var sessionId = '6.23';
@@ -55,13 +55,13 @@
       'pid': 17851,
       'tid': 23,
       'ts': 142000,
-      'args': {}
+      'args': {'data': {'stackTrace': []}}
     }
   ];
 
-  var model = PerformanceTestRunner.createPerformanceModelWithEvents(rawTraceEvents);
-  var event = PerformanceTestRunner.mainTrackEvents().find(
+  PerformanceTestRunner.createPerformanceModelWithEvents(rawTraceEvents);
+  const event = PerformanceTestRunner.mainTrackEvents().find(
       e => e.name === TimelineModel.TimelineModel.RecordType.FunctionCall);
-  TestRunner.addResult(`${event.startTime} ${event.endTime}`);
+  TestRunner.addResult(`${event.name} ${event.startTime}`);
   TestRunner.completeTest();
 })();

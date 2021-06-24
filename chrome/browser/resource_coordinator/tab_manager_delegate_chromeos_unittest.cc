@@ -9,14 +9,15 @@
 #include <utility>
 #include <vector>
 
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/process/process_handle.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
+#include "chrome/browser/resource_coordinator/tab_manager_features.h"
 #include "chrome/browser/resource_coordinator/test_lifecycle_unit.h"
 #include "chrome/browser/resource_coordinator/time.h"
-#include "chromeos/dbus/fake_debug_daemon_client.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "chromeos/dbus/debug_daemon/fake_debug_daemon_client.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace resource_coordinator {
@@ -28,7 +29,7 @@ class TabManagerDelegateTest : public testing::Test {
   ~TabManagerDelegateTest() override {}
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 };
 
 constexpr bool kIsFocused = true;
@@ -69,17 +70,13 @@ TEST_F(TabManagerDelegateTest, CandidatesSorted) {
   // focused LifecycleUnit
   EXPECT_EQ(candidates[0].lifecycle_unit(), &focused_lifecycle_unit);
   // focused app.
-  ASSERT_TRUE(candidates[1].app());
   EXPECT_EQ("focused", candidates[1].app()->process_name());
   // visible app 1, last_activity_time larger than visible app 2.
-  ASSERT_TRUE(candidates[2].app());
   EXPECT_EQ("visible1", candidates[2].app()->process_name());
   // visible app 2, last_activity_time less than visible app 1.
-  ASSERT_TRUE(candidates[3].app());
   EXPECT_EQ("visible2", candidates[3].app()->process_name());
   EXPECT_EQ(candidates[4].lifecycle_unit(), &protected_lifecycle_unit);
   // background service.
-  ASSERT_TRUE(candidates[5].app());
   EXPECT_EQ("service", candidates[5].app()->process_name());
   // protected LifecycleUnit
   // non-focused LifecycleUnits, sorted by last focused time.
@@ -105,57 +102,7 @@ TEST_F(TabManagerDelegateTest, CandidatesSortedWithFocusedAppAndTab) {
   ASSERT_EQ(2U, candidates.size());
   // FOCUSED_TAB should be the first one.
   EXPECT_EQ(&focused_lifecycle_unit, candidates[0].lifecycle_unit());
-  ASSERT_TRUE(candidates[1].app());
   EXPECT_EQ("focused", candidates[1].app()->process_name());
-}
-
-// Test to make sure old process types are active when TabRanker experiment
-// is turned on.
-TEST_F(TabManagerDelegateTest, CandidatesSortedWithTabRanker) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures({features::kTabRanker}, {});
-  std::vector<arc::ArcProcess> arc_processes;
-  arc_processes.emplace_back(1, 10, "focused", arc::mojom::ProcessState::TOP,
-                             kIsFocused, 99);
-  arc_processes.emplace_back(2, 20, "visible1", arc::mojom::ProcessState::TOP,
-                             kNotFocused, 89);
-  arc_processes.emplace_back(
-      3, 30, "service", arc::mojom::ProcessState::SERVICE, kNotFocused, 79);
-
-  TestLifecycleUnit tab1(
-      base::TimeTicks() + base::TimeDelta::FromMilliseconds(100), 4);
-  tab1.SetSortKey(LifecycleUnit::SortKey(10, tab1.GetLastFocusedTime()));
-  TestLifecycleUnit tab2(
-      base::TimeTicks() + base::TimeDelta::FromMilliseconds(90), 5);
-  tab2.SetSortKey(LifecycleUnit::SortKey(20, tab2.GetLastFocusedTime()));
-  TestLifecycleUnit tab3(
-      base::TimeTicks() + base::TimeDelta::FromMilliseconds(80), 6);
-  tab3.SetSortKey(LifecycleUnit::SortKey(30, tab3.GetLastFocusedTime()));
-  LifecycleUnitVector lifecycle_units{&tab1, &tab2, &tab3};
-
-  TabManagerDelegate::OptionalArcProcessList opt_arc_processes(
-      std::move(arc_processes));
-  std::vector<TabManagerDelegate::Candidate> candidates;
-  candidates = TabManagerDelegate::GetSortedCandidates(lifecycle_units,
-                                                       opt_arc_processes);
-
-  ASSERT_EQ(6U, candidates.size());
-  ASSERT_TRUE(candidates[0].app());
-  EXPECT_EQ("focused", candidates[0].app()->process_name());
-  EXPECT_EQ(ProcessType::FOCUSED_APP, candidates[0].process_type());
-  ASSERT_TRUE(candidates[1].app());
-  EXPECT_EQ("visible1", candidates[1].app()->process_name());
-  EXPECT_EQ(ProcessType::PROTECTED_BACKGROUND, candidates[1].process_type());
-  ASSERT_TRUE(candidates[2].app());
-  EXPECT_EQ("service", candidates[2].app()->process_name());
-  EXPECT_EQ(ProcessType::BACKGROUND, candidates[2].process_type());
-
-  EXPECT_EQ(&tab3, candidates[3].lifecycle_unit());
-  EXPECT_EQ(ProcessType::BACKGROUND, candidates[3].process_type());
-  EXPECT_EQ(&tab2, candidates[4].lifecycle_unit());
-  EXPECT_EQ(ProcessType::BACKGROUND, candidates[4].process_type());
-  EXPECT_EQ(&tab1, candidates[5].lifecycle_unit());
-  EXPECT_EQ(ProcessType::BACKGROUND, candidates[5].process_type());
 }
 
 class MockTabManagerDelegate : public TabManagerDelegate {
@@ -459,7 +406,7 @@ TEST_F(TabManagerDelegateTest, KillMultipleProcesses) {
   memory_stat->SetProcessPss(10, 100000);
 
   tab_manager_delegate.LowMemoryKillImpl(
-      base::TimeTicks::Now(), ::mojom::LifecycleUnitDiscardReason::PROACTIVE,
+      base::TimeTicks::Now(), ::mojom::LifecycleUnitDiscardReason::EXTERNAL,
       TabManager::TabDiscardDoneCB(base::DoNothing()),
       std::move(arc_processes));
 

@@ -5,12 +5,14 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_POLICY_ENTERPRISE_STARTUP_DIALOG_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_POLICY_ENTERPRISE_STARTUP_DIALOG_VIEW_H_
 
+#include <memory>
 #include <string>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/enterprise_startup_dialog.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/views/widget/widget_observer.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -19,14 +21,18 @@ namespace policy {
 
 class EnterpriseStartupDialogView : public views::DialogDelegateView {
  public:
+  METADATA_HEADER(EnterpriseStartupDialogView);
   EnterpriseStartupDialogView(
       EnterpriseStartupDialog::DialogResultCallback callback);
+  EnterpriseStartupDialogView(const EnterpriseStartupDialogView&) = delete;
+  EnterpriseStartupDialogView& operator=(const EnterpriseStartupDialogView&) =
+      delete;
   ~EnterpriseStartupDialogView() override;
 
   void DisplayLaunchingInformationWithThrobber(
-      const base::string16& information);
-  void DisplayErrorMessage(const base::string16& error_message,
-                           const base::Optional<base::string16>& accept_button);
+      const std::u16string& information);
+  void DisplayErrorMessage(const std::u16string& error_message,
+                           const absl::optional<std::u16string>& accept_button);
   void CloseDialog();
 
   void AddWidgetObserver(views::WidgetObserver* observer);
@@ -41,15 +47,7 @@ class EnterpriseStartupDialogView : public views::DialogDelegateView {
   void RunDialogCallback(bool was_accepted);
 
   // override views::DialogDelegateView
-  bool Accept() override;
-  bool Cancel() override;
-  bool Close() override;
   bool ShouldShowWindowTitle() const override;
-  ui::ModalType GetModalType() const override;
-  views::View* CreateExtraView() override;
-
-  // override ui::DialogModal
-  int GetDialogButtons() const override;
 
   // override views::View
   gfx::Size CalculatePreferredSize() const override;
@@ -57,28 +55,30 @@ class EnterpriseStartupDialogView : public views::DialogDelegateView {
   // Remove all existing child views from the dialog, show/hide dialog buttons.
   void ResetDialog(bool show_accept_button);
   // Append child views to the content area, setup the layout.
-  void SetupLayout(views::View* icon, views::View* text);
+  void SetupLayout(std::unique_ptr<views::View> icon,
+                   std::unique_ptr<views::View> text);
 
   EnterpriseStartupDialog::DialogResultCallback callback_;
-  bool can_show_browser_window_;
+  bool can_show_browser_window_ = false;
 
-  base::WeakPtrFactory<EnterpriseStartupDialogView> weak_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(EnterpriseStartupDialogView);
+  base::WeakPtrFactory<EnterpriseStartupDialogView> weak_factory_{this};
 };
 
 class EnterpriseStartupDialogImpl : public EnterpriseStartupDialog,
                                     public views::WidgetObserver {
  public:
   explicit EnterpriseStartupDialogImpl(DialogResultCallback callback);
+  EnterpriseStartupDialogImpl(const EnterpriseStartupDialogImpl&) = delete;
+  EnterpriseStartupDialogImpl& operator=(const EnterpriseStartupDialogImpl&) =
+      delete;
   ~EnterpriseStartupDialogImpl() override;
 
   // Override EnterpriseStartupDialog
   void DisplayLaunchingInformationWithThrobber(
-      const base::string16& information) override;
+      const std::u16string& information) override;
   void DisplayErrorMessage(
-      const base::string16& error_message,
-      const base::Optional<base::string16>& accept_button) override;
+      const std::u16string& error_message,
+      const absl::optional<std::u16string>& accept_button) override;
   bool IsShowing() override;
 
   // views::WidgetObserver:
@@ -87,8 +87,6 @@ class EnterpriseStartupDialogImpl : public EnterpriseStartupDialog,
  private:
   // The dialog_view_ is owned by itself.
   EnterpriseStartupDialogView* dialog_view_;
-
-  DISALLOW_COPY_AND_ASSIGN(EnterpriseStartupDialogImpl);
 };
 
 }  // namespace policy

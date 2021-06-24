@@ -37,9 +37,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
@@ -52,13 +49,6 @@ static const int kProgressItemDefaultEstimatedLength = 1024 * 1024;
 static const double kProgressNotificationInterval = 0.02;
 static const double kProgressNotificationTimeInterval = 0.1;
 
-struct ProgressItem {
-  USING_FAST_MALLOC(ProgressItem);
- public:
-  int64_t bytes_received = 0;
-  int64_t estimated_length = 0;
-};
-
 ProgressTracker::ProgressTracker(LocalFrame* frame)
     : frame_(frame),
       last_notified_progress_value_(0),
@@ -69,7 +59,7 @@ ProgressTracker::ProgressTracker(LocalFrame* frame)
 
 ProgressTracker::~ProgressTracker() = default;
 
-void ProgressTracker::Trace(blink::Visitor* visitor) {
+void ProgressTracker::Trace(Visitor* visitor) const {
   visitor->Trace(frame_);
 }
 
@@ -114,6 +104,7 @@ void ProgressTracker::ProgressCompleted() {
   SendFinalProgress();
   Reset();
   GetLocalFrameClient()->DidStopLoading();
+  frame_->UpdateFaviconURL();
   probe::FrameStoppedLoading(frame_);
 }
 
@@ -131,7 +122,7 @@ void ProgressTracker::SendFinalProgress() {
   if (progress_value_ == 1)
     return;
   progress_value_ = 1;
-  GetLocalFrameClient()->ProgressEstimateChanged(progress_value_);
+  frame_->GetLocalFrameHostRemote().DidChangeLoadProgress(progress_value_);
 }
 
 void ProgressTracker::WillStartLoading(uint64_t identifier,
@@ -218,14 +209,14 @@ void ProgressTracker::MaybeSendProgress() {
   if (progress_value_ < last_notified_progress_value_)
     return;
 
-  double now = CurrentTime();
+  double now = base::Time::Now().ToDoubleT();
   double notified_progress_time_delta = now - last_notified_progress_time_;
 
   double notification_progress_delta =
       progress_value_ - last_notified_progress_value_;
   if (notification_progress_delta >= kProgressNotificationInterval ||
       notified_progress_time_delta >= kProgressNotificationTimeInterval) {
-    GetLocalFrameClient()->ProgressEstimateChanged(progress_value_);
+    frame_->GetLocalFrameHostRemote().DidChangeLoadProgress(progress_value_);
     last_notified_progress_value_ = progress_value_;
     last_notified_progress_time_ = now;
   }

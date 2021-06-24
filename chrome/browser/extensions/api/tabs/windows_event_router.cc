@@ -16,15 +16,14 @@
 #include "chrome/browser/extensions/api/tabs/windows_util.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
-#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/window_controller.h"
-#include "chrome/browser/extensions/window_controller_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/windows.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/common/constants.h"
 
 using content::BrowserContext;
@@ -60,7 +59,8 @@ bool ControllerVisibleToListener(WindowController* window_controller,
 }
 
 bool WillDispatchWindowEvent(WindowController* window_controller,
-                             BrowserContext* context,
+                             BrowserContext* browser_context,
+                             Feature::Context target_context,
                              const Extension* extension,
                              Event* event,
                              const base::DictionaryValue* listener_filter) {
@@ -88,7 +88,8 @@ bool WillDispatchWindowEvent(WindowController* window_controller,
 
 bool WillDispatchWindowFocusedEvent(
     WindowController* window_controller,
-    BrowserContext* context,
+    BrowserContext* browser_context,
+    Feature::Context target_context,
     const Extension* extension,
     Event* event,
     const base::DictionaryValue* listener_filter) {
@@ -123,9 +124,9 @@ bool WillDispatchWindowFocusedEvent(
   // dispatch WINDOW_ID_NONE to extensions whose profile lost focus that
   // can't see the new focused window across the incognito boundary.
   // See crbug.com/46610.
-  bool cant_cross_incognito = new_active_context &&
-                              new_active_context != context &&
-                              !util::CanCrossIncognito(extension, context);
+  bool cant_cross_incognito =
+      new_active_context && new_active_context != browser_context &&
+      !util::CanCrossIncognito(extension, browser_context);
   // If the window is not visible by the listener, we also need to
   // clear out the window id from the event.
   bool visible_to_listener = ControllerVisibleToListener(
@@ -146,13 +147,11 @@ bool WillDispatchWindowFocusedEvent(
 WindowsEventRouter::WindowsEventRouter(Profile* profile)
     : profile_(profile),
       focused_profile_(nullptr),
-      focused_window_id_(extension_misc::kUnknownWindowId),
-      observed_app_registry_(this),
-      observed_controller_list_(this) {
+      focused_window_id_(extension_misc::kUnknownWindowId) {
   DCHECK(!profile->IsOffTheRecord());
 
-  observed_app_registry_.Add(AppWindowRegistry::Get(profile_));
-  observed_controller_list_.Add(WindowControllerList::GetInstance());
+  observed_app_registry_.Observe(AppWindowRegistry::Get(profile_));
+  observed_controller_list_.Observe(WindowControllerList::GetInstance());
   // Needed for when no suitable window can be passed to an extension as the
   // currently focused window. On Mac (even in a toolkit-views build) always
   // rely on the notification sent by AppControllerMac after AppKit sends
@@ -160,7 +159,7 @@ WindowsEventRouter::WindowsEventRouter(Profile* profile)
   // allows windows not created by toolkit-views to be tracked.
   // TODO(tapted): Remove the ifdefs (and NOTIFICATION_NO_KEY_WINDOW) when
   // Chrome on Mac only makes windows with toolkit-views.
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   registrar_.Add(this, chrome::NOTIFICATION_NO_KEY_WINDOW,
                  content::NotificationService::AllSources());
 #elif defined(TOOLKIT_VIEWS)
@@ -175,20 +174,20 @@ WindowsEventRouter::WindowsEventRouter(Profile* profile)
 }
 
 WindowsEventRouter::~WindowsEventRouter() {
-#if defined(TOOLKIT_VIEWS) && !defined(OS_MACOSX)
+#if defined(TOOLKIT_VIEWS) && !defined(OS_MAC)
   views::WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(this);
 #endif
 }
 
 void WindowsEventRouter::OnAppWindowAdded(extensions::AppWindow* app_window) {
-  if (!profile_->IsSameProfile(
+  if (!profile_->IsSameOrParent(
           Profile::FromBrowserContext(app_window->browser_context())))
     return;
   AddAppWindow(app_window);
 }
 
 void WindowsEventRouter::OnAppWindowRemoved(extensions::AppWindow* app_window) {
-  if (!profile_->IsSameProfile(
+  if (!profile_->IsSameOrParent(
           Profile::FromBrowserContext(app_window->browser_context())))
     return;
 
@@ -207,16 +206,20 @@ void WindowsEventRouter::OnWindowControllerAdded(
     WindowController* window_controller) {
   if (!HasEventListener(windows::OnCreated::kEventName))
     return;
-  if (!profile_->IsSameProfile(window_controller->profile()))
+  if (!profile_->IsSameOrParent(window_controller->profile()))
     return;
   // Ignore any windows without an associated browser (e.g., AppWindows).
   if (!window_controller->GetBrowser())
     return;
 
   std::unique_ptr<base::ListValue> args(new base::ListValue());
+  // Since we don't populate tab info here, the context type doesn't matter.
+  constexpr ExtensionTabUtil::PopulateTabBehavior populate_behavior =
+      ExtensionTabUtil::kDontPopulateTabs;
+  constexpr Feature::Context context_type = Feature::UNSPECIFIED_CONTEXT;
   args->Append(ExtensionTabUtil::CreateWindowValueForExtension(
-      *window_controller->GetBrowser(), nullptr,
-      ExtensionTabUtil::kDontPopulateTabs));
+      *window_controller->GetBrowser(), nullptr, populate_behavior,
+      context_type));
   DispatchEvent(events::WINDOWS_ON_CREATED, windows::OnCreated::kEventName,
                 window_controller, std::move(args));
 }
@@ -225,7 +228,7 @@ void WindowsEventRouter::OnWindowControllerRemoved(
     WindowController* window_controller) {
   if (!HasEventListener(windows::OnRemoved::kEventName))
     return;
-  if (!profile_->IsSameProfile(window_controller->profile()))
+  if (!profile_->IsSameOrParent(window_controller->profile()))
     return;
   // Ignore any windows without an associated browser (e.g., AppWindows).
   if (!window_controller->GetBrowser())
@@ -238,7 +241,30 @@ void WindowsEventRouter::OnWindowControllerRemoved(
                 window_controller, std::move(args));
 }
 
-#if defined(TOOLKIT_VIEWS) && !defined(OS_MACOSX)
+void WindowsEventRouter::OnWindowBoundsChanged(
+    WindowController* window_controller) {
+  if (!HasEventListener(windows::OnBoundsChanged::kEventName))
+    return;
+  if (!profile_->IsSameOrParent(window_controller->profile()))
+    return;
+  // Ignore any windows without an associated browser (e.g., AppWindows).
+  if (!window_controller->GetBrowser())
+    return;
+
+  auto args = std::make_unique<base::ListValue>();
+  // Since we don't populate tab info here, the context type doesn't matter.
+  constexpr ExtensionTabUtil::PopulateTabBehavior populate_behavior =
+      ExtensionTabUtil::kDontPopulateTabs;
+  constexpr Feature::Context context_type = Feature::UNSPECIFIED_CONTEXT;
+  args->Append(ExtensionTabUtil::CreateWindowValueForExtension(
+      *window_controller->GetBrowser(), nullptr, populate_behavior,
+      context_type));
+  DispatchEvent(events::WINDOWS_ON_BOUNDS_CHANGED,
+                windows::OnBoundsChanged::kEventName, window_controller,
+                std::move(args));
+}
+
+#if defined(TOOLKIT_VIEWS) && !defined(OS_MAC)
 void WindowsEventRouter::OnNativeFocusChanged(gfx::NativeView focused_now) {
   if (!focused_now)
     OnActiveWindowChanged(nullptr);
@@ -249,7 +275,7 @@ void WindowsEventRouter::Observe(
     int type,
     const content::NotificationSource& source,
     const content::NotificationDetails& details) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   DCHECK_EQ(chrome::NOTIFICATION_NO_KEY_WINDOW, type);
   OnActiveWindowChanged(nullptr);
 #endif
@@ -260,7 +286,7 @@ void WindowsEventRouter::OnActiveWindowChanged(
   Profile* window_profile = nullptr;
   int window_id = extension_misc::kUnknownWindowId;
   if (window_controller &&
-      profile_->IsSameProfile(window_controller->profile())) {
+      profile_->IsSameOrParent(window_controller->profile())) {
     window_profile = window_controller->profile();
     window_id = window_controller->GetWindowId();
   }
@@ -278,7 +304,7 @@ void WindowsEventRouter::OnActiveWindowChanged(
 
   std::unique_ptr<Event> event = std::make_unique<Event>(
       events::WINDOWS_ON_FOCUS_CHANGED, windows::OnFocusChanged::kEventName,
-      std::make_unique<base::ListValue>());
+      std::vector<base::Value>());
   event->will_dispatch_callback =
       base::BindRepeating(&WillDispatchWindowFocusedEvent, window_controller);
   EventRouter::Get(profile_)->BroadcastEvent(std::move(event));
@@ -289,7 +315,7 @@ void WindowsEventRouter::DispatchEvent(events::HistogramValue histogram_value,
                                        WindowController* window_controller,
                                        std::unique_ptr<base::ListValue> args) {
   auto event =
-      std::make_unique<Event>(histogram_value, event_name, std::move(args),
+      std::make_unique<Event>(histogram_value, event_name, args->TakeList(),
                               window_controller->profile());
   event->will_dispatch_callback =
       base::BindRepeating(&WillDispatchWindowEvent, window_controller);

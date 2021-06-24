@@ -3,9 +3,13 @@
 // found in the LICENSE file.
 
 #include "gpu/ipc/service/gpu_memory_buffer_factory_dxgi.h"
-#include <wrl.h>
+
 #include <vector>
+
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/trace_event/trace_event.h"
+#include "gpu/command_buffer/common/gpu_memory_buffer_support.h"
+#include "gpu/ipc/common/dxgi_helpers.h"
 #include "ui/gfx/buffer_format_util.h"
 #include "ui/gl/gl_angle_util_win.h"
 #include "ui/gl/gl_bindings.h"
@@ -20,11 +24,13 @@ GpuMemoryBufferFactoryDXGI::~GpuMemoryBufferFactoryDXGI() {}
 gfx::GpuMemoryBufferHandle GpuMemoryBufferFactoryDXGI::CreateGpuMemoryBuffer(
     gfx::GpuMemoryBufferId id,
     const gfx::Size& size,
+    const gfx::Size& framebuffer_size,
     gfx::BufferFormat format,
     gfx::BufferUsage usage,
     int client_id,
     SurfaceHandle surface_handle) {
   TRACE_EVENT0("gpu", "GpuMemoryBufferFactoryDXGI::CreateGpuMemoryBuffer");
+  DCHECK_EQ(framebuffer_size, size);
 
   gfx::GpuMemoryBufferHandle handle;
 
@@ -50,8 +56,8 @@ gfx::GpuMemoryBufferHandle GpuMemoryBufferFactoryDXGI::CreateGpuMemoryBuffer(
          usage == gfx::BufferUsage::SCANOUT);
 
   D3D11_TEXTURE2D_DESC desc = {
-      size.width(),
-      size.height(),
+      static_cast<UINT>(size.width()),
+      static_cast<UINT>(size.height()),
       1,
       1,
       dxgi_format,
@@ -64,12 +70,11 @@ gfx::GpuMemoryBufferHandle GpuMemoryBufferFactoryDXGI::CreateGpuMemoryBuffer(
 
   Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_texture;
 
-  if (FAILED(d3d11_device->CreateTexture2D(&desc, nullptr,
-                                           d3d11_texture.GetAddressOf())))
+  if (FAILED(d3d11_device->CreateTexture2D(&desc, nullptr, &d3d11_texture)))
     return handle;
 
   Microsoft::WRL::ComPtr<IDXGIResource1> dxgi_resource;
-  if (FAILED(d3d11_texture.CopyTo(dxgi_resource.GetAddressOf())))
+  if (FAILED(d3d11_texture.As(&dxgi_resource)))
     return handle;
 
   HANDLE texture_handle;
@@ -82,7 +87,7 @@ gfx::GpuMemoryBufferHandle GpuMemoryBufferFactoryDXGI::CreateGpuMemoryBuffer(
   if (!BufferSizeForBufferFormatChecked(size, format, &buffer_size))
     return handle;
 
-  handle.dxgi_handle = IPC::PlatformFileForTransit(texture_handle);
+  handle.dxgi_handle.Set(texture_handle);
   handle.type = gfx::DXGI_SHARED_HANDLE;
   handle.id = id;
 
@@ -93,6 +98,21 @@ void GpuMemoryBufferFactoryDXGI::DestroyGpuMemoryBuffer(
     gfx::GpuMemoryBufferId id,
     int client_id) {}
 
+bool GpuMemoryBufferFactoryDXGI::FillSharedMemoryRegionWithBufferContents(
+    gfx::GpuMemoryBufferHandle buffer_handle,
+    base::UnsafeSharedMemoryRegion shared_memory) {
+  DCHECK_EQ(buffer_handle.type, gfx::GpuMemoryBufferType::DXGI_SHARED_HANDLE);
+
+  Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device =
+      gl::QueryD3D11DeviceObjectFromANGLE();
+  if (!d3d11_device)
+    return false;
+
+  return CopyDXGIBufferToShMem(buffer_handle.dxgi_handle.Get(),
+                               std::move(shared_memory), d3d11_device.Get(),
+                               &staging_texture_);
+}
+
 ImageFactory* GpuMemoryBufferFactoryDXGI::AsImageFactory() {
   return this;
 }
@@ -102,15 +122,16 @@ GpuMemoryBufferFactoryDXGI::CreateImageForGpuMemoryBuffer(
     gfx::GpuMemoryBufferHandle handle,
     const gfx::Size& size,
     gfx::BufferFormat format,
+    gfx::BufferPlane plane,
     int client_id,
     SurfaceHandle surface_handle) {
   if (handle.type != gfx::DXGI_SHARED_HANDLE)
     return nullptr;
+  if (plane != gfx::BufferPlane::DEFAULT)
+    return nullptr;
   // Transfer ownership of handle to GLImageDXGI.
-  base::win::ScopedHandle handle_owner;
-  handle_owner.Set(handle.dxgi_handle.GetHandle());
   auto image = base::MakeRefCounted<gl::GLImageDXGI>(size, nullptr);
-  if (!image->InitializeHandle(std::move(handle_owner), 0, format))
+  if (!image->InitializeHandle(std::move(handle.dxgi_handle), 0, format))
     return nullptr;
   return image;
 }

@@ -10,11 +10,12 @@
 
 #include <map>
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "base/containers/circular_deque.h"
 #include "base/memory/memory_pressure_listener.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/time/tick_clock.h"
 #include "base/trace_event/memory_allocator_dump_guid.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -24,6 +25,7 @@
 #include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/resources/shared_bitmap.h"
 #include "gpu/command_buffer/common/sync_token.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/khronos/GLES2/gl2.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
@@ -204,9 +206,11 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
   ResourcePool& operator=(const ResourcePool&) = delete;
 
   // Tries to reuse a resource. If none are available, makes a new one.
-  InUsePoolResource AcquireResource(const gfx::Size& size,
-                                    viz::ResourceFormat format,
-                                    const gfx::ColorSpace& color_space);
+  InUsePoolResource AcquireResource(
+      const gfx::Size& size,
+      viz::ResourceFormat format,
+      const gfx::ColorSpace& color_space,
+      const std::string& debug_name = std::string());
 
   // Tries to acquire the resource with |previous_content_id| for us in partial
   // raster. If successful, this function will retun the invalidated rect which
@@ -215,7 +219,9 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
       uint64_t new_content_id,
       const gfx::Rect& new_invalidated_rect,
       uint64_t previous_content_id,
-      gfx::Rect* total_invalidated_rect);
+      gfx::Rect* total_invalidated_rect,
+      const gfx::ColorSpace& raster_color_space,
+      const std::string& debug_name = std::string());
 
   // Gives the InUsePoolResource a |resource_id_for_export()| in order to allow
   // exporting of the resource to the display compositor. This must be called
@@ -320,6 +326,9 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
                       const viz::ClientResourceProvider* resource_provider,
                       bool is_free) const;
 
+    void set_debug_name(const std::string& name) { debug_name_ = name; }
+    const std::string& debug_name() const { return debug_name_; }
+
    private:
     const size_t unique_id_;
     const gfx::Size size_;
@@ -335,7 +344,7 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
     bool avoid_reuse_ = false;
 
     // An id used to name the backing for transfer to the display compositor.
-    viz::ResourceId resource_id_ = 0;
+    viz::ResourceId resource_id_ = viz::kInvalidResourceId;
 
     // The backing for gpu resources. Initially null for resources given
     // out by ResourcePool, to be filled in by the client. Is destroyed on the
@@ -346,6 +355,9 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
     // out by ResourcePool, to be filled in by the client. Is destroyed on the
     // compositor thread.
     std::unique_ptr<SoftwareBacking> software_backing_;
+
+    // Used for debugging and tracing.
+    std::string debug_name_;
   };
 
   // Callback from the ResourceProvider to notify when an exported PoolResource
@@ -408,7 +420,7 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
 
   const base::TickClock* clock_;
 
-  base::WeakPtrFactory<ResourcePool> weak_ptr_factory_;
+  base::WeakPtrFactory<ResourcePool> weak_ptr_factory_{this};
 };
 
 }  // namespace cc

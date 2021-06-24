@@ -6,9 +6,9 @@
 
 #include <utility>
 
-#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "net/http/http_auth_filter.h"
 #include "net/http/url_security_manager.h"
 
@@ -39,9 +39,16 @@ std::string HttpAuthPreferences::AuthAndroidNegotiateAccountType() const {
 }
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+bool HttpAuthPreferences::AllowGssapiLibraryLoad() const {
+  return allow_gssapi_library_load_;
+}
+#endif
+
 bool HttpAuthPreferences::CanUseDefaultCredentials(
     const GURL& auth_origin) const {
-  return security_manager_->CanUseDefaultCredentials(auth_origin);
+  return allow_default_credentials_ == ALLOW_DEFAULT_CREDENTIALS &&
+         security_manager_->CanUseDefaultCredentials(auth_origin);
 }
 
 using DelegationType = HttpAuth::DelegationType;
@@ -57,20 +64,24 @@ DelegationType HttpAuthPreferences::GetDelegationType(
   return DelegationType::kUnconstrained;
 }
 
-void HttpAuthPreferences::SetServerWhitelist(
-    const std::string& server_whitelist) {
-  std::unique_ptr<HttpAuthFilter> whitelist;
-  if (!server_whitelist.empty())
-    whitelist = std::make_unique<HttpAuthFilterWhitelist>(server_whitelist);
-  security_manager_->SetDefaultWhitelist(std::move(whitelist));
+void HttpAuthPreferences::SetAllowDefaultCredentials(DefaultCredentials creds) {
+  allow_default_credentials_ = creds;
 }
 
-void HttpAuthPreferences::SetDelegateWhitelist(
-    const std::string& delegate_whitelist) {
-  std::unique_ptr<HttpAuthFilter> whitelist;
-  if (!delegate_whitelist.empty())
-    whitelist = std::make_unique<HttpAuthFilterWhitelist>(delegate_whitelist);
-  security_manager_->SetDelegateWhitelist(std::move(whitelist));
+void HttpAuthPreferences::SetServerAllowlist(
+    const std::string& server_allowlist) {
+  std::unique_ptr<HttpAuthFilter> allowlist;
+  if (!server_allowlist.empty())
+    allowlist = std::make_unique<HttpAuthFilterAllowlist>(server_allowlist);
+  security_manager_->SetDefaultAllowlist(std::move(allowlist));
+}
+
+void HttpAuthPreferences::SetDelegateAllowlist(
+    const std::string& delegate_allowlist) {
+  std::unique_ptr<HttpAuthFilter> allowlist;
+  if (!delegate_allowlist.empty())
+    allowlist = std::make_unique<HttpAuthFilterAllowlist>(delegate_allowlist);
+  security_manager_->SetDelegateAllowlist(std::move(allowlist));
 }
 
 }  // namespace net

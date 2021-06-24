@@ -1,9 +1,7 @@
-emircan@chromium.org
-chfremer@chromium.org
 tommi@chromium.org
+guidou@chromium.org
 
-# Original (legacy) owner.
+# Original (legacy) owners.
+chfremer@chromium.org
+emircan@chromium.org
 mcasas@chromium.org
-
-# TEAM: media-capture-and-streams@grotations.appspotmail.com
-# COMPONENT: Blink>GetUserMedia>WebCam

@@ -17,6 +17,7 @@
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/ui/chrome_select_file_policy.h"
 #include "chrome/common/net/x509_certificate_model_nss.h"
@@ -152,8 +153,8 @@ void Exporter::FileSelected(const base::FilePath& path,
   }
 
   if (!data.empty()) {
-    base::PostTaskWithTraits(FROM_HERE, {base::MayBlock()},
-                             base::BindOnce(&WriterCallback, path, data));
+    base::ThreadPool::PostTask(FROM_HERE, {base::MayBlock()},
+                               base::BindOnce(&WriterCallback, path, data));
   }
 
   delete this;
@@ -191,7 +192,7 @@ void ShowCertSelectFileDialog(ui::SelectFileDialog* select_file_dialog,
       l10n_util::GetStringUTF16(IDS_CERT_EXPORT_TYPE_PKCS7_CHAIN));
   file_type_info.include_all_files = true;
   select_file_dialog->SelectFile(
-      type, base::string16(), suggested_path, &file_type_info,
+      type, std::u16string(), suggested_path, &file_type_info,
       1,  // 1-based index for |file_type_info.extensions| to specify default.
       FILE_PATH_LITERAL("crt"), parent, params);
 }

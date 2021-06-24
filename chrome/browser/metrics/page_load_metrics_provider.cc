@@ -4,18 +4,16 @@
 
 #include "chrome/browser/metrics/page_load_metrics_provider.h"
 
-#include "chrome/browser/page_load_metrics/metrics_web_contents_observer.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
 
 PageLoadMetricsProvider::PageLoadMetricsProvider() {}
 
 PageLoadMetricsProvider::~PageLoadMetricsProvider() {}
 
 void PageLoadMetricsProvider::OnAppEnterBackground() {
-  for (TabModelList::const_iterator it = TabModelList::begin();
-       it != TabModelList::end(); ++it) {
-    TabModel* model = *it;
+  for (const TabModel* model : TabModelList::models()) {
     for (int tab_index = 0; tab_index < model->GetTabCount(); ++tab_index) {
       content::WebContents* web_contents = model->GetWebContentsAt(tab_index);
       if (!web_contents)

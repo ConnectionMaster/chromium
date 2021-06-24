@@ -6,10 +6,9 @@
 
 #include "base/bind.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/mac/scoped_nsobject.h"
-#import "base/mac/sdk_forward_declarations.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "chrome/browser/ui/browser.h"
@@ -20,8 +19,9 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "third_party/blink/public/platform/web_mouse_wheel_event.h"
+#include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/ocmock_extensions.h"
 #include "ui/events/base_event_utils.h"
@@ -102,7 +102,10 @@ class ChromeRenderWidgetHostViewMacHistorySwiperTest
     ui::SetEventTickClockForTesting(&mock_clock_);
   }
 
-  void TearDownOnMainThread() override { event_queue_.reset(); }
+  void TearDownOnMainThread() override {
+    ui::SetEventTickClockForTesting(nullptr);
+    event_queue_.reset();
+  }
 
  protected:
   // Returns the active web contents.
@@ -332,7 +335,7 @@ class ChromeRenderWidgetHostViewMacHistorySwiperTest
   // Replays the events from the queue.
   void RunQueuedEvents() {
     while ([event_queue_ count] > 0) {
-      QueuedEvent* queued_event = [event_queue_ objectAtIndex:0];
+      QueuedEvent* queued_event = [event_queue_ firstObject];
       NSEvent* event = queued_event.event;
       NSView* view = GetWebContents()
                          ->GetRenderViewHost()
@@ -377,7 +380,7 @@ class ChromeRenderWidgetHostViewMacHistorySwiperTest
   }
 
   void ExpectUrlAndOffset(const GURL& url, int offset) {
-    content::WaitForLoadStop(GetWebContents());
+    EXPECT_TRUE(content::WaitForLoadStop(GetWebContents()));
     EXPECT_EQ(url, GetWebContents()->GetURL());
 
     const int scroll_offset = GetScrollTop();
@@ -678,7 +681,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
   QueueEndEvents();
   RunQueuedEvents();
 
-  content::WaitForLoadStop(GetWebContents());
+  EXPECT_TRUE(content::WaitForLoadStop(GetWebContents()));
   EXPECT_EQ(url2_, GetWebContents()->GetURL());
 
   // Depending on the timing of the IPCs, some of the initial events might be
@@ -741,7 +744,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
 // Initial movements are vertical, and scroll the iframe. Subsequent movements
 // are horizontal, and should not trigger history swiping.
 IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
-                       TestIframeHistorySwiping) {
+                       DISABLED_TestIframeHistorySwiping) {
   if (!IsHistorySwipingSupported())
     return;
 
@@ -750,10 +753,10 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
 
   content::InputEventAckWaiter wheel_end_ack_waiter(
       GetWebContents()->GetRenderViewHost()->GetWidget(),
-      base::BindRepeating([](content::InputEventAckSource,
-                             content::InputEventAckState,
+      base::BindRepeating([](blink::mojom::InputEventResultSource,
+                             blink::mojom::InputEventResultState,
                              const blink::WebInputEvent& event) {
-        return event.GetType() == blink::WebInputEvent::kMouseWheel &&
+        return event.GetType() == blink::WebInputEvent::Type::kMouseWheel &&
                static_cast<const blink::WebMouseWheelEvent&>(event).phase ==
                    blink::WebMouseWheelEvent::kPhaseEnded;
       }));
@@ -770,7 +773,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
   // Wait for the scroll to end.
   wheel_end_ack_waiter.Wait();
 
-  content::WaitForLoadStop(GetWebContents());
+  EXPECT_TRUE(content::WaitForLoadStop(GetWebContents()));
   EXPECT_EQ(url_iframe_, GetWebContents()->GetURL());
 }
 
@@ -795,8 +798,10 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
   ExpectUrlAndOffset(url1_, 0);
 }
 
-IN_PROC_BROWSER_TEST_F(ChromeRenderWidgetHostViewMacHistorySwiperTest,
-                       InnerScrollersOverscrollBehaviorPreventsNavigation) {
+// TODO(crbug.com/1070405): flaky.
+IN_PROC_BROWSER_TEST_F(
+    ChromeRenderWidgetHostViewMacHistorySwiperTest,
+    DISABLED_InnerScrollersOverscrollBehaviorPreventsNavigation) {
   if (!IsHistorySwipingSupported())
     return;
 

@@ -1,10 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env vpython
 # Copyright 2014 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from __future__ import absolute_import
 import unittest
 
+import six
 from pylib.base import base_test_result
 from pylib.results import json_results
 
@@ -119,7 +121,7 @@ class JsonResultsTest(unittest.TestCase):
         'test.package.TestName2',
     ])
 
-    for test_name, iteration_result in iterations[0].iteritems():
+    for test_name, iteration_result in six.iteritems(iterations[0]):
       self.assertTrue(test_name in expected_tests)
       expected_tests.remove(test_name)
       self.assertEquals(1, len(iteration_result))
@@ -201,6 +203,119 @@ class JsonResultsTest(unittest.TestCase):
     self.assertEquals(log, test_iteration_result['output_snippet'])
     self.assertTrue('output_snippet_base64' in test_iteration_result)
     self.assertEquals('', test_iteration_result['output_snippet_base64'])
+
+  def testGenerateJsonTestResultFormatDict_passedResult(self):
+    result = base_test_result.BaseTestResult('test.package.TestName',
+                                             base_test_result.ResultType.PASS)
+
+    all_results = base_test_result.TestRunResults()
+    all_results.AddResult(result)
+
+    results_dict = json_results.GenerateJsonTestResultFormatDict([all_results],
+                                                                 False)
+    self.assertEquals(1, len(results_dict['tests']))
+    self.assertEquals(1, len(results_dict['tests']['test']))
+    self.assertEquals(1, len(results_dict['tests']['test']['package']))
+    self.assertEquals(
+        'PASS',
+        results_dict['tests']['test']['package']['TestName']['expected'])
+    self.assertEquals(
+        'PASS', results_dict['tests']['test']['package']['TestName']['actual'])
+
+    self.assertTrue('FAIL' not in results_dict['num_failures_by_type']
+                    or results_dict['num_failures_by_type']['FAIL'] == 0)
+    self.assertIn('PASS', results_dict['num_failures_by_type'])
+    self.assertEquals(1, results_dict['num_failures_by_type']['PASS'])
+
+  def testGenerateJsonTestResultFormatDict_failedResult(self):
+    result = base_test_result.BaseTestResult('test.package.TestName',
+                                             base_test_result.ResultType.FAIL)
+
+    all_results = base_test_result.TestRunResults()
+    all_results.AddResult(result)
+
+    results_dict = json_results.GenerateJsonTestResultFormatDict([all_results],
+                                                                 False)
+    self.assertEquals(1, len(results_dict['tests']))
+    self.assertEquals(1, len(results_dict['tests']['test']))
+    self.assertEquals(1, len(results_dict['tests']['test']['package']))
+    self.assertEquals(
+        'PASS',
+        results_dict['tests']['test']['package']['TestName']['expected'])
+    self.assertEquals(
+        'FAIL', results_dict['tests']['test']['package']['TestName']['actual'])
+    self.assertEquals(
+        True,
+        results_dict['tests']['test']['package']['TestName']['is_unexpected'])
+
+    self.assertTrue('PASS' not in results_dict['num_failures_by_type']
+                    or results_dict['num_failures_by_type']['PASS'] == 0)
+    self.assertIn('FAIL', results_dict['num_failures_by_type'])
+    self.assertEquals(1, results_dict['num_failures_by_type']['FAIL'])
+
+  def testGenerateJsonTestResultFormatDict_skippedResult(self):
+    result = base_test_result.BaseTestResult('test.package.TestName',
+                                             base_test_result.ResultType.SKIP)
+
+    all_results = base_test_result.TestRunResults()
+    all_results.AddResult(result)
+
+    results_dict = json_results.GenerateJsonTestResultFormatDict([all_results],
+                                                                 False)
+    self.assertEquals(1, len(results_dict['tests']))
+    self.assertEquals(1, len(results_dict['tests']['test']))
+    self.assertEquals(1, len(results_dict['tests']['test']['package']))
+    self.assertEquals(
+        'PASS',
+        results_dict['tests']['test']['package']['TestName']['expected'])
+    self.assertEquals(
+        'FAIL', results_dict['tests']['test']['package']['TestName']['actual'])
+    self.assertEquals(
+        True,
+        results_dict['tests']['test']['package']['TestName']['is_unexpected'])
+
+    self.assertTrue('FAIL' not in results_dict['num_failures_by_type']
+                    or results_dict['num_failures_by_type']['FAIL'] == 0)
+    self.assertTrue('PASS' not in results_dict['num_failures_by_type']
+                    or results_dict['num_failures_by_type']['PASS'] == 0)
+    self.assertIn('SKIP', results_dict['num_failures_by_type'])
+    self.assertEquals(1, results_dict['num_failures_by_type']['SKIP'])
+
+  def testGenerateJsonTestResultFormatDict_failedResultWithRetry(self):
+    result_1 = base_test_result.BaseTestResult('test.package.TestName',
+                                               base_test_result.ResultType.FAIL)
+    run_results_1 = base_test_result.TestRunResults()
+    run_results_1.AddResult(result_1)
+
+    # Simulate a second retry with failure.
+    result_2 = base_test_result.BaseTestResult('test.package.TestName',
+                                               base_test_result.ResultType.FAIL)
+    run_results_2 = base_test_result.TestRunResults()
+    run_results_2.AddResult(result_2)
+
+    all_results = [run_results_1, run_results_2]
+
+    results_dict = json_results.GenerateJsonTestResultFormatDict(
+        all_results, False)
+    self.assertEquals(1, len(results_dict['tests']))
+    self.assertEquals(1, len(results_dict['tests']['test']))
+    self.assertEquals(1, len(results_dict['tests']['test']['package']))
+    self.assertEquals(
+        'PASS',
+        results_dict['tests']['test']['package']['TestName']['expected'])
+    self.assertEquals(
+        'FAIL FAIL',
+        results_dict['tests']['test']['package']['TestName']['actual'])
+    self.assertEquals(
+        True,
+        results_dict['tests']['test']['package']['TestName']['is_unexpected'])
+
+    self.assertTrue('PASS' not in results_dict['num_failures_by_type']
+                    or results_dict['num_failures_by_type']['PASS'] == 0)
+    # According to the spec: If a test was run more than once, only the first
+    # invocation's result is included in the totals.
+    self.assertIn('FAIL', results_dict['num_failures_by_type'])
+    self.assertEquals(1, results_dict['num_failures_by_type']['FAIL'])
 
 
 if __name__ == '__main__':

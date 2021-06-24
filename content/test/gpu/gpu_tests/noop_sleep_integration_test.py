@@ -2,26 +2,27 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from __future__ import print_function
+
 import os
 import sys
 import time
 
 from gpu_tests import gpu_integration_test
-from gpu_tests import gpu_test_expectations
 from gpu_tests import path_util
 
-data_path = os.path.join(
-    path_util.GetChromiumSrcDir(), 'content', 'test', 'data', 'gpu')
+data_path = os.path.join(path_util.GetChromiumSrcDir(), 'content', 'test',
+                         'data', 'gpu')
+
 
 class NoopSleepIntegrationTest(gpu_integration_test.GpuIntegrationTest):
-
   @classmethod
   def Name(cls):
     return 'noop_sleep'
 
   @classmethod
   def GenerateGpuTests(cls, options):
-    tests = (('DoNothing', 'empty.html'),)
+    tests = (('DoNothing', 'empty.html'), )
     for t in tests:
       yield (t[0], t[1], ('_' + t[0]))
 
@@ -31,10 +32,6 @@ class NoopSleepIntegrationTest(gpu_integration_test.GpuIntegrationTest):
     if not tab.browser.supports_tab_control:
       self.fail('Browser must support tab control')
     getattr(self, test_name)(test_path)
-
-  @classmethod
-  def _CreateExpectations(cls):
-    return gpu_test_expectations.GpuTestExpectations()
 
   @classmethod
   def SetUpProcess(cls):
@@ -55,6 +52,7 @@ class NoopSleepIntegrationTest(gpu_integration_test.GpuIntegrationTest):
   def _DoNothing(self, test_path):
     self._Navigate(test_path)
     time.sleep(180)
+
 
 def load_tests(loader, tests, pattern):
   del loader, tests, pattern  # Unused.

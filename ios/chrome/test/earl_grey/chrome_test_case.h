@@ -8,17 +8,30 @@
 #import <XCTest/XCTest.h>
 
 #import "base/ios/block_types.h"
+#import "ios/testing/earl_grey/base_earl_grey_test_case.h"
 #import "ios/testing/earl_grey/disabled_test_macros.h"
-#include "net/test/embedded_test_server/embedded_test_server.h"
+
+namespace net {
+namespace test_server {
+class EmbeddedTestServer;
+}
+}
 
 // Base class for all Chrome Earl Grey tests.
-@interface ChromeTestCase : XCTestCase
+@interface ChromeTestCase : BaseEarlGreyTestCase
 
 // Removes any UI elements that are present, to ensure it is in a clean state.
 + (void)removeAnyOpenMenusAndInfoBars;
 
 // Closes all tabs, and waits for the UI to synchronize.
 + (void)closeAllTabs;
+
+// Turns off mock authentication. It will automatically be re-enabled at the
+// end of the test.
++ (void)disableMockAuthentication;
+
+// Turns mock authentication back on.
++ (void)enableMockAuthentication;
 
 // The EmbeddedTestServer instance that hosts HTTP requests for tests.
 @property(nonatomic, readonly) net::test_server::EmbeddedTestServer* testServer;
@@ -28,13 +41,18 @@
 - (void)setTearDownHandler:(ProceduralBlock)tearDownHandler;
 
 // Turns off mock authentication. It will automatically be re-enabled at the
-// end of the test. This shall only be called once per test.
+// end of the test.
 - (void)disableMockAuthentication;
 
-// Stops the HTTP server. It will be re-started at the end of the test. This
-// should only be called when the HTTP server is running. This shall only be
-// called once per test.
-- (void)stopHTTPServer;
+// Turns mock authentication back on.
+- (void)enableMockAuthentication;
+
+// Returns YES if the test method name extracted from |selector| matches the
+// name of the currently running test method.
+- (BOOL)isRunningTest:(SEL)selector;
+
+// Configure the fixture for startup testing.
++ (void)testForStartup;
 
 @end
 

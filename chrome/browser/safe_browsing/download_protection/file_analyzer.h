@@ -13,10 +13,10 @@
 #include "chrome/common/safe_browsing/binary_feature_extractor.h"
 #include "chrome/services/file_util/public/cpp/sandboxed_rar_analyzer.h"
 #include "chrome/services/file_util/public/cpp/sandboxed_zip_analyzer.h"
-#include "components/safe_browsing/proto/csd.pb.h"
+#include "components/safe_browsing/core/proto/csd.pb.h"
 #include "third_party/protobuf/src/google/protobuf/repeated_field.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "chrome/common/safe_browsing/disk_image_type_sniffer_mac.h"
 #include "chrome/services/file_util/public/cpp/sandboxed_dmg_analyzer_mac.h"
 #endif
@@ -46,11 +46,11 @@ class FileAnalyzer {
 
     // For archive files, whether the archive contains an executable. Has
     // unspecified contents for non-archive files.
-    bool archived_executable;
+    bool archived_executable = false;
 
     // For archive files, whether the archive contains an archive. Has
     // unspecified contents for non-archive files.
-    bool archived_archive;
+    bool archived_archive = false;
 
     // For archive files, the features extracted from each contained
     // archive/binary.
@@ -63,7 +63,7 @@ class FileAnalyzer {
     // For executables, information about the file headers.
     ClientDownloadRequest::ImageHeaders image_headers;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     // For DMG files, the signature of the DMG.
     std::vector<uint8_t> disk_image_signature;
 
@@ -74,10 +74,10 @@ class FileAnalyzer {
 #endif
 
     // For archive files, the number of contained files.
-    int file_count;
+    int file_count = 0;
 
     // For archive files, the number of contained directories.
-    int directory_count;
+    int directory_count = 0;
   };
 
   explicit FileAnalyzer(
@@ -97,7 +97,7 @@ class FileAnalyzer {
   void StartExtractRarFeatures();
   void OnRarAnalysisFinished(const ArchiveAnalyzerResults& archive_results);
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   void StartExtractDmgFeatures();
   void ExtractFileOrDmgFeatures(bool download_file_has_koly_signature);
   void OnDmgAnalysisFinished(
@@ -114,14 +114,13 @@ class FileAnalyzer {
   base::TimeTicks zip_analysis_start_time_;
 
   scoped_refptr<SandboxedRarAnalyzer> rar_analyzer_;
-  base::TimeTicks rar_analysis_start_time_;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   scoped_refptr<SandboxedDMGAnalyzer> dmg_analyzer_;
   base::TimeTicks dmg_analysis_start_time_;
 #endif
 
-  base::WeakPtrFactory<FileAnalyzer> weakptr_factory_;
+  base::WeakPtrFactory<FileAnalyzer> weakptr_factory_{this};
 };
 
 }  // namespace safe_browsing

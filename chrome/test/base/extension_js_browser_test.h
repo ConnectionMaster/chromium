@@ -6,23 +6,23 @@
 #define CHROME_TEST_BASE_EXTENSION_JS_BROWSER_TEST_H_
 
 #include "base/callback_forward.h"
-#include "base/macros.h"
 #include "chrome/test/base/extension_load_waiter_one_shot.h"
 #include "chrome/test/base/javascript_browser_test.h"
 
 // A super class that handles javascript-based tests against an extension.
 //
 // See an example usage at
-//chrome/browser/resources/chromeos/chromevox2/cvox2/background/background.extjs
+// chrome/browser/resources/chromeos/accessibility/chromevox/background/background_test.extjs
 class ExtensionJSBrowserTest : public JavaScriptBrowserTest {
  public:
   ExtensionJSBrowserTest();
-
+  ExtensionJSBrowserTest(const ExtensionJSBrowserTest&) = delete;
+  ExtensionJSBrowserTest& operator=(const ExtensionJSBrowserTest&) = delete;
   ~ExtensionJSBrowserTest() override;
 
  protected:
   // Waits for an extension to load; returns immediately if already loaded.
-  void WaitForExtension(const char* extension_id, const base::Closure& load_cb);
+  void WaitForExtension(const char* extension_id, base::OnceClosure load_cb);
 
   // Method required for js2gtest.
   // Runs |test_fixture|.|test_name| using the framework in test_api.js.
@@ -32,9 +32,7 @@ class ExtensionJSBrowserTest : public JavaScriptBrowserTest {
 
  private:
   std::unique_ptr<ExtensionLoadWaiterOneShot> load_waiter_;
-  bool libs_loaded_;
-
-  DISALLOW_COPY_AND_ASSIGN(ExtensionJSBrowserTest);
+  bool libs_loaded_ = false;
 };
 
 #endif  // CHROME_TEST_BASE_EXTENSION_JS_BROWSER_TEST_H_

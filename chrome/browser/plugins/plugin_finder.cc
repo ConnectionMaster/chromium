@@ -6,10 +6,10 @@
 
 #include <stddef.h>
 
+#include <string>
+
 #include "base/bind.h"
 #include "base/json/json_reader.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/strings/string16.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -18,28 +18,13 @@
 #include "chrome/browser/plugins/plugin_metadata.h"
 #include "chrome/grit/browser_resources.h"
 #include "content/public/common/webplugininfo.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/gurl.h"
 
 using base::DictionaryValue;
 
 namespace {
-
-// Do not change these values, as they are used in UMA.
-enum class PluginListError {
-  // NO_ERROR is defined by Windows headers.
-  PLUGIN_LIST_NO_ERROR = 0,
-  JSON_INVALID_ESCAPE = 1,
-  JSON_SYNTAX_ERROR = 2,
-  JSON_UNEXPECTED_TOKEN = 3,
-  JSON_TRAILING_COMMA = 4,
-  JSON_TOO_MUCH_NESTING = 5,
-  JSON_UNEXPECTED_DATA_AFTER_ROOT = 5,
-  JSON_UNSUPPORTED_ENCODING = 6,
-  JSON_UNQUOTED_DICTIONARY_KEY = 7,
-  SCHEMA_ERROR = 8,
-  NUM_VALUES
-};
 
 // Gets the full path of the plugin file as the identifier.
 std::string GetLongIdentifier(const content::WebPluginInfo& plugin) {
@@ -53,7 +38,7 @@ std::string GetIdentifier(const content::WebPluginInfo& plugin) {
 
 // Gets the plugin group name as the plugin name if it is not empty or
 // the filename without extension if the name is empty.
-static base::string16 GetGroupName(const content::WebPluginInfo& plugin) {
+static std::u16string GetGroupName(const content::WebPluginInfo& plugin) {
   if (!plugin.name.empty())
     return plugin.name;
 
@@ -63,17 +48,15 @@ static base::string16 GetGroupName(const content::WebPluginInfo& plugin) {
 void LoadMimeTypes(bool matching_mime_types,
                    const base::DictionaryValue* plugin_dict,
                    PluginMetadata* plugin) {
-  const base::ListValue* mime_types = NULL;
-  std::string list_key =
+  const base::ListValue* mime_types = nullptr;
+  base::StringPiece list_key =
       matching_mime_types ? "matching_mime_types" : "mime_types";
   if (!plugin_dict->GetList(list_key, &mime_types))
     return;
 
-  bool success = false;
-  for (auto mime_type_it = mime_types->begin();
-       mime_type_it != mime_types->end(); ++mime_type_it) {
+  for (const auto& mime_type : mime_types->GetList()) {
     std::string mime_type_str;
-    success = mime_type_it->GetAsString(&mime_type_str);
+    bool success = mime_type.GetAsString(&mime_type_str);
     DCHECK(success);
     if (matching_mime_types) {
       plugin->AddMatchingMimeType(mime_type_str);
@@ -90,12 +73,12 @@ std::unique_ptr<PluginMetadata> CreatePluginMetadata(
   bool success = plugin_dict->GetString("url", &url);
   std::string help_url;
   plugin_dict->GetString("help_url", &help_url);
-  base::string16 name;
+  std::u16string name;
   success = plugin_dict->GetString("name", &name);
   DCHECK(success);
   bool display_url = true;
   plugin_dict->GetBoolean("displayurl", &display_url);
-  base::string16 group_name_matcher;
+  std::u16string group_name_matcher;
   success = plugin_dict->GetString("group_name_matcher", &group_name_matcher);
   DCHECK(success);
   std::string language_str;
@@ -108,9 +91,9 @@ std::unique_ptr<PluginMetadata> CreatePluginMetadata(
       group_name_matcher, language_str, plugin_is_deprecated);
   const base::ListValue* versions = NULL;
   if (plugin_dict->GetList("versions", &versions)) {
-    for (auto it = versions->begin(); it != versions->end(); ++it) {
-      const base::DictionaryValue* version_dict = NULL;
-      if (!it->GetAsDictionary(&version_dict)) {
+    for (const auto& entry : versions->GetList()) {
+      const base::DictionaryValue* version_dict = nullptr;
+      if (!entry.GetAsDictionary(&version_dict)) {
         NOTREACHED();
         continue;
       }
@@ -131,12 +114,6 @@ std::unique_ptr<PluginMetadata> CreatePluginMetadata(
   LoadMimeTypes(false, plugin_dict, plugin.get());
   LoadMimeTypes(true, plugin_dict, plugin.get());
   return plugin;
-}
-
-void RecordBuiltInPluginListError(PluginListError error_code) {
-  UMA_HISTOGRAM_ENUMERATION("PluginFinder.BuiltInPluginList.ErrorCode",
-                            static_cast<int>(error_code),
-                            static_cast<int>(PluginListError::NUM_VALUES));
 }
 
 }  // namespace
@@ -171,59 +148,12 @@ std::unique_ptr<base::DictionaryValue> PluginFinder::LoadBuiltInPluginList() {
   base::StringPiece json_resource(
       ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
           IDR_PLUGIN_DB_JSON));
-  std::string error_str;
-  int error_code = base::JSONReader::JSON_NO_ERROR;
-  std::unique_ptr<base::Value> value =
-      base::JSONReader::ReadAndReturnErrorDeprecated(
-          json_resource, base::JSON_PARSE_RFC, &error_code, &error_str);
-  if (!value) {
-    DLOG(ERROR) << error_str;
-    switch (error_code) {
-      case base::JSONReader::JSON_INVALID_ESCAPE:
-        RecordBuiltInPluginListError(PluginListError::JSON_INVALID_ESCAPE);
-        break;
-      case base::JSONReader::JSON_SYNTAX_ERROR:
-        RecordBuiltInPluginListError(PluginListError::JSON_SYNTAX_ERROR);
-        break;
-      case base::JSONReader::JSON_UNEXPECTED_TOKEN:
-        RecordBuiltInPluginListError(PluginListError::JSON_UNEXPECTED_TOKEN);
-        break;
-      case base::JSONReader::JSON_TRAILING_COMMA:
-        RecordBuiltInPluginListError(PluginListError::JSON_TRAILING_COMMA);
-        break;
-      case base::JSONReader::JSON_TOO_MUCH_NESTING:
-        RecordBuiltInPluginListError(PluginListError::JSON_TOO_MUCH_NESTING);
-        break;
-      case base::JSONReader::JSON_UNEXPECTED_DATA_AFTER_ROOT:
-        RecordBuiltInPluginListError(
-            PluginListError::JSON_UNEXPECTED_DATA_AFTER_ROOT);
-        break;
-      case base::JSONReader::JSON_UNSUPPORTED_ENCODING:
-        RecordBuiltInPluginListError(
-            PluginListError::JSON_UNSUPPORTED_ENCODING);
-        break;
-      case base::JSONReader::JSON_UNQUOTED_DICTIONARY_KEY:
-        RecordBuiltInPluginListError(
-            PluginListError::JSON_UNQUOTED_DICTIONARY_KEY);
-        break;
-      case base::JSONReader::JSON_NO_ERROR:
-      case base::JSONReader::JSON_PARSE_ERROR_COUNT:
-        NOTREACHED();
-        break;
-    }
+  absl::optional<base::Value> value = base::JSONReader::Read(json_resource);
+  if (!value)
     return nullptr;
-  }
 
-  if (value->type() != base::Value::Type::DICTIONARY) {
-    // JSONReader::JSON_PARSE_ERROR_COUNT is used for the case where the JSON
-    // value has the wrong type.
-    RecordBuiltInPluginListError(PluginListError::SCHEMA_ERROR);
-    return nullptr;
-  }
-
-  DCHECK_EQ(base::JSONReader::JSON_NO_ERROR, error_code);
-  RecordBuiltInPluginListError(PluginListError::PLUGIN_LIST_NO_ERROR);
-  return base::DictionaryValue::From(std::move(value));
+  return base::DictionaryValue::From(
+      base::Value::ToUniquePtrValue(std::move(*value)));
 }
 
 PluginFinder::~PluginFinder() {

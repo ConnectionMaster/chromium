@@ -7,9 +7,8 @@
 #include <memory>
 
 #include "base/memory/scoped_refptr.h"
-#include "base/optional.h"
-#include "services/network/public/mojom/fetch_api.mojom-blink.h"
-#include "third_party/blink/public/platform/modules/service_worker/web_service_worker_response.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
@@ -18,14 +17,14 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_blob.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_form_data.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_readable_stream.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_response_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_url_search_params.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fetch/blob_bytes_consumer.h"
 #include "third_party/blink/renderer/core/fetch/body_stream_buffer.h"
 #include "third_party/blink/renderer/core/fetch/form_data_bytes_consumer.h"
-#include "third_party/blink/renderer/core/fetch/response_init.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/form_data.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"
@@ -33,6 +32,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/cors/cors.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_utils.h"
 #include "third_party/blink/renderer/platform/network/encoded_form_data.h"
@@ -45,7 +45,7 @@ namespace blink {
 namespace {
 
 template <typename CorsHeadersContainer>
-FetchResponseData* FilterResponseData(
+FetchResponseData* FilterResponseDataInternal(
     network::mojom::FetchResponseType response_type,
     FetchResponseData* response,
     CorsHeadersContainer& headers) {
@@ -54,9 +54,9 @@ FetchResponseData* FilterResponseData(
       return response->CreateBasicFilteredResponse();
       break;
     case network::mojom::FetchResponseType::kCors: {
-      WebHTTPHeaderSet header_names;
+      HTTPHeaderSet header_names;
       for (const auto& header : headers)
-        header_names.insert(header.Ascii().data());
+        header_names.insert(header.Ascii());
       return response->CreateCorsFilteredResponse(header_names);
       break;
     }
@@ -80,42 +80,23 @@ FetchResponseData* FilterResponseData(
 FetchResponseData* CreateFetchResponseDataFromFetchAPIResponse(
     ScriptState* script_state,
     mojom::blink::FetchAPIResponse& fetch_api_response) {
-  FetchResponseData* response = nullptr;
-  if (fetch_api_response.status_code > 0)
-    response = FetchResponseData::Create();
-  else
-    response = FetchResponseData::CreateNetworkErrorResponse();
-
-  response->SetResponseSource(fetch_api_response.response_source);
-  response->SetURLList(fetch_api_response.url_list);
-  response->SetStatus(fetch_api_response.status_code);
-  response->SetStatusMessage(WTF::AtomicString(fetch_api_response.status_text));
-  response->SetResponseTime(fetch_api_response.response_time);
-  response->SetCacheStorageCacheName(
-      fetch_api_response.cache_storage_cache_name);
-
-  for (const auto& header : fetch_api_response.headers)
-    response->HeaderList()->Append(header.key, header.value);
-
-  // TODO(wanderview): This sets the mime type of the Response based on the
-  // current headers.  This should be correct for most cases, but technically
-  // the mime type should really be frozen at the initial Response
-  // construction.  We should plumb the value through the cache_storage
-  // persistence layer and include the explicit mime type in FetchAPIResponse
-  // to set here. See: crbug.com/938939
-  response->SetMimeType(response->HeaderList()->ExtractMIMEType());
+  FetchResponseData* response =
+      Response::CreateUnfilteredFetchResponseDataWithoutBody(
+          script_state, fetch_api_response);
 
   if (fetch_api_response.blob) {
-    response->ReplaceBodyStreamBuffer(MakeGarbageCollected<BodyStreamBuffer>(
+    response->ReplaceBodyStreamBuffer(BodyStreamBuffer::Create(
         script_state,
         MakeGarbageCollected<BlobBytesConsumer>(
             ExecutionContext::From(script_state), fetch_api_response.blob),
-        nullptr /* AbortSignal */));
+        nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr,
+        fetch_api_response.side_data_blob));
   }
 
   // Filter the response according to |fetch_api_response|'s ResponseType.
-  response = FilterResponseData(fetch_api_response.response_type, response,
-                                fetch_api_response.cors_exposed_header_names);
+  response =
+      FilterResponseDataInternal(fetch_api_response.response_type, response,
+                                 fetch_api_response.cors_exposed_header_names);
 
   return response;
 }
@@ -168,28 +149,41 @@ Response* Response::Create(ScriptState* script_state,
     // https://crbug.com/335871.
   } else if (V8Blob::HasInstance(body, isolate)) {
     Blob* blob = V8Blob::ToImpl(body.As<v8::Object>());
-    body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
+    body_buffer = BodyStreamBuffer::Create(
         script_state,
         MakeGarbageCollected<BlobBytesConsumer>(execution_context,
                                                 blob->GetBlobDataHandle()),
-        nullptr /* AbortSignal */);
+        nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr);
     content_type = blob->type();
   } else if (body->IsArrayBuffer()) {
     // Avoid calling into V8 from the following constructor parameters, which
     // is potentially unsafe.
     DOMArrayBuffer* array_buffer = V8ArrayBuffer::ToImpl(body.As<v8::Object>());
-    body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
-        script_state, MakeGarbageCollected<FormDataBytesConsumer>(array_buffer),
-        nullptr /* AbortSignal */);
+    if (!base::CheckedNumeric<wtf_size_t>(array_buffer->ByteLength())
+             .IsValid()) {
+      exception_state.ThrowRangeError(
+          "The provided ArrayBuffer exceeds the maximum supported size");
+    } else {
+      body_buffer = BodyStreamBuffer::Create(
+          script_state,
+          MakeGarbageCollected<FormDataBytesConsumer>(array_buffer),
+          nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr);
+    }
   } else if (body->IsArrayBufferView()) {
     // Avoid calling into V8 from the following constructor parameters, which
     // is potentially unsafe.
     DOMArrayBufferView* array_buffer_view =
         V8ArrayBufferView::ToImpl(body.As<v8::Object>());
-    body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
-        script_state,
-        MakeGarbageCollected<FormDataBytesConsumer>(array_buffer_view),
-        nullptr /* AbortSignal */);
+    if (!base::CheckedNumeric<wtf_size_t>(array_buffer_view->byteLength())
+             .IsValid()) {
+      exception_state.ThrowRangeError(
+          "The provided ArrayBufferView exceeds the maximum supported size");
+    } else {
+      body_buffer = BodyStreamBuffer::Create(
+          script_state,
+          MakeGarbageCollected<FormDataBytesConsumer>(array_buffer_view),
+          nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr);
+    }
   } else if (V8FormData::HasInstance(body, isolate)) {
     scoped_refptr<EncodedFormData> form_data =
         V8FormData::ToImpl(body.As<v8::Object>())->EncodeMultiPartFormData();
@@ -197,33 +191,34 @@ Response* Response::Create(ScriptState* script_state,
     // FormDataEncoder::generateUniqueBoundaryString.
     content_type = AtomicString("multipart/form-data; boundary=") +
                    form_data->Boundary().data();
-    body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
+    body_buffer = BodyStreamBuffer::Create(
         script_state,
         MakeGarbageCollected<FormDataBytesConsumer>(execution_context,
                                                     std::move(form_data)),
-        nullptr /* AbortSignal */);
+        nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr);
   } else if (V8URLSearchParams::HasInstance(body, isolate)) {
     scoped_refptr<EncodedFormData> form_data =
         V8URLSearchParams::ToImpl(body.As<v8::Object>())->ToEncodedFormData();
-    body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
+    body_buffer = BodyStreamBuffer::Create(
         script_state,
         MakeGarbageCollected<FormDataBytesConsumer>(execution_context,
                                                     std::move(form_data)),
-        nullptr /* AbortSignal */);
+        nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr);
     content_type = "application/x-www-form-urlencoded;charset=UTF-8";
   } else if (V8ReadableStream::HasInstance(body, isolate)) {
     UseCounter::Count(execution_context,
                       WebFeature::kFetchResponseConstructionWithStream);
     body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
-        script_state, V8ReadableStream::ToImpl(body.As<v8::Object>()));
+        script_state, V8ReadableStream::ToImpl(body.As<v8::Object>()),
+        /*cached_metadata_handler=*/nullptr);
   } else {
     String string = NativeValueTraits<IDLUSVString>::NativeValue(
         isolate, body, exception_state);
     if (exception_state.HadException())
       return nullptr;
-    body_buffer = MakeGarbageCollected<BodyStreamBuffer>(
+    body_buffer = BodyStreamBuffer::Create(
         script_state, MakeGarbageCollected<FormDataBytesConsumer>(string),
-        nullptr /* AbortSignal */);
+        nullptr /* AbortSignal */, /*cached_metadata_handler=*/nullptr);
     content_type = "text/plain;charset=UTF-8";
   }
   return Create(script_state, body_buffer, content_type, init, exception_state);
@@ -299,12 +294,9 @@ Response* Response::Create(ScriptState* script_state,
     // then IsStreamLocked and IsStreamDisturbed will always be false.
     // So we don't have to check BodyStreamBuffer is a ReadableStream
     // or not.
-    if (body->IsStreamLocked(exception_state).value_or(true) ||
-        body->IsStreamDisturbed(exception_state).value_or(true)) {
-      if (!exception_state.HadException()) {
-        exception_state.ThrowTypeError(
-            "Response body object should not be disturbed or locked");
-      }
+    if (body->IsStreamLocked() || body->IsStreamDisturbed()) {
+      exception_state.ThrowTypeError(
+          "Response body object should not be disturbed or locked");
       return nullptr;
     }
 
@@ -374,6 +366,55 @@ Response* Response::redirect(ScriptState* script_state,
   return r;
 }
 
+FetchResponseData* Response::CreateUnfilteredFetchResponseDataWithoutBody(
+    ScriptState* script_state,
+    mojom::blink::FetchAPIResponse& fetch_api_response) {
+  FetchResponseData* response = nullptr;
+  if (fetch_api_response.status_code > 0)
+    response = FetchResponseData::Create();
+  else
+    response = FetchResponseData::CreateNetworkErrorResponse();
+
+  response->SetPadding(fetch_api_response.padding);
+  response->SetResponseSource(fetch_api_response.response_source);
+  response->SetURLList(fetch_api_response.url_list);
+  response->SetStatus(fetch_api_response.status_code);
+  response->SetStatusMessage(WTF::AtomicString(fetch_api_response.status_text));
+  response->SetRequestMethod(
+      WTF::AtomicString(fetch_api_response.request_method));
+  response->SetResponseTime(fetch_api_response.response_time);
+  response->SetCacheStorageCacheName(
+      fetch_api_response.cache_storage_cache_name);
+  response->SetConnectionInfo(fetch_api_response.connection_info);
+  response->SetAlpnNegotiatedProtocol(
+      WTF::AtomicString(fetch_api_response.alpn_negotiated_protocol));
+  response->SetWasFetchedViaSpdy(fetch_api_response.was_fetched_via_spdy);
+  response->SetHasRangeRequested(fetch_api_response.has_range_requested);
+  response->SetRequestIncludeCredentials(
+      fetch_api_response.request_include_credentials);
+
+  for (const auto& header : fetch_api_response.headers)
+    response->HeaderList()->Append(header.key, header.value);
+
+  // Use the |mime_type| provided by the FetchAPIResponse if its set.
+  // Otherwise fall back to extracting the mime type from the headers.  This
+  // can happen when the response is loaded from an older cache_storage
+  // instance that did not yet store the mime_type value.
+  if (!fetch_api_response.mime_type.IsNull())
+    response->SetMimeType(fetch_api_response.mime_type);
+  else
+    response->SetMimeType(response->HeaderList()->ExtractMIMEType());
+
+  return response;
+}
+
+FetchResponseData* Response::FilterResponseData(
+    network::mojom::FetchResponseType response_type,
+    FetchResponseData* response,
+    WTF::Vector<WTF::String>& headers) {
+  return FilterResponseDataInternal(response_type, response, headers);
+}
+
 String Response::type() const {
   // "The type attribute's getter must return response's type."
   switch (response_->GetType()) {
@@ -435,15 +476,10 @@ Headers* Response::headers() const {
 
 Response* Response::clone(ScriptState* script_state,
                           ExceptionState& exception_state) {
-  if (IsBodyLocked(exception_state) == BodyLocked::kLocked ||
-      IsBodyUsed(exception_state) == BodyUsed::kUsed) {
-    DCHECK(!exception_state.HadException());
+  if (IsBodyLocked() || IsBodyUsed()) {
     exception_state.ThrowTypeError("Response body is already used");
     return nullptr;
   }
-
-  if (exception_state.HadException())
-    return nullptr;
 
   FetchResponseData* response = response_->Clone(script_state, exception_state);
   if (exception_state.HadException())
@@ -464,13 +500,9 @@ bool Response::HasPendingActivity() const {
   return Body::HasPendingActivity();
 }
 
-void Response::PopulateWebServiceWorkerResponse(
-    WebServiceWorkerResponse& response) {
-  response_->PopulateWebServiceWorkerResponse(response);
-}
-
-mojom::blink::FetchAPIResponsePtr Response::PopulateFetchAPIResponse() {
-  return response_->PopulateFetchAPIResponse();
+mojom::blink::FetchAPIResponsePtr Response::PopulateFetchAPIResponse(
+    const KURL& request_url) {
+  return response_->PopulateFetchAPIResponse(request_url);
 }
 
 Response::Response(ExecutionContext* context)
@@ -490,16 +522,9 @@ bool Response::HasBody() const {
   return response_->InternalBuffer();
 }
 
-Body::BodyUsed Response::IsBodyUsed(ExceptionState& exception_state) {
+bool Response::IsBodyUsed() const {
   auto* body_buffer = InternalBodyBuffer();
-  if (!body_buffer)
-    return BodyUsed::kUnused;
-  base::Optional<bool> stream_disturbed =
-      body_buffer->IsStreamDisturbed(exception_state);
-  if (exception_state.HadException())
-    return BodyUsed::kBroken;
-  DCHECK(stream_disturbed.has_value());
-  return stream_disturbed.value() ? BodyUsed::kUsed : BodyUsed::kUnused;
+  return body_buffer && body_buffer->IsStreamDisturbed();
 }
 
 String Response::MimeType() const {
@@ -520,15 +545,16 @@ const Vector<KURL>& Response::InternalURLList() const {
   return response_->InternalURLList();
 }
 
-void Response::Trace(blink::Visitor* visitor) {
+FetchHeaderList* Response::InternalHeaderList() const {
+  return response_->InternalHeaderList();
+}
+
+void Response::Trace(Visitor* visitor) const {
+  ScriptWrappable::Trace(visitor);
+  ActiveScriptWrappable<Response>::Trace(visitor);
   Body::Trace(visitor);
   visitor->Trace(response_);
   visitor->Trace(headers_);
-}
-
-bool Response::IsBodyUsedForDCheck(ExceptionState& exception_state) {
-  return InternalBodyBuffer() &&
-         InternalBodyBuffer()->IsStreamDisturbedForDCheck(exception_state);
 }
 
 }  // namespace blink

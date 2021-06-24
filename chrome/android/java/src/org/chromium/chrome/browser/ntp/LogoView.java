@@ -17,7 +17,6 @@ import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
-import android.support.annotation.ColorInt;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.Property;
@@ -26,11 +25,13 @@ import android.view.View;
 import android.view.View.OnClickListener;
 import android.widget.FrameLayout;
 
+import androidx.annotation.ColorInt;
+
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ntp.LogoBridge.Logo;
-import org.chromium.chrome.browser.search_engines.TemplateUrlService;
-import org.chromium.chrome.browser.widget.LoadingView;
+import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+import org.chromium.ui.widget.LoadingView;
 
 import java.lang.ref.WeakReference;
 
@@ -128,6 +129,17 @@ public class LogoView extends FrameLayout implements OnClickListener {
         mLoadingView.setLayoutParams(lp);
         mLoadingView.setVisibility(View.GONE);
         addView(mLoadingView);
+    }
+
+    /**
+     * Clean up member variables when this view is no longer needed.
+     */
+    public void destroy() {
+        // Need to end the animation otherwise it can cause memory leaks since the AnimationHandler
+        // has a reference to the animation callback which then can link back to the
+        // {@code mTransitionProperty}.
+        endFadeAnimation();
+        mLoadingView.destroy();
     }
 
     /**
@@ -303,7 +315,7 @@ public class LogoView extends FrameLayout implements OnClickListener {
      * @return The default logo.
      */
     private Bitmap getDefaultLogo() {
-        if (!TemplateUrlService.getInstance().isDefaultSearchEngineGoogle()) return null;
+        if (!TemplateUrlServiceFactory.get().isDefaultSearchEngineGoogle()) return null;
 
         Bitmap defaultLogo = sDefaultLogo == null ? null : sDefaultLogo.get();
         final int tint = ApiCompatibilityUtils.getColor(getResources(), R.color.google_logo_tint);

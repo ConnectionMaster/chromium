@@ -7,6 +7,8 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "base/trace_event/trace_event.h"
 #include "content/common/download/mhtml_file_writer.mojom.h"
 #include "content/public/renderer/render_thread.h"
 #include "third_party/blink/public/platform/web_thread_safe_data.h"
@@ -96,7 +98,7 @@ void MHTMLProducerHandleWriter::WriteContentsImpl(
   mhtml_contents_ = std::move(mhtml_contents);
 
   scoped_refptr<base::SequencedTaskRunner> task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(
+      base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
 
   task_runner->PostTask(

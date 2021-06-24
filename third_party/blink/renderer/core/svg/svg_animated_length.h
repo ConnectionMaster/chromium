@@ -41,19 +41,8 @@ namespace blink {
 class SVGAnimatedLength : public ScriptWrappable,
                           public SVGAnimatedProperty<SVGLength> {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(SVGAnimatedLength);
 
  public:
-  static SVGAnimatedLength* Create(
-      SVGElement* context_element,
-      const QualifiedName& attribute_name,
-      SVGLengthMode mode,
-      SVGLength::Initial initial_value,
-      CSSPropertyID css_property_id = CSSPropertyID::kInvalid) {
-    return MakeGarbageCollected<SVGAnimatedLength>(
-        context_element, attribute_name, mode, initial_value, css_property_id);
-  }
-
   SVGAnimatedLength(SVGElement* context_element,
                     const QualifiedName& attribute_name,
                     SVGLengthMode mode,
@@ -68,11 +57,21 @@ class SVGAnimatedLength : public ScriptWrappable,
 
   SVGParsingError AttributeChanged(const String&) override;
 
+  // TODO(fs): This doesn't handle calc expressions. For that, we'd probably
+  // need to rewrap the CSSMathExpressionNode with a kValueRangeNonNegative
+  // range specification.
+  const CSSValue* NonNegativeCssValue() const {
+    if (CurrentValue()->IsNegativeNumericLiteral()) {
+      return nullptr;
+    }
+    return &CurrentValue()->AsCSSPrimitiveValue();
+  }
+
   const CSSValue& CssValue() const {
     return CurrentValue()->AsCSSPrimitiveValue();
   }
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 };
 
 }  // namespace blink

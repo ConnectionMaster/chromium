@@ -8,6 +8,8 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/omnibox/browser/omnibox_edit_model.h"
+#include "content/public/test/browser_test.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/test/ink_drop_host_view_test_api.h"
 
 // TODO (spqchan): Refine tests. See crbug.com/770873.
@@ -22,7 +24,8 @@ class LocationIconViewBrowserTest : public InProcessBrowserTest {
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(browser());
     location_bar_ = browser_view->GetLocationBarView();
-    icon_view_.reset(new LocationIconView(font_list, location_bar_));
+    icon_view_ = std::make_unique<LocationIconView>(
+        font_list, location_bar_, location_bar_, browser()->profile());
   }
 
   LocationBarView* location_bar() const { return location_bar_; }
@@ -44,12 +47,14 @@ IN_PROC_BROWSER_TEST_F(LocationIconViewBrowserTest, InkDropMode) {
   model->SetInputInProgress(true);
   icon_view()->Update(/*suppress_animations=*/true);
 
-  EXPECT_EQ(IconLabelBubbleView::InkDropMode::OFF,
-            views::test::InkDropHostViewTestApi(icon_view()).ink_drop_mode());
+  EXPECT_EQ(views::InkDropHost::InkDropMode::OFF,
+            views::test::InkDropHostTestApi(views::InkDrop::Get(icon_view()))
+                .ink_drop_mode());
 
   model->SetInputInProgress(false);
   icon_view()->Update(/*suppress_animations=*/true);
 
-  EXPECT_EQ(IconLabelBubbleView::InkDropMode::ON,
-            views::test::InkDropHostViewTestApi(icon_view()).ink_drop_mode());
+  EXPECT_EQ(views::InkDropHost::InkDropMode::ON,
+            views::test::InkDropHostTestApi(views::InkDrop::Get(icon_view()))
+                .ink_drop_mode());
 }

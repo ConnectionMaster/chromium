@@ -11,6 +11,7 @@
 
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -18,6 +19,7 @@
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_header_panel.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_profile.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -27,15 +29,16 @@
 #include "ui/views/widget/widget_observer.h"
 #include "ui/views/window/dialog_delegate.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "ash/public/cpp/shelf_model.h"  // nogncheck
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_test.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
-#include "chrome/browser/ui/ash/launcher/chrome_launcher_controller.h"
+#include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
+#include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 namespace {
 
 std::vector<arc::mojom::AppInfoPtr> GetArcSettingsAppInfo() {
@@ -58,12 +61,10 @@ class AppInfoDialogTestApi {
  public:
   explicit AppInfoDialogTestApi(AppInfoDialog* dialog) : dialog_(dialog) {}
 
-  AppInfoHeaderPanel* header_panel() {
-    return static_cast<AppInfoHeaderPanel*>(dialog_->child_at(0));
-  }
-
-  views::Link* view_in_store_link() {
-    return header_panel()->view_in_store_link_;
+  void ShowAppInWebStore() {
+    auto* header_panel =
+        static_cast<AppInfoHeaderPanel*>(dialog_->children().front());
+    return header_panel->ShowAppInWebStore();
   }
 
  private:
@@ -89,11 +90,16 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
   // Overridden from testing::Test:
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     shelf_model_ = std::make_unique<ash::ShelfModel>();
-    chrome_launcher_controller_ = std::make_unique<ChromeLauncherController>(
+    chrome_shelf_controller_ = std::make_unique<ChromeShelfController>(
         extension_environment_.profile(), shelf_model_.get());
-    chrome_launcher_controller_->Init();
+    chrome_shelf_controller_->SetProfileForTest(
+        extension_environment_.profile());
+    chrome_shelf_controller_->SetShelfControllerHelperForTest(
+        std::make_unique<ShelfControllerHelper>(
+            extension_environment_.profile()));
+    chrome_shelf_controller_->Init();
     arc_test_.SetUp(extension_environment_.profile());
 #endif
     extension_ = extension_environment_.MakePackagedApp(kTestExtensionId, true);
@@ -105,11 +111,24 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
     CloseAppInfo();
     extension_ = nullptr;
     chrome_app_ = nullptr;
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     arc_test_.TearDown();
-    chrome_launcher_controller_.reset();
+    chrome_shelf_controller_.reset();
     shelf_model_.reset();
 #endif
+
+    // The Browser class had dependencies on LocalState, which is owned by
+    // |extension_environment_|.
+    auto* browser = release_browser();
+    if (browser) {
+      browser->tab_strip_model()->CloseAllTabs();
+      delete browser;
+      // Browser holds a ScopedProfileKeepAlive, which might post a task to the
+      // UI thread on destruction.
+      base::RunLoop().RunUntilIdle();
+    }
+    extension_environment_.DeleteProfile();
+
     BrowserWithTestWindowTest::TearDown();
   }
 
@@ -125,9 +144,9 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
 
   void ShowAppInfoForProfile(const std::string& app_id, Profile* profile) {
     const extensions::Extension* extension =
-        extensions::ExtensionSystem::Get(profile)
-            ->extension_service()
-            ->GetExtensionById(app_id, true);
+        extensions::ExtensionRegistry::Get(profile)
+            ->enabled_extensions()
+            .GetByID(app_id);
     DCHECK(extension);
 
     DCHECK(!widget_);
@@ -149,7 +168,7 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
   // Overridden from views::WidgetObserver:
   void OnWidgetDestroyed(views::Widget* widget) override {
     widget_->RemoveObserver(this);
-    widget_ = NULL;
+    widget_ = nullptr;
   }
 
   void UninstallApp(const std::string& app_id) {
@@ -157,7 +176,7 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
         ->extension_service()
         ->UninstallExtension(
             app_id, extensions::UninstallReason::UNINSTALL_REASON_FOR_TESTING,
-            NULL);
+            nullptr);
   }
 
  protected:
@@ -168,9 +187,9 @@ class AppInfoDialogViewsTest : public BrowserWithTestWindowTest,
   extensions::TestExtensionEnvironment extension_environment_{
       extensions::TestExtensionEnvironment::Type::
           kInheritExistingTaskEnvironment};
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   std::unique_ptr<ash::ShelfModel> shelf_model_;
-  std::unique_ptr<ChromeLauncherController> chrome_launcher_controller_;
+  std::unique_ptr<ChromeShelfController> chrome_shelf_controller_;
   ArcAppTest arc_test_;
 #endif
 
@@ -212,8 +231,8 @@ TEST_F(AppInfoDialogViewsTest, DestroyedProfileClosesDialog) {
   browser_window->Close();
   browser_window.reset();
 
-#if defined(OS_CHROMEOS)
-  chrome_launcher_controller_.reset();
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  chrome_shelf_controller_.reset();
   shelf_model_.reset();
   arc_test_.TearDown();
 #endif
@@ -253,16 +272,14 @@ TEST_F(AppInfoDialogViewsTest, DestroyedOtherProfileDoesNotCloseDialog) {
 // dialog cleanly.
 TEST_F(AppInfoDialogViewsTest, ViewInStore) {
   ShowAppInfo(kTestExtensionId);
-  EXPECT_TRUE(extension_->from_webstore());  // Otherwise there is no link.
-  views::Link* link = test::AppInfoDialogTestApi(dialog_).view_in_store_link();
-  EXPECT_TRUE(link);
+  ASSERT_TRUE(extension_->from_webstore());
 
   TabStripModel* tabs = browser()->tab_strip_model();
   EXPECT_EQ(0, tabs->count());
 
   ASSERT_TRUE(widget_);
   EXPECT_FALSE(widget_->IsClosed());
-  link->OnKeyPressed(ui::KeyEvent(ui::ET_KEY_PRESSED, ui::VKEY_SPACE, 0));
+  test::AppInfoDialogTestApi(dialog_).ShowAppInWebStore();
 
   ASSERT_TRUE(widget_);
   EXPECT_TRUE(widget_->IsClosed());
@@ -279,7 +296,7 @@ TEST_F(AppInfoDialogViewsTest, ViewInStore) {
   EXPECT_FALSE(widget_);
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 TEST_F(AppInfoDialogViewsTest, ArcAppInfoLinks) {
   ShowAppInfo(extension_misc::kChromeAppId);
   EXPECT_FALSE(widget_->IsClosed());
@@ -327,21 +344,21 @@ TEST_F(AppInfoDialogViewsTest, PinButtonsAreFocusedAfterPinUnpin) {
   views::View* unpin_button = dialog_footer->unpin_from_shelf_button_;
 
   pin_button->RequestFocus();
-  EXPECT_TRUE(pin_button->visible());
-  EXPECT_FALSE(unpin_button->visible());
+  EXPECT_TRUE(pin_button->GetVisible());
+  EXPECT_FALSE(unpin_button->GetVisible());
   EXPECT_TRUE(pin_button->HasFocus());
 
   // Avoid attempting to use sync, it's not initialized in this test.
-  auto sync_disabler = chrome_launcher_controller_->GetScopedPinSyncDisabler();
+  auto sync_disabler = chrome_shelf_controller_->GetScopedPinSyncDisabler();
 
   dialog_footer->SetPinnedToShelf(true);
-  EXPECT_FALSE(pin_button->visible());
-  EXPECT_TRUE(unpin_button->visible());
+  EXPECT_FALSE(pin_button->GetVisible());
+  EXPECT_TRUE(unpin_button->GetVisible());
   EXPECT_TRUE(unpin_button->HasFocus());
 
   dialog_footer->SetPinnedToShelf(false);
-  EXPECT_TRUE(pin_button->visible());
-  EXPECT_FALSE(unpin_button->visible());
+  EXPECT_TRUE(pin_button->GetVisible());
+  EXPECT_FALSE(unpin_button->GetVisible());
   EXPECT_TRUE(pin_button->HasFocus());
 }
 #endif

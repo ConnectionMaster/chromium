@@ -4,44 +4,47 @@
 
 #include "third_party/blink/renderer/core/execution_context/remote_security_context.h"
 
+#include "services/network/public/mojom/web_sandbox_flags.mojom-blink.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
-RemoteSecurityContext::RemoteSecurityContext() : SecurityContext() {
+RemoteSecurityContext::RemoteSecurityContext() : SecurityContext(nullptr) {
   // RemoteSecurityContext's origin is expected to stay uninitialized until
   // we set it using replicated origin data from the browser process.
   DCHECK(!GetSecurityOrigin());
-
-  // Start with a clean slate.
-  SetContentSecurityPolicy(MakeGarbageCollected<ContentSecurityPolicy>());
 
   // FIXME: Document::initSecurityContext has a few other things we may
   // eventually want here, such as enforcing a setting to
   // grantUniversalAccess().
 }
 
-void RemoteSecurityContext::Trace(blink::Visitor* visitor) {
-  SecurityContext::Trace(visitor);
-}
-
 void RemoteSecurityContext::SetReplicatedOrigin(
     scoped_refptr<SecurityOrigin> origin) {
   DCHECK(origin);
   SetSecurityOrigin(std::move(origin));
-  GetContentSecurityPolicy()->SetupSelf(*GetSecurityOrigin());
 }
 
-void RemoteSecurityContext::ResetReplicatedContentSecurityPolicy() {
-  DCHECK(GetSecurityOrigin());
-  SetContentSecurityPolicy(MakeGarbageCollected<ContentSecurityPolicy>());
-  GetContentSecurityPolicy()->SetupSelf(*GetSecurityOrigin());
+void RemoteSecurityContext::ResetAndEnforceSandboxFlags(
+    network::mojom::blink::WebSandboxFlags flags) {
+  sandbox_flags_ = flags;
+
+  if (IsSandboxed(network::mojom::blink::WebSandboxFlags::kOrigin) &&
+      GetSecurityOrigin() && !GetSecurityOrigin()->IsOpaque()) {
+    SetSecurityOrigin(GetSecurityOrigin()->DeriveNewOpaqueOrigin());
+  }
 }
 
-void RemoteSecurityContext::ResetSandboxFlags() {
-  sandbox_flags_ = WebSandboxFlags::kNone;
+void RemoteSecurityContext::InitializePermissionsPolicy(
+    const ParsedPermissionsPolicy& parsed_header,
+    const ParsedPermissionsPolicy& container_policy,
+    const PermissionsPolicy* parent_permissions_policy) {
+  report_only_permissions_policy_ = nullptr;
+  permissions_policy_ = PermissionsPolicy::CreateFromParentPolicy(
+      parent_permissions_policy, container_policy,
+      security_origin_->ToUrlOrigin());
+  permissions_policy_->SetHeaderPolicy(parsed_header);
 }
 
 }  // namespace blink

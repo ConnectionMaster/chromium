@@ -11,7 +11,7 @@
 
 #include "base/bind.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/task_environment.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/socket/socket.h"
@@ -37,14 +37,14 @@ const int kTestError = -32123;
 class TransportChannelSocketAdapterTest : public testing::Test {
  public:
   TransportChannelSocketAdapterTest()
-      : callback_(base::Bind(&TransportChannelSocketAdapterTest::Callback,
-                             base::Unretained(this))),
-        callback_result_(0) {
-  }
+      : callback_(
+            base::BindRepeating(&TransportChannelSocketAdapterTest::Callback,
+                                base::Unretained(this))),
+        callback_result_(0) {}
 
  protected:
   void SetUp() override {
-    target_.reset(new TransportChannelSocketAdapter(&channel_));
+    target_ = std::make_unique<TransportChannelSocketAdapter>(&channel_);
   }
 
   void Callback(int result) {
@@ -55,7 +55,8 @@ class TransportChannelSocketAdapterTest : public testing::Test {
   std::unique_ptr<TransportChannelSocketAdapter> target_;
   net::CompletionRepeatingCallback callback_;
   int callback_result_;
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
 };
 
 // Verify that Read() returns net::ERR_IO_PENDING.

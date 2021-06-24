@@ -4,13 +4,19 @@
 
 #include "net/android/network_library.h"
 
+#include <string>
+#include <vector>
+
+#include "base/android/build_info.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/logging.h"
-#include "jni/AndroidNetworkLibrary_jni.h"
+#include "base/check_op.h"
+#include "base/strings/string_split.h"
 #include "net/dns/public/dns_protocol.h"
+#include "net/net_jni_headers/AndroidNetworkLibrary_jni.h"
+#include "net/net_jni_headers/DnsStatus_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;
@@ -89,12 +95,6 @@ bool GetMimeTypeFromExtension(const std::string& extension,
   return true;
 }
 
-std::string GetTelephonyNetworkCountryIso() {
-  return base::android::ConvertJavaStringToUTF8(
-      Java_AndroidNetworkLibrary_getNetworkCountryIso(
-          base::android::AttachCurrentThread()));
-}
-
 std::string GetTelephonyNetworkOperator() {
   return base::android::ConvertJavaStringToUTF8(
       Java_AndroidNetworkLibrary_getNetworkOperator(
@@ -123,24 +123,58 @@ std::string GetWifiSSID() {
           base::android::AttachCurrentThread()));
 }
 
-internal::ConfigParsePosixResult GetDnsServers(
-    std::vector<IPEndPoint>* dns_servers) {
+absl::optional<int32_t> GetWifiSignalLevel() {
+  const int count_buckets = 5;
+  int signal_strength = Java_AndroidNetworkLibrary_getWifiSignalLevel(
+      base::android::AttachCurrentThread(), count_buckets);
+  if (signal_strength < 0)
+    return absl::nullopt;
+  DCHECK_LE(0, signal_strength);
+  DCHECK_GE(count_buckets - 1, signal_strength);
+
+  return signal_strength;
+}
+
+bool GetDnsServers(std::vector<IPEndPoint>* dns_servers,
+                   bool* dns_over_tls_active,
+                   std::string* dns_over_tls_hostname,
+                   std::vector<std::string>* search_suffixes) {
+  DCHECK_GE(base::android::BuildInfo::GetInstance()->sdk_int(),
+            base::android::SDK_VERSION_MARSHMALLOW);
+
   JNIEnv* env = AttachCurrentThread();
-  std::vector<std::string> dns_servers_strings;
-  base::android::JavaArrayOfByteArrayToStringVector(
-      env, Java_AndroidNetworkLibrary_getDnsServers(env), &dns_servers_strings);
-  if (dns_servers_strings.size() == 0)
-    return internal::CONFIG_PARSE_POSIX_NO_NAMESERVERS;
-  if (dns_servers_strings.size() == 1 && dns_servers_strings[0].size() == 1)
-    return internal::CONFIG_PARSE_POSIX_PRIVATE_DNS_ACTIVE;
-  for (const std::string& dns_address_string : dns_servers_strings) {
-    IPAddress dns_address(
-        reinterpret_cast<const uint8_t*>(dns_address_string.c_str()),
-        dns_address_string.size());
+  // Get the DNS status for the active network.
+  ScopedJavaLocalRef<jobject> result =
+      Java_AndroidNetworkLibrary_getDnsStatus(env, nullptr /* network */);
+  if (result.is_null())
+    return false;
+
+  // Parse the DNS servers.
+  std::vector<std::vector<uint8_t>> dns_servers_data;
+  base::android::JavaArrayOfByteArrayToBytesVector(
+      env, Java_DnsStatus_getDnsServers(env, result), &dns_servers_data);
+  for (const std::vector<uint8_t>& dns_address_data : dns_servers_data) {
+    IPAddress dns_address(dns_address_data.data(), dns_address_data.size());
     IPEndPoint dns_server(dns_address, dns_protocol::kDefaultPort);
     dns_servers->push_back(dns_server);
   }
-  return internal::CONFIG_PARSE_POSIX_OK;
+
+  *dns_over_tls_active = Java_DnsStatus_getPrivateDnsActive(env, result);
+  *dns_over_tls_hostname = base::android::ConvertJavaStringToUTF8(
+      Java_DnsStatus_getPrivateDnsServerName(env, result));
+
+  std::string search_suffixes_str = base::android::ConvertJavaStringToUTF8(
+      Java_DnsStatus_getSearchDomains(env, result));
+  *search_suffixes =
+      base::SplitString(search_suffixes_str, ",", base::TRIM_WHITESPACE,
+                        base::SPLIT_WANT_NONEMPTY);
+
+  return !dns_servers->empty();
+}
+
+bool ReportBadDefaultNetwork() {
+  return Java_AndroidNetworkLibrary_reportBadDefaultNetwork(
+      AttachCurrentThread());
 }
 
 void TagSocket(SocketDescriptor socket, uid_t uid, int32_t tag) {

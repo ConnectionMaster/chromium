@@ -31,20 +31,16 @@
 #include "third_party/blink/renderer/core/html/html_wbr_element.h"
 
 #include "third_party/blink/renderer/core/html_names.h"
-#include "third_party/blink/renderer/core/layout/layout_word_break.h"
+#include "third_party/blink/renderer/core/layout/layout_object_factory.h"
 
 namespace blink {
 
-using namespace html_names;
-
-inline HTMLWBRElement::HTMLWBRElement(Document& document)
-    : HTMLElement(kWbrTag, document) {}
-
-DEFINE_NODE_FACTORY(HTMLWBRElement)
+HTMLWBRElement::HTMLWBRElement(Document& document)
+    : HTMLElement(html_names::kWbrTag, document) {}
 
 LayoutObject* HTMLWBRElement::CreateLayoutObject(const ComputedStyle& style,
-                                                 LegacyLayout) {
-  return new LayoutWordBreak(this);
+                                                 LegacyLayout legacy) {
+  return LayoutObjectFactory::CreateWordBreak(this, legacy);
 }
 
 }  // namespace blink

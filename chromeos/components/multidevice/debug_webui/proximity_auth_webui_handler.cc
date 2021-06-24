@@ -21,12 +21,11 @@
 #include "chromeos/components/proximity_auth/messenger.h"
 #include "chromeos/components/proximity_auth/remote_device_life_cycle_impl.h"
 #include "chromeos/components/proximity_auth/remote_status_update.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/services/device_sync/proto/enum_util.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_ui.h"
-#include "device/bluetooth/bluetooth_uuid.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 
 namespace chromeos {
 
@@ -42,7 +41,13 @@ constexpr const multidevice::SoftwareFeature kAllSoftareFeatures[] = {
     multidevice::SoftwareFeature::kInstantTetheringHost,
     multidevice::SoftwareFeature::kInstantTetheringClient,
     multidevice::SoftwareFeature::kMessagesForWebHost,
-    multidevice::SoftwareFeature::kMessagesForWebClient};
+    multidevice::SoftwareFeature::kMessagesForWebClient,
+    multidevice::SoftwareFeature::kPhoneHubHost,
+    multidevice::SoftwareFeature::kPhoneHubClient,
+    multidevice::SoftwareFeature::kWifiSyncHost,
+    multidevice::SoftwareFeature::kWifiSyncClient,
+    multidevice::SoftwareFeature::kEcheHost,
+    multidevice::SoftwareFeature::kEcheClient};
 
 // Keys in the JSON representation of a log message.
 const char kLogMessageTextKey[] = "text";
@@ -57,6 +62,21 @@ const char kSyncStateLastSuccessTime[] = "lastSuccessTime";
 const char kSyncStateNextRefreshTime[] = "nextRefreshTime";
 const char kSyncStateRecoveringFromFailure[] = "recoveringFromFailure";
 const char kSyncStateOperationInProgress[] = "operationInProgress";
+
+// 9999 days in milliseconds.
+const double kFakeInfinityMillis = 863913600000;
+
+double ConvertNextAttemptTimeToDouble(base::TimeDelta delta) {
+  // If no future attempt is scheduled, the next-attempt time is
+  // base::TimeDelta::Max(), which corresponds to an infinite double value. In
+  // order to store the next-attempt time as a double base::Value,
+  // std::isfinite() must be true. So, here we use 9999 days to represent the
+  // max next-attempt time to allow use with base::Value.
+  if (delta.is_max())
+    return kFakeInfinityMillis;
+
+  return delta.InMillisecondsF();
+}
 
 // Converts |log_message| to a raw dictionary value used as a JSON argument to
 // JavaScript functions.
@@ -139,8 +159,7 @@ ProximityAuthWebUIHandler::ProximityAuthWebUIHandler(
     secure_channel::SecureChannelClient* secure_channel_client)
     : device_sync_client_(device_sync_client),
       secure_channel_client_(secure_channel_client),
-      web_contents_initialized_(false),
-      weak_ptr_factory_(this) {}
+      web_contents_initialized_(false) {}
 
 ProximityAuthWebUIHandler::~ProximityAuthWebUIHandler() {
   multidevice::LogBuffer::GetInstance()->RemoveObserver(this);
@@ -328,9 +347,15 @@ void ProximityAuthWebUIHandler::GetLocalState(const base::ListValue* args) {
 
 std::unique_ptr<base::Value>
 ProximityAuthWebUIHandler::GetTruncatedLocalDeviceId() {
-  return std::make_unique<base::Value>(
-      device_sync_client_->GetLocalDeviceMetadata()
-          ->GetTruncatedDeviceIdForLogs());
+  absl::optional<multidevice::RemoteDeviceRef> local_device_metadata =
+      device_sync_client_->GetLocalDeviceMetadata();
+
+  std::string device_id =
+      local_device_metadata
+          ? local_device_metadata->GetTruncatedDeviceIdForLogs()
+          : "Missing Device ID";
+
+  return std::make_unique<base::Value>(device_id);
 }
 
 std::unique_ptr<base::ListValue>
@@ -345,12 +370,12 @@ ProximityAuthWebUIHandler::GetRemoteDevicesList() {
 
 void ProximityAuthWebUIHandler::StartRemoteDeviceLifeCycle(
     multidevice::RemoteDeviceRef remote_device) {
-  base::Optional<multidevice::RemoteDeviceRef> local_device;
+  absl::optional<multidevice::RemoteDeviceRef> local_device;
   local_device = device_sync_client_->GetLocalDeviceMetadata();
 
   selected_remote_device_ = remote_device;
-  life_cycle_.reset(new proximity_auth::RemoteDeviceLifeCycleImpl(
-      *selected_remote_device_, local_device, secure_channel_client_));
+  life_cycle_ = std::make_unique<proximity_auth::RemoteDeviceLifeCycleImpl>(
+      *selected_remote_device_, local_device, secure_channel_client_);
   life_cycle_->AddObserver(this);
   life_cycle_->Start();
 }
@@ -361,7 +386,7 @@ void ProximityAuthWebUIHandler::CleanUpRemoteDeviceLifeCycle() {
                     << selected_remote_device_->name();
   }
   life_cycle_.reset();
-  selected_remote_device_ = base::nullopt;
+  selected_remote_device_ = absl::nullopt;
   last_remote_status_update_.reset();
   web_ui()->CallJavascriptFunctionUnsafe(
       "LocalStateInterface.onRemoteDevicesChanged", *GetRemoteDevicesList());
@@ -470,8 +495,8 @@ void ProximityAuthWebUIHandler::OnRemoteStatusUpdate(
                   << "\n  trust_agent_state: "
                   << static_cast<int>(status_update.trust_agent_state);
 
-  last_remote_status_update_.reset(
-      new proximity_auth::RemoteStatusUpdate(status_update));
+  last_remote_status_update_ =
+      std::make_unique<proximity_auth::RemoteStatusUpdate>(status_update);
   std::unique_ptr<base::ListValue> synced_devices = GetRemoteDevicesList();
   web_ui()->CallJavascriptFunctionUnsafe(
       "LocalStateInterface.onRemoteDevicesChanged", *synced_devices);
@@ -488,8 +513,7 @@ void ProximityAuthWebUIHandler::OnForceSyncNow(bool success) {
 void ProximityAuthWebUIHandler::OnSetSoftwareFeatureState(
     const std::string public_key,
     device_sync::mojom::NetworkRequestResult result_code) {
-  std::string device_id =
-      multidevice::RemoteDeviceRef::GenerateDeviceId(public_key);
+  std::string device_id = RemoteDevice::GenerateDeviceId(public_key);
 
   if (result_code == device_sync::mojom::NetworkRequestResult::kSuccess) {
     PA_LOG(VERBOSE) << "Successfully set SoftwareFeature state for device: "
@@ -540,20 +564,21 @@ void ProximityAuthWebUIHandler::OnGetDebugInfo(
         true /* success */,
         CreateSyncStateDictionary(
             debug_info_ptr->last_enrollment_time.ToJsTime(),
-            debug_info_ptr->time_to_next_enrollment_attempt.InMillisecondsF(),
+            ConvertNextAttemptTimeToDouble(
+                debug_info_ptr->time_to_next_enrollment_attempt),
             debug_info_ptr->is_recovering_from_enrollment_failure,
             debug_info_ptr->is_enrollment_in_progress));
   }
 
   if (sync_update_waiting_for_debug_info_) {
     sync_update_waiting_for_debug_info_ = false;
-    NotifyOnSyncFinished(
-        true /* was_sync_successful */, true /* changed */,
-        CreateSyncStateDictionary(
-            debug_info_ptr->last_sync_time.ToJsTime(),
-            debug_info_ptr->time_to_next_sync_attempt.InMillisecondsF(),
-            debug_info_ptr->is_recovering_from_sync_failure,
-            debug_info_ptr->is_sync_in_progress));
+    NotifyOnSyncFinished(true /* was_sync_successful */, true /* changed */,
+                         CreateSyncStateDictionary(
+                             debug_info_ptr->last_sync_time.ToJsTime(),
+                             ConvertNextAttemptTimeToDouble(
+                                 debug_info_ptr->time_to_next_sync_attempt),
+                             debug_info_ptr->is_recovering_from_sync_failure,
+                             debug_info_ptr->is_sync_in_progress));
   }
 
   if (get_local_state_update_waiting_for_debug_info_) {
@@ -562,12 +587,14 @@ void ProximityAuthWebUIHandler::OnGetDebugInfo(
         GetTruncatedLocalDeviceId(),
         CreateSyncStateDictionary(
             debug_info_ptr->last_enrollment_time.ToJsTime(),
-            debug_info_ptr->time_to_next_enrollment_attempt.InMillisecondsF(),
+            ConvertNextAttemptTimeToDouble(
+                debug_info_ptr->time_to_next_enrollment_attempt),
             debug_info_ptr->is_recovering_from_enrollment_failure,
             debug_info_ptr->is_enrollment_in_progress),
         CreateSyncStateDictionary(
             debug_info_ptr->last_sync_time.ToJsTime(),
-            debug_info_ptr->time_to_next_sync_attempt.InMillisecondsF(),
+            ConvertNextAttemptTimeToDouble(
+                debug_info_ptr->time_to_next_sync_attempt),
             debug_info_ptr->is_recovering_from_sync_failure,
             debug_info_ptr->is_sync_in_progress),
         GetRemoteDevicesList());

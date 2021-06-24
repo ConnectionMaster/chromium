@@ -4,8 +4,11 @@
 
 #include "ui/views/accessible_pane_view.h"
 
+#include <utility>
+
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/layout/fill_layout.h"
@@ -19,18 +22,14 @@ namespace views {
 
 using AccessiblePaneViewTest = ViewsTestBase;
 
-class TestBarView : public AccessiblePaneView,
-                    public ButtonListener {
+class TestBarView : public AccessiblePaneView {
  public:
   TestBarView();
   ~TestBarView() override;
 
-  void ButtonPressed(Button* sender, const ui::Event& event) override;
-  LabelButton* child_button() const { return child_button_.get(); }
-  LabelButton* second_child_button() const {
-    return second_child_button_.get();
-  }
-  LabelButton* third_child_button() const { return third_child_button_.get(); }
+  LabelButton* child_button() const { return child_button_; }
+  LabelButton* second_child_button() const { return second_child_button_; }
+  LabelButton* third_child_button() const { return third_child_button_; }
   LabelButton* not_child_button() const { return not_child_button_.get(); }
 
   View* GetDefaultFocusableChild() override;
@@ -38,9 +37,9 @@ class TestBarView : public AccessiblePaneView,
  private:
   void Init();
 
-  std::unique_ptr<LabelButton> child_button_;
-  std::unique_ptr<LabelButton> second_child_button_;
-  std::unique_ptr<LabelButton> third_child_button_;
+  LabelButton* child_button_;
+  LabelButton* second_child_button_;
+  LabelButton* third_child_button_;
   std::unique_ptr<LabelButton> not_child_button_;
 
   DISALLOW_COPY_AND_ASSIGN(TestBarView);
@@ -53,23 +52,17 @@ TestBarView::TestBarView() {
 
 TestBarView::~TestBarView() = default;
 
-void TestBarView::ButtonPressed(Button* sender, const ui::Event& event) {
-}
-
 void TestBarView::Init() {
   SetLayoutManager(std::make_unique<FillLayout>());
-  base::string16 label;
-  child_button_ = std::make_unique<LabelButton>(this, label);
-  AddChildView(child_button_.get());
-  second_child_button_ = std::make_unique<LabelButton>(this, label);
-  AddChildView(second_child_button_.get());
-  third_child_button_ = std::make_unique<LabelButton>(this, label);
-  AddChildView(third_child_button_.get());
-  not_child_button_ = std::make_unique<LabelButton>(this, label);
+  std::u16string label;
+  child_button_ = AddChildView(std::make_unique<LabelButton>());
+  second_child_button_ = AddChildView(std::make_unique<LabelButton>());
+  third_child_button_ = AddChildView(std::make_unique<LabelButton>());
+  not_child_button_ = std::make_unique<LabelButton>();
 }
 
 View* TestBarView::GetDefaultFocusableChild() {
-  return child_button_.get();
+  return child_button_;
 }
 
 TEST_F(AccessiblePaneViewTest, SimpleSetPaneFocus) {
@@ -79,7 +72,7 @@ TEST_F(AccessiblePaneViewTest, SimpleSetPaneFocus) {
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.bounds = gfx::Rect(50, 50, 650, 650);
-  widget->Init(params);
+  widget->Init(std::move(params));
   View* root = widget->GetRootView();
   root->AddChildView(test_view);
   widget->Show();
@@ -108,7 +101,7 @@ TEST_F(AccessiblePaneViewTest, SetPaneFocusAndRestore) {
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params_main.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params_main.bounds = gfx::Rect(0, 0, 20, 20);
-  widget_main->Init(params_main);
+  widget_main->Init(std::move(params_main));
   View* root_main = widget_main->GetRootView();
   root_main->AddChildView(test_view_main);
   widget_main->Show();
@@ -123,7 +116,7 @@ TEST_F(AccessiblePaneViewTest, SetPaneFocusAndRestore) {
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params_bar.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params_bar.bounds = gfx::Rect(50, 50, 650, 650);
-  widget_bar->Init(params_bar);
+  widget_bar->Init(std::move(params_bar));
   View* root_bar = widget_bar->GetRootView();
   root_bar->AddChildView(test_view_bar);
   widget_bar->Show();
@@ -142,7 +135,7 @@ TEST_F(AccessiblePaneViewTest, SetPaneFocusAndRestore) {
   // predictable. On Mac, Deactivate() is not implemented. Note that
   // TestBarView calls set_allow_deactivate_on_esc(true), which is only
   // otherwise used in Ash.
-#if !defined(OS_MACOSX) || defined(OS_CHROMEOS)
+#if !defined(OS_MAC) || BUILDFLAG(IS_CHROMEOS_ASH)
   // Esc should deactivate the widget.
   test_view_bar->AcceleratorPressed(test_view_bar->escape_key());
   EXPECT_TRUE(widget_main->IsActive());
@@ -164,7 +157,7 @@ TEST_F(AccessiblePaneViewTest, TwoSetPaneFocus) {
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.bounds = gfx::Rect(50, 50, 650, 650);
-  widget->Init(params);
+  widget->Init(std::move(params));
   View* root = widget->GetRootView();
   root->AddChildView(test_view);
   root->AddChildView(test_view_2);
@@ -195,7 +188,7 @@ TEST_F(AccessiblePaneViewTest, PaneFocusTraversal) {
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.bounds = gfx::Rect(50, 50, 650, 650);
-  widget->Init(params);
+  widget->Init(std::move(params));
   View* root = widget->GetRootView();
   root->AddChildView(original_test_view);
   root->AddChildView(test_view);
@@ -243,7 +236,7 @@ TEST_F(AccessiblePaneViewTest, DoesntCrashOnEscapeWithRemovedView) {
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.bounds = gfx::Rect(50, 50, 650, 650);
-  widget.Init(params);
+  widget.Init(std::move(params));
   View* root = widget.GetRootView();
   root->AddChildView(test_view1);
   root->AddChildView(test_view2);

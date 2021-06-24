@@ -31,6 +31,7 @@
 #include "third_party/blink/renderer/modules/indexeddb/idb_transaction.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/memory/scoped_refptr.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -40,8 +41,9 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/events/event_queue.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_database.h"
-#include "third_party/blink/renderer/modules/indexeddb/idb_database_callbacks.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key_path.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_metadata.h"
@@ -51,8 +53,10 @@
 #include "third_party/blink/renderer/modules/indexeddb/idb_value_wrapping.h"
 #include "third_party/blink/renderer/modules/indexeddb/mock_web_idb_database.h"
 #include "third_party/blink/renderer/modules/indexeddb/mock_web_idb_transaction.h"
-#include "third_party/blink/renderer/platform/shared_buffer.h"
+#include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
+#include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "v8/include/v8.h"
 
 namespace blink {
@@ -62,19 +66,11 @@ void DeactivateNewTransactions(v8::Isolate* isolate) {
   V8PerIsolateData::From(isolate)->RunEndOfScopeTasks();
 }
 
-class FakeIDBDatabaseCallbacks final : public IDBDatabaseCallbacks {
- public:
-  FakeIDBDatabaseCallbacks() = default;
-  void OnVersionChange(int64_t old_version, int64_t new_version) override {}
-  void OnForcedClose() override {}
-  void OnAbort(int64_t transaction_id, DOMException* error) override {}
-  void OnComplete(int64_t transaction_id) override {}
-};
-
-class IDBTransactionTest : public testing::Test {
+class IDBTransactionTest : public testing::Test,
+                           public ScopedMockOverlayScrollbars {
  protected:
   void SetUp() override {
-    url_loader_mock_factory_ = platform_->GetURLLoaderMockFactory();
+    url_loader_mock_factory_ = WebURLLoaderMockFactory::GetSingletonInstance();
     WebURLResponse response;
     response.SetCurrentRequestUrl(KURL("blob:"));
     url_loader_mock_factory_->RegisterURLProtocol(WebString("blob"), response,
@@ -91,12 +87,13 @@ class IDBTransactionTest : public testing::Test {
       std::unique_ptr<MockWebIDBTransaction> transaction_backend) {
     db_ = MakeGarbageCollected<IDBDatabase>(
         scope.GetExecutionContext(), std::move(database_backend),
-        MakeGarbageCollected<FakeIDBDatabaseCallbacks>(), scope.GetIsolate());
+        mojo::NullAssociatedReceiver(), mojo::NullRemote());
 
     HashSet<String> transaction_scope = {"store"};
     transaction_ = IDBTransaction::CreateNonVersionChange(
         scope.GetScriptState(), std::move(transaction_backend), kTransactionId,
-        transaction_scope, mojom::IDBTransactionMode::ReadOnly, db_.Get());
+        transaction_scope, mojom::IDBTransactionMode::ReadOnly,
+        mojom::IDBTransactionDurability::Relaxed, db_.Get());
 
     IDBKeyPath store_key_path("primaryKey");
     scoped_refptr<IDBObjectStoreMetadata> store_metadata = base::AdoptRef(
@@ -127,7 +124,6 @@ TEST_F(IDBTransactionTest, ContextDestroyedEarlyDeath) {
 
   Persistent<HeapHashSet<WeakMember<IDBTransaction>>> live_transactions =
       MakeGarbageCollected<HeapHashSet<WeakMember<IDBTransaction>>>();
-  ;
   live_transactions->insert(transaction_);
 
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -146,8 +142,8 @@ TEST_F(IDBTransactionTest, ContextDestroyedEarlyDeath) {
   // This will generate an Abort() call to the back end which is dropped by the
   // fake proxy, so an explicit OnAbort call is made.
   scope.GetExecutionContext()->NotifyContextDestroyed();
-  transaction_->OnAbort(
-      DOMException::Create(DOMExceptionCode::kAbortError, "Aborted"));
+  transaction_->OnAbort(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kAbortError, "Aborted"));
   transaction_.Clear();
   store_.Clear();
 
@@ -168,7 +164,6 @@ TEST_F(IDBTransactionTest, ContextDestroyedAfterDone) {
 
   Persistent<HeapHashSet<WeakMember<IDBTransaction>>> live_transactions =
       MakeGarbageCollected<HeapHashSet<WeakMember<IDBTransaction>>>();
-  ;
   live_transactions->insert(transaction_);
 
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -189,8 +184,8 @@ TEST_F(IDBTransactionTest, ContextDestroyedAfterDone) {
   // This will generate an Abort() call to the back end which is dropped by the
   // fake proxy, so an explicit OnAbort call is made.
   scope.GetExecutionContext()->NotifyContextDestroyed();
-  transaction_->OnAbort(
-      DOMException::Create(DOMExceptionCode::kAbortError, "Aborted"));
+  transaction_->OnAbort(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kAbortError, "Aborted"));
   transaction_.Clear();
   store_.Clear();
 
@@ -215,7 +210,6 @@ TEST_F(IDBTransactionTest, ContextDestroyedWithQueuedResult) {
 
   Persistent<HeapHashSet<WeakMember<IDBTransaction>>> live_transactions =
       MakeGarbageCollected<HeapHashSet<WeakMember<IDBTransaction>>>();
-  ;
   live_transactions->insert(transaction_);
 
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -235,8 +229,8 @@ TEST_F(IDBTransactionTest, ContextDestroyedWithQueuedResult) {
   // This will generate an Abort() call to the back end which is dropped by the
   // fake proxy, so an explicit OnAbort call is made.
   scope.GetExecutionContext()->NotifyContextDestroyed();
-  transaction_->OnAbort(
-      DOMException::Create(DOMExceptionCode::kAbortError, "Aborted"));
+  transaction_->OnAbort(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kAbortError, "Aborted"));
   transaction_.Clear();
   store_.Clear();
 
@@ -259,7 +253,6 @@ TEST_F(IDBTransactionTest, ContextDestroyedWithTwoQueuedResults) {
 
   Persistent<HeapHashSet<WeakMember<IDBTransaction>>> live_transactions =
       MakeGarbageCollected<HeapHashSet<WeakMember<IDBTransaction>>>();
-  ;
   live_transactions->insert(transaction_);
 
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -284,8 +277,8 @@ TEST_F(IDBTransactionTest, ContextDestroyedWithTwoQueuedResults) {
   // This will generate an Abort() call to the back end which is dropped by the
   // fake proxy, so an explicit OnAbort call is made.
   scope.GetExecutionContext()->NotifyContextDestroyed();
-  transaction_->OnAbort(
-      DOMException::Create(DOMExceptionCode::kAbortError, "Aborted"));
+  transaction_->OnAbort(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kAbortError, "Aborted"));
   transaction_.Clear();
   store_.Clear();
 
@@ -310,7 +303,6 @@ TEST_F(IDBTransactionTest, DocumentShutdownWithQueuedAndBlockedResults) {
 
   Persistent<HeapHashSet<WeakMember<IDBTransaction>>> live_transactions =
       MakeGarbageCollected<HeapHashSet<WeakMember<IDBTransaction>>>();
-  ;
   live_transactions->insert(transaction_);
 
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -335,8 +327,8 @@ TEST_F(IDBTransactionTest, DocumentShutdownWithQueuedAndBlockedResults) {
   // This will generate an Abort() call to the back end which is dropped by the
   // fake proxy, so an explicit OnAbort call is made.
   scope.GetDocument().Shutdown();
-  transaction_->OnAbort(
-      DOMException::Create(DOMExceptionCode::kAbortError, "Aborted"));
+  transaction_->OnAbort(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kAbortError, "Aborted"));
   transaction_.Clear();
   store_.Clear();
 
@@ -360,7 +352,6 @@ TEST_F(IDBTransactionTest, TransactionFinish) {
 
   Persistent<HeapHashSet<WeakMember<IDBTransaction>>> live_transactions =
       MakeGarbageCollected<HeapHashSet<WeakMember<IDBTransaction>>>();
-  ;
   live_transactions->insert(transaction_);
 
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -383,8 +374,8 @@ TEST_F(IDBTransactionTest, TransactionFinish) {
 
   // Fire an abort to make sure this doesn't free the transaction during use.
   // The test will not fail if it is, but ASAN would notice the error.
-  db_->OnAbort(kTransactionId,
-               DOMException::Create(DOMExceptionCode::kAbortError, "Aborted"));
+  db_->Abort(kTransactionId, mojom::blink::IDBException::kAbortError,
+             "Aborted");
 
   // OnAbort() should have cleared the transaction's reference to the database.
   ThreadState::Current()->CollectAllGarbageForTesting();

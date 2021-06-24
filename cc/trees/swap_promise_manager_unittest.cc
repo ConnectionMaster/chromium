@@ -4,6 +4,9 @@
 
 #include "cc/trees/swap_promise_manager.h"
 
+#include <memory>
+#include <utility>
+
 #include "cc/trees/swap_promise_monitor.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -16,12 +19,11 @@ namespace {
 class MockSwapPromiseMonitor : public SwapPromiseMonitor {
  public:
   explicit MockSwapPromiseMonitor(SwapPromiseManager* manager)
-      : SwapPromiseMonitor(manager, nullptr) {}
+      : SwapPromiseMonitor(manager) {}
   ~MockSwapPromiseMonitor() override = default;
 
   MOCK_METHOD0(OnSetNeedsCommitOnMain, void());
   void OnSetNeedsRedrawOnImpl() override {}
-  void OnForwardScrollUpdateToMainThreadOnImpl() override {}
 };
 
 class MockSwapPromise : public SwapPromise {
@@ -32,7 +34,9 @@ class MockSwapPromise : public SwapPromise {
   void DidActivate() override {}
   void WillSwap(viz::CompositorFrameMetadata* metadata) override {}
   void DidSwap() override {}
-  void DidNotSwap(DidNotSwapReason reason) override {}
+  DidNotSwapAction DidNotSwap(DidNotSwapReason reason) override {
+    return DidNotSwapAction::BREAK_PROMISE;
+  }
   MOCK_METHOD0(OnCommit, void());
   int64_t TraceId() const override { return 0; }
 };

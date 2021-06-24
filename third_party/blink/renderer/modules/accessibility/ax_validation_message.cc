@@ -4,12 +4,12 @@
 
 #include "third_party/blink/renderer/modules/accessibility/ax_validation_message.h"
 
-#include "SkMatrix44.h"
 #include "third_party/blink/renderer/core/html/forms/listed_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/skia/include/core/SkMatrix44.h"
 
 namespace blink {
 
@@ -17,10 +17,6 @@ AXValidationMessage::AXValidationMessage(AXObjectCacheImpl& ax_object_cache)
     : AXMockObject(ax_object_cache) {}
 
 AXValidationMessage::~AXValidationMessage() {}
-
-AXObject* AXValidationMessage::ComputeParent() const {
-  return AXObjectCache().Root();
-}
 
 bool AXValidationMessage::ComputeAccessibilityIsIgnored(
     IgnoredReasons* ignored_reasons) const {
@@ -44,15 +40,15 @@ void AXValidationMessage::GetRelativeBounds(AXObject** out_container,
   if (!listed_element)
     return;
 
-  HTMLElement* form_control = ToHTMLElement(listed_element);
-  if (!form_control || !form_control->GetLayoutObject())
+  HTMLElement& form_control = listed_element->ToHTMLElement();
+  if (!form_control.GetLayoutObject())
     return;
 
   *out_container = ParentObject();
 
-  if (form_control->GetLayoutObject()) {
+  if (form_control.GetLayoutObject()) {
     out_bounds_in_container =
-        FloatRect(form_control->GetLayoutObject()->AbsoluteBoundingBoxRect());
+        FloatRect(form_control.GetLayoutObject()->AbsoluteBoundingBoxRect());
   }
 }
 
@@ -61,7 +57,10 @@ bool AXValidationMessage::IsOffScreen() const {
 }
 
 bool AXValidationMessage::IsVisible() const {
-  return RelatedFormControlIfVisible();
+  bool is_visible = RelatedFormControlIfVisible();
+  DCHECK(!is_visible || CachedParentObject() == AXObjectCache().Root())
+      << "A visible validation message's parent must be the root object'.";
+  return is_visible;
 }
 
 const AtomicString& AXValidationMessage::LiveRegionStatus() const {
@@ -76,8 +75,8 @@ const AtomicString& AXValidationMessage::LiveRegionRelevant() const {
   return live_region_relevant_additions;
 }
 
-ax::mojom::Role AXValidationMessage::RoleValue() const {
-  return ax::mojom::Role::kAlert;
+ax::mojom::blink::Role AXValidationMessage::NativeRoleIgnoringAria() const {
+  return ax::mojom::blink::Role::kAlert;
 }
 
 ListedElement* AXValidationMessage::RelatedFormControlIfVisible() const {
@@ -103,7 +102,7 @@ ListedElement* AXValidationMessage::RelatedFormControlIfVisible() const {
 
 String AXValidationMessage::TextAlternative(
     bool recursive,
-    bool in_aria_labelled_by_traversal,
+    const AXObject* aria_label_or_description_root,
     AXObjectSet& visited,
     ax::mojom::NameFrom& name_from,
     AXRelatedObjectVector* related_objects,

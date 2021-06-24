@@ -5,13 +5,11 @@
 #ifndef CHROME_BROWSER_UI_PREFS_PREFS_TAB_HELPER_H_
 #define CHROME_BROWSER_UI_PREFS_PREFS_TAB_HELPER_H_
 
-#include "base/callback_list.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/font_pref_change_notifier.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
+#include "chrome/browser/themes/theme_service_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 
 #if !defined(OS_ANDROID)
@@ -29,12 +27,13 @@ class PrefRegistrySyncable;
 }
 
 // Per-tab class to handle user preferences.
-class PrefsTabHelper : public content::NotificationObserver,
+class PrefsTabHelper : public ThemeServiceObserver,
                        public content::WebContentsUserData<PrefsTabHelper> {
  public:
   ~PrefsTabHelper() override;
 
-  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
+                                   const std::string& locale);
   static void GetServiceInstance();
 
  protected:
@@ -46,12 +45,10 @@ class PrefsTabHelper : public content::NotificationObserver,
   friend class content::WebContentsUserData<PrefsTabHelper>;
   friend class PrefWatcher;
 
-  // content::NotificationObserver overrides:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
+  // ThemeServiceObserver overrides:
+  void OnThemeChanged() override;
 
-  // Update the WebContents's blink::mojom::RendererPreferences.
+  // Update the WebContents's blink::RendererPreferences.
   void UpdateRendererPreferences();
 
   void OnFontFamilyPrefChanged(const std::string& pref_name);
@@ -61,15 +58,11 @@ class PrefsTabHelper : public content::NotificationObserver,
 
   content::WebContents* web_contents_;
   Profile* profile_;
-  content::NotificationRegistrar registrar_;
-  std::unique_ptr<base::CallbackList<void(void)>::Subscription>
-      style_sheet_subscription_;
 #if !defined(OS_ANDROID)
-  std::unique_ptr<ChromeZoomLevelPrefs::DefaultZoomLevelSubscription>
-      default_zoom_level_subscription_;
+  base::CallbackListSubscription default_zoom_level_subscription_;
   FontPrefChangeNotifier::Registrar font_change_registrar_;
 #endif  // !defined(OS_ANDROID)
-  base::WeakPtrFactory<PrefsTabHelper> weak_ptr_factory_;
+  base::WeakPtrFactory<PrefsTabHelper> weak_ptr_factory_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

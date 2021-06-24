@@ -10,8 +10,8 @@
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "components/download/public/background_service/background_download_service.h"
 #include "components/download/public/background_service/download_params.h"
-#include "components/download/public/background_service/download_service.h"
 #include "components/download/public/background_service/service_config.h"
 #include "components/offline_pages/core/offline_clock.h"
 #include "components/offline_pages/core/offline_event_logger.h"
@@ -37,13 +37,10 @@ void NotifyDispatcher(PrefetchService* service, PrefetchDownloadResult result) {
 }  // namespace
 
 PrefetchDownloaderImpl::PrefetchDownloaderImpl(
-    download::DownloadService* download_service,
+    download::BackgroundDownloadService* download_service,
     version_info::Channel channel,
     PrefService* prefs)
-    : download_service_(download_service),
-      channel_(channel),
-      prefs_(prefs),
-      weak_ptr_factory_(this) {
+    : download_service_(download_service), channel_(channel), prefs_(prefs) {
   DCHECK(download_service);
 }
 
@@ -111,9 +108,8 @@ void PrefetchDownloaderImpl::StartDownload(const std::string& download_id,
       net::MutableNetworkTrafficAnnotationTag(traffic_annotation);
   params.client = download::DownloadClient::OFFLINE_PAGE_PREFETCH;
   params.guid = download_id;
-  params.callback = base::AdaptCallbackForRepeating(
-      base::BindOnce(&PrefetchDownloaderImpl::OnStartDownload,
-                     weak_ptr_factory_.GetWeakPtr()));
+  params.callback = base::BindOnce(&PrefetchDownloaderImpl::OnStartDownload,
+                                   weak_ptr_factory_.GetWeakPtr());
   params.scheduling_params.network_requirements =
       download::SchedulingParams::NetworkRequirements::UNMETERED;
   params.scheduling_params.battery_requirements =
@@ -121,6 +117,7 @@ void PrefetchDownloaderImpl::StartDownload(const std::string& download_id,
   params.scheduling_params.cancel_time =
       OfflineTimeNow() + kPrefetchDownloadLifetime;
   params.request_params.url = PrefetchDownloadURL(download_location, channel_);
+  params.request_params.require_safety_checks = false;
 
   std::string experiment_header = PrefetchExperimentHeader();
   if (!experiment_header.empty()) {
@@ -149,7 +146,7 @@ void PrefetchDownloaderImpl::StartDownload(const std::string& download_id,
   }
 
   // The download service can queue the download even if it is not fully up yet.
-  download_service_->StartDownload(params);
+  download_service_->StartDownload(std::move(params));
 }
 
 void PrefetchDownloaderImpl::OnDownloadServiceReady(

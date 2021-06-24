@@ -9,13 +9,16 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/containers/contains.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/site_instance_impl.h"
 #include "content/browser/storage_partition_impl.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/common/child_process_host.h"
+#include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -26,7 +29,7 @@ ServiceWorkerProcessManager::ServiceWorkerProcessManager(
       storage_partition_(nullptr),
       process_id_for_test_(ChildProcessHost::kInvalidUniqueID),
       new_process_id_for_test_(ChildProcessHost::kInvalidUniqueID),
-      weak_this_factory_(this) {
+      force_new_process_for_test_(false) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(browser_context);
   weak_this_ = weak_this_factory_.GetWeakPtr();
@@ -66,8 +69,7 @@ void ServiceWorkerProcessManager::Shutdown() {
       if (it.second->HasProcess()) {
         RenderProcessHost* process = it.second->GetProcess();
         if (!process->IsKeepAliveRefCountDisabled())
-          process->DecrementKeepAliveRefCount(
-              RenderProcessHost::KeepAliveClientType::kServiceWorker);
+          process->DecrementKeepAliveRefCount();
       }
     }
   }
@@ -83,9 +85,14 @@ blink::ServiceWorkerStatusCode
 ServiceWorkerProcessManager::AllocateWorkerProcess(
     int embedded_worker_id,
     const GURL& script_url,
+    const absl::optional<network::CrossOriginEmbedderPolicy>&
+        cross_origin_embedder_policy,
     bool can_use_existing_process,
     AllocatedProcessInfo* out_info) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+
+  if (force_new_process_for_test_)
+    can_use_existing_process = false;
 
   out_info->process_id = ChildProcessHost::kInvalidUniqueID;
   out_info->start_situation = ServiceWorkerMetrics::StartSituation::UNKNOWN;
@@ -104,33 +111,32 @@ ServiceWorkerProcessManager::AllocateWorkerProcess(
     return blink::ServiceWorkerStatusCode::kErrorAbort;
   }
 
-  DCHECK(!base::ContainsKey(worker_process_map_, embedded_worker_id))
+  DCHECK(!base::Contains(worker_process_map_, embedded_worker_id))
       << embedded_worker_id << " already has a process allocated";
 
   // Create a SiteInstance to get the renderer process from. Use the site URL
   // from the StoragePartition in case this StoragePartition is for guests
   // (e.g., <webview>).
-  bool use_url_from_storage_partition =
+  const bool is_guest =
       storage_partition_ &&
-      !storage_partition_->site_for_service_worker().is_empty();
+      !storage_partition_->site_for_guest_service_worker_or_shared_worker()
+           .is_empty();
+  const GURL service_worker_url =
+      is_guest
+          ? storage_partition_->site_for_guest_service_worker_or_shared_worker()
+          : script_url;
+  const bool is_coop_coep_cross_origin_isolated =
+      !is_guest && cross_origin_embedder_policy.has_value() &&
+      network::CompatibleWithCrossOriginIsolated(
+          cross_origin_embedder_policy->value);
   scoped_refptr<SiteInstanceImpl> site_instance =
-      SiteInstanceImpl::CreateForURL(
-          browser_context_, use_url_from_storage_partition
-                                ? storage_partition_->site_for_service_worker()
-                                : script_url);
-  site_instance->set_is_for_service_worker();
-
-  // Attempt to reuse a renderer process if possible. Note that in the
-  // <webview> case, process reuse isn't currently supported and a new
-  // process will always be created (https://crbug.com/752667).
-  DCHECK(site_instance->process_reuse_policy() ==
-             SiteInstanceImpl::ProcessReusePolicy::DEFAULT ||
-         site_instance->process_reuse_policy() ==
-             SiteInstanceImpl::ProcessReusePolicy::PROCESS_PER_SITE);
-  if (can_use_existing_process) {
-    site_instance->set_process_reuse_policy(
-        SiteInstanceImpl::ProcessReusePolicy::REUSE_PENDING_OR_COMMITTED_SITE);
-  }
+      SiteInstanceImpl::CreateForServiceWorker(
+          browser_context_, service_worker_url,
+          is_coop_coep_cross_origin_isolated
+              ? WebExposedIsolationInfo::CreateIsolated(
+                    url::Origin::Create(service_worker_url))
+              : WebExposedIsolationInfo::CreateNonIsolated(),
+          can_use_existing_process, is_guest);
 
   // Get the process from the SiteInstance.
   RenderProcessHost* rph = site_instance->GetProcess();
@@ -157,8 +163,7 @@ ServiceWorkerProcessManager::AllocateWorkerProcess(
 
   worker_process_map_.emplace(embedded_worker_id, std::move(site_instance));
   if (!rph->IsKeepAliveRefCountDisabled())
-    rph->IncrementKeepAliveRefCount(
-        RenderProcessHost::KeepAliveClientType::kServiceWorker);
+    rph->IncrementKeepAliveRefCount();
   out_info->process_id = rph->GetID();
   out_info->start_situation = start_situation;
   return blink::ServiceWorkerStatusCode::kOk;
@@ -188,8 +193,7 @@ void ServiceWorkerProcessManager::ReleaseWorkerProcess(int embedded_worker_id) {
   if (it->second->HasProcess()) {
     RenderProcessHost* process = it->second->GetProcess();
     if (!process->IsKeepAliveRefCountDisabled())
-      process->DecrementKeepAliveRefCount(
-          RenderProcessHost::KeepAliveClientType::kServiceWorker);
+      process->DecrementKeepAliveRefCount();
   }
   worker_process_map_.erase(it);
 }
@@ -211,7 +215,6 @@ namespace std {
 // thread.
 void default_delete<content::ServiceWorkerProcessManager>::operator()(
     content::ServiceWorkerProcessManager* ptr) const {
-  content::BrowserThread::DeleteSoon(
-      content::BrowserThread::UI, FROM_HERE, ptr);
+  content::GetUIThreadTaskRunner({})->DeleteSoon(FROM_HERE, ptr);
 }
 }  // namespace std

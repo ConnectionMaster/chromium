@@ -15,11 +15,14 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "content/public/browser/storage_partition.h"
-#include "url/gurl.h"
 
 namespace storage {
 class FileSystemContext;
 class SpecialStoragePolicy;
+}
+
+namespace url {
+class GURL;
 }
 
 namespace content {
@@ -32,11 +35,11 @@ namespace content {
 void ClearPluginPrivateDataOnFileTaskRunner(
     scoped_refptr<storage::FileSystemContext> filesystem_context,
     const GURL& storage_origin,
-    const StoragePartition::OriginMatcherFunction& origin_matcher,
+    StoragePartition::OriginMatcherFunction origin_matcher,
     const scoped_refptr<storage::SpecialStoragePolicy>& special_storage_policy,
     const base::Time begin,
     const base::Time end,
-    const base::Closure& callback);
+    base::OnceClosure callback);
 
 }  // namespace content
 

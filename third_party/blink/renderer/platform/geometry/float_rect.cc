@@ -31,27 +31,8 @@
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_stream.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
-#include "third_party/skia/include/core/SkRect.h"
-#include "ui/gfx/geometry/rect_f.h"
 
 namespace blink {
-
-FloatRect::FloatRect(const IntRect& r)
-    : location_(r.Location()), size_(r.Size()) {}
-
-FloatRect::FloatRect(const LayoutRect& r)
-    : location_(r.Location()), size_(r.Size()) {}
-
-FloatRect::FloatRect(const SkRect& r)
-    : location_(r.fLeft, r.fTop), size_(r.width(), r.height()) {}
-
-void FloatRect::Move(const LayoutSize& delta) {
-  location_.Move(delta.Width().ToFloat(), delta.Height().ToFloat());
-}
-
-void FloatRect::Move(const IntSize& delta) {
-  location_.Move(delta.Width(), delta.Height());
-}
 
 FloatRect FloatRect::NarrowPrecision(double x,
                                      double y,
@@ -81,6 +62,10 @@ bool FloatRect::EqualWithinEpsilon(const FloatRect& other,
 }
 
 #endif
+
+bool FloatRect::IsFinite() const {
+  return static_cast<SkRect>(*this).isFinite();
+}
 
 bool FloatRect::IsExpressibleAsIntRect() const {
   return isWithinIntRange(X()) && isWithinIntRange(Y()) &&
@@ -250,14 +235,6 @@ float FloatRect::SquaredDistanceTo(const FloatPoint& point) const {
   return (point - closest_point).DiagonalLengthSquared();
 }
 
-FloatRect::operator SkRect() const {
-  return SkRect::MakeXYWH(X(), Y(), Width(), Height());
-}
-
-FloatRect::operator gfx::RectF() const {
-  return gfx::RectF(X(), Y(), Width(), Height());
-}
-
 FloatRect UnionRect(const Vector<FloatRect>& rects) {
   FloatRect result;
 
@@ -265,6 +242,39 @@ FloatRect UnionRect(const Vector<FloatRect>& rects) {
     result.Unite(rect);
 
   return result;
+}
+
+FloatRect MaximumCoveredRect(const FloatRect& a, const FloatRect& b) {
+  // Check a or b by itself.
+  FloatRect maximum(a);
+  float maximum_area = a.Size().Area();
+  if (b.Size().Area() > maximum_area) {
+    maximum = b;
+    maximum_area = b.Size().Area();
+  }
+  // Check the regions that include the intersection of a and b. This can be
+  // done by taking the intersection and expanding it vertically and
+  // horizontally. These expanded intersections will both still be covered by
+  // a or b.
+  FloatRect intersection = a;
+  intersection.InclusiveIntersect(b);
+  if (!intersection.IsZero()) {
+    FloatRect vert_expanded_intersection(intersection);
+    vert_expanded_intersection.ShiftYEdgeTo(std::min(a.Y(), b.Y()));
+    vert_expanded_intersection.ShiftMaxYEdgeTo(std::max(a.MaxY(), b.MaxY()));
+    if (vert_expanded_intersection.Size().Area() > maximum_area) {
+      maximum = vert_expanded_intersection;
+      maximum_area = vert_expanded_intersection.Size().Area();
+    }
+    FloatRect horiz_expanded_intersection(intersection);
+    horiz_expanded_intersection.ShiftXEdgeTo(std::min(a.X(), b.X()));
+    horiz_expanded_intersection.ShiftMaxXEdgeTo(std::max(a.MaxX(), b.MaxX()));
+    if (horiz_expanded_intersection.Size().Area() > maximum_area) {
+      maximum = horiz_expanded_intersection;
+      maximum_area = horiz_expanded_intersection.Size().Area();
+    }
+  }
+  return maximum;
 }
 
 IntRect EnclosedIntRect(const FloatRect& rect) {
@@ -298,8 +308,8 @@ std::ostream& operator<<(std::ostream& ostream, const FloatRect& rect) {
 }
 
 String FloatRect::ToString() const {
-  return String::Format("%s %s", Location().ToString().Ascii().data(),
-                        Size().ToString().Ascii().data());
+  return String::Format("%s %s", Location().ToString().Ascii().c_str(),
+                        Size().ToString().Ascii().c_str());
 }
 
 WTF::TextStream& operator<<(WTF::TextStream& ts, const FloatRect& r) {

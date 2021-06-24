@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/containers/contains.h"
 #include "base/macros.h"
 #include "chromeos/services/secure_channel/public/cpp/client/connection_attempt.h"
 #include "chromeos/services/secure_channel/public/cpp/client/secure_channel_client.h"
@@ -26,12 +27,14 @@ class FakeSecureChannelClient : public SecureChannelClient {
     ConnectionRequestArguments(multidevice::RemoteDeviceRef device_to_connect,
                                multidevice::RemoteDeviceRef local_device,
                                const std::string& feature,
-                               const ConnectionPriority& connection_priority);
+                               ConnectionMedium connection_medium,
+                               ConnectionPriority connection_priority);
     ~ConnectionRequestArguments();
 
     multidevice::RemoteDeviceRef device_to_connect;
     multidevice::RemoteDeviceRef local_device;
     std::string feature;
+    ConnectionMedium connection_medium;
     ConnectionPriority connection_priority;
 
    private:
@@ -61,8 +64,8 @@ class FakeSecureChannelClient : public SecureChannelClient {
       multidevice::RemoteDeviceRef device_to_connect,
       multidevice::RemoteDeviceRef local_device) {
     auto device_id_pair = std::make_pair(device_to_connect, local_device);
-    if (!base::ContainsKey(device_pair_to_next_initiate_connection_attempt_,
-                           device_id_pair)) {
+    if (!base::Contains(device_pair_to_next_initiate_connection_attempt_,
+                        device_id_pair)) {
       return nullptr;
     }
 
@@ -74,8 +77,8 @@ class FakeSecureChannelClient : public SecureChannelClient {
       multidevice::RemoteDeviceRef device_to_connect,
       multidevice::RemoteDeviceRef local_device) {
     auto device_id_pair = std::make_pair(device_to_connect, local_device);
-    if (!base::ContainsKey(device_pair_to_next_listen_connection_attempt_,
-                           device_id_pair)) {
+    if (!base::Contains(device_pair_to_next_listen_connection_attempt_,
+                        device_id_pair)) {
       return nullptr;
     }
 
@@ -121,12 +124,15 @@ class FakeSecureChannelClient : public SecureChannelClient {
       multidevice::RemoteDeviceRef device_to_connect,
       multidevice::RemoteDeviceRef local_device,
       const std::string& feature,
+      ConnectionMedium connection_medium,
       ConnectionPriority connection_priority) override;
   std::unique_ptr<ConnectionAttempt> ListenForConnectionFromDevice(
       multidevice::RemoteDeviceRef device_to_connect,
       multidevice::RemoteDeviceRef local_device,
       const std::string& feature,
+      ConnectionMedium connection_medium,
       ConnectionPriority connection_priority) override;
+  void SetNearbyConnector(NearbyConnector* nearby_connector) override {}
 
  private:
   // First element of pair is remote device, second is local device.
@@ -150,5 +156,13 @@ class FakeSecureChannelClient : public SecureChannelClient {
 }  // namespace secure_channel
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+namespace secure_channel {
+using ::chromeos::secure_channel::FakeSecureChannelClient;
+}
+}  // namespace ash
 
 #endif  // CHROMEOS_SERVICES_SECURE_CHANNEL_PUBLIC_CPP_CLIENT_FAKE_SECURE_CHANNEL_CLIENT_H_

@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that breakpoints work in anonymous scripts with >1 targets.\n`);
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
       function testFunction()
@@ -23,7 +23,7 @@
   await SourcesTestRunner.startDebuggerTestPromise();
   TestRunner.evaluateInPageWithTimeout('testFunction()');
   var sourceFrame = await waitForPausedUISourceCode();
-  SourcesTestRunner.createNewBreakpoint(sourceFrame, 10, '', true);
+  await SourcesTestRunner.createNewBreakpoint(sourceFrame, 10, '', true);
   await SourcesTestRunner.waitDebuggerPluginBreakpoints(sourceFrame);
   await SourcesTestRunner.dumpDebuggerPluginBreakpoints(sourceFrame);
   SourcesTestRunner.completeDebuggerTest();

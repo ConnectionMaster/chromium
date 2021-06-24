@@ -7,16 +7,24 @@
 #include <tuple>
 #include <utility>
 
+#include "base/i18n/case_conversion.h"
+#include "base/i18n/string_search.h"
 #include "base/lazy_instance.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "chrome/browser/android/bookmarks/partner_bookmarks_reader.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
+#include "components/url_formatter/url_formatter.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "net/base/escape.h"
+#include "ui/base/models/tree_node_iterator.h"
 
 using bookmarks::BookmarkNode;
 using content::BrowserThread;
@@ -117,11 +125,11 @@ bool PartnerBookmarksShim::IsEditable(const BookmarkNode* node) const {
 
 void PartnerBookmarksShim::RemoveBookmark(const BookmarkNode* node) {
   DCHECK(IsEditable(node));
-  RenameBookmark(node, base::string16());
+  RenameBookmark(node, std::u16string());
 }
 
 void PartnerBookmarksShim::RenameBookmark(const BookmarkNode* node,
-                                          const base::string16& title) {
+                                          const std::u16string& title) {
   DCHECK(IsEditable(node));
   const NodeRenamingMapKey key(node->url(), node->GetTitle());
   node_rename_remove_map_[key] = title;
@@ -147,7 +155,7 @@ const BookmarkNode* PartnerBookmarksShim::GetNodeByID(int64_t id) const {
   return GetNodeByID(GetPartnerBookmarksRoot(), id);
 }
 
-base::string16 PartnerBookmarksShim::GetTitle(const BookmarkNode* node) const {
+std::u16string PartnerBookmarksShim::GetTitle(const BookmarkNode* node) const {
   DCHECK(node);
   DCHECK(IsPartnerBookmark(node));
 
@@ -188,7 +196,8 @@ void PartnerBookmarksShim::SetPartnerBookmarksRoot(
 }
 
 PartnerBookmarksShim::NodeRenamingMapKey::NodeRenamingMapKey(
-    const GURL& url, const base::string16& provider_title)
+    const GURL& url,
+    const std::u16string& provider_title)
     : url_(url), provider_title_(provider_title) {}
 
 PartnerBookmarksShim::NodeRenamingMapKey::~NodeRenamingMapKey() {}
@@ -230,12 +239,12 @@ const BookmarkNode* PartnerBookmarksShim::GetNodeByID(
     int64_t id) const {
   if (parent->id() == id)
     return parent;
-  for (int i = 0, child_count = parent->child_count(); i < child_count; ++i) {
-    const BookmarkNode* result = GetNodeByID(parent->GetChild(i), id);
+  for (const auto& node : parent->children()) {
+    const BookmarkNode* result = GetNodeByID(node.get(), id);
     if (result)
       return result;
   }
-  return NULL;
+  return nullptr;
 }
 
 void PartnerBookmarksShim::ReloadNodeMapping() {
@@ -250,17 +259,16 @@ void PartnerBookmarksShim::ReloadNodeMapping() {
   if (!list)
     return;
 
-  for (base::ListValue::const_iterator it = list->begin();
-       it != list->end(); ++it) {
-    const base::DictionaryValue* dict = NULL;
-    if (!it->GetAsDictionary(&dict)) {
+  for (const auto& entry : list->GetList()) {
+    const base::DictionaryValue* dict = nullptr;
+    if (!entry.GetAsDictionary(&dict)) {
       NOTREACHED();
       continue;
     }
 
     std::string url;
-    base::string16 provider_title;
-    base::string16 mapped_title;
+    std::u16string provider_title;
+    std::u16string mapped_title;
     if (!dict->GetString(kMappingUrl, &url) ||
         !dict->GetString(kMappingProviderTitle, &provider_title) ||
         !dict->GetString(kMappingTitle, &mapped_title)) {
@@ -289,4 +297,31 @@ void PartnerBookmarksShim::SaveNodeMapping() {
     list.Append(std::move(dict));
   }
   prefs_->Set(prefs::kPartnerBookmarkMappings, list);
+}
+
+void PartnerBookmarksShim::GetPartnerBookmarksMatchingProperties(
+    const bookmarks::QueryFields& query,
+    size_t max_count,
+    std::vector<const BookmarkNode*>* nodes) {
+  DCHECK(nodes->size() <= max_count);
+
+  std::vector<std::u16string> query_words =
+      bookmarks::ParseBookmarkQuery(query);
+  if (query_words.empty())
+    return;
+  ui::TreeNodeIterator<const BookmarkNode> iterator(GetPartnerBookmarksRoot());
+  // The check that size < max_count is necessary because we will search for
+  // user (non-partner) bookmarks before calling this function
+  while (iterator.has_next() && nodes->size() < max_count) {
+    const BookmarkNode* node = iterator.Next();
+    // Make sure we don't include the "Partner Bookmarks" folder
+    if (node == GetPartnerBookmarksRoot())
+      continue;
+    if (!query_words.empty() && !bookmarks::DoesBookmarkContainWords(
+                                    GetTitle(node), node->url(), query_words))
+      continue;
+    if (query.title && GetTitle(node) != *query.title)
+      continue;
+    nodes->push_back(node);
+  }
 }

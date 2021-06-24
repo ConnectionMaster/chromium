@@ -4,9 +4,8 @@
 
 #include "third_party/blink/renderer/core/editing/state_machines/state_machine_util.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/platform/text/character.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
 
@@ -38,7 +37,7 @@ bool IsIndicSyllabicCategoryVirama(uint32_t code_point) {
 
 bool IsGraphemeBreak(UChar32 prev_code_point, UChar32 next_code_point) {
   // The following breaking rules come from Unicode Standard Annex #29 on
-  // Unicode Text Segmaentation. See http://www.unicode.org/reports/tr29/
+  // Unicode Text Segmentation. See http://www.unicode.org/reports/tr29/
   int prev_prop =
       u_getIntPropertyValue(prev_code_point, UCHAR_GRAPHEME_CLUSTER_BREAK);
   int next_prop =

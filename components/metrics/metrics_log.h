@@ -14,10 +14,15 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_forward.h"
 #include "base/macros.h"
+#include "base/metrics/histogram_base.h"
+#include "base/strings/string_piece_forward.h"
 #include "base/time/time.h"
-#include "components/metrics/metrics_service_client.h"
+#include "components/metrics/metrics_reporting_default_state.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/metrics_proto/chrome_user_metrics_extension.pb.h"
+#include "third_party/metrics_proto/system_profile.pb.h"
 
 class PrefService;
 
@@ -25,9 +30,28 @@ namespace base {
 class HistogramFlattener;
 class HistogramSamples;
 class HistogramSnapshotManager;
-}
+}  // namespace base
 
 namespace metrics {
+
+// Holds optional metadata associated with a log to be stored.
+struct LogMetadata {
+  LogMetadata();
+  LogMetadata(absl::optional<base::HistogramBase::Count> samples_count,
+              absl::optional<uint64_t> user_id);
+  LogMetadata(const LogMetadata& other);
+  ~LogMetadata();
+
+  // Adds |sample_count| to |samples_count|. If |samples_count| is empty, then
+  // |sample_count| will populate |samples_count|.
+  void AddSampleCount(base::HistogramBase::Count sample_count);
+
+  // The total number of samples in this log if applicable.
+  absl::optional<base::HistogramBase::Count> samples_count;
+
+  // User id associated with the log.
+  absl::optional<uint64_t> user_id;
+};
 
 class MetricsProvider;
 class MetricsServiceClient;
@@ -37,6 +61,9 @@ namespace internal {
 // Maximum number of events before truncation.
 constexpr int kOmniboxEventLimit = 5000;
 constexpr int kUserActionEventLimit = 5000;
+
+SystemProfileProto::InstallerPackage ToInstallerPackage(
+    base::StringPiece installer_package_name);
 }  // namespace internal
 
 class MetricsLog {
@@ -106,12 +133,21 @@ class MetricsLog {
   // always incrementing for use in measuring time durations.
   static int64_t GetCurrentTime();
 
-  // Record core profile settings into the SystemProfileProto.
+  // Records core profile settings into the SystemProfileProto.
   static void RecordCoreSystemProfile(MetricsServiceClient* client,
                                       SystemProfileProto* system_profile);
 
+  // Records core profile settings into the SystemProfileProto without a client.
+  static void RecordCoreSystemProfile(
+      const std::string& version,
+      metrics::SystemProfileProto::Channel channel,
+      bool is_extended_stable_channel,
+      const std::string& application_locale,
+      const std::string& package_name,
+      SystemProfileProto* system_profile);
+
   // Records a user-initiated action.
-  void RecordUserAction(const std::string& key);
+  void RecordUserAction(const std::string& key, base::TimeTicks action_time);
 
   // Record any changes in a given histogram for transmission.
   void RecordHistogramDelta(const std::string& histogram_name,
@@ -152,22 +188,21 @@ class MetricsLog {
   // record.  Must only be called after CloseLog() has been called.
   void GetEncodedLog(std::string* encoded_log);
 
-  const base::TimeTicks& creation_time() const {
-    return creation_time_;
-  }
-
   LogType log_type() const { return log_type_; }
+
+  const LogMetadata& log_metadata() const { return log_metadata_; }
+
+  // Exposed for the sake of mocking/accessing in test code.
+  ChromeUserMetricsExtension* UmaProtoForTest() { return &uma_proto_; }
 
  protected:
   // Exposed for the sake of mocking/accessing in test code.
-
+  // TODO(1034679): migrate to public UmaProtoForTest() method.
   ChromeUserMetricsExtension* uma_proto() { return &uma_proto_; }
 
   // Exposed to allow subclass to access to export the uma_proto. Can be used
   // by external components to export logs to Chrome.
-  const ChromeUserMetricsExtension* uma_proto() const {
-    return &uma_proto_;
-  }
+  const ChromeUserMetricsExtension* uma_proto() const { return &uma_proto_; }
 
  private:
   // Write the default state of the enable metrics checkbox.
@@ -201,6 +236,9 @@ class MetricsLog {
   // True if the environment has already been filled in by a call to
   // RecordEnvironment() or LoadSavedEnvironmentFromPrefs().
   bool has_environment_;
+
+  // Optional metadata associated with the log.
+  LogMetadata log_metadata_;
 
   DISALLOW_COPY_AND_ASSIGN(MetricsLog);
 };

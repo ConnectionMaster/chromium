@@ -8,7 +8,9 @@
 #include <stdint.h>
 
 #include <memory>
+#include <utility>
 
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
@@ -37,6 +39,7 @@ CC_BASE_EXPORT extern const char kBeginFrame[];
 CC_BASE_EXPORT extern const char kNeedsBeginFrameChanged[];
 CC_BASE_EXPORT extern const char kActivateLayerTree[];
 CC_BASE_EXPORT extern const char kRequestMainThreadFrame[];
+CC_BASE_EXPORT extern const char kDroppedFrame[];
 CC_BASE_EXPORT extern const char kBeginMainThreadFrame[];
 CC_BASE_EXPORT extern const char kDrawFrame[];
 CC_BASE_EXPORT extern const char kCompositeLayers[];
@@ -63,14 +66,49 @@ class CC_BASE_EXPORT ScopedLayerTask {
   const char* event_name_;
 };
 
-class CC_BASE_EXPORT ScopedImageDecodeTask {
+class CC_BASE_EXPORT ScopedImageTask {
  public:
-  enum DecodeType { kSoftware, kGpu };
+  enum ImageType { kJxl, kAvif, kBmp, kGif, kIco, kJpeg, kPng, kWebP, kOther };
+
+  explicit ScopedImageTask(ImageType image_type)
+      : image_type_(image_type), start_time_(base::TimeTicks::Now()) {}
+  ScopedImageTask(const ScopedImageTask&) = delete;
+  ~ScopedImageTask() = default;
+  ScopedImageTask& operator=(const ScopedImageTask&) = delete;
+
+  // Prevents logging duration metrics. Used in cases where a task performed
+  // uninteresting work or was terminated early.
+  void SuppressMetrics() { suppress_metrics_ = true; }
+
+ protected:
+  bool suppress_metrics_ = false;
+  const ImageType image_type_;
+  const base::TimeTicks start_time_;
+
+  // UMA histogram parameters
+  const uint32_t bucket_count_ = 50;
+  base::TimeDelta hist_min_ = base::TimeDelta::FromMicroseconds(1);
+  base::TimeDelta hist_max_ = base::TimeDelta::FromMilliseconds(1000);
+};
+
+class CC_BASE_EXPORT ScopedImageUploadTask : public ScopedImageTask {
+ public:
+  ScopedImageUploadTask(const void* image_ptr, ImageType image_type);
+  ScopedImageUploadTask(const ScopedImageUploadTask&) = delete;
+  ~ScopedImageUploadTask();
+
+  ScopedImageUploadTask& operator=(const ScopedImageUploadTask&) = delete;
+};
+
+class CC_BASE_EXPORT ScopedImageDecodeTask : public ScopedImageTask {
+ public:
   enum TaskType { kInRaster, kOutOfRaster };
+  enum DecodeType { kSoftware, kGpu };
 
   ScopedImageDecodeTask(const void* image_ptr,
                         DecodeType decode_type,
-                        TaskType task_type);
+                        TaskType task_type,
+                        ImageType image_type);
   ScopedImageDecodeTask(const ScopedImageDecodeTask&) = delete;
   ~ScopedImageDecodeTask();
 
@@ -79,7 +117,6 @@ class CC_BASE_EXPORT ScopedImageDecodeTask {
  private:
   const DecodeType decode_type_;
   const TaskType task_type_;
-  const base::TimeTicks start_time_;
 };
 
 class CC_BASE_EXPORT ScopedLayerTreeTask {
@@ -139,10 +176,12 @@ inline void CC_BASE_EXPORT DidActivateLayerTree(int layer_tree_host_id,
                        internal::kFrameId, frame_id);
 }
 
-inline void CC_BASE_EXPORT DidBeginFrame(int layer_tree_host_id) {
-  TRACE_EVENT_INSTANT1(internal::CategoryName::kTimelineFrame,
-                       internal::kBeginFrame, TRACE_EVENT_SCOPE_THREAD,
-                       internal::kLayerTreeId, layer_tree_host_id);
+inline void CC_BASE_EXPORT
+DidBeginFrame(int layer_tree_host_id, base::TimeTicks begin_frame_timestamp) {
+  TRACE_EVENT_INSTANT_WITH_TIMESTAMP1(
+      internal::CategoryName::kTimelineFrame, internal::kBeginFrame,
+      TRACE_EVENT_SCOPE_THREAD, begin_frame_timestamp, internal::kLayerTreeId,
+      layer_tree_host_id);
 }
 
 inline void CC_BASE_EXPORT DidDrawFrame(int layer_tree_host_id) {
@@ -155,6 +194,15 @@ inline void CC_BASE_EXPORT DidRequestMainThreadFrame(int layer_tree_host_id) {
   TRACE_EVENT_INSTANT1(
       internal::CategoryName::kTimelineFrame, internal::kRequestMainThreadFrame,
       TRACE_EVENT_SCOPE_THREAD, internal::kLayerTreeId, layer_tree_host_id);
+}
+
+inline void CC_BASE_EXPORT
+DidDropSmoothnessFrame(int layer_tree_host_id,
+                       base::TimeTicks dropped_frame_timestamp) {
+  TRACE_EVENT_INSTANT_WITH_TIMESTAMP1(
+      internal::CategoryName::kTimelineFrame, internal::kDroppedFrame,
+      TRACE_EVENT_SCOPE_THREAD, dropped_frame_timestamp, internal::kLayerTreeId,
+      layer_tree_host_id);
 }
 
 inline std::unique_ptr<base::trace_event::ConvertableToTraceFormat>

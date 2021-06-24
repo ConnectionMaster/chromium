@@ -7,9 +7,12 @@
 #include <memory>
 #include <vector>
 
+#include "ash/constants/ash_paths.h"
+#include "ash/constants/ash_switches.h"
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
@@ -18,24 +21,21 @@
 #include "base/memory/singleton.h"
 #include "base/path_service.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/synchronization/cancellation_flag.h"
+#include "base/synchronization/atomic_flag.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chromeos/app_mode/kiosk_oem_manifest_parser.h"
-#include "chromeos/constants/chromeos_constants.h"
-#include "chromeos/constants/chromeos_paths.h"
-#include "chromeos/constants/chromeos_switches.h"
+#include "chromeos/system/kiosk_oem_manifest_parser.h"
 #include "chromeos/system/name_value_pairs_parser.h"
 
 namespace chromeos {
@@ -45,7 +45,7 @@ namespace {
 
 // Path to the tool used to get system info, and delimiters for the output
 // format of the tool.
-const char* kCrosSystemTool[] = { "/usr/bin/crossystem" };
+const char* kCrosSystemTool[] = {"/usr/bin/crossystem"};
 const char kCrosSystemEq[] = "=";
 const char kCrosSystemDelim[] = "\n";
 const char kCrosSystemCommentDelim[] = "#";
@@ -122,7 +122,7 @@ bool JoinListValuesToString(const base::DictionaryValue* dictionary,
 
   std::string buffer;
   bool first = true;
-  for (const auto& v : *list) {
+  for (const auto& v : list->GetList()) {
     std::string value;
     if (!v.GetAsString(&value))
       return false;
@@ -183,13 +183,17 @@ const char kShouldSendRlzPingKey[] = "should_send_rlz_ping";
 const char kShouldSendRlzPingValueFalse[] = "0";
 const char kShouldSendRlzPingValueTrue[] = "1";
 const char kRlzEmbargoEndDateKey[] = "rlz_embargo_end_date";
+const char kEnterpriseManagementEmbargoEndDateKey[] =
+    "enterprise_management_embargo_end_date";
 const char kCustomizationIdKey[] = "customization_id";
 const char kDevSwitchBootKey[] = "devsw_boot";
 const char kDevSwitchBootValueDev[] = "1";
 const char kDevSwitchBootValueVerified[] = "0";
-const char kFirmwareWriteProtectBootKey[] = "wpsw_boot";
-const char kFirmwareWriteProtectBootValueOn[] = "1";
-const char kFirmwareWriteProtectBootValueOff[] = "0";
+const char kDockMacAddressKey[] = "dock_mac";
+const char kEthernetMacAddressKey[] = "ethernet_mac0";
+const char kFirmwareWriteProtectCurrentKey[] = "wpsw_cur";
+const char kFirmwareWriteProtectCurrentValueOn[] = "1";
+const char kFirmwareWriteProtectCurrentValueOff[] = "0";
 const char kFirmwareTypeKey[] = "mainfw_type";
 const char kFirmwareTypeValueDeveloper[] = "developer";
 const char kFirmwareTypeValueNonchrome[] = "nonchrome";
@@ -198,6 +202,7 @@ const char kHardwareClassKey[] = "hardware_class";
 const char kIsVmKey[] = "is_vm";
 const char kIsVmValueFalse[] = "0";
 const char kIsVmValueTrue[] = "1";
+const char kManufactureDateKey[] = "mfg_date";
 const char kOffersCouponCodeKey[] = "ubind_attribute";
 const char kOffersGroupCodeKey[] = "gbind_attribute";
 const char kRlzBrandCodeKey[] = "rlz_brand_code";
@@ -206,6 +211,7 @@ const char kSerialNumberKeyForTest[] = "serial_number";
 const char kInitialLocaleKey[] = "initial_locale";
 const char kInitialTimezoneKey[] = "initial_timezone";
 const char kKeyboardLayoutKey[] = "keyboard_layout";
+const char kAttestedDeviceIdKey[] = "attested_device_id";
 
 // OEM specific statistics. Must be prefixed with "oem_".
 const char kOemCanExitEnterpriseEnrollmentKey[] = "oem_can_exit_enrollment";
@@ -275,7 +281,7 @@ class StatisticsProviderImpl : public StatisticsProvider {
   bool load_statistics_started_;
   NameValuePairsParser::NameValueMap machine_info_;
   MachineFlags machine_flags_;
-  base::CancellationFlag cancellation_flag_;
+  base::AtomicFlag cancellation_flag_;
   bool oem_manifest_loaded_;
   std::string region_;
   std::unique_ptr<base::Value> regional_data_;
@@ -310,7 +316,8 @@ void StatisticsProviderImpl::SignalStatisticsLoaded() {
     // and unblock pending WaitForStatisticsLoaded() calls.
     statistics_loaded_.Signal();
 
-    VLOG(1) << "Finished loading statistics.";
+    // TODO(crbug.com/1123153): Downgrade to VLOG(1) after the bug is fixed.
+    LOG(WARNING) << "Finished loading statistics.";
   }
 
   // Schedule callbacks that were in |statistics_loaded_callbacks_|.
@@ -336,8 +343,8 @@ bool StatisticsProviderImpl::WaitForStatisticsLoaded() {
     return true;
   }
 
-  LOG(ERROR) << "Statistics not loaded after waiting "
-             << dtime.InMilliseconds() << "ms.";
+  LOG(ERROR) << "Statistics not loaded after waiting " << dtime.InMilliseconds()
+             << "ms.";
   return false;
 }
 
@@ -413,8 +420,7 @@ bool StatisticsProviderImpl::GetMachineStatistic(const std::string& name,
   if (iter == machine_info_.end()) {
     if (GetRegionalInformation(name, result))
       return true;
-    if (result != nullptr &&
-        base::SysInfo::IsRunningOnChromeOS() &&
+    if (result != nullptr && base::SysInfo::IsRunningOnChromeOS() &&
         (oem_manifest_loaded_ || !HasOemPrefix(name))) {
       VLOG(1) << "Requested statistic not found: " << name;
     }
@@ -435,8 +441,7 @@ bool StatisticsProviderImpl::GetMachineFlag(const std::string& name,
 
   MachineFlags::const_iterator iter = machine_flags_.find(name);
   if (iter == machine_flags_.end()) {
-    if (result != nullptr &&
-        base::SysInfo::IsRunningOnChromeOS() &&
+    if (result != nullptr && base::SysInfo::IsRunningOnChromeOS() &&
         (oem_manifest_loaded_ || !HasOemPrefix(name))) {
       VLOG(1) << "Requested machine flag not found: " << name;
     }
@@ -483,7 +488,7 @@ void StatisticsProviderImpl::StartLoadingMachineStatistics(
 
   // TaskPriority::USER_BLOCKING because this is on the critical path of
   // rendering the NTP on startup. https://crbug.com/831835
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE,
       {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
@@ -520,6 +525,7 @@ void StatisticsProviderImpl::LoadMachineStatistics(bool load_oem_manifest) {
   if (cancellation_flag_.IsSet())
     return;
 
+  std::string crossystem_wpsw;
   NameValuePairsParser parser(&machine_info_);
   if (base::SysInfo::IsRunningOnChromeOS()) {
     // Parse all of the key/value pairs from the crossystem tool.
@@ -531,6 +537,12 @@ void StatisticsProviderImpl::LoadMachineStatistics(bool load_oem_manifest) {
     // Drop useless "(error)" values so they don't displace valid values
     // supplied later by other tools: https://crbug.com/844258
     parser.DeletePairsWithValue(kCrosSystemValueError);
+
+    auto it = machine_info_.find(kFirmwareWriteProtectCurrentKey);
+    if (it != machine_info_.end()) {
+      crossystem_wpsw = it->second;
+      machine_info_.erase(it);
+    }
   }
 
   base::FilePath machine_info_path;
@@ -563,15 +575,11 @@ void StatisticsProviderImpl::LoadMachineStatistics(bool load_oem_manifest) {
     }
   }
 
-  parser.GetNameValuePairsFromFile(machine_info_path,
-                                   kMachineHardwareInfoEq,
+  parser.GetNameValuePairsFromFile(machine_info_path, kMachineHardwareInfoEq,
                                    kMachineHardwareInfoDelim);
   parser.GetNameValuePairsFromFile(base::FilePath(kEchoCouponFile),
-                                   kEchoCouponEq,
-                                   kEchoCouponDelim);
-  parser.GetNameValuePairsFromFile(vpd_path,
-                                   kVpdEq,
-                                   kVpdDelim);
+                                   kEchoCouponEq, kEchoCouponDelim);
+  parser.GetNameValuePairsFromFile(vpd_path, kVpdEq, kVpdDelim);
 
   // Ensure that the hardware class key is present with the expected
   // key name, and if it couldn't be retrieved, that the value is "unknown".
@@ -587,6 +595,15 @@ void StatisticsProviderImpl::LoadMachineStatistics(bool load_oem_manifest) {
     if (is_vm_iter != machine_info_.end() &&
         is_vm_iter->second == kIsVmValueTrue) {
       machine_info_[kIsVmKey] = kIsVmValueTrue;
+    }
+
+    // Use the write-protect value from crossystem only if it hasn't been loaded
+    // from any other source, since the result of crosystem is less reliable for
+    // this key.
+    if (machine_info_.find(kFirmwareWriteProtectCurrentKey) ==
+            machine_info_.end() &&
+        !crossystem_wpsw.empty()) {
+      machine_info_[kFirmwareWriteProtectCurrentKey] = crossystem_wpsw;
     }
   }
 
@@ -615,7 +632,8 @@ void StatisticsProviderImpl::LoadMachineStatistics(bool load_oem_manifest) {
     region_ =
         command_line->GetSwitchValueASCII(chromeos::switches::kCrosRegion);
     machine_info_[kRegionKey] = region_;
-    VLOG(1) << "CrOS region set to '" << region_ << "'";
+    // TODO(crbug.com/1123153): Downgrade to VLOG(1) after the bug is fixed.
+    LOG(WARNING) << "CrOS region set to '" << region_ << "'";
   }
 
   if (regional_data_.get() && !region_.empty() && !GetRegionDictionary())
@@ -656,17 +674,15 @@ void StatisticsProviderImpl::LoadOemManifestFromFile(
     LOG(WARNING) << "Unable to load OEM Manifest file: " << file.value();
     return;
   }
-  machine_info_[kOemDeviceRequisitionKey] =
-      oem_manifest.device_requisition;
-  machine_flags_[kOemIsEnterpriseManagedKey] =
-      oem_manifest.enterprise_managed;
+  machine_info_[kOemDeviceRequisitionKey] = oem_manifest.device_requisition;
+  machine_flags_[kOemIsEnterpriseManagedKey] = oem_manifest.enterprise_managed;
   machine_flags_[kOemCanExitEnterpriseEnrollmentKey] =
       oem_manifest.can_exit_enrollment;
-  machine_flags_[kOemKeyboardDrivenOobeKey] =
-      oem_manifest.keyboard_driven_oobe;
+  machine_flags_[kOemKeyboardDrivenOobeKey] = oem_manifest.keyboard_driven_oobe;
 
   oem_manifest_loaded_ = true;
-  VLOG(1) << "Loaded OEM Manifest statistics from " << file.value();
+  // TODO(crbug.com/1123153): Downgrade to VLOG(1) after the bug is fixed.
+  LOG(WARNING) << "Loaded OEM Manifest statistics from " << file.value();
 }
 
 StatisticsProviderImpl* StatisticsProviderImpl::GetInstance() {

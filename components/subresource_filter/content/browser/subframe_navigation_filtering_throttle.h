@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_SUBFRAME_NAVIGATION_FILTERING_THROTTLE_H_
 #define COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_SUBFRAME_NAVIGATION_FILTERING_THROTTLE_H_
 
+#include "base/feature_list.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -12,14 +13,27 @@
 #include "components/subresource_filter/core/common/load_policy.h"
 #include "content/public/browser/navigation_throttle.h"
 
+namespace features {
+extern const base::Feature kSendCnameAliasesToSubresourceFilterFromBrowser;
+}  // namespace features
+
 namespace content {
 class NavigationHandle;
-class RenderFrameHost;
 }  // namespace content
 
 namespace subresource_filter {
 
 class AsyncDocumentSubresourceFilter;
+
+// Struct for keeping variables used in recording CNAME alias metrics bundled
+// together.
+struct CnameAliasMetricInfo {
+  int list_length = 0;
+  int was_ad_tagged_based_on_alias_count = 0;
+  int was_blocked_based_on_alias_count = 0;
+  int invalid_count = 0;
+  int redundant_count = 0;
+};
 
 // NavigationThrottle responsible for filtering subframe document loads, which
 // are considered subresource loads of their parent frame, hence are subject to
@@ -29,27 +43,17 @@ class AsyncDocumentSubresourceFilter;
 // The throttle should only be instantiated for navigations occuring in
 // subframes owned by documents which already have filtering activated, and
 // therefore an associated (Async)DocumentSubresourceFilter.
+//
+// TODO(https://crbug.com/984562): With AdTagging enabled, this throttle delays
+// almost all subframe navigations. This delay is necessary in blocking mode due
+// to logic related to BLOCK_REQUEST_AND_COLLAPSE. However, there may be room
+// for optimization during AdTagging, or migrating BLOCK_REQUEST_AND_COLLAPSE to
+// be allowed during WillProcessResponse.
 class SubframeNavigationFilteringThrottle : public content::NavigationThrottle {
  public:
-  class Delegate {
-   public:
-    // Given what is known about the frame's load policy, its parent frame, and
-    // what it's learned from ad tagging, determine if it's an ad subframe.
-    virtual bool CalculateIsAdSubframe(content::RenderFrameHost* frame_host,
-                                       LoadPolicy load_policy) = 0;
-
-   protected:
-    Delegate() = default;
-    virtual ~Delegate() = default;
-
-    DISALLOW_COPY_AND_ASSIGN(Delegate);
-  };
-
-  // |delegate| must outlive this object.
   SubframeNavigationFilteringThrottle(
       content::NavigationHandle* handle,
-      AsyncDocumentSubresourceFilter* parent_frame_filter,
-      Delegate* delegate);
+      AsyncDocumentSubresourceFilter* parent_frame_filter);
   ~SubframeNavigationFilteringThrottle() override;
 
   // content::NavigationThrottle:
@@ -61,23 +65,43 @@ class SubframeNavigationFilteringThrottle : public content::NavigationThrottle {
   const char* GetNameForLogging() override;
 
  private:
-  content::NavigationThrottle::ThrottleCheckResult DeferToCalculateLoadPolicy();
+  enum class DeferStage {
+    kNotDeferring,
+    kWillStartOrRedirectRequest,
+    kWillProcessResponse
+  };
+
+  content::NavigationThrottle::ThrottleCheckResult
+  MaybeDeferToCalculateLoadPolicy();
+
   void OnCalculatedLoadPolicy(LoadPolicy policy);
+  void OnCalculatedLoadPoliciesFromAliasUrls(std::vector<LoadPolicy> policies);
+  void HandleDisallowedLoad();
 
   void NotifyLoadPolicy() const;
+
+  void DeferStart(DeferStage stage);
+  void UpdateDeferInfo();
+
+  void CancelNavigation();
+  void ResumeNavigation();
 
   // Must outlive this class.
   AsyncDocumentSubresourceFilter* parent_frame_filter_;
 
+  int pending_load_policy_calculations_ = 0;
+  DeferStage defer_stage_ = DeferStage::kNotDeferring;
   base::TimeTicks last_defer_timestamp_;
   base::TimeDelta total_defer_time_;
-  LoadPolicy load_policy_ = LoadPolicy::ALLOW;
 
-  // As specified in the constructor comment, |delegate_| must outlive this
-  // object.
-  Delegate* delegate_;
+  const bool alias_check_enabled_;
+  CnameAliasMetricInfo alias_info_;
 
-  base::WeakPtrFactory<SubframeNavigationFilteringThrottle> weak_ptr_factory_;
+  // Set to the least restrictive load policy by default.
+  LoadPolicy load_policy_ = LoadPolicy::EXPLICITLY_ALLOW;
+
+  base::WeakPtrFactory<SubframeNavigationFilteringThrottle> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(SubframeNavigationFilteringThrottle);
 };

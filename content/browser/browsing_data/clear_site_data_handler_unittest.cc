@@ -7,21 +7,17 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
-#include "base/strings/stringprintf.h"
 #include "base/test/scoped_command_line.h"
-#include "base/test/scoped_task_environment.h"
-#include "content/public/browser/resource_request_info.h"
+#include "base/test/task_environment.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/test/test_browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_util.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/redirect_info.h"
-#include "net/url_request/url_request_job.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -103,7 +99,7 @@ class VectorConsoleMessagesDelegate : public ConsoleMessagesDelegate {
 
   void OutputMessages(const base::RepeatingCallback<WebContents*()>&
                           web_contents_getter) override {
-    *message_buffer_ = messages();
+    *message_buffer_ = GetMessagesForTesting();
   }
 
  private:
@@ -136,10 +132,10 @@ class StringConsoleMessagesDelegate : public ConsoleMessagesDelegate {
 class ClearSiteDataHandlerTest : public testing::Test {
  public:
   ClearSiteDataHandlerTest()
-      : thread_bundle_(TestBrowserThreadBundle::IO_MAINLOOP) {}
+      : task_environment_(BrowserTaskEnvironment::IO_MAINLOOP) {}
 
  private:
-  TestBrowserThreadBundle thread_bundle_;
+  BrowserTaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(ClearSiteDataHandlerTest);
 };
@@ -284,7 +280,7 @@ TEST_F(ClearSiteDataHandlerTest, InvalidHeader) {
         &console_delegate, GURL()));
 
     std::string multiline_message;
-    for (const auto& message : console_delegate.messages()) {
+    for (const auto& message : console_delegate.GetMessagesForTesting()) {
       EXPECT_EQ(blink::mojom::ConsoleMessageLevel::kError, message.level);
       multiline_message += message.text + "\n";
     }

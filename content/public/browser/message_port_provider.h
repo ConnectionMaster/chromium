@@ -5,20 +5,22 @@
 #ifndef CONTENT_PUBLIC_BROWSER_MESSAGE_PORT_PROVIDER_H_
 #define CONTENT_PUBLIC_BROWSER_MESSAGE_PORT_PROVIDER_H_
 
+#include <string>
 #include <vector>
 
 #include "base/macros.h"
 #include "base/memory/singleton.h"
-#include "base/optional.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
+#include "build/chromecast_buildflags.h"
 #include "content/common/content_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/messaging/web_message_port.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/scoped_java_ref.h"
 #endif
 
-#if defined(OS_FUCHSIA)
+#if defined(OS_FUCHSIA) || BUILDFLAG(IS_CHROMECAST)
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #endif
 
@@ -33,11 +35,10 @@ class CONTENT_EXPORT MessagePortProvider {
   // See https://html.spec.whatwg.org/multipage/comms.html#messageevent for
   // further information on message events.
   // Should be called on UI thread.
-  static void PostMessageToFrame(
-      WebContents* web_contents,
-      const base::string16& source_origin,
-      const base::string16& target_origin,
-      const base::string16& data);
+  static void PostMessageToFrame(WebContents* web_contents,
+                                 const std::u16string& source_origin,
+                                 const std::u16string& target_origin,
+                                 const std::u16string& data);
 
 #if defined(OS_ANDROID)
   static void PostMessageToFrame(
@@ -49,15 +50,15 @@ class CONTENT_EXPORT MessagePortProvider {
       const base::android::JavaParamRef<jobjectArray>& ports);
 #endif  // OS_ANDROID
 
-#if defined(OS_FUCHSIA)
+#if defined(OS_FUCHSIA) || BUILDFLAG(IS_CHROMECAST)
   // If |target_origin| is unset, then no origin scoping is applied.
   static void PostMessageToFrame(
       WebContents* web_contents,
-      const base::string16& source_origin,
-      const base::Optional<base::string16>& target_origin,
-      const base::string16& data,
-      std::vector<mojo::ScopedMessagePipeHandle> channels);
-#endif  // OS_FUCHSIA
+      const std::u16string& source_origin,
+      const absl::optional<std::u16string>& target_origin,
+      const std::u16string& data,
+      std::vector<blink::WebMessagePort> ports);
+#endif  // OS_FUCHSIA || BUILDFLAG(IS_CHROMECAST)
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(MessagePortProvider);

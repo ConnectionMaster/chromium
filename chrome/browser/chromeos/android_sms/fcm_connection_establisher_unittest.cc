@@ -11,8 +11,8 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/timer/mock_timer.h"
 #include "chrome/browser/chromeos/android_sms/android_sms_urls.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/fake_service_worker_context.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/messaging/string_message_codec.h"
 #include "third_party/blink/public/common/messaging/transferable_message.h"
@@ -24,14 +24,14 @@ namespace android_sms {
 class FcmConnectionEstablisherTest : public testing::Test {
  protected:
   FcmConnectionEstablisherTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP) {}
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP) {}
   ~FcmConnectionEstablisherTest() override = default;
 
   void VerifyTransferrableMessage(
       const char* expected,
       const content::FakeServiceWorkerContext::
           StartServiceWorkerAndDispatchMessageArgs& call_args) {
-    base::string16 message_string;
+    std::u16string message_string;
     blink::DecodeStringMessage(
         std::get<blink::TransferableMessage>(call_args).owned_encoded_message,
         &message_string);
@@ -39,7 +39,7 @@ class FcmConnectionEstablisherTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   DISALLOW_COPY_AND_ASSIGN(FcmConnectionEstablisherTest);
 };
 

@@ -25,8 +25,10 @@
 #include <unordered_set>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/format_macros.h"
 #include "base/guid.h"
+#include "base/i18n/case_conversion.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -36,6 +38,7 @@
 #include "components/history/core/browser/download_row.h"
 #include "components/history/core/browser/history_constants.h"
 #include "components/history/core/browser/history_database.h"
+#include "components/history/core/browser/keyword_search_term.h"
 #include "components/history/core/browser/page_usage_data.h"
 #include "components/history/core/test/history_backend_db_base_test.h"
 #include "components/history/core/test/test_history_database.h"
@@ -1337,7 +1340,7 @@ TEST_F(HistoryBackendDBTest, MigratePresentations) {
   const URLID url_id = 3;
   const GURL url("http://www.foo.com");
   const std::string url_name(VisitSegmentDatabase::ComputeSegmentName(url));
-  const base::string16 title(base::ASCIIToUTF16("Title1"));
+  const std::u16string title(u"Title1");
   const base::Time segment_time(base::Time::Now());
 
   {
@@ -1388,8 +1391,8 @@ TEST_F(HistoryBackendDBTest, MigratePresentations) {
   // Re-open the db, triggering migration.
   CreateBackendAndDatabase();
 
-  std::vector<std::unique_ptr<PageUsageData>> results = db_->QuerySegmentUsage(
-      segment_time, 10, base::Callback<bool(const GURL&)>());
+  std::vector<std::unique_ptr<PageUsageData>> results =
+      db_->QuerySegmentUsage(segment_time, 10, base::NullCallback());
   ASSERT_EQ(1u, results.size());
   EXPECT_EQ(url, results[0]->GetURL());
   EXPECT_EQ(segment_id, results[0]->GetID());
@@ -1446,8 +1449,8 @@ TEST_F(HistoryBackendDBTest, MigrateVisitSegmentNames) {
   const GURL url2("http://m.foo.com");
   const std::string legacy_segment_name1("http://foo.com/");
   const std::string legacy_segment_name2("http://m.foo.com/");
-  const base::string16 title1(base::ASCIIToUTF16("Title1"));
-  const base::string16 title2(base::ASCIIToUTF16("Title2"));
+  const std::u16string title1(u"Title1");
+  const std::u16string title2(u"Title2");
   const base::Time segment_time(base::Time::Now());
 
   {
@@ -1535,9 +1538,8 @@ TEST_F(HistoryBackendDBTest, MigrateVisitSegmentNames) {
   // Re-open the db, triggering migration.
   CreateBackendAndDatabase();
 
-  std::vector<std::unique_ptr<PageUsageData>> results =
-      db_->QuerySegmentUsage(segment_time, /*max_result_count=*/10,
-                             base::Callback<bool(const GURL&)>());
+  std::vector<std::unique_ptr<PageUsageData>> results = db_->QuerySegmentUsage(
+      segment_time, /*max_result_count=*/10, base::NullCallback());
   ASSERT_EQ(1u, results.size());
   EXPECT_THAT(results[0]->GetURL(), testing::AnyOf(url1, url2));
   EXPECT_THAT(results[0]->GetTitle(), testing::AnyOf(title1, title2));
@@ -1699,6 +1701,297 @@ TEST_F(HistoryBackendDBTest,
   EXPECT_FALSE(visit_row.incremented_omnibox_typed_score);
 }
 
+TEST_F(HistoryBackendDBTest, MigrateVisitsWithoutPubliclyRoutableColumn) {
+  ASSERT_NO_FATAL_FAILURE(CreateDBVersion(42));
+
+  // Define common uninteresting data for visits.
+  const VisitID referring_visit = 0;
+  const ui::PageTransition transition = ui::PAGE_TRANSITION_TYPED;
+  const base::Time visit_time(base::Time::Now());
+  const base::TimeDelta visit_duration(base::TimeDelta::FromSeconds(30));
+
+  // The first visit has both a DB entry and a metadata entry.
+  const VisitID visit_id1 = 1;
+  const URLID url_id1 = 10;
+  const SegmentID segment_id1 = 20;
+  const std::string metadata_value1 = "BLOB1";
+
+  // Open the db for manual manipulation.
+  sql::Database db;
+  ASSERT_TRUE(db.Open(history_dir_.Append(kHistoryFilename)));
+
+  const char kInsertVisitStatement[] =
+      "INSERT INTO visits "
+      "(id, url, visit_time, from_visit, transition, segment_id, "
+      "visit_duration) VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+  // Add an entry to "visits" table.
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertVisitStatement));
+    s.BindInt64(0, visit_id1);
+    s.BindInt64(1, url_id1);
+    s.BindInt64(2, visit_time.ToDeltaSinceWindowsEpoch().InMicroseconds());
+    s.BindInt64(3, referring_visit);
+    s.BindInt64(4, transition);
+    s.BindInt64(5, segment_id1);
+    s.BindInt64(6, visit_duration.InMicroseconds());
+    ASSERT_TRUE(s.Run());
+  }
+
+  // Re-open the db, triggering migration.
+  CreateBackendAndDatabase();
+
+  // The version should have been updated.
+  ASSERT_GE(HistoryDatabase::GetCurrentVersion(), 44);
+
+  // Confirm that publicly_routable column has a default value "false".
+  {
+    sql::Statement s(
+        db.GetUniqueStatement("SELECT publicly_routable FROM visits"));
+    EXPECT_TRUE(s.Step());
+
+    EXPECT_FALSE(s.ColumnBool(1));
+    EXPECT_FALSE(s.Step());
+  }
+
+  // content_annotations should exist.
+  EXPECT_TRUE(db.DoesTableExist("content_annotations"));
+
+  // Confirm that content_annotations table has a annotation_flags column,
+  // but has 0 entry in it because the publicly_routable field in the entry in
+  // the visits table is "false" so is not migrated to the content_annotations
+  // table.
+  {
+    sql::Statement s(db.GetUniqueStatement(
+        "SELECT annotation_flags FROM content_annotations"));
+    EXPECT_FALSE(s.Step());
+  }
+}
+
+TEST_F(HistoryBackendDBTest, MigrateFlocAllowedToAnnotationsTable) {
+  ASSERT_NO_FATAL_FAILURE(CreateDBVersion(43));
+
+  // Define common uninteresting data for visits.
+  const base::Time visit_time(base::Time::Now());
+
+  // The first visit is publicly routable;
+  const VisitID visit_id1 = 1;
+  const URLID url_id1 = 10;
+  const bool publicly_routable1 = true;
+
+  // The second visit is not publicly routable;
+  const VisitID visit_id2 = 2;
+  const URLID url_id2 = 20;
+  const bool publicly_routable2 = false;
+
+  // The third visit is publicly routable;
+  const VisitID visit_id3 = 3;
+  const URLID url_id3 = 30;
+  const bool publicly_routable3 = true;
+
+  // Open the db for manual manipulation.
+  sql::Database db;
+  ASSERT_TRUE(db.Open(history_dir_.Append(kHistoryFilename)));
+
+  const char kInsertVisitStatement[] =
+      "INSERT INTO visits "
+      "(id, url, visit_time, publicly_routable) VALUES (?, ?, ?, ?)";
+
+  const char kInsertAnnotationsStatement[] =
+      "INSERT INTO content_annotations "
+      "(visit_id, floc_protected_score, categories, page_topics_model_version) "
+      "VALUES (?, ?, ?, ?)";
+
+  // Add the three entries to "visits" table.
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertVisitStatement));
+    s.BindInt64(0, visit_id1);
+    s.BindInt64(1, url_id1);
+    s.BindInt64(2, visit_time.ToDeltaSinceWindowsEpoch().InMicroseconds());
+    s.BindBool(3, publicly_routable1);
+    ASSERT_TRUE(s.Run());
+  }
+
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertVisitStatement));
+    s.BindInt64(0, visit_id2);
+    s.BindInt64(1, url_id2);
+    s.BindInt64(2, visit_time.ToDeltaSinceWindowsEpoch().InMicroseconds());
+    s.BindBool(3, publicly_routable2);
+    ASSERT_TRUE(s.Run());
+  }
+
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertVisitStatement));
+    s.BindInt64(0, visit_id3);
+    s.BindInt64(1, url_id3);
+    s.BindInt64(2, visit_time.ToDeltaSinceWindowsEpoch().InMicroseconds());
+    s.BindBool(3, publicly_routable3);
+    ASSERT_TRUE(s.Run());
+  }
+
+  // Add the two entries to "content_annotations" table
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertAnnotationsStatement));
+    s.BindInt64(0, visit_id1);
+    s.BindDouble(1, -1);
+    s.BindString(2, "");
+    s.BindInt64(3, -1);
+    ASSERT_TRUE(s.Run());
+  }
+
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertAnnotationsStatement));
+    s.BindInt64(0, visit_id2);
+    s.BindDouble(1, 0.5f);
+    s.BindString(2, "1:1");
+    s.BindInt64(3, 123);
+    ASSERT_TRUE(s.Run());
+  }
+
+  // Re-open the db, triggering migration.
+  CreateBackendAndDatabase();
+
+  // The version should have been updated.
+  ASSERT_GE(HistoryDatabase::GetCurrentVersion(), 44);
+
+  // Confirm that publicly_routable column still exists.
+  ASSERT_TRUE(db.DoesColumnExist("visits", "publicly_routable"));
+
+  // Check the entries in the content_annotations table.
+  {
+    sql::Statement s(db.GetUniqueStatement(
+        "SELECT visit_id,floc_protected_score,"
+        "categories,page_topics_model_version,annotation_flags "
+        "FROM content_annotations "
+        "ORDER BY visit_id"));
+
+    EXPECT_TRUE(s.Step());
+    EXPECT_EQ(visit_id1, s.ColumnInt64(0));
+    EXPECT_EQ(-1, s.ColumnDouble(1));
+    EXPECT_EQ("", s.ColumnString(2));
+    EXPECT_EQ(-1, s.ColumnInt64(3));
+    EXPECT_EQ(VisitContentAnnotationFlag::kFlocEligibleRelaxed,
+              static_cast<uint64_t>(s.ColumnInt64(4)));
+
+    EXPECT_TRUE(s.Step());
+    EXPECT_EQ(visit_id2, s.ColumnInt64(0));
+    EXPECT_EQ(0.5, s.ColumnDouble(1));
+    EXPECT_EQ("1:1", s.ColumnString(2));
+    EXPECT_EQ(123, s.ColumnInt64(3));
+    EXPECT_EQ(VisitContentAnnotationFlag::kNone,
+              static_cast<uint64_t>(s.ColumnInt64(4)));
+
+    EXPECT_TRUE(s.Step());
+    EXPECT_EQ(visit_id3, s.ColumnInt64(0));
+    EXPECT_EQ(-1, s.ColumnDouble(1));
+    EXPECT_EQ("", s.ColumnString(2));
+    EXPECT_EQ(-1, s.ColumnInt64(3));
+    EXPECT_EQ(VisitContentAnnotationFlag::kFlocEligibleRelaxed,
+              static_cast<uint64_t>(s.ColumnInt64(4)));
+
+    EXPECT_FALSE(s.Step());
+  }
+}
+
+TEST_F(HistoryBackendDBTest, MigrateReplaceClusterVisitsTable) {
+  ASSERT_NO_FATAL_FAILURE(CreateDBVersion(44));
+
+  sql::Database db;
+  ASSERT_TRUE(db.Open(history_dir_.Append(kHistoryFilename)));
+
+  const char kInsertVisitStatement[] =
+      "INSERT INTO visits "
+      "(id, url, visit_time) VALUES (?, ?, ?)";
+
+  const char kInsertAnnotationsStatement[] =
+      "INSERT INTO cluster_visits "
+      "(cluster_visit_id, url_id, visit_id, "
+      "cluster_visit_context_signal_bitmask, duration_since_last_visit, "
+      "page_end_reason) "
+      "VALUES (?, ?, ?, ?, ?, ?)";
+
+  // Add a row to `visits` table.
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertVisitStatement));
+    s.BindInt64(0, 1);
+    s.BindInt64(1, 1);
+    s.BindTime(2, base::Time::Now());
+    ASSERT_TRUE(s.Run());
+  }
+
+  // Add a row to the `cluster_visits` table.
+  {
+    sql::Statement s(db.GetUniqueStatement(kInsertAnnotationsStatement));
+    s.BindInt64(0, 1);
+    s.BindInt64(1, 1);
+    s.BindInt64(2, 1);
+    s.BindInt64(3, 0);
+    s.BindInt64(4, 0);
+    s.BindInt(5, 0);
+    ASSERT_TRUE(s.Run());
+  }
+
+  // Re-open the db, triggering migration.
+  CreateBackendAndDatabase();
+
+  // The version should have been updated.
+  ASSERT_GE(HistoryDatabase::GetCurrentVersion(), 45);
+
+  // Confirm the old `cluster_visits` table no longer exists.
+  ASSERT_FALSE(db.DoesTableExist("cluster_visits"));
+
+  // Confirm the new `context_annotations` exists.
+  ASSERT_TRUE(db.DoesTableExist("context_annotations"));
+
+  // Check `context_annotations` is empty.
+  {
+    sql::Statement s(
+        db.GetUniqueStatement("SELECT COUNT(*) FROM content_annotations"));
+    EXPECT_TRUE(s.Step());
+    EXPECT_EQ(s.ColumnInt64(0), 0u);
+    EXPECT_FALSE(s.Step());
+  }
+}
+
+// Tests that the migration code correctly replaces the lower_term column in the
+// keyword search terms table which normalized_term which contains the
+// normalized search term during migration to version 42.
+TEST_F(HistoryBackendDBTest, MigrateKeywordSearchTerms) {
+  ASSERT_NO_FATAL_FAILURE(CreateDBVersion(41));
+
+  const KeywordID keyword_id = 12;
+  const URLID url_id = 34;
+  const std::u16string term = u"WEEKLY  NEWS  ";
+  const std::u16string lower_term = base::i18n::ToLower(term);
+  const std::u16string normalized_term =
+      base::CollapseWhitespace(lower_term, false);
+
+  sql::Database db;
+  ASSERT_TRUE(db.Open(history_dir_.Append(kHistoryFilename)));
+  sql::Statement insert_statement(
+      db.GetUniqueStatement("INSERT INTO keyword_search_terms (keyword_id, "
+                            "url_id, lower_term, term) VALUES (?,?,?,?)"));
+  insert_statement.BindInt64(0, keyword_id);
+  insert_statement.BindInt64(1, url_id);
+  insert_statement.BindString16(2, lower_term);
+  insert_statement.BindString16(3, term);
+  ASSERT_TRUE(insert_statement.Run());
+
+  // Re-open the db, triggering migration.
+  CreateBackendAndDatabase();
+
+  // The version should have been updated.
+  ASSERT_GE(HistoryDatabase::GetCurrentVersion(), 42);
+
+  history::KeywordSearchTermRow keyword_search_term_row;
+  ASSERT_TRUE(db_->GetKeywordSearchTermRow(url_id, &keyword_search_term_row));
+  EXPECT_EQ(keyword_id, keyword_search_term_row.keyword_id);
+  EXPECT_EQ(url_id, keyword_search_term_row.url_id);
+  EXPECT_EQ(term, keyword_search_term_row.term);
+  EXPECT_EQ(normalized_term, keyword_search_term_row.normalized_term);
+}
+
 // Test to verify the left-over typed_url sync metadata gets cleared correctly
 // during migration to version 41.
 TEST_F(HistoryBackendDBTest, MigrateTypedURLLeftoverMetadata) {
@@ -1841,7 +2134,7 @@ TEST_F(HistoryBackendDBTest, QuerySegmentUsage) {
 
   // Without a filter, the "file://" URL should win.
   std::vector<std::unique_ptr<PageUsageData>> results =
-      db_->QuerySegmentUsage(time, 1, base::Callback<bool(const GURL&)>());
+      db_->QuerySegmentUsage(time, 1, base::NullCallback());
   ASSERT_EQ(1u, results.size());
   EXPECT_EQ(url1, results[0]->GetURL());
   EXPECT_EQ(segment_id1, results[0]->GetID());
@@ -1849,7 +2142,7 @@ TEST_F(HistoryBackendDBTest, QuerySegmentUsage) {
   // With the filter, the "file://" URL should be filtered out, so the "http://"
   // URL should win instead.
   std::vector<std::unique_ptr<PageUsageData>> results2 =
-      db_->QuerySegmentUsage(time, 1, base::Bind(&FilterURL));
+      db_->QuerySegmentUsage(time, 1, base::BindRepeating(&FilterURL));
   ASSERT_EQ(1u, results2.size());
   EXPECT_EQ(url2, results2[0]->GetURL());
   EXPECT_EQ(segment_id2, results2[0]->GetID());

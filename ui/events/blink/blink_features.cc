@@ -6,28 +6,13 @@
 
 namespace features {
 
-const base::Feature kResamplingScrollEvents{"ResamplingScrollEvents",
-                                            base::FEATURE_DISABLED_BY_DEFAULT};
-
-const base::Feature kScrollPredictorTypeChoice{
-    "ScrollPredictorTypeChoice", base::FEATURE_DISABLED_BY_DEFAULT};
-
 const base::Feature kSendMouseLeaveEvents{"SendMouseLeaveEvents",
                                           base::FEATURE_ENABLED_BY_DEFAULT};
 
-const base::Feature kUpdateHoverFromLayoutChangeAtBeginFrame{
-    "UpdateHoverFromLayoutChangeAtBeginFrame",
-    base::FEATURE_DISABLED_BY_DEFAULT};
-
-const base::Feature kUpdateHoverFromScrollAtBeginFrame{
-    "UpdateHoverFromScrollAtBeginFrame", base::FEATURE_DISABLED_BY_DEFAULT};
-
-const base::Feature kCompositorTouchAction{"CompositorTouchAction",
-                                           base::FEATURE_ENABLED_BY_DEFAULT};
-
-const base::Feature kFallbackCursorMode{"FallbackCursorMode",
-                                        base::FEATURE_DISABLED_BY_DEFAULT};
-
 const base::Feature kDontSendKeyEventsToJavascript{
     "DontSendKeyEventsToJavascript", base::FEATURE_DISABLED_BY_DEFAULT};
-}
+
+const base::Feature kReduceHorizontalFlingVelocity{
+    "ReduceHorizontalFlingVelocity", base::FEATURE_DISABLED_BY_DEFAULT};
+
+}  // namespace features

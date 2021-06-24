@@ -11,12 +11,16 @@ namespace ui {
 class Event;
 }
 
-namespace app_list {
+namespace ash {
 
 class AppListFolderItem;
 
 class FolderHeaderViewDelegate {
  public:
+  // Gets the AppListConfig for the app list view in which the folder header
+  // view is shown.
+  virtual const AppListConfig& GetAppListConfig() const = 0;
+
   // Invoked when the back button on the folder header view is clicked.
   // |item| is the folder item which FolderHeaderview represents.
   // |event_flags| contains the flags of the keyboard/mouse event that triggers
@@ -34,6 +38,6 @@ class FolderHeaderViewDelegate {
   virtual ~FolderHeaderViewDelegate() {}
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_VIEWS_FOLDER_HEADER_VIEW_DELEGATE_H_

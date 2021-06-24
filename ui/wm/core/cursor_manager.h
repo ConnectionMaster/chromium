@@ -11,7 +11,6 @@
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "ui/aura/client/cursor_client.h"
-#include "ui/base/cursor/cursor.h"
 #include "ui/display/display.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/native_widget_types.h"
@@ -20,6 +19,7 @@
 
 namespace ui {
 class KeyEvent;
+enum class CursorSize;
 }
 
 namespace wm {
@@ -46,6 +46,7 @@ class WM_CORE_EXPORT CursorManager : public aura::client::CursorClient,
   // Overridden from aura::client::CursorClient:
   void SetCursor(gfx::NativeCursor) override;
   gfx::NativeCursor GetCursor() const override;
+  void SetCursorForced(gfx::NativeCursor) override;
   void ShowCursor() override;
   void HideCursor() override;
   bool IsCursorVisible() const override;
@@ -69,6 +70,8 @@ class WM_CORE_EXPORT CursorManager : public aura::client::CursorClient,
   void CommitVisibility(bool visible) override;
   void CommitCursorSize(ui::CursorSize cursor_size) override;
   void CommitMouseEventsEnabled(bool enabled) override;
+
+  void SetCursorImpl(gfx::NativeCursor cursor, bool forced);
 
   std::unique_ptr<NativeCursorManager> delegate_;
 

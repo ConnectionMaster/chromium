@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests the Timeline API function call is not recorded for InjectedScript.eval.\n`);
-  await TestRunner.loadModule('performance_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
   await TestRunner.showPanel('timeline');
   await TestRunner.evaluateInPagePromise(`
       function performActions()
@@ -13,5 +13,5 @@
   `);
 
   UI.panels.timeline._disableCaptureJSProfileSetting.set(true);
-  PerformanceTestRunner.performActionsAndPrint('performActions()', 'FunctionCall');
+  await PerformanceTestRunner.performActionsAndPrint('performActions()', 'FunctionCall');
 })();

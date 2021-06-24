@@ -26,7 +26,7 @@
 
 #include "third_party/blink/renderer/core/editing/editing_style_utilities.h"
 
-#include "third_party/blink/renderer/core/css/css_color_value.h"
+#include "third_party/blink/renderer/core/css/css_color.h"
 #include "third_party/blink/renderer/core/css/css_computed_style_declaration.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
@@ -40,8 +40,6 @@
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
 
 namespace blink {
-
-using namespace cssvalue;
 
 namespace {
 
@@ -94,14 +92,14 @@ EditingStyleUtilities::CreateWrappingStyleForAnnotatedSerialization(
   // blockquote, to help us differentiate those styles from ones that the user
   // has applied. This helps us get the color of content pasted into
   // blockquotes right.
-  wrapping_style->RemoveStyleAddedByElement(ToHTMLElement(EnclosingNodeOfType(
+  wrapping_style->RemoveStyleAddedByElement(To<HTMLElement>(EnclosingNodeOfType(
       FirstPositionInOrBeforeNode(*context), IsMailHTMLBlockquoteElement,
       kCanCrossEditingBoundary)));
 
   // Call collapseTextDecorationProperties first or otherwise it'll copy the
   // value over from in-effect to text-decorations.
   wrapping_style->CollapseTextDecorationProperties(
-      context->GetDocument().GetSecureContextMode());
+      context->GetExecutionContext()->GetSecureContextMode());
 
   return wrapping_style;
 }
@@ -118,7 +116,7 @@ EditingStyle* EditingStyleUtilities::CreateWrappingStyleForSerialization(
       break;
     if (node.IsStyledElement() && !IsMailHTMLBlockquoteElement(&node)) {
       wrapping_style->MergeInlineAndImplicitStyleOfElement(
-          ToElement(&node), EditingStyle::kDoNotOverrideValues,
+          To<Element>(&node), EditingStyle::kDoNotOverrideValues,
           EditingStyle::kEditingPropertiesInEffect);
     }
   }
@@ -153,10 +151,10 @@ EditingStyle* EditingStyleUtilities::CreateStyleAtSelectionStart(
   // want Position("world", 0) instead.
   // We only do this for range because caret at Position("hello", 5) in
   // <b>hello</b>world should give you font-weight: bold.
-  Node* position_node = position.ComputeContainerNode();
-  if (selection.IsRange() && position_node && position_node->IsTextNode() &&
+  auto* position_node = DynamicTo<Text>(position.ComputeContainerNode());
+  if (selection.IsRange() && position_node &&
       position.ComputeOffsetInContainerNode() ==
-          static_cast<int>(ToText(position_node)->length()))
+          static_cast<int>(position_node->length()))
     position = NextVisuallyDistinctCandidate(position);
 
   Element* element = AssociatedElementOf(position);
@@ -192,9 +190,10 @@ EditingStyle* EditingStyleUtilities::CreateStyleAtSelectionStart(
     const EphemeralRange range(selection.ToNormalizedEphemeralRange());
     if (const CSSValue* value =
             BackgroundColorValueInEffect(range.CommonAncestorContainer())) {
-      style->SetProperty(CSSPropertyID::kBackgroundColor, value->CssText(),
-                         /* important */ false,
-                         document.GetSecureContextMode());
+      style->SetProperty(
+          CSSPropertyID::kBackgroundColor, value->CssText(),
+          /* important */ false,
+          document.GetExecutionContext()->GetSecureContextMode());
     }
   }
 
@@ -204,7 +203,7 @@ EditingStyle* EditingStyleUtilities::CreateStyleAtSelectionStart(
 bool EditingStyleUtilities::IsTransparentColorValue(const CSSValue* css_value) {
   if (!css_value)
     return true;
-  if (auto* color_value = DynamicTo<CSSColorValue>(css_value))
+  if (auto* color_value = DynamicTo<cssvalue::CSSColor>(css_value))
     return !color_value->Value().Alpha();
   if (auto* identifier_value = DynamicTo<CSSIdentifierValue>(css_value))
     return identifier_value->GetValueID() == CSSValueID::kTransparent;
@@ -232,10 +231,24 @@ const CSSValue* EditingStyleUtilities::BackgroundColorValueInEffect(
         MakeGarbageCollected<CSSComputedStyleDeclaration>(ancestor);
     if (!HasTransparentBackgroundColor(ancestor_style)) {
       return ancestor_style->GetPropertyCSSValue(
-          GetCSSPropertyBackgroundColor());
+          CSSPropertyID::kBackgroundColor);
     }
   }
   return nullptr;
+}
+
+void EditingStyleUtilities::StripUAStyleRulesForMarkupSanitization(
+    EditingStyle* style) {
+  if (!style->Style())
+    return;
+
+  // This is a hacky approach to avoid 'font-family: ""' appearing in
+  // sanitized markup.
+  // TODO(editing-dev): Implement a non-hacky fix up for all properties
+  String font_family =
+      style->Style()->GetPropertyValue(CSSPropertyID::kFontFamily);
+  if (font_family == "\"\"")
+    style->Style()->RemoveProperty(CSSPropertyID::kFontFamily);
 }
 
 }  // namespace blink

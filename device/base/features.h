@@ -12,20 +12,27 @@
 
 namespace device {
 
-#if defined(OS_WIN)
+#if defined(OS_WIN) || defined(OS_MAC)
 DEVICE_BASE_EXPORT extern const base::Feature kNewUsbBackend;
-DEVICE_BASE_EXPORT extern const base::Feature kNewBLEWinImplementation;
-#endif  // defined(OS_WIN)
+#endif  // defined(OS_WIN) || defined(OS_MAC)
 
-#if defined(OS_CHROMEOS)
-DEVICE_BASE_EXPORT extern const base::Feature kNewblueDaemon;
-DEVICE_BASE_EXPORT extern const base::Feature kUnfilteredBluetoothDevices;
-#endif  // defined(OS_CHROMEOS)
+#if defined(OS_WIN)
+DEVICE_BASE_EXPORT extern const base::Feature kNewBLEWinImplementation;
+DEVICE_BASE_EXPORT extern const base::Feature kNewBLEGattSessionHandling;
+#endif  // defined(OS_WIN)
 
 #if BUILDFLAG(ENABLE_VR)
 DEVICE_BASE_EXPORT extern const base::Feature kWebXrOrientationSensorDevice;
 #endif  // BUILDFLAG(ENABLE_VR)
 
+// New features should be added to the device::features namespace.
+
+namespace features {
+#if BUILDFLAG(ENABLE_OPENXR)
+DEVICE_BASE_EXPORT extern const base::Feature kOpenXR;
+DEVICE_BASE_EXPORT extern const base::Feature kOpenXRSharedImages;
+#endif  // ENABLE_OPENXR
+}  // namespace features
 }  // namespace device
 
 #endif  // DEVICE_BASE_FEATURES_H_

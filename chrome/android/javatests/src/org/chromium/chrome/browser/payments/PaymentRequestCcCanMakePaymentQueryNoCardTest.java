@@ -4,7 +4,7 @@
 
 package org.chromium.chrome.browser.payments;
 
-import android.support.test.filters.MediumTest;
+import androidx.test.filters.MediumTest;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -12,15 +12,14 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.FlakyTest;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.autofill.AutofillTestHelper;
-import org.chromium.chrome.browser.autofill.CardType;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.payments.PaymentRequestTestRule.MainActivityStartCallback;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -35,33 +34,19 @@ public class PaymentRequestCcCanMakePaymentQueryNoCardTest implements MainActivi
             new PaymentRequestTestRule("payment_request_can_make_payment_query_cc_test.html", this);
 
     @Override
-    public void onMainActivityStarted() throws InterruptedException, ExecutionException,
-            TimeoutException {
+    public void onMainActivityStarted() throws TimeoutException {
         // The user has an incomplete credit card on file. This is not sufficient for
         // canMakePayment() to return true.
-        new AutofillTestHelper().setCreditCard(
-                new CreditCard("", "https://example.com", true, true, "" /* nameOnCard */,
-                        "4111111111111111", "1111", "12", "2050", "visa", R.drawable.visa_card,
-                        CardType.UNKNOWN, "" /* billingAddressId */, "" /* serverId */));
+        new AutofillTestHelper().setCreditCard(new CreditCard("", "https://example.com", true, true,
+                "" /* nameOnCard */, "4111111111111111", "1111", "12", "2050", "visa",
+                R.drawable.visa_card, "" /* billingAddressId */, "" /* serverId */));
     }
 
     @Test
     @MediumTest
+    @FlakyTest(message = "crbug.com/1182234")
     @Feature({"Payments"})
-    @CommandLineFlags.Add("disable-features=PaymentRequestHasEnrolledInstrument")
-    public void testLegacyCannotMakePayment()
-            throws InterruptedException, ExecutionException, TimeoutException {
-        mPaymentRequestTestRule.openPageAndClickBuyAndWait(
-                mPaymentRequestTestRule.getCanMakePaymentQueryResponded());
-        mPaymentRequestTestRule.expectResultContains(new String[] {"false"});
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"Payments"})
-    @CommandLineFlags.Add("enable-features=PaymentRequestHasEnrolledInstrument")
-    public void testCanMakePayment()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void testCanMakePayment() throws TimeoutException {
         mPaymentRequestTestRule.openPageAndClickBuyAndWait(
                 mPaymentRequestTestRule.getCanMakePaymentQueryResponded());
         mPaymentRequestTestRule.expectResultContains(new String[] {"true"});
@@ -69,10 +54,9 @@ public class PaymentRequestCcCanMakePaymentQueryNoCardTest implements MainActivi
 
     @Test
     @MediumTest
+    @FlakyTest(message = "crbug.com/1182234")
     @Feature({"Payments"})
-    @CommandLineFlags.Add("enable-features=PaymentRequestHasEnrolledInstrument")
-    public void testHasEnrolledInstrument()
-            throws InterruptedException, ExecutionException, TimeoutException {
+    public void testHasEnrolledInstrument() throws TimeoutException {
         mPaymentRequestTestRule.openPageAndClickNodeAndWait("has-enrolled-instrument-visa",
                 mPaymentRequestTestRule.getHasEnrolledInstrumentQueryResponded());
         mPaymentRequestTestRule.expectResultContains(new String[] {"false"});

@@ -8,10 +8,7 @@
 #include <memory>
 
 #include "base/compiler_specific.h"
-#include "base/macros.h"
-#include "base/strings/string16.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
-#include "components/omnibox/browser/autocomplete_controller_delegate.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 
 struct AutocompleteMatch;
@@ -29,17 +26,20 @@ class OmniboxPopupModel;
 //     this the point of contact between InstantController and OmniboxEditModel.
 //     As the refactor progresses, keep the class comment up to date to
 //     precisely explain what this class is doing.
-class OmniboxController : public AutocompleteControllerDelegate {
+class OmniboxController : public AutocompleteController::Observer {
  public:
   OmniboxController(OmniboxEditModel* omnibox_edit_model,
                     OmniboxClient* client);
   ~OmniboxController() override;
+  OmniboxController(const OmniboxController&) = delete;
+  OmniboxController& operator=(const OmniboxController&) = delete;
 
   // The |current_url| field of input is only set for mobile ports.
   void StartAutocomplete(const AutocompleteInput& input) const;
 
-  // AutocompleteControllerDelegate:
-  void OnResultChanged(bool default_match_changed) override;
+  // AutocompleteController::Observer:
+  void OnResultChanged(AutocompleteController* controller,
+                       bool default_match_changed) override;
 
   AutocompleteController* autocomplete_controller() {
     return autocomplete_controller_.get();
@@ -86,9 +86,7 @@ class OmniboxController : public AutocompleteControllerDelegate {
   // some time to extract these fields and use a tighter structure here.
   AutocompleteMatch current_match_;
 
-  base::WeakPtrFactory<OmniboxController> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(OmniboxController);
+  base::WeakPtrFactory<OmniboxController> weak_ptr_factory_{this};
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_CONTROLLER_H_

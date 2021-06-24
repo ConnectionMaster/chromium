@@ -13,15 +13,14 @@
 #include "base/command_line.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/singleton.h"
-#include "base/stl_util.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/task/thread_pool/thread_pool.h"
-#include "jni/JniInterface_jni.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
+#include "remoting/android/jni_headers/JniInterface_jni.h"
 #include "remoting/base/chromium_url_request.h"
+#include "remoting/base/oauth_token_getter_proxy.h"
 #include "remoting/base/url_request_context_getter.h"
 #include "remoting/client/jni/jni_oauth_token_getter.h"
 #include "remoting/client/jni/jni_touch_event_data.h"
-#include "remoting/client/oauth_token_getter_proxy.h"
 
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;

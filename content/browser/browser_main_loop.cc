@@ -15,30 +15,30 @@
 #include "base/base_switches.h"
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/debug/alias.h"
+#include "base/cxx17_backports.h"
 #include "base/deferred_sequenced_task_runner.h"
 #include "base/feature_list.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/memory_pressure_monitor.h"
-#include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_current.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
+#include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/pending_task.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_device_source.h"
 #include "base/process/process_metrics.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/system_monitor.h"
-#include "base/task/post_task.h"
+#include "base/task/current_thread.h"
 #include "base/task/thread_pool/initialization_util.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
@@ -47,79 +47,79 @@
 #include "base/timer/hi_res_timer_manager.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/trace_event.h"
+#include "base/util/memory_pressure/multi_source_memory_pressure_monitor.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "build/chromecast_buildflags.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/base/histograms.h"
 #include "components/discardable_memory/service/discardable_shared_memory_manager.h"
+#include "components/services/storage/dom_storage/storage_area_impl.h"
 #include "components/tracing/common/trace_startup_config.h"
-#include "components/tracing/common/trace_to_console.h"
 #include "components/tracing/common/tracing_switches.h"
-#include "components/viz/common/features.h"
-#include "components/viz/common/switches.h"
+#include "components/viz/host/compositing_mode_reporter_impl.h"
 #include "components/viz/host/gpu_host_impl.h"
 #include "components/viz/host/host_frame_sink_manager.h"
-#include "components/viz/service/display_embedder/compositing_mode_reporter_impl.h"
-#include "components/viz/service/display_embedder/server_shared_bitmap_manager.h"
-#include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "content/browser/accessibility/browser_accessibility_state_impl.h"
 #include "content/browser/browser_thread_impl.h"
 #include "content/browser/child_process_security_policy_impl.h"
-#include "content/browser/compositor/surface_utils.h"
 #include "content/browser/compositor/viz_process_transport_factory.h"
-#include "content/browser/dom_storage/dom_storage_area.h"
-#include "content/browser/dom_storage/storage_area_impl.h"
-#include "content/browser/download/download_resource_handler.h"
 #include "content/browser/download/save_file_manager.h"
+#include "content/browser/field_trial_synchronizer.h"
 #include "content/browser/gpu/browser_gpu_channel_host_factory.h"
 #include "content/browser/gpu/browser_gpu_client_delegate.h"
 #include "content/browser/gpu/compositor_util.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
 #include "content/browser/gpu/gpu_process_host.h"
 #include "content/browser/gpu/shader_cache_factory.h"
-#include "content/browser/histogram_synchronizer.h"
-#include "content/browser/loader/resource_dispatcher_host_impl.h"
-#include "content/browser/loader_delegate_impl.h"
-#include "content/browser/media/capture/audio_mirroring_manager.h"
 #include "content/browser/media/media_internals.h"
 #include "content/browser/media/media_keys_listener_manager_impl.h"
-#include "content/browser/memory/swap_metrics_delegate_uma.h"
+#include "content/browser/metrics/histogram_synchronizer.h"
 #include "content/browser/net/browser_online_state_observer.h"
+#include "content/browser/network_service_instance_impl.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
+#include "content/browser/scheduler/browser_task_executor.h"
 #include "content/browser/scheduler/responsiveness/watcher.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor_device_source.h"
-#include "content/browser/service_manager/service_manager_context.h"
+#include "content/browser/service_sandbox_type.h"
+#include "content/browser/sms/sms_provider.h"
 #include "content/browser/speech/speech_recognition_manager_impl.h"
+#include "content/browser/speech/tts_controller_impl.h"
 #include "content/browser/startup_data_impl.h"
 #include "content/browser/startup_task_runner.h"
 #include "content/browser/tracing/background_tracing_manager_impl.h"
+#include "content/browser/tracing/startup_tracing_controller.h"
 #include "content/browser/tracing/tracing_controller_impl.h"
 #include "content/browser/utility_process_host.h"
 #include "content/browser/webrtc/webrtc_internals.h"
 #include "content/browser/webui/content_web_ui_controller_factory.h"
 #include "content/browser/webui/url_data_manager.h"
 #include "content/common/content_switches_internal.h"
-#include "content/common/service_manager/service_manager_connection_impl.h"
+#include "content/common/skia_utils.h"
 #include "content/common/thread_pool_util.h"
+#include "content/public/browser/audio_service.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
-#include "content/public/browser/gpu_data_manager_observer.h"
+#include "content/public/browser/device_service.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/service_process_host.h"
 #include "content/public/browser/site_isolation_policy.h"
-#include "content/public/browser/swap_metrics_driver.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
 #include "content/public/common/result_codes.h"
-#include "content/public/common/service_names.mojom.h"
+#include "content/public/common/zygote/zygote_buildflags.h"
+#include "device/fido/hid/fido_hid_discovery.h"
 #include "device/gamepad/gamepad_service.h"
-#include "gpu/config/gpu_switches.h"
 #include "media/audio/audio_manager.h"
 #include "media/audio/audio_system.h"
 #include "media/audio/audio_thread_impl.h"
-#include "media/base/media.h"
 #include "media/base/user_input_monitor.h"
 #include "media/media_buildflags.h"
 #include "media/midi/midi_service.h"
@@ -132,25 +132,18 @@
 #include "net/socket/client_socket_factory.h"
 #include "net/ssl/ssl_config_service.h"
 #include "ppapi/buildflags/buildflags.h"
-#include "services/audio/public/cpp/audio_system_factory.h"
-#include "services/audio/public/mojom/constants.mojom.h"
-#include "services/content/public/cpp/navigable_contents_view.h"
+#include "services/audio/service.h"
+#include "services/data_decoder/public/cpp/service_provider.h"
 #include "services/network/transitional_url_loader_factory_owner.h"
-#include "services/resource_coordinator/public/cpp/memory_instrumentation/client_process_impl.h"
-#include "services/resource_coordinator/public/mojom/memory_instrumentation/memory_instrumentation.mojom.h"
-#include "services/resource_coordinator/public/mojom/service_constants.mojom.h"
-#include "services/service_manager/zygote/common/zygote_buildflags.h"
 #include "skia/ext/event_tracer_impl.h"
 #include "skia/ext/skia_memory_dump_provider.h"
 #include "sql/sql_memory_dump_provider.h"
 #include "ui/base/clipboard/clipboard.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/display/display_features.h"
 #include "ui/gfx/font_render_params.h"
 #include "ui/gfx/switches.h"
 
-#if defined(USE_AURA) || defined(OS_MACOSX)
-#include "content/browser/compositor/gpu_process_transport_factory.h"
+#if defined(USE_AURA) || defined(OS_MAC)
 #include "content/browser/compositor/image_transport_factory.h"
 #endif
 
@@ -167,6 +160,7 @@
 #include "content/browser/android/launcher_thread.h"
 #include "content/browser/android/scoped_surface_request_manager.h"
 #include "content/browser/android/tracing_controller_android.h"
+#include "content/browser/font_unique_name_lookup/font_unique_name_lookup.h"
 #include "content/browser/screen_orientation/screen_orientation_delegate_android.h"
 #include "media/base/android/media_drm_bridge_client.h"
 #include "ui/android/screen_android.h"
@@ -174,30 +168,26 @@
 #include "ui/gl/gl_surface.h"
 #endif
 
-#if defined(OS_MACOSX)
-#include "base/memory/memory_pressure_monitor_mac.h"
-#include "content/browser/mach_broker_mac.h"
+#if defined(OS_MAC)
 #include "content/browser/renderer_host/browser_compositor_view_mac.h"
 #include "content/browser/theme_helper_mac.h"
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
-#include "ui/base/now_playing/remote_command_center_delegate.h"
 #endif
 
 #if defined(OS_WIN)
-#include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <windows.h>
 
-#include "base/memory/memory_pressure_monitor_win.h"
 #include "content/browser/renderer_host/dwrite_font_lookup_table_builder_win.h"
 #include "net/base/winsock_init.h"
-#include "services/service_manager/sandbox/win/sandbox_win.h"
-#include "ui/display/win/screen_win.h"
+#include "sandbox/policy/win/sandbox_win.h"
 #endif
 
-#if defined(OS_CHROMEOS)
-#include "base/memory/memory_pressure_monitor_chromeos.h"
-#include "chromeos/constants/chromeos_switches.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_switches.h"
+#include "device/bluetooth/bluetooth_adapter_factory.h"
+#include "services/data_decoder/public/cpp/data_decoder.h"
 #endif
 
 #if defined(USE_GLIB)
@@ -206,9 +196,10 @@
 
 #if defined(OS_WIN)
 #include "media/device_monitors/system_message_window_win.h"
-#elif defined(OS_LINUX) && defined(USE_UDEV)
+#include "sandbox/win/src/process_mitigations.h"
+#elif (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)
 #include "media/device_monitors/device_monitor_udev.h"
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
 #include "media/device_monitors/device_monitor_mac.h"
 #endif
 
@@ -219,7 +210,7 @@
 #include "base/fuchsia/fuchsia_logging.h"
 #endif  // defined(OS_FUCHSIA)
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX)
+#if defined(OS_POSIX) && !defined(OS_MAC)
 #include "content/browser/sandbox_host_linux.h"
 #endif
 
@@ -233,16 +224,15 @@
 
 #if defined(USE_X11)
 #include "gpu/config/gpu_driver_bug_workaround_type.h"
-#include "ui/base/x/x11_util_internal.h"  // nogncheck
-#include "ui/gfx/x/x11_connection.h"  // nogncheck
-#include "ui/gfx/x/x11_types.h"  // nogncheck
+#include "ui/base/ui_base_features.h"
+#include "ui/base/x/x11_util.h"           // nogncheck
 #endif
 
 #if defined(USE_NSS_CERTS)
 #include "crypto/nss_util.h"
 #endif
 
-#if defined(ENABLE_IPC_FUZZER) && defined(OS_MACOSX)
+#if defined(ENABLE_IPC_FUZZER) && defined(OS_MAC)
 #include "base/mac/foundation_util.h"
 #endif
 
@@ -290,8 +280,8 @@ static void GLibLogHandler(const gchar* log_domain,
 
 static void SetUpGLibLogHandler() {
   // Register GLib-handled assertions to go through our logging system.
-  const char* const kLogDomains[] =
-      { nullptr, "Gtk", "Gdk", "GLib", "GLib-GObject" };
+  const char* const kLogDomains[] = {nullptr, "Gtk", "Gdk", "GLib",
+                                     "GLib-GObject"};
   for (size_t i = 0; i < base::size(kLogDomains); i++) {
     g_log_set_handler(
         kLogDomains[i],
@@ -303,40 +293,12 @@ static void SetUpGLibLogHandler() {
 }
 #endif  // defined(USE_GLIB)
 
-// Tell compiler not to inline this function so it's possible to tell what
-// thread was unresponsive by inspecting the callstack.
+// NOINLINE so it's possible to tell what thread was unresponsive by inspecting
+// the callstack.
 NOINLINE void ResetThread_IO(
-    std::unique_ptr<BrowserProcessSubThread> io_thread) {
-  const int line_number = __LINE__;
+    std::unique_ptr<BrowserProcessIOThread> io_thread) {
   io_thread.reset();
-  base::debug::Alias(&line_number);
 }
-
-#if defined(OS_WIN)
-// Creates a memory pressure monitor using automatic thresholds, or those
-// specified on the command-line. Ownership is passed to the caller.
-std::unique_ptr<base::win::MemoryPressureMonitor>
-CreateWinMemoryPressureMonitor(const base::CommandLine& parsed_command_line) {
-  std::vector<std::string> thresholds =
-      base::SplitString(parsed_command_line.GetSwitchValueASCII(
-                            switches::kMemoryPressureThresholdsMb),
-                        ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-
-  int moderate_threshold_mb = 0;
-  int critical_threshold_mb = 0;
-  if (thresholds.size() == 2 &&
-      base::StringToInt(thresholds[0], &moderate_threshold_mb) &&
-      base::StringToInt(thresholds[1], &critical_threshold_mb) &&
-      moderate_threshold_mb >= critical_threshold_mb &&
-      critical_threshold_mb >= 0) {
-    return std::make_unique<base::win::MemoryPressureMonitor>(
-        moderate_threshold_mb, critical_threshold_mb);
-  }
-
-  // In absence of valid switches use the automatic defaults.
-  return std::make_unique<base::win::MemoryPressureMonitor>();
-}
-#endif  // defined(OS_WIN)
 
 enum WorkerPoolType : size_t {
   BACKGROUND = 0,
@@ -345,12 +307,6 @@ enum WorkerPoolType : size_t {
   FOREGROUND_BLOCKING,
   WORKER_POOL_COUNT  // Always last.
 };
-
-#if !defined(OS_FUCHSIA)
-// Time between updating and recording swap rates.
-constexpr base::TimeDelta kSwapMetricsInterval =
-    base::TimeDelta::FromSeconds(60);
-#endif  // !defined(OS_FUCHSIA)
 
 #if defined(OS_FUCHSIA)
 // Create and register the job which will contain all child processes
@@ -368,7 +324,7 @@ bool GetBuildDirectory(base::FilePath* result) {
   if (!base::PathService::Get(base::DIR_EXE, result))
     return false;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   if (base::mac::AmIBundled()) {
     // The bundled app executables (Chromium, TestShell, etc) live three
     // levels down from the build directory, eg:
@@ -404,114 +360,80 @@ std::unique_ptr<base::MemoryPressureMonitor> CreateMemoryPressureMonitor(
   if (command_line.HasSwitch(switches::kBrowserTest))
     return nullptr;
 
-// TODO(chrisha): Simplify this code once MemoryPressureMonitor is made a
-// concrete class.
-#if defined(OS_CHROMEOS)
-  if (chromeos::switches::MemoryPressureHandlingEnabled()) {
-    return std::make_unique<base::chromeos::MemoryPressureMonitor>(
-        chromeos::switches::GetMemoryPressureThresholds());
-  }
-  return nullptr;
-#elif defined(OS_MACOSX)
-  return std::make_unique<base::mac::MemoryPressureMonitor>();
-#elif defined(OS_WIN)
-  return CreateWinMemoryPressureMonitor(command_line);
-#else
+  std::unique_ptr<util::MultiSourceMemoryPressureMonitor> monitor;
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  if (chromeos::switches::MemoryPressureHandlingEnabled())
+    monitor = std::make_unique<util::MultiSourceMemoryPressureMonitor>();
+#elif defined(OS_MAC) || defined(OS_WIN) || defined(OS_FUCHSIA) || \
+    BUILDFLAG(IS_CHROMEOS_LACROS)
+  monitor = std::make_unique<util::MultiSourceMemoryPressureMonitor>();
+#endif
   // No memory monitor on other platforms...
-  return nullptr;
+
+  if (monitor)
+    monitor->Start();
+
+  return monitor;
+}
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+mojo::PendingRemote<data_decoder::mojom::BleScanParser> GetBleScanParser() {
+  static base::NoDestructor<data_decoder::DataDecoder> decoder;
+  mojo::PendingRemote<data_decoder::mojom::BleScanParser> ble_scan_parser;
+  decoder->GetService()->BindBleScanParser(
+      ble_scan_parser.InitWithNewPipeAndPassReceiver());
+  return ble_scan_parser;
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+#if defined(OS_WIN)
+// Disable dynamic code using ACG. Prevents the browser process from generating
+// dynamic code or modifying executable code. See comments in
+// sandbox/win/src/security_level.h. Only available on Windows 10 RS1 (1607,
+// Build 14393) onwards.
+const base::Feature kBrowserDynamicCodeDisabled{
+    "BrowserDynamicCodeDisabled", base::FEATURE_DISABLED_BY_DEFAULT};
+#endif  // defined(OS_WIN)
+
+class OopDataDecoder : public data_decoder::ServiceProvider {
+ public:
+  OopDataDecoder() { data_decoder::ServiceProvider::Set(this); }
+  ~OopDataDecoder() override { data_decoder::ServiceProvider::Set(nullptr); }
+
+  // data_decoder::ServiceProvider implementation:
+  void BindDataDecoderService(
+      mojo::PendingReceiver<data_decoder::mojom::DataDecoderService> receiver)
+      override {
+    ServiceProcessHost::Launch(
+        std::move(receiver),
+        ServiceProcessHost::Options()
+            .WithDisplayName("Data Decoder Service")
+            .Pass());
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(OopDataDecoder);
+};
+
+void BindHidManager(mojo::PendingReceiver<device::mojom::HidManager> receiver) {
+#if !defined(OS_ANDROID)
+  if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&BindHidManager, std::move(receiver)));
+    return;
+  }
+
+  GetDeviceService().BindHidManager(std::move(receiver));
 #endif
 }
 
 }  // namespace
 
-#if defined(USE_X11)
-namespace internal {
-
-// Forwards GPUInfo updates to ui::XVisualManager
-class GpuDataManagerVisualProxy : public GpuDataManagerObserver {
- public:
-  explicit GpuDataManagerVisualProxy(GpuDataManagerImpl* gpu_data_manager)
-      : gpu_data_manager_(gpu_data_manager) {
-    gpu_data_manager_->AddObserver(this);
-  }
-
-  ~GpuDataManagerVisualProxy() override {
-    gpu_data_manager_->RemoveObserver(this);
-  }
-
-  void OnGpuInfoUpdate() override {
-    if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kHeadless))
-      return;
-    gpu::GPUInfo gpu_info = gpu_data_manager_->GetGPUInfo();
-    if (!ui::XVisualManager::GetInstance()->OnGPUInfoChanged(
-            gpu_info.software_rendering ||
-                !gpu_data_manager_->GpuAccessAllowed(nullptr),
-            gpu_info.system_visual, gpu_info.rgba_visual)) {
-      // The GPU process sent back bad visuals, which should never happen.
-      auto* gpu_process_host = GpuProcessHost::Get(
-          GpuProcessHost::GPU_PROCESS_KIND_SANDBOXED, false);
-      if (gpu_process_host)
-        gpu_process_host->ForceShutdown();
-    }
-  }
-
- private:
-  GpuDataManagerImpl* gpu_data_manager_;
-
-  DISALLOW_COPY_AND_ASSIGN(GpuDataManagerVisualProxy);
-};
-
-}  // namespace internal
-#endif
-
-#if defined(OS_WIN)
-namespace {
-
-// Provides a bridge whereby display::win::ScreenWin can ask the GPU process
-// about the HDR status of the system.
-class HDRProxy {
- public:
-  static void Initialize() {
-    display::win::ScreenWin::SetRequestHDRStatusCallback(
-        base::BindRepeating(&HDRProxy::RequestHDRStatus));
-  }
-
-  static void RequestHDRStatus() {
-    // The request must be sent to the GPU process from the IO thread.
-    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
-                             base::BindOnce(&HDRProxy::RequestOnIOThread));
-  }
-
- private:
-  static void RequestOnIOThread() {
-    auto* gpu_process_host =
-        GpuProcessHost::Get(GpuProcessHost::GPU_PROCESS_KIND_SANDBOXED, false);
-    if (gpu_process_host) {
-      auto* gpu_service = gpu_process_host->gpu_host()->gpu_service();
-      gpu_service->RequestHDRStatus(
-          base::BindOnce(&HDRProxy::GotResultOnIOThread));
-    } else {
-      bool hdr_enabled = false;
-      GotResultOnIOThread(hdr_enabled);
-    }
-  }
-  static void GotResultOnIOThread(bool hdr_enabled) {
-    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                             base::BindOnce(&HDRProxy::GotResult, hdr_enabled));
-  }
-  static void GotResult(bool hdr_enabled) {
-    display::win::ScreenWin::SetHDREnabled(hdr_enabled);
-  }
-};
-
-}  // namespace
-#endif
-
 // The currently-running BrowserMainLoop.  There can be one or zero.
 BrowserMainLoop* g_current_browser_main_loop = nullptr;
 
 #if defined(OS_ANDROID)
-bool g_browser_main_loop_shutting_down = false;
 
 namespace {
 // Whether or not BrowserMainLoop::CreateStartupTasks() posts any tasks.
@@ -539,20 +461,32 @@ media::AudioManager* BrowserMainLoop::GetAudioManager() {
 
 BrowserMainLoop::BrowserMainLoop(
     const MainFunctionParams& parameters,
-    std::unique_ptr<base::ThreadPool::ScopedExecutionFence>
+    std::unique_ptr<base::ThreadPoolInstance::ScopedExecutionFence>
         scoped_execution_fence)
     : parameters_(parameters),
       parsed_command_line_(parameters.command_line),
-      result_code_(service_manager::RESULT_CODE_NORMAL_EXIT),
+      result_code_(RESULT_CODE_NORMAL_EXIT),
       created_threads_(false),
-      scoped_execution_fence_(std::move(scoped_execution_fence)) {
+      scoped_execution_fence_(std::move(scoped_execution_fence))
+#if !defined(OS_ANDROID)
+      ,
+      // TODO(fdoray): Create the fence on Android too. Not enabled yet because
+      // tests timeout. https://crbug.com/887407
+      scoped_best_effort_execution_fence_(absl::in_place)
+#endif
+{
   DCHECK(!g_current_browser_main_loop);
   DCHECK(scoped_execution_fence_)
       << "ThreadPool must be halted before kicking off content.";
   g_current_browser_main_loop = this;
 
-  if (GetContentClient()->browser()->ShouldCreateThreadPool()) {
-    DCHECK(base::ThreadPool::GetInstance());
+  // Register the UI thread for hang watching before it starts running and set
+  // up a closure to automatically unregister when |this| is destroyed. This
+  // works since the UI thread running the message loop is the main thread and
+  // that makes it the same as the current one.
+  if (base::HangWatcher::IsUIThreadHangWatchingEnabled()) {
+    unregister_thread_closure_ = base::HangWatcher::RegisterThread(
+        base::HangWatcher::ThreadType::kUIThread);
   }
 }
 
@@ -573,12 +507,11 @@ void BrowserMainLoop::Init() {
         static_cast<StartupDataImpl*>(parameters_.startup_data);
     // This is always invoked before |io_thread_| is initialized (i.e. never
     // resets it).
-    io_thread_ = std::move(startup_data->thread);
-    service_manager_context_ = startup_data->service_manager_context;
+    io_thread_ = std::move(startup_data->io_thread);
+    mojo_ipc_support_ = std::move(startup_data->mojo_ipc_support);
   }
 
-  parts_.reset(
-      GetContentClient()->browser()->CreateBrowserMainParts(parameters_));
+  parts_ = GetContentClient()->browser()->CreateBrowserMainParts(parameters_);
 }
 
 // BrowserMainLoop stages ==================================================
@@ -595,10 +528,9 @@ int BrowserMainLoop::EarlyInitialization() {
 #endif
 
 #if defined(USE_X11)
-  if (UsingInProcessGpu()) {
-    if (!gfx::InitializeThreadedX11()) {
-      LOG(ERROR) << "Failed to put Xlib into threaded mode.";
-    }
+  if (!features::IsUsingOzonePlatform() && UsingInProcessGpu() &&
+      !x11::Connection::Get()->Ready()) {
+    LOG(ERROR) << "Failed to open an X11 connection.";
   }
 #endif
 
@@ -621,21 +553,23 @@ int BrowserMainLoop::EarlyInitialization() {
 
   if (parts_) {
     const int pre_early_init_error_code = parts_->PreEarlyInitialization();
-    if (pre_early_init_error_code != service_manager::RESULT_CODE_NORMAL_EXIT)
+    if (pre_early_init_error_code != RESULT_CODE_NORMAL_EXIT)
       return pre_early_init_error_code;
   }
 
-#if defined(OS_ANDROID) || defined(OS_CHROMEOS) || defined(USE_OZONE)
-  // Up the priority of the UI thread unless it was already high (since recent
-  // versions of Android (O+) do this automatically).
-  if (base::PlatformThread::GetCurrentThreadPriority() <
-      base::ThreadPriority::DISPLAY) {
+  // Up the priority of the UI thread unless it was already high (since Mac
+  // and recent versions of Android (O+) do this automatically).
+#if !defined(OS_MAC)
+  if (base::FeatureList::IsEnabled(
+          features::kBrowserUseDisplayThreadPriority) &&
+      base::PlatformThread::GetCurrentThreadPriority() <
+          base::ThreadPriority::DISPLAY) {
     base::PlatformThread::SetCurrentThreadPriority(
         base::ThreadPriority::DISPLAY);
   }
-#endif  // defined(OS_ANDROID) || defined(OS_CHROMEOS)
+#endif  // !defined(OS_MAC)
 
-#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
+#if defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
     defined(OS_ANDROID)
   // We use quite a few file descriptors for our IPC as well as disk the disk
   // cache,and the default limit on the Mac is low (256), so bump it up.
@@ -645,7 +579,7 @@ int BrowserMainLoop::EarlyInitialization() {
   // users can easily hit this limit with many open tabs. Bump up the limit to
   // an arbitrarily high number. See https://crbug.com/539567
   base::IncreaseFdLimitTo(8192);
-#endif  // defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_CHROMEOS) ||
+#endif  // defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS) ||
         // defined(OS_ANDROID)
 
 #if defined(OS_WIN)
@@ -659,6 +593,21 @@ int BrowserMainLoop::EarlyInitialization() {
 
 #if defined(OS_FUCHSIA)
   InitDefaultJob();
+
+  // Have child processes & jobs terminate automatically if the browser process
+  // exits, by marking the browser process as "critical" to its job.
+  zx_status_t result =
+      zx::job::default_job()->set_critical(0, *zx::process::self());
+  ZX_CHECK(ZX_OK == result, result) << "zx_job_set_critical";
+#endif
+
+#if defined(OS_WIN)
+  if (!parsed_command_line_.HasSwitch(switches::kSingleProcess)) {
+    if (base::FeatureList::IsEnabled(kBrowserDynamicCodeDisabled)) {
+      sandbox::ApplyProcessMitigationsToCurrentProcess(
+          sandbox::MITIGATION_DYNAMIC_CODE_DISABLE_WITH_OPT_OUT);
+    }
+  }
 #endif
 
   if (parsed_command_line_.HasSwitch(switches::kRendererProcessLimit)) {
@@ -673,45 +622,57 @@ int BrowserMainLoop::EarlyInitialization() {
   if (parts_)
     parts_->PostEarlyInitialization();
 
-  return service_manager::RESULT_CODE_NORMAL_EXIT;
+  return RESULT_CODE_NORMAL_EXIT;
 }
 
-void BrowserMainLoop::PreMainMessageLoopStart() {
+void BrowserMainLoop::PreCreateMainMessageLoop() {
+  TRACE_EVENT0(
+      "startup",
+      "BrowserMainLoop::CreateMainMessageLoop:PreCreateMainMessageLoop");
   if (parts_) {
-    TRACE_EVENT0("startup",
-        "BrowserMainLoop::MainMessageLoopStart:PreMainMessageLoopStart");
-    parts_->PreMainMessageLoopStart();
+    parts_->PreCreateMainMessageLoop();
   }
 }
 
-void BrowserMainLoop::MainMessageLoopStart() {
-  // DO NOT add more code here. Use PreMainMessageLoopStart() above or
-  // PostMainMessageLoopStart() below.
+void BrowserMainLoop::CreateMainMessageLoop() {
+  // DO NOT add more code here. Use PreCreateMainMessageLoop() above or
+  // PostCreateMainMessageLoop() below.
 
-  TRACE_EVENT0("startup", "BrowserMainLoop::MainMessageLoopStart");
-  DCHECK(base::MessageLoopCurrentForUI::IsSet());
-  InitializeMainThread();
+  TRACE_EVENT0("startup", "BrowserMainLoop::CreateMainMessageLoop");
+
+  base::PlatformThread::SetName("CrBrowserMain");
+
+  // Register the main thread. The main thread's task runner should already have
+  // been initialized but it's not yet known as BrowserThread::UI.
+  DCHECK(base::ThreadTaskRunnerHandle::IsSet());
+  DCHECK(base::CurrentUIThread::IsSet());
+  main_thread_.reset(new BrowserThreadImpl(
+      BrowserThread::UI, base::ThreadTaskRunnerHandle::Get()));
 }
 
-void BrowserMainLoop::PostMainMessageLoopStart() {
+void BrowserMainLoop::PostCreateMainMessageLoop() {
+  TRACE_EVENT0("startup", "BrowserMainLoop::PostCreateMainMessageLoop");
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:SystemMonitor");
-    system_monitor_.reset(new base::SystemMonitor);
+    system_monitor_ = std::make_unique<base::SystemMonitor>();
   }
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:PowerMonitor");
-    std::unique_ptr<base::PowerMonitorSource> power_monitor_source(
-        new base::PowerMonitorDeviceSource());
-    power_monitor_.reset(
-        new base::PowerMonitor(std::move(power_monitor_source)));
+    if (!base::PowerMonitor::IsInitialized()) {
+      base::PowerMonitor::Initialize(
+          std::make_unique<base::PowerMonitorDeviceSource>());
+    }
   }
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:HighResTimerManager");
-    hi_res_timer_manager_.reset(new base::HighResolutionTimerManager);
+    hi_res_timer_manager_ =
+        std::make_unique<base::HighResolutionTimerManager>();
   }
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:NetworkChangeNotifier");
-    network_change_notifier_.reset(net::NetworkChangeNotifier::Create());
+    // On Android if reduced mode started network service this would already be
+    //  created.
+    network_change_notifier_ = net::NetworkChangeNotifier::CreateIfNeeded();
   }
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:ScreenlockMonitor");
@@ -719,10 +680,6 @@ void BrowserMainLoop::PostMainMessageLoopStart() {
         std::make_unique<ScreenlockMonitorDeviceSource>();
     screenlock_monitor_ = std::make_unique<ScreenlockMonitor>(
         std::move(screenlock_monitor_source));
-  }
-  {
-    TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:MediaFeatures");
-    media::InitializeMediaLibrary();
   }
   {
     TRACE_EVENT0("startup",
@@ -733,27 +690,20 @@ void BrowserMainLoop::PostMainMessageLoopStart() {
 
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:OnlineStateObserver");
-    online_state_observer_.reset(new BrowserOnlineStateObserver);
+    online_state_observer_ = std::make_unique<BrowserOnlineStateObserver>();
   }
 
-  {
-    base::SetRecordActionTaskRunner(
-        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI}));
-  }
+  { base::SetRecordActionTaskRunner(GetUIThreadTaskRunner({})); }
 
-  if (!features::IsMultiProcessMash()) {
-    discardable_shared_memory_manager_ =
-        std::make_unique<discardable_memory::DiscardableSharedMemoryManager>();
-    // TODO(boliu): kSingleProcess check is a temporary workaround for
-    // in-process Android WebView. crbug.com/503724 tracks proper fix.
-    if (!parsed_command_line_.HasSwitch(switches::kSingleProcess)) {
-      base::DiscardableMemoryAllocator::SetInstance(
-          discardable_shared_memory_manager_.get());
-    }
+  // TODO(boliu): kSingleProcess check is a temporary workaround for
+  // in-process Android WebView. crbug.com/503724 tracks proper fix.
+  if (!parsed_command_line_.HasSwitch(switches::kSingleProcess)) {
+    base::DiscardableMemoryAllocator::SetInstance(
+        discardable_memory::DiscardableSharedMemoryManager::Get());
   }
 
   if (parts_)
-    parts_->PostMainMessageLoopStart();
+    parts_->PostCreateMainMessageLoop();
 
 #if defined(OS_ANDROID)
   {
@@ -766,49 +716,51 @@ void BrowserMainLoop::PostMainMessageLoopStart() {
   }
 
   if (!parsed_command_line_.HasSwitch(
-      switches::kDisableScreenOrientationLock)) {
+          switches::kDisableScreenOrientationLock)) {
     TRACE_EVENT0("startup",
                  "BrowserMainLoop::Subsystem:ScreenOrientationProvider");
-    screen_orientation_delegate_.reset(
-        new ScreenOrientationDelegateAndroid());
+    screen_orientation_delegate_ =
+        std::make_unique<ScreenOrientationDelegateAndroid>();
   }
 
   base::trace_event::TraceLog::GetInstance()->AddEnabledStateObserver(
       base::trace_event::CPUFreqMonitor::GetInstance());
 #endif
 
-  if (parsed_command_line_.HasSwitch(
-          switches::kEnableAggressiveDOMStorageFlushing)) {
-    TRACE_EVENT0("startup",
-                 "BrowserMainLoop::Subsystem:EnableAggressiveCommitDelay");
-    DOMStorageArea::EnableAggressiveCommitDelay();
-    StorageAreaImpl::EnableAggressiveCommitDelay();
+  if (UsingInProcessGpu()) {
+    // Make sure to limits for skia font cache are applied for in process
+    // gpu setup (crbug.com/1183230).
+    InitializeSkia();
+  } else {
+    // Just enable memory-infra dump providers
+    InitSkiaEventTracer();
+    base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
+        skia::SkiaMemoryDumpProvider::GetInstance(), "Skia", nullptr);
   }
 
-  // Enable memory-infra dump providers.
-  InitSkiaEventTracer();
-#if !defined(OS_ANDROID)
-  if (server_shared_bitmap_manager_) {
-    base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
-        server_shared_bitmap_manager_.get(), "viz::ServerSharedBitmapManager",
-        base::ThreadTaskRunnerHandle::Get());
-  }
-#endif
-  base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
-      skia::SkiaMemoryDumpProvider::GetInstance(), "Skia", nullptr);
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       sql::SqlMemoryDumpProvider::GetInstance(), "Sql", nullptr);
-#if !defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  device::BluetoothAdapterFactory::SetBleScanParserCallback(
+      base::BindRepeating(&GetBleScanParser));
+#else
   // Chrome Remote Desktop needs TransitionalURLLoaderFactoryOwner on ChromeOS.
   network::TransitionalURLLoaderFactoryOwner::DisallowUsageInProcess();
 #endif
+
+  {
+    TRACE_EVENT0("startup",
+                 "BrowserMainLoop::Subsystem:BrowserAccessibilityStateImpl");
+    BrowserAccessibilityStateImpl::GetInstance()->InitBackgroundTasks();
+  }
 }
 
 int BrowserMainLoop::PreCreateThreads() {
-  if (parts_) {
-    TRACE_EVENT0("startup",
-        "BrowserMainLoop::CreateThreads:PreCreateThreads");
+  TRACE_EVENT0("startup", "BrowserMainLoop::PreCreateThreads");
 
+  // Make sure no accidental call to initialize GpuDataManager earlier.
+  DCHECK(!GpuDataManagerImpl::Initialized());
+  if (parts_) {
     result_code_ = parts_->PreCreateThreads();
   }
 
@@ -820,7 +772,7 @@ int BrowserMainLoop::PreCreateThreads() {
   // but must be created on the main thread. The service ctor is
   // inexpensive and does not invoke the io_thread() accessor.
   {
-    TRACE_EVENT0("startup", "BrowserMainLoop::CreateThreads:PluginService");
+    TRACE_EVENT0("startup", "BrowserMainLoop::PluginService");
     PluginService::GetInstance()->Init();
   }
 #endif
@@ -832,46 +784,38 @@ int BrowserMainLoop::PreCreateThreads() {
   CdmRegistry::GetInstance()->Init();
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // The WindowResizeHelper allows the UI thread to wait on specific renderer
   // and GPU messages from the IO thread. Initializing it before the IO thread
   // starts ensures the affected IO thread messages always have somewhere to go.
   ui::WindowResizeHelperMac::Get()->Init(base::ThreadTaskRunnerHandle::Get());
 #endif
 
-  // 1) Need to initialize in-process GpuDataManager before creating threads.
+  // GpuDataManager should be initialized in parts_->PreCreateThreads through
+  // ChromeBrowserMainExtraPartsGpu. However, if |parts_| is not set,
+  // initialize it here.
+  // Need to initialize in-process GpuDataManager before creating threads.
   // It's unsafe to append the gpu command line switches to the global
   // CommandLine::ForCurrentProcess object after threads are created.
-  // 2) Must be after parts_->PreCreateThreads to pick up chrome://flags.
   GpuDataManagerImpl::GetInstance();
+  DCHECK(GpuDataManagerImpl::Initialized());
+  // We report Uma metrics on a periodic basis when running the full browser,
+  // while avoiding doing so in unit tests by making it explicitly enabled here.
+  GpuDataManagerImpl::GetInstance()->StartUmaTimer();
 
-#if defined(USE_X11)
-  gpu_data_manager_visual_proxy_.reset(new internal::GpuDataManagerVisualProxy(
-      GpuDataManagerImpl::GetInstance()));
-#endif
-
-#if !defined(GOOGLE_CHROME_BUILD) || defined(OS_ANDROID)
+#if !BUILDFLAG(GOOGLE_CHROME_BRANDING) || defined(OS_ANDROID)
   // Single-process is an unsupported and not fully tested mode, so
   // don't enable it for official Chrome builds (except on Android).
   if (parsed_command_line_.HasSwitch(switches::kSingleProcess))
     RenderProcessHost::SetRunRendererInProcess(true);
 #endif
 
-  // Initialize origins that are whitelisted for process isolation.  Must be
-  // done after base::FeatureList is initialized, but before any navigations
-  // can happen.
-  ChildProcessSecurityPolicyImpl* policy =
-      ChildProcessSecurityPolicyImpl::GetInstance();
-  policy->AddIsolatedOrigins(SiteIsolationPolicy::GetIsolatedOrigins());
-
-  // Record metrics about which site isolation flags have been turned on.
-  SiteIsolationPolicy::StartRecordingSiteIsolationFlagUsage();
+  // Initialize origins that require process isolation.  Must be done
+  // after base::FeatureList is initialized, but before any navigations can
+  // happen.
+  SiteIsolationPolicy::ApplyGlobalIsolatedOrigins();
 
   return result_code_;
-}
-
-void BrowserMainLoop::PreShutdown() {
-  ui::Clipboard::OnPreShutdownForCurrentThread();
 }
 
 void BrowserMainLoop::CreateStartupTasks() {
@@ -886,39 +830,29 @@ void BrowserMainLoop::CreateStartupTasks() {
 
   startup_task_runner_ = std::make_unique<StartupTaskRunner>(
       base::BindOnce(&BrowserStartupComplete),
-      base::CreateSingleThreadTaskRunnerWithTraits(
-          {BrowserThread::UI, BrowserTaskType::kBootstrap}));
+      GetUIThreadTaskRunner({BrowserTaskType::kBootstrap}));
 #else
   startup_task_runner_ = std::make_unique<StartupTaskRunner>(
       base::OnceCallback<void(int)>(), base::ThreadTaskRunnerHandle::Get());
 #endif
-  StartupTask pre_create_threads =
-      base::Bind(&BrowserMainLoop::PreCreateThreads, base::Unretained(this));
+  StartupTask pre_create_threads = base::BindOnce(
+      &BrowserMainLoop::PreCreateThreads, base::Unretained(this));
   startup_task_runner_->AddTask(std::move(pre_create_threads));
 
   StartupTask create_threads =
-      base::Bind(&BrowserMainLoop::CreateThreads, base::Unretained(this));
+      base::BindOnce(&BrowserMainLoop::CreateThreads, base::Unretained(this));
   startup_task_runner_->AddTask(std::move(create_threads));
 
-  StartupTask post_create_threads =
-      base::Bind(&BrowserMainLoop::PostCreateThreads, base::Unretained(this));
+  StartupTask post_create_threads = base::BindOnce(
+      &BrowserMainLoop::PostCreateThreads, base::Unretained(this));
   startup_task_runner_->AddTask(std::move(post_create_threads));
 
-  StartupTask browser_thread_started = base::Bind(
-      &BrowserMainLoop::BrowserThreadsStarted, base::Unretained(this));
-  startup_task_runner_->AddTask(std::move(browser_thread_started));
-
-  StartupTask pre_main_message_loop_run = base::Bind(
+  StartupTask pre_main_message_loop_run = base::BindOnce(
       &BrowserMainLoop::PreMainMessageLoopRun, base::Unretained(this));
   startup_task_runner_->AddTask(std::move(pre_main_message_loop_run));
 
 #if defined(OS_ANDROID)
-  if (parameters_.ui_task) {
-    // Running inside browser tests, which relies on synchronous start.
-    startup_task_runner_->RunAllTasksNow();
-  } else {
-    startup_task_runner_->StartRunningTasksAsync();
-  }
+  startup_task_runner_->StartRunningTasksAsync();
 #else
   startup_task_runner_->RunAllTasksNow();
 #endif
@@ -926,7 +860,7 @@ void BrowserMainLoop::CreateStartupTasks() {
 
 scoped_refptr<base::SingleThreadTaskRunner>
 BrowserMainLoop::GetResizeTaskRunner() {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   scoped_refptr<base::SingleThreadTaskRunner> task_runner =
       ui::WindowResizeHelperMac::Get()->task_runner();
   // In tests, WindowResizeHelperMac task runner might not be initialized.
@@ -959,24 +893,50 @@ int BrowserMainLoop::CreateThreads() {
   // CreateThreads() (as such maintaining the invariant that PreCreateThreads()
   // et al. "happen-before" BrowserThread::IO is "brought up").
   if (!io_thread_) {
-    io_thread_ = BrowserProcessSubThread::CreateIOThread();
+    io_thread_ = BrowserTaskExecutor::CreateIOThread();
   }
   io_thread_->RegisterAsBrowserThread();
+  BrowserTaskExecutor::InitializeIOThread();
+
+  // TODO(https://crbug.com/863341): Replace with a better API
+  GetContentClient()->browser()->PostAfterStartupTask(
+      FROM_HERE, base::SequencedTaskRunnerHandle::Get(),
+      base::BindOnce(
+          [](BrowserMainLoop* browser_main_loop) {
+            // Enable main thread and thread pool best effort queues. Non-best
+            // effort queues will already have been enabled. This will enable
+            // all queues on all browser threads, so we need to do this after
+            // the threads have been created, i.e. here.
+            content::BrowserTaskExecutor::EnableAllQueues();
+            browser_main_loop->scoped_best_effort_execution_fence_.reset();
+          },
+          // Main thread tasks can't run after BrowserMainLoop destruction.
+          // Accessing an Unretained pointer to BrowserMainLoop from a main
+          // thread task is therefore safe.
+          base::Unretained(this)));
 
   created_threads_ = true;
   return result_code_;
 }
 
 int BrowserMainLoop::PostCreateThreads() {
-  if (parts_) {
-    TRACE_EVENT0("startup", "BrowserMainLoop::PostCreateThreads");
+  TRACE_EVENT0("startup", "BrowserMainLoop::PostCreateThreads");
+
+  tracing_controller_ = std::make_unique<content::TracingControllerImpl>();
+  content::BackgroundTracingManagerImpl::GetInstance()
+      ->AddMetadataGeneratorFunction();
+
+  if (parts_)
     parts_->PostCreateThreads();
-  }
+
+  PostCreateThreadsImpl();
 
   return result_code_;
 }
 
 int BrowserMainLoop::PreMainMessageLoopRun() {
+  TRACE_EVENT0("startup", "BrowserMainLoop::PreMainMessageLoopRun");
+
 #if defined(OS_ANDROID)
   bool use_display_wide_color_gamut =
       GetContentClient()->browser()->GetWideColorGamutHeuristic() ==
@@ -985,32 +945,63 @@ int BrowserMainLoop::PreMainMessageLoopRun() {
   ui::SetScreenAndroid(use_display_wide_color_gamut);
 #endif
 
-  if (parts_) {
-    TRACE_EVENT0("startup",
-        "BrowserMainLoop::CreateThreads:PreMainMessageLoopRun");
+  if (parts_)
+    result_code_ = parts_->PreMainMessageLoopRun();
 
-    parts_->PreMainMessageLoopRun();
+#if defined(OS_WIN)
+  // ShellBrowserMainParts initializes a ShellBrowserContext with a profile
+  // directory only in PreMainMessageLoopRun(). DWriteFontLookupTableBuilder
+  // needs to access this directory, hence triggering after this stage has run.
+  if (base::FeatureList::IsEnabled(features::kFontSrcLocalMatching)) {
+    content::DWriteFontLookupTableBuilder::GetInstance()
+        ->SchedulePrepareFontUniqueNameTableIfNeeded();
   }
+#endif
 
-  // If the UI thread blocks, the whole UI is unresponsive.
-  // Do not allow unresponsive tasks from the UI thread.
+  // If the UI thread blocks, the whole UI is unresponsive. Do not allow
+  // unresponsive tasks from the UI thread and instantiate a
+  // responsiveness::Watcher to catch jank induced by any unintentionally
+  // blocking tasks.
   base::DisallowUnresponsiveTasks();
+  responsiveness_watcher_ = new responsiveness::Watcher;
+  responsiveness_watcher_->SetUp();
   return result_code_;
 }
 
-void BrowserMainLoop::RunMainMessageLoopParts() {
-  // Don't use the TRACE_EVENT0 macro because the tracing infrastructure doesn't
-  // expect synchronous events around the main loop of a thread.
-  TRACE_EVENT_ASYNC_BEGIN0("toplevel", "BrowserMain:MESSAGE_LOOP", this);
-
-  bool ran_main_loop = false;
+void BrowserMainLoop::RunMainMessageLoop() {
+#if defined(OS_ANDROID)
+  // Android's main message loop is the Java message loop.
+  NOTREACHED();
+#else   // defined(OS_ANDROID)
+  auto main_run_loop = std::make_unique<base::RunLoop>();
   if (parts_)
-    ran_main_loop = parts_->MainMessageLoopRun(&result_code_);
+    parts_->WillRunMainMessageLoop(main_run_loop);
+  if (!main_run_loop)
+    return;
 
-  if (!ran_main_loop)
-    MainMessageLoopRun();
+  main_run_loop->RunUntilIdle();
+  // |parts_| may have captured a quit closure in WillRunMainMessageLoop(). If
+  // the above run is quit before it reaches idle on its own,
+  // RunMainMessageLoop() must return right away.
+  if (main_run_loop->AnyQuitCalled())
+    return;
 
-  TRACE_EVENT_ASYNC_END0("toplevel", "BrowserMain:MESSAGE_LOOP", this);
+  // TODO(crbug.com/1175074): Figure out why (only) blink web tests goes through
+  // this code path multiple times...
+  static bool ran_once = false;
+  if (!ran_once) {
+    ran_once = true;
+    if (parts_)
+      parts_->OnFirstIdle();
+    responsiveness_watcher_->OnFirstIdle();
+  }
+
+  main_run_loop->Run();
+#endif  // defined(OS_ANDROID)
+}
+
+void BrowserMainLoop::PreShutdown() {
+  ui::Clipboard::OnPreShutdownForCurrentThread();
 }
 
 void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
@@ -1023,25 +1014,21 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
   // Teardown may start in PostMainMessageLoopRun, and during teardown we
   // need to be able to perform IO.
   base::ThreadRestrictions::SetIOAllowed(true);
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
           base::IgnoreResult(&base::ThreadRestrictions::SetIOAllowed), true));
 
   // Also allow waiting to join threads.
   // TODO(https://crbug.com/800808): Ideally this (and the above SetIOAllowed()
   // would be scoped allowances). That would be one of the first step to ensure
-  // no persistent work is being done after ThreadPool::Shutdown() in order
-  // to move towards atomic shutdown.
+  // no persistent work is being done after ThreadPoolInstance::Shutdown() in
+  // order to move towards atomic shutdown.
   base::ThreadRestrictions::SetWaitAllowed(true);
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
           base::IgnoreResult(&base::ThreadRestrictions::SetWaitAllowed), true));
-
-#if defined(OS_ANDROID)
-  g_browser_main_loop_shutting_down = true;
-#endif
 
   if (RenderProcessHost::run_renderer_in_process())
     RenderProcessHostImpl::ShutDownInProcessRenderer();
@@ -1052,30 +1039,33 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
     parts_->PostMainMessageLoopRun();
   }
 
-  // Cancel pending requests and prevent new requests.
-  if (resource_dispatcher_host_) {
-    TRACE_EVENT0("shutdown",
-                 "BrowserMainLoop::Subsystem:ResourceDispatcherHost");
-    resource_dispatcher_host_->Shutdown();
-  }
   // Request shutdown to clean up allocated resources on the IO thread.
   if (midi_service_) {
     TRACE_EVENT0("shutdown", "BrowserMainLoop::Subsystem:MidiService");
     midi_service_->Shutdown();
   }
 
-  TRACE_EVENT0("shutdown",
-               "BrowserMainLoop::Subsystem:SpeechRecognitionManager");
-  io_thread_->task_runner()->DeleteSoon(FROM_HERE,
-                                        speech_recognition_manager_.release());
+  {
+    TRACE_EVENT0("shutdown",
+                 "BrowserMainLoop::Subsystem:SpeechRecognitionManager");
+    io_thread_->task_runner()->DeleteSoon(
+        FROM_HERE, speech_recognition_manager_.release());
+  }
+
+  TtsControllerImpl::GetInstance()->Shutdown();
 
   memory_pressure_monitor_.reset();
 
-#if defined(OS_MACOSX)
+  ShutDownNetworkService();
+
+  if (base::FeatureList::IsEnabled(features::kProcessHostOnUI))
+    BrowserProcessIOThread::ProcessHostCleanUp();
+
+#if defined(OS_MAC)
   BrowserCompositorMac::DisableRecyclingForShutdown();
 #endif
 
-#if defined(USE_AURA) || defined(OS_MACOSX)
+#if defined(USE_AURA) || defined(OS_MAC)
   {
     TRACE_EVENT0("shutdown",
                  "BrowserMainLoop::Subsystem:ImageTransportFactory");
@@ -1085,9 +1075,7 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
 
 #if !defined(OS_ANDROID)
   host_frame_sink_manager_.reset();
-  frame_sink_manager_impl_.reset();
   compositing_mode_reporter_impl_.reset();
-  server_shared_bitmap_manager_.reset();
 #endif
 
 // The device monitors are using |system_monitor_| as dependency, so delete
@@ -1097,17 +1085,13 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
 // goes away.
 #if defined(OS_WIN)
   system_message_window_.reset();
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   device_monitor_mac_.reset();
 #endif
 
   if (BrowserGpuChannelHostFactory::instance())
     BrowserGpuChannelHostFactory::instance()->CloseChannel();
 
-  // Shutdown the Service Manager and IPC.
-  if (service_manager_context_)
-    service_manager_context_->ShutDown();
-  owned_service_manager_context_.reset();
   mojo_ipc_support_.reset();
 
   if (save_file_manager_)
@@ -1120,7 +1104,7 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
 
   {
     TRACE_EVENT0("shutdown", "BrowserMainLoop::Subsystem:ThreadPool");
-    base::ThreadPool::GetInstance()->Shutdown();
+    base::ThreadPoolInstance::Get()->Shutdown();
   }
 
   // Must happen after the IO thread is shutdown since this may be accessed from
@@ -1170,62 +1154,30 @@ media::AudioManager* BrowserMainLoop::audio_manager() const {
   return audio_manager_.get();
 }
 
-#if !defined(OS_ANDROID)
-viz::FrameSinkManagerImpl* BrowserMainLoop::GetFrameSinkManager() const {
-  return frame_sink_manager_impl_.get();
-}
-
-viz::ServerSharedBitmapManager* BrowserMainLoop::GetServerSharedBitmapManager()
-    const {
-  return server_shared_bitmap_manager_.get();
-}
-#endif
-
 void BrowserMainLoop::GetCompositingModeReporter(
-    viz::mojom::CompositingModeReporterRequest request) {
+    mojo::PendingReceiver<viz::mojom::CompositingModeReporter> receiver) {
 #if defined(OS_ANDROID)
   // Android doesn't support non-gpu compositing modes, and doesn't make a
   // CompositingModeReporter.
   return;
 #else
-  if (features::IsMultiProcessMash()) {
-    // Mash == ChromeOS, which doesn't support software compositing, so no need
-    // to report compositing mode.
-    return;
-  }
-
-  compositing_mode_reporter_impl_->BindRequest(std::move(request));
+  compositing_mode_reporter_impl_->BindReceiver(std::move(receiver));
 #endif
 }
 
-void BrowserMainLoop::InitializeMainThread() {
-  TRACE_EVENT0("startup", "BrowserMainLoop::InitializeMainThread");
-  base::PlatformThread::SetName("CrBrowserMain");
-
-  // Register the main thread. The main thread's task runner should already have
-  // been initialized in MainMessageLoopStart() (or before if
-  // MessageLoopCurrent::Get() was externally provided).
-  DCHECK(base::ThreadTaskRunnerHandle::IsSet());
-  main_thread_.reset(new BrowserThreadImpl(
-      BrowserThread::UI, base::ThreadTaskRunnerHandle::Get()));
-}
-
-int BrowserMainLoop::BrowserThreadsStarted() {
-  TRACE_EVENT0("startup", "BrowserMainLoop::BrowserThreadsStarted");
+void BrowserMainLoop::PostCreateThreadsImpl() {
+  TRACE_EVENT0("startup", "BrowserMainLoop::PostCreateThreadsImpl");
 
   // Bring up Mojo IPC and the embedded Service Manager as early as possible.
   // Initializaing mojo requires the IO thread to have been initialized first,
   // so this cannot happen any earlier than now.
   InitializeMojo();
 
-#if BUILDFLAG(ENABLE_MUS)
-  if (features::IsUsingWindowService()) {
-    base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kEnableSurfaceSynchronization);
-  }
-#endif
+  data_decoder_service_provider_ = std::make_unique<OopDataDecoder>();
 
   HistogramSynchronizer::GetInstance();
+
+  FieldTrialSynchronizer::CreateInstance();
 
   // cc assumes a single client name for metrics in a process, which is
   // is inconsistent with single process mode where both the renderer and
@@ -1242,19 +1194,23 @@ int BrowserMainLoop::BrowserThreadsStarted() {
   // Initialize the GPU shader cache. This needs to be initialized before
   // BrowserGpuChannelHostFactory below, since that depends on an initialized
   // ShaderCacheFactory.
-  InitShaderCacheFactorySingleton(
-      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}));
+  auto process_task_runner =
+      base::FeatureList::IsEnabled(features::kProcessHostOnUI)
+          ? GetUIThreadTaskRunner({})
+          : GetIOThreadTaskRunner({});
+  InitShaderCacheFactorySingleton(process_task_runner);
 
   // Initialize the FontRenderParams on IO thread. This needs to be initialized
   // before gpu process initialization below.
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
-      base::BindOnce(
-          &viz::GpuHostImpl::InitFontRenderParams,
-          gfx::GetFontRenderParams(gfx::FontRenderParamsQuery(), nullptr)));
-
-  // If ash/ws is not hosting viz, then the browser must.
-  bool browser_is_viz_host = !features::IsMultiProcessMash();
+  if (base::FeatureList::IsEnabled(features::kProcessHostOnUI)) {
+    viz::GpuHostImpl::InitFontRenderParams(
+        gfx::GetFontRenderParams(gfx::FontRenderParamsQuery(), nullptr));
+  } else {
+    GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&viz::GpuHostImpl::InitFontRenderParams,
+                                  gfx::GetFontRenderParams(
+                                      gfx::FontRenderParamsQuery(), nullptr)));
+  }
 
   bool always_uses_gpu = true;
   bool established_gpu_channel = false;
@@ -1267,49 +1223,23 @@ int BrowserMainLoop::BrowserThreadsStarted() {
   established_gpu_channel = true;
   if (parsed_command_line_.HasSwitch(switches::kDisableGpu) ||
       parsed_command_line_.HasSwitch(switches::kDisableGpuCompositing) ||
-      parsed_command_line_.HasSwitch(switches::kDisableGpuEarlyInit) ||
-      !browser_is_viz_host) {
+      parsed_command_line_.HasSwitch(switches::kDisableGpuEarlyInit)) {
     established_gpu_channel = always_uses_gpu = false;
   }
 
-  if (browser_is_viz_host) {
-    host_frame_sink_manager_ = std::make_unique<viz::HostFrameSinkManager>();
-    BrowserGpuChannelHostFactory::Initialize(established_gpu_channel);
-    compositing_mode_reporter_impl_ =
-        std::make_unique<viz::CompositingModeReporterImpl>();
+  host_frame_sink_manager_ = std::make_unique<viz::HostFrameSinkManager>();
+  BrowserGpuChannelHostFactory::Initialize(established_gpu_channel);
+  compositing_mode_reporter_impl_ =
+      std::make_unique<viz::CompositingModeReporterImpl>();
 
-    if (features::IsVizDisplayCompositorEnabled()) {
-      auto transport_factory = std::make_unique<VizProcessTransportFactory>(
-          BrowserGpuChannelHostFactory::instance(), GetResizeTaskRunner(),
-          compositing_mode_reporter_impl_.get());
-      transport_factory->ConnectHostFrameSinkManager();
-      ImageTransportFactory::SetFactory(std::move(transport_factory));
-    } else {
-      server_shared_bitmap_manager_ =
-          std::make_unique<viz::ServerSharedBitmapManager>();
-      frame_sink_manager_impl_ = std::make_unique<viz::FrameSinkManagerImpl>(
-          server_shared_bitmap_manager_.get(),
-          switches::GetDeadlineToSynchronizeSurfaces());
-
-      surface_utils::ConnectWithLocalFrameSinkManager(
-          host_frame_sink_manager_.get(), frame_sink_manager_impl_.get(),
-          base::ThreadTaskRunnerHandle::Get());
-
-      ImageTransportFactory::SetFactory(
-          std::make_unique<GpuProcessTransportFactory>(
-              BrowserGpuChannelHostFactory::instance(),
-              compositing_mode_reporter_impl_.get(),
-              server_shared_bitmap_manager_.get(), GetResizeTaskRunner()));
-    }
-  }
+  auto transport_factory = std::make_unique<VizProcessTransportFactory>(
+      BrowserGpuChannelHostFactory::instance(), GetResizeTaskRunner(),
+      compositing_mode_reporter_impl_.get());
+  transport_factory->ConnectHostFrameSinkManager();
+  ImageTransportFactory::SetFactory(std::move(transport_factory));
 
 #if defined(USE_AURA)
-  // In single process mash mode the aura::Env created here uses the
-  // WindowService, and needs to use the context-factory from aura.
-  if (browser_is_viz_host && !features::IsSingleProcessMash()) {
-    env_->set_context_factory(GetContextFactory());
-    env_->set_context_factory_private(GetContextFactoryPrivate());
-  }
+  env_->set_context_factory(GetContextFactory());
 #endif  // defined(USE_AURA)
 #endif  // !defined(OS_ANDROID)
 
@@ -1320,36 +1250,36 @@ int BrowserMainLoop::BrowserThreadsStarted() {
 #endif
 
   {
-    TRACE_EVENT0("startup", "BrowserThreadsStarted::Subsystem:AudioMan");
+    TRACE_EVENT0("startup", "PostCreateThreads::Subsystem:AudioMan");
     InitializeAudio();
   }
 
   {
-    TRACE_EVENT0("startup", "BrowserThreadsStarted::Subsystem:MidiService");
-    midi_service_.reset(new midi::MidiService);
+    TRACE_EVENT0("startup", "PostCreateThreads::Subsystem:MidiService");
+    midi_service_ = std::make_unique<midi::MidiService>();
   }
 
   {
-    TRACE_EVENT0("startup", "BrowserThreadsStarted::Subsystem:GamepadService");
+    TRACE_EVENT0("startup", "PostCreateThreads::Subsystem:Devices");
     device::GamepadService::GetInstance()->StartUp(
-        content::ServiceManagerConnection::GetForProcess()
-            ->GetConnector()
-            ->Clone());
+        base::BindRepeating(&BindHidManager));
+#if !defined(OS_ANDROID)
+    device::FidoHidDiscovery::SetHidManagerBinder(
+        base::BindRepeating(&BindHidManager));
+#endif
   }
 
 #if defined(OS_WIN)
-  if (base::FeatureList::IsEnabled(display::features::kHighDynamicRange))
-    HDRProxy::Initialize();
-  system_message_window_.reset(new media::SystemMessageWindowWin);
-#elif defined(OS_LINUX) && defined(USE_UDEV)
+  system_message_window_ = std::make_unique<media::SystemMessageWindowWin>();
+#elif (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)
   device_monitor_linux_ = std::make_unique<media::DeviceMonitorLinux>();
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   // On Mac, the audio task runner must belong to the main thread.
   // See audio_thread_impl.cc and https://crbug.com/158170.
   DCHECK(!audio_manager_ ||
          audio_manager_->GetTaskRunner()->BelongsToCurrentThread());
-  device_monitor_mac_.reset(
-      new media::DeviceMonitorMac(base::ThreadTaskRunnerHandle::Get()));
+  device_monitor_mac_ = std::make_unique<media::DeviceMonitorMac>(
+      base::ThreadTaskRunnerHandle::Get());
 #endif
 
   // Instantiated once using CreateSingletonInstance(), and accessed only using
@@ -1359,37 +1289,15 @@ int BrowserMainLoop::BrowserThreadsStarted() {
   // Allowed to leak when the browser exits.
   WebRTCInternals::CreateSingletonInstance();
 
-  // RDH needs the IO thread to be created
-  {
-    TRACE_EVENT0("startup",
-      "BrowserMainLoop::BrowserThreadsStarted:InitResourceDispatcherHost");
-    // TODO(ananta)
-    // We register an interceptor on the ResourceDispatcherHostImpl instance to
-    // intercept requests to create handlers for download requests. We need to
-    // find a better way to achieve this. Ideally we don't want knowledge of
-    // downloads in ResourceDispatcherHostImpl.
-    // We pass the task runners for the UI and IO threads as a stopgap approach
-    // for now. Eventually variants of these runners would be available in the
-    // network service.
-    resource_dispatcher_host_.reset(new ResourceDispatcherHostImpl(
-        base::Bind(&DownloadResourceHandler::Create),
-        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}),
-        !parsed_command_line_.HasSwitch(switches::kDisableResourceScheduler)));
-    GetContentClient()->browser()->ResourceDispatcherHostCreated();
-
-    loader_delegate_.reset(new LoaderDelegateImpl());
-    resource_dispatcher_host_->SetLoaderDelegate(loader_delegate_.get());
-  }
-
   // MediaStreamManager needs the IO thread to be created.
   {
     TRACE_EVENT0("startup",
-      "BrowserMainLoop::BrowserThreadsStarted:InitMediaStreamManager");
+                 "BrowserMainLoop::PostCreateThreads:InitMediaStreamManager");
 
     scoped_refptr<base::SingleThreadTaskRunner> audio_task_runner =
         audio_manager_ ? audio_manager_->GetTaskRunner() : nullptr;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     // On Mac, the audio task runner must belong to the main thread.
     // See audio_thread_impl.cc and https://crbug.com/158170.
     if (audio_task_runner) {
@@ -1405,22 +1313,21 @@ int BrowserMainLoop::BrowserThreadsStarted() {
 
   {
     TRACE_EVENT0("startup",
-      "BrowserMainLoop::BrowserThreadsStarted:InitSpeechRecognition");
+                 "BrowserMainLoop::PostCreateThreads:InitSpeechRecognition");
     speech_recognition_manager_.reset(new SpeechRecognitionManagerImpl(
         audio_system_.get(), media_stream_manager_.get()));
   }
 
   {
-    TRACE_EVENT0(
-        "startup",
-        "BrowserMainLoop::BrowserThreadsStarted::InitUserInputMonitor");
+    TRACE_EVENT0("startup",
+                 "BrowserMainLoop::PostCreateThreads::InitUserInputMonitor");
     user_input_monitor_ = media::UserInputMonitor::Create(
         io_thread_->task_runner(), base::ThreadTaskRunnerHandle::Get());
   }
 
   {
     TRACE_EVENT0("startup",
-      "BrowserMainLoop::BrowserThreadsStarted::SaveFileManager");
+                 "BrowserMainLoop::PostCreateThreads::SaveFileManager");
     save_file_manager_ = new SaveFileManager();
   }
 
@@ -1435,54 +1342,38 @@ int BrowserMainLoop::BrowserThreadsStarted() {
 #endif
   ui::Clipboard::SetAllowedThreads(allowed_clipboard_threads);
 
-  if (GpuDataManagerImpl::GetInstance()->GpuProcessStartAllowed() &&
-      !established_gpu_channel && always_uses_gpu && browser_is_viz_host) {
+  if (!established_gpu_channel && always_uses_gpu) {
     TRACE_EVENT_INSTANT0("gpu", "Post task to launch GPU process",
                          TRACE_EVENT_SCOPE_THREAD);
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+    process_task_runner->PostTask(
+        FROM_HERE,
         base::BindOnce(base::IgnoreResult(&GpuProcessHost::Get),
-                       GpuProcessHost::GPU_PROCESS_KIND_SANDBOXED,
-                       true /* force_create */));
+                       GPU_PROCESS_KIND_SANDBOXED, true /* force_create */));
   }
 
 #if defined(OS_WIN)
-  if (!parsed_command_line_.HasSwitch(
-          switches::kDisableGpuProcessForDX12VulkanInfoCollection)) {
-    GpuDataManagerImpl::GetInstance()->RequestGpuSupportedRuntimeVersion();
-  }
-
-  if (base::FeatureList::IsEnabled(features::kFontSrcLocalMatching)) {
-    content::DWriteFontLookupTableBuilder::GetInstance()
-        ->SchedulePrepareFontUniqueNameTable();
-  }
+  GpuDataManagerImpl::GetInstance()->PostCreateThreads();
 #endif
 
   if (MediaKeysListenerManager::IsMediaKeysListenerManagerEnabled()) {
-#if defined(OS_MACOSX)
-    remote_command_center_delegate_ =
-        now_playing::RemoteCommandCenterDelegate::Create();
-#endif
     media_keys_listener_manager_ =
-        std::make_unique<MediaKeysListenerManagerImpl>(
-            content::ServiceManagerConnection::GetForProcess()->GetConnector());
+        std::make_unique<MediaKeysListenerManagerImpl>();
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   ThemeHelperMac::GetInstance();
-#endif  // defined(OS_MACOSX)
-
-  responsiveness_watcher_ = new responsiveness::Watcher;
-  responsiveness_watcher_->SetUp();
+#endif  // defined(OS_MAC)
 
 #if defined(OS_ANDROID)
   media::SetMediaDrmBridgeClient(GetContentClient()->GetMediaDrmBridgeClient());
+  if (base::FeatureList::IsEnabled(features::kFontSrcLocalMatching)) {
+    FontUniqueNameLookup::GetInstance();
+  }
 #endif
 
 #if defined(ENABLE_IPC_FUZZER)
   SetFileUrlPathAliasForIpcFuzzer();
 #endif
-  return result_code_;
 }
 
 bool BrowserMainLoop::UsingInProcessGpu() const {
@@ -1492,17 +1383,6 @@ bool BrowserMainLoop::UsingInProcessGpu() const {
 
 void BrowserMainLoop::InitializeMemoryManagementComponent() {
   memory_pressure_monitor_ = CreateMemoryPressureMonitor(parsed_command_line_);
-
-  std::unique_ptr<SwapMetricsDriver::Delegate> delegate(
-      base::WrapUnique<SwapMetricsDriver::Delegate>(
-          new SwapMetricsDelegateUma()));
-
-#if !defined(OS_FUCHSIA)
-  swap_metrics_driver_ =
-      SwapMetricsDriver::Create(std::move(delegate), kSwapMetricsInterval);
-  if (swap_metrics_driver_)
-    swap_metrics_driver_->Start();
-#endif  // !defined(OS_FUCHSIA)
 }
 
 bool BrowserMainLoop::InitializeToolkit() {
@@ -1526,8 +1406,9 @@ bool BrowserMainLoop::InitializeToolkit() {
 #if defined(USE_AURA)
 
 #if defined(USE_X11)
-  if (!parsed_command_line_.HasSwitch(switches::kHeadless) &&
-      !gfx::GetXDisplay()) {
+  if (!features::IsUsingOzonePlatform() &&
+      !parsed_command_line_.HasSwitch(switches::kHeadless) &&
+      !x11::Connection::Get()->Ready()) {
     LOG(ERROR) << "Unable to open X display.";
     return false;
   }
@@ -1535,32 +1416,13 @@ bool BrowserMainLoop::InitializeToolkit() {
 
   // Env creates the compositor. Aura widgets need the compositor to be created
   // before they can be initialized by the browser.
-  env_ = aura::Env::CreateInstance(features::IsUsingWindowService()
-                                       ? aura::Env::Mode::MUS
-                                       : aura::Env::Mode::LOCAL);
+  env_ = aura::Env::CreateInstance();
 #endif  // defined(USE_AURA)
 
   if (parts_)
     parts_->ToolkitInitialized();
 
   return true;
-}
-
-void BrowserMainLoop::MainMessageLoopRun() {
-#if defined(OS_ANDROID)
-  // Android's main message loop is the Java message loop.
-  NOTREACHED();
-#else
-  DCHECK(base::MessageLoopCurrentForUI::IsSet());
-  if (parameters_.ui_task) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                  *parameters_.ui_task);
-  }
-
-  base::RunLoop run_loop;
-  parts_->PreDefaultMainMessageLoopRun(run_loop.QuitClosure());
-  run_loop.Run();
-#endif
 }
 
 void BrowserMainLoop::InitializeMojo() {
@@ -1571,51 +1433,12 @@ void BrowserMainLoop::InitializeMojo() {
     mojo::SyncCallRestrictions::DisallowSyncCall();
   }
 
-  mojo_ipc_support_.reset(new mojo::core::ScopedIPCSupport(
-      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}),
-      mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST));
-
-  if (!service_manager_context_) {
-    owned_service_manager_context_ =
-        std::make_unique<ServiceManagerContext>(io_thread_->task_runner());
-    service_manager_context_ = owned_service_manager_context_.get();
-  }
-  ServiceManagerContext::StartBrowserConnection();
-
-#if defined(OS_MACOSX)
-  mojo::core::SetMachPortProvider(MachBroker::GetInstance());
-#endif  // defined(OS_MACOSX)
-  GetContentClient()->OnServiceManagerConnected(
-      ServiceManagerConnection::GetForProcess());
-
-  // Ensure that any NavigableContentsViews constructed in the browser process
-  // know they're running in the same process as the service.
-  content::NavigableContentsView::SetClientRunningInServiceProcess();
-
-  tracing_controller_ = std::make_unique<content::TracingControllerImpl>();
-  content::BackgroundTracingManagerImpl::GetInstance()
-      ->AddMetadataGeneratorFunction();
-
-  // Registers the browser process as a memory-instrumentation client, so
-  // that data for the browser process will be available in memory dumps.
-  service_manager::Connector* connector =
-      content::ServiceManagerConnection::GetForProcess()->GetConnector();
-  memory_instrumentation::ClientProcessImpl::Config config(
-      connector, resource_coordinator::mojom::kServiceName,
-      memory_instrumentation::mojom::ProcessType::BROWSER);
-  memory_instrumentation::ClientProcessImpl::CreateInstance(config);
-
   // Start startup tracing through TracingController's interface. TraceLog has
   // been enabled in content_main_runner where threads are not available. Now We
   // need to start tracing for all other tracing agents, which require threads.
   // We can only do this after starting the main message loop to avoid calling
   // MessagePumpForUI::ScheduleWork() before MessagePumpForUI::Start().
-  TracingControllerImpl::GetInstance()->StartStartupTracingIfNeeded();
-
-  if (parts_) {
-    parts_->ServiceManagerConnectionStarted(
-        ServiceManagerConnection::GetForProcess());
-  }
+  StartupTracingController::GetInstance().StartIfNeeded();
 
 #if BUILDFLAG(MOJO_RANDOM_DELAYS_ENABLED)
   mojo::BeginRandomMojoDelays();
@@ -1632,7 +1455,9 @@ void BrowserMainLoop::InitializeAudio() {
 
   // Do not initialize |audio_manager_| if running out of process.
   if (!audio_manager_ &&
-      !base::FeatureList::IsEnabled(features::kAudioServiceOutOfProcess)) {
+      (base::CommandLine::ForCurrentProcess()->HasSwitch(
+           switches::kSingleProcess) ||
+       !base::FeatureList::IsEnabled(features::kAudioServiceOutOfProcess))) {
     audio_manager_ =
         media::AudioManager::Create(std::make_unique<media::AudioThreadImpl>(),
                                     MediaInternals::GetInstance());
@@ -1642,41 +1467,22 @@ void BrowserMainLoop::InitializeAudio() {
   // Iff |audio_manager_| is instantiated, the audio service will run
   // in-process. Complete the setup for that:
   if (audio_manager_) {
-    AudioMirroringManager* const mirroring_manager =
-        AudioMirroringManager::GetInstance();
-    audio_manager_->SetDiverterCallbacks(
-        mirroring_manager->GetAddDiverterCallback(),
-        mirroring_manager->GetRemoveDiverterCallback());
-
     TRACE_EVENT_INSTANT0("startup", "Starting Audio service task runner",
                          TRACE_EVENT_SCOPE_THREAD);
-    ServiceManagerContext::GetAudioServiceRunner()->StartWithTaskRunner(
+    audio::Service::GetInProcessTaskRunner()->StartWithTaskRunner(
         audio_manager_->GetTaskRunner());
   }
 
   if (base::FeatureList::IsEnabled(features::kAudioServiceLaunchOnStartup)) {
     // Schedule the audio service startup on the main thread.
-    BrowserThread::PostAfterStartupTask(
-        FROM_HERE,
-        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI}),
-        base::BindOnce([]() {
-          TRACE_EVENT0("audio", "Starting audio service");
-          ServiceManagerConnection* connection =
-              content::ServiceManagerConnection::GetForProcess();
-          if (connection) {
-            // The browser is not shutting down: |connection| would be null
-            // otherwise.
-            connection->GetConnector()->WarmService(
-                service_manager::ServiceFilter::ByName(
-                    audio::mojom::kServiceName));
-          }
-        }));
+    content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
+        ->PostTask(FROM_HERE, base::BindOnce([]() {
+                     TRACE_EVENT0("audio", "Starting audio service");
+                     GetAudioService();
+                   }));
   }
 
-  audio_system_ = audio::CreateAudioSystem(
-      content::ServiceManagerConnection::GetForProcess()
-          ->GetConnector()
-          ->Clone());
+  audio_system_ = CreateAudioSystemForAudioService();
   CHECK(audio_system_);
 }
 
@@ -1685,6 +1491,18 @@ bool BrowserMainLoop::AudioServiceOutOfProcess() const {
   // embedder does not provide its own in-process AudioManager.
   return base::FeatureList::IsEnabled(features::kAudioServiceOutOfProcess) &&
          !GetContentClient()->browser()->OverridesAudioManager();
+}
+
+SmsProvider* BrowserMainLoop::GetSmsProvider() {
+  if (!sms_provider_) {
+    sms_provider_ = SmsProvider::Create();
+  }
+  return sms_provider_.get();
+}
+
+void BrowserMainLoop::SetSmsProviderForTesting(
+    std::unique_ptr<SmsProvider> provider) {
+  sms_provider_ = std::move(provider);
 }
 
 }  // namespace content

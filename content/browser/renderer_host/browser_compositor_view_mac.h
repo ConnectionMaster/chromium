@@ -14,11 +14,10 @@
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "components/viz/common/surfaces/scoped_surface_id_allocator.h"
 #include "content/browser/renderer_host/delegated_frame_host.h"
-#include "content/public/common/screen_info.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/layer_observer.h"
-#include "ui/display/display.h"
+#include "ui/display/display_list.h"
 #include "ui/gfx/ca_layer_params.h"
 
 namespace ui {
@@ -31,8 +30,8 @@ namespace content {
 class BrowserCompositorMacClient {
  public:
   virtual SkColor BrowserCompositorMacGetGutterColor() const = 0;
-  virtual void BrowserCompositorMacOnBeginFrame(base::TimeTicks frame_time) = 0;
-  virtual void OnFrameTokenChanged(uint32_t frame_token) = 0;
+  virtual void OnFrameTokenChanged(uint32_t frame_token,
+                                   base::TimeTicks activation_time) = 0;
   virtual void DestroyCompositorForShutdown() = 0;
   virtual bool OnBrowserCompositorSurfaceIdChanged() = 0;
   virtual std::vector<viz::SurfaceId> CollectSurfaceIdsForEviction() = 0;
@@ -53,7 +52,7 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
       ui::AcceleratedWidgetMacNSView* accelerated_widget_mac_ns_view,
       BrowserCompositorMacClient* client,
       bool render_widget_host_is_hidden,
-      const display::Display& initial_display,
+      const display::DisplayList& initial_display_list,
       const viz::FrameSinkId& frame_sink_id);
   ~BrowserCompositorMac() override;
 
@@ -68,14 +67,9 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   // no valid frame is available.
   const gfx::CALayerParams* GetLastCALayerParams() const;
 
-  void DidCreateNewRendererCompositorFrameSink(
-      viz::mojom::CompositorFrameSinkClient* renderer_compositor_frame_sink);
-  void OnDidNotProduceFrame(const viz::BeginFrameAck& ack);
   void SetBackgroundColor(SkColor background_color);
   void UpdateVSyncParameters(const base::TimeTicks& timebase,
                              const base::TimeDelta& interval);
-  void SetNeedsBeginFrames(bool needs_begin_frames);
-  void SetWantsAnimateOnlyBeginFrames();
   void TakeFallbackContentFrom(BrowserCompositorMac* other);
 
   // Update the renderer's SurfaceId to reflect the current dimensions of the
@@ -83,14 +77,15 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   // true if any properties that need to be communicated to the
   // RenderWidgetHostImpl have changed.
   bool UpdateSurfaceFromNSView(const gfx::Size& new_size_dip,
-                               const display::Display& new_display);
+                               const display::DisplayList& new_display_list);
 
   // Update the renderer's SurfaceId to reflect |new_size_in_pixels| in
   // anticipation of the NSView resizing during auto-resize.
   void UpdateSurfaceFromChild(
+      bool auto_resize_enabled,
       float new_device_scale_factor,
       const gfx::Size& new_size_in_pixels,
-      const viz::LocalSurfaceIdAllocation& child_local_surface_id_allocation);
+      const viz::LocalSurfaceId& child_local_surface_id);
 
   // This is used to ensure that the ui::Compositor be attached to the
   // DelegatedFrameHost while the RWHImpl is visible.
@@ -114,10 +109,10 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   }
 
   const gfx::Size& GetRendererSize() const { return dfh_size_dip_; }
-  void GetRendererScreenInfo(ScreenInfo* screen_info) const;
+  const display::DisplayList& display_list() const { return display_list_; }
   viz::ScopedSurfaceIdAllocator GetScopedRendererSurfaceIdAllocator(
       base::OnceCallback<void()> allocation_task);
-  const viz::LocalSurfaceIdAllocation& GetRendererLocalSurfaceIdAllocation();
+  const viz::LocalSurfaceId& GetRendererLocalSurfaceId();
   void TransformPointToRootSurface(gfx::PointF* point);
 
   // Indicate that the recyclable compositor should be destroyed, and no future
@@ -128,8 +123,8 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   ui::Layer* DelegatedFrameHostGetLayer() const override;
   bool DelegatedFrameHostIsVisible() const override;
   SkColor DelegatedFrameHostGetGutterColor() const override;
-  void OnBeginFrame(base::TimeTicks frame_time) override;
-  void OnFrameTokenChanged(uint32_t frame_token) override;
+  void OnFrameTokenChanged(uint32_t frame_token,
+                           base::TimeTicks activation_time) override;
   float GetDeviceScaleFactor() const override;
   void InvalidateLocalSurfaceIdOnEviction() override;
   std::vector<viz::SurfaceId> CollectSurfaceIdsForEviction() override;
@@ -186,8 +181,6 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   std::unique_ptr<ui::Layer> root_layer_;
 
   SkColor background_color_ = SK_ColorWHITE;
-  viz::mojom::CompositorFrameSinkClient* renderer_compositor_frame_sink_ =
-      nullptr;
 
   // The viz::ParentLocalSurfaceIdAllocator for the delegated frame host
   // dispenses viz::LocalSurfaceIds that are renderered into by the renderer
@@ -195,7 +188,10 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   viz::ParentLocalSurfaceIdAllocator dfh_local_surface_id_allocator_;
   gfx::Size dfh_size_pixels_;
   gfx::Size dfh_size_dip_;
-  display::Display dfh_display_;
+
+  // Cached info about the displays relevant to the RenderWidgetHostView.
+  // TODO(crbug.com/1169312): Consolidate this cache with that of RWHVBase.
+  display::DisplayList display_list_;
 
   // This is used to cache the saved frame state to be used for tab switching
   // metric. In tab switch in MacOS, DelegatedFrameHost::WasShown is called once

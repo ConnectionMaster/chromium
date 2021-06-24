@@ -48,6 +48,7 @@ class DEVICE_GAMEPAD_EXPORT GamepadPlatformDataFetcherLinux
 
   // GamepadDataFetcher implementation.
   void GetGamepadData(bool devices_changed_hint) override;
+  bool DisconnectUnrecognizedGamepad(int source_id) override;
 
   void PlayEffect(int pad_index,
                   mojom::GamepadHapticEffectType,
@@ -75,11 +76,11 @@ class DEVICE_GAMEPAD_EXPORT GamepadPlatformDataFetcherLinux
   GamepadDeviceLinux* GetOrCreateMatchingDevice(
       const UdevGamepadLinux& pad_info);
   void RemoveDevice(GamepadDeviceLinux* device);
-  void RemoveDeviceAtIndex(int index);
 
   // UdevWatcher::Observer overrides
   void OnDeviceAdded(ScopedUdevDevicePtr device) override;
   void OnDeviceRemoved(ScopedUdevDevicePtr device) override;
+  void OnDeviceChanged(ScopedUdevDevicePtr device) override;
 
   std::unordered_set<std::unique_ptr<GamepadDeviceLinux>> devices_;
 

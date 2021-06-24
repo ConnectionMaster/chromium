@@ -6,6 +6,8 @@
 #define UI_ANDROID_RESOURCES_RESOURCE_MANAGER_IMPL_H_
 
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
@@ -39,8 +41,8 @@ class UI_ANDROID_EXPORT ResourceManagerImpl
   Resource* GetResource(AndroidResourceType res_type, int res_id) override;
   Resource* GetStaticResourceWithTint(
       int res_id, SkColor tint_color) override;
-  void RemoveUnusedTints(const std::unordered_set<int>& used_tints) override;
   void PreloadResource(AndroidResourceType res_type, int res_id) override;
+  void OnFrameUpdatesFinished() override;
 
   // Called from Java
   // ----------------------------------------------------------
@@ -49,6 +51,8 @@ class UI_ANDROID_EXPORT ResourceManagerImpl
                        jint res_type,
                        jint res_id,
                        const base::android::JavaRef<jobject>& bitmap,
+                       jint width,
+                       jint height,
                        jlong native_resource);
   void RemoveResource(
       JNIEnv* env,
@@ -71,6 +75,11 @@ class UI_ANDROID_EXPORT ResourceManagerImpl
   virtual void RequestResourceFromJava(AndroidResourceType res_type,
                                        int res_id);
 
+  // Remove tints that were unused in the current frame being built. This
+  // function takes a set |used_tints| and removes all the tints not in the set
+  // from the cache.
+  void RemoveUnusedTints();
+
   using ResourceMap = std::unordered_map<int, std::unique_ptr<Resource>>;
   using TintedResourceMap =
       std::unordered_map<SkColor, std::unique_ptr<ResourceMap>>;
@@ -78,6 +87,9 @@ class UI_ANDROID_EXPORT ResourceManagerImpl
   cc::UIResourceManager* ui_resource_manager_;
   ResourceMap resources_[ANDROID_RESOURCE_TYPE_COUNT];
   TintedResourceMap tinted_resources_;
+
+  // The set of tints that are used for resources in the current frame.
+  std::unordered_set<int> used_tints_;
 
   base::android::ScopedJavaGlobalRef<jobject> java_obj_;
 

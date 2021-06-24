@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/ui/table_view/table_view_empty_view.h"
 
+#import "ios/chrome/browser/ui/table_view/table_view_constants.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
@@ -22,13 +25,13 @@ NSAttributedString* GetAttributedMessage(NSString* message) {
   NSDictionary* default_attributes = @{
     NSFontAttributeName :
         [UIFont preferredFontForTextStyle:UIFontTextStyleBody],
-    NSForegroundColorAttributeName : [UIColor grayColor],
+    NSForegroundColorAttributeName : [UIColor colorNamed:kTextSecondaryColor],
     NSParagraphStyleAttributeName : paragraph_style
   };
   return [[NSAttributedString alloc] initWithString:message
                                          attributes:default_attributes];
 }
-}
+}  // namespace
 
 @interface TableViewEmptyView ()
 // The message that will be displayed and the label that will display it.
@@ -44,6 +47,9 @@ NSAttributedString* GetAttributedMessage(NSString* message) {
 @end
 
 @implementation TableViewEmptyView
+
+// Synthesized from the ChromeEmptyTableViewBackground protocol
+@synthesize scrollViewContentInsets = _scrollViewContentInsets;
 
 - (instancetype)initWithFrame:(CGRect)frame
                       message:(NSString*)message
@@ -67,29 +73,29 @@ NSAttributedString* GetAttributedMessage(NSString* message) {
   return self;
 }
 
-#pragma mark - Accessors
-
-- (NSString*)messageAccessibilityLabel {
-  return self.messageLabel.accessibilityLabel;
-}
-
-- (void)setMessageAccessibilityLabel:(NSString*)label {
-  if ([self.messageAccessibilityLabel isEqualToString:label])
-    return;
-  self.messageLabel.accessibilityLabel = label;
-}
-
 #pragma mark - Public
 
 + (NSString*)accessibilityIdentifier {
-  return @"TableViewEmptyView";
+  return kTableViewEmptyViewID;
 }
+
+#pragma mark - ChromeEmptyTableViewBackground
 
 - (void)setScrollViewContentInsets:(UIEdgeInsets)scrollViewContentInsets {
   _scrollViewContentInsets = scrollViewContentInsets;
   self.scrollView.contentInset = scrollViewContentInsets;
   self.scrollViewHeight.constant =
       scrollViewContentInsets.top + scrollViewContentInsets.bottom;
+}
+
+- (NSString*)viewAccessibilityLabel {
+  return self.messageLabel.accessibilityLabel;
+}
+
+- (void)setViewAccessibilityLabel:(NSString*)label {
+  if ([self.viewAccessibilityLabel isEqualToString:label])
+    return;
+  self.messageLabel.accessibilityLabel = label;
 }
 
 #pragma mark - UIView

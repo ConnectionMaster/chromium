@@ -16,12 +16,12 @@
 namespace mojo {
 namespace core {
 
-Dispatcher::DispatcherInTransit::DispatcherInTransit() {}
+Dispatcher::DispatcherInTransit::DispatcherInTransit() = default;
 
 Dispatcher::DispatcherInTransit::DispatcherInTransit(
     const DispatcherInTransit& other) = default;
 
-Dispatcher::DispatcherInTransit::~DispatcherInTransit() {}
+Dispatcher::DispatcherInTransit::~DispatcherInTransit() = default;
 
 MojoResult Dispatcher::WatchDispatcher(scoped_refptr<Dispatcher> dispatcher,
                                        MojoHandleSignals signals,
@@ -140,7 +140,7 @@ void Dispatcher::StartSerialize(uint32_t* num_bytes,
 }
 
 bool Dispatcher::EndSerialize(void* destination,
-                              ports::UserMessageEvent::PortAttachment* ports,
+                              ports::PortName* ports,
                               PlatformHandle* handles) {
   LOG(ERROR) << "Attempting to serialize a non-transferrable dispatcher.";
   return true;
@@ -159,7 +159,7 @@ scoped_refptr<Dispatcher> Dispatcher::Deserialize(
     Type type,
     const void* bytes,
     size_t num_bytes,
-    const ports::UserMessageEvent::PortAttachment* ports,
+    const ports::PortName* ports,
     size_t num_ports,
     PlatformHandle* platform_handles,
     size_t num_platform_handles) {
@@ -190,9 +190,9 @@ scoped_refptr<Dispatcher> Dispatcher::Deserialize(
   }
 }
 
-Dispatcher::Dispatcher() {}
+Dispatcher::Dispatcher() = default;
 
-Dispatcher::~Dispatcher() {}
+Dispatcher::~Dispatcher() = default;
 
 }  // namespace core
 }  // namespace mojo

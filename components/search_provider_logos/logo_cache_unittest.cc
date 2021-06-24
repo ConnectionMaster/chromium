@@ -31,15 +31,30 @@ LogoMetadata GetExampleMetadata() {
   metadata.short_link = GURL("https://g.co/");
   metadata.on_click_url = GURL("https://www.google.com/search?q=chicken");
   metadata.animated_url = GURL("http://www.google.com/logos/doodle.png");
+  metadata.dark_animated_url =
+      GURL("http://www.google.com/logos/dark_doodle.png");
   metadata.alt_text = "A logo about chickens";
   metadata.mime_type = "image/jpeg";
+  metadata.dark_mime_type = "image/jpeg";
+  metadata.dark_background_color = "#ABC123";
   metadata.log_url = GURL("https://www.google.com/ddllog?a=b");
+  metadata.dark_log_url = GURL("https://www.google.com/ddllog?a=dark");
   metadata.cta_log_url = GURL("https://www.google.com/ddllog?c=d");
+  metadata.dark_cta_log_url = GURL("https://www.google.com/ddllog?c=dark");
   metadata.share_button_x = 200;
   metadata.share_button_y = 100;
   metadata.share_button_opacity = 0.5;
   metadata.share_button_icon = "test_img";
   metadata.share_button_bg = "#ff22ff";
+  metadata.dark_share_button_x = 150;
+  metadata.dark_share_button_y = 50;
+  metadata.dark_share_button_opacity = 0.7;
+  metadata.dark_share_button_icon = "dark_test_img";
+  metadata.dark_share_button_bg = "#22ff22";
+  metadata.width_px = 500;
+  metadata.height_px = 200;
+  metadata.dark_width_px = 600;
+  metadata.dark_height_px = 230;
   return metadata;
 }
 
@@ -71,6 +86,7 @@ base::RefCountedString* CreateExampleImage(size_t num_bytes) {
 std::unique_ptr<EncodedLogo> GetExampleLogo() {
   auto logo = std::make_unique<EncodedLogo>();
   logo->encoded_image = CreateExampleImage(837);
+  logo->dark_encoded_image = CreateExampleImage(738);
   logo->metadata = GetExampleMetadata();
   return logo;
 }
@@ -78,6 +94,7 @@ std::unique_ptr<EncodedLogo> GetExampleLogo() {
 std::unique_ptr<EncodedLogo> GetExampleLogo2() {
   auto logo = std::make_unique<EncodedLogo>();
   logo->encoded_image = CreateExampleImage(345);
+  logo->dark_encoded_image = CreateExampleImage(543);
   logo->metadata = GetExampleMetadata2();
   return logo;
 }
@@ -85,6 +102,7 @@ std::unique_ptr<EncodedLogo> GetExampleLogo2() {
 std::unique_ptr<EncodedLogo> GetExampleLogoWithoutImage() {
   auto logo = std::make_unique<EncodedLogo>();
   logo->encoded_image = nullptr;
+  logo->dark_encoded_image = nullptr;
   logo->metadata = GetExampleMetadata2();
   return logo;
 }
@@ -103,7 +121,10 @@ void ExpectMetadataEqual(const LogoMetadata& expected_metadata,
   EXPECT_EQ(expected_metadata.alt_text, actual_metadata.alt_text);
   EXPECT_EQ(expected_metadata.mime_type, actual_metadata.mime_type);
   EXPECT_EQ(expected_metadata.log_url, actual_metadata.log_url);
+  EXPECT_EQ(expected_metadata.dark_log_url, actual_metadata.dark_log_url);
   EXPECT_EQ(expected_metadata.cta_log_url, actual_metadata.cta_log_url);
+  EXPECT_EQ(expected_metadata.dark_cta_log_url,
+            actual_metadata.dark_cta_log_url);
   EXPECT_EQ(expected_metadata.short_link, actual_metadata.short_link);
   EXPECT_EQ(expected_metadata.share_button_x, actual_metadata.share_button_x);
   EXPECT_EQ(expected_metadata.share_button_y, actual_metadata.share_button_y);
@@ -112,6 +133,25 @@ void ExpectMetadataEqual(const LogoMetadata& expected_metadata,
   EXPECT_EQ(expected_metadata.share_button_icon,
             actual_metadata.share_button_icon);
   EXPECT_EQ(expected_metadata.share_button_bg, actual_metadata.share_button_bg);
+  EXPECT_EQ(expected_metadata.dark_share_button_x,
+            actual_metadata.dark_share_button_x);
+  EXPECT_EQ(expected_metadata.dark_share_button_y,
+            actual_metadata.dark_share_button_y);
+  EXPECT_EQ(expected_metadata.dark_share_button_opacity,
+            actual_metadata.dark_share_button_opacity);
+  EXPECT_EQ(expected_metadata.dark_share_button_icon,
+            actual_metadata.dark_share_button_icon);
+  EXPECT_EQ(expected_metadata.dark_share_button_bg,
+            actual_metadata.dark_share_button_bg);
+  EXPECT_EQ(expected_metadata.width_px, actual_metadata.width_px);
+  EXPECT_EQ(expected_metadata.height_px, actual_metadata.height_px);
+  EXPECT_EQ(expected_metadata.dark_width_px, actual_metadata.dark_width_px);
+  EXPECT_EQ(expected_metadata.dark_height_px, actual_metadata.dark_height_px);
+  EXPECT_EQ(expected_metadata.iframe_width_px, actual_metadata.iframe_width_px);
+  EXPECT_EQ(expected_metadata.iframe_height_px,
+            actual_metadata.iframe_height_px);
+  EXPECT_EQ(expected_metadata.dark_background_color,
+            actual_metadata.dark_background_color);
 }
 
 void ExpectLogosEqual(const EncodedLogo& expected_logo,
@@ -119,6 +159,10 @@ void ExpectLogosEqual(const EncodedLogo& expected_logo,
   ASSERT_TRUE(expected_logo.encoded_image.get());
   ASSERT_TRUE(actual_logo.encoded_image.get());
   EXPECT_TRUE(expected_logo.encoded_image->Equals(actual_logo.encoded_image));
+  ASSERT_TRUE(expected_logo.dark_encoded_image.get());
+  ASSERT_TRUE(actual_logo.dark_encoded_image.get());
+  EXPECT_TRUE(
+      expected_logo.dark_encoded_image->Equals(actual_logo.dark_encoded_image));
   ExpectMetadataEqual(expected_logo.metadata, actual_logo.metadata);
 }
 
@@ -186,25 +230,29 @@ TEST(LogoCacheSerializationTest, SerializeMetadata) {
   LogoMetadata metadata = GetExampleMetadata();
   std::string metadata_str;
   int logo_num_bytes = 33;
-  LogoCache::LogoMetadataToString(metadata, logo_num_bytes, &metadata_str);
-  std::unique_ptr<LogoMetadata> metadata2 =
-      LogoCache::LogoMetadataFromString(metadata_str, &logo_num_bytes);
+  int dark_logo_num_bytes = 44;
+  LogoCache::LogoMetadataToString(metadata, logo_num_bytes, dark_logo_num_bytes,
+                                  &metadata_str);
+  std::unique_ptr<LogoMetadata> metadata2 = LogoCache::LogoMetadataFromString(
+      metadata_str, &logo_num_bytes, &dark_logo_num_bytes);
   ASSERT_TRUE(metadata2);
   ExpectMetadataEqual(metadata, *metadata2);
 }
 
 TEST(LogoCacheSerializationTest, DeserializeCorruptMetadata) {
   int logo_num_bytes = 33;
-  std::unique_ptr<LogoMetadata> metadata =
-      LogoCache::LogoMetadataFromString("", &logo_num_bytes);
+  int dark_logo_num_bytes = 44;
+  std::unique_ptr<LogoMetadata> metadata = LogoCache::LogoMetadataFromString(
+      "", &logo_num_bytes, &dark_logo_num_bytes);
   ASSERT_FALSE(metadata);
 
   LogoMetadata example_metadata = GetExampleMetadata2();
   std::string corrupt_str;
-  LogoCache::LogoMetadataToString(
-      example_metadata, logo_num_bytes, &corrupt_str);
+  LogoCache::LogoMetadataToString(example_metadata, logo_num_bytes,
+                                  dark_logo_num_bytes, &corrupt_str);
   corrupt_str.append("@");
-  metadata = LogoCache::LogoMetadataFromString(corrupt_str, &logo_num_bytes);
+  metadata = LogoCache::LogoMetadataFromString(corrupt_str, &logo_num_bytes,
+                                               &dark_logo_num_bytes);
   ASSERT_FALSE(metadata);
 }
 
@@ -228,7 +276,7 @@ TEST_F(LogoCacheTest, StoreAndRetrieveMetadata) {
   ExpectMetadata(&metadata);
 
   // Ensure metadata is cached in memory.
-  base::DeleteFile(cache_->GetMetadataPath(), false);
+  base::DeleteFile(cache_->GetMetadataPath());
   ExpectMetadata(&metadata);
 }
 

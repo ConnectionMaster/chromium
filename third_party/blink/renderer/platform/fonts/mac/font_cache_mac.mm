@@ -29,10 +29,15 @@
 
 #import "third_party/blink/renderer/platform/fonts/font_cache.h"
 
-#import <AppKit/AppKit.h>
 #include <memory>
+
+#import <AppKit/AppKit.h>
+#import <CoreText/CoreText.h>
+
 #include "base/location.h"
 #include "base/mac/foundation_util.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/timer/elapsed_timer.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/font_family_names.h"
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
@@ -135,16 +140,14 @@ scoped_refptr<SimpleFontData> FontCache::PlatformFallbackFontForCharacter(
       font_data_to_substitute->PlatformData();
   NSFont* ns_font = base::mac::CFToNSCast(platform_data.CtFont());
 
-  NSString* string =
-      [[NSString alloc] initWithCharactersNoCopy:code_units
-                                          length:code_units_length
-                                    freeWhenDone:NO];
+  NSString* string = [[[NSString alloc]
+      initWithCharacters:reinterpret_cast<UniChar*>(code_units)
+                  length:code_units_length] autorelease];
   NSFont* substitute_font =
       [NSFont findFontLike:ns_font
                  forString:string
                  withRange:NSMakeRange(0, code_units_length)
                 inLanguage:nil];
-  [string release];
 
   // FIXME: Remove this SPI usage: http://crbug.com/255122
   if (!substitute_font && code_units_length == 1)
@@ -221,8 +224,11 @@ scoped_refptr<SimpleFontData> FontCache::PlatformFallbackFontForCharacter(
       substitute_font, platform_data.size(), synthetic_bold,
       (traits & NSFontItalicTrait) &&
           !(substitute_font_traits & NSFontItalicTrait),
-      platform_data.Orientation(),
+      platform_data.Orientation(), font_description.FontOpticalSizing(),
       nullptr);  // No variation paramaters in fallback.
+
+  if (!alternate_font)
+    return nullptr;
 
   return FontDataFromFontPlatformData(alternate_font.get(), kDoNotRetain);
 }
@@ -295,8 +301,9 @@ std::unique_ptr<FontPlatformData> FontCache::CreateFontPlatformData(
   // the returned FontPlatformData since it will not have a valid SkTypeface.
   std::unique_ptr<FontPlatformData> platform_data = FontPlatformDataFromNSFont(
       platform_font, size, synthetic_bold, synthetic_italic,
-      font_description.Orientation(), font_description.VariationSettings());
-  if (!platform_data->Typeface()) {
+      font_description.Orientation(), font_description.FontOpticalSizing(),
+      font_description.VariationSettings());
+  if (!platform_data || !platform_data->Typeface()) {
     return nullptr;
   }
   return platform_data;

@@ -6,18 +6,21 @@
 
 #include "base/command_line.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/lifetime/termination_notification.h"
+#include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "ui/aura/client/capture_client.h"
 #include "ui/aura/window_event_dispatcher.h"
-#include "ui/views/mus/mus_client.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(OS_CHROMEOS)
-#include "ash/shell.h"  // mash-ok
-#else
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/shell.h"
+#endif
+
+#if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
 #include "chrome/browser/notifications/notification_ui_manager.h"
 #endif
 
@@ -27,18 +30,16 @@ void HandleAppExitingForPlatform() {
   // Close all non browser windows now. Those includes notifications
   // and windows created by Ash (launcher, background, etc).
 
-#if defined(OS_CHROMEOS)
-  // This is a no-op in mash, as shutting down the client will dismiss any of
-  // the open menus. This check was originally here to work around an x11-ism,
-  // but has the nice side effect of making this a no-op in mash. When we turn
-  // mash on eventually, this can go away.  crbug.com/723876
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (ash::Shell::HasInstance()) {
     // Releasing the capture will close any menus that might be open:
     // http://crbug.com/134472
-    aura::client::GetCaptureClient(ash::Shell::GetPrimaryRootWindow())->
-        SetCapture(NULL);
+    aura::client::GetCaptureClient(ash::Shell::GetPrimaryRootWindow())
+        ->SetCapture(nullptr);
   }
-#else
+#endif
+
+#if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
   // This clears existing notifications from the message center and their
   // associated ScopedKeepAlives. Chrome OS doesn't use ScopedKeepAlives for
   // notifications.
@@ -47,11 +48,7 @@ void HandleAppExitingForPlatform() {
 
   views::Widget::CloseAllSecondaryWidgets();
 
-  views::MusClient* const mus_client = views::MusClient::Get();
-  if (mus_client)
-    mus_client->CloseAllWidgets();
-
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDisableZeroBrowsersOpenForTests)) {
     // App is exiting, release the keep alive on behalf of Aura Shell.

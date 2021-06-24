@@ -4,9 +4,13 @@
 
 #include "chrome/browser/tab_contents/navigation_metrics_recorder.h"
 
+#include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/navigation_metrics/navigation_metrics.h"
+#include "components/profile_metrics/browser_profile_type.h"
+#include "components/site_engagement/content/site_engagement_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_entry.h"
@@ -25,7 +29,9 @@
 
 NavigationMetricsRecorder::NavigationMetricsRecorder(
     content::WebContents* web_contents)
-    : content::WebContentsObserver(web_contents) {
+    : content::WebContentsObserver(web_contents),
+      site_engagement_service_(site_engagement::SiteEngagementService::Get(
+          Profile::FromBrowserContext(web_contents->GetBrowserContext()))) {
 #if defined(OS_ANDROID)
   // The site isolation synthetic field trial is only needed on Android, as on
   // desktop it would be unnecessarily set for all users.
@@ -60,6 +66,14 @@ void NavigationMetricsRecorder::DidFinishNavigation(
         "SiteIsolationActive", "Enabled");
   }
 
+  // Also register a synthetic field trial when we encounter a navigation to an
+  // OOPIF.
+  if (is_synthetic_isolation_trial_enabled_ &&
+      navigation_handle->GetRenderFrameHost()->IsCrossProcessSubframe()) {
+    ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+        "OutOfProcessIframesActive", "Enabled");
+  }
+
   if (!navigation_handle->IsInMainFrame())
     return;
 
@@ -67,9 +81,26 @@ void NavigationMetricsRecorder::DidFinishNavigation(
   content::NavigationEntry* last_committed_entry =
       web_contents()->GetController().GetLastCommittedEntry();
 
+  const GURL url = last_committed_entry->GetVirtualURL();
+  Profile* profile = Profile::FromBrowserContext(context);
   navigation_metrics::RecordMainFrameNavigation(
-      last_committed_entry->GetVirtualURL(),
-      navigation_handle->IsSameDocument(), context->IsOffTheRecord());
+      url, navigation_handle->IsSameDocument(), profile->IsOffTheRecord(),
+      profile_metrics::GetBrowserProfileType(context));
+  profile->RecordMainFrameNavigation();
+
+  if (url.SchemeIsHTTPOrHTTPS() && !navigation_handle->IsSameDocument() &&
+      !navigation_handle->IsDownload() && !profile->IsOffTheRecord()) {
+    blink::mojom::EngagementLevel engagement_level =
+        site_engagement_service_->GetEngagementLevel(url);
+    UMA_HISTOGRAM_ENUMERATION("Navigation.MainFrame.SiteEngagementLevel",
+                              engagement_level);
+
+    if (navigation_handle->IsFormSubmission()) {
+      UMA_HISTOGRAM_ENUMERATION(
+          "Navigation.MainFrameFormSubmission.SiteEngagementLevel",
+          engagement_level);
+    }
+  }
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(NavigationMetricsRecorder)

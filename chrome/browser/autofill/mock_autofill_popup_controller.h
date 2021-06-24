@@ -8,23 +8,26 @@
 #include <memory>
 #include <vector>
 
+#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller.h"
-#include "chrome/browser/ui/autofill/autofill_popup_layout_model.h"
-#include "components/autofill/core/browser/suggestion.h"
+#include "components/autofill/core/browser/ui/suggestion.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/test/gfx_util.h"
 
 namespace autofill {
 
-class MockAutofillPopupController : public AutofillPopupController {
+class MockAutofillPopupController
+    : public AutofillPopupController,
+      public base::SupportsWeakPtr<MockAutofillPopupController> {
  public:
   MockAutofillPopupController();
   ~MockAutofillPopupController();
 
   // AutofillPopupViewDelegate
-  MOCK_METHOD0(Hide, void());
+  MOCK_METHOD1(Hide, void(PopupHidingReason reason));
   MOCK_METHOD0(ViewDestroyed, void());
   MOCK_METHOD1(SetSelectionAtPoint, void(const gfx::Point& point));
   MOCK_METHOD0(AcceptSelectedLine, bool());
@@ -32,23 +35,19 @@ class MockAutofillPopupController : public AutofillPopupController {
   MOCK_CONST_METHOD0(HasSelection, bool());
   MOCK_CONST_METHOD0(popup_bounds, gfx::Rect());
   MOCK_CONST_METHOD0(container_view, gfx::NativeView());
+  MOCK_CONST_METHOD0(GetWebContents, content::WebContents*());
   const gfx::RectF& element_bounds() const override {
     static base::NoDestructor<gfx::RectF> bounds({100, 100, 250, 50});
     return *bounds;
   }
   MOCK_CONST_METHOD0(IsRTL, bool());
-  const std::vector<autofill::Suggestion> GetSuggestions() override {
-    return suggestions_;
-  }
-#if !defined(OS_ANDROID)
-  MOCK_METHOD1(SetTypesetter, void(gfx::Typesetter typesetter));
-  MOCK_METHOD1(GetElidedValueWidthForRow, int(int row));
-  MOCK_METHOD1(GetElidedLabelWidthForRow, int(int row));
-#endif
 
   // AutofillPopupController
   MOCK_METHOD0(OnSuggestionsChanged, void());
   MOCK_METHOD1(AcceptSuggestion, void(int index));
+  std::vector<Suggestion> GetSuggestions() const override {
+    return suggestions_;
+  }
 
   int GetLineCount() const override { return suggestions_.size(); }
 
@@ -56,24 +55,28 @@ class MockAutofillPopupController : public AutofillPopupController {
     return suggestions_[row];
   }
 
-  const base::string16& GetElidedValueAt(int i) const override {
-    return suggestions_[i].value;
+  std::u16string GetSuggestionMainTextAt(int row) const override {
+    return suggestions_[row].value;
   }
 
-  const base::string16& GetElidedLabelAt(int row) const override {
+  std::u16string GetSuggestionMinorTextAt(int row) const override {
+    return std::u16string();
+  }
+
+  const std::u16string& GetSuggestionLabelAt(int row) const override {
     return suggestions_[row].label;
   }
 
-  MOCK_METHOD3(GetRemovalConfirmationText,
-               bool(int index, base::string16* title, base::string16* body));
-  MOCK_METHOD1(RemoveSuggestion, bool(int index));
-  MOCK_CONST_METHOD1(GetBackgroundColorIDForRow,
-                     ui::NativeTheme::ColorId(int index));
-  MOCK_METHOD1(SetSelectedLine, void(base::Optional<int> selected_line));
-  MOCK_CONST_METHOD0(selected_line, base::Optional<int>());
-  const autofill::AutofillPopupLayoutModel& layout_model() const override {
-    return *layout_model_;
+  base::WeakPtr<MockAutofillPopupController> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
   }
+
+  MOCK_METHOD3(GetRemovalConfirmationText,
+               bool(int index, std::u16string* title, std::u16string* body));
+  MOCK_METHOD1(RemoveSuggestion, bool(int index));
+  MOCK_METHOD1(SetSelectedLine, void(absl::optional<int> selected_line));
+  MOCK_CONST_METHOD0(selected_line, absl::optional<int>());
+  MOCK_CONST_METHOD0(GetPopupType, PopupType());
 
   void set_suggestions(const std::vector<int>& ids) {
     for (const auto& id : ids)
@@ -85,8 +88,10 @@ class MockAutofillPopupController : public AutofillPopupController {
   }
 
  private:
-  std::unique_ptr<autofill::AutofillPopupLayoutModel> layout_model_;
   std::vector<autofill::Suggestion> suggestions_;
+  gfx::ScopedDefaultFontDescription default_font_desc_setter_;
+
+  base::WeakPtrFactory<MockAutofillPopupController> weak_ptr_factory_{this};
 };
 
 }  // namespace autofill

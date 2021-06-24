@@ -4,24 +4,30 @@
 
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_source.h"
 
+#include <utility>
+
 #include "base/bind.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check_op.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/resource_coordinator/discard_metrics_lifecycle_unit_observer.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_source_observer.h"
 #include "chrome/browser/resource_coordinator/resource_coordinator_parts.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit.h"
 #include "chrome/browser/resource_coordinator/tab_manager.h"
-#include "chrome/browser/resource_coordinator/tracing_lifecycle_unit_observer.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
+#include "components/performance_manager/performance_manager_impl.h"
+#include "components/performance_manager/public/graph/page_node.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents_user_data.h"
 
 namespace resource_coordinator {
@@ -54,27 +60,79 @@ class TabLifecycleUnitSource::TabLifecycleUnitHolder
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(TabLifecycleUnitSource::TabLifecycleUnitHolder)
 
+// A very simple graph observer that forwards events over to the
+// TabLifecycleUnitSource on the UI thread. This is created on the UI thread
+// and ownership passed to the performance manager.
+class TabLifecycleStateObserver
+    : public performance_manager::PageNode::ObserverDefaultImpl,
+      public performance_manager::GraphOwned {
+ public:
+  using Graph = performance_manager::Graph;
+  using PageNode = performance_manager::PageNode;
+  using WebContentsProxy = performance_manager::WebContentsProxy;
+
+  TabLifecycleStateObserver() = default;
+  ~TabLifecycleStateObserver() override = default;
+
+ private:
+  static void OnLifecycleStateChangedImpl(
+      const WebContentsProxy& contents_proxy,
+      performance_manager::mojom::LifecycleState state) {
+    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    // If the web contents is still alive then dispatch to the actual
+    // implementation in TabLifecycleUnitSource.
+    if (auto* contents = contents_proxy.Get())
+      TabLifecycleUnitSource::OnLifecycleStateChanged(contents, state);
+  }
+
+  // performance_manager::PageNode::ObserverDefaultImpl::
+  void OnPageLifecycleStateChanged(const PageNode* page_node) override {
+    // Forward the notification over to the UI thread.
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(&TabLifecycleStateObserver::OnLifecycleStateChangedImpl,
+                       page_node->GetContentsProxy(),
+                       page_node->GetLifecycleState()));
+  }
+
+  void OnPassedToGraph(Graph* graph) override {
+    graph->AddPageNodeObserver(this);
+  }
+
+  void OnTakenFromGraph(Graph* graph) override {
+    graph->RemovePageNodeObserver(this);
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(TabLifecycleStateObserver);
+};
+
 TabLifecycleUnitSource::TabLifecycleUnitSource(
-    InterventionPolicyDatabase* intervention_policy_database,
-    UsageClock* usage_clock,
-    PageSignalReceiver* page_signal_receiver)
-    : browser_tab_strip_tracker_(this, nullptr, this),
-      page_signal_receiver_observer_(this),
-      intervention_policy_database_(intervention_policy_database),
+    UsageClock* usage_clock)
+    : browser_tab_strip_tracker_(this, nullptr),
       usage_clock_(usage_clock) {
   // In unit tests, tabs might already exist when TabLifecycleUnitSource is
   // instantiated. No TabLifecycleUnit is created for these tabs.
 
-  DCHECK(intervention_policy_database_);
+  BrowserList::AddObserver(this);
   browser_tab_strip_tracker_.Init();
-  if (page_signal_receiver)
-    page_signal_receiver_observer_.Add(page_signal_receiver);
 }
 
-TabLifecycleUnitSource::~TabLifecycleUnitSource() = default;
+TabLifecycleUnitSource::~TabLifecycleUnitSource() {
+  BrowserList::RemoveObserver(this);
+}
 
+void TabLifecycleUnitSource::Start() {
+  // TODO(sebmarchand): Remove the "IsAvailable" check, or merge the TM into the
+  // PM. The TM and PM must always exist together.
+  if (performance_manager::PerformanceManagerImpl::IsAvailable()) {
+    performance_manager::PerformanceManagerImpl::PassToGraph(
+        FROM_HERE, std::make_unique<TabLifecycleStateObserver>());
+  }
+}
+
+// static
 TabLifecycleUnitExternal* TabLifecycleUnitSource::GetTabLifecycleUnitExternal(
-    content::WebContents* web_contents) const {
+    content::WebContents* web_contents) {
   auto* lu = GetTabLifecycleUnit(web_contents);
   if (!lu)
     return nullptr;
@@ -97,30 +155,14 @@ void TabLifecycleUnitSource::SetFocusedTabStripModelForTesting(
   UpdateFocusedTab();
 }
 
-void TabLifecycleUnitSource::OnFirstLifecycleUnitCreated() {
-  // In production builds monitor the policy override of the lifecycles feature.
-  // This class owns the monitor so it is okay to use base::Unretained. Note
-  // that tests often don't have a local_state pref service available.
-  if (!g_browser_process->local_state())
-    return;
-
-  tab_lifecycles_enterprise_preference_monitor_ =
-      std::make_unique<TabLifecylesEnterprisePreferenceMonitor>(
-          g_browser_process->local_state(),
-          base::BindRepeating(
-              &TabLifecycleUnitSource::SetTabLifecyclesEnterprisePolicy,
-              base::Unretained(this)));
+void TabLifecycleUnitSource::SetMemoryLimitEnterprisePolicyFlag(bool enabled) {
+  memory_limit_enterprise_policy_ = enabled;
 }
 
-void TabLifecycleUnitSource::OnAllLifecycleUnitsDestroyed() {
-  // This needs to be freed before shutdown as PrefChangeRegistrars can't exist
-  // at shutdown. Tear it down when there are no more tabs being monitored.
-  tab_lifecycles_enterprise_preference_monitor_.reset();
-}
-
+// static
 TabLifecycleUnitSource::TabLifecycleUnit*
 TabLifecycleUnitSource::GetTabLifecycleUnit(
-    content::WebContents* web_contents) const {
+    content::WebContents* web_contents) {
   auto* holder = TabLifecycleUnitHolder::FromWebContents(web_contents);
   if (holder)
     return holder->lifecycle_unit();
@@ -130,9 +172,7 @@ TabLifecycleUnitSource::GetTabLifecycleUnit(
 TabStripModel* TabLifecycleUnitSource::GetFocusedTabStripModel() const {
   if (focused_tab_strip_model_for_testing_)
     return focused_tab_strip_model_for_testing_;
-  // Use FindLastActive() rather than FindBrowserWithActiveWindow() to avoid
-  // flakiness when focus changes during browser tests.
-  Browser* const focused_browser = chrome::FindLastActive();
+  Browser* const focused_browser = chrome::FindBrowserWithActiveWindow();
   if (!focused_browser)
     return nullptr;
   return focused_browser->tab_strip_model();
@@ -190,7 +230,6 @@ void TabLifecycleUnitSource::OnTabInserted(TabStripModel* tab_strip_model,
 
     // Add a self-owned observers to record metrics and trace events.
     lifecycle_unit->AddObserver(new DiscardMetricsLifecycleUnitObserver());
-    lifecycle_unit->AddObserver(new TracingLifecycleUnitObserver());
 
     NotifyLifecycleUnitCreated(lifecycle_unit);
   }
@@ -226,24 +265,23 @@ void TabLifecycleUnitSource::OnTabStripModelChanged(
     const TabStripSelectionChange& selection) {
   switch (change.type()) {
     case TabStripModelChange::kInserted: {
-      for (const auto& delta : change.deltas()) {
-        OnTabInserted(tab_strip_model, delta.insert.contents,
-                      selection.new_contents == delta.insert.contents);
+      for (const auto& contents : change.GetInsert()->contents) {
+        OnTabInserted(tab_strip_model, contents.contents,
+                      selection.new_contents == contents.contents);
       }
       break;
     }
     case TabStripModelChange::kRemoved: {
-      for (const auto& delta : change.deltas())
-        OnTabDetached(delta.remove.contents);
+      for (const auto& contents : change.GetRemove()->contents)
+        OnTabDetached(contents.contents);
       break;
     }
     case TabStripModelChange::kReplaced: {
-      for (const auto& delta : change.deltas())
-        OnTabReplaced(delta.replace.old_contents, delta.replace.new_contents);
+      auto* replace = change.GetReplace();
+      OnTabReplaced(replace->old_contents, replace->new_contents);
       break;
     }
     case TabStripModelChange::kMoved:
-    case TabStripModelChange::kGroupChanged:
     case TabStripModelChange::kSelectionOnly:
       break;
   }
@@ -267,6 +305,13 @@ void TabLifecycleUnitSource::TabChangedAt(content::WebContents* contents,
   lifecycle_unit->SetRecentlyAudible(audible_helper->WasRecentlyAudible());
 }
 
+
+void TabLifecycleUnitSource::OnBrowserRemoved(Browser* browser) {
+  // An active browser may be removed without OnBrowserNoLongerActive() being
+  // invoked. crbug.com/1206458
+  UpdateFocusedTab();
+}
+
 void TabLifecycleUnitSource::OnBrowserSetLastActive(Browser* browser) {
   UpdateFocusedTab();
 }
@@ -275,54 +320,17 @@ void TabLifecycleUnitSource::OnBrowserNoLongerActive(Browser* browser) {
   UpdateFocusedTab();
 }
 
+// static
 void TabLifecycleUnitSource::OnLifecycleStateChanged(
     content::WebContents* web_contents,
-    const PageNavigationIdentity& page_navigation_id,
-    mojom::LifecycleState state) {
+    performance_manager::mojom::LifecycleState state) {
   TabLifecycleUnit* lifecycle_unit = GetTabLifecycleUnit(web_contents);
 
-  // Some WebContents aren't attached to a tab, so there is no corresponding
-  // TabLifecycleUnit.
-  // TODO(fdoray): This may want to filter for the navigation_id.
+  // Lifecycle state is updated independently from navigations. Therefore, there
+  // is no need to filter out the event if it was generated before the last
+  // navigation.
   if (lifecycle_unit)
     lifecycle_unit->UpdateLifecycleState(state);
-}
-
-void TabLifecycleUnitSource::SetTabLifecyclesEnterprisePolicy(bool enabled) {
-  tab_lifecycles_enterprise_policy_ = enabled;
-}
-
-TabLifecylesEnterprisePreferenceMonitor::
-    TabLifecylesEnterprisePreferenceMonitor(
-        PrefService* pref_service,
-        OnPreferenceChangedCallback callback)
-    : pref_service_(pref_service), callback_(callback) {
-  // Create a registrar to track changes to the setting.
-  pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
-  pref_change_registrar_->Init(pref_service_);
-  pref_change_registrar_->Add(
-      prefs::kTabLifecyclesEnabled,
-      base::BindRepeating(&TabLifecylesEnterprisePreferenceMonitor::GetPref,
-                          base::Unretained(this)));
-
-  // Do an initial check of the value.
-  GetPref();
-}
-
-TabLifecylesEnterprisePreferenceMonitor::
-    ~TabLifecylesEnterprisePreferenceMonitor() = default;
-
-void TabLifecylesEnterprisePreferenceMonitor::GetPref() {
-  bool enabled = true;
-
-  // If the preference is set to false by enterprise policy then disable the
-  // lifecycles feature.
-  const PrefService::Preference* pref =
-      pref_service_->FindPreference(prefs::kTabLifecyclesEnabled);
-  if (pref->IsManaged() && !pref->GetValue()->GetBool())
-    enabled = false;
-
-  callback_.Run(enabled);
 }
 
 }  // namespace resource_coordinator

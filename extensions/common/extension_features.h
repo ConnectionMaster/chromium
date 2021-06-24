@@ -9,10 +9,33 @@
 
 namespace extensions_features {
 
-extern const base::Feature kBypassCorbOnlyForExtensionsAllowlist;
-extern const char kBypassCorbAllowlistParamName[];
-extern const base::Feature kNewExtensionUpdaterService;
+extern const base::Feature kDisableMalwareExtensionsRemotely;
+extern const base::Feature kDisablePolicyViolationExtensionsRemotely;
+extern const base::Feature kDisablePotentiallyUwsExtensionsRemotely;
+extern const base::Feature kSafeBrowsingCrxAllowlistShowWarnings;
+extern const base::Feature kSafeBrowsingCrxAllowlistAutoDisable;
+
+// Extension check up related features.
+extern const base::Feature kExtensionsCheckup;
+extern const char kExtensionsCheckupEntryPointParameter[];
+extern const char kExtensionsCheckupBannerMessageParameter[];
+extern const char kStartupEntryPoint[];
+extern const char kNtpPromoEntryPoint[];
+extern const char kPerformanceMessage[];
+extern const char kPrivacyMessage[];
+extern const char kNeutralMessage[];
+
 extern const base::Feature kForceWebRequestProxyForTest;
+
+extern const base::Feature kAllowWithholdingExtensionPermissionsOnInstall;
+
+extern const base::Feature kContentScriptsMatchOriginAsFallback;
+
+extern const base::Feature kMv3ExtensionsSupported;
+
+extern const base::Feature kReportKeepaliveUkm;
+
+extern const base::Feature kStrictExtensionIsolation;
 
 }  // namespace extensions_features
 

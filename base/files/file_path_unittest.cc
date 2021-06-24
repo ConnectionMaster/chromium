@@ -6,12 +6,17 @@
 
 #include <sstream>
 
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
+
+#if BUILDFLAG(ENABLE_BASE_TRACING)
+#include "third_party/perfetto/include/perfetto/test/traced_value_test_support.h"  // no-presubmit-check nogncheck
+#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
 #if defined(OS_POSIX) || defined(OS_FUCHSIA)
 #include "base/test/scoped_locale.h"
@@ -320,7 +325,7 @@ TEST_F(FilePathTest, Append) {
     // TODO(erikkay): It would be nice to have a unicode test append value to
     // handle the case when AppendASCII is passed UTF8
 #if defined(OS_WIN)
-    std::string ascii = UTF16ToUTF8(leaf);
+    std::string ascii = WideToUTF8(leaf);
 #elif defined(OS_POSIX) || defined(OS_FUCHSIA)
     std::string ascii = leaf;
 #endif
@@ -394,70 +399,77 @@ TEST_F(FilePathTest, StripTrailingSeparators) {
   }
 }
 
-TEST_F(FilePathTest, IsAbsolute) {
-  const struct UnaryBooleanTestData cases[] = {
-    { FPL(""),       false },
-    { FPL("a"),      false },
-    { FPL("c:"),     false },
-    { FPL("c:a"),    false },
-    { FPL("a/b"),    false },
-    { FPL("//"),     true },
-    { FPL("//a"),    true },
-    { FPL("c:a/b"),  false },
-    { FPL("?:/a"),   false },
+TEST_F(FilePathTest, IsAbsoluteOrNetwork) {
+  const struct {
+    FilePath::StringPieceType input;
+    bool expected_is_absolute;
+    bool expected_is_network;
+  } cases[] = {
+    { FPL(""),       false, false },
+    { FPL("a"),      false, false },
+    { FPL("c:"),     false, false },
+    { FPL("c:a"),    false, false },
+    { FPL("a/b"),    false, false },
+    { FPL("//"),     true,  true },
+    { FPL("//a"),    true,  true },
+    { FPL("c:a/b"),  false, false },
+    { FPL("?:/a"),   false, false },
 #if defined(FILE_PATH_USES_DRIVE_LETTERS)
-    { FPL("/"),      false },
-    { FPL("/a"),     false },
-    { FPL("/."),     false },
-    { FPL("/.."),    false },
-    { FPL("c:/"),    true },
-    { FPL("c:/a"),   true },
-    { FPL("c:/."),   true },
-    { FPL("c:/.."),  true },
-    { FPL("C:/a"),   true },
-    { FPL("d:/a"),   true },
+    { FPL("/"),      false, false },
+    { FPL("/a"),     false, false },
+    { FPL("/."),     false, false },
+    { FPL("/.."),    false, false },
+    { FPL("c:/"),    true,  false },
+    { FPL("c:/a"),   true,  false },
+    { FPL("c:/."),   true,  false },
+    { FPL("c:/.."),  true,  false },
+    { FPL("C:/a"),   true,  false },
+    { FPL("d:/a"),   true,  false },
 #else  // FILE_PATH_USES_DRIVE_LETTERS
-    { FPL("/"),      true },
-    { FPL("/a"),     true },
-    { FPL("/."),     true },
-    { FPL("/.."),    true },
-    { FPL("c:/"),    false },
+    { FPL("/"),      true,  false },
+    { FPL("/a"),     true,  false },
+    { FPL("/."),     true,  false },
+    { FPL("/.."),    true,  false },
+    { FPL("c:/"),    false, false },
 #endif  // FILE_PATH_USES_DRIVE_LETTERS
 #if defined(FILE_PATH_USES_WIN_SEPARATORS)
-    { FPL("a\\b"),   false },
-    { FPL("\\\\"),   true },
-    { FPL("\\\\a"),  true },
-    { FPL("a\\b"),   false },
-    { FPL("\\\\"),   true },
-    { FPL("//a"),    true },
-    { FPL("c:a\\b"), false },
-    { FPL("?:\\a"),  false },
+    { FPL("a\\b"),   false, false },
+    { FPL("\\\\"),   true,  true },
+    { FPL("\\\\a"),  true,  true },
+    { FPL("a\\b"),   false, false },
+    { FPL("\\\\"),   true,  true },
+    { FPL("//a"),    true,  true },
+    { FPL("c:a\\b"), false, false },
+    { FPL("?:\\a"),  false, false },
 #if defined(FILE_PATH_USES_DRIVE_LETTERS)
-    { FPL("\\"),     false },
-    { FPL("\\a"),    false },
-    { FPL("\\."),    false },
-    { FPL("\\.."),   false },
-    { FPL("c:\\"),   true },
-    { FPL("c:\\"),   true },
-    { FPL("c:\\a"),  true },
-    { FPL("c:\\."),  true },
-    { FPL("c:\\.."), true },
-    { FPL("C:\\a"),  true },
-    { FPL("d:\\a"),  true },
+    { FPL("\\"),     false, false },
+    { FPL("\\a"),    false, false },
+    { FPL("\\."),    false, false },
+    { FPL("\\.."),   false, false },
+    { FPL("c:\\"),   true,  false },
+    { FPL("c:\\"),   true,  false },
+    { FPL("c:\\a"),  true,  false },
+    { FPL("c:\\."),  true,  false },
+    { FPL("c:\\.."), true,  false },
+    { FPL("C:\\a"),  true,  false },
+    { FPL("d:\\a"),  true,  false },
 #else  // FILE_PATH_USES_DRIVE_LETTERS
-    { FPL("\\"),     true },
-    { FPL("\\a"),    true },
-    { FPL("\\."),    true },
-    { FPL("\\.."),   true },
-    { FPL("c:\\"),   false },
+    { FPL("\\"),     true,  false },
+    { FPL("\\a"),    true,  false },
+    { FPL("\\."),    true,  false },
+    { FPL("\\.."),   true,  false },
+    { FPL("c:\\"),   false, false },
 #endif  // FILE_PATH_USES_DRIVE_LETTERS
 #endif  // FILE_PATH_USES_WIN_SEPARATORS
   };
 
   for (size_t i = 0; i < base::size(cases); ++i) {
     FilePath input(cases[i].input);
-    bool observed = input.IsAbsolute();
-    EXPECT_EQ(cases[i].expected, observed) <<
+    bool observed_is_absolute = input.IsAbsolute();
+    EXPECT_EQ(cases[i].expected_is_absolute, observed_is_absolute) <<
+              "i: " << i << ", input: " << input.value();
+    bool observed_is_network = input.IsNetwork();
+    EXPECT_EQ(cases[i].expected_is_network, observed_is_network) <<
               "i: " << i << ", input: " << input.value();
   }
 }
@@ -619,6 +631,24 @@ TEST_F(FilePathTest, AppendRelativePathTest) {
     { { FPL("\\foo\\bar"),    FPL("\\foo2\\bar\\baz") },  FPL("")},
     { { FPL("\\foo\\bar"),    FPL("\\foo\\bar2\\baz") },  FPL("")},
 #endif  // FILE_PATH_USES_WIN_SEPARATORS
+
+    // For network paths, the hosts are compared ignoring case, while the rest
+    // of the path is compared using case.
+    { { FPL("//FOO/bar/"),    FPL("//foo/bar/baz") },     FPL("baz")},
+    { { FPL("//foo/BAR/"),    FPL("//foo/bar/baz") },     FPL("")},
+    // For non-network paths, the first component is not a host and should be
+    // compared using case.
+    { { FPL("/FOO/bar/"),     FPL("/foo/bar/baz") },      FPL("")},
+    // Degenerate case when parent has no hostname.
+    { { FPL("//"),            FPL("//foo") },             FPL("foo")},
+#if defined(FILE_PATH_USES_WIN_SEPARATORS)
+    // Network path tests but using Windows path separators.
+    { { FPL("\\\\FOO\\bar"),  FPL("\\\\foo\\bar\\baz") }, FPL("baz")},
+    { { FPL("\\\\fOO\\Bar"),  FPL("\\\\foo\\bar\\baz") }, FPL("")},
+    { { FPL("\\FOO\\bar"),    FPL("\\foo\\bar\\baz") },   FPL("")},
+    { { FPL("\\\\"),          FPL("\\\\foo") },           FPL("foo")},
+#endif  // FILE_PATH_USES_WIN_SEPARATORS
+
   };
 
   const FilePath base(FPL("blah"));
@@ -728,6 +758,7 @@ TEST_F(FilePathTest, Extension) {
 }
 
 TEST_F(FilePathTest, Extension2) {
+  // clang-format off
   const struct UnaryTestData cases[] = {
 #if defined(FILE_PATH_USES_WIN_SEPARATORS)
     { FPL("C:\\a\\b\\c.ext"),        FPL(".ext") },
@@ -762,18 +793,27 @@ TEST_F(FilePathTest, Extension2) {
     { FPL("/user.js"),               FPL(".js") },
   };
   const struct UnaryTestData double_extension_cases[] = {
-    { FPL("/foo.tar.gz"),            FPL(".tar.gz") },
+    // `kCommonDoubleExtensionSuffixes` cases. Blah is not on that allow-list.
+    // Membership is (ASCII) case-insensitive: both ".Z" and ".z" match.
     { FPL("/foo.tar.Z"),             FPL(".tar.Z") },
+    { FPL("/foo.tar.blah"),          FPL(".blah") },
+    { FPL("/foo.tar.bz"),            FPL(".tar.bz") },
     { FPL("/foo.tar.bz2"),           FPL(".tar.bz2") },
+    { FPL("/foo.tar.gz"),            FPL(".tar.gz") },
+    { FPL("/foo.tar.xz"),            FPL(".tar.xz") },
+    { FPL("/foo.tar.z"),             FPL(".tar.z") },
+    // `kCommonDoubleExtensions` cases.
+    { FPL("/foo.1234.user.js"),      FPL(".user.js") },
+    { FPL("foo.user.js"),            FPL(".user.js") },
+    // Other cases.
     { FPL("/foo.1234.gz"),           FPL(".1234.gz") },
     { FPL("/foo.1234.tar.gz"),       FPL(".tar.gz") },
     { FPL("/foo.tar.tar.gz"),        FPL(".tar.gz") },
     { FPL("/foo.tar.gz.gz"),         FPL(".gz.gz") },
-    { FPL("/foo.1234.user.js"),      FPL(".user.js") },
-    { FPL("foo.user.js"),            FPL(".user.js") },
-    { FPL("/foo.tar.bz"),            FPL(".tar.bz") },
   };
-  for (unsigned int i = 0; i < base::size(cases); ++i) {
+  // clang-format on
+
+  for (size_t i = 0; i < base::size(cases); ++i) {
     FilePath path(cases[i].input);
     FilePath::StringType extension = path.Extension();
     FilePath::StringType final_extension = path.FinalExtension();
@@ -782,7 +822,8 @@ TEST_F(FilePathTest, Extension2) {
     EXPECT_EQ(cases[i].expected, final_extension)
         << "i: " << i << ", path: " << path.value();
   }
-  for (unsigned int i = 0; i < base::size(double_extension_cases); ++i) {
+
+  for (size_t i = 0; i < base::size(double_extension_cases); ++i) {
     FilePath path(double_extension_cases[i].input);
     FilePath::StringType extension = path.Extension();
     EXPECT_EQ(double_extension_cases[i].expected, extension)
@@ -878,7 +919,7 @@ TEST_F(FilePathTest, RemoveExtension) {
     { FPL("/foo.bar/foo"),        FPL("/foo.bar/foo") },
     { FPL("/foo.bar/..////"),     FPL("/foo.bar/..////") },
   };
-  for (unsigned int i = 0; i < base::size(cases); ++i) {
+  for (size_t i = 0; i < base::size(cases); ++i) {
     FilePath path(cases[i].input);
     FilePath removed = path.RemoveExtension();
     FilePath removed_final = path.RemoveFinalExtension();
@@ -887,13 +928,18 @@ TEST_F(FilePathTest, RemoveExtension) {
     EXPECT_EQ(cases[i].expected, removed_final.value()) << "i: " << i <<
         ", path: " << path.value();
   }
-  {
+
+  const FilePath::StringPieceType tarballs[] = {
+      FPL("foo.tar.gz"), FPL("foo.tar.xz"), FPL("foo.tar.bz2"),
+      FPL("foo.tar.Z"), FPL("foo.tar.bz")};
+  for (size_t i = 0; i < base::size(tarballs); ++i) {
     FilePath path(FPL("foo.tar.gz"));
     FilePath removed = path.RemoveExtension();
     FilePath removed_final = path.RemoveFinalExtension();
-    EXPECT_EQ(FPL("foo"), removed.value()) << ", path: " << path.value();
-    EXPECT_EQ(FPL("foo.tar"), removed_final.value()) << ", path: "
-                                                     << path.value();
+    EXPECT_EQ(FPL("foo"), removed.value())
+        << "i: " << i << ", path: " << path.value();
+    EXPECT_EQ(FPL("foo.tar"), removed_final.value())
+        << "i: " << i << ", path: " << path.value();
   }
 }
 
@@ -999,7 +1045,7 @@ TEST_F(FilePathTest, MatchesExtension) {
 #endif  // FILE_PATH_USES_DRIVE_LETTERS
     { { FPL("/bar/foo.txt.dll"),        FPL(".txt") },                false},
     { { FPL("/bar/foo.txt"),            FPL(".txt") },                true},
-#if defined(OS_WIN) || defined(OS_MACOSX)
+#if defined(OS_WIN) || defined(OS_APPLE)
     // Umlauts A, O, U: direct comparison, and upper case vs. lower case
     { { FPL("foo.\u00E4\u00F6\u00FC"),  FPL(".\u00E4\u00F6\u00FC") }, true},
     { { FPL("foo.\u00C4\u00D6\u00DC"),  FPL(".\u00E4\u00F6\u00FC") }, true},
@@ -1046,7 +1092,7 @@ TEST_F(FilePathTest, CompareIgnoreCase) {
     { { FPL("\u00DF"),                       FPL("\u1E9E") },              -1},
     { { FPL("SS"),                           FPL("\u00DF") },              -1},
     { { FPL("SS"),                           FPL("\u1E9E") },              -1},
-#if defined(OS_WIN) || defined(OS_MACOSX)
+#if defined(OS_WIN) || defined(OS_APPLE)
     // Umlauts A, O, U: direct comparison, and upper case vs. lower case
     { { FPL("\u00E4\u00F6\u00FC"),           FPL("\u00E4\u00F6\u00FC") },   0},
     { { FPL("\u00C4\u00D6\u00DC"),           FPL("\u00E4\u00F6\u00FC") },   0},
@@ -1068,7 +1114,7 @@ TEST_F(FilePathTest, CompareIgnoreCase) {
     { { FPL("a"),                            FPL("\uFF21") },              -1},
     { { FPL("a"),                            FPL("\uFF41") },              -1},
 #endif
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
     // Codepoints > 0x1000
     // Georgian letter DON: direct comparison, and upper case vs. lower case
     { { FPL("\u10A3"),                       FPL("\u10A3") },               0},
@@ -1139,7 +1185,7 @@ TEST_F(FilePathTest, FromUTF8Unsafe_And_AsUTF8Unsafe) {
       "\xEF\xBC\xA1\xEF\xBC\xA2\xEF\xBC\xA3.txt" },
   };
 
-#if !defined(SYSTEM_NATIVE_UTF8) && defined(OS_LINUX)
+#if !defined(SYSTEM_NATIVE_UTF8) && (defined(OS_LINUX) || defined(OS_CHROMEOS))
   ScopedLocale locale("en_US.UTF-8");
 #endif
 
@@ -1300,9 +1346,15 @@ TEST_F(FilePathTest, PrintToOstream) {
   EXPECT_EQ("foo", ss.str());
 }
 
+#if BUILDFLAG(ENABLE_BASE_TRACING)
+TEST_F(FilePathTest, TracedValueSupport) {
+  EXPECT_EQ(perfetto::TracedValueToString(FilePath(FPL("foo"))), "foo");
+}
+#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
+
 // Test GetHFSDecomposedForm should return empty result for invalid UTF-8
 // strings.
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 TEST_F(FilePathTest, GetHFSDecomposedFormWithInvalidInput) {
   const FilePath::CharType* cases[] = {
     FPL("\xc3\x28"),
@@ -1315,6 +1367,17 @@ TEST_F(FilePathTest, GetHFSDecomposedFormWithInvalidInput) {
     FilePath::StringType observed = FilePath::GetHFSDecomposedForm(
         invalid_input);
     EXPECT_TRUE(observed.empty());
+  }
+}
+
+TEST_F(FilePathTest, CompareIgnoreCaseWithInvalidInput) {
+  const FilePath::CharType* cases[] = {
+      FPL("\xc3\x28"),         FPL("\xe2\x82\x28"),     FPL("\xe2\x28\xa1"),
+      FPL("\xf0\x28\x8c\xbc"), FPL("\xf0\x28\x8c\x28"),
+  };
+  for (auto* invalid_input : cases) {
+    // All example inputs will be greater than the string "fixed".
+    EXPECT_EQ(FilePath::CompareIgnoreCase(invalid_input, FPL("fixed")), 1);
   }
 }
 #endif

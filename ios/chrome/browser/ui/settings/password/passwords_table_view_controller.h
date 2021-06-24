@@ -5,46 +5,38 @@
 #ifndef IOS_CHROME_BROWSER_UI_SETTINGS_PASSWORD_PASSWORDS_TABLE_VIEW_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_UI_SETTINGS_PASSWORD_PASSWORDS_TABLE_VIEW_CONTROLLER_H_
 
-#import "ios/chrome/browser/ui/settings/password/password_details_table_view_controller_delegate.h"
+#import "ios/chrome/browser/ui/settings/password/passwords_consumer.h"
+#import "ios/chrome/browser/ui/settings/settings_controller_protocol.h"
 #import "ios/chrome/browser/ui/settings/settings_navigation_controller.h"
 #import "ios/chrome/browser/ui/settings/settings_root_table_view_controller.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 
-namespace ios {
-class ChromeBrowserState;
-}  // namespace ios
-
-// The accessibility identifier of the password details table view.
-extern NSString* const kPasswordsTableViewId;
-extern NSString* const kPasswordsExportConfirmViewId;
-extern NSString* const kPasswordsSearchBarId;
-extern NSString* const kPasswordsScrimViewId;
-
-@protocol ReauthenticationProtocol;
+class Browser;
 @class PasswordExporter;
+@protocol PasswordsSettingsCommands;
+@protocol PasswordsTableViewControllerDelegate;
+@protocol PasswordsTableViewControllerPresentationDelegate;
 
 @interface PasswordsTableViewController
-    : SettingsRootTableViewController <SettingsControllerProtocol>
+    : SettingsRootTableViewController <PasswordsConsumer,
+                                       SettingsControllerProtocol>
 
-// The designated initializer. |browserState| must not be nil.
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState
-    NS_DESIGNATED_INITIALIZER;
+// The designated initializer. |browser| must not be nil.
+- (instancetype)initWithBrowser:(Browser*)browser NS_DESIGNATED_INITIALIZER;
 
-- (instancetype)initWithTableViewStyle:(UITableViewStyle)style
-                           appBarStyle:
-                               (ChromeTableViewControllerStyle)appBarStyle
-    NS_UNAVAILABLE;
+- (instancetype)initWithStyle:(UITableViewStyle)style NS_UNAVAILABLE;
 
-@end
+@property(nonatomic, weak) id<PasswordsSettingsCommands> handler;
 
-@interface PasswordsTableViewController (Testing) <
-    PasswordDetailsTableViewControllerDelegate>
+// Delegate.
+@property(nonatomic, weak) id<PasswordsTableViewControllerDelegate> delegate;
 
-// Initializes the password exporter with a (fake) |reauthenticationModule|.
-- (void)setReauthenticationModuleForExporter:
-    (id<ReauthenticationProtocol>)reauthenticationModule;
+@property(nonatomic, weak) id<PasswordsTableViewControllerPresentationDelegate>
+    presentationDelegate;
 
-// Returns the password exporter to allow setting fake testing objects on it.
-- (PasswordExporter*)getPasswordExporter;
+// Reauthentication module.
+@property(nonatomic, strong) id<ReauthenticationProtocol>
+    reauthenticationModule;
 
 @end
 

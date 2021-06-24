@@ -4,27 +4,23 @@
 
 #include "components/history/core/browser/in_memory_history_backend.h"
 
+#include <memory>
 #include <set>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
-#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/in_memory_database.h"
 #include "components/history/core/browser/url_database.h"
 
 namespace history {
 
-InMemoryHistoryBackend::InMemoryHistoryBackend()
-    : history_service_observer_(this) {
-}
-
-InMemoryHistoryBackend::~InMemoryHistoryBackend() {
-}
+InMemoryHistoryBackend::InMemoryHistoryBackend() = default;
+InMemoryHistoryBackend::~InMemoryHistoryBackend() = default;
 
 bool InMemoryHistoryBackend::Init(const base::FilePath& history_filename) {
-  db_.reset(new InMemoryDatabase);
+  db_ = std::make_unique<InMemoryDatabase>();
   return db_->InitFromDisk(history_filename);
 }
 
@@ -32,7 +28,7 @@ void InMemoryHistoryBackend::AttachToHistoryService(
     HistoryService* history_service) {
   DCHECK(db_);
   DCHECK(history_service);
-  history_service_observer_.Add(history_service);
+  history_service_observation_.Observe(history_service);
 }
 
 void InMemoryHistoryBackend::DeleteAllSearchTermsForKeyword(
@@ -64,7 +60,7 @@ void InMemoryHistoryBackend::OnURLsDeleted(HistoryService* history_service,
   if (deletion_info.IsAllHistory()) {
     // When all history is deleted, the individual URLs won't be listed. Just
     // create a new database to quickly clear everything out.
-    db_.reset(new InMemoryDatabase);
+    db_ = std::make_unique<InMemoryDatabase>();
     if (!db_->InitFromScratch())
       db_.reset();
     return;
@@ -82,7 +78,7 @@ void InMemoryHistoryBackend::OnKeywordSearchTermUpdated(
     HistoryService* history_service,
     const URLRow& row,
     KeywordID keyword_id,
-    const base::string16& term) {
+    const std::u16string& term) {
   DCHECK(row.id());
   db_->InsertOrUpdateURLRowByID(row);
   db_->SetKeywordSearchTermsForURL(row.id(), keyword_id, term);

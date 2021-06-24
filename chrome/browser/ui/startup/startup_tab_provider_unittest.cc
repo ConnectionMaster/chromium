@@ -8,21 +8,12 @@
 #include "build/build_config.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
-#if defined(OS_WIN)
-#include "base/win/windows_version.h"
-#if defined(GOOGLE_CHROME_BUILD)
-#include "chrome/browser/ui/webui/welcome/nux/constants.h"
-#endif  // defined(GOOGLE_CHROME_BUILD)
-#endif  // defined(OS_WIN)
-
 using StandardOnboardingTabsParams =
     StartupTabProviderImpl::StandardOnboardingTabsParams;
-using Win10OnboardingTabsParams =
-    StartupTabProviderImpl::Win10OnboardingTabsParams;
 
 TEST(StartupTabProviderTest, GetStandardOnboardingTabsForState) {
   {
@@ -103,215 +94,13 @@ TEST(StartupTabProviderTest, GetStandardOnboardingTabsForState_Negative) {
   }
 }
 
-#if defined(OS_WIN)
-TEST(StartupTabProviderTest, GetWin10OnboardingTabsForState) {
-  {
-    // Show Win 10 Welcome page if it has not been seen, but the standard page
-    // has.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.has_seen_welcome_page = true;
-    standard_params.is_signin_allowed = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWin10WelcomePageUrl(false),
-              output[0].url);
-    EXPECT_FALSE(output[0].is_pinned);
-  }
-  {
-    // Show standard Welcome page if the Win 10 Welcome page has been seen, but
-    // the standard page has not.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.is_signin_allowed = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.has_seen_win10_promo = true;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWelcomePageUrl(false), output[0].url);
-    EXPECT_FALSE(output[0].is_pinned);
-  }
-  {
-    // If neither page has been seen, the Win 10 Welcome page takes precedence
-    // this launch.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.is_signin_allowed = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWin10WelcomePageUrl(false),
-              output[0].url);
-    EXPECT_FALSE(output[0].is_pinned);
-  }
-}
-
-TEST(StartupTabProviderTest, GetWin10OnboardingTabsForState_LaterRunVariant) {
-  StandardOnboardingTabsParams standard_params;
-  standard_params.is_signin_allowed = true;
-  {
-    // Show a variant of the Win 10 Welcome page after first run, if it has not
-    // been seen.
-    Win10OnboardingTabsParams win10_params;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWin10WelcomePageUrl(true),
-              output[0].url);
-    EXPECT_FALSE(output[0].is_pinned);
-  }
-  {
-    // Show a variant of the standard Welcome page after first run, if the Win
-    // 10 Welcome page has already been seen but the standard has not.
-    Win10OnboardingTabsParams win10_params;
-    win10_params.has_seen_win10_promo = true;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWelcomePageUrl(true), output[0].url);
-    EXPECT_FALSE(output[0].is_pinned);
-  }
-}
-
-TEST(StartupTabProviderTest, GetWin10OnboardingTabsForState_Negative) {
-  {
-    // Do not show either page if it has already been shown.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.has_seen_welcome_page = true;
-    standard_params.is_signin_allowed = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.has_seen_win10_promo = true;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    EXPECT_TRUE(output.empty());
-  }
-  {
-    // Do not show either page to supervised users.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.is_signin_allowed = true;
-    standard_params.is_supervised_user = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    EXPECT_TRUE(output.empty());
-  }
-  {
-    // If Chrome is already the default browser, don't show the Win 10 Welcome
-    // page, and don't preempt the standard Welcome page.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.is_signin_allowed = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.set_default_browser_allowed = true;
-    win10_params.is_default_browser = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWelcomePageUrl(false), output[0].url);
-    EXPECT_FALSE(output[0].is_pinned);
-  }
-  {
-    // If the user is signed in, block showing the standard Welcome page.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.is_signin_allowed = true;
-    standard_params.is_signed_in = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.has_seen_win10_promo = true;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    EXPECT_TRUE(output.empty());
-  }
-  {
-    // If sign-in is disabled, block showing the standard Welcome page.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-
-    Win10OnboardingTabsParams win10_params;
-    win10_params.has_seen_win10_promo = true;
-    win10_params.set_default_browser_allowed = true;
-
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, win10_params);
-
-    EXPECT_TRUE(output.empty());
-  }
-}
-
-TEST(StartupTabProviderTest,
-     GetWin10OnboardingTabsForState_SetDefaultBrowserNotAllowed) {
-  {
-    // Skip the Win 10 promo if setting the default browser is not allowed.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.is_signin_allowed = true;
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, Win10OnboardingTabsParams());
-
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWelcomePageUrl(false), output[0].url);
-  }
-  {
-    // After first run, no onboarding content is displayed when setting the
-    // default browser is not allowed.
-    StandardOnboardingTabsParams standard_params;
-    standard_params.is_first_run = true;
-    standard_params.has_seen_welcome_page = true;
-    standard_params.is_signin_allowed = true;
-    StartupTabs output = StartupTabProviderImpl::GetWin10OnboardingTabsForState(
-        standard_params, Win10OnboardingTabsParams());
-
-    EXPECT_TRUE(output.empty());
-  }
-}
-#endif  // defined(OS_WIN)
-
-TEST(StartupTabProviderTest, GetMasterPrefsTabsForState) {
-  std::vector<GURL> input = {GURL(base::ASCIIToUTF16("https://new_tab_page")),
-                             GURL(base::ASCIIToUTF16("https://www.google.com")),
-                             GURL(base::ASCIIToUTF16("https://welcome_page"))};
+TEST(StartupTabProviderTest, GetInitialPrefsTabsForState) {
+  std::vector<GURL> input = {GURL(u"https://new_tab_page"),
+                             GURL(u"https://www.google.com"),
+                             GURL(u"https://welcome_page")};
 
   StartupTabs output =
-      StartupTabProviderImpl::GetMasterPrefsTabsForState(true, input);
+      StartupTabProviderImpl::GetInitialPrefsTabsForState(true, input);
 
   ASSERT_EQ(3U, output.size());
   EXPECT_EQ(GURL(chrome::kChromeUINewTabURL), output[0].url);
@@ -322,12 +111,11 @@ TEST(StartupTabProviderTest, GetMasterPrefsTabsForState) {
   EXPECT_FALSE(output[2].is_pinned);
 }
 
-TEST(StartupTabProviderTest, GetMasterPrefsTabsForState_FirstRunOnly) {
-  std::vector<GURL> input = {
-      GURL(base::ASCIIToUTF16("https://www.google.com"))};
+TEST(StartupTabProviderTest, GetInitialPrefsTabsForState_FirstRunOnly) {
+  std::vector<GURL> input = {GURL(u"https://www.google.com")};
 
   StartupTabs output =
-      StartupTabProviderImpl::GetMasterPrefsTabsForState(false, input);
+      StartupTabProviderImpl::GetInitialPrefsTabsForState(false, input);
 
   EXPECT_TRUE(output.empty());
 }
@@ -388,7 +176,7 @@ TEST(StartupTabProviderTest, GetPinnedTabsForState_Negative) {
 
 TEST(StartupTabProviderTest, GetPreferencesTabsForState) {
   SessionStartupPref pref(SessionStartupPref::Type::URLS);
-  pref.urls = {GURL(base::ASCIIToUTF16("https://www.google.com"))};
+  pref.urls = {GURL(u"https://www.google.com")};
 
   StartupTabs output =
       StartupTabProviderImpl::GetPreferencesTabsForState(pref, false);
@@ -399,7 +187,7 @@ TEST(StartupTabProviderTest, GetPreferencesTabsForState) {
 
 TEST(StartupTabProviderTest, GetPreferencesTabsForState_WrongType) {
   SessionStartupPref pref_default(SessionStartupPref::Type::DEFAULT);
-  pref_default.urls = {GURL(base::ASCIIToUTF16("https://www.google.com"))};
+  pref_default.urls = {GURL(u"https://www.google.com")};
 
   StartupTabs output =
       StartupTabProviderImpl::GetPreferencesTabsForState(pref_default, false);
@@ -407,7 +195,7 @@ TEST(StartupTabProviderTest, GetPreferencesTabsForState_WrongType) {
   EXPECT_TRUE(output.empty());
 
   SessionStartupPref pref_last(SessionStartupPref::Type::LAST);
-  pref_last.urls = {GURL(base::ASCIIToUTF16("https://www.google.com"))};
+  pref_last.urls = {GURL(u"https://www.google.com")};
 
   output = StartupTabProviderImpl::GetPreferencesTabsForState(pref_last, false);
 
@@ -416,7 +204,7 @@ TEST(StartupTabProviderTest, GetPreferencesTabsForState_WrongType) {
 
 TEST(StartupTabProviderTest, GetPreferencesTabsForState_NotFirstBrowser) {
   SessionStartupPref pref(SessionStartupPref::Type::URLS);
-  pref.urls = {GURL(base::ASCIIToUTF16("https://www.google.com"))};
+  pref.urls = {GURL(u"https://www.google.com")};
 
   StartupTabs output =
       StartupTabProviderImpl::GetPreferencesTabsForState(pref, true);
@@ -450,19 +238,19 @@ TEST(StartupTabProviderTest, GetNewTabPageTabsForState_Negative) {
 }
 
 TEST(StartupTabProviderTest, IncognitoProfile) {
-  content::TestBrowserThreadBundle thread_bundle;
+  content::BrowserTaskEnvironment task_environment;
   TestingProfile profile;
-  Profile* incognito = profile.GetOffTheRecordProfile();
+  Profile* incognito = profile.GetPrimaryOTRProfile(/*create_if_needed=*/true);
   StartupTabs output = StartupTabProviderImpl().GetOnboardingTabs(incognito);
-#if defined(OS_WIN)
-  if (base::win::GetVersion() >= base::win::VERSION_WIN10) {
-    ASSERT_EQ(1U, output.size());
-    EXPECT_EQ(StartupTabProviderImpl::GetWin10WelcomePageUrl(false),
-              output[0].url.GetOrigin());
-  } else {
-    EXPECT_TRUE(output.empty());
-  }
-#else
   EXPECT_TRUE(output.empty());
-#endif
+}
+
+TEST(StartupTabProviderTest, GetNewTabPageTabsForState_ExtensionsCheckup) {
+  SessionStartupPref pref_default(SessionStartupPref::Type::DEFAULT);
+
+  StartupTabs output = StartupTabProviderImpl::GetExtensionCheckupTabsForState(
+      /*serve_extensions_page=*/true);
+
+  ASSERT_EQ(1U, output.size());
+  EXPECT_EQ("chrome://extensions/?checkup=shown", output[0].url);
 }

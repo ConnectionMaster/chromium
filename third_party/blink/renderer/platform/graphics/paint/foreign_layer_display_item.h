@@ -5,10 +5,12 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_FOREIGN_LAYER_DISPLAY_ITEM_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_FOREIGN_LAYER_DISPLAY_ITEM_H_
 
+#include "base/dcheck_is_on.h"
 #include "cc/layers/layer.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item.h"
 #include "third_party/blink/renderer/platform/graphics/paint/property_tree_state.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
 
@@ -20,27 +22,59 @@ class GraphicsContext;
 //
 // Before CAP, this content is not painted, but is instead inserted into the
 // GraphicsLayer tree.
-class PLATFORM_EXPORT ForeignLayerDisplayItem final : public DisplayItem {
+class PLATFORM_EXPORT ForeignLayerDisplayItem : public DisplayItem {
  public:
-  ForeignLayerDisplayItem(Type, scoped_refptr<cc::Layer>);
-  ~ForeignLayerDisplayItem() override;
+  ForeignLayerDisplayItem(const DisplayItemClient& client,
+                          Type,
+                          scoped_refptr<cc::Layer>,
+                          const IntPoint& offset);
 
-  cc::Layer* GetLayer() const;
+  cc::Layer* GetLayer() const {
+    DCHECK(!IsTombstone());
+    return layer_.get();
+  }
 
-  // DisplayItem
-  bool Equals(const DisplayItem&) const override;
+ private:
+  friend class DisplayItem;
+  bool EqualsForUnderInvalidationImpl(const ForeignLayerDisplayItem&) const;
 #if DCHECK_IS_ON()
-  void PropertiesAsJSON(JSONObject&) const override;
+  void PropertiesAsJSONImpl(JSONObject&) const;
 #endif
+
+  scoped_refptr<cc::Layer> layer_;
+};
+
+// When a foreign layer's debug name is a literal string, define a instance of
+// LiteralDebugNameClient with DEFINE_STATIC_LOCAL() and pass the instance as
+// client to RecordForeignLayer().
+class LiteralDebugNameClient : public DisplayItemClient {
+ public:
+  LiteralDebugNameClient(const char* name) : name_(name) {}
+
+  String DebugName() const override { return name_; }
+
+ private:
+  const char* name_;
+};
+
+template <>
+struct DowncastTraits<ForeignLayerDisplayItem> {
+  static bool AllowFrom(const DisplayItem& i) {
+    return !i.IsTombstone() && i.IsForeignLayer();
+  }
 };
 
 // Records a foreign layer into a GraphicsContext.
 // Use this where you would use a recorder class.
+// |client| provides DebugName and optionally DOMNodeId, while VisualRect will
+// be calculated automatically based on layer bounds and offset.
 PLATFORM_EXPORT void RecordForeignLayer(
-    GraphicsContext&,
-    DisplayItem::Type,
-    scoped_refptr<cc::Layer>,
-    const base::Optional<PropertyTreeState>& = base::nullopt);
+    GraphicsContext& context,
+    const DisplayItemClient& client,
+    DisplayItem::Type type,
+    scoped_refptr<cc::Layer> layer,
+    const IntPoint& offset,
+    const PropertyTreeStateOrAlias* properties = nullptr);
 
 }  // namespace blink
 

@@ -11,6 +11,7 @@
 #include "base/callback.h"
 #include "components/bookmarks/browser/bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node.h"
+#include "components/sync_bookmarks/synced_bookmark_tracker.h"
 #include "url/gurl.h"
 
 namespace syncer {
@@ -18,8 +19,6 @@ class UniquePosition;
 }
 
 namespace sync_bookmarks {
-
-class SyncedBookmarkTracker;
 
 // Class for listening to local changes in the bookmark model and updating
 // metadata in SyncedBookmarkTracker, such that ultimately the processor exposes
@@ -39,19 +38,19 @@ class BookmarkModelObserverImpl : public bookmarks::BookmarkModelObserver {
   void BookmarkModelBeingDeleted(bookmarks::BookmarkModel* model) override;
   void BookmarkNodeMoved(bookmarks::BookmarkModel* model,
                          const bookmarks::BookmarkNode* old_parent,
-                         int old_index,
+                         size_t old_index,
                          const bookmarks::BookmarkNode* new_parent,
-                         int new_index) override;
+                         size_t new_index) override;
   void BookmarkNodeAdded(bookmarks::BookmarkModel* model,
                          const bookmarks::BookmarkNode* parent,
-                         int index) override;
+                         size_t index) override;
   void OnWillRemoveBookmarks(bookmarks::BookmarkModel* model,
                              const bookmarks::BookmarkNode* parent,
-                             int old_index,
+                             size_t old_index,
                              const bookmarks::BookmarkNode* node) override;
   void BookmarkNodeRemoved(bookmarks::BookmarkModel* model,
                            const bookmarks::BookmarkNode* parent,
-                           int old_index,
+                           size_t old_index,
                            const bookmarks::BookmarkNode* node,
                            const std::set<GURL>& removed_urls) override;
   void OnWillRemoveAllUserBookmarks(bookmarks::BookmarkModel* model) override;
@@ -69,8 +68,14 @@ class BookmarkModelObserverImpl : public bookmarks::BookmarkModelObserver {
 
  private:
   syncer::UniquePosition ComputePosition(const bookmarks::BookmarkNode& parent,
-                                         int index,
+                                         size_t index,
                                          const std::string& sync_id);
+
+  // Process a modification of a local node and updates |bookmark_tracker_|
+  // accordingly. No-op if the commit can be optimized away, i.e. if |specifics|
+  // are identical to the previously-known specifics (in hashed form).
+  void ProcessUpdate(const SyncedBookmarkTracker::Entity* entity,
+                     const sync_pb::EntitySpecifics& specifics);
 
   // Processes the deletion of a bookmake node and updates the
   // |bookmark_tracker_| accordingly. If |node| is a bookmark, it gets marked

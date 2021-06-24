@@ -10,20 +10,18 @@
 
 #include "base/bind.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "chromeos/components/multidevice/remote_device_test_util.h"
 #include "chromeos/services/multidevice_setup/multidevice_setup_initializer.h"
 #include "chromeos/services/multidevice_setup/multidevice_setup_service.h"
 #include "chromeos/services/multidevice_setup/public/cpp/android_sms_app_helper_delegate.h"
 #include "chromeos/services/multidevice_setup/public/cpp/android_sms_pairing_state_tracker.h"
 #include "chromeos/services/multidevice_setup/public/cpp/fake_multidevice_setup.h"
-#include "chromeos/services/multidevice_setup/public/mojom/constants.mojom.h"
 #include "chromeos/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
-#include "services/service_manager/public/cpp/test/test_connector_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -43,15 +41,15 @@ class FakeMultiDeviceSetupInitializerFactory
   ~FakeMultiDeviceSetupInitializerFactory() override = default;
 
   // MultiDeviceSetupInitializer::Factory:
-  std::unique_ptr<MultiDeviceSetupBase> BuildInstance(
+  std::unique_ptr<MultiDeviceSetupBase> CreateInstance(
       PrefService* pref_service,
       device_sync::DeviceSyncClient* device_sync_client,
       AuthTokenValidator* auth_token_validator,
       OobeCompletionTracker* oobe_completion_tracker,
       AndroidSmsAppHelperDelegate* android_sms_app_helper_delegate,
       AndroidSmsPairingStateTracker* android_sms_pairing_state_tracker,
-      const device_sync::GcmDeviceInfoProvider* gcm_device_info_provider)
-      override {
+      const device_sync::GcmDeviceInfoProvider* gcm_device_info_provider,
+      bool is_secondary_user) override {
     EXPECT_TRUE(fake_multidevice_setup_);
     return std::move(fake_multidevice_setup_);
   }
@@ -95,10 +93,10 @@ class TestMultiDeviceSetupClientObserver
   DISALLOW_COPY_AND_ASSIGN(TestMultiDeviceSetupClientObserver);
 };
 
-base::Optional<multidevice::RemoteDevice> GetRemoteDeviceFromRef(
-    const base::Optional<multidevice::RemoteDeviceRef>& remote_device_ref) {
+absl::optional<multidevice::RemoteDevice> GetRemoteDeviceFromRef(
+    const absl::optional<multidevice::RemoteDeviceRef>& remote_device_ref) {
   if (!remote_device_ref)
-    return base::Optional<multidevice::RemoteDevice>();
+    return absl::optional<multidevice::RemoteDevice>();
 
   return *multidevice::GetMutableRemoteDevice(*remote_device_ref);
 }
@@ -124,13 +122,12 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
         fake_multidevice_setup_impl_factory_.get());
 
     service_ = std::make_unique<MultiDeviceSetupService>(
-        connector_factory_.RegisterInstance(mojom::kServiceName),
         nullptr /* pref_service */, nullptr /* device_sync_client */,
         nullptr /* auth_token_validator */,
         nullptr /* oobe_completion_tracker */,
         nullptr /* android_sms_app_helper_delegate */,
         nullptr /* android_sms_pairing_state_tracker */,
-        nullptr /* gcm_device_info_provider */);
+        nullptr /* gcm_device_info_provider */, false /* is_secondary_user */);
   }
 
   void InitializeClient(
@@ -139,8 +136,11 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
               MultiDeviceSetupClient::GenerateDefaultHostStatusWithDevice(),
       const MultiDeviceSetupClient::FeatureStatesMap& feature_states_map =
           MultiDeviceSetupClient::GenerateDefaultFeatureStatesMap()) {
-    client_ = MultiDeviceSetupClientImpl::Factory::Get()->BuildInstance(
-        connector_factory_.GetDefaultConnector());
+    mojo::PendingRemote<mojom::MultiDeviceSetup> remote_setup;
+    service_->BindMultiDeviceSetup(
+        remote_setup.InitWithNewPipeAndPassReceiver());
+    client_ =
+        MultiDeviceSetupClientImpl::Factory::Create(std::move(remote_setup));
     SendPendingMojoMessages();
 
     // When |client_| is created, it requests the current host status and
@@ -216,13 +216,14 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
         *eligible_host_devices_, expected_eligible_host_devices);
   }
 
-  void CallSetHostDevice(const std::string& public_key,
-                         const std::string& auth_token,
-                         bool expect_success) {
+  void CallSetHostDevice(
+      const std::string& host_instance_id_or_legacy_device_id,
+      const std::string& auth_token,
+      bool expect_success) {
     base::RunLoop run_loop;
 
     client_->SetHostDevice(
-        public_key, auth_token,
+        host_instance_id_or_legacy_device_id, auth_token,
         base::BindOnce(
             &MultiDeviceSetupClientImplTest::OnSetHostDeviceCompleted,
             base::Unretained(this), run_loop.QuitClosure()));
@@ -233,7 +234,7 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
                            mojom::MultiDeviceSetup::SetHostDeviceCallback>>&
         callbacks = fake_multidevice_setup_->set_host_args();
     EXPECT_EQ(1u, callbacks.size());
-    EXPECT_EQ(public_key, std::get<0>(callbacks[0]));
+    EXPECT_EQ(host_instance_id_or_legacy_device_id, std::get<0>(callbacks[0]));
     EXPECT_EQ(auth_token, std::get<1>(callbacks[0]));
     std::move(std::get<2>(callbacks[0])).Run(expect_success);
 
@@ -254,7 +255,7 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
 
   void CallSetFeatureEnabledState(mojom::Feature feature,
                                   bool enabled,
-                                  const base::Optional<std::string>& auth_token,
+                                  const absl::optional<std::string>& auth_token,
                                   bool should_succeed) {
     size_t num_set_feature_enabled_args_before_call =
         fake_multidevice_setup_->set_feature_enabled_args().size();
@@ -371,7 +372,7 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
   void OnGetHostStatusCompleted(
       base::OnceClosure quit_closure,
       mojom::HostStatus host_status,
-      const base::Optional<multidevice::RemoteDeviceRef>& host_device) {
+      const absl::optional<multidevice::RemoteDeviceRef>& host_device) {
     get_host_status_result_ = std::make_pair(host_status, host_device);
     std::move(quit_closure).Run();
   }
@@ -402,25 +403,24 @@ class MultiDeviceSetupClientImplTest : public testing::Test {
     std::move(quit_closure).Run();
   }
 
-  const base::test::ScopedTaskEnvironment scoped_task_environment_;
+  const base::test::TaskEnvironment task_environment_;
 
   FakeMultiDeviceSetup* fake_multidevice_setup_;
   std::unique_ptr<FakeMultiDeviceSetupInitializerFactory>
       fake_multidevice_setup_impl_factory_;
-  service_manager::TestConnectorFactory connector_factory_;
   std::unique_ptr<MultiDeviceSetupService> service_;
   std::unique_ptr<MultiDeviceSetupClient> client_;
 
-  base::Optional<multidevice::RemoteDeviceRefList> eligible_host_devices_;
-  base::Optional<bool> set_host_device_success_;
-  base::Optional<std::pair<mojom::HostStatus,
-                           base::Optional<multidevice::RemoteDeviceRef>>>
+  absl::optional<multidevice::RemoteDeviceRefList> eligible_host_devices_;
+  absl::optional<bool> set_host_device_success_;
+  absl::optional<std::pair<mojom::HostStatus,
+                           absl::optional<multidevice::RemoteDeviceRef>>>
       get_host_status_result_;
-  base::Optional<bool> set_feature_enabled_state_success_;
-  base::Optional<base::flat_map<mojom::Feature, mojom::FeatureState>>
+  absl::optional<bool> set_feature_enabled_state_success_;
+  absl::optional<base::flat_map<mojom::Feature, mojom::FeatureState>>
       get_feature_states_result_;
-  base::Optional<bool> retry_set_host_now_success_;
-  base::Optional<bool> trigger_event_for_debugging_success_;
+  absl::optional<bool> retry_set_host_now_success_;
+  absl::optional<bool> trigger_event_for_debugging_success_;
 
   DISALLOW_COPY_AND_ASSIGN(MultiDeviceSetupClientImplTest);
 };
@@ -431,7 +431,7 @@ TEST_F(MultiDeviceSetupClientImplTest, GetHostStatus) {
 
   MultiDeviceSetupClient::HostStatusWithDevice host_status_with_device =
       std::make_pair(mojom::HostStatus::kNoEligibleHosts,
-                     base::nullopt /* expected_host_device */);
+                     absl::nullopt /* expected_host_device */);
   SimulateHostStatusChange(host_status_with_device);
   EXPECT_EQ(host_status_with_device, client()->GetHostStatus());
 
@@ -448,14 +448,12 @@ TEST_F(MultiDeviceSetupClientImplTest, TestGetEligibleHostDevices) {
 
 TEST_F(MultiDeviceSetupClientImplTest, TestSetHostDevice_Success) {
   InitializeClient();
-  CallSetHostDevice(test_remote_device_list_[0].public_key, "authToken",
-                    true /* expect_success */);
+  CallSetHostDevice("hostId", "authToken", true /* expect_success */);
 }
 
 TEST_F(MultiDeviceSetupClientImplTest, TestSetHostDevice_Failure) {
   InitializeClient();
-  CallSetHostDevice(test_remote_device_list_[0].public_key, "authToken",
-                    false /* expect_success */);
+  CallSetHostDevice("hostId", "authToken", false /* expect_success */);
 }
 
 TEST_F(MultiDeviceSetupClientImplTest, TestRemoveHostDevice) {

@@ -5,7 +5,10 @@
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
 
 #include <inttypes.h>
+
 #include <algorithm>
+
+#include "base/logging.h"
 #include "base/time/default_tick_clock.h"
 #include "third_party/blink/public/web/blink.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
@@ -15,11 +18,10 @@
 
 namespace blink {
 
-// Wrapper function defined in WebKit.h
+// Function defined in third_party/blink/public/web/blink.h.
 void LogRuntimeCallStats() {
-  LOG(INFO)
-      << "\n"
-      << RuntimeCallStats::From(MainThreadIsolate())->ToString().Utf8().data();
+  LOG(INFO) << "\n"
+            << RuntimeCallStats::From(MainThreadIsolate())->ToString().Utf8();
 }
 
 namespace {
@@ -38,16 +40,16 @@ void RuntimeCallTimer::Start(RuntimeCallCounter* counter,
   DCHECK(!IsRunning());
   counter_ = counter;
   parent_ = parent;
-  start_ticks_ = TimeTicks(clock_->NowTicks());
+  start_ticks_ = base::TimeTicks(clock_->NowTicks());
   if (parent_)
     parent_->Pause(start_ticks_);
 }
 
 RuntimeCallTimer* RuntimeCallTimer::Stop() {
   DCHECK(IsRunning());
-  TimeTicks now = TimeTicks(clock_->NowTicks());
+  base::TimeTicks now = base::TimeTicks(clock_->NowTicks());
   elapsed_time_ += (now - start_ticks_);
-  start_ticks_ = TimeTicks();
+  start_ticks_ = base::TimeTicks();
   counter_->IncrementAndAddTime(elapsed_time_);
   if (parent_)
     parent_->Resume(now);
@@ -178,7 +180,7 @@ Vector<RuntimeCallCounter*> RuntimeCallStats::CounterMapToSortedArray() const {
 void RuntimeCallStats::AddCounterMapStatsToBuilder(
     StringBuilder& builder) const {
   builder.AppendFormat("\nNumber of counters in map: %u\n\n",
-                                counter_map_.size()));
+                       counter_map_.size());
   for (RuntimeCallCounter* counter : CounterMapToSortedArray()) {
     builder.AppendFormat(row_format, counter->GetName(), counter->GetCount(),
                          counter->GetTime().InMillisecondsF());

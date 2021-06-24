@@ -13,7 +13,6 @@ shared_library("gcapi") {
   sources = [
     "gcapi.def",
     "gcapi_dll.cc",
-    "gcapi_dll_version.rc.version",
   ]
 
   deps = [
@@ -25,12 +24,8 @@ shared_library("gcapi") {
 }
 
 copy("copy_gcapi_header") {
-  sources = [
-    "gcapi.h",
-  ]
-  outputs = [
-    "$root_out_dir/{{source_file_part}}",
-  ]
+  sources = [ "gcapi.h" ]
+  outputs = [ "$root_out_dir/{{source_file_part}}" ]
 }
 
 process_version_rc_template("gcapi_dll_version") {
@@ -53,7 +48,7 @@ source_set("lib") {
   deps = [
     "//base",
     "//chrome/installer/launcher_support",
-    "//chrome/installer/util:with_no_strings",
+    "//chrome/installer/util:constants",
     "//google_update",
   ]
 }
@@ -77,7 +72,5 @@ test("gcapi_test") {
     "//testing/gtest",
   ]
 
-  data_deps = [
-    ":gcapi",  # Runtime dependency on this DLL.
-  ]
+  data_deps = [ ":gcapi" ]  # Runtime dependency on this DLL.
 }

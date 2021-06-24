@@ -26,11 +26,17 @@
 #include <memory>
 
 #include "base/memory/scoped_refptr.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/network/public/mojom/trust_tokens.mojom-blink.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_trust_token.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/core/dom/document_parser_client.h"
-#include "third_party/blink/renderer/core/execution_context/context_lifecycle_observer.h"
+#include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/loader/threadable_loader_client.h"
+#include "third_party/blink/renderer/core/probe/async_task_id.h"
 #include "third_party/blink/renderer/core/xmlhttprequest/xml_http_request_event_target.h"
 #include "third_party/blink/renderer/core/xmlhttprequest/xml_http_request_progress_event_throttle.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
@@ -49,19 +55,17 @@
 
 namespace blink {
 
-class
-    ArrayBufferOrArrayBufferViewOrBlobOrDocumentOrStringOrFormDataOrURLSearchParams;
 class Blob;
 class BlobDataHandle;
 class DOMArrayBuffer;
 class DOMArrayBufferView;
+class DOMWrapperWorld;
 class Document;
 class DocumentParser;
 class ExceptionState;
 class ExecutionContext;
 class FormData;
 class ScriptState;
-class SharedBuffer;
 class TextResourceDecoder;
 class ThreadableLoader;
 class URLSearchParams;
@@ -71,9 +75,8 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
                              public ThreadableLoaderClient,
                              public DocumentParserClient,
                              public ActiveScriptWrappable<XMLHttpRequest>,
-                             public ContextLifecycleObserver {
+                             public ExecutionContextLifecycleObserver {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(XMLHttpRequest);
 
  public:
   static XMLHttpRequest* Create(ScriptState*);
@@ -81,8 +84,7 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
 
   XMLHttpRequest(ExecutionContext*,
                  v8::Isolate*,
-                 bool is_isolated_world,
-                 scoped_refptr<SecurityOrigin>);
+                 scoped_refptr<const DOMWrapperWorld> world);
   ~XMLHttpRequest() override;
 
   // These exact numeric values are important because JS expects them.
@@ -103,8 +105,8 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
     kResponseTypeArrayBuffer,
   };
 
-  // ContextLifecycleObserver
-  void ContextDestroyed(ExecutionContext*) override;
+  // ExecutionContextLifecycleObserver
+  void ContextDestroyed() override;
   ExecutionContext* GetExecutionContext() const override;
 
   // ScriptWrappable
@@ -131,14 +133,14 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
             const KURL&,
             bool async,
             ExceptionState&);
-  void send(
-      const ArrayBufferOrArrayBufferViewOrBlobOrDocumentOrStringOrFormDataOrURLSearchParams&,
-      ExceptionState&);
+  void send(const V8UnionDocumentOrXMLHttpRequestBodyInit* body,
+            ExceptionState& exception_state);
   void abort();
   void Dispose();
   void setRequestHeader(const AtomicString& name,
                         const AtomicString& value,
                         ExceptionState&);
+  void setTrustToken(const TrustToken*, ExceptionState&);
   void overrideMimeType(const AtomicString& override, ExceptionState&);
   String getAllResponseHeaders() const;
   const AtomicString& getResponseHeader(const AtomicString&) const;
@@ -155,6 +157,9 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   String responseType();
   void setResponseType(const String&, ExceptionState&);
   String responseURL();
+  DOMException* trustTokenOperationError() const {
+    return trust_token_operation_error_;
+  }
 
   // For Inspector.
   void SendForInspectorXHRReplay(scoped_refptr<EncodedFormData>,
@@ -163,21 +168,15 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   XMLHttpRequestUpload* upload();
   bool IsAsync() { return async_; }
 
+  probe::AsyncTaskId* async_task_id() { return &async_task_id_; }
+
   DEFINE_ATTRIBUTE_EVENT_LISTENER(readystatechange, kReadystatechange)
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
   const char* NameInHeapSnapshot() const override { return "XMLHttpRequest"; }
 
  private:
   class BlobLoader;
-
-  Document* GetDocument() const;
-
-  // Returns the SecurityOrigin of the isolated world if the XMLHttpRequest was
-  // created in an isolated world. Otherwise, returns the SecurityOrigin of the
-  // execution context.
-  const SecurityOrigin* GetSecurityOrigin() const;
-  SecurityOrigin* GetMutableSecurityOrigin();
 
   void DidSendData(uint64_t bytes_sent,
                    uint64_t total_bytes_to_be_sent) override;
@@ -189,8 +188,8 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   void DidDownloadData(uint64_t data_length) override;
   void DidDownloadToBlob(scoped_refptr<BlobDataHandle>) override;
   void DidFinishLoading(uint64_t identifier) override;
-  void DidFail(const ResourceError&) override;
-  void DidFailRedirectCheck() override;
+  void DidFail(uint64_t, const ResourceError&) override;
+  void DidFailRedirectCheck(uint64_t) override;
 
   // BlobLoader notifications.
   void DidFinishLoadingInternal();
@@ -251,8 +250,8 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
 
   // Clears variables used only while the resource is being loaded.
   void ClearVariablesForLoading();
-  // Returns false iff reentry happened and a new load is started.
-  bool InternalAbort();
+  // Clears state and cancels loader.
+  void InternalAbort();
   // Clears variables holding response header and body data.
   void ClearResponse();
   void ClearRequest();
@@ -274,10 +273,7 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   // Handles didFail() call for timeout.
   void HandleDidTimeout();
 
-  void HandleRequestError(DOMExceptionCode,
-                          const AtomicString&,
-                          int64_t,
-                          int64_t);
+  void HandleRequestError(DOMExceptionCode, const AtomicString&);
 
   void UpdateContentTypeAndCharset(const AtomicString& content_type,
                                    const String& charset);
@@ -298,13 +294,16 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   Member<XMLHttpRequestUpload> upload_;
 
   KURL url_;
-  network::mojom::blink::URLLoaderFactoryPtr blob_url_loader_factory_;
+  mojo::PendingRemote<network::mojom::blink::URLLoaderFactory>
+      blob_url_loader_factory_;
   AtomicString method_;
   HTTPHeaderMap request_headers_;
+  network::mojom::blink::TrustTokenParamsPtr trust_token_params_;
+  Member<DOMException> trust_token_operation_error_;
   // Not converted to ASCII lowercase. Must be lowered later or compared
   // using case insensitive comparison functions if needed.
   AtomicString mime_type_override_;
-  TimeDelta timeout_;
+  base::TimeDelta timeout_;
   Member<Blob> response_blob_;
 
   TaskHandle pending_abort_event_;
@@ -318,7 +317,7 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
 
   // Avoid using a flat WTF::String here and rather use a traced v8::String
   // which internally builds a string rope.
-  GC_PLUGIN_IGNORE("crbug.com/841830") TraceWrapperV8String response_text_;
+  TraceWrapperV8String response_text_;
   Member<Document> response_document_;
   Member<DocumentParser> response_document_parser_;
 
@@ -344,10 +343,11 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   ResponseTypeCode response_type_code_ = kResponseTypeDefault;
 
   v8::Isolate* const isolate_;
-  // Set to true if the XMLHttpRequest was created in an isolated world.
-  bool is_isolated_world_;
-  // Stores the SecurityOrigin associated with the isolated world if any.
-  scoped_refptr<SecurityOrigin> isolated_world_security_origin_;
+  // The DOMWrapperWorld in which the request initiated. Can be null.
+  scoped_refptr<const DOMWrapperWorld> world_;
+  // Stores the SecurityOrigin associated with the |world_| if it's an isolated
+  // world.
+  scoped_refptr<const SecurityOrigin> isolated_world_security_origin_;
 
   // This blob loader will be used if |m_downloadingToFile| is true and
   // |m_responseTypeCode| is NOT ResponseTypeBlob.
@@ -368,13 +368,14 @@ class XMLHttpRequest final : public XMLHttpRequestEventTarget,
   bool error_ = false;
   bool upload_events_allowed_ = true;
   bool upload_complete_ = false;
-  bool same_origin_request_ = true;
   // True iff the ongoing resource loading is using the downloadToBlob
   // option.
   bool downloading_to_blob_ = false;
   bool response_text_overflow_ = false;
   bool send_flag_ = false;
   bool response_array_buffer_failure_ = false;
+
+  probe::AsyncTaskId async_task_id_;
 };
 
 std::ostream& operator<<(std::ostream&, const XMLHttpRequest*);

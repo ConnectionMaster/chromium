@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/system_network_context_manager.h"
@@ -24,8 +23,6 @@ namespace content {
 class ChromeNetworkServiceRestartBrowserTest : public InProcessBrowserTest {
  public:
   ChromeNetworkServiceRestartBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        network::features::kNetworkService);
     EXPECT_TRUE(embedded_test_server()->Start());
   }
 
@@ -36,8 +33,6 @@ class ChromeNetworkServiceRestartBrowserTest : public InProcessBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-
   DISALLOW_COPY_AND_ASSIGN(ChromeNetworkServiceRestartBrowserTest);
 };
 
@@ -47,12 +42,10 @@ IN_PROC_BROWSER_TEST_F(ChromeNetworkServiceRestartBrowserTest,
                        StoragePartitionGetNetworkContext) {
   if (content::IsInProcessNetworkService())
     return;
-#if defined(OS_MACOSX)
   // |NetworkServiceTestHelper| doesn't work on browser_tests on macOS.
-  return;
-#endif
+#if !defined(OS_MAC)
   StoragePartition* partition =
-      BrowserContext::GetDefaultStoragePartition(browser()->profile());
+      browser()->profile()->GetDefaultStoragePartition();
 
   network::mojom::NetworkContext* old_network_context =
       partition->GetNetworkContext();
@@ -69,6 +62,7 @@ IN_PROC_BROWSER_TEST_F(ChromeNetworkServiceRestartBrowserTest,
   EXPECT_NE(old_network_context, partition->GetNetworkContext());
   EXPECT_EQ(net::OK,
             LoadBasicRequest(partition->GetNetworkContext(), GetTestURL()));
+#endif
 }
 
 // Make sure |SystemNetworkContextManager::GetContext()| returns valid interface
@@ -77,16 +71,14 @@ IN_PROC_BROWSER_TEST_F(ChromeNetworkServiceRestartBrowserTest,
                        SystemNetworkContextManagerGetContext) {
   if (content::IsInProcessNetworkService())
     return;
-#if defined(OS_MACOSX)
   // |NetworkServiceTestHelper| doesn't work on browser_tests on macOS.
-  return;
-#endif
+#if !defined(OS_MAC)
   SystemNetworkContextManager* system_network_context_manager =
       g_browser_process->system_network_context_manager();
 
-  network::mojom::NetworkContext* old_network_context =
-      system_network_context_manager->GetContext();
-  EXPECT_EQ(net::OK, LoadBasicRequest(old_network_context, GetTestURL()));
+  EXPECT_EQ(net::OK,
+            LoadBasicRequest(system_network_context_manager->GetContext(),
+                             GetTestURL()));
 
   // Crash the NetworkService process. Existing interfaces should receive error
   // notifications at some point.
@@ -94,12 +86,13 @@ IN_PROC_BROWSER_TEST_F(ChromeNetworkServiceRestartBrowserTest,
   // Flush the interface to make sure the error notification was received.
   system_network_context_manager->FlushNetworkInterfaceForTesting();
 
-  // |system_network_context_manager->GetContext()| should return a valid new
-  // pointer after crash.
-  EXPECT_NE(old_network_context, system_network_context_manager->GetContext());
+  // |system_network_context_manager->GetContext()| should return a valid
+  // pointer after crash, since the NetworkContext is bound again.
+  ASSERT_NE(system_network_context_manager->GetContext(), nullptr);
   EXPECT_EQ(net::OK,
             LoadBasicRequest(system_network_context_manager->GetContext(),
                              GetTestURL()));
+#endif
 }
 
 }  // namespace content

@@ -25,7 +25,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/clock.h"
-#include "base/time/time.h"
 #include "build/build_config.h"
 #include "net/base/cache_type.h"
 #include "net/base/completion_once_callback.h"
@@ -50,13 +49,13 @@ class ApplicationStatusListener;
 namespace disk_cache {
 class Backend;
 class Entry;
+class EntryResult;
 }  // namespace disk_cache
 
 namespace net {
 
 class HttpNetworkSession;
 class HttpResponseInfo;
-class IOBuffer;
 class NetLog;
 struct HttpRequestInfo;
 
@@ -100,7 +99,8 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
     DefaultBackend(CacheType type,
                    BackendType backend_type,
                    const base::FilePath& path,
-                   int max_bytes);
+                   int max_bytes,
+                   bool hard_reset);
     ~DefaultBackend() override;
 
     // Returns a factory for an in-memory cache.
@@ -121,6 +121,7 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
     BackendType backend_type_;
     const base::FilePath path_;
     int max_bytes_;
+    bool hard_reset_;
 #if defined(OS_ANDROID)
     base::android::ApplicationStatusListener* app_status_listener_ = nullptr;
 #endif
@@ -203,17 +204,6 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
                                 HttpResponseInfo* response_info,
                                 bool* response_truncated);
 
-  // Writes |buf_len| bytes of metadata stored in |buf| to the cache entry
-  // referenced by |url|, as long as the entry's |expected_response_time| has
-  // not changed. This method returns without blocking, and the operation will
-  // be performed asynchronously without any completion notification.
-  // Takes ownership of |buf|.
-  virtual void WriteMetadata(const GURL& url,
-                             RequestPriority priority,
-                             base::Time expected_response_time,
-                             IOBuffer* buf,
-                             int buf_len);
-
   // Get/Set the cache's mode.
   void set_mode(Mode value) { mode_ = value; }
   Mode mode() { return mode_; }
@@ -225,17 +215,17 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   // Close currently active sockets so that fresh page loads will not use any
   // recycled connections.  For sockets currently in use, they may not close
   // immediately, but they will not be reusable. This is for debugging.
-  void CloseAllConnections();
+  void CloseAllConnections(int net_error, const char* net_log_reason_utf8);
 
   // Close all idle connections. Will close all sockets not in active use.
-  void CloseIdleConnections();
+  void CloseIdleConnections(const char* net_log_reason_utf8);
 
   // Called whenever an external cache in the system reuses the resource
-  // referred to by |url| and |http_method|, inside a page with a top-level
-  // URL at |top_frame_origin|.
+  // referred to by |url| and |http_method| and |network_isolation_key|.
   void OnExternalCacheHit(const GURL& url,
                           const std::string& http_method,
-                          base::Optional<url::Origin> top_frame_origin);
+                          const NetworkIsolationKey& network_isolation_key,
+                          bool is_subframe_document_resource);
 
   // Causes all transactions created after this point to simulate lock timeout
   // and effectively bypass the cache lock whenever there is lock contention.
@@ -275,6 +265,25 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   void DumpMemoryStats(base::trace_event::ProcessMemoryDump* pmd,
                        const std::string& parent_absolute_name) const;
 
+  // Get the URL from the entry's cache key. If double-keying is not enabled,
+  // this will be the key itself.
+  static std::string GetResourceURLFromHttpCacheKey(const std::string& key);
+
+  // Function to generate cache key for testing.
+  static std::string GenerateCacheKeyForTest(const HttpRequestInfo* request);
+
+  // Enable split cache feature if not already overridden in the feature list.
+  // Should only be invoked during process initialization before the HTTP
+  // cache is initialized.
+  static void SplitCacheFeatureEnableByDefault();
+
+  // Returns true if split cache is enabled either by default or by other means
+  // like command line or field trials.
+  static bool IsSplitCacheEnabled();
+
+  // Resets g_init_cache and g_enable_split_cache for tests.
+  static void ClearGlobalsForTesting();
+
  private:
   // Types --------------------------------------------------------------------
 
@@ -291,13 +300,11 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   enum {
     kResponseInfoIndex = 0,
     kResponseContentIndex,
-    kMetadataIndex,
-
+    kDeprecatedMetadataIndex,
     // Must remain at the end of the enum.
     kNumCacheEntryDataIndices
   };
 
-  class MetadataWriter;
   class QuicServerInfoFactoryAdaptor;
   class Transaction;
   class WorkItem;
@@ -312,6 +319,11 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   // To help with testing.
   friend class MockHttpCache;
   friend class HttpCacheIOCallbackTest;
+
+  FRIEND_TEST_ALL_PREFIXES(HttpCacheTest, SplitCacheWithNetworkIsolationKey);
+  FRIEND_TEST_ALL_PREFIXES(HttpCacheTest, NonSplitCache);
+  FRIEND_TEST_ALL_PREFIXES(HttpCacheTest, SplitCache);
+  FRIEND_TEST_ALL_PREFIXES(HttpCacheTest, SplitCacheUsesRegistrableDomain);
 
   using TransactionList = std::list<Transaction*>;
   using TransactionSet = std::unordered_set<Transaction*>;
@@ -390,7 +402,6 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
       std::unordered_map<std::string, std::unique_ptr<ActiveEntry>>;
   using PendingOpsMap = std::unordered_map<std::string, PendingOp*>;
   using ActiveEntriesSet = std::map<ActiveEntry*, std::unique_ptr<ActiveEntry>>;
-  using PlaybackCacheMap = std::unordered_map<std::string, int>;
 
   // Methods ------------------------------------------------------------------
 
@@ -414,7 +425,7 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   int GetBackendForTransaction(Transaction* transaction);
 
   // Generates the cache key for this request.
-  std::string GenerateCacheKey(const HttpRequestInfo*);
+  static std::string GenerateCacheKey(const HttpRequestInfo*);
 
   // Dooms the entry selected by |key|, if it is currently in the list of active
   // entries.
@@ -432,10 +443,11 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   // currently in use.
   int AsyncDoomEntry(const std::string& key, Transaction* transaction);
 
-  // Dooms the entry associated with a GET for a given |url|, loaded from
-  // a page with top-level frame at |top_frame_origin|.
+  // Dooms the entry associated with a GET for a given url and network
+  // isolation key.
   void DoomMainEntryForUrl(const GURL& url,
-                           base::Optional<url::Origin> top_frame_origin);
+                           const NetworkIsolationKey& isolation_key,
+                           bool is_subframe_document_resource);
 
   // Closes a previously doomed entry.
   void FinalizeDoomedEntry(ActiveEntry* entry);
@@ -620,8 +632,20 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
                                   PendingOp* pending_op,
                                   int result);
 
+  // Variant for Open/Create method family, which has a different signature.
+  static void OnPendingCreationOpComplete(const base::WeakPtr<HttpCache>& cache,
+                                          PendingOp* pending_op,
+                                          disk_cache::EntryResult result);
+
   // Processes the backend creation notification.
   void OnBackendCreated(int result, PendingOp* pending_op);
+
+  // Constants ----------------------------------------------------------------
+
+  // Used when generating and accessing keys if cache is split.
+  static const char kDoubleKeyPrefix[];
+  static const char kDoubleKeySeparator[];
+  static const char kSubframeDocumentResourcePrefix[];
 
   // Variables ----------------------------------------------------------------
 
@@ -649,14 +673,12 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   // The set of entries "under construction".
   PendingOpsMap pending_ops_;
 
-  std::unique_ptr<PlaybackCacheMap> playback_cache_map_;
-
   // A clock that can be swapped out for testing.
   base::Clock* clock_;
 
   THREAD_CHECKER(thread_checker_);
 
-  base::WeakPtrFactory<HttpCache> weak_factory_;
+  base::WeakPtrFactory<HttpCache> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(HttpCache);
 };

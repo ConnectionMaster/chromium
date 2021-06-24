@@ -31,7 +31,7 @@ class MEDIA_GPU_EXPORT AndroidVideoSurfaceChooserImpl
   // AndroidVideoSurfaceChooser
   void SetClientCallbacks(UseOverlayCB use_overlay_cb,
                           UseTextureOwnerCB use_texture_owner_cb) override;
-  void UpdateState(base::Optional<AndroidOverlayFactoryCB> new_factory,
+  void UpdateState(absl::optional<AndroidOverlayFactoryCB> new_factory,
                    const State& new_state) override;
 
  private:
@@ -89,7 +89,7 @@ class MEDIA_GPU_EXPORT AndroidVideoSurfaceChooserImpl
   // Time at which we most recently got a failed overlay request.
   base::TimeTicks most_recent_overlay_failure_;
 
-  base::WeakPtrFactory<AndroidVideoSurfaceChooserImpl> weak_factory_;
+  base::WeakPtrFactory<AndroidVideoSurfaceChooserImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AndroidVideoSurfaceChooserImpl);
 };

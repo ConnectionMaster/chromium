@@ -19,7 +19,8 @@ import org.chromium.chromecast.media.AudioContentType;
 
 /**
  * Implements the java-side of the volume control API that maps between volume levels ([0..100])
- * and dBFS values. It uses an Android Things specific system API.
+ * and dBFS values. It uses an Android API that was made public in SDK version 28, but may be
+ * visible via reflection on Android Things on older versions.
  */
 @JNINamespace("chromecast::media")
 @TargetApi(Build.VERSION_CODES.N)
@@ -53,16 +54,29 @@ public final class VolumeMap {
         }
     };
 
+    private static int getStreamMinVolume(int streamType) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return getAudioManager().getStreamMinVolume(streamType);
+        }
+        //  Try to use reflection in case API is hidden.
+        try {
+            return (int) getAudioManager()
+                    .getClass()
+                    .getMethod("getStreamMinVolume", int.class)
+                    .invoke(sAudioManager, streamType);
+        } catch (Exception e) {
+            Log.w(TAG, "Unsupported Android SDK version: " + Build.VERSION.SDK_INT, e);
+            return 0;
+        }
+    };
+
     private static final SparseIntArray MIN_VOLUME_INDEX = new SparseIntArray(4) {
         {
-            append(AudioManager.STREAM_MUSIC,
-                    getAudioManager().getStreamMinVolume(AudioManager.STREAM_MUSIC));
-            append(AudioManager.STREAM_ALARM,
-                    getAudioManager().getStreamMinVolume(AudioManager.STREAM_ALARM));
-            append(AudioManager.STREAM_SYSTEM,
-                    getAudioManager().getStreamMinVolume(AudioManager.STREAM_SYSTEM));
+            append(AudioManager.STREAM_MUSIC, getStreamMinVolume(AudioManager.STREAM_MUSIC));
+            append(AudioManager.STREAM_ALARM, getStreamMinVolume(AudioManager.STREAM_ALARM));
+            append(AudioManager.STREAM_SYSTEM, getStreamMinVolume(AudioManager.STREAM_SYSTEM));
             append(AudioManager.STREAM_VOICE_CALL,
-                    getAudioManager().getStreamMinVolume(AudioManager.STREAM_VOICE_CALL));
+                    getStreamMinVolume(AudioManager.STREAM_VOICE_CALL));
         }
     };
 
@@ -81,6 +95,9 @@ public final class VolumeMap {
 
     // Returns the current volume in dB for the given stream type and volume index.
     private static float getStreamVolumeDB(int streamType, int idx) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return getAudioManager().getStreamVolumeDb(streamType, idx, DEVICE_TYPE);
+        }
         float db = 0;
         if (Build.VERSION.SDK_INT == Build.VERSION_CODES.O_MR1
                 || Build.VERSION.SDK_INT == Build.VERSION_CODES.N) {
@@ -93,10 +110,6 @@ public final class VolumeMap {
             } catch (Exception e) {
                 Log.e(TAG, "Can not call AudioManager.getStreamVolumeDb():", e);
             }
-            // TODO(ckuiper): when Android P becomes available add something like this to call the
-            // AudioManager.getStreamVolumeDb() directly as it is public in P.
-            //   } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            //       db = sAudioManager.getStreamVolumeDb();
         } else {
             Log.e(TAG, "Unsupported Android SDK version:" + Build.VERSION.SDK_INT);
         }
@@ -157,7 +170,8 @@ public final class VolumeMap {
         // There are only a few volume index steps, so simply loop through them
         // and find the interval [dbLeft .. dbRight] that contains db, then
         // interpolate to estimate the volume level to return.
-        float dbLeft = dbMin, dbRight = dbMin;
+        float dbLeft = dbMin;
+        float dbRight = dbMin;
         int idx = minIndex + 1;
         for (; idx <= maxIndex; idx++) {
             dbLeft = dbRight;

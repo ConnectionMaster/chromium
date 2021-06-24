@@ -16,17 +16,20 @@
 #include "components/offline_pages/core/background_snapshot_controller.h"
 #include "components/offline_pages/core/offline_page_types.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/page_type.h"
 
 namespace content {
 class BrowserContext;
 }  // namespace content
 
+namespace security_state {
+struct VisibleSecurityState;
+}  // namespace security_state
+
 namespace offline_pages {
 
 class OfflinerPolicy;
 class OfflinePageModel;
-
-class PageRenovationLoader;
 class PageRenovator;
 
 struct RequestStats {
@@ -71,8 +74,10 @@ class BackgroundLoaderOffliner
   void CanDownload(base::OnceCallback<void(bool)> callback) override;
 
   // WebContentsObserver implementation.
-  void DocumentAvailableInMainFrame() override;
-  void DocumentOnLoadCompletedInMainFrame() override;
+  void DocumentAvailableInMainFrame(
+      content::RenderFrameHost* render_frame_host) override;
+  void DocumentOnLoadCompletedInMainFrame(
+      content::RenderFrameHost* render_frame_host) override;
   void RenderProcessGone(base::TerminationStatus status) override;
   void WebContentsDestroyed() override;
   void DidFinishNavigation(
@@ -80,7 +85,6 @@ class BackgroundLoaderOffliner
 
   // BackgroundSnapshotController::Client implementation.
   void StartSnapshot() override;
-  void RunRenovations() override;
 
   void SetBackgroundSnapshotControllerForTest(
       std::unique_ptr<BackgroundSnapshotController> controller);
@@ -89,10 +93,6 @@ class BackgroundLoaderOffliner
   void ObserveResourceLoading(ResourceLoadingObserver::ResourceDataType type,
                               bool started) override;
   void OnNetworkBytesChanged(int64_t bytes) override;
-
- protected:
-  // Called to reset the loader.
-  virtual void ResetLoader();
 
  private:
   friend class TestBackgroundLoaderOffliner;
@@ -127,8 +127,27 @@ class BackgroundLoaderOffliner
   void DeleteOfflinePageCallback(const SavePageRequest& request,
                                  DeletePageResult result);
 
+  // Checks whether the loaded page can be saved in the background based on its
+  // security information and other characteristics. Returns the respective
+  // RequestStatus value for any specific error or RequestStatus::UNKNOWN
+  // otherwise.
+  Offliner::RequestStatus CanSavePageInBackground(
+      content::WebContents* web_contents);
+
   // Testing method to examine resource stats.
   RequestStats* GetRequestStatsForTest() { return stats_; }
+
+  // Called to reset the loader. Overridden in tests.
+  virtual void ResetLoader();
+
+  // Returns the VisibleSecurityState for the page currently loaded by the
+  // provided WebContents. Overridden in tests.
+  virtual std::unique_ptr<security_state::VisibleSecurityState>
+  GetVisibleSecurityState(content::WebContents* web_contents);
+
+  // Returns PageType for the page currently loaded by the provided WebContents.
+  // Overridden in tests.
+  virtual content::PageType GetPageType(content::WebContents* web_contents);
 
   std::unique_ptr<background_loader::BackgroundLoaderContents> loader_;
   // Not owned.
@@ -150,11 +169,6 @@ class BackgroundLoaderOffliner
   std::unique_ptr<LoadTerminationListener> load_termination_listener_;
   // Whether we are on a low-end device.
   bool is_low_end_device_;
-
-  // PageRenovationLoader must live longer than the PageRenovator.
-  std::unique_ptr<PageRenovationLoader> page_renovation_loader_;
-  // Per-offliner PageRenovator instance.
-  std::unique_ptr<PageRenovator> page_renovator_;
 
   // Save state.
   SaveState save_state_;
@@ -180,7 +194,7 @@ class BackgroundLoaderOffliner
   // Holds stats for resource request status for resource types we track.
   RequestStats stats_[ResourceDataType::RESOURCE_DATA_TYPE_COUNT];
 
-  base::WeakPtrFactory<BackgroundLoaderOffliner> weak_ptr_factory_;
+  base::WeakPtrFactory<BackgroundLoaderOffliner> weak_ptr_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(BackgroundLoaderOffliner);
 };
 

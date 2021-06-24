@@ -14,6 +14,7 @@
 #include "base/macros.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/common/api/file_system.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
@@ -41,7 +42,7 @@ void SetLastChooseEntryDirectory(ExtensionPrefs* prefs,
 
 }  // namespace file_system_api
 
-class FileSystemGetDisplayPathFunction : public UIThreadExtensionFunction {
+class FileSystemGetDisplayPathFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.getDisplayPath",
                              FILESYSTEM_GETDISPLAYPATH)
@@ -51,7 +52,7 @@ class FileSystemGetDisplayPathFunction : public UIThreadExtensionFunction {
   ResponseAction Run() override;
 };
 
-class FileSystemEntryFunction : public UIThreadExtensionFunction {
+class FileSystemEntryFunction : public ExtensionFunction {
  protected:
   FileSystemEntryFunction();
 
@@ -104,7 +105,7 @@ class FileSystemGetWritableEntryFunction : public FileSystemEntryFunction {
   base::FilePath path_;
 };
 
-class FileSystemIsWritableEntryFunction : public UIThreadExtensionFunction {
+class FileSystemIsWritableEntryFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.isWritableEntry",
                              FILESYSTEM_ISWRITABLEENTRY)
@@ -116,17 +117,54 @@ class FileSystemIsWritableEntryFunction : public UIThreadExtensionFunction {
 
 class FileSystemChooseEntryFunction : public FileSystemEntryFunction {
  public:
-  // Allow picker UI to be skipped in testing.
-  static void SkipPickerAndAlwaysSelectPathForTest(base::FilePath* path);
-  static void SkipPickerAndAlwaysSelectPathsForTest(
-      std::vector<base::FilePath>* paths);
-  static void SkipPickerAndSelectSuggestedPathForTest();
-  static void SkipPickerAndAlwaysCancelForTest();
-  static void StopSkippingPickerForTest();
-  // Allow directory access confirmation UI to be skipped in testing.
-  static void SkipDirectoryConfirmationForTest();
-  static void AutoCancelDirectoryConfirmationForTest();
-  static void StopSkippingDirectoryConfirmationForTest();
+  class SkipPickerBaseForTest {
+   protected:
+    SkipPickerBaseForTest();
+    ~SkipPickerBaseForTest();
+
+   private:
+    // Nested pickers are not allowed, so track the singleton
+    // instance.
+    static SkipPickerBaseForTest* g_picker;
+  };
+
+  // Various classes to to allow the picker UI to be skipped in testing.
+  // Upon destruction, the affected global variables are reset to their
+  // default values;
+  class SkipPickerAndAlwaysSelectPathForTest : public SkipPickerBaseForTest {
+   public:
+    explicit SkipPickerAndAlwaysSelectPathForTest(
+        const base::FilePath& path,
+        bool skip_dir_confirmation = false,
+        bool allow_directory_access = false);
+    ~SkipPickerAndAlwaysSelectPathForTest();
+
+   private:
+    const base::FilePath path_;
+  };
+
+  class SkipPickerAndAlwaysSelectPathsForTest : public SkipPickerBaseForTest {
+   public:
+    explicit SkipPickerAndAlwaysSelectPathsForTest(
+        const std::vector<base::FilePath>& paths);
+    ~SkipPickerAndAlwaysSelectPathsForTest();
+
+   private:
+    const std::vector<base::FilePath> paths_;
+  };
+
+  class SkipPickerAndSelectSuggestedPathForTest : public SkipPickerBaseForTest {
+   public:
+    SkipPickerAndSelectSuggestedPathForTest();
+    ~SkipPickerAndSelectSuggestedPathForTest() = default;
+  };
+
+  class SkipPickerAndAlwaysCancelForTest : public SkipPickerBaseForTest {
+   public:
+    SkipPickerAndAlwaysCancelForTest();
+    ~SkipPickerAndAlwaysCancelForTest() = default;
+  };
+
   // Call this with the directory for test file paths. On Chrome OS, accessed
   // path needs to be explicitly registered for smooth integration with Google
   // Drive support.
@@ -140,7 +178,7 @@ class FileSystemChooseEntryFunction : public FileSystemEntryFunction {
       ui::SelectFileDialog::FileTypeInfo* file_type_info,
       const base::FilePath::StringType& suggested_extension,
       const AcceptOptions* accepts,
-      const bool* acceptsAllTypes);
+      const bool* accepts_all_types);
   static void BuildSuggestion(const std::string* opt_name,
                               base::FilePath* suggested_name,
                               base::FilePath::StringType* suggested_extension);
@@ -180,7 +218,7 @@ class FileSystemChooseEntryFunction : public FileSystemEntryFunction {
   base::FilePath initial_path_;
 };
 
-class FileSystemRetainEntryFunction : public UIThreadExtensionFunction {
+class FileSystemRetainEntryFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.retainEntry", FILESYSTEM_RETAINENTRY)
 
@@ -198,7 +236,7 @@ class FileSystemRetainEntryFunction : public UIThreadExtensionFunction {
                        std::unique_ptr<base::File::Info> file_info);
 };
 
-class FileSystemIsRestorableFunction : public UIThreadExtensionFunction {
+class FileSystemIsRestorableFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.isRestorable", FILESYSTEM_ISRESTORABLE)
 
@@ -216,9 +254,9 @@ class FileSystemRestoreEntryFunction : public FileSystemEntryFunction {
   ResponseAction Run() override;
 };
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 // Stub for non Chrome OS operating systems.
-class FileSystemRequestFileSystemFunction : public UIThreadExtensionFunction {
+class FileSystemRequestFileSystemFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.requestFileSystem",
                              FILESYSTEM_REQUESTFILESYSTEM)
@@ -226,12 +264,12 @@ class FileSystemRequestFileSystemFunction : public UIThreadExtensionFunction {
  protected:
   ~FileSystemRequestFileSystemFunction() override {}
 
-  // UIThreadExtensionFunction overrides.
+  // ExtensionFunction overrides.
   ExtensionFunction::ResponseAction Run() override;
 };
 
 // Stub for non Chrome OS operating systems.
-class FileSystemGetVolumeListFunction : public UIThreadExtensionFunction {
+class FileSystemGetVolumeListFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.getVolumeList",
                              FILESYSTEM_GETVOLUMELIST)
@@ -239,13 +277,13 @@ class FileSystemGetVolumeListFunction : public UIThreadExtensionFunction {
  protected:
   ~FileSystemGetVolumeListFunction() override {}
 
-  // UIThreadExtensionFunction overrides.
+  // ExtensionFunction overrides.
   ExtensionFunction::ResponseAction Run() override;
 };
 
 #else
 // Requests a file system for the specified volume id.
-class FileSystemRequestFileSystemFunction : public UIThreadExtensionFunction {
+class FileSystemRequestFileSystemFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.requestFileSystem",
                              FILESYSTEM_REQUESTFILESYSTEM)
@@ -254,7 +292,7 @@ class FileSystemRequestFileSystemFunction : public UIThreadExtensionFunction {
  protected:
   ~FileSystemRequestFileSystemFunction() override;
 
-  // UIThreadExtensionFunction overrides.
+  // ExtensionFunction overrides.
   ExtensionFunction::ResponseAction Run() override;
 
  private:
@@ -265,7 +303,7 @@ class FileSystemRequestFileSystemFunction : public UIThreadExtensionFunction {
 };
 
 // Requests a list of available volumes.
-class FileSystemGetVolumeListFunction : public UIThreadExtensionFunction {
+class FileSystemGetVolumeListFunction : public ExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileSystem.getVolumeList",
                              FILESYSTEM_GETVOLUMELIST)
@@ -274,7 +312,7 @@ class FileSystemGetVolumeListFunction : public UIThreadExtensionFunction {
  protected:
   ~FileSystemGetVolumeListFunction() override;
 
-  // UIThreadExtensionFunction overrides.
+  // ExtensionFunction overrides.
   ExtensionFunction::ResponseAction Run() override;
 
  private:

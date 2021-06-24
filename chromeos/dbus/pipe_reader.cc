@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/task_runner.h"
 #include "net/base/file_stream.h"
@@ -18,8 +17,7 @@ namespace chromeos {
 
 PipeReader::PipeReader(const scoped_refptr<base::TaskRunner>& task_runner)
     : io_buffer_(base::MakeRefCounted<net::IOBufferWithSize>(4096)),
-      task_runner_(task_runner),
-      weak_ptr_factory_(this) {}
+      task_runner_(task_runner) {}
 
 PipeReader::~PipeReader() = default;
 
@@ -71,12 +69,12 @@ void PipeReader::OnRead(int byte_count) {
   DVLOG(1) << "OnRead byte_count: " << byte_count;
   if (byte_count <= 0) {
     // On EOF (= 0), or on error (< 0).
-    base::Optional<std::string> result =
-        byte_count < 0 ? base::nullopt : base::make_optional(std::move(data_));
+    absl::optional<std::string> result =
+        byte_count < 0 ? absl::nullopt : absl::make_optional(std::move(data_));
     // Clear members before calling the |callback|.
     data_.clear();
     data_stream_.reset();
-    base::ResetAndReturn(&callback_).Run(std::move(result));
+    std::move(callback_).Run(std::move(result));
     return;
   }
 

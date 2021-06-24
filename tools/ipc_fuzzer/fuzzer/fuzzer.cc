@@ -10,21 +10,32 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/shared_memory_handle.h"
 #include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/unguessable_token.h"
+#include "base/util/type_safety/id_type.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/content_settings/core/common/content_settings_pattern.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
+#include "gpu/ipc/common/gpu_param_traits_macros.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_utils.h"
 #include "ipc/ipc_sync_channel.h"
 #include "ipc/ipc_sync_message.h"
+#include "media/gpu/ipc/common/media_param_traits.h"
+#include "printing/mojom/print.mojom-shared.h"
+#include "third_party/blink/public/common/page_state/page_state.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 #include "tools/ipc_fuzzer/fuzzer/fuzzer.h"
 #include "tools/ipc_fuzzer/fuzzer/rand_util.h"
 #include "tools/ipc_fuzzer/message_lib/message_cracker.h"
 #include "tools/ipc_fuzzer/message_lib/message_file.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/gfx/range/range.h"
+#include "ui/latency/latency_info.h"
 
 #if defined(OS_POSIX)
 #include <unistd.h>
@@ -151,6 +162,14 @@ struct FuzzTraits<unsigned short> {
 };
 
 template <>
+struct FuzzTraits<char> {
+  static bool Fuzz(char* p, Fuzzer* fuzzer) {
+    fuzzer->FuzzUChar(reinterpret_cast<unsigned char*>(p));
+    return true;
+  }
+};
+
+template <>
 struct FuzzTraits<signed char> {
   static bool Fuzz(signed char* p, Fuzzer* fuzzer) {
     fuzzer->FuzzUChar(reinterpret_cast<unsigned char*>(p));
@@ -199,8 +218,8 @@ struct FuzzTraits<std::string> {
 };
 
 template <>
-struct FuzzTraits<base::string16> {
-  static bool Fuzz(base::string16* p, Fuzzer* fuzzer) {
+struct FuzzTraits<std::u16string> {
+  static bool Fuzz(std::u16string* p, Fuzzer* fuzzer) {
     fuzzer->FuzzString16(p);
     return true;
   }
@@ -430,32 +449,6 @@ struct FuzzTraits<base::File::Info> {
 };
 
 template <>
-struct FuzzTraits<base::NullableString16> {
-  static bool Fuzz(base::NullableString16* p, Fuzzer* fuzzer) {
-    base::string16 string = p->string();
-    bool is_null = p->is_null();
-    if (!FuzzParam(&string, fuzzer))
-      return false;
-    if (!FuzzParam(&is_null, fuzzer))
-      return false;
-    *p = base::NullableString16(string, is_null);
-    return true;
-  }
-};
-
-#if defined(OS_WIN) || defined(OS_MACOSX)
-template <>
-struct FuzzTraits<base::SharedMemoryHandle> {
-  static bool Fuzz(base::SharedMemoryHandle* p, Fuzzer* fuzzer) {
-    // This generates an invalid SharedMemoryHandle. Generating a valid
-    // SharedMemoryHandle requires setting/knowing state in both the sending and
-    // receiving process, which is not currently possible.
-    return true;
-  }
-};
-#endif  // defined(OS_WIN) || defined(OS_MACOSX)
-
-template <>
 struct FuzzTraits<base::Time> {
   static bool Fuzz(base::Time* p, Fuzzer* fuzzer) {
     int64_t internal_value = p->ToInternalValue();
@@ -533,7 +526,8 @@ struct FuzzTraits<base::ListValue> {
           char tmp[200];
           size_t bin_length = RandInRange(sizeof(tmp));
           fuzzer->FuzzData(tmp, bin_length);
-          p->Set(index, base::Value::CreateWithCopiedBuffer(tmp, bin_length));
+          p->Set(index, base::Value::ToUniquePtrValue(base::Value(
+                            base::as_bytes(base::make_span(tmp, bin_length)))));
           break;
         }
         case base::Value::Type::DICTIONARY: {
@@ -610,7 +604,8 @@ struct FuzzTraits<base::DictionaryValue> {
           size_t bin_length = RandInRange(sizeof(tmp));
           fuzzer->FuzzData(tmp, bin_length);
           p->SetWithoutPathExpansion(
-              property, base::Value::CreateWithCopiedBuffer(tmp, bin_length));
+              property, base::Value::ToUniquePtrValue(base::Value(
+                            base::as_bytes(base::make_span(tmp, bin_length)))));
           break;
         }
         case base::Value::Type::DICTIONARY: {
@@ -644,132 +639,94 @@ struct FuzzTraits<base::UnguessableToken> {
       return false;
     if (!FuzzParam(&high, fuzzer))
       return false;
+    while (high == 0 && low == 0) {
+      FuzzParam(&low, fuzzer);
+      FuzzParam(&high, fuzzer);
+    }
     *p = base::UnguessableToken::Deserialize(high, low);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<viz::CompositorFrame> {
-  static bool Fuzz(viz::CompositorFrame* p, Fuzzer* fuzzer) {
-    // TODO(mbarbella): Support mutation.
-    if (!fuzzer->ShouldGenerate())
-      return true;
-
-    if (!FuzzParam(&p->metadata, fuzzer))
-      return false;
-
-    switch (RandInRange(2)) {
-      case 0: {
-        if (!FuzzParam(&p->resource_list, fuzzer))
-          return false;
-        if (!FuzzParam(&p->render_pass_list, fuzzer))
-          return false;
-        return true;
-      }
-      default:
-        // Fuzz nothing to handle the no frame case.
-        return true;
-    }
-  }
-};
-
-template <class A>
-struct FuzzTraits<cc::ListContainer<A>> {
-  static bool Fuzz(cc::ListContainer<A>* p, Fuzzer* fuzzer) {
-    // TODO(mbarbella): This should actually do something.
+struct FuzzTraits<base::UnsafeSharedMemoryRegion> {
+  static bool Fuzz(base::UnsafeSharedMemoryRegion* p, Fuzzer* fuzzer) {
+    size_t size = RandInRange(16 * 1024 * 1024 * sizeof(char));
+    *p = base::UnsafeSharedMemoryRegion::Create(size);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<viz::QuadList> {
-  static bool Fuzz(viz::QuadList* p, Fuzzer* fuzzer) {
-    // TODO(mbarbella): This should actually do something.
+struct FuzzTraits<blink::mojom::EmulatedScreenType> {
+  static bool Fuzz(blink::mojom::EmulatedScreenType* p, Fuzzer* fuzzer) {
+    int screen_type = RandInRange(
+        static_cast<int>(blink::mojom::EmulatedScreenType::kMaxValue) + 1);
+    *p = static_cast<blink::mojom::EmulatedScreenType>(screen_type);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<viz::RenderPass> {
-  static bool Fuzz(viz::RenderPass* p, Fuzzer* fuzzer) {
-    if (!FuzzParam(&p->id, fuzzer))
+struct FuzzTraits<viz::FrameSinkId> {
+  static bool Fuzz(viz::FrameSinkId* p, Fuzzer* fuzzer) {
+    uint32_t client_id;
+    uint32_t sink_id;
+    if (!FuzzParam(&client_id, fuzzer))
       return false;
-    if (!FuzzParam(&p->output_rect, fuzzer))
+    if (!FuzzParam(&sink_id, fuzzer))
       return false;
-    if (!FuzzParam(&p->damage_rect, fuzzer))
-      return false;
-    if (!FuzzParam(&p->transform_to_root_target, fuzzer))
-      return false;
-    if (!FuzzParam(&p->has_transparent_background, fuzzer))
-      return false;
-    if (!FuzzParam(&p->quad_list, fuzzer))
-      return false;
-    if (!FuzzParam(&p->shared_quad_state_list, fuzzer))
-      return false;
-    // Omitting |copy_requests| as it is not sent over IPC.
+    *p = viz::FrameSinkId(client_id, sink_id);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<viz::RenderPassList> {
-  static bool Fuzz(viz::RenderPassList* p, Fuzzer* fuzzer) {
-    if (!fuzzer->ShouldGenerate()) {
-      for (size_t i = 0; i < p->size(); ++i) {
-        if (!FuzzParam(p->at(i).get(), fuzzer))
-          return false;
-      }
-      return true;
-    }
-
-    size_t count = RandElementCount();
-    for (size_t i = 0; i < count; ++i) {
-      std::unique_ptr<viz::RenderPass> render_pass = viz::RenderPass::Create();
-      if (!FuzzParam(render_pass.get(), fuzzer))
-        return false;
-      p->push_back(std::move(render_pass));
-    }
+struct FuzzTraits<viz::LocalSurfaceId> {
+  static bool Fuzz(viz::LocalSurfaceId* p, Fuzzer* fuzzer) {
+    uint32_t parent_sequence_number = p->parent_sequence_number();
+    uint32_t child_sequence_number = p->child_sequence_number();
+    base::UnguessableToken embed_token = p->embed_token();
+    if (!FuzzParam(&parent_sequence_number, fuzzer))
+      return false;
+    if (!FuzzParam(&child_sequence_number, fuzzer))
+      return false;
+    if (!FuzzParam(&embed_token, fuzzer))
+      return false;
+    *p = viz::LocalSurfaceId(parent_sequence_number, child_sequence_number,
+                             embed_token);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<content::PageState> {
-  static bool Fuzz(content::PageState* p, Fuzzer* fuzzer) {
+struct FuzzTraits<viz::ResourceFormat> {
+  static bool Fuzz(viz::ResourceFormat* p, Fuzzer* fuzzer) {
+    int format = RandInRange(viz::ResourceFormat::RESOURCE_FORMAT_MAX + 1);
+    *p = static_cast<viz::ResourceFormat>(format);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<blink::PageState> {
+  static bool Fuzz(blink::PageState* p, Fuzzer* fuzzer) {
     std::string data = p->ToEncodedData();
     if (!FuzzParam(&data, fuzzer))
       return false;
-    *p = content::PageState::CreateFromEncodedData(data);
+    *p = blink::PageState::CreateFromEncodedData(data);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<content::WebCursor> {
-  static bool Fuzz(content::WebCursor* p, Fuzzer* fuzzer) {
-    content::CursorInfo info;
-    p->GetCursorInfo(&info);
-
-    // |type| enum is not validated on de-serialization, so pick random value.
-    if (!FuzzParam(reinterpret_cast<int*>(&info.type), fuzzer))
-      return false;
-    if (!FuzzParam(&info.hotspot, fuzzer))
-      return false;
-    if (!FuzzParam(&info.image_scale_factor, fuzzer))
-      return false;
-    if (!FuzzParam(&info.custom_image, fuzzer))
-      return false;
-    // Omitting |externalHandle| since it is not serialized.
-
-    // Scale factor is expected to be greater than 0, otherwise we hit
-    // a check failure.
-    info.image_scale_factor = fabs(info.image_scale_factor);
-    if (!(info.image_scale_factor > 0.0))
-      info.image_scale_factor = 1;
-
-    *p = content::WebCursor();
-    p->InitFromCursorInfo(info);
+struct FuzzTraits<device::mojom::ScreenOrientationLockType> {
+  static bool Fuzz(device::mojom::ScreenOrientationLockType* p,
+                   Fuzzer* fuzzer) {
+    int value = RandInRange(
+        static_cast<int>(device::mojom::ScreenOrientationLockType::kMaxValue) +
+        1);
+    *p = static_cast<device::mojom::ScreenOrientationLockType>(value);
     return true;
   }
 };
@@ -784,21 +741,94 @@ struct FuzzTraits<ContentSettingsPattern> {
 };
 
 template <>
-struct FuzzTraits<ExtensionMsg_PermissionSetStruct> {
-  static bool Fuzz(ExtensionMsg_PermissionSetStruct* p,
-                       Fuzzer* fuzzer) {
-    // TODO(mbarbella): This should actually do something.
+struct FuzzTraits<gfx::BufferFormat> {
+  static bool Fuzz(gfx::BufferFormat* p, Fuzzer* fuzzer) {
+    int format = RandInRange(static_cast<int>(gfx::BufferFormat::LAST) + 1);
+    *p = static_cast<gfx::BufferFormat>(format);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<extensions::URLPatternSet> {
-  static bool Fuzz(extensions::URLPatternSet* p, Fuzzer* fuzzer) {
-    std::set<URLPattern> patterns = p->patterns();
-    if (!FuzzParam(&patterns, fuzzer))
+struct FuzzTraits<gfx::ColorSpace> {
+  static bool Fuzz(gfx::ColorSpace* p, Fuzzer* fuzzer) {
+    gfx::ColorSpace::PrimaryID primaries;
+    gfx::ColorSpace::TransferID transfer;
+    gfx::ColorSpace::MatrixID matrix;
+    gfx::ColorSpace::RangeID range;
+    if (!FuzzParam(&primaries, fuzzer))
       return false;
-    *p = extensions::URLPatternSet(patterns);
+    if (!FuzzParam(&transfer, fuzzer))
+      return false;
+    if (!FuzzParam(&matrix, fuzzer))
+      return false;
+    if (!FuzzParam(&range, fuzzer))
+      return false;
+    *p = gfx::ColorSpace(primaries, transfer, matrix, range);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::ColorSpace::MatrixID> {
+  static bool Fuzz(gfx::ColorSpace::MatrixID* p, Fuzzer* fuzzer) {
+    uint8_t matrix =
+        RandInRange(static_cast<int>(gfx::ColorSpace::MatrixID::kMaxValue) + 1);
+    *p = static_cast<gfx::ColorSpace::MatrixID>(matrix);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::ColorSpace::PrimaryID> {
+  static bool Fuzz(gfx::ColorSpace::PrimaryID* p, Fuzzer* fuzzer) {
+    int primaries = RandInRange(
+        static_cast<int>(gfx::ColorSpace::PrimaryID::kMaxValue) + 1);
+    *p = static_cast<gfx::ColorSpace::PrimaryID>(primaries);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::ColorSpace::RangeID> {
+  static bool Fuzz(gfx::ColorSpace::RangeID* p, Fuzzer* fuzzer) {
+    uint8_t range =
+        RandInRange(static_cast<int>(gfx::ColorSpace::RangeID::kMaxValue) + 1);
+    *p = static_cast<gfx::ColorSpace::RangeID>(range);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::ColorSpace::TransferID> {
+  static bool Fuzz(gfx::ColorSpace::TransferID* p, Fuzzer* fuzzer) {
+    uint8_t transfer = RandInRange(
+        static_cast<int>(gfx::ColorSpace::TransferID::kMaxValue) + 1);
+    *p = static_cast<gfx::ColorSpace::TransferID>(transfer);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::GpuFenceHandle> {
+  static bool Fuzz(gfx::GpuFenceHandle* p, Fuzzer* fuzzer) {
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::GpuMemoryBufferHandle> {
+  static bool Fuzz(gfx::GpuMemoryBufferHandle* p, Fuzzer* fuzzer) {
+    int type;
+    if (!FuzzParam(&type, fuzzer))
+      return false;
+    if (!FuzzParam(&p->offset, fuzzer))
+      return false;
+    if (!FuzzParam(&p->stride, fuzzer))
+      return false;
+    if (!FuzzParam(&p->region, fuzzer))
+      return false;
+    p->type = static_cast<gfx::GpuMemoryBufferType>(type);
     return true;
   }
 };
@@ -827,6 +857,19 @@ struct FuzzTraits<gfx::PointF> {
     if (!FuzzParam(&y, fuzzer))
       return false;
     p->SetPoint(x, y);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::PresentationFeedback> {
+  static bool Fuzz(gfx::PresentationFeedback* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->timestamp, fuzzer))
+      return false;
+    if (!FuzzParam(&p->interval, fuzzer))
+      return false;
+    if (!FuzzParam(&p->flags, fuzzer))
+      return false;
     return true;
   }
 };
@@ -904,9 +947,43 @@ struct FuzzTraits<gfx::SizeF> {
 };
 
 template <>
+struct FuzzTraits<gfx::SwapResponse> {
+  static bool Fuzz(gfx::SwapResponse* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->swap_id, fuzzer))
+      return false;
+    if (!FuzzParam(&p->result, fuzzer))
+      return false;
+    if (!FuzzParam(&p->timings, fuzzer))
+      return false;
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::SwapResult> {
+  static bool Fuzz(gfx::SwapResult* p, Fuzzer* fuzzer) {
+    int result =
+        RandInRange(static_cast<int>(gfx::SwapResult::SWAP_RESULT_LAST) + 1);
+    *p = static_cast<gfx::SwapResult>(result);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gfx::SwapTimings> {
+  static bool Fuzz(gfx::SwapTimings* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->swap_start, fuzzer))
+      return false;
+    if (!FuzzParam(&p->swap_end, fuzzer))
+      return false;
+    return true;
+  }
+};
+
+template <>
 struct FuzzTraits<gfx::Transform> {
   static bool Fuzz(gfx::Transform* p, Fuzzer* fuzzer) {
-    SkMScalar matrix[16];
+    SkScalar matrix[16];
     for (size_t i = 0; i < base::size(matrix); i++) {
       matrix[i] = p->matrix().get(i / 4, i % 4);
     }
@@ -949,8 +1026,8 @@ struct FuzzTraits<gfx::Vector2dF> {
 };
 
 template <typename TypeMarker, typename WrappedType, WrappedType kInvalidValue>
-struct FuzzTraits<gpu::IdType<TypeMarker, WrappedType, kInvalidValue>> {
-  using param_type = gpu::IdType<TypeMarker, WrappedType, kInvalidValue>;
+struct FuzzTraits<util::IdType<TypeMarker, WrappedType, kInvalidValue>> {
+  using param_type = util::IdType<TypeMarker, WrappedType, kInvalidValue>;
   static bool Fuzz(param_type* id, Fuzzer* fuzzer) {
     WrappedType raw_value = id->GetUnsafeValue();
     if (!FuzzParam(&raw_value, fuzzer))
@@ -961,9 +1038,133 @@ struct FuzzTraits<gpu::IdType<TypeMarker, WrappedType, kInvalidValue>> {
 };
 
 template <>
+struct FuzzTraits<base::StrongAlias<extensions::ActivationSequenceTag, int>> {
+  static bool Fuzz(base::StrongAlias<extensions::ActivationSequenceTag, int>* p,
+                   Fuzzer* fuzzer) {
+    int value;
+    if (!FuzzParam(&value, fuzzer))
+      return false;
+    *p = base::StrongAlias<extensions::ActivationSequenceTag, int>(value);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gl::GpuPreference> {
+  static bool Fuzz(gl::GpuPreference* p, Fuzzer* fuzzer) {
+    int preference =
+        RandInRange(static_cast<int>(gl::GpuPreference::kMaxValue) + 1);
+    *p = static_cast<gl::GpuPreference>(preference);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::ColorSpace> {
+  static bool Fuzz(gpu::ColorSpace* p, Fuzzer* fuzzer) {
+    int color_space = RandInRange(gpu::ColorSpace::COLOR_SPACE_LAST + 1);
+    *p = static_cast<gpu::ColorSpace>(color_space);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::CommandBuffer::State> {
+  static bool Fuzz(gpu::CommandBuffer::State* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->get_offset, fuzzer))
+      return false;
+    if (!FuzzParam(&p->token, fuzzer))
+      return false;
+    if (!FuzzParam(&p->release_count, fuzzer))
+      return false;
+    if (!FuzzParam(&p->error, fuzzer))
+      return false;
+    if (!FuzzParam(&p->context_lost_reason, fuzzer))
+      return false;
+    if (!FuzzParam(&p->generation, fuzzer))
+      return false;
+    if (!FuzzParam(&p->set_get_buffer_count, fuzzer))
+      return false;
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::CommandBufferNamespace> {
+  static bool Fuzz(gpu::CommandBufferNamespace* p, Fuzzer* fuzzer) {
+    int name_space =
+        RandInRange(gpu::CommandBufferNamespace::NUM_COMMAND_BUFFER_NAMESPACES);
+    *p = static_cast<gpu::CommandBufferNamespace>(name_space);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::ContextCreationAttribs> {
+  static bool Fuzz(gpu::ContextCreationAttribs* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->offscreen_framebuffer_size, fuzzer))
+      return false;
+    if (!FuzzParam(&p->gpu_preference, fuzzer))
+      return false;
+    if (!FuzzParam(&p->context_type, fuzzer))
+      return false;
+    if (!FuzzParam(&p->color_space, fuzzer))
+      return false;
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::ContextType> {
+  static bool Fuzz(gpu::ContextType* p, Fuzzer* fuzzer) {
+    int type = RandInRange(gpu::ContextType::CONTEXT_TYPE_LAST + 1);
+    *p = static_cast<gpu::ContextType>(type);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::error::ContextLostReason> {
+  static bool Fuzz(gpu::error::ContextLostReason* p, Fuzzer* fuzzer) {
+    int reason =
+        RandInRange(gpu::error::ContextLostReason::kContextLostReasonLast + 1);
+    *p = static_cast<gpu::error::ContextLostReason>(reason);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::error::Error> {
+  static bool Fuzz(gpu::error::Error* p, Fuzzer* fuzzer) {
+    int error = RandInRange(gpu::error::Error::kErrorLast + 1);
+    *p = static_cast<gpu::error::Error>(error);
+    return true;
+  }
+};
+
+template <>
 struct FuzzTraits<gpu::Mailbox> {
   static bool Fuzz(gpu::Mailbox* p, Fuzzer* fuzzer) {
     fuzzer->FuzzBytes(p->name, sizeof(p->name));
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::SchedulingPriority> {
+  static bool Fuzz(gpu::SchedulingPriority* p, Fuzzer* fuzzer) {
+    int priority =
+        RandInRange(static_cast<int>(gpu::SchedulingPriority::kLast) + 1);
+    *p = static_cast<gpu::SchedulingPriority>(priority);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<gpu::SwapBuffersCompleteParams> {
+  static bool Fuzz(gpu::SwapBuffersCompleteParams* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->swap_response, fuzzer))
+      return false;
     return true;
   }
 };
@@ -1038,20 +1239,6 @@ struct FuzzTraits<GURL> {
   }
 };
 
-template <>
-struct FuzzTraits<HostID> {
-  static bool Fuzz(HostID* p, Fuzzer* fuzzer) {
-    HostID::HostType type = p->type();
-    std::string id = p->id();
-    if (!FuzzParam(&type, fuzzer))
-      return false;
-    if (!FuzzParam(&id, fuzzer))
-      return false;
-    *p = HostID(type, id);
-    return true;
-  }
-};
-
 #if defined(OS_WIN)
 template <>
 struct FuzzTraits<HWND> {
@@ -1081,9 +1268,6 @@ struct FuzzTraits<std::unique_ptr<IPC::Message>> {
   }
 };
 
-#if !defined(OS_WIN)
-// PlatformfileForTransit is just SharedMemoryHandle on Windows, which already
-// has a trait, see ipc/ipc_platform_file.h
 template <>
 struct FuzzTraits<IPC::PlatformFileForTransit> {
   static bool Fuzz(IPC::PlatformFileForTransit* p, Fuzzer* fuzzer) {
@@ -1092,7 +1276,6 @@ struct FuzzTraits<IPC::PlatformFileForTransit> {
     return true;
   }
 };
-#endif
 
 template <>
 struct FuzzTraits<IPC::ChannelHandle> {
@@ -1151,15 +1334,33 @@ struct FuzzTraits<media::AudioParameters> {
 };
 
 template <>
-struct FuzzTraits<media::cast::RtpTimeTicks> {
-  static bool Fuzz(media::cast::RtpTimeTicks* p, Fuzzer* fuzzer) {
-    base::TimeDelta delta;
-    int base;
-    if (!FuzzParam(&delta, fuzzer))
+struct FuzzTraits<media::OverlayInfo> {
+  static bool Fuzz(media::OverlayInfo* p, Fuzzer* fuzzer) {
+    if (!FuzzParam(&p->is_fullscreen, fuzzer))
       return false;
-    if (!FuzzParam(&base, fuzzer))
+    if (!FuzzParam(&p->is_persistent_video, fuzzer))
       return false;
-    *p = media::cast::RtpTimeTicks::FromTimeDelta(delta, base);
+    if (!FuzzParam(&p->routing_token, fuzzer))
+      return false;
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<media::VideoPixelFormat> {
+  static bool Fuzz(media::VideoPixelFormat* p, Fuzzer* fuzzer) {
+    int format = RandInRange(media::VideoPixelFormat::PIXEL_FORMAT_MAX + 1);
+    *p = static_cast<media::VideoPixelFormat>(format);
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<net::EffectiveConnectionType> {
+  static bool Fuzz(net::EffectiveConnectionType* p, Fuzzer* fuzzer) {
+    int type = RandInRange(
+        net::EffectiveConnectionType::EFFECTIVE_CONNECTION_TYPE_LAST + 1);
+    *p = static_cast<net::EffectiveConnectionType>(type);
     return true;
   }
 };
@@ -1223,15 +1424,6 @@ struct FuzzTraits<net::IPEndPoint> {
       return false;
     net::IPEndPoint ip_endpoint(ip_address, port);
     *p = ip_endpoint;
-    return true;
-  }
-};
-
-template <>
-struct FuzzTraits<network_hints::LookupRequest> {
-  static bool Fuzz(network_hints::LookupRequest* p, Fuzzer* fuzzer) {
-    if (!FuzzParam(&p->hostname_list, fuzzer))
-      return false;
     return true;
   }
 };
@@ -1341,15 +1533,6 @@ struct FuzzTraits<ppapi::proxy::SerializedFontDescription> {
 };
 
 template <>
-struct FuzzTraits<ppapi::proxy::SerializedTrueTypeFontDesc> {
-  static bool Fuzz(ppapi::proxy::SerializedTrueTypeFontDesc* p,
-                       Fuzzer* fuzzer) {
-    // TODO(mbarbella): This should actually do something.
-    return true;
-  }
-};
-
-template <>
 struct FuzzTraits<ppapi::proxy::SerializedVar> {
   static bool Fuzz(ppapi::proxy::SerializedVar* p, Fuzzer* fuzzer) {
     // TODO(mbarbella): This should actually do something.
@@ -1417,69 +1600,20 @@ struct FuzzTraits<ppapi::SocketOptionData> {
 };
 
 template <>
-struct FuzzTraits<SkBitmap> {
-  static bool Fuzz(SkBitmap* p, Fuzzer* fuzzer) {
-    // TODO(mbarbella): This should actually do something.
+struct FuzzTraits<printing::mojom::MarginType> {
+  static bool Fuzz(printing::mojom::MarginType* p, Fuzzer* fuzzer) {
+    int type = RandInRange(
+        static_cast<int>(printing::mojom::MarginType::kMaxValue) + 1);
+    *p = static_cast<printing::mojom::MarginType>(type);
     return true;
   }
 };
 
 template <>
-struct FuzzTraits<network::DataElement> {
-  static bool Fuzz(network::DataElement* p, Fuzzer* fuzzer) {
-    // TODO(mbarbella): Support mutation.
-    if (!fuzzer->ShouldGenerate())
-      return true;
-
-    switch (RandInRange(3)) {
-      case 0: {
-        // network::DataElement::Type::TYPE_BYTES
-        if (RandEvent(2)) {
-          p->SetToEmptyBytes();
-        } else {
-          char data[256];
-          int data_len = RandInRange(sizeof(data));
-          fuzzer->FuzzBytes(&data[0], data_len);
-          p->SetToBytes(&data[0], data_len);
-        }
-        return true;
-      }
-      case 1: {
-        // network::DataElement::Type::TYPE_FILE
-        base::FilePath path;
-        uint64_t offset;
-        uint64_t length;
-        base::Time modification_time;
-        if (!FuzzParam(&path, fuzzer))
-          return false;
-        if (!FuzzParam(&offset, fuzzer))
-          return false;
-        if (!FuzzParam(&length, fuzzer))
-          return false;
-        if (!FuzzParam(&modification_time, fuzzer))
-          return false;
-        p->SetToFilePathRange(path, offset, length, modification_time);
-        return true;
-      }
-      case 2: {
-        // network::DataElement::Type::TYPE_BLOB
-        std::string uuid;
-        uint64_t offset;
-        uint64_t length;
-        if (!FuzzParam(&uuid, fuzzer))
-          return false;
-        if (!FuzzParam(&offset, fuzzer))
-          return false;
-        if (!FuzzParam(&length, fuzzer))
-          return false;
-        p->SetToBlobRange(uuid, offset, length);
-        return true;
-      }
-      default: {
-        NOTREACHED();
-        return false;
-      }
-    }
+struct FuzzTraits<SkBitmap> {
+  static bool Fuzz(SkBitmap* p, Fuzzer* fuzzer) {
+    // TODO(mbarbella): This should actually do something.
+    return true;
   }
 };
 
@@ -1517,12 +1651,12 @@ struct FuzzTraits<url::Origin> {
     if (!FuzzParam(&port, fuzzer))
       return false;
 
-    base::Optional<url::Origin> origin;
+    absl::optional<url::Origin> origin;
     if (!opaque) {
       origin = url::Origin::UnsafelyCreateTupleOriginWithoutNormalization(
           scheme, host, port);
     } else {
-      base::Optional<base::UnguessableToken> token =
+      absl::optional<base::UnguessableToken> token =
           p->GetNonceForSerialization();
       if (!token)
         token = base::UnguessableToken::Deserialize(RandU64(), RandU64());
@@ -1546,29 +1680,6 @@ struct FuzzTraits<url::Origin> {
     }
 
     *p = std::move(origin).value();
-    return true;
-  }
-};
-
-template <>
-struct FuzzTraits<URLPattern> {
-  static bool Fuzz(URLPattern* p, Fuzzer* fuzzer) {
-    int valid_schemes = p->valid_schemes();
-    std::string host = p->host();
-    std::string port = p->port();
-    std::string path = p->path();
-    if (!FuzzParam(&valid_schemes, fuzzer))
-      return false;
-    if (!FuzzParam(&host, fuzzer))
-      return false;
-    if (!FuzzParam(&port, fuzzer))
-      return false;
-    if (!FuzzParam(&path, fuzzer))
-      return false;
-    *p = URLPattern(valid_schemes);
-    p->SetHost(host);
-    p->SetPort(port);
-    p->SetPath(path);
     return true;
   }
 };

@@ -10,15 +10,18 @@
 #include "base/bind.h"
 #include "base/no_destructor.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "services/service_manager/public/cpp/connector.h"
 #include "services/service_manager/public/cpp/constants.h"
 #include "services/service_manager/public/cpp/manifest.h"
 #include "services/service_manager/public/cpp/manifest_builder.h"
 #include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/cpp/service_binding.h"
+#include "services/service_manager/public/cpp/service_receiver.h"
 #include "services/service_manager/tests/background.test-mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -38,6 +41,11 @@ const std::vector<Manifest>& GetTestManifests() {
            .Build(),
        service_manager::ManifestBuilder()
            .WithServiceName(kAppName)
+           .WithOptions(ManifestOptionsBuilder()
+                            .WithExecutionMode(
+                                Manifest::ExecutionMode::kStandaloneExecutable)
+                            .WithSandboxType("none")
+                            .Build())
            .ExposeCapability(kTestServiceCapability,
                              Manifest::InterfaceList<mojom::TestService>())
            .Build()}};
@@ -47,14 +55,14 @@ const std::vector<Manifest>& GetTestManifests() {
 // The parent unit test suite service, not the underlying test service.
 class ServiceImpl : public Service {
  public:
-  explicit ServiceImpl(mojom::ServiceRequest request)
-      : binding_(this, std::move(request)) {}
+  explicit ServiceImpl(mojo::PendingReceiver<mojom::Service> receiver)
+      : receiver_(this, std::move(receiver)) {}
   ~ServiceImpl() override = default;
 
-  Connector* connector() { return binding_.GetConnector(); }
+  Connector* connector() { return receiver_.GetConnector(); }
 
  private:
-  ServiceBinding binding_;
+  ServiceReceiver receiver_;
 
   DISALLOW_COPY_AND_ASSIGN(ServiceImpl);
 };
@@ -75,18 +83,18 @@ void SetFlagAndRunClosure(bool* flag, base::OnceClosure closure) {
 #define MAYBE_Basic Basic
 #endif
 TEST(BackgroundServiceManagerTest, MAYBE_Basic) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
   BackgroundServiceManager background_service_manager(GetTestManifests());
-  mojom::ServicePtr service;
-  ServiceImpl service_impl(mojo::MakeRequest(&service));
+  mojo::PendingRemote<mojom::Service> service_remote;
+  ServiceImpl service_impl(service_remote.InitWithNewPipeAndPassReceiver());
   background_service_manager.RegisterService(
       Identity(kTestName, kSystemInstanceGroup, base::Token{},
                base::Token::CreateRandom()),
-      std::move(service), nullptr);
+      std::move(service_remote), mojo::NullReceiver() /* metadata_receiver */);
 
-  mojom::TestServicePtr test_service;
-  service_impl.connector()->BindInterface(ServiceFilter::ByName(kAppName),
-                                          &test_service);
+  mojo::Remote<mojom::TestService> test_service;
+  service_impl.connector()->Connect(ServiceFilter::ByName(kAppName),
+                                    test_service.BindNewPipeAndPassReceiver());
   base::RunLoop run_loop;
   bool got_result = false;
   test_service->Test(base::BindOnce(&SetFlagAndRunClosure, &got_result,

@@ -18,19 +18,19 @@ class StubFormSaver : public FormSaver {
   ~StubFormSaver() override = default;
 
   // FormSaver:
-  void PermanentlyBlacklist(autofill::PasswordForm* observed) override {}
-  void Save(const autofill::PasswordForm& pending,
-            const std::vector<const autofill::PasswordForm*>& matches,
-            const base::string16& old_password) override {}
-  void Update(const autofill::PasswordForm& pending,
-              const std::map<base::string16, const autofill::PasswordForm*>&
-                  best_matches,
-              const std::vector<autofill::PasswordForm>* credentials_to_update,
-              const autofill::PasswordForm* old_primary_key) override {}
-  void PresaveGeneratedPassword(
-      const autofill::PasswordForm& generated) override {}
-  void RemovePresavedPassword() override {}
-  void Remove(const autofill::PasswordForm& form) override {}
+  PasswordForm Blocklist(PasswordFormDigest digest) override;
+  void Unblocklist(const PasswordFormDigest& digest) override;
+  void Save(PasswordForm pending,
+            const std::vector<const PasswordForm*>& matches,
+            const std::u16string& old_password) override {}
+  void Update(PasswordForm pending,
+              const std::vector<const PasswordForm*>& matches,
+              const std::u16string& old_password) override {}
+  void UpdateReplace(PasswordForm pending,
+                     const std::vector<const PasswordForm*>& matches,
+                     const std::u16string& old_password,
+                     const PasswordForm& old_unique_key) override {}
+  void Remove(const PasswordForm& form) override {}
   std::unique_ptr<FormSaver> Clone() override;
 
  private:

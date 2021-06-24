@@ -8,10 +8,10 @@
 
 #include <algorithm>
 
+#include "base/check.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -188,7 +188,7 @@ void PluginList::GetPluginPathsToLoad(
   }
 
   for (const base::FilePath& path : extra_plugin_paths) {
-    if (base::ContainsValue(*plugin_paths, path))
+    if (base::Contains(*plugin_paths, path))
       continue;
     plugin_paths->push_back(path);
   }

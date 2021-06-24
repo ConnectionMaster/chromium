@@ -9,16 +9,15 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/no_destructor.h"
 #include "content/browser/permissions/permission_controller_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/device_service.h"
 #include "content/public/browser/permission_type.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/service_manager_connection.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
-#include "services/device/public/mojom/constants.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
-#include "third_party/blink/public/mojom/feature_policy/feature_policy.mojom.h"
+#include "third_party/blink/public/mojom/permissions_policy/permissions_policy.mojom.h"
 
 using device::mojom::SensorType;
 
@@ -26,12 +25,21 @@ using device::mojom::SensorCreationResult;
 
 namespace content {
 
+namespace {
+
+SensorProviderProxyImpl::SensorProviderBinder& GetBinderOverride() {
+  static base::NoDestructor<SensorProviderProxyImpl::SensorProviderBinder>
+      binder;
+  return *binder;
+}
+
+}  // namespace
+
 SensorProviderProxyImpl::SensorProviderProxyImpl(
     PermissionControllerImpl* permission_controller,
     RenderFrameHost* render_frame_host)
     : permission_controller_(permission_controller),
-      render_frame_host_(render_frame_host),
-      weak_factory_(this) {
+      render_frame_host_(render_frame_host) {
   DCHECK(permission_controller);
   DCHECK(render_frame_host);
 }
@@ -39,8 +47,14 @@ SensorProviderProxyImpl::SensorProviderProxyImpl(
 SensorProviderProxyImpl::~SensorProviderProxyImpl() = default;
 
 void SensorProviderProxyImpl::Bind(
-    device::mojom::SensorProviderRequest request) {
-  binding_set_.AddBinding(this, std::move(request));
+    mojo::PendingReceiver<device::mojom::SensorProvider> receiver) {
+  receiver_set_.Add(this, std::move(receiver));
+}
+
+// static
+void SensorProviderProxyImpl::OverrideSensorProviderBinderForTesting(
+    SensorProviderBinder binder) {
+  GetBinderOverride() = std::move(binder);
 }
 
 void SensorProviderProxyImpl::GetSensor(SensorType type,
@@ -51,29 +65,22 @@ void SensorProviderProxyImpl::GetSensor(SensorType type,
   }
 
   if (!sensor_provider_) {
-    auto* connection = ServiceManagerConnection::GetForProcess();
-
-    if (!connection) {
-      std::move(callback).Run(SensorCreationResult::ERROR_NOT_AVAILABLE,
-                              nullptr);
-      return;
-    }
-
-    connection->GetConnector()->BindInterface(
-        device::mojom::kServiceName, mojo::MakeRequest(&sensor_provider_));
-    sensor_provider_.set_connection_error_handler(base::BindOnce(
+    auto receiver = sensor_provider_.BindNewPipeAndPassReceiver();
+    sensor_provider_.set_disconnect_handler(base::BindOnce(
         &SensorProviderProxyImpl::OnConnectionError, base::Unretained(this)));
+
+    const auto& binder = GetBinderOverride();
+    if (binder)
+      binder.Run(std::move(receiver));
+    else
+      GetDeviceService().BindSensorProvider(std::move(receiver));
   }
 
-  // TODO(shalamov): base::BindOnce should be used (https://crbug.com/714018),
-  // however, PermissionController::RequestPermission enforces use of repeating
-  // callback.
   permission_controller_->RequestPermission(
       PermissionType::SENSORS, render_frame_host_,
       render_frame_host_->GetLastCommittedURL().GetOrigin(), false,
-      base::BindRepeating(
-          &SensorProviderProxyImpl::OnPermissionRequestCompleted,
-          weak_factory_.GetWeakPtr(), type, base::Passed(std::move(callback))));
+      base::BindOnce(&SensorProviderProxyImpl::OnPermissionRequestCompleted,
+                     weak_factory_.GetWeakPtr(), type, std::move(callback)));
 }
 
 void SensorProviderProxyImpl::OnPermissionRequestCompleted(
@@ -84,32 +91,50 @@ void SensorProviderProxyImpl::OnPermissionRequestCompleted(
     std::move(callback).Run(SensorCreationResult::ERROR_NOT_ALLOWED, nullptr);
     return;
   }
+
+  // Unblock the orientation sensors as these are tested to play well with
+  // back-forward cache. This is conservative.
+  // TODO(crbug.com/1027985): Test and unblock all of the sensors to work with
+  // back-forward cache.
+  switch (type) {
+    case SensorType::ABSOLUTE_ORIENTATION_EULER_ANGLES:
+    case SensorType::ABSOLUTE_ORIENTATION_QUATERNION:
+    case SensorType::RELATIVE_ORIENTATION_EULER_ANGLES:
+    case SensorType::RELATIVE_ORIENTATION_QUATERNION:
+      break;
+    default:
+      static_cast<RenderFrameHostImpl*>(render_frame_host_)
+          ->OnSchedulerTrackedFeatureUsed(
+              blink::scheduler::WebSchedulerTrackedFeature::
+                  kRequestedBackForwardCacheBlockedSensors);
+  }
   sensor_provider_->GetSensor(type, std::move(callback));
 }
 
 namespace {
 
-std::vector<blink::mojom::FeaturePolicyFeature>
-SensorTypeToFeaturePolicyFeatures(SensorType type) {
+std::vector<blink::mojom::PermissionsPolicyFeature>
+SensorTypeToPermissionsPolicyFeatures(SensorType type) {
   switch (type) {
     case SensorType::AMBIENT_LIGHT:
-      return {blink::mojom::FeaturePolicyFeature::kAmbientLightSensor};
+      return {blink::mojom::PermissionsPolicyFeature::kAmbientLightSensor};
     case SensorType::ACCELEROMETER:
     case SensorType::LINEAR_ACCELERATION:
-      return {blink::mojom::FeaturePolicyFeature::kAccelerometer};
+    case SensorType::GRAVITY:
+      return {blink::mojom::PermissionsPolicyFeature::kAccelerometer};
     case SensorType::GYROSCOPE:
-      return {blink::mojom::FeaturePolicyFeature::kGyroscope};
+      return {blink::mojom::PermissionsPolicyFeature::kGyroscope};
     case SensorType::MAGNETOMETER:
-      return {blink::mojom::FeaturePolicyFeature::kMagnetometer};
+      return {blink::mojom::PermissionsPolicyFeature::kMagnetometer};
     case SensorType::ABSOLUTE_ORIENTATION_EULER_ANGLES:
     case SensorType::ABSOLUTE_ORIENTATION_QUATERNION:
-      return {blink::mojom::FeaturePolicyFeature::kAccelerometer,
-              blink::mojom::FeaturePolicyFeature::kGyroscope,
-              blink::mojom::FeaturePolicyFeature::kMagnetometer};
+      return {blink::mojom::PermissionsPolicyFeature::kAccelerometer,
+              blink::mojom::PermissionsPolicyFeature::kGyroscope,
+              blink::mojom::PermissionsPolicyFeature::kMagnetometer};
     case SensorType::RELATIVE_ORIENTATION_EULER_ANGLES:
     case SensorType::RELATIVE_ORIENTATION_QUATERNION:
-      return {blink::mojom::FeaturePolicyFeature::kAccelerometer,
-              blink::mojom::FeaturePolicyFeature::kGyroscope};
+      return {blink::mojom::PermissionsPolicyFeature::kAccelerometer,
+              blink::mojom::PermissionsPolicyFeature::kGyroscope};
     default:
       NOTREACHED() << "Unknown sensor type " << type;
       return {};
@@ -119,18 +144,18 @@ SensorTypeToFeaturePolicyFeatures(SensorType type) {
 }  // namespace
 
 bool SensorProviderProxyImpl::CheckFeaturePolicies(SensorType type) const {
-  const std::vector<blink::mojom::FeaturePolicyFeature>& features =
-      SensorTypeToFeaturePolicyFeatures(type);
+  const std::vector<blink::mojom::PermissionsPolicyFeature>& features =
+      SensorTypeToPermissionsPolicyFeatures(type);
   return std::all_of(features.begin(), features.end(),
-                     [this](blink::mojom::FeaturePolicyFeature feature) {
+                     [this](blink::mojom::PermissionsPolicyFeature feature) {
                        return render_frame_host_->IsFeatureEnabled(feature);
                      });
 }
 
 void SensorProviderProxyImpl::OnConnectionError() {
-  // Close all the upstream bindings to notify them of this failure as the
+  // Close all the bindings to notify them of this failure as the
   // GetSensorCallbacks will never be called.
-  binding_set_.CloseAllBindings();
+  receiver_set_.Clear();
   sensor_provider_.reset();
 }
 

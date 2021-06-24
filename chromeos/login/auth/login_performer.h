@@ -17,20 +17,18 @@
 #include "chromeos/login/auth/authenticator.h"
 #include "chromeos/login/auth/extended_authenticator.h"
 #include "chromeos/login/auth/user_context.h"
+#include "components/user_manager/user_type.h"
 #include "google_apis/gaia/google_service_auth_error.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class AccountId;
 
 namespace base {
-class TaskRunner;
+class SequencedTaskRunner;
 }
 
 namespace network {
 class SharedURLLoaderFactory;
-}
-
-namespace content {
-class BrowserContext;
 }
 
 namespace chromeos {
@@ -46,34 +44,31 @@ namespace chromeos {
 class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
     : public AuthStatusConsumer {
  public:
-  typedef enum AuthorizationMode {
+  enum class AuthorizationMode {
     // Authorization performed internally by Chrome.
-    AUTH_MODE_INTERNAL,
-    // Authorization performed by an extension.
-    AUTH_MODE_EXTENSION
-  } AuthorizationMode;
+    kInternal,
+    // Authorization performed by an external service (e.g., Gaia, or Active
+    // Directory).
+    kExternal
+  };
 
   // Delegate class to get notifications from the LoginPerformer.
   class Delegate : public AuthStatusConsumer {
    public:
     ~Delegate() override {}
-    virtual void WhiteListCheckFailed(const std::string& email) = 0;
+    virtual void AllowlistCheckFailed(const std::string& email) = 0;
     virtual void PolicyLoadFailed() = 0;
-    virtual void SetAuthFlowOffline(bool offline) = 0;
   };
 
-  LoginPerformer(scoped_refptr<base::TaskRunner> task_runner,
+  LoginPerformer(scoped_refptr<base::SequencedTaskRunner> task_runner,
                  Delegate* delegate);
   ~LoginPerformer() override;
 
   // Performs a login for |user_context|.
-  // If auth_mode is AUTH_MODE_EXTENSION, there are no further auth checks,
-  // AUTH_MODE_INTERNAL will perform auth checks.
+  // If auth_mode is |kExternal|, there are no further auth checks, |kInternal|
+  // will perform auth checks.
   void PerformLogin(const UserContext& user_context,
                     AuthorizationMode auth_mode);
-
-  // Performs supervised user login with a given |user_context|.
-  void LoginAsSupervisedUser(const UserContext& user_context);
 
   // Performs actions to prepare guest mode login.
   void LoginOffTheRecord();
@@ -88,11 +83,14 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
   // Performs a login into the ARC kiosk mode account with |arc_app_account_id|.
   void LoginAsArcKioskAccount(const AccountId& arc_app_account_id);
 
+  // Performs a login into the Web kiosk mode account with |web_app_account_id|.
+  void LoginAsWebKioskAccount(const AccountId& web_app_account_id);
+
   // AuthStatusConsumer implementation:
   void OnAuthFailure(const AuthFailure& error) override;
   void OnAuthSuccess(const UserContext& user_context) override;
   void OnOffTheRecordAuthSuccess() override;
-  void OnPasswordChangeDetected() override;
+  void OnPasswordChangeDetected(const UserContext& user_context) override;
   void OnOldEncryptionDetected(const UserContext& user_context,
                                bool has_incomplete_migration) override;
 
@@ -125,9 +123,13 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
 
   // Check if user is allowed to sign in on device. |wildcard_match| will
   // contain additional information whether this user is explicitly listed or
-  // not (may be relevant for extension-based sign-in).
-  virtual bool IsUserWhitelisted(const AccountId& account_id,
-                                 bool* wildcard_match) = 0;
+  // not (may be relevant for external-based sign-in). |user_type| will be used
+  // to check if the user is allowed because of the user type, pass
+  // absl::nullopt if user type is not known.
+  virtual bool IsUserAllowlisted(
+      const AccountId& account_id,
+      bool* wildcard_match,
+      const absl::optional<user_manager::UserType>& user_type) = 0;
 
  protected:
   // Platform-dependant methods to be implemented by concrete class.
@@ -135,32 +137,16 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
   // Run trusted check for a platform. If trusted check have to be performed
   // asynchronously, |false| will be returned, and either delegate's
   // PolicyLoadFailed() or |callback| will be called upon actual check.
-  virtual bool RunTrustedCheck(const base::Closure& callback) = 0;
+  virtual bool RunTrustedCheck(base::OnceClosure callback) = 0;
 
   // This method should run addional online check if user can sign in on device.
   // Either |success_callback| or |failure_callback| should be called upon this
   // check.
-  virtual void RunOnlineWhitelistCheck(
-      const AccountId& account_id,
-      bool wildcard_match,
-      const std::string& refresh_token,
-      const base::Closure& success_callback,
-      const base::Closure& failure_callback) = 0;
-
-  // Supervised users-related methods.
-
-  // Check if supervised users are allowed on this device.
-  virtual bool AreSupervisedUsersAllowed() = 0;
-
-  // Check which authenticator should be used for supervised user.
-  virtual bool UseExtendedAuthenticatorForSupervisedUser(
-      const UserContext& user_context) = 0;
-
-  // Probably transform supervised user's authentication key.
-  virtual UserContext TransformSupervisedKey(const UserContext& context) = 0;
-
-  // Set up sign-in flow for supervised user.
-  virtual void SetupSupervisedUserFlow(const AccountId& account_id) = 0;
+  virtual void RunOnlineAllowlistCheck(const AccountId& account_id,
+                                       bool wildcard_match,
+                                       const std::string& refresh_token,
+                                       base::OnceClosure success_callback,
+                                       base::OnceClosure failure_callback) = 0;
 
   // Set up sign-in flow for Easy Unlock.
   virtual void SetupEasyUnlockUserFlow(const AccountId& account_id) = 0;
@@ -168,9 +154,6 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
   // Run policy check for |account_id|. If something is wrong, delegate's
   // PolicyLoadFailed is called.
   virtual bool CheckPolicyForUser(const AccountId& account_id) = 0;
-
-  // Look up browser context to use during signin.
-  virtual content::BrowserContext* GetSigninContext() = 0;
 
   // Gets the SharedURLLoaderFactory used for sign in.
   virtual scoped_refptr<network::SharedURLLoaderFactory>
@@ -190,22 +173,18 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
 
   // Starts authentication.
   void StartAuthentication();
-  void NotifyWhitelistCheckFailure();
+  void NotifyAllowlistCheckFailure();
 
   // Makes sure that authenticator is created.
   void EnsureAuthenticator();
   void EnsureExtendedAuthenticator();
-
-  // Actual implementation of LoginAsSupervisedUser that is run after trusted
-  // values check.
-  void TrustedLoginAsSupervisedUser(const UserContext& user_context);
 
   // Actual implementantion of PeformLogin that is run after trusted values
   // check.
   void DoPerformLogin(const UserContext& user_context,
                       AuthorizationMode auth_mode);
 
-  scoped_refptr<base::TaskRunner> task_runner_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
   // Used for logging in.
   scoped_refptr<Authenticator> authenticator_;
@@ -222,16 +201,22 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
 
   // True if password change has been detected.
   // Once correct password is entered homedir migration is executed.
-  bool password_changed_;
-  int password_changed_callback_count_;
+  bool password_changed_ = false;
+  int password_changed_callback_count_ = 0;
 
   // Authorization mode type.
-  AuthorizationMode auth_mode_;
+  AuthorizationMode auth_mode_ = AuthorizationMode::kInternal;
 
-  base::WeakPtrFactory<LoginPerformer> weak_factory_;
+  base::WeakPtrFactory<LoginPerformer> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(LoginPerformer);
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when the //chrome/browser/chromeos
+// source code migration is finished.
+namespace ash {
+using ::chromeos::LoginPerformer;
+}
 
 #endif  // CHROMEOS_LOGIN_AUTH_LOGIN_PERFORMER_H_

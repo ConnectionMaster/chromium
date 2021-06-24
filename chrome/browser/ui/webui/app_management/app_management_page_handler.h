@@ -6,23 +6,27 @@
 #define CHROME_BROWSER_UI_WEBUI_APP_MANAGEMENT_APP_MANAGEMENT_PAGE_HANDLER_H_
 
 #include "base/macros.h"
-#include "chrome/browser/ui/webui/app_management/app_management.mojom.h"
+#include "base/scoped_observation.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/ui/webui/app_management/app_management.mojom-forward.h"
 #include "chrome/browser/ui/webui/app_management/app_management_shelf_delegate_chromeos.h"
-#include "chrome/services/app_service/public/cpp/app_registry_cache.h"
-#include "mojo/public/cpp/bindings/binding.h"
-
-namespace content {
-class WebUI;
-}
+#include "components/services/app_service/public/cpp/app_registry_cache.h"
+#include "components/services/app_service/public/cpp/preferred_apps_list.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 class Profile;
 
 class AppManagementPageHandler : public app_management::mojom::PageHandler,
-                                 public apps::AppRegistryCache::Observer {
+                                 public apps::AppRegistryCache::Observer,
+                                 public apps::PreferredAppsList::Observer {
  public:
-  AppManagementPageHandler(app_management::mojom::PageHandlerRequest request,
-                           app_management::mojom::PagePtr page,
-                           content::WebUI* web_ui);
+  AppManagementPageHandler(
+      mojo::PendingReceiver<app_management::mojom::PageHandler> receiver,
+      mojo::PendingRemote<app_management::mojom::Page> page,
+      Profile* profile);
   ~AppManagementPageHandler() override;
 
   void OnPinnedChanged(const std::string& app_id, bool pinned);
@@ -36,24 +40,37 @@ class AppManagementPageHandler : public app_management::mojom::PageHandler,
                  apps::mojom::OptionalBool pinned) override;
   void SetPermission(const std::string& app_id,
                      apps::mojom::PermissionPtr permission) override;
+  void SetResizeLocked(const std::string& app_id, bool locked) override;
   void Uninstall(const std::string& app_id) override;
   void OpenNativeSettings(const std::string& app_id) override;
+  void SetPreferredApp(const std::string& app_id,
+                       bool is_preferred_app) override;
 
  private:
   app_management::mojom::AppPtr CreateUIAppPtr(const apps::AppUpdate& update);
 
   // apps::AppRegistryCache::Observer overrides:
   void OnAppUpdate(const apps::AppUpdate& update) override;
+  void OnAppRegistryCacheWillBeDestroyed(
+      apps::AppRegistryCache* cache) override;
 
-  mojo::Binding<app_management::mojom::PageHandler> binding_;
+  // apps::PreferredAppsList::Observer overrides:
+  void OnPreferredAppChanged(const std::string& app_id,
+                             bool is_preferred_app) override;
+  void OnPreferredAppsListWillBeDestroyed(
+      apps::PreferredAppsList* list) override;
 
-  app_management::mojom::PagePtr page_;
+  mojo::Receiver<app_management::mojom::PageHandler> receiver_;
+
+  mojo::Remote<app_management::mojom::Page> page_;
 
   Profile* profile_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   AppManagementShelfDelegate shelf_delegate_;
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  apps::PreferredAppsList& preferred_apps_list_;
 
   DISALLOW_COPY_AND_ASSIGN(AppManagementPageHandler);
 };

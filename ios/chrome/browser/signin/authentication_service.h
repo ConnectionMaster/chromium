@@ -10,12 +10,13 @@
 
 #import "base/ios/block_types.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/signin/core/browser/signin_metrics.h"
+#include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#import "ios/chrome/browser/signin/user_approved_account_list_manager.h"
 #include "ios/public/provider/chrome/browser/signin/chrome_identity_service.h"
-#include "services/identity/public/cpp/identity_manager.h"
 
 namespace syncer {
 class SyncService;
@@ -30,12 +31,12 @@ class SyncSetupService;
 // AuthenticationService is the Chrome interface to the iOS shared
 // authentication library.
 class AuthenticationService : public KeyedService,
-                              public identity::IdentityManager::Observer,
+                              public signin::IdentityManager::Observer,
                               public ios::ChromeIdentityService::Observer {
  public:
   AuthenticationService(PrefService* pref_service,
                         SyncSetupService* sync_setup_service,
-                        identity::IdentityManager* identity_manager,
+                        signin::IdentityManager* identity_manager,
                         syncer::SyncService* sync_service);
   ~AuthenticationService() override;
 
@@ -53,54 +54,67 @@ class AuthenticationService : public KeyedService,
   // KeyedService
   void Shutdown() override;
 
-  // Reminds user to Sign in to Chrome when a new tab is opened if
-  // |should_prompt| is true, otherwise stop prompting.
-  void SetPromptForSignIn(bool should_prompt);
+  // Reminds user to Sign in to Chrome when a new tab is opened.
+  void SetPromptForSignIn();
+
+  // Clears the reminder to Sign in to Chrome when a new tab is opened.
+  void ResetPromptForSignIn();
 
   // Returns whether user should be prompted to Sign in to Chrome.
-  bool ShouldPromptForSignIn();
+  bool ShouldPromptForSignIn() const;
 
-  // Returns whether the token service accounts have changed since the last time
-  // they were stored in the browser state prefs. This storing happens every
-  // time the accounts change in foreground.
-  // This reloads the cached accounts if the information might be stale.
-  virtual bool HaveAccountsChanged();
+  // Returns whether the current account list has been approved by the user.
+  // This method should only be called when there is a primary account.
+  //
+  // TODO(crbug.com/1084491): To make sure IsAccountListApprovedByUser()
+  // a non-stale value, an notification need to be implemented when the SSO
+  // keychain is reloaded. The user can add/remove an account while Chrome
+  // is in foreground (with split screen on iPad).
+  bool IsAccountListApprovedByUser() const;
+
+  // Saves the current account list in Chrome as being approved by the user.
+  // This method should only be called when there is a primary account.
+  void ApproveAccountList();
 
   // ChromeIdentity management
 
   // Returns true if the user is signed in.
   // While the AuthenticationService is in background, this will reload the
   // credentials to ensure the value is up to date.
-  virtual bool IsAuthenticated();
+  virtual bool IsAuthenticated() const;
 
   // Returns true if the user is signed in and the identity is considered
   // managed.
-  virtual bool IsAuthenticatedIdentityManaged();
-
-  // Returns the email of the authenticated user, or |nil| if the user is not
-  // authenticated.
-  virtual NSString* GetAuthenticatedUserEmail();
+  virtual bool IsAuthenticatedIdentityManaged() const;
 
   // Retrieves the identity of the currently authenticated user or |nil| if
   // either the user is not authenticated, or is authenticated through
   // ClientLogin.
   // Virtual for testing.
-  virtual ChromeIdentity* GetAuthenticatedIdentity();
+  virtual ChromeIdentity* GetAuthenticatedIdentity() const;
 
-  // Signs |identity| in to Chrome with |hosted_domain| as its hosted domain,
-  // pauses sync and logs |identity| in to http://google.com. If |identity| has
-  // no hosted domain, |hosted_domain| should be empty.
+  // Grants signin::ConsentLevel::kSignin to |identity|.
+  // This method does not set up Sync-the-feature for the identity.
   // Virtual for testing.
-  virtual void SignIn(ChromeIdentity* identity,
-                      const std::string& hosted_domain);
+  virtual void SignIn(ChromeIdentity* identity);
 
-  // Signs the authenticated user out of Chrome.
+  // Grants signin::ConsentLevel::kSync to |identity|.
+  // This starts setting up Sync-the-feature, but the setup will only complete
+  // once SyncUserSettings::SetFirstSetupComplete() is called.
+  // Virtual for testing.
+  virtual void GrantSyncConsent(ChromeIdentity* identity);
+
+  // Signs the authenticated user out of Chrome and clears the browsing
+  // data if the account is managed. If force_clear_browsing_data is true,
+  // clears the browsing data unconditionally.
+  // Sync consent is automatically removed from all signed-out accounts.
   // Virtual for testing.
   virtual void SignOut(signin_metrics::ProfileSignout signout_source,
+                       bool force_clear_browsing_data,
                        ProceduralBlock completion);
 
   // Returns whether there is a cached associated MDM error for |identity|.
-  bool HasCachedMDMErrorForIdentity(ChromeIdentity* identity);
+  bool HasCachedMDMErrorForIdentity(ChromeIdentity* identity) const;
 
   // Shows the MDM Error dialog for |identity| if it has an associated MDM
   // error. Returns true if |identity| had an associated error, false otherwise.
@@ -114,42 +128,26 @@ class AuthenticationService : public KeyedService,
   // Returns a weak pointer of this.
   base::WeakPtr<AuthenticationService> GetWeakPtr();
 
+  // This needs to be invoked when the application enters foreground to
+  // sync the accounts between the IdentityManager and the SSO library.
+  void OnApplicationWillEnterForeground();
+
  private:
   friend class AuthenticationServiceTest;
   friend class AuthenticationServiceFake;
-
-  // Method called each time the application enters foreground.
-  void OnApplicationEnterForeground();
-
-  // Method called each time the application enters background.
-  void OnApplicationEnterBackground();
 
   // Migrates the token service accounts stored in prefs from emails to account
   // ids.
   void MigrateAccountsStoredInPrefsIfNeeded();
 
-  // Stores the token service accounts in the browser state prefs.
-  void StoreAccountsInPrefs();
-
-  // Gets the accounts previously stored in the  browser state prefs.
-  std::vector<std::string> GetAccountsInPrefs();
-
-  // Returns the cached MDM infos associated with |identity|. If the cache is
-  // stale for |identity|, the entry might be removed.
-  NSDictionary* GetCachedMDMInfo(ChromeIdentity* identity);
+  // Returns the cached MDM infos associated with |identity|. If the cache
+  // is stale for |identity|, the entry might be removed.
+  NSDictionary* GetCachedMDMInfo(ChromeIdentity* identity) const;
 
   // Handles an MDM notification |user_info| associated with |identity|.
   // Returns whether the notification associated with |user_info| was fully
   // handled.
   bool HandleMDMNotification(ChromeIdentity* identity, NSDictionary* user_info);
-
-  // Reloads the accounts to reflect the change in the SSO identities. If
-  // |should_store_accounts_| is true, it will also store the available accounts
-  // in the  browser state prefs.
-  //
-  // |should_prompt| indicates whether the user should be prompted with the
-  // resign-in infobar if the method signs out.
-  void HandleIdentityListChanged(bool should_prompt);
 
   // Verifies that the authenticated user is still associated with a valid
   // ChromeIdentity. This method must only be called when the user is
@@ -168,19 +166,16 @@ class AuthenticationService : public KeyedService,
   // Checks if the authenticated identity was removed by calling
   // |HandleForgottenIdentity|. Reloads the OAuth2 token service accounts if the
   // authenticated identity is still present.
-  // |should_prompt| indicates whether the user should be prompted if the
-  // authenticated identity was removed.
-  void ReloadCredentialsFromIdentities(bool should_prompt);
+  // |keychain_reload| indicates if the identity list has to be reloaded because
+  // the keychain has changed.
+  void ReloadCredentialsFromIdentities(bool keychain_reload);
 
-  // Computes whether the available accounts have changed since the last time
-  // they were stored in the  browser state prefs.
-  void ComputeHaveAccountsChanged();
-
-  // identity::IdentityManager::Observer implementation.
-  void OnEndBatchOfRefreshTokenStateChanges() override;
+  // signin::IdentityManager::Observer implementation.
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event_details) override;
 
   // ChromeIdentityServiceObserver implementation.
-  void OnIdentityListChanged() override;
+  void OnIdentityListChanged(bool keychainReload) override;
   void OnAccessTokenRefreshFailed(ChromeIdentity* identity,
                                   NSDictionary* user_info) override;
   void OnChromeIdentityServiceWillBeDestroyed() override;
@@ -193,35 +188,29 @@ class AuthenticationService : public KeyedService,
   // Pointer to the KeyedServices used by AuthenticationService.
   PrefService* pref_service_ = nullptr;
   SyncSetupService* sync_setup_service_ = nullptr;
-  identity::IdentityManager* identity_manager_ = nullptr;
+  signin::IdentityManager* identity_manager_ = nullptr;
   syncer::SyncService* sync_service_ = nullptr;
 
   // Whether Initialized has been called.
   bool initialized_ = false;
 
-  // Whether the accounts have changed while the AuthenticationService was in
-  // background. When the AuthenticationService is in background, this value
-  // cannot be trusted.
-  bool have_accounts_changed_ = false;
-
-  // Whether the AuthenticationService behaves as being in foreground. In
-  // background, identities changes aren't always notified and can't be
-  // initiated by the user.
-  bool is_in_foreground_ = false;
+  // Manager for the approved account list.
+  UserApprovedAccountListManager user_approved_account_list_manager_;
 
   // Whether the AuthenticationService is currently reloading credentials, used
   // to avoid an infinite reloading loop.
   bool is_reloading_credentials_ = false;
 
   // Map between account IDs and their associated MDM error.
-  std::map<std::string, NSDictionary*> cached_mdm_infos_;
+  mutable std::map<CoreAccountId, NSDictionary*> cached_mdm_infos_;
 
-  id foreground_observer_ = nil;
-  id background_observer_ = nil;
+  base::ScopedObservation<ios::ChromeIdentityService,
+                          ios::ChromeIdentityService::Observer>
+      identity_service_observation_{this};
 
-  ScopedObserver<ios::ChromeIdentityService,
-                 ios::ChromeIdentityService::Observer>
-      identity_service_observer_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
 
   base::WeakPtrFactory<AuthenticationService> weak_pointer_factory_;
 

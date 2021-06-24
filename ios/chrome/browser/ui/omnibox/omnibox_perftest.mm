@@ -12,10 +12,12 @@
 #include "components/omnibox/browser/test_location_bar_model.h"
 #include "ios/chrome/browser/autocomplete/autocomplete_classifier_factory.h"
 #include "ios/chrome/browser/browser_state/test_chrome_browser_state.h"
+#import "ios/chrome/browser/main/test_browser.h"
 #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
 #import "ios/chrome/browser/ui/commands/command_dispatcher.h"
 #include "ios/chrome/browser/ui/location_bar/location_bar_model_delegate_ios.h"
 #import "ios/chrome/browser/ui/omnibox/omnibox_text_field_ios.h"
+#import "ios/chrome/browser/ui/toolbar/adaptive_toolbar_view_controller.h"
 #import "ios/chrome/browser/ui/toolbar/primary_toolbar_coordinator.h"
 #import "ios/chrome/browser/ui/toolbar/toolbar_coordinator_delegate.h"
 #import "ios/chrome/browser/ui/util/named_guide.h"
@@ -24,8 +26,8 @@
 #include "ios/chrome/browser/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/web_state_list/web_state_opener.h"
 #include "ios/chrome/test/base/perf_test_ios.h"
-#include "ios/web/public/test/fakes/test_navigation_manager.h"
-#include "ios/web/public/test/fakes/test_web_state.h"
+#import "ios/web/public/test/fakes/fake_navigation_manager.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #include "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "ui/base/test/ios/keyboard_appearance_listener.h"
@@ -85,14 +87,16 @@ class OmniboxPerfTest : public PerfTest {
     // Create a WebStateList that will always return the test WebState as
     // the active WebState.
     web_state_list_ = std::make_unique<WebStateList>(&web_state_list_delegate_);
-    std::unique_ptr<web::TestWebState> web_state =
-        std::make_unique<web::TestWebState>();
-    std::unique_ptr<web::TestNavigationManager> navigation_manager =
-        std::make_unique<web::TestNavigationManager>();
+    auto web_state = std::make_unique<web::FakeWebState>();
+    auto navigation_manager = std::make_unique<web::FakeNavigationManager>();
     web_state->SetNavigationManager(std::move(navigation_manager));
     web_state_list_->InsertWebState(0, std::move(web_state),
                                     WebStateList::INSERT_FORCE_INDEX,
                                     WebStateOpener());
+
+    // Create the Browser for the toolbar coordinator.
+    browser_ = std::make_unique<TestBrowser>(chrome_browser_state_.get(),
+                                             web_state_list_.get());
 
     // Creates the Toolbar for testing and sizes it to the width of the screen.
     location_bar_model_delegate_.reset(
@@ -107,13 +111,9 @@ class OmniboxPerfTest : public PerfTest {
     [[[toolbarDelegate stub] andReturnValue:OCMOCK_VALUE(model_for_mock)]
         locationBarModel];
 
-    CommandDispatcher* dispatcher = [[CommandDispatcher alloc] init];
-
-    coordinator_ = [[PrimaryToolbarCoordinator alloc]
-        initWithBrowserState:chrome_browser_state_.get()];
+    coordinator_ =
+        [[PrimaryToolbarCoordinator alloc] initWithBrowser:browser_.get()];
     coordinator_.delegate = toolbarDelegate;
-    coordinator_.webStateList = web_state_list_.get();
-    coordinator_.commandDispatcher = dispatcher;
     [coordinator_ start];
 
     UIView* toolbarView = coordinator_.viewController.view;
@@ -227,6 +227,7 @@ class OmniboxPerfTest : public PerfTest {
   std::unique_ptr<TestChromeBrowserState> chrome_browser_state_;
   FakeWebStateListDelegate web_state_list_delegate_;
   std::unique_ptr<WebStateList> web_state_list_;
+  std::unique_ptr<Browser> browser_;
   std::unique_ptr<LocationBarModelDelegateIOS> location_bar_model_delegate_;
   std::unique_ptr<LocationBarModel> location_bar_model_;
   PrimaryToolbarCoordinator* coordinator_;
@@ -271,8 +272,7 @@ TEST_F(OmniboxPerfTest, TestTypeOneCharInTextField) {
 
 // Measures the amount of time it takes to type in the word "google" one
 // letter at a time.
-// TODO(crbug.com/799488): Re-enable this test.
-TEST_F(OmniboxPerfTest, DISABLED_TestTypingInTextField) {
+TEST_F(OmniboxPerfTest, TestTypingInTextField) {
   OmniboxTextFieldIOS* textField = (OmniboxTextFieldIOS*)FindViewByClass(
       coordinator_.viewController.view, [OmniboxTextFieldIOS class]);
   // The characters to type into the omnibox text field.

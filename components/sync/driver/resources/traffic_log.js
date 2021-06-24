@@ -2,10 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.exportPath('chrome.sync.traffic_log_tab', new class {
+import 'chrome://resources/js/jstemplate_compiled.js';
+
+import {addSingletonGetter, addWebUIListener} from 'chrome://resources/js/cr.m.js';
+import {getRequiredElement} from 'chrome://resources/js/util.m.js';
+
+class TrafficLogTag {
   constructor() {
     this.protocolEvents = [];
     this.knownEventTimestamps = new Set();
+
+    /** @type {!HTMLElement} */
+    this.container;
   }
 
   /**
@@ -27,12 +35,10 @@ cr.exportPath('chrome.sync.traffic_log_tab', new class {
 
   /**
    * Callback for incoming protocol events.
-   * @param {Event} e The protocol event.
+   * @param {Object} details The protocol event.
    * @private
    */
-  _onReceivedProtocolEvent(e) {
-    var details = e.details;
-
+  _onReceivedProtocolEvent(details) {
     if (this.knownEventTimestamps.has(details.time)) {
       return;
     }
@@ -40,11 +46,10 @@ cr.exportPath('chrome.sync.traffic_log_tab', new class {
     this.knownEventTimestamps.add(details.time);
     this.protocolEvents.push(details);
 
-    var shouldScrollDown = this._isScrolledToBottom();
+    const shouldScrollDown = this._isScrolledToBottom();
 
     jstProcess(
-      new JsEvalContext({ events: this.protocolEvents }),
-      this.container);
+        new JsEvalContext({events: this.protocolEvents}), this.container);
 
     if (shouldScrollDown) {
       this._scrollToBottom();
@@ -53,21 +58,20 @@ cr.exportPath('chrome.sync.traffic_log_tab', new class {
 
   /**
    * Toggles the given traffic event entry div's "expanded" state.
-   * @param {MouseEvent} e the click event that triggered the toggle.
+   * @param {!Event} e the click event that triggered the toggle.
    * @private
    */
   _expandListener(e) {
-    if (e.target.classList.contains("proto")) {
+    if (e.target.classList.contains('proto')) {
       // We ignore proto clicks to keep it copyable.
       return;
     }
-    var traffic_event_div = e.target;
+    let trafficEventDiv = e.target;
     // Click might be on div's child.
-    if (traffic_event_div.nodeName != "DIV") {
-      traffic_event_div = traffic_event_div.parentNode;
+    if (trafficEventDiv.nodeName !== 'DIV') {
+      trafficEventDiv = trafficEventDiv.parentNode;
     }
-    traffic_event_div.classList.toggle(
-      'traffic-event-entry-expanded-fullscreen');
+    trafficEventDiv.classList.toggle('traffic-event-entry-expanded-fullscreen');
   }
 
   /**
@@ -79,17 +83,21 @@ cr.exportPath('chrome.sync.traffic_log_tab', new class {
   }
 
   onLoad() {
-    this.container = $('traffic-event-fullscreen-container');
+    this.container = getRequiredElement('traffic-event-fullscreen-container');
 
-    chrome.sync.events.addEventListener(
-      'onProtocolEvent', this._onReceivedProtocolEvent.bind(this));
+    addWebUIListener(
+        'onProtocolEvent', this._onReceivedProtocolEvent.bind(this));
 
     // Make the prototype jscontent element disappear.
-    jstProcess({}, this.container);
+    jstProcess(new JsEvalContext({}), this.container);
   }
-});
+}
 
-document.addEventListener(
-  'DOMContentLoaded',
-  chrome.sync.traffic_log_tab.onLoad.bind(chrome.sync.traffic_log_tab),
-  false);
+addSingletonGetter(TrafficLogTag);
+
+// For JS eval.
+window.TrafficLogTag = TrafficLogTag;
+
+document.addEventListener('DOMContentLoaded', () => {
+  TrafficLogTag.getInstance().onLoad();
+});

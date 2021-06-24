@@ -36,14 +36,53 @@
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_api_shim.h"
-#include "third_party/blink/renderer/core/layout/line/inline_text_box.h"
-#include "third_party/blink/renderer/core/layout/line/root_inline_box.h"
+#include "third_party/blink/renderer/core/layout/layout_block_flow.h"
+#include "third_party/blink/renderer/core/layout/ng/inline/ng_caret_position.h"
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_caret_rect.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_offset_mapping.h"
 
 namespace blink {
 
 namespace {
+
+// Returns a position suitable for |ComputeNGCaretPosition()| to calculate
+// local caret rect by |ComputeLocalCaretRect()|:
+//  - A position in |Text| node
+//  - A position before/after atomic inline element. Note: This function
+//    doesn't check whether anchor node is atomic inline level or not.
+template <typename Strategy>
+PositionWithAffinityTemplate<Strategy> AdjustForNGCaretPosition(
+    const PositionWithAffinityTemplate<Strategy>& position_with_affinity) {
+  switch (position_with_affinity.GetPosition().AnchorType()) {
+    case PositionAnchorType::kAfterAnchor:
+    case PositionAnchorType::kBeforeAnchor:
+      return position_with_affinity;
+    case PositionAnchorType::kAfterChildren:
+      // For caret rect computation, |kAfterChildren| and |kAfterNode| are
+      // equivalent. See http://crbug.com/1174101
+      return PositionWithAffinityTemplate<Strategy>(
+          PositionTemplate<Strategy>::AfterNode(
+              *position_with_affinity.GetPosition().AnchorNode()),
+          position_with_affinity.Affinity());
+    case PositionAnchorType::kOffsetInAnchor: {
+      const Node& node = *position_with_affinity.GetPosition().AnchorNode();
+      if (IsA<Text>(node) ||
+          position_with_affinity.GetPosition().OffsetInContainerNode())
+        return position_with_affinity;
+      const LayoutObject* const layout_object = node.GetLayoutObject();
+      if (!layout_object || IsA<LayoutBlockFlow>(layout_object)) {
+        // In case of <div>@0
+        return position_with_affinity;
+      }
+      // For caret rect computation, we paint caret before |layout_object|
+      // instead of inside of it.
+      return PositionWithAffinityTemplate<Strategy>(
+          PositionTemplate<Strategy>::BeforeNode(node),
+          position_with_affinity.Affinity());
+    }
+  }
+  NOTREACHED();
+  return position_with_affinity;
+}
 
 template <typename Strategy>
 LocalCaretRect LocalCaretRectOfPositionTemplate(
@@ -60,18 +99,10 @@ LocalCaretRect LocalCaretRectOfPositionTemplate(
       ComputeInlineAdjustedPosition(position);
 
   if (adjusted.IsNotNull()) {
-    if (NGInlineFormattingContextOf(adjusted.GetPosition()))
-      return ComputeNGLocalCaretRect(adjusted);
+    if (auto caret_position =
+            ComputeNGCaretPosition(AdjustForNGCaretPosition(adjusted)))
+      return ComputeLocalCaretRect(caret_position);
 
-    // TODO(editing-dev): This DCHECK is for ensuring the correctness of
-    // breaking |ComputeInlineBoxPosition| into |ComputeInlineAdjustedPosition|
-    // and |ComputeInlineBoxPositionForInlineAdjustedPosition|. If there is any
-    // DCHECK hit, we should pass primary direction to the latter function.
-    // TODO(crbug.com/793098): Fix it so that we don't need to bother about
-    // primary direction.
-    DCHECK_EQ(
-        PrimaryDirectionOf(*position.GetPosition().ComputeContainerNode()),
-        PrimaryDirectionOf(*adjusted.GetPosition().ComputeContainerNode()));
     const InlineBoxPosition& box_position =
         ComputeInlineBoxPositionForInlineAdjustedPosition(adjusted);
 
@@ -81,15 +112,15 @@ LocalCaretRect LocalCaretRectOfPositionTemplate(
               box_position.inline_box->GetLineLayoutItem());
       return LocalCaretRect(
           box_layout_object,
-          box_layout_object->LocalCaretRect(box_position.inline_box,
-                                            box_position.offset_in_box,
-                                            extra_width_to_end_of_line));
+          box_layout_object->PhysicalLocalCaretRect(
+              box_position.inline_box, box_position.offset_in_box,
+              extra_width_to_end_of_line));
     }
   }
 
   // DeleteSelectionCommandTest.deleteListFromTable goes here.
   return LocalCaretRect(
-      layout_object, layout_object->LocalCaretRect(
+      layout_object, layout_object->PhysicalLocalCaretRect(
                          nullptr, position.GetPosition().ComputeEditingOffset(),
                          extra_width_to_end_of_line));
 }
@@ -110,18 +141,10 @@ LocalCaretRect LocalSelectionRectOfPositionTemplate(
   if (adjusted.IsNull())
     return LocalCaretRect();
 
-  if (NGInlineFormattingContextOf(adjusted.GetPosition())) {
-    return ComputeNGLocalSelectionRect(adjusted);
-  }
+  if (auto caret_position =
+          ComputeNGCaretPosition(AdjustForNGCaretPosition(adjusted)))
+    return ComputeLocalSelectionRect(caret_position);
 
-  // TODO(editing-dev): This DCHECK is for ensuring the correctness of
-  // breaking |ComputeInlineBoxPosition| into |ComputeInlineAdjustedPosition|
-  // and |ComputeInlineBoxPositionForInlineAdjustedPosition|. If there is any
-  // DCHECK hit, we should pass primary direction to the latter function.
-  // TODO(crbug.com/793098): Fix it so that we don't need to bother about
-  // primary direction.
-  DCHECK_EQ(PrimaryDirectionOf(*position.GetPosition().ComputeContainerNode()),
-            PrimaryDirectionOf(*adjusted.GetPosition().ComputeContainerNode()));
   const InlineBoxPosition& box_position =
       ComputeInlineBoxPositionForInlineAdjustedPosition(adjusted);
 
@@ -131,24 +154,21 @@ LocalCaretRect LocalSelectionRectOfPositionTemplate(
   LayoutObject* const layout_object = LineLayoutAPIShim::LayoutObjectFrom(
       box_position.inline_box->GetLineLayoutItem());
 
-  const LayoutRect& rect = layout_object->LocalCaretRect(
-      box_position.inline_box, box_position.offset_in_box);
+  LayoutRect rect = layout_object->LocalCaretRect(box_position.inline_box,
+                                                  box_position.offset_in_box);
 
   if (rect.IsEmpty())
     return LocalCaretRect();
 
   const InlineBox* const box = box_position.inline_box;
-  if (layout_object->Style()->IsHorizontalWritingMode()) {
-    return LocalCaretRect(
-        layout_object,
-        LayoutRect(LayoutPoint(rect.X(), box->Root().SelectionTop()),
-                   LayoutSize(rect.Width(), box->Root().SelectionHeight())));
+  if (layout_object->IsHorizontalWritingMode()) {
+    rect.SetY(box->Root().SelectionTop());
+    rect.SetHeight(box->Root().SelectionHeight());
+  } else {
+    rect.SetX(box->Root().SelectionTop());
+    rect.SetHeight(box->Root().SelectionHeight());
   }
-
-  return LocalCaretRect(
-      layout_object,
-      LayoutRect(LayoutPoint(box->Root().SelectionTop(), rect.Y()),
-                 LayoutSize(box->Root().SelectionHeight(), rect.Height())));
+  return LocalCaretRect(layout_object, layout_object->FlipForWritingMode(rect));
 }
 
 }  // namespace
@@ -175,32 +195,19 @@ LocalCaretRect LocalSelectionRectOfPosition(
 
 template <typename Strategy>
 static IntRect AbsoluteCaretBoundsOfAlgorithm(
-    const PositionWithAffinityTemplate<Strategy>& position) {
-  const LocalCaretRect& caret_rect = LocalCaretRectOfPosition(position);
+    const PositionWithAffinityTemplate<Strategy>& position,
+    LayoutUnit* extra_width_to_end_of_line = nullptr) {
+  const LocalCaretRect& caret_rect = LocalCaretRectOfPositionTemplate<Strategy>(
+      position, extra_width_to_end_of_line);
   if (caret_rect.IsEmpty())
     return IntRect();
   return LocalToAbsoluteQuadOf(caret_rect).EnclosingBoundingBox();
 }
 
-IntRect AbsoluteCaretBoundsOf(const PositionWithAffinity& position) {
-  return AbsoluteCaretBoundsOfAlgorithm<EditingStrategy>(position);
-}
-
-// TODO(editing-dev): This function does pretty much the same thing as
-// |AbsoluteCaretBoundsOf()|. Consider merging them.
-IntRect AbsoluteCaretRectOfPosition(const PositionWithAffinity& position,
-                                    LayoutUnit* extra_width_to_end_of_line) {
-  const LocalCaretRect local_caret_rect =
-      LocalCaretRectOfPosition(position, extra_width_to_end_of_line);
-  if (!local_caret_rect.layout_object)
-    return IntRect();
-
-  const IntRect local_rect = PixelSnappedIntRect(local_caret_rect.rect);
-  return local_rect == IntRect()
-             ? IntRect()
-             : local_caret_rect.layout_object
-                   ->LocalToAbsoluteQuad(FloatRect(local_rect))
-                   .EnclosingBoundingBox();
+IntRect AbsoluteCaretBoundsOf(const PositionWithAffinity& position,
+                              LayoutUnit* extra_width_to_end_of_line) {
+  return AbsoluteCaretBoundsOfAlgorithm<EditingStrategy>(
+      position, extra_width_to_end_of_line);
 }
 
 template <typename Strategy>

@@ -6,7 +6,6 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/mac/foundation_util.h"
 #include "base/strings/string_piece.h"
 #import "ios/chrome/browser/ui/list_model/list_item.h"
@@ -319,7 +318,8 @@ TEST_F(ListModelTest, InvalidIndexPath) {
   ListModel* model = [[ListModel alloc] init];
   [model addSectionWithIdentifier:SectionIdentifierCheese];
 
-  logging::ScopedLogAssertHandler scoped_assert_handler(base::Bind(LogSink));
+  logging::ScopedLogAssertHandler scoped_assert_handler(
+      base::BindRepeating(LogSink));
   bool out_of_bounds_exception_thrown = false;
   @try {
     [model indexInItemTypeForIndexPath:[NSIndexPath indexPathForItem:0
@@ -564,7 +564,8 @@ TEST_F(ListModelTest, InsertItemAtIndex) {
   EXPECT_EQ(2, goudaIndexPath.item);
 }
 
-TEST_F(ListModelTest, IndexPathsForItems) {
+// Tests [ListModel indexPathForItem:].
+TEST_F(ListModelTest, IndexPathForItem) {
   ListModel* model = [[ListModel alloc] init];
 
   [model addSectionWithIdentifier:SectionIdentifierWeasley];
@@ -598,6 +599,65 @@ TEST_F(ListModelTest, IndexPathsForItems) {
   EXPECT_EQ(4, indexPath4.item);
 
   EXPECT_FALSE([model hasItem:notAddedItem]);
+}
+
+// Tests [ListModel indexPathsForItemType:sectionIdentifier:].
+TEST_F(ListModelTest, IndexPathsForItemTypeSectionIdentifier) {
+  ListModel* model = [[ListModel alloc] init];
+
+  // 1st section: Cheddar, Cheddar, Ron, Cheddar, Ron.
+  [model addSectionWithIdentifier:SectionIdentifierCheese];
+  [model addItemWithType:ItemTypeCheeseCheddar
+      toSectionWithIdentifier:SectionIdentifierCheese];
+  [model addItemWithType:ItemTypeCheeseCheddar
+      toSectionWithIdentifier:SectionIdentifierCheese];
+  [model addItemWithType:ItemTypeWeasleyRon
+      toSectionWithIdentifier:SectionIdentifierCheese];
+  [model addItemWithType:ItemTypeCheeseCheddar
+      toSectionWithIdentifier:SectionIdentifierCheese];
+  [model addItemWithType:ItemTypeWeasleyRon
+      toSectionWithIdentifier:SectionIdentifierCheese];
+
+  // 2nd section: Ron, Cheddar, Ron, Ron, Cheddar, Cheddar.
+  [model addSectionWithIdentifier:SectionIdentifierWeasley];
+  [model addItemWithType:ItemTypeWeasleyRon
+      toSectionWithIdentifier:SectionIdentifierWeasley];
+  [model addItemWithType:ItemTypeCheeseCheddar
+      toSectionWithIdentifier:SectionIdentifierWeasley];
+  [model addItemWithType:ItemTypeWeasleyRon
+      toSectionWithIdentifier:SectionIdentifierWeasley];
+  [model addItemWithType:ItemTypeWeasleyRon
+      toSectionWithIdentifier:SectionIdentifierWeasley];
+  [model addItemWithType:ItemTypeCheeseCheddar
+      toSectionWithIdentifier:SectionIdentifierWeasley];
+  [model addItemWithType:ItemTypeCheeseCheddar
+      toSectionWithIdentifier:SectionIdentifierWeasley];
+
+  NSArray<NSIndexPath*>* indexPaths =
+      [model indexPathsForItemType:ItemTypeCheeseCheddar
+                 sectionIdentifier:SectionIdentifierCheese];
+  ASSERT_EQ(3UL, indexPaths.count);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:0 inSection:0], indexPaths[0]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:1 inSection:0], indexPaths[1]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:3 inSection:0], indexPaths[2]);
+
+  indexPaths = [model indexPathsForItemType:ItemTypeWeasleyRon
+                          sectionIdentifier:SectionIdentifierCheese];
+  ASSERT_EQ(2UL, indexPaths.count);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:2 inSection:0], indexPaths[0]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:4 inSection:0], indexPaths[1]);
+
+  indexPaths = [model indexPathsForItemType:ItemTypeCheeseCheddar
+                          sectionIdentifier:SectionIdentifierWeasley];
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:1 inSection:1], indexPaths[0]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:4 inSection:1], indexPaths[1]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:5 inSection:1], indexPaths[2]);
+
+  indexPaths = [model indexPathsForItemType:ItemTypeWeasleyRon
+                          sectionIdentifier:SectionIdentifierWeasley];
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:0 inSection:1], indexPaths[0]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:2 inSection:1], indexPaths[1]);
+  EXPECT_NSEQ([NSIndexPath indexPathForItem:3 inSection:1], indexPaths[2]);
 }
 
 TEST_F(ListModelTest, Headers) {

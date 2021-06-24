@@ -5,27 +5,42 @@
 #ifndef CHROME_BROWSER_NOTIFICATIONS_SCHEDULER_TEST_TEST_UTILS_H_
 #define CHROME_BROWSER_NOTIFICATIONS_SCHEDULER_TEST_TEST_UTILS_H_
 
-#include "chrome/browser/notifications/scheduler/impression_history_tracker.h"
-#include "chrome/browser/notifications/scheduler/impression_types.h"
-#include "chrome/browser/notifications/scheduler/notification_scheduler_types.h"
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "chrome/browser/notifications/scheduler/internal/impression_history_tracker.h"
+#include "chrome/browser/notifications/scheduler/internal/impression_types.h"
+#include "chrome/browser/notifications/scheduler/public/notification_scheduler_types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace notifications {
+
+struct NotificationData;
+struct NotificationEntry;
+
 namespace test {
 
 // Flattened type state data used in test to generate client states.
 struct ImpressionTestData {
   ImpressionTestData(SchedulerClientType type,
-                     int current_max_daily_show,
+                     size_t current_max_daily_show,
                      std::vector<Impression> impressions,
-                     base::Optional<SuppressionInfo> suppression_info);
+                     absl::optional<SuppressionInfo> suppression_info,
+                     size_t negative_events_count,
+                     absl::optional<base::Time> last_negative_event_ts,
+                     absl::optional<base::Time> last_shown_ts);
 
   ImpressionTestData(const ImpressionTestData& other);
   ~ImpressionTestData();
 
   SchedulerClientType type;
-  int current_max_daily_show;
+  size_t current_max_daily_show;
   std::vector<Impression> impressions;
-  base::Optional<SuppressionInfo> suppression_info;
+  absl::optional<SuppressionInfo> suppression_info;
+  size_t negative_events_count;
+  absl::optional<base::Time> last_negative_event_ts;
+  absl::optional<base::Time> last_shown_ts;
 };
 
 // Add one impression test data into a client state.
@@ -41,6 +56,23 @@ void AddImpressionTestData(
 void AddImpressionTestData(
     const std::vector<ImpressionTestData>& test_data,
     std::vector<std::unique_ptr<ClientState>>* client_states);
+
+// Creates an impression.
+Impression CreateImpression(const base::Time& create_time,
+                            UserFeedback feedback,
+                            ImpressionResult impression,
+                            bool integrated,
+                            const std::string& guid,
+                            SchedulerClientType type);
+
+// Generates a debug string to print details of |data|.
+std::string DebugString(const NotificationData* data);
+
+// Generates a debug string to print details of |entry|.
+std::string DebugString(const NotificationEntry* entry);
+
+// Generates a debug string to print details of |client_state|.
+std::string DebugString(const ClientState* client_state);
 
 }  // namespace test
 }  // namespace notifications

@@ -22,17 +22,12 @@ class ExtendedAuthenticator;
 namespace extensions {
 
 class QuickUnlockPrivateGetAuthTokenFunction
-    : public UIThreadExtensionFunction,
+    : public ExtensionFunction,
       public chromeos::AuthStatusConsumer {
  public:
   using AuthenticatorAllocator =
-      base::Callback<chromeos::ExtendedAuthenticator*(
+      base::RepeatingCallback<chromeos::ExtendedAuthenticator*(
           chromeos::AuthStatusConsumer* auth_status_consumer)>;
-
-  class TestObserver {
-   public:
-    virtual void OnGetAuthTokenCalled(const std::string&) = 0;
-  };
 
   QuickUnlockPrivateGetAuthTokenFunction();
 
@@ -41,9 +36,6 @@ class QuickUnlockPrivateGetAuthTokenFunction
   void SetAuthenticatorAllocatorForTesting(
       const AuthenticatorAllocator& allocator);
 
-  // Test API.
-  static void SetTestObserver(
-      QuickUnlockPrivateGetAuthTokenFunction::TestObserver* observer);
 
   DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.getAuthToken",
                              QUICKUNLOCKPRIVATE_GETAUTHTOKEN)
@@ -67,7 +59,7 @@ class QuickUnlockPrivateGetAuthTokenFunction
 };
 
 class QuickUnlockPrivateSetLockScreenEnabledFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   QuickUnlockPrivateSetLockScreenEnabledFunction();
   DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.setLockScreenEnabled",
@@ -85,8 +77,48 @@ class QuickUnlockPrivateSetLockScreenEnabledFunction
   DISALLOW_COPY_AND_ASSIGN(QuickUnlockPrivateSetLockScreenEnabledFunction);
 };
 
-class QuickUnlockPrivateGetAvailableModesFunction
-    : public UIThreadExtensionFunction {
+class QuickUnlockPrivateSetPinAutosubmitEnabledFunction
+    : public ExtensionFunction {
+ public:
+  QuickUnlockPrivateSetPinAutosubmitEnabledFunction();
+  DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.setPinAutosubmitEnabled",
+                             QUICKUNLOCKPRIVATE_SETPINAUTOSUBMITENABLED)
+
+ protected:
+  ~QuickUnlockPrivateSetPinAutosubmitEnabledFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  void HandleSetPinAutoSubmitResult(bool result);
+
+  ChromeExtensionFunctionDetails chrome_details_;
+
+  DISALLOW_COPY_AND_ASSIGN(QuickUnlockPrivateSetPinAutosubmitEnabledFunction);
+};
+
+class QuickUnlockPrivateCanAuthenticatePinFunction : public ExtensionFunction {
+ public:
+  QuickUnlockPrivateCanAuthenticatePinFunction();
+  DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.canAuthenticatePin",
+                             QUICKUNLOCKPRIVATE_CANAUTHENTICATEPIN)
+
+ protected:
+  ~QuickUnlockPrivateCanAuthenticatePinFunction() override;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+
+ private:
+  void HandleCanAuthenticateResult(bool result);
+
+  ChromeExtensionFunctionDetails chrome_details_;
+
+  DISALLOW_COPY_AND_ASSIGN(QuickUnlockPrivateCanAuthenticatePinFunction);
+};
+
+class QuickUnlockPrivateGetAvailableModesFunction : public ExtensionFunction {
  public:
   QuickUnlockPrivateGetAvailableModesFunction();
   DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.getAvailableModes",
@@ -104,8 +136,7 @@ class QuickUnlockPrivateGetAvailableModesFunction
   DISALLOW_COPY_AND_ASSIGN(QuickUnlockPrivateGetAvailableModesFunction);
 };
 
-class QuickUnlockPrivateGetActiveModesFunction
-    : public UIThreadExtensionFunction {
+class QuickUnlockPrivateGetActiveModesFunction : public ExtensionFunction {
  public:
   QuickUnlockPrivateGetActiveModesFunction();
   DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.getActiveModes",
@@ -126,8 +157,7 @@ class QuickUnlockPrivateGetActiveModesFunction
   DISALLOW_COPY_AND_ASSIGN(QuickUnlockPrivateGetActiveModesFunction);
 };
 
-class QuickUnlockPrivateCheckCredentialFunction
-    : public UIThreadExtensionFunction {
+class QuickUnlockPrivateCheckCredentialFunction : public ExtensionFunction {
  public:
   QuickUnlockPrivateCheckCredentialFunction();
   DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.checkCredential",
@@ -144,7 +174,7 @@ class QuickUnlockPrivateCheckCredentialFunction
 };
 
 class QuickUnlockPrivateGetCredentialRequirementsFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   QuickUnlockPrivateGetCredentialRequirementsFunction();
   DECLARE_EXTENSION_FUNCTION("quickUnlockPrivate.getCredentialRequirements",
@@ -160,12 +190,12 @@ class QuickUnlockPrivateGetCredentialRequirementsFunction
   DISALLOW_COPY_AND_ASSIGN(QuickUnlockPrivateGetCredentialRequirementsFunction);
 };
 
-class QuickUnlockPrivateSetModesFunction : public UIThreadExtensionFunction {
+class QuickUnlockPrivateSetModesFunction : public ExtensionFunction {
  public:
   using QuickUnlockMode =
       extensions::api::quick_unlock_private::QuickUnlockMode;
   using ModesChangedEventHandler =
-      base::Callback<void(const std::vector<QuickUnlockMode>&)>;
+      base::RepeatingCallback<void(const std::vector<QuickUnlockMode>&)>;
 
   QuickUnlockPrivateSetModesFunction();
 
@@ -187,7 +217,8 @@ class QuickUnlockPrivateSetModesFunction : public UIThreadExtensionFunction {
   // Continuation of OnAuthSuccess after active modes have been fetched.
   void OnGetActiveModes(const std::vector<QuickUnlockMode>& modes);
 
-  void PinBackendCallComplete(bool result);
+  void PinSetCallComplete(bool result);
+  void PinRemoveCallComplete(bool result);
 
   // Apply any changes specified in |params_|. Returns the new active modes.
   void ModeChangeComplete(const std::vector<QuickUnlockMode>& updated_modes);

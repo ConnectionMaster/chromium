@@ -9,42 +9,109 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.RectF;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ActivityState;
-import org.chromium.base.ApiCompatibilityUtils;
-import org.chromium.base.VisibleForTesting;
+import org.chromium.base.supplier.Supplier;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.compositor.LayerTitleCache;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanel;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelContent;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelManager;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelManager.PanelPriority;
-import org.chromium.chrome.browser.compositor.bottombar.contextualsearch.ContextualSearchPromoControl.ContextualSearchPromoHost;
-import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
+import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.compositor.scene_layer.ContextualSearchSceneLayer;
-import org.chromium.chrome.browser.compositor.scene_layer.SceneOverlayLayer;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManagementDelegate;
+import org.chromium.chrome.browser.contextualsearch.ContextualSearchUma;
+import org.chromium.chrome.browser.contextualsearch.ResolvedSearchTerm.CardTag;
+import org.chromium.chrome.browser.flags.ActivityType;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.layouts.scene_layer.SceneOverlayLayer;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.util.MathUtils;
-import org.chromium.chrome.browser.widget.ScrimView;
-import org.chromium.chrome.browser.widget.ScrimView.ScrimParams;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.toolbar.ToolbarManager;
+import org.chromium.components.browser_ui.widget.scrim.ScrimCoordinator;
+import org.chromium.components.browser_ui.widget.scrim.ScrimProperties;
 import org.chromium.ui.base.LocalizationUtils;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.resources.ResourceManager;
 
-/**
- * Controls the Contextual Search Panel.
- */
-public class ContextualSearchPanel extends OverlayPanel {
-    /** When using the Generic UX we never show the Arrow Icon */
-    private static final float ARROW_ICON_OPACITY_GENERIC_UX = 0.f;
+import java.util.List;
 
-    /** When using the Generic UX we always show the Close Icon */
-    private static final float CLOSE_ICON_OPACITY_GENERIC_UX = 1.f;
+/**
+ * Controls the Contextual Search Panel, primarily the Bar - the
+ * {@link ContextualSearchBarControl} - and the content area that shows the Search Result.
+ */
+public class ContextualSearchPanel extends OverlayPanel implements ContextualSearchPanelInterface {
+    /** Allows controls that appear in this panel to call back with requests or notifications. */
+    interface ContextualSearchPanelSectionHost {
+        /** Returns the current Y position of the panel section. */
+        float getYPositionPx();
+
+        /** Notifies the panel that the caller's section is changing its size. */
+        void onPanelSectionSizeChange(boolean hasStarted);
+    }
+
+    /** The interface that the Opt-in promo uses to communicate with this Panel. */
+    interface ContextualSearchPromoHost extends ContextualSearchPanelSectionHost {
+        /**
+         * Notifies that the user has opted in.
+         * @param wasMandatory Whether the Promo was mandatory.
+         */
+        void onPromoOptIn(boolean wasMandatory);
+
+        /**
+         * Notifies that the user has opted out.
+         */
+        void onPromoOptOut();
+    }
+
+    /** The interface that the help section uses to communicate with this Panel. */
+    interface ContextualSearchHelpSectionHost extends ContextualSearchPanelSectionHost {
+        /** Returns whether the help section of the panel is enabled for the current user. */
+        boolean isPanelHelpEnabled();
+
+        /** Notifies that the user has clicked the OK button in the help section of the panel. */
+        void onPanelHelpOkClicked();
+    }
+
+    /** The interface that the Related Searches section uses to communicate with this Panel. */
+    interface RelatedSearchesSectionHost extends ContextualSearchPanelSectionHost {
+        /**
+         * Notifies that the user has clicked on a suggestions in this section of the panel.
+         * @param suggestionIndex The 0-based index into the list of suggestions provided by the
+         *        panel and presented in the UI. E.g. if the user clicked the second chit this value
+         *        would be 1.
+         */
+        void onSuggestionClicked(int suggestionIndex);
+    }
+
+    /** Restricts the maximized panel height to the given fraction of a tab. */
+    private static final float MAXIMIZED_HEIGHT_FRACTION = 0.95f;
 
     /** Used for logging state changes. */
     private final ContextualSearchPanelMetrics mPanelMetrics;
 
-    /** The height of the bar shadow, in pixels. */
-    private final float mBarShadowHeightPx;
+    /**
+     * The {@link CompositorViewHolder}, used as an anchor view. Also injected into other classes.
+     */
+    private final CompositorViewHolder mCompositorViewHolder;
+
+    /** The {@link WindowAndroid} for the current activity.  */
+    private final WindowAndroid mWindowAndroid;
+
+    /** Used to query toolbar state. */
+    private final ToolbarManager mToolbarManager;
+
+    /** The {@link ActivityType} for the current activity. */
+    private final @ActivityType int mActivityType;
+
+    /** Supplies the current {@link Tab} for the activity. */
+    private final Supplier<Tab> mCurrentTabSupplier;
 
     /** The distance of the divider from the end of the bar, in dp. */
     private final float mEndButtonWidthDp;
@@ -62,16 +129,16 @@ public class ContextualSearchPanel extends OverlayPanel {
     private ContextualSearchSceneLayer mSceneLayer;
 
     /**
-     * A ScrimView for adjusting the Status Bar's brightness when a scrim is present (when the panel
-     * is open).
+     * A ScrimCoordinator for adjusting the Status Bar's brightness when a scrim is present (when
+     * the panel is open).
      */
-    private ScrimView mScrimView;
+    private ScrimCoordinator mScrimCoordinator;
 
     /**
-     * Params that configure our use of the ScrimView for adjusting the Status Bar's
+     * Params that configure our use of the ScrimCoordinator for adjusting the Status Bar's
      * brightness when a scrim is present (when the panel is open).
      */
-    private ScrimParams mScrimParams;
+    private PropertyModel mScrimProperties;
 
     // ============================================================================================
     // Constructor
@@ -79,28 +146,43 @@ public class ContextualSearchPanel extends OverlayPanel {
 
     /**
      * @param context The current Android {@link Context}.
-     * @param updateHost The {@link LayoutUpdateHost} used to request updates in the Layout.
+     * @param layoutManager A layout manager for observing scene changes.
      * @param panelManager The object managing the how different panels are shown.
+     * @param browserControlsStateProvider Used to measure the browser controls.
+     * @param windowAndroid The {@link WindowAndroid} for the current activity.
+     * @param compositorViewHolder The {@link CompositorViewHolder} for the current activity.
+     * @param toolbarHeightDp The height of the toolbar in dp.
+     * @param toolbarManager The {@link ToolbarManager}, used to query for colors.
+     * @param activityType The {@link ActivityType} for the current activity.
+     * @param currentTabSupplier Supplies the current activity tab.
      */
-    public ContextualSearchPanel(
-            Context context, LayoutUpdateHost updateHost, OverlayPanelManager panelManager) {
-        super(context, updateHost, panelManager);
+    public ContextualSearchPanel(@NonNull Context context, @NonNull LayoutManagerImpl layoutManager,
+            @NonNull OverlayPanelManager panelManager,
+            @NonNull BrowserControlsStateProvider browserControlsStateProvider,
+            @NonNull WindowAndroid windowAndroid,
+            @NonNull CompositorViewHolder compositorViewHolder, float toolbarHeightDp,
+            @NonNull ToolbarManager toolbarManager, @ActivityType int activityType,
+            @NonNull Supplier<Tab> currentTabSupplier) {
+        super(context, layoutManager, panelManager, browserControlsStateProvider, windowAndroid,
+                compositorViewHolder, toolbarHeightDp, currentTabSupplier);
         mSceneLayer = createNewContextualSearchSceneLayer();
         mPanelMetrics = new ContextualSearchPanelMetrics();
+        mCompositorViewHolder = compositorViewHolder;
+        mWindowAndroid = windowAndroid;
+        mToolbarManager = toolbarManager;
+        mActivityType = activityType;
+        mCurrentTabSupplier = currentTabSupplier;
 
-        mBarShadowHeightPx =
-                ApiCompatibilityUtils
-                        .getDrawable(mContext.getResources(), R.drawable.modern_toolbar_shadow)
-                        .getIntrinsicHeight();
-        mEndButtonWidthDp = mPxToDp
-                * mContext.getResources().getDimensionPixelSize(
-                          R.dimen.contextual_search_end_button_width);
+        mEndButtonWidthDp = mContext.getResources().getDimensionPixelSize(
+                                    R.dimen.contextual_search_padded_button_width)
+                * mPxToDp;
     }
 
     @Override
     public OverlayPanelContent createNewOverlayPanelContent() {
         return new OverlayPanelContent(mManagementDelegate.getOverlayContentDelegate(),
-                new PanelProgressObserver(), mActivity, /* isIncognito= */ false, getBarHeight());
+                new PanelProgressObserver(), mActivity, /* isIncognito= */ false, getBarHeight(),
+                mCompositorViewHolder, mWindowAndroid, mCurrentTabSupplier);
     }
 
     // ============================================================================================
@@ -115,12 +197,11 @@ public class ContextualSearchPanel extends OverlayPanel {
     }
 
     @Override
-    public SceneOverlayLayer getUpdatedSceneOverlayTree(RectF viewport, RectF visibleViewport,
-            LayerTitleCache layerTitleCache, ResourceManager resourceManager, float yOffset) {
-        super.getUpdatedSceneOverlayTree(
-                viewport, visibleViewport, layerTitleCache, resourceManager, yOffset);
+    public SceneOverlayLayer getUpdatedSceneOverlayTree(
+            RectF viewport, RectF visibleViewport, ResourceManager resourceManager, float yOffset) {
+        super.getUpdatedSceneOverlayTree(viewport, visibleViewport, resourceManager, yOffset);
         mSceneLayer.update(resourceManager, this, getSearchBarControl(), getBarBannerControl(),
-                getPromoControl(), getImageControl());
+                getPromoControl(), getPanelHelp(), getRelatedSearchesControl(), getImageControl());
 
         return mSceneLayer;
     }
@@ -133,11 +214,12 @@ public class ContextualSearchPanel extends OverlayPanel {
      * Sets the {@code ContextualSearchManagementDelegate} associated with this panel.
      * @param delegate The {@code ContextualSearchManagementDelegate}.
      */
+    @Override
     public void setManagementDelegate(ContextualSearchManagementDelegate delegate) {
         if (mManagementDelegate != delegate) {
             mManagementDelegate = delegate;
             if (delegate != null) {
-                setChromeActivity(mManagementDelegate.getChromeActivity());
+                setActivity(mManagementDelegate.getActivity());
             }
         }
     }
@@ -146,6 +228,7 @@ public class ContextualSearchPanel extends OverlayPanel {
      * Notifies that the preference state has changed.
      * @param isEnabled Whether the feature is enabled.
      */
+    @Override
     public void onContextualSearchPrefChanged(boolean isEnabled) {
         if (!isShowing()) return;
 
@@ -162,7 +245,7 @@ public class ContextualSearchPanel extends OverlayPanel {
         int fromState = getPanelState();
 
         mPanelMetrics.onPanelStateChanged(
-                fromState, toState, reason, Profile.getLastUsedProfile().getOriginalProfile());
+                fromState, toState, reason, Profile.getLastUsedRegularProfile());
 
         if (toState == PanelState.PEEKED
                 && (fromState == PanelState.CLOSED || fromState == PanelState.UNDEFINED)) {
@@ -186,15 +269,6 @@ public class ContextualSearchPanel extends OverlayPanel {
     }
 
     @Override
-    protected float getExpandedHeight() {
-        if (canDisplayContentInPanel()) {
-            return super.getExpandedHeight();
-        } else {
-            return getBarHeightPeeking() + getPromoHeightPx() * mPxToDp;
-        }
-    }
-
-    @Override
     protected @PanelState int getProjectedState(float velocity) {
         @PanelState
         int projectedState = super.getProjectedState(velocity);
@@ -202,8 +276,7 @@ public class ContextualSearchPanel extends OverlayPanel {
         // Prevent the fling gesture from moving the Panel from PEEKED to MAXIMIZED. This is to
         // make sure the Promo will be visible, considering that the EXPANDED state is the only
         // one that will show the Promo.
-        if (getPromoControl().isVisible()
-                && projectedState == PanelState.MAXIMIZED
+        if (getPromoControl().isVisible() && projectedState == PanelState.MAXIMIZED
                 && getPanelState() == PanelState.PEEKED) {
             projectedState = PanelState.EXPANDED;
         }
@@ -241,7 +314,7 @@ public class ContextualSearchPanel extends OverlayPanel {
         super.onClosed(reason);
 
         if (mSceneLayer != null) mSceneLayer.hideTree();
-        if (mScrimView != null) mScrimView.hideScrim(false);
+        if (mScrimCoordinator != null) mScrimCoordinator.hideScrim(false);
     }
 
     // ============================================================================================
@@ -266,18 +339,16 @@ public class ContextualSearchPanel extends OverlayPanel {
         if (isPeeking()) {
             if (getSearchBarControl().getQuickActionControl().hasQuickAction()
                     && isCoordinateInsideActionTarget(x)) {
-                mPanelMetrics.setWasQuickActionClicked();
-                getSearchBarControl().getQuickActionControl().sendIntent(
-                        mActivity.getActivityTab());
+                getSearchBarControl().getQuickActionControl().sendIntent(mCurrentTabSupplier.get());
             } else {
                 // super takes care of expanding the Panel when peeking.
                 super.handleBarClick(x, y);
             }
         } else if (isExpanded() || isMaximized()) {
-            if (isCoordinateInsideCloseButton(x)) {
-                closePanel(StateChangeReason.CLOSE_BUTTON, true);
-            } else if (canPromoteToNewTab()) {
+            if (canPromoteToNewTab() && isCoordinateInsideOpenTabButton(x)) {
                 mManagementDelegate.promoteToTab();
+            } else {
+                peekPanel(StateChangeReason.UNKNOWN);
             }
         }
     }
@@ -317,6 +388,8 @@ public class ContextualSearchPanel extends OverlayPanel {
     protected void destroyComponents() {
         super.destroyComponents();
         destroyPromoControl();
+        destroyPanelHelp();
+        destroyRelatedSearchesControl();
         destroyBarBannerControl();
         destroySearchBarControl();
     }
@@ -349,8 +422,29 @@ public class ContextualSearchPanel extends OverlayPanel {
     }
 
     @Override
+    public float getOpenTabIconX() {
+        if (LocalizationUtils.isLayoutRtl()) {
+            return getOffsetX() + getBarMarginSide();
+        } else {
+            return getOffsetX() + getWidth() - getBarMarginSide() - getCloseIconDimension();
+        }
+    }
+
+    @Override
+    protected boolean isCoordinateInsideCloseButton(float x) {
+        return false;
+    }
+
+    @Override
+    protected boolean isCoordinateInsideOpenTabButton(float x) {
+        return getOpenTabIconX() - getButtonPaddingDps() <= x
+                && x <= getOpenTabIconX() + getOpenTabIconDimension() + getButtonPaddingDps();
+    }
+
+    @Override
     public float getContentY() {
-        return getOffsetY() + getBarContainerHeight() + getPromoHeightPx() * mPxToDp;
+        return getOffsetY() + getBarContainerHeight() + getPanelHelpHeight()
+                + getRelatedSearchesMaximumHeight() + getPromoHeightPx() * mPxToDp;
     }
 
     @Override
@@ -360,27 +454,24 @@ public class ContextualSearchPanel extends OverlayPanel {
 
     @Override
     protected float getPeekedHeight() {
-        return getBarHeightPeeking() + getBarBannerControl().getHeightPeekingPx() * mPxToDp;
+        return getBarHeight() + getBarBannerControl().getHeightPeekingPx() * mPxToDp;
     }
 
     @Override
-    protected float calculateBarShadowOpacity() {
-        float barShadowOpacity = 0.f;
-        if (getPromoHeightPx() > 0.f) {
-            float threshold = 2 * mBarShadowHeightPx;
-            barShadowOpacity = getPromoHeightPx() > mBarShadowHeightPx ? 1.f
-                    : MathUtils.interpolate(0.f, 1.f, getPromoHeightPx() / threshold);
-        }
-        return barShadowOpacity;
+    protected float getMaximizedHeight() {
+        // Max height does not cover the entire content screen.
+        return getTabHeight() * MAXIMIZED_HEIGHT_FRACTION;
     }
 
     @Override
-    protected boolean doesMatchFullWidthCriteria(float containerWidth) {
-        if (!mOverrideIsFullWidthSizePanelForTesting && mActivity != null
-                && mActivity.getBottomSheet() != null) {
-            return true;
-        }
-        return super.doesMatchFullWidthCriteria(containerWidth);
+    public float getBarHeight() {
+        return super.getBarHeight() + getInBarRelatedSearchesAnimatedHeight();
+    }
+
+    @Override
+    public void setClampedPanelHeight(float height) {
+        // TODO(donnd): better to just expose the super method to be public?
+        super.setClampedPanelHeight(height);
     }
 
     // ============================================================================================
@@ -404,6 +495,7 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * Notify the panel that the content was seen.
      */
+    @Override
     public void setWasSearchContentViewSeen() {
         mPanelMetrics.setWasSearchContentViewSeen();
     }
@@ -411,6 +503,7 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * @param isActive Whether the promo is active.
      */
+    @Override
     public void setIsPromoActive(boolean isActive, boolean isMandatory) {
         if (isActive) {
             getPromoControl().show(isMandatory);
@@ -419,6 +512,20 @@ public class ContextualSearchPanel extends OverlayPanel {
         }
 
         mPanelMetrics.setIsPromoActive(isActive);
+    }
+
+    @Override
+    public void setIsPanelHelpActive(boolean isActive) {
+        if (isActive) {
+            getPanelHelp().show();
+        } else {
+            getPanelHelp().hide();
+        }
+    }
+
+    @Override
+    public void clearRelatedSearches() {
+        getRelatedSearchesControl().hide();
     }
 
     /**
@@ -444,12 +551,22 @@ public class ContextualSearchPanel extends OverlayPanel {
     }
 
     /**
+     * @return The visible Related Search suggestions.
+     */
+    @VisibleForTesting
+    @Nullable
+    public List<String> getRelatedSearches() {
+        return getRelatedSearchesControl().getRelatedSearchesSuggestions();
+    }
+
+    /**
      * Called after the panel has navigated to prefetched Search Results.
      * If the user has the panel open then they will see the prefetched result starting to load.
      * Currently this just logs the time between the start of the search until the results start to
      * render in the Panel.
      * @param didResolve Whether the search required the Search Term to be resolved.
      */
+    @Override
     public void onPanelNavigatedToPrefetchedSearch(boolean didResolve) {
         mPanelMetrics.onPanelNavigatedToPrefetchedSearch(didResolve);
     }
@@ -468,19 +585,14 @@ public class ContextualSearchPanel extends OverlayPanel {
      * Maximizes the Contextual Search Panel, then promotes it to a regular Tab.
      * @param reason The {@code StateChangeReason} behind the maximization and promotion to tab.
      */
+    @Override
     public void maximizePanelThenPromoteToTab(@StateChangeReason int reason) {
         mShouldPromoteToTabAfterMaximizing = true;
         super.maximizePanel(reason);
-    }
-
-    /**
-     * Maximizes the Contextual Search Panel, then promotes it to a regular Tab.
-     * @param reason The {@code StateChangeReason} behind the maximization and promotion to tab.
-     * @param duration The animation duration in milliseconds.
-     */
-    public void maximizePanelThenPromoteToTab(@StateChangeReason int reason, long duration) {
-        mShouldPromoteToTabAfterMaximizing = true;
-        animatePanelToState(PanelState.MAXIMIZED, reason, duration);
+        if (reason == StateChangeReason.SERP_NAVIGATION) {
+            ContextualSearchUma.logSerpResultClicked(
+                    getRelatedSearchesControl().isShowingRelatedSearchSerp());
+        }
     }
 
     @Override
@@ -501,17 +613,16 @@ public class ContextualSearchPanel extends OverlayPanel {
     public void closePanel(@StateChangeReason int reason, boolean animate) {
         super.closePanel(reason, animate);
         mHasContentBeenTouched = false;
+        if (reason == StateChangeReason.TAB_PROMOTION) {
+            ContextualSearchUma.logTabPromotion(
+                    getRelatedSearchesControl().isShowingRelatedSearchSerp());
+        }
+        destroyRelatedSearchesControl();
     }
 
     @Override
     public void expandPanel(@StateChangeReason int reason) {
         super.expandPanel(reason);
-    }
-
-    @Override
-    public @PanelState int getPanelState() {
-        // NOTE(pedrosimonetti): exposing superclass method to the interface.
-        return super.getPanelState();
     }
 
     @Override
@@ -527,6 +638,7 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * Gets whether a touch on the content view has been done yet or not.
      */
+    @Override
     public boolean didTouchContent() {
         return mHasContentBeenTouched;
     }
@@ -537,6 +649,7 @@ public class ContextualSearchPanel extends OverlayPanel {
      * after search term resolution completed.
      * @param searchTerm The string that represents the search term.
      */
+    @Override
     public void setSearchTerm(String searchTerm) {
         getImageControl().hideCustomImage(true);
         getSearchBarControl().setSearchTerm(searchTerm);
@@ -550,6 +663,7 @@ public class ContextualSearchPanel extends OverlayPanel {
      * @param selection The portion of the context that represents the user's selection.
      * @param end The portion of the context from the selection to its end.
      */
+    @Override
     public void setContextDetails(String selection, String end) {
         getImageControl().hideCustomImage(true);
         getSearchBarControl().setContextDetails(selection, end);
@@ -563,8 +677,17 @@ public class ContextualSearchPanel extends OverlayPanel {
      * When the caption is displayed, the Search Term is pushed up and the caption shows below.
      * @param caption The string to show in as the caption.
      */
+    @Override
     public void setCaption(String caption) {
         getSearchBarControl().setCaption(caption);
+    }
+
+    /** Ensures that we have a Caption to display in the SearchBar. */
+    @Override
+    public void ensureCaption() {
+        if (getSearchBarControl().getCaptionVisible()) return;
+        getSearchBarControl().setCaption(
+                mContext.getResources().getString(R.string.contextual_search_default_caption));
     }
 
     /**
@@ -573,24 +696,42 @@ public class ContextualSearchPanel extends OverlayPanel {
      * @param thumbnailUrl The URL of the thumbnail to display.
      * @param quickActionUri The URI for the intent associated with the quick action.
      * @param quickActionCategory The {@code QuickActionCategory} for the quick action.
+     * @param cardTagEnum The {@link CardTag} that the server returned if there was a card,
+     *        or {@code 0}.
+     * @param relatedSearches Suggested searches to be displayed in the Panel.
      */
+    @Override
     public void onSearchTermResolved(String searchTerm, String thumbnailUrl, String quickActionUri,
-            int quickActionCategory) {
+            int quickActionCategory, @CardTag int cardTagEnum,
+            @Nullable List<String> relatedSearches) {
+        getRelatedSearchesControl().setRelatedSearchesSuggestions(relatedSearches);
         mPanelMetrics.onSearchTermResolved();
+        if (cardTagEnum == CardTag.CT_DEFINITION
+                || cardTagEnum == CardTag.CT_CONTEXTUAL_DEFINITION) {
+            getSearchBarControl().updateForDictionaryDefinition(searchTerm, cardTagEnum);
+            return;
+        }
+
         getSearchBarControl().setSearchTerm(searchTerm);
         getSearchBarControl().animateSearchTermResolution();
-        if (mActivity == null || mActivity.getToolbarManager() == null) return;
+        if (mActivity == null || mToolbarManager == null) return;
 
-        getSearchBarControl().setQuickAction(quickActionUri, quickActionCategory,
-                mActivity.getToolbarManager().getPrimaryColor());
+        getSearchBarControl().setQuickAction(
+                quickActionUri, quickActionCategory, mToolbarManager.getPrimaryColor());
         getImageControl().setThumbnailUrl(thumbnailUrl);
+
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.RELATED_SEARCHES_IN_BAR)
+                && relatedSearches.size() > 0) {
+            getSearchBarControl().animateInBarRelatedSearches();
+        }
     }
 
     /**
-     * Calculates the position of the Contextual Search panel in the screen.
+     * Calculates the position of the Contextual Search panel on the screen.
      * @return A {@link Rect} object that represents the Contextual Search panel's position in
      *         the screen, in pixels.
      */
+    @Override
     public Rect getPanelRect() {
         int[] contentLocationInWindow = new int[2];
         mActivity.findViewById(android.R.id.content).getLocationInWindow(contentLocationInWindow);
@@ -607,6 +748,11 @@ public class ContextualSearchPanel extends OverlayPanel {
         return new Rect(left, top, right, bottom);
     }
 
+    /** @return The padding used for each side of the button in the Bar. */
+    public float getButtonPaddingDps() {
+        return mButtonPaddingDps;
+    }
+
     // ============================================================================================
     // Panel Metrics
     // ============================================================================================
@@ -616,6 +762,7 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * @return The {@link ContextualSearchPanelMetrics}.
      */
+    @Override
     public ContextualSearchPanelMetrics getPanelMetrics() {
         return mPanelMetrics;
     }
@@ -623,6 +770,7 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * Sets that the contextual search involved the promo.
      */
+    @Override
     public void setDidSearchInvolvePromo() {
         mPanelMetrics.setDidSearchInvolvePromo();
     }
@@ -638,6 +786,8 @@ public class ContextualSearchPanel extends OverlayPanel {
         super.updatePanelForCloseOrPeek(percentage);
 
         getPromoControl().onUpdateFromCloseToPeek(percentage);
+        getPanelHelp().onUpdateFromCloseToPeek(percentage);
+        getRelatedSearchesControl().onUpdateFromCloseToPeek(percentage);
         getBarBannerControl().onUpdateFromCloseToPeek(percentage);
         getSearchBarControl().onUpdateFromCloseToPeek(percentage);
     }
@@ -647,6 +797,8 @@ public class ContextualSearchPanel extends OverlayPanel {
         super.updatePanelForExpansion(percentage);
 
         getPromoControl().onUpdateFromPeekToExpand(percentage);
+        getPanelHelp().onUpdateFromPeekToExpand(percentage);
+        getRelatedSearchesControl().onUpdateFromPeekToExpand(percentage);
         getBarBannerControl().onUpdateFromPeekToExpand(percentage);
         getSearchBarControl().onUpdateFromPeekToExpand(percentage);
     }
@@ -656,6 +808,8 @@ public class ContextualSearchPanel extends OverlayPanel {
         super.updatePanelForMaximization(percentage);
 
         getPromoControl().onUpdateFromExpandToMaximize(percentage);
+        getPanelHelp().onUpdateFromExpandToMaximize(percentage);
+        getRelatedSearchesControl().onUpdateFromExpandToMaximize(percentage);
         getBarBannerControl().onUpdateFromExpandToMaximize(percentage);
     }
 
@@ -663,6 +817,12 @@ public class ContextualSearchPanel extends OverlayPanel {
     protected void updatePanelForSizeChange() {
         if (getPromoControl().isVisible()) {
             getPromoControl().invalidate(true);
+        }
+        if (getPanelHelp().isVisible()) {
+            getPanelHelp().invalidate(true);
+        }
+        if (getRelatedSearchesControl().isVisible()) {
+            getRelatedSearchesControl().invalidate(true);
         }
         if (getBarBannerControl().isVisible()) {
             getBarBannerControl().onResized(this);
@@ -693,18 +853,26 @@ public class ContextualSearchPanel extends OverlayPanel {
         float statusBarAlpha =
                 (maxBrightness - basePageBrightness) / (maxBrightness - minBrightness);
         if (statusBarAlpha == 0.0) {
-            if (mScrimView != null) mScrimView.hideScrim(false);
-            mScrimParams = null;
-            mScrimView = null;
+            if (mScrimCoordinator != null) mScrimCoordinator.hideScrim(false);
+            mScrimProperties = null;
+            mScrimCoordinator = null;
             return;
 
         } else {
-            mScrimView = mManagementDelegate.getChromeActivity().getScrim();
-            if (mScrimParams == null) {
-                mScrimParams = new ScrimParams(null, false, true, 0, null);
-                mScrimView.showScrim(mScrimParams);
+            mScrimCoordinator = mManagementDelegate.getScrimCoordinator();
+            if (mScrimProperties == null) {
+                mScrimProperties =
+                        new PropertyModel.Builder(ScrimProperties.REQUIRED_KEYS)
+                                .with(ScrimProperties.TOP_MARGIN, 0)
+                                .with(ScrimProperties.AFFECTS_STATUS_BAR, true)
+                                .with(ScrimProperties.ANCHOR_VIEW, mCompositorViewHolder)
+                                .with(ScrimProperties.SHOW_IN_FRONT_OF_ANCHOR_VIEW, false)
+                                .with(ScrimProperties.VISIBILITY_CALLBACK, null)
+                                .with(ScrimProperties.CLICK_DELEGATE, null)
+                                .build();
+                mScrimCoordinator.showScrim(mScrimProperties);
             }
-            mScrimView.setViewAlpha(statusBarAlpha);
+            mScrimCoordinator.setAlpha(statusBarAlpha);
         }
     }
 
@@ -719,6 +887,7 @@ public class ContextualSearchPanel extends OverlayPanel {
      * Updates the coordinate of the existing selection.
      * @param y The y coordinate of the selection in pixels.
      */
+    @Override
     public void updateBasePageSelectionYPx(float y) {
         mBasePageSelectionYPx = y;
     }
@@ -733,6 +902,7 @@ public class ContextualSearchPanel extends OverlayPanel {
             // Calculate the offset to center the selection on the available area.
             final float availableHeight = getTabHeight() - getExpandedHeight();
             offset = -selectionY + availableHeight / 2;
+            offset += getLayoutOffsetYDps();
         }
         return offset;
     }
@@ -747,6 +917,7 @@ public class ContextualSearchPanel extends OverlayPanel {
      * Creates the ContextualSearchBarControl, if needed. The Views are set to INVISIBLE, because
      * they won't actually be displayed on the screen (their snapshots will be displayed instead).
      */
+    @Override
     public ContextualSearchBarControl getSearchBarControl() {
         if (mSearchBarControl == null) {
             mSearchBarControl =
@@ -763,6 +934,11 @@ public class ContextualSearchPanel extends OverlayPanel {
             mSearchBarControl.destroy();
             mSearchBarControl = null;
         }
+    }
+
+    /** Returns whether we currently have a Search Bar created. */
+    private boolean haveSearchBarControl() {
+        return mSearchBarControl != null;
     }
 
     // ============================================================================================
@@ -812,6 +988,7 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * @return Whether the Promo reached a state in which it could be interacted.
      */
+    @Override
     public boolean wasPromoInteractive() {
         return getPromoControl().wasInteractive();
     }
@@ -850,28 +1027,180 @@ public class ContextualSearchPanel extends OverlayPanel {
      */
     private ContextualSearchPromoHost getContextualSearchPromoHost() {
         if (mPromoHost == null) {
+            // Create a handler for callbacks from the Opt-in promo.
             mPromoHost = new ContextualSearchPromoHost() {
+                @Override
+                public float getYPositionPx() {
+                    // Needs to enumerate anything that can appear above it in the panel.
+                    return Math.round(
+                            (getOffsetY() + getBarContainerHeight()
+                                    + getRelatedSearchesMaximumHeight() + getPanelHelpHeight())
+                            / mPxToDp);
+                }
+
+                @Override
+                public void onPanelSectionSizeChange(boolean hasStarted) {
+                    // The promo section is causing movement, but since there's nothing
+                    // below it we don't need to do anything.
+                }
+
                 @Override
                 public void onPromoOptIn(boolean wasMandatory) {
                     if (wasMandatory) {
                         getOverlayPanelContent().showContent();
                         expandPanel(StateChangeReason.OPTIN);
                     }
+                    mManagementDelegate.onPromoOptIn();
                 }
 
                 @Override
                 public void onPromoOptOut() {
                     closePanel(OverlayPanel.StateChangeReason.OPTOUT, true);
                 }
-
-                @Override
-                public void onUpdatePromoAppearance() {
-                    ContextualSearchPanel.this.updateBarShadow();
-                }
             };
         }
 
         return mPromoHost;
+    }
+
+    // ============================================================================================
+    // In-Panel Help
+    // ============================================================================================
+
+    /** The Help section of the Panel. */
+    private ContextualSearchPanelHelp mPanelHelp;
+    private ContextualSearchHelpSectionHost mHelpSectionHost;
+
+    /**
+     * Returns the {@link ContextualSearchPanelHelp} that controls the help section of this
+     * panel.
+     */
+    private ContextualSearchPanelHelp getPanelHelp() {
+        if (mPanelHelp == null) {
+            mPanelHelp = new ContextualSearchPanelHelp(this, getContextualSearchHelpSectionHost(),
+                    mContext, mContainerView, mResourceLoader);
+        }
+        return mPanelHelp;
+    }
+
+    /**
+     * @return Height of the help section of the panel in DPs.
+     */
+    private float getPanelHelpHeight() {
+        return getPanelHelp().getHeightPx() * mPxToDp;
+    }
+
+    /** Destroys the Help section of this panel. */
+    private void destroyPanelHelp() {
+        mPanelHelp.destroy();
+        mPanelHelp = null;
+    }
+
+    /**
+     * @return An implementation of {@link ContextualSearchHelpSectionHost}.
+     */
+    private ContextualSearchHelpSectionHost getContextualSearchHelpSectionHost() {
+        if (mHelpSectionHost == null) {
+            mHelpSectionHost = new ContextualSearchHelpSectionHost() {
+                @Override
+                public float getYPositionPx() {
+                    // Needs to enumerate anything that can appear above it in the panel.
+                    return Math.round((getOffsetY() + getBarContainerHeight()
+                                              + getRelatedSearchesMaximumHeight())
+                            / mPxToDp);
+                }
+
+                @Override
+                public void onPanelSectionSizeChange(boolean hasStarted) {
+                    // The help section is causing movement which means the promo below
+                    // it will move.
+                    getPromoControl().onUpdateForMovement(hasStarted);
+                }
+
+                @Override
+                public boolean isPanelHelpEnabled() {
+                    return mManagementDelegate.isPanelHelpEnabled();
+                }
+
+                @Override
+                public void onPanelHelpOkClicked() {
+                    // Tell the manager the user said OK.
+                    mManagementDelegate.onPanelHelpOkClicked();
+                }
+            };
+        }
+        return mHelpSectionHost;
+    }
+
+    // ============================================================================================
+    // Related Searches Control Panel-Section
+    // ============================================================================================
+
+    private RelatedSearchesControl mRelatedSearchesControl;
+    private RelatedSearchesSectionHost mRelatedSearchesSectionHost;
+
+    /**
+     * Creates the RelatedSearchesControl, if needed.
+     */
+    @VisibleForTesting
+    public RelatedSearchesControl getRelatedSearchesControl() {
+        if (mRelatedSearchesControl == null) {
+            mRelatedSearchesControl = new RelatedSearchesControl(this,
+                    getRelatedSearchesSectionHost(), mContext, mContainerView, mResourceLoader);
+        }
+        return mRelatedSearchesControl;
+    }
+
+    /**
+     * @return Total height of this section of the panel in DPs (once fully exposed by animation).
+     */
+    float getRelatedSearchesMaximumHeight() {
+        return getRelatedSearchesControl().getHeightPx() * mPxToDp;
+    }
+
+    /**
+     * @return Height of the Related Searches UI as currently show right inside the Bar, in DPs.
+     */
+    public float getInBarRelatedSearchesAnimatedHeight() {
+        return haveSearchBarControl()
+                ? getSearchBarControl().getInBarRelatedSearchesAnimatedHeight()
+                : 0.f;
+    }
+
+    /**
+     * Destroys the RelatedSearchesControl.
+     */
+    private void destroyRelatedSearchesControl() {
+        if (mRelatedSearchesControl != null) {
+            mRelatedSearchesControl.destroy();
+            mRelatedSearchesControl = null;
+        }
+    }
+
+    /**
+     * @return An implementation of {@link RelatedSearchesSectionHost}.
+     */
+    private RelatedSearchesSectionHost getRelatedSearchesSectionHost() {
+        if (mRelatedSearchesSectionHost == null) {
+            mRelatedSearchesSectionHost = new RelatedSearchesSectionHost() {
+                @Override
+                public float getYPositionPx() {
+                    // Nothing can appear above it in the panel.
+                    return Math.round((getOffsetY() + getBarContainerHeight()) / mPxToDp);
+                }
+
+                @Override
+                public void onPanelSectionSizeChange(boolean hasStarted) {
+                    // This section currently doesn't change size, so we can ignore this.
+                }
+
+                @Override
+                public void onSuggestionClicked(int selectionIndex) {
+                    mManagementDelegate.onRelatedSearchesSuggestionClicked(selectionIndex);
+                }
+            };
+        }
+        return mRelatedSearchesSectionHost;
     }
 
     // ============================================================================================
@@ -882,7 +1211,6 @@ public class ContextualSearchPanel extends OverlayPanel {
      * @return Whether the content can be displayed in the panel.
      */
     public boolean canDisplayContentInPanel() {
-        // TODO(pedrosimonetti): add svelte support.
         return !getPromoControl().isMandatory();
     }
 
@@ -896,6 +1224,7 @@ public class ContextualSearchPanel extends OverlayPanel {
      * NOTE(mdjones): This should not be exposed. The only use is in ContextualSearchManager for a
      * bug related to loading new panel content.
      */
+    @Override
     public void destroyContent() {
         super.destroyOverlayPanelContent();
     }
@@ -903,8 +1232,8 @@ public class ContextualSearchPanel extends OverlayPanel {
     /**
      * @return Whether the panel content can be displayed in a new tab.
      */
-    boolean canPromoteToNewTab() {
-        return !mActivity.isCustomTab() && canDisplayContentInPanel();
+    public boolean canPromoteToNewTab() {
+        return mActivityType == ActivityType.TABBED && canDisplayContentInPanel();
     }
 
     // ============================================================================================

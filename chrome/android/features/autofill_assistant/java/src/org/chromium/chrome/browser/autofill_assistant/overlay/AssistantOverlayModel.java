@@ -4,10 +4,16 @@
 
 package org.chromium.chrome.browser.autofill_assistant.overlay;
 
+import android.content.Context;
 import android.graphics.RectF;
+
+import androidx.annotation.ColorInt;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.chrome.browser.autofill_assistant.generic_ui.AssistantDrawable;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -21,19 +27,37 @@ import java.util.List;
 public class AssistantOverlayModel extends PropertyModel {
     public static final WritableIntPropertyKey STATE = new WritableIntPropertyKey();
 
-    // Skipping equality as a way of fixing offset issues. See b/129048184.
-    // TODO(b/129050125): Handle offsets properly and remove.
+    public static final WritableObjectPropertyKey<WebContents> WEB_CONTENTS =
+            new WritableObjectPropertyKey<>();
+
     public static final WritableObjectPropertyKey<List<RectF>> TOUCHABLE_AREA =
-            new WritableObjectPropertyKey<>(/* skipEquality= */ true);
+            new WritableObjectPropertyKey<>();
+
+    public static final WritableObjectPropertyKey<List<RectF>> RESTRICTED_AREA =
+            new WritableObjectPropertyKey<>();
 
     public static final WritableObjectPropertyKey<AssistantOverlayDelegate> DELEGATE =
             new WritableObjectPropertyKey<>();
 
-    public static final WritableObjectPropertyKey<WebContents> WEB_CONTENTS =
+    public static final WritableObjectPropertyKey<Integer> BACKGROUND_COLOR =
+            new WritableObjectPropertyKey<>();
+
+    public static final WritableObjectPropertyKey<Integer> HIGHLIGHT_BORDER_COLOR =
+            new WritableObjectPropertyKey<>();
+
+    public static final WritableObjectPropertyKey<Integer> TAP_TRACKING_COUNT =
+            new WritableObjectPropertyKey<>();
+
+    public static final WritableObjectPropertyKey<Long> TAP_TRACKING_DURATION_MS =
+            new WritableObjectPropertyKey<>();
+
+    public static final WritableObjectPropertyKey<AssistantOverlayImage> OVERLAY_IMAGE =
             new WritableObjectPropertyKey<>();
 
     public AssistantOverlayModel() {
-        super(STATE, TOUCHABLE_AREA, DELEGATE, WEB_CONTENTS);
+        super(WEB_CONTENTS, STATE, TOUCHABLE_AREA, RESTRICTED_AREA, DELEGATE, BACKGROUND_COLOR,
+                HIGHLIGHT_BORDER_COLOR, TAP_TRACKING_COUNT, TAP_TRACKING_DURATION_MS,
+                OVERLAY_IMAGE);
     }
 
     @CalledByNative
@@ -42,13 +66,28 @@ public class AssistantOverlayModel extends PropertyModel {
     }
 
     @CalledByNative
-    private void setTouchableArea(float[] coords) {
+    @VisibleForTesting
+    private void setWebContents(WebContents webContents) {
+        set(WEB_CONTENTS, webContents);
+    }
+
+    private static List<RectF> toRectangles(float[] coords) {
         List<RectF> boxes = new ArrayList<>();
         for (int i = 0; i < coords.length; i += 4) {
             boxes.add(new RectF(/* left= */ coords[i], /* top= */ coords[i + 1],
                     /* right= */ coords[i + 2], /* bottom= */ coords[i + 3]));
         }
-        set(TOUCHABLE_AREA, boxes);
+        return boxes;
+    }
+
+    @CalledByNative
+    private void setTouchableArea(float[] coords) {
+        set(TOUCHABLE_AREA, toRectangles(coords));
+    }
+
+    @CalledByNative
+    private void setRestrictedArea(float[] coords) {
+        set(RESTRICTED_AREA, toRectangles(coords));
     }
 
     @CalledByNative
@@ -57,7 +96,42 @@ public class AssistantOverlayModel extends PropertyModel {
     }
 
     @CalledByNative
-    private void setWebContents(WebContents webContents) {
-        set(WEB_CONTENTS, webContents);
+    private void setBackgroundColor(@Nullable @ColorInt Integer color) {
+        set(BACKGROUND_COLOR, color);
+    }
+
+    @CalledByNative
+    private void setHighlightBorderColor(@Nullable @ColorInt Integer color) {
+        set(HIGHLIGHT_BORDER_COLOR, color);
+    }
+
+    @CalledByNative
+    private void setOverlayImage(Context context, @Nullable AssistantDrawable imageDrawable,
+            int imageSizeInPixels, int imageTopMarginInPixels, int imageBottomMarginInPixels,
+            String text, @Nullable @ColorInt Integer textColor, int textSizeInPixels) {
+        AssistantOverlayImage assistantOverlayImage =
+                new AssistantOverlayImage(imageSizeInPixels, imageTopMarginInPixels,
+                        imageBottomMarginInPixels, text, textColor, textSizeInPixels);
+        if (imageDrawable == null) {
+            set(OVERLAY_IMAGE, assistantOverlayImage);
+            return;
+        }
+        imageDrawable.getDrawable(context, drawable -> {
+            if (drawable != null) {
+                assistantOverlayImage.mDrawable = drawable;
+                set(OVERLAY_IMAGE, assistantOverlayImage);
+            }
+        });
+    }
+
+    @CalledByNative
+    private void clearOverlayImage() {
+        set(OVERLAY_IMAGE, null);
+    }
+
+    @CalledByNative
+    private void setTapTracking(int count, long durationMs) {
+        set(TAP_TRACKING_COUNT, count);
+        set(TAP_TRACKING_DURATION_MS, durationMs);
     }
 }

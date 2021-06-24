@@ -7,9 +7,10 @@
 #include <memory>
 #include <string>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
 #include "chromecast/common/cast_extensions_api_provider.h"
 #include "extensions/common/api/api_features.h"
 #include "extensions/common/api/behavior_features.h"
@@ -37,11 +38,6 @@ class ShellPermissionMessageProvider : public PermissionMessageProvider {
 
   // PermissionMessageProvider implementation.
   PermissionMessages GetPermissionMessages(
-      const PermissionIDSet& permissions) const override {
-    return PermissionMessages();
-  }
-
-  PermissionMessages GetPowerfulPermissionMessages(
       const PermissionIDSet& permissions) const override {
     return PermissionMessages();
   }
@@ -101,15 +97,15 @@ void CastExtensionsClient::FilterHostPermissions(
   NOTIMPLEMENTED();
 }
 
-void CastExtensionsClient::SetScriptingWhitelist(
-    const ScriptingWhitelist& whitelist) {
-  scripting_whitelist_ = whitelist;
+void CastExtensionsClient::SetScriptingAllowlist(
+    const ScriptingAllowlist& allowlist) {
+  scripting_allowlist_ = allowlist;
 }
 
-const ExtensionsClient::ScriptingWhitelist&
-CastExtensionsClient::GetScriptingWhitelist() const {
-  // TODO(jamescook): Real whitelist.
-  return scripting_whitelist_;
+const ExtensionsClient::ScriptingAllowlist&
+CastExtensionsClient::GetScriptingAllowlist() const {
+  // TODO(jamescook): Real allowlist.
+  return scripting_allowlist_;
 }
 
 URLPatternSet CastExtensionsClient::GetPermittedChromeSchemeHosts(
@@ -124,12 +120,6 @@ bool CastExtensionsClient::IsScriptableURL(const GURL& url,
   NOTIMPLEMENTED();
   return true;
 }
-
-bool CastExtensionsClient::ShouldSuppressFatalErrors() const {
-  return true;
-}
-
-void CastExtensionsClient::RecordDidSuppressFatalError() {}
 
 const GURL& CastExtensionsClient::GetWebstoreBaseURL() const {
   return webstore_base_url_;

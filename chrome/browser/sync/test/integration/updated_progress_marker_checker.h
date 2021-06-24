@@ -5,12 +5,10 @@
 #ifndef CHROME_BROWSER_SYNC_TEST_INTEGRATION_UPDATED_PROGRESS_MARKER_CHECKER_H_
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_UPDATED_PROGRESS_MARKER_CHECKER_H_
 
-#include <string>
-
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "chrome/browser/sync/test/integration/single_client_status_change_checker.h"
 #include "components/sync/driver/sync_service_observer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 // Waits until all local changes have been committed and progress markers are
 // updated. This includes local changes posted to the sync thread before the
@@ -23,12 +21,11 @@
 // of this checker.  Please do not use it in new tests.
 class UpdatedProgressMarkerChecker : public SingleClientStatusChangeChecker {
  public:
-  explicit UpdatedProgressMarkerChecker(syncer::ProfileSyncService* service);
+  explicit UpdatedProgressMarkerChecker(syncer::SyncServiceImpl* service);
   ~UpdatedProgressMarkerChecker() override;
 
   // StatusChangeChecker implementation.
-  bool IsExitConditionSatisfied() override;
-  std::string GetDebugMessage() const override;
+  bool IsExitConditionSatisfied(std::ostream* os) override;
 
   // syncer::SyncServiceObserver implementation.
   void OnSyncCycleCompleted(syncer::SyncService* sync) override;
@@ -36,9 +33,9 @@ class UpdatedProgressMarkerChecker : public SingleClientStatusChangeChecker {
  private:
   void GotHasUnsyncedItems(bool has_unsynced_items);
 
-  base::Optional<bool> has_unsynced_items_;
+  absl::optional<bool> has_unsynced_items_;
 
-  base::WeakPtrFactory<UpdatedProgressMarkerChecker> weak_ptr_factory_;
+  base::WeakPtrFactory<UpdatedProgressMarkerChecker> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_SYNC_TEST_INTEGRATION_UPDATED_PROGRESS_MARKER_CHECKER_H_

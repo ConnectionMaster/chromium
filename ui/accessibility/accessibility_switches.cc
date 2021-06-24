@@ -9,14 +9,18 @@
 
 namespace switches {
 
-// Shows additional checkboxes in Settings to enable Chrome OS accessibility
-// features that haven't launched yet.
-const char kEnableExperimentalAccessibilityFeatures[] =
-    "enable-experimental-accessibility-features";
-
 // Shows additional automatic click features that haven't launched yet.
 const char kEnableExperimentalAccessibilityAutoclick[] =
     "enable-experimental-accessibility-autoclick";
+
+// Enables the experimental dictation extension on Chrome OS that hasn't
+// launched yet.
+const char kEnableExperimentalAccessibilityDictationExtension[] =
+    "enable-experimental-accessibility-dictation-extension";
+
+// Enables dictation to use on-device speech recognition.
+const char kEnableExperimentalAccessibilityDictationOffline[] =
+    "enable-experimental-accessibility-dictation-offline";
 
 // Enables support for visually debugging the accessibility labels
 // feature, which provides images descriptions for screen reader users.
@@ -24,25 +28,35 @@ const char kEnableExperimentalAccessibilityLabelsDebugging[] =
     "enable-experimental-accessibility-labels-debugging";
 
 // Enables language detection on in-page text content which is then exposed to
-// accessibility technology such as screen readers.
+// assistive technology such as screen readers.
 const char kEnableExperimentalAccessibilityLanguageDetection[] =
     "enable-experimental-accessibility-language-detection";
 
-// Shows setting to enable Switch Access before it has launched.
-const char kEnableExperimentalAccessibilitySwitchAccess[] =
-    "enable-experimental-accessibility-switch-access";
+// Enables language detection for dynamic content which is then exposed to
+// assistive technology such as screen readers.
+const char kEnableExperimentalAccessibilityLanguageDetectionDynamic[] =
+    "enable-experimental-accessibility-language-detection-dynamic";
 
-// Enables language switching feature that hasn't launched yet.
-const char kEnableExperimentalAccessibilityChromeVoxLanguageSwitching[] =
-    "enable-experimental-accessibility-chromevox-language-switching";
+// Enables in progress Switch Access features for text input.
+const char kEnableExperimentalAccessibilitySwitchAccessText[] =
+    "enable-experimental-accessibility-switch-access-text";
 
-// Enables automatic rich text indication in ChromeVox that hasn't launched yet.
-const char kEnableExperimentalAccessibilityChromeVoxRichTextIndication[] =
-    "enable-experimental-accessibility-chromevox-rich-text-indication";
+// Enables debug feature for drawing rectangle around magnified region, without
+// zooming in.
+const char kEnableMagnifierDebugDrawRect[] = "enable-magnifier-debug-draw-rect";
 
-bool AreExperimentalAccessibilityFeaturesEnabled() {
+// Enables the Switch Access setup guide that hasn't launched yet.
+const char kEnableExperimentalAccessibilitySwitchAccessSetupGuide[] =
+    "enable-experimental-accessibility-switch-access-setup-guide";
+
+bool IsExperimentalAccessibilityDictationExtensionEnabled() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      ::switches::kEnableExperimentalAccessibilityFeatures);
+      ::switches::kEnableExperimentalAccessibilityDictationExtension);
+}
+
+bool IsExperimentalAccessibilityDictationOfflineEnabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      ::switches::kEnableExperimentalAccessibilityDictationOffline);
 }
 
 bool IsExperimentalAccessibilityLanguageDetectionEnabled() {
@@ -50,8 +64,23 @@ bool IsExperimentalAccessibilityLanguageDetectionEnabled() {
       ::switches::kEnableExperimentalAccessibilityLanguageDetection);
 }
 
+bool IsExperimentalAccessibilityLanguageDetectionDynamicEnabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      ::switches::kEnableExperimentalAccessibilityLanguageDetectionDynamic);
+}
+
+bool IsExperimentalAccessibilitySwitchAccessTextEnabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      ::switches::kEnableExperimentalAccessibilitySwitchAccessText);
+}
+
+bool IsMagnifierDebugDrawRectEnabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      ::switches::kEnableMagnifierDebugDrawRect);
+}
+
 #if defined(OS_WIN)
-// Toggles between IAccessible and UI Automation platform API.
+// Enables UI Automation platform API in addition to the IAccessible API.
 const char kEnableExperimentalUIAutomation[] =
     "enable-experimental-ui-automation";
 #endif
@@ -64,5 +93,9 @@ bool IsExperimentalAccessibilityPlatformUIAEnabled() {
   return false;
 #endif
 }
+
+// Optionally disable AXMenuList, which makes the internal pop-up menu
+// UI for a select element directly accessible.
+const char kDisableAXMenuList[] = "disable-ax-menu-list";
 
 }  // namespace switches

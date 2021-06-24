@@ -9,11 +9,12 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_descriptor_watcher_posix.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/posix/unix_domain_socket.h"
 #include "base/rand_util.h"
 #include "base/task_runner_util.h"
@@ -36,7 +37,7 @@ const PowerManagerClient::TimerId kErrorId = -2;
 }  // namespace
 
 NativeTimer::NativeTimer(const std::string& tag)
-    : timer_id_(kNotCreatedId), tag_(tag), weak_factory_(this) {
+    : timer_id_(kNotCreatedId), tag_(tag) {
   // Create a socket pair, one end will be sent to the power daemon the other
   // socket will be used to listen for the timer firing.
   base::ScopedFD powerd_fd;
@@ -125,7 +126,7 @@ void NativeTimer::Start(base::TimeTicks absolute_expiration_time,
 
 void NativeTimer::OnCreateTimer(
     base::ScopedFD expiration_fd,
-    base::Optional<std::vector<int32_t>> timer_ids) {
+    absl::optional<std::vector<int32_t>> timer_ids) {
   DCHECK(expiration_fd.is_valid());
   if (!timer_ids.has_value()) {
     LOG(ERROR) << "No timers returned";

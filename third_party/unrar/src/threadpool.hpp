@@ -1,12 +1,13 @@
 #ifndef _RAR_THREADPOOL_
 #define _RAR_THREADPOOL_
 
-namespace third_party_unrar {
-
 #ifndef RAR_SMP
 const uint MaxPoolThreads=1; // For single threaded version.
 #else
-const uint MaxPoolThreads=32;
+// We need to use the processor groups API to increase it beyond 64.
+// Also be sure to check and adjust if needed per thread and total block size
+// when compressing if going above 64.
+const uint MaxPoolThreads=64;
 
 
 #ifdef _UNIX
@@ -100,12 +101,7 @@ class ThreadPool
 #endif
 };
 
-ThreadPool* CreateThreadPool();
-void DestroyThreadPool(ThreadPool *Pool);
-
 #endif // RAR_SMP
-
-}  // namespace third_party_unrar
 
 #endif // _RAR_THREADPOOL_
 

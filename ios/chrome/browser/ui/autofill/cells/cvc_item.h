@@ -7,10 +7,9 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/ui/collection_view/cells/collection_view_item.h"
-#import "ios/third_party/material_components_ios/src/components/CollectionCells/src/MaterialCollectionCells.h"
+#import <MaterialComponents/MaterialCollectionCells.h>
 
-@protocol TextFieldStyling;
+#import "ios/chrome/browser/ui/collection_view/cells/collection_view_item.h"
 
 // Item corresponding to a CVCCell.
 @interface CVCItem : CollectionViewItem
@@ -18,7 +17,7 @@
 // The instructions text to display.
 @property(nonatomic, copy) NSString* instructionsText;
 
-// The optioonal error message to display.
+// The optional error message to display.
 @property(nonatomic, copy) NSString* errorMessage;
 
 // The month text appearing in the |monthInput| of the cell, if |showDateInput|
@@ -37,12 +36,6 @@
 
 // Whether the cell should show the "New Card?" button.
 @property(nonatomic, assign) BOOL showNewCardButton;
-
-// Whether the date inputs contain erroneous data.
-@property(nonatomic, assign) BOOL showDateInputError;
-
-// Whether the CVC input contains erroneous data.
-@property(nonatomic, assign) BOOL showCVCInputError;
 
 // The resource ID of the CVC image to use.
 @property(nonatomic, assign) int CVCImageResourceID;
@@ -65,14 +58,13 @@
 @property(nonatomic, readonly, strong) UILabel* errorLabel;
 
 // The text field for entering the month.
-@property(nonatomic, readonly, strong)
-    UITextField<TextFieldStyling>* monthInput;
+@property(nonatomic, readonly, strong) UITextField* monthInput;
 
 // The text field for entering the year.
-@property(nonatomic, readonly, strong) UITextField<TextFieldStyling>* yearInput;
+@property(nonatomic, readonly, strong) UITextField* yearInput;
 
 // The text field for entering the CVC.
-@property(nonatomic, readonly, strong) UITextField<TextFieldStyling>* CVCInput;
+@property(nonatomic, readonly, strong) UITextField* CVCInput;
 
 // The image view to display the CVC image with the |CVCResourceID|.
 @property(nonatomic, readonly, strong) UIImageView* CVCImageView;

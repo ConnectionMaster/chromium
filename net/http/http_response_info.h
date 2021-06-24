@@ -7,14 +7,15 @@
 
 #include <string>
 
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "net/base/auth.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
 #include "net/base/proxy_server.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "net/http/http_vary_data.h"
 #include "net/ssl/ssl_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class Pickle;
@@ -23,7 +24,6 @@ class Pickle;
 namespace net {
 
 class HttpResponseHeaders;
-class IOBufferWithSize;
 class SSLCertRequestInfo;
 
 class NET_EXPORT HttpResponseInfo {
@@ -31,7 +31,7 @@ class NET_EXPORT HttpResponseInfo {
   // Describes the kind of connection used to fetch this response.
   //
   // NOTE: Please keep in sync with ConnectionInfo enum in
-  // tools/metrics/histograms/enum.xml.
+  // tools/metrics/histograms/enums.xml.
   // Because of that, and also because these values are persisted to
   // the cache, please make sure not to delete or reorder values.
   enum ConnectionInfo {
@@ -57,12 +57,33 @@ class NET_EXPORT HttpResponseInfo {
     CONNECTION_INFO_QUIC_41 = 19,
     CONNECTION_INFO_QUIC_42 = 20,
     CONNECTION_INFO_QUIC_43 = 21,
-    CONNECTION_INFO_QUIC_99 = 22,
+    CONNECTION_INFO_QUIC_Q099 = 22,
     CONNECTION_INFO_QUIC_44 = 23,
     CONNECTION_INFO_QUIC_45 = 24,
     CONNECTION_INFO_QUIC_46 = 25,
     CONNECTION_INFO_QUIC_47 = 26,
+    CONNECTION_INFO_QUIC_999 = 27,
+    CONNECTION_INFO_QUIC_Q048 = 28,
+    CONNECTION_INFO_QUIC_Q049 = 29,
+    CONNECTION_INFO_QUIC_Q050 = 30,
+    CONNECTION_INFO_QUIC_T048 = 31,
+    CONNECTION_INFO_QUIC_T049 = 32,
+    CONNECTION_INFO_QUIC_T050 = 33,
+    CONNECTION_INFO_QUIC_T099 = 34,
+    CONNECTION_INFO_QUIC_DRAFT_25 = 35,
+    CONNECTION_INFO_QUIC_DRAFT_27 = 36,
+    CONNECTION_INFO_QUIC_DRAFT_28 = 37,
+    CONNECTION_INFO_QUIC_DRAFT_29 = 38,
+    CONNECTION_INFO_QUIC_T051 = 39,
+    CONNECTION_INFO_QUIC_RFC_V1 = 40,
     NUM_OF_CONNECTION_INFOS,
+  };
+
+  enum ConnectionInfoCoarse {
+    CONNECTION_INFO_COARSE_HTTP1,  // HTTP/0.9, 1.0 and 1.1
+    CONNECTION_INFO_COARSE_HTTP2,
+    CONNECTION_INFO_COARSE_QUIC,
+    CONNECTION_INFO_COARSE_OTHER,
   };
 
   // Used for categorizing transactions for reporting in histograms.
@@ -92,6 +113,10 @@ class NET_EXPORT HttpResponseInfo {
     ENTRY_CANT_CONDITIONALIZE,
     ENTRY_MAX,
   };
+
+  // Returns a more coarse-grained description of the protocol used to fetch the
+  // response.
+  static ConnectionInfoCoarse ConnectionInfoToCoarse(ConnectionInfo info);
 
   HttpResponseInfo();
   HttpResponseInfo(const HttpResponseInfo& rhs);
@@ -155,6 +180,11 @@ class NET_EXPORT HttpResponseInfo {
   // used since.
   bool unused_since_prefetch;
 
+  // True if the response is a prefetch whose reuse is "restricted". This means
+  // it can only be reused from the cache by requests that are marked as able to
+  // use restricted prefetches.
+  bool restricted_prefetch;
+
   // True if this resource is stale and needs async revalidation.
   // This value is not persisted by Persist(); it is only ever set when the
   // response is retrieved from the cache.
@@ -188,9 +218,12 @@ class NET_EXPORT HttpResponseInfo {
   // this is the last time the cache entry was validated.
   base::Time response_time;
 
+  // Host resolution error info.
+  ResolveErrorInfo resolve_error_info;
+
   // If the response headers indicate a 401 or 407 failure, then this structure
   // will contain additional information about the authentication challenge.
-  base::Optional<AuthChallengeInfo> auth_challenge;
+  absl::optional<AuthChallengeInfo> auth_challenge;
 
   // The SSL client certificate request info.
   // TODO(wtc): does this really belong in HttpResponseInfo?  I put it here
@@ -209,8 +242,10 @@ class NET_EXPORT HttpResponseInfo {
   // The "Vary" header data for this response.
   HttpVaryData vary_data;
 
-  // Any metadata associated with this resource's cached data.
-  scoped_refptr<IOBufferWithSize> metadata;
+  // Any DNS aliases for the remote endpoint. The alias chain order is
+  // preserved in reverse, from canonical name (i.e. address record name)
+  // through to query name.
+  std::vector<std::string> dns_aliases;
 
   static std::string ConnectionInfoToString(ConnectionInfo connection_info);
 };

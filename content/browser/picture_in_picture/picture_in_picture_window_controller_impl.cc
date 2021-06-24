@@ -5,20 +5,19 @@
 #include "content/browser/picture_in_picture/picture_in_picture_window_controller_impl.h"
 
 #include <set>
+#include <utility>
 
 #include "components/viz/common/surfaces/surface_id.h"
 #include "content/browser/media/media_web_contents_observer.h"
 #include "content/browser/media/session/media_session_impl.h"
-#include "content/browser/picture_in_picture/overlay_surface_embedder.h"
-#include "content/browser/picture_in_picture/picture_in_picture_service_impl.h"
+#include "content/browser/picture_in_picture/picture_in_picture_session.h"
 #include "content/browser/web_contents/web_contents_impl.h"
-#include "content/common/media/media_player_delegate_messages.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/overlay_window.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"  // for PictureInPictureResult
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_client.h"
-#include "ui/compositor/layer.h"
 
 namespace content {
 
@@ -41,38 +40,23 @@ PictureInPictureWindowControllerImpl::GetOrCreateForWebContents(
   return FromWebContents(web_contents);
 }
 
-PictureInPictureWindowControllerImpl::~PictureInPictureWindowControllerImpl() {
-  if (window_)
-    window_->Close();
-
-  // If the initiator WebContents is being destroyed, there is no need to put
-  // the video's media player in a post-Picture-in-Picture mode. In fact, some
-  // things, such as the MediaWebContentsObserver, may already been torn down.
-  if (initiator_->IsBeingDestroyed())
-    return;
-
-  initiator_->SetHasPictureInPictureVideo(false);
-  OnLeavingPictureInPicture(true /* should_pause_video */,
-                            true /* should_reset_pip_player */);
-}
+PictureInPictureWindowControllerImpl::~PictureInPictureWindowControllerImpl() =
+    default;
 
 PictureInPictureWindowControllerImpl::PictureInPictureWindowControllerImpl(
-    WebContents* initiator)
-    : WebContentsObserver(initiator),
-      initiator_(static_cast<WebContentsImpl* const>(initiator)) {
-  DCHECK(initiator_);
-
-  media_web_contents_observer_ = initiator_->media_web_contents_observer();
+    WebContents* web_contents)
+    : WebContentsObserver(web_contents) {
+  DCHECK(web_contents);
 
   EnsureWindow();
   DCHECK(window_) << "Picture in Picture requires a valid window.";
 }
 
-gfx::Size PictureInPictureWindowControllerImpl::Show() {
+void PictureInPictureWindowControllerImpl::Show() {
   DCHECK(window_);
   DCHECK(surface_id_.is_valid());
 
-  MediaSessionImpl* media_session = MediaSessionImpl::Get(initiator_);
+  MediaSessionImpl* media_session = MediaSessionImpl::Get(web_contents());
   media_session_action_play_handled_ = media_session->ShouldRouteAction(
       media_session::mojom::MediaSessionAction::kPlay);
   media_session_action_pause_handled_ = media_session->ShouldRouteAction(
@@ -84,6 +68,14 @@ gfx::Size PictureInPictureWindowControllerImpl::Show() {
   media_session_action_previous_track_handled_ =
       media_session->ShouldRouteAction(
           media_session::mojom::MediaSessionAction::kPreviousTrack);
+  media_session_action_toggle_microphone_handled_ =
+      media_session->ShouldRouteAction(
+          media_session::mojom::MediaSessionAction::kToggleMicrophone);
+  media_session_action_toggle_camera_handled_ =
+      media_session->ShouldRouteAction(
+          media_session::mojom::MediaSessionAction::kToggleCamera);
+  media_session_action_hang_up_handled_ = media_session->ShouldRouteAction(
+      media_session::mojom::MediaSessionAction::kHangUp);
 
   UpdatePlayPauseButtonVisibility();
   window_->SetSkipAdButtonVisibility(media_session_action_skip_ad_handled_);
@@ -91,64 +83,59 @@ gfx::Size PictureInPictureWindowControllerImpl::Show() {
       media_session_action_next_track_handled_);
   window_->SetPreviousTrackButtonVisibility(
       media_session_action_previous_track_handled_);
+  window_->SetMicrophoneMuted(microphone_muted_);
+  window_->SetToggleMicrophoneButtonVisibility(
+      media_session_action_toggle_microphone_handled_);
+  window_->SetCameraState(camera_turned_on_);
+  window_->SetToggleCameraButtonVisibility(
+      media_session_action_toggle_camera_handled_);
+  window_->SetHangUpButtonVisibility(media_session_action_hang_up_handled_);
   window_->ShowInactive();
-  initiator_->SetHasPictureInPictureVideo(true);
-
-  return window_->GetBounds().size();
+  GetWebContentsImpl()->SetHasPictureInPictureVideo(true);
 }
 
-void PictureInPictureWindowControllerImpl::Close(bool should_pause_video,
-                                                 bool should_reset_pip_player) {
+void PictureInPictureWindowControllerImpl::FocusInitiator() {
+  GetWebContentsImpl()->Activate();
+}
+
+void PictureInPictureWindowControllerImpl::Close(bool should_pause_video) {
   if (!window_ || !window_->IsVisible())
     return;
 
   window_->Hide();
-  CloseInternal(should_pause_video, should_reset_pip_player);
+  CloseInternal(should_pause_video);
 }
 
 void PictureInPictureWindowControllerImpl::CloseAndFocusInitiator() {
-  Close(false /* should_pause_video */, true /* should_reset_pip_player */);
-  initiator_->Activate();
+  Close(false /* should_pause_video */);
+  FocusInitiator();
 }
 
-void PictureInPictureWindowControllerImpl::OnWindowDestroyed() {
+void PictureInPictureWindowControllerImpl::OnWindowDestroyed(
+    bool should_pause_video) {
   window_ = nullptr;
-  embedder_ = nullptr;
-  CloseInternal(true /* should_pause_video */,
-                true /* should_reset_pip_player */);
+  CloseInternal(should_pause_video);
 }
 
 void PictureInPictureWindowControllerImpl::EmbedSurface(
     const viz::SurfaceId& surface_id,
     const gfx::Size& natural_size) {
   EnsureWindow();
+
   DCHECK(window_);
-
+  DCHECK(active_session_);
   DCHECK(surface_id.is_valid());
-
-  // TODO(https://crbug.com/925346): We also want to unregister the page that
-  // used to embed the video as its parent.
-  ui::Compositor* compositor = window_->GetLayer()->GetCompositor();
-  if (!surface_id_.is_valid()) {
-    compositor->AddChildFrameSink(surface_id.frame_sink_id());
-  } else if (surface_id_.frame_sink_id() != surface_id.frame_sink_id()) {
-    compositor->RemoveChildFrameSink(surface_id_.frame_sink_id());
-    compositor->AddChildFrameSink(surface_id.frame_sink_id());
-  }
 
   surface_id_ = surface_id;
 
-  // Update the media player id in step with the video surface id. If the
-  // surface id was updated for the same video, this is a no-op. This could
-  // be updated for a different video if another media player on the same
-  // |initiator_| enters Picture-in-Picture mode.
-  UpdateMediaPlayerId();
+  // Update the playback state in step with the video surface id. If the surface
+  // id was updated for the same video, this is a no-op. This could be updated
+  // for a different video if another media player on the same WebContents
+  // enters Picture-in-Picture mode.
+  UpdatePlaybackState(IsPlayerActive(), false);
 
   window_->UpdateVideoSize(natural_size);
-
-  if (!embedder_)
-    embedder_.reset(new OverlaySurfaceEmbedder(window_.get()));
-  embedder_->SetSurfaceId(surface_id_);
+  window_->SetSurfaceId(surface_id_);
 }
 
 OverlayWindow* PictureInPictureWindowControllerImpl::GetWindowForTesting() {
@@ -156,28 +143,20 @@ OverlayWindow* PictureInPictureWindowControllerImpl::GetWindowForTesting() {
 }
 
 void PictureInPictureWindowControllerImpl::UpdateLayerBounds() {
-  if (media_player_id_.has_value() && service_ && window_ &&
-      window_->IsVisible()) {
-    service_->NotifyWindowResized(window_->GetBounds().size());
-  }
-
-  if (embedder_)
-    embedder_->UpdateLayerBounds();
+  if (active_session_ && window_ && window_->IsVisible())
+    active_session_->NotifyWindowResized(window_->GetBounds().size());
 }
 
 bool PictureInPictureWindowControllerImpl::IsPlayerActive() {
-  if (!media_player_id_.has_value())
-    media_player_id_ = service_ ? service_->player_id() : base::nullopt;
-
-  // At creation time, the player id may not be set.
-  if (!media_player_id_.has_value())
+  if (!active_session_ || !active_session_->player_id().has_value())
     return false;
 
-  return media_web_contents_observer_->IsPlayerActive(*media_player_id_);
+  return GetWebContentsImpl()->media_web_contents_observer()->IsPlayerActive(
+      active_session_->player_id().value());
 }
 
-WebContents* PictureInPictureWindowControllerImpl::GetInitiatorWebContents() {
-  return initiator_;
+WebContents* PictureInPictureWindowControllerImpl::GetWebContents() {
+  return web_contents();
 }
 
 void PictureInPictureWindowControllerImpl::UpdatePlaybackState(
@@ -191,7 +170,7 @@ void PictureInPictureWindowControllerImpl::UpdatePlaybackState(
     return;
   }
 
-  DCHECK(media_player_id_.has_value());
+  DCHECK(active_session_);
 
   window_->SetPlaybackState(is_playing ? OverlayWindow::PlaybackState::kPlaying
                                        : OverlayWindow::PlaybackState::kPaused);
@@ -199,85 +178,127 @@ void PictureInPictureWindowControllerImpl::UpdatePlaybackState(
 
 bool PictureInPictureWindowControllerImpl::TogglePlayPause() {
   DCHECK(window_);
+  DCHECK(active_session_);
 
   if (IsPlayerActive()) {
     if (media_session_action_pause_handled_) {
-      MediaSessionImpl::Get(initiator_)
+      MediaSessionImpl::Get(web_contents())
           ->Suspend(MediaSession::SuspendType::kUI);
       return true /* still playing */;
     }
 
-    media_player_id_->render_frame_host->Send(new MediaPlayerDelegateMsg_Pause(
-        media_player_id_->render_frame_host->GetRoutingID(),
-        media_player_id_->delegate_id));
+    active_session_->GetMediaPlayerRemote()->RequestPause(
+        /*triggered_by_user=*/false);
     return false /* paused */;
   }
 
   if (media_session_action_play_handled_) {
-    MediaSessionImpl::Get(initiator_)->Resume(MediaSession::SuspendType::kUI);
+    MediaSessionImpl::Get(web_contents())
+        ->Resume(MediaSession::SuspendType::kUI);
     return false /* still paused */;
   }
 
-  media_player_id_->render_frame_host->Send(new MediaPlayerDelegateMsg_Play(
-      media_player_id_->render_frame_host->GetRoutingID(),
-      media_player_id_->delegate_id));
+  active_session_->GetMediaPlayerRemote()->RequestPlay();
   return true /* playing */;
 }
 
-void PictureInPictureWindowControllerImpl::UpdateMutedState() {
-  if (!window_)
+PictureInPictureResult PictureInPictureWindowControllerImpl::StartSession(
+    PictureInPictureServiceImpl* service,
+    const MediaPlayerId& player_id,
+    mojo::PendingAssociatedRemote<media::mojom::MediaPlayer> player_remote,
+    const viz::SurfaceId& surface_id,
+    const gfx::Size& natural_size,
+    bool show_play_pause_button,
+    mojo::PendingRemote<blink::mojom::PictureInPictureSessionObserver> observer,
+    mojo::PendingRemote<blink::mojom::PictureInPictureSession>* session_remote,
+    gfx::Size* window_size) {
+  auto result =
+      GetWebContentsImpl()->EnterPictureInPicture(surface_id, natural_size);
+
+  // Picture-in-Picture may not be supported by all embedders, so we should only
+  // create the session if the EnterPictureInPicture request was successful.
+  if (result != PictureInPictureResult::kSuccess)
+    return result;
+
+  if (active_session_)
+    active_session_->Disconnect();
+
+  active_session_ = std::make_unique<PictureInPictureSession>(
+      service, player_id, std::move(player_remote),
+      session_remote->InitWithNewPipeAndPassReceiver(), std::move(observer));
+
+  EmbedSurface(surface_id, natural_size);
+  SetShowPlayPauseButton(show_play_pause_button);
+  Show();
+
+  *window_size = GetSize();
+  return result;
+}
+
+void PictureInPictureWindowControllerImpl::OnServiceDeleted(
+    PictureInPictureServiceImpl* service) {
+  if (!active_session_ || active_session_->service() != service)
     return;
 
-  if (always_hide_mute_button_) {
-    window_->SetMutedState(OverlayWindow::MutedState::kNoAudio);
-    return;
-  }
-
-  window_->SetMutedState(IsPlayerMuted() ? OverlayWindow::MutedState::kMuted
-                                         : OverlayWindow::MutedState::kUnmuted);
+  active_session_->Shutdown();
+  active_session_ = nullptr;
 }
 
-bool PictureInPictureWindowControllerImpl::ToggleMute() {
-  DCHECK(window_);
-
-  bool new_muted_status = !IsPlayerMuted();
-  media_player_id_->render_frame_host->Send(new MediaPlayerDelegateMsg_Muted(
-      media_player_id_->render_frame_host->GetRoutingID(),
-      media_player_id_->delegate_id, new_muted_status));
-  return new_muted_status;
-}
-
-void PictureInPictureWindowControllerImpl::UpdateMediaPlayerId() {
-  media_player_id_ = service_ ? service_->player_id() : base::nullopt;
-  UpdatePlaybackState(IsPlayerActive(), !media_player_id_.has_value());
-  UpdateMutedState();
-}
-
-void PictureInPictureWindowControllerImpl::SetAlwaysHidePlayPauseButton(
-    bool is_visible) {
-  always_hide_play_pause_button_ = is_visible;
+void PictureInPictureWindowControllerImpl::SetShowPlayPauseButton(
+    bool show_play_pause_button) {
+  always_show_play_pause_button_ = show_play_pause_button;
   UpdatePlayPauseButtonVisibility();
-}
-
-void PictureInPictureWindowControllerImpl::SetAlwaysHideMuteButton(
-    bool is_visible) {
-  always_hide_mute_button_ = !is_visible;
-  UpdateMutedState();
 }
 
 void PictureInPictureWindowControllerImpl::SkipAd() {
   if (media_session_action_skip_ad_handled_)
-    MediaSession::Get(initiator_)->SkipAd();
+    MediaSession::Get(web_contents())->SkipAd();
 }
 
 void PictureInPictureWindowControllerImpl::NextTrack() {
   if (media_session_action_next_track_handled_)
-    MediaSession::Get(initiator_)->NextTrack();
+    MediaSession::Get(web_contents())->NextTrack();
 }
 
 void PictureInPictureWindowControllerImpl::PreviousTrack() {
   if (media_session_action_previous_track_handled_)
-    MediaSession::Get(initiator_)->PreviousTrack();
+    MediaSession::Get(web_contents())->PreviousTrack();
+}
+
+void PictureInPictureWindowControllerImpl::ToggleMicrophone() {
+  if (!media_session_action_toggle_microphone_handled_)
+    return;
+
+  MediaSession::Get(web_contents())->ToggleMicrophone();
+}
+
+void PictureInPictureWindowControllerImpl::ToggleCamera() {
+  if (!media_session_action_toggle_camera_handled_)
+    return;
+
+  MediaSession::Get(web_contents())->ToggleCamera();
+}
+
+void PictureInPictureWindowControllerImpl::HangUp() {
+  if (media_session_action_hang_up_handled_)
+    MediaSession::Get(web_contents())->HangUp();
+}
+
+void PictureInPictureWindowControllerImpl::MediaSessionInfoChanged(
+    const media_session::mojom::MediaSessionInfoPtr& info) {
+  if (!info)
+    return;
+
+  microphone_muted_ =
+      info->microphone_state == media_session::mojom::MicrophoneState::kMuted;
+  camera_turned_on_ =
+      info->camera_state == media_session::mojom::CameraState::kTurnedOn;
+
+  if (!window_)
+    return;
+
+  window_->SetMicrophoneMuted(microphone_muted_);
+  window_->SetCameraState(camera_turned_on_);
 }
 
 void PictureInPictureWindowControllerImpl::MediaSessionActionsChanged(
@@ -302,6 +323,16 @@ void PictureInPictureWindowControllerImpl::MediaSessionActionsChanged(
   media_session_action_previous_track_handled_ =
       actions.find(media_session::mojom::MediaSessionAction::kPreviousTrack) !=
       actions.end();
+  media_session_action_toggle_microphone_handled_ =
+      actions.find(
+          media_session::mojom::MediaSessionAction::kToggleMicrophone) !=
+      actions.end();
+  media_session_action_toggle_camera_handled_ =
+      actions.find(media_session::mojom::MediaSessionAction::kToggleCamera) !=
+      actions.end();
+  media_session_action_hang_up_handled_ =
+      actions.find(media_session::mojom::MediaSessionAction::kHangUp) !=
+      actions.end();
 
   if (!window_)
     return;
@@ -312,29 +343,37 @@ void PictureInPictureWindowControllerImpl::MediaSessionActionsChanged(
       media_session_action_next_track_handled_);
   window_->SetPreviousTrackButtonVisibility(
       media_session_action_previous_track_handled_);
+  window_->SetToggleMicrophoneButtonVisibility(
+      media_session_action_toggle_microphone_handled_);
+  window_->SetToggleCameraButtonVisibility(
+      media_session_action_toggle_camera_handled_);
+  window_->SetHangUpButtonVisibility(media_session_action_hang_up_handled_);
+}
+
+gfx::Size PictureInPictureWindowControllerImpl::GetSize() {
+  return window_->GetBounds().size();
 }
 
 void PictureInPictureWindowControllerImpl::MediaStartedPlaying(
     const MediaPlayerInfo&,
     const MediaPlayerId& media_player_id) {
-  if (initiator_->IsBeingDestroyed())
+  if (web_contents()->IsBeingDestroyed())
     return;
 
-  if (media_player_id_ != media_player_id)
+  if (!active_session_ || active_session_->player_id() != media_player_id)
     return;
 
   UpdatePlaybackState(true /* is_playing */, false /* reached_end_of_stream */);
-  UpdateMutedState();
 }
 
 void PictureInPictureWindowControllerImpl::MediaStoppedPlaying(
     const MediaPlayerInfo&,
     const MediaPlayerId& media_player_id,
     WebContentsObserver::MediaStoppedReason reason) {
-  if (initiator_->IsBeingDestroyed())
+  if (web_contents()->IsBeingDestroyed())
     return;
 
-  if (media_player_id_ != media_player_id)
+  if (!active_session_ || active_session_->player_id() != media_player_id)
     return;
 
   UpdatePlaybackState(
@@ -342,95 +381,37 @@ void PictureInPictureWindowControllerImpl::MediaStoppedPlaying(
       reason == WebContentsObserver::MediaStoppedReason::kReachedEndOfStream);
 }
 
-void PictureInPictureWindowControllerImpl::MediaMutedStatusChanged(
-    const MediaPlayerId& media_player_id,
-    bool muted) {
-  if (initiator_->IsBeingDestroyed())
-    return;
-
-  if (muted)
-    AddMutedPlayerEntry(media_player_id);
-  else
-    RemoveMutedPlayerEntry(media_player_id);
-
-  if (media_player_id_ == media_player_id)
-    UpdateMutedState();
-}
-
-void PictureInPictureWindowControllerImpl::AddMutedPlayerEntry(
-    const MediaPlayerId& id) {
-  muted_players_[id.render_frame_host].insert(id.delegate_id);
-}
-
-bool PictureInPictureWindowControllerImpl::RemoveMutedPlayerEntry(
-    const MediaPlayerId& id) {
-  auto it = muted_players_.find(id.render_frame_host);
-  if (it == muted_players_.end())
-    return false;
-
-  // Remove the player.
-  bool did_remove = it->second.erase(id.delegate_id) == 1;
-  if (!did_remove)
-    return false;
-
-  // If there are no players left, remove the entry.
-  if (it->second.empty())
-    muted_players_.erase(it);
-
-  return true;
-}
-
-bool PictureInPictureWindowControllerImpl::IsPlayerMuted() {
-  // At creation time, the player id may not be set.
-  if (!media_player_id_.has_value())
-    return false;
-
-  const auto& players =
-      muted_players_.find(media_player_id_->render_frame_host);
-  if (players == muted_players_.end())
-    return false;
-
-  return players->second.find(media_player_id_->delegate_id) !=
-         players->second.end();
+void PictureInPictureWindowControllerImpl::WebContentsDestroyed() {
+  if (window_)
+    window_->Close();
 }
 
 void PictureInPictureWindowControllerImpl::OnLeavingPictureInPicture(
-    bool should_pause_video,
-    bool should_reset_pip_player) {
-  if (window_ && surface_id_.is_valid()) {
-    window_->GetLayer()->GetCompositor()->RemoveChildFrameSink(
-        surface_id_.frame_sink_id());
-  }
+    bool should_pause_video) {
+  DCHECK(active_session_);
 
   if (IsPlayerActive() && should_pause_video) {
     // Pause the current video so there is only one video playing at a time.
-    media_player_id_->render_frame_host->Send(new MediaPlayerDelegateMsg_Pause(
-        media_player_id_->render_frame_host->GetRoutingID(),
-        media_player_id_->delegate_id));
+    active_session_->GetMediaPlayerRemote()->RequestPause(
+        /*triggered_by_user=*/false);
   }
 
-  if (media_player_id_.has_value()) {
-    media_player_id_->render_frame_host->Send(
-        new MediaPlayerDelegateMsg_EndPictureInPictureMode(
-            media_player_id_->render_frame_host->GetRoutingID(),
-            media_player_id_->delegate_id));
-
-    if (should_reset_pip_player) {
-      DCHECK(service_);
-      service_->ResetPlayerId();
-      media_player_id_.reset();
-    }
-  }
+  active_session_->Shutdown();
+  active_session_ = nullptr;
 }
 
 void PictureInPictureWindowControllerImpl::CloseInternal(
-    bool should_pause_video,
-    bool should_reset_pip_player) {
-  if (initiator_->IsBeingDestroyed())
+    bool should_pause_video) {
+  // We shouldn't have an empty active_session_ in this case but (at least for
+  // there tests), extensions seem to be closing the window before the
+  // WebContents is marked as being destroyed. It leads to `CloseInternal()`
+  // being called twice. This early check avoids the rest of the code having to
+  // be aware of this oddity.
+  if (web_contents()->IsBeingDestroyed() || !active_session_)
     return;
 
-  initiator_->SetHasPictureInPictureVideo(false);
-  OnLeavingPictureInPicture(should_pause_video, should_reset_pip_player);
+  GetWebContentsImpl()->SetHasPictureInPictureVideo(false);
+  OnLeavingPictureInPicture(should_pause_video);
   surface_id_ = viz::SurfaceId();
 }
 
@@ -446,9 +427,13 @@ void PictureInPictureWindowControllerImpl::UpdatePlayPauseButtonVisibility() {
   if (!window_)
     return;
 
-  window_->SetAlwaysHidePlayPauseButton((media_session_action_pause_handled_ &&
+  window_->SetPlayPauseButtonVisibility((media_session_action_pause_handled_ &&
                                          media_session_action_play_handled_) ||
-                                        always_hide_play_pause_button_);
+                                        always_show_play_pause_button_);
+}
+
+WebContentsImpl* PictureInPictureWindowControllerImpl::GetWebContentsImpl() {
+  return static_cast<WebContentsImpl*>(web_contents());
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(PictureInPictureWindowControllerImpl)

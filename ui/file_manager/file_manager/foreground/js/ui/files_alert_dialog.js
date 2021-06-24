@@ -2,23 +2,68 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {AlertDialog} from 'chrome://resources/js/cr/ui/dialogs.m.js';
+
+import {util} from '../../../common/js/util.m.js';
+
 /**
  * Alert dialog.
- * @param {!HTMLElement} parentNode
- * @constructor
- * @extends {cr.ui.dialogs.AlertDialog}
  */
-const FilesAlertDialog = function(parentNode) {
-  cr.ui.dialogs.AlertDialog.call(this, parentNode);
-};
+export class FilesAlertDialog extends AlertDialog {
+  /**
+   * @param {!HTMLElement} parentNode
+   */
+  constructor(parentNode) {
+    super(parentNode);
 
-FilesAlertDialog.prototype.__proto__ = cr.ui.dialogs.AlertDialog.prototype;
+    this.container.classList.add('files-ng');
+  }
 
-/**
- * @protected
- * @override
- */
-FilesAlertDialog.prototype.initDom_ = function() {
-  cr.ui.dialogs.AlertDialog.prototype.initDom_.call(this);
-  this.frame_.classList.add('files-alert-dialog');
-};
+  /**
+   * @protected
+   * @override
+   */
+  initDom() {
+    super.initDom();
+    super.hasModalContainer = true;
+
+    this.frame.classList.add('files-alert-dialog');
+  }
+
+  /**
+   * @override
+   * @suppress {accessControls}
+   */
+  show_(...args) {
+    this.parentNode_ = util.getFilesAppModalDialogInstance();
+
+    super.show_(...args);
+
+    this.parentNode_.showModal();
+  }
+
+  /**
+   * @override
+   */
+  hide(...args) {
+    this.parentNode_.close();
+
+    super.hide(...args);
+  }
+
+  /**
+   * @override
+   */
+  showWithTitle(title, message, ...args) {
+    this.frame.classList.toggle('no-title', !title);
+    super.showWithTitle(title, message, ...args);
+  }
+
+  /**
+   * @override
+   */
+  showHtml(title, message, ...args) {
+    this.frame.classList.toggle('no-title', !title);
+    super.showHtml(title, message, ...args);
+  }
+}

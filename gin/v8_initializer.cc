@@ -9,6 +9,8 @@
 
 #include <memory>
 
+#include "base/allocator/partition_allocator/page_allocator.h"
+#include "base/check.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/feature_list.h"
@@ -16,10 +18,12 @@
 #include "base/files/file_path.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/rand_util.h"
+#include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/threading/platform_thread.h"
@@ -30,7 +34,7 @@
 #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
 #if defined(OS_ANDROID)
 #include "base/android/apk_assets.h"
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
 #include "base/mac/foundation_util.h"
 #endif
 #endif  // V8_USE_EXTERNAL_STARTUP_DATA
@@ -39,8 +43,7 @@ namespace gin {
 
 namespace {
 
-// None of these globals are ever freed nor closed.
-base::MemoryMappedFile* g_mapped_natives = nullptr;
+// This global is never freed nor closed.
 base::MemoryMappedFile* g_mapped_snapshot = nullptr;
 
 bool GenerateEntropy(unsigned char* buffer, size_t amount) {
@@ -61,8 +64,6 @@ void GetMappedFileData(base::MemoryMappedFile* mapped_file,
 
 #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
 
-const char kNativesFileName[] = "natives_blob.bin";
-
 #if defined(OS_ANDROID)
 const char kV8ContextSnapshotFileName64[] = "v8_context_snapshot_64.bin";
 const char kV8ContextSnapshotFileName32[] = "v8_context_snapshot_32.bin";
@@ -78,7 +79,9 @@ const char kSnapshotFileName32[] = "snapshot_blob_32.bin";
 #endif
 
 #else  // defined(OS_ANDROID)
-const char kV8ContextSnapshotFileName[] = "v8_context_snapshot.bin";
+#if defined(USE_V8_CONTEXT_SNAPSHOT)
+const char kV8ContextSnapshotFileName[] = V8_CONTEXT_SNAPSHOT_FILENAME;
+#endif
 const char kSnapshotFileName[] = "snapshot_blob.bin";
 #endif  // defined(OS_ANDROID)
 
@@ -88,7 +91,12 @@ const char* GetSnapshotFileName(
     case V8Initializer::V8SnapshotFileType::kDefault:
       return kSnapshotFileName;
     case V8Initializer::V8SnapshotFileType::kWithAdditionalContext:
+#if defined(USE_V8_CONTEXT_SNAPSHOT)
       return kV8ContextSnapshotFileName;
+#else
+      NOTREACHED();
+      return nullptr;
+#endif
   }
   NOTREACHED();
   return nullptr;
@@ -99,10 +107,10 @@ void GetV8FilePath(const char* file_name, base::FilePath* path_out) {
   // This is the path within the .apk.
   *path_out =
       base::FilePath(FILE_PATH_LITERAL("assets")).AppendASCII(file_name);
-#elif defined(OS_MACOSX)
-  base::ScopedCFTypeRef<CFStringRef> natives_file_name(
+#elif defined(OS_MAC)
+  base::ScopedCFTypeRef<CFStringRef> bundle_resource(
       base::SysUTF8ToCFStringRef(file_name));
-  *path_out = base::mac::PathForFrameworkBundleResource(natives_file_name);
+  *path_out = base::mac::PathForFrameworkBundleResource(bundle_resource);
 #else
   base::FilePath data_path;
   bool r = base::PathService::Get(base::DIR_ASSETS, &data_path);
@@ -166,17 +174,6 @@ base::File OpenV8File(const char* file_name,
       }
     } else if (file.error_details() != base::File::FILE_ERROR_IN_USE) {
       result = OpenV8FileResult::FAILED_OTHER;
-#ifdef OS_WIN
-      // TODO(oth): temporary diagnostics for http://crbug.com/479537
-      std::string narrow(kNativesFileName);
-      base::FilePath::StringType nativesBlob(narrow.begin(), narrow.end());
-      if (path.BaseName().value() == nativesBlob) {
-        base::File::Error file_error = file.error_details();
-        base::debug::Alias(&file_error);
-        LOG(FATAL) << "Failed to open V8 file '" << path.value()
-                   << "' (reason: " << file.error_details() << ")";
-      }
-#endif  // OS_WIN
       break;
     } else if (kMaxOpenAttempts - 1 != attempt) {
       base::PlatformThread::Sleep(
@@ -185,21 +182,61 @@ base::File OpenV8File(const char* file_name,
   }
 #endif  // defined(OS_ANDROID)
 
-  UMA_HISTOGRAM_ENUMERATION("V8.Initializer.OpenV8File.Result",
-                            result,
+  UMA_HISTOGRAM_ENUMERATION("V8.Initializer.OpenV8File.Result", result,
                             OpenV8FileResult::MAX_VALUE);
   return file;
 }
 
-enum LoadV8FileResult {
-  V8_LOAD_SUCCESS = 0,
-  V8_LOAD_FAILED_OPEN,
-  V8_LOAD_FAILED_MAP,
-  V8_LOAD_FAILED_VERIFY,  // Deprecated.
-  V8_LOAD_MAX_VALUE
-};
-
 #endif  // defined(V8_USE_EXTERNAL_STARTUP_DATA)
+
+template <int LENGTH>
+void SetV8Flags(const char (&flag)[LENGTH]) {
+  v8::V8::SetFlagsFromString(flag, LENGTH - 1);
+}
+
+void SetV8FlagsFormatted(const char* format, ...) {
+  char buffer[128];
+  va_list args;
+  va_start(args, format);
+  int length = base::vsnprintf(buffer, sizeof(buffer), format, args);
+  if (length <= 0 || sizeof(buffer) <= static_cast<unsigned>(length)) {
+    PLOG(ERROR) << "Invalid formatted V8 flag: " << format;
+    return;
+  }
+  v8::V8::SetFlagsFromString(buffer, length - 1);
+}
+
+void RunArrayBufferCageReservationExperiment() {
+  // TODO(1218005) remove this function once the experiment has ended.
+#if defined(ARCH_CPU_64_BITS)
+  constexpr size_t kGigaBytes = 1024 * 1024 * 1024;
+  constexpr size_t kTeraBytes = 1024 * kGigaBytes;
+  constexpr size_t kExaBytes = 1024 * kTeraBytes;
+
+  constexpr size_t kCageMaxSize = 1 * kExaBytes;
+  constexpr size_t kCageMinSize = 8 * kGigaBytes;
+
+  void* reservation = nullptr;
+  size_t current_size = kCageMaxSize;
+  while (!reservation && current_size >= kCageMinSize) {
+    // The cage reservation will need to be 4GB aligned.
+    reservation = base::AllocPages(nullptr, current_size, 4 * kGigaBytes,
+                                   base::PageInaccessible, base::PageTag::kV8);
+    if (!reservation) {
+      current_size /= 2;
+    }
+  }
+
+  int result = current_size / kGigaBytes;
+  if (reservation) {
+    base::FreePages(reservation, current_size);
+  } else {
+    result = 0;
+  }
+
+  base::UmaHistogramSparse("V8.MaxArrayBufferCageReservationSize", result);
+#endif
+}
 
 }  // namespace
 
@@ -209,39 +246,117 @@ void V8Initializer::Initialize(IsolateHolder::ScriptMode mode) {
   if (v8_is_initialized)
     return;
 
+  if (base::FeatureList::IsEnabled(
+          features::kV8ArrayBufferCageReservationExperiment)) {
+    RunArrayBufferCageReservationExperiment();
+  }
+
   v8::V8::InitializePlatform(V8Platform::Get());
 
   if (!base::FeatureList::IsEnabled(features::kV8OptimizeJavascript)) {
     // We avoid explicitly passing --opt if kV8OptimizeJavascript is enabled
     // since it is the default, and doing so would override flags passed
     // explicitly, e.g., via --js-flags=--no-opt.
-    static const char no_optimize[] = "--no-opt";
-    v8::V8::SetFlagsFromString(no_optimize, sizeof(no_optimize) - 1);
+    SetV8Flags("--no-opt");
   }
 
   if (!base::FeatureList::IsEnabled(features::kV8FlushBytecode)) {
-    static const char no_flush_bytecode[] = "--no-flush-bytecode";
-    v8::V8::SetFlagsFromString(no_flush_bytecode,
-                               sizeof(no_flush_bytecode) - 1);
+    SetV8Flags("--no-flush-bytecode");
   }
 
-  if (!base::FeatureList::IsEnabled(features::kV8MemoryReducerForSmallHeaps)) {
-    static const char no_memory_reducer[] =
-        "--no-memory-reducer-for-small-heaps";
-    v8::V8::SetFlagsFromString(no_memory_reducer,
-                               sizeof(no_memory_reducer) - 1);
+  if (base::FeatureList::IsEnabled(features::kV8OffThreadFinalization)) {
+    SetV8Flags("--finalize-streaming-on-background");
+  }
+
+  if (!base::FeatureList::IsEnabled(features::kV8LazyFeedbackAllocation)) {
+    SetV8Flags("--no-lazy-feedback-allocation");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8ConcurrentInlining)) {
+    SetV8Flags("--concurrent_inlining");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8PerContextMarkingWorklist)) {
+    SetV8Flags("--stress-per-context-marking-worklist");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8FlushEmbeddedBlobICache)) {
+    SetV8Flags("--experimental-flush-embedded-blob-icache");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8ReduceConcurrentMarkingTasks)) {
+    SetV8Flags("--gc-experiment-reduce-concurrent-marking-tasks");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8NoReclaimUnmodifiedWrappers)) {
+    SetV8Flags("--no-reclaim-unmodified-wrappers");
+  }
+
+  if (!base::FeatureList::IsEnabled(features::kV8LocalHeaps)) {
+    // The --local-heaps flag is enabled by default, so we need to explicitly
+    // disable it if kV8LocalHeaps is disabled.
+    // Also disable TurboFan's direct access if local heaps are not enabled.
+    SetV8Flags("--no-local-heaps --no-turbo-direct-heap-access");
+  }
+
+  if (!base::FeatureList::IsEnabled(features::kV8TurboDirectHeapAccess)) {
+    // The --turbo-direct-heap-access flag is enabled by default, so we need to
+    // explicitly disable it if kV8TurboDirectHeapAccess is disabled.
+    SetV8Flags("--no-turbo-direct-heap-access");
+  }
+
+  if (!base::FeatureList::IsEnabled(features::kV8ExperimentalRegexpEngine)) {
+    // The --enable-experimental-regexp-engine-on-excessive-backtracks flag is
+    // enabled by default, so we need to explicitly disable it if
+    // kV8ExperimentalRegexpEngine is disabled.
+    SetV8Flags(
+        "--no-enable-experimental-regexp-engine-on-excessive-backtracks");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8TurboFastApiCalls)) {
+    SetV8Flags("--turbo-fast-api-calls");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8Turboprop)) {
+    SetV8Flags("--turboprop");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8Sparkplug)) {
+    SetV8Flags("--sparkplug");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8UntrustedCodeMitigations)) {
+    SetV8Flags("--untrusted-code-mitigations");
+  } else {
+    SetV8Flags("--no-untrusted-code-mitigations");
+  }
+
+  if (base::FeatureList::IsEnabled(features::kV8ScriptAblation)) {
+    if (int delay = features::kV8ScriptDelayMs.Get()) {
+      SetV8FlagsFormatted("--script-delay=%i", delay);
+    }
+    if (int delay = features::kV8ScriptDelayOnceMs.Get()) {
+      SetV8FlagsFormatted("--script-delay-once=%i", delay);
+    }
+    if (double fraction = features::kV8ScriptDelayFraction.Get()) {
+      SetV8FlagsFormatted("--script-delay-fraction=%f", fraction);
+    }
+  }
+
+  if (!base::FeatureList::IsEnabled(features::kV8ShortBuiltinCalls)) {
+    // The --short-builtin-calls flag is enabled by default on x64 and arm64
+    // desktop configurations, so we need to explicitly disable it if
+    // kV8ShortBuiltinCalls is disabled.
+    // On other configurations it's not supported, so we don't try to enable
+    // it if the feature flag is on.
+    SetV8Flags("--no-short-builtin-calls");
   }
 
   if (IsolateHolder::kStrictMode == mode) {
-    static const char use_strict[] = "--use_strict";
-    v8::V8::SetFlagsFromString(use_strict, sizeof(use_strict) - 1);
+    SetV8Flags("--use_strict");
   }
 
 #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
-  v8::StartupData natives;
-  GetMappedFileData(g_mapped_natives, &natives);
-  v8::V8::SetNativesDataBlob(&natives);
-
   if (g_mapped_snapshot) {
     v8::StartupData snapshot;
     GetMappedFileData(g_mapped_snapshot, &snapshot);
@@ -256,22 +371,15 @@ void V8Initializer::Initialize(IsolateHolder::ScriptMode mode) {
 }
 
 // static
-void V8Initializer::GetV8ExternalSnapshotData(v8::StartupData* natives,
-                                              v8::StartupData* snapshot) {
-  GetMappedFileData(g_mapped_natives, natives);
+void V8Initializer::GetV8ExternalSnapshotData(v8::StartupData* snapshot) {
   GetMappedFileData(g_mapped_snapshot, snapshot);
 }
 
 // static
-void V8Initializer::GetV8ExternalSnapshotData(const char** natives_data_out,
-                                              int* natives_size_out,
-                                              const char** snapshot_data_out,
+void V8Initializer::GetV8ExternalSnapshotData(const char** snapshot_data_out,
                                               int* snapshot_size_out) {
-  v8::StartupData natives;
   v8::StartupData snapshot;
-  GetV8ExternalSnapshotData(&natives, &snapshot);
-  *natives_data_out = natives.data;
-  *natives_size_out = natives.raw_size;
+  GetV8ExternalSnapshotData(&snapshot);
   *snapshot_data_out = snapshot.data;
   *snapshot_size_out = snapshot.raw_size;
 }
@@ -293,16 +401,6 @@ void V8Initializer::LoadV8Snapshot(V8SnapshotFileType snapshot_file_type) {
 }
 
 // static
-void V8Initializer::LoadV8Natives() {
-  if (g_mapped_natives)
-    return;
-
-  base::MemoryMappedFile::Region file_region;
-  base::File file = OpenV8File(kNativesFileName, &file_region);
-  LoadV8NativesFromFile(std::move(file), &file_region);
-}
-
-// static
 void V8Initializer::LoadV8SnapshotFromFile(
     base::File snapshot_file,
     base::MemoryMappedFile::Region* snapshot_file_region,
@@ -311,8 +409,7 @@ void V8Initializer::LoadV8SnapshotFromFile(
     return;
 
   if (!snapshot_file.IsValid()) {
-    UMA_HISTOGRAM_ENUMERATION("V8.Initializer.LoadV8Snapshot.Result",
-                              V8_LOAD_FAILED_OPEN, V8_LOAD_MAX_VALUE);
+    LOG(FATAL) << "Error loading V8 startup snapshot file";
     return;
   }
 
@@ -322,41 +419,13 @@ void V8Initializer::LoadV8SnapshotFromFile(
     region = *snapshot_file_region;
   }
 
-  LoadV8FileResult result = V8_LOAD_SUCCESS;
-  if (!MapV8File(std::move(snapshot_file), region, &g_mapped_snapshot))
-    result = V8_LOAD_FAILED_MAP;
-  UMA_HISTOGRAM_ENUMERATION("V8.Initializer.LoadV8Snapshot.Result", result,
-                            V8_LOAD_MAX_VALUE);
-}
-
-// static
-void V8Initializer::LoadV8NativesFromFile(
-    base::File natives_file,
-    base::MemoryMappedFile::Region* natives_file_region) {
-  if (g_mapped_natives)
+  if (!MapV8File(std::move(snapshot_file), region, &g_mapped_snapshot)) {
+    LOG(FATAL) << "Error mapping V8 startup snapshot file";
     return;
-
-  CHECK(natives_file.IsValid());
-
-  base::MemoryMappedFile::Region region =
-      base::MemoryMappedFile::Region::kWholeFile;
-  if (natives_file_region) {
-    region = *natives_file_region;
-  }
-
-  if (!MapV8File(std::move(natives_file), region, &g_mapped_natives)) {
-    LOG(FATAL) << "Couldn't mmap v8 natives data file";
   }
 }
 
 #if defined(OS_ANDROID)
-// static
-base::FilePath V8Initializer::GetNativesFilePath() {
-  base::FilePath path;
-  GetV8FilePath(kNativesFileName, &path);
-  return path;
-}
-
 // static
 base::FilePath V8Initializer::GetSnapshotFilePath(
     bool abi_32_bit,

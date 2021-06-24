@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -24,6 +24,7 @@
 #include "base/test/test_file_util.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_core_service.h"
@@ -56,14 +57,16 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
-#include "content/public/test/test_utils.h"
+#include "content/public/test/no_renderer_crashes_assertion.h"
 #include "net/base/filename_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/shell_dialogs/fake_select_file_dialog.h"
 
 using content::BrowserContext;
 using content::BrowserThread;
@@ -74,6 +77,7 @@ using content::WebContents;
 using download::DownloadItem;
 using testing::ContainsRegex;
 using testing::HasSubstr;
+using ui::FakeSelectFileDialog;
 
 namespace {
 
@@ -102,9 +106,9 @@ std::string WriteSavedFromPath(const std::string& file_contents,
 // DownloadStoredProperly() below for an example filter.
 class DownloadPersistedObserver : public DownloadHistory::Observer {
  public:
-  typedef base::Callback<bool(
-      DownloadItem* item,
-      const history::DownloadRow&)> PersistedFilter;
+  typedef base::RepeatingCallback<bool(DownloadItem* item,
+                                       const history::DownloadRow&)>
+      PersistedFilter;
 
   DownloadPersistedObserver(Profile* profile, const PersistedFilter& filter)
       : profile_(profile),
@@ -128,21 +132,20 @@ class DownloadPersistedObserver : public DownloadHistory::Observer {
     base::RunLoop run_loop;
     quit_waiting_callback_ = run_loop.QuitClosure();
     run_loop.Run();
-    quit_waiting_callback_ = base::Closure();
     return persisted_;
   }
 
   void OnDownloadStored(DownloadItem* item,
                         const history::DownloadRow& info) override {
     persisted_ = persisted_ || filter_.Run(item, info);
-    if (persisted_ && !quit_waiting_callback_.is_null())
-      quit_waiting_callback_.Run();
+    if (persisted_ && quit_waiting_callback_)
+      std::move(quit_waiting_callback_).Run();
   }
 
  private:
   Profile* profile_;
   PersistedFilter filter_;
-  base::Closure quit_waiting_callback_;
+  base::OnceClosure quit_waiting_callback_;
   bool persisted_;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadPersistedObserver);
@@ -163,7 +166,6 @@ class DownloadRemovedObserver : public DownloadPersistedObserver {
     base::RunLoop run_loop;
     quit_waiting_callback_ = run_loop.QuitClosure();
     run_loop.Run();
-    quit_waiting_callback_ = base::Closure();
     return removed_;
   }
 
@@ -172,13 +174,13 @@ class DownloadRemovedObserver : public DownloadPersistedObserver {
 
   void OnDownloadsRemoved(const DownloadHistory::IdSet& ids) override {
     removed_ = ids.find(download_id_) != ids.end();
-    if (removed_ && !quit_waiting_callback_.is_null())
-      quit_waiting_callback_.Run();
+    if (removed_ && quit_waiting_callback_)
+      std::move(quit_waiting_callback_).Run();
   }
 
  private:
   bool removed_;
-  base::Closure quit_waiting_callback_;
+  base::OnceClosure quit_waiting_callback_;
   int32_t download_id_;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadRemovedObserver);
@@ -250,7 +252,6 @@ class DownloadItemCreatedObserver : public DownloadManager::Observer {
       base::RunLoop run_loop;
       quit_waiting_callback_ = run_loop.QuitClosure();
       run_loop.Run();
-      quit_waiting_callback_ = base::Closure();
     }
 
     *items_seen = items_seen_;
@@ -264,18 +265,18 @@ class DownloadItemCreatedObserver : public DownloadManager::Observer {
     DCHECK_EQ(manager, manager_);
     items_seen_.push_back(item);
 
-    if (!quit_waiting_callback_.is_null())
-      quit_waiting_callback_.Run();
+    if (quit_waiting_callback_)
+      std::move(quit_waiting_callback_).Run();
   }
 
   void ManagerGoingDown(DownloadManager* manager) override {
     manager_->RemoveObserver(this);
-    manager_ = NULL;
-    if (!quit_waiting_callback_.is_null())
-      quit_waiting_callback_.Run();
+    manager_ = nullptr;
+    if (quit_waiting_callback_)
+      std::move(quit_waiting_callback_).Run();
   }
 
-  base::Closure quit_waiting_callback_;
+  base::OnceClosure quit_waiting_callback_;
   DownloadManager* manager_;
   std::vector<DownloadItem*> items_seen_;
 
@@ -330,8 +331,7 @@ class SavePageBrowserTest : public InProcessBrowserTest {
     // in all of these tests.  If it's already here, grab it; if not,
     // wait for it to show up.
     std::vector<DownloadItem*> items;
-    DownloadManager* manager =
-        BrowserContext::GetDownloadManager(browser->profile());
+    DownloadManager* manager = browser->profile()->GetDownloadManager();
     manager->GetAllDownloads(&items);
     if (items.empty())
       DownloadItemCreatedObserver(manager).WaitForDownloadItem(&items);
@@ -354,12 +354,12 @@ class SavePageBrowserTest : public InProcessBrowserTest {
                         save_page_type);
     DownloadPersistedObserver persisted(
         browser()->profile(),
-        base::Bind(&DownloadStoredProperly, url, *main_file_name,
-                   expected_number_of_files, history::DownloadState::COMPLETE));
+        base::BindRepeating(&DownloadStoredProperly, url, *main_file_name,
+                            expected_number_of_files,
+                            history::DownloadState::COMPLETE));
     base::RunLoop run_loop;
     content::SavePackageFinishedObserver observer(
-        content::BrowserContext::GetDownloadManager(browser()->profile()),
-        run_loop.QuitClosure());
+        browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
     ASSERT_TRUE(GetCurrentTab(browser())
                     ->SavePage(*main_file_name, *output_dir, save_page_type));
 
@@ -382,7 +382,7 @@ class SavePageBrowserTest : public InProcessBrowserTest {
 
   DownloadManager* GetDownloadManager() const {
     DownloadManager* download_manager =
-        BrowserContext::GetDownloadManager(browser()->profile());
+        browser()->profile()->GetDownloadManager();
     EXPECT_TRUE(download_manager);
     return download_manager;
   }
@@ -418,6 +418,43 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveHTMLOnly) {
   EXPECT_TRUE(base::ContentsEqual(GetTestDirFile("a.htm"), full_file_name));
 }
 
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveFileURL) {
+  GURL url = net::FilePathToFileURL(GetTestDirFile("text.txt"));
+  ui_test_utils::NavigateToURL(browser(), url);
+
+  base::FilePath full_file_name, dir;
+  SaveCurrentTab(url, content::SAVE_PAGE_TYPE_AS_ONLY_HTML, "test", 1, &dir,
+                 &full_file_name);
+  ASSERT_FALSE(HasFailure());
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(full_file_name));
+  EXPECT_FALSE(base::PathExists(dir));
+  EXPECT_TRUE(base::ContentsEqual(GetTestDirFile("text.txt"), full_file_name));
+}
+
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
+                       SaveHTMLOnly_CrossOriginReadPolicy) {
+  GURL url = embedded_test_server()->GetURL(
+      "/downloads/cross-origin-resource-policy-resource.txt");
+  ui_test_utils::NavigateToURL(browser(), url);
+
+  base::FilePath full_file_name, dir;
+  SaveCurrentTab(url, content::SAVE_PAGE_TYPE_AS_ONLY_HTML, "a", 1, &dir,
+                 &full_file_name);
+  ASSERT_FALSE(HasFailure());
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(full_file_name));
+  EXPECT_FALSE(base::PathExists(dir));
+
+  const base::FilePath::CharType kTestDir[] = FILE_PATH_LITERAL("downloads");
+  const base::FilePath kTestFile =
+      test_dir_.Append(base::FilePath(kTestDir))
+          .AppendASCII("cross-origin-resource-policy-resource.txt");
+  EXPECT_TRUE(base::ContentsEqual(kTestFile, full_file_name));
+}
+
 IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveHTMLOnlyCancel) {
   GURL url = NavigateToMockURL("a");
   DownloadManager* manager = GetDownloadManager();
@@ -428,9 +465,10 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveHTMLOnlyCancel) {
   base::FilePath full_file_name, dir;
   GetDestinationPaths("a", &full_file_name, &dir);
   DownloadItemCreatedObserver creation_observer(manager);
-  DownloadPersistedObserver persisted(browser()->profile(), base::Bind(
-      &DownloadStoredProperly, url, full_file_name, -1,
-      history::DownloadState::CANCELLED));
+  DownloadPersistedObserver persisted(
+      browser()->profile(),
+      base::BindRepeating(&DownloadStoredProperly, url, full_file_name, -1,
+                          history::DownloadState::CANCELLED));
   // -1 to disable number of files check; we don't update after cancel, and
   // we don't know when the single file completed in relationship to
   // the cancel.
@@ -451,6 +489,32 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveHTMLOnlyCancel) {
   // notification, then expect the contents of the downloaded file.
 }
 
+// Test that saving an HTML file with long (i.e. > 65536 bytes) text content
+// does not crash the browser despite the renderer requiring more than one
+// "pass" to serialize the HTML content (see crash from crbug.com/1085721).
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveHTMLWithLongTextContent) {
+  GURL url =
+      embedded_test_server()->GetURL("/save_page/long-text-content.html");
+  ui_test_utils::NavigateToURL(browser(), url);
+
+  base::FilePath full_file_name, dir;
+  SaveCurrentTab(url, content::SAVE_PAGE_TYPE_AS_COMPLETE_HTML,
+                 "long-text-content", 1, &dir, &full_file_name);
+
+  ASSERT_FALSE(HasFailure());
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(full_file_name));
+  EXPECT_FALSE(base::PathExists(dir));
+
+  // Besides checking that the renderer didn't crash, test also that the HTML
+  // content saved is the expected one (i.e. the whole HTML, no truncation).
+  EXPECT_EQ(ReadFileAndCollapseWhitespace(full_file_name),
+            WriteSavedFromPath(ReadFileAndCollapseWhitespace(GetTestDirFile(
+                                   "long-text-content.saved.html")),
+                               url));
+}
+
 class DelayingDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
  public:
   explicit DelayingDownloadManagerDelegate(Profile* profile)
@@ -460,7 +524,7 @@ class DelayingDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
 
   bool ShouldCompleteDownload(
       download::DownloadItem* item,
-      const base::Closure& user_complete_callback) override {
+      base::OnceClosure user_complete_callback) override {
     return false;
   }
 
@@ -468,8 +532,8 @@ class DelayingDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
   DISALLOW_COPY_AND_ASSIGN(DelayingDownloadManagerDelegate);
 };
 
-// Disabled on ChromeOS due to flakiness. crbug.com/580766
-#if defined(OS_CHROMEOS)
+// Disabled on multiple platforms due to flakiness. crbug.com/580766
+#if defined(OS_CHROMEOS) || defined(OS_WIN) || defined(OS_LINUX)
 #define MAYBE_SaveHTMLOnlyTabDestroy DISABLED_SaveHTMLOnlyTabDestroy
 #else
 #define MAYBE_SaveHTMLOnlyTabDestroy SaveHTMLOnlyTabDestroy
@@ -494,7 +558,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, MAYBE_SaveHTMLOnlyTabDestroy) {
                                         content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   std::vector<DownloadItem*> items;
   creation_observer.WaitForDownloadItem(&items);
-  ASSERT_TRUE(items.size() == 1);
+  ASSERT_EQ(1u, items.size());
 
   // Close the tab; does this cancel the download?
   GetCurrentTab(browser())->Close();
@@ -506,6 +570,10 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, MAYBE_SaveHTMLOnlyTabDestroy) {
 }
 
 IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveViewSourceHTMLOnly) {
+  // TODO(lukasza): https://crbug.com/971811: Disallow renderer crashes once the
+  // bug is fixed.
+  content::ScopedAllowRendererCrashes scoped_allow_renderer_crashes;
+
   GURL mock_url = embedded_test_server()->GetURL("/save_page/a.htm");
   GURL view_source_url =
       GURL(content::kViewSourceScheme + std::string(":") + mock_url.spec());
@@ -523,6 +591,8 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveViewSourceHTMLOnly) {
   EXPECT_TRUE(base::ContentsEqual(GetTestDirFile("a.htm"), full_file_name));
 }
 
+// Regression test for https://crbug.com/974312 (saving a page that was served
+// with `Cross-Origin-Resource-Policy: same-origin` http response header).
 IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveCompleteHTML) {
   GURL url = NavigateToMockURL("b");
 
@@ -553,7 +623,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
 
   // Create a download item creation waiter on that window.
   DownloadItemCreatedObserver creation_observer(
-      BrowserContext::GetDownloadManager(incognito->profile()));
+      incognito->profile()->GetDownloadManager());
 
   // Navigate, unblocking with new tab.
   GURL url = embedded_test_server()->GetURL("/save_page/b.htm");
@@ -564,15 +634,14 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
   // Save the page before completion.
   base::FilePath full_file_name, dir;
   GetDestinationPaths("b", &full_file_name, &dir);
-  scoped_refptr<content::MessageLoopRunner> loop_runner(
-      new content::MessageLoopRunner);
+
+  base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      content::BrowserContext::GetDownloadManager(incognito->profile()),
-      loop_runner->QuitClosure());
+      incognito->profile()->GetDownloadManager(), run_loop.QuitClosure());
   ASSERT_TRUE(GetCurrentTab(incognito)->SavePage(
       full_file_name, dir, content::SAVE_PAGE_TYPE_AS_COMPLETE_HTML));
 
-  loop_runner->Run();
+  run_loop.Run();
   ASSERT_TRUE(VerifySavePackageExpectations(incognito, url));
 
   // We can't check more than this because SavePackage is racing with
@@ -594,18 +663,17 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, FileNameFromPageTitle) {
       std::string("Test page for saving page feature") + kAppendedExtension);
   base::FilePath dir =
       GetSaveDir().AppendASCII("Test page for saving page feature_files");
-  DownloadPersistedObserver persisted(browser()->profile(), base::Bind(
-      &DownloadStoredProperly, url, full_file_name, 3,
-      history::DownloadState::COMPLETE));
-  scoped_refptr<content::MessageLoopRunner> loop_runner(
-      new content::MessageLoopRunner);
+  DownloadPersistedObserver persisted(
+      browser()->profile(),
+      base::BindRepeating(&DownloadStoredProperly, url, full_file_name, 3,
+                          history::DownloadState::COMPLETE));
+  base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      content::BrowserContext::GetDownloadManager(browser()->profile()),
-      loop_runner->QuitClosure());
+      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
   ASSERT_TRUE(GetCurrentTab(browser())->SavePage(
       full_file_name, dir, content::SAVE_PAGE_TYPE_AS_COMPLETE_HTML));
 
-  loop_runner->Run();
+  run_loop.Run();
   ASSERT_TRUE(VerifySavePackageExpectations(browser(), url));
   persisted.WaitForPersisted();
 
@@ -664,13 +732,11 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, CleanFilenameFromPageTitle) {
   ui_test_utils::NavigateToURL(browser(), url);
 
   SavePackageFilePicker::SetShouldPromptUser(false);
-  scoped_refptr<content::MessageLoopRunner> loop_runner(
-      new content::MessageLoopRunner);
+  base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      content::BrowserContext::GetDownloadManager(browser()->profile()),
-      loop_runner->QuitClosure());
+      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
   chrome::SavePage(browser());
-  loop_runner->Run();
+  run_loop.Run();
 
   EXPECT_TRUE(base::PathExists(full_file_name));
 
@@ -690,39 +756,54 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SecurityLevelHistogram) {
                                       security_state::NONE, 1);
 }
 
-class SavePageAsMHTMLBrowserTest : public SavePageBrowserTest {
- public:
-  SavePageAsMHTMLBrowserTest() {}
-  ~SavePageAsMHTMLBrowserTest() override;
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitch(switches::kSavePageAsMHTML);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(SavePageAsMHTMLBrowserTest);
-};
-
-SavePageAsMHTMLBrowserTest::~SavePageAsMHTMLBrowserTest() {
-}
-
-IN_PROC_BROWSER_TEST_F(SavePageAsMHTMLBrowserTest, SavePageAsMHTML) {
+// Tests that a page can be saved as MHTML.
+// Flaky on Windows, crbug.com/1048100
+#if defined(OS_WIN)
+#define MAYBE_SavePageAsMHTML DISABLED_SavePageAsMHTML
+#else
+#define MAYBE_SavePageAsMHTML SavePageAsMHTML
+#endif
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, MAYBE_SavePageAsMHTML) {
   static const int64_t kFileSizeMin = 2758;
   GURL url = NavigateToMockURL("b");
   base::FilePath download_dir = DownloadPrefs::FromDownloadManager(
       GetDownloadManager())->DownloadPath();
   base::FilePath full_file_name = download_dir.AppendASCII(std::string(
       "Test page for saving page feature.mhtml"));
-  SavePackageFilePicker::SetShouldPromptUser(false);
-  DownloadPersistedObserver persisted(browser()->profile(), base::Bind(
-      &DownloadStoredProperly, url, full_file_name, -1,
-      history::DownloadState::COMPLETE));
-  scoped_refptr<content::MessageLoopRunner> loop_runner(
-      new content::MessageLoopRunner);
+
+  SavePackageFilePicker::SetShouldPromptUser(true);
+  DownloadPersistedObserver persisted(
+      browser()->profile(),
+      base::BindRepeating(&DownloadStoredProperly, url, full_file_name, -1,
+                          history::DownloadState::COMPLETE));
+
+  FakeSelectFileDialog::Factory* select_file_dialog_factory =
+      FakeSelectFileDialog::RegisterFactory();
+  // Save page and run until the fake select file dialog opens.
+  {
+    base::RunLoop run_loop;
+    select_file_dialog_factory->SetOpenCallback(run_loop.QuitClosure());
+    chrome::SavePage(browser());
+    run_loop.Run();
+  }
+
+// On ChromeOS, the default should be MHTML.
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  ASSERT_EQ("mhtml",
+            select_file_dialog_factory->GetLastDialog()->default_extension());
+#else
+  ASSERT_EQ("html",
+            select_file_dialog_factory->GetLastDialog()->default_extension());
+#endif
+
+  // Save the file as MHTML. Run until save completes.
+  base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      content::BrowserContext::GetDownloadManager(browser()->profile()),
-      loop_runner->QuitClosure());
-  chrome::SavePage(browser());
-  loop_runner->Run();
+      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
+  ASSERT_TRUE(select_file_dialog_factory->GetLastDialog()->CallFileSelected(
+      full_file_name, "mhtml"));
+  run_loop.Run();
+
   ASSERT_TRUE(VerifySavePackageExpectations(browser(), url));
   persisted.WaitForPersisted();
 
@@ -738,17 +819,50 @@ IN_PROC_BROWSER_TEST_F(SavePageAsMHTMLBrowserTest, SavePageAsMHTML) {
   EXPECT_THAT(contents, HasSubstr("content: \"\\e003 \\e004 b\""));
 }
 
+// Tests that if we default our file picker to MHTML due to user preference we
+// update the suggested file name to end with .mhtml.
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
+                       SavePageAsMHTMLByPrefUpdatesExtension) {
+  SavePackageFilePicker::SetShouldPromptUser(false);
+  DownloadPrefs* download_prefs =
+      DownloadPrefs::FromDownloadManager(GetDownloadManager());
+  base::FilePath download_dir = download_prefs->DownloadPath();
+  base::FilePath full_file_name = download_dir.AppendASCII("test_page");
+  download_prefs->SetSaveFileType(content::SAVE_PAGE_TYPE_AS_MHTML);
+
+  base::FilePath received_path;
+  content::SavePageType received_type;
+  content::SavePackagePathPickedCallback callback = base::BindOnce(
+      [](base::FilePath* received_path, content::SavePageType* received_type,
+         const base::FilePath& path, content::SavePageType type,
+         content::SavePackageDownloadCreatedCallback cb) {
+        *received_path = path;
+        *received_type = type;
+      },
+      &received_path, &received_type);
+
+  // Deletes itself.
+  new SavePackageFilePicker(
+      /* web_contents */ GetCurrentTab(browser()),
+      /* suggested_path */ full_file_name,
+      /* default_extension */ FILE_PATH_LITERAL(".html"),
+      /* can_save_as_complete */ true,
+      /* download_prefs */ download_prefs,
+      /* callback */ std::move(callback));
+
+  EXPECT_TRUE(received_path.MatchesExtension(FILE_PATH_LITERAL(".mhtml")));
+  EXPECT_EQ(received_type, content::SAVE_PAGE_TYPE_AS_MHTML);
+}
+
 IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SavePageBrowserTest_NonMHTML) {
   SavePackageFilePicker::SetShouldPromptUser(false);
   GURL url("data:text/plain,foo");
   ui_test_utils::NavigateToURL(browser(), url);
-  scoped_refptr<content::MessageLoopRunner> loop_runner(
-      new content::MessageLoopRunner);
+  base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      content::BrowserContext::GetDownloadManager(browser()->profile()),
-      loop_runner->QuitClosure());
+      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
   chrome::SavePage(browser());
-  loop_runner->Run();
+  run_loop.Run();
   base::FilePath download_dir = DownloadPrefs::FromDownloadManager(
       GetDownloadManager())->DownloadPath();
   base::FilePath filename = download_dir.AppendASCII("dataurl.txt");
@@ -790,8 +904,9 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveDownloadableIFrame) {
         embedded_test_server()->GetURL("/downloads/thisdayinhistory.xls");
     DownloadPersistedObserver persisted(
         browser()->profile(),
-        base::Bind(&DownloadStoredProperly, download_url, base::FilePath(), -1,
-                   history::DownloadState::COMPLETE));
+        base::BindRepeating(&DownloadStoredProperly, download_url,
+                            base::FilePath(), -1,
+                            history::DownloadState::COMPLETE));
 
     ui_test_utils::NavigateToURL(browser(), url);
 
@@ -826,8 +941,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveUnauthorizedResource) {
   base::FilePath file_path =
       temp_dir2.GetPath().Append(FILE_PATH_LITERAL("should-not-save.jpg"));
   std::string file_content("fake-jpg");
-  ASSERT_LT(
-      0, base::WriteFile(file_path, file_content.data(), file_content.size()));
+  ASSERT_TRUE(base::WriteFile(file_path, file_content));
 
   // Refer to the test file from the test page.
   GURL file_url = net::FilePathToFileURL(file_path);
@@ -1043,7 +1157,8 @@ class SavePageOriginalVsSavedComparisonTest
     DLOG(INFO) << "Verifying test expectations for original page... : "
                << GetCurrentTab(browser())->GetLastCommittedURL();
     AssertExpectationsAboutCurrentTab(
-        expected_number_of_frames_in_original_page, expected_substrings);
+        expected_number_of_frames_in_original_page, expected_substrings,
+        save_page_type);
 
     // Save the page.
     base::FilePath full_file_name, dir;
@@ -1071,7 +1186,7 @@ class SavePageOriginalVsSavedComparisonTest
         expected_number_of_frames_in_mhtml_page :
         expected_number_of_frames_in_original_page;
     AssertExpectationsAboutCurrentTab(expected_number_of_frames_in_saved_page,
-                                      expected_substrings);
+                                      expected_substrings, save_page_type);
 
     if (GetParam() == content::SAVE_PAGE_TYPE_AS_MHTML) {
       std::set<url::Origin> origins;
@@ -1086,23 +1201,26 @@ class SavePageOriginalVsSavedComparisonTest
     // See https://crbug.com/948246.
     ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,foo"));
     chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
-    content::WaitForLoadStop(GetCurrentTab(browser()));
+    EXPECT_TRUE(content::WaitForLoadStop(GetCurrentTab(browser())));
+    DLOG(INFO) << "Verifying test expectations after history navigation...";
     AssertExpectationsAboutCurrentTab(expected_number_of_frames_in_saved_page,
-                                      expected_substrings);
+                                      expected_substrings, save_page_type);
   }
 
   // Helper method to deduplicate some code across 2 tests.
   void RunObjectElementsTest(GURL url) {
     content::SavePageType save_page_type = GetParam();
 
-    // 7 comes from:
+    // The |expected_number_of_frames| comes from:
     // - main frame (frames-objects.htm)
     // - object with frame-nested.htm + 2 subframes (frames-nested2.htm + b.htm)
     // - iframe with a.htm
     // - object with svg.svg
     // - object with text.txt
-    // (pdf and png objects do not get a separate frame)
-    int expected_number_of_frames = 7;
+    // - object with pdf.pdf is responsible for presence of 2 extra frames
+    //   (about:blank + one frame for the actual pdf.pdf).  These frames are an
+    //   implementation detail and are not web-exposed (e.g. via window.frames).
+    int expected_number_of_frames = 9;
 
     std::vector<std::string> expected_substrings = {
         "frames-objects.htm: 8da13db4-a512-4d9b-b1c5-dc1c134234b9",
@@ -1112,6 +1230,10 @@ class SavePageOriginalVsSavedComparisonTest
         "frames-nested2.htm: 6d23dc47-f283-4977-96ec-66bcf72301a4",
         "text-object.txt: ae52dd09-9746-4b7e-86a6-6ada5e2680c2",
         "svg: 0875fd06-131d-4708-95e1-861853c6b8dc",
+
+        // TODO(lukasza): Consider also verifying presence of "PDF test file"
+        // from <object data="pdf.pdf">.  This requires ensuring that the PDF is
+        // loaded before continuing with the test.
     };
 
     // TODO(lukasza): crbug.com/553478: Enable <object> testing of MHTML.
@@ -1125,45 +1247,57 @@ class SavePageOriginalVsSavedComparisonTest
  private:
   void AssertExpectationsAboutCurrentTab(
       int expected_number_of_frames,
-      const std::vector<std::string>& expected_substrings) {
-    int actual_number_of_frames = 0;
-    GetCurrentTab(browser())->ForEachFrame(base::BindRepeating(
-        &IncrementInteger, base::Unretained(&actual_number_of_frames)));
+      const std::vector<std::string>& expected_substrings,
+      content::SavePageType save_page_type) {
+    int actual_number_of_frames =
+        GetCurrentTab(browser())->GetAllFrames().size();
     EXPECT_EQ(expected_number_of_frames, actual_number_of_frames);
 
     for (const auto& expected_substring : expected_substrings) {
       int actual_number_of_matches = ui_test_utils::FindInPage(
           GetCurrentTab(browser()), base::UTF8ToUTF16(expected_substring),
-          true,  // |forward|
-          true,  // |case_sensitive|
+          true,   // |forward|
+          false,  // |case_sensitive|
           nullptr, nullptr);
 
       EXPECT_EQ(1, actual_number_of_matches)
           << "Verifying that \"" << expected_substring << "\" appears "
           << "exactly once in the text of web contents";
+
+      // TODO(lukasza): https://crbug.com/1070597 and https://crbug.com/1070886:
+      // Remove the extra test assertions below (and maybe also the
+      // |save_page_type| parameter) after we get a better understanding of the
+      // root cause of test flakiness.
+      if (expected_substring == "a.htm: 1b8aae2b-e164-462f-bd5b-98aa366205f2" &&
+          save_page_type == content::SAVE_PAGE_TYPE_AS_COMPLETE_HTML) {
+        DLOG(INFO) << "Verifying that a.htm frame has fully loaded...";
+        std::vector<std::string> frame_names;
+        for (content::RenderFrameHost* frame :
+             GetCurrentTab(browser())->GetAllFrames()) {
+          frame_names.push_back(frame->GetFrameName());
+        }
+
+        EXPECT_THAT(frame_names, testing::Contains("Frame name of a.htm"));
+      }
     }
 
     std::string forbidden_substrings[] = {
-        "head", // Html markup should not be visible.
-        "err",  // "err" is a prefix of error messages + is strategically
-                // included in some tests in contents that should not render
-                // (i.e. inside of an object element and/or inside of a frame
-                // that should be hidden).
+        "head",  // Html markup should not be visible.
+        "err",   // "err" is a prefix of error messages + is strategically
+                 // included in some tests in contents that should not render
+                 // (i.e. inside of an object element and/or inside of a frame
+                 // that should be hidden).
     };
     for (const auto& forbidden_substring : forbidden_substrings) {
       int actual_number_of_matches = ui_test_utils::FindInPage(
           GetCurrentTab(browser()), base::UTF8ToUTF16(forbidden_substring),
-          true,  // |forward|
+          true,   // |forward|
           false,  // |case_sensitive|
           nullptr, nullptr);
       EXPECT_EQ(0, actual_number_of_matches)
           << "Verifying that \"" << forbidden_substring << "\" doesn't "
           << "appear in the text of web contents";
     }
-  }
-
-  static void IncrementInteger(int* i, content::RenderFrameHost* /* unused */) {
-    (*i)++;
   }
 
   static void CheckFrameForMHTML(std::set<url::Origin>* origins,
@@ -1202,8 +1336,9 @@ IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest, CrossSite) {
 
 // Test compares original-vs-saved for a page with <object> elements.
 // (see crbug.com/553478).
+// crbug.com/1070886: disabled because of flakiness.
 IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest,
-                       ObjectElementsViaHttp) {
+                       DISABLED_ObjectElementsViaHttp) {
   GURL url(
       embedded_test_server()->GetURL("a.com", "/save_page/frames-objects.htm"));
 
@@ -1211,7 +1346,7 @@ IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest,
 }
 
 // Tests that saving a page from file: URI works.
-// TODO(https://crbug.com/840063): Deflake and reenable.
+// TODO(lukasza): https://crbug.com/964364: Re-enable the test.
 IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest,
                        DISABLED_ObjectElementsViaFile) {
   base::FilePath test_data_dir;
@@ -1351,7 +1486,14 @@ IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest, BrokenImage) {
 }
 
 // Test for saving a page with a cross-site <object> element.
-IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest, CrossSiteObject) {
+// Disabled on Windows due to flakiness. crbug.com/1070597.
+#if defined(OS_WIN)
+#define MAYBE_CrossSiteObject DISABLED_CrossSiteObject
+#else
+#define MAYBE_CrossSiteObject CrossSiteObject
+#endif
+IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest,
+                       MAYBE_CrossSiteObject) {
   content::SavePageType save_page_type = GetParam();
 
   std::vector<std::string> expected_substrings = {
@@ -1367,9 +1509,11 @@ IN_PROC_BROWSER_TEST_P(SavePageOriginalVsSavedComparisonTest, CrossSiteObject) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    SaveType,
+    SaveAsCompleteHtml,
     SavePageOriginalVsSavedComparisonTest,
-    ::testing::Values(content::SAVE_PAGE_TYPE_AS_COMPLETE_HTML,
-                      content::SAVE_PAGE_TYPE_AS_MHTML));
+    ::testing::Values(content::SAVE_PAGE_TYPE_AS_COMPLETE_HTML));
+INSTANTIATE_TEST_SUITE_P(SaveAsMhtml,
+                         SavePageOriginalVsSavedComparisonTest,
+                         ::testing::Values(content::SAVE_PAGE_TYPE_AS_MHTML));
 
 }  // namespace

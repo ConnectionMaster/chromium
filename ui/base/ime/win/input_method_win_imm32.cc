@@ -11,8 +11,7 @@
 #include "base/auto_reset.h"
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "ui/base/ime/ime_bridge.h"
-#include "ui/base/ime/ime_engine_handler_interface.h"
+#include "base/metrics/histogram_macros.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/ime/win/tsf_input_scope.h"
 #include "ui/display/win/screen_win.h"
@@ -100,7 +99,6 @@ void InputMethodWinImm32::OnCaretBoundsChanged(const TextInputClient* client) {
   if (!IsTextInputClientFocused(client) || !IsWindowFocused(client))
     return;
   NotifyTextInputCaretBoundsChanged(client);
-  InputMethodWinBase::UpdateCompositionBoundsForEngine(client);
   if (!enabled_)
     return;
 
@@ -125,13 +123,8 @@ void InputMethodWinImm32::OnCaretBoundsChanged(const TextInputClient* client) {
 }
 
 void InputMethodWinImm32::CancelComposition(const TextInputClient* client) {
-  if (IsTextInputClientFocused(client)) {
-    // |enabled_| == false could be faked, and the engine should rely on the
-    // real type get from GetTextInputType().
-    InputMethodWinBase::CancelCompositionForEngine();
-
-    if (enabled_)
-      imm32_manager_.CancelIME(toplevel_window_handle_);
+  if (IsTextInputClientFocused(client) && enabled_) {
+    imm32_manager_.CancelIME(toplevel_window_handle_);
   }
 }
 
@@ -212,6 +205,8 @@ LRESULT InputMethodWinImm32::OnImeStartComposition(HWND window_handle,
   composing_window_handle_ = window_handle;
   imm32_manager_.CreateImeWindow(window_handle);
   imm32_manager_.ResetComposition(window_handle);
+  UMA_HISTOGRAM_BOOLEAN("InputMethod.CompositionWithImm32BasedIme",
+                        imm32_manager_.IsImm32ImeActive());
   return 0;
 }
 
@@ -232,7 +227,9 @@ LRESULT InputMethodWinImm32::OnImeComposition(HWND window_handle,
   ui::CompositionText composition;
   if (imm32_manager_.GetResult(window_handle, lparam, &composition.text)) {
     if (!IsTextInputTypeNone())
-      GetTextInputClient()->InsertText(composition.text);
+      GetTextInputClient()->InsertText(
+          composition.text,
+          ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
     imm32_manager_.ResetComposition(window_handle);
     // Fall though and try reading the composition string.
     // Japanese IMEs send a message containing both GCS_RESULTSTR and
@@ -320,27 +317,22 @@ void InputMethodWinImm32::RefreshInputLanguage() {
 }
 
 void InputMethodWinImm32::ConfirmCompositionText() {
+  // Makes sure the native IME app can be informed about the composition is
+  // cleared, so that it can clean up its internal states.
   if (composing_window_handle_)
     imm32_manager_.CleanupComposition(composing_window_handle_);
+}
 
-  // Though above line should confirm the client's composition text by sending a
-  // result text to us, in case the input method and the client are in
-  // inconsistent states, we check the client's composition state again.
-  if (!IsTextInputTypeNone() && GetTextInputClient()->HasCompositionText()) {
-    GetTextInputClient()->ConfirmCompositionText();
-
-    InputMethodWinBase::ResetEngine();
-  }
+TextInputMode InputMethodWinImm32::GetTextInputMode() const {
+  TextInputClient* client = GetTextInputClient();
+  return client ? client->GetTextInputMode() : TEXT_INPUT_MODE_DEFAULT;
 }
 
 void InputMethodWinImm32::UpdateIMEState() {
   // Use switch here in case we are going to add more text input types.
   // We disable input method in password field.
   const HWND window_handle = toplevel_window_handle_;
-  const TextInputType text_input_type =
-      (GetEngine() && GetEngine()->IsInterestedInKeyEvent())
-          ? TEXT_INPUT_TYPE_NONE
-          : GetTextInputType();
+  const TextInputType text_input_type = GetTextInputType();
   const TextInputMode text_input_mode = GetTextInputMode();
   switch (text_input_type) {
     case ui::TEXT_INPUT_TYPE_NONE:
@@ -357,8 +349,6 @@ void InputMethodWinImm32::UpdateIMEState() {
   imm32_manager_.SetTextInputMode(window_handle, text_input_mode);
   tsf_inputscope::SetInputScopeForTsfUnawareWindow(
       window_handle, text_input_type, text_input_mode);
-
-  InputMethodWinBase::UpdateEngineFocusAndInputContext();
 }
 
 }  // namespace ui

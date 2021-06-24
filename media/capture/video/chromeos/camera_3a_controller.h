@@ -9,7 +9,7 @@
 
 #include "base/cancelable_callback.h"
 #include "media/base/media_export.h"
-#include "media/capture/video/chromeos/mojo/camera3.mojom.h"
+#include "media/capture/video/chromeos/mojom/camera3.mojom.h"
 #include "media/capture/video/chromeos/request_manager.h"
 
 namespace media {
@@ -18,7 +18,7 @@ namespace media {
 // operations and modes of the camera.  For the detailed state transitions for
 // auto-exposure, auto-focus, and auto-white-balancing, see
 // https://source.android.com/devices/camera/camera3_3Amodes
-class CAPTURE_EXPORT Camera3AController
+class CAPTURE_EXPORT Camera3AController final
     : public CaptureMetadataDispatcher::ResultMetadataObserver {
  public:
   Camera3AController(const cros::mojom::CameraMetadataPtr& static_metadata,
@@ -32,6 +32,7 @@ class CAPTURE_EXPORT Camera3AController
 
   // CaptureMetadataDispatcher::ResultMetadataObserver implementation.
   void OnResultMetadataAvailable(
+      uint32_t frame_number,
       const cros::mojom::CameraMetadataPtr& result_metadata) final;
 
   // Enable the auto-focus mode suitable for still capture.
@@ -40,6 +41,19 @@ class CAPTURE_EXPORT Camera3AController
   // TODO(shik): This function is unused now.
   // Enable the auto-focus mode suitable for video recording.
   void SetAutoFocusModeForVideoRecording();
+
+  // Set auto white balance mode.
+  void SetAutoWhiteBalanceMode(cros::mojom::AndroidControlAwbMode mode);
+
+  // Set exposure time.
+  // |enable_auto| enables auto exposure mode. |exposure_time_nanoseconds| is
+  // only effective if |enable_auto| is set to false
+  void SetExposureTime(bool enable_auto, int64_t exposure_time_nanoseconds);
+
+  // Set focus distance.
+  // |enable_auto| enables auto focus mode. |focus_distance_diopters| is only
+  // effective if |enable_auto| is set to false
+  void SetFocusDistance(bool enable_auto, float focus_distance_diopters);
 
   bool IsPointOfInterestSupported();
 
@@ -85,6 +99,7 @@ class CAPTURE_EXPORT Camera3AController
   bool ae_region_supported_;
   bool af_region_supported_;
   bool point_of_interest_supported_;
+  bool zero_shutter_lag_supported_;
 
   CaptureMetadataDispatcher* capture_metadata_dispatcher_;
   const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
@@ -134,7 +149,7 @@ class CAPTURE_EXPORT Camera3AController
 
   base::CancelableOnceClosure delayed_ae_unlock_callback_;
 
-  base::WeakPtrFactory<Camera3AController> weak_ptr_factory_;
+  base::WeakPtrFactory<Camera3AController> weak_ptr_factory_{this};
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Camera3AController);
 };

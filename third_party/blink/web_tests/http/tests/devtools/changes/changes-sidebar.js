@@ -5,6 +5,8 @@
 (async function() {
   TestRunner.addResult(`Tests that the changes sidebar contains the changed uisourcecodes.\n`);
   await TestRunner.loadModule('changes');
+  await TestRunner.loadLegacyModule('workspace_diff');
+  await TestRunner.loadLegacyModule('changes');
 
   var fulfill = function() {};
   var workspace = new Workspace.Workspace();
@@ -62,6 +64,6 @@
 
   function addUISourceCode(url, content) {
     return project.addContentProvider(
-        url, Common.StaticContentProvider.fromString(url, Common.resourceTypes.Stylesheet, content));
+        url, TextUtils.StaticContentProvider.fromString(url, Common.resourceTypes.Stylesheet, content));
   }
 })();

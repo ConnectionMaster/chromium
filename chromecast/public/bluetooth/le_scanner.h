@@ -6,7 +6,6 @@
 #define CHROMECAST_PUBLIC_BLUETOOTH_LE_SCANNER_H_
 
 #include <cstdint>
-#include <string>
 #include <vector>
 
 #include "bluetooth_types.h"    // NOLINT(build/include)
@@ -41,6 +40,9 @@ class CHROMECAST_EXPORT LeScanner {
 
   static bool StartScan();
   static bool StopScan();
+
+  static bool SetScanParameters(int scan_interval_ms, int scan_window_ms)
+      __attribute__((__weak__));
 };
 
 inline LeScanner::ScanResult::ScanResult() = default;

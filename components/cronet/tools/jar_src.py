@@ -13,7 +13,7 @@ REPOSITORY_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
 
 sys.path.insert(0, os.path.join(REPOSITORY_ROOT, 'build/android/gyp'))
-from util import build_utils  # pylint: disable=import-error
+from util import build_utils  # pylint: disable=wrong-import-position
 
 JAVA_PACKAGE_PREFIX = 'org/chromium/'
 
@@ -123,7 +123,7 @@ def main():
 
   if options.depfile:
     deps = []
-    for sources in dir_to_files_map.itervalues():
+    for sources in dir_to_files_map.values():
       deps.extend(sources)
     # Srcjar deps already captured in GN rules (no need to list them here).
     build_utils.WriteDepfile(options.depfile, options.jar_path, deps)

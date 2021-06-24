@@ -82,11 +82,11 @@ bool ProcessPolicy::GenerateRules(const wchar_t* name,
   std::unique_ptr<PolicyRule> process;
   switch (semantics) {
     case TargetPolicy::PROCESS_MIN_EXEC: {
-      process.reset(new PolicyRule(GIVE_READONLY));
+      process = std::make_unique<PolicyRule>(GIVE_READONLY);
       break;
     };
     case TargetPolicy::PROCESS_ALL_EXEC: {
-      process.reset(new PolicyRule(GIVE_ALLACCESS));
+      process = std::make_unique<PolicyRule>(GIVE_ALLACCESS);
       break;
     };
     default: { return false; };
@@ -95,7 +95,7 @@ bool ProcessPolicy::GenerateRules(const wchar_t* name,
   if (!process->AddStringMatch(IF, NameBased::NAME, name, CASE_INSENSITIVE)) {
     return false;
   }
-  if (!policy->AddRule(IPC_CREATEPROCESSW_TAG, process.get())) {
+  if (!policy->AddRule(IpcTag::CREATEPROCESSW, process.get())) {
     return false;
   }
   return true;
@@ -214,9 +214,9 @@ NTSTATUS ProcessPolicy::OpenProcessTokenExAction(const ClientInfo& client_info,
 
 DWORD ProcessPolicy::CreateProcessWAction(EvalResult eval_result,
                                           const ClientInfo& client_info,
-                                          const base::string16& app_name,
-                                          const base::string16& command_line,
-                                          const base::string16& current_dir,
+                                          const std::wstring& app_name,
+                                          const std::wstring& command_line,
+                                          const std::wstring& current_dir,
                                           PROCESS_INFORMATION* process_info) {
   // The only action supported is ASK_BROKER which means create the process.
   if (GIVE_ALLACCESS != eval_result && GIVE_READONLY != eval_result) {

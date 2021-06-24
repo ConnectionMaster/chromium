@@ -13,9 +13,14 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "printing/print_settings.h"
+
+#if defined(OS_CHROMEOS)
+#include "chromeos/crosapi/mojom/local_printer.mojom.h"
+#endif
 
 namespace base {
 class Location;
@@ -44,20 +49,29 @@ class PrintSettings;
 class PrintJob : public base::RefCountedThreadSafe<PrintJob>,
                  public content::NotificationObserver {
  public:
+#if defined(OS_CHROMEOS)
+  // An enumeration of components where print jobs can come from. The order of
+  // these enums must match that of
+  // chrome/browser/chromeos/printing/history/print_job_info.proto.
+  using Source = crosapi::mojom::PrintJob::Source;
+#endif  // defined(OS_CHROMEOS)
+
   // Create a empty PrintJob. When initializing with this constructor,
   // post-constructor initialization must be done with Initialize().
+  // If PrintJob is created on Chrome OS, call SetSource() to set which
+  // component initiated this print job.
   PrintJob();
 
   // Grabs the ownership of the PrintJobWorker from a PrinterQuery along with
   // the print settings. Sets the expected page count of the print job based on
   // the settings.
-  virtual void Initialize(PrinterQuery* query,
-                          const base::string16& name,
-                          int page_count);
+  virtual void Initialize(std::unique_ptr<PrinterQuery> query,
+                          const std::u16string& name,
+                          uint32_t page_count);
 
 #if defined(OS_WIN)
   void StartConversionToNativeFormat(
-      const scoped_refptr<base::RefCountedMemory>& print_data,
+      scoped_refptr<base::RefCountedMemory> print_data,
       const gfx::Size& page_size,
       const gfx::Rect& content_area,
       const gfx::Point& physical_offsets);
@@ -103,6 +117,20 @@ class PrintJob : public base::RefCountedThreadSafe<PrintJob>,
   // Access the current printed document. Warning: may be NULL.
   PrintedDocument* document() const;
 
+  // Access stored settings.
+  const PrintSettings& settings() const;
+
+#if defined(OS_CHROMEOS)
+  // Sets the component which initiated the print job.
+  void SetSource(Source source, const std::string& source_id);
+
+  // Returns the source of print job.
+  Source source() const;
+
+  // Returns the ID of the source.
+  const std::string& source_id() const;
+#endif  // defined(OS_CHROMEOS)
+
   // Posts the given task to be run.
   bool PostTask(const base::Location& from_here, base::OnceClosure task);
 
@@ -114,7 +142,6 @@ class PrintJob : public base::RefCountedThreadSafe<PrintJob>,
 
   // The functions below are used for tests only.
   void set_job_pending(bool pending);
-  void set_settings(const PrintSettings& settings);
 
   // Updates |document_| to a new instance. Protected so that tests can access
   // it.
@@ -147,28 +174,29 @@ class PrintJob : public base::RefCountedThreadSafe<PrintJob>,
 
 #if defined(OS_WIN)
   virtual void StartPdfToEmfConversion(
-      const scoped_refptr<base::RefCountedMemory>& bytes,
+      scoped_refptr<base::RefCountedMemory> bytes,
       const gfx::Size& page_size,
       const gfx::Rect& content_area);
 
   virtual void StartPdfToPostScriptConversion(
-      const scoped_refptr<base::RefCountedMemory>& bytes,
+      scoped_refptr<base::RefCountedMemory> bytes,
       const gfx::Rect& content_area,
       const gfx::Point& physical_offsets,
       bool ps_level2);
 
   virtual void StartPdfToTextConversion(
-      const scoped_refptr<base::RefCountedMemory>& bytes,
+      scoped_refptr<base::RefCountedMemory> bytes,
       const gfx::Size& page_size);
 
-  void OnPdfConversionStarted(int page_count);
-  void OnPdfPageConverted(int page_number,
+  void OnPdfConversionStarted(uint32_t page_count);
+  void OnPdfPageConverted(uint32_t page_number,
                           float scale_factor,
                           std::unique_ptr<MetafilePlayer> metafile);
 
   // Helper method to do the work for ResetPageMapping(). Split for unit tests.
-  static std::vector<int> GetFullPageMapping(const std::vector<int>& pages,
-                                             int total_page_count);
+  static std::vector<uint32_t> GetFullPageMapping(
+      const std::vector<uint32_t>& pages,
+      uint32_t total_page_count);
 #endif  // defined(OS_WIN)
 
   content::NotificationRegistrar registrar_;
@@ -177,9 +205,6 @@ class PrintJob : public base::RefCountedThreadSafe<PrintJob>,
   // are blocking and enters a message loop without your consent. There is one
   // worker thread per print job.
   std::unique_ptr<PrintJobWorker> worker_;
-
-  // Cache of the print context settings for access in the UI thread.
-  PrintSettings settings_;
 
   // The printed document.
   scoped_refptr<PrintedDocument> document_;
@@ -194,8 +219,17 @@ class PrintJob : public base::RefCountedThreadSafe<PrintJob>,
 #if defined(OS_WIN)
   class PdfConversionState;
   std::unique_ptr<PdfConversionState> pdf_conversion_state_;
-  std::vector<int> pdf_page_mapping_;
+  std::vector<uint32_t> pdf_page_mapping_;
 #endif  // defined(OS_WIN)
+
+#if defined(OS_CHROMEOS)
+  // The component which initiated the print job.
+  Source source_;
+
+  // ID of the source.
+  // This should be blank if the source is PRINT_PREVIEW or ARC.
+  std::string source_id_;
+#endif  // defined(OS_CHROMEOS)
 
   // Holds the quit closure while running a nested RunLoop to flush tasks.
   base::OnceClosure quit_closure_;

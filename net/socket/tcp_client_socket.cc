@@ -4,19 +4,27 @@
 
 #include "net/socket/tcp_client_socket.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/time/time.h"
+#include "net/base/features.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/nqe/network_quality_estimator.h"
 #include "net/socket/socket_performance_watcher.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+
+#if defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
+#include "base/power_monitor/power_monitor.h"
+#endif
 
 namespace net {
 
@@ -25,6 +33,7 @@ class NetLogWithSource;
 TCPClientSocket::TCPClientSocket(
     const AddressList& addresses,
     std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+    NetworkQualityEstimator* network_quality_estimator,
     net::NetLog* net_log,
     const net::NetLogSource& source)
     : TCPClientSocket(
@@ -33,26 +42,34 @@ TCPClientSocket::TCPClientSocket(
                                       source),
           addresses,
           -1 /* current_address_index */,
-          nullptr /* bind_address */) {}
+          nullptr /* bind_address */,
+          network_quality_estimator) {}
 
 TCPClientSocket::TCPClientSocket(std::unique_ptr<TCPSocket> connected_socket,
                                  const IPEndPoint& peer_address)
     : TCPClientSocket(std::move(connected_socket),
                       AddressList(peer_address),
                       0 /* current_address_index */,
-                      nullptr /* bind_address */) {}
+                      nullptr /* bind_address */,
+                      // TODO(https://crbug.com/1123197: Pass non-null
+                      // NetworkQualityEstimator
+                      nullptr /* network_quality_estimator */) {}
 
 TCPClientSocket::~TCPClientSocket() {
   Disconnect();
+#if defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
+  base::PowerMonitor::RemovePowerSuspendObserver(this);
+#endif  // defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
 }
 
 std::unique_ptr<TCPClientSocket> TCPClientSocket::CreateFromBoundSocket(
     std::unique_ptr<TCPSocket> bound_socket,
     const AddressList& addresses,
-    const IPEndPoint& bound_address) {
+    const IPEndPoint& bound_address,
+    NetworkQualityEstimator* network_quality_estimator) {
   return base::WrapUnique(new TCPClientSocket(
       std::move(bound_socket), addresses, -1 /* current_address_index */,
-      std::make_unique<IPEndPoint>(bound_address)));
+      std::make_unique<IPEndPoint>(bound_address), network_quality_estimator));
 }
 
 int TCPClientSocket::Bind(const IPEndPoint& address) {
@@ -73,7 +90,7 @@ int TCPClientSocket::Bind(const IPEndPoint& address) {
   if (result != OK)
     return result;
 
-  bind_address_.reset(new IPEndPoint(address));
+  bind_address_ = std::make_unique<IPEndPoint>(address);
   return OK;
 }
 
@@ -98,6 +115,14 @@ int TCPClientSocket::Connect(CompletionOnceCallback callback) {
   if (socket_->IsValid() && current_address_index_ >= 0)
     return OK;
 
+  DCHECK(!read_callback_);
+  DCHECK(!write_callback_);
+
+  if (was_disconnected_on_suspend_) {
+    Disconnect();
+    was_disconnected_on_suspend_ = false;
+  }
+
   socket_->StartLoggingMultipleConnectAttempts(addresses_);
 
   // We will try to connect to each address in addresses_. Start with the
@@ -115,10 +140,12 @@ int TCPClientSocket::Connect(CompletionOnceCallback callback) {
   return rv;
 }
 
-TCPClientSocket::TCPClientSocket(std::unique_ptr<TCPSocket> socket,
-                                 const AddressList& addresses,
-                                 int current_address_index,
-                                 std::unique_ptr<IPEndPoint> bind_address)
+TCPClientSocket::TCPClientSocket(
+    std::unique_ptr<TCPSocket> socket,
+    const AddressList& addresses,
+    int current_address_index,
+    std::unique_ptr<IPEndPoint> bind_address,
+    NetworkQualityEstimator* network_quality_estimator)
     : socket_(std::move(socket)),
       bind_address_(std::move(bind_address)),
       addresses_(addresses),
@@ -126,10 +153,15 @@ TCPClientSocket::TCPClientSocket(std::unique_ptr<TCPSocket> socket,
       next_connect_state_(CONNECT_STATE_NONE),
       previously_disconnected_(false),
       total_received_bytes_(0),
-      was_ever_used_(false) {
+      was_ever_used_(false),
+      was_disconnected_on_suspend_(false),
+      network_quality_estimator_(network_quality_estimator) {
   DCHECK(socket_);
   if (socket_->IsValid())
     socket_->SetDefaultOptionsForClient();
+#if defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
+  base::PowerMonitor::AddPowerSuspendObserver(this);
+#endif  // defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
 }
 
 int TCPClientSocket::ReadCommon(IOBuffer* buf,
@@ -137,17 +169,23 @@ int TCPClientSocket::ReadCommon(IOBuffer* buf,
                                 CompletionOnceCallback callback,
                                 bool read_if_ready) {
   DCHECK(!callback.is_null());
+  DCHECK(read_callback_.is_null());
+
+  if (was_disconnected_on_suspend_)
+    return ERR_NETWORK_IO_SUSPENDED;
 
   // |socket_| is owned by |this| and the callback won't be run once |socket_|
   // is gone/closed. Therefore, it is safe to use base::Unretained() here.
-  CompletionOnceCallback read_callback =
-      base::BindOnce(&TCPClientSocket::DidCompleteRead, base::Unretained(this),
-                     std::move(callback));
+  CompletionOnceCallback complete_read_callback =
+      base::BindOnce(&TCPClientSocket::DidCompleteRead, base::Unretained(this));
   int result =
       read_if_ready
-          ? socket_->ReadIfReady(buf, buf_len, std::move(read_callback))
-          : socket_->Read(buf, buf_len, std::move(read_callback));
-  if (result > 0) {
+          ? socket_->ReadIfReady(buf, buf_len,
+                                 std::move(complete_read_callback))
+          : socket_->Read(buf, buf_len, std::move(complete_read_callback));
+  if (result == ERR_IO_PENDING) {
+    read_callback_ = std::move(callback);
+  } else if (result > 0) {
     was_ever_used_ = true;
     total_received_bytes_ += result;
   }
@@ -222,19 +260,37 @@ int TCPClientSocket::DoConnect() {
   if (socket_->socket_performance_watcher() && current_address_index_ != 0)
     socket_->socket_performance_watcher()->OnConnectionChanged();
 
-  // |socket_| is owned by this class and the callback won't be run once
-  // |socket_| is gone. Therefore, it is safe to use base::Unretained() here.
-  return socket_->Connect(endpoint,
-                          base::Bind(&TCPClientSocket::DidCompleteConnect,
-                                     base::Unretained(this)));
+  start_connect_attempt_ = base::TimeTicks::Now();
+
+  // Start a timer to fail the connect attempt if it takes too long.
+  base::TimeDelta attempt_timeout = GetConnectAttemptTimeout();
+  if (!attempt_timeout.is_max()) {
+    DCHECK(!connect_attempt_timer_.IsRunning());
+    connect_attempt_timer_.Start(
+        FROM_HERE, attempt_timeout,
+        base::BindOnce(&TCPClientSocket::OnConnectAttemptTimeout,
+                       base::Unretained(this)));
+  }
+
+  return ConnectInternal(endpoint);
 }
 
 int TCPClientSocket::DoConnectComplete(int result) {
+  if (start_connect_attempt_) {
+    EmitConnectAttemptHistograms(result);
+    start_connect_attempt_ = absl::nullopt;
+    connect_attempt_timer_.Stop();
+  }
+
   if (result == OK)
     return OK;  // Done!
 
   connection_attempts_.push_back(
       ConnectionAttempt(addresses_[current_address_index_], result));
+
+  // Don't try the next address if entering suspend mode.
+  if (result == ERR_NETWORK_IO_SUSPENDED)
+    return result;
 
   // Close whatever partially connected socket we currently have.
   DoDisconnect();
@@ -250,19 +306,50 @@ int TCPClientSocket::DoConnectComplete(int result) {
   return result;
 }
 
+void TCPClientSocket::OnConnectAttemptTimeout() {
+  DidCompleteConnect(ERR_TIMED_OUT);
+}
+
+int TCPClientSocket::ConnectInternal(const IPEndPoint& endpoint) {
+  // |socket_| is owned by this class and the callback won't be run once
+  // |socket_| is gone. Therefore, it is safe to use base::Unretained() here.
+  return socket_->Connect(endpoint,
+                          base::BindOnce(&TCPClientSocket::DidCompleteConnect,
+                                         base::Unretained(this)));
+}
+
 void TCPClientSocket::Disconnect() {
   DoDisconnect();
   current_address_index_ = -1;
   bind_address_.reset();
+
+  // Cancel any pending callbacks. Not done in DoDisconnect() because that's
+  // called on connection failure, when the connect callback will need to be
+  // invoked.
+  was_disconnected_on_suspend_ = false;
+  connect_callback_.Reset();
+  read_callback_.Reset();
+  write_callback_.Reset();
 }
 
 void TCPClientSocket::DoDisconnect() {
+  if (start_connect_attempt_) {
+    EmitConnectAttemptHistograms(ERR_ABORTED);
+    start_connect_attempt_ = absl::nullopt;
+    connect_attempt_timer_.Stop();
+  }
+
   total_received_bytes_ = 0;
   EmitTCPMetricsHistogramsOnDisconnect();
+
   // If connecting or already connected, record that the socket has been
   // disconnected.
   previously_disconnected_ = socket_->IsValid() && current_address_index_ >= 0;
   socket_->Close();
+
+  // Invalidate weak pointers, so if in the middle of a callback in OnSuspend,
+  // and something destroys this, no other callback is invoked.
+  weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
 bool TCPClientSocket::IsConnected() const {
@@ -324,6 +411,8 @@ int TCPClientSocket::ReadIfReady(IOBuffer* buf,
 }
 
 int TCPClientSocket::CancelReadIfReady() {
+  DCHECK(read_callback_);
+  read_callback_.Reset();
   return socket_->CancelReadIfReady();
 }
 
@@ -333,16 +422,22 @@ int TCPClientSocket::Write(
     CompletionOnceCallback callback,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
   DCHECK(!callback.is_null());
+  DCHECK(write_callback_.is_null());
+
+  if (was_disconnected_on_suspend_)
+    return ERR_NETWORK_IO_SUSPENDED;
 
   // |socket_| is owned by this class and the callback won't be run once
   // |socket_| is gone. Therefore, it is safe to use base::Unretained() here.
-  CompletionOnceCallback write_callback =
-      base::BindOnce(&TCPClientSocket::DidCompleteWrite, base::Unretained(this),
-                     std::move(callback));
-  int result = socket_->Write(buf, buf_len, std::move(write_callback),
+  CompletionOnceCallback complete_write_callback = base::BindOnce(
+      &TCPClientSocket::DidCompleteWrite, base::Unretained(this));
+  int result = socket_->Write(buf, buf_len, std::move(complete_write_callback),
                               traffic_annotation);
-  if (result > 0)
+  if (result == ERR_IO_PENDING) {
+    write_callback_ = std::move(callback);
+  } else if (result > 0) {
     was_ever_used_ = true;
+  }
 
   return result;
 }
@@ -352,7 +447,7 @@ int TCPClientSocket::SetReceiveBufferSize(int32_t size) {
 }
 
 int TCPClientSocket::SetSendBufferSize(int32_t size) {
-    return socket_->SetSendBufferSize(size);
+  return socket_->SetSendBufferSize(size);
 }
 
 SocketDescriptor TCPClientSocket::SocketDescriptorForTesting() const {
@@ -381,6 +476,48 @@ void TCPClientSocket::ApplySocketTag(const SocketTag& tag) {
   socket_->ApplySocketTag(tag);
 }
 
+void TCPClientSocket::OnSuspend() {
+#if defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
+  // If the socket is connected, or connecting, act as if current and future
+  // operations on the socket fail with ERR_NETWORK_IO_SUSPENDED, until the
+  // socket is reconnected.
+
+  if (next_connect_state_ != CONNECT_STATE_NONE) {
+    socket_->Close();
+    DidCompleteConnect(ERR_NETWORK_IO_SUSPENDED);
+    return;
+  }
+
+  // Nothing to do. Use IsValid() rather than IsConnected() because it results
+  // in more testable code, as when calling OnSuspend mode on two sockets
+  // connected to each other will otherwise cause two sockets to behave
+  // differently from each other.
+  if (!socket_->IsValid())
+    return;
+
+  // Use Close() rather than Disconnect() / DoDisconnect() to avoid mutating
+  // state, which more closely matches normal read/write error behavior.
+  socket_->Close();
+
+  was_disconnected_on_suspend_ = true;
+
+  // Grab a weak pointer just in case calling read callback results in |this|
+  // being destroyed, or disconnected. In either case, should not run the write
+  // callback.
+  base::WeakPtr<TCPClientSocket> weak_this = weak_ptr_factory_.GetWeakPtr();
+
+  // Have to grab the write callback now, as it's theoretically possible for the
+  // read callback to reconnects the socket, that reconnection to complete
+  // synchronously, and then for it to start a new write. That also means this
+  // code can't use DidCompleteWrite().
+  CompletionOnceCallback write_callback = std::move(write_callback_);
+  if (read_callback_)
+    DidCompleteRead(ERR_NETWORK_IO_SUSPENDED);
+  if (weak_this && write_callback)
+    std::move(write_callback).Run(ERR_NETWORK_IO_SUSPENDED);
+#endif  // defined(TCP_CLIENT_SOCKET_OBSERVES_SUSPEND)
+}
+
 void TCPClientSocket::DidCompleteConnect(int result) {
   DCHECK_EQ(next_connect_state_, CONNECT_STATE_CONNECT_COMPLETE);
   DCHECK_NE(result, ERR_IO_PENDING);
@@ -393,17 +530,18 @@ void TCPClientSocket::DidCompleteConnect(int result) {
   }
 }
 
-void TCPClientSocket::DidCompleteRead(CompletionOnceCallback callback,
-                                      int result) {
+void TCPClientSocket::DidCompleteRead(int result) {
+  DCHECK(!read_callback_.is_null());
+
   if (result > 0)
     total_received_bytes_ += result;
-
-  DidCompleteReadWrite(std::move(callback), result);
+  DidCompleteReadWrite(std::move(read_callback_), result);
 }
 
-void TCPClientSocket::DidCompleteWrite(CompletionOnceCallback callback,
-                                       int result) {
-  DidCompleteReadWrite(std::move(callback), result);
+void TCPClientSocket::DidCompleteWrite(int result) {
+  DCHECK(!write_callback_.is_null());
+
+  DidCompleteReadWrite(std::move(write_callback_), result);
 }
 
 void TCPClientSocket::DidCompleteReadWrite(CompletionOnceCallback callback,
@@ -432,6 +570,82 @@ void TCPClientSocket::EmitTCPMetricsHistogramsOnDisconnect() {
                                base::TimeDelta::FromMilliseconds(1),
                                base::TimeDelta::FromMinutes(10), 100);
   }
+}
+
+void TCPClientSocket::EmitConnectAttemptHistograms(int result) {
+  // This should only be called in response to completing a connect attempt.
+  DCHECK(start_connect_attempt_);
+
+  base::TimeDelta duration =
+      base::TimeTicks::Now() - start_connect_attempt_.value();
+
+  // Histogram the total time the connect attempt took, grouped by success and
+  // failure. Note that failures also include cases when the connect attempt
+  // was cancelled by the client before the handshake completed.
+  if (result == OK) {
+    UMA_HISTOGRAM_MEDIUM_TIMES("Net.TcpConnectAttempt.Latency.Success",
+                               duration);
+  } else {
+    UMA_HISTOGRAM_MEDIUM_TIMES("Net.TcpConnectAttempt.Latency.Error", duration);
+  }
+
+  absl::optional<base::TimeDelta> transport_rtt = absl::nullopt;
+  if (network_quality_estimator_)
+    transport_rtt = network_quality_estimator_->GetTransportRTT();
+
+  // In cases where there is an estimated transport RTT, histogram the attempt
+  // duration as a percentage of the transport RTT. The histogram range can
+  // record fractions up to 1,000x RTT.
+  if (transport_rtt) {
+    int percent_rtt = 0;
+
+    if (transport_rtt.value().InMilliseconds() != 0) {
+      // Convert the percentage to an int, saturating to 100000.
+      float percent_rtt_float =
+          100.f * (duration.InMillisecondsF() /
+                   transport_rtt.value().InMillisecondsF());
+      if (percent_rtt_float > 100000) {
+        percent_rtt = 100000;
+      } else if (percent_rtt_float > 0) {
+        percent_rtt = static_cast<int>(percent_rtt_float);
+      }
+    }
+
+    if (result == OK) {
+      UMA_HISTOGRAM_COUNTS_100000(
+          "Net.TcpConnectAttempt.LatencyPercentRTT.Success", percent_rtt);
+    } else {
+      UMA_HISTOGRAM_COUNTS_100000(
+          "Net.TcpConnectAttempt.LatencyPercentRTT.Error", percent_rtt);
+    }
+  }
+}
+
+base::TimeDelta TCPClientSocket::GetConnectAttemptTimeout() {
+  if (!base::FeatureList::IsEnabled(features::kTimeoutTcpConnectAttempt))
+    return base::TimeDelta::Max();
+
+  absl::optional<base::TimeDelta> transport_rtt = absl::nullopt;
+  if (network_quality_estimator_)
+    transport_rtt = network_quality_estimator_->GetTransportRTT();
+
+  base::TimeDelta min_timeout = features::kTimeoutTcpConnectAttemptMin.Get();
+  base::TimeDelta max_timeout = features::kTimeoutTcpConnectAttemptMax.Get();
+
+  if (!transport_rtt)
+    return max_timeout;
+
+  base::TimeDelta adaptive_timeout =
+      transport_rtt.value() *
+      features::kTimeoutTcpConnectAttemptRTTMultiplier.Get();
+
+  if (adaptive_timeout <= min_timeout)
+    return min_timeout;
+
+  if (adaptive_timeout >= max_timeout)
+    return max_timeout;
+
+  return adaptive_timeout;
 }
 
 }  // namespace net

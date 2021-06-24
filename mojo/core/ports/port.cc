@@ -12,41 +12,16 @@ Port::Port(uint64_t next_sequence_num_to_send,
            uint64_t next_sequence_num_to_receive)
     : state(kUninitialized),
       next_sequence_num_to_send(next_sequence_num_to_send),
+      last_sequence_num_acknowledged(next_sequence_num_to_send - 1),
+      sequence_num_acknowledge_interval(0),
       last_sequence_num_to_receive(0),
+      sequence_num_to_acknowledge(0),
       message_queue(next_sequence_num_to_receive),
       remove_proxy_on_last_message(false),
-      peer_closed(false) {}
+      peer_closed(false),
+      peer_lost_unexpectedly(false) {}
 
-Port::~Port() {}
-
-Port::Slot* Port::GetSlot(SlotId slot_id) {
-  auto it = slots.find(slot_id);
-  if (it == slots.end())
-    return nullptr;
-  return &it->second;
-}
-
-SlotId Port::AllocateSlot() {
-  DCHECK_EQ(state, kReceiving);
-  SlotId id = ++last_allocated_slot_id;
-  CHECK_EQ(id & kPeerAllocatedSlotIdBit, 0u);
-  slots.emplace(id, Slot{});
-  return id;
-}
-
-bool Port::AddSlotFromPeer(SlotId peer_slot_id) {
-  if (state != kReceiving || (peer_slot_id & kPeerAllocatedSlotIdBit) != 0)
-    return false;
-  auto result = slots.emplace(peer_slot_id | kPeerAllocatedSlotIdBit, Slot{});
-  result.first->second.can_signal = true;
-  return result.second;
-}
-
-Port::Slot::Slot() = default;
-
-Port::Slot::Slot(const Slot&) = default;
-
-Port::Slot::~Slot() = default;
+Port::~Port() = default;
 
 }  // namespace ports
 }  // namespace core

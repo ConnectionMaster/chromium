@@ -4,13 +4,10 @@
 
 (async function() {
   TestRunner.addResult(`Test timeline aggregated details.\n`);
-  await TestRunner.loadModule('performance_test_runner');
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
   await TestRunner.showPanel('timeline');
 
-  await ProductRegistry.instance();
-  NetworkTestRunner.resetProductRegistry();
-  NetworkTestRunner.addProductRegistryEntry('*.google.com', 'Google');
   TestRunner.addResult('');
 
   var sessionId = '6.23';
@@ -565,7 +562,6 @@
   var timeline = UI.panels.timeline;
   timeline._setModel(PerformanceTestRunner.createPerformanceModelWithEvents(rawTraceEvents));
 
-  await ProductRegistry.instance();
   var groupByEnum = Timeline.AggregatedTimelineTreeView.GroupBy;
   for (var grouping of Object.values(groupByEnum)) {
     testEventTree('CallTree', grouping);
@@ -592,7 +588,7 @@
     } else {
       TestRunner.addResult(type);
     }
-    var rootNode = tree._dataGrid.rootNode();
+    var rootNode = tree.dataGrid.rootNode();
     for (var node of rootNode.children)
       printEventTree(1, node._profileNode, node._treeView);
   }

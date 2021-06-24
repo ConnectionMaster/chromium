@@ -7,15 +7,16 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
-#include "chrome/browser/ui/android/infobars/confirm_infobar.h"
+#include "components/infobars/android/confirm_infobar.h"
+#include "components/signin/public/identity_manager/account_info.h"
 
 class UpdatePasswordInfoBarDelegate;
 
 // The infobar to be used with UpdatePasswordInfoBarDelegate.
-class UpdatePasswordInfoBar : public ConfirmInfoBar {
+class UpdatePasswordInfoBar : public infobars::ConfirmInfoBar {
  public:
-  explicit UpdatePasswordInfoBar(
-      std::unique_ptr<UpdatePasswordInfoBarDelegate> delegate);
+  UpdatePasswordInfoBar(std::unique_ptr<UpdatePasswordInfoBarDelegate> delegate,
+                        absl::optional<AccountInfo> account_info);
   ~UpdatePasswordInfoBar() override;
 
   int GetIdOfSelectedUsername() const;
@@ -23,11 +24,14 @@ class UpdatePasswordInfoBar : public ConfirmInfoBar {
  private:
   // ConfirmInfoBar:
   base::android::ScopedJavaLocalRef<jobject> CreateRenderInfoBar(
-      JNIEnv* env) override;
+      JNIEnv* env,
+      const ResourceIdMapper& resource_id_mapper) override;
   void OnLinkClicked(JNIEnv* env,
                      const base::android::JavaParamRef<jobject>& obj) override;
 
   base::android::ScopedJavaGlobalRef<jobject> java_infobar_;
+
+  absl::optional<AccountInfo> account_info_;
 
   DISALLOW_COPY_AND_ASSIGN(UpdatePasswordInfoBar);
 };

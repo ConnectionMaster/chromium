@@ -6,9 +6,11 @@
 #define ANDROID_WEBVIEW_BROWSER_AW_FEATURE_LIST_CREATOR_H_
 
 #include <memory>
+#include <utility>
 
+#include "android_webview/browser/aw_browser_policy_connector.h"
 #include "android_webview/browser/aw_field_trials.h"
-#include "android_webview/browser/aw_variations_service_client.h"
+#include "android_webview/browser/variations/aw_variations_service_client.h"
 #include "base/metrics/field_trial.h"
 #include "components/policy/core/browser/browser_policy_connector_base.h"
 #include "components/prefs/pref_service.h"
@@ -29,6 +31,8 @@ class AwFeatureListCreator {
   // field trials.
   void CreateFeatureListAndFieldTrials();
 
+  void CreateLocalState();
+
   // Passes ownership of the |local_state_| to the caller.
   std::unique_ptr<PrefService> TakePrefService() {
     DCHECK(local_state_);
@@ -36,13 +40,16 @@ class AwFeatureListCreator {
   }
 
   // Passes ownership of the |browser_policy_connector_| to the caller.
-  std::unique_ptr<policy::BrowserPolicyConnectorBase>
-  TakeBrowserPolicyConnector() {
+  std::unique_ptr<AwBrowserPolicyConnector> TakeBrowserPolicyConnector() {
     DCHECK(browser_policy_connector_);
     return std::move(browser_policy_connector_);
   }
 
+  static void DisableSignatureVerificationForTesting();
+
  private:
+  std::unique_ptr<PrefService> CreatePrefService();
+
   // Sets up the field trials and related initialization.
   void SetUpFieldTrials();
 
@@ -63,11 +70,9 @@ class AwFeatureListCreator {
   std::unique_ptr<variations::VariationsFieldTrialCreator>
       variations_field_trial_creator_;
 
-  // If TakePrefService() is called, the caller will take the ownership
-  // of this variable. Stop using this variable afterwards.
-  std::unique_ptr<policy::BrowserPolicyConnectorBase> browser_policy_connector_;
-
   std::unique_ptr<AwVariationsServiceClient> client_;
+
+  std::unique_ptr<AwBrowserPolicyConnector> browser_policy_connector_;
 
   DISALLOW_COPY_AND_ASSIGN(AwFeatureListCreator);
 };

@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_DRIVE_FILE_ERRORS_H_
 #define COMPONENTS_DRIVE_FILE_ERRORS_H_
 
-#include "base/callback_forward.h"
 #include "base/files/file.h"
 #include "google_apis/drive/drive_api_error_codes.h"
 
@@ -32,9 +31,6 @@ enum FileError {
   FILE_ERROR_NO_LOCAL_SPACE = -17,
   FILE_ERROR_SERVICE_UNAVAILABLE = -18,
 };
-
-// Used as callbacks for file operations.
-typedef base::Callback<void(FileError error)> FileOperationCallback;
 
 // Returns a string representation of FileError.
 std::string FileErrorToString(FileError error);

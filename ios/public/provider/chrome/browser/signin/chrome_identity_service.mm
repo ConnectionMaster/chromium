@@ -4,6 +4,9 @@
 
 #include "ios/public/provider/chrome/browser/signin/chrome_identity_service.h"
 
+#include "base/strings/sys_string_conversions.h"
+#include "google_apis/gaia/gaia_auth_util.h"
+#import "ios/public/provider/chrome/browser/signin/chrome_identity.h"
 #include "ios/public/provider/chrome/browser/signin/chrome_identity_interaction_manager.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -27,54 +30,52 @@ bool ChromeIdentityService::HandleApplicationOpenURL(UIApplication* application,
   return false;
 }
 
-UINavigationController* ChromeIdentityService::CreateAccountDetailsController(
+bool ChromeIdentityService::HandleSessionOpenURLContexts(UIScene* scene,
+                                                         NSSet* URLContexts) {
+  return false;
+}
+
+void ChromeIdentityService::ApplicationDidDiscardSceneSessions(
+    NSSet* scene_sessions) {}
+
+DismissASMViewControllerBlock
+ChromeIdentityService::PresentAccountDetailsController(
     ChromeIdentity* identity,
-    id<ChromeIdentityBrowserOpener> browser_opener) {
+    UIViewController* view_controller,
+    BOOL animated) {
   return nil;
 }
 
-UINavigationController*
-ChromeIdentityService::CreateWebAndAppSettingDetailsController(
+DismissASMViewControllerBlock
+ChromeIdentityService::PresentWebAndAppSettingDetailsController(
     ChromeIdentity* identity,
-    id<ChromeIdentityBrowserOpener> browser_opener) {
+    UIViewController* view_controller,
+    BOOL animated) {
   return nil;
 }
 
 ChromeIdentityInteractionManager*
 ChromeIdentityService::CreateChromeIdentityInteractionManager(
-    ios::ChromeBrowserState* browser_state,
     id<ChromeIdentityInteractionManagerDelegate> delegate) const {
   return nil;
 }
 
-bool ChromeIdentityService::IsValidIdentity(ChromeIdentity* identity) const {
-  return false;
-}
+void ChromeIdentityService::IterateOverIdentities(IdentityIteratorCallback) {}
 
-ChromeIdentity* ChromeIdentityService::GetIdentityWithEmail(
-    const std::string& email) const {
-  return nil;
+bool ChromeIdentityService::IsValidIdentity(ChromeIdentity* identity) {
+  return false;
 }
 
 ChromeIdentity* ChromeIdentityService::GetIdentityWithGaiaID(
-    const std::string& gaia_id) const {
+    const std::string& gaia_id) {
   return nil;
 }
 
-std::vector<std::string>
-ChromeIdentityService::GetCanonicalizeEmailsForAllIdentities() const {
-  return std::vector<std::string>();
-}
-
-bool ChromeIdentityService::HasIdentities() const {
+bool ChromeIdentityService::HasIdentities() {
   return false;
 }
 
-NSArray* ChromeIdentityService::GetAllIdentities() const {
-  return nil;
-}
-
-NSArray* ChromeIdentityService::GetAllIdentitiesSortedForDisplay() const {
+NSArray* ChromeIdentityService::GetAllIdentities(PrefService* pref_service) {
   return nil;
 }
 
@@ -101,6 +102,25 @@ UIImage* ChromeIdentityService::GetCachedAvatarForIdentity(
 void ChromeIdentityService::GetHostedDomainForIdentity(
     ChromeIdentity* identity,
     GetHostedDomainCallback callback) {}
+
+NSString* ChromeIdentityService::GetCachedHostedDomainForIdentity(
+    ChromeIdentity* identity) {
+  // @gmail.com accounts are end consumer accounts so it is safe to return @""
+  // even when SSOProfileSource has a nil profile for |sso_identity|.
+  //
+  // Note: This is also needed during the sign-in flow as it avoids waiting for
+  // the profile of |sso_identity| to be fetched from the server.
+  if (gaia::ExtractDomainName(base::SysNSStringToUTF8(identity.userEmail)) ==
+      "gmail.com") {
+    return @"";
+  }
+  return nil;
+}
+
+bool ChromeIdentityService::CanOfferExtendedSyncPromos(
+    ChromeIdentity* identity) {
+  return false;
+}
 
 MDMDeviceStatus ChromeIdentityService::GetMDMDeviceStatus(
     NSDictionary* user_info) {
@@ -130,9 +150,9 @@ bool ChromeIdentityService::IsInvalidGrantError(NSDictionary* user_info) {
   return false;
 }
 
-void ChromeIdentityService::FireIdentityListChanged() {
+void ChromeIdentityService::FireIdentityListChanged(bool keychainReload) {
   for (auto& observer : observer_list_)
-    observer.OnIdentityListChanged();
+    observer.OnIdentityListChanged(keychainReload);
 }
 
 void ChromeIdentityService::FireAccessTokenRefreshFailed(

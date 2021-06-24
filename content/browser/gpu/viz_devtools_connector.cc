@@ -5,13 +5,15 @@
 #include "content/browser/gpu/viz_devtools_connector.h"
 
 #include "base/bind.h"
-#include "base/task/post_task.h"
 #include "components/ui_devtools/devtools_server.h"
 #include "components/viz/common/switches.h"
 #include "content/browser/gpu/gpu_process_host.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/common/content_client.h"
+#include "content/public/common/content_features.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace content {
 
@@ -19,21 +21,26 @@ namespace {
 
 void OnSocketCreated(base::OnceCallback<void(int, int)> callback,
                      int result,
-                     const base::Optional<net::IPEndPoint>& local_addr) {
+                     const absl::optional<net::IPEndPoint>& local_addr) {
   int port = 0;
   if (local_addr)
     port = local_addr->port();
-  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
-                           base::BindOnce(std::move(callback), result, port));
+  if (base::FeatureList::IsEnabled(features::kProcessHostOnUI)) {
+    std::move(callback).Run(result, port);
+  } else {
+    GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), result, port));
+  }
 }
 
 void CreateSocketOnUiThread(
-    network::mojom::TCPServerSocketRequest server_socket_request,
+    mojo::PendingReceiver<network::mojom::TCPServerSocket>
+        server_socket_receiver,
     int port,
     base::OnceCallback<void(int, int)> callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   ui_devtools::UiDevToolsServer::CreateTCPServerSocket(
-      std::move(server_socket_request),
+      std::move(server_socket_receiver),
       GetContentClient()->browser()->GetSystemNetworkContext(), port,
       ui_devtools::UiDevToolsServer::kVizDevtoolsServerTag,
       base::BindOnce(&OnSocketCreated, std::move(callback)));
@@ -41,30 +48,30 @@ void CreateSocketOnUiThread(
 
 }  // namespace
 
-VizDevToolsConnector::VizDevToolsConnector() : weak_ptr_factory_(this) {}
+VizDevToolsConnector::VizDevToolsConnector() {}
 
 VizDevToolsConnector::~VizDevToolsConnector() {}
 
 void VizDevToolsConnector::ConnectVizDevTools() {
   constexpr int kVizDevToolsDefaultPort = 9229;
-  network::mojom::TCPServerSocketPtr server_socket;
-  network::mojom::TCPServerSocketRequest server_socket_request =
-      mojo::MakeRequest(&server_socket);
+  mojo::PendingRemote<network::mojom::TCPServerSocket> server_socket;
   int port = ui_devtools::UiDevToolsServer::GetUiDevToolsPort(
       switches::kEnableVizDevTools, kVizDevToolsDefaultPort);
+  mojo::PendingReceiver<network::mojom::TCPServerSocket>
+      server_socket_receiver = server_socket.InitWithNewPipeAndPassReceiver();
   // Jump to the UI thread to get the network context, create the socket, then
-  // jump back to the IO thread to complete the callback.
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  // jump back to the process thread to complete the callback.
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(
-          &CreateSocketOnUiThread, std::move(server_socket_request), port,
+          &CreateSocketOnUiThread, std::move(server_socket_receiver), port,
           base::BindOnce(&VizDevToolsConnector::OnVizDevToolsSocketCreated,
                          weak_ptr_factory_.GetWeakPtr(),
-                         server_socket.PassInterface())));
+                         std::move(server_socket))));
 }
 
 void VizDevToolsConnector::OnVizDevToolsSocketCreated(
-    network::mojom::TCPServerSocketPtrInfo socket,
+    mojo::PendingRemote<network::mojom::TCPServerSocket> socket,
     int result,
     int port) {
   viz::mojom::VizDevToolsParamsPtr params =

@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 
 #include <memory>
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -15,6 +16,7 @@
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 
@@ -26,8 +28,7 @@ class LayoutThemeTest : public PageTestBase {
 };
 
 void LayoutThemeTest::SetHtmlInnerHTML(const char* html_content) {
-  GetDocument().documentElement()->SetInnerHTMLFromString(
-      String::FromUTF8(html_content));
+  GetDocument().documentElement()->setInnerHTML(String::FromUTF8(html_content));
   UpdateAllLifecyclePhasesForTest();
 }
 
@@ -73,57 +74,65 @@ TEST_F(LayoutThemeTest, ChangeFocusRingColor) {
   EXPECT_EQ(custom_color, OutlineColor(span));
 }
 
-TEST_F(LayoutThemeTest, RootElementColor) {
-  EXPECT_EQ(Color::kBlack,
-            LayoutTheme::GetTheme().RootElementColor(ColorScheme::kLight));
-  EXPECT_EQ(Color::kWhite,
-            LayoutTheme::GetTheme().RootElementColor(ColorScheme::kDark));
-}
-
-TEST_F(LayoutThemeTest, RootElementColorChange) {
+// The expectations in the tests below are relying on LayoutThemeDefault.
+// LayoutThemeMac doesn't inherit from that class.
+#if !defined(OS_MAC)
+TEST_F(LayoutThemeTest, SystemColorWithColorScheme) {
   SetHtmlInnerHTML(R"HTML(
     <style>
-      #initial { color: initial }
+      #dark {
+        color: buttonface;
+        color-scheme: light dark;
+      }
     </style>
-    <div id="initial"></div>
+    <div id="dark"></div>
   )HTML");
 
-  Element* initial = GetDocument().getElementById("initial");
-  ASSERT_TRUE(initial);
-  EXPECT_EQ(ColorScheme::kLight,
-            GetDocument().GetStyleEngine().GetColorScheme());
+  Element* dark_element = GetDocument().getElementById("dark");
+  ASSERT_TRUE(dark_element);
 
-  ASSERT_TRUE(GetDocument().documentElement());
-  const ComputedStyle* document_element_style =
-      GetDocument().documentElement()->GetComputedStyle();
-  ASSERT_TRUE(document_element_style);
-  EXPECT_EQ(Color::kBlack, document_element_style->VisitedDependentColor(
-                               GetCSSPropertyColor()));
-
-  const ComputedStyle* initial_style = initial->GetComputedStyle();
-  ASSERT_TRUE(initial_style);
-  EXPECT_EQ(Color::kBlack,
-            initial_style->VisitedDependentColor(GetCSSPropertyColor()));
+  const ComputedStyle* style = dark_element->GetComputedStyle();
+  EXPECT_EQ(mojom::blink::ColorScheme::kLight, style->UsedColorScheme());
+  EXPECT_EQ(Color(0xdd, 0xdd, 0xdd),
+            style->VisitedDependentColor(GetCSSPropertyColor()));
 
   // Change color scheme to dark.
-  GetDocument().GetSettings()->SetPreferredColorScheme(
-      PreferredColorScheme::kDark);
-  ColorSchemeSet supported_schemes;
-  supported_schemes.Set(ColorScheme::kDark);
-  GetDocument().GetStyleEngine().SetSupportedColorSchemes(supported_schemes);
+  ColorSchemeHelper color_scheme_helper(GetDocument());
+  color_scheme_helper.SetPreferredColorScheme(
+      mojom::blink::PreferredColorScheme::kDark);
   UpdateAllLifecyclePhasesForTest();
 
-  document_element_style = GetDocument().documentElement()->GetComputedStyle();
-  ASSERT_TRUE(document_element_style);
-  EXPECT_EQ(Color::kWhite, document_element_style->VisitedDependentColor(
-                               GetCSSPropertyColor()));
-
-  initial_style = initial->GetComputedStyle();
-  ASSERT_TRUE(initial_style);
-  // Theming does not change the initial value for color, only the UA style for
-  // the root element.
-  EXPECT_EQ(Color::kBlack,
-            initial_style->VisitedDependentColor(GetCSSPropertyColor()));
+  style = dark_element->GetComputedStyle();
+  EXPECT_EQ(mojom::blink::ColorScheme::kDark, style->UsedColorScheme());
+  EXPECT_EQ(Color(0x44, 0x44, 0x44),
+            style->VisitedDependentColor(GetCSSPropertyColor()));
 }
+
+TEST_F(LayoutThemeTest, SetSelectionColors) {
+  LayoutTheme::GetTheme().SetSelectionColors(Color::kBlack, Color::kBlack,
+                                             Color::kBlack, Color::kBlack);
+  EXPECT_EQ(Color::kBlack,
+            LayoutTheme::GetTheme().ActiveSelectionForegroundColor(
+                mojom::blink::ColorScheme::kLight));
+  {
+    // Enabling MobileLayoutTheme switches which instance is returned from
+    // LayoutTheme::GetTheme(). Devtools expect SetSelectionColors() to affect
+    // both LayoutTheme instances.
+    ScopedMobileLayoutThemeForTest scope(true);
+    EXPECT_EQ(Color::kBlack,
+              LayoutTheme::GetTheme().ActiveSelectionForegroundColor(
+                  mojom::blink::ColorScheme::kLight));
+
+    LayoutTheme::GetTheme().SetSelectionColors(Color::kWhite, Color::kWhite,
+                                               Color::kWhite, Color::kWhite);
+    EXPECT_EQ(Color::kWhite,
+              LayoutTheme::GetTheme().ActiveSelectionForegroundColor(
+                  mojom::blink::ColorScheme::kLight));
+  }
+  EXPECT_EQ(Color::kWhite,
+            LayoutTheme::GetTheme().ActiveSelectionForegroundColor(
+                mojom::blink::ColorScheme::kLight));
+}
+#endif  // !defined(OS_MAC)
 
 }  // namespace blink

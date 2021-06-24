@@ -7,25 +7,51 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/logging.h"
+#include "base/callback_helpers.h"
+#include "base/memory/platform_shared_memory_region.h"
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "base/numerics/checked_math.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/posix/eintr_wrapper.h"
 #include "base/system/sys_info.h"
 #include "components/arc/video_accelerator/arc_video_accelerator_util.h"
+#include "media/base/color_plane_layout.h"
+#include "media/base/format_utils.h"
 #include "media/base/video_types.h"
+#include "media/gpu/buffer_validation.h"
 #include "media/gpu/gpu_video_encode_accelerator_factory.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "media/gpu/macros.h"
 #include "mojo/public/cpp/bindings/type_converter.h"
 #include "mojo/public/cpp/system/platform_handle.h"
 
-#define DVLOGF(x) DVLOG(x) << __func__ << "(): "
-
 namespace arc {
 
-GpuArcVideoEncodeAccelerator::GpuArcVideoEncodeAccelerator(
-    const gpu::GpuPreferences& gpu_preferences)
-    : gpu_preferences_(gpu_preferences) {}
+namespace {
 
-GpuArcVideoEncodeAccelerator::~GpuArcVideoEncodeAccelerator() = default;
+// Maximum number of concurrent ARC video clients.
+// Currently we have no way to know the resources are not enough to create more
+// VEAs. Currently this value is selected as 40 instances are enough to pass
+// the CTS tests.
+constexpr size_t kMaxConcurrentClients = 8;
+}  // namespace
+
+// static
+size_t GpuArcVideoEncodeAccelerator::client_count_ = 0;
+
+GpuArcVideoEncodeAccelerator::GpuArcVideoEncodeAccelerator(
+    const gpu::GpuPreferences& gpu_preferences,
+    const gpu::GpuDriverBugWorkarounds& gpu_workarounds)
+    : gpu_preferences_(gpu_preferences),
+      gpu_workarounds_(gpu_workarounds),
+      bitstream_buffer_serial_(0) {}
+
+GpuArcVideoEncodeAccelerator::~GpuArcVideoEncodeAccelerator() {
+  // Normally |client_count_| should always be > 0 if vea_ is set, but if it
+  // isn't and we underflow then we won't be able to create any new decoder
+  // forever. (b/173700103). So let's use an extra check to avoid this...
+  if (accelerator_ && client_count_ > 0)
+    client_count_--;
+}
 
 // VideoEncodeAccelerator::Client implementation.
 void GpuArcVideoEncodeAccelerator::RequireBitstreamBuffers(
@@ -64,41 +90,60 @@ void GpuArcVideoEncodeAccelerator::GetSupportedProfiles(
     GetSupportedProfilesCallback callback) {
   std::move(callback).Run(
       media::GpuVideoEncodeAcceleratorFactory::GetSupportedProfiles(
-          gpu_preferences_));
+          gpu_preferences_, gpu_workarounds_));
 }
 
 void GpuArcVideoEncodeAccelerator::Initialize(
     const media::VideoEncodeAccelerator::Config& config,
-    VideoEncodeClientPtr client,
+    mojo::PendingRemote<mojom::VideoEncodeClient> client,
     InitializeCallback callback) {
+  auto result = InitializeTask(config, std::move(client));
+  std::move(callback).Run(result);
+}
+
+void GpuArcVideoEncodeAccelerator::InitializeDeprecated(
+    const media::VideoEncodeAccelerator::Config& config,
+    mojo::PendingRemote<mojom::VideoEncodeClient> client,
+    InitializeDeprecatedCallback callback) {
+  auto result = InitializeTask(config, std::move(client));
+  std::move(callback).Run(result ==
+                          mojom::VideoEncodeAccelerator::Result::kSuccess);
+}
+
+mojom::VideoEncodeAccelerator::Result
+GpuArcVideoEncodeAccelerator::InitializeTask(
+    const media::VideoEncodeAccelerator::Config& config,
+    mojo::PendingRemote<mojom::VideoEncodeClient> client) {
   DVLOGF(2) << config.AsHumanReadableString();
   if (!config.storage_type.has_value()) {
     DLOG(ERROR) << "storage type must be specified";
-    std::move(callback).Run(false);
-    return;
+    return mojom::VideoEncodeAccelerator::Result::kInvalidArgumentError;
   }
-  input_pixel_format_ = config.input_format;
-  input_storage_type_ = *config.storage_type;
+
+  if (config.input_format != media::PIXEL_FORMAT_NV12) {
+    VLOGF(1) << "Unsupported pixel format: " << config.input_format;
+    return mojom::VideoEncodeAccelerator::Result::kInvalidArgumentError;
+  }
+
+  if (client_count_ >= kMaxConcurrentClients) {
+    VLOGF(1) << "Reject to Initialize() due to too many clients: "
+             << client_count_;
+    return mojom::VideoEncodeAccelerator::Result::kInsufficientResourcesError;
+  }
+
   visible_size_ = config.input_visible_size;
   accelerator_ = media::GpuVideoEncodeAcceleratorFactory::CreateVEA(
-      config, this, gpu_preferences_);
+      config, this, gpu_preferences_, gpu_workarounds_);
   if (accelerator_ == nullptr) {
     DLOG(ERROR) << "Failed to create a VideoEncodeAccelerator.";
-    std::move(callback).Run(false);
-    return;
+    return mojom::VideoEncodeAccelerator::Result::kPlatformFailureError;
   }
-  client_ = std::move(client);
-  std::move(callback).Run(true);
-}
 
-void GpuArcVideoEncodeAccelerator::EncodeDeprecated(
-    mojo::ScopedHandle handle,
-    std::vector<::arc::VideoFramePlane> planes,
-    int64_t timestamp,
-    bool force_keyframe,
-    EncodeCallback callback) {
-  Encode(input_pixel_format_, std::move(handle), planes, timestamp,
-         force_keyframe, std::move(callback));
+  client_.Bind(std::move(client));
+
+  client_count_++;
+  VLOGF(2) << "Number of concurrent clients: " << client_count_;
+  return mojom::VideoEncodeAccelerator::Result::kSuccess;
 }
 
 void GpuArcVideoEncodeAccelerator::Encode(
@@ -125,84 +170,54 @@ void GpuArcVideoEncodeAccelerator::Encode(
     return;
   }
 
-  if (input_storage_type_ ==
-      media::VideoEncodeAccelerator::Config::StorageType::kShmem) {
-    EncodeSharedMemory(std::move(fd), format, planes, timestamp, force_keyframe,
-                       std::move(callback));
-  } else {
-    EncodeDmabuf(std::move(fd), format, planes, timestamp, force_keyframe,
-                 std::move(callback));
-  }
-}
-
-void GpuArcVideoEncodeAccelerator::EncodeDmabuf(
-    base::ScopedFD fd,
-    media::VideoPixelFormat format,
-    const std::vector<::arc::VideoFramePlane>& planes,
-    int64_t timestamp,
-    bool force_keyframe,
-    EncodeCallback callback) {
-  client_->NotifyError(Error::kInvalidArgumentError);
-  NOTIMPLEMENTED();
-}
-
-void GpuArcVideoEncodeAccelerator::EncodeSharedMemory(
-    base::ScopedFD fd,
-    media::VideoPixelFormat format,
-    const std::vector<::arc::VideoFramePlane>& planes,
-    int64_t timestamp,
-    bool force_keyframe,
-    EncodeCallback callback) {
-  if (format != media::PIXEL_FORMAT_I420) {
-    DLOG(ERROR) << "Formats other than I420 are unsupported. format=" << format;
+  if (format != media::PIXEL_FORMAT_NV12) {
+    DLOG(ERROR) << "Formats other than NV12 are unsupported. format=" << format;
     client_->NotifyError(Error::kInvalidArgumentError);
     return;
   }
 
-  size_t allocation_size =
-      media::VideoFrame::AllocationSize(format, coded_size_);
-  // TODO(rockot): Pass GUIDs through Mojo. https://crbug.com/713763.
-  // TODO(rockot): This fd comes from a mojo::ScopedHandle in
-  // GpuArcVideoService::BindSharedMemory. That should be passed through,
-  // rather than pulling out the fd. https://crbug.com/713763.
-  // TODO(rockot): Pass through a real size rather than |0|.
-  base::UnguessableToken guid = base::UnguessableToken::Create();
-  base::SharedMemoryHandle shm_handle(base::FileDescriptor(fd.release(), true),
-                                      0u, guid);
-  auto shm = std::make_unique<base::SharedMemory>(shm_handle, true);
-
-  base::CheckedNumeric<off_t> map_offset = planes[0].offset;
-  base::CheckedNumeric<size_t> map_size = allocation_size;
-  const uint32_t aligned_offset =
-      planes[0].offset % base::SysInfo::VMAllocationGranularity();
-  map_offset -= aligned_offset;
-  map_size += aligned_offset;
-
-  if (!map_offset.IsValid() || !map_size.IsValid()) {
-    DLOG(ERROR) << "Invalid map_offset or map_size";
+  std::vector<base::ScopedFD> fds = DuplicateFD(std::move(fd), planes.size());
+  if (fds.empty()) {
+    DLOG(ERROR) << "Failed to duplicate fd";
     client_->NotifyError(Error::kInvalidArgumentError);
     return;
   }
-  if (!shm->MapAt(map_offset.ValueOrDie(), map_size.ValueOrDie())) {
-    DLOG(ERROR) << "Failed to map memory.";
-    client_->NotifyError(Error::kPlatformFailureError);
+  auto gmb_handle =
+      CreateGpuMemoryBufferHandle(format, gfx::NativePixmapHandle::kNoModifier,
+                                  coded_size_, std::move(fds), planes);
+  if (!gmb_handle) {
+    DLOG(ERROR) << "Failed to create GpuMemoryBufferHandle";
+    client_->NotifyError(Error::kInvalidArgumentError);
     return;
   }
 
-  uint8_t* shm_memory = reinterpret_cast<uint8_t*>(shm->memory());
-  auto frame = media::VideoFrame::WrapExternalSharedMemory(
-      format, coded_size_, gfx::Rect(visible_size_), visible_size_,
-      shm_memory + aligned_offset, allocation_size, shm_handle,
-      planes[0].offset, base::TimeDelta::FromMicroseconds(timestamp));
+  absl::optional<gfx::BufferFormat> buffer_format =
+      VideoPixelFormatToGfxBufferFormat(format);
+  if (!format) {
+    DLOG(ERROR) << "Unexpected format: " << format;
+    client_->NotifyError(Error::kInvalidArgumentError);
+    return;
+  }
+  std::unique_ptr<gfx::GpuMemoryBuffer> gpu_memory_buffer =
+      support_.CreateGpuMemoryBufferImplFromHandle(
+          std::move(gmb_handle).value(), coded_size_, *buffer_format,
+          gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE,
+          base::NullCallback());
 
-  // Add the function to relase |shm| and |callback| to |frame|'s  destruction
-  // observer. When the |frame| goes out of scope, it unmaps and releases the
-  // shared memory as well as executes |callback|.
-  frame->AddDestructionObserver(base::BindOnce(
-      base::DoNothing::Once<std::unique_ptr<base::SharedMemory>>(),
-      std::move(shm)));
+  gpu::MailboxHolder dummy_mailbox[media::VideoFrame::kMaxPlanes];
+  auto frame = media::VideoFrame::WrapExternalGpuMemoryBuffer(
+      gfx::Rect(visible_size_), visible_size_, std::move(gpu_memory_buffer),
+      dummy_mailbox /* mailbox_holders */,
+      base::NullCallback() /* mailbox_holder_release_cb_ */,
+      base::TimeDelta::FromMicroseconds(timestamp));
+  if (!frame) {
+    DLOG(ERROR) << "Failed to create VideoFrame";
+    client_->NotifyError(Error::kInvalidArgumentError);
+    return;
+  }
+
   frame->AddDestructionObserver(std::move(callback));
-  accelerator_->Encode(frame, force_keyframe);
+  accelerator_->Encode(std::move(frame), force_keyframe);
 }
 
 void GpuArcVideoEncodeAccelerator::UseBitstreamBuffer(
@@ -222,17 +237,28 @@ void GpuArcVideoEncodeAccelerator::UseBitstreamBuffer(
     return;
   }
 
+  size_t shmem_size;
+  if (!media::GetFileSize(fd.get(), &shmem_size)) {
+    client_->NotifyError(Error::kInvalidArgumentError);
+    return;
+  }
+
   // TODO(rockot): Pass GUIDs through Mojo. https://crbug.com/713763.
   // TODO(rockot): This fd comes from a mojo::ScopedHandle in
   // GpuArcVideoService::BindSharedMemory. That should be passed through,
   // rather than pulling out the fd. https://crbug.com/713763.
   // TODO(rockot): Pass through a real size rather than |0|.
   base::UnguessableToken guid = base::UnguessableToken::Create();
-  base::SharedMemoryHandle shm_handle(base::FileDescriptor(fd.release(), true),
-                                      0u, guid);
+  auto shm_region = base::subtle::PlatformSharedMemoryRegion::Take(
+      std::move(fd), base::subtle::PlatformSharedMemoryRegion::Mode::kUnsafe,
+      shmem_size, guid);
+  if (!shm_region.IsValid()) {
+    client_->NotifyError(Error::kInvalidArgumentError);
+    return;
+  }
   use_bitstream_cbs_.emplace(bitstream_buffer_serial_, std::move(callback));
   accelerator_->UseOutputBitstreamBuffer(media::BitstreamBuffer(
-      bitstream_buffer_serial_, shm_handle, size, offset));
+      bitstream_buffer_serial_, std::move(shm_region), size, offset));
 
   // Mask against 30 bits to avoid (undefined) wraparound on signed integer.
   bitstream_buffer_serial_ = (bitstream_buffer_serial_ + 1) & 0x3FFFFFFF;

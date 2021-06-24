@@ -40,7 +40,6 @@ class PrefMetricsService : public KeyedService {
     KeyedService* BuildServiceInstanceFor(
         content::BrowserContext* profile) const override;
     bool ServiceIsCreatedWithBrowserContext() const override;
-    bool ServiceIsNULLWhileTesting() const override;
     content::BrowserContext* GetBrowserContextToUse(
         content::BrowserContext* context) const override;
   };
@@ -52,7 +51,7 @@ class PrefMetricsService : public KeyedService {
   Profile* profile_;
   PrefService* prefs_;
 
-  base::WeakPtrFactory<PrefMetricsService> weak_factory_;
+  base::WeakPtrFactory<PrefMetricsService> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PrefMetricsService);
 };

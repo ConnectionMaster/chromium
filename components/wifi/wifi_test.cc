@@ -14,19 +14,19 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_current.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/current_thread.h"
+#include "base/task/single_thread_task_executor.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/wifi/wifi_service.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include "base/mac/scoped_nsautorelease_pool.h"
 #endif
 
@@ -53,7 +53,7 @@ class WiFiTest {
   void Finish(Result result) {
     DCHECK_NE(RESULT_PENDING, result);
     result_ = result;
-    if (base::MessageLoopCurrent::Get())
+    if (base::CurrentThread::Get())
       base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
@@ -71,7 +71,7 @@ class WiFiTest {
     VLOG(0) << "Network List Changed: " << network_guid_list.size();
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // Without this there will be a mem leak on osx.
   base::mac::ScopedNSAutoreleasePool scoped_pool_;
 #endif
@@ -103,7 +103,6 @@ WiFiTest::Result WiFiTest::Main(int argc, const char* argv[]) {
     return RESULT_WRONG_USAGE;
   }
 
-  base::MessageLoopForIO loop;
   result_ = RESULT_PENDING;
 
   return result_;
@@ -124,7 +123,7 @@ bool WiFiTest::ParseCommandLine(int argc, const char* argv[]) {
 
   if (parsed_command_line.GetArgs().size() == 1) {
 #if defined(OS_WIN)
-    network_guid = base::UTF16ToASCII(parsed_command_line.GetArgs()[0]);
+    network_guid = base::WideToASCII(parsed_command_line.GetArgs()[0]);
 #else
     network_guid = parsed_command_line.GetArgs()[0];
 #endif
@@ -135,10 +134,10 @@ bool WiFiTest::ParseCommandLine(int argc, const char* argv[]) {
     MessageBoxA(nullptr, __FUNCTION__, "Debug Me!", MB_OK);
 #endif
 
-  base::MessageLoopForIO loop;
+  base::SingleThreadTaskExecutor executor(base::MessagePumpType::IO);
 
   wifi_service_.reset(WiFiService::Create());
-  wifi_service_->Initialize(loop.task_runner());
+  wifi_service_->Initialize(executor.task_runner());
 
   if (parsed_command_line.HasSwitch("list")) {
     base::ListValue network_list;
@@ -191,16 +190,18 @@ bool WiFiTest::ParseCommandLine(int argc, const char* argv[]) {
   if (parsed_command_line.HasSwitch("connect")) {
     if (!network_guid.empty()) {
       std::string error;
-      if (!properties->empty()) {
+      if (!properties->DictEmpty()) {
         VLOG(0) << "Using connect properties: " << *properties;
         wifi_service_->SetProperties(network_guid, std::move(properties),
                                      &error);
       }
 
       wifi_service_->SetEventObservers(
-          loop.task_runner(),
-          base::Bind(&WiFiTest::OnNetworksChanged, base::Unretained(this)),
-          base::Bind(&WiFiTest::OnNetworkListChanged, base::Unretained(this)));
+          executor.task_runner(),
+          base::BindRepeating(&WiFiTest::OnNetworksChanged,
+                              base::Unretained(this)),
+          base::BindRepeating(&WiFiTest::OnNetworkListChanged,
+                              base::Unretained(this)));
 
       wifi_service_->StartConnect(network_guid, &error);
       VLOG(0) << error;
@@ -231,9 +232,11 @@ bool WiFiTest::ParseCommandLine(int argc, const char* argv[]) {
 
   if (parsed_command_line.HasSwitch("scan")) {
     wifi_service_->SetEventObservers(
-        loop.task_runner(),
-        base::Bind(&WiFiTest::OnNetworksChanged, base::Unretained(this)),
-        base::Bind(&WiFiTest::OnNetworkListChanged, base::Unretained(this)));
+        executor.task_runner(),
+        base::BindRepeating(&WiFiTest::OnNetworksChanged,
+                            base::Unretained(this)),
+        base::BindRepeating(&WiFiTest::OnNetworkListChanged,
+                            base::Unretained(this)));
     wifi_service_->RequestNetworkScan();
     base::RunLoop().Run();
     return true;
@@ -258,7 +261,8 @@ bool WiFiTest::ParseCommandLine(int argc, const char* argv[]) {
 int main(int argc, const char* argv[]) {
   base::CommandLine::Init(argc, argv);
   logging::LoggingSettings settings;
-  settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+  settings.logging_dest =
+      logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   logging::InitLogging(settings);
 
   wifi::WiFiTest wifi_test;

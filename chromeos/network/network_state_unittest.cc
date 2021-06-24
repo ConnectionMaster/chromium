@@ -12,24 +12,39 @@
 #include "base/i18n/streaming_utf8_validator.h"
 #include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
+#include "chromeos/network/network_state_handler.h"
+#include "chromeos/network/network_state_test_helper.h"
 #include "chromeos/network/tether_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
+#include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
 namespace chromeos {
 
 namespace {
 
+const char kTestCellularDevicePath[] = "cellular_path";
+const char kTestCellularDeviceName[] = "cellular_name";
+
 class NetworkStateTest : public testing::Test {
  public:
-  NetworkStateTest() : network_state_("test_path") {
-  }
+  NetworkStateTest() : network_state_("test_path") {}
+
+  // testing::Test:
+  void SetUp() override { AddCellularDevice(); }
 
  protected:
+  const DeviceState* GetCellularDevice() {
+    return helper_.network_state_handler()->GetDeviceState(
+        kTestCellularDevicePath);
+  }
+
   bool SetProperty(const std::string& key, std::unique_ptr<base::Value> value) {
     const bool result = network_state_.PropertyChanged(key, *value);
-    properties_.SetWithoutPathExpansion(key, std::move(value));
+    properties_.SetKey(key, base::Value::FromUniquePtrValue(std::move(value)));
     return result;
   }
 
@@ -44,6 +59,15 @@ class NetworkStateTest : public testing::Test {
   NetworkState network_state_;
 
  private:
+  void AddCellularDevice() {
+    helper_.device_test()->AddDevice(
+        kTestCellularDevicePath, shill::kTypeCellular, kTestCellularDeviceName);
+    base::RunLoop().RunUntilIdle();
+  }
+
+  base::test::SingleThreadTaskEnvironment task_environment_;
+  NetworkStateTestHelper helper_{/*use_default_devices_and_services=*/false};
+
   base::DictionaryValue properties_;
 
   DISALLOW_COPY_AND_ASSIGN(NetworkStateTest);
@@ -166,38 +190,30 @@ TEST_F(NetworkStateTest, CaptivePortalState) {
       base::HexEncode(network_name.c_str(), network_name.length());
   EXPECT_TRUE(SetStringProperty(shill::kWifiHexSsid, hex_ssid));
 
-  // State != portal -> is_captive_portal == false
+  // State != portal -> portal_state() == kOnline
   EXPECT_TRUE(SetStringProperty(shill::kStateProperty, shill::kStateReady));
   SignalInitialPropertiesReceived();
-  EXPECT_FALSE(network_state_.is_captive_portal());
+  EXPECT_EQ(network_state_.portal_state(), NetworkState::PortalState::kOnline);
 
-  // State == portal, kPortalDetection* not set -> is_captive_portal = true
-  EXPECT_TRUE(SetStringProperty(shill::kStateProperty, shill::kStatePortal));
+  // State == redirect-found -> portal_state() == kPortal
+  EXPECT_TRUE(
+      SetStringProperty(shill::kStateProperty, shill::kStateRedirectFound));
   SignalInitialPropertiesReceived();
-  EXPECT_TRUE(network_state_.is_captive_portal());
+  EXPECT_EQ(network_state_.portal_state(), NetworkState::PortalState::kPortal);
 
-  // Set kPortalDetectionFailed* properties to states that should not trigger
-  // is_captive_portal.
-  SetStringProperty(shill::kPortalDetectionFailedPhaseProperty,
-                    shill::kPortalDetectionPhaseUnknown);
-  SetStringProperty(shill::kPortalDetectionFailedStatusProperty,
-                    shill::kPortalDetectionStatusTimeout);
+  // State == portal-suspected -> portal_state() == kPortalSuspected
+  EXPECT_TRUE(
+      SetStringProperty(shill::kStateProperty, shill::kStatePortalSuspected));
   SignalInitialPropertiesReceived();
-  EXPECT_FALSE(network_state_.is_captive_portal());
+  EXPECT_EQ(network_state_.portal_state(),
+            NetworkState::PortalState::kPortalSuspected);
 
-  // Set just the phase property to the expected captive portal state.
-  // is_captive_portal should still be false.
-  SetStringProperty(shill::kPortalDetectionFailedPhaseProperty,
-                    shill::kPortalDetectionPhaseContent);
+  // State == no-connectivity -> portal_state() == kOffline
+  EXPECT_TRUE(
+      SetStringProperty(shill::kStateProperty, shill::kStateNoConnectivity));
   SignalInitialPropertiesReceived();
-  EXPECT_FALSE(network_state_.is_captive_portal());
-
-  // Set the status property to the expected captive portal state property.
-  // is_captive_portal should now be true.
-  SetStringProperty(shill::kPortalDetectionFailedStatusProperty,
-                    shill::kPortalDetectionStatusFailure);
-  SignalInitialPropertiesReceived();
-  EXPECT_TRUE(network_state_.is_captive_portal());
+  EXPECT_EQ(network_state_.portal_state(),
+            NetworkState::PortalState::kNoInternet);
 }
 
 // Third-party VPN provider.
@@ -308,21 +324,21 @@ TEST_F(NetworkStateTest, ConnectionStateNotVisible) {
   network_state_.set_visible(false);
 
   network_state_.SetConnectionState(shill::kStateConfiguration);
-  EXPECT_EQ(network_state_.connection_state(), shill::kStateDisconnect);
+  EXPECT_EQ(network_state_.connection_state(), shill::kStateIdle);
   EXPECT_FALSE(network_state_.IsConnectingState());
 
   network_state_.SetConnectionState(shill::kStateOnline);
-  EXPECT_EQ(network_state_.connection_state(), shill::kStateDisconnect);
+  EXPECT_EQ(network_state_.connection_state(), shill::kStateIdle);
   EXPECT_FALSE(network_state_.IsConnectedState());
 
   network_state_.SetConnectionState(shill::kStateConfiguration);
-  EXPECT_EQ(network_state_.connection_state(), shill::kStateDisconnect);
+  EXPECT_EQ(network_state_.connection_state(), shill::kStateIdle);
   EXPECT_FALSE(network_state_.IsConnectingState());
 }
 
 TEST_F(NetworkStateTest, TetherProperties) {
   network_state_.set_type_for_testing(kTypeTether);
-  network_state_.set_carrier("Project Fi");
+  network_state_.set_tether_carrier("Project Fi");
   network_state_.set_battery_percentage(85);
   network_state_.set_tether_has_connected_to_host(true);
   network_state_.set_signal_strength(75);
@@ -330,20 +346,20 @@ TEST_F(NetworkStateTest, TetherProperties) {
   base::DictionaryValue dictionary;
   network_state_.GetStateProperties(&dictionary);
 
-  int signal_strength;
-  EXPECT_TRUE(dictionary.GetIntegerWithoutPathExpansion(kTetherSignalStrength,
-                                                        &signal_strength));
-  EXPECT_EQ(75, signal_strength);
+  absl::optional<int> signal_strength =
+      dictionary.FindIntKey(kTetherSignalStrength);
+  EXPECT_TRUE(signal_strength.has_value());
+  EXPECT_EQ(75, signal_strength.value());
 
-  int battery_percentage;
-  EXPECT_TRUE(dictionary.GetIntegerWithoutPathExpansion(
-      kTetherBatteryPercentage, &battery_percentage));
-  EXPECT_EQ(85, battery_percentage);
+  absl::optional<int> battery_percentage =
+      dictionary.FindIntKey(kTetherBatteryPercentage);
+  EXPECT_TRUE(battery_percentage.has_value());
+  EXPECT_EQ(85, battery_percentage.value());
 
-  bool tether_has_connected_to_host;
-  EXPECT_TRUE(dictionary.GetBooleanWithoutPathExpansion(
-      kTetherHasConnectedToHost, &tether_has_connected_to_host));
-  EXPECT_TRUE(tether_has_connected_to_host);
+  absl::optional<bool> tether_has_connected_to_host =
+      dictionary.FindBoolKey(kTetherHasConnectedToHost);
+  EXPECT_TRUE(tether_has_connected_to_host.has_value());
+  EXPECT_TRUE(tether_has_connected_to_host.value());
 
   std::string carrier;
   EXPECT_TRUE(
@@ -413,6 +429,43 @@ TEST_F(NetworkStateTest, CelularPaymentPortalGet) {
             network_state_.activation_state());
   EXPECT_EQ("http://test-portal.com", network_state_.payment_url());
   EXPECT_EQ("", network_state_.payment_post_data());
+}
+
+TEST_F(NetworkStateTest, CellularSpecifier) {
+  const char kTestCellularNetworkName[] = "cellular1";
+  const char kTestIccid1[] = "1234567890";
+  const char kTestIccid2[] = "0987654321";
+  EXPECT_TRUE(SetStringProperty(shill::kTypeProperty, shill::kTypeCellular));
+  EXPECT_TRUE(
+      SetStringProperty(shill::kNameProperty, kTestCellularNetworkName));
+  network_state_.set_update_received();
+
+  // Verify that cellular network state with same name but different iccid
+  // produce different specifier values.
+  EXPECT_TRUE(SetStringProperty(shill::kIccidProperty, kTestIccid1));
+  std::string specifier1 = network_state_.GetSpecifier();
+  EXPECT_TRUE(SetStringProperty(shill::kIccidProperty, kTestIccid2));
+  std::string specifier2 = network_state_.GetSpecifier();
+  EXPECT_NE(specifier1, specifier2);
+}
+
+TEST_F(NetworkStateTest, NonShillCellular) {
+  const char kTestIccid[] = "test_iccid";
+  const char kTestEid[] = "test_eid";
+  const char kTestGuid[] = "test_guid";
+
+  std::unique_ptr<NetworkState> non_shill_cellular =
+      NetworkState::CreateNonShillCellularNetwork(
+          kTestIccid, kTestEid, kTestGuid, GetCellularDevice());
+  EXPECT_EQ(kTestIccid, non_shill_cellular->iccid());
+  EXPECT_EQ(kTestEid, non_shill_cellular->eid());
+  EXPECT_EQ(kTestGuid, non_shill_cellular->guid());
+
+  base::Value dictionary(base::Value::Type::DICTIONARY);
+  non_shill_cellular->GetStateProperties(&dictionary);
+  EXPECT_EQ(kTestIccid, *dictionary.FindStringKey(shill::kIccidProperty));
+  EXPECT_EQ(kTestEid, *dictionary.FindStringKey(shill::kEidProperty));
+  EXPECT_EQ(kTestGuid, *dictionary.FindStringKey(shill::kGuidProperty));
 }
 
 }  // namespace chromeos

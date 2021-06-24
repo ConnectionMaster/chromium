@@ -43,6 +43,7 @@ class MediaEngagementContentsObserver : public content::WebContentsObserver {
                                bool muted) override;
   void MediaResized(const gfx::Size& size,
                     const content::MediaPlayerId& id) override;
+  void MediaDestroyed(const content::MediaPlayerId& id) override;
   void AudioContextPlaybackStarted(
       const AudioContextId& audio_context_id) override;
   void AudioContextPlaybackStopped(
@@ -152,7 +153,7 @@ class MediaEngagementContentsObserver : public content::WebContentsObserver {
     // The clock is owned by |service_| which already owns |this|.
     base::Clock* clock_;
 
-    base::Optional<base::Time> start_time_;
+    absl::optional<base::Time> start_time_;
     base::TimeDelta recorded_time_;
   };
 
@@ -162,12 +163,12 @@ class MediaEngagementContentsObserver : public content::WebContentsObserver {
     ~PlayerState();
     PlayerState(PlayerState&&);
 
-    base::Optional<bool> muted;
-    base::Optional<bool> playing;           // Currently playing.
-    base::Optional<bool> significant_size;  // The video track has at least
+    absl::optional<bool> muted;
+    absl::optional<bool> playing;           // Currently playing.
+    absl::optional<bool> significant_size;  // The video track has at least
                                             // a certain frame size.
-    base::Optional<bool> has_audio;         // The media has an audio track.
-    base::Optional<bool> has_video;         // The media has a video track.
+    absl::optional<bool> has_audio;         // The media has an audio track.
+    absl::optional<bool> has_video;         // The media has a video track.
 
     // The engagement score of the origin at playback has been recorded
     // to a histogram.
@@ -233,9 +234,8 @@ class MediaEngagementContentsObserver : public content::WebContentsObserver {
   // Find the appropriate media engagement session if any or create a new one to
   // be used. Will return nullptr if no session should be used.
   scoped_refptr<MediaEngagementSession> GetOrCreateSession(
-      const url::Origin& origin,
-      content::WebContents* opener,
-      bool was_restored) const;
+      content::NavigationHandle* navigation_handle,
+      content::WebContents* opener) const;
 
   // Stores the ids of the players that were audible. The boolean will be true
   // if the player was significant.

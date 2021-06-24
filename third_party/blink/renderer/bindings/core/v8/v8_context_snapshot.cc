@@ -4,7 +4,88 @@
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_context_snapshot.h"
 
-#include <array>
+#if defined(USE_BLINK_V8_BINDING_NEW_IDL_INTERFACE)
+
+namespace blink {
+
+namespace {
+
+V8ContextSnapshot::CreateContextFromSnapshotFuncType
+    g_create_context_from_snapshot_func;
+V8ContextSnapshot::InstallContextIndependentPropsFuncType
+    g_install_context_independent_props_func;
+V8ContextSnapshot::EnsureInterfaceTemplatesFuncType
+    g_ensure_interface_templates_func;
+V8ContextSnapshot::TakeSnapshotFuncType g_take_snapshot_func;
+V8ContextSnapshot::GetReferenceTableFuncType g_get_reference_table_func;
+
+}  // namespace
+
+v8::Local<v8::Context> V8ContextSnapshot::CreateContextFromSnapshot(
+    v8::Isolate* isolate,
+    const DOMWrapperWorld& world,
+    v8::ExtensionConfiguration* extension_config,
+    v8::Local<v8::Object> global_proxy,
+    Document* document) {
+  return g_create_context_from_snapshot_func(isolate, world, extension_config,
+                                             global_proxy, document);
+}
+
+void V8ContextSnapshot::InstallContextIndependentProps(
+    ScriptState* script_state) {
+  return g_install_context_independent_props_func(script_state);
+}
+
+void V8ContextSnapshot::EnsureInterfaceTemplates(v8::Isolate* isolate) {
+  return g_ensure_interface_templates_func(isolate);
+}
+
+v8::StartupData V8ContextSnapshot::TakeSnapshot() {
+  return g_take_snapshot_func();
+}
+
+const intptr_t* V8ContextSnapshot::GetReferenceTable() {
+  return g_get_reference_table_func();
+}
+
+void V8ContextSnapshot::SetCreateContextFromSnapshotFunc(
+    CreateContextFromSnapshotFuncType func) {
+  DCHECK(!g_create_context_from_snapshot_func);
+  DCHECK(func);
+  g_create_context_from_snapshot_func = func;
+}
+
+void V8ContextSnapshot::SetInstallContextIndependentPropsFunc(
+    InstallContextIndependentPropsFuncType func) {
+  DCHECK(!g_install_context_independent_props_func);
+  DCHECK(func);
+  g_install_context_independent_props_func = func;
+}
+
+void V8ContextSnapshot::SetEnsureInterfaceTemplatesFunc(
+    EnsureInterfaceTemplatesFuncType func) {
+  DCHECK(!g_ensure_interface_templates_func);
+  DCHECK(func);
+  g_ensure_interface_templates_func = func;
+}
+
+void V8ContextSnapshot::SetTakeSnapshotFunc(TakeSnapshotFuncType func) {
+  DCHECK(!g_take_snapshot_func);
+  DCHECK(func);
+  g_take_snapshot_func = func;
+}
+
+void V8ContextSnapshot::SetGetReferenceTableFunc(
+    GetReferenceTableFuncType func) {
+  DCHECK(!g_get_reference_table_func);
+  DCHECK(func);
+  g_get_reference_table_func = func;
+}
+
+}  // namespace blink
+
+#else  // USE_BLINK_V8_BINDING_NEW_IDL_INTERFACE
+
 #include <cstring>
 
 #include "third_party/blink/renderer/bindings/core/v8/generated_code_helper.h"
@@ -14,6 +95,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_initializer.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_node.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_window.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/origin_trial_features.h"
 #include "third_party/blink/renderer/platform/bindings/v8_object_constructor.h"
@@ -115,7 +197,7 @@ struct DataForDeserializer {
  public:
   DataForDeserializer(Document* document) : document(document) {}
 
-  Member<Document> document;
+  Document* document;
   // Figures if we failed the deserialization.
   bool did_fail = false;
 };
@@ -136,9 +218,11 @@ v8::Local<v8::Context> V8ContextSnapshot::CreateContextFromSnapshot(
   DataForDeserializer data(document);
   v8::DeserializeInternalFieldsCallback callback =
       v8::DeserializeInternalFieldsCallback(&DeserializeInternalField, &data);
+
   v8::Local<v8::Context> context =
-      v8::Context::FromSnapshot(isolate, index, callback,
-                                extension_configuration, global_proxy)
+      v8::Context::FromSnapshot(
+          isolate, index, callback, extension_configuration, global_proxy,
+          document->GetExecutionContext()->GetMicrotaskQueue())
           .ToLocalChecked();
 
   // In case we fail to deserialize v8::Context from snapshot,
@@ -208,7 +292,7 @@ bool V8ContextSnapshot::InstallConditionalFeatures(
   // The below code handles window.document on the main world.
   {
     CHECK(document);
-    DCHECK(document->IsHTMLDocument());
+    DCHECK(IsA<HTMLDocument>(document));
     CHECK(document->ContainsWrapper());
     v8::Local<v8::Object> document_wrapper =
         ToV8(document, global_proxy, isolate).As<v8::Object>();
@@ -401,7 +485,6 @@ void V8ContextSnapshot::DeserializeInternalField(v8::Local<v8::Object> object,
         embed_data->did_fail = true;
         return;
       }
-      WrapperTypeInfo::WrapperCreated();
       return;
     }
     case InternalFieldType::kNone:
@@ -425,7 +508,7 @@ bool V8ContextSnapshot::CanCreateContextFromSnapshot(
   // When creating a context for the main world from snapshot, we also need a
   // HTMLDocument instance. If typeof window.document is not HTMLDocument, e.g.
   // SVGDocument or XMLDocument, we can't create contexts from the snapshot.
-  return !world.IsMainWorld() || document->IsHTMLDocument();
+  return !world.IsMainWorld() || IsA<HTMLDocument>(document);
 }
 
 void V8ContextSnapshot::EnsureInterfaceTemplatesForWorld(
@@ -458,8 +541,8 @@ void V8ContextSnapshot::TakeSnapshotForWorld(v8::SnapshotCreator* creator,
 
   // Function templates
   v8::HandleScope handleScope(isolate);
-  std::array<v8::Local<v8::FunctionTemplate>, kSnapshotInterfaceSize>
-      interface_templates;
+  Vector<v8::Local<v8::FunctionTemplate>> interface_templates(
+      kSnapshotInterfaceSize);
   v8::Local<v8::FunctionTemplate> window_template;
   for (size_t i = 0; i < kSnapshotInterfaceSize; ++i) {
     const WrapperTypeInfo* wrapper_type_info =
@@ -512,3 +595,5 @@ void V8ContextSnapshot::TakeSnapshotForWorld(v8::SnapshotCreator* creator,
 }
 
 }  // namespace blink
+
+#endif  // USE_BLINK_V8_BINDING_NEW_IDL_INTERFACE

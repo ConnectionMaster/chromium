@@ -13,12 +13,11 @@
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "components/services/filesystem/file_impl.h"
 #include "components/services/filesystem/lock_table.h"
 #include "components/services/filesystem/util.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 
 namespace filesystem {
 
@@ -48,8 +47,8 @@ void DirectoryImpl::Read(ReadCallback callback) {
 
   std::move(callback).Run(base::File::Error::FILE_OK,
                           entries.empty()
-                              ? base::nullopt
-                              : base::make_optional(std::move(entries)));
+                              ? absl::nullopt
+                              : absl::make_optional(std::move(entries)));
 }
 
 // TODO(erg): Consider adding an implementation of Stat()/Touch() to the
@@ -58,7 +57,7 @@ void DirectoryImpl::Read(ReadCallback callback) {
 
 // TODO(vtl): Move the implementation to a thread pool.
 void DirectoryImpl::OpenFile(const std::string& raw_path,
-                             mojom::FileRequest file,
+                             mojo::PendingReceiver<mojom::File> receiver,
                              uint32_t open_flags,
                              OpenFileCallback callback) {
   base::FilePath path;
@@ -82,11 +81,11 @@ void DirectoryImpl::OpenFile(const std::string& raw_path,
     return;
   }
 
-  if (file.is_pending()) {
-    mojo::MakeStrongBinding(
+  if (receiver) {
+    mojo::MakeSelfOwnedReceiver(
         std::make_unique<FileImpl>(path, std::move(base_file), temp_dir_,
                                    lock_table_),
-        std::move(file));
+        std::move(receiver));
   }
   std::move(callback).Run(base::File::Error::FILE_OK);
 }
@@ -114,10 +113,11 @@ void DirectoryImpl::OpenFileHandles(
   std::move(callback).Run(std::move(results));
 }
 
-void DirectoryImpl::OpenDirectory(const std::string& raw_path,
-                                  mojom::DirectoryRequest directory,
-                                  uint32_t open_flags,
-                                  OpenDirectoryCallback callback) {
+void DirectoryImpl::OpenDirectory(
+    const std::string& raw_path,
+    mojo::PendingReceiver<mojom::Directory> receiver,
+    uint32_t open_flags,
+    OpenDirectoryCallback callback) {
   base::FilePath path;
   base::File::Error error = ValidatePath(raw_path, directory_path_, &path);
   if (error != base::File::Error::FILE_OK) {
@@ -146,10 +146,10 @@ void DirectoryImpl::OpenDirectory(const std::string& raw_path,
     }
   }
 
-  if (directory.is_pending()) {
-    mojo::MakeStrongBinding(
+  if (receiver) {
+    mojo::MakeSelfOwnedReceiver(
         std::make_unique<DirectoryImpl>(path, temp_dir_, lock_table_),
-        std::move(directory));
+        std::move(receiver));
   }
 
   std::move(callback).Run(base::File::Error::FILE_OK);
@@ -218,8 +218,12 @@ void DirectoryImpl::Delete(const std::string& raw_path,
     return;
   }
 
-  bool recursive = delete_flags & mojom::kDeleteFlagRecursive;
-  if (!base::DeleteFile(path, recursive)) {
+  bool success;
+  if (delete_flags & mojom::kDeleteFlagRecursive)
+    success = base::DeletePathRecursively(path);
+  else
+    success = base::DeleteFile(path);
+  if (!success) {
     std::move(callback).Run(base::File::Error::FILE_ERROR_FAILED);
     return;
   }
@@ -297,12 +301,10 @@ void DirectoryImpl::StatFile(const std::string& raw_path,
                           MakeFileInformation(info));
 }
 
-void DirectoryImpl::Clone(mojom::DirectoryRequest directory) {
-  if (directory.is_pending()) {
-    mojo::MakeStrongBinding(std::make_unique<DirectoryImpl>(
-                                directory_path_, temp_dir_, lock_table_),
-                            std::move(directory));
-  }
+void DirectoryImpl::Clone(mojo::PendingReceiver<mojom::Directory> receiver) {
+  mojo::MakeSelfOwnedReceiver(
+      std::make_unique<DirectoryImpl>(directory_path_, temp_dir_, lock_table_),
+      std::move(receiver));
 }
 
 void DirectoryImpl::ReadEntireFile(const std::string& raw_path,

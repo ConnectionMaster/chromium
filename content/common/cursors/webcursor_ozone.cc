@@ -6,89 +6,40 @@
 
 #include <algorithm>
 
-#include "third_party/blink/public/platform/web_cursor_info.h"
-#include "ui/base/cursor/cursor.h"
-#include "ui/base/cursor/cursor_util.h"
-#include "ui/base/ui_base_features.h"
-#include "ui/ozone/public/cursor_factory_ozone.h"
-
-namespace {
-const int kDefaultMaxCursorWidth = 64;
-const int kDefaultMaxCursorHeight = 64;
-}
+#include "base/check_op.h"
+#include "build/chromeos_buildflags.h"
 
 namespace content {
 
-ui::PlatformCursor WebCursor::GetPlatformCursor(const ui::Cursor& cursor) {
-  if (features::IsUsingWindowService())
-    return nullptr;
-
-  if (!platform_cursor_) {
-    platform_cursor_ = ui::CursorFactoryOzone::GetInstance()->CreateImageCursor(
-        cursor.GetBitmap(), cursor.GetHotspot(), cursor.device_scale_factor());
-  }
-
-  return platform_cursor_;
-}
-
+#if defined(USE_OZONE)
 void WebCursor::SetDisplayInfo(const display::Display& display) {
-  if (rotation_ == display.rotation() &&
+  if (rotation_ == display.panel_rotation() &&
       device_scale_factor_ == display.device_scale_factor() &&
       maximum_cursor_size_ == display.maximum_cursor_size())
     return;
   device_scale_factor_ = display.device_scale_factor();
-  rotation_ = display.rotation();
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // The cursor should use the panel's physical rotation instead of
+  // rotation. They can be different on ChromeOS but the same on
+  // other platforms.
+  rotation_ = display.panel_rotation();
+#endif
   maximum_cursor_size_ = display.maximum_cursor_size();
   // TODO(oshima): Identify if it's possible to remove this check here and move
-  // the kDefaultMaxCursor{Width,Height} constants to a single place.
-  // crbug.com/603512
+  // the kDefaultMaxSize constants to a single place. crbug.com/603512
   if (maximum_cursor_size_.width() == 0 || maximum_cursor_size_.height() == 0)
-    maximum_cursor_size_ =
-        gfx::Size(kDefaultMaxCursorWidth, kDefaultMaxCursorHeight);
-  if (platform_cursor_)
-    ui::CursorFactoryOzone::GetInstance()->UnrefImageCursor(platform_cursor_);
-  platform_cursor_ = NULL;
-  // It is not necessary to recreate platform_cursor_ yet, since it will be
-  // recreated on demand when GetPlatformCursor is called.
+    maximum_cursor_size_ = gfx::Size(kDefaultMaxSize, kDefaultMaxSize);
+  CleanupPlatformData();
 }
 
 float WebCursor::GetCursorScaleFactor(SkBitmap* bitmap) {
   DCHECK_LT(0, maximum_cursor_size_.width());
   DCHECK_LT(0, maximum_cursor_size_.height());
   return std::min(
-      {device_scale_factor_ / custom_scale_,
+      {device_scale_factor_ / cursor_.image_scale_factor(),
        static_cast<float>(maximum_cursor_size_.width()) / bitmap->width(),
        static_cast<float>(maximum_cursor_size_.height()) / bitmap->height()});
 }
-
-void WebCursor::InitPlatformData() {
-  platform_cursor_ = NULL;
-  device_scale_factor_ = 1.f;
-  rotation_ = display::Display::ROTATE_0;
-  maximum_cursor_size_ =
-      gfx::Size(kDefaultMaxCursorWidth, kDefaultMaxCursorHeight);
-}
-
-bool WebCursor::IsPlatformDataEqual(const WebCursor& other) const {
-  return true;
-}
-
-void WebCursor::CleanupPlatformData() {
-  if (platform_cursor_) {
-    ui::CursorFactoryOzone::GetInstance()->UnrefImageCursor(platform_cursor_);
-    platform_cursor_ = NULL;
-  }
-}
-
-void WebCursor::CopyPlatformData(const WebCursor& other) {
-  if (platform_cursor_)
-    ui::CursorFactoryOzone::GetInstance()->UnrefImageCursor(platform_cursor_);
-  platform_cursor_ = other.platform_cursor_;
-  if (platform_cursor_)
-    ui::CursorFactoryOzone::GetInstance()->RefImageCursor(platform_cursor_);
-
-  device_scale_factor_ = other.device_scale_factor_;
-  maximum_cursor_size_ = other.maximum_cursor_size_;
-}
+#endif
 
 }  // namespace content

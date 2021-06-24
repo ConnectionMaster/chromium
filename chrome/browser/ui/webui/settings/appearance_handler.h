@@ -7,6 +7,7 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
 
 namespace base {
@@ -36,28 +37,16 @@ class AppearanceHandler : public SettingsPageUIHandler {
   // Changes the UI theme of the browser to the default theme.
   void HandleUseDefaultTheme(const base::ListValue* args);
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   // Changes the UI theme of the browser to the system (GTK+) theme.
   void HandleUseSystemTheme(const base::ListValue* args);
 #endif
 
-#if defined(OS_CHROMEOS)
-  // Whether the wallpaper setting should be shown.
-  void IsWallpaperSettingVisible(const base::ListValue* args);
-
-  // Whether the wallpaper is policy controlled.
-  void IsWallpaperPolicyControlled(const base::ListValue* args);
-
-  // Open the wallpaper manager app.
-  void HandleOpenWallpaperManager(const base::ListValue* args);
-
-  // Helper function to resolve the Javascript callback.
-  void ResolveCallback(const base::Value& callback_id, bool result);
-#endif
-
   Profile* profile_;  // Weak pointer.
 
-  base::WeakPtrFactory<AppearanceHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<AppearanceHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AppearanceHandler);
 };

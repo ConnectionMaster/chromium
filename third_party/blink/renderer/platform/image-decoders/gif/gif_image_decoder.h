@@ -28,9 +28,8 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
+
 #include "third_party/skia/include/codec/SkCodec.h"
 
 namespace blink {
@@ -41,6 +40,8 @@ class SegmentStream;
 class PLATFORM_EXPORT GIFImageDecoder final : public ImageDecoder {
  public:
   GIFImageDecoder(AlphaOption, const ColorBehavior&, size_t max_decoded_bytes);
+  GIFImageDecoder(const GIFImageDecoder&) = delete;
+  GIFImageDecoder& operator=(const GIFImageDecoder&) = delete;
   ~GIFImageDecoder() override;
 
   // ImageDecoder:
@@ -48,7 +49,7 @@ class PLATFORM_EXPORT GIFImageDecoder final : public ImageDecoder {
   void OnSetData(SegmentReader* data) override;
   int RepetitionCount() const override;
   bool FrameIsReceivedAtIndex(size_t) const override;
-  TimeDelta FrameDurationAtIndex(size_t) const override;
+  base::TimeDelta FrameDurationAtIndex(size_t) const override;
   // CAUTION: SetFailed() deletes |codec_|.  Be careful to avoid
   // accessing deleted memory.
   bool SetFailed() override;
@@ -80,10 +81,8 @@ class PLATFORM_EXPORT GIFImageDecoder final : public ImageDecoder {
   SegmentStream* segment_stream_ = nullptr;
   mutable int repetition_count_ = kAnimationLoopOnce;
   int prior_frame_ = SkCodec::kNoFrame;
-
-  DISALLOW_COPY_AND_ASSIGN(GIFImageDecoder);
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_GIF_GIF_IMAGE_DECODER_H_

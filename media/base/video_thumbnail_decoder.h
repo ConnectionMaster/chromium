@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "media/base/media_export.h"
@@ -32,18 +31,20 @@ class MEDIA_EXPORT VideoThumbnailDecoder {
   VideoThumbnailDecoder(std::unique_ptr<VideoDecoder> decoder,
                         const VideoDecoderConfig& config,
                         std::vector<uint8_t> encoded_data);
+  VideoThumbnailDecoder(const VideoThumbnailDecoder&) = delete;
+  VideoThumbnailDecoder& operator=(const VideoThumbnailDecoder&) = delete;
   ~VideoThumbnailDecoder();
 
   // Starts to decode the video frame.
   void Start(VideoFrameCallback video_frame_callback);
 
  private:
-  void OnVideoDecoderInitialized(bool success);
-  void OnVideoBufferDecoded(DecodeStatus status);
-  void OnEosBufferDecoded(DecodeStatus status);
+  void OnVideoDecoderInitialized(Status status);
+  void OnVideoBufferDecoded(Status status);
+  void OnEosBufferDecoded(Status status);
 
   // Called when the output frame is generated.
-  void OnVideoFrameDecoded(const scoped_refptr<VideoFrame>& frame);
+  void OnVideoFrameDecoded(scoped_refptr<VideoFrame> frame);
 
   void NotifyComplete(scoped_refptr<VideoFrame> frame);
 
@@ -55,9 +56,7 @@ class MEDIA_EXPORT VideoThumbnailDecoder {
   std::vector<uint8_t> encoded_data_;
 
   VideoFrameCallback video_frame_callback_;
-  base::WeakPtrFactory<VideoThumbnailDecoder> weak_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(VideoThumbnailDecoder);
+  base::WeakPtrFactory<VideoThumbnailDecoder> weak_factory_{this};
 };
 
 }  // namespace media

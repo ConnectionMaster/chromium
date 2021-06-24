@@ -8,8 +8,9 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/frame/browser_controls.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/fullscreen/document_fullscreen.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
@@ -17,7 +18,6 @@
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
-#include "third_party/blink/renderer/core/page/scrolling/root_scroller_util.h"
 #include "third_party/blink/renderer/core/page/scrolling/top_document_root_scroller_controller.h"
 #include "third_party/blink/renderer/core/paint/compositing/paint_layer_compositor.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -25,6 +25,7 @@
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_layer.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
@@ -36,9 +37,7 @@ bool FillsViewport(const Element& element) {
   if (!element.GetLayoutObject())
     return false;
 
-  DCHECK(element.GetLayoutObject()->IsBox());
-
-  LayoutBox* layout_box = ToLayoutBox(element.GetLayoutObject());
+  auto* layout_box = To<LayoutBox>(element.GetLayoutObject());
 
   // TODO(bokan): Broken for OOPIF. crbug.com/642378.
   Document& top_document = element.GetDocument().TopDocument();
@@ -51,11 +50,11 @@ bool FillsViewport(const Element& element) {
   // the parent is done to ensure consistent semantics with respect to how the
   // mobile URL bar affects layout, which isn't a concern for non-iframe
   // elements because those semantics will already be applied to the element.
-  LayoutRect rect = layout_box->IsLayoutIFrame()
-                        ? layout_box->PhysicalContentBoxRect()
-                        : layout_box->PhysicalPaddingBoxRect();
+  PhysicalRect rect = layout_box->IsLayoutIFrame()
+                          ? layout_box->PhysicalContentBoxRect()
+                          : layout_box->PhysicalPaddingBoxRect();
 
-  FloatQuad quad = layout_box->LocalToAbsoluteQuad(FloatRect(rect));
+  FloatQuad quad = layout_box->LocalRectToAbsoluteQuad(rect);
 
   if (!quad.IsRectilinear())
     return false;
@@ -90,8 +89,10 @@ PaintLayerScrollableArea* GetScrollableArea(const Element& element) {
     return frame_view->LayoutViewport();
   }
 
-  DCHECK(element.GetLayoutObject()->IsBox());
-  return ToLayoutBox(element.GetLayoutObject())->GetScrollableArea();
+  if (!element.GetLayoutBoxForScrolling())
+    return nullptr;
+
+  return element.GetLayoutBoxForScrolling()->GetScrollableArea();
 }
 
 }  // namespace
@@ -99,7 +100,7 @@ PaintLayerScrollableArea* GetScrollableArea(const Element& element) {
 RootScrollerController::RootScrollerController(Document& document)
     : document_(&document), effective_root_scroller_(&document) {}
 
-void RootScrollerController::Trace(blink::Visitor* visitor) {
+void RootScrollerController::Trace(Visitor* visitor) const {
   visitor->Trace(document_);
   visitor->Trace(root_scroller_);
   visitor->Trace(effective_root_scroller_);
@@ -159,7 +160,7 @@ void RootScrollerController::DidUpdateIFrameFrameView(
     frame->ScheduleVisualUpdateUnlessThrottled();
 }
 
-void RootScrollerController::RecomputeEffectiveRootScroller() {
+bool RootScrollerController::RecomputeEffectiveRootScroller() {
   ProcessImplicitCandidates();
 
   Node* new_effective_root_scroller = document_;
@@ -175,8 +176,11 @@ void RootScrollerController::RecomputeEffectiveRootScroller() {
     }
   }
 
-  if (effective_root_scroller_ == new_effective_root_scroller)
-    return;
+  // Note, the layout object can be replaced during a rebuild. In that case,
+  // re-run process even if the element itself is the same.
+  if (effective_root_scroller_ == new_effective_root_scroller &&
+      effective_root_scroller_->IsEffectiveRootScroller())
+    return false;
 
   Node* old_effective_root_scroller = effective_root_scroller_;
   effective_root_scroller_ = new_effective_root_scroller;
@@ -210,8 +214,15 @@ void RootScrollerController::RecomputeEffectiveRootScroller() {
   ApplyRootScrollerProperties(*old_effective_root_scroller);
   ApplyRootScrollerProperties(*effective_root_scroller_);
 
-  if (Page* page = document_->GetPage())
+  if (Page* page = document_->GetPage()) {
     page->GlobalRootScrollerController().DidChangeRootScroller();
+
+    // Needed to set the |prevent_viewport_scrolling_from_inner| bit on the
+    // VisualViewportScrollNode.
+    page->GetVisualViewport().SetNeedsPaintPropertyUpdate();
+  }
+
+  return true;
 }
 
 bool RootScrollerController::IsValidRootScroller(const Element& element) const {
@@ -228,7 +239,7 @@ bool RootScrollerController::IsValidRootScroller(const Element& element) const {
   if (element.GetLayoutObject()->IsInsideFlowThread())
     return false;
 
-  if (!element.GetLayoutObject()->HasOverflowClip() &&
+  if (!element.GetLayoutObject()->IsScrollContainer() &&
       !element.IsFrameOwnerElement())
     return false;
 
@@ -238,6 +249,13 @@ bool RootScrollerController::IsValidRootScroller(const Element& element) const {
 
     // TODO(bokan): Make work with OOPIF. crbug.com/642378.
     if (!frame_owner->OwnedEmbeddedContentView()->IsLocalFrameView())
+      return false;
+
+    // It's possible for an iframe to have a LayoutView but not have performed
+    // the lifecycle yet. We shouldn't promote such an iframe until it has
+    // since we won't be able to use the scroller inside yet.
+    Document* doc = frame_owner->contentDocument();
+    if (!doc || !doc->View() || !doc->View()->DidFirstLayout())
       return false;
   }
 
@@ -297,7 +315,7 @@ bool RootScrollerController::IsValidImplicit(const Element& element) const {
     // The LayoutView is allowed to have a clip (since its clip is resized by
     // the URL bar movement). Test it for scrolling so that we only promote if
     // we know we won't block scrolling the main document.
-    if (ancestor->IsLayoutView()) {
+    if (IsA<LayoutView>(ancestor)) {
       const ComputedStyle* ancestor_style = ancestor->Style();
       DCHECK(ancestor_style);
 
@@ -307,8 +325,9 @@ bool RootScrollerController::IsValidImplicit(const Element& element) const {
       if (ancestor_style->ScrollsOverflowY() && area->HasVerticalOverflow())
         return false;
     } else {
-      if (ancestor->ShouldClipOverflow() || ancestor->HasMask() ||
-          ancestor->HasClip() || ancestor->HasClipPath()) {
+      if (ancestor->ShouldClipOverflowAlongEitherAxis() ||
+          ancestor->HasMask() || ancestor->HasClip() ||
+          ancestor->HasClipPath()) {
         return false;
       }
     }
@@ -338,7 +357,7 @@ void RootScrollerController::ApplyRootScrollerProperties(Node& node) {
 
   if (IsA<LocalFrame>(frame_owner->ContentFrame())) {
     LocalFrameView* frame_view =
-        To<LocalFrameView>(frame_owner->OwnedEmbeddedContentView());
+        DynamicTo<LocalFrameView>(frame_owner->OwnedEmbeddedContentView());
 
     bool is_root_scroller = &EffectiveRootScroller() == &node;
 
@@ -404,11 +423,6 @@ void RootScrollerController::ProcessImplicitCandidates() {
     implicit_root_scroller_ = nullptr;
 }
 
-PaintLayer* RootScrollerController::RootScrollerPaintLayer() const {
-  return root_scroller_util::PaintLayerForRootScroller(
-      effective_root_scroller_);
-}
-
 void RootScrollerController::ElementRemoved(const Element& element) {
   if (element != effective_root_scroller_.Get())
     return;
@@ -426,13 +440,14 @@ void RootScrollerController::ConsiderForImplicit(Node& node) {
   if (document_->GetPage()->GetChromeClient().IsPopup())
     return;
 
-  if (!node.IsElementNode())
+  auto* element = DynamicTo<Element>(node);
+  if (!element)
     return;
 
-  if (!IsValidImplicitCandidate(ToElement(node)))
+  if (!IsValidImplicitCandidate(*element))
     return;
 
-  implicit_candidates_.insert(&ToElement(node));
+  implicit_candidates_.insert(element);
 }
 
 template <typename Function>
@@ -460,19 +475,22 @@ void RootScrollerController::ForAllNonThrottledLocalControllers(
   function(*this);
 }
 
-void RootScrollerController::PerformRootScrollerSelection() {
+bool RootScrollerController::PerformRootScrollerSelection() {
   TRACE_EVENT0("blink", "RootScrollerController::PerformRootScrollerSelection");
 
   // Printing can cause a lifecycle update on a detached frame. In that case,
   // don't make any changes.
   if (!document_->GetFrame() || !document_->GetFrame()->IsLocalRoot())
-    return;
+    return false;
 
   DCHECK(document_->Lifecycle().GetState() >= DocumentLifecycle::kLayoutClean);
 
-  ForAllNonThrottledLocalControllers([](RootScrollerController& controller) {
-    controller.RecomputeEffectiveRootScroller();
-  });
+  bool result = false;
+  ForAllNonThrottledLocalControllers(
+      [&result](RootScrollerController& controller) {
+        result |= controller.RecomputeEffectiveRootScroller();
+      });
+  return result;
 }
 
 }  // namespace blink

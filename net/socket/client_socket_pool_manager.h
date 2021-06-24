@@ -14,8 +14,10 @@
 #include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/http/http_network_session.h"
 #include "net/socket/client_socket_pool.h"
+#include "url/scheme_host_port.h"
 
 namespace base {
 class Value;
@@ -26,12 +28,9 @@ class ProcessMemoryDump;
 
 namespace net {
 
-typedef base::Callback<int(const AddressList&, const NetLogWithSource& net_log)>
-    OnHostResolutionCallback;
-
 class ClientSocketHandle;
-class HostPortPair;
 class NetLogWithSource;
+class NetworkIsolationKey;
 class ProxyInfo;
 class ProxyServer;
 
@@ -43,12 +42,6 @@ enum DefaultMaxValues { kDefaultMaxSocketsPerProxyServer = 32 };
 
 class NET_EXPORT_PRIVATE ClientSocketPoolManager {
  public:
-  enum SocketGroupType {
-    SSL_GROUP,     // For all TLS sockets.
-    NORMAL_GROUP,  // For normal HTTP sockets.
-    FTP_GROUP      // For FTP sockets (over an HTTP proxy).
-  };
-
   ClientSocketPoolManager();
   virtual ~ClientSocketPoolManager();
 
@@ -75,8 +68,11 @@ class NET_EXPORT_PRIVATE ClientSocketPoolManager {
   static base::TimeDelta unused_idle_socket_timeout(
       HttpNetworkSession::SocketPoolType pool_type);
 
-  virtual void FlushSocketPoolsWithError(int error) = 0;
-  virtual void CloseIdleSockets() = 0;
+  // The |net_error| is returned to clients of pending socket requests, while
+  // |reason| is logged at the socket layer.
+  virtual void FlushSocketPoolsWithError(int net_error,
+                                         const char* net_log_reason_utf8) = 0;
+  virtual void CloseIdleSockets(const char* net_log_reason_utf8) = 0;
 
   // Returns the socket pool for the specified ProxyServer (Which may be
   // ProxyServer::Direct()).
@@ -100,8 +96,7 @@ class NET_EXPORT_PRIVATE ClientSocketPoolManager {
 // resolved.  If |resolution_callback| does not return OK, then the
 // connection will be aborted with that value.
 int InitSocketHandleForHttpRequest(
-    ClientSocketPoolManager::SocketGroupType group_type,
-    const HostPortPair& endpoint,
+    url::SchemeHostPort endpoint,
     int request_load_flags,
     RequestPriority request_priority,
     HttpNetworkSession* session,
@@ -109,10 +104,11 @@ int InitSocketHandleForHttpRequest(
     const SSLConfig& ssl_config_for_origin,
     const SSLConfig& ssl_config_for_proxy,
     PrivacyMode privacy_mode,
+    NetworkIsolationKey network_isolation_key,
+    SecureDnsPolicy secure_dns_policy,
     const SocketTag& socket_tag,
     const NetLogWithSource& net_log,
     ClientSocketHandle* socket_handle,
-    const OnHostResolutionCallback& resolution_callback,
     CompletionOnceCallback callback,
     const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback);
 
@@ -126,8 +122,7 @@ int InitSocketHandleForHttpRequest(
 // connection will be aborted with that value.
 // This function uses WEBSOCKET_SOCKET_POOL socket pools.
 int InitSocketHandleForWebSocketRequest(
-    ClientSocketPoolManager::SocketGroupType group_type,
-    const HostPortPair& endpoint,
+    url::SchemeHostPort endpoint,
     int request_load_flags,
     RequestPriority request_priority,
     HttpNetworkSession* session,
@@ -135,44 +130,26 @@ int InitSocketHandleForWebSocketRequest(
     const SSLConfig& ssl_config_for_origin,
     const SSLConfig& ssl_config_for_proxy,
     PrivacyMode privacy_mode,
+    NetworkIsolationKey network_isolation_key,
     const NetLogWithSource& net_log,
     ClientSocketHandle* socket_handle,
-    const OnHostResolutionCallback& resolution_callback,
     CompletionOnceCallback callback,
     const ClientSocketPool::ProxyAuthCallback& proxy_auth_callback);
 
-// Deprecated: Please do not use this outside of //net and //services/network.
-// A helper method that uses the passed in proxy to initialize a ConnectJob that
-// does not use a SocketPool, but does use the passed in
-// CommonConnectJobParams's SpdySessionPool. Use this method for a raw socket
-// connection to a host-port pair (that needs to tunnel through the proxies). If
-// |use_tls| is true, will establish a TLS connection on top of the established
-// connection.
-NET_EXPORT std::unique_ptr<ConnectJob> CreateConnectJobForRawConnect(
-    const HostPortPair& host_port_pair,
-    bool use_tls,
-    const CommonConnectJobParams* common_connect_job_params,
-    RequestPriority request_priority,
-    const ProxyInfo& proxy_info,
-    const SSLConfig& ssl_config_for_origin,
-    const SSLConfig& ssl_config_for_proxy,
-    const NetLogWithSource& net_log,
-    ConnectJob::Delegate* connect_job_delegate);
-
 // Similar to InitSocketHandleForHttpRequest except that it initiates the
 // desired number of preconnect streams from the relevant socket pool.
-int PreconnectSocketsForHttpRequest(
-    ClientSocketPoolManager::SocketGroupType group_type,
-    const HostPortPair& endpoint,
-    int request_load_flags,
-    RequestPriority request_priority,
-    HttpNetworkSession* session,
-    const ProxyInfo& proxy_info,
-    const SSLConfig& ssl_config_for_origin,
-    const SSLConfig& ssl_config_for_proxy,
-    PrivacyMode privacy_mode,
-    const NetLogWithSource& net_log,
-    int num_preconnect_streams);
+int PreconnectSocketsForHttpRequest(url::SchemeHostPort endpoint,
+                                    int request_load_flags,
+                                    RequestPriority request_priority,
+                                    HttpNetworkSession* session,
+                                    const ProxyInfo& proxy_info,
+                                    const SSLConfig& ssl_config_for_origin,
+                                    const SSLConfig& ssl_config_for_proxy,
+                                    PrivacyMode privacy_mode,
+                                    NetworkIsolationKey network_isolation_key,
+                                    SecureDnsPolicy secure_dns_policy,
+                                    const NetLogWithSource& net_log,
+                                    int num_preconnect_streams);
 
 }  // namespace net
 

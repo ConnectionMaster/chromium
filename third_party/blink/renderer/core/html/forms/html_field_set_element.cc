@@ -33,18 +33,15 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_block.h"
 #include "third_party/blink/renderer/core/layout/layout_object_factory.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/core/layout/ng/layout_ng_fieldset.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
-using namespace html_names;
-
-inline HTMLFieldSetElement::HTMLFieldSetElement(Document& document)
-    : HTMLFormControlElement(kFieldsetTag, document) {}
-
-HTMLFieldSetElement* HTMLFieldSetElement::Create(Document& document) {
-  return MakeGarbageCollected<HTMLFieldSetElement>(document);
+HTMLFieldSetElement::HTMLFieldSetElement(Document& document)
+    : HTMLFormControlElement(html_names::kFieldsetTag, document) {
+  // This class has DidRecalcStyle().
+  SetHasCustomStyleCallbacks();
 }
 
 bool HTMLFieldSetElement::MatchesValidityPseudoClasses() const {
@@ -53,12 +50,12 @@ bool HTMLFieldSetElement::MatchesValidityPseudoClasses() const {
 
 bool HTMLFieldSetElement::IsValidElement() {
   for (Element* element : *elements()) {
-    if (element->IsFormControlElement()) {
-      if (!ToHTMLFormControlElement(element)->IsNotCandidateOrValid())
+    if (auto* html_form_element = DynamicTo<HTMLFormControlElement>(element)) {
+      if (!html_form_element->IsNotCandidateOrValid())
         return false;
-    } else if (element->IsHTMLElement() &&
-               ToHTMLElement(element)->IsFormAssociatedCustomElement()) {
-      if (!element->EnsureElementInternals().IsNotCandidateOrValid())
+    } else if (auto* html_element = DynamicTo<HTMLElement>(element)) {
+      if (html_element->IsFormAssociatedCustomElement() &&
+          !element->EnsureElementInternals().IsNotCandidateOrValid())
         return false;
     }
   }
@@ -78,7 +75,7 @@ HTMLFieldSetElement::InvalidateDescendantDisabledStateAndFindFocusedOne(
   {
     EventDispatchForbiddenScope event_forbidden;
     for (HTMLElement& element : Traversal<HTMLElement>::DescendantsOf(base)) {
-      if (auto* control = ToHTMLFormControlElementOrNull(element))
+      if (auto* control = DynamicTo<HTMLFormControlElement>(element))
         control->AncestorDisabledStateWasChanged();
       else if (element.IsFormAssociatedCustomElement())
         element.EnsureElementInternals().AncestorDisabledStateWasChanged();
@@ -131,8 +128,17 @@ LayoutObject* HTMLFieldSetElement::CreateLayoutObject(
   return LayoutObjectFactory::CreateFieldset(*this, style, legacy);
 }
 
-bool HTMLFieldSetElement::TypeShouldForceLegacyLayout() const {
-  return !RuntimeEnabledFeatures::LayoutNGFieldsetEnabled();
+LayoutBox* HTMLFieldSetElement::GetLayoutBoxForScrolling() const {
+  if (const auto* ng_fieldset = DynamicTo<LayoutNGFieldset>(GetLayoutBox())) {
+    if (auto* content = ng_fieldset->FindAnonymousFieldsetContentBox())
+      return content;
+  }
+  return HTMLFormControlElement::GetLayoutBoxForScrolling();
+}
+
+void HTMLFieldSetElement::DidRecalcStyle(const StyleRecalcChange change) {
+  if (ChildNeedsReattachLayoutTree())
+    SetNeedsReattachLayoutTree();
 }
 
 HTMLLegendElement* HTMLFieldSetElement::Legend() const {
@@ -141,10 +147,6 @@ HTMLLegendElement* HTMLFieldSetElement::Legend() const {
 
 HTMLCollection* HTMLFieldSetElement::elements() {
   return EnsureCachedCollection<HTMLCollection>(kFormControls);
-}
-
-int HTMLFieldSetElement::tabIndex() const {
-  return HTMLElement::tabIndex();
 }
 
 }  // namespace blink

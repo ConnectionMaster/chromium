@@ -13,7 +13,6 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/shared_memory.h"
 #include "base/process/process_handle.h"
 #include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -27,6 +26,7 @@
 #include "remoting/host/ipc_action_executor.h"
 #include "remoting/host/ipc_audio_capturer.h"
 #include "remoting/host/ipc_input_injector.h"
+#include "remoting/host/ipc_keyboard_layout_monitor.h"
 #include "remoting/host/ipc_mouse_cursor_monitor.h"
 #include "remoting/host/ipc_screen_controls.h"
 #include "remoting/host/ipc_video_frame_capturer.h"
@@ -43,44 +43,44 @@
 #include "base/win/scoped_handle.h"
 #endif  // defined(OS_WIN)
 
-const bool kReadOnly = true;
-
 namespace remoting {
 
 class DesktopSessionProxy::IpcSharedBufferCore
     : public base::RefCountedThreadSafe<IpcSharedBufferCore> {
  public:
-  IpcSharedBufferCore(int id,
-                      base::SharedMemoryHandle handle,
-                      size_t size)
-      : id_(id),
-        shared_memory_(handle, kReadOnly),
-        size_(size) {
-    if (!shared_memory_.Map(size)) {
+  IpcSharedBufferCore(int id, base::ReadOnlySharedMemoryRegion region)
+      : id_(id) {
+    mapping_ = region.Map();
+    if (!mapping_.IsValid()) {
       LOG(ERROR) << "Failed to map a shared buffer: id=" << id
-                 << ", size=" << size;
+                 << ", size=" << region.GetSize();
     }
+    // After being mapped, |region| is no longer needed and can be discarded.
   }
 
-  int id() { return id_; }
-  size_t size() { return size_; }
-  void* memory() { return shared_memory_.memory(); }
+  int id() const { return id_; }
+  size_t size() const { return mapping_.size(); }
+  const void* memory() const { return mapping_.memory(); }
 
  private:
   virtual ~IpcSharedBufferCore() = default;
   friend class base::RefCountedThreadSafe<IpcSharedBufferCore>;
 
   int id_;
-  base::SharedMemory shared_memory_;
-  size_t size_;
+  base::ReadOnlySharedMemoryMapping mapping_;
 
   DISALLOW_COPY_AND_ASSIGN(IpcSharedBufferCore);
 };
 
 class DesktopSessionProxy::IpcSharedBuffer : public webrtc::SharedMemory {
  public:
+  // Note that the webrtc::SharedMemory class is used for both read-only and
+  // writable shared memory, necessitating the ugly const_cast here.
   IpcSharedBuffer(scoped_refptr<IpcSharedBufferCore> core)
-      : SharedMemory(core->memory(), core->size(), 0, core->id()),
+      : SharedMemory(const_cast<void*>(core->memory()),
+                     core->size(),
+                     0,
+                     core->id()),
         core_(core) {}
 
  private:
@@ -142,6 +142,14 @@ DesktopSessionProxy::CreateVideoCapturer() {
 std::unique_ptr<webrtc::MouseCursorMonitor>
 DesktopSessionProxy::CreateMouseCursorMonitor() {
   return std::make_unique<IpcMouseCursorMonitor>(this);
+}
+
+std::unique_ptr<KeyboardLayoutMonitor>
+DesktopSessionProxy::CreateKeyboardLayoutMonitor(
+    base::RepeatingCallback<void(const protocol::KeyboardLayout&)> callback) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  return std::make_unique<IpcKeyboardLayoutMonitor>(std::move(callback), this);
 }
 
 std::unique_ptr<FileOperations> DesktopSessionProxy::CreateFileOperations() {
@@ -210,6 +218,8 @@ bool DesktopSessionProxy::OnMessageReceived(const IPC::Message& message) {
                         OnReleaseSharedBuffer)
     IPC_MESSAGE_HANDLER(ChromotingDesktopNetworkMsg_InjectClipboardEvent,
                         OnInjectClipboardEvent)
+    IPC_MESSAGE_HANDLER(ChromotingDesktopNetworkMsg_KeyboardChanged,
+                        OnKeyboardChanged)
     IPC_MESSAGE_HANDLER(ChromotingDesktopNetworkMsg_DisconnectSession,
                         DisconnectSession)
     IPC_MESSAGE_FORWARD(ChromotingDesktopNetworkMsg_FileResult,
@@ -318,6 +328,20 @@ void DesktopSessionProxy::SetMouseCursorMonitor(
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   mouse_cursor_monitor_ = mouse_cursor_monitor;
+}
+
+void DesktopSessionProxy::SetKeyboardLayoutMonitor(
+    const base::WeakPtr<IpcKeyboardLayoutMonitor>& keyboard_layout_monitor) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  keyboard_layout_monitor_ = std::move(keyboard_layout_monitor);
+}
+
+const absl::optional<protocol::KeyboardLayout>&
+DesktopSessionProxy::GetKeyboardCurrentLayout() const {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  return keyboard_layout_;
 }
 
 void DesktopSessionProxy::DisconnectSession(protocol::ErrorCode error) {
@@ -459,7 +483,8 @@ void DesktopSessionProxy::WriteFile(uint64_t file_id,
   SendToDesktop(new ChromotingNetworkDesktopMsg_WriteFile(file_id, filename));
 }
 
-void DesktopSessionProxy::WriteChunk(uint64_t file_id, std::string data) {
+void DesktopSessionProxy::WriteChunk(uint64_t file_id,
+                                     std::vector<std::uint8_t> data) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   SendToDesktop(new ChromotingNetworkDesktopMsg_WriteFileChunk(file_id, data));
@@ -516,12 +541,12 @@ void DesktopSessionProxy::OnAudioPacket(const std::string& serialized_packet) {
 
 void DesktopSessionProxy::OnCreateSharedBuffer(
     int id,
-    base::SharedMemoryHandle handle,
+    base::ReadOnlySharedMemoryRegion region,
     uint32_t size) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   scoped_refptr<IpcSharedBufferCore> shared_buffer =
-      new IpcSharedBufferCore(id, handle, size);
+      new IpcSharedBufferCore(id, std::move(region));
 
   if (shared_buffer->memory() != nullptr &&
       !shared_buffers_.insert(std::make_pair(id, shared_buffer)).second) {
@@ -539,6 +564,13 @@ void DesktopSessionProxy::OnReleaseSharedBuffer(int id) {
 void DesktopSessionProxy::OnDesktopDisplayChanged(
     const protocol::VideoLayout& displays) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  LOG(INFO) << "DSP::OnDesktopDisplayChanged";
+  for (int display_id = 0; display_id < displays.video_track_size();
+       display_id++) {
+    protocol::VideoTrackLayout track = displays.video_track(display_id);
+    LOG(INFO) << "   #" << display_id << " : "
+              << " [" << track.x_dpi() << "," << track.y_dpi() << "]";
+  }
 
   if (client_session_control_) {
     auto layout = std::make_unique<protocol::VideoLayout>();
@@ -592,6 +624,16 @@ void DesktopSessionProxy::OnMouseCursor(
   if (mouse_cursor_monitor_) {
     mouse_cursor_monitor_->OnMouseCursor(
         base::WrapUnique(webrtc::MouseCursor::CopyOf(mouse_cursor)));
+  }
+}
+
+void DesktopSessionProxy::OnKeyboardChanged(
+    const protocol::KeyboardLayout& layout) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  keyboard_layout_ = layout;
+  if (keyboard_layout_monitor_) {
+    keyboard_layout_monitor_->OnKeyboardChanged(layout);
   }
 }
 

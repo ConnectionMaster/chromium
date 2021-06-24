@@ -9,7 +9,11 @@ Coffee
 - black hot drink
 Milk
 - white cold drink
-x + a / b
+x
++
+a
+/
+b
 Most important heading here
 Google Chrome
 
@@ -43,14 +47,12 @@ Fig1. - Blue Box
 
 This is a footer.
 
-End of test
-
 This test make sure that unfocuasable elements are mapped implicitly to AX roles.
 
 On success, you will see a series of "PASS" messages, followed by "TEST COMPLETE".
 
-AXRole: AXWebArea
-    AXRole: AXBanner
+AXRole: AXGenericContainer
+    AXRole: AXHeader
         AXRole: AXStaticText "This is a Header for this page"
             AXRole: AXInlineTextBox "This is a Header for this page"
     AXRole: AXHeading "Heading"
@@ -63,11 +65,9 @@ AXRole: AXWebArea
         AXRole: AXStaticText "Paragraph"
             AXRole: AXInlineTextBox "Paragraph"
     AXRole: AXRuby
-        AXRole: AXAnnotation
-            AXRole: AXStaticText "한국"
-                AXRole: AXInlineTextBox "한국"
         AXRole: AXStaticText "韓國"
             AXRole: AXInlineTextBox "韓國"
+        AXRole: AXRubyAnnotation "한국"
     AXRole: AXDescriptionList
         AXRole: AXDescriptionListTerm
             AXRole: AXStaticText "Coffee"
@@ -81,20 +81,27 @@ AXRole: AXWebArea
         AXRole: AXDescriptionListDetail
             AXRole: AXStaticText "- white cold drink"
                 AXRole: AXInlineTextBox "- white cold drink"
-    AXRole: AXMath
-        AXRole: AXStaticText "x "
-            AXRole: AXInlineTextBox "x "
-        AXRole: AXStaticText "+ "
-            AXRole: AXInlineTextBox "+ "
-        AXRole: AXStaticText "a "
-            AXRole: AXInlineTextBox "a "
-        AXRole: AXStaticText "/ "
-            AXRole: AXInlineTextBox "/ "
-        AXRole: AXStaticText "b"
-            AXRole: AXInlineTextBox "b"
+    AXRole: AXMath "x + a / b"
+        AXRole: AXGenericContainer
+            AXRole: AXGenericContainer
+                AXRole: AXStaticText "x"
+                    AXRole: AXInlineTextBox "x"
+            AXRole: AXGenericContainer
+                AXRole: AXStaticText "+"
+                    AXRole: AXInlineTextBox "+"
+            AXRole: AXGenericContainer
+                AXRole: AXGenericContainer
+                    AXRole: AXStaticText "a"
+                        AXRole: AXInlineTextBox "a"
+                AXRole: AXGenericContainer
+                    AXRole: AXStaticText "/"
+                        AXRole: AXInlineTextBox "/"
+                AXRole: AXGenericContainer
+                    AXRole: AXStaticText "b"
+                        AXRole: AXInlineTextBox "b"
     AXRole: AXMain
         AXRole: AXArticle
-            AXRole: AXGenericContainer
+            AXRole: AXHeaderAsNonLandmark
                 AXRole: AXHeading "Most important heading here"
                     AXRole: AXStaticText "Most important heading here"
                         AXRole: AXInlineTextBox "Most important heading here"
@@ -103,9 +110,8 @@ AXRole: AXWebArea
                     AXRole: AXInlineTextBox "Google Chrome"
             AXRole: AXParagraph
                 AXRole: AXStaticText "Google Chrome is a free, open-source web browser developed by Google, released in 2008."
-                    AXRole: AXInlineTextBox "Google Chrome is a free, open-source web browser developed by Google, "
-                    AXRole: AXInlineTextBox "released in 2008."
-            AXRole: AXGenericContainer
+                    AXRole: AXInlineTextBox "Google Chrome is a free, open-source web browser developed by Google, released in 2008."
+            AXRole: AXFooterAsNonLandmark
                 AXRole: AXParagraph
                     AXRole: AXStaticText "Footer in article"
                         AXRole: AXInlineTextBox "Footer in article"
@@ -139,15 +145,15 @@ element
             AXRole: AXInlineTextBox "element"
             AXRole: AXInlineTextBox "
 "
-    AXRole: AXRegion
-        AXRole: AXGenericContainer
+    AXRole: AXSection
+        AXRole: AXHeaderAsNonLandmark
             AXRole: AXHeading "Most important heading here"
                 AXRole: AXStaticText "Most important heading here"
                     AXRole: AXInlineTextBox "Most important heading here"
         AXRole: AXParagraph
             AXRole: AXStaticText "Section"
                 AXRole: AXInlineTextBox "Section"
-        AXRole: AXGenericContainer
+        AXRole: AXFooterAsNonLandmark
             AXRole: AXParagraph
                 AXRole: AXStaticText "Footer in section"
                     AXRole: AXInlineTextBox "Footer in section"
@@ -174,13 +180,14 @@ element
         AXRole: AXCaption
             AXRole: AXStaticText "Caption"
                 AXRole: AXInlineTextBox "Caption"
-        AXRole: AXRow
-            AXRole: AXCell "Cell1"
-                AXRole: AXStaticText "Cell1"
-                    AXRole: AXInlineTextBox "Cell1"
-            AXRole: AXCell "Cell2"
-                AXRole: AXStaticText "Cell2"
-                    AXRole: AXInlineTextBox "Cell2"
+        AXRole: AXRowGroup
+            AXRole: AXRow
+                AXRole: AXCell "Cell1"
+                    AXRole: AXStaticText "Cell1"
+                        AXRole: AXInlineTextBox "Cell1"
+                AXRole: AXCell "Cell2"
+                    AXRole: AXStaticText "Cell2"
+                        AXRole: AXInlineTextBox "Cell2"
     AXRole: AXFigure "Fig1. - Blue Box"
         AXRole: AXImage "blue"
         AXRole: AXFigcaption
@@ -191,8 +198,6 @@ element
         AXRole: AXParagraph
             AXRole: AXStaticText "This is a footer."
                 AXRole: AXInlineTextBox "This is a footer."
-    AXRole: AXParagraph
-        AXRole: AXStaticText "End of test"
 
 PASS successfullyParsed is true
 

@@ -4,20 +4,24 @@
 
 #include "third_party/blink/renderer/core/fetch/form_data_bytes_consumer.h"
 
+#include "base/cxx17_backports.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/stl_util.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
+#include "services/network/public/mojom/data_pipe_getter.mojom-blink.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/web_http_body.h"
-#include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/renderer/core/fetch/bytes_consumer_test_util.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/forms/form_data.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/loader/testing/bytes_consumer_test_reader.h"
 #include "third_party/blink/renderer/platform/network/encoded_form_data.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -36,44 +40,45 @@ using MockBytesConsumer = BytesConsumerTestUtil::MockBytesConsumer;
 
 class SimpleDataPipeGetter : public network::mojom::blink::DataPipeGetter {
  public:
-  SimpleDataPipeGetter(const String& str,
-                       network::mojom::blink::DataPipeGetterRequest request)
+  SimpleDataPipeGetter(
+      const String& str,
+      mojo::PendingReceiver<network::mojom::blink::DataPipeGetter> receiver)
       : str_(str) {
-    bindings_.set_connection_error_handler(WTF::BindRepeating(
-        &SimpleDataPipeGetter::OnConnectionError, WTF::Unretained(this)));
-    bindings_.AddBinding(this, std::move(request));
+    receivers_.set_disconnect_handler(WTF::BindRepeating(
+        &SimpleDataPipeGetter::OnMojoDisconnect, WTF::Unretained(this)));
+    receivers_.Add(this, std::move(receiver));
   }
+  SimpleDataPipeGetter(const SimpleDataPipeGetter&) = delete;
+  SimpleDataPipeGetter& operator=(const SimpleDataPipeGetter&) = delete;
   ~SimpleDataPipeGetter() override = default;
 
   // network::mojom::DataPipeGetter implementation:
   void Read(mojo::ScopedDataPipeProducerHandle handle,
             ReadCallback callback) override {
-    bool result = mojo::BlockingCopyFromString(WebString(str_).Utf8(), handle);
+    bool result = mojo::BlockingCopyFromString(str_.Utf8(), handle);
     ASSERT_TRUE(result);
     std::move(callback).Run(0 /* OK */, str_.length());
   }
 
-  void Clone(network::mojom::blink::DataPipeGetterRequest request) override {
-    bindings_.AddBinding(this, std::move(request));
+  void Clone(mojo::PendingReceiver<network::mojom::blink::DataPipeGetter> receiver) override {
+    receivers_.Add(this, std::move(receiver));
   }
 
-  void OnConnectionError() {
-    if (bindings_.empty())
+  void OnMojoDisconnect() {
+    if (receivers_.empty())
       delete this;
   }
 
  private:
   String str_;
-  mojo::BindingSet<network::mojom::blink::DataPipeGetter> bindings_;
-
-  DISALLOW_COPY_AND_ASSIGN(SimpleDataPipeGetter);
+  mojo::ReceiverSet<network::mojom::blink::DataPipeGetter> receivers_;
 };
 
 scoped_refptr<EncodedFormData> ComplexFormData() {
   scoped_refptr<EncodedFormData> data = EncodedFormData::Create();
 
   data->AppendData("foo", 3);
-  data->AppendFileRange("/foo/bar/baz", 3, 4, 5);
+  data->AppendFileRange("/foo/bar/baz", 3, 4, base::Time::FromDoubleT(5));
   auto blob_data = std::make_unique<BlobData>();
   blob_data->AppendText("hello", false);
   auto size = blob_data->length();
@@ -93,18 +98,22 @@ scoped_refptr<EncodedFormData> DataPipeFormData() {
   body.AppendData(WebData("foo", 3));
 
   // Add data pipe.
-  network::mojom::blink::DataPipeGetterPtr data_pipe_getter_ptr;
+  mojo::PendingRemote<network::mojom::blink::DataPipeGetter>
+      data_pipe_getter_remote;
   // Object deletes itself.
-  new SimpleDataPipeGetter(String(" hello world"),
-                           mojo::MakeRequest(&data_pipe_getter_ptr));
-  body.AppendDataPipe(data_pipe_getter_ptr.PassInterface().PassHandle());
+  new SimpleDataPipeGetter(
+      String(" hello world"),
+      data_pipe_getter_remote.InitWithNewPipeAndPassReceiver());
+  body.AppendDataPipe(std::move(data_pipe_getter_remote));
 
   // Add another data pipe.
-  network::mojom::blink::DataPipeGetterPtr data_pipe_getter_ptr2;
+  mojo::PendingRemote<network::mojom::blink::DataPipeGetter>
+      data_pipe_getter_remote2;
   // Object deletes itself.
-  new SimpleDataPipeGetter(String(" here's another data pipe "),
-                           mojo::MakeRequest(&data_pipe_getter_ptr2));
-  body.AppendDataPipe(data_pipe_getter_ptr2.PassInterface().PassHandle());
+  new SimpleDataPipeGetter(
+      String(" here's another data pipe "),
+      data_pipe_getter_remote2.InitWithNewPipeAndPassReceiver());
+  body.AppendDataPipe(std::move(data_pipe_getter_remote2));
 
   // Add some more data.
   body.AppendData(WebData("bar baz", 7));
@@ -113,10 +122,8 @@ scoped_refptr<EncodedFormData> DataPipeFormData() {
   return body;
 }
 
-class NoopClient final : public GarbageCollectedFinalized<NoopClient>,
+class NoopClient final : public GarbageCollected<NoopClient>,
                          public BytesConsumer::Client {
-  USING_GARBAGE_COLLECTED_MIXIN(NoopClient);
-
  public:
   void OnStateChange() override {}
   String DebugName() const override { return "NoopClient"; }
@@ -182,10 +189,10 @@ TEST_F(FormDataBytesConsumerTest, TwoPhaseReadFromSimpleFormData) {
   data->AppendData("foo", 3);
   data->AppendData("hoge", 4);
 
-  auto result =
-      (MakeGarbageCollected<BytesConsumerTestReader>(
-           MakeGarbageCollected<FormDataBytesConsumer>(&GetDocument(), data)))
-          ->Run();
+  auto result = (MakeGarbageCollected<BytesConsumerTestReader>(
+                     MakeGarbageCollected<FormDataBytesConsumer>(
+                         GetFrame().DomWindow(), data)))
+                    ->Run();
   EXPECT_EQ(Result::kDone, result.first);
   EXPECT_EQ("foohoge",
             BytesConsumerTestUtil::CharVectorToString(result.second));
@@ -194,8 +201,8 @@ TEST_F(FormDataBytesConsumerTest, TwoPhaseReadFromSimpleFormData) {
 TEST_F(FormDataBytesConsumerTest, TwoPhaseReadFromComplexFormData) {
   scoped_refptr<EncodedFormData> data = ComplexFormData();
   auto* underlying = MakeGarbageCollected<MockBytesConsumer>();
-  BytesConsumer* consumer =
-      FormDataBytesConsumer::CreateForTesting(&GetDocument(), data, underlying);
+  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), data, underlying);
   Checkpoint checkpoint;
 
   const char* buffer = nullptr;
@@ -263,14 +270,14 @@ TEST_F(FormDataBytesConsumerTest, DrainAsBlobDataHandleFromArrayBuffer) {
 }
 
 TEST_F(FormDataBytesConsumerTest, DrainAsBlobDataHandleFromSimpleFormData) {
-  FormData* data = FormData::Create(UTF8Encoding());
+  auto* data = MakeGarbageCollected<FormData>(UTF8Encoding());
   data->append("name1", "value1");
   data->append("name2", "value2");
   scoped_refptr<EncodedFormData> input_form_data =
       data->EncodeMultiPartFormData();
 
   BytesConsumer* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
-      &GetDocument(), input_form_data);
+      GetFrame().DomWindow(), input_form_data);
   scoped_refptr<BlobDataHandle> blob_data_handle =
       consumer->DrainAsBlobDataHandle();
   ASSERT_TRUE(blob_data_handle);
@@ -289,7 +296,7 @@ TEST_F(FormDataBytesConsumerTest, DrainAsBlobDataHandleFromComplexFormData) {
   scoped_refptr<EncodedFormData> input_form_data = ComplexFormData();
 
   BytesConsumer* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
-      &GetDocument(), input_form_data);
+      GetFrame().DomWindow(), input_form_data);
   scoped_refptr<BlobDataHandle> blob_data_handle =
       consumer->DrainAsBlobDataHandle();
   ASSERT_TRUE(blob_data_handle);
@@ -331,14 +338,14 @@ TEST_F(FormDataBytesConsumerTest, DrainAsFormDataFromArrayBuffer) {
 }
 
 TEST_F(FormDataBytesConsumerTest, DrainAsFormDataFromSimpleFormData) {
-  FormData* data = FormData::Create(UTF8Encoding());
+  auto* data = MakeGarbageCollected<FormData>(UTF8Encoding());
   data->append("name1", "value1");
   data->append("name2", "value2");
   scoped_refptr<EncodedFormData> input_form_data =
       data->EncodeMultiPartFormData();
 
   BytesConsumer* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
-      &GetDocument(), input_form_data);
+      GetFrame().DomWindow(), input_form_data);
   EXPECT_EQ(input_form_data, consumer->DrainAsFormData());
   EXPECT_FALSE(consumer->DrainAsBlobDataHandle());
   const char* buffer = nullptr;
@@ -351,7 +358,7 @@ TEST_F(FormDataBytesConsumerTest, DrainAsFormDataFromComplexFormData) {
   scoped_refptr<EncodedFormData> input_form_data = ComplexFormData();
 
   BytesConsumer* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
-      &GetDocument(), input_form_data);
+      GetFrame().DomWindow(), input_form_data);
   EXPECT_EQ(input_form_data, consumer->DrainAsFormData());
   EXPECT_FALSE(consumer->DrainAsBlobDataHandle());
   const char* buffer = nullptr;
@@ -377,8 +384,8 @@ TEST_F(FormDataBytesConsumerTest, BeginReadAffectsDraining) {
 
 TEST_F(FormDataBytesConsumerTest, BeginReadAffectsDrainingWithComplexFormData) {
   auto* underlying = MakeGarbageCollected<MockBytesConsumer>();
-  BytesConsumer* consumer = FormDataBytesConsumer::CreateForTesting(
-      &GetDocument(), ComplexFormData(), underlying);
+  BytesConsumer* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), ComplexFormData(), underlying);
 
   const char* buffer = nullptr;
   size_t available = 0;
@@ -416,8 +423,8 @@ TEST_F(FormDataBytesConsumerTest, SetClientWithComplexFormData) {
   scoped_refptr<EncodedFormData> input_form_data = ComplexFormData();
 
   auto* underlying = MakeGarbageCollected<MockBytesConsumer>();
-  BytesConsumer* consumer = FormDataBytesConsumer::CreateForTesting(
-      &GetDocument(), input_form_data, underlying);
+  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), input_form_data, underlying);
   Checkpoint checkpoint;
 
   InSequence s;
@@ -438,8 +445,8 @@ TEST_F(FormDataBytesConsumerTest, CancelWithComplexFormData) {
   scoped_refptr<EncodedFormData> input_form_data = ComplexFormData();
 
   auto* underlying = MakeGarbageCollected<MockBytesConsumer>();
-  BytesConsumer* consumer = FormDataBytesConsumer::CreateForTesting(
-      &GetDocument(), input_form_data, underlying);
+  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), input_form_data, underlying);
   Checkpoint checkpoint;
 
   InSequence s;
@@ -455,8 +462,8 @@ TEST_F(FormDataBytesConsumerTest, CancelWithComplexFormData) {
 // Tests consuming an EncodedFormData with data pipe elements.
 TEST_F(FormDataBytesConsumerTest, DataPipeFormData) {
   scoped_refptr<EncodedFormData> input_form_data = DataPipeFormData();
-  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(&GetDocument(),
-                                                               input_form_data);
+  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), input_form_data);
   auto* reader = MakeGarbageCollected<BytesConsumerTestReader>(consumer);
   std::pair<BytesConsumer::Result, Vector<char>> result = reader->Run();
   EXPECT_EQ(Result::kDone, result.first);
@@ -467,8 +474,8 @@ TEST_F(FormDataBytesConsumerTest, DataPipeFormData) {
 // Tests DrainAsFormData() on an EncodedFormData with data pipe elements.
 TEST_F(FormDataBytesConsumerTest, DataPipeFormData_DrainAsFormData) {
   scoped_refptr<EncodedFormData> input_form_data = DataPipeFormData();
-  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(&GetDocument(),
-                                                               input_form_data);
+  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), input_form_data);
   scoped_refptr<EncodedFormData> drained_form_data =
       consumer->DrainAsFormData();
   EXPECT_EQ(*input_form_data, *drained_form_data);
@@ -481,8 +488,8 @@ TEST_F(FormDataBytesConsumerTest,
        DataPipeFormData_DrainAsFormDataWhileReading) {
   // Create the consumer and start reading.
   scoped_refptr<EncodedFormData> input_form_data = DataPipeFormData();
-  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(&GetDocument(),
-                                                               input_form_data);
+  auto* consumer = MakeGarbageCollected<FormDataBytesConsumer>(
+      GetFrame().DomWindow(), input_form_data);
   const char* buffer = nullptr;
   size_t available = 0;
   EXPECT_EQ(BytesConsumer::Result::kOk,

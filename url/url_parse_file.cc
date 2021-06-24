@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_file.h"
 #include "url/url_parse_internal.h"
@@ -215,7 +215,7 @@ void ParseFileURL(const char* url, int url_len, Parsed* parsed) {
   DoParseFileURL(url, url_len, parsed);
 }
 
-void ParseFileURL(const base::char16* url, int url_len, Parsed* parsed) {
+void ParseFileURL(const char16_t* url, int url_len, Parsed* parsed) {
   DoParseFileURL(url, url_len, parsed);
 }
 

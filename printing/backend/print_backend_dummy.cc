@@ -8,44 +8,47 @@
 
 #include "printing/backend/print_backend.h"
 
-#include "base/logging.h"
-#include "base/macros.h"
 #include "base/values.h"
+#include "printing/mojom/print.mojom.h"
 
 namespace printing {
 
 class DummyPrintBackend : public PrintBackend {
  public:
-  DummyPrintBackend() {
+  explicit DummyPrintBackend(const std::string& locale)
+      : PrintBackend(locale) {}
+  DummyPrintBackend(const DummyPrintBackend&) = delete;
+  DummyPrintBackend& operator=(const DummyPrintBackend&) = delete;
+
+  mojom::ResultCode EnumeratePrinters(PrinterList* printer_list) override {
+    return mojom::ResultCode::kFailed;
   }
 
-  bool EnumeratePrinters(PrinterList* printer_list) override {
-    return false;
+  mojom::ResultCode GetDefaultPrinterName(
+      std::string& default_printer) override {
+    default_printer = std::string();
+    return mojom::ResultCode::kSuccess;
   }
 
-  std::string GetDefaultPrinterName() override {
-    return std::string();
+  mojom::ResultCode GetPrinterBasicInfo(
+      const std::string& printer_name,
+      PrinterBasicInfo* printer_info) override {
+    return mojom::ResultCode::kFailed;
   }
 
-  bool GetPrinterBasicInfo(const std::string& printer_name,
-                           PrinterBasicInfo* printer_info) override {
-    return false;
-  }
-
-  bool GetPrinterSemanticCapsAndDefaults(
+  mojom::ResultCode GetPrinterSemanticCapsAndDefaults(
       const std::string& printer_name,
       PrinterSemanticCapsAndDefaults* printer_info) override {
-    return false;
+    return mojom::ResultCode::kFailed;
   }
 
-  bool GetPrinterCapsAndDefaults(
+  mojom::ResultCode GetPrinterCapsAndDefaults(
       const std::string& printer_name,
       PrinterCapsAndDefaults* printer_info) override {
-    return false;
+    return mojom::ResultCode::kFailed;
   }
 
-  std::string GetPrinterDriverInfo(
-      const std::string& printer_name) override {
+  std::string GetPrinterDriverInfo(const std::string& printer_name) override {
     return std::string();
   }
 
@@ -54,15 +57,15 @@ class DummyPrintBackend : public PrintBackend {
   }
 
  private:
-  ~DummyPrintBackend() override {}
-
-  DISALLOW_COPY_AND_ASSIGN(DummyPrintBackend);
+  ~DummyPrintBackend() override = default;
 };
 
 // static
 scoped_refptr<PrintBackend> PrintBackend::CreateInstanceImpl(
-    const base::DictionaryValue* print_backend_settings) {
-  return new DummyPrintBackend();
+    const base::DictionaryValue* print_backend_settings,
+    const std::string& locale,
+    bool /*for_cloud_print*/) {
+  return base::MakeRefCounted<DummyPrintBackend>(locale);
 }
 
 }  // namespace printing

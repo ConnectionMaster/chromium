@@ -5,7 +5,7 @@
 (async function() {
   TestRunner.addResult(
       `Tests that matching selectors are marked properly after new rule creation and selector change.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
       <div id="inspected"></div>
@@ -28,8 +28,8 @@
         ElementsTestRunner.addNewRule('foo, #inspected, .bar, #inspected', callback);
       }
 
-      function callback() {
-        ElementsTestRunner.dumpSelectedElementStyles(true, false, false, true);
+      async function callback() {
+        await ElementsTestRunner.dumpSelectedElementStyles(true, false, false, true);
         next();
       }
     },
@@ -42,8 +42,8 @@
       ElementsTestRunner.waitForSelectorCommitted(callback);
       selectorElement.dispatchEvent(TestRunner.createKeyEvent('Enter'));
 
-      function callback() {
-        ElementsTestRunner.dumpSelectedElementStyles(true, false, false, true);
+      async function callback() {
+        await ElementsTestRunner.dumpSelectedElementStyles(true, false, false, true);
         next();
       }
     }

@@ -27,7 +27,6 @@
 #include "third_party/blink/renderer/core/dom/events/add_event_listener_options_resolved.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/event_listener.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -54,7 +53,7 @@ RegisteredEventListener::RegisteredEventListener(
 RegisteredEventListener& RegisteredEventListener::operator=(
     const RegisteredEventListener& that) = default;
 
-void RegisteredEventListener::Trace(Visitor* visitor) {
+void RegisteredEventListener::Trace(Visitor* visitor) const {
   visitor->Trace(callback_);
 }
 
@@ -84,24 +83,14 @@ bool RegisteredEventListener::Matches(
 }
 
 bool RegisteredEventListener::ShouldFire(const Event& event) const {
-  if (RuntimeEnabledFeatures::
-          CallCaptureListenersAtCapturePhaseAtShadowHostsEnabled()) {
-    if (event.FireOnlyCaptureListenersAtTarget()) {
-      DCHECK_EQ(event.eventPhase(), Event::kAtTarget);
-      return Capture();
-    }
-    if (event.FireOnlyNonCaptureListenersAtTarget()) {
-      DCHECK_EQ(event.eventPhase(), Event::kAtTarget);
-      return !Capture();
-    }
-    if (event.eventPhase() == Event::kCapturingPhase)
-      return Capture();
-    if (event.eventPhase() == Event::kBubblingPhase)
-      return !Capture();
-    return true;
+  if (event.FireOnlyCaptureListenersAtTarget()) {
+    DCHECK_EQ(event.eventPhase(), Event::kAtTarget);
+    return Capture();
   }
-  DCHECK(!event.FireOnlyCaptureListenersAtTarget());
-  DCHECK(!event.FireOnlyNonCaptureListenersAtTarget());
+  if (event.FireOnlyNonCaptureListenersAtTarget()) {
+    DCHECK_EQ(event.eventPhase(), Event::kAtTarget);
+    return !Capture();
+  }
   if (event.eventPhase() == Event::kCapturingPhase)
     return Capture();
   if (event.eventPhase() == Event::kBubblingPhase)

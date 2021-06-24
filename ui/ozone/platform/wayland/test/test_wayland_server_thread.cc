@@ -4,10 +4,12 @@
 
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
 
-#include <stdlib.h>
 #include <sys/socket.h>
 #include <wayland-server.h>
+
+#include <cstdlib>
 #include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/files/file_util.h"
@@ -34,11 +36,15 @@ TestWaylandServerThread::~TestWaylandServerThread() {
   if (client_)
     wl_client_destroy(client_);
 
+  // Stop watching the descriptor here to guarantee that no new events will come
+  // during or after the destruction of the display.
+  controller_.StopWatchingFileDescriptor();
+
   Resume();
   Stop();
 }
 
-bool TestWaylandServerThread::Start(uint32_t shell_version) {
+bool TestWaylandServerThread::Start(const ServerConfig& config) {
   display_.reset(wl_display_create());
   if (!display_)
     return false;
@@ -50,30 +56,32 @@ bool TestWaylandServerThread::Start(uint32_t shell_version) {
   base::ScopedFD server_fd(fd[0]);
   base::ScopedFD client_fd(fd[1]);
 
-  // If client has not specified rect before, user standard ones.
-  if (output_.GetRect().IsEmpty())
-    output_.SetRect(gfx::Rect(0, 0, 800, 600));
-
   if (wl_display_init_shm(display_.get()) < 0)
     return false;
   if (!compositor_.Initialize(display_.get()))
     return false;
+  if (!sub_compositor_.Initialize(display_.get()))
+    return false;
+  if (!viewporter_.Initialize(display_.get()))
+    return false;
   if (!output_.Initialize(display_.get()))
     return false;
+  SetupOutputs();
+
   if (!data_device_manager_.Initialize(display_.get()))
     return false;
   if (!seat_.Initialize(display_.get()))
     return false;
-  if (shell_version == 5) {
-    if (!xdg_shell_.Initialize(display_.get()))
-      return false;
-  } else if (shell_version == 6) {
+  if (config.shell_version == ShellVersion::kV6) {
     if (!zxdg_shell_v6_.Initialize(display_.get()))
       return false;
   } else {
-    NOTREACHED() << "Unsupported shell version: " << shell_version;
+    if (!xdg_shell_.Initialize(display_.get()))
+      return false;
   }
   if (!zwp_text_input_manager_v1_.Initialize(display_.get()))
+    return false;
+  if (!zwp_linux_explicit_synchronization_v1_.Initialize(display_.get()))
     return false;
   if (!zwp_linux_dmabuf_v1_.Initialize(display_.get()))
     return false;
@@ -85,7 +93,7 @@ bool TestWaylandServerThread::Start(uint32_t shell_version) {
   base::Thread::Options options;
   options.message_pump_factory = base::BindRepeating(
       &TestWaylandServerThread::CreateMessagePump, base::Unretained(this));
-  if (!base::Thread::StartWithOptions(options))
+  if (!base::Thread::StartWithOptions(std::move(options)))
     return false;
 
   setenv("WAYLAND_SOCKET", base::NumberToString(client_fd.release()).c_str(),
@@ -107,6 +115,24 @@ void TestWaylandServerThread::Resume() {
   resume_event_.Signal();
 }
 
+MockWpPresentation* TestWaylandServerThread::EnsureWpPresentation() {
+  if (wp_presentation_.Initialize(display_.get()))
+    return &wp_presentation_;
+  return nullptr;
+}
+
+// By default, just make sure primary screen has bounds set. Otherwise delegates
+// it, making it possible to emulate different scenarios, such as, multi-screen,
+// lazy configuration, arbitrary ordering of the outputs metadata sending, etc.
+void TestWaylandServerThread::SetupOutputs() {
+  if (output_delegate_) {
+    output_delegate_->SetupOutputs(&output_);
+    return;
+  }
+  if (output_.GetRect().IsEmpty())
+    output_.SetRect(gfx::Rect{0, 0, 800, 600});
+}
+
 void TestWaylandServerThread::DoPause() {
   base::RunLoop().RunUntilIdle();
   pause_event_.Signal();
@@ -124,7 +150,8 @@ TestWaylandServerThread::CreateMessagePump() {
 
 void TestWaylandServerThread::OnFileCanReadWithoutBlocking(int fd) {
   wl_event_loop_dispatch(event_loop_, 0);
-  wl_display_flush_clients(display_.get());
+  if (display_)
+    wl_display_flush_clients(display_.get());
 }
 
 void TestWaylandServerThread::OnFileCanWriteWithoutBlocking(int fd) {}

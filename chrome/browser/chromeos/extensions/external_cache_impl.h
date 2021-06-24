@@ -21,6 +21,7 @@
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
+#include "extensions/common/extension_id.h"
 
 namespace base {
 class DictionaryValue;
@@ -32,10 +33,6 @@ class ExtensionDownloader;
 
 namespace network {
 class SharedURLLoaderFactory;
-}
-
-namespace service_manager {
-class Connector;
 }
 
 namespace chromeos {
@@ -68,12 +65,13 @@ class ExternalCacheImpl : public ExternalCache,
   void UpdateExtensionsList(
       std::unique_ptr<base::DictionaryValue> prefs) override;
   void OnDamagedFileDetected(const base::FilePath& path) override;
-  void RemoveExtensions(const std::vector<std::string>& ids) override;
-  bool GetExtension(const std::string& id,
+  void RemoveExtensions(
+      const std::vector<extensions::ExtensionId>& ids) override;
+  bool GetExtension(const extensions::ExtensionId& id,
                     base::FilePath* file_path,
                     std::string* version) override;
-  bool ExtensionFetchPending(const std::string& id) override;
-  void PutExternalExtension(const std::string& id,
+  bool ExtensionFetchPending(const extensions::ExtensionId& id) override;
+  void PutExternalExtension(const extensions::ExtensionId& id,
                             const base::FilePath& crx_file_path,
                             const std::string& version,
                             PutExternalExtensionCallback callback) override;
@@ -84,30 +82,24 @@ class ExternalCacheImpl : public ExternalCache,
                const content::NotificationDetails& details) override;
 
   // Implementation of ExtensionDownloaderDelegate:
-  void OnExtensionDownloadFailed(const std::string& id,
+  void OnExtensionDownloadFailed(const extensions::ExtensionId& id,
                                  Error error,
                                  const PingResult& ping_result,
-                                 const std::set<int>& request_ids) override;
+                                 const std::set<int>& request_ids,
+                                 const FailureData& data) override;
   void OnExtensionDownloadFinished(const extensions::CRXFileInfo& file,
                                    bool file_ownership_passed,
                                    const GURL& download_url,
-                                   const std::string& version,
                                    const PingResult& ping_result,
                                    const std::set<int>& request_ids,
-                                   const InstallCallback& callback) override;
-  bool IsExtensionPending(const std::string& id) override;
-  bool GetExtensionExistingVersion(const std::string& id,
+                                   InstallCallback callback) override;
+  bool IsExtensionPending(const extensions::ExtensionId& id) override;
+  bool GetExtensionExistingVersion(const extensions::ExtensionId& id,
                                    std::string* version) override;
 
   void set_flush_on_put(bool flush_on_put) { flush_on_put_ = flush_on_put; }
 
-  void use_null_connector_for_test() { use_null_connector_ = true; }
-
  private:
-  // Gets service manager connector this external cache instance should use.
-  // Might be null in tests - see use_null_connector_for_test().
-  service_manager::Connector* GetConnector();
-
   // Notifies the that the cache has been updated, providing
   // extensions loader with an updated list of extensions.
   void UpdateExtensionLoader();
@@ -116,16 +108,21 @@ class ExternalCacheImpl : public ExternalCache,
   void CheckCache();
 
   // Invoked on the UI thread when a new entry has been installed in the cache.
-  void OnPutExtension(const std::string& id,
+  void OnPutExtension(const extensions::ExtensionId& id,
                       const base::FilePath& file_path,
                       bool file_ownership_passed);
 
   // Invoked on the UI thread when the external extension has been installed
   // in the local cache by calling PutExternalExtension.
-  void OnPutExternalExtension(const std::string& id,
+  void OnPutExternalExtension(const extensions::ExtensionId& id,
                               PutExternalExtensionCallback callback,
                               const base::FilePath& file_path,
                               bool file_ownership_passed);
+
+  // Removes the cached file for |id| from |cached_extensions_| and
+  // |local_cache_| and notifies the |delegate_|. This method should be followed
+  // by a call to UpdateExtensionLoader().
+  void RemoveCachedExtension(const extensions::ExtensionId& id);
 
   extensions::LocalExtensionCache local_cache_;
 
@@ -147,8 +144,6 @@ class ExternalCacheImpl : public ExternalCache,
   // Whether to flush the crx file after putting into |local_cache_|.
   bool flush_on_put_ = false;
 
-  bool use_null_connector_ = false;
-
   // This is the list of extensions currently configured.
   std::unique_ptr<base::DictionaryValue> extensions_;
 
@@ -163,11 +158,17 @@ class ExternalCacheImpl : public ExternalCache,
   content::NotificationRegistrar notification_registrar_;
 
   // Weak factory for callbacks.
-  base::WeakPtrFactory<ExternalCacheImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<ExternalCacheImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExternalCacheImpl);
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::ExternalCacheImpl;
+}
 
 #endif  // CHROME_BROWSER_CHROMEOS_EXTENSIONS_EXTERNAL_CACHE_IMPL_H_

@@ -21,8 +21,8 @@ namespace component_updater {
 class SSLErrorAssistantComponentInstallerPolicy
     : public ComponentInstallerPolicy {
  public:
-  SSLErrorAssistantComponentInstallerPolicy() {}
-  ~SSLErrorAssistantComponentInstallerPolicy() override {}
+  SSLErrorAssistantComponentInstallerPolicy() = default;
+  ~SSLErrorAssistantComponentInstallerPolicy() override = default;
 
  private:
   // ComponentInstallerPolicy methods:
@@ -41,15 +41,13 @@ class SSLErrorAssistantComponentInstallerPolicy
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
-  std::vector<std::string> GetMimeTypes() const override;
 
   static base::FilePath GetInstalledPath(const base::FilePath& base);
 
   DISALLOW_COPY_AND_ASSIGN(SSLErrorAssistantComponentInstallerPolicy);
 };
 
-void RegisterSSLErrorAssistantComponent(ComponentUpdateService* cus,
-                                        const base::FilePath& user_data_dir);
+void RegisterSSLErrorAssistantComponent(ComponentUpdateService* cus);
 
 }  // namespace component_updater
 

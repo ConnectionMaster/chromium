@@ -45,6 +45,7 @@ class TouchSelectionControllerClientManagerAndroid
 
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
+  void ShowContextMenu(const gfx::Point& location) override;
 
   // TouchSelectionControllerClient implementation.
   bool SupportsAnimation() const override;
@@ -54,14 +55,22 @@ class TouchSelectionControllerClientManagerAndroid
   void SelectBetweenCoordinates(const gfx::PointF& base,
                                 const gfx::PointF& extent) override;
   void OnSelectionEvent(ui::SelectionEventType event) override;
-  void OnDragUpdate(const gfx::PointF& position) override;
+  void OnDragUpdate(const ui::TouchSelectionDraggable::Type type,
+                    const gfx::PointF& position) override;
   std::unique_ptr<ui::TouchHandleDrawable> CreateDrawable() override;
   void DidScroll() override;
+  void ShowTouchSelectionContextMenu(const gfx::Point& location) override;
 
   // viz::HitTestRegionObserver implementation.
   void OnAggregatedHitTestRegionListUpdated(
       const viz::FrameSinkId& frame_sink_id,
       const std::vector<viz::AggregatedHitTestRegion>& hit_test_data) override;
+
+  bool has_active_selection() const {
+    return manager_selection_start_.type() !=
+               gfx::SelectionBound::Type::EMPTY ||
+           manager_selection_end_.type() != gfx::SelectionBound::Type::EMPTY;
+  }
 
  private:
   // Neither of the following pointers are owned, and both are assumed to
@@ -72,7 +81,7 @@ class TouchSelectionControllerClientManagerAndroid
   TouchSelectionControllerClient* active_client_;
   gfx::SelectionBound manager_selection_start_;
   gfx::SelectionBound manager_selection_end_;
-  base::ObserverList<TouchSelectionControllerClientManager::Observer>::Unchecked
+  base::ObserverList<TouchSelectionControllerClientManager::Observer>
       observers_;
 
   DISALLOW_COPY_AND_ASSIGN(TouchSelectionControllerClientManagerAndroid);

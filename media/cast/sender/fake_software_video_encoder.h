@@ -14,14 +14,14 @@
 namespace media {
 namespace cast {
 
-class FakeSoftwareVideoEncoder : public SoftwareVideoEncoder {
+class FakeSoftwareVideoEncoder final : public SoftwareVideoEncoder {
  public:
   FakeSoftwareVideoEncoder(const FrameSenderConfig& video_config);
   ~FakeSoftwareVideoEncoder() final;
 
   // SoftwareVideoEncoder implementations.
   void Initialize() final;
-  void Encode(const scoped_refptr<media::VideoFrame>& video_frame,
+  void Encode(scoped_refptr<media::VideoFrame> video_frame,
               const base::TimeTicks& reference_time,
               SenderEncodedFrame* encoded_frame) final;
   void UpdateRates(uint32_t new_bitrate) final;

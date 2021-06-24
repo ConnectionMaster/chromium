@@ -5,7 +5,7 @@
 #include "ios/chrome/app/application_delegate/fake_startup_information.h"
 
 #include "base/time/time.h"
-#include "ios/chrome/browser/app_startup_parameters.h"
+#import "ios/chrome/app/app_startup_parameters.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -14,9 +14,9 @@
 @implementation FakeStartupInformation
 
 @synthesize appLaunchTime = _appLaunchTime;
-@synthesize isPresentingFirstRunUI = _isPresentingFirstRunUI;
+@synthesize isFirstRun = _isFirstRun;
 @synthesize isColdStart = _isColdStart;
-@synthesize startupParameters = _startupParameters;
+@synthesize restoreHelper = _restoreHelper;
 
 - (FirstUserActionRecorder*)firstUserActionRecorder {
   // Stub.
@@ -50,6 +50,11 @@
 
 - (void)startChromeMain {
   // Stub.
+}
+
+- (NSDictionary*)launchOptions {
+  // Stub.
+  return @{};
 }
 
 @end

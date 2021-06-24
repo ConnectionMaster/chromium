@@ -16,6 +16,10 @@ bool StructTraits<tracing::mojom::BufferConfigDataView,
     Read(tracing::mojom::BufferConfigDataView data,
          perfetto::TraceConfig::BufferConfig* out) {
   out->set_size_kb(data.size_kb());
+  perfetto::TraceConfig::BufferConfig::FillPolicy policy;
+  if (data.ReadFillPolicy(&policy)) {
+    out->set_fill_policy(policy);
+  }
 
   return true;
 }
@@ -45,11 +49,38 @@ bool StructTraits<tracing::mojom::DataSourceDataView,
 }
 
 // static
+bool StructTraits<tracing::mojom::PerfettoBuiltinDataSourceDataView,
+                  perfetto::TraceConfig::BuiltinDataSource>::
+    Read(tracing::mojom::PerfettoBuiltinDataSourceDataView data,
+         perfetto::TraceConfig::BuiltinDataSource* out) {
+  out->set_disable_clock_snapshotting(data.disable_clock_snapshotting());
+  out->set_disable_trace_config(data.disable_trace_config());
+  out->set_disable_system_info(data.disable_system_info());
+  out->set_disable_service_events(data.disable_service_events());
+  out->set_primary_trace_clock(static_cast<perfetto::protos::gen::BuiltinClock>(
+      data.primary_trace_clock_id()));
+  return true;
+}
+
+// static
+bool StructTraits<tracing::mojom::IncrementalStateConfigDataView,
+                  perfetto::TraceConfig::IncrementalStateConfig>::
+    Read(tracing::mojom::IncrementalStateConfigDataView data,
+         perfetto::TraceConfig::IncrementalStateConfig* out) {
+  out->set_clear_period_ms(data.clear_period_ms());
+  return true;
+}
+
+// static
 bool StructTraits<tracing::mojom::TraceConfigDataView, perfetto::TraceConfig>::
     Read(tracing::mojom::TraceConfigDataView data, perfetto::TraceConfig* out) {
   std::vector<perfetto::TraceConfig::DataSource> data_sources;
   std::vector<perfetto::TraceConfig::BufferConfig> buffers;
-  if (!data.ReadDataSources(&data_sources) || !data.ReadBuffers(&buffers)) {
+  if (!data.ReadDataSources(&data_sources) || !data.ReadBuffers(&buffers) ||
+      !data.ReadPerfettoBuiltinDataSource(
+          out->mutable_builtin_data_sources()) ||
+      !data.ReadIncrementalStateConfig(
+          out->mutable_incremental_state_config())) {
     return false;
   }
 
@@ -62,6 +93,7 @@ bool StructTraits<tracing::mojom::TraceConfigDataView, perfetto::TraceConfig>::
   }
 
   out->set_duration_ms(data.duration_ms());
+  out->set_write_into_file(data.write_into_file());
   return true;
 }
 

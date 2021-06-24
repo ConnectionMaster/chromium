@@ -12,16 +12,17 @@
 #include "base/posix/eintr_wrapper.h"
 #include "base/process/kill.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/test/chromedriver/chrome/automation_extension.h"
 #include "chrome/test/chromedriver/chrome/devtools_client.h"
 #include "chrome/test/chromedriver/chrome/devtools_event_listener.h"
 #include "chrome/test/chromedriver/chrome/devtools_http_client.h"
 #include "chrome/test/chromedriver/chrome/status.h"
 #include "chrome/test/chromedriver/chrome/web_view_impl.h"
+#include "chrome/test/chromedriver/constants/version.h"
 #include "chrome/test/chromedriver/net/timeout.h"
 
 #if defined(OS_POSIX)
@@ -99,12 +100,15 @@ ChromeDesktopImpl::~ChromeDesktopImpl() {
   if (!quit_) {
     base::FilePath user_data_dir = user_data_dir_.Take();
     base::FilePath extension_dir = extension_dir_.Take();
-    LOG(WARNING) << "chrome quit unexpectedly, leaving behind temporary "
-        "directories for debugging:";
+    LOG(WARNING) << kBrowserShortName
+                 << " quit unexpectedly, leaving behind temporary directories"
+                    "for debugging:";
     if (user_data_dir_.IsValid())
-      LOG(WARNING) << "chrome user data directory: " << user_data_dir.value();
+      LOG(WARNING) << kBrowserShortName
+                   << " user data directory: " << user_data_dir.value();
     if (extension_dir_.IsValid())
-      LOG(WARNING) << "chromedriver automation extension directory: "
+      LOG(WARNING) << kChromeDriverProductShortName
+                   << " automation extension directory: "
                    << extension_dir.value();
   }
 }
@@ -147,10 +151,10 @@ Status ChromeDesktopImpl::WaitForPageToLoad(
     // https://code.google.com/p/chromedriver/issues/detail?id=1205
     device_metrics = nullptr;
   }
-  std::unique_ptr<WebView> web_view_tmp(
-      new WebViewImpl(id, w3c_compliant, devtools_http_client_->browser_info(),
-                      devtools_http_client_->CreateClient(id), device_metrics,
-                      page_load_strategy()));
+  std::unique_ptr<WebView> web_view_tmp(new WebViewImpl(
+      id, w3c_compliant, nullptr, devtools_http_client_->browser_info(),
+      devtools_http_client_->CreateClient(id), device_metrics,
+      page_load_strategy()));
   Status status = web_view_tmp->ConnectIfNecessary();
   if (status.IsError())
     return status;
@@ -160,42 +164,6 @@ Status ChromeDesktopImpl::WaitForPageToLoad(
   if (status.IsOk())
     *web_view = std::move(web_view_tmp);
   return status;
-}
-
-Status ChromeDesktopImpl::GetAutomationExtension(
-    AutomationExtension** extension,
-    bool w3c_compliant) {
-  if (!automation_extension_) {
-    std::unique_ptr<WebView> web_view;
-    Status status = WaitForPageToLoad(
-        "chrome-extension://aapnijgdinlhnhlmodcfapnahmbfebeb/"
-        "_generated_background_page.html",
-        base::TimeDelta::FromSeconds(10),
-        &web_view,
-        w3c_compliant);
-    if (status.IsError())
-      return Status(kUnknownError, "cannot get automation extension", status);
-
-    // The automation extension page has been loaded, but it might not be
-    // initialized yet. Wait for up to 10 seconds for a function on the page
-    // to become defined, as a signal that the page is initialized.
-    base::TimeTicks deadline =
-        base::TimeTicks::Now() + base::TimeDelta::FromSeconds(10);
-    while (base::TimeTicks::Now() < deadline) {
-      std::unique_ptr<base::Value> result;
-      status = web_view->EvaluateScript(
-          std::string(), "typeof launchApp === 'function'", &result);
-      if (status.IsError())
-        return Status(kUnknownError, "cannot get automation extension", status);
-      if (result->is_bool() && result->GetBool())
-        break;
-      base::PlatformThread::Sleep(base::TimeDelta::FromMilliseconds(50));
-    }
-
-    automation_extension_.reset(new AutomationExtension(std::move(web_view)));
-  }
-  *extension = automation_extension_.get();
-  return Status(kOk);
 }
 
 Status ChromeDesktopImpl::GetAsDesktop(ChromeDesktopImpl** desktop) {
@@ -228,9 +196,22 @@ Status ChromeDesktopImpl::QuitImpl() {
   bool kill_gracefully = !user_data_dir_.IsValid();
   // If the Chrome session is being run with --log-net-log, send SIGTERM first
   // to allow Chrome to write out all the net logs to the log path.
-  kill_gracefully |= command_.HasSwitch("log-net-log");
+  kill_gracefully = kill_gracefully || command_.HasSwitch("log-net-log");
+  if (kill_gracefully) {
+    Status status = devtools_websocket_client_->ConnectIfNecessary();
+    if (status.IsOk()) {
+      status = devtools_websocket_client_->SendCommandAndIgnoreResponse(
+          "Browser.close", base::DictionaryValue());
+      // If status is not okay, we will try the old method of KillProcess
+      if (status.IsOk() && process_.WaitForExitWithTimeout(
+                               base::TimeDelta::FromSeconds(10), nullptr))
+        return status;
+    }
+  }
+
   if (!KillProcess(process_, kill_gracefully))
-    return Status(kUnknownError, "cannot kill Chrome");
+    return Status(kUnknownError,
+                  base::StringPrintf("cannot kill %s", kBrowserShortName));
   return Status(kOk);
 }
 

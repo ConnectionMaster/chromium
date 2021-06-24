@@ -4,33 +4,32 @@
 
 #include "cc/test/fake_mask_layer_impl.h"
 
+#include <memory>
+
 #include "base/memory/ptr_util.h"
 
 namespace cc {
 
 FakeMaskLayerImpl::FakeMaskLayerImpl(LayerTreeImpl* tree_impl,
                                      int id,
-                                     scoped_refptr<RasterSource> raster_source,
-                                     Layer::LayerMaskType mask_type)
-    : PictureLayerImpl(tree_impl, id, mask_type) {
+                                     scoped_refptr<RasterSource> raster_source)
+    : PictureLayerImpl(tree_impl, id) {
   SetBounds(raster_source->GetSize());
   Region region;
-  UpdateRasterSource(raster_source, &region, nullptr);
+  UpdateRasterSource(raster_source, &region, nullptr, nullptr);
 }
 
 std::unique_ptr<FakeMaskLayerImpl> FakeMaskLayerImpl::Create(
     LayerTreeImpl* tree_impl,
     int id,
-    scoped_refptr<RasterSource> raster_source,
-    Layer::LayerMaskType mask_type) {
-  return base::WrapUnique(
-      new FakeMaskLayerImpl(tree_impl, id, raster_source, mask_type));
+    scoped_refptr<RasterSource> raster_source) {
+  return base::WrapUnique(new FakeMaskLayerImpl(tree_impl, id, raster_source));
 }
 
 void FakeMaskLayerImpl::GetContentsResourceId(viz::ResourceId* resource_id,
                                               gfx::Size* resource_size,
                                               gfx::SizeF* mask_uv_size) const {
-  *resource_id = 0;
+  *resource_id = viz::kInvalidResourceId;
   *resource_size = resource_size_;
   *mask_uv_size = gfx::SizeF(1.0f, 1.0f);
 }

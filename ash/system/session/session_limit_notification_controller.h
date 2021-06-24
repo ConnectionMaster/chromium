@@ -5,6 +5,7 @@
 #ifndef ASH_SYSTEM_SESSION_SESSION_LIMIT_NOTIFICATION_CONTROLLER_H_
 #define ASH_SYSTEM_SESSION_SESSION_LIMIT_NOTIFICATION_CONTROLLER_H_
 
+#include "ash/ash_export.h"
 #include "ash/system/model/session_length_limit_model.h"
 
 namespace ash {
@@ -23,7 +24,7 @@ class ASH_EXPORT SessionLimitNotificationController
 
   void UpdateNotification();
 
-  base::string16 ComposeNotificationTitle() const;
+  std::u16string ComposeNotificationTitle() const;
 
   static const char kNotificationId[];
 

@@ -5,7 +5,6 @@
 #ifndef EXTENSIONS_COMMON_PERMISSIONS_PERMISSION_MESSAGE_H_
 #define EXTENSIONS_COMMON_PERMISSIONS_PERMISSION_MESSAGE_H_
 
-#include <list>
 #include <string>
 #include <vector>
 
@@ -39,29 +38,27 @@ namespace extensions {
 // permission message, registerable as a callback.
 class PermissionMessage {
  public:
-  PermissionMessage(const base::string16& message,
+  PermissionMessage(const std::u16string& message,
                     const PermissionIDSet& permissions);
-  PermissionMessage(const base::string16& message,
+  PermissionMessage(const std::u16string& message,
                     const PermissionIDSet& permissions,
-                    const std::vector<base::string16>& submessages);
+                    const std::vector<std::u16string>& submessages);
   PermissionMessage(const PermissionMessage& other);
   virtual ~PermissionMessage();
 
-  const base::string16& message() const { return message_; }
+  const std::u16string& message() const { return message_; }
   const PermissionIDSet& permissions() const { return permissions_; }
-  const std::vector<base::string16>& submessages() const {
+  const std::vector<std::u16string>& submessages() const {
     return submessages_;
   }
 
  private:
-  const base::string16 message_;
+  const std::u16string message_;
   const PermissionIDSet permissions_;
-  const std::vector<base::string16> submessages_;
+  const std::vector<std::u16string> submessages_;
 };
 
-// TODO(treib): Make this an std::vector when we have C++11 library support on
-// all platforms. (In C++03, std::vector's elements must be copy-assignable...)
-typedef std::list<PermissionMessage> PermissionMessages;
+using PermissionMessages = std::vector<PermissionMessage>;
 
 }  // namespace extensions
 

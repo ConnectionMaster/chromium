@@ -5,17 +5,21 @@
 #include "extensions/browser/api/messaging/message_service.h"
 
 #include <stdint.h>
+
 #include <limits>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/containers/contains.h"
 #include "base/json/json_writer.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
@@ -61,7 +65,8 @@ namespace {
 
 const char kReceivingEndDoesntExistError[] =
     "Could not establish connection. Receiving end does not exist.";
-#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_MAC) || defined(OS_LINUX) || \
+    defined(OS_CHROMEOS)
 const char kMissingPermissionError[] =
     "Access to native messaging requires nativeMessaging permission.";
 const char kProhibitedByPoliciesError[] =
@@ -106,6 +111,14 @@ const Extension* GetExtensionForNativeAppChannel(
                                                                 true);
 }
 
+void DisableBackForwardCacheForMessaging(content::RenderFrameHost* host) {
+  if (!host)
+    return;
+  content::BackForwardCache::DisableForRenderFrameHost(
+      host, back_forward_cache::DisabledReason(
+                back_forward_cache::DisabledReasonId::kExtensionMessaging));
+}
+
 }  // namespace
 
 struct MessageService::MessageChannel {
@@ -123,6 +136,7 @@ struct MessageService::OpenChannelParams {
   std::unique_ptr<MessagePort> opener_port;
   std::string target_extension_id;
   GURL source_url;
+  absl::optional<url::Origin> source_origin;
   std::string channel_name;
   bool include_guest_process_info;
 
@@ -136,6 +150,7 @@ struct MessageService::OpenChannelParams {
                     std::unique_ptr<MessagePort> opener_port,
                     const std::string& target_extension_id,
                     const GURL& source_url,
+                    absl::optional<url::Origin> source_origin,
                     const std::string& channel_name,
                     bool include_guest_process_info)
       : source(source),
@@ -147,6 +162,7 @@ struct MessageService::OpenChannelParams {
         opener_port(std::move(opener_port)),
         target_extension_id(target_extension_id),
         source_url(source_url),
+        source_origin(source_origin),
         channel_name(channel_name),
         include_guest_process_info(include_guest_process_info) {}
 
@@ -169,8 +185,7 @@ static content::RenderProcessHost* GetExtensionProcess(
 
 MessageService::MessageService(BrowserContext* context)
     : context_(context),
-      messaging_delegate_(ExtensionsAPIClient::Get()->GetMessagingDelegate()),
-      weak_factory_(this) {
+      messaging_delegate_(ExtensionsAPIClient::Get()->GetMessagingDelegate()) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK_NE(nullptr, messaging_delegate_);
 }
@@ -263,10 +278,12 @@ void MessageService::OpenChannelToExtension(
         is_externally_connectable =
             externally_connectable->IdCanConnect(*source_endpoint.extension_id);
       } else {
+        DCHECK(source_render_frame_host);
+
         // Check that the web page URL matches.
         is_web_connection = true;
-        is_externally_connectable =
-            externally_connectable->matches.MatchesURL(source_url);
+        is_externally_connectable = externally_connectable->matches.MatchesURL(
+            source_render_frame_host->GetLastCommittedURL());
       }
     } else {
       // Default behaviour. Any extension or content script, no webpages.
@@ -295,6 +312,10 @@ void MessageService::OpenChannelToExtension(
   std::unique_ptr<base::DictionaryValue> source_tab =
       messaging_delegate_->MaybeGetTabInfo(source_contents);
 
+  absl::optional<url::Origin> source_origin;
+  if (source_render_frame_host)
+    source_origin = source_render_frame_host->GetLastCommittedOrigin();
+
   if (source_tab.get()) {
     DCHECK(source_render_frame_host);
     source_frame_id =
@@ -313,8 +334,8 @@ void MessageService::OpenChannelToExtension(
   std::unique_ptr<OpenChannelParams> params(new OpenChannelParams(
       source, std::move(source_tab), source_frame_id, nullptr,
       source_port_id.GetOppositePortId(), source_endpoint,
-      std::move(opener_port), target_extension_id, source_url, channel_name,
-      include_guest_process_info));
+      std::move(opener_port), target_extension_id, source_url,
+      std::move(source_origin), channel_name, include_guest_process_info));
 
   pending_incognito_channels_[params->receiver_port_id.GetChannelId()] =
       PendingMessagesQueue();
@@ -354,8 +375,8 @@ void MessageService::OpenChannelToExtension(
     // This check may show a dialog.
     messaging_delegate_->QueryIncognitoConnectability(
         context, target_extension, source_contents, source_url,
-        base::Bind(&MessageService::OnOpenChannelAllowed,
-                   weak_factory_.GetWeakPtr(), base::Passed(&params)));
+        base::BindOnce(&MessageService::OnOpenChannelAllowed,
+                       weak_factory_.GetWeakPtr(), std::move(params)));
     return;
   }
 
@@ -383,9 +404,10 @@ void MessageService::OpenChannelToNativeApp(
   if (!opener_port->IsValidPort())
     return;
 
-#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_MAC) || defined(OS_LINUX) || \
+    defined(OS_CHROMEOS)
   bool has_permission = extension->permissions_data()->HasAPIPermission(
-      APIPermission::kNativeMessaging);
+      mojom::APIPermissionID::kNativeMessaging);
   if (!has_permission) {
     opener_port->DispatchOnDisconnect(kMissingPermissionError);
     return;
@@ -409,6 +431,10 @@ void MessageService::OpenChannelToNativeApp(
 
   content::RenderFrameHost* source_rfh =
       source.is_for_render_frame() ? source.GetRenderFrameHost() : nullptr;
+
+  // Disable back forward cache.
+  DisableBackForwardCacheForMessaging(source_rfh);
+
   std::string error = kReceivingEndDoesntExistError;
   const PortId receiver_port_id = source_port_id.GetOppositePortId();
   // NOTE: We're creating |receiver| with nullptr |source_rfh|, which seems to
@@ -416,7 +442,7 @@ void MessageService::OpenChannelToNativeApp(
   // any issues arise from it.
   std::unique_ptr<MessagePort> receiver(
       messaging_delegate_->CreateReceiverForNativeApp(
-          weak_factory_.GetWeakPtr(), source_rfh, extension->id(),
+          context_, weak_factory_.GetWeakPtr(), source_rfh, extension->id(),
           receiver_port_id, native_app_name,
           policy_permission == MessagingDelegate::PolicyPermission::ALLOW_ALL,
           &error));
@@ -433,11 +459,13 @@ void MessageService::OpenChannelToNativeApp(
   channel->opener->IncrementLazyKeepaliveCount();
 
   AddChannel(std::move(channel), receiver_port_id);
-#else  // !(defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_LINUX))
+#else   // !(defined(OS_WIN) || defined(OS_MAC) || defined(OS_LINUX) ||
+        // defined(OS_CHROMEOS))
   const char kNativeMessagingNotSupportedError[] =
       "Native Messaging is not supported on this platform.";
   opener_port->DispatchOnDisconnect(kNativeMessagingNotSupportedError);
-#endif  // !(defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_LINUX))
+#endif  // !(defined(OS_WIN) || defined(OS_MAC) || defined(OS_LINUX) ||
+        // defined(OS_CHROMEOS))
 }
 
 void MessageService::OpenChannelToTab(const ChannelEndpoint& source,
@@ -472,6 +500,9 @@ void MessageService::OpenChannelToTab(const ChannelEndpoint& source,
     return;
   }
 
+  // Disable back forward cache.
+  DisableBackForwardCacheForMessaging(receiver_contents->GetMainFrame());
+
   const PortId receiver_port_id = source_port_id.GetOppositePortId();
   std::unique_ptr<MessagePort> receiver =
       messaging_delegate_->CreateReceiverForTab(weak_factory_.GetWeakPtr(),
@@ -504,7 +535,8 @@ void MessageService::OpenChannelToTab(const ChannelEndpoint& source,
       receiver.release(), receiver_port_id,
       MessagingEndpoint::ForExtension(extension_id), std::move(opener_port),
       extension_id,
-      GURL(),  // Source URL doesn't make sense for opening to tabs.
+      GURL(),         // Source URL doesn't make sense for opening to tabs.
+      url::Origin(),  // Origin URL doesn't make sense for opening to tabs.
       channel_name,
       false));  // Connections to tabs aren't webview guests.
   OpenChannelImpl(receiver_context, std::move(params), extension,
@@ -567,7 +599,8 @@ void MessageService::OpenChannelImpl(BrowserContext* browser_context,
   channel->receiver->DispatchOnConnect(
       params->channel_name, std::move(params->source_tab),
       params->source_frame_id, guest_process_id, guest_render_frame_routing_id,
-      params->source_endpoint, params->target_extension_id, params->source_url);
+      params->source_endpoint, params->target_extension_id, params->source_url,
+      params->source_origin);
 
   // Report the event to the event router, if the target is an extension.
   //
@@ -735,7 +768,7 @@ void MessageService::EnqueuePendingMessage(const PortId& source_port_id,
         PendingMessage(source_port_id, message));
     // A channel should only be holding pending messages because it is in one
     // of these states.
-    DCHECK(!base::ContainsKey(pending_lazy_context_channels_, channel_id));
+    DCHECK(!base::Contains(pending_lazy_context_channels_, channel_id));
     return;
   }
   EnqueuePendingMessageForLazyBackgroundLoad(source_port_id,
@@ -849,10 +882,10 @@ void MessageService::OnOpenChannelAllowed(
   // which depends on whether the extension uses spanning or split mode.
   if (content::RenderProcessHost* extension_process =
           GetExtensionProcess(context, params->target_extension_id)) {
-    params->receiver.reset(
-        new ExtensionMessagePort(
-            weak_factory_.GetWeakPtr(), params->receiver_port_id,
-            params->target_extension_id, extension_process));
+    params->receiver = std::make_unique<ExtensionMessagePort>(
+
+        weak_factory_.GetWeakPtr(), params->receiver_port_id,
+        params->target_extension_id, extension_process);
   } else {
     params->receiver.reset();
   }
@@ -864,6 +897,10 @@ void MessageService::OnOpenChannelAllowed(
     params->opener_port->DispatchOnDisconnect(kReceivingEndDoesntExistError);
     return;
   }
+
+  content::RenderFrameHost* source_rfh =
+      source.is_for_render_frame() ? source.GetRenderFrameHost() : nullptr;
+  DisableBackForwardCacheForMessaging(source_rfh);
 
   // The target might be a lazy background page or a Service Worker. In that
   // case, we have to check if it is loaded and ready, and if not, queue up the
@@ -884,9 +921,9 @@ void MessageService::PendingLazyContextOpenChannel(
   if (context_info == nullptr)
     return;  // TODO(mpcomplete): notify source of disconnect?
 
-  params->receiver.reset(new ExtensionMessagePort(
+  params->receiver = std::make_unique<ExtensionMessagePort>(
       weak_factory_.GetWeakPtr(), params->receiver_port_id,
-      params->target_extension_id, context_info->render_process_host));
+      params->target_extension_id, context_info->render_process_host);
   const Extension* const extension =
       extensions::ExtensionRegistry::Get(context_info->browser_context)
           ->enabled_extensions()

@@ -9,17 +9,22 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/location.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
+#include "net/base/ip_address.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_timing_info.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_isolation_key.h"
+#include "net/base/schemeful_site.h"
 #include "net/cert/x509_certificate.h"
 #include "net/disk_cache/disk_cache.h"
 #include "net/http/http_cache.h"
@@ -30,6 +35,7 @@
 #include "net/log/net_log_source.h"
 #include "net/log/net_log_with_source.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace net {
 
@@ -38,6 +44,11 @@ using MockTransactionMap =
     std::unordered_map<std::string, const MockTransaction*>;
 static MockTransactionMap mock_transactions;
 }  // namespace
+
+TransportInfo DefaultTransportInfo() {
+  return TransportInfo(TransportType::kDirect,
+                       IPEndPoint(IPAddress::IPv4Localhost(), 80), "");
+}
 
 //-----------------------------------------------------------------------------
 // mock transaction data
@@ -48,10 +59,12 @@ const MockTransaction kSimpleGET_Transaction = {
     base::Time(),
     "",
     LOAD_NORMAL,
+    DefaultTransportInfo(),
     "HTTP/1.1 200 OK",
     "Cache-Control: max-age=10000\n",
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
+    {},
     TEST_MODE_NORMAL,
     nullptr,
     nullptr,
@@ -59,7 +72,8 @@ const MockTransaction kSimpleGET_Transaction = {
     0,
     0,
     OK,
-    OK};
+    OK,
+};
 
 const MockTransaction kSimplePOST_Transaction = {
     "http://bugdatabase.com/edit",
@@ -67,10 +81,12 @@ const MockTransaction kSimplePOST_Transaction = {
     base::Time(),
     "",
     LOAD_NORMAL,
+    DefaultTransportInfo(),
     "HTTP/1.1 200 OK",
     "",
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
+    {},
     TEST_MODE_NORMAL,
     nullptr,
     nullptr,
@@ -78,7 +94,8 @@ const MockTransaction kSimplePOST_Transaction = {
     0,
     0,
     OK,
-    OK};
+    OK,
+};
 
 const MockTransaction kTypicalGET_Transaction = {
     "http://www.example.com/~foo/bar.html",
@@ -86,11 +103,13 @@ const MockTransaction kTypicalGET_Transaction = {
     base::Time(),
     "",
     LOAD_NORMAL,
+    DefaultTransportInfo(),
     "HTTP/1.1 200 OK",
     "Date: Wed, 28 Nov 2007 09:40:09 GMT\n"
     "Last-Modified: Wed, 28 Nov 2007 00:40:09 GMT\n",
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
+    {},
     TEST_MODE_NORMAL,
     nullptr,
     nullptr,
@@ -98,7 +117,8 @@ const MockTransaction kTypicalGET_Transaction = {
     0,
     0,
     OK,
-    OK};
+    OK,
+};
 
 const MockTransaction kETagGET_Transaction = {
     "http://www.google.com/foopy",
@@ -106,11 +126,13 @@ const MockTransaction kETagGET_Transaction = {
     base::Time(),
     "",
     LOAD_NORMAL,
+    DefaultTransportInfo(),
     "HTTP/1.1 200 OK",
     "Cache-Control: max-age=10000\n"
     "Etag: \"foopy\"\n",
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
+    {},
     TEST_MODE_NORMAL,
     nullptr,
     nullptr,
@@ -118,7 +140,8 @@ const MockTransaction kETagGET_Transaction = {
     0,
     0,
     OK,
-    OK};
+    OK,
+};
 
 const MockTransaction kRangeGET_Transaction = {
     "http://www.google.com/",
@@ -126,10 +149,12 @@ const MockTransaction kRangeGET_Transaction = {
     base::Time(),
     "Range: 0-100\r\n",
     LOAD_NORMAL,
+    DefaultTransportInfo(),
     "HTTP/1.1 200 OK",
     "Cache-Control: max-age=10000\n",
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
+    {},
     TEST_MODE_NORMAL,
     nullptr,
     nullptr,
@@ -137,7 +162,8 @@ const MockTransaction kRangeGET_Transaction = {
     0,
     0,
     OK,
-    OK};
+    OK,
+};
 
 static const MockTransaction* const kBuiltinMockTransactions[] = {
   &kSimpleGET_Transaction,
@@ -174,6 +200,12 @@ MockHttpRequest::MockHttpRequest(const MockTransaction& t) {
   method = t.method;
   extra_headers.AddHeadersFromString(t.request_headers);
   load_flags = t.load_flags;
+  SchemefulSite site(url);
+  network_isolation_key = NetworkIsolationKey(site, site);
+}
+
+std::string MockHttpRequest::CacheKey() {
+  return HttpCache::GenerateCacheKeyForTest(this);
 }
 
 //-----------------------------------------------------------------------------
@@ -195,9 +227,11 @@ TestTransactionConsumer::~TestTransactionConsumer() = default;
 void TestTransactionConsumer::Start(const HttpRequestInfo* request,
                                     const NetLogWithSource& net_log) {
   state_ = STARTING;
-  int result = trans_->Start(
-      request, base::Bind(&TestTransactionConsumer::OnIOComplete,
-                          base::Unretained(this)), net_log);
+  int result =
+      trans_->Start(request,
+                    base::BindOnce(&TestTransactionConsumer::OnIOComplete,
+                                   base::Unretained(this)),
+                    net_log);
   if (result != ERR_IO_PENDING)
     DidStart(result);
 }
@@ -229,10 +263,10 @@ void TestTransactionConsumer::DidFinish(int result) {
 void TestTransactionConsumer::Read() {
   state_ = READING;
   read_buf_ = base::MakeRefCounted<IOBuffer>(1024);
-  int result = trans_->Read(read_buf_.get(),
-                            1024,
-                            base::Bind(&TestTransactionConsumer::OnIOComplete,
-                                       base::Unretained(this)));
+  int result =
+      trans_->Read(read_buf_.get(), 1024,
+                   base::BindOnce(&TestTransactionConsumer::OnIOComplete,
+                                  base::Unretained(this)));
   if (result != ERR_IO_PENDING)
     DidRead(result);
 }
@@ -263,8 +297,7 @@ MockNetworkTransaction::MockNetworkTransaction(RequestPriority priority,
       sent_bytes_(0),
       socket_log_id_(NetLogSource::kInvalidId),
       done_reading_called_(false),
-      reading_(false),
-      weak_factory_(this) {}
+      reading_(false) {}
 
 MockNetworkTransaction::~MockNetworkTransaction() {
   // Use request_ as in ~HttpNetworkTransaction to make sure its valid and not
@@ -367,11 +400,6 @@ int MockNetworkTransaction::Read(net::IOBuffer* buf,
 void MockNetworkTransaction::StopCaching() {
   if (transaction_factory_.get())
     transaction_factory_->TransactionStopCaching();
-}
-
-bool MockNetworkTransaction::GetFullRequestHeaders(
-    HttpRequestHeaders* headers) const {
-  return false;
 }
 
 int64_t MockNetworkTransaction::GetTotalReceivedBytes() const {
@@ -493,6 +521,7 @@ int MockNetworkTransaction::StartInternal(const HttpRequestInfo* request,
   response_.ssl_info.cert = t->cert;
   response_.ssl_info.cert_status = t->cert_status;
   response_.ssl_info.connection_status = t->ssl_connection_status;
+  response_.dns_aliases = t->dns_aliases;
   data_ = resp_data;
   content_length_ = response_.headers->GetContentLength();
 
@@ -502,10 +531,15 @@ int MockNetworkTransaction::StartInternal(const HttpRequestInfo* request,
   if (request_->load_flags & LOAD_PREFETCH)
     response_.unused_since_prefetch = true;
 
+  if (request_->load_flags & LOAD_RESTRICTED_PREFETCH) {
+    DCHECK(response_.unused_since_prefetch);
+    response_.restricted_prefetch = true;
+  }
+
   // Pause and resume.
   if (!before_network_start_callback_.is_null()) {
     bool defer = false;
-    before_network_start_callback_.Run(&defer);
+    std::move(before_network_start_callback_).Run(&defer);
     if (defer) {
       resume_start_callback_ = std::move(callback);
       return net::ERR_IO_PENDING;
@@ -515,17 +549,25 @@ int MockNetworkTransaction::StartInternal(const HttpRequestInfo* request,
   if (test_mode_ & TEST_MODE_SYNC_NET_START)
     return OK;
 
-  CallbackLater(std::move(callback), OK);
+  int result = OK;
+  if (!connected_callback_.is_null()) {
+    result = connected_callback_.Run(t->transport_info,
+                                     base::DoNothing::Repeatedly<int>());
+  }
+
+  CallbackLater(std::move(callback), result);
   return ERR_IO_PENDING;
 }
 
 void MockNetworkTransaction::SetBeforeNetworkStartCallback(
-    const BeforeNetworkStartCallback& callback) {
-  before_network_start_callback_ = callback;
+    BeforeNetworkStartCallback callback) {
+  before_network_start_callback_ = std::move(callback);
 }
 
-void MockNetworkTransaction::SetBeforeHeadersSentCallback(
-    const BeforeHeadersSentCallback& callback) {}
+void MockNetworkTransaction::SetConnectedCallback(
+    const ConnectedCallback& callback) {
+  connected_callback_ = callback;
+}
 
 int MockNetworkTransaction::ResumeNetworkStart() {
   DCHECK(!resume_start_callback_.is_null());
@@ -535,6 +577,10 @@ int MockNetworkTransaction::ResumeNetworkStart() {
 
 void MockNetworkTransaction::GetConnectionAttempts(
     ConnectionAttempts* out) const {
+  NOTIMPLEMENTED();
+}
+
+void MockNetworkTransaction::CloseConnectionOnDestruction() {
   NOTIMPLEMENTED();
 }
 
@@ -629,6 +675,29 @@ int ReadTransaction(HttpTransaction* trans, std::string* result) {
 
   result->swap(content);
   return OK;
+}
+
+//-----------------------------------------------------------------------------
+// connected callback handler
+
+ConnectedHandler::ConnectedHandler() = default;
+ConnectedHandler::~ConnectedHandler() = default;
+
+ConnectedHandler::ConnectedHandler(const ConnectedHandler&) = default;
+ConnectedHandler& ConnectedHandler::operator=(const ConnectedHandler&) =
+    default;
+ConnectedHandler::ConnectedHandler(ConnectedHandler&&) = default;
+ConnectedHandler& ConnectedHandler::operator=(ConnectedHandler&&) = default;
+
+int ConnectedHandler::OnConnected(const TransportInfo& info,
+                                  CompletionOnceCallback callback) {
+  transports_.push_back(info);
+  if (run_callback_) {
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), result_));
+    return net::ERR_IO_PENDING;
+  }
+  return result_;
 }
 
 }  // namespace net

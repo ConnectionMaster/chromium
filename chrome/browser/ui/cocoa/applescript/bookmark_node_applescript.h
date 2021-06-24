@@ -18,19 +18,20 @@ class BookmarkNode;
 // bookmark item.
 @interface BookmarkNodeAppleScript : ElementAppleScript {
  @protected
-  const bookmarks::BookmarkNode* bookmarkNode_;  // weak.
+  const bookmarks::BookmarkNode* _bookmarkNode;  // weak.
   // Contains the temporary title when a scripter creates a new folder/item with
   // title specified like
   // |make new bookmark folder with properties {title:"foo"}|.
-  NSString* tempTitle_;
+  NSString* _tempTitle;
 }
 
 // Does not actually create a folder/item but just sets its ID, the folder is
 // created in insertInBookmarksFolder: in the corresponding bookmarks folder.
-- (id)init;
+- (instancetype)init;
 
 // Does not make a folder/item but instead uses an existing one.
-- (id)initWithBookmarkNode:(const bookmarks::BookmarkNode*)aBookmarkNode;
+- (instancetype)initWithBookmarkNode:
+    (const bookmarks::BookmarkNode*)aBookmarkNode;
 
 // Assigns a node, sets its unique ID and also copies temporary values.
 - (void)setBookmarkNode:(const bookmarks::BookmarkNode*)aBookmarkNode;

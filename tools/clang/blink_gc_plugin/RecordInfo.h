@@ -40,7 +40,7 @@ class BasePoint : public GraphPoint {
             RecordInfo* info,
             const TracingStatus& status)
       : spec_(spec), info_(info), status_(status) {}
-  const TracingStatus NeedsTracing() { return status_; }
+  const TracingStatus NeedsTracing() override { return status_; }
   const clang::CXXBaseSpecifier& spec() { return spec_; }
   RecordInfo* info() { return info_; }
 
@@ -54,7 +54,7 @@ class FieldPoint : public GraphPoint {
  public:
   FieldPoint(clang::FieldDecl* field, Edge* edge)
       : field_(field), edge_(edge) {}
-  const TracingStatus NeedsTracing() {
+  const TracingStatus NeedsTracing() override {
     return edge_->NeedsTracing(Edge::kRecursive);
   }
   clang::FieldDecl* field() { return field_; }
@@ -88,6 +88,7 @@ class RecordInfo {
   const std::string& name() const { return name_; }
   Fields& GetFields();
   Bases& GetBases();
+  const clang::CXXBaseSpecifier* GetDirectGCBase();
   clang::CXXMethodDecl* GetTraceMethod();
   clang::CXXMethodDecl* GetTraceWrappersMethod();
   clang::CXXMethodDecl* GetTraceDispatchMethod();
@@ -97,13 +98,12 @@ class RecordInfo {
 
   bool IsHeapAllocatedCollection();
   bool IsGCDerived();
+  bool IsGCDirectlyDerived();
   bool IsGCAllocated();
-  bool IsGCFinalized();
   bool IsGCMixin();
   bool IsStackAllocated();
   bool IsNonNewable();
   bool IsOnlyPlacementNewable();
-  bool IsEagerlyFinalized();
 
   bool HasDefinition();
 
@@ -148,7 +148,6 @@ class RecordInfo {
   CachedBool does_need_finalization_;
   CachedBool has_gc_mixin_methods_;
   CachedBool is_declaring_local_trace_;
-  CachedBool is_eagerly_finalized_;
 
   bool determined_trace_methods_;
   clang::CXXMethodDecl* trace_method_;
@@ -158,6 +157,8 @@ class RecordInfo {
   bool is_gc_derived_;
 
   std::vector<std::string> gc_base_names_;
+
+  const clang::CXXBaseSpecifier* directly_derived_gc_base_;
 
   friend class RecordCache;
 };

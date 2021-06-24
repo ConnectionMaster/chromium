@@ -14,7 +14,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/nacl/common/nacl_process_type.h"
@@ -33,13 +33,14 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/bindings_policy.h"
 #include "content/public/common/content_constants.h"
+#include "content/public/common/content_features.h"
 #include "extensions/buildflags/buildflags.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/global_memory_dump.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/memory_instrumentation.h"
 #include "ui/base/l10n/l10n_util.h"
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
-#include "services/service_manager/zygote/zygote_host_linux.h"
+#if defined(OS_POSIX) && !defined(OS_MAC) && !defined(OS_ANDROID)
+#include "content/public/browser/zygote_host/zygote_host_linux.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -48,6 +49,7 @@
 #include "extensions/browser/process_map.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/mojom/view_type.mojom.h"
 #endif
 
 using base::StringPrintf;
@@ -146,16 +148,20 @@ void MemoryDetails::StartFetch() {
   // getting called from the IO thread.
   DCHECK(!BrowserThread::CurrentlyOn(BrowserThread::IO));
 
-  // In order to process this request, we need to use the plugin information.
-  // However, plugin process information is only available from the IO thread.
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
-      base::BindOnce(&MemoryDetails::CollectChildInfoOnIOThread, this));
+  if (base::FeatureList::IsEnabled(features::kProcessHostOnUI)) {
+    CollectChildInfoOnProcessThread();
+  } else {
+    // In order to process this request, we need to use the plugin information.
+    // However, plugin process information is only available from the IO thread.
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(&MemoryDetails::CollectChildInfoOnProcessThread, this));
+  }
 }
 
 MemoryDetails::~MemoryDetails() {}
 
-std::string MemoryDetails::ToLogString() {
+std::string MemoryDetails::ToLogString(bool include_tab_title) {
   std::string log;
   log.reserve(4096);
   ProcessMemoryInformationList processes = ChromeBrowser()->processes;
@@ -165,9 +171,12 @@ std::string MemoryDetails::ToLogString() {
   for (auto iter1 = processes.rbegin(); iter1 != processes.rend(); ++iter1) {
     log += ProcessMemoryInformation::GetFullTypeNameInEnglish(
             iter1->process_type, iter1->renderer_type);
-    if (!iter1->titles.empty()) {
+    // The title of a renderer may contain PII.
+    if ((iter1->process_type != content::PROCESS_TYPE_RENDERER ||
+         include_tab_title) &&
+        !iter1->titles.empty()) {
       log += " [";
-      for (std::vector<base::string16>::const_iterator iter2 =
+      for (std::vector<std::u16string>::const_iterator iter2 =
                iter1->titles.begin();
            iter2 != iter1->titles.end(); ++iter2) {
         if (iter2 != iter1->titles.begin())
@@ -187,8 +196,10 @@ std::string MemoryDetails::ToLogString() {
   return log;
 }
 
-void MemoryDetails::CollectChildInfoOnIOThread() {
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::IO));
+void MemoryDetails::CollectChildInfoOnProcessThread() {
+  DCHECK_CURRENTLY_ON(base::FeatureList::IsEnabled(features::kProcessHostOnUI)
+                          ? content::BrowserThread::UI
+                          : content::BrowserThread::IO);
 
   std::vector<ProcessMemoryInformation> child_info;
 
@@ -209,7 +220,7 @@ void MemoryDetails::CollectChildInfoOnIOThread() {
   }
 
   // Now go do expensive memory lookups in a thread pool.
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE,
       {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
@@ -293,7 +304,7 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
 
       // If this is a RVH for a subframe; skip it to avoid double-counting the
       // WebContents.
-      if (rvh != contents->GetRenderViewHost())
+      if (rvh != contents->GetMainFrame()->GetRenderViewHost())
         continue;
 
       // The rest of this block will happen only once per WebContents.
@@ -313,7 +324,7 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
                 ->enabled_extensions()
                 .GetByID(page_url.host());
         if (extension) {
-          base::string16 title = base::UTF8ToUTF16(extension->name());
+          std::u16string title = base::UTF8ToUTF16(extension->name());
           process.titles.push_back(title);
           process.renderer_type =
               ProcessMemoryInformation::RENDERER_EXTENSION;
@@ -321,8 +332,8 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
         }
       }
 
-      extensions::ViewType type = extensions::GetViewType(contents);
-      if (type == extensions::VIEW_TYPE_BACKGROUND_CONTENTS) {
+      extensions::mojom::ViewType type = extensions::GetViewType(contents);
+      if (type == extensions::mojom::ViewType::kBackgroundContents) {
         process.titles.push_back(base::UTF8ToUTF16(page_url.spec()));
         process.renderer_type =
             ProcessMemoryInformation::RENDERER_BACKGROUND_APP;
@@ -330,14 +341,14 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
       }
 #endif
 
-      base::string16 title = contents->GetTitle();
+      std::u16string title = contents->GetTitle();
       if (!title.length())
         title = l10n_util::GetStringUTF16(IDS_DEFAULT_TAB_TITLE);
       process.titles.push_back(title);
     }
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
-    if (service_manager::ZygoteHost::GetInstance()->IsZygotePid(process.pid)) {
+#if defined(OS_POSIX) && !defined(OS_MAC) && !defined(OS_ANDROID)
+    if (content::ZygoteHost::GetInstance()->IsZygotePid(process.pid)) {
       process.process_type = content::PROCESS_TYPE_ZYGOTE;
     }
 #endif
@@ -351,13 +362,10 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
   base::EraseIf(vector, is_unknown);
 
   // Grab a memory dump for all processes.
-  // Using AdaptCallbackForRepeating allows for an easier transition to
-  // OnceCallbacks for https://crbug.com/714018.
   memory_instrumentation::MemoryInstrumentation::GetInstance()
       ->RequestPrivateMemoryFootprint(
           base::kNullProcessId,
-          base::AdaptCallbackForRepeating(
-              base::BindOnce(&MemoryDetails::DidReceiveMemoryDump, this)));
+          base::BindOnce(&MemoryDetails::DidReceiveMemoryDump, this));
 }
 
 void MemoryDetails::DidReceiveMemoryDump(

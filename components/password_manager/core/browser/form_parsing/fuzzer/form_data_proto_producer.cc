@@ -35,10 +35,9 @@ FormData GenerateWithProto(const ::form_data_fuzzer::Form& form_proto) {
   result.id_attribute = UTF8ToUTF16(form_proto.id());
   result.name_attribute = UTF8ToUTF16(form_proto.name());
   result.is_form_tag = form_proto.is_form_tag();
-  result.is_formless_checkout = form_proto.is_formless_checkout();
   result.name = UTF8ToUTF16(form_proto.name());
   result.action = GURL(form_proto.action());
-  result.origin = GURL(form_proto.origin());
+  result.url = GURL(form_proto.origin());
   result.main_frame_origin =
       url::Origin::Create(GURL(form_proto.main_frame_origin()));
 
@@ -47,9 +46,8 @@ FormData GenerateWithProto(const ::form_data_fuzzer::Form& form_proto) {
     const ::form_data_fuzzer::FormField& form_data_proto = form_proto.fields(i);
     result.fields[i].id_attribute = UTF8ToUTF16(form_data_proto.id());
 #if defined(OS_IOS)
-    result.fields[i].unique_id = result.fields[i].id_attribute +
-                                 base::UTF8ToUTF16("-") +
-                                 base::NumberToString16(i);
+    result.fields[i].unique_id =
+        result.fields[i].id_attribute + u"-" + base::NumberToString16(i);
 #endif
     result.fields[i].name_attribute = UTF8ToUTF16(form_data_proto.name());
     result.fields[i].is_focusable = form_data_proto.is_focusable();

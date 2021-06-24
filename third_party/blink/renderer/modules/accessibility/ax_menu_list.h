@@ -32,25 +32,27 @@
 namespace blink {
 
 class AXObjectCacheImpl;
-class LayoutMenuList;
 
 class AXMenuList final : public AXLayoutObject {
  public:
-  AXMenuList(LayoutMenuList*, AXObjectCacheImpl&);
+  AXMenuList(LayoutObject*, AXObjectCacheImpl&);
 
   AccessibilityExpanded IsExpanded() const final;
   bool OnNativeClickAction() override;
-  void ClearChildren() override;
+  void ClearChildren() const override;
+  void Detach() override;
 
-  void DidUpdateActiveOption(int option_index);
+  void DidUpdateActiveOption();
   void DidShowPopup();
   void DidHidePopup();
+
+  AXObject* GetOrCreateMockPopupChild();
 
  private:
   friend class AXMenuListOption;
 
   bool IsMenuList() const override { return true; }
-  ax::mojom::Role DetermineAccessibilityRole() final;
+  ax::mojom::blink::Role NativeRoleIgnoringAria() const final;
 
   void AddChildren() override;
 
@@ -59,7 +61,10 @@ class AXMenuList final : public AXLayoutObject {
   DISALLOW_COPY_AND_ASSIGN(AXMenuList);
 };
 
-DEFINE_AX_OBJECT_TYPE_CASTS(AXMenuList, IsMenuList());
+template <>
+struct DowncastTraits<AXMenuList> {
+  static bool AllowFrom(const AXObject& object) { return object.IsMenuList(); }
+};
 
 }  // namespace blink
 

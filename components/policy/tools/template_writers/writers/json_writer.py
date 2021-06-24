@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -57,7 +57,10 @@ class JsonWriter(template_writer.TemplateWriter):
     line = '  // %s' % policy['caption']
     self._out.append(line)
     self._out.append(HEADER_DELIMETER)
-    description = self._text_wrapper.wrap(policy['desc'])
+    description = policy['desc']
+    if self.HasExpandedPolicyDescription(policy):
+      description += ' ' + self.GetExpandedPolicyDescription(policy) + '\n'
+    description = self._text_wrapper.wrap(description)
     self._out += description
     line = '  //"%s": %s' % (policy['name'], example_value_str)
     self._out.append('')

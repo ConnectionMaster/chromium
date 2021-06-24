@@ -8,6 +8,8 @@ Note that source file names are treated as symbols in this script while they
 are actually not.
 """
 
+from __future__ import print_function
+
 import json
 import logging
 import os
@@ -42,11 +44,11 @@ _FILES_FILENAME = 'files.json'
 
 class RuntimeSymbolsInProcess(object):
   def __init__(self):
-    self._maps = None
+    self.maps = None
     self._static_symbols_in_filse = {}
 
   def find_procedure(self, runtime_address):
-    for vma in self._maps.iter(ProcMaps.executable):
+    for vma in self.maps.iter(ProcMaps.executable):
       if vma.begin <= runtime_address < vma.end:
         static_symbols = self._static_symbols_in_filse.get(vma.name)
         if static_symbols:
@@ -57,7 +59,7 @@ class RuntimeSymbolsInProcess(object):
     return None
 
   def find_sourcefile(self, runtime_address):
-    for vma in self._maps.iter(ProcMaps.executable):
+    for vma in self.maps.iter(ProcMaps.executable):
       if vma.begin <= runtime_address < vma.end:
         static_symbols = self._static_symbols_in_filse.get(vma.name)
         if static_symbols:
@@ -68,7 +70,7 @@ class RuntimeSymbolsInProcess(object):
     return None
 
   def find_typeinfo(self, runtime_address):
-    for vma in self._maps.iter(ProcMaps.constants):
+    for vma in self.maps.iter(ProcMaps.constants):
       if vma.begin <= runtime_address < vma.end:
         static_symbols = self._static_symbols_in_filse.get(vma.name)
         if static_symbols:
@@ -83,12 +85,12 @@ class RuntimeSymbolsInProcess(object):
     symbols_in_process = RuntimeSymbolsInProcess()
 
     with open(os.path.join(prepared_data_dir, _MAPS_FILENAME), mode='r') as f:
-      symbols_in_process._maps = ProcMaps.load_file(f)
+      symbols_in_process.maps = ProcMaps.load_file(f)
     with open(os.path.join(prepared_data_dir, _FILES_FILENAME), mode='r') as f:
       files = json.load(f)
 
     # pylint: disable=W0212
-    for vma in symbols_in_process._maps.iter(ProcMaps.executable_and_constants):
+    for vma in symbols_in_process.maps.iter(ProcMaps.executable_and_constants):
       file_entry = files.get(vma.name)
       if not file_entry:
         continue
@@ -203,9 +205,9 @@ def main():
                                       sys.stdin)
   for address, symbol in symbols_dict.iteritems():
     if symbol:
-      print '%016x %s' % (address, symbol)
+      print('%016x %s' % (address, symbol))
     else:
-      print '%016x' % address
+      print('%016x' % address)
 
   return 0
 

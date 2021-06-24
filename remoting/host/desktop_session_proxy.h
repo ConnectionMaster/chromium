@@ -10,8 +10,8 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/shared_memory_handle.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/sequenced_task_runner_helpers.h"
@@ -26,6 +26,7 @@
 #include "remoting/proto/event.pb.h"
 #include "remoting/protocol/clipboard_stub.h"
 #include "remoting/protocol/errors.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
 
 namespace base {
@@ -51,6 +52,7 @@ class DesktopSessionConnector;
 struct DesktopSessionProxyTraits;
 class IpcAudioCapturer;
 class IpcMouseCursorMonitor;
+class IpcKeyboardLayoutMonitor;
 class IpcVideoFrameCapturer;
 class ScreenControls;
 
@@ -89,6 +91,8 @@ class DesktopSessionProxy
   std::unique_ptr<ScreenControls> CreateScreenControls();
   std::unique_ptr<webrtc::DesktopCapturer> CreateVideoCapturer();
   std::unique_ptr<webrtc::MouseCursorMonitor> CreateMouseCursorMonitor();
+  std::unique_ptr<KeyboardLayoutMonitor> CreateKeyboardLayoutMonitor(
+      base::RepeatingCallback<void(const protocol::KeyboardLayout&)> callback);
   std::unique_ptr<FileOperations> CreateFileOperations();
   std::string GetCapabilities() const;
   void SetCapabilities(const std::string& capabilities);
@@ -127,6 +131,13 @@ class DesktopSessionProxy
   void SetMouseCursorMonitor(
       const base::WeakPtr<IpcMouseCursorMonitor>& mouse_cursor_monitor);
 
+  // Stores |keyboard_layout_monitor| to be used to post keyboard layout
+  // changes. Called on the |caller_task_runner_| thread.
+  void SetKeyboardLayoutMonitor(
+      const base::WeakPtr<IpcKeyboardLayoutMonitor>& keyboard_layout_monitor);
+  const absl::optional<protocol::KeyboardLayout>& GetKeyboardCurrentLayout()
+      const;
+
   // APIs used to implement the InputInjector interface.
   void InjectClipboardEvent(const protocol::ClipboardEvent& event);
   void InjectKeyEvent(const protocol::KeyEvent& event);
@@ -147,7 +158,8 @@ class DesktopSessionProxy
   void ReadChunk(std::uint64_t file_id, std::uint64_t size) override;
   void WriteFile(std::uint64_t file_id,
                  const base::FilePath& filename) override;
-  void WriteChunk(std::uint64_t file_id, std::string data) override;
+  void WriteChunk(std::uint64_t file_id,
+                  std::vector<std::uint8_t> data) override;
   void Close(std::uint64_t file_id) override;
   void Cancel(std::uint64_t file_id) override;
 
@@ -171,7 +183,7 @@ class DesktopSessionProxy
 
   // Registers a new shared buffer created by the desktop process.
   void OnCreateSharedBuffer(int id,
-                            base::SharedMemoryHandle handle,
+                            base::ReadOnlySharedMemoryRegion region,
                             uint32_t size);
 
   // Drops a cached reference to the shared buffer.
@@ -186,6 +198,9 @@ class DesktopSessionProxy
 
   // Handles MouseCursor notification from the desktop session agent.
   void OnMouseCursor(const webrtc::MouseCursor& mouse_cursor);
+
+  // Handles KeyboardChanged notification from the desktop session agent.
+  void OnKeyboardChanged(const protocol::KeyboardLayout& layout);
 
   // Handles InjectClipboardEvent request from the desktop integration process.
   void OnInjectClipboardEvent(const std::string& serialized_event);
@@ -223,6 +238,9 @@ class DesktopSessionProxy
   // Points to the mouse cursor monitor receiving mouse cursor changes.
   base::WeakPtr<IpcMouseCursorMonitor> mouse_cursor_monitor_;
 
+  // Points to the keyboard layout monitor receiving keyboard layout changes.
+  base::WeakPtr<IpcKeyboardLayoutMonitor> keyboard_layout_monitor_;
+
   // Used to create IpcFileOperations instances and route result messages.
   IpcFileOperationsFactory ipc_file_operations_factory_;
 
@@ -246,6 +264,10 @@ class DesktopSessionProxy
 
   // Stores the session id for the proxied desktop process.
   uint32_t desktop_session_id_ = UINT32_MAX;
+
+  // Caches the last keyboard layout received so it can be provided when Start
+  // is called on IpcKeyboardLayoutMonitor.
+  absl::optional<protocol::KeyboardLayout> keyboard_layout_;
 
   DISALLOW_COPY_AND_ASSIGN(DesktopSessionProxy);
 };

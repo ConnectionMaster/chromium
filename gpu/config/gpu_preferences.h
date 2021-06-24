@@ -11,9 +11,14 @@
 
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "gpu/gpu_export.h"
 #include "media/media_buildflags.h"
 #include "ui/gfx/buffer_types.h"
+
+#if defined(USE_OZONE)
+#include "base/message_loop/message_pump_type.h"
+#endif
 
 namespace gpu {
 
@@ -25,10 +30,32 @@ const size_t kDefaultMaxProgramCacheMemoryBytes = 2 * 1024 * 1024;
 const size_t kLowEndMaxProgramCacheMemoryBytes = 128 * 1024;
 #endif
 
+enum class VulkanImplementationName : uint32_t {
+  kNone = 0,
+  kNative = 1,
+  kForcedNative = 2,  // Cannot be overridden by GPU blocklist.
+  kSwiftshader = 3,
+  kLast = kSwiftshader,
+};
+
+enum class GrContextType : uint32_t {
+  kGL = 0,
+  kVulkan = 1,
+  kMetal = 2,
+  kDawn = 3,
+  kLast = kDawn,
+};
+
+enum class DawnBackendValidationLevel : uint32_t {
+  kDisabled = 0,
+  kPartial = 1,
+  kFull = 2,
+};
+
 // NOTE: if you modify this structure then you must also modify the
 // following two files to keep them in sync:
 //   src/gpu/ipc/common/gpu_preferences.mojom
-//   src/gpu/ipc/common/gpu_preferences_struct_traits.h
+//   src/gpu/ipc/common/gpu_preferences_mojom_traits.h
 struct GPU_EXPORT GpuPreferences {
  public:
   GpuPreferences();
@@ -44,22 +71,13 @@ struct GPU_EXPORT GpuPreferences {
   // If return false, |this| won't be touched.
   bool FromSwitchValue(const std::string& data);
 
-  // Support for accelerated vpx decoding for various vendors,
-  // intended to be used as a bitfield.
-  // VPX_VENDOR_ALL should be updated whenever a new entry is added.
-  enum VpxDecodeVendors {
-    VPX_VENDOR_NONE = 0x00,
-    VPX_VENDOR_MICROSOFT = 0x01,
-    VPX_VENDOR_AMD = 0x02,
-    VPX_VENDOR_ALL = 0x03,
-  };
   // ===================================
   // Settings from //content/public/common/content_switches.h
 
   // Disables hardware acceleration of video decode, where available.
   bool disable_accelerated_video_decode = false;
 
-  // Disables hardware acceleration of video decode, where available.
+  // Disables hardware acceleration of video encode, where available.
   bool disable_accelerated_video_encode = false;
 
   // Causes the GPU process to display a dialog on launch.
@@ -71,10 +89,6 @@ struct GPU_EXPORT GpuPreferences {
 
   // Starts the GPU sandbox before creating a GL context.
   bool gpu_sandbox_start_early = false;
-
-  // Enables experimental hardware acceleration for VP8/VP9 video decoding.
-  // Bitmask - 0x1=Microsoft, 0x2=AMD, 0x03=Try all. Windows only.
-  VpxDecodeVendors enable_accelerated_vpx_decode = VPX_VENDOR_MICROSOFT;
 
   // Enables using CODECAPI_AVLowLatencyMode. Windows only.
   bool enable_low_latency_dxva = true;
@@ -128,8 +142,14 @@ struct GPU_EXPORT GpuPreferences {
   // Enforce GL minimums.
   bool enforce_gl_minimums = false;
 
-  // Sets the total amount of memory that may be allocated for GPU resources
-  uint32_t force_gpu_mem_available = 0;
+  // Sets the total amount of memory that may be allocated for GPU resources.
+  uint32_t force_gpu_mem_available_bytes = 0u;
+
+  // Sets the maximum discardable cache size limit for GPU resources.
+  uint32_t force_gpu_mem_discardable_limit_bytes = 0u;
+
+  // Sets maximum texture size.
+  uint32_t force_max_texture_size = 0u;
 
   // Sets the maximum size of the in-memory gpu program cache, in kb
   uint32_t gpu_program_cache_size = kDefaultMaxProgramCacheMemoryBytes;
@@ -151,10 +171,6 @@ struct GPU_EXPORT GpuPreferences {
 
   // ===================================
   // Settings from //gpu/config/gpu_switches.h
-
-  // Allows user to override the maximum number of WebGL contexts. A value of 0
-  // uses the defaults, which are encoded in the GPU process's code.
-  uint32_t max_active_webgl_contexts = 0;
 
   // Enables the use of SurfaceControl for overlays on Android.
   bool enable_android_surface_control = false;
@@ -183,11 +199,8 @@ struct GPU_EXPORT GpuPreferences {
   // ===================================
   // Settings from //gpu/config/gpu_switches.h
 
-  // Disables workarounds for various GPU driver bugs.
-  bool disable_gpu_driver_bug_workarounds = false;
-
-  // Ignores GPU blacklist.
-  bool ignore_gpu_blacklist = false;
+  // Ignores GPU blocklist.
+  bool ignore_gpu_blocklist = false;
 
   // Oop rasterization preferences in the GPU process.  disable wins over
   // enable, and neither means use defaults from GpuFeatureInfo.
@@ -202,8 +215,14 @@ struct GPU_EXPORT GpuPreferences {
 
   // ===================================
   // Settings from //gpu/command_buffer/service/gpu_switches.h
+  // The type of the GrContext.
+  GrContextType gr_context_type = GrContextType::kGL;
+
   // Use Vulkan for rasterization and display compositing.
-  bool enable_vulkan = false;
+  VulkanImplementationName use_vulkan = VulkanImplementationName::kNone;
+
+  // Enable using vulkan protected memory.
+  bool enable_vulkan_protected_memory = false;
 
   // Use vulkan VK_KHR_surface for presenting.
   bool disable_vulkan_surface = false;
@@ -212,6 +231,19 @@ struct GPU_EXPORT GpuPreferences {
   // testing in order to detect regressions which crash Vulkan.
   bool disable_vulkan_fallback_to_gl_for_testing = false;
 
+  // Heap memory limit for Vulkan. Allocations will fail when this limit is
+  // reached for a heap.
+  uint32_t vulkan_heap_memory_limit = 0u;
+
+  // Sync CPU memory limit for Vulkan. Submission of GPU work will be
+  // synchronize with the CPU in order to free released memory immediately
+  // when this limit is reached.
+  uint32_t vulkan_sync_cpu_memory_limit = 0u;
+
+  // Use Metal for rasterization and Skia-based display compositing. Note that
+  // this is compatible with GL-based display compositing.
+  bool enable_metal = false;
+
   // ===================================
   // Settings from //cc/base/switches.h
   // Enable the GPU benchmarking extension; used by tests only.
@@ -219,6 +251,52 @@ struct GPU_EXPORT GpuPreferences {
 
   // Enable the WebGPU command buffer.
   bool enable_webgpu = false;
+
+  // Enable usage of SPIR-V with WebGPU. This is unsafe since SPIR-V from the
+  // renderer process isn't fully validated.
+  bool enable_webgpu_spirv = false;
+
+  // Enable validation layers in Dawn backends.
+  DawnBackendValidationLevel enable_dawn_backend_validation =
+      DawnBackendValidationLevel::kDisabled;
+
+  // Force the use of the WebGPU/Compat (GLES) backend for all WebGPU content.
+  bool force_webgpu_compat = false;
+
+  // The Dawn features(toggles) enabled on the creation of Dawn devices.
+  std::vector<std::string> enabled_dawn_features_list;
+
+  // The Dawn features(toggles) disabled on the creation of Dawn devices.
+  std::vector<std::string> disabled_dawn_features_list;
+
+  // Enable measuring blocked time on GPU Main thread
+  bool enable_gpu_blocked_time_metric = false;
+
+  // Enable collecting perf data for device categorization purpose. Currently
+  // only enabled on Windows platform for the info collection GPU process.
+  bool enable_perf_data_collection = false;
+
+#if defined(USE_OZONE)
+  // Determines message pump type for the GPU thread.
+  base::MessagePumpType message_pump_type = base::MessagePumpType::DEFAULT;
+#endif
+
+  // ===================================
+  // Settings from //ui/gfx/switches.h
+
+  // Enable native CPU-mappable GPU memory buffer support on Linux.
+  bool enable_native_gpu_memory_buffers = false;
+
+  // ===================================
+  // Settings from //media/base/media_switches.h
+
+#if defined(OS_CHROMEOS)
+  // Enable the hardware-accelerated direct video decoder on ChromeOS.
+  bool enable_chromeos_direct_video_decoder = false;
+#endif
+
+  // Disables oppr debug crash dumps.
+  bool disable_oopr_debug_crash_dump = false;
 
   // Please update gpu_preferences_unittest.cc when making additions or
   // changes to this struct.

@@ -7,14 +7,15 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/scoped_command_line.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/translate/core/browser/translate_download_manager.h"
 #include "components/translate/core/browser/translate_url_util.h"
+#include "components/variations/scoped_variations_ids_provider.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,16 +23,23 @@
 
 namespace translate {
 
+class TranslateLanguageListTest : public testing::Test {
+ public:
+ private:
+  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+      variations::VariationsIdsProvider::Mode::kUseSignedInState};
+};
+
 // Test that the supported languages can be explicitly set using
 // SetSupportedLanguages().
-TEST(TranslateLanguageListTest, SetSupportedLanguages) {
+TEST_F(TranslateLanguageListTest, SetSupportedLanguages) {
   const std::string language_list(
       "{"
       "\"sl\":{\"en\":\"English\",\"ja\":\"Japanese\"},"
       "\"tl\":{\"en\":\"English\",\"ja\":\"Japanese\"}"
       "}");
 
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
   network::TestURLLoaderFactory test_url_loader_factory;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory =
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -52,7 +60,7 @@ TEST(TranslateLanguageListTest, SetSupportedLanguages) {
 
 // Test that the language code back-off of locale is done correctly (where
 // required).
-TEST(TranslateLanguageListTest, GetLanguageCode) {
+TEST_F(TranslateLanguageListTest, GetLanguageCode) {
   TranslateLanguageList language_list;
   EXPECT_EQ("en", language_list.GetLanguageCode("en"));
   // Test backoff of unsupported locale.
@@ -64,7 +72,7 @@ TEST(TranslateLanguageListTest, GetLanguageCode) {
 // Test that the translation URL is correctly generated, and that the
 // translate-security-origin command-line flag correctly overrides the default
 // value.
-TEST(TranslateLanguageListTest, TranslateLanguageUrl) {
+TEST_F(TranslateLanguageListTest, TranslateLanguageUrl) {
   TranslateLanguageList language_list;
 
   // Test default security origin.
@@ -85,7 +93,7 @@ TEST(TranslateLanguageListTest, TranslateLanguageUrl) {
 
 // Test that IsSupportedLanguage() is true for languages that should be
 // supported, and false for invalid languages.
-TEST(TranslateLanguageListTest, IsSupportedLanguage) {
+TEST_F(TranslateLanguageListTest, IsSupportedLanguage) {
   TranslateLanguageList language_list;
   EXPECT_TRUE(language_list.IsSupportedLanguage("en"));
   EXPECT_TRUE(language_list.IsSupportedLanguage("zh-CN"));
@@ -96,26 +104,26 @@ TEST(TranslateLanguageListTest, IsSupportedLanguage) {
 // languages should be large (> 100) and must contain very common languages.
 // If either of these tests are not true, the default language configuration is
 // likely to be incorrect.
-TEST(TranslateLanguageListTest, GetSupportedLanguages) {
+TEST_F(TranslateLanguageListTest, GetSupportedLanguages) {
   TranslateLanguageList language_list;
   std::vector<std::string> languages;
   language_list.GetSupportedLanguages(true /* translate_allowed */, &languages);
   // Check there are a lot of default languages.
   EXPECT_GE(languages.size(), 100ul);
   // Check that some very common languages are there.
-  EXPECT_TRUE(base::ContainsValue(languages, "en"));
-  EXPECT_TRUE(base::ContainsValue(languages, "es"));
-  EXPECT_TRUE(base::ContainsValue(languages, "fr"));
-  EXPECT_TRUE(base::ContainsValue(languages, "ru"));
-  EXPECT_TRUE(base::ContainsValue(languages, "zh-CN"));
-  EXPECT_TRUE(base::ContainsValue(languages, "zh-TW"));
+  EXPECT_TRUE(base::Contains(languages, "en"));
+  EXPECT_TRUE(base::Contains(languages, "es"));
+  EXPECT_TRUE(base::Contains(languages, "fr"));
+  EXPECT_TRUE(base::Contains(languages, "ru"));
+  EXPECT_TRUE(base::Contains(languages, "zh-CN"));
+  EXPECT_TRUE(base::Contains(languages, "zh-TW"));
 }
 
 // Check that we contact the translate server to update the supported language
 // list when translate is enabled by policy.
-TEST(TranslateLanguageListTest, GetSupportedLanguagesFetch) {
+TEST_F(TranslateLanguageListTest, GetSupportedLanguagesFetch) {
   // Set up fake network environment.
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
   network::TestURLLoaderFactory test_url_loader_factory;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory =
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -166,9 +174,9 @@ TEST(TranslateLanguageListTest, GetSupportedLanguagesFetch) {
 
 // Check that we don't send any network data when translate is disabled by
 // policy.
-TEST(TranslateLanguageListTest, GetSupportedLanguagesNoFetch) {
+TEST_F(TranslateLanguageListTest, GetSupportedLanguagesNoFetch) {
   // Set up fake network environment.
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::TaskEnvironment task_environment;
   network::TestURLLoaderFactory test_url_loader_factory;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory =
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(

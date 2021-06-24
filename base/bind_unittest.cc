@@ -10,11 +10,11 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/test/bind_test_util.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -35,6 +35,9 @@ class IncompleteType;
 class NoRef {
  public:
   NoRef() = default;
+  NoRef(const NoRef&) = delete;
+  // Particularly important in this test to ensure no copies are made.
+  NoRef& operator=(const NoRef&) = delete;
 
   MOCK_METHOD0(VoidMethod0, void());
   MOCK_CONST_METHOD0(VoidConstMethod0, void());
@@ -45,22 +48,18 @@ class NoRef {
   MOCK_METHOD1(VoidMethodWithIntArg, void(int));
   MOCK_METHOD0(UniquePtrMethod0, std::unique_ptr<int>());
 
- private:
-  // Particularly important in this test to ensure no copies are made.
-  DISALLOW_COPY_AND_ASSIGN(NoRef);
 };
 
 class HasRef : public NoRef {
  public:
   HasRef() = default;
+  HasRef(const HasRef&) = delete;
+  // Particularly important in this test to ensure no copies are made.
+  HasRef& operator=(const HasRef&) = delete;
 
   MOCK_CONST_METHOD0(AddRef, void());
   MOCK_CONST_METHOD0(Release, bool());
   MOCK_CONST_METHOD0(HasAtLeastOneRef, bool());
-
- private:
-  // Particularly important in this test to ensure no copies are made.
-  DISALLOW_COPY_AND_ASSIGN(HasRef);
 };
 
 class HasRefPrivateDtor : public HasRef {
@@ -311,7 +310,7 @@ int FunctionWithScopedRefptrFirstParam(const scoped_refptr<HasRef>& o, int n) {
   return n;
 }
 
-void TakesACallback(const Closure& callback) {
+void TakesACallback(const RepeatingClosure& callback) {
   callback.Run();
 }
 
@@ -326,7 +325,8 @@ class BindTest : public ::testing::Test {
     const_no_ref_ptr_ = &no_ref_;
     static_func_mock_ptr = &static_func_mock_;
   }
-
+  BindTest(const BindTest&) = delete;
+  BindTest& operator=(const BindTest&) = delete;
   ~BindTest() override = default;
 
   static void VoidFunc0() {
@@ -346,9 +346,6 @@ class BindTest : public ::testing::Test {
 
   // Used by the static functions to perform expectations.
   static StrictMock<NoRef>* static_func_mock_ptr;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(BindTest);
 };
 
 StrictMock<NoRef>* BindTest::static_func_mock_ptr;
@@ -363,31 +360,32 @@ int IntFunc0() {
 }
 
 TEST_F(BindTest, BasicTest) {
-  Callback<int(int, int, int)> cb = Bind(&Sum, 32, 16, 8);
+  RepeatingCallback<int(int, int, int)> cb = BindRepeating(&Sum, 32, 16, 8);
   EXPECT_EQ(92, cb.Run(13, 12, 11));
 
-  Callback<int(int, int, int, int, int, int)> c1 = Bind(&Sum);
+  RepeatingCallback<int(int, int, int, int, int, int)> c1 = BindRepeating(&Sum);
   EXPECT_EQ(69, c1.Run(14, 13, 12, 11, 10, 9));
 
-  Callback<int(int, int, int)> c2 = Bind(c1, 32, 16, 8);
+  RepeatingCallback<int(int, int, int)> c2 = BindRepeating(c1, 32, 16, 8);
   EXPECT_EQ(86, c2.Run(11, 10, 9));
 
-  Callback<int()> c3 = Bind(c2, 4, 2, 1);
+  RepeatingCallback<int()> c3 = BindRepeating(c2, 4, 2, 1);
   EXPECT_EQ(63, c3.Run());
 }
 
-// Test that currying the rvalue result of another Bind() works correctly.
-//   - rvalue should be usable as argument to Bind().
-//   - multiple runs of resulting Callback remain valid.
+// Test that currying the rvalue result of another BindRepeating() works
+// correctly.
+//   - rvalue should be usable as argument to BindRepeating().
+//   - multiple runs of resulting RepeatingCallback remain valid.
 TEST_F(BindTest, CurryingRvalueResultOfBind) {
   int n = 0;
   RepeatingClosure cb = BindRepeating(&TakesACallback,
                                       BindRepeating(&PtrArgSet, &n));
 
-  // If we implement Bind() such that the return value has auto_ptr-like
-  // semantics, the second call here will fail because ownership of
-  // the internal BindState<> would have been transfered to a *temporary*
-  // constructon of a Callback object on the first call.
+  // If we implement BindRepeating() such that the return value has
+  // auto_ptr-like semantics, the second call here will fail because ownership
+  // of the internal BindState<> would have been transferred to a *temporary*
+  // construction of a RepeatingCallback object on the first call.
   cb.Run();
   EXPECT_EQ(2, n);
 
@@ -516,6 +514,120 @@ TEST_F(BindTest, IgnoreResultForOnce) {
   std::move(non_void_weak_method_cb).Run();
 }
 
+TEST_F(BindTest, IgnoreResultForRepeatingCallback) {
+  std::string s;
+  RepeatingCallback<int(int)> cb = BindRepeating(
+      [](std::string* s, int i) {
+        *s += "Run" + base::NumberToString(i);
+        return 5;
+      },
+      &s);
+  RepeatingCallback<void(int)> noreturn = BindRepeating(IgnoreResult(cb));
+  noreturn.Run(2);
+  EXPECT_EQ(s, "Run2");
+}
+
+TEST_F(BindTest, IgnoreResultForOnceCallback) {
+  std::string s;
+  OnceCallback<int(int)> cb = BindOnce(
+      [](std::string* s, int i) {
+        *s += "Run" + base::NumberToString(i);
+        return 5;
+      },
+      &s);
+  OnceCallback<void(int)> noreturn = BindOnce(IgnoreResult(std::move(cb)));
+  std::move(noreturn).Run(2);
+  EXPECT_EQ(s, "Run2");
+}
+
+void SetFromRef(int& ref) {
+  EXPECT_EQ(ref, 1);
+  ref = 2;
+  EXPECT_EQ(ref, 2);
+}
+
+TEST_F(BindTest, BindOnceWithNonConstRef) {
+  int v = 1;
+
+  // Mutates `v` because it's not bound to callback instead it's forwarded by
+  // Run().
+  auto cb1 = BindOnce(SetFromRef);
+  std::move(cb1).Run(v);
+  EXPECT_EQ(v, 2);
+  v = 1;
+
+  // Mutates `v` through std::reference_wrapper bound to callback.
+  auto cb2 = BindOnce(SetFromRef, std::ref(v));
+  std::move(cb2).Run();
+  EXPECT_EQ(v, 2);
+  v = 1;
+
+  // Everything past here following will make a copy of the argument. The copy
+  // will be mutated and leave `v` unmodified.
+  auto cb3 = BindOnce(SetFromRef, base::OwnedRef(v));
+  std::move(cb3).Run();
+  EXPECT_EQ(v, 1);
+
+  int& ref = v;
+  auto cb4 = BindOnce(SetFromRef, base::OwnedRef(ref));
+  std::move(cb4).Run();
+  EXPECT_EQ(v, 1);
+
+  const int cv = 1;
+  auto cb5 = BindOnce(SetFromRef, base::OwnedRef(cv));
+  std::move(cb5).Run();
+  EXPECT_EQ(cv, 1);
+
+  const int& cref = v;
+  auto cb6 = BindOnce(SetFromRef, base::OwnedRef(cref));
+  std::move(cb6).Run();
+  EXPECT_EQ(cref, 1);
+
+  auto cb7 = BindOnce(SetFromRef, base::OwnedRef(1));
+  std::move(cb7).Run();
+}
+
+TEST_F(BindTest, BindRepeatingWithNonConstRef) {
+  int v = 1;
+
+  // Mutates `v` because it's not bound to callback instead it's forwarded by
+  // Run().
+  auto cb1 = BindRepeating(SetFromRef);
+  std::move(cb1).Run(v);
+  EXPECT_EQ(v, 2);
+  v = 1;
+
+  // Mutates `v` through std::reference_wrapper bound to callback.
+  auto cb2 = BindRepeating(SetFromRef, std::ref(v));
+  std::move(cb2).Run();
+  EXPECT_EQ(v, 2);
+  v = 1;
+
+  // Everything past here following will make a copy of the argument. The copy
+  // will be mutated and leave `v` unmodified.
+  auto cb3 = BindRepeating(SetFromRef, base::OwnedRef(v));
+  std::move(cb3).Run();
+  EXPECT_EQ(v, 1);
+
+  int& ref = v;
+  auto cb4 = BindRepeating(SetFromRef, base::OwnedRef(ref));
+  std::move(cb4).Run();
+  EXPECT_EQ(v, 1);
+
+  const int cv = 1;
+  auto cb5 = BindRepeating(SetFromRef, base::OwnedRef(cv));
+  std::move(cb5).Run();
+  EXPECT_EQ(cv, 1);
+
+  const int& cref = v;
+  auto cb6 = BindRepeating(SetFromRef, base::OwnedRef(cref));
+  std::move(cb6).Run();
+  EXPECT_EQ(cref, 1);
+
+  auto cb7 = BindRepeating(SetFromRef, base::OwnedRef(1));
+  std::move(cb7).Run();
+}
+
 // Functions that take reference parameters.
 //  - Forced reference parameter type still stores a copy.
 //  - Forced const reference parameter type still stores a copy.
@@ -633,8 +745,8 @@ TEST_F(BindTest, WeakPtrForOnce) {
       BindOnce(&NoRef::VoidConstMethod0, const_weak_factory.GetWeakPtr());
   OnceClosure const_method_const_ptr_cb =
       BindOnce(&NoRef::VoidConstMethod0, const_weak_factory.GetWeakPtr());
-  Callback<int(int)> normal_func_cb =
-      Bind(&FunctionWithWeakFirstParam, weak_factory.GetWeakPtr());
+  OnceCallback<int(int)> normal_func_cb =
+      BindOnce(&FunctionWithWeakFirstParam, weak_factory.GetWeakPtr());
 
   weak_factory.InvalidateWeakPtrs();
   const_weak_factory.InvalidateWeakPtrs();
@@ -792,6 +904,27 @@ TEST_F(BindTest, OwnedForOnceUniquePtr) {
   EXPECT_EQ(1, deletes);
 }
 
+// Tests OwnedRef
+TEST_F(BindTest, OwnedRefForCounter) {
+  int counter = 0;
+  RepeatingCallback<int()> counter_callback =
+      BindRepeating([](int& counter) { return ++counter; }, OwnedRef(counter));
+
+  EXPECT_EQ(1, counter_callback.Run());
+  EXPECT_EQ(2, counter_callback.Run());
+  EXPECT_EQ(3, counter_callback.Run());
+  EXPECT_EQ(4, counter_callback.Run());
+
+  EXPECT_EQ(0, counter);  // counter should remain unchanged.
+}
+
+TEST_F(BindTest, OwnedRefForIgnoringArguments) {
+  OnceCallback<std::string(std::string)> echo_callback =
+      BindOnce([](int& ignore, std::string s) { return s; }, OwnedRef(0));
+
+  EXPECT_EQ("Hello World", std::move(echo_callback).Run("Hello World"));
+}
+
 template <typename T>
 class BindVariantsTest : public ::testing::Test {
 };
@@ -802,8 +935,9 @@ struct RepeatingTestConfig {
   using ClosureType = RepeatingClosure;
 
   template <typename F, typename... Args>
-  static CallbackType<MakeUnboundRunType<F, Args...>>
-  Bind(F&& f, Args&&... args) {
+  static CallbackType<internal::MakeUnboundRunType<F, Args...>> Bind(
+      F&& f,
+      Args&&... args) {
     return BindRepeating(std::forward<F>(f), std::forward<Args>(args)...);
   }
 };
@@ -814,8 +948,9 @@ struct OnceTestConfig {
   using ClosureType = OnceClosure;
 
   template <typename F, typename... Args>
-  static CallbackType<MakeUnboundRunType<F, Args...>>
-  Bind(F&& f, Args&&... args) {
+  static CallbackType<internal::MakeUnboundRunType<F, Args...>> Bind(
+      F&& f,
+      Args&&... args) {
     return BindOnce(std::forward<F>(f), std::forward<Args>(args)...);
   }
 };
@@ -1056,7 +1191,8 @@ TYPED_TEST(BindMoveOnlyTypeTest, PassedToBoundCallback) {
   int deletes = 0;
 
   TypeParam ptr(new DeleteCounter(&deletes));
-  Callback<TypeParam()> callback = Bind(&PassThru<TypeParam>, Passed(&ptr));
+  RepeatingCallback<TypeParam()> callback =
+      BindRepeating(&PassThru<TypeParam>, Passed(&ptr));
   EXPECT_FALSE(ptr.get());
   EXPECT_EQ(0, deletes);
 
@@ -1067,7 +1203,7 @@ TYPED_TEST(BindMoveOnlyTypeTest, PassedToBoundCallback) {
 
 TYPED_TEST(BindMoveOnlyTypeTest, PassedWithRvalue) {
   int deletes = 0;
-  Callback<TypeParam()> callback = Bind(
+  RepeatingCallback<TypeParam()> callback = BindRepeating(
       &PassThru<TypeParam>, Passed(TypeParam(new DeleteCounter(&deletes))));
   EXPECT_EQ(0, deletes);
 
@@ -1080,8 +1216,8 @@ TYPED_TEST(BindMoveOnlyTypeTest, PassedWithRvalue) {
 TYPED_TEST(BindMoveOnlyTypeTest, ReturnMoveOnlyType) {
   int deletes = 0;
   DeleteCounter* counter = new DeleteCounter(&deletes);
-  Callback<TypeParam()> callback =
-      Bind(&PassThru<TypeParam>, Passed(TypeParam(counter)));
+  RepeatingCallback<TypeParam()> callback =
+      BindRepeating(&PassThru<TypeParam>, Passed(TypeParam(counter)));
   TypeParam result = callback.Run();
   ASSERT_EQ(counter, result.get());
   EXPECT_EQ(0, deletes);
@@ -1099,7 +1235,8 @@ TYPED_TEST(BindMoveOnlyTypeTest, UnboundForwarding) {
   int deletes = 0;
   TypeParam ptr(new DeleteCounter(&deletes));
   // Test unbound argument forwarding.
-  Callback<TypeParam(TypeParam)> cb_unbound = Bind(&PassThru<TypeParam>);
+  RepeatingCallback<TypeParam(TypeParam)> cb_unbound =
+      BindRepeating(&PassThru<TypeParam>);
   cb_unbound.Run(std::move(ptr));
   EXPECT_EQ(1, deletes);
 }
@@ -1123,14 +1260,14 @@ TEST_F(BindTest, BindMoveOnlyVector) {
   v.push_back(std::make_unique<int>(12345));
 
   // Early binding should work:
-  base::Callback<MoveOnlyVector()> bound_cb =
-      base::Bind(&AcceptAndReturnMoveOnlyVector, Passed(&v));
+  base::RepeatingCallback<MoveOnlyVector()> bound_cb =
+      base::BindRepeating(&AcceptAndReturnMoveOnlyVector, Passed(&v));
   MoveOnlyVector intermediate_result = bound_cb.Run();
   VerifyVector(intermediate_result);
 
   // As should passing it as an argument to Run():
-  base::Callback<MoveOnlyVector(MoveOnlyVector)> unbound_cb =
-      base::Bind(&AcceptAndReturnMoveOnlyVector);
+  base::RepeatingCallback<MoveOnlyVector(MoveOnlyVector)> unbound_cb =
+      base::BindRepeating(&AcceptAndReturnMoveOnlyVector);
   MoveOnlyVector final_result = unbound_cb.Run(std::move(intermediate_result));
   VerifyVector(final_result);
 }
@@ -1145,38 +1282,40 @@ TEST_F(BindTest, ArgumentCopies) {
   int assigns = 0;
 
   CopyCounter counter(&copies, &assigns);
-  Bind(&VoidPolymorphic<CopyCounter>::Run, counter);
+  BindRepeating(&VoidPolymorphic<CopyCounter>::Run, counter);
   EXPECT_EQ(1, copies);
   EXPECT_EQ(0, assigns);
 
   copies = 0;
   assigns = 0;
-  Bind(&VoidPolymorphic<CopyCounter>::Run, CopyCounter(&copies, &assigns));
+  BindRepeating(&VoidPolymorphic<CopyCounter>::Run,
+                CopyCounter(&copies, &assigns));
   EXPECT_EQ(1, copies);
   EXPECT_EQ(0, assigns);
 
   copies = 0;
   assigns = 0;
-  Bind(&VoidPolymorphic<CopyCounter>::Run).Run(counter);
+  BindRepeating(&VoidPolymorphic<CopyCounter>::Run).Run(counter);
   EXPECT_EQ(2, copies);
   EXPECT_EQ(0, assigns);
 
   copies = 0;
   assigns = 0;
-  Bind(&VoidPolymorphic<CopyCounter>::Run).Run(CopyCounter(&copies, &assigns));
+  BindRepeating(&VoidPolymorphic<CopyCounter>::Run)
+      .Run(CopyCounter(&copies, &assigns));
   EXPECT_EQ(1, copies);
   EXPECT_EQ(0, assigns);
 
   copies = 0;
   assigns = 0;
   DerivedCopyMoveCounter derived(&copies, &assigns, nullptr, nullptr);
-  Bind(&VoidPolymorphic<CopyCounter>::Run).Run(CopyCounter(derived));
+  BindRepeating(&VoidPolymorphic<CopyCounter>::Run).Run(CopyCounter(derived));
   EXPECT_EQ(2, copies);
   EXPECT_EQ(0, assigns);
 
   copies = 0;
   assigns = 0;
-  Bind(&VoidPolymorphic<CopyCounter>::Run)
+  BindRepeating(&VoidPolymorphic<CopyCounter>::Run)
       .Run(CopyCounter(
           DerivedCopyMoveCounter(&copies, &assigns, nullptr, nullptr)));
   EXPECT_EQ(2, copies);
@@ -1189,8 +1328,8 @@ TEST_F(BindTest, ArgumentMoves) {
   int move_constructs = 0;
   int move_assigns = 0;
 
-  Bind(&VoidPolymorphic<const MoveCounter&>::Run,
-       MoveCounter(&move_constructs, &move_assigns));
+  BindRepeating(&VoidPolymorphic<const MoveCounter&>::Run,
+                MoveCounter(&move_constructs, &move_assigns));
   EXPECT_EQ(1, move_constructs);
   EXPECT_EQ(0, move_assigns);
 
@@ -1199,14 +1338,14 @@ TEST_F(BindTest, ArgumentMoves) {
 
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<MoveCounter>::Run)
+  BindRepeating(&VoidPolymorphic<MoveCounter>::Run)
       .Run(MoveCounter(&move_constructs, &move_assigns));
   EXPECT_EQ(1, move_constructs);
   EXPECT_EQ(0, move_assigns);
 
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<MoveCounter>::Run)
+  BindRepeating(&VoidPolymorphic<MoveCounter>::Run)
       .Run(MoveCounter(DerivedCopyMoveCounter(
           nullptr, nullptr, &move_constructs, &move_assigns)));
   EXPECT_EQ(2, move_constructs);
@@ -1225,7 +1364,7 @@ TEST_F(BindTest, ArgumentCopiesAndMoves) {
   int move_assigns = 0;
 
   CopyMoveCounter counter(&copies, &assigns, &move_constructs, &move_assigns);
-  Bind(&VoidPolymorphic<CopyMoveCounter>::Run, counter);
+  BindRepeating(&VoidPolymorphic<CopyMoveCounter>::Run, counter);
   EXPECT_EQ(1, copies);
   EXPECT_EQ(0, assigns);
   EXPECT_EQ(0, move_constructs);
@@ -1235,8 +1374,9 @@ TEST_F(BindTest, ArgumentCopiesAndMoves) {
   assigns = 0;
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<CopyMoveCounter>::Run,
-       CopyMoveCounter(&copies, &assigns, &move_constructs, &move_assigns));
+  BindRepeating(
+      &VoidPolymorphic<CopyMoveCounter>::Run,
+      CopyMoveCounter(&copies, &assigns, &move_constructs, &move_assigns));
   EXPECT_EQ(0, copies);
   EXPECT_EQ(0, assigns);
   EXPECT_EQ(1, move_constructs);
@@ -1246,7 +1386,7 @@ TEST_F(BindTest, ArgumentCopiesAndMoves) {
   assigns = 0;
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<CopyMoveCounter>::Run).Run(counter);
+  BindRepeating(&VoidPolymorphic<CopyMoveCounter>::Run).Run(counter);
   EXPECT_EQ(1, copies);
   EXPECT_EQ(0, assigns);
   EXPECT_EQ(1, move_constructs);
@@ -1256,7 +1396,7 @@ TEST_F(BindTest, ArgumentCopiesAndMoves) {
   assigns = 0;
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<CopyMoveCounter>::Run)
+  BindRepeating(&VoidPolymorphic<CopyMoveCounter>::Run)
       .Run(CopyMoveCounter(&copies, &assigns, &move_constructs, &move_assigns));
   EXPECT_EQ(0, copies);
   EXPECT_EQ(0, assigns);
@@ -1269,7 +1409,7 @@ TEST_F(BindTest, ArgumentCopiesAndMoves) {
   assigns = 0;
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<CopyMoveCounter>::Run)
+  BindRepeating(&VoidPolymorphic<CopyMoveCounter>::Run)
       .Run(CopyMoveCounter(derived_counter));
   EXPECT_EQ(1, copies);
   EXPECT_EQ(0, assigns);
@@ -1280,7 +1420,7 @@ TEST_F(BindTest, ArgumentCopiesAndMoves) {
   assigns = 0;
   move_constructs = 0;
   move_assigns = 0;
-  Bind(&VoidPolymorphic<CopyMoveCounter>::Run)
+  BindRepeating(&VoidPolymorphic<CopyMoveCounter>::Run)
       .Run(CopyMoveCounter(DerivedCopyMoveCounter(
           &copies, &assigns, &move_constructs, &move_assigns)));
   EXPECT_EQ(0, copies);
@@ -1307,12 +1447,12 @@ TEST_F(BindTest, CapturelessLambda) {
       char(int, double),
       internal::ExtractCallableRunType<decltype(h)>>::value));
 
-  EXPECT_EQ(42, Bind([] { return 42; }).Run());
-  EXPECT_EQ(42, Bind([](int i) { return i * 7; }, 6).Run());
+  EXPECT_EQ(42, BindRepeating([] { return 42; }).Run());
+  EXPECT_EQ(42, BindRepeating([](int i) { return i * 7; }, 6).Run());
 
   int x = 1;
-  base::Callback<void(int)> cb =
-      Bind([](int* x, int i) { *x *= i; }, Unretained(&x));
+  base::RepeatingCallback<void(int)> cb =
+      BindRepeating([](int* x, int i) { *x *= i; }, Unretained(&x));
   cb.Run(6);
   EXPECT_EQ(6, x);
   cb.Run(7);
@@ -1342,11 +1482,24 @@ TEST_F(BindTest, EmptyFunctor) {
 }
 
 TEST_F(BindTest, CapturingLambdaForTesting) {
+  // Test copyable lambdas.
   int x = 6;
   EXPECT_EQ(42, BindLambdaForTesting([=](int y) { return x * y; }).Run(7));
-
+  EXPECT_EQ(42,
+            BindLambdaForTesting([=](int y) mutable { return x *= y; }).Run(7));
   auto f = [x](std::unique_ptr<int> y) { return x * *y; };
   EXPECT_EQ(42, BindLambdaForTesting(f).Run(std::make_unique<int>(7)));
+
+  // Test move-only lambdas.
+  auto y = std::make_unique<int>(7);
+  auto g = [y = std::move(y)](int& x) mutable {
+    return x * *std::exchange(y, nullptr);
+  };
+  EXPECT_EQ(42, BindLambdaForTesting(std::move(g)).Run(x));
+
+  y = std::make_unique<int>(7);
+  auto h = [x, y = std::move(y)] { return x * *y; };
+  EXPECT_EQ(42, BindLambdaForTesting(std::move(h)).Run());
 }
 
 TEST_F(BindTest, Cancellation) {
@@ -1482,12 +1635,29 @@ int __stdcall StdCallFunc(int n) {
 // Windows specific calling convention support.
 //   - Can bind a __fastcall function.
 //   - Can bind a __stdcall function.
+//   - Can bind const and non-const __stdcall methods.
 TEST_F(BindTest, WindowsCallingConventions) {
-  Callback<int()> fastcall_cb = Bind(&FastCallFunc, 1);
+  auto fastcall_cb = BindRepeating(&FastCallFunc, 1);
   EXPECT_EQ(1, fastcall_cb.Run());
 
-  Callback<int()> stdcall_cb = Bind(&StdCallFunc, 2);
+  auto stdcall_cb = BindRepeating(&StdCallFunc, 2);
   EXPECT_EQ(2, stdcall_cb.Run());
+
+  class MethodHolder {
+   public:
+    int __stdcall Func(int n) { return n; }
+    int __stdcall ConstFunc(int n) const { return -n; }
+  };
+
+  MethodHolder obj;
+  auto stdcall_method_cb =
+      BindRepeating(&MethodHolder::Func, base::Unretained(&obj), 1);
+  EXPECT_EQ(1, stdcall_method_cb.Run());
+
+  const MethodHolder const_obj;
+  auto stdcall_const_method_cb =
+      BindRepeating(&MethodHolder::ConstFunc, base::Unretained(&const_obj), 1);
+  EXPECT_EQ(-1, stdcall_const_method_cb.Run());
 }
 #endif
 
@@ -1498,13 +1668,6 @@ TEST_F(BindTest, UnwrapUnretained) {
   auto unretained = Unretained(&i);
   EXPECT_EQ(&i, internal::Unwrap(unretained));
   EXPECT_EQ(&i, internal::Unwrap(std::move(unretained)));
-}
-
-TEST_F(BindTest, UnwrapConstRef) {
-  int p = 0;
-  auto const_ref = std::cref(p);
-  EXPECT_EQ(&p, &internal::Unwrap(const_ref));
-  EXPECT_EQ(&p, &internal::Unwrap(std::move(const_ref)));
 }
 
 TEST_F(BindTest, UnwrapRetainedRef) {
@@ -1552,9 +1715,20 @@ TEST_F(BindTest, BindNoexcept) {
 
 // Test null callbacks cause a DCHECK.
 TEST(BindDeathTest, NullCallback) {
-  base::Callback<void(int)> null_cb;
+  base::RepeatingCallback<void(int)> null_cb;
   ASSERT_TRUE(null_cb.is_null());
-  EXPECT_DCHECK_DEATH(base::Bind(null_cb, 42));
+  EXPECT_CHECK_DEATH(base::BindRepeating(null_cb, 42));
+}
+
+TEST(BindDeathTest, NullFunctionPointer) {
+  void (*null_function)(int) = nullptr;
+  EXPECT_DCHECK_DEATH(base::BindRepeating(null_function, 42));
+}
+
+TEST(BindDeathTest, NullCallbackWithoutBoundArgs) {
+  base::OnceCallback<void(int)> null_cb;
+  ASSERT_TRUE(null_cb.is_null());
+  EXPECT_CHECK_DEATH(base::BindOnce(std::move(null_cb)));
 }
 
 TEST(BindDeathTest, BanFirstOwnerOfRefCountedType) {

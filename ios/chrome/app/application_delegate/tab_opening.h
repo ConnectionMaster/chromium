@@ -6,14 +6,16 @@
 #define IOS_CHROME_APP_APPLICATION_DELEGATE_TAB_OPENING_H_
 
 #include "base/ios/block_types.h"
+#import "ios/chrome/app/app_startup_parameters.h"
 #include "ios/chrome/app/application_mode.h"
-#import "ios/chrome/browser/app_startup_parameters.h"
 #include "ui/base/page_transition_types.h"
 
 @class AppState;
-@class TabModel;
-@protocol StartupInformation;
+class Browser;
 class GURL;
+@protocol StartupInformation;
+struct UrlLoadParams;
+@class URLOpenerParams;
 
 // Protocol for object that can open new tabs during application launch.
 @protocol TabOpening<NSObject>
@@ -22,21 +24,30 @@ class GURL;
 // then opens either a normal or incognito tab with |url|. After opening |url|,
 // run completion |handler| if it is not nil. After Tab is opened the virtual
 // URL is set to the pending navigation item.
-- (void)dismissModalsAndOpenSelectedTabInMode:(ApplicationMode)targetMode
-                                      withURL:(const GURL&)url
-                                   virtualURL:(const GURL&)virtualURL
+- (void)dismissModalsAndOpenSelectedTabInMode:
+            (ApplicationModeForTabOpening)targetMode
+                            withUrlLoadParams:
+                                (const UrlLoadParams&)urlLoadParams
                                dismissOmnibox:(BOOL)dismissOmnibox
-                                   transition:(ui::PageTransition)transition
                                    completion:(ProceduralBlock)completion;
 
-// Creates a new tab if the launch options are not null.
-- (void)openTabFromLaunchOptions:(NSDictionary*)launchOptions
-              startupInformation:(id<StartupInformation>)startupInformation
-                        appState:(AppState*)appState;
+// Dismisses any modal view, excluding the omnibox if |dismissOmnibox| is NO,
+// then opens the list of URLs in |URLs| in either normal or incognito.
+// After opening the array of URLs, run completion |handler| if it not nil.
+- (void)dismissModalsAndOpenMultipleTabsInMode:
+            (ApplicationModeForTabOpening)targetMode
+                                          URLs:(const std::vector<GURL>&)URLs
+                                dismissOmnibox:(BOOL)dismissOmnibox
+                                    completion:(ProceduralBlock)completion;
 
-// Returns whether an NTP tab should be opened when the specified tabModel is
+// Creates a new tab if the launch options are not null.
+- (void)openTabFromLaunchWithParams:(URLOpenerParams*)params
+                 startupInformation:(id<StartupInformation>)startupInformation
+                           appState:(AppState*)appState;
+
+// Returns whether an NTP tab should be opened when the specified browser is
 // made current.
-- (BOOL)shouldOpenNTPTabOnActivationOfTabModel:(TabModel*)tabModel;
+- (BOOL)shouldOpenNTPTabOnActivationOfBrowser:(Browser*)browser;
 
 // Returns a block that can be executed on the new tab to trigger one of the
 // commands. This block can be passed to
@@ -45,10 +56,8 @@ class GURL;
 - (ProceduralBlock)completionBlockForTriggeringAction:
     (NTPTabOpeningPostOpeningAction)action;
 
-// Attempts to complete a Payment Request flow with a payment response from a
-// a third party app. Returns whether or not this operation was successful.
-- (BOOL)shouldCompletePaymentRequestOnCurrentTab:
-    (id<StartupInformation>)startupInformation;
+// Whether the |URL| is already opened, in regular mode.
+- (BOOL)URLIsOpenedInRegularMode:(const GURL&)URL;
 
 @end
 

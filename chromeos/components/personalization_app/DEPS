@@ -1,0 +1,10 @@
+include_rules = [
+  "+ash/constants/ash_features.h",
+  "-chrome",
+  "+chromeos/grit/chromeos_personalization_app_resources.h",
+  "+content/public/browser",
+  "+content/public/common",
+  "+ui/resources/grit/webui_generated_resources.h",
+  "+ui/resources/grit/webui_generated_resources_map.h",
+  "+ui/webui",
+]

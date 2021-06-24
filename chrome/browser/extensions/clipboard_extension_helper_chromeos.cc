@@ -4,13 +4,15 @@
 
 #include "chrome/browser/extensions/clipboard_extension_helper_chromeos.h"
 
-#include "base/callback_helpers.h"
+#include <memory>
+#include <utility>
+
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/synchronization/cancellation_flag.h"
-#include "chrome/browser/image_decoder.h"
+#include "base/synchronization/atomic_flag.h"
+#include "chrome/browser/image_decoder/image_decoder.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 
@@ -37,10 +39,10 @@ class ClipboardExtensionHelper::ClipboardImageDataDecoder
     ImageDecoder::ImageCodec codec = ImageDecoder::DEFAULT_CODEC;
     switch (type) {
       case clipboard::IMAGE_TYPE_PNG:
-        codec = ImageDecoder::ROBUST_PNG_CODEC;
+        codec = ImageDecoder::PNG_CODEC;
         break;
       case clipboard::IMAGE_TYPE_JPEG:
-        codec = ImageDecoder::ROBUST_JPEG_CODEC;
+        codec = ImageDecoder::DEFAULT_CODEC;
         break;
       case clipboard::IMAGE_TYPE_NONE:
         NOTREACHED();
@@ -75,7 +77,8 @@ class ClipboardExtensionHelper::ClipboardImageDataDecoder
 };
 
 ClipboardExtensionHelper::ClipboardExtensionHelper() {
-  clipboard_image_data_decoder_.reset(new ClipboardImageDataDecoder(this));
+  clipboard_image_data_decoder_ =
+      std::make_unique<ClipboardImageDataDecoder>(this);
 }
 
 ClipboardExtensionHelper::~ClipboardExtensionHelper() {}
@@ -84,8 +87,8 @@ void ClipboardExtensionHelper::DecodeAndSaveImageData(
     const std::vector<char>& data,
     clipboard::ImageType type,
     AdditionalDataItemList additional_items,
-    const base::Closure& success_callback,
-    const base::Callback<void(const std::string&)>& error_callback) {
+    base::OnceClosure success_callback,
+    base::OnceCallback<void(const std::string&)> error_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   // If there is a previous image decoding request still running, cancel it
@@ -98,19 +101,18 @@ void ClipboardExtensionHelper::DecodeAndSaveImageData(
   // Cache additonal items.
   additonal_items_ = std::move(additional_items);
 
-  image_save_success_callback_ = success_callback;
-  image_save_error_callback_ = error_callback;
+  image_save_success_callback_ = std::move(success_callback);
+  image_save_error_callback_ = std::move(error_callback);
   clipboard_image_data_decoder_->Start(data, type);
 }
 
 void ClipboardExtensionHelper::OnImageDecodeFailure() {
-  base::ResetAndReturn(&image_save_error_callback_)
-      .Run("Image data decoding failed.");
+  std::move(image_save_error_callback_).Run("Image data decoding failed.");
 }
 
 void ClipboardExtensionHelper::OnImageDecoded(const SkBitmap& bitmap) {
   {
-    ui::ScopedClipboardWriter scw(ui::CLIPBOARD_TYPE_COPY_PASTE);
+    ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
     // Write the decoded image data to clipboard.
     if (!bitmap.empty() && !bitmap.isNull())
       scw.WriteImage(bitmap);
@@ -122,11 +124,11 @@ void ClipboardExtensionHelper::OnImageDecoded(const SkBitmap& bitmap) {
         scw.WriteHTML(base::UTF8ToUTF16(item.data), std::string());
     }
   }
-  base::ResetAndReturn(&image_save_success_callback_).Run();
+  std::move(image_save_success_callback_).Run();
 }
 
 void ClipboardExtensionHelper::OnImageDecodeCancel() {
-  base::ResetAndReturn(&image_save_error_callback_).Run("Request canceled.");
+  std::move(image_save_error_callback_).Run("Request canceled.");
 }
 
 }  // namespace extensions

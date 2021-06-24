@@ -4,42 +4,39 @@
 
 #import "chrome/browser/ui/cocoa/profiles/profile_menu_controller.h"
 
-#include <stddef.h>
-
 #include "base/mac/scoped_nsobject.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile_attributes_entry.h"
-#include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/cocoa/test/cocoa_profile_test.h"
+#include "chrome/browser/ui/cocoa/test/cocoa_test_helper.h"
 #include "chrome/browser/ui/cocoa/test/run_loop_testing.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/test_browser_window.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/sync_preferences/pref_service_syncable.h"
+#include "chrome/test/base/testing_profile_manager.h"
 #include "testing/gtest_mac.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
-class ProfileMenuControllerTest : public CocoaProfileTest {
+class ProfileMenuControllerTest : public BrowserWithTestWindowTest {
  public:
-  ProfileMenuControllerTest() {
+  ProfileMenuControllerTest() { RebuildController(); }
+
+  void SetUp() override {
+    CocoaTest::BootstrapCocoa();
+    BrowserWithTestWindowTest::SetUp();
+
+    // Spin the runloop so |-initializeMenu| gets called.
+    chrome::testing::NSRunLoopRunAllPending();
+  }
+
+  void RebuildController() {
     item_.reset([[NSMenuItem alloc] initWithTitle:@"Users"
                                            action:nil
                                     keyEquivalent:@""]);
     controller_.reset(
         [[ProfileMenuController alloc] initWithMainMenuItem:item_]);
-  }
-
-  void SetUp() override {
-    CocoaProfileTest::SetUp();
-    ASSERT_TRUE(profile());
-
-    // Spin the runloop so |-initializeMenu| gets called.
-    chrome::testing::NSRunLoopRunAllPending();
   }
 
   void TestBottomItems() {
@@ -109,7 +106,7 @@ TEST_F(ProfileMenuControllerTest, RebuildMenu) {
   EXPECT_FALSE([menu_item() isHidden]);
 
   // Create some more profiles on the manager.
-  TestingProfileManager* manager = testing_profile_manager();
+  TestingProfileManager* manager = profile_manager();
   manager->CreateTestingProfile("Profile 2");
   manager->CreateTestingProfile("Profile 3");
 
@@ -118,12 +115,15 @@ TEST_F(ProfileMenuControllerTest, RebuildMenu) {
 
   NSMenuItem* item = [menu itemAtIndex:0];
   EXPECT_EQ(@selector(switchToProfileFromMenu:), [item action]);
+  EXPECT_TRUE([controller() validateMenuItem:item]);
 
   item = [menu itemAtIndex:1];
   EXPECT_EQ(@selector(switchToProfileFromMenu:), [item action]);
+  EXPECT_TRUE([controller() validateMenuItem:item]);
 
   item = [menu itemAtIndex:2];
   EXPECT_EQ(@selector(switchToProfileFromMenu:), [item action]);
+  EXPECT_TRUE([controller() validateMenuItem:item]);
 
   TestBottomItems();
 
@@ -151,7 +151,7 @@ TEST_F(ProfileMenuControllerTest, InsertItems) {
   [menu removeAllItems];
 
   // Create one more profile on the manager.
-  TestingProfileManager* manager = testing_profile_manager();
+  TestingProfileManager* manager = profile_manager();
   manager->CreateTestingProfile("Profile 2");
 
   // With more than one profile, insertItems should return YES.
@@ -198,7 +198,7 @@ TEST_F(ProfileMenuControllerTest, InitialActiveBrowser) {
 // BrowserWindow, so it is called manually.
 TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
   NSMenu* menu = [controller() menu];
-  TestingProfileManager* manager = testing_profile_manager();
+  TestingProfileManager* manager = profile_manager();
   TestingProfile* profile2 = manager->CreateTestingProfile("Profile 2");
   TestingProfile* profile3 = manager->CreateTestingProfile("Profile 3");
   ASSERT_EQ(7, [menu numberOfItems]);
@@ -206,27 +206,29 @@ TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
   // Create a browser and "show" it.
   Browser::CreateParams profile2_params(profile2, true);
   std::unique_ptr<Browser> p2_browser(
-      CreateBrowserWithTestWindowForParams(&profile2_params));
-  BrowserList::SetLastActive(p2_browser.get());
+      CreateBrowserWithTestWindowForParams(profile2_params));
+  [controller() activeBrowserChangedTo:p2_browser.get()];
   VerifyProfileNamedIsActive(@"Profile 2", __LINE__);
 
   // Close the browser and make sure it's still active.
   p2_browser.reset();
+  [controller() activeBrowserChangedTo:nil];
   VerifyProfileNamedIsActive(@"Profile 2", __LINE__);
 
   // Open a new browser and make sure it takes effect.
   Browser::CreateParams profile3_params(profile3, true);
   std::unique_ptr<Browser> p3_browser(
-      CreateBrowserWithTestWindowForParams(&profile3_params));
-  BrowserList::SetLastActive(p3_browser.get());
+      CreateBrowserWithTestWindowForParams(profile3_params));
+  [controller() activeBrowserChangedTo:p3_browser.get()];
   VerifyProfileNamedIsActive(@"Profile 3", __LINE__);
 
   p3_browser.reset();
+  [controller() activeBrowserChangedTo:nil];
   VerifyProfileNamedIsActive(@"Profile 3", __LINE__);
 }
 
 TEST_F(ProfileMenuControllerTest, DeleteActiveProfile) {
-  TestingProfileManager* manager = testing_profile_manager();
+  TestingProfileManager* manager = profile_manager();
 
   manager->CreateTestingProfile("Profile 2");
   TestingProfile* profile3 = manager->CreateTestingProfile("Profile 3");
@@ -240,10 +242,38 @@ TEST_F(ProfileMenuControllerTest, DeleteActiveProfile) {
   PrefService* local_state = g_browser_process->local_state();
   local_state->SetString(prefs::kProfileLastUsed,
                          profile3_path.BaseName().MaybeAsASCII());
+  EXPECT_FALSE(ProfileManager::GetLastUsedProfileIfLoaded());
 
   // Simulate the active browser changing to NULL and ensure a profile doesn't
   // get created by disallowing IO operations temporarily.
-  const bool io_was_allowed = base::ThreadRestrictions::SetIOAllowed(false);
+  base::ScopedDisallowBlocking scoped_disallow_blocking;
   [controller() activeBrowserChangedTo:NULL];
-  base::ThreadRestrictions::SetIOAllowed(io_was_allowed);
+  // Check that validateMenuItem does not load a profile, and edit/new are
+  // disabled.
+  NSMenu* menu = [controller() menu];
+  for (NSMenuItem* item in [menu itemArray]) {
+    bool is_edit_new = [item action] == @selector(editProfile:) ||
+                       [item action] == @selector(newProfile:);
+    EXPECT_EQ([controller() validateMenuItem:item], !is_edit_new);
+  }
+}
+
+TEST_F(ProfileMenuControllerTest, AddProfileDisabled) {
+  PrefService* local_state = g_browser_process->local_state();
+  local_state->SetBoolean(prefs::kBrowserAddPersonEnabled, false);
+
+  RebuildController();
+  // Spin the runloop so |-initializeMenu| gets called.
+  chrome::testing::NSRunLoopRunAllPending();
+
+  NSMenu* menu = [controller() menu];
+  NSInteger count = [menu numberOfItems];
+
+  ASSERT_GE(count, 2);
+
+  NSMenuItem* item = [menu itemAtIndex:count - 2];
+  EXPECT_TRUE([item isSeparatorItem]);
+
+  item = [menu itemAtIndex:count - 1];
+  EXPECT_EQ(@selector(editProfile:), [item action]);
 }

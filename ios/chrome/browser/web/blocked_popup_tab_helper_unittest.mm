@@ -5,17 +5,17 @@
 #import "ios/chrome/browser/web/blocked_popup_tab_helper.h"
 
 #include "base/memory/ptr_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_manager.h"
 #include "ios/chrome/browser/browser_state/test_chrome_browser_state.h"
 #include "ios/chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "ios/chrome/browser/infobars/confirm_infobar_metrics_recorder.h"
 #include "ios/chrome/browser/infobars/infobar_manager_impl.h"
 #import "ios/chrome/browser/web/chrome_web_test.h"
-#import "ios/web/public/test/fakes/test_navigation_manager.h"
-#import "ios/web/public/test/fakes/test_web_state.h"
-#import "ios/web/public/test/fakes/test_web_state_delegate.h"
+#import "ios/web/public/test/fakes/fake_web_state_delegate.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -37,7 +37,7 @@ class BlockedPopupTabHelperTest : public ChromeWebTest {
 
   // Returns true if InfoBarManager is being observed.
   bool IsObservingSources() {
-    return GetBlockedPopupTabHelper()->scoped_observer_.IsObservingSources();
+    return GetBlockedPopupTabHelper()->scoped_observation_.IsObserving();
   }
 
   // Returns BlockedPopupTabHelper that is being tested.
@@ -50,7 +50,7 @@ class BlockedPopupTabHelperTest : public ChromeWebTest {
     return InfoBarManagerImpl::FromWebState(web_state());
   }
 
-  web::TestWebStateDelegate web_state_delegate_;
+  web::FakeWebStateDelegate web_state_delegate_;
 };
 
 // Tests ShouldBlockPopup method. This test changes content settings without
@@ -66,15 +66,15 @@ TEST_F(BlockedPopupTabHelperTest, ShouldBlockPopup) {
           chrome_browser_state_.get()));
   settings_map->SetContentSettingCustomScope(
       ContentSettingsPattern::FromURL(source_url1),
-      ContentSettingsPattern::Wildcard(), CONTENT_SETTINGS_TYPE_POPUPS,
-      std::string(), CONTENT_SETTING_ALLOW);
+      ContentSettingsPattern::Wildcard(), ContentSettingsType::POPUPS,
+      CONTENT_SETTING_ALLOW);
 
   EXPECT_FALSE(GetBlockedPopupTabHelper()->ShouldBlockPopup(source_url1));
   const GURL source_url2("https://source-url2");
   EXPECT_TRUE(GetBlockedPopupTabHelper()->ShouldBlockPopup(source_url2));
 
   // Allow all popups.
-  settings_map->SetDefaultContentSetting(CONTENT_SETTINGS_TYPE_POPUPS,
+  settings_map->SetDefaultContentSetting(ContentSettingsType::POPUPS,
                                          CONTENT_SETTING_ALLOW);
 
   EXPECT_FALSE(GetBlockedPopupTabHelper()->ShouldBlockPopup(source_url1));
@@ -149,4 +149,56 @@ TEST_F(BlockedPopupTabHelperTest, ShowAndDismissInfoBar) {
   GetInfobarManager()->infobar_at(0)->RemoveSelf();
   EXPECT_EQ(0U, GetInfobarManager()->infobar_count());
   EXPECT_FALSE(IsObservingSources());
+}
+
+// Tests that the Infobar presentation and dismissal histograms are recorded
+// correctly.
+TEST_F(BlockedPopupTabHelperTest, RecordDismissMetrics) {
+  base::HistogramTester histogram_tester;
+
+  // Call |HandlePopup| to show an infobar and check that the Presented
+  // histogram was recorded correctly.
+  const GURL test_url("https://popups.example.com");
+  GetBlockedPopupTabHelper()->HandlePopup(test_url, web::Referrer());
+  ASSERT_EQ(1U, GetInfobarManager()->infobar_count());
+  histogram_tester.ExpectUniqueSample(
+      "Mobile.Messages.Confirm.Event.ConfirmInfobarTypeBlockPopups",
+      static_cast<base::HistogramBase::Sample>(
+          MobileMessagesConfirmInfobarEvents::Presented),
+      1);
+
+  // Dismiss the infobar and check that the Dismiss histogram was recorded
+  // correctly.
+  GetInfobarManager()->infobar_at(0)->delegate()->InfoBarDismissed();
+  histogram_tester.ExpectBucketCount(
+      kInfobarTypeBlockPopupsEventHistogram,
+      static_cast<base::HistogramBase::Sample>(
+          MobileMessagesConfirmInfobarEvents::Dismissed),
+      1);
+}
+
+// Tests that the Infobar accept histogram is recorded correctly.
+TEST_F(BlockedPopupTabHelperTest, RecordAcceptMetrics) {
+  base::HistogramTester histogram_tester;
+  const GURL source_url("https://source-url");
+  ASSERT_TRUE(GetBlockedPopupTabHelper()->ShouldBlockPopup(source_url));
+
+  // Block popup.
+  const GURL target_url("https://target-url");
+  web::Referrer referrer(source_url, web::ReferrerPolicyDefault);
+  GetBlockedPopupTabHelper()->HandlePopup(target_url, referrer);
+
+  // Accept the infobar and check that the Accepted histogram was recorded
+  // correctly.
+  ASSERT_EQ(1U, GetInfobarManager()->infobar_count());
+  auto* delegate = GetInfobarManager()
+                       ->infobar_at(0)
+                       ->delegate()
+                       ->AsConfirmInfoBarDelegate();
+  delegate->Accept();
+  histogram_tester.ExpectBucketCount(
+      kInfobarTypeBlockPopupsEventHistogram,
+      static_cast<base::HistogramBase::Sample>(
+          MobileMessagesConfirmInfobarEvents::Accepted),
+      1);
 }

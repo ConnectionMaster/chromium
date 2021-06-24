@@ -6,6 +6,7 @@
 
 #include "base/memory/ptr_util.h"
 #include "base/strings/pattern.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
@@ -41,22 +42,24 @@ void TraceConfigCategoryFilter::InitializeFromString(
     if (category.front() == '-') {
       // Excluded categories start with '-'.
       // Remove '-' from category string.
-      excluded_categories_.push_back(category.substr(1).as_string());
-    } else if (category.starts_with(TRACE_DISABLED_BY_DEFAULT(""))) {
-      disabled_categories_.push_back(category.as_string());
+      excluded_categories_.emplace_back(category.substr(1));
+    } else if (StartsWith(category, TRACE_DISABLED_BY_DEFAULT(""))) {
+      disabled_categories_.emplace_back(category);
     } else {
-      included_categories_.push_back(category.as_string());
+      included_categories_.emplace_back(category);
     }
   }
 }
 
-void TraceConfigCategoryFilter::InitializeFromConfigDict(
-    const DictionaryValue& dict) {
-  const ListValue* category_list = nullptr;
-  if (dict.GetList(kIncludedCategoriesParam, &category_list))
-    SetCategoriesFromIncludedList(*category_list);
-  if (dict.GetList(kExcludedCategoriesParam, &category_list))
-    SetCategoriesFromExcludedList(*category_list);
+void TraceConfigCategoryFilter::InitializeFromConfigDict(const Value& dict) {
+  const Value* included_category_list =
+      dict.FindListKey(kIncludedCategoriesParam);
+  if (included_category_list)
+    SetCategoriesFromIncludedList(*included_category_list);
+  const Value* excluded_category_list =
+      dict.FindListKey(kExcludedCategoriesParam);
+  if (excluded_category_list)
+    SetCategoriesFromExcludedList(*excluded_category_list);
 }
 
 bool TraceConfigCategoryFilter::IsCategoryGroupEnabled(
@@ -157,7 +160,7 @@ void TraceConfigCategoryFilter::Clear() {
   excluded_categories_.clear();
 }
 
-void TraceConfigCategoryFilter::ToDict(DictionaryValue* dict) const {
+void TraceConfigCategoryFilter::ToDict(Value* dict) const {
   StringList categories(included_categories_);
   categories.insert(categories.end(), disabled_categories_.begin(),
                     disabled_categories_.end());
@@ -174,12 +177,12 @@ std::string TraceConfigCategoryFilter::ToFilterString() const {
 }
 
 void TraceConfigCategoryFilter::SetCategoriesFromIncludedList(
-    const ListValue& included_list) {
+    const Value& included_list) {
   included_categories_.clear();
-  for (size_t i = 0; i < included_list.GetSize(); ++i) {
-    std::string category;
-    if (!included_list.GetString(i, &category))
+  for (const Value& item : included_list.GetList()) {
+    if (!item.is_string())
       continue;
+    const std::string& category = item.GetString();
     if (category.compare(0, strlen(TRACE_DISABLED_BY_DEFAULT("")),
                          TRACE_DISABLED_BY_DEFAULT("")) == 0) {
       disabled_categories_.push_back(category);
@@ -190,26 +193,25 @@ void TraceConfigCategoryFilter::SetCategoriesFromIncludedList(
 }
 
 void TraceConfigCategoryFilter::SetCategoriesFromExcludedList(
-    const ListValue& excluded_list) {
+    const Value& excluded_list) {
   excluded_categories_.clear();
-  for (size_t i = 0; i < excluded_list.GetSize(); ++i) {
-    std::string category;
-    if (excluded_list.GetString(i, &category))
-      excluded_categories_.push_back(category);
+  for (const Value& item : excluded_list.GetList()) {
+    if (item.is_string())
+      excluded_categories_.push_back(item.GetString());
   }
 }
 
 void TraceConfigCategoryFilter::AddCategoriesToDict(
     const StringList& categories,
     const char* param,
-    DictionaryValue* dict) const {
+    Value* dict) const {
   if (categories.empty())
     return;
 
-  auto list = std::make_unique<ListValue>();
+  std::vector<base::Value> list;
   for (const std::string& category : categories)
-    list->AppendString(category);
-  dict->Set(param, std::move(list));
+    list.emplace_back(category);
+  dict->SetKey(param, base::Value(std::move(list)));
 }
 
 void TraceConfigCategoryFilter::WriteCategoryFilterString(

@@ -8,10 +8,13 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "net/base/url_util.h"
+#include "remoting/proto/remoting/v1/network_traversal_messages.pb.h"
 
 namespace remoting {
 namespace protocol {
@@ -135,36 +138,40 @@ IceConfig IceConfig::Parse(const base::DictionaryValue& dictionary) {
   // Parse iceServers list and store them in |ice_config|.
   bool errors_found = false;
   ice_config.max_bitrate_kbps = 0;
-  for (const auto& server : *ice_servers_list) {
-    const base::DictionaryValue* server_dict;
-    if (!server.GetAsDictionary(&server_dict)) {
+  for (const auto& server : ice_servers_list->GetList()) {
+    if (!server.is_dict()) {
       errors_found = true;
       continue;
     }
 
-    const base::ListValue* urls_list = nullptr;
-    if (!server_dict->GetList("urls", &urls_list)) {
+    const base::Value* urls_list = server.FindListKey("urls");
+    if (!urls_list) {
       errors_found = true;
       continue;
     }
 
     std::string username;
-    server_dict->GetString("username", &username);
+    const std::string* maybe_username = server.FindStringKey("username");
+    if (maybe_username)
+      username = *maybe_username;
 
     std::string password;
-    server_dict->GetString("credential", &password);
+    const std::string* maybe_password = server.FindStringKey("credential");
+    if (maybe_password)
+      password = *maybe_password;
 
     // Compute the lowest specified bitrate of all the ICE servers.
     // Ideally the bitrate would be stored per ICE server, but it is not
     // possible (at the application level) to look up which particular
     // ICE server was used for the P2P connection.
-    double new_bitrate_double;
-    if (server_dict->GetDouble("maxRateKbps", &new_bitrate_double)) {
-      ice_config.max_bitrate_kbps = MinimumSpecified(
-          ice_config.max_bitrate_kbps, static_cast<int>(new_bitrate_double));
+    auto new_bitrate_double = server.FindDoubleKey("maxRateKbps");
+    if (new_bitrate_double.has_value()) {
+      ice_config.max_bitrate_kbps =
+          MinimumSpecified(ice_config.max_bitrate_kbps,
+                           static_cast<int>(new_bitrate_double.value()));
     }
 
-    for (const auto& url : *urls_list) {
+    for (const auto& url : urls_list->GetList()) {
       std::string url_str;
       if (!url.GetAsString(&url_str)) {
         errors_found = true;
@@ -203,20 +210,56 @@ IceConfig IceConfig::Parse(const std::string& config_json) {
     return IceConfig();
   }
 
-  base::DictionaryValue* dictionary = nullptr;
-  if (!json->GetAsDictionary(&dictionary)) {
+  if (!json->is_dict()) {
     return IceConfig();
   }
 
   // Handle the case when the config is wrapped in 'data', i.e. as {'data': {
   // 'iceServers': {...} }}.
-  base::DictionaryValue* data_dictionary = nullptr;
-  if (!dictionary->HasKey("iceServers") &&
-      dictionary->GetDictionary("data", &data_dictionary)) {
-    return Parse(*data_dictionary);
+  if (!json->FindKey("iceServers")) {
+    base::Value* data_dictionary = json->FindDictKey("data");
+    if (data_dictionary)
+      return Parse(base::Value::AsDictionaryValue(*data_dictionary));
   }
 
-  return Parse(*dictionary);
+  return Parse(base::Value::AsDictionaryValue(*json));
+}
+
+// static
+IceConfig IceConfig::Parse(const apis::v1::GetIceConfigResponse& config) {
+  IceConfig ice_config;
+
+  // Parse lifetimeDuration field.
+  base::TimeDelta lifetime =
+      base::TimeDelta::FromSeconds(config.lifetime_duration().seconds()) +
+      base::TimeDelta::FromNanoseconds(config.lifetime_duration().nanos());
+  ice_config.expiration_time = base::Time::Now() + lifetime;
+
+  // Parse iceServers list and store them in |ice_config|.
+  ice_config.max_bitrate_kbps = 0;
+  for (const auto& server : config.servers()) {
+    // Compute the lowest specified bitrate of all the ICE servers.
+    // Ideally the bitrate would be stored per ICE server, but it is not
+    // possible (at the application level) to look up which particular
+    // ICE server was used for the P2P connection.
+    ice_config.max_bitrate_kbps =
+        MinimumSpecified(ice_config.max_bitrate_kbps, server.max_rate_kbps());
+
+    for (const auto& url : server.urls()) {
+      if (!AddServerToConfig(url, server.username(), server.credential(),
+                             &ice_config)) {
+        LOG(ERROR) << "Invalid ICE server URL: " << url;
+      }
+    }
+  }
+
+  // If there are no STUN or no TURN servers then mark the config as expired so
+  // it will be refreshed for the next session.
+  if (ice_config.stun_servers.empty() || ice_config.turn_servers.empty()) {
+    ice_config.expiration_time = base::Time::Now();
+  }
+
+  return ice_config;
 }
 
 }  // namespace protocol

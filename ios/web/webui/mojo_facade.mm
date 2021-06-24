@@ -19,10 +19,10 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/values.h"
-#include "ios/web/public/web_state/web_state.h"
-#include "ios/web/public/web_thread.h"
+#include "ios/web/public/thread/web_thread.h"
+#import "ios/web/public/web_state.h"
+#include "mojo/public/cpp/bindings/generic_pending_receiver.h"
 #include "mojo/public/cpp/system/core.h"
-#include "services/service_manager/public/mojom/interface_provider.mojom.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -30,12 +30,8 @@
 
 namespace web {
 
-MojoFacade::MojoFacade(
-    service_manager::mojom::InterfaceProvider* interface_provider,
-    WebState* web_state)
-    : interface_provider_(interface_provider), web_state_(web_state) {
+MojoFacade::MojoFacade(WebState* web_state) : web_state_(web_state) {
   DCHECK_CURRENTLY_ON(WebThread::UI);
-  DCHECK(interface_provider_);
   DCHECK(web_state_);
 }
 
@@ -85,7 +81,6 @@ MojoFacade::MessageNameAndArguments MojoFacade::GetMessageNameAndArguments(
                                                     base::JSON_PARSE_RFC);
   CHECK(value_with_error.value);
   CHECK(value_with_error.value->is_dict());
-  CHECK_EQ(value_with_error.error_code, base::JSONReader::JSON_NO_ERROR);
 
   const std::string* name = value_with_error.value->FindStringKey("name");
   CHECK(name);
@@ -101,19 +96,17 @@ void MojoFacade::HandleMojoBindInterface(base::Value args) {
   const std::string* interface_name = args.FindStringKey("interfaceName");
   CHECK(interface_name);
 
-  base::Optional<int> raw_handle = args.FindIntKey("requestHandle");
+  absl::optional<int> raw_handle = args.FindIntKey("requestHandle");
   CHECK(raw_handle.has_value());
 
   mojo::ScopedMessagePipeHandle handle(
       static_cast<mojo::MessagePipeHandle>(*raw_handle));
-
-  // By design interface_provider.getInterface either succeeds or crashes, so
-  // check if interface name is a valid string is intentionally omitted.
-  interface_provider_->GetInterface(*interface_name, std::move(handle));
+  web_state_->GetInterfaceBinderForMainFrame()->BindInterface(
+      mojo::GenericPendingReceiver(*interface_name, std::move(handle)));
 }
 
 void MojoFacade::HandleMojoHandleClose(base::Value args) {
-  base::Optional<int> handle = args.FindIntKey("handle");
+  absl::optional<int> handle = args.FindIntKey("handle");
   CHECK(handle.has_value());
 
   mojo::Handle(*handle).Close();
@@ -134,7 +127,7 @@ base::Value MojoFacade::HandleMojoCreateMessagePipe(base::Value args) {
 }
 
 base::Value MojoFacade::HandleMojoHandleWriteMessage(base::Value args) {
-  base::Optional<int> handle = args.FindIntKey("handle");
+  absl::optional<int> handle = args.FindIntKey("handle");
   CHECK(handle.has_value());
 
   const base::Value* handles_list =
@@ -190,17 +183,14 @@ base::Value MojoFacade::HandleMojoHandleReadMessage(base::Value args) {
   base::Value result(base::Value::Type::DICTIONARY);
   if (mojo_result == MOJO_RESULT_OK) {
     base::Value handles_list(base::Value::Type::LIST);
-    base::Value::ListStorage& handles_list_storage = handles_list.GetList();
     for (uint32_t i = 0; i < handles.size(); i++) {
-      handles_list_storage.emplace_back(
-          static_cast<int>(handles[i].release().value()));
+      handles_list.Append(static_cast<int>(handles[i].release().value()));
     }
     result.SetKey("handles", std::move(handles_list));
 
     base::Value buffer(base::Value::Type::LIST);
-    base::Value::ListStorage& buffer_storage = buffer.GetList();
     for (uint32_t i = 0; i < bytes.size(); i++) {
-      buffer_storage.emplace_back(bytes[i]);
+      buffer.Append(bytes[i]);
     }
     result.SetKey("buffer", std::move(buffer));
   }
@@ -210,11 +200,11 @@ base::Value MojoFacade::HandleMojoHandleReadMessage(base::Value args) {
 }
 
 base::Value MojoFacade::HandleMojoHandleWatch(base::Value args) {
-  base::Optional<int> handle = args.FindIntKey("handle");
+  absl::optional<int> handle = args.FindIntKey("handle");
   CHECK(handle.has_value());
-  base::Optional<int> signals = args.FindIntKey("signals");
+  absl::optional<int> signals = args.FindIntKey("signals");
   CHECK(signals.has_value());
-  base::Optional<int> callback_id = args.FindIntKey("callbackId");
+  absl::optional<int> callback_id = args.FindIntKey("callbackId");
   CHECK(callback_id.has_value());
 
   mojo::SimpleWatcher::ReadyCallback callback = base::BindRepeating(
@@ -234,7 +224,7 @@ base::Value MojoFacade::HandleMojoHandleWatch(base::Value args) {
 }
 
 void MojoFacade::HandleMojoWatcherCancel(base::Value args) {
-  base::Optional<int> watch_id = args.FindIntKey("watchId");
+  absl::optional<int> watch_id = args.FindIntKey("watchId");
   CHECK(watch_id.has_value());
   watchers_.erase(*watch_id);
 }

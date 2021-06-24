@@ -19,7 +19,7 @@
 #include "components/storage_monitor/storage_info_utils.h"
 #include "components/storage_monitor/storage_monitor.h"
 #include "components/storage_monitor/test_storage_monitor.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "services/device/public/mojom/mtp_manager.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -31,8 +31,10 @@ namespace {
 const char kStorageWithInvalidInfo[] = "usb:2,3:11111";
 const char kStorageWithValidInfo[] = "usb:2,2:88888";
 const char kStorageVendor[] = "ExampleVendor";
+const char16_t kStorageVendor16[] = u"ExampleVendor";
 const uint32_t kStorageVendorId = 0x040a;
 const char kStorageProduct[] = "ExampleCamera";
+const char16_t kStorageProduct16[] = u"ExampleCamera";
 const uint32_t kStorageProductId = 0x0160;
 const uint32_t kStorageDeviceFlags = 0x0004000;
 const uint32_t kStorageType = 3;                         // Fixed RAM
@@ -106,13 +108,13 @@ class FakeMtpManagerClientChromeOS : public MtpManagerClientChromeOS {
 class MtpManagerClientChromeOSTest : public testing::Test {
  public:
   MtpManagerClientChromeOSTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP) {}
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP) {}
 
   ~MtpManagerClientChromeOSTest() override {}
 
  protected:
   void SetUp() override {
-    mock_storage_observer_.reset(new MockRemovableStorageObserver);
+    mock_storage_observer_ = std::make_unique<MockRemovableStorageObserver>();
     TestStorageMonitor* monitor = TestStorageMonitor::CreateAndInstall();
     mtp_device_observer_ = std::make_unique<FakeMtpManagerClientChromeOS>(
         monitor->receiver(), monitor->media_transfer_protocol_manager());
@@ -134,7 +136,7 @@ class MtpManagerClientChromeOSTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   std::unique_ptr<FakeMtpManagerClientChromeOS> mtp_device_observer_;
   std::unique_ptr<MockRemovableStorageObserver> mock_storage_observer_;
@@ -155,10 +157,8 @@ TEST_F(MtpManagerClientChromeOSTest, BasicAttachDetach) {
   EXPECT_EQ(device_id, observer().last_attached().device_id());
   EXPECT_EQ(GetDeviceLocationFromStorageName(kStorageWithValidInfo),
             observer().last_attached().location());
-  EXPECT_EQ(base::ASCIIToUTF16(kStorageVendor),
-            observer().last_attached().vendor_name());
-  EXPECT_EQ(base::ASCIIToUTF16(kStorageProduct),
-            observer().last_attached().model_name());
+  EXPECT_EQ(kStorageVendor16, observer().last_attached().vendor_name());
+  EXPECT_EQ(kStorageProduct16, observer().last_attached().model_name());
 
   // Detach the attached storage.
   mtp_device_observer()->MtpStorageDetached(kStorageWithValidInfo);

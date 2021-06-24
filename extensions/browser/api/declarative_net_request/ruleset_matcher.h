@@ -5,130 +5,84 @@
 #ifndef EXTENSIONS_BROWSER_API_DECLARATIVE_NET_REQUEST_RULESET_MATCHER_H_
 #define EXTENSIONS_BROWSER_API_DECLARATIVE_NET_REQUEST_RULESET_MATCHER_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
-#include "components/url_pattern_index/url_pattern_index.h"
+#include "extensions/browser/api/declarative_net_request/extension_url_pattern_index_matcher.h"
 #include "extensions/browser/api/declarative_net_request/flat/extension_ruleset_generated.h"
-#include "url/gurl.h"
-#include "url/origin.h"
+#include "extensions/browser/api/declarative_net_request/regex_rules_matcher.h"
+#include "extensions/common/api/declarative_net_request/constants.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
+namespace content {
+class NavigationHandle;
+class RenderFrameHost;
+}  // namespace content
 
 namespace extensions {
-struct WebRequestInfo;
 
 namespace declarative_net_request {
-class RulesetSource;
+
+struct RulesCountPair;
 
 namespace flat {
 struct ExtensionIndexedRuleset;
 struct UrlRuleMetadata;
 }  // namespace flat
 
-// Struct to hold parameters for a network request.
-struct RequestParams {
-  // |info| must outlive this instance.
-  explicit RequestParams(const WebRequestInfo& info);
-  RequestParams();
-
-  // This is a pointer to a GURL. Hence the GURL must outlive this struct.
-  const GURL* url = nullptr;
-  url::Origin first_party_origin;
-  url_pattern_index::flat::ElementType element_type;
-  bool is_third_party;
-};
-
 // RulesetMatcher encapsulates the Declarative Net Request API ruleset
-// corresponding to a single RulesetSource. This uses the url_pattern_index
-// component to achieve fast matching of network requests against declarative
-// rules. Since this class is immutable, it is thread-safe. In practice it is
-// accessed on the IO thread but created on a sequence where file IO is allowed.
+// corresponding to a single RulesetSource. Since this class is immutable, it is
+// thread-safe.
+// TODO(karandeepb): Rename to RulesetSourceMatcher since this no longer
+// inherits from RulesetMatcherBase.
 class RulesetMatcher {
  public:
-  // Describes the result of creating a RulesetMatcher instance.
-  // This is logged as part of UMA. Hence existing values should not be re-
-  // numbered or deleted. New values should be added before kLoadRulesetMax.
-  enum LoadRulesetResult {
-    // Ruleset loading succeeded.
-    kLoadSuccess = 0,
-
-    // Ruleset loading failed since the provided path did not exist.
-    kLoadErrorInvalidPath = 1,
-
-    // Ruleset loading failed due to a file read error.
-    kLoadErrorFileRead = 2,
-
-    // Ruleset loading failed due to a checksum mismatch.
-    kLoadErrorChecksumMismatch = 3,
-
-    // Ruleset loading failed due to version header mismatch.
-    // TODO(karandeepb): This should be split into two cases:
-    //    - When the indexed ruleset doesn't have the version header in the
-    //      correct format.
-    //    - When the indexed ruleset's version is not the same as that used by
-    //      Chrome.
-    kLoadErrorVersionMismatch = 4,
-
-    kLoadResultMax
-  };
-
-  // Factory function to create a verified RulesetMatcher for |source|. Must be
-  // called on a sequence where file IO is allowed. Returns kLoadSuccess on
-  // success along with the ruleset |matcher|.
-  static LoadRulesetResult CreateVerifiedMatcher(
-      const RulesetSource& source,
-      int expected_ruleset_checksum,
-      std::unique_ptr<RulesetMatcher>* matcher);
-
+  RulesetMatcher(std::string ruleset_data,
+                 RulesetID id,
+                 const ExtensionId& extension_id);
   ~RulesetMatcher();
 
-  // Returns whether the ruleset has a matching blocking rule.
-  bool HasMatchingBlockRule(const RequestParams& params) const {
-    return GetMatchingRule(params, flat::ActionIndex_block);
-  }
+  absl::optional<RequestAction> GetBeforeRequestAction(
+      const RequestParams& params) const;
 
-  // Returns whether the ruleset has a matching allow rule.
-  bool HasMatchingAllowRule(const RequestParams& params) const {
-    return GetMatchingRule(params, flat::ActionIndex_allow);
-  }
+  // Returns a list of actions corresponding to all matched
+  // modifyHeaders rules with priority greater than |min_priority| if specified.
+  std::vector<RequestAction> GetModifyHeadersActions(
+      const RequestParams& params,
+      absl::optional<uint64_t> min_priority) const;
 
-  // Returns whether the ruleset has a matching redirect rule. Populates
-  // |redirect_url| on returning true. |redirect_url| must not be null.
-  bool HasMatchingRedirectRule(const RequestParams& params,
-                               GURL* redirect_url) const;
+  bool IsExtraHeadersMatcher() const;
+  size_t GetRulesCount() const;
+  size_t GetRegexRulesCount() const;
+  RulesCountPair GetRulesCountPair() const;
+
+  void OnRenderFrameCreated(content::RenderFrameHost* host);
+  void OnRenderFrameDeleted(content::RenderFrameHost* host);
+  void OnDidFinishNavigation(content::NavigationHandle* navigation_handle);
 
   // ID of the ruleset. Each extension can have multiple rulesets with
   // their own unique ids.
-  size_t id() const { return id_; }
+  RulesetID id() const { return id_; }
 
-  // Priority of the ruleset. Each extension can have multiple rulesets with
-  // their own different priorities.
-  size_t priority() const { return priority_; }
+  // Returns the tracked highest priority matching allowsAllRequests action, if
+  // any, for |host|.
+  absl::optional<RequestAction> GetAllowlistedFrameActionForTesting(
+      content::RenderFrameHost* host) const;
 
  private:
-  using UrlPatternIndexMatcher = url_pattern_index::UrlPatternIndexMatcher;
-  using ExtensionMetadataList =
-      flatbuffers::Vector<flatbuffers::Offset<flat::UrlRuleMetadata>>;
-
-  explicit RulesetMatcher(std::string ruleset_data, size_t id, size_t priority);
-
-  const url_pattern_index::flat::UrlRule* GetMatchingRule(
-      const RequestParams& params,
-      flat::ActionIndex index,
-      UrlPatternIndexMatcher::FindRuleStrategy strategy =
-          UrlPatternIndexMatcher::FindRuleStrategy::kAny) const;
-
   const std::string ruleset_data_;
 
   const flat::ExtensionIndexedRuleset* const root_;
 
-  // UrlPatternIndexMatchers corresponding to entries in flat::ActionIndex.
-  const std::vector<UrlPatternIndexMatcher> matchers_;
+  const RulesetID id_;
 
-  const ExtensionMetadataList* const metadata_list_;
+  // Underlying matcher for filter-list style rules supported using the
+  // |url_pattern_index| component.
+  ExtensionUrlPatternIndexMatcher url_pattern_index_matcher_;
 
-  size_t id_;
-  size_t priority_;
+  // Underlying matcher for regex rules.
+  RegexRulesMatcher regex_matcher_;
 
   DISALLOW_COPY_AND_ASSIGN(RulesetMatcher);
 };

@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROMECAST_MEDIA_CDM_cast_cdm_H_
-#define CHROMECAST_MEDIA_CDM_cast_cdm_H_
+#ifndef CHROMECAST_MEDIA_CDM_CAST_CDM_H_
+#define CHROMECAST_MEDIA_CDM_CAST_CDM_H_
 
 #include <stdint.h>
 
@@ -17,17 +17,12 @@
 #include "base/sequenced_task_runner_helpers.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
-#include "chromecast/media/base/media_resource_tracker.h"
 #include "chromecast/media/cdm/cast_cdm_context.h"
+#include "chromecast/media/common/media_resource_tracker.h"
 #include "chromecast/public/media/cast_key_status.h"
-#include "media/base/cdm_context.h"
+#include "media/base/callback_registry.h"
 #include "media/base/content_decryption_module.h"
-#include "media/base/player_tracker.h"
 #include "media/cdm/json_web_key.h"
-
-namespace media {
-class PlayerTrackerImpl;
-}
 
 namespace chromecast {
 namespace media {
@@ -50,9 +45,8 @@ class CastCdm : public ::media::ContentDecryptionModule {
       const ::media::SessionKeysChangeCB& session_keys_change_cb,
       const ::media::SessionExpirationUpdateCB& session_expiration_update_cb);
 
-  int RegisterPlayer(const base::Closure& new_key_cb,
-                     const base::Closure& cdm_unset_cb);
-  void UnregisterPlayer(int registration_id);
+  std::unique_ptr<::media::CallbackRegistration> RegisterEventCB(
+      ::media::CdmContext::EventCB event_cb);
 
   // Returns the decryption context needed to decrypt frames encrypted with
   // |key_id|. Returns null if |key_id| is not available.
@@ -83,7 +77,8 @@ class CastCdm : public ::media::ContentDecryptionModule {
   void OnSessionMessage(const std::string& session_id,
                         const std::vector<uint8_t>& message,
                         ::media::CdmMessageType message_type);
-  void OnSessionClosed(const std::string& session_id);
+  void OnSessionClosed(const std::string& session_id,
+                       ::media::CdmSessionClosedReason reason);
   void OnSessionKeysChange(const std::string& session_id,
                            bool newly_usable_keys,
                            ::media::CdmKeysInfo keys_info);
@@ -103,9 +98,15 @@ class CastCdm : public ::media::ContentDecryptionModule {
   ::media::SessionKeysChangeCB session_keys_change_cb_;
   ::media::SessionExpirationUpdateCB session_expiration_update_cb_;
 
-  MediaResourceTracker* media_resource_tracker_;
-  std::unique_ptr<::media::PlayerTrackerImpl> player_tracker_impl_;
+  // Track the usage for hardware resource. nullptr means the implementation
+  // doesn't need hardware resource.
+  MediaResourceTracker* const media_resource_tracker_;
+  std::unique_ptr<MediaResourceTracker::ScopedUsage> media_resource_usage_;
+
   std::unique_ptr<CastCdmContext> cast_cdm_context_;
+
+  ::media::CallbackRegistry<::media::CdmContext::EventCB::RunType>
+      event_callbacks_;
 
   base::ThreadChecker thread_checker_;
 
@@ -115,4 +116,4 @@ class CastCdm : public ::media::ContentDecryptionModule {
 }  // namespace media
 }  // namespace chromecast
 
-#endif  // CHROMECAST_MEDIA_CDM_cast_cdm_H_
+#endif  // CHROMECAST_MEDIA_CDM_CAST_CDM_H_

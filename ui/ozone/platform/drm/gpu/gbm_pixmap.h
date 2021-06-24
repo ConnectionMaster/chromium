@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef UI_OZONE_PLATFORM_DRM_GPU_GBM_BUFFER_H_
-#define UI_OZONE_PLATFORM_DRM_GPU_GBM_BUFFER_H_
+#ifndef UI_OZONE_PLATFORM_DRM_GPU_GBM_PIXMAP_H_
+#define UI_OZONE_PLATFORM_DRM_GPU_GBM_PIXMAP_H_
 
 #include <memory>
 #include <vector>
 
+#include "ui/gfx/linux/gbm_buffer.h"
 #include "ui/gfx/native_pixmap.h"
-#include "ui/ozone/common/linux/gbm_buffer.h"
 #include "ui/ozone/platform/drm/gpu/drm_framebuffer.h"
 
 namespace ui {
@@ -27,9 +27,11 @@ class GbmPixmap : public gfx::NativePixmap {
   // NativePixmap:
   bool AreDmaBufFdsValid() const override;
   int GetDmaBufFd(size_t plane) const override;
-  int GetDmaBufPitch(size_t plane) const override;
-  int GetDmaBufOffset(size_t plane) const override;
-  uint64_t GetDmaBufModifier(size_t plane) const override;
+  uint32_t GetDmaBufPitch(size_t plane) const override;
+  size_t GetDmaBufOffset(size_t plane) const override;
+  size_t GetDmaBufPlaneSize(size_t plane) const override;
+  size_t GetNumberOfPlanes() const override;
+  uint64_t GetBufferFormatModifier() const override;
   gfx::BufferFormat GetBufferFormat() const override;
   gfx::Size GetBufferSize() const override;
   uint32_t GetUniqueId() const override;
@@ -39,10 +41,11 @@ class GbmPixmap : public gfx::NativePixmap {
                             const gfx::Rect& display_bounds,
                             const gfx::RectF& crop_rect,
                             bool enable_blend,
-                            std::unique_ptr<gfx::GpuFence> gpu_fence) override;
+                            std::vector<gfx::GpuFence> acquire_fences,
+                            std::vector<gfx::GpuFence> release_fences) override;
   gfx::NativePixmapHandle ExportHandle() override;
 
-  GbmBuffer* buffer() { return buffer_.get(); }
+  GbmBuffer* buffer() const { return buffer_.get(); }
   const scoped_refptr<DrmFramebuffer>& framebuffer() const {
     return framebuffer_;
   }
@@ -59,4 +62,4 @@ class GbmPixmap : public gfx::NativePixmap {
 
 }  // namespace ui
 
-#endif  // UI_OZONE_PLATFORM_DRM_GPU_GBM_BUFFER_H_
+#endif  // UI_OZONE_PLATFORM_DRM_GPU_GBM_PIXMAP_H_

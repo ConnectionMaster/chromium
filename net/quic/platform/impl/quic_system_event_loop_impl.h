@@ -5,9 +5,10 @@
 #ifndef NET_QUIC_PLATFORM_IMPL_QUIC_SYSTEM_EVENT_LOOP_IMPL_H_
 #define NET_QUIC_PLATFORM_IMPL_QUIC_SYSTEM_EVENT_LOOP_IMPL_H_
 
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/single_thread_task_executor.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 
 inline void QuicRunSystemEventLoopIterationImpl() {
   base::RunLoop().RunUntilIdle();
@@ -16,11 +17,11 @@ inline void QuicRunSystemEventLoopIterationImpl() {
 class QuicSystemEventLoopImpl {
  public:
   QuicSystemEventLoopImpl(std::string context_name) {
-    base::ThreadPool::CreateAndStartWithDefaultParams(context_name);
+    base::ThreadPoolInstance::CreateAndStartWithDefaultParams(context_name);
   }
 
  private:
-  base::MessageLoopForIO message_loop_;
+  base::SingleThreadTaskExecutor io_task_executor_{base::MessagePumpType::IO};
 };
 
 #endif  // NET_QUIC_PLATFORM_IMPL_QUIC_SYSTEM_EVENT_LOOP_IMPL_H_

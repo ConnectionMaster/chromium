@@ -2,7 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import {addEntries, ENTRIES, getCaller, pending, repeatUntil, RootPath, TestEntryInfo} from '../test_util.js';
+import {testcase} from '../testcase.js';
+
+import {openNewWindow, remoteCall, setupAndWaitUntilReady} from './background.js';
+import {BASIC_DRIVE_ENTRY_SET, BASIC_LOCAL_ENTRY_SET} from './test_data.js';
 
 /**
  * Shows the grid view and checks the label texts of entries.
@@ -21,6 +25,13 @@ async function showGridView(rootPath, expectedSet) {
 
   // Open Files app on |rootPath|.
   const appId = await setupAndWaitUntilReady(rootPath);
+
+  // Dismiss the Drive banners so Grid View can display the all entries.
+  if (rootPath === RootPath.DRIVE) {
+    await remoteCall.waitAndClickElement(
+        appId, '.drive-welcome-wrapper .banner-close');
+    await remoteCall.waitAndClickElement(appId, '#offline-learn-more');
+  }
 
   // Click the grid view button.
   await remoteCall.waitForElement(appId, '#view-button');
@@ -41,6 +52,7 @@ async function showGridView(rootPath, expectedSet) {
         caller, 'Failed to compare the grid lables, expected: %j, actual %j.',
         expectedLabels, actualLabels);
   });
+  return appId;
 }
 
 /**
@@ -55,4 +67,118 @@ testcase.showGridViewDownloads = () => {
  */
 testcase.showGridViewDrive = () => {
   return showGridView(RootPath.DRIVE, BASIC_DRIVE_ENTRY_SET);
+};
+
+/**
+ * Tests to view-button switches to thumbnail (grid) view and clicking again
+ * switches back to detail (file list) view.
+ */
+testcase.showGridViewButtonSwitches = async () => {
+  const appId = await showGridView(RootPath.DOWNLOADS, BASIC_LOCAL_ENTRY_SET);
+
+  // Check that a11y message for switching to grid view.
+  let a11yMessages =
+      await remoteCall.callRemoteTestUtil('getA11yAnnounces', appId, []);
+  chrome.test.assertEq(1, a11yMessages.length, 'Missing a11y message');
+  chrome.test.assertEq(
+      'File list has changed to thumbnail view.', a11yMessages[0]);
+
+  // Click view-button again to switch to detail view.
+  await remoteCall.waitAndClickElement(appId, '#view-button');
+
+  // Wait for detail-view to be visible and grid to be hidden.
+  await remoteCall.waitForElement(appId, '#detail-table:not([hidden])');
+  await remoteCall.waitForElement(appId, 'grid[hidden]');
+
+  // Check that a11y message for switching to list view.
+  a11yMessages =
+      await remoteCall.callRemoteTestUtil('getA11yAnnounces', appId, []);
+  chrome.test.assertEq(2, a11yMessages.length, 'Missing a11y message');
+  chrome.test.assertEq('File list has changed to list view.', a11yMessages[1]);
+};
+
+/**
+ * Tests that selecting/de-selecting files with keyboard produces a11y
+ * messages.
+ */
+testcase.showGridViewKeyboardSelectionA11y = async () => {
+  const isGridView = true;
+  return testcase.fileListKeyboardSelectionA11y(isGridView);
+};
+
+/**
+ * Tests that selecting/de-selecting files with mouse produces a11y messages.
+ */
+testcase.showGridViewMouseSelectionA11y = async () => {
+  const isGridView = true;
+  return testcase.fileListMouseSelectionA11y(isGridView);
+};
+
+/**
+ * Tests that Grid View shows "Folders" and "Files" titles before folders and
+ * files respectively.
+ */
+testcase.showGridViewTitles = async () => {
+  const appId = await showGridView(RootPath.DOWNLOADS, BASIC_LOCAL_ENTRY_SET);
+
+  const titles = await remoteCall.callRemoteTestUtil(
+      'queryAllElements', appId, ['.thumbnail-grid .grid-title']);
+  chrome.test.assertEq(2, titles.length, 'Grid view should show 2 titles');
+  const titleTexts = titles.map((title) => title.text).sort();
+  chrome.test.checkDeepEq(['Files', 'Folders'], titleTexts);
+};
+
+/**
+ * Tests that Grid View shows DocumentsProvider thumbnails.
+ */
+testcase.showGridViewDocumentsProvider = async () => {
+  const caller = getCaller();
+
+  // Open Files app.
+  const appId = await openNewWindow(RootPath.DOWNLOADS);
+
+  // Add files to the DocumentsProvider volume.
+  await addEntries(['documents_provider'], BASIC_LOCAL_ENTRY_SET);
+
+  // Wait for the DocumentsProvider volume to mount.
+  const documentsProviderVolumeQuery =
+      '[has-children="true"] [volume-type-icon="documents_provider"]';
+  await remoteCall.waitForElement(appId, documentsProviderVolumeQuery);
+
+  // Click to open the DocumentsProvider volume.
+  chrome.test.assertTrue(
+      !!await remoteCall.callRemoteTestUtil(
+          'fakeMouseClick', appId, [documentsProviderVolumeQuery]),
+      'fakeMouseClick failed');
+
+  // Click the grid view button.
+  await remoteCall.waitForElement(appId, '#view-button');
+  await remoteCall.callRemoteTestUtil(
+      'fakeEvent', appId, ['#view-button', 'click']);
+
+  // Wait for the grid view to load.
+  await remoteCall.callRemoteTestUtil(
+      'queryAllElements', appId, ['grid:not([hidden])']);
+
+  // Check that all DocumentsProvider thumbnails are loaded where expected.
+  await repeatUntil(async () => {
+    for (const [fname, hasThumbnail] of [
+             [ENTRIES.hello.targetPath, false],
+             [ENTRIES.world.targetPath, true],
+             [ENTRIES.desktop.targetPath, true],
+             [ENTRIES.beautiful.targetPath, false],
+             [ENTRIES.photos.targetPath, false],
+    ]) {
+      const item = await remoteCall.waitForElement(
+          appId, `#file-list [file-name="${fname}"]`);
+      const thumbnailLoaded =
+          item.attributes['class'].split(/\s+/).includes('thumbnail-loaded');
+      if (thumbnailLoaded !== hasThumbnail) {
+        return pending(
+            caller, 'Unexpected thumbnail state for %j: %j', fname,
+            hasThumbnail);
+      }
+    }
+    return true;
+  });
 };

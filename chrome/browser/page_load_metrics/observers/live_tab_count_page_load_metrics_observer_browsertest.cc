@@ -9,18 +9,19 @@
 #include <string>
 
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/metrics/live_tab_count_metrics.h"
+#include "chrome/browser/metrics/tab_count_metrics.h"
 #include "chrome/browser/page_load_metrics/observers/histogram_suffixes.h"
-#include "chrome/browser/page_load_metrics/page_load_metrics_test_waiter.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/live_tab_count_metrics/live_tab_count_metrics.h"
+#include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
+#include "components/tab_count_metrics/tab_count_metrics.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using BucketCountArray =
-    std::array<size_t, live_tab_count_metrics::kNumLiveTabCountBuckets>;
+    std::array<size_t, tab_count_metrics::kNumTabCountBuckets>;
 using page_load_metrics::PageLoadMetricsTestWaiter;
 using TimingField = page_load_metrics::PageLoadMetricsTestWaiter::TimingField;
 
@@ -49,7 +50,8 @@ class LiveTabCountPageLoadMetricsBrowserTest : public InProcessBrowserTest {
         std::string(suffix);
     for (size_t bucket = 0; bucket < expected_counts.size(); bucket++) {
       histogram_tester_.ExpectTotalCount(
-          live_tab_count_metrics::HistogramName(histogram_prefix, bucket),
+          tab_count_metrics::HistogramName(histogram_prefix,
+                                           /* live_tabs_only = */ true, bucket),
           expected_counts[bucket]);
     }
   }
@@ -65,16 +67,14 @@ IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
 
   auto waiter = CreatePageLoadMetricsTestWaiterForForegroundTab();
   waiter->AddPageExpectation(TimingField::kFirstContentfulPaint);
-  waiter->AddPageExpectation(TimingField::kFirstMeaningfulPaint);
 
   ui_test_utils::NavigateToURL(browser(), GetTestURL());
   waiter->Wait();
 
-  size_t live_tab_count = live_tab_count_metrics::LiveTabCount();
+  size_t live_tab_count = tab_count_metrics::LiveTabCount();
   EXPECT_EQ(live_tab_count, 1u);
-  ++counts[live_tab_count_metrics::BucketForLiveTabCount(live_tab_count)];
+  ++counts[tab_count_metrics::BucketForTabCount(live_tab_count)];
   ValidateHistograms(internal::kHistogramFirstContentfulPaintSuffix, counts);
-  ValidateHistograms(internal::kHistogramFirstMeaningfulPaintSuffix, counts);
 }
 
 IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
@@ -89,7 +89,6 @@ IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
   EXPECT_TRUE(web_contents);
   auto waiter = std::make_unique<PageLoadMetricsTestWaiter>(web_contents);
   waiter->AddPageExpectation(TimingField::kFirstContentfulPaint);
-  waiter->AddPageExpectation(TimingField::kFirstMeaningfulPaint);
 
   // Switch tabs so the paint events occur.
   browser()->tab_strip_model()->ActivateTabAt(
@@ -99,7 +98,6 @@ IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
 
   BucketCountArray counts = {0};
   ValidateHistograms(internal::kHistogramFirstContentfulPaintSuffix, counts);
-  ValidateHistograms(internal::kHistogramFirstMeaningfulPaintSuffix, counts);
 }
 
 IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
@@ -112,16 +110,14 @@ IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
   // Load the first tab separately, without inserting a new tab.
   auto waiter = CreatePageLoadMetricsTestWaiterForForegroundTab();
   waiter->AddPageExpectation(TimingField::kFirstContentfulPaint);
-  waiter->AddPageExpectation(TimingField::kFirstMeaningfulPaint);
 
   ui_test_utils::NavigateToURL(browser(), GetTestURL());
   waiter->Wait();
 
-  size_t live_tab_count = live_tab_count_metrics::LiveTabCount();
+  size_t live_tab_count = tab_count_metrics::LiveTabCount();
   EXPECT_EQ(live_tab_count, 1u);
-  ++counts[live_tab_count_metrics::BucketForLiveTabCount(live_tab_count)];
+  ++counts[tab_count_metrics::BucketForTabCount(live_tab_count)];
   ValidateHistograms(internal::kHistogramFirstContentfulPaintSuffix, counts);
-  ValidateHistograms(internal::kHistogramFirstMeaningfulPaintSuffix, counts);
 
   // Insert new tabs for the rest.
   for (size_t tab = 1; tab < num_test_tabs; tab++) {
@@ -133,17 +129,15 @@ IN_PROC_BROWSER_TEST_F(LiveTabCountPageLoadMetricsBrowserTest,
 
     auto* web_contents = browser()->tab_strip_model()->GetWebContentsAt(tab);
     EXPECT_TRUE(web_contents);
-    waiter.reset(new PageLoadMetricsTestWaiter(web_contents));
+    waiter = std::make_unique<PageLoadMetricsTestWaiter>(web_contents);
     waiter->AddPageExpectation(TimingField::kFirstContentfulPaint);
-    waiter->AddPageExpectation(TimingField::kFirstMeaningfulPaint);
 
     waiter->Wait();
 
-    live_tab_count = live_tab_count_metrics::LiveTabCount();
+    live_tab_count = tab_count_metrics::LiveTabCount();
     EXPECT_EQ(live_tab_count, tab + 1);
-    ++counts[live_tab_count_metrics::BucketForLiveTabCount(live_tab_count)];
+    ++counts[tab_count_metrics::BucketForTabCount(live_tab_count)];
 
     ValidateHistograms(internal::kHistogramFirstContentfulPaintSuffix, counts);
-    ValidateHistograms(internal::kHistogramFirstMeaningfulPaintSuffix, counts);
   }
 }

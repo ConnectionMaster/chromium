@@ -13,19 +13,31 @@
 #include "content/browser/android/render_widget_host_connector.h"
 #include "content/common/content_export.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace ui {
+
+namespace mojom {
+class TextInputState;
+}  // namespace mojom
 
 struct ImeTextSpan;
 
 }  // namespace ui
+
+namespace blink {
+namespace mojom {
+
+class FrameWidgetInputHandler;
+
+}  // namespace mojom
+}  // namespace blink
 
 namespace content {
 
 class RenderFrameHost;
 class RenderWidgetHostImpl;
 class RenderWidgetHostViewAndroid;
-struct TextInputState;
 
 // This class is in charge of dispatching key events from the java side
 // and forward to renderer along with input method results via
@@ -93,6 +105,7 @@ class CONTENT_EXPORT ImeAdapterAndroid : public RenderWidgetHostConnector {
   void UpdateFrameInfo(const gfx::SelectionBound& selection_start,
                        float dip_scale,
                        float content_offset_ypix);
+  void OnRenderFrameMetadataChangedAfterActivation(const gfx::SizeF& new_size);
 
   // Called from native -> java
   void CancelComposition();
@@ -104,8 +117,7 @@ class CONTENT_EXPORT ImeAdapterAndroid : public RenderWidgetHostConnector {
     return java_ime_adapter_.get(env);
   }
 
-  void UpdateState(const TextInputState& state);
-  void UpdateAfterViewSizeChanged();
+  void UpdateState(const ui::mojom::TextInputState& state);
   void UpdateOnTouchDown();
 
   void AdvanceFocusInForm(JNIEnv*,
@@ -113,13 +125,17 @@ class CONTENT_EXPORT ImeAdapterAndroid : public RenderWidgetHostConnector {
                           jint);
 
  private:
+  bool ShouldVirtualKeyboardOverlayContent();
   RenderWidgetHostImpl* GetFocusedWidget();
   RenderFrameHost* GetFocusedFrame();
+  blink::mojom::FrameWidgetInputHandler* GetFocusedFrameWidgetInputHandler();
   std::vector<ui::ImeTextSpan> GetImeTextSpansFromJava(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       const base::android::JavaParamRef<jobject>& text,
-      const base::string16& text16);
+      const std::u16string& text16);
+
+  gfx::SizeF old_viewport_size_;
 
   // Current RenderWidgetHostView connected to this instance. Can be null.
   RenderWidgetHostViewAndroid* rwhva_;

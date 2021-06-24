@@ -17,7 +17,6 @@
 #include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
 #include "chrome/browser/extensions/api/tabs/tabs_constants.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
@@ -33,7 +32,6 @@
 #include "content/public/common/child_process_host.h"
 #include "content/public/common/result_codes.h"
 #include "extensions/common/error_utils.h"
-#include "third_party/blink/public/platform/web_cache.h"
 
 namespace extensions {
 
@@ -65,7 +63,7 @@ int64_t GetRefreshTypesForProcessOptionalData() {
 }
 
 std::unique_ptr<api::processes::Cache> CreateCacheData(
-    const blink::WebCache::ResourceTypeStat& stat) {
+    const blink::WebCacheResourceTypeStat& stat) {
   std::unique_ptr<api::processes::Cache> cache(new api::processes::Cache());
   cache->size = static_cast<double>(stat.size);
   cache->live_size = static_cast<double>(stat.size);
@@ -88,11 +86,14 @@ api::processes::ProcessType GetProcessType(
     case task_manager::Task::PLUGIN:
       return api::processes::PROCESS_TYPE_PLUGIN;
 
-    case task_manager::Task::WORKER:
-      return api::processes::PROCESS_TYPE_WORKER;
-
     case task_manager::Task::NACL:
       return api::processes::PROCESS_TYPE_NACL;
+
+    // TODO(https://crbug.com/1048715): Assign a different process type for each
+    //                                  worker type.
+    case task_manager::Task::DEDICATED_WORKER:
+    case task_manager::Task::SHARED_WORKER:
+      return api::processes::PROCESS_TYPE_WORKER;
 
     case task_manager::Task::SERVICE_WORKER:
       return api::processes::PROCESS_TYPE_SERVICE_WORKER;
@@ -106,8 +107,12 @@ api::processes::ProcessType GetProcessType(
     case task_manager::Task::UNKNOWN:
     case task_manager::Task::ARC:
     case task_manager::Task::CROSTINI:
+    case task_manager::Task::PLUGIN_VM:
     case task_manager::Task::SANDBOX_HELPER:
     case task_manager::Task::ZYGOTE:
+    // TODO(crbug.com/1186464): Do not expose lacros tasks for now. Defer
+    // the decision until further discussion is made.
+    case task_manager::Task::LACROS:
       return api::processes::PROCESS_TYPE_OTHER;
   }
 
@@ -140,7 +145,7 @@ void FillProcessData(
     task_info.title = base::UTF16ToUTF8(task_manager->GetTitle(task_id));
     const SessionID tab_id = task_manager->GetTabId(task_id);
     if (tab_id.is_valid())
-      task_info.tab_id.reset(new int(tab_id.id()));
+      task_info.tab_id = std::make_unique<int>(tab_id.id());
 
     out_process->tasks.push_back(std::move(task_info));
   }
@@ -149,26 +154,26 @@ void FillProcessData(
   if (!include_optional)
     return;
 
-  out_process->cpu.reset(
-      new double(task_manager->GetPlatformIndependentCPUUsage(id)));
-  out_process->network.reset(new double(static_cast<double>(
-      task_manager->GetProcessTotalNetworkUsage(id))));
+  const double cpu_usage = task_manager->GetPlatformIndependentCPUUsage(id);
+  if (!std::isnan(cpu_usage))
+    out_process->cpu = std::make_unique<double>(cpu_usage);
+
+  const int64_t network_usage = task_manager->GetProcessTotalNetworkUsage(id);
+  if (network_usage != -1)
+    out_process->network = std::make_unique<double>(network_usage);
 
   int64_t v8_allocated = 0;
   int64_t v8_used = 0;
   if (task_manager->GetV8Memory(id, &v8_allocated, &v8_used)) {
-    out_process->js_memory_allocated.reset(new double(static_cast<double>(
-        v8_allocated)));
-    out_process->js_memory_used.reset(new double(static_cast<double>(v8_used)));
+    out_process->js_memory_allocated = std::make_unique<double>(v8_allocated);
+    out_process->js_memory_used = std::make_unique<double>(v8_used);
   }
 
   const int64_t sqlite_bytes = task_manager->GetSqliteMemoryUsed(id);
-  if (sqlite_bytes != -1) {
-    out_process->sqlite_memory.reset(new double(static_cast<double>(
-        sqlite_bytes)));
-  }
+  if (sqlite_bytes != -1)
+    out_process->sqlite_memory = std::make_unique<double>(sqlite_bytes);
 
-  blink::WebCache::ResourceTypeStats cache_stats;
+  blink::WebCacheResourceTypeStats cache_stats;
   if (task_manager->GetWebCacheStats(id, &cache_stats)) {
     out_process->image_cache = CreateCacheData(cache_stats.images);
     out_process->script_cache = CreateCacheData(cache_stats.scripts);
@@ -337,7 +342,7 @@ void ProcessesEventRouter::OnTaskUnresponsive(task_manager::TaskId id) {
 void ProcessesEventRouter::DispatchEvent(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    std::unique_ptr<base::ListValue> event_args) const {
+    std::vector<base::Value> event_args) const {
   EventRouter* event_router = EventRouter::Get(browser_context_);
   if (event_router) {
     std::unique_ptr<Event> event(
@@ -445,7 +450,8 @@ void ProcessesAPI::OnListenerRemoved(const EventListenerInfo& details) {
 
 ProcessesEventRouter* ProcessesAPI::processes_event_router() {
   if (!processes_event_router_.get())
-    processes_event_router_.reset(new ProcessesEventRouter(browser_context_));
+    processes_event_router_ =
+        std::make_unique<ProcessesEventRouter>(browser_context_);
   return processes_event_router_.get();
 }
 
@@ -509,11 +515,11 @@ ExtensionFunction::ResponseAction ProcessesTerminateFunction::Run() {
   // This could be a non-renderer child process like a plugin or a nacl
   // process. Try to get its handle from the BrowserChildProcessHost on the
   // IO thread.
-  base::PostTaskWithTraitsAndReplyWithResult(
-      FROM_HERE, {content::BrowserThread::IO},
-      base::Bind(&ProcessesTerminateFunction::GetProcessHandleOnIO, this,
-                 child_process_host_id_),
-      base::Bind(&ProcessesTerminateFunction::OnProcessHandleOnUI, this));
+  content::GetIOThreadTaskRunner({})->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(&ProcessesTerminateFunction::GetProcessHandleOnIO, this,
+                     child_process_host_id_),
+      base::BindOnce(&ProcessesTerminateFunction::OnProcessHandleOnUI, this));
 
   // Promise to respond later.
   return RespondLater();

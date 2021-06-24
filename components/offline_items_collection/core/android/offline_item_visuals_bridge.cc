@@ -4,8 +4,8 @@
 
 #include "components/offline_items_collection/core/android/offline_item_visuals_bridge.h"
 
+#include "components/offline_items_collection/core/jni_headers/OfflineItemVisualsBridge_jni.h"
 #include "components/offline_items_collection/core/offline_item.h"
-#include "jni/OfflineItemVisualsBridge_jni.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image.h"
 
@@ -24,7 +24,7 @@ ScopedJavaLocalRef<jobject> OfflineItemVisualsBridge::CreateOfflineItemVisuals(
   base::android::ScopedJavaLocalRef<jobject> j_icon;
 
   if (!visuals->icon.IsEmpty())
-    j_icon = gfx::ConvertToJavaBitmap(visuals->icon.ToSkBitmap());
+    j_icon = gfx::ConvertToJavaBitmap(*visuals->icon.ToSkBitmap());
 
   return Java_OfflineItemVisualsBridge_createOfflineItemVisuals(env, j_icon);
 }

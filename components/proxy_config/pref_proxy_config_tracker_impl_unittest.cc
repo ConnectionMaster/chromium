@@ -9,7 +9,7 @@
 
 #include "base/files/file_path.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -82,7 +82,7 @@ class PrefProxyConfigTrackerImplTest : public testing::Test {
   // specified initial config availability.
   void InitConfigService(net::ProxyConfigService::ConfigAvailability
                              delegate_config_availability) {
-    pref_service_.reset(new TestingPrefServiceSimple());
+    pref_service_ = std::make_unique<TestingPrefServiceSimple>();
     PrefProxyConfigTrackerImpl::RegisterPrefs(pref_service_->registry());
     net::ProxyConfig proxy_config;
     proxy_config.set_pac_url(GURL(kFixedPacUrl));
@@ -90,8 +90,8 @@ class PrefProxyConfigTrackerImplTest : public testing::Test {
         proxy_config, TRAFFIC_ANNOTATION_FOR_TESTS);
     delegate_service_ =
         new TestProxyConfigService(fixed_config_, delegate_config_availability);
-    proxy_config_tracker_.reset(new PrefProxyConfigTrackerImpl(
-        pref_service_.get(), base::ThreadTaskRunnerHandle::Get()));
+    proxy_config_tracker_ = std::make_unique<PrefProxyConfigTrackerImpl>(
+        pref_service_.get(), base::ThreadTaskRunnerHandle::Get());
     proxy_config_service_ =
         proxy_config_tracker_->CreateTrackingProxyConfigService(
             std::unique_ptr<net::ProxyConfigService>(delegate_service_));
@@ -104,7 +104,7 @@ class PrefProxyConfigTrackerImplTest : public testing::Test {
     proxy_config_service_.reset();
   }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<TestingPrefServiceSimple> pref_service_;
   TestProxyConfigService* delegate_service_; // weak
   std::unique_ptr<net::ProxyConfigService> proxy_config_service_;

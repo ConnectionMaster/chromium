@@ -6,13 +6,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include <memory>
 #include <utility>
 
+#include "base/cxx17_backports.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/test_file_util.h"
 #include "build/build_config.h"
@@ -61,7 +62,7 @@ class BaseFileTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    base_file_.reset(new BaseFile(DownloadItem::kInvalidId));
+    base_file_ = std::make_unique<BaseFile>(DownloadItem::kInvalidId);
   }
 
   void TearDown() override {
@@ -140,13 +141,17 @@ class BaseFileTest : public testing::Test {
   void CreateFileWithName(const base::FilePath& file_name) {
     EXPECT_NE(base::FilePath::StringType(), file_name.value());
     BaseFile duplicate_file(download::DownloadItem::kInvalidId);
-    EXPECT_EQ(DOWNLOAD_INTERRUPT_REASON_NONE,
-              duplicate_file.Initialize(file_name, temp_dir_.GetPath(),
-                                        base::File(), 0, std::string(),
-                                        std::unique_ptr<crypto::SecureHash>(),
-                                        false, &kTestDataBytesWasted));
+    DownloadInterruptReason reason = duplicate_file.Initialize(
+        file_name, temp_dir_.GetPath(), base::File(), 0, std::string(),
+        std::unique_ptr<crypto::SecureHash>(), false, &kTestDataBytesWasted);
+#if defined(OS_WIN)
+    EXPECT_EQ(reason, DOWNLOAD_INTERRUPT_REASON_FILE_FAILED);
+#else
+    EXPECT_EQ(reason, DOWNLOAD_INTERRUPT_REASON_NONE);
     // Write something into it.
     duplicate_file.AppendDataToFile(kTestData4, kTestDataLength4);
+#endif  // defined(OS_WIN)
+
     // Detach the file so it isn't deleted on destruction of |duplicate_file|.
     duplicate_file.Detach();
   }
@@ -411,7 +416,7 @@ TEST_F(BaseFileTest, WriteWithError) {
   // Pass a file handle which was opened without the WRITE flag.
   // This should result in an error when writing.
   base::File file(path, base::File::FLAG_OPEN_ALWAYS | base::File::FLAG_READ);
-  base_file_.reset(new BaseFile(download::DownloadItem::kInvalidId));
+  base_file_ = std::make_unique<BaseFile>(download::DownloadItem::kInvalidId);
   EXPECT_EQ(DOWNLOAD_INTERRUPT_REASON_NONE,
             base_file_->Initialize(path, base::FilePath(), std::move(file), 0,
                                    std::string(),
@@ -453,7 +458,7 @@ TEST_F(BaseFileTest, AppendToBaseFile) {
   set_expected_data(kTestData4);
 
   // Use the file we've just created.
-  base_file_.reset(new BaseFile(download::DownloadItem::kInvalidId));
+  base_file_ = std::make_unique<BaseFile>(download::DownloadItem::kInvalidId);
   ASSERT_EQ(
       DOWNLOAD_INTERRUPT_REASON_NONE,
       base_file_->Initialize(existing_file_name, base::FilePath(), base::File(),
@@ -484,7 +489,7 @@ TEST_F(BaseFileTest, ReadonlyBaseFile) {
   EXPECT_TRUE(base::MakeFileUnwritable(readonly_file_name));
 
   // Try to overwrite it.
-  base_file_.reset(new BaseFile(download::DownloadItem::kInvalidId));
+  base_file_ = std::make_unique<BaseFile>(download::DownloadItem::kInvalidId);
   EXPECT_EQ(DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED,
             base_file_->Initialize(readonly_file_name, base::FilePath(),
                                    base::File(), 0, std::string(),
@@ -755,6 +760,27 @@ TEST_F(BaseFileTest, WriteDataToSparseFile) {
   base_file_->WriteDataToFile(kTestDataLength1, kTestData2, kTestDataLength2);
   set_expected_data(contents + kTestData2 + kTestData3);
   ExpectHashValue(kHashOfTestData1To3, base_file_->Finish());
+}
+
+// Test that validating data in a file works.
+TEST_F(BaseFileTest, ValidateDataInFile) {
+  ASSERT_TRUE(InitializeFile());
+  ASSERT_TRUE(AppendDataToFile(kTestData1));
+
+  ASSERT_TRUE(base_file_->ValidateDataInFile(0, "Let's", 5));
+  ASSERT_TRUE(base_file_->ValidateDataInFile(1, "et's ", 5));
+  ASSERT_TRUE(base_file_->ValidateDataInFile(
+      0, "Let's write some data to the file!\n", kTestDataLength1));
+  ASSERT_TRUE(base_file_->ValidateDataInFile(kTestDataLength1 - 1, "\n", 1));
+  ASSERT_FALSE(base_file_->ValidateDataInFile(kTestDataLength1, "\n", 1));
+  ASSERT_FALSE(base_file_->ValidateDataInFile(kTestDataLength1 - 1, "y\n", 2));
+  ASSERT_FALSE(base_file_->ValidateDataInFile(0, "et's ", 5));
+  ASSERT_FALSE(base_file_->ValidateDataInFile(
+      0, "Let's write some data to the file1\n", kTestDataLength1));
+  ASSERT_FALSE(base_file_->ValidateDataInFile(
+      0, "Let's write some data to the file1!\n", kTestDataLength1 + 1));
+
+  base_file_->Finish();
 }
 
 }  // namespace download

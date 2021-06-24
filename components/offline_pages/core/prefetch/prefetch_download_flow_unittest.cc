@@ -4,6 +4,7 @@
 
 #include "components/offline_pages/core/prefetch/prefetch_downloader_impl.h"
 
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -40,10 +41,12 @@ class PrefetchDownloadFlowTest : public PrefetchTaskTestBase {
   void SetUp() override {
     PrefetchTaskTestBase::SetUp();
 
-    prefetch_service_taco_.reset(new PrefetchServiceTestTaco);
+    prefetch_service_taco_ = std::make_unique<PrefetchServiceTestTaco>();
     prefetch_service_taco_->SetPrefService(std::move(prefs_));
     prefetch_prefs::SetEnabledByServer(prefetch_service_taco_->pref_service(),
                                        true);
+    prefetch_prefs::SetCachedPrefetchGCMToken(
+        prefetch_service_taco_->pref_service(), "dummy_gcm_token");
 
     auto downloader = std::make_unique<PrefetchDownloaderImpl>(
         &download_service_, kTestChannel,
@@ -56,8 +59,6 @@ class PrefetchDownloadFlowTest : public PrefetchTaskTestBase {
     prefetch_service_taco_->SetPrefetchStore(store_util()->ReleaseStore());
     prefetch_service_taco_->SetPrefetchDownloader(std::move(downloader));
     prefetch_service_taco_->CreatePrefetchService();
-    prefetch_service_taco_->prefetch_service()->SetCachedGCMToken(
-        "dummy_gcm_token");
     item_generator()->set_client_namespace(kSuggestedArticlesNamespace);
   }
 

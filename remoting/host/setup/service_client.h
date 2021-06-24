@@ -12,7 +12,7 @@
 
 namespace network {
 class SharedURLLoaderFactory;
-}
+}  // namespace network
 
 // A class that gives access to the Chromoting service.
 namespace remoting {
@@ -35,8 +35,8 @@ class ServiceClient {
    protected:
     virtual ~Delegate() {}
   };
-  ServiceClient(
-      const std::string& chromoting_hosts_url,
+
+  explicit ServiceClient(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~ServiceClient();
 

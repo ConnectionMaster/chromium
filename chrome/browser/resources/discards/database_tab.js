@@ -2,199 +2,188 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.define('database_tab', function() {
-  'use strict';
+import 'chrome://resources/cr_elements/cr_input/cr_input.m.js';
+import 'chrome://resources/cr_elements/icons.m.js';
+import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
 
-  /**
-   * Compares two db rows by their origin.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} a The first value being
-   *     compared.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} b The second value being
-   *     compared.
-   * @return {number} A negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function compareRowsByOrigin(a, b) {
-    return a.origin.localeCompare(b.origin);
+import {assertNotReached} from 'chrome://resources/js/assert.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {SiteDataDatabaseSize, SiteDataEntry, SiteDataFeature, SiteDataProviderRemote} from './chrome/browser/ui/webui/discards/site_data.mojom-webui.js';
+import {boolToString, durationToString, getOrCreateSiteDataProvider, secondsToString} from './discards.js';
+import {SortedTableBehavior} from './sorted_table_behavior.js';
+
+/**
+ * Compares two db rows by their origin.
+ * @param {SiteDataEntry} a The first value being compared.
+ * @param {SiteDataEntry} b The second value being compared.
+ * @return {number} A negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function compareRowsByOrigin(a, b) {
+  return a.origin.localeCompare(b.origin);
+}
+
+/**
+ * Compares two db rows by their dirty bit.
+ * @param {SiteDataEntry} a The first value being compared.
+ * @param {SiteDataEntry} b The second value being compared.
+ * @return {number} A negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function compareRowsByIsDirty(a, b) {
+  return a.isDirty - b.isDirty;
+}
+
+/**
+ * Compares two db rows by their last load time.
+ * @param {SiteDataEntry} a The first value being compared.
+ * @param {SiteDataEntry} b The second value being compared.
+ * @return {number} A negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function compareRowsByLastLoaded(a, b) {
+  return a.value.lastLoaded - a.value.lastLoaded;
+}
+
+/**
+ * Compares two db rows by their CPU usage.
+ * @param {SiteDataEntry} a The first value being compared.
+ * @param {SiteDataEntry} b The second value being compared.
+ * @return {number} A negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function compareRowsByCpuUsage(a, b) {
+  const keyA =
+      a.value.loadTimeEstimates ? a.value.loadTimeEstimates.avgCpuUsageUs : 0;
+  const keyB =
+      b.value.loadTimeEstimates ? b.value.loadTimeEstimates.avgCpuUsageUs : 0;
+  return keyA - keyB;
+}
+
+/**
+ * Compares two db rows by their memory usage.
+ * @param {SiteDataEntry} a The first value being compared.
+ * @param {SiteDataEntry} b The second value being compared.
+ * @return {number} A negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function compareRowsByMemoryUsage(a, b) {
+  const keyA =
+      a.value.loadTimeEstimates ? a.value.loadTimeEstimates.avgFootprintKb : 0;
+  const keyB =
+      b.value.loadTimeEstimates ? b.value.loadTimeEstimates.avgFootprintKb : 0;
+  return keyA - keyB;
+}
+
+/**
+ * Compares two db rows by their load duration.
+ * @param {SiteDataEntry} a The first value being compared.
+ * @param {SiteDataEntry} b The second value being compared.
+ * @return {number} A negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function compareRowsByLoadDuration(a, b) {
+  const keyA = a.value.loadTimeEstimates ?
+      a.value.loadTimeEstimates.avgLoadDurationUs :
+      0;
+  const keyB = b.value.loadTimeEstimates ?
+      b.value.loadTimeEstimates.avgLoadDurationUs :
+      0;
+  return keyA - keyB;
+}
+
+/**
+ * @param {string} sortKey The sort key to get a function for.
+ * @return {function(SiteDataEntry, SiteDataEntry): number}
+ *     A comparison function that compares two tab infos, returns
+ *     negative number if a < b, 0 if a === b, and a positive
+ *     number if a > b.
+ */
+function getSortFunctionForKey(sortKey) {
+  switch (sortKey) {
+    case 'origin':
+      return compareRowsByOrigin;
+    case 'dirty':
+      return compareRowsByIsDirty;
+    case 'lastLoaded':
+      return compareRowsByLastLoaded;
+    case 'cpuUsage':
+      return compareRowsByCpuUsage;
+    case 'memoryUsage':
+      return compareRowsByMemoryUsage;
+    case 'loadDuration':
+      return compareRowsByLoadDuration;
+    default:
+      assertNotReached('Unknown sortKey: ' + sortKey);
+  }
+}
+
+/**
+ * @param {number} time A time in microseconds.
+ * @return {string} A friendly, human readable string representing the input
+ *    time with units.
+ */
+function microsecondsToString(time) {
+  if (time < 1000) {
+    return time.toString() + ' µs';
+  }
+  time /= 1000;
+  if (time < 1000) {
+    return time.toFixed(2) + ' ms';
+  }
+  time /= 1000;
+  return time.toFixed(2) + ' s';
+}
+
+/**
+ * @param {number} value A memory amount in kilobytes.
+ * @return {string} A friendly, human readable string representing the input
+ *    time with units.
+ */
+function kilobytesToString(value) {
+  if (value < 1000) {
+    return value.toString() + ' KB';
+  }
+  value /= 1000;
+  if (value < 1000) {
+    return value.toFixed(1) + ' MB';
+  }
+  value /= 1000;
+  return value.toFixed(1) + ' GB';
+}
+
+/**
+ * @param {!Object} item The item to retrieve a load time estimate for.
+ * @param {string} propertyName Name of the load time estimate to retrieve.
+ * @return {string} The requested load time estimate or 'N/A' if unavailable.
+ */
+function formatLoadTimeEstimate(item, propertyName) {
+  if (!item.value || !item.value.loadTimeEstimates) {
+    return 'N/A';
   }
 
-  /**
-   * Compares two db rows by their dirty bit.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} a The first value being
-   *     compared.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} b The second value being
-   *     compared.
-   * @return {number} A negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function compareRowsByIsDirty(a, b) {
-    return a.isDirty - b.isDirty;
+  const value = item.value.loadTimeEstimates[propertyName];
+  if (propertyName.endsWith('Us')) {
+    return microsecondsToString(value);
+  } else if (propertyName.endsWith('Kb')) {
+    return kilobytesToString(value);
   }
+  return value.toString();
+}
 
-  /**
-   * Compares two db rows by their last load time.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} a The first value being
-   *     compared.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} b The second value being
-   *     compared.
-   * @return {number} A negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function compareRowsByLastLoaded(a, b) {
-    return a.value.lastLoaded - a.value.lastLoaded;
-  }
-
-  /**
-   * Compares two db rows by their CPU usage.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} a The first value being
-   *     compared.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} b The second value being
-   *     compared.
-   * @return {number} A negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function compareRowsByCpuUsage(a, b) {
-    const keyA =
-        a.value.loadTimeEstimates ? a.value.loadTimeEstimates.avgCpuUsageUs : 0;
-    const keyB =
-        b.value.loadTimeEstimates ? b.value.loadTimeEstimates.avgCpuUsageUs : 0;
-    return keyA - keyB;
-  }
-
-  /**
-   * Compares two db rows by their memory usage.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} a The first value being
-   *     compared.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} b The second value being
-   *     compared.
-   * @return {number} A negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function compareRowsByMemoryUsage(a, b) {
-    const keyA = a.value.loadTimeEstimates ?
-        a.value.loadTimeEstimates.avgFootprintKb :
-        0;
-    const keyB = b.value.loadTimeEstimates ?
-        b.value.loadTimeEstimates.avgFootprintKb :
-        0;
-    return keyA - keyB;
-  }
-
-  /**
-   * Compares two db rows by their load duration.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} a The first value being
-   *     compared.
-   * @param {mojom.SiteCharacteristicsDatabaseEntry} b The second value being
-   *     compared.
-   * @return {number} A negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function compareRowsByLoadDuration(a, b) {
-    const keyA = a.value.loadTimeEstimates ?
-        a.value.loadTimeEstimates.avgLoadDurationUs :
-        0;
-    const keyB = b.value.loadTimeEstimates ?
-        b.value.loadTimeEstimates.avgLoadDurationUs :
-        0;
-    return keyA - keyB;
-  }
-
-  /**
-   * @param {string} sortKey The sort key to get a function for.
-   * @return {function(mojom.SiteCharacteristicsDatabaseEntry,
-                       mojom.SiteCharacteristicsDatabaseEntry): number}
-   *     A comparison function that compares two tab infos, returns
-   *     negative number if a < b, 0 if a == b, and a positive
-   *     number if a > b.
-   */
-  function getSortFunctionForKey(sortKey) {
-    switch (sortKey) {
-      case 'origin':
-        return compareRowsByOrigin;
-      case 'dirty':
-        return compareRowsByIsDirty;
-      case 'lastLoaded':
-        return compareRowsByLastLoaded;
-      case 'cpuUsage':
-        return compareRowsByCpuUsage;
-      case 'memoryUsage':
-        return compareRowsByMemoryUsage;
-      case 'loadDuration':
-        return compareRowsByLoadDuration;
-      default:
-        assertNotReached('Unknown sortKey: ' + sortKey);
-    }
-  }
-
-  /**
-   * @param {number} time A time in microseconds.
-   * @return {string} A friendly, human readable string representing the input
-   *    time with units.
-   */
-  function microsecondsToString(time) {
-    if (time < 1000) {
-      return time.toString() + ' µs';
-    }
-    time /= 1000;
-    if (time < 1000) {
-      return time.toFixed(2) + ' ms';
-    }
-    time /= 1000;
-    return time.toFixed(2) + ' s';
-  }
-
-  /**
-   * @param {number} value A memory amount in kilobytes.
-   * @return {string} A friendly, human readable string representing the input
-   *    time with units.
-   */
-  function kilobytesToString(value) {
-    if (value < 1000) {
-      return value.toString() + ' KB';
-    }
-    value /= 1000;
-    if (value < 1000) {
-      return value.toFixed(1) + ' MB';
-    }
-    value /= 1000;
-    return value.toFixed(1) + ' GB';
-  }
-
-  /**
-   * @param {!Object} item The item to retrieve a load time estimate for.
-   * @param {string} propertyName Name of the load time estimate to retrieve.
-   * @return {string} The requested load time estimate or 'N/A' if unavailable.
-   */
-  function formatLoadTimeEstimate(item, propertyName) {
-    if (!item.value || !item.value.loadTimeEstimates) {
-      return 'N/A';
-    }
-
-    const value = item.value.loadTimeEstimates[propertyName];
-    if (propertyName.endsWith('Us')) {
-      return microsecondsToString(value);
-    } else if (propertyName.endsWith('Kb')) {
-      return kilobytesToString(value);
-    }
-    return value.toString();
-  }
-
-  return {
-    formatLoadTimeEstimate: formatLoadTimeEstimate,
-    getSortFunctionForKey: getSortFunctionForKey,
-    kilobytesToString: kilobytesToString,
-  };
-});
 
 Polymer({
   is: 'database-tab',
+
+  _template: html`{__html_template__}`,
 
   behaviors: [SortedTableBehavior],
 
   properties: {
     /**
      * List of database rows.
-     * @private {?Array<!mojom.SiteCharacteristicsDatabaseEntry>}
+     * @private {?Array<!SiteDataEntry>}
      */
     rows_: {
       type: Array,
@@ -202,7 +191,7 @@ Polymer({
 
     /**
      * The database size response.
-     * @private {!mojom.SiteCharacteristicsDatabaseSize}
+     * @private {!SiteDataDatabaseSize}
      */
     size_: {
       type: Object,
@@ -227,14 +216,14 @@ Polymer({
   /** @private {!Object} */
   requestedOrigins_: {},
 
-  /** @private {?mojom.DiscardsDetailsProviderProxy} */
-  uiHandler_: null,
+  /** @private {?SiteDataProviderRemote} */
+  siteDataProvider_: null,
 
   /** @override */
-  ready: function() {
+  ready() {
     this.setSortKey('origin');
     this.requestedOrigins_ = {};
-    this.uiHandler_ = discards.getOrCreateUiHandler();
+    this.siteDataProvider_ = getOrCreateSiteDataProvider();
 
     // Specifies the update interval of the table, in ms.
     const UPDATE_INTERVAL_MS = 1000;
@@ -254,7 +243,7 @@ Polymer({
   },
 
   /** @override */
-  detached: function() {
+  detached() {
     // Clear the update timers to avoid memory leaks.
     clearInterval(this.updateTableTimer_);
     this.updateTableTimer_ = 0;
@@ -266,11 +255,10 @@ Polymer({
    * Issues a request for the data and renders on response.
    * @private
    */
-  updateDbRows_: function() {
-    this.uiHandler_
-        .getSiteCharacteristicsDatabase(Object.keys(this.requestedOrigins_))
+  updateDbRows_() {
+    this.siteDataProvider_.getSiteDataArray(Object.keys(this.requestedOrigins_))
         .then(response => {
-          // Bail if the SiteCharacteristicsDatabase is turned off.
+          // Bail if the SiteData database is turned off.
           if (!response.result) {
             return;
           }
@@ -289,17 +277,18 @@ Polymer({
    * Adds the current new origin to requested origins and starts an update.
    * @private
    */
-  addNewOrigin_: function() {
+  addNewOrigin_() {
     this.requestedOrigins_[this.newOrigin_] = true;
     this.newOrigin_ = '';
     this.updateDbRows_();
   },
 
   /**
-   * An on-click handler that adds the current new origin to requested origins.
+   * An on-click handler that adds the current new origin to requested
+   * origins.
    * @private
    */
-  onAddOriginClick_: function() {
+  onAddOriginClick_() {
     this.addNewOrigin_();
 
     // Set the focus back to the input field for convenience.
@@ -310,7 +299,7 @@ Polymer({
    * A key-down handler that adds the current new origin to requested origins.
    * @private
    */
-  onOriginKeydown_: function(e) {
+  onOriginKeydown_(e) {
     if (e.key === 'Enter' && this.isValidOrigin_(this.newOrigin_)) {
       this.addNewOrigin_();
       e.stopPropagation();
@@ -321,9 +310,9 @@ Polymer({
    * Issues a request for the database sizes and renders on response.
    * @private
    */
-  updateDbSizes_: function() {
-    this.uiHandler_.getSiteCharacteristicsDatabaseSize().then(response => {
-      // Bail if the SiteCharacteristicsDatabase is turned off.
+  updateDbSizes_() {
+    this.siteDataProvider_.getSiteDataDatabaseSize().then(response => {
+      // Bail if the SiteData database is turned off.
       if (!response.dbSize) {
         return;
       }
@@ -332,24 +321,24 @@ Polymer({
   },
 
   /**
-   * Returns a sort function to compare tab infos based on the provided sort key
-   * and a boolean reverse flag.
+   * Returns a sort function to compare tab infos based on the provided sort
+   * key and a boolean reverse flag.
    * @param {string} sortKey The sort key for the  returned function.
    * @param {boolean} sortReverse True if sorting is reversed.
    * @return {function({Object}, {Object}): number}
    *     A comparison function that compares two tab infos, returns
-   *     negative number if a < b, 0 if a == b, and a positive
+   *     negative number if a < b, 0 if a === b, and a positive
    *     number if a > b.
    * @private
    */
-  computeSortFunction_: function(sortKey, sortReverse) {
+  computeSortFunction_(sortKey, sortReverse) {
     // Polymer 2 may invoke multi-property observers before all properties
     // are defined.
     if (!sortKey) {
       return (a, b) => 0;
     }
 
-    const sortFunction = database_tab.getSortFunctionForKey(sortKey);
+    const sortFunction = getSortFunctionForKey(sortKey);
     return (a, b) => {
       const comp = sortFunction(a, b);
       return sortReverse ? -comp : comp;
@@ -361,7 +350,7 @@ Polymer({
    * @return {boolean} Whether the origin is valid.
    * @private
    */
-  isValidOrigin_: function(origin) {
+  isValidOrigin_(origin) {
     const re = /(https?|ftp):\/\/[a-z+.]/;
 
     return re.test(origin);
@@ -372,7 +361,7 @@ Polymer({
    * @return {boolean} Whether the origin is valid or empty.
    * @private
    */
-  isEmptyOrValidOrigin_: function(origin) {
+  isEmptyOrValidOrigin_(origin) {
     return !origin || this.isValidOrigin_(origin);
   },
 
@@ -381,8 +370,8 @@ Polymer({
    * @return {string} A display string representing value.
    * @private
    */
-  boolToString_: function(value) {
-    return discards.boolToString(value);
+  boolToString_(value) {
+    return boolToString(value);
   },
 
   /**
@@ -392,18 +381,17 @@ Polymer({
    *     occurred.
    * @private
    */
-  lastUseToString_: function(time) {
+  lastUseToString_(time) {
     const nowSecondsFromEpoch = Math.round(Date.now() / 1000);
-    return discards.durationToString(nowSecondsFromEpoch - time);
+    return durationToString(nowSecondsFromEpoch - time);
   },
 
   /**
-   * @param {?mojom.SiteCharacteristicsFeature} feature The feature
-   *     in question.
+   * @param {?SiteDataFeature} feature The feature in question.
    * @return {string} A human-readable string representing the feature.
    * @private
    */
-  featureToString_: function(feature) {
+  featureToString_(feature) {
     if (!feature) {
       return 'N/A';
     }
@@ -411,11 +399,12 @@ Polymer({
     if (feature.useTimestamp) {
       const nowSecondsFromEpoch = Math.round(Date.now() / 1000);
       return 'Used ' +
-          discards.durationToString(nowSecondsFromEpoch - feature.useTimestamp);
+          durationToString(
+                 Number(BigInt(nowSecondsFromEpoch) - feature.useTimestamp));
     }
 
     if (feature.observationDuration) {
-      return discards.secondsToString(feature.observationDuration);
+      return secondsToString(Number(feature.observationDuration));
     }
 
     return 'N/A';
@@ -424,11 +413,12 @@ Polymer({
   /**
    * @param {!Object} item The item to retrieve a load time estimate for.
    * @param {string} propertyName Name of the load time estimate to retrieve.
-   * @return {string} The requested load time estimate or 'N/A' if unavailable.
+   * @return {string} The requested load time estimate or 'N/A' if
+   *     unavailable.
    * @private
    */
-  getLoadTimeEstimate_: function(item, propertyName) {
-    return database_tab.formatLoadTimeEstimate(item, propertyName);
+  getLoadTimeEstimate_(item, propertyName) {
+    return formatLoadTimeEstimate(item, propertyName);
   },
 
   /**
@@ -437,8 +427,8 @@ Polymer({
    * @return {string} A human readable string representing value.
    * @private
    */
-  kilobytesToString_: function(value) {
-    return value == -1 ? 'N/A' : database_tab.kilobytesToString(value);
+  kilobytesToString_(value) {
+    return value === -1 ? 'N/A' : kilobytesToString(value);
   },
 
   /**
@@ -446,7 +436,7 @@ Polymer({
    * @return {string} A human readable string representing value.
    * @private
    */
-  optionalIntegerToString_: function(value) {
-    return value == -1 ? 'N/A' : value.toString();
+  optionalIntegerToString_(value) {
+    return value === -1 ? 'N/A' : value.toString();
   },
 });

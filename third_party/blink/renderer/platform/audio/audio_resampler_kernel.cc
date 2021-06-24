@@ -66,11 +66,8 @@ float* AudioResamplerKernel::GetSourcePointer(
     *number_of_source_frames_needed_p = frames_needed;
 
   // Do bounds checking for the source buffer.
-  bool is_good = fill_index_ < source_buffer_.size() &&
-                 fill_index_ + frames_needed <= source_buffer_.size();
-  DCHECK(is_good);
-  if (!is_good)
-    return nullptr;
+  DCHECK_LT(fill_index_, source_buffer_.size());
+  DCHECK_LE(fill_index_ + frames_needed, source_buffer_.size());
 
   return source_buffer_.Data() + fill_index_;
 }
@@ -81,7 +78,7 @@ void AudioResamplerKernel::Process(float* destination,
 
   float* source = source_buffer_.Data();
 
-  double rate = this->Rate();
+  double rate = Rate();
   rate = clampTo(rate, 0.0, AudioResampler::kMaxRate);
 
   // Start out with the previous saved values (if any).

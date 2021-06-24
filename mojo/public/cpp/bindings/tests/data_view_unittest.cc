@@ -7,10 +7,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "base/message_loop/message_loop.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "mojo/public/cpp/bindings/lib/fixed_buffer.h"
+#include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/lib/message_fragment.h"
 #include "mojo/public/cpp/bindings/lib/serialization.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/interfaces/bindings/tests/test_data_view.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -21,30 +23,29 @@ namespace {
 
 class DataViewTest : public testing::Test {
  private:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 
 struct DataViewHolder {
   std::unique_ptr<TestStructDataView> data_view;
   mojo::Message message;
-  mojo::internal::SerializationContext context;
 };
 
 std::unique_ptr<DataViewHolder> SerializeTestStruct(TestStructPtr input) {
   auto result = std::make_unique<DataViewHolder>();
   result->message = Message(0, 0, 0, 0, nullptr);
-  internal::TestStruct_Data::BufferWriter writer;
-  mojo::internal::Serialize<TestStructDataView>(
-      input, result->message.payload_buffer(), &writer, &result->context);
+  mojo::internal::MessageFragment<internal::TestStruct_Data> fragment(
+      result->message);
+  mojo::internal::Serialize<TestStructDataView>(input, fragment);
   result->data_view =
-      std::make_unique<TestStructDataView>(writer.data(), &result->context);
+      std::make_unique<TestStructDataView>(fragment.data(), &result->message);
   return result;
 }
 
 class TestInterfaceImpl : public TestInterface {
  public:
-  explicit TestInterfaceImpl(TestInterfaceRequest request)
-      : binding_(this, std::move(request)) {}
+  explicit TestInterfaceImpl(PendingReceiver<TestInterface> receiver)
+      : receiver_(this, std::move(receiver)) {}
   ~TestInterfaceImpl() override {}
 
   // TestInterface implementation:
@@ -53,7 +54,7 @@ class TestInterfaceImpl : public TestInterface {
   }
 
  private:
-  Binding<TestInterface> binding_;
+  Receiver<TestInterface> receiver_;
 };
 
 }  // namespace
@@ -157,7 +158,6 @@ TEST_F(DataViewTest, EnumArray) {
   ASSERT_EQ(2u, array_data_view.size());
   EXPECT_EQ(TestEnum::VALUE_1, array_data_view[0]);
   EXPECT_EQ(TestEnum::VALUE_0, array_data_view[1]);
-  EXPECT_EQ(TestEnum::VALUE_0, *(array_data_view.data() + 1));
 
   TestEnum output;
   ASSERT_TRUE(array_data_view.Read(0, &output));
@@ -165,11 +165,11 @@ TEST_F(DataViewTest, EnumArray) {
 }
 
 TEST_F(DataViewTest, InterfaceArray) {
-  TestInterfacePtrInfo ptr_info;
-  TestInterfaceImpl impl(MakeRequest(&ptr_info));
+  PendingRemote<TestInterface> pending_remote;
+  TestInterfaceImpl impl(pending_remote.InitWithNewPipeAndPassReceiver());
 
   TestStructPtr obj(TestStruct::New());
-  obj->f_interface_array.push_back(std::move(ptr_info));
+  obj->f_interface_array.push_back(std::move(pending_remote));
 
   auto data_view_holder = SerializeTestStruct(std::move(obj));
   auto& data_view = *data_view_holder->data_view;
@@ -180,10 +180,12 @@ TEST_F(DataViewTest, InterfaceArray) {
   ASSERT_FALSE(array_data_view.is_null());
   ASSERT_EQ(1u, array_data_view.size());
 
-  TestInterfacePtr ptr2 = array_data_view.Take<TestInterfacePtr>(0);
-  ASSERT_TRUE(ptr2);
+  pending_remote = array_data_view.Take<PendingRemote<TestInterface>>(0);
+  ASSERT_TRUE(pending_remote);
   int32_t result = 0;
-  ASSERT_TRUE(ptr2->Echo(42, &result));
+
+  Remote<TestInterface> remote(std::move(pending_remote));
+  ASSERT_TRUE(remote->Echo(42, &result));
   EXPECT_EQ(42, result);
 }
 

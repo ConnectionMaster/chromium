@@ -8,9 +8,9 @@
 
 namespace invalidation {
 
-IdentityProvider::Observer::~Observer() {}
+IdentityProvider::IdentityProvider() = default;
 
-IdentityProvider::~IdentityProvider() {}
+IdentityProvider::~IdentityProvider() = default;
 
 void IdentityProvider::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
@@ -20,10 +20,8 @@ void IdentityProvider::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-IdentityProvider::IdentityProvider() {}
-
 void IdentityProvider::ProcessRefreshTokenUpdateForAccount(
-    const std::string& account_id) {
+    const CoreAccountId& account_id) {
   if (account_id != GetActiveAccountId()) {
     diagnostic_info_.token_update_for_not_active_account_count++;
     return;
@@ -34,13 +32,11 @@ void IdentityProvider::ProcessRefreshTokenUpdateForAccount(
 }
 
 void IdentityProvider::ProcessRefreshTokenRemovalForAccount(
-    const std::string& account_id) {
+    const CoreAccountId& account_id) {
   if (account_id != GetActiveAccountId()) {
     diagnostic_info_.token_removal_for_not_active_account_count++;
     return;
   }
-  for (auto& observer : observers_)
-    observer.OnActiveAccountRefreshTokenRemoved();
 }
 
 void IdentityProvider::FireOnActiveAccountLogin() {
@@ -59,7 +55,7 @@ void IdentityProvider::RequestDetailedStatus(
   return_callback.Run(diagnostic_info_.CollectDebugData());
 }
 
-IdentityProvider::Diagnostics::Diagnostics() {}
+IdentityProvider::Diagnostics::Diagnostics() = default;
 
 base::DictionaryValue IdentityProvider::Diagnostics::CollectDebugData() const {
   base::DictionaryValue status;

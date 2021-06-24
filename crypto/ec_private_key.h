@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "crypto/crypto_export.h"
@@ -37,7 +38,7 @@ class CRYPTO_EXPORT ECPrivateKey {
   // an ASN.1-encoded PrivateKeyInfo block from PKCS #8. This can return
   // nullptr if initialization fails.
   static std::unique_ptr<ECPrivateKey> CreateFromPrivateKeyInfo(
-      const std::vector<uint8_t>& input);
+      base::span<const uint8_t> input);
 
   // Creates a new instance by importing an existing key pair.
   // The key pair is given as an ASN.1-encoded PKCS #8 EncryptedPrivateKeyInfo
@@ -47,7 +48,7 @@ class CRYPTO_EXPORT ECPrivateKey {
   // This function is deprecated. Use CreateFromPrivateKeyInfo for new code.
   // See https://crbug.com/603319.
   static std::unique_ptr<ECPrivateKey> CreateFromEncryptedPrivateKeyInfo(
-      const std::vector<uint8_t>& encrypted_private_key_info);
+      base::span<const uint8_t> encrypted_private_key_info);
 
   // Returns a copy of the object.
   std::unique_ptr<ECPrivateKey> Copy() const;
@@ -68,7 +69,8 @@ class CRYPTO_EXPORT ECPrivateKey {
   // Exports the public key to an X.509 SubjectPublicKeyInfo block.
   bool ExportPublicKey(std::vector<uint8_t>* output) const;
 
-  // Exports the public key as an EC point in the uncompressed point format.
+  // Exports the public key as an EC point in X9.62 uncompressed form. Note this
+  // includes the leading 0x04 byte.
   bool ExportRawPublicKey(std::string* output) const;
 
  private:
@@ -79,7 +81,6 @@ class CRYPTO_EXPORT ECPrivateKey {
 
   DISALLOW_COPY_AND_ASSIGN(ECPrivateKey);
 };
-
 
 }  // namespace crypto
 

@@ -26,16 +26,15 @@ namespace network {
 
 namespace {
 
-std::unique_ptr<base::Value> CookieStoreOriginFiltered(
-    const std::string& origin,
-    bool is_https,
-    net::NetLogCaptureMode capture_mode) {
-  if (!capture_mode.include_cookies_and_credentials())
-    return nullptr;
-  auto dict = std::make_unique<base::DictionaryValue>();
-  dict->SetString("origin", origin);
-  dict->SetBoolean("is_https", is_https);
-  return dict;
+base::Value CookieStoreOriginFiltered(const std::string& origin,
+                                      bool is_https,
+                                      net::NetLogCaptureMode capture_mode) {
+  if (!net::NetLogCaptureIncludesSensitive(capture_mode))
+    return base::Value();
+  base::DictionaryValue dict;
+  dict.SetString("origin", origin);
+  dict.SetBoolean("is_https", is_https);
+  return std::move(dict);
 }
 
 }  // namespace
@@ -45,9 +44,9 @@ SessionCleanupCookieStore::SessionCleanupCookieStore(
     : persistent_store_(cookie_store) {}
 
 SessionCleanupCookieStore::~SessionCleanupCookieStore() {
-  net_log_.AddEvent(
-      net::NetLogEventType::COOKIE_PERSISTENT_STORE_CLOSED,
-      net::NetLog::StringCallback("type", "SessionCleanupCookieStore"));
+  net_log_.AddEventWithStringParams(
+      net::NetLogEventType::COOKIE_PERSISTENT_STORE_CLOSED, "type",
+      "SessionCleanupCookieStore");
 }
 
 void SessionCleanupCookieStore::DeleteSessionCookies(
@@ -70,8 +69,10 @@ void SessionCleanupCookieStore::DeleteSessionCookies(
     }
     net_log_.AddEvent(
         net::NetLogEventType::COOKIE_PERSISTENT_STORE_ORIGIN_FILTERED,
-        base::BindRepeating(&CookieStoreOriginFiltered, cookie.first,
-                            cookie.second));
+        [&](net::NetLogCaptureMode capture_mode) {
+          return CookieStoreOriginFiltered(cookie.first, cookie.second,
+                                           capture_mode);
+        });
     session_only_cookies.push_back(cookie);
   }
 

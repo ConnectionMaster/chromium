@@ -29,11 +29,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WEBORIGIN_SECURITY_POLICY_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WEBORIGIN_SECURITY_POLICY_H_
 
-#include "services/network/public/mojom/cors_origin_pattern.mojom-shared.h"
-#include "services/network/public/mojom/referrer_policy.mojom-shared.h"
+#include "services/network/public/mojom/cors_origin_pattern.mojom-blink-forward.h"
+#include "services/network/public/mojom/referrer_policy.mojom-blink.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -50,10 +50,6 @@ class PLATFORM_EXPORT SecurityPolicy {
   STATIC_ONLY(SecurityPolicy);
 
  public:
-  // This must be called during initialization (before we create
-  // other threads).
-  static void Init();
-
   // True if the referrer should be omitted according to the
   // ReferrerPolicyNoReferrerWhenDowngrade. If you intend to send a
   // referrer header, you should use generateReferrer instead.
@@ -70,13 +66,17 @@ class PLATFORM_EXPORT SecurityPolicy {
       const SecurityOrigin& source_origin,
       const String& destination_protocol,
       const String& destination_domain,
-      bool allow_destination_subdomains,
+      const uint16_t port,
+      const network::mojom::CorsDomainMatchMode domain_match_mode,
+      const network::mojom::CorsPortMatchMode port_match_mode,
       const network::mojom::CorsOriginAccessMatchPriority priority);
   static void AddOriginAccessBlockListEntry(
       const SecurityOrigin& source_origin,
       const String& destination_protocol,
       const String& destination_domain,
-      bool allow_destination_subdomains,
+      const uint16_t port,
+      const network::mojom::CorsDomainMatchMode domain_match_mode,
+      const network::mojom::CorsPortMatchMode port_match_mode,
       const network::mojom::CorsOriginAccessMatchPriority priority);
   static void ClearOriginAccessListForOrigin(
       const SecurityOrigin& source_origin);
@@ -86,10 +86,6 @@ class PLATFORM_EXPORT SecurityPolicy {
                                     const SecurityOrigin* target_origin);
   static bool IsOriginAccessToURLAllowed(const SecurityOrigin* active_origin,
                                          const KURL&);
-
-  static void AddOriginToTrustworthySafelist(const String&);
-  static bool IsOriginTrustworthySafelisted(const SecurityOrigin&);
-  static bool IsUrlTrustworthySafelisted(const KURL&);
 
   static bool ReferrerPolicyFromString(const String& policy,
                                        ReferrerPolicyLegacyKeywordsSupport,

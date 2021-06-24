@@ -20,12 +20,17 @@ TEST_F(LayoutTableColTest, LocalVisualRect) {
     </table>
   )HTML");
 
-  EXPECT_EQ(LayoutRect(),
-            GetLayoutObjectByElementId("col1")->LocalVisualRect());
-  EXPECT_EQ(LayoutRect(),
-            GetLayoutObjectByElementId("col2")->LocalVisualRect());
-  EXPECT_EQ(LayoutRect(),
-            GetLayoutObjectByElementId("col3")->LocalVisualRect());
+  // TablesNG hidden columns get geometry, because they paint their background
+  // into cells.
+  if (RuntimeEnabledFeatures::LayoutNGTableEnabled()) {
+    EXPECT_FALSE(
+        GetLayoutObjectByElementId("col1")->LocalVisualRect().IsEmpty());
+  } else {
+    EXPECT_TRUE(
+        GetLayoutObjectByElementId("col1")->LocalVisualRect().IsEmpty());
+  }
+  EXPECT_TRUE(GetLayoutObjectByElementId("col2")->LocalVisualRect().IsEmpty());
+  EXPECT_TRUE(GetLayoutObjectByElementId("col3")->LocalVisualRect().IsEmpty());
 }
 
 }  // namespace blink

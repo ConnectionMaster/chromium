@@ -21,15 +21,16 @@
 #include "third_party/blink/renderer/core/svg/svg_foreign_object_element.h"
 
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_foreign_object.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_length.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
-inline SVGForeignObjectElement::SVGForeignObjectElement(Document& document)
+SVGForeignObjectElement::SVGForeignObjectElement(Document& document)
     : SVGGraphicsElement(svg_names::kForeignObjectTag, document),
       x_(MakeGarbageCollected<SVGAnimatedLength>(
           this,
@@ -63,15 +64,13 @@ inline SVGForeignObjectElement::SVGForeignObjectElement(Document& document)
   UseCounter::Count(document, WebFeature::kSVGForeignObjectElement);
 }
 
-void SVGForeignObjectElement::Trace(blink::Visitor* visitor) {
+void SVGForeignObjectElement::Trace(Visitor* visitor) const {
   visitor->Trace(x_);
   visitor->Trace(y_);
   visitor->Trace(width_);
   visitor->Trace(height_);
   SVGGraphicsElement::Trace(visitor);
 }
-
-DEFINE_NODE_FACTORY(SVGForeignObjectElement)
 
 void SVGForeignObjectElement::CollectStyleForPresentationAttribute(
     const QualifiedName& name,
@@ -97,7 +96,8 @@ void SVGForeignObjectElement::CollectStyleForPresentationAttribute(
 }
 
 void SVGForeignObjectElement::SvgAttributeChanged(
-    const QualifiedName& attr_name) {
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   bool is_width_height_attribute =
       attr_name == svg_names::kWidthAttr || attr_name == svg_names::kHeightAttr;
   bool is_xy_attribute =
@@ -121,11 +121,26 @@ void SVGForeignObjectElement::SvgAttributeChanged(
     return;
   }
 
-  SVGGraphicsElement::SvgAttributeChanged(attr_name);
+  SVGGraphicsElement::SvgAttributeChanged(params);
 }
 
 LayoutObject* SVGForeignObjectElement::CreateLayoutObject(const ComputedStyle&,
                                                           LegacyLayout) {
+  // Suppress foreignObject LayoutObjects in SVG hidden containers.
+  // LayoutSVGHiddenContainers does not allow the subtree to be rendered, but
+  // allow LayoutObject descendants to be created. That will causes crashes in
+  // the layout code if object creation is not inhibited for foreignObject
+  // subtrees (https://crbug.com/1027905).
+  // Note that we currently do not support foreignObject instantiation via
+  // <use>, and attachShadow is not allowed on SVG elements, hence it is safe to
+  // use parentElement() here.
+  for (Element* ancestor = parentElement();
+       ancestor && ancestor->IsSVGElement();
+       ancestor = ancestor->parentElement()) {
+    if (ancestor->GetLayoutObject() &&
+        ancestor->GetLayoutObject()->IsSVGHiddenContainer())
+      return nullptr;
+  }
   return new LayoutSVGForeignObject(this);
 }
 

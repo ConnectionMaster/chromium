@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
 #include "content/public/browser/android/synchronous_compositor.h"
 #include "content/public/browser/android/synchronous_compositor_client.h"
 
@@ -18,7 +19,7 @@ namespace content {
 
 class CONTENT_EXPORT TestSynchronousCompositor : public SynchronousCompositor {
  public:
-  TestSynchronousCompositor(int process_id, int routing_id);
+  explicit TestSynchronousCompositor(const viz::FrameSinkId& frame_sink_id);
   ~TestSynchronousCompositor() override;
 
   void SetClient(SynchronousCompositorClient* client);
@@ -27,12 +28,11 @@ class CONTENT_EXPORT TestSynchronousCompositor : public SynchronousCompositor {
       const gfx::Size& viewport_size,
       const gfx::Rect& viewport_rect_for_tile_priority,
       const gfx::Transform& transform_for_tile_priority) override;
-  void ReturnResources(
-      uint32_t layer_tree_frame_sink_id,
-      const std::vector<viz::ReturnedResource>& resources) override;
-  void DidPresentCompositorFrames(
-      viz::PresentationFeedbackMap feedbacks) override {}
-  bool DemandDrawSw(SkCanvas* canvas) override;
+  void ReturnResources(uint32_t layer_tree_frame_sink_id,
+                       std::vector<viz::ReturnedResource> resources) override;
+  void DidPresentCompositorFrames(viz::FrameTimingDetailsMap timing_details,
+                                  uint32_t frame_token) override {}
+  bool DemandDrawSw(SkCanvas* canvas, bool software_canvas) override;
   void SetMemoryPolicy(size_t bytes_limit) override {}
   void DidBecomeActive() override {}
   void DidChangeRootLayerScrollOffset(
@@ -40,13 +40,16 @@ class CONTENT_EXPORT TestSynchronousCompositor : public SynchronousCompositor {
   void SynchronouslyZoomBy(float zoom_delta,
                            const gfx::Point& anchor) override {}
   void OnComputeScroll(base::TimeTicks animate_time) override {}
+  void SetBeginFrameSource(viz::BeginFrameSource* source) override {}
+  void DidInvalidate() override {}
+  void WasEvicted() override {}
 
   void SetHardwareFrame(uint32_t layer_tree_frame_sink_id,
                         std::unique_ptr<viz::CompositorFrame> frame);
 
   struct ReturnedResources {
     ReturnedResources();
-    ReturnedResources(const ReturnedResources& other);
+    ReturnedResources(ReturnedResources&&);
     ~ReturnedResources();
 
     uint32_t layer_tree_frame_sink_id;
@@ -57,8 +60,7 @@ class CONTENT_EXPORT TestSynchronousCompositor : public SynchronousCompositor {
 
  private:
   SynchronousCompositorClient* client_;
-  const int process_id_;
-  const int routing_id_;
+  viz::FrameSinkId frame_sink_id_;
   std::unique_ptr<Frame> hardware_frame_;
   FrameAckArray frame_ack_array_;
 

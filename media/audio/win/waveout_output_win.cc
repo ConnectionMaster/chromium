@@ -4,7 +4,8 @@
 
 #include "media/audio/win/waveout_output_win.h"
 
-#include "base/atomicops.h"
+#include <atomic>
+
 #include "base/logging.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -81,7 +82,7 @@ PCMWaveOutAudioOutputStream::PCMWaveOutAudioOutputStream(
     UINT device_id)
     : state_(PCMA_BRAND_NEW),
       manager_(manager),
-      callback_(NULL),
+      callback_(nullptr),
       num_buffers_(num_buffers),
       buffer_size_(params.GetBytesPerBuffer(kSampleFormat)),
       volume_(1),
@@ -211,7 +212,7 @@ void PCMWaveOutAudioOutputStream::Start(AudioSourceCallback* callback) {
   // From now on |pending_bytes_| would be accessed by callback thread.
   // Most likely waveOutPause() or waveOutRestart() has its own memory barrier,
   // but issuing our own is safer.
-  base::subtle::MemoryBarrier();
+  std::atomic_thread_fence(std::memory_order_seq_cst);
 
   MMRESULT result = ::waveOutPause(waveout_);
   if (result != MMSYSERR_NOERROR) {
@@ -246,7 +247,7 @@ void PCMWaveOutAudioOutputStream::Stop() {
   if (state_ != PCMA_PLAYING)
     return;
   state_ = PCMA_STOPPING;
-  base::subtle::MemoryBarrier();
+  std::atomic_thread_fence(std::memory_order_seq_cst);
 
   // Stop watching for buffer event, waits until outstanding callbacks finish.
   if (waiting_handle_) {
@@ -269,7 +270,7 @@ void PCMWaveOutAudioOutputStream::Stop() {
     GetBuffer(ix)->dwFlags = WHDR_PREPARED;
 
   // Don't use callback after Stop().
-  callback_ = NULL;
+  callback_ = nullptr;
 
   state_ = PCMA_READY;
 }
@@ -301,6 +302,10 @@ void PCMWaveOutAudioOutputStream::Close() {
   manager_->ReleaseOutputStream(this);
 }
 
+// This stream is always used with sub second buffer sizes, where it's
+// sufficient to simply always flush upon Start().
+void PCMWaveOutAudioOutputStream::Flush() {}
+
 void PCMWaveOutAudioOutputStream::SetVolume(double volume) {
   if (!waveout_)
     return;
@@ -315,8 +320,9 @@ void PCMWaveOutAudioOutputStream::GetVolume(double* volume) {
 
 void PCMWaveOutAudioOutputStream::HandleError(MMRESULT error) {
   DLOG(WARNING) << "PCMWaveOutAudio error " << error;
+  // TODO(dalecurtis): See about sending a translated |error| code.
   if (callback_)
-    callback_->OnError();
+    callback_->OnError(AudioSourceCallback::ErrorType::kUnknown);
 }
 
 void PCMWaveOutAudioOutputStream::QueueNextPacket(WAVEHDR *buffer) {
@@ -338,8 +344,10 @@ void PCMWaveOutAudioOutputStream::QueueNextPacket(WAVEHDR *buffer) {
     // Note: If this ever changes to output raw float the data must be clipped
     // and sanitized since it may come from an untrusted source such as NaCl.
     audio_bus_->Scale(volume_);
-    audio_bus_->ToInterleaved(
-        frames_filled, format_.Format.wBitsPerSample / 8, buffer->lpData);
+
+    DCHECK_EQ(format_.Format.wBitsPerSample, 16);
+    audio_bus_->ToInterleaved<SignedInt16SampleTypeTraits>(
+        frames_filled, reinterpret_cast<int16_t*>(buffer->lpData));
 
     buffer->dwBufferLength = used * format_.Format.nChannels / channels_;
   } else {

@@ -15,29 +15,37 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
 #include "base/trace_event/memory_dump_provider.h"
+#include "base/unguessable_token.h"
 #include "components/viz/common/resources/release_callback.h"
 #include "components/viz/common/resources/resource_format.h"
 #include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/resources/transferable_resource.h"
+#include "gpu/command_buffer/client/gles2_interface.h"
 #include "media/base/media_export.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace gfx {
 class Rect;
-class RRectF;
 class Transform;
 }  // namespace gfx
+
+namespace gpu {
+class SharedImageInterface;
+}  // namespace gpu
 
 namespace viz {
 class ClientResourceProvider;
 class ContextProvider;
 class RasterContextProvider;
-class RenderPass;
+class CompositorRenderPass;
 class SharedBitmapReporter;
 }  // namespace viz
+
+namespace gfx {
+class MaskFilterInfo;
+}
 
 namespace media {
 class PaintCanvasVideoRenderer;
@@ -52,6 +60,10 @@ enum class VideoFrameResourceType {
   RGBA_PREMULTIPLIED,
   RGBA,
   STREAM_TEXTURE,
+  // The VideoFrame is merely a hint to compositor that a hole must be made
+  // transparent so the video underlay will be visible.
+  // Used by Chromecast only.
+  VIDEO_HOLE,
 };
 
 class MEDIA_EXPORT VideoFrameExternalResources {
@@ -105,14 +117,13 @@ class MEDIA_EXPORT VideoResourceUpdater
   // of this class (e.g: VideoFrameSubmitter). Producing only one quad will
   // allow viz to optimize compositing when the only content changing per-frame
   // is the video.
-  void AppendQuads(viz::RenderPass* render_pass,
+  void AppendQuads(viz::CompositorRenderPass* render_pass,
                    scoped_refptr<VideoFrame> frame,
                    gfx::Transform transform,
                    gfx::Rect quad_rect,
                    gfx::Rect visible_quad_rect,
-                   const gfx::RRectF& rounded_corner_bounds,
-                   gfx::Rect clip_rect,
-                   bool is_clipped,
+                   const gfx::MaskFilterInfo& mask_filter_info,
+                   absl::optional<gfx::Rect> clip_rect,
                    bool context_opaque,
                    float draw_opacity,
                    int sorting_context_id);
@@ -131,6 +142,9 @@ class MEDIA_EXPORT VideoResourceUpdater
   // A resource that will be embedded in a DrawQuad in the next CompositorFrame.
   // Each video plane will correspond to one FrameResource.
   struct FrameResource {
+    FrameResource();
+    FrameResource(viz::ResourceId id, const gfx::Size& size);
+
     viz::ResourceId id;
     gfx::Size size_in_pixels;
   };
@@ -177,17 +191,23 @@ class MEDIA_EXPORT VideoResourceUpdater
   VideoFrameExternalResources CreateForSoftwarePlanes(
       scoped_refptr<VideoFrame> video_frame);
 
+  gpu::gles2::GLES2Interface* ContextGL();
+
   void RecycleResource(uint32_t plane_resource_id,
                        const gpu::SyncToken& sync_token,
                        bool lost_resource);
-  void ReturnTexture(const scoped_refptr<VideoFrame>& video_frame,
+  void ReturnTexture(scoped_refptr<VideoFrame> video_frame,
                      const gpu::SyncToken& sync_token,
                      bool lost_resource);
+  void DestroyMailbox(gpu::Mailbox mailbox,
+                      scoped_refptr<VideoFrame> video_frame,
+                      const gpu::SyncToken& sync_token,
+                      bool lost_resource);
 
   // base::trace_event::MemoryDumpProvider implementation.
   bool OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
                     base::trace_event::ProcessMemoryDump* pmd) override;
-
+  gpu::SharedImageInterface* SharedImageInterface() const;
   viz::ContextProvider* const context_provider_;
   viz::RasterContextProvider* const raster_context_provider_;
   viz::SharedBitmapReporter* const shared_bitmap_reporter_;
@@ -214,12 +234,16 @@ class MEDIA_EXPORT VideoResourceUpdater
   // Resources that will be placed into quads by the next call to
   // AppendDrawQuads().
   std::vector<FrameResource> frame_resources_;
+  // If the video resource is a hole punching VideoFrame sent by Chromecast,
+  // the VideoFrame carries an |overlay_plane_id_| to activate the video
+  // overlay, but there is no video content to display within VideoFrame.
+  base::UnguessableToken overlay_plane_id_;
 
   // Resources allocated by VideoResourceUpdater. Used to recycle resources so
   // we can reduce the number of allocations and data transfers.
   std::vector<std::unique_ptr<PlaneResource>> all_resources_;
 
-  base::WeakPtrFactory<VideoResourceUpdater> weak_ptr_factory_;
+  base::WeakPtrFactory<VideoResourceUpdater> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(VideoResourceUpdater);
 };

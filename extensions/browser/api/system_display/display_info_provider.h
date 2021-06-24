@@ -13,7 +13,7 @@
 #include "base/callback.h"
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/display/display_observer.h"
 
 namespace display {
@@ -41,7 +41,7 @@ class DisplayInfoProvider : public display::DisplayObserver {
  public:
   using DisplayUnitInfoList = std::vector<api::system_display::DisplayUnitInfo>;
   using DisplayLayoutList = std::vector<api::system_display::DisplayLayout>;
-  using ErrorCallback = base::OnceCallback<void(base::Optional<std::string>)>;
+  using ErrorCallback = base::OnceCallback<void(absl::optional<std::string>)>;
 
   ~DisplayInfoProvider() override;
 
@@ -128,8 +128,6 @@ class DisplayInfoProvider : public display::DisplayObserver {
       int64_t primary_display_id);
 
  private:
-  static DisplayInfoProvider* Create();
-
   // Update the content of the |unit| obtained for |display| using
   // platform specific method.
   virtual void UpdateDisplayUnitInfoForPlatform(

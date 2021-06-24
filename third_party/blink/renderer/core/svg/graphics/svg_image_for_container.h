@@ -26,12 +26,12 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SVG_GRAPHICS_SVG_IMAGE_FOR_CONTAINER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_GRAPHICS_SVG_IMAGE_FOR_CONTAINER_H_
 
+#include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
 #include "third_party/blink/renderer/platform/geometry/float_rect.h"
 #include "third_party/blink/renderer/platform/geometry/float_size.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
-#include "third_party/skia/include/core/SkRefCnt.h"
 
 namespace blink {
 
@@ -54,7 +54,7 @@ namespace blink {
 //
 // SVGImageForContainer stores this per-use information and delegates to the
 // SVGImage for how to draw the image.
-class SVGImageForContainer final : public Image {
+class CORE_EXPORT SVGImageForContainer final : public Image {
   USING_FAST_MALLOC(SVGImageForContainer);
 
  public:
@@ -69,7 +69,8 @@ class SVGImageForContainer final : public Image {
         image, container_size_without_zoom, zoom, url));
   }
 
-  IntSize Size() const override;
+  IntSize SizeWithConfig(SizeConfig) const override;
+  FloatSize SizeWithConfigAsFloat(SizeConfig) const override;
 
   bool HasIntrinsicSize() const override { return image_->HasIntrinsicSize(); }
 
@@ -79,6 +80,7 @@ class SVGImageForContainer final : public Image {
             const cc::PaintFlags&,
             const FloatRect&,
             const FloatRect&,
+            const SkSamplingOptions&,
             RespectImageOrientationEnum,
             ImageClampingMode,
             ImageDecodingMode) override;
@@ -90,12 +92,13 @@ class SVGImageForContainer final : public Image {
 
  protected:
   void DrawPattern(GraphicsContext&,
+                   const cc::PaintFlags&,
                    const FloatRect&,
                    const FloatSize&,
                    const FloatPoint&,
-                   SkBlendMode,
                    const FloatRect&,
-                   const FloatSize& repeat_spacing) override;
+                   const FloatSize& repeat_spacing,
+                   RespectImageOrientationEnum) override;
 
  private:
   SVGImageForContainer(SVGImage* image,
@@ -108,14 +111,6 @@ class SVGImageForContainer final : public Image {
         url_(url) {}
 
   void DestroyDecodedData() override {}
-
-  // TODO(v.paturi): Implement an SVG classifier which can decide if a
-  // filter should be applied based on the image's content and it's
-  // visibility on a dark background.
-  DarkModeClassification ClassifyImageForDarkMode(
-      const FloatRect& src_rect) override {
-    return DarkModeClassification::kApplyDarkModeFilter;
-  }
 
   SVGImage* image_;
   const FloatSize container_size_;

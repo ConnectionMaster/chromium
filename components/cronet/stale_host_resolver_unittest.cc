@@ -9,15 +9,12 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
-#include "base/logging.h"
-#include "base/memory/ptr_util.h"
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
-#include "base/test/scoped_task_environment.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -29,22 +26,26 @@
 #include "net/base/mock_network_change_notifier.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
+#include "net/base/network_isolation_key.h"
 #include "net/cert/cert_verifier.h"
 #include "net/dns/context_host_resolver.h"
 #include "net/dns/dns_config.h"
 #include "net/dns/dns_hosts.h"
 #include "net/dns/dns_test_util.h"
 #include "net/dns/host_cache.h"
+#include "net/dns/host_resolver_manager.h"
 #include "net/dns/host_resolver_proc.h"
+#include "net/dns/host_resolver_source.h"
 #include "net/dns/public/dns_protocol.h"
+#include "net/dns/public/dns_query_type.h"
 #include "net/http/http_network_session.h"
-#include "net/log/net_log.h"
 #include "net/log/net_log_with_source.h"
 #include "net/proxy_resolution/proxy_config.h"
 #include "net/proxy_resolution/proxy_config_service_fixed.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace cronet {
 
@@ -94,11 +95,11 @@ std::unique_ptr<net::MockDnsClient> CreateHangingMockDnsClient() {
 
   net::MockDnsClientRuleList rules;
   rules.emplace_back(
-      kHostname, net::dns_protocol::kTypeA, net::SecureDnsMode::AUTOMATIC,
+      kHostname, net::dns_protocol::kTypeA, false /* secure */,
       net::MockDnsClientRule::Result(net::MockDnsClientRule::FAIL),
       true /* delay */);
   rules.emplace_back(
-      kHostname, net::dns_protocol::kTypeAAAA, net::SecureDnsMode::AUTOMATIC,
+      kHostname, net::dns_protocol::kTypeAAAA, false /* secure */,
       net::MockDnsClientRule::Result(net::MockDnsClientRule::FAIL),
       true /* delay */);
 
@@ -131,8 +132,9 @@ class MockHostResolverProc : public net::HostResolverProc {
 class StaleHostResolverTest : public testing::Test {
  protected:
   StaleHostResolverTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::IO),
+      : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
+        mock_network_change_notifier_(
+            net::test::MockNetworkChangeNotifier::Create()),
         mock_proc_(new MockHostResolverProc(net::OK)),
         resolver_(nullptr),
         resolve_pending_(false),
@@ -174,13 +176,26 @@ class StaleHostResolverTest : public testing::Test {
 
   std::unique_ptr<net::ContextHostResolver>
   CreateMockInnerResolverWithDnsClient(
-      std::unique_ptr<net::DnsClient> dns_client) {
+      std::unique_ptr<net::DnsClient> dns_client,
+      net::URLRequestContext* context = nullptr) {
     std::unique_ptr<net::ContextHostResolver> inner_resolver(
         net::HostResolver::CreateStandaloneContextResolver(nullptr));
+    if (context)
+      inner_resolver->SetRequestContext(context);
 
     net::ProcTaskParams proc_params(mock_proc_.get(), 1u);
     inner_resolver->SetProcParamsForTesting(proc_params);
-    inner_resolver->SetDnsClientForTesting(std::move(dns_client));
+    if (dns_client) {
+      inner_resolver->GetManagerForTesting()->SetDnsClientForTesting(
+          std::move(dns_client));
+      inner_resolver->GetManagerForTesting()->SetInsecureDnsClientEnabled(
+          /*enabled=*/true,
+          /*additional_dns_types_enabled=*/true);
+    } else {
+      inner_resolver->GetManagerForTesting()->SetInsecureDnsClientEnabled(
+          /*enabled=*/false,
+          /*additional_dns_types_enabled=*/false);
+    }
     return inner_resolver;
   }
 
@@ -202,10 +217,11 @@ class StaleHostResolverTest : public testing::Test {
     resolver_ = nullptr;
   }
 
-  void SetResolver(StaleHostResolver* stale_resolver) {
+  void SetResolver(StaleHostResolver* stale_resolver,
+                   net::URLRequestContext* context = nullptr) {
     DCHECK(!resolver_);
     stale_resolver->inner_resolver_ =
-        CreateMockInnerResolverWithDnsClient(nullptr);
+        CreateMockInnerResolverWithDnsClient(nullptr /* dns_client */, context);
     resolver_ = stale_resolver;
   }
 
@@ -215,7 +231,9 @@ class StaleHostResolverTest : public testing::Test {
     DCHECK(resolver_->GetHostCache());
 
     base::TimeDelta ttl(base::TimeDelta::FromSeconds(kCacheEntryTTLSec));
-    net::HostCache::Key key(kHostname, net::ADDRESS_FAMILY_UNSPECIFIED, 0);
+    net::HostCache::Key key(kHostname, net::DnsQueryType::UNSPECIFIED, 0,
+                            net::HostResolverSource::ANY,
+                            net::NetworkIsolationKey());
     net::HostCache::Entry entry(
         error,
         error == net::OK ? MakeAddressList(kCacheAddress) : net::AddressList(),
@@ -236,21 +254,23 @@ class StaleHostResolverTest : public testing::Test {
     DCHECK(resolver_);
     DCHECK(resolver_->GetHostCache());
 
-    net::HostCache::Key key(kHostname, net::ADDRESS_FAMILY_UNSPECIFIED, 0);
+    net::HostCache::Key key(kHostname, net::DnsQueryType::UNSPECIFIED, 0,
+                            net::HostResolverSource::ANY,
+                            net::NetworkIsolationKey());
     base::TimeTicks now = tick_clock_.NowTicks();
     net::HostCache::EntryStaleness stale;
     EXPECT_TRUE(resolver_->GetHostCache()->LookupStale(key, now, &stale));
     EXPECT_TRUE(stale.is_stale());
   }
 
-  void Resolve(const base::Optional<StaleHostResolver::ResolveHostParameters>&
+  void Resolve(const absl::optional<StaleHostResolver::ResolveHostParameters>&
                    optional_parameters) {
     DCHECK(resolver_);
     EXPECT_FALSE(resolve_pending_);
 
-    request_ =
-        resolver_->CreateRequest(net::HostPortPair(kHostname, kPort),
-                                 net::NetLogWithSource(), optional_parameters);
+    request_ = resolver_->CreateRequest(
+        net::HostPortPair(kHostname, kPort), net::NetworkIsolationKey(),
+        net::NetLogWithSource(), optional_parameters);
     resolve_pending_ = true;
     resolve_complete_ = false;
     resolve_error_ = net::ERR_UNEXPECTED;
@@ -273,7 +293,7 @@ class StaleHostResolverTest : public testing::Test {
     // Run until resolve completes or timeout.
     resolve_closure_ = run_loop.QuitWhenIdleClosure();
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitWhenIdleClosure(),
+        FROM_HERE, resolve_closure_,
         base::TimeDelta::FromSeconds(kWaitTimeoutSec));
     run_loop.Run();
   }
@@ -294,7 +314,7 @@ class StaleHostResolverTest : public testing::Test {
     // returns |kNetworkAddress|.
     while (resolve_error() != net::OK ||
            resolve_addresses()[0].ToStringWithoutPort() != kNetworkAddress) {
-      Resolve(base::nullopt);
+      Resolve(absl::nullopt);
       WaitForResolve();
     }
   }
@@ -316,7 +336,7 @@ class StaleHostResolverTest : public testing::Test {
     resolve_complete_ = true;
 
     if (!resolve_closure_.is_null())
-      base::ResetAndReturn(&resolve_closure_).Run();
+      std::move(resolve_closure_).Run();
   }
 
   void AdvanceTickClock(base::TimeDelta delta) { tick_clock_.Advance(delta); }
@@ -330,9 +350,10 @@ class StaleHostResolverTest : public testing::Test {
 
  private:
   // Needed for HostResolver to run HostResolverProc callbacks.
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::SimpleTestTickClock tick_clock_;
-  net::test::MockNetworkChangeNotifier mock_network_change_notifier_;
+  std::unique_ptr<net::test::MockNetworkChangeNotifier>
+      mock_network_change_notifier_;
 
   scoped_refptr<MockHostResolverProc> mock_proc_;
 
@@ -346,7 +367,7 @@ class StaleHostResolverTest : public testing::Test {
   bool resolve_complete_;
   int resolve_error_;
 
-  base::Closure resolve_closure_;
+  base::RepeatingClosure resolve_closure_;
 };
 
 // Make sure that test harness can be created and destroyed without crashing.
@@ -360,7 +381,7 @@ TEST_F(StaleHostResolverTest, Create) {
 TEST_F(StaleHostResolverTest, Network) {
   CreateResolver();
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   WaitForResolve();
 
   EXPECT_TRUE(resolve_complete());
@@ -372,7 +393,7 @@ TEST_F(StaleHostResolverTest, Network) {
 TEST_F(StaleHostResolverTest, Hosts) {
   CreateResolverWithDnsClient(CreateMockDnsClientForHosts());
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   WaitForResolve();
 
   EXPECT_TRUE(resolve_complete());
@@ -385,7 +406,7 @@ TEST_F(StaleHostResolverTest, FreshCache) {
   CreateResolver();
   CreateCacheEntry(kAgeFreshSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
 
   EXPECT_TRUE(resolve_complete());
   EXPECT_EQ(net::OK, resolve_error());
@@ -406,7 +427,7 @@ TEST_F(StaleHostResolverTest, MAYBE_StaleCache) {
   CreateResolver();
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   WaitForResolve();
 
   EXPECT_TRUE(resolve_complete());
@@ -422,7 +443,7 @@ TEST_F(StaleHostResolverTest, StaleCache_DestroyedResolver) {
   CreateResolverWithDnsClient(CreateHangingMockDnsClient());
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   DestroyResolver();
   WaitForResolve();
 
@@ -438,7 +459,7 @@ TEST_F(StaleHostResolverTest, StaleCacheNameNotResolvedEnabled) {
   CreateResolver();
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   WaitForResolve();
 
   EXPECT_TRUE(resolve_complete());
@@ -455,7 +476,7 @@ TEST_F(StaleHostResolverTest, StaleCacheNameNotResolvedDisabled) {
   CreateResolver();
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   WaitForResolve();
 
   EXPECT_TRUE(resolve_complete());
@@ -467,7 +488,7 @@ TEST_F(StaleHostResolverTest, NetworkWithStaleCache) {
   CreateResolver();
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   WaitForResolve();
 
   EXPECT_TRUE(resolve_complete());
@@ -480,7 +501,7 @@ TEST_F(StaleHostResolverTest, CancelWithNoCache) {
   SetStaleDelay(kNoStaleDelaySec);
   CreateResolver();
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
 
   Cancel();
 
@@ -495,7 +516,7 @@ TEST_F(StaleHostResolverTest, CancelWithStaleCache) {
   CreateResolver();
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
 
   Cancel();
 
@@ -608,7 +629,7 @@ TEST_F(StaleHostResolverTest, MAYBE_StaleUsability) {
       LookupStale();
 
     AdvanceTickClock(base::TimeDelta::FromMilliseconds(1));
-    Resolve(base::nullopt);
+    Resolve(absl::nullopt);
     WaitForResolve();
     EXPECT_TRUE(resolve_complete()) << i;
 
@@ -676,23 +697,23 @@ TEST_F(StaleHostResolverTest, CreatedByContext) {
       // Enable Public Key Pinning bypass for local trust anchors.
       true,
       // Optional network thread priority.
-      base::Optional<double>());
+      absl::optional<double>());
 
   net::URLRequestContextBuilder builder;
-  net::NetLog net_log;
-  config.ConfigureURLRequestContextBuilder(&builder, &net_log);
+  config.ConfigureURLRequestContextBuilder(&builder);
   // Set a ProxyConfigService to avoid DCHECK failure when building.
   builder.set_proxy_config_service(
-      base::WrapUnique(new net::ProxyConfigServiceFixed(
-          net::ProxyConfigWithAnnotation::CreateDirect())));
+      std::make_unique<net::ProxyConfigServiceFixed>(
+          net::ProxyConfigWithAnnotation::CreateDirect()));
   std::unique_ptr<net::URLRequestContext> context(builder.Build());
 
   // Experimental options ensure context's resolver is a StaleHostResolver.
-  SetResolver(reinterpret_cast<StaleHostResolver*>(context->host_resolver()));
+  SetResolver(static_cast<StaleHostResolver*>(context->host_resolver()),
+              context.get());
   // Note: Experimental config above sets 0ms stale delay.
   CreateCacheEntry(kAgeExpiredSec, net::OK);
 
-  Resolve(base::nullopt);
+  Resolve(absl::nullopt);
   EXPECT_FALSE(resolve_complete());
   WaitForResolve();
 

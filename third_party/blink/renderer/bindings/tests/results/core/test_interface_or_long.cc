@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/test_interface_or_long.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -63,7 +63,7 @@ TestInterfaceOrLong::TestInterfaceOrLong(const TestInterfaceOrLong&) = default;
 TestInterfaceOrLong::~TestInterfaceOrLong() = default;
 TestInterfaceOrLong& TestInterfaceOrLong::operator=(const TestInterfaceOrLong&) = default;
 
-void TestInterfaceOrLong::Trace(blink::Visitor* visitor) {
+void TestInterfaceOrLong::Trace(Visitor* visitor) const {
   visitor->Trace(test_interface_);
 }
 
@@ -86,7 +86,7 @@ void V8TestInterfaceOrLong::ToImpl(
   }
 
   if (v8_value->IsNumber()) {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -94,7 +94,7 @@ void V8TestInterfaceOrLong::ToImpl(
   }
 
   {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -124,3 +124,4 @@ TestInterfaceOrLong NativeValueTraits<TestInterfaceOrLong>::NativeValue(
 }
 
 }  // namespace blink
+

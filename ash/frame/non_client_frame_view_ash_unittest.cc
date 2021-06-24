@@ -6,34 +6,34 @@
 
 #include <memory>
 
-#include "ash/accelerators/accelerator_controller.h"
+#include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/frame/header_view.h"
 #include "ash/frame/wide_frame_view.h"
-#include "ash/public/cpp/ash_switches.h"
-#include "ash/public/cpp/caption_buttons/frame_caption_button_container_view.h"
-#include "ash/public/cpp/default_frame_header.h"
-#include "ash/public/cpp/immersive/immersive_fullscreen_controller.h"
-#include "ash/public/cpp/immersive/immersive_fullscreen_controller_test_api.h"
-#include "ash/public/cpp/vector_icons/vector_icons.h"
-#include "ash/public/cpp/window_properties.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/desks/desks_util.h"
 #include "ash/wm/overview/overview_controller.h"
+#include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_state_delegate.h"
 #include "ash/wm/wm_event.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
-#include "services/ws/public/mojom/window_tree_constants.mojom.h"
+#include "chromeos/ui/base/window_properties.h"
+#include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
+#include "chromeos/ui/frame/default_frame_header.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller_test_api.h"
+#include "chromeos/ui/vector_icons/vector_icons.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_targeter.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/test_accelerator_target.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/rect.h"
@@ -49,6 +49,14 @@
 
 namespace ash {
 
+using ::chromeos::DefaultFrameHeader;
+using ::chromeos::FrameCaptionButtonContainerView;
+using ::chromeos::ImmersiveFullscreenController;
+using ::chromeos::ImmersiveFullscreenControllerDelegate;
+using ::chromeos::ImmersiveFullscreenControllerTestApi;
+using ::chromeos::kFrameActiveColorKey;
+using ::chromeos::kFrameInactiveColorKey;
+
 // A views::WidgetDelegate which uses a NonClientFrameViewAsh.
 class NonClientFrameViewAshTestWidgetDelegate
     : public views::WidgetDelegateView {
@@ -56,10 +64,12 @@ class NonClientFrameViewAshTestWidgetDelegate
   NonClientFrameViewAshTestWidgetDelegate() = default;
   ~NonClientFrameViewAshTestWidgetDelegate() override = default;
 
-  views::NonClientFrameView* CreateNonClientFrameView(
+  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
       views::Widget* widget) override {
-    non_client_frame_view_ = new NonClientFrameViewAsh(widget);
-    return non_client_frame_view_;
+    auto non_client_frame_view =
+        std::make_unique<NonClientFrameViewAsh>(widget);
+    non_client_frame_view_ = non_client_frame_view.get();
+    return non_client_frame_view;
   }
 
   int GetNonClientFrameViewTopBorderHeight() {
@@ -84,7 +94,10 @@ class NonClientFrameViewAshTestWidgetDelegate
 class TestWidgetConstraintsDelegate
     : public NonClientFrameViewAshTestWidgetDelegate {
  public:
-  TestWidgetConstraintsDelegate() = default;
+  TestWidgetConstraintsDelegate() {
+    SetCanMaximize(true);
+    SetCanMinimize(true);
+  }
   ~TestWidgetConstraintsDelegate() override = default;
 
   // views::View:
@@ -99,10 +112,6 @@ class TestWidgetConstraintsDelegate
   }
 
   // views::WidgetDelegate:
-  bool CanMaximize() const override { return true; }
-
-  bool CanMinimize() const override { return true; }
-
   void set_minimum_size(const gfx::Size& min_size) { minimum_size_ = min_size; }
 
   void set_maximum_size(const gfx::Size& max_size) { maximum_size_ = max_size; }
@@ -169,7 +178,7 @@ TEST_F(NonClientFrameViewAshTest, ActiveStateOfButtonMatchesWidget) {
   EXPECT_TRUE(widget->IsActive());
   // The paint state doesn't change till the next paint.
   ui::DrawWaiterForTest::WaitForCommit(widget->GetLayer()->GetCompositor());
-  EXPECT_TRUE(test_api.size_button()->paint_as_active());
+  EXPECT_TRUE(test_api.size_button()->GetPaintAsActive());
 
   // Activate a different widget so the original one loses activation.
   std::unique_ptr<views::Widget> widget2 =
@@ -178,7 +187,7 @@ TEST_F(NonClientFrameViewAshTest, ActiveStateOfButtonMatchesWidget) {
   ui::DrawWaiterForTest::WaitForCommit(widget->GetLayer()->GetCompositor());
 
   EXPECT_FALSE(widget->IsActive());
-  EXPECT_FALSE(test_api.size_button()->paint_as_active());
+  EXPECT_FALSE(test_api.size_button()->GetPaintAsActive());
 }
 
 // Verify that NonClientFrameViewAsh returns the correct minimum and maximum
@@ -220,26 +229,6 @@ TEST_F(NonClientFrameViewAshTest, MinimumAndMaximumSize) {
             min_frame_size.height());
   EXPECT_EQ(max_client_size.height() + delegate->GetTitleBarHeight(),
             max_frame_size.height());
-}
-
-// Verify that NonClientFrameViewAsh returns the correct minimum frame size when
-// the kMinimumSize property is set.
-TEST_F(NonClientFrameViewAshTest, HonorsMinimumSizeProperty) {
-  const gfx::Size min_client_size(500, 500);
-  TestWidgetConstraintsDelegate* delegate = new TestWidgetConstraintsDelegate;
-  delegate->set_minimum_size(min_client_size);
-  std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
-
-  // Update the native window's minimum size property.
-  const gfx::Size min_window_size(600, 700);
-  widget->GetNativeWindow()->SetProperty(aura::client::kMinimumSize,
-                                         new gfx::Size(min_window_size));
-
-  NonClientFrameViewAsh* non_client_frame_view =
-      delegate->non_client_frame_view();
-  const gfx::Size min_frame_size = non_client_frame_view->GetMinimumSize();
-
-  EXPECT_EQ(min_window_size, min_frame_size);
 }
 
 // Verify that NonClientFrameViewAsh updates the avatar icon based on the
@@ -284,8 +273,8 @@ TEST_F(NonClientFrameViewAshTest, ToggleTabletModeOnMinimizedWindow) {
   widget->Minimize();
 
   // Enter and exit tablet mode while the window is minimized.
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(false);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(false);
 
   // When unminimizing in non-tablet mode, size button should match with
   // maximized window state, which is restore icon.
@@ -303,7 +292,7 @@ TEST_F(NonClientFrameViewAshTest, FrameHiddenInTabletModeForMaximizedWindows) {
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
   widget->Maximize();
 
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   EXPECT_EQ(0, delegate->GetNonClientFrameViewTopBorderHeight());
 }
 
@@ -314,7 +303,7 @@ TEST_F(NonClientFrameViewAshTest,
   auto* delegate = new NonClientFrameViewAshTestWidgetDelegate();
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
 
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   EXPECT_EQ(views::GetCaptionButtonLayoutSize(
                 views::CaptionButtonLayoutSize::kNonBrowserCaption)
                 .height(),
@@ -331,9 +320,9 @@ TEST_F(NonClientFrameViewAshTest,
 
   widget->SetFullscreen(true);
   EXPECT_EQ(0, delegate->GetNonClientFrameViewTopBorderHeight());
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   EXPECT_EQ(0, delegate->GetNonClientFrameViewTopBorderHeight());
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(false);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(false);
   EXPECT_EQ(0, delegate->GetNonClientFrameViewTopBorderHeight());
 }
 
@@ -342,7 +331,7 @@ TEST_F(NonClientFrameViewAshTest, OpeningAppsInTabletMode) {
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
   widget->Maximize();
 
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   EXPECT_EQ(0, delegate->GetNonClientFrameViewTopBorderHeight());
 
   // Verify that after minimizing and showing the widget, the height of the
@@ -355,11 +344,11 @@ TEST_F(NonClientFrameViewAshTest, OpeningAppsInTabletMode) {
   // Verify that when we toggle maximize, the header is shown. For example,
   // maximized can be toggled in tablet mode by using the accessibility
   // keyboard.
-  wm::WMEvent event(wm::WM_EVENT_TOGGLE_MAXIMIZE);
-  wm::GetWindowState(widget->GetNativeWindow())->OnWMEvent(&event);
+  WMEvent event(WM_EVENT_TOGGLE_MAXIMIZE);
+  WindowState::Get(widget->GetNativeWindow())->OnWMEvent(&event);
   EXPECT_EQ(0, delegate->GetNonClientFrameViewTopBorderHeight());
 
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(false);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(false);
   EXPECT_EQ(views::GetCaptionButtonLayoutSize(
                 views::CaptionButtonLayoutSize::kNonBrowserCaption)
                 .height(),
@@ -369,11 +358,11 @@ TEST_F(NonClientFrameViewAshTest, OpeningAppsInTabletMode) {
 // Test if creating a new window in tablet mode uses maximzied state
 // and immersive mode.
 TEST_F(NonClientFrameViewAshTest, GetPreferredOnScreenHeightInTabletMaximzied) {
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
 
   auto* delegate = new TestWidgetConstraintsDelegate;
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
-  auto* frame_view = static_cast<ash::NonClientFrameViewAsh*>(
+  auto* frame_view = static_cast<NonClientFrameViewAsh*>(
       widget->non_client_view()->frame_view());
   auto* header_view = frame_view->GetHeaderView();
   ASSERT_TRUE(widget->IsMaximized());
@@ -392,83 +381,51 @@ TEST_F(NonClientFrameViewAshTest, GetPreferredOnScreenHeightInTabletMaximzied) {
 TEST_F(NonClientFrameViewAshTest, MinimizedWindowsInTabletMode) {
   std::unique_ptr<views::Widget> widget =
       CreateTestWidget(new NonClientFrameViewAshTestWidgetDelegate);
-  widget->GetNativeWindow()->SetProperty(aura::client::kResizeBehaviorKey,
-                                         ws::mojom::kResizeBehaviorCanMaximize);
+  widget->GetNativeWindow()->SetProperty(
+      aura::client::kResizeBehaviorKey,
+      aura::client::kResizeBehaviorCanMaximize);
   widget->Maximize();
   widget->Minimize();
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
 
   widget->Show();
   EXPECT_EQ(widget->non_client_view()->bounds(),
             widget->client_view()->bounds());
 }
 
-TEST_F(NonClientFrameViewAshTest, HeaderVisibilityInOverviewMode) {
+TEST_F(NonClientFrameViewAshTest, HeaderVisibilityInFullscreen) {
   auto* delegate = new NonClientFrameViewAshTestWidgetDelegate();
-  std::unique_ptr<views::Widget> widget =
-      CreateTestWidget(delegate, desks_util::GetActiveDeskContainerId(),
-                       gfx::Rect(0, 0, 400, 500));
+  std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
+  NonClientFrameViewAsh* non_client_frame_view =
+      delegate->non_client_frame_view();
+  HeaderView* header_view = non_client_frame_view->GetHeaderView();
+  EXPECT_FALSE(header_view->in_immersive_mode());
+  EXPECT_TRUE(header_view->GetVisible());
+  widget->SetFullscreen(true);
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(header_view->in_immersive_mode());
+  EXPECT_TRUE(header_view->GetVisible());
+  widget->SetFullscreen(false);
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(header_view->in_immersive_mode());
+  EXPECT_TRUE(header_view->GetVisible());
 
-  // Verify the header is not painted in overview mode and painted when not in
-  // overview mode.
-  Shell::Get()->overview_controller()->ToggleOverview();
-  EXPECT_FALSE(delegate->header_view()->should_paint());
-
-  Shell::Get()->overview_controller()->ToggleOverview();
-  EXPECT_TRUE(delegate->header_view()->should_paint());
-}
-
-TEST_F(NonClientFrameViewAshTest, HeaderVisibilityInSplitview) {
-  auto create_widget = [](NonClientFrameViewAshTestWidgetDelegate* delegate) {
-    std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
-    // Windows need to be resizable and maximizable to be used in splitview.
-    widget->GetNativeWindow()->SetProperty(
-        aura::client::kResizeBehaviorKey,
-        ws::mojom::kResizeBehaviorCanMaximize |
-            ws::mojom::kResizeBehaviorCanResize);
-    return widget;
-  };
-
-  auto* delegate1 = new NonClientFrameViewAshTestWidgetDelegate();
-  auto widget1 = create_widget(delegate1);
-  auto* delegate2 = new NonClientFrameViewAshTestWidgetDelegate();
-  auto widget2 = create_widget(delegate2);
-
-  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
-
-  // Verify that when one window is snapped, the header is drawn for the snapped
-  // window, but not drawn for the window still in overview.
-  Shell::Get()->overview_controller()->ToggleOverview();
-  Shell::Get()->split_view_controller()->SnapWindow(widget1->GetNativeWindow(),
-                                                    SplitViewController::LEFT);
-  EXPECT_TRUE(delegate1->header_view()->should_paint());
-  EXPECT_EQ(0, delegate1->GetNonClientFrameViewTopBorderHeight());
-  EXPECT_FALSE(delegate2->header_view()->should_paint());
-
-  // Verify that when both windows are snapped, the header is drawn for both.
-  Shell::Get()->split_view_controller()->SnapWindow(widget2->GetNativeWindow(),
-                                                    SplitViewController::RIGHT);
-  EXPECT_TRUE(delegate1->header_view()->should_paint());
-  EXPECT_TRUE(delegate2->header_view()->should_paint());
-  EXPECT_EQ(0, delegate1->GetNonClientFrameViewTopBorderHeight());
-  EXPECT_EQ(0, delegate2->GetNonClientFrameViewTopBorderHeight());
-
-  // Toggle overview mode so we return back to left snapped mode. Verify that
-  // the header is again drawn for the snapped window, but not for the unsnapped
-  // window.
-  Shell::Get()->overview_controller()->ToggleOverview();
-  ASSERT_EQ(SplitViewController::LEFT_SNAPPED,
-            Shell::Get()->split_view_controller()->state());
-  EXPECT_TRUE(delegate1->header_view()->should_paint());
-  EXPECT_EQ(0, delegate1->GetNonClientFrameViewTopBorderHeight());
-  EXPECT_FALSE(delegate2->header_view()->should_paint());
-
-  Shell::Get()->split_view_controller()->EndSplitView();
+  // Turn immersive off, and make sure that header view is invisible
+  // in fullscreen.
+  widget->SetFullscreen(true);
+  ImmersiveFullscreenController::EnableForWidget(widget.get(), false);
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(header_view->in_immersive_mode());
+  EXPECT_FALSE(header_view->GetVisible());
+  widget->SetFullscreen(false);
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(header_view->in_immersive_mode());
+  EXPECT_TRUE(header_view->GetVisible());
 }
 
 namespace {
 
-class TestButtonModel : public CaptionButtonModel {
+class TestButtonModel : public chromeos::CaptionButtonModel {
  public:
   TestButtonModel() = default;
   ~TestButtonModel() override = default;
@@ -509,8 +466,8 @@ class TestButtonModel : public CaptionButtonModel {
 }  // namespace
 
 TEST_F(NonClientFrameViewAshTest, BackButton) {
-  ash::AcceleratorController* controller =
-      ash::Shell::Get()->accelerator_controller();
+  AcceleratorControllerImpl* controller =
+      Shell::Get()->accelerator_controller();
   std::unique_ptr<TestButtonModel> model = std::make_unique<TestButtonModel>();
   TestButtonModel* model_ptr = model.get();
 
@@ -537,8 +494,9 @@ TEST_F(NonClientFrameViewAshTest, BackButton) {
   EXPECT_FALSE(header_view->GetBackButton());
   model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_BACK, true);
   non_client_frame_view->SizeConstraintsChanged();
+  widget->LayoutRootViewIfNecessary();
   EXPECT_TRUE(header_view->GetBackButton());
-  EXPECT_FALSE(header_view->GetBackButton()->enabled());
+  EXPECT_FALSE(header_view->GetBackButton()->GetEnabled());
 
   // Back button is disabled, so clicking on it should not should
   // generate back key sequence.
@@ -551,8 +509,9 @@ TEST_F(NonClientFrameViewAshTest, BackButton) {
 
   model_ptr->SetEnabled(views::CAPTION_BUTTON_ICON_BACK, true);
   non_client_frame_view->SizeConstraintsChanged();
+  widget->LayoutRootViewIfNecessary();
   EXPECT_TRUE(header_view->GetBackButton());
-  EXPECT_TRUE(header_view->GetBackButton()->enabled());
+  EXPECT_TRUE(header_view->GetBackButton()->GetEnabled());
 
   // Back button is now enabled, so clicking on it should generate
   // back key sequence.
@@ -565,6 +524,7 @@ TEST_F(NonClientFrameViewAshTest, BackButton) {
 
   model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_BACK, false);
   non_client_frame_view->SizeConstraintsChanged();
+  widget->LayoutRootViewIfNecessary();
   EXPECT_FALSE(header_view->GetBackButton());
 }
 
@@ -583,19 +543,19 @@ TEST_F(NonClientFrameViewAshTest, FrameVisibility) {
       delegate->non_client_frame_view();
   EXPECT_EQ(client_bounds, widget->client_view()->GetLocalBounds().size());
 
-  non_client_frame_view->SetVisible(false);
+  non_client_frame_view->SetFrameEnabled(false);
   widget->GetRootView()->Layout();
   EXPECT_EQ(gfx::Size(200, 100),
             widget->client_view()->GetLocalBounds().size());
-  EXPECT_FALSE(widget->non_client_view()->frame_view()->visible());
+  EXPECT_FALSE(non_client_frame_view->GetFrameEnabled());
   EXPECT_EQ(
       window_bounds,
       non_client_frame_view->GetClientBoundsForWindowBounds(window_bounds));
 
-  non_client_frame_view->SetVisible(true);
+  non_client_frame_view->SetFrameEnabled(true);
   widget->GetRootView()->Layout();
   EXPECT_EQ(client_bounds, widget->client_view()->GetLocalBounds().size());
-  EXPECT_TRUE(widget->non_client_view()->frame_view()->visible());
+  EXPECT_TRUE(non_client_frame_view->GetFrameEnabled());
   EXPECT_EQ(32, delegate->GetNonClientFrameViewTopBorderHeight());
   EXPECT_EQ(
       gfx::Rect(gfx::Point(10, 42), client_bounds),
@@ -617,64 +577,78 @@ TEST_F(NonClientFrameViewAshTest, CustomButtonModel) {
   FrameCaptionButtonContainerView::TestApi test_api(
       header_view->caption_button_container());
 
-  // CLOSE buttion is always visible and enabled.
+  // CLOSE button is always enabled.
   EXPECT_TRUE(test_api.close_button());
-  EXPECT_TRUE(test_api.close_button()->visible());
-  EXPECT_TRUE(test_api.close_button()->enabled());
+  EXPECT_FALSE(test_api.close_button()->GetVisible());
+  EXPECT_TRUE(test_api.close_button()->GetEnabled());
 
-  EXPECT_FALSE(test_api.minimize_button()->visible());
-  EXPECT_FALSE(test_api.size_button()->visible());
-  EXPECT_FALSE(test_api.menu_button()->visible());
+  model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_CLOSE, true);
+  non_client_frame_view->SizeConstraintsChanged();
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.close_button()->GetVisible());
+
+  EXPECT_FALSE(test_api.minimize_button()->GetVisible());
+  EXPECT_FALSE(test_api.size_button()->GetVisible());
+  EXPECT_FALSE(test_api.menu_button()->GetVisible());
 
   // Back button
   model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_BACK, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(header_view->GetBackButton()->visible());
-  EXPECT_FALSE(header_view->GetBackButton()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(header_view->GetBackButton()->GetVisible());
+  EXPECT_FALSE(header_view->GetBackButton()->GetEnabled());
 
   model_ptr->SetEnabled(views::CAPTION_BUTTON_ICON_BACK, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(header_view->GetBackButton()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(header_view->GetBackButton()->GetEnabled());
 
   // size button
   model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_MAXIMIZE_RESTORE, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(test_api.size_button()->visible());
-  EXPECT_FALSE(test_api.size_button()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.size_button()->GetVisible());
+  EXPECT_FALSE(test_api.size_button()->GetEnabled());
 
   model_ptr->SetEnabled(views::CAPTION_BUTTON_ICON_MAXIMIZE_RESTORE, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(test_api.size_button()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.size_button()->GetEnabled());
 
   // minimize button
   model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_MINIMIZE, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(test_api.minimize_button()->visible());
-  EXPECT_FALSE(test_api.minimize_button()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.minimize_button()->GetVisible());
+  EXPECT_FALSE(test_api.minimize_button()->GetEnabled());
 
   model_ptr->SetEnabled(views::CAPTION_BUTTON_ICON_MINIMIZE, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(test_api.minimize_button()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.minimize_button()->GetEnabled());
 
   // menu button
   model_ptr->SetVisible(views::CAPTION_BUTTON_ICON_MENU, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(test_api.menu_button()->visible());
-  EXPECT_FALSE(test_api.menu_button()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.menu_button()->GetVisible());
+  EXPECT_FALSE(test_api.menu_button()->GetEnabled());
 
   model_ptr->SetEnabled(views::CAPTION_BUTTON_ICON_MENU, true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_TRUE(test_api.menu_button()->enabled());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(test_api.menu_button()->GetEnabled());
 
   // zoom button
   EXPECT_STREQ(views::kWindowControlMaximizeIcon.name,
                test_api.size_button()->icon_definition_for_test()->name);
   model_ptr->set_zoom_mode(true);
   non_client_frame_view->SizeConstraintsChanged();
-  EXPECT_STREQ(kWindowControlZoomIcon.name,
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_STREQ(chromeos::kWindowControlZoomIcon.name,
                test_api.size_button()->icon_definition_for_test()->name);
   widget->Maximize();
-  EXPECT_STREQ(kWindowControlDezoomIcon.name,
+  EXPECT_STREQ(chromeos::kWindowControlDezoomIcon.name,
                test_api.size_button()->icon_definition_for_test()->name);
 }
 
@@ -704,20 +678,17 @@ TEST_F(NonClientFrameViewAshTest, WideFrame) {
   EXPECT_FALSE(header_view->should_paint());
   EXPECT_TRUE(wide_header_view->should_paint());
 
-  Shell::Get()->overview_controller()->ToggleOverview();
-  EXPECT_FALSE(wide_header_view->should_paint());
-  Shell::Get()->overview_controller()->ToggleOverview();
-  EXPECT_TRUE(wide_header_view->should_paint());
-
   // Test immersive.
-  ImmersiveFullscreenController controller(Shell::Get()->immersive_context());
+  ImmersiveFullscreenController controller;
   wide_frame_view->Init(&controller);
   EXPECT_FALSE(wide_header_view->in_immersive_mode());
   EXPECT_FALSE(header_view->in_immersive_mode());
+  EXPECT_TRUE(header_view->GetVisible());
 
   ImmersiveFullscreenController::EnableForWidget(widget.get(), true);
   EXPECT_TRUE(header_view->in_immersive_mode());
   EXPECT_TRUE(wide_header_view->in_immersive_mode());
+  EXPECT_TRUE(header_view->GetVisible());
   // The height should be ~(33 *.5)
   wide_header_view->SetVisibleFraction(0.5);
   EXPECT_NEAR(16, wide_header_view->GetPreferredOnScreenHeight(), 1);
@@ -765,7 +736,7 @@ TEST_F(NonClientFrameViewAshTest, WideFrameButton) {
   std::unique_ptr<views::Widget> widget =
       CreateTestWidget(delegate, desks_util::GetActiveDeskContainerId(),
                        gfx::Rect(100, 0, 400, 500));
-
+  widget->Maximize();
   std::unique_ptr<WideFrameView> wide_frame_view =
       std::make_unique<WideFrameView>(widget.get());
   wide_frame_view->GetWidget()->Show();
@@ -773,27 +744,27 @@ TEST_F(NonClientFrameViewAshTest, WideFrameButton) {
   FrameCaptionButtonContainerView::TestApi test_api(
       header_view->caption_button_container());
 
-  EXPECT_STREQ(views::kWindowControlMaximizeIcon.name,
-               test_api.size_button()->icon_definition_for_test()->name);
-  widget->Maximize();
-  header_view->Layout();
   EXPECT_STREQ(views::kWindowControlRestoreIcon.name,
-               test_api.size_button()->icon_definition_for_test()->name);
-
-  widget->Restore();
-  header_view->Layout();
-  EXPECT_STREQ(views::kWindowControlMaximizeIcon.name,
                test_api.size_button()->icon_definition_for_test()->name);
 
   widget->SetFullscreen(true);
   header_view->Layout();
   EXPECT_STREQ(views::kWindowControlRestoreIcon.name,
                test_api.size_button()->icon_definition_for_test()->name);
-
-  widget->SetFullscreen(false);
-  header_view->Layout();
-  EXPECT_STREQ(views::kWindowControlMaximizeIcon.name,
-               test_api.size_button()->icon_definition_for_test()->name);
+  {
+    WMEvent event(WM_EVENT_PIN);
+    WindowState::Get(widget->GetNativeWindow())->OnWMEvent(&event);
+    header_view->Layout();
+    EXPECT_STREQ(views::kWindowControlRestoreIcon.name,
+                 test_api.size_button()->icon_definition_for_test()->name);
+  }
+  {
+    WMEvent event(WM_EVENT_TRUSTED_PIN);
+    WindowState::Get(widget->GetNativeWindow())->OnWMEvent(&event);
+    header_view->Layout();
+    EXPECT_STREQ(views::kWindowControlRestoreIcon.name,
+                 test_api.size_button()->icon_definition_for_test()->name);
+  }
 }
 
 namespace {
@@ -815,12 +786,11 @@ class TestWidgetDelegate : public TestWidgetConstraintsDelegate {
   ~TestWidgetDelegate() override = default;
 
   // views::WidgetDelegate:
-  views::NonClientFrameView* CreateNonClientFrameView(
+  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
       views::Widget* widget) override {
     if (custom_) {
-      ash::wm::WindowState* window_state =
-          ash::wm::GetWindowState(widget->GetNativeWindow());
-      window_state->SetDelegate(std::make_unique<wm::WindowStateDelegate>());
+      WindowState* window_state = WindowState::Get(widget->GetNativeWindow());
+      window_state->SetDelegate(std::make_unique<WindowStateDelegate>());
     }
     return TestWidgetConstraintsDelegate::CreateNonClientFrameView(widget);
   }
@@ -834,19 +804,18 @@ class TestWidgetDelegate : public TestWidgetConstraintsDelegate {
 }  // namespace
 
 // Verify that NonClientFrameViewAsh updates the active color based on the
-// ash::kFrameActiveColorKey window property.
+// kFrameActiveColorKey window property.
 TEST_P(NonClientFrameViewAshFrameColorTest, kFrameActiveColorKey) {
   TestWidgetDelegate* delegate = new TestWidgetDelegate(GetParam());
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
 
   SkColor active_color =
-      widget->GetNativeWindow()->GetProperty(ash::kFrameActiveColorKey);
+      widget->GetNativeWindow()->GetProperty(kFrameActiveColorKey);
   constexpr SkColor new_color = SK_ColorWHITE;
   EXPECT_NE(active_color, new_color);
 
-  widget->GetNativeWindow()->SetProperty(ash::kFrameActiveColorKey, new_color);
-  active_color =
-      widget->GetNativeWindow()->GetProperty(ash::kFrameActiveColorKey);
+  widget->GetNativeWindow()->SetProperty(kFrameActiveColorKey, new_color);
+  active_color = widget->GetNativeWindow()->GetProperty(kFrameActiveColorKey);
   EXPECT_EQ(active_color, new_color);
   EXPECT_EQ(new_color,
             delegate->non_client_frame_view()->GetActiveFrameColorForTest());
@@ -858,47 +827,45 @@ TEST_P(NonClientFrameViewAshFrameColorTest, kFrameActiveColorKey) {
           ->caption_button_container());
   ui::DrawWaiterForTest::WaitForCommit(widget->GetLayer()->GetCompositor());
   gfx::ImageSkia original_icon_image = test_api.size_button()->icon_image();
-  widget->GetNativeWindow()->SetProperty(ash::kFrameActiveColorKey,
-                                         SK_ColorBLACK);
+  widget->GetNativeWindow()->SetProperty(kFrameActiveColorKey, SK_ColorBLACK);
   ui::DrawWaiterForTest::WaitForCommit(widget->GetLayer()->GetCompositor());
   EXPECT_FALSE(original_icon_image.BackedBySameObjectAs(
       test_api.size_button()->icon_image()));
 }
 
 // Verify that NonClientFrameViewAsh updates the inactive color based on the
-// ash::kFrameInactiveColorKey window property.
+// kFrameInactiveColorKey window property.
 TEST_P(NonClientFrameViewAshFrameColorTest, KFrameInactiveColor) {
   TestWidgetDelegate* delegate = new TestWidgetDelegate(GetParam());
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
 
   SkColor active_color =
-      widget->GetNativeWindow()->GetProperty(ash::kFrameInactiveColorKey);
+      widget->GetNativeWindow()->GetProperty(kFrameInactiveColorKey);
   constexpr SkColor new_color = SK_ColorWHITE;
   EXPECT_NE(active_color, new_color);
 
-  widget->GetNativeWindow()->SetProperty(ash::kFrameInactiveColorKey,
-                                         new_color);
-  active_color =
-      widget->GetNativeWindow()->GetProperty(ash::kFrameInactiveColorKey);
+  widget->GetNativeWindow()->SetProperty(kFrameInactiveColorKey, new_color);
+  active_color = widget->GetNativeWindow()->GetProperty(kFrameInactiveColorKey);
   EXPECT_EQ(active_color, new_color);
   EXPECT_EQ(new_color,
             delegate->non_client_frame_view()->GetInactiveFrameColorForTest());
 }
 
 // Verify that NonClientFrameViewAsh updates the active color based on the
-// ash::kFrameActiveColorKey window property.
+// kFrameActiveColorKey window property.
 TEST_P(NonClientFrameViewAshFrameColorTest, WideFrameInitialColor) {
   TestWidgetDelegate* delegate = new TestWidgetDelegate(GetParam());
   std::unique_ptr<views::Widget> widget = CreateTestWidget(delegate);
+  widget->Maximize();
   aura::Window* window = widget->GetNativeWindow();
-  SkColor active_color = window->GetProperty(ash::kFrameActiveColorKey);
-  SkColor inactive_color = window->GetProperty(ash::kFrameInactiveColorKey);
+  SkColor active_color = window->GetProperty(kFrameActiveColorKey);
+  SkColor inactive_color = window->GetProperty(kFrameInactiveColorKey);
   constexpr SkColor new_active_color = SK_ColorWHITE;
   constexpr SkColor new_inactive_color = SK_ColorBLACK;
   EXPECT_NE(active_color, new_active_color);
   EXPECT_NE(inactive_color, new_inactive_color);
-  window->SetProperty(ash::kFrameActiveColorKey, new_active_color);
-  window->SetProperty(ash::kFrameInactiveColorKey, new_inactive_color);
+  window->SetProperty(kFrameActiveColorKey, new_active_color);
+  window->SetProperty(kFrameInactiveColorKey, new_inactive_color);
 
   std::unique_ptr<WideFrameView> wide_frame_view =
       std::make_unique<WideFrameView>(widget.get());
@@ -908,8 +875,8 @@ TEST_P(NonClientFrameViewAshFrameColorTest, WideFrameInitialColor) {
   EXPECT_EQ(new_inactive_color, header->inactive_frame_color_for_testing());
 }
 
-// Run frame color tests with and without custom wm::WindowStateDelegate.
-INSTANTIATE_TEST_SUITE_P(,
+// Run frame color tests with and without custom WindowStateDelegate.
+INSTANTIATE_TEST_SUITE_P(All,
                          NonClientFrameViewAshFrameColorTest,
                          testing::Bool());
 

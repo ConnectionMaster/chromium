@@ -23,11 +23,12 @@ source_set("sockets_tcp") {
   deps = [
     "//base",
     "//content/public/browser",
+    "//extensions/browser/api",
+    "//extensions/browser/api/socket",
+    "//extensions/common",
     "//extensions/common/api",
     "//net",
   ]
 
-  public_deps = [
-    "//extensions/browser:browser_sources",
-  ]
+  public_deps = [ "//extensions/browser:browser_sources" ]
 }

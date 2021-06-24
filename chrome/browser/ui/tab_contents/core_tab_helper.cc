@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -15,11 +16,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_command_controller.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/render_messages.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/lens/lens_features.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -31,14 +31,17 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/context_menu_params.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/load_states.h"
 #include "net/http/http_request_headers.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/base/l10n/l10n_util.h"
 
-#if !defined(OS_ANDROID)
+#if defined(OS_ANDROID)
+#include "chrome/browser/android/tab_android.h"
+#else
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_list.h"
 #endif
 
@@ -57,18 +60,16 @@ const int kImageSearchThumbnailMaxHeight = 600;
 }  // namespace
 
 CoreTabHelper::CoreTabHelper(WebContents* web_contents)
-    : content::WebContentsObserver(web_contents),
-      content_restrictions_(0),
-      weak_factory_(this) {}
+    : content::WebContentsObserver(web_contents), content_restrictions_(0) {}
 
 CoreTabHelper::~CoreTabHelper() {}
 
-base::string16 CoreTabHelper::GetDefaultTitle() {
+std::u16string CoreTabHelper::GetDefaultTitle() {
   return l10n_util::GetStringUTF16(IDS_DEFAULT_TAB_TITLE);
 }
 
-base::string16 CoreTabHelper::GetStatusText() const {
-  base::string16 status_text;
+std::u16string CoreTabHelper::GetStatusText() const {
+  std::u16string status_text;
   GetStatusTextForWebContents(&status_text, web_contents());
   return status_text;
 }
@@ -84,27 +85,59 @@ void CoreTabHelper::UpdateContentRestrictions(int content_restrictions) {
 #endif
 }
 
+void CoreTabHelper::SearchWithLensInNewTab(
+    content::RenderFrameHost* render_frame_host,
+    const GURL& src_url) {
+  SearchByImageInNewTabImpl(
+      render_frame_host, src_url, kImageSearchThumbnailMinSize,
+      lens::features::GetMaxPixels(), lens::features::GetMaxPixels());
+}
+
 void CoreTabHelper::SearchByImageInNewTab(
     content::RenderFrameHost* render_frame_host,
     const GURL& src_url) {
-  chrome::mojom::ChromeRenderFrameAssociatedPtr chrome_render_frame;
+  SearchByImageInNewTabImpl(
+      render_frame_host, src_url, kImageSearchThumbnailMinSize,
+      kImageSearchThumbnailMaxWidth, kImageSearchThumbnailMaxHeight);
+}
+
+void CoreTabHelper::SearchByImageInNewTabImpl(
+    content::RenderFrameHost* render_frame_host,
+    const GURL& src_url,
+    int thumbnail_min_size,
+    int thumbnail_max_width,
+    int thumbnail_max_height) {
+  mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> chrome_render_frame;
   render_frame_host->GetRemoteAssociatedInterfaces()->GetInterface(
       &chrome_render_frame);
   // Bind the InterfacePtr into the callback so that it's kept alive until
   // there's either a connection error or a response.
   auto* thumbnail_capturer_proxy = chrome_render_frame.get();
-  thumbnail_capturer_proxy->RequestThumbnailForContextNode(
-      kImageSearchThumbnailMinSize,
-      gfx::Size(kImageSearchThumbnailMaxWidth, kImageSearchThumbnailMaxHeight),
+  thumbnail_capturer_proxy->RequestImageForContextNode(
+      thumbnail_min_size, gfx::Size(thumbnail_max_width, thumbnail_max_height),
       chrome::mojom::ImageFormat::JPEG,
-      base::Bind(&CoreTabHelper::DoSearchByImageInNewTab,
-                 weak_factory_.GetWeakPtr(), base::Passed(&chrome_render_frame),
-                 src_url));
+      base::BindOnce(&CoreTabHelper::DoSearchByImageInNewTab,
+                     weak_factory_.GetWeakPtr(), std::move(chrome_render_frame),
+                     src_url));
+}
+
+std::unique_ptr<content::WebContents> CoreTabHelper::SwapWebContents(
+    std::unique_ptr<content::WebContents> new_contents,
+    bool did_start_load,
+    bool did_finish_load) {
+#if defined(OS_ANDROID)
+  TabAndroid* tab = TabAndroid::FromWebContents(web_contents());
+  return tab->SwapWebContents(std::move(new_contents), did_start_load,
+                              did_finish_load);
+#else
+  Browser* browser = chrome::FindBrowserWithWebContents(web_contents());
+  return browser->SwapWebContents(web_contents(), std::move(new_contents));
+#endif
 }
 
 // static
-bool CoreTabHelper::GetStatusTextForWebContents(
-    base::string16* status_text, content::WebContents* source) {
+bool CoreTabHelper::GetStatusTextForWebContents(std::u16string* status_text,
+                                                content::WebContents* source) {
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   auto* guest_manager = guest_view::GuestViewManager::FromBrowserContext(
       source->GetBrowserContext());
@@ -199,8 +232,8 @@ bool CoreTabHelper::GetStatusTextForWebContents(
     return false;
 
   return guest_manager->ForEachGuest(
-      source, base::Bind(&CoreTabHelper::GetStatusTextForWebContents,
-                         status_text));
+      source, base::BindRepeating(&CoreTabHelper::GetStatusTextForWebContents,
+                                  status_text));
 #else  // !BUILDFLAG(ENABLE_EXTENSIONS)
   return false;
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
@@ -231,13 +264,35 @@ void CoreTabHelper::NavigationEntriesDeleted() {
 #endif
 }
 
+// Notify browser commands that depend on whether focus is in the
+// web contents or not.
+void CoreTabHelper::OnWebContentsFocused(
+    content::RenderWidgetHost* render_widget_host) {
+#if !defined(OS_ANDROID)
+  Browser* browser = chrome::FindBrowserWithWebContents(web_contents());
+  if (browser)
+    browser->command_controller()->WebContentsFocusChanged();
+#endif  // defined(OS_ANDROID)
+}
+
+void CoreTabHelper::OnWebContentsLostFocus(
+    content::RenderWidgetHost* render_widget_host) {
+#if !defined(OS_ANDROID)
+  Browser* browser = chrome::FindBrowserWithWebContents(web_contents());
+  if (browser)
+    browser->command_controller()->WebContentsFocusChanged();
+#endif  // defined(OS_ANDROID)
+}
+
 // Handles the image thumbnail for the context node, composes a image search
 // request based on the received thumbnail and opens the request in a new tab.
 void CoreTabHelper::DoSearchByImageInNewTab(
-    chrome::mojom::ChromeRenderFrameAssociatedPtr chrome_render_frame,
+    mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame>
+        chrome_render_frame,
     const GURL& src_url,
     const std::vector<uint8_t>& thumbnail_data,
-    const gfx::Size& original_size) {
+    const gfx::Size& original_size,
+    const std::string& image_extension) {
   if (thumbnail_data.empty())
     return;
 
@@ -254,7 +309,7 @@ void CoreTabHelper::DoSearchByImageInNewTab(
     return;
 
   TemplateURLRef::SearchTermsArgs search_args =
-      TemplateURLRef::SearchTermsArgs(base::string16());
+      TemplateURLRef::SearchTermsArgs(std::u16string());
   search_args.image_thumbnail_content.assign(thumbnail_data.begin(),
                                              thumbnail_data.end());
   search_args.image_url = src_url;
@@ -272,7 +327,6 @@ void CoreTabHelper::DoSearchByImageInNewTab(
   const std::string& post_data = post_content.second;
   if (!post_data.empty()) {
     DCHECK(!content_type.empty());
-    open_url_params.uses_post = true;
     open_url_params.post_data = network::ResourceRequestBody::CreateFromBytes(
         post_data.data(), post_data.size());
     open_url_params.extra_headers += base::StringPrintf(

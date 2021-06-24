@@ -6,94 +6,114 @@
  * @fileoverview 'settings-search-engine-entry' is a component for showing a
  * search engine with its name, domain and query URL.
  */
-Polymer({
-  is: 'settings-search-engine-entry',
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.m.js';
+import 'chrome://resources/cr_elements/icons.m.js';
+import '../controls/extension_controlled_indicator.js';
+import './search_engine_entry_css.js';
+import '../settings_shared_css.js';
+import '../site_favicon.js';
 
-  behaviors: [cr.ui.FocusRowBehavior],
+import {AnchorAlignment} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.m.js';
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {FocusRowBehavior, FocusRowBehaviorInterface} from 'chrome://resources/js/cr/ui/focus_row_behavior.m.js';
+import {html, mixinBehaviors, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-  properties: {
-    /** @type {!SearchEngine} */
-    engine: Object,
+import {SearchEngine, SearchEnginesBrowserProxy, SearchEnginesBrowserProxyImpl} from './search_engines_browser_proxy.js';
 
-    /** @type {boolean} */
-    isDefault: {
-      reflectToAttribute: true,
-      type: Boolean,
-      computed: 'computeIsDefault_(engine)'
-    },
 
-    /** @private {boolean} */
-    showDots_: {
-      reflectToAttribute: true,
-      type: Boolean,
-      computed: 'computeShowDots_(engine.canBeDefault,' +
-          'engine.canBeEdited,' +
-          'engine.canBeRemoved)',
-    },
-  },
+/**
+ * @constructor
+ * @extends {PolymerElement}
+ * @implements {FocusRowBehaviorInterface}
+ */
+const SettingsSearchEngineEntryElementBase =
+    mixinBehaviors([FocusRowBehavior], PolymerElement);
 
-  /** @private {settings.SearchEnginesBrowserProxy} */
-  browserProxy_: null,
+/** @polymer */
+class SettingsSearchEngineEntryElement extends
+    SettingsSearchEngineEntryElementBase {
+  static get is() {
+    return 'settings-search-engine-entry';
+  }
+
+  static get template() {
+    return html`{__html_template__}`;
+  }
+
+  static get properties() {
+    return {
+      /** @type {!SearchEngine} */
+      engine: Object,
+
+      /** @type {boolean} */
+      isDefault: {
+        reflectToAttribute: true,
+        type: Boolean,
+        computed: 'computeIsDefault_(engine)'
+      },
+
+    };
+  }
 
   /** @override */
-  created: function() {
-    this.browserProxy_ = settings.SearchEnginesBrowserProxyImpl.getInstance();
-  },
+  constructor() {
+    super();
+
+    /** @private {!SearchEnginesBrowserProxy} */
+    this.browserProxy_ = SearchEnginesBrowserProxyImpl.getInstance();
+  }
 
   /** @private */
-  closePopupMenu_: function() {
-    this.$$('cr-action-menu').close();
-  },
+  closePopupMenu_() {
+    this.shadowRoot.querySelector('cr-action-menu').close();
+  }
 
   /**
    * @return {boolean}
    * @private
    */
-  computeIsDefault_: function() {
+  computeIsDefault_() {
     return this.engine.default;
-  },
-
-  /**
-   * @param {boolean} canBeDefault
-   * @param {boolean} canBeEdited
-   * @param {boolean} canBeRemoved
-   * @return {boolean} Whether to show the dots menu.
-   * @private
-   */
-  computeShowDots_: function(canBeDefault, canBeEdited, canBeRemoved) {
-    return canBeDefault || canBeEdited || canBeRemoved;
-  },
+  }
 
   /** @private */
-  onDeleteTap_: function() {
+  onDeleteTap_() {
     this.browserProxy_.removeSearchEngine(this.engine.modelIndex);
     this.closePopupMenu_();
-  },
+  }
 
   /** @private */
-  onDotsTap_: function() {
-    /** @type {!CrActionMenuElement} */ (this.$$('cr-action-menu'))
-        .showAt(assert(this.$$('cr-icon-button')), {
+  onDotsTap_() {
+    /** @type {!CrActionMenuElement} */ (
+        this.shadowRoot.querySelector('cr-action-menu'))
+        .showAt(assert(this.shadowRoot.querySelector('cr-icon-button')), {
           anchorAlignmentY: AnchorAlignment.AFTER_END,
         });
-  },
+  }
 
   /**
    * @param {!Event} e
    * @private
    */
-  onEditTap_: function(e) {
+  onEditTap_(e) {
     e.preventDefault();
     this.closePopupMenu_();
-    this.fire('edit-search-engine', {
-      engine: this.engine,
-      anchorElement: assert(this.$$('cr-icon-button')),
-    });
-  },
+    this.dispatchEvent(new CustomEvent('edit-search-engine', {
+      bubbles: true,
+      composed: true,
+      detail: {
+        engine: this.engine,
+        anchorElement: assert(this.shadowRoot.querySelector('cr-icon-button')),
+      },
+    }));
+  }
 
   /** @private */
-  onMakeDefaultTap_: function() {
+  onMakeDefaultTap_() {
     this.closePopupMenu_();
     this.browserProxy_.setDefaultSearchEngine(this.engine.modelIndex);
-  },
-});
+  }
+}
+
+customElements.define(
+    SettingsSearchEngineEntryElement.is, SettingsSearchEngineEntryElement);

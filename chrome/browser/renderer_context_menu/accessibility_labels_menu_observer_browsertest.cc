@@ -4,22 +4,26 @@
 
 #include "chrome/browser/renderer_context_menu/accessibility_labels_menu_observer.h"
 
+#include <memory>
+
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/renderer_context_menu/mock_render_view_context_menu.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/context_menu_params.h"
 #include "content/public/common/content_features.h"
-#include "content/public/common/context_menu_params.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/accessibility/accessibility_manager.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #else
 #include "content/public/browser/browser_accessibility_state.h"
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 namespace {
 
@@ -43,8 +47,8 @@ class AccessibilityLabelsMenuObserverTest : public InProcessBrowserTest {
 
   void Reset(bool incognito) {
     observer_.reset();
-    menu_.reset(new MockRenderViewContextMenu(incognito));
-    observer_.reset(new AccessibilityLabelsMenuObserver(menu_.get()));
+    menu_ = std::make_unique<MockRenderViewContextMenu>(incognito);
+    observer_ = std::make_unique<AccessibilityLabelsMenuObserver>(menu_.get());
     menu_->SetObserver(observer_.get());
   }
 
@@ -86,14 +90,14 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsMenuObserverTest,
 
 IN_PROC_BROWSER_TEST_F(AccessibilityLabelsMenuObserverTest,
                        AccessibilityLabelsShowWithScreenReaderEnabled) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Enable Chromevox.
-  chromeos::AccessibilityManager::Get()->EnableSpokenFeedback(true);
+  ash::AccessibilityManager::Get()->EnableSpokenFeedback(true);
 #else
   // Spoof a screen reader.
-  content::BrowserAccessibilityState::GetInstance()->AddAccessibilityModeFlags(
+  content::testing::ScopedContentAXModeSetter scoped_accessibility_mode(
       ui::AXMode::kScreenReader);
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
   menu()->GetPrefs()->SetBoolean(prefs::kAccessibilityImageLabelsEnabled,
                                  false);
   InitMenu();

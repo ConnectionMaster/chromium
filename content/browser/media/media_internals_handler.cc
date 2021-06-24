@@ -5,7 +5,7 @@
 #include "content/browser/media/media_internals_handler.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/values.h"
 #include "content/browser/media/media_internals_proxy.h"
 #include "content/public/browser/browser_thread.h"
@@ -39,7 +39,7 @@ void MediaInternalsMessageHandler::OnGetEverything(
   proxy_->GetEverything();
 }
 
-void MediaInternalsMessageHandler::OnUpdate(const base::string16& update) {
+void MediaInternalsMessageHandler::OnUpdate(const std::u16string& update) {
   // Don't try to execute JavaScript in a RenderView that no longer exists nor
   // if the chrome://media-internals page hasn't finished loading.
   RenderFrameHost* host = web_ui()->GetWebContents()->GetMainFrame();

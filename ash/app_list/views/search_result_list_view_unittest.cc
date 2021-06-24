@@ -10,34 +10,45 @@
 #include <memory>
 #include <utility>
 
+#include "ash/app_list/app_list_test_view_delegate.h"
 #include "ash/app_list/model/search/search_model.h"
-#include "ash/app_list/test/app_list_test_view_delegate.h"
-#include "ash/app_list/test/test_search_result.h"
+#include "ash/app_list/model/search/test_search_result.h"
 #include "ash/app_list/views/search_result_view.h"
 #include "ash/public/cpp/app_list/app_list_features.h"
+#include "ash/public/cpp/test/test_app_list_color_provider.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "ui/views/controls/progress_bar.h"
 #include "ui/views/test/views_test_base.h"
+#include "ui/views/test/widget_test.h"
 
-namespace app_list {
+namespace ash {
 namespace test {
 
 namespace {
 int kDefaultSearchItems = 5;
 }  // namespace
 
-class SearchResultListViewTest : public views::ViewsTestBase {
+class SearchResultListViewTest : public views::test::WidgetTest {
  public:
   SearchResultListViewTest() = default;
   ~SearchResultListViewTest() override = default;
 
   // Overridden from testing::Test:
   void SetUp() override {
-    views::ViewsTestBase::SetUp();
+    views::test::WidgetTest::SetUp();
+    widget_ = CreateTopLevelPlatformWidget();
     view_ = std::make_unique<SearchResultListView>(nullptr, &view_delegate_);
+    widget_->SetBounds(gfx::Rect(0, 0, 300, 200));
+    widget_->GetContentsView()->AddChildView(view_.get());
+    widget_->Show();
     view_->SetResults(view_delegate_.GetSearchModel()->results());
+  }
+
+  void TearDown() override {
+    view_.reset();
+    widget_->CloseNow();
+    views::test::WidgetTest::TearDown();
   }
 
  protected:
@@ -47,8 +58,33 @@ class SearchResultListViewTest : public views::ViewsTestBase {
     return view_->GetResultViewAt(index);
   }
 
+  std::vector<SearchResultView*> GetAssistantResultViews() const {
+    std::vector<SearchResultView*> results;
+    for (auto* view : view_->search_result_views_) {
+      auto* result = view->result();
+      if (result &&
+          result->result_type() == AppListSearchResultType::kAssistantText)
+        results.push_back(view);
+    }
+    return results;
+  }
+
   SearchModel::SearchResults* GetResults() {
     return view_delegate_.GetSearchModel()->results();
+  }
+
+  void AddAssistantSearchResult() {
+    SearchModel::SearchResults* results = GetResults();
+
+    std::unique_ptr<TestSearchResult> assistant_result =
+        std::make_unique<TestSearchResult>();
+    assistant_result->set_result_type(
+        ash::AppListSearchResultType::kAssistantText);
+    assistant_result->set_display_type(ash::SearchResultDisplayType::kList);
+    assistant_result->set_title(u"assistant result");
+    results->Add(std::move(assistant_result));
+
+    RunPendingMessages();
   }
 
   void SetUpSearchResults() {
@@ -59,7 +95,7 @@ class SearchResultListViewTest : public views::ViewsTestBase {
       result->set_display_type(ash::SearchResultDisplayType::kList);
       result->set_title(base::UTF8ToUTF16(base::StringPrintf("Result %d", i)));
       if (i < 2)
-        result->set_details(base::ASCIIToUTF16("Detail"));
+        result->set_details(u"Detail");
       results->Add(std::move(result));
     }
 
@@ -97,13 +133,11 @@ class SearchResultListViewTest : public views::ViewsTestBase {
     }
   }
 
-  views::ProgressBar* GetProgressBarAt(size_t index) const {
-    return GetResultViewAt(index)->progress_bar_;
-  }
-
  private:
+  TestAppListColorProvider color_provider_;  // Needed by AppListView.
   AppListTestViewDelegate view_delegate_;
   std::unique_ptr<SearchResultListView> view_;
+  views::Widget* widget_;
 
   DISALLOW_COPY_AND_ASSIGN(SearchResultListViewTest);
 };
@@ -113,12 +147,10 @@ TEST_F(SearchResultListViewTest, SpokenFeedback) {
 
   // Result 0 has a detail text. Expect that the detail is appended to the
   // accessibility name.
-  EXPECT_EQ(base::ASCIIToUTF16("Result 0, Detail"),
-            GetResultViewAt(0)->ComputeAccessibleName());
+  EXPECT_EQ(u"Result 0, Detail", GetResultViewAt(0)->ComputeAccessibleName());
 
   // Result 2 has no detail text.
-  EXPECT_EQ(base::ASCIIToUTF16("Result 2"),
-            GetResultViewAt(2)->ComputeAccessibleName());
+  EXPECT_EQ(u"Result 2", GetResultViewAt(2)->ComputeAccessibleName());
 }
 
 TEST_F(SearchResultListViewTest, ModelObservers) {
@@ -146,19 +178,31 @@ TEST_F(SearchResultListViewTest, ModelObservers) {
   ExpectConsistent();
 }
 
-// Regression test for http://crbug.com/402859 to ensure ProgressBar is
-// initialized properly in SearchResultListView::SetResult().
-TEST_F(SearchResultListViewTest, ProgressBar) {
+TEST_F(SearchResultListViewTest, HidesAssistantResultWhenTilesVisible) {
   SetUpSearchResults();
 
-  GetResults()->GetItemAt(0)->SetIsInstalling(true);
-  EXPECT_EQ(0.0f, GetProgressBarAt(0)->current_value());
-  GetResults()->GetItemAt(0)->SetPercentDownloaded(10);
+  // No assistant results available.
+  EXPECT_TRUE(GetAssistantResultViews().empty());
 
-  DeleteResultAt(0);
+  AddAssistantSearchResult();
+
+  // Assistant result should be set and visible.
+  for (const auto* view : GetAssistantResultViews()) {
+    EXPECT_TRUE(view->GetVisible());
+    EXPECT_EQ(view->result()->title(), u"assistant result");
+  }
+
+  // Add a tile result
+  std::unique_ptr<TestSearchResult> tile_result =
+      std::make_unique<TestSearchResult>();
+  tile_result->set_display_type(ash::SearchResultDisplayType::kTile);
+  GetResults()->Add(std::move(tile_result));
+
   RunPendingMessages();
-  EXPECT_EQ(0.0f, GetProgressBarAt(0)->current_value());
+
+  // Assistant result should be gone.
+  EXPECT_TRUE(GetAssistantResultViews().empty());
 }
 
 }  // namespace test
-}  // namespace app_list
+}  // namespace ash

@@ -6,14 +6,12 @@
 #define COMPONENTS_VIZ_TEST_TEST_SHARED_BITMAP_MANAGER_H_
 
 #include <map>
+#include <memory>
 #include <set>
 
+#include "base/memory/shared_memory_mapping.h"
 #include "base/sequence_checker.h"
 #include "components/viz/service/display/shared_bitmap_manager.h"
-
-namespace base {
-class SharedMemory;
-}  // namespace base
 
 namespace viz {
 
@@ -29,15 +27,16 @@ class TestSharedBitmapManager : public SharedBitmapManager {
       const SharedBitmapId& id) override;
   base::UnguessableToken GetSharedBitmapTracingGUIDFromId(
       const SharedBitmapId& id) override;
-  bool ChildAllocatedSharedBitmap(mojo::ScopedSharedBufferHandle buffer,
+  bool ChildAllocatedSharedBitmap(base::ReadOnlySharedMemoryMapping mapping,
+                                  const SharedBitmapId& id) override;
+  bool LocalAllocatedSharedBitmap(SkBitmap bitmap,
                                   const SharedBitmapId& id) override;
   void ChildDeletedSharedBitmap(const SharedBitmapId& id) override;
 
  private:
   SEQUENCE_CHECKER(sequence_checker_);
 
-  std::map<SharedBitmapId, base::SharedMemory*> bitmap_map_;
-  std::map<SharedBitmapId, std::unique_ptr<base::SharedMemory>> owned_map_;
+  std::map<SharedBitmapId, base::ReadOnlySharedMemoryMapping> mapping_map_;
   std::set<SharedBitmapId> notified_set_;
 };
 

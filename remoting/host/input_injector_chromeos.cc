@@ -4,22 +4,33 @@
 
 #include "remoting/host/input_injector_chromeos.h"
 
+#include <memory>
 #include <set>
+#include <string>
 #include <utility>
 
+#include "ash/shell.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/i18n/icu_string_conversions.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/system/sys_info.h"
 #include "remoting/host/chromeos/point_transformer.h"
 #include "remoting/host/clipboard.h"
 #include "remoting/proto/internal.pb.h"
+#include "ui/aura/client/cursor_client.h"
+#include "ui/aura/window.h"
+#include "ui/aura/window_tree_host.h"
 #include "ui/base/ime/chromeos/ime_keyboard.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
+#include "ui/base/ime/input_method.h"
+#include "ui/base/ime/text_input_client.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
-#include "ui/events/system_input_injector.h"
+#include "ui/ozone/public/ozone_platform.h"
+#include "ui/ozone/public/system_input_injector.h"
 
 namespace remoting {
 
@@ -73,12 +84,32 @@ void SetCapsLockState(bool caps_lock) {
   ime->GetImeKeyboard()->SetCapsLockEnabled(caps_lock);
 }
 
+class SystemInputInjectorStub : public ui::SystemInputInjector {
+ public:
+  SystemInputInjectorStub() {
+    LOG(WARNING)
+        << "Using stubbed input injector; All CRD user input will be ignored.";
+  }
+  SystemInputInjectorStub(const SystemInputInjectorStub&) = delete;
+  SystemInputInjectorStub& operator=(const SystemInputInjectorStub&) = delete;
+  ~SystemInputInjectorStub() override = default;
+
+  // SystemInputInjector implementation:
+  void MoveCursorTo(const gfx::PointF& location) override {}
+  void InjectMouseButton(ui::EventFlags button, bool down) override {}
+  void InjectMouseWheel(int delta_x, int delta_y) override {}
+  void InjectKeyEvent(ui::DomCode physical_key,
+                      bool down,
+                      bool suppress_auto_repeat) override {}
+};
+
 }  // namespace
 
 // This class is run exclusively on the UI thread of the browser process.
 class InputInjectorChromeos::Core {
  public:
-  Core(ui::SystemInputInjectorFactory* system_input_injector_factory);
+  Core();
+  ~Core();
 
   // Mirrors the public InputInjectorChromeos interface.
   void InjectClipboardEvent(const ClipboardEvent& event);
@@ -90,6 +121,7 @@ class InputInjectorChromeos::Core {
  private:
   void SetLockStates(uint32_t states);
 
+  bool hide_cursor_on_disconnect_ = false;
   std::unique_ptr<ui::SystemInputInjector> delegate_;
   std::unique_ptr<Clipboard> clipboard_;
 
@@ -97,16 +129,20 @@ class InputInjectorChromeos::Core {
   // display rotation settings.
   std::unique_ptr<PointTransformer> point_transformer_;
 
-  // Creates |delegate_|. We store this since Core is created on one thread,
-  // but then Start() is run on a different one.
-  ui::SystemInputInjectorFactory* system_input_injector_factory_;
-
   DISALLOW_COPY_AND_ASSIGN(Core);
 };
 
-InputInjectorChromeos::Core::Core(
-    ui::SystemInputInjectorFactory* system_input_injector_factory)
-    : system_input_injector_factory_(system_input_injector_factory) {}
+InputInjectorChromeos::Core::Core() = default;
+
+InputInjectorChromeos::Core::~Core() {
+  if (hide_cursor_on_disconnect_) {
+    aura::client::CursorClient* cursor_client =
+        aura::client::GetCursorClient(ash::Shell::GetPrimaryRootWindow());
+    if (cursor_client) {
+      cursor_client->HideCursor();
+    }
+  }
+}
 
 void InputInjectorChromeos::Core::InjectClipboardEvent(
     const ClipboardEvent& event) {
@@ -137,9 +173,37 @@ void InputInjectorChromeos::Core::InjectKeyEvent(const KeyEvent& event) {
 }
 
 void InputInjectorChromeos::Core::InjectTextEvent(const TextEvent& event) {
-  // Chrome OS only supports It2Me, which is not supported on mobile clients, so
-  // we don't need to implement text events.
-  NOTIMPLEMENTED();
+  DCHECK(event.has_text());
+
+  aura::Window* root_window = ash::Shell::GetPrimaryRootWindow();
+  if (!root_window) {
+    LOG(ERROR) << "root_window is null, can't inject text.";
+    return;
+  }
+  aura::WindowTreeHost* window_tree_host = root_window->GetHost();
+  if (!window_tree_host) {
+    LOG(ERROR) << "window_tree_host is null, can't inject text.";
+    return;
+  }
+  ui::InputMethod* input_method = window_tree_host->GetInputMethod();
+  if (!input_method) {
+    LOG(ERROR) << "input_method is null, can't inject text.";
+    return;
+  }
+  ui::TextInputClient* text_input_client = input_method->GetTextInputClient();
+  if (!text_input_client) {
+    LOG(ERROR) << "text_input_client is null, can't inject text.";
+    return;
+  }
+
+  std::string normalized_str;
+  base::ConvertToUtf8AndNormalize(event.text(), base::kCodepageUTF8,
+                                  &normalized_str);
+  std::u16string utf16_string = base::UTF8ToUTF16(normalized_str);
+
+  text_input_client->InsertText(
+      utf16_string,
+      ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
 }
 
 void InputInjectorChromeos::Core::InjectMouseEvent(const MouseEvent& event) {
@@ -157,22 +221,37 @@ void InputInjectorChromeos::Core::InjectMouseEvent(const MouseEvent& event) {
 
 void InputInjectorChromeos::Core::Start(
     std::unique_ptr<protocol::ClipboardStub> client_clipboard) {
-  // OK, so we now need to plumb from ChromotingHostContext to here.
-  delegate_ = system_input_injector_factory_->CreateSystemInputInjector();
+  delegate_ = ui::OzonePlatform::GetInstance()->CreateSystemInputInjector();
+  if (!delegate_ && !base::SysInfo::IsRunningOnChromeOS()) {
+    // This happens when directly running the Chrome binary on linux.
+    // We'll simply ignore all input there (instead of crashing).
+    // Note: it would be nicer to swap this out with input_injector_x11.cc
+    // on linux instead (and properly handle the input), but that runs into
+    // dependency issues.
+    delegate_ = std::make_unique<SystemInputInjectorStub>();
+  }
   DCHECK(delegate_);
 
   // Implemented by remoting::ClipboardAura.
   clipboard_ = Clipboard::Create();
   clipboard_->Start(std::move(client_clipboard));
-  point_transformer_.reset(new PointTransformer());
+  point_transformer_ = std::make_unique<PointTransformer>();
+
+  // If the cursor was hidden before we start injecting input then we should try
+  // to restore its state when the remote user disconnects.  The main scenario
+  // where this is important is for devices in non-interactive Kiosk mode.
+  // Since no one is interacting with the screen in this mode, we will leave a
+  // visible cursor after disconnecting which can't be hidden w/o restarting.
+  aura::client::CursorClient* cursor_client =
+      aura::client::GetCursorClient(ash::Shell::GetPrimaryRootWindow());
+  if (cursor_client) {
+    hide_cursor_on_disconnect_ = !cursor_client->IsCursorVisible();
+  }
 }
 
 InputInjectorChromeos::InputInjectorChromeos(
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    ui::SystemInputInjectorFactory* system_input_injector_factory)
-    : input_task_runner_(task_runner) {
-  core_.reset(new Core(system_input_injector_factory));
-}
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner)
+    : input_task_runner_(task_runner), core_(std::make_unique<Core>()) {}
 
 InputInjectorChromeos::~InputInjectorChromeos() {
   input_task_runner_->DeleteSoon(FROM_HERE, core_.release());
@@ -216,12 +295,10 @@ void InputInjectorChromeos::Start(
 // static
 std::unique_ptr<InputInjector> InputInjector::Create(
     scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    ui::SystemInputInjectorFactory* system_input_injector_factory) {
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner) {
   // The Ozone input injector must be called on the UI task runner of the
   // browser process.
-  return base::WrapUnique(
-      new InputInjectorChromeos(ui_task_runner, system_input_injector_factory));
+  return std::make_unique<InputInjectorChromeos>(ui_task_runner);
 }
 
 // static

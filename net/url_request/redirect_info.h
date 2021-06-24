@@ -8,15 +8,25 @@
 #include <string>
 
 #include "net/base/net_export.h"
-#include "net/url_request/url_request.h"
+#include "net/cookies/site_for_cookies.h"
+#include "net/url_request/referrer_policy.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace net {
 
 // RedirectInfo captures information about a redirect and any fields in a
-// request that change. This struct must be kept in sync with
-// content/common/resource_messages.h.
+// request that change.
 struct NET_EXPORT RedirectInfo {
+  // First-party URL redirect policy: During server redirects, the first-party
+  // URL for cookies normally doesn't change. However, if the request is a
+  // top-level first-party request, the first-party URL should be updated to the
+  // URL on every redirect.
+  enum class FirstPartyURLPolicy {
+    NEVER_CHANGE_URL,
+    UPDATE_URL_ON_REDIRECT,
+  };
+
   RedirectInfo();
   RedirectInfo(const RedirectInfo& other);
   ~RedirectInfo();
@@ -27,17 +37,16 @@ struct NET_EXPORT RedirectInfo {
       // request.
       const std::string& original_method,
       const GURL& original_url,
-      const GURL& original_site_for_cookies,
-      const base::Optional<url::Origin>& original_top_frame_origin,
-      URLRequest::FirstPartyURLPolicy original_first_party_url_policy,
-      URLRequest::ReferrerPolicy original_referrer_policy,
+      const SiteForCookies& original_site_for_cookies,
+      FirstPartyURLPolicy original_first_party_url_policy,
+      ReferrerPolicy original_referrer_policy,
       const std::string& original_referrer,
       // The HTTP status code of the redirect response.
       int http_status_code,
       // The new location URL of the redirect response.
       const GURL& new_location,
       // Referrer-Policy header of the redirect response.
-      const base::Optional<std::string>& referrer_policy_header,
+      const absl::optional<std::string>& referrer_policy_header,
       // Whether the URL was upgraded to HTTPS due to upgrade-insecure-requests.
       bool insecure_scheme_was_upgraded,
       // This method copies the URL fragment of the original URL to the new URL
@@ -60,10 +69,8 @@ struct NET_EXPORT RedirectInfo {
   // The new request URL.
   GURL new_url;
 
-  // The new first-party URL for cookies.
-  GURL new_site_for_cookies;
-
-  base::Optional<url::Origin> new_top_frame_origin;
+  // The new first-party for cookies.
+  SiteForCookies new_site_for_cookies;
 
   // The new HTTP referrer header.
   std::string new_referrer;
@@ -77,7 +84,7 @@ struct NET_EXPORT RedirectInfo {
 
   // The new referrer policy that should be obeyed if there are
   // subsequent redirects.
-  URLRequest::ReferrerPolicy new_referrer_policy;
+  ReferrerPolicy new_referrer_policy;
 };
 
 }  // namespace net

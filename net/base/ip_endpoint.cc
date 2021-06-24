@@ -13,9 +13,12 @@
 #include <netinet/in.h>
 #endif
 
+#include <string.h>
+
 #include <tuple>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/sys_byteorder.h"
 #include "net/base/ip_address.h"
@@ -179,6 +182,10 @@ bool IPEndPoint::operator<(const IPEndPoint& other) const {
 
 bool IPEndPoint::operator==(const IPEndPoint& other) const {
   return address_ == other.address_ && port_ == other.port_;
+}
+
+bool IPEndPoint::operator!=(const IPEndPoint& that) const {
+  return !(*this == that);
 }
 
 }  // namespace net

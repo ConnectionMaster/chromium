@@ -4,11 +4,12 @@
 
 #include "components/suggestions/webui/suggestions_source.h"
 
+#include <string>
+
 #include "base/barrier_closure.h"
 #include "base/base64.h"
 #include "base/bind.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
@@ -56,7 +57,7 @@ std::string RenderOutputHtml(const std::string& base_url,
     const ChromeSuggestion& suggestion = profile.suggestions(i);
     base::TimeDelta remaining_time =
         base::TimeDelta::FromMicroseconds(suggestion.expiry_ts() - now);
-    base::string16 remaining_time_formatted = ui::TimeFormat::Detailed(
+    std::u16string remaining_time_formatted = ui::TimeFormat::Detailed(
         ui::TimeFormat::Format::FORMAT_DURATION,
         ui::TimeFormat::Length::LENGTH_LONG, -1, remaining_time);
     std::string line;
@@ -95,14 +96,12 @@ std::string RenderOutputHtmlNoSuggestions(const std::string& base_url,
 
 SuggestionsSource::SuggestionsSource(SuggestionsService* suggestions_service,
                                      const std::string& base_url)
-    : suggestions_service_(suggestions_service),
-      base_url_(base_url),
-      weak_ptr_factory_(this) {}
+    : suggestions_service_(suggestions_service), base_url_(base_url) {}
 
 SuggestionsSource::~SuggestionsSource() {}
 
 void SuggestionsSource::StartDataRequest(const std::string& path,
-                                         const GotDataCallback& callback) {
+                                         GotDataCallback callback) {
   // If this was called as "chrome://suggestions/refresh", we also trigger an
   // async update of the suggestions.
   bool is_refresh = (path == kRefreshPath);
@@ -110,7 +109,7 @@ void SuggestionsSource::StartDataRequest(const std::string& path,
   // |suggestions_service| is null for guest profiles.
   if (!suggestions_service_) {
     std::string output = RenderOutputHtmlNoSuggestions(base_url_, is_refresh);
-    callback.Run(base::RefCountedString::TakeString(&output));
+    std::move(callback).Run(base::RefCountedString::TakeString(&output));
     return;
   }
 
@@ -125,7 +124,7 @@ void SuggestionsSource::StartDataRequest(const std::string& path,
   std::string output =
       !size ? RenderOutputHtmlNoSuggestions(base_url_, is_refresh)
             : RenderOutputHtml(base_url_, is_refresh, suggestions_profile);
-  callback.Run(base::RefCountedString::TakeString(&output));
+  std::move(callback).Run(base::RefCountedString::TakeString(&output));
 }
 
 std::string SuggestionsSource::GetMimeType(const std::string& path) const {

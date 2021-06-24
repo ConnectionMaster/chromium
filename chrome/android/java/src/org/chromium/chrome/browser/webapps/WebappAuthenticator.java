@@ -4,16 +4,12 @@
 
 package org.chromium.chrome.browser.webapps;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
-import android.os.StrictMode;
-import android.os.SystemClock;
 import android.util.Log;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.SecureRandomInitializer;
-import org.chromium.base.metrics.CachedMetrics.TimesHistogramSample;
+import org.chromium.base.StrictModeContext;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -46,9 +42,6 @@ public class WebappAuthenticator {
 
     private static SecretKey sKey;
 
-    private static final TimesHistogramSample sWebappValidationTimes =
-            new TimesHistogramSample("Android.StrictMode.WebappAuthenticatorMac");
-
     /**
      * @see #getMacForUrl
      *
@@ -58,15 +51,10 @@ public class WebappAuthenticator {
      * @return true if the MAC is a valid MAC for the URL, false otherwise.
      */
     public static boolean isUrlValid(String url, byte[] mac) {
-        byte[] goodMac = null;
-        // Temporarily allowing disk access while fixing. TODO: http://crbug.com/525785
-        StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskReads();
-        try {
-            long time = SystemClock.elapsedRealtime();
+        byte[] goodMac;
+        // TODO(crbug.com/525785): Temporarily allowing disk access until more permanent fix is in.
+        try (StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
             goodMac = getMacForUrl(url);
-            sWebappValidationTimes.record(SystemClock.elapsedRealtime() - time);
-        } finally {
-            StrictMode.setThreadPolicy(oldPolicy);
         }
         if (goodMac == null) {
             return false;
@@ -188,10 +176,7 @@ public class WebappAuthenticator {
 
     /**
      * Generates the authentication encryption key in a background thread (if necessary).
-     * SecureRandomInitializer addresses the bug in SecureRandom that "TrulyRandom" warns about, so
-     * this lint warning can safely be suppressed.
      */
-    @SuppressLint("TrulyRandom")
     private static SecretKey generateMacKey() {
         if (sKey != null) {
             return sKey;
@@ -199,10 +184,9 @@ public class WebappAuthenticator {
         try {
             KeyGenerator generator = KeyGenerator.getInstance(MAC_ALGORITHM_NAME);
             SecureRandom random = new SecureRandom();
-            SecureRandomInitializer.initialize(random);
             generator.init(MAC_KEY_BYTE_COUNT * 8, random);
             return generator.generateKey();
-        } catch (NoSuchAlgorithmException | IOException e) {
+        } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
     }

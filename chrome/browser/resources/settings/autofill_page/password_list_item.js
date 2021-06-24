@@ -3,49 +3,80 @@
 // found in the LICENSE file.
 
 /**
- * @fileoverview PasswordListItem represents one row in the list of passwords.
- * It needs to be its own component because FocusRowBehavior provides good a11y.
+ * @fileoverview PasswordListItem represents one row in a list of passwords,
+ * with a "more actions" button. It needs to be its own component because
+ * FocusRowBehavior provides good a11y.
+ * Clicking the button fires a password-more-actions-clicked event.
  */
+
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.m.js';
+import 'chrome://resources/cr_elements/cr_icons_css.m.js';
+import '../settings_shared_css.js';
+import '../site_favicon.js';
+import './passwords_shared_css.js';
+
+import {FocusRowBehavior} from 'chrome://resources/js/cr/ui/focus_row_behavior.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+
+import {ShowPasswordBehavior} from './show_password_behavior.js';
+
+/**
+ * @typedef {!Event<!{target: !HTMLElement, listItem:
+ *     !PasswordListItemElement}>}
+ */
+export let PasswordMoreActionsClickedEvent;
 
 Polymer({
   is: 'password-list-item',
 
+  _template: html`{__html_template__}`,
+
   behaviors: [
-    cr.ui.FocusRowBehavior,
     ShowPasswordBehavior,
   ],
+
+  properties: {
+    /**
+     * Whether to hide the 3 dot button that open the more actions menu.
+     */
+    shouldHideMoreActionsButton: {
+      type: Boolean,
+      value: false,
+    },
+  },
 
   /**
    * Selects the password on tap if revealed.
    * @private
    */
-  onReadonlyInputTap_: function() {
-    if (this.item.password) {
+  onReadonlyInputTap_() {
+    if (this.password) {
       this.$$('#password').select();
     }
   },
 
   /**
-   * Opens the password action menu.
    * @private
    */
-  onPasswordMenuTap_: function() {
+  onPasswordMoreActionsButtonTap_() {
     this.fire(
-        'password-menu-tap', {target: this.$.passwordMenu, listItem: this});
+        'password-more-actions-clicked',
+        {target: this.$.moreActionsButton, listItem: this});
   },
 
   /**
    * Get the aria label for the More Actions button on this row.
-   * @param {!PasswordManagerProxy.UiEntryWithPassword} item This row's item.
    * @private
    */
-  getMoreActionsLabel_: function(item) {
+  getMoreActionsLabel_() {
     // Avoid using I18nBehavior.i18n, because it will filter sequences, which
     // are otherwise not illegal for usernames. Polymer still protects against
     // XSS injection.
     return loadTimeData.getStringF(
-        (item.entry.federationText) ? 'passwordRowFederatedMoreActionsButton' :
+        (this.entry.federationText) ? 'passwordRowFederatedMoreActionsButton' :
                                       'passwordRowMoreActionsButton',
-        item.entry.username, item.entry.urls.shown);
+        this.entry.username, this.entry.urls.shown);
   },
 });

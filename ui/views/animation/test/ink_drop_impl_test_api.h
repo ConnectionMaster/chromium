@@ -85,7 +85,7 @@ class InkDropImplTestApi
 
   // Wrappers to InkDropImpl internals:
   InkDropImpl::HighlightStateFactory* state_factory() {
-    return ink_drop_->highlight_state_factory_.get();
+    return &ink_drop_->highlight_state_factory_;
   }
 
   void SetHighlightState(
@@ -94,6 +94,8 @@ class InkDropImplTestApi
   const InkDropHighlight* highlight() const;
   bool IsHighlightFadingInOrVisible() const;
   bool ShouldHighlight() const;
+
+  ui::Layer* GetRootLayer() const;
 
  protected:
   // MultiLayerAnimatorTestControllerDelegate:

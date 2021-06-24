@@ -9,8 +9,7 @@
 #include <string>
 
 #include "base/callback_forward.h"
-#include "base/optional.h"
-#include "base/strings/string16.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class GURL;
 class Profile;
@@ -21,6 +20,9 @@ class Profile;
 class NotificationHandler {
  public:
   // Type of notifications that a handler can be responsible for.
+  // A Java counterpart will be generated for this enum.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.notifications
+  // GENERATED_JAVA_CLASS_NAME_OVERRIDE: NotificationType
   enum class Type {
     WEB_PERSISTENT = 0,
     WEB_NON_PERSISTENT = 1,
@@ -29,7 +31,14 @@ class NotificationHandler {
     TRANSIENT = 4,  // A generic type for any notification that does not outlive
                     // the browser instance and is controlled by a
                     // NotificationDelegate.
-    MAX = TRANSIENT,
+    // Deprecated
+    // PERMISSION_REQUEST = 5,  // A permission request that is presented to the
+    //                          // user via a notification.
+    SHARING = 6,
+    ANNOUNCEMENT = 7,
+    NEARBY_SHARE = 8,
+    NOTIFICATIONS_MUTED = 9,
+    MAX = NOTIFICATIONS_MUTED,
   };
 
   virtual ~NotificationHandler();
@@ -51,8 +60,8 @@ class NotificationHandler {
   virtual void OnClick(Profile* profile,
                        const GURL& origin,
                        const std::string& notification_id,
-                       const base::Optional<int>& action_index,
-                       const base::Optional<base::string16>& reply,
+                       const absl::optional<int>& action_index,
+                       const absl::optional<std::u16string>& reply,
                        base::OnceClosure completed_closure);
 
   // Called when notifications of the given origin have to be disabled.

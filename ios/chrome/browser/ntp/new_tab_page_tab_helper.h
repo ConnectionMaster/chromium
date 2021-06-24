@@ -10,8 +10,8 @@
 
 #include "base/macros.h"
 #include "base/timer/timer.h"
-#include "ios/web/public/web_state/web_state_observer.h"
-#import "ios/web/public/web_state/web_state_user_data.h"
+#include "ios/web/public/web_state_observer.h"
+#import "ios/web/public/web_state_user_data.h"
 
 @protocol NewTabPageTabHelperDelegate;
 
@@ -25,8 +25,10 @@ class NewTabPageTabHelper : public web::WebStateObserver,
  public:
   ~NewTabPageTabHelper() override;
 
-  static void CreateForWebState(web::WebState* web_state,
-                                id<NewTabPageTabHelperDelegate> delegate);
+  static void CreateForWebState(web::WebState* web_state);
+
+  // Sets the delegate. The delegate is not owned by the tab helper.
+  void SetDelegate(id<NewTabPageTabHelperDelegate> delegate);
 
   // Returns true when the current web_state is an NTP and the underlying
   // controllers have been created.
@@ -47,8 +49,7 @@ class NewTabPageTabHelper : public web::WebStateObserver,
  private:
   friend class web::WebStateUserData<NewTabPageTabHelper>;
 
-  NewTabPageTabHelper(web::WebState* web_state,
-                      id<NewTabPageTabHelperDelegate> delegate);
+  explicit NewTabPageTabHelper(web::WebState* web_state);
 
   // web::WebStateObserver overrides:
   void WebStateDestroyed(web::WebState* web_state) override;
@@ -56,6 +57,8 @@ class NewTabPageTabHelper : public web::WebStateObserver,
                           web::NavigationContext* navigation_context) override;
   void DidFinishNavigation(web::WebState* web_state,
                            web::NavigationContext* navigation_context) override;
+  void DidStopLoading(web::WebState* web_state) override;
+  void DidStartLoading(web::WebState* web_state) override;
 
   // Enable or disable the tab helper.
   void SetActive(bool active);
@@ -82,14 +85,14 @@ class NewTabPageTabHelper : public web::WebStateObserver,
   web::WebState* web_state_ = nullptr;
 
   // |YES| if the current tab helper is active.
-  BOOL active_;
+  BOOL active_ = NO;
 
   // |YES| if the NTP's underlying ios/web page is still loading.
   BOOL ignore_load_requests_ = NO;
 
   // Ensure the ignore_load_requests_ flag is never set to NO for more than
   // |kMaximumIgnoreLoadRequestsTime| seconds.
-  std::unique_ptr<base::OneShotTimer> ignore_load_requests_timer_ = nullptr;
+  std::unique_ptr<base::OneShotTimer> ignore_load_requests_timer_;
 
   WEB_STATE_USER_DATA_KEY_DECL();
 

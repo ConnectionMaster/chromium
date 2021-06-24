@@ -7,27 +7,26 @@
 
 #import <Foundation/Foundation.h>
 
-// States for the InfobarBadge.
-typedef NS_OPTIONS(NSUInteger, InfobarBadgeState) {
-  // Default state. e.g. The InfobarBanner is being presented, or the Banner has
-  // been dismissed and there's nothing presenting.
-  InfobarBadgeStateNone = 0,
-  // The InfobarBadge is selected. e.g. The InfobarBadge was tapped so the
-  // InfobarModal has been presented.
-  InfobarBadgeStateSelected = 1 << 0,
-  // The InfobarBadge is accepted. e.g. The Infobar was accepted/confirmed, and
-  // the Infobar action has taken place.
-  InfobarBadgeStateAccepted = 1 << 1,
-};
+@protocol BadgeItem;
+
+namespace web {
+class WebState;
+}
 
 // Delegate used by InfobarBadgeTabHelper to manage the Infobar badges.
 @protocol InfobarBadgeTabHelperDelegate
 
-// Asks the delegate to display or stop displaying a badge.
-- (void)displayBadge:(BOOL)display;
-
-// Current state for the displayed InfobarBadge.
-@property(nonatomic, assign) InfobarBadgeState badgeState;
+// Asks the delegate to add a badge with the configuration of |badgeItem| for
+// |webState|.
+- (void)addInfobarBadge:(id<BadgeItem>)badgeItem
+            forWebState:(web::WebState*)webState;
+// Asks the delegate to remove a badge matching the badgeType of |badgeItem| for
+// |webState|.
+- (void)removeInfobarBadge:(id<BadgeItem>)badgeItem
+               forWebState:(web::WebState*)webState;
+// Asks the delegate to update the configuration of |badgeItem| for |webState|.
+- (void)updateInfobarBadge:(id<BadgeItem>)badgeItem
+               forWebState:(web::WebState*)webState;
 
 @end
 

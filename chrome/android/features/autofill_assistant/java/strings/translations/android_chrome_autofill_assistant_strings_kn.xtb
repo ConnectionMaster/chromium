@@ -1,18 +1,29 @@
 <?xml version="1.0" ?>
 <!DOCTYPE translationbundle>
 <translationbundle lang="kn">
-<translation id="1135993792949700405">Chrome, ನೀವು ಆಯ್ಕೆ ಮಾಡಿರುವ ವೈಯಕ್ತಿಕ ಡೇಟಾವನ್ನು <ph name="BEGIN_BOLD" /><ph name="DOMAIN" /><ph name="END_BOLD" /> ಗೆ ಕಳುಹಿಸುತ್ತದೆ</translation>
-<translation id="3604604794717279723">ನಾನು ಒಪ್ಪುತ್ತೇನೆ</translation>
+<translation id="1625889395409731085">ಬಾಹ್ಯ ಲಿಂಕ್ ತೆರೆಯುವುದೇ?</translation>
+<translation id="1699570257714336246">ಮಾಹಿತಿ ಕಾಣೆಯಾಗಿದೆ</translation>
+<translation id="1932278019417741381">ಕಾರ್ಯಗಳನ್ನು ಪೂರ್ಣಗೊಳಿಸುವುದಕ್ಕೆ ನಿಮಗೆ ಸಹಾಯ ಮಾಡಲು, ನೀವು ಅಸಿಸ್ಟೆಂಟ್ ಅನ್ನು ಬಳಸಿದ ಸೈಟ್‌ಗಳ URL ಗಳು ಮತ್ತು ವಿಷಯಗಳು ಹಾಗೂ ಅಸಿಸ್ಟೆಂಟ್ ಮೂಲಕ ನೀವು ಸಲ್ಲಿಸಿದ ಮಾಹಿತಿಯನ್ನು Google ಸ್ವೀಕರಿಸುತ್ತದೆ. ಈ ಮಾಹಿತಿಯನ್ನು Google ಖಾತೆಯಲ್ಲಿ ಸಂಗ್ರಹಿಸಿರಬಹುದು. ಅಸಿಸ್ಟೆಂಟ್ ಅನ್ನು Chrome ಸೆಟ್ಟಿಂಗ್‌ಗಳಲ್ಲಿ ಆಫ್ ಮಾಡಬಹುದು. <ph name="BEGIN_LINK" />ಇನ್ನಷ್ಟು ತಿಳಿಯಿರಿ<ph name="END_LINK" /></translation>
+<translation id="2203046366315513658">ಮೌಲ್ಯವನ್ನು ಕಡಿಮೆ ಮಾಡಿ</translation>
+<translation id="2581111578809745440">ಕೆಲವೇ ಟ್ಯಾಪ್‌ಗಳಲ್ಲಿ\nವೇಗವಾದ ಚೆಕ್‌ಔಟ್</translation>
+<translation id="3018033505440165876">Chrome ನಲ್ಲಿ\nGoogle Assistant ಬಳಸಿ ನೋಡಿ</translation>
+<translation id="4130750466177569591">ನಾನು ಒಪ್ಪುತ್ತೇನೆ</translation>
+<translation id="4437727785356380473">Chrome ನಲ್ಲಿ Google ಅಸಿಸ್ಟೆಂಟ್ ಅನ್ನು ಮುಚ್ಚಲಾಗಿದೆ.</translation>
+<translation id="4517854969512651305">ಮೌಲ್ಯವನ್ನು ಹೆಚ್ಚಿಸಿ</translation>
 <translation id="4850886885716139402">ವೀಕ್ಷಣೆ</translation>
-<translation id="5014174725590676422">Chrome ನಲ್ಲಿನ Google ಅಸಿಸ್ಟೆಂಟ್‌ನ ಮೊದಲ ಬಾರಿ ರನ್ ಮಾಡಿದ ಸ್ಕ್ರೀನ್ ಅನ್ನು ತೋರಿಸಲಾಗಿದೆ</translation>
-<translation id="5188078772080029703">Chrome, ಸೈಟ್‌ನ URL ಮತ್ತು ವಿಷಯವನ್ನು ಅಂತೆಯೇ Chrome ನಲ್ಲಿ ಉಳಿಸಲಾಗಿರುವ ನಿಮ್ಮ ಇಮೇಲ್ ಹಾಗೂ ಕ್ರೆಡಿಟ್ ಕಾರ್ಡ್ ಪ್ರಕಾರದ ಮಾಹಿತಿಯನ್ನು Google ಗೆ ಕಳುಹಿಸುತ್ತದೆ. ನೀವು Chrome ಸೆಟ್ಟಿಂಗ್‌ಗಳಲ್ಲಿ ಇದನ್ನು ಆಫ್ ಮಾಡಬಹುದು. <ph name="BEGIN_LINK" />ಇನ್ನಷ್ಟು ತಿಳಿಯಿರಿ<ph name="END_LINK" /></translation>
-<translation id="5388358297987318779">ಚಿತ್ರವನ್ನು ತೆರೆಯಿರಿ</translation>
-<translation id="5462441820145758886">ನೀವು ಚಿತ್ರದ URL ಗೆ ನ್ಯಾವಿಗೇಟ್ ಮಾಡಲು ಬಯಸುತ್ತೀರಾ?</translation>
+<translation id="4952448020231702394">ಹುಡುಕಾಟ ಮತ್ತು ಚೆಕ್‌ ಔಟ್‌ನಂತಹ ವೆಬ್‌ನಲ್ಲಿನ ಕ್ರಿಯೆಗಳನ್ನು ಪೂರ್ಣಗೊಳಿಸಲು ನಿಮಗೆ ಸಹಾಯ ಮಾಡುವ ಮೂಲಕ Google ಅಸಿಸ್ಟೆಂಟ್ ನಿಮ್ಮ ಸಮಯವನ್ನು ಉಳಿಸುತ್ತದೆ.</translation>
+<translation id="4982366513646093083">ಕೆಲವೇ ಟ್ಯಾಪ್‌ಗಳ ಮೂಲಕ\nಆಹಾರವನ್ನು ಆರ್ಡರ್ ಮಾಡಿ</translation>
+<translation id="5267269112080050255">Chrome ನಲ್ಲಿ Google ಅಸಿಸ್ಟೆಂಟ್ ಅನ್ನು ಪೂರ್ಣ ಎತ್ತರದಲ್ಲಿ ತೆರೆಯಲಾಗಿದೆ.</translation>
+<translation id="5447168050208292829">ಕೆಲವೇ ಟ್ಯಾಪ್‌ಗಳ ಮೂಲಕ\nನಿಮ್ಮ ಫ್ಲೈಟ್‌ಗಳ ಕುರಿತು ಪರಿಶೀಲಿಸಿ</translation>
+<translation id="5801568494490449797">ಪ್ರಾಶಸ್ತ್ಯಗಳು</translation>
+<translation id="6555233628095991027">Chrome ನಲ್ಲಿ Google ಅಸಿಸ್ಟೆಂಟ್ ಅನ್ನು ಅರ್ಧ ಎತ್ತರದಲ್ಲಿ ತೆರೆಯಲಾಗಿದೆ.</translation>
+<translation id="6785872064505734160">Chrome ನಲ್ಲಿರುವ Google Assistant, ನಿಮಗಾಗಿ ವೆಬ್‌ಸೈಟ್‌ಗಳಾದ್ಯಂತದ ಕ್ರಿಯೆಗಳನ್ನು ಪೂರ್ಣಗೊಳಿಸಬಲ್ಲದು</translation>
 <translation id="6973932557599545801">ಕ್ಷಮಿಸಿ, ನನ್ನಿಂದ ಸಹಾಯ ಮಾಡಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ, ನಿಮ್ಮ ವಿವೇಚನೆಗೆ ತಕ್ಕಂತೆ ಮುಂದುವರಿಸಿ.</translation>
+<translation id="7135664311366978968">ಕೆಲವೇ ಟ್ಯಾಪ್‌ಗಳ ಮೂಲಕ\nಚಲನಚಿತ್ರ ಟಿಕೆಟ್‌ಗಳನ್ನು ಖರೀದಿಸಿ</translation>
+<translation id="7455021968451468078">ನಿಮ್ಮ ಪಾಸ್‌ವರ್ಡ್ ಅನ್ನು ಬದಲಾಯಿಸುವುದಕ್ಕಾಗಿ\nನಿಮಗೆ ಸಹಾಯ ಮಾಡಲು Google Assistant ಗೆ ಅನುಮತಿ ನೀಡಿ</translation>
 <translation id="7658239707568436148">ರದ್ದುಮಾಡಿ</translation>
-<translation id="7670842975141217779">Chrome ನಲ್ಲಿನ\nGoogle ಅಸಿಸ್ಟೆಂಟ್</translation>
-<translation id="7871791972254842204">ನಂತರ, <ph name="BEGIN_BOLD" /><ph name="DOMAIN" /><ph name="END_BOLD" />ಕುರಿತಾದ ನಿಯಮಗಳು ಮತ್ತು ನಿಬಂಧನೆಗಳನ್ನು ಓದಿ ಹಾಗೂ ಅವುಗಳಿಗೆ ಸಮ್ಮತಿಸಿ</translation>
-<translation id="8723954843026426558">ನಾನು <ph name="BEGIN_BOLD" /><ph name="DOMAIN" /><ph name="END_BOLD" />ಡೊಮೇನ್‌ನ ನಿಯಮಗಳು ಮತ್ತು ನಿಬಂಧನೆಗಳು, ಗೌಪ್ಯತಾ ಕಾರ್ಯನೀತಿ, ಮತ್ತು ಹಿಂತೆಗೆದುಕೊಳ್ಳುವ ಹಕ್ಕಿಗೆ ಸಮ್ಮತಿಸುತ್ತೇನೆ.</translation>
-<translation id="9110718169272311511">Chrome ನಲ್ಲಿನ Google ಅಸಿಸ್ಟೆಂಟ್‌ ಸ್ಕ್ರೀನ್‌ ಕೆಳಭಾಗದಲ್ಲಿ ಲಭ್ಯವಿದೆ</translation>
-<translation id="9138504265731110181">Google ಅಸಿಸ್ಟೆಂಟ್ ನಿಮಗೆ ವೆಬ್‌ನಲ್ಲಿ ಚೆಕ್ ಔಟ್ ಮಾಡಲು ಸಹಾಯ ಮಾಡುವ ಮೂಲಕ ನಿಮ್ಮ ಸಮಯವನ್ನು ಉಳಿಸುತ್ತದೆ</translation>
+<translation id="7953600313732929223">ವೆಬ್‌ಸೈಟ್‌ಗಳಲ್ಲಿ\nಧ್ವನಿ ಕ್ರಿಯೆಗಳನ್ನು ಬಳಸಿ ನೋಡಿ</translation>
+<translation id="8253702004019660079">Chrome ನಲ್ಲಿ Google ಅಸಿಸ್ಟೆಂಟ್.</translation>
+<translation id="8500511870202433545">ಕೆಲವೇ ಟ್ಯಾಪ್‌ಗಳ ಮೂಲಕ\nಕಾರನ್ನು ಬಾಡಿಗೆಗೆ ಪಡೆಯಿರಿ</translation>
+<translation id="945522503751344254">ಪ್ರತಿಕ್ರಿಯೆಯನ್ನು ಕಳುಹಿಸಿ</translation>
 </translationbundle>

@@ -5,7 +5,10 @@
 #import "ios/chrome/browser/ui/ntp_tile_views/ntp_tile_view.h"
 
 #import "ios/chrome/browser/ui/util/dynamic_type_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/colors/UIColor+cr_semantic_colors.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#include "ios/chrome/common/ui/util/dynamic_type_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -16,10 +19,16 @@ namespace {
 const NSInteger kLabelNumLines = 2;
 const CGFloat kSpaceIconTitle = 10;
 const CGFloat kIconSize = 56;
-const CGFloat kTitleAlpha = 0.54;
 const CGFloat kPreferredMaxWidth = 73;
 
 }  // namespace
+
+@interface NTPTileView ()
+// Hold onto the created interaction for pointer support so it can be removed
+// when the view goes away.
+@property(nonatomic, strong)
+    UIPointerInteraction* pointerInteraction API_AVAILABLE(ios(13.4));
+@end
 
 @implementation NTPTileView
 
@@ -27,7 +36,7 @@ const CGFloat kPreferredMaxWidth = 73;
   self = [super initWithFrame:frame];
   if (self) {
     _titleLabel = [[UILabel alloc] init];
-    _titleLabel.textColor = [UIColor colorWithWhite:0 alpha:kTitleAlpha];
+    _titleLabel.textColor = UIColor.cr_secondaryLabelColor;
     _titleLabel.font = [self titleLabelFont];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.preferredMaxLayoutWidth = kPreferredMaxWidth;
@@ -43,7 +52,10 @@ const CGFloat kPreferredMaxWidth = 73;
     UIImageView* backgroundView =
         [[UIImageView alloc] initWithFrame:self.bounds];
     backgroundView.translatesAutoresizingMaskIntoConstraints = NO;
-    backgroundView.image = [[self class] backgroundImage];
+    UIImage* backgroundImage = [[UIImage imageNamed:@"ntp_most_visited_tile"]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    backgroundView.image = backgroundImage;
+    backgroundView.tintColor = [UIColor colorNamed:kGrey100Color];
     [self addSubview:backgroundView];
     [self addSubview:_imageContainerView];
 
@@ -63,8 +75,21 @@ const CGFloat kPreferredMaxWidth = 73;
         @{ @"space" : @(kSpaceIconTitle) });
 
     _imageBackgroundView = backgroundView;
+
+    if (@available(iOS 13.4, *)) {
+      _pointerInteraction =
+          [[UIPointerInteraction alloc] initWithDelegate:self];
+      [self addInteraction:self.pointerInteraction];
+    }
   }
   return self;
+}
+
+- (void)dealloc {
+  if (@available(iOS 13.4, *)) {
+    [self removeInteraction:self.pointerInteraction];
+    self.pointerInteraction = nil;
+  }
 }
 
 // Returns the font size for the location label.
@@ -75,10 +100,6 @@ const CGFloat kPreferredMaxWidth = 73;
       UIContentSizeCategoryAccessibilityLarge);
 }
 
-+ (UIImage*)backgroundImage {
-  return [UIImage imageNamed:@"ntp_most_visited_tile"];
-}
-
 #pragma mark - UIView
 
 - (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
@@ -87,6 +108,33 @@ const CGFloat kPreferredMaxWidth = 73;
       self.traitCollection.preferredContentSizeCategory) {
     self.titleLabel.font = [self titleLabelFont];
   }
+}
+
+#pragma mark - UIPointerInteractionDelegate
+
+- (UIPointerRegion*)pointerInteraction:(UIPointerInteraction*)interaction
+                      regionForRequest:(UIPointerRegionRequest*)request
+                         defaultRegion:(UIPointerRegion*)defaultRegion
+    API_AVAILABLE(ios(13.4)) {
+  return defaultRegion;
+}
+
+- (UIPointerStyle*)pointerInteraction:(UIPointerInteraction*)interaction
+                       styleForRegion:(UIPointerRegion*)region
+    API_AVAILABLE(ios(13.4)) {
+  // The preview APIs require the view to be in a window. Ensure they are before
+  // proceeding.
+  if (!self.window)
+    return nil;
+
+  UITargetedPreview* preview =
+      [[UITargetedPreview alloc] initWithView:_imageContainerView];
+  UIPointerHighlightEffect* effect =
+      [UIPointerHighlightEffect effectWithPreview:preview];
+  UIPointerShape* shape =
+      [UIPointerShape shapeWithRoundedRect:_imageContainerView.frame
+                              cornerRadius:8.0];
+  return [UIPointerStyle styleWithEffect:effect shape:shape];
 }
 
 @end

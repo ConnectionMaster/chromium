@@ -8,13 +8,9 @@
 namespace invalidation {
 namespace prefs {
 
-extern const char kInvalidatorClientId[];
+extern const char kFCMInvalidationClientIDCacheDeprecated[];
 
-extern const char kInvalidatorInvalidationState[];
-
-extern const char kInvalidatorSavedInvalidations[];
-
-extern const char kFCMInvalidationClientIDCache[];
+extern const char kInvalidationClientIDCache[];
 
 }  // namespace prefs
 }  // namespace invalidation

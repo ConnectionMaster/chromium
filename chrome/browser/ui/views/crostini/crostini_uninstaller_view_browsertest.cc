@@ -4,31 +4,33 @@
 
 #include "chrome/browser/ui/views/crostini/crostini_uninstaller_view.h"
 
+#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_base.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/chromeos/crostini/crostini_manager.h"
-#include "chrome/browser/chromeos/crostini/crostini_pref_names.h"
-#include "chrome/browser/chromeos/crostini/crostini_util.h"
+#include "chrome/browser/ash/crostini/crostini_manager.h"
+#include "chrome/browser/ash/crostini/crostini_pref_names.h"
+#include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/app_list_client_impl.h"
-#include "chrome/browser/ui/app_list/crostini/crostini_app_model_builder.h"
 #include "chrome/browser/ui/app_list/test/chrome_app_list_test_support.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/views/crostini/crostini_browser_test_util.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/ui/views/crostini/crostini_dialogue_browser_test_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
-#include "chromeos/dbus/fake_concierge_client.h"
+#include "chromeos/dbus/cicerone/cicerone_client.h"
+#include "chromeos/dbus/concierge/fake_concierge_client.h"
 #include "components/crx_file/id_util.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/views/window/dialog_client_view.h"
 
 class CrostiniUninstallerViewBrowserTest : public CrostiniDialogBrowserTest {
  public:
   class WaitingFakeConciergeClient : public chromeos::FakeConciergeClient {
    public:
+    explicit WaitingFakeConciergeClient(chromeos::FakeCiceroneClient* client)
+        : chromeos::FakeConciergeClient(client) {}
+
     void StopVm(
         const vm_tools::concierge::StopVmRequest& request,
         chromeos::DBusMethodCallback<vm_tools::concierge::StopVmResponse>
@@ -44,7 +46,7 @@ class CrostiniUninstallerViewBrowserTest : public CrostiniDialogBrowserTest {
       base::RunLoop loop;
       closure_ = loop.QuitClosure();
       loop.Run();
-      EXPECT_TRUE(stop_vm_called());
+      EXPECT_GE(stop_vm_call_count(), 1);
     }
 
    private:
@@ -55,10 +57,11 @@ class CrostiniUninstallerViewBrowserTest : public CrostiniDialogBrowserTest {
       : CrostiniUninstallerViewBrowserTest(true /*register_termina*/) {}
 
   explicit CrostiniUninstallerViewBrowserTest(bool register_termina)
-      : CrostiniDialogBrowserTest(register_termina),
-        waiting_fake_concierge_client_(new WaitingFakeConciergeClient()) {
-    chromeos::DBusThreadManager::GetSetterForTesting()->SetConciergeClient(
-        base::WrapUnique(waiting_fake_concierge_client_));
+      : CrostiniDialogBrowserTest(register_termina) {
+    chromeos::ConciergeClient::Shutdown();
+    // After the browser's mainloop is terminated. chromeos::ShutdownDBus() will
+    // delete the object.
+    waiting_fake_concierge_client_ = new WaitingFakeConciergeClient(nullptr);
   }
 
   // DialogBrowserTest:
@@ -71,21 +74,18 @@ class CrostiniUninstallerViewBrowserTest : public CrostiniDialogBrowserTest {
     return CrostiniUninstallerView::GetActiveViewForTesting();
   }
 
-  bool HasAcceptButton() {
-    return ActiveView()->GetDialogClientView()->ok_button() != nullptr;
-  }
+  bool HasAcceptButton() { return ActiveView()->GetOkButton() != nullptr; }
 
-  bool HasCancelButton() {
-    return ActiveView()->GetDialogClientView()->cancel_button() != nullptr;
-  }
+  bool HasCancelButton() { return ActiveView()->GetCancelButton() != nullptr; }
 
   void WaitForViewDestroyed() {
-    base::RunLoop().RunUntilIdle();
+    base::RunLoop run_loop;
+    ActiveView()->set_destructor_callback_for_testing(run_loop.QuitClosure());
+    run_loop.Run();
     EXPECT_EQ(nullptr, ActiveView());
   }
 
  protected:
-  // Owned by chromeos::DBusThreadManager
   WaitingFakeConciergeClient* waiting_fake_concierge_client_;
 
  private:
@@ -118,7 +118,7 @@ IN_PROC_BROWSER_TEST_F(CrostiniUninstallerViewBrowserTest, UninstallFlow) {
   EXPECT_TRUE(HasAcceptButton());
   EXPECT_TRUE(HasCancelButton());
 
-  ActiveView()->GetDialogClientView()->AcceptWindow();
+  ActiveView()->AcceptDialog();
   EXPECT_FALSE(ActiveView()->GetWidget()->IsClosed());
   EXPECT_FALSE(HasAcceptButton());
   EXPECT_FALSE(HasCancelButton());
@@ -147,7 +147,7 @@ IN_PROC_BROWSER_TEST_F(CrostiniUninstalledUninstallerViewBrowserTest,
   EXPECT_TRUE(HasAcceptButton());
   EXPECT_TRUE(HasCancelButton());
 
-  ActiveView()->GetDialogClientView()->AcceptWindow();
+  ActiveView()->AcceptDialog();
 
   WaitForViewDestroyed();
 
@@ -163,7 +163,7 @@ IN_PROC_BROWSER_TEST_F(CrostiniUninstallerViewBrowserTest, Cancel) {
 
   ShowUi("default");
   EXPECT_NE(nullptr, ActiveView());
-  ActiveView()->GetDialogClientView()->CancelWindow();
+  ActiveView()->CancelDialog();
   EXPECT_TRUE(ActiveView()->GetWidget()->IsClosed());
   WaitForViewDestroyed();
 
@@ -182,11 +182,11 @@ IN_PROC_BROWSER_TEST_F(CrostiniUninstallerViewBrowserTest, ErrorThenCancel) {
   response.set_success(false);
   waiting_fake_concierge_client_->set_stop_vm_response(std::move(response));
 
-  ActiveView()->GetDialogClientView()->AcceptWindow();
+  ActiveView()->AcceptDialog();
   EXPECT_FALSE(ActiveView()->GetWidget()->IsClosed());
   waiting_fake_concierge_client_->WaitForStopVmCalled();
   EXPECT_TRUE(HasCancelButton());
-  ActiveView()->GetDialogClientView()->CancelWindow();
+  ActiveView()->CancelDialog();
   WaitForViewDestroyed();
 
   histogram_tester.ExpectUniqueSample(

@@ -5,12 +5,85 @@
 #include "components/autofill/core/browser/autofill_data_util.h"
 
 #include "base/strings/utf_string_conversions.h"
-#include "components/autofill/core/browser/autofill_profile.h"
 #include "components/autofill/core/browser/autofill_test_utils.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
 namespace data_util {
+namespace {
+
+using data_util::bit_field_type_groups::kAddress;
+using data_util::bit_field_type_groups::kEmail;
+using data_util::bit_field_type_groups::kName;
+using data_util::bit_field_type_groups::kPhone;
+
+TEST(AutofillDataUtilTest, DetermineGroupsForHomeNameAndAddress) {
+  const std::vector<ServerFieldType> field_types{NAME_HONORIFIC_PREFIX,
+                                                 NAME_FULL,
+                                                 NAME_FIRST,
+                                                 NAME_MIDDLE,
+                                                 NAME_MIDDLE_INITIAL,
+                                                 NAME_LAST,
+                                                 NAME_LAST_FIRST,
+                                                 NAME_LAST_CONJUNCTION,
+                                                 NAME_LAST_SECOND,
+                                                 NAME_FIRST,
+                                                 NAME_LAST,
+                                                 ADDRESS_HOME_LINE1,
+                                                 ADDRESS_HOME_CITY,
+                                                 ADDRESS_HOME_STATE,
+                                                 ADDRESS_HOME_ZIP};
+
+  const uint32_t expected_group_bitmask = kName | kAddress;
+  const uint32_t group_bitmask = data_util::DetermineGroups(field_types);
+  EXPECT_EQ(expected_group_bitmask, group_bitmask);
+}
+
+TEST(AutofillDataUtilTest, DetermineGroupsForBillingNameAndAddress) {
+  const std::vector<ServerFieldType> field_types{
+      NAME_BILLING_FULL, ADDRESS_BILLING_LINE1, ADDRESS_BILLING_CITY,
+      ADDRESS_BILLING_STATE, ADDRESS_BILLING_ZIP};
+
+  const uint32_t expected_group_bitmask = kName | kAddress;
+  const uint32_t group_bitmask = data_util::DetermineGroups(field_types);
+  EXPECT_EQ(expected_group_bitmask, group_bitmask);
+}
+
+TEST(AutofillDataUtilTest, DetermineGroupsForHomeNamePhoneAndEmail) {
+  const std::vector<ServerFieldType> field_types{
+      NAME_FULL, PHONE_HOME_CITY_AND_NUMBER, EMAIL_ADDRESS};
+
+  const uint32_t expected_group_bitmask = kName | kPhone | kEmail;
+  const uint32_t group_bitmask = data_util::DetermineGroups(field_types);
+  EXPECT_EQ(expected_group_bitmask, group_bitmask);
+}
+
+TEST(AutofillDataUtilTest, DetermineGroupsForBillingNamePhoneAndEmail) {
+  const std::vector<ServerFieldType> field_types{
+      NAME_BILLING_FULL, PHONE_BILLING_WHOLE_NUMBER, EMAIL_ADDRESS};
+
+  const uint32_t expected_group_bitmask = kName | kPhone | kEmail;
+  const uint32_t group_bitmask = data_util::DetermineGroups(field_types);
+  EXPECT_EQ(expected_group_bitmask, group_bitmask);
+}
+
+TEST(AutofillDataUtilTest, DetermineGroupsForUnknownServerFieldType) {
+  const std::vector<ServerFieldType> field_types{UNKNOWN_TYPE, NAME_FULL,
+                                                 ADDRESS_HOME_ZIP};
+
+  const uint32_t expected_group_bitmask = kName | kAddress;
+  const uint32_t group_bitmask = data_util::DetermineGroups(field_types);
+  EXPECT_EQ(expected_group_bitmask, group_bitmask);
+}
+
+TEST(AutofillDataUtilTest, DetermineGroupsForNoServerFieldTypes) {
+  const std::vector<ServerFieldType> field_types =
+      std::vector<ServerFieldType>();
+  const uint32_t expected_group_bitmask = 0;
+  const uint32_t group_bitmask = data_util::DetermineGroups(field_types);
+  EXPECT_EQ(expected_group_bitmask, group_bitmask);
+}
 
 struct IsCJKNameTestCase {
   const char* full_name;
@@ -134,15 +207,14 @@ INSTANTIATE_TEST_SUITE_P(
                          "황목"},  // Korean name, Hangul
 
         // It occasionally happens that a full name is 2 characters, 1/1.
-        FullNameTestCase{"이도", "도", "", "이"},  // Korean name, Hangul
-        FullNameTestCase{"孫文", "文", "", "孫"}   // Chinese name, Unihan
-        ));
+        FullNameTestCase{"이도", "도", "", "이"},    // Korean name, Hangul
+        FullNameTestCase{"孫文", "文", "", "孫"}));  // Chinese name, Unihan
 
 class JoinNamePartsTest : public testing::TestWithParam<FullNameTestCase> {};
 
 TEST_P(JoinNamePartsTest, JoinNameParts) {
   auto test_case = GetParam();
-  base::string16 joined =
+  std::u16string joined =
       JoinNameParts(base::UTF8ToUTF16(test_case.given_name),
                     base::UTF8ToUTF16(test_case.middle_name),
                     base::UTF8ToUTF16(test_case.family_name));
@@ -168,36 +240,7 @@ INSTANTIATE_TEST_SUITE_P(
         // These are no CJK names for us, they're just bogus.
         FullNameTestCase{"Homer シンプソン", "Homer", "", "シンプソン"},
         FullNameTestCase{"ホーマー Simpson", "ホーマー", "", "Simpson"},
-        FullNameTestCase{"반 기 문", "반", "기", "문"}
-        // Has a middle-name, too unusual
-        ));
-
-TEST(AutofillDataUtilTest, ProfileMatchesFullName) {
-  autofill::AutofillProfile profile;
-  autofill::test::SetProfileInfo(
-      &profile, "First", "Middle", "Last", "fml@example.com", "Acme inc",
-      "123 Main", "Apt 2", "Laredo", "TX", "77300", "US", "832-555-1000");
-
-  EXPECT_TRUE(ProfileMatchesFullName(base::UTF8ToUTF16("First Last"), profile));
-
-  EXPECT_TRUE(
-      ProfileMatchesFullName(base::UTF8ToUTF16("First Middle Last"), profile));
-
-  EXPECT_TRUE(
-      ProfileMatchesFullName(base::UTF8ToUTF16("First M Last"), profile));
-
-  EXPECT_TRUE(
-      ProfileMatchesFullName(base::UTF8ToUTF16("First M. Last"), profile));
-
-  EXPECT_TRUE(
-      ProfileMatchesFullName(base::UTF8ToUTF16("Last First"), profile));
-
-  EXPECT_TRUE(
-      ProfileMatchesFullName(base::UTF8ToUTF16("LastFirst"), profile));
-
-  EXPECT_FALSE(
-      ProfileMatchesFullName(base::UTF8ToUTF16("Kirby Puckett"), profile));
-}
+        FullNameTestCase{"반 기 문", "반", "기", "문"}));
 
 struct ValidCountryCodeTestCase {
   std::string country_code;
@@ -240,5 +283,6 @@ INSTANTIATE_TEST_SUITE_P(
         ValidCountryCodeTestCase{"Ca", false},
         ValidCountryCodeTestCase{"cN", false}));
 
+}  // namespace
 }  // namespace data_util
 }  // namespace autofill

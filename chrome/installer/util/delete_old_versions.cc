@@ -9,13 +9,13 @@
 #include <set>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/file_version_info.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/version.h"
 #include "chrome/installer/util/util_constants.h"
 
@@ -33,13 +33,14 @@ base::FilePath GetExecutableVersionDirName(const base::FilePath& exe_path) {
       FileVersionInfo::CreateFileVersionInfo(exe_path));
   if (!file_version_info.get())
     return base::FilePath();
-  return base::FilePath(file_version_info->file_version());
+  return base::FilePath::FromUTF16Unsafe(file_version_info->file_version());
 }
 
 // Returns the names of the old version directories found in |install_dir|. The
 // directories named after the version of chrome.exe or new_chrome.exe are
 // excluded.
 DirectorySet GetOldVersionDirectories(const base::FilePath& install_dir) {
+  // TODO(crbug/1182976): Delete old version directory from all known locations.
   const base::FilePath new_chrome_exe_version_dir_name =
       GetExecutableVersionDirName(install_dir.Append(kChromeNewExe));
   const base::FilePath chrome_exe_version_dir_name =
@@ -87,11 +88,11 @@ bool DeleteDirectoriesWithoutMatchingExecutable(
   bool success = true;
   for (const base::FilePath& directory_name : directories) {
     // Delete the directory if it doesn't have a matching executable.
-    if (!base::ContainsKey(executables, directory_name)) {
+    if (!base::Contains(executables, directory_name)) {
       const base::FilePath directory_path = install_dir.Append(directory_name);
       LOG(WARNING) << "Attempting to delete stray directory "
                    << directory_path.value();
-      if (!base::DeleteFile(directory_path, true)) {
+      if (!base::DeletePathRecursively(directory_path)) {
         PLOG(ERROR) << "Failed to delete stray directory "
                     << directory_path.value();
         success = false;
@@ -113,7 +114,7 @@ bool DeleteExecutablesWithoutMatchingDirectory(
     const auto& executables_for_version = version_and_executables.second;
 
     // Don't delete the executables if they have a matching directory.
-    if (base::ContainsKey(directories, version_dir_name))
+    if (base::Contains(directories, version_dir_name))
       continue;
 
     // Delete executables for version |version_dir_name|.
@@ -121,7 +122,7 @@ bool DeleteExecutablesWithoutMatchingDirectory(
       const base::FilePath executable_name = executable_path.BaseName();
       LOG(WARNING) << "Attempting to delete stray executable "
                    << executable_path.value();
-      if (!base::DeleteFile(executable_path, false)) {
+      if (!base::DeleteFile(executable_path)) {
         PLOG(ERROR) << "Failed to delete stray executable "
                     << executable_path.value();
         success = false;
@@ -185,7 +186,7 @@ bool DeleteVersion(const base::FilePath& version_directory,
   // Delete locked files. The files won't actually be deleted until the locks
   // are released.
   for (const base::FilePath& locked_file_path : locked_file_paths) {
-    if (!base::DeleteFile(locked_file_path, false)) {
+    if (!base::DeleteFile(locked_file_path)) {
       PLOG(ERROR) << "Failed to delete locked file "
                   << locked_file_path.value();
       success = false;
@@ -197,7 +198,7 @@ bool DeleteVersion(const base::FilePath& version_directory,
   locks.clear();
 
   // Delete the version directory.
-  if (!base::DeleteFile(version_directory, true)) {
+  if (!base::DeletePathRecursively(version_directory)) {
     PLOG(ERROR) << "Failed to delete version directory "
                 << version_directory.value();
     success = false;

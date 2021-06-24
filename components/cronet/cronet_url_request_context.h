@@ -15,6 +15,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_checker.h"
 #include "components/prefs/json_pref_store.h"
 #include "net/nqe/effective_connection_type.h"
 #include "net/nqe/effective_connection_type_observer.h"
@@ -241,7 +242,7 @@ class CronetURLRequestContext {
 
    private:
     friend class TestUtil;
-    std::unique_ptr<base::DictionaryValue> GetNetLogInfo() const;
+    base::Value GetNetLogInfo() const;
 
     std::unique_ptr<net::FileNetLogObserver> net_log_file_observer_;
 

@@ -38,7 +38,10 @@ class PLATFORM_EXPORT GeneratedImage : public Image {
 
   bool HasIntrinsicSize() const override { return false; }
 
-  IntSize Size() const override { return RoundedIntSize(size_); }
+  IntSize SizeWithConfig(SizeConfig) const override {
+    return RoundedIntSize(size_);
+  }
+  FloatSize SizeWithConfigAsFloat(SizeConfig) const override { return size_; }
 
   // Assume that generated content has no decoded data we need to worry about
   void DestroyDecodedData() override {}
@@ -47,23 +50,30 @@ class PLATFORM_EXPORT GeneratedImage : public Image {
 
  protected:
   void DrawPattern(GraphicsContext&,
+                   const cc::PaintFlags&,
                    const FloatRect&,
                    const FloatSize&,
                    const FloatPoint&,
-                   SkBlendMode,
                    const FloatRect&,
-                   const FloatSize& repeat_spacing) final;
+                   const FloatSize& repeat_spacing,
+                   RespectImageOrientationEnum) final;
+  virtual sk_sp<cc::PaintShader> CreateShader(const FloatRect& tile_rect,
+                                              const SkMatrix* pattern_matrix,
+                                              const FloatRect& src_rect,
+                                              RespectImageOrientationEnum);
 
   // FIXME: Implement this to be less conservative.
   bool CurrentFrameKnownToBeOpaque() override { return false; }
 
   GeneratedImage(const FloatSize& size) : size_(size) {}
 
-  virtual void DrawTile(GraphicsContext&, const FloatRect&) = 0;
+  virtual void DrawTile(GraphicsContext&,
+                        const FloatRect&,
+                        RespectImageOrientationEnum) = 0;
 
   FloatSize size_;
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GENERATED_IMAGE_H_

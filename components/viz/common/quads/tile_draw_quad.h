@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include "components/viz/common/quads/content_draw_quad_base.h"
+#include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/viz_common_export.h"
 
 namespace viz {
@@ -23,13 +24,12 @@ class VIZ_COMMON_EXPORT TileDrawQuad : public ContentDrawQuadBase {
               const gfx::Rect& rect,
               const gfx::Rect& visible_rect,
               bool needs_blending,
-              unsigned resource_id,
+              ResourceId resource_id,
               // |tex_coord_rect| contains non-normalized coordinates.
               // TODO(reveman): Make the use of normalized vs non-normalized
               // coordinates consistent across all quad types: crbug.com/487370
               const gfx::RectF& tex_coord_rect,
               const gfx::Size& texture_size,
-              bool swizzle_contents,
               bool is_premultiplied,
               bool nearest_neighbor,
               bool force_anti_aliasing_off);
@@ -38,13 +38,12 @@ class VIZ_COMMON_EXPORT TileDrawQuad : public ContentDrawQuadBase {
               const gfx::Rect& rect,
               const gfx::Rect& visible_rect,
               bool needs_blending,
-              unsigned resource_id,
+              ResourceId resource_id,
               // |tex_coord_rect| contains non-normalized coordinates.
               // TODO(reveman): Make the use of normalized vs non-normalized
               // coordinates consistent across all quad types: crbug.com/487370
               const gfx::RectF& tex_coord_rect,
               const gfx::Size& texture_size,
-              bool swizzle_contents,
               bool is_premultiplied,
               bool nearest_neighbor,
               bool force_anti_aliasing_off);

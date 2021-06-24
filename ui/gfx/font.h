@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
 #include "ui/gfx/gfx_export.h"
 #include "ui/gfx/native_widget_types.h"
@@ -60,7 +59,7 @@ class GFX_EXPORT Font {
   Font(const Font& other);
   Font& operator=(const Font& other);
 
-#if defined(OS_MACOSX) || defined(OS_IOS)
+#if defined(OS_APPLE)
   // Creates a font from the specified native font.
   explicit Font(NativeFont native_font);
 #endif
@@ -105,11 +104,11 @@ class GFX_EXPORT Font {
   // Returns the style of the font.
   int GetStyle() const;
 
-  // Returns the specified font name in UTF-8.
+  // Returns the specified font name in UTF-8, without font mapping.
   const std::string& GetFontName() const;
 
-  // Returns the actually used font name in UTF-8.
-  std::string GetActualFontNameForTesting() const;
+  // Returns the actually used font name in UTF-8 after font mapping.
+  std::string GetActualFontName() const;
 
   // Returns the font size in pixels.
   int GetFontSize() const;
@@ -117,15 +116,14 @@ class GFX_EXPORT Font {
   // Returns an object describing how the font should be rendered.
   const FontRenderParams& GetFontRenderParams() const;
 
-#if defined(OS_MACOSX) || defined(OS_IOS)
+#if defined(OS_APPLE)
   // Returns the native font handle.
   // Lifetime lore:
   // Mac:     The object is owned by the system and should not be released.
   NativeFont GetNativeFont() const;
 #endif
 
-  // Raw access to the underlying platform font implementation. Can be
-  // static_cast to a known implementation type if needed.
+  // Raw access to the underlying platform font implementation.
   PlatformFont* platform_font() const { return platform_font_.get(); }
 
  private:
@@ -137,6 +135,9 @@ class GFX_EXPORT Font {
 GFX_EXPORT std::ostream& operator<<(std::ostream& stream,
                                     const Font::Weight weight);
 #endif
+
+// Returns the Font::Weight that matches |weight| or the next bigger one.
+GFX_EXPORT Font::Weight FontWeightFromInt(int weight);
 
 }  // namespace gfx
 

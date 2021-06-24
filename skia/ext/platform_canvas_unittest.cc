@@ -8,7 +8,6 @@
 
 #include <stdint.h>
 
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -76,7 +75,7 @@ bool VerifyRect(const SkCanvas& canvas,
   return true;
 }
 
-#if !defined(USE_AURA) && !defined(OS_MACOSX)
+#if !defined(USE_AURA) && !defined(OS_MAC)
 // Return true if canvas has something that passes for a rounded-corner
 // rectangle. Basically, we're just checking to make sure that the pixels in the
 // middle are of rect_color and pixels in the corners are of canvas_color.
@@ -134,8 +133,8 @@ void DrawNativeRect(SkCanvas& canvas, int x, int y, int w, int h) {
 // intersected with any existing clip.
 void AddClip(SkCanvas& canvas, int x, int y, int w, int h) {
   SkRect rect;
-  rect.set(SkIntToScalar(x), SkIntToScalar(y),
-           SkIntToScalar(x + w), SkIntToScalar(y + h));
+  rect.setXYWH(SkIntToScalar(x), SkIntToScalar(y), SkIntToScalar(w),
+               SkIntToScalar(h));
   canvas.clipRect(rect);
 }
 
@@ -148,8 +147,8 @@ class LayerSaver {
         w_(w),
         h_(h) {
     SkRect bounds;
-    bounds.set(SkIntToScalar(x_), SkIntToScalar(y_),
-               SkIntToScalar(right()), SkIntToScalar(bottom()));
+    bounds.setLTRB(SkIntToScalar(x_), SkIntToScalar(y_), SkIntToScalar(right()),
+                   SkIntToScalar(bottom()));
     canvas_.saveLayer(&bounds, NULL);
     canvas.clear(SkColorSetARGB(0, 0, 0, 0));
   }

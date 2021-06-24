@@ -6,12 +6,13 @@
 #define DEVICE_FIDO_PUBLIC_KEY_CREDENTIAL_USER_ENTITY_H_
 
 #include <stdint.h>
+
 #include <string>
 #include <vector>
 
 #include "base/component_export.h"
-#include "base/optional.h"
 #include "components/cbor/values.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace device {
@@ -22,24 +23,31 @@ namespace device {
 // request.
 class COMPONENT_EXPORT(DEVICE_FIDO) PublicKeyCredentialUserEntity {
  public:
-  static base::Optional<PublicKeyCredentialUserEntity> CreateFromCBORValue(
+  static absl::optional<PublicKeyCredentialUserEntity> CreateFromCBORValue(
       const cbor::Value& cbor);
-  static cbor::Value ConvertToCBOR(const PublicKeyCredentialUserEntity& user);
 
+  PublicKeyCredentialUserEntity();
   explicit PublicKeyCredentialUserEntity(std::vector<uint8_t> id);
+  PublicKeyCredentialUserEntity(std::vector<uint8_t> id,
+                                absl::optional<std::string> name,
+                                absl::optional<std::string> display_name,
+                                absl::optional<GURL> icon_url);
   PublicKeyCredentialUserEntity(const PublicKeyCredentialUserEntity& other);
   PublicKeyCredentialUserEntity(PublicKeyCredentialUserEntity&& other);
   PublicKeyCredentialUserEntity& operator=(
       const PublicKeyCredentialUserEntity& other);
   PublicKeyCredentialUserEntity& operator=(
       PublicKeyCredentialUserEntity&& other);
+  bool operator==(const PublicKeyCredentialUserEntity& other) const;
   ~PublicKeyCredentialUserEntity();
 
   std::vector<uint8_t> id;
-  base::Optional<std::string> name;
-  base::Optional<std::string> display_name;
-  base::Optional<GURL> icon_url;
+  absl::optional<std::string> name;
+  absl::optional<std::string> display_name;
+  absl::optional<GURL> icon_url;
 };
+
+cbor::Value AsCBOR(const PublicKeyCredentialUserEntity&);
 
 }  // namespace device
 

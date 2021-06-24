@@ -5,12 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_INSTALLED_SCRIPTS_MANAGER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_INSTALLED_SCRIPTS_MANAGER_H_
 
-#include "base/optional.h"
+#include "services/network/public/mojom/ip_address_space.mojom-blink-forward.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/network/content_security_policy_response_headers.h"
 #include "third_party/blink/renderer/platform/network/http_header_map.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
@@ -32,6 +33,8 @@ class InstalledScriptsManager {
                String source_text,
                std::unique_ptr<Vector<uint8_t>> meta_data,
                std::unique_ptr<CrossThreadHTTPHeaderMapData>);
+    ScriptData(const ScriptData&) = delete;
+    ScriptData& operator=(const ScriptData&) = delete;
     ScriptData(ScriptData&& other) = default;
     ScriptData& operator=(ScriptData&& other) = default;
 
@@ -43,6 +46,10 @@ class InstalledScriptsManager {
     ContentSecurityPolicyResponseHeaders
     GetContentSecurityPolicyResponseHeaders();
     String GetReferrerPolicy();
+    String GetHttpContentType();
+    network::mojom::IPAddressSpace GetResponseAddressSpace() const {
+      return response_address_space_;
+    }
     std::unique_ptr<Vector<String>> CreateOriginTrialTokens();
 
    private:
@@ -50,8 +57,7 @@ class InstalledScriptsManager {
     String source_text_;
     std::unique_ptr<Vector<uint8_t>> meta_data_;
     HTTPHeaderMap headers_;
-
-    DISALLOW_COPY_AND_ASSIGN(ScriptData);
+    network::mojom::IPAddressSpace response_address_space_;
   };
 
   // Used on the main or worker thread. Returns true if the script has been

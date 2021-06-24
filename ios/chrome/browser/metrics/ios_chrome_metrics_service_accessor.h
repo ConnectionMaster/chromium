@@ -33,6 +33,7 @@ class IOSChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
 
   friend class CrashesDOMHandler;
   friend class IOSChromeDataReductionProxySettings;
+  friend class IOSChromeMainParts;
 
   FRIEND_TEST_ALL_PREFIXES(IOSChromeMetricsServiceAccessorTest,
                            MetricsReportingEnabled);
@@ -45,14 +46,6 @@ class IOSChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
   // details.
   static bool RegisterSyntheticFieldTrial(const std::string& trial_name,
                                           const std::string& group_name);
-
-  // Calls
-  // metrics::MetricsServiceAccessor::RegisterSyntheticFieldTrialWithNameHash()
-  // with ApplicationContext's MetricsService. See that function's declaration
-  // for details.
-  static bool RegisterSyntheticFieldTrialWithNameHash(
-      uint32_t trial_name_hash,
-      const std::string& group_name);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(IOSChromeMetricsServiceAccessor);
 };

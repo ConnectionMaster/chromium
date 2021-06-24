@@ -8,23 +8,22 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/mojom/payments/payment_request.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_exception.h"
-#include "third_party/blink/renderer/modules/payments/payment_details_init.h"
-#include "third_party/blink/renderer/modules/payments/payment_details_update.h"
-#include "third_party/blink/renderer/modules/payments/payment_item.h"
-#include "third_party/blink/renderer/modules/payments/payment_shipping_option.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_payment_details_init.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_payment_details_update.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_payment_item.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_payment_shipping_option.h"
 #include "third_party/blink/renderer/platform/heap/heap_allocator.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
-class Document;
 class PaymentMethodData;
-class ScriptState;
-class ScriptValue;
+class V8TestingScope;
 
 enum PaymentTestDetailToChange {
   kPaymentTestDetailNone,
@@ -87,31 +86,11 @@ payments::mojom::blink::PaymentResponsePtr BuildPaymentResponseForTest();
 
 payments::mojom::blink::PaymentAddressPtr BuildPaymentAddressForTest();
 
-void MakePaymentRequestOriginSecure(Document&);
-
-class PaymentRequestMockFunctionScope {
+class PaymentRequestV8TestingScope : public V8TestingScope {
   STACK_ALLOCATED();
 
  public:
-  explicit PaymentRequestMockFunctionScope(ScriptState*);
-  ~PaymentRequestMockFunctionScope();
-
-  v8::Local<v8::Function> ExpectCall();
-  v8::Local<v8::Function> ExpectCall(String* captor);
-  v8::Local<v8::Function> ExpectNoCall();
-
- private:
-  class MockFunction : public ScriptFunction {
-   public:
-    explicit MockFunction(ScriptState*);
-    MockFunction(ScriptState*, String* captor);
-    v8::Local<v8::Function> Bind();
-    MOCK_METHOD1(Call, ScriptValue(ScriptValue));
-    String* value_;
-  };
-
-  Member<ScriptState> script_state_;
-  Vector<Persistent<MockFunction>> mock_functions_;
+  PaymentRequestV8TestingScope();
 };
 
 }  // namespace blink

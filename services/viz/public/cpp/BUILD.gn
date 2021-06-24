@@ -1,23 +1,15 @@
-# Copyright 2019 The Chromium Authors. All rights reserved.
+# Copyright 2020 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/ui.gni")
-
-source_set("manifest") {
+source_set("crash_keys") {
   sources = [
-    "manifest.cc",
-    "manifest.h",
+    "crash_keys.cc",
+    "crash_keys.h",
   ]
 
   deps = [
     "//base",
-    "//services/service_manager/public/cpp",
-    "//services/viz/privileged/interfaces",
-    "//services/viz/public/interfaces",
+    "//components/crash/core//common:crash_key",
   ]
-
-  if (use_ozone) {
-    deps += [ "//ui/ozone/public/interfaces" ]
-  }
 }

@@ -4,8 +4,10 @@
 
 #include "chrome/browser/media/webrtc/test_stats_dictionary.h"
 
+#include <memory>
+
+#include "base/check.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
 
 namespace content {
 
@@ -43,8 +45,7 @@ std::unique_ptr<TestStatsDictionary> TestStatsReportDictionary::Get(
   const base::DictionaryValue* dictionary;
   if (!report_->GetDictionary(id, &dictionary))
     return nullptr;
-  return std::unique_ptr<TestStatsDictionary>(
-      new TestStatsDictionary(this, dictionary));
+  return std::make_unique<TestStatsDictionary>(this, dictionary);
 }
 
 std::vector<TestStatsDictionary> TestStatsReportDictionary::GetAll() {

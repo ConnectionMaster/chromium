@@ -6,16 +6,19 @@
 
 #include <memory>
 
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "ios/chrome/browser/browser_state/test_chrome_browser_state.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
 #import "ios/chrome/browser/ntp/new_tab_page_tab_helper.h"
 #import "ios/chrome/browser/ntp/new_tab_page_tab_helper_delegate.h"
+#import "ios/chrome/browser/ui/util/named_guide.h"
+#import "ios/chrome/browser/web/features.h"
 #import "ios/chrome/browser/web/page_placeholder_tab_helper.h"
 #import "ios/chrome/browser/web/sad_tab_tab_helper_delegate.h"
+#import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
-#import "ios/web/public/test/fakes/test_navigation_manager.h"
-#import "ios/web/public/test/fakes/test_web_state.h"
+#import "ios/web/public/test/fakes/fake_navigation_manager.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
@@ -66,14 +69,23 @@ class SadTabTabHelperTest : public PlatformTest {
         sad_tab_delegate_([[SadTabTabHelperTestDelegate alloc] init]) {
     browser_state_ = TestChromeBrowserState::Builder().Build();
 
+    // Create view that is added to the window.
+    CGRect frame = {CGPointZero, CGSizeMake(400, 300)};
+    web_state_view_ = [[UIView alloc] initWithFrame:frame];
+    web_state_.SetView(web_state_view_);
+    [scoped_key_window_.Get() addSubview:web_state_view_];
+
+    // The Content Area named guide should be available.
+    NamedGuide* guide = [[NamedGuide alloc] initWithName:kContentAreaGuide];
+    [web_state_view_ addLayoutGuide:guide];
+
     SadTabTabHelper::CreateForWebState(&web_state_);
     tab_helper()->SetDelegate(sad_tab_delegate_);
     PagePlaceholderTabHelper::CreateForWebState(&web_state_);
     OCMStub([application_ sharedApplication]).andReturn(application_);
 
     // Setup navigation manager.
-    std::unique_ptr<web::TestNavigationManager> navigation_manager =
-        std::make_unique<web::TestNavigationManager>();
+    auto navigation_manager = std::make_unique<web::FakeNavigationManager>();
     navigation_manager->SetBrowserState(browser_state_.get());
     navigation_manager_ = navigation_manager.get();
     web_state_.SetNavigationManager(std::move(navigation_manager));
@@ -86,16 +98,19 @@ class SadTabTabHelperTest : public PlatformTest {
 
   ~SadTabTabHelperTest() override { [application_ stopMocking]; }
 
-  base::test::ScopedTaskEnvironment environment_;
-  std::unique_ptr<ios::ChromeBrowserState> browser_state_;
-  web::TestWebState web_state_;
-  web::TestNavigationManager* navigation_manager_;
+  base::test::TaskEnvironment environment_;
+  ScopedKeyWindow scoped_key_window_;
+  UIView* web_state_view_;
+  std::unique_ptr<ChromeBrowserState> browser_state_;
+  web::FakeWebState web_state_;
+  web::FakeNavigationManager* navigation_manager_;
   id application_;
   SadTabTabHelperTestDelegate* sad_tab_delegate_;
 };
 
-// Tests that SadTab is not presented for not shown web states and navigation
-// item is reloaded once web state was shown.
+// Tests that SadTab is not presented for not shown web states. Navigation
+// item is reloaded once web state was shown, and displays the page placeholder
+// during the load.
 TEST_F(SadTabTabHelperTest, ReloadedWhenWebStateWasShown) {
   OCMStub([application_ applicationState]).andReturn(UIApplicationStateActive);
   web_state_.WasHidden();
@@ -110,11 +125,12 @@ TEST_F(SadTabTabHelperTest, ReloadedWhenWebStateWasShown) {
   EXPECT_FALSE(tab_helper()->is_showing_sad_tab());
   EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
 
-  // Navigation item must be reloaded once web state is shown.
+  // Navigation item must be reloaded once web state is shown, while displaying
+  // the page placeholder during the load.
   EXPECT_FALSE(navigation_manager_->LoadIfNecessaryWasCalled());
   web_state_.WasShown();
   EXPECT_TRUE(PagePlaceholderTabHelper::FromWebState(&web_state_)
-                  ->will_add_placeholder_for_next_navigation());
+                  ->displaying_placeholder());
   EXPECT_TRUE(navigation_manager_->LoadIfNecessaryWasCalled());
 }
 
@@ -151,7 +167,8 @@ TEST_F(SadTabTabHelperTest, AppOnNTP) {
 
   web_state_.SetVisibleURL(GURL(kChromeUINewTabURL));
   id delegate = OCMProtocolMock(@protocol(NewTabPageTabHelperDelegate));
-  NewTabPageTabHelper::CreateForWebState(&web_state_, delegate);
+  NewTabPageTabHelper::CreateForWebState(&web_state_);
+  NewTabPageTabHelper::FromWebState(&web_state_)->SetDelegate(delegate);
 
   // Delegate and TabHelper should not present a SadTab.
   EXPECT_FALSE(tab_helper()->is_showing_sad_tab());
@@ -191,8 +208,8 @@ TEST_F(SadTabTabHelperTest, AppIsInactive) {
   EXPECT_TRUE(navigation_manager_->LoadIfNecessaryWasCalled());
 }
 
-// Tests that SadTab is presented for shown web states.
-TEST_F(SadTabTabHelperTest, Presented) {
+// Tests that the page is reloaded for shown web states.
+TEST_F(SadTabTabHelperTest, ReloadFirstTime) {
   OCMStub([application_ applicationState]).andReturn(UIApplicationStateActive);
 
   web_state_.WasShown();
@@ -200,12 +217,13 @@ TEST_F(SadTabTabHelperTest, Presented) {
   // Delegate and TabHelper should not present a SadTab.
   EXPECT_FALSE(tab_helper()->is_showing_sad_tab());
   EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
+  EXPECT_FALSE(navigation_manager_->ReloadWasCalled());
 
-  // Helper should get notified of render process failure. And the delegate
-  // and TabHelper should present a SadTab.
+  // The first time, the tab should be reloaded.
   web_state_.OnRenderProcessGone();
-  EXPECT_TRUE(tab_helper()->is_showing_sad_tab());
-  EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
+  EXPECT_FALSE(tab_helper()->is_showing_sad_tab());
+  EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
+  EXPECT_TRUE(navigation_manager_->ReloadWasCalled());
 }
 
 // Tests that SadTab is removed by the navigation.
@@ -220,6 +238,9 @@ TEST_F(SadTabTabHelperTest, SadTabClearedByNavigation) {
   // Helper should get notified of render process failure. And the delegate
   // and TabHelper should present a SadTab.
   web_state_.OnRenderProcessGone();
+  // The renderer should be gone twice to show the sad tab.
+  web_state_.OnRenderProcessGone();
+
   EXPECT_TRUE(tab_helper()->is_showing_sad_tab());
   ASSERT_TRUE(sad_tab_delegate_.showingSadTab);
 
@@ -244,6 +265,8 @@ TEST_F(SadTabTabHelperTest, HideAndShowPresented) {
   // Helper should get notified of render process failure. And the delegate
   // should present a SadTab.
   web_state_.OnRenderProcessGone();
+  // The renderer should be gone twice to show the sad tab.
+  web_state_.OnRenderProcessGone();
   EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
 
   // Delegate does not show Sad Tab anymore, because WebState was hidden. But
@@ -254,7 +277,6 @@ TEST_F(SadTabTabHelperTest, HideAndShowPresented) {
 
   web_state_.WasShown();
   EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
-  EXPECT_FALSE(sad_tab_delegate_.repeatedFailure);
 }
 
 // Tests that SadTab is presented after web state is shown and removed when web
@@ -271,8 +293,9 @@ TEST_F(SadTabTabHelperTest, HideAndShowPresentedForRepeatedFailure) {
   // Helper should get notified of render process failure. And the delegate
   // should present a SadTab.
   web_state_.OnRenderProcessGone();
-  EXPECT_TRUE(tab_helper()->is_showing_sad_tab());
-  EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
+  // The first time the renderer crashes, the page is reloaded.
+  EXPECT_FALSE(tab_helper()->is_showing_sad_tab());
+  EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
 
   // Simulate repeated failure.
   web_state_.OnRenderProcessGone();
@@ -298,9 +321,9 @@ TEST_F(SadTabTabHelperTest, RepeatedFailuresShowCorrectUI) {
   // Helper should get notified of render process failure.
   web_state_.OnRenderProcessGone();
 
-  // SadTab should be displayed and repeatedFailure should be NO.
-  EXPECT_TRUE(tab_helper()->is_showing_sad_tab());
-  EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
+  // SadTab shouldn't be displayed and repeatedFailure should be NO.
+  EXPECT_FALSE(tab_helper()->is_showing_sad_tab());
+  EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
   EXPECT_FALSE(sad_tab_delegate_.repeatedFailure);
 
   // On a second render process crash, SadTab should be displayed and
@@ -323,10 +346,15 @@ TEST_F(SadTabTabHelperTest, FailureInterval) {
 
   // N.B. The test fixture web_state_ is not used for this test as a custom
   // |repeat_failure_interval| is required.
-  std::unique_ptr<ios::ChromeBrowserState> browser_state =
+  std::unique_ptr<ChromeBrowserState> browser_state =
       TestChromeBrowserState::Builder().Build();
-  web::TestWebState web_state;
+
+  auto navigation_manager = std::make_unique<web::FakeNavigationManager>();
+  navigation_manager->SetBrowserState(browser_state_.get());
+
+  web::FakeWebState web_state;
   web_state.SetBrowserState(browser_state.get());
+  web_state.SetNavigationManager(std::move(navigation_manager));
   SadTabTabHelper::CreateForWebState(&web_state, 0.0f);
   SadTabTabHelper::FromWebState(&web_state)->SetDelegate(sad_tab_delegate_);
   PagePlaceholderTabHelper::CreateForWebState(&web_state);
@@ -336,13 +364,13 @@ TEST_F(SadTabTabHelperTest, FailureInterval) {
   // SadTab should be shown.
   web_state.OnRenderProcessGone();
 
-  // SadTab should be displayed and repeatedFailure should be NO.
-  EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
+  // SadTab shouldn't be displayed and repeatedFailure should be NO.
+  EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
   EXPECT_FALSE(sad_tab_delegate_.repeatedFailure);
 
-  // On a second render process crash, SadTab should be displayed and
-  // repeatedFailure should still be NO due to the 0.0f interval timeout.
   web_state.OnRenderProcessGone();
-  EXPECT_TRUE(sad_tab_delegate_.showingSadTab);
+  // On a second render process crash, SadTab shouldn't be displayed and
+  // repeatedFailure should still be NO due to the 0.0f interval timeout.
+  EXPECT_FALSE(sad_tab_delegate_.showingSadTab);
   EXPECT_FALSE(sad_tab_delegate_.repeatedFailure);
 }

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2017 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -18,8 +18,6 @@ The |linker_name| parameter in various functions must take one of the above
 coded linker name values.
 """
 
-from __future__ import print_function
-
 import argparse
 import code
 import collections
@@ -28,6 +26,7 @@ import logging
 import os
 import re
 import readline
+import sys
 
 import demangle
 import models
@@ -73,6 +72,8 @@ def _NormalizeName(name):
     return '** outlined function'
   if name.startswith('.L.str'):
     return models.STRING_LITERAL_NAME
+  if name.endswith(' (.cfi)'):
+    return name[:-7]
   return name
 
 
@@ -84,7 +85,7 @@ class MapFileParserGold(object):
   def __init__(self):
     self._common_symbols = []
     self._symbols = []
-    self._section_sizes = {}
+    self._section_ranges = {}
     self._lines = None
 
   def Parse(self, lines):
@@ -95,7 +96,7 @@ class MapFileParserGold(object):
       identify file type.
 
     Returns:
-      A tuple of (section_sizes, symbols, extras).
+      A tuple of (section_ranges, symbols, extras).
     """
     self._lines = iter(lines)
     logging.debug('Scanning for Header')
@@ -109,7 +110,7 @@ class MapFileParserGold(object):
       elif line.startswith('Memory map'):
         self._ParseSections()
       break
-    return self._section_sizes, self._symbols, {}
+    return self._section_ranges, self._symbols, {}
 
   def _SkipToLineWithPrefix(self, prefix, prefix2=None):
     for l in self._lines:
@@ -128,11 +129,11 @@ class MapFileParserGold(object):
     return parts
 
   def _ParseCommonSymbols(self):
-# Common symbol       size              file
-#
-# ff_cos_131072       0x40000           obj/third_party/<snip>
-# ff_cos_131072_fixed
-#                     0x20000           obj/third_party/<snip>
+    # Common symbol       size              file
+    #
+    # ff_cos_131072       0x40000           obj/third_party/<snip>
+    # ff_cos_131072_fixed
+    #                     0x20000           obj/third_party/<snip>
     ret = []
     next(self._lines)  # Skip past blank line
 
@@ -142,39 +143,42 @@ class MapFileParserGold(object):
       if not parts:
         break
       name, size_str, path = parts
-      sym = models.Symbol(models.SECTION_BSS,  int(size_str[2:], 16),
-                          full_name=name, object_path=path)
+      sym = models.Symbol(
+          models.SECTION_BSS,
+          int(size_str[2:], 16),
+          full_name=name,
+          object_path=path)
       ret.append(sym)
     return ret
 
   def _ParseSections(self):
-# .text           0x0028c600  0x22d3468
-#  .text.startup._GLOBAL__sub_I_bbr_sender.cc
-#                 0x0028c600       0x38 obj/net/net/bbr_sender.o
-#  .text._reset   0x00339d00       0xf0 obj/third_party/icu/icuuc/ucnv.o
-#  ** fill        0x0255fb00   0x02
-#  .text._ZN4base8AutoLockD2Ev
-#                 0x00290710        0xe obj/net/net/file_name.o
-#                 0x00290711                base::AutoLock::~AutoLock()
-#                 0x00290711                base::AutoLock::~AutoLock()
-# .text._ZNK5blink15LayoutBlockFlow31mustSeparateMarginAfterForChildERK...
-#                 0xffffffffffffffff       0x46 obj/...
-#                 0x006808e1                blink::LayoutBlockFlow::...
-# .text.OUTLINED_FUNCTION_0
-#                 0x002a2000       0x20 obj/net/net/tag.o
-# .bss
-#  .bss._ZGVZN11GrProcessor11initClassIDI10LightingFPEEvvE8kClassID
-#                 0x02d4b294        0x4 obj/skia/skia/SkLightingShader.o
-#                 0x02d4b294   guard variable for void GrProcessor::initClassID
-# .data           0x0028c600  0x22d3468
-#  .data.rel.ro._ZTVN3gvr7android19ScopedJavaGlobalRefIP12_jfloatArrayEE
-#                 0x02d1e668       0x10 ../../third_party/.../libfoo.a(bar.o)
-#                 0x02d1e668   vtable for gvr::android::GlobalRef<_jfloatArray*>
-#  ** merge strings
-#                 0x0255fb00   0x1f2424
-#  ** merge constants
-#                 0x0255fb00   0x8
-# ** common       0x02db5700   0x13ab48
+    # .text           0x0028c600  0x22d3468
+    #  .text.startup._GLOBAL__sub_I_bbr_sender.cc
+    #                 0x0028c600       0x38 obj/net/net/bbr_sender.o
+    #  .text._reset   0x00339d00       0xf0 obj/third_party/icu/icuuc/ucnv.o
+    #  ** fill        0x0255fb00   0x02
+    #  .text._ZN4base8AutoLockD2Ev
+    #                 0x00290710        0xe obj/net/net/file_name.o
+    #                 0x00290711                base::AutoLock::~AutoLock()
+    #                 0x00290711                base::AutoLock::~AutoLock()
+    # .text._ZNK5blink15LayoutBlockFlow31mustSeparateMarginAfterForChildERK...
+    #                 0xffffffffffffffff       0x46 obj/...
+    #                 0x006808e1                blink::LayoutBlockFlow::...
+    # .text.OUTLINED_FUNCTION_0
+    #                 0x002a2000       0x20 obj/net/net/tag.o
+    # .bss
+    #  .bss._ZGVZN11GrProcessor11initClassIDI10LightingFPEEvvE8kClassID
+    #                 0x02d4b294        0x4 obj/skia/skia/SkLightingShader.o
+    #                 0x02d4b294   guard variable for void GrProcessor::ini...
+    # .data           0x0028c600  0x22d3468
+    #  .data.rel.ro._ZTVN3gvr7android19ScopedJavaGlobalRefIP12_jfloatArrayEE
+    #                 0x02d1e668       0x10 ../third_party/.../libfoo.a(bar.o)
+    #                 0x02d1e668   vtable for gvr::android::GlobalRef<_jflo...
+    #  ** merge strings
+    #                 0x0255fb00   0x1f2424
+    #  ** merge constants
+    #                 0x0255fb00   0x8
+    # ** common       0x02db5700   0x13ab48
     syms = self._symbols
     while True:
       line = self._SkipToLineWithPrefix('.')
@@ -189,13 +193,12 @@ class MapFileParserGold(object):
         section_name, section_address_str, section_size_str = parts
         section_address = int(section_address_str[2:], 16)
         section_size = int(section_size_str[2:], 16)
-        self._section_sizes[section_name] = section_size
-        if (section_name in (models.SECTION_BSS,
-                             models.SECTION_RODATA,
-                             models.SECTION_TEXT) or
-            section_name.startswith(models.SECTION_DATA)):
+        self._section_ranges[section_name] = (section_address, section_size)
+        if (section_name in models.BSS_SECTIONS
+            or section_name in (models.SECTION_RODATA, models.SECTION_TEXT)
+            or section_name.startswith(models.SECTION_DATA)):
           logging.info('Parsing %s', section_name)
-          if section_name == models.SECTION_BSS:
+          if section_name in models.BSS_SECTIONS:
             # Common symbols have no address.
             syms.extend(self._common_symbols)
           prefix_len = len(section_name) + 1  # + 1 for the trailing .
@@ -336,7 +339,7 @@ class MapFileParserLld(object):
   def __init__(self, linker_name):
     self._linker_name = linker_name
     self._common_symbols = []
-    self._section_sizes = {}
+    self._section_ranges = {}
 
   @staticmethod
   def ParseArmAnnotations(tok):
@@ -426,39 +429,39 @@ class MapFileParserLld(object):
       identify file type.
 
     Returns:
-      A tuple of (section_sizes, symbols).
+      A tuple of (section_ranges, symbols).
     """
-# Newest format:
-#     VMA      LMA     Size Align Out     In      Symbol
-#     194      194       13     1 .interp
-#     194      194       13     1         <internal>:(.interp)
-#     1a8      1a8     22d8     4 .ARM.exidx
-#     1b0      1b0        8     4         obj/sandbox/syscall.o:(.ARM.exidx)
-#     400      400   123400    64 .text
-#     600      600       14     4         obj/...:(.text.OUTLINED_FUNCTION_0)
-#     600      600        0     1                 $x.3
-#     600      600       14     1                 OUTLINED_FUNCTION_0
-#  123800   123800    20000   256 .rodata
-#  123800   123800       4      4         ...:o:(.rodata._ZN3fooE.llvm.1234)
-#  123800   123800       4      1                 foo (.llvm.1234)
-#  123804   123804       4      4         ...:o:(.rodata.bar.llvm.1234)
-#  123804   123804       4      1                 bar.llvm.1234
-# Older format:
-# Address          Size             Align Out     In      Symbol
-# 00000000002002a8 000000000000001c     1 .interp
-# 00000000002002a8 000000000000001c     1         <internal>:(.interp)
-# ...
-# 0000000000201000 0000000000000202    16 .text
-# 0000000000201000 000000000000002a     1         /[...]/crt1.o:(.text)
-# 0000000000201000 0000000000000000     0                 _start
-# 000000000020102a 0000000000000000     1         /[...]/crti.o:(.text)
-# 0000000000201030 00000000000000bd    16         /[...]/crtbegin.o:(.text)
-# 0000000000201030 0000000000000000     0                 deregister_tm_clones
-# 0000000000201060 0000000000000000     0                 register_tm_clones
-# 00000000002010a0 0000000000000000     0                 __do_global_dtors_aux
-# 00000000002010c0 0000000000000000     0                 frame_dummy
-# 00000000002010ed 0000000000000071     1         a.o:(.text)
-# 00000000002010ed 0000000000000071     0                 main
+    # Newest format:
+    #     VMA      LMA     Size Align Out     In      Symbol
+    #     194      194       13     1 .interp
+    #     194      194       13     1         <internal>:(.interp)
+    #     1a8      1a8     22d8     4 .ARM.exidx
+    #     1b0      1b0        8     4         obj/sandbox/syscall.o:(.ARM.exidx)
+    #     400      400   123400    64 .text
+    #     600      600       14     4         ...:(.text.OUTLINED_FUNCTION_0)
+    #     600      600        0     1                 $x.3
+    #     600      600       14     1                 OUTLINED_FUNCTION_0
+    #  123800   123800    20000   256 .rodata
+    #  123800   123800       4      4         ...:o:(.rodata._ZN3fooE.llvm.1234)
+    #  123800   123800       4      1                 foo (.llvm.1234)
+    #  123804   123804       4      4         ...:o:(.rodata.bar.llvm.1234)
+    #  123804   123804       4      1                 bar.llvm.1234
+    # Older format:
+    # Address          Size             Align Out     In      Symbol
+    # 00000000002002a8 000000000000001c     1 .interp
+    # 00000000002002a8 000000000000001c     1         <internal>:(.interp)
+    # ...
+    # 0000000000201000 0000000000000202    16 .text
+    # 0000000000201000 000000000000002a     1         /[...]/crt1.o:(.text)
+    # 0000000000201000 0000000000000000     0                 _start
+    # 000000000020102a 0000000000000000     1         /[...]/crti.o:(.text)
+    # 0000000000201030 00000000000000bd    16         /[...]/crtbegin.o:(.text)
+    # 0000000000201030 0000000000000000     0             deregister_tm_clones
+    # 0000000000201060 0000000000000000     0             register_tm_clones
+    # 00000000002010a0 0000000000000000     0             __do_global_dtors_aux
+    # 00000000002010c0 0000000000000000     0             frame_dummy
+    # 00000000002010ed 0000000000000071     1         a.o:(.text)
+    # 00000000002010ed 0000000000000071     0             main
     syms = []
     cur_section = None
     cur_section_is_useful = False
@@ -483,20 +486,42 @@ class MapFileParserLld(object):
     thin_map = {}
 
     tokenizer = self.Tokenize(lines)
+
+    in_partitions = False
+    in_jump_table = False
+    jump_tables_count = 0
+    jump_entries_count = 0
+
     for (line, address, size, level, span, tok) in tokenizer:
       # Level 1 data match the "Out" column. They specify sections or
       # PROVIDE_HIDDEN lines.
       if level == 1:
-        if not tok.startswith('PROVIDE_HIDDEN'):
-          self._section_sizes[tok] = size
-        cur_section = tok
-        # E.g., Want to convert "(.text._name)" -> "_name" later.
-        mangled_start_idx = len(cur_section) + 2
-        cur_section_is_useful = (
-            cur_section in (models.SECTION_BSS,
-                            models.SECTION_RODATA,
-                            models.SECTION_TEXT) or
-            cur_section.startswith(models.SECTION_DATA))
+        # Ignore sections that belong to feature library partitions. Seeing a
+        # partition name is an indicator that we've entered a list of feature
+        # partitions. After these, a single .part.end section will follow to
+        # reserve memory at runtime. Seeing the .part.end section also marks the
+        # end of partition sections in the map file.
+        if tok.endswith('_partition'):
+          in_partitions = True
+        elif tok == '.part.end':
+          # Note that we want to retain .part.end section, so it's fine to
+          # restart processing on this section, rather than the next one.
+          in_partitions = False
+
+        if in_partitions:
+          # For now, completely ignore feature partitions.
+          cur_section = None
+          cur_section_is_useful = False
+        else:
+          if not tok.startswith('PROVIDE_HIDDEN'):
+            self._section_ranges[tok] = (address, size)
+          cur_section = tok
+          # E.g., Want to convert "(.text._name)" -> "_name" later.
+          mangled_start_idx = len(cur_section) + 2
+          cur_section_is_useful = (
+              cur_section in models.BSS_SECTIONS
+              or cur_section in (models.SECTION_RODATA, models.SECTION_TEXT)
+              or cur_section.startswith(models.SECTION_DATA))
 
       elif cur_section_is_useful:
         # Level 2 data match the "In" column. They specify object paths and
@@ -504,28 +529,37 @@ class MapFileParserLld(object):
         if level == 2:
           # E.g., 'path.o:(.text._name)' => ['path.o', '(.text._name)'].
           cur_obj, paren_value = tok.split(':')
-          # E.g., '(.text.unlikely._name)' -> '_name'.
-          mangled_name = paren_value[mangled_start_idx:-1]
-          cur_flags = _FlagsFromMangledName(mangled_name)
-          is_partial = True
-          # As of 2017/11 LLD does not distinguish merged strings from other
-          # merged data. Feature request is filed under:
-          # https://bugs.llvm.org/show_bug.cgi?id=35248
-          if cur_obj == '<internal>':
-            if cur_section == '.rodata' and mangled_name == '':
-              # Treat all <internal> sections within .rodata as as string
-              # literals. Some may hold numeric constants or other data, but
-              # there is currently no way to distinguish them.
-              mangled_name = '** lld merge strings'
-            else:
-              # e.g. <internal>:(.text.thunk)
-              mangled_name = '** ' + mangled_name
 
-            is_partial = False
-            cur_obj = None
-          elif cur_obj == 'lto.tmp' or 'thinlto-cache' in cur_obj:
-            thin_map[address] = os.path.basename(cur_obj)
-            cur_obj = None
+          in_jump_table = '.L.cfi.jumptable' in paren_value
+          if in_jump_table:
+            # Store each CFI jump table as a Level 2 symbol, whose Level 3
+            # details are discarded.
+            jump_tables_count += 1
+            cur_obj = ''  # Replaces 'lto.tmp' to prevent problem later.
+            mangled_name = '** CFI jump table'
+          else:
+            # E.g., '(.text.unlikely._name)' -> '_name'.
+            mangled_name = paren_value[mangled_start_idx:-1]
+            cur_flags = _FlagsFromMangledName(mangled_name)
+            is_partial = True
+            # As of 2017/11 LLD does not distinguish merged strings from other
+            # merged data. Feature request is filed under:
+            # https://bugs.llvm.org/show_bug.cgi?id=35248
+            if cur_obj == '<internal>':
+              if cur_section == '.rodata' and mangled_name == '':
+                # Treat all <internal> sections within .rodata as as string
+                # literals. Some may hold numeric constants or other data, but
+                # there is currently no way to distinguish them.
+                mangled_name = '** lld merge strings'
+              else:
+                # e.g. <internal>:(.text.thunk)
+                mangled_name = '** ' + mangled_name
+
+              is_partial = False
+              cur_obj = None
+            elif cur_obj == 'lto.tmp' or 'thinlto-cache' in cur_obj:
+              thin_map[address] = os.path.basename(cur_obj)
+              cur_obj = None
 
           # Create a symbol here since there may be no ensuing Level 3 lines.
           # But if there are, then the symbol can be modified later as sym[-1].
@@ -542,6 +576,17 @@ class MapFileParserLld(object):
         # '$t.42' also appear at Level 3, but they are consumed by |tokenizer|,
         # so don't appear hear.
         elif level == 3:
+          # Handle .L.cfi.jumptable.
+          if in_jump_table:
+            # Level 3 entries in CFI jump tables are thunks with mangled names.
+            # Extracting them as symbols is not worthwhile; we only store the
+            # Level 2 symbol, and print the count for verbose output. For
+            # counting, '__typeid_' entries are excluded since they're likely
+            # just annotations.
+            if not tok.startswith('__typeid_'):
+              jump_entries_count += 1
+            continue
+
           # Ignore anything with '.L_MergedGlobals' prefix. This seems to only
           # happen for ARM (32-bit) builds.
           if tok.startswith('.L_MergedGlobals'):
@@ -578,8 +623,23 @@ class MapFileParserLld(object):
               next_usable_address = address + syms[-1].size
               is_partial = False
             elif address >= next_usable_address:
-              # Prefer |size|, and only fall back to |span| if |size == 0|.
-              size_to_use = size if size > 0 else span
+              if tok.startswith('__typeid_'):
+                assert size == 1
+                if tok.endswith('_byte_array'):
+                  # CFI byte array table: |size| is inaccurate, so use |span|.
+                  size_to_use = span
+                else:
+                  # Likely '_global_addr' or '_unique_member'. These should be:
+                  # * Skipped since they're in CFI tables.
+                  # * Suppressed (via |next_usable_address|) by another Level 3
+                  #   symbol.
+                  # Anything that makes it here would be an anomaly worthy of
+                  # investigation, so print warnings.
+                  logging.warn('Unrecognized __typeid_ symbol at %08X', address)
+                  continue
+              else:
+                # Prefer |size|, and only fall back to |span| if |size == 0|.
+                size_to_use = size if size > 0 else span
               sym = models.Symbol(cur_section, size_to_use, address=address,
                                   full_name=tok, flags=cur_flags)
               syms.append(sym)
@@ -595,7 +655,10 @@ class MapFileParserLld(object):
 
     if promoted_name_count:
       logging.info('Found %d promoted global names', promoted_name_count)
-    return self._section_sizes, syms, {'thin_map': thin_map}
+    if jump_tables_count:
+      logging.info('Found %d CFI jump tables with %d total entries',
+                   jump_tables_count, jump_entries_count)
+    return self._section_ranges, syms, {'thin_map': thin_map}
 
 
 def _DetectLto(lines):
@@ -665,7 +728,7 @@ class MapFileParser(object):
       lines: Iterable of lines from the linker map.
 
     Returns:
-      A tuple of (section_sizes, symbols, extras).
+      A tuple of (section_ranges, symbols, extras).
     """
     next(lines)  # Consume the first line of headers.
     if linker_name.startswith('lld'):
@@ -675,13 +738,13 @@ class MapFileParser(object):
     else:
       raise Exception('.map file is from a unsupported linker.')
 
-    section_sizes, syms, extras = inner_parser.Parse(lines)
+    section_ranges, syms, extras = inner_parser.Parse(lines)
     for sym in syms:
       if sym.object_path and not sym.object_path.endswith(')'):
         # Don't want '' to become '.'.
         # Thin archives' paths will get fixed in |ar.CreateThinObjectPath|.
         sym.object_path = os.path.normpath(sym.object_path)
-    return (section_sizes, syms, extras)
+    return (section_ranges, syms, extras)
 
 
 def DeduceObjectPathsFromThinMap(raw_symbols, extras):
@@ -758,20 +821,24 @@ def main():
   print('Linker type: %s' % linker_name)
 
   with open(args.linker_file, 'r') as map_file:
-    section_sizes, syms, extras = MapFileParser().Parse(linker_name, map_file)
+    section_ranges, syms, extras = MapFileParser().Parse(linker_name, map_file)
 
   if args.dump:
-    print(section_sizes)
+    print(section_ranges)
     for sym in syms:
       print(sym)
   else:
     # Enter interactive shell.
     readline.parse_and_bind('tab: complete')
-    variables = {'section_sizes': section_sizes, 'syms': syms, 'extras': extras}
+    variables = {
+        'section_ranges': section_ranges,
+        'syms': syms,
+        'extras': extras
+    }
     banner_lines = [
         '*' * 80,
         'Variables:',
-        '  section_sizes: Map from section to sizes.',
+        '  section_ranges: Map from section name to (address, size).',
         '  syms: Raw symbols parsed from the linker map file.',
         '  extras: Format-specific extra data.',
         '*' * 80,

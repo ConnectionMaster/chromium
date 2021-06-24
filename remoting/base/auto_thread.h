@@ -9,7 +9,7 @@
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_checker.h"
 #include "build/build_config.h"
@@ -30,7 +30,7 @@ namespace remoting {
 //
 //  (1) Thread::CleanUp()
 //  (2) MessageLoop::~MessageLoop
-//  (3.b) MessageLoopCurrent::DestructionObserver::WillDestroyCurrentMessageLoop
+//  (3.b) CurrentThread::DestructionObserver::WillDestroyCurrentMessageLoop
 class AutoThread : base::PlatformThread::Delegate {
  public:
   // Create an AutoThread with the specified message-loop |type| and |name|.
@@ -39,7 +39,7 @@ class AutoThread : base::PlatformThread::Delegate {
   static scoped_refptr<AutoThreadTaskRunner> CreateWithType(
       const char* name,
       scoped_refptr<AutoThreadTaskRunner> joiner,
-      base::MessageLoop::Type type);
+      base::MessagePumpType type);
   static scoped_refptr<AutoThreadTaskRunner> Create(
       const char* name,
       scoped_refptr<AutoThreadTaskRunner> joiner);
@@ -51,7 +51,7 @@ class AutoThread : base::PlatformThread::Delegate {
   static scoped_refptr<AutoThreadTaskRunner> CreateWithLoopAndComInitTypes(
       const char* name,
       scoped_refptr<AutoThreadTaskRunner> joiner,
-      base::MessageLoop::Type loop_type,
+      base::MessagePumpType pump_type,
       ComInitType com_init_type);
 #endif
 
@@ -71,8 +71,7 @@ class AutoThread : base::PlatformThread::Delegate {
   //
   // NOTE: You must not call this MessageLoop's Quit method directly.  The
   // thread will exit when no references to the TaskRunner remain.
-  scoped_refptr<AutoThreadTaskRunner> StartWithType(
-      base::MessageLoop::Type type);
+  scoped_refptr<AutoThreadTaskRunner> StartWithType(base::MessagePumpType type);
 
 #if defined(OS_WIN)
   // Configures the thread to initialize the specified COM apartment type.
@@ -83,7 +82,7 @@ class AutoThread : base::PlatformThread::Delegate {
  private:
   AutoThread(const char* name, AutoThreadTaskRunner* joiner);
 
-  void QuitThread(const base::Closure& quit_when_idle_closure);
+  void QuitThread(base::OnceClosure quit_when_idle_closure);
   void JoinAndDeleteThread();
 
   // base::PlatformThread::Delegate methods:
@@ -119,4 +118,4 @@ class AutoThread : base::PlatformThread::Delegate {
 
 }  // namespace remoting
 
-#endif  // REMOTING_AUTO_THREAD_H_
+#endif  // REMOTING_BASE_AUTO_THREAD_H_

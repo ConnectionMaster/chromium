@@ -8,7 +8,6 @@
 #include "base/macros.h"
 #include "content/browser/renderer_host/input/synthetic_pointer_driver.h"
 #include "content/common/content_export.h"
-#include "content/common/input/synthetic_web_input_event_builders.h"
 
 namespace content {
 
@@ -30,7 +29,10 @@ class CONTENT_EXPORT SyntheticMouseDriver : public SyntheticPointerDriver {
       float width = 1.f,
       float height = 1.f,
       float rotation_angle = 0.f,
-      float force = 1.f,
+      float force = 0.5,
+      float tangential_pressure = 0.f,
+      int tilt_x = 0,
+      int tilt_y = 0,
       const base::TimeTicks& timestamp = base::TimeTicks::Now()) override;
   void Move(float x,
             float y,
@@ -39,7 +41,10 @@ class CONTENT_EXPORT SyntheticMouseDriver : public SyntheticPointerDriver {
             float width = 1.f,
             float height = 1.f,
             float rotation_angle = 0.f,
-            float force = 1.f) override;
+            float force = 0.5,
+            float tangential_pressure = 0.f,
+            int tilt_x = 0,
+            int tilt_y = 0) override;
   void Release(int index = 0,
                SyntheticPointerActionParams::Button button =
                    SyntheticPointerActionParams::Button::LEFT,
@@ -58,7 +63,10 @@ class CONTENT_EXPORT SyntheticMouseDriver : public SyntheticPointerDriver {
   unsigned last_modifiers_ = 0;
 
  private:
-  bool IsRepeatedClickEvent(const base::TimeTicks& timestamp, float x, float y);
+  int ComputeClickCount(const base::TimeTicks& timestamp,
+                        blink::WebMouseEvent::Button pressed_button,
+                        float x,
+                        float y);
   int click_count_ = 0;
   base::TimeTicks last_mouse_click_time_ = base::TimeTicks::Now();
   float last_x_ = 0;

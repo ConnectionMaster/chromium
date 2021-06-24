@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 //
 // This file contains utility functions for creating and managing magic URLs
-// used to implement WKBasedNavigationManagerImpl.
+// used to implement NavigationManagerImpl.
 //
 // A restore session URL is a specific local file that is used to inject history
 // into a new web view. See ios/web/navigation/resources/restore_session.html.
@@ -18,6 +18,7 @@
 #ifndef IOS_WEB_NAVIGATION_WK_NAVIGATION_UTIL_H_
 #define IOS_WEB_NAVIGATION_WK_NAVIGATION_UTIL_H_
 
+#import <Foundation/Foundation.h>
 #include <memory>
 #include <vector>
 
@@ -39,8 +40,21 @@ extern const char kRestoreSessionSessionHashPrefix[];
 // URL fragment prefix used to encode target URL in a restore_session.html URL.
 extern const char kRestoreSessionTargetUrlHashPrefix[];
 
+// The "Referer" [sic] HTTP header.
+extern NSString* const kReferrerHeaderName;
+
+// Sets (offset, size) and returns an updated last committed index, so the final
+// size is less or equal to kMaxSessionSize. If item_count is greater than
+// kMaxSessionSize, then this function will trim navigation items, which are the
+// furthest to |last_committed_item_index|.
+int GetSafeItemRange(int last_committed_item_index,
+                     int item_count,
+                     int* offset,
+                     int* size);
+
 // Returns true if |url| is a placeholder URL or restore_session.html URL.
 bool IsWKInternalUrl(const GURL& url);
+bool IsWKInternalUrl(NSURL* url);
 
 // Returns true if |url| is an app specific url or an about:// scheme
 // non-placeholder url.
@@ -63,14 +77,14 @@ void CreateRestoreSessionUrl(
 
 // Returns true if the base URL of |url| is restore_session.html.
 bool IsRestoreSessionUrl(const GURL& url);
+bool IsRestoreSessionUrl(NSURL* url);
 
 // Creates a restore_session.html URL that encodes the specified |target_url| in
 // the URL fragment with a "targetUrl=" prefix. When this URL is loaded in the
 // web view, it executes a client-side redirect to |target_url|. This results in
 // a new navigation entry and prunes forward navigation history. This URL is
-// used by WKBasedNavigationManagerImpl to reload a page with user agent
-// override, as reloading |target_url| directly doesn't create a new navigation
-// entry.
+// used by NavigationManagerImpl to reload a page with user agent override,
+// as reloading |target_url| directly doesn't create a new navigation entry.
 GURL CreateRedirectUrl(const GURL& target_url);
 
 // Extracts the URL encoded in the URL fragment of |restore_session_url| to
@@ -80,6 +94,7 @@ bool ExtractTargetURL(const GURL& restore_session_url, GURL* target_url);
 
 // Returns true if |URL| is a placeholder navigation URL.
 bool IsPlaceholderUrl(const GURL& url);
+bool IsPlaceholderUrl(NSURL* url);
 
 // Creates the URL for the placeholder navigation required for Native View and
 // WebUI URLs.

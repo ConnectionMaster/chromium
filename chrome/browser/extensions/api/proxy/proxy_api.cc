@@ -49,19 +49,19 @@ void ProxyEventRouter::OnProxyError(
     event_router->DispatchEventToRenderers(
         events::PROXY_ON_PROXY_ERROR,
         proxy_api_constants::kProxyEventOnProxyError, std::move(args), profile,
-        true, GURL());
+        true, GURL(), false);
   } else {
     event_router->BroadcastEventToRenderers(
         events::PROXY_ON_PROXY_ERROR,
-        proxy_api_constants::kProxyEventOnProxyError, std::move(args), GURL());
+        proxy_api_constants::kProxyEventOnProxyError, std::move(args), GURL(),
+        false);
   }
 }
 
-void ProxyEventRouter::OnPACScriptError(
-    EventRouterForwarder* event_router,
-    void* profile,
-    int line_number,
-    const base::string16& error) {
+void ProxyEventRouter::OnPACScriptError(EventRouterForwarder* event_router,
+                                        void* profile,
+                                        int line_number,
+                                        const std::u16string& error) {
   std::unique_ptr<base::ListValue> args(new base::ListValue());
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetBoolean(proxy_api_constants::kProxyEventFatal, false);
@@ -82,11 +82,12 @@ void ProxyEventRouter::OnPACScriptError(
     event_router->DispatchEventToRenderers(
         events::PROXY_ON_PROXY_ERROR,
         proxy_api_constants::kProxyEventOnProxyError, std::move(args), profile,
-        true, GURL());
+        true, GURL(), false);
   } else {
     event_router->BroadcastEventToRenderers(
         events::PROXY_ON_PROXY_ERROR,
-        proxy_api_constants::kProxyEventOnProxyError, std::move(args), GURL());
+        proxy_api_constants::kProxyEventOnProxyError, std::move(args), GURL(),
+        false);
   }
 }
 
@@ -139,7 +140,8 @@ std::unique_ptr<base::Value> ProxyPrefTransformer::ExtensionToBrowserPref(
 }
 
 std::unique_ptr<base::Value> ProxyPrefTransformer::BrowserToExtensionPref(
-    const base::Value* browser_pref) {
+    const base::Value* browser_pref,
+    bool is_incognito_profile) {
   CHECK(browser_pref->is_dict());
 
   // This is a dictionary wrapper that exposes the proxy configuration stored in

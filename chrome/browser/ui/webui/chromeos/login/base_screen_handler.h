@@ -6,22 +6,22 @@
 #define CHROME_BROWSER_UI_WEBUI_CHROMEOS_LOGIN_BASE_SCREEN_HANDLER_H_
 
 #include "base/macros.h"
-#include "chrome/browser/chromeos/login/oobe_screen.h"
+#include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ui/webui/chromeos/login/base_webui_handler.h"
+// TODO(https://crbug.com/1164001): move to forward declaration
+#include "chrome/browser/ash/login/screens/base_screen.h"
 
 namespace chromeos {
-
-class BaseScreen;
 
 // Base class for the OOBE/Login WebUI handlers which provide methods specific
 // to a particular OobeScreen.
 class BaseScreenHandler : public BaseWebUIHandler {
  public:
-  BaseScreenHandler(OobeScreen oobe_screen,
+  BaseScreenHandler(OobeScreenId oobe_screen,
                     JSCallsContainer* js_calls_container);
   ~BaseScreenHandler() override;
 
-  OobeScreen oobe_screen() const { return oobe_screen_; }
+  OobeScreenId oobe_screen() const { return oobe_screen_; }
 
   void SetBaseScreen(BaseScreen* base_screen);
 
@@ -48,7 +48,7 @@ class BaseScreenHandler : public BaseWebUIHandler {
   std::string user_acted_method_path_;
 
   // OobeScreen that this handler corresponds to.
-  OobeScreen oobe_screen_ = OobeScreen::SCREEN_UNKNOWN;
+  OobeScreenId oobe_screen_ = OobeScreen::SCREEN_UNKNOWN;
 
   BaseScreen* base_screen_ = nullptr;
 

@@ -2,16 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/keyboard/ui/keyboard_ui_controller.h"
+#include "ash/keyboard/ui/keyboard_util.h"
+#include "ash/keyboard/ui/test/keyboard_test_util.h"
+#include "ash/public/cpp/keyboard/keyboard_switches.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "base/bind_helpers.h"
-#include "base/command_line.h"
+#include "base/callback_helpers.h"
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/events/test/event_generator.h"
-#include "ui/keyboard/keyboard_controller.h"
-#include "ui/keyboard/keyboard_util.h"
-#include "ui/keyboard/public/keyboard_switches.h"
-#include "ui/keyboard/test/keyboard_test_util.h"
 
 namespace ash {
 
@@ -21,14 +20,12 @@ class VirtualKeyboardTest : public AshTestBase {
   ~VirtualKeyboardTest() override = default;
 
   void SetUp() override {
-    base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        keyboard::switches::kEnableVirtualKeyboard);
     AshTestBase::SetUp();
-    keyboard::SetTouchKeyboardEnabled(true);
+    SetVirtualKeyboardEnabled(true);
   }
 
   void TearDown() override {
-    keyboard::SetTouchKeyboardEnabled(false);
+    SetVirtualKeyboardEnabled(false);
     AshTestBase::TearDown();
   }
 
@@ -44,7 +41,7 @@ TEST_F(VirtualKeyboardTest, EventsAreHandledBasedOnHitTestBounds) {
   std::unique_ptr<aura::Window> background_window(
       CreateTestWindowInShellWithDelegate(&delegate, 0, root_window->bounds()));
 
-  auto* keyboard_controller = keyboard::KeyboardController::Get();
+  auto* keyboard_controller = keyboard::KeyboardUIController::Get();
   keyboard_controller->ShowKeyboard(false);
   ASSERT_TRUE(keyboard::WaitUntilShown());
 
@@ -59,7 +56,7 @@ TEST_F(VirtualKeyboardTest, EventsAreHandledBasedOnHitTestBounds) {
   // event passes through the keyboard window to the background window.
   ui::test::EventGenerator generator(root_window);
   const gfx::Point origin =
-      keyboard_controller->visual_bounds_in_screen().origin();
+      keyboard_controller->GetVisualBoundsInScreen().origin();
 
   // (0, 0) is inside the first hit rect, so the event is handled by the window
   // and is not received by the background window.
@@ -94,7 +91,7 @@ TEST_F(VirtualKeyboardTest, HitTestBoundsAreResetWhenContainerTypeChanges) {
   std::unique_ptr<aura::Window> background_window(
       CreateTestWindowInShellWithDelegate(&delegate, 0, root_window->bounds()));
 
-  auto* keyboard_controller = keyboard::KeyboardController::Get();
+  auto* keyboard_controller = keyboard::KeyboardUIController::Get();
   keyboard_controller->ShowKeyboard(false);
   ASSERT_TRUE(keyboard::WaitUntilShown());
 
@@ -112,9 +109,9 @@ TEST_F(VirtualKeyboardTest, HitTestBoundsAreResetWhenContainerTypeChanges) {
   // Change the container behavior, which should reset the hit test bounds to
   // the whole keyboard window.
   keyboard_controller->HideKeyboardExplicitlyBySystem();
-  keyboard_controller->SetContainerType(
-      keyboard::mojom::ContainerType::kFloating, base::nullopt,
-      base::DoNothing());
+  keyboard_controller->SetContainerType(keyboard::ContainerType::kFloating,
+                                        gfx::Rect(0, 0, 400, 200),
+                                        base::DoNothing());
   keyboard_controller->ShowKeyboard(false);
 
   // (0, 0) should no longer pass through the keyboard window.

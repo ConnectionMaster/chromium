@@ -11,6 +11,8 @@
 #include "base/command_line.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
+#include "components/security_state/core/features.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/security_style_explanation.h"
@@ -23,7 +25,7 @@
 #include "net/test/cert_test_util.h"
 #include "net/test/test_data_directory.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/platform/web_mixed_content_context_type.h"
+#include "third_party/blink/public/mojom/loader/mixed_content.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -467,8 +469,7 @@ TEST(SecurityStateContentUtilsTest, MixedContentExplanations) {
 TEST(SecurityStateContentUtilsTest, CertErrorContentExplanations) {
   // Test a modern configuration with a key exchange group.
   security_state::VisibleSecurityState visible_security_state;
-  visible_security_state.cert_status =
-      net::CERT_STATUS_UNABLE_TO_CHECK_REVOCATION;
+  visible_security_state.cert_status = 0;
   visible_security_state.url = GURL("https://scheme-is-cryptographic.test");
   net::SSLConnectionStatusSetCipherSuite(
       0xcca8 /* TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 */,
@@ -545,8 +546,7 @@ TEST(SecurityStateContentUtilsTest, CertErrorContentExplanations) {
 TEST(SecurityStateContentUtilsTest, MixedContentAndCertErrorExplanations) {
   // Test a modern configuration with a key exchange group.
   security_state::VisibleSecurityState visible_security_state;
-  visible_security_state.cert_status =
-      net::CERT_STATUS_UNABLE_TO_CHECK_REVOCATION;
+  visible_security_state.cert_status = 0;
   visible_security_state.url = GURL("https://scheme-is-cryptographic.test");
   net::SSLConnectionStatusSetCipherSuite(
       0xcca8 /* TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 */,
@@ -586,32 +586,17 @@ TEST(SecurityStateContentUtilsTest, MixedContentAndCertErrorExplanations) {
   }
 }
 
-// Tests that a security level of HTTP_SHOW_WARNING produces
-// blink::WebSecurityStyleNeutral.
+// Tests that a security level of WARNING produces
+// blink::kSecurityStyleInsecure.
 TEST(SecurityStateContentUtilsTest, HTTPWarning) {
   security_state::VisibleSecurityState visible_security_state;
   visible_security_state.url = GURL("http://scheme-is-not-cryptographic.test");
   content::SecurityStyleExplanations explanations;
-  blink::WebSecurityStyle security_style = GetSecurityStyle(
-      security_state::HTTP_SHOW_WARNING, visible_security_state, &explanations);
-  EXPECT_EQ(blink::kWebSecurityStyleNeutral, security_style);
+  blink::SecurityStyle security_style = GetSecurityStyle(
+      security_state::WARNING, visible_security_state, &explanations);
+  EXPECT_EQ(blink::SecurityStyle::kInsecure, security_style);
   // Verify no explanation was shown.
   EXPECT_EQ(0u, explanations.neutral_explanations.size());
-}
-
-// Tests that a security level of DANGEROUS on an HTTP page with insecure form
-// edits produces blink::WebSecurityStyleInsecure and an explanation.
-TEST(SecurityStateContentUtilsTest, HTTPDangerous) {
-  security_state::VisibleSecurityState visible_security_state;
-  visible_security_state.url = GURL("http://scheme-is-not-cryptographic.test");
-  content::SecurityStyleExplanations explanations;
-  visible_security_state.insecure_input_events.insecure_field_edited = true;
-  blink::WebSecurityStyle security_style = GetSecurityStyle(
-      security_state::DANGEROUS, visible_security_state, &explanations);
-  // Verify that the security style was downgraded and an explanation shown
-  // because a form was edited.
-  EXPECT_EQ(blink::kWebSecurityStyleInsecure, security_style);
-  EXPECT_EQ(1u, explanations.insecure_explanations.size());
 }
 
 // Tests that an explanation is provided if a certificate is missing a
@@ -653,6 +638,120 @@ TEST(SecurityStateContentUtilsTest, SafeBrowsingExplanation) {
   EXPECT_EQ(1u, explanations.insecure_explanations.size());
 }
 
+// Tests that a bad reputation warning in VisibleSecurityState causes an
+// insecure explanation to be set.
+TEST(SecurityStateContentUtilsTest, SafetyTipExplanation_BadReputation) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      security_state::features::kSafetyTipUI);
+
+  security_state::VisibleSecurityState visible_security_state;
+  visible_security_state.cert_status = 0;
+  visible_security_state.url = GURL("https://scheme-is-cryptographic.test");
+  visible_security_state.malicious_content_status =
+      security_state::MALICIOUS_CONTENT_STATUS_NONE;
+  visible_security_state.safety_tip_info = {
+      security_state::SafetyTipStatus::kBadReputation, GURL()};
+  content::SecurityStyleExplanations explanations;
+  GetSecurityStyle(security_state::WARNING, visible_security_state,
+                   &explanations);
+
+  EXPECT_EQ(l10n_util::GetStringUTF8(IDS_SECURITY_TAB_SAFETY_TIP_TITLE),
+            explanations.summary);
+  EXPECT_EQ(1u, explanations.insecure_explanations.size());
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_SECURITY_TAB_SAFETY_TIP_BAD_REPUTATION_DESCRIPTION),
+            explanations.insecure_explanations[0].description);
+}
+
+// Same as SafetyTipExplanation_BadReputation, but for lookalikes. Also checks
+// that the explanation text contains the safe URL.
+TEST(SecurityStateContentUtilsTest, SafetyTipExplanation_Lookalike) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      security_state::features::kSafetyTipUI);
+
+  security_state::VisibleSecurityState visible_security_state;
+  visible_security_state.cert_status = 0;
+  visible_security_state.url = GURL("https://lookalike.test");
+  visible_security_state.malicious_content_status =
+      security_state::MALICIOUS_CONTENT_STATUS_NONE;
+  visible_security_state.safety_tip_info = {
+      security_state::SafetyTipStatus::kLookalike,
+      GURL("http://good-site.test")};
+  content::SecurityStyleExplanations explanations;
+  GetSecurityStyle(security_state::WARNING, visible_security_state,
+                   &explanations);
+
+  EXPECT_EQ(l10n_util::GetStringUTF8(IDS_SECURITY_TAB_SAFETY_TIP_TITLE),
+            explanations.summary);
+  EXPECT_EQ(1u, explanations.insecure_explanations.size());
+  EXPECT_EQ(
+      l10n_util::GetStringFUTF8(
+          IDS_SECURITY_TAB_SAFETY_TIP_LOOKALIKE_DESCRIPTION, u"good-site.test"),
+      explanations.insecure_explanations[0].description);
+}
+
+// Tests that a Safebrowsing warning and a bad reputation warning in
+// VisibleSecurityState causes two insecure explanations to be set, while
+// keeping the title SafeBrowsing related.
+TEST(SecurityStateContentUtilsTest,
+     SafetyTipExplanation_WithSafeBrowsingError) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      security_state::features::kSafetyTipUI);
+
+  security_state::VisibleSecurityState visible_security_state;
+  visible_security_state.cert_status = 0;
+  visible_security_state.url = GURL("https://scheme-is-cryptographic.test");
+  visible_security_state.malicious_content_status =
+      security_state::MALICIOUS_CONTENT_STATUS_MALWARE;
+  visible_security_state.safety_tip_info = {
+      security_state::SafetyTipStatus::kBadReputation, GURL()};
+  content::SecurityStyleExplanations explanations;
+  GetSecurityStyle(security_state::DANGEROUS, visible_security_state,
+                   &explanations);
+  // When there is also a SafeBrowsing warning, the title must be related to
+  // SafeBrowsing.
+  EXPECT_EQ(l10n_util::GetStringUTF8(IDS_SAFEBROWSING_WARNING),
+            explanations.summary);
+
+  EXPECT_EQ(2u, explanations.insecure_explanations.size());
+  EXPECT_EQ(l10n_util::GetStringUTF8(IDS_SAFEBROWSING_WARNING_SUMMARY),
+            explanations.insecure_explanations[0].summary);
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_SECURITY_TAB_SAFETY_TIP_BAD_REPUTATION_SUMMARY),
+            explanations.insecure_explanations[1].summary);
+}
+
+// Tests that a Safebrowsing warning and safety tip status of None in
+// VisibleSecurityState causes only one insecure explanation to be set.
+TEST(SecurityStateContentUtilsTest,
+     SafetyTipExplanationNone_WithSafeBrowsingError) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      security_state::features::kSafetyTipUI);
+
+  security_state::VisibleSecurityState visible_security_state;
+  visible_security_state.cert_status = 0;
+  visible_security_state.url = GURL("https://scheme-is-cryptographic.test");
+  visible_security_state.malicious_content_status =
+      security_state::MALICIOUS_CONTENT_STATUS_MALWARE;
+  visible_security_state.safety_tip_info = {
+      security_state::SafetyTipStatus::kNone, GURL()};
+  content::SecurityStyleExplanations explanations;
+  GetSecurityStyle(security_state::DANGEROUS, visible_security_state,
+                   &explanations);
+  // When there is also a SafeBrowsing warning, the title must be related to
+  // SafeBrowsing.
+  EXPECT_EQ(l10n_util::GetStringUTF8(IDS_SAFEBROWSING_WARNING),
+            explanations.summary);
+
+  EXPECT_EQ(1u, explanations.insecure_explanations.size());
+  EXPECT_EQ(l10n_util::GetStringUTF8(IDS_SAFEBROWSING_WARNING_SUMMARY),
+            explanations.insecure_explanations[0].summary);
+}
+
 // NSS requires that serial numbers be unique even for the same issuer;
 // as all fake certificates will contain the same issuer name, it's
 // necessary to ensure the serial number is unique, as otherwise
@@ -669,8 +768,8 @@ scoped_refptr<net::X509Certificate> CreateFakeCert(
           base::Time::Now() + time_until_expiration, &unused_key, &cert_der)) {
     return nullptr;
   }
-  return net::X509Certificate::CreateFromBytes(cert_der.data(),
-                                               cert_der.size());
+  return net::X509Certificate::CreateFromBytes(
+      base::as_bytes(base::make_span(cert_der)));
 }
 
 // Tests that an info explanation is provided only if the certificate is
@@ -717,7 +816,7 @@ TEST(SecurityStateContentUtilsTest, DefaultSecurityStyleExplanation) {
                                                 "description");
 
   EXPECT_EQ(false, !!explanation.certificate);
-  EXPECT_EQ(blink::WebMixedContentContextType::kNotMixedContent,
+  EXPECT_EQ(blink::mojom::MixedContentContextType::kNotMixedContent,
             explanation.mixed_content_type);
 }
 

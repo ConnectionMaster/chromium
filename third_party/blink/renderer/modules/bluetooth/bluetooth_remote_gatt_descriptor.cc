@@ -4,13 +4,16 @@
 
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth_remote_gatt_descriptor.h"
 
-#include <memory>
+#include <utility>
+
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth_error.h"
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth_remote_gatt_service.h"
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth_remote_gatt_utils.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -20,20 +23,10 @@ BluetoothRemoteGATTDescriptor::BluetoothRemoteGATTDescriptor(
     BluetoothRemoteGATTCharacteristic* characteristic)
     : descriptor_(std::move(descriptor)), characteristic_(characteristic) {}
 
-BluetoothRemoteGATTDescriptor* BluetoothRemoteGATTDescriptor::Create(
-    mojom::blink::WebBluetoothRemoteGATTDescriptorPtr descriptor,
-
-    BluetoothRemoteGATTCharacteristic* characteristic) {
-  BluetoothRemoteGATTDescriptor* result =
-      MakeGarbageCollected<BluetoothRemoteGATTDescriptor>(std::move(descriptor),
-                                                          characteristic);
-  return result;
-}
-
 void BluetoothRemoteGATTDescriptor::ReadValueCallback(
     ScriptPromiseResolver* resolver,
     mojom::blink::WebBluetoothResult result,
-    const base::Optional<Vector<uint8_t>>& value) {
+    const absl::optional<Vector<uint8_t>>& value) {
   if (!resolver->GetExecutionContext() ||
       resolver->GetExecutionContext()->IsContextDestroyed())
     return;
@@ -57,16 +50,20 @@ void BluetoothRemoteGATTDescriptor::ReadValueCallback(
 }
 
 ScriptPromise BluetoothRemoteGATTDescriptor::readValue(
-    ScriptState* script_state) {
+    ScriptState* script_state,
+    ExceptionState& exception_state) {
   if (!GetGatt()->connected()) {
-    return ScriptPromise::RejectWithDOMException(
-        script_state,
-        BluetoothError::CreateNotConnectedException(BluetoothOperation::kGATT));
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNetworkError,
+        BluetoothError::CreateNotConnectedExceptionMessage(
+            BluetoothOperation::kGATT));
+    return ScriptPromise();
   }
 
   if (!GetGatt()->device()->IsValidDescriptor(descriptor_->instance_id)) {
-    return ScriptPromise::RejectWithDOMException(
-        script_state, CreateInvalidDescriptorError());
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      CreateInvalidDescriptorErrorMessage());
+    return ScriptPromise();
   }
 
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver>(script_state);
@@ -106,16 +103,26 @@ void BluetoothRemoteGATTDescriptor::WriteValueCallback(
 
 ScriptPromise BluetoothRemoteGATTDescriptor::writeValue(
     ScriptState* script_state,
-    const DOMArrayPiece& value) {
+    const DOMArrayPiece& value,
+    ExceptionState& exception_state) {
   if (!GetGatt()->connected()) {
-    return ScriptPromise::RejectWithDOMException(
-        script_state,
-        BluetoothError::CreateNotConnectedException(BluetoothOperation::kGATT));
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNetworkError,
+        BluetoothError::CreateNotConnectedExceptionMessage(
+            BluetoothOperation::kGATT));
+    return ScriptPromise();
   }
 
   if (!GetGatt()->device()->IsValidDescriptor(descriptor_->instance_id)) {
-    return ScriptPromise::RejectWithDOMException(
-        script_state, CreateInvalidDescriptorError());
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      CreateInvalidDescriptorErrorMessage());
+    return ScriptPromise();
+  }
+
+  if (value.IsDetached()) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      "Value buffer has been detached.");
+    return ScriptPromise();
   }
 
   // Partial implementation of writeValue algorithm:
@@ -125,15 +132,16 @@ ScriptPromise BluetoothRemoteGATTDescriptor::writeValue(
   // value, per Long Attribute Values) return a promise rejected with an
   // InvalidModificationError and abort.
   if (value.ByteLength() > 512) {
-    return ScriptPromise::RejectWithDOMException(
-        script_state,
-        DOMException::Create(DOMExceptionCode::kInvalidModificationError,
-                             "Value can't exceed 512 bytes."));
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidModificationError,
+        "Value can't exceed 512 bytes.");
+    return ScriptPromise();
   }
 
   // Let valueVector be a copy of the bytes held by value.
   Vector<uint8_t> value_vector;
-  value_vector.Append(value.Bytes(), value.ByteLength());
+  value_vector.Append(value.Bytes(),
+                      static_cast<wtf_size_t>(value.ByteLength()));
 
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver>(script_state);
   ScriptPromise promise = resolver->Promise();
@@ -146,15 +154,13 @@ ScriptPromise BluetoothRemoteGATTDescriptor::writeValue(
   return promise;
 }
 
-DOMException* BluetoothRemoteGATTDescriptor::CreateInvalidDescriptorError() {
-  return BluetoothError::CreateDOMException(
-      BluetoothErrorCode::kInvalidDescriptor,
-      "Descriptor with UUID " + uuid() +
-          " is no longer valid. Remember to retrieve the Descriptor again "
-          "after reconnecting.");
+String BluetoothRemoteGATTDescriptor::CreateInvalidDescriptorErrorMessage() {
+  return "Descriptor with UUID " + uuid() +
+         " is no longer valid. Remember to retrieve the Descriptor again "
+         "after reconnecting.";
 }
 
-void BluetoothRemoteGATTDescriptor::Trace(blink::Visitor* visitor) {
+void BluetoothRemoteGATTDescriptor::Trace(Visitor* visitor) const {
   visitor->Trace(characteristic_);
   visitor->Trace(value_);
   ScriptWrappable::Trace(visitor);

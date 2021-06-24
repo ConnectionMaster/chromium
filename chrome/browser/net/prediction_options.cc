@@ -4,8 +4,7 @@
 
 #include "chrome/browser/net/prediction_options.h"
 
-#include "base/logging.h"
-#include "chrome/browser/profiles/profile_io_data.h"
+#include "base/check_op.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -26,8 +25,8 @@ NetworkPredictionStatus CanPrefetchAndPrerender(
     case NETWORK_PREDICTION_WIFI_ONLY:
       if (base::FeatureList::IsEnabled(
               features::kPredictivePrefetchingAllowedOnAllConnectionTypes) ||
-          !net::NetworkChangeNotifier::IsConnectionCellular(
-              net::NetworkChangeNotifier::GetConnectionType())) {
+          (net::NetworkChangeNotifier::GetConnectionCost() !=
+           net::NetworkChangeNotifier::CONNECTION_COST_METERED)) {
         return NetworkPredictionStatus::ENABLED;
       }
       return NetworkPredictionStatus::DISABLED_DUE_TO_NETWORK;
@@ -53,26 +52,11 @@ void RegisterPredictionOptionsProfilePrefs(
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 }
 
-NetworkPredictionStatus CanPrefetchAndPrerenderIO(
-    ProfileIOData* profile_io_data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  DCHECK(profile_io_data);
-  return CanPrefetchAndPrerender(
-      profile_io_data->network_prediction_options()->GetValue());
-}
-
 NetworkPredictionStatus CanPrefetchAndPrerenderUI(PrefService* prefs) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(prefs);
   return CanPrefetchAndPrerender(
       prefs->GetInteger(prefs::kNetworkPredictionOptions));
-}
-
-bool CanPreresolveAndPreconnectIO(ProfileIOData* profile_io_data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  DCHECK(profile_io_data);
-  return CanPreresolveAndPreconnect(
-      profile_io_data->network_prediction_options()->GetValue());
 }
 
 bool CanPreresolveAndPreconnectUI(PrefService* prefs) {

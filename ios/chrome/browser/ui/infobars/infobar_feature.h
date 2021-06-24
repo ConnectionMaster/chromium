@@ -7,10 +7,12 @@
 
 #include "base/feature_list.h"
 
-// Feature to choose whether to use the new Infobar design, or the legacy one.
-extern const base::Feature kInfobarUIReboot;
+// Feature to choose whether to use OverlayPresenter to show the new Messages
+// Infobar design. Use IsInfobarOverlayUIEnabled() instead of this constant
+// directly.
+extern const base::Feature kInfobarOverlayUI;
 
-// Whether the Infobar UI Reboot is enabled.
-bool IsInfobarUIRebootEnabled();
+// Whether the Messages Infobar UI is presented using OverlayPresenter.
+bool IsInfobarOverlayUIEnabled();
 
 #endif  // IOS_CHROME_BROWSER_UI_INFOBARS_INFOBAR_FEATURE_H_

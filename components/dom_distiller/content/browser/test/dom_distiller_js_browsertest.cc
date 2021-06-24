@@ -17,11 +17,11 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "components/dom_distiller/content/browser/web_contents_main_frame_observer.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/shell/browser/shell.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -30,22 +30,21 @@
 namespace {
 
 // Helper class to know how far in the loading process the current WebContents
-// has come. It will call the callback after DocumentLoadedInFrame is called for
+// has come. It will call the callback after DOMContentLoaded is called for
 // the main frame.
 class WebContentsMainFrameHelper : public content::WebContentsObserver {
  public:
   WebContentsMainFrameHelper(content::WebContents* web_contents,
-                             const base::Closure& callback)
-      : WebContentsObserver(web_contents), callback_(callback) {}
+                             base::OnceClosure callback)
+      : WebContentsObserver(web_contents), callback_(std::move(callback)) {}
 
-  void DocumentLoadedInFrame(
-      content::RenderFrameHost* render_frame_host) override {
-    if (!render_frame_host->GetParent())
-      callback_.Run();
+  void DOMContentLoaded(content::RenderFrameHost* render_frame_host) override {
+    if (!render_frame_host->GetParent() && callback_)
+      std::move(callback_).Run();
   }
 
  private:
-  base::Closure callback_;
+  base::OnceClosure callback_;
 };
 
 }  // namespace
@@ -79,11 +78,11 @@ class DomDistillerJsTest : public content::ContentBrowserTest {
 
   void OnJsTestExecutionDone(base::Value value) {
     result_ = std::move(value);
-    js_test_execution_done_callback_.Run();
+    std::move(js_test_execution_done_callback_).Run();
   }
 
  protected:
-  base::Closure js_test_execution_done_callback_;
+  base::OnceClosure js_test_execution_done_callback_;
   base::Value result_;
 
  private:
@@ -113,10 +112,11 @@ class DomDistillerJsTest : public content::ContentBrowserTest {
 
 // Disabled on MSan as well as Android and Linux CFI bots.
 // https://crbug.com/845180
-#if defined(MEMORY_SANITIZER) || defined(OS_WIN) ||              \
-    ((defined(OS_ANDROID) || defined(OS_LINUX)) &&               \
-     (BUILDFLAG(CFI_CAST_CHECK) || BUILDFLAG(CFI_ICALL_CHECK) || \
-      BUILDFLAG(CFI_ENFORCEMENT_DIAGNOSTIC) ||                   \
+// Then disabled more generally on Android: https://crbug.com/979685
+#if defined(MEMORY_SANITIZER) || defined(OS_WIN) || defined(OS_ANDROID) || \
+    ((defined(OS_LINUX) || defined(OS_CHROMEOS)) &&                        \
+     (BUILDFLAG(CFI_CAST_CHECK) || BUILDFLAG(CFI_ICALL_CHECK) ||           \
+      BUILDFLAG(CFI_ENFORCEMENT_DIAGNOSTIC) ||                             \
       BUILDFLAG(CFI_ENFORCEMENT_TRAP)))
 #define MAYBE_RunJsTests DISABLED_RunJsTests
 #else
@@ -135,8 +135,6 @@ IN_PROC_BROWSER_TEST_F(DomDistillerJsTest, MAYBE_RunJsTests) {
 
   // Load the test file in content shell and wait until it has fully loaded.
   content::WebContents* web_contents = shell()->web_contents();
-  dom_distiller::WebContentsMainFrameObserver::CreateForWebContents(
-      web_contents);
   base::RunLoop url_loaded_runner;
   WebContentsMainFrameHelper main_frame_loaded(web_contents,
                                                url_loaded_runner.QuitClosure());
@@ -161,15 +159,15 @@ IN_PROC_BROWSER_TEST_F(DomDistillerJsTest, MAYBE_RunJsTests) {
   run_loop.Run();
 
   // Convert to dictionary and parse the results.
-  ASSERT_TRUE(result_.is_dict());
+  ASSERT_TRUE(result_.is_dict()) << "Result is not a dictionary: " << result_;
 
-  base::Optional<bool> success = result_.FindBoolKey("success");
+  absl::optional<bool> success = result_.FindBoolKey("success");
   ASSERT_TRUE(success.has_value());
-  base::Optional<int> num_tests = result_.FindIntKey("numTests");
+  absl::optional<int> num_tests = result_.FindIntKey("numTests");
   ASSERT_TRUE(num_tests.has_value());
-  base::Optional<int> failed = result_.FindIntKey("failed");
+  absl::optional<int> failed = result_.FindIntKey("failed");
   ASSERT_TRUE(failed.has_value());
-  base::Optional<int> skipped = result_.FindIntKey("skipped");
+  absl::optional<int> skipped = result_.FindIntKey("skipped");
   ASSERT_TRUE(skipped.has_value());
 
   VLOG(0) << "Ran " << num_tests.value()

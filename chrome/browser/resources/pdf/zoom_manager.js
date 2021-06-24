@@ -2,63 +2,72 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
 
-/**
- * Abstract parent of classes that manage updating the browser
- * with zoom changes and/or updating the viewer's zoom when
- * the browser zoom changes.
- */
-class ZoomManager {
+import {BrowserApi, ZoomBehavior} from './browser_api.js';
+
+// Abstract parent of classes that manage updating the browser with zoom changes
+// and/or updating the viewer's zoom when the browser zoom changes.
+export class ZoomManager {
   /**
-   * @param {!Viewport} viewport A Viewport for which to manage zoom.
+   * @param {function():number} getViewportZoom Callback to get the viewport's
+   *     current zoom level.
    * @param {number} initialZoom The initial browser zoom level.
    */
-  constructor(viewport, initialZoom) {
+  constructor(getViewportZoom, initialZoom) {
     if (this.constructor === ZoomManager) {
       throw new TypeError('Instantiated abstract class: ZoomManager');
     }
-    this.viewport_ = viewport;
+
+    /** @private {number} */
     this.browserZoom_ = initialZoom;
+
+    /** @private {function():number} */
+    this.getViewportZoom_ = getViewportZoom;
+
+    /** @private {!EventTarget} */
+    this.eventTarget_ = new EventTarget();
+  }
+
+  /** @return {!EventTarget} */
+  getEventTarget() {
+    return this.eventTarget_;
   }
 
   /**
    * Creates the appropriate kind of zoom manager given the zoom behavior.
-   *
-   * @param {BrowserApi.ZoomBehavior} zoomBehavior How to manage zoom.
-   * @param {!Viewport} viewport A Viewport for which to manage zoom.
-   * @param {Function} setBrowserZoomFunction A function that sets the browser
-   *     zoom to the provided value.
+   * @param {ZoomBehavior} zoomBehavior How to manage zoom.
+   * @param {function():number} getViewportZoom A function that gets the current
+   *     viewport zoom.
+   * @param {function(number):Promise} setBrowserZoomFunction A function that
+   *     sets the browser zoom to the provided value.
    * @param {number} initialZoom The initial browser zoom level.
    */
-  static create(zoomBehavior, viewport, setBrowserZoomFunction, initialZoom) {
+  static create(
+      zoomBehavior, getViewportZoom, setBrowserZoomFunction, initialZoom) {
     switch (zoomBehavior) {
-      case BrowserApi.ZoomBehavior.MANAGE:
+      case ZoomBehavior.MANAGE:
         return new ActiveZoomManager(
-            viewport, setBrowserZoomFunction, initialZoom);
-      case BrowserApi.ZoomBehavior.PROPAGATE_PARENT:
-        return new EmbeddedZoomManager(viewport, initialZoom);
+            getViewportZoom, setBrowserZoomFunction, initialZoom);
+      case ZoomBehavior.PROPAGATE_PARENT:
+        return new EmbeddedZoomManager(getViewportZoom, initialZoom);
       default:
-        return new InactiveZoomManager(viewport, initialZoom);
+        return new InactiveZoomManager(getViewportZoom, initialZoom);
     }
   }
 
   /**
    * Invoked when a browser-initiated zoom-level change occurs.
-   *
    * @param {number} newZoom the zoom level to zoom to.
    */
   onBrowserZoomChange(newZoom) {}
 
-  /**
-   * Invoked when an extension-initiated zoom-level change occurs.
-   */
+  /** Invoked when an extension-initiated zoom-level change occurs. */
   onPdfZoomChange() {}
 
   /**
    * Combines the internal pdf zoom and the browser zoom to
    * produce the total zoom level for the viewer.
-   *
    * @param {number} internalZoom the zoom level internal to the viewer.
    * @return {number} the total zoom level.
    */
@@ -69,7 +78,6 @@ class ZoomManager {
   /**
    * Given a zoom level, return the internal zoom level needed to
    * produce that zoom level.
-   *
    * @param {number} totalZoom the total zoom level.
    * @return {number} the zoom level internal to the viewer.
    */
@@ -79,7 +87,6 @@ class ZoomManager {
 
   /**
    * Returns whether two numbers are approximately equal.
-   *
    * @param {number} a The first number.
    * @param {number} b The second number.
    */
@@ -92,33 +99,32 @@ class ZoomManager {
   }
 }
 
-/**
- * InactiveZoomManager has no control over the browser's zoom
- * and does not respond to browser zoom changes.
- */
-class InactiveZoomManager extends ZoomManager {}
+// Has no control over the browser's zoom and does not respond to browser zoom
+// changes.
+export class InactiveZoomManager extends ZoomManager {}
 
-/**
- * ActiveZoomManager controls the browser's zoom.
- */
+// ActiveZoomManager controls the browser's zoom.
 class ActiveZoomManager extends ZoomManager {
   /**
    * Constructs a ActiveZoomManager.
-   *
-   * @param {!Viewport} viewport A Viewport for which to manage zoom.
-   * @param {Function} setBrowserZoomFunction A function that sets the browser
-   *     zoom to the provided value.
+   * @param {function():number} getViewportZoom A function that gets the current
+   *     viewport zoom level
+   * @param {function(number):Promise} setBrowserZoomFunction A function that
+   *     sets the browser zoom to the provided value.
    * @param {number} initialZoom The initial browser zoom level.
    */
-  constructor(viewport, setBrowserZoomFunction, initialZoom) {
-    super(viewport, initialZoom);
+  constructor(getViewportZoom, setBrowserZoomFunction, initialZoom) {
+    super(getViewportZoom, initialZoom);
+
+    /** @private {function(number):Promise} */
     this.setBrowserZoomFunction_ = setBrowserZoomFunction;
+
+    /** @private {?Promise} */
     this.changingBrowserZoom_ = null;
   }
 
   /**
    * Invoked when a browser-initiated zoom-level change occurs.
-   *
    * @param {number} newZoom the zoom level to zoom to.
    */
   onBrowserZoomChange(newZoom) {
@@ -135,11 +141,13 @@ class ActiveZoomManager extends ZoomManager {
     }
 
     this.browserZoom_ = newZoom;
-    this.viewport_.setZoom(newZoom);
+    this.eventTarget_.dispatchEvent(
+        new CustomEvent('set-zoom', {detail: newZoom}));
   }
 
   /**
    * Invoked when an extension-initiated zoom-level change occurs.
+   * @override
    */
   onPdfZoomChange() {
     // If we are already changing the browser zoom level in response to a
@@ -150,26 +158,26 @@ class ActiveZoomManager extends ZoomManager {
       return;
     }
 
-    const zoom = this.viewport_.zoom;
-    if (this.floatingPointEquals(this.browserZoom_, zoom)) {
+    const viewportZoom = this.getViewportZoom_();
+    if (this.floatingPointEquals(this.browserZoom_, viewportZoom)) {
       return;
     }
 
-    this.changingBrowserZoom_ = this.setBrowserZoomFunction_(zoom).then(() => {
-      this.browserZoom_ = zoom;
-      this.changingBrowserZoom_ = null;
+    this.changingBrowserZoom_ =
+        this.setBrowserZoomFunction_(viewportZoom).then(() => {
+          this.browserZoom_ = viewportZoom;
+          this.changingBrowserZoom_ = null;
 
-      // The extension's zoom level may have changed while the browser zoom
-      // change was in progress. We call back into onPdfZoomChange to ensure
-      // the browser zoom is up to date.
-      this.onPdfZoomChange();
-    });
+          // The extension's zoom level may have changed while the browser zoom
+          // change was in progress. We call back into onPdfZoomChange to ensure
+          // the browser zoom is up to date.
+          this.onPdfZoomChange();
+        });
   }
 
   /**
    * Combines the internal pdf zoom and the browser zoom to
    * produce the total zoom level for the viewer.
-   *
    * @param {number} internalZoom the zoom level internal to the viewer.
    * @return {number} the total zoom level.
    */
@@ -182,7 +190,6 @@ class ActiveZoomManager extends ZoomManager {
   /**
    * Given a zoom level, return the internal zoom level needed to
    * produce that zoom level.
-   *
    * @param {number} totalZoom the total zoom level.
    * @return {number} the zoom level internal to the viewer.
    */
@@ -193,19 +200,17 @@ class ActiveZoomManager extends ZoomManager {
   }
 }
 
-/**
- * This EmbeddedZoomManager responds to changes in the browser zoom,
- * but does not control the browser zoom.
- */
+// Responds to changes in the browser zoom, but does not control the browser
+// zoom.
 class EmbeddedZoomManager extends ZoomManager {
   /**
    * Invoked when a browser-initiated zoom-level change occurs.
-   *
    * @param {number} newZoom the new browser zoom level.
    */
   onBrowserZoomChange(newZoom) {
     const oldZoom = this.browserZoom_;
     this.browserZoom_ = newZoom;
-    this.viewport_.updateZoomFromBrowserChange(oldZoom);
+    this.eventTarget_.dispatchEvent(
+        new CustomEvent('update-zoom-from-browser', {detail: oldZoom}));
   }
 }

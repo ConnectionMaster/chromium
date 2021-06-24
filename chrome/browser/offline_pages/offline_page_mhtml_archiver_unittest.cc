@@ -15,7 +15,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -24,7 +23,7 @@
 #include "components/offline_pages/core/model/offline_page_model_utils.h"
 #include "components/offline_pages/core/offline_clock.h"
 #include "components/offline_pages/core/test_scoped_offline_clock.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace offline_pages {
@@ -35,7 +34,7 @@ const char kTestURL[] = "http://example.com/hello.mhtml";
 const char kNonExistentURL[] = "http://example.com/non_existent.mhtml";
 // Size of chrome/test/data/offline_pages/hello.mhtml
 const int64_t kTestFileSize = 471LL;
-const base::string16 kTestTitle = base::UTF8ToUTF16("a title");
+const std::u16string kTestTitle = u"a title";
 // SHA256 Hash of chrome/test/data/offline_pages/hello.mhtml
 const std::string kTestDigest(
     "\x43\x60\x62\x02\x06\x15\x0f\x3e\x77\x99\x3d\xed\xdc\xd4\xe2\x0d\xbe\xbd"
@@ -53,9 +52,6 @@ class TestMHTMLArchiver : public OfflinePageMHTMLArchiver {
     SUCCESS,
     NOT_ABLE_TO_ARCHIVE,
     WEB_CONTENTS_MISSING,
-    CONNECTION_SECURITY_ERROR,
-    ERROR_PAGE,
-    INTERSTITIAL_PAGE,
   };
 
   TestMHTMLArchiver(const GURL& url,
@@ -67,8 +63,6 @@ class TestMHTMLArchiver : public OfflinePageMHTMLArchiver {
   void GenerateMHTML(const base::FilePath& archives_dir,
                      content::WebContents* web_contents,
                      const CreateArchiveParams& create_archive_params) override;
-  bool HasConnectionSecurityError(content::WebContents* web_contents) override;
-  content::PageType GetPageType(content::WebContents* web_contents) override;
 
   const GURL url_;
   const TestScenario test_scenario_;
@@ -104,26 +98,14 @@ void TestMHTMLArchiver::GenerateMHTML(
   base::FilePath archive_file_path =
       archives_dir.AppendASCII(url_.ExtractFileName());
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(&TestMHTMLArchiver::OnGenerateMHTMLDone,
-                                base::Unretained(this), url_, archive_file_path,
-                                kTestTitle, create_archive_params.name_space,
-                                OfflineTimeNow(), kTestFileSize));
+      FROM_HERE,
+      base::BindOnce(&TestMHTMLArchiver::OnGenerateMHTMLDone,
+                     base::Unretained(this), url_, archive_file_path,
+                     kTestTitle, create_archive_params.name_space,
+                     OfflineTimeNow(),
+                     content::MHTMLGenerationResult(kTestFileSize, nullptr)));
 
   clock_->Advance(kTimeToSaveMhtml);
-}
-
-bool TestMHTMLArchiver::HasConnectionSecurityError(
-    content::WebContents* web_contents) {
-  return test_scenario_ == TestScenario::CONNECTION_SECURITY_ERROR;
-}
-
-content::PageType TestMHTMLArchiver::GetPageType(
-    content::WebContents* web_contents) {
-  if (test_scenario_ == TestScenario::ERROR_PAGE)
-    return content::PageType::PAGE_TYPE_ERROR;
-  if (test_scenario_ == TestScenario::INTERSTITIAL_PAGE)
-    return content::PageType::PAGE_TYPE_INTERSTITIAL;
-  return content::PageType::PAGE_TYPE_NORMAL;
 }
 
 }  // namespace
@@ -174,11 +156,11 @@ class OfflinePageMHTMLArchiverTest : public testing::Test {
   void OnCreateArchiveDone(OfflinePageArchiver::ArchiverResult result,
                            const GURL& url,
                            const base::FilePath& file_path,
-                           const base::string16& title,
+                           const std::u16string& title,
                            int64_t file_size,
                            const std::string& digest);
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   base::FilePath archive_dir_path_;
   base::HistogramTester histogram_tester_;
 
@@ -188,7 +170,7 @@ class OfflinePageMHTMLArchiverTest : public testing::Test {
   int64_t last_file_size_;
   std::string last_digest_;
   bool async_operation_completed_ = false;
-  base::Closure async_operation_completed_callback_;
+  base::OnceClosure async_operation_completed_callback_;
 
   TestScopedOfflineClock clock_;
 
@@ -196,7 +178,7 @@ class OfflinePageMHTMLArchiverTest : public testing::Test {
 };
 
 OfflinePageMHTMLArchiverTest::OfflinePageMHTMLArchiverTest()
-    : thread_bundle_(content::TestBrowserThreadBundle::REAL_IO_THREAD),
+    : task_environment_(content::BrowserTaskEnvironment::REAL_IO_THREAD),
       last_result_(OfflinePageArchiver::ArchiverResult::ERROR_DEVICE_FULL),
       last_file_size_(0L) {}
 
@@ -228,7 +210,7 @@ void OfflinePageMHTMLArchiverTest::OnCreateArchiveDone(
     OfflinePageArchiver::ArchiverResult result,
     const GURL& url,
     const base::FilePath& file_path,
-    const base::string16& title,
+    const std::u16string& title,
     int64_t file_size,
     const std::string& digest) {
   DCHECK(!async_operation_completed_);
@@ -239,7 +221,7 @@ void OfflinePageMHTMLArchiverTest::OnCreateArchiveDone(
   last_file_size_ = file_size;
   last_digest_ = digest;
   if (!async_operation_completed_callback_.is_null())
-    async_operation_completed_callback_.Run();
+    std::move(async_operation_completed_callback_).Run();
 }
 
 void OfflinePageMHTMLArchiverTest::PumpLoop() {
@@ -272,45 +254,6 @@ TEST_F(OfflinePageMHTMLArchiverTest, NotAbleToGenerateArchive) {
   CreateArchive(page_url, TestMHTMLArchiver::TestScenario::NOT_ABLE_TO_ARCHIVE);
 
   EXPECT_EQ(OfflinePageArchiver::ArchiverResult::ERROR_ARCHIVE_CREATION_FAILED,
-            last_result());
-  EXPECT_EQ(base::FilePath(), last_file_path());
-  EXPECT_EQ(0LL, last_file_size());
-  histogram_tester()->ExpectTotalCount(kCreateArchiveTimeHistogram, 0);
-  histogram_tester()->ExpectTotalCount(kComputeDigestTimeHistogram, 0);
-}
-
-// Tests for archiver handling of non-secure connection.
-TEST_F(OfflinePageMHTMLArchiverTest, ConnectionNotSecure) {
-  GURL page_url = GURL(kTestURL);
-  CreateArchive(page_url,
-                TestMHTMLArchiver::TestScenario::CONNECTION_SECURITY_ERROR);
-
-  EXPECT_EQ(OfflinePageArchiver::ArchiverResult::ERROR_SECURITY_CERTIFICATE,
-            last_result());
-  EXPECT_EQ(base::FilePath(), last_file_path());
-  EXPECT_EQ(0LL, last_file_size());
-  histogram_tester()->ExpectTotalCount(kCreateArchiveTimeHistogram, 0);
-  histogram_tester()->ExpectTotalCount(kComputeDigestTimeHistogram, 0);
-}
-
-// Tests for archiver handling of an error page.
-TEST_F(OfflinePageMHTMLArchiverTest, PageError) {
-  GURL page_url = GURL(kTestURL);
-  CreateArchive(page_url, TestMHTMLArchiver::TestScenario::ERROR_PAGE);
-
-  EXPECT_EQ(OfflinePageArchiver::ArchiverResult::ERROR_ERROR_PAGE,
-            last_result());
-  EXPECT_EQ(base::FilePath(), last_file_path());
-  EXPECT_EQ(0LL, last_file_size());
-  histogram_tester()->ExpectTotalCount(kCreateArchiveTimeHistogram, 0);
-  histogram_tester()->ExpectTotalCount(kComputeDigestTimeHistogram, 0);
-}
-
-// Tests for archiver handling of an interstitial page.
-TEST_F(OfflinePageMHTMLArchiverTest, InterstitialPage) {
-  GURL page_url = GURL(kTestURL);
-  CreateArchive(page_url, TestMHTMLArchiver::TestScenario::INTERSTITIAL_PAGE);
-  EXPECT_EQ(OfflinePageArchiver::ArchiverResult::ERROR_INTERSTITIAL_PAGE,
             last_result());
   EXPECT_EQ(base::FilePath(), last_file_path());
   EXPECT_EQ(0LL, last_file_size());

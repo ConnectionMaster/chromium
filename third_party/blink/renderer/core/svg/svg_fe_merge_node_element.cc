@@ -20,33 +20,32 @@
 
 #include "third_party/blink/renderer/core/svg/svg_fe_merge_node_element.h"
 
+#include "third_party/blink/renderer/core/svg/svg_animated_string.h"
 #include "third_party/blink/renderer/core/svg/svg_filter_primitive_standard_attributes.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
-inline SVGFEMergeNodeElement::SVGFEMergeNodeElement(Document& document)
+SVGFEMergeNodeElement::SVGFEMergeNodeElement(Document& document)
     : SVGElement(svg_names::kFEMergeNodeTag, document),
       in1_(MakeGarbageCollected<SVGAnimatedString>(this, svg_names::kInAttr)) {
   AddToPropertyMap(in1_);
 }
 
-void SVGFEMergeNodeElement::Trace(blink::Visitor* visitor) {
+void SVGFEMergeNodeElement::Trace(Visitor* visitor) const {
   visitor->Trace(in1_);
   SVGElement::Trace(visitor);
 }
 
-DEFINE_NODE_FACTORY(SVGFEMergeNodeElement)
-
 void SVGFEMergeNodeElement::SvgAttributeChanged(
-    const QualifiedName& attr_name) {
-  if (attr_name == svg_names::kInAttr) {
+    const SvgAttributeChangedParams& params) {
+  if (params.name == svg_names::kInAttr) {
     SVGElement::InvalidationGuard invalidation_guard(this);
     InvalidateFilterPrimitiveParent(*this);
     return;
   }
 
-  SVGElement::SvgAttributeChanged(attr_name);
+  SVGElement::SvgAttributeChanged(params);
 }
 
 }  // namespace blink

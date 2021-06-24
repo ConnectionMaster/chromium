@@ -16,12 +16,12 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/printing/cloud_print/privet_http_impl.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "printing/buildflags/buildflags.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -33,6 +33,7 @@
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
 #include "chrome/browser/printing/pwg_raster_converter.h"
+#include "printing/mojom/print.mojom.h"
 #include "printing/pwg_raster_settings.h"
 #endif
 
@@ -266,7 +267,7 @@ const char* const kTestParams[] = {"8.8.4.4", "2001:4860:4860::8888"};
 // string.
 std::string NormalizeJson(const std::string& json) {
   std::string result = json;
-  base::Optional<base::Value> value = base::JSONReader::Read(result);
+  absl::optional<base::Value> value = base::JSONReader::Read(result);
   DCHECK(value) << result;
   base::JSONWriter::Write(*value, &result);
   return result;
@@ -323,7 +324,7 @@ class PrivetHTTPTest : public TestWithParam<const char*> {
                           net::HttpStatusCode http_status = net::HTTP_OK) {
     return test_url_loader_factory_.SimulateResponseForPendingRequest(
         request_url, network::URLLoaderCompletionStatus(net::OK),
-        network::CreateResourceResponseHead(http_status), content);
+        network::CreateURLResponseHead(http_status), content);
   }
 
   std::string GetUploadDataAsNormalizedJSON(const GURL& url) {
@@ -353,7 +354,7 @@ class PrivetHTTPTest : public TestWithParam<const char*> {
   const GURL kSubmitDocWithJobIDURL;
   const GURL kCreateJobURL;
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::WeakWrapperSharedURLLoaderFactory>
       test_shared_url_loader_factory_;
@@ -373,8 +374,8 @@ class MockJSONCallback{
 
   const base::DictionaryValue* value() { return value_.get(); }
   PrivetJSONOperation::ResultCallback callback() {
-    return base::Bind(&MockJSONCallback::OnPrivetJSONDone,
-                      base::Unretained(this));
+    return base::BindOnce(&MockJSONCallback::OnPrivetJSONDone,
+                          base::Unretained(this));
   }
  protected:
   std::unique_ptr<base::DictionaryValue> value_;
@@ -754,7 +755,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulPWGLocalPrint) {
   EXPECT_TRUE(SuccessfulResponse(kSubmitDocURL, kSampleLocalPrintResponse));
   EXPECT_EQ("foobar", GetUploadData(kSubmitDocURL));
 
-  EXPECT_EQ(printing::DuplexMode::SIMPLEX,
+  EXPECT_EQ(printing::mojom::DuplexMode::kSimplex,
             pwg_converter_->bitmap_settings().duplex_mode);
   EXPECT_EQ(printing::TRANSFORM_NORMAL,
             pwg_converter_->bitmap_settings().odd_page_transform);
@@ -769,7 +770,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulPWGLocalPrintDuplex) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname("Sample job name");
   local_print_operation_->SetData(RefCountedBytesFromString("foobar"));
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJTDuplex);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJTDuplex);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetCapabilities(
@@ -790,7 +791,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulPWGLocalPrintDuplex) {
       SuccessfulResponse(kSubmitDocWithJobIDURL, kSampleLocalPrintResponse));
   EXPECT_EQ("foobar", GetUploadData(kSubmitDocWithJobIDURL));
 
-  EXPECT_EQ(printing::DuplexMode::SHORT_EDGE,
+  EXPECT_EQ(printing::mojom::DuplexMode::kShortEdge,
             pwg_converter_->bitmap_settings().duplex_mode);
   EXPECT_EQ(printing::TRANSFORM_ROTATE_180,
             pwg_converter_->bitmap_settings().odd_page_transform);
@@ -805,7 +806,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulPWGLocalPrintMono) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname("Sample job name");
   local_print_operation_->SetData(RefCountedBytesFromString("foobar"));
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJTMono);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJTMono);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetCapabilities(
@@ -839,7 +840,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulPWGLocalPrintMonoToGRAY8Printer) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname("Sample job name");
   local_print_operation_->SetData(RefCountedBytesFromString("foobar"));
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJTMono);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJTMono);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetCapabilities(
@@ -872,7 +873,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulPWGLocalPrintMonoToGRAY8Printer) {
 TEST_P(PrivetLocalPrintTest, SuccessfulLocalPrintWithCreatejob) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname("Sample job name");
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetData(
@@ -905,7 +906,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulLocalPrintWithOverlongName) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname(
       "123456789:123456789:123456789:123456789:123456789:123456789:123456789:");
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetCapabilities(kSampleCapabilitiesResponse);
@@ -930,7 +931,7 @@ TEST_P(PrivetLocalPrintTest, SuccessfulLocalPrintWithOverlongName) {
 TEST_P(PrivetLocalPrintTest, PDFPrintInvalidDocumentTypeRetry) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname("Sample job name");
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetCapabilities(kSampleCapabilitiesResponse);
@@ -959,7 +960,7 @@ TEST_P(PrivetLocalPrintTest, PDFPrintInvalidDocumentTypeRetry) {
 TEST_P(PrivetLocalPrintTest, LocalPrintRetryOnInvalidJobID) {
   local_print_operation_->SetUsername("sample@gmail.com");
   local_print_operation_->SetJobname("Sample job name");
-  base::Optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
+  absl::optional<base::Value> ticket = base::JSONReader::Read(kSampleCJT);
   ASSERT_TRUE(ticket);
   local_print_operation_->SetTicket(std::move(*ticket));
   local_print_operation_->SetCapabilities(kSampleCapabilitiesResponse);
@@ -986,7 +987,7 @@ TEST_P(PrivetLocalPrintTest, LocalPrintRetryOnInvalidJobID) {
 class PrivetHttpWithServerTest : public ::testing::Test {
  protected:
   PrivetHttpWithServerTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
+      : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP),
         shared_url_loader_factory_(
             base::MakeRefCounted<network::TestSharedURLLoaderFactory>()) {}
 
@@ -1004,11 +1005,10 @@ class PrivetHttpWithServerTest : public ::testing::Test {
         "test", server_->host_port_pair(), shared_url_loader_factory_);
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<EmbeddedTestServer> server_;
   std::unique_ptr<PrivetHTTPClientImpl> client_;
   scoped_refptr<network::TestSharedURLLoaderFactory> shared_url_loader_factory_;
-  base::Closure quit_;
 };
 
 class MockPrivetURLLoaderDelegate : public PrivetURLLoader::Delegate {

@@ -6,17 +6,17 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
-#include "jni/UrlFilterBridge_jni.h"
+#include "chrome/android/chrome_jni_headers/UrlFilterBridge_jni.h"
 #include "url/gurl.h"
 
 using base::android::JavaParamRef;
 
 UrlFilterBridge::UrlFilterBridge(
-    const base::Callback<bool(const GURL&)>& url_filter)
+    const base::RepeatingCallback<bool(const GURL&)>& url_filter)
     : url_filter_(url_filter),
-      j_bridge_(Java_UrlFilterBridge_create(
-          base::android::AttachCurrentThread(),
-          reinterpret_cast<uintptr_t>(this))) {}
+      j_bridge_(
+          Java_UrlFilterBridge_create(base::android::AttachCurrentThread(),
+                                      reinterpret_cast<uintptr_t>(this))) {}
 
 UrlFilterBridge::~UrlFilterBridge() {}
 

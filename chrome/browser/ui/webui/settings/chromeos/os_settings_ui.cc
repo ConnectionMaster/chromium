@@ -4,61 +4,35 @@
 
 #include "chrome/browser/ui/webui/settings/chromeos/os_settings_ui.h"
 
-#include <stddef.h>
-
-#include <memory>
-#include <string>
 #include <utility>
-#include <vector>
 
-#include "ash/public/cpp/resources/grit/ash_public_unscaled_resources.h"
-#include "base/metrics/histogram_macros.h"
-#include "build/build_config.h"
-#include "chrome/browser/ui/passwords/manage_passwords_view_utils.h"
-#include "chrome/browser/ui/webui/certificates_handler.h"
-#include "chrome/browser/ui/webui/dark_mode_handler.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/esim_manager.h"
+#include "ash/public/cpp/network_config_service.h"
+#include "base/metrics/histogram_functions.h"
+#include "chrome/browser/nearby_sharing/contacts/nearby_share_contact_manager.h"
+#include "chrome/browser/nearby_sharing/nearby_receive_manager.h"
+#include "chrome/browser/nearby_sharing/nearby_share_settings.h"
+#include "chrome/browser/nearby_sharing/nearby_sharing_service_factory.h"
+#include "chrome/browser/nearby_sharing/nearby_sharing_service_impl.h"
 #include "chrome/browser/ui/webui/managed_ui_handler.h"
-#include "chrome/browser/ui/webui/metrics_handler.h"
-#include "chrome/browser/ui/webui/settings/about_handler.h"
-#include "chrome/browser/ui/webui/settings/accessibility_main_handler.h"
-#include "chrome/browser/ui/webui/settings/appearance_handler.h"
-#include "chrome/browser/ui/webui/settings/browser_lifetime_handler.h"
-#include "chrome/browser/ui/webui/settings/downloads_handler.h"
-#include "chrome/browser/ui/webui/settings/extension_control_handler.h"
-#include "chrome/browser/ui/webui/settings/font_handler.h"
-#include "chrome/browser/ui/webui/settings/languages_handler.h"
-#include "chrome/browser/ui/webui/settings/on_startup_handler.h"
-#include "chrome/browser/ui/webui/settings/people_handler.h"
-#include "chrome/browser/ui/webui/settings/profile_info_handler.h"
-#include "chrome/browser/ui/webui/settings/protocol_handlers_handler.h"
-#include "chrome/browser/ui/webui/settings/reset_settings_handler.h"
-#include "chrome/browser/ui/webui/settings/search_engines_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_clear_browsing_data_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_cookies_view_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_import_data_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_localized_strings_provider.h"
-#include "chrome/browser/ui/webui/settings/settings_media_devices_selection_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_security_key_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_startup_pages_handler.h"
-#include "chrome/browser/ui/webui/settings/settings_ui.h"
-#include "chrome/browser/ui/webui/settings/site_settings_handler.h"
-#include "chrome/browser/web_applications/system_web_app_manager.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/ui/webui/settings/chromeos/device_storage_handler.h"
+#include "chrome/browser/ui/webui/settings/chromeos/os_settings_manager.h"
+#include "chrome/browser/ui/webui/settings/chromeos/os_settings_manager_factory.h"
+#include "chrome/browser/ui/webui/settings/chromeos/pref_names.h"
+#include "chrome/browser/ui/webui/settings/chromeos/search/search_handler.h"
+#include "chrome/browser/ui/webui/settings/chromeos/settings_user_action_tracker.h"
+#include "chrome/browser/ui/webui/webui_util.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/os_settings_resources.h"
 #include "chrome/grit/os_settings_resources_map.h"
-#include "components/password_manager/core/common/password_manager_features.h"
+#include "chromeos/services/cellular_setup/cellular_setup_impl.h"
+#include "chromeos/services/cellular_setup/public/mojom/esim_manager.mojom.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/unified_consent/feature.h"
-#include "content/public/browser/navigation_handle.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "content/public/common/content_features.h"
-
-#if defined(FULL_SAFE_BROWSING)
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
-#include "chrome/browser/ui/webui/settings/change_password_handler.h"
-#endif
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 
 namespace chromeos {
 namespace settings {
@@ -66,180 +40,131 @@ namespace settings {
 // static
 void OSSettingsUI::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterBooleanPref(::prefs::kImportDialogAutofillFormData, true);
-  registry->RegisterBooleanPref(::prefs::kImportDialogBookmarks, true);
-  registry->RegisterBooleanPref(::prefs::kImportDialogHistory, true);
-  registry->RegisterBooleanPref(::prefs::kImportDialogSavedPasswords, true);
-  registry->RegisterBooleanPref(::prefs::kImportDialogSearchEngine, true);
+  registry->RegisterBooleanPref(prefs::kSyncOsWallpaper, false);
 }
 
 OSSettingsUI::OSSettingsUI(content::WebUI* web_ui)
-    : content::WebUIController(web_ui),
-      WebContentsObserver(web_ui->GetWebContents()) {
+    : ui::MojoWebUIController(web_ui, /*enable_chrome_send=*/true),
+      time_when_opened_(base::TimeTicks::Now()),
+      webui_load_timer_(web_ui->GetWebContents(),
+                        "ChromeOS.Settings.LoadDocumentTime",
+                        "ChromeOS.Settings.LoadCompletedTime") {
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* html_source =
       content::WebUIDataSource::Create(chrome::kChromeUIOSSettingsHost);
 
-  ::settings::SettingsUI::InitOSWebUIHandlers(profile, web_ui, html_source);
+  OsSettingsManager* manager = OsSettingsManagerFactory::GetForProfile(profile);
+  manager->AddHandlers(web_ui);
+  manager->AddLoadTimeData(html_source);
+  html_source->DisableTrustedTypesCSP();
 
-  // TODO(jamescook): Remove after basic_page.html is forked for OS settings.
-  html_source->AddBoolean("showOSSettings", true);
+  // TODO(khorimoto): Move to DeviceSection::AddHandler() once |html_source|
+  // parameter is removed.
+  web_ui->AddMessageHandler(
+      std::make_unique<chromeos::settings::StorageHandler>(profile,
+                                                           html_source));
 
-#if BUILDFLAG(OPTIMIZE_WEBUI)
-  std::vector<std::string> exclude_from_gzip;
-#endif
+  webui::SetupWebUIDataSource(
+      html_source,
+      base::make_span(kOsSettingsResources, kOsSettingsResourcesSize),
+      IDR_OS_SETTINGS_OS_SETTINGS_V3_HTML);
 
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::AppearanceHandler>(web_ui));
-
-#if defined(USE_NSS_CERTS)
-  AddSettingsPageUIHandler(
-      std::make_unique<certificate_manager::CertificatesHandler>());
-#elif defined(OS_WIN) || defined(OS_MACOSX)
-  AddSettingsPageUIHandler(std::make_unique<NativeCertificatesHandler>());
-#endif  // defined(USE_NSS_CERTS)
-
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::AccessibilityMainHandler>());
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::BrowserLifetimeHandler>());
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::ClearBrowsingDataHandler>(web_ui));
-  AddSettingsPageUIHandler(std::make_unique<::settings::CookiesViewHandler>());
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::DownloadsHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::ExtensionControlHandler>());
-  AddSettingsPageUIHandler(std::make_unique<::settings::FontHandler>(web_ui));
-  AddSettingsPageUIHandler(std::make_unique<::settings::ImportDataHandler>());
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::LanguagesHandler>(web_ui));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::MediaDevicesSelectionHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::OnStartupHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::PeopleHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::ProfileInfoHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::ProtocolHandlersHandler>());
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::SearchEnginesHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::SiteSettingsHandler>(profile));
-  AddSettingsPageUIHandler(
-      std::make_unique<::settings::StartupPagesHandler>(web_ui));
-  AddSettingsPageUIHandler(std::make_unique<::settings::SecurityKeysHandler>());
-
-  bool password_protection_available = false;
-#if defined(FULL_SAFE_BROWSING)
-  safe_browsing::ChromePasswordProtectionService* password_protection =
-      safe_browsing::ChromePasswordProtectionService::
-          GetPasswordProtectionService(profile);
-  password_protection_available = !!password_protection;
-  if (password_protection) {
-    AddSettingsPageUIHandler(
-        std::make_unique<::settings::ChangePasswordHandler>(
-            profile, password_protection));
-  }
-#endif
-
-  html_source->AddBoolean("passwordProtectionAvailable",
-                          password_protection_available);
-
-  html_source->AddBoolean("unifiedConsentEnabled",
-                          unified_consent::IsUnifiedConsentFeatureEnabled());
-
-  html_source->AddBoolean(
-      "navigateToGooglePasswordManager",
-      ShouldManagePasswordsinGooglePasswordManager(profile));
-
-  html_source->AddBoolean("showImportPasswords",
-                          base::FeatureList::IsEnabled(
-                              password_manager::features::kPasswordImport));
-
-  AddSettingsPageUIHandler(
-      base::WrapUnique(::settings::AboutHandler::Create(html_source, profile)));
-  AddSettingsPageUIHandler(base::WrapUnique(
-      ::settings::ResetSettingsHandler::Create(html_source, profile)));
-
-  // Add the metrics handler to write uma stats.
-  web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
-
-  // Add the System Web App resources for Settings.
-  // TODO(jamescook|calamity): Migrate to chromeos::settings::OSSettingsUI.
-  if (web_app::SystemWebAppManager::IsEnabled()) {
-    html_source->AddResourcePath("icon-192.png", IDR_SETTINGS_LOGO_192);
-    html_source->AddResourcePath("pwa.html", IDR_PWA_HTML);
-#if BUILDFLAG(OPTIMIZE_WEBUI)
-    exclude_from_gzip.push_back("icon-192.png");
-    exclude_from_gzip.push_back("pwa.html");
-#endif  // BUILDFLAG(OPTIMIZE_WEBUI)
-  }
-
-#if BUILDFLAG(OPTIMIZE_WEBUI)
-  const bool use_polymer_2 =
-      base::FeatureList::IsEnabled(::features::kWebUIPolymer2);
-  html_source->AddResourcePath("crisper.js", IDR_OS_SETTINGS_CRISPER_JS);
-  html_source->AddResourcePath("lazy_load.crisper.js",
-                               IDR_OS_SETTINGS_LAZY_LOAD_CRISPER_JS);
-  html_source->AddResourcePath(
-      "lazy_load.html", use_polymer_2
-                            ? IDR_OS_SETTINGS_LAZY_LOAD_VULCANIZED_P2_HTML
-                            : IDR_OS_SETTINGS_LAZY_LOAD_VULCANIZED_HTML);
-  html_source->SetDefaultResource(use_polymer_2
-                                      ? IDR_OS_SETTINGS_VULCANIZED_P2_HTML
-                                      : IDR_OS_SETTINGS_VULCANIZED_HTML);
-  html_source->UseGzip(base::BindRepeating(
-      [](const std::vector<std::string>& excluded_paths,
-         const std::string& path) {
-        return !base::ContainsValue(excluded_paths, path);
-      },
-      std::move(exclude_from_gzip)));
-  html_source->AddResourcePath("manifest.json", IDR_OS_SETTINGS_MANIFEST);
-#else
-  // Add all settings resources.
-  for (size_t i = 0; i < kOsSettingsResourcesSize; ++i) {
-    html_source->AddResourcePath(kOsSettingsResources[i].name,
-                                 kOsSettingsResources[i].value);
-  }
-  html_source->SetDefaultResource(IDR_OS_SETTINGS_SETTINGS_HTML);
-#endif
-
-  ::settings::AddLocalizedStrings(html_source, profile);
-
-  DarkModeHandler::Initialize(web_ui, html_source);
   ManagedUIHandler::Initialize(web_ui, html_source);
 
   content::WebUIDataSource::Add(web_ui->GetWebContents()->GetBrowserContext(),
                                 html_source);
 }
 
-OSSettingsUI::~OSSettingsUI() {}
-
-void OSSettingsUI::AddSettingsPageUIHandler(
-    std::unique_ptr<content::WebUIMessageHandler> handler) {
-  DCHECK(handler);
-  web_ui()->AddMessageHandler(std::move(handler));
+OSSettingsUI::~OSSettingsUI() {
+  // Note: OSSettingsUI lifetime is tied to the lifetime of the browser window.
+  base::UmaHistogramCustomTimes("ChromeOS.Settings.WindowOpenDuration",
+                                base::TimeTicks::Now() - time_when_opened_,
+                                /*min=*/base::TimeDelta::FromMicroseconds(500),
+                                /*max=*/base::TimeDelta::FromHours(1),
+                                /*buckets=*/50);
 }
 
-void OSSettingsUI::DidStartNavigation(
-    content::NavigationHandle* navigation_handle) {
-  if (navigation_handle->IsSameDocument())
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<cellular_setup::mojom::CellularSetup> receiver) {
+  cellular_setup::CellularSetupImpl::CreateAndBindToReciever(
+      std::move(receiver));
+}
+
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<cellular_setup::mojom::ESimManager> receiver) {
+  ash::GetESimManager(std::move(receiver));
+}
+
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<network_config::mojom::CrosNetworkConfig> receiver) {
+  ash::GetNetworkConfigService(std::move(receiver));
+}
+
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<mojom::UserActionRecorder> receiver) {
+  OsSettingsManagerFactory::GetForProfile(Profile::FromWebUI(web_ui()))
+      ->settings_user_action_tracker()
+      ->BindInterface(std::move(receiver));
+}
+
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<mojom::SearchHandler> receiver) {
+  OsSettingsManagerFactory::GetForProfile(Profile::FromWebUI(web_ui()))
+      ->search_handler()
+      ->BindInterface(std::move(receiver));
+}
+
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<app_management::mojom::PageHandlerFactory> receiver) {
+  if (!app_management_page_handler_factory_) {
+    app_management_page_handler_factory_ =
+        std::make_unique<AppManagementPageHandlerFactory>(
+            Profile::FromWebUI(web_ui()));
+  }
+  app_management_page_handler_factory_->Bind(std::move(receiver));
+}
+
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<nearby_share::mojom::NearbyShareSettings> receiver) {
+  if (!NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
+          Profile::FromWebUI(web_ui()))) {
     return;
+  }
 
-  load_start_time_ = base::Time::Now();
+  NearbySharingService* service =
+      NearbySharingServiceFactory::GetForBrowserContext(
+          Profile::FromWebUI(web_ui()));
+  service->GetSettings()->Bind(std::move(receiver));
 }
 
-void OSSettingsUI::DocumentLoadedInFrame(
-    content::RenderFrameHost* render_frame_host) {
-  // TODO(crbug/950007): Create new load histograms
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<nearby_share::mojom::ReceiveManager> receiver) {
+  if (!NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
+          Profile::FromWebUI(web_ui()))) {
+    return;
+  }
+
+  NearbySharingService* service =
+      NearbySharingServiceFactory::GetForBrowserContext(
+          Profile::FromWebUI(web_ui()));
+  mojo::MakeSelfOwnedReceiver(std::make_unique<NearbyReceiveManager>(service),
+                              std::move(receiver));
 }
 
-void OSSettingsUI::DocumentOnLoadCompletedInMainFrame() {
-  // TODO(crbug/950007): Create new load histograms
+void OSSettingsUI::BindInterface(
+    mojo::PendingReceiver<nearby_share::mojom::ContactManager> receiver) {
+  if (!NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
+          Profile::FromWebUI(web_ui()))) {
+    return;
+  }
+
+  NearbySharingService* service =
+      NearbySharingServiceFactory::GetForBrowserContext(
+          Profile::FromWebUI(web_ui()));
+  service->GetContactManager()->Bind(std::move(receiver));
 }
+
+WEB_UI_CONTROLLER_TYPE_IMPL(OSSettingsUI)
 
 }  // namespace settings
 }  // namespace chromeos

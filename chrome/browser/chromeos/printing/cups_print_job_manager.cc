@@ -7,19 +7,17 @@
 #include <algorithm>
 
 #include "base/metrics/histogram_macros.h"
+#include "chrome/browser/chromeos/printing/cups_print_job.h"
 #include "chrome/browser/chromeos/printing/cups_print_job_notification_manager.h"
 
 namespace chromeos {
 
 CupsPrintJobManager::CupsPrintJobManager(Profile* profile) : profile_(profile) {
-  notification_manager_.reset(
-      new CupsPrintJobNotificationManager(profile, this));
+  notification_manager_ =
+      std::make_unique<CupsPrintJobNotificationManager>(profile, this);
 }
 
-CupsPrintJobManager::~CupsPrintJobManager() {
-  notification_manager_.reset();
-  profile_ = nullptr;
-}
+CupsPrintJobManager::~CupsPrintJobManager() = default;
 
 void CupsPrintJobManager::Shutdown() {}
 
@@ -66,7 +64,7 @@ void CupsPrintJobManager::NotifyJobCanceled(base::WeakPtr<CupsPrintJob> job) {
     observer.OnPrintJobCancelled(job);
 }
 
-void CupsPrintJobManager::NotifyJobError(base::WeakPtr<CupsPrintJob> job) {
+void CupsPrintJobManager::NotifyJobFailed(base::WeakPtr<CupsPrintJob> job) {
   for (Observer& observer : observers_)
     observer.OnPrintJobError(job);
 }
@@ -78,10 +76,10 @@ void CupsPrintJobManager::NotifyJobDone(base::WeakPtr<CupsPrintJob> job) {
     observer.OnPrintJobDone(job);
 }
 
-// TODO(jschettler): In some instances, Chrome doesn't receive an error state
-// from the printer (crbug.com/883966). For that reason, the job duration is
-// currently recorded for done and cancelled print jobs without accounting
-// for the added time a job may spend in a suspended or error state.
+// TODO(http://crbug.com/883966): In some instances, Chrome doesn't receive an
+// error state from the printer. For that reason, the job duration is currently
+// recorded for done and cancelled print jobs without accounting for the added
+// time a job may spend in a suspended or error state.
 void CupsPrintJobManager::RecordJobDuration(base::WeakPtr<CupsPrintJob> job) {
   DCHECK(job);
 

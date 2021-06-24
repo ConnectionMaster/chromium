@@ -105,17 +105,6 @@ var tests = [
         .then(chrome.test.succeed);
   },
 
-  function testAbort() {
-    checkStreamDetails('testAbort.csv', false);
-    chrome.mimeHandlerPrivate.abortStream(function() {
-      fetchUrl(streamDetails.streamUrl).then(function(response) {
-        chrome.test.assertEq(0, response.status);
-        chrome.test.assertEq('error', response.data);
-        chrome.test.succeed();
-      });
-    });
-  },
-
   function testNonAsciiHeaders() {
     checkStreamDetails('testNonAsciiHeaders.csv', false);
     chrome.test.assertEq(undefined,
@@ -245,6 +234,28 @@ var tests = [
         () => document.body.webkitRequestFullscreen());
   },
 
+  function testFullscreenEscape() {
+    checkStreamDetails('testFullscreenEscape.csv', false);
+    var calls = 0;
+    var windowId;
+    window.addEventListener('webkitfullscreenchange', async e => {
+      switch(calls) {
+        case 0: // On fullscreen entered.
+          chrome.test.assertTrue(document.webkitIsFullScreen);
+          chrome.test.assertEq(document.body, document.webkitFullscreenElement);
+          break;
+        case 1: // On fullscreen exited.
+          chrome.test.assertFalse(document.webkitIsFullScreen);
+          chrome.test.assertEq(null, document.webkitFullscreenElement);
+          chrome.test.succeed();
+          break;
+      }
+      calls++;
+    });
+    chrome.test.runWithUserGesture(
+        () => document.body.webkitRequestFullscreen());
+  },
+
   function testBackgroundPage() {
     checkStreamDetails('testBackgroundPage.csv', false);
     chrome.runtime.getBackgroundPage(backgroundPage => {
@@ -282,6 +293,14 @@ var tests = [
 
   function testBeforeUnloadShowDialog() {
     checkStreamDetails('testBeforeUnloadShowDialog.csv', false);
+    chrome.mimeHandlerPrivate.setShowBeforeUnloadDialog(
+        true, chrome.test.succeed);
+  },
+
+  // TODO(mustaq): Every test above have a unique csv, which seems redundant.
+  // This particular one is used in two browser tests.
+  function testBeforeUnloadWithUserActivation() {
+    checkStreamDetails('testBeforeUnloadWithUserActivation.csv', false);
     chrome.mimeHandlerPrivate.setShowBeforeUnloadDialog(
         true, chrome.test.succeed);
   },

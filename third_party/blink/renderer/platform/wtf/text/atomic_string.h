@@ -23,15 +23,17 @@
 
 #include <cstring>
 #include <iosfwd>
+#include <type_traits>
 
 #include "build/build_config.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table_deleted_value_type.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
+#include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/text/integer_to_string_conversion.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_export.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 
 namespace WTF {
 
@@ -74,12 +76,6 @@ class WTF_EXPORT AtomicString {
   AtomicString(const LChar* chars, unsigned length);
   AtomicString(const UChar* chars, unsigned length);
   AtomicString(const UChar* chars);
-  AtomicString(const char16_t* chars)
-      : AtomicString(reinterpret_cast<const UChar*>(chars)) {}
-
-  template <wtf_size_t inlineCapacity>
-  explicit AtomicString(const Vector<UChar, inlineCapacity>& vector)
-      : AtomicString(vector.data(), vector.size()) {}
 
   // Constructing an AtomicString from a String / StringImpl can be expensive if
   // the StringImpl is not already atomic.
@@ -174,19 +170,12 @@ class WTF_EXPORT AtomicString {
   }
   bool EndsWith(UChar character) const { return string_.EndsWith(character); }
 
-  // Returns a lowercase version of the string. This function might
-  // convert non-ASCII characters to ASCII characters. For example,
-  // DeprecatedLower() for U+212A is 'k'.
-  // This function is rarely used to implement web platform features.
-  // See crbug.com/627682.
-  // This function is deprecated. We should use LowerASCII(), or introduce
-  // LowerUnicode().
-  AtomicString DeprecatedLower() const;
-
   // Returns a lowercase/uppercase version of the string.
   // These functions convert ASCII characters only.
   AtomicString LowerASCII() const;
   AtomicString UpperASCII() const;
+
+  bool IsLowerASCII() const { return string_.IsLowerASCII(); }
 
   // See comments in WTFString.h.
   int ToInt(bool* ok = nullptr) const { return string_.ToInt(ok); }
@@ -214,9 +203,9 @@ class WTF_EXPORT AtomicString {
   static AtomicString FromUTF8(const char*, size_t length);
   static AtomicString FromUTF8(const char*);
 
-  CString Ascii() const { return string_.Ascii(); }
-  CString Latin1() const { return string_.Latin1(); }
-  CString Utf8(UTF8ConversionMode mode = kLenientUTF8Conversion) const {
+  std::string Ascii() const { return string_.Ascii(); }
+  std::string Latin1() const { return string_.Latin1(); }
+  std::string Utf8(UTF8ConversionMode mode = kLenientUTF8Conversion) const {
     return string_.Utf8(mode);
   }
 
@@ -227,6 +216,8 @@ class WTF_EXPORT AtomicString {
   bool IsSafeToSendToAnotherThread() const {
     return string_.IsSafeToSendToAnotherThread();
   }
+
+  void WriteIntoTrace(perfetto::TracedValue context) const;
 
 #ifndef NDEBUG
   void Show() const;
@@ -243,7 +234,7 @@ class WTF_EXPORT AtomicString {
     return AddSlowCase(r);
   }
   static scoped_refptr<StringImpl> AddSlowCase(StringImpl*);
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   static scoped_refptr<StringImpl> Add(CFStringRef);
 #endif
 };

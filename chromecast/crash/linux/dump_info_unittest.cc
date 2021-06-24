@@ -41,7 +41,6 @@ TEST(DumpInfoTest, BadTimeStringIsNotValid) {
 TEST(DumpInfoTest, AllRequiredFieldsIsValid) {
   std::unique_ptr<DumpInfo> info(
       CreateDumpInfo("{"
-                     "\"name\": \"name\","
                      "\"dump_time\" : \"2001-11-12 18:31:01\","
                      "\"dump\": \"dump_string\","
                      "\"uptime\": \"123456789\","
@@ -58,7 +57,6 @@ TEST(DumpInfoTest, AllRequiredFieldsIsValid) {
   EXPECT_TRUE(base::Time::FromLocalExploded(ex, &dump_time));
 
   ASSERT_TRUE(info->valid());
-  ASSERT_EQ("name", info->params().process_name);
   ASSERT_EQ(dump_time, info->dump_time());
   ASSERT_EQ("dump_string", info->crashed_process_dump());
   ASSERT_EQ(123456789u, info->params().process_uptime);
@@ -97,7 +95,6 @@ TEST(DumpInfoTest, SomeRequiredFieldsEmptyIsValid) {
   EXPECT_TRUE(base::Time::FromLocalExploded(ex, &dump_time));
 
   ASSERT_TRUE(info->valid());
-  ASSERT_EQ("name", info->params().process_name);
   ASSERT_EQ(dump_time, info->dump_time());
   ASSERT_EQ("", info->crashed_process_dump());
   ASSERT_EQ(0u, info->params().process_uptime);
@@ -112,6 +109,7 @@ TEST(DumpInfoTest, AllOptionalFieldsIsValid) {
                      "\"dump\": \"dump_string\","
                      "\"uptime\": \"123456789\","
                      "\"logfile\": \"logfile.log\","
+                     "\"attachments\": [\"file1.txt\", \"file2.img\"],"
                      "\"suffix\": \"suffix\","
                      "\"prev_app_name\": \"previous_app\","
                      "\"cur_app_name\": \"current_app\","
@@ -131,12 +129,15 @@ TEST(DumpInfoTest, AllOptionalFieldsIsValid) {
   EXPECT_TRUE(base::Time::FromLocalExploded(ex, &dump_time));
 
   ASSERT_TRUE(info->valid());
-  ASSERT_EQ("name", info->params().process_name);
   ASSERT_EQ(dump_time, info->dump_time());
   ASSERT_EQ("dump_string", info->crashed_process_dump());
   ASSERT_EQ(123456789u, info->params().process_uptime);
   ASSERT_EQ("logfile.log", info->logfile());
 
+  auto attachments = info->attachments();
+  ASSERT_EQ(2u, attachments.size());
+  ASSERT_EQ("file1.txt", attachments[0]);
+  ASSERT_EQ("file2.img", attachments[1]);
   ASSERT_EQ("suffix", info->params().suffix);
   ASSERT_EQ("previous_app", info->params().previous_app_name);
   ASSERT_EQ("current_app", info->params().current_app_name);
@@ -166,7 +167,6 @@ TEST(DumpInfoTest, SomeOptionalFieldsIsValid) {
   EXPECT_TRUE(base::Time::FromLocalExploded(ex, &dump_time));
 
   ASSERT_TRUE(info->valid());
-  ASSERT_EQ("name", info->params().process_name);
   ASSERT_EQ(dump_time, info->dump_time());
   ASSERT_EQ("dump_string", info->crashed_process_dump());
   ASSERT_EQ(123456789u, info->params().process_uptime);

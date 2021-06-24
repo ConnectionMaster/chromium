@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -24,7 +26,7 @@
 #include "components/drive/drive_api_util.h"
 #include "components/drive/drive_uploader.h"
 #include "components/drive/service/fake_drive_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/leveldatabase/leveldb_chrome.h"
@@ -57,15 +59,15 @@ class SyncEngineInitializerTest : public testing::Test {
         new drive::FakeDriveService);
     fake_drive_service_ = fake_drive_service.get();
 
-    sync_context_.reset(new SyncEngineContext(
+    sync_context_ = std::make_unique<SyncEngineContext>(
         std::move(fake_drive_service),
         std::unique_ptr<drive::DriveUploaderInterface>(),
         nullptr /* task_logger */, base::ThreadTaskRunnerHandle::Get(),
-        base::ThreadTaskRunnerHandle::Get()));
+        base::ThreadTaskRunnerHandle::Get());
 
-    sync_task_manager_.reset(new SyncTaskManager(
+    sync_task_manager_ = std::make_unique<SyncTaskManager>(
         base::WeakPtr<SyncTaskManager::Client>(), 1 /* maximum_parallel_task */,
-        base::ThreadTaskRunnerHandle::Get()));
+        base::ThreadTaskRunnerHandle::Get());
     sync_task_manager_->Initialize(SYNC_STATUS_OK);
   }
 
@@ -88,8 +90,8 @@ class SyncEngineInitializerTest : public testing::Test {
     sync_task_manager_->ScheduleSyncTask(
         FROM_HERE, std::unique_ptr<SyncTask>(initializer),
         SyncTaskManager::PRIORITY_MED,
-        base::Bind(&SyncEngineInitializerTest::DidRunInitializer,
-                   base::Unretained(this), initializer, &status));
+        base::BindOnce(&SyncEngineInitializerTest::DidRunInitializer,
+                       base::Unretained(this), initializer, &status));
 
     base::RunLoop().RunUntilIdle();
     return status;
@@ -212,7 +214,7 @@ class SyncEngineInitializerTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle browser_threads_;
+  content::BrowserTaskEnvironment task_environment_;
   base::ScopedTempDir database_dir_;
   std::unique_ptr<leveldb::Env> in_memory_env_;
 

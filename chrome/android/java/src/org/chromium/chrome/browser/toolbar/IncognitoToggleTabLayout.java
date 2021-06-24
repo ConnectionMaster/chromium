@@ -6,15 +6,15 @@ package org.chromium.chrome.browser.toolbar;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
-import android.support.design.widget.TabLayout;
-import android.support.v7.content.res.AppCompatResources;
 import android.util.AttributeSet;
 import android.widget.ImageView;
 
+import androidx.appcompat.content.res.AppCompatResources;
+
+import com.google.android.material.tabs.TabLayout;
+
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeFeatureList;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
@@ -25,16 +25,16 @@ import org.chromium.ui.widget.ChromeImageView;
  * TabLayout shown in the Horizontal Tab Switcher.
  */
 public class IncognitoToggleTabLayout extends TabLayout implements TabCountObserver {
-    private TabLayout.Tab mStandardButton;
-    private TabLayout.Tab mIncognitoButton;
-    private ImageView mStandardButtonIcon;
-    private ImageView mIncognitoButtonIcon;
-    private TabSwitcherDrawable mTabSwitcherDrawable;
+    private final TabLayout.Tab mStandardButton;
+    private final TabLayout.Tab mIncognitoButton;
+    private final ImageView mStandardButtonIcon;
+    private final ImageView mIncognitoButtonIcon;
+    private final TabSwitcherDrawable mTabSwitcherDrawable;
 
-    private ColorStateList mTabIconDarkColor;
-    private ColorStateList mTabIconLightColor;
-    private ColorStateList mTabIconSelectedDarkColor;
-    private ColorStateList mTabIconSelectedLightColor;
+    private final ColorStateList mTabIconDarkColor;
+    private final ColorStateList mTabIconLightColor;
+    private final ColorStateList mTabIconSelectedDarkColor;
+    private final ColorStateList mIncognitoSelectedColor;
 
     private TabModelSelector mTabModelSelector;
     private TabCountProvider mTabCountProvider;
@@ -46,14 +46,14 @@ public class IncognitoToggleTabLayout extends TabLayout implements TabCountObser
     public IncognitoToggleTabLayout(Context context, AttributeSet attrs) {
         super(context, attrs);
 
-        mTabIconDarkColor =
-                AppCompatResources.getColorStateList(getContext(), R.color.standard_mode_tint);
-        mTabIconSelectedDarkColor =
-                AppCompatResources.getColorStateList(getContext(), R.color.light_active_color);
+        mTabIconDarkColor = AppCompatResources.getColorStateList(
+                getContext(), R.color.default_icon_color_tint_list);
+        mTabIconSelectedDarkColor = AppCompatResources.getColorStateList(
+                getContext(), R.color.default_control_color_active);
         mTabIconLightColor =
                 AppCompatResources.getColorStateList(getContext(), R.color.white_alpha_70);
-        mTabIconSelectedLightColor =
-                AppCompatResources.getColorStateList(getContext(), R.color.white_mode_tint);
+        mIncognitoSelectedColor = AppCompatResources.getColorStateList(
+                getContext(), R.color.default_control_color_active_dark);
 
         mStandardButtonIcon = new ChromeImageView(getContext());
         mTabSwitcherDrawable = TabSwitcherDrawable.createTabSwitcherDrawable(getContext(), false);
@@ -62,10 +62,8 @@ public class IncognitoToggleTabLayout extends TabLayout implements TabCountObser
                 getResources().getString(R.string.accessibility_tab_switcher_standard_stack));
         mIncognitoButtonIcon = new ChromeImageView(getContext());
         mIncognitoButtonIcon.setImageResource(R.drawable.incognito_small);
-        mIncognitoButtonIcon.setContentDescription(getResources().getString(
-                ChromeFeatureList.isEnabled(ChromeFeatureList.INCOGNITO_STRINGS)
-                        ? R.string.accessibility_tab_switcher_private_stack
-                        : R.string.accessibility_tab_switcher_incognito_stack));
+        mIncognitoButtonIcon.setContentDescription(
+                getResources().getString(R.string.accessibility_tab_switcher_incognito_stack));
 
         mStandardButton = newTab().setCustomView(mStandardButtonIcon);
         addTab(mStandardButton);
@@ -92,7 +90,7 @@ public class IncognitoToggleTabLayout extends TabLayout implements TabCountObser
     public void setTabModelSelector(TabModelSelector selector) {
         mTabModelSelector = selector;
         if (mTabModelSelector == null) return;
-        mTabModelSelectorObserver = new EmptyTabModelSelectorObserver() {
+        mTabModelSelectorObserver = new TabModelSelectorObserver() {
             @Override
             public void onTabModelSelected(TabModel newModel, TabModel oldModel) {
                 setStateBasedOnModel();
@@ -101,8 +99,10 @@ public class IncognitoToggleTabLayout extends TabLayout implements TabCountObser
         mTabModelSelector.addObserver(mTabModelSelectorObserver);
         setStateBasedOnModel();
 
-        assert mTabCountProvider != null;
-        mTabSwitcherDrawable.updateForTabCount(mTabCountProvider.getTabCount(false), false);
+        assert mTabModelSelector.isTabStateInitialized();
+        mTabSwitcherDrawable.updateForTabCount(
+                mTabModelSelector.getTabModelFilterProvider().getTabModelFilter(false).getCount(),
+                false);
     }
 
     public void setTabCountProvider(TabCountProvider tabCountProvider) {
@@ -127,18 +127,22 @@ public class IncognitoToggleTabLayout extends TabLayout implements TabCountObser
     private void setStateBasedOnModel() {
         if (mTabModelSelector == null) return;
         final boolean isIncognitoSelected = mTabModelSelector.isIncognitoSelected();
-        if (isIncognitoSelected) {
-            setSelectedTabIndicatorColor(mTabIconSelectedLightColor.getDefaultColor());
-            ApiCompatibilityUtils.setImageTintList(mStandardButtonIcon, mTabIconLightColor);
-            mTabSwitcherDrawable.setTint(mTabIconLightColor);
-            ApiCompatibilityUtils.setImageTintList(
-                    mIncognitoButtonIcon, mTabIconSelectedLightColor);
-        } else {
-            setSelectedTabIndicatorColor(mTabIconSelectedDarkColor.getDefaultColor());
-            ApiCompatibilityUtils.setImageTintList(mStandardButtonIcon, mTabIconSelectedDarkColor);
-            mTabSwitcherDrawable.setTint(mTabIconSelectedDarkColor);
-            ApiCompatibilityUtils.setImageTintList(mIncognitoButtonIcon, mTabIconDarkColor);
-        }
+
+        // Update the selected tab indicator
+        setSelectedTabIndicatorColor(isIncognitoSelected
+                        ? mIncognitoSelectedColor.getDefaultColor()
+                        : mTabIconSelectedDarkColor.getDefaultColor());
+
+        // Update the Tab Switcher (Standard button) tab
+        mTabSwitcherDrawable.setTint(
+                isIncognitoSelected ? mTabIconLightColor : mTabIconSelectedDarkColor);
+        ApiCompatibilityUtils.setImageTintList(mStandardButtonIcon,
+                isIncognitoSelected ? mTabIconLightColor : mTabIconSelectedDarkColor);
+
+        // Update the Incognito tab
+        ApiCompatibilityUtils.setImageTintList(mIncognitoButtonIcon,
+                isIncognitoSelected ? mIncognitoSelectedColor : mTabIconDarkColor);
+
         // Ensure the tab in tab layout is correctly selected when tab switcher is
         // first opened.
         if (isIncognitoSelected && !mIncognitoButton.isSelected()) {
@@ -158,9 +162,7 @@ public class IncognitoToggleTabLayout extends TabLayout implements TabCountObser
         mTabModelSelector.selectModel(incognitoSelected);
 
         final int stackAnnouncementId = incognitoSelected
-                ? (ChromeFeatureList.isEnabled(ChromeFeatureList.INCOGNITO_STRINGS)
-                                  ? R.string.accessibility_tab_switcher_private_stack_selected
-                                  : R.string.accessibility_tab_switcher_incognito_stack_selected)
+                ? R.string.accessibility_tab_switcher_incognito_stack_selected
                 : R.string.accessibility_tab_switcher_standard_stack_selected;
         announceForAccessibility(getResources().getString(stackAnnouncementId));
     }

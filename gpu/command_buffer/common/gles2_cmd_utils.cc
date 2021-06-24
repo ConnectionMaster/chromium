@@ -15,8 +15,10 @@
 
 #include <sstream>
 
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_math.h"
-#include "base/stl_util.h"
 
 namespace gpu {
 namespace gles2 {
@@ -289,6 +291,10 @@ int GLES2Util::GLGetNumValuesReturned(int id) const {
     case GL_ATOMIC_COUNTER_BUFFER_SIZE:
       return 1;
     case GL_ATOMIC_COUNTER_BUFFER_START:
+      return 1;
+    case GL_DISPATCH_INDIRECT_BUFFER_BINDING:
+      return 1;
+    case GL_DRAW_INDIRECT_BUFFER_BINDING:
       return 1;
     case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS:
       return 1;
@@ -929,77 +935,6 @@ uint32_t GLES2Util::GetGroupSizeForBufferType(uint32_t count, uint32_t type) {
   return type_size * count;
 }
 
-uint32_t GLES2Util::GetComponentCountForGLTransformType(uint32_t type) {
-  switch (type) {
-    case GL_TRANSLATE_X_CHROMIUM:
-    case GL_TRANSLATE_Y_CHROMIUM:
-      return 1;
-    case GL_TRANSLATE_2D_CHROMIUM:
-      return 2;
-    case GL_TRANSLATE_3D_CHROMIUM:
-      return 3;
-    case GL_AFFINE_2D_CHROMIUM:
-    case GL_TRANSPOSE_AFFINE_2D_CHROMIUM:
-      return 6;
-    case GL_AFFINE_3D_CHROMIUM:
-    case GL_TRANSPOSE_AFFINE_3D_CHROMIUM:
-      return 12;
-    default:
-      return 0;
-  }
-}
-
-uint32_t GLES2Util::GetCoefficientCountForGLPathFragmentInputGenMode(
-    uint32_t gen_mode) {
-  switch (gen_mode) {
-    case GL_EYE_LINEAR_CHROMIUM:
-      return 4;
-    case GL_OBJECT_LINEAR_CHROMIUM:
-      return 3;
-    case GL_CONSTANT_CHROMIUM:
-      return 1;
-    case GL_NONE:
-    default:
-      return 0;
-  }
-}
-
-uint32_t GLES2Util::GetGLTypeSizeForPathCoordType(uint32_t type) {
-  switch (type) {
-    case GL_BYTE:
-      return sizeof(GLbyte);  // NOLINT
-    case GL_UNSIGNED_BYTE:
-      return sizeof(GLubyte);  // NOLINT
-    case GL_SHORT:
-      return sizeof(GLshort);  // NOLINT
-    case GL_UNSIGNED_SHORT:
-      return sizeof(GLushort);  // NOLINT
-    case GL_FLOAT:
-      return sizeof(GLfloat);  // NOLINT
-    default:
-      return 0;
-  }
-}
-
-uint32_t GLES2Util::GetGLTypeSizeForGLPathNameType(uint32_t type) {
-  switch (type) {
-    case GL_BYTE:
-      return sizeof(GLbyte);  // NOLINT
-    case GL_UNSIGNED_BYTE:
-      return sizeof(GLubyte);  // NOLINT
-    case GL_SHORT:
-      return sizeof(GLshort);  // NOLINT
-    case GL_UNSIGNED_SHORT:
-      return sizeof(GLushort);  // NOLINT
-    case GL_INT:
-      return sizeof(GLint);  // NOLINT
-    case GL_UNSIGNED_INT:
-      return sizeof(GLuint);  // NOLINT
-    default:
-      return 0;
-  }
-}
-
 uint32_t GLES2Util::GLErrorToErrorBit(uint32_t error) {
   switch (error) {
     case GL_INVALID_ENUM:
@@ -1157,8 +1092,11 @@ uint32_t GLES2Util::GetGLReadPixelsImplementationType(uint32_t internal_format,
     case GL_R16UI:
     case GL_RG16UI:
     case GL_RGBA16UI:
-    case GL_RGB10_A2:
     case GL_RGB10_A2UI:
+    case GL_R16_EXT:
+    case GL_RG16_EXT:
+    case GL_RGB16_EXT:
+    case GL_RGBA16_EXT:
       return GL_UNSIGNED_SHORT;
     case GL_R32UI:
     case GL_RG32UI:
@@ -1171,6 +1109,10 @@ uint32_t GLES2Util::GetGLReadPixelsImplementationType(uint32_t internal_format,
     case GL_R16I:
     case GL_RG16I:
     case GL_RGBA16I:
+    case GL_R16_SNORM_EXT:
+    case GL_RG16_SNORM_EXT:
+    case GL_RGB16_SNORM_EXT:
+    case GL_RGBA16_SNORM_EXT:
       return GL_SHORT;
     case GL_R32I:
     case GL_RG32I:
@@ -1219,7 +1161,12 @@ uint32_t GLES2Util::GetChannelsForFormat(int format) {
     case GL_RGB16I:
     case GL_RGB32UI:
     case GL_RGB32I:
+    case GL_RGB16_EXT:
+    case GL_RGB16_SNORM_EXT:
       return kRGB;
+    case GL_RGB_YCRCB_420_CHROMIUM:
+    case GL_RGB_YCBCR_420V_CHROMIUM:
+    case GL_RGB_YCBCR_P010_CHROMIUM:
     case GL_BGRA_EXT:
     case GL_BGRA8_EXT:
     case GL_RGBA16F_EXT:
@@ -1239,6 +1186,8 @@ uint32_t GLES2Util::GetChannelsForFormat(int format) {
     case GL_RGBA16I:
     case GL_RGBA32UI:
     case GL_RGBA32I:
+    case GL_RGBA16_EXT:
+    case GL_RGBA16_SNORM_EXT:
       return kRGBA;
     case GL_DEPTH_COMPONENT32_OES:
     case GL_DEPTH_COMPONENT24_OES:
@@ -1263,6 +1212,8 @@ uint32_t GLES2Util::GetChannelsForFormat(int format) {
     case GL_R16I:
     case GL_R32UI:
     case GL_R32I:
+    case GL_R16_EXT:
+    case GL_R16_SNORM_EXT:
       return kRed;
     case GL_RG_EXT:
     case GL_RG8:
@@ -1275,6 +1226,8 @@ uint32_t GLES2Util::GetChannelsForFormat(int format) {
     case GL_RG16I:
     case GL_RG32UI:
     case GL_RG32I:
+    case GL_RG16_EXT:
+    case GL_RG16_SNORM_EXT:
       return kRed | kGreen;
     default:
       return 0x0000;
@@ -1286,6 +1239,8 @@ bool GLES2Util::IsSizedColorFormat(uint32_t internal_format) {
     case GL_ALPHA16F_EXT:
     case GL_ALPHA32F_EXT:
     case GL_RGB8:
+    case GL_RGB16_EXT:
+    case GL_RGB16_SNORM_EXT:
     case GL_RGB565:
     case GL_RGB16F:
     case GL_RGB32F:
@@ -1303,6 +1258,8 @@ bool GLES2Util::IsSizedColorFormat(uint32_t internal_format) {
     case GL_RGBA16F:
     case GL_RGBA32F:
     case GL_RGBA8_OES:
+    case GL_RGBA16_EXT:
+    case GL_RGBA16_SNORM_EXT:
     case GL_RGBA4:
     case GL_RGB5_A1:
     case GL_SRGB8_ALPHA8:
@@ -1317,6 +1274,8 @@ bool GLES2Util::IsSizedColorFormat(uint32_t internal_format) {
     case GL_RGBA32I:
     case GL_R8:
     case GL_R8_SNORM:
+    case GL_R16_EXT:
+    case GL_R16_SNORM_EXT:
     case GL_R16F:
     case GL_R32F:
     case GL_R8UI:
@@ -1327,6 +1286,8 @@ bool GLES2Util::IsSizedColorFormat(uint32_t internal_format) {
     case GL_R32I:
     case GL_RG8:
     case GL_RG8_SNORM:
+    case GL_RG16_EXT:
+    case GL_RG16_SNORM_EXT:
     case GL_RG16F:
     case GL_RG32F:
     case GL_RG8UI:
@@ -1430,6 +1391,8 @@ void GLES2Util::GetColorFormatComponentSizes(
     case GL_RGB16F:
     case GL_RGB16UI:
     case GL_RGB16I:
+    case GL_RGB16_EXT:
+    case GL_RGB16_SNORM_EXT:
       *r = 16;
       *g = 16;
       *b = 16;
@@ -1465,6 +1428,8 @@ void GLES2Util::GetColorFormatComponentSizes(
     case GL_RGBA16F_EXT:
     case GL_RGBA16UI:
     case GL_RGBA16I:
+    case GL_RGBA16_EXT:
+    case GL_RGBA16_SNORM_EXT:
       *r = 16;
       *g = 16;
       *b = 16;
@@ -1507,6 +1472,7 @@ void GLES2Util::GetColorFormatComponentSizes(
     case GL_R16UI:
     case GL_R16I:
     case GL_R16_EXT:
+    case GL_R16_SNORM_EXT:
       *r = 16;
       break;
     case GL_R32F:
@@ -1524,6 +1490,8 @@ void GLES2Util::GetColorFormatComponentSizes(
     case GL_RG16F:
     case GL_RG16UI:
     case GL_RG16I:
+    case GL_RG16_EXT:
+    case GL_RG16_SNORM_EXT:
       *r = 16;
       *g = 16;
       break;
@@ -1674,6 +1642,10 @@ uint32_t GLES2Util::MapBufferTargetToBindingEnum(uint32_t target) {
       return GL_COPY_READ_BUFFER_BINDING;
     case GL_COPY_WRITE_BUFFER:
       return GL_COPY_WRITE_BUFFER_BINDING;
+    case GL_DISPATCH_INDIRECT_BUFFER:
+      return GL_DISPATCH_INDIRECT_BUFFER_BINDING;
+    case GL_DRAW_INDIRECT_BUFFER:
+      return GL_DRAW_INDIRECT_BUFFER_BINDING;
     case GL_ELEMENT_ARRAY_BUFFER:
       return GL_ELEMENT_ARRAY_BUFFER_BINDING;
     case GL_PIXEL_PACK_BUFFER:
@@ -1784,6 +1756,8 @@ uint32_t GLES2Util::ConvertToSizedFormat(uint32_t format, uint32_t type) {
           return GL_RGB16F;
         case GL_FLOAT:
           return GL_RGB32F;
+        case GL_UNSIGNED_SHORT:
+          return GL_RGB16_EXT;
         default:
           NOTREACHED();
           break;
@@ -1801,6 +1775,8 @@ uint32_t GLES2Util::ConvertToSizedFormat(uint32_t format, uint32_t type) {
           return GL_RGBA16F;
         case GL_FLOAT:
           return GL_RGBA32F;
+        case GL_UNSIGNED_SHORT:
+          return GL_RGBA16_EXT;
         default:
           NOTREACHED();
           break;
@@ -1842,6 +1818,8 @@ uint32_t GLES2Util::ConvertToSizedFormat(uint32_t format, uint32_t type) {
           return GL_RG16F;
         case GL_FLOAT:
           return GL_RG32F;
+        case GL_UNSIGNED_SHORT:
+          return GL_RG16_EXT;
         default:
           NOTREACHED();
           break;

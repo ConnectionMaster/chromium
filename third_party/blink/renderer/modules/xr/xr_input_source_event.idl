@@ -5,10 +5,9 @@
 [
     SecureContext,
     Exposed=Window,
-    RuntimeEnabled=WebXR,
-    Constructor(DOMString type, XRInputSourceEventInit eventInitDict)
+    RuntimeEnabled=WebXR
 ] interface XRInputSourceEvent : Event {
-  readonly attribute XRFrame frame;
-  readonly attribute XRInputSource inputSource;
-  readonly attribute long? buttonIndex;
+  constructor(DOMString type, XRInputSourceEventInit eventInitDict);
+  [SameObject] readonly attribute XRFrame frame;
+  [SameObject] readonly attribute XRInputSource inputSource;
 };

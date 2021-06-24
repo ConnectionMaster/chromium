@@ -4,6 +4,19 @@
 
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 
-bool AutocompleteProviderClient::IsBrowserUpdateAvailable() const {
-  return false;
+history_clusters::HistoryClustersService*
+AutocompleteProviderClient::GetHistoryClustersService() {
+  return nullptr;
+}
+
+bool AutocompleteProviderClient::AllowDeletingBrowserHistory() const {
+  return true;
+}
+
+std::string AutocompleteProviderClient::ProfileUserName() const {
+  return "";
+}
+
+bool AutocompleteProviderClient::IsIncognitoModeAvailable() const {
+  return true;
 }

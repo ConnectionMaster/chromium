@@ -4,161 +4,30 @@
 
 #include "third_party/blink/renderer/core/script/module_script.h"
 
+#include "base/feature_list.h"
+#include "base/macros.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/renderer/bindings/core/v8/module_record.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/bindings/core/v8/worker_or_worklet_script_controller.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/script/module_record_resolver.h"
+#include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "v8/include/v8.h"
 
 namespace blink {
 
-// <specdef href="https://html.spec.whatwg.org/C/#creating-a-module-script">
-ModuleScript* ModuleScript::Create(
-    const ParkableString& original_source_text,
-    SingleCachedMetadataHandler* cache_handler,
-    ScriptSourceLocationType source_location_type,
-    Modulator* modulator,
-    const KURL& source_url,
-    const KURL& base_url,
-    const ScriptFetchOptions& options,
-    const TextPosition& start_position) {
-  // <spec step="1">If scripting is disabled for settings's responsible browsing
-  // context, then set source to the empty string.</spec>
-  ParkableString source_text;
-  if (!modulator->IsScriptingDisabled())
-    source_text = original_source_text;
-
-  // <spec step="2">Let script be a new module script that this algorithm will
-  // subsequently initialize.</spec>
-
-  // <spec step="3">Set script's settings object to settings.</spec>
-  //
-  // Note: "script's settings object" will be |modulator|.
-
-  // <spec step="7">Let result be ParseModule(source, settings's Realm,
-  // script).</spec>
-  ScriptState* script_state = modulator->GetScriptState();
-  ScriptState::Scope scope(script_state);
-  v8::Isolate* isolate = script_state->GetIsolate();
-  ExceptionState exception_state(isolate, ExceptionState::kExecutionContext,
-                                 "ModuleScript", "Create");
-
-  ModuleRecordProduceCacheData* produce_cache_data = nullptr;
-
-  ModuleRecord result = ModuleRecord::Compile(
-      isolate, source_text.ToString(), source_url, base_url, options,
-      start_position, exception_state, modulator->GetV8CacheOptions(),
-      cache_handler, source_location_type, &produce_cache_data);
-
-  // CreateInternal processes Steps 4 and 8-10.
-  //
-  // [nospec] We initialize the other ModuleScript members anyway by running
-  // Steps 8-13 before Step 6. In a case that compile failed, we will
-  // immediately turn the script into errored state. Thus the members will not
-  // be used for the speced algorithms, but may be used from inspector.
-  ModuleScript* script =
-      CreateInternal(source_text, modulator, result, source_url, base_url,
-                     options, start_position, produce_cache_data);
-
-  // <spec step="8">If result is a list of errors, then:</spec>
-  if (exception_state.HadException()) {
-    DCHECK(result.IsNull());
-
-    // <spec step="8.1">Set script's parse error to result[0].</spec>
-    v8::Local<v8::Value> error = exception_state.GetException();
-    exception_state.ClearException();
-    script->SetParseErrorAndClearRecord(ScriptValue(script_state, error));
-
-    // <spec step="8.2">Return script.</spec>
-    return script;
-  }
-
-  // <spec step="9">For each string requested of
-  // result.[[RequestedModules]]:</spec>
-  for (const auto& requested :
-       modulator->ModuleRequestsFromModuleRecord(result)) {
-    // <spec step="9.1">Let url be the result of resolving a module specifier
-    // given script's base URL and requested.</spec>
-    //
-    // <spec step="9.2">If url is failure, then:</spec>
-    String failure_reason;
-    if (script->ResolveModuleSpecifier(requested.specifier, &failure_reason)
-            .IsValid())
-      continue;
-
-    // <spec step="9.2.1">Let error be a new TypeError exception.</spec>
-    String error_message = "Failed to resolve module specifier \"" +
-                           requested.specifier + "\". " + failure_reason;
-    v8::Local<v8::Value> error =
-        V8ThrowException::CreateTypeError(isolate, error_message);
-
-    // <spec step="9.2.2">Set script's parse error to error.</spec>
-    script->SetParseErrorAndClearRecord(ScriptValue(script_state, error));
-
-    // <spec step="9.2.3">Return script.</spec>
-    return script;
-  }
-
-  // <spec step="11">Return script.</spec>
-  return script;
-}
-
-ModuleScript* ModuleScript::CreateForTest(Modulator* modulator,
-                                          ModuleRecord record,
-                                          const KURL& base_url,
-                                          const ScriptFetchOptions& options) {
-  ParkableString dummy_source_text(String("").ReleaseImpl());
-  KURL dummy_source_url;
-  return CreateInternal(dummy_source_text, modulator, record, dummy_source_url,
-                        base_url, options, TextPosition::MinimumPosition(),
-                        nullptr);
-}
-
-// <specdef href="https://html.spec.whatwg.org/C/#creating-a-module-script">
-ModuleScript* ModuleScript::CreateInternal(
-    const ParkableString& source_text,
-    Modulator* modulator,
-    ModuleRecord result,
-    const KURL& source_url,
-    const KURL& base_url,
-    const ScriptFetchOptions& options,
-    const TextPosition& start_position,
-    ModuleRecordProduceCacheData* produce_cache_data) {
-  // <spec step="6">Set script's parse error and error to rethrow to
-  // null.</spec>
-  //
-  // <spec step="10">Set script's record to result.</spec>
-  //
-  // <spec step="4">Set script's base URL to baseURL.</spec>
-  //
-  // <spec step="5">Set script's fetch options to options.</spec>
-  //
-  // [nospec] |source_text| is saved for CSP checks.
-  ModuleScript* module_script = MakeGarbageCollected<ModuleScript>(
-      modulator, result, source_url, base_url, options, source_text,
-      start_position, produce_cache_data);
-
-  // Step 7, a part of ParseModule(): Passing script as the last parameter
-  // here ensures result.[[HostDefined]] will be script.
-  modulator->GetModuleRecordResolver()->RegisterModuleScript(module_script);
-
-  return module_script;
-}
-
 ModuleScript::ModuleScript(Modulator* settings_object,
-                           ModuleRecord record,
+                           v8::Local<v8::Module> record,
                            const KURL& source_url,
                            const KURL& base_url,
-                           const ScriptFetchOptions& fetch_options,
-                           const ParkableString& source_text,
-                           const TextPosition& start_position,
-                           ModuleRecordProduceCacheData* produce_cache_data)
+                           const ScriptFetchOptions& fetch_options)
     : Script(fetch_options, base_url),
       settings_object_(settings_object),
-      source_text_(source_text),
-      start_position_(start_position),
-      source_url_(source_url),
-      produce_cache_data_(produce_cache_data) {
-  if (record.IsNull()) {
+      source_url_(source_url) {
+  if (record.IsEmpty()) {
     // We allow empty records for module infra tests which never touch records.
     // This should never happen outside unit tests.
     return;
@@ -167,16 +36,16 @@ ModuleScript::ModuleScript(Modulator* settings_object,
   DCHECK(settings_object);
   v8::Isolate* isolate = settings_object_->GetScriptState()->GetIsolate();
   v8::HandleScope scope(isolate);
-  record_.Set(isolate, record.NewLocal(isolate));
+  record_.Set(isolate, record);
 }
 
-ModuleRecord ModuleScript::Record() const {
-  if (record_.IsEmpty())
-    return ModuleRecord();
-
+v8::Local<v8::Module> ModuleScript::V8Module() const {
+  if (record_.IsEmpty()) {
+    return v8::Local<v8::Module>();
+  }
   v8::Isolate* isolate = settings_object_->GetScriptState()->GetIsolate();
-  v8::HandleScope scope(isolate);
-  return ModuleRecord(isolate, record_.NewLocal(isolate), source_url_);
+
+  return record_.NewLocal(isolate);
 }
 
 bool ModuleScript::HasEmptyRecord() const {
@@ -187,29 +56,29 @@ void ModuleScript::SetParseErrorAndClearRecord(ScriptValue error) {
   DCHECK(!error.IsEmpty());
 
   record_.Clear();
-  ScriptState::Scope scope(error.GetScriptState());
-  parse_error_.Set(error.GetIsolate(), error.V8Value());
+  parse_error_.Set(settings_object_->GetScriptState()->GetIsolate(),
+                   error.V8Value());
 }
 
 ScriptValue ModuleScript::CreateParseError() const {
   ScriptState* script_state = settings_object_->GetScriptState();
-  v8::Isolate* isolate = script_state->GetIsolate();
   ScriptState::Scope scope(script_state);
-  ScriptValue error(script_state, parse_error_.NewLocal(isolate));
+  ScriptValue error(script_state->GetIsolate(), parse_error_.Get(script_state));
   DCHECK(!error.IsEmpty());
   return error;
 }
 
 void ModuleScript::SetErrorToRethrow(ScriptValue error) {
-  ScriptState::Scope scope(error.GetScriptState());
-  error_to_rethrow_.Set(error.GetIsolate(), error.V8Value());
+  ScriptState* script_state = settings_object_->GetScriptState();
+  ScriptState::Scope scope(script_state);
+  error_to_rethrow_.Set(script_state->GetIsolate(), error.V8Value());
 }
 
 ScriptValue ModuleScript::CreateErrorToRethrow() const {
   ScriptState* script_state = settings_object_->GetScriptState();
-  v8::Isolate* isolate = script_state->GetIsolate();
   ScriptState::Scope scope(script_state);
-  ScriptValue error(script_state, error_to_rethrow_.NewLocal(isolate));
+  ScriptValue error(script_state->GetIsolate(),
+                    error_to_rethrow_.Get(script_state));
   DCHECK(!error.IsEmpty());
   return error;
 }
@@ -220,7 +89,7 @@ KURL ModuleScript::ResolveModuleSpecifier(const String& module_request,
   if (found != specifier_to_url_cache_.end())
     return found->value;
 
-  KURL url = settings_object_->ResolveModuleSpecifier(module_request, BaseURL(),
+  KURL url = SettingsObject()->ResolveModuleSpecifier(module_request, BaseURL(),
                                                       failure_reason);
   // Cache the result only on success, so that failure_reason is set for
   // subsequent calls too.
@@ -229,37 +98,57 @@ KURL ModuleScript::ResolveModuleSpecifier(const String& module_request,
   return url;
 }
 
-void ModuleScript::Trace(blink::Visitor* visitor) {
+void ModuleScript::Trace(Visitor* visitor) const {
   visitor->Trace(settings_object_);
   visitor->Trace(record_.UnsafeCast<v8::Value>());
   visitor->Trace(parse_error_);
   visitor->Trace(error_to_rethrow_);
-  visitor->Trace(produce_cache_data_);
   Script::Trace(visitor);
 }
 
-void ModuleScript::RunScript(LocalFrame* frame, const SecurityOrigin*) {
+void ModuleScript::RunScript(LocalDOMWindow*) {
+  // We need a HandleScope for the `ScriptEvaluationResult` returned from
+  // `RunScriptAndReturnValue`.
+  v8::HandleScope scope(SettingsObject()->GetScriptState()->GetIsolate());
   DVLOG(1) << *this << "::RunScript()";
-  settings_object_->ExecuteModule(this,
-                                  Modulator::CaptureEvalErrorFlag::kReport);
+  ignore_result(RunScriptAndReturnValue());
 }
 
-String ModuleScript::InlineSourceTextForCSP() const {
-  return source_text_.ToString();
+bool ModuleScript::RunScriptOnWorkerOrWorklet(
+    WorkerOrWorkletGlobalScope& global_scope) {
+  // We need a HandleScope for the `ScriptEvaluationResult` returned from
+  // `RunScriptAndReturnValue`.
+  v8::HandleScope scope(SettingsObject()->GetScriptState()->GetIsolate());
+  DCHECK(global_scope.IsContextThread());
+
+  // TODO(nhiroki): Catch an error when an evaluation error happens.
+  // (https://crbug.com/680046)
+  ScriptEvaluationResult result = RunScriptAndReturnValue();
+
+  // Service workers prohibit async module graphs (those with top-level await),
+  // so the promise result from executing a service worker module is always
+  // settled. To maintain compatibility with synchronous module graphs, rejected
+  // promises are considered synchronous failures in service workers.
+  //
+  // https://github.com/w3c/ServiceWorker/pull/1444
+  if (base::FeatureList::IsEnabled(features::kTopLevelAwait) &&
+      global_scope.IsServiceWorkerGlobalScope() &&
+      result.GetResultType() == ScriptEvaluationResult::ResultType::kSuccess) {
+    v8::Local<v8::Promise> promise = result.GetSuccessValue().As<v8::Promise>();
+    DCHECK_NE(promise->State(), v8::Promise::kPending);
+    return promise->State() == v8::Promise::kFulfilled;
+  }
+
+  return result.GetResultType() == ScriptEvaluationResult::ResultType::kSuccess;
 }
 
-void ModuleScript::ProduceCache() {
-  if (!produce_cache_data_)
-    return;
+ScriptEvaluationResult ModuleScript::RunScriptAndReturnValue(
+    V8ScriptRunner::RethrowErrorsOption rethrow_errors) {
+  return V8ScriptRunner::EvaluateModule(this, std::move(rethrow_errors));
+}
 
-  ScriptState* script_state = settings_object_->GetScriptState();
-  v8::Isolate* isolate = script_state->GetIsolate();
-  ScriptState::Scope scope(script_state);
-
-  V8CodeCache::ProduceCache(isolate, produce_cache_data_, source_text_.length(),
-                            source_url_, StartPosition());
-
-  produce_cache_data_ = nullptr;
+std::pair<size_t, size_t> ModuleScript::GetClassicScriptSizes() const {
+  return std::pair<size_t, size_t>(0, 0);
 }
 
 std::ostream& operator<<(std::ostream& stream,

@@ -5,21 +5,25 @@
 #ifndef PRINTING_PRINTING_CONTEXT_SYSTEM_DIALOG_WIN_H_
 #define PRINTING_PRINTING_CONTEXT_SYSTEM_DIALOG_WIN_H_
 
-#include <ocidl.h>
-#include <commdlg.h>
+#include <ocidl.h>  // NOLINT(build/include_order)
+
+#include <commdlg.h>  // Must come after ocidl.h.
 
 #include <string>
 
-#include "base/macros.h"
 #include "printing/printing_context_win.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace printing {
 
-class PRINTING_EXPORT PrintingContextSystemDialogWin
+class COMPONENT_EXPORT(PRINTING) PrintingContextSystemDialogWin
     : public PrintingContextWin {
  public:
   explicit PrintingContextSystemDialogWin(Delegate* delegate);
+  PrintingContextSystemDialogWin(const PrintingContextSystemDialogWin&) =
+      delete;
+  PrintingContextSystemDialogWin& operator=(
+      const PrintingContextSystemDialogWin&) = delete;
   ~PrintingContextSystemDialogWin() override;
 
   // PrintingContext implementation.
@@ -43,8 +47,6 @@ class PRINTING_EXPORT PrintingContextSystemDialogWin
 
   // Parses the result of a PRINTDLGEX result.
   Result ParseDialogResultEx(const PRINTDLGEX& dialog_options);
-
-  DISALLOW_COPY_AND_ASSIGN(PrintingContextSystemDialogWin);
 };
 
 }  // namespace printing

@@ -4,11 +4,11 @@
 
 #include "components/mirroring/service/rtp_stream.h"
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_task_environment.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/task_environment.h"
 #include "media/base/video_frame.h"
 #include "media/cast/cast_config.h"
 #include "media/cast/cast_environment.h"
@@ -31,25 +31,21 @@ namespace {
 
 class DummyClient final : public RtpStreamClient {
  public:
-  DummyClient() : weak_factory_(this) {}
+  DummyClient() {}
   ~DummyClient() override {}
 
   // RtpStreamClient implementation.
   void OnError(const std::string& message) override {}
   void RequestRefreshFrame() override {}
   void CreateVideoEncodeAccelerator(
-      const media::cast::ReceiveVideoEncodeAcceleratorCallback& callback)
-      override {}
-  void CreateVideoEncodeMemory(
-      size_t size,
-      const media::cast::ReceiveVideoEncodeMemoryCallback& callback) override {}
+      media::cast::ReceiveVideoEncodeAcceleratorCallback callback) override {}
 
   base::WeakPtr<RtpStreamClient> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }
 
  private:
-  base::WeakPtrFactory<DummyClient> weak_factory_;
+  base::WeakPtrFactory<DummyClient> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DummyClient);
 };
@@ -61,16 +57,16 @@ class RtpStreamTest : public ::testing::Test {
   RtpStreamTest()
       : cast_environment_(new media::cast::CastEnvironment(
             &testing_clock_,
-            scoped_task_environment_.GetMainThreadTaskRunner(),
-            scoped_task_environment_.GetMainThreadTaskRunner(),
-            scoped_task_environment_.GetMainThreadTaskRunner())) {
+            task_environment_.GetMainThreadTaskRunner(),
+            task_environment_.GetMainThreadTaskRunner(),
+            task_environment_.GetMainThreadTaskRunner())) {
     testing_clock_.Advance(base::TimeTicks::Now() - base::TimeTicks());
   }
 
-  ~RtpStreamTest() override { scoped_task_environment_.RunUntilIdle(); }
+  ~RtpStreamTest() override { task_environment_.RunUntilIdle(); }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::SimpleTestTickClock testing_clock_;
   const scoped_refptr<media::cast::CastEnvironment> cast_environment_;
   DummyClient client_;
@@ -87,12 +83,11 @@ TEST_F(RtpStreamTest, VideoStreaming) {
   scoped_refptr<media::VideoFrame> video_frame = media::VideoFrame::CreateFrame(
       media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size, base::TimeDelta());
   media::cast::PopulateVideoFrame(video_frame.get(), 1);
-  video_frame->metadata()->SetTimeTicks(
-      media::VideoFrameMetadata::REFERENCE_TIME, testing_clock_.NowTicks());
+  video_frame->metadata().reference_time = testing_clock_.NowTicks();
 
   auto video_sender = std::make_unique<media::cast::VideoSender>(
       cast_environment_, media::cast::GetDefaultVideoSenderConfig(),
-      base::DoNothing(), base::DoNothing(), base::DoNothing(), &transport_,
+      base::DoNothing(), base::DoNothing(), &transport_, base::DoNothing(),
       base::DoNothing());
   VideoRtpStream video_stream(std::move(video_sender), client_.GetWeakPtr());
   {
@@ -105,7 +100,7 @@ TEST_F(RtpStreamTest, VideoStreaming) {
     run_loop.Run();
   }
 
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 // Test the audio streaming pipeline.
@@ -131,7 +126,7 @@ TEST_F(RtpStreamTest, AudioStreaming) {
     run_loop.Run();
   }
 
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 }  // namespace mirroring

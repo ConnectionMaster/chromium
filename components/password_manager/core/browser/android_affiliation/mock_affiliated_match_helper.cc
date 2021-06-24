@@ -6,8 +6,8 @@
 
 #include <utility>
 
-#include "components/autofill/core/common/password_form.h"
-#include "components/password_manager/core/browser/android_affiliation/affiliation_service.h"
+#include "components/password_manager/core/browser/android_affiliation/android_affiliation_service.h"
+#include "components/password_manager/core/browser/password_form.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -16,17 +16,17 @@ namespace password_manager {
 MockAffiliatedMatchHelper::MockAffiliatedMatchHelper()
     : AffiliatedMatchHelper(nullptr, nullptr) {}
 
-MockAffiliatedMatchHelper::~MockAffiliatedMatchHelper() {}
+MockAffiliatedMatchHelper::~MockAffiliatedMatchHelper() = default;
 
 void MockAffiliatedMatchHelper::ExpectCallToGetAffiliatedAndroidRealms(
-    const PasswordStore::FormDigest& expected_observed_form,
+    const PasswordFormDigest& expected_observed_form,
     const std::vector<std::string>& results_to_return) {
   EXPECT_CALL(*this, OnGetAffiliatedAndroidRealmsCalled(expected_observed_form))
       .WillOnce(testing::Return(results_to_return));
 }
 
 void MockAffiliatedMatchHelper::ExpectCallToGetAffiliatedWebRealms(
-    const PasswordStore::FormDigest& expected_android_form,
+    const PasswordFormDigest& expected_android_form,
     const std::vector<std::string>& results_to_return) {
   EXPECT_CALL(*this, OnGetAffiliatedWebRealmsCalled(expected_android_form))
       .WillOnce(testing::Return(results_to_return));
@@ -40,8 +40,8 @@ void MockAffiliatedMatchHelper::
       .WillOnce(testing::Return(results_to_inject));
 }
 
-void MockAffiliatedMatchHelper::GetAffiliatedAndroidRealms(
-    const PasswordStore::FormDigest& observed_form,
+void MockAffiliatedMatchHelper::GetAffiliatedAndroidAndWebRealms(
+    const PasswordFormDigest& observed_form,
     AffiliatedRealmsCallback result_callback) {
   std::vector<std::string> affiliated_android_realms =
       OnGetAffiliatedAndroidRealmsCalled(observed_form);
@@ -49,7 +49,7 @@ void MockAffiliatedMatchHelper::GetAffiliatedAndroidRealms(
 }
 
 void MockAffiliatedMatchHelper::GetAffiliatedWebRealms(
-    const PasswordStore::FormDigest& android_form,
+    const PasswordFormDigest& android_form,
     AffiliatedRealmsCallback result_callback) {
   std::vector<std::string> affiliated_web_realms =
       OnGetAffiliatedWebRealmsCalled(android_form);
@@ -57,7 +57,8 @@ void MockAffiliatedMatchHelper::GetAffiliatedWebRealms(
 }
 
 void MockAffiliatedMatchHelper::InjectAffiliationAndBrandingInformation(
-    std::vector<std::unique_ptr<autofill::PasswordForm>> forms,
+    std::vector<std::unique_ptr<PasswordForm>> forms,
+    AndroidAffiliationService::StrategyOnCacheMiss strategy_on_cache_miss,
     PasswordFormsCallback result_callback) {
   const std::vector<AffiliationAndBrandingInformation>& information =
       OnInjectAffiliationAndBrandingInformationCalled();

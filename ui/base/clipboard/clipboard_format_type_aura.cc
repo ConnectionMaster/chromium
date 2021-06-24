@@ -8,15 +8,10 @@
 
 namespace ui {
 
-namespace {
-constexpr char kMimeTypeFilename[] = "chromium/filename";
-}
-
-// I would love for the ClipboardFormatType to really be a wrapper around an X11
-// ::Atom, but there are a few problems. Chromeos unit tests spawn a new X11
-// server for each test, so Atom numeric values don't persist across tests. We
-// could still maybe deal with that if we didn't have static accessor methods
-// everywhere.
+// TODO(huangdarwin): Investigate creating a new clipboard_format_type_x11 as a
+// wrapper around an X11 ::Atom. This wasn't possible in the past, because unit
+// tests spawned a new X11 server for each test, meaning Atom numeric values
+// didn't persist across tests.
 ClipboardFormatType::ClipboardFormatType() = default;
 
 ClipboardFormatType::~ClipboardFormatType() = default;
@@ -34,11 +29,15 @@ ClipboardFormatType ClipboardFormatType::Deserialize(
   return ClipboardFormatType(serialization);
 }
 
+std::string ClipboardFormatType::GetName() const {
+  return Serialize();
+}
+
 bool ClipboardFormatType::operator<(const ClipboardFormatType& other) const {
   return data_ < other.data_;
 }
 
-bool ClipboardFormatType::Equals(const ClipboardFormatType& other) const {
+bool ClipboardFormatType::operator==(const ClipboardFormatType& other) const {
   return data_ == other.data_;
 }
 
@@ -51,18 +50,13 @@ ClipboardFormatType ClipboardFormatType::GetType(
 }
 
 // static
-const ClipboardFormatType& ClipboardFormatType::GetUrlType() {
+const ClipboardFormatType& ClipboardFormatType::GetFilenamesType() {
   static base::NoDestructor<ClipboardFormatType> type(kMimeTypeURIList);
   return *type;
 }
 
 // static
-const ClipboardFormatType& ClipboardFormatType::GetUrlWType() {
-  return ClipboardFormatType::GetUrlType();
-}
-
-// static
-const ClipboardFormatType& ClipboardFormatType::GetMozUrlType() {
+const ClipboardFormatType& ClipboardFormatType::GetUrlType() {
   static base::NoDestructor<ClipboardFormatType> type(kMimeTypeMozillaURL);
   return *type;
 }
@@ -74,24 +68,14 @@ const ClipboardFormatType& ClipboardFormatType::GetPlainTextType() {
 }
 
 // static
-const ClipboardFormatType& ClipboardFormatType::GetPlainTextWType() {
-  return ClipboardFormatType::GetPlainTextType();
-}
-
-// static
-const ClipboardFormatType& ClipboardFormatType::GetFilenameType() {
-  static base::NoDestructor<ClipboardFormatType> type(kMimeTypeFilename);
+const ClipboardFormatType& ClipboardFormatType::GetHtmlType() {
+  static base::NoDestructor<ClipboardFormatType> type(kMimeTypeHTML);
   return *type;
 }
 
 // static
-const ClipboardFormatType& ClipboardFormatType::GetFilenameWType() {
-  return ClipboardFormatType::GetFilenameType();
-}
-
-// static
-const ClipboardFormatType& ClipboardFormatType::GetHtmlType() {
-  static base::NoDestructor<ClipboardFormatType> type(kMimeTypeHTML);
+const ClipboardFormatType& ClipboardFormatType::GetSvgType() {
+  static base::NoDestructor<ClipboardFormatType> type(kMimeTypeSvg);
   return *type;
 }
 
@@ -102,9 +86,14 @@ const ClipboardFormatType& ClipboardFormatType::GetRtfType() {
 }
 
 // static
-const ClipboardFormatType& ClipboardFormatType::GetBitmapType() {
+const ClipboardFormatType& ClipboardFormatType::GetPngType() {
   static base::NoDestructor<ClipboardFormatType> type(kMimeTypePNG);
   return *type;
+}
+
+// static
+const ClipboardFormatType& ClipboardFormatType::GetBitmapType() {
+  return ClipboardFormatType::GetPngType();
 }
 
 // static
@@ -117,13 +106,6 @@ const ClipboardFormatType& ClipboardFormatType::GetWebKitSmartPasteType() {
 // static
 const ClipboardFormatType& ClipboardFormatType::GetWebCustomDataType() {
   static base::NoDestructor<ClipboardFormatType> type(kMimeTypeWebCustomData);
-  return *type;
-}
-
-// static
-const ClipboardFormatType& ClipboardFormatType::GetPepperCustomDataType() {
-  static base::NoDestructor<ClipboardFormatType> type(
-      kMimeTypePepperCustomData);
   return *type;
 }
 

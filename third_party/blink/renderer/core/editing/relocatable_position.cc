@@ -3,25 +3,46 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/editing/relocatable_position.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
 RelocatablePosition::RelocatablePosition(const Position& position)
     : range_(position.IsNotNull()
-                 ? Range::Create(*position.GetDocument(), position, position)
-                 : nullptr) {}
+                 ? MakeGarbageCollected<Range>(*position.GetDocument(),
+                                               position,
+                                               position)
+                 : nullptr),
+      original_position_(position) {}
 
-RelocatablePosition::~RelocatablePosition() {
-  if (!range_)
-    return;
-  range_->Dispose();
+void RelocatablePosition::SetPosition(const Position& position) {
+  DCHECK(position.IsNotNull());
+  DCHECK(range_);
+  DCHECK_EQ(position.GetDocument(), range_->StartPosition().GetDocument());
+  range_->setStart(position);
+  range_->setEnd(position);
+  original_position_ = position;
 }
 
 Position RelocatablePosition::GetPosition() const {
   if (!range_)
     return Position();
   DCHECK(range_->collapsed());
-  return range_->StartPosition();
+  const Position& position = range_->StartPosition();
+  DCHECK(position.IsNotNull());
+  DCHECK(position.IsOffsetInAnchor());
+
+  // The Range converted the position into one of type kOffsetInAnchor.
+  // Return the original one if it's equivalent to the relocated one.
+  if (original_position_.IsConnected() &&
+      original_position_.IsEquivalent(position))
+    return original_position_;
+  return position;
+}
+
+void RelocatablePosition::Trace(Visitor* visitor) const {
+  visitor->Trace(range_);
+  visitor->Trace(original_position_);
 }
 
 }  // namespace blink

@@ -21,14 +21,11 @@
 #include "net/http/http_stream_factory.h"
 #include "net/http/http_stream_request.h"
 #include "net/log/net_log_with_source.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_header_block.h"
 
 namespace base {
 class OneShotTimer;
 }  // namespace base
-
-namespace spdy {
-class SpdyHeaderBlock;
-}  // namespace spdy
 
 namespace net {
 
@@ -70,7 +67,7 @@ class NET_EXPORT BidirectionalStream : public BidirectionalStreamImpl::Delegate,
     // call BidirectionalStream::SendData to send data,
     // or call BidirectionalStream::Cancel to cancel the stream.
     virtual void OnHeadersReceived(
-        const spdy::SpdyHeaderBlock& response_headers) = 0;
+        const spdy::Http2HeaderBlock& response_headers) = 0;
 
     // Called when a pending read is completed asynchronously.
     // |bytes_read| specifies how much data is read.
@@ -90,7 +87,7 @@ class NET_EXPORT BidirectionalStream : public BidirectionalStreamImpl::Delegate,
     // are received, which can happen before a read completes.
     // The delegate is able to continue reading if there is no pending read and
     // EOF has not been received, or to send data if there is no pending send.
-    virtual void OnTrailersReceived(const spdy::SpdyHeaderBlock& trailers) = 0;
+    virtual void OnTrailersReceived(const spdy::Http2HeaderBlock& trailers) = 0;
 
     // Called when an error occurred. Do not call into the stream after this
     // point. No other delegate functions will be called after this.
@@ -188,10 +185,10 @@ class NET_EXPORT BidirectionalStream : public BidirectionalStreamImpl::Delegate,
   // BidirectionalStreamImpl::Delegate implementation:
   void OnStreamReady(bool request_headers_sent) override;
   void OnHeadersReceived(
-      const spdy::SpdyHeaderBlock& response_headers) override;
+      const spdy::Http2HeaderBlock& response_headers) override;
   void OnDataRead(int bytes_read) override;
   void OnDataSent() override;
-  void OnTrailersReceived(const spdy::SpdyHeaderBlock& trailers) override;
+  void OnTrailersReceived(const spdy::Http2HeaderBlock& trailers) override;
   void OnFailed(int error) override;
 
   // HttpStreamRequest::Delegate implementation:
@@ -209,7 +206,8 @@ class NET_EXPORT BidirectionalStream : public BidirectionalStreamImpl::Delegate,
   void OnStreamFailed(int status,
                       const NetErrorDetails& net_error_details,
                       const SSLConfig& used_ssl_config,
-                      const ProxyInfo& used_proxy_info) override;
+                      const ProxyInfo& used_proxy_info,
+                      ResolveErrorInfo resolve_error_info) override;
   void OnCertificateError(int status,
                           const SSLConfig& used_ssl_config,
                           const SSLInfo& ssl_info) override;
@@ -219,17 +217,10 @@ class NET_EXPORT BidirectionalStream : public BidirectionalStreamImpl::Delegate,
                         HttpAuthController* auth_controller) override;
   void OnNeedsClientAuth(const SSLConfig& used_ssl_config,
                          SSLCertRequestInfo* cert_info) override;
-  void OnHttpsProxyTunnelResponseRedirect(
-      const HttpResponseInfo& response_info,
-      const SSLConfig& used_ssl_config,
-      const ProxyInfo& used_proxy_info,
-      std::unique_ptr<HttpStream> stream) override;
   void OnQuicBroken() override;
 
   // Helper method to notify delegate if there is an error.
   void NotifyFailed(int error);
-
-  void UpdateHistograms();
 
   // BidirectionalStreamRequestInfo used when requesting the stream.
   std::unique_ptr<BidirectionalStreamRequestInfo> request_info_;
@@ -268,7 +259,7 @@ class NET_EXPORT BidirectionalStream : public BidirectionalStreamImpl::Delegate,
   // are received. Other fields are populated at different stages of the request
   LoadTimingInfo load_timing_info_;
 
-  base::WeakPtrFactory<BidirectionalStream> weak_factory_;
+  base::WeakPtrFactory<BidirectionalStream> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BidirectionalStream);
 };

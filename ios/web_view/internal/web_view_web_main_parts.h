@@ -5,10 +5,10 @@
 #ifndef IOS_WEB_VIEW_INTERNAL_WEB_VIEW_WEB_MAIN_PARTS_H_
 #define IOS_WEB_VIEW_INTERNAL_WEB_VIEW_WEB_MAIN_PARTS_H_
 
-#include <memory>
 
 #include "base/macros.h"
-#include "ios/web/public/app/web_main_parts.h"
+#include "base/metrics/field_trial.h"
+#include "ios/web/public/init/web_main_parts.h"
 
 namespace ios_web_view {
 
@@ -20,7 +20,7 @@ class WebViewWebMainParts : public web::WebMainParts {
 
  private:
   // web::WebMainParts implementation.
-  void PreMainMessageLoopStart() override;
+  void PreCreateMainMessageLoop() override;
   void PreCreateThreads() override;
   void PreMainMessageLoopRun() override;
   void PostMainMessageLoopRun() override;
@@ -30,6 +30,10 @@ class WebViewWebMainParts : public web::WebMainParts {
   void LoadNonScalableResources();
   // Loads resources that can be scaled. f.e. png images for @1x, @2x, and @3x.
   void LoadScalableResources();
+
+  // Dummy FieldTrialList instance for code that consumes variations data,
+  // although ios WebView does not support variations.
+  base::FieldTrialList field_trial_list_;
 
   DISALLOW_COPY_AND_ASSIGN(WebViewWebMainParts);
 };

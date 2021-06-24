@@ -38,6 +38,9 @@ NamedLineCollection::NamedLineCollection(
   const NamedGridLinesMap& auto_repeat_grid_line_names =
       is_row_axis ? grid_container_style.AutoRepeatNamedGridColumnLines()
                   : grid_container_style.AutoRepeatNamedGridRowLines();
+  const NamedGridLinesMap& implicit_grid_line_names =
+      is_row_axis ? grid_container_style.ImplicitNamedGridColumnLines()
+                  : grid_container_style.ImplicitNamedGridRowLines();
 
   if (!grid_line_names.IsEmpty()) {
     auto it = grid_line_names.find(named_line);
@@ -50,6 +53,12 @@ NamedLineCollection::NamedLineCollection(
         it == auto_repeat_grid_line_names.end() ? nullptr : &it->value;
   }
 
+  if (!implicit_grid_line_names.IsEmpty()) {
+    auto it = implicit_grid_line_names.find(named_line);
+    implicit_named_lines_indexes_ =
+        it == implicit_grid_line_names.end() ? nullptr : &it->value;
+  }
+
   insertion_point_ =
       is_row_axis ? grid_container_style.GridAutoRepeatColumnsInsertionPoint()
                   : grid_container_style.GridAutoRepeatRowsInsertionPoint();
@@ -59,48 +68,73 @@ NamedLineCollection::NamedLineCollection(
                   : grid_container_style.GridAutoRepeatRows().size();
 }
 
-bool NamedLineCollection::HasNamedLines() {
+bool NamedLineCollection::HasExplicitNamedLines() {
   return named_lines_indexes_ || auto_repeat_named_lines_indexes_;
 }
 
-size_t NamedLineCollection::Find(size_t line) {
-  if (line > last_line_)
-    return kNotFound;
-
-  if (!auto_repeat_named_lines_indexes_ || line < insertion_point_)
-    return named_lines_indexes_ ? named_lines_indexes_->Find(line) : kNotFound;
-
-  if (line <= (insertion_point_ + auto_repeat_total_tracks_)) {
-    size_t local_index = line - insertion_point_;
-
-    size_t index_in_first_repetition =
-        local_index % auto_repeat_track_list_length_;
-    if (index_in_first_repetition)
-      return auto_repeat_named_lines_indexes_->Find(index_in_first_repetition);
-
-    // The line names defined in the last line are also present in the first
-    // line of the next repetition (if any). Same for the line names defined in
-    // the first line.
-    if (local_index == auto_repeat_total_tracks_)
-      return auto_repeat_named_lines_indexes_->Find(
-          auto_repeat_track_list_length_);
-    size_t position =
-        auto_repeat_named_lines_indexes_->Find(static_cast<size_t>(0));
-    if (position != kNotFound)
-      return position;
-    return local_index == 0 ? kNotFound
-                            : auto_repeat_named_lines_indexes_->Find(
-                                  auto_repeat_track_list_length_);
-  }
-
-  return named_lines_indexes_ ? named_lines_indexes_->Find(
-                                    line - (auto_repeat_total_tracks_ - 1))
-                              : kNotFound;
+bool NamedLineCollection::HasNamedLines() {
+  return HasExplicitNamedLines() || implicit_named_lines_indexes_;
 }
 
 bool NamedLineCollection::Contains(size_t line) {
   CHECK(HasNamedLines());
-  return Find(line) != kNotFound;
+
+  if (line > last_line_)
+    return false;
+
+  auto find = [](const Vector<size_t>* indexes, size_t line) {
+    return indexes && indexes->Find(line) != kNotFound;
+  };
+
+  if (find(implicit_named_lines_indexes_, line))
+    return true;
+
+  if (auto_repeat_track_list_length_ == 0LU || line < insertion_point_)
+    return find(named_lines_indexes_, line);
+
+  DCHECK(auto_repeat_total_tracks_);
+
+  if (line > insertion_point_ + auto_repeat_total_tracks_)
+    return find(named_lines_indexes_, line - (auto_repeat_total_tracks_ - 1));
+
+  if (line == insertion_point_) {
+    return find(named_lines_indexes_, line) ||
+           find(auto_repeat_named_lines_indexes_, 0);
+  }
+
+  if (line == insertion_point_ + auto_repeat_total_tracks_) {
+    return find(auto_repeat_named_lines_indexes_,
+                auto_repeat_track_list_length_) ||
+           find(named_lines_indexes_, insertion_point_ + 1);
+  }
+
+  size_t auto_repeat_index_in_first_repetition =
+      (line - insertion_point_) % auto_repeat_track_list_length_;
+  if (!auto_repeat_index_in_first_repetition &&
+      find(auto_repeat_named_lines_indexes_, auto_repeat_track_list_length_))
+    return true;
+  return find(auto_repeat_named_lines_indexes_,
+              auto_repeat_index_in_first_repetition);
+}
+
+size_t NamedLineCollection::FirstExplicitPosition() {
+  DCHECK(HasExplicitNamedLines());
+
+  size_t first_line = 0;
+
+  // If there is no auto repeat(), there must be some named line outside, return
+  // the 1st one. Also return it if it precedes the auto-repeat().
+  if (auto_repeat_track_list_length_ == 0 ||
+      (named_lines_indexes_ &&
+       named_lines_indexes_->at(first_line) <= insertion_point_))
+    return named_lines_indexes_->at(first_line);
+
+  // Return the 1st named line inside the auto repeat(), if any.
+  if (auto_repeat_named_lines_indexes_)
+    return auto_repeat_named_lines_indexes_->at(first_line) + insertion_point_;
+
+  // The 1st named line must be after the auto repeat().
+  return named_lines_indexes_->at(first_line) + auto_repeat_total_tracks_ - 1;
 }
 
 size_t NamedLineCollection::FirstPosition() {
@@ -108,25 +142,14 @@ size_t NamedLineCollection::FirstPosition() {
 
   size_t first_line = 0;
 
-  if (!auto_repeat_named_lines_indexes_) {
-    if (insertion_point_ == 0 ||
-        insertion_point_ < named_lines_indexes_->at(first_line))
-      return named_lines_indexes_->at(first_line) +
-             (auto_repeat_total_tracks_ ? auto_repeat_total_tracks_ - 1 : 0);
-    return named_lines_indexes_->at(first_line);
-  }
+  if (!implicit_named_lines_indexes_)
+    return FirstExplicitPosition();
 
-  if (!named_lines_indexes_)
-    return auto_repeat_named_lines_indexes_->at(first_line) + insertion_point_;
+  if (!HasExplicitNamedLines())
+    return implicit_named_lines_indexes_->at(first_line);
 
-  if (insertion_point_ == 0)
-    return std::min(
-        named_lines_indexes_->at(first_line) + auto_repeat_total_tracks_,
-        auto_repeat_named_lines_indexes_->at(first_line));
-
-  return std::min(
-      named_lines_indexes_->at(first_line),
-      auto_repeat_named_lines_indexes_->at(first_line) + insertion_point_);
+  return std::min(FirstExplicitPosition(),
+                  implicit_named_lines_indexes_->at(first_line));
 }
 
 GridPositionSide GridPositionsResolver::InitialPositionSide(
@@ -140,16 +163,15 @@ GridPositionSide GridPositionsResolver::FinalPositionSide(
 }
 
 static void InitialAndFinalPositionsFromStyle(
-    const LayoutBox& grid_item,
+    const ComputedStyle& grid_item_style,
     GridTrackSizingDirection direction,
     GridPosition& initial_position,
     GridPosition& final_position) {
   initial_position = (direction == kForColumns)
-                         ? grid_item.Style()->GridColumnStart()
-                         : grid_item.Style()->GridRowStart();
-  final_position = (direction == kForColumns)
-                       ? grid_item.Style()->GridColumnEnd()
-                       : grid_item.Style()->GridRowEnd();
+                         ? grid_item_style.GridColumnStart()
+                         : grid_item_style.GridRowStart();
+  final_position = (direction == kForColumns) ? grid_item_style.GridColumnEnd()
+                                              : grid_item_style.GridRowEnd();
 
   // We must handle the placement error handling code here instead of in the
   // StyleAdjuster because we don't want to overwrite the specified values.
@@ -239,9 +261,10 @@ size_t GridPositionsResolver::ExplicitGridColumnCount(
     const ComputedStyle& grid_container_style,
     size_t auto_repeat_tracks_count) {
   return std::min<size_t>(
-      std::max(grid_container_style.GridTemplateColumns().size() +
-                   auto_repeat_tracks_count,
-               grid_container_style.NamedGridAreaColumnCount()),
+      std::max(
+          grid_container_style.GridTemplateColumns().LegacyTrackList().size() +
+              auto_repeat_tracks_count,
+          grid_container_style.NamedGridAreaColumnCount()),
       kGridMaxTracks);
 }
 
@@ -249,9 +272,10 @@ size_t GridPositionsResolver::ExplicitGridRowCount(
     const ComputedStyle& grid_container_style,
     size_t auto_repeat_tracks_count) {
   return std::min<size_t>(
-      std::max(grid_container_style.GridTemplateRows().size() +
-                   auto_repeat_tracks_count,
-               grid_container_style.NamedGridAreaRowCount()),
+      std::max(
+          grid_container_style.GridTemplateRows().LegacyTrackList().size() +
+              auto_repeat_tracks_count,
+          grid_container_style.NamedGridAreaRowCount()),
       kGridMaxTracks);
 }
 
@@ -328,11 +352,11 @@ static GridSpan ResolveGridPositionAgainstOppositePosition(
 }
 
 size_t GridPositionsResolver::SpanSizeForAutoPlacedItem(
-    const LayoutBox& grid_item,
+    const ComputedStyle& grid_item_style,
     GridTrackSizingDirection direction) {
   GridPosition initial_position, final_position;
-  InitialAndFinalPositionsFromStyle(grid_item, direction, initial_position,
-                                    final_position);
+  InitialAndFinalPositionsFromStyle(grid_item_style, direction,
+                                    initial_position, final_position);
 
   // This method will only be used when both positions need to be resolved
   // against the opposite one.
@@ -435,12 +459,12 @@ static int ResolveGridPositionFromStyle(
 
 GridSpan GridPositionsResolver::ResolveGridPositionsFromStyle(
     const ComputedStyle& grid_container_style,
-    const LayoutBox& grid_item,
+    const ComputedStyle& grid_item_style,
     GridTrackSizingDirection direction,
     size_t auto_repeat_tracks_count) {
   GridPosition initial_position, final_position;
-  InitialAndFinalPositionsFromStyle(grid_item, direction, initial_position,
-                                    final_position);
+  InitialAndFinalPositionsFromStyle(grid_item_style, direction,
+                                    initial_position, final_position);
 
   GridPositionSide initial_side = InitialPositionSide(direction);
   GridPositionSide final_side = FinalPositionSide(direction);

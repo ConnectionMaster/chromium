@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "components/download/public/common/download_url_parameters.h"
@@ -15,6 +16,7 @@
 #include "content/public/browser/download_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -39,6 +41,7 @@ class MockDownloadManager : public DownloadManager {
     GURL site_url;
     GURL tab_url;
     GURL tab_referrer_url;
+    absl::optional<url::Origin> request_initiator;
     std::string mime_type;
     std::string original_mime_type;
     base::Time start_time;
@@ -66,6 +69,7 @@ class MockDownloadManager : public DownloadManager {
         const GURL& site_url,
         const GURL& tab_url,
         const GURL& tab_refererr_url,
+        const absl::optional<url::Origin>& request_initiator,
         const std::string& mime_type,
         const std::string& original_mime_type,
         base::Time start_time,
@@ -95,33 +99,20 @@ class MockDownloadManager : public DownloadManager {
 
   // DownloadManager:
   MOCK_METHOD1(SetDelegate, void(DownloadManagerDelegate* delegate));
-  MOCK_CONST_METHOD0(GetDelegate, DownloadManagerDelegate*());
+  MOCK_METHOD0(GetDelegate, DownloadManagerDelegate*());
   MOCK_METHOD0(Shutdown, void());
   MOCK_METHOD1(GetAllDownloads, void(DownloadVector* downloads));
   MOCK_METHOD1(Init, bool(BrowserContext* browser_context));
-
-  // Gasket for handling scoped_ptr arguments.
-  void StartDownload(std::unique_ptr<download::DownloadCreateInfo> info,
-                     std::unique_ptr<download::InputStream> stream,
-                     scoped_refptr<download::DownloadURLLoaderFactoryGetter>
-                         url_loader_factory_getter,
-                     const download::DownloadUrlParameters::OnStartedCallback&
-                         callback) override;
-
-  MOCK_METHOD2(MockStartDownload,
-               void(download::DownloadCreateInfo*, download::InputStream*));
   MOCK_METHOD3(RemoveDownloadsByURLAndTime,
-               int(const base::Callback<bool(const GURL&)>& url_filter,
+               int(const base::RepeatingCallback<bool(const GURL&)>& url_filter,
                    base::Time remove_begin,
                    base::Time remove_end));
   MOCK_METHOD1(DownloadUrlMock, void(download::DownloadUrlParameters*));
-  bool DownloadUrl(
+  void DownloadUrl(
       std::unique_ptr<download::DownloadUrlParameters> params) override {
-    DownloadUrl(std::move(params), nullptr, nullptr);
-    return true;
+    DownloadUrl(std::move(params), nullptr);
   }
   void DownloadUrl(std::unique_ptr<download::DownloadUrlParameters> params,
-                   std::unique_ptr<storage::BlobDataHandle> blob_data_handle,
                    scoped_refptr<network::SharedURLLoaderFactory>
                        blob_url_loader_factory) override {
     DownloadUrlMock(params.get());
@@ -140,6 +131,7 @@ class MockDownloadManager : public DownloadManager {
       const GURL& site_url,
       const GURL& tab_url,
       const GURL& tab_refererr_url,
+      const absl::optional<url::Origin>& request_initiator,
       const std::string& mime_type,
       const std::string& original_mime_type,
       base::Time start_time,
@@ -162,14 +154,15 @@ class MockDownloadManager : public DownloadManager {
                download::DownloadItem*(CreateDownloadItemAdapter adapter));
   MOCK_METHOD1(PostInitialization,
                void(DownloadInitializationDependency dependency));
-  MOCK_CONST_METHOD0(IsManagerInitialized, bool());
-  MOCK_CONST_METHOD0(InProgressCount, int());
-  MOCK_CONST_METHOD0(NonMaliciousInProgressCount, int());
-  MOCK_CONST_METHOD0(GetBrowserContext, BrowserContext*());
+  MOCK_METHOD0(IsManagerInitialized, bool());
+  MOCK_METHOD0(InProgressCount, int());
+  MOCK_METHOD0(NonMaliciousInProgressCount, int());
+  MOCK_METHOD0(GetBrowserContext, BrowserContext*());
   MOCK_METHOD0(CheckForHistoryFilesRemoval, void());
   MOCK_METHOD1(GetDownload, download::DownloadItem*(uint32_t id));
   MOCK_METHOD1(GetDownloadByGuid, download::DownloadItem*(const std::string&));
   MOCK_METHOD1(GetNextId, void(base::OnceCallback<void(uint32_t)>));
+  MOCK_METHOD1(CanDownload, bool(download::DownloadUrlParameters*));
 
   void OnHistoryQueryComplete(
       base::OnceClosure load_history_downloads_cb) override;

@@ -12,12 +12,13 @@
 #include "android_webview/browser/find_helper.h"
 #include "android_webview/browser/permission/media_access_permission_request.h"
 #include "android_webview/browser/permission/permission_request_handler.h"
+#include "android_webview/browser_jni_headers/AwWebContentsDelegate_jni.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -29,9 +30,9 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
-#include "jni/AwWebContentsDelegate_jni.h"
-#include "net/base/escape.h"
+#include "net/base/filename_util.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
@@ -52,14 +53,12 @@ namespace {
 const int kFileChooserModeOpenMultiple = 1 << 0;
 const int kFileChooserModeOpenFolder = 1 << 1;
 
-base::LazyInstance<AwJavaScriptDialogManager>::Leaky
-    g_javascript_dialog_manager = LAZY_INSTANCE_INITIALIZER;
 }
 
 AwWebContentsDelegate::AwWebContentsDelegate(JNIEnv* env, jobject obj)
     : WebContentsDelegateAndroid(env, obj), is_fullscreen_(false) {}
 
-AwWebContentsDelegate::~AwWebContentsDelegate() {}
+AwWebContentsDelegate::~AwWebContentsDelegate() = default;
 
 void AwWebContentsDelegate::RendererUnresponsive(
     content::WebContents* source,
@@ -93,7 +92,9 @@ void AwWebContentsDelegate::RendererResponsive(
 
 content::JavaScriptDialogManager*
 AwWebContentsDelegate::GetJavaScriptDialogManager(WebContents* source) {
-  return g_javascript_dialog_manager.Pointer();
+  static base::NoDestructor<AwJavaScriptDialogManager>
+      javascript_dialog_manager;
+  return javascript_dialog_manager.get();
 }
 
 void AwWebContentsDelegate::FindReply(WebContents* web_contents,
@@ -110,19 +111,9 @@ void AwWebContentsDelegate::FindReply(WebContents* web_contents,
       request_id, number_of_matches, active_match_ordinal, final_update);
 }
 
-void AwWebContentsDelegate::CanDownload(
-    const GURL& url,
-    const std::string& request_method,
-    base::OnceCallback<void(bool)> callback) {
-  // Android webview intercepts download in its resource dispatcher host
-  // delegate, so should not reach here.
-  NOTREACHED();
-  std::move(callback).Run(false);
-}
-
 void AwWebContentsDelegate::RunFileChooser(
     content::RenderFrameHost* render_frame_host,
-    std::unique_ptr<content::FileSelectListener> listener,
+    scoped_refptr<content::FileSelectListener> listener,
     const FileChooserParams& params) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> java_delegate = GetJavaDelegate(env);
@@ -150,8 +141,8 @@ void AwWebContentsDelegate::RunFileChooser(
   Java_AwWebContentsDelegate_runFileChooser(
       env, java_delegate, render_frame_host->GetProcess()->GetID(),
       render_frame_host->GetRoutingID(), mode_flags,
-      ConvertUTF16ToJavaString(
-          env, base::JoinString(params.accept_types, base::ASCIIToUTF16(","))),
+      ConvertUTF16ToJavaString(env,
+                               base::JoinString(params.accept_types, u",")),
       params.title.empty() ? nullptr
                            : ConvertUTF16ToJavaString(env, params.title),
       params.default_file_name.empty()
@@ -163,6 +154,7 @@ void AwWebContentsDelegate::RunFileChooser(
 void AwWebContentsDelegate::AddNewContents(
     WebContents* source,
     std::unique_ptr<WebContents> new_contents,
+    const GURL& target_url,
     WindowOpenDisposition disposition,
     const gfx::Rect& initial_rect,
     bool user_gesture,
@@ -274,24 +266,26 @@ void AwWebContentsDelegate::RequestMediaAccessPermission(
     content::MediaResponseCallback callback) {
   AwContents* aw_contents = AwContents::FromWebContents(web_contents);
   if (!aw_contents) {
-    std::move(callback).Run(blink::MediaStreamDevices(),
-                            blink::MEDIA_DEVICE_FAILED_DUE_TO_SHUTDOWN,
-                            std::unique_ptr<content::MediaStreamUI>());
+    std::move(callback).Run(
+        blink::MediaStreamDevices(),
+        blink::mojom::MediaStreamRequestResult::FAILED_DUE_TO_SHUTDOWN,
+        nullptr);
     return;
   }
   aw_contents->GetPermissionRequestHandler()->SendRequest(
-      std::unique_ptr<AwPermissionRequestDelegate>(
-          new MediaAccessPermissionRequest(request, std::move(callback))));
+      std::make_unique<MediaAccessPermissionRequest>(request,
+                                                     std::move(callback)));
 }
 
 void AwWebContentsDelegate::EnterFullscreenModeForTab(
-    content::WebContents* web_contents,
-    const GURL& origin,
-    const blink::WebFullscreenOptions& options) {
-  WebContentsDelegateAndroid::EnterFullscreenModeForTab(web_contents, origin,
+    content::RenderFrameHost* requesting_frame,
+    const blink::mojom::FullscreenOptions& options) {
+  WebContentsDelegateAndroid::EnterFullscreenModeForTab(requesting_frame,
                                                         options);
   is_fullscreen_ = true;
-  web_contents->GetRenderViewHost()->GetWidget()->SynchronizeVisualProperties();
+  requesting_frame->GetRenderViewHost()
+      ->GetWidget()
+      ->SynchronizeVisualProperties();
 }
 
 void AwWebContentsDelegate::ExitFullscreenModeForTab(
@@ -302,7 +296,7 @@ void AwWebContentsDelegate::ExitFullscreenModeForTab(
 }
 
 bool AwWebContentsDelegate::IsFullscreenForTabOrPending(
-    const content::WebContents* web_contents) const {
+    const content::WebContents* web_contents) {
   return is_fullscreen_;
 }
 
@@ -314,7 +308,7 @@ void AwWebContentsDelegate::UpdateUserGestureCarryoverInfo(
     intercept_navigation_delegate->UpdateLastUserGestureCarryoverTimestamp();
 }
 
-std::unique_ptr<content::FileSelectListener>
+scoped_refptr<content::FileSelectListener>
 AwWebContentsDelegate::TakeFileSelectListener() {
   return std::move(file_select_listener_);
 }
@@ -335,7 +329,7 @@ static void JNI_AwWebContentsDelegate_FilesSelectedInChooser(
       static_cast<AwWebContentsDelegate*>(web_contents->GetDelegate());
   if (!delegate)
     return;
-  std::unique_ptr<content::FileSelectListener> listener =
+  scoped_refptr<content::FileSelectListener> listener =
       delegate->TakeFileSelectListener();
 
   if (!file_paths.obj()) {
@@ -344,7 +338,7 @@ static void JNI_AwWebContentsDelegate_FilesSelectedInChooser(
   }
 
   std::vector<std::string> file_path_str;
-  std::vector<base::string16> display_name_str;
+  std::vector<std::u16string> display_name_str;
   // Note file_paths maybe NULL, but this will just yield a zero-length vector.
   base::android::AppendJavaStringArrayToStringVector(env, file_paths,
                                                      &file_path_str);
@@ -356,13 +350,13 @@ static void JNI_AwWebContentsDelegate_FilesSelectedInChooser(
     GURL url(file_path_str[i]);
     if (!url.is_valid())
       continue;
-    base::FilePath path(
-        url.SchemeIsFile()
-            ? net::UnescapeURLComponent(
-                  url.path(), net::UnescapeRule::SPACES |
-                                  net::UnescapeRule::
-                                      URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS)
-            : file_path_str[i]);
+    base::FilePath path;
+    if (url.SchemeIsFile()) {
+      if (!net::FileURLToFilePath(url, &path))
+        continue;
+    } else {
+      path = base::FilePath(file_path_str[i]);
+    }
     auto file_info = blink::mojom::NativeFileInfo::New();
     file_info->file_path = path;
     if (!display_name_str[i].empty())

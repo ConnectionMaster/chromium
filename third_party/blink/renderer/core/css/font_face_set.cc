@@ -7,6 +7,7 @@
 #include "third_party/blink/renderer/core/css/font_face_cache.h"
 #include "third_party/blink/renderer/core/css/font_face_set_load_event.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -57,7 +58,8 @@ FontFaceSet* FontFaceSet::addForBinding(ScriptState*,
   font_selector->GetFontFaceCache()->AddFontFace(font_face, false);
   if (font_face->LoadStatus() == FontFace::kLoading)
     AddToLoadingFonts(font_face);
-  font_selector->FontFaceInvalidated();
+  font_selector->FontFaceInvalidated(
+      FontInvalidationReason::kGeneralInvalidation);
   return this;
 }
 
@@ -72,7 +74,8 @@ void FontFaceSet::clearForBinding(ScriptState*, ExceptionState&) {
       RemoveFromLoadingFonts(font_face);
   }
   non_css_connected_faces_.clear();
-  font_selector->FontFaceInvalidated();
+  font_selector->FontFaceInvalidated(
+      FontInvalidationReason::kGeneralInvalidation);
 }
 
 bool FontFaceSet::deleteForBinding(ScriptState*,
@@ -89,7 +92,8 @@ bool FontFaceSet::deleteForBinding(ScriptState*,
     font_selector->GetFontFaceCache()->RemoveFontFace(font_face, false);
     if (font_face->LoadStatus() == FontFace::kLoading)
       RemoveFromLoadingFonts(font_face);
-    font_selector->FontFaceInvalidated();
+    font_selector->FontFaceInvalidated(
+        FontInvalidationReason::kFontFaceDeleted);
     return true;
   }
   return false;
@@ -105,13 +109,13 @@ bool FontFaceSet::hasForBinding(ScriptState*,
          IsCSSConnectedFontFace(font_face);
 }
 
-void FontFaceSet::Trace(blink::Visitor* visitor) {
+void FontFaceSet::Trace(Visitor* visitor) const {
   visitor->Trace(non_css_connected_faces_);
   visitor->Trace(loading_fonts_);
   visitor->Trace(loaded_fonts_);
   visitor->Trace(failed_fonts_);
   visitor->Trace(ready_);
-  ContextClient::Trace(visitor);
+  ExecutionContextClient::Trace(visitor);
   EventTargetWithInlineData::Trace(visitor);
   FontFace::LoadFontCallback::Trace(visitor);
 }
@@ -151,8 +155,10 @@ void FontFaceSet::LoadFontPromiseResolver::LoadFonts() {
     return;
   }
 
-  for (wtf_size_t i = 0; i < font_faces_.size(); i++)
+  for (wtf_size_t i = 0; i < font_faces_.size(); i++) {
     font_faces_[i]->LoadWithCallback(this);
+    font_faces_[i]->DidBeginImperativeLoad();
+  }
 }
 
 ScriptPromise FontFaceSet::load(ScriptState* script_state,
@@ -165,14 +171,14 @@ ScriptPromise FontFaceSet::load(ScriptState* script_state,
   if (!ResolveFontStyle(font_string, font)) {
     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver>(script_state);
     ScriptPromise promise = resolver->Promise();
-    resolver->Reject(DOMException::Create(
+    resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kSyntaxError,
         "Could not resolve '" + font_string + "' as a font."));
     return promise;
   }
 
   FontFaceCache* font_face_cache = GetFontSelector()->GetFontFaceCache();
-  FontFaceArray faces;
+  FontFaceArray* faces = MakeGarbageCollected<FontFaceArray>();
   for (const FontFamily* f = &font.GetFontDescription().Family(); f;
        f = f->Next()) {
     CSSSegmentedFontFace* segmented_font_face =
@@ -272,7 +278,7 @@ void FontFaceSet::LoadFontPromiseResolver::NotifyError(FontFace* font_face) {
   }
 }
 
-void FontFaceSet::LoadFontPromiseResolver::Trace(blink::Visitor* visitor) {
+void FontFaceSet::LoadFontPromiseResolver::Trace(Visitor* visitor) const {
   visitor->Trace(font_faces_);
   visitor->Trace(resolver_);
   LoadFontCallback::Trace(visitor);

@@ -6,28 +6,38 @@
 #define CHROME_BROWSER_VR_TEST_WEBXR_VR_BROWSER_TEST_H_
 
 #include "build/build_config.h"
+#include "chrome/browser/vr/test/conditional_skipping.h"
 #include "chrome/browser/vr/test/webxr_browser_test.h"
 #include "chrome/browser/vr/test/xr_browser_test.h"
-#include "chrome/common/chrome_features.h"
+#include "components/permissions/permission_request_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "device/base/features.h"
 #include "device/vr/buildflags/buildflags.h"
+#include "ui/gfx/geometry/vector3d_f.h"
 
 #if defined(OS_WIN)
-#include "services/service_manager/sandbox/features.h"
+#include "sandbox/policy/features.h"
 #endif
 
 namespace vr {
 
-// WebXR for VR-specific test base class.
+// WebXR for VR-specific test base class without any particular runtime.
 class WebXrVrBrowserTestBase : public WebXrBrowserTestBase {
  public:
+  WebXrVrBrowserTestBase();
+  ~WebXrVrBrowserTestBase() override;
   void EnterSessionWithUserGesture(content::WebContents* web_contents) override;
   void EnterSessionWithUserGestureOrFail(
       content::WebContents* web_contents) override;
   void EndSession(content::WebContents* web_contents) override;
   void EndSessionOrFail(content::WebContents* web_contents) override;
+
+  permissions::PermissionRequestManager* GetPermissionRequestManager();
+  permissions::PermissionRequestManager* GetPermissionRequestManager(
+      content::WebContents* web_contents);
+
+  virtual gfx::Vector3dF GetControllerOffset() const;
 
   // Necessary to use the WebContents-less versions of functions.
   using WebXrBrowserTestBase::XrDeviceFound;
@@ -36,66 +46,44 @@ class WebXrVrBrowserTestBase : public WebXrBrowserTestBase {
   using WebXrBrowserTestBase::EnterSessionWithUserGestureOrFail;
   using WebXrBrowserTestBase::EndSession;
   using WebXrBrowserTestBase::EndSessionOrFail;
+
+  permissions::PermissionRequestManager::AutoResponseType
+      permission_auto_response_ =
+          permissions::PermissionRequestManager::ACCEPT_ALL;
 };
 
-// Test class with OpenVR disabled.
-class WebXrVrBrowserTestOpenVrDisabled : public WebXrVrBrowserTestBase {
+// Test class with all runtimes disabled.
+class WebXrVrRuntimelessBrowserTest : public WebXrVrBrowserTestBase {
  public:
-  WebXrVrBrowserTestOpenVrDisabled() {
-    enable_features_.push_back(features::kWebXr);
-
-#if BUILDFLAG(ENABLE_WINDOWS_MR)
-    disable_features_.push_back(features::kWindowsMixedReality);
-#endif
-  }
+  WebXrVrRuntimelessBrowserTest();
 };
 
-// WebXrOrientationSensorDevice is only defined when the enable_vr flag is set.
-#if BUILDFLAG(ENABLE_VR)
-class WebXrVrBrowserTestSensorless : public WebXrVrBrowserTestBase {
+class WebXrVrRuntimelessBrowserTestSensorless
+    : public WebXrVrRuntimelessBrowserTest {
  public:
-  WebXrVrBrowserTestSensorless() {
-    enable_features_.push_back(features::kWebXr);
-    disable_features_.push_back(device::kWebXrOrientationSensorDevice);
-
-#if BUILDFLAG(ENABLE_WINDOWS_MR)
-    disable_features_.push_back(features::kWindowsMixedReality);
-#endif
-
-#if defined(OS_WIN)
-    disable_features_.push_back(service_manager::features::kXRSandbox);
-#endif
-  }
+  WebXrVrRuntimelessBrowserTestSensorless();
 };
-#endif
 
-// OpenVR feature only defined on Windows.
-#ifdef OS_WIN
-// Test class with standard features enabled: WebXR and OpenVR.
-class WebXrVrBrowserTestStandard : public WebXrVrBrowserTestBase {
+#if BUILDFLAG(ENABLE_OPENXR)
+// OpenXR-specific subclass of WebXrVrBrowserTestBase.
+class WebXrVrOpenXrBrowserTestBase : public WebXrVrBrowserTestBase {
  public:
-  WebXrVrBrowserTestStandard() {
-    enable_features_.push_back(features::kOpenVR);
-    enable_features_.push_back(features::kWebXr);
-
-#if BUILDFLAG(ENABLE_WINDOWS_MR)
-    disable_features_.push_back(features::kWindowsMixedReality);
-#endif
-  }
+  WebXrVrOpenXrBrowserTestBase();
+  ~WebXrVrOpenXrBrowserTestBase() override;
+  XrBrowserTestBase::RuntimeType GetRuntimeType() const override;
 };
 
-// Test class with WebXR disabled.
-class WebXrVrBrowserTestWebXrDisabled : public WebXrVrBrowserTestBase {
+class WebXrVrOpenXrBrowserTest : public WebXrVrOpenXrBrowserTestBase {
  public:
-  WebXrVrBrowserTestWebXrDisabled() {
-    enable_features_.push_back(features::kOpenVR);
-
-#if BUILDFLAG(ENABLE_WINDOWS_MR)
-    disable_features_.push_back(features::kWindowsMixedReality);
-#endif
-  }
+  WebXrVrOpenXrBrowserTest();
 };
-#endif  // OS_WIN
+
+class WebXrVrOpenXrBrowserTestWebXrDisabled
+    : public WebXrVrOpenXrBrowserTestBase {
+ public:
+  WebXrVrOpenXrBrowserTestWebXrDisabled();
+};
+#endif  // BUIDFLAG(ENABLE_OPENXR)
 
 }  // namespace vr
 

@@ -7,7 +7,6 @@
 
 #include "media/cdm/library_cdm/cdm_host_proxy.h"
 
-#include "base/logging.h"
 #include "base/macros.h"
 
 namespace media {
@@ -110,10 +109,6 @@ class CdmHostProxyImpl : public CdmHostProxy {
     return host_->CreateFileIO(client);
   }
 
-  cdm::CdmProxy* RequestCdmProxy(cdm::CdmProxyClient* client) final {
-    return host_->RequestCdmProxy(client);
-  }
-
   void RequestStorageId(uint32_t version) final {
     host_->RequestStorageId(version);
   }
@@ -123,29 +118,6 @@ class CdmHostProxyImpl : public CdmHostProxy {
 
   DISALLOW_COPY_AND_ASSIGN(CdmHostProxyImpl);
 };
-
-// Specialization for cdm::Host_9 methods.
-
-template <>
-void CdmHostProxyImpl<cdm::Host_9>::OnInitialized(bool /* success */) {
-  // OnInitialized() doesn't exist on Host_9.
-}
-
-template <>
-cdm::CdmProxy* CdmHostProxyImpl<cdm::Host_9>::RequestCdmProxy(
-    cdm::CdmProxyClient* /* client */) {
-  NOTREACHED() << "cdm::ContentDecryptionModule_9 CDM should never call this.";
-  return nullptr;
-}
-
-// Specialization for cdm::Host_10 methods.
-
-template <>
-cdm::CdmProxy* CdmHostProxyImpl<cdm::Host_10>::RequestCdmProxy(
-    cdm::CdmProxyClient* /* client */) {
-  NOTREACHED() << "cdm::ContentDecryptionModule_10 CDM should never call this.";
-  return nullptr;
-}
 
 }  // namespace media
 

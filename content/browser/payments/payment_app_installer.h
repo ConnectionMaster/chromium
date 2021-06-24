@@ -5,16 +5,17 @@
 #ifndef CONTENT_BROWSER_PAYMENTS_PAYMENT_APP_INSTALLER_H_
 #define CONTENT_BROWSER_PAYMENTS_PAYMENT_APP_INSTALLER_H_
 
+#include <stdint.h>
 #include <vector>
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "content/public/browser/supported_delegations.h"
 
 class GURL;
 
 namespace content {
 
-class BrowserContext;
 class WebContents;
 
 // Installs a web payment app with a default payment instrument and returns
@@ -22,8 +23,7 @@ class WebContents;
 class PaymentAppInstaller {
  public:
   using InstallPaymentAppCallback =
-      base::OnceCallback<void(BrowserContext* browser_context,
-                              long registration_id)>;
+      base::OnceCallback<void(int64_t registration_id)>;
 
   // Installs the payment app.
   // |app_name| is the name of the payment app.
@@ -32,7 +32,8 @@ class PaymentAppInstaller {
   // |scope| is the registration scope.
   // |use_cache| indicates whether to use cache.
   // |enabled_methods| are the enabled methods of the app.
-  // |callback| to send back registeration result.
+  // |supported_delegations| are the supported delegations of the payment app.
+  // |callback| to send back registration result.
   static void Install(WebContents* web_contents,
                       const std::string& app_name,
                       const std::string& app_icon,
@@ -40,6 +41,7 @@ class PaymentAppInstaller {
                       const GURL& scope,
                       bool use_cache,
                       const std::string& method,
+                      const SupportedDelegations& supported_delegations,
                       InstallPaymentAppCallback callback);
 
  private:

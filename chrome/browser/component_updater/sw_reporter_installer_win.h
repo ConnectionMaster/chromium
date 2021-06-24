@@ -12,7 +12,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "chrome/browser/safe_browsing/chrome_cleaner/reporter_runner_win.h"
+#include "chrome/browser/safe_browsing/chrome_cleaner/sw_reporter_invocation_win.h"
 #include "components/component_updater/component_installer.h"
 #include "components/component_updater/component_updater_service.h"
 
@@ -34,22 +34,24 @@ class ComponentUpdateService;
 
 constexpr char kSwReporterComponentId[] = "gkmgaooipdjhmangpemjhigmamcehddo";
 
-// These MUST match the values for SoftwareReporterExperimentError in
-// histograms.xml. Exposed for testing.
-enum SoftwareReporterExperimentError {
-  SW_REPORTER_EXPERIMENT_ERROR_BAD_TAG = 0,
-  SW_REPORTER_EXPERIMENT_ERROR_BAD_PARAMS = 1,
-  SW_REPORTER_EXPERIMENT_ERROR_MISSING_PARAMS = 2,
-  SW_REPORTER_EXPERIMENT_ERROR_MAX,
+// These values are logged to UMA. Entries should not be renumbered and
+// numeric values should never be reused. Please keep in sync with
+// "SoftwareReporterConfigurationError" in
+// src/tools/metrics/histograms/enums.xml.
+enum SoftwareReporterConfigurationError {
+  kBadTag = 0,
+  kBadParams = 1,
+  kMissingParams = 2,
+  kMaxValue = kMissingParams
 };
 
 // Callback for running the software reporter after it is downloaded.
-using OnComponentReadyCallback = base::Callback<void(
+using OnComponentReadyCallback = base::RepeatingCallback<void(
     safe_browsing::SwReporterInvocationSequence&& invocations)>;
 
 class SwReporterInstallerPolicy : public ComponentInstallerPolicy {
  public:
-  explicit SwReporterInstallerPolicy(const OnComponentReadyCallback& callback);
+  explicit SwReporterInstallerPolicy(OnComponentReadyCallback callback);
   ~SwReporterInstallerPolicy() override;
 
   // ComponentInstallerPolicy implementation.
@@ -68,7 +70,6 @@ class SwReporterInstallerPolicy : public ComponentInstallerPolicy {
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
-  std::vector<std::string> GetMimeTypes() const override;
 
  private:
   friend class SwReporterInstallerTest;

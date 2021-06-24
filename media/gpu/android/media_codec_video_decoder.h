@@ -8,15 +8,18 @@
 #include <vector>
 
 #include "base/containers/circular_deque.h"
-#include "base/optional.h"
 #include "base/threading/thread_checker.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/timer/timer.h"
 #include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_preferences.h"
+#include "media/base/android/media_crypto_context.h"
 #include "media/base/android_overlay_mojo_factory.h"
+#include "media/base/callback_registry.h"
+#include "media/base/cdm_context.h"
 #include "media/base/overlay_info.h"
 #include "media/base/video_decoder.h"
+#include "media/base/video_decoder_config.h"
 #include "media/gpu/android/android_video_surface_chooser.h"
 #include "media/gpu/android/codec_allocator.h"
 #include "media/gpu/android/codec_wrapper.h"
@@ -24,9 +27,11 @@
 #include "media/gpu/android/surface_chooser_helper.h"
 #include "media/gpu/android/video_frame_factory.h"
 #include "media/gpu/media_gpu_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
+class MediaLog;
 class ScopedAsyncTrace;
 struct SupportedVideoDecoderConfig;
 
@@ -55,14 +60,17 @@ struct PendingDecode {
 // playbacks that need them.
 // TODO: Lazy initialization should be handled at a higher layer of the media
 // stack for both simplicity and cross platform support.
-class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
-                                                public CodecAllocatorClient {
+class MEDIA_GPU_EXPORT MediaCodecVideoDecoder final : public VideoDecoder {
  public:
   static std::vector<SupportedVideoDecoderConfig> GetSupportedConfigs();
 
-  MediaCodecVideoDecoder(
+  ~MediaCodecVideoDecoder() override;
+  static void DestroyAsync(std::unique_ptr<MediaCodecVideoDecoder>);
+
+  static std::unique_ptr<VideoDecoder> Create(
       const gpu::GpuPreferences& gpu_preferences,
       const gpu::GpuFeatureInfo& gpu_feature_info,
+      std::unique_ptr<MediaLog> media_log,
       DeviceInfo* device_info,
       CodecAllocator* codec_allocator,
       std::unique_ptr<AndroidVideoSurfaceChooser> surface_chooser,
@@ -71,39 +79,44 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
       std::unique_ptr<VideoFrameFactory> video_frame_factory);
 
   // VideoDecoder implementation:
-  std::string GetDisplayName() const override;
+  VideoDecoderType GetDecoderType() const override;
   void Initialize(const VideoDecoderConfig& config,
                   bool low_delay,
                   CdmContext* cdm_context,
-                  const InitCB& init_cb,
+                  InitCB init_cb,
                   const OutputCB& output_cb,
                   const WaitingCB& waiting_cb) override;
-  void Decode(scoped_refptr<DecoderBuffer> buffer,
-              const DecodeCB& decode_cb) override;
-  void Reset(const base::Closure& closure) override;
+  void Decode(scoped_refptr<DecoderBuffer> buffer, DecodeCB decode_cb) override;
+  void Reset(base::OnceClosure closure) override;
   bool NeedsBitstreamConversion() const override;
   bool CanReadWithoutStalling() const override;
   int GetMaxDecodeRequests() const override;
 
- protected:
-  // Protected for testing.
-  ~MediaCodecVideoDecoder() override;
+ private:
+  // The test has access for PumpCodec() and the constructor.
+  friend class MediaCodecVideoDecoderTest;
+
+  MediaCodecVideoDecoder(
+      const gpu::GpuPreferences& gpu_preferences,
+      const gpu::GpuFeatureInfo& gpu_feature_info,
+      std::unique_ptr<MediaLog> media_log,
+      DeviceInfo* device_info,
+      CodecAllocator* codec_allocator,
+      std::unique_ptr<AndroidVideoSurfaceChooser> surface_chooser,
+      AndroidOverlayMojoFactoryCB overlay_factory_cb,
+      RequestOverlayInfoCB request_overlay_info_cb,
+      std::unique_ptr<VideoFrameFactory> video_frame_factory);
 
   // Set up |cdm_context| as part of initialization.  Guarantees that |init_cb|
   // will be called depending on the outcome, though not necessarily before this
   // function returns.
-  void SetCdm(CdmContext* cdm_context, const InitCB& init_cb);
+  void SetCdm(CdmContext* cdm_context, InitCB init_cb);
 
   // Called when the Cdm provides |media_crypto|.  Will signal |init_cb| based
   // on the result, and set the codec config properly.
-  void OnMediaCryptoReady(const InitCB& init_cb,
+  void OnMediaCryptoReady(InitCB init_cb,
                           JavaObjectPtr media_crypto,
                           bool requires_secure_video_codec);
-
- private:
-  // The test has access for PumpCodec().
-  friend class MediaCodecVideoDecoderTest;
-  friend class base::DeleteHelper<MediaCodecVideoDecoder>;
 
   enum class State {
     // Initializing resources required to create a codec.
@@ -122,17 +135,14 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
 
   enum class DrainType { kForReset, kForDestroy };
 
-  // Starts teardown.
-  void Destroy() override;
-
   // Finishes initialization.
   void StartLazyInit();
   void OnVideoFrameFactoryInitialized(
-      scoped_refptr<TextureOwner> texture_owner);
+      scoped_refptr<gpu::TextureOwner> texture_owner);
 
-  // Resets |waiting_for_key_| to false, indicating that MediaCodec might now
-  // accept buffers.
-  void OnKeyAdded();
+  // Callback for the CDM to notify |this|. Resets |waiting_for_key_| to false,
+  // indicating that MediaCodec might now accept buffers.
+  void OnCdmContextEvent(CdmContext::Event event);
 
   // Updates |surface_chooser_| with the new overlay info.
   void OnOverlayInfoChanged(const OverlayInfo& overlay_info);
@@ -149,10 +159,15 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
   // Creates a codec asynchronously.
   void CreateCodec();
 
-  // CodecAllocatorClient implementation.
-  void OnCodecConfigured(
-      std::unique_ptr<MediaCodecBridge> media_codec,
-      scoped_refptr<AVDASurfaceBundle> surface_bundle) override;
+  // Trampoline helper which ensures correct release of MediaCodecBridge and
+  // CodecSurfaceBundle even if this class goes away.
+  static void OnCodecConfiguredInternal(
+      base::WeakPtr<MediaCodecVideoDecoder> weak_this,
+      CodecAllocator* codec_allocator,
+      scoped_refptr<CodecSurfaceBundle> surface_bundle,
+      std::unique_ptr<MediaCodecBridge> codec);
+  void OnCodecConfigured(scoped_refptr<CodecSurfaceBundle> surface_bundle,
+                         std::unique_ptr<MediaCodecBridge> media_codec);
 
   // Flushes the codec, or if flush() is not supported, releases it and creates
   // a new one.
@@ -174,10 +189,12 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
 
   // Forwards |frame| via |output_cb_| if |reset_generation| matches
   // |reset_generation_|.  |async_trace| is the (optional) scoped trace that
-  // started when we dequeued the corresponding output buffer.
+  // started when we dequeued the corresponding output buffer.  |started_at| is
+  // the wall clock time at which we dequeued the output buffer.
   void ForwardVideoFrame(int reset_generation,
                          std::unique_ptr<ScopedAsyncTrace> async_trace,
-                         const scoped_refptr<VideoFrame>& frame);
+                         base::TimeTicks started_at,
+                         scoped_refptr<VideoFrame> frame);
 
   // Starts draining the codec by queuing an EOS if required. It skips the drain
   // if possible.
@@ -186,8 +203,10 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
   void CancelPendingDecodes(DecodeStatus status);
 
   // Sets |state_| and does common teardown for the terminal states. |state_|
-  // must be either kSurfaceDestroyed or kError.
-  void EnterTerminalState(State state);
+  // must be either kSurfaceDestroyed or kError.  |reason| will be logged to
+  // |media_log_| as an info event ("error" indicates that playback will stop,
+  // but we don't know that the renderer will do that).
+  void EnterTerminalState(State state, const char* reason);
   bool InTerminalState();
 
   // Releases |codec_| if it's not null.
@@ -209,6 +228,8 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
   // position if required.
   PromotionHintAggregator::NotifyPromotionHintCB CreatePromotionHintCB();
 
+  std::unique_ptr<MediaLog> media_log_;
+
   State state_ = State::kInitializing;
 
   // Whether initialization still needs to be done on the first decode call.
@@ -217,14 +238,14 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
 
   // Whether we've seen MediaCodec return MEDIA_CODEC_NO_KEY indicating that
   // the corresponding key was not set yet, and MediaCodec will not accept
-  // buffers until OnKeyAdded() is called.
+  // buffers until OnCdmContextEvent() is called with kHasAdditionalUsableKey.
   bool waiting_for_key_ = false;
 
   // The reason for the current drain operation if any.
-  base::Optional<DrainType> drain_type_;
+  absl::optional<DrainType> drain_type_;
 
   // The current reset cb if a Reset() is in progress.
-  base::Closure reset_cb_;
+  base::OnceClosure reset_cb_;
 
   // A generation counter that's incremented every time Reset() is called.
   int reset_generation_ = 0;
@@ -251,11 +272,11 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
   // reflects the latest surface choice by |surface_chooser_|. If the codec is
   // configured with some other surface, then a transition is pending. It's
   // non-null from the first surface choice.
-  scoped_refptr<AVDASurfaceBundle> target_surface_bundle_;
+  scoped_refptr<CodecSurfaceBundle> target_surface_bundle_;
 
   // A TextureOwner bundle that is kept for the lifetime of MCVD so that if we
   // have to synchronously switch surfaces we always have one available.
-  scoped_refptr<AVDASurfaceBundle> texture_owner_bundle_;
+  scoped_refptr<CodecSurfaceBundle> texture_owner_bundle_;
 
   // A callback for requesting overlay info updates.
   RequestOverlayInfoCB request_overlay_info_cb_;
@@ -288,9 +309,8 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
   // Owned by CDM which is external to this decoder.
   MediaCryptoContext* media_crypto_context_ = nullptr;
 
-  // MediaDrmBridge requires registration/unregistration of the player, this
-  // registration id is used for this.
-  int cdm_registration_id_ = 0;
+  // To keep the CdmContext event callback registered.
+  std::unique_ptr<CallbackRegistration> event_cb_registration_;
 
   // Do we need a hw-secure codec?
   bool requires_secure_codec_ = false;
@@ -303,11 +323,28 @@ class MEDIA_GPU_EXPORT MediaCodecVideoDecoder : public VideoDecoder,
   // in some random state, possibly with output buffers pending.
   bool deferred_flush_pending_ = false;
 
+  // Should we upgrade the next flush to a full release / reallocation of the
+  // codec?  This lets us update our hints to the decoder about the size of the
+  // expected video.
+  bool deferred_reallocation_pending_ = false;
+
+  // Width, in pixels, of the resolution that we last told the codec about.
+  int last_width_ = 0;
+
+  // KEY_MAX_INPUT_SIZE configured for the current codec.
+  size_t max_input_size_ = 0;
+
   // Optional crypto object from the Cdm.
   base::android::ScopedJavaGlobalRef<jobject> media_crypto_;
 
-  base::WeakPtrFactory<MediaCodecVideoDecoder> weak_factory_;
-  base::WeakPtrFactory<MediaCodecVideoDecoder> codec_allocator_weak_factory_;
+  // For A/B power testing, this causes all non-L1 content to avoid overlays.
+  // This is only for A/B power testing, and can be removed after that.
+  // See https://crbug.com/1081346 .
+  bool allow_nonsecure_overlays_ = true;
+
+  base::WeakPtrFactory<MediaCodecVideoDecoder> weak_factory_{this};
+  base::WeakPtrFactory<MediaCodecVideoDecoder> codec_allocator_weak_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaCodecVideoDecoder);
 };

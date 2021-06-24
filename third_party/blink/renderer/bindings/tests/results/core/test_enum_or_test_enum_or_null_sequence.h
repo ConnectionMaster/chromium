@@ -11,7 +11,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_BINDINGS_TESTS_RESULTS_CORE_TEST_ENUM_OR_TEST_ENUM_OR_NULL_SEQUENCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_BINDINGS_TESTS_RESULTS_CORE_TEST_ENUM_OR_TEST_ENUM_OR_NULL_SEQUENCE_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -40,7 +40,7 @@ class CORE_EXPORT TestEnumOrTestEnumOrNullSequence final {
   TestEnumOrTestEnumOrNullSequence(const TestEnumOrTestEnumOrNullSequence&);
   ~TestEnumOrTestEnumOrNullSequence();
   TestEnumOrTestEnumOrNullSequence& operator=(const TestEnumOrTestEnumOrNullSequence&);
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   enum class SpecificType {

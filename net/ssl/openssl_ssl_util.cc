@@ -5,18 +5,19 @@
 #include "net/ssl/openssl_ssl_util.h"
 
 #include <errno.h>
+
 #include <utility>
 
-#include "base/bind.h"
-#include "base/callback.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/notreached.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "crypto/openssl_util.h"
 #include "net/base/net_errors.h"
 #include "net/cert/x509_util.h"
+#include "net/log/net_log_with_source.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "third_party/boringssl/src/include/openssl/err.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
@@ -90,8 +91,8 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
     case SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED:
     case SSL_R_SSLV3_ALERT_CERTIFICATE_UNKNOWN:
     case SSL_R_TLSV1_ALERT_ACCESS_DENIED:
+    case SSL_R_TLSV1_ALERT_CERTIFICATE_REQUIRED:
     case SSL_R_TLSV1_ALERT_UNKNOWN_CA:
-    case SSL_R_TLSV1_CERTIFICATE_REQUIRED:
       return ERR_BAD_SSL_CLIENT_AUTH_CERT;
     case SSL_R_SSLV3_ALERT_DECOMPRESSION_FAILURE:
       return ERR_SSL_DECOMPRESSION_FAILURE_ALERT;
@@ -101,8 +102,6 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
       return ERR_SSL_DECRYPT_ERROR_ALERT;
     case SSL_R_TLSV1_UNRECOGNIZED_NAME:
       return ERR_SSL_UNRECOGNIZED_NAME_ALERT;
-    case SSL_R_BAD_DH_P_LENGTH:
-      return ERR_SSL_WEAK_SERVER_EPHEMERAL_DH_KEY;
     case SSL_R_SERVER_CERT_CHANGED:
       return ERR_SSL_SERVER_CERT_CHANGED;
     case SSL_R_WRONG_VERSION_ON_EARLY_DATA:
@@ -128,22 +127,20 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
   }
 }
 
-std::unique_ptr<base::Value> NetLogOpenSSLErrorCallback(
-    int net_error,
-    int ssl_error,
-    const OpenSSLErrorInfo& error_info,
-    NetLogCaptureMode /* capture_mode */) {
-  std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
-  dict->SetInteger("net_error", net_error);
-  dict->SetInteger("ssl_error", ssl_error);
+base::Value NetLogOpenSSLErrorParams(int net_error,
+                                     int ssl_error,
+                                     const OpenSSLErrorInfo& error_info) {
+  base::DictionaryValue dict;
+  dict.SetInteger("net_error", net_error);
+  dict.SetInteger("ssl_error", ssl_error);
   if (error_info.error_code != 0) {
-    dict->SetInteger("error_lib", ERR_GET_LIB(error_info.error_code));
-    dict->SetInteger("error_reason", ERR_GET_REASON(error_info.error_code));
+    dict.SetInteger("error_lib", ERR_GET_LIB(error_info.error_code));
+    dict.SetInteger("error_reason", ERR_GET_REASON(error_info.error_code));
   }
   if (error_info.file != nullptr)
-    dict->SetString("file", error_info.file);
+    dict.SetString("file", error_info.file);
   if (error_info.line != 0)
-    dict->SetInteger("line", error_info.line);
+    dict.SetInteger("line", error_info.line);
   return std::move(dict);
 }
 
@@ -211,12 +208,14 @@ int MapOpenSSLErrorWithDetails(int err,
   }
 }
 
-NetLogParametersCallback CreateNetLogOpenSSLErrorCallback(
-    int net_error,
-    int ssl_error,
-    const OpenSSLErrorInfo& error_info) {
-  return base::Bind(&NetLogOpenSSLErrorCallback,
-                    net_error, ssl_error, error_info);
+void NetLogOpenSSLError(const NetLogWithSource& net_log,
+                        NetLogEventType type,
+                        int net_error,
+                        int ssl_error,
+                        const OpenSSLErrorInfo& error_info) {
+  net_log.AddEvent(type, [&] {
+    return NetLogOpenSSLErrorParams(net_error, ssl_error, error_info);
+  });
 }
 
 int GetNetSSLVersion(SSL* ssl) {

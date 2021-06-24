@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "content/browser/indexed_db/indexed_db_metadata_coding.h"
 #include "third_party/blink/public/common/indexeddb/indexeddb_key_path.h"
 #include "third_party/leveldatabase/src/include/leveldb/status.h"
@@ -23,8 +22,8 @@ struct IndexedDBObjectStoreMetadata;
 }  // namespace blink
 
 namespace content {
-class LevelDBDatabase;
-class LevelDBTransaction;
+class TransactionalLevelDBDatabase;
+class TransactionalLevelDBTransaction;
 
 // A fake implementation of IndexedDBMetadataCoding, for testing.
 class FakeIndexedDBMetadataCoding : public IndexedDBMetadataCoding {
@@ -33,74 +32,75 @@ class FakeIndexedDBMetadataCoding : public IndexedDBMetadataCoding {
   ~FakeIndexedDBMetadataCoding() override;
 
   leveldb::Status ReadDatabaseNames(
-      LevelDBDatabase* db,
+      TransactionalLevelDBDatabase* db,
       const std::string& origin_identifier,
-      std::vector<base::string16>* names) override;
+      std::vector<std::u16string>* names) override;
 
   leveldb::Status ReadMetadataForDatabaseName(
-      LevelDBDatabase* db,
+      TransactionalLevelDBDatabase* db,
       const std::string& origin_identifier,
-      const base::string16& name,
+      const std::u16string& name,
       blink::IndexedDBDatabaseMetadata* metadata,
       bool* found) override;
   leveldb::Status CreateDatabase(
-      LevelDBDatabase* database,
+      TransactionalLevelDBDatabase* database,
       const std::string& origin_identifier,
-      const base::string16& name,
+      const std::u16string& name,
       int64_t version,
       blink::IndexedDBDatabaseMetadata* metadata) override;
 
-  void SetDatabaseVersion(LevelDBTransaction* transaction,
-                          int64_t row_id,
-                          int64_t version,
-                          blink::IndexedDBDatabaseMetadata* metadata) override;
+  leveldb::Status SetDatabaseVersion(
+      TransactionalLevelDBTransaction* transaction,
+      int64_t row_id,
+      int64_t version,
+      blink::IndexedDBDatabaseMetadata* metadata) override;
 
-  leveldb::Status FindDatabaseId(LevelDBDatabase* db,
+  leveldb::Status FindDatabaseId(TransactionalLevelDBDatabase* db,
                                  const std::string& origin_identifier,
-                                 const base::string16& name,
+                                 const std::u16string& name,
                                  int64_t* id,
                                  bool* found) override;
 
   leveldb::Status CreateObjectStore(
-      LevelDBTransaction* transaction,
+      TransactionalLevelDBTransaction* transaction,
       int64_t database_id,
       int64_t object_store_id,
-      base::string16 name,
+      std::u16string name,
       blink::IndexedDBKeyPath key_path,
       bool auto_increment,
       blink::IndexedDBObjectStoreMetadata* metadata) override;
 
   leveldb::Status RenameObjectStore(
-      LevelDBTransaction* transaction,
+      TransactionalLevelDBTransaction* transaction,
       int64_t database_id,
-      base::string16 new_name,
-      base::string16* old_name,
+      std::u16string new_name,
+      std::u16string* old_name,
       blink::IndexedDBObjectStoreMetadata* metadata) override;
 
   leveldb::Status DeleteObjectStore(
-      LevelDBTransaction* transaction,
+      TransactionalLevelDBTransaction* transaction,
       int64_t database_id,
       const blink::IndexedDBObjectStoreMetadata& object_store) override;
 
-  leveldb::Status CreateIndex(LevelDBTransaction* transaction,
+  leveldb::Status CreateIndex(TransactionalLevelDBTransaction* transaction,
                               int64_t database_id,
                               int64_t object_store_id,
                               int64_t index_id,
-                              base::string16 name,
+                              std::u16string name,
                               blink::IndexedDBKeyPath key_path,
                               bool is_unique,
                               bool is_multi_entry,
                               blink::IndexedDBIndexMetadata* metadata) override;
 
-  leveldb::Status RenameIndex(LevelDBTransaction* transaction,
+  leveldb::Status RenameIndex(TransactionalLevelDBTransaction* transaction,
                               int64_t database_id,
                               int64_t object_store_id,
-                              base::string16 new_name,
-                              base::string16* old_name,
+                              std::u16string new_name,
+                              std::u16string* old_name,
                               blink::IndexedDBIndexMetadata* metadata) override;
 
   leveldb::Status DeleteIndex(
-      LevelDBTransaction* transaction,
+      TransactionalLevelDBTransaction* transaction,
       int64_t database_id,
       int64_t object_store_id,
       const blink::IndexedDBIndexMetadata& metadata) override;

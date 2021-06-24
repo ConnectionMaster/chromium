@@ -6,13 +6,12 @@
 #define CHROME_CHROME_CLEANER_SETTINGS_SETTINGS_H_
 
 #include <windows.h>
+
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/memory/singleton.h"
-#include "base/strings/string16.h"
 #include "chrome/chrome_cleaner/logging/proto/shared_data.pb.h"
 #include "chrome/chrome_cleaner/settings/settings_definitions.h"
 #include "components/chrome_cleaner/public/constants/constants.h"
@@ -38,7 +37,7 @@ class Settings {
   virtual bool allow_crash_report_upload() const;
 
   // Returns the session id for this run as passed by Chrome to the reporter.
-  virtual base::string16 session_id() const;
+  virtual std::wstring session_id() const;
 
   virtual std::string cleanup_id() const;
 
@@ -73,9 +72,32 @@ class Settings {
   // Returns true if Safe Browsing extended reporting is enabled for the user.
   virtual bool sber_enabled() const;
 
+  // Returns an empty string if prompt_using_mojo() is false.
   virtual const std::string& chrome_mojo_pipe_token() const;
 
+  // Returns false if prompt_using_mojo() is false.
   virtual bool has_parent_pipe_handle() const;
+
+  virtual bool prompt_using_mojo() const;
+
+  // Returns the handle value passed on the command line, even if the handle
+  // has been closed. Returns INVALID_HANDLE_VALUE if prompt_using_mojo() is
+  // true.
+  virtual HANDLE prompt_response_read_handle() const;
+
+  // Returns the handle value passed on the command line, even if the handle
+  // has been closed. Returns INVALID_HANDLE_VALUE if prompt_using_mojo() is
+  // true.
+  virtual HANDLE prompt_request_write_handle() const;
+
+  // Returns true if the command-line switches specify a valid IPC setup.
+  // Since IPC is only used in scanning mode, all combinations of switches in
+  // other modes are considered valid.
+  virtual bool switches_valid_for_ipc() const;
+
+  // Returns true if any IPC related switch is included on the command-line.
+  // switches_valid_for_ipc() may return false even if this returns true.
+  virtual bool has_any_ipc_switch() const;
 
   // Returns the execution mode sent by Chrome if valid, or kNone if
   // kExecutionModeSwitch is not present or the corresponding value is invalid.
@@ -160,7 +182,7 @@ class Settings {
 
   // Statistics about the current run.
   std::string cleanup_id_;
-  base::string16 session_id_;
+  std::wstring session_id_;
 
   // Execution parameters.
   ExecutionMode execution_mode_ = ExecutionMode::kNone;
@@ -178,6 +200,12 @@ class Settings {
   // Mojo related settings.
   std::string chrome_mojo_pipe_token_;
   bool has_parent_pipe_handle_ = false;
+  bool prompt_using_mojo_ = false;
+
+  // Proto related settings.
+  bool prompt_using_proto_ = false;
+  HANDLE prompt_response_read_handle_ = INVALID_HANDLE_VALUE;
+  HANDLE prompt_request_write_handle_ = INVALID_HANDLE_VALUE;
 
   // Engine selection settings.
   Engine::Name engine_ = Engine::UNKNOWN;

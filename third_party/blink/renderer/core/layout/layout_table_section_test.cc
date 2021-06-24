@@ -14,7 +14,12 @@ namespace {
 class LayoutTableSectionTest : public RenderingTest {
  protected:
   LayoutTableSection* GetSectionByElementId(const char* id) {
-    return ToLayoutTableSection(GetLayoutObjectByElementId(id));
+    DCHECK(!RuntimeEnabledFeatures::LayoutNGTableEnabled());
+    return To<LayoutTableSection>(GetLayoutObjectByElementId(id));
+  }
+
+  LayoutBox* GetSectionByElementIdAsBox(const char* id) {
+    return To<LayoutBox>(GetLayoutObjectByElementId(id));
   }
 
   LayoutTableSection* CreateSection(unsigned rows, unsigned columns) {
@@ -29,7 +34,9 @@ class LayoutTableSectionTest : public RenderingTest {
         row->appendChild(GetDocument().CreateRawElement(html_names::kTdTag));
     }
     UpdateAllLifecyclePhasesForTest();
-    return ToLayoutTableSection(section->GetLayoutObject());
+    // TODO(958381) Needs to TableNG compatible with
+    // LayoutNGTableSectionInterface.
+    return To<LayoutTableSection>(section->GetLayoutObject());
   }
 };
 
@@ -44,10 +51,10 @@ TEST_F(LayoutTableSectionTest,
     </table>
   )HTML");
 
-  auto* section = GetSectionByElementId("section");
+  auto* section = GetSectionByElementIdAsBox("section");
   EXPECT_TRUE(section);
   EXPECT_FALSE(
-      section->BackgroundIsKnownToBeOpaqueInRect(LayoutRect(0, 0, 1, 1)));
+      section->BackgroundIsKnownToBeOpaqueInRect(PhysicalRect(0, 0, 1, 1)));
 }
 
 TEST_F(LayoutTableSectionTest, BackgroundIsKnownToBeOpaqueWithBorderSpacing) {
@@ -59,10 +66,10 @@ TEST_F(LayoutTableSectionTest, BackgroundIsKnownToBeOpaqueWithBorderSpacing) {
     </table>
   )HTML");
 
-  auto* section = GetSectionByElementId("section");
+  auto* section = GetSectionByElementIdAsBox("section");
   EXPECT_TRUE(section);
   EXPECT_FALSE(
-      section->BackgroundIsKnownToBeOpaqueInRect(LayoutRect(0, 0, 1, 1)));
+      section->BackgroundIsKnownToBeOpaqueInRect(PhysicalRect(0, 0, 1, 1)));
 }
 
 TEST_F(LayoutTableSectionTest, BackgroundIsKnownToBeOpaqueWithEmptyCell) {
@@ -75,13 +82,17 @@ TEST_F(LayoutTableSectionTest, BackgroundIsKnownToBeOpaqueWithEmptyCell) {
     </table>
   )HTML");
 
-  auto* section = GetSectionByElementId("section");
+  auto* section = GetSectionByElementIdAsBox("section");
   EXPECT_TRUE(section);
   EXPECT_FALSE(
-      section->BackgroundIsKnownToBeOpaqueInRect(LayoutRect(0, 0, 1, 1)));
+      section->BackgroundIsKnownToBeOpaqueInRect(PhysicalRect(0, 0, 1, 1)));
 }
 
 TEST_F(LayoutTableSectionTest, EmptySectionDirtiedRowsAndEffeciveColumns) {
+  // TablesNG does not support the API.
+  if (RuntimeEnabledFeatures::LayoutNGTableEnabled())
+    return;
+
   SetBodyInnerHTML(R"HTML(
     <table style='border: 100px solid red'>
       <thead id='section'></thead>
@@ -103,6 +114,9 @@ TEST_F(LayoutTableSectionTest, EmptySectionDirtiedRowsAndEffeciveColumns) {
 }
 
 TEST_F(LayoutTableSectionTest, PrimaryCellAtAndOriginatingCellAt) {
+  // TablesNG does not support the API.
+  if (RuntimeEnabledFeatures::LayoutNGTableEnabled())
+    return;
   SetBodyInnerHTML(R"HTML(
     <table>
       <tbody id='section'>
@@ -138,6 +152,9 @@ TEST_F(LayoutTableSectionTest, PrimaryCellAtAndOriginatingCellAt) {
 }
 
 TEST_F(LayoutTableSectionTest, DirtiedRowsAndEffectiveColumnsWithSpans) {
+  // TablesNG does not support the API.
+  if (RuntimeEnabledFeatures::LayoutNGTableEnabled())
+    return;
   SetBodyInnerHTML(R"HTML(
     <style>
       td { width: 100px; height: 100px; padding: 0 }
@@ -226,6 +243,9 @@ TEST_F(LayoutTableSectionTest, DirtiedRowsAndEffectiveColumnsWithSpans) {
 
 TEST_F(LayoutTableSectionTest,
        DirtiedRowsAndEffectiveColumnsWithCollapsedBorders) {
+  // TablesNG does not support DirtiedRowsAndEffectiveColumns.
+  if (RuntimeEnabledFeatures::LayoutNGTableEnabled())
+    return;
   SetBodyInnerHTML(R"HTML(
     <style>
       td { width: 100px; height: 100px; padding: 0; border: 2px solid; }
@@ -299,7 +319,7 @@ TEST_F(LayoutTableSectionTest, VisualOverflowWithCollapsedBorders) {
     </table>
   )HTML");
 
-  auto* section = GetSectionByElementId("section");
+  auto* section = GetSectionByElementIdAsBox("section");
 
   // The section's self visual overflow doesn't cover the collapsed borders.
   EXPECT_EQ(section->BorderBoxRect(), section->SelfVisualOverflowRect());
@@ -314,12 +334,15 @@ TEST_F(LayoutTableSectionTest, VisualOverflowWithCollapsedBorders) {
 
 static void SetCellsOverflowInRow(LayoutTableRow* row) {
   for (auto* cell = row->FirstCell(); cell; cell = cell->NextCell()) {
-    ToElement(cell->GetNode())
+    To<Element>(cell->GetNode())
         ->setAttribute(html_names::kClassAttr, "overflow");
   }
 }
 
 TEST_F(LayoutTableSectionTest, OverflowingCells) {
+  // TablesNG does not support the API.
+  if (RuntimeEnabledFeatures::LayoutNGTableEnabled())
+    return;
   SetBodyInnerHTML(R"HTML(
     <style>
       td { width: 10px; height: 10px }

@@ -5,6 +5,12 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_EXTENSIONS_BOOKMARK_APP_UTIL_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_EXTENSIONS_BOOKMARK_APP_UTIL_H_
 
+#include <vector>
+
+#include "chrome/browser/web_applications/components/web_app_constants.h"
+#include "chrome/browser/web_applications/components/web_application_info.h"
+#include "extensions/common/constants.h"
+
 namespace content {
 class BrowserContext;
 }
@@ -34,27 +40,27 @@ bool BookmarkAppIsLocallyInstalled(content::BrowserContext* context,
 bool BookmarkAppIsLocallyInstalled(const ExtensionPrefs* prefs,
                                    const Extension* extension);
 
-// Returns true if a bookmark or hosted app from a given URL is already
-// installed and enabled.
-bool BookmarkOrHostedAppInstalled(content::BrowserContext* browser_context,
-                                  const GURL& url);
-
 // Generates a scope based on |launch_url| and checks if the |url| falls under
 // it. https://www.w3.org/TR/appmanifest/#navigation-scope
 bool IsInNavigationScopeForLaunchUrl(const GURL& launch_url, const GURL& url);
-
-// Finds the first Shortcut App (a non-PWA Bookmark App) with |url| in its
-// scope, returns nullptr if there are none.
-const Extension* GetInstalledShortcutForUrl(
-    content::BrowserContext* browser_context,
-    const GURL& url);
 
 // Count a number of all bookmark apps which are installed by user
 // (non default-installed apps).
 int CountUserInstalledBookmarkApps(content::BrowserContext* browser_context);
 
-// Returns whether the given |url| is a valid user bookmark app url.
-bool IsValidBookmarkAppUrl(const GURL& url);
+std::vector<SquareSizePx> GetBookmarkAppDownloadedIconSizes(
+    const Extension* extension);
+
+std::vector<IconSizes> GetBookmarkAppDownloadedShortcutsMenuIconsSizes(
+    const Extension* extension);
+
+struct LaunchContainerAndType {
+  extensions::LaunchContainer launch_container;
+  extensions::LaunchType launch_type;
+};
+
+LaunchContainerAndType GetLaunchContainerAndTypeFromDisplayMode(
+    web_app::DisplayMode display_mode);
 
 }  // namespace extensions
 

@@ -25,7 +25,6 @@
       "fileSystem": ["requestFileSystem", "write"]
     },
     "fullscreen",
-    "mediaPlayerPrivate",
     "metricsPrivate",
     "power",
     "storage",
@@ -58,18 +57,12 @@
   },
   "app": {
     "background": {
-      "scripts": [
-        "chrome://resources/js/cr.js",
-        "chrome://resources/js/cr/event_target.js",
-        "chrome://resources/js/cr/ui/array_data_model.js",
-        "chrome://resources/js/load_time_data.js",
-        "chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/background/js/background_common_scripts.js",
-        "js/background_scripts.js"
-      ]
+      "page": "background.html"
     },
     // enhhojjnijigcajfphajepfemndkmdlo is the Dev Media Router component extension ID.
     // pkedcjkdefgpdelpbcmbmeomcjbeemfm is the Stable Media Router component extension ID.
     // ljoplibgfehghmibaoaepfagnmbbfiga is the ui/file_manager/integration_tests component extension ID.
-    "content_security_policy": "default-src 'none'; script-src 'self' blob: filesystem: chrome://resources chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj chrome-extension://enhhojjnijigcajfphajepfemndkmdlo chrome-extension://pkedcjkdefgpdelpbcmbmeomcjbeemfm chrome-extension://ljoplibgfehghmibaoaepfagnmbbfiga; style-src 'self' blob: filesystem: chrome://resources 'unsafe-inline'; img-src 'self' blob: filesystem: chrome://theme chrome://resources data: https://www.googledrive.com; media-src 'self' blob: filesystem:; object-src 'self' blob: filesystem:; font-src chrome://resources;"
+    // connect-src for Polymer: crbug.com/1022018
+    "content_security_policy": "default-src 'none'; script-src 'self' blob: filesystem: chrome://resources chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj chrome-extension://enhhojjnijigcajfphajepfemndkmdlo chrome-extension://pkedcjkdefgpdelpbcmbmeomcjbeemfm chrome-extension://ljoplibgfehghmibaoaepfagnmbbfiga; style-src 'self' blob: filesystem: chrome://resources 'unsafe-inline'; img-src 'self' blob: filesystem: chrome://theme chrome://resources data: https://www.googledrive.com; media-src 'self' blob: filesystem:; object-src 'self' blob: filesystem:; font-src chrome://resources; connect-src chrome://resources;"
   }
 }

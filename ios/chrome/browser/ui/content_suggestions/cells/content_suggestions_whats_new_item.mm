@@ -4,11 +4,13 @@
 
 #import "ios/chrome/browser/ui/content_suggestions/cells/content_suggestions_whats_new_item.h"
 
-#include "base/logging.h"
+#import <MaterialComponents/MaterialTypography.h>
+
+#include "base/check_op.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #include "ios/chrome/common/string_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
-#import "ios/third_party/material_components_ios/src/components/Typography/src/MaterialTypography.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -22,9 +24,6 @@ const CGFloat kLabelIconMargin = 8;
 const CGFloat kLabelFontSize = 14;
 const CGFloat kIconSize = 24;
 const CGFloat kIconTopMargin = 10;
-
-const int kTextColorRGB = 0x333333;
-const int kLinkColorRGB = 0x5595FE;
 
 }  // namespace
 
@@ -159,36 +158,25 @@ const int kLinkColorRGB = 0x5595FE;
 + (void)configureLabel:(UILabel*)promoLabel withText:(NSString*)text {
   promoLabel.font =
       [[MDCTypography fontLoader] regularFontOfSize:kLabelFontSize];
-  promoLabel.textColor = UIColorFromRGB(kTextColorRGB, 1.0);
+  promoLabel.textColor = [UIColor colorNamed:kTextPrimaryColor];
   promoLabel.numberOfLines = 0;
 
-  NSRange linkRange;
-  NSString* strippedText = ParseStringWithLink(text, &linkRange);
-  DCHECK_NE(NSNotFound, static_cast<NSInteger>(linkRange.location));
-  DCHECK_NE(0u, linkRange.length);
-
-  NSMutableAttributedString* attributedText =
-      [[NSMutableAttributedString alloc] initWithString:strippedText];
-
-  // Sets the styling to mimic a link.
-  UIColor* linkColor = UIColorFromRGB(kLinkColorRGB, 1.0);
-  [attributedText addAttribute:NSForegroundColorAttributeName
-                         value:linkColor
-                         range:linkRange];
-  [attributedText addAttribute:NSUnderlineStyleAttributeName
-                         value:@(NSUnderlineStyleSingle)
-                         range:linkRange];
-  [attributedText addAttribute:NSUnderlineColorAttributeName
-                         value:linkColor
-                         range:linkRange];
-
   // Sets the line spacing on the attributed string.
-  NSInteger strLength = [strippedText length];
   NSMutableParagraphStyle* style = [[NSMutableParagraphStyle alloc] init];
   [style setLineSpacing:kLabelLineSpacing];
-  [attributedText addAttribute:NSParagraphStyleAttributeName
-                         value:style
-                         range:NSMakeRange(0, strLength)];
+  NSDictionary* textAttributes = @{
+    NSParagraphStyleAttributeName : style,
+  };
+
+  // Sets the styling to mimic a link.
+  NSDictionary* linkAttributes = @{
+    NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor],
+    NSUnderlineStyleAttributeName : @(NSUnderlineStyleSingle),
+    NSUnderlineColorAttributeName : [UIColor colorNamed:kBlueColor],
+  };
+
+  NSAttributedString* attributedText =
+      AttributedStringFromStringWithLink(text, textAttributes, linkAttributes);
 
   [promoLabel setAttributedText:attributedText];
 }

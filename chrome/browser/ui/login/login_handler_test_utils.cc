@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/login/login_handler_test_utils.h"
 
+#include "base/containers/contains.h"
 #include "chrome/browser/ui/login/login_handler.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -33,7 +34,7 @@ void LoginPromptBrowserTestObserver::Observe(
 }
 
 void LoginPromptBrowserTestObserver::AddHandler(LoginHandler* handler) {
-  ASSERT_FALSE(base::ContainsValue(handlers_, handler));
+  ASSERT_FALSE(base::Contains(handlers_, handler));
   handlers_.push_back(handler);
 }
 

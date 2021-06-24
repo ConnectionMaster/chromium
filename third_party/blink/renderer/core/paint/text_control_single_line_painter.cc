@@ -4,9 +4,11 @@
 
 #include "third_party/blink/renderer/core/paint/text_control_single_line_painter.h"
 
+#include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/layout/layout_text_control_single_line.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "third_party/blink/renderer/core/paint/block_painter.h"
+#include "third_party/blink/renderer/core/paint/box_painter.h"
 #include "third_party/blink/renderer/core/paint/scoped_paint_state.h"
 #include "third_party/blink/renderer/core/paint/theme_painter.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
@@ -17,16 +19,15 @@ void TextControlSingleLinePainter::Paint(const PaintInfo& paint_info) {
   BlockPainter(text_control_).Paint(paint_info);
 
   if (!ShouldPaintSelfBlockBackground(paint_info.phase) ||
-      !text_control_.ShouldDrawCapsLockIndicator())
+      !To<HTMLInputElement>(text_control_.GetNode())
+           ->ShouldDrawCapsLockIndicator())
     return;
 
   if (DrawingRecorder::UseCachedDrawingIfPossible(
           paint_info.context, text_control_, DisplayItem::kCapsLockIndicator))
     return;
-  DrawingRecorder recorder(paint_info.context, text_control_,
-                           DisplayItem::kCapsLockIndicator);
 
-  LayoutRect contents_rect = text_control_.PhysicalContentBoxRect();
+  PhysicalRect contents_rect = text_control_.PhysicalContentBoxRect();
 
   // Center in the block progression direction.
   if (text_control_.IsHorizontalWritingMode()) {
@@ -39,8 +40,12 @@ void TextControlSingleLinePainter::Paint(const PaintInfo& paint_info) {
 
   // Convert the rect into the coords used for painting the content.
   ScopedPaintState paint_state(text_control_, paint_info);
-  contents_rect.MoveBy(paint_state.PaintOffset());
+  contents_rect.Move(paint_state.PaintOffset());
   IntRect snapped_rect = PixelSnappedIntRect(contents_rect);
+
+  BoxDrawingRecorder recorder(paint_info.context, text_control_,
+                              DisplayItem::kCapsLockIndicator,
+                              paint_state.PaintOffset());
   LayoutTheme::GetTheme().Painter().PaintCapsLockIndicator(
       text_control_, paint_state.GetPaintInfo(), snapped_rect);
 }

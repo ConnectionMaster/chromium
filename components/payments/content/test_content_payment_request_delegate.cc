@@ -4,15 +4,24 @@
 
 #include "components/payments/content/test_content_payment_request_delegate.h"
 
+#include <utility>
+
 #include "components/payments/content/payment_manifest_web_data_service.h"
+#include "components/payments/core/error_strings.h"
 
 namespace payments {
 
 TestContentPaymentRequestDelegate::TestContentPaymentRequestDelegate(
+    std::unique_ptr<base::SingleThreadTaskExecutor> task_executor,
     autofill::PersonalDataManager* pdm)
-    : core_delegate_(pdm) {}
+    : core_delegate_(std::move(task_executor), pdm) {}
 
 TestContentPaymentRequestDelegate::~TestContentPaymentRequestDelegate() {}
+
+std::unique_ptr<autofill::InternalAuthenticator>
+TestContentPaymentRequestDelegate::CreateInternalAuthenticator() const {
+  return nullptr;
+}
 
 scoped_refptr<PaymentManifestWebDataService>
 TestContentPaymentRequestDelegate::GetPaymentManifestWebDataService() const {
@@ -24,7 +33,8 @@ TestContentPaymentRequestDelegate::GetDisplayManager() {
   return nullptr;
 }
 
-void TestContentPaymentRequestDelegate::ShowDialog(PaymentRequest* request) {
+void TestContentPaymentRequestDelegate::ShowDialog(
+    base::WeakPtr<PaymentRequest> request) {
   core_delegate_.ShowDialog(request);
 }
 
@@ -48,6 +58,18 @@ bool TestContentPaymentRequestDelegate::IsBrowserWindowActive() const {
   return core_delegate_.IsBrowserWindowActive();
 }
 
+bool TestContentPaymentRequestDelegate::SkipUiForBasicCard() const {
+  return false;
+}
+
+std::string TestContentPaymentRequestDelegate::GetTwaPackageName() const {
+  return "";
+}
+
+PaymentRequestDialog* TestContentPaymentRequestDelegate::GetDialogForTesting() {
+  return nullptr;
+}
+
 autofill::PersonalDataManager*
 TestContentPaymentRequestDelegate::GetPersonalDataManager() {
   return core_delegate_.GetPersonalDataManager();
@@ -58,12 +80,8 @@ const std::string& TestContentPaymentRequestDelegate::GetApplicationLocale()
   return core_delegate_.GetApplicationLocale();
 }
 
-bool TestContentPaymentRequestDelegate::IsIncognito() const {
-  return core_delegate_.IsIncognito();
-}
-
-bool TestContentPaymentRequestDelegate::IsSslCertificateValid() {
-  return core_delegate_.IsSslCertificateValid();
+bool TestContentPaymentRequestDelegate::IsOffTheRecord() const {
+  return core_delegate_.IsOffTheRecord();
 }
 
 const GURL& TestContentPaymentRequestDelegate::GetLastCommittedURL() const {
@@ -107,6 +125,11 @@ bool TestContentPaymentRequestDelegate::IsInteractive() const {
   return true;
 }
 
+std::string
+TestContentPaymentRequestDelegate::GetInvalidSslCertificateErrorMessage() {
+  return "";  // Empty string indicates valid SSL certificate.
+}
+
 autofill::TestAddressNormalizer*
 TestContentPaymentRequestDelegate::test_address_normalizer() {
   return core_delegate_.test_address_normalizer();
@@ -118,6 +141,11 @@ void TestContentPaymentRequestDelegate::DelayFullCardRequestCompletion() {
 
 void TestContentPaymentRequestDelegate::CompleteFullCardRequest() {
   core_delegate_.CompleteFullCardRequest();
+}
+
+const PaymentUIObserver*
+TestContentPaymentRequestDelegate::GetPaymentUIObserver() const {
+  return nullptr;
 }
 
 }  // namespace payments

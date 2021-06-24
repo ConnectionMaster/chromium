@@ -4,6 +4,8 @@
 
 #include "chrome/browser/offline_pages/android/offline_page_auto_fetcher_service_factory.h"
 
+#include <string>
+
 #include "base/memory/singleton.h"
 #include "chrome/browser/offline_pages/android/auto_fetch_notifier.h"
 #include "chrome/browser/offline_pages/android/offline_page_auto_fetcher_service.h"
@@ -15,12 +17,13 @@ namespace offline_pages {
 
 class OfflinePageAutoFetcherServiceFactory::ServiceDelegate final
     : public OfflinePageAutoFetcherService::Delegate {
-  void ShowAutoFetchCompleteNotification(const base::string16& pageTitle,
-                                         const std::string& url,
+  void ShowAutoFetchCompleteNotification(const std::u16string& pageTitle,
+                                         const std::string& original_url,
+                                         const std::string& final_url,
                                          int android_tab_id,
                                          int64_t offline_id) override {
     offline_pages::ShowAutoFetchCompleteNotification(
-        pageTitle, url, android_tab_id, offline_id);
+        pageTitle, original_url, final_url, android_tab_id, offline_id);
   }
 };
 

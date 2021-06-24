@@ -21,7 +21,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PLUGINS_DOM_MIME_TYPE_ARRAY_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PLUGINS_DOM_MIME_TYPE_ARRAY_H_
 
-#include "third_party/blink/renderer/core/execution_context/context_lifecycle_observer.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/page/plugins_changed_observer.h"
 #include "third_party/blink/renderer/modules/plugins/dom_mime_type.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -31,21 +31,17 @@
 namespace blink {
 
 class ExceptionState;
-class LocalFrame;
+class Frame;
+class LocalDOMWindow;
 class PluginData;
 
 class DOMMimeTypeArray final : public ScriptWrappable,
-                               public ContextLifecycleObserver,
+                               public ExecutionContextLifecycleObserver,
                                public PluginsChangedObserver {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(DOMMimeTypeArray);
 
  public:
-  static DOMMimeTypeArray* Create(LocalFrame* frame) {
-    return MakeGarbageCollected<DOMMimeTypeArray>(frame);
-  }
-
-  explicit DOMMimeTypeArray(LocalFrame*);
+  explicit DOMMimeTypeArray(LocalDOMWindow*);
 
   void UpdatePluginData();
 
@@ -55,14 +51,18 @@ class DOMMimeTypeArray final : public ScriptWrappable,
   void NamedPropertyEnumerator(Vector<String>&, ExceptionState&) const;
   bool NamedPropertyQuery(const AtomicString&, ExceptionState&) const;
 
+  static bool ShouldReturnEmptyPluginData(Frame*);
+
   // PluginsChangedObserver implementation.
   void PluginsChanged() override;
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
   PluginData* GetPluginData() const;
-  void ContextDestroyed(ExecutionContext*) override;
+  void ContextDestroyed() override;
+
+  bool ShouldReturnEmptyPluginData() const;
 
   HeapVector<Member<DOMMimeType>> dom_mime_types_;
 };

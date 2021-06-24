@@ -7,8 +7,6 @@
 
 #include <jni.h>
 
-#include <memory>
-
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -43,7 +41,7 @@ class LogoBridge {
 
   search_provider_logos::LogoService* logo_service_;
 
-  base::WeakPtrFactory<LogoBridge> weak_ptr_factory_;
+  base::WeakPtrFactory<LogoBridge> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LogoBridge);
 };

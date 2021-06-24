@@ -11,7 +11,6 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "extensions/browser/content_verifier/content_hash.h"
@@ -44,13 +43,14 @@ namespace internals {
 class ContentHashFetcher {
  public:
   // A callback for when fetch is complete.
-  // The response contents is passed through std::unique_ptr<std::string>.
+  // The response contents is passed through std::unique_ptr<std::string>. In
+  // case of failure the error code is passed as a last argument.
   using HashFetcherCallback =
-      base::OnceCallback<void(const ContentHash::ExtensionKey&,
-                              std::unique_ptr<std::string>)>;
+      base::OnceCallback<void(ContentHash::FetchKey,
+                              std::unique_ptr<std::string>,
+                              ContentHash::FetchErrorCode)>;
 
-  ContentHashFetcher(const ContentHash::ExtensionKey& extension_key,
-                     ContentHash::FetchParams fetch_params);
+  ContentHashFetcher(ContentHash::FetchKey fetch_key);
 
   // Note: |this| is deleted once OnSimpleLoaderComplete() completes.
   void Start(HashFetcherCallback hash_fetcher_callback);
@@ -62,8 +62,7 @@ class ContentHashFetcher {
 
   void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
 
-  ContentHash::ExtensionKey extension_key_;
-  ContentHash::FetchParams fetch_params_;
+  ContentHash::FetchKey fetch_key_;
 
   HashFetcherCallback hash_fetcher_callback_;
 

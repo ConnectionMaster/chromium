@@ -4,12 +4,11 @@
 
 #include "chrome/browser/signin/dice_tab_helper.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/browser/signin/dice_tab_helper.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/ui/browser_finder.h"
-#include "components/signin/core/browser/account_consistency_method.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
@@ -29,11 +28,6 @@ void DiceTabHelper::InitializeSigninFlow(
   DCHECK(signin_url.is_valid());
   DCHECK(signin_url_.is_empty() || signin_url_ == signin_url);
 
-  // The signin page must be loading.
-  DCHECK(web_contents()->GetController().GetPendingEntry());
-  DCHECK_EQ(signin_url,
-            web_contents()->GetController().GetPendingEntry()->GetURL());
-
   signin_url_ = signin_url;
   signin_access_point_ = access_point;
   signin_reason_ = reason;
@@ -41,8 +35,10 @@ void DiceTabHelper::InitializeSigninFlow(
   is_chrome_signin_page_ = true;
   signin_page_load_recorded_ = false;
   redirect_url_ = redirect_url;
+  sync_signin_flow_status_ = SyncSigninFlowStatus::kNotStarted;
 
-  if (reason == signin_metrics::Reason::REASON_SIGNIN_PRIMARY_ACCOUNT) {
+  if (reason == signin_metrics::Reason::kSigninPrimaryAccount) {
+    sync_signin_flow_status_ = SyncSigninFlowStatus::kStarted;
     signin_metrics::LogSigninAccessPointStarted(access_point, promo_action);
     signin_metrics::RecordSigninUserActionForAccessPoint(access_point,
                                                          promo_action);
@@ -52,6 +48,15 @@ void DiceTabHelper::InitializeSigninFlow(
 
 bool DiceTabHelper::IsChromeSigninPage() const {
   return is_chrome_signin_page_;
+}
+
+bool DiceTabHelper::IsSyncSigninInProgress() const {
+  return sync_signin_flow_status_ == SyncSigninFlowStatus::kStarted;
+}
+
+void DiceTabHelper::OnSyncSigninFlowComplete() {
+  // The flow is complete, reset to initial state.
+  sync_signin_flow_status_ = SyncSigninFlowStatus::kNotStarted;
 }
 
 void DiceTabHelper::DidStartNavigation(

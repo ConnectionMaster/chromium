@@ -5,14 +5,10 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_SYNC_DICE_BUBBLE_SYNC_PROMO_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_SYNC_DICE_BUBBLE_SYNC_PROMO_VIEW_H_
 
-#include <memory>
-#include <vector>
-
-#include "base/macros.h"
 #include "chrome/browser/ui/sync/bubble_sync_promo_delegate.h"
-#include "chrome/browser/ui/views/profiles/dice_accounts_menu.h"
-#include "components/signin/core/browser/signin_metrics.h"
-#include "ui/views/controls/button/button.h"
+#include "components/signin/public/base/signin_metrics.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/views/style/typography.h"
 #include "ui/views/view.h"
 
 class Profile;
@@ -26,13 +22,11 @@ class DiceSigninButtonView;
 //   the user to sign in to Chrome.
 // * If Chrome has at least one account, then the promo button is personalized
 //   with the user full name and avatar icon and allows the user to enable sync.
-class DiceBubbleSyncPromoView : public views::View,
-                                public views::ButtonListener {
+class DiceBubbleSyncPromoView : public views::View {
  public:
+  METADATA_HEADER(DiceBubbleSyncPromoView);
   // Creates a personalized sync promo view.
   // |delegate| is not owned by DiceBubbleSyncPromoView.
-  // The promo message is set to |no_accounts_promo_message_resource_id| when
-  // Chrome has no accounts. If no value is given, then no message is shown.
   // The promo message is set to |accounts_promo_message_resource_id| when
   // Chrome has at least one account.
   // If |signin_button_prominent| is false and a non-personalized signin button
@@ -43,14 +37,12 @@ class DiceBubbleSyncPromoView : public views::View,
   DiceBubbleSyncPromoView(Profile* profile,
                           BubbleSyncPromoDelegate* delegate,
                           signin_metrics::AccessPoint access_point,
-                          int no_accounts_promo_message_resource_id = 0,
                           int accounts_promo_message_resource_id = 0,
                           bool signin_button_prominent = true,
                           int text_style = views::style::STYLE_PRIMARY);
+  DiceBubbleSyncPromoView(const DiceBubbleSyncPromoView&) = delete;
+  DiceBubbleSyncPromoView& operator=(const DiceBubbleSyncPromoView&) = delete;
   ~DiceBubbleSyncPromoView() override;
-
-  // views::ButtonListener:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
   // Returns the sign-in button.
   views::View* GetSigninButtonForTesting();
@@ -58,22 +50,10 @@ class DiceBubbleSyncPromoView : public views::View,
  private:
   // Used to enable sync in the DiceAccountsMenu and when |signin_button_| is
   // pressed.
-  void EnableSync(bool is_default_promo_account,
-                  const base::Optional<AccountInfo>& account);
-
-  // views::View:
-  const char* GetClassName() const override;
+  void EnableSync();
 
   // Delegate, to handle clicks on the sign-in buttons.
   BubbleSyncPromoDelegate* delegate_;
   DiceSigninButtonView* signin_button_view_ = nullptr;
-
-  // Accounts submenu that is shown when |signin_button_->drop_down_arrow()| is
-  // pressed.
-  std::unique_ptr<DiceAccountsMenu> dice_accounts_menu_;
-
-  std::vector<AccountInfo> accounts_for_submenu_;
-
-  DISALLOW_COPY_AND_ASSIGN(DiceBubbleSyncPromoView);
 };
 #endif  // CHROME_BROWSER_UI_VIEWS_SYNC_DICE_BUBBLE_SYNC_PROMO_VIEW_H_

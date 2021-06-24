@@ -9,11 +9,10 @@
 #include "base/macros.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/platform_window/platform_window.h"
+#include "ui/platform_window/platform_window_delegate.h"
 #include "ui/platform_window/stub/stub_window_export.h"
 
 namespace ui {
-
-class PlatformWindowDelegate;
 
 // StubWindow is useful for tests, as well as implementations that only care
 // about bounds.
@@ -29,13 +28,14 @@ class STUB_WINDOW_EXPORT StubWindow : public PlatformWindow {
 
  private:
   // PlatformWindow:
-  void Show() override;
+  void Show(bool inactive) override;
   void Hide() override;
   void Close() override;
+  bool IsVisible() const override;
   void PrepareForShutdown() override;
   void SetBounds(const gfx::Rect& bounds) override;
-  gfx::Rect GetBounds() override;
-  void SetTitle(const base::string16& title) override;
+  gfx::Rect GetBounds() const override;
+  void SetTitle(const std::u16string& title) override;
   void SetCapture() override;
   void ReleaseCapture() override;
   void ToggleFullscreen() override;
@@ -44,12 +44,18 @@ class STUB_WINDOW_EXPORT StubWindow : public PlatformWindow {
   void Minimize() override;
   void Restore() override;
   PlatformWindowState GetPlatformWindowState() const override;
-  void SetCursor(PlatformCursor cursor) override;
+  void Activate() override;
+  void Deactivate() override;
+  void SetUseNativeFrame(bool use_native_frame) override;
+  bool ShouldUseNativeFrame() const override;
+  void SetCursor(scoped_refptr<PlatformCursor> cursor) override;
   void MoveCursorTo(const gfx::Point& location) override;
   void ConfineCursorToBounds(const gfx::Rect& bounds) override;
-  PlatformImeController* GetPlatformImeController() override;
   void SetRestoredBoundsInPixels(const gfx::Rect& bounds) override;
   gfx::Rect GetRestoredBoundsInPixels() const override;
+  void SetWindowIcons(const gfx::ImageSkia& window_icon,
+                      const gfx::ImageSkia& app_icon) override;
+  void SizeConstraintsChanged() override;
 
   PlatformWindowDelegate* delegate_;
   gfx::Rect bounds_;

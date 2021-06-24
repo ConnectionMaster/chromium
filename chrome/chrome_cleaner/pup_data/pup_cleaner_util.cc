@@ -4,9 +4,8 @@
 
 #include "chrome/chrome_cleaner/pup_data/pup_cleaner_util.h"
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_util.h"
-#include "base/logging.h"
 #include "chrome/chrome_cleaner/os/file_remover.h"
 #include "chrome/chrome_cleaner/os/layered_service_provider_wrapper.h"
 #include "chrome/chrome_cleaner/pup_data/pup_data.h"
@@ -18,14 +17,10 @@ bool CollectRemovablePupFiles(const std::vector<UwSId>& pup_ids,
                               FilePathSet* pup_files) {
   bool valid_removal = true;
 
-  FilePathSet files_detected_in_services =
-      PUPData::GetFilesDetectedInServices(pup_ids);
-
   auto lsp = chrome_cleaner::LayeredServiceProviderWrapper();
   chrome_cleaner::FileRemover file_remover(digest_verifier,
                                            /*archiver=*/nullptr,
                                            lsp,
-                                           files_detected_in_services,
                                            base::DoNothing());
 
   for (const auto& pup_id : pup_ids) {

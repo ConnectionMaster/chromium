@@ -6,19 +6,27 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
-#include "base/strings/utf_string_conversions.h"
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
+#include "ui/gfx/range/range.h"
 #include "ui/gfx/render_text.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/examples/grit/views_examples_resources.h"
 #include "ui/views/layout/grid_layout.h"
 #include "ui/views/view.h"
 
-using base::ASCIIToUTF16;
+using l10n_util::GetStringUTF16;
+using l10n_util::GetStringUTF8;
 
 namespace views {
 namespace examples {
@@ -51,9 +59,11 @@ class PreferredSizeLabel : public Label {
 // A simple View that hosts a RenderText object.
 class MultilineExample::RenderTextView : public View {
  public:
-  RenderTextView() : render_text_(gfx::RenderText::CreateHarfBuzzInstance()) {
+  RenderTextView() : render_text_(gfx::RenderText::CreateRenderText()) {
     render_text_->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
     render_text_->SetColor(SK_ColorBLACK);
+    render_text_->set_selection_color(SK_ColorBLACK);
+    render_text_->set_selection_background_focused_color(SK_ColorGRAY);
     render_text_->SetMultiline(true);
     SetBorder(CreateSolidBorder(2, SK_ColorGRAY));
   }
@@ -87,7 +97,7 @@ class MultilineExample::RenderTextView : public View {
     return height;
   }
 
-  void SetText(const base::string16& new_contents) {
+  void SetText(const std::u16string& new_contents) {
     // Color and style the text inside |test_range| to test colors and styles.
     const size_t range_max = new_contents.length();
     gfx::Range color_range = ClampRange(gfx::Range(1, 21), range_max);
@@ -111,9 +121,7 @@ class MultilineExample::RenderTextView : public View {
 
  private:
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override {
-    gfx::Rect bounds = GetLocalBounds();
-    bounds.Inset(GetInsets());
-    render_text_->SetDisplayRect(bounds);
+    render_text_->SetDisplayRect(GetContentsBounds());
   }
 
   std::unique_ptr<gfx::RenderText> render_text_;
@@ -121,78 +129,86 @@ class MultilineExample::RenderTextView : public View {
   DISALLOW_COPY_AND_ASSIGN(RenderTextView);
 };
 
-MultilineExample::MultilineExample() : ExampleBase("Multiline RenderText") {}
+MultilineExample::MultilineExample()
+    : ExampleBase(GetStringUTF8(IDS_MULTILINE_SELECT_LABEL).c_str()) {}
 
 MultilineExample::~MultilineExample() = default;
 
 void MultilineExample::CreateExampleView(View* container) {
-  const base::string16 kTestString = base::WideToUTF16(L"qwerty"
-      L"\x627\x644\x631\x626\x64A\x633\x64A\x629"
-      L"asdfgh");
+  const std::u16string kTestString =
+      u"qwerty"
+      u"\x627\x644\x631\x626\x64A\x633\x64A\x629"
+      u"asdfgh";
 
-  render_text_view_ = new RenderTextView();
-  render_text_view_->SetText(kTestString);
+  auto render_text_view = std::make_unique<RenderTextView>();
+  render_text_view->SetText(kTestString);
 
-  label_ = new PreferredSizeLabel();
-  label_->SetText(kTestString);
-  label_->SetMultiLine(true);
-  label_->SetBorder(CreateSolidBorder(2, SK_ColorCYAN));
+  auto label = std::make_unique<PreferredSizeLabel>();
+  label->SetText(kTestString);
+  label->SetMultiLine(true);
+  label->SetBorder(CreateSolidBorder(2, SK_ColorCYAN));
 
-  label_checkbox_ = new Checkbox(ASCIIToUTF16("views::Label:"), this);
-  label_checkbox_->SetChecked(true);
-  label_checkbox_->set_request_focus_on_press(false);
+  auto label_checkbox = std::make_unique<Checkbox>(
+      GetStringUTF16(IDS_MULTILINE_LABEL),
+      base::BindRepeating(
+          [](MultilineExample* example) {
+            example->label_->SetText(example->label_checkbox_->GetChecked()
+                                         ? example->textfield_->GetText()
+                                         : std::u16string());
+          },
+          base::Unretained(this)));
+  label_checkbox->SetChecked(true);
+  label_checkbox->SetRequestFocusOnPress(false);
 
-  elision_checkbox_ = new Checkbox(ASCIIToUTF16("elide text?"), this);
-  elision_checkbox_->SetChecked(false);
-  elision_checkbox_->set_request_focus_on_press(false);
+  auto elision_checkbox = std::make_unique<Checkbox>(
+      GetStringUTF16(IDS_MULTILINE_ELIDE_LABEL),
+      base::BindRepeating(
+          [](MultilineExample* example) {
+            example->render_text_view_->SetMaxLines(
+                example->elision_checkbox_->GetChecked() ? 3 : 0);
+          },
+          base::Unretained(this)));
+  elision_checkbox->SetChecked(false);
+  elision_checkbox->SetRequestFocusOnPress(false);
 
-  textfield_ = new Textfield();
-  textfield_->set_controller(this);
-  textfield_->SetText(kTestString);
+  auto textfield = std::make_unique<Textfield>();
+  textfield->set_controller(this);
+  textfield->SetText(kTestString);
 
-  GridLayout* layout = container->SetLayoutManager(
-      std::make_unique<views::GridLayout>(container));
+  GridLayout* layout =
+      container->SetLayoutManager(std::make_unique<views::GridLayout>());
 
   ColumnSet* column_set = layout->AddColumnSet(0);
-  column_set->AddColumn(GridLayout::LEADING, GridLayout::CENTER,
-      0.0f, GridLayout::USE_PREF, 0, 0);
-  column_set->AddColumn(GridLayout::FILL, GridLayout::FILL,
-      1.0f, GridLayout::FIXED, 0, 0);
+  column_set->AddColumn(GridLayout::LEADING, GridLayout::CENTER, 0.0f,
+                        GridLayout::ColumnSize::kUsePreferred, 0, 0);
+  column_set->AddColumn(GridLayout::FILL, GridLayout::FILL, 1.0f,
+                        GridLayout::ColumnSize::kFixed, 0, 0);
 
   layout->StartRow(0, 0);
-  layout->AddView(new Label(ASCIIToUTF16("gfx::RenderText:")));
-  layout->AddView(render_text_view_);
+  layout->AddView(
+      std::make_unique<Label>(GetStringUTF16(IDS_MULTILINE_RENDER_TEXT_LABEL)));
+  render_text_view_ = layout->AddView(std::move(render_text_view));
 
   layout->StartRow(0, 0);
-  layout->AddView(label_checkbox_);
-  layout->AddView(label_);
+  label_checkbox_ = layout->AddView(std::move(label_checkbox));
+  label_ = layout->AddView(std::move(label));
 
   layout->StartRow(0, 0);
-  layout->AddView(elision_checkbox_);
+  elision_checkbox_ = layout->AddView(std::move(elision_checkbox));
 
   layout->StartRow(0, 0);
-  layout->AddView(new Label(ASCIIToUTF16("Sample Text:")));
-  layout->AddView(textfield_);
+  layout->AddView(
+      std::make_unique<Label>(GetStringUTF16(IDS_MULTILINE_SAMPLE_TEXT_LABEL)));
+  textfield_ = layout->AddView(std::move(textfield));
 }
 
 void MultilineExample::ContentsChanged(Textfield* sender,
-                                       const base::string16& new_contents) {
+                                       const std::u16string& new_contents) {
   render_text_view_->SetText(new_contents);
-  if (label_checkbox_->checked())
+  if (label_checkbox_->GetChecked())
     label_->SetText(new_contents);
-  container()->InvalidateLayout();
-  container()->SchedulePaint();
-}
-
-void MultilineExample::ButtonPressed(Button* sender, const ui::Event& event) {
-  if (sender == label_checkbox_) {
-    label_->SetText(label_checkbox_->checked() ? textfield_->text()
-                                               : base::string16());
-  } else if (sender == elision_checkbox_) {
-    render_text_view_->SetMaxLines(elision_checkbox_->checked() ? 3 : 0);
-  }
-  container()->InvalidateLayout();
-  container()->SchedulePaint();
+  example_view()->InvalidateLayout();
+  example_view()->SchedulePaint();
 }
 
 }  // namespace examples

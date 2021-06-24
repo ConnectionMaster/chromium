@@ -7,6 +7,7 @@
 #include <array>
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "components/offline_pages/core/offline_clock.h"
@@ -248,8 +249,7 @@ StaleEntryFinalizerTask::StaleEntryFinalizerTask(
     PrefetchDispatcher* prefetch_dispatcher,
     PrefetchStore* prefetch_store)
     : prefetch_dispatcher_(prefetch_dispatcher),
-      prefetch_store_(prefetch_store),
-      weak_ptr_factory_(this) {
+      prefetch_store_(prefetch_store) {
   DCHECK(prefetch_dispatcher_);
   DCHECK(prefetch_store_);
 }

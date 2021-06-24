@@ -4,10 +4,11 @@
 
 #include "remoting/protocol/ice_transport.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "remoting/protocol/channel_authenticator.h"
 #include "remoting/protocol/channel_multiplexer.h"
-#include "remoting/protocol/native_ip_synthesizer.h"
 #include "remoting/protocol/pseudotcp_channel_factory.h"
 #include "remoting/protocol/secure_channel_factory.h"
 #include "remoting/protocol/stream_channel_factory.h"
@@ -27,10 +28,7 @@ static const char kMuxChannelName[] = "mux";
 
 IceTransport::IceTransport(scoped_refptr<TransportContext> transport_context,
                            EventHandler* event_handler)
-    : transport_context_(transport_context),
-      event_handler_(event_handler),
-      weak_factory_(this) {
-  transport_context_->set_relay_mode(TransportContext::RelayMode::GTURN);
+    : transport_context_(transport_context), event_handler_(event_handler) {
   transport_context->Prepare();
 }
 
@@ -45,12 +43,14 @@ void IceTransport::Start(
   DCHECK(!pseudotcp_channel_factory_);
 
   send_transport_info_callback_ = std::move(send_transport_info_callback);
-  pseudotcp_channel_factory_.reset(new PseudoTcpChannelFactory(this));
-  secure_channel_factory_.reset(new SecureChannelFactory(
-      pseudotcp_channel_factory_.get(), authenticator));
-  message_channel_factory_.reset(new StreamMessageChannelFactoryAdapter(
-      secure_channel_factory_.get(),
-      base::Bind(&IceTransport::OnChannelError, weak_factory_.GetWeakPtr())));
+  pseudotcp_channel_factory_ = std::make_unique<PseudoTcpChannelFactory>(this);
+  secure_channel_factory_ = std::make_unique<SecureChannelFactory>(
+      pseudotcp_channel_factory_.get(), authenticator);
+  message_channel_factory_ =
+      std::make_unique<StreamMessageChannelFactoryAdapter>(
+          secure_channel_factory_.get(),
+          base::BindRepeating(&IceTransport::OnChannelError,
+                              weak_factory_.GetWeakPtr()));
 }
 
 bool IceTransport::ProcessTransportInfo(jingle_xmpp::XmlElement* transport_info_xml) {
@@ -73,8 +73,6 @@ bool IceTransport::ProcessTransportInfo(jingle_xmpp::XmlElement* transport_info_
   for (auto it = transport_info.candidates.begin();
        it != transport_info.candidates.end(); ++it) {
     auto channel = channels_.find(it->name);
-    rtc::SocketAddress address = ToNativeSocket(it->candidate.address());
-    it->candidate.set_address(address);
     if (channel != channels_.end()) {
       channel->second->AddRemoteCandidate(it->candidate);
     } else {
@@ -93,22 +91,23 @@ MessageChannelFactory* IceTransport::GetChannelFactory() {
 
 MessageChannelFactory* IceTransport::GetMultiplexedChannelFactory() {
   if (!channel_multiplexer_) {
-    channel_multiplexer_.reset(
-        new ChannelMultiplexer(secure_channel_factory_.get(), kMuxChannelName));
-    mux_channel_factory_.reset(new StreamMessageChannelFactoryAdapter(
+    channel_multiplexer_ = std::make_unique<ChannelMultiplexer>(
+        secure_channel_factory_.get(), kMuxChannelName);
+    mux_channel_factory_ = std::make_unique<StreamMessageChannelFactoryAdapter>(
         channel_multiplexer_.get(),
-        base::Bind(&IceTransport::OnChannelError, weak_factory_.GetWeakPtr())));
+        base::BindRepeating(&IceTransport::OnChannelError,
+                            weak_factory_.GetWeakPtr()));
   }
   return mux_channel_factory_.get();
 }
 
 void IceTransport::CreateChannel(const std::string& name,
-                                 const ChannelCreatedCallback& callback) {
+                                 ChannelCreatedCallback callback) {
   DCHECK(!channels_[name]);
 
   std::unique_ptr<IceTransportChannel> channel(
       new IceTransportChannel(transport_context_));
-  channel->Connect(name, this, callback);
+  channel->Connect(name, this, std::move(callback));
   AddPendingRemoteTransportInfo(channel.get());
   channels_[name] = channel.release();
 }
@@ -182,7 +181,7 @@ void IceTransport::EnsurePendingTransportInfoMessage() {
             transport_info_timer_.IsRunning());
 
   if (!pending_transport_info_message_) {
-    pending_transport_info_message_.reset(new IceTransportInfo());
+    pending_transport_info_message_ = std::make_unique<IceTransportInfo>();
     // Delay sending the new candidates in case we get more candidates
     // that we can send in one message.
     transport_info_timer_.Start(

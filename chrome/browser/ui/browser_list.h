@@ -14,6 +14,11 @@
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "build/build_config.h"
+
+#if defined(OS_ANDROID)
+#error This file should only be included on desktop.
+#endif
 
 class Browser;
 class Profile;
@@ -29,7 +34,7 @@ class BrowserList {
  public:
   using BrowserSet = base::flat_set<Browser*>;
   using BrowserVector = std::vector<Browser*>;
-  using CloseCallback = base::Callback<void(const base::FilePath&)>;
+  using CloseCallback = base::RepeatingCallback<void(const base::FilePath&)>;
   using const_iterator = BrowserVector::const_iterator;
   using const_reverse_iterator = BrowserVector::const_reverse_iterator;
 
@@ -67,6 +72,11 @@ class BrowserList {
   // so notify and THEN delete the object.
   static void AddBrowser(Browser* browser);
   static void RemoveBrowser(Browser* browser);
+
+  // Appends active browser windows to |last_active_browsers_|, and prepends
+  // minimized browser windows to |last_active_browsers_|, i.e., treat
+  // minimized windows as least recently active.
+  static void AddBrowserToActiveList(Browser* browser);
 
   // Adds and removes |observer| from the observer list for all desktops.
   // Observers are responsible for making sure the notifying browser is relevant
@@ -116,18 +126,27 @@ class BrowserList {
       const CloseCallback& on_close_aborted,
       bool skip_beforeunload);
 
-  // Returns true if at least one incognito session is active across all
+  // Returns true if at least one off-the-record browser is active across all
   // desktops.
-  static bool IsIncognitoSessionActive();
+  static bool IsOffTheRecordBrowserActive();
 
-  // Returns the number of active incognito sessions for |profile| across all
-  // desktops. Note that this function does not count devtools windows opened
-  // for incognito windows.
-  static int GetIncognitoSessionsActiveForProfile(Profile* profile);
+  // Returns the number of active off-the-record browsers for |profile| across
+  // all desktops. Note that this function does not count devtools windows
+  // opened for off-the-record windows.
+  static int GetOffTheRecordBrowsersActiveForProfile(Profile* profile);
 
-  // Returns true if the incognito session for |profile| is in use in any window
-  // across all desktops. This function considers devtools windows as well.
-  static bool IsIncognitoSessionInUse(Profile* profile);
+  // Returns the number of active incognito browsers except devtools windows
+  // across all desktops.
+  static size_t GetIncognitoBrowserCount();
+
+  // Returns the number of active guest browsers except devtools windows
+  // across all desktops.
+  static size_t GetGuestBrowserCount();
+
+  // Returns true if the off-the-record browser for |profile| is in use in any
+  // window across all desktops. This function considers devtools windows as
+  // well.
+  static bool IsOffTheRecordBrowserInUse(Profile* profile);
 
  private:
   BrowserList();
@@ -167,7 +186,8 @@ class BrowserList {
   // A vector of the browsers in this list, in the order they were added.
   BrowserVector browsers_;
   // A vector of the browsers in this list that have been activated, in the
-  // reverse order in which they were last activated.
+  // reverse order in which they were last activated. Minimized browser windows,
+  // (e.g., created by session restore) are inserted at the front of the list.
   BrowserVector last_active_browsers_;
   // A vector of the browsers that are currently in the closing state.
   BrowserSet currently_closing_browsers_;

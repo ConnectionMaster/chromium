@@ -9,7 +9,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/local_discovery/service_discovery_client_impl.h"
 #include "net/base/net_errors.h"
@@ -202,8 +202,8 @@ class MockServiceWatcherClient {
                void(ServiceWatcher::UpdateType, const std::string&));
 
   ServiceWatcher::UpdatedCallback GetCallback() {
-    return base::Bind(&MockServiceWatcherClient::OnServiceUpdated,
-                      base::Unretained(this));
+    return base::BindRepeating(&MockServiceWatcherClient::OnServiceUpdated,
+                               base::Unretained(this));
   }
 };
 
@@ -219,7 +219,7 @@ class ServiceDiscoveryTest : public ::testing::Test {
  protected:
   void RunFor(base::TimeDelta time_period) {
     base::RunLoop run_loop;
-    base::CancelableCallback<void()> callback(run_loop.QuitWhenIdleClosure());
+    base::CancelableOnceClosure callback(run_loop.QuitWhenIdleClosure());
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE, callback.callback(), time_period);
     run_loop.Run();
@@ -231,7 +231,8 @@ class ServiceDiscoveryTest : public ::testing::Test {
   net::MockMDnsSocketFactory socket_factory_;
   net::MDnsClientImpl mdns_client_;
   ServiceDiscoveryClientImpl service_discovery_client_;
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 };
 
 TEST_F(ServiceDiscoveryTest, AddRemoveService) {
@@ -439,9 +440,9 @@ class ServiceResolverTest : public ServiceDiscoveryTest {
 
   void SetUp() override {
     resolver_ = service_discovery_client_.CreateServiceResolver(
-                    "hello._privet._tcp.local",
-                     base::Bind(&ServiceResolverTest::OnFinishedResolving,
-                                base::Unretained(this)));
+        "hello._privet._tcp.local",
+        base::BindOnce(&ServiceResolverTest::OnFinishedResolving,
+                       base::Unretained(this)));
   }
 
   void OnFinishedResolving(ServiceResolver::RequestStatus request_status,

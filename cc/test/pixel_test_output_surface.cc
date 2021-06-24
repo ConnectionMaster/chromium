@@ -12,23 +12,24 @@
 #include "components/viz/service/display/output_surface_frame.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "third_party/khronos/GLES2/gl2.h"
+#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/presentation_feedback.h"
+#include "ui/gfx/swap_result.h"
 #include "ui/gfx/transform.h"
-#include "ui/gl/gl_utils.h"
 
 namespace cc {
 
 PixelTestOutputSurface::PixelTestOutputSurface(
     scoped_refptr<viz::ContextProvider> context_provider,
-    bool flipped_output_surface)
-    : OutputSurface(std::move(context_provider)), weak_ptr_factory_(this) {
-  capabilities_.flipped_output_surface = flipped_output_surface;
+    gfx::SurfaceOrigin origin)
+    : OutputSurface(std::move(context_provider)) {
+  capabilities_.output_surface_origin = origin;
   capabilities_.supports_stencil = true;
 }
 
 PixelTestOutputSurface::PixelTestOutputSurface(
     std::unique_ptr<viz::SoftwareOutputDevice> software_device)
-    : OutputSurface(std::move(software_device)), weak_ptr_factory_(this) {
+    : OutputSurface(std::move(software_device)) {
   capabilities_.supports_stencil = true;
 }
 
@@ -46,19 +47,18 @@ void PixelTestOutputSurface::BindFramebuffer() {
   context_provider()->ContextGL()->BindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void PixelTestOutputSurface::SetDrawRectangle(const gfx::Rect& rect) {}
-
 void PixelTestOutputSurface::Reshape(const gfx::Size& size,
                                      float device_scale_factor,
                                      const gfx::ColorSpace& color_space,
-                                     bool has_alpha,
+                                     gfx::BufferFormat format,
                                      bool use_stencil) {
   // External stencil test cannot be tested at the same time as |use_stencil|.
   DCHECK(!use_stencil || !external_stencil_test_);
   if (context_provider()) {
+    const bool has_alpha = gfx::AlphaBitsForBufferFormat(format);
     context_provider()->ContextGL()->ResizeCHROMIUM(
         size.width(), size.height(), device_scale_factor,
-        gl::GetGLColorSpace(color_space), has_alpha);
+        color_space.AsGLColorSpace(), has_alpha);
   } else {
     software_device()->Resize(size, device_scale_factor);
   }
@@ -77,14 +77,12 @@ void PixelTestOutputSurface::SwapBuffers(viz::OutputSurfaceFrame frame) {
 }
 
 void PixelTestOutputSurface::SwapBuffersCallback() {
-  client_->DidReceiveSwapBuffersAck();
+  base::TimeTicks now = base::TimeTicks::Now();
+  gfx::SwapTimings timings = {now, now};
+  client_->DidReceiveSwapBuffersAck(timings,
+                                    /*release_fence=*/gfx::GpuFenceHandle());
   client_->DidReceivePresentationFeedback(
       gfx::PresentationFeedback(base::TimeTicks::Now(), base::TimeDelta(), 0));
-}
-
-viz::OverlayCandidateValidator*
-PixelTestOutputSurface::GetOverlayCandidateValidator() const {
-  return nullptr;
 }
 
 bool PixelTestOutputSurface::IsDisplayedAsOverlayPlane() const {
@@ -93,10 +91,6 @@ bool PixelTestOutputSurface::IsDisplayedAsOverlayPlane() const {
 
 unsigned PixelTestOutputSurface::GetOverlayTextureId() const {
   return 0;
-}
-
-gfx::BufferFormat PixelTestOutputSurface::GetOverlayBufferFormat() const {
-  return gfx::BufferFormat::RGBX_8888;
 }
 
 uint32_t PixelTestOutputSurface::GetFramebufferCopyTextureFormat() {
@@ -108,6 +102,13 @@ uint32_t PixelTestOutputSurface::GetFramebufferCopyTextureFormat() {
 
 unsigned PixelTestOutputSurface::UpdateGpuFence() {
   return 0;
+}
+
+void PixelTestOutputSurface::SetUpdateVSyncParametersCallback(
+    viz::UpdateVSyncParametersCallback callback) {}
+
+gfx::OverlayTransform PixelTestOutputSurface::GetDisplayTransform() {
+  return gfx::OVERLAY_TRANSFORM_NONE;
 }
 
 }  // namespace cc

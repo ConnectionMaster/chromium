@@ -67,14 +67,14 @@ class SecureChannel : public ConnectionObserver {
 
   class Factory {
    public:
-    static std::unique_ptr<SecureChannel> NewInstance(
+    static std::unique_ptr<SecureChannel> Create(
         std::unique_ptr<Connection> connection);
 
-    static void SetInstanceForTesting(Factory* factory);
+    static void SetFactoryForTesting(Factory* factory);
 
    protected:
-    virtual std::unique_ptr<SecureChannel> BuildInstance(
-        std::unique_ptr<Connection> connection);
+    virtual std::unique_ptr<SecureChannel> CreateInstance(
+        std::unique_ptr<Connection> connection) = 0;
 
    private:
     static Factory* factory_instance_;
@@ -96,13 +96,13 @@ class SecureChannel : public ConnectionObserver {
   virtual void RemoveObserver(Observer* observer);
 
   // Returns the RSSI of the connection; if no derived class overrides this
-  // function, base::nullopt is returned.
+  // function, absl::nullopt is returned.
   virtual void GetConnectionRssi(
-      base::OnceCallback<void(base::Optional<int32_t>)> callback);
+      base::OnceCallback<void(absl::optional<int32_t>)> callback);
 
   // The |responder_auth| message. Returns null if |secure_context_| is null or
   // status() != AUTHENTICATED.
-  virtual base::Optional<std::string> GetChannelBindingData();
+  virtual absl::optional<std::string> GetChannelBindingData();
 
   Status status() const { return status_; }
 
@@ -156,7 +156,7 @@ class SecureChannel : public ConnectionObserver {
   std::unique_ptr<PendingMessage> pending_message_;
   int next_sequence_number_ = 0;
   base::ObserverList<Observer>::Unchecked observer_list_;
-  base::WeakPtrFactory<SecureChannel> weak_ptr_factory_;
+  base::WeakPtrFactory<SecureChannel> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SecureChannel);
 };

@@ -9,11 +9,15 @@
 #include "ash/public/cpp/app_list/app_list_config.h"
 #include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/chromeos/arc/icon_decode_request.h"
+#include "chrome/browser/apps/app_service/app_icon_factory.h"
+#include "chrome/browser/ash/arc/icon_decode_request.h"
 #include "chrome/browser/ui/app_list/app_list_controller_delegate.h"
+#include "chrome/browser/ui/app_list/search/search_tags_util.h"
+#include "chrome/common/chrome_features.h"
 #include "components/arc/arc_service_manager.h"
 #include "components/arc/session/arc_bridge_service.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "ui/base/models/simple_menu_model.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -40,7 +44,7 @@ bool LaunchIntent(const std::string& intent_uri, int64_t display_id) {
 
   if (auto* app_instance =
           ARC_GET_INSTANCE_FOR_METHOD(app, LaunchIntentDeprecated)) {
-    app_instance->LaunchIntentDeprecated(intent_uri, base::nullopt);
+    app_instance->LaunchIntentDeprecated(intent_uri, absl::nullopt);
     return true;
   }
 
@@ -51,7 +55,7 @@ bool LaunchIntent(const std::string& intent_uri, int64_t display_id) {
 class AvatarImageSource : public gfx::CanvasImageSource {
  public:
   AvatarImageSource(gfx::ImageSkia avatar, int size)
-      : CanvasImageSource(gfx::Size(size, size), false), radius_(size / 2) {
+      : CanvasImageSource(gfx::Size(size, size)), radius_(size / 2) {
     avatar_ = gfx::ImageSkiaOperations::CreateResizedImage(
         avatar, skia::ImageOperations::RESIZE_BEST, gfx::Size(size, size));
   }
@@ -77,21 +81,47 @@ class AvatarImageSource : public gfx::CanvasImageSource {
 
 ArcAppDataSearchResult::ArcAppDataSearchResult(
     arc::mojom::AppDataResultPtr data,
-    AppListControllerDelegate* list_controller)
-    : data_(std::move(data)),
-      list_controller_(list_controller),
-      weak_ptr_factory_(this) {
-  SetTitle(base::UTF8ToUTF16(data_->label));
+    AppListControllerDelegate* list_controller,
+    const std::u16string& query)
+    : data_(std::move(data)), list_controller_(list_controller) {
+  const std::u16string title = base::UTF8ToUTF16(data_->label);
+  SetTitle(title);
+  SetTitleTags(CalculateTags(query, title));
   set_id(kAppDataSearchPrefix + launch_intent_uri());
   if (data_->type == arc::mojom::AppDataResultType::PERSON) {
     SetDisplayType(ash::SearchResultDisplayType::kTile);
+    SetMetricsType(ash::APP_DATA_RESULT_PERSON);
   } else if (data_->type == arc::mojom::AppDataResultType::NOTE_DOCUMENT) {
-    SetDetails(base::UTF8ToUTF16(data_->text));
+    const std::u16string details = base::UTF8ToUTF16(data_->text);
+    SetDetails(details);
+    SetDetailsTags(CalculateTags(query, details));
     SetDisplayType(ash::SearchResultDisplayType::kList);
+    SetMetricsType(ash::APP_DATA_RESULT_NOTE_DOCUMENT);
+  } else {
+    NOTREACHED();
+    SetMetricsType(ash::SEARCH_RESULT_TYPE_BOUNDARY);
   }
 
   // TODO(warx): set default images when icon_png_data() is not available.
-  if (!icon_png_data()) {
+  if (base::FeatureList::IsEnabled(features::kAppServiceAdaptiveIcon)) {
+    if (!data_->icon) {
+      SetIcon(gfx::ImageSkia());
+      return;
+    }
+
+    apps::ArcRawIconPngDataToImageSkia(
+        std::move(data_->icon),
+        ash::SharedAppListConfig::instance().search_tile_icon_dimension(),
+        base::BindOnce(&ArcAppDataSearchResult::ApplyIcon,
+                       weak_ptr_factory_.GetWeakPtr()));
+    return;
+  }
+
+  // TODO(crbug.com/1083331): Remove the checking !data_->icon_png_data, when
+  // the ARC change is rolled in Chrome OS.
+  if ((!data_->icon || !data_->icon->icon_png_data ||
+       data_->icon->icon_png_data->empty()) &&
+      !data_->icon_png_data) {
     SetIcon(gfx::ImageSkia());
     return;
   }
@@ -99,7 +129,7 @@ ArcAppDataSearchResult::ArcAppDataSearchResult(
   icon_decode_request_ = std::make_unique<arc::IconDecodeRequest>(
       base::BindOnce(&ArcAppDataSearchResult::ApplyIcon,
                      weak_ptr_factory_.GetWeakPtr()),
-      app_list::AppListConfig::instance().search_tile_icon_dimension());
+      ash::SharedAppListConfig::instance().search_tile_icon_dimension());
   icon_decode_request_->StartWithOptions(icon_png_data().value());
 }
 
@@ -123,18 +153,6 @@ void ArcAppDataSearchResult::ApplyIcon(const gfx::ImageSkia& icon) {
     return;
   }
   SetIcon(icon);
-}
-
-SearchResultType ArcAppDataSearchResult::GetSearchResultType() const {
-  switch (data_->type) {
-    case arc::mojom::AppDataResultType::PERSON:
-      return APP_DATA_RESULT_PERSON;
-    case arc::mojom::AppDataResultType::NOTE_DOCUMENT:
-      return APP_DATA_RESULT_NOTE_DOCUMENT;
-    default:
-      NOTREACHED();
-      return SEARCH_RESULT_TYPE_BOUNDARY;
-  }
 }
 
 }  // namespace app_list

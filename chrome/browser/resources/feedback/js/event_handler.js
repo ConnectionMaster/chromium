@@ -9,11 +9,6 @@
  * @const
  */
 const FEEDBACK_WIDTH = 500;
-/**
- * @type {number}
- * @const
- */
-const FEEDBACK_HEIGHT = 610;
 
 /**
  * @type {string}
@@ -21,11 +16,12 @@ const FEEDBACK_HEIGHT = 610;
  */
 const FEEDBACK_DEFAULT_WINDOW_ID = 'default_window';
 
+// List of extension IDs that are permitted to invoke Feedback.
 // To generate a hashed extension ID, use a sha-1 hash, all in lower case.
 // Example:
 //   echo -n 'abcdefghijklmnopqrstuvwxyzabcdef' | sha1sum | \
 //       awk '{print toupper($1)}'
-const whitelistedExtensionIds = [
+const feedbackCallerExtensions = [
   '12E618C3C6E97495AAECF2AC12DEB082353241C6',  // QuickOffice
   '3727DD3E564B6055387425027AD74C58784ACC15',  // QuickOffice
   '2FC374607C2DF285634B67C64A2E356C607091C3',  // QuickOffice
@@ -83,6 +79,8 @@ const whitelistedExtensionIds = [
   'C2ABD68C33A5B485971C9638B80D6A2E9CBA78C4',  // http://crbug.com/908458
   'B41E7F08E1179CC03CBD1F49E57CF353A40ADE07',  // http://crbug.com/908458
   'A948368FC53BE437A55FEB414106E207925482F5',  // ChromeOS Files App.
+  '754A9CB3C8623093180E10CF4C3AB64837179E68',  // https://crbug.com/1201800
+  'CF6B19571334F49878327D557597D23B1458AA39',  // https://crbug.com/1201800
 ];
 
 /**
@@ -185,7 +183,9 @@ class FeedbackRequest {
         this.feedbackInfo_, function(result, landingPageType) {
           if (result == chrome.feedbackPrivate.Status.SUCCESS) {
             console.log('Feedback: Report sent for request with ID ' + ID);
-            if (FLOW != chrome.feedbackPrivate.FeedbackFlow.LOGIN) {
+            if (FLOW != chrome.feedbackPrivate.FeedbackFlow.LOGIN &&
+                landingPageType !=
+                    chrome.feedbackPrivate.LandingPageType.NO_LANDING_PAGE) {
               const landingPage = landingPageType ==
                       chrome.feedbackPrivate.LandingPageType.NORMAL ?
                   FEEDBACK_LANDING_PAGE :
@@ -219,16 +219,16 @@ class FeedbackRequest {
 }
 
 /**
- * Function to determine whether or not a given extension id is whitelisted to
- * invoke the feedback UI. If the extension is whitelisted, the callback to
- * start the Feedback UI will be called.
+ * Function to determine whether or not a given extension id is allowed to
+ * invoke the feedback UI. If it is, the callback to start the Feedback UI will
+ * be called.
  * @param {string} id the id of the sender extension.
  * @param {Function} startFeedbackCallback The callback function that will
  *     will start the feedback UI.
  * @param {Object} feedbackInfo The feedback info object to pass to the
  *     start feedback UI callback.
  */
-function senderWhitelisted(id, startFeedbackCallback, feedbackInfo) {
+function invokeFeedbackIfPermitted(id, startFeedbackCallback, feedbackInfo) {
   crypto.subtle.digest('SHA-1', new TextEncoder().encode(id))
       .then(function(hashBuffer) {
         let hashString = '';
@@ -238,7 +238,7 @@ function senderWhitelisted(id, startFeedbackCallback, feedbackInfo) {
           hashString += n < 0x10 ? '0' : '';
           hashString += n.toString(16);
         }
-        if (whitelistedExtensionIds.indexOf(hashString.toUpperCase()) != -1) {
+        if (feedbackCallerExtensions.indexOf(hashString.toUpperCase()) != -1) {
           startFeedbackCallback(feedbackInfo);
         }
       });
@@ -265,7 +265,7 @@ function feedbackReadyHandler(request, sender, sendResponse) {
  */
 function requestFeedbackHandler(request, sender, sendResponse) {
   if (request.requestFeedback) {
-    senderWhitelisted(sender.id, startFeedbackUI, request.feedbackInfo);
+    invokeFeedbackIfPermitted(sender.id, startFeedbackUI, request.feedbackInfo);
   }
 }
 
@@ -285,7 +285,9 @@ function startFeedbackUI(feedbackInfo) {
         id: FEEDBACK_DEFAULT_WINDOW_ID,
         innerBounds: {
           minWidth: FEEDBACK_WIDTH,
-          minHeight: FEEDBACK_HEIGHT,
+        },
+        outerBounds: {
+          maxHeight: window.screen.availHeight,
         },
         hidden: true,
         resizable: false

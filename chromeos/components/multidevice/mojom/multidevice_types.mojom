@@ -32,7 +32,21 @@ enum SoftwareFeature {
   // SMS Connect gives users the ability to read and reply to their text
   // messages from their Chromebooks.
   SMS_CONNECT_HOST = 7,
-  SMS_CONNECT_CLIENT = 8
+  SMS_CONNECT_CLIENT = 8,
+
+  // Phone Hub allows users to view phone metadata and send commands to their
+  // phone directly from the Chrome OS UI.
+  PHONE_HUB_HOST = 9,
+  PHONE_HUB_CLIENT = 10,
+
+  // Wifi Sync with Android allows users to sync wifi network configurations
+  // between Chrome OS devices and a connected Android phone
+  WIFI_SYNC_HOST = 11,
+  WIFI_SYNC_CLIENT = 12,
+
+  // Eche
+  ECHE_HOST = 13,
+  ECHE_CLIENT = 14
 };
 
 // Enumeration of what value a SoftwareFeature can be.
@@ -58,8 +72,12 @@ struct RemoteDevice {
   // human-readable (i.e., it does not contain non-ASCII characters).
   string device_id;
 
-  // Identifier for the user to whom this device is registered.
-  string user_id;
+  // Email for the user to whom this device is registered.
+  string user_email;
+
+  // The immutable FCM Instance ID assigned to the device. Used as the primary
+  // identifier for devices using CryptAuth v2 Enrollment and DeviceSync.
+  string instance_id;
 
   // Human-readable device name; by default, this is the name of the device
   // model, but this value is editable.
@@ -85,4 +103,9 @@ struct RemoteDevice {
   // metadata synced for over 30 days, it is possible that a connection will not
   // be able to be established over BLE.
   array<BeaconSeed> beacon_seeds;
+
+  // Bluetooth public address, formatted as a hex string with colons and capital
+  // letters (example: "01:23:45:67:89:AB"). If the device does not have a
+  // synced address, this field is empty.
+  string bluetooth_public_address;
 };

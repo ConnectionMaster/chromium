@@ -9,13 +9,14 @@
 #include "base/android/build_info.h"
 #include "base/bind.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -47,11 +48,6 @@ ACTION_P4(CheckCountAndPostQuitTask, count, limit, task_runner, quit_closure) {
   if (++*count >= limit)
     task_runner->PostTask(FROM_HERE, quit_closure);
 }
-
-const char kSpeechFile_16b_s_48k[] = "speech_16b_stereo_48kHz.raw";
-const char kSpeechFile_16b_m_48k[] = "speech_16b_mono_48kHz.raw";
-const char kSpeechFile_16b_s_44k[] = "speech_16b_stereo_44kHz.raw";
-const char kSpeechFile_16b_m_44k[] = "speech_16b_mono_44kHz.raw";
 
 const float kCallbackTestTimeMs = 2000.0;
 const int kBytesPerSample = 2;
@@ -207,7 +203,8 @@ class FileAudioSource : public AudioOutputStream::AudioSourceCallback {
     // sufficient data remaining in the file to fill up the complete frame.
     int frames = max_size / (dest->channels() * kBytesPerSample);
     if (max_size) {
-      dest->FromInterleaved(file_->data() + pos_, frames, kBytesPerSample);
+      auto* source = reinterpret_cast<const int16_t*>(file_->data() + pos_);
+      dest->FromInterleaved<SignedInt16SampleTypeTraits>(source, frames);
       pos_ += max_size;
     }
 
@@ -218,7 +215,7 @@ class FileAudioSource : public AudioOutputStream::AudioSourceCallback {
     return frames;
   }
 
-  void OnError() override {}
+  void OnError(ErrorType type) override {}
 
   int file_size() { return file_->data_size(); }
 
@@ -244,7 +241,7 @@ class FileAudioSink : public AudioInputStream::AudioInputCallback {
     // Allocate space for ~10 seconds of data.
     const int kMaxBufferSize =
         10 * params.sample_rate() * params.GetBytesPerFrame(kSampleFormat);
-    buffer_.reset(new media::SeekableBuffer(0, kMaxBufferSize));
+    buffer_ = std::make_unique<media::SeekableBuffer>(0, kMaxBufferSize);
 
     // Open up the binary file which will be written to in the destructor.
     base::FilePath file_path;
@@ -317,13 +314,14 @@ class FullDuplexAudioSinkSource
     // Start with a reasonably small FIFO size. It will be increased
     // dynamically during the test if required.
     size_t buffer_size = params.GetBytesPerBuffer(kSampleFormat);
-    fifo_.reset(new media::SeekableBuffer(0, 2 * buffer_size));
+    fifo_ = std::make_unique<media::SeekableBuffer>(0, 2 * buffer_size);
     buffer_.reset(new uint8_t[buffer_size]);
   }
 
   ~FullDuplexAudioSinkSource() override {}
 
   // AudioInputStream::AudioInputCallback implementation
+  void OnError() override {}
   void OnData(const AudioBus* src,
               base::TimeTicks capture_time,
               double volume) override {
@@ -363,9 +361,8 @@ class FullDuplexAudioSinkSource
     }
   }
 
-  void OnError() override {}
-
   // AudioOutputStream::AudioSourceCallback implementation
+  void OnError(ErrorType type) override {}
   int OnMoreData(base::TimeDelta /* delay */,
                  base::TimeTicks /* delay_timestamp */,
                  int /* prior_frames_skipped */,
@@ -421,11 +418,12 @@ class FullDuplexAudioSinkSource
 class AudioAndroidOutputTest : public testing::Test {
  public:
   AudioAndroidOutputTest()
-      : loop_(new base::MessageLoopForUI()),
+      : task_environment_(
+            base::test::SingleThreadTaskEnvironment::MainThreadType::UI),
         audio_manager_(AudioManager::CreateForTesting(
             std::make_unique<TestAudioThread>())),
         audio_manager_device_info_(audio_manager_.get()),
-        audio_output_stream_(NULL) {
+        audio_output_stream_(nullptr) {
     // Flush the message loop to ensure that AudioManager is fully initialized.
     base::RunLoop().RunUntilIdle();
   }
@@ -445,7 +443,7 @@ class AudioAndroidOutputTest : public testing::Test {
   }
 
   // Synchronously runs the provided callback/closure on the audio thread.
-  void RunOnAudioThread(const base::Closure& closure) {
+  void RunOnAudioThread(base::OnceClosure closure) {
     if (!audio_manager()->GetTaskRunner()->BelongsToCurrentThread()) {
       base::WaitableEvent event(
           base::WaitableEvent::ResetPolicy::AUTOMATIC,
@@ -453,51 +451,45 @@ class AudioAndroidOutputTest : public testing::Test {
       audio_manager()->GetTaskRunner()->PostTask(
           FROM_HERE,
           base::BindOnce(&AudioAndroidOutputTest::RunOnAudioThreadImpl,
-                         base::Unretained(this), closure, &event));
+                         base::Unretained(this), std::move(closure), &event));
       event.Wait();
     } else {
-      closure.Run();
+      std::move(closure).Run();
     }
   }
 
-  void RunOnAudioThreadImpl(const base::Closure& closure,
+  void RunOnAudioThreadImpl(base::OnceClosure closure,
                             base::WaitableEvent* event) {
     DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
-    closure.Run();
+    std::move(closure).Run();
     event->Signal();
   }
 
   void GetDefaultOutputStreamParametersOnAudioThread() {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidOutputTest::GetDefaultOutputStreamParameters,
-                   base::Unretained(this)));
+    RunOnAudioThread(base::BindOnce(
+        &AudioAndroidOutputTest::GetDefaultOutputStreamParameters,
+        base::Unretained(this)));
   }
 
   void MakeAudioOutputStreamOnAudioThread(const AudioParameters& params) {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidOutputTest::MakeOutputStream,
-                   base::Unretained(this),
-                   params));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidOutputTest::MakeOutputStream,
+                                    base::Unretained(this), params));
   }
 
   void OpenAndCloseAudioOutputStreamOnAudioThread() {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidOutputTest::OpenAndClose,
-                   base::Unretained(this)));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidOutputTest::OpenAndClose,
+                                    base::Unretained(this)));
   }
 
   void OpenAndStartAudioOutputStreamOnAudioThread(
       AudioOutputStream::AudioSourceCallback* source) {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidOutputTest::OpenAndStart,
-                   base::Unretained(this),
-                   source));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidOutputTest::OpenAndStart,
+                                    base::Unretained(this), source));
   }
 
   void StopAndCloseAudioOutputStreamOnAudioThread() {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidOutputTest::StopAndClose,
-                   base::Unretained(this)));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidOutputTest::StopAndClose,
+                                    base::Unretained(this)));
   }
 
   double AverageTimeBetweenCallbacks(int num_callbacks) const {
@@ -523,7 +515,7 @@ class AudioAndroidOutputTest : public testing::Test {
                                             base::ThreadTaskRunnerHandle::Get(),
                                             run_loop.QuitWhenIdleClosure()),
                   Invoke(RealOnMoreData)));
-    EXPECT_CALL(source, OnError()).Times(0);
+    EXPECT_CALL(source, OnError(_)).Times(0);
 
     OpenAndStartAudioOutputStreamOnAudioThread(&source);
 
@@ -563,7 +555,7 @@ class AudioAndroidOutputTest : public testing::Test {
     DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
     EXPECT_TRUE(audio_output_stream_->Open());
     audio_output_stream_->Close();
-    audio_output_stream_ = NULL;
+    audio_output_stream_ = nullptr;
   }
 
   void OpenAndStart(AudioOutputStream::AudioSourceCallback* source) {
@@ -576,10 +568,10 @@ class AudioAndroidOutputTest : public testing::Test {
     DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
     audio_output_stream_->Stop();
     audio_output_stream_->Close();
-    audio_output_stream_ = NULL;
+    audio_output_stream_ = nullptr;
   }
 
-  std::unique_ptr<base::MessageLoopForUI> loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<AudioManager> audio_manager_;
   AudioDeviceInfoAccessorForTests audio_manager_device_info_;
   AudioParameters audio_output_parameters_;
@@ -597,7 +589,7 @@ class AudioAndroidOutputTest : public testing::Test {
 class AudioAndroidInputTest : public AudioAndroidOutputTest,
                               public testing::WithParamInterface<bool> {
  public:
-  AudioAndroidInputTest() : audio_input_stream_(NULL) {}
+  AudioAndroidInputTest() : audio_input_stream_(nullptr) {}
 
  protected:
   const AudioParameters& audio_input_parameters() {
@@ -617,36 +609,30 @@ class AudioAndroidInputTest : public AudioAndroidOutputTest,
   }
 
   void GetDefaultInputStreamParametersOnAudioThread() {
-     RunOnAudioThread(
-        base::Bind(&AudioAndroidInputTest::GetDefaultInputStreamParameters,
-                   base::Unretained(this)));
+    RunOnAudioThread(
+        base::BindOnce(&AudioAndroidInputTest::GetDefaultInputStreamParameters,
+                       base::Unretained(this)));
   }
 
   void MakeAudioInputStreamOnAudioThread(const AudioParameters& params) {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidInputTest::MakeInputStream,
-                   base::Unretained(this),
-                   params));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidInputTest::MakeInputStream,
+                                    base::Unretained(this), params));
   }
 
   void OpenAndCloseAudioInputStreamOnAudioThread() {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidInputTest::OpenAndClose,
-                   base::Unretained(this)));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidInputTest::OpenAndClose,
+                                    base::Unretained(this)));
   }
 
   void OpenAndStartAudioInputStreamOnAudioThread(
       AudioInputStream::AudioInputCallback* sink) {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidInputTest::OpenAndStart,
-                   base::Unretained(this),
-                   sink));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidInputTest::OpenAndStart,
+                                    base::Unretained(this), sink));
   }
 
   void StopAndCloseAudioInputStreamOnAudioThread() {
-    RunOnAudioThread(
-        base::Bind(&AudioAndroidInputTest::StopAndClose,
-                   base::Unretained(this)));
+    RunOnAudioThread(base::BindOnce(&AudioAndroidInputTest::StopAndClose,
+                                    base::Unretained(this)));
   }
 
   void StartInputStreamCallbacks(const AudioParameters& params) {
@@ -705,14 +691,16 @@ class AudioAndroidInputTest : public AudioAndroidOutputTest,
 
   void OpenAndClose() {
     DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
-    EXPECT_TRUE(audio_input_stream_->Open());
+    EXPECT_EQ(audio_input_stream_->Open(),
+              AudioInputStream::OpenOutcome::kSuccess);
     audio_input_stream_->Close();
-    audio_input_stream_ = NULL;
+    audio_input_stream_ = nullptr;
   }
 
   void OpenAndStart(AudioInputStream::AudioInputCallback* sink) {
     DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
-    EXPECT_TRUE(audio_input_stream_->Open());
+    EXPECT_EQ(audio_input_stream_->Open(),
+              AudioInputStream::OpenOutcome::kSuccess);
     audio_input_stream_->Start(sink);
   }
 
@@ -720,7 +708,7 @@ class AudioAndroidInputTest : public AudioAndroidOutputTest,
     DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
     audio_input_stream_->Stop();
     audio_input_stream_->Close();
-    audio_input_stream_ = NULL;
+    audio_input_stream_ = nullptr;
   }
 
   AudioInputStream* audio_input_stream_;
@@ -749,7 +737,7 @@ TEST_F(AudioAndroidOutputTest, GetDefaultOutputStreamParameters) {
 TEST_F(AudioAndroidInputTest, GetAudioInputDeviceDescriptions) {
   ABORT_AUDIO_TEST_IF_NOT(audio_manager_device_info()->HasAudioInputDevices());
   AudioDeviceDescriptions devices;
-  RunOnAudioThread(base::Bind(
+  RunOnAudioThread(base::BindOnce(
       &AudioDeviceInfoAccessorForTests::GetAudioInputDeviceDescriptions,
       base::Unretained(audio_manager_device_info()), &devices));
   CheckDeviceDescriptions(devices);
@@ -759,7 +747,7 @@ TEST_F(AudioAndroidInputTest, GetAudioInputDeviceDescriptions) {
 TEST_F(AudioAndroidOutputTest, GetAudioOutputDeviceDescriptions) {
   ABORT_AUDIO_TEST_IF_NOT(audio_manager_device_info()->HasAudioOutputDevices());
   AudioDeviceDescriptions devices;
-  RunOnAudioThread(base::Bind(
+  RunOnAudioThread(base::BindOnce(
       &AudioDeviceInfoAccessorForTests::GetAudioOutputDeviceDescriptions,
       base::Unretained(audio_manager_device_info()), &devices));
   CheckDeviceDescriptions(devices);
@@ -769,9 +757,8 @@ TEST_F(AudioAndroidOutputTest, GetAudioOutputDeviceDescriptions) {
 TEST_P(AudioAndroidInputTest, CreateAndCloseInputStream) {
   AudioParameters params = GetInputStreamParameters();
   MakeAudioInputStreamOnAudioThread(params);
-  RunOnAudioThread(
-      base::Bind(&AudioInputStream::Close,
-                 base::Unretained(audio_input_stream_)));
+  RunOnAudioThread(base::BindOnce(&AudioInputStream::Close,
+                                  base::Unretained(audio_input_stream_)));
 }
 
 // Ensure that a default output stream can be created and closed.
@@ -781,9 +768,8 @@ TEST_P(AudioAndroidInputTest, CreateAndCloseInputStream) {
 TEST_F(AudioAndroidOutputTest, CreateAndCloseOutputStream) {
   GetDefaultOutputStreamParametersOnAudioThread();
   MakeAudioOutputStreamOnAudioThread(audio_output_parameters());
-  RunOnAudioThread(
-      base::Bind(&AudioOutputStream::Close,
-                 base::Unretained(audio_output_stream_)));
+  RunOnAudioThread(base::BindOnce(&AudioOutputStream::Close,
+                                  base::Unretained(audio_output_stream_)));
 }
 
 // Ensure that a default input stream can be opened and closed.
@@ -840,40 +826,6 @@ TEST_F(AudioAndroidOutputTest, StartOutputStreamCallbacksNonDefaultParameters) {
   StartOutputStreamCallbacks(params);
 }
 
-// Play out a PCM file segment in real time and allow the user to verify that
-// the rendered audio sounds OK.
-// NOTE: this test requires user interaction and is not designed to run as an
-// automatized test on bots.
-TEST_F(AudioAndroidOutputTest, DISABLED_RunOutputStreamWithFileAsSource) {
-  GetDefaultOutputStreamParametersOnAudioThread();
-  DVLOG(1) << audio_output_parameters();
-  MakeAudioOutputStreamOnAudioThread(audio_output_parameters());
-
-  std::string file_name;
-  const AudioParameters params = audio_output_parameters();
-  if (params.sample_rate() == 48000 && params.channels() == 2) {
-    file_name = kSpeechFile_16b_s_48k;
-  } else if (params.sample_rate() == 48000 && params.channels() == 1) {
-    file_name = kSpeechFile_16b_m_48k;
-  } else if (params.sample_rate() == 44100 && params.channels() == 2) {
-    file_name = kSpeechFile_16b_s_44k;
-  } else if (params.sample_rate() == 44100 && params.channels() == 1) {
-    file_name = kSpeechFile_16b_m_44k;
-  } else {
-    FAIL() << "This test supports 44.1kHz and 48kHz mono/stereo only.";
-    return;
-  }
-
-  base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
-                            base::WaitableEvent::InitialState::NOT_SIGNALED);
-  FileAudioSource source(&event, file_name);
-
-  OpenAndStartAudioOutputStreamOnAudioThread(&source);
-  DVLOG(0) << ">> Verify that the file is played out correctly...";
-  EXPECT_TRUE(event.TimedWait(TestTimeouts::action_max_timeout()));
-  StopAndCloseAudioOutputStreamOnAudioThread();
-}
-
 // Start input streaming and run it for ten seconds while recording to a
 // local audio file.
 // NOTE: this test requires user interaction and is not designed to run as an
@@ -923,7 +875,7 @@ TEST_P(AudioAndroidInputTest, DISABLED_RunDuplexInputStreamWithFileAsSink) {
 
   EXPECT_CALL(source, OnMoreData(_, _, 0, NotNull()))
       .WillRepeatedly(Invoke(RealOnMoreData));
-  EXPECT_CALL(source, OnError()).Times(0);
+  EXPECT_CALL(source, OnError(_)).Times(0);
 
   OpenAndStartAudioInputStreamOnAudioThread(&sink);
   OpenAndStartAudioOutputStreamOnAudioThread(&source);

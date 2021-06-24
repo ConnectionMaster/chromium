@@ -11,8 +11,9 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/ozone/platform/drm/gpu/drm_thread.h"
-#include "ui/ozone/public/interfaces/device_cursor.mojom.h"
+#include "ui/ozone/public/mojom/device_cursor.mojom.h"
 #include "ui/ozone/public/overlay_surface_candidate.h"
 
 namespace ui {
@@ -25,28 +26,34 @@ class InterThreadMessagingProxy;
 // proxy objects then deal with safely posting the messages to the DRM thread.
 class DrmThreadProxy {
  public:
-  using OverlayCapabilitiesCallback =
-      base::OnceCallback<void(gfx::AcceleratedWidget,
-                              const std::vector<OverlaySurfaceCandidate>&,
-                              const std::vector<OverlayStatus>&)>;
-
   DrmThreadProxy();
   ~DrmThreadProxy();
 
   void BindThreadIntoMessagingProxy(InterThreadMessagingProxy* messaging_proxy);
 
-  void StartDrmThread(base::OnceClosure binding_drainer);
+  void StartDrmThread(base::OnceClosure receiver_drainer);
 
   std::unique_ptr<DrmWindowProxy> CreateDrmWindowProxy(
       gfx::AcceleratedWidget widget);
 
   void CreateBuffer(gfx::AcceleratedWidget widget,
                     const gfx::Size& size,
+                    const gfx::Size& framebuffer_size,
                     gfx::BufferFormat format,
                     gfx::BufferUsage usage,
                     uint32_t flags,
                     std::unique_ptr<GbmBuffer>* buffer,
                     scoped_refptr<DrmFramebuffer>* framebuffer);
+
+  using CreateBufferAsyncCallback =
+      base::OnceCallback<void(std::unique_ptr<GbmBuffer>,
+                              scoped_refptr<DrmFramebuffer>)>;
+  void CreateBufferAsync(gfx::AcceleratedWidget widget,
+                         const gfx::Size& size,
+                         gfx::BufferFormat format,
+                         gfx::BufferUsage usage,
+                         uint32_t flags,
+                         CreateBufferAsyncCallback callback);
 
   void CreateBufferFromHandle(gfx::AcceleratedWidget widget,
                               const gfx::Size& size,
@@ -66,10 +73,18 @@ class DrmThreadProxy {
   void CheckOverlayCapabilities(
       gfx::AcceleratedWidget widget,
       const std::vector<OverlaySurfaceCandidate>& candidates,
-      OverlayCapabilitiesCallback callback);
+      DrmThread::OverlayCapabilitiesCallback callback);
 
-  void AddBindingCursorDevice(ozone::mojom::DeviceCursorRequest request);
-  void AddBindingDrmDevice(ozone::mojom::DrmDeviceRequest request);
+  // Similar to CheckOverlayCapabilities() but returns the result synchronously.
+  std::vector<OverlayStatus> CheckOverlayCapabilitiesSync(
+      gfx::AcceleratedWidget widget,
+      const std::vector<OverlaySurfaceCandidate>& candidates);
+
+  void AddDrmDeviceReceiver(
+      mojo::PendingReceiver<ozone::mojom::DrmDevice> receiver);
+
+  bool WaitUntilDrmThreadStarted();
+  scoped_refptr<base::SingleThreadTaskRunner> GetDrmThreadTaskRunner();
 
  private:
   DrmThread drm_thread_;

@@ -5,12 +5,12 @@
 #include "chrome/browser/ui/autofill/payments/credit_card_scanner_controller.h"
 
 #include <memory>
+#include <string>
 
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/autofill/payments/credit_card_scanner_view.h"
 #include "chrome/browser/ui/autofill/payments/credit_card_scanner_view_delegate.h"
@@ -26,9 +26,9 @@ class Controller : public CreditCardScannerViewDelegate,
                    public base::SupportsWeakPtr<Controller> {
  public:
   Controller(content::WebContents* web_contents,
-             const AutofillClient::CreditCardScanCallback& callback)
+             AutofillClient::CreditCardScanCallback callback)
       : view_(CreditCardScannerView::Create(AsWeakPtr(), web_contents)),
-        callback_(callback) {
+        callback_(std::move(callback)) {
     DCHECK(view_);
   }
 
@@ -52,7 +52,7 @@ class Controller : public CreditCardScannerViewDelegate,
   void ScanCompleted(const CreditCard& card) override {
     AutofillMetrics::LogScanCreditCardCompleted(
         base::TimeTicks::Now() - show_time_, true);
-    callback_.Run(card);
+    std::move(callback_).Run(card);
     delete this;
   }
 
@@ -79,8 +79,8 @@ bool CreditCardScannerController::HasCreditCardScanFeature() {
 // static
 void CreditCardScannerController::ScanCreditCard(
     content::WebContents* web_contents,
-    const AutofillClient::CreditCardScanCallback& callback) {
-  (new Controller(web_contents, callback))->Show();
+    AutofillClient::CreditCardScanCallback callback) {
+  (new Controller(web_contents, std::move(callback)))->Show();
 }
 
 }  // namespace autofill

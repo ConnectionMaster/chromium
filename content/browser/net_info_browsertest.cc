@@ -12,7 +12,9 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
 #include "content/browser/net/network_quality_observer_impl.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
@@ -143,27 +145,23 @@ class NetInfoBrowserTest : public content::ContentBrowserTest {
   }
 
   std::string RunScriptExtractString(const std::string& script) {
-    std::string data;
-    EXPECT_TRUE(ExecuteScriptAndExtractString(shell(), script, &data));
-    return data;
+    return EvalJs(shell(), script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractString();
   }
 
   bool RunScriptExtractBool(const std::string& script) {
-    bool data;
-    EXPECT_TRUE(ExecuteScriptAndExtractBool(shell(), script, &data));
-    return data;
+    return EvalJs(shell(), script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractBool();
   }
 
   double RunScriptExtractDouble(const std::string& script) {
-    double data = 0.0;
-    EXPECT_TRUE(ExecuteScriptAndExtractDouble(shell(), script, &data));
-    return data;
+    return EvalJs(shell(), script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractDouble();
   }
 
   int RunScriptExtractInt(const std::string& script) {
-    int data = 0;
-    EXPECT_TRUE(ExecuteScriptAndExtractInt(shell(), script, &data));
-    return data;
+    return EvalJs(shell(), script, content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+        .ExtractInt();
   }
 
  private:
@@ -177,7 +175,7 @@ IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, VerifyNetworkStateInitialized) {
   net::NetworkChangeNotifier::DisableForTest disable_for_test;
   MockNetworkChangeNotifierWifi mock_notifier;
 
-  NavigateToURL(shell(), content::GetTestUrl("", "net_info.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), content::GetTestUrl("", "net_info.html")));
   EXPECT_TRUE(RunScriptExtractBool("getOnLine()"));
   EXPECT_EQ("wifi", RunScriptExtractString("getType()"));
   EXPECT_EQ(net::NetworkChangeNotifier::GetMaxBandwidthMbpsForConnectionSubtype(
@@ -188,7 +186,7 @@ IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, VerifyNetworkStateInitialized) {
 // Make sure that type changes in the browser make their way to
 // navigator.connection.type.
 IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, NetworkChangePlumbsToNavigator) {
-  NavigateToURL(shell(), content::GetTestUrl("", "net_info.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), content::GetTestUrl("", "net_info.html")));
   SetConnectionType(net::NetworkChangeNotifier::CONNECTION_WIFI,
                     net::NetworkChangeNotifier::SUBTYPE_WIFI_N);
   EXPECT_EQ("wifi", RunScriptExtractString("getType()"));
@@ -207,7 +205,7 @@ IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, NetworkChangePlumbsToNavigator) {
 // Make sure that type changes in the browser make their way to
 // navigator.isOnline.
 IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, IsOnline) {
-  NavigateToURL(shell(), content::GetTestUrl("", "net_info.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), content::GetTestUrl("", "net_info.html")));
   SetConnectionType(net::NetworkChangeNotifier::CONNECTION_ETHERNET,
                     net::NetworkChangeNotifier::SUBTYPE_GIGABIT_ETHERNET);
   EXPECT_TRUE(RunScriptExtractBool("getOnLine()"));
@@ -224,7 +222,7 @@ IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, IsOnline) {
 IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, TwoRenderViewsInOneProcess) {
   SetConnectionType(net::NetworkChangeNotifier::CONNECTION_ETHERNET,
                     net::NetworkChangeNotifier::SUBTYPE_GIGABIT_ETHERNET);
-  NavigateToURL(shell(), content::GetTestUrl("", "net_info.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), content::GetTestUrl("", "net_info.html")));
   EXPECT_TRUE(RunScriptExtractBool("getOnLine()"));
 
   SetConnectionType(net::NetworkChangeNotifier::CONNECTION_NONE,
@@ -232,7 +230,7 @@ IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest, TwoRenderViewsInOneProcess) {
   EXPECT_FALSE(RunScriptExtractBool("getOnLine()"));
 
   // Open the same page in a new window on the same process.
-  EXPECT_TRUE(ExecuteScript(shell(), "window.open(\"net_info.html\")"));
+  EXPECT_TRUE(ExecJs(shell(), "window.open(\"net_info.html\")"));
 
   // The network state should not have reinitialized to what it was when opening
   // the first window (online).
@@ -285,14 +283,13 @@ IN_PROC_BROWSER_TEST_F(NetInfoBrowserTest,
   // effective connection type.
   GetNetworkQualityTracker()->ReportEffectiveConnectionTypeForTesting(
       net::EFFECTIVE_CONNECTION_TYPE_2G);
-  base::RunLoop().RunUntilIdle();
   EXPECT_EQ("2g", RunScriptExtractString("getEffectiveType()"));
+
   GetNetworkQualityTracker()->ReportEffectiveConnectionTypeForTesting(
       net::EFFECTIVE_CONNECTION_TYPE_3G);
-  base::RunLoop().RunUntilIdle();
   EXPECT_EQ("3g", RunScriptExtractString("getEffectiveType()"));
+
   FetchHistogramsFromChildProcesses();
-  base::RunLoop().RunUntilIdle();
   EXPECT_GT(GetTotalSampleCount(&histogram_tester, "NQE.RenderThreadNotified"),
             samples);
 }

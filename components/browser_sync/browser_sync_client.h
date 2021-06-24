@@ -14,10 +14,6 @@
 
 class BookmarkUndoService;
 
-namespace autofill {
-class PersonalDataManager;
-}  // namespace autofill
-
 namespace bookmarks {
 class BookmarkModel;
 }  // namespace bookmarks
@@ -33,6 +29,10 @@ class HistoryService;
 namespace send_tab_to_self {
 class SendTabToSelfSyncService;
 }  // namespace send_tab_to_self
+
+namespace sync_preferences {
+class PrefServiceSyncable;
+}  // namespace sync_preferences
 
 namespace sync_sessions {
 class SessionSyncService;
@@ -51,10 +51,9 @@ namespace browser_sync {
 // to handle these scenarios gracefully.
 class BrowserSyncClient : public syncer::SyncClient {
  public:
-  BrowserSyncClient();
-  ~BrowserSyncClient() override;
+  BrowserSyncClient() = default;
+  ~BrowserSyncClient() override = default;
 
-  base::FilePath GetSyncDataPath() final;
   virtual syncer::ModelTypeStoreService* GetModelTypeStoreService() = 0;
 
   // Returns a weak pointer to the ModelTypeControllerDelegate specified by
@@ -67,10 +66,10 @@ class BrowserSyncClient : public syncer::SyncClient {
   virtual bookmarks::BookmarkModel* GetBookmarkModel() = 0;
   virtual favicon::FaviconService* GetFaviconService() = 0;
   virtual history::HistoryService* GetHistoryService() = 0;
+  virtual sync_preferences::PrefServiceSyncable* GetPrefServiceSyncable() = 0;
   virtual sync_sessions::SessionSyncService* GetSessionSyncService() = 0;
   virtual send_tab_to_self::SendTabToSelfSyncService*
   GetSendTabToSelfSyncService() = 0;
-  virtual autofill::PersonalDataManager* GetPersonalDataManager() = 0;
   virtual BookmarkUndoService* GetBookmarkUndoService() = 0;
   virtual base::RepeatingClosure GetPasswordStateChangedCallback() = 0;
 

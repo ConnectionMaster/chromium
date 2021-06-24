@@ -22,13 +22,14 @@ class DatagramClientSocket;
 class HostPortPair;
 class NetLog;
 struct NetLogSource;
+class SSLClientContext;
 class SSLClientSocket;
-struct SSLClientSocketContext;
 struct SSLConfig;
 class ProxyClientSocket;
 class ProxyDelegate;
 class ProxyServer;
 class HttpAuthController;
+class NetworkQualityEstimator;
 
 // An interface used to instantiate StreamSocket objects.  Used to facilitate
 // testing code with mock socket implementations.
@@ -43,19 +44,23 @@ class NET_EXPORT ClientSocketFactory {
       NetLog* net_log,
       const NetLogSource& source) = 0;
 
+  // |network_quality_estimator| is optional. If not specified, the network
+  // quality will not be considered when determining TCP connect handshake
+  // timeouts, or when histogramming the handshake duration.
   virtual std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+      NetworkQualityEstimator* network_quality_estimator,
       NetLog* net_log,
       const NetLogSource& source) = 0;
 
   // It is allowed to pass in a StreamSocket that is not obtained from a
   // socket pool. The caller could create a StreamSocket directly.
   virtual std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
+      SSLClientContext* context,
       std::unique_ptr<StreamSocket> stream_socket,
       const HostPortPair& host_and_port,
-      const SSLConfig& ssl_config,
-      const SSLClientSocketContext& context) = 0;
+      const SSLConfig& ssl_config) = 0;
 
   virtual std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
       std::unique_ptr<StreamSocket> stream_socket,
@@ -67,7 +72,6 @@ class NET_EXPORT ClientSocketFactory {
       bool using_spdy,
       NextProto negotiated_protocol,
       ProxyDelegate* proxy_delegate,
-      bool is_https_proxy,
       const NetworkTrafficAnnotationTag& traffic_annotation) = 0;
 
   // Returns the default ClientSocketFactory.

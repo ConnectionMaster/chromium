@@ -8,8 +8,10 @@
 #include <cfloat>
 #include <string>
 
+#include "base/cxx17_backports.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
+#include "base/numerics/ranges.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/clock.h"
 #include "components/ntp_snippets/features.h"
@@ -163,7 +165,7 @@ double GetEstimateHoursBetweenEvents(double metric_value,
   //   estimate_hours = log(metric_value / (metric_value - 1)) / discount_rate.
   double estimate_hours =
       std::log(metric_value / (metric_value - 1)) / discount_rate_per_hour;
-  return std::max(min_hours, std::min(max_hours, estimate_hours));
+  return base::ClampToRange(estimate_hours, min_hours, max_hours);
 }
 
 // The inverse of GetEstimateHoursBetweenEvents().
@@ -172,8 +174,7 @@ double GetMetricValueForEstimateHoursBetweenEvents(
     double discount_rate_per_hour,
     double min_hours,
     double max_hours) {
-  // Keep the input value within [min_hours, max_hours].
-  estimate_hours = std::max(min_hours, std::min(max_hours, estimate_hours));
+  estimate_hours = base::ClampToRange(estimate_hours, min_hours, max_hours);
   // Return |metric_value| such that GetEstimateHoursBetweenEvents for
   // |metric_value| returns |estimate_hours|. Thus, solve |metric_value| in
   //   metric_value = 1 + e^{-discount_rate * estimate_hours} * metric_value,
@@ -357,10 +358,10 @@ double UserClassifier::GetHoursSinceLastTime(Metric metric) const {
     return 0;
   }
 
-  base::TimeDelta since_last_time =
+  const base::TimeDelta since_last_time =
       clock_->Now() - DeserializeTime(pref_service_->GetInt64(
                           kLastTimeKeys[static_cast<int>(metric)]));
-  return since_last_time.InSecondsF() / 3600;
+  return since_last_time / base::TimeDelta::FromHours(1);
 }
 
 bool UserClassifier::HasLastTime(Metric metric) const {

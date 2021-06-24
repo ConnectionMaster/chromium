@@ -11,7 +11,7 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace feature_engagement {
@@ -33,7 +33,7 @@ class InMemoryEventStoreTest : public ::testing::Test {
   bool load_callback_has_been_invoked_;
   bool last_result_;
   std::unique_ptr<std::vector<Event>> loaded_events_;
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 }  // namespace
 
@@ -51,8 +51,8 @@ TEST_F(InMemoryEventStoreTest, LoadShouldProvideEventsAsCallback) {
 
   // Load the data and ensure the callback is not immediately invoked, since the
   // result should be posted.
-  store.Load(base::Bind(&InMemoryEventStoreTest::LoadCallback,
-                        base::Unretained(this)));
+  store.Load(base::BindOnce(&InMemoryEventStoreTest::LoadCallback,
+                            base::Unretained(this)));
   EXPECT_FALSE(load_callback_has_been_invoked_);
 
   // Run the message loop until it's idle to finish to ensure the result is

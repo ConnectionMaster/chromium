@@ -39,7 +39,7 @@ ScriptContextSet::~ScriptContextSet() {
 ScriptContext* ScriptContextSet::Register(
     blink::WebLocalFrame* frame,
     const v8::Local<v8::Context>& v8_context,
-    int world_id) {
+    int32_t world_id) {
   const Extension* extension =
       GetExtensionFromFrameAndWorld(frame, world_id, false);
   const Extension* effective_extension =
@@ -50,7 +50,7 @@ ScriptContext* ScriptContextSet::Register(
       extension, world_id, frame_url, frame->GetDocument().GetSecurityOrigin());
   Feature::Context effective_context_type = ClassifyJavaScriptContext(
       effective_extension, world_id,
-      ScriptContext::GetEffectiveDocumentURL(frame, frame_url, true),
+      ScriptContext::GetEffectiveDocumentURLForContext(frame, frame_url, true),
       frame->GetDocument().GetSecurityOrigin());
 
   ScriptContext* context =
@@ -139,7 +139,7 @@ void ScriptContextSet::AddForTesting(std::unique_ptr<ScriptContext> context) {
 
 const Extension* ScriptContextSet::GetExtensionFromFrameAndWorld(
     blink::WebLocalFrame* frame,
-    int world_id,
+    int32_t world_id,
     bool use_effective_url) {
   std::string extension_id;
   if (world_id != 0) {
@@ -154,8 +154,8 @@ const Extension* ScriptContextSet::GetExtensionFromFrameAndWorld(
     // an about:blank script context that is scriptable by their parent/opener
     // before they finish navigating.
     GURL frame_url = ScriptContext::GetAccessCheckedFrameURL(frame);
-    frame_url = ScriptContext::GetEffectiveDocumentURL(frame, frame_url,
-                                                       use_effective_url);
+    frame_url = ScriptContext::GetEffectiveDocumentURLForContext(
+        frame, frame_url, use_effective_url);
     extension_id =
         RendererExtensionRegistry::Get()->GetExtensionOrAppIDByURL(frame_url);
   }
@@ -173,7 +173,7 @@ const Extension* ScriptContextSet::GetExtensionFromFrameAndWorld(
 
 Feature::Context ScriptContextSet::ClassifyJavaScriptContext(
     const Extension* extension,
-    int world_id,
+    int32_t world_id,
     const GURL& url,
     const blink::WebSecurityOrigin& origin) {
   // WARNING: This logic must match ProcessMap::GetContextType, as much as
@@ -207,7 +207,7 @@ Feature::Context ScriptContextSet::ClassifyJavaScriptContext(
     // unless the extension in question is a component extension, in which case
     // we cheat and call it blessed.
     if (extension->is_hosted_app() &&
-        extension->location() != Manifest::COMPONENT) {
+        extension->location() != mojom::ManifestLocation::kComponent) {
       return Feature::BLESSED_WEB_PAGE_CONTEXT;
     }
 
@@ -215,9 +215,9 @@ Feature::Context ScriptContextSet::ClassifyJavaScriptContext(
                                    : Feature::BLESSED_EXTENSION_CONTEXT;
   }
 
-  // TODO(kalman): This isUnique() check is wrong, it should be performed as
+  // TODO(kalman): This IsOpaque() check is wrong, it should be performed as
   // part of ScriptContext::IsSandboxedPage().
-  if (!origin.IsUnique() &&
+  if (!origin.IsOpaque() &&
       RendererExtensionRegistry::Get()->ExtensionBindingsAllowed(url)) {
     if (!extension)  // TODO(kalman): when does this happen?
       return Feature::UNSPECIFIED_CONTEXT;
@@ -230,6 +230,9 @@ Feature::Context ScriptContextSet::ClassifyJavaScriptContext(
 
   if (url.SchemeIs(content::kChromeUIScheme))
     return Feature::WEBUI_CONTEXT;
+
+  if (url.SchemeIs(content::kChromeUIUntrustedScheme))
+    return Feature::WEBUI_UNTRUSTED_CONTEXT;
 
   return Feature::WEB_PAGE_CONTEXT;
 }

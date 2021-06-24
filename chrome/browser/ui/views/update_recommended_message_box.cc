@@ -5,8 +5,10 @@
 #include "chrome/browser/ui/views/update_recommended_message_box.h"
 
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/grit/chromium_strings.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -15,7 +17,7 @@
 #include "ui/views/controls/message_box_view.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #endif
@@ -34,12 +36,26 @@ void UpdateRecommendedMessageBox::Show(gfx::NativeWindow parent_window) {
 // UpdateRecommendedMessageBox, private:
 
 UpdateRecommendedMessageBox::UpdateRecommendedMessageBox() {
-  views::MessageBoxView::InitParams params(
-      l10n_util::GetStringUTF16(IDS_UPDATE_RECOMMENDED));
-  params.message_width = ChromeLayoutProvider::Get()->GetDistanceMetric(
-      ChromeDistanceMetric::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH);
+  SetButtonLabel(ui::DIALOG_BUTTON_OK,
+                 l10n_util::GetStringUTF16(IDS_RELAUNCH_AND_UPDATE));
+  SetButtonLabel(ui::DIALOG_BUTTON_CANCEL,
+                 l10n_util::GetStringUTF16(IDS_NOT_NOW));
+  SetModalType(ui::MODAL_TYPE_WINDOW);
+  SetOwnedByWidget(true);
+  SetTitle(IDS_UPDATE_RECOMMENDED_DIALOG_TITLE);
+  std::u16string update_message;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  update_message = l10n_util::GetStringUTF16(IDS_UPDATE_RECOMMENDED);
+#else
+  update_message = l10n_util::GetPluralStringFUTF16(
+      IDS_UPDATE_RECOMMENDED, BrowserList::GetIncognitoBrowserCount());
+#endif
+
   // Also deleted when the window closes.
-  message_box_view_ = new views::MessageBoxView(params);
+  message_box_view_ = new views::MessageBoxView(update_message);
+  message_box_view_->SetMessageWidth(
+      ChromeLayoutProvider::Get()->GetDistanceMetric(
+          views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
   chrome::RecordDialogCreation(chrome::DialogIdentifier::UPDATE_RECOMMENDED);
 }
 
@@ -51,14 +67,8 @@ bool UpdateRecommendedMessageBox::Accept() {
   return true;
 }
 
-base::string16 UpdateRecommendedMessageBox::GetDialogButtonLabel(
-    ui::DialogButton button) const {
-  return l10n_util::GetStringUTF16((button == ui::DIALOG_BUTTON_OK) ?
-      IDS_RELAUNCH_AND_UPDATE : IDS_NOT_NOW);
-}
-
 bool UpdateRecommendedMessageBox::ShouldShowWindowTitle() const {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   return false;
 #else
   return true;
@@ -69,30 +79,14 @@ bool UpdateRecommendedMessageBox::ShouldShowCloseButton() const {
   return false;
 }
 
-base::string16 UpdateRecommendedMessageBox::GetWindowTitle() const {
-#if defined(OS_CHROMEOS)
-  return base::string16();
-#else
-  return l10n_util::GetStringUTF16(IDS_UPDATE_RECOMMENDED_DIALOG_TITLE);
-#endif
-}
-
-void UpdateRecommendedMessageBox::DeleteDelegate() {
-  delete this;
-}
-
-ui::ModalType UpdateRecommendedMessageBox::GetModalType() const {
-  return ui::MODAL_TYPE_WINDOW;
-}
-
 views::View* UpdateRecommendedMessageBox::GetContentsView() {
   return message_box_view_;
 }
 
 views::Widget* UpdateRecommendedMessageBox::GetWidget() {
-  return message_box_view_->GetWidget();
+  return message_box_view_ ? message_box_view_->GetWidget() : nullptr;
 }
 
 const views::Widget* UpdateRecommendedMessageBox::GetWidget() const {
-  return message_box_view_->GetWidget();
+  return message_box_view_ ? message_box_view_->GetWidget() : nullptr;
 }

@@ -55,8 +55,9 @@ def compare_builders(name, main_builders, sub_builders):
 
 def main():
   project = project_pb2.Project()
-  with open(os.path.join(THIS_DIR, 'luci-milo.cfg'), 'rb') as f:
-    google.protobuf.text_format.Parse(f.read(), project)
+  with open(os.path.join(THIS_DIR, 'generated', 'luci-milo.cfg'), 'rb') as f:
+    google.protobuf.text_format.Parse(f.read(), project,
+                                      allow_unknown_field=True)
 
   # Maps subwaterfall name to list of builders on that subwaterfall
   # on the main waterfall.
@@ -72,8 +73,8 @@ def main():
   # Check that every referenced subwaterfall has its own console, unless it's
   # explicitly excluded below.
   excluded_names = [
-      # This is the chrome/chromium.chrome console in src-internal.
-      'chromium.chrome',
+      # This is the chrome console in src-internal.
+      'chrome',
   ]
   all_console_names = [console.id for console in project.consoles]
   referenced_names = set(subwaterfalls.keys())

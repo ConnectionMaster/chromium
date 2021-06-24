@@ -4,23 +4,25 @@
 
 """Test runner for running tests using xcodebuild."""
 
-import sys
-
 import collections
-import json
+import distutils.version
 import logging
-import multiprocessing
+from multiprocessing import pool
 import os
-import plistlib
-import re
-import shutil
 import subprocess
-import threading
+import sys
 import time
 
+import file_util
+import iossim_util
+import standard_json_util as sju
+import test_apps
 import test_runner
+import xcode_log_parser
 
 LOGGER = logging.getLogger(__name__)
+MAXIMUM_TESTS_PER_SHARD_FOR_RERUN = 20
+XTDEVICE_FOLDER = os.path.expanduser('~/Library/Developer/XCTestDevices')
 
 
 class LaunchCommandCreationError(test_runner.TestRunnerError):
@@ -37,6 +39,52 @@ class LaunchCommandPoolCreationError(test_runner.TestRunnerError):
     super(LaunchCommandPoolCreationError, self).__init__(message)
 
 
+def erase_all_simulators(path=None):
+  """Erases all simulator devices.
+
+  Args:
+    path: (str) A path with simulators
+  """
+  command = ['xcrun', 'simctl']
+  if path:
+    command += ['--set', path]
+    LOGGER.info('Erasing all simulators from folder %s.' % path)
+  else:
+    LOGGER.info('Erasing all simulators.')
+
+  try:
+    subprocess.check_call(command + ['erase', 'all'])
+  except subprocess.CalledProcessError as e:
+    # Logging error instead of throwing so we don't cause failures in case
+    # this was indeed failing to clean up.
+    message = 'Failed to erase all simulators. Error: %s' % e.output
+    LOGGER.error(message)
+
+
+def shutdown_all_simulators(path=None):
+  """Shutdown all simulator devices.
+
+  Fix for DVTCoreSimulatorAdditionsErrorDomain error.
+
+  Args:
+    path: (str) A path with simulators
+  """
+  command = ['xcrun', 'simctl']
+  if path:
+    command += ['--set', path]
+    LOGGER.info('Shutdown all simulators from folder %s.' % path)
+  else:
+    LOGGER.info('Shutdown all simulators.')
+
+  try:
+    subprocess.check_call(command + ['shutdown', 'all'])
+  except subprocess.CalledProcessError as e:
+    # Logging error instead of throwing so we don't cause failures in case
+    # this was indeed failing to clean up.
+    message = 'Failed to shutdown all simulators. Error: %s' % e.output
+    LOGGER.error(message)
+
+
 def terminate_process(proc):
   """Terminates the process.
 
@@ -48,204 +96,25 @@ def terminate_process(proc):
   try:
     proc.terminate()
   except OSError as ex:
-    LOGGER.info('Error while killing a process: %s' % ex)
-
-
-def test_status_summary(summary_plist):
-  """Gets status summary from TestSummaries.plist.
-
-  Args:
-    summary_plist: (str) A path to plist-file.
-
-  Returns:
-    A dict that contains all passed and failed tests from the egtests.app.
-    e.g.
-    {
-        'passed': [passed_tests],
-        'failed': {
-            'failed_test': ['StackTrace']
-        }
-    }
-  """
-  root_summary = plistlib.readPlist(summary_plist)
-  status_summary = {
-      'passed': [],
-      'failed': {}
-  }
-  for summary in root_summary['TestableSummaries']:
-    failed_egtests = {}  # Contains test identifier and message
-    passed_egtests = []
-    if not summary['Tests']:
-      continue
-    for test_suite in summary['Tests'][0]['Subtests'][0]['Subtests']:
-      for test in test_suite['Subtests']:
-        if test['TestStatus'] == 'Success':
-          passed_egtests.append(test['TestIdentifier'])
-        else:
-          message = []
-          for failure_summary in test['FailureSummaries']:
-            message.append('%s: line %s' % (failure_summary['FileName'],
-                                            failure_summary['LineNumber']))
-            message.extend(failure_summary['Message'].splitlines())
-          failed_egtests[test['TestIdentifier']] = message
-    if failed_egtests:
-      status_summary['failed'] = failed_egtests
-    if passed_egtests:
-      status_summary['passed'] = passed_egtests
-  return status_summary
-
-
-def collect_test_results(plist_path):
-  """Gets test result data from Info.plist.
-
-  Args:
-    plist_path: (str) A path to plist-file.
-  Returns:
-    Test result as a map:
-      {
-        'passed': [passed_tests],
-        'failed': {
-            'failed_test': ['StackTrace']
-        }
-    }
-  """
-  test_results = {
-      'passed': [],
-      'failed': {}
-  }
-  root = plistlib.readPlist(plist_path)
-
-  for action in root['Actions']:
-    action_result = action['ActionResult']
-    if ((root['TestsCount'] == 0 and
-         root['TestsFailedCount'] == 0)
-        or 'TestSummaryPath' not in action_result):
-      test_results['failed']['TESTS_DID_NOT_START'] = []
-      if 'ErrorSummaries' in action_result and action_result['ErrorSummaries']:
-        test_results['failed']['TESTS_DID_NOT_START'].append('\n'.join(
-            error_summary['Message']
-            for error_summary in action_result['ErrorSummaries']))
-    else:
-      summary_plist = os.path.join(os.path.dirname(plist_path),
-                                   action_result['TestSummaryPath'])
-      summary = test_status_summary(summary_plist)
-      test_results['failed'] = summary['failed']
-      test_results['passed'] = summary['passed']
-  return test_results
-
-
-class EgtestsApp(object):
-  """Egtests to run.
-
-  Stores data about egtests:
-    egtests_app: full path to egtests app.
-    project_path: root project folder.
-    module_name: egtests module name.
-    filtered_tests: List of tests to include or exclude, depending on `invert`.
-    invert: type of filter(True - inclusive, False - exclusive).
-  """
-
-  def __init__(self, egtests_app, filtered_tests=None, invert=False,
-               test_args=None, env_vars=None):
-    """Initialize Egtests.
-
-    Args:
-      egtests_app: (str) full path to egtests app.
-      filtered_tests: (list) Specific tests to run
-        (it can inclusive/exclusive based on invert parameter).
-         E.g.
-          [ 'TestCaseClass1/testMethod1', 'TestCaseClass2/testMethod2']
-      invert: type of filter(True - inclusive, False - exclusive).
-      test_args: List of strings to pass as arguments to the test when
-        launching.
-      env_vars: List of environment variables to pass to the test itself.
-
-    Raises:
-      AppNotFoundError: If the given app does not exist
-    """
-    if not os.path.exists(egtests_app):
-      raise test_runner.AppNotFoundError(egtests_app)
-    self.egtests_path = egtests_app
-    self.project_path = os.path.dirname(self.egtests_path)
-    self.module_name = os.path.splitext(os.path.basename(egtests_app))[0]
-    self.filter = filtered_tests
-    self.invert = invert
-    self.test_args = test_args
-    self.env_vars = env_vars
-
-  def _xctest_path(self):
-    """Gets xctest-file from egtests/PlugIns folder.
-
-    Returns:
-      A path for xctest in the format of /PlugIns/file.xctest
-
-    Raises:
-      PlugInsNotFoundError: If no PlugIns folder found in egtests.app.
-      XCTestPlugInNotFoundError: If no xctest-file found in PlugIns.
-    """
-    plugins_dir = os.path.join(self.egtests_path, 'PlugIns')
-    if not os.path.exists(plugins_dir):
-      raise test_runner.PlugInsNotFoundError(plugins_dir)
-    plugin_xctest = None
-    for plugin in os.listdir(plugins_dir):
-      if plugin.startswith(
-          self.module_name) and plugin.endswith('.xctest'):
-        plugin_xctest = os.path.join(plugins_dir, plugin)
-    if not plugin_xctest:
-      raise test_runner.XCTestPlugInNotFoundError(plugins_dir)
-    return plugin_xctest.replace(self.egtests_path, '')
-
-  def xctestrun_node(self):
-    """Fills only required nodes for egtests in xctestrun file.
-
-    Returns:
-      A node with filled required fields about egtests.
-    """
-    module = self.module_name + '_module'
-    xctestrun_data = {
-        module: {
-            'IsAppHostedTestBundle': True,
-            'TestBundlePath': '__TESTHOST__%s' % self._xctest_path(),
-            'TestHostPath': '%s' % self.egtests_path,
-            'TestingEnvironmentVariables': {
-                'DYLD_INSERT_LIBRARIES': (
-                    '__PLATFORMS__/iPhoneSimulator.platform/Developer/'
-                    'usr/lib/libXCTestBundleInject.dylib'),
-                'DYLD_LIBRARY_PATH': self.project_path,
-                'DYLD_FRAMEWORK_PATH': self.project_path + ':',
-                'XCInjectBundleInto': '__TESTHOST__/%s' % self.module_name
-            }
-        }
-    }
-    if self.filter:
-      if self.invert:
-        xctestrun_data[module].update(
-            {'SkipTestIdentifiers': self.filter})
-      else:
-        xctestrun_data[module].update(
-            {'OnlyTestIdentifiers': self.filter})
-    if self.env_vars:
-      xctestrun_data[module].update(
-          {'EnvironmentVariables': self.env_vars})
-    if self.test_args:
-      xctestrun_data[module].update(
-          {'CommandLineArguments': self.test_args})
-    return xctestrun_data
+    LOGGER.error('Error while killing a process: %s' % ex)
 
 
 class LaunchCommand(object):
   """Stores xcodebuild test launching command."""
 
-  def __init__(self, egtests_app, destination,
+  def __init__(self,
+               egtests_app,
+               udid,
                shards,
                retries,
                out_dir=os.path.basename(os.getcwd()),
+               use_clang_coverage=False,
                env=None):
     """Initialize launch command.
 
     Args:
       egtests_app: (EgtestsApp) An egtests_app to run.
-      destination: (str) A destination.
+      udid: (str) UDID of a device/simulator.
       shards: (int) A number of shards.
       retries: (int) A number of retries.
       out_dir: (str) A folder in which xcodebuild will generate test output.
@@ -255,77 +124,19 @@ class LaunchCommand(object):
     Raises:
       LaunchCommandCreationError: if one of parameters was not set properly.
     """
-    if not isinstance(egtests_app, EgtestsApp):
+    if not isinstance(egtests_app, test_apps.EgtestsApp):
       raise test_runner.AppNotFoundError(
           'Parameter `egtests_app` is not EgtestsApp: %s' % egtests_app)
     self.egtests_app = egtests_app
-    self.destination = destination
+    self.udid = udid
     self.shards = shards
     self.retries = retries
     self.out_dir = out_dir
     self.logs = collections.OrderedDict()
     self.test_results = collections.OrderedDict()
+    self.use_clang_coverage = use_clang_coverage
     self.env = env
-
-  def _make_cmd_list_for_failed_tests(self, failed_results, out_dir,
-                                      test_args=None, env_vars=None):
-    """Makes cmd list based on failure results.
-
-    Args:
-      failed_results: Map of failed tests, where key is name of egtests_app and
-        value is a list of failed_test_case/test_methods:
-          {
-              'failed_test_case/test_methods': ['StackTrace']
-          }
-      out_dir: (str) An output path.
-      test_args: List of strings to pass as arguments to the test when
-        launching.
-      env_vars: List of environment variables to pass to the test itself.
-
-    Returns:
-      List of Launch commands to re-run failed tests.
-      Every destination will run on separate clone of a stimulator.
-    """
-    eg_app = EgtestsApp(
-        egtests_app=self.egtests_app.egtests_path,
-        filtered_tests=[test.replace(' ', '/') for test in failed_results],
-        test_args=test_args,
-        env_vars=env_vars)
-    # Regenerates xctest run and gets a command.
-    return self.command(eg_app, out_dir, self.destination, shards=1)
-
-  def _copy_screenshots(self, info_plist_path, output_folder):
-    """Copy screenshots of failed tests to output folder.
-
-    Args:
-      info_plist_path: (str) A full path to Info.plist
-      output_folder: (str) A full path to folder where
-    """
-    plist = plistlib.readPlist(info_plist_path)
-    if 'TestFailureSummaries' not in plist or not plist['TestFailureSummaries']:
-      LOGGER.info('No failures in %s' % info_plist_path)
-      return
-
-    screenshot_regex = re.compile(r'Screenshots:\s\{(\n.*)+?\n}')
-    for failure_summary in plist['TestFailureSummaries']:
-      screenshots = screenshot_regex.search(failure_summary['Message'])
-      test_case_folder = os.path.join(
-          output_folder,
-          'failures',
-          failure_summary['TestCase'].replace('[', '').replace(']', '').replace(
-              ' ', '_').replace('-', ''))
-      if not os.path.exists(test_case_folder):
-        os.makedirs(test_case_folder)
-      if screenshots:
-        LOGGER.info('Screenshots for failure "%s" in "%s"' % (
-            failure_summary['TestCase'], test_case_folder))
-        d = json.loads(screenshots.group().replace('Screenshots:', '').strip())
-        for f in d.values():
-          if not os.path.exists(f):
-            LOGGER.warning('File %s does not exist!' % f)
-            continue
-          screenshot = os.path.join(test_case_folder, os.path.basename(f))
-          shutil.copyfile(f, screenshot)
+    self._log_parser = xcode_log_parser.get_parser()
 
   def summary_log(self):
     """Calculates test summary - how many passed, failed and error tests.
@@ -349,84 +160,94 @@ class LaunchCommand(object):
                 and index == len(self.test_results['attempts']) - 1)):
           self.logs[test_status] += len(test_attempt_results[test_status])
 
-  def launch_attempt(self, cmd, out_dir):
+  def launch_attempt(self, cmd):
     """Launch a process and do logging simultaneously.
 
     Args:
       cmd: (list[str]) A command to run.
-      out_dir: (str) Output directory given to the command. Used in tests only.
 
     Returns:
-      returncode - return code of command run.
+      output - command output as list of strings.
     """
-    LOGGER.info('Launching %s with env %s' % (cmd, self.env))
     proc = subprocess.Popen(
         cmd,
         env=self.env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-
-    while True:
-      # It seems that subprocess.stdout.readline() is stuck from time to time
-      # and tests fail because of TIMEOUT.
-      # Try to fix the issue by adding timer-thread for 3 mins
-      # that will kill `frozen` running process if no new line is read
-      # and will finish test attempt.
-      # If new line appears in 3 mins, just cancel timer.
-      timer = threading.Timer(test_runner.READLINE_TIMEOUT,
-                              terminate_process, [proc])
-      timer.start()
-      line = proc.stdout.readline()
-      timer.cancel()
-      if not line:
-        break
-      line = line.rstrip()
-      LOGGER.info(line)
-      sys.stdout.flush()
-
-    proc.wait()
-    LOGGER.info('Command %s finished with %d' % (cmd, proc.returncode))
-    return proc.returncode
+    return test_runner.print_process_output(proc)
 
   def launch(self):
     """Launches tests using xcodebuild."""
-    cmd_list = []
     self.test_results['attempts'] = []
-
+    cancelled_statuses = {'TESTS_DID_NOT_START', 'BUILD_INTERRUPTED'}
+    shards = self.shards
+    running_tests = set(self.egtests_app.get_all_tests())
     # total number of attempts is self.retries+1
     for attempt in range(self.retries + 1):
+      # Erase all simulators per each attempt
+      if iossim_util.is_device_with_udid_simulator(self.udid):
+        # kill all running simulators to prevent possible memory leaks
+        test_runner.SimulatorTestRunner.kill_simulators()
+        shutdown_all_simulators()
+        shutdown_all_simulators(XTDEVICE_FOLDER)
+        erase_all_simulators()
+        erase_all_simulators(XTDEVICE_FOLDER)
       outdir_attempt = os.path.join(self.out_dir, 'attempt_%d' % attempt)
-      # Create a command for the 1st run or if tests did not start,
-      # re-run the same command but with different output folder.
-      # (http://crbug.com/916620) If tests did not start, repeat the command.
-      if (not self.test_results['attempts'] or 'TESTS_DID_NOT_START'
-          in self.test_results['attempts'][-1]['failed']):
-        cmd_list = self.command(self.egtests_app,
-                                outdir_attempt,
-                                self.destination,
-                                self.shards)
-      # Re-init the command based on list of failed tests.
-      else:
-        cmd_list = self._make_cmd_list_for_failed_tests(
-            self.test_results['attempts'][-1]['failed'],
-            outdir_attempt,
-            test_args=self.egtests_app.test_args,
-            env_vars=self.egtests_app.env_vars)
-
+      cmd_list = self.egtests_app.command(outdir_attempt, 'id=%s' % self.udid,
+                                          shards)
       # TODO(crbug.com/914878): add heartbeat logging to xcodebuild_runner.
       LOGGER.info('Start test attempt #%d for command [%s]' % (
           attempt, ' '.join(cmd_list)))
-      self.launch_attempt(cmd_list, outdir_attempt)
-      self.test_results['attempts'].append(
-          collect_test_results(os.path.join(outdir_attempt, 'Info.plist')))
-      if self.retries == attempt or not self.test_results[
-          'attempts'][-1]['failed']:
-        break
-      self._copy_screenshots(os.path.join(outdir_attempt, 'Info.plist'),
-                             outdir_attempt)
+      output = self.launch_attempt(cmd_list)
 
-    self.test_results['end_run'] = int(time.time())
+      if hasattr(self, 'use_clang_coverage') and self.use_clang_coverage:
+        # out_dir of LaunchCommand object is the TestRunner out_dir joined with
+        # UDID. Use os.path.dirname to retrieve the TestRunner out_dir.
+        file_util.move_raw_coverage_data(self.udid,
+                                         os.path.dirname(self.out_dir))
+      self.test_results['attempts'].append(
+          self._log_parser.collect_test_results(outdir_attempt, output))
+
+      # Do not exit here when no failed test from parsed log and parallel
+      # testing is enabled (shards > 1), because when one of the shards fails
+      # before tests start , the tests not run don't appear in log at all.
+      if (self.retries == attempt or
+          (shards == 1 and not self.test_results['attempts'][-1]['failed'])):
+        break
+
+      # Exclude passed tests in next test attempt.
+      self.egtests_app.excluded_tests += self.test_results['attempts'][-1][
+          'passed']
+      # crbug.com/987664 - for the case when
+      # all tests passed but build was interrupted,
+      # excluded(passed) tests are equal to tests to run.
+      if set(self.egtests_app.excluded_tests) == running_tests:
+        for status in cancelled_statuses:
+          failure = self.test_results['attempts'][-1]['failed'].pop(
+              status, None)
+          if failure:
+            LOGGER.info('Failure for passed tests %s: %s' % (status, failure))
+        break
+
+      # If tests are not completed(interrupted or did not start)
+      # re-run them with the same number of shards,
+      # otherwise re-run with shards=1 and exclude passed tests.
+      cancelled_attempt = cancelled_statuses.intersection(
+          self.test_results['attempts'][-1]['failed'].keys())
+
+      # Item in cancelled_statuses is used to config for next attempt. The usage
+      # should be confined in this method. Real tests affected by these statuses
+      # will be marked timeout in results.
+      for status in cancelled_statuses:
+        self.test_results['attempts'][-1]['failed'].pop(status, None)
+
+      if (not cancelled_attempt
+          # If need to re-run less than 20 tests, 1 shard should be enough.
+          or (len(running_tests) - len(self.egtests_app.excluded_tests)
+              <= MAXIMUM_TESTS_PER_SHARD_FOR_RERUN)):
+        shards = 1
+
     self.summary_log()
 
     return {
@@ -434,97 +255,42 @@ class LaunchCommand(object):
         'logs': self.logs
     }
 
-  def fill_xctest_run(self, egtests_app):
-    """Fills xctestrun file by egtests.
-
-    Args:
-      egtests_app: (EgtestsApp) An Egetsts_app to run.
-
-    Returns:
-      A path to xctestrun file.
-
-    Raises:
-      AppNotFoundError if egtests is empty.
-    """
-    if not egtests_app:
-      raise test_runner.AppNotFoundError('Egtests is not found!')
-    xctestrun = os.path.join(
-        os.path.abspath(os.path.join(self.out_dir, os.pardir)),
-        'run_%d.xctestrun' % int(time.time()))
-    if not os.path.exists(xctestrun):
-      with open(xctestrun, 'w'):
-        pass
-    # Creates a dict with data about egtests to run - fill all required fields:
-    # egtests_module, egtest_app_path, egtests_xctest_path and
-    # filtered tests if filter is specified.
-    # Write data in temp xctest run file.
-    plistlib.writePlist(egtests_app.xctestrun_node(), xctestrun)
-    return xctestrun
-
-  def command(self, egtests_app, out_dir, destination, shards):
-    """Returns the command that launches tests using xcodebuild.
-
-    Format of command:
-    xcodebuild test-without-building -xctestrun file.xctestrun \
-      -parallel-testing-enabled YES -parallel-testing-worker-count %d% \
-      [-destination "destination"]  -resultBundlePath %output_path%
-
-    Args:
-      egtests_app: (EgtestsApp) An egetsts_app to run.
-      out_dir: (str) An output directory.
-      destination: (str) A destination of running simulator.
-      shards: (int) A number of shards.
-
-    Returns:
-      A list of strings forming the command to launch the test.
-    """
-    cmd = ['xcodebuild', 'test-without-building',
-           '-xctestrun', self.fill_xctest_run(egtests_app),
-           '-destination', destination,
-           '-resultBundlePath', out_dir]
-    if self.shards > 1:
-      cmd += ['-parallel-testing-enabled', 'YES',
-              '-parallel-testing-worker-count', str(shards)]
-    return cmd
-
 
 class SimulatorParallelTestRunner(test_runner.SimulatorTestRunner):
   """Class for running simulator tests using xCode."""
 
-  def __init__(
-      self,
-      app_path,
-      iossim_path,
-      xcode_build_version,
-      version,
-      platform,
-      out_dir,
-      mac_toolchain=None,
-      retries=1,
-      shards=1,
-      xcode_path=None,
-      test_cases=None,
-      test_args=None,
-      env_vars=None
-  ):
+  def __init__(self,
+               app_path,
+               host_app_path,
+               iossim_path,
+               version,
+               platform,
+               out_dir,
+               release=False,
+               retries=1,
+               shards=1,
+               test_cases=None,
+               test_args=None,
+               use_clang_coverage=False,
+               env_vars=None):
     """Initializes a new instance of SimulatorParallelTestRunner class.
 
     Args:
       app_path: (str) A path to egtests_app.
+      host_app_path: (str) A path to the host app for EG2.
       iossim_path: Path to the compiled iossim binary to use.
                    Not used, but is required by the base class.
-      xcode_build_version: (str) Xcode build version for running tests.
       version: (str) iOS version to run simulator on.
       platform: (str) Name of device.
       out_dir: (str) A directory to emit test data into.
-      mac_toolchain: (str) A command to run `mac_toolchain` tool.
+      release: (bool) Whether this test runner is running for a release build.
       retries: (int) A number to retry test run, will re-run only failed tests.
       shards: (int) A number of shards. Default is 1.
-      xcode_path: (str) A path to Xcode.app folder.
       test_cases: (list) List of tests to be included in the test run.
                   None or [] to include all tests.
       test_args: List of strings to pass as arguments to the test when
         launching.
+      use_clang_coverage: Whether code coverage is enabled in this run.
       env_vars: List of environment variables to pass to the test itself.
 
     Raises:
@@ -538,23 +304,26 @@ class SimulatorParallelTestRunner(test_runner.SimulatorTestRunner):
         iossim_path,
         platform,
         version,
-        xcode_build_version,
         out_dir,
         env_vars=env_vars,
-        mac_toolchain=mac_toolchain,
         retries=retries or 1,
         shards=shards or 1,
         test_args=test_args,
         test_cases=test_cases,
-        xcode_path=xcode_path,
-        xctest=False
-    )
-    self.erase_all_simulators()
+        use_clang_coverage=use_clang_coverage,
+        xctest=False)
+    self.set_up()
+    self.host_app_path = None
+    if host_app_path != 'NO_PATH':
+      self.host_app_path = os.path.abspath(host_app_path)
     self._init_sharding_data()
     self.logs = collections.OrderedDict()
-    self.test_results = collections.OrderedDict()
-    self.test_results['start_run'] = int(time.time())
-    self.test_results['end_run'] = None
+    self.release = release
+    self.test_results['path_delimiter'] = '/'
+    # Do not enable parallel testing when code coverage is enabled, because raw
+    # coverage data won't be produced with parallel testing.
+    if hasattr(self, 'use_clang_coverage') and self.use_clang_coverage:
+      self.shards = 1
 
   def _init_sharding_data(self):
     """Initialize sharding data.
@@ -563,24 +332,18 @@ class SimulatorParallelTestRunner(test_runner.SimulatorTestRunner):
     [
         {
             'app':paths to egtests_app,
-            'destination': 'platform=iOS Simulator,OS=<os>,Name=<simulator>'
+            'udid': 'UDID of Simulator'
             'shards': N
         }
     ]
     """
-    self.sharding_data = [
-        {
-            'app': self.app_path,
-            # Destination is required to run tests via xcodebuild and it
-            # looks like
-            # 'platform=iOS Simulator,OS=<os_version>,Name=<simulator-name>'
-            # By default all tests runs on 'platform=iOS Simulator'.
-            'destination': 'platform=iOS Simulator,OS=%s,name=%s' % (
-                self.version, self.platform),
-            'shards': self.shards,
-            'test_cases': self.test_cases
-        }
-    ]
+    self.sharding_data = [{
+        'app': self.app_path,
+        'host': self.host_app_path,
+        'udid': self.udid,
+        'shards': self.shards,
+        'test_cases': self.test_cases
+    }]
 
   def get_launch_env(self):
     """Returns a dict of environment variables to use to launch the test app.
@@ -592,39 +355,66 @@ class SimulatorParallelTestRunner(test_runner.SimulatorTestRunner):
     env['NSUnbufferedIO'] = 'YES'
     return env
 
+  def get_launch_test_app(self, params):
+    """Returns the proper test_app for the run, requiring sharding data.
+
+    Args:
+      params: A collection of sharding_data params.
+
+    Returns:
+      An implementation of EgtestsApp included the sharding_data params
+    """
+    return test_apps.EgtestsApp(
+        params['app'],
+        included_tests=params['test_cases'],
+        env_vars=self.env_vars,
+        test_args=self.test_args,
+        release=self.release,
+        host_app_path=params['host'])
+
   def launch(self):
     """Launches tests using xcodebuild."""
-    destinaion_folder = lambda dest: dest.replace(
-        'platform=iOS Simulator,', '').replace(',name=', ' ').replace('OS=', '')
     launch_commands = []
     for params in self.sharding_data:
-      launch_commands.append(LaunchCommand(
-          EgtestsApp(params['app'], filtered_tests=params['test_cases'],
-                     env_vars=self.env_vars, test_args=self.test_args),
-          params['destination'],
-          shards=params['shards'],
-          retries=self.retries,
-          out_dir=os.path.join(self.out_dir,
-                               destinaion_folder(params['destination'])),
-          env=self.get_launch_env()))
+      test_app = self.get_launch_test_app(params)
+      launch_commands.append(
+          LaunchCommand(
+              test_app,
+              udid=params['udid'],
+              shards=params['shards'],
+              retries=self.retries,
+              out_dir=os.path.join(self.out_dir, params['udid']),
+              use_clang_coverage=(hasattr(self, 'use_clang_coverage') and
+                                  self.use_clang_coverage),
+              env=self.get_launch_env()))
 
-    pool = multiprocessing.pool.ThreadPool(len(launch_commands))
+    thread_pool = pool.ThreadPool(len(launch_commands))
     attempts_results = []
-    for result in pool.imap_unordered(LaunchCommand.launch, launch_commands):
+    for result in thread_pool.imap_unordered(LaunchCommand.launch,
+                                             launch_commands):
       attempts_results.append(result['test_results']['attempts'])
-    self.test_results['end_run'] = int(time.time())
+
+    # Deletes simulator used in the tests after tests end.
+    if iossim_util.is_device_with_udid_simulator(self.udid):
+      iossim_util.delete_simulator_by_udid(self.udid)
 
     # Gets passed tests
-    self.logs['passed'] = []
+    self.logs['passed tests'] = []
     for shard_attempts in attempts_results:
       for attempt in shard_attempts:
-        self.logs['passed'].extend(attempt['passed'])
+        self.logs['passed tests'].extend(attempt['passed'])
 
     # If the last attempt does not have failures, mark failed as empty
-    self.logs['failed'] = []
+    self.logs['failed tests'] = []
     for shard_attempts in attempts_results:
       if shard_attempts[-1]['failed']:
-        self.logs['failed'].extend(shard_attempts[-1]['failed'].keys())
+        self.logs['failed tests'].extend(shard_attempts[-1]['failed'].keys())
+
+    # Gets disabled tests from test app object if any.
+    self.logs['disabled tests'] = []
+    for launch_command in launch_commands:
+      self.logs['disabled tests'].extend(
+          launch_command.egtests_app.disabled_tests)
 
     # Gets all failures/flakes and lists them in bot summary
     all_failures = set()
@@ -638,15 +428,138 @@ class SimulatorParallelTestRunner(test_runner.SimulatorTestRunner):
           all_failures.add(failure)
 
     # Gets only flaky(not failed) tests.
-    self.logs['flaked'] = list(all_failures - set(self.logs['failed']))
+    self.logs['flaked tests'] = list(
+        all_failures - set(self.logs['failed tests']))
+
+    # Gets not-started/interrupted tests.
+    # all_tests_to_run takes into consideration that only a subset of tests may
+    # have run due to the test sharding logic in run.py.
+    all_tests_to_run = set([
+        test_name for launch_command in launch_commands
+        for test_name in launch_command.egtests_app.get_all_tests()
+    ])
+
+    aborted_tests = []
+    # TODO(crbug.com/1048758): For device targets, the list of test names parsed
+    # from otool output is incorrect. For multitasking or any flaky test suite,
+    # the list contains more tests than what actually runs.
+    if (self.__class__.__name__ != 'DeviceXcodeTestRunner' and
+        'ios_chrome_multitasking_eg' not in self.app_path and
+        '_flaky_eg' not in self.app_path):
+      aborted_tests = list(all_tests_to_run - set(self.logs['failed tests']) -
+                           set(self.logs['passed tests']))
+    aborted_tests.sort()
+    self.logs['aborted tests'] = aborted_tests
+
+    self.test_results['interrupted'] = bool(aborted_tests)
+    self.test_results['num_failures_by_type'] = {
+        'FAIL': len(self.logs['failed tests'] + self.logs['aborted tests']),
+        'PASS': len(self.logs['passed tests']),
+    }
+
+    output = sju.StdJson()
+    for shard_attempts in attempts_results:
+      for attempt, attempt_results in enumerate(shard_attempts):
+
+        for test in attempt_results['failed'].keys():
+          # TODO(crbug.com/1178923): Remove unicode check when it's figured out
+          # where unicode is introduced.
+          log_lines = []
+          for line in self.logs.get(test, []):
+            if sys.version_info.major == 2:
+              if isinstance(line, unicode):
+                LOGGER.warning('Unicode string: %s' % line)
+                line = line.encode('utf-8')
+            log_lines.append(line)
+
+          output.mark_failed(test, test_log='\n'.join(log_lines))
+
+        # 'aborted tests' in logs is an array of strings, each string defined
+        # as "{TestCase}/{testMethod}"
+        for test in self.logs['aborted tests']:
+          output.mark_timeout(test)
+
+        for test in attempt_results['passed']:
+          output.mark_passed(test)
+
+    output.mark_all_disabled(self.logs['disabled tests'])
+    output.finalize()
+
+    self.test_results['tests'] = output.tests
 
     # Test is failed if there are failures for the last run.
-    return not self.logs['failed']
+    # or if there are aborted tests.
+    return not self.logs['failed tests'] and not self.logs['aborted tests']
 
-  def erase_all_simulators(self):
-    """Erases all simulator devices.
 
-    Fix for DVTCoreSimulatorAdditionsErrorDomain error.
+class DeviceXcodeTestRunner(SimulatorParallelTestRunner,
+                            test_runner.DeviceTestRunner):
+  """Class for running tests on real device using xCode."""
+
+  def __init__(
+      self,
+      app_path,
+      host_app_path,
+      out_dir,
+      release=False,
+      retries=1,
+      test_cases=None,
+      test_args=None,
+      env_vars=None,
+  ):
+    """Initializes a new instance of DeviceXcodeTestRunner class.
+
+    Args:
+      app_path: (str) A path to egtests_app.
+      host_app_path: (str) A path to the host app for EG2.
+      out_dir: (str) A directory to emit test data into.
+      retries: (int) A number to retry test run, will re-run only failed tests.
+      test_cases: (list) List of tests to be included in the test run.
+                  None or [] to include all tests.
+      test_args: List of strings to pass as arguments to the test when
+        launching.
+      env_vars: List of environment variables to pass to the test itself.
+
+    Raises:
+      AppNotFoundError: If the given app does not exist.
+      DeviceDetectionError: If no device found.
+      PlugInsNotFoundError: If the PlugIns directory does not exist for XCTests.
+      XcodeVersionNotFoundError: If the given Xcode version does not exist.
+      XCTestPlugInNotFoundError: If the .xctest PlugIn does not exist.
     """
-    LOGGER.info('Erasing all simulators.')
-    subprocess.call(['xcrun', 'simctl', 'erase', 'all'])
+    test_runner.DeviceTestRunner.__init__(
+        self,
+        app_path,
+        out_dir,
+        env_vars=env_vars,
+        retries=retries,
+        test_args=test_args,
+        test_cases=test_cases,
+    )
+    self.shards = 1  # For tests on real devices shards=1
+    self.version = None
+    self.platform = None
+    self.host_app_path = None
+    if host_app_path != 'NO_PATH':
+      self.host_app_path = os.path.abspath(host_app_path)
+    self.homedir = ''
+    self.release = release
+    self.set_up()
+    self._init_sharding_data()
+    self.start_time = time.strftime('%Y-%m-%d-%H%M%S', time.localtime())
+    self.test_results['path_delimiter'] = '/'
+
+  def set_up(self):
+    """Performs setup actions which must occur prior to every test launch."""
+    self.uninstall_apps()
+    self.wipe_derived_data()
+
+  def tear_down(self):
+    """Performs cleanup actions which must occur after every test launch."""
+    test_runner.DeviceTestRunner.tear_down(self)
+
+  def launch(self):
+    try:
+      return super(DeviceXcodeTestRunner, self).launch()
+    finally:
+      self.tear_down()

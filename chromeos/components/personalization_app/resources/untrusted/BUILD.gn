@@ -1,0 +1,73 @@
+# Copyright 2021 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//third_party/closure_compiler/compile_js.gni")
+import("//tools/grit/preprocess_if_expr.gni")
+import("//tools/polymer/html_to_js.gni")
+
+js_library("collections_grid") {
+  deps = [
+    "../../mojom:mojom_js_library_for_compile",
+    "../common:constants",
+    "../common:iframe_api",
+    "../common:styles",
+    "//third_party/polymer/v3_0/components-chromium/iron-list:iron-list",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+  ]
+}
+
+js_library("images_grid") {
+  deps = [
+    "../../mojom:mojom_js_library_for_compile",
+    "../common:constants",
+    "../common:iframe_api",
+    "../common:styles",
+    "//third_party/polymer/v3_0/components-chromium/iron-list:iron-list",
+    "//third_party/polymer/v3_0/components-chromium/polymer:polymer_bundled",
+  ]
+}
+
+js_type_check("closure_compile") {
+  is_polymer3 = true
+  closure_flags = default_closure_args + [
+                    "language_in=ECMASCRIPT_2020",
+                    "browser_resolver_prefix_replacements=\"chrome-untrusted://personalization/polymer/v3_0/=../../third_party/polymer/v3_0/components-chromium/\"",
+                    "browser_resolver_prefix_replacements=\"chrome-untrusted://personalization/polymer/v3_0/polymer/polymer_bundled.min.js=../../third_party/polymer/v3_0/components-chromium/polymer/polymer_bundled.js\"",
+                  ]
+  deps = [
+    ":collections_grid",
+    ":images_grid",
+  ]
+}
+
+html_to_js("web_components") {
+  js_files = [
+    "collections_grid.js",
+    "images_grid.js",
+  ]
+}
+
+copy("copy_static") {
+  sources = [
+    "collections.html",
+    "images.html",
+  ]
+  outputs = [ "$target_gen_dir/{{source_file_part}}" ]
+}
+
+preprocess_if_expr("preprocess") {
+  deps = [
+    ":copy_static",
+    ":web_components",
+  ]
+  in_folder = "$target_gen_dir/.."
+  out_folder = "$target_gen_dir/processed"
+  out_manifest = "$target_gen_dir/manifest.json"
+  in_files = [
+    "untrusted/collections.html",
+    "untrusted/collections_grid.js",
+    "untrusted/images.html",
+    "untrusted/images_grid.js",
+  ]
+}

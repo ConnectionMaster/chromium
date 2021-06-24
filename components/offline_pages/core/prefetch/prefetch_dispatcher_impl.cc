@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/guid.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/post_task.h"
@@ -28,7 +29,6 @@
 #include "components/offline_pages/core/prefetch/prefetch_service.h"
 #include "components/offline_pages/core/prefetch/prefetch_types.h"
 #include "components/offline_pages/core/prefetch/server_forbidden_check_request.h"
-#include "components/offline_pages/core/prefetch/suggested_articles_observer.h"
 #include "components/offline_pages/core/prefetch/suggestions_provider.h"
 #include "components/offline_pages/core/prefetch/tasks/add_unique_urls_task.h"
 #include "components/offline_pages/core/prefetch/tasks/download_archives_task.h"
@@ -44,9 +44,9 @@
 #include "components/offline_pages/core/prefetch/tasks/mark_operation_done_task.h"
 #include "components/offline_pages/core/prefetch/tasks/metrics_finalization_task.h"
 #include "components/offline_pages/core/prefetch/tasks/page_bundle_update_task.h"
+#include "components/offline_pages/core/prefetch/tasks/remove_url_task.h"
 #include "components/offline_pages/core/prefetch/tasks/sent_get_operation_cleanup_task.h"
 #include "components/offline_pages/core/prefetch/tasks/stale_entry_finalizer_task.h"
-#include "components/offline_pages/core/prefetch/thumbnail_fetcher.h"
 #include "components/offline_pages/core/prefetch/visuals_fetch_by_url.h"
 #include "components/prefs/pref_service.h"
 #include "url/gurl.h"
@@ -70,7 +70,7 @@ PrefetchURL SuggestionToPrefetchURL(PrefetchSuggestion suggestion) {
 }  // namespace
 
 PrefetchDispatcherImpl::PrefetchDispatcherImpl(PrefService* pref_service)
-    : pref_service_(pref_service), task_queue_(this), weak_factory_(this) {}
+    : pref_service_(pref_service), task_queue_(this) {}
 
 PrefetchDispatcherImpl::~PrefetchDispatcherImpl() = default;
 
@@ -90,25 +90,16 @@ void PrefetchDispatcherImpl::EnsureTaskScheduled() {
     background_task_->SetReschedule(
         PrefetchBackgroundTaskRescheduleType::RESCHEDULE_WITHOUT_BACKOFF);
   } else {
-    service_->GetGCMToken(
-        base::BindOnce(&PrefetchDispatcherImpl::EnsureTaskScheduledWithGCMToken,
-                       weak_factory_.GetWeakPtr()));
+    service_->GetPrefetchBackgroundTaskHandler()->EnsureTaskScheduled();
   }
-}
-
-void PrefetchDispatcherImpl::EnsureTaskScheduledWithGCMToken(
-    const std::string& gcm_token) {
-  service_->GetPrefetchBackgroundTaskHandler()->EnsureTaskScheduled(gcm_token);
 }
 
 void PrefetchDispatcherImpl::AddCandidatePrefetchURLs(
     const std::string& name_space,
     const std::vector<PrefetchURL>& prefetch_urls) {
   if (!prefetch_prefs::IsEnabled(pref_service_)) {
-    if (prefetch_prefs::IsForbiddenCheckDue(pref_service_)) {
-      CheckIfEnabledByServer(service_->GetPrefetchNetworkRequestFactory(),
-                             pref_service_);
-    }
+    if (prefetch_prefs::IsForbiddenCheckDue(pref_service_))
+      CheckIfEnabledByServer(pref_service_, service_);
     return;
   }
 
@@ -125,9 +116,7 @@ void PrefetchDispatcherImpl::AddCandidatePrefetchURLs(
   task_queue_.AddTask(
       std::make_unique<StaleEntryFinalizerTask>(this, prefetch_store));
 
-  // Second, move FINISHED to ZOMBIE. This also just needs to run regularly to
-  // report various prefetch item metrics. Note that we're not running this in
-  // the background task due to crbug.com/944615.
+  // Second, move FINISHED to ZOMBIE.
   task_queue_.AddTask(
       std::make_unique<MetricsFinalizationTask>(prefetch_store));
 
@@ -142,6 +131,14 @@ void PrefetchDispatcherImpl::AddCandidatePrefetchURLs(
 
 void PrefetchDispatcherImpl::NewSuggestionsAvailable(
     SuggestionsProvider* suggestions_provider) {
+  // No need to GetKnownContent if prefetching is disabled (however, we don't
+  // want to prevent the server-forbidden check).
+  if (!prefetch_prefs::IsEnabled(pref_service_)) {
+    if (prefetch_prefs::IsForbiddenCheckDue(pref_service_))
+      CheckIfEnabledByServer(pref_service_, service_);
+    return;
+  }
+
   suggestions_provider->GetCurrentArticleSuggestions(
       base::BindOnce(&PrefetchDispatcherImpl::AddSuggestions, GetWeakPtr()));
 }
@@ -149,8 +146,17 @@ void PrefetchDispatcherImpl::NewSuggestionsAvailable(
 void PrefetchDispatcherImpl::RemoveSuggestion(const GURL& url) {
   if (!prefetch_prefs::IsEnabled(pref_service_))
     return;
-  // TODO(https://crbug.com/841516): to be implemented soon.
-  NOTIMPLEMENTED();
+
+  // Remove the URL from the prefetch database.
+  task_queue_.AddTask(MakeRemoveUrlTask(service_->GetPrefetchStore(), url));
+
+  // Remove the URL from the offline model.
+  PageCriteria criteria;
+  criteria.url = url;
+  criteria.client_namespaces =
+      std::vector<std::string>{kSuggestedArticlesNamespace};
+  service_->GetOfflinePageModel()->DeletePagesWithCriteria(criteria,
+                                                           base::DoNothing());
 }
 
 void PrefetchDispatcherImpl::RemoveAllUnprocessedPrefetchURLs(
@@ -216,6 +222,13 @@ void PrefetchDispatcherImpl::QueueReconcileTasks() {
 
   task_queue_.AddTask(std::make_unique<ImportCleanupTask>(
       service_->GetPrefetchStore(), service_->GetPrefetchImporter()));
+
+  // This task should be last, because it is least important for correct
+  // operation of the system, and because any reconciliation tasks might
+  // generate more entries in the FINISHED state that the finalization task
+  // could pick up.
+  task_queue_.AddTask(
+      std::make_unique<MetricsFinalizationTask>(service_->GetPrefetchStore()));
 }
 
 void PrefetchDispatcherImpl::QueueActionTasks() {
@@ -243,7 +256,7 @@ void PrefetchDispatcherImpl::QueueActionTasks() {
   std::unique_ptr<Task> get_operation_task = std::make_unique<GetOperationTask>(
       service_->GetPrefetchStore(),
       service_->GetPrefetchNetworkRequestFactory(),
-      base::BindOnce(
+      base::BindRepeating(
           &PrefetchDispatcherImpl::DidGenerateBundleOrGetOperationRequest,
           GetWeakPtr(), "GetOperationRequest"));
   task_queue_.AddTask(std::move(get_operation_task));
@@ -252,7 +265,7 @@ void PrefetchDispatcherImpl::QueueActionTasks() {
       std::make_unique<GeneratePageBundleTask>(
           this, service_->GetPrefetchStore(), service_->GetCachedGCMToken(),
           service_->GetPrefetchNetworkRequestFactory(),
-          base::BindOnce(
+          base::BindRepeating(
               &PrefetchDispatcherImpl::DidGenerateBundleOrGetOperationRequest,
               GetWeakPtr(), "GeneratePageBundleRequest"));
   task_queue_.AddTask(std::move(generate_page_bundle_task));
@@ -465,21 +478,11 @@ void PrefetchDispatcherImpl::VisualsAvailabilityChecked(
   if (availability.has_thumbnail && availability.has_favicon) {
     FetchVisuals(std::move(remaining_ids), is_first_attempt);
   } else {
-    // Zine/Feed: thumbnail_fetcher is non-null only with Zine.
-    ThumbnailFetcher* thumbnail_fetcher = service_->GetThumbnailFetcher();
-    if (thumbnail_fetcher) {
-      auto complete_callback = base::BindOnce(
-          &PrefetchDispatcherImpl::ThumbnailFetchComplete, GetWeakPtr(),
-          offline_id, std::move(remaining_ids), is_first_attempt, GURL());
-      thumbnail_fetcher->FetchSuggestionImageData(client_id,
-                                                  std::move(complete_callback));
-    } else {
-      task_queue_.AddTask(std::make_unique<GetVisualsInfoTask>(
-          service_->GetPrefetchStore(), offline_id,
-          base::BindOnce(&PrefetchDispatcherImpl::VisualsInfoReceived,
-                         GetWeakPtr(), offline_id, std::move(remaining_ids),
-                         is_first_attempt, availability)));
-    }
+    task_queue_.AddTask(std::make_unique<GetVisualsInfoTask>(
+        service_->GetPrefetchStore(), offline_id,
+        base::BindOnce(&PrefetchDispatcherImpl::VisualsInfoReceived,
+                       GetWeakPtr(), offline_id, std::move(remaining_ids),
+                       is_first_attempt, availability)));
   }
 }
 

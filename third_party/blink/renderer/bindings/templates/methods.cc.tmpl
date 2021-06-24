@@ -9,6 +9,10 @@ RUNTIME_CALL_TIMER_SCOPE(info.GetIsolate(), RuntimeCallStats::CounterId::{{count
 RUNTIME_CALL_TIMER_SCOPE_DISABLED_BY_DEFAULT(info.GetIsolate(), "{{counter}}");
 {% endmacro %}
 
+{% macro trace_event(name) %}
+BLINK_BINDINGS_TRACE_EVENT("{{name}}");
+{% endmacro %}
+
 {% macro generate_method(method, world_suffix) %}
 static void {{method.camel_case_name}}{{method.overload_index}}Method{{world_suffix}}(const v8::FunctionCallbackInfo<v8::Value>& info) {
   {% filter format_remove_duplicates([
@@ -50,6 +54,10 @@ static void {{method.camel_case_name}}{{method.overload_index}}Method{{world_suf
   {% endif %}{# interface_name == 'Window' and not method.is_cross_origin #}
   {% endif %}{# not method.is_static #}
 
+  {% if interface_name == "Window" and method.is_cross_origin %}
+  impl->ReportCoopAccess("{{method.name}}");
+  {% endif %}
+
   {# Security checks #}
   {% if method.is_check_security_for_return_value %}
   {{define_exception_state}}
@@ -69,10 +77,6 @@ static void {{method.camel_case_name}}{{method.overload_index}}Method{{world_suf
   {% else %}
   ScriptState* script_state = ScriptState::ForRelevantRealm(info);
   {% endif %}
-  {% endif %}
-
-  {% if method.is_custom_element_callbacks %}
-  V0CustomElementProcessingStack::CallbackDeliveryScope delivery_scope;
   {% endif %}
 
   {{function_call | trim | indent(2)}}
@@ -182,7 +186,7 @@ if (info[{{argument.index}}]->IsFunction()) {
 {% elif argument.is_variadic_wrapper_type %}
 for (int i = {{argument.index}}; i < info.Length(); ++i) {
   if (!V8{{argument.idl_type}}::HasInstance(info[i], info.GetIsolate())) {
-    {{throw_argument_error(method, argument, "parameter %(index)d is not of type '%(type)s'.")}}
+    {{throw_type_error(method, "ExceptionMessages::ArgumentNotOfType(%(index)d, \"%(type)s\")" | format(index=argument.index, type=argument.idl_type))}}
     return;
   }
   {{argument.local_cpp_variable}}.push_back(V8{{argument.idl_type}}::ToImpl(v8::Local<v8::Object>::Cast(info[i])));
@@ -201,20 +205,6 @@ if (!info[{{argument.index}}]->IsNullOrUndefined() && !info[{{argument.index}}]-
 if (!info[{{argument.index}}]->IsNullOrUndefined()) {
   {{v8_value_to_local_cpp_value(argument) | trim | indent(2)}}
 }
-{% elif argument.idl_type == 'object' %}
-if (info[{{argument.index}}]->IsObject()) {
-  {{v8_value_to_local_cpp_value(argument)}}
-{% if argument.is_nullable %}
-} else if (info[{{argument.index}}]->IsNullOrUndefined()) {
-  {{argument.local_cpp_variable}} = ScriptValue(ScriptState::Current(info.GetIsolate()), v8::Null(info.GetIsolate()));
-{% elif argument.is_optional %}
-} else if (info[{{argument.index}}]->IsUndefined()) {
-  {{argument.local_cpp_variable}} = ScriptValue(ScriptState::Current(info.GetIsolate()), v8::Undefined(info.GetIsolate()));
-{% endif %}
-} else {
-  {{throw_argument_error(method, argument, "parameter %(index)d ('%(name)s') is not an object.")}}
-  return;
-}
 {% else %}{# argument is something else #}
 {{v8_value_to_local_cpp_value(argument)}}
 {% endif %}{# end of the dispatch by the argument type #}
@@ -226,7 +216,7 @@ if (info[{{argument.index}}]->IsObject()) {
    Note: for variadic arguments, the type checking is done for each matched
    argument instead; see argument.is_variadic_wrapper_type code-path above. #}
 if (!{{argument.local_cpp_variable}}{% if argument.is_nullable %} && !IsUndefinedOrNull(info[{{argument.index}}]){% endif %}) {
-  {{throw_argument_error(method, argument, "parameter %(index)d is not of type '%(type)s'.")}}
+  {{throw_type_error(method, "ExceptionMessages::ArgumentNotOfType(%(index)d, \"%(type)s\")" | format(index=argument.index, type=argument.idl_type))}}
   return;
 }
 {% elif argument.enum_values %}
@@ -249,11 +239,8 @@ if (!{{argument.local_cpp_variable}}.IsUndefinedOrNull() && !{{argument.local_cp
 
 {######################################}
 {% macro cpp_method_call(method, v8_set_return_value, cpp_value) %}
-{% if method.is_custom_call_prologue %}
-{{v8_class}}::{{method.camel_case_name}}MethodPrologueCustom(info, impl);
-{% endif %}
 {# Local variables #}
-{% if method.is_call_with_execution_context %}
+{% if method.is_call_with_execution_context or method.high_entropy == 'Direct' %}
 {# [ConstructorCallWith=ExecutionContext] or [CallWith=ExecutionContext] #}
 {% if method.is_constructor %}
 ExecutionContext* execution_context = ToExecutionContext(
@@ -266,8 +253,8 @@ ExecutionContext* execution_context = ExecutionContext::ForRelevantRealm(info);
 {% endif %}
 {% if method.is_call_with_document %}
 {# [ConstructorCallWith=Document] #}
-Document& document = *To<Document>(ToExecutionContext(
-    info.NewTarget().As<v8::Object>()->CreationContext()));
+Document& document = *ToLocalDOMWindow(
+    info.NewTarget().As<v8::Object>()->CreationContext())->document();
 {% endif %}
 {# Call #}
 {% if method.idl_type == 'void' %}
@@ -279,6 +266,9 @@ Document& document = *To<Document>(ToExecutionContext(
 {{method.cpp_type}} impl = {{cpp_value}};
 {% elif method.use_local_result %}
 {{method.cpp_type}} result = {{cpp_value}};
+{% if method.high_entropy == 'Direct' %}
+Dactyloscoper::RecordDirectSurface(execution_context, WebFeature::k{{method.measure_as('Method')}}, result);
+{% endif %}
 {% endif %}
 {# Post-call #}
 {% if method.is_raises_exception %}
@@ -309,9 +299,6 @@ else
 {{v8_set_return_value}};
 {% endif %}
 {%- endif %}{# None for void #}
-{% if method.is_custom_call_epilogue %}
-{{v8_class}}::{{method.camel_case_name}}MethodEpilogueCustom(info, impl);
-{% endif %}
 {% endmacro %}
 
 
@@ -467,6 +454,7 @@ if ({{test}}) {
 {##############################################################################}
 {% macro method_callback(method, world_suffix) %}
 void {{v8_class_or_partial}}::{{method.camel_case_name}}MethodCallback{{world_suffix}}(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  {{ trace_event(method.runtime_call_stats.trace_event_name) | trim | indent(2) }}
   {% if method.runtime_call_stats.extended_attribute_defined %}
   {{ runtime_timer_scope(method.runtime_call_stats.method_counter) | trim | indent(2) }}
   {% else %}
@@ -506,17 +494,17 @@ void {{v8_class_or_partial}}::{{method.camel_case_name}}MethodCallback{{world_su
 
 {##############################################################################}
 {% macro origin_safe_method_getter(method, world_suffix) %}
-{# TODO(dcheng): Currently, bindings must create a function object for each
-   realm as a hack to support the incumbent realm. Clean this up when Blink
-   properly supports the incumbent realm. #}
 static void {{method.camel_case_name}}OriginSafeMethodGetter{{world_suffix}}(const v8::PropertyCallbackInfo<v8::Value>& info) {
-  static int dom_template_key; // This address is used for a key to look up the dom template.
-  V8PerIsolateData* data = V8PerIsolateData::From(info.GetIsolate());
-  const DOMWrapperWorld& world = DOMWrapperWorld::World(info.GetIsolate()->GetCurrentContext());
+  v8::Isolate* isolate = info.GetIsolate();
+  V8PerIsolateData* data = V8PerIsolateData::From(isolate);
+  const DOMWrapperWorld& world =
+      DOMWrapperWorld::World(isolate->GetCurrentContext());
   v8::Local<v8::FunctionTemplate> interface_template =
       data->FindInterfaceTemplate(world, {{v8_class}}::GetWrapperTypeInfo());
-  v8::Local<v8::Signature> signature = v8::Signature::New(info.GetIsolate(), interface_template);
+  v8::Local<v8::Signature> signature =
+      v8::Signature::New(isolate, interface_template);
 
+  static int dom_template_key; // This address is used for a key to look up the dom template.
   v8::Local<v8::FunctionTemplate> method_template =
       data->FindOrCreateOperationTemplate(
           world,
@@ -525,27 +513,11 @@ static void {{method.camel_case_name}}OriginSafeMethodGetter{{world_suffix}}(con
           v8::Local<v8::Value>(),
           signature,
           {{method.length}});
-  // Return the function by default, unless the user script has overwritten it.
-  V8SetReturnValue(info, method_template->GetFunction(info.GetIsolate()->GetCurrentContext())
-                   .ToLocalChecked());
 
-  {{cpp_class}}* impl = {{v8_class}}::ToImpl(info.Holder());
-  if (!BindingSecurity::ShouldAllowAccessTo(
-          CurrentDOMWindow(info.GetIsolate()), impl,
-          BindingSecurity::ErrorReportOption::kDoNotReport)) {
-    return;
-  }
-
-  {% raw %}
-  // {{method.name}} must be same with |methodName| (=name) in
-  // {{cpp_class}}OriginSafeMethodSetter defined in interface.cc.tmpl.
-  {% endraw %}
-  V8PrivateProperty::Symbol property_symbol =
-      V8PrivateProperty::GetSymbol(info.GetIsolate(), "{{method.name}}");
-  v8::Local<v8::Object> holder = v8::Local<v8::Object>::Cast(info.Holder());
-  if (property_symbol.HasValue(holder)) {
-    V8SetReturnValue(info, property_symbol.GetOrUndefined(holder));
-  }
+  V8SetReturnValue(
+      info,
+      method_template->GetFunction(
+          isolate->GetCurrentContext()).ToLocalChecked());
 }
 {% endmacro %}
 
@@ -647,6 +619,12 @@ V8SetReturnValue(info, wrapper);
 {######################################}
 {% macro install_conditional_methods(methods_to_install) %}
 {% for method in methods_to_install %}
+{% filter cross_origin_isolated(method.overloads.cross_origin_isolated_test_all
+                                if method.overloads else
+                                method.cross_origin_isolated_test) %}
+{% filter direct_socket_enabled(method.overloads.direct_socket_enabled_test_all
+                                if method.overloads else
+                                method.direct_socket_enabled_test) %}
 {% filter secure_context(method.overloads.secure_context_test_all
                          if method.overloads else
                          method.secure_context_test) %}
@@ -670,5 +648,7 @@ V8SetReturnValue(info, wrapper);
 {% endfilter %}{# runtime_enabled() #}
 {% endfilter %}{# exposed() #}
 {% endfilter %}{# secure_context() #}
+{% endfilter %}{# direct_socket_enabled() #}
+{% endfilter %}{# cross_origin_isolated() #}
 {% endfor %}
 {%- endmacro %}

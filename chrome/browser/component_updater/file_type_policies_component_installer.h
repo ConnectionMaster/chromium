@@ -27,8 +27,8 @@ class ComponentUpdateService;
 class FileTypePoliciesComponentInstallerPolicy
     : public ComponentInstallerPolicy {
  public:
-  FileTypePoliciesComponentInstallerPolicy() {}
-  ~FileTypePoliciesComponentInstallerPolicy() override {}
+  FileTypePoliciesComponentInstallerPolicy() = default;
+  ~FileTypePoliciesComponentInstallerPolicy() override = default;
 
  private:
   // The following methods override ComponentInstallerPolicy.
@@ -47,7 +47,6 @@ class FileTypePoliciesComponentInstallerPolicy
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
-  std::vector<std::string> GetMimeTypes() const override;
 
   static base::FilePath GetInstalledPath(const base::FilePath& base);
 
@@ -56,8 +55,7 @@ class FileTypePoliciesComponentInstallerPolicy
 
 // Call once during startup to make the component update service aware of
 // the File Type Policies component.
-void RegisterFileTypePoliciesComponent(ComponentUpdateService* cus,
-                                       const base::FilePath& user_data_dir);
+void RegisterFileTypePoliciesComponent(ComponentUpdateService* cus);
 
 }  // namespace component_updater
 

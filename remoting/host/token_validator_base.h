@@ -36,7 +36,7 @@ class TokenValidatorBase
   // TokenValidator interface.
   void ValidateThirdPartyToken(
       const std::string& token,
-      const base::Callback<void(const std::string& shared_secret)>&
+      base::OnceCallback<void(const std::string& shared_secret)>
           on_token_validated) override;
 
   const GURL& token_url() const override;
@@ -85,13 +85,14 @@ class TokenValidatorBase
   // needs to be retried.
   std::string token_;
 
-  base::Callback<void(const std::string& shared_secret)> on_token_validated_;
+  base::OnceCallback<void(const std::string& shared_secret)>
+      on_token_validated_;
 
-  base::WeakPtrFactory<TokenValidatorBase> weak_factory_;
+  base::WeakPtrFactory<TokenValidatorBase> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TokenValidatorBase);
 };
 
 }  // namespace remoting
 
-#endif  // REMOTING_HOST_TOKEN_VALIDATOR_BASE_H
+#endif  // REMOTING_HOST_TOKEN_VALIDATOR_BASE_H_

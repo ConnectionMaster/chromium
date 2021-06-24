@@ -4,8 +4,7 @@
 
 #import "ios/chrome/browser/ui/commands/open_new_tab_command.h"
 
-#include "base/logging.h"
-#include "ios/web/public/referrer.h"
+#include "ios/web/public/navigation/referrer.h"
 #include "url/gurl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -64,10 +63,10 @@
                   appendTo:append];
 }
 
-- (instancetype)initFromChrome:(const GURL&)URL {
+- (instancetype)initFromChrome:(const GURL&)URL inIncognito:(BOOL)inIncognito {
   self = [self initWithURL:URL
                   referrer:web::Referrer()
-               inIncognito:NO
+               inIncognito:inIncognito
               inBackground:NO
                   appendTo:kLastTab];
   if (self) {
@@ -96,8 +95,13 @@
   return [self commandWithIncognito:YES];
 }
 
++ (instancetype)commandWithURLFromChrome:(const GURL&)URL
+                             inIncognito:(BOOL)inIncognito {
+  return [[self alloc] initFromChrome:URL inIncognito:inIncognito];
+}
+
 + (instancetype)commandWithURLFromChrome:(const GURL&)URL {
-  return [[self alloc] initFromChrome:URL];
+  return [[self alloc] initFromChrome:URL inIncognito:NO];
 }
 
 - (const GURL&)URL {

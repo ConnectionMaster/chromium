@@ -21,8 +21,8 @@
 
 #include "base/callback.h"
 #include "base/files/file.h"
-#include "base/logging.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -31,6 +31,7 @@
 #include "media/capture/mojom/image_capture.mojom.h"
 #include "media/capture/video/video_capture_buffer_handle.h"
 #include "media/capture/video/video_capture_device_descriptor.h"
+#include "media/capture/video/video_capture_feedback.h"
 #include "media/capture/video_capture_types.h"
 #include "ui/gfx/gpu_memory_buffer.h"
 
@@ -62,9 +63,22 @@ class CAPTURE_EXPORT VideoFrameConsumerFeedbackObserver {
   // previously sent out by the VideoCaptureDevice we are giving feedback about.
   // It is used to indicate which particular frame the reported utilization
   // corresponds to.
-  virtual void OnUtilizationReport(int frame_feedback_id, double utilization) {}
+  virtual void OnUtilizationReport(int frame_feedback_id,
+                                   media::VideoCaptureFeedback feedback) {}
+};
 
-  static constexpr double kNoUtilizationRecorded = -1.0;
+struct CAPTURE_EXPORT CapturedExternalVideoBuffer {
+  CapturedExternalVideoBuffer(gfx::GpuMemoryBufferHandle handle,
+                              VideoCaptureFormat format,
+                              gfx::ColorSpace color_space);
+  CapturedExternalVideoBuffer(CapturedExternalVideoBuffer&& other);
+  ~CapturedExternalVideoBuffer();
+
+  CapturedExternalVideoBuffer& operator=(CapturedExternalVideoBuffer&& other);
+
+  gfx::GpuMemoryBufferHandle handle;
+  VideoCaptureFormat format;
+  gfx::ColorSpace color_space;
 };
 
 class CAPTURE_EXPORT VideoCaptureDevice
@@ -95,12 +109,19 @@ class CAPTURE_EXPORT VideoCaptureDevice
       class CAPTURE_EXPORT HandleProvider {
        public:
         virtual ~HandleProvider() {}
-        virtual mojo::ScopedSharedBufferHandle GetHandleForInterProcessTransit(
-            bool read_only) = 0;
-        virtual base::SharedMemoryHandle
-        GetNonOwnedSharedMemoryHandleForLegacyIPC() = 0;
+
+        // Duplicate as an writable (unsafe) shared memory region.
+        virtual base::UnsafeSharedMemoryRegion DuplicateAsUnsafeRegion() = 0;
+
+        // Duplicate as a writable (unsafe) mojo buffer.
+        virtual mojo::ScopedSharedBufferHandle DuplicateAsMojoBuffer() = 0;
+
+        // Access a |VideoCaptureBufferHandle| for local, writable memory.
         virtual std::unique_ptr<VideoCaptureBufferHandle>
         GetHandleForInProcessAccess() = 0;
+
+        // Clone a |GpuMemoryBufferHandle| for IPC.
+        virtual gfx::GpuMemoryBufferHandle GetGpuMemoryBufferHandle() = 0;
       };
 
       Buffer();
@@ -116,6 +137,12 @@ class CAPTURE_EXPORT VideoCaptureDevice
       int frame_feedback_id;
       std::unique_ptr<HandleProvider> handle_provider;
       std::unique_ptr<ScopedAccessPermission> access_permission;
+
+      // Some buffer types may be preemptively mapped in the capturer if
+      // requested by the consumer.
+      // This is used to notify the client that a shared memory region
+      // associated with the buffer is valid.
+      bool is_premapped = false;
     };
 
     // Result code for calls to ReserveOutputBuffer()
@@ -144,10 +171,13 @@ class CAPTURE_EXPORT VideoCaptureDevice
     // OnConsumerReportingUtilization(). This identifier is needed because
     // frames are consumed asynchronously and multiple frames can be "in flight"
     // at the same time.
+    // TODO(crbug.com/978143): remove |frame_feedback_id| default value.
     virtual void OnIncomingCapturedData(const uint8_t* data,
                                         int length,
                                         const VideoCaptureFormat& frame_format,
+                                        const gfx::ColorSpace& color_space,
                                         int clockwise_rotation,
+                                        bool flip_y,
                                         base::TimeTicks reference_time,
                                         base::TimeDelta timestamp,
                                         int frame_feedback_id = 0) = 0;
@@ -160,6 +190,7 @@ class CAPTURE_EXPORT VideoCaptureDevice
     // |buffer| when creating the content of the output buffer.
     // |clockwise_rotation|, |reference_time|, |timestamp|, and
     // |frame_feedback_id| serve the same purposes as in OnIncomingCapturedData.
+    // TODO(crbug.com/978143): remove |frame_feedback_id| default value.
     virtual void OnIncomingCapturedGfxBuffer(
         gfx::GpuMemoryBuffer* buffer,
         const VideoCaptureFormat& frame_format,
@@ -167,6 +198,19 @@ class CAPTURE_EXPORT VideoCaptureDevice
         base::TimeTicks reference_time,
         base::TimeDelta timestamp,
         int frame_feedback_id = 0) = 0;
+
+    // Captured a new video frame. The data for this frame is in |handle|,
+    // which is owned by the platform-specific capture device. It is the
+    // responsibilty of the implementation to prevent the buffer in |handle|
+    // from being reused by the external capturer. In practice, this is used
+    // only on macOS, the external capturer maintains a CVPixelBufferPool, and
+    // gfx::ScopedInUseIOSurface is used to prevent reuse of buffers until all
+    // consumers have consumed them.
+    virtual void OnIncomingCapturedExternalBuffer(
+        CapturedExternalVideoBuffer buffer,
+        std::vector<CapturedExternalVideoBuffer> scaled_buffers,
+        base::TimeTicks reference_time,
+        base::TimeDelta timestamp) = 0;
 
     // Reserve an output buffer into which contents can be captured directly.
     // The returned |buffer| will always be allocated with a memory size
@@ -285,6 +329,10 @@ class CAPTURE_EXPORT VideoCaptureDevice
   // would be sequenced through the same task runner, so that deallocation
   // happens first.
   virtual void StopAndDeAllocate() = 0;
+
+  // Hints to the source that if it has an alpha channel, that alpha channel
+  // will be ignored and can be discarded.
+  virtual void SetCanDiscardAlpha(bool can_discard_alpha) {}
 
   // Retrieve the photo capabilities and settings of the device (e.g. zoom
   // levels etc). On success, invokes |callback|. On failure, drops callback

@@ -10,7 +10,8 @@ source_set("cells") {
     "popup_menu_item.h",
   ]
   deps = [
+    "resources:popup_menu_separator_color",
     "//ios/chrome/browser/ui/table_view/cells",
   ]
-  libs = [ "UIKit.framework" ]
+  frameworks = [ "UIKit.framework" ]
 }

@@ -7,12 +7,10 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/memory/ref_counted.h"
 #include "base/single_thread_task_runner.h"
-#include "ipc/ipc_listener.h"
-#include "ipc/ipc_sender.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "ui/ozone/ozone_base_export.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 
 namespace ui {
 
@@ -25,7 +23,7 @@ namespace ui {
 // Under X11, we don't need any GPU messages for display configuration.
 // That's why there's no real functionality here: it's purely mechanism
 // to support additional messages needed by specific platforms.
-class OZONE_BASE_EXPORT GpuPlatformSupportHost {
+class COMPONENT_EXPORT(OZONE_BASE) GpuPlatformSupportHost {
  public:
   using GpuHostBindInterfaceCallback =
       base::RepeatingCallback<void(const std::string&,
@@ -36,33 +34,24 @@ class OZONE_BASE_EXPORT GpuPlatformSupportHost {
   GpuPlatformSupportHost();
   virtual ~GpuPlatformSupportHost();
 
-  // Called when the GPU process is spun up.
-  // This is called from browser IO thread.
-  virtual void OnGpuProcessLaunched(
-      int host_id,
-      scoped_refptr<base::SingleThreadTaskRunner> ui_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> send_runner,
-      const base::Callback<void(IPC::Message*)>& sender) = 0;
-
   // Called when the GPU process is destroyed.
   // This is called from browser UI thread.
   virtual void OnChannelDestroyed(int host_id) = 0;
 
-  // Called to handle an IPC message. Note that this can be called from any
-  // thread.
-  virtual void OnMessageReceived(const IPC::Message& message) = 0;
-
   // Called when the GPU service is launched.
-  // Called from the browser IO thread.
+  // Called from the browser IO thread if ProcessHostOnUI is disabled, otherwise
+  // called on the browser UI thread.
   virtual void OnGpuServiceLaunched(
-      scoped_refptr<base::SingleThreadTaskRunner> host_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> io_runner,
+      int host_id,
+      scoped_refptr<base::SingleThreadTaskRunner> ui_runner,
+      scoped_refptr<base::SingleThreadTaskRunner> process_host_runner,
       GpuHostBindInterfaceCallback binder,
       GpuHostTerminateCallback terminate_callback) = 0;
 };
 
 // create a stub implementation.
-OZONE_BASE_EXPORT GpuPlatformSupportHost* CreateStubGpuPlatformSupportHost();
+COMPONENT_EXPORT(OZONE_BASE)
+GpuPlatformSupportHost* CreateStubGpuPlatformSupportHost();
 
 }  // namespace ui
 

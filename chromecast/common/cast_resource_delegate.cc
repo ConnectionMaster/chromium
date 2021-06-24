@@ -5,6 +5,7 @@
 #include "chromecast/common/cast_resource_delegate.h"
 
 #include "base/files/file_path.h"
+#include "base/notreached.h"
 #include "base/path_service.h"
 #include "ui/gfx/image/image.h"
 
@@ -65,14 +66,19 @@ base::RefCountedStaticMemory* CastResourceDelegate::LoadDataResourceBytes(
   return NULL;
 }
 
+absl::optional<std::string> CastResourceDelegate::LoadDataResourceString(
+    int resource_id) {
+  return absl::nullopt;
+}
+
 bool CastResourceDelegate::GetRawDataResource(int resource_id,
                                               ui::ScaleFactor scale_factor,
-                                              base::StringPiece* value) {
+                                              base::StringPiece* value) const {
   return false;
 }
 
 bool CastResourceDelegate::GetLocalizedString(int message_id,
-                                              base::string16* value) {
+                                              std::u16string* value) const {
   ExtraLocaledStringMap::const_iterator it =
       extra_localized_strings_.find(message_id);
   if (it != extra_localized_strings_.end()) {
@@ -84,7 +90,7 @@ bool CastResourceDelegate::GetLocalizedString(int message_id,
 
 void CastResourceDelegate::AddExtraLocalizedString(
     int resource_id,
-    const base::string16& localized) {
+    const std::u16string& localized) {
   RemoveExtraLocalizedString(resource_id);
   extra_localized_strings_.insert(std::make_pair(resource_id, localized));
 }

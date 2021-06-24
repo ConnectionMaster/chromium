@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/css/style_traversal_root.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/node_traversal.h"
 
 namespace blink {
 
@@ -11,13 +13,24 @@ void StyleTraversalRoot::Update(ContainerNode* common_ancestor,
                                 Node* dirty_node) {
   DCHECK(dirty_node);
   DCHECK(dirty_node->isConnected());
+  AssertRootNodeInvariants();
 
   if (!common_ancestor) {
     // This is either first dirty node in which case we are using it as a
-    // single root, or the document which we set as a common root.
-    root_node_ = dirty_node;
-    if (dirty_node->IsDocumentNode())
+    // single root, or the document/documentElement which we set as a common
+    // root.
+    //
+    // TODO(futhark): Disallow Document as the root. All traversals start at
+    // the RootElement().
+    Element* document_element = dirty_node->GetDocument().documentElement();
+    if (dirty_node->IsDocumentNode() ||
+        (root_node_ && dirty_node == document_element)) {
       root_type_ = RootType::kCommonRoot;
+    } else {
+      DCHECK(!document_element ||
+             (!root_node_ && root_type_ == RootType::kSingleRoot));
+    }
+    root_node_ = dirty_node;
     return;
   }
 
@@ -43,15 +56,12 @@ void StyleTraversalRoot::Update(ContainerNode* common_ancestor,
   root_type_ = RootType::kCommonRoot;
 }
 
-void StyleTraversalRoot::ChildrenRemoved(ContainerNode& parent) {
-  if (!root_node_ || root_node_->isConnected())
-    return;
 #if DCHECK_IS_ON()
-  DCHECK(IsChildDirty(parent));
-  DCHECK(!IsDirty(parent));
-#endif  // DCHECK_IS_ON()
-  ClearChildDirtyForAncestors(parent);
-  Clear();
+bool StyleTraversalRoot::IsModifyingFlatTree() const {
+  DCHECK(root_node_);
+  return root_node_->GetDocument().GetStyleEngine().InDOMRemoval() ||
+         root_node_->GetDocument().IsInSlotAssignmentRecalc();
 }
+#endif
 
 }  // namespace blink

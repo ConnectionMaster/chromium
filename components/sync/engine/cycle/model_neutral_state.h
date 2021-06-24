@@ -7,7 +7,6 @@
 
 #include "components/sync/base/model_type.h"
 #include "components/sync/base/syncer_error.h"
-#include "components/sync/protocol/sync.pb.h"
 
 namespace syncer {
 
@@ -22,9 +21,6 @@ struct ModelNeutralState {
 
   // The set of types for which updates were requested from the server.
   ModelTypeSet get_updates_request_types;
-
-  // The set of types for which commits were sent to the server.
-  ModelTypeSet commit_request_types;
 
   int num_successful_commits;
 

@@ -6,15 +6,19 @@
 #define NET_SOCKET_TRANSPORT_CONNECT_JOB_H_
 
 #include <memory>
-#include <string>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_export.h"
+#include "net/base/network_isolation_key.h"
 #include "net/dns/host_resolver.h"
+#include "net/dns/public/resolve_error_info.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/socket/connect_job.h"
 #include "net/socket/connection_attempts.h"
 #include "net/socket/socket_tag.h"
@@ -24,21 +28,24 @@ namespace net {
 class NetLogWithSource;
 class SocketTag;
 
-typedef base::RepeatingCallback<int(const AddressList&,
-                                    const NetLogWithSource& net_log)>
-    OnHostResolutionCallback;
-
 class NET_EXPORT_PRIVATE TransportSocketParams
     : public base::RefCounted<TransportSocketParams> {
  public:
   // |host_resolution_callback| will be invoked after the the hostname is
-  // resolved.  If |host_resolution_callback| does not return OK, then the
+  // resolved. |network_isolation_key| is passed to the HostResolver to prevent
+  // cross-NIK leaks. If |host_resolution_callback| does not return OK, then the
   // connection will be aborted with that value.
   TransportSocketParams(
       const HostPortPair& host_port_pair,
+      const NetworkIsolationKey& network_isolation_key,
+      SecureDnsPolicy secure_dns_policy,
       const OnHostResolutionCallback& host_resolution_callback);
 
   const HostPortPair& destination() const { return destination_; }
+  const NetworkIsolationKey& network_isolation_key() const {
+    return network_isolation_key_;
+  }
+  SecureDnsPolicy secure_dns_policy() const { return secure_dns_policy_; }
   const OnHostResolutionCallback& host_resolution_callback() const {
     return host_resolution_callback_;
   }
@@ -48,6 +55,8 @@ class NET_EXPORT_PRIVATE TransportSocketParams
   ~TransportSocketParams();
 
   const HostPortPair destination_;
+  const NetworkIsolationKey network_isolation_key_;
+  const SecureDnsPolicy secure_dns_policy_;
   const OnHostResolutionCallback host_resolution_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(TransportSocketParams);
@@ -105,6 +114,7 @@ class NET_EXPORT_PRIVATE TransportConnectJob : public ConnectJob {
   LoadState GetLoadState() const override;
   bool HasEstablishedConnection() const override;
   ConnectionAttempts GetConnectionAttempts() const override;
+  ResolveErrorInfo GetResolveErrorInfo() const override;
 
   // Rolls |addrlist| forward until the first IPv4 address, if any.
   // WARNING: this method should only be used to implement the prefer-IPv4 hack.
@@ -163,6 +173,7 @@ class NET_EXPORT_PRIVATE TransportConnectJob : public ConnectJob {
   base::OneShotTimer fallback_timer_;
 
   int resolve_result_;
+  ResolveErrorInfo resolve_error_info_;
 
   // Used in the failure case to save connection attempts made on the main and
   // fallback sockets and pass them on in |GetAdditionalErrorState|. (In the
@@ -171,6 +182,8 @@ class NET_EXPORT_PRIVATE TransportConnectJob : public ConnectJob {
   // it is returned.)
   ConnectionAttempts connection_attempts_;
   ConnectionAttempts fallback_connection_attempts_;
+
+  base::WeakPtrFactory<TransportConnectJob> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TransportConnectJob);
 };

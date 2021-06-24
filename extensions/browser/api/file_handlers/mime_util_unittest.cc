@@ -17,8 +17,11 @@
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/extensions_test.h"
+#include "storage/browser/quota/quota_manager_proxy.h"
 #include "storage/browser/test/test_file_system_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace extensions {
 namespace app_file_handler_util {
@@ -44,21 +47,22 @@ void OnMimeTypesCollected(
 storage::FileSystemURL CreateNativeLocalFileSystemURL(
     storage::FileSystemContext* context,
     const base::FilePath local_path) {
-  return context->CreateCrackedFileSystemURL(
-      GURL(kOrigin), storage::kFileSystemTypeNativeLocal, local_path);
+  return context->CreateCrackedFileSystemURL(url::Origin::Create(GURL(kOrigin)),
+                                             storage::kFileSystemTypeLocal,
+                                             local_path);
 }
 
 }  // namespace
 
 class FileHandlersMimeUtilTest : public ExtensionsTest {
  protected:
-  FileHandlersMimeUtilTest() {}
-  ~FileHandlersMimeUtilTest() override {}
+  FileHandlersMimeUtilTest() = default;
+  ~FileHandlersMimeUtilTest() override = default;
 
   void SetUp() override {
     ExtensionsTest::SetUp();
-    file_system_context_ = content::CreateFileSystemContextForTesting(
-        NULL, browser_context()->GetPath());
+    file_system_context_ = storage::CreateFileSystemContextForTesting(
+        /*quota_manager_proxy=*/nullptr, browser_context()->GetPath());
 
     const std::string kSampleContent = "<html><body></body></html>";
     base::FilePath temp_filename = CreateTemporaryFile(kSampleContent);
@@ -94,9 +98,10 @@ class FileHandlersMimeUtilTest : public ExtensionsTest {
 TEST_F(FileHandlersMimeUtilTest, GetMimeTypeForLocalPath) {
   {
     std::string result;
-    GetMimeTypeForLocalPath(browser_context(), base::FilePath::FromUTF8Unsafe(
-                                                   kJPEGExtensionFilePath),
-                            base::Bind(&OnMimeTypeResult, &result));
+    GetMimeTypeForLocalPath(
+        browser_context(),
+        base::FilePath::FromUTF8Unsafe(kJPEGExtensionFilePath),
+        base::BindOnce(&OnMimeTypeResult, &result));
     content::RunAllTasksUntilIdle();
     EXPECT_EQ("image/jpeg", result);
   }
@@ -106,7 +111,7 @@ TEST_F(FileHandlersMimeUtilTest, GetMimeTypeForLocalPath) {
     GetMimeTypeForLocalPath(
         browser_context(),
         base::FilePath::FromUTF8Unsafe(kJPEGExtensionUpperCaseFilePath),
-        base::Bind(&OnMimeTypeResult, &result));
+        base::BindOnce(&OnMimeTypeResult, &result));
     content::RunAllTasksUntilIdle();
     EXPECT_EQ("image/jpeg", result);
   }
@@ -114,7 +119,7 @@ TEST_F(FileHandlersMimeUtilTest, GetMimeTypeForLocalPath) {
   {
     std::string result;
     GetMimeTypeForLocalPath(browser_context(), html_mime_file_path_,
-                            base::Bind(&OnMimeTypeResult, &result));
+                            base::BindOnce(&OnMimeTypeResult, &result));
     content::RunAllTasksUntilIdle();
     EXPECT_EQ("text/html", result);
   }
@@ -122,12 +127,20 @@ TEST_F(FileHandlersMimeUtilTest, GetMimeTypeForLocalPath) {
   {
     std::string result;
     GetMimeTypeForLocalPath(browser_context(), amr_mime_file_path_,
-                            base::BindRepeating(&OnMimeTypeResult, &result));
+                            base::BindOnce(&OnMimeTypeResult, &result));
     content::RunAllTasksUntilIdle();
     // The MIME type for AMR files is supposed to be "audio/AMR" (note: upper
     // case). However, platforms are inconsistent in this and some, including
     // chrome, use lower case.
     EXPECT_EQ("audio/amr", base::ToLowerASCII(result));
+  }
+
+  {
+    std::string result;
+    GetMimeTypeForLocalPath(browser_context(), html_mime_file_path_.DirName(),
+                            base::BindOnce(&OnMimeTypeResult, &result));
+    content::RunAllTasksUntilIdle();
+    EXPECT_EQ("inode/directory", result);
   }
 }
 
@@ -143,15 +156,19 @@ TEST_F(FileHandlersMimeUtilTest, MimeTypeCollector_ForURLs) {
       base::FilePath::FromUTF8Unsafe(kJPEGExtensionUpperCaseFilePath)));
   urls.push_back(CreateNativeLocalFileSystemURL(file_system_context_.get(),
                                                 html_mime_file_path_));
+  urls.push_back(CreateNativeLocalFileSystemURL(
+      file_system_context_.get(), html_mime_file_path_.DirName()));
 
   std::vector<std::string> result;
-  collector.CollectForURLs(urls, base::Bind(&OnMimeTypesCollected, &result));
+  collector.CollectForURLs(urls,
+                           base::BindOnce(&OnMimeTypesCollected, &result));
   content::RunAllTasksUntilIdle();
 
-  ASSERT_EQ(3u, result.size());
+  ASSERT_EQ(4u, result.size());
   EXPECT_EQ("image/jpeg", result[0]);
   EXPECT_EQ("image/jpeg", result[1]);
   EXPECT_EQ("text/html", result[2]);
+  EXPECT_EQ("inode/directory", result[3]);
 }
 
 TEST_F(FileHandlersMimeUtilTest, MimeTypeCollector_ForLocalPaths) {
@@ -162,16 +179,18 @@ TEST_F(FileHandlersMimeUtilTest, MimeTypeCollector_ForLocalPaths) {
   local_paths.push_back(
       base::FilePath::FromUTF8Unsafe(kJPEGExtensionUpperCaseFilePath));
   local_paths.push_back(html_mime_file_path_);
+  local_paths.push_back(html_mime_file_path_.DirName());
 
   std::vector<std::string> result;
-  collector.CollectForLocalPaths(local_paths,
-                                 base::Bind(&OnMimeTypesCollected, &result));
+  collector.CollectForLocalPaths(
+      local_paths, base::BindOnce(&OnMimeTypesCollected, &result));
   content::RunAllTasksUntilIdle();
 
-  ASSERT_EQ(3u, result.size());
+  ASSERT_EQ(4u, result.size());
   EXPECT_EQ("image/jpeg", result[0]);
   EXPECT_EQ("image/jpeg", result[1]);
   EXPECT_EQ("text/html", result[2]);
+  EXPECT_EQ("inode/directory", result[3]);
 }
 
 }  // namespace app_file_handler_util

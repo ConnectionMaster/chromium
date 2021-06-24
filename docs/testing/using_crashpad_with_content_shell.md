@@ -16,18 +16,6 @@ building. This slows down linking several minutes, so don't just always set it
 by default.
 ***
 
-*** note
-**Linux:** Add `use_debug_fission = true` to your [gn build
-arguments](https://gn.googlesource.com/gn/+/master/docs/quick_start.md) before
-building.
-***
-
-*** note
-**Android:** Add `force_local_build_id = true` to your [gn build
-arguments](https://gn.googlesource.com/gn/+/master/docs/quick_start.md) before
-building.
-***
-
 Then, create a directory where the crash dumps will be stored:
 
 * Linux/Mac:
@@ -36,7 +24,8 @@ Then, create a directory where the crash dumps will be stored:
   ```
 * Android:
   ```bash
-  adb shell mkdir /data/local/tmp/crashes
+  adb root
+  adb shell mkdir /data/data/org.chromium.content_shell_apk/cache
   ```
 * Windows:
   ```bash
@@ -67,21 +56,17 @@ Crashpad can be enabled by passing `--enable-crash-reporter` and
   ```bash
   out/Default/bin/content_shell_apk install
   out/Default/bin/content_shell_apk launch chrome://crash
-  --args="--enable-crash-reporter --crash-dumps-dir=/data/local/tmp/crashes"
+  --args="--enable-crash-reporter --crash-dumps-dir=/data/data/org.chromium.content_shell_apk/cache"
   ```
 
 ## Retrieving the crash dump
 
-On Linux and Android, we first have to retrieve the crash dump. On Mac and
-Windows, this step can be skipped.
+On Android, we first have to retrieve the crash dump. On other platforms, this
+step can be skipped.
 
-* Linux:
-  ```bash
-  components/crash/content/tools/dmp2minidump.py /tmp/crashes/*.dmp /tmp/minidump
-  ```
 * Android:
   ```bash
-  adb pull $(adb shell ls /data/local/tmp/crashes/pending/*.dmp) /tmp/chromium-renderer-minidump.dmp
+  adb pull $(adb shell ls /data/data/org.chromium.content_shell_apk/cache/pending/*.dmp) /tmp/chromium-renderer-minidump.dmp
   ```
 
 ## Symbolizing the crash dump
@@ -107,7 +92,8 @@ format that breakpad can understand.
   components/crash/content/tools/generate_breakpad_symbols.py \
       --build-dir=out/Default \
       --binary=out/Default/lib/libcontent_shell_content_view.so \
-      --symbols-dir=out/Default/content_shell.breakpad.syms --clear
+      --symbols-dir=out/Default/content_shell.breakpad.syms --clear \
+      --platform=android
   ```
 
 Now we can generate a stack trace from the crash dump. Assuming the crash dump

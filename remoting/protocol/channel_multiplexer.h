@@ -29,7 +29,7 @@ class ChannelMultiplexer : public StreamChannelFactory {
 
   // StreamChannelFactory interface.
   void CreateChannel(const std::string& name,
-                     const ChannelCreatedCallback& callback) override;
+                     ChannelCreatedCallback callback) override;
   void CancelChannelCreation(const std::string& name) override;
 
  private:
@@ -85,7 +85,7 @@ class ChannelMultiplexer : public StreamChannelFactory {
   BufferedSocketWriter writer_;
   MessageReader reader_;
 
-  base::WeakPtrFactory<ChannelMultiplexer> weak_factory_;
+  base::WeakPtrFactory<ChannelMultiplexer> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ChannelMultiplexer);
 };

@@ -19,7 +19,7 @@ GCDApiFlow::Request::~Request() {
 
 std::unique_ptr<GCDApiFlow> GCDApiFlow::Create(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    identity::IdentityManager* identity_manager) {
+    signin::IdentityManager* identity_manager) {
   return std::make_unique<GCDApiFlowImpl>(url_loader_factory, identity_manager);
 }
 
@@ -39,8 +39,11 @@ std::string CloudPrintApiFlowRequest::GetOAuthScope() {
   return cloud_devices::kCloudPrintAuthScope;
 }
 
-std::vector<std::string> CloudPrintApiFlowRequest::GetExtraRequestHeaders() {
-  return std::vector<std::string>(1, cloud_print::kChromeCloudPrintProxyHeader);
+std::vector<std::pair<std::string, std::string>>
+CloudPrintApiFlowRequest::GetExtraRequestHeaders() {
+  return std::vector<std::pair<std::string, std::string>>(
+      1, std::make_pair(cloud_print::kChromeCloudPrintProxyHeaderName,
+                        cloud_print::kChromeCloudPrintProxyHeaderValue));
 }
 
 }  // namespace cloud_print

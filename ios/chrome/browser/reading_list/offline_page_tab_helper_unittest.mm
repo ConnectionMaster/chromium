@@ -13,7 +13,8 @@
 #include "components/reading_list/core/reading_list_model_impl.h"
 #include "ios/chrome/browser/browser_state/test_chrome_browser_state.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
-#import "ios/web/public/test/fakes/test_web_state.h"
+#import "ios/web/public/test/fakes/fake_navigation_manager.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #include "ios/web/public/test/web_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -88,9 +89,23 @@ class FakeReadingListModel : public ReadingListModel {
     return nullptr;
   }
 
+  bool IsUrlSupported(const GURL& url) override {
+    NOTREACHED();
+    return false;
+  }
+
   const ReadingListEntry& AddEntry(const GURL& url,
                                    const std::string& title,
                                    reading_list::EntrySource source) override {
+    NOTREACHED();
+    return *entry_;
+  }
+
+  const ReadingListEntry& AddEntry(
+      const GURL& url,
+      const std::string& title,
+      reading_list::EntrySource source,
+      base::TimeDelta estimated_read_time) override {
     NOTREACHED();
     return *entry_;
   }
@@ -145,41 +160,45 @@ class FakeReadingListModel : public ReadingListModel {
 class OfflinePageTabHelperTest : public web::WebTest {
  public:
   void SetUp() override {
-    web::WebTest::SetUp();
-    TestChromeBrowserState::Builder test_cbs_builder;
-    base::FilePath test_data_dir;
-    ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir));
-    test_data_dir = test_data_dir.AppendASCII(kTestDirectory);
-    test_cbs_builder.SetPath(test_data_dir);
-    chrome_browser_state_ = test_cbs_builder.Build();
-    test_web_state_.SetBrowserState(chrome_browser_state_.get());
+    // Ensure that the EXPECT_TRUE in CreateBrowserState() passed.
+    ASSERT_NO_FATAL_FAILURE(web::WebTest::SetUp());
+
+    fake_web_state_.SetBrowserState(GetBrowserState());
+    fake_web_state_.SetNavigationManager(
+        std::make_unique<web::FakeNavigationManager>());
     reading_list_model_ = std::make_unique<ReadingListModelImpl>(
         /*storage_layer*/ nullptr, /*pref_service*/ nullptr,
         base::DefaultClock::GetInstance());
     reading_list_model_->AddEntry(GURL(kTestURL), kTestTitle,
                                   reading_list::ADDED_VIA_CURRENT_APP);
-    OfflinePageTabHelper::CreateForWebState(&test_web_state_,
+    OfflinePageTabHelper::CreateForWebState(&fake_web_state_,
                                             reading_list_model_.get());
   }
 
+  std::unique_ptr<web::BrowserState> CreateBrowserState() override {
+    TestChromeBrowserState::Builder test_cbs_builder;
+    base::FilePath test_data_dir;
+    EXPECT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir));
+    test_data_dir = test_data_dir.AppendASCII(kTestDirectory);
+    test_cbs_builder.SetPath(test_data_dir);
+    return test_cbs_builder.Build();
+  }
+
  protected:
-  std::unique_ptr<TestChromeBrowserState> chrome_browser_state_;
   std::unique_ptr<ReadingListModelImpl> reading_list_model_;
-  web::TestWebState test_web_state_;
+  web::FakeWebState fake_web_state_;
 };
 
 // Test fixture to test loading of Reading list offline pages with a delayed
 // ReadingListModel.
 class OfflinePageTabHelperDelayedModelTest : public web::WebTest {
   void SetUp() override {
-    web::WebTest::SetUp();
-    TestChromeBrowserState::Builder test_cbs_builder;
-    base::FilePath test_data_dir;
-    ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir));
-    test_data_dir = test_data_dir.AppendASCII(kTestDirectory);
-    test_cbs_builder.SetPath(test_data_dir);
-    chrome_browser_state_ = test_cbs_builder.Build();
-    test_web_state_.SetBrowserState(chrome_browser_state_.get());
+    // Ensure that the EXPECT_TRUE in CreateBrowserState() passed.
+    ASSERT_NO_FATAL_FAILURE(web::WebTest::SetUp());
+
+    fake_web_state_.SetBrowserState(GetBrowserState());
+    fake_web_state_.SetNavigationManager(
+        std::make_unique<web::FakeNavigationManager>());
     fake_reading_list_model_ = std::make_unique<FakeReadingListModel>();
     GURL url(kTestURL);
     entry_ = std::make_unique<ReadingListEntry>(url, kTestTitle, base::Time());
@@ -188,14 +207,22 @@ class OfflinePageTabHelperDelayedModelTest : public web::WebTest {
                              GURL(kTestDistilledURL), 50,
                              base::Time::FromTimeT(100));
     fake_reading_list_model_->SetEntry(entry_.get());
-    OfflinePageTabHelper::CreateForWebState(&test_web_state_,
+    OfflinePageTabHelper::CreateForWebState(&fake_web_state_,
                                             fake_reading_list_model_.get());
   }
 
+  std::unique_ptr<web::BrowserState> CreateBrowserState() override {
+    TestChromeBrowserState::Builder test_cbs_builder;
+    base::FilePath test_data_dir;
+    EXPECT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir));
+    test_data_dir = test_data_dir.AppendASCII(kTestDirectory);
+    test_cbs_builder.SetPath(test_data_dir);
+    return test_cbs_builder.Build();
+  }
+
  protected:
-  std::unique_ptr<TestChromeBrowserState> chrome_browser_state_;
   std::unique_ptr<FakeReadingListModel> fake_reading_list_model_;
-  web::TestWebState test_web_state_;
+  web::FakeWebState fake_web_state_;
   std::unique_ptr<ReadingListEntry> entry_;
 };
 
@@ -203,21 +230,21 @@ class OfflinePageTabHelperDelayedModelTest : public web::WebTest {
 TEST_F(OfflinePageTabHelperTest, TestLoadReadingListSuccess) {
   GURL url(kTestURL);
   const ReadingListEntry* entry = reading_list_model_->GetEntryByURL(url);
-  test_web_state_.SetCurrentURL(url);
+  fake_web_state_.SetCurrentURL(url);
   web::FakeNavigationContext context;
   context.SetUrl(url);
   context.SetHasCommitted(true);
-  test_web_state_.OnNavigationStarted(&context);
-  test_web_state_.OnNavigationFinished(&context);
-  test_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::SUCCESS);
+  fake_web_state_.OnNavigationStarted(&context);
+  fake_web_state_.OnNavigationFinished(&context);
+  fake_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::SUCCESS);
   EXPECT_FALSE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForFileOperationTimeout, ^bool {
         base::RunLoop().RunUntilIdle();
-        return test_web_state_.GetLastLoadedData();
+        return fake_web_state_.GetLastLoadedData();
       }));
-  EXPECT_FALSE(test_web_state_.GetLastLoadedData());
+  EXPECT_FALSE(fake_web_state_.GetLastLoadedData());
   EXPECT_TRUE(entry->IsRead());
-  EXPECT_FALSE(OfflinePageTabHelper::FromWebState(&test_web_state_)
+  EXPECT_FALSE(OfflinePageTabHelper::FromWebState(&fake_web_state_)
                    ->presenting_offline_page());
 }
 
@@ -228,17 +255,17 @@ TEST_F(OfflinePageTabHelperTest, TestLoadReadingListFailure) {
   web::FakeNavigationContext context;
   context.SetUrl(url);
   context.SetHasCommitted(true);
-  test_web_state_.OnNavigationStarted(&context);
-  test_web_state_.OnNavigationFinished(&context);
-  test_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
+  fake_web_state_.OnNavigationStarted(&context);
+  fake_web_state_.OnNavigationFinished(&context);
+  fake_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
   EXPECT_FALSE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForFileOperationTimeout, ^bool {
         base::RunLoop().RunUntilIdle();
-        return test_web_state_.GetLastLoadedData();
+        return fake_web_state_.GetLastLoadedData();
       }));
-  EXPECT_FALSE(test_web_state_.GetLastLoadedData());
+  EXPECT_FALSE(fake_web_state_.GetLastLoadedData());
   EXPECT_FALSE(entry->IsRead());
-  EXPECT_FALSE(OfflinePageTabHelper::FromWebState(&test_web_state_)
+  EXPECT_FALSE(OfflinePageTabHelper::FromWebState(&fake_web_state_)
                    ->presenting_offline_page());
 }
 
@@ -251,22 +278,26 @@ TEST_F(OfflinePageTabHelperTest, TestLoadReadingListDistilled) {
       url, base::FilePath(distilled_path), GURL(kTestDistilledURL), 50,
       base::Time::FromTimeT(100));
   const ReadingListEntry* entry = reading_list_model_->GetEntryByURL(url);
-  test_web_state_.SetCurrentURL(url);
+  fake_web_state_.SetCurrentURL(url);
   web::FakeNavigationContext context;
   context.SetHasCommitted(true);
+  std::unique_ptr<web::NavigationItem> item = web::NavigationItem::Create();
+  static_cast<web::FakeNavigationManager*>(
+      fake_web_state_.GetNavigationManager())
+      ->SetLastCommittedItem(item.get());
   context.SetUrl(url);
-  test_web_state_.OnNavigationStarted(&context);
-  test_web_state_.OnNavigationFinished(&context);
-  test_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
-  EXPECT_FALSE(test_web_state_.GetLastLoadedData());
+  fake_web_state_.OnNavigationStarted(&context);
+  fake_web_state_.OnNavigationFinished(&context);
+  fake_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
+  EXPECT_FALSE(fake_web_state_.GetLastLoadedData());
   EXPECT_FALSE(entry->IsRead());
   EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForFileOperationTimeout, ^bool {
         base::RunLoop().RunUntilIdle();
-        return test_web_state_.GetLastLoadedData();
+        return fake_web_state_.GetLastLoadedData();
       }));
   EXPECT_TRUE(entry->IsRead());
-  EXPECT_TRUE(OfflinePageTabHelper::FromWebState(&test_web_state_)
+  EXPECT_TRUE(OfflinePageTabHelper::FromWebState(&fake_web_state_)
                   ->presenting_offline_page());
 }
 
@@ -279,22 +310,22 @@ TEST_F(OfflinePageTabHelperTest, TestLoadReadingListFailureThenNavigate) {
   web::FakeNavigationContext context;
   context.SetHasCommitted(true);
   context.SetUrl(url);
-  test_web_state_.OnNavigationStarted(&context);
-  test_web_state_.OnNavigationFinished(&context);
-  test_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
+  fake_web_state_.OnNavigationStarted(&context);
+  fake_web_state_.OnNavigationFinished(&context);
+  fake_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
 
   web::FakeNavigationContext second_context;
   second_context.SetUrl(second_url);
   second_context.SetHasCommitted(true);
-  test_web_state_.OnNavigationStarted(&second_context);
+  fake_web_state_.OnNavigationStarted(&second_context);
   EXPECT_FALSE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForFileOperationTimeout, ^bool {
         base::RunLoop().RunUntilIdle();
-        return test_web_state_.GetLastLoadedData();
+        return fake_web_state_.GetLastLoadedData();
       }));
-  EXPECT_FALSE(test_web_state_.GetLastLoadedData());
+  EXPECT_FALSE(fake_web_state_.GetLastLoadedData());
   EXPECT_FALSE(entry->IsRead());
-  EXPECT_FALSE(OfflinePageTabHelper::FromWebState(&test_web_state_)
+  EXPECT_FALSE(OfflinePageTabHelper::FromWebState(&fake_web_state_)
                    ->presenting_offline_page());
 }
 
@@ -302,7 +333,7 @@ TEST_F(OfflinePageTabHelperTest, TestLoadReadingListFailureThenNavigate) {
 // version.
 TEST_F(OfflinePageTabHelperTest, TestHasDistilledVersionForOnlineUrl) {
   OfflinePageTabHelper* offline_page_tab_helper =
-      OfflinePageTabHelper::FromWebState(&test_web_state_);
+      OfflinePageTabHelper::FromWebState(&fake_web_state_);
   GURL url(kTestURL);
   EXPECT_FALSE(offline_page_tab_helper->HasDistilledVersionForOnlineUrl(url));
   GURL second_url(kTestSecondURL);
@@ -320,20 +351,24 @@ TEST_F(OfflinePageTabHelperTest, TestHasDistilledVersionForOnlineUrl) {
 // a long time to load.
 TEST_F(OfflinePageTabHelperDelayedModelTest, TestLateReadingListModelLoading) {
   OfflinePageTabHelper* offline_page_tab_helper =
-      OfflinePageTabHelper::FromWebState(&test_web_state_);
+      OfflinePageTabHelper::FromWebState(&fake_web_state_);
   GURL url(kTestURL);
   EXPECT_FALSE(offline_page_tab_helper->HasDistilledVersionForOnlineUrl(url));
   web::FakeNavigationContext context;
 
   context.SetHasCommitted(true);
+  std::unique_ptr<web::NavigationItem> item = web::NavigationItem::Create();
+  static_cast<web::FakeNavigationManager*>(
+      fake_web_state_.GetNavigationManager())
+      ->SetLastCommittedItem(item.get());
   context.SetUrl(url);
-  test_web_state_.OnNavigationStarted(&context);
-  test_web_state_.OnNavigationFinished(&context);
-  test_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
+  fake_web_state_.OnNavigationStarted(&context);
+  fake_web_state_.OnNavigationFinished(&context);
+  fake_web_state_.OnPageLoaded(web::PageLoadCompletionStatus::FAILURE);
   EXPECT_FALSE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForFileOperationTimeout, ^bool {
         base::RunLoop().RunUntilIdle();
-        return test_web_state_.GetLastLoadedData();
+        return fake_web_state_.GetLastLoadedData();
       }));
   EXPECT_FALSE(entry_->IsRead());
   EXPECT_FALSE(offline_page_tab_helper->presenting_offline_page());
@@ -341,7 +376,7 @@ TEST_F(OfflinePageTabHelperDelayedModelTest, TestLateReadingListModelLoading) {
   EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForFileOperationTimeout, ^bool {
         base::RunLoop().RunUntilIdle();
-        return test_web_state_.GetLastLoadedData();
+        return fake_web_state_.GetLastLoadedData();
       }));
   EXPECT_TRUE(entry_->IsRead());
   EXPECT_TRUE(offline_page_tab_helper->presenting_offline_page());

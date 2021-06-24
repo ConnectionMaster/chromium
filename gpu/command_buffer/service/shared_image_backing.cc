@@ -6,7 +6,13 @@
 
 #include "gpu/command_buffer/service/memory_tracking.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
+#include "gpu/command_buffer/service/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image_representation.h"
+#include "gpu/command_buffer/service/texture_manager.h"
+
+#if defined(OS_ANDROID)
+#include "base/android/scoped_hardware_buffer_fence_sync.h"
+#endif
 
 namespace gpu {
 
@@ -14,6 +20,8 @@ SharedImageBacking::SharedImageBacking(const Mailbox& mailbox,
                                        viz::ResourceFormat format,
                                        const gfx::Size& size,
                                        const gfx::ColorSpace& color_space,
+                                       GrSurfaceOrigin surface_origin,
+                                       SkAlphaType alpha_type,
                                        uint32_t usage,
                                        size_t estimated_size,
                                        bool is_thread_safe)
@@ -21,8 +29,12 @@ SharedImageBacking::SharedImageBacking(const Mailbox& mailbox,
       format_(format),
       size_(size),
       color_space_(color_space),
+      surface_origin_(surface_origin),
+      alpha_type_(alpha_type),
       usage_(usage),
       estimated_size_(estimated_size) {
+  DCHECK_CALLED_ON_VALID_THREAD(factory_thread_checker_);
+
   if (is_thread_safe)
     lock_.emplace();
 }
@@ -33,6 +45,10 @@ void SharedImageBacking::OnContextLost() {
   AutoLock auto_lock(this);
 
   have_context_ = false;
+}
+
+bool SharedImageBacking::PresentSwapChain() {
+  return false;
 }
 
 std::unique_ptr<SharedImageRepresentationGLTexture>
@@ -63,7 +79,27 @@ std::unique_ptr<SharedImageRepresentationSkia> SharedImageBacking::ProduceSkia(
 std::unique_ptr<SharedImageRepresentationDawn> SharedImageBacking::ProduceDawn(
     SharedImageManager* manager,
     MemoryTypeTracker* tracker,
-    DawnDevice device) {
+    WGPUDevice device,
+    WGPUBackendType backend_type) {
+  return nullptr;
+}
+
+std::unique_ptr<SharedImageRepresentationOverlay>
+SharedImageBacking::ProduceOverlay(SharedImageManager* manager,
+                                   MemoryTypeTracker* tracker) {
+  return nullptr;
+}
+
+std::unique_ptr<SharedImageRepresentationVaapi>
+SharedImageBacking::ProduceVASurface(SharedImageManager* manager,
+                                     MemoryTypeTracker* tracker,
+                                     VaapiDependenciesFactory* dep_factory) {
+  return nullptr;
+}
+
+std::unique_ptr<SharedImageRepresentationMemory>
+SharedImageBacking::ProduceMemory(SharedImageManager* manager,
+                                  MemoryTypeTracker* tracker) {
   return nullptr;
 }
 
@@ -99,9 +135,19 @@ void SharedImageBacking::ReleaseRef(SharedImageRepresentation* representation) {
     refs_[0]->tracker()->TrackMemAlloc(estimated_size_);
     return;
   }
+}
 
-  // Last ref deleted, clean up.
-  Destroy();
+void SharedImageBacking::RegisterImageFactory(SharedImageFactory* factory) {
+  DCHECK_CALLED_ON_VALID_THREAD(factory_thread_checker_);
+  DCHECK(!factory_);
+
+  factory_ = factory;
+}
+
+void SharedImageBacking::UnregisterImageFactory() {
+  DCHECK_CALLED_ON_VALID_THREAD(factory_thread_checker_);
+
+  factory_ = nullptr;
 }
 
 bool SharedImageBacking::HasAnyRefs() const {
@@ -110,17 +156,25 @@ bool SharedImageBacking::HasAnyRefs() const {
   return !refs_.empty();
 }
 
-bool SharedImageBacking::have_context() const {
-  AssertLockedIfNecessary();
-
-  DCHECK(refs_.empty());
-
-  return have_context_;
+void SharedImageBacking::OnReadSucceeded() {
+  AutoLock auto_lock(this);
+  if (scoped_write_uma_) {
+    scoped_write_uma_->SetConsumed();
+    scoped_write_uma_.reset();
+  }
 }
 
-void SharedImageBacking::AssertLockedIfNecessary() const {
-  if (lock_)
-    lock_->AssertAcquired();
+void SharedImageBacking::OnWriteSucceeded() {
+  AutoLock auto_lock(this);
+  scoped_write_uma_.emplace();
+}
+
+size_t SharedImageBacking::EstimatedSizeForMemTracking() const {
+  return estimated_size_;
+}
+
+bool SharedImageBacking::have_context() const {
+  return have_context_;
 }
 
 SharedImageBacking::AutoLock::AutoLock(
@@ -136,5 +190,56 @@ base::Lock* SharedImageBacking::AutoLock::InitializeLock(
 
   return &shared_image_backing->lock_.value();
 }
+
+ClearTrackingSharedImageBacking::ClearTrackingSharedImageBacking(
+    const Mailbox& mailbox,
+    viz::ResourceFormat format,
+    const gfx::Size& size,
+    const gfx::ColorSpace& color_space,
+    GrSurfaceOrigin surface_origin,
+    SkAlphaType alpha_type,
+    uint32_t usage,
+    size_t estimated_size,
+    bool is_thread_safe)
+    : SharedImageBacking(mailbox,
+                         format,
+                         size,
+                         color_space,
+                         surface_origin,
+                         alpha_type,
+                         usage,
+                         estimated_size,
+                         is_thread_safe) {}
+
+gfx::Rect ClearTrackingSharedImageBacking::ClearedRect() const {
+  AutoLock auto_lock(this);
+  return ClearedRectInternal();
+}
+
+void ClearTrackingSharedImageBacking::SetClearedRect(
+    const gfx::Rect& cleared_rect) {
+  AutoLock auto_lock(this);
+  SetClearedRectInternal(cleared_rect);
+}
+
+gfx::Rect ClearTrackingSharedImageBacking::ClearedRectInternal() const {
+  return cleared_rect_;
+}
+
+void ClearTrackingSharedImageBacking::SetClearedRectInternal(
+    const gfx::Rect& cleared_rect) {
+  cleared_rect_ = cleared_rect;
+}
+
+scoped_refptr<gfx::NativePixmap> SharedImageBacking::GetNativePixmap() {
+  return nullptr;
+}
+
+#if defined(OS_ANDROID)
+std::unique_ptr<base::android::ScopedHardwareBufferFenceSync>
+SharedImageBacking::GetAHardwareBuffer() {
+  return nullptr;
+}
+#endif
 
 }  // namespace gpu

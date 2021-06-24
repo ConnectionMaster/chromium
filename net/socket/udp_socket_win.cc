@@ -5,16 +5,21 @@
 #include "net/socket/udp_socket_win.h"
 
 #include <mstcpip.h>
+#include <winsock2.h>
+
+#include <memory>
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check_op.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/rand_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
@@ -33,14 +38,6 @@
 #include "net/socket/socket_tag.h"
 #include "net/socket/udp_net_log_parameters.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-
-namespace {
-
-const int kBindRetries = 10;
-const int kPortStart = 1024;
-const int kPortEnd = 65535;
-
-}  // namespace
 
 namespace net {
 
@@ -251,16 +248,13 @@ UDPSocketWin::UDPSocketWin(DatagramSocket::BindType bind_type,
       socket_options_(SOCKET_OPTION_MULTICAST_LOOP),
       multicast_interface_(0),
       multicast_time_to_live_(1),
-      bind_type_(bind_type),
       use_non_blocking_io_(false),
       read_iobuffer_len_(0),
       write_iobuffer_len_(0),
       recv_from_address_(nullptr),
-      net_log_(NetLogWithSource::Make(net_log, NetLogSourceType::UDP_SOCKET)),
-      event_pending_(this) {
+      net_log_(NetLogWithSource::Make(net_log, NetLogSourceType::UDP_SOCKET)) {
   EnsureWinsockInit();
-  net_log_.BeginEvent(NetLogEventType::SOCKET_ALIVE,
-                      source.ToEventParametersCallback());
+  net_log_.BeginEventReferencingSource(NetLogEventType::SOCKET_ALIVE, source);
 }
 
 UDPSocketWin::~UDPSocketWin() {
@@ -273,6 +267,10 @@ int UDPSocketWin::Open(AddressFamily address_family) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK_EQ(socket_, INVALID_SOCKET);
 
+  auto owned_socket_count = TryAcquireGlobalUDPSocketCount();
+  if (owned_socket_count.empty())
+    return ERR_INSUFFICIENT_RESOURCES;
+
   addr_family_ = ConvertAddressFamily(address_family);
   socket_ = CreatePlatformSocket(addr_family_, SOCK_DGRAM, IPPROTO_UDP);
   if (socket_ == INVALID_SOCKET)
@@ -283,11 +281,15 @@ int UDPSocketWin::Open(AddressFamily address_family) {
     read_write_event_.Set(WSACreateEvent());
     WSAEventSelect(socket_, read_write_event_.Get(), FD_READ | FD_WRITE);
   }
+
+  owned_socket_count_ = std::move(owned_socket_count);
   return OK;
 }
 
 void UDPSocketWin::Close() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  owned_socket_count_.Reset();
 
   if (socket_ == INVALID_SOCKET)
     return;
@@ -361,10 +363,10 @@ int UDPSocketWin::GetLocalAddress(IPEndPoint* address) const {
     if (!local_address->FromSockAddr(storage.addr, storage.addr_len))
       return ERR_ADDRESS_INVALID;
     local_address_ = std::move(local_address);
-    net_log_.AddEvent(NetLogEventType::UDP_LOCAL_ADDRESS,
-                      CreateNetLogUDPConnectCallback(
-                          local_address_.get(),
-                          NetworkChangeNotifier::kInvalidNetworkHandle));
+    net_log_.AddEvent(NetLogEventType::UDP_LOCAL_ADDRESS, [&] {
+      return CreateNetLogUDPConnectParams(
+          *local_address_, NetworkChangeNotifier::kInvalidNetworkHandle);
+    });
   }
 
   *address = *local_address_;
@@ -438,17 +440,17 @@ int UDPSocketWin::SendToOrWrite(IOBuffer* buf,
     return nwrite;
 
   if (address)
-    send_to_address_.reset(new IPEndPoint(*address));
+    send_to_address_ = std::make_unique<IPEndPoint>(*address);
   write_callback_ = std::move(callback);
   return ERR_IO_PENDING;
 }
 
 int UDPSocketWin::Connect(const IPEndPoint& address) {
   DCHECK_NE(socket_, INVALID_SOCKET);
-  net_log_.BeginEvent(
-      NetLogEventType::UDP_CONNECT,
-      CreateNetLogUDPConnectCallback(
-          &address, NetworkChangeNotifier::kInvalidNetworkHandle));
+  net_log_.BeginEvent(NetLogEventType::UDP_CONNECT, [&] {
+    return CreateNetLogUDPConnectParams(
+        address, NetworkChangeNotifier::kInvalidNetworkHandle);
+  });
   int rv = SetMulticastOptions();
   if (rv != OK)
     return rv;
@@ -462,31 +464,25 @@ int UDPSocketWin::InternalConnect(const IPEndPoint& address) {
   DCHECK(!is_connected());
   DCHECK(!remote_address_.get());
 
-  int rv = 0;
-  if (bind_type_ == DatagramSocket::RANDOM_BIND) {
-    // Construct IPAddress of appropriate size (IPv4 or IPv6) of 0s,
-    // representing INADDR_ANY or in6addr_any.
-    size_t addr_size = (address.GetSockAddrFamily() == AF_INET)
-                           ? IPAddress::kIPv4AddressSize
-                           : IPAddress::kIPv6AddressSize;
-    rv = RandomBind(IPAddress::AllZeros(addr_size));
-  }
-  // else connect() does the DatagramSocket::DEFAULT_BIND
-
-  if (rv < 0) {
-    base::UmaHistogramSparse("Net.UdpSocketRandomBindErrorCode", -rv);
-    return rv;
-  }
+  // Always do a random bind.
+  //
+  // Ignore failures, which may happen if the socket was already bound.
+  // Microsoft's documentation claims this is a uint16, but experimentally, this
+  // fails if passed a 16-bit value.
+  std::uint32_t randomize_port_value = 1;
+  setsockopt(socket_, SOL_SOCKET, SO_RANDOMIZE_PORT,
+             reinterpret_cast<const char*>(&randomize_port_value),
+             sizeof(randomize_port_value));
 
   SockaddrStorage storage;
   if (!address.ToSockAddr(storage.addr, &storage.addr_len))
     return ERR_ADDRESS_INVALID;
 
-  rv = connect(socket_, storage.addr, storage.addr_len);
+  int rv = connect(socket_, storage.addr, storage.addr_len);
   if (rv < 0)
     return MapSystemError(WSAGetLastError());
 
-  remote_address_.reset(new IPEndPoint(address));
+  remote_address_ = std::make_unique<IPEndPoint>(address);
 
   if (dscp_manager_)
     dscp_manager_->PrepareForSend(*remote_address_.get());
@@ -743,12 +739,11 @@ void UDPSocketWin::LogRead(int result,
   }
 
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(
-        NetLogEventType::UDP_BYTES_RECEIVED,
-        CreateNetLogUDPDataTranferCallback(result, bytes, address));
+    NetLogUDPDataTransfer(net_log_, NetLogEventType::UDP_BYTES_RECEIVED, result,
+                          bytes, address);
   }
 
-  NetworkActivityMonitor::GetInstance()->IncrementBytesReceived(result);
+  activity_monitor::IncrementBytesReceived(result);
 }
 
 void UDPSocketWin::LogWrite(int result,
@@ -760,12 +755,9 @@ void UDPSocketWin::LogWrite(int result,
   }
 
   if (net_log_.IsCapturing()) {
-    net_log_.AddEvent(
-        NetLogEventType::UDP_BYTES_SENT,
-        CreateNetLogUDPDataTranferCallback(result, bytes, address));
+    NetLogUDPDataTransfer(net_log_, NetLogEventType::UDP_BYTES_SENT, result,
+                          bytes, address);
   }
-
-  NetworkActivityMonitor::GetInstance()->IncrementBytesSent(result);
 }
 
 int UDPSocketWin::InternalRecvFromOverlapped(IOBuffer* buf,
@@ -1007,18 +999,6 @@ int UDPSocketWin::DoBind(const IPEndPoint& address) {
   return MapSystemError(last_error);
 }
 
-int UDPSocketWin::RandomBind(const IPAddress& address) {
-  DCHECK_EQ(bind_type_, DatagramSocket::RANDOM_BIND);
-
-  for (int i = 0; i < kBindRetries; ++i) {
-    int rv = DoBind(IPEndPoint(
-        address, static_cast<uint16_t>(base::RandInt(kPortStart, kPortEnd))));
-    if (rv != ERR_ADDRESS_IN_USE)
-      return rv;
-  }
-  return DoBind(IPEndPoint(address, 0));
-}
-
 QwaveApi* UDPSocketWin::GetQwaveApi() const {
   return QwaveApi::GetDefault();
 }
@@ -1244,7 +1224,7 @@ DatagramBuffers UDPSocketWin::GetUnwrittenBuffers() {
   return result;
 }
 DscpManager::DscpManager(QwaveApi* api, SOCKET socket)
-    : api_(api), socket_(socket), weak_ptr_factory_(this) {
+    : api_(api), socket_(socket) {
   RequestHandle();
 }
 
@@ -1337,7 +1317,7 @@ void DscpManager::RequestHandle() {
   }
 
   handle_is_initializing_ = true;
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
       base::BindOnce(&DscpManager::DoCreateHandle, api_),
       base::BindOnce(&DscpManager::OnHandleCreated, api_,

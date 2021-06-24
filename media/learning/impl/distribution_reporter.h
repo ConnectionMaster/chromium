@@ -11,10 +11,11 @@
 #include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "media/learning/common/learning_task.h"
+#include "media/learning/common/target_histogram.h"
 #include "media/learning/impl/model.h"
-#include "media/learning/impl/target_histogram.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 namespace learning {
@@ -28,6 +29,19 @@ class COMPONENT_EXPORT(LEARNING_IMPL) DistributionReporter {
   struct PredictionInfo {
     // What value was observed?
     TargetValue observed;
+
+    // UKM source id to use when logging this result.
+    // This will be filled in by the LearningTaskController.  For example, the
+    // MojoLearningTaskControllerService will be created in the browser by the
+    // MediaMetricsProvider, which gets the SourceId via callback from the
+    // RenderFrameHostDelegate on construction.
+    //
+    // TODO(liberato): Right now, this is not filled in anywhere.  When the
+    // mojo service is created (MediaMetricsProvider), record the source id and
+    // memorize it in any MojoLearningTaskControllerService that's created by
+    // the MediaMetricsProvider, either directly or in a wrapper for the
+    // mojo controller.
+    ukm::SourceId source_id = ukm::kInvalidSourceId;
 
     // Total weight of the training data used to create this model.
     double total_training_weight = 0.;
@@ -67,7 +81,7 @@ class COMPONENT_EXPORT(LEARNING_IMPL) DistributionReporter {
   virtual void OnPrediction(const PredictionInfo& prediction_info,
                             TargetHistogram predicted) = 0;
 
-  const base::Optional<std::set<int>>& feature_indices() const {
+  const absl::optional<std::set<int>>& feature_indices() const {
     return feature_indices_;
   }
 
@@ -76,9 +90,9 @@ class COMPONENT_EXPORT(LEARNING_IMPL) DistributionReporter {
 
   // If provided, then these are the features that are used to train the model.
   // Otherwise, we assume that all features are used.
-  base::Optional<std::set<int>> feature_indices_;
+  absl::optional<std::set<int>> feature_indices_;
 
-  base::WeakPtrFactory<DistributionReporter> weak_factory_;
+  base::WeakPtrFactory<DistributionReporter> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DistributionReporter);
 };

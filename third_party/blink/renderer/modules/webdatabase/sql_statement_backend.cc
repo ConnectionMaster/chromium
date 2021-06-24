@@ -34,7 +34,6 @@
 #include "third_party/blink/renderer/modules/webdatabase/sqlite/sqlite_database.h"
 #include "third_party/blink/renderer/modules/webdatabase/sqlite/sqlite_statement.h"
 #include "third_party/blink/renderer/modules/webdatabase/storage_log.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 
 // The Life-Cycle of a SQLStatement i.e. Who's keeping the SQLStatement alive?
 // ==========================================================================
@@ -98,7 +97,7 @@ SQLStatementBackend::SQLStatementBackend(SQLStatement* frontend,
   frontend_->SetBackend(this);
 }
 
-void SQLStatementBackend::Trace(blink::Visitor* visitor) {
+void SQLStatementBackend::Trace(Visitor* visitor) const {
   visitor->Trace(frontend_);
   visitor->Trace(result_set_);
 }

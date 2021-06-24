@@ -28,10 +28,10 @@ VideoCaptureOverlay::FrameSource::~FrameSource() = default;
 
 VideoCaptureOverlay::VideoCaptureOverlay(
     FrameSource* frame_source,
-    mojom::FrameSinkVideoCaptureOverlayRequest request)
-    : frame_source_(frame_source), binding_(this, std::move(request)) {
+    mojo::PendingReceiver<mojom::FrameSinkVideoCaptureOverlay> receiver)
+    : frame_source_(frame_source), receiver_(this, std::move(receiver)) {
   DCHECK(frame_source_);
-  binding_.set_connection_error_handler(
+  receiver_.set_disconnect_handler(
       base::BindOnce(&FrameSource::OnOverlayConnectionLost,
                      base::Unretained(frame_source_), this));
 }
@@ -414,8 +414,9 @@ void VideoCaptureOverlay::Sprite::TransformImage() {
     scaled_image = image_;
   } else {
     if (scaled_image.tryAllocPixels(scaled_image_format) &&
-        image_.pixmap().scalePixels(scaled_image.pixmap(),
-                                    kMedium_SkFilterQuality)) {
+        image_.pixmap().scalePixels(
+            scaled_image.pixmap(),
+            SkSamplingOptions(SkFilterMode::kLinear, SkMipmapMode::kNearest))) {
       // Cache the scaled image, to avoid needing to re-scale in future calls to
       // this method.
       image_ = scaled_image;
@@ -464,9 +465,8 @@ void VideoCaptureOverlay::Sprite::TransformImage() {
         gfx::ColorSpace::MatrixID::RGB, gfx::ColorSpace::RangeID::FULL);
   }
   if (image_color_space != color_space_) {
-    const auto color_transform = gfx::ColorTransform::NewColorTransform(
-        image_color_space, color_space_,
-        gfx::ColorTransform::Intent::INTENT_ABSOLUTE);
+    const auto color_transform =
+        gfx::ColorTransform::NewColorTransform(image_color_space, color_space_);
     color_transform->Transform(colors.get(), num_pixels);
   }
 

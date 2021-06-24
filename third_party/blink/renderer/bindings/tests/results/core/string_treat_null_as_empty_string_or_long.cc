@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/string_treat_null_as_empty_string_or_long.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -57,7 +57,7 @@ StringTreatNullAsEmptyStringOrLong::StringTreatNullAsEmptyStringOrLong(const Str
 StringTreatNullAsEmptyStringOrLong::~StringTreatNullAsEmptyStringOrLong() = default;
 StringTreatNullAsEmptyStringOrLong& StringTreatNullAsEmptyStringOrLong::operator=(const StringTreatNullAsEmptyStringOrLong&) = default;
 
-void StringTreatNullAsEmptyStringOrLong::Trace(blink::Visitor* visitor) {
+void StringTreatNullAsEmptyStringOrLong::Trace(Visitor* visitor) const {
 }
 
 void V8StringTreatNullAsEmptyStringOrLong::ToImpl(
@@ -73,7 +73,7 @@ void V8StringTreatNullAsEmptyStringOrLong::ToImpl(
     return;
 
   if (v8_value->IsNumber()) {
-    int32_t cpp_value = NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state);
+    int32_t cpp_value{ NativeValueTraits<IDLLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetLong(cpp_value);
@@ -81,7 +81,7 @@ void V8StringTreatNullAsEmptyStringOrLong::ToImpl(
   }
 
   {
-    V8StringResource<kTreatNullAsEmptyString> cpp_value = v8_value;
+    V8StringResource<kTreatNullAsEmptyString> cpp_value{ v8_value };
     if (!cpp_value.Prepare(exception_state))
       return;
     impl.SetString(cpp_value);
@@ -111,3 +111,4 @@ StringTreatNullAsEmptyStringOrLong NativeValueTraits<StringTreatNullAsEmptyStrin
 }
 
 }  // namespace blink
+

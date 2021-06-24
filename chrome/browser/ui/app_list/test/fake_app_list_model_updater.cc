@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "base/containers/flat_map.h"
+#include "base/logging.h"
+#include "base/run_loop.h"
 #include "chrome/browser/ui/app_list/chrome_app_list_item.h"
 #include "extensions/common/constants.h"
 
@@ -64,6 +66,15 @@ void FakeAppListModelUpdater::MoveItemToFolder(const std::string& id,
   }
 }
 
+void FakeAppListModelUpdater::SetItemIcon(const std::string& id,
+                                          const gfx::ImageSkia& icon) {
+  ++update_image_count_;
+  if (update_image_count_ == expected_update_image_count_ &&
+      !icon_updated_callback_.is_null()) {
+    std::move(icon_updated_callback_).Run();
+  }
+}
+
 void FakeAppListModelUpdater::SetSearchEngineIsGoogle(bool is_google) {
   search_engine_is_google_ = is_google;
 }
@@ -110,16 +121,12 @@ void FakeAppListModelUpdater::GetIdToAppListIndexMap(
 
 syncer::StringOrdinal FakeAppListModelUpdater::GetFirstAvailablePosition()
     const {
-  std::vector<ChromeAppListItem*> top_level_items;
-  for (auto& item : items_) {
-    DCHECK(item->position().IsValid())
-        << "Item with invalid position: id=" << item->id()
-        << ", name=" << item->name() << ", is_folder=" << item->is_folder()
-        << ", is_page_break=" << item->is_page_break();
-    if (item->folder_id().empty() && item->position().IsValid())
-      top_level_items.emplace_back(item.get());
-  }
-  return GetFirstAvailablePositionInternal(top_level_items);
+  return GetFirstAvailablePositionInternal(GetTopLevelItems());
+}
+
+syncer::StringOrdinal FakeAppListModelUpdater::GetPositionBeforeFirstItem()
+    const {
+  return GetPositionBeforeFirstItemInternal(GetTopLevelItems());
 }
 
 void FakeAppListModelUpdater::GetContextMenuModel(
@@ -144,13 +151,12 @@ void FakeAppListModelUpdater::PublishSearchResults(
   search_results_ = results;
 }
 
-ash::mojom::AppListItemMetadataPtr
-FakeAppListModelUpdater::FindOrCreateOemFolder(
+void FakeAppListModelUpdater::FindOrCreateOemFolder(
     const std::string& oem_folder_name,
     const syncer::StringOrdinal& preferred_oem_position) {
   ChromeAppListItem* oem_folder = FindFolderItem(ash::kOemFolderId);
   if (oem_folder) {
-    ash::mojom::AppListItemMetadataPtr folder_data =
+    std::unique_ptr<ash::AppListItemMetadata> folder_data =
         oem_folder->CloneMetadata();
     folder_data->name = oem_folder_name;
     oem_folder->SetMetadata(std::move(folder_data));
@@ -159,7 +165,7 @@ FakeAppListModelUpdater::FindOrCreateOemFolder(
         std::make_unique<ChromeAppListItem>(nullptr, ash::kOemFolderId,
                                             nullptr);
     oem_folder = new_folder.get();
-    ash::mojom::AppListItemMetadataPtr folder_data =
+    std::unique_ptr<ash::AppListItemMetadata> folder_data =
         oem_folder->CloneMetadata();
     folder_data->position = preferred_oem_position.IsValid()
                                 ? preferred_oem_position
@@ -168,7 +174,6 @@ FakeAppListModelUpdater::FindOrCreateOemFolder(
     oem_folder->SetMetadata(std::move(folder_data));
     AddItem(std::move(new_folder));
   }
-  return oem_folder->CloneMetadata();
 }
 
 syncer::StringOrdinal FakeAppListModelUpdater::GetOemFolderPos() {
@@ -215,10 +220,13 @@ void FakeAppListModelUpdater::UpdateAppItemFromSyncItem(
   }
 }
 
-void FakeAppListModelUpdater::OnFolderCreated(
-    ash::mojom::AppListItemMetadataPtr folder) {
+void FakeAppListModelUpdater::OnItemAdded(
+    std::unique_ptr<ash::AppListItemMetadata> item) {
+  if (!item->is_folder)
+    return;
+
   std::unique_ptr<ChromeAppListItem> stub_folder =
-      std::make_unique<ChromeAppListItem>(profile_, folder->id, this);
+      std::make_unique<ChromeAppListItem>(profile_, item->id, this);
 
   for (AppListModelUpdaterObserver& observer : observers_)
     observer.OnAppListItemAdded(stub_folder.get());
@@ -226,6 +234,17 @@ void FakeAppListModelUpdater::OnFolderCreated(
   AddItem(std::move(stub_folder));
 }
 
+void FakeAppListModelUpdater::OnItemUpdated(
+    std::unique_ptr<ash::AppListItemMetadata> item) {
+  ChromeAppListItem* chrome_item = FindItem(item->id);
+
+  // Ignore the item if it does not exist.
+  if (!chrome_item)
+    return;
+
+  for (AppListModelUpdaterObserver& observer : observers_)
+    observer.OnAppListItemUpdated(chrome_item);
+}
 void FakeAppListModelUpdater::AddObserver(
     AppListModelUpdaterObserver* observer) {
   observers_.AddObserver(observer);
@@ -234,4 +253,25 @@ void FakeAppListModelUpdater::AddObserver(
 void FakeAppListModelUpdater::RemoveObserver(
     AppListModelUpdaterObserver* observer) {
   observers_.RemoveObserver(observer);
+}
+
+void FakeAppListModelUpdater::WaitForIconUpdates(size_t expected_updates) {
+  base::RunLoop run_loop;
+  expected_update_image_count_ = expected_updates + update_image_count_;
+  icon_updated_callback_ = run_loop.QuitClosure();
+  run_loop.Run();
+}
+
+std::vector<ChromeAppListItem*> FakeAppListModelUpdater::GetTopLevelItems()
+    const {
+  std::vector<ChromeAppListItem*> top_level_items;
+  for (auto& item : items_) {
+    DCHECK(item->position().IsValid())
+        << "Item with invalid position: id=" << item->id()
+        << ", name=" << item->name() << ", is_folder=" << item->is_folder()
+        << ", is_page_break=" << item->is_page_break();
+    if (item->folder_id().empty() && item->position().IsValid())
+      top_level_items.emplace_back(item.get());
+  }
+  return top_level_items;
 }

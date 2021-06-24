@@ -5,7 +5,9 @@
 #include "ui/views/bubble/info_bubble.h"
 
 #include <memory>
+#include <utility>
 
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -46,20 +48,21 @@ class InfoBubbleFrame : public BubbleFrameView {
   DISALLOW_COPY_AND_ASSIGN(InfoBubbleFrame);
 };
 
-InfoBubble::InfoBubble(View* anchor, const base::string16& message)
+InfoBubble::InfoBubble(View* anchor, const std::u16string& message)
     : anchor_(anchor), frame_(nullptr), preferred_width_(0) {
   DCHECK(anchor_);
   SetAnchorView(anchor_);
+
+  DialogDelegate::SetButtons(ui::DIALOG_BUTTON_NONE);
 
   set_margins(LayoutProvider::Get()->GetInsetsMetric(
       InsetsMetric::INSETS_TOOLTIP_BUBBLE));
   SetCanActivate(false);
 
   SetLayoutManager(std::make_unique<FillLayout>());
-  Label* label = new Label(message);
-  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  label->SetMultiLine(true);
-  AddChildView(label);
+  label_ = AddChildView(std::make_unique<Label>(message));
+  label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  label_->SetMultiLine(true);
 }
 
 InfoBubble::~InfoBubble() = default;
@@ -76,13 +79,15 @@ void InfoBubble::Hide() {
     widget->Close();
 }
 
-NonClientFrameView* InfoBubble::CreateNonClientFrameView(Widget* widget) {
+std::unique_ptr<NonClientFrameView> InfoBubble::CreateNonClientFrameView(
+    Widget* widget) {
   DCHECK(!frame_);
-  frame_ = new InfoBubbleFrame(margins());
-  frame_->set_available_bounds(anchor_widget()->GetWindowBoundsInScreen());
-  frame_->SetBubbleBorder(
+  auto frame = std::make_unique<InfoBubbleFrame>(margins());
+  frame->set_available_bounds(anchor_widget()->GetWindowBoundsInScreen());
+  frame->SetBubbleBorder(
       std::make_unique<BubbleBorder>(arrow(), GetShadow(), color()));
-  return frame_;
+  frame_ = frame.get();
+  return frame;
 }
 
 gfx::Size InfoBubble::CalculatePreferredSize() const {
@@ -107,10 +112,6 @@ void InfoBubble::OnWidgetBoundsChanged(Widget* widget,
     frame_->set_available_bounds(widget->GetWindowBoundsInScreen());
 }
 
-int InfoBubble::GetDialogButtons() const {
-  return ui::DIALOG_BUTTON_NONE;
-}
-
 void InfoBubble::UpdatePosition() {
   if (!widget_)
     return;
@@ -124,5 +125,8 @@ void InfoBubble::UpdatePosition() {
     widget_->Hide();
   }
 }
+
+BEGIN_METADATA(InfoBubble, BubbleDialogDelegateView)
+END_METADATA
 
 }  // namespace views

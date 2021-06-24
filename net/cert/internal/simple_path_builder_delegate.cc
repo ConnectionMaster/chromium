@@ -4,7 +4,6 @@
 
 #include "net/cert/internal/simple_path_builder_delegate.h"
 
-#include "base/logging.h"
 #include "net/cert/internal/cert_error_params.h"
 #include "net/cert/internal/cert_errors.h"
 #include "net/cert/internal/signature_algorithm.h"
@@ -29,7 +28,6 @@ DEFINE_CERT_ERROR_ID(kUnacceptableCurveForEcdsa,
                      "Only P-256, P-384, P-521 are supported for ECDSA");
 
 bool IsAcceptableCurveForEcdsa(int curve_nid) {
-  // Whitelist default permitted named curves.
   switch (curve_nid) {
     case NID_X9_62_prime256v1:
     case NID_secp384r1:
@@ -49,6 +47,7 @@ SimplePathBuilderDelegate::SimplePathBuilderDelegate(
       digest_policy_(digest_policy) {}
 
 void SimplePathBuilderDelegate::CheckPathAfterVerification(
+    const CertPathBuilder& path_builder,
     CertPathBuilderResultPath* path) {
   // Do nothing - consider all candidate paths valid.
 }
@@ -56,7 +55,7 @@ void SimplePathBuilderDelegate::CheckPathAfterVerification(
 bool SimplePathBuilderDelegate::IsSignatureAlgorithmAcceptable(
     const SignatureAlgorithm& algorithm,
     CertErrors* errors) {
-  // Whitelist default permitted signature algorithms to:
+  // Restrict default permitted signature algorithms to:
   //
   //    RSA PKCS#1 v1.5
   //    RSASSA-PSS

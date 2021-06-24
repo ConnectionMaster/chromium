@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -27,6 +27,7 @@ class AdmxWriterUnittest(xml_writer_base_unittest.XmlWriterBaseTest):
     # Writer
     config = {
         'win_supported_os': 'SUPPORTED_TESTOS',
+        'win_supported_os_win7': 'SUPPORTED_TESTOS_2',
         'win_config': {
             'win': {
                 'reg_mandatory_key_name':
@@ -108,6 +109,8 @@ class AdmxWriterUnittest(xml_writer_base_unittest.XmlWriterBaseTest):
         '    <definitions>\n'
         '      <definition displayName="'
         '$(string.SUPPORTED_TESTOS)" name="SUPPORTED_TESTOS"/>\n'
+        '      <definition displayName="'
+        '$(string.SUPPORTED_TESTOS_2)" name="SUPPORTED_TESTOS_2"/>\n'
         '    </definitions>\n'
         '  </supportedOn>\n'
         '  <categories>\n'
@@ -140,6 +143,8 @@ class AdmxWriterUnittest(xml_writer_base_unittest.XmlWriterBaseTest):
         '    <definitions>\n'
         '      <definition displayName="'
         '$(string.SUPPORTED_TESTOS)" name="SUPPORTED_TESTOS"/>\n'
+        '      <definition displayName="'
+        '$(string.SUPPORTED_TESTOS_2)" name="SUPPORTED_TESTOS_2"/>\n'
         '    </definitions>\n'
         '  </supportedOn>\n'
         '  <categories>\n'
@@ -379,6 +384,35 @@ class AdmxWriterUnittest(xml_writer_base_unittest.XmlWriterBaseTest):
         '</policy>')
     self.AssertXMLEquals(output, expected_output)
 
+  def testIntPolicyWithWin7Only(self):
+    int_policy = {
+        'name': 'SampleIntPolicy',
+        'type': 'int',
+        'supported_on': [{
+            'platform': 'win7',
+        }]
+    }
+    self._initWriterForPolicy(self.writer, int_policy)
+
+    self.writer.WritePolicy(int_policy)
+    output = self.GetXMLOfChildren(self._GetPoliciesElement(self.writer._doc))
+    expected_output = (
+        '<policy class="' + self.writer.GetClass(int_policy) + '"'
+        ' displayName="$(string.SampleIntPolicy)"'
+        ' explainText="$(string.SampleIntPolicy_Explain)"'
+        ' key="Software\\Policies\\' + self._GetKey() + '"'
+        ' name="SampleIntPolicy"'
+        ' presentation="$(presentation.SampleIntPolicy)">\n'
+        '  <parentCategory ref="PolicyGroup"/>\n'
+        '  <supportedOn ref="SUPPORTED_TESTOS_2"/>\n'
+        '  <elements>\n'
+        '    <decimal id="SampleIntPolicy" maxValue="2000000000" minValue="0" '
+        'valueName="SampleIntPolicy"/>\n'
+        '  </elements>\n'
+        '</policy>')
+    self.AssertXMLEquals(output, expected_output)
+
+
   def testIntEnumPolicy(self):
     enum_policy = {
         'name':
@@ -578,17 +612,19 @@ class AdmxWriterUnittest(xml_writer_base_unittest.XmlWriterBaseTest):
     self.assertTrue(
         self.writer.IsPolicySupported({
             'supported_on': [{
-                'platforms': ['win', 'zzz']
+                'platform': 'win'
             }, {
-                'platforms': ['aaa']
+                'platform': 'aaa'
             }]
         }))
     self.assertFalse(
         self.writer.IsPolicySupported({
             'supported_on': [{
-                'platforms': ['mac', 'linux']
+                'platform': 'mac'
             }, {
-                'platforms': ['aaa']
+                'platform': 'aaa'
+            }, {
+                'platform': 'linux'
             }]
         }))
 

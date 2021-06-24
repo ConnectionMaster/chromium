@@ -7,12 +7,18 @@
 #include <string>
 
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/config/gpu_finch_features.h"
+#include "skia/buildflags.h"
 #include "ui/gl/gl_switches.h"
+#include "ui/gl/gl_utils.h"
 
 #if defined(USE_EGL)
 #include "ui/gl/gl_surface_egl.h"
@@ -51,18 +57,16 @@ gl::GLContextAttribs GenerateGLContextAttribs(
     attribs.webgl_compatibility_context =
         IsWebGLContextType(attribs_helper.context_type);
 
-    // Always use the global texture share group for the passthrough command
-    // decoder
+    // Always use the global texture and semaphore share group for the
+    // passthrough command decoder
     attribs.global_texture_share_group = true;
+    attribs.global_semaphore_share_group = true;
 
     attribs.robust_resource_initialization = true;
     attribs.robust_buffer_access = true;
 
     // Request a specific context version instead of always 3.0
-    if (IsWebGL2ComputeContextType(attribs_helper.context_type)) {
-      attribs.client_major_es_version = 3;
-      attribs.client_minor_es_version = 1;
-    } else if (IsWebGL2OrES3ContextType(attribs_helper.context_type)) {
+    if (IsWebGL2OrES3ContextType(attribs_helper.context_type)) {
       attribs.client_major_es_version = 3;
       attribs.client_minor_es_version = 0;
     } else {
@@ -82,39 +86,22 @@ gl::GLContextAttribs GenerateGLContextAttribs(
     attribs.client_minor_es_version = 0;
   }
 
+  if (IsES31ForTestingContextType(attribs_helper.context_type)) {
+    // Forcefully disable ES 3.1 contexts. Tests create contexts by initializing
+    // the attributes directly.
+    attribs.client_major_es_version = 2;
+    attribs.client_minor_es_version = 0;
+  }
+
   return attribs;
 }
 
 bool UsePassthroughCommandDecoder(const base::CommandLine* command_line) {
-  std::string switch_value;
-  if (command_line->HasSwitch(switches::kUseCmdDecoder)) {
-    switch_value = command_line->GetSwitchValueASCII(switches::kUseCmdDecoder);
-  }
-
-  if (switch_value == kCmdDecoderPassthroughName) {
-    return true;
-  } else if (switch_value == kCmdDecoderValidatingName) {
-    return false;
-  } else {
-    // Unrecognized or missing switch, use the default.
-    return base::FeatureList::IsEnabled(
-        features::kDefaultPassthroughCommandDecoder);
-  }
+  return gl::UsePassthroughCommandDecoder(command_line);
 }
 
 bool PassthroughCommandDecoderSupported() {
-#if defined(USE_EGL)
-  // Using the passthrough command buffer requires that specific ANGLE
-  // extensions are exposed
-  return gl::GLSurfaceEGL::IsCreateContextBindGeneratesResourceSupported() &&
-         gl::GLSurfaceEGL::IsCreateContextWebGLCompatabilitySupported() &&
-         gl::GLSurfaceEGL::IsRobustResourceInitSupported() &&
-         gl::GLSurfaceEGL::IsDisplayTextureShareGroupSupported() &&
-         gl::GLSurfaceEGL::IsCreateContextClientArraysSupported();
-#else
-  // The passthrough command buffer is only supported on top of ANGLE/EGL
-  return false;
-#endif  // defined(USE_EGL)
+  return gl::PassthroughCommandDecoderSupported();
 }
 
 GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
@@ -140,9 +127,16 @@ GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
   gpu_preferences.enforce_gl_minimums =
       command_line->HasSwitch(switches::kEnforceGLMinimums);
   if (GetUintFromSwitch(command_line, switches::kForceGpuMemAvailableMb,
-                        &gpu_preferences.force_gpu_mem_available)) {
-    gpu_preferences.force_gpu_mem_available *= 1024 * 1024;
+                        &gpu_preferences.force_gpu_mem_available_bytes)) {
+    gpu_preferences.force_gpu_mem_available_bytes *= 1024 * 1024;
   }
+  if (GetUintFromSwitch(
+          command_line, switches::kForceGpuMemDiscardableLimitMb,
+          &gpu_preferences.force_gpu_mem_discardable_limit_bytes)) {
+    gpu_preferences.force_gpu_mem_discardable_limit_bytes *= 1024 * 1024;
+  }
+  GetUintFromSwitch(command_line, switches::kForceMaxTextureSize,
+                    &gpu_preferences.force_max_texture_size);
   if (GetUintFromSwitch(command_line, switches::kGpuProgramCacheSizeKb,
                         &gpu_preferences.gpu_program_cache_size)) {
     gpu_preferences.gpu_program_cache_size *= 1024;
@@ -161,17 +155,99 @@ GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
       command_line->HasSwitch(switches::kEnableGPUServiceTracing);
   gpu_preferences.use_passthrough_cmd_decoder =
       gpu::gles2::UsePassthroughCommandDecoder(command_line);
-  gpu_preferences.disable_gpu_driver_bug_workarounds =
-      command_line->HasSwitch(switches::kDisableGpuDriverBugWorkarounds);
-  gpu_preferences.ignore_gpu_blacklist =
-      command_line->HasSwitch(switches::kIgnoreGpuBlacklist);
+  gpu_preferences.ignore_gpu_blocklist =
+      command_line->HasSwitch(switches::kIgnoreGpuBlocklist);
   gpu_preferences.enable_webgpu =
+      command_line->HasSwitch(switches::kEnableUnsafeWebGPU) ||
+      command_line->HasSwitch(switches::kEnableUnsafeWebGPUService);
+  gpu_preferences.enable_webgpu_spirv =
       command_line->HasSwitch(switches::kEnableUnsafeWebGPU);
-  gpu_preferences.enable_vulkan =
-      command_line->HasSwitch(switches::kEnableVulkan);
+  gpu_preferences.force_webgpu_compat =
+      command_line->HasSwitch(switches::kForceWebGPUCompat);
+  if (command_line->HasSwitch(switches::kEnableDawnBackendValidation)) {
+    auto value = command_line->GetSwitchValueASCII(
+        switches::kEnableDawnBackendValidation);
+    if (value.empty() || value == "full") {
+      gpu_preferences.enable_dawn_backend_validation =
+          DawnBackendValidationLevel::kFull;
+    } else if (value == "partial") {
+      gpu_preferences.enable_dawn_backend_validation =
+          DawnBackendValidationLevel::kPartial;
+    }
+  }
+  if (command_line->HasSwitch(switches::kEnableDawnFeatures)) {
+    gpu_preferences.enabled_dawn_features_list = base::SplitString(
+        command_line->GetSwitchValueASCII(switches::kEnableDawnFeatures), ",",
+        base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  }
+  if (command_line->HasSwitch(switches::kDisableDawnFeatures)) {
+    gpu_preferences.disabled_dawn_features_list = base::SplitString(
+        command_line->GetSwitchValueASCII(switches::kDisableDawnFeatures), ",",
+        base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  }
+  gpu_preferences.gr_context_type = ParseGrContextType();
+  gpu_preferences.use_vulkan = ParseVulkanImplementationName(command_line);
   gpu_preferences.disable_vulkan_surface =
       command_line->HasSwitch(switches::kDisableVulkanSurface);
+
+  gpu_preferences.enable_gpu_blocked_time_metric =
+      command_line->HasSwitch(switches::kEnableGpuBlockedTime);
+
   return gpu_preferences;
+}
+
+GrContextType ParseGrContextType() {
+#if BUILDFLAG(SKIA_USE_DAWN)
+  if (base::FeatureList::IsEnabled(features::kSkiaDawn))
+    return GrContextType::kDawn;
+#endif
+#if defined(OS_MAC)
+  return base::FeatureList::IsEnabled(features::kMetal) ? GrContextType::kMetal
+                                                        : GrContextType::kGL;
+#else
+  return features::IsUsingVulkan() ? GrContextType::kVulkan
+                                   : GrContextType::kGL;
+#endif
+}
+
+VulkanImplementationName ParseVulkanImplementationName(
+    const base::CommandLine* command_line) {
+#if defined(OS_ANDROID)
+  if (command_line->HasSwitch(switches::kWebViewDrawFunctorUsesVulkan) &&
+      base::FeatureList::IsEnabled(features::kWebViewVulkan)) {
+    return VulkanImplementationName::kForcedNative;
+  }
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // LACROS doesn't support Vulkan right now, to avoid LACROS picking up Linux
+  // finch, kNone is returned for LACROS.
+  // TODO(https://crbug.com/1155622): When LACROS is separated from Linux finch
+  // config.
+  return VulkanImplementationName::kNone;
+#else
+  if (command_line->HasSwitch(switches::kUseVulkan)) {
+    auto value = command_line->GetSwitchValueASCII(switches::kUseVulkan);
+    if (value.empty() || value == switches::kVulkanImplementationNameNative) {
+      return VulkanImplementationName::kForcedNative;
+    } else if (value == switches::kVulkanImplementationNameSwiftshader) {
+      return VulkanImplementationName::kSwiftshader;
+    }
+  }
+
+  if (features::IsUsingVulkan()) {
+    // If the vulkan feature is enabled from command line, we will force to use
+    // vulkan even if it is blocklisted.
+    return base::FeatureList::GetInstance()->IsFeatureOverriddenFromCommandLine(
+               features::kVulkan.name,
+               base::FeatureList::OVERRIDE_ENABLE_FEATURE)
+               ? VulkanImplementationName::kForcedNative
+               : VulkanImplementationName::kNative;
+  }
+
+  // GrContext is not going to use Vulkan.
+  return VulkanImplementationName::kNone;
+#endif
 }
 
 }  // namespace gles2

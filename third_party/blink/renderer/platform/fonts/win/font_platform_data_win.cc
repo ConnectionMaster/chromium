@@ -29,31 +29,31 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
-
 #include <windows.h>
-#include "SkFont.h"
-#include "SkTypeface.h"
+
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+#include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
+#include "third_party/skia/include/core/SkFont.h"
+#include "third_party/skia/include/core/SkTypeface.h"
 
 namespace blink {
 
-void FontPlatformData::SetupSkFont(SkFont* font, float, const Font*) const {
+void FontPlatformData::SetupSkFont(SkFont* font,
+                                   float,
+                                   const FontDescription*) const {
   font->setSize(SkFloatToScalar(text_size_));
   font->setTypeface(typeface_);
   font->setEmbolden(synthetic_bold_);
   font->setSkewX(synthetic_italic_ ? -SK_Scalar1 / 4 : 0);
 
-  uint32_t font_flags = FontFlags();
-  if (font_flags & kSubpixelsAntiAlias) {
+  if (style_.use_subpixel_rendering) {
     font->setEdging(SkFont::Edging::kSubpixelAntiAlias);
-  } else if (font_flags & kAntiAlias) {
+  } else if (style_.use_anti_alias) {
     font->setEdging(SkFont::Edging::kAntiAlias);
   } else {
     font->setEdging(SkFont::Edging::kAlias);
   }
-  font->setSubpixel(SkToBool(font_flags & kSubpixelMetrics));
 
   // Only use sub-pixel positioning if anti aliasing is enabled. Otherwise,
   // without font smoothing, subpixel text positioning leads to uneven spacing
@@ -61,7 +61,7 @@ void FontPlatformData::SetupSkFont(SkFont* font, float, const Font*) const {
   // only has non-antialiased glyphs to draw, so they necessarily get clamped at
   // pixel positions, which leads to uneven spacing, either too close or too far
   // away from adjacent glyphs. We avoid this by linking the two flags.
-  if (font_flags & kAntiAlias)
+  if (style_.use_anti_alias)
     font->setSubpixel(true);
 
   if (WebTestSupport::IsRunningWebTest() &&
@@ -71,40 +71,24 @@ void FontPlatformData::SetupSkFont(SkFont* font, float, const Font*) const {
   font->setEmbeddedBitmaps(!avoid_embedded_bitmaps_);
 }
 
-static bool IsWebFont(const String& family_name) {
-  // Web-fonts have artifical names constructed to always be:
-  // 1. 24 characters, followed by a '\0'
-  // 2. the last two characters are '=='
-  return family_name.length() == 24 && '=' == family_name[22] &&
-         '=' == family_name[23];
-}
+WebFontRenderStyle FontPlatformData::QuerySystemForRenderStyle() {
+  WebFontRenderStyle style;
+  style.use_anti_alias = 0;
+  style.use_subpixel_rendering = 0;
 
-static int ComputeFontFlags(String font_family_name) {
-  if (WebTestSupport::IsRunningWebTest())
-    return WebTestSupport::IsFontAntialiasingEnabledForTest()
-               ? FontPlatformData::kAntiAlias
-               : 0;
-
-  int font_flags = 0;
-  if (FontCache::GetFontCache()->AntialiasedTextEnabled()) {
-    int lcd_flag = FontCache::GetFontCache()->LcdTextEnabled()
-                       ? FontPlatformData::kSubpixelsAntiAlias
-                       : 0;
-    font_flags = FontPlatformData::kAntiAlias | lcd_flag;
+  if (WebTestSupport::IsRunningWebTest()) {
+    if (WebTestSupport::IsFontAntialiasingEnabledForTest())
+      style.use_anti_alias = 1;
+    return style;
   }
 
-  // Many web-fonts are so poorly hinted that they are terrible to read when
-  // drawn in BW.  In these cases, we have decided to FORCE these fonts to be
-  // drawn with at least grayscale AA, even when the System (getSystemTextFlags)
-  // tells us to draw only in BW.
-  if (IsWebFont(font_family_name))
-    font_flags |= FontPlatformData::kAntiAlias;
+  if (FontCache::GetFontCache()->AntialiasedTextEnabled()) {
+    style.use_anti_alias = 1;
+    if (FontCache::GetFontCache()->LcdTextEnabled())
+      style.use_subpixel_rendering = 1;
+  }
 
-  return font_flags;
-}
-
-void FontPlatformData::QuerySystemForRenderStyle() {
-  font_flags_ = ComputeFontFlags(FontFamilyName());
+  return style;
 }
 
 }  // namespace blink

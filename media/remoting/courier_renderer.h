@@ -5,9 +5,9 @@
 #ifndef MEDIA_REMOTING_COURIER_RENDERER_H_
 #define MEDIA_REMOTING_COURIER_RENDERER_H_
 
-#include <stdint.h>
-
 #include <memory>
+#include <tuple>
+#include <utility>
 
 #include "base/callback.h"
 #include "base/containers/circular_deque.h"
@@ -19,10 +19,13 @@
 #include "base/timer/timer.h"
 #include "media/base/pipeline_status.h"
 #include "media/base/renderer.h"
-#include "media/mojo/interfaces/remoting.mojom.h"
+#include "media/mojo/mojom/remoting.mojom.h"
 #include "media/remoting/metrics.h"
 #include "media/remoting/rpc_broker.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/openscreen/src/cast/streaming/remoting.pb.h"
 
 namespace media {
 
@@ -37,7 +40,7 @@ class RendererController;
 // A media::Renderer implementation that proxies all operations to a remote
 // renderer via RPCs. The CourierRenderer is instantiated by
 // AdaptiveRendererFactory when media remoting is meant to take place.
-class CourierRenderer : public Renderer {
+class CourierRenderer final : public Renderer {
  public:
   // The whole class except for constructor and GetMediaTime() runs on
   // |media_task_runner|. The constructor and GetMediaTime() run on render main
@@ -55,8 +58,8 @@ class CourierRenderer : public Renderer {
       scoped_refptr<base::SingleThreadTaskRunner> media_task_runner,
       base::WeakPtr<CourierRenderer> self,
       base::WeakPtr<RpcBroker> rpc_broker,
-      mojom::RemotingDataStreamSenderPtrInfo audio,
-      mojom::RemotingDataStreamSenderPtrInfo video,
+      mojo::PendingRemote<mojom::RemotingDataStreamSender> audio,
+      mojo::PendingRemote<mojom::RemotingDataStreamSender> video,
       mojo::ScopedDataPipeProducerHandle audio_handle,
       mojo::ScopedDataPipeProducerHandle video_handle);
 
@@ -66,16 +69,15 @@ class CourierRenderer : public Renderer {
   static void OnMessageReceivedOnMainThread(
       scoped_refptr<base::SingleThreadTaskRunner> media_task_runner,
       base::WeakPtr<CourierRenderer> self,
-      std::unique_ptr<pb::RpcMessage> message);
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
 
  public:
   // media::Renderer implementation.
   void Initialize(MediaResource* media_resource,
                   RendererClient* client,
-                  const PipelineStatusCB& init_cb) final;
-  void SetCdm(CdmContext* cdm_context,
-              const CdmAttachedCB& cdm_attached_cb) final;
-  void Flush(const base::Closure& flush_cb) final;
+                  PipelineStatusCallback init_cb) final;
+  void SetLatencyHint(absl::optional<base::TimeDelta> latency_hint) final;
+  void Flush(base::OnceClosure flush_cb) final;
   void StartPlayingFrom(base::TimeDelta time) final;
   void SetPlaybackRate(double playback_rate) final;
   void SetVolume(float volume) final;
@@ -95,31 +97,39 @@ class CourierRenderer : public Renderer {
   };
 
   // Callback when attempting to establish data pipe. Runs on media thread only.
-  void OnDataPipeCreated(mojom::RemotingDataStreamSenderPtrInfo audio,
-                         mojom::RemotingDataStreamSenderPtrInfo video,
-                         mojo::ScopedDataPipeProducerHandle audio_handle,
-                         mojo::ScopedDataPipeProducerHandle video_handle,
-                         int audio_rpc_handle,
-                         int video_rpc_handle);
+  void OnDataPipeCreated(
+      mojo::PendingRemote<mojom::RemotingDataStreamSender> audio,
+      mojo::PendingRemote<mojom::RemotingDataStreamSender> video,
+      mojo::ScopedDataPipeProducerHandle audio_handle,
+      mojo::ScopedDataPipeProducerHandle video_handle,
+      int audio_rpc_handle,
+      int video_rpc_handle);
 
   // Callback function when RPC message is received. Runs on media thread only.
-  void OnReceivedRpc(std::unique_ptr<pb::RpcMessage> message);
+  void OnReceivedRpc(std::unique_ptr<openscreen::cast::RpcMessage> message);
 
   // Function to post task to main thread in order to send RPC message.
-  void SendRpcToRemote(std::unique_ptr<pb::RpcMessage> message);
+  void SendRpcToRemote(std::unique_ptr<openscreen::cast::RpcMessage> message);
 
   // Functions when RPC message is received.
-  void AcquireRendererDone(std::unique_ptr<pb::RpcMessage> message);
-  void InitializeCallback(std::unique_ptr<pb::RpcMessage> message);
+  void AcquireRendererDone(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void InitializeCallback(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
   void FlushUntilCallback();
-  void SetCdmCallback(std::unique_ptr<pb::RpcMessage> message);
-  void OnTimeUpdate(std::unique_ptr<pb::RpcMessage> message);
-  void OnBufferingStateChange(std::unique_ptr<pb::RpcMessage> message);
-  void OnAudioConfigChange(std::unique_ptr<pb::RpcMessage> message);
-  void OnVideoConfigChange(std::unique_ptr<pb::RpcMessage> message);
-  void OnVideoNaturalSizeChange(std::unique_ptr<pb::RpcMessage> message);
-  void OnVideoOpacityChange(std::unique_ptr<pb::RpcMessage> message);
-  void OnStatisticsUpdate(std::unique_ptr<pb::RpcMessage> message);
+  void OnTimeUpdate(std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void OnBufferingStateChange(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void OnAudioConfigChange(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void OnVideoConfigChange(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void OnVideoNaturalSizeChange(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void OnVideoOpacityChange(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
+  void OnStatisticsUpdate(
+      std::unique_ptr<openscreen::cast::RpcMessage> message);
 
   // Called when |current_media_time_| is updated.
   void OnMediaTimeUpdated();
@@ -172,14 +182,16 @@ class CourierRenderer : public Renderer {
   int remote_renderer_handle_;
 
   // Callbacks.
-  PipelineStatusCB init_workflow_done_callback_;
-  CdmAttachedCB cdm_attached_cb_;
-  base::Closure flush_cb_;
+  PipelineStatusCallback init_workflow_done_callback_;
+  base::OnceClosure flush_cb_;
 
   VideoRendererSink* const video_renderer_sink_;  // Outlives this class.
 
   // Current playback rate.
   double playback_rate_ = 0;
+
+  // Current volume.
+  float volume_ = 1.0f;
 
   // Ignores updates until this time.
   base::TimeTicks ignore_updates_until_time_;
@@ -219,7 +231,7 @@ class CourierRenderer : public Renderer {
   // reported buffer underflow.
   bool receiver_is_blocked_on_local_demuxers_ = true;
 
-  base::WeakPtrFactory<CourierRenderer> weak_factory_;
+  base::WeakPtrFactory<CourierRenderer> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CourierRenderer);
 };

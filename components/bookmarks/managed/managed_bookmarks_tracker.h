@@ -9,10 +9,10 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "components/prefs/pref_change_registrar.h"
 
 class GURL;
@@ -32,7 +32,7 @@ class BookmarkPermanentNode;
 // managed_node() in the BookmarkModel follow the policy-defined bookmark tree.
 class ManagedBookmarksTracker {
  public:
-  typedef base::Callback<std::string()> GetManagementDomainCallback;
+  using GetManagementDomainCallback = base::RepeatingCallback<std::string()>;
 
   // Shared constants used in the policy configuration.
   static const char kName[];
@@ -42,7 +42,7 @@ class ManagedBookmarksTracker {
 
   ManagedBookmarksTracker(BookmarkModel* model,
                           PrefService* prefs,
-                          const GetManagementDomainCallback& callback);
+                          GetManagementDomainCallback callback);
   ~ManagedBookmarksTracker();
 
   // Returns the initial list of managed bookmarks, which can be passed to
@@ -61,14 +61,14 @@ class ManagedBookmarksTracker {
   void Init(BookmarkPermanentNode* managed_node);
 
  private:
-  base::string16 GetBookmarksFolderTitle() const;
+  std::u16string GetBookmarksFolderTitle() const;
 
   void ReloadManagedBookmarks();
 
   void UpdateBookmarks(const BookmarkNode* folder, const base::ListValue* list);
   static bool LoadBookmark(const base::ListValue* list,
                            size_t index,
-                           base::string16* title,
+                           std::u16string* title,
                            GURL* url,
                            const base::ListValue** children);
 

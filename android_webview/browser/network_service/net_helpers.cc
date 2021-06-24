@@ -6,7 +6,7 @@
 
 #include "android_webview/browser/aw_contents_io_thread_client.h"
 #include "android_webview/common/url_constants.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
 #include "net/base/load_flags.h"
 #include "url/gurl.h"
@@ -27,6 +27,7 @@ int UpdateCacheControlFlags(int load_flags, int cache_control_flags) {
 
 // Gets the net-layer load_flags which reflect |client|'s cache mode.
 int GetCacheModeForClient(AwContentsIoThreadClient* client) {
+  DCHECK(client);
   AwContentsIoThreadClient::CacheMode cache_mode = client->GetCacheMode();
   switch (cache_mode) {
     case AwContentsIoThreadClient::LOAD_CACHE_ELSE_NETWORK:
@@ -50,6 +51,9 @@ int GetCacheModeForClient(AwContentsIoThreadClient* client) {
 }  // namespace
 
 int UpdateLoadFlags(int load_flags, AwContentsIoThreadClient* client) {
+  if (!client)
+    return load_flags;
+
   if (client->ShouldBlockNetworkLoads()) {
     return UpdateCacheControlFlags(
         load_flags,
@@ -64,6 +68,9 @@ int UpdateLoadFlags(int load_flags, AwContentsIoThreadClient* client) {
 }
 
 bool ShouldBlockURL(const GURL& url, AwContentsIoThreadClient* client) {
+  if (!client)
+    return false;
+
   // Part of implementation of WebSettings.allowContentAccess.
   if (url.SchemeIs(url::kContentScheme) && client->ShouldBlockContentUrls())
     return true;

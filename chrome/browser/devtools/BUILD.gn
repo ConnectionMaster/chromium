@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/chromeos/ui_mode.gni")
 import("//extensions/buildflags/buildflags.gni")
 
 if (!is_android) {
@@ -26,11 +27,13 @@ if (!is_android) {
     "protocol/page.h",
     "protocol/protocol.cc",
     "protocol/protocol.h",
+    "protocol/security.cc",
+    "protocol/security.h",
     "protocol/target.cc",
     "protocol/target.h",
   ]
 
-  if (is_chromeos) {
+  if (is_chromeos_ash) {
     _protocol_generated += [
       "protocol/window_manager.cc",
       "protocol/window_manager.h",
@@ -42,22 +45,16 @@ if (!is_android) {
   action("concatenate_protocols") {
     script = _inspector_protocol + "/concatenate_protocols.py"
 
-    deps = [
-      "//third_party/blink/renderer/core/inspector:protocol_version",
-    ]
+    deps = [ "//third_party/blink/public/devtools_protocol:protocol_version" ]
 
     _blink_protocol_path =
-        "$root_gen_dir/third_party/blink/renderer/core/inspector/protocol.json"
-    inputs = [
-      _blink_protocol_path,
-    ]
+        "$root_gen_dir/third_party/blink/public/devtools_protocol/protocol.json"
+    inputs = [ _blink_protocol_path ]
     output_file = _concatenated_protocol_path
-    outputs = [
-      output_file,
-    ]
+    outputs = [ output_file ]
 
     args = [ rebase_path(_blink_protocol_path, root_build_dir) ]
-    if (is_chromeos) {
+    if (is_chromeos_ash) {
       inputs += [ "cros_protocol.pdl" ]
       args += [ rebase_path("cros_protocol.pdl", root_build_dir) ]
     }
@@ -68,9 +65,7 @@ if (!is_android) {
   inspector_protocol_generate("protocol_generated_sources") {
     inspector_protocol_dir = _inspector_protocol
     visibility = [ ":*" ]  # Only targets in this file can depend on this.
-    deps = [
-      ":concatenate_protocols",
-    ]
+    deps = [ ":concatenate_protocols" ]
     out_dir = target_gen_dir
     config_file = "inspector_protocol_config.json"
 
@@ -98,26 +93,62 @@ static_library("devtools") {
 
   deps = [
     "//base",
+
+    # To prevent circular GN dependencies, this target does not depend on
+    # //chrome/browser:browser, even though it has a real build dependency on
+    # it.  However, depending on the order in which this target and
+    # //chrome/browser:browser are built it's possible that the connectors
+    # proto header (which //chrome/browser:browser depends on) is not generated
+    # yet causing devtools not to compile.  Adding this indirect dependency to
+    # the proto to fix that.
+    "//components/enterprise/common/proto:connectors_proto",
+
+    # Similar bandaid as the above. Since we cannot depend on
+    # //chrome/browser:browser, we include indirect dependencies here.
+    "//components/paint_preview/buildflags:buildflags",
     "//content/public/browser",
     "//net",
-    "//services/viz/privileged/interfaces/compositing",
+    "//services/viz/privileged/mojom/compositing",
     "//third_party/blink/public:buildflags",
     "//ui/events:dom_keycode_converter",
   ]
 
   if (!is_android) {
     deps += [
+      "//build:chromeos_buildflags",
       "//chrome:extra_resources",
       "//chrome:resources",
       "//chrome:strings",
       "//chrome/app/theme:theme_resources",
+      "//chrome/browser:browser_process",
+      "//chrome/browser/media/router:media_router_feature",
+      "//chrome/browser/profiles:profile",
       "//chrome/common",
+      "//components/guest_view/browser",
+      "//components/infobars/content",
+      "//components/infobars/core",
+      "//components/javascript_dialogs",
+      "//components/keep_alive_registry",
+      "//components/keyed_service/content",
+      "//components/language/core/browser",
+      "//components/pref_registry",
+      "//components/prefs",
+      "//components/sessions",
+      "//components/sync_preferences",
       "//components/viz/host",
+      "//components/web_modal",
+      "//components/zoom",
+      "//extensions/browser",
       "//net/server:http_server",
       "//skia",
       "//third_party/icu",
       "//third_party/leveldatabase",
+      "//ui/base/cursor/mojom:cursor_type",
+      "//ui/shell_dialogs",
     ]
+    if (is_chromeos_ash) {
+      deps += [ "//ash/constants" ]
+    }
     sources += [
       "chrome_devtools_manager_delegate.cc",
       "chrome_devtools_manager_delegate.h",
@@ -198,7 +229,16 @@ static_library("devtools") {
     sources += [ "devtools_dock_tile.cc" ]
   }
   if (!is_android) {
-    deps += [ ":protocol_generated_sources" ]
+    deps += [
+      ":protocol_generated_sources",
+      "//chrome/app:command_ids",
+      "//components/media_router/browser",
+      "//components/media_router/common/mojom:media_router",
+      "//components/security_state/content",
+      "//components/subresource_filter/content/browser:browser",
+      "//components/webapps/browser",
+      "//third_party/inspector_protocol:crdtp",
+    ]
     sources += [
       "protocol/browser_handler.cc",
       "protocol/browser_handler.h",
@@ -206,10 +246,13 @@ static_library("devtools") {
       "protocol/cast_handler.h",
       "protocol/page_handler.cc",
       "protocol/page_handler.h",
+      "protocol/security_handler.cc",
+      "protocol/security_handler.h",
       "protocol/target_handler.cc",
       "protocol/target_handler.h",
     ]
-    if (is_chromeos) {
+    if (is_chromeos_ash) {
+      deps += [ "//ash" ]
       sources += [
         "protocol/window_manager_handler.cc",
         "protocol/window_manager_handler.h",
@@ -226,12 +269,16 @@ static_library("devtools") {
 static_library("test_support") {
   sources = []
   deps = []
+  testonly = true
 
   if (!is_android) {
     deps += [
+      ":devtools",
       "//base",
+      "//chrome/browser:browser_process",
       "//chrome/browser/ui",
       "//content/public/browser",
+      "//content/test:test_support",
     ]
 
     sources += [

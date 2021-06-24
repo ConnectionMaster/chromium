@@ -16,6 +16,7 @@ Must run in a git checkout, as it relies on git grep for a fast way to
 find files that reference the moved file.
 """
 
+from __future__ import print_function
 
 import optparse
 import os
@@ -33,7 +34,7 @@ sort_headers = __import__('sort-headers')
 import sort_sources
 
 
-HANDLED_EXTENSIONS = ['.cc', '.mm', '.h', '.hh', '.cpp']
+HANDLED_EXTENSIONS = ['.cc', '.mm', '.h', '.hh', '.cpp', '.mojom']
 
 
 def IsHandledFile(path):
@@ -86,6 +87,35 @@ def MoveFile(from_path, to_path):
     raise Exception('Fatal: Failed to run git mv command.')
 
 
+def UpdateIncludes(from_path, to_path, in_blink):
+  """Updates any includes of |from_path| to |to_path|. Paths supplied to this
+  function have been mapped to forward slashes.
+  """
+  from_include_path = from_path
+  to_include_path = to_path
+  if in_blink:
+    from_include_path = UpdateIncludePathForBlink(from_include_path)
+    to_include_path = UpdateIncludePathForBlink(to_include_path)
+
+  # This handles three types of include/imports:
+  # . C++ includes.
+  # . Object-C imports
+  # . Imports in mojom files.
+  files_with_changed_includes = mffr.MultiFileFindReplace(
+      r'(#?(include|import)\s*["<])%s([>"]);?' % re.escape(from_include_path),
+      r'\1%s\3' % to_include_path,
+      ['*.cc', '*.h', '*.m', '*.mm', '*.cpp', '*.mojom'])
+
+  # Reorder headers in files that changed.
+  for changed_file in files_with_changed_includes:
+
+    def AlwaysConfirm(a, b):
+      return True
+
+    sort_headers.FixFileWithConfirmFunction(changed_file, AlwaysConfirm, True,
+                                            in_blink)
+
+
 def UpdatePostMove(from_path, to_path, in_blink):
   """Given a file that has moved from |from_path| to |to_path|,
   updates the moved file's include guard to match the new path and
@@ -95,27 +125,18 @@ def UpdatePostMove(from_path, to_path, in_blink):
   # Include paths always use forward slashes.
   from_path = from_path.replace('\\', '/')
   to_path = to_path.replace('\\', '/')
+  extension = os.path.splitext(from_path)[1]
 
-  if os.path.splitext(from_path)[1] in ['.h', '.hh']:
-    UpdateIncludeGuard(from_path, to_path)
-
-    from_include_path = from_path
-    to_include_path = to_path
-    if in_blink:
-      from_include_path = UpdateIncludePathForBlink(from_include_path)
-      to_include_path = UpdateIncludePathForBlink(to_include_path)
-
-    # Update include/import references.
-    files_with_changed_includes = mffr.MultiFileFindReplace(
-        r'(#(include|import)\s*["<])%s([>"])' % re.escape(from_include_path),
-        r'\1%s\3' % to_include_path,
-        ['*.cc', '*.h', '*.m', '*.mm', '*.cpp'])
-
-    # Reorder headers in files that changed.
-    for changed_file in files_with_changed_includes:
-      def AlwaysConfirm(a, b): return True
-      sort_headers.FixFileWithConfirmFunction(changed_file, AlwaysConfirm, True,
-                                              in_blink)
+  if extension in ['.h', '.hh', '.mojom']:
+    UpdateIncludes(from_path, to_path, in_blink)
+    if extension == '.mojom':
+      # For mojom files, update includes of generated headers.
+      UpdateIncludes(from_path + '.h', to_path + '.h', in_blink)
+      UpdateIncludes(from_path + '-blink.h', to_path + '-blink.h', in_blink)
+      UpdateIncludes(from_path + '-shared.h', to_path + '-shared.h', in_blink)
+      UpdateIncludes(from_path + '-forward.h', to_path + '-forward.h', in_blink)
+    else:
+      UpdateIncludeGuard(from_path, to_path)
 
   # Update comments; only supports // comments, which are primarily
   # used in our code.
@@ -175,7 +196,7 @@ def UpdatePostMove(from_path, to_path, in_blink):
     to_first, to_rest = SplitByFirstComponent(to_rest)
     visiting_directory = os.path.join(visiting_directory, from_first)
     if not from_rest or not to_rest or from_rest == to_rest:
-        break
+      break
 
 
 def MakeIncludeGuardName(path_from_root):
@@ -204,9 +225,9 @@ def UpdateIncludeGuard(old_path, new_path):
   # The file should now have three instances of the new guard: two at the top
   # of the file plus one at the bottom for the comment on the #endif.
   if new_contents.count(new_guard) != 3:
-    print ('WARNING: Could not successfully update include guard; perhaps '
-           'old guard is not per style guide? You will have to update the '
-           'include guard manually. (%s)' % new_path)
+    print('WARNING: Could not successfully update include guard; perhaps '
+          'old guard is not per style guide? You will have to update the '
+          'include guard manually. (%s)' % new_path)
 
   with open(new_path, 'w') as f:
     f.write(new_contents)
@@ -217,7 +238,7 @@ def main():
   # this in the .git directory.
   if (os.system('git rev-parse') != 0 or
       os.path.basename(os.getcwd()) == '.git'):
-    print 'Fatal: You must run in a git checkout.'
+    print('Fatal: You must run in a git checkout.')
     return 1
 
   cwd = os.getcwd()
@@ -245,14 +266,14 @@ def main():
   orig_to_path = args[-1]
 
   if len(from_paths) > 1 and not os.path.isdir(orig_to_path):
-    print 'Target %s is not a directory.' % orig_to_path
-    print
+    print('Target %s is not a directory.' % orig_to_path)
+    print()
     parser.print_help()
     return 1
 
   for from_path in from_paths:
     if not opts.error_for_non_source_file and not IsHandledFile(from_path):
-      print '%s does not appear to be a source file, skipping' % (from_path)
+      print('%s does not appear to be a source file, skipping' % (from_path))
       continue
     to_path = MakeDestinationPath(from_path, orig_to_path)
     if not opts.already_moved:

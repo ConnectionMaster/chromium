@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/values.h"
 #include "net/base/load_flags.h"
 
@@ -14,14 +15,13 @@ namespace net {
 
 // Returns parameters associated with the start of a server push lookup
 // transaction.
-std::unique_ptr<base::Value> NetLogPushLookupTransactionCallback(
+base::Value NetLogPushLookupTransactionParams(
     const NetLogSource& net_log,
-    const ServerPushDelegate::ServerPushHelper* push_helper,
-    NetLogCaptureMode /* capture_mode */) {
-  std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
-  net_log.AddToEventParameters(dict.get());
-  dict->SetString("push_url", push_helper->GetURL().possibly_invalid_spec());
-  return std::move(dict);
+    const ServerPushDelegate::ServerPushHelper* push_helper) {
+  base::Value dict(base::Value::Type::DICTIONARY);
+  net_log.AddToEventParameters(&dict);
+  dict.SetStringKey("push_url", push_helper->GetURL().possibly_invalid_spec());
+  return dict;
 }
 
 HttpCacheLookupManager::LookupTransaction::LookupTransaction(
@@ -40,11 +40,13 @@ int HttpCacheLookupManager::LookupTransaction::StartLookup(
     HttpCache* cache,
     CompletionOnceCallback callback,
     const NetLogWithSource& session_net_log) {
-  net_log_.BeginEvent(NetLogEventType::SERVER_PUSH_LOOKUP_TRANSACTION,
-                      base::Bind(&NetLogPushLookupTransactionCallback,
-                                 session_net_log.source(), push_helper_.get()));
+  net_log_.BeginEvent(NetLogEventType::SERVER_PUSH_LOOKUP_TRANSACTION, [&] {
+    return NetLogPushLookupTransactionParams(session_net_log.source(),
+                                             push_helper_.get());
+  });
 
   request_->url = push_helper_->GetURL();
+  request_->network_isolation_key = push_helper_->GetNetworkIsolationKey();
   request_->method = "GET";
   request_->load_flags = LOAD_ONLY_FROM_CACHE | LOAD_SKIP_CACHE_VALIDATION;
   cache->CreateTransaction(DEFAULT_PRIORITY, &transaction_);
@@ -61,7 +63,7 @@ void HttpCacheLookupManager::LookupTransaction::OnLookupComplete(int result) {
 }
 
 HttpCacheLookupManager::HttpCacheLookupManager(HttpCache* http_cache)
-    : http_cache_(http_cache), weak_factory_(this) {}
+    : http_cache_(http_cache) {}
 
 HttpCacheLookupManager::~HttpCacheLookupManager() = default;
 
@@ -71,7 +73,7 @@ void HttpCacheLookupManager::OnPush(
   GURL pushed_url = push_helper->GetURL();
 
   // There's a pending lookup transaction sent over already.
-  if (base::ContainsKey(lookup_transactions_, pushed_url))
+  if (base::Contains(lookup_transactions_, pushed_url))
     return;
 
   auto lookup = std::make_unique<LookupTransaction>(std::move(push_helper),
@@ -80,8 +82,9 @@ void HttpCacheLookupManager::OnPush(
   // LookupTransaction.
 
   int rv = lookup->StartLookup(
-      http_cache_, base::Bind(&HttpCacheLookupManager::OnLookupComplete,
-                              weak_factory_.GetWeakPtr(), pushed_url),
+      http_cache_,
+      base::BindOnce(&HttpCacheLookupManager::OnLookupComplete,
+                     weak_factory_.GetWeakPtr(), pushed_url),
       session_net_log);
 
   if (rv == ERR_IO_PENDING) {

@@ -8,28 +8,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+
 #include "base/memory/scoped_refptr.h"
-#include "base/strings/string16.h"
 #include "sandbox/win/src/sandbox_types.h"
 #include "sandbox/win/src/security_level.h"
 
 namespace sandbox {
 
-class AppContainerProfile;
+class AppContainer;
+class PolicyInfo;
 
 class TargetPolicy {
  public:
   // Windows subsystems that can have specific rules.
-  // Note: The process subsystem(SUBSY_PROCESS) does not evaluate the request
+  // Note: The process subsystem(SUBSYS_PROCESS) does not evaluate the request
   // exactly like the CreateProcess API does. See the comment at the top of
   // process_thread_dispatcher.cc for more details.
   enum SubSystem {
-    SUBSYS_FILES,           // Creation and opening of files and pipes.
-    SUBSYS_NAMED_PIPES,     // Creation of named pipes.
-    SUBSYS_PROCESS,         // Creation of child processes.
-    SUBSYS_REGISTRY,        // Creation and opening of registry keys.
-    SUBSYS_SYNC,            // Creation of named sync objects.
-    SUBSYS_WIN32K_LOCKDOWN  // Win32K Lockdown related policy.
+    SUBSYS_FILES,            // Creation and opening of files and pipes.
+    SUBSYS_NAMED_PIPES,      // Creation of named pipes.
+    SUBSYS_PROCESS,          // Creation of child processes.
+    SUBSYS_REGISTRY,         // Creation and opening of registry keys.
+    SUBSYS_SYNC,             // Creation of named sync objects.
+    SUBSYS_WIN32K_LOCKDOWN,  // Win32K Lockdown related policy.
+    SUBSYS_SIGNED_BINARY     // Signed binary policy.
   };
 
   // Allowable semantics when a rule is matched.
@@ -56,9 +59,7 @@ class TargetPolicy {
     FAKE_USER_GDI_INIT,     // Fakes user32 and gdi32 initialization. This can
                             // be used to allow the DLLs to load and initialize
                             // even if the process cannot access that subsystem.
-    IMPLEMENT_OPM_APIS      // Implements FAKE_USER_GDI_INIT and also exposes
-                            // IPC calls to handle Output Protection Manager
-                            // APIs.
+    SIGNED_ALLOW_LOAD       // Allows loading the module when CIG is enabled.
   };
 
   // Increments the reference count of this object. The reference count must
@@ -151,7 +152,7 @@ class TargetPolicy {
   // Returns the name of the alternate desktop used. If an alternate window
   // station is specified, the name is prepended by the window station name,
   // followed by a backslash.
-  virtual base::string16 GetAlternateDesktop() const = 0;
+  virtual std::wstring GetAlternateDesktop() const = 0;
 
   // Precreates the desktop and window station, if any.
   virtual ResultCode CreateAlternateDesktop(bool alternate_winstation) = 0;
@@ -249,10 +250,9 @@ class TargetPolicy {
   // resources.
   virtual void SetLockdownDefaultDacl() = 0;
 
-  // Enable OPM API redirection when in Win32k lockdown.
-  virtual void SetEnableOPMRedirection() = 0;
-  // Enable OPM API emulation when in Win32k lockdown.
-  virtual bool GetEnableOPMRedirection() = 0;
+  // Adds a restricting random SID to the restricted SIDs list as well as
+  // the default DACL.
+  virtual void AddRestrictingRandomSid() = 0;
 
   // Configure policy to use an AppContainer profile. |package_name| is the
   // name of the profile to use. Specifying True for |create_profile| ensures
@@ -261,13 +261,16 @@ class TargetPolicy {
   virtual ResultCode AddAppContainerProfile(const wchar_t* package_name,
                                             bool create_profile) = 0;
 
-  // Get the configured AppContainerProfile.
-  virtual scoped_refptr<AppContainerProfile> GetAppContainerProfile() = 0;
+  // Get the configured AppContainer.
+  virtual scoped_refptr<AppContainer> GetAppContainer() = 0;
 
   // Set effective token that will be used for creating the initial and
   // lockdown tokens. The token the caller passes must remain valid for the
   // lifetime of the policy object.
   virtual void SetEffectiveToken(HANDLE token) = 0;
+
+  // Returns a snapshot of the policy configuration.
+  virtual std::unique_ptr<PolicyInfo> GetPolicyInfo() = 0;
 
  protected:
   ~TargetPolicy() {}

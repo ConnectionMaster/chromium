@@ -11,13 +11,15 @@ namespace extensions {
 // One day we might want to auto generate these.
 namespace behavior_feature {
 
-extern const char kWhitelistedForIncognito[];
 extern const char kDoNotSync[];
 extern const char kZoomWithoutBubble[];
 extern const char kAllowUsbDevicesPermissionInterfaceClass[];
 extern const char kSigninScreen[];
 extern const char kAllowDeprecatedAudioApi[];
 extern const char kAllowSecondaryKioskAppEnabledOnLaunch[];
+extern const char kKeyPermissionsInLoginScreen[];
+extern const char kImprivataInSessionExtension[];
+extern const char kImprivataLoginScreenExtension[];
 
 }  // namespace behavior_feature
 

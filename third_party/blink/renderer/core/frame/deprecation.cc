@@ -4,14 +4,15 @@
 
 #include "third_party/blink/renderer/core/frame/deprecation.h"
 
-#include "services/service_manager/public/cpp/connector.h"
-#include "third_party/blink/public/mojom/feature_policy/feature_policy.mojom-blink.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+#include "third_party/blink/public/mojom/permissions_policy/permissions_policy.mojom-blink.h"
 #include "third_party/blink/public/mojom/reporting/reporting.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/deprecation_report_body.h"
 #include "third_party/blink/renderer/core/frame/frame_console.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/report.h"
@@ -21,9 +22,10 @@
 #include "third_party/blink/renderer/core/origin_trials/origin_trial_context.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/wtf/date_math.h"
 
-using blink::WebFeature;
+namespace blink {
 
 namespace {
 
@@ -43,138 +45,121 @@ const char kChromeLoadTimesPaintTiming[] =
 
 enum Milestone {
   kUnknown,
-  kM60,
-  kM61,
-  kM62,
-  kM63,
-  kM64,
-  kM65,
-  kM66,
-  kM67,
-  kM68,
-  kM69,
-  kM70,
-  kM71,
-  kM72,
-  kM73,
-  kM74,
-  kM75,
-  kM76,
+  kM61 = 61,
+  kM62 = 62,
+  kM64 = 64,
+  kM65 = 65,
+  kM70 = 70,
+  kM71 = 71,
+  kM72 = 72,
+  kM75 = 75,
+  kM76 = 76,
+  kM77 = 77,
+  kM78 = 78,
+  kM79 = 79,
+  kM80 = 80,
+  kM81 = 81,
+  kM82 = 82,
+  kM83 = 83,
+  kM84 = 84,
+  kM85 = 85,
+  kM86 = 86,
+  kM87 = 87,
+  kM88 = 88,
+  kM89 = 89,
+  kM90 = 90,
+  kM91 = 91,
+  kM92 = 92,
+  kM93 = 93,
+  kM94 = 94,
+  kM95 = 95,
+  kM96 = 96,
+  kM97 = 97,
 };
 
-// Returns estimated milestone dates as human-readable strings.
-const char* MilestoneString(Milestone milestone) {
-  // These are the Estimated Stable Dates:
-  // https://www.chromium.org/developers/calendar
-
-  switch (milestone) {
-    case kUnknown:
-      return "";
-    case kM60:
-      return "M60, around August 2017";
-    case kM61:
-      return "M61, around September 2017";
-    case kM62:
-      return "M62, around October 2017";
-    case kM63:
-      return "M63, around December 2017";
-    case kM64:
-      return "M64, around January 2018";
-    case kM65:
-      return "M65, around March 2018";
-    case kM66:
-      return "M66, around April 2018";
-    case kM67:
-      return "M67, around May 2018";
-    case kM68:
-      return "M68, around July 2018";
-    case kM69:
-      return "M69, around September 2018";
-    case kM70:
-      return "M70, around October 2018";
-    case kM71:
-      return "M71, around December 2018";
-    case kM72:
-      return "M72, around January 2019";
-    case kM73:
-      return "M73, around March 2019";
-    case kM74:
-      return "M74, around April 2019";
-    case kM75:
-      return "M75, around June 2019";
-    case kM76:
-      return "M76, around July 2019";
-  }
-
-  NOTREACHED();
-  return nullptr;
-}
-
 // Returns estimated milestone dates as milliseconds since January 1, 1970.
-double MilestoneDate(Milestone milestone) {
+base::Time::Exploded MilestoneDate(Milestone milestone) {
   // These are the Estimated Stable Dates:
   // https://www.chromium.org/developers/calendar
-  // All are at 04:00:00 GMT.
-  // TODO(yoichio): We should have something like "Time(March, 6, 2018)".
+  // All dates except for kUnknown are at 04:00:00 GMT.
   switch (milestone) {
     case kUnknown:
-      return 0;
-    case kM60:
-      return 1500955200000;  // July 25, 2017.
+      break;
     case kM61:
-      return 1504584000000;  // September 5, 2017.
+      return {2017, 9, 0, 5, 4};
     case kM62:
-      return 1508212800000;  // October 17, 2017.
-    case kM63:
-      return 1512450000000;  // December 5, 2017.
+      return {2017, 10, 0, 17, 4};
     case kM64:
-      return 1516683600000;  // January 23, 2018.
+      return {2018, 1, 0, 23, 4};
     case kM65:
-      return 1520312400000;  // March 6, 2018.
-    case kM66:
-      return 1523937600000;  // April 17, 2018.
-    case kM67:
-      return 1527566400000;  // May 29, 2018.
-    case kM68:
-      return 1532404800000;  // July 24, 2018.
-    case kM69:
-      return 1536033600000;  // September 4, 2018.
+      return {2018, 3, 0, 6, 4};
     case kM70:
-      return 1539662400000;  // October 16, 2018.
+      return {2018, 10, 0, 16, 4};
     case kM71:
-      return 1543899600000;  // December 4, 2018.
+      return {2018, 12, 0, 4, 4};
     case kM72:
-      return 1548734400000;  // January 29, 2019.
-    case kM73:
-      return 1552363200000;  // March 12, 2019.
-    case kM74:
-      return 1555992000000;  // April 23, 2019.
+      return {2019, 1, 0, 29, 4};
     case kM75:
-      return 1559620800000;  // June 4, 2019.
+      return {2019, 6, 0, 4, 4};
     case kM76:
-      return 1564459200000;  // Jul 30, 2019.
+      return {2019, 7, 0, 30, 4};
+    case kM77:
+      return {2019, 9, 0, 10, 4};
+    case kM78:
+      return {2019, 10, 0, 22, 4};
+    case kM79:
+      return {2019, 12, 0, 10, 4};
+    case kM80:
+      return {2020, 2, 0, 4, 4};
+    case kM81:
+      return {2020, 4, 0, 7, 4};
+    case kM82:
+      // This release was cancelled, so this is the (new) M83 date.
+      // https://groups.google.com/a/chromium.org/d/msg/chromium-dev/N1NxbSVOZas/ySlEKDKkBgAJ
+      return {2020, 5, 0, 18, 4};
+    case kM83:
+      return {2020, 5, 0, 18, 4};
+    case kM84:
+      return {2020, 7, 0, 14, 4};
+    case kM85:
+      return {2020, 8, 0, 25, 4};
+    case kM86:
+      return {2020, 10, 0, 6, 4};
+    case kM87:
+      return {2020, 11, 0, 17, 4};
+    case kM88:
+      return {2021, 1, 0, 19, 4};
+    case kM89:
+      return {2021, 3, 0, 2, 4};
+    case kM90:
+      return {2021, 4, 0, 13, 4};
+    case kM91:
+      return {2021, 5, 0, 25, 4};
+    case kM92:
+      return {2021, 7, 0, 20, 4};
+    case kM93:
+      return {2021, 8, 0, 31, 4};
+    case kM94:
+      return {2021, 9, 0, 21, 4};
+    case kM95:
+      return {2021, 10, 0, 19, 4};
+    case kM96:
+      return {2022, 11, 0, 16, 4};
+    case kM97:
+      return {2022, 1, 0, 4, 4};
   }
 
   NOTREACHED();
-  return 0;
+  return {1970, 1, 0, 1, 0};
 }
 
-String GetDeviceSensorDeprecationMessage(const char* event_name,
-                                         const char* status_url) {
-  static constexpr char kConcreteMessage[] =
-      "The `%s` event is deprecated on insecure origins and will be removed in "
-      "%s. Event handlers can still be registered but are no longer invoked "
-      "since %s. See %s for more details.";
-  static constexpr char kGenericMessage[] =
-      "The `%s` event is deprecated on insecure origins and will be removed. "
-      "See %s for more details.";
-
-  if (blink::RuntimeEnabledFeatures::
-          RestrictDeviceSensorEventsToSecureContextsEnabled()) {
-    return String::Format(kConcreteMessage, event_name, MilestoneString(kM76),
-                          MilestoneString(kM74), status_url);
-  }
-  return String::Format(kGenericMessage, event_name, status_url);
+// Returns estimated milestone dates as human-readable strings.
+String MilestoneString(Milestone milestone) {
+  if (milestone == kUnknown)
+    return "";
+  base::Time::Exploded date = MilestoneDate(milestone);
+  return String::Format("M%d, around %s %d", milestone,
+                        WTF::kMonthFullName[date.month - 1], date.year);
 }
 
 struct DeprecationInfo {
@@ -194,7 +179,7 @@ String WillBeRemoved(const char* feature,
   return String::Format(
       "%s is deprecated and will be removed in %s. See "
       "https://www.chromestatus.com/features/%s for more details.",
-      feature, MilestoneString(milestone), details);
+      feature, MilestoneString(milestone).Ascii().c_str(), details);
 }
 
 String ReplacedWillBeRemoved(const char* feature,
@@ -204,7 +189,8 @@ String ReplacedWillBeRemoved(const char* feature,
   return String::Format(
       "%s is deprecated and will be removed in %s. Please use %s instead. See "
       "https://www.chromestatus.com/features/%s for more details.",
-      feature, MilestoneString(milestone), replacement, details);
+      feature, MilestoneString(milestone).Ascii().c_str(), replacement,
+      details);
 }
 
 DeprecationInfo GetDeprecationInfo(WebFeature feature) {
@@ -279,12 +265,11 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
     // Blocked subresource requests:
     case WebFeature::kLegacyProtocolEmbeddedAsSubresource:
       return {"LegacyProtocolEmbeddedAsSubresource", kUnknown,
-              String::Format(
-                  "Subresource requests using legacy protocols (like `ftp:`) "
-                  "are blocked. Please deliver web-accessible resources over "
-                  "modern protocols like HTTPS. See "
-                  "https://www.chromestatus.com/feature/5709390967472128 for "
-                  "details.")};
+              "Subresource requests using legacy protocols (like `ftp:`) "
+              "are blocked. Please deliver web-accessible resources over "
+              "modern protocols like HTTPS. See "
+              "https://www.chromestatus.com/feature/5709390967472128 for "
+              "details."};
 
     case WebFeature::kRequestedSubresourceWithEmbeddedCredentials:
       return {"RequestedSubresourceWithEmbeddedCredentials", kUnknown,
@@ -293,35 +278,7 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
               "https://www.chromestatus.com/feature/5669008342777856 for more "
               "details."};
 
-    // Blocked `<meta http-equiv="set-cookie" ...>`
-    case WebFeature::kMetaSetCookie:
-      return {"MetaSetCookie", kM65,
-              String::Format(
-                  "Setting cookies via `<meta http-equiv='Set-Cookie' ...>` no "
-                  "longer works, as of M65. Consider switching to "
-                  " `document.cookie = ...`, or to `Set-Cookie` HTTP headers "
-                  "instead. See %s for more details.",
-                  "https://www.chromestatus.com/feature/6170540112871424")};
-
     // Powerful features on insecure origins (https://goo.gl/rStTGz)
-    case WebFeature::kDeviceMotionInsecureOrigin:
-      return {"DeviceMotionInsecureOrigin", kM76,
-              GetDeviceSensorDeprecationMessage(
-                  "devicemotion",
-                  "https://www.chromestatus.com/feature/5688035094036480")};
-
-    case WebFeature::kDeviceOrientationInsecureOrigin:
-      return {"DeviceOrientationInsecureOrigin", kM76,
-              GetDeviceSensorDeprecationMessage(
-                  "deviceorientation",
-                  "https://www.chromestatus.com/feature/5468407470227456")};
-
-    case WebFeature::kDeviceOrientationAbsoluteInsecureOrigin:
-      return {"DeviceOrientationAbsoluteInsecureOrigin", kM76,
-              GetDeviceSensorDeprecationMessage(
-                  "deviceorientationabsolute",
-                  "https://www.chromestatus.com/feature/5468407470227456")};
-
     case WebFeature::kGeolocationInsecureOrigin:
     case WebFeature::kGeolocationInsecureOriginIframe:
       return {"GeolocationInsecureOrigin", kUnknown,
@@ -370,57 +327,51 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
           "https://www.chromestatus.com/features/6107495151960064 for more "
           "details."};
 
-    case WebFeature::kApplicationCacheManifestSelectInsecureOrigin:
     case WebFeature::kApplicationCacheAPIInsecureOrigin:
+    case WebFeature::kApplicationCacheManifestSelectInsecureOrigin:
       return {"ApplicationCacheAPIInsecureOrigin", kM70,
-              "Application Cache is restricted to secure contexts. Please "
-              "consider migrating your application to HTTPS, and eventually "
-              "shifting over to Service Workers. See https://goo.gl/rStTGz for "
-              "more details."};
+              "Application Cache was previously restricted to secure origins "
+              "only from M70 on but now secure origin use is deprecated and "
+              "will be removed in M82.  Please shift your use case over to "
+              "Service Workers."};
+
+    case WebFeature::kApplicationCacheAPISecureOrigin:
+      return {
+          "ApplicationCacheAPISecureOrigin", kM85,
+          WillBeRemoved("Application Cache API use", kM85, "6192449487634432")};
+
+    case WebFeature::kApplicationCacheManifestSelectSecureOrigin:
+      return {"ApplicationCacheAPISecureOrigin", kM85,
+              WillBeRemoved("Application Cache API manifest selection", kM85,
+                            "6192449487634432")};
 
     case WebFeature::kNotificationInsecureOrigin:
     case WebFeature::kNotificationAPIInsecureOriginIframe:
     case WebFeature::kNotificationPermissionRequestedInsecureOrigin:
-      return {
-          "NotificationInsecureOrigin", kUnknown,
-          String::Format(
+      return {"NotificationInsecureOrigin", kUnknown,
               "The Notification API may no longer be used from insecure "
               "origins. "
               "You should consider switching your application to a secure "
               "origin, "
-              "such as HTTPS. See https://goo.gl/rStTGz for more details.")};
+              "such as HTTPS. See https://goo.gl/rStTGz for more details."};
 
     case WebFeature::kNotificationPermissionRequestedIframe:
-      return {
-          "NotificationPermissionRequestedIframe", kUnknown,
-          String::Format(
+      return {"NotificationPermissionRequestedIframe", kUnknown,
               "Permission for the Notification API may no longer be requested "
               "from "
               "a cross-origin iframe. You should consider requesting "
               "permission "
               "from a top-level frame or opening a new window instead. See "
               "https://www.chromestatus.com/feature/6451284559265792 for more "
-              "details.")};
-
-    case WebFeature::kCSSDeepCombinator:
-      return {"CSSDeepCombinator", kM65,
-              "/deep/ combinator is no longer supported in CSS dynamic profile."
-              "It is now effectively no-op, acting as if it were a descendant "
-              "combinator. /deep/ combinator will be removed, and will be "
-              "invalid at M65. You should remove it. See "
-              "https://www.chromestatus.com/features/4964279606312960 for more "
               "details."};
 
-    case WebFeature::kVREyeParametersOffset:
-      return {"VREyeParametersOffset", kUnknown,
-              ReplacedBy("VREyeParameters.offset",
-                         "view matrices provided by VRFrameData")};
-
     case WebFeature::kCSSSelectorInternalMediaControlsOverlayCastButton:
-      return {
-          "CSSSelectorInternalMediaControlsOverlayCastButton", kM61,
-          WillBeRemoved("-internal-media-controls-overlay-cast-button selector",
-                        kM61, "5714245488476160")};
+      return {"CSSSelectorInternalMediaControlsOverlayCastButton", kUnknown,
+              "The disableRemotePlayback attribute should be used in order to "
+              "disable the default Cast integration instead of using "
+              "-internal-media-controls-overlay-cast-button selector. See "
+              "https://www.chromestatus.com/feature/5714245488476160 for more "
+              "details."};
 
     case WebFeature::kSelectionAddRangeIntersect:
       return {
@@ -439,13 +390,7 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
                              "https://www.chromestatus.com/features/"
                              "5654810086866944 "
                              "for more details.",
-                             MilestoneString(kM62))};
-
-    case WebFeature::kChildSrcAllowedWorkerThatScriptSrcBlocked:
-      return {"ChildSrcAllowedWorkerThatScriptSrcBlocked", kM60,
-              ReplacedWillBeRemoved("The 'child-src' directive",
-                                    "the 'script-src' directive for Workers",
-                                    kM60, "5922594955984896")};
+                             MilestoneString(kM62).Ascii().c_str())};
 
     case WebFeature::kCanRequestURLHTTPContainingNewline:
       return {
@@ -457,50 +402,6 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
           "load these resources. See "
           "https://www.chromestatus.com/feature/5735596811091968 for more "
           "details."};
-
-    case WebFeature::kPaymentRequestNetworkNameInSupportedMethods:
-      return {
-          "PaymentRequestNetworkNameInSupportedMethods", kM64,
-          ReplacedWillBeRemoved(
-              "Card issuer network (\"amex\", \"diners\", \"discover\", "
-              "\"jcb\", "
-              "\"mastercard\", \"mir\", \"unionpay\", \"visa\") as payment "
-              "method",
-              "payment method name \"basic-card\" with issuer network in the "
-              "\"supportedNetworks\" field",
-              kM64, "5725727580225536")};
-
-    case WebFeature::kHTMLImports:
-      return {"DeprecatedHTMLImports", kM73,
-              ReplacedWillBeRemoved("HTML Imports", "ES modules", kM73,
-                                    "5144752345317376")};
-
-    case WebFeature::kElementCreateShadowRoot:
-      return {"ElementCreateShadowRoot", kM73,
-              ReplacedWillBeRemoved("Element.createShadowRoot",
-                                    "Element.attachShadow", kM73,
-                                    "4507242028072960")};
-
-    case WebFeature::kDocumentRegisterElement:
-      return {"DocumentRegisterElement", kM73,
-              ReplacedWillBeRemoved("document.registerElement",
-                                    "window.customElements.define", kM73,
-                                    "4642138092470272")};
-    case WebFeature::kCSSSelectorPseudoUnresolved:
-      return {
-          "CSSSelectorPseudoUnresolved", kM73,
-          ReplacedWillBeRemoved(":unresolved pseudo selector", ":not(:defined)",
-                                kM73, "4642138092470272")};
-
-    case WebFeature::kPresentationRequestStartInsecureOrigin:
-    case WebFeature::kPresentationReceiverInsecureOrigin:
-      return {
-          "PresentationInsecureOrigin", kM72,
-          String("Using the Presentation API on insecure origins is "
-                 "deprecated and will be removed in M72. You should consider "
-                 "switching your application to a secure origin, such as "
-                 "HTTPS. See "
-                 "https://goo.gl/rStTGz for more details.")};
 
     case WebFeature::kLocalCSSFileExtensionRejected:
       return {"LocalCSSFileExtensionRejected", kM64,
@@ -548,21 +449,6 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
               "Creating a MediaStreamAudioSourceNode on an OfflineAudioContext",
               kM71, "5258622686724096")};
 
-    case WebFeature::kRTCDataChannelInitMaxRetransmitTime:
-      return {"RTCDataChannelInitMaxRetransmitTime", kM70,
-              ReplacedWillBeRemoved("maxRetransmitTime", "maxPacketLifeTime",
-                                    kM70, "5198350873788416")};
-
-    case WebFeature::kGridRowTrackPercentIndefiniteHeight:
-      return {"GridRowTrackPercentIndefiniteHeight", kM70,
-              String::Format("Percentages row tracks and gutters for "
-                             "indefinite height grid containers will be "
-                             "resolved against the intrinsic height instead of "
-                             "being treated as auto and zero respectively. "
-                             "This change will happen in %s. See "
-                             "https://www.chromestatus.com/feature/"
-                             "6708326821789696 for more details.",
-                             MilestoneString(kM70))};
     case WebFeature::kTextToSpeech_SpeakDisallowedByAutoplay:
       return {
           "TextToSpeech_DisallowedByAutoplay", kM71,
@@ -570,7 +456,7 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
                          "no longer allowed since %s. See "
                          "https://www.chromestatus.com/feature/"
                          "5687444770914304 for more details",
-                         MilestoneString(kM71))};
+                         MilestoneString(kM71).Ascii().c_str())};
 
     case WebFeature::kRTCPeerConnectionComplexPlanBSdpUsingDefaultSdpSemantics:
       return {"RTCPeerConnectionComplexPlanBSdpUsingDefaultSdpSemantics", kM72,
@@ -583,26 +469,16 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
                   "clients expecting Unified Plan. For more information about "
                   "how to prepare for the switch, see "
                   "https://webrtc.org/web-apis/chrome/unified-plan/.",
-                  MilestoneString(kM72))};
+                  MilestoneString(kM72).Ascii().c_str())};
 
     case WebFeature::kNoSysexWebMIDIWithoutPermission:
-      return {"NoSysexWebMIDIWithoutPermission", kM75,
+      return {"NoSysexWebMIDIWithoutPermission", kM82,
               String::Format(
                   "Web MIDI will ask a permission to use even if the sysex is "
-                  "not specified in the MIDIOptions since %s. See "
+                  "not specified in the MIDIOptions since around %s. See "
                   "https://www.chromestatus.com/feature/5138066234671104 for "
                   "more details.",
-                  MilestoneString(kM75))};
-
-    case WebFeature::kNoSysexWebMIDIOnInsecureOrigin:
-      return {"NoSysexWebMIDIOnInsecureOrigin", kM75,
-              String::Format(
-                  "Web MIDI will be deprecated on insecure origins since %s. "
-                  "You should consider switching your application to a secure "
-                  "origin, such as HTTPS. See "
-                  "https://www.chromestatus.com/feature/5138066234671104 for "
-                  "more details.",
-                  MilestoneString(kM75))};
+                  MilestoneString(kM82).Ascii().c_str())};
 
     case WebFeature::kCustomCursorIntersectsViewport:
       return {
@@ -612,32 +488,164 @@ DeprecationInfo GetDeprecationInfo(WebFeature feature) {
               "native UI",
               kM75, "5825971391299584")};
 
-    case WebFeature::kV8AtomicsWake:
-      return {"V8AtomicsWake", kM76,
-              ReplacedWillBeRemoved("Atomics.wake", "Atomics.notify", kM76,
-                                    "6228189936353280")};
+    case WebFeature::kXRSupportsSession:
+      return {"XRSupportsSession", kM80,
+              ReplacedBy(
+                  "supportsSession()",
+                  "isSessionSupported() and check the resolved boolean value")};
 
+    case WebFeature::kObsoleteWebrtcTlsVersion:
+      return {"ObsoleteWebRtcCipherSuite", kM81,
+              String::Format(
+                  "Your partner is negotiating an obsolete (D)TLS version. "
+                  "Support for this will be removed in %s. "
+                  "Please check with your partner to have this fixed.",
+                  MilestoneString(kM81).Ascii().c_str())};
+
+    case WebFeature::kCssStyleSheetReplaceWithImport:
+      return {
+          "CssStyleSheetReplaceWithImport", kM84,
+          String::Format(
+              "Support for calls to CSSStyleSheet.replace() with stylesheet "
+              "text that includes @import has been deprecated, and will be "
+              "removed in %s. See "
+              "https://chromestatus.com/feature/4735925877735424 for more "
+              "details.",
+              MilestoneString(kM84).Ascii().c_str())};
+
+    case WebFeature::kV8SharedArrayBufferConstructedWithoutIsolation:
+      return {
+          "SharedArrayBufferConstructedWithoutIsolation", kM92,
+          String::Format(
+              "SharedArrayBuffer will require cross-origin isolation as of "
+              "%s. See "
+              "https://developer.chrome.com/blog/enabling-shared-array-buffer/"
+              " for more details.",
+              MilestoneString(kM92).Ascii().c_str())};
+
+    case WebFeature::kV8RTCRtpSender_CreateEncodedAudioStreams_Method:
+      return {"V8RTCRtpSender_CreateEncodedAudioStreams_Method", kM88,
+              ReplacedWillBeRemoved("RTCRtpSender.createEncodedAudioStreams",
+                                    "RTCRtpSender.createEncodedStreams", kM88,
+                                    "6321945865879552")};
+
+    case WebFeature::kV8RTCRtpSender_CreateEncodedVideoStreams_Method:
+      return {"V8RTCRtpSender_CreateEncodedVideoStreams_Method", kM88,
+              ReplacedWillBeRemoved("RTCRtpSender.createEncodedVideoStreams",
+                                    "RTCRtpSender.createEncodedStreams", kM88,
+                                    "6321945865879552")};
+
+    case WebFeature::kV8RTCRtpReceiver_CreateEncodedAudioStreams_Method:
+      return {"V8RTCRtpReceiver_CreateEncodedAudioStreams_Method", kM88,
+              ReplacedWillBeRemoved("RTCRtpReceiver.createEncodedAudioStreams",
+                                    "RTCRtpReceiver.createEncodedStreams", kM88,
+                                    "6321945865879552")};
+
+    case WebFeature::kV8RTCRtpReceiver_CreateEncodedVideoStreams_Method:
+      return {"V8RTCRtpReceiver_CreateEncodedVideoStreams_Method", kM88,
+              ReplacedWillBeRemoved("RTCRtpReceiver.createEncodedVideoStreams",
+                                    "RTCRtpReceiver.createEncodedStreams", kM88,
+                                    "6321945865879552")};
+
+    case WebFeature::kForceEncodedAudioInsertableStreams:
+      return {"ForceEncodedAudioInsertableStreams", kM88,
+              ReplacedWillBeRemoved(
+                  "RTCConfiguration.forceEncodedAudioInsertableStreams",
+                  "RTCConfiguration.encodedInsertableStreams", kM88,
+                  "6321945865879552")};
+
+    case WebFeature::kForceEncodedVideoInsertableStreams:
+      return {"ForceEncodedVideoInsertableStreams", kM88,
+              ReplacedWillBeRemoved(
+                  "RTCConfiguration.forceEncodedVideoInsertableStreams",
+                  "RTCConfiguration.encodedInsertableStreams", kM88,
+                  "6321945865879552")};
+
+    case WebFeature::kRTCConstraintEnableRtpDataChannelsFalse:
+    case WebFeature::kRTCConstraintEnableRtpDataChannelsTrue:
+      return {
+          "RTP data channel", kM88,
+          "RTP data channels are no longer supported. "
+          "The \"RtpDataChannels\" constraint is currently ignored, and may "
+          "cause an error at a later date."};
+
+    case WebFeature::kRTCPeerConnectionSdpSemanticsPlanB:
+      return {"RTCPeerConnectionSdpSemanticsPlanB", kM93,
+              "Plan B SDP semantics, which is used when constructing an "
+              "RTCPeerConnection with {sdpSemantics:\"plan-b\"}, is a legacy "
+              "version of the Session Description Protocol that has severe "
+              "compatibility issues on modern browsers. The standardized SDP "
+              "format, \"unified-plan\", has been used by default since M72 "
+              "(January, 2019). Dropping support for Plan B is targeted for "
+              "M93. See https://www.chromestatus.com/feature/5823036655665152 "
+              "for more details."};
+
+    case WebFeature::kRTCPeerConnectionSdpSemanticsPlanBWithReverseOriginTrial:
+      return {"RTCPeerConnectionSdpSemanticsPlanBWithReverseOriginTrial", kM96,
+              "Plan B SDP semantics, which is used when constructing an "
+              "RTCPeerConnection with {sdpSemantics:\"plan-b\"}, is a legacy "
+              "version of the Session Description Protocol that has severe "
+              "compatibility issues on modern browsers. The standardized SDP "
+              "format, \"unified-plan\", has been used by default since M72 "
+              "(January, 2019). Dropping support for Plan B is targeted for "
+              "M93, but this page may extend the deadline until the End Date "
+              "of the 'RTCPeerConnection Plan B SDP Semantics' deprecation "
+              "trial."};
+
+    case WebFeature::kAddressSpaceUnknownNonSecureContextEmbeddedPrivate:
+    case WebFeature::kAddressSpaceUnknownNonSecureContextEmbeddedLocal:
+    case WebFeature::kAddressSpacePublicNonSecureContextEmbeddedPrivate:
+    case WebFeature::kAddressSpacePublicNonSecureContextEmbeddedLocal:
+    case WebFeature::kAddressSpacePrivateNonSecureContextEmbeddedLocal:
+      return {"InsecurePrivateNetworkSubresourceRequest", kM92,
+              "The website requested a subresource from a "
+              "network that it could only access because of its users' "
+              "privileged network position. These requests expose non-public "
+              "devices and servers to the internet, increasing the risk of a "
+              "cross-site request forgery (CSRF) attack, and/or information "
+              "leakage. To mitigate these risks, Chrome deprecates requests to "
+              "non-public subresources when initiated from non-secure "
+              "contexts, and will start blocking them in Chrome 92 (July "
+              "2021). See https://chromestatus.com/feature/5436853517811712 "
+              "for more details."};
+    case WebFeature::kRTCPeerConnectionOfferAllowExtmapMixedFalse:
+      return {"RTCPeerConnectionOfferExtmapAllowMixedFalse", kM93,
+              "The RTCPeerConnection offerAllowExtmapMixed option is a "
+              "non-standard feature. This feature will be removed in M93 "
+              "(Canary: July 15, 2021; Stable: August 24, 2021). For "
+              "interoperability with legacy WebRTC versions that throw "
+              "errors when attempting to parse the a=extmap-allow-mixed "
+              "line in the SDP remove the line from the SDP during "
+              "signalling."};
     // Features that aren't deprecated don't have a deprecation message.
     default:
       return {"NotDeprecated", kUnknown, ""};
   }
 }
 
-}  // anonymous namespace
-
-namespace blink {
-
-Deprecation::Deprecation() : mute_count_(0) {
-  css_property_deprecation_bits_.EnsureSize(numCSSPropertyIDs);
-  features_deprecation_bits_.EnsureSize(
-      static_cast<int>(WebFeature::kNumberOfFeatures));
+Report* CreateReportInternal(const KURL& context_url,
+                             const DeprecationInfo& info) {
+  absl::optional<base::Time> optional_removal_date;
+  if (info.anticipated_removal != kUnknown) {
+    base::Time removal_date;
+    bool result = base::Time::FromUTCExploded(
+        MilestoneDate(info.anticipated_removal), &removal_date);
+    DCHECK(result);
+    optional_removal_date = removal_date;
+  }
+  DeprecationReportBody* body = MakeGarbageCollected<DeprecationReportBody>(
+      info.id, optional_removal_date, info.message);
+  return MakeGarbageCollected<Report>(ReportType::kDeprecation, context_url,
+                                      body);
 }
 
-Deprecation::~Deprecation() = default;
+}  // anonymous namespace
+
+Deprecation::Deprecation() : mute_count_(0) {}
 
 void Deprecation::ClearSuppression() {
-  css_property_deprecation_bits_.ClearAll();
-  features_deprecation_bits_.ClearAll();
+  css_property_deprecation_bits_.reset();
+  features_deprecation_bits_.reset();
 }
 
 void Deprecation::MuteForInspector() {
@@ -649,23 +657,22 @@ void Deprecation::UnmuteForInspector() {
 }
 
 void Deprecation::Suppress(CSSPropertyID unresolved_property) {
-  DCHECK(isCSSPropertyIDWithName(unresolved_property));
-  css_property_deprecation_bits_.QuickSet(
-      static_cast<int>(unresolved_property));
+  DCHECK(IsCSSPropertyIDWithName(unresolved_property));
+  css_property_deprecation_bits_.set(static_cast<size_t>(unresolved_property));
 }
 
 bool Deprecation::IsSuppressed(CSSPropertyID unresolved_property) {
-  DCHECK(isCSSPropertyIDWithName(unresolved_property));
-  return css_property_deprecation_bits_.QuickGet(
-      static_cast<int>(unresolved_property));
+  DCHECK(IsCSSPropertyIDWithName(unresolved_property));
+  return css_property_deprecation_bits_[static_cast<size_t>(
+      unresolved_property)];
 }
 
 void Deprecation::SetReported(WebFeature feature) {
-  features_deprecation_bits_.QuickSet(static_cast<int>(feature));
+  features_deprecation_bits_.set(static_cast<size_t>(feature));
 }
 
 bool Deprecation::GetReported(WebFeature feature) const {
-  return features_deprecation_bits_.QuickGet(static_cast<int>(feature));
+  return features_deprecation_bits_[static_cast<size_t>(feature)];
 }
 
 void Deprecation::WarnOnDeprecatedProperties(
@@ -679,9 +686,9 @@ void Deprecation::WarnOnDeprecatedProperties(
   String message = DeprecationMessage(unresolved_property);
   if (!message.IsEmpty()) {
     page->GetDeprecation().Suppress(unresolved_property);
-    ConsoleMessage* console_message =
-        ConsoleMessage::Create(mojom::ConsoleMessageSource::kDeprecation,
-                               mojom::ConsoleMessageLevel::kWarning, message);
+    auto* console_message = MakeGarbageCollected<ConsoleMessage>(
+        mojom::ConsoleMessageSource::kDeprecation,
+        mojom::ConsoleMessageLevel::kWarning, message);
     frame->Console().AddMessage(console_message);
   }
 }
@@ -693,105 +700,58 @@ String Deprecation::DeprecationMessage(CSSPropertyID unresolved_property) {
   return g_empty_string;
 }
 
+void Deprecation::CountDeprecationCrossOriginIframe(LocalDOMWindow* window,
+                                                    WebFeature feature) {
+  DCHECK(window);
+  if (!window->GetFrame())
+    return;
+
+  // Check to see if the frame can script into the top level context.
+  Frame& top = window->GetFrame()->Tree().Top();
+  if (!window->GetSecurityOrigin()->CanAccess(
+          top.GetSecurityContext()->GetSecurityOrigin())) {
+    CountDeprecation(window, feature);
+  }
+}
+
 void Deprecation::CountDeprecation(ExecutionContext* context,
                                    WebFeature feature) {
   if (!context)
     return;
 
-  // TODO(yoichio): We should remove these counters when v0 APIs are removed.
-  // crbug.com/946875.
-  if (const OriginTrialContext* origin_trial_context =
-          OriginTrialContext::FromOrCreate(context)) {
-    if (feature == WebFeature::kHTMLImports &&
-        origin_trial_context->IsFeatureEnabled(
-            OriginTrialFeature::kHTMLImports) &&
-        !RuntimeEnabledFeatures::HTMLImportsEnabledByRuntimeFlag()) {
-      UseCounter::Count(context, WebFeature::kHTMLImportsOnReverseOriginTrials);
-    } else if (feature == WebFeature::kElementCreateShadowRoot &&
-               origin_trial_context->IsFeatureEnabled(
-                   OriginTrialFeature::kShadowDOMV0) &&
-               !RuntimeEnabledFeatures::ShadowDOMV0EnabledByRuntimeFlag()) {
-      UseCounter::Count(
-          context, WebFeature::kElementCreateShadowRootOnReverseOriginTrials);
-    } else if (feature == WebFeature::kDocumentRegisterElement &&
-               origin_trial_context->IsFeatureEnabled(
-                   OriginTrialFeature::kCustomElementsV0) &&
-               !RuntimeEnabledFeatures::
-                   CustomElementsV0EnabledByRuntimeFlag()) {
-      UseCounter::Count(
-          context, WebFeature::kDocumentRegisterElementOnReverseOriginTrials);
+  Deprecation* deprecation = nullptr;
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    if (window->GetFrame())
+      deprecation = &window->GetFrame()->GetPage()->GetDeprecation();
+  } else if (auto* scope = DynamicTo<WorkerOrWorkletGlobalScope>(context)) {
+    // TODO(crbug.com/1146824): Remove this once PlzDedicatedWorker and
+    // PlzServiceWorker ship.
+    if (!scope->IsInitialized()) {
+      return;
     }
+    deprecation = &scope->GetDeprecation();
   }
-  // TODO(dcheng): Maybe this should be a virtual on ExecutionContext?
-  if (auto* document = DynamicTo<Document>(context)) {
-    Deprecation::CountDeprecation(*document, feature);
+
+  if (!deprecation || deprecation->mute_count_ ||
+      deprecation->GetReported(feature)) {
     return;
   }
-  if (auto* scope = DynamicTo<WorkerOrWorkletGlobalScope>(context))
-    scope->CountDeprecation(feature);
-}
-
-void Deprecation::CountDeprecation(const Document& document,
-                                   WebFeature feature) {
-  Deprecation::CountDeprecation(document.Loader(), feature);
-}
-
-void Deprecation::CountDeprecation(DocumentLoader* loader, WebFeature feature) {
-  if (!loader)
-    return;
-  LocalFrame* frame = loader->GetFrame();
-  if (!frame)
-    return;
-  Page* page = frame->GetPage();
-  if (!loader || !page || page->GetDeprecation().mute_count_ ||
-      page->GetDeprecation().GetReported(feature))
-    return;
-
-  page->GetDeprecation().SetReported(feature);
-  UseCounter::Count(loader, feature);
-  GenerateReport(frame, feature);
-}
-
-void Deprecation::CountDeprecationCrossOriginIframe(const Document& document,
-                                                    WebFeature feature) {
-  LocalFrame* frame = document.GetFrame();
-  if (!frame)
-    return;
-
-  // Check to see if the frame can script into the top level document.
-  const SecurityOrigin* security_origin =
-      frame->GetSecurityContext()->GetSecurityOrigin();
-  Frame& top = frame->Tree().Top();
-  if (!security_origin->CanAccess(
-          top.GetSecurityContext()->GetSecurityOrigin()))
-    CountDeprecation(document, feature);
-}
-
-void Deprecation::GenerateReport(const LocalFrame* frame, WebFeature feature) {
-  DeprecationInfo info = GetDeprecationInfo(feature);
+  deprecation->SetReported(feature);
+  context->CountUse(feature);
+  const DeprecationInfo info = GetDeprecationInfo(feature);
 
   // Send the deprecation message to the console as a warning.
   DCHECK(!info.message.IsEmpty());
-  ConsoleMessage* console_message = ConsoleMessage::Create(
+  auto* console_message = MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kDeprecation,
       mojom::ConsoleMessageLevel::kWarning, info.message);
-  frame->Console().AddMessage(console_message);
+  context->AddConsoleMessage(console_message);
 
-  if (!frame || !frame->Client())
-    return;
-
-  Document* document = frame->GetDocument();
-
-  // Construct the deprecation report.
-  double removal_date = MilestoneDate(info.anticipated_removal);
-  DeprecationReportBody* body = MakeGarbageCollected<DeprecationReportBody>(
-      info.id, removal_date, info.message);
-  Report* report = MakeGarbageCollected<Report>(
-      "deprecation", document->Url().GetString(), body);
+  Report* report = CreateReportInternal(context->Url(), info);
 
   // Send the deprecation report to the Reporting API and any
   // ReportingObservers.
-  ReportingContext::From(document)->QueueReport(report);
+  ReportingContext::From(context)->QueueReport(report);
 }
 
 // static

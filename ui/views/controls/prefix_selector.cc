@@ -4,6 +4,8 @@
 
 #include "ui/views/controls/prefix_selector.h"
 
+#include <algorithm>
+
 #if defined(OS_WIN)
 #include <vector>
 #endif
@@ -11,6 +13,7 @@
 #include "base/i18n/case_conversion.h"
 #include "base/time/default_tick_clock.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/gfx/range/range.h"
@@ -19,12 +22,6 @@
 #include "ui/views/widget/widget.h"
 
 namespace views {
-
-namespace {
-
-constexpr int64_t kTimeBeforeClearingMS = 1000;
-
-}  // namespace
 
 PrefixSelector::PrefixSelector(PrefixDelegate* delegate, View* host_view)
     : prefix_delegate_(delegate),
@@ -39,25 +36,27 @@ void PrefixSelector::OnViewBlur() {
 
 bool PrefixSelector::ShouldContinueSelection() const {
   const base::TimeTicks now(tick_clock_->NowTicks());
-  return ((now - time_of_last_key_).InMilliseconds() < kTimeBeforeClearingMS);
+  constexpr auto kTimeBeforeClearing = base::TimeDelta::FromSeconds(1);
+  return (now - time_of_last_key_) < kTimeBeforeClearing;
 }
 
 void PrefixSelector::SetCompositionText(
-    const ui::CompositionText& composition) {
+    const ui::CompositionText& composition) {}
+
+uint32_t PrefixSelector::ConfirmCompositionText(bool keep_selection) {
+  return UINT32_MAX;
 }
 
-void PrefixSelector::ConfirmCompositionText() {
-}
+void PrefixSelector::ClearCompositionText() {}
 
-void PrefixSelector::ClearCompositionText() {
-}
-
-void PrefixSelector::InsertText(const base::string16& text) {
+void PrefixSelector::InsertText(const std::u16string& text,
+                                InsertTextCursorBehavior cursor_behavior) {
+  // TODO(crbug.com/1155331): Handle |cursor_behavior| correctly.
   OnTextInput(text);
 }
 
 void PrefixSelector::InsertChar(const ui::KeyEvent& event) {
-  OnTextInput(base::string16(1, event.GetCharacter()));
+  OnTextInput(std::u16string(1, event.GetCharacter()));
 }
 
 ui::TextInputType PrefixSelector::GetTextInputType() const {
@@ -86,6 +85,11 @@ gfx::Rect PrefixSelector::GetCaretBounds() const {
   // coordinates.
   views::View::ConvertRectToScreen(host_view_, &rect);
   return rect;
+}
+
+gfx::Rect PrefixSelector::GetSelectionBoundingBox() const {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return gfx::Rect();
 }
 
 bool PrefixSelector::GetCompositionCharacterBounds(uint32_t index,
@@ -130,7 +134,7 @@ bool PrefixSelector::DeleteRange(const gfx::Range& range) {
 }
 
 bool PrefixSelector::GetTextFromRange(const gfx::Range& range,
-                                        base::string16* text) const {
+                                      std::u16string* text) const {
   return false;
 }
 
@@ -143,8 +147,7 @@ bool PrefixSelector::ChangeTextDirectionAndLayoutAlignment(
   return true;
 }
 
-void PrefixSelector::ExtendSelectionAndDelete(size_t before, size_t after) {
-}
+void PrefixSelector::ExtendSelectionAndDelete(size_t before, size_t after) {}
 
 void PrefixSelector::EnsureCaretNotInRect(const gfx::Rect& rect) {}
 
@@ -168,15 +171,46 @@ bool PrefixSelector::ShouldDoLearning() {
   return false;
 }
 
-#if defined(OS_WIN)
-void PrefixSelector::SetCompositionFromExistingText(
+#if defined(OS_WIN) || BUILDFLAG(IS_CHROMEOS_ASH)
+bool PrefixSelector::SetCompositionFromExistingText(
     const gfx::Range& range,
-    const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) {}
-void PrefixSelector::SetActiveCompositionForAccessibility(
-    const gfx::Range& range) {}
+    const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) {
+  // TODO(https://crbug.com/952757): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
 #endif
 
-void PrefixSelector::OnTextInput(const base::string16& text) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+gfx::Range PrefixSelector::GetAutocorrectRange() const {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return gfx::Range();
+}
+
+gfx::Rect PrefixSelector::GetAutocorrectCharacterBounds() const {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return gfx::Rect();
+}
+
+bool PrefixSelector::SetAutocorrectRange(const gfx::Range& range) {
+  // TODO(crbug.com/1091088): Implement SetAutocorrectRange.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+#endif
+
+#if defined(OS_WIN)
+void PrefixSelector::SetActiveCompositionForAccessibility(
+    const gfx::Range& range,
+    const std::u16string& active_composition_text,
+    bool is_composition_committed) {}
+
+void PrefixSelector::GetActiveTextInputControlLayoutBounds(
+    absl::optional<gfx::Rect>* control_bounds,
+    absl::optional<gfx::Rect>* selection_bounds) {}
+#endif
+
+void PrefixSelector::OnTextInput(const std::u16string& text) {
   // Small hack to filter out 'tab' and 'enter' input, as the expectation is
   // that they are control characters and will not affect the currently-active
   // prefix.
@@ -203,7 +237,7 @@ void PrefixSelector::OnTextInput(const base::string16& text) {
   time_of_last_key_ = tick_clock_->NowTicks();
 
   const int start_row = row;
-  const base::string16 lower_text(base::i18n::ToLower(current_text_));
+  const std::u16string lower_text(base::i18n::ToLower(current_text_));
   do {
     if (TextAtRowMatchesText(row, lower_text)) {
       prefix_delegate_->SetSelectedRow(row);
@@ -214,11 +248,11 @@ void PrefixSelector::OnTextInput(const base::string16& text) {
 }
 
 bool PrefixSelector::TextAtRowMatchesText(int row,
-                                          const base::string16& lower_text) {
-  const base::string16 model_text(
+                                          const std::u16string& lower_text) {
+  const std::u16string model_text(
       base::i18n::ToLower(prefix_delegate_->GetTextForRow(row)));
   return (model_text.size() >= lower_text.size()) &&
-      (model_text.compare(0, lower_text.size(), lower_text) == 0);
+         (model_text.compare(0, lower_text.size(), lower_text) == 0);
 }
 
 void PrefixSelector::ClearText() {

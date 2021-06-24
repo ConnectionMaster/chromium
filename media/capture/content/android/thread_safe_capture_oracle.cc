@@ -93,8 +93,8 @@ bool ThreadSafeCaptureOracle::ObserveEventAndDecideCapture(
     // TODO(miu): Clients should request exact padding, instead of this
     // memory-wasting hack to make frames that are compatible with all HW
     // encoders.  http://crbug.com/555911
-    coded_size.SetSize(base::bits::Align(visible_size.width(), 16),
-                       base::bits::Align(visible_size.height(), 16));
+    coded_size.SetSize(base::bits::AlignUp(visible_size.width(), 16),
+                       base::bits::AlignUp(visible_size.height(), 16));
 
     const auto result_code = client_->ReserveOutputBuffer(
         coded_size, params_.requested_format.pixel_format, frame_number,
@@ -133,11 +133,10 @@ bool ThreadSafeCaptureOracle::ObserveEventAndDecideCapture(
 
   std::unique_ptr<VideoCaptureBufferHandle> output_buffer_access =
       output_buffer.handle_provider->GetHandleForInProcessAccess();
-  *storage = VideoFrame::WrapExternalSharedMemory(
+  *storage = VideoFrame::WrapExternalData(
       params_.requested_format.pixel_format, coded_size,
       gfx::Rect(visible_size), visible_size, output_buffer_access->data(),
-      output_buffer_access->mapped_size(), base::SharedMemoryHandle(), 0u,
-      base::TimeDelta());
+      output_buffer_access->mapped_size(), base::TimeDelta());
 
   // Note: Passing the |output_buffer_access| in the callback is a bit of a
   // hack. Really, the access should be owned by the VideoFrame so that access
@@ -166,7 +165,7 @@ bool ThreadSafeCaptureOracle::ObserveEventAndDecideCapture(
   }
 
   *callback = base::BindOnce(&ThreadSafeCaptureOracle::DidCaptureFrame, this,
-                             base::Passed(&capture));
+                             std::move(capture));
 
   return true;
 }
@@ -222,30 +221,25 @@ void ThreadSafeCaptureOracle::DidCaptureFrame(
   if (!should_deliver_frame || !client_)
     return;
 
-  frame->metadata()->SetDouble(VideoFrameMetadata::FRAME_RATE,
-                               params_.requested_format.frame_rate);
-  frame->metadata()->SetTimeTicks(VideoFrameMetadata::CAPTURE_BEGIN_TIME,
-                                  capture->begin_time);
-  frame->metadata()->SetTimeTicks(VideoFrameMetadata::CAPTURE_END_TIME,
-                                  base::TimeTicks::Now());
-  frame->metadata()->SetTimeDelta(VideoFrameMetadata::FRAME_DURATION,
-                                  capture->frame_duration);
-  frame->metadata()->SetTimeTicks(VideoFrameMetadata::REFERENCE_TIME,
-                                  reference_time);
+  frame->metadata().frame_rate = params_.requested_format.frame_rate;
+  frame->metadata().capture_begin_time = capture->begin_time;
+  frame->metadata().capture_end_time = base::TimeTicks::Now();
+  frame->metadata().frame_duration = capture->frame_duration;
+  frame->metadata().reference_time = reference_time;
 
   media::VideoCaptureFormat format(frame->coded_size(),
                                    params_.requested_format.frame_rate,
                                    frame->format());
   client_->OnIncomingCapturedBufferExt(
       std::move(capture->buffer), format, frame->ColorSpace(), reference_time,
-      frame->timestamp(), frame->visible_rect(), *frame->metadata());
+      frame->timestamp(), frame->visible_rect(), frame->metadata());
 }
 
 void ThreadSafeCaptureOracle::OnConsumerReportingUtilization(
     int frame_number,
-    double utilization) {
+    const media::VideoCaptureFeedback& feedback) {
   base::AutoLock guard(lock_);
-  oracle_.RecordConsumerFeedback(frame_number, utilization);
+  oracle_.RecordConsumerFeedback(frame_number, feedback);
 }
 
 }  // namespace media

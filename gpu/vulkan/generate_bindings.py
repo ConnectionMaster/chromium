@@ -1,124 +1,261 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2018 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""code generator for Vulkan function pointers."""
+"""Code generator for Vulkan function pointers."""
 
 import filecmp
 import optparse
 import os
 import platform
 import sys
+from os import path
 from string import Template
 from subprocess import call
 
+vulkan_reg_path = path.join(path.dirname(__file__), "..", "..", "third_party",
+                            "vulkan-deps", "vulkan-headers", "src", "registry")
+sys.path.append(vulkan_reg_path)
+from reg import Registry
+
+registry = Registry()
+registry.loadFile(open(path.join(vulkan_reg_path, "vk.xml")))
+
+VULKAN_REQUIRED_API_VERSION = 'VK_API_VERSION_1_1'
+
 VULKAN_UNASSOCIATED_FUNCTIONS = [
-# vkGetInstanceProcAddr belongs here but is handled specially.
-# vkEnumerateInstanceVersion belongs here but is handled specially.
-{ 'name': 'vkCreateInstance' },
-{ 'name': 'vkEnumerateInstanceExtensionProperties' },
-{ 'name': 'vkEnumerateInstanceLayerProperties' },
+  {
+    'functions': [
+      # vkGetInstanceProcAddr belongs here but is handled specially.
+      'vkEnumerateInstanceVersion',
+      'vkCreateInstance',
+      'vkEnumerateInstanceExtensionProperties',
+      'vkEnumerateInstanceLayerProperties',
+    ]
+  }
 ]
 
 VULKAN_INSTANCE_FUNCTIONS = [
-{ 'name': 'vkDestroyInstance' },
-# vkDestroySurfaceKHR belongs here but is handled specially.
-{ 'name': 'vkEnumeratePhysicalDevices' },
-{ 'name': 'vkGetDeviceProcAddr' },
-]
-
-VULKAN_PHYSICAL_DEVICE_FUNCTIONS = [
-{ 'name': 'vkCreateDevice' },
-{ 'name': 'vkEnumerateDeviceLayerProperties' },
-{ 'name': 'vkGetPhysicalDeviceQueueFamilyProperties' },
-# The following functions belong here but are handled specially:
-# vkGetPhysicalDeviceSurfaceCapabilitiesKHR
-# vkGetPhysicalDeviceSurfaceFormatsKHR
-# vkGetPhysicalDeviceSurfaceSupportKHR
-# vkGetPhysicalDeviceXlibPresentationSupportKHR
+  {
+    'functions': [
+      'vkCreateDevice',
+      'vkDestroyInstance',
+      'vkEnumerateDeviceExtensionProperties',
+      'vkEnumerateDeviceLayerProperties',
+      'vkEnumeratePhysicalDevices',
+      'vkGetDeviceProcAddr',
+      'vkGetPhysicalDeviceFeatures2',
+      'vkGetPhysicalDeviceFormatProperties',
+      'vkGetPhysicalDeviceFormatProperties2',
+      'vkGetPhysicalDeviceImageFormatProperties2',
+      'vkGetPhysicalDeviceMemoryProperties',
+      'vkGetPhysicalDeviceMemoryProperties2',
+      'vkGetPhysicalDeviceProperties',
+      'vkGetPhysicalDeviceProperties2',
+      'vkGetPhysicalDeviceQueueFamilyProperties',
+    ]
+  },
+  {
+    'ifdef': 'DCHECK_IS_ON()',
+    'extension': 'VK_EXT_DEBUG_REPORT_EXTENSION_NAME',
+    'functions': [
+      'vkCreateDebugReportCallbackEXT',
+      'vkDestroyDebugReportCallbackEXT',
+    ]
+  },
+  {
+    'extension': 'VK_KHR_SURFACE_EXTENSION_NAME',
+    'functions': [
+      'vkDestroySurfaceKHR',
+      'vkGetPhysicalDeviceSurfaceCapabilitiesKHR',
+      'vkGetPhysicalDeviceSurfaceFormatsKHR',
+      'vkGetPhysicalDeviceSurfaceSupportKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(USE_VULKAN_XCB)',
+    'extension': 'VK_KHR_XCB_SURFACE_EXTENSION_NAME',
+    'functions': [
+      'vkCreateXcbSurfaceKHR',
+      'vkGetPhysicalDeviceXcbPresentationSupportKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_WIN)',
+    'extension': 'VK_KHR_WIN32_SURFACE_EXTENSION_NAME',
+    'functions': [
+      'vkCreateWin32SurfaceKHR',
+      'vkGetPhysicalDeviceWin32PresentationSupportKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_ANDROID)',
+    'extension': 'VK_KHR_ANDROID_SURFACE_EXTENSION_NAME',
+    'functions': [
+      'vkCreateAndroidSurfaceKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_FUCHSIA)',
+    'extension': 'VK_FUCHSIA_IMAGEPIPE_SURFACE_EXTENSION_NAME',
+    'functions': [
+      'vkCreateImagePipeSurfaceFUCHSIA',
+    ]
+  },
 ]
 
 VULKAN_DEVICE_FUNCTIONS = [
-{ 'name': 'vkAllocateCommandBuffers' },
-{ 'name': 'vkAllocateDescriptorSets' },
-{ 'name': 'vkAllocateMemory' },
-{ 'name': 'vkBindImageMemory' },
-{ 'name': 'vkCreateCommandPool' },
-{ 'name': 'vkCreateDescriptorPool' },
-{ 'name': 'vkCreateDescriptorSetLayout' },
-{ 'name': 'vkCreateFence' },
-{ 'name': 'vkCreateFramebuffer' },
-{ 'name': 'vkCreateImage' },
-{ 'name': 'vkCreateImageView' },
-{ 'name': 'vkCreateRenderPass' },
-{ 'name': 'vkCreateSampler' },
-{ 'name': 'vkCreateSemaphore' },
-{ 'name': 'vkCreateShaderModule' },
-{ 'name': 'vkDestroyCommandPool' },
-{ 'name': 'vkDestroyDescriptorPool' },
-{ 'name': 'vkDestroyDescriptorSetLayout' },
-{ 'name': 'vkDestroyDevice' },
-{ 'name': 'vkDestroyFramebuffer' },
-{ 'name': 'vkDestroyFence' },
-{ 'name': 'vkDestroyImage' },
-{ 'name': 'vkDestroyImageView' },
-{ 'name': 'vkDestroyRenderPass' },
-{ 'name': 'vkDestroySampler' },
-{ 'name': 'vkDestroySemaphore' },
-{ 'name': 'vkDestroyShaderModule' },
-{ 'name': 'vkDeviceWaitIdle' },
-{ 'name': 'vkFreeCommandBuffers' },
-{ 'name': 'vkFreeDescriptorSets' },
-{ 'name': 'vkFreeMemory' },
-{ 'name': 'vkGetDeviceQueue' },
-{ 'name': 'vkGetFenceStatus' },
-{ 'name': 'vkGetImageMemoryRequirements' },
-{ 'name': 'vkResetFences' },
-{ 'name': 'vkUpdateDescriptorSets' },
-{ 'name': 'vkWaitForFences' },
-]
-
-VULKAN_DEVICE_FUNCTIONS_ANDROID = [
-{ 'name': 'vkGetAndroidHardwareBufferPropertiesANDROID' },
-]
-
-VULKAN_DEVICE_FUNCTIONS_LINUX_OR_ANDROID = [
-{ 'name': 'vkGetSemaphoreFdKHR' },
-{ 'name': 'vkImportSemaphoreFdKHR' },
-]
-
-VULKAN_DEVICE_FUNCTIONS_LINUX = [
-{ 'name': 'vkGetMemoryFdKHR'},
-]
-
-VULKAN_DEVICE_FUNCTIONS_FUCHSIA = [
-{ 'name': 'vkImportSemaphoreZirconHandleFUCHSIA' },
-{ 'name': 'vkGetSemaphoreZirconHandleFUCHSIA' },
-]
-
-VULKAN_QUEUE_FUNCTIONS = [
-{ 'name': 'vkQueueSubmit' },
-{ 'name': 'vkQueueWaitIdle' },
-]
-
-VULKAN_COMMAND_BUFFER_FUNCTIONS = [
-{ 'name': 'vkBeginCommandBuffer' },
-{ 'name': 'vkCmdBeginRenderPass' },
-{ 'name': 'vkCmdEndRenderPass' },
-{ 'name': 'vkCmdExecuteCommands' },
-{ 'name': 'vkCmdNextSubpass' },
-{ 'name': 'vkCmdPipelineBarrier' },
-{ 'name': 'vkEndCommandBuffer' },
-{ 'name': 'vkResetCommandBuffer' },
-]
-
-VULKAN_SWAPCHAIN_FUNCTIONS = [
-{ 'name': 'vkAcquireNextImageKHR' },
-{ 'name': 'vkCreateSwapchainKHR' },
-{ 'name': 'vkDestroySwapchainKHR' },
-{ 'name': 'vkGetSwapchainImagesKHR' },
-{ 'name': 'vkQueuePresentKHR' },
+  {
+    'functions': [
+      'vkAllocateCommandBuffers',
+      'vkAllocateDescriptorSets',
+      'vkAllocateMemory',
+      'vkBeginCommandBuffer',
+      'vkBindBufferMemory',
+      'vkBindBufferMemory2',
+      'vkBindImageMemory',
+      'vkBindImageMemory2',
+      'vkCmdBeginRenderPass',
+      'vkCmdCopyBuffer',
+      'vkCmdCopyBufferToImage',
+      'vkCmdEndRenderPass',
+      'vkCmdExecuteCommands',
+      'vkCmdNextSubpass',
+      'vkCmdPipelineBarrier',
+      'vkCreateBuffer',
+      'vkCreateCommandPool',
+      'vkCreateDescriptorPool',
+      'vkCreateDescriptorSetLayout',
+      'vkCreateFence',
+      'vkCreateFramebuffer',
+      'vkCreateGraphicsPipelines',
+      'vkCreateImage',
+      'vkCreateImageView',
+      'vkCreateRenderPass',
+      'vkCreateSampler',
+      'vkCreateSemaphore',
+      'vkCreateShaderModule',
+      'vkDestroyBuffer',
+      'vkDestroyCommandPool',
+      'vkDestroyDescriptorPool',
+      'vkDestroyDescriptorSetLayout',
+      'vkDestroyDevice',
+      'vkDestroyFence',
+      'vkDestroyFramebuffer',
+      'vkDestroyImage',
+      'vkDestroyImageView',
+      'vkDestroyRenderPass',
+      'vkDestroySampler',
+      'vkDestroySemaphore',
+      'vkDestroyShaderModule',
+      'vkDeviceWaitIdle',
+      'vkFlushMappedMemoryRanges',
+      'vkEndCommandBuffer',
+      'vkFreeCommandBuffers',
+      'vkFreeDescriptorSets',
+      'vkFreeMemory',
+      'vkInvalidateMappedMemoryRanges',
+      'vkGetBufferMemoryRequirements',
+      'vkGetBufferMemoryRequirements2',
+      'vkGetDeviceQueue',
+      'vkGetDeviceQueue2',
+      'vkGetFenceStatus',
+      'vkGetImageMemoryRequirements',
+      'vkGetImageMemoryRequirements2',
+      'vkGetImageSubresourceLayout',
+      'vkMapMemory',
+      'vkQueueSubmit',
+      'vkQueueWaitIdle',
+      'vkResetCommandBuffer',
+      'vkResetFences',
+      'vkUnmapMemory',
+      'vkUpdateDescriptorSets',
+      'vkWaitForFences',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_ANDROID)',
+    'extension':
+        'VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME',
+    'functions': [
+      'vkGetAndroidHardwareBufferPropertiesANDROID',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_ANDROID)',
+    'extension': 'VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME',
+    'functions': [
+      'vkGetSemaphoreFdKHR',
+      'vkImportSemaphoreFdKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_WIN)',
+    'extension': 'VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME',
+    'functions': [
+      'vkGetSemaphoreWin32HandleKHR',
+      'vkImportSemaphoreWin32HandleKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_ANDROID)',
+    'extension': 'VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME',
+    'functions': [
+      'vkGetMemoryFdKHR',
+      'vkGetMemoryFdPropertiesKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_WIN)',
+    'extension': 'VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME',
+    'functions': [
+      'vkGetMemoryWin32HandleKHR',
+      'vkGetMemoryWin32HandlePropertiesKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_FUCHSIA)',
+    'extension': 'VK_FUCHSIA_EXTERNAL_SEMAPHORE_EXTENSION_NAME',
+    'functions': [
+      'vkImportSemaphoreZirconHandleFUCHSIA',
+      'vkGetSemaphoreZirconHandleFUCHSIA',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_FUCHSIA)',
+    'extension': 'VK_FUCHSIA_EXTERNAL_MEMORY_EXTENSION_NAME',
+    'functions': [
+      'vkGetMemoryZirconHandleFUCHSIA',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_FUCHSIA)',
+    'extension': 'VK_FUCHSIA_BUFFER_COLLECTION_EXTENSION_NAME',
+    'functions': [
+      'vkCreateBufferCollectionFUCHSIA',
+      'vkSetBufferCollectionConstraintsFUCHSIA',
+      'vkGetBufferCollectionPropertiesFUCHSIA',
+      'vkDestroyBufferCollectionFUCHSIA',
+    ]
+  },
+  {
+    'extension': 'VK_KHR_SWAPCHAIN_EXTENSION_NAME',
+    'functions': [
+      'vkAcquireNextImageKHR',
+      'vkCreateSwapchainKHR',
+      'vkDestroySwapchainKHR',
+      'vkGetSwapchainImagesKHR',
+      'vkQueuePresentKHR',
+    ]
+  },
+  {
+    'ifdef': 'defined(OS_LINUX) || defined(OS_CHROMEOS)',
+    'extension': 'VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME',
+    'functions': [
+      'vkGetImageDrmFormatModifierPropertiesEXT',
+    ]
+  }
 ]
 
 SELF_LOCATION = os.path.dirname(os.path.abspath(__file__))
@@ -136,27 +273,99 @@ LICENSE_AND_HEADER = """\
 
 """
 
-def WriteFunctionDeclarations(file, functions):
-  template = Template('  PFN_${name} ${name}Fn = nullptr;\n')
-  for func in functions:
-    file.write(template.substitute(func))
+def WriteFunctionsInternal(out_file, functions, gen_content,
+                           check_extension=False):
+  for group in functions:
+    if 'ifdef' in group:
+      out_file.write('#if %s\n' % group['ifdef'])
 
-def WriteMacros(file, functions):
-  template = Template(
-      '#define $name gpu::GetVulkanFunctionPointers()->${name}Fn\n')
-  for func in functions:
-    file.write(template.substitute(func))
+    extension = group['extension'] if 'extension' in group else ''
+    min_api_version = \
+        group['min_api_version'] if 'min_api_version' in group else ''
 
-def GenerateHeaderFile(file, unassociated_functions, instance_functions,
-                       physical_device_functions, device_functions,
-                       device_functions_android,
-                       device_functions_linux_or_android,
-                       device_functions_linux, device_functions_fuchsia,
-                       queue_functions, command_buffer_functions,
-                       swapchain_functions):
+    if not check_extension:
+      for func in group['functions']:
+        out_file.write(gen_content(func))
+    elif not extension and not min_api_version:
+      for func in group['functions']:
+        out_file.write(gen_content(func))
+    else:
+      if min_api_version:
+        out_file.write('  if (api_version >= %s) {\n' % min_api_version)
+
+        for func in group['functions']:
+          out_file.write(
+              gen_content(func))
+
+        out_file.write('}\n')
+        if extension:
+          out_file.write('else ')
+
+      if extension:
+        out_file.write('if (gfx::HasExtension(enabled_extensions, %s)) {\n' %
+                   extension)
+
+        extension_suffix = \
+            group['extension_suffix'] if 'extension_suffix' in group \
+            else ''
+        for func in group['functions']:
+          out_file.write(gen_content(func, extension_suffix))
+
+        out_file.write('}\n')
+    if 'ifdef' in group:
+      out_file.write('#endif  // %s\n' % group['ifdef'])
+    out_file.write('\n')
+
+def WriteFunctions(out_file, functions, template, check_extension=False):
+  def gen_content(func, suffix=''):
+    return template.substitute({'name': func,'extension_suffix': suffix})
+  WriteFunctionsInternal(out_file, functions, gen_content, check_extension)
+
+def WriteFunctionDeclarations(out_file, functions):
+  template = Template('  VulkanFunction<PFN_${name}> ${name};\n')
+  WriteFunctions(out_file, functions, template)
+
+def WriteMacros(out_file, functions):
+  def gen_content(func, suffix=''):
+    if func not in registry.cmddict:
+      # Some fuchsia functions are not in the vulkan registry, so use macro for
+      # them.
+      template = Template(
+          '#define $name gpu::GetVulkanFunctionPointers()->${name}\n')
+      return  template.substitute({'name': func, 'extension_suffix' : suffix})
+    none_str = lambda s: s if s else ''
+    cmd = registry.cmddict[func].elem
+    proto = cmd.find('proto')
+    params = cmd.findall('param')
+    pdecl = none_str(proto.text)
+    for elem in proto:
+      text = none_str(elem.text)
+      tail = none_str(elem.tail)
+      pdecl += text + tail
+    n = len(params)
+
+    callstat = 'return gpu::GetVulkanFunctionPointers()->%s(' % func
+    paramdecl = '('
+    if n > 0:
+      paramnames = (''.join(t for t in p.itertext())
+                    for p in params)
+      paramdecl += ', '.join(paramnames)
+      paramnames = (''.join(p[1].text)
+                    for p in params)
+      callstat += ', '.join(paramnames)
+    else:
+        paramdecl += 'void'
+    paramdecl += ')'
+    callstat += ')'
+    pdecl += paramdecl
+    return 'ALWAYS_INLINE %s { %s; }\n' % (pdecl, callstat)
+
+  WriteFunctionsInternal(out_file, functions, gen_content)
+
+def GenerateHeaderFile(out_file):
   """Generates gpu/vulkan/vulkan_function_pointers.h"""
 
-  file.write(LICENSE_AND_HEADER +
+  out_file.write(LICENSE_AND_HEADER +
 """
 
 #ifndef GPU_VULKAN_VULKAN_FUNCTION_POINTERS_H_
@@ -164,155 +373,113 @@ def GenerateHeaderFile(file, unassociated_functions, instance_functions,
 
 #include <vulkan/vulkan.h>
 
+#include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/native_library.h"
 #include "build/build_config.h"
-#include "gpu/vulkan/vulkan_export.h"
+#include "ui/gfx/extension_set.h"
 
 #if defined(OS_ANDROID)
 #include <vulkan/vulkan_android.h>
 #endif
 
 #if defined(OS_FUCHSIA)
+#include <zircon/types.h>
+// <vulkan/vulkan_fuchsia.h> must be included after <zircon/types.h>
+#include <vulkan/vulkan_fuchsia.h>
+
 #include "gpu/vulkan/fuchsia/vulkan_fuchsia_ext.h"
 #endif
 
-#if defined(USE_VULKAN_XLIB)
-#include <X11/Xlib.h>
-#include <vulkan/vulkan_xlib.h>
+#if defined(USE_VULKAN_XCB)
+#include <xcb/xcb.h>
+// <vulkan/vulkan_xcb.h> must be included after <xcb/xcb.h>
+#include <vulkan/vulkan_xcb.h>
+#endif
+
+#if defined(OS_WIN)
+#include <vulkan/vulkan_win32.h>
 #endif
 
 namespace gpu {
 
 struct VulkanFunctionPointers;
 
-VULKAN_EXPORT VulkanFunctionPointers* GetVulkanFunctionPointers();
+constexpr uint32_t kVulkanRequiredApiVersion = %s;
 
-struct VulkanFunctionPointers {
+COMPONENT_EXPORT(VULKAN) VulkanFunctionPointers* GetVulkanFunctionPointers();
+
+struct COMPONENT_EXPORT(VULKAN) VulkanFunctionPointers {
   VulkanFunctionPointers();
   ~VulkanFunctionPointers();
 
-  VULKAN_EXPORT bool BindUnassociatedFunctionPointers();
+  bool BindUnassociatedFunctionPointers();
 
   // These functions assume that vkGetInstanceProcAddr has been populated.
-  VULKAN_EXPORT bool BindInstanceFunctionPointers(VkInstance vk_instance);
-  VULKAN_EXPORT bool BindPhysicalDeviceFunctionPointers(VkInstance vk_instance);
+  bool BindInstanceFunctionPointers(
+      VkInstance vk_instance,
+      uint32_t api_version,
+      const gfx::ExtensionSet& enabled_extensions);
 
   // These functions assume that vkGetDeviceProcAddr has been populated.
-  VULKAN_EXPORT bool BindDeviceFunctionPointers(VkDevice vk_device);
-  bool BindSwapchainFunctionPointers(VkDevice vk_device);
+  bool BindDeviceFunctionPointers(
+      VkDevice vk_device,
+      uint32_t api_version,
+      const gfx::ExtensionSet& enabled_extensions);
 
-  base::NativeLibrary vulkan_loader_library_ = nullptr;
+  base::NativeLibrary vulkan_loader_library = nullptr;
+
+  template<typename T>
+  class VulkanFunction;
+  template <typename R, typename ...Args>
+  class VulkanFunction <R(VKAPI_PTR*)(Args...)> {
+   public:
+    using Fn = R(VKAPI_PTR*)(Args...);
+
+    explicit operator bool() const {
+      return !!fn_;
+    }
+
+    NO_SANITIZE("cfi-icall")
+    R operator()(Args... args) const {
+      return fn_(args...);
+    }
+
+    Fn get() const { return fn_; }
+
+   private:
+    friend VulkanFunctionPointers;
+
+    Fn operator=(Fn fn) {
+      fn_ = fn;
+      return fn_;
+    }
+
+    Fn fn_ = nullptr;
+  };
 
   // Unassociated functions
-  PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersionFn = nullptr;
-  PFN_vkGetInstanceProcAddr vkGetInstanceProcAddrFn = nullptr;
-""")
+  VulkanFunction<PFN_vkGetInstanceProcAddr> vkGetInstanceProcAddr;
 
-  WriteFunctionDeclarations(file, unassociated_functions)
+""" % VULKAN_REQUIRED_API_VERSION)
 
-  file.write("""\
+  WriteFunctionDeclarations(out_file, VULKAN_UNASSOCIATED_FUNCTIONS)
+
+  out_file.write("""\
 
   // Instance functions
 """)
 
-  WriteFunctionDeclarations(file, instance_functions)
+  WriteFunctionDeclarations(out_file, VULKAN_INSTANCE_FUNCTIONS);
 
-  file.write("""\
-  PFN_vkDestroySurfaceKHR vkDestroySurfaceKHRFn = nullptr;
-#if defined(USE_VULKAN_XLIB)
-  PFN_vkCreateXlibSurfaceKHR vkCreateXlibSurfaceKHRFn = nullptr;
-#endif
-  // Physical Device functions
-""")
+  out_file.write("""\
 
-  WriteFunctionDeclarations(file, physical_device_functions)
-
-  file.write("""\
-  PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
-      vkGetPhysicalDeviceSurfaceCapabilitiesKHRFn = nullptr;
-  PFN_vkGetPhysicalDeviceSurfaceFormatsKHR
-      vkGetPhysicalDeviceSurfaceFormatsKHRFn = nullptr;
-  PFN_vkGetPhysicalDeviceSurfaceSupportKHR
-      vkGetPhysicalDeviceSurfaceSupportKHRFn = nullptr;
-#if defined(USE_VULKAN_XLIB)
-  PFN_vkGetPhysicalDeviceXlibPresentationSupportKHR
-      vkGetPhysicalDeviceXlibPresentationSupportKHRFn = nullptr;
-#endif
   // Device functions
 """)
 
-  WriteFunctionDeclarations(file, device_functions)
+  WriteFunctionDeclarations(out_file, VULKAN_DEVICE_FUNCTIONS)
 
-  file.write("""\
-
-  // Android only device functions.
-#if defined(OS_ANDROID)
-""")
-
-  WriteFunctionDeclarations(file, device_functions_android)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-  // Device functions shared between Linux and Android.
-#if defined(OS_LINUX) || defined(OS_ANDROID)
-""")
-
-  WriteFunctionDeclarations(file, device_functions_linux_or_android)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-  // Linux-only device functions.
-#if defined(OS_LINUX)
-""")
-
-  WriteFunctionDeclarations(file, device_functions_linux)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-  // Fuchsia only device functions.
-#if defined(OS_FUCHSIA)
-""")
-
-  WriteFunctionDeclarations(file, device_functions_fuchsia)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-  // Queue functions
-""")
-
-  WriteFunctionDeclarations(file, queue_functions)
-
-  file.write("""\
-
-  // Command Buffer functions
-""")
-
-  WriteFunctionDeclarations(file, command_buffer_functions)
-
-  file.write("""\
-
-  // Swapchain functions
-""")
-
-  WriteFunctionDeclarations(file, swapchain_functions)
-
-  file.write("""\
+  out_file.write("""\
 };
 
 }  // namespace gpu
@@ -320,154 +487,68 @@ struct VulkanFunctionPointers {
 // Unassociated functions
 """)
 
-  WriteMacros(file, [ { 'name': 'vkGetInstanceProcAddr' } ])
-  WriteMacros(file, unassociated_functions)
+  WriteMacros(out_file, [{'functions': [ 'vkGetInstanceProcAddr']}])
+  WriteMacros(out_file, VULKAN_UNASSOCIATED_FUNCTIONS)
 
-  file.write("""\
+  out_file.write("""\
 
 // Instance functions
 """)
 
-  WriteMacros(file, instance_functions)
-  WriteMacros(file, [ { 'name': 'vkDestroySurfaceKHR' } ])
+  WriteMacros(out_file, VULKAN_INSTANCE_FUNCTIONS);
 
-  file.write("#if defined(USE_VULKAN_XLIB)\n")
-  WriteMacros(file, [ { 'name': 'vkCreateXlibSurfaceKHR' } ])
-  file.write("#endif\n")
-
-  file.write("""\
-
-// Physical Device functions
-""")
-
-  WriteMacros(file, physical_device_functions)
-  WriteMacros(file, [
-      { 'name': 'vkGetPhysicalDeviceSurfaceCapabilitiesKHR' },
-      { 'name': 'vkGetPhysicalDeviceSurfaceFormatsKHR' },
-      { 'name': 'vkGetPhysicalDeviceSurfaceSupportKHR' },
-  ])
-  file.write("#if defined(USE_VULKAN_XLIB)\n")
-  WriteMacros(file, [
-      { 'name': 'vkGetPhysicalDeviceXlibPresentationSupportKHR' },
-  ])
-  file.write("#endif\n")
-
-
-  file.write("""\
+  out_file.write("""\
 
 // Device functions
 """)
 
-  WriteMacros(file, device_functions)
+  WriteMacros(out_file, VULKAN_DEVICE_FUNCTIONS)
 
-  file.write("""\
+  out_file.write("""\
 
-#if defined(OS_ANDROID)
-""")
+#endif  // GPU_VULKAN_VULKAN_FUNCTION_POINTERS_H_""")
 
-  WriteMacros(file, device_functions_android)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-#if defined(OS_LINUX) || defined(OS_ANDROID)
-""")
-
-  WriteMacros(file, device_functions_linux_or_android)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-#if defined(OS_LINUX)
-""")
-
-  WriteMacros(file, device_functions_linux)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-#if defined(OS_FUCHSIA)
-""")
-
-  WriteMacros(file, device_functions_fuchsia)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-// Queue functions
-""")
-
-  WriteMacros(file, queue_functions)
-
-  file.write("""\
-
-// Command buffer functions
-""")
-
-  WriteMacros(file, command_buffer_functions)
-
-  file.write("""\
-
-// Swapchain functions
-""")
-
-  WriteMacros(file, swapchain_functions)
-
-  file.write("""\
-
-#endif  // GPU_VULKAN_VULKAN_FUNCTION_POINTERS_H_
-""")
-
-def WriteFunctionPointerInitialization(file, proc_addr_function, parent,
+def WriteFunctionPointerInitialization(out_file, proc_addr_function, parent,
                                        functions):
-  template = Template("""  ${name}Fn = reinterpret_cast<PFN_${name}>(
-    $get_proc_addr($parent, "$name"));
-  if (!${name}Fn)
+  template = Template("""  ${name} = reinterpret_cast<PFN_${name}>(
+    ${get_proc_addr}(${parent}, "${name}${extension_suffix}"));
+  if (!${name}) {
+    DLOG(WARNING) << "Failed to bind vulkan entrypoint: "
+                  << "${name}${extension_suffix}";
     return false;
+  }
 
 """)
-  for func in functions:
-    file.write(template.substitute(name=func['name'], get_proc_addr =
-                                   proc_addr_function, parent=parent))
 
-def WriteUnassociatedFunctionPointerInitialization(file, functions):
-  WriteFunctionPointerInitialization(file, 'vkGetInstanceProcAddrFn', 'nullptr',
-                                     functions)
+  # Substitute all values in the template, except name, which is processed in
+  # WriteFunctions().
+  template = Template(template.substitute({
+        'name': '${name}', 'extension_suffix': '${extension_suffix}',
+        'get_proc_addr': proc_addr_function, 'parent': parent}))
 
-def WriteInstanceFunctionPointerInitialization(file, functions):
-  WriteFunctionPointerInitialization(file, 'vkGetInstanceProcAddrFn',
+  WriteFunctions(out_file, functions, template, check_extension=True)
+
+def WriteUnassociatedFunctionPointerInitialization(out_file, functions):
+  WriteFunctionPointerInitialization(out_file, 'vkGetInstanceProcAddr',
+                                     'nullptr', functions)
+
+def WriteInstanceFunctionPointerInitialization(out_file, functions):
+  WriteFunctionPointerInitialization(out_file, 'vkGetInstanceProcAddr',
                                      'vk_instance', functions)
 
-def WriteDeviceFunctionPointerInitialization(file, functions):
-  WriteFunctionPointerInitialization(file, 'vkGetDeviceProcAddrFn', 'vk_device',
-                                     functions)
+def WriteDeviceFunctionPointerInitialization(out_file, functions):
+  WriteFunctionPointerInitialization(out_file, 'vkGetDeviceProcAddr',
+                                     'vk_device', functions)
 
-def GenerateSourceFile(file, unassociated_functions, instance_functions,
-                       physical_device_functions, device_functions,
-                       device_functions_android,
-                       device_functions_linux_or_android,
-                       device_functions_linux, device_functions_fuchsia,
-                       queue_functions, command_buffer_functions,
-                       swapchain_functions):
+def GenerateSourceFile(out_file):
   """Generates gpu/vulkan/vulkan_function_pointers.cc"""
 
-  file.write(LICENSE_AND_HEADER +
+  out_file.write(LICENSE_AND_HEADER +
 """
 
 #include "gpu/vulkan/vulkan_function_pointers.h"
 
+#include "base/logging.h"
 #include "base/no_destructor.h"
 
 namespace gpu {
@@ -484,128 +565,46 @@ bool VulkanFunctionPointers::BindUnassociatedFunctionPointers() {
   // vkGetInstanceProcAddr must be handled specially since it gets its function
   // pointer through base::GetFunctionPOinterFromNativeLibrary(). Other Vulkan
   // functions don't do this.
-  vkGetInstanceProcAddrFn = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-      base::GetFunctionPointerFromNativeLibrary(vulkan_loader_library_,
+  vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+      base::GetFunctionPointerFromNativeLibrary(vulkan_loader_library,
                                                 "vkGetInstanceProcAddr"));
-  if (!vkGetInstanceProcAddrFn)
+  if (!vkGetInstanceProcAddr)
     return false;
-
-  vkEnumerateInstanceVersionFn =
-      reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
-          vkGetInstanceProcAddrFn(nullptr, "vkEnumerateInstanceVersion"));
-  // vkEnumerateInstanceVersion didn't exist in Vulkan 1.0, so we should
-  // proceed even if we fail to get vkEnumerateInstanceVersion pointer.
 """)
 
-  WriteUnassociatedFunctionPointerInitialization(file, unassociated_functions)
+  WriteUnassociatedFunctionPointerInitialization(
+      out_file, VULKAN_UNASSOCIATED_FUNCTIONS)
 
-  file.write("""\
+  out_file.write("""\
 
   return true;
 }
 
 bool VulkanFunctionPointers::BindInstanceFunctionPointers(
-    VkInstance vk_instance) {
+    VkInstance vk_instance,
+    uint32_t api_version,
+    const gfx::ExtensionSet& enabled_extensions) {
+  DCHECK_GE(api_version, kVulkanRequiredApiVersion);
 """)
 
-  WriteInstanceFunctionPointerInitialization(file, instance_functions)
+  WriteInstanceFunctionPointerInitialization(
+      out_file, VULKAN_INSTANCE_FUNCTIONS);
 
-  file.write("""\
+  out_file.write("""\
 
   return true;
 }
 
-bool VulkanFunctionPointers::BindPhysicalDeviceFunctionPointers(
-    VkInstance vk_instance) {
-""")
-
-  WriteInstanceFunctionPointerInitialization(file, physical_device_functions)
-
-  file.write("""\
-
-  return true;
-}
-
-bool VulkanFunctionPointers::BindDeviceFunctionPointers(VkDevice vk_device) {
+bool VulkanFunctionPointers::BindDeviceFunctionPointers(
+    VkDevice vk_device,
+    uint32_t api_version,
+    const gfx::ExtensionSet& enabled_extensions) {
+  DCHECK_GE(api_version, kVulkanRequiredApiVersion);
   // Device functions
 """)
-  WriteDeviceFunctionPointerInitialization(file, device_functions)
+  WriteDeviceFunctionPointerInitialization(out_file, VULKAN_DEVICE_FUNCTIONS)
 
-  file.write("""\
-
-#if defined(OS_ANDROID)
-
-""")
-
-  WriteDeviceFunctionPointerInitialization(file, device_functions_android)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-#if defined(OS_LINUX) || defined(OS_ANDROID)
-
-""")
-
-  WriteDeviceFunctionPointerInitialization(file,
-                                           device_functions_linux_or_android)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-#if defined(OS_LINUX)
-
-""")
-
-  WriteDeviceFunctionPointerInitialization(file,
-                                           device_functions_linux)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-#if defined(OS_FUCHSIA)
-
-""")
-
-  WriteDeviceFunctionPointerInitialization(file, device_functions_fuchsia)
-
-  file.write("""\
-#endif
-""")
-
-  file.write("""\
-
-  // Queue functions
-""")
-  WriteDeviceFunctionPointerInitialization(file, queue_functions)
-
-  file.write("""\
-
-  // Command Buffer functions
-""")
-  WriteDeviceFunctionPointerInitialization(file, command_buffer_functions)
-
-  file.write("""\
-
-
-  return true;
-}
-
-bool VulkanFunctionPointers::BindSwapchainFunctionPointers(VkDevice vk_device) {
-""")
-
-  WriteDeviceFunctionPointerInitialization(file, swapchain_functions)
-
-  file.write("""\
-
+  out_file.write("""\
 
   return true;
 }
@@ -642,31 +641,15 @@ def main(argv):
 
   header_file_name = 'vulkan_function_pointers.h'
   header_file = open(
-      os.path.join(output_dir, header_file_name), 'wb')
-  GenerateHeaderFile(header_file, VULKAN_UNASSOCIATED_FUNCTIONS,
-                     VULKAN_INSTANCE_FUNCTIONS,
-                     VULKAN_PHYSICAL_DEVICE_FUNCTIONS, VULKAN_DEVICE_FUNCTIONS,
-                     VULKAN_DEVICE_FUNCTIONS_ANDROID,
-                     VULKAN_DEVICE_FUNCTIONS_LINUX_OR_ANDROID,
-                     VULKAN_DEVICE_FUNCTIONS_LINUX,
-                     VULKAN_DEVICE_FUNCTIONS_FUCHSIA,
-                     VULKAN_QUEUE_FUNCTIONS, VULKAN_COMMAND_BUFFER_FUNCTIONS,
-                     VULKAN_SWAPCHAIN_FUNCTIONS)
+      os.path.join(output_dir, header_file_name), 'w')
+  GenerateHeaderFile(header_file)
   header_file.close()
   ClangFormat(header_file.name)
 
   source_file_name = 'vulkan_function_pointers.cc'
   source_file = open(
-      os.path.join(output_dir, source_file_name), 'wb')
-  GenerateSourceFile(source_file, VULKAN_UNASSOCIATED_FUNCTIONS,
-                     VULKAN_INSTANCE_FUNCTIONS,
-                     VULKAN_PHYSICAL_DEVICE_FUNCTIONS, VULKAN_DEVICE_FUNCTIONS,
-                     VULKAN_DEVICE_FUNCTIONS_ANDROID,
-                     VULKAN_DEVICE_FUNCTIONS_LINUX_OR_ANDROID,
-                     VULKAN_DEVICE_FUNCTIONS_LINUX,
-                     VULKAN_DEVICE_FUNCTIONS_FUCHSIA,
-                     VULKAN_QUEUE_FUNCTIONS, VULKAN_COMMAND_BUFFER_FUNCTIONS,
-                     VULKAN_SWAPCHAIN_FUNCTIONS)
+      os.path.join(output_dir, source_file_name), 'w')
+  GenerateSourceFile(source_file)
   source_file.close()
   ClangFormat(source_file.name)
 
@@ -678,10 +661,10 @@ def main(argv):
         check_failed_filenames.append(filename)
 
   if len(check_failed_filenames) > 0:
-    print 'Please run gpu/vulkan/generate_bindings.py'
-    print 'Failed check on generated files:'
+    print('Please run gpu/vulkan/generate_bindings.py')
+    print('Failed check on generated files:')
     for filename in check_failed_filenames:
-      print filename
+      print(filename)
     return 1
 
   return 0

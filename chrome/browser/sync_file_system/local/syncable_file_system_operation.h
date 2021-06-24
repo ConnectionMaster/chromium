@@ -14,8 +14,8 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "storage/browser/fileapi/file_system_operation.h"
-#include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/file_system/file_system_operation.h"
+#include "storage/browser/file_system/file_system_url.h"
 
 namespace storage {
 class FileSystemContext;
@@ -43,11 +43,13 @@ class SyncableFileSystemOperation : public storage::FileSystemOperation {
             const storage::FileSystemURL& dest_url,
             CopyOrMoveOption option,
             ErrorBehavior error_behavior,
-            const CopyProgressCallback& progress_callback,
+            const CopyOrMoveProgressCallback& progress_callback,
             StatusCallback callback) override;
   void Move(const storage::FileSystemURL& src_url,
             const storage::FileSystemURL& dest_url,
             CopyOrMoveOption option,
+            ErrorBehavior error_behavior,
+            const CopyOrMoveProgressCallback& progress_callback,
             StatusCallback callback) override;
   void DirectoryExists(const storage::FileSystemURL& url,
                        StatusCallback callback) override;
@@ -129,7 +131,7 @@ class SyncableFileSystemOperation : public storage::FileSystemOperation {
 
   StatusCallback completion_callback_;
 
-  base::WeakPtrFactory<SyncableFileSystemOperation> weak_factory_;
+  base::WeakPtrFactory<SyncableFileSystemOperation> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SyncableFileSystemOperation);
 };

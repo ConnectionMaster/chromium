@@ -6,15 +6,18 @@
 #define MEDIA_GPU_TEST_VIDEO_FRAME_HELPERS_H_
 
 #include "base/memory/scoped_refptr.h"
+#include "media/base/video_frame.h"
 #include "media/base/video_frame_layout.h"
 #include "media/base/video_types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/size.h"
 
+namespace gpu {
+class GpuMemoryBufferFactory;
+}
+
 namespace media {
-
-class VideoFrame;
-
 namespace test {
 
 class Image;
@@ -29,7 +32,8 @@ class VideoFrameProcessor {
   // calculate the frame's checksum, write the frame to file,... The
   // |frame_index| is the index of the video frame in display order. The caller
   // should not modify the video frame while a reference is being held by the
-  // VideoFrameProcessor.
+  // VideoFrameProcessor. This function should always be called on the same
+  // thread.
   virtual void ProcessVideoFrame(scoped_refptr<const VideoFrame> video_frame,
                                  size_t frame_index) = 0;
 
@@ -50,28 +54,58 @@ bool ConvertVideoFrame(const VideoFrame* src_frame, VideoFrame* dst_frame);
 scoped_refptr<VideoFrame> ConvertVideoFrame(const VideoFrame* src_frame,
                                             VideoPixelFormat dst_pixel_format);
 
-// Copy |src_frame| into a new VideoFrame with |dst_layout|. This doesn't
-// convert pixel format. That is, |dst_layout|'s format must be the same as
-// |src_frame|'s format. This function supports all formats. The created
-// VideoFrame's content is the same as |src_frame|. The created VideoFrame owns
-// the buffer. Returns nullptr on failure.
-scoped_refptr<VideoFrame> CloneVideoFrameWithLayout(
+// Scale and copy the |src_frame| to a new video frame with the specified scale.
+// Supported input format is NV12.
+scoped_refptr<VideoFrame> ScaleVideoFrame(const VideoFrame* src_frame,
+                                          const gfx::Size& dst_resolution);
+
+// Copy |src_frame| into a new VideoFrame.
+// If |dst_storage_type| is STORAGE_DMABUFS, this function creates DMABUF-backed
+// VideoFrame with |dst_layout|. If |dst_storage_type| is STORAGE_OWNED_MEMORY,
+// this function creates memory-backed VideoFrame with |dst_layout|.
+// |dst_buffer_usage| and |gpu_memory_buffer_factory| must be specified if
+// |dst_storage_type| is STORAGE_DMABUFS or STORAGE_GPU_MEMORY_BUFFER, and in
+// that case the |gpu_memory_buffer_factory| will be used for the allocation to
+// create a graphic buffer with the requested usage.
+// The created VideoFrame's content is the same as |src_frame|. The created
+// VideoFrame owns the buffer. Returns nullptr on failure.
+scoped_refptr<VideoFrame> CloneVideoFrame(
+    gpu::GpuMemoryBufferFactory* gpu_memory_buffer_factory,
     const VideoFrame* const src_frame,
-    const VideoFrameLayout& dst_layout);
+    const VideoFrameLayout& dst_layout,
+    VideoFrame::StorageType dst_storage_type = VideoFrame::STORAGE_OWNED_MEMORY,
+    absl::optional<gfx::BufferUsage> dst_buffer_usage = absl::nullopt);
+
+// Create Dmabuf-backed VideoFrame from |src_frame|. The created VideoFrame
+// doesn't depend on |src_frame|'s lifetime. |src_frame| should be a
+// GpuMemoryBuffer-backed VideoFrame.
+scoped_refptr<VideoFrame> CreateDmabufVideoFrame(
+    const VideoFrame* const src_frame);
+
+// Create GpuMemoryBuffer-based VideoFrame from |frame|. The created VideoFrame
+// doesn't depend on |frame|'s lifetime.
+// |frame| should be a DMABUF-backed VideoFrame. |buffer_usage| is a
+// GpuMemoryBuffer's buffer usage. |frame| must be created following the
+// |buffer_usage|.
+// This function works on ChromeOS only.
+scoped_refptr<VideoFrame> CreateGpuMemoryBufferVideoFrame(
+    gpu::GpuMemoryBufferFactory* gpu_memory_buffer_factory,
+    const VideoFrame* const frame,
+    gfx::BufferUsage buffer_usage);
 
 // Get VideoFrame that contains Load()ed data. The returned VideoFrame doesn't
 // own the data and thus must not be changed.
 scoped_refptr<const VideoFrame> CreateVideoFrameFromImage(const Image& image);
 
-// Create a video frame layout for the specified |pixel_format| and
-// |coded_size|. If |single_buffer| is true, the created VideoFrameLayout
-// represents all the planes are stored in the same buffer. Otherwise, it
-// represents each plane is stored in separated planes.
-base::Optional<VideoFrameLayout> CreateVideoFrameLayout(
+// Create a video frame layout for the specified |pixel_format|, |dimension|
+// and |alignment|. |plane_rows| is optional. If it is not nullptr, this fills
+// the number of rows of each plane into it. The created VideoFrameLayout
+// represents all the planes stored in a single physical buffer.
+absl::optional<VideoFrameLayout> CreateVideoFrameLayout(
     VideoPixelFormat pixel_format,
-    const gfx::Size& size,
-    bool single_buffer);
-
+    const gfx::Size& dimension,
+    const uint32_t alignment = VideoFrame::kFrameAddressAlignment,
+    std::vector<size_t>* plane_rows = nullptr);
 }  // namespace test
 }  // namespace media
 

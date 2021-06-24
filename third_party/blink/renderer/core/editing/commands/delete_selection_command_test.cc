@@ -6,6 +6,7 @@
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/position.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
@@ -15,6 +16,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 #include <memory>
 
@@ -45,16 +47,17 @@ TEST_F(DeleteSelectionCommandTest, deleteListFromTable) {
       SetSelectionOptions());
 
   DeleteSelectionCommand* command =
-      DeleteSelectionCommand::Create(GetDocument(),
-                                     DeleteSelectionOptions::Builder()
-                                         .SetMergeBlocksAfterDelete(true)
-                                         .SetSanitizeMarkup(true)
-                                         .Build(),
-                                     InputEvent::InputType::kDeleteByCut);
+      MakeGarbageCollected<DeleteSelectionCommand>(
+          GetDocument(),
+          DeleteSelectionOptions::Builder()
+              .SetMergeBlocksAfterDelete(true)
+              .SetSanitizeMarkup(true)
+              .Build(),
+          InputEvent::InputType::kDeleteByCut);
 
   EXPECT_TRUE(command->Apply()) << "the delete command should have succeeded";
   EXPECT_EQ("<div contenteditable=\"true\"><br></div>",
-            GetDocument().body()->InnerHTMLAsString());
+            GetDocument().body()->innerHTML());
   EXPECT_TRUE(frame->Selection().GetSelectionInDOMTree().IsCaret());
   EXPECT_EQ(Position(div, 0), frame->Selection()
                                   .ComputeVisibleSelectionInDOMTree()
@@ -68,13 +71,37 @@ TEST_F(DeleteSelectionCommandTest, ForwardDeleteWithFirstLetter) {
       SetSelectionTextToBody("<p contenteditable>a^b|c</p>"),
       SetSelectionOptions());
 
-  DeleteSelectionCommand& command = *DeleteSelectionCommand::Create(
-      GetDocument(), DeleteSelectionOptions::Builder()
-                         .SetMergeBlocksAfterDelete(true)
-                         .SetSanitizeMarkup(true)
-                         .Build());
+  DeleteSelectionCommand& command =
+      *MakeGarbageCollected<DeleteSelectionCommand>(
+          GetDocument(), DeleteSelectionOptions::Builder()
+                             .SetMergeBlocksAfterDelete(true)
+                             .SetSanitizeMarkup(true)
+                             .Build());
   EXPECT_TRUE(command.Apply()) << "the delete command should have succeeded";
   EXPECT_EQ("<p contenteditable>a|c</p>", GetSelectionTextFromBody());
+}
+
+// This is a regression test for https://crbug.com/1172439
+TEST_F(DeleteSelectionCommandTest, DeleteWithEditabilityChange) {
+  Selection().SetSelection(
+      SetSelectionTextToBody(
+          "^<style>body{-webkit-user-modify:read-write}</style>x|"),
+      SetSelectionOptions());
+  EXPECT_TRUE(HasEditableStyle(*GetDocument().body()));
+
+  DeleteSelectionCommand& command =
+      *MakeGarbageCollected<DeleteSelectionCommand>(
+          GetDocument(), DeleteSelectionOptions::Builder()
+                             .SetMergeBlocksAfterDelete(true)
+                             .SetSanitizeMarkup(true)
+                             .Build());
+  // Should not crash.
+  EXPECT_TRUE(command.Apply());
+
+  // The command removes the <style>, so the <body> stops being editable,
+  // and then "x" is not removed.
+  EXPECT_FALSE(HasEditableStyle(*GetDocument().body()));
+  EXPECT_EQ("|x", GetSelectionTextFromBody());
 }
 
 }  // namespace blink

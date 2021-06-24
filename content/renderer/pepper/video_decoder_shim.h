@@ -23,7 +23,7 @@ namespace base {
 class SingleThreadTaskRunner;
 }
 
-namespace ws {
+namespace viz {
 class ContextProviderCommandBuffer;
 }
 
@@ -42,7 +42,7 @@ class VideoDecoderShim : public media::VideoDecodeAccelerator {
 
   // media::VideoDecodeAccelerator implementation.
   bool Initialize(const Config& config, Client* client) override;
-  void Decode(const media::BitstreamBuffer& bitstream_buffer) override;
+  void Decode(media::BitstreamBuffer bitstream_buffer) override;
   void AssignPictureBuffers(
       const std::vector<media::PictureBuffer>& buffers) override;
   void ReusePictureBuffer(int32_t picture_buffer_id) override;
@@ -61,7 +61,6 @@ class VideoDecoderShim : public media::VideoDecodeAccelerator {
   struct PendingDecode;
   struct PendingFrame;
   class DecoderImpl;
-  class YUVConverter;
 
   void OnInitializeFailed();
   void OnDecodeComplete(int32_t result, uint32_t decode_id);
@@ -80,13 +79,13 @@ class VideoDecoderShim : public media::VideoDecodeAccelerator {
 
   PepperVideoDecoderHost* host_;
   scoped_refptr<base::SingleThreadTaskRunner> media_task_runner_;
-  scoped_refptr<ws::ContextProviderCommandBuffer> context_provider_;
+  scoped_refptr<viz::ContextProviderCommandBuffer> context_provider_;
 
   // The current decoded frame size.
   gfx::Size texture_size_;
-  // Map that takes the plugin's GL texture id to the renderer's GL texture id.
-  using TextureIdMap = std::unordered_map<uint32_t, uint32_t>;
-  TextureIdMap texture_id_map_;
+  // Map that takes the plugin's GL texture id to the renderer's mailbox.
+  using IdToMailboxMap = std::unordered_map<uint32_t, gpu::Mailbox>;
+  IdToMailboxMap texture_mailbox_map_;
   // Available textures (these are plugin ids.)
   using TextureIdSet = std::unordered_set<uint32_t>;
   TextureIdSet available_textures_;
@@ -106,9 +105,7 @@ class VideoDecoderShim : public media::VideoDecodeAccelerator {
 
   uint32_t num_pending_decodes_;
 
-  std::unique_ptr<YUVConverter> yuv_converter_;
-
-  base::WeakPtrFactory<VideoDecoderShim> weak_ptr_factory_;
+  base::WeakPtrFactory<VideoDecoderShim> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(VideoDecoderShim);
 };

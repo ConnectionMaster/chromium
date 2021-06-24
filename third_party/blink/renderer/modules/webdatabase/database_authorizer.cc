@@ -28,7 +28,7 @@
 
 #include "third_party/blink/renderer/modules/webdatabase/database_authorizer.h"
 
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
@@ -84,6 +84,8 @@ const FunctionNameList& AllowedFunctions() {
           // SQLite ICU functions
           // like(), lower() and upper() are already in the list
           "regexp",
+          // Used internally by ALTER TABLE ADD COLUMN.
+          "printf",
       }));
   return list;
 }
@@ -242,7 +244,7 @@ int DatabaseAuthorizer::CreateVTable(const String& table_name,
     return kSQLAuthDeny;
 
   // Allow only the FTS3 extension
-  if (!DeprecatedEqualIgnoringCase(module_name, "fts3"))
+  if (!EqualIgnoringASCIICase(module_name, "fts3"))
     return kSQLAuthDeny;
 
   last_action_changed_database_ = true;
@@ -339,13 +341,13 @@ int DatabaseAuthorizer::DenyBasedOnTableName(const String& table_name) const {
   // Sadly, normal creates and drops end up affecting sqlite_master in an
   // authorizer callback, so it will be tough to enforce all of the following
   // policies:
-  // if (equalIgnoringCase(tableName, "sqlite_master") ||
-  //     equalIgnoringCase(tableName, "sqlite_temp_master") ||
-  //     equalIgnoringCase(tableName, "sqlite_sequence") ||
-  //     equalIgnoringCase(tableName, Database::databaseInfoTableName()))
+  // if (EqualIgnoringASCIICase(table_name, "sqlite_master") ||
+  //     EqualIgnoringASCIICase(table_name, "sqlite_temp_master") ||
+  //     EqualIgnoringASCIICase(table_name, "sqlite_sequence") ||
+  //     EqualIgnoringASCIICase(table_name, database_info_table_name_))
   //   return SQLAuthDeny;
 
-  if (DeprecatedEqualIgnoringCase(table_name, database_info_table_name_))
+  if (EqualIgnoringASCIICase(table_name, database_info_table_name_))
     return kSQLAuthDeny;
 
   return kSQLAuthAllow;

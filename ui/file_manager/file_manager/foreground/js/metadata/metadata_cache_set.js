@@ -2,10 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+
+import {util} from '../../../common/js/util.m.js';
+
+import {MetadataCacheItem} from './metadata_cache_item.js';
+import {MetadataItem} from './metadata_item.js';
+import {MetadataRequest} from './metadata_request.js';
+
 /**
  * Set of MetadataCacheItem.
  */
-class MetadataCacheSet extends cr.EventTarget {
+export class MetadataCacheSet extends EventTarget {
   /**
    * @param {!MetadataCacheSetStorage} items Storage object containing
    *     MetadataCacheItem.
@@ -185,7 +193,7 @@ class MetadataCacheSet extends cr.EventTarget {
  * Interface of raw strage for MetadataCacheItem.
  * @interface
  */
-class MetadataCacheSetStorage {
+export class MetadataCacheSetStorage {
   /**
    * Returns an item corresponding to the given URL.
    * @param {string} url Entry URL.
@@ -224,7 +232,7 @@ class MetadataCacheSetStorage {
  * Implementation of MetadataCacheSetStorage by using raw object.
  * @implements {MetadataCacheSetStorage}
  */
-class MetadataCacheSetStorageForObject {
+export class MetadataCacheSetStorageForObject {
   /** @param {Object} items Map of URL and MetadataCacheItem. */
   constructor(items) {
     this.items_ = items;
@@ -265,58 +273,5 @@ class MetadataCacheSetStorageForObject {
     for (const url in this.items_) {
       delete this.items_[url];
     }
-  }
-}
-
-/**
- * Implementation of MetadataCacheSetStorage by using LRUCache.
- * TODO(hirono): Remove this class.
- * @implements {MetadataCacheSetStorage}
- */
-class MetadataCacheSetStorageForLRUCache {
-  /**
-   * @param {!LRUCache<!MetadataCacheItem>} cache LRUCache.
-   */
-  constructor(cache) {
-    /**
-     * @private {!LRUCache<!MetadataCacheItem>}
-     * @const
-     */
-    this.cache_ = cache;
-  }
-
-  /**
-   * @override
-   */
-  get(url) {
-    return this.cache_.get(url);
-  }
-
-  /**
-   * @override
-   */
-  peek(url) {
-    return this.cache_.peek(url);
-  }
-
-  /**
-   * @override
-   */
-  put(url, item) {
-    this.cache_.put(url, item);
-  }
-
-  /**
-   * @override
-   */
-  remove(url) {
-    this.cache_.remove(url);
-  }
-
-  /**
-   * @override
-   */
-  removeAll() {
-    assertNotReached('Not implemented.');
   }
 }

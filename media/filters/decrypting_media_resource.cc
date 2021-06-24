@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/logging.h"
 #include "media/base/cdm_context.h"
 #include "media/base/demuxer_stream.h"
@@ -22,19 +22,18 @@ DecryptingMediaResource::DecryptingMediaResource(
     MediaResource* media_resource,
     CdmContext* cdm_context,
     MediaLog* media_log,
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner)
+    scoped_refptr<base::SequencedTaskRunner> task_runner)
     : media_resource_(media_resource),
       cdm_context_(cdm_context),
       media_log_(media_log),
-      task_runner_(task_runner),
-      weak_factory_(this) {
+      task_runner_(task_runner) {
   DCHECK(media_resource);
   DCHECK_EQ(MediaResource::STREAM, media_resource->GetType());
   DCHECK(cdm_context_);
   DCHECK(cdm_context_->GetDecryptor());
   DCHECK(cdm_context_->GetDecryptor()->CanAlwaysDecrypt());
   DCHECK(media_log_);
-  DCHECK(task_runner->BelongsToCurrentThread());
+  DCHECK(task_runner->RunsTasksInCurrentSequence());
 }
 
 DecryptingMediaResource::~DecryptingMediaResource() = default;
@@ -70,9 +69,8 @@ void DecryptingMediaResource::Initialize(InitCB init_cb, WaitingCB waiting_cb) {
     // trampolined to the |task_runner_|."
     decrypting_demuxer_stream->Initialize(
         stream, cdm_context_,
-        base::BindRepeating(
-            &DecryptingMediaResource::OnDecryptingDemuxerInitialized,
-            weak_factory_.GetWeakPtr()));
+        base::BindOnce(&DecryptingMediaResource::OnDecryptingDemuxerInitialized,
+                       weak_factory_.GetWeakPtr()));
 
     streams_.push_back(decrypting_demuxer_stream.get());
     owned_streams_.push_back(std::move(decrypting_demuxer_stream));
@@ -86,7 +84,7 @@ int DecryptingMediaResource::DecryptingDemuxerStreamCountForTesting() const {
 void DecryptingMediaResource::OnDecryptingDemuxerInitialized(
     PipelineStatus status) {
   DVLOG(2) << __func__ << ": DecryptingDemuxerStream initialization ended "
-           << "with the status: " << MediaLog::PipelineStatusToString(status);
+           << "with the status: " << status;
 
   // Decrement the count of DecryptingDemuxerStreams that need to be
   // initialized.

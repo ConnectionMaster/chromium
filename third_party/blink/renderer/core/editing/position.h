@@ -26,10 +26,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_POSITION_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_POSITION_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/editing_strategy.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
@@ -40,7 +40,6 @@ enum class PositionAnchorType : unsigned {
   kOffsetInAnchor,
   kBeforeAnchor,
   kAfterAnchor,
-  kBeforeChildren,
   kAfterChildren,
 };
 
@@ -98,9 +97,7 @@ class PositionTemplate {
   bool IsBeforeAnchor() const {
     return anchor_type_ == PositionAnchorType::kBeforeAnchor;
   }
-  bool IsBeforeChildren() const {
-    return anchor_type_ == PositionAnchorType::kBeforeChildren;
-  }
+  bool IsBeforeChildren() const;
   bool IsOffsetInAnchor() const {
     return anchor_type_ == PositionAnchorType::kOffsetInAnchor;
   }
@@ -135,7 +132,6 @@ class PositionTemplate {
   // Returns an offset for editing based on anchor type for using with
   // |AnchorNode()| function:
   //   - kOffsetInAnchor  offset_
-  //   - kBeforeChildren  0
   //   - kBeforeAnchor    0
   //   - kAfterChildren   last editing offset in anchor node
   //   - kAfterAnchor     last editing offset in anchor node
@@ -184,7 +180,7 @@ class PositionTemplate {
   // Note: Comparison of positions require both parameters are non-null. You
   // should check null-position before comparing them.
   // TODO(yosin): We should use |Position::operator<()| instead of
-  // |Position::comapreTo()| to utilize |DHCECK_XX()|.
+  // |Position::compareTo()| to utilize |DCHECK_XX()|.
   int16_t CompareTo(const PositionTemplate<Strategy>&) const;
   bool operator<(const PositionTemplate<Strategy>&) const;
   bool operator<=(const PositionTemplate<Strategy>&) const;
@@ -216,12 +212,12 @@ class PositionTemplate {
       const Node& anchor_node);
 
   String ToAnchorTypeAndOffsetString() const;
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
   void ShowTreeForThis() const;
   void ShowTreeForThisInFlatTree() const;
 #endif
 
-  void Trace(Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   bool IsAfterAnchorOrAfterChildren() const {
@@ -274,6 +270,7 @@ bool operator!=(const PositionTemplate<Strategy>& a,
 }
 
 CORE_EXPORT PositionInFlatTree ToPositionInFlatTree(const Position&);
+CORE_EXPORT PositionInFlatTree ToPositionInFlatTree(const PositionInFlatTree&);
 CORE_EXPORT Position ToPositionInDOMTree(const Position&);
 CORE_EXPORT Position ToPositionInDOMTree(const PositionInFlatTree&);
 
@@ -298,8 +295,8 @@ CORE_EXPORT std::ostream& operator<<(std::ostream&, const PositionInFlatTree&);
 
 }  // namespace blink
 
-#ifndef NDEBUG
-// Outside the WebCore namespace for ease of invocation from gdb.
+#if DCHECK_IS_ON()
+// Outside the blink namespace for ease of invocation from gdb.
 void showTree(const blink::Position&);
 void showTree(const blink::Position*);
 #endif

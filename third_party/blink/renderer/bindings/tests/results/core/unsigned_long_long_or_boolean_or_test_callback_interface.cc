@@ -10,7 +10,7 @@
 // clang-format off
 #include "third_party/blink/renderer/bindings/tests/results/core/unsigned_long_long_or_boolean_or_test_callback_interface.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_for_core.h"
@@ -75,7 +75,7 @@ UnsignedLongLongOrBooleanOrTestCallbackInterface::UnsignedLongLongOrBooleanOrTes
 UnsignedLongLongOrBooleanOrTestCallbackInterface::~UnsignedLongLongOrBooleanOrTestCallbackInterface() = default;
 UnsignedLongLongOrBooleanOrTestCallbackInterface& UnsignedLongLongOrBooleanOrTestCallbackInterface::operator=(const UnsignedLongLongOrBooleanOrTestCallbackInterface&) = default;
 
-void UnsignedLongLongOrBooleanOrTestCallbackInterface::Trace(blink::Visitor* visitor) {
+void UnsignedLongLongOrBooleanOrTestCallbackInterface::Trace(Visitor* visitor) const {
   visitor->Trace(test_callback_interface_);
 }
 
@@ -103,7 +103,7 @@ void V8UnsignedLongLongOrBooleanOrTestCallbackInterface::ToImpl(
   }
 
   if (v8_value->IsNumber()) {
-    uint64_t cpp_value = NativeValueTraits<IDLUnsignedLongLong>::NativeValue(isolate, v8_value, exception_state);
+    uint64_t cpp_value{ NativeValueTraits<IDLUnsignedLongLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetUnsignedLongLong(cpp_value);
@@ -111,7 +111,7 @@ void V8UnsignedLongLongOrBooleanOrTestCallbackInterface::ToImpl(
   }
 
   {
-    uint64_t cpp_value = NativeValueTraits<IDLUnsignedLongLong>::NativeValue(isolate, v8_value, exception_state);
+    uint64_t cpp_value{ NativeValueTraits<IDLUnsignedLongLong>::NativeValue(isolate, v8_value, exception_state) };
     if (exception_state.HadException())
       return;
     impl.SetUnsignedLongLong(cpp_value);
@@ -143,3 +143,4 @@ UnsignedLongLongOrBooleanOrTestCallbackInterface NativeValueTraits<UnsignedLongL
 }
 
 }  // namespace blink
+

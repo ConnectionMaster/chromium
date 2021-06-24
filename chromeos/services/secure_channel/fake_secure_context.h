@@ -9,9 +9,9 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "chromeos/services/secure_channel/secure_context.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -25,10 +25,9 @@ class FakeSecureContext : public SecureContext {
   // SecureContext:
   ProtocolVersion GetProtocolVersion() const override;
   std::string GetChannelBindingData() const override;
-  void Encode(const std::string& message,
-              const MessageCallback& callback) override;
+  void Encode(const std::string& message, MessageCallback callback) override;
   void Decode(const std::string& encoded_message,
-              const MessageCallback& callback) override;
+              MessageCallback callback) override;
 
   void set_protocol_version(ProtocolVersion protocol_version) {
     protocol_version_ = protocol_version;
@@ -40,7 +39,7 @@ class FakeSecureContext : public SecureContext {
 
  private:
   ProtocolVersion protocol_version_;
-  base::Optional<std::string> channel_binding_data_;
+  absl::optional<std::string> channel_binding_data_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeSecureContext);
 };

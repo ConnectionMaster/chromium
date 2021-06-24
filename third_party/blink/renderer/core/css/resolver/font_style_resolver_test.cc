@@ -6,14 +6,14 @@
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
 TEST(FontStyleResolverTest, Simple) {
-  MutableCSSPropertyValueSet* style =
-      MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
-  CSSParser::ParseValue(style, CSSPropertyID::kFont, "15px Ahem", true,
-                        SecureContextMode::kInsecureContext);
+  auto* style =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  CSSParser::ParseValue(style, CSSPropertyID::kFont, "15px Ahem", true);
 
   FontDescription desc = FontStyleResolver::ComputeFont(*style, nullptr);
 
@@ -23,10 +23,9 @@ TEST(FontStyleResolverTest, Simple) {
 }
 
 TEST(FontStyleResolverTest, InvalidSize) {
-  MutableCSSPropertyValueSet* style =
-      MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
-  CSSParser::ParseValue(style, CSSPropertyID::kFont, "-1px Ahem", true,
-                        SecureContextMode::kInsecureContext);
+  auto* style =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  CSSParser::ParseValue(style, CSSPropertyID::kFont, "-1px Ahem", true);
 
   FontDescription desc = FontStyleResolver::ComputeFont(*style, nullptr);
 
@@ -36,10 +35,9 @@ TEST(FontStyleResolverTest, InvalidSize) {
 }
 
 TEST(FontStyleResolverTest, InvalidWeight) {
-  MutableCSSPropertyValueSet* style =
-      MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
-  CSSParser::ParseValue(style, CSSPropertyID::kFont, "wrong 1px Ahem", true,
-                        SecureContextMode::kInsecureContext);
+  auto* style =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  CSSParser::ParseValue(style, CSSPropertyID::kFont, "wrong 1px Ahem", true);
 
   FontDescription desc = FontStyleResolver::ComputeFont(*style, nullptr);
 
@@ -49,11 +47,10 @@ TEST(FontStyleResolverTest, InvalidWeight) {
 }
 
 TEST(FontStyleResolverTest, InvalidEverything) {
-  MutableCSSPropertyValueSet* style =
-      MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
+  auto* style =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
   CSSParser::ParseValue(style, CSSPropertyID::kFont,
-                        "wrong wrong wrong 1px Ahem", true,
-                        SecureContextMode::kInsecureContext);
+                        "wrong wrong wrong 1px Ahem", true);
 
   FontDescription desc = FontStyleResolver::ComputeFont(*style, nullptr);
 
@@ -63,16 +60,15 @@ TEST(FontStyleResolverTest, InvalidEverything) {
 }
 
 TEST(FontStyleResolverTest, RelativeSize) {
-  MutableCSSPropertyValueSet* style =
-      MutableCSSPropertyValueSet::Create(kHTMLStandardMode);
-  CSSParser::ParseValue(style, CSSPropertyID::kFont, "italic 2ex Ahem", true,
-                        SecureContextMode::kInsecureContext);
+  auto* style =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  CSSParser::ParseValue(style, CSSPropertyID::kFont, "italic 2ex Ahem", true);
 
   FontDescription desc = FontStyleResolver::ComputeFont(*style, nullptr);
 
   EXPECT_EQ(desc.Family().Family(), "Ahem");
-  EXPECT_EQ(desc.SpecifiedSize(), 16);
-  EXPECT_EQ(desc.ComputedSize(), 16);
+  EXPECT_EQ(desc.SpecifiedSize(), 10);
+  EXPECT_EQ(desc.ComputedSize(), 10);
 }
 
 }  // namespace blink

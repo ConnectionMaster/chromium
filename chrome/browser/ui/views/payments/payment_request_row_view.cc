@@ -6,6 +6,7 @@
 
 #include "chrome/browser/ui/views/payments/payment_request_views_util.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
@@ -13,37 +14,59 @@
 
 namespace payments {
 
-PaymentRequestRowView::PaymentRequestRowView(views::ButtonListener* listener,
+PaymentRequestRowView::PaymentRequestRowView(PressedCallback callback,
                                              bool clickable,
                                              const gfx::Insets& insets)
-    : views::Button(listener),
+    : views::Button(std::move(callback)),
       clickable_(clickable),
       insets_(insets),
       previous_row_(nullptr) {
-  SetEnabled(clickable_);
+  // When not clickable, use Button's STATE_DISABLED but don't set our
+  // View state to disabled. The former ensures we aren't clickable, the
+  // latter also disables us and our children for event handling.
+  views::Button::SetState(clickable_ ? views::Button::STATE_NORMAL
+                                     : views::Button::STATE_DISABLED);
   ShowBottomSeparator();
   SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
 }
 
 PaymentRequestRowView::~PaymentRequestRowView() {}
 
+bool PaymentRequestRowView::GetClickable() const {
+  return clickable_;
+}
+
 void PaymentRequestRowView::SetActiveBackground() {
-  ui::NativeTheme* theme = GetWidget()->GetNativeTheme();
-  SetBackground(views::CreateSolidBackground(theme->GetSystemColor(
-      ui::NativeTheme::kColorId_ResultsTableHoveredBackground)));
+  // TODO(crbug/976890): Check whether we can GetSystemColor from a NativeTheme
+  // ColorId instead of hard code here.
+  SetBackground(views::CreateSolidBackground(SkColorSetA(SK_ColorBLACK, 0x0D)));
 }
 
 void PaymentRequestRowView::ShowBottomSeparator() {
-  SetBorder(payments::CreatePaymentRequestRowBorder(
-      GetNativeTheme()->GetSystemColor(
-          ui::NativeTheme::kColorId_SeparatorColor),
-      insets_));
+  bottom_separator_visible_ = true;
+  UpdateBottomSeparator();
   SchedulePaint();
 }
 
 void PaymentRequestRowView::HideBottomSeparator() {
-  SetBorder(views::CreateEmptyBorder(insets_));
+  bottom_separator_visible_ = false;
+  UpdateBottomSeparator();
   SchedulePaint();
+}
+
+void PaymentRequestRowView::UpdateBottomSeparator() {
+  // Create an empty border even when not present in a Widget hierarchy as the
+  // border is needed to correctly compute the bounds of the ScrollView in the
+  // PaymentRequestSheetController which is done before this is added to its
+  // Widget.
+  // TODO(crbug.com/1213247): Update PaymentRequestSheetController to recompute
+  // the bounds of its ScrollView in response to changes in preferred size.
+  SetBorder(bottom_separator_visible_ && GetWidget()
+                ? payments::CreatePaymentRequestRowBorder(
+                      GetNativeTheme()->GetSystemColor(
+                          ui::NativeTheme::kColorId_SeparatorColor),
+                      insets_)
+                : views::CreateEmptyBorder(insets_));
 }
 
 void PaymentRequestRowView::SetIsHighlighted(bool highlighted) {
@@ -60,27 +83,36 @@ void PaymentRequestRowView::SetIsHighlighted(bool highlighted) {
   }
 }
 
-// views::Button:
 void PaymentRequestRowView::StateChanged(ButtonState old_state) {
-  if (!clickable())
+  Button::StateChanged(old_state);
+  if (!GetClickable())
     return;
 
-  SetIsHighlighted(state() == views::Button::STATE_HOVERED ||
-                   state() == views::Button::STATE_PRESSED);
+  SetIsHighlighted(GetState() == views::Button::STATE_HOVERED ||
+                   GetState() == views::Button::STATE_PRESSED);
+}
+
+void PaymentRequestRowView::OnThemeChanged() {
+  Button::OnThemeChanged();
+  UpdateBottomSeparator();
 }
 
 void PaymentRequestRowView::OnFocus() {
-  if (clickable()) {
+  if (GetClickable()) {
     SetIsHighlighted(true);
     SchedulePaint();
   }
 }
 
 void PaymentRequestRowView::OnBlur() {
-  if (clickable()) {
+  if (GetClickable()) {
     SetIsHighlighted(false);
     SchedulePaint();
   }
 }
+
+BEGIN_METADATA(PaymentRequestRowView, views::Button)
+ADD_READONLY_PROPERTY_METADATA(bool, Clickable)
+END_METADATA
 
 }  // namespace payments

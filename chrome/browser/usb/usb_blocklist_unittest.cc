@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/usb/usb_blocklist.h"
+
+#include "base/strings/string_piece.h"
 #include "components/variations/variations_params_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -16,7 +18,7 @@ class UsbBlocklistTest : public testing::Test {
     params_manager_.ClearAllVariationParams();
 
     std::map<std::string, std::string> params;
-    params["blocklist_additions"] = list.as_string();
+    params["blocklist_additions"] = std::string(list);
     params_manager_.SetVariationParams("WebUSBBlocklist", params);
 
     blocklist_.ResetToDefaultValuesForTest();

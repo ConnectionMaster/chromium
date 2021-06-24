@@ -10,7 +10,6 @@
 #include <tuple>
 #include <vector>
 
-#include "base/callback_forward.h"
 #include "base/containers/flat_map.h"
 #include "base/memory/ref_counted.h"
 
@@ -18,23 +17,17 @@ class GURL;
 class PrefService;
 
 namespace base {
-class FilePath;
 class Version;
 }
 
 namespace update_client {
 
 class ActivityDataService;
+class CrxDownloaderFactory;
 class NetworkFetcherFactory;
 class PatcherFactory;
 class ProtocolHandlerFactory;
 class UnzipperFactory;
-
-using RecoveryCRXElevator = base::OnceCallback<std::tuple<bool, int, int>(
-    const base::FilePath& crx_path,
-    const std::string& browser_appid,
-    const std::string& browser_version,
-    const std::string& session_id)>;
 
 // Controls the component updater behavior.
 // TODO(sorin): this class will be split soon in two. One class controls
@@ -43,7 +36,7 @@ using RecoveryCRXElevator = base::OnceCallback<std::tuple<bool, int, int>(
 class Configurator : public base::RefCountedThreadSafe<Configurator> {
  public:
   // Delay in seconds from calling Start() to the first update check.
-  virtual int InitialDelay() const = 0;
+  virtual double InitialDelay() const = 0;
 
   // Delay in seconds to every subsequent update check. 0 means don't check.
   virtual int NextCheckDelay() const = 0;
@@ -103,6 +96,8 @@ class Configurator : public base::RefCountedThreadSafe<Configurator> {
 
   virtual scoped_refptr<NetworkFetcherFactory> GetNetworkFetcherFactory() = 0;
 
+  virtual scoped_refptr<CrxDownloaderFactory> GetCrxDownloaderFactory() = 0;
+
   virtual scoped_refptr<UnzipperFactory> GetUnzipperFactory() = 0;
 
   virtual scoped_refptr<PatcherFactory> GetPatcherFactory() = 0;
@@ -146,30 +141,15 @@ class Configurator : public base::RefCountedThreadSafe<Configurator> {
   // called only from a blocking pool thread, as it may access the file system.
   virtual bool IsPerUserInstall() const = 0;
 
-  // Returns the key hash corresponding to a CRX trusted by ActionRun. The
-  // CRX payloads are signed with this key, and their integrity is verified
-  // during the unpacking by the action runner. This is a dependency injection
-  // feature to support testing.
-  virtual std::vector<uint8_t> GetRunActionKeyHash() const = 0;
-
-  // Returns the app GUID with which Chrome is registered with Google Update, or
-  // an empty string if this brand does not integrate with Google Update.
-  virtual std::string GetAppGuid() const = 0;
-
   // Returns the class factory to create protocol parser and protocol
   // serializer object instances.
   virtual std::unique_ptr<ProtocolHandlerFactory> GetProtocolHandlerFactory()
       const = 0;
 
-  // Returns a callback which can elevate and run the CRX payload associated
-  // with the improved recovery component. Running this payload repairs the
-  // Chrome update functionality.
-  virtual RecoveryCRXElevator GetRecoveryCRXElevator() const = 0;
-
  protected:
   friend class base::RefCountedThreadSafe<Configurator>;
 
-  virtual ~Configurator() {}
+  virtual ~Configurator() = default;
 };
 
 }  // namespace update_client

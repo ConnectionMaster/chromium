@@ -4,17 +4,19 @@
 
 #include "ios/chrome/browser/ui/webui/signin_internals_ui_ios.h"
 
+#include <string>
+#include <vector>
+
 #include "base/hash/hash.h"
-#include "components/grit/components_resources.h"
-#include "components/signin/core/browser/about_signin_internals.h"
+#include "components/grit/dev_ui_components_resources.h"
+#include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
 #include "ios/chrome/browser/signin/about_signin_internals_factory.h"
 #include "ios/chrome/browser/signin/identity_manager_factory.h"
-#include "ios/web/public/web_ui_ios_data_source.h"
 #include "ios/web/public/webui/web_ui_ios.h"
-#include "services/identity/public/cpp/accounts_in_cookie_jar_info.h"
-#include "services/identity/public/cpp/identity_manager.h"
+#include "ios/web/public/webui/web_ui_ios_data_source.h"
 
 namespace {
 
@@ -22,33 +24,33 @@ web::WebUIIOSDataSource* CreateSignInInternalsHTMLSource() {
   web::WebUIIOSDataSource* source =
       web::WebUIIOSDataSource::Create(kChromeUISignInInternalsHost);
 
-  source->SetJsonPath("strings.js");
+  source->UseStringsJs();
   source->AddResourcePath("signin_internals.js", IDR_SIGNIN_INTERNALS_INDEX_JS);
+  source->AddResourcePath("signin_index.css", IDR_SIGNIN_INTERNALS_INDEX_CSS);
   source->SetDefaultResource(IDR_SIGNIN_INTERNALS_INDEX_HTML);
-  source->UseGzip();
 
   return source;
 }
 
 }  //  namespace
 
-SignInInternalsUIIOS::SignInInternalsUIIOS(web::WebUIIOS* web_ui)
-    : WebUIIOSController(web_ui) {
-  ios::ChromeBrowserState* browser_state =
-      ios::ChromeBrowserState::FromWebUIIOS(web_ui);
+SignInInternalsUIIOS::SignInInternalsUIIOS(web::WebUIIOS* web_ui,
+                                           const std::string& host)
+    : WebUIIOSController(web_ui, host) {
+  ChromeBrowserState* browser_state = ChromeBrowserState::FromWebUIIOS(web_ui);
   DCHECK(browser_state);
   web::WebUIIOSDataSource::Add(browser_state,
                                CreateSignInInternalsHTMLSource());
-
-  AboutSigninInternals* about_signin_internals =
-      ios::AboutSigninInternalsFactory::GetForBrowserState(browser_state);
-  if (about_signin_internals)
-    about_signin_internals->AddSigninObserver(this);
+  web_ui->AddMessageHandler(std::make_unique<SignInInternalsHandlerIOS>());
 }
 
-SignInInternalsUIIOS::~SignInInternalsUIIOS() {
-  ios::ChromeBrowserState* browser_state =
-      ios::ChromeBrowserState::FromWebUIIOS(web_ui());
+SignInInternalsUIIOS::~SignInInternalsUIIOS() = default;
+
+SignInInternalsHandlerIOS::SignInInternalsHandlerIOS() {}
+
+SignInInternalsHandlerIOS::~SignInInternalsHandlerIOS() {
+  ChromeBrowserState* browser_state =
+      ChromeBrowserState::FromWebUIIOS(web_ui());
   DCHECK(browser_state);
   AboutSigninInternals* about_signin_internals =
       ios::AboutSigninInternalsFactory::GetForBrowserState(browser_state);
@@ -56,52 +58,62 @@ SignInInternalsUIIOS::~SignInInternalsUIIOS() {
     about_signin_internals->RemoveSigninObserver(this);
 }
 
-bool SignInInternalsUIIOS::OverrideHandleWebUIIOSMessage(
-    const GURL& source_url,
-    const std::string& name,
-    const base::ListValue& content) {
-  if (name == "getSigninInfo") {
-    ios::ChromeBrowserState* browser_state =
-        ios::ChromeBrowserState::FromWebUIIOS(web_ui());
-    DCHECK(browser_state);
+void SignInInternalsHandlerIOS::RegisterMessages() {
+  web_ui()->RegisterMessageCallback(
+      "getSigninInfo",
+      base::BindRepeating(&SignInInternalsHandlerIOS::HandleGetSignInInfo,
+                          base::Unretained(this)));
+}
 
-    AboutSigninInternals* about_signin_internals =
-        ios::AboutSigninInternalsFactory::GetForBrowserState(browser_state);
-    // TODO(vishwath): The UI would look better if we passed in a dict with some
-    // reasonable defaults, so the about:signin-internals page doesn't look
-    // empty in incognito mode. Alternatively, we could force about:signin to
-    // open in non-incognito mode always (like about:settings for ex.).
-    if (about_signin_internals) {
-      base::Value status = about_signin_internals->GetSigninStatus()->Clone();
-      std::vector<const base::Value*> args{&status};
-      web_ui()->CallJavascriptFunction(
-          "chrome.signin.getSigninInfo.handleReply", args);
-      identity::IdentityManager* identity_manager =
-          IdentityManagerFactory::GetForBrowserState(browser_state);
-      identity::AccountsInCookieJarInfo accounts_in_cookie_jar =
-          identity_manager->GetAccountsInCookieJar();
-      if (accounts_in_cookie_jar.accounts_are_fresh) {
-        about_signin_internals->OnAccountsInCookieUpdated(
-            accounts_in_cookie_jar,
-            GoogleServiceAuthError(GoogleServiceAuthError::NONE));
-      }
+void SignInInternalsHandlerIOS::HandleGetSignInInfo(
+    const base::ListValue* args) {
+  std::string callback_id;
+  CHECK(args->GetString(0, &callback_id));
+  base::Value callback(callback_id);
+  base::Value success(true);
 
-      return true;
-    }
+  ChromeBrowserState* browser_state =
+      ChromeBrowserState::FromWebUIIOS(web_ui());
+  DCHECK(browser_state);
+  AboutSigninInternals* about_signin_internals =
+      ios::AboutSigninInternalsFactory::GetForBrowserState(browser_state);
+
+  if (!about_signin_internals) {
+    base::Value empty;
+    std::vector<const base::Value*> return_args{&callback, &success, &empty};
+    web_ui()->CallJavascriptFunction("cr.webUIResponse", return_args);
+    return;
   }
-  return false;
+
+  // Note(vishwath): The UI would look better if we passed in a dict with some
+  // reasonable defaults, so the about:signin-internals page doesn't look
+  // empty in incognito mode. Alternatively, we could force about:signin to
+  // open in non-incognito mode always (like about:settings for ex.).
+  about_signin_internals->AddSigninObserver(this);
+  base::Value status = about_signin_internals->GetSigninStatus()->Clone();
+  std::vector<const base::Value*> return_args{&callback, &success, &status};
+  web_ui()->CallJavascriptFunction("cr.webUIResponse", return_args);
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForBrowserState(browser_state);
+  signin::AccountsInCookieJarInfo accounts_in_cookie_jar =
+      identity_manager->GetAccountsInCookieJar();
+  if (accounts_in_cookie_jar.accounts_are_fresh) {
+    about_signin_internals->OnAccountsInCookieUpdated(
+        accounts_in_cookie_jar,
+        GoogleServiceAuthError(GoogleServiceAuthError::NONE));
+  }
 }
 
-void SignInInternalsUIIOS::OnSigninStateChanged(
+void SignInInternalsHandlerIOS::OnSigninStateChanged(
     const base::DictionaryValue* info) {
-  std::vector<const base::Value*> args{info};
-  web_ui()->CallJavascriptFunction("chrome.signin.onSigninInfoChanged.fire",
-                                   args);
+  base::Value event_name("signin-info-changed");
+  std::vector<const base::Value*> args{&event_name, info};
+  web_ui()->CallJavascriptFunction("cr.webUIListenerCallback", args);
 }
 
-void SignInInternalsUIIOS::OnCookieAccountsFetched(
+void SignInInternalsHandlerIOS::OnCookieAccountsFetched(
     const base::DictionaryValue* info) {
-  std::vector<const base::Value*> args{info};
-  web_ui()->CallJavascriptFunction("chrome.signin.onCookieAccountsFetched.fire",
-                                   args);
+  base::Value event_name("update-cookie-accounts");
+  std::vector<const base::Value*> args{&event_name, info};
+  web_ui()->CallJavascriptFunction("cr.webUIListenerCallback", args);
 }

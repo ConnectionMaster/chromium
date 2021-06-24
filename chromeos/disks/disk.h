@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/component_export.h"
+#include "base/files/file_path.h"
 #include "base/macros.h"
 #include "chromeos/dbus/cros_disks_client.h"
 
@@ -23,7 +24,6 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
        // Whether the device is mounted in read-only mode by the policy.
        // Valid only when the device mounted and mount_path_ is non-empty.
        bool write_disabled_by_policy,
-       const std::string& system_path_prefix,
        const std::string& base_mount_path);
 
   // For tests.
@@ -41,10 +41,6 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
   // TODO(amistry): mount_path() being set DOES NOT means the disk is mounted.
   // See crrev.com/f8692888d11a10b5b5f8ad6fbfdeae21aed8cbf6 for the reason.
   const std::string& mount_path() const { return mount_path_; }
-
-  // The path of the device according to the udev system.
-  // (e.g. /sys/devices/pci0000:00/.../8:0:0:0/block/sdb/sdb1)
-  const std::string& system_path() const { return system_path_; }
 
   // The path of the device according to filesystem.
   // (e.g. /dev/sdb)
@@ -76,12 +72,20 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
   // Returns the file system uuid string.
   const std::string& fs_uuid() const { return fs_uuid_; }
 
-  // Path of the system device this device's block is a part of.
+  // Path of the storage device this device's block is a part of.
   // (e.g. /sys/devices/pci0000:00/.../8:0:0:0/)
-  const std::string& system_path_prefix() const { return system_path_prefix_; }
+  const std::string& storage_device_path() const {
+    return storage_device_path_;
+  }
 
   // Device type.
   DeviceType device_type() const { return device_type_; }
+
+  // USB bus number of the device.
+  int bus_number() const { return bus_number_; }
+
+  // USB device number of the device.
+  int device_number() const { return device_number_; }
 
   // Total size of the device in bytes.
   uint64_t total_size_in_bytes() const { return total_size_in_bytes_; }
@@ -134,6 +138,11 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
 
   bool IsStatefulPartition() const;
 
+  // Is the disk being mounted for the first time since being plugged in.
+  bool is_first_mount() const { return is_first_mount_; }
+
+  void set_is_first_mount(bool first_mount) { is_first_mount_ = first_mount; }
+
  private:
   friend class Builder;
 
@@ -142,7 +151,6 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
   std::string device_path_;
   std::string mount_path_;
   bool write_disabled_by_policy_ = false;
-  std::string system_path_;
   std::string file_path_;
   std::string device_label_;
   std::string drive_label_;
@@ -151,8 +159,10 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
   std::string product_id_;
   std::string product_name_;
   std::string fs_uuid_;
-  std::string system_path_prefix_;
+  std::string storage_device_path_;
   DeviceType device_type_ = DEVICE_TYPE_UNKNOWN;
+  int bus_number_ = 0;
+  int device_number_ = 0;
   uint64_t total_size_in_bytes_ = 0;
   bool is_parent_ = false;
   bool is_read_only_hardware_ = false;
@@ -162,6 +172,7 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk {
   bool is_hidden_ = false;
   bool is_auto_mountable_ = false;
   bool is_mounted_ = false;
+  bool is_first_mount_ = true;
   std::string file_system_type_;
   std::string base_mount_path_;
 };
@@ -174,7 +185,6 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk::Builder {
   Builder& SetDevicePath(const std::string& device_path);
   Builder& SetMountPath(const std::string& mount_path);
   Builder& SetWriteDisabledByPolicy(bool write_disabled_by_policy);
-  Builder& SetSystemPath(const std::string& system_path);
   Builder& SetFilePath(const std::string& file_path);
   Builder& SetDeviceLabel(const std::string& device_label);
   Builder& SetDriveLabel(const std::string& drive_label);
@@ -183,8 +193,10 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk::Builder {
   Builder& SetProductId(const std::string& product_id);
   Builder& SetProductName(const std::string& product_name);
   Builder& SetFileSystemUUID(const std::string& fs_uuid);
-  Builder& SetSystemPathPrefix(const std::string& system_path_prefix);
+  Builder& SetStorageDevicePath(const std::string& storage_device_path_);
   Builder& SetDeviceType(DeviceType device_type);
+  Builder& SetBusNumber(int bus_number);
+  Builder& SetDeviceNumber(int device_number);
   Builder& SetSizeInBytes(uint64_t total_size_in_bytes);
   Builder& SetIsParent(bool is_parent);
   Builder& SetIsReadOnlyHardware(bool is_read_only_hardware);
@@ -203,6 +215,8 @@ class COMPONENT_EXPORT(CHROMEOS_DISKS) Disk::Builder {
 
   DISALLOW_COPY_AND_ASSIGN(Builder);
 };
+
+COMPONENT_EXPORT(CHROMEOS_DISKS) base::FilePath GetStatefulPartitionPath();
 
 }  // namespace disks
 }  // namespace chromeos

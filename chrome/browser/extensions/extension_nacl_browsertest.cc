@@ -5,10 +5,9 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -20,8 +19,9 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/webplugininfo.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "extensions/browser/extension_system.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -30,6 +30,7 @@ using content::PluginService;
 using content::WebContents;
 using extensions::Extension;
 using extensions::Manifest;
+using extensions::mojom::ManifestLocation;
 
 namespace {
 
@@ -54,6 +55,7 @@ class NaClExtensionTest : public extensions::ExtensionBrowserTest {
     INSTALL_TYPE_FROM_WEBSTORE,
     INSTALL_TYPE_NON_WEBSTORE,
   };
+
   enum PluginType {
     PLUGIN_TYPE_NONE = 0,
     PLUGIN_TYPE_EMBED = 1,
@@ -62,40 +64,41 @@ class NaClExtensionTest : public extensions::ExtensionBrowserTest {
                       PLUGIN_TYPE_CONTENT_HANDLER,
   };
 
-
   const Extension* InstallExtension(const base::FilePath& file_path,
                                     InstallType install_type) {
-    extensions::ExtensionService* service =
-        extensions::ExtensionSystem::Get(browser()->profile())
-            ->extension_service();
-    const Extension* extension = NULL;
+    extensions::ExtensionRegistry* registry = extension_registry();
+    const Extension* extension = nullptr;
     switch (install_type) {
       case INSTALL_TYPE_COMPONENT:
         if (LoadExtensionAsComponent(file_path)) {
-          extension = service->GetExtensionById(kExtensionId, false);
+          extension = registry->GetExtensionById(
+              kExtensionId, extensions::ExtensionRegistry::ENABLED);
         }
         break;
 
       case INSTALL_TYPE_UNPACKED:
         // Install the extension from a folder so it's unpacked.
         if (LoadExtension(file_path)) {
-          extension = service->GetExtensionById(kExtensionId, false);
+          extension = registry->GetExtensionById(
+              kExtensionId, extensions::ExtensionRegistry::ENABLED);
         }
         break;
 
       case INSTALL_TYPE_FROM_WEBSTORE:
         // Install native_client.crx from the webstore.
         if (InstallExtensionFromWebstore(file_path, 1)) {
-          extension = service->GetExtensionById(last_loaded_extension_id(),
-                                                false);
+          extension = registry->GetExtensionById(
+              last_loaded_extension_id(),
+              extensions::ExtensionRegistry::ENABLED);
         }
         break;
 
       case INSTALL_TYPE_NON_WEBSTORE:
         // Install native_client.crx but not from the webstore.
         if (extensions::ExtensionBrowserTest::InstallExtension(file_path, 1)) {
-          extension = service->GetExtensionById(last_loaded_extension_id(),
-                                                false);
+          extension = registry->GetExtensionById(
+              last_loaded_extension_id(),
+              extensions::ExtensionRegistry::ENABLED);
         }
         break;
     }
@@ -182,7 +185,7 @@ IN_PROC_BROWSER_TEST_F(NaClExtensionTest, DISABLED_NonWebStoreExtension) {
 IN_PROC_BROWSER_TEST_F(NaClExtensionTest, DISABLED_ComponentExtension) {
   const Extension* extension = InstallExtension(INSTALL_TYPE_COMPONENT);
   ASSERT_TRUE(extension);
-  ASSERT_EQ(extension->location(), Manifest::COMPONENT);
+  ASSERT_EQ(extension->location(), ManifestLocation::kComponent);
   CheckPluginsCreated(extension, PLUGIN_TYPE_ALL);
 }
 
@@ -191,7 +194,7 @@ IN_PROC_BROWSER_TEST_F(NaClExtensionTest, DISABLED_ComponentExtension) {
 IN_PROC_BROWSER_TEST_F(NaClExtensionTest, DISABLED_UnpackedExtension) {
   const Extension* extension = InstallExtension(INSTALL_TYPE_UNPACKED);
   ASSERT_TRUE(extension);
-  ASSERT_EQ(extension->location(), Manifest::UNPACKED);
+  ASSERT_EQ(extension->location(), ManifestLocation::kUnpacked);
   CheckPluginsCreated(extension, PLUGIN_TYPE_ALL);
 }
 
@@ -270,9 +273,11 @@ IN_PROC_BROWSER_TEST_F(NaClExtensionTest, MainFrameIsRemote) {
       embed.addEventListener('error', function() {
           window.domAutomationController.send(true);
       });
-      document.body.appendChild(embed); )";
+      document.body.appendChild(embed);
+       )";
   bool done;
   EXPECT_TRUE(ExecuteScriptAndExtractBool(subframe, script, &done));
+  EXPECT_TRUE(done);
 
   // If we get here, then it means that the renderer didn't crash (the crash
   // would have prevented the "error" event from firing and so

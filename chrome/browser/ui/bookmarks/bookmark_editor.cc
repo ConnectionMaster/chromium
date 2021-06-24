@@ -19,7 +19,7 @@ namespace {
 const BookmarkNode* CreateNewNode(BookmarkModel* model,
                                   const BookmarkNode* parent,
                                   const BookmarkEditor::EditDetails& details,
-                                  const base::string16& new_title,
+                                  const std::u16string& new_title,
                                   const GURL& new_url) {
   const BookmarkNode* node;
   // When create the new one to right-clicked folder, add it to the next to the
@@ -27,16 +27,18 @@ const BookmarkNode* CreateNewNode(BookmarkModel* model,
   // it was right-clicked, it might cause out of range exception when another
   // bookmark manager edits contents of the folder.
   // So we must check the range.
-  int child_count = parent->child_count();
-  int insert_index = (parent == details.parent_node && details.index >= 0 &&
-                      details.index <= child_count) ?
-                      details.index : child_count;
+  size_t child_count = parent->children().size();
+  size_t insert_index =
+      (parent == details.parent_node && details.index.has_value() &&
+       details.index.value() <= child_count)
+          ? details.index.value()
+          : child_count;
   if (details.type == BookmarkEditor::EditDetails::NEW_URL) {
     node = model->AddURL(parent, insert_index, new_title, new_url);
   } else if (details.type == BookmarkEditor::EditDetails::NEW_FOLDER) {
     node = model->AddFolder(parent, insert_index, new_title);
     for (size_t i = 0; i < details.urls.size(); ++i) {
-      model->AddURL(node, node->child_count(), details.urls[i].second,
+      model->AddURL(node, node->children().size(), details.urls[i].second,
                     details.urls[i].first);
     }
     model->SetDateFolderModified(parent, base::Time::Now());
@@ -50,9 +52,7 @@ const BookmarkNode* CreateNewNode(BookmarkModel* model,
 
 }  // namespace
 
-BookmarkEditor::EditDetails::EditDetails(Type node_type)
-    : type(node_type), existing_node(NULL), parent_node(NULL), index(-1) {
-}
+BookmarkEditor::EditDetails::EditDetails(Type node_type) : type(node_type) {}
 
 BookmarkNode::Type BookmarkEditor::EditDetails::GetNodeType() const {
   BookmarkNode::Type node_type = BookmarkNode::URL;
@@ -104,9 +104,9 @@ BookmarkEditor::EditDetails BookmarkEditor::EditDetails::EditNode(
 
 BookmarkEditor::EditDetails BookmarkEditor::EditDetails::AddNodeInFolder(
     const BookmarkNode* parent_node,
-    int index,
+    size_t index,
     const GURL& url,
-    const base::string16& title) {
+    const std::u16string& title) {
   EditDetails details(NEW_URL);
   details.parent_node = parent_node;
   details.index = index;
@@ -117,7 +117,7 @@ BookmarkEditor::EditDetails BookmarkEditor::EditDetails::AddNodeInFolder(
 
 BookmarkEditor::EditDetails BookmarkEditor::EditDetails::AddFolder(
     const BookmarkNode* parent_node,
-    int index) {
+    size_t index) {
   EditDetails details(NEW_FOLDER);
   details.parent_node = parent_node;
   details.index = index;
@@ -133,7 +133,7 @@ const BookmarkNode* BookmarkEditor::ApplyEditsWithNoFolderChange(
     BookmarkModel* model,
     const BookmarkNode* parent,
     const EditDetails& details,
-    const base::string16& new_title,
+    const std::u16string& new_title,
     const GURL& new_url) {
   if (details.type == EditDetails::NEW_URL ||
       details.type == EditDetails::NEW_FOLDER) {
@@ -155,7 +155,7 @@ const BookmarkNode* BookmarkEditor::ApplyEditsWithPossibleFolderChange(
     BookmarkModel* model,
     const BookmarkNode* new_parent,
     const EditDetails& details,
-    const base::string16& new_title,
+    const std::u16string& new_title,
     const GURL& new_url) {
   if (details.type == EditDetails::NEW_URL ||
       details.type == EditDetails::NEW_FOLDER) {
@@ -166,7 +166,7 @@ const BookmarkNode* BookmarkEditor::ApplyEditsWithPossibleFolderChange(
   DCHECK(node);
 
   if (new_parent != node->parent())
-    model->Move(node, new_parent, new_parent->child_count());
+    model->Move(node, new_parent, new_parent->children().size());
   if (node->is_url())
     model->SetURL(node, new_url);
   model->SetTitle(node, new_title);

@@ -14,7 +14,7 @@
 #include <limits>
 #include <string>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/numerics/safe_math.h"
 #include "gpu/command_buffer/common/gles2_utils_export.h"
@@ -156,15 +156,6 @@ class GLES2_UTILS_EXPORT GLES2Util {
   static uint32_t GetGLTypeSizeForBuffers(uint32_t type);
 
   static uint32_t GetGroupSizeForBufferType(uint32_t count, uint32_t type);
-
-  static uint32_t GetComponentCountForGLTransformType(uint32_t type);
-
-  static uint32_t GetCoefficientCountForGLPathFragmentInputGenMode(
-      uint32_t gen_mode);
-
-  static uint32_t GetGLTypeSizeForPathCoordType(uint32_t type);
-
-  static uint32_t GetGLTypeSizeForGLPathNameType(uint32_t type);
 
   static uint32_t GLErrorToErrorBit(uint32_t gl_error);
 

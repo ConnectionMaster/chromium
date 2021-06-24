@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
 
+#include <utility>
+
+#include "chrome/browser/file_select_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
@@ -11,6 +14,7 @@
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/web_contents.h"
 
 using content::BrowserContext;
@@ -33,20 +37,24 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
     WebContents* source,
     const OpenURLParams& params) {
   if (!context)
-    return NULL;
+    return nullptr;
 
   Profile* profile = Profile::FromBrowserContext(context);
 
   Browser* browser = chrome::FindTabbedBrowser(profile, false);
   const bool browser_created = !browser;
   if (!browser) {
+    if (Browser::GetCreationStatusForProfile(profile) !=
+        Browser::CreationStatus::kOk) {
+      return nullptr;
+    }
     // TODO(erg): OpenURLParams should pass a user_gesture flag, pass it to
     // CreateParams, and pass the real value to nav_params below.
-    browser =
-        new Browser(Browser::CreateParams(Browser::TYPE_TABBED, profile, true));
+    browser = Browser::Create(
+        Browser::CreateParams(Browser::TYPE_NORMAL, profile, true));
   }
   NavigateParams nav_params(browser, params.url, params.transition);
-  nav_params.referrer = params.referrer;
+  nav_params.FillNavigateParamsFromOpenURLParams(params);
   if (source && source->IsCrashed() &&
       params.disposition == WindowOpenDisposition::CURRENT_TAB &&
       ui::PageTransitionCoreTypeIs(params.transition,
@@ -56,7 +64,6 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
     nav_params.disposition = params.disposition;
   }
   nav_params.window_action = NavigateParams::SHOW_WINDOW;
-  nav_params.user_gesture = true;
   Navigate(&nav_params);
 
   // Close the browser if chrome::Navigate created a new one.
@@ -76,6 +83,7 @@ void ChromeWebContentsHandler::AddNewContents(
     content::BrowserContext* context,
     WebContents* source,
     std::unique_ptr<WebContents> new_contents,
+    const GURL& target_url,
     WindowOpenDisposition disposition,
     const gfx::Rect& initial_rect,
     bool user_gesture) {
@@ -87,8 +95,14 @@ void ChromeWebContentsHandler::AddNewContents(
   Browser* browser = chrome::FindTabbedBrowser(profile, false);
   const bool browser_created = !browser;
   if (!browser) {
-    browser = new Browser(
-        Browser::CreateParams(Browser::TYPE_TABBED, profile, user_gesture));
+    // The request can be triggered by Captive portal when browser is not ready
+    // (https://crbug.com/1141608).
+    if (Browser::GetCreationStatusForProfile(profile) !=
+        Browser::CreationStatus::kOk) {
+      return;
+    }
+    browser = Browser::Create(
+        Browser::CreateParams(Browser::TYPE_NORMAL, profile, user_gesture));
   }
   NavigateParams params(browser, std::move(new_contents));
   params.source_contents = source;
@@ -101,4 +115,12 @@ void ChromeWebContentsHandler::AddNewContents(
   // Close the browser if chrome::Navigate created a new one.
   if (browser_created && (browser != params.browser))
     browser->window()->Close();
+}
+
+void ChromeWebContentsHandler::RunFileChooser(
+    content::RenderFrameHost* render_frame_host,
+    scoped_refptr<content::FileSelectListener> listener,
+    const blink::mojom::FileChooserParams& params) {
+  FileSelectHelper::RunFileChooser(render_frame_host, std::move(listener),
+                                   params);
 }

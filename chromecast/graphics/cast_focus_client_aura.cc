@@ -4,12 +4,13 @@
 
 #include "chromecast/graphics/cast_focus_client_aura.h"
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
+#include "base/logging.h"
 #include "ui/aura/window.h"
 
-#define LOG_WINDOW_INFO(top_level, window)                              \
-  "top-level: " << (top_level)->id() << ": '" << (top_level)->GetName() \
-                << "', window: " << (window)->id() << ": '"             \
+#define LOG_WINDOW_INFO(top_level, window)                                 \
+  "top-level: " << (top_level)->GetId() << ": '" << (top_level)->GetName() \
+                << "', window: " << (window)->GetId() << ": '"             \
                 << (window)->GetName() << "'"
 
 namespace chromecast {
@@ -125,7 +126,7 @@ void CastFocusClientAura::FocusWindow(aura::Window* window) {
     aura::Window* top_level = GetZOrderWindow(window);
     DCHECK(top_level);
     DLOG(INFO) << "Requesting focus for " << LOG_WINDOW_INFO(top_level, window);
-    if (!base::ContainsValue(focusable_windows_, window)) {
+    if (!base::Contains(focusable_windows_, window)) {
       // We're not yet tracking this focusable window, so start tracking it as a
       // potential focus target.
       window->AddObserver(this);
@@ -199,7 +200,7 @@ aura::Window* CastFocusClientAura::GetWindowToFocus() {
     // Compare z-order of top-level windows using the window IDs.
     aura::Window* top_level = GetZOrderWindow(window);
     DCHECK(top_level);
-    if (!next || top_level->id() >= next_top_level->id()) {
+    if (!next || top_level->GetId() >= next_top_level->GetId()) {
       next = window;
       next_top_level = top_level;
     }

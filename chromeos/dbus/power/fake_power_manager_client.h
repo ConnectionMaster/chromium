@@ -5,7 +5,6 @@
 #ifndef CHROMEOS_DBUS_POWER_FAKE_POWER_MANAGER_CLIENT_H_
 #define CHROMEOS_DBUS_POWER_FAKE_POWER_MANAGER_CLIENT_H_
 
-#include <map>
 #include <memory>
 #include <queue>
 #include <string>
@@ -15,16 +14,22 @@
 #include "base/callback_forward.h"
 #include "base/component_export.h"
 #include "base/containers/circular_deque.h"
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/optional.h"
+#include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/dbus/power_manager/backlight.pb.h"
 #include "chromeos/dbus/power_manager/policy.pb.h"
 #include "chromeos/dbus/power_manager/power_supply_properties.pb.h"
 #include "chromeos/dbus/power_manager/suspend.pb.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
+namespace base {
+class OneShotTimer;
+}
 
 namespace chromeos {
 
@@ -47,7 +52,6 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   int num_set_is_projecting_calls() const {
     return num_set_is_projecting_calls_;
   }
-  int num_defer_screen_dim_calls() const { return num_defer_screen_dim_calls_; }
   int num_wake_notification_calls() const {
     return num_wake_notification_calls_;
   }
@@ -75,13 +79,15 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   void set_user_activity_callback(base::RepeatingClosure callback) {
     user_activity_callback_ = std::move(callback);
   }
+  void set_peripheral_battery_refresh_level(const std::string& address,
+                                            int level) {
+    peripheral_battery_refresh_levels_[address] = level;
+  }
 
   // PowerManagerClient overrides:
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   bool HasObserver(const Observer* observer) const override;
-  void WaitForServiceToBeAvailable(
-      WaitForServiceToBeAvailableCallback callback) override;
   void SetRenderProcessManagerDelegate(
       base::WeakPtr<RenderProcessManagerDelegate> delegate) override;
   void DecreaseScreenBrightness(bool allow_off) override;
@@ -93,9 +99,11 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   void IncreaseKeyboardBrightness() override;
   void GetKeyboardBrightnessPercent(
       DBusMethodCallback<double> callback) override;
-  const base::Optional<power_manager::PowerSupplyProperties>& GetLastStatus()
+  const absl::optional<power_manager::PowerSupplyProperties>& GetLastStatus()
       override;
   void RequestStatusUpdate() override;
+  void RequestAllPeripheralBatteryUpdate() override;
+  void RequestThermalState() override;
   void RequestSuspend() override;
   void RequestRestart(power_manager::RequestRestartReason reason,
                       const std::string& description) override;
@@ -113,8 +121,10 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   void GetInactivityDelays(
       DBusMethodCallback<power_manager::PowerManagementPolicy::Delays> callback)
       override;
-  base::OnceClosure GetSuspendReadinessCallback(
-      const base::Location& from_where) override;
+  void BlockSuspend(const base::UnguessableToken& token,
+                    const std::string& debug_info) override;
+  void UnblockSuspend(const base::UnguessableToken& token) override;
+  bool SupportsAmbientColor() override;
   void CreateArcTimers(
       const std::string& tag,
       std::vector<std::pair<clockid_t, base::ScopedFD>> arc_timer_requests,
@@ -124,7 +134,8 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
                      VoidDBusMethodCallback callback) override;
   void DeleteArcTimers(const std::string& tag,
                        VoidDBusMethodCallback callback) override;
-  void DeferScreenDim() override;
+  base::TimeDelta GetDarkSuspendDelayTimeout() override;
+  void RefreshBluetoothBattery(const std::string& address) override;
 
   // Pops the first report from |video_activity_reports_|, returning whether the
   // activity was fullscreen or not. There must be at least one report.
@@ -148,9 +159,6 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
 
   // Notifies observers that the power button has been pressed or released.
   void SendPowerButtonEvent(bool down, const base::TimeTicks& timestamp);
-
-  // Notifies observers that the screen is about to be dimmed.
-  void SendScreenDimImminent();
 
   // Sets |lid_state_| or |tablet_mode_| and notifies |observers_| about the
   // change.
@@ -176,22 +184,34 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   // return false if there are no pending brightness changes.
   bool ApplyPendingScreenBrightnessChange();
 
+  // Returns time ticks from boot including time ticks spent during sleeping.
+  base::TimeTicks GetCurrentBootTime();
+
   // Sets the screen brightness percent to be returned.
   // The nullopt |percent| means an error. In case of success,
   // |percent| must be in the range of [0, 100].
-  void set_screen_brightness_percent(const base::Optional<double>& percent) {
+  void set_screen_brightness_percent(const absl::optional<double>& percent) {
     screen_brightness_percent_ = percent;
   }
 
-  void set_keyboard_brightness_percent(const base::Optional<double>& percent) {
+  void set_keyboard_brightness_percent(const absl::optional<double>& percent) {
     keyboard_brightness_percent_ = percent;
   }
 
- private:
-  // Callback that will be run by asynchronous suspend delays to report
-  // readiness.
-  void HandleSuspendReadiness();
+  void set_supports_ambient_color(bool supports_ambient_color) {
+    supports_ambient_color_ = supports_ambient_color;
+  }
 
+  // Sets |tick_clock| to |tick_clock_|.
+  void set_tick_clock(const base::TickClock* tick_clock) {
+    tick_clock_ = tick_clock;
+  }
+
+  void simulate_start_arc_timer_failure(bool simulate) {
+    simulate_start_arc_timer_failure_ = simulate;
+  }
+
+ private:
   // Notifies |observers_| that |props_| has been updated.
   void NotifyObservers();
 
@@ -204,7 +224,7 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   power_manager::PowerManagementPolicy policy_;
 
   // Power status received from the power manager.
-  base::Optional<power_manager::PowerSupplyProperties> props_;
+  absl::optional<power_manager::PowerSupplyProperties> props_;
 
   // Number of times that various methods have been called.
   int num_request_restart_calls_ = 0;
@@ -212,17 +232,16 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   int num_set_policy_calls_ = 0;
   int num_set_is_projecting_calls_ = 0;
   int num_set_backlights_forced_off_calls_ = 0;
-  int num_defer_screen_dim_calls_ = 0;
   int num_wake_notification_calls_ = 0;
 
   // Number of pending suspend readiness callbacks.
   int num_pending_suspend_readiness_callbacks_ = 0;
 
   // Current screen brightness in the range [0.0, 100.0].
-  base::Optional<double> screen_brightness_percent_;
+  absl::optional<double> screen_brightness_percent_;
 
   // Current keyboard brightness in the range [0.0, 100.0].
-  base::Optional<double> keyboard_brightness_percent_;
+  absl::optional<double> keyboard_brightness_percent_;
 
   // Last screen brightness requested via SetScreenBrightness().
   // Unlike |screen_brightness_percent_|, this value will not be changed by
@@ -248,6 +267,10 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   // explicitly by calling ApplyPendingScreenBrightnessChange().
   bool enqueue_brightness_changes_on_backlights_forced_off_ = false;
 
+  // Whether the device has an ambient color sensor. Can be set via
+  // SetSupportsAmbientColor().
+  bool supports_ambient_color_ = false;
+
   // Pending screen brightness changes caused by SetBacklightsForcedOff().
   // ApplyPendingScreenBrightnessChange() applies the first pending change.
   std::queue<power_manager::BacklightBrightnessChange>
@@ -263,13 +286,15 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   // Monotonically increasing timer id assigned to created timers.
   TimerId next_timer_id_ = 1;
 
-  // Represents the timer expiration fd associated with a timer id stored as
-  // the key. The fd is written to when the timer associated with the clock
-  // expires.
-  std::map<TimerId, base::ScopedFD> timer_expiration_fds_;
+  // Represents the timer and the timer expiration fd associated with a timer id
+  // stored as the key. The fd is written to when the timer associated with the
+  // clock expires.
+  base::flat_map<TimerId,
+                 std::pair<std::unique_ptr<base::OneShotTimer>, base::ScopedFD>>
+      arc_timers_;
 
   // Maps a client's tag to its list of timer ids.
-  std::map<std::string, std::vector<TimerId>> client_timer_ids_;
+  base::flat_map<std::string, std::vector<TimerId>> client_timer_ids_;
 
   // Video activity reports that we were requested to send, in the order they
   // were requested. True if fullscreen.
@@ -284,6 +309,15 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
   // If non-empty, called by NotifyUserActivity().
   base::RepeatingClosure user_activity_callback_;
 
+  // Clock to use to calculate time ticks. Used for ArcTimer related APIs.
+  const base::TickClock* tick_clock_;
+
+  // If set then |StartArcTimer| returns failure.
+  bool simulate_start_arc_timer_failure_ = false;
+
+  // Used in RefreshBluetoothBattery.
+  base::flat_map<std::string, int> peripheral_battery_refresh_levels_;
+
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
   base::WeakPtrFactory<FakePowerManagerClient> weak_ptr_factory_{this};
@@ -292,5 +326,10 @@ class COMPONENT_EXPORT(DBUS_POWER) FakePowerManagerClient
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when moved to ash.
+namespace ash {
+using ::chromeos::FakePowerManagerClient;
+}
 
 #endif  // CHROMEOS_DBUS_POWER_FAKE_POWER_MANAGER_CLIENT_H_

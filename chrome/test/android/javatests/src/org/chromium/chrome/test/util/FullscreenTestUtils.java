@@ -4,21 +4,20 @@
 
 package org.chromium.chrome.test.util;
 
-import static org.chromium.base.test.util.ScalableTimeout.scaleTimeout;
-
 import android.app.Activity;
 import android.os.Build;
 import android.view.View;
 import android.view.WindowManager;
 
+import org.hamcrest.Matchers;
+
 import org.chromium.base.task.PostTask;
+import org.chromium.base.test.util.Criteria;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabTestUtils;
 import org.chromium.chrome.browser.tab.TabWebContentsDelegateAndroid;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
-import org.chromium.content_public.browser.test.util.Criteria;
-import org.chromium.content_public.browser.test.util.CriteriaHelper;
-
-import java.util.concurrent.Callable;
 
 /**
  * Static methods for use in tests that require toggling persistent fullscreen.
@@ -35,7 +34,7 @@ public class FullscreenTestUtils {
      */
     public static void togglePersistentFullscreenAndAssert(final Tab tab, final boolean state,
             Activity activity) {
-        final TabWebContentsDelegateAndroid delegate = tab.getTabWebContentsDelegateAndroid();
+        final TabWebContentsDelegateAndroid delegate = TabTestUtils.getTabWebContentsDelegate(tab);
         FullscreenTestUtils.togglePersistentFullscreen(delegate, state);
         FullscreenTestUtils.waitForFullscreenFlag(tab, state, activity);
         FullscreenTestUtils.waitForPersistentFullscreen(delegate, state);
@@ -67,12 +66,9 @@ public class FullscreenTestUtils {
      */
     public static void waitForFullscreenFlag(final Tab tab, final boolean state,
             final Activity activity) {
-        CriteriaHelper.pollUiThread(new Criteria() {
-            @Override
-            public boolean isSatisfied() {
-                return isFullscreenFlagSet(tab, state, activity);
-            }
-        }, scaleTimeout(6000), CriteriaHelper.DEFAULT_POLLING_INTERVAL);
+        CriteriaHelper.pollUiThread(()
+                                            -> isFullscreenFlagSet(tab, state, activity),
+                6000L, CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 
     /**
@@ -83,12 +79,9 @@ public class FullscreenTestUtils {
      */
     public static void waitForPersistentFullscreen(final TabWebContentsDelegateAndroid delegate,
             boolean state) {
-        CriteriaHelper.pollUiThread(Criteria.equals(state, new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return delegate.isFullscreenForTabOrPending();
-            }
-        }));
+        CriteriaHelper.pollUiThread(() -> {
+            Criteria.checkThat(delegate.isFullscreenForTabOrPending(), Matchers.is(state));
+        });
     }
 
     private static boolean isFlagSet(int flags, int flag) {

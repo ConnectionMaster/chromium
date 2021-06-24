@@ -6,23 +6,25 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/test/simple_test_clock.h"
 #include "base/values.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/test/mock_render_process_host.h"
+#include "content/public/test/fake_local_frame.h"
 #include "extensions/browser/api/alarms/alarm_manager.h"
 #include "extensions/browser/api/alarms/alarms_api.h"
 #include "extensions/browser/api/alarms/alarms_api_constants.h"
 #include "extensions/browser/api_unittest.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_messages.h"
-#include "ipc/ipc_test_sink.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 typedef extensions::api::alarms::Alarm JsAlarm;
 
@@ -134,7 +136,7 @@ void ExtensionAlarmsTestGetAlarmCallback(ExtensionAlarmsTest* test,
   // Ensure the alarm is gone.
   test->alarm_manager_->GetAllAlarms(
       test->extension()->id(),
-      base::Bind(ExtensionAlarmsTestGetAllAlarmsCallback));
+      base::BindOnce(ExtensionAlarmsTestGetAllAlarmsCallback));
 }
 
 TEST_F(ExtensionAlarmsTest, Create) {
@@ -144,7 +146,7 @@ TEST_F(ExtensionAlarmsTest, Create) {
 
   alarm_manager_->GetAlarm(
       extension()->id(), std::string(),
-      base::Bind(ExtensionAlarmsTestGetAlarmCallback, this));
+      base::BindOnce(ExtensionAlarmsTestGetAlarmCallback, this));
 }
 
 void ExtensionAlarmsTestCreateRepeatingGetAlarmCallback(
@@ -178,7 +180,7 @@ TEST_F(ExtensionAlarmsTest, CreateRepeating) {
 
   alarm_manager_->GetAlarm(
       extension()->id(), std::string(),
-      base::Bind(ExtensionAlarmsTestCreateRepeatingGetAlarmCallback, this));
+      base::BindOnce(ExtensionAlarmsTestCreateRepeatingGetAlarmCallback, this));
 }
 
 void ExtensionAlarmsTestCreateAbsoluteGetAlarm2Callback(
@@ -205,7 +207,7 @@ void ExtensionAlarmsTestCreateAbsoluteGetAlarm1Callback(
 
   test->alarm_manager_->GetAlarm(
       test->extension()->id(), std::string(),
-      base::Bind(ExtensionAlarmsTestCreateAbsoluteGetAlarm2Callback, test));
+      base::BindOnce(ExtensionAlarmsTestCreateAbsoluteGetAlarm2Callback, test));
 }
 
 TEST_F(ExtensionAlarmsTest, CreateAbsolute) {
@@ -214,7 +216,7 @@ TEST_F(ExtensionAlarmsTest, CreateAbsolute) {
 
   alarm_manager_->GetAlarm(
       extension()->id(), std::string(),
-      base::Bind(ExtensionAlarmsTestCreateAbsoluteGetAlarm1Callback, this));
+      base::BindOnce(ExtensionAlarmsTestCreateAbsoluteGetAlarm1Callback, this));
 }
 
 void ExtensionAlarmsTestCreateRepeatingWithQuickFirstCallGetAlarm3Callback(
@@ -235,7 +237,7 @@ void ExtensionAlarmsTestCreateRepeatingWithQuickFirstCallGetAlarm2Callback(
 
   test->alarm_manager_->GetAlarm(
       test->extension()->id(), std::string(),
-      base::Bind(
+      base::BindOnce(
           ExtensionAlarmsTestCreateRepeatingWithQuickFirstCallGetAlarm3Callback,
           test));
 }
@@ -256,7 +258,7 @@ void ExtensionAlarmsTestCreateRepeatingWithQuickFirstCallGetAlarm1Callback(
 
   test->alarm_manager_->GetAlarm(
       test->extension()->id(), std::string(),
-      base::Bind(
+      base::BindOnce(
           ExtensionAlarmsTestCreateRepeatingWithQuickFirstCallGetAlarm2Callback,
           test));
 }
@@ -267,7 +269,7 @@ TEST_F(ExtensionAlarmsTest, CreateRepeatingWithQuickFirstCall) {
 
   alarm_manager_->GetAlarm(
       extension()->id(), std::string(),
-      base::Bind(
+      base::BindOnce(
           ExtensionAlarmsTestCreateRepeatingWithQuickFirstCallGetAlarm1Callback,
           this));
 }
@@ -288,36 +290,44 @@ TEST_F(ExtensionAlarmsTest, CreateDupe) {
 
   alarm_manager_->GetAllAlarms(
       extension()->id(),
-      base::Bind(ExtensionAlarmsTestCreateDupeGetAllAlarmsCallback));
+      base::BindOnce(ExtensionAlarmsTestCreateDupeGetAllAlarmsCallback));
 }
+
+class ConsoleLogMessageLocalFrame : public content::FakeLocalFrame {
+ public:
+  void AddMessageToConsole(blink::mojom::ConsoleMessageLevel level,
+                           const std::string& message,
+                           bool discard_duplicates) override {
+    message_count_++;
+    last_level_ = level;
+    last_message_ = message;
+  }
+  unsigned message_count() const { return message_count_; }
+  const std::string& last_message() const { return last_message_; }
+  blink::mojom::ConsoleMessageLevel last_level() const {
+    return last_level_.value();
+  }
+
+ private:
+  unsigned message_count_ = 0;
+  absl::optional<blink::mojom::ConsoleMessageLevel> last_level_;
+  std::string last_message_;
+};
 
 TEST_F(ExtensionAlarmsTest, CreateDelayBelowMinimum) {
   // Create an alarm with delay below the minimum accepted value.
-  IPC::TestSink& sink = static_cast<content::MockRenderProcessHost*>(
-                            contents()->GetMainFrame()->GetProcess())
-                            ->sink();
-  size_t initial_message_count = sink.message_count();
+  ConsoleLogMessageLocalFrame local_frame;
+  local_frame.Init(contents()->GetMainFrame()->GetRemoteAssociatedInterfaces());
+  base::RunLoop().RunUntilIdle();
+  ASSERT_EQ(local_frame.message_count(), 0u);
   CreateAlarm("[\"negative\", {\"delayInMinutes\": -0.2}]");
-  // A new message should have been added.
-  ASSERT_GT(sink.message_count(), initial_message_count);
-
-  // All of this would be cleaner if we could read the message as a
-  // FrameMsg_AddMessageToConsole, but that would be a layering violation.
-  // Better yet would be an observer method for frames adding console messages,
-  // but it's not worth adding just for a test.
-  const IPC::Message* warning =
-      sink.GetMessageAt(initial_message_count /* 0-based */);
-  ASSERT_TRUE(warning);
-
-  int level = 0;
-  base::PickleIterator iter(*warning);
-  ASSERT_TRUE(iter.ReadInt(&level));
-  std::string message;
-  ASSERT_TRUE(iter.ReadString(&message));
+  base::RunLoop().RunUntilIdle();
+  ASSERT_EQ(local_frame.message_count(), 1u);
 
   EXPECT_EQ(blink::mojom::ConsoleMessageLevel::kWarning,
-            static_cast<blink::mojom::ConsoleMessageLevel>(level));
-  EXPECT_THAT(message, testing::HasSubstr("delay is less than minimum of 1"));
+            local_frame.last_level());
+  EXPECT_THAT(local_frame.last_message(),
+              testing::HasSubstr("delay is less than minimum of 1"));
 }
 
 TEST_F(ExtensionAlarmsTest, Get) {
@@ -416,7 +426,7 @@ void ExtensionAlarmsTestClearGetAllAlarms1Callback(
   // Ensure the 0.001-minute alarm is still there, since it's repeating.
   test->alarm_manager_->GetAllAlarms(
       test->extension()->id(),
-      base::Bind(ExtensionAlarmsTestClearGetAllAlarms2Callback));
+      base::BindOnce(ExtensionAlarmsTestClearGetAllAlarms2Callback));
 }
 
 TEST_F(ExtensionAlarmsTest, Clear) {
@@ -424,9 +434,8 @@ TEST_F(ExtensionAlarmsTest, Clear) {
   {
     std::unique_ptr<base::Value> result(
         RunFunctionAndReturnValue(new AlarmsClearFunction(), "[\"nobody\"]"));
-    bool copy_bool_result = false;
-    ASSERT_TRUE(result->GetAsBoolean(&copy_bool_result));
-    EXPECT_FALSE(copy_bool_result);
+    ASSERT_TRUE(result->is_bool());
+    EXPECT_FALSE(result->GetBool());
   }
 
   // Create 3 alarms.
@@ -436,21 +445,19 @@ TEST_F(ExtensionAlarmsTest, Clear) {
   {
     std::unique_ptr<base::Value> result(
         RunFunctionAndReturnValue(new AlarmsClearFunction(), "[\"7\"]"));
-    bool copy_bool_result = false;
-    ASSERT_TRUE(result->GetAsBoolean(&copy_bool_result));
-    EXPECT_TRUE(copy_bool_result);
+    ASSERT_TRUE(result->is_bool());
+    EXPECT_TRUE(result->GetBool());
   }
   {
     std::unique_ptr<base::Value> result(
         RunFunctionAndReturnValue(new AlarmsClearFunction(), "[\"0\"]"));
-    bool copy_bool_result = false;
-    ASSERT_TRUE(result->GetAsBoolean(&copy_bool_result));
-    EXPECT_TRUE(copy_bool_result);
+    ASSERT_TRUE(result->is_bool());
+    EXPECT_TRUE(result->GetBool());
   }
 
   alarm_manager_->GetAllAlarms(
       extension()->id(),
-      base::Bind(ExtensionAlarmsTestClearGetAllAlarms1Callback, this));
+      base::BindOnce(ExtensionAlarmsTestClearGetAllAlarms1Callback, this));
 }
 
 void ExtensionAlarmsTestClearAllGetAllAlarms2Callback(
@@ -468,7 +475,7 @@ void ExtensionAlarmsTestClearAllGetAllAlarms1Callback(
   test->RunFunction(new AlarmsClearAllFunction(), "[]");
   test->alarm_manager_->GetAllAlarms(
       test->extension()->id(),
-      base::Bind(ExtensionAlarmsTestClearAllGetAllAlarms2Callback));
+      base::BindOnce(ExtensionAlarmsTestClearAllGetAllAlarms2Callback));
 }
 
 TEST_F(ExtensionAlarmsTest, ClearAll) {
@@ -476,16 +483,15 @@ TEST_F(ExtensionAlarmsTest, ClearAll) {
   {
     std::unique_ptr<base::Value> result(
         RunFunctionAndReturnValue(new AlarmsClearAllFunction(), "[]"));
-    bool copy_bool_result = false;
-    ASSERT_TRUE(result->GetAsBoolean(&copy_bool_result));
-    EXPECT_TRUE(copy_bool_result);
+    ASSERT_TRUE(result->is_bool());
+    EXPECT_TRUE(result->GetBool());
   }
 
   // Create 3 alarms.
   CreateAlarms(3);
   alarm_manager_->GetAllAlarms(
       extension()->id(),
-      base::Bind(ExtensionAlarmsTestClearAllGetAllAlarms1Callback, this));
+      base::BindOnce(ExtensionAlarmsTestClearAllGetAllAlarms1Callback, this));
 }
 
 class ExtensionAlarmsSchedulingTest : public ExtensionAlarmsTest {
@@ -504,20 +510,21 @@ class ExtensionAlarmsSchedulingTest : public ExtensionAlarmsTest {
   void VerifyScheduledTime(const std::string& alarm_name) {
     alarm_manager_->GetAlarm(
         extension()->id(), alarm_name,
-        base::Bind(&ExtensionAlarmsSchedulingTest::GetAlarmCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&ExtensionAlarmsSchedulingTest::GetAlarmCallback,
+                       base::Unretained(this)));
   }
 
   void RemoveAlarm(const std::string& name) {
     alarm_manager_->RemoveAlarm(
         extension()->id(), name,
-        base::Bind(&ExtensionAlarmsSchedulingTest::RemoveAlarmCallback));
+        base::BindOnce(&ExtensionAlarmsSchedulingTest::RemoveAlarmCallback));
   }
 
   void RemoveAllAlarms() {
     alarm_manager_->RemoveAllAlarms(
         extension()->id(),
-        base::Bind(&ExtensionAlarmsSchedulingTest::RemoveAllAlarmsCallback));
+        base::BindOnce(
+            &ExtensionAlarmsSchedulingTest::RemoveAllAlarmsCallback));
   }
 };
 
@@ -540,7 +547,7 @@ TEST_F(ExtensionAlarmsSchedulingTest, PollScheduling) {
     std::unique_ptr<Alarm> alarm(new Alarm);
     alarm->js_alarm->name = "bb";
     alarm->js_alarm->scheduled_time = 30 * 60000;
-    alarm->js_alarm->period_in_minutes.reset(new double(30));
+    alarm->js_alarm->period_in_minutes = std::make_unique<double>(30);
     alarm_manager_->AddAlarmImpl(extension()->id(), std::move(alarm));
     VerifyScheduledTime("a");
     RemoveAllAlarms();
@@ -550,7 +557,7 @@ TEST_F(ExtensionAlarmsSchedulingTest, PollScheduling) {
     std::unique_ptr<Alarm> alarm(new Alarm);
     alarm->js_alarm->name = "bb";
     alarm->js_alarm->scheduled_time = 3 * 60000;
-    alarm->js_alarm->period_in_minutes.reset(new double(3));
+    alarm->js_alarm->period_in_minutes = std::make_unique<double>(3);
     alarm_manager_->AddAlarmImpl(extension()->id(), std::move(alarm));
     base::RunLoop().Run();
     EXPECT_EQ(
@@ -565,12 +572,12 @@ TEST_F(ExtensionAlarmsSchedulingTest, PollScheduling) {
     std::unique_ptr<Alarm> alarm2(new Alarm);
     alarm2->js_alarm->name = "bb";
     alarm2->js_alarm->scheduled_time = 4 * 60000;
-    alarm2->js_alarm->period_in_minutes.reset(new double(4));
+    alarm2->js_alarm->period_in_minutes = std::make_unique<double>(4);
     alarm_manager_->AddAlarmImpl(extension()->id(), std::move(alarm2));
     std::unique_ptr<Alarm> alarm3(new Alarm);
     alarm3->js_alarm->name = "ccc";
     alarm3->js_alarm->scheduled_time = 25 * 60000;
-    alarm3->js_alarm->period_in_minutes.reset(new double(25));
+    alarm3->js_alarm->period_in_minutes = std::make_unique<double>(25);
     alarm_manager_->AddAlarmImpl(extension()->id(), std::move(alarm3));
     base::RunLoop().Run();
     EXPECT_EQ(
@@ -581,8 +588,9 @@ TEST_F(ExtensionAlarmsSchedulingTest, PollScheduling) {
 }
 
 TEST_F(ExtensionAlarmsSchedulingTest, ReleasedExtensionPollsInfrequently) {
-  set_extension(
-      ExtensionBuilder("Test").SetLocation(Manifest::INTERNAL).Build());
+  set_extension(ExtensionBuilder("Test")
+                    .SetLocation(mojom::ManifestLocation::kInternal)
+                    .Build());
   test_clock_.SetNow(base::Time::FromJsTime(300000));
   CreateAlarm("[\"a\", {\"when\": 300010}]");
   CreateAlarm("[\"b\", {\"when\": 340000}]");
@@ -615,8 +623,9 @@ TEST_F(ExtensionAlarmsSchedulingTest, TimerRunning) {
 }
 
 TEST_F(ExtensionAlarmsSchedulingTest, MinimumGranularity) {
-  set_extension(
-      ExtensionBuilder("Test").SetLocation(Manifest::INTERNAL).Build());
+  set_extension(ExtensionBuilder("Test")
+                    .SetLocation(mojom::ManifestLocation::kInternal)
+                    .Build());
   test_clock_.SetNow(base::Time::FromJsTime(0));
   CreateAlarm("[\"a\", {\"periodInMinutes\": 2}]");
   test_clock_.Advance(base::TimeDelta::FromSeconds(1));
@@ -643,8 +652,9 @@ TEST_F(ExtensionAlarmsSchedulingTest, DifferentMinimumGranularities) {
   // CreateAlarm() uses extension_, so keep a ref of the old one around, and
   // repopulate extension_.
   scoped_refptr<const Extension> extension2(extension_ref());
-  set_extension(
-      ExtensionBuilder("Test").SetLocation(Manifest::INTERNAL).Build());
+  set_extension(ExtensionBuilder("Test")
+                    .SetLocation(mojom::ManifestLocation::kInternal)
+                    .Build());
 
   CreateAlarm("[\"b\", {\"periodInMinutes\": 2}]");
 
@@ -697,8 +707,9 @@ TEST_F(ExtensionAlarmsSchedulingTest, PollFrequencyFromStoredAlarm) {
                                     std::move(value));
 
     // Let the alarm fire once, we will verify the next polling time afterwards.
-    alarm_manager_->GetAlarm(extension()->id(), "hello",
-                             base::Bind(FrequencyTestGetAlarmsCallback, this));
+    alarm_manager_->GetAlarm(
+        extension()->id(), "hello",
+        base::BindOnce(FrequencyTestGetAlarmsCallback, this));
 
     // The stored alarm's "periodInMinutes" is much smaller than allowed minimum
     // in this test (alarms_api_constants::kDevDelayMinimum or

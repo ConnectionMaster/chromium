@@ -8,10 +8,9 @@
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/net_errors.h"
 #include "net/log/test_net_log.h"
-#include "net/log/test_net_log_entry.h"
 #include "net/log/test_net_log_util.h"
 #include "net/socket/datagram_socket.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -127,14 +126,13 @@ class MockUDPSocketPosix : public UDPSocketPosix {
   }
 };
 
-class UDPSocketPosixTest : public TestWithScopedTaskEnvironment {
+class UDPSocketPosixTest : public TestWithTaskEnvironment {
  public:
   UDPSocketPosixTest()
-      : TestWithScopedTaskEnvironment(
-            base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME),
+      : TestWithTaskEnvironment(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME),
         socket_(DatagramSocket::DEFAULT_BIND, &client_log_, NetLogSource()),
-        callback_fired_(false),
-        weak_factory_(this) {
+        callback_fired_(false) {
     write_callback_ = base::BindRepeating(&UDPSocketPosixTest::OnWriteComplete,
                                           weak_factory_.GetWeakPtr());
   }
@@ -220,14 +218,15 @@ class UDPSocketPosixTest : public TestWithScopedTaskEnvironment {
         .WillOnce(Return(kNumMsgs));
   }
 
-  TestNetLog client_log_;
+  RecordingTestNetLog client_log_;
   MockUDPSocketPosix socket_;
   DatagramBuffers buffers_;
   bool callback_fired_;
   int rv_;
   std::string msgs_[kNumMsgs] = {kHelloMsg, kSecondMsg, kThirdMsg};
-  int lengths_[kNumMsgs] = {kHelloMsg.length(), kSecondMsg.length(),
-                            kThirdMsg.length()};
+  int lengths_[kNumMsgs] = {static_cast<int>(kHelloMsg.length()),
+                            static_cast<int>(kSecondMsg.length()),
+                            static_cast<int>(kThirdMsg.length())};
   int total_lengths_ =
       kHelloMsg.length() + kSecondMsg.length() + kThirdMsg.length();
   DatagramBuffer* buffer_ptrs_[kNumMsgs];
@@ -236,7 +235,7 @@ class UDPSocketPosixTest : public TestWithScopedTaskEnvironment {
   struct iovec msg_iov_[kNumMsgs];
   struct mmsghdr msgvec_[kNumMsgs];
 #endif
-  base::WeakPtrFactory<UDPSocketPosixTest> weak_factory_;
+  base::WeakPtrFactory<UDPSocketPosixTest> weak_factory_{this};
 };
 
 TEST_F(UDPSocketPosixTest, InternalSendBuffers) {
@@ -345,8 +344,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffers) {
   socket_.DidSendBuffers(std::move(send_result));
   EXPECT_EQ(0u, socket_.GetUnwrittenBuffers().size());
   VerifyBuffersDequeued();
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(4u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -369,8 +367,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersAsync) {
   socket_.SetWriteCallback(write_callback_);
   socket_.DidSendBuffers(std::move(send_result));
   EXPECT_EQ(0u, socket_.GetUnwrittenBuffers().size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(4u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -394,8 +391,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersError) {
   socket_.SetWriteCallback(write_callback_);
   socket_.DidSendBuffers(std::move(send_result));
   EXPECT_EQ(2u, socket_.GetUnwrittenBuffers().size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(2u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -413,8 +409,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersShort) {
   socket_.SetWriteCallback(write_callback_);
   socket_.DidSendBuffers(std::move(send_result));
   EXPECT_EQ(2u, socket_.GetUnwrittenBuffers().size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(2u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -433,8 +428,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersPending) {
   EXPECT_CALL(socket_, InternalWatchFileDescriptor()).WillOnce(Return(true));
   socket_.DidSendBuffers(std::move(send_result));
   EXPECT_EQ(2u, socket_.GetUnwrittenBuffers().size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(2u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -454,8 +448,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersWatchError) {
       .WillOnce(InvokeWithoutArgs(WatcherSetInvalidHandle));
   socket_.DidSendBuffers(std::move(send_result));
   EXPECT_EQ(2u, socket_.GetUnwrittenBuffers().size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(3u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -478,8 +471,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersStopWatch) {
   socket_.DidSendBuffers(std::move(send_result));
   buffers_ = socket_.GetUnwrittenBuffers();
   EXPECT_EQ(2u, buffers_.size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(2u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -497,7 +489,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersStopWatch) {
   socket_.DidSendBuffers(std::move(send_result2));
 
   EXPECT_EQ(0u, socket_.GetUnwrittenBuffers().size());
-  client_log_.GetEntries(&client_entries);
+  client_entries = client_log_.GetEntries();
   EXPECT_EQ(4u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -523,8 +515,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersErrorStopWatch) {
   socket_.DidSendBuffers(std::move(send_result));
   buffers_ = socket_.GetUnwrittenBuffers();
   EXPECT_EQ(2u, buffers_.size());
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(2u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -542,7 +533,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersErrorStopWatch) {
   socket_.DidSendBuffers(std::move(send_result2));
 
   EXPECT_EQ(2u, socket_.GetUnwrittenBuffers().size());
-  client_log_.GetEntries(&client_entries);
+  client_entries = client_log_.GetEntries();
   EXPECT_EQ(2u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));
@@ -561,8 +552,7 @@ TEST_F(UDPSocketPosixTest, DidSendBuffersDelayCallbackWhileTooManyBuffers) {
   ResetWriteCallback();
   socket_.SetWriteCallback(write_callback_);
   socket_.DidSendBuffers(std::move(send_result));
-  TestNetLogEntry::List client_entries;
-  client_log_.GetEntries(&client_entries);
+  auto client_entries = client_log_.GetEntries();
   EXPECT_EQ(3u, client_entries.size());
   EXPECT_TRUE(
       LogContainsBeginEvent(client_entries, 0, NetLogEventType::SOCKET_ALIVE));

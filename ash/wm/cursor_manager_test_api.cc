@@ -4,10 +4,10 @@
 
 #include "ash/wm/cursor_manager_test_api.h"
 
+#include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/shell.h"
-#include "ash/shell_test_api.h"
 #include "ash/wm/native_cursor_manager_ash.h"
-#include "ui/base/cursor/image_cursors.h"
+#include "ui/base/cursor/cursor_size.h"
 #include "ui/display/display.h"
 #include "ui/wm/core/cursor_manager.h"
 
@@ -29,11 +29,7 @@ gfx::NativeCursor CursorManagerTestApi::GetCurrentCursor() const {
 
 display::Display::Rotation CursorManagerTestApi::GetCurrentCursorRotation()
     const {
-  return ShellTestApi(Shell::Get()).native_cursor_manager_ash()->GetRotation();
-}
-
-float CursorManagerTestApi::GetCurrentCursorScale() const {
-  return ShellTestApi(Shell::Get()).native_cursor_manager_ash()->GetScale();
+  return ShellTestApi().native_cursor_manager_ash()->GetRotation();
 }
 
 }  // namespace ash

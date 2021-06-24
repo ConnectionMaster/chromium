@@ -6,18 +6,33 @@
  * @fileoverview Suite of tests for extension options dialog.
  * These are run as part of interactive_ui_tests.
  */
+
+import 'chrome://extensions/extensions.js';
+
+import {getDeepActiveElement} from 'chrome://resources/js/util.m.js';
+
+import {eventToPromise} from '../test_util.m.js';
+
 suite('ExtensionOptionsDialogTest', () => {
   test('show options dialog', async () => {
-    const manager = document.querySelector('extensions-manager');
+    document.body.innerHTML = '';
+    window.history.replaceState(
+        {}, '', '/?id=ibbpngabdmdpednkhonkkobdeccpkiff');
+
+    const manager = document.createElement('extensions-manager');
+    document.body.appendChild(manager);
     assertTrue(!!manager);
-    const extensionDetailView = manager.$$('extensions-detail-view');
+    await eventToPromise('view-enter-start', manager);
+    const extensionDetailView =
+        manager.shadowRoot.querySelector('extensions-detail-view');
     assertTrue(!!extensionDetailView);
 
-    const optionsButton = extensionDetailView.$$('#extensions-options');
+    const optionsButton =
+        extensionDetailView.shadowRoot.querySelector('#extensions-options');
     optionsButton.click();
-    await test_util.eventToPromise('cr-dialog-open', manager);
-    const dialog = manager.$$('#options-dialog');
-    let waitForClose = test_util.eventToPromise('close', dialog);
+    await eventToPromise('cr-dialog-open', manager);
+    const dialog = manager.shadowRoot.querySelector('#options-dialog');
+    let waitForClose = eventToPromise('close', dialog);
     dialog.$.dialog.cancel();
     await waitForClose;
     const activeElement = getDeepActiveElement();

@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/core/layout/text_autosizer.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/platform/web_float_rect.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -17,9 +16,9 @@
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 
 namespace blink {
-class TextAutosizerClient : public EmptyChromeClient {
+class TextAutosizerClient : public RenderingTestChromeClient {
  public:
-  float WindowToViewportScalar(const float value) const override {
+  float WindowToViewportScalar(LocalFrame*, const float value) const override {
     return value * device_scale_factor_;
   }
   IntRect ViewportToScreen(const IntRect& rect,
@@ -38,7 +37,7 @@ class TextAutosizerClient : public EmptyChromeClient {
 
 class TextAutosizerTest : public RenderingTest {
  public:
-  ChromeClient& GetChromeClient() const override {
+  RenderingTestChromeClient& GetChromeClient() const override {
     return GetTextAutosizerClient();
   }
   TextAutosizerClient& GetTextAutosizerClient() const {
@@ -579,7 +578,7 @@ TEST_F(TextAutosizerTest, ChangingSuperClusterFirstText) {
   UpdateAllLifecyclePhasesForTest();
 
   Element* long_text_element = GetDocument().getElementById("longText");
-  long_text_element->SetInnerHTMLFromString(
+  long_text_element->setInnerHTML(
       "    Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed "
       "do eiusmod tempor"
       "    incididunt ut labore et dolore magna aliqua. Ut enim ad minim "
@@ -624,7 +623,7 @@ TEST_F(TextAutosizerTest, ChangingSuperClusterSecondText) {
   UpdateAllLifecyclePhasesForTest();
 
   Element* long_text_element = GetDocument().getElementById("longText");
-  long_text_element->SetInnerHTMLFromString(
+  long_text_element->setInnerHTML(
       "    Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed "
       "do eiusmod tempor"
       "    incididunt ut labore et dolore magna aliqua. Ut enim ad minim "
@@ -669,7 +668,7 @@ TEST_F(TextAutosizerTest, AddingSuperCluster) {
   UpdateAllLifecyclePhasesForTest();
 
   Element* container = GetDocument().getElementById("container");
-  container->SetInnerHTMLFromString(
+  container->setInnerHTML(
       "<div class='supercluster' id='longText'>"
       "    Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed "
       "do eiusmod tempor"
@@ -717,7 +716,7 @@ TEST_F(TextAutosizerTest, ChangingInheritedClusterTextInsideSuperCluster) {
   UpdateAllLifecyclePhasesForTest();
 
   Element* long_text_element = GetDocument().getElementById("longText");
-  long_text_element->SetInnerHTMLFromString(
+  long_text_element->setInnerHTML(
       "    Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed "
       "do eiusmod tempor"
       "    incididunt ut labore et dolore magna aliqua. Ut enim ad minim "
@@ -803,7 +802,7 @@ TEST_F(TextAutosizerTest, ResizeAndGlyphOverflowChanged) {
   GetDocument().GetSettings()->SetTextAutosizingWindowSizeOverride(
       IntSize(360, 640));
   Element* html = GetDocument().body()->parentElement();
-  html->SetInnerHTMLFromString(
+  html->setInnerHTML(
       "<head>"
       "  <meta name='viewport' content='width=800'>"
       "  <style>"
@@ -843,7 +842,7 @@ TEST_F(TextAutosizerTest, ResizeAndGlyphOverflowChanged) {
 
 TEST_F(TextAutosizerTest, narrowContentInsideNestedWideBlock) {
   Element* html = GetDocument().body()->parentElement();
-  html->SetInnerHTMLFromString(
+  html->setInnerHTML(
       "<head>"
       "  <meta name='viewport' content='width=800'>"
       "  <style>"
@@ -879,7 +878,7 @@ TEST_F(TextAutosizerTest, narrowContentInsideNestedWideBlock) {
 
 TEST_F(TextAutosizerTest, LayoutViewWidthProvider) {
   Element* html = GetDocument().body()->parentElement();
-  html->SetInnerHTMLFromString(
+  html->setInnerHTML(
       "<head>"
       "  <meta name='viewport' content='width=800'>"
       "  <style>"
@@ -908,8 +907,8 @@ TEST_F(TextAutosizerTest, LayoutViewWidthProvider) {
   EXPECT_FLOAT_EQ(40.f,
                   content->GetLayoutObject()->StyleRef().ComputedFontSize());
 
-  GetDocument().getElementById("panel")->SetInnerHTMLFromString("insert text");
-  content->SetInnerHTMLFromString(content->InnerHTMLAsString());
+  GetDocument().getElementById("panel")->setInnerHTML("insert text");
+  content->setInnerHTML(content->innerHTML());
   UpdateAllLifecyclePhasesForTest();
 
   // (specified font-size = 16px) * (viewport width = 800px) /
@@ -920,7 +919,7 @@ TEST_F(TextAutosizerTest, LayoutViewWidthProvider) {
 
 TEST_F(TextAutosizerTest, MultiColumns) {
   Element* html = GetDocument().body()->parentElement();
-  html->SetInnerHTMLFromString(
+  html->setInnerHTML(
       "<head>"
       "  <meta name='viewport' content='width=800'>"
       "  <style>"
@@ -1084,7 +1083,7 @@ class TextAutosizerSimTest : public SimTest {
 };
 
 TEST_F(TextAutosizerSimTest, CrossSiteUseCounter) {
-  WebView().MainFrameWidget()->Resize(WebSize(800, 800));
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 800));
 
   SimRequest main_resource("https://example.com/", "text/html");
   SimRequest child_resource("https://crosssite.com/", "text/html");
@@ -1111,8 +1110,8 @@ TEST_F(TextAutosizerSimTest, CrossSiteUseCounter) {
   auto* child_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
   auto* child_doc = child_frame->GetFrame()->GetDocument();
 
-  EXPECT_TRUE(UseCounter::IsCounted(*child_doc,
-                                    WebFeature::kTextAutosizedCrossSiteIframe));
+  EXPECT_TRUE(
+      child_doc->IsUseCounted(WebFeature::kTextAutosizedCrossSiteIframe));
 }
 
 }  // namespace blink

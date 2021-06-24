@@ -14,11 +14,13 @@
 #include "extensions/browser/api/media_perception_private/media_perception_private_api.h"
 #include "extensions/common/api/media_perception_private.h"
 #include "extensions/common/features/feature_session_type.h"
+#include "extensions/common/mojom/feature_session_type.mojom.h"
 #include "extensions/common/switches.h"
 #include "extensions/shell/browser/shell_extensions_api_client.h"
 #include "extensions/shell/test/shell_apitest.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace extensions {
 
@@ -36,20 +38,22 @@ class TestMediaPerceptionAPIDelegate : public MediaPerceptionAPIDelegate {
       base::ThreadTaskRunnerHandle::Get()->PostTask(
           FROM_HERE,
           base::BindOnce(
-              std::move(load_callback), true,
+              std::move(load_callback),
+              media_perception::COMPONENT_INSTALLATION_ERROR_NONE,
               base::FilePath("/run/imageloader/rtanalytics-light/1.0")));
       return;
     }
 
-    // Firing callback with false indicates that the installation of the
-    // component failed.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::BindOnce(std::move(load_callback), false, base::FilePath()));
+        base::BindOnce(std::move(load_callback),
+                       media_perception::COMPONENT_INSTALLATION_ERROR_NOT_FOUND,
+                       base::FilePath()));
   }
 
-  void BindDeviceFactoryProviderToVideoCaptureService(
-      video_capture::mojom::DeviceFactoryProviderPtr* provider) override {
+  void BindVideoSourceProvider(
+      mojo::PendingReceiver<video_capture::mojom::VideoSourceProvider> receiver)
+      override {
     NOTIMPLEMENTED();
   }
 
@@ -58,9 +62,10 @@ class TestMediaPerceptionAPIDelegate : public MediaPerceptionAPIDelegate {
     NOTIMPLEMENTED();
   }
 
-  void ForwardMediaPerceptionRequest(
-      chromeos::media_perception::mojom::MediaPerceptionRequest request,
-      content::RenderFrameHost* render_frame_host) override {
+  void ForwardMediaPerceptionReceiver(
+      content::RenderFrameHost* render_frame_host,
+      mojo::PendingReceiver<chromeos::media_perception::mojom::MediaPerception>
+          receiver) override {
     NOTIMPLEMENTED();
   }
 };
@@ -91,9 +96,9 @@ class MediaPerceptionPrivateApiTest : public ShellApiTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     ShellApiTest::SetUpCommandLine(command_line);
-    // Whitelist of the extension ID of the test extension.
+    // Allowlist of the extension ID of the test extension.
     command_line->AppendSwitchASCII(
-        extensions::switches::kWhitelistedExtensionID,
+        extensions::switches::kAllowlistedExtensionID,
         "epcifkihnkjgphfkloaaleeakhpmgdmn");
   }
 
@@ -111,12 +116,12 @@ class MediaPerceptionPrivateApiTest : public ShellApiTest {
 
   void SetUpOnMainThread() override {
     session_feature_type_ = extensions::ScopedCurrentFeatureSessionType(
-        extensions::FeatureSessionType::KIOSK);
+        extensions::mojom::FeatureSessionType::kKiosk);
     ShellApiTest::SetUpOnMainThread();
   }
 
  private:
-  std::unique_ptr<base::AutoReset<extensions::FeatureSessionType>>
+  std::unique_ptr<base::AutoReset<extensions::mojom::FeatureSessionType>>
       session_feature_type_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaPerceptionPrivateApiTest);

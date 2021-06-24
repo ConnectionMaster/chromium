@@ -5,8 +5,8 @@
 #include <memory>
 
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/json/json_file_value_serializer.h"
-#include "base/stl_util.h"
 #include "chrome/common/extensions/manifest_tests/chrome_manifest_test.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/features/simple_feature.h"
@@ -39,11 +39,12 @@ TEST_F(PlatformAppsManifestTest, PlatformApps) {
   EXPECT_FALSE(IncognitoInfo::IsSplitMode(extension.get()));
 
   Testcase error_testcases[] = {
-    Testcase("init_invalid_platform_app_2.json",
-             errors::kBackgroundRequiredForPlatformApps),
-    Testcase("init_invalid_platform_app_3.json",
-             ErrorUtils::FormatErrorMessage(
-                 errors::kInvalidManifestVersionOld, "2", "apps")),
+      Testcase("init_invalid_platform_app_2.json",
+               errors::kBackgroundRequiredForPlatformApps),
+      Testcase("init_invalid_platform_app_3.json",
+               ErrorUtils::FormatErrorMessage(
+                   errors::kInvalidManifestVersionUnsupported, "either 2 or 3",
+                   "apps")),
   };
   RunTestcases(error_testcases, base::size(error_testcases), EXPECT_TYPE_ERROR);
 
@@ -54,12 +55,12 @@ TEST_F(PlatformAppsManifestTest, PlatformApps) {
           "apps, but this is a packaged app."),
       Testcase("init_invalid_platform_app_4.json",
                "'background' is only allowed for extensions, legacy packaged "
-               "apps, and"
-               " hosted apps, but this is a packaged app."),
+               "apps, hosted apps, and login screen extensions, but this is a "
+               "packaged app."),
       Testcase("init_invalid_platform_app_5.json",
                "'background' is only allowed for extensions, legacy packaged "
-               "apps, and"
-               " hosted apps, but this is a packaged app."),
+               "apps, hosted apps, and login screen extensions, but this is a "
+               "packaged app."),
       Testcase("incognito_invalid_platform_app.json",
                "'incognito' is only allowed for extensions and legacy packaged "
                "apps, "
@@ -74,8 +75,9 @@ TEST_F(PlatformAppsManifestTest, PlatformAppContentSecurityPolicy) {
   Testcase warning_testcases[] = {
     Testcase(
         "init_platform_app_csp_warning_1.json",
-        "'content_security_policy' is only allowed for extensions and legacy "
-            "packaged apps, but this is a packaged app."),
+        "'content_security_policy' is only allowed for extensions, legacy "
+            "packaged apps, and login screen extensions, but this is a "
+            "packaged app."),
     Testcase(
         "init_platform_app_csp_warning_2.json",
         "'app.content_security_policy' is not allowed for specified extension "
@@ -125,11 +127,10 @@ TEST_F(PlatformAppsManifestTest, CertainApisRequirePlatformApps) {
   // Create each manifest.
   for (const char* api_name : kPlatformAppExperimentalApis) {
     base::Value permissions(base::Value::Type::LIST);
-    permissions.GetList().push_back(base::Value("experimental"));
-    permissions.GetList().push_back(base::Value(api_name));
+    permissions.Append(base::Value("experimental"));
+    permissions.Append(base::Value(api_name));
     manifest.SetKey("permissions", std::move(permissions));
-    manifests.push_back(
-        std::make_unique<ManifestData>(manifest.CreateDeepCopy(), ""));
+    manifests.push_back(std::make_unique<ManifestData>(manifest.Clone(), ""));
   }
   // First try to load without any flags. This should warn for every API.
   for (const std::unique_ptr<ManifestData>& manifest : manifests) {

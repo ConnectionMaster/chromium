@@ -32,19 +32,21 @@ class ChromeNativeAppWindowViews
       views::Widget* widget);
   virtual void InitializeDefaultWindow(
       const extensions::AppWindow::CreateParams& create_params);
-  virtual views::NonClientFrameView* CreateStandardDesktopAppFrame();
-  virtual views::NonClientFrameView* CreateNonStandardAppFrame() = 0;
+  virtual std::unique_ptr<views::NonClientFrameView>
+  CreateStandardDesktopAppFrame();
+  virtual std::unique_ptr<views::NonClientFrameView>
+  CreateNonStandardAppFrame() = 0;
   virtual bool ShouldRemoveStandardFrame();
 
   // ui::BaseWindow implementation.
   gfx::Rect GetRestoredBounds() const override;
   ui::WindowShowState GetRestoredState() const override;
-  bool IsAlwaysOnTop() const override;
+  ui::ZOrderLevel GetZOrderLevel() const override;
 
   // WidgetDelegate implementation.
-  gfx::ImageSkia GetWindowAppIcon() override;
-  gfx::ImageSkia GetWindowIcon() override;
-  views::NonClientFrameView* CreateNonClientFrameView(
+  ui::ImageModel GetWindowAppIcon() override;
+  ui::ImageModel GetWindowIcon() override;
+  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
       views::Widget* widget) override;
   bool WidgetHasHitTestMask() const override;
   void GetWidgetHitTestMask(SkPath* mask) const override;
@@ -65,10 +67,13 @@ class ChromeNativeAppWindowViews
       extensions::AppWindow* app_window,
       const extensions::AppWindow::CreateParams& create_params) override;
 
- private:
-  // Ensures that the Chrome app icon is created.
-  void EnsureAppIconCreated();
+  virtual gfx::Image GetCustomImage();
+  virtual gfx::Image GetAppIconImage();
 
+  // Ensures that the Chrome app icon is created.
+  virtual void EnsureAppIconCreated();
+
+ private:
   // extensions::ChromeAppIconDelegate:
   void OnIconUpdated(extensions::ChromeAppIcon* icon) override;
 

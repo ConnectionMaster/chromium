@@ -6,28 +6,29 @@
 
 #include <math.h>
 #include <algorithm>
-#include <memory>
 #include <utility>
 #include <vector>
 
-#include "ash/home_screen/home_launcher_gesture_handler.h"
-#include "ash/home_screen/home_screen_controller.h"
+#include "ash/public/cpp/metrics_util.h"
 #include "ash/public/cpp/window_animation_types.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/wm/pip/pip_positioner.h"
 #include "ash/wm/window_util.h"
 #include "ash/wm/workspace_controller.h"
+#include "base/bind.h"
+#include "base/check.h"
 #include "base/i18n/rtl.h"
-#include "base/lazy_instance.h"
-#include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/time/time.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/class_property.h"
+#include "ui/compositor/animation_throughput_reporter.h"
 #include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
@@ -47,9 +48,12 @@ namespace {
 
 const int kLayerAnimationsForMinimizeDurationMS = 200;
 
-// Durations for the cross-fade animation, in milliseconds.
-const float kCrossFadeDurationMinMs = 200.f;
-const float kCrossFadeDurationMaxMs = 400.f;
+// Amount of time for the cross fade animation.
+constexpr base::TimeDelta kCrossFadeDuration =
+    base::TimeDelta::FromMilliseconds(200);
+
+constexpr base::TimeDelta kCrossFadeMaxDuration =
+    base::TimeDelta::FromMilliseconds(400);
 
 // Durations for the brightness/grayscale fade animation, in milliseconds.
 const int kBrightnessGrayscaleFadeDurationMs = 1000;
@@ -68,9 +72,8 @@ const float kWindowAnimation_ShowOpacity = 1.f;
 constexpr base::TimeDelta kZeroAnimationMs =
     base::TimeDelta::FromMilliseconds(300);
 
-int64_t Round64(float f) {
-  return static_cast<int64_t>(f + 0.5f);
-}
+constexpr char kCrossFadeSmoothness[] =
+    "Ash.Window.AnimationSmoothness.CrossFade";
 
 base::TimeDelta GetCrossFadeDuration(aura::Window* window,
                                      const gfx::RectF& old_bounds,
@@ -83,38 +86,309 @@ base::TimeDelta GetCrossFadeDuration(aura::Window* window,
   int max_area = std::max(old_area, new_area);
   // Avoid divide by zero.
   if (max_area == 0)
-    return base::TimeDelta::FromMilliseconds(kCrossFadeDurationMS);
+    return kCrossFadeDuration;
 
   int delta_area = std::abs(old_area - new_area);
   // If the area didn't change, the animation is instantaneous.
   if (delta_area == 0)
-    return base::TimeDelta::FromMilliseconds(kCrossFadeDurationMS);
+    return kCrossFadeDuration;
 
   float factor = static_cast<float>(delta_area) / static_cast<float>(max_area);
-  const float kRange = kCrossFadeDurationMaxMs - kCrossFadeDurationMinMs;
-  return base::TimeDelta::FromMilliseconds(
-      Round64(kCrossFadeDurationMinMs + (factor * kRange)));
+  const auto kRange = kCrossFadeMaxDuration - kCrossFadeDuration;
+  return kCrossFadeDuration + factor * kRange;
 }
 
-class CrossFadeMetricsReporter : public ui::AnimationMetricsReporter {
+// Observer for a window cross-fade animation. If either the window closes or
+// the layer's animation completes, it deletes the layer and removes itself as
+// an observer.
+class CrossFadeObserver : public aura::WindowObserver,
+                          public ui::ImplicitAnimationObserver {
  public:
-  CrossFadeMetricsReporter() = default;
-  ~CrossFadeMetricsReporter() override = default;
+  // Observes |window| for destruction, but does not take ownership.
+  // Takes ownership of |layer_owner| and its child layers.
+  CrossFadeObserver(aura::Window* window,
+                    std::unique_ptr<ui::LayerTreeOwner> layer_owner,
+                    absl::optional<std::string> histogram_name)
+      : window_(window),
+        layer_(window->layer()),
+        layer_owner_(std::move(layer_owner)) {
+    window_->AddObserver(this);
 
-  void Report(int value) override {
-    UMA_HISTOGRAM_PERCENTAGE("Ash.Window.AnimationSmoothness.CrossFade", value);
+    smoothness_tracker_ =
+        layer_->GetCompositor()->RequestNewThroughputTracker();
+    smoothness_tracker_->Start(metrics_util::ForSmoothness(base::BindRepeating(
+        [](const absl::optional<std::string>& histogram_name, int smoothness) {
+          if (histogram_name) {
+            DCHECK(!histogram_name->empty());
+            base::UmaHistogramPercentageObsoleteDoNotUse(*histogram_name,
+                                                         smoothness);
+          } else {
+            UMA_HISTOGRAM_PERCENTAGE(kCrossFadeSmoothness, smoothness);
+          }
+        },
+        std::move(histogram_name))));
+  }
+  CrossFadeObserver(const CrossFadeObserver&) = delete;
+  CrossFadeObserver& operator=(const CrossFadeObserver&) = delete;
+  ~CrossFadeObserver() override {
+    smoothness_tracker_->Stop();
+    smoothness_tracker_.reset();
+
+    // Stop the old animator to trigger aborts or ends on any observers it may
+    // have.
+    layer_owner_->root()->GetAnimator()->StopAnimating();
+
+    window_->RemoveObserver(this);
+    window_ = nullptr;
+    layer_ = nullptr;
+  }
+
+  // aura::WindowObserver:
+  void OnWindowDestroying(aura::Window* window) override { StopAnimating(); }
+  void OnWindowRemovingFromRootWindow(aura::Window* window,
+                                      aura::Window* new_root) override {
+    StopAnimating();
+  }
+  void OnWindowLayerRecreated(aura::Window* window) override {
+    // If the window layer is recreated. |layer_| will hold the LayerAnimator we
+    // were originally observing. Layer recreation is usually done when doing
+    // another window animation, so stop this current one and trigger
+    // OnImplicitAnimationsCompleted to delete ourselves.
+    layer_->GetAnimator()->StopAnimating();
+  }
+
+  // ui::ImplicitAnimationObserver:
+  void OnImplicitAnimationsCompleted() override { delete this; }
+
+ protected:
+  void StopAnimating() {
+    // Trigger OnImplicitAnimationsCompleted() to be called and deletes us. If
+    // no animation is running then do the deletion ourselves.
+    DCHECK(window_);
+    window_->layer()->GetAnimator()->StopAnimating();
+  }
+
+  // The window and the associated layer this observer is watching. The window
+  // layer may be recreated during the course of the animation so |layer_| will
+  // be different |window_->layer()| after construction.
+  aura::Window* window_;
+  ui::Layer* layer_;
+
+  std::unique_ptr<ui::LayerTreeOwner> layer_owner_;
+
+  absl::optional<ui::ThroughputTracker> smoothness_tracker_;
+};
+
+// A version of CrossFadeObserver which updates its transform to match the
+// visible bounds of the window it is cross-fading. It is expected users of this
+// will not perform their own transform animation on the passed LayerTreeOwner.
+class CrossFadeUpdateTransformObserver
+    : public CrossFadeObserver,
+      public ui::CompositorAnimationObserver {
+ public:
+  CrossFadeUpdateTransformObserver(
+      aura::Window* window,
+      std::unique_ptr<ui::LayerTreeOwner> layer_owner,
+      absl::optional<std::string> histogram_name)
+      : CrossFadeObserver(window, std::move(layer_owner), histogram_name) {
+    compositor_ = window->layer()->GetCompositor();
+    compositor_->AddAnimationObserver(this);
+  }
+  CrossFadeUpdateTransformObserver(const CrossFadeUpdateTransformObserver&) =
+      delete;
+  CrossFadeUpdateTransformObserver& operator=(
+      const CrossFadeUpdateTransformObserver&) = delete;
+  ~CrossFadeUpdateTransformObserver() override {
+    compositor_->RemoveAnimationObserver(this);
+  }
+
+  // CrossFadeObserver:
+  void OnLayerAnimationStarted(ui::LayerAnimationSequence* sequence) override {
+    DCHECK(!layer_owner_->root()->GetAnimator()->IsAnimatingProperty(
+        ui::LayerAnimationElement::TRANSFORM));
+    CrossFadeObserver::OnLayerAnimationStarted(sequence);
+  }
+
+  // ui::CompositorAnimationObserver:
+  void OnAnimationStep(base::TimeTicks timestamp) override {
+    // If these get shut down or destroyed we should delete ourselves.
+    DCHECK(compositor_);
+    DCHECK(window_);
+
+    // Calculate the transform needed to place |layer_owner_| in the same bounds
+    // plus transform as |window_|.
+    gfx::RectF old_bounds(layer_owner_->root()->bounds());
+    gfx::RectF new_bounds(window_->bounds());
+    gfx::Transform new_transform = window_->transform();
+    DCHECK(new_transform.IsScaleOrTranslation());
+
+    // Apply the transform on the bounds to get the location of |window_|.
+    // Transforms are calculated in a way where scale does not affect position,
+    // so use the same logic here.
+    gfx::RectF effective_bounds(new_bounds.size());
+    new_transform.TransformRect(&effective_bounds);
+    effective_bounds.set_x(effective_bounds.x() + new_bounds.x());
+    effective_bounds.set_y(effective_bounds.y() + new_bounds.y());
+
+    const gfx::Transform old_transform =
+        gfx::TransformBetweenRects(old_bounds, effective_bounds);
+    layer_owner_->root()->SetTransform(old_transform);
+  }
+
+  void OnCompositingShuttingDown(ui::Compositor* compositor) override {
+    DCHECK_EQ(compositor_, compositor);
+    StopAnimating();
   }
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(CrossFadeMetricsReporter);
+  ui::Compositor* compositor_ = nullptr;
 };
 
-base::LazyInstance<CrossFadeMetricsReporter>::Leaky g_reporter_cross_fade =
-    LAZY_INSTANCE_INITIALIZER;
+// Internal implementation of a cross fade animation. If
+// |animate_old_layer_transform| is true, both new and old layers will animate
+// their opacities and transforms. Otherwise, the old layer will on animate its
+// opacity; its transforms will be updated via an observer.
+void CrossFadeAnimationInternal(
+    aura::Window* window,
+    std::unique_ptr<ui::LayerTreeOwner> old_layer_owner,
+    bool animate_old_layer_transform,
+    absl::optional<base::TimeDelta> duration,
+    absl::optional<gfx::Tween::Type> tween_type,
+    absl::optional<std::string> histogram_name) {
+  ui::Layer* old_layer = old_layer_owner->root();
+  ui::Layer* new_layer = window->layer();
+
+  DCHECK(old_layer);
+  const gfx::Rect old_bounds(old_layer_owner->root()->bounds());
+
+  gfx::RectF old_transformed_bounds(old_bounds);
+  gfx::Transform old_transform(old_layer_owner->root()->transform());
+  gfx::Transform old_transform_in_root;
+  old_transform_in_root.Translate(old_bounds.x(), old_bounds.y());
+  old_transform_in_root.PreconcatTransform(old_transform);
+  old_transform_in_root.Translate(-old_bounds.x(), -old_bounds.y());
+  old_transform_in_root.TransformRect(&old_transformed_bounds);
+  const gfx::Rect new_bounds(window->bounds());
+  const bool old_on_top = (old_bounds.width() > new_bounds.width());
+
+  // Ensure the higher-resolution layer is on top.
+  if (old_on_top)
+    old_layer->parent()->StackBelow(new_layer, old_layer);
+  else
+    old_layer->parent()->StackAbove(new_layer, old_layer);
+
+  // Shorten the animation if there's not much visual movement.
+  const base::TimeDelta animation_duration = duration.value_or(
+      GetCrossFadeDuration(window, old_transformed_bounds, new_bounds));
+  const gfx::Tween::Type animation_tween_type =
+      tween_type.value_or(gfx::Tween::EASE_OUT);
+
+  // Scale up the old layer while translating to new position.
+  {
+    ui::Layer* old_layer = old_layer_owner->root();
+    old_layer->GetAnimator()->StopAnimating();
+    old_layer->SetTransform(old_transform);
+    ui::ScopedLayerAnimationSettings settings(old_layer->GetAnimator());
+    settings.SetTransitionDuration(animation_duration);
+    settings.SetTweenType(animation_tween_type);
+    settings.DeferPaint();
+
+    if (old_on_top) {
+      // Only caching render surface when there is an opacity animation and
+      // multiple layers.
+      if (!old_layer->children().empty())
+        settings.CacheRenderSurface();
+      // The old layer is on top, and should fade out. The new layer below will
+      // stay opaque to block the desktop.
+      old_layer->SetOpacity(kWindowAnimation_HideOpacity);
+    } else if (!animate_old_layer_transform) {
+      // If |animate_old_layer_transform| and |old_on_top| are both false, then
+      // the old layer will have no animations and the observer will delete
+      // itself (and the old layer) right away. To make sure the old layer stays
+      // behind the new layer with opacity 1.f for the duration of the
+      // animation, change the tween to zero.
+      settings.SetTweenType(gfx::Tween::ZERO);
+      old_layer->SetOpacity(kWindowAnimation_HideOpacity);
+    }
+
+    if (animate_old_layer_transform) {
+      gfx::Transform out_transform;
+      float scale_x =
+          new_bounds.width() / static_cast<float>(old_bounds.width());
+      float scale_y =
+          new_bounds.height() / static_cast<float>(old_bounds.height());
+      out_transform.Translate(new_bounds.x() - old_bounds.x(),
+                              new_bounds.y() - old_bounds.y());
+      out_transform.Scale(scale_x, scale_y);
+      old_layer->SetTransform(out_transform);
+    }
+    // In tests |old_layer| is deleted here, as animations have zero duration.
+    old_layer = nullptr;
+  }
+
+  // Set the new layer's current transform, such that the user sees a scaled
+  // version of the window with the original bounds at the original position.
+  gfx::Transform in_transform;
+  const float scale_x =
+      old_transformed_bounds.width() / static_cast<float>(new_bounds.width());
+  const float scale_y =
+      old_transformed_bounds.height() / static_cast<float>(new_bounds.height());
+  in_transform.Translate(old_transformed_bounds.x() - new_bounds.x(),
+                         old_transformed_bounds.y() - new_bounds.y());
+  in_transform.Scale(scale_x, scale_y);
+  new_layer->SetTransform(in_transform);
+  if (!old_on_top) {
+    // The new layer is on top and should fade in.  The old layer below will
+    // stay opaque and block the desktop.
+    new_layer->SetOpacity(kWindowAnimation_HideOpacity);
+  }
+  {
+    // Animation observer owns the old layer and deletes itself. It should be
+    // attached to the new layer so that if the new layer animation gets
+    // aborted, we can delete the old layer.
+    CrossFadeObserver* observer =
+        animate_old_layer_transform
+            ? new CrossFadeObserver(window, std::move(old_layer_owner),
+                                    histogram_name)
+            : new CrossFadeUpdateTransformObserver(
+                  window, std::move(old_layer_owner), histogram_name);
+
+    // Animate the new layer to the identity transform, so the window goes to
+    // its newly set bounds.
+    ui::ScopedLayerAnimationSettings settings(new_layer->GetAnimator());
+    settings.AddObserver(observer);
+    settings.SetTransitionDuration(animation_duration);
+    settings.SetTweenType(animation_tween_type);
+    settings.DeferPaint();
+    if (!old_on_top) {
+      // Only caching render surface when there is an opacity animation and
+      // multiple layers.
+      if (!new_layer->children().empty())
+        settings.CacheRenderSurface();
+      // New layer is on top, fade it in.
+      new_layer->SetOpacity(kWindowAnimation_ShowOpacity);
+    }
+    new_layer->SetTransform(gfx::Transform());
+  }
+}
 
 }  // namespace
 
-const int kCrossFadeDurationMS = 200;
+void SetTransformForScaleAnimation(ui::Layer* layer,
+                                   LayerScaleAnimationDirection type) {
+  // Scales for windows above and below the current workspace.
+  constexpr float kLayerScaleAboveSize = 1.1f;
+  constexpr float kLayerScaleBelowSize = .9f;
+
+  const float scale = type == LAYER_SCALE_ANIMATION_ABOVE
+                          ? kLayerScaleAboveSize
+                          : kLayerScaleBelowSize;
+  gfx::Transform transform;
+  transform.Translate(-layer->bounds().width() * (scale - 1.0f) / 2,
+                      -layer->bounds().height() * (scale - 1.0f) / 2);
+  transform.Scale(scale, scale);
+  layer->SetTransform(transform);
+}
 
 void AddLayerAnimationsForMinimize(aura::Window* window, bool show) {
   // Recalculate the transform at restore time since the launcher item may have
@@ -249,40 +523,6 @@ void AnimateHideWindow_BrightnessGrayscale(aura::Window* window) {
   AnimateShowHideWindowCommon_BrightnessGrayscale(window, false);
 }
 
-bool AnimateShowWindow_SlideDown(aura::Window* window) {
-  HomeScreenController* home_screen_controller =
-      Shell::Get()->home_screen_controller();
-  const TabletModeController* tablet_mode_controller =
-      Shell::Get()->tablet_mode_controller();
-
-  if (home_screen_controller && tablet_mode_controller &&
-      tablet_mode_controller->IsTabletModeWindowManagerEnabled()) {
-    // Slide down the window from above screen to show and, meanwhile, slide
-    // down the home launcher off screen.
-    HomeLauncherGestureHandler* handler =
-        home_screen_controller->home_launcher_gesture_handler();
-    if (handler &&
-        handler->HideHomeLauncherForWindow(
-            display::Screen::GetScreen()->GetDisplayNearestView(window),
-            window)) {
-      // Now that the window has been restored, we need to clear its animation
-      // style to default so that normal animation applies.
-      ::wm::SetWindowVisibilityAnimationType(
-          window, ::wm::WINDOW_VISIBILITY_ANIMATION_TYPE_DEFAULT);
-      return true;
-    }
-  }
-
-  // Fallback to no animation.
-  return false;
-}
-
-bool AnimateHideWindow_SlideDown(aura::Window* window) {
-  // The hide animation should be handled in HomeLauncherGestureHandler, so
-  // fallback to no animation.
-  return false;
-}
-
 void AnimateHideWindow_SlideOut(aura::Window* window) {
   base::TimeDelta duration =
       base::TimeDelta::FromMilliseconds(PipPositioner::kPipDismissTimeMs);
@@ -297,6 +537,7 @@ void AnimateHideWindow_SlideOut(aura::Window* window) {
       display::Screen::GetScreen()->GetDisplayNearestWindow(window);
   gfx::Rect dismissed_bounds =
       PipPositioner::GetDismissedPosition(display, bounds);
+  ::wm::ConvertRectFromScreen(window->parent(), &dismissed_bounds);
   window->layer()->SetBounds(dismissed_bounds);
 }
 
@@ -322,19 +563,16 @@ bool AnimateShowWindow(aura::Window* window) {
   }
 
   switch (::wm::GetWindowVisibilityAnimationType(window)) {
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_MINIMIZE:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_MINIMIZE:
       AnimateShowWindow_Minimize(window);
       return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_BRIGHTNESS_GRAYSCALE:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_BRIGHTNESS_GRAYSCALE:
       AnimateShowWindow_BrightnessGrayscale(window);
       return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_SLIDE_DOWN:
-      return AnimateShowWindow_SlideDown(window);
-      return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT:
       AnimateShowWindow_FadeIn(window);
       return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_STEP_END:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_STEP_END:
       AnimateShowWindow_StepEnd(window);
       return true;
     default:
@@ -350,18 +588,16 @@ bool AnimateHideWindow(aura::Window* window) {
   }
 
   switch (::wm::GetWindowVisibilityAnimationType(window)) {
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_MINIMIZE:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_MINIMIZE:
       AnimateHideWindow_Minimize(window);
       return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_BRIGHTNESS_GRAYSCALE:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_BRIGHTNESS_GRAYSCALE:
       AnimateHideWindow_BrightnessGrayscale(window);
       return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_SLIDE_DOWN:
-      return AnimateHideWindow_SlideDown(window);
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT:
       AnimateHideWindow_SlideOut(window);
       return true;
-    case wm::WINDOW_VISIBILITY_ANIMATION_TYPE_STEP_END:
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_STEP_END:
       AnimateHideWindow_StepEnd(window);
       return true;
     default:
@@ -370,144 +606,25 @@ bool AnimateHideWindow(aura::Window* window) {
   }
 }
 
-// Observer for a window cross-fade animation. If either the window closes or
-// the layer's animation completes, it deletes the layer and removes itself as
-// an observer.
-class CrossFadeObserver : public aura::WindowObserver,
-                          public ui::ImplicitAnimationObserver {
- public:
-  // Observes |window| for destruction, but does not take ownership.
-  // Takes ownership of |layer| and its child layers.
-  CrossFadeObserver(aura::Window* window,
-                    std::unique_ptr<ui::LayerTreeOwner> layer_owner)
-      : window_(window), layer_owner_(std::move(layer_owner)) {
-    window_->AddObserver(this);
-  }
-  ~CrossFadeObserver() override {
-    window_->RemoveObserver(this);
-    window_ = NULL;
-  }
+void CrossFadeAnimation(aura::Window* window,
+                        std::unique_ptr<ui::LayerTreeOwner> old_layer_owner) {
+  CrossFadeAnimationInternal(
+      window, std::move(old_layer_owner), /*animate_old_layer=*/true,
+      /*duration=*/absl::nullopt, /*tween_type=*/absl::nullopt,
+      /*histogram_name=*/absl::nullopt);
+}
 
-  // aura::WindowObserver overrides:
-  void OnWindowDestroying(aura::Window* window) override {
-    // Triggers OnImplicitAnimationsCompleted() to be called and deletes us.
-    layer_owner_->root()->GetAnimator()->StopAnimating();
-  }
-  void OnWindowRemovingFromRootWindow(aura::Window* window,
-                                      aura::Window* new_root) override {
-    layer_owner_->root()->GetAnimator()->StopAnimating();
-  }
-
-  // ui::ImplicitAnimationObserver overrides:
-  void OnImplicitAnimationsCompleted() override { delete this; }
-
- private:
-  aura::Window* window_;  // not owned
-  std::unique_ptr<ui::LayerTreeOwner> layer_owner_;
-
-  DISALLOW_COPY_AND_ASSIGN(CrossFadeObserver);
-};
-
-base::TimeDelta CrossFadeAnimation(
-    aura::Window* window,
-    std::unique_ptr<ui::LayerTreeOwner> old_layer_owner,
-    gfx::Tween::Type tween_type) {
-  ui::Layer* old_layer = old_layer_owner->root();
-  ui::Layer* new_layer = window->layer();
-
-  DCHECK(old_layer);
-  const gfx::Rect old_bounds(old_layer_owner->root()->bounds());
-
-  gfx::RectF old_transformed_bounds(old_bounds);
-  gfx::Transform old_transform(old_layer_owner->root()->transform());
-  gfx::Transform old_transform_in_root;
-  old_transform_in_root.Translate(old_bounds.x(), old_bounds.y());
-  old_transform_in_root.PreconcatTransform(old_transform);
-  old_transform_in_root.Translate(-old_bounds.x(), -old_bounds.y());
-  old_transform_in_root.TransformRect(&old_transformed_bounds);
-  const gfx::Rect new_bounds(window->bounds());
-  const bool old_on_top = (old_bounds.width() > new_bounds.width());
-
-  // Ensure the higher-resolution layer is on top.
-  if (old_on_top)
-    old_layer->parent()->StackBelow(new_layer, old_layer);
-  else
-    old_layer->parent()->StackAbove(new_layer, old_layer);
-
-  // Shorten the animation if there's not much visual movement.
-  const base::TimeDelta duration =
-      GetCrossFadeDuration(window, old_transformed_bounds, new_bounds);
-
-  // Scale up the old layer while translating to new position.
-  {
-    ui::Layer* old_layer = old_layer_owner->root();
-    old_layer->GetAnimator()->StopAnimating();
-    old_layer->SetTransform(old_transform);
-    ui::ScopedLayerAnimationSettings settings(old_layer->GetAnimator());
-    // Animation observer owns the old layer and deletes itself.
-    settings.AddObserver(
-        new CrossFadeObserver(window, std::move(old_layer_owner)));
-    settings.SetTransitionDuration(duration);
-    settings.SetTweenType(tween_type);
-    // Only add reporter to |old_layer|.
-    settings.SetAnimationMetricsReporter(g_reporter_cross_fade.Pointer());
-    settings.DeferPaint();
-    if (old_on_top) {
-      // Only caching render surface when there is an opacity animation and
-      // multiple layers.
-      if (!old_layer->children().empty())
-        settings.CacheRenderSurface();
-      // The old layer is on top, and should fade out.  The new layer below will
-      // stay opaque to block the desktop.
-      old_layer->SetOpacity(kWindowAnimation_HideOpacity);
-    }
-    gfx::Transform out_transform;
-    float scale_x = static_cast<float>(new_bounds.width()) /
-                    static_cast<float>(old_bounds.width());
-    float scale_y = static_cast<float>(new_bounds.height()) /
-                    static_cast<float>(old_bounds.height());
-    out_transform.Translate(new_bounds.x() - old_bounds.x(),
-                            new_bounds.y() - old_bounds.y());
-    out_transform.Scale(scale_x, scale_y);
-    old_layer->SetTransform(out_transform);
-    // In tests |old_layer| is deleted here, as animations have zero duration.
-    old_layer = NULL;
-  }
-
-  // Set the new layer's current transform, such that the user sees a scaled
-  // version of the window with the original bounds at the original position.
-  gfx::Transform in_transform;
-  const float scale_x =
-      old_transformed_bounds.width() / static_cast<float>(new_bounds.width());
-  const float scale_y =
-      old_transformed_bounds.height() / static_cast<float>(new_bounds.height());
-  in_transform.Translate(old_transformed_bounds.x() - new_bounds.x(),
-                         old_transformed_bounds.y() - new_bounds.y());
-  in_transform.Scale(scale_x, scale_y);
-  new_layer->SetTransform(in_transform);
-  if (!old_on_top) {
-    // The new layer is on top and should fade in.  The old layer below will
-    // stay opaque and block the desktop.
-    new_layer->SetOpacity(kWindowAnimation_HideOpacity);
-  }
-  {
-    // Animate the new layer to the identity transform, so the window goes to
-    // its newly set bounds.
-    ui::ScopedLayerAnimationSettings settings(new_layer->GetAnimator());
-    settings.SetTransitionDuration(duration);
-    settings.SetTweenType(tween_type);
-    settings.DeferPaint();
-    if (!old_on_top) {
-      // Only caching render surface when there is an opacity animation and
-      // multiple layers.
-      if (!new_layer->children().empty())
-        settings.CacheRenderSurface();
-      // New layer is on top, fade it in.
-      new_layer->SetOpacity(kWindowAnimation_ShowOpacity);
-    }
-    new_layer->SetTransform(gfx::Transform());
-  }
-  return duration;
+void CrossFadeAnimationAnimateNewLayerOnly(aura::Window* window,
+                                           const gfx::Rect& target_bounds,
+                                           base::TimeDelta duration,
+                                           gfx::Tween::Type tween_type,
+                                           const std::string& histogram_name) {
+  std::unique_ptr<ui::LayerTreeOwner> old_layer_owner =
+      ::wm::RecreateLayers(window);
+  window->SetBounds(target_bounds);
+  CrossFadeAnimationInternal(window, std::move(old_layer_owner),
+                             /*animate_old_layer=*/false, duration, tween_type,
+                             histogram_name);
 }
 
 bool AnimateOnChildWindowVisibilityChanged(aura::Window* window, bool visible) {
@@ -569,9 +686,9 @@ gfx::Rect GetMinimizeAnimationTargetBoundsInScreen(aura::Window* window) {
   if (item_rect.width() != 0 || item_rect.height() != 0) {
     if (shelf->GetVisibilityState() == SHELF_AUTO_HIDE) {
       gfx::Rect shelf_bounds = shelf->GetWindow()->GetBoundsInScreen();
-      if (shelf->alignment() == SHELF_ALIGNMENT_LEFT)
+      if (shelf->alignment() == ShelfAlignment::kLeft)
         item_rect.set_x(shelf_bounds.right());
-      else if (shelf->alignment() == SHELF_ALIGNMENT_RIGHT)
+      else if (shelf->alignment() == ShelfAlignment::kRight)
         item_rect.set_x(shelf_bounds.x());
       else
         item_rect.set_y(shelf_bounds.y());
@@ -586,12 +703,12 @@ gfx::Rect GetMinimizeAnimationTargetBoundsInScreen(aura::Window* window) {
       display::Screen::GetScreen()->GetDisplayNearestWindow(window).work_area();
   int ltr_adjusted_x = base::i18n::IsRTL() ? work_area.right() : work_area.x();
   switch (shelf->alignment()) {
-    case SHELF_ALIGNMENT_BOTTOM:
-    case SHELF_ALIGNMENT_BOTTOM_LOCKED:
+    case ShelfAlignment::kBottom:
+    case ShelfAlignment::kBottomLocked:
       return gfx::Rect(ltr_adjusted_x, work_area.bottom(), 0, 0);
-    case SHELF_ALIGNMENT_LEFT:
+    case ShelfAlignment::kLeft:
       return gfx::Rect(work_area.x(), work_area.y(), 0, 0);
-    case SHELF_ALIGNMENT_RIGHT:
+    case ShelfAlignment::kRight:
       return gfx::Rect(work_area.right(), work_area.y(), 0, 0);
   }
   NOTREACHED();

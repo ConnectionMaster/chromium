@@ -7,6 +7,7 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/plugins/plugin_finder.h"
@@ -15,8 +16,6 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/network_service_instance.h"
-#include "content/public/common/service_manager_connection.h"
-#include "services/data_decoder/public/cpp/safe_json_parser.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
@@ -61,11 +60,11 @@ GURL GetPluginsServerURL() {
   std::string filename;
 #if defined(OS_WIN)
   filename = "plugins_win.json";
-#elif defined(OS_CHROMEOS)
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   filename = "plugins_chromeos.json";
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   filename = "plugins_linux.json";
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   filename = "plugins_mac.json";
 #else
 #error Unknown platform
@@ -87,9 +86,6 @@ PluginsResourceService::PluginsResourceService(PrefService* local_state)
           g_browser_process->system_network_context_manager()
               ->GetSharedURLLoaderFactory(),
           switches::kDisableBackgroundNetworking,
-          base::Bind(data_decoder::SafeJsonParser::Parse,
-                     content::ServiceManagerConnection::GetForProcess()
-                         ->GetConnector()),
           kPluginResourceServiceTrafficAnnotation,
           base::BindOnce(&content::GetNetworkConnectionTracker)) {}
 

@@ -5,6 +5,7 @@
 #include "ios/chrome/browser/net/ios_chrome_network_delegate.h"
 
 #include <stdlib.h>
+#include <iterator>
 
 #include "base/base_paths.h"
 #include "base/debug/alias.h"
@@ -12,14 +13,14 @@
 #include "base/debug/stack_trace.h"
 #include "base/logging.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/path_service.h"
 #include "base/task/post_task.h"
+#include "components/content_settings/core/common/content_settings.h"
 #include "components/prefs/pref_member.h"
 #include "components/prefs/pref_service.h"
 #include "ios/chrome/browser/pref_names.h"
-#include "ios/web/public/web_task_traits.h"
-#include "ios/web/public/web_thread.h"
+#include "ios/web/public/thread/web_task_traits.h"
+#include "ios/web/public/thread/web_thread.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/cookies/cookie_options.h"
@@ -41,21 +42,6 @@ void ReportInvalidReferrerSend(const GURL& target_url,
   NOTREACHED();
 }
 
-// Record network errors that HTTP requests complete with, including OK and
-// ABORTED.
-void RecordNetworkErrorHistograms(const net::URLRequest* request,
-                                  int net_error) {
-  if (request->url().SchemeIs("http")) {
-    base::UmaHistogramSparse("Net.HttpRequestCompletionErrorCodes",
-                             std::abs(net_error));
-
-    if (request->load_flags() & net::LOAD_MAIN_FRAME_DEPRECATED) {
-      base::UmaHistogramSparse("Net.HttpRequestCompletionErrorCodes.MainFrame",
-                               std::abs(net_error));
-    }
-  }
-}
-
 }  // namespace
 
 IOSChromeNetworkDelegate::IOSChromeNetworkDelegate()
@@ -70,8 +56,8 @@ void IOSChromeNetworkDelegate::InitializePrefsOnUIThread(
   DCHECK_CURRENTLY_ON(web::WebThread::UI);
   if (enable_do_not_track) {
     enable_do_not_track->Init(prefs::kEnableDoNotTrack, pref_service);
-    enable_do_not_track->MoveToThread(
-        base::CreateSingleThreadTaskRunnerWithTraits({web::WebThread::IO}));
+    enable_do_not_track->MoveToSequence(
+        base::CreateSingleThreadTaskRunner({web::WebThread::IO}));
   }
 }
 
@@ -84,22 +70,27 @@ int IOSChromeNetworkDelegate::OnBeforeURLRequest(
   return net::OK;
 }
 
-void IOSChromeNetworkDelegate::OnCompleted(net::URLRequest* request,
-                                           bool started,
-                                           int net_error) {
-  RecordNetworkErrorHistograms(request, net_error);
-}
-
-bool IOSChromeNetworkDelegate::OnCanGetCookies(
+bool IOSChromeNetworkDelegate::OnAnnotateAndMoveUserBlockedCookies(
     const net::URLRequest& request,
-    const net::CookieList& cookie_list,
+    net::CookieAccessResultList& maybe_included_cookies,
+    net::CookieAccessResultList& excluded_cookies,
     bool allowed_from_caller) {
-  // Null during tests, or when we're running in the system context.
-  if (!cookie_settings_)
-    return allowed_from_caller;
+  // `cookie_settings_` is null during tests, or when we're running in the
+  // system context.
+  bool allowed = allowed_from_caller;
+  if (cookie_settings_) {
+    allowed = allowed && cookie_settings_->IsFullCookieAccessAllowed(
+                             request.url(),
+                             request.site_for_cookies().RepresentativeUrl());
+  }
 
-  return allowed_from_caller && cookie_settings_->IsCookieAccessAllowed(
-                                    request.url(), request.site_for_cookies());
+  if (!allowed) {
+    ExcludeAllCookies(
+        net::CookieInclusionStatus::ExclusionReason::EXCLUDE_USER_PREFERENCES,
+        maybe_included_cookies, excluded_cookies);
+  }
+
+  return allowed;
 }
 
 bool IOSChromeNetworkDelegate::OnCanSetCookie(
@@ -111,25 +102,23 @@ bool IOSChromeNetworkDelegate::OnCanSetCookie(
   if (!cookie_settings_)
     return allowed_from_caller;
 
-  return allowed_from_caller && cookie_settings_->IsCookieAccessAllowed(
-                                    request.url(), request.site_for_cookies());
-}
-
-bool IOSChromeNetworkDelegate::OnCanAccessFile(
-    const net::URLRequest& request,
-    const base::FilePath& original_path,
-    const base::FilePath& absolute_path) const {
-  return true;
+  return allowed_from_caller &&
+         cookie_settings_->IsFullCookieAccessAllowed(
+             request.url(), request.site_for_cookies().RepresentativeUrl());
 }
 
 bool IOSChromeNetworkDelegate::OnForcePrivacyMode(
     const GURL& url,
-    const GURL& site_for_cookies) const {
+    const net::SiteForCookies& site_for_cookies,
+    const absl::optional<url::Origin>& top_frame_origin,
+    net::CookieOptions::SamePartyCookieContextType
+        same_party_cookie_context_type) const {
   // Null during tests, or when we're running in the system context.
   if (!cookie_settings_.get())
     return false;
 
-  return !cookie_settings_->IsCookieAccessAllowed(url, site_for_cookies);
+  return !cookie_settings_->IsFullCookieAccessAllowed(
+      url, site_for_cookies.RepresentativeUrl(), top_frame_origin);
 }
 
 bool IOSChromeNetworkDelegate::

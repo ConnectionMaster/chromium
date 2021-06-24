@@ -22,11 +22,11 @@ class IOBuffer;
 class NET_EXPORT_PRIVATE SourceStream {
  public:
   enum SourceType {
-#define SOURCE_STREAM_TYPE(label) TYPE_##label,
-#include "net/filter/source_stream_type_list.h"
-#undef SOURCE_STREAM_TYPE
-    // Used for UMA.
-    TYPE_MAX,
+    TYPE_BROTLI,
+    TYPE_DEFLATE,
+    TYPE_GZIP,
+    TYPE_UNKNOWN,
+    TYPE_NONE,
   };
 
   // |type| is the type of the SourceStream.
@@ -53,6 +53,12 @@ class NET_EXPORT_PRIVATE SourceStream {
   // Returns a string that represents stream. This is for UMA and NetLog
   // logging.
   virtual std::string Description() const = 0;
+
+  // Returns true if there may be more bytes to read in this source stream.
+  // This is not a guarantee that there are more bytes (in the case that
+  // the stream doesn't know).  However, if this returns false, then the stream
+  // is guaranteed to be complete.
+  virtual bool MayHaveMoreBytes() const = 0;
 
   SourceType type() const { return type_; }
 

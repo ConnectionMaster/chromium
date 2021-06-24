@@ -26,6 +26,7 @@
 #include "util/file/directory_reader.h"
 #include "util/file/filesystem.h"
 #include "util/misc/initialization_state_dcheck.h"
+#include "util/misc/memory_sanitizer.h"
 
 namespace crashpad {
 
@@ -172,8 +173,7 @@ off_t GetFileSize(const base::FilePath& filepath) {
 
 void AddAttachmentSize(const base::FilePath& attachments_dir, uint64_t* size) {
   // Early return if the attachment directory does not exist.
-  struct stat statbuf;
-  if (stat(attachments_dir.value().c_str(), &statbuf) != 0) {
+  if (!IsDirectory(attachments_dir, /*allow_symlinks=*/false)) {
     return;
   }
   DirectoryReader reader;
@@ -333,6 +333,9 @@ void CrashReportDatabase::UploadReport::InitializeAttachments() {
   base::FilePath attachments_dir =
       static_cast<CrashReportDatabaseGeneric*>(database_)->AttachmentsPath(
           uuid);
+  if (!IsDirectory(attachments_dir, /*allow_symlinks=*/false)) {
+    return;
+  }
   DirectoryReader reader;
   if (!reader.Open(attachments_dir)) {
     return;
@@ -872,7 +875,6 @@ void CrashReportDatabaseGeneric::CleanOrphanedAttachments() {
   base::FilePath root_attachments_dir(base_dir_.Append(kAttachmentsDirectory));
   DirectoryReader reader;
   if (!reader.Open(root_attachments_dir)) {
-    LOG(ERROR) << "no attachments dir";
     return;
   }
 
@@ -913,6 +915,9 @@ void CrashReportDatabaseGeneric::CleanOrphanedAttachments() {
 
 void CrashReportDatabaseGeneric::RemoveAttachmentsByUUID(const UUID& uuid) {
   base::FilePath attachments_dir = AttachmentsPath(uuid);
+  if (!IsDirectory(attachments_dir, /*allow_symlinks=*/false)) {
+    return;
+  }
   DirectoryReader reader;
   if (!reader.Open(attachments_dir)) {
     return;
@@ -1003,6 +1008,11 @@ bool CrashReportDatabaseGeneric::WriteNewMetadata(const base::FilePath& path) {
   }
 
   ReportMetadata metadata;
+#if defined(MEMORY_SANITIZER)
+  // memset() + re-initialization is required to zero padding bytes for MSan.
+  memset(&metadata, 0, sizeof(metadata));
+#endif  // defined(MEMORY_SANITIZER)
+  metadata = {};
   metadata.creation_time = time(nullptr);
 
   return LoggingWriteFile(handle.get(), &metadata, sizeof(metadata));
@@ -1023,6 +1033,11 @@ bool CrashReportDatabaseGeneric::WriteMetadata(const base::FilePath& path,
   }
 
   ReportMetadata metadata;
+#if defined(MEMORY_SANITIZER)
+  // memset() + re-initialization is required to zero padding bytes for MSan.
+  memset(&metadata, 0, sizeof(metadata));
+#endif  // defined(MEMORY_SANITIZER)
+  metadata = {};
   metadata.creation_time = report.creation_time;
   metadata.last_upload_attempt_time = report.last_upload_attempt_time;
   metadata.upload_attempts = report.upload_attempts;

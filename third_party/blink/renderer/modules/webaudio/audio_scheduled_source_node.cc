@@ -33,8 +33,8 @@
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
@@ -63,17 +63,9 @@ AudioScheduledSourceHandler::UpdateSchedulingInfo(size_t quantum_frame_size,
   double start_frame_offset = 0;
 
   DCHECK(output_bus);
-  if (!output_bus) {
-    return std::make_tuple(quantum_frame_offset, non_silent_frames_to_process,
-                           start_frame_offset);
-  }
-
-  DCHECK_EQ(quantum_frame_size,
-            static_cast<size_t>(audio_utilities::kRenderQuantumFrames));
-  if (quantum_frame_size != audio_utilities::kRenderQuantumFrames) {
-    return std::make_tuple(quantum_frame_offset, non_silent_frames_to_process,
-                           start_frame_offset);
-  }
+  DCHECK_EQ(
+      quantum_frame_size,
+      static_cast<size_t>(GetDeferredTaskHandler().RenderQuantumFrames()));
 
   double sample_rate = Context()->sampleRate();
 
@@ -207,6 +199,8 @@ void AudioScheduledSourceHandler::Start(double when,
   // node. The reference will get dropped when the source has finished playing.
   Context()->NotifySourceNodeStartedProcessing(GetNode());
 
+  SetOnEndedNotificationPending();
+
   // This synchronizes with process(). updateSchedulingInfo will read some of
   // the variables being set here.
   MutexLocker process_locker(process_lock_);
@@ -256,17 +250,24 @@ void AudioScheduledSourceHandler::FinishWithoutOnEnded() {
 void AudioScheduledSourceHandler::Finish() {
   FinishWithoutOnEnded();
 
-  PostCrossThreadTask(*task_runner_, FROM_HERE,
-                      CrossThreadBind(&AudioScheduledSourceHandler::NotifyEnded,
-                                      WrapRefCounted(this)));
+  PostCrossThreadTask(
+      *task_runner_, FROM_HERE,
+      CrossThreadBindOnce(&AudioScheduledSourceHandler::NotifyEnded,
+                          AsWeakPtr()));
 }
 
 void AudioScheduledSourceHandler::NotifyEnded() {
+  // NotifyEnded is always called when the node is finished, even if
+  // htere are no event listeners.  We always dispatch the event and
+  // let DispatchEvent take are of sending the event to the right
+  // place,
   DCHECK(IsMainThread());
   if (!Context() || !Context()->GetExecutionContext())
     return;
   if (GetNode())
     GetNode()->DispatchEvent(*Event::Create(event_type_names::kEnded));
+
+  on_ended_notification_pending_ = false;
 }
 
 // ----------------------------------------------------------------
@@ -312,10 +313,12 @@ bool AudioScheduledSourceNode::HasPendingActivity() const {
     return false;
   }
 
-  // If a node is scheduled or playing, do not collect the node prematurely
-  // even its reference is out of scope. Then fire onended event if assigned.
+  // If a node is scheduled or playing, do not collect the node
+  // prematurely even its reference is out of scope. If the onended
+  // event has not yet fired, we still have activity pending too.
   return ContainsHandler() &&
-         GetAudioScheduledSourceHandler().IsPlayingOrScheduled();
+         (GetAudioScheduledSourceHandler().IsPlayingOrScheduled() ||
+          GetAudioScheduledSourceHandler().IsOnEndedNotificationPending());
 }
 
 }  // namespace blink

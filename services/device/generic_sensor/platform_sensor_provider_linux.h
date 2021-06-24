@@ -2,45 +2,38 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef SERVICES_DEVICE_GENERIC_SENSOR_PUBLIC_PLATFORM_SENSOR_PROVIDER_LINUX_H_
-#define SERVICES_DEVICE_GENERIC_SENSOR_PUBLIC_PLATFORM_SENSOR_PROVIDER_LINUX_H_
+#ifndef SERVICES_DEVICE_GENERIC_SENSOR_PLATFORM_SENSOR_PROVIDER_LINUX_H_
+#define SERVICES_DEVICE_GENERIC_SENSOR_PLATFORM_SENSOR_PROVIDER_LINUX_H_
 
-#include "services/device/generic_sensor/platform_sensor_provider.h"
+#include "services/device/generic_sensor/platform_sensor_provider_linux_base.h"
 
 #include "base/memory/weak_ptr.h"
 #include "base/sequenced_task_runner.h"
 #include "services/device/generic_sensor/linux/sensor_device_manager.h"
 
-namespace base {
-template <typename T>
-struct DefaultSingletonTraits;
-}  // namespace base
-
 namespace device {
 
 struct SensorInfoLinux;
 
-class PlatformSensorProviderLinux : public PlatformSensorProvider,
+class PlatformSensorProviderLinux : public PlatformSensorProviderLinuxBase,
                                     public SensorDeviceManager::Delegate {
  public:
-  static PlatformSensorProviderLinux* GetInstance();
+  PlatformSensorProviderLinux();
+  ~PlatformSensorProviderLinux() override;
 
   // Sets another service provided by tests.
   void SetSensorDeviceManagerForTesting(
       std::unique_ptr<SensorDeviceManager> sensor_device_manager);
 
  protected:
-  ~PlatformSensorProviderLinux() override;
-
+  // PlatformSensorProviderLinuxBase overrides:
   void CreateSensorInternal(mojom::SensorType type,
                             SensorReadingSharedBuffer* reading_buffer,
-                            const CreateSensorCallback& callback) override;
-
+                            CreateSensorCallback callback) override;
   void FreeResources() override;
+  bool IsSensorTypeAvailable(mojom::SensorType type) const override;
 
  private:
-  friend struct base::DefaultSingletonTraits<PlatformSensorProviderLinux>;
-
   friend class PlatformSensorAndProviderLinuxTest;
 
   // This is also needed for testing, as we create one provider per test, and
@@ -50,22 +43,11 @@ class PlatformSensorProviderLinux : public PlatformSensorProvider,
   using SensorDeviceMap =
       std::unordered_map<mojom::SensorType, std::unique_ptr<SensorInfoLinux>>;
 
-  PlatformSensorProviderLinux();
-
-  void SensorDeviceFound(
-      mojom::SensorType type,
-      SensorReadingSharedBuffer* reading_buffer,
-      const PlatformSensorProviderBase::CreateSensorCallback& callback,
-      const SensorInfoLinux* sensor_device);
-
   // Returns SensorInfoLinux structure of a requested type.
   // If a request cannot be processed immediately, returns nullptr and
   // all the requests stored in |requests_map_| are processed after
   // enumeration is ready.
-  SensorInfoLinux* GetSensorDevice(mojom::SensorType type);
-
-  // Returns all found iio devices. Currently not implemented.
-  void GetAllSensorDevices();
+  SensorInfoLinux* GetSensorDevice(mojom::SensorType type) const;
 
   // Processed stored requests in |request_map_|.
   void ProcessStoredRequests();
@@ -74,16 +56,12 @@ class PlatformSensorProviderLinux : public PlatformSensorProvider,
   void CreateSensorAndNotify(mojom::SensorType type,
                              SensorInfoLinux* sensor_device);
 
-  // SensorDeviceManager::Delegate implements:
+  // SensorDeviceManager::Delegate overrides:
   void OnSensorNodesEnumerated() override;
   void OnDeviceAdded(mojom::SensorType type,
                      std::unique_ptr<SensorInfoLinux> sensor_device) override;
   void OnDeviceRemoved(mojom::SensorType type,
                        const std::string& device_node) override;
-
-  void CreateFusionSensor(mojom::SensorType type,
-                          SensorReadingSharedBuffer* reading_buffer,
-                          const CreateSensorCallback& callback);
 
   // Set to true when enumeration is ready.
   bool sensor_nodes_enumerated_;
@@ -103,11 +81,11 @@ class PlatformSensorProviderLinux : public PlatformSensorProvider,
   std::unique_ptr<SensorDeviceManager, base::OnTaskRunnerDeleter>
       sensor_device_manager_;
 
-  base::WeakPtrFactory<PlatformSensorProviderLinux> weak_ptr_factory_;
+  base::WeakPtrFactory<PlatformSensorProviderLinux> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PlatformSensorProviderLinux);
 };
 
 }  // namespace device
 
-#endif  // SERVICES_DEVICE_GENERIC_SENSOR_PUBLIC_PLATFORM_SENSOR_PROVIDER_LINUX_H_
+#endif  // SERVICES_DEVICE_GENERIC_SENSOR_PLATFORM_SENSOR_PROVIDER_LINUX_H_

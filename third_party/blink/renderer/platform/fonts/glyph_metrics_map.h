@@ -34,7 +34,7 @@
 #include "base/memory/ptr_util.h"
 #include "third_party/blink/renderer/platform/fonts/glyph.h"
 #include "third_party/blink/renderer/platform/geometry/float_rect.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
@@ -49,6 +49,8 @@ class GlyphMetricsMap {
 
  public:
   GlyphMetricsMap() : filled_primary_page_(false) {}
+  GlyphMetricsMap(const GlyphMetricsMap&) = delete;
+  GlyphMetricsMap& operator=(const GlyphMetricsMap&) = delete;
   T MetricsForGlyph(Glyph glyph) {
     return LocatePage(glyph / GlyphMetricsPage::kSize)->MetricsForGlyph(glyph);
   }
@@ -61,9 +63,10 @@ class GlyphMetricsMap {
  private:
   class GlyphMetricsPage {
     USING_FAST_MALLOC(GlyphMetricsPage);
-    DISALLOW_COPY_AND_ASSIGN(GlyphMetricsPage);
 
    public:
+    GlyphMetricsPage(const GlyphMetricsPage&) = delete;
+    GlyphMetricsPage& operator=(const GlyphMetricsPage&) = delete;
     static const size_t kSize =
         256;  // Usually covers Latin-1 in a single page.
     GlyphMetricsPage() {}
@@ -95,8 +98,6 @@ class GlyphMetricsMap {
   // We optimize for the page that contains glyph indices 0-255.
   GlyphMetricsPage primary_page_;
   std::unique_ptr<HashMap<int, std::unique_ptr<GlyphMetricsPage>>> pages_;
-
-  DISALLOW_COPY_AND_ASSIGN(GlyphMetricsMap);
 };
 
 template <>
@@ -139,4 +140,4 @@ GlyphMetricsMap<T>::LocatePageSlowCase(unsigned page_number) {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_GLYPH_METRICS_MAP_H_

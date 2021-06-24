@@ -10,13 +10,12 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/safe_browsing/file_type_policies_test_util.h"
 #include "chrome/common/safe_browsing/mock_binary_feature_extractor.h"
-#include "components/safe_browsing/features.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "components/safe_browsing/core/features.h"
+#include "components/safe_browsing/core/file_type_policies_test_util.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -46,8 +45,6 @@ class FileAnalyzerTest : public testing::Test {
   void SetUp() override {
     has_result_ = false;
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    scoped_feature_list_.InitAndEnableFeature(
-        safe_browsing::kInspectRarContentFeature);
   }
 
   void TearDown() override {}
@@ -58,9 +55,8 @@ class FileAnalyzerTest : public testing::Test {
   base::ScopedTempDir temp_dir_;
 
  private:
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   content::InProcessUtilityThreadHelper in_process_utility_thread_helper_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(FileAnalyzerTest, TypeWinExecutable) {
@@ -246,7 +242,7 @@ TEST_F(FileAnalyzerTest, TypeInvalidZip) {
 
 // Since we only inspect contents of DMGs on OS X, we only get
 // MAC_ARCHIVE_FAILED_PARSING on OS X.
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 TEST_F(FileAnalyzerTest, TypeInvalidDmg) {
   scoped_refptr<MockBinaryFeatureExtractor> extractor =
       new testing::StrictMock<MockBinaryFeatureExtractor>();
@@ -635,7 +631,7 @@ TEST_F(FileAnalyzerTest, ExtractsImageHeadersForExe) {
   EXPECT_EQ(result_.image_headers.pe_headers().file_header(), "image header");
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 
 TEST_F(FileAnalyzerTest, ExtractsSignatureForDmg) {
   scoped_refptr<MockBinaryFeatureExtractor> extractor =
@@ -730,7 +726,7 @@ TEST_F(FileAnalyzerTest, SmallRarHasContentInspection) {
 }
 
 // TODO(crbug.com/949399): The test is flaky (fail, timeout) on all platforms.
-TEST_F(FileAnalyzerTest, DISABLED_LargeRarSkipsContentInspection) {
+TEST_F(FileAnalyzerTest, LargeRarSkipsContentInspection) {
   scoped_refptr<MockBinaryFeatureExtractor> extractor =
       new testing::StrictMock<MockBinaryFeatureExtractor>();
   FileAnalyzer analyzer(extractor);

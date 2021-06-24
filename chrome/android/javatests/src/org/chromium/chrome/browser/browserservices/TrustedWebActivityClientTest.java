@@ -7,35 +7,42 @@ package org.chromium.chrome.browser.browserservices;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
-import android.support.customtabs.trusted.TrustedWebActivityServiceConnectionManager;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
 import android.support.test.rule.ServiceTestRule;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestRule;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
+import org.chromium.chrome.browser.ChromeApplicationImpl;
+import org.chromium.chrome.browser.dependency_injection.ChromeAppComponent;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.StandardNotificationBuilder;
+import org.chromium.chrome.test.util.browser.Features;
+import org.chromium.chrome.test.util.browser.Features.EnableFeatures;
+import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 
+import java.util.Collections;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -57,9 +64,10 @@ import java.util.concurrent.TimeoutException;
  * 4. This sends a Message to ResponseHandler in this class.
  */
 @RunWith(BaseJUnit4ClassRunner.class)
+@EnableFeatures(ChromeFeatureList.USE_NOTIFICATION_COMPAT_BUILDER)
 public class TrustedWebActivityClientTest {
     private static final Uri SCOPE = Uri.parse("https://www.example.com/notifications");
-    private static final Origin ORIGIN = new Origin(SCOPE);
+    private static final Origin ORIGIN = Origin.create(SCOPE);
     private static final String NOTIFICATION_TAG = "tag";
     private static final int NOTIFICATION_ID = 123;
 
@@ -67,6 +75,9 @@ public class TrustedWebActivityClientTest {
             "org.chromium.chrome.tests.support";
     private static final String MESSENGER_SERVICE_NAME =
             "org.chromium.chrome.browser.browserservices.MessengerService";
+
+    @Rule
+    public final TestRule mProcessor = new Features.JUnitProcessor();
 
     @Rule public final ServiceTestRule mServiceTestRule = new ServiceTestRule();
 
@@ -122,16 +133,15 @@ public class TrustedWebActivityClientTest {
     }
 
     @Before
-    public void setUp() throws TimeoutException, RemoteException, InterruptedException {
-        RecordHistogram.setDisabledForTests(true);
+    public void setUp() throws TimeoutException, RemoteException {
         mTargetContext = InstrumentationRegistry.getTargetContext();
         mBuilder = new StandardNotificationBuilder(mTargetContext);
-        mClient = new TrustedWebActivityClient(new TrustedWebActivityServiceConnectionManager(
-                ContextUtils.getApplicationContext()),
-                new TrustedWebActivityUmaRecorder(ChromeBrowserInitializer.getInstance()));
+
+        ChromeAppComponent component = ChromeApplicationImpl.getComponent();
+        mClient = component.resolveTrustedWebActivityClient();
 
         // TestTrustedWebActivityService is in the test support apk.
-        TrustedWebActivityClient.registerClient(mTargetContext, ORIGIN, TEST_SUPPORT_PACKAGE);
+        component.resolveTwaPermissionManager().addDelegateApp(ORIGIN, TEST_SUPPORT_PACKAGE);
 
         // The MessengerService lives in the same package as the TestTrustedWebActivityService.
         // We use it as a side channel to verify what the TestTrustedWebActivityService does.
@@ -161,8 +171,7 @@ public class TrustedWebActivityClientTest {
      */
     @Test
     @SmallTest
-    public void clientCommunicatesWithServiceCorrectly()
-            throws TimeoutException, InterruptedException {
+    public void clientCommunicatesWithServiceCorrectly() throws TimeoutException {
         postNotification();
 
         Assert.assertTrue(mResponseHandler.mGetSmallIconId.getCallCount() >= 1);
@@ -175,15 +184,13 @@ public class TrustedWebActivityClientTest {
                         R.string.notification_category_group_general));
     }
 
-
-    private void postNotification()
-            throws TimeoutException, InterruptedException {
+    private void postNotification() throws TimeoutException {
         PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT, () -> {
             mClient.notifyNotification(SCOPE, NOTIFICATION_TAG, NOTIFICATION_ID, mBuilder,
                     NotificationUmaTracker.getInstance());
         });
 
-        mResponseHandler.mNotifyNotification.waitForCallback();
+        mResponseHandler.mNotifyNotification.waitForFirst();
     }
 
     /**
@@ -192,14 +199,77 @@ public class TrustedWebActivityClientTest {
      */
     @Test
     @SmallTest
-    public void testCancelNotification() throws TimeoutException, InterruptedException {
+    public void testCancelNotification() throws TimeoutException {
         PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT,
                 () -> mClient.cancelNotification(SCOPE, NOTIFICATION_TAG, NOTIFICATION_ID));
 
-        mResponseHandler.mCancelNotification.waitForCallback();
+        mResponseHandler.mCancelNotification.waitForFirst();
 
         Assert.assertEquals(mResponseHandler.mNotificationTag, NOTIFICATION_TAG);
         Assert.assertEquals(mResponseHandler.mNotificationId, NOTIFICATION_ID);
     }
 
+    /**
+     * Tests that the appropriate callback is called when we try to connect to a TWA that doesn't
+     * exist.
+     */
+    @Test
+    @SmallTest
+    public void testNoClientFound() throws TimeoutException {
+        Origin scope = Origin.createOrThrow("https://www.websitewithouttwa.com/");
+
+        CallbackHelper noTwaFound = new CallbackHelper();
+
+        TrustedWebActivityClient.PermissionCheckCallback callback =
+                new TrustedWebActivityClient.PermissionCheckCallback() {
+            @Override
+            public void onPermissionCheck(ComponentName answeringApp, boolean enabled) { }
+
+            @Override
+            public void onNoTwaFound() {
+                noTwaFound.notifyCalled();
+            }
+        };
+
+        PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT,
+                () -> mClient.checkNotificationPermission(scope, callback));
+
+        noTwaFound.waitForFirst();
+    }
+
+    /**
+     * Tests {@link TrustedWebActivityClient#createLaunchIntentForTwa}.
+     */
+    @Test
+    @SmallTest
+    public void createLaunchIntent() {
+        Context context = InstrumentationRegistry.getContext();
+        String targetPackageName = mTargetContext.getPackageName();
+
+        // This should return null because there are no ResolveInfos.
+        Assert.assertNull(TrustedWebActivityClient.createLaunchIntentForTwa(
+                context, SCOPE.toString(), Collections.emptyList()));
+
+        ResolveInfo resolveInfo = new ResolveInfo();
+
+        // This should return null because there are no ResolveInfos with ActivityInfos.
+        Assert.assertNull(TrustedWebActivityClient.createLaunchIntentForTwa(
+                context, SCOPE.toString(), Collections.singletonList(resolveInfo)));
+
+        ActivityInfo activityInfo = new ActivityInfo();
+        activityInfo.packageName = targetPackageName;
+        activityInfo.name = "ActivityWithDeepLink";
+
+        resolveInfo.activityInfo = activityInfo;
+
+        // This should return null because the given ResolveInfo is not for a verified app.
+        Assert.assertNull(TrustedWebActivityClient.createLaunchIntentForTwa(
+                context, SCOPE.toString(), Collections.singletonList(resolveInfo)));
+
+        ChromeApplicationImpl.getComponent().resolveTwaPermissionManager().addDelegateApp(
+                Origin.create(SCOPE), targetPackageName);
+
+        Assert.assertNotNull(TrustedWebActivityClient.createLaunchIntentForTwa(
+                context, SCOPE.toString(), Collections.singletonList(resolveInfo)));
+    }
 }

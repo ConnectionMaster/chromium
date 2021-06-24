@@ -20,6 +20,9 @@ namespace security_interstitials {
 // This class displays UI for Safe Browsing errors that block page loads. This
 // class is purely about visual display; it does not do any error-handling logic
 // to determine what type of error should be displayed when.
+// |created_prior_to_navigation| should be set to true if this UI was created
+// prior to navigating to the error page (e.g. from WillFailResponse in a
+// navigation throttle), false otherwise.
 class SafeBrowsingLoudErrorUI
     : public security_interstitials::BaseSafeBrowsingErrorUI {
  public:
@@ -30,12 +33,13 @@ class SafeBrowsingLoudErrorUI
       const BaseSafeBrowsingErrorUI::SBErrorDisplayOptions& display_options,
       const std::string& app_locale,
       const base::Time& time_triggered,
-      ControllerClient* controller);
+      ControllerClient* controller,
+      bool created_prior_to_navigation);
 
   ~SafeBrowsingLoudErrorUI() override;
 
   // Implement BaseSafeBrowsingErrorUI.
-  void PopulateStringsForHtml(base::DictionaryValue* load_time_data) override;
+  void PopulateStringsForHtml(base::Value* load_time_data) override;
   void HandleCommand(SecurityInterstitialCommand command) override;
 
   int GetHTMLTemplateId() const override;
@@ -43,11 +47,14 @@ class SafeBrowsingLoudErrorUI
  private:
   // Fills the passed dictionary with the values to be passed to the template
   // when creating the HTML.
-  void PopulateExtendedReportingOption(base::DictionaryValue* load_time_data);
-  void PopulateMalwareLoadTimeData(base::DictionaryValue* load_time_data);
-  void PopulateHarmfulLoadTimeData(base::DictionaryValue* load_time_data);
-  void PopulatePhishingLoadTimeData(base::DictionaryValue* load_time_data);
-  void PopulateBillingLoadTimeData(base::DictionaryValue* load_time_data);
+  void PopulateExtendedReportingOption(base::Value* load_time_data);
+  void PopulateMalwareLoadTimeData(base::Value* load_time_data);
+  void PopulateHarmfulLoadTimeData(base::Value* load_time_data);
+  void PopulatePhishingLoadTimeData(base::Value* load_time_data);
+  void PopulateBillingLoadTimeData(base::Value* load_time_data);
+  void PopulateEnhancedProtectionMessage(base::Value* load_time_data);
+
+  const bool created_prior_to_navigation_;
 
   DISALLOW_COPY_AND_ASSIGN(SafeBrowsingLoudErrorUI);
 };

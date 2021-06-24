@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <set>
 
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace offline_pages {
@@ -39,7 +39,7 @@ TEST(PrefetchTaskTestBaseTest, StateEnumIsFullyRepresentedInOrderedArray) {
       case PrefetchItemState::FINISHED:
       case PrefetchItemState::ZOMBIE:
         EXPECT_TRUE(
-            base::ContainsValue(kOrderedPrefetchItemStates, maybe_valid_state))
+            base::Contains(kOrderedPrefetchItemStates, maybe_valid_state))
             << "Valid state was not found in the array: " << i;
         ++element_count;
         break;

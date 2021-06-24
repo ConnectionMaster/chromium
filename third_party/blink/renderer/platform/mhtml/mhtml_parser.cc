@@ -31,7 +31,9 @@
 #include "third_party/blink/renderer/platform/mhtml/mhtml_parser.h"
 
 #include <stddef.h>
+#include <utility>
 
+#include "base/logging.h"
 #include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/mhtml/archive_resource.h"
 #include "third_party/blink/renderer/platform/network/http_parsers.h"
@@ -91,7 +93,7 @@ void QuotedPrintableDecode(const char* data,
 
 // This class is a limited MIME parser used to parse the MIME headers of MHTML
 // files.
-class MIMEHeader : public GarbageCollectedFinalized<MIMEHeader> {
+class MIMEHeader final : public GarbageCollected<MIMEHeader> {
  public:
   MIMEHeader();
 
@@ -117,14 +119,14 @@ class MIMEHeader : public GarbageCollectedFinalized<MIMEHeader> {
   }
   String ContentLocation() const { return content_location_; }
   String ContentID() const { return content_id_; }
-  WTF::Time Date() const { return date_; }
+  base::Time Date() const { return date_; }
 
   // Multi-part type and boundaries are only valid for multipart MIME headers.
   String MultiPartType() const { return multipart_type_; }
   String EndOfPartBoundary() const { return end_of_part_boundary_; }
   String EndOfDocumentBoundary() const { return end_of_document_boundary_; }
 
-  void Trace(blink::Visitor* visitor) {}
+  void Trace(Visitor* visitor) const {}
 
  private:
   static Encoding ParseContentTransferEncoding(const String&);
@@ -134,7 +136,7 @@ class MIMEHeader : public GarbageCollectedFinalized<MIMEHeader> {
   Encoding content_transfer_encoding_;
   String content_location_;
   String content_id_;
-  WTF::Time date_;
+  base::Time date_;
   String multipart_type_;
   String end_of_part_boundary_;
   String end_of_document_boundary_;
@@ -150,7 +152,9 @@ static KeyValueMap RetrieveKeyValuePairs(SharedBufferChunkReader* buffer) {
   while (!(line = buffer->NextChunkAsUTF8StringWithLatin1Fallback()).IsNull()) {
     if (line.IsEmpty())
       break;  // Empty line means end of key/value section.
-    if (line[0] == '\t') {
+    // RFC822 continuation: A line that starts with LWSP is a continuation of
+    // the prior line.
+    if ((line[0] == '\t') || (line[0] == ' ')) {
       value.Append(line.Substring(1));
       continue;
     }
@@ -221,11 +225,11 @@ MIMEHeader* MIMEHeader::ParseHeader(SharedBufferChunkReader* buffer) {
 
   mime_parameters_iterator = key_value_pairs.find("date");
   if (mime_parameters_iterator != key_value_pairs.end()) {
-    WTF::Time parsed_time;
+    base::Time parsed_time;
     // Behave like //net and parse time-valued headers with a default time zone
     // of UTC.
-    if (WTF::Time::FromUTCString(mime_parameters_iterator->value.Utf8().data(),
-                                 &parsed_time))
+    if (base::Time::FromUTCString(
+            mime_parameters_iterator->value.Utf8().c_str(), &parsed_time))
       mime_header->date_ = parsed_time;
   }
 
@@ -234,7 +238,7 @@ MIMEHeader* MIMEHeader::ParseHeader(SharedBufferChunkReader* buffer) {
 
 MIMEHeader::Encoding MIMEHeader::ParseContentTransferEncoding(
     const String& text) {
-  String encoding = text.StripWhiteSpace().DeprecatedLower();
+  String encoding = text.StripWhiteSpace().LowerASCII();
   if (encoding == "base64")
     return Encoding::kBase64;
   if (encoding == "quoted-printable")
@@ -276,7 +280,7 @@ HeapVector<Member<ArchiveResource>> MHTMLParser::ParseArchive() {
   return resources;
 }
 
-WTF::Time MHTMLParser::CreationDate() const {
+base::Time MHTMLParser::CreationDate() const {
   return creation_date_;
 }
 
@@ -363,7 +367,7 @@ ArchiveResource* MHTMLParser::ParseNextPart(
     // read the part content till reaching the boundary without CRLF. So the
     // part content may contain CRLF at the end, which will be stripped off
     // later.
-    line_reader_.SetSeparator(end_of_part_boundary.Utf8().data());
+    line_reader_.SetSeparator(end_of_part_boundary.Utf8().c_str());
     if (!line_reader_.NextChunk(content)) {
       DVLOG(1) << "Binary contents requires end of part";
       return nullptr;
@@ -412,7 +416,7 @@ ArchiveResource* MHTMLParser::ParseNextPart(
       }
       // Note that we use line.utf8() and not line.ascii() as ascii turns
       // special characters (such as tab, line-feed...) into '?'.
-      content.Append(line.Utf8().data(), line.length());
+      content.Append(line.Utf8().c_str(), line.length());
       if (content_transfer_encoding == MIMEHeader::Encoding::kQuotedPrintable) {
         // The line reader removes the \r\n, but we need them for the content in
         // this case as the QuotedPrintable decoder expects CR-LF terminated

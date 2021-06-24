@@ -7,26 +7,45 @@
 
 #include "base/component_export.h"
 #include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+
+namespace url {
+class Origin;
+}
 
 namespace device {
 
 #if defined(OS_WIN)
+// Controls whether on Windows, U2F/CTAP2 requests are forwarded to the
+// native WebAuthentication API, where available.
 COMPONENT_EXPORT(DEVICE_FIDO)
 extern const base::Feature kWebAuthUseNativeWinApi;
 #endif  // defined(OS_WIN)
 
-// Controls the proxying of Cryptotoken requests through WebAuthn.
+// Support a special caBLEv2 mode where the server provides the linking
+// information.
 COMPONENT_EXPORT(DEVICE_FIDO)
-extern const base::Feature kWebAuthProxyCryptotoken;
+extern const base::Feature kWebAuthCableServerLink;
 
-// Enable support for PIN-based user-verification.
+// Enable synced Android devices to be a 2nd-factor security key.
 COMPONENT_EXPORT(DEVICE_FIDO)
-extern const base::Feature kWebAuthPINSupport;
+extern const base::Feature kWebAuthCableSecondFactor;
 
-// Enable support for resident keys.
+// Enable using a phone as a generic security key.
 COMPONENT_EXPORT(DEVICE_FIDO)
-extern const base::Feature kWebAuthResidentKeys;
+extern const base::Feature kWebAuthPhoneSupport;
+
+// Support the caBLE extension in assertion requests from any origin.
+COMPONENT_EXPORT(DEVICE_FIDO)
+extern const base::Feature kWebAuthCableExtensionAnywhere;
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+// Enable a ChromeOS platform authenticator
+COMPONENT_EXPORT(DEVICE_FIDO)
+extern const base::Feature kWebAuthCrosPlatformAuthenticator;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace device
 

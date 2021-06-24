@@ -9,10 +9,11 @@
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/task_environment.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
+#import "ios/chrome/browser/prerender/prerender_pref.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_detail_text_item.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_controller_test.h"
 #include "ios/chrome/grit/ios_strings.h"
@@ -23,14 +24,15 @@
 #error "This file requires ARC support."
 #endif
 
+using prerender_prefs::NetworkPredictionSetting;
+
 @interface DataplanUsageTableViewController (ExposedForTesting)
-- (void)updateBasePref:(BOOL)basePref wifiPref:(BOOL)wifiPref;
+- (void)updateSetting:(prerender_prefs::NetworkPredictionSetting)newSetting;
 @end
 
 namespace {
 
-const char* kBasePref = "BasePref";
-const char* kWifiPref = "WifiPref";
+const char* kPrefName = "SettingPref";
 
 class DataplanUsageTableViewControllerTest
     : public ChromeTableViewControllerTest {
@@ -44,20 +46,20 @@ class DataplanUsageTableViewControllerTest
   ChromeTableViewController* InstantiateController() override {
     dataplanController_ = [[DataplanUsageTableViewController alloc]
         initWithPrefs:pref_service_.get()
-             basePref:kBasePref
-             wifiPref:kWifiPref
+          settingPref:kPrefName
                 title:@"CollectionTitle"];
     return dataplanController_;
   }
 
   std::unique_ptr<PrefService> CreateLocalState() {
     scoped_refptr<PrefRegistrySimple> registry(new PrefRegistrySimple());
-    registry->RegisterBooleanPref(kBasePref, false);
-    registry->RegisterBooleanPref(kWifiPref, false);
+    registry->RegisterIntegerPref(
+        kPrefName, static_cast<int>(NetworkPredictionSetting::kDisabled));
 
     sync_preferences::PrefServiceMockFactory factory;
     base::FilePath path("DataplanUsageTableViewControllerTest.pref");
-    factory.SetUserPrefsFile(path, message_loop_.task_runner().get());
+    factory.SetUserPrefsFile(path,
+                             task_environment_.GetMainThreadTaskRunner().get());
     return factory.Create(registry.get());
   }
 
@@ -70,7 +72,8 @@ class DataplanUsageTableViewControllerTest
     EXPECT_EQ(accessory_type, cell.accessoryType);
   }
 
-  base::MessageLoopForUI message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
   std::unique_ptr<PrefService> pref_service_;
   DataplanUsageTableViewController* dataplanController_;
 };
@@ -95,22 +98,19 @@ TEST_F(DataplanUsageTableViewControllerTest, TestUpdateCheckedState) {
   ASSERT_EQ(1, NumberOfSections());
   ASSERT_EQ(3, NumberOfItemsInSection(0));
 
-  [dataplanController_ updateBasePref:YES wifiPref:YES];
+  [dataplanController_
+      updateSetting:NetworkPredictionSetting::kEnabledWifiOnly];
   CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 0);
   CheckTextItemAccessoryType(UITableViewCellAccessoryCheckmark, 0, 1);
   CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 2);
 
-  [dataplanController_ updateBasePref:YES wifiPref:NO];
+  [dataplanController_
+      updateSetting:NetworkPredictionSetting::kEnabledWifiAndCellular];
   CheckTextItemAccessoryType(UITableViewCellAccessoryCheckmark, 0, 0);
   CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 1);
   CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 2);
 
-  [dataplanController_ updateBasePref:NO wifiPref:YES];
-  CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 0);
-  CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 1);
-  CheckTextItemAccessoryType(UITableViewCellAccessoryCheckmark, 0, 2);
-
-  [dataplanController_ updateBasePref:NO wifiPref:NO];
+  [dataplanController_ updateSetting:NetworkPredictionSetting::kDisabled];
   CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 0);
   CheckTextItemAccessoryType(UITableViewCellAccessoryNone, 0, 1);
   CheckTextItemAccessoryType(UITableViewCellAccessoryCheckmark, 0, 2);

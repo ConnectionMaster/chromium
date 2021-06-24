@@ -12,9 +12,8 @@
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/sync/base/hash_util.h"
 #include "components/sync/base/unique_position.h"
-#include "components/sync/engine/non_blocking_sync_common.h"
+#include "components/sync/engine/commit_and_get_updates_types.h"
 #include "components/sync_bookmarks/bookmark_specifics_conversions.h"
-#include "components/sync_bookmarks/synced_bookmark_tracker.h"
 
 namespace sync_bookmarks {
 
@@ -45,10 +44,10 @@ void BookmarkModelObserverImpl::BookmarkModelBeingDeleted(
 void BookmarkModelObserverImpl::BookmarkNodeMoved(
     bookmarks::BookmarkModel* model,
     const bookmarks::BookmarkNode* old_parent,
-    int old_index,
+    size_t old_index,
     const bookmarks::BookmarkNode* new_parent,
-    int new_index) {
-  const bookmarks::BookmarkNode* node = new_parent->GetChild(new_index);
+    size_t new_index) {
+  const bookmarks::BookmarkNode* node = new_parent->children()[new_index].get();
 
   // We shouldn't see changes to the top-level nodes.
   DCHECK(!model->is_permanent_node(node));
@@ -61,25 +60,24 @@ void BookmarkModelObserverImpl::BookmarkNodeMoved(
 
   const std::string& sync_id = entity->metadata()->server_id();
   const base::Time modification_time = base::Time::Now();
-
-  const sync_pb::UniquePosition unique_position =
-      ComputePosition(*new_parent, new_index, sync_id).ToProto();
+  const syncer::UniquePosition unique_position =
+      ComputePosition(*new_parent, new_index, sync_id);
 
   sync_pb::EntitySpecifics specifics =
       CreateSpecificsFromBookmarkNode(node, model, /*force_favicon_load=*/true);
 
-  bookmark_tracker_->Update(sync_id, entity->metadata()->server_version(),
+  bookmark_tracker_->Update(entity, entity->metadata()->server_version(),
                             modification_time, unique_position, specifics);
   // Mark the entity that it needs to be committed.
-  bookmark_tracker_->IncrementSequenceNumber(sync_id);
+  bookmark_tracker_->IncrementSequenceNumber(entity);
   nudge_for_commit_closure_.Run();
 }
 
 void BookmarkModelObserverImpl::BookmarkNodeAdded(
     bookmarks::BookmarkModel* model,
     const bookmarks::BookmarkNode* parent,
-    int index) {
-  const bookmarks::BookmarkNode* node = parent->GetChild(index);
+    size_t index) {
+  const bookmarks::BookmarkNode* node = parent->children()[index].get();
   if (!model->client()->CanSyncNode(node)) {
     return;
   }
@@ -90,30 +88,44 @@ void BookmarkModelObserverImpl::BookmarkNodeAdded(
   // Should be removed after figuring out the reason for the crash.
   CHECK(parent_entity);
 
-  // Similar to the directory implementation here:
-  // https://cs.chromium.org/chromium/src/components/sync/syncable/mutable_entry.cc?l=237&gsn=CreateEntryKernel
-  // Assign a temp server id for the entity. Will be overriden by the actual
-  // server id upon receiving commit response.
-  const std::string sync_id = base::GenerateGUID();
-  const int64_t server_version = syncer::kUncommittedVersion;
-  const base::Time creation_time = base::Time::Now();
-  const sync_pb::UniquePosition unique_position =
-      ComputePosition(*parent, index, sync_id).ToProto();
+  const syncer::UniquePosition unique_position =
+      ComputePosition(*parent, index, node->guid().AsLowercaseString());
 
   sync_pb::EntitySpecifics specifics =
       CreateSpecificsFromBookmarkNode(node, model, /*force_favicon_load=*/true);
 
-  bookmark_tracker_->Add(sync_id, node, server_version, creation_time,
-                         unique_position, specifics);
+  // It is possible that a created bookmark was restored after deletion and
+  // the tombstone was not committed yet. In that case the existing entity
+  // should be updated.
+  const SyncedBookmarkTracker::Entity* entity =
+      bookmark_tracker_->GetEntityForClientTagHash(
+          SyncedBookmarkTracker::GetClientTagHashFromGUID(node->guid()));
+  const base::Time creation_time = base::Time::Now();
+  if (entity) {
+    // If there is a tracked entity with the same client tag hash (effectively
+    // the same bookmark GUID), it must be a tombstone. Otherwise it means
+    // the bookmark model contains to bookmarks with the same GUID.
+    // TODO(crbug.com/516866): The below CHECK is added to debug some crashes.
+    // Should be removed after figuring out the reason for the crash.
+    CHECK(!entity->bookmark_node()) << "Added bookmark with duplicate GUID";
+    bookmark_tracker_->UndeleteTombstoneForBookmarkNode(entity, node);
+    bookmark_tracker_->Update(entity, entity->metadata()->server_version(),
+                              creation_time, unique_position, specifics);
+  } else {
+    entity = bookmark_tracker_->Add(node, node->guid().AsLowercaseString(),
+                                    syncer::kUncommittedVersion, creation_time,
+                                    unique_position, specifics);
+  }
+
   // Mark the entity that it needs to be committed.
-  bookmark_tracker_->IncrementSequenceNumber(sync_id);
+  bookmark_tracker_->IncrementSequenceNumber(entity);
   nudge_for_commit_closure_.Run();
 }
 
 void BookmarkModelObserverImpl::OnWillRemoveBookmarks(
     bookmarks::BookmarkModel* model,
     const bookmarks::BookmarkNode* parent,
-    int old_index,
+    size_t old_index,
     const bookmarks::BookmarkNode* node) {
   if (!model->client()->CanSyncNode(node)) {
     return;
@@ -126,7 +138,7 @@ void BookmarkModelObserverImpl::OnWillRemoveBookmarks(
 void BookmarkModelObserverImpl::BookmarkNodeRemoved(
     bookmarks::BookmarkModel* model,
     const bookmarks::BookmarkNode* parent,
-    int old_index,
+    size_t old_index,
     const bookmarks::BookmarkNode* node,
     const std::set<GURL>& removed_urls) {
   // All the work should have already been done in OnWillRemoveBookmarks.
@@ -137,13 +149,10 @@ void BookmarkModelObserverImpl::BookmarkNodeRemoved(
 void BookmarkModelObserverImpl::OnWillRemoveAllUserBookmarks(
     bookmarks::BookmarkModel* model) {
   const bookmarks::BookmarkNode* root_node = model->root_node();
-  for (int i = 0; i < root_node->child_count(); ++i) {
-    const bookmarks::BookmarkNode* permanent_node = root_node->GetChild(i);
-    for (int j = permanent_node->child_count() - 1; j >= 0; --j) {
-      if (!model->client()->CanSyncNode(permanent_node->GetChild(j))) {
-        continue;
-      }
-      ProcessDelete(permanent_node, permanent_node->GetChild(j));
+  for (const auto& permanent_node : root_node->children()) {
+    for (const auto& child : permanent_node->children()) {
+      if (model->client()->CanSyncNode(child.get()))
+        ProcessDelete(permanent_node.get(), child.get());
     }
   }
   nudge_for_commit_closure_.Run();
@@ -182,25 +191,10 @@ void BookmarkModelObserverImpl::BookmarkNodeChanged(
     //    start tracking the node.
     return;
   }
-  const base::Time modification_time = base::Time::Now();
+
   sync_pb::EntitySpecifics specifics =
       CreateSpecificsFromBookmarkNode(node, model, /*force_favicon_load=*/true);
-  // TODO(crbug.com/516866): The below CHECKs are added to debug some crashes.
-  // Should be removed after figuring out the reason for the crash.
-  CHECK_EQ(entity, bookmark_tracker_->GetEntityForBookmarkNode(node));
-  if (entity->MatchesSpecificsHash(specifics)) {
-    // We should push data to the server only if there is an actual change in
-    // the data. We could hit this code path without having actual changes
-    // (e.g.upon a favicon load).
-    return;
-  }
-  const std::string& sync_id = entity->metadata()->server_id();
-  bookmark_tracker_->Update(sync_id, entity->metadata()->server_version(),
-                            modification_time,
-                            entity->metadata()->unique_position(), specifics);
-  // Mark the entity that it needs to be committed.
-  bookmark_tracker_->IncrementSequenceNumber(sync_id);
-  nudge_for_commit_closure_.Run();
+  ProcessUpdate(entity, specifics);
 }
 
 void BookmarkModelObserverImpl::BookmarkMetaInfoChanged(
@@ -227,7 +221,35 @@ void BookmarkModelObserverImpl::BookmarkNodeFaviconChanged(
     model->GetFavicon(node);
     return;
   }
-  BookmarkNodeChanged(model, node);
+
+  const SyncedBookmarkTracker::Entity* entity =
+      bookmark_tracker_->GetEntityForBookmarkNode(node);
+  if (!entity) {
+    // This should be practically unreachable but in theory it's possible that a
+    // favicon changes *during* the creation of a bookmark (by another
+    // observer). See analogous codepath in BookmarkNodeChanged().
+    return;
+  }
+
+  const sync_pb::EntitySpecifics specifics = CreateSpecificsFromBookmarkNode(
+      node, model, /*force_favicon_load=*/false);
+
+  // TODO(crbug.com/1094825): implement |base_specifics_hash| similar to
+  // ClientTagBasedModelTypeProcessor.
+  if (!entity->MatchesFaviconHash(specifics.bookmark().favicon())) {
+    ProcessUpdate(entity, specifics);
+    return;
+  }
+
+  // The favicon content didn't actually change, which means this event is
+  // almost certainly the result of favicon loading having completed.
+  if (entity->IsUnsynced()) {
+    // When kSyncDoNotCommitBookmarksWithoutFavicon is enabled, nudge for
+    // commit once favicon is loaded. This is needed in case when unsynced
+    // entity was skipped while building commit requests (since favicon wasn't
+    // loaded).
+    nudge_for_commit_closure_.Run();
+  }
 }
 
 void BookmarkModelObserverImpl::BookmarkNodeChildrenReordered(
@@ -249,12 +271,9 @@ void BookmarkModelObserverImpl::BookmarkNodeChildrenReordered(
   // 4. Sort the middle, using Between (e.g. recursive implementation).
 
   syncer::UniquePosition position;
-  syncer::UniquePosition previous_position;
-  for (int i = 0; i < node->child_count(); ++i) {
-    const bookmarks::BookmarkNode* child = node->GetChild(i);
-
+  for (const auto& child : node->children()) {
     const SyncedBookmarkTracker::Entity* entity =
-        bookmark_tracker_->GetEntityForBookmarkNode(child);
+        bookmark_tracker_->GetEntityForBookmarkNode(child.get());
     DCHECK(entity);
 
     const std::string& sync_id = entity->metadata()->server_id();
@@ -262,38 +281,35 @@ void BookmarkModelObserverImpl::BookmarkNodeChildrenReordered(
         bookmark_tracker_->model_type_state().cache_guid(), sync_id);
     const base::Time modification_time = base::Time::Now();
 
-    if (i == 0) {
-      position = syncer::UniquePosition::InitialPosition(suffix);
-    } else {
-      position = syncer::UniquePosition::After(previous_position, suffix);
-    }
-
-    previous_position = position;
+    position = (child == node->children().front())
+                   ? syncer::UniquePosition::InitialPosition(suffix)
+                   : syncer::UniquePosition::After(position, suffix);
 
     const sync_pb::EntitySpecifics specifics = CreateSpecificsFromBookmarkNode(
-        node, model, /*force_favicon_load=*/true);
+        child.get(), model, /*force_favicon_load=*/true);
 
-    bookmark_tracker_->Update(sync_id, entity->metadata()->server_version(),
-                              modification_time, position.ToProto(), specifics);
+    bookmark_tracker_->Update(entity, entity->metadata()->server_version(),
+                              modification_time, position, specifics);
     // Mark the entity that it needs to be committed.
-    bookmark_tracker_->IncrementSequenceNumber(sync_id);
+    bookmark_tracker_->IncrementSequenceNumber(entity);
   }
   nudge_for_commit_closure_.Run();
 }
 
 syncer::UniquePosition BookmarkModelObserverImpl::ComputePosition(
     const bookmarks::BookmarkNode& parent,
-    int index,
+    size_t index,
     const std::string& sync_id) {
   const std::string& suffix = syncer::GenerateSyncableBookmarkHash(
       bookmark_tracker_->model_type_state().cache_guid(), sync_id);
-  DCHECK_NE(0, parent.child_count());
+  DCHECK(!parent.children().empty());
   const SyncedBookmarkTracker::Entity* predecessor_entity = nullptr;
   const SyncedBookmarkTracker::Entity* successor_entity = nullptr;
 
   // Look for the first tracked predecessor.
-  for (int i = index - 1; i >= 0; i--) {
-    const bookmarks::BookmarkNode* predecessor_node = parent.GetChild(i);
+  for (auto i = parent.children().crend() - index;
+       i != parent.children().crend(); ++i) {
+    const bookmarks::BookmarkNode* predecessor_node = i->get();
     predecessor_entity =
         bookmark_tracker_->GetEntityForBookmarkNode(predecessor_node);
     if (predecessor_entity) {
@@ -302,8 +318,9 @@ syncer::UniquePosition BookmarkModelObserverImpl::ComputePosition(
   }
 
   // Look for the first tracked successor.
-  for (int i = index + 1; i < parent.child_count(); i++) {
-    const bookmarks::BookmarkNode* successor_node = parent.GetChild(i);
+  for (auto i = parent.children().cbegin() + index + 1;
+       i != parent.children().cend(); ++i) {
+    const bookmarks::BookmarkNode* successor_node = i->get();
     successor_entity =
         bookmark_tracker_->GetEntityForBookmarkNode(successor_node);
     if (successor_entity) {
@@ -341,23 +358,57 @@ syncer::UniquePosition BookmarkModelObserverImpl::ComputePosition(
       suffix);
 }
 
+void BookmarkModelObserverImpl::ProcessUpdate(
+    const SyncedBookmarkTracker::Entity* entity,
+    const sync_pb::EntitySpecifics& specifics) {
+  DCHECK(entity);
+
+  // Data should be committed to the server only if there is an actual change,
+  // determined here by comparing hashes.
+  if (entity->MatchesSpecificsHash(specifics)) {
+    // Specifics haven't actually changed, so the local change can be ignored.
+    //
+    // This is an opportunity to populate the favicon hash in sync metadata if
+    // it hasn't been populated yet. This is needed because the proto field that
+    // stores favicon hashes was introduced late. The fact that hashed specifics
+    // match implies that the favicon (which is part of specifics) must also
+    // match, hence the proto field can be safely populated.
+    bookmark_tracker_->PopulateFaviconHashIfUnset(
+        entity, specifics.bookmark().favicon());
+    return;
+  }
+
+  bookmark_tracker_->Update(
+      entity, entity->metadata()->server_version(),
+      /*modification_time=*/base::Time::Now(),
+      syncer::UniquePosition::FromProto(entity->metadata()->unique_position()),
+      specifics);
+  // Mark the entity that it needs to be committed.
+  bookmark_tracker_->IncrementSequenceNumber(entity);
+  nudge_for_commit_closure_.Run();
+}
+
 void BookmarkModelObserverImpl::ProcessDelete(
     const bookmarks::BookmarkNode* parent,
     const bookmarks::BookmarkNode* node) {
   // If not a leaf node, process all children first.
-  for (int i = 0; i < node->child_count(); ++i) {
-    const bookmarks::BookmarkNode* child = node->GetChild(i);
-    ProcessDelete(node, child);
-  }
+  for (const auto& child : node->children())
+    ProcessDelete(node, child.get());
   // Process the current node.
   const SyncedBookmarkTracker::Entity* entity =
       bookmark_tracker_->GetEntityForBookmarkNode(node);
   // Shouldn't try to delete untracked entities.
   DCHECK(entity);
-  const std::string& sync_id = entity->metadata()->server_id();
-  bookmark_tracker_->MarkDeleted(sync_id);
+  // If the entity hasn't been committed and doesn't have an inflight commit
+  // request, simply remove it from the tracker.
+  if (entity->metadata()->server_version() == syncer::kUncommittedVersion &&
+      !entity->commit_may_have_started()) {
+    bookmark_tracker_->Remove(entity);
+    return;
+  }
+  bookmark_tracker_->MarkDeleted(entity);
   // Mark the entity that it needs to be committed.
-  bookmark_tracker_->IncrementSequenceNumber(sync_id);
+  bookmark_tracker_->IncrementSequenceNumber(entity);
 }
 
 }  // namespace sync_bookmarks

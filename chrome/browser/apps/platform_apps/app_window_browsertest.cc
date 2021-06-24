@@ -4,24 +4,23 @@
 
 #include "base/run_loop.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/apps/app_service/app_launch_params.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/extensions/app_launch_params.h"
-#include "chrome/browser/ui/extensions/application_launch.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/app_window/app_window_geometry_cache.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
-
-#if defined(OS_MACOSX)
-#include "base/mac/mac_util.h"
-#include "chrome/browser/ui/views_mode_controller.h"
-#endif
 
 using extensions::AppWindowGeometryCache;
 using extensions::ResultCatcher;
@@ -152,19 +151,15 @@ IN_PROC_BROWSER_TEST_F(AppWindowAPITest, DISABLED_TestMaximize) {
 }
 
 // Flaky on Linux. http://crbug.com/424399.
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #define MAYBE_TestMinimize DISABLED_TestMinimize
 #else
 #define MAYBE_TestMinimize TestMinimize
 #endif
 
 IN_PROC_BROWSER_TEST_F(AppWindowAPITest, MAYBE_TestMinimize) {
-#if defined(OS_MACOSX)
-  if (base::mac::IsOS10_10())
-    return;  // Fails when swarmed. http://crbug.com/660582
-  if (!views_mode_controller::IsViewsBrowserCocoa())
-    return;  // Fails in Views mode: https://crbug.com/834908
-#endif
   ASSERT_TRUE(RunAppWindowAPITest("testMinimize")) << message_;
 }
 
@@ -177,7 +172,7 @@ IN_PROC_BROWSER_TEST_F(AppWindowAPITest, DISABLED_TestRestoreAfterClose) {
 }
 
 // These tests will be flaky in Linux as window bounds change asynchronously.
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 #define MAYBE_TestDeprecatedBounds DISABLED_TestDeprecatedBounds
 #define MAYBE_TestInitialBounds DISABLED_TestInitialBounds
 #define MAYBE_TestInitialConstraints DISABLED_TestInitialConstraints
@@ -197,18 +192,10 @@ IN_PROC_BROWSER_TEST_F(AppWindowAPITest, MAYBE_TestDeprecatedBounds) {
 }
 
 IN_PROC_BROWSER_TEST_F(AppWindowAPITest, MAYBE_TestInitialBounds) {
-#if defined(OS_MACOSX)
-  if (!views_mode_controller::IsViewsBrowserCocoa())
-    return;  // Fails in Views mode: https://crbug.com/834908
-#endif
   ASSERT_TRUE(RunAppWindowAPITest("testInitialBounds")) << message_;
 }
 
 IN_PROC_BROWSER_TEST_F(AppWindowAPITest, MAYBE_TestInitialConstraints) {
-#if defined(OS_MACOSX)
-  if (!views_mode_controller::IsViewsBrowserCocoa())
-    return;  // Fails in Views mode: https://crbug.com/834908
-#endif
   ASSERT_TRUE(RunAppWindowAPITest("testInitialConstraints")) << message_;
 }
 
@@ -238,9 +225,12 @@ IN_PROC_BROWSER_TEST_F(AppWindowAPITest,
       test_data_dir_.AppendASCII("platform_apps").AppendASCII("window_api"));
   EXPECT_TRUE(extension);
 
-  OpenApplication(AppLaunchParams(
-      browser()->profile(), extension, extensions::LAUNCH_CONTAINER_NONE,
-      WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+  apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+      ->BrowserAppLauncher()
+      ->LaunchAppWithParams(apps::AppLaunchParams(
+          extension->id(), apps::mojom::LaunchContainer::kLaunchContainerNone,
+          WindowOpenDisposition::NEW_WINDOW,
+          apps::mojom::AppLaunchSource::kSourceTest));
 
   ExtensionTestMessageListener geometry_listener("ListenGeometryChange", true);
 

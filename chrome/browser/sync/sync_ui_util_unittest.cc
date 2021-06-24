@@ -2,32 +2,53 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <memory>
+#include "chrome/browser/sync/sync_ui_util.h"
+
 #include <set>
 #include <string>
+#include <utility>
 
-#include "base/bind.h"
-#include "base/strings/string16.h"
-#include "base/strings/utf_string_conversions.h"
-#include "build/build_config.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/sync/profile_sync_service_factory.h"
-#include "chrome/browser/sync/sync_ui_util.h"
-#include "chrome/test/base/testing_profile.h"
+#include "base/test/task_environment.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/grit/chromium_strings.h"
+#include "chrome/grit/generated_resources.h"
+#include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/sync/driver/test_sync_service.h"
 #include "components/sync/engine/sync_engine.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/identity_test_environment.h"
-#include "services/identity/public/cpp/identity_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-using syncer::TestSyncService;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_features.h"
+#include "base/test/scoped_feature_list.h"
+#endif
 
 namespace {
+
+MATCHER_P4(SyncStatusLabelsMatch,
+           message_type,
+           status_label_string_id,
+           button_string_id,
+           action_type,
+           "") {
+  if (arg.message_type != message_type) {
+    *result_listener << "Wrong message type";
+    return false;
+  }
+  if (arg.status_label_string_id != status_label_string_id) {
+    *result_listener << "Wrong status label";
+    return false;
+  }
+  if (arg.button_string_id != button_string_id) {
+    *result_listener << "Wrong button string";
+    return false;
+  }
+  if (arg.action_type != action_type) {
+    *result_listener << "Wrong action type";
+    return false;
+  }
+  return true;
+}
 
 // A number of distinct states of the SyncService can be generated for tests.
 enum DistinctState {
@@ -35,39 +56,33 @@ enum DistinctState {
   STATUS_CASE_SETUP_ERROR,
   STATUS_CASE_AUTH_ERROR,
   STATUS_CASE_PROTOCOL_ERROR,
-  STATUS_CASE_PASSPHRASE_ERROR,
   STATUS_CASE_CONFIRM_SYNC_SETTINGS,
+  STATUS_CASE_PASSPHRASE_ERROR,
+  STATUS_CASE_TRUSTED_VAULT_KEYS_ERROR,
+  STATUS_CASE_TRUSTED_VAULT_RECOVERABILITY_ERROR,
   STATUS_CASE_SYNCED,
   STATUS_CASE_SYNC_DISABLED_BY_POLICY,
+  STATUS_CASE_SYNC_RESET_FROM_DASHBOARD,
   NUMBER_OF_STATUS_CASES
 };
 
 const char kTestUser[] = "test_user@test.com";
 
-}  // namespace
-
-class SyncUIUtilTest : public testing::Test {
- private:
-  content::TestBrowserThreadBundle thread_bundle_;
-};
-
 // Sets up a TestSyncService to emulate one of a number of distinct cases in
-// order to perform tests on the generated messages.
-// Returns the expected value for the output argument |action_type| for each
-// of the distinct cases.
-sync_ui_util::ActionType GetDistinctCase(
-    TestSyncService* service,
-    identity::IdentityManager* identity_manager,
-    int case_number) {
-  // Auth Error object is returned by reference in mock and needs to stay in
-  // scope throughout test, so it is owned by calling method. However it is
-  // immutable so can only be allocated in this method.
+// order to perform tests on the generated messages. Returns the expected value
+// GetSyncStatusLabels should return.
+// TODO(mastiz): Split the cases below to separate tests.
+SyncStatusLabels SetUpDistinctCase(
+    syncer::TestSyncService* service,
+    signin::IdentityTestEnvironment* test_environment,
+    DistinctState case_number) {
   switch (case_number) {
     case STATUS_CASE_SETUP_IN_PROGRESS: {
       service->SetFirstSetupComplete(false);
       service->SetSetupInProgress(true);
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
-      return sync_ui_util::NO_ACTION;
+      return {SyncStatusMessageType::kPreSynced, IDS_SYNC_SETUP_IN_PROGRESS,
+              IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction};
     }
     case STATUS_CASE_SETUP_ERROR: {
       service->SetFirstSetupComplete(false);
@@ -75,7 +90,15 @@ sync_ui_util::ActionType GetDistinctCase(
       service->SetDisableReasons(
           syncer::SyncService::DISABLE_REASON_UNRECOVERABLE_ERROR);
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
-      return sync_ui_util::REAUTHENTICATE;
+      return {
+        SyncStatusMessageType::kSyncError,
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+            IDS_SYNC_STATUS_UNRECOVERABLE_ERROR,
+#else
+            IDS_SYNC_STATUS_UNRECOVERABLE_ERROR_NEEDS_SIGNOUT,
+#endif
+            IDS_SYNC_RELOGIN_BUTTON, SyncStatusActionType::kReauthenticate
+      };
     }
     case STATUS_CASE_AUTH_ERROR: {
       service->SetFirstSetupComplete(true);
@@ -84,13 +107,19 @@ sync_ui_util::ActionType GetDistinctCase(
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
 
       // Make sure to fail authentication with an error in this case.
-      std::string account_id = identity_manager->GetPrimaryAccountId();
-      identity::SetRefreshTokenForPrimaryAccount(identity_manager);
-      identity::UpdatePersistentErrorOfRefreshTokenForAccount(
-          identity_manager, account_id,
+      CoreAccountId account_id =
+          test_environment->identity_manager()->GetPrimaryAccountId(
+              signin::ConsentLevel::kSync);
+      test_environment->SetRefreshTokenForPrimaryAccount();
+      service->SetAuthenticatedAccountInfo(
+          test_environment->identity_manager()->GetPrimaryAccountInfo(
+              signin::ConsentLevel::kSync));
+      test_environment->UpdatePersistentErrorOfRefreshTokenForAccount(
+          account_id,
           GoogleServiceAuthError(GoogleServiceAuthError::State::SERVICE_ERROR));
-      service->SetDisableReasons(syncer::SyncService::DISABLE_REASON_NONE);
-      return sync_ui_util::REAUTHENTICATE;
+      service->SetDisableReasons(syncer::SyncService::DisableReasonSet());
+      return {SyncStatusMessageType::kSyncError, IDS_SYNC_RELOGIN_ERROR,
+              IDS_SYNC_RELOGIN_BUTTON, SyncStatusActionType::kReauthenticate};
     }
     case STATUS_CASE_PROTOCOL_ERROR: {
       service->SetFirstSetupComplete(true);
@@ -101,31 +130,58 @@ sync_ui_util::ActionType GetDistinctCase(
       syncer::SyncStatus status;
       status.sync_protocol_error = protocol_error;
       service->SetDetailedSyncStatus(false, status);
-      service->SetDisableReasons(syncer::SyncService::DISABLE_REASON_NONE);
-      return sync_ui_util::UPGRADE_CLIENT;
+      service->SetDisableReasons(syncer::SyncService::DisableReasonSet());
+      return {SyncStatusMessageType::kSyncError, IDS_SYNC_UPGRADE_CLIENT,
+              IDS_SYNC_UPGRADE_CLIENT_BUTTON,
+              SyncStatusActionType::kUpgradeClient};
     }
     case STATUS_CASE_CONFIRM_SYNC_SETTINGS: {
       service->SetFirstSetupComplete(false);
       service->SetPassphraseRequired(false);
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
-      return sync_ui_util::CONFIRM_SYNC_SETTINGS;
+      return {SyncStatusMessageType::kSyncError,
+              IDS_SYNC_SETTINGS_NOT_CONFIRMED,
+              IDS_SYNC_ERROR_USER_MENU_CONFIRM_SYNC_SETTINGS_BUTTON,
+              SyncStatusActionType::kConfirmSyncSettings};
     }
     case STATUS_CASE_PASSPHRASE_ERROR: {
       service->SetFirstSetupComplete(true);
       service->SetTransportState(syncer::SyncService::TransportState::ACTIVE);
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
-      service->SetDisableReasons(syncer::SyncService::DISABLE_REASON_NONE);
+      service->SetDisableReasons(syncer::SyncService::DisableReasonSet());
       service->SetPassphraseRequired(true);
-      service->SetPassphraseRequiredForDecryption(true);
-      return sync_ui_util::ENTER_PASSPHRASE;
+      service->SetPassphraseRequiredForPreferredDataTypes(true);
+      return {SyncStatusMessageType::kSyncError, IDS_SYNC_STATUS_NEEDS_PASSWORD,
+              IDS_SYNC_STATUS_NEEDS_PASSWORD_BUTTON,
+              SyncStatusActionType::kEnterPassphrase};
     }
+    case STATUS_CASE_TRUSTED_VAULT_KEYS_ERROR:
+      service->SetFirstSetupComplete(true);
+      service->SetTransportState(syncer::SyncService::TransportState::ACTIVE);
+      service->SetDetailedSyncStatus(false, syncer::SyncStatus());
+      service->SetDisableReasons(syncer::SyncService::DisableReasonSet());
+      service->SetPassphraseRequired(false);
+      service->SetTrustedVaultKeyRequiredForPreferredDataTypes(true);
+      return {SyncStatusMessageType::kPasswordsOnlySyncError,
+              IDS_SETTINGS_EMPTY_STRING, IDS_SYNC_STATUS_NEEDS_KEYS_BUTTON,
+              SyncStatusActionType::kRetrieveTrustedVaultKeys};
+    case STATUS_CASE_TRUSTED_VAULT_RECOVERABILITY_ERROR:
+      service->SetFirstSetupComplete(true);
+      service->SetTransportState(syncer::SyncService::TransportState::ACTIVE);
+      service->SetDetailedSyncStatus(false, syncer::SyncStatus());
+      service->SetDisableReasons(syncer::SyncService::DisableReasonSet());
+      service->SetPassphraseRequired(false);
+      service->SetTrustedVaultRecoverabilityDegraded(true);
+      return {SyncStatusMessageType::kSynced, IDS_SYNC_ACCOUNT_SYNCING,
+              IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction};
     case STATUS_CASE_SYNCED: {
       service->SetFirstSetupComplete(true);
       service->SetTransportState(syncer::SyncService::TransportState::ACTIVE);
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
-      service->SetDisableReasons(syncer::SyncService::DISABLE_REASON_NONE);
+      service->SetDisableReasons(syncer::SyncService::DisableReasonSet());
       service->SetPassphraseRequired(false);
-      return sync_ui_util::NO_ACTION;
+      return {SyncStatusMessageType::kSynced, IDS_SYNC_ACCOUNT_SYNCING,
+              IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction};
     }
     case STATUS_CASE_SYNC_DISABLED_BY_POLICY: {
       service->SetDisableReasons(
@@ -134,153 +190,209 @@ sync_ui_util::ActionType GetDistinctCase(
       service->SetTransportState(syncer::SyncService::TransportState::DISABLED);
       service->SetPassphraseRequired(false);
       service->SetDetailedSyncStatus(false, syncer::SyncStatus());
-      return sync_ui_util::NO_ACTION;
+      return {SyncStatusMessageType::kSynced,
+              IDS_SIGNED_IN_WITH_SYNC_DISABLED_BY_POLICY,
+              IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction};
+    }
+    case STATUS_CASE_SYNC_RESET_FROM_DASHBOARD: {
+      // Note: On desktop, if there is a primary account, then
+      // DISABLE_REASON_USER_CHOICE can only occur if Sync was reset from the
+      // dashboard, and the UI treats it as such.
+      service->SetDisableReasons(
+          syncer::SyncService::DISABLE_REASON_USER_CHOICE);
+      service->SetFirstSetupComplete(true);
+      service->SetTransportState(syncer::SyncService::TransportState::ACTIVE);
+      service->SetPassphraseRequired(false);
+      service->SetDetailedSyncStatus(false, syncer::SyncStatus());
+      return {SyncStatusMessageType::kSyncError,
+              IDS_SIGNED_IN_WITH_SYNC_STOPPED_VIA_DASHBOARD,
+              IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction};
     }
     case NUMBER_OF_STATUS_CASES:
       NOTREACHED();
   }
-  return sync_ui_util::NO_ACTION;
-}
-
-std::unique_ptr<KeyedService> BuildTestSyncService(
-    content::BrowserContext* context) {
-  return std::make_unique<TestSyncService>();
-}
-
-std::unique_ptr<TestingProfile> BuildTestingProfile() {
-  return IdentityTestEnvironmentProfileAdaptor::
-      CreateProfileForIdentityTestEnvironment(
-          {{ProfileSyncServiceFactory::GetInstance(),
-            base::BindRepeating(&BuildTestSyncService)}});
-}
-
-std::unique_ptr<TestingProfile> BuildSignedInTestingProfile() {
-  std::unique_ptr<TestingProfile> profile = BuildTestingProfile();
-  IdentityTestEnvironmentProfileAdaptor identity_adaptor(profile.get());
-  identity_adaptor.identity_test_env()->SetPrimaryAccount(kTestUser);
-  return profile;
+  return {SyncStatusMessageType::kPreSynced, IDS_SETTINGS_EMPTY_STRING,
+          IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction};
 }
 
 // This test ensures that each distinctive SyncService status will return a
-// unique combination of status and link messages from GetStatusLabels().
-TEST_F(SyncUIUtilTest, DistinctCasesReportUniqueMessageSets) {
-  std::set<base::string16> messages;
-  for (int idx = 0; idx != NUMBER_OF_STATUS_CASES; idx++) {
-    std::unique_ptr<Profile> profile = BuildTestingProfile();
+// proper status and link messages from GetSyncStatusLabels().
+TEST(SyncUIUtilTest, DistinctCasesReportProperMessages) {
+  base::test::TaskEnvironment task_environment;
 
-    IdentityTestEnvironmentProfileAdaptor env_adaptor(profile.get());
-    identity::IdentityTestEnvironment* environment =
-        env_adaptor.identity_test_env();
-    identity::IdentityManager* identity_manager =
-        environment->identity_manager();
+  for (int index = 0; index != NUMBER_OF_STATUS_CASES; index++) {
+    syncer::TestSyncService service;
+    signin::IdentityTestEnvironment environment;
 
-    // Need a primary account signed in before calling GetDistinctCase().
-    environment->MakePrimaryAccountAvailable(kTestUser);
+    // Need a primary account signed in before calling SetUpDistinctCase().
+    environment.MakePrimaryAccountAvailable(kTestUser,
+                                            signin::ConsentLevel::kSync);
 
-    TestSyncService* service = static_cast<TestSyncService*>(
-        ProfileSyncServiceFactory::GetForProfile(profile.get()));
-    sync_ui_util::ActionType expected_action_type =
-        GetDistinctCase(service, identity_manager, idx);
-    base::string16 status_label;
-    base::string16 link_label;
-    sync_ui_util::ActionType action_type = sync_ui_util::NO_ACTION;
-    sync_ui_util::GetStatusLabels(profile.get(), &status_label, &link_label,
-                                  &action_type);
+    SyncStatusLabels expected_labels = SetUpDistinctCase(
+        &service, &environment, static_cast<DistinctState>(index));
 
-    EXPECT_EQ(expected_action_type, action_type)
-        << "Wrong action returned for case #" << idx;
-    // If the status and link message combination is already present in the set
-    // of messages already seen, this is a duplicate rather than a unique
-    // message, and the test has failed.
-    EXPECT_FALSE(status_label.empty())
-        << "Empty status label returned for case #" << idx;
-    // Ensures a search for string 'href' (found in links, not a string to be
-    // found in an English language message) fails, since links are excluded
-    // from the status label.
-    EXPECT_EQ(status_label.find(base::ASCIIToUTF16("href")),
-              base::string16::npos);
-    base::string16 combined_label =
-        status_label + base::ASCIIToUTF16("#") + link_label;
-    EXPECT_TRUE(messages.find(combined_label) == messages.end()) <<
-        "Duplicate message for case #" << idx << ": " << combined_label;
-    messages.insert(combined_label);
+    EXPECT_THAT(GetSyncStatusLabels(&service, environment.identity_manager(),
+                                    /*is_user_signout_allowed=*/true),
+                SyncStatusLabelsMatch(expected_labels.message_type,
+                                      expected_labels.status_label_string_id,
+                                      expected_labels.button_string_id,
+                                      expected_labels.action_type));
   }
 }
 
-TEST_F(SyncUIUtilTest, UnrecoverableErrorWithActionableError) {
-  std::unique_ptr<Profile> profile = BuildSignedInTestingProfile();
+TEST(SyncUIUtilTest, UnrecoverableErrorWithActionableError) {
+  base::test::TaskEnvironment task_environment;
+  syncer::TestSyncService service;
+  signin::IdentityTestEnvironment environment;
 
-  TestSyncService* service = static_cast<TestSyncService*>(
-      ProfileSyncServiceFactory::GetForProfile(profile.get()));
-  service->SetFirstSetupComplete(true);
-  service->SetDisableReasons(
+  environment.SetPrimaryAccount(kTestUser, signin::ConsentLevel::kSync);
+  service.SetFirstSetupComplete(true);
+  service.SetDisableReasons(
       syncer::SyncService::DISABLE_REASON_UNRECOVERABLE_ERROR);
 
   // First time action is not set. We should get unrecoverable error.
-  service->SetDetailedSyncStatus(true, syncer::SyncStatus());
-
-  base::string16 link_label;
-  base::string16 unrecoverable_error_status_label;
-  sync_ui_util::ActionType action_type = sync_ui_util::NO_ACTION;
-  sync_ui_util::GetStatusLabels(profile.get(),
-                                &unrecoverable_error_status_label, &link_label,
-                                &action_type);
+  service.SetDetailedSyncStatus(true, syncer::SyncStatus());
 
   // Expect the generic unrecoverable error action which is to reauthenticate.
-  EXPECT_EQ(sync_ui_util::REAUTHENTICATE, action_type);
+  int unrecoverable_error =
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+      IDS_SYNC_STATUS_UNRECOVERABLE_ERROR;
+#else
+      IDS_SYNC_STATUS_UNRECOVERABLE_ERROR_NEEDS_SIGNOUT;
+#endif
+  EXPECT_THAT(
+      GetSyncStatusLabels(&service, environment.identity_manager(),
+                          /*is_user_signout_allowed=*/true),
+      SyncStatusLabelsMatch(SyncStatusMessageType::kSyncError,
+                            unrecoverable_error, IDS_SYNC_RELOGIN_BUTTON,
+                            SyncStatusActionType::kReauthenticate));
 
-  // This time set action to UPGRADE_CLIENT. Ensure that status label differs
-  // from previous one.
+  // This time set action to SyncStatusActionType::kUpgradeClient.
   syncer::SyncStatus status;
   status.sync_protocol_error.action = syncer::UPGRADE_CLIENT;
-  service->SetDetailedSyncStatus(true, status);
-  base::string16 upgrade_client_status_label;
-  sync_ui_util::GetStatusLabels(profile.get(), &upgrade_client_status_label,
-                                &link_label, &action_type);
-  // Expect an explicit 'client upgrade' action.
-  EXPECT_EQ(sync_ui_util::UPGRADE_CLIENT, action_type);
+  service.SetDetailedSyncStatus(true, status);
 
-  EXPECT_NE(unrecoverable_error_status_label, upgrade_client_status_label);
+  EXPECT_THAT(GetSyncStatusLabels(&service, environment.identity_manager(),
+                                  /*is_user_signout_allowed=*/true),
+              SyncStatusLabelsMatch(SyncStatusMessageType::kSyncError,
+                                    IDS_SYNC_UPGRADE_CLIENT,
+                                    IDS_SYNC_UPGRADE_CLIENT_BUTTON,
+                                    SyncStatusActionType::kUpgradeClient));
 }
 
-TEST_F(SyncUIUtilTest, ActionableErrorWithPassiveMessage) {
-  std::unique_ptr<Profile> profile = BuildSignedInTestingProfile();
+TEST(SyncUIUtilTest, ActionableErrorWithPassiveMessage) {
+  base::test::TaskEnvironment task_environment;
+  syncer::TestSyncService service;
+  signin::IdentityTestEnvironment environment;
 
-  TestSyncService* service = static_cast<TestSyncService*>(
-      ProfileSyncServiceFactory::GetForProfile(profile.get()));
-  service->SetFirstSetupComplete(true);
-  service->SetDisableReasons(
+  environment.SetPrimaryAccount(kTestUser, signin::ConsentLevel::kSync);
+  service.SetFirstSetupComplete(true);
+  service.SetDisableReasons(
       syncer::SyncService::DISABLE_REASON_UNRECOVERABLE_ERROR);
 
-  // Set action to UPGRADE_CLIENT.
+  // Set action to SyncStatusActionType::kUpgradeClient.
   syncer::SyncStatus status;
   status.sync_protocol_error.action = syncer::UPGRADE_CLIENT;
-  service->SetDetailedSyncStatus(true, status);
+  service.SetDetailedSyncStatus(true, status);
 
-  base::string16 actionable_error_status_label;
-  base::string16 link_label;
-  sync_ui_util::ActionType action_type = sync_ui_util::NO_ACTION;
-  sync_ui_util::GetStatusLabels(profile.get(), &actionable_error_status_label,
-                                &link_label, &action_type);
   // Expect a 'client upgrade' call to action.
-  EXPECT_EQ(sync_ui_util::UPGRADE_CLIENT, action_type);
-  EXPECT_NE(actionable_error_status_label, base::string16());
+  EXPECT_THAT(GetSyncStatusLabels(&service, environment.identity_manager(),
+                                  /*is_user_signout_allowed=*/true),
+              SyncStatusLabelsMatch(SyncStatusMessageType::kSyncError,
+                                    IDS_SYNC_UPGRADE_CLIENT,
+                                    IDS_SYNC_UPGRADE_CLIENT_BUTTON,
+                                    SyncStatusActionType::kUpgradeClient));
 }
 
-TEST_F(SyncUIUtilTest, SyncSettingsConfirmationNeededTest) {
-  std::unique_ptr<Profile> profile = BuildSignedInTestingProfile();
+TEST(SyncUIUtilTest, SyncSettingsConfirmationNeededTest) {
+  base::test::TaskEnvironment task_environment;
+  syncer::TestSyncService service;
+  signin::IdentityTestEnvironment environment;
 
-  TestSyncService* service = static_cast<TestSyncService*>(
-      ProfileSyncServiceFactory::GetForProfile(profile.get()));
-  service->SetFirstSetupComplete(false);
-  ASSERT_TRUE(sync_ui_util::ShouldRequestSyncConfirmation(service));
+  environment.SetPrimaryAccount(kTestUser, signin::ConsentLevel::kSync);
+  service.SetFirstSetupComplete(false);
+  ASSERT_TRUE(ShouldRequestSyncConfirmation(&service));
 
-  base::string16 actionable_error_status_label;
-  base::string16 link_label;
-  sync_ui_util::ActionType action_type = sync_ui_util::NO_ACTION;
-
-  sync_ui_util::GetStatusLabels(profile.get(), &actionable_error_status_label,
-                                &link_label, &action_type);
-
-  EXPECT_EQ(action_type, sync_ui_util::CONFIRM_SYNC_SETTINGS);
+  EXPECT_THAT(
+      GetSyncStatusLabels(&service, environment.identity_manager(),
+                          /*is_user_signout_allowed=*/true),
+      SyncStatusLabelsMatch(
+          SyncStatusMessageType::kSyncError, IDS_SYNC_SETTINGS_NOT_CONFIRMED,
+          IDS_SYNC_ERROR_USER_MENU_CONFIRM_SYNC_SETTINGS_BUTTON,
+          SyncStatusActionType::kConfirmSyncSettings));
 }
+
+// Errors in non-sync accounts should be ignored.
+TEST(SyncUIUtilTest, IgnoreSyncErrorForNonSyncAccount) {
+  base::test::TaskEnvironment task_environment;
+  syncer::TestSyncService service;
+  signin::IdentityTestEnvironment environment;
+
+  const AccountInfo primary_account_info =
+      environment.MakePrimaryAccountAvailable(kTestUser,
+                                              signin::ConsentLevel::kSync);
+  service.SetAuthenticatedAccountInfo(primary_account_info);
+  service.SetFirstSetupComplete(true);
+
+  // Setup a secondary account.
+  const AccountInfo secondary_account_info =
+      environment.MakeAccountAvailable("secondary-user@example.com");
+
+  // Verify that we do not have any existing errors.
+  ASSERT_THAT(GetSyncStatusLabels(&service, environment.identity_manager(),
+                                  /*is_user_signout_allowed=*/true),
+              SyncStatusLabelsMatch(
+                  SyncStatusMessageType::kSynced, IDS_SYNC_ACCOUNT_SYNCING,
+                  IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction));
+
+  // Add an error to the secondary account.
+  environment.UpdatePersistentErrorOfRefreshTokenForAccount(
+      secondary_account_info.account_id,
+      GoogleServiceAuthError(
+          GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS));
+
+  // Verify that we do not see any sign-in errors.
+  EXPECT_THAT(GetSyncStatusLabels(&service, environment.identity_manager(),
+                                  /*is_user_signout_allowed=*/true),
+              SyncStatusLabelsMatch(
+                  SyncStatusMessageType::kSynced, IDS_SYNC_ACCOUNT_SYNCING,
+                  IDS_SETTINGS_EMPTY_STRING, SyncStatusActionType::kNoAction));
+}
+
+TEST(SyncUIUtilTest, ShouldShowSyncPassphraseError) {
+  syncer::TestSyncService service;
+  service.SetFirstSetupComplete(true);
+  service.SetPassphraseRequiredForPreferredDataTypes(true);
+  EXPECT_TRUE(ShouldShowSyncPassphraseError(&service));
+}
+
+TEST(SyncUIUtilTest, ShouldShowSyncPassphraseError_SyncDisabled) {
+  syncer::TestSyncService service;
+  service.SetFirstSetupComplete(false);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  service.GetUserSettings()->SetOsSyncFeatureEnabled(false);
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+  service.SetPassphraseRequiredForPreferredDataTypes(true);
+  EXPECT_FALSE(ShouldShowSyncPassphraseError(&service));
+}
+
+TEST(SyncUIUtilTest, ShouldShowSyncPassphraseError_NotUsingPassphrase) {
+  syncer::TestSyncService service;
+  service.SetFirstSetupComplete(true);
+  service.SetPassphraseRequiredForPreferredDataTypes(false);
+  EXPECT_FALSE(ShouldShowSyncPassphraseError(&service));
+}
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+TEST(SyncUIUtilTest, ShouldShowSyncPassphraseError_OsSyncEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(chromeos::features::kSplitSettingsSync);
+  syncer::TestSyncService service;
+  service.SetPassphraseRequiredForPreferredDataTypes(true);
+  service.SetFirstSetupComplete(false);
+  service.GetUserSettings()->SetOsSyncFeatureEnabled(true);
+  EXPECT_TRUE(ShouldShowSyncPassphraseError(&service));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+}  // namespace

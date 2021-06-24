@@ -1,23 +1,15 @@
 [document web]
-++[list]
-++++[list item] dropeffect:copy
-++++++[static] name='• '
-++++++[text] name='copy'
-++++[list item] dropeffect:move
-++++++[static] name='• '
-++++++[text] name='move'
-++++[list item] dropeffect:link
-++++++[static] name='• '
-++++++[text] name='link'
-++++[list item] dropeffect:execute
-++++++[static] name='• '
-++++++[text] name='execute'
-++++[list item] dropeffect:popup
-++++++[static] name='• '
-++++++[text] name='popup'
-++++[list item] dropeffect:none
-++++++[static] name='• '
-++++++[text] name='none(default)'
-++++[list item] dropeffect:link|popup
-++++++[static] name='• '
-++++++[text] name='link'
+++[section] dropeffect:copy
+++++[static] name='copy'
+++[section] dropeffect:move
+++++[static] name='move'
+++[section] dropeffect:link
+++++[static] name='link'
+++[section] dropeffect:execute
+++++[static] name='execute'
+++[section] dropeffect:popup
+++++[static] name='popup'
+++[section] dropeffect:none
+++++[static] name='none(default)'
+++[section] dropeffect:link popup
+++++[static] name='link popup'

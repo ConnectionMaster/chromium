@@ -6,7 +6,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_PERFORMANCE_LONG_TASK_TIMING_H_
 
 #include "third_party/blink/renderer/core/timing/performance_entry.h"
-#include "third_party/blink/renderer/core/timing/sub_task_attribution.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -20,25 +19,27 @@ class PerformanceLongTaskTiming final : public PerformanceEntry {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  PerformanceLongTaskTiming(
-      double start_time,
-      double end_time,
-      const AtomicString& name,
-      const String& frame_src,
-      const String& frame_id,
-      const String& frame_name,
-      const SubTaskAttribution::EntriesVector& sub_task_attributions);
+  // This constructor uses int for |duration| on purpose: to avoid exposing a
+  // high resolution value in its entry. Having it be int ensures 1 ms
+  // granularity, even though it is ultimately stored as a double in
+  // PerformanceEntry.
+  PerformanceLongTaskTiming(double start_time,
+                            int duration,
+                            const AtomicString& name,
+                            const AtomicString& culprit_type,
+                            const AtomicString& culprit_src,
+                            const AtomicString& culprit_id,
+                            const AtomicString& culprit_name);
+  ~PerformanceLongTaskTiming() override;
 
   AtomicString entryType() const override;
   PerformanceEntryType EntryTypeEnum() const override;
 
   TaskAttributionVector attribution() const;
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
-  ~PerformanceLongTaskTiming() override;
-
   void BuildJSONValue(V8ObjectBuilder&) const override;
 
   TaskAttributionVector attribution_;

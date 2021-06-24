@@ -5,6 +5,8 @@
 #include "cc/raster/staging_buffer_pool.h"
 
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/strings/stringprintf.h"
@@ -88,7 +90,7 @@ void StagingBuffer::DestroyGLResources(gpu::raster::RasterInterface* ri,
 }
 
 void StagingBuffer::OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
-                                 viz::ResourceFormat format,
+                                 viz::ResourceFormat dump_format,
                                  bool in_free_list) const {
   if (!gpu_memory_buffer)
     return;
@@ -99,7 +101,7 @@ void StagingBuffer::OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
   MemoryAllocatorDump* buffer_dump = pmd->CreateAllocatorDump(buffer_dump_name);
 
   uint64_t buffer_size_in_bytes =
-      viz::ResourceSizes::UncheckedSizeInBytes<uint64_t>(size, format);
+      viz::ResourceSizes::UncheckedSizeInBytes<uint64_t>(size, dump_format);
   buffer_dump->AddScalar(MemoryAllocatorDump::kNameSize,
                          MemoryAllocatorDump::kUnitsBytes,
                          buffer_size_in_bytes);
@@ -128,15 +130,14 @@ StagingBufferPool::StagingBufferPool(
       free_staging_buffer_usage_in_bytes_(0),
       staging_buffer_expiration_delay_(
           base::TimeDelta::FromMilliseconds(kStagingBufferExpirationDelayMs)),
-      reduce_memory_usage_pending_(false),
-      weak_ptr_factory_(this) {
+      reduce_memory_usage_pending_(false) {
   DCHECK(worker_context_provider_);
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       this, "cc::StagingBufferPool", base::ThreadTaskRunnerHandle::Get());
 
-  memory_pressure_listener_.reset(new base::MemoryPressureListener(
-      base::BindRepeating(&StagingBufferPool::OnMemoryPressure,
-                          weak_ptr_factory_.GetWeakPtr())));
+  memory_pressure_listener_ = std::make_unique<base::MemoryPressureListener>(
+      FROM_HERE, base::BindRepeating(&StagingBufferPool::OnMemoryPressure,
+                                     weak_ptr_factory_.GetWeakPtr()));
 
   reduce_memory_usage_callback_ = base::BindRepeating(
       &StagingBufferPool::ReduceMemoryUsage, weak_ptr_factory_.GetWeakPtr());
@@ -195,8 +196,6 @@ bool StagingBufferPool::OnMemoryDump(
 
 void StagingBufferPool::AddStagingBuffer(const StagingBuffer* staging_buffer,
                                          viz::ResourceFormat format) {
-  lock_.AssertAcquired();
-
   DCHECK(buffers_.find(staging_buffer) == buffers_.end());
   buffers_.insert(staging_buffer);
   int buffer_usage_in_bytes = viz::ResourceSizes::UncheckedSizeInBytes<int>(
@@ -206,8 +205,6 @@ void StagingBufferPool::AddStagingBuffer(const StagingBuffer* staging_buffer,
 
 void StagingBufferPool::RemoveStagingBuffer(
     const StagingBuffer* staging_buffer) {
-  lock_.AssertAcquired();
-
   DCHECK(buffers_.find(staging_buffer) != buffers_.end());
   buffers_.erase(staging_buffer);
   int buffer_usage_in_bytes = viz::ResourceSizes::UncheckedSizeInBytes<int>(
@@ -218,8 +215,6 @@ void StagingBufferPool::RemoveStagingBuffer(
 
 void StagingBufferPool::MarkStagingBufferAsFree(
     const StagingBuffer* staging_buffer) {
-  lock_.AssertAcquired();
-
   int buffer_usage_in_bytes = viz::ResourceSizes::UncheckedSizeInBytes<int>(
       staging_buffer->size, staging_buffer->format);
   free_staging_buffer_usage_in_bytes_ += buffer_usage_in_bytes;
@@ -227,8 +222,6 @@ void StagingBufferPool::MarkStagingBufferAsFree(
 
 void StagingBufferPool::MarkStagingBufferAsBusy(
     const StagingBuffer* staging_buffer) {
-  lock_.AssertAcquired();
-
   int buffer_usage_in_bytes = viz::ResourceSizes::UncheckedSizeInBytes<int>(
       staging_buffer->size, staging_buffer->format);
   DCHECK_GE(free_staging_buffer_usage_in_bytes_, buffer_usage_in_bytes);
@@ -335,8 +328,6 @@ std::unique_ptr<StagingBuffer> StagingBufferPool::AcquireStagingBuffer(
 }
 
 base::TimeTicks StagingBufferPool::GetUsageTimeForLRUBuffer() {
-  lock_.AssertAcquired();
-
   if (!free_buffers_.empty())
     return free_buffers_.front()->last_usage;
 
@@ -347,8 +338,6 @@ base::TimeTicks StagingBufferPool::GetUsageTimeForLRUBuffer() {
 }
 
 void StagingBufferPool::ScheduleReduceMemoryUsage() {
-  lock_.AssertAcquired();
-
   if (reduce_memory_usage_pending_)
     return;
 
@@ -388,8 +377,6 @@ void StagingBufferPool::ReduceMemoryUsage() {
 }
 
 void StagingBufferPool::ReleaseBuffersNotUsedSince(base::TimeTicks time) {
-  lock_.AssertAcquired();
-
   {
     viz::RasterContextProvider::ScopedRasterContextLock scoped_context(
         worker_context_provider_);

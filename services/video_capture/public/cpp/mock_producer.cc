@@ -4,10 +4,12 @@
 
 #include "services/video_capture/public/cpp/mock_producer.h"
 
+#include "media/capture/mojom/video_capture_buffer.mojom.h"
+
 namespace video_capture {
 
-MockProducer::MockProducer(mojom::ProducerRequest request)
-    : binding_(this, std::move(request)) {}
+MockProducer::MockProducer(mojo::PendingReceiver<mojom::Producer> receiver)
+    : receiver_(this, std::move(receiver)) {}
 
 MockProducer::~MockProducer() = default;
 

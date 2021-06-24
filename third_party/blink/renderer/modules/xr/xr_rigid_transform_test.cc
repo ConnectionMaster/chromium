@@ -4,8 +4,6 @@
 
 #include "third_party/blink/renderer/modules/xr/xr_rigid_transform.h"
 
-#include <vector>
-
 #include "third_party/blink/renderer/modules/xr/xr_test_utils.h"
 #include "third_party/blink/renderer/modules/xr/xr_utils.h"
 
@@ -29,8 +27,8 @@ static void AssertDOMPointsEqualForTest(const DOMPointReadOnly* a,
 
 static void AssertMatricesEqualForTest(const TransformationMatrix& a,
                                        const TransformationMatrix& b) {
-  const std::vector<double> a_data = GetMatrixDataForTest(a);
-  const std::vector<double> b_data = GetMatrixDataForTest(b);
+  const Vector<double> a_data = GetMatrixDataForTest(a);
+  const Vector<double> b_data = GetMatrixDataForTest(b);
   for (int i = 0; i < 16; ++i) {
     ASSERT_NEAR(a_data[i], b_data[i], kEpsilon);
   }
@@ -52,31 +50,33 @@ static void TestComposeDecompose(DOMPointInit* position,
 
 static void TestDoubleInverse(DOMPointInit* position,
                               DOMPointInit* orientation) {
-  XRRigidTransform transform(position, orientation);
-  XRRigidTransform inverse_transform(transform.InverseTransformMatrix());
-  XRRigidTransform inverse_inverse_transform(
-      inverse_transform.InverseTransformMatrix());
-  AssertTransformsEqualForTest(transform, inverse_inverse_transform);
+  XRRigidTransform* transform =
+      MakeGarbageCollected<XRRigidTransform>(position, orientation);
+  XRRigidTransform* inverse_transform = MakeGarbageCollected<XRRigidTransform>(
+      transform->InverseTransformMatrix());
+  XRRigidTransform* inverse_inverse_transform =
+      MakeGarbageCollected<XRRigidTransform>(
+          inverse_transform->InverseTransformMatrix());
+  AssertTransformsEqualForTest(*transform, *inverse_inverse_transform);
 }
 
 TEST(XRRigidTransformTest, Compose) {
   DOMPointInit* position = MakePointForTest(1.0, 2.0, 3.0, 1.0);
   DOMPointInit* orientation = MakePointForTest(0.7071068, 0.0, 0.0, 0.7071068);
   XRRigidTransform transform(position, orientation);
-  const std::vector<double> actual_matrix =
+  const Vector<double> actual_matrix =
       GetMatrixDataForTest(transform.TransformMatrix());
-  const std::vector<double> expected_matrix{1.0, 0.0, 0.0, 0.0,  0.0, 0.0,
-                                            1.0, 0.0, 0.0, -1.0, 0.0, 0.0,
-                                            1.0, 2.0, 3.0, 1.0};
+  const Vector<double> expected_matrix{1.0, 0.0,  0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                                       0.0, -1.0, 0.0, 0.0, 1.0, 2.0, 3.0, 1.0};
   for (int i = 0; i < 16; ++i) {
     ASSERT_NEAR(actual_matrix[i], expected_matrix[i], kEpsilon);
   }
 }
 
 TEST(XRRigidTransformTest, Decompose) {
-  XRRigidTransform transform(std::make_unique<TransformationMatrix>(
-      1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 2.0,
-      3.0, 1.0));
+  TransformationMatrix matrix(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0,
+                              0.0, 0.0, 1.0, 2.0, 3.0, 1.0);
+  XRRigidTransform transform(matrix);
   const DOMPointReadOnly expected_position(1.0, 2.0, 3.0, 1.0);
   const DOMPointReadOnly expected_orientation(0.7071068, 0.0, 0.0, 0.7071068);
   AssertDOMPointsEqualForTest(transform.position(), &expected_position);
@@ -104,6 +104,17 @@ TEST(XRRigidTransformTest, DoubleInverse2) {
   TestDoubleInverse(MakePointForTest(1.0, -1.0, 4.0, 1.0),
                     MakePointForTest(0.3701005885691383, -0.5678993882056005,
                                      0.31680366148754113, 0.663438979322567));
+}
+
+TEST(XRRigidTransformTest, InverseObjectEquality) {
+  XRRigidTransform* transform = MakeGarbageCollected<XRRigidTransform>(
+      MakePointForTest(1.0, 2.0, 3.0, 4.0),
+      MakePointForTest(1.0, 0.0, 0.0, 1.0));
+  XRRigidTransform* transform_inverse = transform->inverse();
+  ASSERT_TRUE(transform_inverse != transform);
+  ASSERT_TRUE(transform_inverse == transform->inverse());
+  ASSERT_TRUE(transform_inverse->inverse() == transform);
+  ASSERT_TRUE(transform->inverse()->inverse() == transform);
 }
 
 }  // namespace

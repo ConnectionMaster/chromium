@@ -8,7 +8,6 @@
 #include "ash/system/network/tray_network_state_observer.h"
 #include "ash/system/unified/feature_pod_controller_base.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 
 namespace ash {
 
@@ -16,7 +15,7 @@ class UnifiedSystemTrayController;
 
 // Controller of vpn feature pod button.
 class VPNFeaturePodController : public FeaturePodControllerBase,
-                                public TrayNetworkStateObserver::Delegate {
+                                public TrayNetworkStateObserver {
  public:
   VPNFeaturePodController(UnifiedSystemTrayController* tray_controller);
   ~VPNFeaturePodController() override;
@@ -26,13 +25,11 @@ class VPNFeaturePodController : public FeaturePodControllerBase,
   void OnIconPressed() override;
   SystemTrayItemUmaType GetUmaType() const override;
 
-  // TrayNetworkStateObserver::Delegate:
-  void NetworkStateChanged(bool notify_a11y) override;
+  // TrayNetworkStateObserver:
+  void ActiveNetworkStateChanged() override;
 
  private:
   void Update();
-
-  const std::unique_ptr<TrayNetworkStateObserver> network_state_observer_;
 
   // Unowned.
   UnifiedSystemTrayController* const tray_controller_;

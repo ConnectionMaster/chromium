@@ -5,14 +5,14 @@
 #ifndef CHROME_BROWSER_FIRST_RUN_UPGRADE_UTIL_H_
 #define CHROME_BROWSER_FIRST_RUN_UPGRADE_UTIL_H_
 
+#include <memory>
+
+#include "base/callback_forward.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 
-#if defined(OS_ANDROID) || defined(OS_CHROMEOS)
+#if defined(OS_ANDROID) || BUILDFLAG(IS_CHROMEOS_ASH)
 #error Not used on Android or ChromeOS
-#endif
-
-#if defined(OS_WIN)
-#include <string>
 #endif
 
 namespace base {
@@ -25,12 +25,14 @@ namespace upgrade_util {
 // launched, returns false.
 bool RelaunchChromeBrowser(const base::CommandLine& command_line);
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
 
-void SetNewCommandLine(base::CommandLine* new_command_line);
+// Sets a command line to be used to relaunch the browser upon exit.
+void SetNewCommandLine(std::unique_ptr<base::CommandLine> new_command_line);
 
-// Launches a new instance of the browser if the current instance in persistent
-// mode an upgrade is detected.
+// Launches a new instance of the browser using a command line previously
+// provided to SetNewCommandLine. This is typically used to finalize an in-use
+// update that was detected while the browser was in persistent mode.
 void RelaunchChromeBrowserWithNewCommandLineIfNeeded();
 
 // Windows:
@@ -40,7 +42,16 @@ void RelaunchChromeBrowserWithNewCommandLineIfNeeded();
 //  running instance.
 bool IsUpdatePendingRestart();
 
-#endif  // !defined(OS_MACOSX)
+#endif  // !defined(OS_MAC)
+
+using RelaunchChromeBrowserCallback =
+    base::RepeatingCallback<bool(const base::CommandLine&)>;
+
+// Sets |callback| to be run to process a RelaunchChromeBrowser request. This
+// is a test seam for whole-browser tests. See
+// ScopedRelaunchChromeBrowserOverride for convenience.
+RelaunchChromeBrowserCallback SetRelaunchChromeBrowserCallbackForTesting(
+    RelaunchChromeBrowserCallback callback);
 
 }  // namespace upgrade_util
 

@@ -5,19 +5,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_THREADED_WORKLET_OBJECT_PROXY_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_THREADED_WORKLET_OBJECT_PROXY_H_
 
-#include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "third_party/blink/public/platform/web_url_request.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/workers/threaded_object_proxy_base.h"
 #include "third_party/blink/renderer/core/workers/worker_reporting_proxy.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
 
 namespace blink {
 
 class ThreadedWorkletMessagingProxy;
 class WorkletPendingTasks;
 class WorkerThread;
+class WorkerResourceTimingNotifier;
 struct CrossThreadFetchClientSettingsObjectData;
 
 // A proxy to talk to the parent worker object. See class comments on
@@ -32,13 +33,18 @@ class CORE_EXPORT ThreadedWorkletObjectProxy : public ThreadedObjectProxyBase {
   static std::unique_ptr<ThreadedWorkletObjectProxy> Create(
       ThreadedWorkletMessagingProxy*,
       ParentExecutionContextTaskRunners*);
+
+  ThreadedWorkletObjectProxy(const ThreadedWorkletObjectProxy&) = delete;
+  ThreadedWorkletObjectProxy& operator=(const ThreadedWorkletObjectProxy&) =
+      delete;
   ~ThreadedWorkletObjectProxy() override;
 
   void FetchAndInvokeScript(
       const KURL& module_url_record,
-      network::mojom::FetchCredentialsMode,
+      network::mojom::CredentialsMode,
       std::unique_ptr<CrossThreadFetchClientSettingsObjectData>
           outside_settings_object,
+      WorkerResourceTimingNotifier* outside_resource_timing_notifier,
       scoped_refptr<base::SingleThreadTaskRunner> outside_settings_task_runner,
       WorkletPendingTasks*,
       WorkerThread*);
@@ -56,7 +62,6 @@ class CORE_EXPORT ThreadedWorkletObjectProxy : public ThreadedObjectProxyBase {
   // the tasks.
   CrossThreadWeakPersistent<ThreadedWorkletMessagingProxy>
       messaging_proxy_weak_ptr_;
-  DISALLOW_COPY_AND_ASSIGN(ThreadedWorkletObjectProxy);
 };
 
 }  // namespace blink

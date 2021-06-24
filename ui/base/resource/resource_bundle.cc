@@ -12,21 +12,29 @@
 
 #include "base/big_endian.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
+#include "base/debug/alias.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/trace_event/base_tracing.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "net/filter/gzip_header.h"
 #include "skia/ext/image_operations.h"
+#include "third_party/brotli/include/brotli/decode.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "third_party/zlib/google/compression_utils.h"
 #include "ui/base/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/layout.h"
@@ -37,18 +45,18 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/codec/png_codec.h"
-#include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_source.h"
 #include "ui/strings/grit/app_locale_settings.h"
+#include "url/gurl.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/build_info.h"
 #include "ui/base/resource/resource_bundle_android.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #include "ui/gfx/platform_font_skia.h"
 #endif
 
@@ -66,11 +74,11 @@ const size_t kPngChunkMetadataSize = 12;  // length, type, crc32
 const unsigned char kPngScaleChunkType[4] = { 'c', 's', 'C', 'l' };
 const unsigned char kPngDataChunkType[4] = { 'I', 'D', 'A', 'T' };
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
 const char kPakFileExtension[] = ".pak";
 #endif
 
-ResourceBundle* g_shared_instance_ = NULL;
+ResourceBundle* g_shared_instance_ = nullptr;
 
 base::FilePath GetResourcesPakFilePath(const std::string& pak_name) {
   base::FilePath path;
@@ -79,7 +87,7 @@ base::FilePath GetResourcesPakFilePath(const std::string& pak_name) {
 
   // Return just the name of the pak file.
 #if defined(OS_WIN)
-  return base::FilePath(base::ASCIIToUTF16(pak_name));
+  return base::FilePath(base::ASCIIToWide(pak_name));
 #else
   return base::FilePath(pak_name.c_str());
 #endif  // OS_WIN
@@ -90,6 +98,73 @@ SkBitmap CreateEmptyBitmap() {
   bitmap.allocN32Pixels(32, 32);
   bitmap.eraseARGB(255, 255, 255, 0);
   return bitmap;
+}
+
+// Helper function for determining whether a resource is gzipped.
+bool HasGzipHeader(base::StringPiece data) {
+  net::GZipHeader header;
+  const char* header_end = nullptr;
+  net::GZipHeader::Status header_status =
+      header.ReadMore(data.data(), data.length(), &header_end);
+  return header_status == net::GZipHeader::COMPLETE_HEADER;
+}
+
+// Helper function for determining whether a resource is brotli compressed.
+bool HasBrotliHeader(base::StringPiece data) {
+  // Check that the data is brotli decoded by checking for kBrotliConst in
+  // header. Header added during compression at tools/grit/grit/node/base.py.
+  const uint8_t* data_bytes = reinterpret_cast<const uint8_t*>(data.data());
+  static_assert(base::size(ResourceBundle::kBrotliConst) == 2,
+                "Magic number should be 2 bytes long");
+  return data.size() >= ResourceBundle::kBrotliHeaderSize &&
+         *data_bytes == ResourceBundle::kBrotliConst[0] &&
+         *(data_bytes + 1) == ResourceBundle::kBrotliConst[1];
+}
+
+// Returns the uncompressed size of Brotli compressed |input| from header.
+size_t GetBrotliDecompressSize(base::StringPiece input) {
+  CHECK(input.data());
+  CHECK(HasBrotliHeader(input));
+  const uint8_t* raw_input = reinterpret_cast<const uint8_t*>(input.data());
+  raw_input = raw_input + base::size(ResourceBundle::kBrotliConst);
+  // Get size of uncompressed resource from header.
+  uint64_t uncompress_size = 0;
+  int bytes_size = static_cast<int>(ResourceBundle::kBrotliHeaderSize -
+                                    base::size(ResourceBundle::kBrotliConst));
+  for (int i = 0; i < bytes_size; i++) {
+    uncompress_size |= static_cast<uint64_t>(*(raw_input + i)) << (i * 8);
+  }
+  return static_cast<size_t>(uncompress_size);
+}
+
+// Decompresses data in |input| using brotli, storing
+// the result in |output|, which is resized as necessary. Returns true for
+// success. To be used for grit compressed resources only.
+bool BrotliDecompress(base::StringPiece input, std::string* output) {
+  size_t decompress_size = GetBrotliDecompressSize(input);
+  const uint8_t* raw_input = reinterpret_cast<const uint8_t*>(input.data());
+  raw_input = raw_input + ResourceBundle::kBrotliHeaderSize;
+
+  output->resize(decompress_size);
+  uint8_t* output_bytes =
+      reinterpret_cast<uint8_t*>(const_cast<char*>(output->data()));
+  return BrotliDecoderDecompress(
+             input.size() - ResourceBundle::kBrotliHeaderSize, raw_input,
+             &decompress_size, output_bytes) == BROTLI_DECODER_RESULT_SUCCESS;
+}
+
+// Helper function for decompressing resource.
+void DecompressIfNeeded(base::StringPiece data, std::string* output) {
+  if (!data.empty() && HasGzipHeader(data)) {
+    bool success = compression::GzipUncompress(data, output);
+    DCHECK(success);
+  } else if (!data.empty() && HasBrotliHeader(data)) {
+    bool success = BrotliDecompress(data, output);
+    DCHECK(success);
+  } else {
+    // Assume the raw data is not compressed.
+    output->assign(data.data(), data.size());
+  }
 }
 
 }  // namespace
@@ -134,10 +209,9 @@ class ResourceBundle::ResourceBundleImageSource : public gfx::ImageSkiaSource {
     if (fell_back_to_1x) {
       // GRIT fell back to the 100% image, so rescale it to the correct size.
       image = skia::ImageOperations::Resize(
-          image,
-          skia::ImageOperations::RESIZE_LANCZOS3,
-          gfx::ToCeiledInt(image.width() * scale),
-          gfx::ToCeiledInt(image.height() * scale));
+          image, skia::ImageOperations::RESIZE_LANCZOS3,
+          base::ClampCeil(image.width() * scale),
+          base::ClampCeil(image.height() * scale));
     } else {
       scale = GetScaleForScaleFactor(scale_factor);
     }
@@ -151,33 +225,20 @@ class ResourceBundle::ResourceBundleImageSource : public gfx::ImageSkiaSource {
   DISALLOW_COPY_AND_ASSIGN(ResourceBundleImageSource);
 };
 
-struct ResourceBundle::FontKey {
-  FontKey(const std::string& typeface,
-          int in_size_delta,
-          gfx::Font::FontStyle in_style,
-          gfx::Font::Weight in_weight)
-      : typeface(typeface),
-        size_delta(in_size_delta),
-        style(in_style),
-        weight(in_weight) {}
+ResourceBundle::FontDetails::FontDetails(std::string typeface,
+                                         int size_delta,
+                                         gfx::Font::Weight weight)
+    : typeface(typeface), size_delta(size_delta), weight(weight) {}
 
-  ~FontKey() {}
+bool ResourceBundle::FontDetails::operator==(const FontDetails& rhs) const {
+  return std::tie(typeface, size_delta, weight) ==
+         std::tie(rhs.typeface, rhs.size_delta, rhs.weight);
+}
 
-  bool operator==(const FontKey& rhs) const {
-    return std::tie(typeface, size_delta, style, weight) ==
-           std::tie(rhs.typeface, rhs.size_delta, rhs.style, rhs.weight);
-  }
-
-  bool operator<(const FontKey& rhs) const {
-    return std::tie(typeface, size_delta, style, weight) <
-           std::tie(rhs.typeface, rhs.size_delta, rhs.style, rhs.weight);
-  }
-
-  std::string typeface;
-  int size_delta;
-  gfx::Font::FontStyle style;
-  gfx::Font::Weight weight;
-};
+bool ResourceBundle::FontDetails::operator<(const FontDetails& rhs) const {
+  return std::tie(typeface, size_delta, weight) <
+         std::tie(rhs.typeface, rhs.size_delta, rhs.weight);
+}
 
 // static
 std::string ResourceBundle::InitSharedInstanceWithLocale(
@@ -187,7 +248,9 @@ std::string ResourceBundle::InitSharedInstanceWithLocale(
   InitSharedInstance(delegate);
   if (load_resources == LOAD_COMMON_RESOURCES)
     g_shared_instance_->LoadCommonResources();
-  std::string result = g_shared_instance_->LoadLocaleResources(pref_locale);
+  std::string result =
+      g_shared_instance_->LoadLocaleResources(pref_locale,
+                                              /*crash_on_failure=*/true);
   g_shared_instance_->InitDefaultFontList();
   return result;
 }
@@ -196,7 +259,7 @@ std::string ResourceBundle::InitSharedInstanceWithLocale(
 void ResourceBundle::InitSharedInstanceWithPakFileRegion(
     base::File pak_file,
     const base::MemoryMappedFile::Region& region) {
-  InitSharedInstance(NULL);
+  InitSharedInstance(nullptr);
   auto data_pack = std::make_unique<DataPack>(SCALE_FACTOR_100P);
   if (!data_pack->LoadFromFileRegion(std::move(pak_file), region)) {
     LOG(WARNING) << "failed to load pak file";
@@ -209,7 +272,7 @@ void ResourceBundle::InitSharedInstanceWithPakFileRegion(
 
 // static
 void ResourceBundle::InitSharedInstanceWithPakPath(const base::FilePath& path) {
-  InitSharedInstance(NULL);
+  InitSharedInstance(nullptr);
   g_shared_instance_->LoadTestResources(path, path);
 
   g_shared_instance_->InitDefaultFontList();
@@ -218,18 +281,26 @@ void ResourceBundle::InitSharedInstanceWithPakPath(const base::FilePath& path) {
 // static
 void ResourceBundle::CleanupSharedInstance() {
   delete g_shared_instance_;
-  g_shared_instance_ = NULL;
+  g_shared_instance_ = nullptr;
+}
+
+// static
+ResourceBundle* ResourceBundle::SwapSharedInstanceForTesting(
+    ResourceBundle* instance) {
+  ResourceBundle* ret = g_shared_instance_;
+  g_shared_instance_ = instance;
+  return ret;
 }
 
 // static
 bool ResourceBundle::HasSharedInstance() {
-  return g_shared_instance_ != NULL;
+  return g_shared_instance_ != nullptr;
 }
 
 // static
 ResourceBundle& ResourceBundle::GetSharedInstance() {
   // Must call InitSharedInstance before this function.
-  CHECK(g_shared_instance_ != NULL);
+  CHECK(g_shared_instance_ != nullptr);
   return *g_shared_instance_;
 }
 
@@ -248,7 +319,8 @@ void ResourceBundle::LoadSecondaryLocaleDataWithPakFileRegion(
 #if !defined(OS_ANDROID)
 // static
 bool ResourceBundle::LocaleDataPakExists(const std::string& locale) {
-  return !GetLocaleFilePath(locale, true).empty();
+  const auto path = GetLocaleFilePath(locale);
+  return !path.empty() && base::PathExists(path);
 }
 #endif  // !defined(OS_ANDROID)
 
@@ -269,7 +341,7 @@ void ResourceBundle::AddDataPackFromFile(base::File file,
                             scale_factor);
 }
 
-void ResourceBundle::AddDataPackFromBuffer(base::StringPiece buffer,
+void ResourceBundle::AddDataPackFromBuffer(base::span<const uint8_t> buffer,
                                            ScaleFactor scale_factor) {
   std::unique_ptr<DataPack> data_pack(new DataPack(scale_factor));
   if (data_pack->LoadFromBuffer(buffer)) {
@@ -292,34 +364,17 @@ void ResourceBundle::AddDataPackFromFileRegion(
   }
 }
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_APPLE)
 // static
-base::FilePath ResourceBundle::GetLocaleFilePath(const std::string& app_locale,
-                                                 bool test_file_exists) {
+base::FilePath ResourceBundle::GetLocaleFilePath(
+    const std::string& app_locale) {
   if (app_locale.empty())
     return base::FilePath();
 
   base::FilePath locale_file_path;
-
-  base::PathService::Get(ui::DIR_LOCALES, &locale_file_path);
-
-  if (!locale_file_path.empty()) {
-#if defined(OS_ANDROID)
-    if (locale_file_path.value().find("chromium_tests") == std::string::npos) {
-      std::string extracted_file_suffix =
-          base::android::BuildInfo::GetInstance()->extracted_file_suffix();
-      locale_file_path = locale_file_path.AppendASCII(
-          app_locale + kPakFileExtension + extracted_file_suffix);
-    } else {
-      // TODO(agrieve): Update tests to not side-load pak files and remove
-      //     this special-case. https://crbug.com/691719
-      locale_file_path =
-          locale_file_path.AppendASCII(app_locale + kPakFileExtension);
-    }
-#else
+  if (base::PathService::Get(ui::DIR_LOCALES, &locale_file_path)) {
     locale_file_path =
         locale_file_path.AppendASCII(app_locale + kPakFileExtension);
-#endif
   }
 
   // Note: The delegate GetPathForLocalePack() override is currently only used
@@ -332,25 +387,19 @@ base::FilePath ResourceBundle::GetLocaleFilePath(const std::string& app_locale,
         locale_file_path, app_locale);
   }
 
-  // Don't try to load empty values or values that are not absolute paths.
-  if (locale_file_path.empty() || !locale_file_path.IsAbsolute())
-    return base::FilePath();
-
-  if (test_file_exists && !base::PathExists(locale_file_path))
-    return base::FilePath();
-
-  return locale_file_path;
+  // Don't try to load from paths that are not absolute.
+  return locale_file_path.IsAbsolute() ? locale_file_path : base::FilePath();
 }
 #endif
 
 #if !defined(OS_ANDROID)
-std::string ResourceBundle::LoadLocaleResources(
-    const std::string& pref_locale) {
+std::string ResourceBundle::LoadLocaleResources(const std::string& pref_locale,
+                                                bool crash_on_failure) {
   DCHECK(!locale_resources_data_.get()) << "locale.pak already loaded";
   std::string app_locale = l10n_util::GetApplicationLocale(pref_locale);
   base::FilePath locale_file_path = GetOverriddenPakPath();
   if (locale_file_path.empty())
-    locale_file_path = GetLocaleFilePath(app_locale, true);
+    locale_file_path = GetLocaleFilePath(app_locale);
 
   if (locale_file_path.empty()) {
     // It's possible that there is no locale.pak.
@@ -359,13 +408,22 @@ std::string ResourceBundle::LoadLocaleResources(
   }
 
   std::unique_ptr<DataPack> data_pack(new DataPack(SCALE_FACTOR_100P));
-  if (!data_pack->LoadFromPath(locale_file_path)) {
-    LOG(ERROR) << "failed to load locale.pak";
-    NOTREACHED();
-    return std::string();
+  if (!data_pack->LoadFromPath(locale_file_path) && crash_on_failure) {
+    // https://crbug.com/1076423: Chrome can't start when the locale file cannot
+    // be loaded. Crash early and gather some data.
+#if defined(OS_WIN)
+    const auto last_error = ::GetLastError();
+    base::debug::Alias(&last_error);
+    wchar_t path_copy[MAX_PATH];
+    base::wcslcpy(path_copy, locale_file_path.value().c_str(),
+                  base::size(path_copy));
+    base::debug::Alias(path_copy);
+#endif  // defined(OS_WIN)
+    CHECK(false);
   }
 
   locale_resources_data_ = std::move(data_pack);
+  loaded_locale_ = pref_locale;
   return app_locale;
 }
 #endif  // defined(OS_ANDROID)
@@ -374,18 +432,22 @@ void ResourceBundle::LoadTestResources(const base::FilePath& path,
                                        const base::FilePath& locale_path) {
   is_test_resources_ = true;
   DCHECK(!ui::GetSupportedScaleFactors().empty());
-  const ScaleFactor scale_factor(ui::GetSupportedScaleFactors()[0]);
   // Use the given resource pak for both common and localized resources.
-  std::unique_ptr<DataPack> data_pack(new DataPack(scale_factor));
-  if (!path.empty() && data_pack->LoadFromPath(path))
-    AddDataPack(std::move(data_pack));
 
-  data_pack.reset(new DataPack(ui::SCALE_FACTOR_NONE));
+  if (!path.empty()) {
+    const ScaleFactor scale_factor(ui::GetSupportedScaleFactors()[0]);
+    auto data_pack = std::make_unique<DataPack>(scale_factor);
+    CHECK(data_pack->LoadFromPath(path));
+    AddDataPack(std::move(data_pack));
+  }
+
+  auto data_pack = std::make_unique<DataPack>(ui::SCALE_FACTOR_NONE);
   if (!locale_path.empty() && data_pack->LoadFromPath(locale_path)) {
     locale_resources_data_ = std::move(data_pack);
   } else {
-    locale_resources_data_.reset(new DataPack(ui::SCALE_FACTOR_NONE));
+    locale_resources_data_ = std::make_unique<DataPack>(ui::SCALE_FACTOR_NONE);
   }
+
   // This is necessary to initialize ICU since we won't be calling
   // LoadLocaleResources in this case.
   l10n_util::GetApplicationLocale(std::string());
@@ -402,34 +464,40 @@ void ResourceBundle::OverrideLocalePakForTest(const base::FilePath& pak_path) {
 
 void ResourceBundle::OverrideLocaleStringResource(
     int resource_id,
-    const base::string16& string) {
+    const std::u16string& string) {
   overridden_locale_strings_[resource_id] = string;
 }
 
-const base::FilePath& ResourceBundle::GetOverriddenPakPath() {
+const base::FilePath& ResourceBundle::GetOverriddenPakPath() const {
   return overridden_pak_path_;
 }
 
-base::string16 ResourceBundle::MaybeMangleLocalizedString(
-    const base::string16& str) {
+std::u16string ResourceBundle::MaybeMangleLocalizedString(
+    const std::u16string& str) const {
   if (!mangle_localized_strings_)
     return str;
 
-  // IDS_DEFAULT_FONT_SIZE and friends are localization "strings" that are
+  // IDS_MINIMUM_FONT_SIZE and friends are localization "strings" that are
   // actually integral constants. These should not be mangled or they become
   // impossible to parse.
   int ignored;
   if (base::StringToInt(str, &ignored))
     return str;
 
+  // IDS_WEBSTORE_URL and some other resources are localization "strings" that
+  // are actually URLs, where the "localized" part is actually just the language
+  // code embedded in the URL. Don't mangle any URL.
+  if (GURL(str).is_valid())
+    return str;
+
   // For a string S, produce [[ --- S --- ]], where the number of dashes is 1/4
   // of the number of characters in S. This makes S something around 50-75%
   // longer, except for extremely short strings, which get > 100% longer.
-  base::string16 start_marker = base::UTF8ToUTF16("[[");
-  base::string16 end_marker = base::UTF8ToUTF16("]]");
-  base::string16 dashes = base::string16(str.size() / 4, '-');
+  std::u16string start_marker = u"[[";
+  std::u16string end_marker = u"]]";
+  std::u16string dashes = std::u16string(str.size() / 4, '-');
   return base::JoinString({start_marker, dashes, str, dashes, end_marker},
-                          base::UTF8ToUTF16(" "));
+                          u" ");
 }
 
 std::string ResourceBundle::ReloadLocaleResources(
@@ -440,7 +508,7 @@ std::string ResourceBundle::ReloadLocaleResources(
   overridden_locale_strings_.clear();
 
   UnloadLocaleResources();
-  return LoadLocaleResources(pref_locale);
+  return LoadLocaleResources(pref_locale, /*crash_on_failure=*/false);
 }
 
 gfx::ImageSkia* ResourceBundle::GetImageSkiaNamed(int resource_id) {
@@ -465,7 +533,7 @@ gfx::Image& ResourceBundle::GetImageNamed(int resource_id) {
   if (image.IsEmpty()) {
     DCHECK(!data_packs_.empty()) << "Missing call to SetResourcesDataDLL?";
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     ui::ScaleFactor scale_factor_to_load = GetMaxScaleFactor();
 #elif defined(OS_WIN)
     ui::ScaleFactor scale_factor_to_load =
@@ -494,10 +562,12 @@ gfx::Image& ResourceBundle::GetImageNamed(int resource_id) {
   }
 
   // The load was successful, so cache the image.
-  auto inserted = images_.insert(std::make_pair(resource_id, image));
+  auto inserted = images_.emplace(resource_id, image);
   DCHECK(inserted.second);
   return inserted.first->second;
 }
+
+constexpr uint8_t ResourceBundle::kBrotliConst[];
 
 base::RefCountedMemory* ResourceBundle::LoadDataResourceBytes(
     int resource_id) const {
@@ -507,18 +577,33 @@ base::RefCountedMemory* ResourceBundle::LoadDataResourceBytes(
 base::RefCountedMemory* ResourceBundle::LoadDataResourceBytesForScale(
     int resource_id,
     ScaleFactor scale_factor) const {
-  base::RefCountedMemory* bytes = NULL;
-  if (delegate_)
-    bytes = delegate_->LoadDataResourceBytes(resource_id, scale_factor);
+  TRACE_EVENT("ui", "ResourceBundle::LoadDataResourceBytesForScale",
+              [&](perfetto::EventContext ctx) {
+                auto* event =
+                    ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>();
+                auto* data = event->set_resource_bundle();
+                data->set_resource_id(resource_id);
+              });
 
-  if (!bytes) {
-    base::StringPiece data =
-        GetRawDataResourceForScale(resource_id, scale_factor);
-    if (!data.empty())
-      bytes = new base::RefCountedStaticMemory(data.data(), data.length());
+  if (delegate_) {
+    base::RefCountedMemory* bytes =
+        delegate_->LoadDataResourceBytes(resource_id, scale_factor);
+    if (bytes)
+      return bytes;
   }
 
-  return bytes;
+  base::StringPiece data =
+      GetRawDataResourceForScale(resource_id, scale_factor);
+  if (data.empty())
+    return nullptr;
+
+  if (HasGzipHeader(data) || HasBrotliHeader(data)) {
+    base::RefCountedString* bytes_string = new base::RefCountedString();
+    DecompressIfNeeded(data, &(bytes_string->data()));
+    return bytes_string;
+  }
+
+  return new base::RefCountedStaticMemory(data.data(), data.length());
 }
 
 base::StringPiece ResourceBundle::GetRawDataResource(int resource_id) const {
@@ -530,8 +615,9 @@ base::StringPiece ResourceBundle::GetRawDataResourceForScale(
     ScaleFactor scale_factor) const {
   base::StringPiece data;
   if (delegate_ &&
-      delegate_->GetRawDataResource(resource_id, scale_factor, &data))
+      delegate_->GetRawDataResource(resource_id, scale_factor, &data)) {
     return data;
+  }
 
   if (scale_factor != ui::SCALE_FACTOR_100P) {
     for (size_t i = 0; i < data_packs_.size(); i++) {
@@ -548,14 +634,71 @@ base::StringPiece ResourceBundle::GetRawDataResourceForScale(
          data_packs_[i]->GetScaleFactor() == ui::SCALE_FACTOR_300P ||
          data_packs_[i]->GetScaleFactor() == ui::SCALE_FACTOR_NONE) &&
         data_packs_[i]->GetStringPiece(static_cast<uint16_t>(resource_id),
-                                       &data))
+                                       &data)) {
       return data;
+    }
   }
 
   return base::StringPiece();
 }
 
-base::string16 ResourceBundle::GetLocalizedString(int resource_id) {
+std::string ResourceBundle::LoadDataResourceString(int resource_id) const {
+  if (delegate_) {
+    absl::optional<std::string> data =
+        delegate_->LoadDataResourceString(resource_id);
+    if (data)
+      return data.value();
+  }
+
+  return LoadDataResourceStringForScale(resource_id, ui::SCALE_FACTOR_NONE);
+}
+
+std::string ResourceBundle::LoadDataResourceStringForScale(
+    int resource_id,
+    ScaleFactor scaling_factor) const {
+  std::string output;
+  DecompressIfNeeded(GetRawDataResourceForScale(resource_id, scaling_factor),
+                     &output);
+  return output;
+}
+
+std::string ResourceBundle::LoadLocalizedResourceString(int resource_id) const {
+  base::AutoLock lock_scope(*locale_resources_data_lock_);
+  base::StringPiece data;
+  if (!(locale_resources_data_.get() &&
+        locale_resources_data_->GetStringPiece(
+            static_cast<uint16_t>(resource_id), &data) &&
+        !data.empty())) {
+    if (secondary_locale_resources_data_.get() &&
+        secondary_locale_resources_data_->GetStringPiece(
+            static_cast<uint16_t>(resource_id), &data) &&
+        !data.empty()) {
+    } else {
+      data = GetRawDataResource(resource_id);
+    }
+  }
+  std::string output;
+  DecompressIfNeeded(data, &output);
+  return output;
+}
+
+bool ResourceBundle::IsGzipped(int resource_id) const {
+  base::StringPiece raw_data = GetRawDataResource(resource_id);
+  if (!raw_data.data())
+    return false;
+
+  return HasGzipHeader(raw_data);
+}
+
+bool ResourceBundle::IsBrotli(int resource_id) const {
+  base::StringPiece raw_data = GetRawDataResource(resource_id);
+  if (!raw_data.data())
+    return false;
+
+  return HasBrotliHeader(raw_data);
+}
+
+std::u16string ResourceBundle::GetLocalizedString(int resource_id) {
 #if DCHECK_IS_ON()
   {
     base::AutoLock lock_scope(*locale_resources_data_lock_);
@@ -568,7 +711,7 @@ base::string16 ResourceBundle::GetLocalizedString(int resource_id) {
 }
 
 base::RefCountedMemory* ResourceBundle::LoadLocalizedResourceBytes(
-    int resource_id) {
+    int resource_id) const {
   {
     base::AutoLock lock_scope(*locale_resources_data_lock_);
     base::StringPiece data;
@@ -591,74 +734,56 @@ base::RefCountedMemory* ResourceBundle::LoadLocalizedResourceBytes(
   return LoadDataResourceBytes(resource_id);
 }
 
-const gfx::FontList& ResourceBundle::GetFontListWithDelta(
-    int size_delta,
-    gfx::Font::FontStyle style,
-    gfx::Font::Weight weight) {
-  return GetFontListWithTypefaceAndDelta(/*typeface=*/std::string(), size_delta,
-                                         style, weight);
+const gfx::FontList& ResourceBundle::GetFontListWithDelta(int size_delta) {
+  return GetFontListForDetails(FontDetails(std::string(), size_delta));
 }
 
-const gfx::FontList& ResourceBundle::GetFontListWithTypefaceAndDelta(
-    const std::string& typeface,
-    int size_delta,
-    gfx::Font::FontStyle style,
-    gfx::Font::Weight weight) {
+const gfx::FontList& ResourceBundle::GetFontListForDetails(
+    const FontDetails& details) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const FontKey styled_key(typeface, size_delta, style, weight);
-
-  auto found = font_cache_.find(styled_key);
+  auto found = font_cache_.find(details);
   if (found != font_cache_.end())
     return found->second;
 
-  const FontKey base_key(typeface, 0, gfx::Font::NORMAL,
-                         gfx::Font::Weight::NORMAL);
+  const FontDetails base_details(details.typeface);
   gfx::FontList default_font_list = gfx::FontList();
   gfx::FontList base_font_list =
-      typeface.empty()
+      details.typeface.empty()
           ? default_font_list
-          : gfx::FontList({typeface}, default_font_list.GetFontStyle(),
+          : gfx::FontList({details.typeface}, default_font_list.GetFontStyle(),
                           default_font_list.GetFontSize(),
                           default_font_list.GetFontWeight());
-  font_cache_.insert({base_key, base_font_list});
-  gfx::FontList& base = font_cache_.find(base_key)->second;
-  if (styled_key == base_key)
+  font_cache_.emplace(base_details, base_font_list);
+  gfx::FontList& base = font_cache_.find(base_details)->second;
+  if (details == base_details)
     return base;
 
   // Fonts of a given style are derived from the unstyled font of the same size.
   // Cache the unstyled font by first inserting a default-constructed font list.
   // Then, derive it for the initial insertion, or use the iterator that points
   // to the existing entry that the insertion collided with.
-  const FontKey sized_key(typeface, size_delta, gfx::Font::NORMAL,
-                          gfx::Font::Weight::NORMAL);
-  auto sized = font_cache_.insert(std::make_pair(sized_key, base_font_list));
+  const FontDetails sized_details(details.typeface, details.size_delta);
+  auto sized = font_cache_.emplace(sized_details, base_font_list);
   if (sized.second)
-    sized.first->second = base.DeriveWithSizeDelta(size_delta);
-  if (styled_key == sized_key) {
+    sized.first->second = base.DeriveWithSizeDelta(details.size_delta);
+  if (details == sized_details) {
     return sized.first->second;
   }
 
-  auto styled = font_cache_.insert(std::make_pair(styled_key, base_font_list));
+  auto styled = font_cache_.emplace(details, base_font_list);
   DCHECK(styled.second);  // Otherwise font_cache_.find(..) would have found it.
   styled.first->second = sized.first->second.Derive(
-      0, sized.first->second.GetFontStyle() | style, weight);
+      0, sized.first->second.GetFontStyle(), details.weight);
 
   return styled.first->second;
 }
 
-const gfx::Font& ResourceBundle::GetFontWithDelta(int size_delta,
-                                                  gfx::Font::FontStyle style,
-                                                  gfx::Font::Weight weight) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return GetFontListWithDelta(size_delta, style, weight).GetPrimaryFont();
-}
-
 const gfx::FontList& ResourceBundle::GetFontList(FontStyle legacy_style) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  gfx::Font::Weight font_weight = gfx::Font::Weight::NORMAL;
+  gfx::Font::Weight weight = gfx::Font::Weight::NORMAL;
   if (legacy_style == BoldFont || legacy_style == MediumBoldFont)
-    font_weight = gfx::Font::Weight::BOLD;
+    weight = gfx::Font::Weight::BOLD;
 
   int size_delta = 0;
   switch (legacy_style) {
@@ -677,7 +802,7 @@ const gfx::FontList& ResourceBundle::GetFontList(FontStyle legacy_style) {
       break;
   }
 
-  return GetFontListWithDelta(size_delta, gfx::Font::NORMAL, font_weight);
+  return GetFontListForDetails(FontDetails(std::string(), size_delta, weight));
 }
 
 const gfx::Font& ResourceBundle::GetFont(FontStyle style) {
@@ -692,7 +817,7 @@ void ResourceBundle::ReloadFonts() {
 }
 
 ScaleFactor ResourceBundle::GetMaxScaleFactor() const {
-#if defined(OS_WIN) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
   return max_scale_factor_;
 #else
   return GetSupportedScaleFactors().back();
@@ -702,7 +827,7 @@ ScaleFactor ResourceBundle::GetMaxScaleFactor() const {
 bool ResourceBundle::IsScaleFactorSupported(ScaleFactor scale_factor) {
   const std::vector<ScaleFactor>& supported_scale_factors =
       ui::GetSupportedScaleFactors();
-  return base::ContainsValue(supported_scale_factors, scale_factor);
+  return base::Contains(supported_scale_factors, scale_factor);
 }
 
 void ResourceBundle::CheckCanOverrideStringResources() {
@@ -727,7 +852,7 @@ ResourceBundle::~ResourceBundle() {
 
 // static
 void ResourceBundle::InitSharedInstance(Delegate* delegate) {
-  DCHECK(g_shared_instance_ == NULL) << "ResourceBundle initialized twice";
+  DCHECK(g_shared_instance_ == nullptr) << "ResourceBundle initialized twice";
   g_shared_instance_ = new ResourceBundle(delegate);
   std::vector<ScaleFactor> supported_scale_factors;
 #if defined(OS_IOS)
@@ -745,7 +870,8 @@ void ResourceBundle::InitSharedInstance(Delegate* delegate) {
   // On platforms other than iOS, 100P is always a supported scale factor.
   // For Windows we have a separate case in this function.
   supported_scale_factors.push_back(SCALE_FACTOR_100P);
-#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_WIN)
+#if defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
+    defined(OS_WIN)
   supported_scale_factors.push_back(SCALE_FACTOR_200P);
 #endif
 #endif
@@ -809,7 +935,7 @@ void ResourceBundle::AddDataPack(std::unique_ptr<DataPack> data_pack) {
 }
 
 void ResourceBundle::InitDefaultFontList() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
   // InitDefaultFontList() is called earlier than overriding the locale strings.
   // So we call the |GetLocalizedStringImpl()| which doesn't set the flag
   // |can_override_locale_string_resources_| to false. This is okay, because the
@@ -902,8 +1028,8 @@ gfx::Image& ResourceBundle::GetEmptyImage() {
   return empty_image_;
 }
 
-base::string16 ResourceBundle::GetLocalizedStringImpl(int resource_id) {
-  base::string16 string;
+std::u16string ResourceBundle::GetLocalizedStringImpl(int resource_id) const {
+  std::u16string string;
   if (delegate_ && delegate_->GetLocalizedString(resource_id, &string))
     return MaybeMangleLocalizedString(string);
 
@@ -920,7 +1046,7 @@ base::string16 ResourceBundle::GetLocalizedStringImpl(int resource_id) {
   // string (better than crashing).
   if (!locale_resources_data_.get()) {
     LOG(WARNING) << "locale resources are not loaded";
-    return base::string16();
+    return std::u16string();
   }
 
   base::StringPiece data;
@@ -937,11 +1063,15 @@ base::string16 ResourceBundle::GetLocalizedStringImpl(int resource_id) {
       // Fall back on the main data pack (shouldn't be any strings here except
       // in unittests).
       data = GetRawDataResource(resource_id);
+#if defined(OS_FUCHSIA)
+      CHECK(!data.empty());
+#else   // !defined(OS_FUCHSIA)
       if (data.empty()) {
         LOG(WARNING) << "unable to find resource: " << resource_id;
         NOTREACHED();
-        return base::string16();
+        return std::u16string();
       }
+#endif  // !defined(OS_FUCHSIA)
     }
   }
 
@@ -950,9 +1080,9 @@ base::string16 ResourceBundle::GetLocalizedStringImpl(int resource_id) {
       << "requested localized string from binary pack file";
 
   // Data pack encodes strings as either UTF8 or UTF16.
-  base::string16 msg;
+  std::u16string msg;
   if (encoding == ResourceHandle::UTF16) {
-    msg = base::string16(reinterpret_cast<const base::char16*>(data.data()),
+    msg = std::u16string(reinterpret_cast<const char16_t*>(data.data()),
                          data.length() / 2);
   } else if (encoding == ResourceHandle::UTF8) {
     msg = base::UTF8ToUTF16(data);

@@ -4,9 +4,10 @@
 
 #include "chrome/browser/android/vr/gvr_input_delegate.h"
 
+#include <string>
 #include <utility>
 
-#include "chrome/browser/android/vr/gl_browser_interface.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/android/vr/vr_controller.h"
 #include "chrome/browser/vr/input_event.h"
 #include "chrome/browser/vr/model/controller_model.h"
@@ -20,11 +21,8 @@ constexpr gfx::Vector3dF kForwardVector = {0.0f, 0.0f, -1.0f};
 
 namespace vr {
 
-GvrInputDelegate::GvrInputDelegate(gvr::GvrApi* gvr_api,
-                                   GlBrowserInterface* browser)
-    : controller_(std::make_unique<VrController>(gvr_api)),
-      gvr_api_(gvr_api),
-      browser_(browser) {}
+GvrInputDelegate::GvrInputDelegate(gvr::GvrApi* gvr_api)
+    : controller_(std::make_unique<VrController>(gvr_api)), gvr_api_(gvr_api) {}
 
 GvrInputDelegate::~GvrInputDelegate() = default;
 
@@ -42,11 +40,6 @@ void GvrInputDelegate::UpdateController(const gfx::Transform& head_pose,
                                         base::TimeTicks current_time,
                                         bool is_webxr_frame) {
   controller_->UpdateState(head_pose);
-
-  device::GvrGamepadData controller_data = controller_->GetGamepadData();
-  if (!is_webxr_frame)
-    controller_data.connected = false;
-  browser_->UpdateGamepadData(controller_data);
 }
 
 ControllerModel GvrInputDelegate::GetControllerModel(
@@ -120,7 +113,7 @@ device::mojom::XRInputSourceStatePtr GvrInputDelegate::GetInputSourceState() {
       device::mojom::XRTargetRayMode::POINTING;
 
   // Controller uses an arm model.
-  state->description->emulated_position = true;
+  state->emulated_position = true;
 
   if (controller_->IsConnected()) {
     // Set the primary button state.
@@ -141,12 +134,17 @@ device::mojom::XRInputSourceStatePtr GvrInputDelegate::GetInputSourceState() {
     // Get the grip transform
     gfx::Transform grip;
     controller_->GetTransform(&grip);
-    state->grip = grip;
+    state->mojo_from_input = grip;
 
     // Set the pointer offset from the grip transform.
     gfx::Transform pointer;
     controller_->GetRelativePointerTransform(&pointer);
-    state->description->pointer_offset = pointer;
+    state->description->input_from_pointer = pointer;
+
+    state->description->profiles.push_back("google-daydream");
+
+    // This Gamepad data is used to expose touchpad position to WebXR.
+    state->gamepad = controller_->GetGamepadData();
   }
 
   return state;

@@ -5,9 +5,9 @@
 #include "chrome/service/service_ipc_server.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "base/bind.h"
-#include "base/metrics/histogram_delta_serialization.h"
 
 ServiceIPCServer::ServiceIPCServer(
     Client* client,
@@ -15,13 +15,12 @@ ServiceIPCServer::ServiceIPCServer(
     base::WaitableEvent* shutdown_event)
     : client_(client),
       io_task_runner_(io_task_runner),
-      shutdown_event_(shutdown_event),
-      binding_(this) {
+      shutdown_event_(shutdown_event) {
   DCHECK(client);
   DCHECK(shutdown_event);
   binder_registry_.AddInterface(
-      base::Bind(&ServiceIPCServer::HandleServiceProcessConnection,
-                 base::Unretained(this)));
+      base::BindRepeating(&ServiceIPCServer::HandleServiceProcessConnection,
+                          base::Unretained(this)));
 }
 
 bool ServiceIPCServer::Init() {
@@ -30,12 +29,13 @@ bool ServiceIPCServer::Init() {
 }
 
 void ServiceIPCServer::CreateChannel() {
-  binding_.Close();
+  receiver_.reset();
 
-  binding_.Bind(service_manager::mojom::InterfaceProviderRequest(
-      client_->CreateChannelMessagePipe()));
-  binding_.set_connection_error_handler(
-      base::Bind(&ServiceIPCServer::OnChannelError, base::Unretained(this)));
+  receiver_.Bind(
+      mojo::PendingReceiver<service_manager::mojom::InterfaceProvider>(
+          client_->CreateChannelMessagePipe()));
+  receiver_.set_disconnect_handler(base::BindOnce(
+      &ServiceIPCServer::OnChannelError, base::Unretained(this)));
 }
 
 ServiceIPCServer::~ServiceIPCServer() = default;
@@ -60,19 +60,6 @@ void ServiceIPCServer::Hello(HelloCallback callback) {
   std::move(callback).Run();
 }
 
-void ServiceIPCServer::GetHistograms(GetHistogramsCallback callback) {
-  if (!histogram_delta_serializer_) {
-    histogram_delta_serializer_.reset(
-        new base::HistogramDeltaSerialization("ServiceProcess"));
-  }
-  std::vector<std::string> deltas;
-  // "false" to PerpareAndSerializeDeltas() indicates to *not* include
-  // histograms held in persistent storage on the assumption that they will be
-  // visible to the recipient through other means.
-  histogram_delta_serializer_->PrepareAndSerializeDeltas(&deltas, false);
-  std::move(callback).Run(deltas);
-}
-
 void ServiceIPCServer::ShutDown() {
   client_->OnShutdown();
 }
@@ -87,6 +74,6 @@ void ServiceIPCServer::GetInterface(const std::string& interface_name,
 }
 
 void ServiceIPCServer::HandleServiceProcessConnection(
-    chrome::mojom::ServiceProcessRequest request) {
-  service_process_bindings_.AddBinding(this, std::move(request));
+    mojo::PendingReceiver<chrome::mojom::ServiceProcess> receiver) {
+  service_process_receivers_.Add(this, std::move(receiver));
 }

@@ -7,6 +7,7 @@
 #include "chrome/browser/extensions/api/settings_private/generated_prefs.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 
 namespace extensions {
@@ -30,6 +31,16 @@ GeneratedPrefsFactory::GeneratedPrefsFactory()
           BrowserContextDependencyManager::GetInstance()) {}
 
 GeneratedPrefsFactory::~GeneratedPrefsFactory() {}
+
+content::BrowserContext* GeneratedPrefsFactory::GetBrowserContextToUse(
+    content::BrowserContext* context) const {
+  // Use |context| even if it is off-the-record/incognito.
+  return context;
+}
+
+bool GeneratedPrefsFactory::ServiceIsNULLWhileTesting() const {
+  return true;
+}
 
 KeyedService* GeneratedPrefsFactory::BuildServiceInstanceFor(
     content::BrowserContext* profile) const {

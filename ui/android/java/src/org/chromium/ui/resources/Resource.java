@@ -15,10 +15,22 @@ import org.chromium.ui.resources.statics.NinePatchData;
  */
 public interface Resource {
     /**
-     * This may be called more than once so if possible avoid doing redundant work.
+     * This can only be called in
+     * {@link ResourceLoader.ResourceLoaderCallback#onResourceLoaded(int, int, Resource)}, where it
+     * would be called exactly once per invocation, and the {@link Bitmap} would be deep-copied into
+     * the CC layer, so it is encouraged to make sure we don't keep an extra copy at the Java side
+     * unnecessarily.
      * @return A {@link Bitmap} representing the resource.
      */
     Bitmap getBitmap();
+
+    /**
+     * Called when {@link getBitmap} returns null, if this returns true we will inform the CC layer
+     * to remove this resource as its no longer correct. This can be used when the Bitmap is
+     * produced asynchronously and something about the previous bitmap (like layout size) has
+     * changed and the CC layer should not fall back on the stale bitmap.
+     */
+    boolean shouldRemoveResourceOnNullBitmap();
 
     /**
      * @return The size of the bitmap.

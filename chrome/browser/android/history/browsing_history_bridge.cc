@@ -12,35 +12,30 @@
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "chrome/android/chrome_jni_headers/BrowsingHistoryBridge_jni.h"
 #include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/profiles/profile_android.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/sync/profile_sync_service_factory.h"
+#include "chrome/browser/sync/sync_service_factory.h"
 #include "components/history/core/browser/browsing_history_service.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/url_formatter/url_formatter.h"
-#include "jni/BrowsingHistoryBridge_jni.h"
+#include "url/android/gurl_android.h"
 
 using history::BrowsingHistoryService;
 
 const int kMaxQueryCount = 150;
 
-BrowsingHistoryBridge::BrowsingHistoryBridge(JNIEnv* env,
-                                             const JavaParamRef<jobject>& obj,
-                                             bool is_incognito) {
-  Profile* last_profile = ProfileManager::GetLastUsedProfile();
-  // We cannot trust GetLastUsedProfile() to return the original or incognito
-  // profile. Instead the boolean |is_incognito| is passed to track this choice.
-  // As of writing GetLastUsedProfile() will always return the original profile,
-  // but to be more defensive, manually grab the original profile anyway. Note
-  // that while some platforms might not open history when incognito, Android
-  // does, but only shows local history.
-  profile_ = is_incognito ? last_profile->GetOffTheRecordProfile()
-                          : last_profile->GetOriginalProfile();
+BrowsingHistoryBridge::BrowsingHistoryBridge(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    const JavaParamRef<jobject>& j_profile) {
+  profile_ = ProfileAndroid::FromProfileAndroid(j_profile);
 
   history::HistoryService* local_history = HistoryServiceFactory::GetForProfile(
       profile_, ServiceAccessType::EXPLICIT_ACCESS);
   syncer::SyncService* sync_service =
-      ProfileSyncServiceFactory::GetForProfile(profile_);
+      SyncServiceFactory::GetForProfile(profile_);
   browsing_history_service_ = std::make_unique<BrowsingHistoryService>(
       this, local_history, sync_service);
 
@@ -88,7 +83,7 @@ void BrowsingHistoryBridge::OnQueryComplete(
   for (const BrowsingHistoryService::HistoryEntry& entry : results) {
     // TODO(twellington): Move the domain logic to BrowsingHistoryServce so it
     // can be shared with ContentBrowsingHistoryDriver.
-    base::string16 domain = url_formatter::IDNToUnicode(entry.url.host());
+    std::u16string domain = url_formatter::IDNToUnicode(entry.url.host());
     // When the domain is empty, use the scheme instead. This allows for a
     // sensible treatment of e.g. file: URLs when group by domain is on.
     if (domain.empty())
@@ -103,7 +98,7 @@ void BrowsingHistoryBridge::OnQueryComplete(
 
     Java_BrowsingHistoryBridge_createHistoryItemAndAddToList(
         env, j_query_result_obj_,
-        base::android::ConvertUTF8ToJavaString(env, entry.url.spec()),
+        url::GURLAndroid::FromNativeGURL(env, entry.url),
         base::android::ConvertUTF16ToJavaString(env, domain),
         base::android::ConvertUTF16ToJavaString(env, entry.title),
         most_recent_java_timestamp,
@@ -119,10 +114,10 @@ void BrowsingHistoryBridge::OnQueryComplete(
 void BrowsingHistoryBridge::MarkItemForRemoval(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj,
-    jstring j_url,
+    const JavaParamRef<jobject>& j_url,
     const JavaParamRef<jlongArray>& j_native_timestamps) {
   BrowsingHistoryService::HistoryEntry entry;
-  entry.url = GURL(base::android::ConvertJavaStringToUTF16(env, j_url));
+  entry.url = *url::GURLAndroid::ToNativeGURL(env, j_url);
 
   std::vector<int64_t> timestamps;
   base::android::JavaLongArrayToInt64Vector(env, j_native_timestamps,
@@ -164,10 +159,11 @@ Profile* BrowsingHistoryBridge::GetProfile() {
   return profile_;
 }
 
-static jlong JNI_BrowsingHistoryBridge_Init(JNIEnv* env,
-                                            const JavaParamRef<jobject>& obj,
-                                            jboolean is_incognito) {
+static jlong JNI_BrowsingHistoryBridge_Init(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    const JavaParamRef<jobject>& j_profile) {
   BrowsingHistoryBridge* bridge =
-      new BrowsingHistoryBridge(env, obj, is_incognito);
+      new BrowsingHistoryBridge(env, obj, j_profile);
   return reinterpret_cast<intptr_t>(bridge);
 }

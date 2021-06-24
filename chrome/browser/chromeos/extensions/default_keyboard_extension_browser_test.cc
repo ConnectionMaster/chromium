@@ -7,7 +7,9 @@
 
 #include <vector>
 
+#include "ash/public/cpp/keyboard/keyboard_switches.h"
 #include "base/command_line.h"
+#include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
@@ -20,11 +22,11 @@
 #include "content/public/browser/render_widget_host_iterator.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/common/extension.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/ime/input_method.h"
-#include "ui/keyboard/public/keyboard_switches.h"
 
 namespace {
 const base::FilePath::CharType kWebuiTestDir[] = FILE_PATH_LITERAL("webui");
@@ -94,17 +96,18 @@ DefaultKeyboardExtensionBrowserTest::GetKeyboardWebContents(
     const std::string& id) {
   // Ensure the keyboard is shown.
   auto* client = ChromeKeyboardControllerClient::Get();
-  client->SetEnableFlag(keyboard::mojom::KeyboardEnableFlag::kExtensionEnabled);
+  client->SetEnableFlag(keyboard::KeyboardEnableFlag::kExtensionEnabled);
   client->ShowKeyboard();
-  client->FlushForTesting();
 
   GURL url = extensions::Extension::GetBaseURLFromExtensionId(id);
   std::unique_ptr<content::RenderWidgetHostIterator> widgets(
       content::RenderWidgetHost::GetRenderWidgetHosts());
   while (content::RenderWidgetHost* widget = widgets->GetNextHost()) {
     content::RenderViewHost* view = content::RenderViewHost::From(widget);
-    if (view && url == view->GetSiteInstance()->GetSiteURL()) {
-      content::WebContents* wc = content::WebContents::FromRenderViewHost(view);
+    if (!view)
+      continue;
+    content::WebContents* wc = content::WebContents::FromRenderViewHost(view);
+    if (wc && url == wc->GetMainFrame()->GetSiteInstance()->GetSiteURL()) {
       // Waits for virtual keyboard to load.
       EXPECT_TRUE(content::WaitForLoadStop(wc));
       return wc;

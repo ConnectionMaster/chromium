@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -17,18 +18,20 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
 #include "extensions/buildflags/buildflags.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/network/public/cpp/features.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/signin/merge_session_throttling_utils.h"
-#include "chrome/browser/chromeos/login/signin/oauth2_login_manager_factory.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/login/signin/merge_session_throttling_utils.h"
+#include "chrome/browser/ash/login/signin/oauth2_login_manager_factory.h"
 #endif
 
 namespace {
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 
-// By default, JavaScript, images and autoplay are enabled in guest content.
+// By default, JavaScript and images are enabled, and blockable mixed content is
+// blocked in guest content
 void GetGuestViewDefaultContentSettingRules(
     bool incognito,
     RendererContentSettingRules* rules) {
@@ -43,12 +46,7 @@ void GetGuestViewDefaultContentSettingRules(
       base::Value::FromUniquePtrValue(
           content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW)),
       std::string(), incognito));
-  rules->autoplay_rules.push_back(ContentSettingPatternSource(
-      ContentSettingsPattern::Wildcard(), ContentSettingsPattern::Wildcard(),
-      base::Value::FromUniquePtrValue(
-          content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW)),
-      std::string(), incognito));
-  rules->client_hints_rules.push_back(ContentSettingPatternSource(
+  rules->mixed_content_rules.push_back(ContentSettingPatternSource(
       ContentSettingsPattern::Wildcard(), ContentSettingsPattern::Wildcard(),
       base::Value::FromUniquePtrValue(
           content_settings::ContentSettingToValue(CONTENT_SETTING_BLOCK)),
@@ -58,26 +56,16 @@ void GetGuestViewDefaultContentSettingRules(
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 }  // namespace
 
-RendererUpdater::RendererUpdater(Profile* profile)
-    : profile_(profile), identity_manager_observer_(this) {
+RendererUpdater::RendererUpdater(Profile* profile) : profile_(profile) {
   identity_manager_ = IdentityManagerFactory::GetForProfile(profile);
-  identity_manager_observer_.Add(identity_manager_);
-#if defined(OS_CHROMEOS)
+  identity_manager_observation_.Observe(identity_manager_);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   oauth2_login_manager_ =
       chromeos::OAuth2LoginManagerFactory::GetForProfile(profile_);
   oauth2_login_manager_->AddObserver(this);
   merge_session_running_ =
       merge_session_throttling_utils::ShouldDelayRequestForProfile(profile_);
 #endif
-  variations_http_header_provider_ =
-      variations::VariationsHttpHeaderProvider::GetInstance();
-  variations_http_header_provider_->AddObserver(this);
-  cached_variation_ids_header_ =
-      variations_http_header_provider_->GetClientDataHeader(
-          false /* is_signed_in */);
-  cached_variation_ids_header_signed_in_ =
-      variations_http_header_provider_->GetClientDataHeader(
-          true /* is_signed_in */);
 
   PrefService* pref_service = profile->GetPrefs();
   force_google_safesearch_.Init(prefs::kForceGoogleSafeSearch, pref_service);
@@ -101,20 +89,18 @@ RendererUpdater::RendererUpdater(Profile* profile)
 
 RendererUpdater::~RendererUpdater() {
   DCHECK(!identity_manager_);
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   DCHECK(!oauth2_login_manager_);
 #endif
 }
 
 void RendererUpdater::Shutdown() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   oauth2_login_manager_->RemoveObserver(this);
   oauth2_login_manager_ = nullptr;
 #endif
-  identity_manager_observer_.RemoveAll();
+  identity_manager_observation_.Reset();
   identity_manager_ = nullptr;
-  variations_http_header_provider_->RemoveObserver(this);
-  variations_http_header_provider_ = nullptr;
 }
 
 void RendererUpdater::InitializeRenderer(
@@ -125,16 +111,17 @@ void RendererUpdater::InitializeRenderer(
       Profile::FromBrowserContext(render_process_host->GetBrowserContext());
   bool is_incognito_process = profile->IsOffTheRecord();
 
-  chrome::mojom::ChromeOSListenerRequest chromeos_listener_request;
-#if defined(OS_CHROMEOS)
+  mojo::PendingReceiver<chrome::mojom::ChromeOSListener>
+      chromeos_listener_receiver;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (merge_session_running_) {
-    chrome::mojom::ChromeOSListenerPtr chromeos_listener;
-    chromeos_listener_request = MakeRequest(&chromeos_listener);
+    mojo::Remote<chrome::mojom::ChromeOSListener> chromeos_listener;
+    chromeos_listener_receiver = chromeos_listener.BindNewPipeAndPassReceiver();
     chromeos_listeners_.push_back(std::move(chromeos_listener));
   }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
   renderer_configuration->SetInitialConfiguration(
-      is_incognito_process, std::move(chromeos_listener_request));
+      is_incognito_process, std::move(chromeos_listener_receiver));
 
   UpdateRenderer(&renderer_configuration);
 
@@ -152,9 +139,9 @@ void RendererUpdater::InitializeRenderer(
   renderer_configuration->SetContentSettingRules(rules);
 }
 
-std::vector<chrome::mojom::RendererConfigurationAssociatedPtr>
+std::vector<mojo::AssociatedRemote<chrome::mojom::RendererConfiguration>>
 RendererUpdater::GetRendererConfigurations() {
-  std::vector<chrome::mojom::RendererConfigurationAssociatedPtr> rv;
+  std::vector<mojo::AssociatedRemote<chrome::mojom::RendererConfiguration>> rv;
   for (content::RenderProcessHost::iterator it(
            content::RenderProcessHost::AllHostsIterator());
        !it.IsAtEnd(); it.Advance()) {
@@ -171,19 +158,20 @@ RendererUpdater::GetRendererConfigurations() {
   return rv;
 }
 
-chrome::mojom::RendererConfigurationAssociatedPtr
+mojo::AssociatedRemote<chrome::mojom::RendererConfiguration>
 RendererUpdater::GetRendererConfiguration(
     content::RenderProcessHost* render_process_host) {
   IPC::ChannelProxy* channel = render_process_host->GetChannel();
   if (!channel)
-    return nullptr;
+    return mojo::AssociatedRemote<chrome::mojom::RendererConfiguration>();
 
-  chrome::mojom::RendererConfigurationAssociatedPtr renderer_configuration;
+  mojo::AssociatedRemote<chrome::mojom::RendererConfiguration>
+      renderer_configuration;
   channel->GetRemoteAssociatedInterface(&renderer_configuration);
   return renderer_configuration;
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 void RendererUpdater::OnSessionRestoreStateChanged(
     Profile* user_profile,
     chromeos::OAuth2LoginManager::SessionRestoreState state) {
@@ -198,20 +186,12 @@ void RendererUpdater::OnSessionRestoreStateChanged(
 }
 #endif
 
-void RendererUpdater::OnPrimaryAccountSet(const CoreAccountInfo& account_info) {
-  UpdateAllRenderers();
-}
-
-void RendererUpdater::OnPrimaryAccountCleared(
-    const CoreAccountInfo& account_info) {
-  UpdateAllRenderers();
-}
-
-void RendererUpdater::VariationIdsHeaderUpdated(
-    const std::string& variation_ids_header,
-    const std::string& variation_ids_header_signed_in) {
-  cached_variation_ids_header_ = variation_ids_header;
-  cached_variation_ids_header_signed_in_ = variation_ids_header_signed_in;
+void RendererUpdater::OnPrimaryAccountChanged(
+    const signin::PrimaryAccountChangeEvent& event) {
+  if (event.GetEventTypeFor(signin::ConsentLevel::kSync) ==
+      signin::PrimaryAccountChangeEvent::Type::kNone) {
+    return;
+  }
   UpdateAllRenderers();
 }
 
@@ -222,13 +202,11 @@ void RendererUpdater::UpdateAllRenderers() {
 }
 
 void RendererUpdater::UpdateRenderer(
-    chrome::mojom::RendererConfigurationAssociatedPtr* renderer_configuration) {
+    mojo::AssociatedRemote<chrome::mojom::RendererConfiguration>*
+        renderer_configuration) {
   (*renderer_configuration)
       ->SetConfiguration(chrome::mojom::DynamicParams::New(
           force_google_safesearch_.GetValue(),
           force_youtube_restrict_.GetValue(),
-          allowed_domains_for_apps_.GetValue(),
-          identity_manager_->HasPrimaryAccount()
-              ? cached_variation_ids_header_signed_in_
-              : cached_variation_ids_header_));
+          allowed_domains_for_apps_.GetValue()));
 }

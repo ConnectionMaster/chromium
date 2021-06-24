@@ -7,9 +7,9 @@
 #include <stdint.h>
 #include <windows.h>
 
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/win/registry.h"
 #include "base/win/windows_version.h"
 
@@ -28,7 +28,7 @@ const wchar_t kRestorePointClientLibrary[] = L"srclient.dll";
 namespace chrome_cleaner {
 
 SystemRestorePointComponent::SystemRestorePointComponent(
-    const base::string16& product_fullname)
+    const std::wstring& product_fullname)
     : set_restore_point_info_fn_(nullptr),
       remove_restore_point_info_fn_(nullptr),
       sequence_number_(kInvalidSequenceNumber),
@@ -77,7 +77,7 @@ void SystemRestorePointComponent::PreCleanup() {
   // continue with the restore point anyway even if doing so fails. See
   // http://msdn.microsoft.com/en-us/library/windows/desktop/aa378941.aspx for
   // more information.
-  if (base::win::GetVersion() >= base::win::VERSION_WIN8) {
+  if (base::win::GetVersion() >= base::win::Version::WIN8) {
     base::win::RegKey system_restore_key(HKEY_LOCAL_MACHINE, kSystemRestoreKey,
                                          KEY_SET_VALUE | KEY_QUERY_VALUE);
     if (system_restore_key.Valid() &&

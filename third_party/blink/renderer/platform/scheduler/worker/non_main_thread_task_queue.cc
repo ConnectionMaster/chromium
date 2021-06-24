@@ -29,17 +29,36 @@ NonMainThreadTaskQueue::~NonMainThreadTaskQueue() = default;
 
 void NonMainThreadTaskQueue::OnTaskCompleted(
     const base::sequence_manager::Task& task,
-    const TaskQueue::TaskTiming& task_timing) {
+    TaskQueue::TaskTiming* task_timing,
+    base::sequence_manager::LazyNow* lazy_now) {
   // |non_main_thread_scheduler_| can be nullptr in tests.
   if (non_main_thread_scheduler_) {
-    non_main_thread_scheduler_->OnTaskCompleted(this, task, task_timing);
+    non_main_thread_scheduler_->OnTaskCompleted(this, task, task_timing,
+                                                lazy_now);
   }
 }
 
-void NonMainThreadTaskQueue::SetPaused(bool paused) {
-  if (!task_queue_voter_)
-    task_queue_voter_ = CreateQueueEnabledVoter();
-  task_queue_voter_->SetQueueEnabled(!paused);
+void NonMainThreadTaskQueue::SetWebSchedulingPriority(
+    WebSchedulingPriority priority) {
+  if (web_scheduling_priority_ == priority)
+    return;
+  web_scheduling_priority_ = priority;
+  OnWebSchedulingPriorityChanged();
+}
+
+void NonMainThreadTaskQueue::OnWebSchedulingPriorityChanged() {
+  DCHECK(web_scheduling_priority_);
+  switch (web_scheduling_priority_.value()) {
+    case WebSchedulingPriority::kUserBlockingPriority:
+      SetQueuePriority(TaskQueue::QueuePriority::kHighPriority);
+      return;
+    case WebSchedulingPriority::kUserVisiblePriority:
+      SetQueuePriority(TaskQueue::QueuePriority::kNormalPriority);
+      return;
+    case WebSchedulingPriority::kBackgroundPriority:
+      SetQueuePriority(TaskQueue::QueuePriority::kLowPriority);
+      return;
+  }
 }
 
 }  // namespace scheduler

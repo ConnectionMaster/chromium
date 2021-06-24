@@ -1,9 +1,4 @@
-hans@chromium.org
-pcc@chromium.org
-thakis@chromium.org
-rnk@chromium.org
+file://tools/clang/scripts/OWNERS
 
 # Only for clang tooling.
 dcheng@chromium.org
-
-# COMPONENT: Tools

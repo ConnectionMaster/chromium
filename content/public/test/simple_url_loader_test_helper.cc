@@ -6,12 +6,11 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check.h"
 
 namespace content {
 
-SimpleURLLoaderTestHelper::SimpleURLLoaderTestHelper()
-    : weak_ptr_factory_(this) {}
+SimpleURLLoaderTestHelper::SimpleURLLoaderTestHelper() {}
 
 SimpleURLLoaderTestHelper::~SimpleURLLoaderTestHelper() {}
 

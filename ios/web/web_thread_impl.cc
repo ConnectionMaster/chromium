@@ -13,14 +13,13 @@
 #include "base/compiler_specific.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/task/post_task.h"
 #include "base/task/task_executor.h"
 #include "base/time/time.h"
-#include "ios/web/public/web_task_traits.h"
-#include "ios/web/public/web_thread_delegate.h"
+#include "ios/web/public/thread/web_task_traits.h"
+#include "ios/web/public/thread/web_thread_delegate.h"
 
 namespace web {
 
@@ -36,15 +35,14 @@ class WebThreadTaskRunner : public base::SingleThreadTaskRunner {
   bool PostDelayedTask(const base::Location& from_here,
                        base::OnceClosure task,
                        base::TimeDelta delay) override {
-    return base::PostDelayedTaskWithTraits(from_here, {id_}, std::move(task),
-                                           delay);
+    return base::PostDelayedTask(from_here, {id_}, std::move(task), delay);
   }
 
   bool PostNonNestableDelayedTask(const base::Location& from_here,
                                   base::OnceClosure task,
                                   base::TimeDelta delay) override {
-    return base::PostDelayedTaskWithTraits(from_here, {id_, NonNestable()},
-                                           std::move(task), delay);
+    return base::PostDelayedTask(from_here, {id_, NonNestable()},
+                                 std::move(task), delay);
   }
 
   bool RunsTasksInCurrentSequence() const override {
@@ -152,27 +150,26 @@ class WebThreadTaskExecutor : public base::TaskExecutor {
   ~WebThreadTaskExecutor() override {}
 
   // base::TaskExecutor implementation.
-  bool PostDelayedTaskWithTraits(const base::Location& from_here,
-                                 const base::TaskTraits& traits,
-                                 base::OnceClosure task,
-                                 base::TimeDelta delay) override {
+  bool PostDelayedTask(const base::Location& from_here,
+                       const base::TaskTraits& traits,
+                       base::OnceClosure task,
+                       base::TimeDelta delay) override {
     return PostTaskHelper(
         GetWebThreadIdentifier(traits), from_here, std::move(task), delay,
         traits.GetExtension<WebTaskTraitsExtension>().nestable());
   }
 
-  scoped_refptr<base::TaskRunner> CreateTaskRunnerWithTraits(
+  scoped_refptr<base::TaskRunner> CreateTaskRunner(
       const base::TaskTraits& traits) override {
     return GetTaskRunnerForThread(GetWebThreadIdentifier(traits));
   }
 
-  scoped_refptr<base::SequencedTaskRunner> CreateSequencedTaskRunnerWithTraits(
+  scoped_refptr<base::SequencedTaskRunner> CreateSequencedTaskRunner(
       const base::TaskTraits& traits) override {
     return GetTaskRunnerForThread(GetWebThreadIdentifier(traits));
   }
 
-  scoped_refptr<base::SingleThreadTaskRunner>
-  CreateSingleThreadTaskRunnerWithTraits(
+  scoped_refptr<base::SingleThreadTaskRunner> CreateSingleThreadTaskRunner(
       const base::TaskTraits& traits,
       base::SingleThreadTaskRunnerThreadMode thread_mode) override {
     // It's not possible to request DEDICATED access to a WebThread.

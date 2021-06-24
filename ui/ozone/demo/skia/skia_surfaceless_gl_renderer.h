@@ -30,8 +30,7 @@ class SurfacelessSkiaGlRenderer : public SkiaGlRenderer {
  private:
   // SkiaGlRenderer:
   void RenderFrame() override;
-  void PostRenderFrameTask(gfx::SwapResult result,
-                           std::unique_ptr<gfx::GpuFence>) override;
+  void PostRenderFrameTask(gfx::SwapCompletionResult result) override;
 
   class BufferWrapper;
 
@@ -45,7 +44,7 @@ class SurfacelessSkiaGlRenderer : public SkiaGlRenderer {
 
   int back_buffer_ = 0;
 
-  base::WeakPtrFactory<SurfacelessSkiaGlRenderer> weak_ptr_factory_;
+  base::WeakPtrFactory<SurfacelessSkiaGlRenderer> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SurfacelessSkiaGlRenderer);
 };

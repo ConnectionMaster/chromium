@@ -6,16 +6,19 @@
 
 #include "chrome/browser/component_updater/chrome_component_updater_configurator.h"
 #include "chrome/browser/component_updater/recovery_component_installer.h"
-#include "chrome/browser/component_updater/recovery_improved_component_installer.h"
-#include "chrome/browser/component_updater/supervised_user_whitelist_installer.h"
+#include "chrome/common/buildflags.h"
+#include "components/component_updater/installer_policies/autofill_states_component_installer.h"
+
+#if !defined(OS_ANDROID)
+#include "chrome/browser/component_updater/soda_component_installer.h"
+#endif
 
 namespace component_updater {
 
 void RegisterPrefs(PrefRegistrySimple* registry) {
   RegisterPrefsForChromeComponentUpdaterConfigurator(registry);
   RegisterPrefsForRecoveryComponent(registry);
-  RegisterPrefsForRecoveryImprovedComponent(registry);
-  SupervisedUserWhitelistInstaller::RegisterPrefs(registry);
+  AutofillStatesComponentInstallerPolicy::RegisterPrefs(registry);
 }
 
 }  // namespace component_updater

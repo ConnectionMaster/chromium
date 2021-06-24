@@ -70,6 +70,8 @@ class StaleHostResolver : public net::HostResolver {
 
   // HostResolver implementation:
 
+  void OnShutdown() override;
+
   // Resolves as a regular HostResolver, but if stale data is available and
   // usable (according to the options passed to the constructor), and fresh data
   // is not returned before the specified delay, returns the stale data instead.
@@ -78,19 +80,15 @@ class StaleHostResolver : public net::HostResolver {
   // request to continue in order to repopulate the cache.
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const net::HostPortPair& host,
+      const net::NetworkIsolationKey& network_isolation_key,
       const net::NetLogWithSource& net_log,
-      const base::Optional<ResolveHostParameters>& optional_parameters)
+      const absl::optional<ResolveHostParameters>& optional_parameters)
       override;
 
   // The remaining public methods pass through to the inner resolver:
 
-  void SetDnsClientEnabled(bool enabled) override;
   net::HostCache* GetHostCache() override;
-  bool HasCached(base::StringPiece hostname,
-                 net::HostCache::Entry::Source* source_out,
-                 net::HostCache::EntryStaleness* stale_out,
-                 bool* secure_out) const override;
-  std::unique_ptr<base::Value> GetDnsConfigAsValue() const override;
+  base::Value GetDnsConfigAsValue() const override;
   void SetRequestContext(net::URLRequestContext* request_context) override;
 
  private:
@@ -126,7 +124,7 @@ class StaleHostResolver : public net::HostResolver {
   std::unordered_map<ResolveHostRequest*, std::unique_ptr<ResolveHostRequest>>
       detached_requests_;
 
-  base::WeakPtrFactory<StaleHostResolver> weak_ptr_factory_;
+  base::WeakPtrFactory<StaleHostResolver> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(StaleHostResolver);
 };

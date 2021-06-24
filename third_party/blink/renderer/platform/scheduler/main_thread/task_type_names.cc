@@ -4,7 +4,7 @@
 
 #include "third_party/blink/renderer/platform/scheduler/main_thread/task_type_names.h"
 
-#include "base/logging.h"
+#include "base/notreached.h"
 
 namespace blink {
 namespace scheduler {
@@ -23,6 +23,8 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "Networking";
     case TaskType::kNetworkingWithURLLoaderAnnotation:
       return "NetworkingWithURLLoaderAnnotation";
+    case TaskType::kNetworkingUnfreezable:
+      return "NetworkingUnfreezable";
     case TaskType::kNetworkingControl:
       return "NetworkingControl";
     case TaskType::kHistoryTraversal:
@@ -35,8 +37,12 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "CanvasBlobSerialization";
     case TaskType::kMicrotask:
       return "Microtask";
-    case TaskType::kJavascriptTimer:
-      return "JavascriptTimer";
+    case TaskType::kJavascriptTimerImmediate:
+      return "JavascriptTimerImmediate";
+    case TaskType::kJavascriptTimerDelayedLowNesting:
+      return "JavascriptTimerDelayedLowNesting";
+    case TaskType::kJavascriptTimerDelayedHighNesting:
+      return "JavascriptTimerDelayedHighNesting";
     case TaskType::kRemoteEvent:
       return "RemoteEvent";
     case TaskType::kWebSocket:
@@ -61,10 +67,6 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "IdleTask";
     case TaskType::kMiscPlatformAPI:
       return "MiscPlatformAPI";
-    case TaskType::kExperimentalWebSchedulingUserInteraction:
-      return "ExperimentalWebSchedulingUserInteraction";
-    case TaskType::kExperimentalWebSchedulingBestEffort:
-      return "ExperimentalWebSchedulingBackground";
     case TaskType::kFontLoading:
       return "FontLoading";
     case TaskType::kApplicationLifeCycle:
@@ -75,6 +77,8 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "Permission";
     case TaskType::kServiceWorkerClientMessage:
       return "ServiceWorkerClientMessage";
+    case TaskType::kWebLocks:
+      return "WebLocks";
     case TaskType::kInternalDefault:
       return "InternalDefault";
     case TaskType::kInternalLoading:
@@ -87,14 +91,10 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "InternalMedia";
     case TaskType::kInternalMediaRealTime:
       return "InternalMediaRealTime";
-    case TaskType::kInternalIPC:
-      return "InternalIPC";
     case TaskType::kInternalUserInteraction:
       return "InternalUserInteraction";
     case TaskType::kInternalInspector:
       return "InternalInspector";
-    case TaskType::kInternalWorker:
-      return "InternalWorker";
     case TaskType::kMainThreadTaskQueueV8:
       return "MainThreadTaskQueueV8";
     case TaskType::kMainThreadTaskQueueCompositor:
@@ -105,14 +105,12 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "MainThreadTaskQueueInput";
     case TaskType::kMainThreadTaskQueueIdle:
       return "MainThreadTaskQueueIdle";
-    case TaskType::kMainThreadTaskQueueIPC:
-      return "MainThreadTaskQueueIPC";
     case TaskType::kMainThreadTaskQueueControl:
       return "MainThreadTaskQueueControl";
-    case TaskType::kMainThreadTaskQueueCleanup:
-      return "MainThreadTaskQueueCleanup";
     case TaskType::kMainThreadTaskQueueMemoryPurge:
       return "MainThreadTaskQueueMemoryPurge";
+    case TaskType::kMainThreadTaskQueueNonWaking:
+      return "MainThreadTaskQueueNonWaking";
     case TaskType::kInternalIntersectionObserver:
       return "InternalIntersectionObserver";
     case TaskType::kCompositorThreadTaskQueueDefault:
@@ -131,8 +129,28 @@ const char* TaskTypeNames::TaskTypeToString(TaskType task_type) {
       return "InternalTranslation";
     case TaskType::kInternalContentCapture:
       return "InternalContentCapture";
-    case TaskType::kInternalNavigation:
-      return "InternalNavigation";
+    case TaskType::kInternalNavigationAssociated:
+      return "InternalNavigationAssociated";
+    case TaskType::kInternalNavigationAssociatedUnfreezable:
+      return "InternalNavigationAssociatedUnfreezable";
+    case TaskType::kInternalContinueScriptLoading:
+      return "InternalContinueScriptLoading";
+    case TaskType::kExperimentalWebScheduling:
+      return "ExperimentalWebScheduling";
+    case TaskType::kInternalFrameLifecycleControl:
+      return "InternalFrameLifecycleControl";
+    case TaskType::kInternalFindInPage:
+      return "InternalFindInPage";
+    case TaskType::kInternalHighPriorityLocalFrame:
+      return "InternalHighPriorityLocalFrame";
+    case TaskType::kInternalInputBlocking:
+      return "InternalInputBlocking";
+    case TaskType::kMainThreadTaskQueueIPCTracking:
+      return "MainThreadTaskQueueIPCTracking";
+    case TaskType::kWakeLock:
+      return "WakeLock";
+    case TaskType::kWebGPU:
+      return "WebGPU";
     case TaskType::kCount:
       return "Count";
   }

@@ -6,6 +6,7 @@ package org.chromium.components.spellcheck;
 
 import android.content.Context;
 import android.os.SystemClock;
+import android.text.style.SuggestionSpan;
 import android.view.textservice.SentenceSuggestionsInfo;
 import android.view.textservice.SpellCheckerSession;
 import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener;
@@ -15,6 +16,7 @@ import android.view.textservice.TextServicesManager;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.annotations.NativeMethods;
 import org.chromium.base.metrics.RecordHistogram;
 
 import java.util.ArrayList;
@@ -88,7 +90,8 @@ public class SpellCheckerSessionBridge implements SpellCheckerSessionListener {
             text = text.substring(0, text.length() - 1);
         }
         mStartMs = SystemClock.elapsedRealtime();
-        mSpellCheckerSession.getSentenceSuggestions(new TextInfo[] {new TextInfo(text)}, 0);
+        mSpellCheckerSession.getSentenceSuggestions(
+                new TextInfo[] {new TextInfo(text)}, SuggestionSpan.SUGGESTIONS_MAX_SIZE);
     }
 
     /**
@@ -136,7 +139,8 @@ public class SpellCheckerSessionBridge implements SpellCheckerSessionListener {
                 }
             }
         }
-        nativeProcessSpellCheckResults(mNativeSpellCheckerSessionBridge,
+        SpellCheckerSessionBridgeJni.get().processSpellCheckResults(
+                mNativeSpellCheckerSessionBridge, SpellCheckerSessionBridge.this,
                 convertListToArray(offsets), convertListToArray(lengths),
                 suggestions.toArray(new String[suggestions.size()][]));
 
@@ -159,6 +163,10 @@ public class SpellCheckerSessionBridge implements SpellCheckerSessionListener {
     @Override
     public void onGetSuggestions(SuggestionsInfo[] results) {}
 
-    private native void nativeProcessSpellCheckResults(long nativeSpellCheckerSessionBridge,
-            int[] offsets, int[] lengths, String[][] suggestions);
+    @NativeMethods
+    interface Natives {
+        void processSpellCheckResults(long nativeSpellCheckerSessionBridge,
+                SpellCheckerSessionBridge caller, int[] offsets, int[] lengths,
+                String[][] suggestions);
+    }
 }

@@ -52,7 +52,7 @@ function test2(mode) {
     prepareDOMTree(sandbox, mode, null, true);
     hostDiv = document.getElementById('host-div');
     shouldBe('internals.shadowRoot(hostDiv).delegatesFocus', 'true');
-    shouldBe('hostDiv.tabIndex', '0');
+    shouldBe('hostDiv.tabIndex', '-1');
 
     var expectedOrder = [
       'input-before',
@@ -178,7 +178,7 @@ function test8(mode) {
 
 function test() {
     debug('Testing shadow host with possible combinations of mode, tabindex and delegatesFocus');
-
+    
     test1('open');
     test2('open');
     test3('open');

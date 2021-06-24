@@ -89,7 +89,33 @@ enum class UserInteractionType {
   // User started an app from the Kiosk Next Home app.
   APP_STARTED_FROM_KIOSK_NEXT_HOME = 18,
 
-  kMaxValue = APP_STARTED_FROM_KIOSK_NEXT_HOME,
+  // User interacted with an app using a gamepad.
+  GAMEPAD_INTERACTION = 19,
+
+  // User started an app from entering URL in the Omnibox in the browser.
+  APP_STARTED_FROM_OMNIBOX = 20,
+
+  // User started an app from Chrome OS sharesheet.
+  APP_STARTED_FROM_SHARESHEET = 21,
+
+  // User started an app from Chrome OS full restore.
+  APP_STARTED_FROM_FULL_RESTORE = 22,
+
+  kMaxValue = APP_STARTED_FROM_FULL_RESTORE,
+};
+
+// Enumerates relevant Mojo connections.
+// These values are  persisted to logs, and should therefore never be renumbered
+// nor reused. Should be synced with ArcMojoConnectionType in
+// tools/metrics/histograms/enums.xml.
+enum class MojoConnectionType {
+  // Mojo connection to AppLauncher was lost.
+  APP_LAUNCHER = 0,
+
+  // Mojo connection to IntentHelper was lost.
+  INTENT_HELPER = 1,
+
+  kMaxValue = INTENT_HELPER,
 };
 
 }  // namespace arc

@@ -4,24 +4,29 @@
 
 #include "chrome/browser/ui/views/tabs/alert_indicator.h"
 
+#include <utility>
+
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "components/vector_icons/vector_icons.h"
-#include "ui/base/material_design/material_design_controller.h"
-#include "ui/gfx/animation/animation_delegate.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/gfx/animation/multi_animation.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/views/animation/animation_delegate_views.h"
 
 namespace {
 
 // Fade-in/out duration for the tab indicator animations.  Fade-in is quick to
 // immediately notify the user.  Fade-out is more gradual, so that the user has
 // a chance of finding a tab that has quickly "blipped" on and off.
-constexpr int kIndicatorFadeInDurationMs = 200;
-constexpr int kIndicatorFadeOutDurationMs = 1000;
+constexpr auto kIndicatorFadeInDuration =
+    base::TimeDelta::FromMilliseconds(200);
+constexpr auto kIndicatorFadeOutDuration =
+    base::TimeDelta::FromMilliseconds(1000);
 
 // Interval between frame updates of the tab indicator animations.  This is not
 // the usual 60 FPS because a trade-off must be made between tab UI animation
@@ -29,46 +34,26 @@ constexpr int kIndicatorFadeOutDurationMs = 1000;
 constexpr base::TimeDelta kIndicatorFrameInterval =
     base::TimeDelta::FromMilliseconds(50);  // 20 FPS
 
-// Animation that throbs in (towards 1.0) and out (towards 0.0), and ends in the
-// "in" state.
-class TabRecordingIndicatorAnimation : public gfx::MultiAnimation {
- public:
-  ~TabRecordingIndicatorAnimation() override {}
+std::unique_ptr<gfx::MultiAnimation> CreateTabRecordingIndicatorAnimation() {
+  // Number of times the throbber fades in and out. After these cycles a final
+  // fade-in animation is played to end visible.
+  constexpr size_t kFadeInFadeOutCycles = 2;
 
-  // Overridden to provide alternating "towards in" and "towards out" behavior.
-  double GetCurrentValue() const override;
-
-  static std::unique_ptr<TabRecordingIndicatorAnimation> Create();
-
- private:
-  TabRecordingIndicatorAnimation(const gfx::MultiAnimation::Parts& parts,
-                                 const base::TimeDelta interval)
-      : MultiAnimation(parts, interval) {}
-
-  // Number of times to "toggle throb" the recording and tab capture indicators
-  // when they first appear.
-  static const int kCaptureIndicatorThrobCycles = 5;
-};
-
-double TabRecordingIndicatorAnimation::GetCurrentValue() const {
-  return current_part_index() % 2 ? 1.0 - MultiAnimation::GetCurrentValue()
-                                  : MultiAnimation::GetCurrentValue();
-}
-
-std::unique_ptr<TabRecordingIndicatorAnimation>
-TabRecordingIndicatorAnimation::Create() {
-  MultiAnimation::Parts parts;
-  static_assert(
-      kCaptureIndicatorThrobCycles % 2 != 0,
-      "odd number of cycles required so animation finishes in showing state");
-  for (int i = 0; i < kCaptureIndicatorThrobCycles; ++i) {
-    parts.push_back(MultiAnimation::Part(
-        i % 2 ? kIndicatorFadeOutDurationMs : kIndicatorFadeInDurationMs,
-        gfx::Tween::EASE_IN));
+  gfx::MultiAnimation::Parts parts;
+  for (size_t i = 0; i < kFadeInFadeOutCycles; ++i) {
+    // Fade-in:
+    parts.push_back(gfx::MultiAnimation::Part(kIndicatorFadeInDuration,
+                                              gfx::Tween::EASE_IN));
+    // Fade-out (from 1 to 0):
+    parts.push_back(gfx::MultiAnimation::Part(kIndicatorFadeOutDuration,
+                                              gfx::Tween::EASE_IN, 1.0, 0.0));
   }
+  // Finish by fading in to show the indicator.
+  parts.push_back(
+      gfx::MultiAnimation::Part(kIndicatorFadeInDuration, gfx::Tween::EASE_IN));
 
-  std::unique_ptr<TabRecordingIndicatorAnimation> animation(
-      new TabRecordingIndicatorAnimation(parts, kIndicatorFrameInterval));
+  auto animation =
+      std::make_unique<gfx::MultiAnimation>(parts, kIndicatorFrameInterval);
   animation->set_continuous(false);
   return animation;
 }
@@ -79,7 +64,7 @@ gfx::Image GetTabAlertIndicatorImage(TabAlertState alert_state,
                                      SkColor button_color) {
   const gfx::VectorIcon* icon = nullptr;
   int image_width = GetLayoutConstant(TAB_ALERT_INDICATOR_ICON_WIDTH);
-  const bool touch_ui = ui::MaterialDesignController::touch_ui();
+  const bool touch_ui = ui::TouchUiController::Get()->touch_ui();
   switch (alert_state) {
     case TabAlertState::AUDIO_PLAYING:
       icon = touch_ui ? &kTabAudioRoundedIcon : &kTabAudioIcon;
@@ -101,8 +86,14 @@ gfx::Image GetTabAlertIndicatorImage(TabAlertState alert_state,
     case TabAlertState::BLUETOOTH_CONNECTED:
       icon = &kTabBluetoothConnectedIcon;
       break;
+    case TabAlertState::BLUETOOTH_SCAN_ACTIVE:
+      icon = &kTabBluetoothScanActiveIcon;
+      break;
     case TabAlertState::USB_CONNECTED:
       icon = &kTabUsbConnectedIcon;
+      break;
+    case TabAlertState::HID_CONNECTED:
+      icon = &vector_icons::kVideogameAssetIcon;
       break;
     case TabAlertState::SERIAL_CONNECTED:
       // TODO(https://crbug.com/917204): This icon is too large to fit properly
@@ -113,10 +104,8 @@ gfx::Image GetTabAlertIndicatorImage(TabAlertState alert_state,
       icon = &kPictureInPictureAltIcon;
       break;
     case TabAlertState::VR_PRESENTING_IN_HEADSET:
-      icon = &kVrHeadsetIcon;
+      icon = &vector_icons::kVrHeadsetIcon;
       break;
-    case TabAlertState::NONE:
-      return gfx::Image();
   }
   DCHECK(icon);
   return gfx::Image(gfx::CreateVectorIcon(*icon, image_width, button_color));
@@ -127,36 +116,42 @@ gfx::Image GetTabAlertIndicatorImage(TabAlertState alert_state,
 // indicator to alert the user that recording, tab capture, or audio playback
 // has started/stopped.
 std::unique_ptr<gfx::Animation> CreateTabAlertIndicatorFadeAnimation(
-    TabAlertState alert_state) {
+    absl::optional<TabAlertState> alert_state) {
   if (alert_state == TabAlertState::MEDIA_RECORDING ||
       alert_state == TabAlertState::TAB_CAPTURING ||
       alert_state == TabAlertState::DESKTOP_CAPTURING) {
-    return TabRecordingIndicatorAnimation::Create();
+    return CreateTabRecordingIndicatorAnimation();
   }
 
+  // TODO(pbos): Investigate if this functionality can be pushed down into a
+  // parent class somehow, or leave a better paper trail of why doing so is not
+  // feasible.
   // Note: While it seems silly to use a one-part MultiAnimation, it's the only
   // gfx::Animation implementation that lets us control the frame interval.
   gfx::MultiAnimation::Parts parts;
-  const bool is_for_fade_in = (alert_state != TabAlertState::NONE);
+  const bool is_for_fade_in = (alert_state.has_value());
   parts.push_back(gfx::MultiAnimation::Part(
-      is_for_fade_in ? kIndicatorFadeInDurationMs : kIndicatorFadeOutDurationMs,
+      is_for_fade_in ? kIndicatorFadeInDuration : kIndicatorFadeOutDuration,
       gfx::Tween::EASE_IN));
-  std::unique_ptr<gfx::MultiAnimation> animation(
-      new gfx::MultiAnimation(parts, kIndicatorFrameInterval));
+  auto animation =
+      std::make_unique<gfx::MultiAnimation>(parts, kIndicatorFrameInterval);
   animation->set_continuous(false);
   return std::move(animation);
 }
 
 }  // namespace
 
-class AlertIndicator::FadeAnimationDelegate : public gfx::AnimationDelegate {
+class AlertIndicator::FadeAnimationDelegate
+    : public views::AnimationDelegateViews {
  public:
   explicit FadeAnimationDelegate(AlertIndicator* indicator)
-      : indicator_(indicator) {}
-  ~FadeAnimationDelegate() override {}
+      : AnimationDelegateViews(indicator), indicator_(indicator) {}
+  FadeAnimationDelegate(const FadeAnimationDelegate&) = delete;
+  FadeAnimationDelegate& operator=(const FadeAnimationDelegate&) = delete;
+  ~FadeAnimationDelegate() override = default;
 
  private:
-  // gfx::AnimationDelegate
+  // views::AnimationDelegateViews
   void AnimationProgressed(const gfx::Animation* animation) override {
     indicator_->SchedulePaint();
   }
@@ -172,15 +167,10 @@ class AlertIndicator::FadeAnimationDelegate : public gfx::AnimationDelegate {
   }
 
   AlertIndicator* const indicator_;
-
-  DISALLOW_COPY_AND_ASSIGN(FadeAnimationDelegate);
 };
 
 AlertIndicator::AlertIndicator(Tab* parent_tab)
-    : views::ImageView(),
-      parent_tab_(parent_tab),
-      alert_state_(TabAlertState::NONE),
-      showing_alert_state_(TabAlertState::NONE) {
+    : views::ImageView(), parent_tab_(parent_tab) {
   DCHECK(parent_tab_);
 }
 
@@ -190,7 +180,7 @@ void AlertIndicator::OnPaint(gfx::Canvas* canvas) {
   double opaqueness = 1.0;
   if (fade_animation_) {
     opaqueness = fade_animation_->GetCurrentValue();
-    if (alert_state_ == TabAlertState::NONE)
+    if (!alert_state_)
       opaqueness = 1.0 - opaqueness;  // Fading out, not in.
   }
   if (opaqueness < 1.0)
@@ -200,14 +190,16 @@ void AlertIndicator::OnPaint(gfx::Canvas* canvas) {
     canvas->Restore();
 }
 
-void AlertIndicator::TransitionToAlertState(TabAlertState next_state) {
+void AlertIndicator::TransitionToAlertState(
+    absl::optional<TabAlertState> next_state) {
   if (next_state == alert_state_)
     return;
 
-  TabAlertState previous_alert_showing_state = showing_alert_state_;
+  absl::optional<TabAlertState> previous_alert_showing_state =
+      showing_alert_state_;
 
-  if (next_state != TabAlertState::NONE)
-    ResetImage(next_state);
+  if (next_state)
+    ResetImage(next_state.value());
 
   if ((alert_state_ == TabAlertState::AUDIO_PLAYING &&
        next_state == TabAlertState::AUDIO_MUTING) ||
@@ -217,13 +209,13 @@ void AlertIndicator::TransitionToAlertState(TabAlertState next_state) {
     showing_alert_state_ = next_state;
     fade_animation_.reset();
   } else {
-    if (next_state == TabAlertState::NONE)
+    if (!next_state)
       showing_alert_state_ = alert_state_;  // Fading-out indicator.
     else
       showing_alert_state_ = next_state;  // Fading-in to next indicator.
     fade_animation_ = CreateTabAlertIndicatorFadeAnimation(next_state);
     if (!fade_animation_delegate_)
-      fade_animation_delegate_.reset(new FadeAnimationDelegate(this));
+      fade_animation_delegate_ = std::make_unique<FadeAnimationDelegate>(this);
     fade_animation_->set_delegate(fade_animation_delegate_.get());
     fade_animation_->Start();
   }
@@ -235,9 +227,8 @@ void AlertIndicator::TransitionToAlertState(TabAlertState next_state) {
 }
 
 void AlertIndicator::OnParentTabButtonColorChanged() {
-  if (alert_state_ == TabAlertState::AUDIO_PLAYING ||
-      alert_state_ == TabAlertState::AUDIO_MUTING)
-    ResetImage(alert_state_);
+  if (alert_state_)
+    ResetImage(alert_state_.value());
 }
 
 views::View* AlertIndicator::GetTooltipHandlerForPoint(
@@ -250,3 +241,6 @@ void AlertIndicator::ResetImage(TabAlertState state) {
   gfx::ImageSkia image = GetTabAlertIndicatorImage(state, color).AsImageSkia();
   SetImage(&image);
 }
+
+BEGIN_METADATA(AlertIndicator, views::ImageView)
+END_METADATA

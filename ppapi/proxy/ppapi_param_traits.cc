@@ -12,7 +12,6 @@
 #include "build/build_config.h"
 #include "ppapi/c/pp_resource.h"
 #include "ppapi/proxy/ppapi_messages.h"
-#include "ppapi/proxy/serialized_flash_menu.h"
 #include "ppapi/proxy/serialized_var.h"
 #include "ppapi/shared_impl/host_resource.h"
 #include "ppapi/shared_impl/private/ppb_x509_certificate_private_shared.h"
@@ -235,9 +234,6 @@ void ParamTraits<ppapi::proxy::SerializedHandle>::Write(base::Pickle* m,
                                                         const param_type& p) {
   ppapi::proxy::SerializedHandle::WriteHeader(p.header(), m);
   switch (p.type()) {
-    case ppapi::proxy::SerializedHandle::SHARED_MEMORY:
-      WriteParam(m, p.shmem());
-      break;
     case ppapi::proxy::SerializedHandle::SHARED_MEMORY_REGION:
       WriteParam(m, const_cast<param_type&>(p).TakeSharedMemoryRegion());
       break;
@@ -260,13 +256,6 @@ bool ParamTraits<ppapi::proxy::SerializedHandle>::Read(
   if (!ppapi::proxy::SerializedHandle::ReadHeader(iter, &header))
     return false;
   switch (header.type) {
-    case ppapi::proxy::SerializedHandle::SHARED_MEMORY: {
-      base::SharedMemoryHandle handle;
-      if (!ReadParam(m, iter, &handle))
-        return false;
-      r->set_shmem(handle, header.size);
-      break;
-    }
     case ppapi::proxy::SerializedHandle::SHARED_MEMORY_REGION: {
       base::subtle::PlatformSharedMemoryRegion region;
       if (!ReadParam(m, iter, &region))
@@ -445,37 +434,6 @@ void ParamTraits<ppapi::proxy::SerializedFontDescription>::Log(
 }
 #endif  // !defined(OS_NACL) && !defined(NACL_WIN64)
 
-// ppapi::proxy::SerializedTrueTypeFontDesc ------------------------------------
-
-// static
-void ParamTraits<ppapi::proxy::SerializedTrueTypeFontDesc>::Write(
-    base::Pickle* m,
-    const param_type& p) {
-  WriteParam(m, p.family);
-  WriteParam(m, p.generic_family);
-  WriteParam(m, p.style);
-  WriteParam(m, p.weight);
-  WriteParam(m, p.width);
-  WriteParam(m, p.charset);
-}
-
-// static
-bool ParamTraits<ppapi::proxy::SerializedTrueTypeFontDesc>::Read(
-    const base::Pickle* m,
-    base::PickleIterator* iter,
-    param_type* r) {
-  return ReadParam(m, iter, &r->family) &&
-         ReadParam(m, iter, &r->generic_family) &&
-         ReadParam(m, iter, &r->style) && ReadParam(m, iter, &r->weight) &&
-         ReadParam(m, iter, &r->width) && ReadParam(m, iter, &r->charset);
-}
-
-// static
-void ParamTraits<ppapi::proxy::SerializedTrueTypeFontDesc>::Log(
-    const param_type& p,
-    std::string* l) {
-}
-
 #if !defined(OS_NACL) && !defined(NACL_WIN64)
 // ppapi::PepperFilePath -------------------------------------------------------
 
@@ -512,27 +470,6 @@ void ParamTraits<ppapi::PepperFilePath>::Log(const param_type& p,
   l->append(")");
 }
 
-// SerializedFlashMenu ---------------------------------------------------------
-
-// static
-void ParamTraits<ppapi::proxy::SerializedFlashMenu>::Write(
-    base::Pickle* m,
-    const param_type& p) {
-  p.WriteToMessage(m);
-}
-
-// static
-bool ParamTraits<ppapi::proxy::SerializedFlashMenu>::Read(
-    const base::Pickle* m,
-    base::PickleIterator* iter,
-    param_type* r) {
-  return r->ReadFromMessage(m, iter);
-}
-
-// static
-void ParamTraits<ppapi::proxy::SerializedFlashMenu>::Log(const param_type& p,
-                                                         std::string* l) {
-}
 #endif  // !defined(OS_NACL) && !defined(NACL_WIN64)
 
 // PPB_X509Certificate_Fields --------------------------------------------------

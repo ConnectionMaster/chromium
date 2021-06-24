@@ -7,15 +7,14 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/command_line.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_service_client.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/metrics_switches.h"
 #include "components/metrics_services_manager/metrics_services_manager_client.h"
-#include "components/rappor/rappor_service_impl.h"
 #include "components/ukm/ukm_service.h"
 #include "components/variations/service/variations_service.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -41,15 +40,6 @@ MetricsServicesManager::CreateEntropyProvider() {
 metrics::MetricsService* MetricsServicesManager::GetMetricsService() {
   DCHECK(thread_checker_.CalledOnValidThread());
   return GetMetricsServiceClient()->GetMetricsService();
-}
-
-rappor::RapporServiceImpl* MetricsServicesManager::GetRapporServiceImpl() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  if (!rappor_service_) {
-    rappor_service_ = client_->CreateRapporServiceImpl();
-    rappor_service_->Initialize(client_->GetURLLoaderFactory());
-  }
-  return rappor_service_.get();
 }
 
 ukm::UkmService* MetricsServicesManager::GetUkmService() {
@@ -80,8 +70,8 @@ MetricsServicesManager::GetMetricsServiceClient() {
     metrics_service_client_ = client_->CreateMetricsServiceClient();
     // base::Unretained is safe since |this| owns the metrics_service_client_.
     metrics_service_client_->SetUpdateRunningServicesCallback(
-        base::Bind(&MetricsServicesManager::UpdateRunningServices,
-                   base::Unretained(this)));
+        base::BindRepeating(&MetricsServicesManager::UpdateRunningServices,
+                            base::Unretained(this)));
   }
   return metrics_service_client_.get();
 }
@@ -100,8 +90,8 @@ void MetricsServicesManager::UpdatePermissions(bool current_may_record,
     }
   }
 
-  // Stash the current permissions so that we can update the RapporServiceImpl
-  // correctly when the Rappor preference changes.
+  // Stash the current permissions so that we can update the services correctly
+  // when preferences change.
   may_record_ = current_may_record;
   consent_given_ = current_consent_given;
   may_upload_ = current_may_upload;
@@ -115,7 +105,6 @@ void MetricsServicesManager::UpdateRunningServices() {
   const base::CommandLine* cmdline = base::CommandLine::ForCurrentProcess();
   if (cmdline->HasSwitch(metrics::switches::kMetricsRecordingOnly)) {
     metrics->StartRecordingForTests();
-    GetRapporServiceImpl()->Update(true, false);
     return;
   }
 
@@ -133,8 +122,6 @@ void MetricsServicesManager::UpdateRunningServices() {
   }
 
   UpdateUkmService();
-
-  GetRapporServiceImpl()->Update(may_record_, may_upload_);
 }
 
 void MetricsServicesManager::UpdateUkmService() {
@@ -146,13 +133,13 @@ void MetricsServicesManager::UpdateUkmService() {
       metrics_service_client_->AreNotificationListenersEnabledOnAllProfiles();
   bool sync_enabled =
       metrics_service_client_->IsMetricsReportingForceEnabled() ||
-      metrics_service_client_->SyncStateAllowsUkm();
-  bool is_incognito = client_->IsIncognitoSessionActive();
+      metrics_service_client_->IsUkmAllowedForAllProfiles();
+  bool is_incognito = client_->IsOffTheRecordSessionActive();
 
   if (consent_given_ && listeners_active && sync_enabled && !is_incognito) {
     // TODO(skare): revise this - merged in a big change
     ukm->EnableRecording(
-        metrics_service_client_->SyncStateAllowsExtensionUkm());
+        metrics_service_client_->IsUkmAllowedWithExtensionsForAllProfiles());
     if (may_upload_)
       ukm->EnableReporting();
     else
@@ -175,6 +162,10 @@ void MetricsServicesManager::UpdateUploadPermissions(bool may_upload) {
 
 bool MetricsServicesManager::IsMetricsReportingEnabled() const {
   return client_->IsMetricsReportingEnabled();
+}
+
+bool MetricsServicesManager::IsMetricsConsentGiven() const {
+  return client_->IsMetricsConsentGiven();
 }
 
 }  // namespace metrics_services_manager

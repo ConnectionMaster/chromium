@@ -7,27 +7,30 @@
 #include "base/json/json_writer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/chromeos/bluetooth_dialog_localized_strings_provider.h"
+#include "chrome/browser/ui/webui/webui_util.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/browser_resources.h"
+#include "chrome/grit/bluetooth_pairing_dialog_resources.h"
+#include "chrome/grit/bluetooth_pairing_dialog_resources_map.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "content/public/common/content_features.h"
 #include "device/bluetooth/bluetooth_device.h"
+#include "device/bluetooth/public/cpp/bluetooth_address.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace chromeos {
 
 namespace {
 
-constexpr int kBluetoothPairingDialogHeight = 350;
+constexpr int kBluetoothPairingDialogHeight = 375;
 
 void AddBluetoothStrings(content::WebUIDataSource* html_source) {
   struct {
     const char* name;
     int id;
   } localized_strings[] = {
+      {"bluetoothPairDeviceTitle", IDS_SETTINGS_BLUETOOTH_PAIR_DEVICE_TITLE},
       {"ok", IDS_OK},
       {"cancel", IDS_CANCEL},
       {"close", IDS_CLOSE},
@@ -42,11 +45,11 @@ void AddBluetoothStrings(content::WebUIDataSource* html_source) {
 // static
 SystemWebDialogDelegate* BluetoothPairingDialog::ShowDialog(
     const std::string& address,
-    const base::string16& name_for_display,
+    const std::u16string& name_for_display,
     bool paired,
     bool connected) {
   std::string cannonical_address =
-      device::BluetoothDevice::CanonicalizeAddress(address);
+      device::CanonicalizeBluetoothAddress(address);
   if (cannonical_address.empty()) {
     LOG(ERROR) << "BluetoothPairingDialog: Invalid address: " << address;
     return nullptr;
@@ -65,12 +68,11 @@ SystemWebDialogDelegate* BluetoothPairingDialog::ShowDialog(
 
 BluetoothPairingDialog::BluetoothPairingDialog(
     const std::string& address,
-    const base::string16& name_for_display,
+    const std::u16string& name_for_display,
     bool paired,
     bool connected)
-    : SystemWebDialogDelegate(
-          GURL(chrome::kChromeUIBluetoothPairingURL),
-          l10n_util::GetStringUTF16(IDS_SETTINGS_BLUETOOTH_PAIR_DEVICE_TITLE)),
+    : SystemWebDialogDelegate(GURL(chrome::kChromeUIBluetoothPairingURL),
+                              std::u16string() /* title */),
       address_(address) {
   device_data_.SetString("address", address);
   device_data_.SetString("name", name_for_display);
@@ -104,20 +106,11 @@ BluetoothPairingDialogUI::BluetoothPairingDialogUI(content::WebUI* web_ui)
 
   AddBluetoothStrings(source);
   source->AddLocalizedString("title", IDS_SETTINGS_BLUETOOTH_PAIR_DEVICE_TITLE);
-  source->SetJsonPath("strings.js");
-#if BUILDFLAG(OPTIMIZE_WEBUI)
-  source->UseGzip();
-  source->SetDefaultResource(
-      base::FeatureList::IsEnabled(features::kWebUIPolymer2)
-          ? IDR_BLUETOOTH_PAIRING_DIALOG_VULCANIZED_P2_HTML
-          : IDR_BLUETOOTH_PAIRING_DIALOG_VULCANIZED_HTML);
-  source->AddResourcePath("crisper.js",
-                          IDR_BLUETOOTH_PAIRING_DIALOG_CRISPER_JS);
-#else
-  source->SetDefaultResource(IDR_BLUETOOTH_PAIRING_DIALOG_HTML);
-  source->AddResourcePath("bluetooth_pairing_dialog.js",
-                          IDR_BLUETOOTH_PAIRING_DIALOG_JS);
-#endif
+  webui::SetupWebUIDataSource(
+      source,
+      base::make_span(kBluetoothPairingDialogResources,
+                      kBluetoothPairingDialogResourcesSize),
+      IDR_BLUETOOTH_PAIRING_DIALOG_BLUETOOTH_PAIRING_DIALOG_CONTAINER_HTML);
   content::WebUIDataSource::Add(Profile::FromWebUI(web_ui), source);
 }
 

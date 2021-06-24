@@ -7,6 +7,7 @@
 #include <utility>
 #include "third_party/blink/renderer/core/inspector/protocol/Protocol.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/inspector_protocol/crdtp/cbor.h"
 
 namespace blink {
 
@@ -45,53 +46,8 @@ String ToCoreString(std::unique_ptr<v8_inspector::StringBuffer> buffer) {
 namespace protocol {
 
 // static
-std::unique_ptr<protocol::Value> StringUtil::parseJSON(const String& string) {
-  if (string.IsNull())
-    return nullptr;
-  if (string.Is8Bit()) {
-    return parseJSONCharacters(
-        reinterpret_cast<const uint8_t*>(string.Characters8()),
-        string.length());
-  }
-  return parseJSONCharacters(
-      reinterpret_cast<const uint16_t*>(string.Characters16()),
-      string.length());
-}
-
-// static
-ProtocolMessage StringUtil::jsonToMessage(const String& message) {
-  ProtocolMessage result;
-  result.json = message;
-  return result;
-}
-
-// static
-ProtocolMessage StringUtil::binaryToMessage(std::vector<uint8_t> message) {
-  ProtocolMessage result;
-  result.binary = std::move(message);
-  return result;
-}
-
-// static
-void StringUtil::builderAppendQuotedString(StringBuilder& builder,
-                                           const String& str) {
-  builder.Append('"');
-  if (!str.IsEmpty()) {
-    if (str.Is8Bit()) {
-      escapeLatinStringForJSON(
-          reinterpret_cast<const uint8_t*>(str.Characters8()), str.length(),
-          &builder);
-    } else {
-      escapeWideStringForJSON(
-          reinterpret_cast<const uint16_t*>(str.Characters16()), str.length(),
-          &builder);
-    }
-  }
-  builder.Append('"');
-}
-
-// static
-String StringUtil::fromUTF16(const uint16_t* data, size_t length) {
+String StringUtil::fromUTF16LE(const uint16_t* data, size_t length) {
+  // Chromium doesn't support big endian architectures, so it's OK to cast here.
   return String(reinterpret_cast<const UChar*>(data), length);
 }
 
@@ -99,7 +55,7 @@ namespace {
 class BinaryBasedOnSharedBuffer : public Binary::Impl {
  public:
   explicit BinaryBasedOnSharedBuffer(scoped_refptr<SharedBuffer> buffer)
-      : buffer_(buffer) {}
+      : buffer_(std::move(buffer)) {}
 
   const uint8_t* data() const override {
     return reinterpret_cast<const uint8_t*>(buffer_->Data());
@@ -138,10 +94,13 @@ class BinaryBasedOnCachedData : public Binary::Impl {
 };
 }  // namespace
 
+// Implements Serializable.
+void Binary::AppendSerialized(std::vector<uint8_t>* out) const {
+  crdtp::cbor::EncodeBinary(crdtp::span<uint8_t>(data(), size()), out);
+}
+
 String Binary::toBase64() const {
-  return impl_ ? WTF::Base64Encode(reinterpret_cast<const char*>(impl_->data()),
-                                   impl_->size())
-               : String();
+  return impl_ ? Base64Encode(*impl_) : String();
 }
 
 // static
@@ -154,7 +113,8 @@ Binary Binary::fromBase64(const String& base64, bool* success) {
 
 // static
 Binary Binary::fromSharedBuffer(scoped_refptr<SharedBuffer> buffer) {
-  return Binary(base::AdoptRef(new BinaryBasedOnSharedBuffer(buffer)));
+  return Binary(
+      base::AdoptRef(new BinaryBasedOnSharedBuffer(std::move(buffer))));
 }
 
 // static
@@ -178,3 +138,78 @@ Binary Binary::fromCachedData(
 
 }  // namespace protocol
 }  // namespace blink
+
+namespace crdtp {
+
+using blink::protocol::Binary;
+using blink::protocol::StringUtil;
+
+// static
+bool ProtocolTypeTraits<WTF::String>::Deserialize(DeserializerState* state,
+                                                  String* value) {
+  auto* tokenizer = state->tokenizer();
+  if (tokenizer->TokenTag() == crdtp::cbor::CBORTokenTag::STRING8) {
+    const auto str = tokenizer->GetString8();
+    *value = StringUtil::fromUTF8(str.data(), str.size());
+    return true;
+  }
+  if (tokenizer->TokenTag() == crdtp::cbor::CBORTokenTag::STRING16) {
+    const auto str = tokenizer->GetString16WireRep();
+    *value = StringUtil::fromUTF16LE(
+        reinterpret_cast<const uint16_t*>(str.data()), str.size() / 2);
+    return true;
+  }
+  state->RegisterError(Error::BINDINGS_STRING_VALUE_EXPECTED);
+  return false;
+}
+
+// static
+void ProtocolTypeTraits<WTF::String>::Serialize(const String& value,
+                                                std::vector<uint8_t>* bytes) {
+  if (value.length() == 0) {
+    crdtp::cbor::EncodeString8(span<uint8_t>(nullptr, 0),
+                               bytes);  // Empty string.
+    return;
+  }
+  if (value.Is8Bit()) {
+    crdtp::cbor::EncodeFromLatin1(
+        span<uint8_t>(reinterpret_cast<const uint8_t*>(value.Characters8()),
+                      value.length()),
+        bytes);
+    return;
+  }
+  crdtp::cbor::EncodeFromUTF16(
+      span<uint16_t>(reinterpret_cast<const uint16_t*>(value.Characters16()),
+                     value.length()),
+      bytes);
+}
+
+// static
+bool ProtocolTypeTraits<blink::protocol::Binary>::Deserialize(
+    DeserializerState* state,
+    blink::protocol::Binary* value) {
+  auto* tokenizer = state->tokenizer();
+  if (tokenizer->TokenTag() == crdtp::cbor::CBORTokenTag::BINARY) {
+    const span<uint8_t> bin = tokenizer->GetBinary();
+    *value = Binary::fromSpan(bin.data(), bin.size());
+    return true;
+  }
+  if (tokenizer->TokenTag() == crdtp::cbor::CBORTokenTag::STRING8) {
+    const auto str_span = tokenizer->GetString8();
+    String str = StringUtil::fromUTF8(str_span.data(), str_span.size());
+    bool success = false;
+    *value = Binary::fromBase64(str, &success);
+    return success;
+  }
+  state->RegisterError(Error::BINDINGS_BINARY_VALUE_EXPECTED);
+  return false;
+}
+
+// static
+void ProtocolTypeTraits<blink::protocol::Binary>::Serialize(
+    const blink::protocol::Binary& value,
+    std::vector<uint8_t>* bytes) {
+  value.AppendSerialized(bytes);
+}
+
+}  // namespace crdtp

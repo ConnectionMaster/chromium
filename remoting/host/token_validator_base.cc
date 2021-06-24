@@ -26,7 +26,7 @@
 #include "net/ssl/client_cert_store_nss.h"
 #elif defined(OS_WIN)
 #include "net/ssl/client_cert_store_win.h"
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
 #include "net/ssl/client_cert_store_mac.h"
 #endif
 #include "net/ssl/ssl_cert_request_info.h"
@@ -34,7 +34,6 @@
 #include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_status.h"
 #include "remoting/base/logging.h"
 #include "url/gurl.h"
 
@@ -42,6 +41,7 @@ namespace {
 
 constexpr int kBufferSize = 4096;
 constexpr char kCertIssuerWildCard[] = "*";
+constexpr char kJsonSafetyPrefix[] = ")]}'\n";
 
 // Returns a value from the issuer field for certificate selection, in order of
 // preference.  If the O or OU entries are populated with multiple values, we
@@ -97,6 +97,14 @@ bool WorseThan(const std::string& issuer,
   return c1->valid_expiry() < c2->valid_expiry();
 }
 
+#if defined(OS_WIN)
+HCERTSTORE OpenLocalMachineCertStore() {
+  return ::CertOpenStore(
+      CERT_STORE_PROV_SYSTEM, 0, NULL,
+      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_READONLY_FLAG, L"MY");
+}
+#endif
+
 }  // namespace
 
 namespace remoting {
@@ -108,8 +116,7 @@ TokenValidatorBase::TokenValidatorBase(
     : third_party_auth_config_(third_party_auth_config),
       token_scope_(token_scope),
       request_context_getter_(request_context_getter),
-      buffer_(base::MakeRefCounted<net::IOBuffer>(kBufferSize)),
-      weak_factory_(this) {
+      buffer_(base::MakeRefCounted<net::IOBuffer>(kBufferSize)) {
   DCHECK(third_party_auth_config_.token_url.is_valid());
   DCHECK(third_party_auth_config_.token_validation_url.is_valid());
 }
@@ -119,12 +126,12 @@ TokenValidatorBase::~TokenValidatorBase() = default;
 // TokenValidator interface.
 void TokenValidatorBase::ValidateThirdPartyToken(
     const std::string& token,
-    const base::Callback<void(
-        const std::string& shared_secret)>& on_token_validated) {
+    base::OnceCallback<void(const std::string& shared_secret)>
+        on_token_validated) {
   DCHECK(!request_);
   DCHECK(!on_token_validated.is_null());
 
-  on_token_validated_ = on_token_validated;
+  on_token_validated_ = std::move(on_token_validated);
   token_ = token;
   StartValidateRequest(token);
 }
@@ -170,7 +177,7 @@ void TokenValidatorBase::OnReadCompleted(net::URLRequest* source,
   retrying_request_ = false;
   std::string shared_token = ProcessResponse(net_result);
   request_.reset();
-  on_token_validated_.Run(shared_token);
+  std::move(on_token_validated_).Run(shared_token);
 }
 
 void TokenValidatorBase::OnReceivedRedirect(
@@ -204,11 +211,9 @@ void TokenValidatorBase::OnCertificateRequested(
   // store instead.
   // The ACL on the private key of the machine certificate in the "Local
   // Machine" cert store needs to allow access by "Local Service".
-  HCERTSTORE cert_store = ::CertOpenStore(
-      CERT_STORE_PROV_SYSTEM, 0, NULL,
-      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_READONLY_FLAG, L"MY");
-  client_cert_store = new net::ClientCertStoreWin(cert_store);
-#elif defined(OS_MACOSX)
+  client_cert_store = new net::ClientCertStoreWin(
+      base::BindRepeating(&OpenLocalMachineCertStore));
+#elif defined(OS_APPLE)
   client_cert_store = new net::ClientCertStoreMac();
 #else
   // OpenSSL does not use the ClientCertStore infrastructure.
@@ -288,25 +293,29 @@ std::string TokenValidatorBase::ProcessResponse(int net_result) {
   }
 
   // Decode the JSON data from the response.
-  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(data_);
-  base::DictionaryValue* dict;
-  if (!value || !value->GetAsDictionary(&dict)) {
+  // Server can potentially pad the JSON response with a magic prefix. We need
+  // to strip that off if that exists.
+  std::string responseData =
+      base::StartsWith(data_, kJsonSafetyPrefix, base::CompareCase::SENSITIVE)
+          ? data_.substr(sizeof(kJsonSafetyPrefix) - 1)
+          : data_;
+
+  absl::optional<base::Value> value = base::JSONReader::Read(responseData);
+  if (!value || !value->is_dict()) {
     LOG(ERROR) << "Invalid token validation response: '" << data_ << "'";
     return std::string();
   }
 
-  std::string token_scope;
-  dict->GetStringWithoutPathExpansion("scope", &token_scope);
-  if (!IsValidScope(token_scope)) {
-    LOG(ERROR) << "Invalid scope: '" << token_scope << "', expected: '"
+  std::string* token_scope = value->FindStringKey("scope");
+  if (!token_scope || !IsValidScope(*token_scope)) {
+    LOG(ERROR) << "Invalid scope: '" << *token_scope << "', expected: '"
                << token_scope_ << "'.";
     return std::string();
   }
 
-  std::string shared_secret;
   // Everything is valid, so return the shared secret to the caller.
-  dict->GetStringWithoutPathExpansion("access_token", &shared_secret);
-  return shared_secret;
+  std::string* shared_secret = value->FindStringKey("access_token");
+  return shared_secret ? *shared_secret : std::string();
 }
 
 }  // namespace remoting

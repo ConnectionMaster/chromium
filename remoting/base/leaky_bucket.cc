@@ -4,7 +4,6 @@
 
 #include "remoting/base/leaky_bucket.h"
 
-#include "base/logging.h"
 
 namespace remoting {
 
@@ -46,10 +45,14 @@ void LeakyBucket::UpdateRate(int new_rate, base::TimeTicks now) {
 }
 
 void LeakyBucket::UpdateLevel(base::TimeTicks now) {
-  current_level_ -= rate_ * (now - level_updated_time_).InMicroseconds() /
-            base::TimeTicks::kMicrosecondsPerSecond;
-  if (current_level_ < 0)
+  int64_t drainage_amount = rate_ *
+                            (now - level_updated_time_).InMicroseconds() /
+                            base::TimeTicks::kMicrosecondsPerSecond;
+  if (current_level_ < drainage_amount) {
     current_level_ = 0;
+  } else {
+    current_level_ -= drainage_amount;
+  }
   level_updated_time_ = now;
 }
 

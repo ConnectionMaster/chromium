@@ -7,8 +7,8 @@
 
 #include <memory>
 
-#include "base/containers/flat_map.h"
-#include "content/browser/scheduler/browser_ui_thread_task_queue.h"
+#include "base/task/sequence_manager/task_queue.h"
+#include "content/browser/scheduler/browser_task_queues.h"
 #include "content/common/content_export.h"
 
 namespace base {
@@ -25,6 +25,26 @@ class BrowserTaskExecutor;
 // implement scheduling policy. This class is never deleted in production.
 class CONTENT_EXPORT BrowserUIThreadScheduler {
  public:
+  class UserInputActiveHandle {
+   public:
+    explicit UserInputActiveHandle(BrowserUIThreadScheduler* scheduler);
+    ~UserInputActiveHandle();
+
+    // This is a move only type.
+    UserInputActiveHandle(const UserInputActiveHandle&) = delete;
+    UserInputActiveHandle& operator=(const UserInputActiveHandle&) = delete;
+    UserInputActiveHandle& operator=(UserInputActiveHandle&&);
+    UserInputActiveHandle(UserInputActiveHandle&& other);
+
+   private:
+    void MoveFrom(UserInputActiveHandle* other);
+    // Only this constructor actually creates a UserInputActiveHandle that will
+    // inform scheduling decisions.
+    BrowserUIThreadScheduler* scheduler_ = nullptr;
+  };
+
+  using Handle = BrowserTaskQueues::Handle;
+
   BrowserUIThreadScheduler();
   ~BrowserUIThreadScheduler();
 
@@ -33,23 +53,9 @@ class CONTENT_EXPORT BrowserUIThreadScheduler {
       base::sequence_manager::SequenceManager* sequence_manager,
       base::sequence_manager::TimeDomain* time_domain);
 
-  // Initializes any scheduler experiments.
-  void PostFeatureListSetup();
+  using QueueType = BrowserTaskQueues::QueueType;
 
-  // Releases the scheduler although GetTaskRunner() continues to operate
-  // however no tasks will be executed after this point.
-  void Shutdown();
-
-  using QueueType = BrowserUIThreadTaskQueue::QueueType;
-
-  // Can be called from any thread.
-  scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunnerForTesting(
-      QueueType queue_type);
-
-  // Adds a fence to all queues, runs all tasks until idle, and finally removes
-  // the fences. Note that the run loop will eventually become idle, as new
-  // tasks will not be scheduled due to the fence.
-  void RunAllPendingTasksForTesting();
+  scoped_refptr<Handle> GetHandle() const { return handle_; }
 
  private:
   friend class BrowserTaskExecutor;
@@ -58,28 +64,35 @@ class CONTENT_EXPORT BrowserUIThreadScheduler {
       base::sequence_manager::SequenceManager* sequence_manager,
       base::sequence_manager::TimeDomain* time_domain);
 
-  // Note this will be called before the FeatureList has been initialized.
-  void InitialiseTaskQueues();
+  void CommonSequenceManagerSetup(
+      base::sequence_manager::SequenceManager* sequence_manager);
 
-  scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(
-      QueueType queue_type);
+  // Called after the feature list is ready and we can set up any policy
+  // experiments.
+  void PostFeatureListSetup();
+  // Used in the BrowserPrioritizeNativeWork experiment, when we want to
+  // prioritize yielding to java when user input starts and for a short period
+  // after it ends.
+  BrowserUIThreadScheduler::UserInputActiveHandle OnUserInputStart();
+  void DidStartUserInput();
+  void DidEndUserInput();
+  // After user input has ended CancelNativePriority will be called to inform
+  // the SequenceManager to stop prioritizing yielding to native tasks.
+  void CancelNativePriority();
 
   // In production the BrowserUIThreadScheduler will own its SequenceManager,
   // but in tests it may not.
   std::unique_ptr<base::sequence_manager::SequenceManager>
       owned_sequence_manager_;
 
-  base::sequence_manager::SequenceManager* sequence_manager_;
-  base::sequence_manager::TimeDomain* time_domain_;
+  BrowserTaskQueues task_queues_;
+  scoped_refptr<Handle> handle_;
 
-  // The |task_queues_| and |task_runners_| are eagerly constructed and are
-  // immutable after InitialiseTaskQueues() has run. If we ever change that e.g.
-  // for per-frame scheduling then we will need to protect this with a lock.
-  // NB |task_runners_| outlive the SequenceManager, but |task_queues_| do not.
-  base::flat_map<QueueType, scoped_refptr<BrowserUIThreadTaskQueue>>
-      task_queues_;
-  base::flat_map<QueueType, scoped_refptr<base::SingleThreadTaskRunner>>
-      task_runners_;
+  // These four variables are used in the BrowserPrioritizeNativeWork finch
+  // experiment. False ensures this feature is disabled by default.
+  int user_input_active_handle_count = 0;
+  bool browser_prioritize_native_work_ = false;
+  base::TimeDelta browser_prioritize_native_work_after_input_end_ms_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserUIThreadScheduler);
 };

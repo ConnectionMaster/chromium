@@ -6,8 +6,9 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/json/json_reader.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread.h"
@@ -29,8 +30,8 @@ class SyncWebSocketImplTest : public testing::Test {
   ~SyncWebSocketImplTest() override {}
 
   void SetUp() override {
-    base::Thread::Options options(base::MessageLoop::TYPE_IO, 0);
-    ASSERT_TRUE(client_thread_.StartWithOptions(options));
+    ASSERT_TRUE(client_thread_.StartWithOptions(
+        base::Thread::Options(base::MessagePumpType::IO, 0)));
     context_getter_ = new URLRequestContextGetter(client_thread_.task_runner());
     ASSERT_TRUE(server_.Start());
   }
@@ -51,7 +52,8 @@ TEST_F(SyncWebSocketImplTest, CreateDestroy) {
   SyncWebSocketImpl sock(context_getter_.get());
 }
 
-TEST_F(SyncWebSocketImplTest, Connect) {
+// TODO(crbug.com/1177142) Re-enable test
+TEST_F(SyncWebSocketImplTest, DISABLED_Connect) {
   SyncWebSocketImpl sock(context_getter_.get());
   ASSERT_TRUE(sock.Connect(server_.web_socket_url()));
 }
@@ -72,6 +74,36 @@ TEST_F(SyncWebSocketImplTest, SendReceive) {
   ASSERT_STREQ("hi", message.c_str());
 }
 
+TEST_F(SyncWebSocketImplTest, DetermineRecipient) {
+  SyncWebSocketImpl sock(context_getter_.get());
+  ASSERT_TRUE(sock.Connect(server_.web_socket_url()));
+  std::string message_for_chromedriver = R"({
+        "id": 1,
+        "method": "Page.enable"
+      })";
+  std::string message_not_for_chromedriver = R"({
+        "id": -1,
+        "method": "Page.enable"
+      })";
+  sock.Send(message_not_for_chromedriver);
+  sock.Send(message_for_chromedriver);
+  std::string message;
+  ASSERT_EQ(SyncWebSocket::kOk,
+            sock.ReceiveNextMessage(&message, long_timeout()));
+
+  // Getting message id and method
+  base::DictionaryValue* message_dict;
+  absl::optional<base::Value> message_value = base::JSONReader::Read(message);
+  ASSERT_TRUE(message_value.has_value());
+  ASSERT_TRUE(message_value->GetAsDictionary(&message_dict));
+  std::string method;
+  ASSERT_TRUE(message_dict->GetString("method", &method));
+  int id;
+  ASSERT_TRUE(message_dict->GetInteger("id", &id));
+  ASSERT_EQ(method, "Page.enable");
+  ASSERT_EQ(id, 1);
+}
+
 TEST_F(SyncWebSocketImplTest, SendReceiveTimeout) {
   SyncWebSocketImpl sock(context_getter_.get());
 
@@ -80,7 +112,7 @@ TEST_F(SyncWebSocketImplTest, SendReceiveTimeout) {
   base::WaitableEvent server_reply_allowed(
       base::WaitableEvent::ResetPolicy::AUTOMATIC,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
-  server_.SetMessageCallback(base::Bind(
+  server_.SetMessageCallback(base::BindOnce(
       &base::WaitableEvent::Wait, base::Unretained(&server_reply_allowed)));
 
   ASSERT_TRUE(sock.Connect(server_.web_socket_url()));

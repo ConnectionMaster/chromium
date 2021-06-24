@@ -10,13 +10,13 @@
 #include "build/build_config.h"
 #include "content/public/browser/javascript_dialog_manager.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #if __OBJC__
 @class ShellJavaScriptDialogHelper;
 #else
 class ShellJavaScriptDialogHelper;
 #endif  // __OBJC__
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
 namespace content {
 
@@ -27,8 +27,8 @@ class ShellJavaScriptDialog {
   ShellJavaScriptDialog(ShellJavaScriptDialogManager* manager,
                         gfx::NativeWindow parent_window,
                         JavaScriptDialogType dialog_type,
-                        const base::string16& message_text,
-                        const base::string16& default_prompt_text,
+                        const std::u16string& message_text,
+                        const std::u16string& default_prompt_text,
                         JavaScriptDialogManager::DialogClosedCallback callback);
   ~ShellJavaScriptDialog();
 
@@ -36,16 +36,15 @@ class ShellJavaScriptDialog {
   void Cancel();
 
  private:
-  JavaScriptDialogManager::DialogClosedCallback callback_;
-
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   ShellJavaScriptDialogHelper* helper_;  // owned
 #elif defined(OS_WIN)
+  JavaScriptDialogManager::DialogClosedCallback callback_;
   ShellJavaScriptDialogManager* manager_;
   JavaScriptDialogType dialog_type_;
   HWND dialog_win_;
-  base::string16 message_text_;
-  base::string16 default_prompt_text_;
+  std::u16string message_text_;
+  std::u16string default_prompt_text_;
   static INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wparam,
                                      LPARAM lparam);
 #endif

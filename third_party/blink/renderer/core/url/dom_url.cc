@@ -50,20 +50,18 @@ DOMURL::DOMURL(const String& url,
 
 DOMURL::~DOMURL() = default;
 
-void DOMURL::Trace(blink::Visitor* visitor) {
+void DOMURL::Trace(Visitor* visitor) const {
   visitor->Trace(search_params_);
   ScriptWrappable::Trace(visitor);
 }
 
-void DOMURL::SetInput(const String& value) {
+void DOMURL::setHref(const String& value, ExceptionState& exception_state) {
   KURL url(BlankURL(), value);
-  if (url.IsValid()) {
-    url_ = url;
-    input_ = String();
-  } else {
-    url_ = KURL();
-    input_ = value;
+  if (!url.IsValid()) {
+    exception_state.ThrowTypeError("Invalid URL");
+    return;
   }
+  url_ = url;
   Update();
 }
 

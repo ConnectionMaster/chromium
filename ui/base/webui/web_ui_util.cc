@@ -7,14 +7,18 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/feature_list.h"
 #include "base/i18n/rtl.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "net/base/escape.h"
+#include "third_party/modp_b64/modp_b64.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/template_expressions.h"
@@ -22,7 +26,7 @@
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/resources/grit/webui_resources.h"
+#include "ui/resources/grit/webui_generated_resources.h"
 #include "ui/strings/grit/app_locale_settings.h"
 #include "url/gurl.h"
 
@@ -31,20 +35,39 @@
 #endif
 
 namespace webui {
+namespace {
+std::string GetWebUiCssTextDefaults(const std::string& css_template) {
+  ui::TemplateReplacements placeholders;
+  placeholders["textDirection"] = GetTextDirection();
+  placeholders["fontFamily"] = GetFontFamily();
+  placeholders["fontSize"] = GetFontSize();
+  return ui::ReplaceTemplateExpressions(css_template, placeholders);
+}
+}  // namespace
 
 std::string GetBitmapDataUrl(const SkBitmap& bitmap) {
-  TRACE_EVENT2("oobe", "GetImageDataUrl",
-               "width", bitmap.width(), "height", bitmap.height());
+  TRACE_EVENT2("ui", "GetBitmapDataUrl", "width", bitmap.width(), "height",
+               bitmap.height());
   std::vector<unsigned char> output;
   gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, false, &output);
   return GetPngDataUrl(output.data(), output.size());
 }
 
 std::string GetPngDataUrl(const unsigned char* data, size_t size) {
-  std::string str_url(reinterpret_cast<const char*>(data), size);
-  base::Base64Encode(str_url, &str_url);
-  str_url.insert(0, "data:image/png;base64,");
-  return str_url;
+  constexpr char kPrefix[] = "data:image/png;base64,";
+  constexpr size_t kPrefixLen = base::size(kPrefix) - 1;
+  // Includes room for trailing null byte.
+  size_t max_encode_len = modp_b64_encode_len(size);
+  std::string output;
+  // This initializes the characters in the string, but there's no good way to
+  // avoid that and maintain a std::string API.
+  output.resize(kPrefixLen + max_encode_len);
+  memcpy(&output[0], kPrefix, kPrefixLen);
+  // |max_encode_len| is >= 1, so &output[kPrefixLen] is valid.
+  size_t actual_encode_len = modp_b64_encode(
+      &output[kPrefixLen], reinterpret_cast<const char*>(data), size);
+  output.resize(kPrefixLen + actual_encode_len);
+  return output;
 }
 
 WindowOpenDisposition GetDispositionFromClick(const base::ListValue* args,
@@ -78,8 +101,7 @@ bool ParseScaleFactor(const base::StringPiece& identifier,
   }
 
   double scale = 0;
-  std::string stripped;
-  identifier.substr(0, identifier.length() - 1).CopyToString(&stripped);
+  std::string stripped(identifier.substr(0, identifier.length() - 1));
   if (!base::StringToDouble(stripped, &scale)) {
     LOG(WARNING) << "Invalid scale factor format: " << identifier;
     return false;
@@ -115,10 +137,7 @@ void ParsePathAndImageSpec(const GURL& url,
                            std::string* path,
                            float* scale_factor,
                            int* frame_index) {
-  *path = net::UnescapeURLComponent(
-      url.path().substr(1),
-      net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-          net::UnescapeRule::SPACES);
+  *path = net::UnescapeBinaryURLComponent(url.path_piece().substr(1));
   if (scale_factor)
     *scale_factor = 1.0f;
   if (frame_index)
@@ -134,7 +153,7 @@ void ParsePathAndImageSpec(const GURL& url,
             pos + 1, stripped_path.length() - pos - 1), &factor)) {
       // Strip scale factor specification from path.
       stripped_path.remove_suffix(stripped_path.length() - pos);
-      stripped_path.CopyToString(path);
+      path->assign(stripped_path.data(), stripped_path.size());
     }
     if (scale_factor)
       *scale_factor = factor;
@@ -151,7 +170,7 @@ void ParsePathAndImageSpec(const GURL& url,
             &index)) {
       // Strip frame index specification from path.
       stripped_path.remove_suffix(stripped_path.length() - pos);
-      stripped_path.CopyToString(path);
+      path->assign(stripped_path.data(), stripped_path.size());
     }
     if (frame_index)
       *frame_index = index;
@@ -164,16 +183,13 @@ void ParsePathAndScale(const GURL& url,
   ParsePathAndImageSpec(url, path, scale_factor, nullptr);
 }
 
-void ParsePathAndFrame(const GURL& url, std::string* path, int* frame_index) {
-  ParsePathAndImageSpec(url, path, nullptr, frame_index);
-}
-
 void SetLoadTimeDataDefaults(const std::string& app_locale,
-                             base::DictionaryValue* localized_strings) {
-  localized_strings->SetString("fontfamily", GetFontFamily());
-  localized_strings->SetString("fontsize", GetFontSize());
-  localized_strings->SetString("language", l10n_util::GetLanguage(app_locale));
-  localized_strings->SetString("textdirection", GetTextDirection());
+                             base::Value* localized_strings) {
+  localized_strings->SetStringKey("fontfamily", GetFontFamily());
+  localized_strings->SetStringKey("fontsize", GetFontSize());
+  localized_strings->SetStringKey("language",
+                                  l10n_util::GetLanguage(app_locale));
+  localized_strings->SetStringKey("textdirection", GetTextDirection());
 }
 
 void SetLoadTimeDataDefaults(const std::string& app_locale,
@@ -184,26 +200,18 @@ void SetLoadTimeDataDefaults(const std::string& app_locale,
   (*replacements)["textdirection"] = GetTextDirection();
 }
 
-std::string GetWebUiCssTextDefaults(base::StringPiece css_template) {
-  ui::TemplateReplacements placeholders;
-  placeholders["textDirection"] = GetTextDirection();
-  placeholders["fontFamily"] = GetFontFamily();
-  placeholders["fontSize"] = GetFontSize();
-  return ui::ReplaceTemplateExpressions(css_template, placeholders);
-}
-
 std::string GetWebUiCssTextDefaults() {
   const ui::ResourceBundle& resource_bundle =
       ui::ResourceBundle::GetSharedInstance();
   return GetWebUiCssTextDefaults(
-      resource_bundle.GetRawDataResource(IDR_WEBUI_CSS_TEXT_DEFAULTS));
+      resource_bundle.LoadDataResourceString(IDR_WEBUI_CSS_TEXT_DEFAULTS_CSS));
 }
 
 std::string GetWebUiCssTextDefaultsMd() {
   const ui::ResourceBundle& resource_bundle =
       ui::ResourceBundle::GetSharedInstance();
-  return GetWebUiCssTextDefaults(
-      resource_bundle.GetRawDataResource(IDR_WEBUI_CSS_TEXT_DEFAULTS_MD));
+  return GetWebUiCssTextDefaults(resource_bundle.LoadDataResourceString(
+      IDR_WEBUI_CSS_TEXT_DEFAULTS_MD_CSS));
 }
 
 void AppendWebUiCssTextDefaults(std::string* html) {
@@ -215,11 +223,15 @@ void AppendWebUiCssTextDefaults(std::string* html) {
 std::string GetFontFamily() {
   std::string font_family = l10n_util::GetStringUTF8(IDS_WEB_FONT_FAMILY);
 
-// TODO(dnicoara) Remove Ozone check when PlatformFont support is introduced
-// into Ozone: crbug.com/320050
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) && !defined(USE_OZONE)
-  font_family = ui::ResourceBundle::GetSharedInstance().GetFont(
-      ui::ResourceBundle::BaseFont).GetFontName() + ", " + font_family;
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  std::string font_name = ui::ResourceBundle::GetSharedInstance()
+                              .GetFont(ui::ResourceBundle::BaseFont)
+                              .GetFontName();
+  // Wrap |font_name| with quotes to ensure it will always be parsed correctly
+  // in CSS.
+  font_family = "\"" + font_name + "\", " + font_family;
 #endif
 
   return font_family;

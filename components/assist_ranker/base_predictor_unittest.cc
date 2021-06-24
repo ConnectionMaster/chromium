@@ -7,9 +7,10 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "components/assist_ranker/fake_ranker_model_loader.h"
 #include "components/assist_ranker/predictor_config.h"
 #include "components/assist_ranker/proto/ranker_example.pb.h"
@@ -32,18 +33,18 @@ const char kTestUmaPrefixName[] = "Test.Ranker";
 const char kTestUrlParamName[] = "ranker-model-url";
 const char kTestDefaultModelUrl[] = "https://foo.bar/model.bin";
 
-// The whitelisted features must be metrics of kTestLoggingName in ukm.xml,
+// The allowed features must be metrics of kTestLoggingName in ukm.xml,
 // though the types do not need to match.
 const char kBoolFeature[] = "DidOptIn";
 const char kIntFeature[] = "DurationAfterScrollMs";
 const char kFloatFeature[] = "FontSize";
 const char kStringFeature[] = "IsEntity";
 const char kStringListFeature[] = "IsEntityEligible";
-const char kFeatureNotWhitelisted[] = "not_whitelisted";
+const char kFeatureNotAllowed[] = "not_allowed";
 
 const char kTestNavigationUrl[] = "https://foo.com";
 
-const base::flat_set<std::string> kFeatureWhitelist({kBoolFeature, kIntFeature,
+const base::flat_set<std::string> kFeatureAllowlist({kBoolFeature, kIntFeature,
                                                      kFloatFeature,
                                                      kStringFeature,
                                                      kStringListFeature});
@@ -57,7 +58,7 @@ const base::FeatureParam<std::string> kTestRankerUrl{
 const PredictorConfig kTestPredictorConfig =
     PredictorConfig{kTestModelName,     kTestLoggingName,
                     kTestUmaPrefixName, LOG_UKM,
-                    &kFeatureWhitelist, &kTestRankerQuery,
+                    &kFeatureAllowlist, &kTestRankerQuery,
                     &kTestRankerUrl,    kNoPredictThresholdReplacement};
 
 // Class that implements virtual functions of the base class.
@@ -113,7 +114,7 @@ class BasePredictorTest : public ::testing::Test {
 
  private:
   // Sets up the task scheduling/task-runner environment for each test.
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   // Sets itself as the global UkmRecorder on construction.
   ukm::TestAutoSetUkmRecorder test_ukm_recorder_;
@@ -164,7 +165,7 @@ TEST_F(BasePredictorTest, LogExampleToUkm) {
   features[kStringListFeature].mutable_string_list()->add_string_value("42");
 
   // This feature will not be logged.
-  features[kFeatureNotWhitelisted].set_bool_value(false);
+  features[kFeatureNotAllowed].set_bool_value(false);
 
   predictor->LogExampleToUkm(example, GetSourceId());
 
@@ -185,14 +186,14 @@ TEST_F(BasePredictorTest, LogExampleToUkm) {
                                           360287971246764839);
 
   EXPECT_FALSE(
-      GetTestUkmRecorder()->EntryHasMetric(entries[0], kFeatureNotWhitelisted));
+      GetTestUkmRecorder()->EntryHasMetric(entries[0], kFeatureNotAllowed));
 }
 
 TEST_F(BasePredictorTest, GetPredictThresholdReplacement) {
   float altered_threshold = 0.78f;  // Arbitrary value.
   const PredictorConfig altered_threshold_config{
       kTestModelName,  kTestLoggingName,   kTestUmaPrefixName,
-      LOG_UKM,         &kFeatureWhitelist, &kTestRankerQuery,
+      LOG_UKM,         &kFeatureAllowlist, &kTestRankerQuery,
       &kTestRankerUrl, altered_threshold};
   auto predictor = FakePredictor::Create(altered_threshold_config);
   EXPECT_EQ(altered_threshold, predictor->GetPredictThresholdReplacement());

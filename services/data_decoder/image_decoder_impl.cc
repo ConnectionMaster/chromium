@@ -7,17 +7,14 @@
 #include <string.h>
 
 #include <utility>
+#include "build/chromeos_buildflags.h"
 
-#include "base/logging.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
 #include "skia/ext/image_operations.h"
 #include "third_party/blink/public/platform/web_data.h"
-#include "third_party/blink/public/platform/web_image.h"
-#include "third_party/blink/public/platform/web_size.h"
+#include "third_party/blink/public/web/web_image.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
-#if defined(OS_CHROMEOS)
-#include "ui/gfx/codec/chromeos/jpeg_codec_robust_slow.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
 #include "ui/gfx/codec/png_codec.h"
 #endif
 
@@ -30,11 +27,12 @@ int64_t kPadding = 64;
 void ResizeImage(SkBitmap* decoded_image,
                  bool shrink_to_fit,
                  int64_t max_size_in_bytes) {
-  // When serialized, the space taken up by a skia::mojom::Bitmap excluding
+  // When serialized, the space taken up by a skia::mojom::BitmapN32 excluding
   // the pixel data payload should be:
-  //   sizeof(skia::mojom::Bitmap::Data_) + pixel data array header (8 bytes)
+  //   sizeof(skia::mojom::BitmapN32::Data_) +
+  //       pixel data array header (8 bytes)
   // Use a bigger number in case we need padding at the end.
-  int64_t struct_size = sizeof(skia::mojom::Bitmap::Data_) + kPadding;
+  int64_t struct_size = sizeof(skia::mojom::BitmapN32::Data_) + kPadding;
   int64_t image_size = decoded_image->computeByteSize();
   int halves = 0;
   while (struct_size + (image_size >> 2 * halves) > max_size_in_bytes)
@@ -58,13 +56,11 @@ void ResizeImage(SkBitmap* decoded_image,
 
 }  // namespace
 
-ImageDecoderImpl::ImageDecoderImpl(
-    std::unique_ptr<service_manager::ServiceContextRef> service_ref)
-    : service_ref_(std::move(service_ref)) {}
+ImageDecoderImpl::ImageDecoderImpl() = default;
 
 ImageDecoderImpl::~ImageDecoderImpl() = default;
 
-void ImageDecoderImpl::DecodeImage(const std::vector<uint8_t>& encoded_data,
+void ImageDecoderImpl::DecodeImage(mojo_base::BigBuffer encoded_data,
                                    mojom::ImageCodec codec,
                                    bool shrink_to_fit,
                                    int64_t max_size_in_bytes,
@@ -76,17 +72,9 @@ void ImageDecoderImpl::DecodeImage(const std::vector<uint8_t>& encoded_data,
   }
 
   SkBitmap decoded_image;
-#if defined(OS_CHROMEOS)
-  if (codec == mojom::ImageCodec::ROBUST_JPEG) {
-    // Our robust jpeg decoding is using IJG libjpeg.
-    if (encoded_data.size()) {
-      std::unique_ptr<SkBitmap> decoded_jpeg(gfx::JPEGCodecRobustSlow::Decode(
-          encoded_data.data(), encoded_data.size()));
-      if (decoded_jpeg.get() && !decoded_jpeg->empty())
-        decoded_image = *decoded_jpeg;
-    }
-  } else if (codec == mojom::ImageCodec::ROBUST_PNG) {
-    // Our robust PNG decoding is using libpng.
+#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  if (codec == mojom::ImageCodec::kPng) {
+    // Our PNG decoding is using libpng.
     if (encoded_data.size()) {
       SkBitmap decoded_png;
       if (gfx::PNGCodec::Decode(encoded_data.data(), encoded_data.size(),
@@ -95,8 +83,8 @@ void ImageDecoderImpl::DecodeImage(const std::vector<uint8_t>& encoded_data,
       }
     }
   }
-#endif  // defined(OS_CHROMEOS)
-  if (codec == mojom::ImageCodec::DEFAULT) {
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+  if (codec == mojom::ImageCodec::kDefault) {
     decoded_image = blink::WebImage::FromData(
         blink::WebData(reinterpret_cast<const char*>(encoded_data.data()),
                        encoded_data.size()),
@@ -109,7 +97,7 @@ void ImageDecoderImpl::DecodeImage(const std::vector<uint8_t>& encoded_data,
   std::move(callback).Run(decoded_image);
 }
 
-void ImageDecoderImpl::DecodeAnimation(const std::vector<uint8_t>& encoded_data,
+void ImageDecoderImpl::DecodeAnimation(mojo_base::BigBuffer encoded_data,
                                        bool shrink_to_fit,
                                        int64_t max_size_in_bytes,
                                        DecodeAnimationCallback callback) {

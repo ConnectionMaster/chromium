@@ -14,6 +14,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/strings/string_piece.h"
 #include "extensions/common/manifest.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 #include "extensions/common/value_builder.h"
 
 namespace extensions {
@@ -48,12 +49,16 @@ class ExtensionBuilder {
   enum class ActionType {
     PAGE_ACTION,
     BROWSER_ACTION,
+    ACTION,
   };
 
-  enum class BackgroundPage {
-    PERSISTENT,
-    EVENT,
+  enum class BackgroundContext {
+    BACKGROUND_PAGE,
+    EVENT_PAGE,
+    SERVICE_WORKER,
   };
+
+  static constexpr char kServiceWorkerScriptFile[] = "sw.js";
 
   // Initializes an ExtensionBuilder that can be used with SetManifest() for
   // complete customization.
@@ -85,9 +90,8 @@ class ExtensionBuilder {
   // be set (though note that we synthesize a page action for most extensions).
   ExtensionBuilder& SetAction(ActionType action);
 
-  // Sets a background page for the extension to have. By default, no background
-  // page will be set.
-  ExtensionBuilder& SetBackgroundPage(BackgroundPage background_page);
+  // Sets a background context for the extension. By default, none will be set.
+  ExtensionBuilder& SetBackgroundContext(BackgroundContext background_context);
 
   // Adds a content script to the extension, with a script with the specified
   // |script_name| that matches the given |match_patterns|.
@@ -147,8 +151,8 @@ class ExtensionBuilder {
   // Defaults to FilePath().
   ExtensionBuilder& SetPath(const base::FilePath& path);
 
-  // Defaults to Manifest::UNPACKED.
-  ExtensionBuilder& SetLocation(Manifest::Location location);
+  // Defaults to mojom::ManifestLocation::kUnpacked.
+  ExtensionBuilder& SetLocation(mojom::ManifestLocation location);
 
   // Merge another manifest into the current manifest, with new keys taking
   // precedence.
@@ -177,7 +181,7 @@ class ExtensionBuilder {
   std::unique_ptr<base::DictionaryValue> manifest_value_;
 
   base::FilePath path_;
-  Manifest::Location location_;
+  mojom::ManifestLocation location_;
   int flags_;
   std::string id_;
 

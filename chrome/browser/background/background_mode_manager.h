@@ -14,9 +14,13 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/sequenced_task_runner.h"
 #include "chrome/browser/background/background_application_list_model.h"
+#include "chrome/browser/extensions/forced_extensions/force_installed_tracker.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/status_icons/status_icon.h"
 #include "chrome/browser/status_icons/status_icon_menu_model.h"
 #include "chrome/browser/ui/browser_list_observer.h"
@@ -28,10 +32,10 @@
 #include "extensions/common/extension_id.h"
 
 class BackgroundModeOptimizer;
-class BackgroundTrigger;
 class Browser;
 class PrefRegistrySimple;
 class Profile;
+class ScopedProfileKeepAlive;
 class StatusIcon;
 class StatusTray;
 
@@ -50,9 +54,9 @@ using CommandIdHandlerVector = std::vector<base::RepeatingClosure>;
 // are no open browser windows.
 //
 // Chrome enters background mode whenever there is an application with the
-// "background" permission installed, or a "trigger" that requires Chrome to be
-// running. This class monitors the set of installed/loaded extensions to ensure
-// that Chrome enters/exits background mode at the appropriate time.
+// "background" permission installed. This class monitors the set of
+// installed/loaded extensions to ensure that Chrome enters/exits background
+// mode at the appropriate time.
 //
 // When Chrome is in background mode, it will continue running even after the
 // last browser window is closed, until the user explicitly exits the app.
@@ -109,14 +113,9 @@ class BackgroundModeManager : public content::NotificationObserver,
   // For testing purposes.
   size_t NumberOfBackgroundModeData();
 
-  // Registers |trigger| as a reason for enabling background mode. Does not
-  // take ownership of |trigger|.
-  void RegisterTrigger(const Profile* profile,
-                       BackgroundTrigger* trigger,
-                       bool should_notify_user);
-
-  // Unregisters |trigger| as a reason for enabling background mode.
-  void UnregisterTrigger(const Profile* profile, BackgroundTrigger* trigger);
+  int client_installed_notifications_for_test() {
+    return client_installed_notifications_;
+  }
 
  private:
   friend class AppBackgroundPageApiTest;
@@ -146,9 +145,7 @@ class BackgroundModeManager : public content::NotificationObserver,
   FRIEND_TEST_ALL_PREFIXES(BackgroundModeManagerTest,
                            DeleteBackgroundProfile);
   FRIEND_TEST_ALL_PREFIXES(BackgroundModeManagerTest,
-                           TriggerRegisterUnregister);
-  FRIEND_TEST_ALL_PREFIXES(BackgroundModeManagerTest,
-                           TriggerRegisterWhileDisabled);
+                           ForceInstalledExtensionsKeepAlive);
   FRIEND_TEST_ALL_PREFIXES(BackgroundModeManagerWithExtensionsTest,
                            BackgroundMenuGeneration);
   FRIEND_TEST_ALL_PREFIXES(BackgroundModeManagerWithExtensionsTest,
@@ -158,17 +155,21 @@ class BackgroundModeManager : public content::NotificationObserver,
   FRIEND_TEST_ALL_PREFIXES(BackgroundAppBrowserTest,
                            ReloadBackgroundApp);
 
-  // A pending trigger may be registered later. The boolean indicates whether
-  // the user should be notified when it is registered.
-  using PendingTriggerData = std::map<BackgroundTrigger*, bool>;
-
   // Manages the background clients and menu items for a single profile. A
-  // client can be a trigger or an extension.
-  class BackgroundModeData : public StatusIconMenuModel::Delegate {
+  // client is an extension.
+  class BackgroundModeData : public StatusIconMenuModel::Delegate,
+                             public extensions::ForceInstalledTracker::Observer,
+                             public ProfileObserver {
    public:
-    BackgroundModeData(Profile* profile,
+    BackgroundModeData(BackgroundModeManager* manager,
+                       Profile* profile,
                        CommandIdHandlerVector* command_id_handler_vector);
     ~BackgroundModeData() override;
+
+    void SetTracker(extensions::ForceInstalledTracker* tracker);
+
+    // Overrides from extensions::ForceInstalledTracker::Observer.
+    void OnForceInstalledExtensionsReady() override;
 
     // Overrides from StatusIconMenuModel::Delegate implementation.
     void ExecuteCommand(int command_id, int event_flags) override;
@@ -182,9 +183,13 @@ class BackgroundModeManager : public content::NotificationObserver,
     // Browser window.
     Browser* GetBrowserWindow();
 
-    // Returns if this profile has background clients. A client can be a trigger
-    // or an extension.
-    bool HasBackgroundClient() const;
+    // Returns if this profile has persistent background clients. A client is an
+    // extension.
+    bool HasPersistentBackgroundClient() const;
+
+    // Returns if this profile has any background clients. A client is an
+    // extension.
+    bool HasAnyBackgroundClient() const;
 
     // Builds the profile specific parts of the menu. The menu passed in may
     // be a submenu in the case of multi-profiles or the main menu in the case
@@ -195,11 +200,11 @@ class BackgroundModeManager : public content::NotificationObserver,
 
     // Set the name associated with this background mode data for displaying in
     // the status tray.
-    void SetName(const base::string16& new_profile_name);
+    void SetName(const std::u16string& new_profile_name);
 
     // The name associated with this background mode data. This should match
     // the name in the ProfileAttributesStorage for this profile.
-    base::string16 name();
+    std::u16string name();
 
     // Used for sorting BackgroundModeData*s.
     static bool BackgroundModeDataCompare(const BackgroundModeData* bmd1,
@@ -209,37 +214,37 @@ class BackgroundModeManager : public content::NotificationObserver,
     // the last call to GetNewBackgroundApps()).
     std::set<const extensions::Extension*> GetNewBackgroundApps();
 
-    // Adds a pending |trigger| as a reason to enable background mode. A pending
-    // trigger does not activate background mode, but may be registered later by
-    // RegisterPendingTriggers. Does not take ownership of |trigger|.
-    void AddPendingTrigger(BackgroundTrigger* trigger, bool should_notify_user);
+    // Acquires or releases a strong ref to the Profile, preventing/allowing it
+    // to be deleted.
+    //
+    // Acquires the ref if background mode is active, and this profile has
+    // persistent background apps. Releases it otherwise.
+    void UpdateProfileKeepAlive();
 
-    // Takes ownership of the pending trigger data.
-    PendingTriggerData TakePendingTriggerData();
-
-    // If there are pending triggers.
-    bool HasPendingTrigger() const;
-
-    // Registers |trigger| as a reason to enable background mode. Does not take
-    // ownership of |trigger|. Idempotent.
-    void RegisterTrigger(BackgroundTrigger* trigger);
-
-    // Removes |trigger| from the registered and pending triggers. Idempotent.
-    void UnregisterTrigger(BackgroundTrigger* trigger);
-
-    // Checks whether |trigger| is already registered or stored as a pending
-    // trigger.
-    bool HasTrigger(BackgroundTrigger* trigger);
+    // ProfileObserver overrides:
+    void OnProfileWillBeDestroyed(Profile* profile) override;
 
    private:
+    BackgroundModeManager* const manager_;
+
+    base::ScopedObservation<Profile, ProfileObserver> profile_observation_{
+        this};
+    base::ScopedObservation<extensions::ForceInstalledTracker,
+                            extensions::ForceInstalledTracker::Observer>
+        force_installed_tracker_observation_{this};
+
     // The cached list of BackgroundApplications.
     std::unique_ptr<BackgroundApplicationListModel> applications_;
 
     // Name associated with this profile which is used to label its submenu.
-    base::string16 name_;
+    std::u16string name_;
 
     // The profile associated with this background app data.
-    Profile* const profile_;
+    Profile* profile_;
+
+    // Prevents |profile_| from being deleted. Created or reset by
+    // UpdateProfileKeepAlive().
+    std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive_;
 
     // Weak ref vector owned by BackgroundModeManager where the indices
     // correspond to Command IDs and values correspond to their handlers.
@@ -251,14 +256,6 @@ class BackgroundModeManager : public content::NotificationObserver,
     // good about tracking changes to the background permission around
     // extension reloads, and will sometimes report spurious permission changes.
     std::set<extensions::ExtensionId> current_extensions_;
-
-    // This class does not own the triggers. If a trigger does not outlive this
-    // class it must be unregistered before destruction.
-    PendingTriggerData pending_trigger_data_;
-
-    // This class does not own the triggers. If a trigger does not outlive this
-    // class it must be unregistered before destruction.
-    std::set<BackgroundTrigger*> registered_triggers_;
   };
 
   using BackgroundModeInfoMap =
@@ -270,7 +267,7 @@ class BackgroundModeManager : public content::NotificationObserver,
                const content::NotificationDetails& details) override;
 
   // Called when ExtensionSystem is ready.
-  void OnExtensionsReady(const Profile* profile);
+  void OnExtensionsReady(Profile* profile);
 
   // Called when the kBackgroundModeEnabled preference changes.
   void OnBackgroundModeEnabledPrefChanged();
@@ -283,7 +280,7 @@ class BackgroundModeManager : public content::NotificationObserver,
   void OnProfileAdded(const base::FilePath& profile_path) override;
   void OnProfileWillBeRemoved(const base::FilePath& profile_path) override;
   void OnProfileNameChanged(const base::FilePath& profile_path,
-                            const base::string16& old_profile_name) override;
+                            const std::u16string& old_profile_name) override;
 
   // Overrides from StatusIconMenuModel::Delegate implementation.
   void ExecuteCommand(int command_id, int event_flags) override;
@@ -296,11 +293,15 @@ class BackgroundModeManager : public content::NotificationObserver,
   // the ProfileAttributesStorage if needed. If |new_client_names| is not empty
   // the user will be notified about the added client(s).
   void OnClientsChanged(const Profile* profile,
-                        const std::vector<base::string16>& new_client_names);
+                        const std::vector<std::u16string>& new_client_names);
 
   // Invoked when a background client is installed so we can ensure that
   // launch-on-startup is enabled if appropriate.
-  void OnBackgroundClientInstalled(const base::string16& name);
+  void OnBackgroundClientInstalled(const std::u16string& name);
+
+  // Update whether Chrome should be launched on startup, depending on whether
+  // |this| has any persistent background clients.
+  void UpdateEnableLaunchOnStartup();
 
   // Called to make sure that our launch-on-startup mode is properly set.
   // (virtual so it can be mocked in tests).
@@ -308,7 +309,7 @@ class BackgroundModeManager : public content::NotificationObserver,
 
   // Invoked when a client is installed so we can display a platform-specific
   // notification.
-  virtual void DisplayClientInstalledNotification(const base::string16& name);
+  virtual void DisplayClientInstalledNotification(const std::u16string& name);
 
   // Invoked to put Chrome in KeepAlive mode - chrome runs in the background
   // and has a status bar icon.
@@ -332,6 +333,13 @@ class BackgroundModeManager : public content::NotificationObserver,
   // manually, or all apps have been loaded).
   void ReleaseStartupKeepAlive();
 
+  // If --no-startup-window is passed, BackgroundModeManager will manually keep
+  // chrome running while waiting for force-installed extensions to install.
+  // This is called when we no longer need to do this (either because the user
+  // has chosen to exit chrome manually, or all force-installed extensions have
+  // installed/failed installing).
+  void ReleaseForceInstalledExtensionsKeepAlive();
+
   // Create a status tray icon to allow the user to shutdown Chrome when running
   // in background mode. Virtual to enable testing.
   virtual void CreateStatusTrayIcon();
@@ -354,7 +362,7 @@ class BackgroundModeManager : public content::NotificationObserver,
   // This should not be used to iterate over the background mode data. It is
   // used to efficiently delete an item from the background mode data map.
   BackgroundModeInfoMap::iterator GetBackgroundModeIterator(
-      const base::string16& profile_name);
+      const std::u16string& profile_name);
 
   // Returns true if the "Let chrome run in the background" pref is checked.
   // (virtual to allow overriding in tests).
@@ -366,17 +374,18 @@ class BackgroundModeManager : public content::NotificationObserver,
   // Turns on background mode if it's currently disabled.
   void EnableBackgroundMode();
 
-  // Returns if any profile on the system has a background client.
-  // A client can be a trigger or an extension.
-  // (virtual to allow overriding in unit tests)
-  virtual bool HasBackgroundClient() const;
+  // Returns if any profile on the system has a persistent background client.
+  // A client is an extension. (virtual to allow overriding in unit tests)
+  virtual bool HasPersistentBackgroundClient() const;
 
-  // Returns if there are background clients for a profile. A client can be a
-  // trigger or an extension.
-  virtual bool HasBackgroundClientForProfile(const Profile* profile) const;
+  // Returns if any profile on the system has any background client.
+  // A client is an extension. (virtual to allow overriding in unit tests)
+  virtual bool HasAnyBackgroundClient() const;
 
-  // Returns if the system has any pending triggers, for all profiles.
-  bool HasPendingTrigger() const;
+  // Returns if there are persistent background clients for a profile. A client
+  // is an extension.
+  virtual bool HasPersistentBackgroundClientForProfile(
+      const Profile* profile) const;
 
   // Returns true if we should be in background mode.
   bool ShouldBeInBackgroundMode() const;
@@ -436,8 +445,13 @@ class BackgroundModeManager : public content::NotificationObserver,
 
   // Set when we are keeping chrome running during the startup process - this
   // is required when running with the --no-startup-window flag, as otherwise
-  // chrome would immediately exit due to having no open windows.
+  // chrome would immediately exit due to having no open windows. Resets
+  // after |ExtensionSystem| startup.
   std::unique_ptr<ScopedKeepAlive> keep_alive_for_startup_;
+
+  // Like |keep_alive_for_startup_|, but resets after force-installed
+  // extensions are finished installing.
+  std::unique_ptr<ScopedKeepAlive> keep_alive_for_force_installed_extensions_;
 
   // Reference to the optimizer to use to reduce Chrome's footprint when in
   // background mode. If null, optimizations are disabled.
@@ -448,14 +462,20 @@ class BackgroundModeManager : public content::NotificationObserver,
   // app).
   bool keep_alive_for_test_ = false;
 
+  // Tracks the number of "background app installed" notifications shown to the
+  // user. Used for testing.
+  int client_installed_notifications_ = 0;
+
   // Set to true when background mode is suspended.
   bool background_mode_suspended_ = false;
+
+  absl::optional<bool> launch_on_startup_enabled_;
 
   // Task runner for making startup/login configuration changes that may
   // require file system or registry access.
   const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
-  base::WeakPtrFactory<BackgroundModeManager> weak_factory_;
+  base::WeakPtrFactory<BackgroundModeManager> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundModeManager);
 };

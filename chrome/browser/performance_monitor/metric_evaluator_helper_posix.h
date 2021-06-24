@@ -15,8 +15,7 @@ class MetricEvaluatorsHelperPosix : public MetricEvaluatorsHelper {
   ~MetricEvaluatorsHelperPosix() override;
 
   // MetricEvaluatorsHelper:
-  base::Optional<int> GetFreePhysicalMemoryMb() override;
-  base::Optional<float> GetDiskIdleTimePercent() override;
+  absl::optional<int> GetFreePhysicalMemoryMb() override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MetricEvaluatorsHelperPosix);

@@ -8,8 +8,9 @@
 #include "base/macros.h"
 #include "base/sequence_checker.h"
 #include "base/timer/timer.h"
+#include "net/base/backoff_entry.h"
 #include "net/base/network_change_notifier.h"
-#include "remoting/signaling/ftl_signal_strategy.h"
+#include "remoting/signaling/signal_strategy.h"
 
 namespace remoting {
 
@@ -27,7 +28,7 @@ class FtlSignalingConnector
   // The |auth_failed_callback| is called when authentication fails. The
   // singaling connector will no longer try to reconnect after this callback is
   // called.
-  FtlSignalingConnector(FtlSignalStrategy* signal_strategy,
+  FtlSignalingConnector(SignalStrategy* signal_strategy,
                         base::OnceClosure auth_failed_callback);
   ~FtlSignalingConnector() override;
 
@@ -43,13 +44,20 @@ class FtlSignalingConnector
       net::NetworkChangeNotifier::ConnectionType type) override;
 
  private:
-  void TryReconnect();
+  friend class FtlSignalingConnectorTest;
+
+  void TryReconnect(base::TimeDelta delay);
   void DoReconnect();
 
-  FtlSignalStrategy* signal_strategy_;
+  SignalStrategy* signal_strategy_;
   base::OnceClosure auth_failed_callback_;
 
+  net::BackoffEntry backoff_;
   base::OneShotTimer timer_;
+
+  // Timer to reset |backoff_|. We delay resetting the backoff so that we can
+  // treat an immediate CONNECTED->DISCONNECTED transition as failure.
+  base::OneShotTimer backoff_reset_timer_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

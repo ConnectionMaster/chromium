@@ -14,18 +14,17 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/permissions/permission_manager.h"
 #include "chrome/browser/permissions/permission_manager_factory.h"
-#include "chrome/browser/permissions/permission_request_id.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/permissions/permission_request_id.h"
 #include "content/public/browser/permission_controller_delegate.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
@@ -73,25 +72,26 @@ class TestNotificationPermissionContext : public NotificationPermissionContext {
 
   ContentSetting GetContentSettingFromMap(const GURL& url_a,
                                           const GURL& url_b) {
-    return HostContentSettingsMapFactory::GetForProfile(profile())
+    return HostContentSettingsMapFactory::GetForProfile(browser_context())
         ->GetContentSetting(url_a.GetOrigin(), url_b.GetOrigin(),
-                            content_settings_type(), std::string());
+                            content_settings_type());
   }
 
  private:
   // NotificationPermissionContext:
-  void NotifyPermissionSet(const PermissionRequestID& id,
+  void NotifyPermissionSet(const permissions::PermissionRequestID& id,
                            const GURL& requesting_origin,
                            const GURL& embedder_origin,
-                           const BrowserPermissionCallback& callback,
+                           permissions::BrowserPermissionCallback callback,
                            bool persist,
-                           ContentSetting content_setting) override {
+                           ContentSetting content_setting,
+                           bool is_one_time) override {
     permission_set_count_++;
     last_permission_set_persisted_ = persist;
     last_permission_set_setting_ = content_setting;
     NotificationPermissionContext::NotifyPermissionSet(
-        id, requesting_origin, embedder_origin, callback, persist,
-        content_setting);
+        id, requesting_origin, embedder_origin, std::move(callback), persist,
+        content_setting, /*is_one_time=*/false);
   }
 
   int permission_set_count_;
@@ -121,7 +121,8 @@ class NotificationPermissionContextTest
                             const GURL& requesting_origin,
                             const GURL& embedding_origin,
                             ContentSetting setting) {
-    context->UpdateContentSetting(requesting_origin, embedding_origin, setting);
+    context->UpdateContentSetting(requesting_origin, embedding_origin, setting,
+                                  /*is_one_time=*/false);
   }
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -270,13 +271,14 @@ TEST_F(NotificationPermissionContextTest, WebNotificationsTopLevelOriginOnly) {
                 .content_setting);
 
   // Requesting permission for different origins should fail.
-  PermissionRequestID fake_id(0 /* render_process_id */,
-                              0 /* render_frame_id */, 0 /* request_id */);
+  permissions::PermissionRequestID fake_id(
+      0 /* render_process_id */, 0 /* render_frame_id */,
+      permissions::PermissionRequestID::RequestLocalId());
 
   ContentSetting result = CONTENT_SETTING_DEFAULT;
   context.DecidePermission(web_contents(), fake_id, requesting_origin,
                            embedding_origin, true /* user_gesture */,
-                           base::Bind(&StoreContentSetting, &result));
+                           base::BindOnce(&StoreContentSetting, &result));
 
   ASSERT_EQ(result, CONTENT_SETTING_BLOCK);
   EXPECT_EQ(CONTENT_SETTING_ASK,
@@ -324,16 +326,25 @@ TEST_F(NotificationPermissionContextTest, SecureOriginRequirement) {
                 .content_setting);
 }
 
+#if defined(OS_MAC) && defined(ARCH_CPU_ARM64)
+// Bulk-disabled for arm64 bot stabilization: https://crbug.com/1154345
+#define MAYBE_TestDenyInIncognitoAfterDelay \
+  DISABLED_TestDenyInIncognitoAfterDelay
+#else
+#define MAYBE_TestDenyInIncognitoAfterDelay TestDenyInIncognitoAfterDelay
+#endif
+
 // Tests auto-denial after a time delay in incognito.
-TEST_F(NotificationPermissionContextTest, TestDenyInIncognitoAfterDelay) {
+TEST_F(NotificationPermissionContextTest, MAYBE_TestDenyInIncognitoAfterDelay) {
   TestNotificationPermissionContext permission_context(
-      profile()->GetOffTheRecordProfile());
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true));
   GURL url("https://www.example.com");
   NavigateAndCommit(url);
 
-  const PermissionRequestID id(
+  const permissions::PermissionRequestID id(
       web_contents()->GetMainFrame()->GetProcess()->GetID(),
-      web_contents()->GetMainFrame()->GetRoutingID(), -1);
+      web_contents()->GetMainFrame()->GetRoutingID(),
+      permissions::PermissionRequestID::RequestLocalId());
 
   base::TestMockTimeTaskRunner* task_runner = SwitchToMockTime();
 
@@ -393,17 +404,19 @@ TEST_F(NotificationPermissionContextTest, TestDenyInIncognitoAfterDelay) {
 // Tests how multiple parallel permission requests get auto-denied in incognito.
 TEST_F(NotificationPermissionContextTest, TestParallelDenyInIncognito) {
   TestNotificationPermissionContext permission_context(
-      profile()->GetOffTheRecordProfile());
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true));
   GURL url("https://www.example.com");
   NavigateAndCommit(url);
   web_contents()->WasShown();
 
-  const PermissionRequestID id0(
+  const permissions::PermissionRequestID id1(
       web_contents()->GetMainFrame()->GetProcess()->GetID(),
-      web_contents()->GetMainFrame()->GetRoutingID(), 0);
-  const PermissionRequestID id1(
+      web_contents()->GetMainFrame()->GetRoutingID(),
+      permissions::PermissionRequestID::RequestLocalId(1));
+  const permissions::PermissionRequestID id2(
       web_contents()->GetMainFrame()->GetProcess()->GetID(),
-      web_contents()->GetMainFrame()->GetRoutingID(), 1);
+      web_contents()->GetMainFrame()->GetRoutingID(),
+      permissions::PermissionRequestID::RequestLocalId(2));
 
   base::TestMockTimeTaskRunner* task_runner = SwitchToMockTime();
 
@@ -413,9 +426,9 @@ TEST_F(NotificationPermissionContextTest, TestParallelDenyInIncognito) {
             permission_context.last_permission_set_setting());
 
   permission_context.RequestPermission(
-      web_contents(), id0, url, true /* user_gesture */, base::DoNothing());
-  permission_context.RequestPermission(
       web_contents(), id1, url, true /* user_gesture */, base::DoNothing());
+  permission_context.RequestPermission(
+      web_contents(), id2, url, true /* user_gesture */, base::DoNothing());
 
   EXPECT_EQ(0, permission_context.permission_set_count());
   EXPECT_EQ(CONTENT_SETTING_ASK,
@@ -464,9 +477,7 @@ TEST_F(NotificationPermissionContextTest, GetNotificationsSettings) {
 
   ContentSettingsForOneType settings;
   HostContentSettingsMapFactory::GetForProfile(profile())
-      ->GetSettingsForOneType(CONTENT_SETTINGS_TYPE_NOTIFICATIONS,
-                              content_settings::ResourceIdentifier(),
-                              &settings);
+      ->GetSettingsForOneType(ContentSettingsType::NOTIFICATIONS, &settings);
 
   // |settings| contains the default setting and 4 exceptions.
   ASSERT_EQ(5u, settings.size());

@@ -7,10 +7,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/task/post_task.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
 #include "net/proxy_resolution/proxy_info.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "url/gurl.h"
@@ -19,26 +17,25 @@ namespace predictors {
 
 ProxyLookupClientImpl::ProxyLookupClientImpl(
     const GURL& url,
+    const net::NetworkIsolationKey& network_isolation_key,
     ProxyLookupCallback callback,
     network::mojom::NetworkContext* network_context)
-    : binding_(this), callback_(std::move(callback)) {
+    : callback_(std::move(callback)) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  network::mojom::ProxyLookupClientPtr proxy_lookup_client_ptr;
-  binding_.Bind(
-      mojo::MakeRequest(&proxy_lookup_client_ptr),
-      base::CreateSingleThreadTaskRunnerWithTraits(
-          {content::BrowserThread::UI, content::BrowserTaskType::kPreconnect}));
-  network_context->LookUpProxyForURL(url, std::move(proxy_lookup_client_ptr));
-  binding_.set_connection_error_handler(
+  network_context->LookUpProxyForURL(
+      url, network_isolation_key,
+      receiver_.BindNewPipeAndPassRemote(content::GetUIThreadTaskRunner(
+          {content::BrowserTaskType::kPreconnect})));
+  receiver_.set_disconnect_handler(
       base::BindOnce(&ProxyLookupClientImpl::OnProxyLookupComplete,
-                     base::Unretained(this), net::ERR_ABORTED, base::nullopt));
+                     base::Unretained(this), net::ERR_ABORTED, absl::nullopt));
 }
 
 ProxyLookupClientImpl::~ProxyLookupClientImpl() = default;
 
 void ProxyLookupClientImpl::OnProxyLookupComplete(
     int32_t net_error,
-    const base::Optional<net::ProxyInfo>& proxy_info) {
+    const absl::optional<net::ProxyInfo>& proxy_info) {
   bool success = proxy_info.has_value() && !proxy_info->is_direct();
   std::move(callback_).Run(success);
 }

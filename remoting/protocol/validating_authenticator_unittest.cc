@@ -11,8 +11,8 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "remoting/protocol/authenticator.h"
 #include "remoting/protocol/protocol_mock_objects.h"
 #include "remoting/protocol/validating_authenticator.h"
@@ -32,13 +32,13 @@ typedef ValidatingAuthenticator::Result ValidationResult;
 
 constexpr char kRemoteTestJid[] = "ficticious_jid_for_testing";
 
-// testing::InvokeArgument<N> does not work with base::Callback, fortunately
+// testing::InvokeArgument<N> does not work with base::OnceCallback, fortunately
 // gmock makes it simple to create action templates that do for the various
 // possible numbers of arguments.
 ACTION_TEMPLATE(InvokeCallbackArgument,
                 HAS_1_TEMPLATE_PARAMS(int, k),
                 AND_0_VALUE_PARAMS()) {
-  std::get<k>(args).Run();
+  std::move(const_cast<base::OnceClosure&>(std::get<k>(args))).Run();
 }
 
 }  // namespace
@@ -48,9 +48,8 @@ class ValidatingAuthenticatorTest : public testing::Test {
   ValidatingAuthenticatorTest();
   ~ValidatingAuthenticatorTest() override;
 
-  void ValidateCallback(
-      const std::string& remote_jid,
-      const ValidatingAuthenticator::ResultCallback& callback);
+  void ValidateCallback(const std::string& remote_jid,
+                        ValidatingAuthenticator::ResultCallback callback);
 
  protected:
   // testing::Test overrides.
@@ -77,7 +76,7 @@ class ValidatingAuthenticatorTest : public testing::Test {
   std::unique_ptr<ValidatingAuthenticator> validating_authenticator_;
 
  private:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(ValidatingAuthenticatorTest);
 };
@@ -88,19 +87,20 @@ ValidatingAuthenticatorTest::~ValidatingAuthenticatorTest() = default;
 
 void ValidatingAuthenticatorTest::ValidateCallback(
     const std::string& remote_jid,
-    const ValidatingAuthenticator::ResultCallback& callback) {
+    ValidatingAuthenticator::ResultCallback callback) {
   validate_complete_called_ = true;
-  callback.Run(validation_result_);
+  std::move(callback).Run(validation_result_);
 }
 
 void ValidatingAuthenticatorTest::SetUp() {
   mock_authenticator_ = new testing::NiceMock<MockAuthenticator>();
   std::unique_ptr<Authenticator> authenticator(mock_authenticator_);
 
-  validating_authenticator_.reset(new ValidatingAuthenticator(
-      kRemoteTestJid, base::Bind(&ValidatingAuthenticatorTest::ValidateCallback,
-                                 base::Unretained(this)),
-      std::move(authenticator)));
+  validating_authenticator_ = std::make_unique<ValidatingAuthenticator>(
+      kRemoteTestJid,
+      base::BindRepeating(&ValidatingAuthenticatorTest::ValidateCallback,
+                          base::Unretained(this)),
+      std::move(authenticator));
 }
 
 void ValidatingAuthenticatorTest::SendMessageAndWaitForCallback() {

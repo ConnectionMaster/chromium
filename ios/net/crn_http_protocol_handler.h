@@ -7,6 +7,8 @@
 
 #import <Foundation/Foundation.h>
 
+#include <memory>
+
 #include "base/macros.h"
 #include "net/base/load_timing_info.h"
 #include "net/http/http_response_info.h"
@@ -29,9 +31,7 @@ class HTTPProtocolHandlerDelegate {
   // a NSURLErrorUnsupportedURL error is generated.
   virtual bool IsRequestSupported(NSURLRequest* request) = 0;
 
-  // Returns the request context used for requests that are not associated with
-  // a RequestTracker. This includes in particular the requests that are not
-  // aware of the network stack. Must not return null.
+  // Returns the request context used. Must not return null.
   virtual URLRequestContextGetter* GetDefaultURLRequestContext() = 0;
 };
 

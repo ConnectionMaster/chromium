@@ -4,8 +4,8 @@
 
 #include "chrome/browser/offline_pages/offline_page_utils.h"
 
-#include "base/logging.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/android/tab_web_contents_delegate_android.h"
 #include "chrome/browser/offline_pages/android/downloads/offline_page_download_bridge.h"
 #include "chrome/browser/offline_pages/android/downloads/offline_page_infobar_delegate.h"
 #include "content/public/browser/web_contents.h"
@@ -28,19 +28,19 @@ bool OfflinePageUtils::GetTabId(content::WebContents* web_contents,
 // static
 bool OfflinePageUtils::CurrentlyShownInCustomTab(
     content::WebContents* web_contents) {
-  TabAndroid* tab_android = TabAndroid::FromWebContents(web_contents);
-  DCHECK(tab_android);
-  return tab_android && tab_android->IsCurrentlyACustomTab();
+  auto* delegate = static_cast<::android::TabWebContentsDelegateAndroid*>(
+      web_contents->GetDelegate());
+  return delegate && delegate->IsCustomTab();
 }
 
 // static
 void OfflinePageUtils::ShowDuplicatePrompt(
-    const base::Closure& confirm_continuation,
+    base::OnceClosure confirm_continuation,
     const GURL& url,
     bool exists_duplicate_request,
     content::WebContents* web_contents) {
-  OfflinePageInfoBarDelegate::Create(
-      confirm_continuation, url, exists_duplicate_request, web_contents);
+  OfflinePageInfoBarDelegate::Create(std::move(confirm_continuation), url,
+                                     exists_duplicate_request, web_contents);
 }
 
 // static

@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/contains.h"
 #include "base/i18n/rtl.h"
 #include "base/lazy_instance.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -113,7 +113,7 @@ bool MessageBundle::AppendReservedMessagesForLocale(
   // Add all reserved messages to the dictionary, but check for collisions.
   auto it = append_messages.begin();
   for (; it != append_messages.end(); ++it) {
-    if (base::ContainsKey(dictionary_, it->first)) {
+    if (base::Contains(dictionary_, it->first)) {
       *error = ErrorUtils::FormatErrorMessage(
           errors::kReservedMessageFound, it->first);
       return false;

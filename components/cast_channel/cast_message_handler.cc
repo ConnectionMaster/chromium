@@ -12,9 +12,8 @@
 #include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/default_tick_clock.h"
+#include "components/cast_channel/cast_message_util.h"
 #include "components/cast_channel/cast_socket_service.h"
-#include "services/data_decoder/public/cpp/safe_json_parser.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace cast_channel {
 
@@ -23,8 +22,11 @@ namespace {
 // The max launch timeout amount for session launch requests.
 constexpr base::TimeDelta kLaunchMaxTimeout = base::TimeDelta::FromMinutes(2);
 
+// The max size of Cast Message is 64KB.
+constexpr int kMaxCastMessagePayload = 64 * 1024;
+
 void ReportParseError(const std::string& error) {
-  DVLOG(2) << "Error parsing JSON message: " << error;
+  DVLOG(1) << "Error parsing JSON message: " << error;
 }
 
 }  // namespace
@@ -51,26 +53,26 @@ bool VirtualConnection::operator<(const VirtualConnection& other) const {
          std::tie(other.channel_id, other.source_id, other.destination_id);
 }
 
-InternalMessage::InternalMessage(CastMessageType type, base::Value message)
-    : type(type), message(std::move(message)) {}
+InternalMessage::InternalMessage(CastMessageType type,
+                                 const std::string& message_namespace,
+                                 base::Value message)
+    : type(type),
+      message_namespace(message_namespace),
+      message(std::move(message)) {}
 InternalMessage::~InternalMessage() = default;
 
-CastMessageHandler::CastMessageHandler(
-    CastSocketService* socket_service,
-    std::unique_ptr<service_manager::Connector> connector,
-    const base::Token& data_decoder_batch_id,
-    const std::string& user_agent,
-    const std::string& browser_version,
-    const std::string& locale)
+CastMessageHandler::CastMessageHandler(CastSocketService* socket_service,
+                                       ParseJsonCallback parse_json,
+                                       const std::string& user_agent,
+                                       const std::string& browser_version,
+                                       const std::string& locale)
     : sender_id_(base::StringPrintf("sender-%d", base::RandInt(0, 1000000))),
-      connector_(std::move(connector)),
-      data_decoder_batch_id_(data_decoder_batch_id),
+      parse_json_(std::move(parse_json)),
       user_agent_(user_agent),
       browser_version_(browser_version),
       locale_(locale),
       socket_service_(socket_service),
-      clock_(base::DefaultTickClock::GetInstance()),
-      weak_ptr_factory_(this) {
+      clock_(base::DefaultTickClock::GetInstance()) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
   socket_service_->task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&CastSocketService::AddObserver,
@@ -83,9 +85,11 @@ CastMessageHandler::~CastMessageHandler() {
   socket_service_->RemoveObserver(this);
 }
 
-void CastMessageHandler::EnsureConnection(int channel_id,
-                                          const std::string& source_id,
-                                          const std::string& destination_id) {
+void CastMessageHandler::EnsureConnection(
+    int channel_id,
+    const std::string& source_id,
+    const std::string& destination_id,
+    VirtualConnectionType connection_type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
@@ -93,7 +97,34 @@ void CastMessageHandler::EnsureConnection(int channel_id,
     return;
   }
 
-  DoEnsureConnection(socket, source_id, destination_id);
+  DoEnsureConnection(socket, source_id, destination_id, connection_type);
+}
+
+void CastMessageHandler::CloseConnection(int channel_id,
+                                         const std::string& source_id,
+                                         const std::string& destination_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CastSocket* socket = socket_service_->GetSocket(channel_id);
+  if (!socket) {
+    return;
+  }
+
+  VirtualConnection connection(socket->id(), source_id, destination_id);
+  if (virtual_connections_.find(connection) == virtual_connections_.end())
+    return;
+
+  VLOG(1) << "Closing VC for channel: " << connection.channel_id
+          << ", source: " << connection.source_id
+          << ", dest: " << connection.destination_id;
+  socket->transport()->SendMessage(
+      CreateVirtualConnectionClose(connection.source_id,
+                                   connection.destination_id),
+      base::BindOnce(&CastMessageHandler::OnMessageSent,
+                     weak_ptr_factory_.GetWeakPtr()));
+
+  // Assume the virtual connection close will succeed.  Eventually the receiver
+  // will remove the connection even if it doesn't.
+  virtual_connections_.erase(connection);
 }
 
 CastMessageHandler::PendingRequests*
@@ -125,8 +156,8 @@ void CastMessageHandler::RequestAppAvailability(
   if (requests->AddAppAvailabilityRequest(
           std::make_unique<GetAppAvailabilityRequest>(
               request_id, std::move(callback), clock_, app_id))) {
-    SendCastMessage(socket, CreateGetAppAvailabilityRequest(
-                                sender_id_, request_id, app_id));
+    SendCastMessageToSocket(socket, CreateGetAppAvailabilityRequest(
+                                        sender_id_, request_id, app_id));
   }
 }
 
@@ -140,10 +171,11 @@ void CastMessageHandler::RequestReceiverStatus(int channel_id) {
   }
 
   int request_id = NextRequestId();
-  SendCastMessage(socket, CreateReceiverStatusRequest(sender_id_, request_id));
+  SendCastMessageToSocket(socket,
+                          CreateReceiverStatusRequest(sender_id_, request_id));
 }
 
-void CastMessageHandler::SendBroadcastMessage(
+Result CastMessageHandler::SendBroadcastMessage(
     int channel_id,
     const std::vector<std::string>& app_ids,
     const BroadcastRequest& request) {
@@ -152,7 +184,7 @@ void CastMessageHandler::SendBroadcastMessage(
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
     DVLOG(2) << __func__ << ": socket not found: " << channel_id;
-    return;
+    return Result::kFailed;
   }
 
   int request_id = NextRequestId();
@@ -163,18 +195,25 @@ void CastMessageHandler::SendBroadcastMessage(
   // about the response, as broadcasts are fire-and-forget.
   CastMessage message =
       CreateBroadcastRequest(sender_id_, request_id, app_ids, request);
-  SendCastMessage(socket, message);
+  if (message.ByteSizeLong() > kMaxCastMessagePayload) {
+    return Result::kFailed;
+  }
+  SendCastMessageToSocket(socket, message);
+  return Result::kOk;
 }
 
-void CastMessageHandler::LaunchSession(int channel_id,
-                                       const std::string& app_id,
-                                       base::TimeDelta launch_timeout,
-                                       LaunchSessionCallback callback) {
+void CastMessageHandler::LaunchSession(
+    int channel_id,
+    const std::string& app_id,
+    base::TimeDelta launch_timeout,
+    const std::vector<std::string>& supported_app_types,
+    const absl::optional<base::Value>& app_params,
+    LaunchSessionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
-    DVLOG(2) << __func__ << ": socket not found: " << channel_id;
-    std::move(callback).Run(LaunchSessionResponse());
+    std::move(callback).Run(GetLaunchSessionResponseError(
+        base::StringPrintf("Socket not found: %d.", channel_id)));
     return;
   }
 
@@ -184,23 +223,30 @@ void CastMessageHandler::LaunchSession(int channel_id,
   launch_timeout = std::min(launch_timeout, kLaunchMaxTimeout);
   DVLOG(2) << __func__ << ", channel_id: " << channel_id
            << ", request_id: " << request_id;
+  CastMessage message = CreateLaunchRequest(
+      sender_id_, request_id, app_id, locale_, supported_app_types, app_params);
+  if (message.ByteSizeLong() > kMaxCastMessagePayload) {
+    std::move(callback).Run(GetLaunchSessionResponseError(
+        "Message size exceeds maximum cast channel message payload."));
+    return;
+  }
   if (requests->AddLaunchRequest(std::make_unique<LaunchSessionRequest>(
                                      request_id, std::move(callback), clock_),
                                  launch_timeout)) {
-    SendCastMessage(
-        socket, CreateLaunchRequest(sender_id_, request_id, app_id, locale_));
+    SendCastMessageToSocket(socket, message);
   }
 }
 
 void CastMessageHandler::StopSession(
     int channel_id,
     const std::string& session_id,
-    const base::Optional<std::string>& client_id,
+    const absl::optional<std::string>& client_id,
     ResultCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
     DVLOG(2) << __func__ << ": socket not found: " << channel_id;
+    std::move(callback).Run(cast_channel::Result::kFailed);
     return;
   }
 
@@ -210,16 +256,15 @@ void CastMessageHandler::StopSession(
            << ", request_id: " << request_id;
   if (requests->AddStopRequest(std::make_unique<StopSessionRequest>(
           request_id, std::move(callback), clock_))) {
-    SendCastMessage(socket, CreateStopRequest(client_id.value_or(sender_id_),
-                                              request_id, session_id));
+    SendCastMessageToSocket(
+        socket, CreateStopRequest(client_id.value_or(sender_id_), request_id,
+                                  session_id));
   }
 }
 
-Result CastMessageHandler::SendAppMessage(int channel_id,
-                                          const CastMessage& message) {
+Result CastMessageHandler::SendCastMessage(int channel_id,
+                                           const CastMessage& message) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!IsCastInternalNamespace(message.namespace_()))
-      << ": unexpected app message namespace: " << message.namespace_();
 
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
@@ -227,11 +272,21 @@ Result CastMessageHandler::SendAppMessage(int channel_id,
     return Result::kFailed;
   }
 
-  SendCastMessage(socket, message);
+  SendCastMessageToSocket(socket, message);
   return Result::kOk;
 }
 
-base::Optional<int> CastMessageHandler::SendMediaRequest(
+Result CastMessageHandler::SendAppMessage(int channel_id,
+                                          const CastMessage& message) {
+  DCHECK(!IsCastReservedNamespace(message.namespace_()))
+      << ": unexpected app message namespace: " << message.namespace_();
+  if (message.ByteSizeLong() > kMaxCastMessagePayload) {
+    return Result::kFailed;
+  }
+  return SendCastMessage(channel_id, message);
+}
+
+absl::optional<int> CastMessageHandler::SendMediaRequest(
     int channel_id,
     const base::Value& body,
     const std::string& source_id,
@@ -241,25 +296,26 @@ base::Optional<int> CastMessageHandler::SendMediaRequest(
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
     DVLOG(2) << __func__ << ": socket not found: " << channel_id;
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   int request_id = NextRequestId();
-  SendCastMessage(
+  SendCastMessageToSocket(
       socket, CreateMediaRequest(body, request_id, source_id, destination_id));
   return request_id;
 }
 
-Result CastMessageHandler::SendSetVolumeRequest(int channel_id,
-                                                const base::Value& body,
-                                                const std::string& source_id,
-                                                ResultCallback callback) {
+void CastMessageHandler::SendSetVolumeRequest(int channel_id,
+                                              const base::Value& body,
+                                              const std::string& source_id,
+                                              ResultCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   CastSocket* socket = socket_service_->GetSocket(channel_id);
   if (!socket) {
     DVLOG(2) << __func__ << ": socket not found: " << channel_id;
-    return Result::kFailed;
+    std::move(callback).Run(Result::kFailed);
+    return;
   }
 
   auto* requests = GetOrCreatePendingRequests(channel_id);
@@ -267,8 +323,8 @@ Result CastMessageHandler::SendSetVolumeRequest(int channel_id,
 
   requests->AddVolumeRequest(std::make_unique<SetVolumeRequest>(
       request_id, std::move(callback), clock_));
-  SendCastMessage(socket, CreateSetVolumeRequest(body, request_id, source_id));
-  return Result::kOk;
+  SendCastMessageToSocket(socket,
+                          CreateSetVolumeRequest(body, request_id, source_id));
 }
 
 void CastMessageHandler::AddObserver(Observer* observer) {
@@ -295,17 +351,21 @@ void CastMessageHandler::OnError(const CastSocket& socket,
 void CastMessageHandler::OnMessage(const CastSocket& socket,
                                    const CastMessage& message) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DVLOG(2) << __func__ << ", channel_id: " << socket.id()
-           << ", message: " << CastMessageToString(message);
-  if (IsCastInternalNamespace(message.namespace_())) {
+  // TODO(jrw): Splitting internal messages into a separate code path with a
+  // separate data type is pretty questionable, because it causes duplicated
+  // code paths in the downstream logic (manifested as separate OnAppMessage and
+  // OnInternalMessage methods).
+  if (IsCastReservedNamespace(message.namespace_())) {
     if (message.payload_type() ==
-        cast_channel::CastMessage_PayloadType_STRING) {
-      data_decoder::SafeJsonParser::ParseBatch(
-          connector_.get(), message.payload_utf8(),
-          base::BindRepeating(&CastMessageHandler::HandleCastInternalMessage,
-                              weak_ptr_factory_.GetWeakPtr(), socket.id(),
-                              message.source_id(), message.destination_id()),
-          base::BindRepeating(&ReportParseError), data_decoder_batch_id_);
+        cast::channel::CastMessage_PayloadType_STRING) {
+      VLOG(1) << __func__ << ": channel_id: " << socket.id()
+              << ", message: " << message;
+      parse_json_.Run(
+          message.payload_utf8(),
+          base::BindOnce(&CastMessageHandler::HandleCastInternalMessage,
+                         weak_ptr_factory_.GetWeakPtr(), socket.id(),
+                         message.source_id(), message.destination_id(),
+                         message.namespace_()));
     } else {
       DLOG(ERROR) << "Dropping internal message with binary payload: "
                   << message.namespace_();
@@ -327,8 +387,15 @@ void CastMessageHandler::HandleCastInternalMessage(
     int channel_id,
     const std::string& source_id,
     const std::string& destination_id,
-    std::unique_ptr<base::Value> payload) {
-  if (!payload->is_dict()) {
+    const std::string& namespace_,
+    data_decoder::DataDecoder::ValueOrError parse_result) {
+  if (!parse_result.value) {
+    ReportParseError(*parse_result.error);
+    return;
+  }
+
+  base::Value& payload = *parse_result.value;
+  if (!payload.is_dict()) {
     ReportParseError("Parsed message not a dictionary");
     return;
   }
@@ -340,16 +407,19 @@ void CastMessageHandler::HandleCastInternalMessage(
     return;
   }
 
-  base::Optional<int> request_id = GetRequestIdFromResponse(*payload);
+  absl::optional<int> request_id = GetRequestIdFromResponse(payload);
   if (request_id) {
     auto requests_it = pending_requests_.find(channel_id);
     if (requests_it != pending_requests_.end())
-      requests_it->second->HandlePendingRequest(*request_id, *payload);
+      // You might think this method should return in this case, but there is at
+      // least one message type (RECEIVER_STATUS), that has a request ID but
+      // also needs to be handled by the registered observers.
+      requests_it->second->HandlePendingRequest(*request_id, payload);
   }
 
-  CastMessageType type = ParseMessageTypeFromPayload(*payload);
+  CastMessageType type = ParseMessageTypeFromPayload(payload);
   if (type == CastMessageType::kOther) {
-    DVLOG(2) << "Unknown message type: " << *payload;
+    DVLOG(2) << "Unknown type in message: " << payload;
     return;
   }
 
@@ -360,36 +430,40 @@ void CastMessageHandler::HandleCastInternalMessage(
     return;
   }
 
-  InternalMessage internal_message(type, std::move(*payload));
+  InternalMessage internal_message(type, namespace_, std::move(payload));
   for (auto& observer : observers_)
     observer.OnInternalMessage(channel_id, internal_message);
 }
 
-void CastMessageHandler::SendCastMessage(CastSocket* socket,
-                                         const CastMessage& message) {
+void CastMessageHandler::SendCastMessageToSocket(CastSocket* socket,
+                                                 const CastMessage& message) {
   // A virtual connection must be opened to the receiver before other messages
   // can be sent.
-  DoEnsureConnection(socket, message.source_id(), message.destination_id());
+  DoEnsureConnection(socket, message.source_id(), message.destination_id(),
+                     GetConnectionType(message.destination_id()));
+  VLOG(1) << __func__ << ": channel_id: " << socket->id()
+          << ", message: " << message;
   socket->transport()->SendMessage(
       message, base::BindOnce(&CastMessageHandler::OnMessageSent,
                               weak_ptr_factory_.GetWeakPtr()));
 }
 
-void CastMessageHandler::DoEnsureConnection(CastSocket* socket,
-                                            const std::string& source_id,
-                                            const std::string& destination_id) {
+void CastMessageHandler::DoEnsureConnection(
+    CastSocket* socket,
+    const std::string& source_id,
+    const std::string& destination_id,
+    VirtualConnectionType connection_type) {
   VirtualConnection connection(socket->id(), source_id, destination_id);
+
+  // If there is already a connection, there is nothing to do.
   if (virtual_connections_.find(connection) != virtual_connections_.end())
     return;
 
-  DVLOG(1) << "Creating VC for channel: " << connection.channel_id
-           << ", source: " << connection.source_id
-           << ", dest: " << connection.destination_id;
+  VLOG(1) << "Creating VC for channel: " << connection.channel_id
+          << ", source: " << connection.source_id
+          << ", dest: " << connection.destination_id;
   CastMessage virtual_connection_request = CreateVirtualConnectionRequest(
-      connection.source_id, connection.destination_id,
-      connection.destination_id == kPlatformReceiverId
-          ? VirtualConnectionType::kStrong
-          : VirtualConnectionType::kInvisible,
+      connection.source_id, connection.destination_id, connection_type,
       user_agent_, browser_version_);
   socket->transport()->SendMessage(
       virtual_connection_request,
@@ -406,7 +480,7 @@ void CastMessageHandler::OnMessageSent(int result) {
   DVLOG_IF(2, result < 0) << "SendMessage failed with code: " << result;
 }
 
-CastMessageHandler::PendingRequests::PendingRequests() {}
+CastMessageHandler::PendingRequests::PendingRequests() = default;
 CastMessageHandler::PendingRequests::~PendingRequests() {
   for (auto& request : pending_app_availability_requests_) {
     std::move(request->callback)
@@ -450,8 +524,12 @@ bool CastMessageHandler::PendingRequests::AddAppAvailabilityRequest(
 bool CastMessageHandler::PendingRequests::AddLaunchRequest(
     std::unique_ptr<LaunchSessionRequest> request,
     base::TimeDelta timeout) {
-  if (pending_launch_session_request_)
+  if (pending_launch_session_request_) {
+    std::move(request->callback)
+        .Run(cast_channel::GetLaunchSessionResponseError(
+            "There already exists a launch request for the channel"));
     return false;
+  }
 
   int request_id = request->request_id;
   request->timeout_timer.Start(
@@ -465,8 +543,10 @@ bool CastMessageHandler::PendingRequests::AddLaunchRequest(
 
 bool CastMessageHandler::PendingRequests::AddStopRequest(
     std::unique_ptr<StopSessionRequest> request) {
-  if (pending_stop_session_request_)
+  if (pending_stop_session_request_) {
+    std::move(request->callback).Run(cast_channel::Result::kFailed);
     return false;
+  }
 
   int request_id = request->request_id;
   request->timeout_timer.Start(

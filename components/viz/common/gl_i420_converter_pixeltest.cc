@@ -4,6 +4,8 @@
 
 #include "components/viz/common/gl_i420_converter.h"
 
+#include <GLES2/gl2ext.h>
+
 #include "cc/test/pixel_test.h"
 #include "cc/test/pixel_test_utils.h"
 #include "components/viz/common/gl_scaler_test_util.h"
@@ -34,7 +36,7 @@ class GLI420ConverterPixelTest : public cc::PixelTest,
 
  protected:
   void SetUp() final {
-    cc::PixelTest::SetUpGLWithoutRenderer(false);
+    cc::PixelTest::SetUpGLWithoutRenderer(gfx::SurfaceOrigin::kBottomLeft);
     converter_.reset(new GLI420Converter(context_provider(), allow_mrt_path()));
     texture_helper_ = std::make_unique<GLScalerTestTextureHelper>(
         context_provider()->ContextGL());
@@ -122,6 +124,6 @@ TEST_P(GLI420ConverterPixelTest, ScaleAndConvert) {
 
 // Run the tests twice, once disallowing use of the MRT path, and once allowing
 // its use (auto-detecting whether the current platform supports it).
-INSTANTIATE_TEST_SUITE_P(, GLI420ConverterPixelTest, testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All, GLI420ConverterPixelTest, testing::Bool());
 
 }  // namespace viz

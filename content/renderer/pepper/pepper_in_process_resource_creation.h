@@ -5,8 +5,6 @@
 #ifndef CONTENT_RENDERER_PEPPER_PEPPER_IN_PROCESS_RESOURCE_CREATION_H_
 #define CONTENT_RENDERER_PEPPER_PEPPER_IN_PROCESS_RESOURCE_CREATION_H_
 
-#include <memory>
-
 #include "base/macros.h"
 #include "content/renderer/pepper/resource_creation_impl.h"
 #include "ppapi/proxy/connection.h"
@@ -58,9 +56,6 @@ class PepperInProcessResourceCreation : public ResourceCreationImpl {
                                const PP_Size* size,
                                PP_Bool is_always_opaque) override;
   PP_Resource CreatePrinting(PP_Instance instance) override;
-  PP_Resource CreateTrueTypeFont(
-      PP_Instance instance,
-      const struct PP_TrueTypeFontDesc_Dev* desc) override;
   PP_Resource CreateURLLoader(PP_Instance instance) override;
   PP_Resource CreateURLRequestInfo(PP_Instance instance) override;
   PP_Resource CreateWebSocket(PP_Instance instance) override;

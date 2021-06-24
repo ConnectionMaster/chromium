@@ -4,24 +4,32 @@
 
 #include "chrome/browser/metrics/chrome_metrics_service_client.h"
 
+#include <string>
+
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/metrics/persistent_histogram_allocator.h"
 #include "base/process/process_handle.h"
 #include "base/test/metrics/user_action_tester.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/metrics/chrome_metrics_services_manager_client.h"
 #include "chrome/common/buildflags.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/metrics/client_info.h"
 #include "components/metrics/file_metrics_provider.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
-#include "components/metrics/test_enabled_state_provider.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
+#include "components/metrics/unsent_log_store.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/ukm/ukm_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_service_manager_context.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -31,8 +39,7 @@
 #include "extensions/common/extension_builder.h"
 #endif
 
-#if defined(OS_CHROMEOS)
-#include "chromeos/assistant/buildflags.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/login/login_state/login_state.h"
 #endif
@@ -47,7 +54,7 @@ class ChromeMetricsServiceClientTest : public testing::Test {
     testing::Test::SetUp();
     metrics::MetricsService::RegisterPrefs(prefs_.registry());
     metrics_state_manager_ = metrics::MetricsStateManager::Create(
-        &prefs_, &enabled_state_provider_, base::string16(),
+        &prefs_, &enabled_state_provider_, std::wstring(),
         base::BindRepeating(
             &ChromeMetricsServiceClientTest::FakeStoreClientInfoBackup,
             base::Unretained(this)),
@@ -55,22 +62,24 @@ class ChromeMetricsServiceClientTest : public testing::Test {
             &ChromeMetricsServiceClientTest::LoadFakeClientInfoBackup,
             base::Unretained(this)));
     ASSERT_TRUE(profile_manager_.SetUp());
-    service_manager_context_ =
-        std::make_unique<content::TestServiceManagerContext>();
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    scoped_feature_list_.InitAndEnableFeature(features::kUmaStorageDimensions);
     // ChromeOs Metrics Provider require g_login_state and power manager client
     // initialized before they can be instantiated.
     chromeos::PowerManagerClient::InitializeFake();
     chromeos::LoginState::Initialize();
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
   }
 
   void TearDown() override {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     chromeos::LoginState::Shutdown();
     chromeos::PowerManagerClient::Shutdown();
-#endif  // defined(OS_CHROMEOS)
-    service_manager_context_.reset();
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+    // ChromeMetricsServiceClient::Initialize() initializes
+    // IdentifiabilityStudySettings as part of creating the
+    // PrivacyBudgetUkmEntryFilter. Reset them after the test.
+    blink::IdentifiabilityStudySettings::ResetStateForTesting();
   }
 
  protected:
@@ -80,13 +89,13 @@ class ChromeMetricsServiceClientTest : public testing::Test {
     return std::make_unique<metrics::ClientInfo>();
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   TestingPrefServiceSimple prefs_;
   TestingProfileManager profile_manager_;
   base::UserActionTester user_action_runner_;
   std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
   metrics::TestEnabledStateProvider enabled_state_provider_;
-  std::unique_ptr<content::TestServiceManagerContext> service_manager_context_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ChromeMetricsServiceClientTest);
@@ -106,9 +115,9 @@ TEST_F(ChromeMetricsServiceClientTest, FilterFiles) {
   base::ProcessId my_pid = base::GetCurrentProcId();
   base::FilePath active_dir(FILE_PATH_LITERAL("foo"));
   base::FilePath upload_dir(FILE_PATH_LITERAL("bar"));
-  base::FilePath upload_path;
-  base::GlobalHistogramAllocator::ConstructFilePathsForUploadDir(
-      active_dir, upload_dir, "TestMetrics", &upload_path, nullptr, nullptr);
+  base::FilePath upload_path =
+      base::GlobalHistogramAllocator::ConstructFilePathForUploadDir(
+          upload_dir, "TestMetrics");
   EXPECT_EQ(metrics::FileMetricsProvider::FILTER_ACTIVE_THIS_PID,
             ChromeMetricsServiceClient::FilterBrowserMetricsFiles(upload_path));
 
@@ -127,15 +136,16 @@ TEST_F(ChromeMetricsServiceClientTest, FilterFiles) {
 }  // namespace
 
 TEST_F(ChromeMetricsServiceClientTest, TestRegisterUKMProviders) {
-  // Test that UKM service has initialized its metrics providers.
-  // Currently there are 5 providers for all platform except ChromeOS.
+  // Test that UKM service has initialized its metrics providers. Currently
+  // there are 6 providers for all platform except ChromeOS.
   // NetworkMetricsProvider, GPUMetricsProvider, CPUMetricsProvider
-  // and ScreenInfoMetricsProvider.
-  size_t expected_providers = 5;
-
-#if defined(OS_CHROMEOS)
-  expected_providers++;  // ChromeOSMetricsProvider
-#endif                   // defined(OS_CHROMEOS)
+  // ScreenInfoMetricsProvider, FieldTrialsProvider, and
+  // PrivacyBudgetMetricsProvider.
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  const size_t expected_providers = 7;  // ChromeOSMetricsProvider
+#else
+  const size_t expected_providers = 6;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   std::unique_ptr<ChromeMetricsServiceClient> chrome_metrics_service_client =
       ChromeMetricsServiceClient::Create(metrics_state_manager_.get());
@@ -150,27 +160,33 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterUKMProviders) {
 }
 
 TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
-  // This is the metrics provider added in MetricsService constructor.
-  // StabilityMetricsProvider, FieldTrialsProvider and
-  // MetricsStateMetricsProvider.
-  size_t expected_providers = 3;
+  // This is for the two metrics providers added in the MetricsService
+  // constructor: StabilityMetricsProvider and MetricsStateMetricsProvider.
+  size_t expected_providers = 2;
 
   // This is the number of metrics providers that are outside any #if macros.
-  expected_providers += 17;
+  expected_providers += 21;
+
+  int sample_rate;
+  if (ChromeMetricsServicesManagerClient::GetSamplingRatePerMille(
+          &sample_rate)) {
+    // SamplingMetricsProvider.
+    expected_providers++;
+  }
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   expected_providers++;  // ExtensionsMetricsProvider.
 #endif                   // defined(ENABLE_EXTENSIONS)
 
 #if defined(OS_ANDROID)
-  // AndroidMetricsProvider and PageLoadMetricsProvider.
-  expected_providers += 2;
+  // AndroidMetricsProvider, ChromeAndroidMetricsProvider, and
+  // PageLoadMetricsProvider.
+  expected_providers += 3;
 #endif  // defined(OS_ANDROID)
 
 #if defined(OS_WIN)
-  // GoogleUpdateMetricsProviderWin, WatcherMetricsProviderWin and
-  // AntiVirusMetricsProvider.
-  expected_providers += 3;
+  // GoogleUpdateMetricsProviderWin and AntiVirusMetricsProvider.
+  expected_providers += 2;
 #endif  // defined(OS_WIN)
 
 #if BUILDFLAG(ENABLE_PLUGINS)
@@ -178,27 +194,41 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
   expected_providers++;
 #endif  // BUILDFLAG(ENABLE_PLUGINS)
 
-#if defined(OS_CHROMEOS)
-#if BUILDFLAG(ENABLE_CROS_ASSISTANT)
-  expected_providers++;  // AssistantServiceMetricsProvider.
-#endif                   // BUILDFLAG(ENABLE_CROS_ASSISTANT)
-  // ChromeOSMetricsProvider, SigninStatusMetricsProviderChromeOS and
-  // PrinterMetricsProvider.
-  expected_providers += 3;
-#endif  // defined(OS_CHROMEOS)
-
-#if !defined(OS_CHROMEOS)
-  // ChromeSigninStatusMetricsProvider (for non ChromeOS).
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+  // LacrosMetricsProvider.
   expected_providers++;
-#endif  // !defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
 
-#if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // AmbientModeMetricsProvider, AssistantServiceMetricsProvider,
+  // CrosHealthdMetricsProvider, ChromeOSMetricsProvider,
+  // SigninStatusMetricsProviderChromeOS, PrinterMetricsProvider,
+  // HashedLoggingMetricsProvider, FamilyUserMetricsProvider,
+  // FamilyLinkUserMetricsProvider, and UserTypeByDeviceTypeMetricsProvider.
+  expected_providers += 10;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+  // ChromeSigninStatusMetricsProvider (for non ChromeOS).
+  // AccessibilityMetricsProvider
+  expected_providers += 2;
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+
+#if !defined(OS_ANDROID) && !BUILDFLAG(IS_CHROMEOS_ASH)
   expected_providers++;  // UpgradeMetricsProvider
-#endif                   //! defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+#endif                   //! defined(OS_ANDROID) && !BUILDFLAG(IS_CHROMEOS_ASH)
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   expected_providers++;  // PowerMetricsProvider
-#endif                   // defined(OS_MACOSX)
+#endif                   // defined(OS_MAC)
+
+// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
+// of lacros-chrome is complete.
+#if defined(OS_WIN) || defined(OS_MAC) || \
+    (defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS))
+  expected_providers++;  // DesktopPlatformFeaturesMetricsProvider
+#endif  // defined(OS_WIN) || defined(OS_MAC) || (defined(OS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS_LACROS))
 
   std::unique_ptr<ChromeMetricsServiceClient> chrome_metrics_service_client =
       ChromeMetricsServiceClient::Create(metrics_state_manager_.get());
@@ -239,4 +269,41 @@ TEST_F(ChromeMetricsServiceClientTest, IsWebstoreExtension) {
   EXPECT_TRUE(
       ChromeMetricsServiceClient::IsWebstoreExtension(test_extension_id2));
 }
-#endif
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+TEST_F(ChromeMetricsServiceClientTest, GetUploadSigningKey_NotEmpty) {
+  std::unique_ptr<ChromeMetricsServiceClient> chrome_metrics_service_client =
+      ChromeMetricsServiceClient::Create(metrics_state_manager_.get());
+  const std::string signing_key =
+      chrome_metrics_service_client->GetUploadSigningKey();
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  // The signing key should never be an empty string for a Chrome-branded build.
+  EXPECT_FALSE(signing_key.empty());
+#else
+  // In non-branded builds, we may still have a valid signing key if
+  // USE_OFFICIAL_GOOGLE_API_KEYS is true. However, that macro is not available
+  // in this file.
+  ALLOW_UNUSED_LOCAL(signing_key);
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+}
+
+TEST_F(ChromeMetricsServiceClientTest, GetUploadSigningKey_CanSignLogs) {
+  std::unique_ptr<ChromeMetricsServiceClient> chrome_metrics_service_client =
+      ChromeMetricsServiceClient::Create(metrics_state_manager_.get());
+  const std::string signing_key =
+      chrome_metrics_service_client->GetUploadSigningKey();
+
+  std::string signature;
+  bool sign_success = metrics::UnsentLogStore::ComputeHMACForLog(
+      "Test Log Data", signing_key, &signature);
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  // The signing key should be able to sign data for a Chrome-branded build.
+  EXPECT_TRUE(sign_success);
+  EXPECT_FALSE(signature.empty());
+#else
+  // In non-branded builds, we may still have a valid signing key if
+  // USE_OFFICIAL_GOOGLE_API_KEYS is true. However, that macro is not available
+  // in this file, so just check that success == a non-empty signature.
+  EXPECT_EQ(sign_success, !signature.empty());
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+}

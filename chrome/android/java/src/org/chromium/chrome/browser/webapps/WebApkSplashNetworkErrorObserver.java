@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.webapps;
 
+import android.app.Activity;
 import android.content.Context;
 
 import org.chromium.base.ContextUtils;
@@ -20,11 +21,8 @@ import org.chromium.net.NetworkChangeNotifier;
  * start URL.
  */
 public class WebApkSplashNetworkErrorObserver extends EmptyTabObserver {
-    // No error.
-    public static final int ERROR_OK = 0;
-
-    private WebappSplashDelegate mDelegate;
-
+    private Activity mActivity;
+    private WebApkOfflineDialog mOfflineDialog;
     private String mWebApkName;
 
     private boolean mDidShowNetworkErrorDialog;
@@ -32,24 +30,35 @@ public class WebApkSplashNetworkErrorObserver extends EmptyTabObserver {
     /** Indicates whether reloading is allowed. */
     private boolean mAllowReloads;
 
-    public WebApkSplashNetworkErrorObserver(WebappSplashDelegate delegate, String webApkName) {
-        mDelegate = delegate;
+    public WebApkSplashNetworkErrorObserver(Activity activity, String webApkName) {
+        mActivity = activity;
         mWebApkName = webApkName;
+    }
+
+    public boolean isNetworkErrorDialogVisible() {
+        return mOfflineDialog != null && mOfflineDialog.isShowing();
     }
 
     @Override
     public void onDidFinishNavigation(final Tab tab, NavigationHandle navigation) {
-        if (!navigation.isInMainFrame()) return;
+        if (!navigation.isInPrimaryMainFrame()) return;
 
         switch (navigation.errorCode()) {
-            case ERROR_OK:
-                mDelegate.hideWebApkNetworkErrorDialog();
+            case NetError.OK:
+                if (mOfflineDialog != null) {
+                    mOfflineDialog.cancel();
+                    mOfflineDialog = null;
+                }
                 break;
             case NetError.ERR_NETWORK_CHANGED:
                 onNetworkChanged(tab);
                 break;
             default:
-                onNetworkError(tab, navigation.errorCode());
+                String dialogMessage =
+                        generateNetworkErrorWebApkDialogMessage(navigation.errorCode());
+                if (dialogMessage != null) {
+                    onNetworkError(tab, dialogMessage);
+                }
                 break;
         }
         WebApkUma.recordNetworkErrorWhenLaunch(-navigation.errorCode());
@@ -66,9 +75,7 @@ public class WebApkSplashNetworkErrorObserver extends EmptyTabObserver {
         mAllowReloads = false;
     }
 
-    private void onNetworkError(final Tab tab, int errorCode) {
-        if (tab.getActivity() == null) return;
-
+    private void onNetworkError(final Tab tab, String dialogMessage) {
         // Do not show the network error dialog more than once (e.g. if the user backed out of
         // the dialog).
         if (mDidShowNetworkErrorDialog) return;
@@ -89,11 +96,15 @@ public class WebApkSplashNetworkErrorObserver extends EmptyTabObserver {
                 };
 
         NetworkChangeNotifier.addConnectionTypeObserver(observer);
-        mDelegate.showWebApkNetworkErrorDialog(generateNetworkErrorWebApkDialogMessage(errorCode));
+        mOfflineDialog = new WebApkOfflineDialog();
+        mOfflineDialog.show(mActivity, dialogMessage);
     }
 
-    /** Generates network error dialog message for the given error code. */
-    private String generateNetworkErrorWebApkDialogMessage(int errorCode) {
+    /**
+     * Generates network error dialog message for the given error code. Returns null if the
+     * dialog should not be shown.
+     */
+    private String generateNetworkErrorWebApkDialogMessage(@NetError int errorCode) {
         Context context = ContextUtils.getApplicationContext();
         switch (errorCode) {
             case NetError.ERR_INTERNET_DISCONNECTED:
@@ -101,8 +112,10 @@ public class WebApkSplashNetworkErrorObserver extends EmptyTabObserver {
             case NetError.ERR_TUNNEL_CONNECTION_FAILED:
                 return context.getString(
                         R.string.webapk_network_error_message_tunnel_connection_failed);
-            default:
+            case NetError.ERR_NAME_NOT_RESOLVED:
                 return context.getString(R.string.webapk_cannot_connect_to_site);
+            default:
+                return null;
         }
     }
 }

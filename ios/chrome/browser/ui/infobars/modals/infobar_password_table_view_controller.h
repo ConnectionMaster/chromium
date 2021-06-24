@@ -7,25 +7,20 @@
 
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_controller.h"
 
+#import "ios/chrome/browser/infobars/infobar_type.h"
+#import "ios/chrome/browser/ui/infobars/modals/infobar_password_modal_consumer.h"
+
 @protocol InfobarPasswordModalDelegate;
 
 // InfobarPasswordTableViewController represents the content for the Passwords
 // InfobarModal.
-@interface InfobarPasswordTableViewController : ChromeTableViewController
+@interface InfobarPasswordTableViewController
+    : ChromeTableViewController <InfobarPasswordModalConsumer>
 
-// InfobarPasswordModalDelegate for this ViewController.
-@property(nonatomic, strong) id<InfobarPasswordModalDelegate>
-    infobarModalDelegate;
-// The username being displayed in the InfobarModal.
-@property(nonatomic, copy) NSString* username;
-// The masked password being displayed in the InfobarModal.
-@property(nonatomic, copy) NSString* maskedPassword;
-// The unmasked password for the InfobarModal.
-@property(nonatomic, copy) NSString* unmaskedPassword;
-// The URL being displayed in the InfobarModal.
-@property(nonatomic, copy) NSString* URL;
-// The text used for the save credentials button.
-@property(nonatomic, copy) NSString* saveButtonText;
+- (instancetype)initWithDelegate:(id<InfobarPasswordModalDelegate>)modalDelegate
+                            type:(InfobarType)infobarType
+    NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithStyle:(UITableViewStyle)style NS_UNAVAILABLE;
 
 @end
 

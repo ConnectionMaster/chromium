@@ -5,7 +5,8 @@
 package org.chromium.android_webview.test;
 
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Rule;
@@ -22,7 +23,7 @@ public class AwFormDatabaseTest {
 
     @Test
     @SmallTest
-    public void testSmoke() throws Throwable {
+    public void testSmoke() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             AwFormDatabase.clearFormData();
             Assert.assertFalse(AwFormDatabase.hasFormData());

@@ -1,0 +1,203 @@
+// Copyright 2021 The Chromium Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.continuous_search;
+
+import android.view.View;
+
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.base.Callback;
+import org.chromium.base.supplier.Supplier;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.continuous_search.ContinuousSearchContainerCoordinator.HeightObserver;
+import org.chromium.chrome.browser.layouts.LayoutStateProvider;
+import org.chromium.chrome.browser.layouts.LayoutType;
+import org.chromium.ui.modelutil.PropertyModel;
+
+import java.util.HashSet;
+
+/**
+ * Business logic for the container the hosts the Continuous Search Navigation UI. The container
+ * is part of the top browser controls and aligns below the top toolbar.
+ */
+class ContinuousSearchContainerMediator implements BrowserControlsStateProvider.Observer {
+    private PropertyModel mModel;
+    private final HashSet<HeightObserver> mObservers = new HashSet<>();
+    private final BrowserControlsStateProvider mBrowserControlsStateProvider;
+    private final LayoutStateProvider mLayoutStateProvider;
+    private final Runnable mInitializeLayout;
+    private final Supplier<Boolean> mCanAnimateNativeBrowserControls;
+    private Runnable mRequestLayout;
+    private final Supplier<Integer> mDefaultTopContainerHeightSupplier;
+    private final Callback<Boolean> mHideToolbarShadow;
+
+    private Runnable mOnFinishedHide;
+    private boolean mInitialized;
+    private boolean mIsVisible;
+    private boolean mWantVisible;
+    private boolean mIsTabObscured;
+    private int mJavaLayoutHeight;
+
+    ContinuousSearchContainerMediator(BrowserControlsStateProvider browserControlsStateProvider,
+            LayoutStateProvider layoutStateProvider,
+            Supplier<Boolean> canAnimateNativeBrowserControls,
+            Supplier<Integer> defaultTopContainerHeightSupplier, Runnable initializeLayout,
+            Callback<Boolean> hideToolbarShadow) {
+        mBrowserControlsStateProvider = browserControlsStateProvider;
+        mLayoutStateProvider = layoutStateProvider;
+        mCanAnimateNativeBrowserControls = canAnimateNativeBrowserControls;
+        mDefaultTopContainerHeightSupplier = defaultTopContainerHeightSupplier;
+        mInitializeLayout = initializeLayout;
+        mHideToolbarShadow = hideToolbarShadow;
+    }
+
+    void onLayoutInitialized(PropertyModel model, Runnable requestLayout) {
+        mModel = model;
+        mRequestLayout = requestLayout;
+    }
+
+    /**
+     * Called when the obscurity state of the current Tab changes.
+     * @param isObscured Whether the tab is obscured.
+     */
+    void updateTabObscured(boolean isObscured) {
+        mIsTabObscured = isObscured;
+        if (mModel == null) return;
+
+        // Avoid showing on unobscure if the UI should be hidden.
+        if (!mWantVisible && !isObscured) return;
+
+        // Avoid obscuring if already in the correct state.
+        if (mIsVisible == !isObscured) return;
+
+        updateVisibility(!isObscured, true);
+    }
+
+    /**
+     * Displays the container. This will increase the top controls height with an animation that
+     * is controlled by cc and displays the container.
+     */
+    void show() {
+        mOnFinishedHide = null;
+        mWantVisible = true;
+
+        if (mIsVisible) return;
+
+        mInitializeLayout.run();
+        mInitialized = true;
+        if (mJavaLayoutHeight == 0) {
+            mRequestLayout.run();
+        } else {
+            updateVisibility(true, false);
+        }
+    }
+
+    /**
+     * Hides the container. This will decrease the top controls height with an animation that
+     * is controlled by cc and hides the container.
+     */
+    void hide(Runnable onFinishedHide) {
+        mOnFinishedHide = onFinishedHide;
+        mWantVisible = false;
+
+        if (!mInitialized || !mIsVisible) {
+            runOnFinishedHide();
+            return;
+        }
+
+        updateVisibility(false, false);
+    }
+
+    void setJavaHeight(int javaHeight) {
+        if (mJavaLayoutHeight > 0 || javaHeight <= 0) return;
+
+        mJavaLayoutHeight = javaHeight;
+        updateVisibility(true, false);
+    }
+
+    private void updateVisibility(boolean isVisible, boolean forceNoAnimation) {
+        mIsVisible = isVisible;
+        mBrowserControlsStateProvider.addObserver(this);
+        if (isVisible) {
+            mHideToolbarShadow.onResult(true);
+        }
+
+        for (HeightObserver observer : mObservers) {
+            observer.onHeightChange(isVisible ? mJavaLayoutHeight : 0,
+                    !forceNoAnimation && mLayoutStateProvider.isLayoutVisible(LayoutType.BROWSING));
+        }
+    }
+
+    void addHeightObserver(HeightObserver observer) {
+        mObservers.add(observer);
+    }
+
+    void removeHeightObserver(HeightObserver observer) {
+        mObservers.remove(observer);
+    }
+
+    @Override
+    public void onControlsOffsetChanged(int topOffset, int topControlsMinHeightOffset,
+            int bottomOffset, int bottomControlsMinHeightOffset, boolean needsAnimate) {
+        // Whether container height is part of top controls height.
+        boolean isIncludedInHeight = mBrowserControlsStateProvider.getTopControlsHeight()
+                > mDefaultTopContainerHeightSupplier.get()
+                        + mBrowserControlsStateProvider.getTopControlsMinHeight();
+        // Whether the part of top controls that is not included in min height visible.
+        boolean isNonMinHeightTopControlsVisible = topOffset
+                        + mBrowserControlsStateProvider.getTopControlsHeight()
+                        - mBrowserControlsStateProvider.getTopControlsMinHeight()
+                > 0;
+        // Whether container is at least partly visible.
+        boolean isUiVisible = isIncludedInHeight && isNonMinHeightTopControlsVisible;
+        final boolean uiFullyVisible = isUiVisible && topOffset == 0;
+        int yOffset = topOffset + mBrowserControlsStateProvider.getTopControlsMinHeight()
+                + mDefaultTopContainerHeightSupplier.get();
+        mModel.set(ContinuousSearchContainerProperties.VERTICAL_OFFSET, yOffset);
+
+        // Show the composited view when the UI is at least partly visible and native
+        // can run animations. This change will happen on the next composited frame.
+        final boolean showCompositedView =
+                !mIsTabObscured && isUiVisible && mCanAnimateNativeBrowserControls.get();
+        mModel.set(ContinuousSearchContainerProperties.COMPOSITED_VIEW_VISIBLE, showCompositedView);
+
+        // If we're running the animations in native, the Android view should only be visible when
+        // the container is fully shown. Otherwise, the Android view will be visible if it's within
+        // screen boundaries. This change will happen immediately.
+        final int androidViewState = mIsTabObscured
+                ? View.INVISIBLE
+                : !uiFullyVisible && isUiVisible && mCanAnimateNativeBrowserControls.get()
+                        ? View.GONE
+                        : ((isUiVisible && !mCanAnimateNativeBrowserControls.get())
+                                                || uiFullyVisible
+                                        ? View.VISIBLE
+                                        : View.GONE);
+        mModel.set(ContinuousSearchContainerProperties.ANDROID_VIEW_VISIBILITY, androidViewState);
+
+        final boolean doneHiding = !isUiVisible && !mIsVisible;
+        if (doneHiding) {
+            mHideToolbarShadow.onResult(false);
+            runOnFinishedHide();
+            mBrowserControlsStateProvider.removeObserver(this);
+        }
+    }
+
+    @VisibleForTesting
+    void runOnFinishedHide() {
+        if (mOnFinishedHide != null) {
+            mOnFinishedHide.run();
+            mOnFinishedHide = null;
+        }
+    }
+
+    void destroy() {
+        mBrowserControlsStateProvider.removeObserver(this);
+    }
+
+    @VisibleForTesting
+    boolean isVisibleForTesting() {
+        return mIsVisible;
+    }
+}

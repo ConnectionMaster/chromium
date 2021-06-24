@@ -13,8 +13,8 @@
 #include "crypto/random.h"
 #import "ios/chrome/browser/chrome_url_util.h"
 #include "ios/chrome/common/x_callback_url.h"
-#include "ios/web/public/web_state/url_verification_constants.h"
-#import "ios/web/public/web_state/web_state.h"
+#include "ios/web/public/deprecated/url_verification_constants.h"
+#import "ios/web/public/web_state.h"
 #include "net/base/url_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -39,9 +39,9 @@ const char kRequestIDKey[] = "requestId";
 
 // Generates the JS string to be injected onto the web page to send FIDO U2F
 // requests' results from the U2F callback URL.
-- (base::string16)JSStringFromReponseURL:(const GURL&)URL;
+- (std::u16string)JSStringFromReponseURL:(const GURL&)URL;
 
-// Checks if the source URL has Google domain or whitelisted test domain.
+// Checks if the source URL has Google domain or allow-listed test domain.
 - (BOOL)shouldAllowSourceURL:(const GURL&)sourceURL;
 
 @end
@@ -70,7 +70,7 @@ const char kRequestIDKey[] = "requestId";
     return GURL();
   }
 
-  // Check if the webpage has Google or whitelisted test domain.
+  // Check if the webpage has Google or allowed test domain.
   if (![self shouldAllowSourceURL:originURL]) {
     return GURL();
   }
@@ -85,7 +85,7 @@ const char kRequestIDKey[] = "requestId";
 
   // Compose callback string.
   NSString* chromeScheme =
-      [[ChromeAppConstants sharedInstance] getBundleURLScheme];
+      [[ChromeAppConstants sharedInstance] bundleURLScheme];
   GURL successOrErrorURL(base::StringPrintf(
       "%s://%s/", base::SysNSStringToUTF8(chromeScheme).c_str(),
       kU2FCallbackURL));
@@ -141,10 +141,10 @@ const char kRequestIDKey[] = "requestId";
 
 #pragma mark - Helper method
 
-- (base::string16)JSStringFromReponseURL:(const GURL&)URL {
+- (std::u16string)JSStringFromReponseURL:(const GURL&)URL {
   std::string requestID;
   if (!net::GetValueForKeyInQuery(URL, kRequestIDKey, &requestID)) {
-    return base::string16();
+    return std::u16string();
   }
 
   std::string JSString;
@@ -204,11 +204,12 @@ const char kRequestIDKey[] = "requestId";
     return YES;
   }
 
-  NSSet* whitelistedDomains =
-      [NSSet setWithObjects:@"u2fdemo.appspot.com",
-                            @"chromeiostesting-dot-u2fdemo.appspot.com", nil];
   NSString* sourceDomain = base::SysUTF8ToNSString(sourceURL.host());
-  return [whitelistedDomains containsObject:sourceDomain];
+  // Convert this condition to checking membership in a set if any new cases
+  // need to be added.
+  return [sourceDomain isEqualToString:@"u2fdemo.appspot.com"] ||
+         [sourceDomain
+             isEqualToString:@"chromeiostesting-dot-u2fdemo.appspot.com"];
 }
 
 @end

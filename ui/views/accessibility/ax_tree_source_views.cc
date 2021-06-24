@@ -4,6 +4,7 @@
 
 #include "ui/views/accessibility/ax_tree_source_views.h"
 
+#include <string>
 #include <vector>
 
 #include "ui/accessibility/ax_action_data.h"
@@ -99,8 +100,16 @@ AXAuraObjWrapper* AXTreeSourceViews::GetParent(AXAuraObjWrapper* node) const {
   return parent;
 }
 
+bool AXTreeSourceViews::IsIgnored(AXAuraObjWrapper* node) const {
+  if (!node)
+    return false;
+  ui::AXNodeData out_data;
+  node->Serialize(&out_data);
+  return out_data.IsIgnored();
+}
+
 bool AXTreeSourceViews::IsValid(AXAuraObjWrapper* node) const {
-  return node && !node->IsIgnored();
+  return node;
 }
 
 bool AXTreeSourceViews::IsEqual(AXAuraObjWrapper* node1,
@@ -110,6 +119,10 @@ bool AXTreeSourceViews::IsEqual(AXAuraObjWrapper* node1,
 
 AXAuraObjWrapper* AXTreeSourceViews::GetNull() const {
   return nullptr;
+}
+
+std::string AXTreeSourceViews::GetDebugString(AXAuraObjWrapper* node) const {
+  return node ? node->ToString() : "(null)";
 }
 
 void AXTreeSourceViews::SerializeNode(AXAuraObjWrapper* node,

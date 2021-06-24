@@ -5,7 +5,6 @@ import json
 import math
 
 from telemetry import story
-from tracing.value import histogram as histogram_module
 
 from page_sets import press_story
 
@@ -62,9 +61,7 @@ class DromaeoStory(press_story.PressStory):
       container[key]['sum'] += math.log(value)
 
     def AddResult(name, value):
-      hg = histogram_module.Histogram(Escape(name), "unitless_biggerIsBetter")
-      hg.AddSample(value)
-      self.AddJavascriptMetricHistogram(hg)
+      self.AddMeasurement(Escape(name), 'unitless_biggerIsBetter', [value])
 
     aggregated = {}
     for data in score:
@@ -77,7 +74,7 @@ class DromaeoStory(press_story.PressStory):
       collection_name = data['collection']
       AggregateData(aggregated, collection_name, data['mean'])
 
-    for key, value in aggregated.iteritems():
+    for key, value in aggregated.items():
       AddResult(key, math.exp(value['sum'] / value['count']))
 
 

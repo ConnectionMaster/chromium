@@ -66,26 +66,44 @@ void WebSecurityPolicy::RegisterURLSchemeAsFirstPartyWhenTopLevel(
   SchemeRegistry::RegisterURLSchemeAsFirstPartyWhenTopLevel(scheme);
 }
 
+void WebSecurityPolicy::
+    RegisterURLSchemeAsFirstPartyWhenTopLevelEmbeddingSecure(
+        const WebString& scheme) {
+  SchemeRegistry::RegisterURLSchemeAsFirstPartyWhenTopLevelEmbeddingSecure(
+      scheme);
+}
+
+void WebSecurityPolicy::RegisterURLSchemeAsAllowingSharedArrayBuffers(
+    const WebString& scheme) {
+  SchemeRegistry::RegisterURLSchemeAsAllowingSharedArrayBuffers(scheme);
+}
+
 void WebSecurityPolicy::AddOriginAccessAllowListEntry(
     const WebURL& source_origin,
     const WebString& destination_protocol,
     const WebString& destination_host,
-    bool allow_destination_subdomains,
+    const uint16_t destination_port,
+    const network::mojom::CorsDomainMatchMode domain_match_mode,
+    const network::mojom::CorsPortMatchMode port_match_mode,
     const network::mojom::CorsOriginAccessMatchPriority priority) {
   SecurityPolicy::AddOriginAccessAllowListEntry(
       *SecurityOrigin::Create(source_origin), destination_protocol,
-      destination_host, allow_destination_subdomains, priority);
+      destination_host, destination_port, domain_match_mode, port_match_mode,
+      priority);
 }
 
 void WebSecurityPolicy::AddOriginAccessBlockListEntry(
     const WebURL& source_origin,
     const WebString& destination_protocol,
     const WebString& destination_host,
-    bool allow_destination_subdomains,
+    const uint16_t destination_port,
+    const network::mojom::CorsDomainMatchMode domain_match_mode,
+    const network::mojom::CorsPortMatchMode port_match_mode,
     const network::mojom::CorsOriginAccessMatchPriority priority) {
   SecurityPolicy::AddOriginAccessBlockListEntry(
       *SecurityOrigin::Create(source_origin), destination_protocol,
-      destination_host, allow_destination_subdomains, priority);
+      destination_host, destination_port, domain_match_mode, port_match_mode,
+      priority);
 }
 
 void WebSecurityPolicy::ClearOriginAccessListForOrigin(
@@ -97,11 +115,6 @@ void WebSecurityPolicy::ClearOriginAccessListForOrigin(
 
 void WebSecurityPolicy::ClearOriginAccessList() {
   SecurityPolicy::ClearOriginAccessList();
-}
-
-void WebSecurityPolicy::AddOriginToTrustworthySafelist(
-    const WebString& origin) {
-  SecurityPolicy::AddOriginToTrustworthySafelist(origin);
 }
 
 void WebSecurityPolicy::AddSchemeToSecureContextSafelist(
@@ -125,6 +138,18 @@ void WebSecurityPolicy::RegisterURLSchemeAsNotAllowingJavascriptURLs(
 void WebSecurityPolicy::RegisterURLSchemeAsAllowedForReferrer(
     const WebString& scheme) {
   SchemeRegistry::RegisterURLSchemeAsAllowedForReferrer(scheme);
+}
+
+void WebSecurityPolicy::RegisterURLSchemeAsError(const WebString& scheme) {
+  SchemeRegistry::RegisterURLSchemeAsError(scheme);
+}
+
+void WebSecurityPolicy::RegisterURLSchemeAsExtension(const WebString& scheme) {
+  SchemeRegistry::RegisterURLSchemeAsExtension(scheme);
+}
+
+void WebSecurityPolicy::RegisterURLSchemeAsWebUI(const WebString& scheme) {
+  SchemeRegistry::RegisterURLSchemeAsWebUI(scheme);
 }
 
 }  // namespace blink

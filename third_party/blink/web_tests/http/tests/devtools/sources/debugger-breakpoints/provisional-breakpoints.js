@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult('Tests provisional breakpoints on navigation.');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
 
   await TestRunner.navigate(TestRunner.url('resources/a.html'));
@@ -18,7 +18,7 @@
 
   TestRunner.addResult('Navigate to the same page and dump stack on pause');
   TestRunner.navigate(TestRunner.url('resources/a.html'));
-  SourcesTestRunner.captureStackTrace(await SourcesTestRunner.waitUntilPausedPromise());
+  await SourcesTestRunner.captureStackTrace(await SourcesTestRunner.waitUntilPausedPromise());
   await new Promise(resolve => SourcesTestRunner.resumeExecution(resolve));
 
   TestRunner.addResult('Remove breakpoint, set another in not inline script and dump it');
@@ -33,7 +33,7 @@
 
   TestRunner.addResult('Navigate to the same page and dump stack on pause');
   TestRunner.navigate(TestRunner.url('resources/a.html'));
-  SourcesTestRunner.captureStackTrace(await SourcesTestRunner.waitUntilPausedPromise());
+  await SourcesTestRunner.captureStackTrace(await SourcesTestRunner.waitUntilPausedPromise());
   await new Promise(resolve => SourcesTestRunner.resumeExecution(resolve));
 
   SourcesTestRunner.completeDebuggerTest();

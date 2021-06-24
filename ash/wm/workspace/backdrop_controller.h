@@ -2,17 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef ASH_WM_WORKSPACE_WORKSPACE_BACKDROP_DELEGATE_IMPL_H_
-#define ASH_WM_WORKSPACE_WORKSPACE_BACKDROP_DELEGATE_IMPL_H_
+#ifndef ASH_WM_WORKSPACE_BACKDROP_CONTROLLER_H_
+#define ASH_WM_WORKSPACE_BACKDROP_CONTROLLER_H_
 
 #include <memory>
 
 #include "ash/accessibility/accessibility_observer.h"
-#include "ash/shell_observer.h"
-#include "ash/wallpaper/wallpaper_controller_observer.h"
+#include "ash/ash_export.h"
+#include "ash/public/cpp/tablet_mode_observer.h"
+#include "ash/public/cpp/wallpaper_controller_observer.h"
+#include "ash/public/cpp/window_backdrop.h"
+#include "ash/public/cpp/window_properties.h"
 #include "ash/wm/overview/overview_observer.h"
 #include "ash/wm/splitview/split_view_controller.h"
+#include "ash/wm/splitview/split_view_observer.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
+#include "base/scoped_multi_source_observation.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace aura {
 class Window;
@@ -27,51 +35,50 @@ class EventHandler;
 }
 
 namespace ash {
-namespace mojom {
-enum class WindowStateType;
-}
-
-namespace wm {
-class WindowState;
-}
-
-class BackdropDelegate;
 
 // A backdrop which gets created for a container |window| and which gets
 // stacked behind the top level, activatable window that meets the following
 // criteria.
 //
 // 1) Has a aura::client::kHasBackdrop property = true.
-// 2) BackdropDelegate::HasBackdrop(aura::Window* window) returns true.
-// 3) Active ARC window when the spoken feedback is enabled.
-class BackdropController : public AccessibilityObserver,
-                           public ShellObserver,
-                           public OverviewObserver,
-                           public SplitViewController::Observer,
-                           public WallpaperControllerObserver {
+// 2) Active ARC window when the spoken feedback is enabled.
+// 3) In tablet mode:
+//        - Bottom-most snapped window in splitview,
+//        - Top-most activatable window if splitview is inactive.
+class ASH_EXPORT BackdropController : public AccessibilityObserver,
+                                      public OverviewObserver,
+                                      public SplitViewObserver,
+                                      public WallpaperControllerObserver,
+                                      public TabletModeObserver,
+                                      public WindowBackdrop::Observer {
  public:
   explicit BackdropController(aura::Window* container);
   ~BackdropController() override;
 
-  void OnWindowAddedToLayout(aura::Window* child);
-  void OnWindowRemovedFromLayout(aura::Window* child);
-  void OnChildWindowVisibilityChanged(aura::Window* child, bool visible);
+  void OnWindowAddedToLayout(aura::Window* window);
+  void OnWindowRemovedFromLayout(aura::Window* window);
+  void OnChildWindowVisibilityChanged(aura::Window* window);
   void OnWindowStackingChanged(aura::Window* window);
-  void OnPostWindowStateTypeChange(wm::WindowState* window_state,
-                                   mojom::WindowStateType old_type);
+  void OnPostWindowStateTypeChange(aura::Window* window);
   void OnDisplayMetricsChanged();
 
-  void SetBackdropDelegate(std::unique_ptr<BackdropDelegate> delegate);
+  // Called when the desk content is changed in order to update the state of the
+  // backdrop even if overview mode is active.
+  void OnDeskContentChanged();
 
   // Update the visibility of, and restack the backdrop relative to
   // the other windows in the container.
   void UpdateBackdrop();
 
+  // Pauses backdrop updates until the returned object goes out of scope.
+  base::ScopedClosureRunner PauseUpdates();
+
+  // Returns the current visible top level window in the container.
+  aura::Window* GetTopmostWindowWithBackdrop();
+
   aura::Window* backdrop_window() { return backdrop_window_; }
 
-  // ShellObserver:
-  void OnSplitViewModeStarting() override;
-  void OnSplitViewModeEnded() override;
+  aura::Window* window_having_backdrop() { return window_having_backdrop_; }
 
   // OverviewObserver:
   void OnOverviewModeStarting() override;
@@ -81,7 +88,7 @@ class BackdropController : public AccessibilityObserver,
   // AccessibilityObserver:
   void OnAccessibilityStatusChanged() override;
 
-  // SplitViewController::Observer:
+  // SplitViewObserver:
   void OnSplitViewStateChanged(SplitViewController::State previous_state,
                                SplitViewController::State state) override;
   void OnSplitViewDividerPositionChanged() override;
@@ -89,8 +96,21 @@ class BackdropController : public AccessibilityObserver,
   // WallpaperControllerObserver:
   void OnWallpaperPreviewStarted() override;
 
+  // TabletModeObserver:
+  void OnTabletModeStarted() override;
+  void OnTabletModeEnded() override;
+
+  // WindowBackdrop::Observer:
+  void OnWindowBackdropPropertyChanged(aura::Window* window) override;
+
  private:
+  class WindowAnimationWaiter;
   friend class WorkspaceControllerTestApi;
+
+  // Reenables updates previously pause by calling PauseUpdates().
+  void RestoreUpdates();
+
+  void UpdateBackdropInternal();
 
   void EnsureBackdropWidget();
 
@@ -98,16 +118,16 @@ class BackdropController : public AccessibilityObserver,
 
   void Layout();
 
-  // Returns the current visible top level window in the container.
-  aura::Window* GetTopmostWindowWithBackdrop();
-
   bool WindowShouldHaveBackdrop(aura::Window* window);
 
-  // Show the backdrop window.
+  // Show the backdrop window if the |window_having_backdrop_| is not animating,
+  // otherwise it will wait for that animation to finish. If it can show the
+  // backdrop, it will update its bounds and stacking order before its shown.
   void Show();
 
-  // Hide the backdrop window.
-  void Hide(bool animate = true);
+  // Hide the backdrop window. If |destroy| is true, the backdrop widget will be
+  // destroyed, otherwise it'll be just hidden.
+  void Hide(bool destroy, bool animate = true);
 
   // Returns true if the backdrop window should be fullscreen. It should not be
   // fullscreen only if 1) split view is active and 2) there is only one snapped
@@ -121,19 +141,35 @@ class BackdropController : public AccessibilityObserver,
   // backdrop bounds should be the bounds of the snapped window.
   gfx::Rect GetBackdropBounds();
 
-  // Sets the animtion type of |backdrop_window_| to |type|.
-  void SetBackdropAnimationType(int type);
+  // If |window_having_backdrop_| is animating such that we shouldn't update the
+  // backdrop until that animation is complete, starts observing this animation
+  // (if not already done) and returns true. Returns false otherwise.
+  bool MaybeWaitForWindowAnimation();
+
+  // Updates the layout of the backdrop if one exists and is visible.
+  void MaybeUpdateLayout();
+
+  // Returns true if changes to |window| may require updating the backdrop
+  // visibility and availability.
+  bool DoesWindowCauseBackdropUpdates(aura::Window* window) const;
+
+  aura::Window* root_window_;
 
   // The backdrop which covers the rest of the screen.
-  views::Widget* backdrop_ = nullptr;
+  std::unique_ptr<views::Widget> backdrop_;
 
   // aura::Window for |backdrop_|.
   aura::Window* backdrop_window_ = nullptr;
 
+  // The window for which a backdrop has been installed.
+  aura::Window* window_having_backdrop_ = nullptr;
+
   // The container of the window that should have a backdrop.
   aura::Window* container_;
 
-  std::unique_ptr<BackdropDelegate> delegate_;
+  // If |window_having_backdrop_| is animating while we're trying to show the
+  // backdrop, we postpone showing it until the animation completes.
+  std::unique_ptr<WindowAnimationWaiter> window_animation_waiter_;
 
   // Event hanlder used to implement actions for accessibility.
   std::unique_ptr<ui::EventHandler> backdrop_event_handler_;
@@ -144,9 +180,14 @@ class BackdropController : public AccessibilityObserver,
   // in overview mode.
   bool pause_update_ = false;
 
+  base::ScopedMultiSourceObservation<WindowBackdrop, WindowBackdrop::Observer>
+      window_backdrop_observations_{this};
+
+  base::WeakPtrFactory<BackdropController> weak_ptr_factory_{this};
+
   DISALLOW_COPY_AND_ASSIGN(BackdropController);
 };
 
 }  // namespace ash
 
-#endif  // ASH_WM_WORKSPACE_WORKSPACE_BACKDROP_DELEGATE_IMPL_H_
+#endif  // ASH_WM_WORKSPACE_BACKDROP_CONTROLLER_H_

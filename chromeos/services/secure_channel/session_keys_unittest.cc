@@ -18,7 +18,7 @@ namespace secure_channel {
 namespace {
 
 // Values generated using the Android implementation.
-const char kMasterKeyHex[] =
+const char kSessionKeyHex[] =
     "f611126a04302551ac1e8ed512952ee287a1d2561e2a2c72e7bf1ebe4bdc74ce";
 const char kInitiatorKeyHex[] =
     "787ec48783f0a1f9fb9c5bc0230c2e7f45b8783acf8c9bd1c63242df9da31999";
@@ -35,23 +35,16 @@ class SecureChannelSessionKeysTest : public testing::Test {
 };
 
 TEST_F(SecureChannelSessionKeysTest, GenerateKeys) {
-  std::vector<uint8_t> data;
+  std::string session_key;
+  ASSERT_TRUE(base::HexStringToString(kSessionKeyHex, &session_key));
 
-  std::string master_key(kMasterKeyHex);
-  ASSERT_TRUE(base::HexStringToBytes(master_key, &data));
-  master_key.assign(reinterpret_cast<char*>(&data[0]), data.size());
+  std::string initiator_key;
+  ASSERT_TRUE(base::HexStringToString(kInitiatorKeyHex, &initiator_key));
 
-  data.clear();
-  std::string initiator_key(kInitiatorKeyHex);
-  ASSERT_TRUE(base::HexStringToBytes(initiator_key, &data));
-  initiator_key.assign(reinterpret_cast<char*>(&data[0]), data.size());
+  std::string responder_key;
+  ASSERT_TRUE(base::HexStringToString(kResponderKeyHex, &responder_key));
 
-  data.clear();
-  std::string responder_key(kResponderKeyHex);
-  ASSERT_TRUE(base::HexStringToBytes(responder_key, &data));
-  responder_key.assign(reinterpret_cast<char*>(&data[0]), data.size());
-
-  SessionKeys session_keys(master_key);
+  SessionKeys session_keys(session_key);
   EXPECT_EQ(initiator_key, session_keys.initiator_encode_key());
   EXPECT_EQ(responder_key, session_keys.responder_encode_key());
 }

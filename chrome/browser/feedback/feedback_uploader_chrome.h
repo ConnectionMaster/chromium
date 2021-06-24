@@ -9,12 +9,24 @@
 
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
+#include "build/chromeos_buildflags.h"
 #include "components/feedback/feedback_uploader.h"
-#include "services/identity/public/cpp/access_token_info.h"
+#include "components/signin/public/identity_manager/access_token_info.h"
 
-namespace identity {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chromeos/components/chromebox_for_meetings/buildflags/buildflags.h"
+#if BUILDFLAG(PLATFORM_CFM)
+#include "components/invalidation/public/identity_provider.h"
+#endif  // BUILDFLAG(PLATFORM_CFM)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+namespace content {
+class BrowserContext;
+}  // namespace content
+
+namespace signin {
 class PrimaryAccountAccessTokenFetcher;
-}  // namespace identity
+}  // namespace signin
 
 class GoogleServiceAuthError;
 
@@ -22,11 +34,21 @@ namespace feedback {
 
 class FeedbackUploaderChrome : public FeedbackUploader {
  public:
-  FeedbackUploaderChrome(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      content::BrowserContext* context,
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+  explicit FeedbackUploaderChrome(content::BrowserContext* context);
   ~FeedbackUploaderChrome() override;
+
+  class Delegate {
+   public:
+    // Notifies the delegate when we have started dispatching a feedback report.
+    virtual void OnStartDispatchingReport() = 0;
+
+   protected:
+    virtual ~Delegate() = default;
+  };
+
+  void set_feedback_uploader_delegate(Delegate* delegate) {
+    delegate_ = delegate;
+  }
 
  private:
   // feedback::FeedbackUploader:
@@ -34,12 +56,30 @@ class FeedbackUploaderChrome : public FeedbackUploader {
   void AppendExtraHeadersToUploadRequest(
       network::ResourceRequest* resource_request) override;
 
-  void AccessTokenAvailable(GoogleServiceAuthError error,
-                            identity::AccessTokenInfo access_token_info);
+  void PrimaryAccountAccessTokenAvailable(
+      GoogleServiceAuthError error,
+      signin::AccessTokenInfo access_token_info);
 
-  std::unique_ptr<identity::PrimaryAccountAccessTokenFetcher> token_fetcher_;
+  void AccessTokenAvailable(GoogleServiceAuthError error, std::string token);
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(PLATFORM_CFM)
+  void ActiveAccountAccessTokenAvailable(GoogleServiceAuthError error,
+                                         std::string token);
+
+  std::unique_ptr<invalidation::ActiveAccountAccessTokenFetcher>
+      active_account_token_fetcher_;
+#endif  // BUILDFLAG(PLATFORM_CFM)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
+      primary_account_token_fetcher_;
 
   std::string access_token_;
+
+  Delegate* delegate_ = nullptr;  // Not owned.
+
+  content::BrowserContext* context_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(FeedbackUploaderChrome);
 };

@@ -4,6 +4,10 @@
 
 #include "components/viz/test/compositor_frame_helpers.h"
 
+#include <memory>
+#include <set>
+#include <utility>
+
 namespace viz {
 namespace {
 
@@ -31,24 +35,24 @@ CompositorFrameBuilder& CompositorFrameBuilder::AddDefaultRenderPass() {
 CompositorFrameBuilder& CompositorFrameBuilder::AddRenderPass(
     const gfx::Rect& output_rect,
     const gfx::Rect& damage_rect) {
-  std::unique_ptr<RenderPass> pass = RenderPass::Create();
-  pass->SetNew(next_render_pass_id_++, output_rect, damage_rect,
-               gfx::Transform());
+  auto pass = CompositorRenderPass::Create();
+  pass->SetNew(render_pass_id_generator_.GenerateNextId(), output_rect,
+               damage_rect, gfx::Transform());
   frame_->render_pass_list.push_back(std::move(pass));
   return *this;
 }
 
 CompositorFrameBuilder& CompositorFrameBuilder::AddRenderPass(
-    std::unique_ptr<RenderPass> render_pass) {
+    std::unique_ptr<CompositorRenderPass> render_pass) {
   // Give the render pass a unique id if one hasn't been assigned.
-  if (render_pass->id == 0)
-    render_pass->id = next_render_pass_id_++;
+  if (render_pass->id.is_null())
+    render_pass->id = render_pass_id_generator_.GenerateNextId();
   frame_->render_pass_list.push_back(std::move(render_pass));
   return *this;
 }
 
 CompositorFrameBuilder& CompositorFrameBuilder::SetRenderPassList(
-    RenderPassList render_pass_list) {
+    CompositorRenderPassList render_pass_list) {
   DCHECK(frame_->render_pass_list.empty());
   frame_->render_pass_list = std::move(render_pass_list);
   return *this;
@@ -64,6 +68,11 @@ CompositorFrameBuilder& CompositorFrameBuilder::SetTransferableResources(
     std::vector<TransferableResource> resource_list) {
   DCHECK(frame_->resource_list.empty());
   frame_->resource_list = std::move(resource_list);
+  return *this;
+}
+
+CompositorFrameBuilder& CompositorFrameBuilder::PopulateResources() {
+  PopulateTransferableResources(frame_.value());
   return *this;
 }
 
@@ -115,16 +124,17 @@ CompositorFrameBuilder& CompositorFrameBuilder::SetReferencedSurfaces(
   return *this;
 }
 
-CompositorFrameBuilder& CompositorFrameBuilder::SetContentSourceId(
-    uint32_t content_source_id) {
-  frame_->metadata.content_source_id = content_source_id;
-  return *this;
-}
-
 CompositorFrameBuilder& CompositorFrameBuilder::SetSendFrameTokenToEmbedder(
     bool send) {
   DCHECK(frame_->metadata.frame_token);
   frame_->metadata.send_frame_token_to_embedder = send;
+  return *this;
+}
+
+CompositorFrameBuilder& CompositorFrameBuilder::AddDelegatedInkMetadata(
+    const gfx::DelegatedInkMetadata& metadata) {
+  frame_->metadata.delegated_ink_metadata =
+      std::make_unique<gfx::DelegatedInkMetadata>(metadata);
   return *this;
 }
 
@@ -133,7 +143,6 @@ CompositorFrame CompositorFrameBuilder::MakeInitCompositorFrame() const {
   CompositorFrame frame;
   frame.metadata.begin_frame_ack = BeginFrameAck::CreateManualAckWithDamage();
   frame.metadata.device_scale_factor = 1.f;
-  frame.metadata.local_surface_id_allocation_time = base::TimeTicks::Now();
   frame.metadata.frame_token = ++next_token;
   return frame;
 }
@@ -142,8 +151,41 @@ CompositorFrame MakeDefaultCompositorFrame() {
   return CompositorFrameBuilder().AddDefaultRenderPass().Build();
 }
 
+AggregatedFrame MakeDefaultAggregatedFrame(size_t num_render_passes) {
+  static AggregatedRenderPassId::Generator id_generator;
+  AggregatedFrame frame;
+  for (size_t i = 0; i < num_render_passes; ++i) {
+    frame.render_pass_list.push_back(std::make_unique<AggregatedRenderPass>());
+    frame.render_pass_list.back()->SetNew(id_generator.GenerateNextId(),
+                                          kDefaultOutputRect,
+                                          kDefaultDamageRect, gfx::Transform());
+  }
+  return frame;
+}
+
 CompositorFrame MakeEmptyCompositorFrame() {
   return CompositorFrameBuilder().Build();
+}
+
+void PopulateTransferableResources(CompositorFrame& frame) {
+  DCHECK(frame.resource_list.empty());
+
+  std::set<ResourceId> resources_added;
+  for (auto& render_pass : frame.render_pass_list) {
+    for (auto* quad : render_pass->quad_list) {
+      for (ResourceId resource_id : quad->resources) {
+        if (resource_id == kInvalidResourceId)
+          continue;
+
+        // Adds a TransferableResource the first time seeing a ResourceId.
+        if (resources_added.insert(resource_id).second) {
+          frame.resource_list.push_back(TransferableResource::MakeSoftware(
+              SharedBitmap::GenerateId(), quad->rect.size(), RGBA_8888));
+          frame.resource_list.back().id = resource_id;
+        }
+      }
+    }
+  }
 }
 
 }  // namespace viz

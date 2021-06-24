@@ -17,13 +17,12 @@ namespace cc {
 namespace {
 
 size_t kLockedMemoryLimitBytes = 128 * 1024 * 1024;
-SkMatrix CreateMatrix(const SkSize& scale, bool is_decomposable) {
-  SkMatrix matrix;
-  matrix.setScale(scale.width(), scale.height());
+SkM44 CreateMatrix(const SkSize& scale, bool is_decomposable) {
+  SkM44 matrix = SkM44::Scale(scale.width(), scale.height());
 
   if (!is_decomposable) {
     // Perspective is not decomposable, add it.
-    matrix[SkMatrix::kMPersp0] = 0.1f;
+    matrix.setRC(3, 0, 0.1f);
   }
 
   return matrix;
@@ -45,12 +44,12 @@ class BaseTest : public testing::Test {
       float scale,
       const SkIRect src_rect = SkIRect::MakeEmpty()) {
     return DrawImage(
-        paint_image(),
+        paint_image(), false,
         src_rect.isEmpty()
             ? SkIRect::MakeWH(paint_image().width(), paint_image().height())
             : src_rect,
         kMedium_SkFilterQuality, CreateMatrix(SkSize::Make(scale, scale), true),
-        PaintImage::kDefaultFrameIndex);
+        PaintImage::kDefaultFrameIndex, GetColorSpace());
   }
 
   SoftwareImageDecodeCache& cache() { return *cache_; }
@@ -80,8 +79,7 @@ class N32Cache : public virtual BaseTest {
   std::unique_ptr<SoftwareImageDecodeCache> CreateCache() override {
     return std::make_unique<SoftwareImageDecodeCache>(
         kN32_SkColorType, kLockedMemoryLimitBytes,
-        PaintImage::kDefaultGeneratorClientId,
-        GetColorSpace().ToSkColorSpace());
+        PaintImage::kDefaultGeneratorClientId);
   }
 };
 
@@ -90,8 +88,7 @@ class RGBA4444Cache : public virtual BaseTest {
   std::unique_ptr<SoftwareImageDecodeCache> CreateCache() override {
     return std::make_unique<SoftwareImageDecodeCache>(
         kARGB_4444_SkColorType, kLockedMemoryLimitBytes,
-        PaintImage::kDefaultGeneratorClientId,
-        GetColorSpace().ToSkColorSpace());
+        PaintImage::kDefaultGeneratorClientId);
   }
 };
 
@@ -100,8 +97,7 @@ class RGBA_F16Cache : public virtual BaseTest {
   std::unique_ptr<SoftwareImageDecodeCache> CreateCache() override {
     return std::make_unique<SoftwareImageDecodeCache>(
         kRGBA_F16_SkColorType, kLockedMemoryLimitBytes,
-        PaintImage::kDefaultGeneratorClientId,
-        GetColorSpace().ToSkColorSpace());
+        PaintImage::kDefaultGeneratorClientId);
   }
 };
 
@@ -138,6 +134,9 @@ class Predecode : public virtual BaseTest {
                          const DrawImage& draw_image,
                          const gfx::Size& expected_size) override {
     auto decoded = cache().GetDecodedImageForDraw(draw_image);
+    EXPECT_TRUE(SkColorSpace::Equals(
+        decoded.image()->colorSpace(),
+        draw_image.target_color_space().ToSkColorSpace().get()));
     SCOPED_TRACE(base::StringPrintf("Failure from line %d", line));
     EXPECT_EQ(decoded.image()->width(), expected_size.width());
     EXPECT_EQ(decoded.image()->height(), expected_size.height());

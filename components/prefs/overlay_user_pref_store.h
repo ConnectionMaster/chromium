@@ -53,12 +53,14 @@ class COMPONENTS_PREFS_EXPORT OverlayUserPrefStore
                         std::unique_ptr<base::Value> value,
                         uint32_t flags) override;
   void RemoveValue(const std::string& key, uint32_t flags) override;
+  void RemoveValuesByPrefixSilently(const std::string& prefix) override;
   bool ReadOnly() const override;
   PrefReadError GetReadError() const override;
   PrefReadError ReadPrefs() override;
   void ReadPrefsAsync(ReadErrorDelegate* delegate) override;
   void CommitPendingWrite(base::OnceClosure reply_callback,
                           base::OnceClosure synchronous_done_callback) override;
+  void CommitPendingWriteSynchronously() override;
   void SchedulePendingLossyWrites() override;
   void ReportValueChanged(const std::string& key, uint32_t flags) override;
 

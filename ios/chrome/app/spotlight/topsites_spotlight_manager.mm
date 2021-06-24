@@ -19,8 +19,8 @@
 #include "ios/chrome/browser/favicon/ios_chrome_large_icon_service_factory.h"
 #include "ios/chrome/browser/history/top_sites_factory.h"
 #include "ios/chrome/browser/suggestions/suggestions_service_factory.h"
-#include "ios/chrome/browser/sync/profile_sync_service_factory.h"
 #include "ios/chrome/browser/sync/sync_observer_bridge.h"
+#include "ios/chrome/browser/sync/sync_service_factory.h"
 #import "ios/chrome/browser/ui/content_suggestions/content_suggestions_mediator.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -50,9 +50,7 @@ class SpotlightSuggestionsBridge;
   syncer::SyncService* _syncService;                    // weak
 
   scoped_refptr<history::TopSites> _topSites;
-  std::unique_ptr<
-      suggestions::SuggestionsService::ResponseCallbackList::Subscription>
-      _suggestionsServiceResponseSubscription;
+  base::CallbackListSubscription _suggestionsServiceResponseSubscription;
 
   // Indicates if a reindex is pending. Reindexes made by calling the external
   // reindexTopSites method are executed at most every second.
@@ -151,7 +149,7 @@ class SpotlightSuggestionsBridge
 @synthesize topSites = _topSites;
 
 + (TopSitesSpotlightManager*)topSitesSpotlightManagerWithBrowserState:
-    (ios::ChromeBrowserState*)browserState {
+    (ChromeBrowserState*)browserState {
   return [[TopSitesSpotlightManager alloc]
       initWithLargeIconService:IOSChromeLargeIconServiceFactory::
                                    GetForBrowserState(browserState)
@@ -159,7 +157,7 @@ class SpotlightSuggestionsBridge
                                    browserState)
                  bookmarkModel:ios::BookmarkModelFactory::GetForBrowserState(
                                    browserState)
-                   syncService:ProfileSyncServiceFactory::GetForBrowserState(
+                   syncService:SyncServiceFactory::GetForBrowserState(
                                    browserState)
             suggestionsService:suggestions::SuggestionsServiceFactory::
                                    GetForBrowserState(browserState)];
@@ -188,9 +186,10 @@ class SpotlightSuggestionsBridge
       _suggestionsBridge.reset(new SpotlightSuggestionsBridge(self));
       _syncService = syncService;
       _suggestionService = suggestionsService;
-      _suggestionsServiceResponseSubscription = _suggestionService->AddCallback(
-          base::Bind(&SpotlightSuggestionsBridge::OnSuggestionsProfileAvailable,
-                     _suggestionsBridge->AsWeakPtr()));
+      _suggestionsServiceResponseSubscription =
+          _suggestionService->AddCallback(base::BindRepeating(
+              &SpotlightSuggestionsBridge::OnSuggestionsProfileAvailable,
+              _suggestionsBridge->AsWeakPtr()));
       _syncObserverBridge.reset(new SyncObserverBridge(self, syncService));
     }
   }
@@ -218,9 +217,9 @@ class SpotlightSuggestionsBridge
 }
 
 - (void)addAllLocalTopSitesItems {
-  _topSites->GetMostVisitedURLs(
-      base::Bind(&SpotlightTopSitesCallbackBridge::OnMostVisitedURLsAvailable,
-                 _topSitesCallbackBridge->AsWeakPtr()));
+  _topSites->GetMostVisitedURLs(base::BindOnce(
+      &SpotlightTopSitesCallbackBridge::OnMostVisitedURLsAvailable,
+      _topSitesCallbackBridge->AsWeakPtr()));
 }
 
 - (void)addAllSuggestionsTopSitesItems {

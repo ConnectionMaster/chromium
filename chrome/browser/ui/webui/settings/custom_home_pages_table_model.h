@@ -22,10 +22,6 @@ namespace content {
 class WebContents;
 }
 
-namespace history {
-class URLRow;
-}
-
 namespace ui {
 class TableModelObserver;
 }
@@ -61,8 +57,8 @@ class CustomHomePagesTableModel : public ui::TableModel {
 
   // TableModel overrides:
   int RowCount() override;
-  base::string16 GetText(int row, int column_id) override;
-  base::string16 GetTooltip(int row) override;
+  std::u16string GetText(int row, int column_id) override;
+  std::u16string GetTooltip(int row) override;
   void SetObserver(ui::TableModelObserver* observer) override;
 
  private:
@@ -85,16 +81,12 @@ class CustomHomePagesTableModel : public ui::TableModel {
   // |observable| is true.
   void OnGotTitle(const GURL& entry_url,
                   bool observable,
-                  bool found_url,
-                  const history::URLRow& row,
-                  const history::VisitVector& visits);
+                  history::QueryURLResult result);
 
   // Like OnGotTitle, except that num_outstanding_title_lookups_ is decremented
   // and if the count reaches zero the observer is notifed.
   void OnGotOneOfManyTitles(const GURL& entry_url,
-                            bool found_url,
-                            const history::URLRow& row,
-                            const history::VisitVector& visits);
+                            history::QueryURLResult result);
 
   // Adds an entry at the specified index, but doesn't load the title or tell
   // the observer.
@@ -104,7 +96,7 @@ class CustomHomePagesTableModel : public ui::TableModel {
   void RemoveWithoutNotification(int index);
 
   // Returns the URL for a particular row, formatted for display to the user.
-  base::string16 FormattedURL(int row) const;
+  std::u16string FormattedURL(int row) const;
 
   // Set of entries we're showing.
   std::vector<Entry> entries_;

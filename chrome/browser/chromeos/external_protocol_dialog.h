@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "ui/views/window/dialog_delegate.h"
 
@@ -22,24 +21,16 @@ namespace views {
 class MessageBoxView;
 }
 
-// An external protocol dialog for ChromeOS. Unlike other platforms,
-// ChromeOS does not support launching external program, therefore,
-// this dialog simply says it is not supported.
-class ExternalProtocolDialog : public views::DialogDelegate {
+// The external protocol dialog for Chrome OS shown when there are no handlers.
+class ExternalProtocolNoHandlersDialog : public views::DialogDelegate {
  public:
-  // RunExternalProtocolDialog calls this private constructor.
-  ExternalProtocolDialog(content::WebContents* web_contents, const GURL& url);
+  ExternalProtocolNoHandlersDialog(content::WebContents* web_contents,
+                                   const GURL& url);
+  ~ExternalProtocolNoHandlersDialog() override;
 
-  ~ExternalProtocolDialog() override;
-
-  // views::DialogDelegate Methods:
-  int GetDialogButtons() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  base::string16 GetWindowTitle() const override;
-  void DeleteDelegate() override;
+  // views::DialogDelegate:
+  std::u16string GetWindowTitle() const override;
   views::View* GetContentsView() override;
-
-  // views::WidgetDelegate Methods:
   const views::Widget* GetWidget() const override;
   views::Widget* GetWidget() override;
 
@@ -53,7 +44,7 @@ class ExternalProtocolDialog : public views::DialogDelegate {
   // The scheme of the url.
   std::string scheme_;
 
-  DISALLOW_COPY_AND_ASSIGN(ExternalProtocolDialog);
+  DISALLOW_COPY_AND_ASSIGN(ExternalProtocolNoHandlersDialog);
 };
 
 #endif  // CHROME_BROWSER_CHROMEOS_EXTERNAL_PROTOCOL_DIALOG_H_

@@ -7,7 +7,7 @@
 
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/text_granularity.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -58,6 +58,8 @@ class CORE_EXPORT SetSelectionOptions::Builder final {
  public:
   explicit Builder(const SetSelectionOptions&);
   Builder();
+  Builder(const Builder&) = delete;
+  Builder& operator=(const Builder&) = delete;
 
   SetSelectionOptions Build() const;
 
@@ -74,8 +76,6 @@ class CORE_EXPORT SetSelectionOptions::Builder final {
 
  private:
   SetSelectionOptions data_;
-
-  DISALLOW_COPY_AND_ASSIGN(Builder);
 };
 
 }  // namespace blink

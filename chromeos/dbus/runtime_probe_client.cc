@@ -9,6 +9,7 @@
 
 #include "base/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/observer_list.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "dbus/bus.h"
@@ -20,7 +21,7 @@ namespace chromeos {
 
 class RuntimeProbeClientImpl : public RuntimeProbeClient {
  public:
-  RuntimeProbeClientImpl() : weak_ptr_factory_(this) {}
+  RuntimeProbeClientImpl() {}
 
   ~RuntimeProbeClientImpl() override = default;
 
@@ -33,7 +34,7 @@ class RuntimeProbeClientImpl : public RuntimeProbeClient {
 
     if (!writer.AppendProtoAsArrayOfBytes(request)) {
       LOG(ERROR) << "Failed to encode ProbeRequest protobuf";
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
     proxy_->CallMethod(
@@ -57,14 +58,14 @@ class RuntimeProbeClientImpl : public RuntimeProbeClient {
   void OnProbeCategories(RuntimeProbeCallback callback,
                          dbus::Response* response) {
     if (!response) {
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
     runtime_probe::ProbeResult response_proto;
     dbus::MessageReader reader(response);
     if (!reader.PopArrayOfBytesAsProto(&response_proto)) {
       LOG(ERROR) << "Failed to parse proto from " << response->GetMember();
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
     std::move(callback).Run(response_proto);
@@ -74,7 +75,7 @@ class RuntimeProbeClientImpl : public RuntimeProbeClient {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<RuntimeProbeClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<RuntimeProbeClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RuntimeProbeClientImpl);
 };

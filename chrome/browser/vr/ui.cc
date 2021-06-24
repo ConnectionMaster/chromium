@@ -12,9 +12,9 @@
 #include "chrome/browser/vr/ui.h"
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/numerics/math_constants.h"
 #include "base/numerics/ranges.h"
-#include "base/strings/string16.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "chrome/browser/vr/content_input_delegate.h"
@@ -136,8 +136,7 @@ Ui::Ui(UiBrowserInterface* browser,
       input_manager_(std::make_unique<UiInputManager>(scene_.get())),
       keyboard_delegate_(std::move(keyboard_delegate)),
       text_input_delegate_(std::move(text_input_delegate)),
-      audio_delegate_(std::move(audio_delegate)),
-      weak_ptr_factory_(this) {
+      audio_delegate_(std::move(audio_delegate)) {
   UiInitialState state = ui_initial_state;
   if (text_input_delegate_) {
     text_input_delegate_->SetRequestFocusCallback(
@@ -294,7 +293,7 @@ void Ui::OnSpeechRecognitionEnded() {
   }
 }
 
-void Ui::SetRecognitionResult(const base::string16& result) {
+void Ui::SetRecognitionResult(const std::u16string& result) {
   model_->speech.recognition_result = result;
 }
 
@@ -327,10 +326,12 @@ void Ui::UpdateWebInputIndices(int selection_start,
   content_input_delegate_->OnWebInputIndicesChanged(
       selection_start, selection_end, composition_start, composition_end,
       base::BindOnce(
-          [](TextInputInfo* model, const TextInputInfo& new_state) {
-            *model = new_state;
+          [](Model* model, const TextInputInfo& new_state) {
+            EditedText web_input_text = model->web_input_text_field_info;
+            web_input_text.current = new_state;
+            model->set_web_input_text_field_info(std::move(web_input_text));
           },
-          base::Unretained(&model_->web_input_text_field_info.current)));
+          base::Unretained(model_.get())));
 }
 
 void Ui::SetAlertDialogEnabled(bool enabled,
@@ -377,7 +378,7 @@ void Ui::SetDialogFloating(bool floating) {
   model_->hosted_platform_ui.floating = floating;
 }
 
-void Ui::ShowPlatformToast(const base::string16& text) {
+void Ui::ShowPlatformToast(const std::u16string& text) {
   model_->platform_toast = std::make_unique<PlatformToast>(text);
 }
 
@@ -426,9 +427,9 @@ void Ui::OnPause() {
 }
 
 void Ui::OnMenuButtonClicked() {
-  // Menu button clicks should be a no-op when browsing mode is disabled.
-  if (model_->browsing_disabled)
+  if (!model_->gvr_input_support) {
     return;
+  }
 
   if (model_->reposition_window_enabled()) {
     model_->pop_mode(kModeRepositionWindow);
@@ -608,14 +609,12 @@ void Ui::InitializeModel(const UiInitialState& ui_initial_state) {
     model_->push_mode(mode);
   }
 
-  model_->browsing_disabled = ui_initial_state.browsing_disabled;
   model_->waiting_for_background = ui_initial_state.assets_supported;
   model_->supports_selection = ui_initial_state.supports_selection;
   model_->needs_keyboard_update = ui_initial_state.needs_keyboard_update;
   model_->standalone_vr_device = ui_initial_state.is_standalone_vr_device;
-  model_->use_new_incognito_strings =
-      ui_initial_state.use_new_incognito_strings;
   model_->controllers.push_back(ControllerModel());
+  model_->gvr_input_support = ui_initial_state.gvr_input_support;
 }
 
 void Ui::AcceptDoffPromptForTesting() {
@@ -714,6 +713,7 @@ gfx::Transform Ui::GetContentWorldSpaceTransform() {
 
 bool Ui::OnBeginFrame(base::TimeTicks current_time,
                       const gfx::Transform& head_pose) {
+  model_->current_time = current_time;
   return scene_->OnBeginFrame(current_time, head_pose);
 }
 
@@ -901,10 +901,10 @@ FovRectangle Ui::GetMinimalFov(const gfx::Transform& view_matrix,
 
 #if defined(OS_ANDROID)
 extern "C" {
-
 // This symbol is retrieved from the VR feature module library via dlsym(),
 // where it's bare address is type-cast to a CreateUiFunction pointer and
-// executed. Any changes to the arguments here must be mirrored in that type.
+// executed. The forward declaration here ensures that the signatures match.
+CreateUiFunction CreateUi;
 __attribute__((visibility("default"))) UiInterface* CreateUi(
     UiBrowserInterface* browser,
     PlatformInputHandler* content_input_forwarder,
@@ -916,7 +916,7 @@ __attribute__((visibility("default"))) UiInterface* CreateUi(
                 std::move(text_input_delegate), std::move(audio_delegate),
                 ui_initial_state);
 }
-}
+}  // extern "C"
 #endif  // defined(OS_ANDROID
 
 }  // namespace vr

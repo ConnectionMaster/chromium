@@ -6,17 +6,11 @@
 
 #include <memory>
 
-#include "base/macros.h"
+#include "ash/system/message_center/metrics_utils.h"
 #include "base/observer_list.h"
-#include "base/strings/utf_string_conversions.h"
-#include "build/build_config.h"
-#include "ui/base/l10n/l10n_util.h"
-#include "ui/base/models/simple_menu_model.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/message_center_types.h"
 #include "ui/message_center/notification_blocker.h"
-#include "ui/message_center/views/notification_menu_model.h"
-#include "ui/strings/grit/ui_strings.h"
 
 namespace ash {
 
@@ -33,14 +27,14 @@ MessageCenterUiController::~MessageCenterUiController() {
   message_center_->RemoveObserver(this);
 }
 
-bool MessageCenterUiController::ShowMessageCenterBubble(bool show_by_click) {
+bool MessageCenterUiController::ShowMessageCenterBubble() {
   if (message_center_visible_)
     return true;
 
   HidePopupBubbleInternal();
 
   message_center_->SetVisibility(message_center::VISIBILITY_MESSAGE_CENTER);
-  message_center_visible_ = delegate_->ShowMessageCenter(show_by_click);
+  message_center_visible_ = delegate_->ShowMessageCenter();
   if (message_center_visible_)
     NotifyUiControllerChanged();
   return message_center_visible_;
@@ -108,6 +102,7 @@ void MessageCenterUiController::HidePopupBubbleInternal() {
 
 void MessageCenterUiController::OnNotificationAdded(
     const std::string& notification_id) {
+  metrics_utils::LogNotificationAdded(notification_id);
   OnMessageCenterChanged();
 }
 
@@ -124,10 +119,20 @@ void MessageCenterUiController::OnNotificationUpdated(
 
 void MessageCenterUiController::OnNotificationClicked(
     const std::string& notification_id,
-    const base::Optional<int>& button_index,
-    const base::Optional<base::string16>& reply) {
+    const absl::optional<int>& button_index,
+    const absl::optional<std::u16string>& reply) {
   if (popups_visible_)
     OnMessageCenterChanged();
+
+  // Note: we use |message_center_visible_| instead of |popups_visible_| here
+  // due to timing issues when dismissing the last popup notification.
+  bool is_popup = !message_center_visible_;
+  if (reply.has_value())
+    metrics_utils::LogInlineReplySent(notification_id, is_popup);
+  else if (button_index.has_value())
+    metrics_utils::LogClickedActionButton(notification_id, is_popup);
+  else
+    metrics_utils::LogClickedBody(notification_id, is_popup);
 }
 
 void MessageCenterUiController::OnNotificationDisplayed(
@@ -143,6 +148,14 @@ void MessageCenterUiController::OnQuietModeChanged(bool in_quiet_mode) {
 void MessageCenterUiController::OnBlockingStateChanged(
     message_center::NotificationBlocker* blocker) {
   OnMessageCenterChanged();
+}
+
+void MessageCenterUiController::OnNotificationPopupShown(
+    const std::string& notification_id,
+    bool mark_notification_as_read) {
+  // Timed out popup notifications are not marked as read.
+  if (!mark_notification_as_read)
+    metrics_utils::LogPopupExpiredToTray(notification_id);
 }
 
 void MessageCenterUiController::OnMessageCenterChanged() {

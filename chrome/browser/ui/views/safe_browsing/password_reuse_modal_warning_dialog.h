@@ -7,7 +7,10 @@
 
 #include "base/callback.h"
 #include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace content {
@@ -16,31 +19,37 @@ class WebContents;
 
 namespace safe_browsing {
 
+using password_manager::metrics_util::PasswordType;
+
 // Implementation of password reuse modal dialog.
 class PasswordReuseModalWarningDialog
     : public views::DialogDelegateView,
       public ChromePasswordProtectionService::Observer,
       public content::WebContentsObserver {
  public:
+  METADATA_HEADER(PasswordReuseModalWarningDialog);
   PasswordReuseModalWarningDialog(content::WebContents* web_contents,
                                   ChromePasswordProtectionService* service,
-                                  ReusedPasswordType password_type,
+                                  ReusedPasswordAccountType password_type,
                                   OnWarningDone done_callback);
-
+  PasswordReuseModalWarningDialog(const PasswordReuseModalWarningDialog&) =
+      delete;
+  PasswordReuseModalWarningDialog& operator=(
+      const PasswordReuseModalWarningDialog&) = delete;
   ~PasswordReuseModalWarningDialog() override;
+
+  void CreateSavedPasswordReuseModalWarningDialog(
+      const std::u16string message_body,
+      std::vector<std::u16string> placeholders,
+      std::vector<size_t> placeholder_offsets);
+  void CreateGaiaPasswordReuseModalWarningDialog(
+      views::Label* message_body_label);
 
   // views::DialogDelegateView:
   gfx::Size CalculatePreferredSize() const override;
-  ui::ModalType GetModalType() const override;
-  base::string16 GetWindowTitle() const override;
+  std::u16string GetWindowTitle() const override;
   bool ShouldShowCloseButton() const override;
-  gfx::ImageSkia GetWindowIcon() override;
-  bool ShouldShowWindowIcon() const override;
-  bool Cancel() override;
-  bool Accept() override;
-  bool Close() override;
-  int GetDefaultDialogButton() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
+  ui::ImageModel GetWindowIcon() override;
 
   // ChromePasswordProtectionService::Observer:
   void OnGaiaPasswordChanged() override;
@@ -55,9 +64,10 @@ class PasswordReuseModalWarningDialog
   OnWarningDone done_callback_;
   ChromePasswordProtectionService* service_;
   const GURL url_;
-  ReusedPasswordType password_type_;
+  const ReusedPasswordAccountType password_type_;
 
-  DISALLOW_COPY_AND_ASSIGN(PasswordReuseModalWarningDialog);
+  // Records the start time when modal warning is constructed.
+  base::TimeTicks modal_construction_start_time_;
 };
 
 }  // namespace safe_browsing

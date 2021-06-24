@@ -6,7 +6,6 @@
 #define UI_GL_GL_CONTEXT_EGL_H_
 
 #include <map>
-#include <string>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
@@ -29,25 +28,27 @@ class GL_EXPORT GLContextEGL : public GLContextReal {
   // Implement GLContext.
   bool Initialize(GLSurface* compatible_surface,
                   const GLContextAttribs& attribs) override;
-  bool MakeCurrent(GLSurface* surface) override;
+  bool MakeCurrentImpl(GLSurface* surface) override;
   void ReleaseCurrent(GLSurface* surface) override;
   bool IsCurrent(GLSurface* surface) override;
   void* GetHandle() override;
-  bool WasAllocatedUsingRobustnessExtension() override;
+  unsigned int CheckStickyGraphicsResetStatusImpl() override;
   void SetUnbindFboOnMakeCurrent() override;
   YUVToRGBConverter* GetYUVToRGBConverter(
       const gfx::ColorSpace& color_space) override;
+  void SetVisibility(bool visibility) override;
 
  protected:
   ~GLContextEGL() override;
 
  private:
   void Destroy();
-  void ReleaseYUVToRGBConverters();
+  void ReleaseYUVToRGBConvertersAndBackpressureFences();
 
   EGLContext context_ = nullptr;
   EGLDisplay display_ = nullptr;
   EGLConfig config_ = nullptr;
+  unsigned int graphics_reset_status_ = 0;  // GL_NO_ERROR;
   bool unbind_fbo_on_makecurrent_ = false;
   bool lost_ = false;
   std::map<gfx::ColorSpace, std::unique_ptr<YUVToRGBConverter>>

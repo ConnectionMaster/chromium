@@ -28,6 +28,7 @@ class SharedURLLoaderFactory;
 }
 
 class Browser;
+class SigninUIError;
 
 // Implementation for the inline login WebUI handler on desktop Chrome. Once
 // CrOS migrates to the same webview approach as desktop Chrome, much of the
@@ -46,10 +47,7 @@ class InlineLoginHandlerImpl : public InlineLoginHandler {
 
   Browser* GetDesktopBrowser();
   void SyncSetupFailed();
-  // Closes the current tab.
-  void CloseTab();
-  void HandleLoginError(const std::string& error_msg,
-                        const base::string16& email);
+  void HandleLoginError(const SigninUIError& error);
 
   // Calls the javascript function 'sendLSTFetchResults' with the given
   // base::Value result. This value will be passed to another
@@ -68,10 +66,12 @@ class InlineLoginHandlerImpl : public InlineLoginHandler {
                      bool skip_for_now,
                      bool trusted,
                      bool trusted_found,
-                     bool choose_what_to_sync) override;
+                     bool choose_what_to_sync,
+                     base::Value edu_login_params) override;
 
-  // This struct exists to pass paramters to the FinishCompleteLogin() method,
-  // since the base::Bind() call does not support this many template args.
+  // This struct exists to pass parameters to the FinishCompleteLogin() method,
+  // since the base::BindRepeating() call does not support this many template
+  // args.
   struct FinishCompleteLoginParams {
    public:
     FinishCompleteLoginParams(InlineLoginHandlerImpl* handler,
@@ -125,7 +125,7 @@ class InlineLoginHandlerImpl : public InlineLoginHandler {
   // process.
   bool confirm_untrusted_signin_;
 
-  base::WeakPtrFactory<InlineLoginHandlerImpl> weak_factory_;
+  base::WeakPtrFactory<InlineLoginHandlerImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(InlineLoginHandlerImpl);
 };

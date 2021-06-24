@@ -4,20 +4,24 @@
 
 #include "chrome/browser/ui/views/color_chooser_aura.h"
 
+#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/color_chooser.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/views/color_chooser/color_chooser_view.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
 
 ColorChooserAura::ColorChooserAura(content::WebContents* web_contents,
                                    SkColor initial_color)
     : web_contents_(web_contents) {
-  view_ = new views::ColorChooserView(this, initial_color);
-  widget_ = views::Widget::CreateWindowWithParent(
-      view_, web_contents->GetTopLevelNativeWindow());
-  widget_->Show();
+  chooser_ = std::make_unique<views::ColorChooser>(this, initial_color);
+  chooser_widget_ = base::WrapUnique(views::Widget::CreateWindowWithParent(
+      chooser_->MakeWidgetDelegate(), web_contents->GetTopLevelNativeWindow()));
+  chooser_widget_->Show();
 }
+
+ColorChooserAura::~ColorChooserAura() = default;
 
 void ColorChooserAura::OnColorChosen(SkColor color) {
   if (web_contents_)
@@ -25,17 +29,11 @@ void ColorChooserAura::OnColorChosen(SkColor color) {
 }
 
 void ColorChooserAura::OnColorChooserDialogClosed() {
-  view_ = NULL;
-  widget_ = NULL;
   DidEndColorChooser();
 }
 
 void ColorChooserAura::End() {
-  if (widget_) {
-    view_->set_listener(NULL);
-    widget_->Close();
-    view_ = NULL;
-    widget_ = NULL;
+  if (chooser_widget_) {
     // DidEndColorChooser will invoke Browser::DidEndColorChooser, which deletes
     // this. Take care of the call order.
     DidEndColorChooser();
@@ -48,23 +46,22 @@ void ColorChooserAura::DidEndColorChooser() {
 }
 
 void ColorChooserAura::SetSelectedColor(SkColor color) {
-  if (view_)
-    view_->OnColorChanged(color);
+  chooser_->OnColorChanged(color);
 }
 
 // static
-ColorChooserAura* ColorChooserAura::Open(
-    content::WebContents* web_contents, SkColor initial_color) {
-  return new ColorChooserAura(web_contents, initial_color);
+std::unique_ptr<ColorChooserAura> ColorChooserAura::Open(
+    content::WebContents* web_contents,
+    SkColor initial_color) {
+  return base::WrapUnique(new ColorChooserAura(web_contents, initial_color));
 }
 
-#if !defined(OS_WIN)
 namespace chrome {
 
-content::ColorChooser* ShowColorChooser(content::WebContents* web_contents,
-                                        SkColor initial_color) {
+std::unique_ptr<content::ColorChooser> ShowColorChooser(
+    content::WebContents* web_contents,
+    SkColor initial_color) {
   return ColorChooserAura::Open(web_contents, initial_color);
 }
 
 }  // namespace chrome
-#endif  // OS_WIN

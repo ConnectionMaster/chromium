@@ -8,12 +8,13 @@
 
 namespace blink {
 
-base::Optional<double> NumberPropertyFunctions::GetInitialNumber(
-    const CSSProperty& property) {
-  return GetNumber(property, ComputedStyle::InitialStyle());
+absl::optional<double> NumberPropertyFunctions::GetInitialNumber(
+    const CSSProperty& property,
+    const ComputedStyle& initial_style) {
+  return GetNumber(property, initial_style);
 }
 
-base::Optional<double> NumberPropertyFunctions::GetNumber(
+absl::optional<double> NumberPropertyFunctions::GetNumber(
     const CSSProperty& property,
     const ComputedStyle& style) {
   switch (property.PropertyID()) {
@@ -44,21 +45,21 @@ base::Optional<double> NumberPropertyFunctions::GetNumber(
 
     case CSSPropertyID::kFontSizeAdjust:
       if (!style.HasFontSizeAdjust())
-        return base::Optional<double>();
+        return absl::optional<double>();
       return style.FontSizeAdjust();
     case CSSPropertyID::kColumnCount:
       if (style.HasAutoColumnCount())
-        return base::Optional<double>();
+        return absl::optional<double>();
       return style.ColumnCount();
     case CSSPropertyID::kZIndex:
       if (style.HasAutoZIndex())
-        return base::Optional<double>();
+        return absl::optional<double>();
       return style.ZIndex();
 
     case CSSPropertyID::kTextSizeAdjust: {
       const TextSizeAdjust& text_size_adjust = style.GetTextSizeAdjust();
       if (text_size_adjust.IsAuto())
-        return base::Optional<double>();
+        return absl::optional<double>();
       return text_size_adjust.Multiplier() * 100;
     }
 
@@ -66,16 +67,22 @@ base::Optional<double> NumberPropertyFunctions::GetNumber(
       const Length& length = style.SpecifiedLineHeight();
       // Numbers are represented by percentages.
       if (!length.IsPercent())
-        return base::Optional<double>();
+        return absl::optional<double>();
       double value = length.Value();
       // -100% represents the keyword "normal".
       if (value == -100)
-        return base::Optional<double>();
+        return absl::optional<double>();
       return value / 100;
     }
 
+    case CSSPropertyID::kTabSize: {
+      if (!style.GetTabSize().IsSpaces())
+        return absl::nullopt;
+      return style.GetTabSize().float_value_;
+    }
+
     default:
-      return base::Optional<double>();
+      return absl::optional<double>();
   }
 }
 
@@ -99,6 +106,7 @@ double NumberPropertyFunctions::ClampNumber(const CSSProperty& property,
     case CSSPropertyID::kFlexShrink:
     case CSSPropertyID::kFontSizeAdjust:
     case CSSPropertyID::kLineHeight:
+    case CSSPropertyID::kTabSize:
     case CSSPropertyID::kTextSizeAdjust:
       return clampTo<float>(value, 0);
 
@@ -108,9 +116,6 @@ double NumberPropertyFunctions::ClampNumber(const CSSProperty& property,
 
     case CSSPropertyID::kColumnCount:
       return clampTo<uint16_t>(round(value), 1);
-
-    case CSSPropertyID::kColumnRuleWidth:
-      return clampTo<uint16_t>(round(value));
 
     case CSSPropertyID::kOrder:
     case CSSPropertyID::kZIndex:
@@ -141,6 +146,9 @@ bool NumberPropertyFunctions::SetNumber(const CSSProperty& property,
       return true;
     case CSSPropertyID::kLineHeight:
       style.SetLineHeight(Length::Percent(value * 100));
+      return true;
+    case CSSPropertyID::kTabSize:
+      style.SetTabSize(TabSize(value));
       return true;
     case CSSPropertyID::kOpacity:
       style.SetOpacity(value);

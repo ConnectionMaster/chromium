@@ -7,22 +7,23 @@
 
 namespace switches {
 
+// Scale factor to apply to every animation duration. Must be >= 0.0. This will
+// only apply to LinearAnimation and its subclasses.
+const char kAnimationDurationScale[] = "animation-duration-scale";
+
 // Force disables font subpixel positioning. This affects the character glyph
 // sharpness, kerning, hinting and layout.
 const char kDisableFontSubpixelPositioning[] =
     "disable-font-subpixel-positioning";
 
+// Enable native CPU-mappable GPU memory buffer support on Linux.
+const char kEnableNativeGpuMemoryBuffers[] = "enable-native-gpu-memory-buffers";
+
+// Forces whether the user desires reduced motion, regardless of system
+// settings.
+const char kForcePrefersReducedMotion[] = "force-prefers-reduced-motion";
+
 // Run in headless mode, i.e., without a UI or display server dependencies.
 const char kHeadless[] = "headless";
 
 }  // namespace switches
-
-namespace features {
-
-// Enables or disables the use of cc::PaintRecords as a backing store for
-// ImageSkiaReps. This may reduce load on the UI thread by moving rasterization
-// of drawables away from this thread.
-const base::Feature kUsePaintRecordForImageSkia{
-    "UsePaintRecordForImageSkia", base::FEATURE_ENABLED_BY_DEFAULT};
-
-}  // namespace features

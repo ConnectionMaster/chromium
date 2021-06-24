@@ -4,15 +4,19 @@
 
 #include "third_party/blink/renderer/platform/blob/blob_bytes_provider.h"
 
+#include <utility>
+
+#include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/post_task.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "base/task/thread_pool.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
-#include "third_party/blink/renderer/platform/histogram.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -95,7 +99,7 @@ class BlobBytesStreamer {
 void IncreaseChildProcessRefCount() {
   if (!WTF::IsMainThread()) {
     PostCrossThreadTask(*Thread::MainThread()->GetTaskRunner(), FROM_HERE,
-                        CrossThreadBind(&IncreaseChildProcessRefCount));
+                        CrossThreadBindOnce(&IncreaseChildProcessRefCount));
     return;
   }
   Platform::Current()->SuddenTerminationChanged(false);
@@ -104,7 +108,7 @@ void IncreaseChildProcessRefCount() {
 void DecreaseChildProcessRefCount() {
   if (!WTF::IsMainThread()) {
     PostCrossThreadTask(*Thread::MainThread()->GetTaskRunner(), FROM_HERE,
-                        CrossThreadBind(&DecreaseChildProcessRefCount));
+                        CrossThreadBindOnce(&DecreaseChildProcessRefCount));
     return;
   }
   Platform::Current()->SuddenTerminationChanged(true);
@@ -116,8 +120,8 @@ constexpr size_t BlobBytesProvider::kMaxConsolidatedItemSizeInBytes;
 
 // static
 BlobBytesProvider* BlobBytesProvider::CreateAndBind(
-    mojom::blink::BytesProviderRequest request) {
-  auto task_runner = base::CreateSequencedTaskRunnerWithTraits(
+    mojo::PendingReceiver<mojom::blink::BytesProvider> receiver) {
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE});
   auto provider = base::WrapUnique(new BlobBytesProvider(task_runner));
   auto* result = provider.get();
@@ -125,12 +129,13 @@ BlobBytesProvider* BlobBytesProvider::CreateAndBind(
   // using the MayBlock taskrunner for actual file operations.
   PostCrossThreadTask(
       *task_runner, FROM_HERE,
-      CrossThreadBind(
+      CrossThreadBindOnce(
           [](std::unique_ptr<BlobBytesProvider> provider,
-             mojom::blink::BytesProviderRequest request) {
-            mojo::MakeStrongBinding(std::move(provider), std::move(request));
+             mojo::PendingReceiver<mojom::blink::BytesProvider> receiver) {
+            mojo::MakeSelfOwnedReceiver(std::move(provider),
+                                        std::move(receiver));
           },
-          WTF::Passed(std::move(provider)), WTF::Passed(std::move(request))));
+          std::move(provider), std::move(receiver)));
   return result;
 }
 
@@ -183,22 +188,18 @@ void BlobBytesProvider::RequestAsFile(uint64_t source_offset,
                                       uint64_t file_offset,
                                       RequestAsFileCallback callback) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(BooleanHistogram, seek_histogram,
-                                  ("Storage.Blob.RendererFileSeekFailed"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(BooleanHistogram, write_histogram,
-                                  ("Storage.Blob.RendererFileWriteFailed"));
 
   if (!file.IsValid()) {
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
 
   int64_t seek_distance =
       file.Seek(base::File::FROM_BEGIN, SafeCast<int64_t>(file_offset));
   bool seek_failed = seek_distance < 0;
-  seek_histogram.Count(seek_failed);
+  base::UmaHistogramBoolean("Storage.Blob.RendererFileSeekFailed", seek_failed);
   if (seek_failed) {
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
 
@@ -230,9 +231,10 @@ void BlobBytesProvider::RequestAsFile(uint64_t source_offset,
       int actual_written = file.WriteAtCurrentPos(
           data->data() + data_offset + written, writing_size);
       bool write_failed = actual_written < 0;
-      write_histogram.Count(write_failed);
+      base::UmaHistogramBoolean("Storage.Blob.RendererFileWriteFailed",
+                                write_failed);
       if (write_failed) {
-        std::move(callback).Run(base::nullopt);
+        std::move(callback).Run(absl::nullopt);
         return;
       }
       written += actual_written;
@@ -242,12 +244,12 @@ void BlobBytesProvider::RequestAsFile(uint64_t source_offset,
   }
 
   if (!file.Flush()) {
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
   base::File::Info info;
   if (!file.GetInfo(&info)) {
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
   std::move(callback).Run(info.last_modified);

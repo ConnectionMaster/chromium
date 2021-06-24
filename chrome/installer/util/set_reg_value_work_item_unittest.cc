@@ -139,12 +139,9 @@ TEST_F(SetRegValueWorkItemTest, WriteExistingNonOverwrite) {
   // Now test REG_DWORD value.
   // Write data to the value we are going to set.
   ASSERT_EQ(ERROR_SUCCESS, test_key_.WriteValue(kNameDword, kDword1));
-  work_item.reset(WorkItem::CreateSetRegValueWorkItem(HKEY_CURRENT_USER,
-                                                      kTestKey,
-                                                      WorkItem::kWow64Default,
-                                                      kNameDword,
-                                                      kDword2,
-                                                      false));
+  work_item.reset(WorkItem::CreateSetRegValueWorkItem(
+      HKEY_CURRENT_USER, kTestKey, WorkItem::kWow64Default, kNameDword, kDword2,
+      false));
   ASSERT_TRUE(work_item->Do());
 
   DWORD read_dword;
@@ -165,8 +162,8 @@ TEST_F(SetRegValueWorkItemTest, WriteExistingOverwrite) {
   ASSERT_EQ(ERROR_SUCCESS, test_key_.WriteValue(kNameStr, kDataStr1));
 
   const wchar_t kNameEmpty[] = L"name_empty";
-  ASSERT_EQ(ERROR_SUCCESS, RegSetValueEx(test_key_.Handle(), kNameEmpty, NULL,
-                                         REG_SZ, NULL, 0));
+  ASSERT_EQ(ERROR_SUCCESS, RegSetValueEx(test_key_.Handle(), kNameEmpty, 0,
+                                         REG_SZ, nullptr, 0));
 
   std::unique_ptr<SetRegValueWorkItem> work_item1(
       WorkItem::CreateSetRegValueWorkItem(HKEY_CURRENT_USER, kTestKey,
@@ -196,7 +193,8 @@ TEST_F(SetRegValueWorkItemTest, WriteExistingOverwrite) {
 
   DWORD type = 0;
   DWORD size = 0;
-  EXPECT_EQ(ERROR_SUCCESS, test_key_.ReadValue(kNameEmpty, NULL, &size, &type));
+  EXPECT_EQ(ERROR_SUCCESS,
+            test_key_.ReadValue(kNameEmpty, nullptr, &size, &type));
   EXPECT_EQ(static_cast<DWORD>(REG_SZ), type);
   EXPECT_EQ(0u, size);
 
@@ -231,12 +229,9 @@ TEST_F(SetRegValueWorkItemTest, WriteNonExistingKey) {
           kNameStr, kDataStr1, false));
   EXPECT_FALSE(work_item->Do());
 
-  work_item.reset(WorkItem::CreateSetRegValueWorkItem(HKEY_CURRENT_USER,
-                                                      non_existing.c_str(),
-                                                      WorkItem::kWow64Default,
-                                                      kNameStr,
-                                                      kDword1,
-                                                      false));
+  work_item.reset(WorkItem::CreateSetRegValueWorkItem(
+      HKEY_CURRENT_USER, non_existing.c_str(), WorkItem::kWow64Default,
+      kNameStr, kDword1, false));
   EXPECT_FALSE(work_item->Do());
 }
 
@@ -264,8 +259,8 @@ TEST_F(SetRegValueWorkItemTest, ModifyExistingWithCallback) {
   std::unique_ptr<SetRegValueWorkItem> work_item(
       WorkItem::CreateSetRegValueWorkItem(
           HKEY_CURRENT_USER, kTestKey, WorkItem::kWow64Default, kNameStr,
-          base::Bind(&VerifyPreviousValueAndReplace, &callback_invocation_count,
-                     kDataStr1, kDataStr2)));
+          base::BindOnce(&VerifyPreviousValueAndReplace,
+                         &callback_invocation_count, kDataStr1, kDataStr2)));
 
   // The callback should not be used until the item is executed.
   EXPECT_EQ(0, callback_invocation_count);
@@ -296,8 +291,8 @@ TEST_F(SetRegValueWorkItemTest, ModifyNonExistingWithCallback) {
   std::unique_ptr<SetRegValueWorkItem> work_item(
       WorkItem::CreateSetRegValueWorkItem(
           HKEY_CURRENT_USER, kTestKey, WorkItem::kWow64Default, kNameStr,
-          base::Bind(&VerifyPreviousValueAndReplace, &callback_invocation_count,
-                     L"", kDataStr1)));
+          base::BindOnce(&VerifyPreviousValueAndReplace,
+                         &callback_invocation_count, L"", kDataStr1)));
 
   EXPECT_EQ(0, callback_invocation_count);
 
@@ -327,8 +322,8 @@ TEST_F(SetRegValueWorkItemTest, ModifyExistingNonStringWithStringCallback) {
   std::unique_ptr<SetRegValueWorkItem> work_item(
       WorkItem::CreateSetRegValueWorkItem(
           HKEY_CURRENT_USER, kTestKey, WorkItem::kWow64Default, kNameStr,
-          base::Bind(&VerifyPreviousValueAndReplace, &callback_invocation_count,
-                     L"", kDataStr1)));
+          base::BindOnce(&VerifyPreviousValueAndReplace,
+                         &callback_invocation_count, L"", kDataStr1)));
 
   EXPECT_EQ(0, callback_invocation_count);
 

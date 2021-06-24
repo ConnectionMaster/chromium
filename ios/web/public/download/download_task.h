@@ -8,10 +8,11 @@
 #import <Foundation/Foundation.h>
 
 #include <stdint.h>
+
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "ui/base/page_transition_types.h"
 
 class GURL;
@@ -23,6 +24,7 @@ class URLFetcherResponseWriter;
 namespace web {
 
 class DownloadTaskObserver;
+class WebState;
 
 // Provides API for a single browser download task. This is the model class that
 // stores all the state for a download. Must be used on the UI thread.
@@ -41,6 +43,9 @@ class DownloadTask {
     // Download is completely finished.
     kComplete,
   };
+
+  // Returns WebState which requested this download.
+  virtual WebState* GetWebState() = 0;
 
   // Returns the download task state.
   virtual State GetState() const = 0;
@@ -65,6 +70,10 @@ class DownloadTask {
   // The URL that the download request originally attempted to fetch. This may
   // differ from the final download URL if there were redirects.
   virtual const GURL& GetOriginalUrl() const = 0;
+
+  // HTTP method for this download task (only @"GET" and @"POST" are currently
+  // supported).
+  virtual NSString* GetHttpMethod() const = 0;
 
   // Returns true if the download is in a terminal state. This includes
   // completed downloads, cancelled downloads, and interrupted downloads that
@@ -100,11 +109,8 @@ class DownloadTask {
   // Effective MIME type of downloaded content.
   virtual std::string GetMimeType() const = 0;
 
-  // The page transition type associated with the download request.
-  virtual ui::PageTransition GetTransitionType() const = 0;
-
   // Suggested name for the downloaded file.
-  virtual base::string16 GetSuggestedFilename() const = 0;
+  virtual std::u16string GetSuggestedFilename() const = 0;
 
   // Returns true if the last download operation was fully or partially
   // performed while the application was not active.

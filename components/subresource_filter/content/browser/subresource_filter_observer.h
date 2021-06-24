@@ -5,7 +5,7 @@
 #ifndef COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_SUBRESOURCE_FILTER_OBSERVER_H_
 #define COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_SUBRESOURCE_FILTER_OBSERVER_H_
 
-#include "components/safe_browsing/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/db/v4_protocol_manager_util.h"
 #include "components/subresource_filter/content/browser/subresource_filter_safe_browsing_client.h"
 #include "components/subresource_filter/core/common/activation_decision.h"
 #include "components/subresource_filter/core/common/load_policy.h"
@@ -41,7 +41,7 @@ class SubresourceFilterObserver {
   // threat types.
   virtual void OnSafeBrowsingChecksComplete(
       content::NavigationHandle* navigation_handle,
-      const SafeBrowsingCheckResults& results) {}
+      const SubresourceFilterSafeBrowsingClient::CheckResult& result) {}
 
   // Called at most once per navigation when page activation is computed. This
   // will be called before ReadyToCommitNavigation.
@@ -50,16 +50,18 @@ class SubresourceFilterObserver {
       const mojom::ActivationState& activation_state) {}
 
   // Called before navigation commit, either at the WillStartRequest stage or
-  // WillRedirectRequest stage. |is_ad_frame| is true if |load_policy| is
-  // ALLOW or WOULD_DISALLOW or if ad tagging has determined that the frame is
-  // an ad.
+  // WillRedirectRequest stage.
   virtual void OnSubframeNavigationEvaluated(
       content::NavigationHandle* navigation_handle,
-      LoadPolicy load_policy,
-      bool is_ad_subframe) {}
+      LoadPolicy load_policy) {}
 
-  virtual void OnAdSubframeDetected(
-      content::RenderFrameHost* render_frame_host) {}
+  // Called when a frame is tagged or untagged as an ad, along with the frame's
+  // current status as an ad subframe and the evidence which resulted in the
+  // change. This will be called prior to commit time in the case of an initial
+  // synchronous load or at ReadyToCommitNavigation otherwise.
+  virtual void OnIsAdSubframeChanged(
+      content::RenderFrameHost* render_frame_host,
+      bool is_ad_subframe) {}
 };
 
 }  // namespace subresource_filter

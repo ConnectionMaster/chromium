@@ -6,26 +6,28 @@
 #define CHROME_RENDERER_CHROME_RENDER_THREAD_OBSERVER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/weak_ptr.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/common/renderer_configuration.mojom.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "content/public/renderer/render_thread_observer.h"
-#include "mojo/public/cpp/bindings/associated_binding_set.h"
+#include "mojo/public/cpp/bindings/associated_receiver_set.h"
+#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/renderer/chromeos_delayed_callback_group.h"
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
-namespace content {
-class ResourceDispatcherDelegate;
-}
+namespace blink {
+class WebResourceRequestSenderDelegate;
+}  // namespace blink
 
 namespace visitedlink {
-class VisitedLinkSlave;
+class VisitedLinkReader;
 }
 
 // This class filters the incoming control messages (i.e. ones not destined for
@@ -35,7 +37,7 @@ class VisitedLinkSlave;
 class ChromeRenderThreadObserver : public content::RenderThreadObserver,
                                    public chrome::mojom::RendererConfiguration {
  public:
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // A helper class to handle Mojo calls that need to be dispatched to the IO
   // thread instead of the main thread as is the norm.
   // This class is thread-safe.
@@ -43,7 +45,8 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
                            public base::RefCountedThreadSafe<ChromeOSListener> {
    public:
     static scoped_refptr<ChromeOSListener> Create(
-        chrome::mojom::ChromeOSListenerRequest chromeos_listener_request);
+        mojo::PendingReceiver<chrome::mojom::ChromeOSListener>
+            chromeos_listener_receiver);
 
     // Is the merge session still running?
     bool IsMergeSessionRunning() const;
@@ -62,17 +65,17 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
     ChromeOSListener();
     ~ChromeOSListener() override;
 
-    void BindOnIOThread(
-        chrome::mojom::ChromeOSListenerRequest chromeos_listener_request);
+    void BindOnIOThread(mojo::PendingReceiver<chrome::mojom::ChromeOSListener>
+                            chromeos_listener_receiver);
 
     scoped_refptr<DelayedCallbackGroup> session_merged_callbacks_;
     bool merge_session_running_ GUARDED_BY(lock_);
     mutable base::Lock lock_;
-    mojo::Binding<chrome::mojom::ChromeOSListener> binding_;
+    mojo::Receiver<chrome::mojom::ChromeOSListener> receiver_{this};
 
     DISALLOW_COPY_AND_ASSIGN(ChromeOSListener);
   };
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   ChromeRenderThreadObserver();
   ~ChromeRenderThreadObserver() override;
@@ -87,18 +90,15 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
   // |ChromeRenderThreadObserver|.
   const RendererContentSettingRules* content_setting_rules() const;
 
-  visitedlink::VisitedLinkSlave* visited_link_slave() {
-    return visited_link_slave_.get();
+  visitedlink::VisitedLinkReader* visited_link_reader() {
+    return visited_link_reader_.get();
   }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   scoped_refptr<ChromeOSListener> chromeos_listener() const {
     return chromeos_listener_;
   }
-#endif  // defined(OS_CHROMEOS)
-
-  // Return a weak pointer to |this|.
-  base::WeakPtr<ChromeRenderThreadObserver> GetWeakPtr();
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
  private:
   // content::RenderThreadObserver:
@@ -108,34 +108,32 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
       blink::AssociatedInterfaceRegistry* associated_interfaces) override;
 
   // chrome::mojom::RendererConfiguration:
-  void SetInitialConfiguration(bool is_incognito_process,
-                               chrome::mojom::ChromeOSListenerRequest
-                                   chromeos_listener_request) override;
+  void SetInitialConfiguration(
+      bool is_incognito_process,
+      mojo::PendingReceiver<chrome::mojom::ChromeOSListener>
+          chromeos_listener_receiver) override;
   void SetConfiguration(chrome::mojom::DynamicParamsPtr params) override;
   void SetContentSettingRules(
       const RendererContentSettingRules& rules) override;
-  void SetFieldTrialGroup(const std::string& trial_name,
-                          const std::string& group_name) override;
-
   void OnRendererConfigurationAssociatedRequest(
-      chrome::mojom::RendererConfigurationAssociatedRequest request);
+      mojo::PendingAssociatedReceiver<chrome::mojom::RendererConfiguration>
+          receiver);
 
   static bool is_incognito_process_;
-  std::unique_ptr<content::ResourceDispatcherDelegate> resource_delegate_;
+  std::unique_ptr<blink::WebResourceRequestSenderDelegate>
+      resource_request_sender_delegate_;
   RendererContentSettingRules content_setting_rules_;
 
-  std::unique_ptr<visitedlink::VisitedLinkSlave> visited_link_slave_;
+  std::unique_ptr<visitedlink::VisitedLinkReader> visited_link_reader_;
 
-  mojo::AssociatedBindingSet<chrome::mojom::RendererConfiguration>
-      renderer_configuration_bindings_;
+  mojo::AssociatedReceiverSet<chrome::mojom::RendererConfiguration>
+      renderer_configuration_receivers_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Only set if the Chrome OS merge session was running when the renderer
   // was started.
   scoped_refptr<ChromeOSListener> chromeos_listener_;
-#endif  // defined(OS_CHROMEOS)
-
-  base::WeakPtrFactory<ChromeRenderThreadObserver> weak_factory_;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   DISALLOW_COPY_AND_ASSIGN(ChromeRenderThreadObserver);
 };

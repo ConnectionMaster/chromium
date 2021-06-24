@@ -1,2 +1,4 @@
 rootWebArea
-++navigation
+++genericContainer ignored
+++++genericContainer ignored
+++++++navigation

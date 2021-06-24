@@ -22,6 +22,7 @@
 #include "net/url_request/url_request_test_util.h"
 #include "net/websockets/websocket_handshake_stream_create_helper.h"
 #include "net/websockets/websocket_stream.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace url {
 class Origin;
@@ -86,7 +87,7 @@ std::string WebSocketStandardResponse(const std::string& extra_headers);
 HttpRequestHeaders WebSocketCommonTestHeaders();
 
 // Generates a handshake request header block when using WebSockets over HTTP/2.
-spdy::SpdyHeaderBlock WebSocketHttp2Request(
+spdy::Http2HeaderBlock WebSocketHttp2Request(
     const std::string& path,
     const std::string& authority,
     const std::string& origin,
@@ -94,7 +95,7 @@ spdy::SpdyHeaderBlock WebSocketHttp2Request(
 
 // Generates a handshake response header block when using WebSockets over
 // HTTP/2.
-spdy::SpdyHeaderBlock WebSocketHttp2Response(
+spdy::Http2HeaderBlock WebSocketHttp2Response(
     const WebSocketExtraHeaders& extra_headers);
 
 // This class provides a convenient way to construct a MockClientSocketFactory
@@ -184,22 +185,25 @@ class DummyConnectDelegate : public WebSocketStream::ConnectDelegate {
   DummyConnectDelegate() = default;
   ~DummyConnectDelegate() override = default;
   void OnCreateRequest(URLRequest* url_request) override {}
-  void OnSuccess(std::unique_ptr<WebSocketStream> stream) override {}
-  void OnFailure(const std::string& message) override {}
+  void OnSuccess(
+      std::unique_ptr<WebSocketStream> stream,
+      std::unique_ptr<WebSocketHandshakeResponseInfo> response) override {}
+  void OnFailure(const std::string& message,
+                 int net_error,
+                 absl::optional<int> response_code) override {}
   void OnStartOpeningHandshake(
       std::unique_ptr<WebSocketHandshakeRequestInfo> request) override {}
-  void OnFinishOpeningHandshake(
-      std::unique_ptr<WebSocketHandshakeResponseInfo> response) override {}
   void OnSSLCertificateError(
       std::unique_ptr<WebSocketEventInterface::SSLErrorCallbacks>
           ssl_error_callbacks,
+      int net_error,
       const SSLInfo& ssl_info,
       bool fatal) override {}
   int OnAuthRequired(const AuthChallengeInfo& auth_info,
                      scoped_refptr<HttpResponseHeaders> response_headers,
                      const IPEndPoint& remote_endpoint,
                      base::OnceCallback<void(const AuthCredentials*)> callback,
-                     base::Optional<AuthCredentials>* credentials) override;
+                     absl::optional<AuthCredentials>* credentials) override;
 };
 
 // WebSocketStreamRequestAPI implementation that sets the value of
@@ -212,7 +216,9 @@ class TestWebSocketStreamRequestAPI : public WebSocketStreamRequestAPI {
       WebSocketBasicHandshakeStream* handshake_stream) override;
   void OnHttp2HandshakeStreamCreated(
       WebSocketHttp2HandshakeStream* handshake_stream) override;
-  void OnFailure(const std::string& message) override {}
+  void OnFailure(const std::string& message,
+                 int net_error,
+                 absl::optional<int> response_code) override {}
 };
 
 // A sub-class of WebSocketHandshakeStreamCreateHelper which sets a

@@ -9,12 +9,16 @@
 
 #include "base/command_line.h"
 #include "base/strings/stringprintf.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/apps/app_service/app_launch_params.h"
+#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/extensions/api/tabs/tabs_api.h"
 #include "chrome/browser/extensions/extension_function_test_utils.h"
 #include "chrome/browser/ui/apps/chrome_app_delegate.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
-#include "chrome/browser/ui/extensions/application_launch.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/test/browser_test_utils.h"
@@ -27,9 +31,9 @@
 #include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/media/router/media_routes_observer.h"
-#include "chrome/browser/ui/ash/cast_config_client_media_router.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ui/ash/cast_config_controller_media_router.h"
+#include "components/media_router/browser/media_routes_observer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #endif
 
@@ -62,7 +66,7 @@ void PlatformAppBrowserTest::SetUpCommandLine(base::CommandLine* command_line) {
 
 void PlatformAppBrowserTest::SetUpOnMainThread() {
   ExtensionApiTest::SetUpOnMainThread();
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Mock the Media Router in extension api tests. Several of the
   // PlatformAppBrowserTest suites call RunAllPendingInMessageLoop() when there
   // are mojo messages that will call back into Profile creation through the
@@ -71,13 +75,13 @@ void PlatformAppBrowserTest::SetUpOnMainThread() {
   ON_CALL(*media_router_, RegisterMediaSinksObserver(testing::_))
       .WillByDefault(testing::Return(true));
 
-  CastConfigClientMediaRouter::SetMediaRouterForTest(media_router_.get());
+  CastConfigControllerMediaRouter::SetMediaRouterForTest(media_router_.get());
 #endif
 }
 
 void PlatformAppBrowserTest::TearDownOnMainThread() {
-#if defined(OS_CHROMEOS)
-  CastConfigClientMediaRouter::SetMediaRouterForTest(nullptr);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  CastConfigControllerMediaRouter::SetMediaRouterForTest(nullptr);
 #endif
   ExtensionApiTest::TearDownOnMainThread();
 }
@@ -154,16 +158,21 @@ const Extension* PlatformAppBrowserTest::InstallAndLaunchPlatformApp(
 }
 
 void PlatformAppBrowserTest::LaunchPlatformApp(const Extension* extension) {
-  OpenApplication(AppLaunchParams(
-      browser()->profile(), extension, LAUNCH_CONTAINER_NONE,
-      WindowOpenDisposition::NEW_WINDOW, extensions::SOURCE_TEST));
+  apps::AppServiceProxyFactory::GetForProfile(profile())
+      ->BrowserAppLauncher()
+      ->LaunchAppWithParams(apps::AppLaunchParams(
+          extension->id(), LaunchContainer::kLaunchContainerNone,
+          WindowOpenDisposition::NEW_WINDOW,
+          apps::mojom::AppLaunchSource::kSourceTest));
 }
 
 void PlatformAppBrowserTest::LaunchHostedApp(const Extension* extension) {
-  OpenApplication(CreateAppLaunchParamsUserContainer(
-      browser()->profile(), extension,
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      extensions::SOURCE_COMMAND_LINE));
+  apps::AppServiceProxyFactory::GetForProfile(profile())
+      ->BrowserAppLauncher()
+      ->LaunchAppWithParams(CreateAppLaunchParamsUserContainer(
+          browser()->profile(), extension,
+          WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          apps::mojom::AppLaunchSource::kSourceCommandLine));
 }
 
 WebContents* PlatformAppBrowserTest::GetFirstAppWindowWebContents() {
@@ -234,8 +243,9 @@ AppWindow* PlatformAppBrowserTest::CreateAppWindowFromParams(
     content::BrowserContext* context,
     const Extension* extension,
     const AppWindow::CreateParams& params) {
-  AppWindow* window = new AppWindow(browser()->profile(),
-                                    new ChromeAppDelegate(true), extension);
+  AppWindow* window = new AppWindow(
+      browser()->profile(), new ChromeAppDelegate(browser()->profile(), true),
+      extension);
   ProcessManager* process_manager = ProcessManager::Get(context);
   ExtensionHost* background_host =
       process_manager->GetBackgroundHostForExtension(extension->id());

@@ -6,6 +6,8 @@
 
 #include "base/json/json_reader.h"
 #include "base/values.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "printing/print_settings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -47,33 +49,45 @@ const char kPrinterSettings[] = R"({
 
 }  // namespace
 
+TEST(PrintSettingsConversionTest, ConversionTest_InvalidSettings) {
+  absl::optional<base::Value> value = base::JSONReader::Read("{}");
+  ASSERT_TRUE(value.has_value());
+  EXPECT_FALSE(PrintSettingsFromJobSettings(value.value()));
+}
+
 TEST(PrintSettingsConversionTest, ConversionTest) {
-  std::unique_ptr<base::Value> value =
-      base::JSONReader::ReadDeprecated(kPrinterSettings);
-  ASSERT_TRUE(value);
-  PrintSettings settings;
-  bool success = PrintSettingsFromJobSettings(
-      base::Value::FromUniquePtrValue(std::move(value)), &settings);
-  ASSERT_TRUE(success);
+  absl::optional<base::Value> value = base::JSONReader::Read(kPrinterSettings);
+  ASSERT_TRUE(value.has_value());
+  std::unique_ptr<PrintSettings> settings =
+      PrintSettingsFromJobSettings(value.value());
+  ASSERT_TRUE(settings);
 #if defined(OS_CHROMEOS)
-  EXPECT_TRUE(settings.send_user_info());
-  EXPECT_EQ("username@domain.net", settings.username());
-  EXPECT_EQ("0000", settings.pin_value());
+  EXPECT_TRUE(settings->send_user_info());
+  EXPECT_EQ("username@domain.net", settings->username());
+  EXPECT_EQ("0000", settings->pin_value());
 #endif
+  EXPECT_EQ(settings->dpi_horizontal(), 300);
+  EXPECT_EQ(settings->dpi_vertical(), 300);
+  value->SetIntKey("dpiVertical", 600);
+  settings = PrintSettingsFromJobSettings(value.value());
+  ASSERT_TRUE(settings);
+  EXPECT_EQ(settings->dpi_horizontal(), 300);
+  EXPECT_EQ(settings->dpi_vertical(), 600);
+  EXPECT_TRUE(value->RemoveKey("dpiVertical"));
+  settings = PrintSettingsFromJobSettings(value.value());
+  EXPECT_FALSE(settings);
 }
 
 #if defined(OS_CHROMEOS)
 TEST(PrintSettingsConversionTest, ConversionTest_DontSendUsername) {
-  std::unique_ptr<base::Value> value =
-      base::JSONReader::ReadDeprecated(kPrinterSettings);
-  ASSERT_TRUE(value);
+  absl::optional<base::Value> value = base::JSONReader::Read(kPrinterSettings);
+  ASSERT_TRUE(value.has_value());
   value->SetKey(kSettingSendUserInfo, base::Value(false));
-  PrintSettings settings;
-  bool success = PrintSettingsFromJobSettings(
-      base::Value::FromUniquePtrValue(std::move(value)), &settings);
-  ASSERT_TRUE(success);
-  EXPECT_FALSE(settings.send_user_info());
-  EXPECT_EQ("", settings.username());
+  std::unique_ptr<PrintSettings> settings =
+      PrintSettingsFromJobSettings(value.value());
+  ASSERT_TRUE(settings);
+  EXPECT_FALSE(settings->send_user_info());
+  EXPECT_EQ("", settings->username());
 }
 #endif
 

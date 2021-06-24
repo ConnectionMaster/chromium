@@ -9,20 +9,19 @@
 #include "base/files/file_util.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/string_util.h"
-#include "base/task/lazy_task_runner.h"
-#include "base/task/post_task.h"
+#include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/third_party/icu/icu_utf.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "storage/browser/fileapi/file_system_context.h"
+#include "storage/browser/file_system/file_system_context.h"
 
 namespace content {
 
 scoped_refptr<base::SequencedTaskRunner> impl_task_runner() {
   constexpr base::TaskTraits kBlockingTraits = {
       base::MayBlock(), base::TaskPriority::BEST_EFFORT};
-  static base::LazySequencedTaskRunner s_sequenced_task_unner =
-      LAZY_SEQUENCED_TASK_RUNNER_INITIALIZER(kBlockingTraits);
+  static base::LazyThreadPoolSequencedTaskRunner s_sequenced_task_unner =
+      LAZY_THREAD_POOL_SEQUENCED_TASK_RUNNER_INITIALIZER(kBlockingTraits);
   return s_sequenced_task_unner.Get();
 }
 
@@ -64,7 +63,7 @@ bool DevToolsStreamFile::InitOnFileSequenceIfNeeded() {
     LOG(ERROR) << "Failed to open temporary file: " << temp_path.value() << ", "
                << base::File::ErrorToString(file_.error_details());
     had_errors_ = true;
-    DeleteFile(temp_path, false);
+    base::DeleteFile(temp_path);
     return false;
   }
   return true;
@@ -111,19 +110,20 @@ void DevToolsStreamFile::ReadOnFileSequence(off_t position,
       } else {
         buffer.resize(size_got);
       }
-      data.reset(new std::string(std::move(buffer)));
       status = size_got ? StatusSuccess : StatusEOF;
       last_read_pos_ = position + size_got;
+      if (binary_) {
+        data = std::make_unique<std::string>();
+        base::Base64Encode(buffer, data.get());
+        base64_encoded = true;
+      } else {
+        data = std::make_unique<std::string>(std::move(buffer));
+      }
     }
   }
-  if (binary_) {
-    std::string raw_data(std::move(*data));
-    base::Base64Encode(raw_data, data.get());
-    base64_encoded = true;
-  }
-  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                           base::BindOnce(std::move(callback), std::move(data),
-                                          base64_encoded, status));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), std::move(data),
+                                base64_encoded, status));
 }
 
 void DevToolsStreamFile::AppendOnFileSequence(

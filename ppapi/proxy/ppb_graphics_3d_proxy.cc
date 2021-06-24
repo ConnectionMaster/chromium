@@ -4,6 +4,8 @@
 
 #include "ppapi/proxy/ppb_graphics_3d_proxy.h"
 
+#include <memory>
+
 #include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/client/gles2_implementation.h"
@@ -64,9 +66,9 @@ bool Graphics3D::Init(gpu::gles2::GLES2Implementation* share_gles2,
   InstanceData* data = dispatcher->GetInstanceData(host_resource().instance());
   DCHECK(data);
 
-  command_buffer_.reset(new PpapiCommandBufferProxy(
+  command_buffer_ = std::make_unique<PpapiCommandBufferProxy>(
       host_resource(), &data->flush_info, dispatcher, capabilities,
-      std::move(shared_state), command_buffer_id));
+      std::move(shared_state), command_buffer_id);
 
   return CreateGLES2Impl(share_gles2);
 }
@@ -83,7 +85,7 @@ scoped_refptr<gpu::Buffer> Graphics3D::CreateTransferBuffer(
     uint32_t size,
     int32_t* id) {
   *id = -1;
-  return NULL;
+  return nullptr;
 }
 
 PP_Bool Graphics3D::DestroyTransferBuffer(int32_t id) {
@@ -161,7 +163,7 @@ PP_Resource PPB_Graphics3D_Proxy::CreateProxyResource(
     return PP_ERROR_BADARGUMENT;
 
   HostResource share_host;
-  gpu::gles2::GLES2Implementation* share_gles2 = NULL;
+  gpu::gles2::GLES2Implementation* share_gles2 = nullptr;
   if (share_context != 0) {
     EnterResourceNoLock<PPB_Graphics3D_API> enter(share_context, true);
     if (enter.failed())
@@ -217,8 +219,8 @@ PP_Resource PPB_Graphics3D_Proxy::CreateProxyResource(
         case PP_GRAPHICS3DATTRIB_GPU_PREFERENCE:
           attrib_helper.gpu_preference =
               (value == PP_GRAPHICS3DATTRIB_GPU_PREFERENCE_LOW_POWER)
-                  ? gl::PreferIntegratedGpu
-                  : gl::PreferDiscreteGpu;
+                  ? gl::GpuPreference::kLowPower
+                  : gl::GpuPreference::kHighPerformance;
           break;
         case PP_GRAPHICS3DATTRIB_SINGLE_BUFFER:
           attrib_helper.single_buffer = !!value;
@@ -294,7 +296,7 @@ void PPB_Graphics3D_Proxy::OnMsgCreate(
     gpu::Capabilities* capabilities,
     SerializedHandle* shared_state,
     gpu::CommandBufferId* command_buffer_id) {
-  shared_state->set_null_shmem();
+  shared_state->set_null_shmem_region();
 
   thunk::EnterResourceCreation enter(instance);
 

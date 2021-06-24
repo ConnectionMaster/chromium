@@ -8,6 +8,7 @@
 #include "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
 #include "base/no_destructor.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/native_theme/native_theme_base.h"
 #include "ui/native_theme/native_theme_export.h"
 
@@ -36,28 +37,45 @@ class NATIVE_THEME_EXPORT NativeThemeMac : public NativeThemeBase {
   // an appropriate gray.
   static SkColor ApplySystemControlTint(SkColor color);
 
-  // If the system is not running Mojave, or not forcing dark/light mode, do
-  // nothing. Otherwise, set the correct appearance on NSApp, adjusting for High
-  // Contrast if necessary.
-  // TODO(lgrey): Remove this when we're no longer suppressing dark mode by
-  // default.
-  static void MaybeUpdateBrowserAppearance();
+  // NativeTheme:
+  SkColor GetSystemColorDeprecated(ColorId color_id,
+                                   ColorScheme color_scheme,
+                                   bool apply_processing) const override;
+  SkColor GetSystemButtonPressedColor(SkColor base_color) const override;
+  PreferredContrast CalculatePreferredContrast() const override;
 
-  // Overridden from NativeTheme:
-  SkColor GetSystemColor(ColorId color_id) const override;
-
-  // Overridden from NativeThemeBase:
+  // NativeThemeBase:
+  void Paint(cc::PaintCanvas* canvas,
+             Part part,
+             State state,
+             const gfx::Rect& rect,
+             const ExtraParams& extra,
+             ColorScheme color_scheme,
+             const absl::optional<SkColor>& accent_color) const override;
   void PaintMenuPopupBackground(
       cc::PaintCanvas* canvas,
       const gfx::Size& size,
-      const MenuBackgroundExtraParams& menu_background) const override;
-  void PaintMenuItemBackground(
-      cc::PaintCanvas* canvas,
-      State state,
-      const gfx::Rect& rect,
-      const MenuItemExtraParams& menu_item) const override;
-  bool UsesHighContrastColors() const override;
-  bool SystemDarkModeEnabled() const override;
+      const MenuBackgroundExtraParams& menu_background,
+      ColorScheme color_scheme) const override;
+  void PaintMenuItemBackground(cc::PaintCanvas* canvas,
+                               State state,
+                               const gfx::Rect& rect,
+                               const MenuItemExtraParams& menu_item,
+                               ColorScheme color_scheme) const override;
+  void PaintMacScrollbarThumb(cc::PaintCanvas* canvas,
+                              Part part,
+                              State state,
+                              const gfx::Rect& rect,
+                              const ScrollbarExtraParams& scroll_thumb,
+                              ColorScheme color_scheme) const;
+  // Paint the track. |track_bounds| is the bounds for the track.
+  void PaintMacScrollBarTrackOrCorner(cc::PaintCanvas* canvas,
+                                      Part part,
+                                      State state,
+                                      const ScrollbarExtraParams& extra_params,
+                                      const gfx::Rect& rect,
+                                      ColorScheme color_scheme,
+                                      bool is_corner) const;
 
   // Paints the styled button shape used for default controls on Mac. The basic
   // style is used for dialog buttons, comboboxes, and tabbed pane tabs.
@@ -70,28 +88,81 @@ class NATIVE_THEME_EXPORT NativeThemeMac : public NativeThemeBase {
                                         bool round_right,
                                         bool focus);
 
-  // Updates cached dark mode status and notifies observers if it has changed.
-  void UpdateDarkModeStatus();
-
  protected:
   friend class NativeTheme;
   friend class base::NoDestructor<NativeThemeMac>;
   static NativeThemeMac* instance();
 
- private:
-  NativeThemeMac();
+  NativeThemeMac(bool configure_web_instance, bool should_only_use_dark_colors);
   ~NativeThemeMac() override;
 
+ private:
   // Paint the selected menu item background, and a border for emphasis when in
   // high contrast.
   void PaintSelectedMenuItem(cc::PaintCanvas* canvas,
-                             const gfx::Rect& rect) const;
+                             const gfx::Rect& rect,
+                             ColorScheme color_scheme) const;
+
+  void PaintScrollBarTrackGradient(cc::PaintCanvas* canvas,
+                                   const gfx::Rect& rect,
+                                   const ScrollbarExtraParams& extra_params,
+                                   bool is_corner,
+                                   ColorScheme color_scheme) const;
+  void PaintScrollbarTrackInnerBorder(cc::PaintCanvas* canvas,
+                                      const gfx::Rect& rect,
+                                      const ScrollbarExtraParams& extra_params,
+                                      bool is_corner,
+                                      ColorScheme color_scheme) const;
+  void PaintScrollbarTrackOuterBorder(cc::PaintCanvas* canvas,
+                                      const gfx::Rect& rect,
+                                      const ScrollbarExtraParams& extra_params,
+                                      bool is_corner,
+                                      ColorScheme color_scheme) const;
+
+  void InitializeDarkModeStateAndObserver();
+
+  void ConfigureWebInstance() override;
+
+  // Used by the GetSystem to run the switch for MacOS override colors that may
+  // use named NS system colors. This is a separate function from GetSystemColor
+  // to make sure the NSAppearance can be set in a scoped way.
+  absl::optional<SkColor> GetOSColor(ColorId color_id,
+                                     ColorScheme color_scheme) const;
+
+  enum ScrollbarPart {
+    kThumb,
+    kTrackInnerBorder,
+    kTrackOuterBorder,
+  };
+
+  absl::optional<SkColor> GetScrollbarColor(
+      ScrollbarPart part,
+      ColorScheme color_scheme,
+      const ScrollbarExtraParams& extra_params) const;
+
+  int ScrollbarTrackBorderWidth(float scale_from_dip) const {
+    constexpr float border_width = 1.0f;
+    return scale_from_dip * border_width;
+  }
+
+  // The amount the thumb is inset from the ends and the inside edge of track
+  // border.
+  int GetScrollbarThumbInset(bool is_overlay, float scale_from_dip) const {
+    return scale_from_dip * (is_overlay ? 2.0f : 3.0f);
+  }
+
+  // Returns the minimum size for the thumb. We will not inset the thumb if it
+  // will be smaller than this size.
+  gfx::Size GetThumbMinSize(bool vertical) const;
 
   base::scoped_nsobject<NativeThemeEffectiveAppearanceObserver>
       appearance_observer_;
   id high_contrast_notification_token_;
 
-  bool is_dark_mode_ = false;
+  // Used to notify the web native theme of changes to dark mode and high
+  // contrast.
+  std::unique_ptr<NativeTheme::ColorSchemeNativeThemeObserver>
+      color_scheme_observer_;
 
   DISALLOW_COPY_AND_ASSIGN(NativeThemeMac);
 };

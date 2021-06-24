@@ -7,32 +7,21 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/feature_list.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/policy/profile_policy_connector_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/managed_ui.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/base/l10n/l10n_util.h"
-
-#if defined(OS_CHROMEOS)
-#include "ui/chromeos/devicetype_utils.h"
-#endif
 
 namespace {
 
 policy::PolicyService* GetProfilePolicyService(Profile* profile) {
-  auto* profile_connector =
-      policy::ProfilePolicyConnectorFactory::GetForBrowserContext(profile);
+  auto* profile_connector = profile->GetProfilePolicyConnector();
   return profile_connector->policy_service();
 }
 
@@ -122,21 +111,12 @@ void ManagedUIHandler::RemoveObservers() {
 std::unique_ptr<base::DictionaryValue> ManagedUIHandler::GetDataSourceUpdate()
     const {
   auto update = std::make_unique<base::DictionaryValue>();
-
-  bool link_to_management_page = base::FeatureList::IsEnabled(
-      features::kLinkManagedNoticeToChromeUIManagementURL);
-
-  update->SetKey("managedByOrg",
-                 base::Value(l10n_util::GetStringFUTF16(
-                     IDS_MANAGED_BY_ORG_WITH_HYPERLINK,
-                     base::UTF8ToUTF16(link_to_management_page
-                                           ? chrome::kChromeUIManagementURL
-                                           : chrome::kManagedUiLearnMoreUrl)
-#if defined(OS_CHROMEOS)
-                         ,
-                     ui::GetChromeOSDeviceName()
+  update->SetKey("browserManagedByOrg",
+                 base::Value(chrome::GetManagedUiWebUILabel(profile_)));
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  update->SetKey("deviceManagedByOrg",
+                 base::Value(chrome::GetDeviceManagedUiWebUILabel()));
 #endif
-                         )));
   update->SetKey("isManaged", base::Value(managed_));
   return update;
 }

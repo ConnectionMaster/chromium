@@ -10,7 +10,7 @@
  * @suppress {checkTypes, checkVars}
  */
 
-goog.require('__crWeb.base');
+// Requires __crWeb.base
 
 /**
  * Namespace for this module.
@@ -39,18 +39,19 @@ __gCrWeb.translate['installCallbacks'] = function() {
         'errorCode': cr.googleTranslate.errorCode,
         'loadTime': cr.googleTranslate.loadTime,
         'readyTime': cr.googleTranslate.readyTime});
-  }
+  };
 
   /**
    * Sets a callback to inform host of the result of translation.
    */
   cr.googleTranslate.resultCallback = function() {
     __gCrWeb.message.invokeOnHost({
-        'command': 'translate.status',
-        'errorCode': cr.googleTranslate.errorCode,
-        'originalPageLanguage': cr.googleTranslate.sourceLang,
-        'translationTime': cr.googleTranslate.translationTime});
-  }
+      'command': 'translate.status',
+      'errorCode': cr.googleTranslate.errorCode,
+      'pageSourceLanguage': cr.googleTranslate.sourceLang,
+      'translationTime': cr.googleTranslate.translationTime
+    });
+  };
 
   /**
    * Sets a callback to inform host to download javascript.
@@ -59,14 +60,14 @@ __gCrWeb.translate['installCallbacks'] = function() {
     __gCrWeb.message.invokeOnHost({
         'command': 'translate.loadjavascript',
         'url': url});
-  }
+  };
 };
 
 /**
  * Redefine XMLHttpRequest's open to capture request configurations.
  * Only redefines once because this script may be injected multiple times.
  */
-if (typeof(XMLHttpRequest.prototype.realOpen) == 'undefined') {
+if (typeof XMLHttpRequest.prototype.realOpen === 'undefined') {
   XMLHttpRequest.prototype.realOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
     this.savedMethod = method;
@@ -75,7 +76,7 @@ if (typeof(XMLHttpRequest.prototype.realOpen) == 'undefined') {
     this.savedUser = user;
     this.savedPassword = password;
     this.realOpen(method, url, async, user, password);
-  }
+  };
 }
 
 /**
@@ -89,14 +90,14 @@ __gCrWeb.translate['xhrs'] = [];
  * predefined translate security origin.
  * Only redefines once because this script may be injected multiple times.
  */
-if (typeof(XMLHttpRequest.prototype.realSend) == 'undefined') {
+if (typeof XMLHttpRequest.prototype.realSend === 'undefined') {
   XMLHttpRequest.prototype.realSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function(body) {
     // If this is a translate request, save this xhr and proxy the request to
     // the browser. Else, pass it through to the original implementation.
     // |securityOrigin| is predefined by translate_script.cc.
     if (this.savedUrl.startsWith(securityOrigin)) {
-      var length = __gCrWeb.translate['xhrs'].push(this);
+      const length = __gCrWeb.translate['xhrs'].push(this);
       __gCrWeb.message.invokeOnHost({
           'command': 'translate.sendrequest',
           'method': this.savedMethod,
@@ -106,7 +107,7 @@ if (typeof(XMLHttpRequest.prototype.realSend) == 'undefined') {
     } else {
       this.realSend(body);
     }
-  }
+  };
 }
 
 /**

@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/chromeos/file_manager/file_manager_jstest_base.h"
+#include "chrome/browser/ash/file_manager/file_manager_jstest_base.h"
+#include "content/public/test/browser_test.h"
 
 class ImageLoaderJsTest : public FileManagerJsTestBase {
  protected:
@@ -11,17 +12,17 @@ class ImageLoaderJsTest : public FileManagerJsTestBase {
 };
 
 IN_PROC_BROWSER_TEST_F(ImageLoaderJsTest, ImageLoaderClientTest) {
-  RunGeneratedTest("/image_loader_client_unittest.html");
+  RunTestURL("image_loader_client_unittest.m_gen.html");
 }
 
 IN_PROC_BROWSER_TEST_F(ImageLoaderJsTest, CacheTest) {
-  RunGeneratedTest("/cache_unittest.html");
+  RunTestURL("cache_unittest.m_gen.html");
 }
 
 IN_PROC_BROWSER_TEST_F(ImageLoaderJsTest, ImageLoaderTest) {
-  RunGeneratedTest("/image_loader_unittest.html");
+  RunTestURL("image_loader_unittest.m_gen.html");
 }
 
-IN_PROC_BROWSER_TEST_F(ImageLoaderJsTest, PiexLoaderTest) {
-  RunGeneratedTest("/piex_loader_unittest.html");
+IN_PROC_BROWSER_TEST_F(ImageLoaderJsTest, SchedulerTest) {
+  RunTestURL("scheduler_unittest.m_gen.html");
 }

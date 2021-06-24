@@ -30,7 +30,6 @@
 #include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/modules/gamepad/gamepad_button.h"
 #include "third_party/blink/renderer/modules/gamepad/gamepad_haptic_actuator.h"
-#include "third_party/blink/renderer/modules/gamepad/gamepad_pose.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
@@ -51,24 +50,29 @@ class MODULES_EXPORT Gamepad final : public ScriptWrappable {
     virtual ~Client() = default;
   };
 
-  explicit Gamepad(Client* client, unsigned index);
+  Gamepad(Client* client,
+          int index,
+          base::TimeTicks time_origin,
+          base::TimeTicks time_floor);
   ~Gamepad() override;
+
+  void UpdateFromDeviceState(const device::Gamepad&,
+                             bool cross_origin_isolated_capability);
 
   typedef Vector<double> DoubleVector;
 
   const String& id() const { return id_; }
   void SetId(const String& id) { id_ = id; }
 
-  unsigned index() const { return index_; }
+  int index() const { return index_; }
 
   bool connected() const { return connected_; }
   void SetConnected(bool val) { connected_ = val; }
 
   DOMHighResTimeStamp timestamp() const { return timestamp_; }
-  void SetTimestamp(DOMHighResTimeStamp val) { timestamp_ = val; }
 
   const String& mapping() const { return mapping_; }
-  void SetMapping(const String& val) { mapping_ = val; }
+  void SetMapping(device::GamepadMapping mapping);
 
   const DoubleVector& axes();
   void SetAxes(unsigned count, const double* data);
@@ -85,25 +89,19 @@ class MODULES_EXPORT Gamepad final : public ScriptWrappable {
     return vibration_actuator_type_;
   }
 
-  GamepadPose* pose() const { return pose_; }
-  void SetPose(const device::GamepadPose&);
-
-  const String& hand() const { return hand_; }
-  void SetHand(const device::GamepadHand&);
-
-  unsigned displayId() const { return display_id_; }
-  void SetDisplayId(unsigned val) { display_id_ = val; }
-
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
+  void SetTimestamp(const device::Gamepad& device_gamepad,
+                    bool cross_origin_isolated_capability);
+
   Member<Client> client_;
 
   // A string identifying the gamepad model.
   String id_;
 
   // The index of this gamepad within the GamepadList.
-  const unsigned index_;
+  const int index_;
 
   // True if this gamepad was still connected when gamepad state was captured.
   bool connected_;
@@ -126,15 +124,6 @@ class MODULES_EXPORT Gamepad final : public ScriptWrappable {
   // The type of haptic actuator used for vibration effects.
   device::GamepadHapticActuatorType vibration_actuator_type_;
 
-  // Snapshot of the gamepad pose.
-  Member<GamepadPose> pose_;
-
-  // A string representing the handedness of the gamepad.
-  String hand_;
-
-  // An identifier for associating a gamepad with a VR headset.
-  unsigned display_id_;
-
   // True if the data in |axes_| has changed since the last time it was
   // accessed.
   bool is_axis_data_dirty_;
@@ -142,6 +131,12 @@ class MODULES_EXPORT Gamepad final : public ScriptWrappable {
   // True if the data in |buttons_| has changed since the last time it was
   // accessed.
   bool is_button_data_dirty_;
+
+  // Base time on which all relative timestamps are based.
+  const base::TimeTicks time_origin_;
+
+  // Minimum value to use for timestamps from the device.
+  const base::TimeTicks time_floor_;
 };
 
 }  // namespace blink

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -8,6 +8,8 @@
 # GRD samples exceed the 80 character limit.
 # pylint: disable-msg=C6310
 
+from __future__ import print_function
+
 import os
 import sys
 import unittest
@@ -15,8 +17,6 @@ import unittest
 if __name__ == '__main__':
   sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 
-from grit import exception
-from grit import grd_reader
 from grit import util
 from grit.format import rc_header
 
@@ -123,15 +123,15 @@ class RcHeaderFormatterUnittest(unittest.TestCase):
                       '#define IDS_GREETING 10000\n'
                       '#define IDS_BONGO 10001\n'), ''.join(output))
 
-    # Using resource whitelist support.
-    grd.SetWhitelistSupportEnabled(True)
+    # Using resource allowlist support.
+    grd.SetAllowlistSupportEnabled(True)
     output = rc_header.FormatDefines(grd)
     self.assertEqual(('#define IDR_LOGO '
-                      '(::ui::WhitelistedResource<300>(), 300)\n'
+                      '(::ui::AllowlistedResource<300>(), 300)\n'
                       '#define IDS_GREETING '
-                      '(::ui::WhitelistedResource<10000>(), 10000)\n'
+                      '(::ui::AllowlistedResource<10000>(), 10000)\n'
                       '#define IDS_BONGO '
-                      '(::ui::WhitelistedResource<10001>(), 10001)\n'),
+                      '(::ui::AllowlistedResource<10001>(), 10001)\n'),
                      ''.join(output))
 
 if __name__ == '__main__':

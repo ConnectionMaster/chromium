@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Test CPU profile timestamps are properly sorted.\n`);
-  await TestRunner.loadModule('performance_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
   await TestRunner.showPanel('timeline');
 
   var sessionId = '6.23';
@@ -53,7 +53,7 @@
           'frame': '0x2f7b63884000',
           'scriptId': '52',
           'scriptLine': 539,
-          'scriptName': 'chrome-devtools://devtools/bundled/ui/UIUtils.js'
+          'scriptName': 'devtools://devtools/bundled/ui/UIUtils.js'
         }
       },
       'cat': 'disabled-by-default-devtools.timeline',

@@ -4,15 +4,14 @@
 
 #include "chrome/browser/vr/elements/text.h"
 
+#include "base/numerics/safe_conversions.h"
 #include "cc/paint/skia_paint_canvas.h"
 #include "chrome/browser/vr/elements/render_text_wrapper.h"
 #include "chrome/browser/vr/elements/ui_texture.h"
-#include "chrome/browser/vr/font_fallback.h"
 #include "third_party/icu/source/common/unicode/uscript.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/render_text.h"
 #include "ui/gfx/shadow_value.h"
@@ -40,7 +39,7 @@ bool IsFixedWidthLayout(TextLayoutMode mode) {
 }
 
 void UpdateRenderText(gfx::RenderText* render_text,
-                      const base::string16& text,
+                      const std::u16string& text,
                       const gfx::FontList& font_list,
                       SkColor color,
                       TextAlignment text_alignment,
@@ -156,7 +155,7 @@ class TextTexture : public UiTexture {
     SetAndDirty(&font_height_dmms_, font_height_dmms);
   }
 
-  void SetText(const base::string16& text) { SetAndDirty(&text_, text); }
+  void SetText(const std::u16string& text) { SetAndDirty(&text_, text); }
 
   void SetColor(SkColor color) { SetAndDirty(&color_, color); }
 
@@ -203,11 +202,6 @@ class TextTexture : public UiTexture {
     return lines_;
   }
 
-  void SetOnUnhandledCodePointCallback(
-      base::RepeatingCallback<void()> callback) {
-    unhandled_codepoint_callback_ = callback;
-  }
-
   void SetOnRenderTextCreated(
       base::RepeatingCallback<void(gfx::RenderText*)> callback) {
     render_text_created_callback_ = callback;
@@ -226,22 +220,22 @@ class TextTexture : public UiTexture {
  private:
   void Draw(SkCanvas* sk_canvas, const gfx::Size& texture_size) override;
 
-  void PrepareDrawStringRect(const base::string16& text,
+  void PrepareDrawStringRect(const std::u16string& text,
                              const gfx::FontList& font_list,
                              gfx::Rect* bounds,
                              const TextRenderParameters& parameters);
-  void PrepareDrawWrapText(const base::string16& text,
+  void PrepareDrawWrapText(const std::u16string& text,
                            const gfx::FontList& font_list,
                            gfx::Rect* bounds,
                            const TextRenderParameters& parameters);
-  void PrepareDrawSingleLineText(const base::string16& text,
+  void PrepareDrawSingleLineText(const std::u16string& text,
                                  const gfx::FontList& font_list,
                                  gfx::Rect* bounds,
                                  const TextRenderParameters& parameters);
 
   gfx::SizeF size_;
   gfx::Vector2d texture_offset_;
-  base::string16 text_;
+  std::u16string text_;
   float font_height_dmms_ = 0;
   float text_width_ = 0;
   TextAlignment alignment_ = kTextAlignmentCenter;
@@ -257,7 +251,6 @@ class TextTexture : public UiTexture {
   std::vector<std::unique_ptr<gfx::RenderText>> lines_;
   Text* element_ = nullptr;
 
-  base::RepeatingCallback<void()> unhandled_codepoint_callback_;
   base::RepeatingCallback<void(gfx::RenderText*)> render_text_created_callback_;
   base::RepeatingCallback<void(const gfx::RenderText&, SkCanvas*)>
       render_text_rendered_callback_;
@@ -278,7 +271,7 @@ void Text::SetFontHeightInDmm(float font_height_dmms) {
   texture_->SetFontHeightInDmm(font_height_dmms);
 }
 
-void Text::SetText(const base::string16& text) {
+void Text::SetText(const std::u16string& text) {
   texture_->SetText(text);
 }
 
@@ -353,11 +346,6 @@ void Text::SetUnsupportedCodePointsForTest(bool unsupported) {
   texture_->set_unsupported_code_points_for_test(unsupported);
 }
 
-void Text::SetOnUnhandledCodePointCallback(
-    base::RepeatingCallback<void()> callback) {
-  texture_->SetOnUnhandledCodePointCallback(callback);
-}
-
 void Text::SetOnRenderTextCreated(
     base::RepeatingCallback<void(gfx::RenderText*)> callback) {
   texture_->SetOnRenderTextCreated(callback);
@@ -401,14 +389,8 @@ gfx::Size TextTexture::LayOutText() {
     text_bounds.set_width(DmmToPixel(text_width_));
   }
 
-  gfx::FontList fonts;
-  bool check_all_characters = !!unhandled_codepoint_callback_;
-  if (!GetFontList(kDefaultFontFamily, pixel_font_height, text_, &fonts,
-                   check_all_characters) ||
-      unsupported_code_point_for_test_) {
-    if (unhandled_codepoint_callback_)
-      unhandled_codepoint_callback_.Run();
-  }
+  gfx::FontList fonts =
+      gfx::FontList(gfx::Font(kDefaultFontFamily, pixel_font_height));
 
   TextRenderParameters parameters;
   parameters.color = color_;
@@ -456,8 +438,8 @@ gfx::Size TextTexture::LayOutText() {
 
   // Note, there is no padding here whatsoever.
   if (parameters.shadows_enabled) {
-    texture_offset_ = gfx::Vector2d(gfx::ToFlooredInt(parameters.shadow_size),
-                                    gfx::ToFlooredInt(parameters.shadow_size));
+    const int offset = base::ClampFloor(parameters.shadow_size);
+    texture_offset_ = gfx::Vector2d(offset, offset);
   }
 
   set_measured();
@@ -481,7 +463,7 @@ void TextTexture::Draw(SkCanvas* sk_canvas, const gfx::Size& texture_size) {
 }
 
 void TextTexture::PrepareDrawStringRect(
-    const base::string16& text,
+    const std::u16string& text,
     const gfx::FontList& font_list,
     gfx::Rect* bounds,
     const TextRenderParameters& parameters) {
@@ -498,7 +480,7 @@ void TextTexture::PrepareDrawStringRect(
   }
 }
 
-void TextTexture::PrepareDrawWrapText(const base::string16& text,
+void TextTexture::PrepareDrawWrapText(const std::u16string& text,
                                       const gfx::FontList& font_list,
                                       gfx::Rect* bounds,
                                       const TextRenderParameters& parameters) {
@@ -506,7 +488,7 @@ void TextTexture::PrepareDrawWrapText(const base::string16& text,
   DCHECK(!parameters.cursor_enabled);
 
   gfx::Rect rect(*bounds);
-  std::vector<base::string16> strings;
+  std::vector<std::u16string> strings;
   gfx::ElideRectangleText(text, font_list, bounds->width(),
                           bounds->height() ? bounds->height() : INT_MAX,
                           gfx::WRAP_LONG_WORDS, &strings);
@@ -514,7 +496,8 @@ void TextTexture::PrepareDrawWrapText(const base::string16& text,
   int height = 0;
   int line_height = 0;
   for (size_t i = 0; i < strings.size(); i++) {
-    auto render_text = gfx::RenderText::CreateHarfBuzzInstance();
+    std::unique_ptr<gfx::RenderText> render_text =
+        gfx::RenderText::CreateRenderText();
     UpdateRenderText(render_text.get(), strings[i], font_list, parameters.color,
                      parameters.text_alignment, parameters.shadows_enabled,
                      parameters.shadow_color, parameters.shadow_size);
@@ -541,13 +524,13 @@ void TextTexture::PrepareDrawWrapText(const base::string16& text,
 }
 
 void TextTexture::PrepareDrawSingleLineText(
-    const base::string16& text,
+    const std::u16string& text,
     const gfx::FontList& font_list,
     gfx::Rect* bounds,
     const TextRenderParameters& parameters) {
   if (lines_.size() != 1) {
     lines_.clear();
-    lines_.push_back(gfx::RenderText::CreateHarfBuzzInstance());
+    lines_.push_back(gfx::RenderText::CreateRenderText());
   }
 
   auto* render_text = lines_.front().get();

@@ -5,12 +5,14 @@
 #ifndef SERVICES_NETWORK_URL_LOADER_FACTORY_H_
 #define SERVICES_NETWORK_URL_LOADER_FACTORY_H_
 
-#include <memory>
-#include <set>
-
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/mojom/cookie_access_observer.mojom.h"
+#include "services/network/public/mojom/cross_origin_embedder_policy.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
@@ -33,9 +35,8 @@ class CorsURLLoaderFactory;
 // works on each frame.
 // A URLLoaderFactory can be created with null ResourceSchedulerClient, in which
 // case requests constructed by the factory will not be throttled.
-// The CORS related part is implemented in CorsURLLoader[Factory] until
-// kOutOfBlinkCors and kNetworkService is fully enabled. Note that
-// NetworkContext::CreateURLLoaderFactory returns a CorsURLLoaderFactory,
+// Note that the CORS related part is implemented in CorsURLLoader[Factory]
+// and NetworkContext::CreateURLLoaderFactory returns a CorsURLLoaderFactory,
 // instead of a URLLoaderFactory.
 class URLLoaderFactory : public mojom::URLLoaderFactory {
  public:
@@ -49,29 +50,60 @@ class URLLoaderFactory : public mojom::URLLoaderFactory {
   ~URLLoaderFactory() override;
 
   // mojom::URLLoaderFactory implementation.
-  void CreateLoaderAndStart(mojom::URLLoaderRequest request,
-                            int32_t routing_id,
+  void CreateLoaderAndStart(mojo::PendingReceiver<mojom::URLLoader> receiver,
                             int32_t request_id,
                             uint32_t options,
                             const ResourceRequest& url_request,
-                            mojom::URLLoaderClientPtr client,
+                            mojo::PendingRemote<mojom::URLLoaderClient> client,
                             const net::MutableNetworkTrafficAnnotationTag&
                                 traffic_annotation) override;
-  void Clone(mojom::URLLoaderFactoryRequest request) override;
+  void Clone(mojo::PendingReceiver<mojom::URLLoaderFactory> receiver) override;
 
-  static constexpr int kMaxKeepaliveConnections = 256;
-  static constexpr int kMaxKeepaliveConnectionsPerProcess = 20;
-  static constexpr int kMaxKeepaliveConnectionsPerProcessForFetchAPI = 10;
+  // Called by URLLoaders created by this factory each time before a request is
+  // sent.
+  void OnBeforeURLRequest();
+
+  mojom::DevToolsObserver* GetDevToolsObserver() const;
+  mojom::CookieAccessObserver* GetCookieAccessObserver() const;
+  mojom::URLLoaderNetworkServiceObserver* GetURLLoaderNetworkServiceObserver()
+      const;
+
+  static constexpr int kMaxKeepaliveConnections = 2048;
+  static constexpr int kMaxKeepaliveConnectionsPerTopLevelFrame = 256;
+  static constexpr int kMaxTotalKeepaliveRequestSize = 512 * 1024;
 
  private:
+  // Starts the timer to call
+  // URLLoaderNetworkServiceObserver::OnLoadingStateUpdate(), if
+  // needed.
+  void MaybeStartUpdateLoadInfoTimer();
+
+  // Invoked once the browser has acknowledged receiving the previous LoadInfo.
+  // Sets |waiting_on_load_state_ack_| to false, and calls
+  // MaybeStartUpdateLoadeInfoTimer.
+  void AckUpdateLoadInfo();
+
+  // Finds the most relevant URLLoader that is outstanding and asks it to
+  // send an update.
+  void UpdateLoadInfo();
+
   // The NetworkContext that indirectly owns |this|.
   NetworkContext* const context_;
   mojom::URLLoaderFactoryParamsPtr params_;
   scoped_refptr<ResourceSchedulerClient> resource_scheduler_client_;
-  mojom::TrustedURLLoaderHeaderClientPtr header_client_;
+  mojo::Remote<mojom::TrustedURLLoaderHeaderClient> header_client_;
+  mojo::Remote<mojom::CrossOriginEmbedderPolicyReporter> coep_reporter_;
 
   // |cors_url_loader_factory_| owns this.
   cors::CorsURLLoaderFactory* cors_url_loader_factory_;
+
+  mojo::Remote<mojom::CookieAccessObserver> cookie_observer_;
+  mojo::Remote<mojom::URLLoaderNetworkServiceObserver>
+      url_loader_network_service_observer_;
+  mojo::Remote<mojom::DevToolsObserver> devtools_observer_;
+
+  base::OneShotTimer update_load_info_timer_;
+  bool waiting_on_load_state_ack_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(URLLoaderFactory);
 };

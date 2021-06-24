@@ -10,6 +10,7 @@
 #include "base/timer/timer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/events/devices/device_data_manager.h"
 #include "ui/events/event.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
 #include "ui/ozone/platform/wayland/test/test_keyboard.h"
@@ -18,12 +19,15 @@
 
 #if BUILDFLAG(USE_XKBCOMMON)
 #include "base/memory/free_deleter.h"
-#include "base/memory/shared_memory.h"
+#include "base/memory/platform_shared_memory_region.h"
+#include "base/memory/shared_memory_mapping.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "ui/events/keycodes/scoped_xkb.h"  // nogncheck
 #endif
 
 using ::testing::_;
 using ::testing::SaveArg;
+using ::testing::Values;
 
 namespace ui {
 
@@ -39,6 +43,9 @@ class WaylandKeyboardTest : public WaylandTest {
 
     Sync();
 
+    EXPECT_EQ(1u,
+              DeviceDataManager::GetInstance()->GetKeyboardDevices().size());
+
     keyboard_ = server_.seat()->keyboard();
     ASSERT_TRUE(keyboard_);
 
@@ -53,13 +60,20 @@ class WaylandKeyboardTest : public WaylandTest {
         xkb_keymap_get_as_string(xkb_keymap_.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
     DCHECK(keymap_string.get());
     size_t keymap_size = strlen(keymap_string.get()) + 1;
-    base::SharedMemory shared_keymap;
-    bool rv = shared_keymap.CreateAndMapAnonymous(keymap_size);
-    DCHECK(rv);
+
+    base::UnsafeSharedMemoryRegion shared_keymap_region =
+        base::UnsafeSharedMemoryRegion::Create(keymap_size);
+    base::WritableSharedMemoryMapping shared_keymap =
+        shared_keymap_region.Map();
+    base::subtle::PlatformSharedMemoryRegion platform_shared_keymap =
+        base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+            std::move(shared_keymap_region));
+    DCHECK(shared_keymap.IsValid());
+
     memcpy(shared_keymap.memory(), keymap_string.get(), keymap_size);
-    wl_keyboard_send_keymap(keyboard_->resource(),
-                            WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
-                            shared_keymap.handle().GetHandle(), keymap_size);
+    wl_keyboard_send_keymap(
+        keyboard_->resource(), WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
+        platform_shared_keymap.GetPlatformHandle().fd, keymap_size);
 #endif
   }
 
@@ -471,11 +485,13 @@ TEST_P(WaylandKeyboardTest, NoEventAutoRepeatBeforeTimeout) {
   EXPECT_EQ(ET_KEY_RELEASED, key_event2->type());
 }
 
-INSTANTIATE_TEST_SUITE_P(XdgVersionV5Test,
+INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          WaylandKeyboardTest,
-                         ::testing::Values(kXdgShellV5));
+                         Values(wl::ServerConfig{
+                             .shell_version = wl::ShellVersion::kStable}));
 INSTANTIATE_TEST_SUITE_P(XdgVersionV6Test,
                          WaylandKeyboardTest,
-                         ::testing::Values(kXdgShellV6));
+                         Values(wl::ServerConfig{
+                             .shell_version = wl::ShellVersion::kV6}));
 
 }  // namespace ui

@@ -29,7 +29,6 @@
 #include <ostream>  // NOLINT
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/text_affinity.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -46,12 +45,12 @@ bool CanBeAnchorNode<EditingStrategy>(Node* node) {
 template <>
 bool CanBeAnchorNode<EditingInFlatTreeStrategy>(Node* node) {
   return CanBeAnchorNode<EditingStrategy>(node) &&
-         node->CanParticipateInFlatTree();
+         (!node || !node->IsShadowRoot());
 }
 #endif
 
 template <typename Strategy>
-void PositionTemplate<Strategy>::Trace(Visitor* visitor) {
+void PositionTemplate<Strategy>::Trace(Visitor* visitor) const {
   visitor->Trace(anchor_node_);
 }
 
@@ -131,11 +130,9 @@ PositionTemplate<Strategy>::PositionTemplate(const Node* anchor_node,
     DCHECK_EQ(offset, 0);
     return;
   }
-  if (anchor_node_->IsCharacterDataNode()) {
+  if (auto* data = DynamicTo<CharacterData>(anchor_node_.Get())) {
     DCHECK_GE(offset, 0);
-    DCHECK_LE(static_cast<unsigned>(offset),
-              ToCharacterData(anchor_node_)->length())
-        << anchor_node_;
+    DCHECK_LE(static_cast<unsigned>(offset), data->length()) << anchor_node_;
     return;
   }
   DCHECK_GE(offset, 0);
@@ -183,7 +180,6 @@ Node* PositionTemplate<Strategy>::ComputeContainerNode() const {
     return nullptr;
 
   switch (AnchorType()) {
-    case PositionAnchorType::kBeforeChildren:
     case PositionAnchorType::kAfterChildren:
     case PositionAnchorType::kOffsetInAnchor:
       return anchor_node_.Get();
@@ -201,8 +197,8 @@ Node* PositionTemplate<Strategy>::ComputeContainerNode() const {
 
 template <typename Strategy>
 static int MinOffsetForNode(Node* anchor_node, int offset) {
-  if (anchor_node->IsCharacterDataNode())
-    return std::min(offset, static_cast<int>(ToCharacterData(anchor_node)->length()));
+  if (auto* data = DynamicTo<CharacterData>(anchor_node))
+    return std::min(offset, static_cast<int>(data->length()));
 
   int new_offset = 0;
   for (Node* node = Strategy::FirstChild(*anchor_node);
@@ -218,8 +214,6 @@ int PositionTemplate<Strategy>::ComputeOffsetInContainerNode() const {
     return 0;
 
   switch (AnchorType()) {
-    case PositionAnchorType::kBeforeChildren:
-      return 0;
     case PositionAnchorType::kAfterChildren:
       return LastOffsetInNode(*anchor_node_);
     case PositionAnchorType::kOffsetInAnchor:
@@ -285,8 +279,6 @@ Node* PositionTemplate<Strategy>::ComputeNodeBeforePosition() const {
   if (!anchor_node_)
     return nullptr;
   switch (AnchorType()) {
-    case PositionAnchorType::kBeforeChildren:
-      return nullptr;
     case PositionAnchorType::kAfterChildren:
       return Strategy::LastChild(*anchor_node_);
     case PositionAnchorType::kOffsetInAnchor:
@@ -306,8 +298,6 @@ Node* PositionTemplate<Strategy>::ComputeNodeAfterPosition() const {
     return nullptr;
 
   switch (AnchorType()) {
-    case PositionAnchorType::kBeforeChildren:
-      return Strategy::FirstChild(*anchor_node_);
     case PositionAnchorType::kAfterChildren:
       return nullptr;
     case PositionAnchorType::kOffsetInAnchor:
@@ -379,6 +369,13 @@ static bool IsPositionConnected(const PositionInFlatTree& position) {
 }
 
 template <typename Strategy>
+bool PositionTemplate<Strategy>::IsBeforeChildren() const {
+  if (IsBeforeAnchor())
+    return !Strategy::PreviousSibling(*anchor_node_);
+  return IsOffsetInAnchor() && !offset_;
+}
+
+template <typename Strategy>
 bool PositionTemplate<Strategy>::IsConnected() const {
   return IsPositionConnected(*this);
 }
@@ -400,9 +397,7 @@ int16_t ComparePositions(const PositionInFlatTree& position_a,
   DCHECK(position_a.IsNotNull());
   DCHECK(position_b.IsNotNull());
 
-  position_a.AnchorNode()->UpdateDistributionForFlatTreeTraversal();
   Node* container_a = position_a.ComputeContainerNode();
-  position_b.AnchorNode()->UpdateDistributionForFlatTreeTraversal();
   Node* container_b = position_b.ComputeContainerNode();
   int offset_a = position_a.ComputeOffsetInContainerNode();
   int offset_b = position_b.ComputeOffsetInContainerNode();
@@ -459,7 +454,6 @@ bool PositionTemplate<Strategy>::AtFirstEditingPositionForNode() const {
   switch (anchor_type_) {
     case PositionAnchorType::kOffsetInAnchor:
       return offset_ == 0;
-    case PositionAnchorType::kBeforeChildren:
     case PositionAnchorType::kBeforeAnchor:
       return true;
     case PositionAnchorType::kAfterChildren:
@@ -543,19 +537,17 @@ PositionTemplate<Strategy> PositionTemplate<Strategy>::AfterNode(
 // static
 template <typename Strategy>
 int PositionTemplate<Strategy>::LastOffsetInNode(const Node& node) {
-  return node.IsCharacterDataNode()
-             ? static_cast<int>(ToCharacterData(node).length())
-             : static_cast<int>(Strategy::CountChildren(node));
+  if (auto* data = DynamicTo<CharacterData>(node))
+    return static_cast<int>(data->length());
+
+  return static_cast<int>(Strategy::CountChildren(node));
 }
 
 // static
 template <typename Strategy>
 PositionTemplate<Strategy> PositionTemplate<Strategy>::FirstPositionInNode(
     const Node& anchor_node) {
-  if (anchor_node.IsTextNode())
-    return PositionTemplate<Strategy>(anchor_node, 0);
-  return PositionTemplate<Strategy>(&anchor_node,
-                                    PositionAnchorType::kBeforeChildren);
+  return PositionTemplate<Strategy>(anchor_node, 0);
 }
 
 // static
@@ -594,17 +586,17 @@ PositionInFlatTree ToPositionInFlatTree(const Position& pos) {
   if (pos.IsOffsetInAnchor()) {
     if (anchor->IsCharacterDataNode())
       return PositionInFlatTree(anchor, pos.ComputeOffsetInContainerNode());
-    DCHECK(!anchor->IsElementNode() || anchor->CanParticipateInFlatTree());
     int offset = pos.ComputeOffsetInContainerNode();
+    if (!offset) {
+      Node* node = anchor->IsShadowRoot() ? anchor->OwnerShadowHost() : anchor;
+      return PositionInFlatTree::FirstPositionInNode(*node);
+    }
     Node* child = NodeTraversal::ChildAt(*anchor, offset);
     if (!child) {
-      if (anchor->IsShadowRoot())
-        return PositionInFlatTree(anchor->OwnerShadowHost(),
-                                  PositionAnchorType::kAfterChildren);
-      return PositionInFlatTree(anchor, PositionAnchorType::kAfterChildren);
+      Node* node = anchor->IsShadowRoot() ? anchor->OwnerShadowHost() : anchor;
+      return PositionInFlatTree::LastPositionInNode(*node);
     }
-    child->UpdateDistributionForFlatTreeTraversal();
-    if (!child->CanParticipateInFlatTree()) {
+    if (child->IsShadowRoot()) {
       if (anchor->IsShadowRoot())
         return PositionInFlatTree(anchor->OwnerShadowHost(), offset);
       return PositionInFlatTree(anchor, offset);
@@ -614,17 +606,16 @@ PositionInFlatTree ToPositionInFlatTree(const Position& pos) {
     // When |pos| isn't appeared in flat tree, we map |pos| to after
     // children of shadow host.
     // e.g. "foo",0 in <progress>foo</progress>
-    if (anchor->IsShadowRoot())
-      return PositionInFlatTree(anchor->OwnerShadowHost(),
-                                PositionAnchorType::kAfterChildren);
-    return PositionInFlatTree(anchor, PositionAnchorType::kAfterChildren);
+    if (anchor->IsShadowRoot()) {
+      return PositionInFlatTree::LastPositionInNode(*anchor->OwnerShadowHost());
+    }
+    return PositionInFlatTree::LastPositionInNode(*anchor);
   }
 
   if (anchor->IsShadowRoot())
     return PositionInFlatTree(anchor->OwnerShadowHost(), pos.AnchorType());
   if (pos.IsBeforeAnchor() || pos.IsAfterAnchor()) {
-    if (anchor->CanParticipateInFlatTree() &&
-        !FlatTreeTraversal::Parent(*anchor)) {
+    if (!FlatTreeTraversal::Parent(*anchor)) {
       // For Before/AfterAnchor, if |anchor| doesn't have parent in the flat
       // tree, there is no valid corresponding PositionInFlatTree.
       // Since this function is a primitive function, we do not adjust |pos|
@@ -637,6 +628,10 @@ PositionInFlatTree ToPositionInFlatTree(const Position& pos) {
   // TODO(yosin): Once we have a test case for SLOT or active insertion point,
   // this function should handle it.
   return PositionInFlatTree(anchor, pos.AnchorType());
+}
+
+PositionInFlatTree ToPositionInFlatTree(const PositionInFlatTree& position) {
+  return position;
 }
 
 Position ToPositionInDOMTree(const Position& position) {
@@ -652,26 +647,24 @@ Position ToPositionInDOMTree(const PositionInFlatTree& position) {
   switch (position.AnchorType()) {
     case PositionAnchorType::kAfterChildren:
       // FIXME: When anchorNode is <img>, assertion fails in the constructor.
-      return Position(anchor_node, PositionAnchorType::kAfterChildren);
+      return Position::LastPositionInNode(*anchor_node);
     case PositionAnchorType::kAfterAnchor:
       return Position::AfterNode(*anchor_node);
-    case PositionAnchorType::kBeforeChildren:
-      return Position(anchor_node, PositionAnchorType::kBeforeChildren);
     case PositionAnchorType::kBeforeAnchor:
       return Position::BeforeNode(*anchor_node);
     case PositionAnchorType::kOffsetInAnchor: {
       int offset = position.OffsetInContainerNode();
       if (anchor_node->IsCharacterDataNode())
         return Position(anchor_node, offset);
+      if (!offset)
+        return Position::FirstPositionInNode(*anchor_node);
       Node* child = FlatTreeTraversal::ChildAt(*anchor_node, offset);
       if (child)
         return Position(child->parentNode(), child->NodeIndex());
-      if (!position.OffsetInContainerNode())
-        return Position(anchor_node, PositionAnchorType::kBeforeChildren);
 
       // |child| is null when the position is at the end of the children.
       // <div>foo|</div>
-      return Position(anchor_node, PositionAnchorType::kAfterChildren);
+      return Position::LastPositionInNode(*anchor_node);
     }
     default:
       NOTREACHED();
@@ -689,8 +682,6 @@ String PositionTemplate<Strategy>::ToAnchorTypeAndOffsetString() const {
       builder.Append("]");
       return builder.ToString();
     }
-    case PositionAnchorType::kBeforeChildren:
-      return "beforeChildren";
     case PositionAnchorType::kAfterChildren:
       return "afterChildren";
     case PositionAnchorType::kBeforeAnchor:
@@ -702,7 +693,7 @@ String PositionTemplate<Strategy>::ToAnchorTypeAndOffsetString() const {
   return g_empty_string;
 }
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 template <typename Strategy>
 void PositionTemplate<Strategy>::ShowTreeForThis() const {
@@ -711,8 +702,8 @@ void PositionTemplate<Strategy>::ShowTreeForThis() const {
     return;
   }
   LOG(INFO) << "\n"
-            << AnchorNode()->ToTreeStringForThis().Utf8().data()
-            << ToAnchorTypeAndOffsetString().Utf8().data();
+            << AnchorNode()->ToTreeStringForThis().Utf8()
+            << ToAnchorTypeAndOffsetString().Utf8();
 }
 
 template <typename Strategy>
@@ -722,11 +713,11 @@ void PositionTemplate<Strategy>::ShowTreeForThisInFlatTree() const {
     return;
   }
   LOG(INFO) << "\n"
-            << AnchorNode()->ToFlatTreeStringForThis().Utf8().data()
-            << ToAnchorTypeAndOffsetString().Utf8().data();
+            << AnchorNode()->ToFlatTreeStringForThis().Utf8()
+            << ToAnchorTypeAndOffsetString().Utf8();
 }
 
-#endif
+#endif  // DCHECK_IS_ON()
 
 template <typename PositionType>
 static std::ostream& PrintPosition(std::ostream& ostream,
@@ -734,7 +725,7 @@ static std::ostream& PrintPosition(std::ostream& ostream,
   if (position.IsNull())
     return ostream << "null";
   return ostream << position.AnchorNode() << "@"
-                 << position.ToAnchorTypeAndOffsetString().Utf8().data();
+                 << position.ToAnchorTypeAndOffsetString().Utf8();
 }
 
 std::ostream& operator<<(std::ostream& ostream,
@@ -746,8 +737,6 @@ std::ostream& operator<<(std::ostream& ostream,
       return ostream << "afterChildren";
     case PositionAnchorType::kBeforeAnchor:
       return ostream << "beforeAnchor";
-    case PositionAnchorType::kBeforeChildren:
-      return ostream << "beforeChildren";
     case PositionAnchorType::kOffsetInAnchor:
       return ostream << "offsetInAnchor";
   }
@@ -769,7 +758,7 @@ template class CORE_TEMPLATE_EXPORT PositionTemplate<EditingInFlatTreeStrategy>;
 
 }  // namespace blink
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 void showTree(const blink::Position& pos) {
   pos.ShowTreeForThis();

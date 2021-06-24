@@ -6,8 +6,9 @@
 #define EXTENSIONS_COMMON_CONSTANTS_H_
 
 #include "base/files/file_path.h"
-#include "base/logging.h"
-#include "ui/base/layout.h"
+#include "base/strings/string_piece_forward.h"
+#include "build/chromeos_buildflags.h"
+#include "components/services/app_service/public/mojom/types.mojom-forward.h"
 
 namespace extensions {
 
@@ -17,11 +18,17 @@ extern const char kExtensionScheme[];
 // The name of the manifest inside an extension.
 extern const base::FilePath::CharType kManifestFilename[];
 
+// The name of the differential fingerprint file inside an extension.
+extern const base::FilePath::CharType kDifferentialFingerprintFilename[];
+
 // The name of locale folder inside an extension.
 extern const base::FilePath::CharType kLocaleFolder[];
 
 // The name of the messages file inside an extension.
 extern const base::FilePath::CharType kMessagesFilename[];
+
+// The name of the gzipped messages file inside an extension.
+extern const base::FilePath::CharType kGzippedMessagesFilename[];
 
 // The base directory for subdirectories with platform-specific code.
 extern const base::FilePath::CharType kPlatformSpecificFolder[];
@@ -36,8 +43,8 @@ extern const base::FilePath::CharType kVerifiedContentsFilename[];
 // Name of the computed hashes file within the metadata folder.
 extern const base::FilePath::CharType kComputedHashesFilename[];
 
-// Name of the indexed ruleset file for the Declarative Net Request API.
-extern const base::FilePath::CharType kIndexedRulesetFilename[];
+// Name of the indexed ruleset directory for the Declarative Net Request API.
+extern const base::FilePath::CharType kIndexedRulesetDirectory[];
 
 // The name of the directory inside the profile where extensions are
 // installed to.
@@ -115,38 +122,8 @@ extern const size_t kWebstoreSignaturesPublicKeySize;
 // from a non-service worker context
 extern const int kMainThreadId;
 
-// Enumeration of possible app launch sources.
-// This should be kept in sync with LaunchSource in
-// extensions/common/api/app_runtime.idl, and GetLaunchSourceEnum() in
-// extensions/browser/api/app_runtime/app_runtime_api.cc.
-// Note the enumeration is used in UMA histogram so entries
-// should not be re-ordered or removed.
-enum AppLaunchSource {
-  SOURCE_NONE,
-  SOURCE_UNTRACKED,
-  SOURCE_APP_LAUNCHER,
-  SOURCE_NEW_TAB_PAGE,
-  SOURCE_RELOAD,
-  SOURCE_RESTART,
-  SOURCE_LOAD_AND_LAUNCH,
-  SOURCE_COMMAND_LINE,
-  SOURCE_FILE_HANDLER,
-  SOURCE_URL_HANDLER,
-  SOURCE_SYSTEM_TRAY,
-  SOURCE_ABOUT_PAGE,
-  SOURCE_KEYBOARD,
-  SOURCE_EXTENSIONS_PAGE,
-  SOURCE_MANAGEMENT_API,
-  SOURCE_EPHEMERAL_APP_DEPRECATED,
-  SOURCE_BACKGROUND,
-  SOURCE_KIOSK,
-  SOURCE_CHROME_INTERNAL,
-  SOURCE_TEST,
-  SOURCE_INSTALLED_NOTIFICATION,
-  SOURCE_CONTEXT_MENU,
-  SOURCE_ARC,
-  NUM_APP_LAUNCH_SOURCES
-};
+using apps::mojom::AppLaunchSource;
+using apps::mojom::LaunchContainer;
 
 // This enum is used for the launch type the user wants to use for an
 // application.
@@ -166,22 +143,6 @@ enum LaunchType {
   // the default for the NTP and chrome.management.launchApp().
   LAUNCH_TYPE_DEFAULT = LAUNCH_TYPE_REGULAR
 };
-
-// Don't remove items or change the order of this enum.  It's used in
-// histograms and preferences.
-enum LaunchContainer {
-  LAUNCH_CONTAINER_WINDOW,
-  LAUNCH_CONTAINER_PANEL_DEPRECATED,
-  LAUNCH_CONTAINER_TAB,
-  // For platform apps, which don't actually have a container (they just get a
-  // "onLaunched" event).
-  LAUNCH_CONTAINER_NONE,
-  NUM_LAUNCH_CONTAINERS
-};
-
-// The origin of injected CSS.
-enum CSSOrigin { CSS_ORIGIN_AUTHOR, CSS_ORIGIN_USER };
-static const CSSOrigin CSS_ORIGIN_LAST = CSS_ORIGIN_USER;
 
 }  // namespace extensions
 
@@ -231,11 +192,47 @@ extern const char kMimeHandlerPrivateTestExtensionId[];
 // The extension id of the Camera application.
 extern const char kCameraAppId[];
 
+// The extension id of the devoloper version of Camera application.
+extern const char kCameraAppDevId[];
+
 // The extension id of the Chrome component application.
 extern const char kChromeAppId[];
 
+// Fake extension ID for the Lacros chrome browser application.
+extern const char kLacrosAppId[];
+
 // The extension id of the Files Manager application.
 extern const char kFilesManagerAppId[];
+
+// The extension id of the Calculator application.
+extern const char kCalculatorAppId[];
+
+// The extension id of the demo Calendar application.
+extern const char kCalendarDemoAppId[];
+
+// The extension id of the GMail application.
+extern const char kGMailAppId[];
+
+// The extension id of the demo Google Docs application.
+extern const char kGoogleDocsDemoAppId[];
+
+// The extension id of the Google Docs PWA.
+extern const char kGoogleDocsPwaAppId[];
+
+// The extension id of the Google Drive application.
+extern const char kGoogleDriveAppId[];
+
+// The extension id of the Google Meet PWA.
+extern const char kGoogleMeetPwaAppId[];
+
+// The extension id of the demo Google Sheets application.
+extern const char kGoogleSheetsDemoAppId[];
+
+// The extension id of the Google Sheets PWA.
+extern const char kGoogleSheetsPwaAppId[];
+
+// The extension id of the demo Google Slides application.
+extern const char kGoogleSlidesDemoAppId[];
 
 // The extension id of the Google Keep application.
 extern const char kGoogleKeepAppId[];
@@ -243,27 +240,51 @@ extern const char kGoogleKeepAppId[];
 // The extension id of the Youtube application.
 extern const char kYoutubeAppId[];
 
-// The extension id of the genius (Get Help) app.
-extern const char kGeniusAppId[];
+// The extension id of the Youtube PWA.
+extern const char kYoutubePwaAppId[];
 
-#if defined(OS_CHROMEOS)
+// The extension id of the Spotify PWA.
+extern const char kSpotifyAppId[];
+
+// The extension id of the BeFunky PWA.
+extern const char kBeFunkyAppId[];
+
+// The extension id of the Clipchamp PWA.
+extern const char kClipchampAppId[];
+
+// The extension id of the GeForce NOW PWA.
+extern const char kGeForceNowAppId[];
+
+// The extension id of the Zoom PWA.
+extern const char kZoomAppId[];
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 // The extension id of the default Demo Mode Highlights app.
 extern const char kHighlightsAppId[];
 
-// The extension id of an alternate Demo Mode Highlights app.
-extern const char kHighlightsAlt1AppId[];
-
-// The extension id of an alternate Demo Mode Highlights app.
-extern const char kHighlightsAlt2AppId[];
+// The extension id of the atlas Demo Mode Highlights app.
+extern const char kHighlightsAtlasAppId[];
 
 // The extension id of the default Demo Mode screensaver app.
 extern const char kScreensaverAppId[];
 
-// The extension id of an alternate Demo Mode screensaver app.
-extern const char kScreensaverAlt1AppId[];
+// The extension id of the atlas Demo Mode screensaver app.
+extern const char kScreensaverAtlasAppId[];
 
-// The extension id of an alternate Demo Mode screensaver app.
-extern const char kScreensaverAlt2AppId[];
+// The extension id of the krane Demo Mode screensaver app. That app is only
+// run on KRANE-ZDKS devices.
+extern const char kScreensaverKraneZdksAppId[];
+
+// The id of the testing extension allowed in the signin profile.
+extern const char kSigninProfileTestExtensionId[];
+
+// The id of the testing extension allowed in guest mode.
+extern const char kGuestModeTestExtensionId[];
+
+// Returns true if this app is part of the "system UI". Generally this is UI
+// that that on other operating systems would be considered part of the OS,
+// for example the file manager.
+bool IsSystemUIApp(base::StringPiece extension_id);
 #endif
 
 // The extension id for the production version of Hangouts.
@@ -278,8 +299,9 @@ extern const char kPolicyBlockedScripting[];
 // The default block size for hashing used in content verification.
 extern const int kContentVerificationDefaultBlockSize;
 
-// The minimum severity of a log or error in order to report it to the browser.
-extern const logging::LogSeverity kMinimumSeverityToReportError;
+// IDs for the Media Router Component Extension.
+extern const char kCastExtensionIdRelease[];
+extern const char kCastExtensionIdDev[];
 
 }  // namespace extension_misc
 

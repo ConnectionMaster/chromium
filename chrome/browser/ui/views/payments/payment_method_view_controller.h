@@ -20,21 +20,25 @@ class PaymentRequestDialogView;
 class PaymentMethodViewController : public PaymentRequestSheetController {
  public:
   // Does not take ownership of the arguments, which should outlive this object.
-  PaymentMethodViewController(PaymentRequestSpec* spec,
-                              PaymentRequestState* state,
-                              PaymentRequestDialogView* dialog);
+  PaymentMethodViewController(base::WeakPtr<PaymentRequestSpec> spec,
+                              base::WeakPtr<PaymentRequestState> state,
+                              base::WeakPtr<PaymentRequestDialogView> dialog);
   ~PaymentMethodViewController() override;
 
  private:
   // PaymentRequestSheetController:
-  base::string16 GetSheetTitle() override;
+  std::u16string GetSheetTitle() override;
   void FillContentView(views::View* content_view) override;
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
-  base::string16 GetSecondaryButtonLabel() override;
-  int GetSecondaryButtonTag() override;
+  bool ShouldShowPrimaryButton() override;
+  bool ShouldShowSecondaryButton() override;
+  std::u16string GetSecondaryButtonLabel() override;
+  ButtonCallback GetSecondaryButtonCallback() override;
   int GetSecondaryButtonId() override;
 
   PaymentRequestItemList payment_method_list_;
+
+  // Whether or not adding a new card is allowed.
+  bool enable_add_card_;
 
   DISALLOW_COPY_AND_ASSIGN(PaymentMethodViewController);
 };

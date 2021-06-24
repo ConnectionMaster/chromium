@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/chromeos/file_manager/file_manager_browsertest_base.h"
-
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ash/file_manager/file_manager_browsertest_base.h"
+#include "content/public/test/browser_test.h"
 #include "media/base/media_switches.h"
 
 namespace file_manager {
@@ -15,7 +15,11 @@ class AudioPlayerBrowserTestBase : public FileManagerBrowserTestBase {
   AudioPlayerBrowserTestBase() = default;
 
  protected:
-  GuestMode GetGuestMode() const override { return MODE; }
+  Options GetOptions() const override {
+    Options opts;
+    opts.guest_mode = MODE;
+    return opts;
+  }
 
   const char* GetTestCaseName() const override {
     return test_case_name_.c_str();
@@ -82,12 +86,21 @@ IN_PROC_BROWSER_TEST_F(AudioPlayerBrowserTest, ChangeTracksPlayListIcon) {
   StartTest();
 }
 
-IN_PROC_BROWSER_TEST_F(AudioPlayerBrowserTest, NativeMediaKey) {
-  // The HardwareMediaKeyHandling feature makes key handling flaky.
-  // See https://crbug.com/902519.
-  base::test::ScopedFeatureList disable_media_key_handling;
-  disable_media_key_handling.InitAndDisableFeature(
-      media::kHardwareMediaKeyHandling);
+class AudioPlayerBrowserTestWithoutHardwareMediaKeyHandling
+    : public AudioPlayerBrowserTest {
+ public:
+  AudioPlayerBrowserTestWithoutHardwareMediaKeyHandling() {
+    // The HardwareMediaKeyHandling feature makes key handling flaky.
+    // See https://crbug.com/902519.
+    feature_list_.InitAndDisableFeature(media::kHardwareMediaKeyHandling);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(AudioPlayerBrowserTestWithoutHardwareMediaKeyHandling,
+                       NativeMediaKey) {
   set_test_case_name("mediaKeyNative");
   StartTest();
 }

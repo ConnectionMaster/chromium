@@ -6,7 +6,6 @@
 
 #include "third_party/blink/renderer/core/layout/layout_multi_column_set.h"
 #include "third_party/blink/renderer/core/paint/block_painter.h"
-#include "third_party/blink/renderer/core/paint/box_painter.h"
 #include "third_party/blink/renderer/core/paint/object_painter.h"
 #include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/platform/geometry/layout_point.h"
@@ -15,7 +14,7 @@
 namespace blink {
 
 void MultiColumnSetPainter::PaintObject(const PaintInfo& paint_info,
-                                        const LayoutPoint& paint_offset) {
+                                        const PhysicalOffset& paint_offset) {
   if (layout_multi_column_set_.StyleRef().Visibility() != EVisibility::kVisible)
     return;
 
@@ -29,17 +28,18 @@ void MultiColumnSetPainter::PaintObject(const PaintInfo& paint_info,
   // It's also really unlikely that the columns would overlap another block.
   if (!layout_multi_column_set_.FlowThread() ||
       (paint_info.phase != PaintPhase::kForeground &&
-       paint_info.phase != PaintPhase::kSelection))
+       paint_info.phase != PaintPhase::kSelectionDragImage))
     return;
 
   PaintColumnRules(paint_info, paint_offset);
 }
 
-void MultiColumnSetPainter::PaintColumnRules(const PaintInfo& paint_info,
-                                             const LayoutPoint& paint_offset) {
+void MultiColumnSetPainter::PaintColumnRules(
+    const PaintInfo& paint_info,
+    const PhysicalOffset& paint_offset) {
   Vector<LayoutRect> column_rule_bounds;
-  if (!layout_multi_column_set_.ComputeColumnRuleBounds(paint_offset,
-                                                        column_rule_bounds))
+  if (!layout_multi_column_set_.ComputeColumnRuleBounds(
+          paint_offset.ToLayoutPoint(), column_rule_bounds))
     return;
 
   if (DrawingRecorder::UseCachedDrawingIfPossible(paint_info.context,
@@ -48,7 +48,8 @@ void MultiColumnSetPainter::PaintColumnRules(const PaintInfo& paint_info,
     return;
 
   DrawingRecorder recorder(paint_info.context, layout_multi_column_set_,
-                           DisplayItem::kColumnRules);
+                           DisplayItem::kColumnRules,
+                           PixelSnappedIntRect(UnionRect(column_rule_bounds)));
 
   const ComputedStyle& block_style =
       layout_multi_column_set_.MultiColumnBlockFlow()->StyleRef();
@@ -63,11 +64,8 @@ void MultiColumnSetPainter::PaintColumnRules(const PaintInfo& paint_info,
 
   for (auto& bound : column_rule_bounds) {
     IntRect pixel_snapped_rule_rect = PixelSnappedIntRect(bound);
-    ObjectPainter::DrawLineForBoxSide(
-        paint_info.context, pixel_snapped_rule_rect.X(),
-        pixel_snapped_rule_rect.Y(), pixel_snapped_rule_rect.MaxX(),
-        pixel_snapped_rule_rect.MaxY(), box_side, rule_color, rule_style, 0, 0,
-        true);
+    ObjectPainter::DrawBoxSide(paint_info.context, pixel_snapped_rule_rect,
+                               box_side, rule_color, rule_style);
   }
 }
 

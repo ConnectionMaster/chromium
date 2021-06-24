@@ -17,11 +17,11 @@
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
 #include "net/test/gtest_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
 #include "base/mac/scoped_nsautorelease_pool.h"
 #endif
 
@@ -34,7 +34,7 @@ namespace net {
 // FilePath and needs to open the file itself. When it's true, it's passed an
 // already open base::File.
 class UploadFileElementReaderTest : public testing::TestWithParam<bool>,
-                                    public WithScopedTaskEnvironment {
+                                    public WithTaskEnvironment {
  protected:
   void SetUp() override {
     // Some tests (*.ReadPartially) rely on bytes_.size() being even.
@@ -94,7 +94,7 @@ class UploadFileElementReaderTest : public testing::TestWithParam<bool>,
         length, expected_modification_time);
   }
 
-#if defined(OS_MACOSX)
+#if defined(OS_APPLE)
   // May be needed to avoid leaks on OSX.
   base::mac::ScopedNSAutoreleasePool scoped_pool_;
 #endif
@@ -327,7 +327,7 @@ TEST_P(UploadFileElementReaderTest, WrongPath) {
   EXPECT_THAT(init_callback.WaitForResult(), IsError(ERR_FILE_NOT_FOUND));
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          UploadFileElementReaderTest,
                          testing::ValuesIn({false, true}));
 

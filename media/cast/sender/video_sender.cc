@@ -63,12 +63,11 @@ void LogVideoCaptureTimestamps(CastEnvironment* cast_environment,
   capture_end_event->width = video_frame.visible_rect().width();
   capture_end_event->height = video_frame.visible_rect().height();
 
-  if (!video_frame.metadata()->GetTimeTicks(
-          media::VideoFrameMetadata::CAPTURE_BEGIN_TIME,
-          &capture_begin_event->timestamp) ||
-      !video_frame.metadata()->GetTimeTicks(
-          media::VideoFrameMetadata::CAPTURE_END_TIME,
-          &capture_end_event->timestamp)) {
+  if (video_frame.metadata().capture_begin_time.has_value() &&
+      video_frame.metadata().capture_end_time.has_value()) {
+    capture_begin_event->timestamp = *video_frame.metadata().capture_begin_time;
+    capture_end_event->timestamp = *video_frame.metadata().capture_end_time;
+  } else {
     // The frame capture timestamps were not provided by the video capture
     // source.  Simply log the events as happening right now.
     capture_begin_event->timestamp = capture_end_event->timestamp =
@@ -89,11 +88,11 @@ void LogVideoCaptureTimestamps(CastEnvironment* cast_environment,
 VideoSender::VideoSender(
     scoped_refptr<CastEnvironment> cast_environment,
     const FrameSenderConfig& video_config,
-    const StatusChangeCallback& status_change_cb,
+    StatusChangeCallback status_change_cb,
     const CreateVideoEncodeAcceleratorCallback& create_vea_cb,
-    const CreateVideoEncodeMemoryCallback& create_video_encode_mem_cb,
     CastTransport* const transport_sender,
-    const PlayoutDelayChangeCB& playout_delay_change_cb)
+    PlayoutDelayChangeCB playout_delay_change_cb,
+    media::VideoCaptureFeedbackCB feedback_callback)
     : FrameSender(
           cast_environment,
           transport_sender,
@@ -107,29 +106,24 @@ VideoSender::VideoSender(
                                              video_config.max_frame_rate)),
       frames_in_encoder_(0),
       last_bitrate_(0),
-      playout_delay_change_cb_(playout_delay_change_cb),
+      playout_delay_change_cb_(std::move(playout_delay_change_cb)),
+      feedback_cb_(feedback_callback),
       low_latency_mode_(false),
       last_reported_encoder_utilization_(-1.0),
-      last_reported_lossy_utilization_(-1.0),
-      weak_factory_(this) {
-  video_encoder_ = VideoEncoder::Create(
-      cast_environment_,
-      video_config,
-      status_change_cb,
-      create_vea_cb,
-      create_video_encode_mem_cb);
+      last_reported_lossy_utilization_(-1.0) {
+  video_encoder_ = VideoEncoder::Create(cast_environment_, video_config,
+                                        status_change_cb, create_vea_cb);
   if (!video_encoder_) {
     cast_environment_->PostTask(
-        CastEnvironment::MAIN,
-        FROM_HERE,
-        base::Bind(status_change_cb, STATUS_UNSUPPORTED_CODEC));
+        CastEnvironment::MAIN, FROM_HERE,
+        base::BindOnce(std::move(status_change_cb), STATUS_UNSUPPORTED_CODEC));
   }
 }
 
 VideoSender::~VideoSender() = default;
 
 void VideoSender::InsertRawVideoFrame(
-    const scoped_refptr<media::VideoFrame>& video_frame,
+    scoped_refptr<media::VideoFrame> video_frame,
     const base::TimeTicks& reference_time) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
 
@@ -143,20 +137,19 @@ void VideoSender::InsertRawVideoFrame(
   LogVideoCaptureTimestamps(cast_environment_.get(), *video_frame,
                             rtp_timestamp);
 
-  // Used by chrome/browser/extension/api/cast_streaming/performance_test.cc
+  // Used by chrome/browser/media/cast_mirroring_performance_browsertest.cc
   TRACE_EVENT_INSTANT2("cast_perf_test", "InsertRawVideoFrame",
                        TRACE_EVENT_SCOPE_THREAD, "timestamp",
                        (reference_time - base::TimeTicks()).InMicroseconds(),
                        "rtp_timestamp", rtp_timestamp.lower_32_bits());
 
-  bool low_latency_mode;
-  if (video_frame->metadata()->GetBoolean(
-          VideoFrameMetadata::INTERACTIVE_CONTENT, &low_latency_mode)) {
-    if (low_latency_mode && !low_latency_mode_) {
+  {
+    bool new_low_latency_mode = video_frame->metadata().interactive_content;
+    if (new_low_latency_mode && !low_latency_mode_) {
       VLOG(1) << "Interactive mode playout time " << min_playout_delay_;
       playout_delay_change_cb_.Run(min_playout_delay_);
     }
-    low_latency_mode_ = low_latency_mode;
+    low_latency_mode_ = new_low_latency_mode;
   }
 
   // Drop the frame if either its RTP or reference timestamp is not an increase
@@ -252,11 +245,11 @@ void VideoSender::InsertRawVideoFrame(
       MaybeRenderPerformanceMetricsOverlay(
           GetTargetPlayoutDelay(), low_latency_mode_, bitrate,
           frames_in_encoder_ + 1, last_reported_encoder_utilization_,
-          last_reported_lossy_utilization_, video_frame);
+          last_reported_lossy_utilization_, std::move(video_frame));
   if (video_encoder_->EncodeVideoFrame(
           frame_to_encode, reference_time,
-          base::Bind(&VideoSender::OnEncodedVideoFrame, AsWeakPtr(),
-                     frame_to_encode, bitrate))) {
+          base::BindOnce(&VideoSender::OnEncodedVideoFrame, AsWeakPtr(),
+                         frame_to_encode, bitrate))) {
     TRACE_EVENT_ASYNC_BEGIN1("cast.stream", "Video Encode",
                              frame_to_encode.get(), "rtp_timestamp",
                              rtp_timestamp.lower_32_bits());
@@ -295,7 +288,7 @@ base::TimeDelta VideoSender::GetInFlightMediaDuration() const {
 }
 
 void VideoSender::OnEncodedVideoFrame(
-    const scoped_refptr<media::VideoFrame>& video_frame,
+    scoped_refptr<media::VideoFrame> video_frame,
     int encoder_bitrate,
     std::unique_ptr<SenderEncodedFrame> encoded_frame) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
@@ -329,10 +322,13 @@ void VideoSender::OnEncodedVideoFrame(
     // Key frames are artificially capped to 1.0 because their actual
     // utilization is atypical compared to the other frames in the stream, and
     // this can misguide the producer of the input video frames.
-    video_frame->metadata()->SetDouble(
-        media::VideoFrameMetadata::RESOURCE_UTILIZATION,
-        encoded_frame->dependency == EncodedFrame::KEY ?
-            std::min(1.0, attenuated_utilization) : attenuated_utilization);
+    VideoCaptureFeedback feedback;
+    feedback.resource_utilization =
+        encoded_frame->dependency == EncodedFrame::KEY
+            ? std::min(1.0, attenuated_utilization)
+            : attenuated_utilization;
+    if (feedback_cb_)
+      feedback_cb_.Run(feedback);
   }
 
   SendEncodedFrame(encoder_bitrate, std::move(encoded_frame));

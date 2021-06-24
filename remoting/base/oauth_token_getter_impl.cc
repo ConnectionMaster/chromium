@@ -4,6 +4,7 @@
 
 #include "remoting/base/oauth_token_getter_impl.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -22,7 +23,11 @@ namespace {
 const int kMaxRetries = 3;
 
 // Time when we we try to update OAuth token before its expiration.
-const int kTokenUpdateTimeBeforeExpirySeconds = 60;
+const int kTokenUpdateTimeBeforeExpirySeconds = 120;
+
+// Max time we wait for the response before giving up.
+constexpr base::TimeDelta kResponseTimeoutDuration =
+    base::TimeDelta::FromSeconds(30);
 
 }  // namespace
 
@@ -31,12 +36,12 @@ OAuthTokenGetterImpl::OAuthTokenGetterImpl(
     const OAuthTokenGetter::CredentialsUpdatedCallback& on_credentials_update,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     bool auto_refresh)
-    : intermediate_credentials_(std::move(intermediate_credentials)),
-      gaia_oauth_client_(
-          new gaia::GaiaOAuthClient(std::move(url_loader_factory))),
+    : url_loader_factory_(url_loader_factory),
+      intermediate_credentials_(std::move(intermediate_credentials)),
+      gaia_oauth_client_(new gaia::GaiaOAuthClient(url_loader_factory)),
       credentials_updated_callback_(on_credentials_update) {
   if (auto_refresh) {
-    refresh_timer_.reset(new base::OneShotTimer());
+    refresh_timer_ = std::make_unique<base::OneShotTimer>();
   }
 }
 
@@ -44,11 +49,11 @@ OAuthTokenGetterImpl::OAuthTokenGetterImpl(
     std::unique_ptr<OAuthAuthorizationCredentials> authorization_credentials,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     bool auto_refresh)
-    : authorization_credentials_(std::move(authorization_credentials)),
-      gaia_oauth_client_(
-          new gaia::GaiaOAuthClient(std::move(url_loader_factory))) {
+    : url_loader_factory_(url_loader_factory),
+      authorization_credentials_(std::move(authorization_credentials)),
+      gaia_oauth_client_(new gaia::GaiaOAuthClient(url_loader_factory)) {
   if (auto_refresh) {
-    refresh_timer_.reset(new base::OneShotTimer());
+    refresh_timer_ = std::make_unique<base::OneShotTimer>();
   }
 }
 
@@ -67,10 +72,11 @@ void OAuthTokenGetterImpl::OnGetTokensResponse(const std::string& refresh_token,
   UpdateAccessToken(access_token, expires_seconds);
 
   // Keep the refresh token in the authorization_credentials.
-  authorization_credentials_.reset(
-      new OAuthTokenGetter::OAuthAuthorizationCredentials(
+  authorization_credentials_ =
+      std::make_unique<OAuthTokenGetter::OAuthAuthorizationCredentials>(
+
           std::string(), refresh_token,
-          intermediate_credentials_->is_service_account));
+          intermediate_credentials_->is_service_account);
 
   // Clear out the one time use token.
   intermediate_credentials_.reset();
@@ -93,7 +99,6 @@ void OAuthTokenGetterImpl::OnRefreshTokenResponse(
   if (!authorization_credentials_->is_service_account && !email_verified_) {
     gaia_oauth_client_->GetUserEmail(access_token, kMaxRetries, this);
   } else {
-    response_pending_ = false;
     NotifyTokenCallbacks(OAuthTokenGetterImpl::SUCCESS,
                          authorization_credentials_->login,
                          oauth_access_token_);
@@ -119,12 +124,9 @@ void OAuthTokenGetterImpl::OnGetUserEmailResponse(
   }
 
   email_verified_ = true;
-  response_pending_ = false;
 
-  // Now that we've refreshed the token and verified that it's for the correct
-  // user account, try to connect using the new token.
-  NotifyTokenCallbacks(OAuthTokenGetterImpl::SUCCESS, user_email,
-                       oauth_access_token_);
+  NotifyTokenCallbacks(OAuthTokenGetterImpl::SUCCESS,
+                       authorization_credentials_->login, oauth_access_token_);
 }
 
 void OAuthTokenGetterImpl::UpdateAccessToken(const std::string& access_token,
@@ -147,6 +149,9 @@ void OAuthTokenGetterImpl::NotifyTokenCallbacks(
     const std::string& user_email,
     const std::string& access_token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  SetResponsePending(false);
+
   base::queue<TokenCallback> callbacks;
   callbacks.swap(pending_callbacks_);
 
@@ -168,7 +173,6 @@ void OAuthTokenGetterImpl::NotifyUpdatedCallbacks(
 void OAuthTokenGetterImpl::OnOAuthError() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   LOG(ERROR) << "OAuth: invalid credentials.";
-  response_pending_ = false;
 
   // Throw away invalid credentials and force a refresh.
   oauth_access_token_.clear();
@@ -183,16 +187,17 @@ void OAuthTokenGetterImpl::OnNetworkError(int response_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   LOG(ERROR) << "Network error when trying to update OAuth token: "
              << response_code;
-  response_pending_ = false;
   NotifyTokenCallbacks(OAuthTokenGetterImpl::NETWORK_ERROR, std::string(),
                        std::string());
 }
 
 void OAuthTokenGetterImpl::CallWithToken(TokenCallback on_access_token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  pending_callbacks_.push(std::move(on_access_token));
+
   if (intermediate_credentials_) {
-    pending_callbacks_.push(std::move(on_access_token));
-    if (!response_pending_) {
+    if (!IsResponsePending()) {
       GetOauthTokensFromAuthCode();
     }
   } else {
@@ -202,13 +207,17 @@ void OAuthTokenGetterImpl::CallWithToken(TokenCallback on_access_token) {
         (!authorization_credentials_->is_service_account && !email_verified_);
 
     if (need_new_auth_token) {
-      pending_callbacks_.push(std::move(on_access_token));
-      if (!response_pending_) {
+      if (!IsResponsePending()) {
         RefreshAccessToken();
       }
     } else {
-      std::move(on_access_token)
-          .Run(SUCCESS, authorization_credentials_->login, oauth_access_token_);
+      // If IsResponsePending() is true here, |on_access_token| will be called
+      // when the response is received.
+      if (!IsResponsePending()) {
+        NotifyTokenCallbacks(OAuthTokenGetterImpl::SUCCESS,
+                             authorization_credentials_->login,
+                             oauth_access_token_);
+      }
     }
   }
 }
@@ -218,10 +227,14 @@ void OAuthTokenGetterImpl::InvalidateCache() {
   access_token_expiry_time_ = base::Time();
 }
 
+base::WeakPtr<OAuthTokenGetterImpl> OAuthTokenGetterImpl::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
+}
+
 void OAuthTokenGetterImpl::GetOauthTokensFromAuthCode() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << "Fetching OAuth token from Auth Code.";
-  DCHECK(!response_pending_);
+  DCHECK(!IsResponsePending());
 
   // Service accounts use different API keys, as they use the client app flow.
   google_apis::OAuth2Client oauth2_client =
@@ -238,7 +251,7 @@ void OAuthTokenGetterImpl::GetOauthTokensFromAuthCode() {
       google_apis::GetOAuth2ClientID(oauth2_client),
       google_apis::GetOAuth2ClientSecret(oauth2_client), redirect_uri};
 
-  response_pending_ = true;
+  SetResponsePending(true);
 
   gaia_oauth_client_->GetTokensFromAuthCode(
       client_info, intermediate_credentials_->authorization_code, kMaxRetries,
@@ -248,7 +261,7 @@ void OAuthTokenGetterImpl::GetOauthTokensFromAuthCode() {
 void OAuthTokenGetterImpl::RefreshAccessToken() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << "Refreshing OAuth Access token.";
-  DCHECK(!response_pending_);
+  DCHECK(!IsResponsePending());
 
   // Service accounts use different API keys, as they use the client app flow.
   google_apis::OAuth2Client oauth2_client =
@@ -263,11 +276,38 @@ void OAuthTokenGetterImpl::RefreshAccessToken() {
       // is not required when getting access tokens from refresh tokens.
       ""};
 
-  response_pending_ = true;
+  SetResponsePending(true);
   std::vector<std::string> empty_scope_list;  // Use scope from refresh token.
   gaia_oauth_client_->RefreshToken(client_info,
                                    authorization_credentials_->refresh_token,
                                    empty_scope_list, kMaxRetries, this);
+}
+
+bool OAuthTokenGetterImpl::IsResponsePending() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return response_timeout_timer_.IsRunning();
+}
+
+void OAuthTokenGetterImpl::SetResponsePending(bool is_pending) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (is_pending) {
+    if (IsResponsePending()) {
+      LOG(DFATAL) << "The response is already pending.";
+      return;
+    }
+    response_timeout_timer_.Start(FROM_HERE, kResponseTimeoutDuration, this,
+                                  &OAuthTokenGetterImpl::OnResponseTimeout);
+  } else {
+    response_timeout_timer_.Stop();
+  }
+}
+
+void OAuthTokenGetterImpl::OnResponseTimeout() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  LOG(ERROR) << "GaiaOAuthClient response timeout";
+  gaia_oauth_client_ =
+      std::make_unique<gaia::GaiaOAuthClient>(url_loader_factory_);
+  NotifyTokenCallbacks(OAuthTokenGetterImpl::NETWORK_ERROR, {}, {});
 }
 
 }  // namespace remoting

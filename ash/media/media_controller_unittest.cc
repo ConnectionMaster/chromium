@@ -2,14 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/media/media_controller.h"
+#include "ash/media/media_controller_impl.h"
 
 #include <memory>
 
-#include "ash/session/session_controller.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/ash_pref_names.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "base/macros.h"
+#include "base/test/scoped_feature_list.h"
+#include "components/prefs/testing_pref_service.h"
 #include "services/media_session/public/cpp/test/test_media_controller.h"
 
 namespace ash {
@@ -25,9 +29,9 @@ class MediaControllerTest : public AshTestBase {
 
     controller_ = std::make_unique<media_session::test::TestMediaController>();
 
-    MediaController* media_controller = Shell::Get()->media_controller();
+    MediaControllerImpl* media_controller = Shell::Get()->media_controller();
     media_controller->SetMediaSessionControllerForTest(
-        controller_->CreateMediaControllerPtr());
+        controller_->CreateMediaControllerRemote());
     media_controller->FlushForTesting();
 
     {
@@ -55,14 +59,33 @@ class MediaControllerTest : public AshTestBase {
   }
 
   void SimulateSessionLock() {
-    mojom::SessionInfoPtr info_ptr = mojom::SessionInfo::New();
-    info_ptr->state = session_manager::SessionState::LOCKED;
-    Shell::Get()->session_controller()->SetSessionInfo(std::move(info_ptr));
+    SessionInfo info;
+    info.state = session_manager::SessionState::LOCKED;
+    Shell::Get()->session_controller()->SetSessionInfo(info);
   }
 
   void Flush() {
     controller_->Flush();
     Shell::Get()->media_controller()->FlushForTesting();
+  }
+
+  void HandleMediaKeys() {
+    Shell::Get()->media_controller()->HandleMediaPlayPause();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaPlay();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaPause();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaStop();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaPrevTrack();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaNextTrack();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaSeekBackward();
+    Flush();
+    Shell::Get()->media_controller()->HandleMediaSeekForward();
+    Flush();
   }
 
  private:
@@ -71,52 +94,120 @@ class MediaControllerTest : public AshTestBase {
   DISALLOW_COPY_AND_ASSIGN(MediaControllerTest);
 };
 
-TEST_F(MediaControllerTest, DisablePlayPauseWhenLocked) {
+TEST_F(MediaControllerTest, EnableMediaKeysWhenUnlocked) {
   EXPECT_EQ(0, controller()->suspend_count());
-
-  Shell::Get()->media_controller()->HandleMediaPlayPause();
-  Flush();
-
-  EXPECT_EQ(1, controller()->suspend_count());
-
-  SimulateSessionLock();
-
-  Shell::Get()->media_controller()->HandleMediaPlayPause();
-  Flush();
-
-  EXPECT_EQ(1, controller()->suspend_count());
-}
-
-TEST_F(MediaControllerTest, DisablePreviousTrackWhenLocked) {
+  EXPECT_EQ(0, controller()->resume_count());
+  EXPECT_EQ(0, controller()->stop_count());
   EXPECT_EQ(0, controller()->previous_track_count());
+  EXPECT_EQ(0, controller()->next_track_count());
+  EXPECT_EQ(0, controller()->seek_backward_count());
+  EXPECT_EQ(0, controller()->seek_forward_count());
 
-  Shell::Get()->media_controller()->HandleMediaPrevTrack();
-  Flush();
+  HandleMediaKeys();
 
+  EXPECT_EQ(2, controller()->suspend_count());
+  EXPECT_EQ(1, controller()->resume_count());
+  EXPECT_EQ(1, controller()->stop_count());
   EXPECT_EQ(1, controller()->previous_track_count());
-
-  SimulateSessionLock();
-
-  Shell::Get()->media_controller()->HandleMediaPrevTrack();
-  Flush();
-
-  EXPECT_EQ(1, controller()->previous_track_count());
+  EXPECT_EQ(1, controller()->next_track_count());
+  EXPECT_EQ(1, controller()->seek_backward_count());
+  EXPECT_EQ(1, controller()->seek_forward_count());
 }
 
-TEST_F(MediaControllerTest, DisableNextTrackWhenLocked) {
+TEST_F(MediaControllerTest, EnableLockScreenMediaKeys) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kLockScreenMediaControls);
+
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetLastActiveUserPrefService();
+  prefs->SetBoolean(prefs::kLockScreenMediaControlsEnabled, true);
+
+  EXPECT_TRUE(
+      Shell::Get()->media_controller()->AreLockScreenMediaKeysEnabled());
+}
+
+TEST_F(MediaControllerTest, DisableLockScreenMediaKeysIfFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kLockScreenMediaControls);
+
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetPrimaryUserPrefService();
+  prefs->SetBoolean(prefs::kLockScreenMediaControlsEnabled, true);
+
+  EXPECT_FALSE(
+      Shell::Get()->media_controller()->AreLockScreenMediaKeysEnabled());
+
+  prefs->SetBoolean(prefs::kLockScreenMediaControlsEnabled, false);
+
+  EXPECT_FALSE(
+      Shell::Get()->media_controller()->AreLockScreenMediaKeysEnabled());
+}
+
+TEST_F(MediaControllerTest, DisableLockScreenMediaKeysIfPreferenceDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kLockScreenMediaControls);
+
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetPrimaryUserPrefService();
+  prefs->SetBoolean(prefs::kLockScreenMediaControlsEnabled, false);
+
+  EXPECT_FALSE(
+      Shell::Get()->media_controller()->AreLockScreenMediaKeysEnabled());
+}
+
+TEST_F(MediaControllerTest, EnableMediaKeysWhenLockedAndControlsEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kLockScreenMediaControls);
+
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetPrimaryUserPrefService();
+  prefs->SetBoolean(prefs::kLockScreenMediaControlsEnabled, true);
+
+  EXPECT_EQ(0, controller()->suspend_count());
+  EXPECT_EQ(0, controller()->resume_count());
+  EXPECT_EQ(0, controller()->stop_count());
+  EXPECT_EQ(0, controller()->previous_track_count());
   EXPECT_EQ(0, controller()->next_track_count());
-
-  Shell::Get()->media_controller()->HandleMediaNextTrack();
-  Flush();
-
-  EXPECT_EQ(1, controller()->next_track_count());
+  EXPECT_EQ(0, controller()->seek_backward_count());
+  EXPECT_EQ(0, controller()->seek_forward_count());
 
   SimulateSessionLock();
 
-  Shell::Get()->media_controller()->HandleMediaNextTrack();
-  Flush();
+  HandleMediaKeys();
 
+  EXPECT_EQ(2, controller()->suspend_count());
+  EXPECT_EQ(1, controller()->resume_count());
+  EXPECT_EQ(1, controller()->stop_count());
+  EXPECT_EQ(1, controller()->previous_track_count());
   EXPECT_EQ(1, controller()->next_track_count());
+  EXPECT_EQ(1, controller()->seek_backward_count());
+  EXPECT_EQ(1, controller()->seek_forward_count());
+}
+
+TEST_F(MediaControllerTest, DisableMediaKeysWhenLockedAndControlsDisabled) {
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetPrimaryUserPrefService();
+  prefs->SetBoolean(prefs::kLockScreenMediaControlsEnabled, false);
+
+  EXPECT_EQ(0, controller()->suspend_count());
+  EXPECT_EQ(0, controller()->resume_count());
+  EXPECT_EQ(0, controller()->stop_count());
+  EXPECT_EQ(0, controller()->previous_track_count());
+  EXPECT_EQ(0, controller()->next_track_count());
+  EXPECT_EQ(0, controller()->seek_backward_count());
+  EXPECT_EQ(0, controller()->seek_forward_count());
+
+  SimulateSessionLock();
+
+  HandleMediaKeys();
+
+  EXPECT_EQ(0, controller()->suspend_count());
+  EXPECT_EQ(0, controller()->resume_count());
+  EXPECT_EQ(0, controller()->stop_count());
+  EXPECT_EQ(0, controller()->previous_track_count());
+  EXPECT_EQ(0, controller()->next_track_count());
+  EXPECT_EQ(0, controller()->seek_backward_count());
+  EXPECT_EQ(0, controller()->seek_forward_count());
 }
 
 }  // namespace ash

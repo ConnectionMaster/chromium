@@ -15,6 +15,7 @@
 #include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
+#include "components/webrtc/media_stream_device_enumerator_impl.h"
 #include "content/public/browser/media_observer.h"
 #include "content/public/browser/media_stream_request.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -34,7 +35,9 @@ class PrefRegistrySyncable;
 
 // This singleton is used to receive updates about media events from the content
 // layer.
-class MediaCaptureDevicesDispatcher : public content::MediaObserver {
+class MediaCaptureDevicesDispatcher
+    : public content::MediaObserver,
+      public webrtc::MediaStreamDeviceEnumeratorImpl {
  public:
   class Observer {
    public:
@@ -51,7 +54,7 @@ class MediaCaptureDevicesDispatcher : public content::MediaObserver {
     // Handle an information update related to a media stream request.
     virtual void OnRequestUpdate(int render_process_id,
                                  int render_frame_id,
-                                 blink::MediaStreamType stream_type,
+                                 blink::mojom::MediaStreamType stream_type,
                                  const content::MediaRequestState state) {}
 
     // Handle an information update that a new stream is being created.
@@ -74,8 +77,6 @@ class MediaCaptureDevicesDispatcher : public content::MediaObserver {
   // on destruction.
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
-  const blink::MediaStreamDevices& GetAudioCaptureDevices();
-  const blink::MediaStreamDevices& GetVideoCaptureDevices();
 
   // Method called from WebCapturerDelegate implementations to process access
   // requests. |extension| is set to NULL if request was made from a drive-by
@@ -89,64 +90,52 @@ class MediaCaptureDevicesDispatcher : public content::MediaObserver {
   // access permission. Note that this does not query the user.
   bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  blink::MediaStreamType type);
+                                  blink::mojom::MediaStreamType type);
 
   // Same as above but for an |extension|, which may not be NULL.
   bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  blink::MediaStreamType type,
+                                  blink::mojom::MediaStreamType type,
                                   const extensions::Extension* extension);
-
-  // Helper to get the default devices which can be used by the media request.
-  // Uses the first available devices if the default devices are not available.
-  // If the return list is empty, it means there is no available device on the
-  // OS.
-  // Called on the UI thread.
-  void GetDefaultDevicesForProfile(Profile* profile,
-                                   bool audio,
-                                   bool video,
-                                   blink::MediaStreamDevices* devices);
-
-  // Helper to get default device IDs. If the returned value is an empty string,
-  // it means that there is no default device for the given device |type|. The
-  // only supported |type| values are blink::MEDIA_DEVICE_AUDIO_CAPTURE and
-  // blink::MEDIA_DEVICE_VIDEO_CAPTURE.
-  // Must be called on the UI thread.
-  std::string GetDefaultDeviceIDForProfile(Profile* profile,
-                                           blink::MediaStreamType type);
-
-  // Helpers for picking particular requested devices, identified by raw id.
-  // If the device requested is not available it will return NULL.
-  const blink::MediaStreamDevice* GetRequestedAudioDevice(
-      const std::string& requested_audio_device_id);
-  const blink::MediaStreamDevice* GetRequestedVideoDevice(
-      const std::string& requested_video_device_id);
-
-  // Returns the first available audio or video device, or NULL if no devices
-  // are available.
-  const blink::MediaStreamDevice* GetFirstAvailableAudioDevice();
-  const blink::MediaStreamDevice* GetFirstAvailableVideoDevice();
 
   // Unittests that do not require actual device enumeration should call this
   // API on the singleton. It is safe to call this multiple times on the
   // signleton.
   void DisableDeviceEnumerationForTesting();
 
-  // Overridden from content::MediaObserver:
+  // Helper to get default device IDs. If the returned value is an empty string,
+  // it means that there is no default device for the given device |type|. The
+  // only supported |type| values are
+  // blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE and
+  // blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE.
+  // Must be called on the UI thread.
+  std::string GetDefaultDeviceIDForProfile(Profile* profile,
+                                           blink::mojom::MediaStreamType type);
+
+  // webrtc::MediaStreamDeviceEnumeratorImpl:
+  const blink::MediaStreamDevices& GetAudioCaptureDevices() const override;
+  const blink::MediaStreamDevices& GetVideoCaptureDevices() const override;
+  void GetDefaultDevicesForBrowserContext(
+      content::BrowserContext* context,
+      bool audio,
+      bool video,
+      blink::MediaStreamDevices* devices) override;
+
+  // content::MediaObserver:
   void OnAudioCaptureDevicesChanged() override;
   void OnVideoCaptureDevicesChanged() override;
   void OnMediaRequestStateChanged(int render_process_id,
                                   int render_frame_id,
                                   int page_request_id,
                                   const GURL& security_origin,
-                                  blink::MediaStreamType stream_type,
+                                  blink::mojom::MediaStreamType stream_type,
                                   content::MediaRequestState state) override;
   void OnCreatingAudioStream(int render_process_id,
                              int render_frame_id) override;
   void OnSetCapturingLinkSecured(int render_process_id,
                                  int render_frame_id,
                                  int page_request_id,
-                                 blink::MediaStreamType stream_type,
+                                 blink::mojom::MediaStreamType stream_type,
                                  bool is_secure) override;
 
   scoped_refptr<MediaStreamCaptureIndicator> GetMediaStreamCaptureIndicator();
@@ -162,6 +151,8 @@ class MediaCaptureDevicesDispatcher : public content::MediaObserver {
   void SetTestVideoCaptureDevices(const blink::MediaStreamDevices& devices);
 
  private:
+  friend class MediaCaptureDevicesDispatcherTest;
+
   friend struct base::DefaultSingletonTraits<MediaCaptureDevicesDispatcher>;
 
   MediaCaptureDevicesDispatcher();
@@ -170,18 +161,19 @@ class MediaCaptureDevicesDispatcher : public content::MediaObserver {
   // Called by the MediaObserver() functions, executed on UI thread.
   void NotifyAudioDevicesChangedOnUIThread();
   void NotifyVideoDevicesChangedOnUIThread();
-  void UpdateMediaRequestStateOnUIThread(int render_process_id,
-                                         int render_frame_id,
-                                         int page_request_id,
-                                         const GURL& security_origin,
-                                         blink::MediaStreamType stream_type,
-                                         content::MediaRequestState state);
+  void UpdateMediaRequestStateOnUIThread(
+      int render_process_id,
+      int render_frame_id,
+      int page_request_id,
+      const GURL& security_origin,
+      blink::mojom::MediaStreamType stream_type,
+      content::MediaRequestState state);
   void OnCreatingAudioStreamOnUIThread(int render_process_id,
                                        int render_frame_id);
   void UpdateVideoScreenCaptureStatus(int render_process_id,
                                       int render_frame_id,
                                       int page_request_id,
-                                      blink::MediaStreamType stream_type,
+                                      blink::mojom::MediaStreamType stream_type,
                                       bool is_secure);
 
   // Only for testing, a list of cached audio capture devices.

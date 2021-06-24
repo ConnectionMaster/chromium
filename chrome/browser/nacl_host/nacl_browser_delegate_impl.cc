@@ -9,22 +9,21 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #include "base/strings/string_split.h"
-#include "base/task/post_task.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/component_updater/pnacl_component_installer.h"
-#include "chrome/browser/infobars/infobar_service.h"
 #include "chrome/browser/nacl_host/nacl_infobar_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/renderer_host/pepper/chrome_browser_pepper_host_factory.h"
-#include "chrome/common/channel_info.h"
+#include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_paths_internal.h"
 #include "chrome/common/logging_chrome.h"
 #include "chrome/common/pepper_permission_util.h"
+#include "components/infobars/content/content_infobar_manager.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/buildflags/buildflags.h"
@@ -32,8 +31,9 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/extension_service.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
-#include "extensions/browser/info_map.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
@@ -65,9 +65,9 @@ NaClBrowserDelegateImpl::~NaClBrowserDelegateImpl() {
 
 void NaClBrowserDelegateImpl::ShowMissingArchInfobar(int render_process_id,
                                                      int render_view_id) {
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                           base::BindOnce(&CreateInfoBarOnUiThread,
-                                          render_process_id, render_view_id));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&CreateInfoBarOnUiThread, render_process_id,
+                                render_view_id));
 }
 
 bool NaClBrowserDelegateImpl::DialogsAreSuppressed() {
@@ -95,7 +95,7 @@ bool NaClBrowserDelegateImpl::GetUserDirectory(base::FilePath* user_dir) {
 }
 
 std::string NaClBrowserDelegateImpl::GetVersionString() const {
-  return chrome::GetVersionString();
+  return chrome::kChromeVersion;
 }
 
 ppapi::host::HostFactory* NaClBrowserDelegateImpl::CreatePpapiHostFactory(
@@ -165,29 +165,33 @@ bool NaClBrowserDelegateImpl::URLMatchesDebugPatterns(
 
 // This function is security sensitive.  Be sure to check with a security
 // person before you modify it.
-bool NaClBrowserDelegateImpl::MapUrlToLocalFilePath(
-    const GURL& file_url,
-    bool use_blocking_api,
-    const base::FilePath& profile_directory,
-    base::FilePath* file_path) {
+NaClBrowserDelegate::MapUrlToLocalFilePathCallback
+NaClBrowserDelegateImpl::GetMapUrlToLocalFilePathCallback(
+    const base::FilePath& profile_directory) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-  scoped_refptr<extensions::InfoMap> extension_info_map =
-      GetExtensionInfoMap(profile_directory);
-  return extension_info_map->MapUrlToLocalFilePath(
-      file_url, use_blocking_api, file_path);
+  auto extensions = std::make_unique<extensions::ExtensionSet>();
+  extensions->InsertAll(
+      extensions::ExtensionRegistry::Get(
+          profile_manager_->GetProfileByPath(profile_directory))
+          ->enabled_extensions());
+  return base::BindRepeating(&extensions::util::MapUrlToLocalFilePath,
+                             base::Owned(std::move(extensions)));
 #else
-  return false;
+  return base::BindRepeating([](const GURL& url, bool use_blocking_api,
+                                base::FilePath* file_path) { return false; });
 #endif
 }
 
 bool NaClBrowserDelegateImpl::IsNonSfiModeAllowed(
     const base::FilePath& profile_directory,
     const GURL& manifest_url) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-  const extensions::ExtensionSet* extension_set =
-      &GetExtensionInfoMap(profile_directory)->extensions();
-  return IsExtensionOrSharedModuleWhitelisted(manifest_url, extension_set,
-                                              allowed_nonsfi_origins_);
+  auto* registry = extensions::ExtensionRegistry::Get(
+      profile_manager_->GetProfileByPath(profile_directory));
+  return IsExtensionOrSharedModuleWhitelisted(
+      manifest_url, &registry->enabled_extensions(), allowed_nonsfi_origins_);
 #else
   return false;
 #endif
@@ -204,21 +208,8 @@ void NaClBrowserDelegateImpl::CreateInfoBarOnUiThread(int render_process_id,
       content::WebContents::FromRenderViewHost(rvh);
   if (!web_contents)
     return;
-  InfoBarService* infobar_service =
-      InfoBarService::FromWebContents(web_contents);
-  if (infobar_service)
-    NaClInfoBarDelegate::Create(infobar_service);
+  infobars::ContentInfoBarManager* infobar_manager =
+      infobars::ContentInfoBarManager::FromWebContents(web_contents);
+  if (infobar_manager)
+    NaClInfoBarDelegate::Create(infobar_manager);
 }
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-scoped_refptr<extensions::InfoMap> NaClBrowserDelegateImpl::GetExtensionInfoMap(
-    const base::FilePath& profile_directory) {
-  // Get the profile associated with the renderer.
-  Profile* profile = profile_manager_->GetProfileByPath(profile_directory);
-  DCHECK(profile);
-  scoped_refptr<extensions::InfoMap> extension_info_map =
-      extensions::ExtensionSystem::Get(profile)->info_map();
-  DCHECK(extension_info_map.get());
-  return extension_info_map;
-}
-#endif

@@ -24,17 +24,19 @@
 #include "third_party/blink/renderer/core/layout/layout_replaced.h"
 
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
+#include "third_party/blink/renderer/core/html/html_dimension.h"
 #include "third_party/blink/renderer/core/layout/api/line_layout_block_flow.h"
+#include "third_party/blink/renderer/core/layout/geometry/logical_offset.h"
+#include "third_party/blink/renderer/core/layout/geometry/logical_size.h"
 #include "third_party/blink/renderer/core/layout/intrinsic_sizing_info.h"
 #include "third_party/blink/renderer/core/layout/layout_analyzer.h"
 #include "third_party/blink/renderer/core/layout/layout_block.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/layout/layout_video.h"
-#include "third_party/blink/renderer/core/layout/ng/geometry/ng_logical_offset.h"
-#include "third_party/blink/renderer/core/layout/ng/geometry/ng_logical_size.h"
+#include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_cursor.h"
+#include "third_party/blink/renderer/core/layout/ng/ng_length_utils.h"
 #include "third_party/blink/renderer/core/layout/ng/ng_physical_box_fragment.h"
-#include "third_party/blink/renderer/core/paint/ng/ng_paint_fragment.h"
 #include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/replaced_painter.h"
@@ -63,6 +65,7 @@ LayoutReplaced::LayoutReplaced(Element* element,
 LayoutReplaced::~LayoutReplaced() = default;
 
 void LayoutReplaced::WillBeDestroyed() {
+  NOT_DESTROYED();
   if (!DocumentBeingDestroyed() && Parent())
     Parent()->DirtyLinesFromChangedChild(this);
 
@@ -71,6 +74,7 @@ void LayoutReplaced::WillBeDestroyed() {
 
 void LayoutReplaced::StyleDidChange(StyleDifference diff,
                                     const ComputedStyle* old_style) {
+  NOT_DESTROYED();
   LayoutBox::StyleDidChange(diff, old_style);
 
   // Replaced elements can have border-radius clips without clipping overflow;
@@ -89,10 +93,11 @@ void LayoutReplaced::StyleDidChange(StyleDifference diff,
 }
 
 void LayoutReplaced::UpdateLayout() {
+  NOT_DESTROYED();
   DCHECK(NeedsLayout());
   LayoutAnalyzer::Scope analyzer(*this);
 
-  LayoutRect old_content_rect = ReplacedContentRect();
+  PhysicalRect old_content_rect = ReplacedContentRect();
 
   SetHeight(MinimumReplacedHeight());
 
@@ -100,6 +105,9 @@ void LayoutReplaced::UpdateLayout() {
   UpdateLogicalHeight();
 
   ClearLayoutOverflow();
+  ClearSelfNeedsLayoutOverflowRecalc();
+  ClearChildNeedsLayoutOverflowRecalc();
+
   UpdateAfterLayout();
 
   ClearNeedsLayout();
@@ -109,61 +117,96 @@ void LayoutReplaced::UpdateLayout() {
 }
 
 void LayoutReplaced::IntrinsicSizeChanged() {
+  NOT_DESTROYED();
   int scaled_width =
       static_cast<int>(kDefaultWidth * StyleRef().EffectiveZoom());
   int scaled_height =
       static_cast<int>(kDefaultHeight * StyleRef().EffectiveZoom());
   intrinsic_size_ = LayoutSize(scaled_width, scaled_height);
-  SetNeedsLayoutAndPrefWidthsRecalcAndFullPaintInvalidation(
+  SetNeedsLayoutAndIntrinsicWidthsRecalcAndFullPaintInvalidation(
       layout_invalidation_reason::kSizeChanged);
 }
 
 void LayoutReplaced::Paint(const PaintInfo& paint_info) const {
+  NOT_DESTROYED();
   ReplacedPainter(*this).Paint(paint_info);
 }
 
 bool LayoutReplaced::HasReplacedLogicalHeight() const {
+  NOT_DESTROYED();
   if (StyleRef().LogicalHeight().IsAuto())
-    return false;
+    return StretchBlockSizeIfAuto();
 
-  if (StyleRef().LogicalHeight().IsSpecified()) {
+  if (StyleRef().LogicalHeight().IsFixed())
+    return true;
+
+  if (StyleRef().LogicalHeight().IsPercentOrCalc()) {
     if (HasAutoHeightOrContainingBlockWithAutoHeight())
       return false;
     return true;
   }
 
-  if (StyleRef().LogicalHeight().IsIntrinsic())
+  if (StyleRef().LogicalHeight().IsContentOrIntrinsicOrFillAvailable())
     return true;
 
   return false;
 }
 
 bool LayoutReplaced::NeedsPreferredWidthsRecalculation() const {
+  NOT_DESTROYED();
   // If the height is a percentage and the width is auto, then the
   // containingBlocks's height changing can cause this node to change it's
   // preferred width because it maintains aspect ratio.
   return HasRelativeLogicalHeight() && StyleRef().LogicalWidth().IsAuto();
 }
 
-static inline bool LayoutObjectHasAspectRatio(
+static inline bool LayoutObjectHasIntrinsicAspectRatio(
     const LayoutObject* layout_object) {
   DCHECK(layout_object);
   return layout_object->IsImage() || layout_object->IsCanvas() ||
-         layout_object->IsVideo();
+         IsA<LayoutVideo>(layout_object);
 }
 
 void LayoutReplaced::RecalcVisualOverflow() {
-  LayoutObject::RecalcVisualOverflow();
+  NOT_DESTROYED();
   ClearVisualOverflow();
+  LayoutObject::RecalcVisualOverflow();
   AddVisualEffectOverflow();
 }
 
 void LayoutReplaced::ComputeIntrinsicSizingInfoForReplacedContent(
     IntrinsicSizingInfo& intrinsic_sizing_info) const {
+  NOT_DESTROYED();
+  // In cases where we apply size containment we don't need to compute sizing
+  // information, since the final result does not depend on it.
   if (ShouldApplySizeContainment()) {
+    // Reset the size in case it was already populated.
     intrinsic_sizing_info.size = FloatSize();
+
+    const StyleAspectRatio& aspect_ratio = StyleRef().AspectRatio();
+    if (!aspect_ratio.IsAuto()) {
+      intrinsic_sizing_info.aspect_ratio.SetWidth(
+          aspect_ratio.GetRatio().Width());
+      intrinsic_sizing_info.aspect_ratio.SetHeight(
+          aspect_ratio.GetRatio().Height());
+    }
+
+    // If any of the dimensions are overridden, set those sizes.
+    if (HasOverrideIntrinsicContentLogicalWidth()) {
+      intrinsic_sizing_info.size.SetWidth(
+          OverrideIntrinsicContentLogicalWidth().ToFloat());
+    }
+    if (HasOverrideIntrinsicContentLogicalHeight()) {
+      intrinsic_sizing_info.size.SetHeight(
+          OverrideIntrinsicContentLogicalHeight().ToFloat());
+    }
     return;
   }
+
+  // Size overrides only apply if there is size-containment, which is checked
+  // above.
+  DCHECK(!HasOverrideIntrinsicContentLogicalWidth());
+  DCHECK(!HasOverrideIntrinsicContentLogicalHeight());
 
   ComputeIntrinsicSizingInfo(intrinsic_sizing_info);
 
@@ -181,6 +224,7 @@ void LayoutReplaced::ComputeIntrinsicSizingInfoForReplacedContent(
 
 FloatSize LayoutReplaced::ConstrainIntrinsicSizeToMinMax(
     const IntrinsicSizingInfo& intrinsic_sizing_info) const {
+  NOT_DESTROYED();
   // Constrain the intrinsic size along each axis according to minimum and
   // maximum width/heights along the opposite axis. So for example a maximum
   // width that shrinks our width will result in the height we compute here
@@ -209,6 +253,7 @@ FloatSize LayoutReplaced::ConstrainIntrinsicSizeToMinMax(
 
 void LayoutReplaced::ComputePositionedLogicalWidth(
     LogicalExtentComputedValues& computed_values) const {
+  NOT_DESTROYED();
   // The following is based off of the W3C Working Draft from April 11, 2006 of
   // CSS 2.1: Section 10.3.8 "Absolutely positioned, replaced elements"
   // <http://www.w3.org/TR/2005/WD-CSS21-20050613/visudet.html#abs-replaced-width>
@@ -217,8 +262,7 @@ void LayoutReplaced::ComputePositionedLogicalWidth(
 
   // We don't use containingBlock(), since we may be positioned by an enclosing
   // relative positioned inline.
-  const LayoutBoxModelObject* container_block =
-      ToLayoutBoxModelObject(Container());
+  const auto* container_block = To<LayoutBoxModelObject>(Container());
 
   const LayoutUnit container_logical_width =
       ContainingBlockLogicalWidthForPositioned(container_block);
@@ -407,7 +451,7 @@ void LayoutReplaced::ComputePositionedLogicalWidth(
   // should be removed.
   if (container_block->IsLayoutInline() &&
       !container_block->StyleRef().IsLeftToRightDirection()) {
-    const LayoutInline* flow = ToLayoutInline(container_block);
+    const auto* flow = To<LayoutInline>(container_block);
     InlineFlowBox* first_line = flow->FirstLineBox();
     InlineFlowBox* last_line = flow->LastLineBox();
     if (first_line && last_line && first_line != last_line) {
@@ -428,6 +472,7 @@ void LayoutReplaced::ComputePositionedLogicalWidth(
 
 void LayoutReplaced::ComputePositionedLogicalHeight(
     LogicalExtentComputedValues& computed_values) const {
+  NOT_DESTROYED();
   // The following is based off of the W3C Working Draft from April 11, 2006 of
   // CSS 2.1: Section 10.6.5 "Absolutely positioned, replaced elements"
   // <http://www.w3.org/TR/2005/WD-CSS21-20050613/visudet.html#abs-replaced-height>
@@ -436,8 +481,7 @@ void LayoutReplaced::ComputePositionedLogicalHeight(
 
   // We don't use containingBlock(), since we may be positioned by an enclosing
   // relpositioned inline.
-  const LayoutBoxModelObject* container_block =
-      ToLayoutBoxModelObject(Container());
+  const auto* container_block = To<LayoutBoxModelObject>(Container());
 
   const LayoutUnit container_logical_height =
       ContainingBlockLogicalHeightForPositioned(container_block);
@@ -584,9 +628,10 @@ void LayoutReplaced::ComputePositionedLogicalHeight(
   computed_values.position_ = logical_top_pos;
 }
 
-LayoutRect LayoutReplaced::ComputeObjectFit(
+PhysicalRect LayoutReplaced::ComputeObjectFit(
     const LayoutSize* overridden_intrinsic_size) const {
-  LayoutRect content_rect = PhysicalContentBoxRect();
+  NOT_DESTROYED();
+  PhysicalRect content_rect = PhysicalContentBoxRect();
   EObjectFit object_fit = StyleRef().GetObjectFit();
 
   if (object_fit == EObjectFit::kFill &&
@@ -605,30 +650,29 @@ LayoutRect LayoutReplaced::ComputeObjectFit(
   if (!intrinsic_size.Width() || !intrinsic_size.Height())
     return content_rect;
 
-  LayoutSize scaled_intrinsic_size = intrinsic_size;
-  LayoutRect final_rect = content_rect;
+  PhysicalSize scaled_intrinsic_size(intrinsic_size);
+  PhysicalRect final_rect = content_rect;
   switch (object_fit) {
     case EObjectFit::kScaleDown:
       // Srcset images have an intrinsic size depending on their destination,
       // but with object-fit: scale-down they need to use the underlying image
       // src's size. So revert back to the original size in that case.
-      if (IsLayoutImage()) {
-        scaled_intrinsic_size.Scale(
-            1.0 / ToLayoutImage(this)->ImageDevicePixelRatio());
+      if (auto* image = DynamicTo<LayoutImage>(this)) {
+        scaled_intrinsic_size.Scale(1.0 / image->ImageDevicePixelRatio());
       }
       FALLTHROUGH;
     case EObjectFit::kContain:
     case EObjectFit::kCover:
-      final_rect.SetSize(final_rect.Size().FitToAspectRatio(
+      final_rect.size = final_rect.size.FitToAspectRatio(
           scaled_intrinsic_size, object_fit == EObjectFit::kCover
                                      ? kAspectRatioFitGrow
-                                     : kAspectRatioFitShrink));
+                                     : kAspectRatioFitShrink);
       if (object_fit != EObjectFit::kScaleDown ||
-          final_rect.Width() <= scaled_intrinsic_size.Width())
+          final_rect.Width() <= scaled_intrinsic_size.width)
         break;
       FALLTHROUGH;
     case EObjectFit::kNone:
-      final_rect.SetSize(scaled_intrinsic_size);
+      final_rect.size = scaled_intrinsic_size;
       break;
     case EObjectFit::kFill:
       break;
@@ -642,45 +686,52 @@ LayoutRect LayoutReplaced::ComputeObjectFit(
   LayoutUnit y_offset =
       MinimumValueForLength(StyleRef().ObjectPosition().Y(),
                             content_rect.Height() - final_rect.Height());
-  final_rect.Move(x_offset, y_offset);
+  final_rect.Move(PhysicalOffset(x_offset, y_offset));
 
   return final_rect;
 }
 
-LayoutRect LayoutReplaced::ReplacedContentRect() const {
+PhysicalRect LayoutReplaced::ReplacedContentRect() const {
+  NOT_DESTROYED();
   return ComputeObjectFit();
 }
 
-LayoutRect LayoutReplaced::PreSnappedRectForPersistentSizing(LayoutRect rect) {
-  rect.SetSize(LayoutSize(RoundedIntSize(rect.Size())));
-  return rect;
+PhysicalRect LayoutReplaced::PreSnappedRectForPersistentSizing(
+    const PhysicalRect& rect) {
+  return PhysicalRect(rect.offset, PhysicalSize(RoundedIntSize(rect.size)));
 }
 
 void LayoutReplaced::ComputeIntrinsicSizingInfo(
     IntrinsicSizingInfo& intrinsic_sizing_info) const {
+  NOT_DESTROYED();
   DCHECK(!ShouldApplySizeContainment());
   intrinsic_sizing_info.size = FloatSize(IntrinsicLogicalWidth().ToFloat(),
                                          IntrinsicLogicalHeight().ToFloat());
 
+  const StyleAspectRatio& aspect_ratio = StyleRef().AspectRatio();
+  if (!aspect_ratio.IsAuto()) {
+    intrinsic_sizing_info.aspect_ratio.SetWidth(
+        aspect_ratio.GetRatio().Width());
+    intrinsic_sizing_info.aspect_ratio.SetHeight(
+        aspect_ratio.GetRatio().Height());
+    if (!IsHorizontalWritingMode())
+      intrinsic_sizing_info.Transpose();
+  }
+  if (aspect_ratio.GetType() == EAspectRatioType::kRatio)
+    return;
+  // Otherwise, let the intrinsic aspect ratio take precedence, below.
+
   // Figure out if we need to compute an intrinsic ratio.
-  if (intrinsic_sizing_info.size.IsEmpty() || !LayoutObjectHasAspectRatio(this))
+  if (!LayoutObjectHasIntrinsicAspectRatio(this))
     return;
 
-  intrinsic_sizing_info.aspect_ratio = intrinsic_sizing_info.size;
-}
-
-static inline LayoutUnit ResolveWidthForRatio(LayoutUnit height,
-                                              const FloatSize& aspect_ratio) {
-  return LayoutUnit(height * aspect_ratio.Width() / aspect_ratio.Height());
-}
-
-static inline LayoutUnit ResolveHeightForRatio(LayoutUnit width,
-                                               const FloatSize& aspect_ratio) {
-  return LayoutUnit(width * aspect_ratio.Height() / aspect_ratio.Width());
+  if (!intrinsic_sizing_info.size.IsEmpty())
+    intrinsic_sizing_info.aspect_ratio = intrinsic_sizing_info.size;
 }
 
 LayoutUnit LayoutReplaced::ComputeConstrainedLogicalWidth(
     ShouldComputePreferred should_compute_preferred) const {
+  NOT_DESTROYED();
   if (should_compute_preferred == kComputePreferred)
     return ComputeReplacedLogicalWidthRespectingMinMaxWidth(LayoutUnit(),
                                                             kComputePreferred);
@@ -705,12 +756,13 @@ LayoutUnit LayoutReplaced::ComputeConstrainedLogicalWidth(
 
 LayoutUnit LayoutReplaced::ComputeReplacedLogicalWidth(
     ShouldComputePreferred should_compute_preferred) const {
-  if (StyleRef().LogicalWidth().IsSpecified() ||
-      StyleRef().LogicalWidth().IsIntrinsic())
+  NOT_DESTROYED();
+  if (!StyleRef().LogicalWidth().IsAuto() || StretchInlineSizeIfAuto()) {
     return ComputeReplacedLogicalWidthRespectingMinMaxWidth(
         ComputeReplacedLogicalWidthUsing(kMainOrPreferredSize,
                                          StyleRef().LogicalWidth()),
         should_compute_preferred);
+  }
 
   // 10.3.2 Inline, replaced elements:
   // http://www.w3.org/TR/CSS21/visudet.html#inline-replaced-width
@@ -721,7 +773,8 @@ LayoutUnit LayoutReplaced::ComputeReplacedLogicalWidth(
       ConstrainIntrinsicSizeToMinMax(intrinsic_sizing_info);
 
   if (StyleRef().LogicalWidth().IsAuto()) {
-    bool computed_height_is_auto = StyleRef().LogicalHeight().IsAuto();
+    bool computed_height_is_auto =
+        StyleRef().LogicalHeight().IsAuto() && !StretchBlockSizeIfAuto();
 
     // If 'height' and 'width' both have computed values of 'auto' and the
     // element also has an intrinsic width, then that intrinsic width is the
@@ -746,9 +799,22 @@ LayoutUnit LayoutReplaced::ComputeReplacedLogicalWidth(
                 : ComputeConstrainedLogicalWidth(should_compute_preferred);
         LayoutUnit logical_height =
             ComputeReplacedLogicalHeight(estimated_used_width);
+        NGBoxStrut border_padding(BorderStart() + ComputedCSSPaddingStart(),
+                                  BorderEnd() + ComputedCSSPaddingEnd(),
+                                  BorderBefore() + ComputedCSSPaddingBefore(),
+                                  BorderAfter() + ComputedCSSPaddingAfter());
+        // Because ComputeReplacedLogicalHeight returns a content size, we need
+        // to add border + padding for InlineSizeFromAspectRatio.
+        EBoxSizing box_sizing = EBoxSizing::kContentBox;
+        logical_height += border_padding.BlockSum();
+        if (StyleRef().AspectRatio().GetType() == EAspectRatioType::kRatio)
+          box_sizing = StyleRef().BoxSizing();
+        double aspect_ratio = intrinsic_sizing_info.aspect_ratio.Width() /
+                              intrinsic_sizing_info.aspect_ratio.Height();
         return ComputeReplacedLogicalWidthRespectingMinMaxWidth(
-            ResolveWidthForRatio(logical_height,
-                                 intrinsic_sizing_info.aspect_ratio),
+            InlineSizeFromAspectRatio(border_padding, aspect_ratio, box_sizing,
+                                      logical_height) -
+                border_padding.InlineSum(),
             should_compute_preferred);
       }
 
@@ -790,6 +856,7 @@ LayoutUnit LayoutReplaced::ComputeReplacedLogicalWidth(
 
 LayoutUnit LayoutReplaced::ComputeReplacedLogicalHeight(
     LayoutUnit estimated_used_width) const {
+  NOT_DESTROYED();
   // 10.5 Content height: the 'height' property:
   // http://www.w3.org/TR/CSS21/visudet.html#propdef-height
   if (HasReplacedLogicalHeight()) {
@@ -821,8 +888,22 @@ LayoutUnit LayoutReplaced::ComputeReplacedLogicalHeight(
   if (!intrinsic_sizing_info.aspect_ratio.IsEmpty()) {
     LayoutUnit used_width =
         estimated_used_width ? estimated_used_width : AvailableLogicalWidth();
+    NGBoxStrut border_padding(BorderStart() + ComputedCSSPaddingStart(),
+                              BorderEnd() + ComputedCSSPaddingEnd(),
+                              BorderBefore() + ComputedCSSPaddingBefore(),
+                              BorderAfter() + ComputedCSSPaddingAfter());
+    // Because used_size contains a content size, we need
+    // to add border + padding for BlockSizeFromAspectRatio.
+    EBoxSizing box_sizing = EBoxSizing::kContentBox;
+    used_width += border_padding.InlineSum();
+    if (StyleRef().AspectRatio().GetType() == EAspectRatioType::kRatio)
+      box_sizing = StyleRef().BoxSizing();
+    double aspect_ratio = intrinsic_sizing_info.aspect_ratio.Height() /
+                          intrinsic_sizing_info.aspect_ratio.Width();
     return ComputeReplacedLogicalHeightRespectingMinMaxHeight(
-        ResolveHeightForRatio(used_width, intrinsic_sizing_info.aspect_ratio));
+        BlockSizeFromAspectRatio(border_padding, aspect_ratio, box_sizing,
+                                 used_width) -
+        border_padding.BlockSum());
   }
 
   // Otherwise, if 'height' has a computed value of 'auto', and the element has
@@ -840,60 +921,47 @@ LayoutUnit LayoutReplaced::ComputeReplacedLogicalHeight(
       IntrinsicLogicalHeight());
 }
 
-void LayoutReplaced::ComputeIntrinsicLogicalWidths(
-    LayoutUnit& min_logical_width,
-    LayoutUnit& max_logical_width) const {
-  min_logical_width = max_logical_width = IntrinsicLogicalWidth();
+MinMaxSizes LayoutReplaced::ComputeIntrinsicLogicalWidths() const {
+  NOT_DESTROYED();
+  MinMaxSizes sizes;
+  sizes += BorderAndPaddingLogicalWidth() + IntrinsicLogicalWidth();
+  return sizes;
 }
 
-void LayoutReplaced::ComputePreferredLogicalWidths() {
-  DCHECK(PreferredLogicalWidthsDirty());
+MinMaxSizes LayoutReplaced::PreferredLogicalWidths() const {
+  NOT_DESTROYED();
+  MinMaxSizes sizes;
 
   // We cannot resolve some logical width here (i.e. percent, fill-available or
   // fit-content) as the available logical width may not be set on our
   // containing block.
   const Length& logical_width = StyleRef().LogicalWidth();
   if (logical_width.IsPercentOrCalc() || logical_width.IsFillAvailable() ||
-      logical_width.IsFitContent())
-    ComputeIntrinsicLogicalWidths(min_preferred_logical_width_,
-                                  max_preferred_logical_width_);
-  else
-    min_preferred_logical_width_ = max_preferred_logical_width_ =
-        ComputeReplacedLogicalWidth(kComputePreferred);
+      logical_width.IsFitContent()) {
+    sizes = IntrinsicLogicalWidths();
+    sizes -= BorderAndPaddingLogicalWidth();
+  } else {
+    sizes = ComputeReplacedLogicalWidth(kComputePreferred);
+  }
 
   const ComputedStyle& style_to_use = StyleRef();
   if (style_to_use.LogicalWidth().IsPercentOrCalc() ||
       style_to_use.LogicalMaxWidth().IsPercentOrCalc())
-    min_preferred_logical_width_ = LayoutUnit();
+    sizes.min_size = LayoutUnit();
 
   if (style_to_use.LogicalMinWidth().IsFixed() &&
       style_to_use.LogicalMinWidth().Value() > 0) {
-    max_preferred_logical_width_ =
-        std::max(max_preferred_logical_width_,
-                 AdjustContentBoxLogicalWidthForBoxSizing(
-                     style_to_use.LogicalMinWidth().Value()));
-    min_preferred_logical_width_ =
-        std::max(min_preferred_logical_width_,
-                 AdjustContentBoxLogicalWidthForBoxSizing(
-                     style_to_use.LogicalMinWidth().Value()));
+    sizes.Encompass(AdjustContentBoxLogicalWidthForBoxSizing(
+        style_to_use.LogicalMinWidth().Value()));
   }
 
   if (style_to_use.LogicalMaxWidth().IsFixed()) {
-    max_preferred_logical_width_ =
-        std::min(max_preferred_logical_width_,
-                 AdjustContentBoxLogicalWidthForBoxSizing(
-                     style_to_use.LogicalMaxWidth().Value()));
-    min_preferred_logical_width_ =
-        std::min(min_preferred_logical_width_,
-                 AdjustContentBoxLogicalWidthForBoxSizing(
-                     style_to_use.LogicalMaxWidth().Value()));
+    sizes.Constrain(AdjustContentBoxLogicalWidthForBoxSizing(
+        style_to_use.LogicalMaxWidth().Value()));
   }
 
-  LayoutUnit border_and_padding = BorderAndPaddingLogicalWidth();
-  min_preferred_logical_width_ += border_and_padding;
-  max_preferred_logical_width_ += border_and_padding;
-
-  ClearPreferredLogicalWidthsDirty();
+  sizes += BorderAndPaddingLogicalWidth();
+  return sizes;
 }
 
 static std::pair<LayoutUnit, LayoutUnit> SelectionTopAndBottom(
@@ -906,37 +974,27 @@ static std::pair<LayoutUnit, LayoutUnit> SelectionTopAndBottom(
   const std::pair<LayoutUnit, LayoutUnit> fallback(
       layout_replaced.LogicalTop(), layout_replaced.LogicalBottom());
 
-  const NGPaintFragment* inline_container =
-      layout_replaced.IsInline()
-          ? NGPaintFragment::GetForInlineContainer(&layout_replaced)
-          : nullptr;
-  if (inline_container) {
+  if (layout_replaced.IsInline() &&
+      layout_replaced.IsInLayoutNGInlineFormattingContext()) {
     // Step 1: Find the line box containing |layout_replaced|.
-    const NGPaintFragment* inline_fragment =
-        *NGPaintFragment::InlineFragmentsFor(&layout_replaced).begin();
-    if (!inline_fragment)
+    NGInlineCursor line_box;
+    line_box.MoveTo(layout_replaced);
+    if (!line_box)
       return fallback;
-    const NGPaintFragment* line_box_container =
-        inline_fragment->ContainerLineBox();
-    if (!line_box_container)
+    line_box.MoveToContainingLine();
+    if (!line_box)
       return fallback;
 
     // Step 2: Return the logical top and bottom of the line box.
     // TODO(layout-dev): Use selection top & bottom instead of line's, or decide
     // if we still want to distinguish line and selection heights in NG.
-    const ComputedStyle& line_style = line_box_container->Style();
-    const WritingMode writing_mode = line_style.GetWritingMode();
-    const TextDirection text_direction = line_style.Direction();
-    const NGPhysicalOffset line_box_offset =
-        line_box_container->InlineOffsetToContainerBox();
-    const NGPhysicalSize line_box_size = line_box_container->Size();
-    const NGLogicalOffset logical_offset = line_box_offset.ConvertToLogical(
-        writing_mode, text_direction, inline_container->Size(),
-        line_box_container->Size());
-    const NGLogicalSize logical_size =
-        line_box_size.ConvertToLogical(writing_mode);
-    return {logical_offset.block_offset,
-            logical_offset.block_offset + logical_size.block_size};
+    const ComputedStyle& line_style = line_box.Current().Style();
+    const auto writing_direction = line_style.GetWritingDirection();
+    const WritingModeConverter converter(writing_direction,
+                                         line_box.ContainerFragment().Size());
+    const LogicalRect logical_rect =
+        converter.ToLogical(line_box.Current().RectInContainerFragment());
+    return {logical_rect.offset.block_offset, logical_rect.BlockEndOffset()};
   }
 
   InlineBox* box = layout_replaced.InlineBoxWrapper();
@@ -948,60 +1006,59 @@ static std::pair<LayoutUnit, LayoutUnit> SelectionTopAndBottom(
 }
 
 PositionWithAffinity LayoutReplaced::PositionForPoint(
-    const LayoutPoint& point) const {
+    const PhysicalOffset& point) const {
+  NOT_DESTROYED();
+
   LayoutUnit top;
   LayoutUnit bottom;
   std::tie(top, bottom) = SelectionTopAndBottom(*this);
 
+  LayoutPoint flipped_point_in_container =
+      LocationContainer()->FlipForWritingMode(point + PhysicalLocation());
   LayoutUnit block_direction_position = IsHorizontalWritingMode()
-                                            ? point.Y() + Location().Y()
-                                            : point.X() + Location().X();
+                                            ? flipped_point_in_container.Y()
+                                            : flipped_point_in_container.X();
   LayoutUnit line_direction_position = IsHorizontalWritingMode()
-                                           ? point.X() + Location().X()
-                                           : point.Y() + Location().Y();
+                                           ? flipped_point_in_container.X()
+                                           : flipped_point_in_container.Y();
 
   if (block_direction_position < top)
-    return CreatePositionWithAffinity(
-        CaretMinOffset());  // coordinates are above
+    return PositionBeforeThis();  // coordinates are above
 
   if (block_direction_position >= bottom)
-    return CreatePositionWithAffinity(
-        CaretMaxOffset());  // coordinates are below
+    return PositionBeforeThis();  // coordinates are below
 
   if (GetNode()) {
     const bool is_at_left_side =
         line_direction_position <= LogicalLeft() + (LogicalWidth() / 2);
     const bool is_at_start = is_at_left_side == IsLtr(ResolvedDirection());
-    // TODO(crbug.com/827923): Stop creating positions using int offsets on
-    // non-text nodes.
-    return CreatePositionWithAffinity(is_at_start ? 0 : 1);
+    if (is_at_start)
+      return PositionBeforeThis();
+    return PositionAfterThis();
   }
 
   return LayoutBox::PositionForPoint(point);
 }
 
-LayoutRect LayoutReplaced::LocalSelectionRect() const {
+PhysicalRect LayoutReplaced::LocalSelectionVisualRect() const {
+  NOT_DESTROYED();
   if (GetSelectionState() == SelectionState::kNone ||
       GetSelectionState() == SelectionState::kContain) {
-    return LayoutRect();
+    return PhysicalRect();
   }
 
-  if (IsInline()) {
-    const auto fragments = NGPaintFragment::InlineFragmentsFor(this);
-    if (fragments.IsInLayoutNGInlineFormattingContext()) {
-      LayoutRect rect;
-      for (const NGPaintFragment* fragment : fragments) {
-        const NGPhysicalOffsetRect fragment_rect =
-            fragment->ComputeLocalSelectionRectForReplaced();
-        rect.Unite(fragment_rect.ToLayoutRect());
-      }
-      return rect;
-    }
+  if (IsInline() && IsInLayoutNGInlineFormattingContext()) {
+    PhysicalRect rect;
+    NGInlineCursor cursor;
+    cursor.MoveTo(*this);
+    for (; cursor; cursor.MoveToNextForSameLayoutObject())
+      rect.Unite(cursor.CurrentLocalSelectionRectForReplaced());
+    return rect;
   }
 
   if (!InlineBoxWrapper()) {
     // We're a block-level replaced element.  Just return our own dimensions.
-    return LayoutRect(LayoutPoint(), Size());
+    return PhysicalRect(PhysicalOffset(), Size());
   }
 
   RootInlineBox& root = InlineBoxWrapper()->Root();
@@ -1009,11 +1066,12 @@ LayoutRect LayoutReplaced::LocalSelectionRect() const {
       root.Block().StyleRef().IsFlippedBlocksWritingMode()
           ? InlineBoxWrapper()->LogicalBottom() - root.SelectionBottom()
           : root.SelectionTop() - InlineBoxWrapper()->LogicalTop();
-  if (root.Block().StyleRef().IsHorizontalWritingMode())
-    return LayoutRect(LayoutUnit(), new_logical_top, Size().Width(),
-                      root.SelectionHeight());
-  return LayoutRect(new_logical_top, LayoutUnit(), root.SelectionHeight(),
-                    Size().Height());
+  if (root.Block().StyleRef().IsHorizontalWritingMode()) {
+    return PhysicalRect(LayoutUnit(), new_logical_top, Size().Width(),
+                        root.SelectionHeight());
+  }
+  return PhysicalRect(new_logical_top, LayoutUnit(), root.SelectionHeight(),
+                      Size().Height());
 }
 
 }  // namespace blink

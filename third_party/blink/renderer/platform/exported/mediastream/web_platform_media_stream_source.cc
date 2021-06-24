@@ -4,16 +4,12 @@
 
 #include "third_party/blink/public/platform/modules/mediastream/web_platform_media_stream_source.h"
 
+#include <utility>
+
+#include "base/check.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
 
-#include "base/logging.h"
-
 namespace blink {
-
-const char kMediaStreamSourceTab[] = "tab";
-const char kMediaStreamSourceScreen[] = "screen";
-const char kMediaStreamSourceDesktop[] = "desktop";
-const char kMediaStreamSourceSystem[] = "system";
 
 const char WebPlatformMediaStreamSource::kSourceId[] = "sourceId";
 
@@ -31,7 +27,7 @@ void WebPlatformMediaStreamSource::StopSource() {
 
 void WebPlatformMediaStreamSource::FinalizeStopSource() {
   if (!stop_callback_.is_null())
-    base::ResetAndReturn(&stop_callback_).Run(Owner());
+    std::move(stop_callback_).Run(Owner());
   if (Owner())
     Owner().SetReadyState(WebMediaStreamSource::kReadyStateEnded);
 }
@@ -50,10 +46,20 @@ void WebPlatformMediaStreamSource::SetDevice(const MediaStreamDevice& device) {
   device_ = device;
 }
 
+void WebPlatformMediaStreamSource::SetCaptureHandle(
+    media::mojom::CaptureHandlePtr capture_handle) {
+  if (!device_.display_media_info.has_value()) {
+    DVLOG(1) << "Not a display-capture device.";
+    return;
+  }
+  auto& info = device_.display_media_info.value();
+  info->capture_handle = std::move(capture_handle);
+}
+
 void WebPlatformMediaStreamSource::SetStopCallback(
-    const SourceStoppedCallback& stop_callback) {
+    SourceStoppedCallback stop_callback) {
   DCHECK(stop_callback_.is_null());
-  stop_callback_ = stop_callback;
+  stop_callback_ = std::move(stop_callback);
 }
 
 void WebPlatformMediaStreamSource::ResetSourceStoppedCallback() {

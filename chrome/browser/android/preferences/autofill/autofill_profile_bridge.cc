@@ -2,14 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/android/preferences/autofill/autofill_profile_bridge.h"
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/android/chrome_jni_headers/AutofillProfileBridge_jni.h"
 #include "chrome/browser/browser_process.h"
-#include "components/autofill/core/browser/autofill_country.h"
-#include "jni/AutofillProfileBridge_jni.h"
+#include "components/autofill/core/browser/geo/autofill_country.h"
+#include "content/public/browser/web_contents.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_field.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_metadata.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_ui.h"
@@ -48,10 +51,10 @@ static void JNI_AutofillProfileBridge_GetSupportedCountries(
     const JavaParamRef<jobject>& j_country_name_list) {
   std::vector<std::string> country_codes = GetRegionCodes();
   std::vector<std::string> known_country_codes;
-  std::vector<base::string16> known_country_names;
+  std::vector<std::u16string> known_country_names;
   std::string locale = g_browser_process->GetApplicationLocale();
   for (auto country_code : country_codes) {
-    const base::string16& country_name =
+    const std::u16string& country_name =
         l10n_util::GetDisplayNameForCountry(country_code, locale);
     // Don't display a country code for which a name is not known yet.
     if (country_name != base::UTF8ToUTF16(country_code)) {
@@ -134,6 +137,16 @@ JNI_AutofillProfileBridge_GetAddressUiComponents(
       env, ToJavaIntArray(env, component_length), j_length_list);
 
   return ConvertUTF8ToJavaString(env, best_language_tag);
+}
+
+void ShowAutofillProfileSettings(content::WebContents* web_contents) {
+  Java_AutofillProfileBridge_showAutofillProfileSettings(
+      base::android::AttachCurrentThread(), web_contents->GetJavaWebContents());
+}
+
+void ShowAutofillCreditCardSettings(content::WebContents* web_contents) {
+  Java_AutofillProfileBridge_showAutofillCreditCardSettings(
+      base::android::AttachCurrentThread(), web_contents->GetJavaWebContents());
 }
 
 }  // namespace autofill

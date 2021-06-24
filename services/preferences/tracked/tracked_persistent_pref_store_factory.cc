@@ -13,10 +13,11 @@
 #include "base/bind.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_filter.h"
+#include "components/prefs/segregated_pref_store.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/preferences/public/mojom/tracked_preference_validation_delegate.mojom.h"
 #include "services/preferences/tracked/pref_hash_filter.h"
 #include "services/preferences/tracked/pref_hash_store_impl.h"
-#include "services/preferences/tracked/segregated_pref_store.h"
 #include "services/preferences/tracked/temp_scoped_dir_cleaner.h"
 #include "services/preferences/tracked/tracked_preferences_migration.h"
 
@@ -48,15 +49,14 @@ GetExternalVerificationPrefHashStorePair(
     const prefs::mojom::TrackedPersistentPrefStoreConfiguration& config,
     scoped_refptr<TempScopedDirCleaner> temp_dir_cleaner) {
 #if defined(OS_WIN)
-  return std::make_pair(std::make_unique<PrefHashStoreImpl>(
-                            config.registry_seed, config.legacy_device_id,
-                            false /* use_super_mac */),
-                        std::make_unique<RegistryHashStoreContentsWin>(
-                            config.registry_path,
-                            config.unprotected_pref_filename.DirName()
-                                .BaseName()
-                                .LossyDisplayName(),
-                            std::move(temp_dir_cleaner)));
+  return std::make_pair(
+      std::make_unique<PrefHashStoreImpl>(config.registry_seed,
+                                          config.legacy_device_id,
+                                          false /* use_super_mac */),
+      std::make_unique<RegistryHashStoreContentsWin>(
+          base::AsWString(config.registry_path),
+          config.unprotected_pref_filename.DirName().BaseName().value(),
+          std::move(temp_dir_cleaner)));
 #else
   return std::make_pair(nullptr, nullptr);
 #endif
@@ -91,33 +91,33 @@ PersistentPrefStore* CreateTrackedPersistentPrefStore(
   // object between the unprotected and protected hash filter's
   // RegistryHashStoreContentsWin which will clear the registry keys when
   // destroyed. (https://crbug.com/721245)
-  if (base::StartsWith(config->unprotected_pref_filename.DirName()
-                           .BaseName()
-                           .LossyDisplayName(),
-                       base::ScopedTempDir::GetTempDirPrefix(),
-                       base::CompareCase::INSENSITIVE_ASCII)) {
+  if (base::StartsWith(
+          config->unprotected_pref_filename.DirName().BaseName().value(),
+          base::ScopedTempDir::GetTempDirPrefix(),
+          base::CompareCase::INSENSITIVE_ASCII)) {
     temp_scoped_dir_cleaner =
         base::MakeRefCounted<TempScopedDirRegistryCleaner>();
   }
 #endif
 
-  prefs::mojom::TrackedPreferenceValidationDelegatePtr validation_delegate;
+  mojo::Remote<prefs::mojom::TrackedPreferenceValidationDelegate>
+      validation_delegate;
   validation_delegate.Bind(std::move(config->validation_delegate));
+  auto validation_delegate_ref = base::MakeRefCounted<base::RefCountedData<
+      mojo::Remote<prefs::mojom::TrackedPreferenceValidationDelegate>>>(
+      std::move(validation_delegate));
   std::unique_ptr<PrefHashFilter> unprotected_pref_hash_filter(
       new PrefHashFilter(CreatePrefHashStore(*config, false),
                          GetExternalVerificationPrefHashStorePair(
                              *config, temp_scoped_dir_cleaner),
-                         unprotected_configuration, nullptr,
-                         validation_delegate.get(), config->reporting_ids_count,
-                         false));
-  prefs::mojom::ResetOnLoadObserverPtr reset_on_load_observer(
-      std::move(config->reset_on_load_observer));
+                         unprotected_configuration, mojo::NullRemote(),
+                         validation_delegate_ref, config->reporting_ids_count));
   std::unique_ptr<PrefHashFilter> protected_pref_hash_filter(new PrefHashFilter(
       CreatePrefHashStore(*config, true),
       GetExternalVerificationPrefHashStorePair(*config,
                                                temp_scoped_dir_cleaner),
-      protected_configuration, std::move(reset_on_load_observer),
-      validation_delegate.get(), config->reporting_ids_count, true));
+      protected_configuration, std::move(config->reset_on_load_observer),
+      validation_delegate_ref, config->reporting_ids_count));
 
   PrefHashFilter* raw_unprotected_pref_hash_filter =
       unprotected_pref_hash_filter.get();
@@ -133,18 +133,20 @@ PersistentPrefStore* CreateTrackedPersistentPrefStore(
 
   SetupTrackedPreferencesMigration(
       unprotected_pref_names, protected_pref_names,
-      base::Bind(&RemoveValueSilently, unprotected_pref_store->AsWeakPtr()),
-      base::Bind(&RemoveValueSilently, protected_pref_store->AsWeakPtr()),
-      base::Bind(&JsonPrefStore::RegisterOnNextSuccessfulWriteReply,
-                 unprotected_pref_store->AsWeakPtr()),
-      base::Bind(&JsonPrefStore::RegisterOnNextSuccessfulWriteReply,
-                 protected_pref_store->AsWeakPtr()),
+      base::BindRepeating(&RemoveValueSilently,
+                          unprotected_pref_store->AsWeakPtr()),
+      base::BindRepeating(&RemoveValueSilently,
+                          protected_pref_store->AsWeakPtr()),
+      base::BindRepeating(&JsonPrefStore::RegisterOnNextSuccessfulWriteReply,
+                          unprotected_pref_store->AsWeakPtr()),
+      base::BindRepeating(&JsonPrefStore::RegisterOnNextSuccessfulWriteReply,
+                          protected_pref_store->AsWeakPtr()),
       CreatePrefHashStore(*config, false), CreatePrefHashStore(*config, true),
       raw_unprotected_pref_hash_filter, raw_protected_pref_hash_filter);
 
-  return new SegregatedPrefStore(unprotected_pref_store, protected_pref_store,
-                                 protected_pref_names,
-                                 std::move(validation_delegate));
+  return new SegregatedPrefStore(std::move(unprotected_pref_store),
+                                 std::move(protected_pref_store),
+                                 std::move(protected_pref_names));
 }
 
 void InitializeMasterPrefsTracking(
@@ -153,7 +155,7 @@ void InitializeMasterPrefsTracking(
   PrefHashFilter(
       CreatePrefHashStore(*configuration, false),
       GetExternalVerificationPrefHashStorePair(*configuration, nullptr),
-      configuration->tracking_configuration, nullptr, nullptr,
-      configuration->reporting_ids_count, false)
+      configuration->tracking_configuration, mojo::NullRemote(), nullptr,
+      configuration->reporting_ids_count)
       .Initialize(master_prefs);
 }

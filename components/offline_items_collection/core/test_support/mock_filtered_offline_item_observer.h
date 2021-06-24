@@ -21,7 +21,8 @@ class MockFilteredOfflineItemObserver {
 
     // FilteredOfflineItemObserver::Observer implementation.
     MOCK_METHOD1(OnItemRemoved, void(const ContentId&));
-    MOCK_METHOD1(OnItemUpdated, void(const OfflineItem&));
+    MOCK_METHOD2(OnItemUpdated,
+                 void(const OfflineItem&, const absl::optional<UpdateDelta>&));
   };
 
   class ScopedMockObserver : public MockObserver {

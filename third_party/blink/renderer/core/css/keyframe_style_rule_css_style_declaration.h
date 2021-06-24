@@ -14,13 +14,6 @@ class CSSKeyframeRule;
 class KeyframeStyleRuleCSSStyleDeclaration final
     : public StyleRuleCSSStyleDeclaration {
  public:
-  static KeyframeStyleRuleCSSStyleDeclaration* Create(
-      MutableCSSPropertyValueSet& property_set,
-      CSSKeyframeRule* parent_rule) {
-    return MakeGarbageCollected<KeyframeStyleRuleCSSStyleDeclaration>(
-        property_set, parent_rule);
-  }
-
   KeyframeStyleRuleCSSStyleDeclaration(MutableCSSPropertyValueSet&,
                                        CSSKeyframeRule*);
 
@@ -31,4 +24,4 @@ class KeyframeStyleRuleCSSStyleDeclaration final
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CSS_KEYFRAME_STYLE_RULE_CSS_STYLE_DECLARATION_H_

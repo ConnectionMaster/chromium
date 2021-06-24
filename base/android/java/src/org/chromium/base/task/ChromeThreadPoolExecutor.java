@@ -8,8 +8,9 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 import android.os.Process;
 
-import org.chromium.base.BuildConfig;
-import org.chromium.base.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.build.BuildConfig;
 
 import java.lang.reflect.Field;
 import java.util.HashMap;
@@ -75,11 +76,11 @@ class ChromeThreadPoolExecutor extends ThreadPoolExecutor {
                 blamedClass = field.get(runnable).getClass();
             }
         } catch (NoSuchFieldException e) {
-            if (BuildConfig.DCHECK_IS_ON) {
+            if (BuildConfig.ENABLE_ASSERTS) {
                 throw new RuntimeException(e);
             }
         } catch (IllegalAccessException e) {
-            if (BuildConfig.DCHECK_IS_ON) {
+            if (BuildConfig.ENABLE_ASSERTS) {
                 throw new RuntimeException(e);
             }
         }

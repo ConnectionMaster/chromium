@@ -4,6 +4,7 @@
         <title>touch-action: parent > child: auto > child: none</title>
         <meta name="assert" content="TA15.5 - when a user touches an element, the effect of that touch is determined by the value of the touch-action property and the default touch behaviors on the element and its ancestors. Scrollable-Parent, Child: `auto`, Grand-Child: `none`">
         <meta name="viewport" content="width=device-width">
+        <meta name="timeout" content="long">
         <link rel="stylesheet" type="text/css" href="pointerevent_styles.css">
         <script src="/resources/testharness.js"></script>
         <script src="/resources/testharnessreport.js"></script>
@@ -92,7 +93,7 @@
             function run() {
                 var target0 = document.getElementById("target0");
                 var btnComplete = document.getElementById("btnComplete");
-                var clickIsReceived = false;
+                var actions_promise;
 
                 // Check if touch-action attribute works properly for embedded divs
                 // Scrollable-Parent, Child: `auto`, Grand-Child: `none`
@@ -103,7 +104,11 @@
                         assert_equals(target0.scrollLeft, 0, "scroll x offset should be 0 in the end of the test");
                         assert_equals(target0.scrollTop, 0, "scroll y offset should be 0 in the end of the test");
                     });
-                    clickIsReceived = true;
+
+                    // Make sure the test finishes after all the input actions are completed.
+                    actions_promise.then( () => {
+                      test_touchaction.done();
+                    });
                     updateDescriptionComplete();
                 });
 
@@ -112,15 +117,10 @@
                 });
 
                 // Inject touch inputs.
-                touchScrollInTarget(scrollTarget, 'down').then(function() {
+                actions_promise = touchScrollInTarget(scrollTarget, 'down').then(function() {
                     return touchScrollInTarget(scrollTarget, 'right');
                 }).then(function() {
-                    return touchTapInTarget(btnComplete);
-                }).then(function() {
-                    test_touchaction.step(function () {
-                        assert_true(clickIsReceived, "click should be received before the test finishes");
-                    }, "click should be received before the test finishes");
-                    test_touchaction.done();
+                    return clickInTarget("touch", btnComplete);
                 });
             }
         </script>

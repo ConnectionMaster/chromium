@@ -4,7 +4,7 @@
 
 #include "third_party/blink/renderer/modules/encryptedmedia/encrypted_media_utils.h"
 
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "media/base/eme_constants.h"
 
 namespace blink {
 
@@ -12,35 +12,32 @@ namespace {
 
 const char kTemporary[] = "temporary";
 const char kPersistentLicense[] = "persistent-license";
-const char kPersistentUsageRecord[] = "persistent-usage-record";
 
 }  // namespace
 
-// static
-WebEncryptedMediaInitDataType EncryptedMediaUtils::ConvertToInitDataType(
+media::EmeInitDataType EncryptedMediaUtils::ConvertToInitDataType(
     const String& init_data_type) {
   if (init_data_type == "cenc")
-    return WebEncryptedMediaInitDataType::kCenc;
+    return media::EmeInitDataType::CENC;
   if (init_data_type == "keyids")
-    return WebEncryptedMediaInitDataType::kKeyids;
+    return media::EmeInitDataType::KEYIDS;
   if (init_data_type == "webm")
-    return WebEncryptedMediaInitDataType::kWebm;
+    return media::EmeInitDataType::WEBM;
 
   // |initDataType| is not restricted in the idl, so anything is possible.
-  return WebEncryptedMediaInitDataType::kUnknown;
+  return media::EmeInitDataType::UNKNOWN;
 }
 
-// static
 String EncryptedMediaUtils::ConvertFromInitDataType(
-    WebEncryptedMediaInitDataType init_data_type) {
+    media::EmeInitDataType init_data_type) {
   switch (init_data_type) {
-    case WebEncryptedMediaInitDataType::kCenc:
+    case media::EmeInitDataType::CENC:
       return "cenc";
-    case WebEncryptedMediaInitDataType::kKeyids:
+    case media::EmeInitDataType::KEYIDS:
       return "keyids";
-    case WebEncryptedMediaInitDataType::kWebm:
+    case media::EmeInitDataType::WEBM:
       return "webm";
-    case WebEncryptedMediaInitDataType::kUnknown:
+    case media::EmeInitDataType::UNKNOWN:
       // Chromium should not use Unknown, but we use it in Blink when the
       // actual value has been blocked for non-same-origin or mixed content.
       return String();
@@ -57,11 +54,6 @@ WebEncryptedMediaSessionType EncryptedMediaUtils::ConvertToSessionType(
     return WebEncryptedMediaSessionType::kTemporary;
   if (session_type == kPersistentLicense)
     return WebEncryptedMediaSessionType::kPersistentLicense;
-  if (session_type == kPersistentUsageRecord &&
-      RuntimeEnabledFeatures::
-          EncryptedMediaPersistentUsageRecordSessionEnabled()) {
-    return WebEncryptedMediaSessionType::kPersistentUsageRecord;
-  }
 
   // |sessionType| is not restricted in the idl, so anything is possible.
   return WebEncryptedMediaSessionType::kUnknown;
@@ -75,12 +67,6 @@ String EncryptedMediaUtils::ConvertFromSessionType(
       return kTemporary;
     case WebEncryptedMediaSessionType::kPersistentLicense:
       return kPersistentLicense;
-    case WebEncryptedMediaSessionType::kPersistentUsageRecord:
-      if (RuntimeEnabledFeatures::
-              EncryptedMediaPersistentUsageRecordSessionEnabled()) {
-        return kPersistentUsageRecord;
-      }
-      FALLTHROUGH;
     case WebEncryptedMediaSessionType::kUnknown:
       // Unexpected session type from Chromium.
       NOTREACHED();
@@ -143,6 +129,45 @@ String EncryptedMediaUtils::ConvertMediaKeysRequirementToString(
 
   NOTREACHED();
   return "not-allowed";
+}
+
+// static
+const char* EncryptedMediaUtils::GetInterfaceName(EmeApiType type) {
+  switch (type) {
+    case EmeApiType::kCreateMediaKeys:
+      return "MediaKeySystemAccess";
+    case EmeApiType::kSetServerCertificate:
+    case EmeApiType::kGetStatusForPolicy:
+      return "MediaKeys";
+    case EmeApiType::kGenerateRequest:
+    case EmeApiType::kLoad:
+    case EmeApiType::kUpdate:
+    case EmeApiType::kClose:
+    case EmeApiType::kRemove:
+      return "MediaKeySession";
+  }
+}
+
+// static
+const char* EncryptedMediaUtils::GetPropertyName(EmeApiType type) {
+  switch (type) {
+    case EmeApiType::kCreateMediaKeys:
+      return "createMediaKeys";
+    case EmeApiType::kSetServerCertificate:
+      return "setServerCertificate";
+    case EmeApiType::kGetStatusForPolicy:
+      return "getStatusForPolicy";
+    case EmeApiType::kGenerateRequest:
+      return "generateRequest";
+    case EmeApiType::kLoad:
+      return "load";
+    case EmeApiType::kUpdate:
+      return "update";
+    case EmeApiType::kClose:
+      return "close";
+    case EmeApiType::kRemove:
+      return "remove";
+  }
 }
 
 }  // namespace blink

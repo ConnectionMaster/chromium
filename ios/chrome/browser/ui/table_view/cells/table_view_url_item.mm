@@ -9,10 +9,13 @@
 #import "ios/chrome/browser/ui/table_view/cells/table_view_cells_constants.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_url_cell_favicon_badge_view.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_styler.h"
+#include "ios/chrome/browser/ui/ui_feature_flags.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/favicon/favicon_view.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/colors/UIColor+cr_semantic_colors.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/favicon/favicon_view.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #include "url/gurl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -22,15 +25,18 @@
 namespace {
 // The width and height of the favicon ImageView.
 const CGFloat kFaviconWidth = 16;
+// The legacy width and height of the favicon container view.
+const CGFloat kFaviconContainerLegacyWidth = 28;
 // The width and height of the favicon container view.
-const CGFloat kFaviconContainerWidth = 28;
+const CGFloat kFaviconContainerWidth = 30;
 // Default delimiter to use between the hostname and the supplemental URL text
 // if text is specified but not the delimiter.
 const char kDefaultSupplementalURLTextDelimiter[] = "•";
-}
-
-#pragma mark - TableViewURLCellFaviconBadgeView
-
+// Corner radius of the favicon ImageView.
+const CGFloat kFavIconCornerRadius = 7.0;
+// Width of the favicon border ImageView.
+const CGFloat kFavIconBorderWidth = 1.5;
+}  // namespace
 
 #pragma mark - TableViewURLItem
 
@@ -63,17 +69,13 @@ const char kDefaultSupplementalURLTextDelimiter[] = "•";
   cell.metadataLabel.text = self.metadata;
   cell.cellUniqueIdentifier = self.uniqueIdentifier;
   cell.accessibilityTraits |= UIAccessibilityTraitButton;
-  // If the background color specified by the styler is opaque, use it as the
-  // subview backround colors as well.
-  UIColor* backgroundColor = styler.tableViewBackgroundColor;
-  if (AreCGFloatsEqual(CGColorGetAlpha(backgroundColor.CGColor), 1.0)) {
-    cell.faviconContainerView.backgroundColor = styler.tableViewBackgroundColor;
-    cell.titleLabel.backgroundColor = styler.tableViewBackgroundColor;
-    cell.URLLabel.backgroundColor = styler.tableViewBackgroundColor;
-    cell.metadataLabel.backgroundColor = styler.tableViewBackgroundColor;
-  }
+
   if (styler.cellTitleColor)
     cell.titleLabel.textColor = styler.cellTitleColor;
+  if (styler.cellDetailColor) {
+    cell.URLLabel.textColor = styler.cellDetailColor;
+    cell.metadataLabel.textColor = styler.cellDetailColor;
+  }
 
   [cell configureUILayout];
 }
@@ -132,24 +134,41 @@ const char kDefaultSupplementalURLTextDelimiter[] = "•";
 @end
 
 @implementation TableViewURLCell
-@synthesize faviconView = _faviconView;
-@synthesize faviconContainerView = _faviconContainerView;
-@synthesize faviconBadgeView = _faviconBadgeView;
-@synthesize horizontalStack = _horizontalStack;
-@synthesize cellUniqueIdentifier = _cellUniqueIdentifier;
-@synthesize shouldGenerateAccessibilityLabel =
-    _shouldGenerateAccessibilityLabel;
-@synthesize metadataLabel = _metadataLabel;
-@synthesize titleLabel = _titleLabel;
-@synthesize URLLabel = _URLLabel;
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style
               reuseIdentifier:(NSString*)reuseIdentifier {
   self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+
   if (self) {
-    _faviconContainerView = [[UIImageView alloc]
-        initWithImage:[UIImage
-                          imageNamed:@"table_view_cell_favicon_background"]];
+    if (base::FeatureList::IsEnabled(kSettingsRefresh)) {
+      _faviconContainerView = [[UIView alloc] init];
+      if (@available(iOS 13, *)) {
+        [self.traitCollection performAsCurrentTraitCollection:^{
+          if (self.traitCollection.userInterfaceStyle ==
+              UIUserInterfaceStyleDark) {
+            _faviconContainerView.backgroundColor =
+                [UIColor colorNamed:kSeparatorColor];
+          }
+          _faviconContainerView.layer.borderColor =
+              [UIColor colorNamed:kSeparatorColor].CGColor;
+        }];
+      } else {
+        _faviconContainerView.layer.borderColor =
+            [UIColor colorNamed:kSeparatorColor].CGColor;
+      }
+      _faviconContainerView.layer.borderWidth = kFavIconBorderWidth;
+      _faviconContainerView.layer.cornerRadius = kFavIconCornerRadius;
+      _faviconContainerView.layer.masksToBounds = YES;
+    } else {
+      UIImage* containerBackground =
+          [[UIImage imageNamed:@"table_view_cell_favicon_background"]
+              imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+      _faviconContainerView =
+          [[UIImageView alloc] initWithImage:containerBackground];
+      _faviconContainerView.tintColor =
+          [UIColor colorNamed:kFaviconBackgroundColor];
+    }
+
     _faviconView = [[FaviconView alloc] init];
     _faviconView.contentMode = UIViewContentModeScaleAspectFit;
     _faviconView.clipsToBounds = YES;
@@ -162,15 +181,14 @@ const char kDefaultSupplementalURLTextDelimiter[] = "•";
     // Set font sizes using dynamic type.
     _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     _titleLabel.adjustsFontForContentSizeCategory = YES;
-    _URLLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _URLLabel.font =
+        [UIFont preferredFontForTextStyle:kTableViewSublabelFontStyle];
     _URLLabel.adjustsFontForContentSizeCategory = YES;
-    _URLLabel.textColor =
-        UIColorFromRGB(kTableViewSecondaryLabelLightGrayTextColor);
+    _URLLabel.textColor = UIColor.cr_secondaryLabelColor;
     _URLLabel.hidden = YES;
     _metadataLabel.font =
-        [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    _metadataLabel.textColor =
-        UIColorFromRGB(kTableViewSecondaryLabelLightGrayTextColor);
+        [UIFont preferredFontForTextStyle:kTableViewSublabelFontStyle];
+    _metadataLabel.textColor = UIColor.cr_secondaryLabelColor;
     _metadataLabel.adjustsFontForContentSizeCategory = YES;
     _metadataLabel.hidden = YES;
 
@@ -228,9 +246,12 @@ const char kDefaultSupplementalURLTextDelimiter[] = "•";
       [_faviconView.centerXAnchor
           constraintEqualToAnchor:_faviconContainerView.centerXAnchor],
       [_faviconContainerView.heightAnchor
-          constraintEqualToConstant:kFaviconContainerWidth],
+          constraintEqualToConstant:base::FeatureList::IsEnabled(
+                                        kSettingsRefresh)
+                                        ? kFaviconContainerWidth
+                                        : kFaviconContainerLegacyWidth],
       [_faviconContainerView.widthAnchor
-          constraintEqualToConstant:kFaviconContainerWidth],
+          constraintEqualToAnchor:_faviconContainerView.heightAnchor],
       [_faviconContainerView.leadingAnchor
           constraintEqualToAnchor:self.contentView.leadingAnchor
                          constant:kTableViewHorizontalSpacing],
@@ -311,12 +332,37 @@ const char kDefaultSupplementalURLTextDelimiter[] = "•";
   }
 }
 
+- (NSArray<NSString*>*)accessibilityUserInputLabels {
+  NSMutableArray<NSString*>* userInputLabels = [[NSMutableArray alloc] init];
+  if (self.titleLabel.text) {
+    [userInputLabels addObject:self.titleLabel.text];
+  }
+
+  return userInputLabels;
+}
+
 - (NSString*)accessibilityIdentifier {
   return self.titleLabel.text;
 }
 
 - (BOOL)isAccessibilityElement {
   return YES;
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
+  [super traitCollectionDidChange:previousTraitCollection];
+  if (@available(iOS 13, *)) {
+    if ([self.traitCollection
+            hasDifferentColorAppearanceComparedToTraitCollection:
+                previousTraitCollection]) {
+      self.faviconContainerView.backgroundColor =
+          self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+              ? [UIColor colorNamed:kSeparatorColor]
+              : UIColor.clearColor;
+      self.faviconContainerView.layer.borderColor =
+          [UIColor colorNamed:kSeparatorColor].CGColor;
+    }
+  }
 }
 
 @end

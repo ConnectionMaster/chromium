@@ -5,19 +5,25 @@
 #ifndef CHROME_BROWSER_UI_BLUETOOTH_BLUETOOTH_CHOOSER_DESKTOP_H_
 #define CHROME_BROWSER_UI_BLUETOOTH_BLUETOOTH_CHOOSER_DESKTOP_H_
 
+#include "base/callback.h"
 #include "base/macros.h"
-#include "components/bubble/bubble_reference.h"
+#include "base/memory/weak_ptr.h"
 #include "content/public/browser/bluetooth_chooser.h"
 
 class BluetoothChooserController;
+
+namespace content {
+class RenderFrameHost;
+}  // namespace content
 
 // Represents a Bluetooth chooser to ask the user to select a Bluetooth
 // device from a list of options. This implementation is for desktop.
 // BluetoothChooserAndroid implements the mobile part.
 class BluetoothChooserDesktop : public content::BluetoothChooser {
  public:
-  explicit BluetoothChooserDesktop(
-      BluetoothChooserController* bluetooth_chooser_controller);
+  BluetoothChooserDesktop(
+      content::RenderFrameHost* frame,
+      const content::BluetoothChooser::EventHandler& event_handler);
   ~BluetoothChooserDesktop() override;
 
   // BluetoothChooser:
@@ -25,22 +31,18 @@ class BluetoothChooserDesktop : public content::BluetoothChooser {
   void ShowDiscoveryState(DiscoveryState state) override;
   void AddOrUpdateDevice(const std::string& device_id,
                          bool should_update_name,
-                         const base::string16& device_name,
+                         const std::u16string& device_name,
                          bool is_gatt_connected,
                          bool is_paired,
                          int signal_strength_level) override;
 
-  // Sets a reference to the bubble being displayed so that it can be closed if
-  // this object is destroyed.
-  void set_bubble(base::WeakPtr<BubbleController> bubble) {
-    bubble_ = std::move(bubble);
-  }
-
  private:
-  // Weak. DeviceChooserContentView[Cocoa] owns it.
-  BluetoothChooserController* bluetooth_chooser_controller_;
+  // DeviceChooserContentView owns the controller.
+  base::WeakPtr<BluetoothChooserController> bluetooth_chooser_controller_;
 
-  base::WeakPtr<BubbleController> bubble_;
+  // Closes the displayed UI if it is still open. Used to ensure the bubble
+  // closes if this controller is torn down.
+  base::OnceClosure close_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothChooserDesktop);
 };

@@ -15,7 +15,7 @@
 // Callback called when the async request launched from
 // |getLoginsFromPasswordStore| finishes.
 - (void)onGetPasswordStoreResults:
-    (std::vector<std::unique_ptr<autofill::PasswordForm>>)results;
+    (std::vector<std::unique_ptr<password_manager::PasswordForm>>)results;
 
 @end
 
@@ -27,7 +27,8 @@ class SavePasswordsConsumer : public password_manager::PasswordStoreConsumer {
   explicit SavePasswordsConsumer(id<SavePasswordsConsumerDelegate> delegate);
   ~SavePasswordsConsumer() override;
   void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<autofill::PasswordForm>> results) override;
+      std::vector<std::unique_ptr<password_manager::PasswordForm>> results)
+      override;
 
  private:
   __weak id<SavePasswordsConsumerDelegate> delegate_ = nil;
@@ -36,4 +37,4 @@ class SavePasswordsConsumer : public password_manager::PasswordStoreConsumer {
 
 }  // namespace ios
 
-#endif  // IOS_CHROME_BROWSER_PASSWORDS_IOS_CHROME_PASSWORD_STORE_FACTORY_H_
+#endif  // IOS_CHROME_BROWSER_PASSWORDS_SAVE_PASSWORDS_CONSUMER_H_

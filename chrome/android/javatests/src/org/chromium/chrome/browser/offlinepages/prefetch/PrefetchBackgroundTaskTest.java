@@ -9,8 +9,10 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
-import android.support.test.filters.SmallTest;
 
+import androidx.test.filters.SmallTest;
+
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -20,10 +22,11 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.browser.background_task_scheduler.ChromeNativeBackgroundTaskDelegate;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.offlinepages.OfflineTestUtil;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.ReducedModeNativeTestRule;
 import org.chromium.components.background_task_scheduler.BackgroundTask.TaskFinishedCallback;
 import org.chromium.components.background_task_scheduler.BackgroundTaskScheduler;
 import org.chromium.components.background_task_scheduler.BackgroundTaskSchedulerFactory;
@@ -41,14 +44,13 @@ import java.util.concurrent.TimeUnit;
 /** Unit tests for {@link PrefetchBackgroundTask}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-        "enable-features=OfflinePagesPrefetching"})
+        "enable-features=OfflinePagesPrefetching,InterestFeedContentSuggestions"})
 public class PrefetchBackgroundTaskTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public ReducedModeNativeTestRule mNativeTestRule = new ReducedModeNativeTestRule();
 
     private static final double BACKOFF_JITTER_FACTOR = 0.33;
     private static final int SEMAPHORE_TIMEOUT_MS = 5000;
-    private static final String GCM_TOKEN = "dummy_gcm_token";
     private TestBackgroundTaskScheduler mScheduler;
 
     private static class TestPrefetchBackgroundTask extends PrefetchBackgroundTask {
@@ -57,13 +59,12 @@ public class PrefetchBackgroundTaskTest {
 
         public TestPrefetchBackgroundTask(TaskInfo taskInfo) {
             mTaskInfo = taskInfo;
+            setDelegate(new ChromeNativeBackgroundTaskDelegate());
         }
 
         public void startTask(Context context, final TaskFinishedCallback callback) {
             TaskParameters.Builder builder =
-                    TaskParameters.create(TaskIds.OFFLINE_PAGES_PREFETCH_JOB_ID)
-                            .addExtras(PrefetchBackgroundTaskScheduler.createGCMTokenBundle(
-                                    GCM_TOKEN));
+                    TaskParameters.create(TaskIds.OFFLINE_PAGES_PREFETCH_JOB_ID);
             TaskParameters params = builder.build();
             onStartTask(context, params, new TaskFinishedCallback() {
                 @Override
@@ -81,9 +82,7 @@ public class PrefetchBackgroundTaskTest {
         public void stopTask() {
             TestThreadUtils.runOnUiThreadBlocking(() -> {
                 TaskParameters.Builder builder =
-                        TaskParameters.create(TaskIds.OFFLINE_PAGES_PREFETCH_JOB_ID)
-                                .addExtras(PrefetchBackgroundTaskScheduler.createGCMTokenBundle(
-                                        GCM_TOKEN));
+                        TaskParameters.create(TaskIds.OFFLINE_PAGES_PREFETCH_JOB_ID);
                 TaskParameters params = builder.build();
                 onStopTask(ContextUtils.getApplicationContext(), params);
             });
@@ -129,6 +128,11 @@ public class PrefetchBackgroundTaskTest {
         @Override
         public void cancel(Context context, int taskId) {
             removeTask(taskId);
+        }
+
+        @Override
+        public boolean isScheduled(Context context, int taskId) {
+            return (mTasks.get(taskId) != null);
         }
 
         @Override
@@ -184,19 +188,25 @@ public class PrefetchBackgroundTaskTest {
     }
 
     @Before
-    public void setUp() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+    public void setUp() {
         TestThreadUtils.runOnUiThreadBlocking(() -> {
             mScheduler = new TestBackgroundTaskScheduler();
             BackgroundTaskSchedulerFactory.setSchedulerForTesting(mScheduler);
         });
         OfflineTestUtil.setPrefetchingEnabledByServer(true);
+        OfflineTestUtil.setGCMTokenForTesting("dummy_gcm_token");
+
+        PrefetchBackgroundTask.alwaysSupportMinimalBrowserForTesting();
+    }
+
+    @After
+    public void tearDown() {
+        mNativeTestRule.assertMinimalBrowserStarted();
     }
 
     private void scheduleTask(int additionalDelaySeconds) {
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            PrefetchBackgroundTaskScheduler.scheduleTask(additionalDelaySeconds, GCM_TOKEN);
-        });
+        TestThreadUtils.runOnUiThreadBlocking(
+                () -> { PrefetchBackgroundTaskScheduler.scheduleTask(additionalDelaySeconds); });
     }
 
     @Test

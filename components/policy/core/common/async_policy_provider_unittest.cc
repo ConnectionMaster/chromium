@@ -4,12 +4,14 @@
 
 #include "components/policy/core/common/async_policy_provider.h"
 
+#include <memory>
+
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "components/policy/core/common/async_policy_loader.h"
@@ -34,8 +36,7 @@ void SetPolicy(PolicyBundle* bundle,
                const std::string& value) {
   bundle->Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()))
       .Set(name, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-           POLICY_SOURCE_PLATFORM, std::make_unique<base::Value>(value),
-           nullptr);
+           POLICY_SOURCE_PLATFORM, base::Value(value), nullptr);
 }
 
 class MockPolicyLoader : public AsyncPolicyLoader {
@@ -60,7 +61,7 @@ class MockPolicyLoader : public AsyncPolicyLoader {
 
 MockPolicyLoader::MockPolicyLoader(
     scoped_refptr<base::SequencedTaskRunner> task_runner)
-    : AsyncPolicyLoader(task_runner) {}
+    : AsyncPolicyLoader(task_runner, /*periodic_updates=*/true) {}
 
 MockPolicyLoader::~MockPolicyLoader() {}
 
@@ -68,7 +69,7 @@ std::unique_ptr<PolicyBundle> MockPolicyLoader::Load() {
   std::unique_ptr<PolicyBundle> bundle;
   const PolicyBundle* loaded = MockLoad();
   if (loaded) {
-    bundle.reset(new PolicyBundle());
+    bundle = std::make_unique<PolicyBundle>();
     bundle->CopyFrom(*loaded);
   }
   return bundle;
@@ -84,7 +85,7 @@ class AsyncPolicyProviderTest : public testing::Test {
   void SetUp() override;
   void TearDown() override;
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   SchemaRegistry schema_registry_;
   PolicyBundle initial_bundle_;
   MockPolicyLoader* loader_;
@@ -106,8 +107,8 @@ void AsyncPolicyProviderTest::SetUp() {
   EXPECT_CALL(*loader_, InitOnBackgroundThread()).Times(1);
   EXPECT_CALL(*loader_, MockLoad()).WillOnce(Return(&initial_bundle_));
 
-  provider_.reset(new AsyncPolicyProvider(
-      &schema_registry_, std::unique_ptr<AsyncPolicyLoader>(loader_)));
+  provider_ = std::make_unique<AsyncPolicyProvider>(
+      &schema_registry_, std::unique_ptr<AsyncPolicyLoader>(loader_));
   provider_->Init(&schema_registry_);
   // Verify that the initial load is done synchronously:
   EXPECT_TRUE(provider_->policies().Equals(initial_bundle_));

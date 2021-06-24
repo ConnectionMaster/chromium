@@ -5,16 +5,24 @@
 #include "cc/scheduler/scheduler.h"
 
 #include <algorithm>
+#include <utility>
+#include <vector>
 
 #include "base/auto_reset.h"
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
 #include "cc/base/devtools_instrumentation.h"
-#include "cc/scheduler/compositor_timing_history.h"
+#include "cc/metrics/begin_main_frame_metrics.h"
+#include "cc/metrics/compositor_frame_reporting_controller.h"
+#include "cc/metrics/compositor_timing_history.h"
+#include "components/power_scheduler/power_mode_arbiter.h"
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
+#include "services/tracing/public/cpp/perfetto/macros.h"
+#include "third_party/perfetto/protos/perfetto/trace/track_event/chrome_compositor_scheduler_state.pbzero.h"
 
 namespace cc {
 
@@ -30,14 +38,24 @@ Scheduler::Scheduler(
     const SchedulerSettings& settings,
     int layer_tree_host_id,
     base::SingleThreadTaskRunner* task_runner,
-    std::unique_ptr<CompositorTimingHistory> compositor_timing_history)
+    std::unique_ptr<CompositorTimingHistory> compositor_timing_history,
+    gfx::RenderingPipeline* main_thread_pipeline,
+    gfx::RenderingPipeline* compositor_thread_pipeline,
+    CompositorFrameReportingController* compositor_frame_reporting_controller,
+    power_scheduler::PowerModeArbiter* power_mode_arbiter)
     : settings_(settings),
       client_(client),
       layer_tree_host_id_(layer_tree_host_id),
       task_runner_(task_runner),
       compositor_timing_history_(std::move(compositor_timing_history)),
-      begin_impl_frame_tracker_(BEGINFRAMETRACKER_FROM_HERE),
-      state_machine_(settings) {
+      compositor_frame_reporting_controller_(
+          compositor_frame_reporting_controller),
+      begin_impl_frame_tracker_(FROM_HERE),
+      state_machine_(settings),
+      main_thread_pipeline_(main_thread_pipeline),
+      compositor_thread_pipeline_(compositor_thread_pipeline),
+      power_mode_voter_(
+          power_mode_arbiter->NewVoter("PowerModeVoter.MainThreadAnimation")) {
   TRACE_EVENT1("cc", "Scheduler::Scheduler", "settings", settings_.AsValue());
   DCHECK(client_);
   DCHECK(!state_machine_.BeginFrameNeeded());
@@ -115,6 +133,11 @@ void Scheduler::NotifyAnimationWorkletStateChange(AnimationWorkletState state,
   ProcessScheduledActions();
 }
 
+void Scheduler::NotifyPaintWorkletStateChange(PaintWorkletState state) {
+  state_machine_.NotifyPaintWorkletStateChange(state);
+  ProcessScheduledActions();
+}
+
 void Scheduler::SetNeedsBeginMainFrame() {
   state_machine_.SetNeedsBeginMainFrame();
   ProcessScheduledActions();
@@ -136,8 +159,13 @@ void Scheduler::SetNeedsPrepareTiles() {
   ProcessScheduledActions();
 }
 
-void Scheduler::DidSubmitCompositorFrame() {
-  compositor_timing_history_->DidSubmitCompositorFrame();
+void Scheduler::DidSubmitCompositorFrame(uint32_t frame_token,
+                                         EventMetricsSet events_metrics,
+                                         bool has_missing_content) {
+  compositor_frame_reporting_controller_->DidSubmitCompositorFrame(
+      frame_token, begin_main_frame_args_.frame_id,
+      last_activate_origin_frame_args_.frame_id, std::move(events_metrics),
+      has_missing_content);
   state_machine_.DidSubmitCompositorFrame();
 
   // There is no need to call ProcessScheduledActions here because
@@ -148,8 +176,7 @@ void Scheduler::DidSubmitCompositorFrame() {
 }
 
 void Scheduler::DidReceiveCompositorFrameAck() {
-  DCHECK_GT(state_machine_.pending_submit_frames(), 0) << AsValue()->ToString();
-  compositor_timing_history_->DidReceiveCompositorFrameAck();
+  DCHECK_GT(state_machine_.pending_submit_frames(), 0);
   state_machine_.DidReceiveCompositorFrameAck();
   ProcessScheduledActions();
 }
@@ -163,22 +190,34 @@ void Scheduler::SetTreePrioritiesAndScrollState(
   ProcessScheduledActions();
 }
 
-void Scheduler::NotifyReadyToCommit() {
+void Scheduler::NotifyReadyToCommit(
+    std::unique_ptr<BeginMainFrameMetrics> details) {
   TRACE_EVENT0("cc", "Scheduler::NotifyReadyToCommit");
   compositor_timing_history_->NotifyReadyToCommit();
+  compositor_frame_reporting_controller_->NotifyReadyToCommit(
+      std::move(details));
   state_machine_.NotifyReadyToCommit();
   ProcessScheduledActions();
 }
 
 void Scheduler::DidCommit() {
+  if (main_thread_pipeline_)
+    main_thread_pipeline_->NotifyFrameFinished();
   compositor_timing_history_->DidCommit();
+  compositor_frame_reporting_controller_->DidCommit();
 }
 
 void Scheduler::BeginMainFrameAborted(CommitEarlyOutReason reason) {
   TRACE_EVENT1("cc", "Scheduler::BeginMainFrameAborted", "reason",
                CommitEarlyOutReasonToString(reason));
   compositor_timing_history_->BeginMainFrameAborted();
+  auto frame_id = last_dispatched_begin_main_frame_args_.frame_id;
+  compositor_frame_reporting_controller_->BeginMainFrameAborted(frame_id,
+                                                                reason);
+
   state_machine_.BeginMainFrameAborted(reason);
+  if (main_thread_pipeline_)
+    main_thread_pipeline_->NotifyFrameFinished();
   ProcessScheduledActions();
 }
 
@@ -189,6 +228,13 @@ void Scheduler::WillPrepareTiles() {
 void Scheduler::DidPrepareTiles() {
   compositor_timing_history_->DidPrepareTiles();
   state_machine_.DidPrepareTiles();
+}
+
+void Scheduler::DidPresentCompositorFrame(
+    uint32_t frame_token,
+    const viz::FrameTimingDetails& details) {
+  compositor_frame_reporting_controller_->DidPresentCompositorFrame(frame_token,
+                                                                    details);
 }
 
 void Scheduler::DidLoseLayerTreeFrameSink() {
@@ -203,7 +249,6 @@ void Scheduler::DidCreateAndInitializeLayerTreeFrameSink() {
   DCHECK(!observing_begin_frame_source_);
   DCHECK(begin_impl_frame_deadline_task_.IsCancelled());
   state_machine_.DidCreateAndInitializeLayerTreeFrameSink();
-  compositor_timing_history_->DidCreateAndInitializeLayerTreeFrameSink();
   UpdateCompositorTimingHistoryRecordingEnabled();
   ProcessScheduledActions();
 }
@@ -211,8 +256,9 @@ void Scheduler::DidCreateAndInitializeLayerTreeFrameSink() {
 void Scheduler::NotifyBeginMainFrameStarted(
     base::TimeTicks main_thread_start_time) {
   TRACE_EVENT0("cc", "Scheduler::NotifyBeginMainFrameStarted");
-  state_machine_.NotifyBeginMainFrameStarted();
   compositor_timing_history_->BeginMainFrameStarted(main_thread_start_time);
+  compositor_frame_reporting_controller_->BeginMainFrameStarted(
+      main_thread_start_time);
 }
 
 base::TimeTicks Scheduler::LastBeginImplFrameTime() {
@@ -256,11 +302,17 @@ void Scheduler::StartOrStopBeginFrames() {
     if (begin_frame_source_)
       begin_frame_source_->RemoveObserver(this);
     // We're going idle so drop pending begin frame.
+    if (settings_.using_synchronous_renderer_compositor)
+      FinishImplFrameSynchronous();
     CancelPendingBeginFrameTask();
+
     compositor_timing_history_->BeginImplFrameNotExpectedSoon();
+    compositor_frame_reporting_controller_->OnStoppedRequestingBeginFrames();
     devtools_instrumentation::NeedsBeginFrameChanged(layer_tree_host_id_,
                                                      false);
     client_->WillNotReceiveBeginFrame();
+    main_thread_pipeline_active_.reset();
+    compositor_thread_pipeline_active_.reset();
   }
 }
 
@@ -268,7 +320,8 @@ void Scheduler::CancelPendingBeginFrameTask() {
   if (pending_begin_frame_args_.IsValid()) {
     TRACE_EVENT_INSTANT0("cc", "Scheduler::BeginFrameDropped",
                          TRACE_EVENT_SCOPE_THREAD);
-    SendDidNotProduceFrame(pending_begin_frame_args_);
+    SendDidNotProduceFrame(pending_begin_frame_args_,
+                           FrameSkippedReason::kNoDamage);
     // Make pending begin frame invalid so that we don't accidentally use it.
     pending_begin_frame_args_ = viz::BeginFrameArgs();
   }
@@ -319,20 +372,21 @@ bool Scheduler::OnBeginFrameDerivedImpl(const viz::BeginFrameArgs& args) {
     client_->FrameIntervalUpdated(last_frame_interval_);
   }
 
-  if (ShouldDropBeginFrame(args)) {
+  // Drop the BeginFrame if we don't need one.
+  if (!state_machine_.BeginFrameNeeded()) {
     TRACE_EVENT_INSTANT0("cc", "Scheduler::BeginFrameDropped",
                          TRACE_EVENT_SCOPE_THREAD);
     // Since we don't use the BeginFrame, we may later receive the same
     // BeginFrame again. Thus, we can't confirm it at this point, even though we
     // don't have any updates right now.
-    SendDidNotProduceFrame(args);
+    SendDidNotProduceFrame(args, FrameSkippedReason::kNoDamage);
     return false;
   }
 
   // Trace this begin frame time through the Chrome stack
-  TRACE_EVENT_FLOW_BEGIN0(
-      TRACE_DISABLED_BY_DEFAULT("cc.debug.scheduler.frames"),
-      "viz::BeginFrameArgs", args.frame_time.since_origin().InMicroseconds());
+  TRACE_EVENT_WITH_FLOW0(TRACE_DISABLED_BY_DEFAULT("cc.debug.scheduler.frames"),
+                         "viz::BeginFrameArgs", TRACE_EVENT_FLAG_FLOW_OUT,
+                         args.frame_time.since_origin().InMicroseconds());
 
   if (settings_.using_synchronous_renderer_compositor) {
     BeginImplFrameSynchronous(args);
@@ -353,7 +407,8 @@ bool Scheduler::OnBeginFrameDerivedImpl(const viz::BeginFrameArgs& args) {
     if (pending_begin_frame_args_.IsValid()) {
       TRACE_EVENT_INSTANT0("cc", "Scheduler::BeginFrameDropped",
                            TRACE_EVENT_SCOPE_THREAD);
-      SendDidNotProduceFrame(pending_begin_frame_args_);
+      SendDidNotProduceFrame(pending_begin_frame_args_,
+                             FrameSkippedReason::kRecoverLatency);
     }
     pending_begin_frame_args_ = args;
     // ProcessScheduledActions() will post the previous frame's deadline if it
@@ -380,14 +435,19 @@ void Scheduler::SetVideoNeedsBeginFrames(bool video_needs_begin_frames) {
 void Scheduler::OnDrawForLayerTreeFrameSink(bool resourceless_software_draw,
                                             bool skip_draw) {
   DCHECK(settings_.using_synchronous_renderer_compositor);
-  DCHECK_EQ(state_machine_.begin_impl_frame_state(),
-            SchedulerStateMachine::BeginImplFrameState::IDLE);
+  if (state_machine_.begin_impl_frame_state() ==
+      SchedulerStateMachine::BeginImplFrameState::INSIDE_BEGIN_FRAME) {
+    DCHECK(needs_finish_frame_for_synchronous_compositor_);
+  } else {
+    DCHECK_EQ(state_machine_.begin_impl_frame_state(),
+              SchedulerStateMachine::BeginImplFrameState::IDLE);
+    DCHECK(!needs_finish_frame_for_synchronous_compositor_);
+  }
   DCHECK(begin_impl_frame_deadline_task_.IsCancelled());
 
   state_machine_.SetResourcelessSoftwareDraw(resourceless_software_draw);
   state_machine_.SetSkipDraw(skip_draw);
-  state_machine_.OnBeginImplFrameDeadline();
-  ProcessScheduledActions();
+  OnBeginImplFrameDeadline();
 
   state_machine_.OnBeginImplFrameIdle();
   ProcessScheduledActions();
@@ -428,7 +488,7 @@ void Scheduler::BeginImplFrameWithDeadline(const viz::BeginFrameArgs& args) {
     TRACE_EVENT_INSTANT0("cc", "Scheduler::MissedBeginFrameDropped",
                          TRACE_EVENT_SCOPE_THREAD);
     skipped_last_frame_missed_exceeded_deadline_ = true;
-    SendDidNotProduceFrame(args);
+    SendDidNotProduceFrame(args, FrameSkippedReason::kRecoverLatency);
     return;
   }
   skipped_last_frame_missed_exceeded_deadline_ = false;
@@ -447,20 +507,9 @@ void Scheduler::BeginImplFrameWithDeadline(const viz::BeginFrameArgs& args) {
       adjusted_args.interval -
       compositor_timing_history_->DrawDurationEstimate() - kDeadlineFudgeFactor;
 
-  // An estimate of time from starting the main frame on the main thread to when
-  // the resulting pending tree is activated. Note that this excludes the
-  // durations where progress is blocked due to back pressure in the pipeline
-  // (ready to commit to commit, ready to activate to activate, etc.)
-  base::TimeDelta bmf_start_to_activate =
-      compositor_timing_history_
-          ->BeginMainFrameStartToReadyToCommitDurationEstimate() +
-      compositor_timing_history_->CommitDurationEstimate() +
-      compositor_timing_history_->CommitToReadyToActivateDurationEstimate() +
-      compositor_timing_history_->ActivateDurationEstimate();
-
   base::TimeDelta bmf_to_activate_estimate_critical =
-      bmf_start_to_activate +
-      compositor_timing_history_->BeginMainFrameQueueDurationCriticalEstimate();
+      compositor_timing_history_
+          ->BeginMainFrameQueueToActivateCriticalEstimate();
   state_machine_.SetCriticalBeginMainFrameToActivateIsFast(
       bmf_to_activate_estimate_critical < bmf_to_activate_threshold);
 
@@ -480,40 +529,36 @@ void Scheduler::BeginImplFrameWithDeadline(const viz::BeginFrameArgs& args) {
     time_since_main_frame_sent =
         now - compositor_timing_history_->begin_main_frame_sent_time();
   }
-  base::TimeDelta bmf_sent_to_ready_to_commit_estimate =
-      compositor_timing_history_
-          ->BeginMainFrameStartToReadyToCommitDurationEstimate();
+  base::TimeDelta bmf_sent_to_ready_to_commit_estimate;
   if (begin_main_frame_args_.on_critical_path) {
-    bmf_sent_to_ready_to_commit_estimate +=
+    bmf_sent_to_ready_to_commit_estimate =
         compositor_timing_history_
-            ->BeginMainFrameQueueDurationCriticalEstimate();
+            ->BeginMainFrameStartToReadyToCommitCriticalEstimate();
   } else {
-    bmf_sent_to_ready_to_commit_estimate +=
+    bmf_sent_to_ready_to_commit_estimate =
         compositor_timing_history_
-            ->BeginMainFrameQueueDurationNotCriticalEstimate();
+            ->BeginMainFrameStartToReadyToCommitNotCriticalEstimate();
   }
 
-  // We defer the invalidation if we expect the main thread to respond within
-  // this frame, and our prediction in the last frame was correct. That
-  // is, if we predicted the main thread to be fast and it fails to respond
-  // before the deadline in the previous frame, we don't defer the invalidation
-  // in the next frame.
-  const bool main_thread_response_expected_before_deadline =
-      bmf_sent_to_ready_to_commit_estimate - time_since_main_frame_sent <
-      bmf_to_activate_threshold;
-  const bool previous_invalidation_maybe_skipped_for_main_frame =
-      state_machine_.should_defer_invalidation_for_fast_main_frame() &&
-      state_machine_.main_thread_failed_to_respond_last_deadline();
+  bool main_thread_response_expected_before_deadline;
+  if (time_since_main_frame_sent > bmf_to_activate_threshold) {
+    // If the response to a main frame is pending past the desired duration
+    // then proactively assume that the main thread is slow instead of late
+    // correction through the frame history.
+    main_thread_response_expected_before_deadline = false;
+  } else {
+    main_thread_response_expected_before_deadline =
+        bmf_sent_to_ready_to_commit_estimate - time_since_main_frame_sent <
+        bmf_to_activate_threshold;
+  }
   state_machine_.set_should_defer_invalidation_for_fast_main_frame(
-      main_thread_response_expected_before_deadline &&
-      !previous_invalidation_maybe_skipped_for_main_frame);
+      main_thread_response_expected_before_deadline);
 
   base::TimeDelta bmf_to_activate_estimate = bmf_to_activate_estimate_critical;
   if (!begin_main_frame_args_.on_critical_path) {
     bmf_to_activate_estimate =
-        bmf_start_to_activate +
         compositor_timing_history_
-            ->BeginMainFrameQueueDurationNotCriticalEstimate();
+            ->BeginMainFrameQueueToActivateNotCriticalEstimate();
   }
   bool can_activate_before_deadline =
       CanBeginMainFrameAndActivateBeforeDeadline(adjusted_args,
@@ -528,16 +573,42 @@ void Scheduler::BeginImplFrameWithDeadline(const viz::BeginFrameArgs& args) {
     TRACE_EVENT_INSTANT0("cc", "SkipBeginImplFrameToReduceLatency",
                          TRACE_EVENT_SCOPE_THREAD);
     skipped_last_frame_to_reduce_latency_ = true;
-    SendDidNotProduceFrame(args);
+    SendDidNotProduceFrame(args, FrameSkippedReason::kRecoverLatency);
     return;
   }
 
   skipped_last_frame_to_reduce_latency_ = false;
 
+  // A pipeline is activated if it's subscribed to BeginFrame callbacks. For the
+  // compositor this implies BeginImplFrames while for the main thread it would
+  // be BeginMainFrames.
+  // TODO(crbug.com/1157620) : For now this also includes cases where the
+  // rendering loop doesn't lead to any visual updates, for example a rAF
+  // callback updating content offscreen. These can be treated differently from
+  // a scheduling perspective (Idle vs Animating).
+  if (compositor_thread_pipeline_) {
+    if (!compositor_thread_pipeline_active_)
+      compositor_thread_pipeline_active_.emplace(compositor_thread_pipeline_);
+    compositor_thread_pipeline_->SetTargetDuration(adjusted_args.interval);
+  }
+
+  if (main_thread_pipeline_) {
+    // TODO(crbug.com/1157620) : We need a heuristic to mark the main pipeline
+    // inactive if it stops subscribing to main frames. For instance after a
+    // composited animation is committed.
+    if (state_machine_.did_commit_during_frame() &&
+        !main_thread_pipeline_active_)
+      main_thread_pipeline_active_.emplace(main_thread_pipeline_);
+    main_thread_pipeline_->SetTargetDuration(adjusted_args.interval);
+  }
+
   BeginImplFrame(adjusted_args, now);
 }
 
 void Scheduler::BeginImplFrameSynchronous(const viz::BeginFrameArgs& args) {
+  // Finish the previous frame (if needed) before starting a new one.
+  FinishImplFrameSynchronous();
+
   TRACE_EVENT1("cc,benchmark", "Scheduler::BeginImplFrame", "args",
                args.AsValue());
   // The main thread currently can't commit before we draw with the
@@ -549,17 +620,32 @@ void Scheduler::BeginImplFrameSynchronous(const viz::BeginFrameArgs& args) {
   BeginImplFrame(args, Now());
   compositor_timing_history_->WillFinishImplFrame(
       state_machine_.needs_redraw());
-  FinishImplFrame();
+  compositor_frame_reporting_controller_->OnFinishImplFrame(args.frame_id);
+  // Delay the call to |FinishFrame()| if a draw is anticipated, so that it is
+  // called after the draw happens (in |OnDrawForLayerTreeFrameSink()|).
+  needs_finish_frame_for_synchronous_compositor_ = true;
+  if (!state_machine_.did_invalidate_layer_tree_frame_sink()) {
+    // If there was no invalidation, then finish the frame immediately.
+    FinishImplFrameSynchronous();
+  }
 }
 
 void Scheduler::FinishImplFrame() {
+  DCHECK(!needs_finish_frame_for_synchronous_compositor_);
   state_machine_.OnBeginImplFrameIdle();
 
   // Send ack before calling ProcessScheduledActions() because it might send an
   // ack for any pending begin frame if we are going idle after this. This
   // ensures that the acks are sent in order.
-  if (!state_machine_.did_submit_in_last_frame())
-    SendDidNotProduceFrame(begin_impl_frame_tracker_.Current());
+  if (!state_machine_.did_submit_in_last_frame()) {
+    bool has_pending_tree = state_machine_.has_pending_tree();
+    bool is_waiting_on_main = state_machine_.begin_main_frame_state() !=
+                              SchedulerStateMachine::BeginMainFrameState::IDLE;
+    SendDidNotProduceFrame(begin_impl_frame_tracker_.Current(),
+                           is_waiting_on_main || has_pending_tree
+                               ? FrameSkippedReason::kWaitingOnMain
+                               : FrameSkippedReason::kNoDamage);
+  }
 
   begin_impl_frame_tracker_.Finish();
 
@@ -567,19 +653,24 @@ void Scheduler::FinishImplFrame() {
   DCHECK(!inside_scheduled_action_);
   {
     base::AutoReset<bool> mark_inside(&inside_scheduled_action_, true);
-    client_->DidFinishImplFrame();
+    client_->DidFinishImplFrame(last_activate_origin_frame_args());
   }
 
   if (begin_frame_source_)
     begin_frame_source_->DidFinishFrame(this);
+
+  if (compositor_thread_pipeline_)
+    compositor_thread_pipeline_->NotifyFrameFinished();
 }
 
-void Scheduler::SendDidNotProduceFrame(const viz::BeginFrameArgs& args) {
-  if (last_begin_frame_ack_.source_id == args.source_id &&
-      last_begin_frame_ack_.sequence_number == args.sequence_number)
+void Scheduler::SendDidNotProduceFrame(const viz::BeginFrameArgs& args,
+                                       FrameSkippedReason reason) {
+  if (last_begin_frame_ack_.frame_id == args.frame_id)
     return;
   last_begin_frame_ack_ = viz::BeginFrameAck(args, false /* has_damage */);
-  client_->DidNotProduceFrame(last_begin_frame_ack_);
+  client_->DidNotProduceFrame(last_begin_frame_ack_, reason);
+  compositor_frame_reporting_controller_->DidNotProduceFrame(args.frame_id,
+                                                             reason);
 }
 
 // BeginImplFrame starts a compositor frame that will wait up until a deadline
@@ -597,18 +688,14 @@ void Scheduler::BeginImplFrame(const viz::BeginFrameArgs& args,
     base::AutoReset<bool> mark_inside(&inside_scheduled_action_, true);
 
     begin_impl_frame_tracker_.Start(args);
-    state_machine_.OnBeginImplFrame(args.source_id, args.sequence_number,
-                                    args.animate_only);
-    devtools_instrumentation::DidBeginFrame(layer_tree_host_id_);
-    compositor_timing_history_->WillBeginImplFrame(
-        state_machine_.NewActiveTreeLikely(), args.frame_time, args.type, now);
+    state_machine_.OnBeginImplFrame(args.frame_id, args.animate_only);
+    compositor_timing_history_->WillBeginImplFrame(args, now);
+    compositor_frame_reporting_controller_->WillBeginImplFrame(args);
     bool has_damage =
         client_->WillBeginImplFrame(begin_impl_frame_tracker_.Current());
 
-    if (!has_damage) {
+    if (!has_damage)
       state_machine_.AbortDraw();
-      compositor_timing_history_->DrawAborted();
-    }
   }
 
   ProcessScheduledActions();
@@ -652,8 +739,10 @@ void Scheduler::ScheduleBeginImplFrameDeadline() {
       // Send early DidNotProduceFrame if we don't expect to produce a frame
       // soon so that display scheduler doesn't wait unnecessarily.
       // Note: This will only send one DidNotProduceFrame ack per begin frame.
-      if (!state_machine_.NewActiveTreeLikely())
-        SendDidNotProduceFrame(begin_impl_frame_tracker_.Current());
+      if (!state_machine_.NewActiveTreeLikely()) {
+        SendDidNotProduceFrame(begin_impl_frame_tracker_.Current(),
+                               FrameSkippedReason::kNoDamage);
+      }
       break;
     }
     case DeadlineMode::REGULAR:
@@ -699,11 +788,28 @@ void Scheduler::OnBeginImplFrameDeadline() {
   //     order to wait for more user-input before starting the next commit.
   // * Creating a new OuputSurface will not occur during the deadline in
   //     order to allow the state machine to "settle" first.
-  compositor_timing_history_->WillFinishImplFrame(
-      state_machine_.needs_redraw());
+  if (!settings_.using_synchronous_renderer_compositor) {
+    compositor_timing_history_->WillFinishImplFrame(
+        state_machine_.needs_redraw());
+    compositor_frame_reporting_controller_->OnFinishImplFrame(
+        begin_main_frame_args_.frame_id);
+  }
+
   state_machine_.OnBeginImplFrameDeadline();
   ProcessScheduledActions();
-  FinishImplFrame();
+
+  if (settings_.using_synchronous_renderer_compositor)
+    FinishImplFrameSynchronous();
+  else
+    FinishImplFrame();
+}
+
+void Scheduler::FinishImplFrameSynchronous() {
+  DCHECK(settings_.using_synchronous_renderer_compositor);
+  if (needs_finish_frame_for_synchronous_compositor_) {
+    needs_finish_frame_for_synchronous_compositor_ = false;
+    FinishImplFrame();
+  }
 }
 
 void Scheduler::DrawIfPossible() {
@@ -716,12 +822,8 @@ void Scheduler::DrawIfPossible() {
   state_machine_.WillDraw();
   DrawResult result = client_->ScheduledActionDrawIfPossible();
   state_machine_.DidDraw(result);
-  compositor_timing_history_->DidDraw(
-      drawing_with_new_active_tree,
-      begin_impl_frame_tracker_.DangerousMethodCurrentOrLast().frame_time,
-      client_->CompositedAnimationsCount(),
-      client_->MainThreadAnimationsCount(),
-      client_->CurrentFrameHadRAF(), client_->NextFrameHasPendingRAF());
+  compositor_timing_history_->DidDraw(drawing_with_new_active_tree,
+                                      client_->HasCustomPropertyAnimations());
 }
 
 void Scheduler::DrawForced() {
@@ -734,12 +836,8 @@ void Scheduler::DrawForced() {
   state_machine_.WillDraw();
   DrawResult result = client_->ScheduledActionDrawForced();
   state_machine_.DidDraw(result);
-  compositor_timing_history_->DidDraw(
-      drawing_with_new_active_tree,
-      begin_impl_frame_tracker_.DangerousMethodCurrentOrLast().frame_time,
-      client_->CompositedAnimationsCount(),
-      client_->MainThreadAnimationsCount(),
-      client_->CurrentFrameHadRAF(), client_->NextFrameHasPendingRAF());
+  compositor_timing_history_->DidDraw(drawing_with_new_active_tree,
+                                      client_->HasCustomPropertyAnimations());
 }
 
 void Scheduler::SetDeferBeginMainFrame(bool defer_begin_main_frame) {
@@ -769,20 +867,22 @@ void Scheduler::ProcessScheduledActions() {
   SchedulerStateMachine::Action action;
   do {
     action = state_machine_.NextAction();
-    TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("cc.debug.scheduler"),
-                 "SchedulerStateMachine", "state", AsValue());
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("cc.debug.scheduler"),
+                "SchedulerStateMachine", [this](perfetto::EventContext ctx) {
+                  this->AsProtozeroInto(ctx.event()->set_cc_scheduler_state());
+                });
     base::AutoReset<SchedulerStateMachine::Action> mark_inside_action(
         &inside_action_, action);
     switch (action) {
       case SchedulerStateMachine::Action::NONE:
         break;
       case SchedulerStateMachine::Action::SEND_BEGIN_MAIN_FRAME:
-        compositor_timing_history_->WillBeginMainFrame(
-            begin_main_frame_args_.on_critical_path,
-            begin_main_frame_args_.frame_time);
+        compositor_timing_history_->WillBeginMainFrame(begin_main_frame_args_);
+        compositor_frame_reporting_controller_->WillBeginMainFrame(
+            begin_main_frame_args_);
         state_machine_.WillSendBeginMainFrame();
-        // TODO(brianderson): Pass begin_main_frame_args_ directly to client.
         client_->ScheduledActionSendBeginMainFrame(begin_main_frame_args_);
+        last_dispatched_begin_main_frame_args_ = begin_main_frame_args_;
         break;
       case SchedulerStateMachine::Action::
           NOTIFY_BEGIN_MAIN_FRAME_NOT_EXPECTED_UNTIL:
@@ -799,18 +899,24 @@ void Scheduler::ProcessScheduledActions() {
         bool commit_has_no_updates = false;
         state_machine_.WillCommit(commit_has_no_updates);
         compositor_timing_history_->WillCommit();
+        compositor_frame_reporting_controller_->WillCommit();
         client_->ScheduledActionCommit();
+        last_commit_origin_frame_args_ = last_dispatched_begin_main_frame_args_;
         break;
       }
       case SchedulerStateMachine::Action::ACTIVATE_SYNC_TREE:
         compositor_timing_history_->WillActivate();
+        compositor_frame_reporting_controller_->WillActivate();
         state_machine_.WillActivate();
         client_->ScheduledActionActivateSyncTree();
         compositor_timing_history_->DidActivate();
+        compositor_frame_reporting_controller_->DidActivate();
+        last_activate_origin_frame_args_ = last_commit_origin_frame_args_;
         break;
       case SchedulerStateMachine::Action::PERFORM_IMPL_SIDE_INVALIDATION:
         state_machine_.WillPerformImplSideInvalidation();
         compositor_timing_history_->WillInvalidateOnImplSide();
+        compositor_frame_reporting_controller_->WillInvalidateOnImplSide();
         client_->ScheduledActionPerformImplSideInvalidation();
         break;
       case SchedulerStateMachine::Action::DRAW_IF_POSSIBLE:
@@ -823,7 +929,6 @@ void Scheduler::ProcessScheduledActions() {
         // No action is actually performed, but this allows the state machine to
         // drain the pipeline without actually drawing.
         state_machine_.AbortDraw();
-        compositor_timing_history_->DrawAborted();
         break;
       }
       case SchedulerStateMachine::Action::BEGIN_LAYER_TREE_FRAME_SINK_CREATION:
@@ -847,64 +952,47 @@ void Scheduler::ProcessScheduledActions() {
 
   PostPendingBeginFrameTask();
   StartOrStopBeginFrames();
+  UpdatePowerModeVote();
 }
 
-std::unique_ptr<base::trace_event::ConvertableToTraceFormat>
-Scheduler::AsValue() const {
-  auto state = std::make_unique<base::trace_event::TracedValue>();
-  AsValueInto(state.get());
-  return std::move(state);
-}
-
-void Scheduler::AsValueInto(base::trace_event::TracedValue* state) const {
+void Scheduler::AsProtozeroInto(
+    perfetto::protos::pbzero::ChromeCompositorSchedulerState* state) const {
   base::TimeTicks now = Now();
 
-  state->BeginDictionary("state_machine");
-  state_machine_.AsValueInto(state);
-  state->EndDictionary();
+  state_machine_.AsProtozeroInto(state->set_state_machine());
 
-  state->SetBoolean("observing_begin_frame_source",
-                    observing_begin_frame_source_);
-  state->SetBoolean("begin_impl_frame_deadline_task",
-                    !begin_impl_frame_deadline_task_.IsCancelled());
-  state->SetBoolean("pending_begin_frame_task",
-                    !pending_begin_frame_task_.IsCancelled());
-  state->SetBoolean("skipped_last_frame_missed_exceeded_deadline",
-                    skipped_last_frame_missed_exceeded_deadline_);
-  state->SetBoolean("skipped_last_frame_to_reduce_latency",
-                    skipped_last_frame_to_reduce_latency_);
-  state->SetString("inside_action",
-                   SchedulerStateMachine::ActionToString(inside_action_));
-  state->SetString("deadline_mode",
-                   SchedulerStateMachine::BeginImplFrameDeadlineModeToString(
-                       deadline_mode_));
+  state->set_observing_begin_frame_source(observing_begin_frame_source_);
+  state->set_begin_impl_frame_deadline_task(
+      !begin_impl_frame_deadline_task_.IsCancelled());
+  state->set_pending_begin_frame_task(!pending_begin_frame_task_.IsCancelled());
+  state->set_skipped_last_frame_missed_exceeded_deadline(
+      skipped_last_frame_missed_exceeded_deadline_);
+  state->set_skipped_last_frame_to_reduce_latency(
+      skipped_last_frame_to_reduce_latency_);
+  state->set_inside_action(
+      SchedulerStateMachine::ActionToProtozeroEnum(inside_action_));
+  state->set_deadline_mode(
+      SchedulerStateMachine::BeginImplFrameDeadlineModeToProtozeroEnum(
+          deadline_mode_));
 
-  state->SetDouble("deadline_ms", deadline_.since_origin().InMillisecondsF());
-  state->SetDouble("deadline_scheduled_at_ms",
-                   deadline_scheduled_at_.since_origin().InMillisecondsF());
+  state->set_deadline_us(deadline_.since_origin().InMicroseconds());
+  state->set_deadline_scheduled_at_us(
+      deadline_scheduled_at_.since_origin().InMicroseconds());
 
-  state->SetDouble("now_ms", Now().since_origin().InMillisecondsF());
-  state->SetDouble("now_to_deadline_ms", (deadline_ - Now()).InMillisecondsF());
-  state->SetDouble("now_to_deadline_scheduled_at_ms",
-                   (deadline_scheduled_at_ - Now()).InMillisecondsF());
+  state->set_now_us(Now().since_origin().InMicroseconds());
+  state->set_now_to_deadline_delta_us((deadline_ - Now()).InMicroseconds());
+  state->set_now_to_deadline_scheduled_at_delta_us(
+      (deadline_scheduled_at_ - Now()).InMicroseconds());
 
-  state->BeginDictionary("begin_impl_frame_args");
-  begin_impl_frame_tracker_.AsValueInto(now, state);
-  state->EndDictionary();
+  begin_impl_frame_tracker_.AsProtozeroInto(now,
+                                            state->set_begin_impl_frame_args());
 
-  state->BeginDictionary("begin_frame_observer_state");
-  BeginFrameObserverBase::AsValueInto(state);
-  state->EndDictionary();
+  BeginFrameObserverBase::AsProtozeroInto(
+      state->set_begin_frame_observer_state());
 
   if (begin_frame_source_) {
-    state->BeginDictionary("begin_frame_source_state");
-    begin_frame_source_->AsValueInto(state);
-    state->EndDictionary();
+    begin_frame_source_->AsProtozeroInto(state->set_begin_frame_source_state());
   }
-
-  state->BeginDictionary("compositor_timing_history");
-  compositor_timing_history_->AsValueInto(state);
-  state->EndDictionary();
 }
 
 void Scheduler::UpdateCompositorTimingHistoryRecordingEnabled() {
@@ -913,45 +1001,12 @@ void Scheduler::UpdateCompositorTimingHistoryRecordingEnabled() {
       state_machine_.visible());
 }
 
-bool Scheduler::ShouldDropBeginFrame(const viz::BeginFrameArgs& args) const {
-  // Drop the BeginFrame if we don't need one.
-  if (!state_machine_.BeginFrameNeeded())
-    return true;
-
-  // Also ignore MISSED args in full-pipe mode, because a missed BeginFrame may
-  // have already been completed by the DisplayScheduler. In such a case,
-  // handling it now would be likely to mess up future full-pipe BeginFrames.
-  // The only situation in which we can reasonably receive MISSED args is when
-  // our frame sink hierarchy changes, since we always request BeginFrames in
-  // full-pipe mode. If surface synchronization is also enabled, we can and
-  // should use the MISSED args safely because the parent's latest
-  // CompositorFrame will block its activation until we submit a new frame.
-  if (args.type == viz::BeginFrameArgs::MISSED &&
-      settings_.wait_for_all_pipeline_stages_before_draw &&
-      !settings_.enable_surface_synchronization) {
-    return true;
-  }
-
-  // We shouldn't be handling missed frames in the browser process (i.e. where
-  // commit_to_active_tree is set) since we don't know if we should create a
-  // frame at this time. Doing so leads to issues like crbug.com/882907. This
-  // early-out is a short term fix to keep fling animations smooth.
-  // TODO(bokan): In the long term, the display compositor should decide
-  // whether to issue a missed frame; it is tracked in
-  // https://crbug.com/930890.
-  if (args.type == viz::BeginFrameArgs::MISSED &&
-      settings_.commit_to_active_tree)
-    return true;
-
-  return false;
-}
-
 bool Scheduler::ShouldRecoverMainLatency(
     const viz::BeginFrameArgs& args,
     bool can_activate_before_deadline) const {
   DCHECK(!settings_.using_synchronous_renderer_compositor);
 
-  if (!settings_.enable_latency_recovery)
+  if (!settings_.enable_main_latency_recovery)
     return false;
 
   // The main thread is in a low latency mode and there's no need to recover.
@@ -983,7 +1038,7 @@ bool Scheduler::ShouldRecoverImplLatency(
     bool can_activate_before_deadline) const {
   DCHECK(!settings_.using_synchronous_renderer_compositor);
 
-  if (!settings_.enable_latency_recovery)
+  if (!settings_.enable_impl_latency_recovery)
     return false;
 
   // Disable impl thread latency recovery when using the unthrottled
@@ -1029,11 +1084,9 @@ bool Scheduler::CanBeginMainFrameAndActivateBeforeDeadline(
   return estimated_draw_time < args.deadline;
 }
 
-bool Scheduler::IsBeginMainFrameSentOrStarted() const {
-  return (state_machine_.begin_main_frame_state() ==
-              SchedulerStateMachine::BeginMainFrameState::SENT ||
-          state_machine_.begin_main_frame_state() ==
-              SchedulerStateMachine::BeginMainFrameState::STARTED);
+bool Scheduler::IsBeginMainFrameSent() const {
+  return state_machine_.begin_main_frame_state() ==
+         SchedulerStateMachine::BeginMainFrameState::SENT;
 }
 
 viz::BeginFrameAck Scheduler::CurrentBeginFrameAckForActiveTree() const {
@@ -1045,6 +1098,36 @@ void Scheduler::ClearHistory() {
   state_machine_.SetSkipNextBeginMainFrameToReduceLatency(false);
   compositor_timing_history_->ClearHistory();
   ProcessScheduledActions();
+}
+
+void Scheduler::UpdatePowerModeVote() {
+  // After three aborted BeginMainFrames, consider the main thread's involvement
+  // in frame production unimportant. PowerMode detection for compositor-driven
+  // animation or no-op animation relies on the voter in the frame sink in this
+  // case.
+  constexpr int kMaxAbortedBeginMainFrames = 2;
+
+  bool main_thread_animation =
+      observing_begin_frame_source_ &&
+      (state_machine_.needs_begin_main_frame() ||
+       state_machine_.CommitPending() || state_machine_.has_pending_tree()) &&
+      state_machine_.aborted_begin_main_frame_count() <=
+          kMaxAbortedBeginMainFrames;
+
+  power_scheduler::PowerMode vote =
+      main_thread_animation ? power_scheduler::PowerMode::kMainThreadAnimation
+                            : power_scheduler::PowerMode::kIdle;
+
+  if (last_power_mode_vote_ == vote)
+    return;
+
+  last_power_mode_vote_ = vote;
+  if (vote == power_scheduler::PowerMode::kIdle) {
+    power_mode_voter_->ResetVoteAfterTimeout(
+        power_scheduler::PowerModeVoter::kAnimationTimeout);
+  } else {
+    power_mode_voter_->VoteFor(vote);
+  }
 }
 
 }  // namespace cc

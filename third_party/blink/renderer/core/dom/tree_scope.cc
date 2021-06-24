@@ -28,13 +28,13 @@
 
 #include "third_party/blink/renderer/core/css/resolver/scoped_style_resolver.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/container_node.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_path.h"
 #include "third_party/blink/renderer/core/dom/id_target_observer_registry.h"
-#include "third_party/blink/renderer/core/dom/node_child_removal_tracker.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/dom/tree_scope_adopter.h"
@@ -56,8 +56,6 @@
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
-
-using namespace html_names;
 
 TreeScope::TreeScope(ContainerNode& root_node, Document& document)
     : root_node_(&root_node),
@@ -109,6 +107,8 @@ ScopedStyleResolver& TreeScope::EnsureScopedStyleResolver() {
 }
 
 void TreeScope::ClearScopedStyleResolver() {
+  if (scoped_style_resolver_)
+    scoped_style_resolver_->ResetStyle();
   scoped_style_resolver_.Clear();
 }
 
@@ -117,13 +117,7 @@ Element* TreeScope::getElementById(const AtomicString& element_id) const {
     return nullptr;
   if (!elements_by_id_)
     return nullptr;
-  Element* element = elements_by_id_->GetElementById(element_id, *this);
-  if (element && &RootNode() == &GetDocument() &&
-      GetDocument().InDOMNodeRemovedHandler()) {
-    if (NodeChildRemovalTracker::IsBeingRemoved(element))
-      GetDocument().CountDetachingNodeAccessInDOMNodeRemovedHandler();
-  }
-  return element;
+  return elements_by_id_->GetElementById(element_id, *this);
 }
 
 const HeapVector<Member<Element>>& TreeScope::GetAllElementsById(
@@ -193,7 +187,7 @@ HTMLMapElement* TreeScope::GetImageMap(const String& url) const {
   if (hash_pos == kNotFound)
     return nullptr;
   String name = url.Substring(hash_pos + 1);
-  return ToHTMLMapElement(
+  return To<HTMLMapElement>(
       image_maps_by_name_->GetElementByMapName(AtomicString(name), *this));
 }
 
@@ -209,7 +203,7 @@ static bool PointInFrameContentIfVisible(Document& document,
     return false;
 
   // The VisibleContentRect check below requires that scrollbars are up-to-date.
-  document.UpdateStyleAndLayout();
+  document.UpdateStyleAndLayout(DocumentUpdateReason::kHitTest);
 
   auto* scrollable_area = frame_view->LayoutViewport();
   IntRect visible_frame_rect(IntPoint(),
@@ -265,7 +259,7 @@ Element* TreeScope::HitTestPointInternal(Node* node,
   if (node->IsPseudoElement() || node->IsTextNode())
     element = node->ParentOrShadowHostElement();
   else
-    element = ToElement(node);
+    element = To<Element>(node);
   if (!element)
     return nullptr;
   if (type == HitTestPointType::kWebExposed)
@@ -279,20 +273,19 @@ static bool ShouldAcceptNonElementNode(const Node& node) {
     return false;
   // In some cases the hit test doesn't return slot elements, so we can only
   // get it through its child and can't skip it.
-  if (IsHTMLSlotElement(*parent))
+  if (IsA<HTMLSlotElement>(*parent))
     return true;
   // SVG text content elements has no background, and are thus not
   // hit during the background phase of hit-testing. Because of that
   // we need to allow any child (Text) node of these elements.
-  return IsSVGTextContentElement(*parent);
+  return IsA<SVGTextContentElement>(parent);
 }
 
 HeapVector<Member<Element>> TreeScope::ElementsFromHitTestResult(
     HitTestResult& result) const {
-  DCHECK(RootNode().isConnected());
   HeapVector<Member<Element>> elements;
   Node* last_node = nullptr;
-  for (const auto rect_based_node : result.ListBasedTestResult()) {
+  for (const auto& rect_based_node : result.ListBasedTestResult()) {
     Node* node = rect_based_node.Get();
     if (!node->IsElementNode() && !ShouldAcceptNonElementNode(*node))
       continue;
@@ -302,8 +295,8 @@ HeapVector<Member<Element>> TreeScope::ElementsFromHitTestResult(
     if (node == last_node)
       continue;
 
-    if (node && node->IsElementNode()) {
-      elements.push_back(ToElement(node));
+    if (auto* element = DynamicTo<Element>(node)) {
+      elements.push_back(element);
       last_node = node;
     }
   }
@@ -357,8 +350,8 @@ void TreeScope::SetAdoptedStyleSheets(
           "Can't adopt non-constructed stylesheets.");
       return;
     }
-    Document* associated_document = sheet->AssociatedDocument();
-    if (associated_document && *associated_document != GetDocument()) {
+    Document* document = sheet->ConstructorDocument();
+    if (document && *document != GetDocument()) {
       exception_state.ThrowDOMException(DOMExceptionCode::kNotAllowedError,
                                         "Sharing constructed stylesheets in "
                                         "multiple documents is not allowed");
@@ -389,7 +382,7 @@ DOMSelection* TreeScope::GetSelection() const {
   return selection_.Get();
 }
 
-Element* TreeScope::FindAnchor(const String& name) {
+Element* TreeScope::FindAnchorWithName(const String& name) {
   if (name.IsEmpty())
     return nullptr;
   if (Element* element = getElementById(AtomicString(name)))
@@ -407,6 +400,38 @@ Element* TreeScope::FindAnchor(const String& name) {
     }
   }
   return nullptr;
+}
+
+Node* TreeScope::FindAnchor(const String& fragment) {
+  Node* anchor = nullptr;
+  // https://html.spec.whatwg.org/C/#the-indicated-part-of-the-document
+  // 1. Let fragment be the document's URL's fragment.
+
+  // 2. If fragment is "", top of the document.
+  // TODO(1117212) Move empty check to here.
+
+  // 3. Try the raw fragment (for HTML documents; skip it for `svgView()`).
+  // TODO(1117212) Remove this 'raw' check, or make it actually 'raw'
+  if (!GetDocument().IsSVGDocument()) {
+    anchor = FindAnchorWithName(fragment);
+    if (anchor)
+      return anchor;
+  }
+
+  // 4. Let fragmentBytes be the percent-decoded fragment.
+  // 5. Let decodedFragment be the UTF-8 decode without BOM of fragmentBytes.
+  String name = DecodeURLEscapeSequences(fragment, DecodeURLMode::kUTF8);
+  // 6. Try decodedFragment.
+  anchor = FindAnchorWithName(name);
+  if (anchor)
+    return anchor;
+
+  // 7. If decodedFragment is "top", top of the document.
+  // TODO(1117212) Move the IsEmpty check to step 2.
+  if (fragment.IsEmpty() || EqualIgnoringASCIICase(name, "top"))
+    anchor = &GetDocument();
+
+  return anchor;
 }
 
 void TreeScope::AdoptIfNeeded(Node& node) {
@@ -475,7 +500,7 @@ Element* TreeScope::AdjustedFocusedElement() const {
   if (!element)
     return nullptr;
 
-  if (RootNode().IsInV1ShadowTree()) {
+  if (RootNode().IsInShadowTree()) {
     if (Element* retargeted = AdjustedFocusedElementInternal(*element)) {
       return (this == &retargeted->GetTreeScope()) ? retargeted : nullptr;
     }
@@ -489,8 +514,8 @@ Element* TreeScope::AdjustedFocusedElement() const {
       // - InsertionPoint
       // - shadow host
       // - Document::focusedElement()
-      // So, it's safe to do toElement().
-      return ToElement(context.Target()->ToNode());
+      // So, it's safe to do To<Element>().
+      return To<Element>(context.Target()->ToNode());
     }
   }
   return nullptr;
@@ -500,12 +525,7 @@ Element* TreeScope::AdjustedElement(const Element& target) const {
   const Element* adjusted_target = &target;
   for (const Element* ancestor = &target; ancestor;
        ancestor = ancestor->OwnerShadowHost()) {
-    // This adjustment is done only for V1 shadows, and is skipped for V0 or UA
-    // shadows, because .pointerLockElement and .(webkit)fullscreenElement is
-    // not available for non-V1 shadow roots.
-    // TODO(kochi): Once V0 code is removed, use the same logic as
-    // .activeElement for V1.
-    if (ancestor->ShadowRootIfV1())
+    if (ancestor->GetShadowRoot())
       adjusted_target = ancestor;
     if (this == ancestor->GetTreeScope())
       return const_cast<Element*>(adjusted_target);
@@ -595,8 +615,8 @@ Element* TreeScope::GetElementByAccessKey(const String& key) const {
   Element* result = nullptr;
   Node& root = RootNode();
   for (Element& element : ElementTraversal::DescendantsOf(root)) {
-    if (DeprecatedEqualIgnoringCase(element.FastGetAttribute(kAccesskeyAttr),
-                                    key))
+    if (DeprecatedEqualIgnoringCase(
+            element.FastGetAttribute(html_names::kAccesskeyAttr), key))
       result = &element;
     if (ShadowRoot* shadow_root = element.GetShadowRoot()) {
       if (Element* shadow_result = shadow_root->GetElementByAccessKey(key))
@@ -620,7 +640,7 @@ void TreeScope::SetNeedsStyleRecalcForViewportUnits() {
   }
 }
 
-void TreeScope::Trace(Visitor* visitor) {
+void TreeScope::Trace(Visitor* visitor) const {
   visitor->Trace(root_node_);
   visitor->Trace(document_);
   visitor->Trace(parent_tree_scope_);

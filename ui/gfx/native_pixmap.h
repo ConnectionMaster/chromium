@@ -27,10 +27,16 @@ class NativePixmap : public base::RefCountedThreadSafe<NativePixmap> {
 
   virtual bool AreDmaBufFdsValid() const = 0;
   virtual int GetDmaBufFd(size_t plane) const = 0;
-  virtual int GetDmaBufPitch(size_t plane) const = 0;
-  virtual int GetDmaBufOffset(size_t plane) const = 0;
-  virtual uint64_t GetDmaBufModifier(size_t plane) const = 0;
+  virtual uint32_t GetDmaBufPitch(size_t plane) const = 0;
+  virtual size_t GetDmaBufOffset(size_t plane) const = 0;
+  virtual size_t GetDmaBufPlaneSize(size_t plane) const = 0;
+  // Return the number of non-interleaved "color" planes.
+  virtual size_t GetNumberOfPlanes() const = 0;
+
+  // The following methods return format, modifier and size of the buffer,
+  // respectively.
   virtual gfx::BufferFormat GetBufferFormat() const = 0;
+  virtual uint64_t GetBufferFormatModifier() const = 0;
   virtual gfx::Size GetBufferSize() const = 0;
 
   // Return an id that is guaranteed to be unique and equal for all instances
@@ -53,8 +59,11 @@ class NativePixmap : public base::RefCountedThreadSafe<NativePixmap> {
   // range of [0,1].
   // |enable_blend| specifies if the plane should be alpha blended, with premul
   // apha, when scanned out.
-  // |gpu_fence| specifies a gpu fence to wait on before the pixmap is ready
-  // to be displayed.
+  // |acquire_fences| specifies gpu fences to wait on before the pixmap is ready
+  // to be displayed. These fence are fired when the gpu has finished writing to
+  // the pixmap.
+  // |release_fences| specifies gpu fences that are signalled when the pixmap
+  // has been displayed and is ready for reuse.
   virtual bool ScheduleOverlayPlane(
       gfx::AcceleratedWidget widget,
       int plane_z_order,
@@ -62,7 +71,8 @@ class NativePixmap : public base::RefCountedThreadSafe<NativePixmap> {
       const gfx::Rect& display_bounds,
       const gfx::RectF& crop_rect,
       bool enable_blend,
-      std::unique_ptr<gfx::GpuFence> gpu_fence) = 0;
+      std::vector<gfx::GpuFence> acquire_fences,
+      std::vector<gfx::GpuFence> release_fences) = 0;
 
   // Export the buffer for sharing across processes.
   // Any file descriptors in the exported handle are owned by the caller.

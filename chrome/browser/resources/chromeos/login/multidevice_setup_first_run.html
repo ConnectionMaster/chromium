@@ -10,6 +10,12 @@
 <link rel="import" href="chrome://resources/cr_components/chromeos/multidevice_setup/multidevice_setup.html">
 <link rel="import" href="chrome://resources/html/i18n_behavior.html">
 <link rel="import" href="chrome://resources/html/web_ui_listener_behavior.html">
+
+<link rel="import" href="/components/buttons/oobe_next_button.html">
+<link rel="import" href="/components/buttons/oobe_text_button.html">
+<link rel="import" href="/components/behaviors/oobe_i18n_behavior.html">
+<link rel="import" href="/components/throbber_notice/throbber_notice.html">
+
 <!--
   UI for the MultiDevice setup flow when displayed after OOBE or during the
   user's first login on this Chromebook. Note that this flow is
@@ -27,21 +33,21 @@
 <dom-module id="multidevice-setup-first-run">
   <template>
     <link rel="stylesheet" href="oobe_popup_overlay.css">
-    <style include="shared-style multidevice-setup-shared ">
+    <style include="multidevice-setup-shared oobe-common">
+      multidevice-setup {
+        --multidevice-setup-width: 100%;
+        --iron-pages-overflow: auto;
+      }
+
       #multidevice-help-overlay-container {
         width: 768px;
       }
 
-      #multidevice-help-overlay-webview {
+      #multideviceHelpOverlayWebview {
         border: 1px solid #d9d9d9;
         display: block;
         height: 450px;
         width: 100%;
-      }
-
-      #multidevice-help-overlay-webview-container.overlay-loading > webview,
-      #multidevice-help-overlay-webview-container:not(.overlay-loading) > div {
-        display: none;
       }
 
       #multidevice-help-overlay-webview-container {
@@ -50,6 +56,11 @@
         margin: auto;
         padding: 24px 8px 8px 8px;
         width: 100%;
+      }
+
+      .multidevice-help-overlay-webview-loading {
+          height: 100%;
+          width: 100%;
       }
 
       .multidevice-help-overlay-close-top {
@@ -83,20 +94,23 @@
         margin: 8px;
         min-height: 0;
       }
+
+      oobe-text-button {
+        --oobe-button-border-color: var(--google-grey-200);
+      }
     </style>
-    <multidevice-setup delegate="[[delegate_]]"
+    <multidevice-setup id="multideviceSetup"
+        delegate="[[delegate_]]"
         on-setup-exited="onExitRequested_"
         on-forward-button-focus-requested="onForwardButtonFocusRequested_"
-        forward-button-text="{{forwardButtonText_}}"
+        forward-button-text-id="{{forwardButtonTextId_}}"
         forward-button-disabled="{{forwardButtonDisabled_}}"
-        cancel-button-text="{{cancelButtonText_}}">
-      <oobe-text-button slot="cancel-button">
-        <div>[[cancelButtonText_]]</div>
-      </oobe-text-button>
-      <oobe-next-button id="next-button" slot="forward-button"
-          disabled$="[[forwardButtonDisabled_]]">
-        <div>[[forwardButtonText_]]</div>
-      </oobe-next-button>
+        cancel-button-text-id="{{cancelButtonTextId_}}">
+      <oobe-text-button slot="cancel-button"
+        text-key="[[cancelButtonTextId_]]"></oobe-text-button>
+      <oobe-next-button id="nextButton" slot="forward-button"
+          disabled$="[[forwardButtonDisabled_]]"
+          text-key="[[forwardButtonTextId_]]"></oobe-next-button>
     </multidevice-setup>
 
     <div id="multidevice-help-overlay" class="popup-overlay"
@@ -107,19 +121,25 @@
             class="multidevice-help-overlay-close-top
                 multidevice-help-overlay-close-button"
             on-click="hideWebviewOverlay_"
-            title="[[getOverlayCloseTopTitle_()]]">
+            title="[[i18nDynamic(locale, 'arcOverlayClose')]]">
         </div>
         <div id="multidevice-help-overlay-webview-container">
-          <webview id="multidevice-help-overlay-webview"
+          <div class="multidevice-help-overlay-webview-loading
+                      layout horizontal center-center"
+              hidden$="[[!isWebviewLoading_]]">
+            <throbber-notice text-key="gaiaLoading"></throbber-notice>
+          </div>
+          <webview id="multideviceHelpOverlayWebview"
+              hidden$="[[isWebviewLoading_]]"
               src="[[webviewSrc_]]"></webview>
         </div>
         <div class="multidevice-help-button-strip">
+          <!-- TODO(crbug.com/894537): Use string that is specific to
+                  MultiDevice. -->
           <oobe-text-button inverse id="multidevice-help-overlay-close-bottom"
               class="multidevice-help-overlay-close-button"
+              text-key="arcOverlayClose"
               on-click="hideWebviewOverlay_">
-            <!-- TODO(crbug.com/894537): Use string that is specific to
-                    MultiDevice. -->
-            <div i18n-content="arcOverlayClose"></div>
           </oobe-text-button>
         </div>
       </div>

@@ -31,17 +31,18 @@ class UpdateClientImpl : public UpdateClient {
  public:
   UpdateClientImpl(scoped_refptr<Configurator> config,
                    scoped_refptr<PingManager> ping_manager,
-                   UpdateChecker::Factory update_checker_factory,
-                   CrxDownloader::Factory crx_downloader_factory);
+                   UpdateChecker::Factory update_checker_factory);
 
   // Overrides for UpdateClient.
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   void Install(const std::string& id,
                CrxDataCallback crx_data_callback,
+               CrxStateChangeCallback crx_state_change_callback,
                Callback callback) override;
   void Update(const std::vector<std::string>& ids,
               CrxDataCallback crx_data_callback,
+              CrxStateChangeCallback crx_state_change_callback,
               bool is_foreground,
               Callback callback) override;
   bool GetCrxUpdateState(const std::string& id,
@@ -52,6 +53,9 @@ class UpdateClientImpl : public UpdateClient {
                          const base::Version& version,
                          int reason,
                          Callback callback) override;
+  void SendRegistrationPing(const std::string& id,
+                            const base::Version& version,
+                            Callback callback) override;
 
  private:
   ~UpdateClientImpl() override;

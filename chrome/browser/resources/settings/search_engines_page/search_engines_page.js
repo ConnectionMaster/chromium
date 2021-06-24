@@ -6,173 +6,255 @@
  * @fileoverview 'settings-search-engines-page' is the settings page
  * containing search engines settings.
  */
-Polymer({
-  is: 'settings-search-engines-page',
+import 'chrome://resources/cr_elements/cr_button/cr_button.m.js';
+import 'chrome://resources/cr_elements/shared_style_css.m.js';
+import 'chrome://resources/cr_elements/shared_vars_css.m.js';
+import 'chrome://resources/js/cr.m.js';
+import 'chrome://resources/polymer/v3_0/iron-flex-layout/iron-flex-layout-classes.js';
+import '../controls/controlled_radio_button.js';
+import '../controls/settings_radio_group.js';
+import './search_engine_dialog.js';
+import './search_engines_list.js';
+import './omnibox_extension_entry.js';
+import '../settings_shared_css.js';
+import '../settings_vars_css.js';
 
-  behaviors: [settings.GlobalScrollTargetBehavior, WebUIListenerBehavior],
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {focusWithoutInk} from 'chrome://resources/js/cr/ui/focus_without_ink.m.js';
+import {WebUIListenerBehavior, WebUIListenerBehaviorInterface} from 'chrome://resources/js/web_ui_listener_behavior.m.js';
+import {afterNextRender, html, mixinBehaviors, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-  properties: {
-    /** @type {!Array<!SearchEngine>} */
-    defaultEngines: Array,
+import {GlobalScrollTargetBehavior} from '../global_scroll_target_behavior.js';
+import {loadTimeData} from '../i18n_setup.js';
+import {routes} from '../route.js';
 
-    /** @type {!Array<!SearchEngine>} */
-    otherEngines: Array,
+import {SearchEngine, SearchEnginesBrowserProxyImpl, SearchEnginesInfo} from './search_engines_browser_proxy.js';
 
-    /** @type {!Array<!SearchEngine>} */
-    extensions: Array,
+/**
+ * @typedef {!CustomEvent<!{
+ *     engine: !SearchEngine,
+ *     anchorElement: !HTMLElement
+ * }>}
+ */
+let SearchEngineEditEvent;
 
-    /**
-     * Needed by GlobalScrollTargetBehavior.
-     * @override
-     */
-    subpageRoute: {
-      type: Object,
-      value: settings.routes.SEARCH_ENGINES,
-    },
 
-    /** @private {boolean} */
-    showExtensionsList_: {
-      type: Boolean,
-      computed: 'computeShowExtensionsList_(extensions)',
-    },
+/**
+ * @constructor
+ * @extends {PolymerElement}
+ * @implements {WebUIListenerBehaviorInterface}
+ */
+const SettingsSearchEnginesPageElementBase = mixinBehaviors(
+    [GlobalScrollTargetBehavior, WebUIListenerBehavior], PolymerElement);
 
-    /** Filters out all search engines that do not match. */
-    filter: {
-      type: String,
-      value: '',
-    },
+/** @polymer */
+class SettingsSearchEnginesPageElement extends
+    SettingsSearchEnginesPageElementBase {
+  static get is() {
+    return 'settings-search-engines-page';
+  }
 
-    /** @private {!Array<!SearchEngine>} */
-    matchingDefaultEngines_: {
-      type: Array,
-      computed: 'computeMatchingEngines_(defaultEngines, filter)',
-    },
+  static get template() {
+    return html`{__html_template__}`;
+  }
 
-    /** @private {!Array<!SearchEngine>} */
-    matchingOtherEngines_: {
-      type: Array,
-      computed: 'computeMatchingEngines_(otherEngines, filter)',
-    },
+  static get properties() {
+    return {
+      /**
+       * Preferences state.
+       */
+      prefs: {
+        type: Object,
+        notify: true,
+      },
 
-    /** @private {!Array<!SearchEngine>} */
-    matchingExtensions_: {
-      type: Array,
-      computed: 'computeMatchingEngines_(extensions, filter)',
-    },
+      /** @type {!Array<!SearchEngine>} */
+      defaultEngines: Array,
 
-    /** @private {HTMLElement} */
-    omniboxExtensionlastFocused_: Object,
+      /** @type {!Array<!SearchEngine>} */
+      activeEngines: Array,
 
-    /** @private {boolean} */
-    omniboxExtensionListBlurred_: Boolean,
+      /** @type {!Array<!SearchEngine>} */
+      otherEngines: Array,
 
-    /** @private {?SearchEngine} */
-    dialogModel_: {
-      type: Object,
-      value: null,
-    },
+      /** @type {!Array<!SearchEngine>} */
+      extensions: Array,
 
-    /** @private {?HTMLElement} */
-    dialogAnchorElement_: {
-      type: Object,
-      value: null,
-    },
+      /**
+       * Needed by GlobalScrollTargetBehavior.
+       * @override
+       */
+      subpageRoute: {
+        type: Object,
+        value: routes.SEARCH_ENGINES,
+      },
 
-    /** @private */
-    showDialog_: {
-      type: Boolean,
-      value: false,
-    },
-  },
+      /** @private {boolean} */
+      showExtensionsList_: {
+        type: Boolean,
+        computed: 'computeShowExtensionsList_(extensions)',
+      },
 
-  // Since the iron-list for extensions is enclosed in a dom-if, observe both
-  // |extensions| and |showExtensionsList_|.
-  observers: ['extensionsChanged_(extensions, showExtensionsList_)'],
+      /** Filters out all search engines that do not match. */
+      filter: {
+        type: String,
+        value: '',
+      },
 
-  listeners: {
-    'edit-search-engine': 'onEditSearchEngine_',
-  },
+      /** @private {!Array<!SearchEngine>} */
+      matchingDefaultEngines_: {
+        type: Array,
+        computed: 'computeMatchingEngines_(defaultEngines, filter)',
+      },
+
+      /** @private {!Array<!SearchEngine>} */
+      matchingActiveEngines_: {
+        type: Array,
+        computed: 'computeMatchingEngines_(activeEngines, filter)',
+      },
+
+      /** @private {!Array<!SearchEngine>} */
+      matchingOtherEngines_: {
+        type: Array,
+        computed: 'computeMatchingEngines_(otherEngines, filter)',
+      },
+
+      /** @private {!Array<!SearchEngine>} */
+      matchingExtensions_: {
+        type: Array,
+        computed: 'computeMatchingEngines_(extensions, filter)',
+      },
+
+      /** @private {HTMLElement} */
+      omniboxExtensionlastFocused_: Object,
+
+      /** @private {boolean} */
+      omniboxExtensionListBlurred_: Boolean,
+
+      /** @private {?SearchEngine} */
+      dialogModel_: {
+        type: Object,
+        value: null,
+      },
+
+      /** @private {?HTMLElement} */
+      dialogAnchorElement_: {
+        type: Object,
+        value: null,
+      },
+
+      /** @private */
+      showDialog_: {
+        type: Boolean,
+        value: false,
+      },
+
+      /** @private */
+      showKeywordTriggerSetting_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showKeywordTriggerSetting'),
+      },
+
+      /** @private */
+      showActiveSearchEngines_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showActiveSearchEngines'),
+      },
+
+    };
+  }
+
+  static get observers() {
+    return ['extensionsChanged_(extensions, showExtensionsList_)'];
+  }
 
   /** @override */
-  ready: function() {
-    settings.SearchEnginesBrowserProxyImpl.getInstance()
-        .getSearchEnginesList()
-        .then(this.enginesChanged_.bind(this));
+  ready() {
+    super.ready();
+
+    SearchEnginesBrowserProxyImpl.getInstance().getSearchEnginesList().then(
+        this.enginesChanged_.bind(this));
     this.addWebUIListener(
         'search-engines-changed', this.enginesChanged_.bind(this));
 
     // Sets offset in iron-list that uses the page as a scrollTarget.
-    Polymer.RenderStatus.afterNextRender(this, function() {
+    afterNextRender(this, function() {
       this.$.otherEngines.scrollOffset = this.$.otherEngines.offsetTop;
     });
-  },
+
+    this.addEventListener(
+        'edit-search-engine',
+        e => this.onEditSearchEngine_(
+            /** @type {!SearchEngineEditEvent} */ (e)));
+  }
 
   /**
    * @param {?SearchEngine} searchEngine
    * @param {!HTMLElement} anchorElement
    * @private
    */
-  openDialog_: function(searchEngine, anchorElement) {
+  openDialog_(searchEngine, anchorElement) {
     this.dialogModel_ = searchEngine;
     this.dialogAnchorElement_ = anchorElement;
     this.showDialog_ = true;
-  },
+  }
 
   /** @private */
-  onCloseDialog_: function() {
+  onCloseDialog_() {
     this.showDialog_ = false;
     const anchor = /** @type {!HTMLElement} */ (this.dialogAnchorElement_);
-    cr.ui.focusWithoutInk(anchor);
+    focusWithoutInk(anchor);
     this.dialogModel_ = null;
     this.dialogAnchorElement_ = null;
-  },
+  }
 
   /**
-   * @param {!CustomEvent<!{
-   *     engine: !SearchEngine,
-   *     anchorElement: !HTMLElement
-   * }>} e
+   * @param {!SearchEngineEditEvent} e
    * @private
    */
-  onEditSearchEngine_: function(e) {
+  onEditSearchEngine_(e) {
     this.openDialog_(e.detail.engine, e.detail.anchorElement);
-  },
+  }
 
   /** @private */
-  extensionsChanged_: function() {
+  extensionsChanged_() {
     if (this.showExtensionsList_ && this.$.extensions) {
-      this.$.extensions.notifyResize();
+      /** @type {!IronListElement} */ (this.$.extensions).notifyResize();
     }
-  },
+  }
 
   /**
    * @param {!SearchEnginesInfo} searchEnginesInfo
    * @private
    */
-  enginesChanged_: function(searchEnginesInfo) {
+  enginesChanged_(searchEnginesInfo) {
     this.defaultEngines = searchEnginesInfo.defaults;
 
-    // Sort |otherEngines| in alphabetical order.
+    // Sort |activeEngines| and |otherEngines| in alphabetical order.
+    this.activeEngines = searchEnginesInfo.actives.sort(
+        (a, b) => a.name.toLocaleLowerCase().localeCompare(
+            b.name.toLocaleLowerCase()));
     this.otherEngines = searchEnginesInfo.others.sort(
         (a, b) => a.name.toLocaleLowerCase().localeCompare(
             b.name.toLocaleLowerCase()));
 
     this.extensions = searchEnginesInfo.extensions;
-  },
+  }
 
   /**
    * @param {!Event} e
    * @private
    */
-  onAddSearchEngineTap_: function(e) {
+  onAddSearchEngineTap_(e) {
     e.preventDefault();
-    this.openDialog_(null, assert(this.$.addSearchEngine));
-  },
+    this.openDialog_(
+        null, assert(/** @type {HTMLElement} */ (this.$.addSearchEngine)));
+  }
 
   /** @private */
-  computeShowExtensionsList_: function() {
+  computeShowExtensionsList_() {
     return this.extensions.length > 0;
-  },
+  }
 
   /**
    * Filters the given list based on the currently existing filter string.
@@ -180,8 +262,8 @@ Polymer({
    * @return {!Array<!SearchEngine>}
    * @private
    */
-  computeMatchingEngines_: function(list) {
-    if (this.filter == '') {
+  computeMatchingEngines_(list) {
+    if (this.filter === '') {
       return list;
     }
 
@@ -190,7 +272,7 @@ Polymer({
       return [e.displayName, e.name, e.keyword, e.url].some(
           term => term.toLowerCase().includes(filter));
     });
-  },
+  }
 
   /**
    * @param {!Array<!SearchEngine>} list The original list.
@@ -198,7 +280,10 @@ Polymer({
    * @return {boolean} Whether to show the "no results" message.
    * @private
    */
-  showNoResultsMessage_: function(list, filteredList) {
-    return list.length > 0 && filteredList.length == 0;
-  },
-});
+  showNoResultsMessage_(list, filteredList) {
+    return list.length > 0 && filteredList.length === 0;
+  }
+}
+
+customElements.define(
+    SettingsSearchEnginesPageElement.is, SettingsSearchEnginesPageElement);

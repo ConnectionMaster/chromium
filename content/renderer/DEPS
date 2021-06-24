@@ -1,21 +1,27 @@
 include_rules = [
   # Allow inclusion of specific components that we depend on.
   # See comment in content/DEPS for which components are allowed.
+  # *********************************** NOTE ***********************************
+  # If adding a new component dependency, email content/OWNERS first.
+  # ****************************************************************************
   "+components/discardable_memory/client",
   "+components/metrics",
   "+components/metrics:single_sample_metrics",
   "+components/payments",
-  "+components/tracing",
   "+components/url_formatter",
   "+components/viz/client",
   "+components/viz/common",
+  # *********************************** NOTE ***********************************
+  # If adding a new component dependency, email content/OWNERS first.
+  # ****************************************************************************
+
+  "+chromeos/system/core_scheduling.h",
   "+content/public/child",
   "+content/public/renderer",
   "+content/child",
   "+device/base/synchronization",
   "+device/gamepad/public/cpp",
   "+device/gamepad/public/mojom",
-  "+device/usb/public",
   "+gin",
   "+jingle/glue",
   "+mojo",
@@ -24,6 +30,7 @@ include_rules = [
   "+third_party/hyphen/hyphen.h",
   "+third_party/webrtc_overrides",
   "+third_party/blink/public/common",
+  "+third_party/blink/public/mojom",
   "+v8/include",
   "+v8/src/third_party/vtune",
 ]
@@ -33,6 +40,9 @@ specific_include_rules = {
     "+content/public/browser",
     "+content/shell",
   ],
+  "renderer_main\.cc": [
+   "+chromeos/memory/userspace_swap",
+  ],
   "render_thread_impl_browsertest\.cc": [
     "+content/app/mojo/mojo_init.h",
   ],
@@ -40,12 +50,8 @@ specific_include_rules = {
     "+components/discardable_memory/service",
     "+content/browser/browser_main_loop.h",
   ],
-  # TODO(crbug.com/734668): Dependencies on ozone should be removed, as content
-  # embedded in mus won't be able to talk to the native ozone.
-  "renderer_main\.cc": [
-    "+ui/ozone/public/client_native_pixmap_factory_ozone.h",
-  ],
   ".*_(unit|pixel|perf)test.*\.cc": [
     "+components/viz/test",
+    "+third_party/blink/renderer/platform/testing",
   ],
 }

@@ -11,13 +11,13 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_custom_element_definition_builder.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_element_definition_options.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
-#include "third_party/blink/renderer/core/dom/element_definition_options.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/custom/ce_reactions_scope.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_definition.h"
@@ -25,11 +25,11 @@
 #include "third_party/blink/renderer/core/html/custom/custom_element_descriptor.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_reaction_stack.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_upgrade_sorter.h"
-#include "third_party/blink/renderer/core/html/custom/v0_custom_element_registration_context.h"
 #include "third_party/blink/renderer/core/html_element_type_helpers.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -37,11 +37,10 @@ namespace {
 
 void CollectUpgradeCandidateInNode(Node& root,
                                    HeapVector<Member<Element>>& candidates) {
-  if (root.IsElementNode()) {
-    Element& root_element = ToElement(root);
-    if (root_element.GetCustomElementState() == CustomElementState::kUndefined)
+  if (auto* root_element = DynamicTo<Element>(root)) {
+    if (root_element->GetCustomElementState() == CustomElementState::kUndefined)
       candidates.push_back(root_element);
-    if (auto* shadow_root = root_element.GetShadowRoot()) {
+    if (auto* shadow_root = root_element->GetShadowRoot()) {
       if (shadow_root->GetType() != ShadowRootType::kUserAgent)
         CollectUpgradeCandidateInNode(*shadow_root, candidates);
     }
@@ -75,28 +74,15 @@ bool ThrowIfValidName(const AtomicString& name,
 
 }  // namespace
 
-CustomElementRegistry* CustomElementRegistry::Create(
-    const LocalDOMWindow* owner) {
-  CustomElementRegistry* registry =
-      MakeGarbageCollected<CustomElementRegistry>(owner);
-  Document* document = owner->document();
-  if (V0CustomElementRegistrationContext* v0 =
-          document ? document->RegistrationContext() : nullptr)
-    registry->Entangle(v0);
-  return registry;
-}
-
 CustomElementRegistry::CustomElementRegistry(const LocalDOMWindow* owner)
     : element_definition_is_running_(false),
       owner_(owner),
-      v0_(MakeGarbageCollected<V0RegistrySet>()),
       upgrade_candidates_(MakeGarbageCollected<UpgradeCandidateMap>()),
       reaction_stack_(&CustomElementReactionStack::Current()) {}
 
-void CustomElementRegistry::Trace(Visitor* visitor) {
+void CustomElementRegistry::Trace(Visitor* visitor) const {
   visitor->Trace(definitions_);
   visitor->Trace(owner_);
-  visitor->Trace(v0_);
   visitor->Trace(upgrade_candidates_);
   visitor->Trace(when_defined_promise_map_);
   visitor->Trace(reaction_stack_);
@@ -130,7 +116,7 @@ CustomElementDefinition* CustomElementRegistry::DefineInternal(
   if (ThrowIfInvalidName(name, allow_embedder_names, exception_state))
     return nullptr;
 
-  if (NameIsDefined(name) || V0NameIsDefined(name)) {
+  if (NameIsDefined(name)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
         "the name \"" + name + "\" has already been used with this registry");
@@ -150,13 +136,13 @@ CustomElementDefinition* CustomElementRegistry::DefineInternal(
 
   // Step 7. customized built-in elements definition
   // element interface extends option checks
-  if (options->hasExtends()) {
+  if (!options->extends().IsNull()) {
     // 7.1. If element interface is valid custom element name, throw exception
     const AtomicString& extends = AtomicString(options->extends());
     if (ThrowIfValidName(AtomicString(options->extends()), exception_state))
       return nullptr;
     // 7.2. If element interface is undefined element, throw exception
-    if (htmlElementTypeForTag(extends) ==
+    if (htmlElementTypeForTag(extends, owner_->document()) ==
         HTMLElementType::kHTMLUnknownElement) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kNotSupportedError,
@@ -218,6 +204,11 @@ CustomElementDefinition* CustomElementRegistry::DefineInternal(
   NameIdMap::AddResult result = name_id_map_.insert(descriptor.GetName(), id);
   CHECK(result.is_new_entry);
 
+  if (definition->IsFormAssociated()) {
+    if (Document* document = owner_->document())
+      UseCounter::Count(*document, WebFeature::kFormAssociatedCustomElement);
+  }
+
   HeapVector<Member<Element>> candidates;
   CollectCandidates(descriptor, &candidates);
   for (Element* candidate : candidates)
@@ -266,19 +257,6 @@ bool CustomElementRegistry::NameIsDefined(const AtomicString& name) const {
   return name_id_map_.Contains(name);
 }
 
-void CustomElementRegistry::Entangle(V0CustomElementRegistrationContext* v0) {
-  v0_->insert(v0);
-  v0->SetV1(this);
-}
-
-bool CustomElementRegistry::V0NameIsDefined(const AtomicString& name) {
-  for (const auto& v0 : *v0_) {
-    if (v0->NameIsDefined(name))
-      return true;
-  }
-  return false;
-}
-
 CustomElementDefinition* CustomElementRegistry::DefinitionForName(
     const AtomicString& name) const {
   return DefinitionForId(name_id_map_.at(name));
@@ -296,7 +274,7 @@ void CustomElementRegistry::AddCandidate(Element& candidate) {
     if (!is.IsNull())
       name = is;
   }
-  if (NameIsDefined(name) || V0NameIsDefined(name))
+  if (NameIsDefined(name))
     return;
   UpgradeCandidateMap::iterator it = upgrade_candidates_->find(name);
   UpgradeCandidateSet* set;
@@ -361,10 +339,8 @@ void CustomElementRegistry::upgrade(Node* root) {
   CollectUpgradeCandidateInNode(*root, candidates);
 
   // 2. For each candidate of candidates, try to upgrade candidate.
-  for (auto& candidate : candidates) {
-    CustomElement::TryToUpgrade(*candidate,
-                                true /* upgrade_invisible_elements */);
-  }
+  for (auto& candidate : candidates)
+    CustomElement::TryToUpgrade(*candidate);
 }
 
 }  // namespace blink

@@ -4,17 +4,17 @@
 
 #import "ios/chrome/browser/voice/text_to_speech_listener.h"
 
-#import "ios/web/public/web_state/web_state.h"
 #include "ios/web/public/test/web_test_with_web_state.h"
+#import "ios/web/public/test/web_view_content_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/gtest_mac.h"
-#import "third_party/google_toolbox_for_mac/src/Foundation/GTMStringEncoding.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
 namespace {
+const char kExpectedDecodedData[] = "testaudo32oio";
 NSString* const kHTMLFormat =
     @"<html><head><script>%@</script></head><body></body></html>";
 NSString* const kValidVoiceSearchScript =
@@ -71,6 +71,13 @@ class TextToSpeechListenerTest : public web::WebTestWithWebState {
  public:
   void SetUp() override {
     web::WebTestWithWebState::SetUp();
+    // Load Html is triggering several callbacks when called the first time.
+    // Call it a first time before setting the |delegate_| to make sure that it
+    // is working as expected in tests.
+    LoadHtml(@"<html><body>Page loaded</body></html>");
+    ASSERT_TRUE(
+        web::test::WaitForWebViewContainingText(web_state(), "Page loaded"));
+
     delegate_ = [[TestTTSListenerDelegate alloc] init];
     listener_ = [[TextToSpeechListener alloc] initWithWebState:web_state()
                                                       delegate:delegate_];
@@ -90,14 +97,16 @@ class TextToSpeechListenerTest : public web::WebTestWithWebState {
 };
 
 TEST_F(TextToSpeechListenerTest, ValidAudioDataTest) {
-  GTMStringEncoding* encoder = [GTMStringEncoding rfc4648Base64StringEncoding];
-  NSString* html =
-      [NSString stringWithFormat:kHTMLFormat, kValidVoiceSearchScript];
   NSData* expected_audio_data =
-      [encoder decode:@"dGVzdGF1ZG8zMm9pbw==" error:nullptr];
-  TestExtraction(html, expected_audio_data);
+      [NSData dataWithBytes:&kExpectedDecodedData[0]
+                     length:sizeof(kExpectedDecodedData) - 1];
+  TestExtraction(
+      [NSString stringWithFormat:kHTMLFormat, kValidVoiceSearchScript],
+      expected_audio_data);
 }
 
 TEST_F(TextToSpeechListenerTest, InvalidAudioDataTest) {
-  TestExtraction([NSString stringWithFormat:kHTMLFormat, @""], nil);
+  NSData* expected_audio_data = nil;
+  TestExtraction([NSString stringWithFormat:kHTMLFormat, @""],
+                 expected_audio_data);
 }

@@ -12,7 +12,6 @@
 
 #include "base/containers/id_map.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 
 class CookieTreeNode;
 
@@ -29,17 +28,15 @@ class CookiesTreeModelUtil {
   // Finds or creates an ID for given |node| and returns it as string.
   std::string GetTreeNodeId(const CookieTreeNode* node);
 
-  // Append the details of the child nodes of |parent| in specified range.
+  // Append the details of the child nodes of |parent|.
   void GetChildNodeDetails(const CookieTreeNode* parent,
-                           int start,
-                           int count,
                            bool include_quota_nodes,
                            base::ListValue* list);
 
   // Append the children nodes of |parent| in specified range to |nodes| list.
   void GetChildNodeList(const CookieTreeNode* parent,
-                        int start,
-                        int count,
+                        size_t start,
+                        size_t count,
                         bool include_quota_nodes,
                         base::ListValue* nodes);
 
@@ -52,7 +49,7 @@ class CookiesTreeModelUtil {
   // Gets tree node from |title| under |root|. |title| is a node title. Return
   // NULL if |title| is not found.
   const CookieTreeNode* GetTreeNodeFromTitle(const CookieTreeNode* root,
-                                             const base::string16& title);
+                                             const std::u16string& title);
 
  private:
   using CookiesTreeNodeIdMap = base::IDMap<const CookieTreeNode*>;

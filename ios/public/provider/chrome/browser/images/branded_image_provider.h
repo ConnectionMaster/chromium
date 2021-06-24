@@ -50,9 +50,21 @@ class BrandedImageProvider {
   // on Download Manager UI.
   virtual UIImage* GetDownloadGoogleDriveImage();
 
-  // Returns the 28pt x 28pt image to use for the "Search" icon in the toolbar.
-  virtual UIImage* GetToolbarSearchIcon(SearchEngineIcon type,
-                                        bool dark_version);
+  // Returns the 30pt x 30pt image to use for the fallback icon for answers in
+  // the omnibox popup and in the omnibox as the default search engine icon.
+  virtual UIImage* GetOmniboxAnswerIcon();
+
+  // Returns the image used for the "Stay Safe" default browser promo.
+  virtual UIImage* GetStaySafePromoImage();
+
+  // Returns the image used for the "Made for iOS" default browser promo.
+  virtual UIImage* GetMadeForIOSPromoImage();
+
+  // Returns the image used for the "Made for iPadOS" default browser promo.
+  virtual UIImage* GetMadeForIPadOSPromoImage();
+
+  // Returns the image used for the non-modal default browser promo.
+  virtual UIImage* GetNonModalPromoImage();
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BrandedImageProvider);

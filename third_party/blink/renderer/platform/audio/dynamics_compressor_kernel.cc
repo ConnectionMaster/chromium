@@ -33,10 +33,9 @@
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/audio/denormal_disabler.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/fdlibm/ieee754.h"
 
 namespace blink {
-
-using namespace audio_utilities;
 
 // Metering hits peaks instantly, but releases this fast (in seconds).
 const float kMeteringReleaseTimeConstant = 0.325f;
@@ -63,8 +62,9 @@ DynamicsCompressorKernel::DynamicsCompressorKernel(float sample_rate,
   // Initializes most member variables
   Reset();
 
-  metering_release_k_ = static_cast<float>(DiscreteTimeConstantForSampleRate(
-      kMeteringReleaseTimeConstant, sample_rate));
+  metering_release_k_ =
+      static_cast<float>(audio_utilities::DiscreteTimeConstantForSampleRate(
+          kMeteringReleaseTimeConstant, sample_rate));
 }
 
 void DynamicsCompressorKernel::SetNumberOfChannels(
@@ -98,26 +98,27 @@ void DynamicsCompressorKernel::SetPreDelayTime(float pre_delay_time) {
 // Exponential curve for the knee.
 // It is 1st derivative matched at m_linearThreshold and asymptotically
 // approaches the value m_linearThreshold + 1 / k.
-float DynamicsCompressorKernel::KneeCurve(float x, float k) {
+float DynamicsCompressorKernel::KneeCurve(float x, float k) const {
   // Linear up to threshold.
   if (x < linear_threshold_)
     return x;
 
-  return linear_threshold_ + (1 - expf(-k * (x - linear_threshold_))) / k;
+  return linear_threshold_ +
+         (1 - fdlibm::expf(-k * (x - linear_threshold_))) / k;
 }
 
 // Full compression curve with constant ratio after knee.
-float DynamicsCompressorKernel::Saturate(float x, float k) {
+float DynamicsCompressorKernel::Saturate(float x, float k) const {
   float y;
 
   if (x < knee_threshold_)
     y = KneeCurve(x, k);
   else {
     // Constant ratio after knee.
-    float x_db = LinearToDecibels(x);
+    float x_db = audio_utilities::LinearToDecibels(x);
     float y_db = yknee_threshold_db_ + slope_ * (x_db - knee_threshold_db_);
 
-    y = DecibelsToLinear(y_db);
+    y = audio_utilities::DecibelsToLinear(y_db);
   }
 
   return y;
@@ -126,26 +127,26 @@ float DynamicsCompressorKernel::Saturate(float x, float k) {
 // Approximate 1st derivative with input and output expressed in dB.
 // This slope is equal to the inverse of the compression "ratio".
 // In other words, a compression ratio of 20 would be a slope of 1/20.
-float DynamicsCompressorKernel::SlopeAt(float x, float k) {
+float DynamicsCompressorKernel::SlopeAt(float x, float k) const {
   if (x < linear_threshold_)
     return 1;
 
   float x2 = x * 1.001;
 
-  float x_db = LinearToDecibels(x);
-  float x2_db = LinearToDecibels(x2);
+  float x_db = audio_utilities::LinearToDecibels(x);
+  float x2_db = audio_utilities::LinearToDecibels(x2);
 
-  float y_db = LinearToDecibels(KneeCurve(x, k));
-  float y2_db = LinearToDecibels(KneeCurve(x2, k));
+  float y_db = audio_utilities::LinearToDecibels(KneeCurve(x, k));
+  float y2_db = audio_utilities::LinearToDecibels(KneeCurve(x2, k));
 
   float m = (y2_db - y_db) / (x2_db - x_db);
 
   return m;
 }
 
-float DynamicsCompressorKernel::KAtSlope(float desired_slope) {
+float DynamicsCompressorKernel::KAtSlope(float desired_slope) const {
   float x_db = db_threshold_ + db_knee_;
-  float x = DecibelsToLinear(x_db);
+  float x = audio_utilities::DecibelsToLinear(x_db);
 
   // Approximate k given initial values.
   float min_k = 0.1;
@@ -178,7 +179,7 @@ float DynamicsCompressorKernel::UpdateStaticCurveParameters(float db_threshold,
   if (db_threshold != db_threshold_ || db_knee != db_knee_ || ratio != ratio_) {
     // Threshold and knee.
     db_threshold_ = db_threshold;
-    linear_threshold_ = DecibelsToLinear(db_threshold);
+    linear_threshold_ = audio_utilities::DecibelsToLinear(db_threshold);
     db_knee_ = db_knee;
 
     // Compute knee parameters.
@@ -188,9 +189,10 @@ float DynamicsCompressorKernel::UpdateStaticCurveParameters(float db_threshold,
     float k = KAtSlope(1 / ratio_);
 
     knee_threshold_db_ = db_threshold + db_knee;
-    knee_threshold_ = DecibelsToLinear(knee_threshold_db_);
+    knee_threshold_ = audio_utilities::DecibelsToLinear(knee_threshold_db_);
 
-    yknee_threshold_db_ = LinearToDecibels(KneeCurve(knee_threshold_, k));
+    yknee_threshold_db_ =
+        audio_utilities::LinearToDecibels(KneeCurve(knee_threshold_, k));
 
     knee_ = k;
   }
@@ -218,7 +220,7 @@ void DynamicsCompressorKernel::Process(
     float release_zone4) {
   DCHECK_EQ(pre_delay_buffers_.size(), number_of_channels);
 
-  float sample_rate = this->SampleRate();
+  float sample_rate = SampleRate();
 
   float dry_mix = 1 - effect_blend;
   float wet_mix = effect_blend;
@@ -230,10 +232,10 @@ void DynamicsCompressorKernel::Process(
   float full_range_makeup_gain = 1 / full_range_gain;
 
   // Empirical/perceptual tuning.
-  full_range_makeup_gain = powf(full_range_makeup_gain, 0.6f);
+  full_range_makeup_gain = fdlibm::powf(full_range_makeup_gain, 0.6f);
 
-  float master_linear_gain =
-      DecibelsToLinear(db_post_gain) * full_range_makeup_gain;
+  float linear_post_gain =
+      audio_utilities::DecibelsToLinear(db_post_gain) * full_range_makeup_gain;
 
   // Attack parameters.
   attack_time = std::max(0.001f, attack_time);
@@ -297,7 +299,7 @@ void DynamicsCompressorKernel::Process(
     float desired_gain = detector_average_;
 
     // Pre-warp so we get desiredGain after sin() warp below.
-    float scaled_desired_gain = asinf(desired_gain) / kPiOverTwoFloat;
+    float scaled_desired_gain = fdlibm::asinf(desired_gain) / kPiOverTwoFloat;
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // Deal with envelopes
@@ -312,14 +314,22 @@ void DynamicsCompressorKernel::Process(
 
     // compressionDiffDb is the difference between current compression level and
     // the desired level.
-    float compression_diff_db =
-        LinearToDecibels(compressor_gain_ / scaled_desired_gain);
+    float compression_diff_db;
+
+    if (scaled_desired_gain == 0) {
+      compression_diff_db = is_releasing ? -1 : 1;
+    } else {
+      compression_diff_db = audio_utilities::LinearToDecibels(
+          compressor_gain_ / scaled_desired_gain);
+    }
 
     if (is_releasing) {
       // Release mode - compressionDiffDb should be negative dB
       max_attack_compression_diff_db_ = -1;
 
       // Fix gremlins.
+      // TODO(rtoy): Replace with a DCHECK so we can figure out how NaN can
+      // occur.
       if (std::isnan(compression_diff_db))
         compression_diff_db = -1;
       if (std::isinf(compression_diff_db))
@@ -344,11 +354,13 @@ void DynamicsCompressorKernel::Process(
 #define kSpacingDb 5
       float db_per_frame = kSpacingDb / calc_release_frames;
 
-      envelope_rate = DecibelsToLinear(db_per_frame);
+      envelope_rate = audio_utilities::DecibelsToLinear(db_per_frame);
     } else {
       // Attack mode - compressionDiffDb should be positive dB
 
       // Fix gremlins.
+      // TODO(rtoy): Replace with a DCHECK so we can figure out how NaN can
+      // occur.
       if (std::isnan(compression_diff_db))
         compression_diff_db = 1;
       if (std::isinf(compression_diff_db))
@@ -363,7 +375,7 @@ void DynamicsCompressorKernel::Process(
       float eff_atten_diff_db = std::max(0.5f, max_attack_compression_diff_db_);
 
       float x = 0.25f / eff_atten_diff_db;
-      envelope_rate = 1 - powf(x, 1 / attack_frames);
+      envelope_rate = 1 - fdlibm::powf(x, 1 / attack_frames);
     }
 
     // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -407,12 +419,13 @@ void DynamicsCompressorKernel::Process(
 
         float attenuation = abs_input <= 0.0001f ? 1 : shaped_input / abs_input;
 
-        float attenuation_db = -LinearToDecibels(attenuation);
+        float attenuation_db = -audio_utilities::LinearToDecibels(attenuation);
         attenuation_db = std::max(2.0f, attenuation_db);
 
         float db_per_frame = attenuation_db / sat_release_frames;
 
-        float sat_release_rate = DecibelsToLinear(db_per_frame) - 1;
+        float sat_release_rate =
+            audio_utilities::DecibelsToLinear(db_per_frame) - 1;
 
         bool is_release = (attenuation > detector_average);
         float rate = is_release ? sat_release_rate : 1;
@@ -440,14 +453,14 @@ void DynamicsCompressorKernel::Process(
         // Warp pre-compression gain to smooth out sharp exponential transition
         // points.
         float post_warp_compressor_gain =
-            sinf(kPiOverTwoFloat * compressor_gain);
+            fdlibm::sinf(kPiOverTwoFloat * compressor_gain);
 
-        // Calculate total gain using master gain and effect blend.
+        // Calculate total gain using the linear post-gain and effect blend.
         float total_gain =
-            dry_mix + wet_mix * master_linear_gain * post_warp_compressor_gain;
+            dry_mix + wet_mix * linear_post_gain * post_warp_compressor_gain;
 
         // Calculate metering.
-        float db_real_gain = 20 * std::log10(post_warp_compressor_gain);
+        float db_real_gain = 20 * fdlibm::log10(post_warp_compressor_gain);
         if (db_real_gain < metering_gain_)
           metering_gain_ = db_real_gain;
         else

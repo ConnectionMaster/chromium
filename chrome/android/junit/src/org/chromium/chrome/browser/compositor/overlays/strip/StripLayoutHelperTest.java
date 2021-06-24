@@ -24,8 +24,9 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
 import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
-import org.chromium.chrome.browser.compositor.layouts.components.VirtualView;
+import org.chromium.chrome.browser.layouts.components.VirtualView;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabImpl;
 import org.chromium.chrome.browser.tabmodel.EmptyTabModel;
 import org.chromium.ui.base.LocalizationUtils;
 
@@ -182,7 +183,7 @@ public class StripLayoutHelperTest {
 
         public void addTab(final String title) {
             mMaxId++;
-            final Tab mockTab = mock(Tab.class);
+            final TabImpl mockTab = mock(TabImpl.class);
             final int tabId = mMaxId;
             when(mockTab.getId()).thenReturn(tabId);
             when(mockTab.getTitle()).thenReturn(title);

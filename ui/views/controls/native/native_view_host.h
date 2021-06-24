@@ -5,11 +5,15 @@
 #ifndef UI_VIEWS_CONTROLS_NATIVE_NATIVE_VIEW_HOST_H_
 #define UI_VIEWS_CONTROLS_NATIVE_NATIVE_VIEW_HOST_H_
 
-#include <string>
+#include <memory>
 
 #include "base/macros.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/views/view.h"
+
+namespace gfx {
+class RoundedCornersF;
+}
 
 namespace views {
 namespace test {
@@ -28,8 +32,7 @@ extern const char kWidgetNativeViewHostKey[];
 // the platform-specific work of manipulating the underlying OS widget type.
 class VIEWS_EXPORT NativeViewHost : public View {
  public:
-  // The NativeViewHost's class name.
-  static const char kViewClassName[];
+  METADATA_HEADER(NativeViewHost);
 
   NativeViewHost();
   ~NativeViewHost() override;
@@ -47,14 +50,16 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // detached before calling this function, and this has no effect in that case.
   void Detach();
 
-  // Sets the corner radius for clipping gfx::NativeView. Returns true on
-  // success or false if the platform doesn't support the operation.
-  // This method calls SetCustomMask internally.
-  bool SetCornerRadius(int corner_radius);
+  // Sets the corner radii for clipping gfx::NativeView. Returns true on success
+  // or false if the platform doesn't support the operation. This method calls
+  // SetCustomMask internally.
+  bool SetCornerRadii(const gfx::RoundedCornersF& corner_radii);
 
   // Sets the custom layer mask for clipping gfx::NativeView. Returns true on
   // success or false if the platform doesn't support the operation.
   // NB: This does not interact nicely with fast_resize.
+  // TODO(tluk): This is currently only being used to apply rounded corners in
+  // ash code. Migrate existing use to SetCornerRadii().
   bool SetCustomMask(std::unique_ptr<ui::LayerOwner> mask);
 
   // Sets the height of the top region where the gfx::NativeView shouldn't be
@@ -77,6 +82,9 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // it can return this value when querying its parent accessible.
   void SetParentAccessible(gfx::NativeViewAccessible);
 
+  // Returns the parent accessible object to this host's native view.
+  gfx::NativeViewAccessible GetParentAccessible();
+
   // Fast resizing will move the native view and clip its visible region, this
   // will result in white areas and will not resize the content (so scrollbars
   // will be all wrong and content will flow offscreen). Only use this
@@ -85,11 +93,6 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // end. USE WITH CAUTION.
   void set_fast_resize(bool fast_resize) { fast_resize_ = fast_resize; }
   bool fast_resize() const { return fast_resize_; }
-
-  // Value of fast_resize() the last time Layout() was invoked.
-  bool fast_resize_at_last_layout() const {
-    return fast_resize_at_last_layout_;
-  }
 
   gfx::NativeView native_view() const { return native_view_; }
 
@@ -109,7 +112,6 @@ class VIEWS_EXPORT NativeViewHost : public View {
   void OnVisibleBoundsChanged() override;
   void ViewHierarchyChanged(
       const ViewHierarchyChangedDetails& details) override;
-  const char* GetClassName() const override;
 
  private:
   friend class test::NativeViewHostTestBase;
@@ -137,9 +139,6 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // True if the native view is being resized using the fast method described
   // in the setter/accessor above.
   bool fast_resize_ = false;
-
-  // Value of |fast_resize_| during the last call to Layout.
-  bool fast_resize_at_last_layout_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(NativeViewHost);
 };

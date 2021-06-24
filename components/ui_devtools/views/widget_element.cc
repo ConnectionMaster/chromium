@@ -6,13 +6,14 @@
 
 #include "components/ui_devtools/Protocol.h"
 #include "components/ui_devtools/ui_element_delegate.h"
+#include "components/ui_devtools/views/devtools_event_util.h"
 
 namespace ui_devtools {
 
 WidgetElement::WidgetElement(views::Widget* widget,
                              UIElementDelegate* ui_element_delegate,
                              UIElement* parent)
-    : UIElement(UIElementType::WIDGET, ui_element_delegate, parent),
+    : UIElementWithMetaData(UIElementType::WIDGET, ui_element_delegate, parent),
       widget_(widget) {
   widget_->AddRemovalsObserver(this);
   widget_->AddObserver(this);
@@ -23,6 +24,7 @@ WidgetElement::~WidgetElement() {
     widget_->RemoveRemovalsObserver(this);
     widget_->RemoveObserver(this);
   }
+  CHECK(!IsInObserverList());
 }
 
 void WidgetElement::OnWillRemoveView(views::Widget* widget, views::View* view) {
@@ -42,13 +44,11 @@ void WidgetElement::OnWidgetBoundsChanged(views::Widget* widget,
 
 void WidgetElement::OnWidgetDestroyed(views::Widget* widget) {
   DCHECK_EQ(widget, widget_);
-  delegate()->OnUIElementRemoved(this);
+  if (parent())
+    parent()->RemoveChild(this);
+  else
+    delegate()->OnUIElementRemoved(this);
   widget_ = nullptr;
-}
-
-std::vector<std::pair<std::string, std::string>>
-WidgetElement::GetCustomProperties() const {
-  return {};
 }
 
 void WidgetElement::GetBounds(gfx::Rect* bounds) const {
@@ -72,14 +72,9 @@ void WidgetElement::SetVisible(bool visible) {
     widget_->Hide();
 }
 
-std::unique_ptr<protocol::Array<std::string>> WidgetElement::GetAttributes()
-    const {
-  auto attributes = protocol::Array<std::string>::create();
-  attributes->addItem("name");
-  attributes->addItem(widget_->GetName());
-  attributes->addItem("active");
-  attributes->addItem(widget_->IsActive() ? "true" : "false");
-  return attributes;
+std::vector<std::string> WidgetElement::GetAttributes() const {
+  return {"name", widget_->GetName(), "active",
+          widget_->IsActive() ? "true" : "false"};
 }
 
 std::pair<gfx::NativeWindow, gfx::Rect>
@@ -109,4 +104,23 @@ int UIElement::FindUIElementIdForBackendElement<views::Widget>(
   }
   return 0;
 }
+
+bool WidgetElement::DispatchKeyEvent(protocol::DOM::KeyEvent* event) {
+  ui::KeyEvent key_event = ConvertToUIKeyEvent(event);
+  widget_->OnKeyEvent(&key_event);
+  return true;
+}
+
+ui::metadata::ClassMetaData* WidgetElement::GetClassMetaData() const {
+  return widget_->GetClassMetaData();
+}
+
+void* WidgetElement::GetClassInstance() const {
+  return widget_;
+}
+
+ui::Layer* WidgetElement::GetLayer() const {
+  return widget_->GetLayer();
+}
+
 }  // namespace ui_devtools

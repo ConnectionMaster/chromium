@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "remoting/proto/audio.pb.h"
 #include "remoting/protocol/fake_audio_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -26,8 +26,7 @@ namespace {
 const int kSampleRate = 48000;
 const int kBytesPerSample = 2;
 const int kChannels = 2;
-constexpr base::TimeDelta kFrameDuration =
-    base::TimeDelta::FromMilliseconds(10);
+constexpr auto kFrameDuration = base::TimeDelta::FromMilliseconds(10);
 
 class FakeAudioSink : public webrtc::AudioTrackSinkInterface{
  public:
@@ -42,7 +41,7 @@ class FakeAudioSink : public webrtc::AudioTrackSinkInterface{
     EXPECT_EQ(kSampleRate, sample_rate);
     EXPECT_EQ(kBytesPerSample * 8, bits_per_sample);
     EXPECT_EQ(kChannels, static_cast<int>(number_of_channels));
-    EXPECT_EQ(kSampleRate * kFrameDuration / base::TimeDelta::FromSeconds(1),
+    EXPECT_EQ((kSampleRate * kFrameDuration).InSeconds(),
               static_cast<int>(number_of_samples));
     const int16_t* samples = reinterpret_cast<const int16_t*>(audio_data);
     samples_.insert(samples_.end(), samples,
@@ -61,7 +60,7 @@ class WebrtcAudioSourceAdapterTest : public testing::Test {
  public:
   void SetUp() override {
     audio_source_adapter_ = new rtc::RefCountedObject<WebrtcAudioSourceAdapter>(
-        message_loop_.task_runner());
+        task_environment_.GetMainThreadTaskRunner());
     audio_source_ = new FakeAudioSource();
     audio_source_adapter_->Start(base::WrapUnique(audio_source_));
     audio_source_adapter_->AddSink(&sink_);
@@ -74,7 +73,7 @@ class WebrtcAudioSourceAdapterTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   FakeAudioSource* audio_source_;
   scoped_refptr<WebrtcAudioSourceAdapter> audio_source_adapter_;
   FakeAudioSink sink_;

@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/ash/assistant/assistant_client.h"
-
 #include <string>
 #include <vector>
 
@@ -12,11 +10,13 @@
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ui/ash/assistant/assistant_client_impl.h"
 #include "chrome/browser/ui/ash/assistant/assistant_context_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "ui/accessibility/ax_assistant_structure.h"
@@ -88,14 +88,18 @@ IN_PROC_BROWSER_TEST_F(AssistantContextBrowserTest,
   ui::AssistantNode* root = assistant_tree->nodes[0].get();
 
   ASSERT_EQ(root->children_indices.size(), 1ul);
-  ui::AssistantNode* child =
+  ui::AssistantNode* div =
       assistant_tree->nodes[root->children_indices[0]].get();
 
-  ui::AssistantNode* grad_child =
-      assistant_tree->nodes[child->children_indices[0]].get();
-  ASSERT_EQ(base::UTF16ToUTF8(grad_child->text), "Hello");
-  ASSERT_EQ(grad_child->rect.x(), 20);
-  ASSERT_EQ(grad_child->rect.y(), 20);
+  ui::AssistantNode* para =
+      assistant_tree->nodes[div->children_indices[0]].get();
+  EXPECT_TRUE(para->text.empty());
+  EXPECT_EQ(para->rect.x(), 20);
+  EXPECT_EQ(para->rect.y(), 20);
+
+  ui::AssistantNode* static_text =
+      assistant_tree->nodes[para->children_indices[0]].get();
+  ASSERT_EQ(base::UTF16ToUTF8(static_text->text), "Hello");
 }
 
 }  // namespace assistant

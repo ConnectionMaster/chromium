@@ -12,7 +12,6 @@
 #include <string>
 #include <vector>
 
-#include "base/strings/string16.h"
 #include "components/search_engines/template_url_service.h"
 
 class KeywordWebDataService;
@@ -22,12 +21,12 @@ class WDTypedResult;
 
 // Returns the short name of the default search engine, or the empty string if
 // none is set.
-base::string16 GetDefaultSearchEngineName(TemplateURLService* service);
+std::u16string GetDefaultSearchEngineName(TemplateURLService* service);
 
 // Returns a GURL that searches for |terms| using the default search engine of
 // |service|.
 GURL GetDefaultSearchURLForSearchTerms(TemplateURLService* service,
-                                       const base::string16& terms);
+                                       const std::u16string& terms);
 
 // Returns matching URL from |template_urls| or NULL.
 TemplateURL* FindURLByPrepopulateID(
@@ -67,6 +66,22 @@ struct ActionsFromPrepopulateData {
   EditedEngines edited_engines;
   std::vector<TemplateURLData> added_engines;
 };
+
+// MergeEnginesFromPrepopulateData merges search engines from
+// |prepopulated_urls| into |template_urls|. Calls
+// CreateActionsFromCurrentPrepopulateData() to collect actions and then applies
+// them on |tempate_urls|. MergeEnginesFromPrepopulateData is invoked when the
+// version of the prepopulate data changes. If |removed_keyword_guids| is not
+// nullptr, the Sync GUID of each item removed from the DB will be added to it.
+// Note that this function will take ownership of |prepopulated_urls| and will
+// clear the vector.
+// The function is exposed in header file to provide access from unittests.
+void MergeEnginesFromPrepopulateData(
+    KeywordWebDataService* service,
+    std::vector<std::unique_ptr<TemplateURLData>>* prepopulated_urls,
+    TemplateURLService::OwnedTemplateURLVector* template_urls,
+    TemplateURL* default_search_provider,
+    std::set<std::string>* removed_keyword_guids);
 
 // Given the user's current URLs and the current set of prepopulated URLs,
 // produces the set of actions (see above) required to make the user's URLs

@@ -17,13 +17,25 @@ FakeCryptAuthKeyCreator::~FakeCryptAuthKeyCreator() = default;
 void FakeCryptAuthKeyCreator::CreateKeys(
     const base::flat_map<CryptAuthKeyBundle::Name, CreateKeyData>&
         keys_to_create,
-    const base::Optional<CryptAuthKey>& server_ephemeral_dh,
+    const absl::optional<CryptAuthKey>& server_ephemeral_dh,
     CreateKeysCallback create_keys_callback) {
   DCHECK(!keys_to_create.empty());
   DCHECK(keys_to_create_.empty());
   keys_to_create_ = keys_to_create;
   server_ephemeral_dh_ = server_ephemeral_dh;
   create_keys_callback_ = std::move(create_keys_callback);
+}
+
+FakeCryptAuthKeyCreatorFactory::FakeCryptAuthKeyCreatorFactory() = default;
+
+FakeCryptAuthKeyCreatorFactory::~FakeCryptAuthKeyCreatorFactory() = default;
+
+std::unique_ptr<CryptAuthKeyCreator>
+FakeCryptAuthKeyCreatorFactory::CreateInstance() {
+  auto instance = std::make_unique<FakeCryptAuthKeyCreator>();
+  instance_ = instance.get();
+
+  return instance;
 }
 
 }  // namespace device_sync

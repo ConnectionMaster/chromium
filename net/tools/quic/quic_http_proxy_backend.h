@@ -26,12 +26,10 @@
 
 #include "base/base64.h"
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/values.h"
 #include "net/third_party/quiche/src/quic/tools/quic_simple_server_backend.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
@@ -72,7 +70,7 @@ class QuicHttpProxyBackend : public quic::QuicSimpleServerBackend {
   bool InitializeBackend(const std::string& backend_url) override;
   bool IsBackendInitialized() const override;
   void FetchResponseFromBackend(
-      const spdy::SpdyHeaderBlock& request_headers,
+      const spdy::Http2HeaderBlock& request_headers,
       const std::string& incoming_body,
       quic::QuicSimpleServerBackend::RequestHandler* quic_stream) override;
   void CloseBackendResponseStream(

@@ -10,6 +10,7 @@
 
 #include "base/compiler_specific.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_constraints.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 
@@ -42,7 +43,7 @@ class MapValueIterator {
 
 // These constants are copied from extensions/common/extension_constants.h and
 // content/public/common/url_constants.h to avoid complicated dependencies.
-const char kChromeDevToolsScheme[] = "chrome-devtools";
+const char kChromeDevToolsScheme[] = "devtools";
 const char kChromeUIScheme[] = "chrome";
 const char kExtensionScheme[] = "chrome-extension";
 
@@ -65,6 +66,12 @@ void GetRendererContentSettingRules(const HostContentSettingsMap* map,
 
 // Returns true if setting |a| is more permissive than setting |b|.
 bool IsMorePermissive(ContentSetting a, ContentSetting b);
+
+// Returns whether or not the supplied constraint should be persistently stored.
+bool IsConstraintPersistent(const ContentSettingConstraints& constraints);
+
+// Returns the expiration time for a supplied |duration|.
+base::Time GetConstraintExpiration(const base::TimeDelta duration);
 
 }  // namespace content_settings
 

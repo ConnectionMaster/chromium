@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
 
 // Implementation of Status.
 
@@ -56,12 +56,9 @@ ValueStore::ReadResult& ValueStore::ReadResult::operator=(ReadResult&& rhs) =
 
 // Implementation of WriteResult.
 
-ValueStore::WriteResult::WriteResult(
-    std::unique_ptr<ValueStoreChangeList> changes,
-    Status status)
-    : changes_(std::move(changes)), status_(std::move(status)) {
-  CHECK(changes_);
-}
+ValueStore::WriteResult::WriteResult(ValueStoreChangeList changes,
+                                     Status status)
+    : changes_(std::move(changes)), status_(std::move(status)) {}
 
 ValueStore::WriteResult::WriteResult(Status status)
     : status_(std::move(status)) {}

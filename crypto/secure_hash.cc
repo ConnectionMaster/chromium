@@ -6,8 +6,8 @@
 
 #include <stddef.h>
 
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/notreached.h"
 #include "base/pickle.h"
 #include "crypto/openssl_util.h"
 #include "third_party/boringssl/src/include/openssl/mem.h"
@@ -20,6 +20,9 @@ namespace {
 class SecureHashSHA256 : public SecureHash {
  public:
   SecureHashSHA256() {
+    // Ensure that CPU features detection is performed before using
+    // BoringSSL. This will enable hw accelerated implementations.
+    EnsureOpenSSLInit();
     SHA256_Init(&ctx_);
   }
 

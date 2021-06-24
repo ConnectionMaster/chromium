@@ -17,7 +17,7 @@ void GLSurfaceStub::Destroy() {
 
 bool GLSurfaceStub::Resize(const gfx::Size& size,
                            float scale_factor,
-                           ColorSpace color_space,
+                           const gfx::ColorSpace& color_space,
                            bool has_alpha) {
   return true;
 }
@@ -56,10 +56,6 @@ bool GLSurfaceStub::SupportsDCLayers() const {
 
 gfx::Vector2d GLSurfaceStub::GetDrawOffset() const {
   return supports_draw_rectangle_ ? gfx::Vector2d(100, 200) : gfx::Vector2d();
-}
-
-bool GLSurfaceStub::SupportsPresentationCallback() {
-  return true;
 }
 
 GLSurfaceStub::~GLSurfaceStub() {}

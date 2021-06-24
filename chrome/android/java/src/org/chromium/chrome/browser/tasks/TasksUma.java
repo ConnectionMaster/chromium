@@ -7,7 +7,8 @@ package org.chromium.chrome.browser.tasks;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.state.CriticalPersistedTabData;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 
 import java.util.ArrayList;
@@ -64,7 +65,8 @@ public class TasksUma {
         if (totalTabCount == 0) return;
 
         for (int i = 0; i < totalTabCount; i++) {
-            Integer tabLaunchType = model.getTabAt(i).getLaunchTypeAtInitialTabCreation();
+            Integer tabLaunchType =
+                    CriticalPersistedTabData.from(model.getTabAt(i)).getTabLaunchTypeAtCreation();
             if (tabLaunchType == null) {
                 // This should not happen. Because @{link Tab#TabLaunchType} is never null, except
                 // for testing purpose or in the document-mode which it's deprecated.
@@ -72,6 +74,7 @@ public class TasksUma {
                 continue;
             }
             if (tabLaunchType == TabLaunchType.FROM_CHROME_UI
+                    || tabLaunchType == TabLaunchType.FROM_START_SURFACE
                     || tabLaunchType == TabLaunchType.FROM_LONGPRESS_BACKGROUND
                     || tabLaunchType == TabLaunchType.FROM_LAUNCHER_SHORTCUT) {
                 manuallyCreatedCount++;
@@ -131,7 +134,7 @@ public class TasksUma {
         for (int i = 0; i < model.getCount(); i++) {
             Tab currentTab = model.getTabAt(i);
 
-            String url = currentTab.getUrl();
+            String url = currentTab.getUrl().getSpec();
             int urlDuplicatedCount = 0;
             if (uniqueUrlCounterMap.containsKey(url)) {
                 duplicatedTabCount++;
@@ -139,7 +142,7 @@ public class TasksUma {
             }
             uniqueUrlCounterMap.put(url, urlDuplicatedCount + 1);
 
-            int parentIdOfCurrentTab = currentTab.getParentId();
+            int parentIdOfCurrentTab = CriticalPersistedTabData.from(currentTab).getParentId();
             if (!tabsRelationList.containsKey(parentIdOfCurrentTab)) {
                 tabsRelationList.put(parentIdOfCurrentTab, new ArrayList<>());
             }

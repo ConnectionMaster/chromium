@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/notreached.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -112,7 +113,7 @@ bool GetPacUrlFromExtensionPref(const base::DictionaryValue* proxy_config,
     return true;
 
   // TODO(battre): Handle UTF-8 URLs (http://crbug.com/72692).
-  base::string16 pac_url16;
+  std::u16string pac_url16;
   if (pac_dict->HasKey(proxy_api_constants::kProxyConfigPacScriptUrl) &&
       !pac_dict->GetString(proxy_api_constants::kProxyConfigPacScriptUrl,
                            &pac_url16)) {
@@ -139,7 +140,7 @@ bool GetPacDataFromExtensionPref(const base::DictionaryValue* proxy_config,
   if (!pac_dict)
     return true;
 
-  base::string16 pac_data16;
+  std::u16string pac_data16;
   if (pac_dict->HasKey(proxy_api_constants::kProxyConfigPacScriptData) &&
       !pac_dict->GetString(proxy_api_constants::kProxyConfigPacScriptData,
                            &pac_data16)) {
@@ -174,7 +175,7 @@ bool GetProxyServer(const base::DictionaryValue* proxy_server,
     scheme = default_scheme;
 
   // TODO(battre): handle UTF-8 in hostnames (http://crbug.com/72692).
-  base::string16 host16;
+  std::u16string host16;
   if (!proxy_server->GetString(proxy_api_constants::kProxyConfigRuleHost,
                                &host16)) {
     LOG(ERROR) << "Could not parse a 'rules.*.host' entry.";
@@ -282,7 +283,7 @@ bool JoinUrlList(const base::ListValue* list,
       result.append(joiner);
 
     // TODO(battre): handle UTF-8 (http://crbug.com/72692).
-    base::string16 entry;
+    std::u16string entry;
     if (!list->GetString(i, &entry)) {
       LOG(ERROR) << "'rules.bypassList' could not be parsed.";
       *bad_message = true;
@@ -517,7 +518,7 @@ std::unique_ptr<base::ListValue> TokenizeToStringList(
   auto out = std::make_unique<base::ListValue>();
   base::StringTokenizer entries(in, delims);
   while (entries.GetNext())
-    out->AppendString(entries.token());
+    out->AppendString(entries.token_piece());
   return out;
 }
 

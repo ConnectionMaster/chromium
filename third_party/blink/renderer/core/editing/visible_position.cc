@@ -31,18 +31,19 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
+#include "third_party/blink/renderer/core/editing/inline_box_position.h"
+#include "third_party/blink/renderer/core/editing/local_caret_rect.h"
 #include "third_party/blink/renderer/core/editing/ng_flat_tree_shorthands.h"
 #include "third_party/blink/renderer/core/editing/text_affinity.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_caret_navigator.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_node.h"
+#include "third_party/blink/renderer/core/layout/line/inline_box.h"
+#include "third_party/blink/renderer/core/layout/line/root_inline_box.h"
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_offset_mapping.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/geometry/float_quad.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 
 namespace blink {
 
@@ -68,8 +69,39 @@ VisiblePositionTemplate<Strategy>::VisiblePositionTemplate(
 }
 
 template <typename Strategy>
-void VisiblePositionTemplate<Strategy>::Trace(Visitor* visitor) {
+void VisiblePositionTemplate<Strategy>::Trace(Visitor* visitor) const {
   visitor->Trace(position_with_affinity_);
+}
+
+template <typename Strategy>
+static inline bool InDifferentLinesOfSameInlineFormattingContext(
+    const PositionWithAffinityTemplate<Strategy>& position1,
+    const PositionWithAffinityTemplate<Strategy>& position2) {
+  DCHECK(position1.IsNotNull());
+  DCHECK(position2.IsNotNull());
+  // Optimization for common cases.
+  if (position1 == position2)
+    return false;
+  // InSameLine may DCHECK that the anchors have a layout object.
+  if (!position1.AnchorNode()->GetLayoutObject() ||
+      !position2.AnchorNode()->GetLayoutObject())
+    return false;
+  // Return false if the positions are in the same line.
+  if (InSameLine(position1, position2))
+    return false;
+  // Return whether the positions are in the same inline formatting context.
+  if (RuntimeEnabledFeatures::LayoutNGEnabled()) {
+    const LayoutBlockFlow* block1 =
+        NGInlineFormattingContextOf(position1.GetPosition());
+    return block1 &&
+           block1 == NGInlineFormattingContextOf(position2.GetPosition());
+  }
+  const InlineBox* inline_box1 = ComputeInlineBoxPosition(position1).inline_box;
+  if (!inline_box1)
+    return false;
+  const InlineBox* inline_box2 = ComputeInlineBoxPosition(position2).inline_box;
+  return inline_box2 &&
+         inline_box1->Root().LineBoxes() == inline_box2->Root().LineBoxes();
 }
 
 template <typename Strategy>
@@ -80,6 +112,7 @@ VisiblePositionTemplate<Strategy> VisiblePositionTemplate<Strategy>::Create(
   DCHECK(position_with_affinity.IsConnected()) << position_with_affinity;
 
   Document& document = *position_with_affinity.GetDocument();
+  DCHECK(position_with_affinity.IsValidFor(document)) << position_with_affinity;
   DCHECK(!document.NeedsLayoutTreeUpdate());
   DocumentLifecycle::DisallowTransitionScope disallow_transition(
       document.Lifecycle());
@@ -90,8 +123,30 @@ VisiblePositionTemplate<Strategy> VisiblePositionTemplate<Strategy>::Create(
     return VisiblePositionTemplate<Strategy>();
   const PositionWithAffinityTemplate<Strategy> downstream_position(
       deep_position);
-  if (position_with_affinity.Affinity() == TextAffinity::kDownstream)
+  if (position_with_affinity.Affinity() == TextAffinity::kDownstream) {
+    // Fast path for common cases.
+    if (position_with_affinity == downstream_position)
+      return VisiblePositionTemplate<Strategy>(downstream_position);
+
+    // If the canonical position went into a previous line of the same inline
+    // formatting context, use the start of the current line instead.
+    const PositionInFlatTree& flat_deep_position =
+        ToPositionInFlatTree(deep_position);
+    const PositionInFlatTree& flat_position =
+        ToPositionInFlatTree(position_with_affinity.GetPosition());
+    if (flat_deep_position.IsNotNull() && flat_position.IsNotNull() &&
+        flat_deep_position < flat_position &&
+        InDifferentLinesOfSameInlineFormattingContext(position_with_affinity,
+                                                      downstream_position)) {
+      const PositionWithAffinityTemplate<Strategy>& start_of_line =
+          StartOfLine(position_with_affinity);
+      if (start_of_line.IsNotNull())
+        return VisiblePositionTemplate<Strategy>(start_of_line);
+    }
+
+    // Otherwise use the canonical position.
     return VisiblePositionTemplate<Strategy>(downstream_position);
+  }
 
   if (RuntimeEnabledFeatures::BidiCaretAffinityEnabled() &&
       NGInlineFormattingContextOf(deep_position)) {
@@ -100,36 +155,10 @@ VisiblePositionTemplate<Strategy> VisiblePositionTemplate<Strategy>::Create(
     const PositionWithAffinityTemplate<Strategy> upstream_position(
         deep_position, TextAffinity::kUpstream);
 
-    if (!InSameLine(downstream_position, upstream_position))
+    if (AbsoluteCaretBoundsOf(downstream_position) !=
+        AbsoluteCaretBoundsOf(upstream_position)) {
       return VisiblePositionTemplate<Strategy>(upstream_position);
-
-    if (!NGOffsetMapping::AcceptsPosition(ToPositionInDOMTree(deep_position))) {
-      // editing/selection/mixed-editability-10.html reaches here.
-      // We can't check bidi in such case. Use downstream as the default.
-      // TODO(xiaochengh): Investigate why we reach here and how to work around.
-      return VisiblePositionTemplate<Strategy>(downstream_position);
     }
-
-    // Check if the position is at bidi boundary.
-    const LayoutObject* layout_object =
-        deep_position.AnchorNode()->GetLayoutObject();
-    DCHECK(layout_object) << position_with_affinity;
-    if (!layout_object->IsInline())
-      return VisiblePositionTemplate<Strategy>(downstream_position);
-    LayoutBlockFlow* const context =
-        NGOffsetMapping::GetInlineFormattingContextOf(*layout_object);
-    DCHECK(context);
-    DCHECK(context->IsLayoutNGMixin());
-
-    const NGOffsetMapping* mapping = NGInlineNode::GetOffsetMapping(context);
-    DCHECK(mapping);
-
-    const base::Optional<unsigned> offset =
-        mapping->GetTextContentOffset(ToPositionInDOMTree(deep_position));
-    DCHECK(offset.has_value());
-
-    if (NGCaretNavigator(*context).OffsetIsBidiBoundary(offset.value()))
-      return VisiblePositionTemplate<Strategy>(upstream_position);
     return VisiblePositionTemplate<Strategy>(downstream_position);
   }
 
@@ -206,7 +235,7 @@ VisiblePositionInFlatTree CreateVisiblePosition(
   return VisiblePositionInFlatTree::Create(position_with_affinity);
 }
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 template <typename Strategy>
 void VisiblePositionTemplate<Strategy>::ShowTreeForThis() const {
@@ -251,14 +280,14 @@ std::ostream& operator<<(std::ostream& ostream,
 
 }  // namespace blink
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 void showTree(const blink::VisiblePosition* vpos) {
   if (vpos) {
     vpos->ShowTreeForThis();
     return;
   }
-  DVLOG(0) << "Cannot showTree for (nil) VisiblePosition.";
+  DLOG(INFO) << "Cannot showTree for (nil) VisiblePosition.";
 }
 
 void showTree(const blink::VisiblePosition& vpos) {

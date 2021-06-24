@@ -4,6 +4,7 @@
 
 #include "media/cast/net/udp_packet_pipe.h"
 
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -12,7 +13,7 @@
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -25,11 +26,13 @@ constexpr uint32_t kDefaultDataPipeCapacityBytes = 10;
 class UdpPacketPipeTest : public ::testing::Test {
  public:
   UdpPacketPipeTest() {
-    mojo::DataPipe data_pipe(kDefaultDataPipeCapacityBytes);
-    writer_ = std::make_unique<UdpPacketPipeWriter>(
-        std::move(data_pipe.producer_handle));
-    reader_ = std::make_unique<UdpPacketPipeReader>(
-        std::move(data_pipe.consumer_handle));
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    CHECK_EQ(mojo::CreateDataPipe(kDefaultDataPipeCapacityBytes,
+                                  producer_handle, consumer_handle),
+             MOJO_RESULT_OK);
+    writer_ = std::make_unique<UdpPacketPipeWriter>(std::move(producer_handle));
+    reader_ = std::make_unique<UdpPacketPipeReader>(std::move(consumer_handle));
   }
 
   ~UdpPacketPipeTest() override = default;
@@ -39,7 +42,7 @@ class UdpPacketPipeTest : public ::testing::Test {
   }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::unique_ptr<UdpPacketPipeWriter> writer_;
   std::unique_ptr<UdpPacketPipeReader> reader_;
   base::circular_deque<std::unique_ptr<Packet>> packets_read_;
@@ -59,7 +62,7 @@ TEST_F(UdpPacketPipeTest, Normal) {
   EXPECT_CALL(done_callback, Run()).Times(1);
   writer_->Write(new base::RefCountedData<Packet>(packet1),
                  done_callback.Get());
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // |packet2| can not be completely written in the data pipe due to capacity
   // limit.
@@ -67,7 +70,7 @@ TEST_F(UdpPacketPipeTest, Normal) {
   EXPECT_CALL(done_callback2, Run()).Times(0);
   writer_->Write(new base::RefCountedData<Packet>(packet2),
                  done_callback2.Get());
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   testing::Mock::VerifyAndClearExpectations(&done_callback2);
   EXPECT_TRUE(packets_read_.empty());
 
@@ -75,7 +78,7 @@ TEST_F(UdpPacketPipeTest, Normal) {
   EXPECT_CALL(done_callback2, Run()).Times(1);
   reader_->Read(
       base::BindOnce(&UdpPacketPipeTest::OnPacketRead, base::Unretained(this)));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(1u, packets_read_.size());
   EXPECT_EQ(0, std::memcmp(packet1.data(), packets_read_.front()->data(),
                            packet1.size()));
@@ -84,7 +87,7 @@ TEST_F(UdpPacketPipeTest, Normal) {
   // Reads |packet2| from the pipe.
   reader_->Read(
       base::BindOnce(&UdpPacketPipeTest::OnPacketRead, base::Unretained(this)));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(1u, packets_read_.size());
   EXPECT_EQ(0, std::memcmp(packet2.data(), packets_read_.front()->data(),
                            packet2.size()));

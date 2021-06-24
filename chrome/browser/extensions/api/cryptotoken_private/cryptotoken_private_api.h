@@ -5,11 +5,6 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_CRYPTOTOKEN_PRIVATE_CRYPTOTOKEN_PRIVATE_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_CRYPTOTOKEN_PRIVATE_CRYPTOTOKEN_PRIVATE_API_H_
 
-#include <memory>
-#include <string>
-#include <vector>
-
-#include "base/values.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
 #include "chrome/common/extensions/api/cryptotoken_private.h"
 #include "extensions/browser/extension_function.h"
@@ -27,18 +22,18 @@ void CryptotokenRegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry);
 
 class CryptotokenPrivateCanOriginAssertAppIdFunction
-    : public UIThreadExtensionFunction {
-  public:
-    CryptotokenPrivateCanOriginAssertAppIdFunction();
-    DECLARE_EXTENSION_FUNCTION("cryptotokenPrivate.canOriginAssertAppId",
-                               CRYPTOTOKENPRIVATE_CANORIGINASSERTAPPID)
-  protected:
-    ~CryptotokenPrivateCanOriginAssertAppIdFunction() override {}
-    ResponseAction Run() override;
+    : public ExtensionFunction {
+ public:
+  CryptotokenPrivateCanOriginAssertAppIdFunction();
+  DECLARE_EXTENSION_FUNCTION("cryptotokenPrivate.canOriginAssertAppId",
+                             CRYPTOTOKENPRIVATE_CANORIGINASSERTAPPID)
+ protected:
+  ~CryptotokenPrivateCanOriginAssertAppIdFunction() override {}
+  ResponseAction Run() override;
 };
 
 class CryptotokenPrivateIsAppIdHashInEnterpriseContextFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   CryptotokenPrivateIsAppIdHashInEnterpriseContextFunction();
   DECLARE_EXTENSION_FUNCTION(
@@ -51,7 +46,7 @@ class CryptotokenPrivateIsAppIdHashInEnterpriseContextFunction
 };
 
 class CryptotokenPrivateCanAppIdGetAttestationFunction
-    : public UIThreadExtensionFunction {
+    : public ExtensionFunction {
  public:
   CryptotokenPrivateCanAppIdGetAttestationFunction();
   DECLARE_EXTENSION_FUNCTION("cryptotokenPrivate.canAppIdGetAttestation",
@@ -63,14 +58,26 @@ class CryptotokenPrivateCanAppIdGetAttestationFunction
   void Complete(bool result);
 };
 
-class CryptotokenPrivateCanProxyToWebAuthnFunction
-    : public UIThreadExtensionFunction {
+class CryptotokenPrivateRecordRegisterRequestFunction
+    : public ExtensionFunction {
  public:
-  CryptotokenPrivateCanProxyToWebAuthnFunction();
-  DECLARE_EXTENSION_FUNCTION("cryptotokenPrivate.canProxyToWebAuthn",
-                             CRYPTOTOKENPRIVATE_CANPROXYTOWEBAUTHN)
+  CryptotokenPrivateRecordRegisterRequestFunction() = default;
+  DECLARE_EXTENSION_FUNCTION("cryptotokenPrivate.recordRegisterRequest",
+                             CRYPTOTOKENPRIVATE_RECORDREGISTERREQUEST)
+
  protected:
-  ~CryptotokenPrivateCanProxyToWebAuthnFunction() override {}
+  ~CryptotokenPrivateRecordRegisterRequestFunction() override = default;
+  ResponseAction Run() override;
+};
+
+class CryptotokenPrivateRecordSignRequestFunction : public ExtensionFunction {
+ public:
+  CryptotokenPrivateRecordSignRequestFunction() = default;
+  DECLARE_EXTENSION_FUNCTION("cryptotokenPrivate.recordSignRequest",
+                             CRYPTOTOKENPRIVATE_RECORDSIGNREQUEST)
+
+ protected:
+  ~CryptotokenPrivateRecordSignRequestFunction() override = default;
   ResponseAction Run() override;
 };
 

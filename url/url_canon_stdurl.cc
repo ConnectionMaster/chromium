@@ -108,9 +108,11 @@ bool DoCanonicalizeStandardURL(const URLComponentSource<CHAR>& source,
 
 }  // namespace
 
-
 // Returns the default port for the given canonical scheme, or PORT_UNSPECIFIED
 // if the scheme is unknown.
+//
+// Please keep blink::DefaultPortForProtocol and url::DefaultPortForProtocol in
+// sync.
 int DefaultPortForScheme(const char* scheme, int scheme_len) {
   int default_port = PORT_UNSPECIFIED;
   switch (scheme_len) {
@@ -127,10 +129,6 @@ int DefaultPortForScheme(const char* scheme, int scheme_len) {
         default_port = 21;
       else if (!strncmp(scheme, kWssScheme, scheme_len))
         default_port = 443;
-      break;
-    case 6:
-      if (!strncmp(scheme, kGopherScheme, scheme_len))
-        default_port = 70;
       break;
     case 2:
       if (!strncmp(scheme, kWsScheme, scheme_len))
@@ -152,16 +150,16 @@ bool CanonicalizeStandardURL(const char* spec,
       output, new_parsed);
 }
 
-bool CanonicalizeStandardURL(const base::char16* spec,
+bool CanonicalizeStandardURL(const char16_t* spec,
                              int spec_len,
                              const Parsed& parsed,
                              SchemeType scheme_type,
                              CharsetConverter* query_converter,
                              CanonOutput* output,
                              Parsed* new_parsed) {
-  return DoCanonicalizeStandardURL<base::char16, base::char16>(
-      URLComponentSource<base::char16>(spec), parsed, scheme_type,
-      query_converter, output, new_parsed);
+  return DoCanonicalizeStandardURL<char16_t, char16_t>(
+      URLComponentSource<char16_t>(spec), parsed, scheme_type, query_converter,
+      output, new_parsed);
 }
 
 // It might be nice in the future to optimize this so unchanged components don't
@@ -191,7 +189,7 @@ bool ReplaceStandardURL(const char* base,
 // regular code path can be used.
 bool ReplaceStandardURL(const char* base,
                         const Parsed& base_parsed,
-                        const Replacements<base::char16>& replacements,
+                        const Replacements<char16_t>& replacements,
                         SchemeType scheme_type,
                         CharsetConverter* query_converter,
                         CanonOutput* output,

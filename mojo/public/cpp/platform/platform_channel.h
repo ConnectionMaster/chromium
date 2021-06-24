@@ -15,11 +15,11 @@
 namespace mojo {
 
 // PlatformChannel encapsulates construction and ownership of two entangled
-// endpoints of a platform-specific communication primitive, e.g. a Windows pipe
-// or a Unix domain socket. One endpoint is designated as the "local" endpoint
-// and should be retained by the creating process; the other endpoint is
-// designated as the "remote" endpoint and should be passed to an external
-// process.
+// endpoints of a platform-specific communication primitive, e.g. a Windows
+// pipe, a Unix domain socket, or a macOS Mach port pair. One endpoint is
+// designated as the "local" endpoint and should be retained by the creating
+// process; the other endpoint is designated as the "remote" endpoint and
+// should be passed to an external process.
 //
 // PlatformChannels can be used to bootstrap Mojo IPC between one process and
 // another. Typically the other process is a child of this process, and there
@@ -41,18 +41,8 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformChannel {
   using HandlePassingInfo = base::HandlesToInheritVector;
 #elif defined(OS_FUCHSIA)
   using HandlePassingInfo = base::HandlesToTransferVector;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-  // This type represents a union between MachPortsForRendezvous and
-  // FileHandleMappingVector, so that the type to use can be determined at run-
-  // time.
-  // TODO(crbug.com/932175): This will become a typedef to
-  // base::MachPortsForRendezvous in the future.
-  class HandlePassingInfo : public base::MachPortsForRendezvous,
-                            public base::FileHandleMappingVector {
-   public:
-    using base::MachPortsForRendezvous::operator=;
-    using base::FileHandleMappingVector::operator=;
-  };
+#elif defined(OS_MAC)
+  using HandlePassingInfo = base::MachPortsForRendezvous;
 #elif defined(OS_POSIX)
   using HandlePassingInfo = base::FileHandleMappingVector;
 #else
@@ -116,6 +106,10 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformChannel {
   // |kHandleSwitch| flag.
   static PlatformChannelEndpoint RecoverPassedEndpointFromCommandLine(
       const base::CommandLine& command_line) WARN_UNUSED_RESULT;
+
+  // Indicates whether |RecoverPassedEndpointFromCommandLine()| would succeed.
+  static bool CommandLineHasPassedEndpoint(
+      const base::CommandLine& command_line);
 
  private:
   PlatformChannelEndpoint local_endpoint_;

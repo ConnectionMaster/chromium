@@ -10,13 +10,13 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/menu_manager_factory.h"
 #include "chrome/browser/extensions/tab_helper.h"
@@ -24,19 +24,16 @@
 #include "chrome/common/extensions/api/chrome_web_view_internal.h"
 #include "chrome/common/extensions/api/context_menus.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
+#include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/child_process_host.h"
-#include "content/public/common/context_menu_params.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/browser/state_store.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/background_info.h"
+#include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/text_elider.h"
 
@@ -175,13 +172,12 @@ std::set<MenuItem::Id> MenuItem::RemoveAllDescendants() {
   return result;
 }
 
-base::string16 MenuItem::TitleWithReplacement(const base::string16& selection,
+std::u16string MenuItem::TitleWithReplacement(const std::u16string& selection,
                                               size_t max_length) const {
-  base::string16 result = base::UTF8ToUTF16(title_);
+  std::u16string result = base::UTF8ToUTF16(title_);
   // TODO(asargent) - Change this to properly handle %% escaping so you can
   // put "%s" in titles that won't get substituted.
-  base::ReplaceSubstringsAfterOffset(
-      &result, 0, base::ASCIIToUTF16("%s"), selection);
+  base::ReplaceSubstringsAfterOffset(&result, 0, u"%s", selection);
 
   if (result.length() > max_length)
     result = gfx::TruncateString(result, max_length, gfx::WORD_BREAK);
@@ -196,7 +192,7 @@ bool MenuItem::SetChecked(bool checked) {
 }
 
 void MenuItem::AddChild(std::unique_ptr<MenuItem> item) {
-  item->parent_id_.reset(new Id(id_));
+  item->parent_id_ = std::make_unique<Id>(id_);
   children_.push_back(std::move(item));
 }
 
@@ -316,18 +312,19 @@ const char MenuManager::kOnWebviewContextMenus[] =
     "webViewInternal.contextMenus";
 
 MenuManager::MenuManager(content::BrowserContext* context, StateStore* store)
-    : extension_registry_observer_(this),
-      browser_context_(context),
-      store_(store) {
-  extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context_));
-  registrar_.Add(this, chrome::NOTIFICATION_PROFILE_DESTROYED,
-                 content::NotificationService::AllSources());
+    : browser_context_(context), store_(store) {
+  extension_registry_observation_.Observe(
+      ExtensionRegistry::Get(browser_context_));
+  Profile* profile = Profile::FromBrowserContext(context);
+  observed_profiles_.AddObservation(profile);
+  if (profile->HasPrimaryOTRProfile())
+    observed_profiles_.AddObservation(
+        profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
   if (store_)
     store_->RegisterKey(kContextMenusKey);
 }
 
-MenuManager::~MenuManager() {
-}
+MenuManager::~MenuManager() = default;
 
 // static
 MenuManager* MenuManager::Get(content::BrowserContext* context) {
@@ -357,12 +354,12 @@ bool MenuManager::AddContextItem(const Extension* extension,
   const MenuItem::ExtensionKey& key = item->id().extension_key;
 
   // The item must have a non-empty key, and not have already been added.
-  if (key.empty() || base::ContainsKey(items_by_id_, item->id()))
+  if (key.empty() || base::Contains(items_by_id_, item->id()))
     return false;
 
   DCHECK_EQ(extension->id(), key.extension_id);
 
-  bool first_item = !base::ContainsKey(context_items_, key);
+  bool first_item = !base::Contains(context_items_, key);
   context_items_[key].push_back(std::move(item));
   items_by_id_[item_ptr->id()] = item_ptr;
 
@@ -386,7 +383,7 @@ bool MenuManager::AddChildItem(const MenuItem::Id& parent_id,
   if (!parent || parent->type() != MenuItem::NORMAL ||
       parent->incognito() != child->incognito() ||
       parent->extension_id() != child->extension_id() ||
-      base::ContainsKey(items_by_id_, child->id()))
+      base::Contains(items_by_id_, child->id()))
     return false;
   MenuItem* child_ptr = child.get();
   parent->AddChild(std::move(child));
@@ -474,7 +471,7 @@ bool MenuManager::ChangeParent(const MenuItem::Id& child_id,
 }
 
 bool MenuManager::RemoveContextMenuItem(const MenuItem::Id& id) {
-  if (!base::ContainsKey(items_by_id_, id))
+  if (!base::Contains(items_by_id_, id))
     return false;
 
   MenuItem* menu_item = GetItemById(id);
@@ -644,13 +641,13 @@ void MenuManager::ExecuteCommand(content::BrowserContext* context,
     SetIdKeyValue(properties.get(), "parentMenuItemId", *item->parent_id());
 
   switch (params.media_type) {
-    case blink::WebContextMenuData::kMediaTypeImage:
+    case blink::mojom::ContextMenuDataMediaType::kImage:
       properties->SetString("mediaType", "image");
       break;
-    case blink::WebContextMenuData::kMediaTypeVideo:
+    case blink::mojom::ContextMenuDataMediaType::kVideo:
       properties->SetString("mediaType", "video");
       break;
-    case blink::WebContextMenuData::kMediaTypeAudio:
+    case blink::mojom::ContextMenuDataMediaType::kAudio:
       properties->SetString("mediaType", "audio");
       break;
     default:  {}  // Do nothing.
@@ -674,14 +671,8 @@ void MenuManager::ExecuteCommand(content::BrowserContext* context,
                            webview_guest->view_instance_id());
   }
 
-  auto args = std::make_unique<base::ListValue>();
-  args->Reserve(2);
-  args->Append(std::move(properties));
-  // |properties| is invalidated at this time, which is why |args| needs to be
-  // queried for the pointer. The obtained pointer is guaranteed to stay valid
-  // even after further Appends, because enough storage was reserved above.
-  base::DictionaryValue* raw_properties = nullptr;
-  args->GetDictionary(0, &raw_properties);
+  base::Value::ListStorage args;
+  args.push_back(base::Value::FromUniquePtrValue(std::move(properties)));
 
   // Add the tab info to the argument list.
   // No tab info in a platform app.
@@ -690,32 +681,34 @@ void MenuManager::ExecuteCommand(content::BrowserContext* context,
     if (web_contents) {
       int frame_id = ExtensionApiFrameIdMap::GetFrameId(render_frame_host);
       if (frame_id != ExtensionApiFrameIdMap::kInvalidFrameId)
-        raw_properties->SetInteger("frameId", frame_id);
+        args[0].SetIntKey("frameId", frame_id);
 
       // We intentionally don't scrub the tab data here, since the user chose to
       // invoke the extension on the page.
-      // NOTE(devlin): We could potentially gate this on whether the extension
-      // has activeTab.
-      args->Append(ExtensionTabUtil::CreateTabObject(
-                       web_contents, ExtensionTabUtil::kDontScrubTab, extension)
-                       ->ToValue());
+      // TODO(tjudkins) Potentially use GetScrubTabBehavior here to gate based
+      // on permissions.
+      ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior = {
+          ExtensionTabUtil::kDontScrubTab, ExtensionTabUtil::kDontScrubTab};
+      args.push_back(base::Value::FromUniquePtrValue(
+          ExtensionTabUtil::CreateTabObject(web_contents, scrub_tab_behavior,
+                                            extension)
+              ->ToValue()));
     } else {
-      args->Append(std::make_unique<base::DictionaryValue>());
+      args.push_back(base::DictionaryValue());
     }
   }
 
   if (item->type() == MenuItem::CHECKBOX ||
       item->type() == MenuItem::RADIO) {
     bool was_checked = item->checked();
-    raw_properties->SetBoolean("wasChecked", was_checked);
+    args[0].SetBoolKey("wasChecked", was_checked);
 
     // RADIO items always get set to true when you click on them, but CHECKBOX
     // items get their state toggled.
-    bool checked =
-        (item->type() == MenuItem::RADIO) ? true : !was_checked;
+    bool checked = item->type() == MenuItem::RADIO || !was_checked;
 
     item->SetChecked(checked);
-    raw_properties->SetBoolean("checked", item->checked());
+    args[0].SetBoolKey("checked", item->checked());
 
     if (extension)
       WriteToStorage(extension, item->id().extension_key);
@@ -735,7 +728,7 @@ void MenuManager::ExecuteCommand(content::BrowserContext* context,
         webview_guest ? events::WEB_VIEW_INTERNAL_CONTEXT_MENUS
                       : events::CONTEXT_MENUS,
         webview_guest ? kOnWebviewContextMenus : kOnContextMenus,
-        std::unique_ptr<base::ListValue>(args->DeepCopy()), context);
+        base::Value(args).TakeList(), context);
     event->user_gesture = EventRouter::USER_GESTURE_ENABLED;
     event_router->DispatchEventToExtension(item->extension_id(),
                                            std::move(event));
@@ -793,7 +786,7 @@ void MenuManager::SanitizeRadioListsInMenu(
 }
 
 bool MenuManager::ItemUpdated(const MenuItem::Id& id) {
-  if (!base::ContainsKey(items_by_id_, id))
+  if (!base::Contains(items_by_id_, id))
     return false;
 
   MenuItem* menu_item = GetItemById(id);
@@ -816,7 +809,7 @@ bool MenuManager::ItemUpdated(const MenuItem::Id& id) {
 
 void MenuManager::WriteToStorage(const Extension* extension,
                                  const MenuItem::ExtensionKey& extension_key) {
-  if (!BackgroundInfo::HasLazyBackgroundPage(extension))
+  if (!BackgroundInfo::HasLazyContext(extension))
     return;
   // <webview> menu items are transient and not stored in storage.
   if (extension_key.webview_instance_id)
@@ -829,6 +822,9 @@ void MenuManager::WriteToStorage(const Extension* extension,
       (*i)->GetFlattenedSubtree(&all_items);
     }
   }
+
+  for (TestObserver& observer : observers_)
+    observer.WillWriteToStorage(extension->id());
 
   if (store_) {
     store_->SetExtensionValue(extension->id(), kContextMenusKey,
@@ -858,16 +854,17 @@ void MenuManager::ReadFromStorage(const std::string& extension_id,
       AddContextItem(extension, std::move(items[i]));
     }
   }
+
+  for (TestObserver& observer : observers_)
+    observer.DidReadFromStorage(extension_id);
 }
 
 void MenuManager::OnExtensionLoaded(content::BrowserContext* browser_context,
                                     const Extension* extension) {
-  if (store_ && BackgroundInfo::HasLazyBackgroundPage(extension)) {
-    store_->GetExtensionValue(
-        extension->id(),
-        kContextMenusKey,
-        base::Bind(
-            &MenuManager::ReadFromStorage, AsWeakPtr(), extension->id()));
+  if (store_ && BackgroundInfo::HasLazyContext(extension)) {
+    store_->GetExtensionValue(extension->id(), kContextMenusKey,
+                              base::BindOnce(&MenuManager::ReadFromStorage,
+                                             AsWeakPtr(), extension->id()));
   }
 
   if (extension->from_bookmark() && UrlHandlers::GetUrlHandlers(extension)) {
@@ -879,23 +876,19 @@ void MenuManager::OnExtensionUnloaded(content::BrowserContext* browser_context,
                                       const Extension* extension,
                                       UnloadedExtensionReason reason) {
   MenuItem::ExtensionKey extension_key(extension->id());
-  if (base::ContainsKey(context_items_, extension_key)) {
+  if (base::Contains(context_items_, extension_key)) {
     RemoveAllContextItems(extension_key);
   }
 }
 
-void MenuManager::Observe(int type,
-                          const content::NotificationSource& source,
-                          const content::NotificationDetails& details) {
-  DCHECK_EQ(chrome::NOTIFICATION_PROFILE_DESTROYED, type);
-  Profile* profile = content::Source<Profile>(source).ptr();
-  // We cannot use profile_->HasOffTheRecordProfile as it may already be
-  // false at this point, if for example the incognito profile was destroyed
-  // using DestroyOffTheRecordProfile.
-  if (profile->GetOriginalProfile() == browser_context_ &&
-      profile->GetOriginalProfile() != profile) {
+void MenuManager::OnOffTheRecordProfileCreated(Profile* off_the_record) {
+  observed_profiles_.AddObservation(off_the_record);
+}
+
+void MenuManager::OnProfileWillBeDestroyed(Profile* profile) {
+  observed_profiles_.RemoveObservation(profile);
+  if (profile->IsOffTheRecord())
     RemoveAllIncognitoContextItems();
-  }
 }
 
 gfx::Image MenuManager::GetIconForExtension(const std::string& extension_id) {
@@ -913,6 +906,14 @@ void MenuManager::RemoveAllIncognitoContextItems() {
   for (auto remove_iter = items_to_remove.begin();
        remove_iter != items_to_remove.end(); ++remove_iter)
     RemoveContextMenuItem(*remove_iter);
+}
+
+void MenuManager::AddObserver(TestObserver* observer) {
+  observers_.AddObserver(observer);
+}
+
+void MenuManager::RemoveObserver(TestObserver* observer) {
+  observers_.RemoveObserver(observer);
 }
 
 MenuItem::ExtensionKey::ExtensionKey()

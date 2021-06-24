@@ -7,10 +7,11 @@
 
 #include <memory>
 
+#include "base/callback.h"
 #include "components/security_state/core/security_state.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "third_party/blink/public/platform/web_security_style.h"
+#include "third_party/blink/public/common/security/security_style.h"
 
 namespace content {
 class NavigationHandle;
@@ -26,9 +27,9 @@ class SecurityStateTabHelper
   ~SecurityStateTabHelper() override;
 
   // See security_state::GetSecurityLevel.
-  security_state::SecurityLevel GetSecurityLevel() const;
+  security_state::SecurityLevel GetSecurityLevel();
   std::unique_ptr<security_state::VisibleSecurityState>
-  GetVisibleSecurityState() const;
+  GetVisibleSecurityState();
 
   // content::WebContentsObserver:
   void DidStartNavigation(
@@ -37,13 +38,20 @@ class SecurityStateTabHelper
       content::NavigationHandle* navigation_handle) override;
   void DidChangeVisibleSecurityState() override;
 
+  // Used by tests to specify a callback to be called when
+  // GetVisibleSecurityState() is called.
+  void set_get_security_level_callback_for_tests_(base::OnceClosure closure) {
+    get_security_level_callback_for_tests_ = std::move(closure);
+  }
+
  private:
   explicit SecurityStateTabHelper(content::WebContents* web_contents);
   friend class content::WebContentsUserData<SecurityStateTabHelper>;
 
   bool UsedPolicyInstalledCertificate() const;
   security_state::MaliciousContentStatus GetMaliciousContentStatus() const;
-  std::vector<std::string> GetSecureOriginsAndPatterns() const;
+
+  base::OnceClosure get_security_level_callback_for_tests_;
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

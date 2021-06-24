@@ -38,11 +38,12 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task_runner_util.h"
@@ -60,10 +61,10 @@ using extensions::Action;
 constexpr base::TimeDelta kCleaningDelay = base::TimeDelta::FromHours(12);
 
 // We should log the arguments to these API calls.  Be careful when
-// constructing this whitelist to not keep arguments that might compromise
+// constructing this allowlist to not keep arguments that might compromise
 // privacy by logging too much data to the activity log.
 //
-// TODO(mvrable): The contents of this whitelist should be reviewed and
+// TODO(mvrable): The contents of this allowlist should be reviewed and
 // expanded as needed.
 struct ApiList {
   Action::ActionType type;
@@ -172,7 +173,7 @@ CountingPolicy::CountingPolicy(Profile* profile)
       url_table_("url_ids"),
       retention_time_(base::TimeDelta::FromHours(60)) {
   for (size_t i = 0; i < base::size(kAlwaysLog); i++) {
-    api_arg_whitelist_.insert(
+    api_arg_allowlist_.insert(
         std::make_pair(kAlwaysLog[i].type, kAlwaysLog[i].name));
   }
 }
@@ -204,7 +205,7 @@ void CountingPolicy::QueueAction(scoped_refptr<Action> action) {
   if (activity_database()->is_db_valid()) {
     action = action->Clone();
     Util::StripPrivacySensitiveFields(action);
-    Util::StripArguments(api_arg_whitelist_, action);
+    Util::StripArguments(api_arg_allowlist_, action);
 
     // If the current action falls on a different date than the ones in the
     // queue, flush the queue out now to prevent any false merging (actions
@@ -435,8 +436,8 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
     return actions;
 
   // Build up the query based on which parameters were specified.
-  std::string where_str = "";
-  std::string where_next = "";
+  std::string where_str;
+  std::string where_next;
   if (!extension_id.empty()) {
     where_str += "extension_id=?";
     where_next = " AND ";
@@ -489,11 +490,11 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
 
   // Execute the query and get results.
   while (query.is_valid() && query.Step()) {
-    scoped_refptr<Action> action =
-        new Action(query.ColumnString(0),
-                   base::Time::FromInternalValue(query.ColumnInt64(1)),
-                   static_cast<Action::ActionType>(query.ColumnInt(2)),
-                   query.ColumnString(3), query.ColumnInt64(10));
+    auto action = base::MakeRefCounted<Action>(
+        query.ColumnString(0),
+        base::Time::FromInternalValue(query.ColumnInt64(1)),
+        static_cast<Action::ActionType>(query.ColumnInt(2)),
+        query.ColumnString(3), query.ColumnInt64(10));
 
     if (query.GetColumnType(4) != sql::ColumnType::kNull) {
       std::unique_ptr<base::Value> parsed_value =

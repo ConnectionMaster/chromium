@@ -9,6 +9,7 @@
 #include "base/win/windows_version.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "ui/base/hit_test.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/win/hwnd_metrics.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/views/widget/widget.h"
@@ -20,9 +21,6 @@ namespace {
 const int kResizeAreaCornerSize = 16;
 
 }  // namespace
-
-const char GlassAppWindowFrameViewWin::kViewClassName[] =
-    "ui/views/apps/GlassAppWindowFrameViewWin";
 
 GlassAppWindowFrameViewWin::GlassAppWindowFrameViewWin(views::Widget* widget)
     : widget_(widget) {}
@@ -36,7 +34,7 @@ gfx::Insets GlassAppWindowFrameViewWin::GetGlassInsets() const {
       display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYCAPTION);
 
   int frame_size =
-      base::win::GetVersion() < base::win::VERSION_WIN10
+      base::win::GetVersion() < base::win::Version::WIN10
           ? display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXSIZEFRAME)
           : 0;
 
@@ -46,7 +44,7 @@ gfx::Insets GlassAppWindowFrameViewWin::GetGlassInsets() const {
 gfx::Insets GlassAppWindowFrameViewWin::GetClientAreaInsets(
     HMONITOR monitor) const {
   gfx::Insets insets;
-  if (base::win::GetVersion() < base::win::VERSION_WIN10) {
+  if (base::win::GetVersion() < base::win::Version::WIN10) {
     // This tells Windows that most of the window is a client area, meaning
     // Chrome will draw it. Windows still fills in the glass bits because of the
     // DwmExtendFrameIntoClientArea call in |UpdateDWMFrame|.
@@ -139,10 +137,6 @@ gfx::Size GlassAppWindowFrameViewWin::CalculatePreferredSize() const {
       .size();
 }
 
-const char* GlassAppWindowFrameViewWin::GetClassName() const {
-  return kViewClassName;
-}
-
 gfx::Size GlassAppWindowFrameViewWin::GetMinimumSize() const {
   gfx::Size min_size = widget_->client_view()->GetMinimumSize();
 
@@ -164,3 +158,6 @@ gfx::Size GlassAppWindowFrameViewWin::GetMaximumSize() const {
 
   return max_size;
 }
+
+BEGIN_METADATA(GlassAppWindowFrameViewWin, views::NonClientFrameView)
+END_METADATA

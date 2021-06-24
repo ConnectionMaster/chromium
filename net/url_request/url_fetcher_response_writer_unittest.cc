@@ -4,6 +4,8 @@
 
 #include "net/url_request/url_fetcher_response_writer.h"
 
+#include <memory>
+
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
@@ -12,7 +14,7 @@
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
 #include "net/test/gtest_util.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/platform_test.h"
 
@@ -29,7 +31,7 @@ const char kData[] = "Hello!";
 class URLFetcherStringWriterTest : public PlatformTest {
  protected:
   void SetUp() override {
-    writer_.reset(new URLFetcherStringWriter);
+    writer_ = std::make_unique<URLFetcherStringWriter>();
     buf_ = base::MakeRefCounted<StringIOBuffer>(kData);
   }
 
@@ -58,14 +60,20 @@ TEST_F(URLFetcherStringWriterTest, Basic) {
 }
 
 class URLFetcherFileWriterTest : public PlatformTest,
-                                 public WithScopedTaskEnvironment {
+                                 public WithTaskEnvironment {
  protected:
   void SetUp() override {
+    PlatformTest::SetUp();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     file_path_ = temp_dir_.GetPath().AppendASCII("test.txt");
-    writer_.reset(new URLFetcherFileWriter(base::ThreadTaskRunnerHandle::Get(),
-                                           file_path_));
+    writer_ = std::make_unique<URLFetcherFileWriter>(
+        base::ThreadTaskRunnerHandle::Get(), file_path_);
     buf_ = base::MakeRefCounted<StringIOBuffer>(kData);
+  }
+
+  void TearDown() override {
+    ASSERT_TRUE(temp_dir_.Delete());
+    PlatformTest::TearDown();
   }
 
   base::ScopedTempDir temp_dir_;
@@ -187,6 +195,10 @@ TEST_F(URLFetcherFileWriterTest, InitializeAgainAfterFinishWithError) {
   EXPECT_THAT(callback4.WaitForResult(), IsOk());
   // Verify the result.
   EXPECT_TRUE(base::PathExists(file_path_));
+
+  // Destroy the writer and allow all files to be closed.
+  writer_.reset();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(URLFetcherFileWriterTest, DisownFile) {
@@ -208,11 +220,11 @@ TEST_F(URLFetcherFileWriterTest, DisownFile) {
 }
 
 class URLFetcherFileWriterTemporaryFileTest : public PlatformTest,
-                                              public WithScopedTaskEnvironment {
+                                              public WithTaskEnvironment {
  protected:
   void SetUp() override {
-    writer_.reset(new URLFetcherFileWriter(base::ThreadTaskRunnerHandle::Get(),
-                                           base::FilePath()));
+    writer_ = std::make_unique<URLFetcherFileWriter>(
+        base::ThreadTaskRunnerHandle::Get(), base::FilePath());
     buf_ = base::MakeRefCounted<StringIOBuffer>(kData);
   }
 

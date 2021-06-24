@@ -5,7 +5,7 @@
 #ifndef CHROME_BROWSER_POLICY_BROWSER_DM_TOKEN_STORAGE_WIN_H_
 #define CHROME_BROWSER_POLICY_BROWSER_DM_TOKEN_STORAGE_WIN_H_
 
-#include "chrome/browser/policy/browser_dm_token_storage.h"
+#include "components/enterprise/browser/controller/browser_dm_token_storage.h"
 
 #include <string>
 
@@ -18,37 +18,33 @@
 
 namespace policy {
 
-// Implementation of BrowserDMTokenStorage for Windows. The global singleton
-// instance can be retrieved by calling BrowserDMTokenStorage::Get().
-class BrowserDMTokenStorageWin : public BrowserDMTokenStorage {
+// Implementation of BrowserDMTokenStorage delegate for Windows.
+class BrowserDMTokenStorageWin : public BrowserDMTokenStorage::Delegate {
  public:
-  // Get the global singleton instance by calling BrowserDMTokenStorage::Get().
   BrowserDMTokenStorageWin();
   ~BrowserDMTokenStorageWin() override;
 
  private:
-  // override BrowserDMTokenStorage
+  // override BrowserDMTokenStorage::Delegate
   std::string InitClientId() override;
   std::string InitEnrollmentToken() override;
   std::string InitDMToken() override;
   bool InitEnrollmentErrorOption() override;
-  void SaveDMToken(const std::string& token) override;
+  BrowserDMTokenStorage::StoreTask SaveDMTokenTask(
+      const std::string& token,
+      const std::string& client_id) override;
+  scoped_refptr<base::TaskRunner> SaveDMTokenTaskRunner() override;
 
   scoped_refptr<base::SingleThreadTaskRunner> com_sta_task_runner_;
 
-  // This should always be the last member of the class.
-  base::WeakPtrFactory<BrowserDMTokenStorageWin> weak_factory_;
-
   FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest, InitClientId);
-  FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest, InitEnrollmentToken);
-  // TODO(crbug.com/907589): Remove once no longer in use.
   FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest,
-                           InitOldEnrollmentToken);
-  // TODO(crbug.com/907589): Remove once no longer in use.
+                           InitEnrollmentTokenFromPreferred);
   FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest,
-                           InitOldEnrollmentTokenPriority);
+                           InitEnrollmentTokenFromSecondary);
   FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest, InitDMToken);
-  FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest, SaveDMToken);
+  FRIEND_TEST_ALL_PREFIXES(BrowserDMTokenStorageWinTest,
+                           InitDMTokenFromBrowserLocation);
 
   DISALLOW_COPY_AND_ASSIGN(BrowserDMTokenStorageWin);
 };

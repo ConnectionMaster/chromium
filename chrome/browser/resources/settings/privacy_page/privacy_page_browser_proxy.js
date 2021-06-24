@@ -4,65 +4,149 @@
 
 /** @fileoverview Handles interprocess communication for the privacy page. */
 
-/** @typedef {{enabled: boolean, managed: boolean}} */
-let MetricsReporting;
+// clang-format off
+import {addSingletonGetter, sendWithPromise} from 'chrome://resources/js/cr.m.js';
+// clang-format on
 
-cr.define('settings', function() {
-  /** @interface */
-  class PrivacyPageBrowserProxy {
-    // <if expr="_google_chrome and not chromeos">
-    /** @return {!Promise<!MetricsReporting>} */
-    getMetricsReporting() {}
+  /** @typedef {{enabled: boolean, managed: boolean}} */
+export let MetricsReporting;
 
-    /** @param {boolean} enabled */
-    setMetricsReportingEnabled(enabled) {}
+/** @typedef {{name: string, value: string, policy: string}} */
+export let ResolverOption;
 
-    // </if>
+/**
+ * Contains the possible string values for the secure DNS mode. This must be
+ * kept in sync with the mode names in chrome/browser/net/secure_dns_config.h.
+ * @enum {string}
+ */
+export const SecureDnsMode = {
+  OFF: 'off',
+  AUTOMATIC: 'automatic',
+  SECURE: 'secure',
+};
 
-    // <if expr="is_win or is_macosx">
-    /** Invokes the native certificate manager (used by win and mac). */
-    showManageSSLCertificates() {}
+/**
+ * Contains the possible management modes. This should be kept in sync with
+ * the management modes in chrome/browser/net/secure_dns_config.h.
+ * @enum {number}
+ */
+export const SecureDnsUiManagementMode = {
+  NO_OVERRIDE: 0,
+  DISABLED_MANAGED: 1,
+  DISABLED_PARENTAL_CONTROLS: 2,
+};
 
-    // </if>
+/**
+ * @typedef {{
+ *   mode: SecureDnsMode,
+ *   templates: !Array<string>,
+ *   managementMode: SecureDnsUiManagementMode
+ * }}
+ */
+export let SecureDnsSetting;
 
-    /** @param {boolean} enabled */
-    setBlockAutoplayEnabled(enabled) {}
-  }
+/** @interface */
+export class PrivacyPageBrowserProxy {
+  // <if expr="_google_chrome and not chromeos">
+  /** @return {!Promise<!MetricsReporting>} */
+  getMetricsReporting() {}
+
+  /** @param {boolean} enabled */
+  setMetricsReportingEnabled(enabled) {}
+
+  // </if>
+
+  // <if expr="is_win or is_macosx">
+  /** Invokes the native certificate manager (used by win and mac). */
+  showManageSSLCertificates() {}
+
+  // </if>
+
+  /** @param {boolean} enabled */
+  setBlockAutoplayEnabled(enabled) {}
+
+  /** @return {!Promise<!Array<!ResolverOption>>} */
+  getSecureDnsResolverList() {}
+
+  /** @return {!Promise<!SecureDnsSetting>} */
+  getSecureDnsSetting() {}
 
   /**
-   * @implements {settings.PrivacyPageBrowserProxy}
+   * Returns the URL templates, if they are all valid.
+   * @param {string} entry
+   * @return {!Promise<!Array<string>>}
    */
-  class PrivacyPageBrowserProxyImpl {
-    // <if expr="_google_chrome and not chromeos">
-    /** @override */
-    getMetricsReporting() {
-      return cr.sendWithPromise('getMetricsReporting');
-    }
+  parseCustomDnsEntry(entry) {}
 
-    /** @override */
-    setMetricsReportingEnabled(enabled) {
-      chrome.send('setMetricsReportingEnabled', [enabled]);
-    }
+  /**
+   * Returns True if a test query to the secure DNS template succeeded
+   * or was cancelled.
+   * @param {string} template
+   * @return {!Promise<boolean>}
+   */
+  probeCustomDnsTemplate(template) {}
 
-    // </if>
+  /**
+   * Records metrics on the user's interaction with the dropdown menu.
+   * @param {string} oldSelection value of previously selected dropdown option
+   * @param {string} newSelection value of newly selected dropdown option
+   */
+  recordUserDropdownInteraction(oldSelection, newSelection) {}
+}
 
-    /** @override */
-    setBlockAutoplayEnabled(enabled) {
-      chrome.send('setBlockAutoplayEnabled', [enabled]);
-    }
-
-    // <if expr="is_win or is_macosx">
-    /** @override */
-    showManageSSLCertificates() {
-      chrome.send('showManageSSLCertificates');
-    }
-    // </if>
+/**
+ * @implements {PrivacyPageBrowserProxy}
+ */
+export class PrivacyPageBrowserProxyImpl {
+  // <if expr="_google_chrome and not chromeos">
+  /** @override */
+  getMetricsReporting() {
+    return sendWithPromise('getMetricsReporting');
   }
 
-  cr.addSingletonGetter(PrivacyPageBrowserProxyImpl);
+  /** @override */
+  setMetricsReportingEnabled(enabled) {
+    chrome.send('setMetricsReportingEnabled', [enabled]);
+  }
 
-  return {
-    PrivacyPageBrowserProxy: PrivacyPageBrowserProxy,
-    PrivacyPageBrowserProxyImpl: PrivacyPageBrowserProxyImpl,
-  };
-});
+  // </if>
+
+  /** @override */
+  setBlockAutoplayEnabled(enabled) {
+    chrome.send('setBlockAutoplayEnabled', [enabled]);
+  }
+
+  // <if expr="is_win or is_macosx">
+  /** @override */
+  showManageSSLCertificates() {
+    chrome.send('showManageSSLCertificates');
+  }
+  // </if>
+
+  /** @override */
+  getSecureDnsResolverList() {
+    return sendWithPromise('getSecureDnsResolverList');
+  }
+
+  /** @override */
+  getSecureDnsSetting() {
+    return sendWithPromise('getSecureDnsSetting');
+  }
+
+  /** @override */
+  parseCustomDnsEntry(entry) {
+    return sendWithPromise('parseCustomDnsEntry', entry);
+  }
+
+  /** @override */
+  probeCustomDnsTemplate(template) {
+    return sendWithPromise('probeCustomDnsTemplate', template);
+  }
+
+  /** override */
+  recordUserDropdownInteraction(oldSelection, newSelection) {
+    chrome.send('recordUserDropdownInteraction', [oldSelection, newSelection]);
+  }
+}
+
+addSingletonGetter(PrivacyPageBrowserProxyImpl);

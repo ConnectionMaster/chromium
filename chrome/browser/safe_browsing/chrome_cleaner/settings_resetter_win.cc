@@ -12,7 +12,6 @@
 
 #include "base/barrier_closure.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -86,11 +85,11 @@ class SettingsResetter : public base::RefCounted<SettingsResetter> {
   friend class base::RefCounted<SettingsResetter>;
 
   // Resets settings for |profile| according to default values given by
-  // |master_settings|. Used as a callback for
+  // |main_settings|. Used as a callback for
   // DefaultSettingsFetcher::FetchDefaultSettings().
   void OnFetchCompleted(
       Profile* profile,
-      std::unique_ptr<BrandcodedDefaultSettings> master_settings);
+      std::unique_ptr<BrandcodedDefaultSettings> main_settings);
 
   // Removes the settings reset tag for |profile|. If there are no more
   // profiles to reset, invokes |done_callback_| and deletes this object.
@@ -141,13 +140,13 @@ SettingsResetter::~SettingsResetter() {
 void SettingsResetter::Run() {
   for (Profile* profile : profiles_to_reset_) {
     delegate_->FetchDefaultSettings(
-        base::Bind(&SettingsResetter::OnFetchCompleted, this, profile));
+        base::BindOnce(&SettingsResetter::OnFetchCompleted, this, profile));
   }
 }
 
 void SettingsResetter::OnFetchCompleted(
     Profile* profile,
-    std::unique_ptr<BrandcodedDefaultSettings> master_settings) {
+    std::unique_ptr<BrandcodedDefaultSettings> main_settings) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   static const ProfileResetter::ResettableFlags kSettingsToReset =
@@ -157,8 +156,8 @@ void SettingsResetter::OnFetchCompleted(
 
   profile_resetters_.push_back(delegate_->GetProfileResetter(profile));
   profile_resetters_.back()->Reset(
-      kSettingsToReset, std::move(master_settings),
-      base::Bind(&SettingsResetter::OnResetCompleted, this, profile));
+      kSettingsToReset, std::move(main_settings),
+      base::BindOnce(&SettingsResetter::OnResetCompleted, this, profile));
 }
 
 void SettingsResetter::OnResetCompleted(Profile* profile) {
@@ -173,7 +172,7 @@ void SettingsResetter::OnResetCompleted(Profile* profile) {
 
 // Returns true if there is information of a completed cleanup in the registry.
 bool CleanupCompletedFromRegistry() {
-  base::string16 cleaner_key_path(
+  std::wstring cleaner_key_path(
       chrome_cleaner::kSoftwareRemovalToolRegistryKey);
   cleaner_key_path.append(L"\\").append(chrome_cleaner::kCleanerSubKey);
 

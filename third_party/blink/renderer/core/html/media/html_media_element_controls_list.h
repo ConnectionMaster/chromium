@@ -15,15 +15,12 @@ class HTMLMediaElement;
 
 class CORE_EXPORT HTMLMediaElementControlsList final : public DOMTokenList {
  public:
-  static HTMLMediaElementControlsList* Create(HTMLMediaElement* element) {
-    return MakeGarbageCollected<HTMLMediaElementControlsList>(element);
-  }
-
   explicit HTMLMediaElementControlsList(HTMLMediaElement*);
 
   // Whether the list dictates to hide a certain control.
   bool ShouldHideDownload() const;
   bool ShouldHideFullscreen() const;
+  bool ShouldHidePlaybackRate() const;
   bool ShouldHideRemotePlayback() const;
 
  private:
@@ -32,4 +29,4 @@ class CORE_EXPORT HTMLMediaElementControlsList final : public DOMTokenList {
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_MEDIA_HTML_MEDIA_ELEMENT_CONTROLS_LIST_H_

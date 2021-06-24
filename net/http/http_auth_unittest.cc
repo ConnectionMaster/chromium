@@ -8,11 +8,12 @@
 #include <set>
 #include <string>
 
+#include "base/cxx17_backports.h"
 #include "base/memory/ref_counted.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_isolation_key.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_auth_challenge_tokenizer.h"
 #include "net/http/http_auth_filter.h"
@@ -41,16 +42,16 @@ std::unique_ptr<HttpAuthHandlerMock> CreateMockHandler(bool connection_based) {
                                          challenge_text.end());
   GURL origin("www.example.com");
   SSLInfo null_ssl_info;
-  EXPECT_TRUE(auth_handler->InitFromChallenge(&challenge, HttpAuth::AUTH_SERVER,
-                                              null_ssl_info, origin,
-                                              NetLogWithSource()));
+  EXPECT_TRUE(auth_handler->InitFromChallenge(
+      &challenge, HttpAuth::AUTH_SERVER, null_ssl_info, NetworkIsolationKey(),
+      origin, NetLogWithSource()));
   return auth_handler;
 }
 
 scoped_refptr<HttpResponseHeaders> HeadersFromResponseText(
     const std::string& response) {
-  return scoped_refptr<HttpResponseHeaders>(new HttpResponseHeaders(
-      HttpUtil::AssembleRawHeaders(response.c_str(), response.length())));
+  return base::MakeRefCounted<HttpResponseHeaders>(
+      HttpUtil::AssembleRawHeaders(response));
 }
 
 HttpAuth::AuthorizationResult HandleChallengeResponse(
@@ -140,10 +141,10 @@ TEST(HttpAuthTest, ChooseBestChallenge) {
 
     SSLInfo null_ssl_info;
     std::unique_ptr<HttpAuthHandler> handler;
-    HttpAuth::ChooseBestChallenge(http_auth_handler_factory.get(), *headers,
-                                  null_ssl_info, HttpAuth::AUTH_SERVER, origin,
-                                  disabled_schemes, NetLogWithSource(),
-                                  host_resolver.get(), &handler);
+    HttpAuth::ChooseBestChallenge(
+        http_auth_handler_factory.get(), *headers, null_ssl_info,
+        NetworkIsolationKey(), HttpAuth::AUTH_SERVER, origin, disabled_schemes,
+        NetLogWithSource(), host_resolver.get(), &handler);
 
     if (handler.get()) {
       EXPECT_EQ(tests[i].challenge_scheme, handler->auth_scheme());

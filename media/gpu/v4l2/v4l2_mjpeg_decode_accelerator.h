@@ -17,27 +17,41 @@
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
-#include "media/base/bitstream_buffer.h"
-#include "media/base/unaligned_shared_memory.h"
-#include "media/base/video_frame.h"
+#include "components/chromeos_camera/mjpeg_decode_accelerator.h"
 #include "media/gpu/media_gpu_export.h"
 #include "media/gpu/v4l2/v4l2_device.h"
-#include "media/video/mjpeg_decode_accelerator.h"
 
 namespace media {
 
+class VideoFrame;
+
 class MEDIA_GPU_EXPORT V4L2MjpegDecodeAccelerator
-    : public MjpegDecodeAccelerator {
+    : public chromeos_camera::MjpegDecodeAccelerator {
  public:
+  // Job record. Jobs are processed in a FIFO order. This is separate from
+  // BufferRecord of input, because a BufferRecord of input may be returned
+  // before we dequeue the corresponding output buffer. It can't always be
+  // associated with a BufferRecord of output immediately either, because at
+  // the time of submission we may not have one available (and don't need one
+  // to submit input to the device).
+  class JobRecord;
+
   V4L2MjpegDecodeAccelerator(
       const scoped_refptr<V4L2Device>& device,
       const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner);
   ~V4L2MjpegDecodeAccelerator() override;
 
   // MjpegDecodeAccelerator implementation.
-  bool Initialize(Client* client) override;
-  void Decode(const BitstreamBuffer& bitstream_buffer,
-              const scoped_refptr<VideoFrame>& video_frame) override;
+  void InitializeAsync(
+      chromeos_camera::MjpegDecodeAccelerator::Client* client,
+      chromeos_camera::MjpegDecodeAccelerator::InitCB init_cb) override;
+  void Decode(BitstreamBuffer bitstream_buffer,
+              scoped_refptr<VideoFrame> video_frame) override;
+  void Decode(int32_t task_id,
+              base::ScopedFD src_dmabuf_fd,
+              size_t src_size,
+              off_t src_offset,
+              scoped_refptr<media::VideoFrame> dst_frame) override;
   bool IsSupported() override;
 
  private:
@@ -52,27 +66,6 @@ class MEDIA_GPU_EXPORT V4L2MjpegDecodeAccelerator
     bool at_device;
   };
 
-  // Job record. Jobs are processed in a FIFO order. This is separate from
-  // BufferRecord of input, because a BufferRecord of input may be returned
-  // before we dequeue the corresponding output buffer. It can't always be
-  // associated with a BufferRecord of output immediately either, because at
-  // the time of submission we may not have one available (and don't need one
-  // to submit input to the device).
-  struct JobRecord {
-    JobRecord(const BitstreamBuffer& bitstream_buffer,
-              scoped_refptr<VideoFrame> video_frame);
-    ~JobRecord();
-
-    // Input image buffer ID.
-    int32_t bitstream_buffer_id;
-    // Memory mapped from |bitstream_buffer|.
-    UnalignedSharedMemory shm;
-    // Offset used for shm.
-    off_t offset;
-    // Output frame buffer.
-    scoped_refptr<VideoFrame> out_frame;
-  };
-
   void EnqueueInput();
   void EnqueueOutput();
   void Dequeue();
@@ -83,13 +76,16 @@ class MEDIA_GPU_EXPORT V4L2MjpegDecodeAccelerator
   void DestroyInputBuffers();
   void DestroyOutputBuffers();
 
-  // Convert |output_buffer| to I420 and copy the result to |dst_frame|.
-  // The function can convert to I420 from the following formats:
-  //   - All splane formats that libyuv::ConvertToI420 can handle.
-  //   - V4L2_PIX_FMT_YUV_420M
-  //   - V4L2_PIX_FMT_YUV_422M
+  void InitializeOnTaskRunner(
+      chromeos_camera::MjpegDecodeAccelerator::Client* client,
+      InitCB init_cb);
+
+  // Convert |output_buffer| to |dst_frame|. The function supports the following
+  // formats:
+  //   - All formats that libyuv::ConvertToI420 can handle.
+  //   - V4L2_PIX_FMT_YUV_420M, V4L2_PIX_FMT_YUV_422M to I420, YV12, and NV12.
   bool ConvertOutputImage(const BufferRecord& output_buffer,
-                          const scoped_refptr<VideoFrame>& dst_frame);
+                          scoped_refptr<VideoFrame> dst_frame);
 
   // Return the number of input/output buffers enqueued to the device.
   size_t InputBufferQueuedCount();
@@ -102,9 +98,9 @@ class MEDIA_GPU_EXPORT V4L2MjpegDecodeAccelerator
   // Destroy and create output buffers. Return false on error.
   bool RecreateOutputBuffers();
 
-  void VideoFrameReady(int32_t bitstream_buffer_id);
-  void NotifyError(int32_t bitstream_buffer_id, Error error);
-  void PostNotifyError(int32_t bitstream_buffer_id, Error error);
+  void VideoFrameReady(int32_t task_id);
+  void NotifyError(int32_t task_id, Error error);
+  void PostNotifyError(int32_t task_id, Error error);
 
   // Run on |decoder_thread_| to enqueue the coming frame.
   void DecodeTask(std::unique_ptr<JobRecord> job_record);
@@ -139,6 +135,9 @@ class MEDIA_GPU_EXPORT V4L2MjpegDecodeAccelerator
   // Number of physical planes the output buffers have.
   size_t output_buffer_num_planes_;
 
+  // Strides of the output buffers.
+  size_t output_strides_[VIDEO_MAX_PLANES];
+
   // ChildThread's task runner.
   scoped_refptr<base::SingleThreadTaskRunner> child_task_runner_;
 
@@ -146,7 +145,7 @@ class MEDIA_GPU_EXPORT V4L2MjpegDecodeAccelerator
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
   // The client of this class.
-  Client* client_;
+  chromeos_camera::MjpegDecodeAccelerator::Client* client_;
 
   // The V4L2Device this class is operating upon.
   scoped_refptr<V4L2Device> device_;

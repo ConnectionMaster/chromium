@@ -21,7 +21,6 @@
 #include "components/offline_pages/core/prefetch/tasks/get_visuals_info_task.h"
 #include "components/offline_pages/task/task_queue.h"
 #include "components/version_info/channel.h"
-#include "net/url_request/url_request_context_getter.h"
 
 class PrefService;
 
@@ -73,8 +72,6 @@ class PrefetchDispatcherImpl : public PrefetchDispatcher,
   }
 
   void DisposeTask();
-
-  void EnsureTaskScheduledWithGCMToken(const std::string& gcm_token);
 
   // Callbacks for network requests.
   void DidGenerateBundleOrGetOperationRequest(
@@ -147,7 +144,7 @@ class PrefetchDispatcherImpl : public PrefetchDispatcher,
   bool needs_pipeline_processing_ = false;
   bool suspended_ = false;
   std::unique_ptr<PrefetchBackgroundTask> background_task_;
-  base::WeakPtrFactory<PrefetchDispatcherImpl> weak_factory_;
+  base::WeakPtrFactory<PrefetchDispatcherImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PrefetchDispatcherImpl);
 };

@@ -10,7 +10,7 @@ namespace device_sync {
 
 CryptAuthEnrollmentResult::CryptAuthEnrollmentResult(
     ResultCode result_code,
-    const base::Optional<cryptauthv2::ClientDirective>& client_directive)
+    const absl::optional<cryptauthv2::ClientDirective>& client_directive)
     : result_code_(result_code), client_directive_(client_directive) {}
 
 CryptAuthEnrollmentResult::CryptAuthEnrollmentResult(
@@ -150,6 +150,15 @@ std::ostream& operator<<(
       break;
     case ResultCode::kErrorTimeoutWaitingForClientAppMetadata:
       stream << "[Error: Timeout waiting for ClientAppMetadata]";
+      break;
+    case ResultCode::kErrorUserKeyPairCreationFailed:
+      stream << "[Error: Failed to create user key pair]";
+      break;
+    case ResultCode::kErrorLegacyAuthzenKeyCreationFailed:
+      stream << "[Error: Failed to create legacy authzen key]";
+      break;
+    case ResultCode::kErrorDeviceSyncBetterTogetherKeyCreationFailed:
+      stream << "[Error: Failed to create DeviceSync:BetterTogether key pair]";
       break;
   }
 

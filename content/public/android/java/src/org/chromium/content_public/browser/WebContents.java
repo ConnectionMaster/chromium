@@ -7,15 +7,18 @@ package org.chromium.content_public.browser;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Parcelable;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
 
-import org.chromium.base.Callback;
-import org.chromium.base.VisibleForTesting;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.ui.OverscrollRefreshHandler;
 import org.chromium.ui.base.EventForwarder;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.url.GURL;
+
+import java.util.List;
 
 /**
  * The WebContents Java wrapper to allow communicating with the native WebContents object.
@@ -80,7 +83,14 @@ public interface WebContents extends Parcelable {
     }
 
     /**
+     * TODO(ctzsm): Rename this method to setDelegates()
+     *
      * Initialize various content objects of {@link WebContents} lifetime.
+     *
+     * Note: This method is more of to set the {@link ViewAndroidDelegate} and {@link
+     * ViewEventSink.InternalAccessDelegate}, most of the embedder should only call this once during
+     * the whole lifecycle of the {@link WebContents}, but it is safe to call it multiple times.
+     *
      * @param productVersion Product version for accessibility.
      * @param viewDelegate Delegate to add/remove anchor views.
      * @param accessDelegate Handles dispatching all hidden or super methods to the containerView.
@@ -92,8 +102,19 @@ public interface WebContents extends Parcelable {
             @NonNull InternalsHolder internalsHolder);
 
     /**
+     * Clear Java WebContentsObservers so we can put this WebContents to the background. Use this
+     * method only when the WebContents will not be destroyed shortly. Currently only used by Chrome
+     * for swapping WebContents in Tab.
+     *
+     * Note: This is a temporary workaround for Chrome until it can clean up Observers directly.
+     * Avoid new calls to this method.
+     */
+    void clearJavaWebContentsObservers();
+
+    /**
      * @return The top level WindowAndroid associated with this WebContents.  This can be null.
      */
+    @Nullable
     WindowAndroid getTopLevelNativeWindow();
 
     /*
@@ -108,6 +129,7 @@ public interface WebContents extends Parcelable {
      * @return The {@link ViewAndroidDelegate} from which to get the container view.
      *         This can be null.
      */
+    @Nullable
     ViewAndroidDelegate getViewAndroidDelegate();
 
     /**
@@ -121,14 +143,53 @@ public interface WebContents extends Parcelable {
     boolean isDestroyed();
 
     /**
+     * Removes the native WebContents' reference to this object. This is used when we want to
+     * destroy this object without destroying its native counterpart.
+     */
+    @Deprecated
+    void clearNativeReference();
+
+    /**
      * @return The navigation controller associated with this WebContents.
      */
     NavigationController getNavigationController();
 
     /**
-     * @return  The main frame associated with this WebContents.
+     * @return The main frame associated with this WebContents.
      */
     RenderFrameHost getMainFrame();
+
+    /**
+     * @return The focused frame associated with this WebContents. Will be null if the WebContents
+     * does not have focus.
+     */
+    @Nullable
+    RenderFrameHost getFocusedFrame();
+
+    /**
+     * @return The frame associated with the id. Will be null if the ID does not correspond to a
+     *         live RenderFrameHost.
+     */
+    @Nullable
+    RenderFrameHost getRenderFrameHostFromId(GlobalRenderFrameHostId id);
+
+    /**
+     * @return The root level view from the renderer, or {@code null} in some cases where there is
+     *         none.
+     */
+    @Nullable
+    RenderWidgetHostView getRenderWidgetHostView();
+
+    /**
+     * @return The WebContents that are nested within this one.
+     */
+    List<? extends WebContents> getInnerWebContents();
+
+    /**
+     * @return The WebContents Visibility. See native WebContents::GetVisibility.
+     */
+    @Visibility
+    int getVisibility();
 
     /**
      * @return The title for the current visible page.
@@ -138,7 +199,7 @@ public interface WebContents extends Parcelable {
     /**
      * @return The URL for the current visible page.
      */
-    String getVisibleUrl();
+    GURL getVisibleUrl();
 
     /**
      * @return The character encoding for the current visible page.
@@ -157,6 +218,14 @@ public interface WebContents extends Parcelable {
     boolean isLoadingToDifferentDocument();
 
     /**
+     * Runs the beforeunload handler, if any. The tab will be closed if there's no beforeunload
+     * handler or if the user accepts closing.
+     *
+     * @param autoCancel See C++ WebContents for explanation.
+     */
+    void dispatchBeforeUnload(boolean autoCancel);
+
+    /**
      * Stop any pending navigation.
      */
     void stop();
@@ -173,10 +242,11 @@ public interface WebContents extends Parcelable {
 
     /**
      * ChildProcessImportance on Android allows controls of the renderer process bindings
-     * independent of visibility. Note this does not affect importance of subframe processes.
-     * @param mainFrameImportance importance of the main frame process.
+     * independent of visibility. Note this does not affect importance of subframe processes
+     * or main frames processeses for non-primary pages.
+     * @param primaryMainFrameImportance importance of the primary page's main frame process.
      */
-    void setImportance(@ChildProcessImportance int mainFrameImportance);
+    void setImportance(@ChildProcessImportance int primaryMainFrameImportance);
 
     /**
      * Suspends all media players for this WebContents.  Note: There may still
@@ -193,29 +263,22 @@ public interface WebContents extends Parcelable {
     void setAudioMuted(boolean mute);
 
     /**
-     * Get the Background color from underlying RenderWidgetHost for this WebContent.
-     */
-    int getBackgroundColor();
-
-    /**
-     * @return Whether the page is currently showing an interstitial, such as a bad HTTPS page.
-     */
-    boolean isShowingInterstitialPage();
-
-    /**
      * @return Whether the location bar should be focused by default for this page.
      */
     boolean focusLocationBarByDefault();
 
     /**
-     * If the view is ready to draw contents to the screen. In hardware mode,
-     * the initialization of the surface texture may not occur until after the
-     * view has been added to the layout. This method will return {@code true}
-     * once the texture is actually ready.
+     * Sets or removes page level focus.
+     * @param hasFocus Indicates if focus should be set or removed.
      */
-    boolean isReady();
+    void setFocus(boolean hasFocus);
 
-     /**
+    /**
+     * @return true if the renderer is in fullscreen mode.
+     */
+    boolean isFullscreenForCurrentTab();
+
+    /**
      * Inform WebKit that Fullscreen mode has been exited by the user.
      */
     void exitFullscreen();
@@ -248,7 +311,7 @@ public interface WebContents extends Parcelable {
      *
      * @return The last committed URL.
      */
-    String getLastCommittedUrl();
+    GURL getLastCommittedUrl();
 
     /**
      * Get the InCognito state of WebContents.
@@ -275,7 +338,7 @@ public interface WebContents extends Parcelable {
      *                 will be made on the main thread.
      *                 If no result is required, pass null.
      */
-    void evaluateJavaScript(String script, JavaScriptCallback callback);
+    void evaluateJavaScript(String script, @Nullable JavaScriptCallback callback);
 
     /**
      * Injects the passed Javascript code in the current page and evaluates it.
@@ -288,7 +351,7 @@ public interface WebContents extends Parcelable {
      *                 If no result is required, pass null.
      */
     @VisibleForTesting
-    void evaluateJavaScriptForTests(String script, JavaScriptCallback callback);
+    void evaluateJavaScriptForTests(String script, @Nullable JavaScriptCallback callback);
 
     /**
      * Adds a log message to dev tools console. |level| must be a value of
@@ -297,23 +360,20 @@ public interface WebContents extends Parcelable {
     void addMessageToDevToolsConsole(int level, String message);
 
     /**
-     * Post a message to a frame.
+     * Post a message to main frame.
      *
-     * @param frameName The name of the frame. If the name is null the message is posted
-     *                  to the main frame.
      * @param message   The message
      * @param targetOrigin  The target origin. If the target origin is a "*" or a
      *                  empty string, it indicates a wildcard target origin.
-     * @param sentPorts The sent message ports, if any. Pass null if there is no
+     * @param ports The sent message ports, if any. Pass null if there is no
      *                  message ports to pass.
      */
-    void postMessageToFrame(String frameName, String message,
-            String sourceOrigin, String targetOrigin, MessagePort[] ports);
+    void postMessageToMainFrame(String message, String sourceOrigin, String targetOrigin,
+            @Nullable MessagePort[] ports);
 
     /**
      * Creates a message channel for sending postMessage requests and returns the ports for
      * each end of the channel.
-     * @param service The message port service to register the channel with.
      * @return The ports that forms the ends of the message channel created.
      */
     MessagePort[] createMessageChannel();
@@ -337,6 +397,11 @@ public interface WebContents extends Parcelable {
     int getThemeColor();
 
     /**
+     * @return Current page load progress on a scale of 0 to 1.
+     */
+    float getLoadProgress();
+
+    /**
      * Initiate extraction of text, HTML, and other information for clipping puposes (smart clip)
      * from the rectangle area defined by starting positions (x and y), and width and height.
      */
@@ -346,14 +411,6 @@ public interface WebContents extends Parcelable {
      * Register a handler to handle smart clip data once extraction is done.
      */
     void setSmartClipResultHandler(final Handler smartClipHandler);
-
-    /**
-     * Requests a snapshop of accessibility tree. The result is provided asynchronously
-     * using the callback
-     * @param callback The callback to be called when the snapshot is ready. The callback
-     *                 cannot be null.
-     */
-    void requestAccessibilitySnapshot(AccessibilitySnapshotCallback callback);
 
     /**
      * Returns {@link EventForwarder} which is used to forward input/view events
@@ -383,21 +440,10 @@ public interface WebContents extends Parcelable {
     void setOverscrollRefreshHandler(OverscrollRefreshHandler handler);
 
     /**
-     * Requests an image snapshot of the content and stores it in the specified folder.
-     *
-     * @param width The width of the resulting bitmap, or 0 for "auto."
-     * @param height The height of the resulting bitmap, or 0 for "auto."
-     * @param path The folder in which to store the screenshot.
-     * @param callback May be called synchronously, or at a later point, to deliver the bitmap
-     *                 result (or a failure code).
+     * Controls use of spatial-navigation mode.
+     * @param disable True if spatial navigation should never be used.
      */
-    void writeContentBitmapToDiskAsync(
-            int width, int height, String path, Callback<String> callback);
-
-    /**
-     * Reloads all the Lo-Fi images in this WebContents.
-     */
-    void reloadLoFiImages();
+    void setSpatialNavigationDisabled(boolean disabled);
 
     /**
      * Sends a request to download the given image {@link url}.
@@ -416,7 +462,7 @@ public interface WebContents extends Parcelable {
      *                 renderer.
      * @return The unique id of the download request
      */
-    int downloadImage(String url, boolean isFavicon, int maxBitmapSize, boolean bypassCache,
+    int downloadImage(GURL url, boolean isFavicon, int maxBitmapSize, boolean bypassCache,
             ImageDownloadCallback callback);
 
     /**
@@ -457,16 +503,16 @@ public interface WebContents extends Parcelable {
     void setSize(int width, int height);
 
     /**
-     * Gets the view size width of the WebContents. The size is in physical pixels.
+     * Gets the view size width of the WebContents.
      *
-     * @return The width of the view.
+     * @return The width of the view in dip.
      */
     int getWidth();
 
     /**
-     * Gets the view size width of the WebContents. The size is in physical pixels.
+     * Gets the view size width of the WebContents.
      *
-     * @return The width of the view.
+     * @return The width of the view in dip.
      */
     int getHeight();
 
@@ -477,4 +523,16 @@ public interface WebContents extends Parcelable {
      * @param insets The insets stored in a Rect.
      */
     void setDisplayCutoutSafeArea(Rect insets);
+
+    /**
+     * Notify that web preferences needs update for various properties.
+     */
+    void notifyRendererPreferenceUpdate();
+
+    /**
+     * Notify that the browser controls heights have changed. Any change to the top controls height,
+     * bottom controls height, top controls min-height, and bottom controls min-height will call
+     * this. Min-height is the minimum visible height the controls can have.
+     */
+    void notifyBrowserControlsHeightChanged();
 }

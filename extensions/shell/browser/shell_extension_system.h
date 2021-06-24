@@ -60,12 +60,11 @@ class ShellExtensionSystem : public ExtensionSystem {
 
   // ExtensionSystem implementation:
   void InitForRegularProfile(bool extensions_enabled) override;
-  void InitForIncognitoProfile() override;
   ExtensionService* extension_service() override;
   RuntimeData* runtime_data() override;
   ManagementPolicy* management_policy() override;
   ServiceWorkerManager* service_worker_manager() override;
-  SharedUserScriptMaster* shared_user_script_master() override;
+  UserScriptManager* user_script_manager() override;
   StateStore* state_store() override;
   StateStore* rules_store() override;
   scoped_refptr<ValueStoreFactory> store_factory() override;
@@ -74,11 +73,12 @@ class ShellExtensionSystem : public ExtensionSystem {
   AppSorting* app_sorting() override;
   void RegisterExtensionWithRequestContexts(
       const Extension* extension,
-      const base::Closure& callback) override;
+      base::OnceClosure callback) override;
   void UnregisterExtensionWithRequestContexts(
       const std::string& extension_id,
       const UnloadedExtensionReason reason) override;
   const base::OneShotEvent& ready() const override;
+  bool is_ready() const override;
   ContentVerifier* content_verifier() override;
   std::unique_ptr<ExtensionSet> GetDependentExtensions(
       const Extension* extension) override;
@@ -87,6 +87,9 @@ class ShellExtensionSystem : public ExtensionSystem {
                      const base::FilePath& temp_dir,
                      bool install_immediately,
                      InstallUpdateCallback install_update_callback) override;
+  void PerformActionBasedOnOmahaAttributes(
+      const std::string& extension_id,
+      const base::Value& attributes) override;
   bool FinishDelayedInstallationIfReady(const std::string& extension_id,
                                         bool install_immediately) override;
 
@@ -102,6 +105,7 @@ class ShellExtensionSystem : public ExtensionSystem {
   std::unique_ptr<RuntimeData> runtime_data_;
   std::unique_ptr<QuotaService> quota_service_;
   std::unique_ptr<AppSorting> app_sorting_;
+  std::unique_ptr<UserScriptManager> user_script_manager_;
 
   std::unique_ptr<ShellExtensionLoader> extension_loader_;
 
@@ -110,7 +114,7 @@ class ShellExtensionSystem : public ExtensionSystem {
   // Signaled when the extension system has completed its startup tasks.
   base::OneShotEvent ready_;
 
-  base::WeakPtrFactory<ShellExtensionSystem> weak_factory_;
+  base::WeakPtrFactory<ShellExtensionSystem> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ShellExtensionSystem);
 };

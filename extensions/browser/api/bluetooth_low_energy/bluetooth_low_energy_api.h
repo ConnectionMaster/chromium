@@ -90,7 +90,7 @@ namespace api {
 // Base class for bluetoothLowEnergy API functions. This class handles some of
 // the common logic involved in all API functions, such as checking for
 // platform support and returning the correct error.
-class BluetoothLowEnergyExtensionFunction : public UIThreadExtensionFunction {
+class BluetoothLowEnergyExtensionFunction : public ExtensionFunction {
  public:
   BluetoothLowEnergyExtensionFunction();
 
@@ -158,10 +158,7 @@ class BluetoothLowEnergyConnectFunction
   std::unique_ptr<bluetooth_low_energy::Connect::Params> params_;
 
  private:
-  // Success and error callbacks, called by
-  // BluetoothLowEnergyEventRouter::Connect.
-  void SuccessCallback();
-  void ErrorCallback(BluetoothLowEnergyEventRouter::Status status);
+  void ConnectCallback(BluetoothLowEnergyEventRouter::Status status);
 };
 
 class BluetoothLowEnergyDisconnectFunction

@@ -11,7 +11,7 @@
 
 #include "third_party/blink/renderer/bindings/tests/results/core/v8_void_callback_function_enum_arg.h"
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "third_party/blink/renderer/bindings/core/v8/generated_code_helper.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
@@ -20,6 +20,7 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 
 namespace blink {
 
@@ -61,11 +62,16 @@ v8::Maybe<void> V8VoidCallbackFunctionEnumArg::Invoke(bindings::V8ValueOrScriptW
   v8::Context::BackupIncumbentScope backup_incumbent_scope(
       IncumbentScriptState()->GetContext());
 
+  if (UNLIKELY(ScriptForbiddenScope::IsScriptForbidden())) {
+    ScriptForbiddenScope::ThrowScriptForbiddenException(GetIsolate());
+    return v8::Nothing<void>();
+  }
+
   v8::Local<v8::Function> function;
   // callback function's invoke:
   // step 4. If ! IsCallable(F) is false:
   //
-  // No [TreatNonObjectAsNull] presents.  Must be always callable.
+  // No [LegacyTreatNonObjectAsNull] presents.  Must be always callable.
   DCHECK(CallbackObject()->IsFunction());
   function = CallbackFunction();
 
@@ -80,7 +86,7 @@ v8::Maybe<void> V8VoidCallbackFunctionEnumArg::Invoke(bindings::V8ValueOrScriptW
   // Enum values provided by Blink must be valid, otherwise typo.
 #if DCHECK_IS_ON()
   {
-    const char* kValidArgValues[] = {
+    const char* const kValidArgValues[] = {
         "",
         "EnumValue1",
         "EnumValue2",
@@ -136,16 +142,6 @@ void V8VoidCallbackFunctionEnumArg::InvokeAndReportException(bindings::V8ValueOr
       Invoke(callback_this_value, arg);
   // An exception if any is killed with the v8::TryCatch above.
   ALLOW_UNUSED_LOCAL(maybe_result);
-}
-
-v8::Maybe<void> V8PersistentCallbackFunction<V8VoidCallbackFunctionEnumArg>::Invoke(bindings::V8ValueOrScriptWrappableAdapter callback_this_value, const String& arg) {
-  return Proxy()->Invoke(
-      callback_this_value, arg);
-}
-
-void V8PersistentCallbackFunction<V8VoidCallbackFunctionEnumArg>::InvokeAndReportException(bindings::V8ValueOrScriptWrappableAdapter callback_this_value, const String& arg) {
-  Proxy()->InvokeAndReportException(
-      callback_this_value, arg);
 }
 
 }  // namespace blink

@@ -6,11 +6,12 @@
 #define CHROME_BROWSER_UI_VIEWS_EXTERNAL_PROTOCOL_DIALOG_H_
 
 #include "base/macros.h"
-#include "base/time/time.h"
+#include "chrome/browser/profiles/profile.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
-
-class ProtocolDialogDelegate;
+#include "url/origin.h"
 
 namespace content {
 class WebContents;
@@ -21,38 +22,42 @@ class ExternalProtocolDialogTestApi;
 }
 
 namespace views {
-class Checkbox;
+class MessageBoxView;
 }
 
-class ExternalProtocolDialog : public views::DialogDelegateView {
+class ExternalProtocolDialog : public views::DialogDelegateView,
+                               public content::WebContentsObserver {
  public:
+  METADATA_HEADER(ExternalProtocolDialog);
   // Show by calling ExternalProtocolHandler::RunExternalProtocolDialog().
-  ExternalProtocolDialog(std::unique_ptr<const ProtocolDialogDelegate> delegate,
-                         content::WebContents* web_contents);
-
+  ExternalProtocolDialog(content::WebContents* web_contents,
+                         const GURL& url,
+                         const std::u16string& program_name,
+                         const absl::optional<url::Origin>& initiating_origin);
+  ExternalProtocolDialog(const ExternalProtocolDialog&) = delete;
+  ExternalProtocolDialog& operator=(const ExternalProtocolDialog&) = delete;
   ~ExternalProtocolDialog() override;
 
   // views::DialogDelegateView:
   gfx::Size CalculatePreferredSize() const override;
   bool ShouldShowCloseButton() const override;
-  int GetDefaultDialogButton() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  base::string16 GetWindowTitle() const override;
-  bool Cancel() override;
-  bool Accept() override;
-  ui::ModalType GetModalType() const override;
+  std::u16string GetWindowTitle() const override;
+  views::View* GetContentsView() override;
+  views::Widget* GetWidget() override;
+  const views::Widget* GetWidget() const override;
 
  private:
   friend class test::ExternalProtocolDialogTestApi;
 
-  const std::unique_ptr<const ProtocolDialogDelegate> delegate_;
+  void SetRememberSelectionCheckboxCheckedForTesting(bool checked);
+  void OnDialogAccepted();
 
-  views::Checkbox* remember_decision_checkbox_;
+  const GURL url_;
+  const std::u16string program_name_;
+  const absl::optional<url::Origin> initiating_origin_;
 
-  // The time at which this dialog was created.
-  base::TimeTicks creation_time_;
-
-  DISALLOW_COPY_AND_ASSIGN(ExternalProtocolDialog);
+  // The message box whose commands we handle.
+  views::MessageBoxView* message_box_view_ = nullptr;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_EXTERNAL_PROTOCOL_DIALOG_H_

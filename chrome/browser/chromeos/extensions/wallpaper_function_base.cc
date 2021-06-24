@@ -4,13 +4,12 @@
 
 #include "chrome/browser/chromeos/extensions/wallpaper_function_base.h"
 
-#include "base/memory/ref_counted_memory.h"
+#include "base/cxx17_backports.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
-#include "base/synchronization/cancellation_flag.h"
-#include "base/task/lazy_task_runner.h"
+#include "base/synchronization/atomic_flag.h"
+#include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/task_traits.h"
-#include "chrome/browser/image_decoder.h"
+#include "chrome/browser/image_decoder/image_decoder.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/login/login_state/login_state.h"
 #include "content/public/browser/browser_thread.h"
@@ -33,16 +32,31 @@ const char* const kWallpaperLayoutArrays[] = {
 
 const int kWallpaperLayoutCount = base::size(kWallpaperLayoutArrays);
 
-base::LazySequencedTaskRunner g_blocking_task_runner =
-    LAZY_SEQUENCED_TASK_RUNNER_INITIALIZER(
+base::LazyThreadPoolSequencedTaskRunner g_blocking_task_runner =
+    LAZY_THREAD_POOL_SEQUENCED_TASK_RUNNER_INITIALIZER(
         base::TaskTraits(base::MayBlock(),
                          base::TaskPriority::USER_BLOCKING,
                          base::TaskShutdownBehavior::BLOCK_SHUTDOWN));
-base::LazySequencedTaskRunner g_non_blocking_task_runner =
-    LAZY_SEQUENCED_TASK_RUNNER_INITIALIZER(
+base::LazyThreadPoolSequencedTaskRunner g_non_blocking_task_runner =
+    LAZY_THREAD_POOL_SEQUENCED_TASK_RUNNER_INITIALIZER(
         base::TaskTraits(base::MayBlock(),
                          base::TaskPriority::USER_VISIBLE,
                          base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN));
+
+// Returns an image of |size| that contains as much of |image| as possible
+// without distorting the |image|.  Unused areas are cropped away.
+gfx::ImageSkia ScaleAspectRatioAndCropCenter(const gfx::Size& size,
+                                             const gfx::ImageSkia& image) {
+  float scale = std::min(float{image.width()} / float{size.width()},
+                         float{image.height()} / float{size.height()});
+  gfx::Size scaled_size = {scale * size.width(), scale * size.height()};
+  gfx::Rect bounds{{0, 0}, image.size()};
+  bounds.ClampToCenteredSize(scaled_size);
+  auto scaled_and_cropped_image = gfx::ImageSkiaOperations::CreateTiledImage(
+      image, bounds.x(), bounds.y(), bounds.width(), bounds.height());
+  return gfx::ImageSkiaOperations::CreateResizedImage(
+      scaled_and_cropped_image, skia::ImageOperations::RESIZE_LANCZOS3, size);
+}
 
 }  // namespace
 
@@ -119,7 +133,7 @@ class WallpaperFunctionBase::UnsafeWallpaperDecoder
 
  private:
   scoped_refptr<WallpaperFunctionBase> function_;
-  base::CancellationFlag cancel_flag_;
+  base::AtomicFlag cancel_flag_;
 
   DISALLOW_COPY_AND_ASSIGN(UnsafeWallpaperDecoder);
 };
@@ -167,13 +181,12 @@ void WallpaperFunctionBase::OnFailure(const std::string& error) {
   Respond(Error(error));
 }
 
-void WallpaperFunctionBase::GenerateThumbnail(
+std::vector<uint8_t> WallpaperFunctionBase::GenerateThumbnail(
     const gfx::ImageSkia& image,
-    const gfx::Size& size,
-    scoped_refptr<base::RefCountedBytes>* thumbnail_data_out) {
-  *thumbnail_data_out = new base::RefCountedBytes();
-  gfx::ImageSkia thumbnail_image = gfx::ImageSkiaOperations::CreateResizedImage(
-      image, skia::ImageOperations::RESIZE_LANCZOS3, size);
-  gfx::JPEGCodec::Encode(*thumbnail_image.bitmap(), 90 /*quality=*/,
-                         &(*thumbnail_data_out)->data());
+    const gfx::Size& size) {
+  std::vector<uint8_t> data_out;
+  gfx::JPEGCodec::Encode(
+      *wallpaper_api_util::ScaleAspectRatioAndCropCenter(size, image).bitmap(),
+      90 /*quality=*/, &data_out);
+  return data_out;
 }

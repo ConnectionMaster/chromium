@@ -38,8 +38,6 @@ component("impl") {
     "random_number_generator.h",
     "random_tree_trainer.cc",
     "random_tree_trainer.h",
-    "target_histogram.cc",
-    "target_histogram.h",
     "training_algorithm.h",
     "voting_ensemble.cc",
     "voting_ensemble.h",
@@ -50,11 +48,10 @@ component("impl") {
   deps = [
     "//base",
     "//services/metrics/public/cpp:metrics_cpp",
+    "//services/metrics/public/cpp:ukm_builders",
   ]
 
-  public_deps = [
-    "//media/learning/common",
-  ]
+  public_deps = [ "//media/learning/common" ]
 }
 
 source_set("unit_tests") {
@@ -72,7 +69,6 @@ source_set("unit_tests") {
     "one_hot_unittest.cc",
     "random_number_generator_unittest.cc",
     "random_tree_trainer_unittest.cc",
-    "target_histogram_unittest.cc",
     "test_random_number_generator.cc",
     "test_random_number_generator.h",
   ]
@@ -80,6 +76,7 @@ source_set("unit_tests") {
   deps = [
     ":impl",
     "//base/test:test_support",
+    "//components/ukm:test_support",
     "//media:test_support",
     "//media/learning/impl",
     "//testing/gtest",
@@ -87,9 +84,7 @@ source_set("unit_tests") {
 }
 
 fuzzer_test("learning_fuzzer") {
-  sources = [
-    "learning_fuzzertest.cc",
-  ]
+  sources = [ "learning_fuzzertest.cc" ]
   deps = [
     ":impl",
     "//base",

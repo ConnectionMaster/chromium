@@ -2,21 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/memory/ptr_util.h"
-#include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
+#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/account_id/account_id.h"
-#include "components/signin/core/browser/account_info.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/identity_test_environment.h"
 
 namespace ash {
 
@@ -34,7 +36,7 @@ class MultiUserUtilTest : public ChromeAshTestBase {
   void SetUp() override {
     ChromeAshTestBase::SetUp();
 
-    fake_user_manager_ = new chromeos::FakeChromeUserManager;
+    fake_user_manager_ = new FakeChromeUserManager;
     user_manager_enabler_ = std::make_unique<user_manager::ScopedUserManager>(
         base::WrapUnique(fake_user_manager_));
 
@@ -42,8 +44,8 @@ class MultiUserUtilTest : public ChromeAshTestBase {
                        CreateProfileForIdentityTestEnvironment()
                            .release());
 
-    identity_test_env_adaptor_.reset(
-        new IdentityTestEnvironmentProfileAdaptor(profile_.get()));
+    identity_test_env_adaptor_ =
+        std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_.get());
   }
 
   void TearDown() override {
@@ -53,27 +55,27 @@ class MultiUserUtilTest : public ChromeAshTestBase {
   }
 
   // Add a user to the identity manager with given gaia_id and email.
-  std::string AddUserAndSignIn(const std::string& email) {
-    AccountInfo account_info =
-        identity_test_env()->MakePrimaryAccountAvailable(email);
+  CoreAccountId AddUserAndSignIn(const std::string& email) {
+    AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
+        email, signin::ConsentLevel::kSync);
     fake_user_manager_->AddUser(
-        multi_user_util::GetAccountIdFromEmail(account_info.account_id));
+        multi_user_util::GetAccountIdFromEmail(account_info.email));
     fake_user_manager_->UserLoggedIn(
-        multi_user_util::GetAccountIdFromEmail(account_info.account_id),
+        multi_user_util::GetAccountIdFromEmail(account_info.email),
         chromeos::ProfileHelper::GetUserIdHashByUserIdForTesting(
-            account_info.account_id),
+            account_info.email),
         false /* browser_restart */, false /* is_child */);
 
     return account_info.account_id;
   }
 
-  void SimulateTokenRevoked(const std::string& account_id) {
+  void SimulateTokenRevoked(const CoreAccountId& account_id) {
     identity_test_env()->RemoveRefreshTokenForAccount(account_id);
   }
 
   TestingProfile* profile() { return profile_.get(); }
 
-  identity::IdentityTestEnvironment* identity_test_env() {
+  signin::IdentityTestEnvironment* identity_test_env() {
     return identity_test_env_adaptor_->identity_test_env();
   }
 
@@ -82,7 +84,7 @@ class MultiUserUtilTest : public ChromeAshTestBase {
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_env_adaptor_;
   // |fake_user_manager_| is owned by |user_manager_enabler_|.
-  chromeos::FakeChromeUserManager* fake_user_manager_;
+  FakeChromeUserManager* fake_user_manager_;
   std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
 
   DISALLOW_COPY_AND_ASSIGN(MultiUserUtilTest);
@@ -92,8 +94,8 @@ class MultiUserUtilTest : public ChromeAshTestBase {
 // valid profile is provided, even if this profile's refresh token has been
 // revoked. (On Chrome OS we don't force to end the session in this case.)
 TEST_F(MultiUserUtilTest, ReturnValidAccountIdIfTokenRevoked) {
-  std::string account_id = AddUserAndSignIn(kTestAccountEmail);
-  identity::IdentityManager* identity_manager =
+  CoreAccountId account_id = AddUserAndSignIn(kTestAccountEmail);
+  signin::IdentityManager* identity_manager =
       identity_test_env()->identity_manager();
 
   EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(account_id));

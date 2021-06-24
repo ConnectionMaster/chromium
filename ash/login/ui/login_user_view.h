@@ -8,10 +8,11 @@
 #include "ash/ash_export.h"
 #include "ash/login/ui/login_base_bubble_view.h"
 #include "ash/login/ui/login_display_style.h"
-#include "ash/login/ui/login_user_menu_view.h"
-#include "ash/public/interfaces/login_user_info.mojom.h"
+#include "ash/login/ui/login_remove_account_dialog.h"
+#include "ash/public/cpp/login_types.h"
 #include "base/macros.h"
-#include "ui/views/controls/button/button.h"
+#include "base/scoped_observation.h"
+#include "ui/display/manager/display_configurator.h"
 #include "ui/views/view.h"
 
 namespace ash {
@@ -19,10 +20,10 @@ namespace ash {
 class HoverNotifier;
 class LoginButton;
 
-// Display the user's profile icon, name, and a menu icon in various layout
-// styles.
+// Display the user's profile icon, name, and a remove_account_dialog icon in
+// various layout styles.
 class ASH_EXPORT LoginUserView : public views::View,
-                                 public views::ButtonListener {
+                                 public display::DisplayConfigurator::Observer {
  public:
   // TestApi is used for tests to get internal implementation details.
   class ASH_EXPORT TestApi {
@@ -32,13 +33,15 @@ class ASH_EXPORT LoginUserView : public views::View,
 
     LoginDisplayStyle display_style() const;
 
-    const base::string16& displayed_name() const;
+    const std::u16string& displayed_name() const;
 
     views::View* user_label() const;
     views::View* tap_button() const;
     views::View* dropdown() const;
-    LoginBaseBubbleView* menu() const;
-    views::View* user_domain() const;
+    LoginRemoveAccountDialog* remove_account_dialog() const;
+    views::View* enterprise_icon() const;
+
+    void OnTap() const;
 
     bool is_opaque() const;
 
@@ -57,14 +60,13 @@ class ASH_EXPORT LoginUserView : public views::View,
   // |show_dropdown| arg is false.
   LoginUserView(LoginDisplayStyle style,
                 bool show_dropdown,
-                bool show_domain,
                 const OnTap& on_tap,
                 const OnRemoveWarningShown& on_remove_warning_shown,
                 const OnRemove& on_remove);
   ~LoginUserView() override;
 
   // Update the user view to display the given user information.
-  void UpdateForUser(const mojom::LoginUserInfoPtr& user, bool animate);
+  void UpdateForUser(const LoginUserInfo& user, bool animate);
 
   // Set if the view must be opaque.
   void SetForceOpaque(bool force_opaque);
@@ -72,25 +74,29 @@ class ASH_EXPORT LoginUserView : public views::View,
   // Enables or disables tapping the view.
   void SetTapEnabled(bool enabled);
 
-  const mojom::LoginUserInfoPtr& current_user() const { return current_user_; }
+  // DisplayConfigurator::Observer
+  void OnPowerStateChanged(chromeos::DisplayPowerState power_state) override;
+
+  const LoginUserInfo& current_user() const { return current_user_; }
+
+  void UpdateDropdownIcon();
 
   // views::View:
   const char* GetClassName() const override;
   gfx::Size CalculatePreferredSize() const override;
   void Layout() override;
   void RequestFocus() override;
-
-  // views::ButtonListener:
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
+  void OnThemeChanged() override;
 
  private:
-  class UserDomainInfoView;
   class UserImage;
   class UserLabel;
   class TapButton;
 
   // Called when hover state changes.
   void OnHover(bool has_hover);
+
+  void DropdownButtonPressed();
 
   // Updates UI element values so they reflect the data in |current_user_|.
   void UpdateCurrentUserState();
@@ -109,7 +115,7 @@ class ASH_EXPORT LoginUserView : public views::View,
 
   // The user that is currently being displayed (or will be displayed when an
   // animation completes).
-  mojom::LoginUserInfoPtr current_user_;
+  LoginUserInfo current_user_;
 
   // Used to dispatch opacity update events.
   std::unique_ptr<HoverNotifier> hover_notifier_;
@@ -120,19 +126,21 @@ class ASH_EXPORT LoginUserView : public views::View,
   LoginButton* dropdown_ = nullptr;
   TapButton* tap_button_ = nullptr;
 
-  // Bubble used for displaying the user dropdown menu. Its parent is the top
-  // level view, either LockContentsView or LockDebugView. This allows the menu
-  // to be clicked outside the bounds of the user view.
-  LoginUserMenuView* menu_ = nullptr;
-
-  // Show the domain information for public account user.
-  UserDomainInfoView* user_domain_ = nullptr;
+  // Bubble used for displaying the user remove account dialog. Its parent is
+  // the top level view, either LockContentsView or LockDebugView. This allows
+  // the remove account dialog to be clicked outside the bounds of the user
+  // view.
+  LoginRemoveAccountDialog* remove_account_dialog_ = nullptr;
 
   // True iff the view is currently opaque (ie, opacity = 1).
   bool is_opaque_ = false;
   // True if the view must be opaque (ie, opacity = 1) regardless of input
   // state.
   bool force_opaque_ = false;
+
+  base::ScopedObservation<display::DisplayConfigurator,
+                          display::DisplayConfigurator::Observer>
+      display_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(LoginUserView);
 };

@@ -6,8 +6,8 @@
 
 #include <memory>
 
-#include "base/logging.h"
-#include "base/scoped_observer.h"
+#include "base/check_op.h"
+#include "base/scoped_observation.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/events/event_observer.h"
@@ -20,27 +20,28 @@ namespace {
 // An EventMonitorAura that removes its event observer on window destruction.
 class WindowMonitorAura : public EventMonitorAura, public aura::WindowObserver {
  public:
-  WindowMonitorAura(aura::Env* env,
-                    ui::EventObserver* event_observer,
+  WindowMonitorAura(ui::EventObserver* event_observer,
                     aura::Window* target_window,
                     const std::set<ui::EventType>& types)
-      : EventMonitorAura(env, event_observer, target_window, types),
+      : EventMonitorAura(event_observer, target_window, types),
         target_window_(target_window) {
-    window_observer_.Add(target_window);
+    window_observation_.Observe(target_window);
   }
   ~WindowMonitorAura() override = default;
 
   // aura::WindowObserver:
   void OnWindowDestroying(aura::Window* window) override {
     DCHECK_EQ(window, target_window_);
-    window_observer_.Remove(target_window_);
+    DCHECK(window_observation_.IsObservingSource(target_window_));
+    window_observation_.Reset();
     target_window_ = nullptr;
     TearDown();
   }
 
  private:
   aura::Window* target_window_;
-  ScopedObserver<aura::Window, aura::WindowObserver> window_observer_{this};
+  base::ScopedObservation<aura::Window, aura::WindowObserver>
+      window_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WindowMonitorAura);
 };
@@ -52,8 +53,8 @@ std::unique_ptr<EventMonitor> EventMonitor::CreateApplicationMonitor(
     ui::EventObserver* event_observer,
     gfx::NativeWindow context,
     const std::set<ui::EventType>& types) {
-  aura::Env* env = context->env();
-  return std::make_unique<EventMonitorAura>(env, event_observer, env, types);
+  return std::make_unique<EventMonitorAura>(event_observer,
+                                            aura::Env::GetInstance(), types);
 }
 
 // static
@@ -61,19 +62,18 @@ std::unique_ptr<EventMonitor> EventMonitor::CreateWindowMonitor(
     ui::EventObserver* event_observer,
     gfx::NativeWindow target_window,
     const std::set<ui::EventType>& types) {
-  return std::make_unique<WindowMonitorAura>(
-      target_window->env(), event_observer, target_window, types);
+  return std::make_unique<WindowMonitorAura>(event_observer, target_window,
+                                             types);
 }
 
-EventMonitorAura::EventMonitorAura(aura::Env* env,
-                                   ui::EventObserver* event_observer,
+EventMonitorAura::EventMonitorAura(ui::EventObserver* event_observer,
                                    ui::EventTarget* event_target,
                                    const std::set<ui::EventType>& types)
-    : env_(env), event_observer_(event_observer), event_target_(event_target) {
-  DCHECK(env_);
+    : event_observer_(event_observer), event_target_(event_target) {
   DCHECK(event_observer_);
   DCHECK(event_target_);
-  env_->AddEventObserver(event_observer_, event_target, types);
+  aura::Env::GetInstance()->AddEventObserver(event_observer_, event_target,
+                                             types);
 }
 
 EventMonitorAura::~EventMonitorAura() {
@@ -81,12 +81,12 @@ EventMonitorAura::~EventMonitorAura() {
 }
 
 gfx::Point EventMonitorAura::GetLastMouseLocation() {
-  return env_->last_mouse_location();
+  return aura::Env::GetInstance()->last_mouse_location();
 }
 
 void EventMonitorAura::TearDown() {
   if (event_observer_)
-    env_->RemoveEventObserver(event_observer_);
+    aura::Env::GetInstance()->RemoveEventObserver(event_observer_);
   event_observer_ = nullptr;
 }
 

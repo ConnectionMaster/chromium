@@ -4,20 +4,56 @@
 
 #include "ash/system/update/update_notification_controller.h"
 
-#include "ash/public/cpp/ash_features.h"
 #include "ash/shell.h"
 #include "ash/system/model/system_tray_model.h"
+#include "ash/system/session/shutdown_confirmation_dialog.h"
+#include "ash/system/system_notification_controller.h"
 #include "ash/test/ash_test_base.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/branding_buildflags.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/message_center/message_center.h"
+#include "ui/message_center/message_center_observer.h"
+#include "ui/message_center/public/cpp/notification_delegate.h"
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #define SYSTEM_APP_NAME "Chrome OS"
 #else
 #define SYSTEM_APP_NAME "Chromium OS"
 #endif
 
 namespace ash {
+namespace {
+
+const char kNotificationId[] = "chrome://update";
+
+// Waits for the notification to be added. Needed because the controller posts a
+// task to check for slow boot request before showing the notification.
+class AddNotificationWaiter : public message_center::MessageCenterObserver {
+ public:
+  AddNotificationWaiter() {
+    message_center::MessageCenter::Get()->AddObserver(this);
+  }
+  ~AddNotificationWaiter() override {
+    message_center::MessageCenter::Get()->RemoveObserver(this);
+  }
+
+  void Wait() { run_loop_.Run(); }
+
+  // message_center::MessageCenterObserver:
+  void OnNotificationAdded(const std::string& notification_id) override {
+    if (notification_id == kNotificationId)
+      run_loop_.Quit();
+  }
+
+  base::RunLoop run_loop_;
+};
+
+}  // namespace
 
 class UpdateNotificationControllerTest : public AshTestBase {
  public:
@@ -27,48 +63,54 @@ class UpdateNotificationControllerTest : public AshTestBase {
  protected:
   bool HasNotification() {
     return message_center::MessageCenter::Get()->FindVisibleNotificationById(
-        UpdateNotificationController::kNotificationId);
+        kNotificationId);
   }
 
   std::string GetNotificationTitle() {
-    return base::UTF16ToUTF8(
-        message_center::MessageCenter::Get()
-            ->FindVisibleNotificationById(
-                UpdateNotificationController::kNotificationId)
-            ->title());
+    return base::UTF16ToUTF8(message_center::MessageCenter::Get()
+                                 ->FindVisibleNotificationById(kNotificationId)
+                                 ->title());
   }
 
   std::string GetNotificationMessage() {
-    return base::UTF16ToUTF8(
-        message_center::MessageCenter::Get()
-            ->FindVisibleNotificationById(
-                UpdateNotificationController::kNotificationId)
-            ->message());
+    return base::UTF16ToUTF8(message_center::MessageCenter::Get()
+                                 ->FindVisibleNotificationById(kNotificationId)
+                                 ->message());
   }
 
   std::string GetNotificationButton(int index) {
-    return base::UTF16ToUTF8(
-        message_center::MessageCenter::Get()
-            ->FindVisibleNotificationById(
-                UpdateNotificationController::kNotificationId)
-            ->buttons()
-            .at(index)
-            .title);
+    return base::UTF16ToUTF8(message_center::MessageCenter::Get()
+                                 ->FindVisibleNotificationById(kNotificationId)
+                                 ->buttons()
+                                 .at(index)
+                                 .title);
   }
 
   int GetNotificationButtonCount() {
     return message_center::MessageCenter::Get()
-        ->FindVisibleNotificationById(
-            UpdateNotificationController::kNotificationId)
+        ->FindVisibleNotificationById(kNotificationId)
         ->buttons()
         .size();
   }
 
   int GetNotificationPriority() {
     return message_center::MessageCenter::Get()
-        ->FindVisibleNotificationById(
-            UpdateNotificationController::kNotificationId)
+        ->FindVisibleNotificationById(kNotificationId)
         ->priority();
+  }
+
+  void AddSlowBootFilePath(const base::FilePath& file_path) {
+    int bytes_written = base::WriteFile(file_path, "1\n", 2);
+    EXPECT_TRUE(bytes_written == 2);
+    Shell::Get()
+        ->system_notification_controller()
+        ->update_->slow_boot_file_path_ = file_path;
+  }
+
+  ShutdownConfirmationDialog* GetSlowBootConfirmationDialog() {
+    return Shell::Get()
+        ->system_notification_controller()
+        ->update_->confirmation_dialog_;
   }
 
  private:
@@ -83,8 +125,13 @@ TEST_F(UpdateNotificationControllerTest, VisibilityAfterUpdate) {
   EXPECT_FALSE(HasNotification());
 
   // Simulate an update.
-  Shell::Get()->system_tray_model()->ShowUpdateIcon(
-      mojom::UpdateSeverity::LOW, false, false, mojom::UpdateType::SYSTEM);
+  Shell::Get()->system_tray_model()->ShowUpdateIcon(UpdateSeverity::kLow, false,
+                                                    false, UpdateType::kSystem);
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification is now visible.
   ASSERT_TRUE(HasNotification());
@@ -94,24 +141,54 @@ TEST_F(UpdateNotificationControllerTest, VisibilityAfterUpdate) {
   EXPECT_EQ("Restart to update", GetNotificationButton(0));
 }
 
-#if defined(GOOGLE_CHROME_BUILD)
-TEST_F(UpdateNotificationControllerTest, VisibilityAfterFlashUpdate) {
+// Tests that the update icon becomes visible when an update becomes
+// available.
+TEST_F(UpdateNotificationControllerTest, VisibilityAfterUpdateWithSlowReboot) {
   // The system starts with no update pending, so the notification isn't
   // visible.
   EXPECT_FALSE(HasNotification());
 
+  // Add a slow boot file.
+  base::ScopedTempDir tmp_dir;
+  ASSERT_TRUE(tmp_dir.CreateUniqueTempDir());
+  AddSlowBootFilePath(tmp_dir.GetPath().Append("slow_boot_required"));
+
   // Simulate an update.
-  Shell::Get()->system_tray_model()->ShowUpdateIcon(
-      mojom::UpdateSeverity::LOW, false, false, mojom::UpdateType::FLASH);
+  Shell::Get()->system_tray_model()->ShowUpdateIcon(UpdateSeverity::kLow, false,
+                                                    false, UpdateType::kSystem);
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification is now visible.
   ASSERT_TRUE(HasNotification());
-  EXPECT_EQ("Adobe Flash Player update available", GetNotificationTitle());
-  EXPECT_EQ("Learn more about the latest " SYSTEM_APP_NAME " update",
+  EXPECT_EQ("Update available", GetNotificationTitle());
+  EXPECT_EQ("Learn more about the latest " SYSTEM_APP_NAME
+            " update. This Chromebook needs to restart to apply an update. "
+            "This can take up to 1 minute.",
             GetNotificationMessage());
   EXPECT_EQ("Restart to update", GetNotificationButton(0));
+
+  // Ensure Slow Boot Dialog is not open.
+  EXPECT_FALSE(GetSlowBootConfirmationDialog());
+
+  // Trigger Click on "Restart to Update" button in Notification.
+  message_center::MessageCenter::Get()->ClickOnNotificationButton(
+      kNotificationId, 0);
+
+  // Ensure Slow Boot Dialog is open and notification is removed.
+  ASSERT_TRUE(GetSlowBootConfirmationDialog());
+  EXPECT_FALSE(HasNotification());
+
+  // Click the cancel button on Slow Boot Confirmation Dialog.
+  GetSlowBootConfirmationDialog()->CancelDialog();
+
+  // Ensure that the Slow Boot Dialog is closed and notification is visible.
+  EXPECT_FALSE(GetSlowBootConfirmationDialog());
+  EXPECT_TRUE(HasNotification());
 }
-#endif
 
 // Tests that the update icon's visibility after an update becomes
 // available for downloading over cellular connection.
@@ -125,6 +202,11 @@ TEST_F(UpdateNotificationControllerTest,
   Shell::Get()->system_tray_model()->SetUpdateOverCellularAvailableIconVisible(
       true);
 
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
+
   // The notification is now visible.
   ASSERT_TRUE(HasNotification());
   EXPECT_EQ("Update available", GetNotificationTitle());
@@ -137,6 +219,11 @@ TEST_F(UpdateNotificationControllerTest,
   Shell::Get()->system_tray_model()->SetUpdateOverCellularAvailableIconVisible(
       false);
 
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
+
   // The notification disappears.
   EXPECT_FALSE(HasNotification());
 }
@@ -148,8 +235,13 @@ TEST_F(UpdateNotificationControllerTest,
   EXPECT_FALSE(HasNotification());
 
   // Simulate an update that requires factory reset.
-  Shell::Get()->system_tray_model()->ShowUpdateIcon(
-      mojom::UpdateSeverity::LOW, true, false, mojom::UpdateType::SYSTEM);
+  Shell::Get()->system_tray_model()->ShowUpdateIcon(UpdateSeverity::kLow, true,
+                                                    false, UpdateType::kSystem);
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification is now visible.
   ASSERT_TRUE(HasNotification());
@@ -167,8 +259,13 @@ TEST_F(UpdateNotificationControllerTest, VisibilityAfterRollback) {
   EXPECT_FALSE(HasNotification());
 
   // Simulate a rollback.
-  Shell::Get()->system_tray_model()->ShowUpdateIcon(
-      mojom::UpdateSeverity::LOW, false, true, mojom::UpdateType::SYSTEM);
+  Shell::Get()->system_tray_model()->ShowUpdateIcon(UpdateSeverity::kLow, false,
+                                                    true, UpdateType::kSystem);
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification is now visible.
   ASSERT_TRUE(HasNotification());
@@ -186,8 +283,13 @@ TEST_F(UpdateNotificationControllerTest, SetUpdateNotificationStateTest) {
   EXPECT_FALSE(HasNotification());
 
   // Simulate an update.
-  Shell::Get()->system_tray_model()->ShowUpdateIcon(
-      mojom::UpdateSeverity::LOW, false, false, mojom::UpdateType::SYSTEM);
+  Shell::Get()->system_tray_model()->ShowUpdateIcon(UpdateSeverity::kLow, false,
+                                                    false, UpdateType::kSystem);
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification is now visible.
   ASSERT_TRUE(HasNotification());
@@ -204,9 +306,14 @@ TEST_F(UpdateNotificationControllerTest, SetUpdateNotificationStateTest) {
 
   // Simulate notification type set to recommended.
   Shell::Get()->system_tray_model()->SetUpdateNotificationState(
-      mojom::NotificationStyle::ADMIN_RECOMMENDED,
+      NotificationStyle::kAdminRecommended,
       base::UTF8ToUTF16(recommended_notification_title),
       base::UTF8ToUTF16(recommended_notification_body));
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification's title and body have changed.
   ASSERT_TRUE(HasNotification());
@@ -224,9 +331,14 @@ TEST_F(UpdateNotificationControllerTest, SetUpdateNotificationStateTest) {
 
   // Simulate notification type set to required.
   Shell::Get()->system_tray_model()->SetUpdateNotificationState(
-      mojom::NotificationStyle::ADMIN_REQUIRED,
+      NotificationStyle::kAdminRequired,
       base::UTF8ToUTF16(required_notification_title),
       base::UTF8ToUTF16(required_notification_body));
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification's title and body have changed.
   ASSERT_TRUE(HasNotification());
@@ -239,7 +351,12 @@ TEST_F(UpdateNotificationControllerTest, SetUpdateNotificationStateTest) {
 
   // Simulate notification type set back to default.
   Shell::Get()->system_tray_model()->SetUpdateNotificationState(
-      mojom::NotificationStyle::DEFAULT, base::string16(), base::string16());
+      NotificationStyle::kDefault, std::u16string(), std::u16string());
+
+  // Showing Update Notification posts a task to check for slow boot request
+  // and use the result of that check to generate appropriate notification. Wait
+  // until everything is complete and then check if the notification is visible.
+  task_environment()->RunUntilIdle();
 
   // The notification has the default text.
   ASSERT_TRUE(HasNotification());
@@ -249,6 +366,34 @@ TEST_F(UpdateNotificationControllerTest, SetUpdateNotificationStateTest) {
   EXPECT_EQ("Restart to update", GetNotificationButton(0));
   EXPECT_NE(message_center::NotificationPriority::SYSTEM_PRIORITY,
             GetNotificationPriority());
+}
+
+TEST_F(UpdateNotificationControllerTest, VisibilityAfterLacrosUpdate) {
+  // The system starts with no update pending, so the notification isn't
+  // visible.
+  EXPECT_FALSE(HasNotification());
+
+  // Simulate an update.
+  AddNotificationWaiter waiter;
+  Shell::Get()->system_tray_model()->ShowUpdateIcon(UpdateSeverity::kLow, false,
+                                                    false, UpdateType::kLacros);
+  waiter.Wait();
+
+  // The notification is now visible.
+  ASSERT_TRUE(HasNotification());
+  EXPECT_EQ("Lacros update available", GetNotificationTitle());
+  EXPECT_EQ("Device restart is required to apply the update.",
+            GetNotificationMessage());
+  EXPECT_EQ("Restart to update", GetNotificationButton(0));
+
+  // Click the "Restart to update" button.
+  message_center::MessageCenter::Get()
+      ->FindVisibleNotificationById(kNotificationId)
+      ->delegate()
+      ->Click(/*button_index=*/0, /*reply=*/absl::nullopt);
+
+  // Controller tried to restart chrome.
+  EXPECT_EQ(1, GetSessionControllerClient()->attempt_restart_chrome_count());
 }
 
 }  // namespace ash

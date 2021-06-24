@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/compiler/compiler.gni")
 import("//testing/test.gni")
 
 component("ports") {
@@ -24,8 +25,6 @@ component("ports") {
     "port_locker.h",
     "port_ref.cc",
     "port_ref.h",
-    "slot_ref.cc",
-    "slot_ref.h",
     "user_data.h",
     "user_message.cc",
     "user_message.h",
@@ -33,14 +32,15 @@ component("ports") {
 
   defines = [ "IS_MOJO_CORE_PORTS_IMPL" ]
 
-  public_deps = [
-    "//base",
-  ]
+  public_deps = [ "//base" ]
 
   if (!is_nacl) {
-    deps = [
-      "//crypto",
-    ]
+    deps = [ "//crypto" ]
+  }
+
+  if (!is_debug && !optimize_for_size) {
+    configs -= [ "//build/config/compiler:default_optimization" ]
+    configs += [ "//build/config/compiler:optimize_max" ]
   }
 }
 

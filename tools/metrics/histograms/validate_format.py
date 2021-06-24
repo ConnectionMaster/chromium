@@ -8,18 +8,15 @@
 import os
 import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'common'))
-import path_util
-
 import extract_histograms
 import histogram_paths
 import merge_xml
 
 def main():
-  doc = merge_xml.MergeFiles(histogram_paths.ALL_XMLS)
+  doc = merge_xml.MergeFiles(histogram_paths.ALL_XMLS,
+                             should_expand_owners=True)
   _, errors = extract_histograms.ExtractHistogramsFromDom(doc)
   sys.exit(errors)
 
 if __name__ == '__main__':
   main()
-

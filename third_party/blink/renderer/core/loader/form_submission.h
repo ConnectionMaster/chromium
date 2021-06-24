@@ -31,24 +31,25 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_FORM_SUBMISSION_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LOADER_FORM_SUBMISSION_H_
 
-#include "base/macros.h"
-#include "third_party/blink/public/web/web_triggering_event_info.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-blink-forward.h"
+#include "third_party/blink/public/web/web_frame_load_type.h"
 #include "third_party/blink/renderer/core/loader/frame_load_request.h"
 #include "third_party/blink/renderer/core/loader/navigation_policy.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
-class Document;
 class EncodedFormData;
 class Event;
+class Frame;
 class HTMLFormControlElement;
 class HTMLFormElement;
 
-class FormSubmission : public GarbageCollectedFinalized<FormSubmission> {
+class FormSubmission final : public GarbageCollected<FormSubmission> {
  public:
   enum SubmitMethod { kGetMethod, kPostMethod, kDialogMethod };
 
@@ -60,6 +61,8 @@ class FormSubmission : public GarbageCollectedFinalized<FormSubmission> {
         : method_(kGetMethod),
           is_multi_part_form_(false),
           encoding_type_("application/x-www-form-urlencoded") {}
+    Attributes(const Attributes&) = delete;
+    Attributes& operator=(const Attributes&) = delete;
 
     SubmitMethod Method() const { return method_; }
     static SubmitMethod ParseMethodType(const String&);
@@ -90,29 +93,38 @@ class FormSubmission : public GarbageCollectedFinalized<FormSubmission> {
     AtomicString target_;
     AtomicString encoding_type_;
     String accept_charset_;
-
-    DISALLOW_COPY_AND_ASSIGN(Attributes);
   };
 
   static FormSubmission* Create(HTMLFormElement*,
                                 const Attributes&,
-                                Event*,
+                                const Event*,
                                 HTMLFormControlElement* submit_button);
 
-  FormSubmission(SubmitMethod,
-                 const KURL& action,
-                 const AtomicString& target,
-                 const AtomicString& content_type,
-                 HTMLFormElement*,
-                 scoped_refptr<EncodedFormData>,
-                 const String& boundary,
-                 Event*);
+  FormSubmission(
+      SubmitMethod,
+      const KURL& action,
+      const AtomicString& target,
+      const AtomicString& content_type,
+      HTMLFormElement*,
+      scoped_refptr<EncodedFormData>,
+      const Event*,
+      NavigationPolicy navigation_policy,
+      mojom::blink::TriggeringEventInfo triggering_event_info,
+      ClientNavigationReason reason,
+      std::unique_ptr<ResourceRequest> resource_request,
+      Frame* target_frame,
+      WebFrameLoadType load_type,
+      LocalDOMWindow* origin_window,
+      const LocalFrameToken& initiator_frame_token,
+      std::unique_ptr<SourceLocation> source_location,
+      mojo::PendingRemote<mojom::blink::PolicyContainerHostKeepAliveHandle>
+          initiator_policy_container_keep_alive_handle);
   // FormSubmission for DialogMethod
   explicit FormSubmission(const String& result);
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
-  FrameLoadRequest CreateFrameLoadRequest(Document* origin_document);
+  void Navigate();
 
   KURL RequestURL() const;
 
@@ -120,9 +132,10 @@ class FormSubmission : public GarbageCollectedFinalized<FormSubmission> {
   const KURL& Action() const { return action_; }
   HTMLFormElement* Form() const { return form_.Get(); }
   EncodedFormData* Data() const { return form_data_.get(); }
-  NavigationPolicy GetNavigationPolicy() const { return navigation_policy_; }
 
   const String& Result() const { return result_; }
+
+  Frame* TargetFrame() const { return target_frame_; }
 
  private:
   // FIXME: Hold an instance of Attributes instead of individual members.
@@ -132,10 +145,27 @@ class FormSubmission : public GarbageCollectedFinalized<FormSubmission> {
   AtomicString content_type_;
   Member<HTMLFormElement> form_;
   scoped_refptr<EncodedFormData> form_data_;
-  String boundary_;
   NavigationPolicy navigation_policy_;
-  WebTriggeringEventInfo triggering_event_info_;
+  mojom::blink::TriggeringEventInfo triggering_event_info_;
   String result_;
+  ClientNavigationReason reason_;
+  std::unique_ptr<ResourceRequest> resource_request_;
+  Member<Frame> target_frame_;
+  WebFrameLoadType load_type_;
+  Member<LocalDOMWindow> origin_window_;
+  LocalFrameToken initiator_frame_token_;
+
+  // Since form submissions are scheduled asynchronously, we need to store the
+  // source location when we create the form submission and then pass it over to
+  // the `FrameLoadRequest`. Capturing the source location later when creating
+  // the `FrameLoadRequest` will not return the correct location.
+  std::unique_ptr<SourceLocation> source_location_;
+
+  // Since form submissions are scheduled asynchronously, we need to keep a
+  // handle to the initiator PolicyContainerHost. This ensures that it remains
+  // available in the browser until we create the NavigationRequest.
+  mojo::PendingRemote<mojom::blink::PolicyContainerHostKeepAliveHandle>
+      initiator_policy_container_keep_alive_handle_;
 };
 
 }  // namespace blink

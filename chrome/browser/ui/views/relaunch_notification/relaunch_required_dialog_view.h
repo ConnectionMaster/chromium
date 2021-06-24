@@ -13,7 +13,6 @@
 
 class Browser;
 namespace views {
-class Label;
 class Widget;
 }  // namespace views
 
@@ -39,21 +38,8 @@ class RelaunchRequiredDialogView : views::DialogDelegateView {
   void SetDeadline(base::Time deadline);
 
   // views::DialogDelegateView:
-  bool Cancel() override;
-  bool Accept() override;
-  int GetDefaultDialogButton() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  ui::ModalType GetModalType() const override;
-  base::string16 GetWindowTitle() const override;
-  bool ShouldShowCloseButton() const override;
-  gfx::ImageSkia GetWindowIcon() override;
-  bool ShouldShowWindowIcon() const override;
-  int GetHeightForWidth(int width) const override;
-  void Layout() override;
-
- protected:
-  // views::DialogDelegateView:
-  gfx::Size CalculatePreferredSize() const override;
+  std::u16string GetWindowTitle() const override;
+  ui::ImageModel GetWindowIcon() override;
 
  private:
   RelaunchRequiredDialogView(base::Time deadline,
@@ -61,14 +47,6 @@ class RelaunchRequiredDialogView : views::DialogDelegateView {
 
   // Invoked when the timer fires to refresh the title text.
   void UpdateWindowTitle();
-
-  static constexpr int kTitleIconSize = 20;
-
-  // A callback to run if the user accepts the prompt to relaunch the browser.
-  base::RepeatingClosure on_accept_;
-
-  // The label containing the body text of the dialog.
-  views::Label* body_label_;
 
   // Timer that schedules title refreshes.
   RelaunchRequiredTimer relaunch_required_timer_;

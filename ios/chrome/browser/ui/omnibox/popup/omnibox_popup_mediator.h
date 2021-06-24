@@ -2,18 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef IOS_CHROME_BROWSER_UI_OMNIBOX_OMNIBOX_POPUP_MEDIATOR_H_
-#define IOS_CHROME_BROWSER_UI_OMNIBOX_OMNIBOX_POPUP_MEDIATOR_H_
+#ifndef IOS_CHROME_BROWSER_UI_OMNIBOX_POPUP_OMNIBOX_POPUP_MEDIATOR_H_
+#define IOS_CHROME_BROWSER_UI_OMNIBOX_POPUP_OMNIBOX_POPUP_MEDIATOR_H_
 
 #import <UIKit/UIKit.h>
-#include "components/omnibox/browser/autocomplete_result.h"
 
+#include <memory>
+
+#include "components/omnibox/browser/autocomplete_result.h"
 #import "ios/chrome/browser/ui/omnibox/popup/autocomplete_result_consumer.h"
 #import "ios/chrome/browser/ui/omnibox/popup/favicon_retriever.h"
 #import "ios/chrome/browser/ui/omnibox/popup/image_retriever.h"
 #include "ui/base/window_open_disposition.h"
 
 @protocol BrowserCommands;
+@class DefaultBrowserPromoNonModalScheduler;
 @class OmniboxPopupPresenter;
 class FaviconLoader;
 class WebStateList;
@@ -58,6 +61,8 @@ class OmniboxPopupMediatorDelegate {
 
 @property(nonatomic, weak) id<BrowserCommands> dispatcher;
 @property(nonatomic, weak) id<AutocompleteResultConsumer> consumer;
+// Scheduler to notify about events happening in this popup.
+@property(nonatomic, weak) DefaultBrowserPromoNonModalScheduler* promoScheduler;
 @property(nonatomic, assign, getter=isIncognito) BOOL incognito;
 // Whether the popup is open.
 @property(nonatomic, assign, getter=isOpen) BOOL open;
@@ -66,6 +71,9 @@ class OmniboxPopupMediatorDelegate {
 @property(nonatomic, strong) OmniboxPopupPresenter* presenter;
 // The web state list this mediator is handling.
 @property(nonatomic, assign) WebStateList* webStateList;
+// Whether the default search engine is Google impacts which icon is used in
+// some cases
+@property(nonatomic, assign) BOOL defaultSearchEngineIsGoogle;
 
 // Designated initializer. Takes ownership of |imageFetcher|.
 - (instancetype)initWithFetcher:
@@ -82,6 +90,7 @@ class OmniboxPopupMediatorDelegate {
 
 // Updates the popup with the |results|.
 - (void)updateWithResults:(const AutocompleteResult&)results;
+
 @end
 
-#endif  // IOS_CHROME_BROWSER_UI_OMNIBOX_OMNIBOX_POPUP_MEDIATOR_H_
+#endif  // IOS_CHROME_BROWSER_UI_OMNIBOX_POPUP_OMNIBOX_POPUP_MEDIATOR_H_

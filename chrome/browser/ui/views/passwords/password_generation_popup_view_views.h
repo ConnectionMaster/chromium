@@ -11,6 +11,10 @@
 
 class PasswordGenerationPopupController;
 
+namespace views {
+class Label;
+}
+
 class PasswordGenerationPopupViewViews : public autofill::AutofillPopupBaseView,
                                          public PasswordGenerationPopupView {
  public:
@@ -19,13 +23,12 @@ class PasswordGenerationPopupViewViews : public autofill::AutofillPopupBaseView,
       views::Widget* parent_widget);
 
   // PasswordGenerationPopupView implementation
-  void Show() override;
+  bool Show() override WARN_UNUSED_RESULT;
   void Hide() override;
   void UpdateState() override;
   void UpdatePasswordValue() override;
-  void UpdateBoundsAndRedrawPopup() override;
+  bool UpdateBoundsAndRedrawPopup() override WARN_UNUSED_RESULT;
   void PasswordSelectionUpdated() override;
-  bool IsPointInPasswordBounds(const gfx::Point& point) override;
 
  private:
   class GeneratedPasswordBox;
@@ -35,12 +38,16 @@ class PasswordGenerationPopupViewViews : public autofill::AutofillPopupBaseView,
   void CreateLayoutAndChildren();
 
   // views:Views implementation.
+  void OnThemeChanged() override;
   void OnPaint(gfx::Canvas* canvas) override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   gfx::Size CalculatePreferredSize() const override;
 
   // Sub view that displays the actual generated password.
   GeneratedPasswordBox* password_view_ = nullptr;
+
+  // The footer label.
+  views::Label* help_label_ = nullptr;
 
   // Controller for this view. Weak reference.
   PasswordGenerationPopupController* controller_;

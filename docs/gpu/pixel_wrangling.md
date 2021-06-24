@@ -46,14 +46,22 @@ so on. The waterfalls we’re interested in are:
         compare the `got_angle_revision` buildbot property on the GPU builders
         or `parent_got_angle_revision` on the testers. This revision can be
         used to do a `git log` in the `third_party/angle` repository.
+*   [Chromium SwANGLE]
+    *   These bots run GPU tests on top of ANGLE's GLES implementation running
+        on top of SwiftShader's Vulkan implementation purely in software.
+        Regressions should mostly be handled by the [ANGLE Wrangler], but some
+        failures fall into Pixel Wrangler's domain, for example, WebGL failures
+        due to Chromium-side and WebGL-side changes on
+        linux-swangle-chromium-x64, mac-swangle-chromium-x64 and
+        win-swangle-chromium-x86 bots.
 
 <!-- TODO(kainino): update link when the page is migrated -->
 [Tour of the Chromium Buildbot Waterfall]: http://www.chromium.org/developers/testing/chromium-build-infrastructure/tour-of-the-chromium-buildbot
 [Chromium GPU]: https://ci.chromium.org/p/chromium/g/chromium.gpu/console?reload=120
 [Chromium GPU FYI]: https://ci.chromium.org/p/chromium/g/chromium.gpu.fyi/console?reload=120
+[Chromium SwANGLE]: https://ci.chromium.org/p/chromium/g/chromium.swangle/console?reload=120
 [ANGLE tryservers]: https://build.chromium.org/p/tryserver.chromium.angle/waterfall
-<!-- TODO(kainino): update link when the page is migrated -->
-[ANGLE Wrangler]: https://sites.google.com/a/chromium.org/dev/developers/how-tos/angle-wrangling
+[ANGLE Wrangler]: https://chromium.googlesource.com/angle/angle/+/main/infra/ANGLEWrangling.md
 
 ## Test Suites
 
@@ -80,6 +88,8 @@ test the code that is actually shipped. As of this writing, the tests included:
     `src/gpu/gles2_conform_support/BUILD.gn`
 *   `gl_tests`: see `src/gpu/BUILD.gn`
 *   `gl_unittests`: see `src/ui/gl/BUILD.gn`
+*   `rendering_representative_perf_tests` (on the chromium.gpu.fyi waterfall):
+    see `src/chrome/test/BUILD.gn`
 
 And more. See
 [`src/testing/buildbot/README.md`](../../testing/buildbot/README.md)
@@ -110,7 +120,7 @@ shift, and a calendar appointment.
         GPU bots.
     *   In this case you'll upload CLs to Gerrit to perform reverts (optionally
         using the new "Revert" button in the UI), and might consider using
-        `TBR=` to speed through trivial and urgent CLs. In general, try to send
+        `Tbr:` to speed through trivial and urgent CLs. In general, try to send
         all CLs through the commit queue.
     *   Contact bajones, kainino, kbr, vmiura, zmo, or another member of the
         Chrome GPU team who's already a committer for help landing patches or
@@ -127,9 +137,9 @@ shift, and a calendar appointment.
 ### How to Keep the Bots Green
 
 1.  Watch for redness on the tree.
-    1.  [Sheriff-O-Matic now has support for the chromium.gpu.fyi waterfall]!
-    1.  The chromium.gpu bots are covered under Sheriff-O-Matic's [Chromium
-        tab]. As pixel wrangler, ignore any non-GPU test failures in this tab.
+    1.  [Sheriff-O-Matic] now has support for all the
+        [GPU Bots' Waterfalls](#GPU-Bots_Waterfalls) under the
+        [Chromium GPU][Sheriff-O-Matic] tab!
     1.  The bots are expected to be green all the time. Flakiness on these bots
         is neither expected nor acceptable.
     1.  If a bot goes consistently red, it's necessary to figure out whether a
@@ -157,6 +167,12 @@ shift, and a calendar appointment.
         revert message, provide a clear description of what broke, links to
         failing builds, and excerpts of the failure logs, because the build
         logs expire after a few days.
+    1.  If the failure is one that you believe should have been caught by an
+        optional GPU trybot, you can use the script at
+        [`//content/test/gpu/trim_culprit_cls.py`][trim culprit cls] to help
+        trim down the blamelist by finding out which CLs passed said trybot
+        before submission. See the documentation at the top of the script for
+        example usage, etc.
 1.  Make sure the bots are running jobs.
     1.  Keep an eye on the console views of the various bots.
     1.  Make sure the bots are all actively processing jobs. If they go offline
@@ -200,29 +216,45 @@ shift, and a calendar appointment.
         main waterfalls.
 1.  Check if any pixel test failures are actual failures or need to be
     rebaselined.
-    1.  For a given build failing the pixel tests, click the "stdio" link of
-        the "pixel" step.
-    1.  The output will contain a link of the form
-        <http://chromium-browser-gpu-tests.commondatastorage.googleapis.com/view_test_results.html?242523_Linux_Release_Intel__telemetry>
-    1.  Visit the link to see whether the generated or reference images look
-        incorrect.
-    1.  All of the reference images for all of the bots are stored in cloud
-        storage under [chromium-gpu-archive/reference-images]. They are indexed
-        by version number, OS, GPU vendor, GPU device, and whether or not
-        antialiasing is enabled in that configuration. You can download the
-        reference images individually to examine them in detail.
-1.  Rebaseline pixel test reference images if necessary.
-    1.  Follow the [instructions on the GPU testing page].
-    1.  Alternatively, if absolutely necessary, you can use the [Chrome
-        Internal GPU Pixel Wrangling Instructions] to delete just the broken
-        reference images for a particular configuration.
+    1. For a given build failing the pixel tests, look for either:
+        1. One or more links named `gold_triage_link for <test name>`. This will
+           be the case if there are fewer than 10 links. If the test was run on
+           a trybot, the link will instead be named
+           `triage_link_for_entire_cl for <test name>` (the weird naming comes
+           with how the recipe processes and displays links).
+        1. A single link named
+           `Too many artifacts produced to link individually, click for links`.
+           This will be the case if there are 10 or more links.
+    1. In either case, follow the link(s) to the triage page for the image the
+       failing test produced.
+        1. If the test was run on a trybot, all the links will point to the same
+           page, which will be the triage page for every untriaged image
+           produced by the CL being tested.
+    1. Ensure you are signed in to the Gold server the links take you to (both
+       @google.com and @chromium.org accounts work).
+    1. Triage images on those pages (typically by approving them, but you can
+       mark them as negative if it is an image that should not be produced). In
+       the case of a negative image, a bug should be filed on
+       [crbug](https://crbug.com) to investigate and fix the cause of that
+       particular image being produced, as future occurrences of it will cause
+       the test to fail. Such bugs should include the `Internals>GPU>Testing`
+       component and whatever component is suitable for the type of failing
+       test (likely `Blink>WebGL` or `Blink>Canvas`). The test should also be
+       marked as failing or skipped(see the item below on updating the
+       Telemetry-based test expectations) so that the test failure doesn't show
+       up as a builder failure. If the failure is consistent, prefer to skip
+       instead of mark as failing so that the failure links don't pile up. If
+       the failure occurs on the trybots, include the change to the
+       expectations in your CL.
+    1. Additional, less common triage steps for the pixel tests can be found in
+       [this section][gold less common failures] of the GPU Gold documentation.
 1.  Update Telemetry-based test expectations if necessary.
     1.  Most of the GPU tests are run inside a full Chromium browser, launched
         by Telemetry, rather than a Gtest harness. The tests and their
-        expectations are contained in [src/content/test/gpu/gpu_tests/] . See
-        for example <code>[webgl_conformance_expectations.py]</code>,
-        <code>[gpu_process_expectations.py]</code> and
-        <code>[pixel_expectations.py]</code>.
+        expectations are contained in [src/content/test/gpu/gpu_tests/test_expectations] . See
+        for example <code>[webgl_conformance_expectations.txt]</code>,
+        <code>[gpu_process_expectations.txt]</code> and
+        <code>[pixel_expectations.txt]</code>.
     1.  See the header of the file a list of modifiers to specify a bot
         configuration. It is possible to specify OS (down to a specific
         version, say, Windows 7 or Mountain Lion), GPU vendor
@@ -237,11 +269,17 @@ shift, and a calendar appointment.
         close the Chromium tree.
     1.  Please read the section on [stamping out flakiness] for motivation on
         how important it is to eliminate flakiness rather than hiding it.
+    1. For failures of rendering_representative_perf_tests please refer to its
+    [instructions on updating expectations][rendering_representative_perf_tests].
+    1. It's always better to have the CL reviewed properly, but for urgent
+       suppressions when no reviewer is available, it is possible to rubber
+       stamp the CL via adding `rubber-stamper@appspot.gserviceaccount.com` as
+       your reviewer, in addition to the regular reviewer.
 1.  For the remaining Gtest-style tests, use the [`DISABLED_`
     modifier][gtest-DISABLED] to suppress any failures if necessary.
 
-[Sheriff-O-Matic now has support for the chromium.gpu.fyi waterfall]: https://sheriff-o-matic.appspot.com/chromium.gpu.fyi
-[Chromium tab]: https://sheriff-o-matic.appspot.com/chromium
+[Sheriff-O-Matic]: https://sheriff-o-matic.appspot.com/chromium.gpu
+[trim culprit cls]: https://source.chromium.org/chromium/chromium/src/+/main:content/test/gpu/trim_culprit_cls.py
 [tree sheriffing page]: https://sites.google.com/a/chromium.org/dev/developers/tree-sheriffs
 [linux-rel]: https://ci.chromium.org/p/chromium/builders/luci.chromium.try/linux-rel
 [luci.chromium.try]: https://ci.chromium.org/p/chromium/g/luci.chromium.try/builders
@@ -253,15 +291,15 @@ https://ci.chromium.org/p/chromium/builders/luci.chromium.try/win7-rel
 [Chromium Try Flakes]: http://chromium-try-flakes.appspot.com/
 <!-- TODO(kainino): link doesn't work, but is still included from chromium-swarm homepage so not removing it now -->
 [Swarming Server Stats]: https://chromium-swarm.appspot.com/stats
-[chromium-gpu-archive/reference-images]: https://console.developers.google.com/storage/chromium-gpu-archive/reference-images
-[instructions on the GPU testing page]: https://chromium.googlesource.com/chromium/src/+/master/docs/gpu/gpu_testing.md
+[gold less common failures]: gpu_pixel_testing_with_gold.md#Triaging-Less-Common-Failures
 [Chrome Internal GPU Pixel Wrangling Instructions]: https://sites.google.com/a/google.com/client3d/documents/chrome-internal-gpu-pixel-wrangling-instructions
-[src/content/test/gpu/gpu_tests/]: https://chromium.googlesource.com/chromium/src/+/master/content/test/gpu/gpu_tests/
-[webgl_conformance_expectations.py]: https://chromium.googlesource.com/chromium/src/+/master/content/test/gpu/gpu_tests/webgl_conformance_expectations.py
-[gpu_process_expectations.py]: https://chromium.googlesource.com/chromium/src/+/master/content/test/gpu/gpu_tests/gpu_process_expectations.py
-[pixel_expectations.py]: https://chromium.googlesource.com/chromium/src/+/master/content/test/gpu/gpu_tests/pixel_expectations.py
+[src/content/test/gpu/gpu_tests/test_expectations]: https://chromium.googlesource.com/chromium/src/+/main/content/test/gpu/gpu_tests/test_expectations
+[webgl_conformance_expectations.txt]: https://chromium.googlesource.com/chromium/src/+/main/content/test/gpu/gpu_tests/test_expectations/webgl_conformance_expectations.txt
+[gpu_process_expectations.txt]: https://chromium.googlesource.com/chromium/src/+/main/content/test/gpu/gpu_tests/test_expectations/gpu_process_expectations.txt
+[pixel_expectations.txt]: https://chromium.googlesource.com/chromium/src/+/main/content/test/gpu/gpu_tests/test_expectations/pixel_expectations.txt
 [stamping out flakiness]: gpu_testing.md#Stamping-out-Flakiness
 [gtest-DISABLED]: https://github.com/google/googletest/blob/master/googletest/docs/AdvancedGuide.md#temporarily-disabling-tests
+[rendering_representative_perf_tests]: ../testing/rendering_representative_perf_tests.md#Updating-Expectations
 
 ### When Bots Misbehave (SSHing into a bot)
 
@@ -283,8 +321,16 @@ https://ci.chromium.org/p/chromium/builders/luci.chromium.try/win7-rel
 
 [telemetry documentation]: https://cs.chromium.org/chromium/src/third_party/catapult/telemetry/docs/run_benchmarks_locally.md
 
-## Extending the GPU Pixel Wrangling Rotation
+## Modifying the GPU Pixel Wrangling Rotation
 
-See the [Chrome Internal GPU Pixel Wrangling Instructions] for information on extending the rotation.
+You may find yourself needing to modify the current rotation. Whether to extend
+the rotation, or if scheduling conflicts arise.
+
+For scheduling conflicts you can swap your shift with another wrangler. A good
+approach is to look at the rotation calendar, finding someone with nearby dates
+to yours. Reach out to them, as they will often be willing to swap.
+
+To actually modify the rotation:
+See the [Chrome Internal GPU Pixel Wrangling Instructions] for information.
 
 [Chrome Internal GPU Pixel Wrangling Instructions]: https://sites.google.com/a/google.com/client3d/documents/chrome-internal-gpu-pixel-wrangling-instructions

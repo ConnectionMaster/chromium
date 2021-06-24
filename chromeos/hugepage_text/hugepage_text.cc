@@ -1,7 +1,7 @@
 // Copyright 2015 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-// Author: Ken Chen <kenchen@google.com>
+// Author: Ken Chen <kenchen@google.com> Tiancong Wang <tcwang@google.com>
 //
 // hugepage text library to remap process executable segment with hugepages.
 
@@ -14,6 +14,29 @@
 
 #include "base/bit_cast.h"
 #include "base/logging.h"
+#include "base/posix/eintr_wrapper.h"
+
+// CHROMEOS_ORDERFILE_USE is a flag intended to use orderfile
+// to link Chrome. Only when orderfile is used, we will use hugepages.
+
+// These function are here to delimit the start and end of the symbols
+// ordered by orderfile.
+// Due to ICF (Identical Code Folding), the linker merges functions
+// that have the same code (or empty). So we need to give these functions
+// some unique body, using inline .word in assembly.
+// Note that .word means different sizes in different architectures.
+// So we choose 16-bit numbers.
+extern "C" {
+void chrome_end_ordered_code() {
+  asm(".word 0xd44d");
+  asm(".word 0xc5b0");
+}
+
+void chrome_begin_ordered_code() {
+  asm(".word 0xa073");
+  asm(".word 0xdda6");
+}
+}
 
 namespace chromeos {
 
@@ -29,6 +52,15 @@ namespace chromeos {
 #define MADV_HUGEPAGE 14
 #endif
 
+#ifdef CHROMEOS_ORDERFILE_USE
+constexpr static bool kIsOrderfileEnabled = true;
+#else
+constexpr static bool kIsOrderfileEnabled = false;
+#endif
+
+const base::Feature kCrOSHugepageRemapAndLockZygote{
+    "CrOSHugepageRemapAndLockInZygote", base::FEATURE_ENABLED_BY_DEFAULT};
+
 const int kHpageShift = 21;
 const int kHpageSize = (1 << kHpageShift);
 const int kHpageMask = (~(kHpageSize - 1));
@@ -37,9 +69,10 @@ const int kProtection = (PROT_READ | PROT_WRITE);
 const int kMremapFlags = (MREMAP_MAYMOVE | MREMAP_FIXED);
 
 // The number of hugepages we want to use to map chrome text section
-// to hugepages. With the help of AutoFDO, the hot functions are grouped
-// in to a small area of the binary.
-const int kNumHugePages = 15;
+// to hugepages. Map at least 8 hugepages because of hardware support.
+// Map at most 16 hugepages to avoid using too many hugepages.
+constexpr static int kMinNumHugePages = 8;
+constexpr static int kMaxNumHugePages = 16;
 
 // Get an anonymous mapping backed by explicit transparent hugepage
 // Return NULL if such mapping can not be established.
@@ -102,7 +135,7 @@ static void MremapHugetlbText(void* vaddr, const size_t hsize) {
   NoAsanAlignedMemcpy(haddr, vaddr, hsize);
 
   // change mapping protection to read only now that it has done the copy
-  if (mprotect(haddr, hsize, PROT_READ | PROT_EXEC)) {
+  if (HANDLE_EINTR(mprotect(haddr, hsize, PROT_READ | PROT_EXEC))) {
     PLOG(INFO) << "can not change protection to r-x, fall back to small page";
     munmap(haddr, hsize);
     return;
@@ -116,33 +149,76 @@ static void MremapHugetlbText(void* vaddr, const size_t hsize) {
   }
 }
 
-// Top level text remapping function.
+// Utility function to get 2MB-aligned address smaller or larger than the
+// given address.
+// Inputs: address, the address to get 2MB-aligned address for.
+//         round_up, whether to get larger (true) or smaller (false) 2MB-aligned
+//         address.
+// Return: 2MB-aligned address rounded up or down. Or itself if it's
+//         already 2MB-aligned.
+static size_t RoundToHugepageAlignment(size_t address, bool round_up) {
+  // Whether it's round_up or not, if the address is exactly 2MB-aligned,
+  // just return itself
+  if (address % kHpageSize == 0)
+    return address;
+  return round_up ? (address / kHpageSize + 1) * kHpageSize
+                  : address / kHpageSize * kHpageSize;
+}
+
+// Top level text remapping function, when orderfile is enabled.
 //
 // Inputs: vaddr, the starting virtual address to remap to hugepage
 //         segsize, size of the memory segment to remap in bytes
 // Return: none
 // Effect: physical backing page changed from small page to hugepage. If there
-//         are error condition, the remaping operation is aborted.
-static void RemapHugetlbText(void* vaddr, const size_t segsize) {
-  // remove unaligned head regions
-  uintptr_t head_gap =
-      (kHpageSize - reinterpret_cast<uintptr_t>(vaddr) % kHpageSize) %
-      kHpageSize;
-  uintptr_t addr = reinterpret_cast<uintptr_t>(vaddr) + head_gap;
-
-  if (segsize < head_gap)
+//         are error condition, the remapping operation is aborted.
+static void RemapHugetlbTextWithOrderfileLayout(void* vaddr,
+                                                const size_t segsize) {
+  auto text_start = reinterpret_cast<size_t>(vaddr);
+  auto text_end = text_start + segsize;
+  auto marker_start = reinterpret_cast<size_t>(chrome_begin_ordered_code);
+  auto marker_end = reinterpret_cast<size_t>(chrome_end_ordered_code);
+  // Check if the markers are ordered correctly by the orderfile
+  if (!(marker_start < marker_end && text_start <= marker_start &&
+        marker_end < text_end)) {
+    LOG(WARNING) << "The ordering seems incorrect, fall back to small page";
     return;
+  }
 
-  size_t hsize = segsize - head_gap;
-  hsize = hsize & kHpageMask;
+  // Try to map symbols from the 2MB-aligned address before marker_start
+  size_t mapping_start = RoundToHugepageAlignment(marker_start, false);
+  if (mapping_start < text_start) {
+    // If the address is outside of text section, start to map
+    // at the 2MB-aligned address after the marker_start
+    mapping_start = RoundToHugepageAlignment(marker_start, true);
+  }
 
-  if (hsize > kHpageSize * kNumHugePages)
-    hsize = kHpageSize * kNumHugePages;
+  // Try to map symbols to the 2MB-aligned address after the marker_end
+  size_t mapping_end = RoundToHugepageAlignment(marker_end, true);
+  if (mapping_end > text_end) {
+    // If the address is outside of text section, end mapping at
+    // the 2MB-aligned address before the marker_end
+    // Note that this is not expected to happen for current linker
+    // behavior, as the markers are placed in the front (for x86) or
+    // are placed in the middle (for ARM/ARM64/PowerPC)
+    mapping_end = RoundToHugepageAlignment(marker_end, false);
+  }
 
-  if (hsize == 0)
-    return;
+  size_t hsize = mapping_end - mapping_start;
 
-  MremapHugetlbText(reinterpret_cast<void*>(addr), hsize);
+  // Make sure the number of hugepages used is between kMinNumHugePages
+  // and kMaxNumHugePages.
+  if (hsize < kHpageSize * kMinNumHugePages) {
+    LOG(WARNING) << "Orderfile ordered fewer than " << kMinNumHugePages
+                 << " huge pages.";
+    hsize = kHpageSize * kMinNumHugePages;
+  } else if (hsize > kHpageSize * kMaxNumHugePages) {
+    LOG(WARNING) << "Orderfile ordered more than " << kMaxNumHugePages
+                 << " huge pages.";
+    hsize = kHpageSize * kMaxNumHugePages;
+  }
+
+  MremapHugetlbText(reinterpret_cast<void*>(mapping_start), hsize);
 }
 
 // For a given ELF program header descriptor, iterates over all segments within
@@ -170,9 +246,7 @@ static int FilterElfHeader(struct dl_phdr_info* info, size_t size, void* data) {
         info->dlpi_phdr[i].p_flags == (PF_R | PF_X)) {
       vaddr = bit_cast<void*>(info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
       segsize = info->dlpi_phdr[i].p_filesz;
-
-      RemapHugetlbText(vaddr, segsize);
-      // Only re-map the first text segment.
+      RemapHugetlbTextWithOrderfileLayout(vaddr, segsize);
       return 1;
     }
   }
@@ -185,7 +259,12 @@ static int FilterElfHeader(struct dl_phdr_info* info, size_t size, void* data) {
 // the hugepages. Any errors will cause the failing piece of this to be rolled
 // back, so nothing world-ending can come from this function (hopefully ;) ).
 void InitHugepagesAndMlockSelf(void) {
-  dl_iterate_phdr(FilterElfHeader, 0);
+  // The following function is conditionally compiled, so use
+  // the statements to avoid compiler warnings of unused functions
+  if (kIsOrderfileEnabled &&
+      base::FeatureList::IsEnabled(chromeos::kCrOSHugepageRemapAndLockZygote)) {
+    dl_iterate_phdr(FilterElfHeader, 0);
+  }
 }
 
 }  // namespace chromeos

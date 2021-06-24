@@ -11,30 +11,31 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/task/post_task.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/version.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/update_client/activity_data_service.h"
 #include "components/update_client/component.h"
 #include "components/update_client/net/url_loader_post_interceptor.h"
 #include "components/update_client/persisted_data.h"
+#include "components/update_client/test_activity_data_service.h"
 #include "components/update_client/test_configurator.h"
 #include "components/update_client/update_engine.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 using std::string;
@@ -55,58 +56,6 @@ base::FilePath test_file(const char* file) {
 
 const char kUpdateItemId[] = "jebgalgnebhfojomionfpkfelancnnkf";
 
-class ActivityDataServiceTest final : public ActivityDataService {
- public:
-  bool GetActiveBit(const std::string& id) const override;
-  void ClearActiveBit(const std::string& id) override;
-  int GetDaysSinceLastActive(const std::string& id) const override;
-  int GetDaysSinceLastRollCall(const std::string& id) const override;
-
-  void SetActiveBit(const std::string& id, bool value);
-  void SetDaysSinceLastActive(const std::string& id, int daynum);
-  void SetDaysSinceLastRollCall(const std::string& id, int daynum);
-
- private:
-  std::map<std::string, bool> actives_;
-  std::map<std::string, int> days_since_last_actives_;
-  std::map<std::string, int> days_since_last_rollcalls_;
-};
-
-bool ActivityDataServiceTest::GetActiveBit(const std::string& id) const {
-  const auto& it = actives_.find(id);
-  return it != actives_.end() ? it->second : false;
-}
-
-void ActivityDataServiceTest::ClearActiveBit(const std::string& id) {
-  SetActiveBit(id, false);
-}
-
-int ActivityDataServiceTest::GetDaysSinceLastActive(
-    const std::string& id) const {
-  const auto& it = days_since_last_actives_.find(id);
-  return it != days_since_last_actives_.end() ? it->second : -2;
-}
-
-int ActivityDataServiceTest::GetDaysSinceLastRollCall(
-    const std::string& id) const {
-  const auto& it = days_since_last_rollcalls_.find(id);
-  return it != days_since_last_rollcalls_.end() ? it->second : -2;
-}
-
-void ActivityDataServiceTest::SetActiveBit(const std::string& id, bool value) {
-  actives_[id] = value;
-}
-
-void ActivityDataServiceTest::SetDaysSinceLastActive(const std::string& id,
-                                                     int daynum) {
-  days_since_last_actives_[id] = daynum;
-}
-
-void ActivityDataServiceTest::SetDaysSinceLastRollCall(const std::string& id,
-                                                       int daynum) {
-  days_since_last_rollcalls_[id] = daynum;
-}
-
 }  // namespace
 
 class UpdateCheckerTest : public testing::TestWithParam<bool> {
@@ -119,7 +68,7 @@ class UpdateCheckerTest : public testing::TestWithParam<bool> {
   void TearDown() override;
 
   void UpdateCheckComplete(
-      const base::Optional<ProtocolParser::Results>& results,
+      const absl::optional<ProtocolParser::Results>& results,
       ErrorCategory error_category,
       int error,
       int retry_after_sec);
@@ -131,7 +80,7 @@ class UpdateCheckerTest : public testing::TestWithParam<bool> {
   std::unique_ptr<Component> MakeComponent() const;
 
   scoped_refptr<TestConfigurator> config_;
-  std::unique_ptr<ActivityDataServiceTest> activity_data_service_;
+  std::unique_ptr<TestActivityDataService> activity_data_service_;
   std::unique_ptr<TestingPrefServiceSimple> pref_;
   std::unique_ptr<PersistedData> metadata_;
 
@@ -139,7 +88,7 @@ class UpdateCheckerTest : public testing::TestWithParam<bool> {
 
   std::unique_ptr<URLLoaderPostInterceptor> post_interceptor_;
 
-  base::Optional<ProtocolParser::Results> results_;
+  absl::optional<ProtocolParser::Results> results_;
   ErrorCategory error_category_ = ErrorCategory::kNone;
   int error_ = 0;
   int retry_after_sec_ = 0;
@@ -151,7 +100,7 @@ class UpdateCheckerTest : public testing::TestWithParam<bool> {
  private:
   scoped_refptr<UpdateContext> MakeMockUpdateContext() const;
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   base::OnceClosure quit_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(UpdateCheckerTest);
@@ -161,11 +110,9 @@ class UpdateCheckerTest : public testing::TestWithParam<bool> {
 INSTANTIATE_TEST_SUITE_P(Parameterized, UpdateCheckerTest, testing::Bool());
 
 UpdateCheckerTest::UpdateCheckerTest()
-    : scoped_task_environment_(
-          base::test::ScopedTaskEnvironment::MainThreadType::IO) {}
+    : task_environment_(base::test::TaskEnvironment::MainThreadType::IO) {}
 
-UpdateCheckerTest::~UpdateCheckerTest() {
-}
+UpdateCheckerTest::~UpdateCheckerTest() = default;
 
 void UpdateCheckerTest::SetUp() {
   is_foreground_ = GetParam();
@@ -173,7 +120,7 @@ void UpdateCheckerTest::SetUp() {
   config_ = base::MakeRefCounted<TestConfigurator>();
 
   pref_ = std::make_unique<TestingPrefServiceSimple>();
-  activity_data_service_ = std::make_unique<ActivityDataServiceTest>();
+  activity_data_service_ = std::make_unique<TestActivityDataService>();
   PersistedData::RegisterPrefs(pref_->registry());
   metadata_ = std::make_unique<PersistedData>(pref_.get(),
                                               activity_data_service_.get());
@@ -199,7 +146,7 @@ void UpdateCheckerTest::TearDown() {
 
   // The PostInterceptor requires the message loop to run to destruct correctly.
   // TODO(sorin): This is fragile and should be fixed.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 void UpdateCheckerTest::RunThreads() {
@@ -214,7 +161,7 @@ void UpdateCheckerTest::Quit() {
 }
 
 void UpdateCheckerTest::UpdateCheckComplete(
-    const base::Optional<ProtocolParser::Results>& results,
+    const absl::optional<ProtocolParser::Results>& results,
     ErrorCategory error_category,
     int error,
     int retry_after_sec) {
@@ -228,12 +175,14 @@ void UpdateCheckerTest::UpdateCheckComplete(
 scoped_refptr<UpdateContext> UpdateCheckerTest::MakeMockUpdateContext() const {
   return base::MakeRefCounted<UpdateContext>(
       config_, false, std::vector<std::string>(),
-      UpdateClient::CrxDataCallback(), UpdateEngine::NotifyObserversCallback(),
-      UpdateEngine::Callback(), nullptr);
+      UpdateClient::CrxStateChangeCallback(),
+      UpdateEngine::NotifyObserversCallback(), UpdateEngine::Callback(),
+      nullptr);
 }
 
 std::unique_ptr<Component> UpdateCheckerTest::MakeComponent() const {
   CrxComponent crx_component;
+  crx_component.app_id = "jebgalgnebhfojomionfpkfelancnnkf";
   crx_component.name = "test_jebg";
   crx_component.pk_hash.assign(jebg_hash, jebg_hash + base::size(jebg_hash));
   crx_component.installer = nullptr;
@@ -323,17 +272,17 @@ TEST_P(UpdateCheckerTest, UpdateCheckSuccess) {
                        .FindKey("fp")
                        ->GetString());
 
-#if (OS_WIN)
-    EXPECT_TRUE(request->FindKey("domainjoined"));
-#if defined(GOOGLE_CHROME_BUILD)
-    const auto* updater = request->FindKey("updater");
-    EXPECT_TRUE(updater);
-    EXPECT_EQ("Omaha", updater->FindKey("name")->GetString());
-    EXPECT_TRUE(updater->FindKey("autoupdatecheckenabled")->is_bool());
-    EXPECT_TRUE(updater->FindKey("ismachine")->is_bool());
-    EXPECT_TRUE(updater->FindKey("updatepolicy")->is_int());
-#endif  // GOOGLE_CHROME_BUILD
-#endif  // OS_WINDOWS
+#if defined(OS_WIN)
+  EXPECT_TRUE(request->FindKey("domainjoined"));
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  const auto* updater = request->FindKey("updater");
+  EXPECT_TRUE(updater);
+  EXPECT_EQ("Omaha", updater->FindKey("name")->GetString());
+  EXPECT_TRUE(updater->FindKey("autoupdatecheckenabled")->is_bool());
+  EXPECT_TRUE(updater->FindKey("ismachine")->is_bool());
+  EXPECT_TRUE(updater->FindKey("updatepolicy")->is_int());
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#endif  // OS_WIN
 
   // Sanity check the arguments of the callback after parsing.
   EXPECT_EQ(ErrorCategory::kNone, error_category_);
@@ -491,10 +440,10 @@ TEST_P(UpdateCheckerTest, UpdateCheckDownloadPreference) {
 
   // The request must contain dlpref="cacheable".
   const auto request = post_interceptor_->GetRequestBody(0);
-    const auto root = base::JSONReader().Read(request);
-    ASSERT_TRUE(root);
-    EXPECT_EQ("cacheable",
-              root->FindKey("request")->FindKey("dlpref")->GetString());
+  const auto root = base::JSONReader::Read(request);
+  ASSERT_TRUE(root);
+  EXPECT_EQ("cacheable",
+            root->FindKey("request")->FindKey("dlpref")->GetString());
 }
 
 // This test is checking that an update check signed with CUP fails, since there
@@ -645,7 +594,7 @@ TEST_P(UpdateCheckerTest, UpdateCheckLastActive) {
   RunThreads();
 
   // The active bit should be reset.
-  EXPECT_FALSE(metadata_->GetActiveBit(kUpdateItemId));
+  EXPECT_FALSE(activity_data_service_->GetActiveBit(kUpdateItemId));
 
   activity_data_service_->SetActiveBit(kUpdateItemId, true);
   update_checker_ = UpdateChecker::Create(config_, metadata_.get());
@@ -657,7 +606,7 @@ TEST_P(UpdateCheckerTest, UpdateCheckLastActive) {
   RunThreads();
 
   // The active bit should be reset.
-  EXPECT_FALSE(metadata_->GetActiveBit(kUpdateItemId));
+  EXPECT_FALSE(activity_data_service_->GetActiveBit(kUpdateItemId));
 
   update_checker_ = UpdateChecker::Create(config_, metadata_.get());
   update_checker_->CheckForUpdates(
@@ -667,7 +616,7 @@ TEST_P(UpdateCheckerTest, UpdateCheckLastActive) {
                      base::Unretained(this)));
   RunThreads();
 
-  EXPECT_FALSE(metadata_->GetActiveBit(kUpdateItemId));
+  EXPECT_FALSE(activity_data_service_->GetActiveBit(kUpdateItemId));
 
   EXPECT_EQ(3, post_interceptor_->GetHitCount())
       << post_interceptor_->GetRequestsAsString();

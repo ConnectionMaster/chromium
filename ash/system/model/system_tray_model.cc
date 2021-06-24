@@ -6,6 +6,7 @@
 
 #include "ash/root_window_controller.h"
 #include "ash/shell.h"
+#include "ash/system/message_center/message_center_controller.h"
 #include "ash/system/model/clock_model.h"
 #include "ash/system/model/enterprise_domain_model.h"
 #include "ash/system/model/locale_model.h"
@@ -14,9 +15,12 @@
 #include "ash/system/model/update_model.h"
 #include "ash/system/model/virtual_keyboard_model.h"
 #include "ash/system/network/active_network_icon.h"
+#include "ash/system/network/tray_network_state_model.h"
+#include "ash/system/phonehub/phone_hub_notification_controller.h"
+#include "ash/system/phonehub/phone_hub_tray.h"
 #include "ash/system/status_area_widget.h"
 #include "ash/system/unified/unified_system_tray.h"
-#include "base/logging.h"
+#include "chromeos/components/phonehub/phone_hub_manager.h"
 
 namespace ash {
 
@@ -28,16 +32,14 @@ SystemTrayModel::SystemTrayModel()
       tracing_(std::make_unique<TracingModel>()),
       update_model_(std::make_unique<UpdateModel>()),
       virtual_keyboard_(std::make_unique<VirtualKeyboardModel>()),
-      active_network_icon_(std::make_unique<ActiveNetworkIcon>()) {}
+      network_state_model_(std::make_unique<TrayNetworkStateModel>()),
+      active_network_icon_(
+          std::make_unique<ActiveNetworkIcon>(network_state_model_.get())) {}
 
 SystemTrayModel::~SystemTrayModel() = default;
 
-void SystemTrayModel::BindRequest(mojom::SystemTrayRequest request) {
-  bindings_.AddBinding(this, std::move(request));
-}
-
-void SystemTrayModel::SetClient(mojom::SystemTrayClientPtr client_ptr) {
-  client_ptr_ = std::move(client_ptr);
+void SystemTrayModel::SetClient(SystemTrayClient* client) {
+  client_ = client;
 }
 
 void SystemTrayModel::SetPrimaryTrayEnabled(bool enabled) {
@@ -60,11 +62,16 @@ void SystemTrayModel::SetUse24HourClock(bool use_24_hour) {
   clock()->SetUse24HourClock(use_24_hour);
 }
 
-void SystemTrayModel::SetEnterpriseDisplayDomain(
-    const std::string& enterprise_display_domain,
+void SystemTrayModel::SetEnterpriseDomainInfo(
+    const std::string& enterprise_domain_manager,
     bool active_directory_managed) {
-  enterprise_domain()->SetEnterpriseDisplayDomain(enterprise_display_domain,
-                                                  active_directory_managed);
+  enterprise_domain()->SetEnterpriseDomainInfo(enterprise_domain_manager,
+                                               active_directory_managed);
+}
+
+void SystemTrayModel::SetEnterpriseAccountDomainInfo(
+    const std::string& account_domain_manager) {
+  enterprise_domain()->SetEnterpriseAccountDomainInfo(account_domain_manager);
 }
 
 void SystemTrayModel::SetPerformanceTracingIconVisible(bool visible) {
@@ -72,25 +79,29 @@ void SystemTrayModel::SetPerformanceTracingIconVisible(bool visible) {
 }
 
 void SystemTrayModel::SetLocaleList(
-    std::vector<mojom::LocaleInfoPtr> locale_list,
+    std::vector<LocaleInfo> locale_list,
     const std::string& current_locale_iso_code) {
   locale()->SetLocaleList(std::move(locale_list), current_locale_iso_code);
 }
 
-void SystemTrayModel::ShowUpdateIcon(mojom::UpdateSeverity severity,
+void SystemTrayModel::ShowUpdateIcon(UpdateSeverity severity,
                                      bool factory_reset_required,
                                      bool rollback,
-                                     mojom::UpdateType update_type) {
+                                     UpdateType update_type) {
   update_model()->SetUpdateAvailable(severity, factory_reset_required, rollback,
                                      update_type);
 }
 
 void SystemTrayModel::SetUpdateNotificationState(
-    mojom::NotificationStyle style,
-    const base::string16& notification_title,
-    const base::string16& notification_body) {
+    NotificationStyle style,
+    const std::u16string& notification_title,
+    const std::u16string& notification_body) {
   update_model()->SetUpdateNotificationState(style, notification_title,
                                              notification_body);
+}
+
+void SystemTrayModel::ResetUpdateState() {
+  update_model()->ResetUpdateAvailable();
 }
 
 void SystemTrayModel::SetUpdateOverCellularAvailableIconVisible(bool visible) {
@@ -106,6 +117,30 @@ void SystemTrayModel::ShowVolumeSliderBubble() {
       continue;
     system_tray->ShowVolumeSliderBubble();
   }
+}
+
+void SystemTrayModel::ShowNetworkDetailedViewBubble() {
+  // Show the bubble on the primary display.
+  UnifiedSystemTray* system_tray = Shell::GetPrimaryRootWindowController()
+                                       ->GetStatusAreaWidget()
+                                       ->unified_system_tray();
+  if (system_tray)
+    system_tray->ShowNetworkDetailedViewBubble();
+}
+
+void SystemTrayModel::SetPhoneHubManager(
+    chromeos::phonehub::PhoneHubManager* phone_hub_manager) {
+  for (RootWindowController* root_window_controller :
+       Shell::GetAllRootWindowControllers()) {
+    auto* phone_hub_tray =
+        root_window_controller->GetStatusAreaWidget()->phone_hub_tray();
+    phone_hub_tray->SetPhoneHubManager(phone_hub_manager);
+  }
+
+  Shell::Get()
+      ->message_center_controller()
+      ->phone_hub_notification_controller()
+      ->SetManager(phone_hub_manager);
 }
 
 }  // namespace ash

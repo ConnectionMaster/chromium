@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/modules/webdatabase/database_tracker.h"
 #include "third_party/blink/renderer/modules/webdatabase/storage_log.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 
 namespace blink {
@@ -134,7 +135,6 @@ Database* DatabaseManager::OpenDatabaseInternal(
     const String& name,
     const String& expected_version,
     const String& display_name,
-    uint32_t estimated_size,
     V8DatabaseCallback* creation_callback,
     bool set_version_in_new_database,
     DatabaseError& error,
@@ -144,7 +144,7 @@ Database* DatabaseManager::OpenDatabaseInternal(
   DatabaseContext* backend_context = DatabaseContextFor(context)->Backend();
   if (DatabaseTracker::Tracker().CanEstablishDatabase(backend_context, error)) {
     Database* backend = MakeGarbageCollected<Database>(
-        backend_context, name, expected_version, display_name, estimated_size);
+        backend_context, name, expected_version, display_name);
     if (backend->OpenAndVerifyVersion(set_version_in_new_database, error,
                                       error_message, creation_callback))
       return backend;
@@ -170,7 +170,6 @@ Database* DatabaseManager::OpenDatabase(ExecutionContext* context,
                                         const String& name,
                                         const String& expected_version,
                                         const String& display_name,
-                                        uint32_t estimated_size,
                                         V8DatabaseCallback* creation_callback,
                                         DatabaseError& error,
                                         String& error_message) {
@@ -178,8 +177,8 @@ Database* DatabaseManager::OpenDatabase(ExecutionContext* context,
 
   bool set_version_in_new_database = !creation_callback;
   Database* database = OpenDatabaseInternal(
-      context, name, expected_version, display_name, estimated_size,
-      creation_callback, set_version_in_new_database, error, error_message);
+      context, name, expected_version, display_name, creation_callback,
+      set_version_in_new_database, error, error_message);
   if (!database)
     return nullptr;
 
@@ -199,9 +198,9 @@ String DatabaseManager::FullPathForDatabase(const SecurityOrigin* origin,
 
 void DatabaseManager::LogErrorMessage(ExecutionContext* context,
                                       const String& message) {
-  context->AddConsoleMessage(
-      ConsoleMessage::Create(mojom::ConsoleMessageSource::kStorage,
-                             mojom::ConsoleMessageLevel::kError, message));
+  context->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+      mojom::ConsoleMessageSource::kStorage, mojom::ConsoleMessageLevel::kError,
+      message));
 }
 
 }  // namespace blink

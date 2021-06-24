@@ -12,11 +12,11 @@ FakeAccountStatusChangeDelegate::FakeAccountStatusChangeDelegate() = default;
 
 FakeAccountStatusChangeDelegate::~FakeAccountStatusChangeDelegate() = default;
 
-mojom::AccountStatusChangeDelegatePtr
-FakeAccountStatusChangeDelegate::GenerateInterfacePtr() {
-  mojom::AccountStatusChangeDelegatePtr interface_ptr;
-  bindings_.AddBinding(this, mojo::MakeRequest(&interface_ptr));
-  return interface_ptr;
+mojo::PendingRemote<mojom::AccountStatusChangeDelegate>
+FakeAccountStatusChangeDelegate::GenerateRemote() {
+  mojo::PendingRemote<mojom::AccountStatusChangeDelegate> remote;
+  receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+  return remote;
 }
 
 void FakeAccountStatusChangeDelegate::OnPotentialHostExistsForNewUser() {
@@ -35,6 +35,10 @@ void FakeAccountStatusChangeDelegate::OnConnectedHostSwitchedForExistingUser(
 void FakeAccountStatusChangeDelegate::OnNewChromebookAddedForExistingUser(
     const std::string& new_host_device_name) {
   ++num_existing_user_chromebook_added_events_handled_;
+}
+
+void FakeAccountStatusChangeDelegate::OnBecameEligibleForWifiSync() {
+  ++num_eligible_for_wifi_sync_events_handled_;
 }
 
 }  // namespace multidevice_setup

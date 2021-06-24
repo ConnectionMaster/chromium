@@ -4,14 +4,17 @@
 
 #include "ui/gl/gl_surface.h"
 
+#include <utility>
+
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/threading/thread_local.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/swap_result.h"
+#include "ui/gl/dc_renderer_layer_params.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_image.h"
 #include "ui/gl/gl_implementation.h"
@@ -25,7 +28,7 @@ base::LazyInstance<base::ThreadLocalPointer<GLSurface>>::Leaky
     current_surface_ = LAZY_INSTANCE_INITIALIZER;
 }  // namespace
 
-GLSurface::GLSurface() {}
+GLSurface::GLSurface() = default;
 
 bool GLSurface::Initialize() {
   return Initialize(GLSurfaceFormat());
@@ -39,7 +42,7 @@ void GLSurface::PrepareToDestroy(bool have_context) {}
 
 bool GLSurface::Resize(const gfx::Size& size,
                        float scale_factor,
-                       ColorSpace color_space,
+                       const gfx::ColorSpace& color_space,
                        bool has_alpha) {
   NOTIMPLEMENTED();
   return false;
@@ -51,10 +54,6 @@ bool GLSurface::Recreate() {
 }
 
 bool GLSurface::DeferDraws() {
-  return false;
-}
-
-bool GLSurface::SupportsPresentationCallback() {
   return false;
 }
 
@@ -143,10 +142,6 @@ void* GLSurface::GetConfig() {
   return NULL;
 }
 
-unsigned long GLSurface::GetCompatibilityKey() {
-  return 0;
-}
-
 gfx::VSyncProvider* GLSurface::GetVSyncProvider() {
   return NULL;
 }
@@ -174,7 +169,8 @@ void GLSurface::ScheduleCALayerInUseQuery(
   NOTIMPLEMENTED();
 }
 
-bool GLSurface::ScheduleDCLayer(const ui::DCRendererLayerParams& params) {
+bool GLSurface::ScheduleDCLayer(
+    std::unique_ptr<ui::DCRendererLayerParams> params) {
   NOTIMPLEMENTED();
   return false;
 }
@@ -188,8 +184,12 @@ bool GLSurface::IsSurfaceless() const {
   return false;
 }
 
-bool GLSurface::FlipsVertically() const {
+bool GLSurface::SupportsViewporter() const {
   return false;
+}
+
+gfx::SurfaceOrigin GLSurface::GetOrigin() const {
+  return gfx::SurfaceOrigin::kBottomLeft;
 }
 
 bool GLSurface::BuffersFlipped() const {
@@ -200,11 +200,11 @@ bool GLSurface::SupportsDCLayers() const {
   return false;
 }
 
-bool GLSurface::UseOverlaysForVideo() const {
+bool GLSurface::SupportsProtectedVideo() const {
   return false;
 }
 
-bool GLSurface::SupportsProtectedVideo() const {
+bool GLSurface::SupportsOverridePlatformSize() const {
   return false;
 }
 
@@ -217,6 +217,12 @@ gfx::Vector2d GLSurface::GetDrawOffset() const {
 }
 
 void GLSurface::SetRelyOnImplicitSync() {
+  // Some GLSurface derived classes might not implement this workaround while
+  // still being allocated on devices where the workaround is enabled.
+  // It is fine to ignore this call in those cases.
+}
+
+void GLSurface::SetForceGlFlushOnSwapBuffers() {
   // Some GLSurface derived classes might not implement this workaround while
   // still being allocated on devices where the workaround is enabled.
   // It is fine to ignore this call in those cases.
@@ -242,17 +248,41 @@ EGLTimestampClient* GLSurface::GetEGLTimestampClient() {
   return nullptr;
 }
 
+bool GLSurface::SupportsGpuVSync() const {
+  return false;
+}
+
+bool GLSurface::SupportsDelegatedInk() {
+  return false;
+}
+
+void GLSurface::InitDelegatedInkPointRendererReceiver(
+    mojo::PendingReceiver<gfx::mojom::DelegatedInkPointRenderer>
+        pending_receiver) {
+  NOTREACHED();
+}
+
+void GLSurface::SetGpuVSyncEnabled(bool enabled) {}
+
 GLSurface* GLSurface::GetCurrent() {
   return current_surface_.Pointer()->Get();
 }
 
-GLSurface::~GLSurface() {
-  if (GetCurrent() == this)
-    SetCurrent(NULL);
+bool GLSurface::IsCurrent() {
+  return GetCurrent() == this;
 }
 
-void GLSurface::SetCurrent(GLSurface* surface) {
-  current_surface_.Pointer()->Set(surface);
+GLSurface::~GLSurface() {
+  if (GetCurrent() == this)
+    ClearCurrent();
+}
+
+void GLSurface::ClearCurrent() {
+  current_surface_.Pointer()->Set(nullptr);
+}
+
+void GLSurface::SetCurrent() {
+  current_surface_.Pointer()->Set(this);
 }
 
 bool GLSurface::ExtensionsContain(const char* c_extensions, const char* name) {
@@ -270,6 +300,10 @@ bool GLSurface::ExtensionsContain(const char* c_extensions, const char* name) {
 
 GLSurfaceAdapter::GLSurfaceAdapter(GLSurface* surface) : surface_(surface) {}
 
+void GLSurfaceAdapter::PrepareToDestroy(bool have_context) {
+  surface_->PrepareToDestroy(have_context);
+}
+
 bool GLSurfaceAdapter::Initialize(GLSurfaceFormat format) {
   return surface_->Initialize(format);
 }
@@ -280,7 +314,7 @@ void GLSurfaceAdapter::Destroy() {
 
 bool GLSurfaceAdapter::Resize(const gfx::Size& size,
                               float scale_factor,
-                              ColorSpace color_space,
+                              const gfx::ColorSpace& color_space,
                               bool has_alpha) {
   return surface_->Resize(size, scale_factor, color_space, has_alpha);
 }
@@ -346,10 +380,6 @@ void GLSurfaceAdapter::CommitOverlayPlanesAsync(
                                      std::move(presentation_callback));
 }
 
-bool GLSurfaceAdapter::SupportsPresentationCallback() {
-  return surface_->SupportsPresentationCallback();
-}
-
 bool GLSurfaceAdapter::SupportsSwapBuffersWithBounds() {
   return surface_->SupportsSwapBuffersWithBounds();
 }
@@ -402,10 +432,6 @@ void* GLSurfaceAdapter::GetConfig() {
   return surface_->GetConfig();
 }
 
-unsigned long GLSurfaceAdapter::GetCompatibilityKey() {
-  return surface_->GetCompatibilityKey();
-}
-
 GLSurfaceFormat GLSurfaceAdapter::GetFormat() {
   return surface_->GetFormat();
 }
@@ -432,8 +458,8 @@ bool GLSurfaceAdapter::ScheduleOverlayPlane(
 }
 
 bool GLSurfaceAdapter::ScheduleDCLayer(
-    const ui::DCRendererLayerParams& params) {
-  return surface_->ScheduleDCLayer(params);
+    std::unique_ptr<ui::DCRendererLayerParams> params) {
+  return surface_->ScheduleDCLayer(std::move(params));
 }
 
 bool GLSurfaceAdapter::SetEnableDCLayers(bool enable) {
@@ -444,8 +470,12 @@ bool GLSurfaceAdapter::IsSurfaceless() const {
   return surface_->IsSurfaceless();
 }
 
-bool GLSurfaceAdapter::FlipsVertically() const {
-  return surface_->FlipsVertically();
+bool GLSurfaceAdapter::SupportsViewporter() const {
+  return surface_->SupportsViewporter();
+}
+
+gfx::SurfaceOrigin GLSurfaceAdapter::GetOrigin() const {
+  return surface_->GetOrigin();
 }
 
 bool GLSurfaceAdapter::BuffersFlipped() const {
@@ -456,12 +486,12 @@ bool GLSurfaceAdapter::SupportsDCLayers() const {
   return surface_->SupportsDCLayers();
 }
 
-bool GLSurfaceAdapter::UseOverlaysForVideo() const {
-  return surface_->UseOverlaysForVideo();
-}
-
 bool GLSurfaceAdapter::SupportsProtectedVideo() const {
   return surface_->SupportsProtectedVideo();
+}
+
+bool GLSurfaceAdapter::SupportsOverridePlatformSize() const {
+  return surface_->SupportsOverridePlatformSize();
 }
 
 bool GLSurfaceAdapter::SetDrawRectangle(const gfx::Rect& rect) {
@@ -474,6 +504,10 @@ gfx::Vector2d GLSurfaceAdapter::GetDrawOffset() const {
 
 void GLSurfaceAdapter::SetRelyOnImplicitSync() {
   surface_->SetRelyOnImplicitSync();
+}
+
+void GLSurfaceAdapter::SetForceGlFlushOnSwapBuffers() {
+  surface_->SetForceGlFlushOnSwapBuffers();
 }
 
 bool GLSurfaceAdapter::SupportsSwapTimestamps() const {
@@ -492,7 +526,46 @@ bool GLSurfaceAdapter::SupportsPlaneGpuFences() const {
   return surface_->SupportsPlaneGpuFences();
 }
 
-GLSurfaceAdapter::~GLSurfaceAdapter() {}
+bool GLSurfaceAdapter::SupportsGpuVSync() const {
+  return surface_->SupportsGpuVSync();
+}
+
+void GLSurfaceAdapter::SetGpuVSyncEnabled(bool enabled) {
+  surface_->SetGpuVSyncEnabled(enabled);
+}
+
+void GLSurfaceAdapter::SetDisplayTransform(gfx::OverlayTransform transform) {
+  return surface_->SetDisplayTransform(transform);
+}
+
+void GLSurfaceAdapter::SetFrameRate(float frame_rate) {
+  surface_->SetFrameRate(frame_rate);
+}
+
+void GLSurfaceAdapter::SetCurrent() {
+  surface_->SetCurrent();
+}
+
+bool GLSurfaceAdapter::IsCurrent() {
+  return surface_->IsCurrent();
+}
+
+bool GLSurfaceAdapter::SupportsDelegatedInk() {
+  return surface_->SupportsDelegatedInk();
+}
+
+void GLSurfaceAdapter::SetDelegatedInkTrailStartPoint(
+    std::unique_ptr<gfx::DelegatedInkMetadata> metadata) {
+  surface_->SetDelegatedInkTrailStartPoint(std::move(metadata));
+}
+
+void GLSurfaceAdapter::InitDelegatedInkPointRendererReceiver(
+    mojo::PendingReceiver<gfx::mojom::DelegatedInkPointRenderer>
+        pending_receiver) {
+  surface_->InitDelegatedInkPointRendererReceiver(std::move(pending_receiver));
+}
+
+GLSurfaceAdapter::~GLSurfaceAdapter() = default;
 
 scoped_refptr<GLSurface> InitializeGLSurfaceWithFormat(
     scoped_refptr<GLSurface> surface, GLSurfaceFormat format) {

@@ -8,9 +8,11 @@
 
 #include <vector>
 
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "net/base/escape.h"
@@ -210,7 +212,7 @@ class FormDataParserMultipart : public FormDataParser {
 
   // Produces a regexp to match the string "--" + |literal|. The idea is to
   // represent "--" + |literal| as a "quoted pattern", a verbatim copy enclosed
-  // in "\\Q" and "\\E". The only catch is to watch out for occurences of "\\E"
+  // in "\\Q" and "\\E". The only catch is to watch out for occurrences of "\\E"
   // inside |literal|. Those must be excluded from the quote and the backslash
   // doubly escaped. For example, for literal == "abc\\Edef" the result is
   // "\\Q--abc\\E\\\\E\\Qdef\\E".
@@ -342,7 +344,7 @@ std::unique_ptr<FormDataParser> FormDataParser::CreateFromContentTypeHeader(
       size_t offset = content_type_header->find(kBoundaryString);
       if (offset == std::string::npos) {
         // Malformed header.
-        return std::unique_ptr<FormDataParser>();
+        return nullptr;
       }
       offset += sizeof(kBoundaryString) - 1;
       boundary = content_type_header->substr(
@@ -360,10 +362,10 @@ std::unique_ptr<FormDataParser> FormDataParser::CreateFromContentTypeHeader(
       return std::unique_ptr<FormDataParser>(
           new FormDataParserMultipart(boundary));
     case ERROR_CHOICE:
-      return std::unique_ptr<FormDataParser>();
+      return nullptr;
   }
   NOTREACHED();  // Some compilers do not believe this is unreachable.
-  return std::unique_ptr<FormDataParser>();
+  return nullptr;
 }
 
 FormDataParser::FormDataParser() {}
@@ -395,11 +397,11 @@ bool FormDataParserUrlEncoded::GetNextNameValue(Result* result) {
     const net::UnescapeRule::Type kUnescapeRules =
         net::UnescapeRule::REPLACE_PLUS_WITH_SPACE;
 
-    std::string unescaped_name;
-    net::UnescapeBinaryURLComponent(name_, kUnescapeRules, &unescaped_name);
+    std::string unescaped_name =
+        net::UnescapeBinaryURLComponent(name_, kUnescapeRules);
     result->set_name(unescaped_name);
-    std::string unescaped_value;
-    net::UnescapeBinaryURLComponent(value_, kUnescapeRules, &unescaped_value);
+    std::string unescaped_value =
+        net::UnescapeBinaryURLComponent(value_, kUnescapeRules);
     const base::StringPiece unescaped_data(unescaped_value.data(),
                                            unescaped_value.length());
     if (base::IsStringUTF8(unescaped_data)) {
@@ -492,7 +494,7 @@ bool FormDataParserMultipart::FinishReadingPart(base::StringPiece* data) {
       return false;
     }
     // Subtract 2 for the trailing "\r\n".
-    data->set(data_start, source_.data() - data_start - 2);
+    *data = base::StringPiece(data_start, source_.data() - data_start - 2);
   }
 
   // Finally, read the dash-boundary and either skip to the next body part, or
@@ -548,16 +550,14 @@ bool FormDataParserMultipart::GetNextNameValue(Result* result) {
     return_value = FinishReadingPart(value_assigned ? nullptr : &value);
   }
 
-  std::string unescaped_name;
-  net::UnescapeBinaryURLComponent(name.as_string(), &unescaped_name);
-  result->set_name(unescaped_name);
+  result->set_name(net::UnescapeBinaryURLComponent(name));
   if (value_assigned) {
     // Hold filename as value.
-    result->SetStringValue(value.as_string());
+    result->SetStringValue(std::string(value));
   } else if (value_is_binary) {
     result->SetBinaryValue(value);
   } else {
-    result->SetStringValue(value.as_string());
+    result->SetStringValue(std::string(value));
   }
 
   return return_value;
@@ -628,12 +628,12 @@ bool FormDataParserMultipart::TryReadHeader(base::StringPiece* name,
     state_ = STATE_ERROR;
     return true;  // See (*) for why true.
   }
-  name->set(groups[1].data(), groups[1].size());
+  *name = base::StringPiece(groups[1].data(), groups[1].size());
 
   if (value_pattern().Match(header,
                             kContentDispositionLength, header.size(),
                             RE2::UNANCHORED, groups, 2)) {
-    value->set(groups[1].data(), groups[1].size());
+    *value = base::StringPiece(groups[1].data(), groups[1].size());
     *value_assigned = true;
   }
   return true;

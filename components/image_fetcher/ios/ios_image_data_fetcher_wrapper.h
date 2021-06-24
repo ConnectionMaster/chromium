@@ -8,9 +8,9 @@
 #import <Foundation/Foundation.h>
 
 #include "base/memory/ref_counted.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/image_fetcher/core/image_data_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_types.h"
+#include "net/url_request/referrer_policy.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -19,8 +19,6 @@ class SharedURLLoaderFactory;
 class GURL;
 
 namespace image_fetcher {
-
-using DataUseServiceName = data_use_measurement::DataUseUserData::ServiceName;
 
 class IOSImageDataFetcherWrapper {
  public:
@@ -39,17 +37,13 @@ class IOSImageDataFetcherWrapper {
   // be called with the downloaded image, or nil if any error happened. If the
   // image is WebP it will be decoded.
   // The |referrer| and |referrer_policy| will be passed on to the underlying
-  // URLFetcher.
+  // URLLoader.
   // |callback| cannot be nil.
-  void FetchImageDataWebpDecoded(
-      const GURL& image_url,
-      ImageDataFetcherBlock callback,
-      const std::string& referrer,
-      net::URLRequest::ReferrerPolicy referrer_policy,
-      bool send_cookies = false);
-
-  // Sets a service name against which to track data usage.
-  void SetDataUseServiceName(DataUseServiceName data_use_service_name);
+  void FetchImageDataWebpDecoded(const GURL& image_url,
+                                 ImageDataFetcherBlock callback,
+                                 const std::string& referrer,
+                                 net::ReferrerPolicy referrer_policy,
+                                 bool send_cookies = false);
 
   // Test-only accessor for underlying ImageDataFetcher.
   ImageDataFetcher* AccessImageDataFetcherForTesting() {

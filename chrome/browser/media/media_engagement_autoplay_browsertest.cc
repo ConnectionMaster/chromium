@@ -20,6 +20,7 @@
 #include "chrome/common/renderer_configuration.mojom.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "media/base/media_switches.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -27,18 +28,8 @@
 namespace {
 
 base::FilePath GetPythonPath() {
-#if defined(OS_WIN)
-  // Windows bots do not have python installed and available on the PATH.
-  // Please see infra/doc/users/python.md
-  base::FilePath bot_path =
-      base::FilePath(FILE_PATH_LITERAL("c:/infra-system/bin/python.exe"));
-
-  if (base::PathExists(bot_path))
-    return bot_path;
-  return base::FilePath(FILE_PATH_LITERAL("python.exe"));
-#else
-  return base::FilePath(FILE_PATH_LITERAL("python"));
-#endif
+  // Every environment should have python3.
+  return base::FilePath(FILE_PATH_LITERAL("python3"));
 }
 
 const base::FilePath kTestDataPath = base::FilePath(
@@ -46,9 +37,9 @@ const base::FilePath kTestDataPath = base::FilePath(
 
 const char kMediaEngagementTestDataPath[] = "chrome/test/data/media/engagement";
 
-const base::string16 kAllowedTitle = base::ASCIIToUTF16("Allowed");
+const std::u16string kAllowedTitle = u"Allowed";
 
-const base::string16 kDeniedTitle = base::ASCIIToUTF16("Denied");
+const std::u16string kDeniedTitle = u"Denied";
 
 const base::FilePath kEmptyDataPath = kTestDataPath.AppendASCII("empty.pb");
 
@@ -68,6 +59,13 @@ class MediaEngagementAutoplayBrowserTest
     http_server_.ServeFilesFromSourceDirectory(kMediaEngagementTestDataPath);
     http_server_origin2_.ServeFilesFromSourceDirectory(
         kMediaEngagementTestDataPath);
+
+    // Enable or disable MEI based on the test parameter.
+    if (GetParam()) {
+      scoped_feature_list_.InitWithFeatures(kFeatures, {});
+    } else {
+      scoped_feature_list_.InitWithFeatures({}, kFeatures);
+    }
   }
 
   ~MediaEngagementAutoplayBrowserTest() override = default;
@@ -81,13 +79,6 @@ class MediaEngagementAutoplayBrowserTest
   void SetUp() override {
     ASSERT_TRUE(http_server_.Start());
     ASSERT_TRUE(http_server_origin2_.Start());
-
-    // Enable or disable MEI based on the test parameter.
-    if (GetParam()) {
-      scoped_feature_list_.InitWithFeatures(kFeatures, {});
-    } else {
-      scoped_feature_list_.InitWithFeatures({}, kFeatures);
-    }
 
     InProcessBrowserTest::SetUp();
 
@@ -119,16 +110,20 @@ class MediaEngagementAutoplayBrowserTest
                               "\""));
   }
 
-  void SetScores(GURL url, int visits, int media_playbacks) {
-    MediaEngagementScore score = GetService()->CreateEngagementScore(url);
+  void SetScores(const url::Origin& origin, int visits, int media_playbacks) {
+    MediaEngagementScore score = GetService()->CreateEngagementScore(origin);
     score.SetVisits(visits);
     score.SetMediaPlaybacks(media_playbacks);
     score.Commit();
   }
 
-  GURL PrimaryOrigin() { return http_server_.GetURL("/"); }
+  url::Origin PrimaryOrigin() const {
+    return url::Origin::Create(http_server_.GetURL("/"));
+  }
 
-  GURL SecondaryOrigin() { return http_server_origin2_.GetURL("/"); }
+  url::Origin SecondaryOrigin() const {
+    return url::Origin::Create(http_server_origin2_.GetURL("/"));
+  }
 
   void ExpectAutoplayAllowedIfEnabled() {
     if (GetParam()) {
@@ -142,7 +137,7 @@ class MediaEngagementAutoplayBrowserTest
 
   void ExpectAutoplayDenied() { EXPECT_EQ(kDeniedTitle, WaitAndGetTitle()); }
 
-  void ApplyPreloadedOrigin(GURL url) {
+  void ApplyPreloadedOrigin(const url::Origin& origin) {
     base::ScopedAllowBlockingForTesting allow_blocking;
 
     // Get two temporary files.
@@ -153,11 +148,10 @@ class MediaEngagementAutoplayBrowserTest
 
     // Write JSON file with the server origin in it.
     base::ListValue list;
-    list.AppendString(url::Origin::Create(url).Serialize());
+    list.AppendString(origin.Serialize());
     std::string json_data;
     base::JSONWriter::Write(list, &json_data);
-    EXPECT_TRUE(
-        base::WriteFile(input_path, json_data.c_str(), json_data.size()));
+    EXPECT_TRUE(base::WriteFile(input_path, json_data));
 
     // Get the path to the "generator" binary in the module path.
     base::FilePath module_dir;
@@ -188,7 +182,7 @@ class MediaEngagementAutoplayBrowserTest
   }
 
  private:
-  base::string16 WaitAndGetTitle() {
+  std::u16string WaitAndGetTitle() {
     content::TitleWatcher title_watcher(GetWebContents(), kAllowedTitle);
     title_watcher.AlsoWaitForTitle(kDeniedTitle);
     return title_watcher.WaitAndGetTitle();
@@ -293,8 +287,14 @@ IN_PROC_BROWSER_TEST_P(MediaEngagementAutoplayBrowserTest,
   ExpectAutoplayAllowedIfEnabled();
 }
 
+// Disabled due to being flaky. crbug.com/1212507
+#if defined(OS_MAC)
+#define MAYBE_UsePreloadedData_Allowed DISABLED_UsePreloadedData_Allowed
+#else
+#define MAYBE_UsePreloadedData_Allowed UsePreloadedData_Allowed
+#endif
 IN_PROC_BROWSER_TEST_P(MediaEngagementAutoplayBrowserTest,
-                       UsePreloadedData_Allowed) {
+                       MAYBE_UsePreloadedData_Allowed) {
   // Autoplay should be blocked by default if we have a bad score.
   SetScores(PrimaryOrigin(), 0, 0);
   LoadTestPage("engagement_autoplay_test.html");
@@ -363,6 +363,28 @@ IN_PROC_BROWSER_TEST_P(MediaEngagementAutoplayBrowserTest, TopFrameNavigation) {
   ExpectAutoplayAllowedIfEnabled();
 }
 
-INSTANTIATE_TEST_SUITE_P(/* no prefix */,
+class MediaEngagementAutoplayBrowserTestHttpsOnly
+    : public MediaEngagementAutoplayBrowserTest {
+ public:
+  MediaEngagementAutoplayBrowserTestHttpsOnly() {
+    feature_list_.InitAndEnableFeature(media::kMediaEngagementHTTPSOnly);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(MediaEngagementAutoplayBrowserTestHttpsOnly,
+                       BypassAutoplayHighEngagement) {
+  SetScores(PrimaryOrigin(), 20, 20);
+  LoadTestPage("engagement_autoplay_test.html");
+  ExpectAutoplayDenied();
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
                          MediaEngagementAutoplayBrowserTest,
+                         testing::Bool());
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         MediaEngagementAutoplayBrowserTestHttpsOnly,
                          testing::Bool());

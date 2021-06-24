@@ -11,14 +11,9 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "chrome/browser/search/one_google_bar/one_google_bar_loader.h"
-
-class GoogleURLTracker;
-
-namespace base {
-class Value;
-}
+#include "services/data_decoder/public/cpp/data_decoder.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace network {
 class SimpleURLLoader;
@@ -31,7 +26,6 @@ class OneGoogleBarLoaderImpl : public OneGoogleBarLoader {
  public:
   OneGoogleBarLoaderImpl(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      GoogleURLTracker* google_url_tracker,
       const std::string& application_locale,
       bool account_consistency_mirror_required);
   ~OneGoogleBarLoaderImpl() override;
@@ -39,6 +33,8 @@ class OneGoogleBarLoaderImpl : public OneGoogleBarLoader {
   void Load(OneGoogleCallback callback) override;
 
   GURL GetLoadURLForTesting() const override;
+
+  bool SetAdditionalQueryParams(const std::string& value) override;
 
  private:
   class AuthenticatedURLLoader;
@@ -48,20 +44,19 @@ class OneGoogleBarLoaderImpl : public OneGoogleBarLoader {
   void LoadDone(const network::SimpleURLLoader* simple_loader,
                 std::unique_ptr<std::string> response_body);
 
-  void JsonParsed(std::unique_ptr<base::Value> value);
-  void JsonParseFailed(const std::string& message);
+  void JsonParsed(data_decoder::DataDecoder::ValueOrError result);
 
-  void Respond(Status status, const base::Optional<OneGoogleBarData>& data);
+  void Respond(Status status, const absl::optional<OneGoogleBarData>& data);
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-  GoogleURLTracker* google_url_tracker_;
   const std::string application_locale_;
   const bool account_consistency_mirror_required_;
 
   std::vector<OneGoogleCallback> callbacks_;
   std::unique_ptr<AuthenticatedURLLoader> pending_request_;
+  std::string additional_query_params_;
 
-  base::WeakPtrFactory<OneGoogleBarLoaderImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<OneGoogleBarLoaderImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(OneGoogleBarLoaderImpl);
 };

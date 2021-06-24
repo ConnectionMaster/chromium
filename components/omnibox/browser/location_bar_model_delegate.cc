@@ -4,12 +4,21 @@
 
 #include "components/omnibox/browser/location_bar_model_delegate.h"
 
-bool LocationBarModelDelegate::ShouldPreventElision() const {
+bool LocationBarModelDelegate::ShouldPreventElision() {
+  return false;
+}
+
+bool LocationBarModelDelegate::ShouldTrimDisplayUrlAfterHostName() const {
   return false;
 }
 
 bool LocationBarModelDelegate::ShouldDisplayURL() const {
   return true;
+}
+
+bool LocationBarModelDelegate::ShouldUseUpdatedConnectionSecurityIndicators()
+    const {
+  return false;
 }
 
 security_state::SecurityLevel LocationBarModelDelegate::GetSecurityLevel()
@@ -32,6 +41,18 @@ const gfx::VectorIcon* LocationBarModelDelegate::GetVectorIconOverride() const {
 }
 
 bool LocationBarModelDelegate::IsOfflinePage() const {
+  return false;
+}
+
+bool LocationBarModelDelegate::IsNewTabPage() const {
+  return false;
+}
+
+bool LocationBarModelDelegate::IsNewTabPageURL(const GURL& url) const {
+  return false;
+}
+
+bool LocationBarModelDelegate::IsHomePage(const GURL& url) const {
   return false;
 }
 

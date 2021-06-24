@@ -4,10 +4,11 @@
 
 #include "ui/gfx/icon_util.h"
 
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_util.h"
 #include "base/files/important_file_writer.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "base/win/resource_util.h"
 #include "base/win/scoped_gdi_object.h"
@@ -19,6 +20,7 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_family.h"
+#include "ui/gfx/skbitmap_operations.h"
 
 namespace {
 
@@ -96,7 +98,7 @@ bool BuildResizedImageFamily(const gfx::ImageFamily& image_family,
 // |bitmaps| must be an empty vector, and not NULL.
 // Returns true on success, false on failure. This fails if any image in
 // |image_family| is not a 32-bit ARGB image, or is otherwise invalid.
-bool ConvertImageFamilyToBitmaps(
+void ConvertImageFamilyToBitmaps(
     const gfx::ImageFamily& image_family,
     std::vector<SkBitmap>* bitmaps,
     scoped_refptr<base::RefCountedMemory>* png_bytes) {
@@ -114,13 +116,8 @@ bool ConvertImageFamilyToBitmaps(
     DCHECK_LE(image.Height(), IconUtil::kLargeIconSize);
 
     SkBitmap bitmap = image.AsBitmap();
-
-    // Only 32 bit ARGB bitmaps are supported. We also make sure the bitmap has
-    // been properly initialized.
-    if ((bitmap.colorType() != kN32_SkColorType) ||
-        (bitmap.getPixels() == NULL)) {
-      return false;
-    }
+    CHECK_EQ(bitmap.colorType(), kN32_SkColorType);
+    CHECK(!bitmap.isNull());
 
     // Special case: Icons exactly 256x256 are stored in PNG format.
     if (image.Width() == IconUtil::kLargeIconSize &&
@@ -130,8 +127,6 @@ bool ConvertImageFamilyToBitmaps(
       bitmaps->push_back(bitmap);
     }
   }
-
-  return true;
 }
 
 }  // namespace
@@ -207,7 +202,7 @@ base::win::ScopedHICON IconUtil::CreateHICONFromSkBitmap(
     size_t bytes_per_line = (bitmap.width() + 0xF) / 16 * 2;
     size_t mask_bits_size = bytes_per_line * bitmap.height();
 
-    mask_bits.reset(new uint8_t[mask_bits_size]);
+    mask_bits = std::make_unique<uint8_t[]>(mask_bits_size);
     DCHECK(mask_bits.get());
 
     // Make all pixels transparent.
@@ -314,15 +309,21 @@ SkBitmap IconUtil::CreateSkBitmapFromHICON(HICON icon) {
   return CreateSkBitmapFromHICONHelper(icon, icon_size);
 }
 
-base::win::ScopedHICON IconUtil::CreateCursorFromDIB(const gfx::Size& icon_size,
-                                                     const gfx::Point& hotspot,
-                                                     const void* dib_bits,
-                                                     size_t dib_size) {
+base::win::ScopedHICON IconUtil::CreateCursorFromSkBitmap(
+    const SkBitmap& bitmap,
+    const gfx::Point& hotspot) {
+  if (bitmap.empty())
+    return base::win::ScopedHICON();
+
+  // Only 32 bit ARGB bitmaps are supported.
+  if (bitmap.colorType() != kN32_SkColorType) {
+    NOTIMPLEMENTED() << " unsupported color type: " << bitmap.colorType();
+    return base::win::ScopedHICON();
+  }
+
   BITMAPINFO icon_bitmap_info = {};
-  skia::CreateBitmapHeader(
-      icon_size.width(),
-      icon_size.height(),
-      reinterpret_cast<BITMAPINFOHEADER*>(&icon_bitmap_info));
+  skia::CreateBitmapHeaderForN32SkBitmap(
+      bitmap, reinterpret_cast<BITMAPINFOHEADER*>(&icon_bitmap_info));
 
   base::win::ScopedGetDC dc(NULL);
   base::win::ScopedCreateDC working_dc(CreateCompatibleDC(dc));
@@ -333,15 +334,8 @@ base::win::ScopedHICON IconUtil::CreateCursorFromDIB(const gfx::Size& icon_size,
                        0,
                        0,
                        0));
-  if (dib_size > 0) {
-    SetDIBits(0,
-              bitmap_handle.get(),
-              0,
-              icon_size.height(),
-              dib_bits,
-              &icon_bitmap_info,
-              DIB_RGB_COLORS);
-  }
+  SetDIBits(0, bitmap_handle.get(), 0, bitmap.height(), bitmap.getPixels(),
+            &icon_bitmap_info, DIB_RGB_COLORS);
 
   HBITMAP old_bitmap = reinterpret_cast<HBITMAP>(
       SelectObject(working_dc.Get(), bitmap_handle.get()));
@@ -349,11 +343,7 @@ base::win::ScopedHICON IconUtil::CreateCursorFromDIB(const gfx::Size& icon_size,
   SelectObject(working_dc.Get(), old_bitmap);
 
   base::win::ScopedGDIObject<HBITMAP> mask(
-      CreateBitmap(icon_size.width(),
-                   icon_size.height(),
-                   1,
-                   1,
-                   NULL));
+      CreateBitmap(bitmap.width(), bitmap.height(), 1, 1, NULL));
   ICONINFO ii = {0};
   ii.fIcon = FALSE;
   ii.xHotspot = hotspot.x();
@@ -468,8 +458,7 @@ bool IconUtil::CreateIconFileFromImageFamily(
 
   std::vector<SkBitmap> bitmaps;
   scoped_refptr<base::RefCountedMemory> png_bytes;
-  if (!ConvertImageFamilyToBitmaps(resized_image_family, &bitmaps, &png_bytes))
-    return false;
+  ConvertImageFamilyToBitmaps(resized_image_family, &bitmaps, &png_bytes);
 
   // Guaranteed true because BuildResizedImageFamily will provide at least one
   // image < 256x256.
@@ -527,18 +516,15 @@ bool IconUtil::CreateIconFileFromImageFamily(
   DCHECK_EQ(offset, buffer_size);
 
   if (write_type == NORMAL_WRITE) {
-    auto saved_size =
-        base::WriteFile(icon_path, reinterpret_cast<const char*>(&buffer[0]),
-                        static_cast<int>(buffer.size()));
-    if (saved_size == static_cast<int>(buffer.size()))
+    if (base::WriteFile(icon_path, buffer))
       return true;
-    bool delete_success = base::DeleteFile(icon_path, false);
+    bool delete_success = base::DeleteFile(icon_path);
     DCHECK(delete_success);
     return false;
-  } else {
-    std::string data(buffer.begin(), buffer.end());
-    return base::ImportantFileWriter::WriteFileAtomically(icon_path, data);
   }
+
+  std::string data(buffer.begin(), buffer.end());
+  return base::ImportantFileWriter::WriteFileAtomically(icon_path, data);
 }
 
 bool IconUtil::PixelsHaveAlpha(const uint32_t* pixels, size_t num_pixels) {
@@ -634,7 +620,11 @@ void IconUtil::SetSingleIconImageInformation(const SkBitmap& bitmap,
   // opaque.
   unsigned char* image_addr = reinterpret_cast<unsigned char*>(icon_image);
   unsigned char* xor_mask_addr = image_addr + sizeof(BITMAPINFOHEADER);
-  CopySkBitmapBitsIntoIconBuffer(bitmap, xor_mask_addr, xor_mask_size);
+
+  // Make sure pixels are not premultiplied by alpha.
+  SkBitmap unpremul_bitmap = SkBitmapOperations::UnPreMultiply(bitmap);
+  CopySkBitmapBitsIntoIconBuffer(unpremul_bitmap, xor_mask_addr, xor_mask_size);
+
   *image_byte_count = bytes_in_resource;
 }
 

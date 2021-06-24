@@ -23,7 +23,7 @@ class WorkerResourceFetcherProperties final : public ResourceFetcherProperties {
       scoped_refptr<WebWorkerFetchContext> web_context);
   ~WorkerResourceFetcherProperties() override = default;
 
-  void Trace(Visitor* visitor) override;
+  void Trace(Visitor* visitor) const override;
 
   // ResourceFetcherProperties implementation
   const FetchClientSettingsObject& GetFetchClientSettingsObject()
@@ -42,17 +42,26 @@ class WorkerResourceFetcherProperties final : public ResourceFetcherProperties {
     return -1;
   }
   bool IsPaused() const override;
+  LoaderFreezeMode FreezeMode() const override;
   bool IsDetached() const override { return false; }
   bool IsLoadComplete() const override { return false; }
   bool ShouldBlockLoadingSubResource() const override { return false; }
+  bool IsSubframeDeprioritizationEnabled() const override { return false; }
   scheduler::FrameStatus GetFrameStatus() const override {
     return scheduler::FrameStatus::kNone;
+  }
+  const KURL& WebBundlePhysicalUrl() const override;
+  int GetOutstandingThrottledLimit() const override;
+  scoped_refptr<SecurityOrigin> GetLitePageSubresourceRedirectOrigin()
+      const override {
+    return nullptr;
   }
 
  private:
   const Member<WorkerOrWorkletGlobalScope> global_scope_;
   const Member<const FetchClientSettingsObject> fetch_client_settings_object_;
   const scoped_refptr<WebWorkerFetchContext> web_context_;
+  const int outstanding_throttled_limit_;
 };
 
 }  // namespace blink

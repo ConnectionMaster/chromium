@@ -13,8 +13,8 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_download_manager.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_web_ui.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -25,8 +25,7 @@ class DownloadsHandlerTest : public testing::Test {
   DownloadsHandlerTest()
       : download_manager_(new content::MockDownloadManager()),
         handler_(&profile_) {
-    content::BrowserContext::SetDownloadManagerForTesting(
-        &profile_, base::WrapUnique(download_manager_));
+    profile_.SetDownloadManagerForTesting(base::WrapUnique(download_manager_));
     std::unique_ptr<ChromeDownloadManagerDelegate> delegate =
         std::make_unique<ChromeDownloadManagerDelegate>(&profile_);
     chrome_download_manager_delegate_ = delegate.get();
@@ -65,16 +64,15 @@ class DownloadsHandlerTest : public testing::Test {
     std::string event;
     ASSERT_TRUE(data.arg1()->GetAsString(&event));
     EXPECT_EQ("auto-open-downloads-changed", event);
-    bool auto_open_downloads = false;
-    ASSERT_TRUE(data.arg2()->GetAsBoolean(&auto_open_downloads));
-    EXPECT_FALSE(auto_open_downloads);
+    ASSERT_TRUE(data.arg2()->is_bool());
+    EXPECT_FALSE(data.arg2()->GetBool());
   }
 
   Profile* profile() { return &profile_; }
   DownloadsHandler* handler() { return &handler_; }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   content::TestWebUI test_web_ui_;
   TestingProfile profile_;
 

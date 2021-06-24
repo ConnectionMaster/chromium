@@ -1,5 +1,3 @@
-namespace third_party_unrar {
-
 void Unpack::Unpack5(bool Solid)
 {
   FileExtracted=true;
@@ -28,9 +26,9 @@ void Unpack::Unpack5(bool Solid)
 
       // We use 'while', because for empty block containing only Huffman table,
       // we'll be on the block border once again just after reading the table.
-      while (Inp.InAddr>BlockHeader.BlockStart+BlockHeader.BlockSize-1 ||
-             (Inp.InAddr==BlockHeader.BlockStart+BlockHeader.BlockSize-1 &&
-             Inp.InBit>=BlockHeader.BlockBitSize))
+      while (Inp.InAddr>BlockHeader.BlockStart+BlockHeader.BlockSize-1 || 
+             Inp.InAddr==BlockHeader.BlockStart+BlockHeader.BlockSize-1 && 
+             Inp.InBit>=BlockHeader.BlockBitSize)
       {
         if (BlockHeader.LastBlockInFile)
         {
@@ -129,12 +127,10 @@ void Unpack::Unpack5(bool Solid)
     if (MainSlot==257)
     {
       if (LastLength!=0)
-      {
         if (Fragmented)
           FragWindow.CopyString(LastLength,OldDist[0],UnpPtr,MaxWinMask);
         else
           CopyString(LastLength,OldDist[0]);
-      }
       continue;
     }
     if (MainSlot<262)
@@ -393,8 +389,8 @@ void Unpack::UnpWriteBuf()
 
   // Choose the nearest among WriteBorder and WrPtr actual written border.
   // If border is equal to UnpPtr, it means that we have MaxWinSize data ahead.
-  if (WriteBorder==UnpPtr ||
-      (WrPtr!=UnpPtr && ((WrPtr-UnpPtr)&MaxWinMask)<((WriteBorder-UnpPtr)&MaxWinMask)))
+  if (WriteBorder==UnpPtr || 
+      WrPtr!=UnpPtr && ((WrPtr-UnpPtr)&MaxWinMask)<((WriteBorder-UnpPtr)&MaxWinMask))
     WriteBorder=WrPtr;
 }
 
@@ -440,6 +436,10 @@ byte* Unpack::ApplyFilter(byte *Data,uint DataSize,UnpackFilter *Flt)
       }
       return SrcData;
     case FILTER_ARM:
+      // 2019-11-15: we turned off ARM filter by default when compressing,
+      // mostly because it is inefficient for modern 64 bit ARM binaries.
+      // It was turned on by default in 5.0 - 5.80b3 , so we still need it
+      // here for compatibility with some of previously created archives.
       {
         uint FileOffset=(uint)WrittenFileSize;
         // DataSize is unsigned, so we use "CurPos+3" and not "DataSize-3"
@@ -685,5 +685,3 @@ void Unpack::InitFilters()
 {
   Filters.SoftReset();
 }
-
-}  // namespace third_party_unrar

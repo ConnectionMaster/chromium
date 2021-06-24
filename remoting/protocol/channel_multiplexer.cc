@@ -55,10 +55,8 @@ class PendingPacket {
 const char ChannelMultiplexer::kMuxChannelName[] = "mux";
 
 struct ChannelMultiplexer::PendingChannel {
-  PendingChannel(const std::string& name,
-                 const ChannelCreatedCallback& callback)
-      : name(name), callback(callback) {
-  }
+  PendingChannel(const std::string& name, ChannelCreatedCallback callback)
+      : name(name), callback(std::move(callback)) {}
   std::string name;
   ChannelCreatedCallback callback;
 };
@@ -131,7 +129,7 @@ class ChannelMultiplexer::MuxSocket : public P2PStreamSocket {
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<MuxSocket> weak_factory_;
+  base::WeakPtrFactory<MuxSocket> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MuxSocket);
 };
@@ -216,8 +214,7 @@ ChannelMultiplexer::MuxSocket::MuxSocket(MuxChannel* channel)
     : channel_(channel),
       read_buffer_size_(0),
       write_pending_(false),
-      write_result_(0),
-      weak_factory_(this) {}
+      write_result_(0) {}
 
 ChannelMultiplexer::MuxSocket::~MuxSocket() {
   channel_->OnSocketDestroyed();
@@ -314,8 +311,7 @@ ChannelMultiplexer::ChannelMultiplexer(StreamChannelFactory* factory,
                                        const std::string& base_channel_name)
     : base_channel_factory_(factory),
       base_channel_name_(base_channel_name),
-      next_channel_id_(0),
-      weak_factory_(this) {}
+      next_channel_id_(0) {}
 
 ChannelMultiplexer::~ChannelMultiplexer() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -327,24 +323,24 @@ ChannelMultiplexer::~ChannelMultiplexer() {
 }
 
 void ChannelMultiplexer::CreateChannel(const std::string& name,
-                                       const ChannelCreatedCallback& callback) {
+                                       ChannelCreatedCallback callback) {
   if (base_channel_.get()) {
     // Already have |base_channel_|. Create new multiplexed channel
     // synchronously.
-    callback.Run(GetOrCreateChannel(name)->CreateSocket());
+    std::move(callback).Run(GetOrCreateChannel(name)->CreateSocket());
   } else if (!base_channel_.get() && !base_channel_factory_) {
     // Fail synchronously if we failed to create |base_channel_|.
-    callback.Run(nullptr);
+    std::move(callback).Run(nullptr);
   } else {
     // Still waiting for the |base_channel_|.
-    pending_channels_.push_back(PendingChannel(name, callback));
+    pending_channels_.emplace_back(name, std::move(callback));
 
     // If this is the first multiplexed channel then create the base channel.
     if (pending_channels_.size() == 1U) {
       base_channel_factory_->CreateChannel(
           base_channel_name_,
-          base::Bind(&ChannelMultiplexer::OnBaseChannelReady,
-                     base::Unretained(this)));
+          base::BindOnce(&ChannelMultiplexer::OnBaseChannelReady,
+                         base::Unretained(this)));
     }
   }
 }
@@ -366,15 +362,16 @@ void ChannelMultiplexer::OnBaseChannelReady(
 
   if (base_channel_.get()) {
     // Initialize reader and writer.
-    reader_.StartReading(base_channel_.get(),
-                         base::Bind(&ChannelMultiplexer::OnIncomingPacket,
-                                    base::Unretained(this)),
-                         base::Bind(&ChannelMultiplexer::OnBaseChannelError,
-                                    base::Unretained(this)));
-    writer_.Start(base::Bind(&P2PStreamSocket::Write,
-                             base::Unretained(base_channel_.get())),
-                  base::Bind(&ChannelMultiplexer::OnBaseChannelError,
-                             base::Unretained(this)));
+    reader_.StartReading(
+        base_channel_.get(),
+        base::BindRepeating(&ChannelMultiplexer::OnIncomingPacket,
+                            base::Unretained(this)),
+        base::BindOnce(&ChannelMultiplexer::OnBaseChannelError,
+                       base::Unretained(this)));
+    writer_.Start(base::BindRepeating(&P2PStreamSocket::Write,
+                                      base::Unretained(base_channel_.get())),
+                  base::BindOnce(&ChannelMultiplexer::OnBaseChannelError,
+                                 base::Unretained(this)));
   }
 
   DoCreatePendingChannels();
@@ -392,12 +389,12 @@ void ChannelMultiplexer::DoCreatePendingChannels() {
       FROM_HERE, base::BindOnce(&ChannelMultiplexer::DoCreatePendingChannels,
                                 weak_factory_.GetWeakPtr()));
 
-  PendingChannel c = pending_channels_.front();
+  PendingChannel c = std::move(pending_channels_.front());
   pending_channels_.erase(pending_channels_.begin());
   std::unique_ptr<P2PStreamSocket> socket;
   if (base_channel_.get())
     socket = GetOrCreateChannel(c.name)->CreateSocket();
-  c.callback.Run(std::move(socket));
+  std::move(c.callback).Run(std::move(socket));
 }
 
 ChannelMultiplexer::MuxChannel* ChannelMultiplexer::GetOrCreateChannel(

@@ -125,6 +125,8 @@ class NET_EXPORT_PRIVATE HttpCache::Writers {
     return network_transaction_.get();
   }
 
+  void CloseConnectionOnDestruction();
+
   // Returns the load state of the |network_transaction_| if present else
   // returns LOAD_STATE_IDLE.
   LoadState GetLoadState() const;
@@ -233,9 +235,9 @@ class NET_EXPORT_PRIVATE HttpCache::Writers {
   // Owner of |this|.
   ActiveEntry* entry_ = nullptr;
 
-  std::unique_ptr<HttpTransaction> network_transaction_ = nullptr;
+  std::unique_ptr<HttpTransaction> network_transaction_;
 
-  scoped_refptr<IOBuffer> read_buf_ = nullptr;
+  scoped_refptr<IOBuffer> read_buf_;
 
   int io_buf_len_ = 0;
   int write_len_ = 0;
@@ -283,7 +285,7 @@ class NET_EXPORT_PRIVATE HttpCache::Writers {
   // end of DoLoop().
   base::OnceClosure cache_callback_;  // Callback for cache_.
 
-  base::WeakPtrFactory<Writers> weak_factory_;
+  base::WeakPtrFactory<Writers> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(Writers);
 };
 

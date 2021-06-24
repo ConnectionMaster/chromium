@@ -21,7 +21,7 @@
 #import "ios/chrome/browser/ui/reading_list/reading_list_table_view_item.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_utils.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/favicon/favicon_view.h"
+#import "ios/chrome/common/ui/favicon/favicon_view.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -168,11 +168,9 @@ const CGFloat kFaviconMinWidthHeight = 16;
 
         [strongSelf.dataSink itemHasChangedAfterDelay:strongItem];
       };
-  FaviconAttributes* cachedAttributes = self.faviconLoader->FaviconForPageUrl(
+  self.faviconLoader->FaviconForPageUrl(
       item.faviconPageURL, kFaviconWidthHeight, kFaviconMinWidthHeight,
       /*fallback_to_google_server=*/false, completionBlock);
-  DCHECK(cachedAttributes);
-  return completionBlock(cachedAttributes);
 }
 
 - (void)beginBatchUpdates {

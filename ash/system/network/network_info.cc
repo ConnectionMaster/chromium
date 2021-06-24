@@ -4,28 +4,32 @@
 
 #include "ash/system/network/network_info.h"
 
+#include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
+
 namespace ash {
 
-NetworkInfo::NetworkInfo()
-    : disable(false),
-      connected(false),
-      connecting(false),
-      type(Type::UNKNOWN) {}
+NetworkInfo::NetworkInfo() : NetworkInfo(std::string()) {}
 
 NetworkInfo::NetworkInfo(const std::string& guid)
     : guid(guid),
-      disable(false),
-      connected(false),
-      connecting(false),
-      type(Type::UNKNOWN) {}
+      connection_state(
+          chromeos::network_config::mojom::ConnectionStateType::kNotConnected),
+      type(chromeos::network_config::mojom::NetworkType::kWiFi),
+      source(chromeos::network_config::mojom::OncSource::kNone),
+      activation_state(
+          chromeos::network_config::mojom::ActivationStateType::kUnknown) {}
 
 NetworkInfo::~NetworkInfo() = default;
 
 bool NetworkInfo::operator==(const NetworkInfo& other) const {
   return guid == other.guid && label == other.label &&
          tooltip == other.tooltip && image.BackedBySameObjectAs(other.image) &&
-         disable == other.disable && connected == other.connected &&
-         connecting == other.connecting && type == other.type;
+         type == other.type && disable == other.disable &&
+         sim_locked == other.sim_locked &&
+         connection_state == other.connection_state && source == other.source &&
+         activation_state == other.activation_state &&
+         battery_percentage == other.battery_percentage &&
+         inhibited == other.inhibited;
 }
 
 }  // namespace ash

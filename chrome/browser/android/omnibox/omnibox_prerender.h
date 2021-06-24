@@ -5,11 +5,8 @@
 #ifndef CHROME_BROWSER_ANDROID_OMNIBOX_OMNIBOX_PRERENDER_H_
 #define CHROME_BROWSER_ANDROID_OMNIBOX_OMNIBOX_PRERENDER_H_
 
-#include <memory>
-
 #include "base/android/jni_weak_ref.h"
 #include "base/macros.h"
-#include "base/strings/string16.h"
 
 class Profile;
 struct AutocompleteMatch;
@@ -63,6 +60,7 @@ class OmniboxPrerender {
   void DoPrerender(const AutocompleteMatch& match,
                    Profile* profile,
                    content::WebContents* web_contents);
+  void DoPreconnect(const AutocompleteMatch& match, Profile* profile);
   JavaObjectWeakGlobalRef weak_java_omnibox_;
 
   DISALLOW_COPY_AND_ASSIGN(OmniboxPrerender);

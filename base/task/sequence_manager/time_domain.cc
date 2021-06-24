@@ -9,6 +9,7 @@
 #include "base/task/sequence_manager/task_queue_impl.h"
 #include "base/task/sequence_manager/work_queue.h"
 #include "base/threading/thread_checker.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 namespace sequence_manager {
@@ -50,26 +51,24 @@ void TimeDomain::UnregisterQueue(internal::TaskQueueImpl* queue) {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
   DCHECK_EQ(queue->GetTimeDomain(), this);
   LazyNow lazy_now(CreateLazyNow());
-  SetNextWakeUpForQueue(queue, nullopt, internal::WakeUpResolution::kLow,
-                        &lazy_now);
+  SetNextWakeUpForQueue(queue, absl::nullopt, &lazy_now);
 }
 
 void TimeDomain::SetNextWakeUpForQueue(
     internal::TaskQueueImpl* queue,
-    Optional<internal::DelayedWakeUp> wake_up,
-    internal::WakeUpResolution resolution,
+    absl::optional<internal::DelayedWakeUp> wake_up,
     LazyNow* lazy_now) {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
   DCHECK_EQ(queue->GetTimeDomain(), this);
   DCHECK(queue->IsQueueEnabled() || !wake_up);
 
-  Optional<TimeTicks> previous_wake_up;
-  Optional<internal::WakeUpResolution> previous_queue_resolution;
+  absl::optional<TimeTicks> previous_wake_up;
+  absl::optional<internal::WakeUpResolution> previous_queue_resolution;
   if (!delayed_wake_up_queue_.empty())
     previous_wake_up = delayed_wake_up_queue_.Min().wake_up.time;
   if (queue->heap_handle().IsValid()) {
     previous_queue_resolution =
-        delayed_wake_up_queue_.at(queue->heap_handle()).resolution;
+        delayed_wake_up_queue_.at(queue->heap_handle()).wake_up.resolution;
   }
 
   if (wake_up) {
@@ -77,10 +76,10 @@ void TimeDomain::SetNextWakeUpForQueue(
     if (queue->heap_handle().IsValid()) {
       // O(log n)
       delayed_wake_up_queue_.ChangeKey(queue->heap_handle(),
-                                       {wake_up.value(), resolution, queue});
+                                       {wake_up.value(), queue});
     } else {
       // O(log n)
-      delayed_wake_up_queue_.insert({wake_up.value(), resolution, queue});
+      delayed_wake_up_queue_.insert({wake_up.value(), queue});
     }
   } else {
     // Remove a wake-up from heap if present.
@@ -88,7 +87,7 @@ void TimeDomain::SetNextWakeUpForQueue(
       delayed_wake_up_queue_.erase(queue->heap_handle());
   }
 
-  Optional<TimeTicks> new_wake_up;
+  absl::optional<TimeTicks> new_wake_up;
   if (!delayed_wake_up_queue_.empty())
     new_wake_up = delayed_wake_up_queue_.Min().wake_up.time;
 
@@ -96,7 +95,7 @@ void TimeDomain::SetNextWakeUpForQueue(
       *previous_queue_resolution == internal::WakeUpResolution::kHigh) {
     pending_high_res_wake_up_count_--;
   }
-  if (wake_up && resolution == internal::WakeUpResolution::kHigh)
+  if (wake_up && wake_up->resolution == internal::WakeUpResolution::kHigh)
     pending_high_res_wake_up_count_++;
   DCHECK_GE(pending_high_res_wake_up_count_, 0);
 
@@ -133,35 +132,22 @@ void TimeDomain::MoveReadyDelayedTasksToWorkQueues(LazyNow* lazy_now) {
   }
 }
 
-Optional<TimeTicks> TimeDomain::NextScheduledRunTime() const {
+absl::optional<TimeTicks> TimeDomain::NextScheduledRunTime() const {
   DCHECK_CALLED_ON_VALID_THREAD(associated_thread_->thread_checker);
   if (delayed_wake_up_queue_.empty())
-    return nullopt;
+    return absl::nullopt;
   return delayed_wake_up_queue_.Min().wake_up.time;
 }
 
-void TimeDomain::AsValueInto(trace_event::TracedValue* state) const {
-  state->BeginDictionary();
-  state->SetString("name", GetName());
-  state->SetInteger("registered_delay_count", delayed_wake_up_queue_.size());
+Value TimeDomain::AsValue() const {
+  Value state(Value::Type::DICTIONARY);
+  state.SetStringKey("name", GetName());
+  state.SetIntKey("registered_delay_count", delayed_wake_up_queue_.size());
   if (!delayed_wake_up_queue_.empty()) {
     TimeDelta delay = delayed_wake_up_queue_.Min().wake_up.time - Now();
-    state->SetDouble("next_delay_ms", delay.InMillisecondsF());
+    state.SetDoubleKey("next_delay_ms", delay.InMillisecondsF());
   }
-  AsValueIntoInternal(state);
-  state->EndDictionary();
-}
-
-void TimeDomain::AsValueIntoInternal(trace_event::TracedValue* state) const {
-  // Can be overriden to trace some additional state.
-}
-
-bool TimeDomain::HasPendingHighResolutionTasks() const {
-  return pending_high_res_wake_up_count_;
-}
-
-bool TimeDomain::Empty() const {
-  return delayed_wake_up_queue_.empty();
+  return state;
 }
 
 }  // namespace sequence_manager

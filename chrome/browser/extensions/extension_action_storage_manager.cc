@@ -13,8 +13,7 @@
 #include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
-#include "chrome/browser/extensions/extension_action.h"
-#include "chrome/browser/extensions/extension_action_manager.h"
+#include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/state_store.h"
@@ -167,7 +166,8 @@ std::unique_ptr<base::DictionaryValue> DefaultsToValue(
   dict->SetString(kPopupUrlStorageKey,
                   action->GetPopupUrl(kDefaultTabId).spec());
   dict->SetString(kTitleStorageKey, action->GetTitle(kDefaultTabId));
-  dict->SetString(kBadgeTextStorageKey, action->GetBadgeText(kDefaultTabId));
+  dict->SetString(kBadgeTextStorageKey,
+                  action->GetExplicitlySetBadgeText(kDefaultTabId));
   dict->SetString(
       kBadgeBackgroundColorStorageKey,
       SkColorToRawString(action->GetBadgeBackgroundColor(kDefaultTabId)));
@@ -196,12 +196,11 @@ std::unique_ptr<base::DictionaryValue> DefaultsToValue(
 
 ExtensionActionStorageManager::ExtensionActionStorageManager(
     content::BrowserContext* context)
-    : browser_context_(context),
-      extension_action_observer_(this),
-      extension_registry_observer_(this),
-      weak_factory_(this) {
-  extension_action_observer_.Add(ExtensionActionAPI::Get(browser_context_));
-  extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context_));
+    : browser_context_(context) {
+  extension_action_observation_.Observe(
+      ExtensionActionAPI::Get(browser_context_));
+  extension_registry_observation_.Observe(
+      ExtensionRegistry::Get(browser_context_));
 
   StateStore* store = GetStateStore();
   if (store)
@@ -214,18 +213,17 @@ ExtensionActionStorageManager::~ExtensionActionStorageManager() {
 void ExtensionActionStorageManager::OnExtensionLoaded(
     content::BrowserContext* browser_context,
     const Extension* extension) {
-  if (!ExtensionActionManager::Get(browser_context_)->GetBrowserAction(
-          *extension))
+  ExtensionAction* action = ExtensionActionManager::Get(browser_context_)
+                                ->GetExtensionAction(*extension);
+  if (!action || action->action_type() != ActionInfo::TYPE_BROWSER)
     return;
 
   StateStore* store = GetStateStore();
   if (store) {
     store->GetExtensionValue(
-        extension->id(),
-        kBrowserActionStorageKey,
-        base::Bind(&ExtensionActionStorageManager::ReadFromStorage,
-                   weak_factory_.GetWeakPtr(),
-                   extension->id()));
+        extension->id(), kBrowserActionStorageKey,
+        base::BindOnce(&ExtensionActionStorageManager::ReadFromStorage,
+                       weak_factory_.GetWeakPtr(), extension->id()));
   }
 }
 
@@ -245,7 +243,7 @@ void ExtensionActionStorageManager::OnExtensionActionUpdated(
 }
 
 void ExtensionActionStorageManager::OnExtensionActionAPIShuttingDown() {
-  extension_action_observer_.RemoveAll();
+  extension_action_observation_.Reset();
 }
 
 void ExtensionActionStorageManager::WriteToStorage(
@@ -267,10 +265,9 @@ void ExtensionActionStorageManager::ReadFromStorage(
   if (!extension)
     return;
 
-  ExtensionAction* browser_action =
-      ExtensionActionManager::Get(browser_context_)->GetBrowserAction(
-          *extension);
-  if (!browser_action) {
+  ExtensionAction* action = ExtensionActionManager::Get(browser_context_)
+                                ->GetExtensionAction(*extension);
+  if (!action || action->action_type() != ActionInfo::TYPE_BROWSER) {
     // This can happen if the extension is updated between startup and when the
     // storage read comes back, and the update removes the browser action.
     // http://crbug.com/349371
@@ -281,7 +278,7 @@ void ExtensionActionStorageManager::ReadFromStorage(
   if (!value.get() || !value->GetAsDictionary(&dict))
     return;
 
-  SetDefaultsFromValue(dict, browser_action);
+  SetDefaultsFromValue(dict, action);
 }
 
 StateStore* ExtensionActionStorageManager::GetStateStore() {

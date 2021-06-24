@@ -5,12 +5,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <utility>
 #include <vector>
 
-#include "base/test/scoped_task_environment.h"
+#include "base/macros.h"
 #include "content/browser/appcache/appcache.h"
 #include "content/browser/appcache/appcache_host.h"
 #include "content/browser/appcache/mock_appcache_service.h"
+#include "content/public/test/browser_task_environment.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/appcache/appcache.mojom.h"
 #include "third_party/blink/public/mojom/appcache/appcache_info.mojom.h"
@@ -19,25 +22,36 @@
 namespace content {
 
 class AppCacheTest : public testing::Test {
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  BrowserTaskEnvironment task_environment_;
 };
 
 TEST_F(AppCacheTest, CleanupUnusedCache) {
   MockAppCacheService service;
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 111));
+  auto cache = base::MakeRefCounted<AppCache>(service.storage(), 111);
   cache->set_complete(true);
-  scoped_refptr<AppCacheGroup> group(
-      new AppCacheGroup(service.storage(), GURL("http://blah/manifest"), 111));
+  auto group = base::MakeRefCounted<AppCacheGroup>(
+      service.storage(), GURL("http://blah/manifest"), 111);
   group->AddCache(cache.get());
 
-  blink::mojom::AppCacheFrontendPtr frontend1;
-  mojo::MakeRequest(&frontend1);
-  AppCacheHost host1(/*host_id=*/1, /*process_id=*/1, /*render_frame_id=*/1,
-                     std::move(frontend1), &service);
-  blink::mojom::AppCacheFrontendPtr frontend2;
-  mojo::MakeRequest(&frontend2);
-  AppCacheHost host2(/*host_id=*/2, /*process_id=*/2, /*render_frame_id=*/2,
-                     std::move(frontend2), &service);
+  mojo::PendingRemote<blink::mojom::AppCacheFrontend> frontend1;
+  ignore_result(frontend1.InitWithNewPipeAndPassReceiver());
+  const int kMockProcessId1 = 1;
+  const int kMockProcessId2 = 2;
+  AppCacheHost host1(
+      /*host_id=*/base::UnguessableToken::Create(), kMockProcessId1,
+      /*render_frame_id=*/1,
+      ChildProcessSecurityPolicyImpl::GetInstance()->CreateHandle(
+          kMockProcessId1),
+      std::move(frontend1), &service);
+
+  mojo::PendingRemote<blink::mojom::AppCacheFrontend> frontend2;
+  ignore_result(frontend2.InitWithNewPipeAndPassReceiver());
+  AppCacheHost host2(
+      /*host_id=*/base::UnguessableToken::Create(), kMockProcessId2,
+      /*render_frame_id=*/2,
+      ChildProcessSecurityPolicyImpl::GetInstance()->CreateHandle(
+          kMockProcessId2),
+      std::move(frontend2), &service);
 
   host1.AssociateCompleteCache(cache.get());
   host2.AssociateCompleteCache(cache.get());
@@ -48,7 +62,7 @@ TEST_F(AppCacheTest, CleanupUnusedCache) {
 
 TEST_F(AppCacheTest, AddModifyRemoveEntry) {
   MockAppCacheService service;
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 111));
+  auto cache = base::MakeRefCounted<AppCache>(service.storage(), 111);
 
   EXPECT_TRUE(cache->entries().empty());
   EXPECT_EQ(0L, cache->cache_size());
@@ -102,24 +116,22 @@ TEST_F(AppCacheTest, AddModifyRemoveEntry) {
 TEST_F(AppCacheTest, InitializeWithManifest) {
   MockAppCacheService service;
 
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 1234));
+  auto cache = base::MakeRefCounted<AppCache>(service.storage(), 1234);
   EXPECT_TRUE(cache->fallback_namespaces_.empty());
-  EXPECT_TRUE(cache->online_whitelist_namespaces_.empty());
-  EXPECT_FALSE(cache->online_whitelist_all_);
+  EXPECT_TRUE(cache->online_safelist_namespaces_.empty());
+  EXPECT_FALSE(cache->online_safelist_all_);
 
   AppCacheManifest manifest;
   manifest.explicit_urls.insert("http://one.com");
   manifest.explicit_urls.insert("http://two.com");
   manifest.fallback_namespaces.push_back(
       AppCacheNamespace(APPCACHE_FALLBACK_NAMESPACE, GURL("http://fb1.com"),
-                GURL("http://fbone.com"), true));
-  manifest.online_whitelist_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_NETWORK_NAMESPACE, GURL("http://w1.com"),
-          GURL(), false));
-  manifest.online_whitelist_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_NETWORK_NAMESPACE, GURL("http://w2.com"),
-          GURL(), false));
-  manifest.online_whitelist_all = true;
+                        GURL("http://fbone.com")));
+  manifest.online_safelist_namespaces.push_back(AppCacheNamespace(
+      APPCACHE_NETWORK_NAMESPACE, GURL("http://w1.com"), GURL()));
+  manifest.online_safelist_namespaces.push_back(AppCacheNamespace(
+      APPCACHE_NETWORK_NAMESPACE, GURL("http://w2.com"), GURL()));
+  manifest.online_safelist_all = true;
 
   cache->InitializeWithManifest(&manifest);
   const std::vector<AppCacheNamespace>& fallbacks =
@@ -128,19 +140,18 @@ TEST_F(AppCacheTest, InitializeWithManifest) {
   EXPECT_EQ(expected, fallbacks.size());
   EXPECT_EQ(GURL("http://fb1.com"), fallbacks[0].namespace_url);
   EXPECT_EQ(GURL("http://fbone.com"), fallbacks[0].target_url);
-  EXPECT_TRUE(fallbacks[0].is_pattern);
-  const std::vector<AppCacheNamespace>& whitelist =
-      cache->online_whitelist_namespaces_;
+  const std::vector<AppCacheNamespace>& safelist =
+      cache->online_safelist_namespaces_;
   expected = 2;
-  EXPECT_EQ(expected, whitelist.size());
-  EXPECT_EQ(GURL("http://w1.com"), whitelist[0].namespace_url);
-  EXPECT_EQ(GURL("http://w2.com"), whitelist[1].namespace_url);
-  EXPECT_TRUE(cache->online_whitelist_all_);
+  EXPECT_EQ(expected, safelist.size());
+  EXPECT_EQ(GURL("http://w1.com"), safelist[0].namespace_url);
+  EXPECT_EQ(GURL("http://w2.com"), safelist[1].namespace_url);
+  EXPECT_TRUE(cache->online_safelist_all_);
 
   // Ensure collections in manifest were taken over by the cache rather than
   // copied.
   EXPECT_TRUE(manifest.fallback_namespaces.empty());
-  EXPECT_TRUE(manifest.online_whitelist_namespaces.empty());
+  EXPECT_TRUE(manifest.online_safelist_namespaces.empty());
 }
 
 TEST_F(AppCacheTest, FindResponseForRequest) {
@@ -174,27 +185,24 @@ TEST_F(AppCacheTest, FindResponseForRequest) {
   const int64_t kInterceptResponseId = 6;
 
   AppCacheManifest manifest;
-  manifest.online_whitelist_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_NETWORK_NAMESPACE, kOnlineNamespaceUrl,
-          GURL(), false));
-  manifest.online_whitelist_namespaces.push_back(
+  manifest.online_safelist_namespaces.push_back(AppCacheNamespace(
+      APPCACHE_NETWORK_NAMESPACE, kOnlineNamespaceUrl, GURL()));
+  manifest.online_safelist_namespaces.push_back(
       AppCacheNamespace(APPCACHE_NETWORK_NAMESPACE,
-          kOnlineNamespaceWithinOtherNamespaces, GURL(), false));
-  manifest.fallback_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_FALLBACK_NAMESPACE, kFallbackNamespaceUrl1,
-          kFallbackEntryUrl1, false));
-  manifest.fallback_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_FALLBACK_NAMESPACE, kFallbackNamespaceUrl2,
-          kFallbackEntryUrl2, false));
+                        kOnlineNamespaceWithinOtherNamespaces, GURL()));
+  manifest.fallback_namespaces.push_back(AppCacheNamespace(
+      APPCACHE_FALLBACK_NAMESPACE, kFallbackNamespaceUrl1, kFallbackEntryUrl1));
+  manifest.fallback_namespaces.push_back(AppCacheNamespace(
+      APPCACHE_FALLBACK_NAMESPACE, kFallbackNamespaceUrl2, kFallbackEntryUrl2));
   manifest.intercept_namespaces.push_back(
       AppCacheNamespace(APPCACHE_INTERCEPT_NAMESPACE, kInterceptNamespace,
-          kInterceptNamespaceEntry, false));
-  manifest.intercept_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_INTERCEPT_NAMESPACE,
-          kInterceptNamespaceWithinFallback, kInterceptNamespaceEntry, false));
+                        kInterceptNamespaceEntry));
+  manifest.intercept_namespaces.push_back(AppCacheNamespace(
+      APPCACHE_INTERCEPT_NAMESPACE, kInterceptNamespaceWithinFallback,
+      kInterceptNamespaceEntry));
 
   // Create a cache with some namespaces and entries.
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 1234));
+  auto cache = base::MakeRefCounted<AppCache>(service.storage(), 1234);
   cache->InitializeWithManifest(&manifest);
   cache->AddEntry(
       kFallbackEntryUrl1,
@@ -355,221 +363,43 @@ TEST_F(AppCacheTest, FindResponseForRequest) {
   EXPECT_FALSE(network_namespace);
 }
 
-TEST_F(AppCacheTest, FindInterceptPatternResponseForRequest) {
-  MockAppCacheService service;
-
-  // Setup an appcache with an intercept namespace that uses pattern matching.
-  const GURL kInterceptNamespaceBase("http://blah/intercept_namespace/");
-  const GURL kInterceptPatternNamespace(
-      kInterceptNamespaceBase.Resolve("*.hit*"));
-  const GURL kInterceptNamespaceEntry("http://blah/intercept_resource");
-  const int64_t kInterceptResponseId = 1;
-  AppCacheManifest manifest;
-  manifest.intercept_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_INTERCEPT_NAMESPACE,
-          kInterceptPatternNamespace, kInterceptNamespaceEntry, true));
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 1234));
-  cache->InitializeWithManifest(&manifest);
-  cache->AddEntry(
-      kInterceptNamespaceEntry,
-      AppCacheEntry(AppCacheEntry::INTERCEPT, kInterceptResponseId));
-  cache->set_complete(true);
-
-  // See that the pattern match works.
-  bool found = false;
-  AppCacheEntry entry;
-  AppCacheEntry fallback_entry;
-  GURL intercept_namespace;
-  GURL fallback_namespace;
-  bool network_namespace = false;
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/miss"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_FALSE(found);
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/intercept_namespace/another_miss"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_FALSE(found);
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/intercept_namespace/path.hit"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_TRUE(found);
-  EXPECT_EQ(kInterceptResponseId, entry.response_id());
-  EXPECT_EQ(kInterceptNamespaceEntry,
-            cache->GetInterceptEntryUrl(intercept_namespace));
-  EXPECT_FALSE(fallback_entry.has_response_id());
-  EXPECT_TRUE(fallback_namespace.is_empty());
-  EXPECT_FALSE(network_namespace);
-
-  entry = AppCacheEntry();  // reset
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/intercept_namespace/longer/path.hit?arg=ok"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_TRUE(found);
-  EXPECT_EQ(kInterceptResponseId, entry.response_id());
-  EXPECT_EQ(kInterceptNamespaceEntry,
-            cache->GetInterceptEntryUrl(intercept_namespace));
-  EXPECT_FALSE(fallback_entry.has_response_id());
-  EXPECT_TRUE(fallback_namespace.is_empty());
-  EXPECT_FALSE(network_namespace);
-}
-
-TEST_F(AppCacheTest, FindFallbackPatternResponseForRequest) {
-  MockAppCacheService service;
-
-  // Setup an appcache with a fallback namespace that uses pattern matching.
-  const GURL kFallbackNamespaceBase("http://blah/fallback_namespace/");
-  const GURL kFallbackPatternNamespace(
-      kFallbackNamespaceBase.Resolve("*.hit*"));
-  const GURL kFallbackNamespaceEntry("http://blah/fallback_resource");
-  const int64_t kFallbackResponseId = 1;
-  AppCacheManifest manifest;
-  manifest.fallback_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_FALLBACK_NAMESPACE, kFallbackPatternNamespace,
-                kFallbackNamespaceEntry, true));
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 1234));
-  cache->InitializeWithManifest(&manifest);
-  cache->AddEntry(
-      kFallbackNamespaceEntry,
-      AppCacheEntry(AppCacheEntry::FALLBACK, kFallbackResponseId));
-  cache->set_complete(true);
-
-  // See that the pattern match works.
-  bool found = false;
-  AppCacheEntry entry;
-  AppCacheEntry fallback_entry;
-  GURL intercept_namespace;
-  GURL fallback_namespace;
-  bool network_namespace = false;
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/miss"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_FALSE(found);
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/fallback_namespace/another_miss"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_FALSE(found);
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/fallback_namespace/path.hit"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_TRUE(found);
-  EXPECT_FALSE(entry.has_response_id());
-  EXPECT_EQ(kFallbackResponseId, fallback_entry.response_id());
-  EXPECT_EQ(kFallbackNamespaceEntry,
-            cache->GetFallbackEntryUrl(fallback_namespace));
-  EXPECT_FALSE(network_namespace);
-
-  fallback_entry = AppCacheEntry();
-  fallback_namespace = GURL();
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/fallback_namespace/longer/path.hit?arg=ok"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_TRUE(found);
-  EXPECT_FALSE(entry.has_response_id());
-  EXPECT_EQ(kFallbackResponseId, fallback_entry.response_id());
-  EXPECT_EQ(kFallbackNamespaceEntry,
-            cache->GetFallbackEntryUrl(fallback_namespace));
-  EXPECT_TRUE(intercept_namespace.is_empty());
-  EXPECT_FALSE(network_namespace);
-}
-
-TEST_F(AppCacheTest, FindNetworkNamespacePatternResponseForRequest) {
-  MockAppCacheService service;
-
-  // Setup an appcache with a network namespace that uses pattern matching.
-  const GURL kNetworkNamespaceBase("http://blah/network_namespace/");
-  const GURL kNetworkPatternNamespace(
-      kNetworkNamespaceBase.Resolve("*.hit*"));
-  AppCacheManifest manifest;
-  manifest.online_whitelist_namespaces.push_back(
-      AppCacheNamespace(APPCACHE_NETWORK_NAMESPACE, kNetworkPatternNamespace,
-                GURL(), true));
-  manifest.online_whitelist_all = false;
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), 1234));
-  cache->InitializeWithManifest(&manifest);
-  cache->set_complete(true);
-
-  // See that the pattern match works.
-  bool found = false;
-  AppCacheEntry entry;
-  AppCacheEntry fallback_entry;
-  GURL intercept_namespace;
-  GURL fallback_namespace;
-  bool network_namespace = false;
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/miss"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_FALSE(found);
-
-  found = cache->FindResponseForRequest(
-      GURL("http://blah/network_namespace/path.hit"),
-      &entry, &intercept_namespace,
-      &fallback_entry, &fallback_namespace,
-      &network_namespace);
-  EXPECT_TRUE(found);
-  EXPECT_TRUE(network_namespace);
-  EXPECT_FALSE(entry.has_response_id());
-  EXPECT_FALSE(fallback_entry.has_response_id());
-}
-
 TEST_F(AppCacheTest, ToFromDatabaseRecords) {
   // Setup a cache with some entries.
   const int64_t kCacheId = 1234;
   const int64_t kGroupId = 4321;
   const GURL kManifestUrl("http://foo.com/manifest");
+  const std::string kManifestScope = kManifestUrl.GetWithoutFilename().path();
   const GURL kInterceptUrl("http://foo.com/intercept.html");
   const GURL kFallbackUrl("http://foo.com/fallback.html");
-  const GURL kWhitelistUrl("http://foo.com/whitelist*");
+  const GURL kPatternSafelistUrl("http://foo.com/patternsafelist*");
+  const GURL kSafelistUrl("http://foo.com/safelist");
   const std::string kData(
-    "CACHE MANIFEST\r"
-    "CHROMIUM-INTERCEPT:\r"
-    "/intercept return /intercept.html\r"
-    "FALLBACK:\r"
-    "/ /fallback.html\r"
-    "NETWORK:\r"
-    "/whitelist* isPattern\r"
-    "*\r");
+      "CACHE MANIFEST\r"
+      "CHROMIUM-INTERCEPT:\r"
+      "/intercept return /intercept.html\r"
+      "FALLBACK:\r"
+      "/ /fallback.html\r"
+      "NETWORK:\r"
+      "/patternsafelist* isPattern\r"
+      "/safelist\r"
+      "*\r");
+
   MockAppCacheService service;
-  scoped_refptr<AppCacheGroup> group =
-      new AppCacheGroup(service.storage(), kManifestUrl, kGroupId);
-  scoped_refptr<AppCache> cache(new AppCache(service.storage(), kCacheId));
+  auto cache = base::MakeRefCounted<AppCache>(service.storage(), kCacheId);
+  auto group = base::MakeRefCounted<AppCacheGroup>(service.storage(),
+                                                   kManifestUrl, kGroupId);
   AppCacheManifest manifest;
-  EXPECT_TRUE(ParseManifest(kManifestUrl, kData.c_str(), kData.length(),
-                            PARSE_MANIFEST_ALLOWING_DANGEROUS_FEATURES,
-                            manifest));
+  EXPECT_TRUE(
+      ParseManifest(kManifestUrl, kManifestScope, kData.c_str(), kData.length(),
+                    PARSE_MANIFEST_ALLOWING_DANGEROUS_FEATURES, manifest));
   cache->InitializeWithManifest(&manifest);
   EXPECT_EQ(APPCACHE_NETWORK_NAMESPACE,
-            cache->online_whitelist_namespaces_[0].type);
-  EXPECT_TRUE(cache->online_whitelist_namespaces_[0].is_pattern);
-  EXPECT_EQ(kWhitelistUrl,
-            cache->online_whitelist_namespaces_[0].namespace_url);
+            cache->online_safelist_namespaces_[0].type);
+  EXPECT_EQ(kPatternSafelistUrl,
+            cache->online_safelist_namespaces_[0].namespace_url);
+  EXPECT_EQ(APPCACHE_NETWORK_NAMESPACE,
+            cache->online_safelist_namespaces_[1].type);
+  EXPECT_EQ(kSafelistUrl, cache->online_safelist_namespaces_[1].namespace_url);
   cache->AddEntry(kManifestUrl, AppCacheEntry(AppCacheEntry::MANIFEST,
                                               /*response_id=*/1,
                                               /*response_size=*/1000,
@@ -588,13 +418,9 @@ TEST_F(AppCacheTest, ToFromDatabaseRecords) {
   std::vector<AppCacheDatabase::EntryRecord> entries;
   std::vector<AppCacheDatabase::NamespaceRecord> intercepts;
   std::vector<AppCacheDatabase::NamespaceRecord> fallbacks;
-  std::vector<AppCacheDatabase::OnlineWhiteListRecord> whitelists;
-  cache->ToDatabaseRecords(group.get(),
-                           &cache_record,
-                           &entries,
-                           &intercepts,
-                           &fallbacks,
-                           &whitelists);
+  std::vector<AppCacheDatabase::OnlineSafeListRecord> safelists;
+  cache->ToDatabaseRecords(group.get(), &cache_record, &entries, &intercepts,
+                           &fallbacks, &safelists);
   EXPECT_EQ(kCacheId, cache_record.cache_id);
   EXPECT_EQ(kGroupId, cache_record.group_id);
   EXPECT_TRUE(cache_record.online_wildcard);
@@ -603,15 +429,14 @@ TEST_F(AppCacheTest, ToFromDatabaseRecords) {
   EXPECT_EQ(3u, entries.size());
   EXPECT_EQ(1u, intercepts.size());
   EXPECT_EQ(1u, fallbacks.size());
-  EXPECT_EQ(1u, whitelists.size());
+  EXPECT_EQ(2u, safelists.size());
   cache = nullptr;
 
   // Create a new AppCache and populate it with those records and verify.
-  cache = new AppCache(service.storage(), kCacheId);
-  cache->InitializeWithDatabaseRecords(
-      cache_record, entries, intercepts,
-      fallbacks, whitelists);
-  EXPECT_TRUE(cache->online_whitelist_all_);
+  cache = base::MakeRefCounted<AppCache>(service.storage(), kCacheId);
+  cache->InitializeWithDatabaseRecords(cache_record, entries, intercepts,
+                                       fallbacks, safelists);
+  EXPECT_TRUE(cache->online_safelist_all_);
   EXPECT_EQ(3u, cache->entries().size());
   EXPECT_TRUE(cache->GetEntry(kManifestUrl));
   EXPECT_TRUE(cache->GetEntry(kInterceptUrl));
@@ -623,83 +448,128 @@ TEST_F(AppCacheTest, ToFromDatabaseRecords) {
   EXPECT_EQ(1000 + 10000 + 100000, cache->cache_size());
   EXPECT_EQ(0 + 10 + 100, cache->padding_size());
   EXPECT_EQ(APPCACHE_NETWORK_NAMESPACE,
-            cache->online_whitelist_namespaces_[0].type);
-  EXPECT_TRUE(cache->online_whitelist_namespaces_[0].is_pattern);
-  EXPECT_EQ(kWhitelistUrl,
-            cache->online_whitelist_namespaces_[0].namespace_url);
+            cache->online_safelist_namespaces_[0].type);
+  EXPECT_EQ(kPatternSafelistUrl,
+            cache->online_safelist_namespaces_[0].namespace_url);
+  EXPECT_EQ(APPCACHE_NETWORK_NAMESPACE,
+            cache->online_safelist_namespaces_[1].type);
+  EXPECT_EQ(kSafelistUrl, cache->online_safelist_namespaces_[1].namespace_url);
 }
 
 TEST_F(AppCacheTest, IsNamespaceMatch) {
   AppCacheNamespace prefix;
   prefix.namespace_url = GURL("http://foo.com/prefix");
-  prefix.is_pattern = false;
+  EXPECT_TRUE(prefix.IsMatch(GURL("http://foo.com/prefix")));
   EXPECT_TRUE(prefix.IsMatch(
       GURL("http://foo.com/prefix_and_anothing_goes")));
+  EXPECT_TRUE(prefix.IsMatch(GURL("http://foo.com/prefix/this_too")));
+  EXPECT_TRUE(prefix.IsMatch(GURL("http://foo.com/prefix/")));
   EXPECT_FALSE(prefix.IsMatch(
       GURL("http://foo.com/nope")));
 
-  AppCacheNamespace bar_no_star;
-  bar_no_star.namespace_url = GURL("http://foo.com/bar");
-  bar_no_star.is_pattern = true;
-  EXPECT_TRUE(bar_no_star.IsMatch(
-      GURL("http://foo.com/bar")));
-  EXPECT_FALSE(bar_no_star.IsMatch(
-      GURL("http://foo.com/bar/nope")));
-
+  // The following tests ensure that wildcards are not supported. Chrome used
+  // to support an `isPattern` extension enabling wildcard matching.
   AppCacheNamespace bar_star;
   bar_star.namespace_url = GURL("http://foo.com/bar/*");
-  bar_star.is_pattern = true;
-  EXPECT_TRUE(bar_star.IsMatch(
-      GURL("http://foo.com/bar/")));
-  EXPECT_TRUE(bar_star.IsMatch(
-      GURL("http://foo.com/bar/should_match")));
-  EXPECT_FALSE(bar_star.IsMatch(
-      GURL("http://foo.com/not_bar/should_not_match")));
+  EXPECT_FALSE(bar_star.IsMatch(GURL("http://foo.com/bar/")));
+  EXPECT_FALSE(bar_star.IsMatch(GURL("http://foo.com/bar/should_not_match")));
+  EXPECT_FALSE(
+      bar_star.IsMatch(GURL("http://foo.com/not_bar/should_not_match")));
 
   AppCacheNamespace star_bar_star;
   star_bar_star.namespace_url = GURL("http://foo.com/*/bar/*");
-  star_bar_star.is_pattern = true;
-  EXPECT_TRUE(star_bar_star.IsMatch(
-      GURL("http://foo.com/any/bar/should_match")));
-  EXPECT_TRUE(star_bar_star.IsMatch(
-      GURL("http://foo.com/any/bar/")));
+  EXPECT_FALSE(
+      star_bar_star.IsMatch(GURL("http://foo.com/any/bar/should_not_match")));
+  EXPECT_FALSE(star_bar_star.IsMatch(GURL("http://foo.com/any/bar/")));
   EXPECT_FALSE(star_bar_star.IsMatch(
       GURL("http://foo.com/any/not_bar/no_match")));
 
   AppCacheNamespace query_star_edit;
   query_star_edit.namespace_url = GURL("http://foo.com/query?id=*&verb=edit*");
-  query_star_edit.is_pattern = true;
-  EXPECT_TRUE(query_star_edit.IsMatch(
+  EXPECT_FALSE(query_star_edit.IsMatch(
       GURL("http://foo.com/query?id=1234&verb=edit&option=blue")));
-  EXPECT_TRUE(query_star_edit.IsMatch(
+  EXPECT_FALSE(query_star_edit.IsMatch(
       GURL("http://foo.com/query?id=12345&option=blue&verb=edit")));
   EXPECT_FALSE(query_star_edit.IsMatch(
       GURL("http://foo.com/query?id=12345&option=blue&verb=print")));
-  EXPECT_TRUE(query_star_edit.IsMatch(
+  EXPECT_FALSE(query_star_edit.IsMatch(
       GURL("http://foo.com/query?id=123&verb=print&verb=edit")));
+}
 
-  AppCacheNamespace star_greediness;
-  star_greediness.namespace_url = GURL("http://foo.com/*/b");
-  star_greediness.is_pattern = true;
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/wxy/z/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/b/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b/b/b/b/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b/b/b/a/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b/01234567890abcdef/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b/01234567890abcdef/b01234567890abcdef/b")));
-  EXPECT_TRUE(star_greediness.IsMatch(
-      GURL("http://foo.com/a/b/01234567890abcdef_eat_some_more_characters_"
-           "/and_even_more_for_the_heck_of_it/01234567890abcdef/b")));
+TEST_F(AppCacheTest, CheckValidManifestScopeTests) {
+  EXPECT_TRUE(
+      AppCache::CheckValidManifestScope(GURL("http://mockhost/manifest"), "/"));
+  EXPECT_TRUE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "/foo/"));
+
+  // Check that a relative scope is allowed.
+  EXPECT_TRUE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "bar/"));
+  EXPECT_TRUE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "../"));
+  EXPECT_TRUE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "../foo/"));
+  // Relative past the top of the path should be equal to both "../" and "/"
+  // (and hence valid).
+  EXPECT_TRUE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "../../"));
+
+  // A scope must be non-empty.
+  EXPECT_FALSE(
+      AppCache::CheckValidManifestScope(GURL("http://mockhost/manifest"), ""));
+
+  // Check that scope must end in a slash.
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "/foo"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "bar"));
+  EXPECT_TRUE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), ".."));
+
+  // Test invalid scopes.
+  EXPECT_FALSE(
+      AppCache::CheckValidManifestScope(GURL("http://mockhost/manifest"), " "));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "\t"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "\n"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "?foo"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "/?foo"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "../?foo"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "#foo"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "/#foo"));
+  EXPECT_FALSE(AppCache::CheckValidManifestScope(
+      GURL("http://mockhost/manifest"), "../#foo"));
+}
+
+TEST_F(AppCacheTest, GetManifestScopeTests) {
+  // Test the defaults.
+  EXPECT_EQ(AppCache::GetManifestScope(GURL("http://mockhost/manifest"), ""),
+            "/");
+  EXPECT_EQ(
+      AppCache::GetManifestScope(GURL("http://mockhost/foo/manifest"), ""),
+      "/foo/");
+
+  // Test the overrides.
+  EXPECT_EQ(AppCache::GetManifestScope(GURL("http://mockhost/manifest"), "/"),
+            "/");
+  EXPECT_EQ(
+      AppCache::GetManifestScope(GURL("http://mockhost/foo/manifest"), "/"),
+      "/");
+  EXPECT_EQ(
+      AppCache::GetManifestScope(GURL("http://mockhost/foo/manifest"), "../"),
+      "../");
+
+  // Relative past the top of the path should be equal to both "../" and "/"
+  // (and hence valid), so we keep it as it was passed to us.
+  EXPECT_EQ(
+      AppCache::GetManifestScope(GURL("http://mockhost/manifest"), "../../"),
+      "../../");
 }
 
 }  // namespace content

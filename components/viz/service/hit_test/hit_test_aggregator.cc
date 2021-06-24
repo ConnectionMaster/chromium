@@ -4,8 +4,6 @@
 
 #include "components/viz/service/hit_test/hit_test_aggregator.h"
 
-#include "base/metrics/histogram_macros.h"
-#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/hit_test/hit_test_region_list.h"
 #include "components/viz/common/quads/debug_border_draw_quad.h"
@@ -30,13 +28,12 @@ HitTestAggregator::HitTestAggregator(
       root_frame_sink_id_(frame_sink_id),
       initial_region_size_(initial_region_size),
       incremental_region_size_(initial_region_size),
-      max_region_size_(max_region_size),
-      weak_ptr_factory_(this) {}
+      max_region_size_(max_region_size) {}
 
 HitTestAggregator::~HitTestAggregator() = default;
 
 void HitTestAggregator::Aggregate(const SurfaceId& display_surface_id,
-                                  RenderPassList* render_passes) {
+                                  AggregatedRenderPassList* render_passes) {
   DCHECK(referenced_child_regions_.empty());
 
   // The index will only have changed when new hit-test data has been submitted.
@@ -58,12 +55,7 @@ void HitTestAggregator::Aggregate(const SurfaceId& display_surface_id,
   hit_test_debug_ = false;
   hit_test_debug_ask_regions_ = 0;
 
-  base::ElapsedTimer aggregate_timer;
   AppendRoot(display_surface_id);
-  UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES("Event.VizHitTest.AggregateTimeUs",
-                                          aggregate_timer.Elapsed(),
-                                          base::TimeDelta::FromMicroseconds(1),
-                                          base::TimeDelta::FromSeconds(10), 50);
   SendHitTestData();
 
   if (hit_test_debug_ && render_passes) {
@@ -71,7 +63,8 @@ void HitTestAggregator::Aggregate(const SurfaceId& display_surface_id,
   }
 }
 
-void HitTestAggregator::InsertHitTestDebugQuads(RenderPassList* render_passes) {
+void HitTestAggregator::InsertHitTestDebugQuads(
+    AggregatedRenderPassList* render_passes) {
   const base::flat_set<FrameSinkId>* hit_test_async_queried_debug_regions =
       hit_test_manager_->GetHitTestAsyncQueriedDebugRegions(
           root_frame_sink_id_);
@@ -145,18 +138,18 @@ void HitTestAggregator::SendHitTestData() {
                                                   hit_test_data_);
 }
 
-base::Optional<int64_t> HitTestAggregator::GetTraceIdIfUpdated(
+absl::optional<int64_t> HitTestAggregator::GetTraceIdIfUpdated(
     const SurfaceId& surface_id,
     uint64_t active_frame_index) {
   bool enabled;
   TRACE_EVENT_CATEGORY_GROUP_ENABLED(
       TRACE_DISABLED_BY_DEFAULT("viz.hit_testing_flow"), &enabled);
   if (!enabled)
-    return base::nullopt;
+    return absl::nullopt;
 
   uint64_t& frame_index = last_active_frame_index_[surface_id.frame_sink_id()];
   if (frame_index == active_frame_index)
-    return base::nullopt;
+    return absl::nullopt;
   frame_index = active_frame_index;
   return ~hit_test_manager_->GetTraceId(surface_id);
 }
@@ -171,7 +164,7 @@ void HitTestAggregator::AppendRoot(const SurfaceId& surface_id) {
   if (!hit_test_region_list)
     return;
 
-  base::Optional<int64_t> trace_id =
+  absl::optional<int64_t> trace_id =
       GetTraceIdIfUpdated(surface_id, active_frame_index);
   TRACE_EVENT_WITH_FLOW1(
       TRACE_DISABLED_BY_DEFAULT("viz.hit_testing_flow"), "Event.Pipeline",
@@ -193,7 +186,6 @@ void HitTestAggregator::AppendRoot(const SurfaceId& surface_id) {
 
   DCHECK_GE(region_index, 1u);
   int32_t child_count = region_index - 1;
-  UMA_HISTOGRAM_COUNTS_1000("Event.VizHitTest.HitTestRegions", region_index);
   SetRegionAt(0, surface_id.frame_sink_id(), hit_test_region_list->flags,
               hit_test_region_list->async_hit_test_reasons,
               hit_test_region_list->bounds, hit_test_region_list->transform,
@@ -256,7 +248,7 @@ size_t HitTestAggregator::AppendRegion(size_t region_index,
                 region.frame_sink_id);
         SurfaceId surface_id(region.frame_sink_id, local_surface_id);
 
-        base::Optional<int64_t> trace_id =
+        absl::optional<int64_t> trace_id =
             GetTraceIdIfUpdated(surface_id, active_frame_index);
         TRACE_EVENT_WITH_FLOW1(
             TRACE_DISABLED_BY_DEFAULT("viz.hit_testing_flow"), "Event.Pipeline",

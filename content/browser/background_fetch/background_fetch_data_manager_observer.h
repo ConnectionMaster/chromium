@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/memory/scoped_refptr.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/background_fetch/background_fetch.mojom.h"
 
 class SkBitmap;
@@ -21,7 +21,7 @@ class BackgroundFetchRequestInfo;
 
 // Observer interface for objects that would like to be notified about changes
 // committed to storage through the Background Fetch data manager. All methods
-// will be invoked on the IO thread.
+// will be invoked on the service worker core thread.
 class BackgroundFetchDataManagerObserver {
  public:
   // Called when the Background Fetch registration has been created.

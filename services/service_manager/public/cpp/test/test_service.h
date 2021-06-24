@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "services/service_manager/public/cpp/connector.h"
 #include "services/service_manager/public/cpp/service.h"
-#include "services/service_manager/public/cpp/service_binding.h"
+#include "services/service_manager/public/cpp/service_receiver.h"
 #include "services/service_manager/public/mojom/service.mojom.h"
 
 namespace service_manager {
@@ -17,7 +17,7 @@ namespace service_manager {
 // Manager instance and have each test behave like a unique service instance
 // that can connect to any of various services under test.
 //
-// Typical usage is paired with ServiceManager::RegisterServiceForTesting, for
+// Typical usage is paired with ServiceManager::RegisterTestInstance, for
 // example:
 //
 //   class MyTest : public testing::Test {
@@ -31,26 +31,26 @@ namespace service_manager {
 //     }
 //
 //    private:
-//     base::test::ScopedTaskEnvironment task_environment_;
+//     base::test::TaskEnvironment task_environment_;
 //     service_manager::TestServiceManager test_service_manager_;
 //     service_manager::TestService test_service_;
 //   };
 //
 //   TEST_F(MyTest, ConnectToFoo) {
-//     foo::mojom::FooPtr foo;
-//     connector()->BindInterface("foo", mojo::MakeRequest(&foo));
+//     mojo::Remote<foo::mojom::Foo> foo;
+//     connector()->BindInterface("foo", foo.BindNewPipeAndPassReceiver());
 //     foo->DoSomeStuff();
 //     // etc...
 //   }
 class TestService : public Service {
  public:
-  explicit TestService(mojom::ServiceRequest request);
+  explicit TestService(mojo::PendingReceiver<mojom::Service> receiver);
   ~TestService() override;
 
-  Connector* connector() { return binding_.GetConnector(); }
+  Connector* connector() { return receiver_.GetConnector(); }
 
  private:
-  ServiceBinding binding_;
+  ServiceReceiver receiver_;
 
   DISALLOW_COPY_AND_ASSIGN(TestService);
 };

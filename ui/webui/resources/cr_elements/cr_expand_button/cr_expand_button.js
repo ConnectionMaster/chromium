@@ -19,6 +19,7 @@ Polymer({
       type: Boolean,
       value: false,
       notify: true,
+      observer: 'onExpandedChange_',
     },
 
     /**
@@ -31,13 +32,20 @@ Polymer({
     },
 
     /** A11y text descriptor for this control. */
-    alt: String,
+    ariaLabel: {
+      type: String,
+      observer: 'onAriaLabelChange_',
+    },
 
     tabIndex: {
       type: Number,
       value: 0,
     },
   },
+
+  observers: [
+    'updateAriaExpanded_(disabled, expanded)',
+  ],
 
   listeners: {
     click: 'toggleExpand_',
@@ -53,37 +61,48 @@ Polymer({
     this.$.icon.noink = value;
   },
 
-  focus: function() {
+  focus() {
     this.$.icon.focus();
   },
 
-  /**
-   * @param {boolean} expanded
-   * @private
-   */
-  getAriaPressed_: function(expanded) {
-    return expanded ? 'true' : 'false';
+  /** @private */
+  onAriaLabelChange_() {
+    if (this.ariaLabel) {
+      this.$.icon.removeAttribute('aria-labelledby');
+      this.$.icon.setAttribute('aria-label', this.ariaLabel);
+    } else {
+      this.$.icon.removeAttribute('aria-label');
+      this.$.icon.setAttribute('aria-labelledby', 'label');
+    }
   },
 
-  /**
-   * @param {boolean} expanded
-   * @private
-   */
-  iconName_: function(expanded) {
-    return expanded ? 'icon-expand-less' : 'icon-expand-more';
+  /** @private */
+  onExpandedChange_() {
+    this.$.icon.ironIcon = this.expanded ? 'cr:expand-less' : 'cr:expand-more';
   },
 
   /**
    * @param {!Event} event
    * @private
    */
-  toggleExpand_: function(event) {
+  toggleExpand_(event) {
     // Prevent |click| event from bubbling. It can cause parents of this
     // elements to erroneously re-toggle this control.
     event.stopPropagation();
     event.preventDefault();
 
+    this.scrollIntoViewIfNeeded();
     this.expanded = !this.expanded;
     cr.ui.focusWithoutInk(this.$.icon);
   },
+
+  /** @private */
+  updateAriaExpanded_() {
+    if (this.disabled) {
+      this.$.icon.removeAttribute('aria-expanded');
+    } else {
+      this.$.icon.setAttribute('aria-expanded', this.expanded);
+    }
+  },
 });
+/* #ignore */ console.warn('crbug/1173575, non-JS module files deprecated.');

@@ -8,8 +8,8 @@
 
 #include "base/bind.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
-#include "chromeos/dbus/cryptohome/fake_cryptohome_client.h"
+#include "base/test/task_environment.h"
+#include "chromeos/dbus/userdataauth/fake_cryptohome_misc_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -24,11 +24,11 @@ void CopySystemSalt(std::string* out_system_salt,
 class SystemSaltGetterTest : public testing::Test {
  protected:
   SystemSaltGetterTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::UI) {}
+      : task_environment_(
+            base::test::SingleThreadTaskEnvironment::MainThreadType::UI) {}
 
   void SetUp() override {
-    CryptohomeClient::InitializeFake();
+    CryptohomeMiscClient::InitializeFake();
 
     EXPECT_FALSE(SystemSaltGetter::IsInitialized());
     SystemSaltGetter::Initialize();
@@ -38,27 +38,27 @@ class SystemSaltGetterTest : public testing::Test {
 
   void TearDown() override {
     SystemSaltGetter::Shutdown();
-    CryptohomeClient::Shutdown();
+    CryptohomeMiscClient::Shutdown();
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 
 TEST_F(SystemSaltGetterTest, GetSystemSalt) {
   // Try to get system salt before the service becomes available.
-  FakeCryptohomeClient::Get()->SetServiceIsAvailable(false);
+  FakeCryptohomeMiscClient::Get()->SetServiceIsAvailable(false);
   std::string system_salt;
   SystemSaltGetter::Get()->GetSystemSalt(
-      base::Bind(&CopySystemSalt, &system_salt));
+      base::BindOnce(&CopySystemSalt, &system_salt));
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(system_salt.empty());  // System salt is not returned yet.
 
   // Service becomes available.
-  FakeCryptohomeClient::Get()->SetServiceIsAvailable(true);
+  FakeCryptohomeMiscClient::Get()->SetServiceIsAvailable(true);
   base::RunLoop().RunUntilIdle();
   const std::string expected_system_salt =
       SystemSaltGetter::ConvertRawSaltToHexString(
-          FakeCryptohomeClient::GetStubSystemSalt());
+          FakeCryptohomeMiscClient::GetStubSystemSalt());
   EXPECT_EQ(expected_system_salt, system_salt);  // System salt is returned.
 }
 

@@ -4,16 +4,16 @@
 
 #include "net/dns/dns_reloader.h"
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_OPENBSD) && \
+#if defined(OS_POSIX) && !defined(OS_APPLE) && !defined(OS_OPENBSD) && \
     !defined(OS_ANDROID) && !defined(OS_FUCHSIA)
 
 #include <resolv.h>
 
 #include "base/lazy_instance.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/notreached.h"
 #include "base/synchronization/lock.h"
+#include "base/task/current_thread.h"
 #include "base/threading/thread_local.h"
 #include "net/base/network_change_notifier.h"
 
@@ -40,12 +40,15 @@ namespace {
 //
 // Android does not have /etc/resolv.conf. The system takes care of nameserver
 // changes, so none of this is needed.
+//
+// TODO(crbug.com/971411): Convert to SystemDnsConfigChangeNotifier because this
+// really only cares about system DNS config changes, not Chrome effective
+// config changes.
 
 class DnsReloader : public NetworkChangeNotifier::DNSObserver {
  public:
   // NetworkChangeNotifier::DNSObserver:
   void OnDNSChanged() override {
-    DCHECK(base::MessageLoopCurrentForIO::IsSet());
     base::AutoLock lock(lock_);
     resolver_generation_++;
   }
@@ -108,5 +111,5 @@ void DnsReloaderMaybeReload() {
 
 }  // namespace net
 
-#endif  // defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_OPENBSD) &&
+#endif  // defined(OS_POSIX) && !defined(OS_APPLE) && !defined(OS_OPENBSD) &&
         // !defined(OS_ANDROID)

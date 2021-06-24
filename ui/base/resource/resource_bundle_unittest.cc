@@ -10,14 +10,15 @@
 
 #include "base/base_paths.h"
 #include "base/big_endian.h"
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -35,6 +36,7 @@
 
 using ::testing::_;
 using ::testing::Between;
+using ::testing::DoAll;
 using ::testing::Property;
 using ::testing::Return;
 using ::testing::ReturnArg;
@@ -107,7 +109,11 @@ class ResourceBundleTest : public testing::Test {
   ~ResourceBundleTest() override {}
 
   // Overridden from testing::Test:
-  void TearDown() override { delete resource_bundle_; }
+  void TearDown() override {
+    delete resource_bundle_;
+    if (temp_dir_.IsValid())
+      ASSERT_TRUE(temp_dir_.Delete());
+  }
 
   // Returns new ResoureBundle with the specified |delegate|. The
   // ResourceBundleTest class manages the lifetime of the returned
@@ -120,6 +126,7 @@ class ResourceBundleTest : public testing::Test {
   }
 
  protected:
+  base::ScopedTempDir temp_dir_;
   ResourceBundle* resource_bundle_;
 
  private:
@@ -144,8 +151,8 @@ TEST_F(ResourceBundleTest, DelegateGetPathForResourcePack) {
 }
 
 TEST_F(ResourceBundleTest, DelegateGetPathForLocalePack) {
-  ResourceBundle::CleanupSharedInstance();
-
+  ResourceBundle* orig_instance =
+      ResourceBundle::SwapSharedInstanceForTesting(nullptr);
   MockResourceBundleDelegate delegate;
   ResourceBundle::InitSharedInstance(&delegate);
 
@@ -157,18 +164,19 @@ TEST_F(ResourceBundleTest, DelegateGetPathForLocalePack) {
       .RetiresOnSaturation();
 
   EXPECT_FALSE(ResourceBundle::LocaleDataPakExists(locale));
-  EXPECT_EQ("",
-            ResourceBundle::GetSharedInstance().LoadLocaleResources(locale));
+  EXPECT_EQ("", ResourceBundle::GetSharedInstance().LoadLocaleResources(
+                    locale, /*crash_on_failure=*/false));
 
   // Allow the load to proceed.
   EXPECT_CALL(delegate, GetPathForLocalePack(_, _))
       .WillRepeatedly(ReturnArg<0>());
 
   EXPECT_TRUE(ResourceBundle::LocaleDataPakExists(locale));
-  EXPECT_EQ(locale,
-            ResourceBundle::GetSharedInstance().LoadLocaleResources(locale));
+  EXPECT_EQ(locale, ResourceBundle::GetSharedInstance().LoadLocaleResources(
+                        locale, /*crash_on_failure=*/false));
 
   ResourceBundle::CleanupSharedInstance();
+  ResourceBundle::SwapSharedInstanceForTesting(orig_instance);
 }
 
 TEST_F(ResourceBundleTest, DelegateGetImageNamed) {
@@ -246,29 +254,66 @@ TEST_F(ResourceBundleTest, DelegateGetRawDataResource) {
   EXPECT_EQ(string_piece.data(), result.data());
 }
 
+TEST_F(ResourceBundleTest, IsGzipped) {
+  ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+  base::FilePath data_path =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("sample.pak"));
+  // Dump contents into a pak file and load it.
+  ASSERT_TRUE(base::WriteFile(
+      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5}));
+  ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
+  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_100P);
+
+  ASSERT_FALSE(resource_bundle->IsGzipped(1));
+  ASSERT_FALSE(resource_bundle->IsGzipped(4));
+  ASSERT_FALSE(resource_bundle->IsGzipped(6));
+  ASSERT_TRUE(resource_bundle->IsGzipped(8));
+  // Ask for a non-existent resource ID.
+  ASSERT_FALSE(resource_bundle->IsGzipped(200));
+}
+
+TEST_F(ResourceBundleTest, IsBrotli) {
+  ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+  base::FilePath data_path =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("sample.pak"));
+  // Dump contents into a pak file and load it.
+  ASSERT_TRUE(base::WriteFile(
+      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5}));
+  ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
+  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_100P);
+
+  ASSERT_FALSE(resource_bundle->IsBrotli(1));
+  ASSERT_FALSE(resource_bundle->IsBrotli(4));
+  ASSERT_TRUE(resource_bundle->IsBrotli(6));
+  ASSERT_FALSE(resource_bundle->IsGzipped(6));
+  ASSERT_FALSE(resource_bundle->IsBrotli(8));
+  // Ask for non-existent resource ID.
+  ASSERT_FALSE(resource_bundle->IsBrotli(200));
+}
+
 TEST_F(ResourceBundleTest, DelegateGetLocalizedString) {
   MockResourceBundleDelegate delegate;
   ResourceBundle* resource_bundle = CreateResourceBundle(&delegate);
 
-  base::string16 data = base::ASCIIToUTF16("My test data");
+  std::u16string data = u"My test data";
   int resource_id = 5;
 
   EXPECT_CALL(delegate, GetLocalizedString(resource_id, _))
       .Times(1)
       .WillOnce(DoAll(SetArgPointee<1>(data), Return(true)));
 
-  base::string16 result = resource_bundle->GetLocalizedString(resource_id);
+  std::u16string result = resource_bundle->GetLocalizedString(resource_id);
   EXPECT_EQ(data, result);
 }
 
 TEST_F(ResourceBundleTest, OverrideStringResource) {
   ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
 
-  base::string16 data = base::ASCIIToUTF16("My test data");
+  std::u16string data = u"My test data";
   int resource_id = 5;
 
-  base::string16 result = resource_bundle->GetLocalizedString(resource_id);
-  EXPECT_EQ(base::string16(), result);
+  std::u16string result = resource_bundle->GetLocalizedString(resource_id);
+  EXPECT_EQ(std::u16string(), result);
 
   resource_bundle->OverrideLocaleStringResource(resource_id, data);
 
@@ -280,7 +325,7 @@ TEST_F(ResourceBundleTest, OverrideStringResource) {
 TEST_F(ResourceBundleTest, CanOverrideStringResources) {
   ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
 
-  base::string16 data = base::ASCIIToUTF16("My test data");
+  std::u16string data = u"My test data";
   int resource_id = 5;
 
   EXPECT_TRUE(
@@ -295,16 +340,16 @@ TEST_F(ResourceBundleTest, DelegateGetLocalizedStringWithOverride) {
   MockResourceBundleDelegate delegate;
   ResourceBundle* resource_bundle = CreateResourceBundle(&delegate);
 
-  base::string16 delegate_data = base::ASCIIToUTF16("My delegate data");
+  std::u16string delegate_data = u"My delegate data";
   int resource_id = 5;
 
   EXPECT_CALL(delegate, GetLocalizedString(resource_id, _))
       .Times(1)
       .WillOnce(DoAll(SetArgPointee<1>(delegate_data), Return(true)));
 
-  base::string16 override_data = base::ASCIIToUTF16("My override data");
+  std::u16string override_data = u"My override data";
 
-  base::string16 result = resource_bundle->GetLocalizedString(resource_id);
+  std::u16string result = resource_bundle->GetLocalizedString(resource_id);
   EXPECT_EQ(delegate_data, result);
 }
 
@@ -321,8 +366,9 @@ class ResourceBundleImageTest : public ResourceBundleTest {
   ~ResourceBundleImageTest() override {}
 
   void SetUp() override {
+    ResourceBundleTest::SetUp();
     // Create a temporary directory to write test resource bundles to.
-    ASSERT_TRUE(dir_.CreateUniqueTempDir());
+    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
   }
 
   // Returns resource bundle which uses an empty data pak for locale data.
@@ -330,8 +376,8 @@ class ResourceBundleImageTest : public ResourceBundleTest {
     // Write an empty data pak for locale data.
     const base::FilePath& locale_path = dir_path().Append(
         FILE_PATH_LITERAL("locale.pak"));
-    EXPECT_EQ(base::WriteFile(locale_path, kEmptyPakContents, kEmptyPakSize),
-              static_cast<int>(kEmptyPakSize));
+    EXPECT_TRUE(
+        base::WriteFile(locale_path, {kEmptyPakContents, kEmptyPakSize}));
 
     ui::ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
 
@@ -341,7 +387,7 @@ class ResourceBundleImageTest : public ResourceBundleTest {
   }
 
   // Returns the path of temporary directory to write test data packs into.
-  const base::FilePath& dir_path() { return dir_.GetPath(); }
+  const base::FilePath& dir_path() { return temp_dir_.GetPath(); }
 
   // Returns the number of DataPacks managed by |resource_bundle|.
   size_t NumDataPacksInResourceBundle(ResourceBundle* resource_bundle) {
@@ -351,19 +397,47 @@ class ResourceBundleImageTest : public ResourceBundleTest {
 
  private:
   std::unique_ptr<DataPack> locale_pack_;
-  base::ScopedTempDir dir_;
 
   DISALLOW_COPY_AND_ASSIGN(ResourceBundleImageTest);
 };
 
-// Verify that we don't crash when trying to load a resource that is not found.
-// In some cases, we fail to mmap resources.pak, but try to keep going anyway.
 TEST_F(ResourceBundleImageTest, LoadDataResourceBytes) {
   base::FilePath data_path = dir_path().Append(FILE_PATH_LITERAL("sample.pak"));
 
   // Dump contents into the pak files.
-  ASSERT_EQ(base::WriteFile(data_path, kEmptyPakContents,
-      kEmptyPakSize), static_cast<int>(kEmptyPakSize));
+  ASSERT_TRUE(base::WriteFile(
+      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5}));
+
+  // Load pak file.
+  ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
+  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_NONE);
+
+  // Test normal uncompressed data.
+  scoped_refptr<base::RefCountedMemory> resource =
+      resource_bundle->LoadDataResourceBytes(4);
+  EXPECT_EQ("this is id 4",
+            std::string(resource->front_as<char>(), resource->size()));
+
+  // Test the brotli data.
+  scoped_refptr<base::RefCountedMemory> brotli_resource =
+      resource_bundle->LoadDataResourceBytes(6);
+  EXPECT_EQ("this is id 6", std::string(brotli_resource->front_as<char>(),
+                                        brotli_resource->size()));
+
+  // Test the gzipped data.
+  scoped_refptr<base::RefCountedMemory> gzip_resource =
+      resource_bundle->LoadDataResourceBytes(8);
+  EXPECT_EQ("this is id 8", std::string(gzip_resource->front_as<char>(),
+                                        gzip_resource->size()));
+}
+
+// Verify that we don't crash when trying to load a resource that is not found.
+// In some cases, we fail to mmap resources.pak, but try to keep going anyway.
+TEST_F(ResourceBundleImageTest, LoadDataResourceBytesNotFound) {
+  base::FilePath data_path = dir_path().Append(FILE_PATH_LITERAL("sample.pak"));
+
+  // Dump contents into the pak files.
+  ASSERT_TRUE(base::WriteFile(data_path, {kEmptyPakContents, kEmptyPakSize}));
 
   // Create a resource bundle from the file.
   ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
@@ -381,16 +455,73 @@ TEST_F(ResourceBundleImageTest, LoadDataResourceBytes) {
             resource_bundle->LoadDataResourceBytes(kUnfoundResourceId));
 }
 
+TEST_F(ResourceBundleImageTest, LoadDataResourceStringForScale) {
+  base::FilePath data_path = dir_path().Append(FILE_PATH_LITERAL("sample.pak"));
+  base::FilePath data_2x_path =
+      dir_path().Append(FILE_PATH_LITERAL("sample_2x.pak"));
+
+  // Dump content into pak files.
+  ASSERT_TRUE(base::WriteFile(
+      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5}));
+  ASSERT_TRUE(base::WriteFile(data_2x_path, {kSampleCompressScaledPakContents,
+                                             kSampleCompressScaledPakSize}));
+
+  // Load pak files.
+  ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
+  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_100P);
+  resource_bundle->AddDataPackFromPath(data_2x_path, SCALE_FACTOR_200P);
+
+  // Resource ID 6 is brotlied and exists in both 1x and 2x paks, so we expect a
+  // different result when requesting the 2x scale.
+  EXPECT_EQ("this is id 6", resource_bundle->LoadDataResourceStringForScale(
+                                6, SCALE_FACTOR_100P));
+  EXPECT_EQ("this is id 6 x2", resource_bundle->LoadDataResourceStringForScale(
+                                   6, SCALE_FACTOR_200P));
+}
+
+TEST_F(ResourceBundleImageTest, LoadLocalizedResourceString) {
+  base::FilePath data_path = dir_path().Append(FILE_PATH_LITERAL("sample.pak"));
+  // Dump content into pak file.
+  ASSERT_TRUE(base::WriteFile(
+      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5}));
+  // Load pak file.
+  ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
+  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_NONE);
+  resource_bundle->OverrideLocalePakForTest(data_path);
+
+  EXPECT_EQ("this is id 6", resource_bundle->LoadLocalizedResourceString(6));
+  EXPECT_EQ("this is id 8", resource_bundle->LoadLocalizedResourceString(8));
+}
+
+TEST_F(ResourceBundleImageTest, LoadDataResourceString) {
+  base::FilePath data_path = dir_path().Append(FILE_PATH_LITERAL("sample.pak"));
+  // Dump content into pak file.
+  ASSERT_TRUE(base::WriteFile(
+      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5}));
+  // Load pak file.
+  ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
+  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_NONE);
+
+  // Resource ID 6 is Brotli compressed, expect it to be uncompressed.
+  EXPECT_EQ("this is id 6", resource_bundle->LoadDataResourceString(6));
+
+  // Resource ID 8 is Gzip compressed, expect it to be uncompressed.
+  EXPECT_EQ("this is id 8", resource_bundle->LoadDataResourceString(8));
+
+  // Resource ID 4 is plain text (not compressed), expect to return as-is.
+  EXPECT_EQ("this is id 4", resource_bundle->LoadDataResourceString(4));
+}
+
 TEST_F(ResourceBundleImageTest, GetRawDataResource) {
   base::FilePath data_path = dir_path().Append(FILE_PATH_LITERAL("sample.pak"));
   base::FilePath data_2x_path =
       dir_path().Append(FILE_PATH_LITERAL("sample_2x.pak"));
 
   // Dump contents into the pak files.
-  ASSERT_EQ(base::WriteFile(data_path, kSamplePakContentsV4, kSamplePakSizeV4),
-            static_cast<int>(kSamplePakSizeV4));
-  ASSERT_EQ(base::WriteFile(data_2x_path, kSamplePakContents2x,
-      kSamplePakSize2x), static_cast<int>(kSamplePakSize2x));
+  ASSERT_TRUE(
+      base::WriteFile(data_path, {kSamplePakContentsV4, kSamplePakSizeV4}));
+  ASSERT_TRUE(
+      base::WriteFile(data_2x_path, {kSamplePakContents2x, kSamplePakSize2x}));
 
   // Load the regular and 2x pak files.
   ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
@@ -438,7 +569,7 @@ TEST_F(ResourceBundleImageTest, GetImageNamed) {
 
   gfx::ImageSkia* image_skia = resource_bundle->GetImageSkiaNamed(3);
 
-#if defined(OS_CHROMEOS) || defined(OS_WIN)
+#if BUILDFLAG(IS_CHROMEOS_ASH) || defined(OS_WIN)
   // ChromeOS/Windows load highest scale factor first.
   EXPECT_EQ(ui::SCALE_FACTOR_200P,
             GetSupportedScaleFactor(image_skia->image_reps()[0].scale()));
@@ -458,10 +589,9 @@ TEST_F(ResourceBundleImageTest, GetImageNamed) {
       GetScaleForScaleFactor(ui::SCALE_FACTOR_200P));
   EXPECT_EQ(ui::SCALE_FACTOR_200P, GetSupportedScaleFactor(image_rep.scale()));
 
-  // The 1.4x pack was not loaded. Requesting the 1.4x resource should return
-  // either the 1x or the 2x resource.
-  image_rep = image_skia->GetRepresentation(
-      ui::GetScaleForScaleFactor(ui::SCALE_FACTOR_140P));
+  // Requesting the 1.4x resource should return either the 1x or the 2x
+  // resource.
+  image_rep = image_skia->GetRepresentation(1.4f);
   ui::ScaleFactor scale_factor = GetSupportedScaleFactor(image_rep.scale());
   EXPECT_TRUE(scale_factor == ui::SCALE_FACTOR_100P ||
               scale_factor == ui::SCALE_FACTOR_200P);
@@ -506,49 +636,6 @@ TEST_F(ResourceBundleImageTest, GetImageNamedFallback1x) {
   EXPECT_EQ(20, image_rep.pixel_width());
   EXPECT_EQ(20, image_rep.pixel_height());
 }
-
-#if defined(OS_WIN)
-// Tests GetImageNamed() behaves properly when the size of a scaled image
-// requires rounding as a result of using a non-integer scale factor.
-// Scale factors of 140 and 1805 are Windows specific.
-TEST_F(ResourceBundleImageTest, GetImageNamedFallback1xRounding) {
-  std::vector<ScaleFactor> supported_factors;
-  supported_factors.push_back(SCALE_FACTOR_100P);
-  supported_factors.push_back(SCALE_FACTOR_140P);
-  supported_factors.push_back(SCALE_FACTOR_180P);
-  test::ScopedSetSupportedScaleFactors scoped_supported(supported_factors);
-
-  base::FilePath data_path = dir_path().AppendASCII("sample.pak");
-  base::FilePath data_140P_path = dir_path().AppendASCII("sample_140P.pak");
-  base::FilePath data_180P_path = dir_path().AppendASCII("sample_180P.pak");
-
-  CreateDataPackWithSingleBitmap(data_path, 8, base::StringPiece());
-  // Mark 140% and 180% images as requiring 1x fallback.
-  CreateDataPackWithSingleBitmap(
-      data_140P_path, 8,
-      base::StringPiece(reinterpret_cast<const char*>(kPngScaleChunk),
-                        base::size(kPngScaleChunk)));
-  CreateDataPackWithSingleBitmap(
-      data_180P_path, 8,
-      base::StringPiece(reinterpret_cast<const char*>(kPngScaleChunk),
-                        base::size(kPngScaleChunk)));
-
-  ResourceBundle* resource_bundle = CreateResourceBundleWithEmptyLocalePak();
-  resource_bundle->AddDataPackFromPath(data_path, SCALE_FACTOR_100P);
-  resource_bundle->AddDataPackFromPath(data_140P_path, SCALE_FACTOR_140P);
-  resource_bundle->AddDataPackFromPath(data_180P_path, SCALE_FACTOR_180P);
-
-  // Non-integer dimensions should be rounded up.
-  gfx::ImageSkia* image_skia = resource_bundle->GetImageSkiaNamed(3);
-  gfx::ImageSkiaRep image_rep =
-    image_skia->GetRepresentation(
-    GetScaleForScaleFactor(ui::SCALE_FACTOR_140P));
-  EXPECT_EQ(12, image_rep.pixel_width());
-  image_rep = image_skia->GetRepresentation(
-    GetScaleForScaleFactor(ui::SCALE_FACTOR_180P));
-  EXPECT_EQ(15, image_rep.pixel_width());
-}
-#endif
 
 TEST_F(ResourceBundleImageTest, FallbackToNone) {
   std::vector<ScaleFactor> supported_factors;

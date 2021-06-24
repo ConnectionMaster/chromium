@@ -4,18 +4,19 @@
 
 #include "components/sync/driver/fake_sync_service.h"
 
+#include <utility>
+
 #include "base/values.h"
-#include "components/signin/core/browser/account_info.h"
+#include "components/signin/public/identity_manager/account_info.h"
 #include "components/sync/driver/sync_token_status.h"
 #include "components/sync/engine/cycle/sync_cycle_snapshot.h"
-#include "components/sync/syncable/user_share.h"
+#include "components/sync/model/type_entities_count.h"
 
 namespace syncer {
 
 // Dummy methods
 
-FakeSyncService::FakeSyncService()
-    : user_share_(std::make_unique<UserShare>()) {}
+FakeSyncService::FakeSyncService() = default;
 
 FakeSyncService::~FakeSyncService() = default;
 
@@ -27,7 +28,8 @@ const syncer::SyncUserSettings* FakeSyncService::GetUserSettings() const {
   return nullptr;
 }
 
-int FakeSyncService::GetDisableReasons() const {
+syncer::SyncService::DisableReasonSet FakeSyncService::GetDisableReasons()
+    const {
   return DISABLE_REASON_NOT_SIGNED_IN;
 }
 
@@ -63,15 +65,9 @@ bool FakeSyncService::HasObserver(const SyncServiceObserver* observer) const {
 
 void FakeSyncService::StopAndClear() {}
 
+void FakeSyncService::SetSyncAllowedByPlatform(bool allowed) {}
+
 void FakeSyncService::OnDataTypeRequestsSyncStartup(ModelType type) {}
-
-ModelTypeSet FakeSyncService::GetRegisteredDataTypes() const {
-  return ModelTypeSet();
-}
-
-ModelTypeSet FakeSyncService::GetForcedDataTypes() const {
-  return ModelTypeSet();
-}
 
 ModelTypeSet FakeSyncService::GetPreferredDataTypes() const {
   return ModelTypeSet();
@@ -98,13 +94,10 @@ bool FakeSyncService::RequiresClientUpgrade() const {
   return false;
 }
 
-UserShare* FakeSyncService::GetUserShare() const {
-  return user_share_.get();
-}
+void FakeSyncService::DataTypePreconditionChanged(ModelType type) {}
 
-void FakeSyncService::ReadyForStartChanged(ModelType type) {}
-
-syncer::SyncTokenStatus FakeSyncService::GetSyncTokenStatus() const {
+syncer::SyncTokenStatus FakeSyncService::GetSyncTokenStatusForDebugging()
+    const {
   return syncer::SyncTokenStatus();
 }
 
@@ -113,11 +106,11 @@ bool FakeSyncService::QueryDetailedSyncStatusForDebugging(
   return false;
 }
 
-base::Time FakeSyncService::GetLastSyncedTime() const {
+base::Time FakeSyncService::GetLastSyncedTimeForDebugging() const {
   return base::Time();
 }
 
-SyncCycleSnapshot FakeSyncService::GetLastCycleSnapshot() const {
+SyncCycleSnapshot FakeSyncService::GetLastCycleSnapshotForDebugging() const {
   return SyncCycleSnapshot();
 }
 
@@ -125,15 +118,22 @@ std::unique_ptr<base::Value> FakeSyncService::GetTypeStatusMapForDebugging() {
   return nullptr;
 }
 
-const GURL& FakeSyncService::sync_service_url() const {
+void FakeSyncService::GetEntityCountsForDebugging(
+    base::OnceCallback<void(const std::vector<TypeEntitiesCount>&)> callback)
+    const {
+  return std::move(callback).Run({});
+}
+
+const GURL& FakeSyncService::GetSyncServiceUrlForDebugging() const {
   return sync_service_url_;
 }
 
-std::string FakeSyncService::unrecoverable_error_message() const {
+std::string FakeSyncService::GetUnrecoverableErrorMessageForDebugging() const {
   return std::string();
 }
 
-base::Location FakeSyncService::unrecoverable_error_location() const {
+base::Location FakeSyncService::GetUnrecoverableErrorLocationForDebugging()
+    const {
   return base::Location();
 }
 
@@ -143,20 +143,21 @@ void FakeSyncService::AddProtocolEventObserver(
 void FakeSyncService::RemoveProtocolEventObserver(
     ProtocolEventObserver* observer) {}
 
-void FakeSyncService::AddTypeDebugInfoObserver(
-    TypeDebugInfoObserver* observer) {}
-
-void FakeSyncService::RemoveTypeDebugInfoObserver(
-    TypeDebugInfoObserver* observer) {}
-
-base::WeakPtr<JsController> FakeSyncService::GetJsController() {
-  return base::WeakPtr<JsController>();
-}
-
-void FakeSyncService::GetAllNodes(
-    const base::Callback<void(std::unique_ptr<base::ListValue>)>& callback) {}
+void FakeSyncService::GetAllNodesForDebugging(
+    base::OnceCallback<void(std::unique_ptr<base::ListValue>)> callback) {}
 
 void FakeSyncService::SetInvalidationsForSessionsEnabled(bool enabled) {}
+
+void FakeSyncService::AddTrustedVaultDecryptionKeysFromWeb(
+    const std::string& gaia_id,
+    const std::vector<std::vector<uint8_t>>& keys,
+    int last_key_version) {}
+
+void FakeSyncService::AddTrustedVaultRecoveryMethodFromWeb(
+    const std::string& gaia_id,
+    const std::vector<uint8_t>& public_key,
+    int method_type_hint,
+    base::OnceClosure callback) {}
 
 void FakeSyncService::Shutdown() {}
 

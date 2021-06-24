@@ -15,15 +15,16 @@ namespace google_apis {
 class AboutResource;
 
 // Callback used for getting AboutResource.
-typedef base::Callback<void(DriveApiErrorCode error,
-                            std::unique_ptr<AboutResource> about_resource)>
+typedef base::OnceCallback<void(DriveApiErrorCode error,
+                                std::unique_ptr<AboutResource> about_resource)>
     AboutResourceCallback;
 
 // Closure for canceling a certain request. Each request-issuing method returns
 // this type of closure. If it is called during the request is in-flight, the
 // callback passed with the request is invoked with DRIVE_CANCELLED. If the
 // request is already finished, nothing happens.
-typedef base::Closure CancelCallback;
+typedef base::OnceClosure CancelCallbackOnce;
+typedef base::RepeatingClosure CancelCallbackRepeating;
 
 }  // namespace google_apis
 

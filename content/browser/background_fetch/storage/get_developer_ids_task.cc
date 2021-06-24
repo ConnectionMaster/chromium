@@ -16,13 +16,12 @@ namespace background_fetch {
 GetDeveloperIdsTask::GetDeveloperIdsTask(
     DatabaseTaskHost* host,
     int64_t service_worker_registration_id,
-    const url::Origin& origin,
+    const blink::StorageKey& storage_key,
     blink::mojom::BackgroundFetchService::GetDeveloperIdsCallback callback)
     : DatabaseTask(host),
       service_worker_registration_id_(service_worker_registration_id),
-      origin_(origin),
-      callback_(std::move(callback)),
-      weak_factory_(this) {}
+      storage_key_(storage_key),
+      callback_(std::move(callback)) {}
 
 GetDeveloperIdsTask::~GetDeveloperIdsTask() = default;
 
@@ -34,8 +33,8 @@ void GetDeveloperIdsTask::Start() {
 }
 
 void GetDeveloperIdsTask::DidGetUniqueIds(
-    const base::flat_map<std::string, std::string>& data_map,
-    blink::ServiceWorkerStatusCode status) {
+    blink::ServiceWorkerStatusCode status,
+    const base::flat_map<std::string, std::string>& data_map) {
   switch (ToDatabaseStatus(status)) {
     case DatabaseStatus::kNotFound:
       FinishWithError(blink::mojom::BackgroundFetchError::NONE);

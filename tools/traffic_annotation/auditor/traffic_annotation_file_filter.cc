@@ -13,7 +13,6 @@
 #include "base/process/launch.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "third_party/re2/src/re2/re2.h"
@@ -32,6 +31,7 @@ const char* kRelevantKeywords[] = {
     "DefinePartialNetworkTrafficAnnotation",
     "CompleteNetworkTrafficAnnotation",
     "BranchedCompleteNetworkTrafficAnnotation",
+    "CreateMutableNetworkTrafficAnnotationTag",
     "NO_TRAFFIC_ANNOTATION_YET",
     "NO_PARTIAL_TRAFFIC_ANNOTATION_YET",
     "MISSING_TRAFFIC_ANNOTATION",
@@ -78,10 +78,10 @@ void TrafficAnnotationFileFilter::GetFilesFromGit(
     }
   }
 
-  for (const std::string file_path : base::SplitString(
+  for (const std::string& file_path : base::SplitString(
            git_list, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL)) {
     if (IsFileRelevant(file_path))
-      git_files_.push_back(file_path);
+      git_files_.push_back(std::move(file_path));
   }
 
   base::SetCurrentDirectory(original_path);

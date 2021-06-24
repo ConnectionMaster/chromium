@@ -11,15 +11,15 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/containers/contains.h"
+#include "base/test/task_environment.h"
 #include "chromeos/services/secure_channel/connection_details.h"
-#include "chromeos/services/secure_channel/connection_medium.h"
 #include "chromeos/services/secure_channel/fake_authenticated_channel.h"
 #include "chromeos/services/secure_channel/fake_client_connection_parameters.h"
 #include "chromeos/services/secure_channel/fake_connection_delegate.h"
 #include "chromeos/services/secure_channel/fake_multiplexed_channel.h"
 #include "chromeos/services/secure_channel/fake_single_client_message_proxy.h"
+#include "chromeos/services/secure_channel/public/cpp/shared/connection_medium.h"
 #include "chromeos/services/secure_channel/single_client_message_proxy_impl.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -52,7 +52,7 @@ class FakeSingleClientMessageProxyImplFactory
   }
 
  private:
-  std::unique_ptr<SingleClientMessageProxy> BuildInstance(
+  std::unique_ptr<SingleClientMessageProxy> CreateInstance(
       SingleClientMessageProxy::Delegate* delegate,
       std::unique_ptr<ClientConnectionParameters> client_connection_parameters)
       override {
@@ -102,7 +102,7 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
   void SetUp() override {
     fake_proxy_factory_ =
         std::make_unique<FakeSingleClientMessageProxyImplFactory>();
-    SingleClientMessageProxyImpl::Factory::SetInstanceForTesting(
+    SingleClientMessageProxyImpl::Factory::SetFactoryForTesting(
         fake_proxy_factory_.get());
 
     fake_delegate_ = std::make_unique<FakeMultiplexedChannelDelegate>();
@@ -113,7 +113,7 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
   }
 
   void TearDown() override {
-    SingleClientMessageProxyImpl::Factory::SetInstanceForTesting(nullptr);
+    SingleClientMessageProxyImpl::Factory::SetFactoryForTesting(nullptr);
   }
 
   void CreateChannel() {
@@ -121,16 +121,14 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
         std::make_unique<FakeAuthenticatedChannel>();
     fake_authenticated_channel_ = fake_authenticated_channel.get();
 
-    multiplexed_channel_ =
-        MultiplexedChannelImpl::Factory::Get()->BuildInstance(
-            std::move(fake_authenticated_channel), fake_delegate_.get(),
-            ConnectionDetails(kTestDeviceId,
-                              ConnectionMedium::kBluetoothLowEnergy),
-            &initial_client_list_);
+    multiplexed_channel_ = MultiplexedChannelImpl::Factory::Create(
+        std::move(fake_authenticated_channel), fake_delegate_.get(),
+        ConnectionDetails(kTestDeviceId, ConnectionMedium::kBluetoothLowEnergy),
+        &initial_client_list_);
 
-    // Once BuildInstance() has finished, |fake_proxy_factory_| is expected to
-    // have already created one or more instances. Verify that the delegate
-    // passed to the factory is actually |multiplexed_channel_|.
+    // Once Create() has finished, |fake_proxy_factory_| is expected to have
+    // already created one or more instances. Verify that the delegate passed to
+    // the factory is actually |multiplexed_channel_|.
     EXPECT_EQ(static_cast<MultiplexedChannelImpl*>(multiplexed_channel_.get()),
               fake_proxy_factory_->expected_delegate());
   }
@@ -184,7 +182,7 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
   }
 
   bool HasMessageBeenSent(int message_counter) {
-    return base::ContainsKey(sent_message_counters_, message_counter);
+    return base::Contains(sent_message_counters_, message_counter);
   }
 
   void DisconnectClientAndVerifyState(
@@ -198,7 +196,7 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
     base::UnguessableToken proxy_id = sending_proxy->GetProxyId();
 
     // All relevant parties should still indicate that the connection is valid.
-    EXPECT_TRUE(base::ContainsKey(id_to_active_proxy_map(), proxy_id));
+    EXPECT_TRUE(base::Contains(id_to_active_proxy_map(), proxy_id));
     EXPECT_FALSE(
         fake_authenticated_channel_->has_disconnection_been_requested());
     EXPECT_FALSE(multiplexed_channel_->IsDisconnecting());
@@ -207,7 +205,7 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
 
     // Disconnecting the client should result in the proxy being deleted.
     sending_proxy->NotifyClientDisconnected();
-    EXPECT_FALSE(base::ContainsKey(id_to_active_proxy_map(), proxy_id));
+    EXPECT_FALSE(base::Contains(id_to_active_proxy_map(), proxy_id));
 
     if (!is_last_client)
       return;
@@ -297,7 +295,7 @@ class SecureChannelMultiplexedChannelImplTest : public testing::Test {
     sent_message_counters_.insert(message_counter);
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   int next_send_message_counter_ = 0;
   std::unordered_set<int> sent_message_counters_;

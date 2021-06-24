@@ -7,24 +7,21 @@
 #include <memory>
 #include <utility>
 
+#include "base/metrics/histogram_functions.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_clipboard_permission_descriptor.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_midi_permission_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_permission_descriptor.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_push_permission_descriptor.h"
-#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/execution_context/navigator_base.h"
 #include "third_party/blink/renderer/core/frame/frame.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/origin_trials/origin_trials.h"
-#include "third_party/blink/renderer/modules/permissions/permission_descriptor.h"
 #include "third_party/blink/renderer/modules/permissions/permission_status.h"
 #include "third_party/blink/renderer/modules/permissions/permission_utils.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
@@ -35,126 +32,30 @@ using mojom::blink::PermissionDescriptorPtr;
 using mojom::blink::PermissionName;
 using mojom::blink::PermissionService;
 
-namespace {
+// static
+const char Permissions::kSupplementName[] = "Permissions";
 
-// Parses the raw permission dictionary and returns the Mojo
-// PermissionDescriptor if parsing was successful. If an exception occurs, it
-// will be stored in |exceptionState| and null will be returned. Therefore, the
-// |exceptionState| should be checked before attempting to use the returned
-// permission as the non-null assert will be fired otherwise.
-//
-// Websites will be able to run code when `name()` is called, changing the
-// current context. The caller should make sure that no assumption is made
-// after this has been called.
-PermissionDescriptorPtr ParsePermission(ScriptState* script_state,
-                                        const ScriptValue raw_permission,
-                                        ExceptionState& exception_state) {
-  PermissionDescriptor* permission =
-      NativeValueTraits<PermissionDescriptor>::NativeValue(
-          script_state->GetIsolate(), raw_permission.V8Value(),
-          exception_state);
-
-  if (exception_state.HadException()) {
-    exception_state.ThrowTypeError(exception_state.Message());
-    return nullptr;
+// static
+Permissions* Permissions::permissions(NavigatorBase& navigator) {
+  Permissions* supplement =
+      Supplement<NavigatorBase>::From<Permissions>(navigator);
+  if (!supplement) {
+    supplement = MakeGarbageCollected<Permissions>(navigator);
+    ProvideTo(navigator, supplement);
   }
-
-  const String& name = permission->name();
-  if (name == "geolocation")
-    return CreatePermissionDescriptor(PermissionName::GEOLOCATION);
-  if (name == "camera")
-    return CreatePermissionDescriptor(PermissionName::VIDEO_CAPTURE);
-  if (name == "microphone")
-    return CreatePermissionDescriptor(PermissionName::AUDIO_CAPTURE);
-  if (name == "notifications")
-    return CreatePermissionDescriptor(PermissionName::NOTIFICATIONS);
-  if (name == "persistent-storage")
-    return CreatePermissionDescriptor(PermissionName::DURABLE_STORAGE);
-  if (name == "push") {
-    PushPermissionDescriptor* push_permission =
-        NativeValueTraits<PushPermissionDescriptor>::NativeValue(
-            script_state->GetIsolate(), raw_permission.V8Value(),
-            exception_state);
-    if (exception_state.HadException()) {
-      exception_state.ThrowTypeError(exception_state.Message());
-      return nullptr;
-    }
-
-    // Only "userVisibleOnly" push is supported for now.
-    if (!push_permission->userVisibleOnly()) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotSupportedError,
-          "Push Permission without userVisibleOnly:true isn't supported yet.");
-      return nullptr;
-    }
-
-    return CreatePermissionDescriptor(PermissionName::NOTIFICATIONS);
-  }
-  if (name == "midi") {
-    MidiPermissionDescriptor* midi_permission =
-        NativeValueTraits<MidiPermissionDescriptor>::NativeValue(
-            script_state->GetIsolate(), raw_permission.V8Value(),
-            exception_state);
-    return CreateMidiPermissionDescriptor(midi_permission->sysex());
-  }
-  if (name == "background-sync")
-    return CreatePermissionDescriptor(PermissionName::BACKGROUND_SYNC);
-  if (name == "ambient-light-sensor" || name == "accelerometer" ||
-      name == "gyroscope" || name == "magnetometer") {
-    if (!RuntimeEnabledFeatures::SensorEnabled()) {
-      exception_state.ThrowTypeError("GenericSensor flag is not enabled.");
-      return nullptr;
-    }
-
-    // Magnetometer and ALS require an extra flag.
-    if (name == "ambient-light-sensor") {
-      if (!RuntimeEnabledFeatures::SensorExtraClassesEnabled()) {
-        exception_state.ThrowTypeError(
-            "GenericSensorExtraClasses flag is not enabled.");
-        return nullptr;
-      }
-    }
-
-    return CreatePermissionDescriptor(PermissionName::SENSORS);
-  }
-  if (name == "accessibility-events") {
-    if (!RuntimeEnabledFeatures::AccessibilityObjectModelEnabled()) {
-      exception_state.ThrowTypeError(
-          "Accessibility Object Model is not enabled.");
-      return nullptr;
-    }
-    return CreatePermissionDescriptor(PermissionName::ACCESSIBILITY_EVENTS);
-  }
-  if (name == "clipboard-read" || name == "clipboard-write") {
-    PermissionName permission_name = PermissionName::CLIPBOARD_READ;
-    if (name == "clipboard-write")
-      permission_name = PermissionName::CLIPBOARD_WRITE;
-
-    ClipboardPermissionDescriptor* clipboard_permission =
-        NativeValueTraits<ClipboardPermissionDescriptor>::NativeValue(
-            script_state->GetIsolate(), raw_permission.V8Value(),
-            exception_state);
-    return CreateClipboardPermissionDescriptor(
-        permission_name, clipboard_permission->allowWithoutGesture());
-  }
-  if (name == "payment-handler")
-    return CreatePermissionDescriptor(PermissionName::PAYMENT_HANDLER);
-  if (name == "background-fetch") {
-    return CreatePermissionDescriptor(PermissionName::BACKGROUND_FETCH);
-  }
-  if (name == "idle-detection")
-    return CreatePermissionDescriptor(PermissionName::IDLE_DETECTION);
-
-  return nullptr;
+  return supplement;
 }
 
-}  // anonymous namespace
+Permissions::Permissions(NavigatorBase& navigator)
+    : Supplement<NavigatorBase>(navigator),
+      ExecutionContextLifecycleObserver(navigator.GetExecutionContext()),
+      service_(navigator.GetExecutionContext()) {}
 
 ScriptPromise Permissions::query(ScriptState* script_state,
                                  const ScriptValue& raw_permission,
                                  ExceptionState& exception_state) {
   PermissionDescriptorPtr descriptor =
-      ParsePermission(script_state, raw_permission, exception_state);
+      ParsePermissionDescriptor(script_state, raw_permission, exception_state);
   if (exception_state.HadException())
     return ScriptPromise();
 
@@ -167,10 +68,10 @@ ScriptPromise Permissions::query(ScriptState* script_state,
   // likely be "prompt".
   PermissionDescriptorPtr descriptor_copy = descriptor->Clone();
   GetService(ExecutionContext::From(script_state))
-      .HasPermission(std::move(descriptor),
-                     WTF::Bind(&Permissions::TaskComplete, WrapPersistent(this),
-                               WrapPersistent(resolver),
-                               WTF::Passed(std::move(descriptor_copy))));
+      ->HasPermission(
+          std::move(descriptor),
+          WTF::Bind(&Permissions::TaskComplete, WrapPersistent(this),
+                    WrapPersistent(resolver), std::move(descriptor_copy)));
   return promise;
 }
 
@@ -178,7 +79,7 @@ ScriptPromise Permissions::request(ScriptState* script_state,
                                    const ScriptValue& raw_permission,
                                    ExceptionState& exception_state) {
   PermissionDescriptorPtr descriptor =
-      ParsePermission(script_state, raw_permission, exception_state);
+      ParsePermissionDescriptor(script_state, raw_permission, exception_state);
   if (exception_state.HadException())
     return ScriptPromise();
 
@@ -188,16 +89,12 @@ ScriptPromise Permissions::request(ScriptState* script_state,
   ScriptPromise promise = resolver->Promise();
 
   PermissionDescriptorPtr descriptor_copy = descriptor->Clone();
-  Document* doc = DynamicTo<Document>(context);
-  LocalFrame* frame = doc ? doc->GetFrame() : nullptr;
-  GetService(ExecutionContext::From(script_state))
-      .RequestPermission(
-          std::move(descriptor),
-          LocalFrame::HasTransientUserActivation(
-              frame, true /* check_if_main_thread */),
-          WTF::Bind(&Permissions::TaskComplete, WrapPersistent(this),
-                    WrapPersistent(resolver),
-                    WTF::Passed(std::move(descriptor_copy))));
+  LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(context);
+  LocalFrame* frame = window ? window->GetFrame() : nullptr;
+  GetService(context)->RequestPermission(
+      std::move(descriptor), LocalFrame::HasTransientUserActivation(frame),
+      WTF::Bind(&Permissions::TaskComplete, WrapPersistent(this),
+                WrapPersistent(resolver), std::move(descriptor_copy)));
   return promise;
 }
 
@@ -205,7 +102,7 @@ ScriptPromise Permissions::revoke(ScriptState* script_state,
                                   const ScriptValue& raw_permission,
                                   ExceptionState& exception_state) {
   PermissionDescriptorPtr descriptor =
-      ParsePermission(script_state, raw_permission, exception_state);
+      ParsePermissionDescriptor(script_state, raw_permission, exception_state);
   if (exception_state.HadException())
     return ScriptPromise();
 
@@ -214,26 +111,28 @@ ScriptPromise Permissions::revoke(ScriptState* script_state,
 
   PermissionDescriptorPtr descriptor_copy = descriptor->Clone();
   GetService(ExecutionContext::From(script_state))
-      .RevokePermission(
+      ->RevokePermission(
           std::move(descriptor),
           WTF::Bind(&Permissions::TaskComplete, WrapPersistent(this),
-                    WrapPersistent(resolver),
-                    WTF::Passed(std::move(descriptor_copy))));
+                    WrapPersistent(resolver), std::move(descriptor_copy)));
   return promise;
 }
 
 ScriptPromise Permissions::requestAll(
     ScriptState* script_state,
-    const Vector<ScriptValue>& raw_permissions,
+    const HeapVector<ScriptValue>& raw_permissions,
     ExceptionState& exception_state) {
   Vector<PermissionDescriptorPtr> internal_permissions;
   Vector<int> caller_index_to_internal_index;
   caller_index_to_internal_index.resize(raw_permissions.size());
+
+  ExecutionContext* context = ExecutionContext::From(script_state);
+
   for (wtf_size_t i = 0; i < raw_permissions.size(); ++i) {
     const ScriptValue& raw_permission = raw_permissions[i];
 
-    auto descriptor =
-        ParsePermission(script_state, raw_permission, exception_state);
+    auto descriptor = ParsePermissionDescriptor(script_state, raw_permission,
+                                                exception_state);
     if (exception_state.HadException())
       return ScriptPromise();
 
@@ -252,8 +151,6 @@ ScriptPromise Permissions::requestAll(
     caller_index_to_internal_index[i] = internal_index;
   }
 
-  ExecutionContext* context = ExecutionContext::From(script_state);
-
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver>(script_state);
   ScriptPromise promise = resolver->Promise();
 
@@ -262,31 +159,40 @@ ScriptPromise Permissions::requestAll(
   for (const auto& descriptor : internal_permissions)
     internal_permissions_copy.push_back(descriptor->Clone());
 
-  Document* doc = DynamicTo<Document>(context);
-  LocalFrame* frame = doc ? doc->GetFrame() : nullptr;
-  GetService(ExecutionContext::From(script_state))
-      .RequestPermissions(
-          std::move(internal_permissions),
-          LocalFrame::HasTransientUserActivation(
-              frame, true /* check_if_main_thread */),
-          WTF::Bind(&Permissions::BatchTaskComplete, WrapPersistent(this),
-                    WrapPersistent(resolver),
-                    WTF::Passed(std::move(internal_permissions_copy)),
-                    WTF::Passed(std::move(caller_index_to_internal_index))));
+  LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(context);
+  LocalFrame* frame = window ? window->GetFrame() : nullptr;
+  GetService(context)->RequestPermissions(
+      std::move(internal_permissions),
+      LocalFrame::HasTransientUserActivation(frame),
+      WTF::Bind(&Permissions::BatchTaskComplete, WrapPersistent(this),
+                WrapPersistent(resolver), std::move(internal_permissions_copy),
+                std::move(caller_index_to_internal_index)));
   return promise;
 }
 
-PermissionService& Permissions::GetService(
+void Permissions::ContextDestroyed() {
+  base::UmaHistogramCounts1000("Permissions.API.CreatedPermissionStatusObjects",
+                               created_permission_status_objects_);
+}
+
+void Permissions::Trace(Visitor* visitor) const {
+  visitor->Trace(service_);
+  ScriptWrappable::Trace(visitor);
+  Supplement<NavigatorBase>::Trace(visitor);
+  ExecutionContextLifecycleObserver::Trace(visitor);
+}
+
+PermissionService* Permissions::GetService(
     ExecutionContext* execution_context) {
-  if (!service_) {
+  if (!service_.is_bound()) {
     ConnectToPermissionService(
         execution_context,
-        mojo::MakeRequest(&service_, execution_context->GetTaskRunner(
-                                         TaskType::kPermission)));
-    service_.set_connection_error_handler(WTF::Bind(
+        service_.BindNewPipeAndPassReceiver(
+            execution_context->GetTaskRunner(TaskType::kPermission)));
+    service_.set_disconnect_handler(WTF::Bind(
         &Permissions::ServiceConnectionError, WrapWeakPersistent(this)));
   }
-  return *service_;
+  return service_.get();
 }
 
 void Permissions::ServiceConnectionError() {
@@ -300,7 +206,7 @@ void Permissions::TaskComplete(ScriptPromiseResolver* resolver,
       resolver->GetExecutionContext()->IsContextDestroyed())
     return;
   resolver->Resolve(
-      PermissionStatus::Take(resolver, result, std::move(descriptor)));
+      PermissionStatus::Take(*this, resolver, result, std::move(descriptor)));
 }
 
 void Permissions::BatchTaskComplete(
@@ -319,7 +225,7 @@ void Permissions::BatchTaskComplete(
   result.ReserveInitialCapacity(caller_index_to_internal_index.size());
   for (int internal_index : caller_index_to_internal_index) {
     result.push_back(PermissionStatus::CreateAndListen(
-        resolver->GetExecutionContext(), results[internal_index],
+        *this, resolver->GetExecutionContext(), results[internal_index],
         descriptors[internal_index]->Clone()));
   }
   resolver->Resolve(result);

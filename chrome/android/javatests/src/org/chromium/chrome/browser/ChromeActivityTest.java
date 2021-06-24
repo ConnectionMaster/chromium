@@ -5,8 +5,9 @@
 package org.chromium.chrome.browser;
 
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.MediumTest;
-import android.support.test.filters.SmallTest;
+
+import androidx.test.filters.MediumTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -16,11 +17,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.chrome.browser.device.DeviceClassManager;
-import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.tab.TabImpl;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.ChromeTabCreator;
-import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -47,7 +48,7 @@ public class ChromeActivityTest {
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         if (mTestServer != null) mTestServer.stopAndDestroyServer();
     }
 
@@ -58,19 +59,18 @@ public class ChromeActivityTest {
      */
     @Test
     @MediumTest
-    @RetryOnFailure
     public void testTabVisibility() {
         // Create two tabs - tab[0] in the foreground and tab[1] in the background.
-        final Tab[] tabs = new Tab[2];
+        final TabImpl[] tabs = new TabImpl[2];
         TestThreadUtils.runOnUiThreadBlocking(() -> {
             // Foreground tab.
             ChromeTabCreator tabCreator =
                     mActivityTestRule.getActivity().getCurrentTabCreator();
-            tabs[0] = tabCreator.createNewTab(
-                    new LoadUrlParams(mTestServer.getURL(FILE_PATH)),
-                    TabLaunchType.FROM_CHROME_UI, null);
+            tabs[0] = (TabImpl) tabCreator.createNewTab(
+                    new LoadUrlParams(mTestServer.getURL(FILE_PATH)), TabLaunchType.FROM_CHROME_UI,
+                    null);
             // Background tab.
-            tabs[1] = tabCreator.createNewTab(
+            tabs[1] = (TabImpl) tabCreator.createNewTab(
                     new LoadUrlParams(mTestServer.getURL(FILE_PATH)),
                     TabLaunchType.FROM_LONGPRESS_BACKGROUND, null);
         });

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "ui/views/animation/test/test_ink_drop.h"
+#include "ui/gfx/transform.h"
 
 namespace views {
 namespace test {
@@ -12,6 +13,8 @@ TestInkDrop::~TestInkDrop() = default;
 
 void TestInkDrop::HostSizeChanged(const gfx::Size& new_size) {}
 
+void TestInkDrop::HostTransformChanged(const gfx::Transform& new_transform) {}
+
 InkDropState TestInkDrop::GetTargetInkDropState() const {
   return state_;
 }
@@ -20,7 +23,7 @@ void TestInkDrop::AnimateToState(InkDropState ink_drop_state) {
   state_ = ink_drop_state;
 }
 
-void TestInkDrop::SetHoverHighlightFadeDurationMs(int duration_ms) {}
+void TestInkDrop::SetHoverHighlightFadeDuration(base::TimeDelta duration_ms) {}
 
 void TestInkDrop::UseDefaultHoverHighlightFadeDuration() {}
 

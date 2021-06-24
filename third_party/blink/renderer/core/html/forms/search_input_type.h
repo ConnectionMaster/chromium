@@ -38,14 +38,12 @@ namespace blink {
 
 class SearchInputType final : public BaseTextInputType {
  public:
-  static InputType* Create(HTMLInputElement&);
+  explicit SearchInputType(HTMLInputElement&);
 
-  SearchInputType(HTMLInputElement&);
+  void Trace(Visitor*) const final;
 
  private:
   void CountUsage() override;
-  LayoutObject* CreateLayoutObject(const ComputedStyle&,
-                                   LegacyLayout) const override;
   const AtomicString& FormControlType() const override;
   bool NeedsContainer() const override;
   void CreateShadowSubtree() override;
@@ -60,7 +58,7 @@ class SearchInputType final : public BaseTextInputType {
   void StartSearchEventTimer();
   void UpdateCancelButtonVisibility();
 
-  TaskRunnerTimer<SearchInputType> search_event_timer_;
+  HeapTaskRunnerTimer<SearchInputType> search_event_timer_;
 };
 
 }  // namespace blink

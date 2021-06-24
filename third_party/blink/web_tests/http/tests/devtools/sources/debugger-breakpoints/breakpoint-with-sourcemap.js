@@ -4,7 +4,7 @@
 
 (async function test() {
   TestRunner.addResult('Checks breakpoint in file with sourcemap');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
 
   await SourcesTestRunner.startDebuggerTestPromise();
@@ -20,6 +20,6 @@ foo();
   await SourcesTestRunner.waitDebuggerPluginBreakpoints(sourceFrame);
   TestRunner.evaluateInPageAnonymously('foo()');
   let callFrames = await SourcesTestRunner.waitUntilPausedPromise();
-  SourcesTestRunner.captureStackTrace(callFrames);
+  await SourcesTestRunner.captureStackTrace(callFrames);
   SourcesTestRunner.completeDebuggerTest();
 })();

@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_CSS_CSS_ANIMATIONS_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_CSS_CSS_ANIMATIONS_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/animation/css/css_animation_data.h"
 #include "third_party/blink/renderer/core/animation/css/css_animation_update.h"
 #include "third_party/blink/renderer/core/animation/css/css_transition_data.h"
@@ -39,6 +38,7 @@
 #include "third_party/blink/renderer/core/animation/interpolation.h"
 #include "third_party/blink/renderer/core/css/css_keyframes_rule.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
+#include "third_party/blink/renderer/core/css/properties/css_bitset.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
@@ -51,38 +51,52 @@ class Element;
 class StylePropertyShorthand;
 class StyleResolver;
 
-class CSSAnimations final {
+class CORE_EXPORT CSSAnimations final {
   DISALLOW_NEW();
 
  public:
   CSSAnimations();
-
-  bool IsAnimationForInspector(const Animation&);
-  bool IsTransitionAnimationForInspector(const Animation&) const;
+  CSSAnimations(const CSSAnimations&) = delete;
+  CSSAnimations& operator=(const CSSAnimations&) = delete;
 
   static const StylePropertyShorthand& PropertiesForTransitionAll();
   static bool IsAnimationAffectingProperty(const CSSProperty&);
   static bool IsAffectedByKeyframesFromScope(const Element&, const TreeScope&);
   static bool IsAnimatingCustomProperties(const ElementAnimations*);
+  static bool IsAnimatingStandardProperties(const ElementAnimations*,
+                                            const CSSBitset*,
+                                            KeyframeEffect::Priority);
+  static bool IsAnimatingFontAffectingProperties(const ElementAnimations*);
+  static bool IsAnimatingRevert(const ElementAnimations*);
   static void CalculateAnimationUpdate(CSSAnimationUpdate&,
-                                       const Element* animating_element,
+                                       const Element& animating_element,
                                        Element&,
                                        const ComputedStyle&,
                                        const ComputedStyle* parent_style,
                                        StyleResolver*);
   static void CalculateCompositorAnimationUpdate(
       CSSAnimationUpdate&,
-      const Element* animating_element,
+      const Element& animating_element,
       Element&,
       const ComputedStyle&,
       const ComputedStyle* parent_style,
       bool was_viewport_changed);
 
+  static AnimationEffect::EventDelegate* CreateEventDelegate(
+      Element* element,
+      const PropertyHandle& property_handle,
+      const AnimationEffect::EventDelegate* old_event_delegate);
+
+  static AnimationEffect::EventDelegate* CreateEventDelegate(
+      Element* element,
+      const AtomicString& animation_name,
+      const AnimationEffect::EventDelegate* old_event_delegate);
+
   // Specifies whether to process custom or standard CSS properties.
   enum class PropertyPass { kCustom, kStandard };
   static void CalculateTransitionUpdate(CSSAnimationUpdate&,
                                         PropertyPass,
-                                        const Element* animating_element,
+                                        Element& animating_element,
                                         const ComputedStyle&);
 
   static void SnapshotCompositorKeyframes(Element&,
@@ -102,11 +116,10 @@ class CSSAnimations final {
   }
   void Cancel();
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
-  class RunningAnimation final
-      : public GarbageCollectedFinalized<RunningAnimation> {
+  class RunningAnimation final : public GarbageCollected<RunningAnimation> {
    public:
     RunningAnimation(Animation* animation, NewCSSAnimation new_animation)
         : animation(animation),
@@ -117,6 +130,8 @@ class CSSAnimations final {
           style_rule_version(new_animation.style_rule_version),
           play_state_list(new_animation.play_state_list) {}
 
+    AnimationTimeline* Timeline() const { return animation->timeline(); }
+
     void Update(UpdatedCSSAnimation update) {
       DCHECK_EQ(update.animation, animation);
       style_rule = update.style_rule;
@@ -125,7 +140,7 @@ class CSSAnimations final {
       specified_timing = update.specified_timing;
     }
 
-    void Trace(blink::Visitor* visitor) {
+    void Trace(Visitor* visitor) const {
       visitor->Trace(animation);
       visitor->Trace(style_rule);
     }
@@ -139,11 +154,11 @@ class CSSAnimations final {
     Vector<EAnimPlayState> play_state_list;
   };
 
-  struct RunningTransition {
-    DISALLOW_NEW();
-
+  struct RunningTransition : public GarbageCollected<RunningTransition> {
    public:
-    void Trace(blink::Visitor* visitor) { visitor->Trace(animation); }
+    virtual ~RunningTransition() = default;
+
+    void Trace(Visitor* visitor) const { visitor->Trace(animation); }
 
     Member<Animation> animation;
     scoped_refptr<const ComputedStyle> from;
@@ -154,7 +169,7 @@ class CSSAnimations final {
 
   HeapVector<Member<RunningAnimation>> running_animations_;
 
-  using TransitionMap = HeapHashMap<PropertyHandle, RunningTransition>;
+  using TransitionMap = HeapHashMap<PropertyHandle, Member<RunningTransition>>;
   TransitionMap transitions_;
 
   CSSAnimationUpdate pending_update_;
@@ -168,13 +183,14 @@ class CSSAnimations final {
 
    public:
     CSSAnimationUpdate& update;
-    Member<const Element> animating_element;
+    Element& animating_element;
     const ComputedStyle& old_style;
     const ComputedStyle& style;
+    scoped_refptr<const ComputedStyle> before_change_style;
     scoped_refptr<const ComputedStyle> cloned_style;
     const TransitionMap* active_transitions;
     HashSet<PropertyHandle>& listed_properties;
-    const CSSTransitionData& transition_data;
+    const CSSTransitionData* transition_data;
   };
 
   static void CalculateTransitionUpdateForCustomProperty(
@@ -194,22 +210,41 @@ class CSSAnimations final {
 
   static void CalculateAnimationActiveInterpolations(
       CSSAnimationUpdate&,
-      const Element* animating_element);
+      const Element& animating_element);
   static void CalculateTransitionActiveInterpolations(
       CSSAnimationUpdate&,
       PropertyPass,
-      const Element* animating_element);
+      const Element& animating_element);
+
+  // The before-change style is defined as the computed values of all properties
+  // on the element as of the previous style change event, except with any
+  // styles derived from declarative animations updated to the current time.
+  // https://drafts.csswg.org/css-transitions-1/#before-change-style
+  static scoped_refptr<const ComputedStyle> CalculateBeforeChangeStyle(
+      Element& animating_element,
+      const ComputedStyle& base_style);
 
   class AnimationEventDelegate final : public AnimationEffect::EventDelegate {
    public:
-    AnimationEventDelegate(Element* animation_target, const AtomicString& name)
+    AnimationEventDelegate(
+        Element* animation_target,
+        const AtomicString& name,
+        Timing::Phase previous_phase = Timing::kPhaseNone,
+        absl::optional<double> previous_iteration = absl::nullopt)
         : animation_target_(animation_target),
           name_(name),
-          previous_phase_(AnimationEffect::kPhaseNone),
-          previous_iteration_(NullValue()) {}
+          previous_phase_(previous_phase),
+          previous_iteration_(previous_iteration) {}
     bool RequiresIterationEvents(const AnimationEffect&) override;
-    void OnEventCondition(const AnimationEffect&) override;
-    void Trace(blink::Visitor*) override;
+    void OnEventCondition(const AnimationEffect&, Timing::Phase) override;
+
+    bool IsAnimationEventDelegate() const override { return true; }
+    Timing::Phase getPreviousPhase() const { return previous_phase_; }
+    absl::optional<double> getPreviousIteration() const {
+      return previous_iteration_;
+    }
+
+    void Trace(Visitor*) const override;
 
    private:
     const Element& AnimationTarget() const { return *animation_target_; }
@@ -218,28 +253,33 @@ class CSSAnimations final {
 
     void MaybeDispatch(Document::ListenerType,
                        const AtomicString& event_name,
-                       double elapsed_time);
+                       const AnimationTimeDelta& elapsed_time);
     Member<Element> animation_target_;
     const AtomicString name_;
-    AnimationEffect::Phase previous_phase_;
-    double previous_iteration_;
+    Timing::Phase previous_phase_;
+    absl::optional<double> previous_iteration_;
   };
 
   class TransitionEventDelegate final : public AnimationEffect::EventDelegate {
    public:
     TransitionEventDelegate(Element* transition_target,
-                            const PropertyHandle& property)
+                            const PropertyHandle& property,
+                            Timing::Phase previous_phase = Timing::kPhaseNone)
         : transition_target_(transition_target),
           property_(property),
-          previous_phase_(AnimationEffect::kPhaseNone) {}
+          previous_phase_(previous_phase) {}
     bool RequiresIterationEvents(const AnimationEffect&) override {
       return false;
     }
-    void OnEventCondition(const AnimationEffect&) override;
-    void Trace(blink::Visitor*) override;
+    void OnEventCondition(const AnimationEffect&, Timing::Phase) override;
+    bool IsTransitionEventDelegate() const override { return true; }
+    Timing::Phase getPreviousPhase() const { return previous_phase_; }
+
+    void Trace(Visitor*) const override;
 
    private:
-    void EnqueueEvent(const WTF::AtomicString& type, double elapsed_time);
+    void EnqueueEvent(const WTF::AtomicString& type,
+                      const AnimationTimeDelta& elapsed_time);
 
     const Element& TransitionTarget() const { return *transition_target_; }
     EventTarget* GetEventTarget() const;
@@ -248,12 +288,24 @@ class CSSAnimations final {
 
     Member<Element> transition_target_;
     PropertyHandle property_;
-    AnimationEffect::Phase previous_phase_;
+    Timing::Phase previous_phase_;
   };
+};
 
-  DISALLOW_COPY_AND_ASSIGN(CSSAnimations);
+template <>
+struct DowncastTraits<CSSAnimations::AnimationEventDelegate> {
+  static bool AllowFrom(const AnimationEffect::EventDelegate& delegate) {
+    return delegate.IsAnimationEventDelegate();
+  }
+};
+
+template <>
+struct DowncastTraits<CSSAnimations::TransitionEventDelegate> {
+  static bool AllowFrom(const AnimationEffect::EventDelegate& delegate) {
+    return delegate.IsTransitionEventDelegate();
+  }
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_CSS_CSS_ANIMATIONS_H_

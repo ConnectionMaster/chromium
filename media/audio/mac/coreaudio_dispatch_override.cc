@@ -12,6 +12,7 @@
 #include "base/logging.h"
 #include "base/mac/mac_util.h"
 #include "base/metrics/histogram_macros.h"
+#include "build/build_config.h"
 
 namespace {
 struct dyld_interpose_tuple {
@@ -60,16 +61,20 @@ enum CallsiteLookupEvent {
   LOOKUP_MAX = LOOKUP_PAUSEIO_CALLSITE_FOUND
 };
 
+#if defined(ARCH_CPU_X86_64)
 void LogCallsiteLookupEvent(CallsiteLookupEvent event) {
   UMA_HISTOGRAM_ENUMERATION("Media.Audio.CoreAudioDispatchOverrideLookupEvent",
                             event, LOOKUP_MAX + 1);
 }
+#endif
 
 const char kCoreAudioPath[] =
     "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio";
 
 dispatch_queue_t g_pause_resume_queue = nullptr;
 bool g_dispatch_override_installed = false;
+
+#if defined(ARCH_CPU_X86_64)
 base::subtle::AtomicWord g_resumeio_callsite = 0;
 base::subtle::AtomicWord g_pauseio_callsite = 0;
 
@@ -97,14 +102,23 @@ bool AddressIsPauseOrResume(intptr_t address) {
 
   DCHECK_EQ(strcmp(info.dli_fname, kCoreAudioPath), 0);
 
+  // Before Mac OSX 10.10, this code is not applied because dyld is not
+  // available.
+  // From Mac OSX 10.10 to 10.15 (excluded) the target functions that trigger
+  // the interposition are HALC_IOContext_ResumeIO and HALC_IOContext_PauseIO
+  // for respectively resume and pause.
+  // With MacOSX 10.15 the target functions have changed to _XIOContext_ResumeIO
+  // and _XIOContext_PauseIO for respectively resume and pause.
   if (!resumeio_callsite && info.dli_sname &&
-      strcmp(info.dli_sname, "HALC_IOContext_ResumeIO") == 0) {
+      (strcmp(info.dli_sname, "HALC_IOContext_ResumeIO") == 0 ||
+       strcmp(info.dli_sname, "_XIOContext_ResumeIO") == 0)) {
     resumeio_callsite = address;
     base::subtle::NoBarrier_CompareAndSwap(&g_resumeio_callsite, 0,
                                            resumeio_callsite);
     LogCallsiteLookupEvent(LOOKUP_RESUMEIO_CALLSITE_FOUND);
   } else if (!pauseio_callsite && info.dli_sname &&
-             strcmp(info.dli_sname, "HALC_IOContext_PauseIO") == 0) {
+             (strcmp(info.dli_sname, "HALC_IOContext_PauseIO") == 0 ||
+              strcmp(info.dli_sname, "_XIOContext_PauseIO") == 0)) {
     pauseio_callsite = address;
     base::subtle::NoBarrier_CompareAndSwap(&g_pauseio_callsite, 0,
                                            pauseio_callsite);
@@ -130,6 +144,7 @@ dispatch_queue_t GetGlobalQueueOverride(long identifier, unsigned long flags) {
 
   return dispatch_get_global_queue(identifier, flags);
 }
+#endif  // defined(ARCH_CPU_X86_64)
 
 }  // namespace
 
@@ -139,12 +154,6 @@ bool InitializeCoreAudioDispatchOverride() {
 
   DCHECK_EQ(g_pause_resume_queue, nullptr);
 
-  if (!base::mac::IsAtLeastOS10_10()) {
-    LogInitResult(RESULT_NOT_SUPPORTED);
-    return false;
-  }
-
-  // This function should be available in macOS > 10.10.
   if (dyld_dynamic_interpose == nullptr) {
     LOG(ERROR) << "Unable to resolve dyld_dynamic_interpose()";
     LogInitResult(RESULT_DYNAMIC_INTERPOSE_NOT_FOUND);
@@ -175,6 +184,8 @@ bool InitializeCoreAudioDispatchOverride() {
     LogInitResult(RESULT_COREAUDIO_MACH_HEADER_NOT_FOUND);
     return false;
   }
+
+#if defined(ARCH_CPU_X86_64)
   const auto* header = reinterpret_cast<const mach_header*>(info.dli_fbase);
   g_pause_resume_queue =
       dispatch_queue_create("org.chromium.CoreAudioPauseResumeQueue", nullptr);
@@ -186,6 +197,8 @@ bool InitializeCoreAudioDispatchOverride() {
       &GetGlobalQueueOverride,
       reinterpret_cast<DispatchGetGlobalQueueFunc>(&dispatch_get_global_queue));
   dyld_dynamic_interpose(header, &interposition, 1);
+#endif  // defined(ARCH_CPU_X86_64)
+
   g_dispatch_override_installed = true;
   LogInitResult(RESULT_INITIALIZED);
   return true;

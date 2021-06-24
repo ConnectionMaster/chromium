@@ -4,46 +4,115 @@
 
 #include "chrome/browser/ui/webui/app_management/app_management_shelf_delegate_chromeos.h"
 
+#include <algorithm>
+
 #include "ash/public/cpp/shelf_item.h"
 #include "ash/public/cpp/shelf_model.h"
 #include "ash/public/cpp/shelf_types.h"
-#include "chrome/browser/ui/ash/launcher/chrome_launcher_controller.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/ash/chrome_shelf_prefs.h"
+#include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
+#include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
+#include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
 #include "chrome/browser/ui/webui/app_management/app_management_page_handler.h"
-#include "chrome/services/app_service/public/mojom/types.mojom.h"
+#include "components/services/app_service/public/mojom/types.mojom.h"
 
 using apps::mojom::OptionalBool;
 
 AppManagementShelfDelegate::AppManagementShelfDelegate(
-    AppManagementPageHandler* page_handler)
+    AppManagementPageHandler* page_handler,
+    Profile* profile)
     : page_handler_(page_handler) {
-  ChromeLauncherController::instance()->shelf_model()->AddObserver(this);
+  auto* shelf_controller = ChromeShelfController::instance();
+  if (!shelf_controller) {
+    return;
+  }
+
+  auto* shelf_model = shelf_controller->shelf_model();
+  if (!shelf_model) {
+    return;
+  }
+  shelf_controller_helper_ = new ShelfControllerHelper(profile);
+
+  shelf_model->AddObserver(this);
 }
 
 AppManagementShelfDelegate::~AppManagementShelfDelegate() {
-  ChromeLauncherController::instance()->shelf_model()->RemoveObserver(this);
+  auto* shelf_controller = ChromeShelfController::instance();
+  if (!shelf_controller) {
+    return;
+  }
+
+  auto* shelf_model = shelf_controller->shelf_model();
+  if (!shelf_model) {
+    return;
+  }
+
+  shelf_model->RemoveObserver(this);
 }
 
 bool AppManagementShelfDelegate::IsPinned(const std::string& app_id) {
-  return ChromeLauncherController::instance()->IsAppPinned(app_id);
+  auto* shelf_controller = ChromeShelfController::instance();
+  if (!shelf_controller) {
+    return false;
+  }
+  return shelf_controller->IsAppPinned(app_id);
+}
+
+bool AppManagementShelfDelegate::IsPolicyPinned(
+    const std::string& app_id) const {
+  auto* shelf_controller = ChromeShelfController::instance();
+
+  if (!shelf_controller) {
+    return false;
+  }
+
+  auto* shelf_item = shelf_controller->GetItem(ash::ShelfID(app_id));
+  if (shelf_item) {
+    return shelf_item->pinned_by_policy;
+  }
+  // The app doesn't exist on the shelf - check launcher prefs instead.
+  std::vector<std::string> policy_pinned_apps =
+      GetAppsPinnedByPolicy(shelf_controller_helper_);
+  return std::any_of(policy_pinned_apps.begin(), policy_pinned_apps.end(),
+                     [app_id](std::string app) { return app_id == app; });
 }
 
 void AppManagementShelfDelegate::SetPinned(const std::string& app_id,
                                            OptionalBool pinned) {
+  auto* shelf_controller = ChromeShelfController::instance();
+
+  if (!shelf_controller) {
+    return;
+  }
+
   if (pinned == OptionalBool::kTrue) {
-    ChromeLauncherController::instance()->PinAppWithID(app_id);
+    shelf_controller->PinAppWithID(app_id);
   } else if (pinned == OptionalBool::kFalse) {
-    ChromeLauncherController::instance()->UnpinAppWithID(app_id);
+    shelf_controller->UnpinAppWithID(app_id);
   } else {
     NOTREACHED();
   }
 }
 
 void AppManagementShelfDelegate::ShelfItemAdded(int index) {
-  const std::string& app_id = ChromeLauncherController::instance()
-                                  ->shelf_model()
-                                  ->items()[index]
-                                  .id.app_id;
-  bool is_pinned = ChromeLauncherController::instance()->IsAppPinned(app_id);
+  auto* shelf_controller = ChromeShelfController::instance();
+  if (!shelf_controller) {
+    return;
+  }
+
+  auto* shelf_model = shelf_controller->shelf_model();
+  if (!shelf_model) {
+    return;
+  }
+
+  if (index >= shelf_model->item_count()) {
+    // index out of bounds.
+    return;
+  }
+
+  const std::string& app_id = shelf_model->items()[index].id.app_id;
+  bool is_pinned = shelf_controller->IsAppPinned(app_id);
 
   page_handler_->OnPinnedChanged(app_id, is_pinned);
 }
@@ -58,11 +127,23 @@ void AppManagementShelfDelegate::ShelfItemRemoved(
 void AppManagementShelfDelegate::ShelfItemChanged(
     int index,
     const ash::ShelfItem& old_item) {
-  const std::string& app_id = ChromeLauncherController::instance()
-                                  ->shelf_model()
-                                  ->items()[index]
-                                  .id.app_id;
-  bool is_pinned = ChromeLauncherController::instance()->IsAppPinned(app_id);
+  auto* shelf_controller = ChromeShelfController::instance();
+  if (!shelf_controller) {
+    return;
+  }
+
+  auto* shelf_model = shelf_controller->shelf_model();
+  if (!shelf_model) {
+    return;
+  }
+
+  if (index >= shelf_model->item_count()) {
+    // index out of bounds.
+    return;
+  }
+
+  const std::string& app_id = shelf_model->items()[index].id.app_id;
+  bool is_pinned = shelf_controller->IsAppPinned(app_id);
 
   page_handler_->OnPinnedChanged(app_id, is_pinned);
 }

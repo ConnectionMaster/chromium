@@ -9,8 +9,8 @@
 #include <memory>
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/rand_util.h"
-#include "base/stl_util.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_element.h"
@@ -38,8 +38,8 @@ void SchedulePulsingAnimation(ui::Layer* layer) {
       std::make_unique<ui::LayerAnimationSequence>();
 
   // The animations loop infinitely.
-  opacity_sequence->set_is_cyclic(true);
-  transform_sequence->set_is_cyclic(true);
+  opacity_sequence->set_is_repeating(true);
+  transform_sequence->set_is_repeating(true);
 
   const gfx::Rect local_bounds(layer->bounds().size());
   for (size_t i = 0; i < base::size(kAnimationOpacity); ++i) {
@@ -70,7 +70,7 @@ void SchedulePulsingAnimation(ui::Layer* layer) {
 
 }  // namespace
 
-namespace app_list {
+namespace ash {
 
 PulsingBlockView::PulsingBlockView(const gfx::Size& size, bool start_delay) {
   SetPaintToLayer();
@@ -84,6 +84,10 @@ PulsingBlockView::PulsingBlockView(const gfx::Size& size, bool start_delay) {
 
 PulsingBlockView::~PulsingBlockView() {}
 
+const char* PulsingBlockView::GetClassName() const {
+  return "PulsingBlockView";
+}
+
 void PulsingBlockView::OnStartDelayTimer() {
   SchedulePulsingAnimation(layer());
 }
@@ -94,4 +98,4 @@ void PulsingBlockView::OnPaint(gfx::Canvas* canvas) {
   canvas->FillRect(rect, kBlockColor);
 }
 
-}  // namespace app_list
+}  // namespace ash

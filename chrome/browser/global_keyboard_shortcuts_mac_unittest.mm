@@ -8,6 +8,7 @@
 
 #include "chrome/browser/global_keyboard_shortcuts_mac.h"
 
+#include "base/check_op.h"
 #include "base/macros.h"
 #include "base/stl_util.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -31,6 +32,19 @@ int CommandForKeys(bool command_key,
     modifierFlags |= NSControlKeyMask;
   if (opt_key)
     modifierFlags |= NSAlternateKeyMask;
+
+  switch (vkey_code) {
+    case kVK_UpArrow:
+    case kVK_DownArrow:
+    case kVK_LeftArrow:
+    case kVK_RightArrow:
+      // Docs say this is set whenever a key came from the numpad *or* the arrow
+      // keys.
+      modifierFlags |= NSEventModifierFlagNumericPad;
+      break;
+    default:
+      break;
+  }
 
   unichar shifted_character;
   unichar character;

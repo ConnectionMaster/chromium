@@ -9,7 +9,6 @@
 
 #include "base/i18n/number_formatting.h"
 #include "base/i18n/rtl.h"
-#include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/icu_test_util.h"
 #include "build/build_config.h"
@@ -38,10 +37,10 @@ TEST(NumberFormattingTest, FormatNumber) {
 
   for (const auto& i : cases) {
     i18n::SetICUDefaultLocale("en");
-    testing::ResetFormatters();
+    ResetFormattersForTesting();
     EXPECT_EQ(i.expected_english, UTF16ToUTF8(FormatNumber(i.number)));
     i18n::SetICUDefaultLocale("de");
-    testing::ResetFormatters();
+    ResetFormattersForTesting();
     EXPECT_EQ(i.expected_german, UTF16ToUTF8(FormatNumber(i.number)));
   }
 }
@@ -82,11 +81,11 @@ TEST(NumberFormattingTest, FormatDouble) {
   test::ScopedRestoreICUDefaultLocale restore_locale;
   for (const auto& i : cases) {
     i18n::SetICUDefaultLocale("en");
-    testing::ResetFormatters();
+    ResetFormattersForTesting();
     EXPECT_EQ(i.expected_english,
               UTF16ToUTF8(FormatDouble(i.number, i.frac_digits)));
     i18n::SetICUDefaultLocale("de");
-    testing::ResetFormatters();
+    ResetFormattersForTesting();
     EXPECT_EQ(i.expected_german,
               UTF16ToUTF8(FormatDouble(i.number, i.frac_digits)));
   }

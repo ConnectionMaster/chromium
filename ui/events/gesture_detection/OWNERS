@@ -1,7 +1,4 @@
-tdresser@chromium.org
+flackr@chromium.org
 
 per-file gesture_configuration_cast.cc=alexst@chromium.org
 per-file gesture_configuration_cast.cc=kpschoedel@chromium.org
-
-# TEAM: input-dev@chromium.org
-# COMPONENT: Blink>Input

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "base/check_op.h"
 #include "base/logging.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -25,8 +26,8 @@ bool ExactPixelComparator::Compare(const SkBitmap& actual_bmp,
   gfx::Rect error_bounding_rect = gfx::Rect();
 
   // Check that bitmaps have identical dimensions.
-  DCHECK(actual_bmp.width() == expected_bmp.width() &&
-         actual_bmp.height() == expected_bmp.height());
+  DCHECK_EQ(actual_bmp.width(), expected_bmp.width());
+  DCHECK_EQ(actual_bmp.height(), expected_bmp.height());
 
   for (int x = 0; x < actual_bmp.width(); ++x) {
     for (int y = 0; y < actual_bmp.height(); ++y) {
@@ -52,20 +53,60 @@ bool ExactPixelComparator::Compare(const SkBitmap& actual_bmp,
   return true;
 }
 
+ManhattanDistancePixelComparator::ManhattanDistancePixelComparator(
+    int tolerance)
+    : tolerance_(tolerance) {}
+
+bool ManhattanDistancePixelComparator::Compare(
+    const SkBitmap& actual_bmp,
+    const SkBitmap& expected_bmp) const {
+  // Check that bitmaps have identical dimensions.
+  DCHECK_EQ(actual_bmp.width(), expected_bmp.width());
+  DCHECK_EQ(actual_bmp.height(), expected_bmp.height());
+
+  for (int y = 0; y < actual_bmp.height(); ++y) {
+    for (int x = 0; x < actual_bmp.width(); ++x) {
+      SkColor actual_color = actual_bmp.getColor(x, y);
+      SkColor expected_color = expected_bmp.getColor(x, y);
+
+      int pixel_b = SkColorGetB(actual_color);
+      int pixel_g = SkColorGetG(actual_color);
+      int pixel_r = SkColorGetR(actual_color);
+
+      int ref_pixel_b = SkColorGetB(expected_color);
+      int ref_pixel_g = SkColorGetG(expected_color);
+      int ref_pixel_r = SkColorGetR(expected_color);
+
+      int manhattan_distance = std::abs(pixel_b - ref_pixel_b) +
+                               std::abs(pixel_g - ref_pixel_g) +
+                               std::abs(pixel_r - ref_pixel_r);
+
+      if (manhattan_distance > tolerance_) {
+        LOG(ERROR) << "Pixel test failed on (" << x << ", " << y << "). "
+                   << "Manhattan distance: " << manhattan_distance << ".";
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 FuzzyPixelComparator::FuzzyPixelComparator(
-    const bool discard_alpha,
-    const float error_pixels_percentage_limit,
-    const float small_error_pixels_percentage_limit,
-    const float avg_abs_error_limit,
-    const int max_abs_error_limit,
-    const int small_error_threshold)
+    bool discard_alpha,
+    float error_pixels_percentage_limit,
+    float small_error_pixels_percentage_limit,
+    float avg_abs_error_limit,
+    int max_abs_error_limit,
+    int small_error_threshold,
+    bool check_critical_error)
     : discard_alpha_(discard_alpha),
       error_pixels_percentage_limit_(error_pixels_percentage_limit),
       small_error_pixels_percentage_limit_(small_error_pixels_percentage_limit),
       avg_abs_error_limit_(avg_abs_error_limit),
       max_abs_error_limit_(max_abs_error_limit),
-      small_error_threshold_(small_error_threshold) {
-}
+      small_error_threshold_(small_error_threshold),
+      check_critical_error_(check_critical_error) {}
 
 bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
                                    const SkBitmap& expected_bmp) const {
@@ -73,6 +114,8 @@ bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
   int error_pixels_count = 0;
   // Number of pixels with a small error
   int small_error_pixels_count = 0;
+  // Number of pixels with a critical error.
+  int critial_error_pixels_count = 0;
   // The per channel sums of absolute errors over all pixels.
   int64_t sum_abs_error_r = 0;
   int64_t sum_abs_error_g = 0;
@@ -87,11 +130,12 @@ bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
   gfx::Rect error_bounding_rect = gfx::Rect();
 
   // Check that bitmaps have identical dimensions.
-  DCHECK(actual_bmp.width() == expected_bmp.width() &&
-         actual_bmp.height() == expected_bmp.height());
+  DCHECK_EQ(actual_bmp.width(), expected_bmp.width());
+  DCHECK_EQ(actual_bmp.height(), expected_bmp.height());
 
   // Check that bitmaps are not empty.
-  DCHECK(actual_bmp.width() > 0 && actual_bmp.height() > 0);
+  DCHECK_GT(actual_bmp.width(), 0);
+  DCHECK_GT(actual_bmp.height(), 0);
 
   for (int x = 0; x < actual_bmp.width(); ++x) {
     for (int y = 0; y < actual_bmp.height(); ++y) {
@@ -106,10 +150,11 @@ bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
         ++error_pixels_count;
 
         // Compute per channel errors
+        uint32_t expected_alpha = SkColorGetA(expected_color);
         int error_r = SkColorGetR(actual_color) - SkColorGetR(expected_color);
         int error_g = SkColorGetG(actual_color) - SkColorGetG(expected_color);
         int error_b = SkColorGetB(actual_color) - SkColorGetB(expected_color);
-        int error_a = SkColorGetA(actual_color) - SkColorGetA(expected_color);
+        int error_a = SkColorGetA(actual_color) - expected_alpha;
         int abs_error_r = std::abs(error_r);
         int abs_error_g = std::abs(error_g);
         int abs_error_b = std::abs(error_b);
@@ -121,6 +166,10 @@ bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
             abs_error_b <= small_error_threshold_ &&
             abs_error_a <= small_error_threshold_)
           ++small_error_pixels_count;
+
+        if (check_critical_error_ && abs_error_a != 0 &&
+            (expected_alpha == 0 || expected_alpha == 0xff))
+          ++critial_error_pixels_count;
 
         // Update per channel maximum absolute errors
         max_abs_error_r = std::max(max_abs_error_r, abs_error_r);
@@ -167,7 +216,7 @@ bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
       max_abs_error_r > max_abs_error_limit_ ||
       max_abs_error_g > max_abs_error_limit_ ||
       max_abs_error_b > max_abs_error_limit_ ||
-      max_abs_error_a > max_abs_error_limit_) {
+      max_abs_error_a > max_abs_error_limit_ || critial_error_pixels_count) {
     LOG(ERROR) << "Percentage of pixels with an error: "
                << error_pixels_percentage;
     LOG(ERROR) << "Percentage of pixels with errors not greater than "
@@ -183,20 +232,21 @@ bool FuzzyPixelComparator::Compare(const SkBitmap& actual_bmp,
                << "G=" << max_abs_error_g << " "
                << "B=" << max_abs_error_b << " "
                << "A=" << max_abs_error_a;
+    LOG(ERROR) << "Critical error: " << critial_error_pixels_count;
 
-      for (int x = 0; x < actual_bmp.width(); ++x) {
-        for (int y = 0; y < actual_bmp.height(); ++y) {
-          SkColor actual_color = actual_bmp.getColor(x, y);
-          SkColor expected_color = expected_bmp.getColor(x, y);
-          if (discard_alpha_) {
-            actual_color = SkColorSetA(actual_color, 0);
-            expected_color = SkColorSetA(expected_color, 0);
-          }
-          if (actual_color != expected_color)
-            error_bounding_rect.Union(gfx::Rect(x, y, 1, 1));
+    for (int x = 0; x < actual_bmp.width(); ++x) {
+      for (int y = 0; y < actual_bmp.height(); ++y) {
+        SkColor actual_color = actual_bmp.getColor(x, y);
+        SkColor expected_color = expected_bmp.getColor(x, y);
+        if (discard_alpha_) {
+          actual_color = SkColorSetA(actual_color, 0);
+          expected_color = SkColorSetA(expected_color, 0);
         }
+        if (actual_color != expected_color)
+          error_bounding_rect.Union(gfx::Rect(x, y, 1, 1));
       }
-      LOG(ERROR) << "Error Bounding Box : " << error_bounding_rect.ToString();
+    }
+    LOG(ERROR) << "Error Bounding Box : " << error_bounding_rect.ToString();
     return false;
   } else {
     return true;

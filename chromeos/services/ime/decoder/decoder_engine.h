@@ -6,41 +6,53 @@
 #define CHROMEOS_SERVICES_IME_DECODER_DECODER_ENGINE_H_
 
 #include "base/scoped_native_library.h"
+#include "chromeos/services/ime/ime_decoder.h"
 #include "chromeos/services/ime/input_engine.h"
+#include "chromeos/services/ime/public/cpp/shared_lib/interfaces.h"
 #include "chromeos/services/ime/public/mojom/input_engine.mojom.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "chromeos/services/ime/public/mojom/input_method.mojom.h"
+#include "chromeos/services/ime/public/mojom/input_method_host.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 namespace ime {
 
-// TODO(https://crbug.com/837156): Introduce a DecoderAPILibrary class/struct.
-// Inside, we define the shared function pointer types which are implemented
-// in the decoder shared library.
-
 // An enhanced implementation of the basic InputEngine which allows the input
 // engine to call a customized transliteration library (aka decoder) to provide
 // a premium typing experience.
-class DecoderEngine : public InputEngine {
+class DecoderEngine : public InputEngine, public mojom::InputChannel {
  public:
-  DecoderEngine(service_manager::Connector* connector,
-                scoped_refptr<base::SequencedTaskRunner> task_runner);
+  explicit DecoderEngine(ImeCrosPlatform* platform);
   ~DecoderEngine() override;
 
-  // InputEngine overrides:
+  // Binds the mojom::InputChannel interface to this object and returns true if
+  // the given ime_spec is supported by the engine.
   bool BindRequest(const std::string& ime_spec,
-                   mojom::InputChannelRequest request,
-                   mojom::InputChannelPtr client,
-                   const std::vector<uint8_t>& extra) override;
-  bool IsImeSupported(const std::string& ime_spec) override;
+                   mojo::PendingReceiver<mojom::InputChannel> receiver,
+                   mojo::PendingRemote<mojom::InputChannel> remote,
+                   const std::vector<uint8_t>& extra);
+
+  // mojom::InputChannel:
   void ProcessMessage(const std::vector<uint8_t>& message,
                       ProcessMessageCallback callback) override;
 
  private:
-  // Shared library handle of the implementation for input logic with decoders.
-  base::ScopedNativeLibrary library_;
+  // Try to load the decoding functions from some decoder shared library.
+  // Returns whether loading decoder is successful.
+  bool TryLoadDecoder();
 
-  mojo::BindingSet<mojom::InputChannel> channel_bindings_;
+  // Returns whether the decoder shared library supports this ime_spec.
+  bool IsImeSupportedByDecoder(const std::string& ime_spec);
+
+  ImeCrosPlatform* platform_ = nullptr;
+
+  absl::optional<ImeDecoder::EntryPoints> decoder_entry_points_;
+
+  mojo::ReceiverSet<mojom::InputChannel> decoder_channel_receivers_;
 
   DISALLOW_COPY_AND_ASSIGN(DecoderEngine);
 };

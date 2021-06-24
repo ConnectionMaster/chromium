@@ -13,7 +13,7 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/update_client/net/url_loader_post_interceptor.h"
 #include "components/update_client/test_configurator.h"
@@ -57,7 +57,7 @@ class RequestSenderTest : public testing::Test,
   void Quit();
   void RunThreads();
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   scoped_refptr<TestConfigurator> config_;
   std::unique_ptr<RequestSender> request_sender_;
@@ -76,10 +76,9 @@ class RequestSenderTest : public testing::Test,
 INSTANTIATE_TEST_SUITE_P(IsForeground, RequestSenderTest, ::testing::Bool());
 
 RequestSenderTest::RequestSenderTest()
-    : scoped_task_environment_(
-          base::test::ScopedTaskEnvironment::MainThreadType::IO) {}
+    : task_environment_(base::test::TaskEnvironment::MainThreadType::IO) {}
 
-RequestSenderTest::~RequestSenderTest() {}
+RequestSenderTest::~RequestSenderTest() = default;
 
 void RequestSenderTest::SetUp() {
   config_ = base::MakeRefCounted<TestConfigurator>();
@@ -101,7 +100,7 @@ void RequestSenderTest::TearDown() {
 
   // Run the threads until they are idle to allow the clean up
   // of the network interceptors on the IO thread.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   config_ = nullptr;
 }
 
@@ -160,9 +159,12 @@ TEST_P(RequestSenderTest, RequestSendSuccess) {
   const auto extra_request_headers =
       std::get<1>(post_interceptor_->GetRequests()[0]);
   EXPECT_TRUE(extra_request_headers.HasHeader("X-Goog-Update-Interactivity"));
+  EXPECT_TRUE(extra_request_headers.HasHeader("Content-Type"));
   std::string header;
   extra_request_headers.GetHeader("X-Goog-Update-Interactivity", &header);
   EXPECT_STREQ(is_foreground ? "fg" : "bg", header.c_str());
+  extra_request_headers.GetHeader("Content-Type", &header);
+  EXPECT_STREQ("application/json", header.c_str());
 }
 
 // Tests that the request succeeds using the second url after the first url

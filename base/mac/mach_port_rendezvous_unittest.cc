@@ -9,10 +9,13 @@
 #include <utility>
 
 #include "base/at_exit.h"
+#include "base/mac/foundation_util.h"
 #include "base/mac/mach_logging.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/multiprocess_test.h"
 #include "base/test/test_timeouts.h"
+#include "base/threading/platform_thread.h"
+#include "base/time/time.h"
 #include "testing/multiprocess_func_list.h"
 
 namespace base {
@@ -148,6 +151,18 @@ TEST_F(MachPortRendezvousServerTest, CleanupIfNoRendezvous) {
 
   EXPECT_EQ(42, exit_code);
 
+  // There is no way to synchronize the test code with the asynchronous
+  // delivery of the dispatch process-exit notification. Loop for a short
+  // while for it to be delivered.
+  auto start = TimeTicks::Now();
+  do {
+    if (client_data().size() == 0)
+      break;
+    // Sleep is fine because dispatch will process the notification on one of
+    // its workers.
+    PlatformThread::Sleep(TimeDelta::FromMilliseconds(10));
+  } while ((TimeTicks::Now() - start) < TestTimeouts::action_timeout());
+
   EXPECT_EQ(0u, client_data().size());
 }
 
@@ -204,6 +219,27 @@ TEST_F(MachPortRendezvousServerTest, DestroyRight) {
     ASSERT_EQ(kr, KERN_SUCCESS);
     EXPECT_EQ(refs, test.send_rights);
   }
+}
+
+MULTIPROCESS_TEST_MAIN(FailToRendezvous) {
+  // The rendezvous system uses the BaseBundleID to construct the bootstrap
+  // server name, so changing it will result in a failure to look it up.
+  base::mac::SetBaseBundleID("org.chromium.totallyfake");
+  CHECK_EQ(nullptr, base::MachPortRendezvousClient::GetInstance());
+  return 0;
+}
+
+TEST_F(MachPortRendezvousServerTest, FailToRendezvous) {
+  auto* server = MachPortRendezvousServer::GetInstance();
+  ASSERT_TRUE(server);
+
+  Process child = SpawnChild("FailToRendezvous");
+
+  int exit_code;
+  ASSERT_TRUE(WaitForMultiprocessTestChildExit(
+      child, TestTimeouts::action_timeout(), &exit_code));
+
+  EXPECT_EQ(0, exit_code);
 }
 
 }  // namespace base

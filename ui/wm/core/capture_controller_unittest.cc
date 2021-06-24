@@ -4,9 +4,9 @@
 
 #include "ui/wm/core/capture_controller.h"
 
+#include <memory>
 #include <utility>
 
-#include "base/logging.h"
 #include "base/macros.h"
 #include "ui/aura/client/capture_delegate.h"
 #include "ui/aura/env.h"
@@ -57,15 +57,15 @@ class CaptureControllerTest : public aura::test::AuraTestBase {
 
   void SetUp() override {
     AuraTestBase::SetUp();
-    capture_controller_.reset(new ScopedCaptureClient(root_window()));
+    capture_controller_ = std::make_unique<ScopedCaptureClient>(root_window());
 
     second_host_ = aura::WindowTreeHost::Create(
         ui::PlatformWindowInitProperties{gfx::Rect(0, 0, 800, 600)});
     second_host_->InitHost();
     second_host_->window()->Show();
     second_host_->SetBoundsInPixels(gfx::Rect(800, 600));
-    second_capture_controller_.reset(
-        new ScopedCaptureClient(second_host_->window()));
+    second_capture_controller_ =
+        std::make_unique<ScopedCaptureClient>(second_host_->window());
   }
 
   void TearDown() override {
@@ -89,7 +89,7 @@ class CaptureControllerTest : public aura::test::AuraTestBase {
         delegate
             ? delegate
             : aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate());
-    window->set_id(id);
+    window->SetId(id);
     window->Init(ui::LAYER_TEXTURED);
     parent->AddChild(window);
     window->SetBounds(bounds);

@@ -21,9 +21,10 @@ changed, a window will be prompted asking for user's consent. The old version
 will also be saved in a backup file.
 """
 
+from __future__ import print_function
+
 __author__ = 'evanm (Evan Martin)'
 
-from HTMLParser import HTMLParser
 import logging
 import os
 import re
@@ -31,8 +32,13 @@ import shutil
 import sys
 from xml.dom import minidom
 
+if sys.version_info.major == 2:
+  from HTMLParser import HTMLParser
+else:
+  from html.parser import HTMLParser
+
 import action_utils
-import actions_print_style
+import actions_model
 
 # Import the metrics/common module for pretty print xml.
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'common'))
@@ -72,6 +78,16 @@ USER_METRICS_ACTION_RE_JS = re.compile(r"""
   """,
   re.VERBOSE | re.DOTALL      # Verbose syntax and makes . also match new lines.
 )
+USER_METRICS_ACTION_RE_DEVTOOLS = re.compile(r"""
+  InspectorFrontendHost\.recordUserMetricsAction     # Start of function call.
+  \(                          # Opening parenthesis.
+  \s*                         # Any amount of whitespace, including new lines.
+  (.+?)                       # A sequence of characters for the param.
+  \s*                         # Any amount of whitespace, including new lines.
+  \)                          # Closing parenthesis.
+  """,
+  re.VERBOSE | re.DOTALL      # Verbose syntax and makes . also match new lines.
+)
 COMPUTED_ACTION_RE = re.compile(r'RecordComputedAction')
 QUOTED_STRING_RE = re.compile(r"""('[^']+'|"[^"]+")$""")
 
@@ -99,6 +115,7 @@ KNOWN_COMPUTED_USERS = (
   'pepper_pdf_host.cc',  # see AddClosedSourceActions()
   'record_user_action.cc', # see RecordUserAction.java
   'blink_platform_impl.cc', # see WebKit/public/platform/Platform.h
+  'devtools_ui_bindings.cc', # see AddDevToolsActions()
 )
 
 # Language codes used in Chrome. The list should be updated when a new
@@ -359,7 +376,7 @@ def GrepForActions(path, actions):
       if not action_name:
         break
       actions.add(action_name)
-    except InvalidStatementException, e:
+    except InvalidStatementException as e:
       logging.warning(str(e))
 
   if action_re != USER_METRICS_ACTION_RE:
@@ -426,12 +443,37 @@ def GrepForWebUIActions(path, actions):
     # ensure the path of the file being parsed gets printed if that happens.
     close_called = True
     parser.close()
-  except Exception, e:
-    print "Error encountered for path %s" % path
+  except Exception as e:
+    print("Error encountered for path %s" % path)
     raise e
   finally:
     if not close_called:
       parser.close()
+
+def GrepForDevToolsActions(path, actions):
+  """Grep a DevTools source file for calls to UserMetrics functions.
+
+  Arguments:
+    path: path to the file
+    actions: set of actions to add to
+  """
+  global number_of_files_total
+  number_of_files_total = number_of_files_total + 1
+
+  ext = os.path.splitext(path)[1].lower()
+  if ext != '.js':
+    return
+
+  finder = ActionNameFinder(path, open(path).read(),
+      USER_METRICS_ACTION_RE_DEVTOOLS)
+  while True:
+    try:
+      action_name = finder.FindNextAction()
+      if not action_name:
+        break
+      actions.add(action_name)
+    except InvalidStatementException as e:
+      logging.warning(str(e))
 
 def WalkDirectory(root_path, actions, extensions, callback):
   for path, dirs, files in os.walk(root_path):
@@ -440,8 +482,8 @@ def WalkDirectory(root_path, actions, extensions, callback):
     if '.git' in dirs:
       dirs.remove('.git')
     for file in files:
-      ext = os.path.splitext(file)[1]
-      if ext in extensions:
+      filename, ext = os.path.splitext(file)
+      if ext in extensions and not filename.endswith('test'):
         callback(os.path.join(path, file), actions)
 
 def AddLiteralActions(actions):
@@ -484,6 +526,16 @@ def AddWebUIActions(actions):
                                 'resources')
   WalkDirectory(resources_root, actions, ('.html'), GrepForWebUIActions)
   WalkDirectory(resources_root, actions, ('.js'), GrepForActions)
+
+def AddDevToolsActions(actions):
+  """Add user actions defined in DevTools frontend files.
+
+  Arguments:
+    actions: set of actions to add to.
+  """
+  resources_root = os.path.join(REPOSITORY_ROOT, 'third_party', 'blink',
+                                'renderer', 'devtools', 'front_end')
+  WalkDirectory(resources_root, actions, ('.js'), GrepForDevToolsActions)
 
 def AddHistoryPageActions(actions):
   """Add actions that are used in History page.
@@ -712,7 +764,7 @@ def PrettyPrint(actions_dict, comment_nodes, suffixes):
   for suffix_tag in suffixes:
     actions_element.appendChild(suffix_tag)
 
-  return actions_print_style.GetPrintStyle().PrettyPrintXml(doc)
+  return actions_model.PrettifyTree(doc)
 
 
 def UpdateXml(original_xml):
@@ -721,12 +773,8 @@ def UpdateXml(original_xml):
   actions = set()
   AddComputedActions(actions)
   AddWebUIActions(actions)
-
+  AddDevToolsActions(actions)
   AddLiteralActions(actions)
-
-  # print "Scanned {0} number of files".format(number_of_files_total)
-  # print "Found {0} entries".format(len(actions))
-
   AddAutomaticResetBannerActions(actions)
   AddBookmarkManagerActions(actions)
   AddChromeOSActions(actions)
@@ -742,8 +790,13 @@ def UpdateXml(original_xml):
 
 
 def main(argv):
-  presubmit_util.DoPresubmitMain(argv, 'actions.xml', 'actions.old.xml',
-                                 'extract_actions.py', UpdateXml)
+  presubmit_util.DoPresubmitMain(
+      argv,
+      'actions.xml',
+      'actions.old.xml',
+      UpdateXml,
+      script_name='extract_actions.py')
+
 
 if '__main__' == __name__:
   sys.exit(main(sys.argv))

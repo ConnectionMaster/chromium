@@ -10,7 +10,10 @@
 #include "content/public/test/network_service_test_helper.h"
 #include "content/public/utility/content_utility_client.h"
 #include "content/shell/common/shell_switches.h"
-#include "services/service_manager/embedder/switches.h"
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "chromeos/lacros/lacros_chrome_service_delegate.h"
+#endif
 
 namespace {
 
@@ -45,6 +48,14 @@ namespace extensions {
 TestShellMainDelegate::TestShellMainDelegate() {}
 
 TestShellMainDelegate::~TestShellMainDelegate() {}
+
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+void TestShellMainDelegate::PostEarlyInitialization(bool is_running_tests) {
+  // Browser tests on Lacros requires a non-null LacrosService.
+  lacros_service_ = std::make_unique<chromeos::LacrosService>(
+      /*delegate=*/nullptr);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
 
 content::ContentUtilityClient*
 TestShellMainDelegate::CreateContentUtilityClient() {

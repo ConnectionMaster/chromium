@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/script/mock_script_element_base.h"
 #include "third_party/blink/renderer/core/script/pending_script.h"
 #include "third_party/blink/renderer/core/script/script.h"
+#include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
@@ -35,12 +36,12 @@ class MockPendingScript : public PendingScript {
 
   MockPendingScript(ScriptElementBase* element,
                     ScriptSchedulingType scheduling_type)
-      : PendingScript(element, TextPosition()) {
+      : PendingScript(element, TextPosition::MinimumPosition()) {
     SetSchedulingType(scheduling_type);
   }
   ~MockPendingScript() override {}
 
-  MOCK_CONST_METHOD0(GetScriptType, mojom::ScriptType());
+  MOCK_CONST_METHOD0(GetScriptType, mojom::blink::ScriptType());
   MOCK_CONST_METHOD1(CheckMIMETypeBeforeRunScript, bool(Document*));
   MOCK_CONST_METHOD1(GetSource, Script*(const KURL&));
   MOCK_CONST_METHOD0(IsExternal, bool());
@@ -48,8 +49,6 @@ class MockPendingScript : public PendingScript {
   MOCK_CONST_METHOD0(UrlForTracing, KURL());
   MOCK_METHOD0(RemoveFromMemoryCache, void());
   MOCK_METHOD1(ExecuteScriptBlock, void(const KURL&));
-
-  void StartStreamingIfPossible() override {}
 
   bool IsReady() const override { return is_ready_; }
   void SetIsReady(bool is_ready) { is_ready_ = is_ready; }
@@ -64,6 +63,8 @@ class MockPendingScript : public PendingScript {
     MockScriptElementBase* element = MockScriptElementBase::Create();
     EXPECT_CALL(*element, GetDocument())
         .WillRepeatedly(testing::ReturnRef(*document));
+    EXPECT_CALL(*element, GetExecutionContext())
+        .WillRepeatedly(testing::Return(document->GetExecutionContext()));
     MockPendingScript* pending_script =
         MakeGarbageCollected<MockPendingScript>(element, scheduling_type);
     EXPECT_CALL(*pending_script, IsExternal()).WillRepeatedly(Return(true));
@@ -76,14 +77,16 @@ class MockPendingScript : public PendingScript {
 
 class ScriptRunnerTest : public testing::Test {
  public:
-  ScriptRunnerTest() : document_(Document::CreateForTest()) {}
+  ScriptRunnerTest()
+      : page_holder_(std::make_unique<DummyPageHolder>()),
+        document_(&page_holder_->GetDocument()) {}
 
   void SetUp() override {
-    // We have to create ScriptRunner after initializing platform, because we
-    // need Platform::current()->currentThread()->scheduler()->
-    // loadingTaskRunner() to be initialized before creating ScriptRunner to
-    // save it in constructor.
     script_runner_ = MakeGarbageCollected<ScriptRunner>(document_.Get());
+    // Give ScriptRunner a task runner that platform_ will pump in
+    // RunUntilIdle()/RunSingleTask().
+    script_runner_->SetTaskRunnerForTesting(
+        Thread::Current()->GetTaskRunner().get());
     RuntimeCallStats::SetRuntimeCallStatsForTesting();
   }
   void TearDown() override {
@@ -101,6 +104,14 @@ class ScriptRunnerTest : public testing::Test {
     script_runner_->QueueScriptForExecution(pending_script);
   }
 
+  void PauseAsyncScriptExecution() {
+    script_runner_->PauseAsyncScriptExecution();
+  }
+  void ResumeAsyncScriptExecution() {
+    script_runner_->ResumeAsyncScriptExecution();
+  }
+
+  std::unique_ptr<DummyPageHolder> page_holder_;
   Persistent<Document> document_;
   Persistent<ScriptRunner> script_runner_;
   WTF::Vector<int> order_;
@@ -191,6 +202,51 @@ TEST_F(ScriptRunnerTest, QueueMixedScripts) {
 
   // Async tasks are expected to run first.
   EXPECT_THAT(order_, ElementsAre(4, 5, 1, 2, 3));
+}
+
+TEST_F(ScriptRunnerTest, QueueMixedScriptWithAsyncDelay) {
+  // PauseAsyncScriptExecution/ResumeAsyncScriptExecution are designed so that
+  // the parser can guarantee async scripts don't run between adjacent <script>
+  // tags.
+  auto* pending_script1 = MockPendingScript::CreateInOrder(document_);
+  auto* pending_script2 = MockPendingScript::CreateInOrder(document_);
+  auto* pending_script3 = MockPendingScript::CreateInOrder(document_);
+  auto* pending_script4 = MockPendingScript::CreateAsync(document_);
+  auto* pending_script5 = MockPendingScript::CreateAsync(document_);
+
+  QueueScriptForExecution(pending_script1);
+  QueueScriptForExecution(pending_script2);
+  QueueScriptForExecution(pending_script3);
+  QueueScriptForExecution(pending_script4);
+  QueueScriptForExecution(pending_script5);
+
+  EXPECT_CALL(*pending_script1, ExecuteScriptBlock(_))
+      .WillOnce(InvokeWithoutArgs([this] { order_.push_back(1); }));
+  EXPECT_CALL(*pending_script2, ExecuteScriptBlock(_))
+      .WillOnce(InvokeWithoutArgs([this] { order_.push_back(2); }));
+  EXPECT_CALL(*pending_script3, ExecuteScriptBlock(_))
+      .WillOnce(InvokeWithoutArgs([this] { order_.push_back(3); }));
+  EXPECT_CALL(*pending_script4, ExecuteScriptBlock(_))
+      .WillOnce(InvokeWithoutArgs([this] { order_.push_back(4); }));
+  EXPECT_CALL(*pending_script5, ExecuteScriptBlock(_))
+      .WillOnce(InvokeWithoutArgs([this] { order_.push_back(5); }));
+
+  NotifyScriptReady(pending_script1);
+  NotifyScriptReady(pending_script2);
+
+  platform_->RunUntilIdle();
+  EXPECT_THAT(order_, ElementsAre(1, 2));
+  PauseAsyncScriptExecution();
+
+  NotifyScriptReady(pending_script3);
+  NotifyScriptReady(pending_script4);
+  NotifyScriptReady(pending_script5);
+
+  platform_->RunUntilIdle();
+  EXPECT_THAT(order_, ElementsAre(1, 2, 3));
+  ResumeAsyncScriptExecution();
+  platform_->RunUntilIdle();
+  EXPECT_THAT(order_, ElementsAre(1, 2, 3, 4, 5));
 }
 
 TEST_F(ScriptRunnerTest, QueueReentrantScript_Async) {
@@ -327,8 +383,10 @@ TEST_F(ScriptRunnerTest, ResumeAndSuspend_InOrder) {
   NotifyScriptReady(pending_script3);
 
   platform_->RunSingleTask();
-  script_runner_->Suspend();
-  script_runner_->Resume();
+  script_runner_->ContextLifecycleStateChanged(
+      mojom::FrameLifecycleState::kPaused);
+  script_runner_->ContextLifecycleStateChanged(
+      mojom::FrameLifecycleState::kRunning);
   platform_->RunUntilIdle();
 
   // Make sure elements are correct and in right order.
@@ -356,8 +414,10 @@ TEST_F(ScriptRunnerTest, ResumeAndSuspend_Async) {
       .WillOnce(InvokeWithoutArgs([this] { order_.push_back(3); }));
 
   platform_->RunSingleTask();
-  script_runner_->Suspend();
-  script_runner_->Resume();
+  script_runner_->ContextLifecycleStateChanged(
+      mojom::FrameLifecycleState::kPaused);
+  script_runner_->ContextLifecycleStateChanged(
+      mojom::FrameLifecycleState::kRunning);
   platform_->RunUntilIdle();
 
   // Make sure elements are correct.

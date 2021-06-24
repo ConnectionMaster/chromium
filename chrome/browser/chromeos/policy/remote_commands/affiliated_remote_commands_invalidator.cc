@@ -4,15 +4,20 @@
 
 #include "chrome/browser/chromeos/policy/remote_commands/affiliated_remote_commands_invalidator.h"
 
+#include <memory>
+
+#include "base/time/default_clock.h"
 #include "chrome/browser/policy/cloud/remote_commands_invalidator_impl.h"
 
 namespace policy {
 
 AffiliatedRemoteCommandsInvalidator::AffiliatedRemoteCommandsInvalidator(
     CloudPolicyCore* core,
-    AffiliatedInvalidationServiceProvider* invalidation_service_provider)
+    AffiliatedInvalidationServiceProvider* invalidation_service_provider,
+    PolicyInvalidationScope scope)
     : core_(core),
-      invalidation_service_provider_(invalidation_service_provider) {
+      invalidation_service_provider_(invalidation_service_provider),
+      scope_(scope) {
   invalidation_service_provider_->RegisterConsumer(this);
 }
 
@@ -29,7 +34,8 @@ void AffiliatedRemoteCommandsInvalidator::OnInvalidationServiceSet(
   }
   // Create a new one if required.
   if (invalidation_service) {
-    invalidator_.reset(new RemoteCommandsInvalidatorImpl(core_));
+    invalidator_ = std::make_unique<RemoteCommandsInvalidatorImpl>(
+        core_, base::DefaultClock::GetInstance(), scope_);
     invalidator_->Initialize(invalidation_service);
   }
 }

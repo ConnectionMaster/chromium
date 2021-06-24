@@ -12,17 +12,16 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/singleton.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/power_policy_controller.h"
 #include "chromeos/dbus/power_manager/backlight.pb.h"
 #include "components/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "components/arc/arc_service_manager.h"
+#include "components/arc/arc_util.h"
 #include "components/arc/session/arc_bridge_service.h"
-#include "content/public/common/service_manager_connection.h"
-#include "services/device/public/mojom/constants.mojom.h"
+#include "content/public/browser/device_service.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/wake_lock.mojom.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
-#include "services/service_manager/public/cpp/connector.h"
 #include "ui/display/manager/display_configurator.h"
 
 namespace arc {
@@ -60,8 +59,8 @@ class ArcPowerBridgeFactory
 class ArcPowerBridge::WakeLockRequestor {
  public:
   WakeLockRequestor(device::mojom::WakeLockType type,
-                    service_manager::Connector* connector)
-      : type_(type), connector_(connector) {}
+                    device::mojom::WakeLockProvider* provider)
+      : type_(type), provider_(provider) {}
   ~WakeLockRequestor() = default;
 
   // Increments the number of outstanding requests from Android and requests a
@@ -73,12 +72,9 @@ class ArcPowerBridge::WakeLockRequestor {
 
     // Initialize |wake_lock_| if this is the first time we're using it.
     if (!wake_lock_) {
-      device::mojom::WakeLockProviderPtr provider;
-      connector_->BindInterface(device::mojom::kServiceName,
-                                mojo::MakeRequest(&provider));
-      provider->GetWakeLockWithoutContext(
+      provider_->GetWakeLockWithoutContext(
           type_, device::mojom::WakeLockReason::kOther, "ARC",
-          mojo::MakeRequest(&wake_lock_));
+          wake_lock_.BindNewPipeAndPassReceiver());
     }
 
     wake_lock_->RequestWakeLock();
@@ -105,16 +101,16 @@ class ArcPowerBridge::WakeLockRequestor {
 
  private:
   // Type of wake lock to request.
-  device::mojom::WakeLockType type_;
+  const device::mojom::WakeLockType type_;
 
-  // Used to get services. Not owned.
-  service_manager::Connector* const connector_ = nullptr;
+  // The WakeLockProvider implementation we use to request WakeLocks. Not owned.
+  device::mojom::WakeLockProvider* const provider_;
 
   // Number of outstanding Android requests.
   int num_android_requests_ = 0;
 
   // Lazily initialized in response to first request.
-  device::mojom::WakeLockPtr wake_lock_;
+  mojo::Remote<device::mojom::WakeLock> wake_lock_;
 
   DISALLOW_COPY_AND_ASSIGN(WakeLockRequestor);
 };
@@ -127,7 +123,7 @@ ArcPowerBridge* ArcPowerBridge::GetForBrowserContext(
 
 ArcPowerBridge::ArcPowerBridge(content::BrowserContext* context,
                                ArcBridgeService* bridge_service)
-    : arc_bridge_service_(bridge_service), weak_ptr_factory_(this) {
+    : arc_bridge_service_(bridge_service) {
   arc_bridge_service_->power()->SetHost(this);
   arc_bridge_service_->power()->AddObserver(this);
 }
@@ -135,6 +131,18 @@ ArcPowerBridge::ArcPowerBridge(content::BrowserContext* context,
 ArcPowerBridge::~ArcPowerBridge() {
   arc_bridge_service_->power()->RemoveObserver(this);
   arc_bridge_service_->power()->SetHost(nullptr);
+}
+
+void ArcPowerBridge::AddObserver(Observer* observer) {
+  observer_list_.AddObserver(observer);
+}
+
+void ArcPowerBridge::RemoveObserver(Observer* observer) {
+  observer_list_.RemoveObserver(observer);
+}
+
+void ArcPowerBridge::SetUserIdHash(const std::string& user_id_hash) {
+  user_id_hash_ = user_id_hash;
 }
 
 bool ArcPowerBridge::TriggerNotifyBrightnessTimerForTesting() {
@@ -150,7 +158,7 @@ void ArcPowerBridge::FlushWakeLocksForTesting() {
 }
 
 void ArcPowerBridge::OnConnectionReady() {
-  // TODO(mash): Support this functionality without ash::Shell access in Chrome.
+  // ash::Shell may not exist in tests.
   if (ash::Shell::HasInstance())
     ash::Shell::Get()->display_configurator()->AddObserver(this);
   chromeos::PowerManagerClient::Get()->AddObserver(this);
@@ -160,7 +168,7 @@ void ArcPowerBridge::OnConnectionReady() {
 }
 
 void ArcPowerBridge::OnConnectionClosed() {
-  // TODO(mash): Support this functionality without ash::Shell access in Chrome.
+  // ash::Shell may not exist in tests.
   if (ash::Shell::HasInstance())
     ash::Shell::Get()->display_configurator()->RemoveObserver(this);
   chromeos::PowerManagerClient::Get()->RemoveObserver(this);
@@ -169,22 +177,80 @@ void ArcPowerBridge::OnConnectionClosed() {
 
 void ArcPowerBridge::SuspendImminent(
     power_manager::SuspendImminent::Reason reason) {
+  is_suspending_ = true;
   mojom::PowerInstance* power_instance =
       ARC_GET_INSTANCE_FOR_METHOD(arc_bridge_service_->power(), Suspend);
   if (!power_instance)
     return;
 
-  power_instance->Suspend(
-      chromeos::PowerManagerClient::Get()->GetSuspendReadinessCallback(
-          FROM_HERE));
+  auto token = base::UnguessableToken::Create();
+  chromeos::PowerManagerClient::Get()->BlockSuspend(token, "ArcPowerBridge");
+  power_instance->Suspend(base::BindOnce(&ArcPowerBridge::OnAndroidSuspendReady,
+                                         weak_ptr_factory_.GetWeakPtr(),
+                                         token));
 }
 
-void ArcPowerBridge::SuspendDone(const base::TimeDelta& sleep_duration) {
+void ArcPowerBridge::OnAndroidSuspendReady(base::UnguessableToken token) {
+  // For the ARCVM case, we only want to suspend the VM if a suspend is still
+  // underway ie. if SuspendImminent was observed without a subsequent
+  // SuspendDone. Otherwise, skip suspending the VM but still call
+  // UnblockSuspend to fulfill the contract and to align with ARC container's
+  // behavior.
+  if (arc::IsArcVmEnabled() && is_suspending_) {
+    vm_tools::concierge::SuspendVmRequest request;
+    request.set_name(kArcVmName);
+    request.set_owner_id(user_id_hash_);
+    chromeos::ConciergeClient::Get()->SuspendVm(
+        request, base::BindOnce(&ArcPowerBridge::OnConciergeSuspendVmResponse,
+                                weak_ptr_factory_.GetWeakPtr(), token));
+    return;
+  }
+
+  chromeos::PowerManagerClient::Get()->UnblockSuspend(token);
+}
+
+void ArcPowerBridge::OnConciergeSuspendVmResponse(
+    base::UnguessableToken token,
+    absl::optional<vm_tools::concierge::SuspendVmResponse> reply) {
+  if (!reply.has_value())
+    LOG(ERROR) << "Failed to suspend arcvm, no reply received.";
+  else if (!reply.value().success())
+    LOG(ERROR) << "Failed to suspend arcvm: " << reply.value().failure_reason();
+  chromeos::PowerManagerClient::Get()->UnblockSuspend(token);
+}
+
+void ArcPowerBridge::SuspendDone(base::TimeDelta sleep_duration) {
+  is_suspending_ = false;
+  if (arc::IsArcVmEnabled()) {
+    vm_tools::concierge::ResumeVmRequest request;
+    request.set_name(kArcVmName);
+    request.set_owner_id(user_id_hash_);
+    chromeos::ConciergeClient::Get()->ResumeVm(
+        request, base::BindOnce(&ArcPowerBridge::OnConciergeResumeVmResponse,
+                                weak_ptr_factory_.GetWeakPtr()));
+    return;
+  }
+  DispatchAndroidResume();
+}
+
+void ArcPowerBridge::OnConciergeResumeVmResponse(
+    absl::optional<vm_tools::concierge::ResumeVmResponse> reply) {
+  if (!reply.has_value()) {
+    LOG(ERROR) << "Failed to resume arcvm, no reply received.";
+    return;
+  }
+  if (!reply.value().success()) {
+    LOG(ERROR) << "Failed to resume arcvm: " << reply.value().failure_reason();
+    return;
+  }
+  DispatchAndroidResume();
+}
+
+void ArcPowerBridge::DispatchAndroidResume() {
   mojom::PowerInstance* power_instance =
       ARC_GET_INSTANCE_FOR_METHOD(arc_bridge_service_->power(), Resume);
   if (!power_instance)
     return;
-
   power_instance->Resume();
 }
 
@@ -202,6 +268,16 @@ void ArcPowerBridge::ScreenBrightnessChanged(
                        weak_ptr_factory_.GetWeakPtr(), change.percent()));
   }
   last_brightness_changed_time_ = now;
+}
+
+void ArcPowerBridge::PowerChanged(
+    const power_manager::PowerSupplyProperties& proto) {
+  mojom::PowerInstance* power_instance = ARC_GET_INSTANCE_FOR_METHOD(
+      arc_bridge_service_->power(), PowerSupplyInfoChanged);
+  if (!power_instance)
+    return;
+
+  power_instance->PowerSupplyInfoChanged();
 }
 
 void ArcPowerBridge::OnPowerStateChanged(
@@ -263,7 +339,7 @@ void ArcPowerBridge::OnScreenBrightnessUpdateRequest(double percent) {
   power_manager::SetBacklightBrightnessRequest request;
   request.set_percent(percent);
   request.set_transition(
-      power_manager::SetBacklightBrightnessRequest_Transition_GRADUAL);
+      power_manager::SetBacklightBrightnessRequest_Transition_FAST);
   request.set_cause(
       power_manager::SetBacklightBrightnessRequest_Cause_USER_REQUEST);
   chromeos::PowerManagerClient::Get()->SetScreenBrightness(request);
@@ -275,26 +351,31 @@ ArcPowerBridge::WakeLockRequestor* ArcPowerBridge::GetWakeLockRequestor(
   if (it != wake_lock_requestors_.end())
     return it->second.get();
 
-  service_manager::Connector* connector =
-      connector_for_test_
-          ? connector_for_test_
-          : content::ServiceManagerConnection::GetForProcess()->GetConnector();
-  DCHECK(connector);
+  if (!wake_lock_provider_) {
+    content::GetDeviceService().BindWakeLockProvider(
+        wake_lock_provider_.BindNewPipeAndPassReceiver());
+  }
 
   it = wake_lock_requestors_
-           .emplace(type, std::make_unique<WakeLockRequestor>(type, connector))
+           .emplace(type, std::make_unique<WakeLockRequestor>(
+                              type, wake_lock_provider_.get()))
            .first;
   return it->second.get();
 }
 
 void ArcPowerBridge::OnGetScreenBrightnessPercent(
-    base::Optional<double> percent) {
+    absl::optional<double> percent) {
   if (!percent.has_value()) {
     LOG(ERROR)
         << "PowerManagerClient::GetScreenBrightnessPercent reports an error";
     return;
   }
   UpdateAndroidScreenBrightness(percent.value());
+}
+
+void ArcPowerBridge::OnWakefulnessChanged(mojom::WakefulnessMode mode) {
+  for (auto& observer : observer_list_)
+    observer.OnWakefulnessChanged(mode);
 }
 
 void ArcPowerBridge::UpdateAndroidScreenBrightness(double percent) {

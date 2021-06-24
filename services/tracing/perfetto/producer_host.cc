@@ -7,14 +7,21 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/process/process.h"
+#include "base/tracing/perfetto_task_runner.h"
+#include "build/build_config.h"
+#include "services/tracing/perfetto/perfetto_service.h"
+#include "services/tracing/public/cpp/perfetto/producer_client.h"
 #include "services/tracing/public/cpp/perfetto/shared_memory.h"
-#include "third_party/perfetto/include/perfetto/tracing/core/commit_data_request.h"
+#include "services/tracing/public/cpp/tracing_features.h"
+#include "third_party/perfetto/include/perfetto/ext/tracing/core/commit_data_request.h"
 #include "third_party/perfetto/include/perfetto/tracing/core/data_source_descriptor.h"
 #include "third_party/perfetto/include/perfetto/tracing/core/trace_config.h"
 
 namespace tracing {
 
-ProducerHost::ProducerHost() = default;
+ProducerHost::ProducerHost(base::tracing::PerfettoTaskRunner* task_runner)
+    : task_runner_(task_runner) {}
 
 ProducerHost::~ProducerHost() {
   // Manually reset to prevent any callbacks from the ProducerEndpoint
@@ -22,20 +29,64 @@ ProducerHost::~ProducerHost() {
   producer_endpoint_.reset();
 }
 
-void ProducerHost::Initialize(mojom::ProducerClientPtr producer_client,
-                              perfetto::TracingService* service,
-                              const std::string& name) {
+ProducerHost::InitializationResult ProducerHost::Initialize(
+    mojo::PendingRemote<mojom::ProducerClient> producer_client,
+    perfetto::TracingService* service,
+    const std::string& name,
+    mojo::ScopedSharedBufferHandle shared_memory,
+    uint64_t shared_memory_buffer_page_size_bytes) {
   DCHECK(service);
   DCHECK(!producer_endpoint_);
 
-  producer_client_ = std::move(producer_client);
+  producer_client_.Bind(std::move(producer_client));
 
-  // TODO(oysteine): Figure out an uid once we need it.
-  // TODO(oysteine): Figure out a good buffer size.
+  auto shm = std::make_unique<MojoSharedMemory>(std::move(shared_memory));
+  // We may fail to map the buffer provided by the ProducerClient.
+  if (!shm->start()) {
+    return InitializationResult::kSmbMappingFailed;
+  }
+
+  size_t shm_size = shm->size();
+  MojoSharedMemory* shm_raw = shm.get();
+
+  // TODO(oysteine): Figure out a uid once we need it.
   producer_endpoint_ = service->ConnectProducer(
-      this, 0 /* uid */, name,
-      4 * 1024 * 1024 /* shared_memory_size_hint_bytes */);
-  DCHECK(producer_endpoint_);
+      this, 0 /* uid */, name, shm_size, /*in_process=*/false,
+      perfetto::TracingService::ProducerSMBScrapingMode::kDefault,
+      shared_memory_buffer_page_size_bytes, std::move(shm));
+
+  // In some cases, the service may deny the producer connection (e.g. if too
+  // many producers are registered).
+  if (!producer_endpoint_) {
+    return InitializationResult::kProducerEndpointConstructionFailed;
+  }
+
+  // The service will adopt the shared memory buffer provided by the
+  // ProducerClient as long as it is correctly sized.
+  if (producer_endpoint_->shared_memory() != shm_raw) {
+    return InitializationResult::kSmbNotAdopted;
+  }
+
+  // When we are in-process, we don't use the in-process arbiter perfetto would
+  // provide (thus pass |in_process = false| to ConnectProducer), but rather
+  // bind the ProducerClient's arbiter to the service's endpoint and task runner
+  // directly. This allows us to use startup tracing via an unbound SMA, while
+  // avoiding some cross-sequence PostTasks when committing chunks (since we
+  // bypass mojo).
+  base::ProcessId pid;
+  if (PerfettoService::ParsePidFromProducerName(name, &pid)) {
+    bool in_process = (pid == base::Process::Current().Pid());
+    // TODO(skyostil): Implement arbiter binding for the client API.
+    if (in_process && !base::FeatureList::IsEnabled(
+                          features::kEnablePerfettoClientApiProducer)) {
+      PerfettoTracedProcess::Get()
+          ->producer_client()
+          ->BindInProcessSharedMemoryArbiter(producer_endpoint_.get(),
+                                             task_runner_);
+    }
+  }
+
+  return InitializationResult::kSuccess;
 }
 
 void ProducerHost::OnConnect() {
@@ -47,14 +98,7 @@ void ProducerHost::OnDisconnect() {
 }
 
 void ProducerHost::OnTracingSetup() {
-  MojoSharedMemory* shared_memory =
-      static_cast<MojoSharedMemory*>(producer_endpoint_->shared_memory());
-  DCHECK(shared_memory);
-  DCHECK(producer_client_);
-  mojo::ScopedSharedBufferHandle shm = shared_memory->Clone();
-  DCHECK(shm.is_valid());
-
-  producer_client_->OnTracingStart(std::move(shm));
+  producer_client_->OnTracingStart();
 }
 
 void ProducerHost::SetupDataSource(perfetto::DataSourceInstanceID,
@@ -98,15 +142,26 @@ void ProducerHost::Flush(
   producer_client_->Flush(id, data_source_ids);
 }
 
+void ProducerHost::ClearIncrementalState(const perfetto::DataSourceInstanceID*,
+                                         size_t) {
+  DCHECK(producer_client_);
+  producer_client_->ClearIncrementalState();
+}
+
 // This data can come from a malicious child process. We don't do any
 // sanitization here because ProducerEndpoint::CommitData() (And any other
 // ProducerEndpoint methods) are designed to deal with malformed / malicious
 // inputs.
-void ProducerHost::CommitData(const perfetto::CommitDataRequest& data_request) {
+void ProducerHost::CommitData(const perfetto::CommitDataRequest& data_request,
+                              CommitDataCallback callback) {
   if (on_commit_callback_for_testing_) {
     on_commit_callback_for_testing_.Run(data_request);
   }
-  producer_endpoint_->CommitData(data_request);
+  // This assumes that CommitData() will execute the callback synchronously.
+  producer_endpoint_->CommitData(data_request, [&callback]() {
+    std::move(callback).Run();
+  });
+  DCHECK(!callback);  // Should have been run synchronously above.
 }
 
 void ProducerHost::RegisterDataSource(

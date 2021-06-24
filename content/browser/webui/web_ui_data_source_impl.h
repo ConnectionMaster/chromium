@@ -12,6 +12,7 @@
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/values.h"
@@ -20,7 +21,6 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/base/template_expressions.h"
 
 namespace content {
 
@@ -30,15 +30,19 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
                                            public WebUIDataSource {
  public:
   // WebUIDataSource:
-  void AddString(base::StringPiece name, const base::string16& value) override;
+  void AddString(base::StringPiece name, const std::u16string& value) override;
   void AddString(base::StringPiece name, const std::string& value) override;
   void AddLocalizedString(base::StringPiece name, int ids) override;
+  void AddLocalizedStrings(
+      base::span<const webui::LocalizedString> strings) override;
   void AddLocalizedStrings(
       const base::DictionaryValue& localized_strings) override;
   void AddBoolean(base::StringPiece name, bool value) override;
   void AddInteger(base::StringPiece name, int32_t value) override;
-  void SetJsonPath(base::StringPiece path) override;
+  void AddDouble(base::StringPiece name, double value) override;
+  void UseStringsJs() override;
   void AddResourcePath(base::StringPiece path, int resource_id) override;
+  void AddResourcePaths(base::span<const webui::ResourcePath> paths) override;
   void SetDefaultResource(int resource_id) override;
   void SetRequestFilter(const WebUIDataSource::ShouldHandleRequestCallback&
                             should_handle_request_callback,
@@ -46,30 +50,29 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
                             handle_request_callback) override;
   void DisableReplaceExistingSource() override;
   void DisableContentSecurityPolicy() override;
-  void OverrideContentSecurityPolicyScriptSrc(const std::string& data) override;
-  void OverrideContentSecurityPolicyObjectSrc(const std::string& data) override;
-  void OverrideContentSecurityPolicyChildSrc(const std::string& data) override;
+  void OverrideContentSecurityPolicy(network::mojom::CSPDirectiveName directive,
+                                     const std::string& value) override;
+  void OverrideCrossOriginOpenerPolicy(const std::string& value) override;
+  void OverrideCrossOriginEmbedderPolicy(const std::string& value) override;
+  void OverrideCrossOriginResourcePolicy(const std::string& value) override;
+  void DisableTrustedTypesCSP() override;
   void DisableDenyXFrameOptions() override;
-  void UseGzip() override;
-  void UseGzip(base::RepeatingCallback<bool(const std::string&)>
-                   is_gzipped_callback) override;
-  std::string GetSource() const override;
-
-  // URLDataSourceImpl:
-  const ui::TemplateReplacements* GetReplacements() const override;
+  void EnableReplaceI18nInJS() override;
+  std::string GetSource() override;
 
   // Add the locale to the load time data defaults. May be called repeatedly.
   void EnsureLoadTimeDataDefaultsAdded();
 
   bool IsWebUIDataSourceImpl() const override;
+  void AddFrameAncestor(const GURL& frame_ancestor) override;
 
  protected:
   explicit WebUIDataSourceImpl(const std::string& source_name);
   ~WebUIDataSourceImpl() override;
 
   // Completes a request by sending our dictionary of localized strings.
-  void SendLocalizedStringsAsJSON(
-      const URLDataSource::GotDataCallback& callback);
+  void SendLocalizedStringsAsJSON(URLDataSource::GotDataCallback callback,
+                                  bool from_js_module);
 
   // Protected for testing.
   virtual const base::DictionaryValue* GetLocalizedStrings() const;
@@ -80,30 +83,28 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   friend class WebUIDataSource;
   friend class WebUIDataSourceTest;
 
-  FRIEND_TEST_ALL_PREFIXES(WebUIDataSourceTest, IsGzipped);
-  FRIEND_TEST_ALL_PREFIXES(WebUIDataSourceTest, IsGzippedWithCallback);
-
   // Methods that match URLDataSource which are called by
   // InternalDataSource.
   std::string GetMimeType(const std::string& path) const;
-  void StartDataRequest(
-      const std::string& path,
-      const ResourceRequestInfo::WebContentsGetter& wc_getter,
-      const URLDataSource::GotDataCallback& callback);
+  void StartDataRequest(const GURL& url,
+                        const WebContents::Getter& wc_getter,
+                        URLDataSource::GotDataCallback callback);
+
+  int PathToIdrOrDefault(const std::string& path) const;
 
   // Note: this must be called before StartDataRequest() to have an effect.
   void disable_load_time_data_defaults_for_testing() {
     add_load_time_data_defaults_ = false;
   }
 
-  bool IsGzipped(const std::string& path) const;
+  bool ShouldReplaceI18nInJS() const;
 
   // The name of this source.
   // E.g., for favicons, this could be "favicon", which results in paths for
   // specific resources like "favicon/34" getting sent to this source.
   std::string source_name_;
   int default_resource_;
-  std::string json_path_;
+  bool use_strings_js_ = false;
   std::map<std::string, int> path_to_idr_map_;
   // The replacements are initiallized in the main thread and then used in the
   // IO thread. The map is safe to read from multiple threads as long as no
@@ -116,18 +117,17 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   WebUIDataSource::HandleRequestCallback filter_callback_;
   WebUIDataSource::ShouldHandleRequestCallback should_handle_request_callback_;
 
-  bool add_csp_;
-  bool script_src_set_;
-  std::string script_src_;
-  bool object_src_set_;
-  std::string object_src_;
-  bool frame_src_set_;
-  std::string frame_src_;
-  bool deny_xframe_options_;
-  bool add_load_time_data_defaults_;
-  bool replace_existing_source_;
-  bool use_gzip_;
-  base::RepeatingCallback<bool(const std::string&)> is_gzipped_callback_;
+  bool add_csp_ = true;
+
+  base::flat_map<network::mojom::CSPDirectiveName, std::string> csp_overrides_;
+  std::string coop_value_;
+  std::string coep_value_;
+  std::string corp_value_;
+  bool deny_xframe_options_ = true;
+  bool add_load_time_data_defaults_ = true;
+  bool replace_existing_source_ = true;
+  bool should_replace_i18n_in_js_ = false;
+  std::set<GURL> frame_ancestors_;
 
   DISALLOW_COPY_AND_ASSIGN(WebUIDataSourceImpl);
 };

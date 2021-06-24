@@ -15,20 +15,22 @@ class SpellCheckRequester;
 
 // This class is only supposed to be used by IdleSpellCheckController in hot
 // mode invocation. Not to be confused with SpellCheckRequester.
+// See design doc for details: https://goo.gl/zONC3v
 class HotModeSpellCheckRequester {
   STACK_ALLOCATED();
 
  public:
   explicit HotModeSpellCheckRequester(SpellCheckRequester&);
+  HotModeSpellCheckRequester(const HotModeSpellCheckRequester&) = delete;
+  HotModeSpellCheckRequester& operator=(const HotModeSpellCheckRequester&) =
+      delete;
   void CheckSpellingAt(const Position&);
 
  private:
   HeapVector<Member<const Element>> processed_root_editables_;
-  Member<SpellCheckRequester> requester_;
-
-  DISALLOW_COPY_AND_ASSIGN(HotModeSpellCheckRequester);
+  SpellCheckRequester* requester_;
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SPELLCHECK_HOT_MODE_SPELL_CHECK_REQUESTER_H_

@@ -7,10 +7,11 @@
 
 #include <jni.h>
 
+#include <string>
+
 #include "base/android/jni_weak_ref.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 
 namespace content {
 
@@ -39,9 +40,9 @@ class SmartSelectionClient {
 
  private:
   void OnSurroundingTextReceived(int callback_data,
-                                 const base::string16& text,
-                                 int start,
-                                 int end);
+                                 const std::u16string& text,
+                                 uint32_t start,
+                                 uint32_t end);
 
   // A weak reference to the Java ContentSelectionClient object.
   JavaObjectWeakGlobalRef java_ref_;
@@ -50,7 +51,7 @@ class SmartSelectionClient {
   // the request for the text.
   WebContents* web_contents_;
 
-  base::WeakPtrFactory<SmartSelectionClient> weak_ptr_factory_;
+  base::WeakPtrFactory<SmartSelectionClient> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SmartSelectionClient);
 };

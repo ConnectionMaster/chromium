@@ -4,7 +4,7 @@
 
 #include "chromecast/media/cma/backend/fuchsia/fuchsia_volume_control.h"
 
-#include "base/logging.h"
+#include "base/notreached.h"
 
 namespace chromecast {
 namespace media {
@@ -42,6 +42,10 @@ void FuchsiaVolumeControl::SetMuted(bool muted) {
 }
 
 void FuchsiaVolumeControl::SetPowerSave(bool power_save_on) {
+  NOTIMPLEMENTED();
+}
+
+void FuchsiaVolumeControl::SetLimit(float limit) {
   NOTIMPLEMENTED();
 }
 

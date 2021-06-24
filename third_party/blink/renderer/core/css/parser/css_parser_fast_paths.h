@@ -9,7 +9,7 @@
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
@@ -28,13 +28,11 @@ class CORE_EXPORT CSSParserFastPaths {
   // CSSPropertyParser
   static bool IsKeywordPropertyID(CSSPropertyID);
 
-  // Returns if a property should be handled by the fast path, but have other
-  // non-keyword values which should be handled by the CSSPropertyParser.
-  static bool IsPartialKeywordPropertyID(CSSPropertyID);
-
   static bool IsValidKeywordPropertyAndValue(CSSPropertyID,
                                              CSSValueID,
                                              CSSParserMode);
+
+  static bool IsValidSystemFont(CSSValueID);
 
   static CSSValue* ParseColor(const String&, CSSParserMode);
 };

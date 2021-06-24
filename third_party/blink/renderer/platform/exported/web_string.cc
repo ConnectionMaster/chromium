@@ -34,7 +34,6 @@
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_fast_path.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -80,43 +79,33 @@ const WebUChar* WebString::Data16() const {
 }
 
 std::string WebString::Utf8(UTF8ConversionMode mode) const {
-  StringUTF8Adaptor utf8(impl_.get(),
-                         static_cast<WTF::UTF8ConversionMode>(mode));
-  return utf8.AsStdString();
+  return String(impl_).Utf8(static_cast<WTF::UTF8ConversionMode>(mode));
+}
+
+WebString WebString::Substring(size_t pos, size_t len) const {
+  return String(impl_->Substring(pos, len));
 }
 
 WebString WebString::FromUTF8(const char* data, size_t length) {
   return String::FromUTF8(data, length);
 }
 
-WebString WebString::FromUTF16(const base::string16& s) {
+WebString WebString::FromUTF16(const char16_t* s) {
+  return WebString(s, std::char_traits<char16_t>::length(s));
+}
+
+WebString WebString::FromUTF16(const std::u16string& s) {
   return WebString(s.data(), s.length());
 }
 
-WebString WebString::FromUTF16(const base::NullableString16& s) {
-  if (s.is_null())
-    return WebString();
-  return WebString(s.string().data(), s.string().length());
-}
-
-WebString WebString::FromUTF16(const base::Optional<base::string16>& s) {
+WebString WebString::FromUTF16(const absl::optional<std::u16string>& s) {
   if (!s.has_value())
     return WebString();
   return WebString(s->data(), s->length());
 }
 
 std::string WebString::Latin1() const {
-  String string(impl_);
-
-  if (string.IsEmpty())
-    return std::string();
-
-  if (string.Is8Bit())
-    return std::string(reinterpret_cast<const char*>(string.Characters8()),
-                       string.length());
-
-  CString latin1 = string.Latin1();
-  return std::string(latin1.data(), latin1.length());
+  return String(impl_).Latin1();
 }
 
 WebString WebString::FromLatin1(const WebLChar* data, size_t length) {
@@ -145,6 +134,12 @@ bool WebString::ContainsOnlyASCII() const {
 WebString WebString::FromASCII(const std::string& s) {
   DCHECK(base::IsStringASCII(s));
   return FromLatin1(s);
+}
+
+WebString WebString::IsolatedCopy() const {
+  if (!impl_)
+    return WebString();
+  return String(impl_).IsolatedCopy();
 }
 
 bool WebString::Equals(const WebString& s) const {

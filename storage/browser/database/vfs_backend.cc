@@ -6,9 +6,9 @@
 
 #include <stdint.h>
 
+#include "base/check.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/logging.h"
 #include "build/build_config.h"
 #include "third_party/sqlite/sqlite3.h"
 
@@ -122,7 +122,7 @@ base::File VfsBackend::OpenTempFileInDirectory(const base::FilePath& dir_path,
 int VfsBackend::DeleteFile(const base::FilePath& file_path, bool sync_dir) {
   if (!base::PathExists(file_path))
     return SQLITE_OK;
-  if (!base::DeleteFile(file_path, false))
+  if (!base::DeleteFile(file_path))
     return SQLITE_IOERR_DELETE;
 
   int error_code = SQLITE_OK;
@@ -154,12 +154,6 @@ uint32_t VfsBackend::GetFileAttributes(const base::FilePath& file_path) {
     attributes = -1;
 #endif
   return attributes;
-}
-
-// static
-int64_t VfsBackend::GetFileSize(const base::FilePath& file_path) {
-  int64_t size = 0;
-  return (base::GetFileSize(file_path, &size) ? size : 0);
 }
 
 // static

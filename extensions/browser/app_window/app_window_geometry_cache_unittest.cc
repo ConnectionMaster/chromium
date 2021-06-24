@@ -16,6 +16,7 @@
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extensions_test.h"
+#include "extensions/browser/unloaded_extension_reason.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/value_builder.h"
 
@@ -64,7 +65,8 @@ class AppWindowGeometryCacheTest : public ExtensionsTest {
 void AppWindowGeometryCacheTest::SetUp() {
   ExtensionsTest::SetUp();
   extension_prefs_ = ExtensionPrefs::Get(browser_context());
-  cache_.reset(new AppWindowGeometryCache(browser_context(), extension_prefs_));
+  cache_ = std::make_unique<AppWindowGeometryCache>(browser_context(),
+                                                    extension_prefs_);
   cache_->SetSyncDelayForTests(0);
 }
 
@@ -92,7 +94,7 @@ void AppWindowGeometryCacheTest::AddGeometryAndLoadExtension(
   value->SetInteger("screen_bounds_w", screen_bounds.width());
   value->SetInteger("screen_bounds_h", screen_bounds.height());
   value->SetInteger("state", state);
-  dict->SetWithoutPathExpansion(window_id, std::move(value));
+  dict->SetKey(window_id, base::Value::FromUniquePtrValue(std::move(value)));
   extension_prefs_->SetGeometryCache(extension_id, std::move(dict));
   LoadExtension(extension_id);
 }

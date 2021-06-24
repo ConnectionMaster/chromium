@@ -9,8 +9,8 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
@@ -248,11 +248,10 @@ std::unique_ptr<URLMatcherPortFilter> URLMatcherFactory::CreateURLMatcherPorts(
     return nullptr;
   }
 
-  for (const auto& entry : *value_list) {
-    int port = 0;
+  for (const auto& entry : value_list->GetList()) {
     const base::ListValue* range = nullptr;
-    if (entry.GetAsInteger(&port)) {
-      ranges.push_back(URLMatcherPortFilter::CreateRange(port));
+    if (entry.is_int()) {
+      ranges.push_back(URLMatcherPortFilter::CreateRange(entry.GetInt()));
     } else if (entry.GetAsList(&range)) {
       int from = 0, to = 0;
       if (range->GetSize() != 2u ||

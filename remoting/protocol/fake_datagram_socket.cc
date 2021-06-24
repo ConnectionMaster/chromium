@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -20,10 +19,7 @@ namespace remoting {
 namespace protocol {
 
 FakeDatagramSocket::FakeDatagramSocket()
-    : input_pos_(0),
-      task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      weak_factory_(this) {
-}
+    : input_pos_(0), task_runner_(base::ThreadTaskRunnerHandle::Get()) {}
 
 FakeDatagramSocket::~FakeDatagramSocket() {
   EXPECT_TRUE(task_runner_->BelongsToCurrentThread());
@@ -39,7 +35,7 @@ void FakeDatagramSocket::AppendInputPacket(const std::string& data) {
     int result = CopyReadData(read_buffer_.get(), read_buffer_size_);
     read_buffer_ = nullptr;
 
-    base::ResetAndReturn(&read_callback_).Run(result);
+    std::move(read_callback_).Run(result);
   }
 }
 
@@ -131,9 +127,7 @@ int FakeDatagramSocket::CopyReadData(const scoped_refptr<net::IOBuffer>& buf,
 FakeDatagramChannelFactory::FakeDatagramChannelFactory()
     : task_runner_(base::ThreadTaskRunnerHandle::Get()),
       asynchronous_create_(false),
-      fail_create_(false),
-      weak_factory_(this) {
-}
+      fail_create_(false) {}
 
 FakeDatagramChannelFactory::~FakeDatagramChannelFactory() {
   for (auto it = channels_.begin(); it != channels_.end(); ++it) {
@@ -154,7 +148,7 @@ FakeDatagramSocket* FakeDatagramChannelFactory::GetFakeChannel(
 
 void FakeDatagramChannelFactory::CreateChannel(
     const std::string& name,
-    const ChannelCreatedCallback& callback) {
+    ChannelCreatedCallback callback) {
   EXPECT_FALSE(channels_[name]);
 
   std::unique_ptr<FakeDatagramSocket> channel(new FakeDatagramSocket());
@@ -174,18 +168,18 @@ void FakeDatagramChannelFactory::CreateChannel(
         FROM_HERE,
         base::BindOnce(&FakeDatagramChannelFactory::NotifyChannelCreated,
                        weak_factory_.GetWeakPtr(), std::move(channel), name,
-                       callback));
+                       std::move(callback)));
   } else {
-    NotifyChannelCreated(std::move(channel), name, callback);
+    NotifyChannelCreated(std::move(channel), name, std::move(callback));
   }
 }
 
 void FakeDatagramChannelFactory::NotifyChannelCreated(
     std::unique_ptr<FakeDatagramSocket> owned_socket,
     const std::string& name,
-    const ChannelCreatedCallback& callback) {
+    ChannelCreatedCallback callback) {
   if (channels_.find(name) != channels_.end())
-    callback.Run(std::move(owned_socket));
+    std::move(callback).Run(std::move(owned_socket));
 }
 
 void FakeDatagramChannelFactory::CancelChannelCreation(

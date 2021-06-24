@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CONTENT_COMMON_FONT_CACHE_DISPATCHER_WIN_H_
-#define CONTENT_COMMON_FONT_CACHE_DISPATCHER_WIN_H_
+#ifndef CONTENT_PUBLIC_COMMON_FONT_CACHE_DISPATCHER_WIN_H_
+#define CONTENT_PUBLIC_COMMON_FONT_CACHE_DISPATCHER_WIN_H_
 
 #include <windows.h>
 
@@ -11,10 +11,7 @@
 #include "base/memory/singleton.h"
 #include "content/common/content_export.h"
 #include "content/public/common/font_cache_win.mojom.h"
-
-namespace service_manager {
-struct BindSourceInfo;
-}
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace content {
 
@@ -26,8 +23,7 @@ class CONTENT_EXPORT FontCacheDispatcher : public mojom::FontCacheWin {
   FontCacheDispatcher();
   ~FontCacheDispatcher() override;
 
-  static void Create(mojom::FontCacheWinRequest request,
-                     const service_manager::BindSourceInfo& source_info);
+  static void Create(mojo::PendingReceiver<mojom::FontCacheWin> receiver);
 
  private:
   // mojom::FontCacheWin:
@@ -40,4 +36,4 @@ class CONTENT_EXPORT FontCacheDispatcher : public mojom::FontCacheWin {
 
 }  // namespace content
 
-#endif  // CONTENT_COMMON_FONT_CACHE_DISPATCHER_WIN_H_
+#endif  // CONTENT_PUBLIC_COMMON_FONT_CACHE_DISPATCHER_WIN_H_

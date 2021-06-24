@@ -23,7 +23,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_FILTERS_FILTER_EFFECT_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_FILTERS_FILTER_EFFECT_H_
 
-#include "base/macros.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/platform/geometry/float_rect.h"
 #include "third_party/blink/renderer/platform/geometry/int_rect.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
@@ -48,12 +48,12 @@ enum FilterEffectType {
   kFilterEffectTypeSourceInput
 };
 
-class PLATFORM_EXPORT FilterEffect
-    : public GarbageCollectedFinalized<FilterEffect> {
-
+class PLATFORM_EXPORT FilterEffect : public GarbageCollected<FilterEffect> {
  public:
+  FilterEffect(const FilterEffect&) = delete;
+  FilterEffect& operator=(const FilterEffect&) = delete;
   virtual ~FilterEffect();
-  virtual void Trace(blink::Visitor*);
+  virtual void Trace(Visitor*) const;
 
   void DisposeImageFilters();
   void DisposeImageFiltersRecursive();
@@ -141,7 +141,7 @@ class PLATFORM_EXPORT FilterEffect
 
   Color AdaptColorToOperatingInterpolationSpace(const Color& device_color);
 
-  PaintFilter::CropRect GetCropRect() const;
+  absl::optional<PaintFilter::CropRect> GetCropRect() const;
 
  private:
   FilterEffectVector input_effects_;
@@ -165,8 +165,6 @@ class PLATFORM_EXPORT FilterEffect
   InterpolationSpace operating_interpolation_space_;
 
   sk_sp<PaintFilter> image_filters_[4];
-
-  DISALLOW_COPY_AND_ASSIGN(FilterEffect);
 };
 
 }  // namespace blink

@@ -4,8 +4,9 @@
 
 (async function() {
   TestRunner.addResult(`Tests that ScriptSearchScope performs search across all sources correctly.\n`);
-  await TestRunner.loadModule('bindings_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadTestModule('bindings_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadLegacyModule('search');
   await TestRunner.showPanel('sources');
 
   function fileSystemUISourceCodes() {
@@ -44,7 +45,7 @@
     var urlPrefix =
         TestRunner.mainTarget.inspectedURL().substr(0, TestRunner.mainTarget.inspectedURL().lastIndexOf('/') + 1);
     var url = TestRunner.url('resources/' + name);
-    return Runtime.loadResourcePromise(url).then(function(text) {
+    return Root.Runtime.loadResourcePromise(url).then(function(text) {
       fs.root.addFile(name, text);
     });
   }

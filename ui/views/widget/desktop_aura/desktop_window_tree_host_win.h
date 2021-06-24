@@ -19,8 +19,8 @@ namespace aura {
 namespace client {
 class DragDropClient;
 class FocusClient;
-}
-}
+}  // namespace client
+}  // namespace aura
 
 namespace ui {
 enum class DomCode;
@@ -59,6 +59,12 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   // A way of converting an HWND into a content window.
   static aura::Window* GetContentWindowForHWND(HWND hwnd);
 
+  // Set to true when DesktopDragDropClientWin starts a touch-initiated drag
+  // drop and false when it finishes. While in touch drag, if pointer events are
+  // received, the equivalent mouse events are generated, because ole32
+  // ::DoDragDrop does not seem to handle pointer events.
+  void SetInTouchDrag(bool in_touch_drag);
+
  protected:
   // Overridden from DesktopWindowTreeHost:
   void Init(const Widget::InitParams& params) override;
@@ -66,8 +72,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   void OnActiveWindowChanged(bool active) override;
   void OnWidgetInitDone() override;
   std::unique_ptr<corewm::Tooltip> CreateTooltip() override;
-  std::unique_ptr<aura::client::DragDropClient> CreateDragDropClient(
-      DesktopNativeCursorManager* cursor_manager) override;
+  std::unique_ptr<aura::client::DragDropClient> CreateDragDropClient() override;
   void Close() override;
   void CloseNow() override;
   aura::WindowTreeHost* AsWindowTreeHost() override;
@@ -95,11 +100,11 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   bool IsMaximized() const override;
   bool IsMinimized() const override;
   bool HasCapture() const override;
-  void SetAlwaysOnTop(bool always_on_top) override;
-  bool IsAlwaysOnTop() const override;
+  void SetZOrderLevel(ui::ZOrderLevel order) override;
+  ui::ZOrderLevel GetZOrderLevel() const override;
   void SetVisibleOnAllWorkspaces(bool always_visible) override;
   bool IsVisibleOnAllWorkspaces() const override;
-  bool SetWindowTitle(const base::string16& title) override;
+  bool SetWindowTitle(const std::u16string& title) override;
   void ClearNativeFocus() override;
   Widget::MoveLoopResult RunMoveLoop(
       const gfx::Vector2d& drag_offset,
@@ -107,7 +112,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
       Widget::MoveLoopEscapeBehavior escape_behavior) override;
   void EndMoveLoop() override;
   void SetVisibilityChangedAnimationsEnabled(bool value) override;
-  NonClientFrameView* CreateNonClientFrameView() override;
+  std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() override;
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
   void FrameTypeChanged() override;
@@ -132,15 +137,12 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   void ShowImpl() override;
   void HideImpl() override;
   gfx::Rect GetBoundsInPixels() const override;
-  void SetBoundsInPixels(
-      const gfx::Rect& bounds,
-      const viz::LocalSurfaceIdAllocation& local_surface_id_allocation =
-          viz::LocalSurfaceIdAllocation()) override;
+  void SetBoundsInPixels(const gfx::Rect& bounds) override;
   gfx::Point GetLocationOnScreenInPixels() const override;
   void SetCapture() override;
   void ReleaseCapture() override;
   bool CaptureSystemKeyEventsImpl(
-      base::Optional<base::flat_set<ui::DomCode>> dom_codes) override;
+      absl::optional<base::flat_set<ui::DomCode>> dom_codes) override;
   void ReleaseSystemKeyEventCapture() override;
   bool IsKeyLocked(ui::DomCode dom_code) override;
   base::flat_map<std::string, std::string> GetKeyboardLayoutMap() override;
@@ -148,6 +150,8 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   void OnCursorVisibilityChangedNative(bool show) override;
   void MoveCursorToScreenLocationInPixels(
       const gfx::Point& location_in_pixels) override;
+  std::unique_ptr<aura::ScopedEnableUnadjustedMouseEvents>
+  RequestUnadjustedMovement() override;
 
   // Overridden from aura::client::AnimationHost
   void SetHostTransitionOffsets(
@@ -161,8 +165,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   FrameMode GetFrameMode() const override;
   bool HasFrame() const override;
   void SchedulePaint() override;
-  void SetAlwaysRenderAsActive(bool always_render_as_active) override;
-  bool IsAlwaysRenderAsActive() override;
+  bool ShouldPaintAsActive() const override;
   bool CanResize() const override;
   bool CanMaximize() const override;
   bool CanMinimize() const override;
@@ -171,7 +174,6 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   bool WidgetSizeIsClientSize() const override;
   bool IsModal() const override;
   int GetInitialShowState() const override;
-  bool WillProcessWorkAreaChange() const override;
   int GetNonClientComponent(const gfx::Point& point) const override;
   void GetWindowMask(const gfx::Size& size, SkPath* path) override;
   bool GetClientAreaInsets(gfx::Insets* insets,
@@ -182,9 +184,8 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   gfx::Size DIPToScreenSize(const gfx::Size& dip_size) const override;
   void ResetWindowControls() override;
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
-  void HandleAppDeactivated() override;
   void HandleActivationChanged(bool active) override;
-  bool HandleAppCommand(short command) override;
+  bool HandleAppCommand(int command) override;
   void HandleCancelMode() override;
   void HandleCaptureLost() override;
   void HandleClose() override;
@@ -237,8 +238,6 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
 
  private:
   friend class ::views::test::DesktopWindowTreeHostWinTestApi;
-
-  void SetWindowTransparency();
 
   // Returns true if a modal window is active in the current root window chain.
   bool IsModalWindowActive() const;
@@ -311,6 +310,17 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   // Indicates if current window will receive mouse events when should not
   // become activated.
   bool wants_mouse_events_when_inactive_ = false;
+
+  // The location of the most recent mouse event on an occluded window. This is
+  // used to generate the OccludedWindowMouseEvents stat and can be removed
+  // when that stat is no longer tracked.
+  gfx::Point occluded_window_mouse_event_loc_;
+
+  bool in_touch_drag_ = false;
+
+  // The z-order level of the window; the window exhibits "always on top"
+  // behavior if > 0.
+  ui::ZOrderLevel z_order_ = ui::ZOrderLevel::kNormal;
 
   DISALLOW_COPY_AND_ASSIGN(DesktopWindowTreeHostWin);
 };

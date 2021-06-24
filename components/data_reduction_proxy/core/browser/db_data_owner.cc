@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "components/data_reduction_proxy/core/browser/data_store.h"
 #include "components/data_reduction_proxy/core/browser/data_usage_store.h"
 #include "components/data_reduction_proxy/proto/data_store.pb.h"
@@ -14,9 +14,7 @@
 namespace data_reduction_proxy {
 
 DBDataOwner::DBDataOwner(std::unique_ptr<DataStore> store)
-    : store_(std::move(store)),
-      data_usage_(new DataUsageStore(store_.get())),
-      weak_factory_(this) {
+    : store_(std::move(store)), data_usage_(new DataUsageStore(store_.get())) {
   sequence_checker_.DetachFromSequence();
 }
 

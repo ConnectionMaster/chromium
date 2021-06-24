@@ -6,6 +6,7 @@
 #define UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_WINDOW_TREE_HOST_H_
 
 #include <memory>
+#include <string>
 
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/base/ui_base_types.h"
@@ -19,13 +20,17 @@ class Window;
 namespace client {
 class DragDropClient;
 class ScreenPositionClient;
-}
+}  // namespace client
 }  // namespace aura
 
 namespace gfx {
 class ImageSkia;
 class Rect;
-}
+}  // namespace gfx
+
+namespace ui {
+class PaintContext;
+}  // namespace ui
 
 namespace views {
 namespace corewm {
@@ -68,8 +73,8 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   // Creates and returns the DragDropClient implementation to use. Return value
   // is owned by DesktopNativeWidgetAura and lives as long as
   // DesktopWindowTreeHost.
-  virtual std::unique_ptr<aura::client::DragDropClient> CreateDragDropClient(
-      DesktopNativeCursorManager* cursor_manager) = 0;
+  virtual std::unique_ptr<aura::client::DragDropClient>
+  CreateDragDropClient() = 0;
 
   // Creates the ScreenPositionClient to use for the WindowTreeHost. Default
   // implementation creates DesktopScreenPositionClient.
@@ -130,14 +135,14 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   virtual bool HasCapture() const = 0;
 
-  virtual void SetAlwaysOnTop(bool always_on_top) = 0;
-  virtual bool IsAlwaysOnTop() const = 0;
+  virtual void SetZOrderLevel(ui::ZOrderLevel order) = 0;
+  virtual ui::ZOrderLevel GetZOrderLevel() const = 0;
 
   virtual void SetVisibleOnAllWorkspaces(bool always_visible) = 0;
   virtual bool IsVisibleOnAllWorkspaces() const = 0;
 
   // Returns true if the title changed.
-  virtual bool SetWindowTitle(const base::string16& title) = 0;
+  virtual bool SetWindowTitle(const std::u16string& title) = 0;
 
   virtual void ClearNativeFocus() = 0;
 
@@ -149,7 +154,7 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   virtual void SetVisibilityChangedAnimationsEnabled(bool value) = 0;
 
-  virtual NonClientFrameView* CreateNonClientFrameView() = 0;
+  virtual std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() = 0;
 
   // Determines whether the window should use native title bar and borders.
   virtual bool ShouldUseNativeFrame() const = 0;
@@ -198,8 +203,8 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   // operates in pixels). This function is implemented in terms of Screen.
   virtual void SetBoundsInDIP(const gfx::Rect& bounds);
 
-  // See description in Widget::OnCanActivateChanged().
-  virtual void OnCanActivateChanged() {}
+  // Updates window shape by clipping the canvas before paint starts.
+  virtual void UpdateWindowShapeIfNeeded(const ui::PaintContext& context);
 };
 
 }  // namespace views

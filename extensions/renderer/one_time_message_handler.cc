@@ -8,7 +8,7 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/supports_user_data.h"
 #include "content/public/renderer/render_frame.h"
 #include "extensions/common/api/messaging/message.h"
@@ -142,7 +142,7 @@ bool WillListenerReplyAsync(v8::Local<v8::Context> context,
 
 OneTimeMessageHandler::OneTimeMessageHandler(
     NativeExtensionBindingsSystem* bindings_system)
-    : bindings_system_(bindings_system), weak_factory_(this) {}
+    : bindings_system_(bindings_system) {}
 OneTimeMessageHandler::~OneTimeMessageHandler() {}
 
 bool OneTimeMessageHandler::HasPort(ScriptContext* script_context,
@@ -155,8 +155,8 @@ bool OneTimeMessageHandler::HasPort(ScriptContext* script_context,
                                                    kDontCreateIfMissing);
   if (!data)
     return false;
-  return port_id.is_opener ? base::ContainsKey(data->openers, port_id)
-                           : base::ContainsKey(data->receivers, port_id);
+  return port_id.is_opener ? base::Contains(data->openers, port_id)
+                           : base::Contains(data->receivers, port_id);
 }
 
 void OneTimeMessageHandler::SendMessage(
@@ -164,7 +164,6 @@ void OneTimeMessageHandler::SendMessage(
     const PortId& new_port_id,
     const MessageTarget& target,
     const std::string& method_name,
-    bool include_tls_channel_id,
     const Message& message,
     v8::Local<v8::Function> response_callback) {
   v8::Isolate* isolate = script_context->isolate();
@@ -191,7 +190,7 @@ void OneTimeMessageHandler::SendMessage(
 
   IPCMessageSender* ipc_sender = bindings_system_->GetIPCMessageSender();
   ipc_sender->SendOpenMessageChannel(script_context, new_port_id, target,
-                                     method_name, include_tls_channel_id);
+                                     method_name);
   ipc_sender->SendPostMessageToPort(new_port_id, message);
 
   // If the sender doesn't provide a response callback, we can immediately
@@ -220,7 +219,7 @@ void OneTimeMessageHandler::AddReceiver(ScriptContext* script_context,
   OneTimeMessageContextData* data =
       GetPerContextData<OneTimeMessageContextData>(context, kCreateIfMissing);
   DCHECK(data);
-  DCHECK(!base::ContainsKey(data->receivers, target_port_id));
+  DCHECK(!base::Contains(data->receivers, target_port_id));
   OneTimeReceiver& receiver = data->receivers[target_port_id];
   receiver.sender.Reset(isolate, sender);
   receiver.routing_id = RoutingIdForScriptContext(script_context);
@@ -281,8 +280,8 @@ bool OneTimeMessageHandler::DeliverMessageToReceiver(
   // listener return `true` if they intend to respond asynchronously; otherwise
   // we close the port.
   auto callback = std::make_unique<OneTimeMessageCallback>(
-      base::Bind(&OneTimeMessageHandler::OnOneTimeMessageResponse,
-                 weak_factory_.GetWeakPtr(), target_port_id));
+      base::BindOnce(&OneTimeMessageHandler::OnOneTimeMessageResponse,
+                     weak_factory_.GetWeakPtr(), target_port_id));
   v8::Local<v8::External> external = v8::External::New(isolate, callback.get());
   v8::Local<v8::Function> response_function;
 
@@ -292,17 +291,12 @@ bool OneTimeMessageHandler::DeliverMessageToReceiver(
     return handled;
   }
 
-  // We shouldn't need to monitor context invalidation here. We store the ports
-  // for the context in PerContextData (cleaned up on context destruction), and
-  // the browser watches for frame navigation or destruction, and cleans up
-  // orphaned channels.
-  base::Closure on_context_invalidated;
-
   new GCCallback(
       script_context, response_function,
-      base::Bind(&OneTimeMessageHandler::OnResponseCallbackCollected,
-                 weak_factory_.GetWeakPtr(), script_context, target_port_id),
-      base::Closure());
+      base::BindOnce(&OneTimeMessageHandler::OnResponseCallbackCollected,
+                     weak_factory_.GetWeakPtr(), script_context,
+                     target_port_id),
+      base::OnceClosure());
 
   v8::HandleScope handle_scope(isolate);
   v8::Local<v8::Value> v8_message =

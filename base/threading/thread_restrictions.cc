@@ -4,173 +4,240 @@
 
 #include "base/threading/thread_restrictions.h"
 
+#include "base/trace_event/base_tracing.h"
+
 #if DCHECK_IS_ON()
 
-#include "base/lazy_instance.h"
-#include "base/logging.h"
+#include <utility>
+
+#include "base/check_op.h"
+#include "base/debug/stack_trace.h"
+#include "base/no_destructor.h"
 #include "base/threading/thread_local.h"
+#include "base/trace_event/base_tracing.h"
+#include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 
+struct BooleanWithStack {
+  // Default value.
+  BooleanWithStack() = default;
+
+  // Value when explicitly set.
+  explicit BooleanWithStack(bool value)
+      : value_(value)
+#if !defined(OS_NACL) && !defined(OS_ANDROID)
+        ,
+        stack_(absl::in_place)
+#endif
+  {
+  }
+
+  explicit operator bool() const { return value_; }
+
+  friend std::ostream& operator<<(std::ostream& out,
+                                  const BooleanWithStack& bws) {
+    out << bws.value_;
+#if !defined(OS_NACL) && !defined(OS_ANDROID)
+    if (bws.stack_.has_value()) {
+      out << " set by\n" << bws.stack_.value();
+    } else {
+      out << " (value by default)";
+    }
+#endif
+    return out;
+  }
+
+  const bool value_ = false;
+
+// NaCL doesn't support stack sampling and Android is slow at stack
+// sampling and this causes timeouts (crbug.com/959139).
+#if !defined(OS_NACL) && !defined(OS_ANDROID)
+  const absl::optional<debug::StackTrace> stack_;
+#endif
+};
+
 namespace {
 
-LazyInstance<ThreadLocalBoolean>::Leaky g_blocking_disallowed =
-    LAZY_INSTANCE_INITIALIZER;
-
-LazyInstance<ThreadLocalBoolean>::Leaky
-    g_singleton_disallowed = LAZY_INSTANCE_INITIALIZER;
-
-LazyInstance<ThreadLocalBoolean>::Leaky g_base_sync_primitives_disallowed =
-    LAZY_INSTANCE_INITIALIZER;
-
-LazyInstance<ThreadLocalBoolean>::Leaky g_cpu_intensive_work_disallowed =
-    LAZY_INSTANCE_INITIALIZER;
+ThreadLocalOwnedPointer<BooleanWithStack>& GetBlockingDisallowedTls() {
+  static NoDestructor<ThreadLocalOwnedPointer<BooleanWithStack>> instance;
+  auto& tls = *instance;
+  if (!tls.Get())
+    tls.Set(std::make_unique<BooleanWithStack>());
+  return tls;
+}
+ThreadLocalOwnedPointer<BooleanWithStack>& GetSingletonDisallowedTls() {
+  static NoDestructor<ThreadLocalOwnedPointer<BooleanWithStack>> instance;
+  auto& tls = *instance;
+  if (!tls.Get())
+    tls.Set(std::make_unique<BooleanWithStack>());
+  return tls;
+}
+ThreadLocalOwnedPointer<BooleanWithStack>&
+GetBaseSyncPrimitivesDisallowedTls() {
+  static NoDestructor<ThreadLocalOwnedPointer<BooleanWithStack>> instance;
+  auto& tls = *instance;
+  if (!tls.Get())
+    tls.Set(std::make_unique<BooleanWithStack>());
+  return tls;
+}
+ThreadLocalOwnedPointer<BooleanWithStack>& GetCPUIntensiveWorkDisallowedTls() {
+  static NoDestructor<ThreadLocalOwnedPointer<BooleanWithStack>> instance;
+  auto& tls = *instance;
+  if (!tls.Get())
+    tls.Set(std::make_unique<BooleanWithStack>());
+  return tls;
+}
 
 }  // namespace
 
 namespace internal {
 
 void AssertBlockingAllowed() {
-  DCHECK(!g_blocking_disallowed.Get().Get())
+  DCHECK(!*GetBlockingDisallowedTls())
       << "Function marked as blocking was called from a scope that disallows "
          "blocking! If this task is running inside the ThreadPool, it needs "
          "to have MayBlock() in its TaskTraits. Otherwise, consider making "
          "this blocking work asynchronous or, as a last resort, you may use "
-         "ScopedAllowBlocking (see its documentation for best practices).";
+         "ScopedAllowBlocking (see its documentation for best practices).\n"
+      << "g_blocking_disallowed " << *GetBlockingDisallowedTls();
 }
 
 }  // namespace internal
 
 void DisallowBlocking() {
-  g_blocking_disallowed.Get().Set(true);
+  GetBlockingDisallowedTls().Set(std::make_unique<BooleanWithStack>(true));
 }
 
 ScopedDisallowBlocking::ScopedDisallowBlocking()
-    : was_disallowed_(g_blocking_disallowed.Get().Get()) {
-  g_blocking_disallowed.Get().Set(true);
-}
+    : was_disallowed_(GetBlockingDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(true))) {}
 
 ScopedDisallowBlocking::~ScopedDisallowBlocking() {
-  DCHECK(g_blocking_disallowed.Get().Get());
-  g_blocking_disallowed.Get().Set(was_disallowed_);
-}
-
-ScopedAllowBlocking::ScopedAllowBlocking()
-    : was_disallowed_(g_blocking_disallowed.Get().Get()) {
-  g_blocking_disallowed.Get().Set(false);
-}
-
-ScopedAllowBlocking::~ScopedAllowBlocking() {
-  DCHECK(!g_blocking_disallowed.Get().Get());
-  g_blocking_disallowed.Get().Set(was_disallowed_);
+  DCHECK(*GetBlockingDisallowedTls())
+      << "~ScopedDisallowBlocking() running while surprisingly already no "
+         "longer disallowed.\n"
+      << "g_blocking_disallowed " << *GetBlockingDisallowedTls();
+  GetBlockingDisallowedTls().Set(std::move(was_disallowed_));
 }
 
 void DisallowBaseSyncPrimitives() {
-  g_base_sync_primitives_disallowed.Get().Set(true);
+  GetBaseSyncPrimitivesDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(true));
 }
 
 ScopedAllowBaseSyncPrimitives::ScopedAllowBaseSyncPrimitives()
-    : was_disallowed_(g_base_sync_primitives_disallowed.Get().Get()) {
-  DCHECK(!g_blocking_disallowed.Get().Get())
+    : was_disallowed_(GetBaseSyncPrimitivesDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false))) {
+  DCHECK(!*GetBlockingDisallowedTls())
       << "To allow //base sync primitives in a scope where blocking is "
-         "disallowed use ScopedAllowBaseSyncPrimitivesOutsideBlockingScope.";
-  g_base_sync_primitives_disallowed.Get().Set(false);
+         "disallowed use ScopedAllowBaseSyncPrimitivesOutsideBlockingScope.\n"
+      << "g_blocking_disallowed " << *GetBlockingDisallowedTls();
 }
 
 ScopedAllowBaseSyncPrimitives::~ScopedAllowBaseSyncPrimitives() {
-  DCHECK(!g_base_sync_primitives_disallowed.Get().Get());
-  g_base_sync_primitives_disallowed.Get().Set(was_disallowed_);
-}
-
-ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
-    ScopedAllowBaseSyncPrimitivesOutsideBlockingScope()
-    : was_disallowed_(g_base_sync_primitives_disallowed.Get().Get()) {
-  g_base_sync_primitives_disallowed.Get().Set(false);
-}
-
-ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
-    ~ScopedAllowBaseSyncPrimitivesOutsideBlockingScope() {
-  DCHECK(!g_base_sync_primitives_disallowed.Get().Get());
-  g_base_sync_primitives_disallowed.Get().Set(was_disallowed_);
+  DCHECK(!*GetBaseSyncPrimitivesDisallowedTls());
+  GetBaseSyncPrimitivesDisallowedTls().Set(std::move(was_disallowed_));
 }
 
 ScopedAllowBaseSyncPrimitivesForTesting::
     ScopedAllowBaseSyncPrimitivesForTesting()
-    : was_disallowed_(g_base_sync_primitives_disallowed.Get().Get()) {
-  g_base_sync_primitives_disallowed.Get().Set(false);
-}
+    : was_disallowed_(GetBaseSyncPrimitivesDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false))) {}
 
 ScopedAllowBaseSyncPrimitivesForTesting::
     ~ScopedAllowBaseSyncPrimitivesForTesting() {
-  DCHECK(!g_base_sync_primitives_disallowed.Get().Get());
-  g_base_sync_primitives_disallowed.Get().Set(was_disallowed_);
+  DCHECK(!*GetBaseSyncPrimitivesDisallowedTls());
+  GetBaseSyncPrimitivesDisallowedTls().Set(std::move(was_disallowed_));
+}
+
+ScopedAllowUnresponsiveTasksForTesting::ScopedAllowUnresponsiveTasksForTesting()
+    : was_disallowed_base_sync_(GetBaseSyncPrimitivesDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false))),
+      was_disallowed_blocking_(GetBlockingDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false))),
+      was_disallowed_cpu_(GetCPUIntensiveWorkDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false))) {}
+
+ScopedAllowUnresponsiveTasksForTesting::
+    ~ScopedAllowUnresponsiveTasksForTesting() {
+  DCHECK(!*GetBaseSyncPrimitivesDisallowedTls());
+  DCHECK(!*GetBlockingDisallowedTls());
+  DCHECK(!*GetCPUIntensiveWorkDisallowedTls());
+  GetBaseSyncPrimitivesDisallowedTls().Set(
+      std::move(was_disallowed_base_sync_));
+  GetBlockingDisallowedTls().Set(std::move(was_disallowed_blocking_));
+  GetCPUIntensiveWorkDisallowedTls().Set(std::move(was_disallowed_cpu_));
 }
 
 namespace internal {
 
 void AssertBaseSyncPrimitivesAllowed() {
-  DCHECK(!g_base_sync_primitives_disallowed.Get().Get())
+  DCHECK(!*GetBaseSyncPrimitivesDisallowedTls())
       << "Waiting on a //base sync primitive is not allowed on this thread to "
          "prevent jank and deadlock. If waiting on a //base sync primitive is "
          "unavoidable, do it within the scope of a "
          "ScopedAllowBaseSyncPrimitives. If in a test, "
-         "use ScopedAllowBaseSyncPrimitivesForTesting.";
+         "use ScopedAllowBaseSyncPrimitivesForTesting.\n"
+      << "g_base_sync_primitives_disallowed "
+      << *GetBaseSyncPrimitivesDisallowedTls()
+      << "It can be useful to know that g_blocking_disallowed is "
+      << *GetBlockingDisallowedTls();
 }
 
 void ResetThreadRestrictionsForTesting() {
-  g_blocking_disallowed.Get().Set(false);
-  g_singleton_disallowed.Get().Set(false);
-  g_base_sync_primitives_disallowed.Get().Set(false);
-  g_cpu_intensive_work_disallowed.Get().Set(false);
+  GetBlockingDisallowedTls().Set(std::make_unique<BooleanWithStack>(false));
+  GetSingletonDisallowedTls().Set(std::make_unique<BooleanWithStack>(false));
+  GetBaseSyncPrimitivesDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(false));
+  GetCPUIntensiveWorkDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(false));
 }
 
 }  // namespace internal
 
 void AssertLongCPUWorkAllowed() {
-  DCHECK(!g_cpu_intensive_work_disallowed.Get().Get())
+  DCHECK(!*GetCPUIntensiveWorkDisallowedTls())
       << "Function marked as CPU intensive was called from a scope that "
-         "disallows this kind of work! Consider making this work asynchronous.";
+         "disallows this kind of work! Consider making this work "
+         "asynchronous.\n"
+      << "g_cpu_intensive_work_disallowed "
+      << *GetCPUIntensiveWorkDisallowedTls();
 }
 
 void DisallowUnresponsiveTasks() {
   DisallowBlocking();
   DisallowBaseSyncPrimitives();
-  g_cpu_intensive_work_disallowed.Get().Set(true);
-}
-
-ThreadRestrictions::ScopedAllowIO::ScopedAllowIO()
-    : was_allowed_(SetIOAllowed(true)) {}
-
-ThreadRestrictions::ScopedAllowIO::~ScopedAllowIO() {
-  SetIOAllowed(was_allowed_);
+  GetCPUIntensiveWorkDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(true));
 }
 
 // static
 bool ThreadRestrictions::SetIOAllowed(bool allowed) {
-  bool previous_disallowed = g_blocking_disallowed.Get().Get();
-  g_blocking_disallowed.Get().Set(!allowed);
-  return !previous_disallowed;
+  const bool previously_allowed = !*GetBlockingDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(!allowed));
+  return previously_allowed;
 }
 
 // static
 bool ThreadRestrictions::SetSingletonAllowed(bool allowed) {
-  bool previous_disallowed = g_singleton_disallowed.Get().Get();
-  g_singleton_disallowed.Get().Set(!allowed);
-  return !previous_disallowed;
+  const bool previously_allowed = !*GetSingletonDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(!allowed));
+  return previously_allowed;
 }
 
 // static
 void ThreadRestrictions::AssertSingletonAllowed() {
-  if (g_singleton_disallowed.Get().Get()) {
-    NOTREACHED() << "LazyInstance/Singleton is not allowed to be used on this "
-                 << "thread.  Most likely it's because this thread is not "
-                 << "joinable (or the current task is running with "
-                 << "TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN semantics), so "
-                 << "AtExitManager may have deleted the object on shutdown, "
-                 << "leading to a potential shutdown crash. If you need to use "
-                 << "the object from this context, it'll have to be updated to "
-                 << "use Leaky traits.";
-  }
+  DCHECK(!*GetSingletonDisallowedTls())
+      << "LazyInstance/Singleton is not allowed to be used on this thread. "
+         "Most likely it's because this thread is not joinable (or the current "
+         "task is running with TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN "
+         "semantics), so AtExitManager may have deleted the object on "
+         "shutdown, leading to a potential shutdown crash. If you need to use "
+         "the object from this context, it'll have to be updated to use Leaky "
+         "traits.\n"
+      << "g_singleton_disallowed " << *GetSingletonDisallowedTls();
 }
 
 // static
@@ -179,11 +246,85 @@ void ThreadRestrictions::DisallowWaiting() {
 }
 
 bool ThreadRestrictions::SetWaitAllowed(bool allowed) {
-  bool previous_disallowed = g_base_sync_primitives_disallowed.Get().Get();
-  g_base_sync_primitives_disallowed.Get().Set(!allowed);
-  return !previous_disallowed;
+  const bool previously_allowed = !*GetBaseSyncPrimitivesDisallowedTls().Set(
+      std::make_unique<BooleanWithStack>(!allowed));
+  return previously_allowed;
 }
 
 }  // namespace base
 
 #endif  // DCHECK_IS_ON()
+
+namespace base {
+
+ScopedAllowBlocking::ScopedAllowBlocking(const Location& from_here)
+#if DCHECK_IS_ON()
+    : was_disallowed_(GetBlockingDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false)))
+#endif
+{
+  TRACE_EVENT_BEGIN(
+      "base", "ScopedAllowBlocking", [&](perfetto::EventContext ctx) {
+        ctx.event()->set_source_location_iid(
+            base::trace_event::InternedSourceLocation::Get(
+                &ctx, base::trace_event::TraceSourceLocation(from_here)));
+      });
+}
+
+ScopedAllowBlocking::~ScopedAllowBlocking() {
+  TRACE_EVENT_END0("base", "ScopedAllowBlocking");
+
+#if DCHECK_IS_ON()
+  DCHECK(!*GetBlockingDisallowedTls());
+  GetBlockingDisallowedTls().Set(std::move(was_disallowed_));
+#endif
+}
+
+ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
+    ScopedAllowBaseSyncPrimitivesOutsideBlockingScope(const Location& from_here)
+#if DCHECK_IS_ON()
+    : was_disallowed_(GetBaseSyncPrimitivesDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false)))
+#endif
+{
+  TRACE_EVENT_BEGIN(
+      "base", "ScopedAllowBaseSyncPrimitivesOutsideBlockingScope",
+      [&](perfetto::EventContext ctx) {
+        ctx.event()->set_source_location_iid(
+            base::trace_event::InternedSourceLocation::Get(
+                &ctx, base::trace_event::TraceSourceLocation(from_here)));
+      });
+}
+
+ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
+    ~ScopedAllowBaseSyncPrimitivesOutsideBlockingScope() {
+  TRACE_EVENT_END0("base", "ScopedAllowBaseSyncPrimitivesOutsideBlockingScope");
+
+#if DCHECK_IS_ON()
+  DCHECK(!*GetBaseSyncPrimitivesDisallowedTls());
+  GetBaseSyncPrimitivesDisallowedTls().Set(std::move(was_disallowed_));
+#endif
+}
+
+ThreadRestrictions::ScopedAllowIO::ScopedAllowIO(const Location& from_here)
+#if DCHECK_IS_ON()
+    : was_disallowed_(GetBlockingDisallowedTls().Set(
+          std::make_unique<BooleanWithStack>(false)))
+#endif
+{
+  TRACE_EVENT_BEGIN("base", "ScopedAllowIO", [&](perfetto::EventContext ctx) {
+    ctx.event()->set_source_location_iid(
+        base::trace_event::InternedSourceLocation::Get(
+            &ctx, base::trace_event::TraceSourceLocation(from_here)));
+  });
+}
+
+ThreadRestrictions::ScopedAllowIO::~ScopedAllowIO() {
+  TRACE_EVENT_END0("base", "ScopedAllowIO");
+
+#if DCHECK_IS_ON()
+  GetBlockingDisallowedTls().Set(std::move(was_disallowed_));
+#endif
+}
+
+}  // namespace base

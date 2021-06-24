@@ -8,10 +8,11 @@
 #include <vector>
 
 #include "base/component_export.h"
-#include "base/optional.h"
 #include "base/run_loop.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media_session {
 namespace test {
@@ -26,11 +27,13 @@ class COMPONENT_EXPORT(MEDIA_SESSION_TEST_SUPPORT_CPP) TestAudioFocusObserver
       media_session::mojom::AudioFocusRequestStatePtr session) override;
   void OnFocusLost(
       media_session::mojom::AudioFocusRequestStatePtr session) override;
+  void OnRequestIdReleased(const base::UnguessableToken& request_id) override {}
 
   void WaitForGainedEvent();
   void WaitForLostEvent();
 
-  void BindToMojoRequest(media_session::mojom::AudioFocusObserverRequest);
+  mojo::PendingRemote<media_session::mojom::AudioFocusObserver>
+  BindNewPipeAndPassRemote();
 
   const media_session::mojom::AudioFocusRequestStatePtr& focus_gained_session()
       const {
@@ -52,7 +55,7 @@ class COMPONENT_EXPORT(MEDIA_SESSION_TEST_SUPPORT_CPP) TestAudioFocusObserver
   }
 
  private:
-  mojo::Binding<mojom::AudioFocusObserver> binding_;
+  mojo::Receiver<mojom::AudioFocusObserver> receiver_{this};
 
   // These store the values we received.
   media_session::mojom::AudioFocusRequestStatePtr focus_gained_session_;

@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <utility>
+
 #include "base/threading/thread_task_runner_handle.h"
 #include "cc/animation/animation_host.h"
 #include "cc/layers/append_quads_data.h"
@@ -19,6 +21,8 @@
 #include "cc/test/fake_picture_layer_impl.h"
 #include "cc/test/fake_proxy.h"
 #include "cc/test/fake_recording_source.h"
+#include "cc/test/layer_test_common.h"
+#include "cc/test/property_tree_test_utils.h"
 #include "cc/test/skia_common.h"
 #include "cc/test/stub_layer_tree_host_single_thread_client.h"
 #include "cc/test/test_task_graph_runner.h"
@@ -105,9 +109,8 @@ TEST(PictureLayerTest, InvalidateRasterAfterUpdate) {
   host_impl.CreatePendingTree();
   host_impl.pending_tree()->SetRootLayerForTesting(
       FakePictureLayerImpl::Create(host_impl.pending_tree(), 1));
-  host_impl.pending_tree()->BuildLayerListForTesting();
   FakePictureLayerImpl* layer_impl = static_cast<FakePictureLayerImpl*>(
-      host_impl.pending_tree()->root_layer_for_testing());
+      host_impl.pending_tree()->root_layer());
   layer->PushPropertiesTo(layer_impl);
 
   EXPECT_EQ(invalidation_bounds,
@@ -146,9 +149,8 @@ TEST(PictureLayerTest, InvalidateRasterWithoutUpdate) {
   host_impl.CreatePendingTree();
   host_impl.pending_tree()->SetRootLayerForTesting(
       FakePictureLayerImpl::Create(host_impl.pending_tree(), 1));
-  host_impl.pending_tree()->BuildLayerListForTesting();
   FakePictureLayerImpl* layer_impl = static_cast<FakePictureLayerImpl*>(
-      host_impl.pending_tree()->root_layer_for_testing());
+      host_impl.pending_tree()->root_layer());
   layer->PushPropertiesTo(layer_impl);
 
   EXPECT_EQ(gfx::Rect(), layer_impl->GetPendingInvalidation()->bounds());
@@ -158,8 +160,7 @@ TEST(PictureLayerTest, ClearVisibleRectWhenNoTiling) {
   gfx::Size layer_size(50, 50);
   FakeContentLayerClient client;
   client.set_bounds(layer_size);
-  client.add_draw_image(CreateDiscardablePaintImage(layer_size), gfx::Point(),
-                        PaintFlags());
+  client.add_draw_image(CreateDiscardablePaintImage(layer_size), gfx::Point());
   scoped_refptr<PictureLayer> layer = PictureLayer::Create(&client);
   layer->SetBounds(gfx::Size(10, 10));
 
@@ -183,19 +184,18 @@ TEST(PictureLayerTest, ClearVisibleRectWhenNoTiling) {
 
   std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink(
       FakeLayerTreeFrameSink::Create3d());
-  LayerTreeSettings layer_tree_settings = LayerTreeSettings();
   FakeLayerTreeHostImpl host_impl(
-      layer_tree_settings, &impl_task_runner_provider, &task_graph_runner);
+      LayerListSettings(), &impl_task_runner_provider, &task_graph_runner);
   host_impl.SetVisible(true);
   EXPECT_TRUE(host_impl.InitializeFrameSink(layer_tree_frame_sink.get()));
 
   host_impl.CreatePendingTree();
   host_impl.pending_tree()->SetRootLayerForTesting(
       FakePictureLayerImpl::Create(host_impl.pending_tree(), 1));
-  host_impl.pending_tree()->BuildLayerListAndPropertyTreesForTesting();
-
   FakePictureLayerImpl* layer_impl = static_cast<FakePictureLayerImpl*>(
-      host_impl.pending_tree()->root_layer_for_testing());
+      host_impl.pending_tree()->root_layer());
+  SetupRootProperties(layer_impl);
+  UpdateDrawProperties(host_impl.pending_tree());
 
   layer->PushPropertiesTo(layer_impl);
 
@@ -206,99 +206,26 @@ TEST(PictureLayerTest, ClearVisibleRectWhenNoTiling) {
 
   // By updating the draw proprties on the active tree, we will set the viewport
   // rect for tile priorities to something non-empty.
-  host_impl.active_tree()->BuildPropertyTreesForTesting();
-  host_impl.active_tree()->UpdateDrawProperties();
+  UpdateDrawProperties(host_impl.active_tree());
 
   layer->SetBounds(gfx::Size(11, 11));
 
   host_impl.CreatePendingTree();
   layer_impl = static_cast<FakePictureLayerImpl*>(
-      host_impl.pending_tree()->root_layer_for_testing());
+      host_impl.pending_tree()->root_layer());
 
   // We should now have invalid contents and should therefore clear the
   // recording source.
   layer->PushPropertiesTo(layer_impl);
-  host_impl.pending_tree()->BuildPropertyTreesForTesting();
+  UpdateDrawProperties(host_impl.pending_tree());
 
   host_impl.ActivateSyncTree();
 
-  std::unique_ptr<viz::RenderPass> render_pass = viz::RenderPass::Create();
+  auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
-  host_impl.active_tree()->root_layer_for_testing()->WillDraw(
-      DRAW_MODE_SOFTWARE, nullptr);
-  host_impl.active_tree()->root_layer_for_testing()->AppendQuads(
-      render_pass.get(), &data);
-  host_impl.active_tree()->root_layer_for_testing()->DidDraw(nullptr);
-}
-
-TEST(PictureLayerTest, HasSlowPaths) {
-  std::unique_ptr<FakeRecordingSource> recording_source_owned(
-      new FakeRecordingSource);
-  FakeRecordingSource* recording_source = recording_source_owned.get();
-
-  gfx::Size layer_bounds(200, 200);
-  gfx::Rect layer_rect(layer_bounds);
-  Region invalidation(layer_rect);
-
-  FakeContentLayerClient client;
-  client.set_bounds(layer_bounds);
-  scoped_refptr<FakePictureLayer> layer =
-      FakePictureLayer::CreateWithRecordingSource(
-          &client, std::move(recording_source_owned));
-
-  FakeLayerTreeHostClient host_client;
-  TestTaskGraphRunner task_graph_runner;
-  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
-  std::unique_ptr<FakeLayerTreeHost> host = FakeLayerTreeHost::Create(
-      &host_client, &task_graph_runner, animation_host.get());
-  host->SetRootLayer(layer);
-
-  recording_source->SetNeedsDisplayRect(layer_rect);
-  layer->Update();
-
-  // Layer does not have slow paths by default.
-  EXPECT_FALSE(layer->HasSlowPaths());
-
-  // Add slow-path content to the client.
-  client.set_contains_slow_paths(true);
-  recording_source->SetNeedsDisplayRect(layer_rect);
-  layer->Update();
-  EXPECT_TRUE(layer->HasSlowPaths());
-}
-
-TEST(PictureLayerTest, HasNonAAPaint) {
-  std::unique_ptr<FakeRecordingSource> recording_source_owned(
-      new FakeRecordingSource);
-  FakeRecordingSource* recording_source = recording_source_owned.get();
-
-  gfx::Size layer_bounds(200, 200);
-  gfx::Rect layer_rect(layer_bounds);
-  Region invalidation(layer_rect);
-
-  FakeContentLayerClient client;
-  client.set_bounds(layer_bounds);
-  scoped_refptr<FakePictureLayer> layer =
-      FakePictureLayer::CreateWithRecordingSource(
-          &client, std::move(recording_source_owned));
-
-  FakeLayerTreeHostClient host_client;
-  TestTaskGraphRunner task_graph_runner;
-  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
-  std::unique_ptr<FakeLayerTreeHost> host = FakeLayerTreeHost::Create(
-      &host_client, &task_graph_runner, animation_host.get());
-  host->SetRootLayer(layer);
-
-  recording_source->SetNeedsDisplayRect(layer_rect);
-  layer->Update();
-
-  // Layer does not have non-aa paint by default.
-  EXPECT_FALSE(layer->HasNonAAPaint());
-
-  // Add non-aa content to the client.
-  client.add_draw_rect(layer_rect, PaintFlags());
-  recording_source->SetNeedsDisplayRect(layer_rect);
-  layer->Update();
-  EXPECT_TRUE(layer->HasNonAAPaint());
+  host_impl.active_tree()->root_layer()->WillDraw(DRAW_MODE_SOFTWARE, nullptr);
+  host_impl.active_tree()->root_layer()->AppendQuads(render_pass.get(), &data);
+  host_impl.active_tree()->root_layer()->DidDraw(nullptr);
 }
 
 // PicturePile uses the source frame number as a unit for measuring invalidation
@@ -351,13 +278,13 @@ TEST(PictureLayerTest, NonMonotonicSourceFrameNumber) {
   // Do a main frame, record the picture layers.
   EXPECT_EQ(0, layer->update_count());
   layer->SetNeedsDisplay();
-  host1->Composite(base::TimeTicks::Now(), false);
+  host1->CompositeForTest(base::TimeTicks::Now(), false);
   EXPECT_EQ(1, layer->update_count());
   EXPECT_EQ(1, host1->SourceFrameNumber());
 
   // The source frame number in |host1| is now higher than host2.
   layer->SetNeedsDisplay();
-  host1->Composite(base::TimeTicks::Now(), false);
+  host1->CompositeForTest(base::TimeTicks::Now(), false);
   EXPECT_EQ(2, layer->update_count());
   EXPECT_EQ(2, host1->SourceFrameNumber());
 
@@ -368,7 +295,7 @@ TEST(PictureLayerTest, NonMonotonicSourceFrameNumber) {
   // Do a main frame, record the picture layers. The frame number has changed
   // non-monotonically.
   layer->SetNeedsDisplay();
-  host2->Composite(base::TimeTicks::Now(), false);
+  host2->CompositeForTest(base::TimeTicks::Now(), false);
   EXPECT_EQ(3, layer->update_count());
   EXPECT_EQ(1, host2->SourceFrameNumber());
 
@@ -423,7 +350,7 @@ TEST(PictureLayerTest, ChangingHostsWithCollidingFrames) {
   // Do a main frame, record the picture layers.
   EXPECT_EQ(0, layer->update_count());
   layer->SetBounds(gfx::Size(500, 500));
-  host1->Composite(base::TimeTicks::Now(), false);
+  host1->CompositeForTest(base::TimeTicks::Now(), false);
   EXPECT_EQ(1, layer->update_count());
   EXPECT_EQ(1, host1->SourceFrameNumber());
   EXPECT_EQ(gfx::Size(500, 500), layer->bounds());
@@ -441,7 +368,7 @@ TEST(PictureLayerTest, ChangingHostsWithCollidingFrames) {
 
   // Change its bounds while it's in a state that can't update.
   layer->SetBounds(gfx::Size(600, 600));
-  host2->Composite(base::TimeTicks::Now(), false);
+  host2->CompositeForTest(base::TimeTicks::Now(), false);
 
   // This layer should not have been updated because it is invisible.
   EXPECT_EQ(1, layer->update_count());

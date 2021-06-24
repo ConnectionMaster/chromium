@@ -2,9 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/macros.h"
+#include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
@@ -14,6 +18,7 @@
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
@@ -21,11 +26,17 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
+#include "content/public/test/url_loader_interceptor.h"
+#include "content/public/test/url_loader_monitor.h"
+#include "net/base/features.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/network/public/cpp/resource_request.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -53,9 +64,9 @@ class ViewSourceTest : public InProcessBrowserTest {
   DISALLOW_COPY_AND_ASSIGN(ViewSourceTest);
 };
 
-class ViewSourceFeaturePolicyTest : public ViewSourceTest {
+class ViewSourcePermissionsPolicyTest : public ViewSourceTest {
  public:
-  ViewSourceFeaturePolicyTest() : ViewSourceTest() {}
+  ViewSourcePermissionsPolicyTest() : ViewSourceTest() {}
 
  protected:
   void SetUpOnMainThread() override {
@@ -69,7 +80,7 @@ class ViewSourceFeaturePolicyTest : public ViewSourceTest {
   }
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(ViewSourceFeaturePolicyTest);
+  DISALLOW_COPY_AND_ASSIGN(ViewSourcePermissionsPolicyTest);
 };
 
 // This test renders a page in view-source and then checks to see if the title
@@ -86,7 +97,7 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, DoesBrowserRenderInViewSource) {
 
   // Check that the title didn't get set.  It should not be there (because we
   // are in view-source mode).
-  EXPECT_NE(base::ASCIIToUTF16("foo"),
+  EXPECT_NE(u"foo",
             browser()->tab_strip_model()->GetActiveWebContents()->GetTitle());
 }
 
@@ -333,7 +344,18 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInMainframe) {
                             "document.getElementById('form').submit();"));
   form_post_observer.Wait();
   GURL target_url(embedded_test_server()->GetURL("a.com", "/echoall"));
-  EXPECT_EQ(target_url, original_main_frame->GetLastCommittedURL());
+
+  content::RenderFrameHost* current_main_frame =
+      original_contents->GetMainFrame();
+  if (content::CanSameSiteMainFrameNavigationsChangeRenderFrameHosts()) {
+    // When ProactivelySwapBrowsingInstance or RenderDocument is enabled on
+    // same-site main frame navigations, the form submission above will result
+    // in a change of RFH.
+    EXPECT_NE(current_main_frame, original_main_frame);
+  } else {
+    EXPECT_EQ(current_main_frame, original_main_frame);
+  }
+  EXPECT_EQ(target_url, current_main_frame->GetLastCommittedURL());
 
   // Extract the response nonce.
   std::string response_nonce;
@@ -341,13 +363,13 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInMainframe) {
       domAutomationController.send(
           document.getElementById('response-nonce').innerText); )";
   EXPECT_TRUE(ExecuteScriptAndExtractString(
-      original_main_frame, response_nonce_extraction_script, &response_nonce));
+      current_main_frame, response_nonce_extraction_script, &response_nonce));
 
   // Open view-source mode tab for the main frame.  This tries to mimic the
   // behavior of RenderViewContextMenu::ExecuteCommand when it handles
   // IDC_CONTENT_CONTEXT_VIEWFRAMESOURCE.
   content::WebContentsAddedObserver view_source_contents_observer;
-  original_main_frame->ViewSource();
+  current_main_frame->ViewSource();
   content::WebContents* view_source_contents =
       view_source_contents_observer.GetWebContents();
   EXPECT_TRUE(WaitForLoadStop(view_source_contents));
@@ -369,7 +391,7 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInMainframe) {
   EXPECT_THAT(source_text,
               HasSubstr("<h1>Request Body:</h1><pre>text=value</pre>"));
   EXPECT_THAT(source_text,
-              HasSubstr("<h1>Request Headers:</h1><pre>POST /echoall HTTP"));
+              HasSubstr("<pre id='request-headers'>POST /echoall HTTP"));
   EXPECT_THAT(source_text,
               ContainsRegex("Request Headers:.*Referer: " + form_url.spec()));
   EXPECT_THAT(
@@ -384,7 +406,7 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInMainframe) {
 
   // Verify that the original contents and the view-source contents are in a
   // different process - see https://crbug.com/699493.
-  EXPECT_NE(original_main_frame->GetSiteInstance(),
+  EXPECT_NE(current_main_frame->GetSiteInstance(),
             view_source_contents->GetMainFrame()->GetSiteInstance());
 
   // Verify the title of view-source is derived from the URL (not from the title
@@ -393,16 +415,96 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInMainframe) {
   EXPECT_EQ("EmbeddedTestServer - EchoAll",
             base::UTF16ToUTF8(original_contents->GetTitle()));
   EXPECT_THAT(title, Not(HasSubstr("EmbeddedTestServer - EchoAll")));
-  GURL original_url = original_main_frame->GetLastCommittedURL();
+  GURL original_url = current_main_frame->GetLastCommittedURL();
   EXPECT_THAT(title, HasSubstr(content::kViewSourceScheme));
   EXPECT_THAT(title, HasSubstr(original_url.host()));
   EXPECT_THAT(title, HasSubstr(original_url.port()));
   EXPECT_THAT(title, HasSubstr(original_url.path()));
 }
 
+// Test the case where ViewSource() is called on a top-level RenderFrameHost
+// that has never had a commit, so has an empty IsolationInfo. For ViewSource()
+// to do anything, the NavigationController for the tab must have a
+// LastCommittedEntry(). This sounds like a contradiction of requirements, but
+// can happen when a tab is cloned, and possibly other cases as well, like
+// session restore.
+//
+// The main concern here is that the source RenderFrameHost has an empty
+// IsolationInfo, and accessing it would DCHECK, so this path should mint a new
+// one.
+IN_PROC_BROWSER_TEST_F(ViewSourceTest,
+                       ViewSourceWithRenderFrameHostWithoutCommit) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Navigate to a URL, it doesn't matter which, just need the tab to have a
+  // committed entry other than about:blank or the NTP.
+  GURL url(embedded_test_server()->GetURL(kTestHtml));
+  ui_test_utils::NavigateToURL(browser(), url);
+  EXPECT_EQ(0, browser()->tab_strip_model()->active_index());
+
+  // Duplicate the tab. The newly created tab should be active.
+  chrome::DuplicateTab(browser());
+  EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
+
+  // Check preconditions.
+  EXPECT_TRUE(browser()
+                  ->tab_strip_model()
+                  ->GetActiveWebContents()
+                  ->GetController()
+                  .GetLastCommittedEntry());
+  EXPECT_EQ(GURL(), browser()
+                        ->tab_strip_model()
+                        ->GetActiveWebContents()
+                        ->GetMainFrame()
+                        ->GetLastCommittedURL());
+
+  // Open a view source tab, and watch for its main network request.
+  content::URLLoaderMonitor loader_monitor({url});
+  content::WebContentsAddedObserver view_source_contents_observer;
+  browser()
+      ->tab_strip_model()
+      ->GetActiveWebContents()
+      ->GetMainFrame()
+      ->ViewSource();
+  content::WebContents* view_source_contents =
+      view_source_contents_observer.GetWebContents();
+  EXPECT_TRUE(WaitForLoadStop(view_source_contents));
+  GURL view_source_url(content::kViewSourceScheme + std::string(":") +
+                       url.spec());
+  EXPECT_EQ(view_source_url, view_source_contents->GetLastCommittedURL());
+
+  // Verify the request for the view-source tab had the correct IsolationInfo.
+  absl::optional<network::ResourceRequest> request =
+      loader_monitor.GetRequestInfo(url);
+  ASSERT_TRUE(request);
+  ASSERT_TRUE(request->trusted_params);
+  url::Origin origin = url::Origin::Create(url);
+  EXPECT_TRUE(request->trusted_params->isolation_info.IsEqualForTesting(
+      net::IsolationInfo::Create(net::IsolationInfo::RequestType::kMainFrame,
+                                 origin, origin,
+                                 net::SiteForCookies::FromOrigin(origin),
+                                 std::set<net::SchemefulSite>())));
+}
+
+class ViewSourceWithSplitCacheTest
+    : public ViewSourceTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  void SetUp() override {
+    bool split_cache_by_network_isolation_key = GetParam();
+    feature_list_.InitWithFeatureState(
+        net::features::kSplitCacheByNetworkIsolationKey,
+        split_cache_by_network_isolation_key);
+    ViewSourceTest::SetUp();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
 // Tests that "View Source" works fine for *subframes* shown via HTTP POST.
 // This is a regression test for https://crbug.com/774691.
-IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInSubframe) {
+IN_PROC_BROWSER_TEST_P(ViewSourceWithSplitCacheTest, HttpPostInSubframe) {
   // Navigate to a page with multiple frames.
   content::SetupCrossSiteRedirector(embedded_test_server());
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -463,7 +565,7 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInSubframe) {
   EXPECT_THAT(source_text,
               HasSubstr("<h1>Request Body:</h1><pre>text=value</pre>"));
   EXPECT_THAT(source_text,
-              HasSubstr("<h1>Request Headers:</h1><pre>POST /echoall HTTP"));
+              HasSubstr("<pre id='request-headers'>POST /echoall HTTP"));
   EXPECT_THAT(source_text,
               ContainsRegex("Request Headers:.*Referer: " + form_url.spec()));
   EXPECT_THAT(
@@ -490,6 +592,104 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, HttpPostInSubframe) {
   EXPECT_THAT(title, HasSubstr(original_url.port()));
   EXPECT_THAT(title, HasSubstr(original_url.path()));
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ViewSourceWithSplitCacheTest,
+    testing::Bool());
+
+using ViewSourceWithSplitCacheEnabledTest = ViewSourceWithSplitCacheTest;
+
+// Tests that the network isolation key for the view-source request is reused
+// in the back-navigation request to the view-source page.
+//
+// The test runs the following steps:
+// 1. Navigate to page a.com/title1.html
+// 2. Create a cross-site subframe b.com/title1.html
+// 3. View-source the subframe
+// 4. Navigate the view-source page to a c.com/title1.html
+// 5. Navigate back to the view-source page
+//
+// In the end, the test checks whether the back navigation request resource
+// exists in the cache. |exists_in_cache == true| implies the top_frame_origin
+// of the network isolation key is a.com (reused).
+IN_PROC_BROWSER_TEST_P(ViewSourceWithSplitCacheEnabledTest,
+                       NetworkIsolationKeyReusedForBackNavigation) {
+  content::SetupCrossSiteRedirector(embedded_test_server());
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // 1. Navigate to page a.com/title1.html
+  GURL main_url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  ui_test_utils::NavigateToURL(browser(), main_url);
+
+  content::WebContents* original_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  std::string subframe_url =
+      GURL(embedded_test_server()->GetURL("b.com", "/title1.html")).spec();
+  {
+    // 2. Create a cross-site subframe b.com/title1.html
+    std::string create_frame_script = base::StringPrintf(
+        "let frame = document.createElement('iframe');"
+        "frame.src = '%s';"
+        "document.body.appendChild(frame);",
+        subframe_url.c_str());
+    content::TestNavigationObserver navigation_observer(original_contents);
+    original_contents->GetMainFrame()->ExecuteJavaScriptForTests(
+        base::ASCIIToUTF16(create_frame_script), base::NullCallback());
+    navigation_observer.Wait();
+  }
+
+  // 3. View-source the subframe
+  content::WebContentsAddedObserver view_source_contents_observer;
+  original_contents->GetAllFrames()[1]->ViewSource();
+  content::WebContents* view_source_contents =
+      view_source_contents_observer.GetWebContents();
+  EXPECT_TRUE(WaitForLoadStop(view_source_contents));
+  // This test expects us to re-load a page after a back navigation (and reuse
+  // the network isolation key while doing so), which won't happen when the
+  // page is restored from the back forward cache. We are disabling caching for
+  // |view_source_contents| to make sure it will not be put into the back
+  // forward cache.
+  view_source_contents->GetController().GetBackForwardCache().DisableForTesting(
+      content::BackForwardCache::TEST_ASSUMES_NO_CACHING);
+
+  // 4. Navigate the view-source page to a c.com/title1.html
+  ui_test_utils::NavigateToURL(
+      browser(), GURL(embedded_test_server()->GetURL("c.com", "/title1.html")));
+
+  base::RunLoop cache_status_waiter;
+  content::URLLoaderInterceptor interceptor(
+      base::BindLambdaForTesting(
+          [&](content::URLLoaderInterceptor::RequestParams* params) {
+            return false;
+          }),
+      base::BindLambdaForTesting(
+          [&](const GURL& request_url,
+              const network::URLLoaderCompletionStatus& status) {
+            if (request_url == subframe_url) {
+              EXPECT_TRUE(status.exists_in_cache);
+              cache_status_waiter.Quit();
+            }
+          }),
+      {});
+
+  {
+    // 5. Navigate back to the view-source page
+    content::WebContents* new_contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    content::TestNavigationObserver navigation_observer(new_contents);
+    chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+    navigation_observer.Wait();
+  }
+
+  cache_status_waiter.Run();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ViewSourceWithSplitCacheEnabledTest,
+    ::testing::Values(true));
 
 // Verify that links clicked from view-source do not send a Referer header.
 // See https://crbug.com/834023.
@@ -539,7 +739,7 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest, JavaScriptURISanitized) {
 
 // This test verifies that 'view-source' documents are not affected by vertical
 // scroll (see https://crbug.com/898688).
-IN_PROC_BROWSER_TEST_F(ViewSourceFeaturePolicyTest,
+IN_PROC_BROWSER_TEST_F(ViewSourcePermissionsPolicyTest,
                        ViewSourceNotAffectedByHeaderPolicy) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const std::string k_verify_feature = R"(
@@ -564,3 +764,59 @@ IN_PROC_BROWSER_TEST_F(ViewSourceFeaturePolicyTest,
       &response));
   EXPECT_EQ("vertical-scroll", response);
 }
+
+namespace {
+
+class ViewSourcePrerenderTest : public ViewSourceTest {
+ protected:
+  content::test::PrerenderTestHelper& prerender_test_helper() {
+    return prerender_test_helper_;
+  }
+
+  content::WebContents* target() const { return target_; }
+  void set_target(content::WebContents* target) { target_ = target; }
+
+  void SetUpOnMainThread() override {
+    ViewSourceTest::SetUpOnMainThread();
+    prerender_test_helper().SetUpOnMainThread(embedded_test_server());
+  }
+
+ private:
+  content::test::PrerenderTestHelper prerender_test_helper_{
+      base::BindRepeating(&ViewSourcePrerenderTest::target,
+                          base::Unretained(this))};
+
+  // The WebContents which is expected to request prerendering.
+  content::WebContents* target_ = nullptr;
+};
+
+// A frame in a prerendered page should be able to have its source viewed, like
+// any other. There is currently no UI for this, but in principle it should
+// work.
+IN_PROC_BROWSER_TEST_F(ViewSourcePrerenderTest, ViewSourceForPrerender) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL referrer_url = embedded_test_server()->GetURL("/title1.html");
+  GURL prerender_url = embedded_test_server()->GetURL("/title2.html");
+  content::RenderFrameHost* referrer_frame =
+      ui_test_utils::NavigateToURL(browser(), referrer_url);
+  set_target(content::WebContents::FromRenderFrameHost(referrer_frame));
+
+  prerender_test_helper().AddPrerender(prerender_url);
+  int host_id = prerender_test_helper().GetHostForUrl(prerender_url);
+  content::RenderFrameHost* prerender_frame =
+      prerender_test_helper().GetPrerenderedMainFrameHost(host_id);
+  EXPECT_TRUE(prerender_frame);
+
+  content::WebContentsAddedObserver view_source_contents_observer;
+  prerender_frame->ViewSource();
+  content::WebContents* view_source_contents =
+      view_source_contents_observer.GetWebContents();
+  EXPECT_TRUE(WaitForLoadStop(view_source_contents));
+  EXPECT_EQ(view_source_contents->GetLastCommittedURL(),
+            GURL(base::StrCat(
+                {content::kViewSourceScheme, ":", prerender_url.spec()})));
+  EXPECT_THAT(base::UTF16ToUTF8(view_source_contents->GetTitle()),
+              HasSubstr(content::kViewSourceScheme));
+}
+
+}  // namespace

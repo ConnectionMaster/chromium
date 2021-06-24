@@ -29,9 +29,6 @@
 #include <memory>
 #include <utility>
 
-#include "SkSize.h"
-#include "SkTypes.h"
-#include "base/macros.h"
 #include "base/memory/memory_pressure_listener.h"
 #include "base/memory/ptr_util.h"
 #include "cc/paint/paint_image_generator.h"
@@ -43,6 +40,8 @@
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/threading_primitives.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/skia/include/core/SkSize.h"
+#include "third_party/skia/include/core/SkTypes.h"
 
 namespace blink {
 
@@ -89,6 +88,8 @@ class CacheEntry : public DoublyLinkedListNode<CacheEntry> {
         use_count_(use_count),
         prev_(nullptr),
         next_(nullptr) {}
+  CacheEntry(const CacheEntry&) = delete;
+  CacheEntry& operator=(const CacheEntry&) = delete;
 
   virtual ~CacheEntry() { DCHECK(!use_count_); }
 
@@ -112,8 +113,6 @@ class CacheEntry : public DoublyLinkedListNode<CacheEntry> {
  private:
   CacheEntry* prev_;
   CacheEntry* next_;
-
-  DISALLOW_COPY_AND_ASSIGN(CacheEntry);
 };
 
 class DecoderCacheEntry final : public CacheEntry {
@@ -245,6 +244,8 @@ class PLATFORM_EXPORT ImageDecodingStore final {
 
  public:
   ImageDecodingStore();
+  ImageDecodingStore(const ImageDecodingStore&) = delete;
+  ImageDecodingStore& operator=(const ImageDecodingStore&) = delete;
   ~ImageDecodingStore();
 
   static ImageDecodingStore& Instance();
@@ -322,40 +323,34 @@ class PLATFORM_EXPORT ImageDecodingStore final {
   // This is used for eviction of old entries.
   // Head of this list is the least recently used cache entry.
   // Tail of this list is the most recently used cache entry.
-  DoublyLinkedList<CacheEntry> ordered_cache_list_;
+  DoublyLinkedList<CacheEntry> ordered_cache_list_ GUARDED_BY(mutex_);
 
   // A lookup table for all decoder cache objects. Owns all decoder cache
   // objects.
   typedef HashMap<DecoderCacheKey, std::unique_ptr<DecoderCacheEntry>>
       DecoderCacheMap;
-  DecoderCacheMap decoder_cache_map_;
+  DecoderCacheMap decoder_cache_map_ GUARDED_BY(mutex_);
 
   // A lookup table to map ImageFrameGenerator to all associated
   // decoder cache keys.
   typedef HashSet<DecoderCacheKey> DecoderCacheKeySet;
   typedef HashMap<const ImageFrameGenerator*, DecoderCacheKeySet>
       DecoderCacheKeyMap;
-  DecoderCacheKeyMap decoder_cache_key_map_;
+  DecoderCacheKeyMap decoder_cache_key_map_ GUARDED_BY(mutex_);
 
-  size_t heap_limit_in_bytes_;
-  size_t heap_memory_usage_in_bytes_;
+  size_t heap_limit_in_bytes_ GUARDED_BY(mutex_);
+  size_t heap_memory_usage_in_bytes_ GUARDED_BY(mutex_);
 
   // A listener to global memory pressure events.
   base::MemoryPressureListener memory_pressure_listener_;
 
-  // Protect concurrent access to these members:
-  //   m_orderedCacheList
-  //   m_decoderCacheMap and all CacheEntrys stored in it
-  //   m_decoderCacheKeyMap
-  //   m_heapLimitInBytes
-  //   m_heapMemoryUsageInBytes
-  // This mutex also protects calls to underlying skBitmap's
-  // lockPixels()/unlockPixels() as they are not threadsafe.
+  // Also protects:
+  // - the CacheEntry in |decoder_cache_map_|.
+  // - calls to underlying skBitmap's LockPixels()/UnlockPixels() as they are
+  //   not threadsafe.
   Mutex mutex_;
-
-  DISALLOW_COPY_AND_ASSIGN(ImageDecodingStore);
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_IMAGE_DECODING_STORE_H_

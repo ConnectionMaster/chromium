@@ -5,38 +5,36 @@
 #ifndef GOOGLE_APIS_GCM_ENGINE_INSTANCE_ID_GET_TOKEN_REQUEST_HANDLER_H_
 #define GOOGLE_APIS_GCM_ENGINE_INSTANCE_ID_GET_TOKEN_REQUEST_HANDLER_H_
 
-#include <map>
 #include <string>
 
 #include "base/macros.h"
+#include "base/time/time.h"
 #include "google_apis/gcm/engine/registration_request.h"
 
 namespace gcm {
 
 // Used to obtain a token based on Instance ID.
-class GCM_EXPORT InstanceIDGetTokenRequestHandler :
-    public RegistrationRequest::CustomRequestHandler {
+class GCM_EXPORT InstanceIDGetTokenRequestHandler
+    : public RegistrationRequest::CustomRequestHandler {
  public:
-  InstanceIDGetTokenRequestHandler(
-      const std::string& instance_id,
-      const std::string& authorized_entity,
-      const std::string& scope,
-      int gcm_version,
-      const std::map<std::string, std::string>& options);
+  InstanceIDGetTokenRequestHandler(const std::string& instance_id,
+                                   const std::string& authorized_entity,
+                                   const std::string& scope,
+                                   int gcm_version,
+                                   base::TimeDelta time_to_live);
   ~InstanceIDGetTokenRequestHandler() override;
 
-   // RegistrationRequest overrides:
+  // RegistrationRequest overrides:
   void BuildRequestBody(std::string* body) override;
-  void ReportUMAs(RegistrationRequest::Status status,
-                  int retry_count,
-                  base::TimeDelta complete_time) override;
+  void ReportStatusToUMA(RegistrationRequest::Status status) override;
+  void ReportNetErrorCodeToUMA(int net_error_code) override;
 
  private:
   std::string instance_id_;
   std::string authorized_entity_;
   std::string scope_;
   int gcm_version_;
-  std::map<std::string, std::string> options_;
+  base::TimeDelta time_to_live_;
 
   DISALLOW_COPY_AND_ASSIGN(InstanceIDGetTokenRequestHandler);
 };

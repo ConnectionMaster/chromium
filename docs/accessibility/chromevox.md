@@ -13,7 +13,7 @@ To start or stop ChromeVox, press Ctrl+Alt+Z at any time.
 
 ## Developer Info
 
-Code location: ```chrome/browser/resources/chromeos/chromevox```
+Code location: ```chrome/browser/resources/chromeos/accessibility/chromevox```
 
 Ninja target: it's built as part of "chrome", but you can build and run
 browser_tests to test it (Chrome OS target only - you must have target_os =
@@ -36,10 +36,12 @@ few use cases.
 When developing a new feature, it may be helpful to save time by not having to
 go through a compile cycle. This can be achieved by setting
 ```chromevox_compress_js``` to 0 in
-chrome/browser/resources/chromeos/chromevox/BUILD.gn, or by using a debug build.
+chrome/browser/resources/chromeos/accessibility/chromevox/BUILD.gn, or by using
+a debug build.
 
 In a debug build or with chromevox_compress_js off, the unflattened files in the
-Chrome out directory (e.g. out/Release/resources/chromeos/chromevox/). Now you
+Chrome out directory
+(e.g. out/Release/resources/chromeos/accessibility/chromevox/). Now you
 can hack directly on the copy of ChromeVox in out/ and toggle ChromeVox to pick
 up your changes (via Ctrl+Alt+Z).
 
@@ -61,6 +63,41 @@ Another option is to use the built-in developer console. Go to the
 ChromeVox options page with Search+Shift+o, o; then, substitute the
 “options.html” path with “background.html”, and then open up the
 inspector.
+
+### Debugging ChromeOS
+
+To debug ChromeVox in ChromeOS, you need to add the command-line flag to the
+config file in device under test(DUT) instead of starting chrome from command
+line.
+
+```
+(dut) $ echo " --remote-debugging-port=9222 " >> /etc/chrome_dev.conf
+(dut) $ restart ui
+```
+
+This is also written in
+[Simple Chrome Workflow Doc](https://chromium.googlesource.com/chromiumos/docs/+/HEAD/simple_chrome_workflow.md#command_line-flags-and-environment-variables).
+
+You need to ssh from your development device into your DUT forwarding port 9222
+to open ChromeVox extension background page in your dev device, for example
+```
+ssh my_crbook -L 3333:localhost:9222
+```
+
+Then open the forwarded port in the development device, http://localhost:3333 in
+the example.
+
+You may need to remove rootfs verification to write to `/etc/chrome_dev.conf`.
+
+```
+(dut) $ crossystem dev_boot_signed_only=0
+(dut) $ sudo /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification
+(dut) $ reboot
+```
+
+See
+[Chromium OS Doc](https://chromium.googlesource.com/chromiumos/docs/+/HEAD/developer_mode.md#disable-verity)
+for more information about removing rootfs verification.
 
 ### Running tests
 

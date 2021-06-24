@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "components/search_engines/template_url_id.h"
 #include "url/gurl.h"
@@ -23,6 +22,7 @@ class ListValue;
 struct TemplateURLData {
   TemplateURLData();
   TemplateURLData(const TemplateURLData& other);
+  TemplateURLData& operator=(const TemplateURLData& other);
 
   // Creates a TemplateURLData suitable for prepopulated engines.
   // Note that unlike in the default constructor, |safe_for_autoreplace| will
@@ -30,8 +30,8 @@ struct TemplateURLData {
   // value, instead of current time.
   // StringPiece in arguments is used to pass const char* pointer members
   // of PrepopulatedEngine structure which can be nullptr.
-  TemplateURLData(const base::string16& name,
-                  const base::string16& keyword,
+  TemplateURLData(const std::u16string& name,
+                  const std::u16string& keyword,
                   base::StringPiece search_url,
                   base::StringPiece suggest_url,
                   base::StringPiece image_url,
@@ -52,17 +52,22 @@ struct TemplateURLData {
   // A short description of the template. This is the name we show to the user
   // in various places that use TemplateURLs. For example, the location bar
   // shows this when the user selects a substituting match.
-  void SetShortName(const base::string16& short_name);
-  const base::string16& short_name() const { return short_name_; }
+  void SetShortName(const std::u16string& short_name);
+  const std::u16string& short_name() const { return short_name_; }
 
   // The shortcut for this TemplateURL.  |keyword| must be non-empty.
-  void SetKeyword(const base::string16& keyword);
-  const base::string16& keyword() const { return keyword_; }
+  void SetKeyword(const std::u16string& keyword);
+  const std::u16string& keyword() const { return keyword_; }
 
   // The raw URL for the TemplateURL, which may not be valid as-is (e.g. because
   // it requires substitutions first).  This must be non-empty.
   void SetURL(const std::string& url);
   const std::string& url() const { return url_; }
+
+  // Recomputes |sync_guid| using the same logic as in the constructor. This
+  // means a random GUID is generated, except for prepopulated search engines,
+  // which generate GUIDs deterministically based on |prepopulate_id|.
+  void GenerateSyncGUID();
 
   // Estimates dynamic memory usage.
   // See base/trace_event/memory_usage_estimator.h for more info.
@@ -127,6 +132,9 @@ struct TemplateURLData {
   // group policy.
   bool created_by_policy;
 
+  // True if this TemplateURL was created from metadata received from Play API.
+  bool created_from_play_api;
+
   // Number of times this TemplateURL has been explicitly used to load a URL.
   // We don't increment this for uses as the "default search engine" since
   // that's not really "explicit" usage and incrementing would result in pinning
@@ -148,8 +156,8 @@ struct TemplateURLData {
  private:
   // Private so we can enforce using the setters and thus enforce that these
   // fields are never empty.
-  base::string16 short_name_;
-  base::string16 keyword_;
+  std::u16string short_name_;
+  std::u16string keyword_;
   std::string url_;
 };
 

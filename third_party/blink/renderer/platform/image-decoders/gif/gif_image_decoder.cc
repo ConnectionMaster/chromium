@@ -79,15 +79,28 @@ void GIFImageDecoder::OnSetData(SegmentReader* data) {
     SkCodec::Result codec_creation_result;
     codec_ = SkCodec::MakeFromStream(std::move(segment_stream),
                                      &codec_creation_result, nullptr);
+
+    // SkCodec supports many codecs, but this class is only for GIF decoding.
+    if (codec_ && codec_->getEncodedFormat() != SkEncodedImageFormat::kGIF) {
+      SetFailed();
+      return;
+    }
+
     switch (codec_creation_result) {
       case SkCodec::kSuccess: {
         // SkCodec::MakeFromStream will read enough of the image to get the
         // image size.
         SkImageInfo image_info = codec_->getInfo();
-        SetSize(image_info.width(), image_info.height());
+        SetSize(static_cast<unsigned>(image_info.width()),
+                static_cast<unsigned>(image_info.height()));
         return;
       }
       case SkCodec::kIncompleteInput:
+        if (IsAllDataReceived()) {
+          SetFailed();
+          return;
+        }
+
         // |segment_stream_|'s ownership is passed into MakeFromStream.
         // It is deleted if MakeFromStream fails.
         // If MakeFromStream fails, we set |segment_stream_| to null so
@@ -146,10 +159,10 @@ bool GIFImageDecoder::FrameIsReceivedAtIndex(size_t index) const {
   return frame_info.fFullyReceived;
 }
 
-TimeDelta GIFImageDecoder::FrameDurationAtIndex(size_t index) const {
+base::TimeDelta GIFImageDecoder::FrameDurationAtIndex(size_t index) const {
   if (index < frame_buffer_cache_.size())
     return frame_buffer_cache_[index].Duration();
-  return TimeDelta();
+  return base::TimeDelta();
 }
 
 bool GIFImageDecoder::SetFailed() {
@@ -200,7 +213,7 @@ void GIFImageDecoder::InitializeNewFrame(size_t index) {
   SkCodec::FrameInfo frame_info;
   bool frame_info_received = codec_->getFrameInfo(index, &frame_info);
   DCHECK(frame_info_received);
-  frame.SetDuration(TimeDelta::FromMilliseconds(frame_info.fDuration));
+  frame.SetDuration(base::TimeDelta::FromMilliseconds(frame_info.fDuration));
   size_t required_previous_frame_index;
   if (frame_info.fRequiredFrame == SkCodec::kNoFrame) {
     required_previous_frame_index = kNotFound;

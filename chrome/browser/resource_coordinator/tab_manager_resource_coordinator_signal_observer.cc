@@ -11,6 +11,9 @@
 #include "chrome/browser/resource_coordinator/tab_manager_stats_collector.h"
 #include "chrome/browser/resource_coordinator/tab_manager_web_contents_data.h"
 #include "chrome/browser/resource_coordinator/utils.h"
+#include "components/performance_manager/public/graph/graph_operations.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 
 namespace resource_coordinator {
 
@@ -19,54 +22,63 @@ namespace resource_coordinator {
 // and can't be forward declared.
 class TabManagerResourceCoordinatorSignalObserverHelper {
  public:
-  static void OnPageAlmostIdle(content::WebContents* web_contents) {
-    TabLoadTracker::Get()->OnPageAlmostIdle(web_contents);
+  static void OnPageStoppedLoading(content::WebContents* web_contents) {
+    TabLoadTracker::Get()->OnPageStoppedLoading(web_contents);
   }
 };
 
 TabManager::ResourceCoordinatorSignalObserver::
-    ResourceCoordinatorSignalObserver(PageSignalReceiver* page_signal_receiver)
-    : page_signal_receiver_(page_signal_receiver) {
-  if (page_signal_receiver_)
-    page_signal_receiver_->AddObserver(this);
-}
+    ResourceCoordinatorSignalObserver(
+        const base::WeakPtr<TabManager>& tab_manager)
+    : tab_manager_(tab_manager) {}
 
 TabManager::ResourceCoordinatorSignalObserver::
-    ~ResourceCoordinatorSignalObserver() {
-  if (page_signal_receiver_)
-    page_signal_receiver_->RemoveObserver(this);
-}
+    ~ResourceCoordinatorSignalObserver() = default;
 
-void TabManager::ResourceCoordinatorSignalObserver::OnPageAlmostIdle(
-    content::WebContents* web_contents,
-    const PageNavigationIdentity& page_navigation_id) {
-  DCHECK_NE(nullptr, page_signal_receiver_);
-
-  // Only dispatch the event if it pertains to the current navigation.
-  if (page_signal_receiver_->GetNavigationIDForWebContents(web_contents) ==
-      page_navigation_id.navigation_id) {
-    TabManagerResourceCoordinatorSignalObserverHelper::OnPageAlmostIdle(
-        web_contents);
+void TabManager::ResourceCoordinatorSignalObserver::OnLoadingStateChanged(
+    const PageNode* page_node) {
+  // Forward the notification over to the UI thread when the page stops loading.
+  if (page_node->GetLoadingState() == PageNode::LoadingState::kLoadedIdle) {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&OnPageStoppedLoadingOnUi,
+                                  page_node->GetContentsProxy()));
   }
 }
 
-void TabManager::ResourceCoordinatorSignalObserver::
-    OnExpectedTaskQueueingDurationSet(
-        content::WebContents* web_contents,
-        const PageNavigationIdentity& page_navigation_id,
-        base::TimeDelta duration) {
-  DCHECK_NE(nullptr, page_signal_receiver_);
+void TabManager::ResourceCoordinatorSignalObserver::OnPassedToGraph(
+    Graph* graph) {
+  graph->AddPageNodeObserver(this);
+  graph->AddProcessNodeObserver(this);
+}
 
-  if (page_signal_receiver_->GetNavigationIDForWebContents(web_contents) !=
-      page_navigation_id.navigation_id) {
-    // |web_contents| has been re-navigated, drop this notification rather than
-    // recording it against the wrong origin.
-    return;
+void TabManager::ResourceCoordinatorSignalObserver::OnTakenFromGraph(
+    Graph* graph) {
+  graph->RemovePageNodeObserver(this);
+  graph->RemoveProcessNodeObserver(this);
+}
+
+// static
+content::WebContents*
+TabManager::ResourceCoordinatorSignalObserver::GetContentsForDispatch(
+    const base::WeakPtr<TabManager>& tab_manager,
+    const WebContentsProxy& contents_proxy,
+    int64_t navigation_id) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!tab_manager.get() || !contents_proxy.Get() ||
+      contents_proxy.LastNavigationId() != navigation_id) {
+    return nullptr;
   }
+  return contents_proxy.Get();
+}
 
-  g_browser_process->GetTabManager()
-      ->stats_collector()
-      ->RecordExpectedTaskQueueingDuration(web_contents, duration);
+// static
+void TabManager::ResourceCoordinatorSignalObserver::OnPageStoppedLoadingOnUi(
+    const WebContentsProxy& contents_proxy) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (auto* contents = contents_proxy.Get()) {
+    TabManagerResourceCoordinatorSignalObserverHelper::OnPageStoppedLoading(
+        contents);
+  }
 }
 
 }  // namespace resource_coordinator

@@ -21,6 +21,7 @@
 #include "ui/gfx/geometry/size.h"
 
 #if defined(OS_WIN)
+#include "base/strings/utf_string_conversions.h"
 #include "content/public/app/sandbox_helper_win.h"
 #include "sandbox/win/src/sandbox_types.h"
 #endif
@@ -55,7 +56,7 @@ class HeadlessExample : public headless::HeadlessWebContents::Observer,
   // The DevTools client used to control the tab.
   std::unique_ptr<headless::HeadlessDevToolsClient> devtools_client_;
   // A helper for creating weak pointers to this class.
-  base::WeakPtrFactory<HeadlessExample> weak_factory_;
+  base::WeakPtrFactory<HeadlessExample> weak_factory_{this};
 };
 
 namespace {
@@ -66,8 +67,7 @@ HeadlessExample::HeadlessExample(headless::HeadlessBrowser* browser,
                                  headless::HeadlessWebContents* web_contents)
     : browser_(browser),
       web_contents_(web_contents),
-      devtools_client_(headless::HeadlessDevToolsClient::Create()),
-      weak_factory_(this) {
+      devtools_client_(headless::HeadlessDevToolsClient::Create()) {
   web_contents_->AddObserver(this);
 }
 
@@ -148,7 +148,11 @@ void OnHeadlessBrowserStarted(headless::HeadlessBrowser* browser) {
     browser->Shutdown();
     return;
   }
+#if defined(OS_WIN)
+  GURL url(base::WideToUTF16(args[0]));
+#else
   GURL url(args[0]);
+#endif
 
   // Open a tab (i.e., HeadlessWebContents) in the newly created browser
   // context.
@@ -180,7 +184,7 @@ int main(int argc, const char** argv) {
 #if defined(OS_WIN)
   // In windows, you must initialize and set the sandbox, or pass it along
   // if it has already been initialized.
-  sandbox::SandboxInterfaceInfo sandbox_info = {0};
+  sandbox::SandboxInterfaceInfo sandbox_info = {nullptr};
   content::InitializeSandboxInfo(&sandbox_info);
   builder.SetSandboxInfo(&sandbox_info);
 #endif

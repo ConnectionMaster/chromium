@@ -7,15 +7,14 @@
 #include <memory>
 
 #include "ash/public/cpp/shell_window_ids.h"
+#include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/screen_util.h"
 #include "ash/shell.h"
-#include "ash/shell_test_api.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/window_factory.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "ui/aura/env.h"
 #include "ui/aura/test/test_window_delegate.h"
+#include "ui/aura/window.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/layout.h"
@@ -23,6 +22,7 @@
 #include "ui/display/display_switches.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/screen.h"
+#include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/test/event_generator.h"
 
 namespace ash {
@@ -30,8 +30,7 @@ namespace ash {
 namespace {
 
 ScreenPositionController* GetScreenPositionController() {
-  ShellTestApi test_api(Shell::Get());
-  return test_api.screen_position_controller();
+  return ShellTestApi().screen_position_controller();
 }
 
 class ScreenPositionControllerTest : public AshTestBase {
@@ -41,11 +40,11 @@ class ScreenPositionControllerTest : public AshTestBase {
 
   void SetUp() override {
     AshTestBase::SetUp();
-    window_ = window_factory::NewWindow(&window_delegate_);
+    window_ = std::make_unique<aura::Window>(&window_delegate_);
     window_->SetType(aura::client::WINDOW_TYPE_NORMAL);
     window_->Init(ui::LAYER_NOT_DRAWN);
     ParentWindowInPrimaryRootWindow(window_.get());
-    window_->set_id(1);
+    window_->SetId(1);
   }
 
   void TearDown() override {
@@ -220,8 +219,10 @@ TEST_F(ScreenPositionControllerTest, ConvertHostPointToScreenRotate) {
   EXPECT_EQ("350,30", ConvertHostPointToScreen(30, 450));
 
   // Move |window_| to the 2nd.
-  window_->SetBoundsInScreen(gfx::Rect(300, 20, 50, 50),
-                             display_manager()->GetSecondaryDisplay());
+  window_->SetBoundsInScreen(
+      gfx::Rect(300, 20, 50, 50),
+      display::test::DisplayManagerTestApi(display_manager())
+          .GetSecondaryDisplay());
   aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   EXPECT_EQ(root_windows[1], window_->GetRootWindow());
 
@@ -251,8 +252,10 @@ TEST_F(ScreenPositionControllerTest, ConvertHostPointToScreenZoomScale) {
   EXPECT_EQ("185,50", ConvertHostPointToScreen(60, 450));
 
   // Move |window_| to the 2nd.
-  window_->SetBoundsInScreen(gfx::Rect(300, 20, 50, 50),
-                             display_manager()->GetSecondaryDisplay());
+  window_->SetBoundsInScreen(
+      gfx::Rect(300, 20, 50, 50),
+      display::test::DisplayManagerTestApi(display_manager())
+          .GetSecondaryDisplay());
   aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   EXPECT_EQ(root_windows[1], window_->GetRootWindow());
 
@@ -272,10 +275,10 @@ namespace {
 class ConvertToScreenEventHandler : public ui::EventHandler {
  public:
   ConvertToScreenEventHandler() : could_convert_to_screen_(true) {
-    Shell::Get()->aura_env()->AddPreTargetHandler(this);
+    aura::Env::GetInstance()->AddPreTargetHandler(this);
   }
   ~ConvertToScreenEventHandler() override {
-    Shell::Get()->aura_env()->RemovePreTargetHandler(this);
+    aura::Env::GetInstance()->RemovePreTargetHandler(this);
   }
 
   bool could_convert_to_screen() const { return could_convert_to_screen_; }
@@ -308,8 +311,10 @@ TEST_F(ScreenPositionControllerTest,
   base::RunLoop().RunUntilIdle();
 
   // Create a window on the secondary display.
-  window_->SetBoundsInScreen(gfx::Rect(600, 0, 400, 400),
-                             display_manager()->GetSecondaryDisplay());
+  window_->SetBoundsInScreen(
+      gfx::Rect(600, 0, 400, 400),
+      display::test::DisplayManagerTestApi(display_manager())
+          .GetSecondaryDisplay());
 
   // Move the mouse cursor over |window_|. Synthetic mouse moves are dispatched
   // asynchronously when a window which contains the mouse cursor is destroyed.
@@ -317,7 +322,7 @@ TEST_F(ScreenPositionControllerTest,
   // ScreenPositionClient has been detached from the root window.
   GetEventGenerator()->MoveMouseTo(800, 200);
   EXPECT_TRUE(window_->GetBoundsInScreen().Contains(
-      Shell::Get()->aura_env()->last_mouse_location()));
+      aura::Env::GetInstance()->last_mouse_location()));
 
   aura::Window::Windows root_windows = Shell::Get()->GetAllRootWindows();
   aura::WindowTracker tracker;

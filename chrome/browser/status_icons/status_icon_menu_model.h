@@ -10,6 +10,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/models/simple_menu_model.h"
 
 namespace gfx {
@@ -61,11 +62,9 @@ class StatusIconMenuModel
 
   // Calling any of these "change" methods will mark the menu item as "dynamic"
   // (see menu_model.h:IsItemDynamicAt) which many platforms take as a cue to
-  // refresh the label, sublabel and icon of the menu item each time the menu is
+  // refresh the label and icon of the menu item each time the menu is
   // shown.
-  void ChangeLabelForCommandId(int command_id, const base::string16& label);
-  void ChangeSublabelForCommandId(
-      int command_id, const base::string16& sublabel);
+  void ChangeLabelForCommandId(int command_id, const std::u16string& label);
   void ChangeIconForCommandId(int command_id, const gfx::Image& icon);
 
   void AddObserver(Observer* observer);
@@ -78,9 +77,8 @@ class StatusIconMenuModel
   bool GetAcceleratorForCommandId(int command_id,
                                   ui::Accelerator* accelerator) const override;
   bool IsItemForCommandIdDynamic(int command_id) const override;
-  base::string16 GetLabelForCommandId(int command_id) const override;
-  base::string16 GetSublabelForCommandId(int command_id) const override;
-  bool GetIconForCommandId(int command_id, gfx::Image* icon) const override;
+  std::u16string GetLabelForCommandId(int command_id) const override;
+  ui::ImageModel GetIconForCommandId(int command_id) const override;
 
  protected:
   // Overriden from ui::SimpleMenuModel:

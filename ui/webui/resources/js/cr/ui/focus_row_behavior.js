@@ -2,10 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-cr.define('cr.ui', function() {
-  /** @type {string} */
-  let lastKeyDownKey = '';
+// clang-format off
+// #import {afterNextRender} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+// #import {assert} from 'chrome://resources/js/assert.m.js';
+// #import {focusWithoutInk} from './focus_without_ink.m.js';
+// #import {FocusRow, FocusRowDelegate} from './focus_row.m.js';
+// clang-format on
 
+cr.define('cr.ui', function() {
   /** @implements {cr.ui.FocusRowDelegate} */
   class FocusRowBehaviorDelegate {
     /**
@@ -26,7 +30,12 @@ cr.define('cr.ui', function() {
      * @param {!Event} e
      */
     onFocus(row, e) {
-      this.listItem_.lastFocused = e.path[0];
+      const element = e.path[0];
+      const focusableElement = cr.ui.FocusRow.getFocusableElement(element);
+      if (element !== focusableElement) {
+        focusableElement.focus();
+      }
+      this.listItem_.lastFocused = focusableElement;
     }
 
     /**
@@ -37,7 +46,7 @@ cr.define('cr.ui', function() {
      */
     onKeydown(row, e) {
       // Prevent iron-list from changing the focus on enter.
-      if (e.key == 'Enter') {
+      if (e.key === 'Enter') {
         e.stopPropagation();
       }
 
@@ -84,13 +93,31 @@ cr.define('cr.ui', function() {
    *
    * @polymerBehavior
    */
-  const FocusRowBehavior = {
+  /* #export */ const FocusRowBehavior = {
     properties: {
       /** @private {cr.ui.VirtualFocusRow} */
       row_: Object,
 
       /** @private {boolean} */
       mouseFocused_: Boolean,
+
+      /** Will be updated when |index| is set, unless specified elsewhere. */
+      id: {
+        type: String,
+        reflectToAttribute: true,
+      },
+
+      /** For notifying when the row is in focus. */
+      isFocused: {
+        type: Boolean,
+        notify: true,
+      },
+
+      /** Should be bound to the index of the item from the iron-list */
+      focusRowIndex: {
+        type: Number,
+        observer: 'focusRowIndexChanged',
+      },
 
       /** @type {Element} */
       lastFocused: {
@@ -116,6 +143,31 @@ cr.define('cr.ui', function() {
       },
     },
 
+    /**
+     * Returns an ID based on the index that was passed in.
+     * @param {?number} index
+     * @return {?string}
+     */
+    computeId_(index) {
+      return index !== undefined ? `frb${index}` : undefined;
+    },
+
+    /**
+     * Sets |id| if it hasn't been set elsewhere. Also sets |aria-rowindex|.
+     * @param {number} newIndex
+     * @param {number} oldIndex
+     */
+    focusRowIndexChanged(newIndex, oldIndex) {
+      // focusRowIndex is 0-based where aria-rowindex is 1-based.
+      this.setAttribute('aria-rowindex', newIndex + 1);
+
+      // Only set ID if it matches what was previously set. This prevents
+      // overriding the ID value if it's set elsewhere.
+      if (this.id === this.computeId_(oldIndex)) {
+        this.id = this.computeId_(newIndex);
+      }
+    },
+
     /** @private {?Element} */
     firstControl_: null,
 
@@ -123,7 +175,7 @@ cr.define('cr.ui', function() {
     controlObservers_: [],
 
     /** @override */
-    attached: function() {
+    attached() {
       this.classList.add('no-outline');
 
       Polymer.RenderStatus.afterNextRender(this, function() {
@@ -139,17 +191,15 @@ cr.define('cr.ui', function() {
         this.listen(this, 'dom-change', 'addItems_');
         this.listen(this, 'mousedown', 'onMouseDown_');
         this.listen(this, 'blur', 'onBlur_');
-        this.listen(this, 'keydown', 'onKeydown_');
       });
     },
 
     /** @override */
-    detached: function() {
+    detached() {
       this.unlisten(this, 'focus', 'onFocus_');
       this.unlisten(this, 'dom-change', 'addItems_');
       this.unlisten(this, 'mousedown', 'onMouseDown_');
       this.unlisten(this, 'blur', 'onBlur_');
-      this.unlisten(this, 'keydown', 'onKeydown_');
       this.removeObservers_();
       if (this.firstControl_) {
         this.unlisten(this.firstControl_, 'keydown', 'onFirstControlKeydown_');
@@ -160,12 +210,12 @@ cr.define('cr.ui', function() {
     },
 
     /** @return {!cr.ui.FocusRow} */
-    getFocusRow: function() {
+    getFocusRow() {
       return assert(this.row_);
     },
 
     /** @private */
-    updateFirstControl_: function() {
+    updateFirstControl_() {
       const newFirstControl = this.row_.getFirstFocusable();
       if (newFirstControl === this.firstControl_) {
         return;
@@ -183,7 +233,7 @@ cr.define('cr.ui', function() {
     },
 
     /** @private */
-    removeObservers_: function() {
+    removeObservers_() {
       if (this.controlObservers_.length > 0) {
         this.controlObservers_.forEach(observer => {
           observer.disconnect();
@@ -193,7 +243,7 @@ cr.define('cr.ui', function() {
     },
 
     /** @private */
-    addItems_: function() {
+    addItems_() {
       this.ironListTabIndexChanged_();
       if (this.row_) {
         this.removeObservers_();
@@ -216,7 +266,7 @@ cr.define('cr.ui', function() {
      * @return {!MutationObserver}
      * @private
      */
-    createObserver_: function() {
+    createObserver_() {
       return new MutationObserver(mutations => {
         const mutation = mutations[0];
         if (mutation.attributeName === 'style' && mutation.oldValue) {
@@ -245,9 +295,9 @@ cr.define('cr.ui', function() {
      * @param {!Element} control
      * @private
      */
-    addMutationObservers_: function(control) {
+    addMutationObservers_(control) {
       let current = control;
-      while (current && current != this.root) {
+      while (current && current !== this.root) {
         const currentObserver = this.createObserver_();
         currentObserver.observe(current, {
           attributes: true,
@@ -264,7 +314,7 @@ cr.define('cr.ui', function() {
      * @param {!Event} e The focus event
      * @private
      */
-    onFocus_: function(e) {
+    onFocus_(e) {
       if (this.mouseFocused_) {
         this.mouseFocused_ = false;  // Consume and reset flag.
         return;
@@ -280,42 +330,38 @@ cr.define('cr.ui', function() {
       const restoreFocusToFirst =
           this.listBlurred && e.composedPath()[0] === this;
 
-      if (!this.lastFocused || restoreFocusToFirst) {
+      if (this.lastFocused && !restoreFocusToFirst) {
+        cr.ui.focusWithoutInk(this.row_.getEquivalentElement(this.lastFocused));
+      } else {
         const firstFocusable = assert(this.firstControl_);
-        firstFocusable.focus();
-      } else if (lastKeyDownKey == 'ArrowDown' || lastKeyDownKey == 'ArrowUp') {
-        this.row_.getEquivalentElement(this.lastFocused).focus();
+        cr.ui.focusWithoutInk(firstFocusable);
       }
       this.listBlurred = false;
+      this.isFocused = true;
     },
 
     /** @param {!KeyboardEvent} e */
-    onFirstControlKeydown_: function(e) {
+    onFirstControlKeydown_(e) {
       if (e.shiftKey && e.key === 'Tab') {
         this.focus();
       }
     },
 
-    /** @param {!KeyboardEvent} e */
-    onKeydown_: function(e) {
-      lastKeyDownKey = e.key;
-    },
-
     /** @private */
-    ironListTabIndexChanged_: function() {
+    ironListTabIndexChanged_() {
       if (this.row_) {
-        this.row_.makeActive(this.ironListTabIndex == 0);
+        this.row_.makeActive(this.ironListTabIndex === 0);
       }
 
       // If a new row is being focused, reset listBlurred. This means an item
       // has been removed and iron-list is about to focus the next item.
-      if (this.ironListTabIndex == 0) {
+      if (this.ironListTabIndex === 0) {
         this.listBlurred = false;
       }
     },
 
     /** @private */
-    onMouseDown_: function() {
+    onMouseDown_() {
       this.mouseFocused_ = true;  // Set flag to not do any control-focusing.
     },
 
@@ -323,8 +369,10 @@ cr.define('cr.ui', function() {
      * @param {!Event} e
      * @private
      */
-    onBlur_: function(e) {
-      this.mouseFocused_ = false;  // Reset flag since it's not active anymore.
+    onBlur_(e) {
+      // Reset focused flags since it's not active anymore.
+      this.mouseFocused_ = false;
+      this.isFocused = false;
 
       const node =
           e.relatedTarget ? /** @type {!Node} */ (e.relatedTarget) : null;
@@ -334,6 +382,40 @@ cr.define('cr.ui', function() {
     },
   };
 
+  /** @interface */
+  /* #export */ class FocusRowBehaviorInterface {
+    constructor() {
+      /** @type {string} */
+      this.id;
+
+      /** @type {boolean} */
+      this.isFocused;
+
+      /** @type {number} */
+      this.focusRowIndex;
+
+      /** @type {?Element} */
+      this.lastFocused;
+
+      /** @type {number} */
+      this.ironListTabIndex;
+
+      /** @type {boolean} */
+      this.listBlurred;
+    }
+
+    /**
+     * @param {number} newIndex
+     * @param {number} oldIndex
+     */
+    focusRowIndexChanged(newIndex, oldIndex) {}
+
+    /** @return {!cr.ui.FocusRow} */
+    getFocusRow() {}
+  }
+
+  // #cr_define_end
+  console.warn('crbug/1173575, non-JS module files deprecated.');
   return {
     FocusRowBehaviorDelegate,
     VirtualFocusRow,

@@ -1,19 +1,20 @@
-<link rel="import" href="chrome://resources/html/polymer.html">
-
-<link rel="import" href="chrome://resources/cr_elements/shared_vars_css.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-styles/color.html">
-
 <custom-style>
-<style is="custom-style">
+<style>
   html {
     /* Note: error-color is used for many warnings. There's also an orange-y
      * warning color in 1 place. */
     --error-color: var(--google-red-700);
+    /* Copied from 'ui/gfx/color_palette.h' kGoogleYellow700 (#f29900) */
+    --warning-color: rgb(242, 153, 0);
+    --extensions-card-height: 160px;
     --separator-gap: 9px;
   }
 
-  html[dark] {
-    --error-color: var(--google-red-refresh-300);
+  @media (prefers-color-scheme: dark) {
+    html {
+      --error-color: var(--google-red-refresh-300);
+      --warning-color: var(--google-yellow-refresh-300);
+    }
   }
 </style>
 </custom-style>

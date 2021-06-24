@@ -11,7 +11,7 @@ class ChromeBrowserStateManager;
 
 namespace profile_metrics {
 struct Counts;
-}
+}  // namespace profile_metrics
 
 // Counts and returns summary information about the browser states currently in
 // the |manager|. This information is returned in the output variable

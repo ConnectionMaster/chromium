@@ -7,9 +7,9 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
 #include "net/base/io_buffer.h"
@@ -74,6 +74,10 @@ std::string FilterSourceStream::Description() const {
   return next_type_string + "," + GetTypeAsString();
 }
 
+bool FilterSourceStream::MayHaveMoreBytes() const {
+  return !upstream_end_reached_;
+}
+
 FilterSourceStream::SourceType FilterSourceStream::ParseEncodingType(
     const std::string& encoding) {
   if (encoding.empty()) {
@@ -88,10 +92,6 @@ FilterSourceStream::SourceType FilterSourceStream::ParseEncodingType(
   } else {
     return TYPE_UNKNOWN;
   }
-}
-
-void FilterSourceStream::ReportContentDecodingFailed(SourceType type) {
-  UMA_HISTOGRAM_ENUMERATION("Net.ContentDecodingFailed2", type, TYPE_MAX);
 }
 
 int FilterSourceStream::DoLoop(int result) {
@@ -129,9 +129,9 @@ int FilterSourceStream::DoReadData() {
 
   next_state_ = STATE_READ_DATA_COMPLETE;
   // Use base::Unretained here is safe because |this| owns |upstream_|.
-  int rv = upstream_->Read(
-      input_buffer_.get(), kBufferSize,
-      base::Bind(&FilterSourceStream::OnIOComplete, base::Unretained(this)));
+  int rv = upstream_->Read(input_buffer_.get(), kBufferSize,
+                           base::BindOnce(&FilterSourceStream::OnIOComplete,
+                                          base::Unretained(this)));
 
   return rv;
 }
@@ -162,9 +162,6 @@ int FilterSourceStream::DoFilterData() {
   DCHECK(bytes_output != 0 ||
          consumed_bytes == drainable_input_buffer_->BytesRemaining());
 
-  if (bytes_output == ERR_CONTENT_DECODING_FAILED) {
-    ReportContentDecodingFailed(type());
-  }
   // FilterData() is not allowed to return ERR_IO_PENDING.
   DCHECK_NE(ERR_IO_PENDING, bytes_output);
 
@@ -192,7 +189,7 @@ void FilterSourceStream::OnIOComplete(int result) {
   output_buffer_ = nullptr;
   output_buffer_size_ = 0;
 
-  base::ResetAndReturn(&callback_).Run(rv);
+  std::move(callback_).Run(rv);
 }
 
 bool FilterSourceStream::NeedMoreData() const {

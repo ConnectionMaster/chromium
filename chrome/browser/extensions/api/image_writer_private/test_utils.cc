@@ -9,14 +9,18 @@
 
 #include "base/bind.h"
 #include "base/location.h"
+#include "base/path_service.h"
 #include "base/single_thread_task_runner.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_messages.h"
-#include "services/service_manager/public/cpp/connector.h"
+#include "chrome/common/chrome_paths.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chromeos/dbus/concierge/concierge_client.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/fake_image_burner_client.h"
 #include "chromeos/disks/disk.h"
@@ -25,25 +29,25 @@
 namespace extensions {
 namespace image_writer {
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 namespace {
 
 class ImageWriterFakeImageBurnerClient
     : public chromeos::FakeImageBurnerClient {
  public:
-  ImageWriterFakeImageBurnerClient() {}
-  ~ImageWriterFakeImageBurnerClient() override {}
+  ImageWriterFakeImageBurnerClient() = default;
+  ~ImageWriterFakeImageBurnerClient() override = default;
 
   void SetEventHandlers(
-      const BurnFinishedHandler& burn_finished_handler,
+      BurnFinishedHandler burn_finished_handler,
       const BurnProgressUpdateHandler& burn_progress_update_handler) override {
-    burn_finished_handler_ = burn_finished_handler;
+    burn_finished_handler_ = std::move(burn_finished_handler);
     burn_progress_update_handler_ = burn_progress_update_handler;
   }
 
   void BurnImage(const std::string& from_path,
                  const std::string& to_path,
-                 const ErrorCallback& error_callback) override {
+                 ErrorCallback error_callback) override {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
         base::BindOnce(burn_progress_update_handler_, to_path, 0, 100));
@@ -54,7 +58,8 @@ class ImageWriterFakeImageBurnerClient
         FROM_HERE,
         base::BindOnce(burn_progress_update_handler_, to_path, 100, 100));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(burn_finished_handler_, to_path, true, ""));
+        FROM_HERE,
+        base::BindOnce(std::move(burn_finished_handler_), to_path, true, ""));
   }
 
  private:
@@ -67,11 +72,11 @@ class ImageWriterFakeImageBurnerClient
 
 MockOperationManager::MockOperationManager(content::BrowserContext* context)
     : OperationManager(context) {}
-MockOperationManager::~MockOperationManager() {}
+MockOperationManager::~MockOperationManager() = default;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 FakeDiskMountManager::FakeDiskMountManager() {}
-FakeDiskMountManager::~FakeDiskMountManager() {}
+FakeDiskMountManager::~FakeDiskMountManager() = default;
 
 void FakeDiskMountManager::UnmountDeviceRecursively(
     const std::string& device_path,
@@ -87,17 +92,15 @@ SimulateProgressInfo::SimulateProgressInfo(
     bool will_succeed)
     : progress_list(progress_list), will_succeed(will_succeed) {}
 
-SimulateProgressInfo::~SimulateProgressInfo() {}
+SimulateProgressInfo::~SimulateProgressInfo() = default;
 SimulateProgressInfo::SimulateProgressInfo(const SimulateProgressInfo&) =
     default;
 
 FakeImageWriterClient::FakeImageWriterClient()
-    : ImageWriterUtilityClient(
-          base::CreateSequencedTaskRunnerWithTraits(
-              {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
-               base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
-          /*connector=*/nullptr) {}
-FakeImageWriterClient::~FakeImageWriterClient() {}
+    : ImageWriterUtilityClient(base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})) {}
+FakeImageWriterClient::~FakeImageWriterClient() = default;
 
 void FakeImageWriterClient::SimulateProgressAndCompletion(
     const SimulateProgressInfo& info) {
@@ -110,14 +113,14 @@ void FakeImageWriterClient::SimulateProgressAndCompletion(
   }
 }
 
-void FakeImageWriterClient::Write(const ProgressCallback& progress_callback,
-                                  const SuccessCallback& success_callback,
-                                  const ErrorCallback& error_callback,
+void FakeImageWriterClient::Write(ProgressCallback progress_callback,
+                                  SuccessCallback success_callback,
+                                  ErrorCallback error_callback,
                                   const base::FilePath& source,
                                   const base::FilePath& target) {
-  progress_callback_ = progress_callback;
-  success_callback_ = success_callback;
-  error_callback_ = error_callback;
+  progress_callback_ = std::move(progress_callback);
+  success_callback_ = std::move(success_callback);
+  error_callback_ = std::move(error_callback);
 
   if (simulate_on_write_) {
     SimulateProgressAndCompletion(*simulate_on_write_);
@@ -125,14 +128,14 @@ void FakeImageWriterClient::Write(const ProgressCallback& progress_callback,
   }
 }
 
-void FakeImageWriterClient::Verify(const ProgressCallback& progress_callback,
-                                   const SuccessCallback& success_callback,
-                                   const ErrorCallback& error_callback,
+void FakeImageWriterClient::Verify(ProgressCallback progress_callback,
+                                   SuccessCallback success_callback,
+                                   ErrorCallback error_callback,
                                    const base::FilePath& source,
                                    const base::FilePath& target) {
-  progress_callback_ = progress_callback;
-  success_callback_ = success_callback;
-  error_callback_ = error_callback;
+  progress_callback_ = std::move(progress_callback);
+  success_callback_ = std::move(success_callback);
+  error_callback_ = std::move(error_callback);
 
   if (simulate_on_verify_) {
     SimulateProgressAndCompletion(*simulate_on_verify_);
@@ -140,8 +143,8 @@ void FakeImageWriterClient::Verify(const ProgressCallback& progress_callback,
   }
 }
 
-void FakeImageWriterClient::Cancel(const CancelCallback& cancel_callback) {
-  cancel_callback_ = cancel_callback;
+void FakeImageWriterClient::Cancel(CancelCallback cancel_callback) {
+  cancel_callback_ = std::move(cancel_callback);
 }
 
 void FakeImageWriterClient::Shutdown() {
@@ -174,39 +177,39 @@ void FakeImageWriterClient::Progress(int64_t progress) {
 
 void FakeImageWriterClient::Success() {
   if (!success_callback_.is_null())
-    success_callback_.Run();
+    std::move(success_callback_).Run();
 }
 
 void FakeImageWriterClient::Error(const std::string& message) {
   if (!error_callback_.is_null())
-    error_callback_.Run(message);
+    std::move(error_callback_).Run(message);
 }
 
 void FakeImageWriterClient::Cancel() {
   if (!cancel_callback_.is_null())
-    cancel_callback_.Run();
+    std::move(cancel_callback_).Run();
 }
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 scoped_refptr<ImageWriterUtilityClient> CreateFakeImageWriterUtilityClient(
     ImageWriterTestUtils* utils) {
   auto* client = new FakeImageWriterClient();
   utils->OnUtilityClientCreated(client);
   return base::WrapRefCounted(client);
 }
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
 
 ImageWriterTestUtils::ImageWriterTestUtils()
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
     : utility_client_factory_(
-          base::Bind(&CreateFakeImageWriterUtilityClient, this))
+          base::BindRepeating(&CreateFakeImageWriterUtilityClient, this))
 #endif
 {
 }
-ImageWriterTestUtils::~ImageWriterTestUtils() {
-}
 
-#if !defined(OS_CHROMEOS)
+ImageWriterTestUtils::~ImageWriterTestUtils() = default;
+
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 void ImageWriterTestUtils::OnUtilityClientCreated(
     FakeImageWriterClient* client) {
   DCHECK(!client_.get())
@@ -217,7 +220,7 @@ void ImageWriterTestUtils::OnUtilityClientCreated(
 }
 #endif
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 void ImageWriterTestUtils::RunOnUtilityClientCreation(
     base::OnceCallback<void(FakeImageWriterClient*)> closure) {
   client_creation_callback_ = std::move(closure);
@@ -238,13 +241,17 @@ void ImageWriterTestUtils::SetUp(bool is_browser_test) {
   ASSERT_TRUE(FillFile(test_image_path_, kImagePattern, kTestFileSize));
   ASSERT_TRUE(FillFile(test_device_path_, kDevicePattern, kTestFileSize));
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (!chromeos::DBusThreadManager::IsInitialized()) {
-    std::unique_ptr<chromeos::DBusThreadManagerSetter> dbus_setter =
-        chromeos::DBusThreadManager::GetSetterForTesting();
-    std::unique_ptr<chromeos::ImageBurnerClient> image_burner_fake(
-        new ImageWriterFakeImageBurnerClient());
-    dbus_setter->SetImageBurnerClient(std::move(image_burner_fake));
+    if (!is_browser_test) {
+      // For browser tests, chromeos::InitializeDBus() automatically does the
+      // same.
+      chromeos::DBusThreadManager::Initialize();
+      chromeos::ConciergeClient::InitializeFake(
+          /*fake_cicerone_client=*/nullptr);
+    }
+    chromeos::DBusThreadManager::GetSetterForTesting()->SetImageBurnerClient(
+        std::make_unique<ImageWriterFakeImageBurnerClient>());
   }
 
   FakeDiskMountManager* disk_manager = new FakeDiskMountManager();
@@ -265,8 +272,11 @@ void ImageWriterTestUtils::SetUp(bool is_browser_test) {
 }
 
 void ImageWriterTestUtils::TearDown() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (chromeos::DBusThreadManager::IsInitialized()) {
+    // When in browser_tests, this path is not taken. These clients have already
+    // been shut down by chromeos::ShutdownDBus().
+    chromeos::ConciergeClient::Shutdown();
     chromeos::DBusThreadManager::Shutdown();
   }
   chromeos::disks::DiskMountManager::Shutdown();
@@ -316,9 +326,8 @@ bool ImageWriterTestUtils::FillFile(const base::FilePath& file,
 }
 
 ImageWriterUnitTestBase::ImageWriterUnitTestBase()
-    : thread_bundle_(content::TestBrowserThreadBundle::REAL_IO_THREAD) {}
-ImageWriterUnitTestBase::~ImageWriterUnitTestBase() {
-}
+    : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP) {}
+ImageWriterUnitTestBase::~ImageWriterUnitTestBase() = default;
 
 void ImageWriterUnitTestBase::SetUp() {
   testing::Test::SetUp();
@@ -328,6 +337,14 @@ void ImageWriterUnitTestBase::SetUp() {
 void ImageWriterUnitTestBase::TearDown() {
   testing::Test::TearDown();
   test_utils_.TearDown();
+}
+
+bool GetTestDataDirectory(base::FilePath* path) {
+  bool success = base::PathService::Get(chrome::DIR_TEST_DATA, path);
+  if (!success)
+    return false;
+  *path = path->AppendASCII("image_writer_private");
+  return true;
 }
 
 }  // namespace image_writer

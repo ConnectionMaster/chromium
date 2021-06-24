@@ -6,7 +6,6 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_AUTOFILL_WALLET_MODEL_TYPE_CONTROLLER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/macros.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -29,13 +28,16 @@ class AutofillWalletModelTypeController : public syncer::ModelTypeController,
   // |sync_client| must outlive this object.
   AutofillWalletModelTypeController(
       syncer::ModelType type,
-      std::unique_ptr<syncer::ModelTypeControllerDelegate> delegate_on_disk,
+      std::unique_ptr<syncer::ModelTypeControllerDelegate>
+          delegate_for_full_sync_mode,
       PrefService* pref_service,
       syncer::SyncService* sync_service);
   AutofillWalletModelTypeController(
       syncer::ModelType type,
-      std::unique_ptr<syncer::ModelTypeControllerDelegate> delegate_on_disk,
-      std::unique_ptr<syncer::ModelTypeControllerDelegate> delegate_in_memory,
+      std::unique_ptr<syncer::ModelTypeControllerDelegate>
+          delegate_for_full_sync_mode,
+      std::unique_ptr<syncer::ModelTypeControllerDelegate>
+          delegate_for_transport_mode,
       PrefService* pref_service,
       syncer::SyncService* sync_service);
   ~AutofillWalletModelTypeController() override;
@@ -43,7 +45,8 @@ class AutofillWalletModelTypeController : public syncer::ModelTypeController,
   // DataTypeController overrides.
   void Stop(syncer::ShutdownReason shutdown_reason,
             StopCallback callback) override;
-  bool ReadyForStart() const override;
+  PreconditionState GetPreconditionState() const override;
+  bool ShouldRunInTransportOnlyMode() const override;
 
   // syncer::SyncServiceObserver implementation.
   void OnStateChanged(syncer::SyncService* sync) override;

@@ -10,6 +10,8 @@
 
 #include "base/macros.h"
 #include "base/values.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "url/origin.h"
 
 class GURL;
 
@@ -66,7 +68,8 @@ class MessagePort {
       int guest_render_frame_routing_id,
       const MessagingEndpoint& source_endpoint,
       const std::string& target_extension_id,
-      const GURL& source_url);
+      const GURL& source_url,
+      absl::optional<url::Origin> source_origin);
 
   // Notifies the port that the channel has been closed. If |error_message| is
   // non-empty, it indicates an error occurred while opening the connection.

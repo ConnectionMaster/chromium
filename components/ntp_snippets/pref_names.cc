@@ -7,10 +7,6 @@
 namespace ntp_snippets {
 namespace prefs {
 
-const char kEnableSnippets[] = "ntp_snippets.enable";
-
-const char kArticlesListVisible[] = "ntp_snippets.list_visible";
-
 const char kRemoteSuggestionCategories[] = "ntp_snippets.remote_categories";
 
 const char kSnippetLastFetchAttemptTime[] = "ntp_snippets.last_fetch_attempt";
@@ -74,21 +70,6 @@ const char kClickBasedCategoryRankerOrderWithClicks[] =
     "ntp_suggestions.click_based_category_ranker.category_order_with_clicks";
 const char kClickBasedCategoryRankerLastDecayTime[] =
     "ntp_suggestions.click_based_category_ranker.last_decay_time";
-
-const char kBreakingNewsSubscriptionDataToken[] =
-    "ntp_suggestions.breaking_news_subscription_data.token";
-
-const char kBreakingNewsSubscriptionDataIsAuthenticated[] =
-    "ntp_suggestions.breaking_news_subscription_data.is_authenticated";
-
-const char kBreakingNewsGCMSubscriptionTokenCache[] =
-    "ntp_suggestions.breaking_news_gcm_subscription_token_cache";
-
-const char kBreakingNewsGCMLastTokenValidationTime[] =
-    "ntp_suggestions.breaking_news_gcm_last_token_validation_time";
-
-const char kBreakingNewsGCMLastForcedSubscriptionTime[] =
-    "ntp_suggestions.breaking_news_gcm_last_forced_subscription_time";
 
 }  // namespace prefs
 }  // namespace ntp_snippets

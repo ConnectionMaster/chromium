@@ -9,7 +9,6 @@
 
 #include "base/containers/circular_deque.h"
 #include "base/memory/ref_counted.h"
-#include "base/time/time.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_converter.h"
 #include "media/base/audio_parameters.h"
@@ -27,7 +26,7 @@ class MEDIA_EXPORT AudioBufferConverter : public AudioConverter::InputCallback {
   explicit AudioBufferConverter(const AudioParameters& output_params);
   ~AudioBufferConverter() override;
 
-  void AddInput(const scoped_refptr<AudioBuffer>& buffer);
+  void AddInput(scoped_refptr<AudioBuffer> buffer);
 
   // Is an output buffer available via GetNextBuffer()?
   bool HasNextBuffer();
@@ -54,7 +53,7 @@ class MEDIA_EXPORT AudioBufferConverter : public AudioConverter::InputCallback {
   double ProvideInput(AudioBus* audio_bus, uint32_t frames_delayed) override;
 
   // Reset the converter in response to a configuration change.
-  void ResetConverter(const scoped_refptr<AudioBuffer>& input_buffer);
+  void ResetConverter(const AudioBuffer& input_buffer);
 
   // Perform conversion if we have enough data.
   void ConvertIfPossible();

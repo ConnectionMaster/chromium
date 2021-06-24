@@ -9,6 +9,7 @@
 
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/quic/platform/impl/quic_chromium_clock.h"
 #include "net/quic/quic_chromium_client_session.h"
 #include "net/quic/quic_http_stream.h"
@@ -27,26 +28,25 @@ const quic::QuicConfig* QuicStreamFactoryPeer::GetConfig(
   return &factory->config_;
 }
 
-quic::QuicCryptoClientConfig* QuicStreamFactoryPeer::GetCryptoConfig(
-    QuicStreamFactory* factory) {
-  return &factory->crypto_config_;
+std::unique_ptr<QuicCryptoClientConfigHandle>
+QuicStreamFactoryPeer::GetCryptoConfig(
+    QuicStreamFactory* factory,
+    const NetworkIsolationKey& network_isolation_key) {
+  return factory->GetCryptoConfigForTesting(network_isolation_key);
 }
 
 bool QuicStreamFactoryPeer::HasActiveSession(
     QuicStreamFactory* factory,
-    const quic::QuicServerId& server_id) {
-  return factory->HasActiveSession(QuicSessionKey(server_id, SocketTag()));
+    const quic::QuicServerId& server_id,
+    const NetworkIsolationKey& network_isolation_key) {
+  return factory->HasActiveSession(QuicSessionKey(
+      server_id, SocketTag(), network_isolation_key, SecureDnsPolicy::kAllow));
 }
 
 bool QuicStreamFactoryPeer::HasActiveJob(QuicStreamFactory* factory,
                                          const quic::QuicServerId& server_id) {
-  return factory->HasActiveJob(QuicSessionKey(server_id, SocketTag()));
-}
-
-bool QuicStreamFactoryPeer::HasActiveCertVerifierJob(
-    QuicStreamFactory* factory,
-    const quic::QuicServerId& server_id) {
-  return factory->HasActiveCertVerifierJob(server_id);
+  return factory->HasActiveJob(QuicSessionKey(
+      server_id, SocketTag(), NetworkIsolationKey(), SecureDnsPolicy::kAllow));
 }
 
 // static
@@ -54,7 +54,8 @@ QuicChromiumClientSession* QuicStreamFactoryPeer::GetPendingSession(
     QuicStreamFactory* factory,
     const quic::QuicServerId& server_id,
     const HostPortPair& destination) {
-  QuicSessionKey session_key(server_id, SocketTag());
+  QuicSessionKey session_key(server_id, SocketTag(), NetworkIsolationKey(),
+                             SecureDnsPolicy::kAllow);
   QuicStreamFactory::QuicSessionAliasKey key(destination, session_key);
   DCHECK(factory->HasActiveJob(session_key));
   DCHECK_EQ(factory->all_sessions_.size(), 1u);
@@ -64,8 +65,10 @@ QuicChromiumClientSession* QuicStreamFactoryPeer::GetPendingSession(
 
 QuicChromiumClientSession* QuicStreamFactoryPeer::GetActiveSession(
     QuicStreamFactory* factory,
-    const quic::QuicServerId& server_id) {
-  QuicSessionKey session_key(server_id, SocketTag());
+    const quic::QuicServerId& server_id,
+    const NetworkIsolationKey& network_isolation_key) {
+  QuicSessionKey session_key(server_id, SocketTag(), network_isolation_key,
+                             SecureDnsPolicy::kAllow);
   DCHECK(factory->HasActiveSession(session_key));
   return factory->active_sessions_[session_key];
 }
@@ -74,7 +77,8 @@ bool QuicStreamFactoryPeer::HasLiveSession(
     QuicStreamFactory* factory,
     const HostPortPair& destination,
     const quic::QuicServerId& server_id) {
-  QuicSessionKey session_key = QuicSessionKey(server_id, SocketTag());
+  QuicSessionKey session_key = QuicSessionKey(
+      server_id, SocketTag(), NetworkIsolationKey(), SecureDnsPolicy::kAllow);
   QuicStreamFactory::QuicSessionAliasKey alias_key =
       QuicStreamFactory::QuicSessionAliasKey(destination, session_key);
   for (auto it = factory->all_sessions_.begin();
@@ -111,25 +115,6 @@ quic::QuicTime::Delta QuicStreamFactoryPeer::GetPingTimeout(
   return factory->ping_timeout_;
 }
 
-bool QuicStreamFactoryPeer::GetRaceCertVerification(
-    QuicStreamFactory* factory) {
-  return factory->race_cert_verification_;
-}
-
-void QuicStreamFactoryPeer::SetRaceCertVerification(
-    QuicStreamFactory* factory,
-    bool race_cert_verification) {
-  factory->race_cert_verification_ = race_cert_verification;
-}
-
-quic::QuicAsyncStatus QuicStreamFactoryPeer::StartCertVerifyJob(
-    QuicStreamFactory* factory,
-    const quic::QuicServerId& server_id,
-    int cert_verify_flags,
-    const NetLogWithSource& net_log) {
-  return factory->StartCertVerifyJob(server_id, cert_verify_flags, net_log);
-}
-
 void QuicStreamFactoryPeer::SetYieldAfterPackets(QuicStreamFactory* factory,
                                                  int yield_after_packets) {
   factory->yield_after_packets_ = yield_after_packets;
@@ -143,13 +128,16 @@ void QuicStreamFactoryPeer::SetYieldAfterDuration(
 
 bool QuicStreamFactoryPeer::CryptoConfigCacheIsEmpty(
     QuicStreamFactory* factory,
-    const quic::QuicServerId& quic_server_id) {
-  return factory->CryptoConfigCacheIsEmpty(quic_server_id);
+    const quic::QuicServerId& quic_server_id,
+    const NetworkIsolationKey& network_isolation_key) {
+  return factory->CryptoConfigCacheIsEmptyForTesting(quic_server_id,
+                                                     network_isolation_key);
 }
 
 void QuicStreamFactoryPeer::CacheDummyServerConfig(
     QuicStreamFactory* factory,
-    const quic::QuicServerId& quic_server_id) {
+    const quic::QuicServerId& quic_server_id,
+    const NetworkIsolationKey& network_isolation_key) {
   // Minimum SCFG that passes config validation checks.
   const char scfg[] = {// SCFG
                        0x53, 0x43, 0x46, 0x47,
@@ -175,23 +163,24 @@ void QuicStreamFactoryPeer::CacheDummyServerConfig(
   DCHECK(cert);
   certs.emplace_back(x509_util::CryptoBufferAsStringPiece(cert->cert_buffer()));
 
-  quic::QuicCryptoClientConfig* crypto_config = &factory->crypto_config_;
+  std::unique_ptr<QuicCryptoClientConfigHandle> crypto_config_handle =
+      GetCryptoConfig(factory, network_isolation_key);
   quic::QuicCryptoClientConfig::CachedState* cached =
-      crypto_config->LookupOrCreate(quic_server_id);
+      crypto_config_handle->GetConfig()->LookupOrCreate(quic_server_id);
   quic::QuicChromiumClock clock;
   cached->Initialize(server_config, source_address_token, certs, "", "",
                      signature, clock.WallNow(), quic::QuicWallTime::Zero());
   DCHECK(!cached->certs().empty());
 }
 
-quic::QuicClientPushPromiseIndex* QuicStreamFactoryPeer::GetPushPromiseIndex(
-    QuicStreamFactory* factory) {
-  return &factory->push_promise_index_;
-}
-
 int QuicStreamFactoryPeer::GetNumPushStreamsCreated(
     QuicStreamFactory* factory) {
   return factory->num_push_streams_created_;
+}
+
+size_t QuicStreamFactoryPeer::GetNumDegradingSessions(
+    QuicStreamFactory* factory) {
+  return factory->connectivity_monitor_.GetNumDegradingSessions();
 }
 
 void QuicStreamFactoryPeer::SetAlarmFactory(

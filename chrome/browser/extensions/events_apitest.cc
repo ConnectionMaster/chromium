@@ -12,6 +12,7 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/process_manager.h"
@@ -34,8 +35,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, EventsAreUnregistered) {
   EventRouter* event_router = EventRouter::Get(profile());
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
 
-  std::string test_extension_name = "events_are_unregistered";
-  ASSERT_TRUE(RunExtensionSubtest(test_extension_name, "page1.html"))
+  constexpr char test_extension_name[] = "events_are_unregistered";
+  ASSERT_TRUE(RunExtensionTest(test_extension_name, {.page_url = "page1.html"}))
       << message_;
 
   // Find the extension we just installed by looking for the path.
@@ -73,7 +74,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, EventsAreUnregistered) {
 // Test that listeners for webview-related events are not stored (even for lazy
 // contexts). See crbug.com/736381.
 IN_PROC_BROWSER_TEST_F(ExtensionApiTest, WebViewEventRegistration) {
-  ASSERT_TRUE(RunPlatformAppTest("events/webview_events")) << message_;
+  ASSERT_TRUE(RunExtensionTest("events/webview_events",
+                               {.launch_as_platform_app = true}))
+      << message_;
   EventRouter* event_router = EventRouter::Get(profile());
   // We should not register lazy listeners for any webview-related events.
   EXPECT_FALSE(
@@ -208,11 +211,12 @@ IN_PROC_BROWSER_TEST_F(EventsApiTest,
   }
 }
 
-// Disabled on non-Mac due to flaky timeouts. https://crbug.com/833854
-#if !defined(OS_MACOSX)
-#define MAYBE_NewlyIntroducedListener DISABLED_NewlyIntroducedListener
-#else
+// This test is OK on Windows, but times out on other platforms.
+// https://crbug.com/833854
+#if defined(OS_WIN)
 #define MAYBE_NewlyIntroducedListener NewlyIntroducedListener
+#else
+#define MAYBE_NewlyIntroducedListener DISABLED_NewlyIntroducedListener
 #endif
 // Tests that if an extension's updated version has a new lazy listener, it
 // fires properly after the update.
@@ -244,7 +248,7 @@ IN_PROC_BROWSER_TEST_F(EventsApiTest, MAYBE_NewlyIntroducedListener) {
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), GURL(url::kAboutBlankURL),
         WindowOpenDisposition::NEW_BACKGROUND_TAB,
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     // Expect tabs.onCreated to fire.
     EXPECT_TRUE(catcher.GetNextResult());
   }

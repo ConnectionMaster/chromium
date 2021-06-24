@@ -23,6 +23,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/omnibox/browser/omnibox_view.h"
 #include "content/public/browser/browser_accessibility_state.h"
+#include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -111,7 +112,7 @@ void WinAccessibilityEventMonitor::WaitForNextEvent(
   if (event_queue_.empty()) {
     loop_runner_ = new content::MessageLoopRunner();
     loop_runner_->Run();
-    loop_runner_ = NULL;
+    loop_runner_.reset();
   }
   EventInfo event_info = event_queue_.front();
   event_queue_.pop_front();
@@ -121,9 +122,9 @@ void WinAccessibilityEventMonitor::WaitForNextEvent(
 
   Microsoft::WRL::ComPtr<IAccessible> acc_obj;
   base::win::ScopedVariant child_variant;
-  CHECK(S_OK == AccessibleObjectFromEvent(
-                    event_info.hwnd, event_info.obj_id, event_info.child_id,
-                    acc_obj.GetAddressOf(), child_variant.Receive()));
+  CHECK(S_OK == AccessibleObjectFromEvent(event_info.hwnd, event_info.obj_id,
+                                          event_info.child_id, &acc_obj,
+                                          child_variant.Receive()));
 
   base::win::ScopedVariant role_variant;
   if (S_OK == acc_obj->get_accRole(child_variant, role_variant.Receive()))
@@ -140,7 +141,7 @@ void WinAccessibilityEventMonitor::WaitForNextEvent(
   base::win::ScopedBstr name_bstr;
   HRESULT hr = acc_obj->get_accName(child_variant, name_bstr.Receive());
   if (S_OK == hr)
-    *out_name = base::UTF16ToUTF8(base::string16(name_bstr));
+    *out_name = base::WideToUTF8(name_bstr.Get());
   else
     *out_name = "";
 }

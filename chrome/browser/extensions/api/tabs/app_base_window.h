@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_TABS_APP_BASE_WINDOW_H_
 #define CHROME_BROWSER_EXTENSIONS_API_TABS_APP_BASE_WINDOW_H_
 
-#include <string>
-
 #include "base/macros.h"
 #include "ui/base/base_window.h"
 
@@ -45,8 +43,8 @@ class AppBaseWindow : public ui::BaseWindow {
   void Restore() override;
   void SetBounds(const gfx::Rect& bounds) override;
   void FlashFrame(bool flash) override;
-  bool IsAlwaysOnTop() const override;
-  void SetAlwaysOnTop(bool always_on_top) override;
+  ui::ZOrderLevel GetZOrderLevel() const override;
+  void SetZOrderLevel(ui::ZOrderLevel order) override;
 
   NativeAppWindow* GetBaseWindow() const;
 

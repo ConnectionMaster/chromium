@@ -12,16 +12,16 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/metrics/field_trial.h"
-#include "base/strings/string16.h"
 #include "components/metrics/clean_exit_beacon.h"
 #include "components/metrics/client_info.h"
+#include "components/metrics/cloned_install_detector.h"
+#include "components/metrics/entropy_state.h"
 
 class PrefService;
 class PrefRegistrySimple;
 
 namespace metrics {
 
-class ClonedInstallDetector;
 class EnabledStateProvider;
 class MetricsProvider;
 
@@ -32,12 +32,12 @@ class MetricsStateManager final {
  public:
   // A callback that can be invoked to store client info to persistent storage.
   // Storing an empty client_id will resulted in the backup being voided.
-  typedef base::Callback<void(const ClientInfo& client_info)>
+  typedef base::RepeatingCallback<void(const ClientInfo& client_info)>
       StoreClientInfoCallback;
 
   // A callback that can be invoked to load client info stored through the
   // StoreClientInfoCallback.
-  typedef base::Callback<std::unique_ptr<ClientInfo>(void)>
+  typedef base::RepeatingCallback<std::unique_ptr<ClientInfo>(void)>
       LoadClientInfoCallback;
 
   ~MetricsStateManager();
@@ -56,12 +56,24 @@ class MetricsStateManager final {
   // not opted in to metrics reporting.
   const std::string& client_id() const { return client_id_; }
 
+  // Returns the low entropy source for this client.
+  int GetLowEntropySource();
+
   // The CleanExitBeacon, used to determine whether the previous Chrome browser
   // session terminated gracefully.
   CleanExitBeacon* clean_exit_beacon() { return &clean_exit_beacon_; }
   const CleanExitBeacon* clean_exit_beacon() const {
     return &clean_exit_beacon_;
   }
+
+  // Signals whether the session has shutdown cleanly. Passing `false` means
+  // that Chrome has launched and has not yet shut down safely. Passing `true`
+  // signals that Chrome has shut down safely.
+  //
+  // Seeing a call with `false` without a matching call with `true` suggests
+  // that Chrome crashed or otherwise did not shut down cleanly, e.g. maybe the
+  // OS crashed.
+  void LogHasSessionShutdownCleanly(bool has_session_shutdown_cleanly);
 
   // Forces the client ID to be generated. This is useful in case it's needed
   // before recording.
@@ -71,6 +83,9 @@ class MetricsStateManager final {
   // clone is detected, resets the client id and low entropy source. This
   // should not be called more than once.
   void CheckForClonedInstall();
+
+  // Checks if the cloned install detector says that client ids should be reset.
+  bool ShouldResetClientIdsOnClonedInstall();
 
   // Returns the preferred entropy provider used to seed persistent activities
   // based on whether or not metrics reporting is permitted on this client.
@@ -91,15 +106,15 @@ class MetricsStateManager final {
   CreateLowEntropyProvider();
 
   // Creates the MetricsStateManager, enforcing that only a single instance
-  // of the class exists at a time. Returns NULL if an instance exists already.
-  // On Windows, |backup_registry_key| is used to store a backup of the clean
-  // exit beacon. It is ignored on other platforms.
+  // of the class exists at a time. Returns nullptr if an instance exists
+  // already. On Windows, |backup_registry_key| is used to store a backup of the
+  // clean exit beacon. It is ignored on other platforms.
   static std::unique_ptr<MetricsStateManager> Create(
       PrefService* local_state,
       EnabledStateProvider* enabled_state_provider,
-      const base::string16& backup_registry_key,
-      const StoreClientInfoCallback& store_client_info,
-      const LoadClientInfoCallback& load_client_info);
+      const std::wstring& backup_registry_key,
+      StoreClientInfoCallback store_client_info,
+      LoadClientInfoCallback load_client_info);
 
   // Registers local state prefs used by this class.
   static void RegisterPrefs(PrefRegistrySimple* registry);
@@ -108,17 +123,6 @@ class MetricsStateManager final {
   FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest, CheckProviderResetIds);
   FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest, EntropySourceUsed_Low);
   FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest, EntropySourceUsed_High);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest, LowEntropySource0NotReset);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest, HaveNoLowEntropySource);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest,
-                           HaveOnlyNewLowEntropySource);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest,
-                           HaveOnlyOldLowEntropySource);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest, HaveBothLowEntropySources);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest,
-                           CorruptNewLowEntropySources);
-  FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest,
-                           CorruptOldLowEntropySources);
   FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest,
                            ProvisionalClientId_PromotedToClientId);
   FRIEND_TEST_ALL_PREFIXES(MetricsStateManagerTest,
@@ -136,9 +140,6 @@ class MetricsStateManager final {
     ENTROPY_SOURCE_ENUM_SIZE,
   };
 
-  // Default value for prefs::kMetricsLowEntropySource.
-  static constexpr int kLowEntropySourceNotSet = -1;
-
   // Creates the MetricsStateManager with the given |local_state|. Uses
   // |enabled_state_provider| to query whether there is consent for metrics
   // reporting, and if it is enabled. Clients should instead use Create(), which
@@ -147,9 +148,9 @@ class MetricsStateManager final {
   // that it is later retrievable by |load_client_info|.
   MetricsStateManager(PrefService* local_state,
                       EnabledStateProvider* enabled_state_provider,
-                      const base::string16& backup_registry_key,
-                      const StoreClientInfoCallback& store_client_info,
-                      const LoadClientInfoCallback& load_client_info);
+                      const std::wstring& backup_registry_key,
+                      StoreClientInfoCallback store_client_info,
+                      LoadClientInfoCallback load_client_info);
 
   // Backs up the current client info via |store_client_info_|.
   void BackUpCurrentClientInfo();
@@ -163,20 +164,8 @@ class MetricsStateManager final {
   // |provisional_client_id_| must be set before calling this.
   std::string GetHighEntropySource();
 
-  // Returns the low entropy source for this client. Generates a new value if
-  // there is none. See the |low_entropy_source_| comment for more info.
-  int GetLowEntropySource();
-
-  // Returns the old low entropy source for this client. Does not generate a new
-  // value, but instead returns |kLowEntropySourceNotSet|, if there is none. See
-  // the |old_low_entropy_source_| comment for more info.
+  // Returns the old low entropy source for this client.
   int GetOldLowEntropySource();
-
-  // Loads the low entropy source values from prefs. Creates the new source
-  // value if it doesn't exist, but doesn't create the old source value. After
-  // this function finishes, |low_entropy_source_| will be set, but
-  // |old_low_entropy_source_| may still be |kLowEntropySourceNotSet|.
-  void UpdateLowEntropySources();
 
   // Updates |entropy_source_returned_| with |type| iff the current value is
   // ENTROPY_SOURCE_NONE and logs the new value in a histogram.
@@ -189,13 +178,13 @@ class MetricsStateManager final {
     return entropy_source_returned_;
   }
 
+  std::string initial_client_id_for_testing() const {
+    return initial_client_id_;
+  }
+
   // Reset the client id and low entropy source if the kMetricsResetMetricIDs
   // pref is true.
   void ResetMetricsIDsIfNecessary();
-
-  // Checks whether a value is on the range of allowed low entropy source
-  // values.
-  static bool IsValidLowEntropySource(int value);
 
   // Whether an instance of this class exists. Used to enforce that there aren't
   // multiple instances of this class at a given time.
@@ -231,14 +220,14 @@ class MetricsStateManager final {
   // trials don't toggle state between first and second run.
   std::string provisional_client_id_;
 
-  // The non-identifying low entropy source values. These values seed the
-  // pseudorandom generators which pick experimental groups. The "old" value is
-  // thought to be biased in the wild, and is no longer used for experiments
-  // requiring low entropy. Clients which already have an "old" value continue
-  // incorporating it into the high entropy source, to avoid changing those
-  // group assignments. New clients only have the new source.
-  int low_entropy_source_;
-  int old_low_entropy_source_;
+  // The client id that was used do field trial randomization. This field should
+  // only be changed when we need to do group assignment. |initial_client_id|
+  // should left blank iff a client id was not used to do field trial
+  // randomization.
+  std::string initial_client_id_;
+
+  // An instance of EntropyState for getting the entropy source values.
+  EntropyState entropy_state_;
 
   // The last entropy source returned by this service, used for testing.
   EntropySourceType entropy_source_returned_;
@@ -253,7 +242,9 @@ class MetricsStateManager final {
   // has no record of what the previous metrics id was.
   std::string previous_client_id_;
 
-  std::unique_ptr<ClonedInstallDetector> cloned_install_detector_;
+  // The detector for understanding the cloned nature of the install so that we
+  // can reset client ids.
+  ClonedInstallDetector cloned_install_detector_;
 
   DISALLOW_COPY_AND_ASSIGN(MetricsStateManager);
 };

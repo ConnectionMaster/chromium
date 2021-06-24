@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/run_loop.h"
+#include "chrome/browser/vr/test/multi_class_browser_test.h"
 #include "chrome/browser/vr/test/ui_utils.h"
 #include "chrome/browser/vr/test/webxr_vr_browser_test.h"
 #include "chrome/browser/vr/ui_test_input.h"
@@ -12,30 +14,33 @@
 
 namespace vr {
 
-void InSessionPermissionNotificationCommon(WebXrVrBrowserTestStandard* t) {
+// Tests that permission requests that occur when in an immersive session cause
+// a notification to appear telling the user that a permission request is
+// visible in the browser and that closing the browser while this is still
+// displayed does not cause any issues.
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestInSessionPermissionNotificationCloseWhileVisible) {
   // We need to use a local server for permission requests to not hit a DCHECK.
-  t->LoadUrlAndAwaitInitialization(
-      t->GetEmbeddedServerUrlForHtmlTestFile("generic_webxr_page"));
+  t->LoadFileAndAwaitInitialization("generic_webxr_page");
   t->EnterSessionWithUserGestureOrFail();
   // Use location instead of camera/microphone since those automatically reject
   // if a suitable device is not connected.
   // TODO(bsheedy): Find a way to support more permission types (maybe use
   // MockPermissionPromptFactory?).
+
+  // AutoResponseForTest is overridden when requesting a session. We don't want
+  // to change that as we want anything necessary to request a session to get
+  // granted. However, we want no action to be taken now so that the prompt for
+  // location comes up and does not get dismissed.
+  t->GetPermissionRequestManager()->set_auto_response_for_test(
+      permissions::PermissionRequestManager::NONE);
   t->RunJavaScriptOrFail(
       "navigator.geolocation.getCurrentPosition( ()=>{}, ()=>{} )");
+  base::RunLoop().RunUntilIdle();
   auto utils = UiUtils::Create();
   utils->PerformActionAndWaitForVisibilityStatus(
       UserFriendlyElementName::kWebXrExternalPromptNotification,
       true /* visible */, base::DoNothing::Once());
-}
-
-// Tests that permission requests that occur when in an immersive session cause
-// a notification to appear telling the user that a permission request is
-// visible in the browser and that closing the browser while this is still
-// displayed does not cause any issues.
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestInSessionPermissionNotificationCloseWhileVisible) {
-  InSessionPermissionNotificationCommon(this);
 }
 
 // TODO(https://crbug.com/920697): Add tests verifying the notification

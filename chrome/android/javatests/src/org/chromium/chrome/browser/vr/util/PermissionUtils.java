@@ -4,8 +4,8 @@
 
 package org.chromium.chrome.browser.vr.util;
 
-import org.chromium.chrome.browser.permissions.PermissionDialogController;
-import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.components.permissions.PermissionDialogController;
 import org.chromium.content_public.browser.test.util.TestThreadUtils;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 
@@ -14,6 +14,7 @@ import org.chromium.ui.modaldialog.ModalDialogProperties;
  * in the VR Browser, see NativeUiUtils.
  */
 public class PermissionUtils {
+    public static final long DIALOG_POLLING_INTERVAL_MS = 250;
     /**
      * Blocks until a permission prompt appears.
      */
@@ -21,6 +22,19 @@ public class PermissionUtils {
         CriteriaHelper.pollUiThread(() -> {
             return PermissionDialogController.getInstance().isDialogShownForTest();
         }, "Permission prompt did not appear in allotted time");
+    }
+
+    /**
+     * Blocks until the consent prompt is dismissed.
+     */
+    public static void waitForPermissionPromptDismissal() {
+        CriteriaHelper.pollUiThread(
+                ()
+                        -> {
+                    return !PermissionDialogController.getInstance().isDialogShownForTest();
+                },
+                "Consent prompt did not get dismissed in allotted time",
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL, DIALOG_POLLING_INTERVAL_MS);
     }
 
     /**

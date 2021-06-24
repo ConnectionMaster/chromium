@@ -9,10 +9,10 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "components/download/public/common/download_item.h"
 #include "components/offline_items_collection/core/offline_item.h"
 #include "components/offline_items_collection/core/rename_result.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 // Contains various utility methods for conversions between DownloadItem and
 // OfflineItem.
@@ -39,13 +39,23 @@ class OfflineItemUtils {
       offline_items_collection::FailState fail_state);
 
   // Gets the short text to display for a offline_items_collection::FailState.
-  static base::string16 GetFailStateMessage(
+  static std::u16string GetFailStateMessage(
       offline_items_collection::FailState fail_state);
 
   // Converts download::DownloadItem::DownloadRenameResult to
   // offline_items_collection::RenameResult.
   static RenameResult ConvertDownloadRenameResultToRenameResult(
       DownloadRenameResult download_rename_result);
+
+  // Converts OfflineItemSchedule to DownloadSchedule.
+  static absl::optional<download::DownloadSchedule> ToDownloadSchedule(
+      absl::optional<offline_items_collection::OfflineItemSchedule>
+          offline_item_schedule);
+
+  // Converts DownloadSchedule to OfflineItemSchedule.
+  static absl::optional<offline_items_collection::OfflineItemSchedule>
+  ToOfflineItemSchedule(
+      absl::optional<download::DownloadSchedule> download_schedule);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(OfflineItemUtils);

@@ -4,6 +4,8 @@
 
 #include "chromecast/browser/extensions/api/settings_private/settings_private_api.h"
 
+#include "base/values.h"
+
 namespace extensions {
 namespace cast {
 
@@ -22,7 +24,7 @@ ExtensionFunction::ResponseAction SettingsPrivateSetPrefFunction::Run() {
 SettingsPrivateGetAllPrefsFunction::~SettingsPrivateGetAllPrefsFunction() {}
 
 ExtensionFunction::ResponseAction SettingsPrivateGetAllPrefsFunction::Run() {
-  return RespondNow(Error(kErrorNotSupported));
+  return RespondNow(OneArgument(base::Value(base::Value::Type::LIST)));
 }
 
 SettingsPrivateGetPrefFunction::~SettingsPrivateGetPrefFunction() {}

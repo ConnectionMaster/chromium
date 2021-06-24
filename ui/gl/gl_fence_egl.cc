@@ -10,17 +10,6 @@
 
 namespace gl {
 
-namespace {
-
-bool g_ignore_egl_sync_failures = false;
-
-}  // namespace
-
-// static
-void GLFenceEGL::SetIgnoreFailures() {
-  g_ignore_egl_sync_failures = true;
-}
-
 GLFenceEGL::GLFenceEGL() = default;
 
 // static
@@ -42,9 +31,12 @@ std::unique_ptr<GLFenceEGL> GLFenceEGL::Create(EGLenum type, EGLint* attribs) {
 }
 
 bool GLFenceEGL::InitializeInternal(EGLenum type, EGLint* attribs) {
+  sync_ = EGL_NO_SYNC_KHR;
   display_ = eglGetCurrentDisplay();
-  sync_ = eglCreateSyncKHR(display_, type, attribs);
-  glFlush();
+  if (display_ != EGL_NO_DISPLAY) {
+    sync_ = eglCreateSyncKHR(display_, type, attribs);
+    glFlush();
+  }
   return sync_ != EGL_NO_SYNC_KHR;
 }
 
@@ -63,7 +55,7 @@ bool GLFenceEGL::HasCompleted() {
 
 void GLFenceEGL::ClientWait() {
   EGLint result = ClientWaitWithTimeoutNanos(EGL_FOREVER_KHR);
-  DCHECK(g_ignore_egl_sync_failures || EGL_TIMEOUT_EXPIRED_KHR != result);
+  DCHECK_NE(EGL_TIMEOUT_EXPIRED_KHR, result);
 }
 
 EGLint GLFenceEGL::ClientWaitWithTimeoutNanos(EGLTimeKHR timeout) {
@@ -72,7 +64,7 @@ EGLint GLFenceEGL::ClientWaitWithTimeoutNanos(EGLTimeKHR timeout) {
   if (result == EGL_FALSE) {
     LOG(ERROR) << "Failed to wait for EGLSync. error:"
                << ui::GetLastEGLErrorString();
-    CHECK(g_ignore_egl_sync_failures);
+    CHECK(false);
   }
   return result;
 }
@@ -86,7 +78,7 @@ void GLFenceEGL::ServerWait() {
   if (eglWaitSyncKHR(display_, sync_, flags) == EGL_FALSE) {
     LOG(ERROR) << "Failed to wait for EGLSync. error:"
                << ui::GetLastEGLErrorString();
-    CHECK(g_ignore_egl_sync_failures);
+    CHECK(false);
   }
 }
 

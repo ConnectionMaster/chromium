@@ -7,9 +7,8 @@
 #include <stddef.h>
 #include <utility>
 
+#include "base/cxx17_backports.h"
 #include "base/json/json_reader.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/chrome/devtools_client.h"
 #include "chrome/test/chromedriver/chrome/status.h"
@@ -28,13 +27,7 @@ Status HeapSnapshotTaker::TakeSnapshot(std::unique_ptr<base::Value>* snapshot) {
 
   Status status3(kOk);
   if (status1.IsOk() && status2.IsOk()) {
-    std::unique_ptr<base::Value> value =
-        base::JSONReader::ReadDeprecated(snapshot_);
-    if (!value) {
-      status3 = Status(kUnknownError, "heap snapshot not in JSON format");
-    } else {
-      *snapshot = std::move(value);
-    }
+    *snapshot = std::make_unique<base::Value>(std::move(snapshot_));
   }
   snapshot_.clear();
   if (status1.IsError()) {

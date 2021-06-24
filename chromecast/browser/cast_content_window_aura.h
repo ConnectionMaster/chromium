@@ -8,33 +8,31 @@
 #include "base/macros.h"
 #include "chromecast/browser/cast_content_gesture_handler.h"
 #include "chromecast/browser/cast_content_window.h"
+#include "chromecast/ui/media_control_ui.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "ui/aura/window_observer.h"
 
 namespace aura {
 class Window;
 }  // namespace aura
 
-namespace content {
-class WebContents;
-}  // namespace content
-
 namespace chromecast {
-namespace shell {
 
 class TouchBlocker;
 
 class CastContentWindowAura : public CastContentWindow,
+                              public CastWebContents::Observer,
+                              public content::WebContentsObserver,
                               public aura::WindowObserver {
  public:
-  explicit CastContentWindowAura(const CastContentWindow::CreateParams& params);
+  CastContentWindowAura(const CastContentWindow::CreateParams& params,
+                        CastWindowManager* window_manager);
   ~CastContentWindowAura() override;
 
   // CastContentWindow implementation:
-  void CreateWindowForWebContents(
-      content::WebContents* web_contents,
-      CastWindowManager* window_manager,
-      CastWindowManager::WindowId z_order,
-      VisibilityPriority visibility_priority) override;
+  void CreateWindow(mojom::ZOrder z_order,
+                    VisibilityPriority visibility_priority) override;
   void GrantScreenAccess() override;
   void RevokeScreenAccess() override;
   void RequestVisibility(VisibilityPriority visibility_priority) override;
@@ -43,13 +41,24 @@ class CastContentWindowAura : public CastContentWindow,
   void NotifyVisibilityChange(VisibilityType visibility_type) override;
   void RequestMoveOut() override;
   void EnableTouchInput(bool enabled) override;
+  mojom::MediaControlUi* media_controls() override;
+
+  // CastWebContents::Observer implementation:
+  void MainFrameResized(const gfx::Rect& bounds) override;
+
+  // content::WebContentsObserver implementation:
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
   // aura::WindowObserver implementation:
   void OnWindowVisibilityChanged(aura::Window* window, bool visible) override;
   void OnWindowDestroyed(aura::Window* window) override;
 
  private:
-  CastContentWindow::Delegate* const delegate_;
+  void SetFullWindowBounds();
+  void SetHiddenWindowBounds();
+
+  CastWindowManager* const window_manager_;
 
   // Utility class for detecting and dispatching gestures to delegates.
   std::unique_ptr<CastContentGestureHandler> gesture_dispatcher_;
@@ -58,15 +67,15 @@ class CastContentWindowAura : public CastContentWindow,
   const bool is_touch_enabled_;
   std::unique_ptr<TouchBlocker> touch_blocker_;
 
-  // TODO(seantopping): Inject in constructor.
-  CastWindowManager* window_manager_ = nullptr;
+  std::unique_ptr<MediaControlUi> media_controls_;
+
   aura::Window* window_;
   bool has_screen_access_;
+  bool resize_window_when_navigation_starts_;
 
   DISALLOW_COPY_AND_ASSIGN(CastContentWindowAura);
 };
 
-}  // namespace shell
 }  // namespace chromecast
 
 #endif  // CHROMECAST_BROWSER_CAST_CONTENT_WINDOW_AURA_H_

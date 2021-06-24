@@ -28,7 +28,7 @@
 #include "third_party/blink/renderer/platform/graphics/gradient.h"
 
 #include <algorithm>
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/platform/geometry/float_rect.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_shader.h"
@@ -73,7 +73,7 @@ void Gradient::AddColorStops(const Vector<Gradient::ColorStop>& stops) {
     AddColorStop(stop);
 }
 
-void Gradient::SortStopsIfNecessary() {
+void Gradient::SortStopsIfNecessary() const {
   if (stops_sorted_)
     return;
 
@@ -83,11 +83,6 @@ void Gradient::SortStopsIfNecessary() {
     return;
 
   std::stable_sort(stops_.begin(), stops_.end(), CompareStops);
-}
-
-// FIXME: This would be more at home as Color::operator SkColor.
-static inline SkColor MakeSkColor(const Color& c) {
-  return SkColorSetARGB(c.Alpha(), c.Red(), c.Green(), c.Blue());
 }
 
 // Collect sorted stop position and color information into the pos and colors
@@ -108,18 +103,18 @@ void Gradient::FillSkiaStops(ColorBuffer& colors, OffsetBuffer& pos) const {
     pos.push_back(WebCoreDoubleToSkScalar(0));
     if (color_filter_) {
       colors.push_back(
-          color_filter_->filterColor(MakeSkColor(stops_.front().color)));
+          color_filter_->filterColor(SkColor(stops_.front().color)));
     } else {
-      colors.push_back(MakeSkColor(stops_.front().color));
+      colors.push_back(SkColor(stops_.front().color));
     }
   }
 
   for (const auto& stop : stops_) {
     pos.push_back(WebCoreDoubleToSkScalar(stop.stop));
     if (color_filter_)
-      colors.push_back(color_filter_->filterColor(MakeSkColor(stop.color)));
+      colors.push_back(color_filter_->filterColor(SkColor(stop.color)));
     else
-      colors.push_back(MakeSkColor(stop.color));
+      colors.push_back(SkColor(stop.color));
   }
 
   // Copy the last stop to 1.0 if needed. See comment above about this float
@@ -132,7 +127,7 @@ void Gradient::FillSkiaStops(ColorBuffer& colors, OffsetBuffer& pos) const {
 }
 
 sk_sp<PaintShader> Gradient::CreateShaderInternal(
-    const SkMatrix& local_matrix) {
+    const SkMatrix& local_matrix) const {
   SortStopsIfNecessary();
   DCHECK(stops_sorted_);
 
@@ -168,7 +163,8 @@ sk_sp<PaintShader> Gradient::CreateShaderInternal(
   return shader;
 }
 
-void Gradient::ApplyToFlags(PaintFlags& flags, const SkMatrix& local_matrix) {
+void Gradient::ApplyToFlags(PaintFlags& flags,
+                            const SkMatrix& local_matrix) const {
   if (!cached_shader_ || local_matrix != cached_shader_->GetLocalMatrix() ||
       flags.getColorFilter().get() != color_filter_.get()) {
     color_filter_ = flags.getColorFilter();
@@ -249,7 +245,7 @@ class RadialGradient final : public Gradient {
                                   const SkMatrix& local_matrix,
                                   SkColor fallback_color) const override {
     const SkMatrix* matrix = &local_matrix;
-    base::Optional<SkMatrix> adjusted_local_matrix;
+    absl::optional<SkMatrix> adjusted_local_matrix;
     if (aspect_ratio_ != 1) {
       // CSS3 elliptical gradients: apply the elliptical scaling at the
       // gradient center point.
@@ -316,7 +312,7 @@ class ConicGradient final : public Gradient {
     // Skia's sweep gradient angles are relative to the x-axis, not the y-axis.
     const float skia_rotation = rotation_ - 90;
     const SkMatrix* matrix = &local_matrix;
-    base::Optional<SkMatrix> adjusted_local_matrix;
+    absl::optional<SkMatrix> adjusted_local_matrix;
     if (skia_rotation) {
       adjusted_local_matrix.emplace(local_matrix);
       adjusted_local_matrix->preRotate(skia_rotation, position_.X(),

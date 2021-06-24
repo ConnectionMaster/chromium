@@ -21,8 +21,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/tick_clock.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/client_update_protocol/ecdsa.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/network_time/network_time_pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -38,7 +38,7 @@ namespace network_time {
 
 // Network time queries are enabled on all desktop platforms except ChromeOS,
 // which uses tlsdated to set the system time.
-#if defined(OS_ANDROID) || defined(OS_CHROMEOS) || defined(OS_IOS)
+#if defined(OS_ANDROID) || BUILDFLAG(IS_CHROMEOS_ASH) || defined(OS_IOS)
 const base::Feature kNetworkTimeServiceQuerying{
     "NetworkTimeServiceQuerying", base::FEATURE_DISABLED_BY_DEFAULT};
 #else
@@ -125,16 +125,16 @@ const char kVariationsServiceRandomQueryProbability[] =
 const char kVariationsServiceFetchBehavior[] = "FetchBehavior";
 
 // This is an ECDSA prime256v1 named-curve key.
-const int kKeyVersion = 2;
+const int kKeyVersion = 5;
 const uint8_t kKeyPubBytes[] = {
-    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
-    0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
-    0x42, 0x00, 0x04, 0xc9, 0xde, 0x8e, 0x72, 0x05, 0xb8, 0xb9, 0xec, 0xa4,
-    0x26, 0xc8, 0x0d, 0xd9, 0x05, 0x59, 0x67, 0xad, 0xd7, 0xf5, 0xf0, 0x46,
-    0xe4, 0xab, 0xe9, 0x81, 0x67, 0x8b, 0x9d, 0x2a, 0x21, 0x68, 0x22, 0xfe,
-    0x83, 0xed, 0x9f, 0x80, 0x19, 0x4f, 0xc5, 0x24, 0xac, 0x12, 0x66, 0xc4,
-    0x4e, 0xf6, 0x8f, 0x54, 0xb5, 0x0c, 0x49, 0xe9, 0xa5, 0xf1, 0x40, 0xfd,
-    0xd9, 0x1a, 0x92, 0x90, 0x8a, 0x67, 0x15};
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02,
+    0x01, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03,
+    0x42, 0x00, 0x04, 0xE4, 0xA5, 0xA5, 0xA1, 0x99, 0x27, 0x83, 0x2B, 0x93,
+    0xF6, 0x30, 0xA6, 0x87, 0x78, 0x62, 0xB1, 0x81, 0x72, 0xD1, 0xA0, 0xB0,
+    0xFD, 0x48, 0x5F, 0x29, 0x60, 0x9C, 0x96, 0xC5, 0x10, 0xE3, 0x42, 0x43,
+    0x61, 0xB9, 0xDA, 0xEC, 0x30, 0xA8, 0x22, 0xA8, 0x69, 0xF7, 0x1F, 0x17,
+    0x5D, 0x83, 0xF7, 0xFD, 0xAE, 0x41, 0xDB, 0x31, 0x40, 0xAF, 0xA2, 0x32,
+    0xAE, 0x68, 0xFE, 0xD1, 0x6B, 0xB4, 0xB0};
 
 std::string GetServerProof(
     scoped_refptr<net::HttpResponseHeaders> response_headers) {
@@ -394,7 +394,7 @@ NetworkTimeTracker::NetworkTimeResult NetworkTimeTracker::GetNetworkTime(
   return NETWORK_TIME_AVAILABLE;
 }
 
-bool NetworkTimeTracker::StartTimeFetch(const base::Closure& closure) {
+bool NetworkTimeTracker::StartTimeFetch(base::OnceClosure closure) {
   DCHECK(thread_checker_.CalledOnValidThread());
   FetchBehavior behavior = GetFetchBehavior();
   if (behavior != FETCHES_ON_DEMAND_ONLY &&
@@ -404,7 +404,7 @@ bool NetworkTimeTracker::StartTimeFetch(const base::Closure& closure) {
 
   // Enqueue the callback before calling CheckTime(), so that if
   // CheckTime() completes synchronously, the callback gets called.
-  fetch_completion_callbacks_.push_back(closure);
+  fetch_completion_callbacks_.push_back(std::move(closure));
 
   // If a time query is already in progress, do not start another one.
   if (time_fetcher_) {
@@ -439,7 +439,7 @@ void NetworkTimeTracker::CheckTime() {
   }
 
   std::string query_string;
-  query_signer_->SignRequest(nullptr, &query_string);
+  query_signer_->SignRequest("", &query_string);
   GURL url = server_url_;
   GURL::Replacements replacements;
   replacements.SetQueryStr(query_string);
@@ -473,7 +473,7 @@ void NetworkTimeTracker::CheckTime() {
   // Not expecting any cookies, but just in case.
   resource_request->load_flags =
       net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE;
-  resource_request->allow_credentials = false;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   // This cancels any outstanding fetch.
   time_fetcher_ = network::SimpleURLLoader::Create(std::move(resource_request),
                                                    traffic_annotation);
@@ -581,10 +581,11 @@ void NetworkTimeTracker::OnURLLoaderComplete(
   // Clear |fetch_completion_callbacks_| before running any of them,
   // because a callback could call StartTimeFetch() to enqueue another
   // callback.
-  std::vector<base::Closure> callbacks = fetch_completion_callbacks_;
+  std::vector<base::OnceClosure> callbacks =
+      std::move(fetch_completion_callbacks_);
   fetch_completion_callbacks_.clear();
-  for (const auto& callback : callbacks) {
-    callback.Run();
+  for (auto& callback : callbacks) {
+    std::move(callback).Run();
   }
 }
 

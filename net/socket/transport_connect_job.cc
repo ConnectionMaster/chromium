@@ -5,18 +5,22 @@
 #include "net/socket/transport_connect_job.h"
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/base/trace_constants.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
@@ -46,8 +50,12 @@ bool AddressListOnlyContainsIPv6(const AddressList& list) {
 
 TransportSocketParams::TransportSocketParams(
     const HostPortPair& host_port_pair,
+    const NetworkIsolationKey& network_isolation_key,
+    SecureDnsPolicy secure_dns_policy,
     const OnHostResolutionCallback& host_resolution_callback)
     : destination_(host_port_pair),
+      network_isolation_key_(network_isolation_key),
+      secure_dns_policy_(secure_dns_policy),
       host_resolution_callback_(host_resolution_callback) {}
 
 TransportSocketParams::~TransportSocketParams() = default;
@@ -144,6 +152,10 @@ ConnectionAttempts TransportConnectJob::GetConnectionAttempts() const {
   attempts.insert(attempts.begin(), fallback_connection_attempts_.begin(),
                   fallback_connection_attempts_.end());
   return attempts;
+}
+
+ResolveErrorInfo TransportConnectJob::GetResolveErrorInfo() const {
+  return resolve_error_info_;
 }
 
 // static
@@ -258,8 +270,10 @@ int TransportConnectJob::DoResolveHost() {
 
   HostResolver::ResolveHostParameters parameters;
   parameters.initial_priority = priority();
-  request_ = host_resolver()->CreateRequest(params_->destination(), net_log(),
-                                            parameters);
+  parameters.secure_dns_policy = params_->secure_dns_policy();
+  request_ = host_resolver()->CreateRequest(params_->destination(),
+                                            params_->network_isolation_key(),
+                                            net_log(), parameters);
 
   return request_->Start(base::BindOnce(&TransportConnectJob::OnIOComplete,
                                         base::Unretained(this)));
@@ -273,20 +287,28 @@ int TransportConnectJob::DoResolveHostComplete(int result) {
   // through proxies, |connect_start| should not include dns lookup time.
   connect_timing_.connect_start = connect_timing_.dns_end;
   resolve_result_ = result;
+  resolve_error_info_ = request_->GetResolveErrorInfo();
 
   if (result != OK)
     return result;
   DCHECK(request_->GetAddressResults());
 
-  // Invoke callback, and abort if it fails.
+  next_state_ = STATE_TRANSPORT_CONNECT;
+
+  // Invoke callback.  If it indicates |this| may be slated for deletion, then
+  // only continue after a PostTask.
   if (!params_->host_resolution_callback().is_null()) {
-    result = params_->host_resolution_callback().Run(
-        request_->GetAddressResults().value(), net_log());
-    if (result != OK)
-      return result;
+    OnHostResolutionCallbackResult callback_result =
+        params_->host_resolution_callback().Run(
+            params_->destination(), request_->GetAddressResults().value());
+    if (callback_result == OnHostResolutionCallbackResult::kMayBeDeletedAsync) {
+      base::ThreadTaskRunnerHandle::Get()->PostTask(
+          FROM_HERE, base::BindOnce(&TransportConnectJob::OnIOComplete,
+                                    weak_ptr_factory_.GetWeakPtr(), OK));
+      return ERR_IO_PENDING;
+    }
   }
 
-  next_state_ = STATE_TRANSPORT_CONNECT;
   return result;
 }
 
@@ -302,8 +324,8 @@ int TransportConnectJob::DoTransportConnect() {
   }
   transport_socket_ = client_socket_factory()->CreateTransportClientSocket(
       request_->GetAddressResults().value(),
-      std::move(socket_performance_watcher), net_log().net_log(),
-      net_log().source());
+      std::move(socket_performance_watcher), network_quality_estimator(),
+      net_log().net_log(), net_log().source());
 
   // If the list contains IPv6 and IPv4 addresses, and the first address
   // is IPv6, the IPv4 addresses will be tried as fallback addresses, per
@@ -348,7 +370,8 @@ int TransportConnectJob::DoTransportConnectComplete(int result) {
       race_result = RACE_IPV6_WINS;
     HistogramDuration(connect_timing_, race_result);
 
-    SetSocket(std::move(transport_socket_));
+    DCHECK(request_);
+    SetSocket(std::move(transport_socket_), request_->GetDnsAliasResults());
   } else {
     // Failure will be returned via |GetAdditionalErrorState|, so save
     // connection attempts from both sockets for use there.
@@ -375,8 +398,8 @@ void TransportConnectJob::DoIPv6FallbackTransportConnect() {
   DCHECK(!fallback_transport_socket_.get());
   DCHECK(!fallback_addresses_.get());
 
-  fallback_addresses_.reset(
-      new AddressList(request_->GetAddressResults().value()));
+  fallback_addresses_ =
+      std::make_unique<AddressList>(request_->GetAddressResults().value());
   MakeAddressListStartWithIPv4(fallback_addresses_.get());
 
   // Create a |SocketPerformanceWatcher|, and pass the ownership.
@@ -391,7 +414,7 @@ void TransportConnectJob::DoIPv6FallbackTransportConnect() {
   fallback_transport_socket_ =
       client_socket_factory()->CreateTransportClientSocket(
           *fallback_addresses_, std::move(socket_performance_watcher),
-          net_log().net_log(), net_log().source());
+          network_quality_estimator(), net_log().net_log(), net_log().source());
   fallback_connect_start_time_ = base::TimeTicks::Now();
   int rv = fallback_transport_socket_->Connect(base::BindOnce(
       &TransportConnectJob::DoIPv6FallbackTransportConnectComplete,
@@ -426,7 +449,9 @@ void TransportConnectJob::DoIPv6FallbackTransportConnectComplete(int result) {
 
     connect_timing_.connect_start = fallback_connect_start_time_;
     HistogramDuration(connect_timing_, RACE_IPV4_WINS);
-    SetSocket(std::move(fallback_transport_socket_));
+    DCHECK(request_);
+    SetSocket(std::move(fallback_transport_socket_),
+              request_->GetDnsAliasResults());
     next_state_ = STATE_NONE;
   } else {
     // Failure will be returned via |GetAdditionalErrorState|, so save

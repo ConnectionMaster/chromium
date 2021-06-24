@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CONTENT_BROWSER_ANDROID_LAUNCHER_THREAD_H
-#define CONTENT_BROWSER_ANDROID_LAUNCHER_THREAD_H
+#ifndef CONTENT_BROWSER_ANDROID_LAUNCHER_THREAD_H_
+#define CONTENT_BROWSER_ANDROID_LAUNCHER_THREAD_H_
 
 #include "base/android/java_handler_thread.h"
 
 #include "base/lazy_instance.h"
-
-namespace base {
-class MessageLoop;
-}
 
 namespace content {
 namespace android {
@@ -20,7 +16,7 @@ namespace android {
 // native code, but accessed through BrowserThread(Impl) instead.
 class LauncherThread {
  public:
-  static base::MessageLoop* GetMessageLoop();
+  static scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner();
 
  private:
   friend base::LazyInstanceTraitsBase<LauncherThread>;
@@ -34,4 +30,4 @@ class LauncherThread {
 }  // namespace android
 }  // namespace content
 
-#endif  // CONTENT_BROWSER_ANDROID_LAUNCHER_THREAD_H
+#endif  // CONTENT_BROWSER_ANDROID_LAUNCHER_THREAD_H_

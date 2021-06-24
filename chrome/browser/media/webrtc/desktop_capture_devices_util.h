@@ -18,14 +18,15 @@
 // Returns an instance of MediaStreamUI to be passed to content layer.
 std::unique_ptr<content::MediaStreamUI> GetDevicesForDesktopCapture(
     content::WebContents* web_contents,
+    const url::Origin& capturer_origin,
     blink::MediaStreamDevices* devices,
     const content::DesktopMediaID& media_id,
-    blink::MediaStreamType devices_video_type,
-    blink::MediaStreamType devices_audio_type,
+    blink::mojom::MediaStreamType devices_video_type,
+    blink::mojom::MediaStreamType devices_audio_type,
     bool capture_audio,
     bool disable_local_echo,
     bool display_notification,
-    const base::string16& application_title,
-    const base::string16& registered_extension_name);
+    const std::u16string& application_title,
+    const std::u16string& registered_extension_name);
 
 #endif  // CHROME_BROWSER_MEDIA_WEBRTC_DESKTOP_CAPTURE_DEVICES_UTIL_H_

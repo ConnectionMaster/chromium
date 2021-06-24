@@ -5,11 +5,12 @@
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "components/embedder_support/origin_trials/pref_names.h"
+#include "components/embedder_support/switches.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -53,15 +54,21 @@ class ChromeOriginTrialsTest : public InProcessBrowserTest {
 
   void AddDisabledFeaturesToPrefs(const std::vector<std::string>& features) {
     base::ListValue disabled_feature_list;
-    disabled_feature_list.AppendStrings(features);
-    ListPrefUpdate update(local_state(), prefs::kOriginTrialDisabledFeatures);
+    for (const std::string& feature : features) {
+      disabled_feature_list.Append(feature);
+    }
+    ListPrefUpdate update(
+        local_state(), embedder_support::prefs::kOriginTrialDisabledFeatures);
     update->Swap(&disabled_feature_list);
   }
 
   void AddDisabledTokensToPrefs(const std::vector<std::string>& tokens) {
     base::ListValue disabled_token_list;
-    disabled_token_list.AppendStrings(tokens);
-    ListPrefUpdate update(local_state(), prefs::kOriginTrialDisabledTokens);
+    for (const std::string& token : tokens) {
+      disabled_token_list.Append(token);
+    }
+    ListPrefUpdate update(local_state(),
+                          embedder_support::prefs::kOriginTrialDisabledTokens);
     update->Swap(&disabled_token_list);
   }
 
@@ -76,31 +83,36 @@ class ChromeOriginTrialsTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(ChromeOriginTrialsTest, NoPublicKeySet) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  EXPECT_FALSE(command_line->HasSwitch(switches::kOriginTrialPublicKey));
+  EXPECT_FALSE(
+      command_line->HasSwitch(embedder_support::kOriginTrialPublicKey));
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOriginTrialsTest, NoDisabledFeatures) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  EXPECT_FALSE(command_line->HasSwitch(switches::kOriginTrialDisabledFeatures));
+  EXPECT_FALSE(
+      command_line->HasSwitch(embedder_support::kOriginTrialDisabledFeatures));
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOriginTrialsTest, NoDisabledTokens) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  EXPECT_FALSE(command_line->HasSwitch(switches::kOriginTrialDisabledTokens));
+  EXPECT_FALSE(
+      command_line->HasSwitch(embedder_support::kOriginTrialDisabledTokens));
 }
 
 // Tests to verify that the public key is correctly read from prefs and
 // added to the command line
 IN_PROC_BROWSER_TEST_F(ChromeOriginTrialsTest, PRE_PublicKeySetOnCommandLine) {
-  local_state()->Set(prefs::kOriginTrialPublicKey, base::Value(kNewPublicKey));
-  ASSERT_EQ(kNewPublicKey,
-            local_state()->GetString(prefs::kOriginTrialPublicKey));
+  local_state()->Set(embedder_support::prefs::kOriginTrialPublicKey,
+                     base::Value(kNewPublicKey));
+  ASSERT_EQ(kNewPublicKey, local_state()->GetString(
+                               embedder_support::prefs::kOriginTrialPublicKey));
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeOriginTrialsTest, PublicKeySetOnCommandLine) {
-  ASSERT_EQ(kNewPublicKey,
-            local_state()->GetString(prefs::kOriginTrialPublicKey));
-  std::string actual = GetCommandLineSwitch(switches::kOriginTrialPublicKey);
+  ASSERT_EQ(kNewPublicKey, local_state()->GetString(
+                               embedder_support::prefs::kOriginTrialPublicKey));
+  std::string actual =
+      GetCommandLineSwitch(embedder_support::kOriginTrialPublicKey);
   EXPECT_EQ(kNewPublicKey, actual);
 }
 
@@ -113,18 +125,20 @@ class ChromeOriginTrialsDisabledFeaturesTest
 IN_PROC_BROWSER_TEST_P(ChromeOriginTrialsDisabledFeaturesTest,
                        PRE_DisabledFeaturesSetOnCommandLine) {
   AddDisabledFeaturesToPrefs(GetParam().input_list);
-  ASSERT_TRUE(local_state()->HasPrefPath(prefs::kOriginTrialDisabledFeatures));
+  ASSERT_TRUE(local_state()->HasPrefPath(
+      embedder_support::prefs::kOriginTrialDisabledFeatures));
 }
 
 IN_PROC_BROWSER_TEST_P(ChromeOriginTrialsDisabledFeaturesTest,
                        DisabledFeaturesSetOnCommandLine) {
-  ASSERT_TRUE(local_state()->HasPrefPath(prefs::kOriginTrialDisabledFeatures));
+  ASSERT_TRUE(local_state()->HasPrefPath(
+      embedder_support::prefs::kOriginTrialDisabledFeatures));
   std::string actual =
-      GetCommandLineSwitch(switches::kOriginTrialDisabledFeatures);
+      GetCommandLineSwitch(embedder_support::kOriginTrialDisabledFeatures);
   EXPECT_EQ(GetParam().expected_switch, actual);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          ChromeOriginTrialsDisabledFeaturesTest,
                          ::testing::ValuesIn(kDisabledFeaturesTests));
 
@@ -137,18 +151,20 @@ class ChromeOriginTrialsDisabledTokensTest
 IN_PROC_BROWSER_TEST_P(ChromeOriginTrialsDisabledTokensTest,
                        PRE_DisabledTokensSetOnCommandLine) {
   AddDisabledTokensToPrefs(GetParam().input_list);
-  ASSERT_TRUE(local_state()->HasPrefPath(prefs::kOriginTrialDisabledTokens));
+  ASSERT_TRUE(local_state()->HasPrefPath(
+      embedder_support::prefs::kOriginTrialDisabledTokens));
 }
 
 IN_PROC_BROWSER_TEST_P(ChromeOriginTrialsDisabledTokensTest,
                        DisabledTokensSetOnCommandLine) {
-  ASSERT_TRUE(local_state()->HasPrefPath(prefs::kOriginTrialDisabledTokens));
+  ASSERT_TRUE(local_state()->HasPrefPath(
+      embedder_support::prefs::kOriginTrialDisabledTokens));
   std::string actual =
-      GetCommandLineSwitch(switches::kOriginTrialDisabledTokens);
+      GetCommandLineSwitch(embedder_support::kOriginTrialDisabledTokens);
   EXPECT_EQ(GetParam().expected_switch, actual);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
+INSTANTIATE_TEST_SUITE_P(All,
                          ChromeOriginTrialsDisabledTokensTest,
                          ::testing::ValuesIn(kDisabledTokensTests));
 

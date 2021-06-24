@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/auto_reset.h"
+#include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
 #include "third_party/blink/renderer/core/dom/text.h"
@@ -25,7 +26,7 @@
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_node.h"
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_node_data.h"
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_offset_mapping.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -42,6 +43,9 @@ class ElementInnerTextCollector final {
 
  public:
   ElementInnerTextCollector() = default;
+  ElementInnerTextCollector(const ElementInnerTextCollector&) = delete;
+  ElementInnerTextCollector& operator=(const ElementInnerTextCollector&) =
+      delete;
 
   String RunOn(const Element& element);
 
@@ -50,6 +54,8 @@ class ElementInnerTextCollector final {
   class Result final {
    public:
     Result() = default;
+    Result(const Result&) = delete;
+    Result& operator=(const Result&) = delete;
 
     void EmitChar16(UChar code_point);
     void EmitNewline();
@@ -63,23 +69,20 @@ class ElementInnerTextCollector final {
 
     StringBuilder builder_;
     int required_line_break_count_ = 0;
-
-    DISALLOW_COPY_AND_ASSIGN(Result);
   };
 
   static bool HasDisplayContentsStyle(const Node& node);
   static bool IsBeingRendered(const Node& node);
   // Returns true if used value of "display" is block-level.
   static bool IsDisplayBlockLevel(const Node&);
-  static LayoutObject* PreviousLeafOf(const LayoutObject& layout_object);
-  static bool ShouldEmitNewlineForTableRow(const LayoutTableRow& table_row);
+  static bool ShouldEmitNewlineForTableRow(
+      const LayoutNGTableRowInterface& table_row);
 
   const NGOffsetMapping* GetOffsetMapping(const LayoutText& layout_text);
   void ProcessChildren(const Node& node);
   void ProcessChildrenWithRequiredLineBreaks(const Node& node,
                                              int required_line_break_count);
   void ProcessLayoutText(const LayoutText& layout_text, const Text& text_node);
-  void ProcessLayoutTextEmpty(const LayoutText& layout_text);
   void ProcessNode(const Node& node);
   void ProcessOptionElement(const HTMLOptionElement& element);
   void ProcessSelectElement(const HTMLSelectElement& element);
@@ -87,14 +90,18 @@ class ElementInnerTextCollector final {
 
   // Result character buffer.
   Result result_;
-
-  DISALLOW_COPY_AND_ASSIGN(ElementInnerTextCollector);
 };
 
 String ElementInnerTextCollector::RunOn(const Element& element) {
   DCHECK(!element.InActiveDocument() || !NeedsLayoutTreeUpdate(element));
 
-  // 1. If this element is not being rendered, or if the user agent is a non-CSS
+  // 1. If this element is locked or a part of a locked subtree, then it is
+  // hidden from view (and also possibly not laid out) and innerText should be
+  // empty.
+  if (DisplayLockUtilities::NearestLockedInclusiveAncestor(element))
+    return {};
+
+  // 2. If this element is not being rendered, or if the user agent is a non-CSS
   // user agent, then return the same value as the textContent IDL attribute on
   // this element.
   // Note: To pass WPT test, case we don't use |textContent| for
@@ -106,8 +113,8 @@ String ElementInnerTextCollector::RunOn(const Element& element) {
     return element.textContent(convert_brs_to_newlines);
   }
 
-  // 2. Let results be a new empty list.
-  // 3. For each child node node of this element:
+  // 3. Let results be a new empty list.
+  // 4. For each child node node of this element:
   //   1. Let current be the list resulting in running the inner text collection
   //      steps with node. Each item in results will either be a JavaScript
   //      string or a positive integer (a required line break count).
@@ -115,10 +122,10 @@ String ElementInnerTextCollector::RunOn(const Element& element) {
   // Note: Handles <select> and <option> here since they are implemented as
   // UA shadow DOM, e.g. Text nodes in <option> don't have layout object.
   // See also: https://github.com/whatwg/html/issues/3797
-  if (IsHTMLSelectElement(element))
-    ProcessSelectElement(ToHTMLSelectElement(element));
-  else if (IsHTMLOptionElement(element))
-    ProcessOptionElement(ToHTMLOptionElement(element));
+  if (auto* html_select_element = DynamicTo<HTMLSelectElement>(element))
+    ProcessSelectElement(*html_select_element);
+  else if (auto* option_element = DynamicTo<HTMLOptionElement>(element))
+    ProcessOptionElement(*option_element);
   else
     ProcessChildren(element);
   return result_.Finish();
@@ -126,7 +133,8 @@ String ElementInnerTextCollector::RunOn(const Element& element) {
 
 // static
 bool ElementInnerTextCollector::HasDisplayContentsStyle(const Node& node) {
-  return node.IsElementNode() && ToElement(node).HasDisplayContentsStyle();
+  auto* element = DynamicTo<Element>(node);
+  return element && element->HasDisplayContentsStyle();
 }
 
 // An element is *being rendered* if it has any associated CSS layout boxes,
@@ -145,12 +153,12 @@ bool ElementInnerTextCollector::IsDisplayBlockLevel(const Node& node) {
   const LayoutObject* const layout_object = node.GetLayoutObject();
   if (!layout_object)
     return false;
+  if (layout_object->IsTableSection()) {
+    // Note: |LayoutTableSection::IsInline()| returns false, but it is not
+    // block-level.
+    return false;
+  }
   if (!layout_object->IsLayoutBlock()) {
-    if (layout_object->IsTableSection()) {
-      // Note: |LayoutTableSeleciton::IsInline()| returns false, but it is not
-      // block-level.
-      return false;
-    }
     // Note: Block-level replaced elements, e.g. <img style=display:block>,
     // reach here. Unlike |LayoutBlockFlow::AddChild()|, innerText considers
     // floats and absolutely-positioned elements as block-level node.
@@ -172,37 +180,26 @@ bool ElementInnerTextCollector::IsDisplayBlockLevel(const Node& node) {
 }
 
 // static
-LayoutObject* ElementInnerTextCollector::PreviousLeafOf(
-    const LayoutObject& layout_object) {
-  LayoutObject* parent = layout_object.Parent();
-  for (LayoutObject* runner = layout_object.PreviousInPreOrder(); runner;
-       runner = runner->PreviousInPreOrder()) {
-    if (runner != parent)
-      return runner;
-    parent = runner->Parent();
-  }
-  return nullptr;
-}
-
-// static
 bool ElementInnerTextCollector::ShouldEmitNewlineForTableRow(
-    const LayoutTableRow& table_row) {
-  const LayoutTable* const table = table_row.Table();
+    const LayoutNGTableRowInterface& table_row) {
+  const LayoutNGTableInterface* const table = table_row.TableInterface();
   if (!table)
     return false;
-  if (table_row.NextRow())
+  if (table_row.NextRowInterface())
     return true;
   // For TABLE contains TBODY, TFOOTER, THEAD.
-  const LayoutTableSection* const table_section = table_row.Section();
+  const LayoutNGTableSectionInterface* table_section =
+      table_row.SectionInterface();
   if (!table_section)
     return false;
   // See |LayoutTable::SectionAbove()| and |SectionBelow()| for traversing
   // |LayoutTableSection|.
-  for (LayoutObject* runner = table_section->NextSibling(); runner;
-       runner = runner->NextSibling()) {
+  for (const LayoutObject* runner =
+           table_section->ToLayoutObject()->NextSibling();
+       runner; runner = runner->NextSibling()) {
     if (!runner->IsTableSection())
       continue;
-    if (ToLayoutTableSection(*runner).NumRows() > 0)
+    if (ToInterface<LayoutNGTableSectionInterface>(runner)->NumRows() > 0)
       return true;
   }
   // No table row after |node|.
@@ -246,8 +243,17 @@ void ElementInnerTextCollector::ProcessLayoutText(const LayoutText& layout_text,
   }
 
   const NGOffsetMapping* const mapping = GetOffsetMapping(layout_text);
-  const NGMappingUnitRange range = mapping->GetMappingUnitsForNode(text_node);
-  for (const NGOffsetMappingUnit& unit : range) {
+  if (!mapping) {
+    // TODO(crbug.com/967995): There are certain cases where we fail to compute
+    // |NGOffsetMapping| due to failures in layout. As the root cause is hard to
+    // fix at the moment, we work around it here so that the production build
+    // doesn't crash.
+    NOTREACHED() << layout_text;
+    return;
+  }
+
+  for (const NGOffsetMappingUnit& unit :
+       mapping->GetMappingUnitsForNode(text_node)) {
     result_.EmitText(
         StringView(mapping->GetText(), unit.TextContentStart(),
                    unit.TextContentEnd() - unit.TextContentStart()));
@@ -260,13 +266,18 @@ void ElementInnerTextCollector::ProcessNode(const Node& node) {
   // each child node of node in tree order, and then concatenating the results
   // to a single list.
 
-  // 2. If node's computed value of 'visibility' is not 'visible', then return
+  // 2. If the node is display locked, then we should not process it or its
+  // children, since they are not visible or accessible via innerText.
+  if (DisplayLockUtilities::NearestLockedInclusiveAncestor(node))
+    return;
+
+  // 3. If node's computed value of 'visibility' is not 'visible', then return
   // items.
   const ComputedStyle* style = node.GetComputedStyle();
   if (style && style->Visibility() != EVisibility::kVisible)
     return ProcessChildren(node);
 
-  // 3. If node is not being rendered, then return items. For the purpose of
+  // 4. If node is not being rendered, then return items. For the purpose of
   // this step, the following elements must act as described if the computed
   // value of the 'display' property is not 'none':
   // Note: items can be non-empty due to 'display:contents'.
@@ -281,28 +292,29 @@ void ElementInnerTextCollector::ProcessNode(const Node& node) {
   //   whose child boxes include only those of option element child nodes; and
   // * option element have an associated non-replaced block-level CSS box whose
   //   child boxes are as normal for non-replaced block-level CSS boxes.
-  if (IsHTMLSelectElement(node))
-    return ProcessSelectElement(ToHTMLSelectElement(node));
-  if (IsHTMLOptionElement(node)) {
+  if (auto* html_select_element = DynamicTo<HTMLSelectElement>(node))
+    return ProcessSelectElement(*html_select_element);
+  if (auto* option_element = DynamicTo<HTMLOptionElement>(node)) {
     // Since child nodes of OPTION are not rendered, we use dedicated function.
     // e.g. <div>ab<option>12</div>cd</div>innerText == "ab\n12\ncd"
     // Note: "label" attribute doesn't affect value of innerText.
-    return ProcessOptionElement(ToHTMLOptionElement(node));
+    return ProcessOptionElement(*option_element);
   }
 
-  // 4. If node is a Text node, then for each CSS text box produced by node.
-  if (node.IsTextNode())
-    return ProcessTextNode(ToText(node));
+  // 5. If node is a Text node, then for each CSS text box produced by node.
+  auto* text_node = DynamicTo<Text>(node);
+  if (text_node)
+    return ProcessTextNode(*text_node);
 
-  // 5. If node is a br element, then append a string containing a single U+000A
+  // 6. If node is a br element, then append a string containing a single U+000A
   // LINE FEED (LF) character to items.
-  if (IsHTMLBRElement(node)) {
+  if (IsA<HTMLBRElement>(node)) {
     ProcessChildren(node);
     result_.EmitNewline();
     return;
   }
 
-  // 6. If node's computed value of 'display' is 'table-cell', and node's CSS
+  // 7. If node's computed value of 'display' is 'table-cell', and node's CSS
   // box is not the last 'table-cell' box of its enclosing 'table-row' box, then
   // append a string containing a single U+0009 CHARACTER TABULATION (tab)
   // character to items.
@@ -310,33 +322,35 @@ void ElementInnerTextCollector::ProcessNode(const Node& node) {
   if (style->Display() == EDisplay::kTableCell) {
     ProcessChildren(node);
     if (layout_object.IsTableCell() &&
-        ToLayoutTableCell(layout_object).NextCell())
+        ToInterface<LayoutNGTableCellInterface>(layout_object)
+            .NextCellInterface())
       result_.EmitTab();
     return;
   }
 
-  // 7. If node's computed value of 'display' is 'table-row', and node's CSS box
+  // 8. If node's computed value of 'display' is 'table-row', and node's CSS box
   // is not the last 'table-row' box of the nearest ancestor 'table' box, then
   // append a string containing a single U+000A LINE FEED (LF) character to
   // items.
   if (style->Display() == EDisplay::kTableRow) {
     ProcessChildren(node);
     if (layout_object.IsTableRow() &&
-        ShouldEmitNewlineForTableRow(ToLayoutTableRow(layout_object)))
+        ShouldEmitNewlineForTableRow(
+            ToInterface<LayoutNGTableRowInterface>(layout_object)))
       result_.EmitNewline();
     return;
   }
 
-  // 8. If node is a p element, then append 2 (a required line break count) at
+  // 9. If node is a p element, then append 2 (a required line break count) at
   // the beginning and end of items.
-  if (IsHTMLParagraphElement(node)) {
+  if (IsA<HTMLParagraphElement>(node)) {
     // Note: <p style="display:contents>foo</p> doesn't generate layout object
     // for P.
     ProcessChildrenWithRequiredLineBreaks(node, 2);
     return;
   }
 
-  // 9. If node's used value of 'display' is block-level or 'table-caption',
+  // 10. If node's used value of 'display' is block-level or 'table-caption',
   // then append 1 (a required line break count) at the beginning and end of
   // items.
   if (IsDisplayBlockLevel(node))
@@ -355,18 +369,18 @@ void ElementInnerTextCollector::ProcessOptionElement(
 void ElementInnerTextCollector::ProcessSelectElement(
     const HTMLSelectElement& select_element) {
   for (const Node& child : NodeTraversal::ChildrenOf(select_element)) {
-    if (IsHTMLOptionElement(child)) {
-      ProcessOptionElement(ToHTMLOptionElement(child));
+    if (auto* option_element = DynamicTo<HTMLOptionElement>(child)) {
+      ProcessOptionElement(*option_element);
       continue;
     }
-    if (!IsHTMLOptGroupElement(child))
+    if (!IsA<HTMLOptGroupElement>(child))
       continue;
     // Note: We should emit newline for OPTGROUP even if it has no OPTION.
     // e.g. <div>a<select><optgroup></select>b</div>.innerText == "a\nb"
     result_.EmitRequiredLineBreak(1);
     for (const Node& maybe_option : NodeTraversal::ChildrenOf(child)) {
-      if (IsHTMLOptionElement(maybe_option))
-        ProcessOptionElement(ToHTMLOptionElement(maybe_option));
+      if (auto* option_element = DynamicTo<HTMLOptionElement>(maybe_option))
+        ProcessOptionElement(*option_element);
     }
     result_.EmitRequiredLineBreak(1);
   }
@@ -446,7 +460,22 @@ void ElementInnerTextCollector::Result::FlushRequiredLineBreak() {
 String Element::innerText() {
   // We need to update layout, since |ElementInnerTextCollector()| uses line
   // boxes in the layout tree.
-  GetDocument().UpdateStyleAndLayoutForNode(this);
+  GetDocument().UpdateStyleAndLayoutForNode(this,
+                                            DocumentUpdateReason::kJavaScript);
+  return GetInnerTextWithoutUpdate();
+}
+
+// Used for callers that must ensure no document lifecycle rewind.
+String Element::GetInnerTextWithoutUpdate() {
+  // TODO(https:://crbug.com/1165850 https:://crbug.com/1166296) Layout should
+  // always be clean here, but the lifecycle does not report the correctly
+  // updated value unless servicing animations. Fix the UpdateStyleAndLayout()
+  // to correctly advance the lifecycle, and then update the following DCHECK to
+  // always require clean layout in active documents.
+  // DCHECK(!GetDocument().IsActive() || !GetDocument().GetPage() ||
+  //        GetDocument().Lifecycle().GetState() >=
+  //            DocumentLifecycle::kLayoutClean)
+  //     << "Layout must be clean when GetInnerTextWithoutUpdate() is called.";
   return ElementInnerTextCollector().RunOn(*this);
 }
 

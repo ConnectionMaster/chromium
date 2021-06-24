@@ -13,8 +13,8 @@
 
 #include "base/component_export.h"
 #include "base/debug/alias.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_piece.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_canon.h"
 #include "url/url_canon_stdstring.h"
@@ -45,8 +45,8 @@
 // will know to escape this and produce the desired result.
 class COMPONENT_EXPORT(URL) GURL {
  public:
-  typedef url::StringPieceReplacements<std::string> Replacements;
-  typedef url::StringPieceReplacements<base::string16> ReplacementsW;
+  typedef url::StringPieceReplacements<char> Replacements;
+  typedef url::StringPieceReplacements<char16_t> ReplacementsW;
 
   // Creates an empty, invalid URL.
   GURL();
@@ -166,8 +166,7 @@ class COMPONENT_EXPORT(URL) GURL {
   // Note that we use the more general url::Replacements type to give
   // callers extra flexibility rather than our override.
   GURL ReplaceComponents(const url::Replacements<char>& replacements) const;
-  GURL ReplaceComponents(
-      const url::Replacements<base::char16>& replacements) const;
+  GURL ReplaceComponents(const url::Replacements<char16_t>& replacements) const;
 
   // A helper function that is equivalent to replacing the path with a slash
   // and clearing out everything after that. We sometimes need to know just the
@@ -217,6 +216,10 @@ class COMPONENT_EXPORT(URL) GURL {
   // about:blank/#foo.
   bool IsAboutBlank() const;
 
+  // Returns true when the url is of the form about:srcdoc, about:srcdoc?foo or
+  // about:srcdoc/#foo.
+  bool IsAboutSrcdoc() const;
+
   // Returns true if the given parameter (should be lower-case ASCII to match
   // the canonicalized scheme) is the scheme for this URL. Do not include a
   // colon.
@@ -224,9 +227,6 @@ class COMPONENT_EXPORT(URL) GURL {
 
   // Returns true if the scheme is "http" or "https".
   bool SchemeIsHTTPOrHTTPS() const;
-
-  // Returns true if the scheme is valid for use as a referrer.
-  bool SchemeIsValidForReferrer() const;
 
   // Returns true is the scheme is "ws" or "wss".
   bool SchemeIsWSOrWSS() const;
@@ -382,6 +382,9 @@ class COMPONENT_EXPORT(URL) GURL {
   // parameter, and query portions of the URL. It is guaranteed to be ASCII.
   std::string PathForRequest() const;
 
+  // Returns the same characters as PathForRequest(), avoiding a copy.
+  base::StringPiece PathForRequestPiece() const;
+
   // Returns the host, excluding the square brackets surrounding IPv6 address
   // literals. This can be useful for passing to getaddrinfo().
   std::string HostNoBrackets() const;
@@ -430,6 +433,12 @@ class COMPONENT_EXPORT(URL) GURL {
   // See base/trace_event/memory_usage_estimator.h for more info.
   size_t EstimateMemoryUsage() const;
 
+  // Helper used by GURL::IsAboutUrl and KURL::IsAboutURL.
+  static bool IsAboutPath(base::StringPiece actual_path,
+                          base::StringPiece allowed_path);
+
+  void WriteIntoTrace(perfetto::TracedValue context) const;
+
  private:
   // Variant of the string parsing constructor that allows the caller to elect
   // retain trailing whitespace, if any, on the passed URL spec, but only if
@@ -439,11 +448,13 @@ class COMPONENT_EXPORT(URL) GURL {
   enum RetainWhiteSpaceSelector { RETAIN_TRAILING_PATH_WHITEPACE };
   GURL(const std::string& url_string, RetainWhiteSpaceSelector);
 
-  template<typename STR>
-  void InitCanonical(base::BasicStringPiece<STR> input_spec,
-                     bool trim_path_end);
+  template <typename T, typename CharT = typename T::value_type>
+  void InitCanonical(T input_spec, bool trim_path_end);
 
   void InitializeFromCanonicalSpec();
+
+  // Helper used by IsAboutBlank and IsAboutSrcdoc.
+  bool IsAboutUrl(base::StringPiece allowed_path) const;
 
   // Returns the substring of the input identified by the given component.
   std::string ComponentString(const url::Component& comp) const {

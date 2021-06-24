@@ -5,9 +5,27 @@
 #ifndef CHROME_BROWSER_ANDROID_CONTEXTUALSEARCH_RESOLVED_SEARCH_TERM_H_
 #define CHROME_BROWSER_ANDROID_CONTEXTUALSEARCH_RESOLVED_SEARCH_TERM_H_
 
-#include <string>
+#include <string.h>
+
+#include <algorithm>
+#include <cmath>
+#include <new>
+#include <ostream>
+#include <utility>
+
+#include "base/bit_cast.h"
+#include "base/containers/checked_iterators.h"
+#include "base/json/json_writer.h"
+#include "base/logging.h"
+#include "base/memory/ptr_util.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/trace_event/memory_usage_estimator.h"
 
 #include "base/macros.h"
+
+// Provides the native support needed for the Java class by the same name,
+// which encapsulates a server response for Contextual Search.
 
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.contextualsearch
@@ -43,9 +61,13 @@ struct ResolvedSearchTerm {
                      const QuickActionCategory& quick_action_category,
                      int64_t logged_event_id,
                      const std::string& search_url_full,
-                     const std::string& search_url_preload);
+                     const std::string& search_url_preload,
+                     int coca_card_tag,
+                     const std::string& related_searches_json);
   ~ResolvedSearchTerm();
 
+  // TODO(donnd): switch to member-initialization style instead of initializers.
+  // TODO(donnd): change these members names to include an ending underscore.
   const bool is_invalid;
   const int response_code;
   // Use strings, rather than just references, to keep this complete.
@@ -64,6 +86,8 @@ struct ResolvedSearchTerm {
   const int64_t logged_event_id;  // Often 0.
   const std::string search_url_full;
   const std::string search_url_preload;
+  const int coca_card_tag;
+  const std::string related_searches_json;
 
   DISALLOW_COPY_AND_ASSIGN(ResolvedSearchTerm);
 };

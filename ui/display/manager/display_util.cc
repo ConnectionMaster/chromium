@@ -9,59 +9,16 @@
 #include <array>
 #include <cmath>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
+#include "build/chromeos_buildflags.h"
 #include "ui/display/manager/managed_display_info.h"
 #include "ui/display/types/display_snapshot.h"
 
 namespace display {
-namespace {
 
-// The total number of display zoom factors to enumerate.
-constexpr int kNumOfZoomFactors = 9;
-
-// A pair representing the list of zoom values for a given minimum display
-// resolution width.
-using ZoomListBucket = std::pair<int, std::array<float, kNumOfZoomFactors>>;
-
-// A pair representing the list of zoom values for a given minimum default dsf.
-using ZoomListBucketDsf =
-    std::pair<float, std::array<float, kNumOfZoomFactors>>;
-
-// For displays with a device scale factor of unity, we use a static list of
-// initialized zoom values. For a given resolution width of a display, we can
-// find its associated list of zoom values by simply finding the last bucket
-// with a width less than the given resolution width.
-// Ex. A resolution width of 1024, we will use the bucket with the width of 960.
-constexpr std::array<ZoomListBucket, 8> kZoomListBuckets{{
-    {0, {0.60f, 0.65f, 0.70f, 0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 1.f}},
-    {720, {0.70f, 0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 1.f, 1.05f, 1.10f}},
-    {800, {0.75f, 0.80f, 0.85f, 0.90f, 0.95f, 1.f, 1.05f, 1.10f, 1.15f}},
-    {960, {0.90f, 0.95f, 1.f, 1.05f, 1.10f, 1.15f, 1.20f, 1.25f, 1.30f}},
-    {1280, {0.90f, 1.f, 1.05f, 1.10f, 1.15f, 1.20f, 1.25f, 1.30f, 1.50f}},
-    {1920, {1.f, 1.10f, 1.15f, 1.20f, 1.30f, 1.40f, 1.50f, 1.75f, 2.00f}},
-    {3840, {1.f, 1.10f, 1.20f, 1.40f, 1.60f, 1.80f, 2.00f, 2.20f, 2.40f}},
-    {5120, {1.f, 1.25f, 1.50f, 1.75f, 2.00f, 2.25f, 2.50f, 2.75f, 3.00f}},
-}};
-
-// Displays with a default device scale factor have a static list of initialized
-// zoom values that includes a zoom level to go to the native resolution of the
-// display. Ensure that the list of DSFs are in sync with the list of default
-// device scale factors in display_change_observer.cc.
-constexpr std::array<ZoomListBucketDsf, 4> kZoomListBucketsForDsf{{
-    {1.25f, {0.7f, 1.f / 1.25f, 0.85f, 0.9f, 0.95f, 1.f, 1.1f, 1.2f, 1.3f}},
-    {1.6f, {1.f / 1.6f, 0.7f, 0.75f, 0.8f, 0.85f, 0.9f, 1.f, 1.15f, 1.3f}},
-    {2.f, {1.f / 2.f, 0.6f, 0.7f, 0.8f, 0.9f, 1.f, 1.1f, 1.25f, 1.5f}},
-    {2.25f, {1.f / 2.25f, 0.6f, 0.7f, 0.8f, 0.9f, 1.f, 1.15f, 1.3f, 1.5f}},
-}};
-
-bool WithinEpsilon(float a, float b) {
-  return std::abs(a - b) < std::numeric_limits<float>::epsilon();
-}
-
-}  // namespace
-
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 std::string DisplayPowerStateToString(chromeos::DisplayPowerState state) {
   switch (state) {
     case chromeos::DISPLAY_POWER_ALL_ON:
@@ -75,23 +32,6 @@ std::string DisplayPowerStateToString(chromeos::DisplayPowerState state) {
     default:
       return "unknown (" + base::NumberToString(state) + ")";
   }
-}
-
-std::string MultipleDisplayStateToString(MultipleDisplayState state) {
-  switch (state) {
-    case MULTIPLE_DISPLAY_STATE_INVALID:
-      return "INVALID";
-    case MULTIPLE_DISPLAY_STATE_HEADLESS:
-      return "HEADLESS";
-    case MULTIPLE_DISPLAY_STATE_SINGLE:
-      return "SINGLE";
-    case MULTIPLE_DISPLAY_STATE_MULTI_MIRROR:
-      return "DUAL_MIRROR";
-    case MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED:
-      return "MULTI_EXTENDED";
-  }
-  NOTREACHED() << "Unknown state " << state;
-  return "INVALID";
 }
 
 int GetDisplayPower(const std::vector<DisplaySnapshot*>& displays,
@@ -116,8 +56,27 @@ int GetDisplayPower(const std::vector<DisplaySnapshot*>& displays,
   return num_on_displays;
 }
 
-bool IsPhysicalDisplayType(DisplayConnectionType type) {
-  return !(type & DISPLAY_CONNECTION_TYPE_NETWORK);
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+bool WithinEpsilon(float a, float b) {
+  return std::abs(a - b) < std::numeric_limits<float>::epsilon();
+}
+
+std::string MultipleDisplayStateToString(MultipleDisplayState state) {
+  switch (state) {
+    case MULTIPLE_DISPLAY_STATE_INVALID:
+      return "INVALID";
+    case MULTIPLE_DISPLAY_STATE_HEADLESS:
+      return "HEADLESS";
+    case MULTIPLE_DISPLAY_STATE_SINGLE:
+      return "SINGLE";
+    case MULTIPLE_DISPLAY_STATE_MULTI_MIRROR:
+      return "DUAL_MIRROR";
+    case MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED:
+      return "MULTI_EXTENDED";
+  }
+  NOTREACHED() << "Unknown state " << state;
+  return "INVALID";
 }
 
 bool GetContentProtectionMethods(DisplayConnectionType type,
@@ -167,7 +126,8 @@ std::vector<float> GetDisplayZoomFactors(const ManagedDisplayMode& mode) {
   // There may be cases where the device scale factor is less than 1. This can
   // happen during testing or local linux builds.
   const int effective_width = std::round(
-      static_cast<float>(mode.size().width()) / mode.device_scale_factor());
+      static_cast<float>(std::max(mode.size().width(), mode.size().height())) /
+      mode.device_scale_factor());
 
   std::size_t index = kZoomListBuckets.size() - 1;
   while (index > 0 && effective_width < kZoomListBuckets[index].first)

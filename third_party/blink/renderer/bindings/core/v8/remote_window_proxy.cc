@@ -37,9 +37,7 @@
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/v8_dom_wrapper.h"
-#include "third_party/blink/renderer/platform/histogram.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "v8/include/v8.h"
 
 namespace blink {
@@ -63,8 +61,6 @@ void RemoteWindowProxy::DisposeContext(Lifecycle next_status,
   if (lifecycle_ == Lifecycle::kV8MemoryIsForciblyPurged) {
     DCHECK(next_status == Lifecycle::kGlobalObjectIsDetached ||
            next_status == Lifecycle::kFrameIsDetachedAndV8MemoryIsPurged);
-    if (next_status == Lifecycle::kFrameIsDetachedAndV8MemoryIsPurged)
-      global_proxy_.SetPhantom();
     lifecycle_ = next_status;
     return;
   }
@@ -75,18 +71,13 @@ void RemoteWindowProxy::DisposeContext(Lifecycle next_status,
   if ((next_status == Lifecycle::kV8MemoryIsForciblyPurged ||
        next_status == Lifecycle::kGlobalObjectIsDetached) &&
       !global_proxy_.IsEmpty()) {
+    v8::HandleScope handle_scope(GetIsolate());
     global_proxy_.Get().SetWrapperClassId(0);
     V8DOMWrapper::ClearNativeInfo(GetIsolate(),
                                   global_proxy_.NewLocal(GetIsolate()));
 #if DCHECK_IS_ON()
     DidDetachGlobalObject();
 #endif
-  }
-
-  if (next_status == Lifecycle::kFrameIsDetached) {
-    // The context's frame is detached from the DOM, so there shouldn't be a
-    // strong reference to the context.
-    global_proxy_.SetPhantom();
   }
 
   DCHECK_EQ(lifecycle_, Lifecycle::kContextIsInitialized);
@@ -96,11 +87,6 @@ void RemoteWindowProxy::DisposeContext(Lifecycle next_status,
 void RemoteWindowProxy::Initialize() {
   TRACE_EVENT1("v8", "RemoteWindowProxy::initialize", "isMainWindow",
                GetFrame()->IsMainFrame());
-  SCOPED_BLINK_UMA_HISTOGRAM_TIMER(
-      GetFrame()->IsMainFrame()
-          ? "Blink.Binding.InitializeMainRemoteWindowProxy"
-          : "Blink.Binding.InitializeNonMainRemoteWindowProxy");
-
   ScriptForbiddenScope::AllowUserAgentScript allow_script;
 
   v8::HandleScope handle_scope(GetIsolate());
@@ -112,7 +98,10 @@ void RemoteWindowProxy::CreateContext() {
   // Create a new v8::Context with the window object as the global object
   // (aka the inner global). Reuse the outer global proxy if it already exists.
   v8::Local<v8::ObjectTemplate> global_template =
-      V8Window::DomTemplate(GetIsolate(), *world_)->InstanceTemplate();
+      V8Window::GetWrapperTypeInfo()
+          ->GetV8ClassTemplate(GetIsolate(), *world_)
+          .As<v8::FunctionTemplate>()
+          ->InstanceTemplate();
   CHECK(!global_template.IsEmpty());
 
   v8::Local<v8::Object> global_proxy =
@@ -151,9 +140,8 @@ void RemoteWindowProxy::SetupWindowPrototypeChain() {
   // The global object, aka window wrapper object.
   v8::Local<v8::Object> window_wrapper =
       global_proxy->GetPrototype().As<v8::Object>();
-  v8::Local<v8::Object> associated_wrapper =
-      AssociateWithWrapper(window, wrapper_type_info, window_wrapper);
-  DCHECK(associated_wrapper == window_wrapper);
+  V8DOMWrapper::SetNativeInfo(GetIsolate(), window_wrapper, wrapper_type_info,
+                              window);
 }
 
 }  // namespace blink

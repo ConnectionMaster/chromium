@@ -12,6 +12,9 @@ import android.view.textclassifier.TextClassifier;
 import android.view.textclassifier.TextSelection;
 
 import org.chromium.content.browser.selection.SmartSelectionClient;
+import org.chromium.ui.touch_selection.SelectionEventType;
+
+import java.util.List;
 
 /**
  * Interface to a content layer client that can process and modify selection text.
@@ -64,6 +67,11 @@ public interface SelectionClient {
         public TextSelection textSelection;
 
         /**
+         * Icons for additional menu items.
+         */
+        public List<Drawable> additionalIcons;
+
+        /**
          * A helper method that returns true if the result has both visual info
          * and an action so that, for instance, one can make a new menu item.
          */
@@ -94,7 +102,7 @@ public interface SelectionClient {
      * @param posXPix The x coordinate of the selection start handle.
      * @param posYPix The y coordinate of the selection start handle.
      */
-    void onSelectionEvent(int eventType, float posXPix, float posYPix);
+    void onSelectionEvent(@SelectionEventType int eventType, float posXPix, float posYPix);
 
     /**
      * Acknowledges that a selectWordAroundCaret action has completed with the given result.
@@ -119,13 +127,10 @@ public interface SelectionClient {
      */
     void cancelAllRequests();
 
-    // The clang-format tool is confused by the java 8 usage of default in an interface.
-    // TODO(donnd): remove this once it's supported.  See b/67428051.
-    // clang-format off
     /**
-     * Returns a SelectionMetricsLogger associated with the SelectionClient or null.
+     * Returns a SelectionEventProcessor associated with the SelectionClient or null.
      */
-    default SelectionMetricsLogger getSelectionMetricsLogger() {
+    default SelectionEventProcessor getSelectionEventProcessor() {
         return null;
     }
 
@@ -152,7 +157,6 @@ public interface SelectionClient {
     default TextClassifier getCustomTextClassifier() {
         return null;
     }
-    // clang-format on
 
     /** Creates a {@link SelectionClient} instance. */
     public static SelectionClient createSmartSelectionClient(WebContents webContents) {

@@ -4,12 +4,13 @@
 
 #include "components/invalidation/public/invalidation_handler.h"
 
-namespace syncer {
+namespace invalidation {
 
-InvalidationHandler::InvalidationHandler() {
+void InvalidationHandler::OnInvalidatorClientIdChange(
+    const std::string& client_id) {}
+
+bool InvalidationHandler::IsPublicTopic(const Topic& topic) const {
+  return false;
 }
 
-InvalidationHandler::~InvalidationHandler() {
-}
-
-}  // namespace syncer
+}  // namespace invalidation

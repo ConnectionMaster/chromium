@@ -14,6 +14,7 @@
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/extension_host.h"
+#include "extensions/common/mojom/view_type.mojom.h"
 
 class Browser;
 
@@ -35,20 +36,19 @@ class ExtensionViewHost
       public web_modal::WebContentsModalDialogHost,
       public content::NotificationObserver {
  public:
+  // |browser| may be null, since extension views may be bound to TabContents
+  // hosted in ExternalTabContainer objects, which do not instantiate Browsers.
   ExtensionViewHost(const Extension* extension,
                     content::SiteInstance* site_instance,
                     const GURL& url,
-                    ViewType host_type);
+                    mojom::ViewType host_type,
+                    Browser* browser);
   ~ExtensionViewHost() override;
 
-  ExtensionView* view() { return view_.get(); }
-  const ExtensionView* view() const { return view_.get(); }
+  Browser* browser() { return browser_; }
 
-  // Create an ExtensionView and tie it to this host and |browser|.  Note NULL
-  // is a valid argument for |browser|.  Extension views may be bound to
-  // tab-contents hosted in ExternalTabContainer objects, which do not
-  // instantiate Browser objects.
-  void CreateView(Browser* browser);
+  void set_view(ExtensionView* view) { view_ = view; }
+  ExtensionView* view() { return view_; }
 
   void SetAssociatedWebContents(content::WebContents* web_contents);
 
@@ -77,19 +77,19 @@ class ExtensionViewHost
       const content::NativeWebKeyboardEvent& event) override;
   bool PreHandleGestureEvent(content::WebContents* source,
                              const blink::WebGestureEvent& event) override;
-  content::ColorChooser* OpenColorChooser(
+  std::unique_ptr<content::ColorChooser> OpenColorChooser(
       content::WebContents* web_contents,
       SkColor color,
       const std::vector<blink::mojom::ColorSuggestionPtr>& suggestions)
       override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      std::unique_ptr<content::FileSelectListener> listener,
+                      scoped_refptr<content::FileSelectListener> listener,
                       const blink::mojom::FileChooserParams& params) override;
   void ResizeDueToAutoResize(content::WebContents* source,
                              const gfx::Size& new_size) override;
 
   // content::WebContentsObserver
-  void RenderViewCreated(content::RenderViewHost* render_view_host) override;
+  void RenderFrameCreated(content::RenderFrameHost* frame_host) override;
 
   // web_modal::WebContentsModalDialogManagerDelegate
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost()
@@ -114,15 +114,18 @@ class ExtensionViewHost
                const content::NotificationDetails& details) override;
 
  private:
-  // Implemented per-platform. Create the platform-specific ExtensionView.
-  static std::unique_ptr<ExtensionView> CreateExtensionView(
-      ExtensionViewHost* host,
-      Browser* browser);
-  // Optional view that shows the rendered content in the UI.
-  std::unique_ptr<ExtensionView> view_;
+  // Returns whether the provided event is a raw escape keypress in a
+  // mojom::ViewType::kExtensionPopup.
+  bool IsEscapeInPopup(const content::NativeWebKeyboardEvent& event) const;
+
+  // The browser associated with the ExtensionView, if any.
+  Browser* browser_;
+
+  // View that shows the rendered content in the UI.
+  ExtensionView* view_;
 
   // The relevant WebContents associated with this ExtensionViewHost, if any.
-  content::WebContents* associated_web_contents_;
+  content::WebContents* associated_web_contents_ = nullptr;
 
   // Observer to detect when the associated web contents is destroyed.
   class AssociatedWebContentsObserver;

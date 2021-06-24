@@ -4,25 +4,35 @@
 
 #import "ios/chrome/browser/ui/reading_list/reading_list_table_view_controller.h"
 
+#include "base/check_op.h"
 #include "base/ios/ios_util.h"
-#include "base/logging.h"
 #include "base/mac/foundation_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/stl_util.h"
 #include "components/strings/grit/components_strings.h"
+#import "ios/chrome/app/tests_hook.h"
+#import "ios/chrome/browser/drag_and_drop/drag_item_util.h"
+#import "ios/chrome/browser/drag_and_drop/table_view_url_drag_drop_handler.h"
+#import "ios/chrome/browser/main/browser.h"
 #import "ios/chrome/browser/ui/alert_coordinator/action_sheet_coordinator.h"
 #import "ios/chrome/browser/ui/list_model/list_item+Controller.h"
 #import "ios/chrome/browser/ui/reading_list/empty_reading_list_message_util.h"
+#import "ios/chrome/browser/ui/reading_list/reading_list_constants.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_data_sink.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_data_source.h"
+#import "ios/chrome/browser/ui/reading_list/reading_list_list_item.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_list_item_updater.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_list_view_controller_audience.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_list_view_controller_delegate.h"
+#import "ios/chrome/browser/ui/reading_list/reading_list_menu_provider.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_toolbar_button_commands.h"
 #import "ios/chrome/browser/ui/reading_list/reading_list_toolbar_button_manager.h"
 #import "ios/chrome/browser/ui/table_view/cells/table_view_text_header_footer_item.h"
+#import "ios/chrome/browser/ui/table_view/table_view_utils.h"
+#include "ios/chrome/browser/ui/ui_feature_flags.h"
+#import "ios/chrome/browser/ui/util/menu_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util_mac.h"
@@ -32,8 +42,6 @@
 #endif
 
 namespace {
-// The image to use in the placeholder view while the table is empty.
-NSString* const kEmptyStateImage = @"reading_list_empty_state_new";
 // Types of ListItems used by the reading list UI.
 typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeHeader = kItemTypeEnumZero,
@@ -59,13 +67,18 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 }
 }  // namespace
 
-@interface ReadingListTableViewController ()<ReadingListDataSink,
-                                             ReadingListToolbarButtonCommands>
+@interface ReadingListTableViewController () <ReadingListDataSink,
+                                              ReadingListToolbarButtonCommands,
+                                              TableViewURLDragDataSource>
 
 // Redefine the model to return ReadingListListItems
 @property(nonatomic, readonly)
     TableViewModel<TableViewItem<ReadingListListItem>*>* tableViewModel;
 
+// The number of batch operation triggered by UI.
+// One UI operation can trigger multiple batch operation, so this can be greater
+// than 1.
+@property(nonatomic, assign) int numberOfBatchOperationInProgress;
 // Whether the data source has been modified while in editing mode.
 @property(nonatomic, assign) BOOL dataSourceModifiedWhileEditing;
 // The toolbar button manager.
@@ -84,25 +97,18 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 @property(nonatomic, readonly, getter=isEditingWithSwipe) BOOL editingWithSwipe;
 // Whether to remove empty sections after editing is reset to NO.
 @property(nonatomic, assign) BOOL needsSectionCleanupAfterEditing;
-
+// Handler for URL drag interactions.
+@property(nonatomic, strong) TableViewURLDragDropHandler* dragDropHandler;
 @end
 
 @implementation ReadingListTableViewController
-@synthesize delegate = _delegate;
-@synthesize audience = _audience;
-@synthesize dataSource = _dataSource;
 @dynamic tableViewModel;
-@synthesize dataSourceModifiedWhileEditing = _dataSourceModifiedWhileEditing;
-@synthesize toolbarManager = _toolbarManager;
-@synthesize selectedUnreadItemCount = _selectedUnreadItemCount;
-@synthesize selectedReadItemCount = _selectedReadItemCount;
-@synthesize markConfirmationSheet = _markConfirmationSheet;
-@synthesize editingWithToolbarButtons = _editingWithToolbarButtons;
-@synthesize needsSectionCleanupAfterEditing = _needsSectionCleanupAfterEditing;
 
 - (instancetype)init {
-  self = [super initWithTableViewStyle:UITableViewStylePlain
-                           appBarStyle:ChromeTableViewControllerStyleNoAppBar];
+  UITableViewStyle style = base::FeatureList::IsEnabled(kSettingsRefresh)
+                               ? ChromeTableViewStyle()
+                               : UITableViewStylePlain;
+  self = [super initWithStyle:style];
   if (self) {
     _toolbarManager = [[ReadingListToolbarButtonManager alloc] init];
     _toolbarManager.commandHandler = self;
@@ -138,6 +144,7 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   if (!editing) {
     self.editingWithToolbarButtons = NO;
     if (self.needsSectionCleanupAfterEditing) {
+      [self removeEmptySections];
       self.needsSectionCleanupAfterEditing = NO;
     }
   }
@@ -187,7 +194,7 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 }
 
 + (NSString*)accessibilityIdentifier {
-  return @"ReadingListTableView";
+  return kReadingListViewID;
 }
 
 #pragma mark - UIViewController
@@ -206,16 +213,21 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   self.tableView.allowsMultipleSelection = YES;
   // Add a tableFooterView in order to disable separators at the bottom of the
   // tableView.
-  // TODO(crbug.com/863606): Remove this workaround when iOS10 is no longer
-  // supported, as it is not necessary in iOS 11.
-  self.tableView.tableFooterView = [[UIView alloc] init];
 
   // Add gesture recognizer for the context menu.
-  UILongPressGestureRecognizer* longPressRecognizer =
-      [[UILongPressGestureRecognizer alloc]
-          initWithTarget:self
-                  action:@selector(handleLongPress:)];
-  [self.tableView addGestureRecognizer:longPressRecognizer];
+  if (!IsNativeContextMenuEnabled()) {
+    UILongPressGestureRecognizer* longPressRecognizer =
+        [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleLongPress:)];
+    [self.tableView addGestureRecognizer:longPressRecognizer];
+  }
+
+    self.dragDropHandler = [[TableViewURLDragDropHandler alloc] init];
+    self.dragDropHandler.origin = WindowActivityReadingListOrigin;
+    self.dragDropHandler.dragDataSource = self;
+    self.tableView.dragDelegate = self.dragDropHandler;
+    self.tableView.dragInteractionEnabled = true;
 }
 
 - (void)viewWillTransitionToSize:(CGSize)size
@@ -241,11 +253,11 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
      forRowAtIndexPath:(NSIndexPath*)indexPath {
   DCHECK_EQ(editingStyle, UITableViewCellEditingStyleDelete);
   base::RecordAction(base::UserMetricsAction("MobileReadingListDeleteEntry"));
-  // The UIKit animation for the swipe-to-delete gesture throws an exception if
-  // the section of the deleted item is removed before the animation is
-  // finished.  To prevent this from happening, record that cleanup is needed
-  // and remove the section when self.tableView.editing is reset to NO when the
-  // animation finishes.
+
+  // On IOS 12, the UIKit animation for the swipe-to-delete gesture throws an
+  // exception if the section of the deleted item is removed before the
+  // animation is finished. This is still needed on IOS 13 to prevent displaying
+  // Cancel and Mark all buttons, see crbug.com/1022763.
   self.needsSectionCleanupAfterEditing = YES;
   [self deleteItemsAtIndexPaths:@[ indexPath ]
                      endEditing:NO
@@ -290,6 +302,49 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   return [self.tableViewModel itemAtIndexPath:indexPath].type == ItemTypeItem;
 }
 
+- (UIContextMenuConfiguration*)tableView:(UITableView*)tableView
+    contextMenuConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath
+                                        point:(CGPoint)point
+    API_AVAILABLE(ios(13.0)) {
+  if (!IsNativeContextMenuEnabled()) {
+    // Returning nil will allow the gesture to be captured and show the old
+    // context menus.
+    return nil;
+  }
+
+  if (self.isEditing) {
+    // Don't show the context menu when currently in editing mode.
+    return nil;
+  }
+
+  return [self.menuProvider
+      contextMenuConfigurationForItem:[self.tableViewModel
+                                          itemAtIndexPath:indexPath]
+                             withView:[self.tableView
+                                          cellForRowAtIndexPath:indexPath]];
+}
+
+#pragma mark - TableViewURLDragDataSource
+
+- (URLInfo*)tableView:(UITableView*)tableView
+    URLInfoAtIndexPath:(NSIndexPath*)indexPath {
+  if (self.tableView.editing)
+    return nil;
+  id<ReadingListListItem> item =
+      [self.tableViewModel itemAtIndexPath:indexPath];
+  return [[URLInfo alloc] initWithURL:item.entryURL title:item.title];
+}
+
+#pragma mark - UIAdaptivePresentationControllerDelegate
+
+- (void)presentationControllerDidDismiss:
+    (UIPresentationController*)presentationController {
+  base::RecordAction(base::UserMetricsAction("IOSReadingListCloseWithSwipe"));
+  // Call the delegate dismissReadingListListViewController to clean up state
+  // and stop the Coordinator.
+  [self.delegate dismissReadingListListViewController:self];
+}
+
 #pragma mark - ChromeTableViewController
 
 - (void)loadModel {
@@ -314,9 +369,9 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 }
 
 - (void)dataSourceChanged {
-  // If we are editing and monitoring the model updates, set a flag to reload
-  // the data at the end of the editing.
-  if (self.editing) {
+  // If the model is updated when the UI is already making a change, set a flag
+  // to reload the data at the end of the editing.
+  if (self.numberOfBatchOperationInProgress) {
     self.dataSourceModifiedWhileEditing = YES;
   } else {
     [self reloadData];
@@ -359,13 +414,6 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   return [self.dataSource isItemRead:item];
 }
 
-- (void)deleteItem:(id<ReadingListListItem>)item {
-  TableViewModel* model = self.tableViewModel;
-  TableViewItem* tableViewItem = base::mac::ObjCCastStrict<TableViewItem>(item);
-  if ([model hasItem:tableViewItem])
-    [self deleteItemsAtIndexPaths:@[ [model indexPathForItem:tableViewItem] ]];
-}
-
 - (void)openItemInNewTab:(id<ReadingListListItem>)item {
   [self.delegate readingListListViewController:self
                               openItemInNewTab:item
@@ -385,6 +433,12 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 
 - (void)markItemRead:(id<ReadingListListItem>)item {
   TableViewModel* model = self.tableViewModel;
+  if (![model hasSectionForSectionIdentifier:SectionIdentifierUnread]) {
+    // Prevent trying to access this section if it has been concurrently
+    // deleted (via another window or Sync).
+    return;
+  }
+
   TableViewItem* tableViewItem = base::mac::ObjCCastStrict<TableViewItem>(item);
   if ([model hasItem:tableViewItem
           inSectionWithIdentifier:SectionIdentifierUnread]) {
@@ -395,11 +449,27 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 
 - (void)markItemUnread:(id<ReadingListListItem>)item {
   TableViewModel* model = self.tableViewModel;
+  if (![model hasSectionForSectionIdentifier:SectionIdentifierRead]) {
+    // Prevent trying to access this section if it has been concurrently
+    // deleted (via another window or Sync).
+    return;
+  }
+
   TableViewItem* tableViewItem = base::mac::ObjCCastStrict<TableViewItem>(item);
   if ([model hasItem:tableViewItem
           inSectionWithIdentifier:SectionIdentifierRead]) {
     [self markItemsAtIndexPaths:@[ [model indexPathForItem:tableViewItem] ]
                  withReadStatus:NO];
+  }
+}
+
+- (void)deleteItem:(id<ReadingListListItem>)item {
+  TableViewItem<ReadingListListItem>* tableViewItem =
+      base::mac::ObjCCastStrict<TableViewItem<ReadingListListItem>>(item);
+  if ([self.tableViewModel hasItem:tableViewItem]) {
+    NSIndexPath* indexPath =
+        [self.tableViewModel indexPathForItem:tableViewItem];
+    [self deleteItemsAtIndexPaths:@[ indexPath ]];
   }
 }
 
@@ -519,12 +589,28 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   [self.markConfirmationSheet start];
 }
 
+- (void)performBatchTableViewUpdates:(void (^)(void))updates
+                          completion:(void (^)(BOOL finished))completion {
+  self.numberOfBatchOperationInProgress += 1;
+  void (^releaseDataSource)(BOOL) = ^(BOOL finished) {
+    // Set numberOfBatchOperationInProgress before calling completion, as
+    // completion may trigger another change.
+    DCHECK_GT(self.numberOfBatchOperationInProgress, 0);
+    self.numberOfBatchOperationInProgress -= 1;
+    if (completion) {
+      completion(finished);
+    }
+  };
+  [super performBatchTableViewUpdates:updates completion:releaseDataSource];
+}
+
 #pragma mark - ReadingListToolbarButtonCommands Helpers
 
 // Creates a confirmation action sheet for the "Mark" toolbar button item.
 - (void)initializeMarkConfirmationSheet {
-  self.markConfirmationSheet =
-      [self.toolbarManager markButtonConfirmationWithBaseViewController:self];
+  self.markConfirmationSheet = [self.toolbarManager
+      markButtonConfirmationWithBaseViewController:self
+                                           browser:_browser];
 
   [self.markConfirmationSheet
       addItemWithTitle:l10n_util::GetNSStringWithFixup(IDS_CANCEL)
@@ -591,6 +677,7 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
       self.selectedUnreadItemCount, self.selectedReadItemCount);
   if (self.toolbarManager.buttonItemsUpdated)
     [self setToolbarItems:[self.toolbarManager buttonItems] animated:YES];
+  [self.toolbarManager updateMarkButtonTitle];
 }
 
 #pragma mark - Item Editing Helpers
@@ -655,6 +742,9 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
                     toSection:(SectionIdentifier)toSection {
   // Reconfigure cells, allowing the custom actions to be updated.
   for (NSIndexPath* indexPath in sortedIndexPaths) {
+    if (![self.tableView cellForRowAtIndexPath:indexPath])
+      continue;
+
     [[self.tableViewModel itemAtIndexPath:indexPath]
         configureCell:[self.tableView cellForRowAtIndexPath:indexPath]
            withStyler:self.styler];
@@ -699,7 +789,6 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     [self batchEditDidFinish];
   };
   [self performBatchTableViewUpdates:updates completion:completion];
-  [self removeEmptySections];
 }
 
 // Moves the ListItem within self.tableViewModel at |modelIndex| and the
@@ -772,9 +861,9 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     [self.dataSource removeEntryFromItem:item];
   };
   [self updateItemsAtIndexPaths:indexPaths withItemUpdater:updater];
-  if (endEditing)
+  if (endEditing) {
     [self exitEditingModeAnimated:YES];
-
+  }
   // Update the model and table view for the deleted items.
   UITableView* tableView = self.tableView;
   NSArray* sortedIndexPaths =
@@ -884,13 +973,12 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
       }
     }
   };
-  [self performBatchTableViewUpdates:updates completion:nil];
 
+  [self performBatchTableViewUpdates:updates completion:nil];
   if (!self.dataSource.hasElements)
     [self tableIsEmpty];
   else
     [self updateToolbarItems];
-
   return removedSectionCount;
 }
 
@@ -900,16 +988,24 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   [self setEditing:NO animated:animated];
 }
 
-#pragma mark - Emtpy Table Helpers
+#pragma mark - Empty Table Helpers
 
 // Called when the table is empty.
 - (void)tableIsEmpty {
-  [self
-      addEmptyTableViewWithAttributedMessage:GetReadingListEmptyMessage()
-                                       image:[UIImage
-                                                 imageNamed:kEmptyStateImage]];
-  [self updateEmptyTableViewMessageAccessibilityLabel:
-            GetReadingListEmptyMessageA11yLabel()];
+  // It is necessary to reloadData now, before modifying the view which will
+  // force a layout.
+  // If the window is not displayed (e.g. in an inactive scene) the number of
+  // elements may be outdated and the layout triggered by this function will
+  // generate access non-existing items.
+  [self.tableView reloadData];
+  UIImage* emptyImage = [UIImage imageNamed:@"reading_list_empty"];
+  NSString* title =
+      l10n_util::GetNSString(IDS_IOS_READING_LIST_NO_ENTRIES_TITLE);
+  NSString* subtitle =
+      l10n_util::GetNSString(IDS_IOS_READING_LIST_NO_ENTRIES_MESSAGE);
+  [self addEmptyTableViewWithImage:emptyImage title:title subtitle:subtitle];
+  self.navigationItem.largeTitleDisplayMode =
+      UINavigationItemLargeTitleDisplayModeNever;
   self.tableView.alwaysBounceVertical = NO;
   self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
   [self.audience readingListHasItems:NO];

@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef COMPONENTS_DOM_DISTILLER_CORE_DOM_DISTILLER_CONTENT_STORE_H_
-#define COMPONENTS_DOM_DISTILLER_CORE_DOM_DISTILLER_CONTENT_STORE_H_
+#ifndef COMPONENTS_DOM_DISTILLER_CORE_DISTILLED_CONTENT_STORE_H_
+#define COMPONENTS_DOM_DISTILLER_CORE_DISTILLED_CONTENT_STORE_H_
 
 #include <memory>
 #include <string>
@@ -11,7 +11,6 @@
 
 #include "base/bind.h"
 #include "base/containers/mru_cache.h"
-#include "base/macros.h"
 #include "components/dom_distiller/core/article_entry.h"
 #include "components/dom_distiller/core/proto/distilled_article.pb.h"
 
@@ -24,10 +23,10 @@ const int kDefaultMaxNumCachedEntries = 32;
 // ArticleEntry.
 class DistilledContentStore {
  public:
-  typedef base::Callback<void(bool /* success */,
-                              std::unique_ptr<DistilledArticleProto>)>
+  typedef base::OnceCallback<void(bool /* success */,
+                                  std::unique_ptr<DistilledArticleProto>)>
       LoadCallback;
-  typedef base::Callback<void(bool /* success */)> SaveCallback;
+  typedef base::OnceCallback<void(bool /* success */)> SaveCallback;
 
   virtual void SaveContent(const ArticleEntry& entry,
                            const DistilledArticleProto& proto,
@@ -35,11 +34,11 @@ class DistilledContentStore {
   virtual void LoadContent(const ArticleEntry& entry,
                            LoadCallback callback) = 0;
 
-  DistilledContentStore() {}
-  virtual ~DistilledContentStore() {}
+  DistilledContentStore() = default;
+  virtual ~DistilledContentStore() = default;
 
- private:
-  DISALLOW_COPY_AND_ASSIGN(DistilledContentStore);
+  DistilledContentStore(const DistilledContentStore&) = delete;
+  DistilledContentStore& operator=(const DistilledContentStore&) = delete;
 };
 
 // This content store keeps up to |max_num_entries| of the last accessed items
@@ -79,7 +78,6 @@ class InMemoryContentStore : public DistilledContentStore {
 
   typedef base::MRUCache<std::string,
                          std::unique_ptr<DistilledArticleProto, CacheDeletor>>
-
       ContentMap;
   typedef std::unordered_map<std::string, std::string> UrlMap;
 
@@ -87,6 +85,6 @@ class InMemoryContentStore : public DistilledContentStore {
   UrlMap url_to_id_;
 };
 
-}  // dom_distiller
+}  // namespace dom_distiller
 
-#endif  // COMPONENTS_DOM_DISTILLER_CORE_DOM_DISTILLER_CONTENT_CACHE_H_
+#endif  // COMPONENTS_DOM_DISTILLER_CORE_DISTILLED_CONTENT_STORE_H_

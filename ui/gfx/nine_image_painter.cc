@@ -8,7 +8,8 @@
 
 #include <limits>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "base/numerics/safe_conversions.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkScalar.h"
@@ -16,7 +17,6 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
-#include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/scoped_canvas.h"
 #include "ui/gfx/skia_util.h"
@@ -99,10 +99,10 @@ void NineImagePainter::Paint(Canvas* canvas,
 
   // Since the drawing from the following Fill() calls assumes the mapped origin
   // is at (0,0), we need to translate the canvas to the mapped origin.
-  const int left_in_pixels = ToRoundedInt(bounds.x() * scale);
-  const int top_in_pixels = ToRoundedInt(bounds.y() * scale);
-  const int right_in_pixels = ToRoundedInt(bounds.right() * scale);
-  const int bottom_in_pixels = ToRoundedInt(bounds.bottom() * scale);
+  const int left_in_pixels = base::ClampRound(bounds.x() * scale);
+  const int top_in_pixels = base::ClampRound(bounds.y() * scale);
+  const int right_in_pixels = base::ClampRound(bounds.right() * scale);
+  const int bottom_in_pixels = base::ClampRound(bounds.bottom() * scale);
 
   const int width_in_pixels = right_in_pixels - left_in_pixels;
   const int height_in_pixels = bottom_in_pixels - top_in_pixels;
@@ -150,12 +150,10 @@ void NineImagePainter::Paint(Canvas* canvas,
   i7h = std::min(i7h, height_in_pixels - i1h);
   i8h = std::min(i8h, height_in_pixels - i2h);
 
-  int i4x = std::min(std::min(i0w, i3w), i6w);
-  int i4y = std::min(std::min(i0h, i1h), i2h);
-  int i4w =
-      std::max(width_in_pixels - i4x - std::min(std::min(i2w, i5w), i8w), 0);
-  int i4h =
-      std::max(height_in_pixels - i4y - std::min(std::min(i6h, i7h), i8h), 0);
+  int i4x = std::min({i0w, i3w, i6w});
+  int i4y = std::min({i0h, i1h, i2h});
+  int i4w = std::max(width_in_pixels - i4x - std::min({i2w, i5w, i8w}), 0);
+  int i4h = std::max(height_in_pixels - i4y - std::min({i6h, i7h, i8h}), 0);
 
   cc::PaintFlags flags;
   flags.setAlpha(alpha);

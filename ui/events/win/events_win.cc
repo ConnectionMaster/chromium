@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/notreached.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/win/events_win_utils.h"
 
@@ -16,7 +17,17 @@ int EventFlagsFromNative(const MSG& native_event) {
 }
 
 base::TimeTicks EventTimeFromNative(const MSG& native_event) {
+  // Note EventTimeFromMSG actually returns a time based on the current clock
+  // tick, ignoring MSG. See the comments in that function (which is in
+  // events_win_utils.cc) for the reason.
   return EventTimeFromMSG(native_event);
+}
+
+base::TimeTicks EventLatencyTimeFromNative(const MSG& native_event,
+                                           base::TimeTicks current_time) {
+  // For latency calculations use the real timestamp, rather than the one
+  // returned from EventTimeFromMSG.
+  return EventLatencyTimeFromTickClock(native_event.time, current_time);
 }
 
 gfx::PointF EventLocationFromNative(const MSG& native_event) {
@@ -51,24 +62,21 @@ gfx::Vector2d GetMouseWheelOffset(const MSG& native_event) {
   return GetMouseWheelOffsetFromMSG(native_event);
 }
 
+gfx::Vector2d GetMouseWheelTick120ths(const MSG& native_event) {
+  // On Windows, the wheel offset is already in 120ths of a tick
+  // (https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-mousewheel).
+  return GetMouseWheelOffsetFromMSG(native_event);
+}
+
 MSG CopyNativeEvent(const MSG& event) {
   return CopyMSGEvent(event);
 }
 
 void ReleaseCopiedNativeEvent(const MSG& event) {}
 
-void ClearTouchIdIfReleased(const MSG& xev) {
-  NOTIMPLEMENTED();
-}
-
-int GetTouchId(const MSG& xev) {
-  NOTIMPLEMENTED();
-  return 0;
-}
-
 PointerDetails GetTouchPointerDetailsFromNative(const MSG& native_event) {
   NOTIMPLEMENTED();
-  return PointerDetails(EventPointerType::POINTER_TYPE_TOUCH,
+  return PointerDetails(EventPointerType::kTouch,
                         /* pointer_id*/ 0,
                         /* radius_x */ 1.0,
                         /* radius_y */ 1.0,

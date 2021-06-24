@@ -8,15 +8,23 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "components/exo/layer_tree_frame_sink_holder.h"
 #include "components/exo/surface.h"
 #include "components/exo/surface_delegate.h"
+#include "components/viz/common/gpu/context_lost_observer.h"
 #include "components/viz/common/quads/compositor_frame_metadata.h"
+#include "ui/display/display_observer.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace aura {
 class Window;
 }  // namespace aura
+
+namespace viz {
+class ContextProvider;
+}
 
 namespace exo {
 class LayerTreeFrameSinkHolder;
@@ -24,7 +32,8 @@ class LayerTreeFrameSinkHolder;
 // This class provides functionality for hosting a surface tree. The surface
 // tree is hosted in the |host_window_|.
 class SurfaceTreeHost : public SurfaceDelegate,
-                        public ui::ContextFactoryObserver {
+                        public display::DisplayObserver,
+                        public viz::ContextLostObserver {
  public:
   explicit SurfaceTreeHost(const std::string& window_name);
   ~SurfaceTreeHost() override;
@@ -42,7 +51,7 @@ class SurfaceTreeHost : public SurfaceDelegate,
 
   // Call this to indicate that the previous CompositorFrame is processed and
   // the surface is being scheduled for a draw.
-  void DidReceiveCompositorFrameAck();
+  virtual void DidReceiveCompositorFrameAck();
 
   // Call this to indicate that the CompositorFrame with given
   // |presentation_token| has been first time presented to user.
@@ -62,12 +71,17 @@ class SurfaceTreeHost : public SurfaceDelegate,
   }
 
   using PresentationCallbacks = std::list<Surface::PresentationCallback>;
+
+  const PresentationCallbacks& presentation_callbacks() const {
+    return presentation_callbacks_;
+  }
+
   base::flat_map<uint32_t, PresentationCallbacks>&
   GetActivePresentationCallbacksForTesting() {
     return active_presentation_callbacks_;
   }
 
-  // Overridden from SurfaceDelegate:
+  // SurfaceDelegate:
   void OnSurfaceCommit() override;
   bool IsSurfaceSynchronized() const override;
   bool IsInputEnabled(Surface* surface) const override;
@@ -77,16 +91,45 @@ class SurfaceTreeHost : public SurfaceDelegate,
   void OnSetParent(Surface* parent, const gfx::Point& position) override {}
   void OnSetStartupId(const char* startup_id) override {}
   void OnSetApplicationId(const char* application_id) override {}
+  void SetUseImmersiveForFullscreen(bool value) override {}
+  void OnActivationRequested() override {}
+  void OnNewOutputAdded() override;
+  void OnSetServerStartResize() override {}
+  void ShowSnapPreviewToLeft() override {}
+  void ShowSnapPreviewToRight() override {}
+  void HideSnapPreview() override {}
+  void SetSnappedToLeft() override {}
+  void SetSnappedToRight() override {}
+  void UnsetSnap() override {}
+  void SetCanGoBack() override {}
+  void UnsetCanGoBack() override {}
 
-  // Overridden from ui::ContextFactoryObserver:
-  void OnLostSharedContext() override;
+  // display::DisplayObserver:
+  void OnDisplayMetricsChanged(const display::Display& display,
+                               uint32_t changed_metrics) override;
+
+  // viz::ContextLostObserver:
+  void OnContextLost() override;
 
  protected:
+  void UpdateDisplayOnTree();
+
   // Call this to submit a compositor frame.
   void SubmitCompositorFrame();
 
+  // Call this to submit an empty compositor frame. This may be useful if
+  // the surface tree is becoming invisible but the resources (e.g. buffers)
+  // need to be released back to the client.
+  void SubmitEmptyCompositorFrame();
+
+  // Update the host window's size to cover sufaces that must be visible and
+  // not clipped.
+  virtual void UpdateHostWindowBounds();
+
  private:
-  void UpdateHostWindowBounds();
+  viz::CompositorFrame PrepareToSubmitCompositorFrame();
+
+  void HandleContextLost();
 
   Surface* root_surface_ = nullptr;
 
@@ -110,6 +153,12 @@ class SurfaceTreeHost : public SurfaceDelegate,
       active_presentation_callbacks_;
 
   viz::FrameTokenGenerator next_token_;
+
+  scoped_refptr<viz::ContextProvider> context_provider_;
+
+  int64_t display_id_ = display::kInvalidDisplayId;
+
+  base::WeakPtrFactory<SurfaceTreeHost> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SurfaceTreeHost);
 };

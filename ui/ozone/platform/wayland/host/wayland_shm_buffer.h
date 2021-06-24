@@ -5,12 +5,9 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_SHM_BUFFER_H_
 #define UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_SHM_BUFFER_H_
 
-#include <wayland-client.h>
-
-#include <memory>
 
 #include "base/macros.h"
-#include "base/memory/shared_memory.h"
+#include "base/memory/shared_memory_mapping.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "ui/gfx/geometry/size.h"
@@ -18,15 +15,17 @@
 
 namespace ui {
 
+class WaylandShm;
+
 // Encapsulates a Wayland SHM buffer, covering basically 2 use cases:
 // (1) Buffers created and mmap'ed locally to draw skia bitmap(s) into; and
 // (2) Buffers created using file descriptor (e.g: sent by gpu process/thread,
 // through IPC), not mapped in local memory address space.
 // WaylandShmBuffer is moveable, non-copyable, and is assumed to own both
-// wl_buffer and SharedMemory (if any) instance.
+// wl_buffer and WritableSharedMemoryMapping (if any) instance.
 class WaylandShmBuffer {
  public:
-  WaylandShmBuffer(wl_shm* shm, const gfx::Size& size);
+  WaylandShmBuffer(WaylandShm* shm, const gfx::Size& size);
   ~WaylandShmBuffer();
 
   WaylandShmBuffer(WaylandShmBuffer&& buffer);
@@ -49,16 +48,16 @@ class WaylandShmBuffer {
   int stride() const { return stride_; }
 
  private:
-  void Initialize(wl_shm* shm);
+  void Initialize(WaylandShm* shm);
 
   gfx::Size size_;
   int stride_;
   wl::Object<wl_buffer> buffer_;
-  std::unique_ptr<base::SharedMemory> shared_memory_ = nullptr;
+  base::WritableSharedMemoryMapping shared_memory_mapping_;
 
   DISALLOW_COPY_AND_ASSIGN(WaylandShmBuffer);
 };
 
 }  // namespace ui
 
-#endif  // UI_OZONE_PLATFORM_WAYLAND_COMMON_WAYLAND_SHM_BUFFER_H_
+#endif  // UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_SHM_BUFFER_H_

@@ -26,10 +26,10 @@ class ShellDownloadManagerDelegate : public DownloadManagerDelegate {
 
   void Shutdown() override;
   bool DetermineDownloadTarget(download::DownloadItem* download,
-                               const DownloadTargetCallback& callback) override;
+                               DownloadTargetCallback* callback) override;
   bool ShouldOpenDownload(download::DownloadItem* item,
-                          const DownloadOpenDelayedCallback& callback) override;
-  void GetNextId(const DownloadIdCallback& callback) override;
+                          DownloadOpenDelayedCallback callback) override;
+  void GetNextId(DownloadIdCallback callback) override;
 
   // Inhibits prompting and sets the default download path.
   void SetDownloadBehaviorForTesting(
@@ -38,26 +38,26 @@ class ShellDownloadManagerDelegate : public DownloadManagerDelegate {
  private:
   friend class base::RefCountedThreadSafe<ShellDownloadManagerDelegate>;
 
-  typedef base::Callback<void(const base::FilePath&)>
-      FilenameDeterminedCallback;
+  using FilenameDeterminedCallback =
+      base::OnceCallback<void(const base::FilePath&)>;
 
   static void GenerateFilename(const GURL& url,
                                const std::string& content_disposition,
                                const std::string& suggested_filename,
                                const std::string& mime_type,
                                const base::FilePath& suggested_directory,
-                               const FilenameDeterminedCallback& callback);
+                               FilenameDeterminedCallback callback);
   void OnDownloadPathGenerated(uint32_t download_id,
-                               const DownloadTargetCallback& callback,
+                               DownloadTargetCallback callback,
                                const base::FilePath& suggested_path);
   void ChooseDownloadPath(uint32_t download_id,
-                          const DownloadTargetCallback& callback,
+                          DownloadTargetCallback callback,
                           const base::FilePath& suggested_path);
 
   DownloadManager* download_manager_;
   base::FilePath default_download_path_;
   bool suppress_prompting_;
-  base::WeakPtrFactory<ShellDownloadManagerDelegate> weak_ptr_factory_;
+  base::WeakPtrFactory<ShellDownloadManagerDelegate> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ShellDownloadManagerDelegate);
 };

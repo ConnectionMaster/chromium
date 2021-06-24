@@ -5,21 +5,24 @@
 #include "chrome/browser/media/webrtc/desktop_media_list_base.h"
 
 #include <set>
+#include <utility>
 
 #include "base/bind.h"
-#include "base/task/post_task.h"
-#include "chrome/browser/media/webrtc/desktop_media_list_observer.h"
+#include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/gfx/image/image.h"
 
-using content::BrowserThread;
 using content::DesktopMediaID;
 
 DesktopMediaListBase::DesktopMediaListBase(base::TimeDelta update_period)
-    : update_period_(update_period), weak_factory_(this) {}
+    : update_period_(update_period) {}
 
-DesktopMediaListBase::~DesktopMediaListBase() {}
+DesktopMediaListBase::DesktopMediaListBase(base::TimeDelta update_period,
+                                           DesktopMediaListObserver* observer)
+    : update_period_(update_period), observer_(observer) {}
+
+DesktopMediaListBase::~DesktopMediaListBase() = default;
 
 void DesktopMediaListBase::SetUpdatePeriod(base::TimeDelta period) {
   DCHECK(!observer_);
@@ -36,9 +39,26 @@ void DesktopMediaListBase::SetViewDialogWindowId(DesktopMediaID dialog_id) {
 
 void DesktopMediaListBase::StartUpdating(DesktopMediaListObserver* observer) {
   DCHECK(!observer_);
-
   observer_ = observer;
-  Refresh();
+
+  // Process sources previously discovered by a call to Update().
+  if (observer_) {
+    for (size_t i = 0; i < sources_.size(); i++) {
+      observer_->OnSourceAdded(this, i);
+    }
+  }
+
+  DCHECK(!refresh_callback_);
+  refresh_callback_ = base::BindOnce(&DesktopMediaListBase::ScheduleNextRefresh,
+                                     weak_factory_.GetWeakPtr());
+  Refresh(true);
+}
+
+void DesktopMediaListBase::Update(UpdateCallback callback) {
+  DCHECK(sources_.empty());
+  DCHECK(!refresh_callback_);
+  refresh_callback_ = std::move(callback);
+  Refresh(false);
 }
 
 int DesktopMediaListBase::GetSourceCount() const {
@@ -52,13 +72,13 @@ const DesktopMediaList::Source& DesktopMediaListBase::GetSource(
   return sources_[index];
 }
 
-DesktopMediaID::Type DesktopMediaListBase::GetMediaListType() const {
+DesktopMediaList::Type DesktopMediaListBase::GetMediaListType() const {
   return type_;
 }
 
 DesktopMediaListBase::SourceDescription::SourceDescription(
     DesktopMediaID id,
-    const base::string16& name)
+    const std::u16string& name)
     : id(id), name(name) {}
 
 void DesktopMediaListBase::UpdateSourcesList(
@@ -72,7 +92,8 @@ void DesktopMediaListBase::UpdateSourcesList(
   for (size_t i = 0; i < sources_.size(); ++i) {
     if (new_source_set.find(sources_[i].id) == new_source_set.end()) {
       sources_.erase(sources_.begin() + i);
-      observer_->OnSourceRemoved(this, i);
+      if (observer_)
+        observer_->OnSourceRemoved(this, i);
       --i;
     }
   }
@@ -88,7 +109,8 @@ void DesktopMediaListBase::UpdateSourcesList(
         sources_.insert(sources_.begin() + i, Source());
         sources_[i].id = new_sources[i].id;
         sources_[i].name = new_sources[i].name;
-        observer_->OnSourceAdded(this, i);
+        if (observer_)
+          observer_->OnSourceAdded(this, i);
       }
     }
   }
@@ -112,12 +134,14 @@ void DesktopMediaListBase::UpdateSourcesList(
       sources_.erase(sources_.begin() + old_pos);
       sources_.insert(sources_.begin() + pos, temp);
 
-      observer_->OnSourceMoved(this, old_pos, pos);
+      if (observer_)
+        observer_->OnSourceMoved(this, old_pos, pos);
     }
 
     if (sources_[pos].name != new_sources[pos].name) {
       sources_[pos].name = new_sources[pos].name;
-      observer_->OnSourceNameChanged(this, pos);
+      if (observer_)
+        observer_->OnSourceNameChanged(this, pos);
     }
     ++pos;
   }
@@ -125,25 +149,41 @@ void DesktopMediaListBase::UpdateSourcesList(
 
 void DesktopMediaListBase::UpdateSourceThumbnail(DesktopMediaID id,
                                                  const gfx::ImageSkia& image) {
+  // Unlike other methods that check can_refresh(), this one won't cause
+  // OnRefreshComplete() to be called, but the caller is expected to schedule a
+  // call to OnRefreshComplete() after this method has been called as many times
+  // as needed, so the check is still valid.
+  DCHECK(can_refresh());
+
   for (size_t i = 0; i < sources_.size(); ++i) {
     if (sources_[i].id == id) {
       sources_[i].thumbnail = image;
-      observer_->OnSourceThumbnailChanged(this, i);
+      if (observer_)
+        observer_->OnSourceThumbnailChanged(this, i);
       break;
     }
   }
 }
 
-void DesktopMediaListBase::ScheduleNextRefresh() {
-  base::PostDelayedTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                                  base::BindOnce(&DesktopMediaListBase::Refresh,
-                                                 weak_factory_.GetWeakPtr()),
-                                  update_period_);
-}
-
 // static
 uint32_t DesktopMediaListBase::GetImageHash(const gfx::Image& image) {
   SkBitmap bitmap = image.AsBitmap();
-  uint32_t value = base::Hash(bitmap.getPixels(), bitmap.computeByteSize());
-  return value;
+  return base::FastHash(base::make_span(
+      static_cast<uint8_t*>(bitmap.getPixels()), bitmap.computeByteSize()));
+}
+
+void DesktopMediaListBase::OnRefreshComplete() {
+  DCHECK(refresh_callback_);
+  std::move(refresh_callback_).Run();
+}
+
+void DesktopMediaListBase::ScheduleNextRefresh() {
+  DCHECK(!refresh_callback_);
+  refresh_callback_ = base::BindOnce(&DesktopMediaListBase::ScheduleNextRefresh,
+                                     weak_factory_.GetWeakPtr());
+  content::GetUIThreadTaskRunner({})->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&DesktopMediaListBase::Refresh, weak_factory_.GetWeakPtr(),
+                     true),
+      update_period_);
 }

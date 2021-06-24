@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/css/media_values_dynamic.h"
 
-#include "third_party/blink/public/common/css/preferred_color_scheme.h"
+#include "third_party/blink/public/common/css/forced_colors.h"
+#include "third_party/blink/public/common/css/navigation_controls.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/css_resolution_units.h"
 #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
@@ -15,7 +16,7 @@
 namespace blink {
 
 MediaValues* MediaValuesDynamic::Create(Document& document) {
-  return MediaValuesDynamic::Create(document.GetFrameOfMasterDocument());
+  return MediaValuesDynamic::Create(document.GetFrame());
 }
 
 MediaValues* MediaValuesDynamic::Create(LocalFrame* frame) {
@@ -98,7 +99,7 @@ int MediaValuesDynamic::MonochromeBitsPerComponent() const {
   return CalculateMonochromeBitsPerComponent(frame_);
 }
 
-PointerType MediaValuesDynamic::PrimaryPointerType() const {
+mojom::blink::PointerType MediaValuesDynamic::PrimaryPointerType() const {
   return CalculatePrimaryPointerType(frame_);
 }
 
@@ -106,7 +107,7 @@ int MediaValuesDynamic::AvailablePointerTypes() const {
   return CalculateAvailablePointerTypes(frame_);
 }
 
-HoverType MediaValuesDynamic::PrimaryHoverType() const {
+mojom::blink::HoverType MediaValuesDynamic::PrimaryHoverType() const {
   return CalculatePrimaryHoverType(frame_);
 }
 
@@ -126,7 +127,7 @@ const String MediaValuesDynamic::MediaType() const {
   return CalculateMediaType(frame_);
 }
 
-WebDisplayMode MediaValuesDynamic::DisplayMode() const {
+blink::mojom::DisplayMode MediaValuesDynamic::DisplayMode() const {
   return CalculateDisplayMode(frame_);
 }
 
@@ -134,20 +135,42 @@ bool MediaValuesDynamic::StrictMode() const {
   return CalculateStrictMode(frame_);
 }
 
-DisplayShape MediaValuesDynamic::GetDisplayShape() const {
-  return CalculateDisplayShape(frame_);
-}
-
 ColorSpaceGamut MediaValuesDynamic::ColorGamut() const {
   return CalculateColorGamut(frame_);
 }
 
-PreferredColorScheme MediaValuesDynamic::GetPreferredColorScheme() const {
+mojom::blink::PreferredColorScheme MediaValuesDynamic::GetPreferredColorScheme()
+    const {
   return CalculatePreferredColorScheme(frame_);
+}
+
+mojom::blink::PreferredContrast MediaValuesDynamic::GetPreferredContrast()
+    const {
+  return CalculatePreferredContrast(frame_);
 }
 
 bool MediaValuesDynamic::PrefersReducedMotion() const {
   return CalculatePrefersReducedMotion(frame_);
+}
+
+bool MediaValuesDynamic::PrefersReducedData() const {
+  return CalculatePrefersReducedData(frame_);
+}
+
+ForcedColors MediaValuesDynamic::GetForcedColors() const {
+  return CalculateForcedColors(frame_);
+}
+
+NavigationControls MediaValuesDynamic::GetNavigationControls() const {
+  return CalculateNavigationControls(frame_);
+}
+
+ScreenSpanning MediaValuesDynamic::GetScreenSpanning() const {
+  return CalculateScreenSpanning(frame_);
+}
+
+DevicePosture MediaValuesDynamic::GetDevicePosture() const {
+  return CalculateDevicePosture(frame_);
 }
 
 Document* MediaValuesDynamic::GetDocument() const {
@@ -158,7 +181,7 @@ bool MediaValuesDynamic::HasValues() const {
   return frame_;
 }
 
-void MediaValuesDynamic::Trace(blink::Visitor* visitor) {
+void MediaValuesDynamic::Trace(Visitor* visitor) const {
   visitor->Trace(frame_);
   MediaValues::Trace(visitor);
 }

@@ -9,6 +9,8 @@ import android.webkit.WebViewClient;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwRenderProcess;
+import org.chromium.android_webview.ScriptHandler;
+import org.chromium.android_webview.WebMessageListener;
 import org.chromium.android_webview.WebViewChromiumRunQueue;
 import org.chromium.base.ThreadUtils;
 import org.chromium.content_public.browser.MessagePort;
@@ -28,7 +30,7 @@ public class SharedWebViewChromium {
     private SharedWebViewContentsClientAdapter mContentsClientAdapter;
 
     // Default WebViewClient used to avoid null checks.
-    final static WebViewClient sNullWebViewClient = new WebViewClient();
+    static final WebViewClient sNullWebViewClient = new WebViewClient();
     // The WebViewClient instance that was passed to WebView.setWebViewClient().
     private WebViewClient mWebViewClient = sNullWebViewClient;
     private WebChromeClient mWebChromeClient;
@@ -114,7 +116,34 @@ public class SharedWebViewChromium {
             });
             return;
         }
-        mAwContents.postMessageToFrame(null, message, targetOrigin, sentPorts);
+        mAwContents.postMessageToMainFrame(message, targetOrigin, sentPorts);
+    }
+
+    public void addWebMessageListener(final String jsObjectName, final String[] allowedOriginRules,
+            final WebMessageListener listener) {
+        if (checkNeedsPost()) {
+            mRunQueue.addTask(
+                    () -> addWebMessageListener(jsObjectName, allowedOriginRules, listener));
+            return;
+        }
+        mAwContents.addWebMessageListener(jsObjectName, allowedOriginRules, listener);
+    }
+
+    public void removeWebMessageListener(final String jsObjectName) {
+        if (checkNeedsPost()) {
+            mRunQueue.addTask(() -> removeWebMessageListener(jsObjectName));
+            return;
+        }
+        mAwContents.removeWebMessageListener(jsObjectName);
+    }
+
+    public ScriptHandler addDocumentStartJavaScript(
+            final String script, final String[] allowedOriginRules) {
+        if (checkNeedsPost()) {
+            return mRunQueue.runOnUiThreadBlocking(
+                    () -> addDocumentStartJavaScript(script, allowedOriginRules));
+        }
+        return mAwContents.addDocumentStartJavaScript(script, allowedOriginRules);
     }
 
     public void setWebViewRendererClientAdapter(

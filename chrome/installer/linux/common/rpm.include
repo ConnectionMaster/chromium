@@ -8,18 +8,18 @@ install_rpm_key() {
   # Make sure all the most recent signing subkeys are installed.
   NEED_KEYS=0
 
-  # 2016 signing subkey
-  rpm -q ${KEY_PACKAGE} --qf '%{Pubkeys:armor}\n' | \
-    gpg --with-colons - 2>/dev/null | \
-    grep -q 1397BC53640DB551
-  if [ "$?" -ne "0" ]; then
-    NEED_KEYS=1
-  fi
-
   # 2017 signing subkey
   rpm -q ${KEY_PACKAGE} --qf '%{Pubkeys:armor}\n' | \
     gpg --with-colons - 2>/dev/null | \
     grep -q 6494C6D6997C215E
+  if [ "$?" -ne "0" ]; then
+    NEED_KEYS=1
+  fi
+
+  # 2019 signing subkey
+  rpm -q ${KEY_PACKAGE} --qf '%{Pubkeys:armor}\n' | \
+    gpg --with-colons - 2>/dev/null | \
+    grep -q 78BD65473CB3BD13
   if [ "$?" -ne "0" ]; then
     NEED_KEYS=1
   fi
@@ -75,7 +75,6 @@ D3+sWZF/WACfeNAu1/1hwZtUo1bR+MWiCjpvHtwAnA1R3IHqFLQ2X3xJ40XPuAyY
 =Quqp
 -----END PGP PUBLIC KEY BLOCK-----
 -----BEGIN PGP PUBLIC KEY BLOCK-----
-Version: GnuPG v1
 
 mQINBFcMjNMBEAC6Wr5QuLIFgz1V1EFPlg8ty2TsjQEl4VWftUAqWlMevJFWvYEx
 BOsOZ6kNFfBfjAxgJNWTkxZrHzDl74R7KW/nUx6X57bpFjUyRaB8F3/NpWKSeIGS
@@ -172,8 +171,42 @@ ygtsvUZz0BxYymoWFd4F8sp43oL2TXU6Wp7QIpBaFgkSf/UQxfR6wcQ3ivafeS1l
 g8vUFuMfuMLto6T0JiZw8uKSuDWltSReF+FXVnhawz72BZMy8RIoshGdpWHn/YbN
 6L+JOuxZnvkMAZvSLT3c0H4XCDYtEfK2mJMqD2ynX5tGR8Fy3GAaEjhx36TvzTjC
 XRmJ+FnlSW1p77x+UjFUFcpY8skv+f0Gip30iynAb1hoAdibIDab612OWi/4vX0D
-aM6t68Uq8rsabeJYsZG4
-=lzV/
+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
+eBqxcHwQ
+=4zaS
 -----END PGP PUBLIC KEY BLOCK-----
 KEYDATA
     rpm --import "$TMPKEY"
@@ -188,24 +221,34 @@ KEYDATA
 
 determine_rpm_package_manager() {
   local RELEASE
+
+  # Modern method using os-release(5)
+  if [ -f "/etc/os-release" ]; then
+    RELEASE=$(. "/etc/os-release"; echo "$ID")
+    case $RELEASE in
+    "fedora"|"rhel"|"centos"|"amzn"|"mageia"|"openmandriva")
+      PACKAGEMANAGERS=(yum)
+      ;;
+    "suse"|"sles"|"sled"|"opensuse"|"opensuse-leap"|"opensuse-tumbleweed")
+      PACKAGEMANAGERS=(zypp)
+      ;;
+    esac
+  fi
+
+  if [ "$PACKAGEMANAGERS" ]; then
+    return
+  fi
+
+  # Fallback method using lsb_release(1)
   LSB_RELEASE="$(which lsb_release 2> /dev/null)"
   if [ -x "$LSB_RELEASE" ]; then
     RELEASE=$(lsb_release -i 2> /dev/null | sed 's/:\t/:/' | cut -d ':' -f 2-)
     case $RELEASE in
-    "Fedora"|"Amazon")
+    "Fedora"|"Amazon"|"Mageia"|"OpenMandrivaLinux")
       PACKAGEMANAGERS=(yum)
       ;;
-    "Mageia")
-      PACKAGEMANAGERS=(urpmi)
-      if [ "$(lsb_release -rs 2> /dev/null)" -ge "6" ]; then
-        PACKAGEMANAGERS=(yum urpmi)
-      fi
-      ;;
-    "MandrivaLinux")
-      PACKAGEMANAGERS=(urpmi)
-      ;;
     "SUSE LINUX"|"openSUSE")
-      PACKAGEMANAGERS=(yast)
+      PACKAGEMANAGERS=(zypp)
       ;;
     esac
   fi
@@ -215,35 +258,18 @@ determine_rpm_package_manager() {
   fi
 
   # Fallback methods that are probably unnecessary on modern systems.
-  if [ -f "/etc/lsb-release" ]; then
-    # file missing on Fedora, does not contain DISTRIB_ID on OpenSUSE.
-    eval $(sed -e '/DISTRIB_ID/!d' /etc/lsb-release)
-    case $DISTRIB_ID in
-    MandrivaLinux)
-      PACKAGEMANAGERS=(urpmi)
-      ;;
-    esac
-  fi
-
-  if [ "$PACKAGEMANAGERS" ]; then
-    return
-  fi
-
   if [ -f "/etc/fedora-release" ] || [ -f "/etc/redhat-release" ]; then
     PACKAGEMANAGERS=(yum)
   elif [ -f "/etc/system-release" ] && grep -Fq "Amazon Linux" "/etc/system-release"; then
     PACKAGEMANAGERS=(yum)
   elif [ -f "/etc/SuSE-release" ]; then
-    PACKAGEMANAGERS=(yast)
-  elif [ -f "/etc/mandriva-release" ]; then
-    PACKAGEMANAGERS=(urpmi)
+    PACKAGEMANAGERS=(zypp)
   fi
 }
 
 DEFAULT_ARCH="@@ARCHITECTURE@@"
 YUM_REPO_FILE="/etc/yum.repos.d/@@PACKAGE@@.repo"
 ZYPPER_REPO_FILE="/etc/zypp/repos.d/@@PACKAGE@@.repo"
-URPMI_REPO_FILE="/etc/urpmi/urpmi.cfg"
 
 install_yum() {
   install_rpm_key
@@ -264,42 +290,10 @@ REPOCONTENT
   fi
 }
 
-# This is called by the cron job, rather than in the RPM postinstall.
-# We cannot do this during the install when urpmi is running due to
-# database locking. We also need to enable the repository, and we can
-# only do that while we are online.
-# see: https://qa.mandriva.com/show_bug.cgi?id=31893
-configure_urpmi() {
+install_zypp() {
   if [ ! "$REPOCONFIG" ]; then
     return 0
   fi
-
-  urpmq --list-media | grep -q -s "^@@PACKAGE@@$"
-  if [ "$?" -eq "0" ]; then
-    # Repository already configured
-    return 0
-  fi
-  urpmi.addmedia --update \
-    "@@PACKAGE@@" "$REPOCONFIG/$DEFAULT_ARCH"
-}
-
-install_urpmi() {
-  # urpmi not smart enough to pull media_info/pubkey from the repository?
-  install_rpm_key
-
-  # Defer urpmi.addmedia to configure_urpmi() in the cron job.
-  # See comment there.
-  #
-  # urpmi.addmedia --update \
-  #   "@@PACKAGE@@" "$REPOCONFIG/$DEFAULT_ARCH"
-}
-
-install_yast() {
-  if [ ! "$REPOCONFIG" ]; then
-    return 0
-  fi
-
-  # We defer adding the key to later. See comment in the cron job.
 
   # Ideally, we would run: zypper addrepo -t YUM -f \
   # "$REPOCONFIG/$DEFAULT_ARCH" "@@PACKAGE@@"
@@ -311,6 +305,8 @@ name=@@PACKAGE@@
 enabled=1
 autorefresh=1
 baseurl=$REPOCONFIG/$DEFAULT_ARCH
+gpgcheck=1
+gpgkey=https://dl.google.com/linux/linux_signing_key.pub
 type=rpm-md
 keeppackages=0
 REPOCONTENT
@@ -326,11 +322,8 @@ verify_install() {
   "yum")
     [ -f "$YUM_REPO_FILE" ]
     ;;
-  "yast")
+  "zypp")
     [ -f "$ZYPPER_REPO_FILE" ]
-    ;;
-  "urpmi")
-    urpmq --list-url | grep -q -s "\b@@PACKAGE@@\b"
     ;;
   esac
 }
@@ -349,11 +342,8 @@ update_bad_repo() {
     "yum")
       update_repo_file "$YUM_REPO_FILE"
       ;;
-    "yast")
+    "zypp")
       update_repo_file "$ZYPPER_REPO_FILE"
-      ;;
-    "urpmi")
-      update_urpmi_cfg
       ;;
     esac
   done
@@ -395,26 +385,6 @@ update_repo_file() {
   sed -i -e "s,^baseurl=.*,baseurl=$REPOCONFIG/$DEFAULT_ARCH," "$REPO_FILE"
 }
 
-update_urpmi_cfg() {
-  REPOCFG=$(urpmq --list-url | grep "\b@@PACKAGE@@\b")
-  if [ ! "$REPOCFG" ]; then
-    # Don't do anything if the repo isn't there, since that probably means the
-    # user deleted it.
-    return 0
-  fi
-
-  # See if it's the right repo URL
-  REPOMATCH=$(echo "$REPOCFG" | grep "\b$REPOCONFIG/$DEFAULT_ARCH\b")
-  # If so, nothing to do
-  if [ "$REPOMATCH" ]; then
-    return 0
-  fi
-
-  # Looks like it's the wrong URL, so recreate it.
-  urpmi.removemedia "@@PACKAGE@@" && \
-    urpmi.addmedia --update "@@PACKAGE@@" "$REPOCONFIG/$DEFAULT_ARCH"
-}
-
 # We only remove the repository configuration during a purge. Since RPM has
 # no equivalent to dpkg --purge, the code below is actually never used. We
 # keep it only for reference purposes, should we ever need it.
@@ -423,18 +393,7 @@ update_urpmi_cfg() {
 #  rm -f "$YUM_REPO_FILE"
 #}
 #
-#remove_urpmi() {
-#  # Ideally, we would run: urpmi.removemedia "@@PACKAGE@@"
-#  # but that does not work when urpmi is running.
-#  # Sentinel comment text does not work either because urpmi.update removes
-#  # all comments. So we just delete the entry that matches what we originally
-#  # inserted. If such an entry was added manually, that's tough luck.
-#  if [ -f "$URPMI_REPO_FILE" ]; then
-#    sed -i '\_^@@PACKAGE@@ $REPOCONFIG/$DEFAULT_ARCH {$_,/^}$/d' "$URPMI_REPO_FILE"
-#  fi
-#}
-#
-#remove_yast() {
+#remove_zypp() {
 #  # Ideally, we would run: zypper removerepo "@@PACKAGE@@"
 #  # but that does not work when zypper is running.
 #  rm -f /etc/zypp/repos.d/@@PACKAGE@@.repo
@@ -443,9 +402,11 @@ update_urpmi_cfg() {
 DEFAULT_ARCH="@@ARCHITECTURE@@"
 
 get_lib_dir() {
-  if [ "$DEFAULT_ARCH" = "i386" ]; then
+  if [ "$DEFAULT_ARCH" = "i386" ] || [ "$DEFAULT_ARCH" = "armhf" ] || \
+      [ "$DEFAULT_ARCH" = "mipsel" ]; then
     LIBDIR=lib
-  elif [ "$DEFAULT_ARCH" = "x86_64" ]; then
+  elif [ "$DEFAULT_ARCH" = "x86_64" ] || [ "$DEFAULT_ARCH" = "aarch64" ] || \
+        [ "$DEFAULT_ARCH" = "mips64el" ]; then
     LIBDIR=lib64
   else
     echo Unknown CPU Architecture: "$DEFAULT_ARCH"

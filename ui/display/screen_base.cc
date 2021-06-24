@@ -27,6 +27,13 @@ gfx::NativeWindow ScreenBase::GetWindowAtScreenPoint(const gfx::Point& point) {
   return nullptr;
 }
 
+gfx::NativeWindow ScreenBase::GetLocalProcessWindowAtPoint(
+    const gfx::Point& screen_point,
+    const std::set<gfx::NativeWindow>& ignore) {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return nullptr;
+}
+
 Display ScreenBase::GetPrimaryDisplay() const {
   auto iter = display_list_.GetPrimaryDisplayIterator();
   if (iter == display_list_.displays().end())
@@ -35,8 +42,6 @@ Display ScreenBase::GetPrimaryDisplay() const {
 }
 
 Display ScreenBase::GetDisplayNearestWindow(gfx::NativeWindow window) const {
-  // TODO(riajiang): Implement this for multi-displays either here or in
-  // ScreenMus.
   NOTIMPLEMENTED_LOG_ONCE();
   return GetPrimaryDisplay();
 }
@@ -68,6 +73,13 @@ void ScreenBase::AddObserver(DisplayObserver* observer) {
 
 void ScreenBase::RemoveObserver(DisplayObserver* observer) {
   display_list_.RemoveObserver(observer);
+}
+
+void ScreenBase::SetPanelRotationForTesting(int64_t display_id,
+                                            Display::Rotation rotation) {
+  Display display = *display_list_.FindDisplayById(display_id);
+  display.set_panel_rotation(rotation);
+  ProcessDisplayChanged(display, true);
 }
 
 void ScreenBase::ProcessDisplayChanged(const Display& changed_display,

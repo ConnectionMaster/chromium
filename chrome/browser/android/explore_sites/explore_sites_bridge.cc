@@ -2,14 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
+#include "chrome/android/chrome_jni_headers/ExploreSitesBridge_jni.h"
+#include "chrome/android/chrome_jni_headers/ExploreSitesCategory_jni.h"
+#include "chrome/android/chrome_jni_headers/ExploreSitesSite_jni.h"
 #include "chrome/browser/android/explore_sites/explore_sites_bridge.h"
 #include "chrome/browser/android/explore_sites/explore_sites_feature.h"
 #include "chrome/browser/android/explore_sites/explore_sites_service.h"
@@ -19,10 +25,8 @@
 #include "chrome/browser/profiles/profile_android.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "jni/ExploreSitesBridge_jni.h"
-#include "jni/ExploreSitesCategory_jni.h"
-#include "jni/ExploreSitesSite_jni.h"
 #include "ui/gfx/android/java_bitmap.h"
+#include "url/android/gurl_android.h"
 
 namespace explore_sites {
 using base::android::ConvertUTF8ToJavaString;
@@ -57,10 +61,11 @@ void CatalogReady(ScopedJavaGlobalRef<jobject>(j_result_obj),
             ConvertUTF8ToJavaString(env, category.label),
             category.ntp_shown_count, category.interaction_count, j_result_obj);
     for (auto& site : category.sites) {
+      ScopedJavaLocalRef<jobject> jurl =
+          url::GURLAndroid::FromNativeGURL(env, site.url);
       Java_ExploreSitesSite_createSiteInCategory(
-          env, site.site_id, ConvertUTF8ToJavaString(env, site.title),
-          ConvertUTF8ToJavaString(env, site.url.spec()), site.is_blacklisted,
-          j_category);
+          env, site.site_id, ConvertUTF8ToJavaString(env, site.title), jurl,
+          site.is_blocked, j_category);
     }
   }
   base::android::RunObjectCallbackAndroid(j_callback_obj, j_result_obj);
@@ -74,7 +79,7 @@ void ImageReady(ScopedJavaGlobalRef<jobject>(j_callback_obj),
     return;
   }
 
-  ScopedJavaLocalRef<jobject> j_bitmap = gfx::ConvertToJavaBitmap(bitmap.get());
+  ScopedJavaLocalRef<jobject> j_bitmap = gfx::ConvertToJavaBitmap(*bitmap);
 
   base::android::RunObjectCallbackAndroid(j_callback_obj, j_bitmap);
 }
@@ -84,34 +89,76 @@ void UpdateCatalogDone(ScopedJavaGlobalRef<jobject>(j_callback_obj),
   base::android::RunBooleanCallbackAndroid(j_callback_obj, result);
 }
 
-}  // namespace
+// Handle result of fetching catalog from network.
+void OnUpdatedFromNetwork(CatalogCallback callback,
+                          ExploreSitesService* service,
+                          const bool update_successful) {
+  if (update_successful) {
+    // Try pulling from disk again
+    service->GetCatalog(std::move(callback));
+  } else {
+    // Updating the catalog from the network has failed
+    std::move(callback).Run(GetCatalogStatus::kNoCatalog, nullptr);
+  }
+}
 
-// static
-void JNI_ExploreSitesBridge_GetEspCatalog(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& j_profile,
-    const JavaParamRef<jobject>& j_result_obj,
-    const JavaParamRef<jobject>& j_callback_obj) {
-  Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
-  DCHECK(profile);
+// Handle result of getting catalog from the disk for first time.
+// A raw pointer to service is passed here because the service guarantees the
+// callback, if fired, will be fired before the service is destroyed.
+void OnGotCatalog(CatalogCallback callback,
+                  const ExploreSitesCatalogUpdateRequestSource source,
+                  const std::string accept_languages,
+                  ExploreSitesService* service,
+                  GetCatalogStatus status,
+                  std::unique_ptr<std::vector<ExploreSitesCategory>> result) {
+  const bool requires_load_from_network =
+      status == GetCatalogStatus::kNoCatalog || result == nullptr ||
+      result->size() == 0;
 
-  ExploreSitesService* service =
-      ExploreSitesServiceFactory::GetForBrowserContext(profile);
-  if (!service) {
-    DLOG(ERROR) << "Unable to create the ExploreSitesService!";
-    base::android::RunObjectCallbackAndroid(j_callback_obj, nullptr);
-    return;
+  if (source == ExploreSitesCatalogUpdateRequestSource::kNewTabPage) {
+    UMA_HISTOGRAM_BOOLEAN("ExploreSites.NTPLoadingCatalogFromNetwork",
+                          requires_load_from_network);
   }
 
-  service->GetCatalog(
-      base::BindOnce(&CatalogReady, ScopedJavaGlobalRef<jobject>(j_result_obj),
-                     ScopedJavaGlobalRef<jobject>(j_callback_obj)));
+  if (requires_load_from_network) {
+    UMA_HISTOGRAM_ENUMERATION(
+        "ExploreSites.CatalogUpdateRequestSource", source,
+        ExploreSitesCatalogUpdateRequestSource::kNumEntries);
+    service->UpdateCatalogFromNetwork(
+        true, accept_languages,
+        base::BindOnce(&OnUpdatedFromNetwork, std::move(callback), service));
+  } else {
+    std::move(callback).Run(status, std::move(result));
+  }
 }
+
+// TODO(petewil): It might be better to move the PrefService work inside
+// ExploreSitesService.
+std::string GetAcceptLanguagesFromProfile(Profile* profile) {
+  std::string accept_languages;
+  PrefService* pref_service = profile->GetPrefs();
+  if (pref_service != nullptr) {
+    accept_languages =
+        pref_service->GetString(language::prefs::kAcceptLanguages);
+  }
+  return accept_languages;
+}
+
+// CatalogCallback that ignores and destroys result
+void IgnoreCatalog(GetCatalogStatus status,
+                   std::unique_ptr<std::vector<ExploreSitesCategory>> result) {}
+
+}  // namespace
 
 // static
 jint JNI_ExploreSitesBridge_GetVariation(JNIEnv* env) {
   return static_cast<jint>(
       chrome::android::explore_sites::GetExploreSitesVariation());
+}
+
+// static
+jint JNI_ExploreSitesBridge_GetDenseVariation(JNIEnv* env) {
+  return static_cast<jint>(chrome::android::explore_sites::GetDenseVariation());
 }
 
 // static
@@ -137,6 +184,59 @@ void JNI_ExploreSitesBridge_GetIcon(
                               ScopedJavaGlobalRef<jobject>(j_callback_obj)));
 }
 
+void JNI_ExploreSitesBridge_GetCatalog(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& j_profile,
+    const jint j_source,
+    const JavaParamRef<jobject>& j_result_obj,
+    const JavaParamRef<jobject>& j_callback_obj) {
+  Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
+  DCHECK(profile);
+
+  ExploreSitesService* service =
+      ExploreSitesServiceFactory::GetForBrowserContext(profile);
+  if (!service) {
+    DLOG(ERROR) << "Unable to create the ExploreSitesService!";
+    base::android::RunObjectCallbackAndroid(j_callback_obj, nullptr);
+    return;
+  }
+
+  std::string accept_languages = GetAcceptLanguagesFromProfile(profile);
+
+  const ExploreSitesCatalogUpdateRequestSource source =
+      static_cast<ExploreSitesCatalogUpdateRequestSource>(j_source);
+
+  service->GetCatalog(base::BindOnce(
+      &OnGotCatalog,
+      base::BindOnce(&CatalogReady, ScopedJavaGlobalRef<jobject>(j_result_obj),
+                     ScopedJavaGlobalRef<jobject>(j_callback_obj)),
+      source, accept_languages, service));
+}
+
+void JNI_ExploreSitesBridge_InitializeCatalog(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& j_profile,
+    const jint j_source) {
+  Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
+  DCHECK(profile);
+
+  ExploreSitesService* service =
+      ExploreSitesServiceFactory::GetForBrowserContext(profile);
+  if (!service) {
+    DLOG(ERROR) << "Unable to create the ExploreSitesService!";
+    return;
+  }
+
+  std::string accept_languages = GetAcceptLanguagesFromProfile(profile);
+
+  const ExploreSitesCatalogUpdateRequestSource source =
+      static_cast<ExploreSitesCatalogUpdateRequestSource>(j_source);
+
+  service->GetCatalog(base::BindOnce(&OnGotCatalog,
+                                     base::BindOnce(&IgnoreCatalog), source,
+                                     accept_languages, service));
+}
+
 void JNI_ExploreSitesBridge_UpdateCatalogFromNetwork(
     JNIEnv* env,
     const JavaParamRef<jobject>& j_profile,
@@ -153,14 +253,7 @@ void JNI_ExploreSitesBridge_UpdateCatalogFromNetwork(
     return;
   }
 
-  // TODO(petewil): It might be better to move the PrefService work inside
-  // ExploreSitesService.
-  std::string accept_languages;
-  PrefService* pref_service = profile->GetPrefs();
-  if (pref_service != nullptr) {
-    accept_languages =
-        pref_service->GetString(language::prefs::kAcceptLanguages);
-  }
+  std::string accept_languages = GetAcceptLanguagesFromProfile(profile);
 
   service->UpdateCatalogFromNetwork(
       static_cast<bool>(is_immediate_fetch), accept_languages,
@@ -168,10 +261,9 @@ void JNI_ExploreSitesBridge_UpdateCatalogFromNetwork(
                      ScopedJavaGlobalRef<jobject>(j_callback_obj)));
 }
 
-void JNI_ExploreSitesBridge_BlacklistSite(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& j_profile,
-    const JavaParamRef<jstring>& j_url) {
+void JNI_ExploreSitesBridge_BlockSite(JNIEnv* env,
+                                      const JavaParamRef<jobject>& j_profile,
+                                      const JavaParamRef<jstring>& j_url) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
   std::string url = ConvertJavaStringToUTF8(env, j_url);
   ExploreSitesService* service =
@@ -181,7 +273,7 @@ void JNI_ExploreSitesBridge_BlacklistSite(
     return;
   }
 
-  service->BlacklistSite(url);
+  service->BlockSite(url);
 }
 
 void JNI_ExploreSitesBridge_RecordClick(JNIEnv* env,
@@ -201,22 +293,6 @@ void JNI_ExploreSitesBridge_RecordClick(JNIEnv* env,
   service->RecordClick(url, category_type);
 }
 
-void JNI_ExploreSitesBridge_IncrementNtpShownCount(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& j_profile,
-    const jint j_category_id) {
-  Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
-  ExploreSitesService* service =
-      ExploreSitesServiceFactory::GetForBrowserContext(profile);
-  if (!service) {
-    DLOG(ERROR) << "Unable to create the ExploreSitesService!";
-    return;
-  }
-
-  int category_id = static_cast<int>(j_category_id);
-  service->IncrementNtpShownCount(category_id);
-}
-
 // static
 void ExploreSitesBridge::ScheduleDailyTask() {
   JNIEnv* env = base::android::AttachCurrentThread();
@@ -230,10 +306,9 @@ float ExploreSitesBridge::GetScaleFactorFromDevice() {
 }
 
 // static
-void JNI_ExploreSitesBridge_GetCategoryImage(
+void JNI_ExploreSitesBridge_GetSummaryImage(
     JNIEnv* env,
     const JavaParamRef<jobject>& j_profile,
-    const jint j_category_id,
     const jint j_pixel_size,
     const JavaParamRef<jobject>& j_callback_obj) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
@@ -247,9 +322,9 @@ void JNI_ExploreSitesBridge_GetCategoryImage(
     return;
   }
 
-  service->GetCategoryImage(
-      j_category_id, j_pixel_size,
-      base::BindOnce(&ImageReady,
-                     ScopedJavaGlobalRef<jobject>(j_callback_obj)));
+  service->GetSummaryImage(
+      j_pixel_size, base::BindOnce(&ImageReady, ScopedJavaGlobalRef<jobject>(
+                                                    j_callback_obj)));
 }
+
 }  // namespace explore_sites

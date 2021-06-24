@@ -5,21 +5,19 @@
 #ifndef CHROME_BROWSER_UI_ASH_ASH_TEST_UTIL_H_
 #define CHROME_BROWSER_UI_ASH_ASH_TEST_UTIL_H_
 
-#include "ash/public/interfaces/shell_test_api.test-mojom-test-utils.h"
-#include "ash/public/interfaces/shell_test_api.test-mojom.h"
+namespace chromeos {
+enum class WindowStateType;
+}
+
+namespace aura {
+class Window;
+}
 
 namespace test {
 
-// Binds to ash service and returns a ShellTestApiPtr.
-ash::mojom::ShellTestApiPtr GetShellTestApi();
-
-// Waits until WindowTreeHost no longer holding pointer events.
-// If |wait_for_all_changes| is true, this also runs
-// aura::test::WaitForAllChangesToComplete().
-void WaitForNoPointerHoldLock(bool wait_for_changes = true);
-
-// Waits until the overview animation finishes and its state becomes |state|.
-void WaitForOverviewAnimationState(ash::mojom::OverviewAnimationState state);
+// The snap window. This will activate the |window|.
+void ActivateAndSnapWindow(aura::Window* window,
+                           chromeos::WindowStateType type);
 
 }  // namespace test
 

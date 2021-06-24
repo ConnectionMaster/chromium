@@ -15,14 +15,15 @@
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "net/dns/public/dns_protocol.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/dns/test_dns_config_service.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
 
 namespace {
 
-class DnsConfigServiceTest : public TestWithScopedTaskEnvironment {
+class DnsConfigServiceTest : public TestWithTaskEnvironment {
  public:
   void OnConfigChanged(const DnsConfig& config) {
     last_config_ = config;
@@ -31,33 +32,6 @@ class DnsConfigServiceTest : public TestWithScopedTaskEnvironment {
   }
 
  protected:
-  class TestDnsConfigService : public DnsConfigService {
-   public:
-    void ReadNow() override {}
-    bool StartWatching() override { return true; }
-
-    // Expose the protected methods to this test suite.
-    void InvalidateConfig() {
-      DnsConfigService::InvalidateConfig();
-    }
-
-    void InvalidateHosts() {
-      DnsConfigService::InvalidateHosts();
-    }
-
-    void OnConfigRead(const DnsConfig& config) {
-      DnsConfigService::OnConfigRead(config);
-    }
-
-    void OnHostsRead(const DnsHosts& hosts) {
-      DnsConfigService::OnHostsRead(hosts);
-    }
-
-    void set_watch_failed(bool value) {
-      DnsConfigService::set_watch_failed(value);
-    }
-  };
-
   void WaitForConfig(base::TimeDelta timeout) {
     base::RunLoop run_loop;
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
@@ -86,9 +60,9 @@ class DnsConfigServiceTest : public TestWithScopedTaskEnvironment {
   }
 
   void SetUp() override {
-    service_.reset(new TestDnsConfigService());
-    service_->WatchConfig(base::Bind(&DnsConfigServiceTest::OnConfigChanged,
-                                     base::Unretained(this)));
+    service_ = std::make_unique<TestDnsConfigService>();
+    service_->WatchConfig(base::BindRepeating(
+        &DnsConfigServiceTest::OnConfigChanged, base::Unretained(this)));
     EXPECT_FALSE(last_config_.IsValid());
   }
 
@@ -213,7 +187,7 @@ TEST_F(DnsConfigServiceTest, WatchFailure) {
   EXPECT_TRUE(last_config_.Equals(config1));
 
   // Simulate watch failure.
-  service_->set_watch_failed(true);
+  service_->set_watch_failed_for_testing(true);
   service_->InvalidateConfig();
   WaitForConfig(TestTimeouts::action_timeout());
   EXPECT_FALSE(last_config_.Equals(config1));

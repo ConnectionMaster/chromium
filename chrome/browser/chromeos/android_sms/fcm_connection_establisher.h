@@ -85,7 +85,7 @@ class FcmConnectionEstablisher : public ConnectionEstablisher {
   void OnMessageDispatchResult(bool status);
 
   std::unique_ptr<base::OneShotTimer> retry_timer_;
-  base::Optional<InFlightMessage> in_flight_message_;
+  absl::optional<InFlightMessage> in_flight_message_;
 
   // A queue of messages to be dispatched. Messages are dispatched and retried
   // one at a time from this queue.
@@ -97,7 +97,7 @@ class FcmConnectionEstablisher : public ConnectionEstablisher {
   static const int kMaxRetryCount;
   static const base::TimeDelta kRetryDelay;
 
-  base::WeakPtrFactory<FcmConnectionEstablisher> weak_ptr_factory_;
+  base::WeakPtrFactory<FcmConnectionEstablisher> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(FcmConnectionEstablisher);
 };

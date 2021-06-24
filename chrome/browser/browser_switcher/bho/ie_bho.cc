@@ -5,9 +5,9 @@
 // Implementation of DLL Exports.
 
 #include <ShlObj.h>
-#include <atlbase.h>
 
-#include "chrome/browser/browser_switcher/bho/ie_bho.h"
+#include "chrome/browser/browser_switcher/bho/atl.h"
+#include "chrome/browser/browser_switcher/bho/ie_bho_idl.h"
 #include "chrome/browser/browser_switcher/bho/logging.h"
 #include "chrome/browser/browser_switcher/bho/resource.h"
 

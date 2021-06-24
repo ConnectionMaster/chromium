@@ -12,7 +12,8 @@
 #include <string>
 
 #include "base/command_line.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
+#include "base/logging.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_info_collector.h"
@@ -23,7 +24,7 @@
 #include "ui/gl/gl_version_info.h"
 #include "ui/gl/init/gl_factory.h"
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 #include "ui/gl/gl_image_native_pixmap.h"
 #endif
 
@@ -36,13 +37,16 @@ const uint8_t GLTestHelper::kCheckClearValue;
 
 bool GLTestHelper::InitializeGL(gl::GLImplementation gl_impl) {
   if (gl_impl == gl::GLImplementation::kGLImplementationNone) {
-    if (!gl::init::InitializeGLNoExtensionsOneOff())
+    if (!gl::init::InitializeGLNoExtensionsOneOff(/*init_bindings*/ true))
       return false;
   } else {
-    if (!gl::init::InitializeGLOneOffImplementation(
-            gl_impl,
+    if (!gl::init::InitializeStaticGLBindingsImplementation(
+            gl::GLImplementationParts(gl_impl),
+            /*fallback_to_software_gl*/ false))
+      return false;
+
+    if (!gl::init::InitializeGLOneOffPlatformImplementation(
             false,  // fallback_to_software_gl
-            false,  // gpu_service_logging
             false,  // disable_gl_drawing
             false   // init_extensions
             )) {
@@ -78,14 +82,14 @@ bool GLTestHelper::HasExtension(const char* extension) {
 }
 
 bool GLTestHelper::CheckGLError(const char* msg, int line) {
-   bool success = true;
-   GLenum error = GL_NO_ERROR;
-   while ((error = glGetError()) != GL_NO_ERROR) {
-     success = false;
-     EXPECT_EQ(static_cast<GLenum>(GL_NO_ERROR), error)
-         << "GL ERROR in " << msg << " at line " << line << " : " << error;
-   }
-   return success;
+  bool success = true;
+  GLenum error = GL_NO_ERROR;
+  while ((error = glGetError()) != GL_NO_ERROR) {
+    success = false;
+    EXPECT_EQ(static_cast<GLenum>(GL_NO_ERROR), error)
+        << "GL ERROR in " << msg << " at line " << line << " : " << error;
+  }
+  return success;
 }
 
 GLuint GLTestHelper::CompileShader(GLenum type, const char* shaderSrc) {
@@ -213,22 +217,36 @@ bool GLTestHelper::CheckPixels(GLint x,
                                GLint tolerance,
                                const uint8_t* color,
                                const uint8_t* mask) {
+  std::vector<uint8_t> colors(width * height * 4);
+  for (int i = 0; i < width * height * 4; i += 4)
+    memcpy(&colors[i], color, 4);
+  return CheckPixels(x, y, width, height, tolerance, colors, mask);
+}
+
+bool GLTestHelper::CheckPixels(GLint x,
+                               GLint y,
+                               GLsizei width,
+                               GLsizei height,
+                               GLint tolerance,
+                               const std::vector<uint8_t>& expected,
+                               const uint8_t* mask) {
   GLsizei size = width * height * 4;
-  std::unique_ptr<uint8_t[]> pixels(new uint8_t[size]);
-  memset(pixels.get(), kCheckClearValue, size);
-  glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.get());
+  std::vector<uint8_t> pixels(size, kCheckClearValue);
+  glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
   int bad_count = 0;
   for (GLint yy = 0; yy < height; ++yy) {
     for (GLint xx = 0; xx < width; ++xx) {
       int offset = yy * width * 4 + xx * 4;
       for (int jj = 0; jj < 4; ++jj) {
         uint8_t actual = pixels[offset + jj];
-        uint8_t expected = color[jj];
-        int diff = actual - expected;
+        uint8_t expected_component = expected[offset + jj];
+        int diff = actual - expected_component;
         diff = diff < 0 ? -diff: diff;
         if ((!mask || mask[jj]) && diff > tolerance) {
-          EXPECT_EQ(expected, actual) << " at " << (xx + x) << ", " << (yy + y)
-                                      << " channel " << jj;
+          EXPECT_EQ(static_cast<int>(expected_component),
+                    static_cast<int>(actual))
+              << " at " << (xx + x) << ", " << (yy + y) << " channel " << jj;
           ++bad_count;
           // Exit early just so we don't spam the log but we print enough
           // to hopefully make it easy to diagnose the issue.
@@ -277,7 +295,7 @@ struct BitmapInfoHeader{
   uint8_t clr_important[4];
 };
 
-}
+}  // namespace
 
 bool GLTestHelper::SaveBackbufferAsBMP(
     const char* filename, int width, int height) {
@@ -363,36 +381,42 @@ GpuCommandBufferTestEGL::GpuCommandBufferTestEGL() : gl_reinitialized_(false) {}
 
 GpuCommandBufferTestEGL::~GpuCommandBufferTestEGL() {}
 
-bool GpuCommandBufferTestEGL::InitializeEGLGLES2(int width, int height) {
-  if (gl::GetGLImplementation() !=
-      gl::GLImplementation::kGLImplementationEGLGLES2) {
-    const auto impls = gl::init::GetAllowedGLImplementations();
-    if (!base::ContainsValue(impls,
-          gl::GLImplementation::kGLImplementationEGLGLES2)) {
-      LOG(INFO) << "Skip test, implementation EGLGLES2 is not available";
-      return false;
-    }
-
+bool GpuCommandBufferTestEGL::InitializeEGL(int width, int height) {
+  gl::GLImplementation current_impl = gl::GetGLImplementation();
+  if (!(current_impl == gl::kGLImplementationEGLGLES2 ||
+        current_impl == gl::kGLImplementationEGLANGLE)) {
     gpu::GPUInfo gpu_info;
-    gpu::CollectContextGraphicsInfo(&gpu_info, gpu::GpuPreferences());
+    gpu::CollectContextGraphicsInfo(&gpu_info);
+    gpu::CollectBasicGraphicsInfo(base::CommandLine::ForCurrentProcess(),
+                                  &gpu_info);
     // See crbug.com/822716, the ATI proprietary driver has eglGetProcAddress
     // but eglInitialize crashes with x11.
     if (gpu_info.gl_vendor.find("ATI Technologies Inc.") != std::string::npos) {
       LOG(INFO) << "Skip test, ATI proprietary driver crashes with egl/x11";
       return false;
     }
+    // The native EGL driver is not supported with the passthrough command
+    // decoder, in that case use ANGLE
+    gl::GLImplementationParts new_impl(gl::kGLImplementationEGLGLES2);
+    if (gpu_info.passthrough_cmd_decoder)
+      new_impl = gl::GLImplementationParts(gl::kGLImplementationEGLANGLE);
+
+    const auto allowed_impls = gl::init::GetAllowedGLImplementations();
+    if (!base::Contains(allowed_impls, new_impl.gl)) {
+      LOG(INFO) << "Skip test, no EGL implementation is available";
+      return false;
+    }
 
     gl_reinitialized_ = true;
     gl::init::ShutdownGL(false /* due_to_fallback */);
-    if (!GLTestHelper::InitializeGL(
-            gl::GLImplementation::kGLImplementationEGLGLES2)) {
-      LOG(INFO) << "Skip test, failed to initialize EGLGLES2";
+    if (!GLTestHelper::InitializeGL(new_impl.gl)) {
+      LOG(INFO) << "Skip test, failed to initialize EGL";
       return false;
     }
   }
-
-  DCHECK_EQ(gl::GLImplementation::kGLImplementationEGLGLES2,
-            gl::GetGLImplementation());
+  current_impl = gl::GetGLImplementation();
+  DCHECK(current_impl == gl::kGLImplementationEGLGLES2 ||
+         current_impl == gl::kGLImplementationEGLANGLE);
 
   // Make the GL context current now to get all extensions.
   GLManager::Options options;
@@ -429,7 +453,7 @@ void GpuCommandBufferTestEGL::RestoreGLDefault() {
   window_system_binding_info_ = gl::GLWindowSystemBindingInfo();
 }
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 scoped_refptr<gl::GLImageNativePixmap>
 GpuCommandBufferTestEGL::CreateGLImageNativePixmap(gfx::BufferFormat format,
                                                    gfx::Size size,

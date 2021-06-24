@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/power_monitor/power_monitor.h"
 
 namespace media {
@@ -17,8 +18,7 @@ PowerObserverHelper::PowerObserverHelper(
     base::RepeatingClosure resume_callback)
     : task_runner_(std::move(task_runner)),
       suspend_callback_(std::move(suspend_callback)),
-      resume_callback_(std::move(resume_callback)),
-      weak_factory_(this) {
+      resume_callback_(std::move(resume_callback)) {
   DCHECK(!suspend_callback_.is_null());
   DCHECK(!resume_callback_.is_null());
 
@@ -28,14 +28,12 @@ PowerObserverHelper::PowerObserverHelper(
   // TODO(grunell): We could be suspending when adding this as observer, and
   // we won't be notified about that. See if we can add
   // PowerMonitorSource::IsSuspending() so that this can be checked here.
-  if (auto* power_monitor = base::PowerMonitor::Get())
-    power_monitor->AddObserver(this);
+  base::PowerMonitor::AddPowerSuspendObserver(this);
 }
 
 PowerObserverHelper::~PowerObserverHelper() {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  if (auto* power_monitor = base::PowerMonitor::Get())
-    power_monitor->RemoveObserver(this);
+  base::PowerMonitor::RemovePowerSuspendObserver(this);
 }
 
 bool PowerObserverHelper::IsSuspending() const {

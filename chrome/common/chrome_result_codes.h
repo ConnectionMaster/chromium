@@ -105,11 +105,19 @@ enum ResultCode {
   // Cloud policy enrollment is failed or given up by user.
   RESULT_CODE_CLOUD_POLICY_ENROLLMENT_FAILED,
 
+  // Chrome was downgraded since the last launch. Perform downgrade processing
+  // and relaunch.
+  RESULT_CODE_DOWNGRADE_AND_RELAUNCH,
+
+  // The GPU process was terminated due to context lost. This is in sync with
+  // viz::ExitCode in components/viz/service/gl/gpu_service_impl.h.
+  RESULT_CODE_GPU_EXIT_ON_CONTEXT_LOST,
+
   // Last return code (keep this last).
   RESULT_CODE_CHROME_LAST_CODE
 };
 
-static_assert(RESULT_CODE_CHROME_LAST_CODE == 33,
+static_assert(RESULT_CODE_CHROME_LAST_CODE == 35,
               "Please make sure the enum values are in sync with enums.xml");
 
 }  // namespace chrome

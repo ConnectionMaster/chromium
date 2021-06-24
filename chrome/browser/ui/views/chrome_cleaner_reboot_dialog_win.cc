@@ -4,9 +4,9 @@
 
 #include "chrome/browser/ui/views/chrome_cleaner_reboot_dialog_win.h"
 
-#include "base/strings/string16.h"
+#include <string>
+
 #include "chrome/browser/safe_browsing/chrome_cleaner/chrome_cleaner_reboot_dialog_controller_win.h"
-#include "chrome/browser/safe_browsing/chrome_cleaner/srt_field_trial_win.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -14,6 +14,7 @@
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/insets.h"
@@ -22,7 +23,6 @@
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/dialog_client_view.h"
 
 namespace chrome {
 
@@ -50,40 +50,58 @@ ChromeCleanerRebootDialog::ChromeCleanerRebootDialog(
     : dialog_controller_(dialog_controller) {
   DCHECK(dialog_controller_);
 
+  set_draggable(true);
+  SetButtonLabel(ui::DIALOG_BUTTON_OK,
+                 l10n_util::GetStringUTF16(
+                     IDS_CHROME_CLEANUP_REBOOT_PROMPT_RESTART_BUTTON_LABEL));
+  SetModalType(ui::MODAL_TYPE_NONE);
+
+  using Controller = safe_browsing::ChromeCleanerRebootDialogController;
+  using ControllerClosureFn = void (Controller::*)(void);
+  auto close_callback = [](Controller** controller, ControllerClosureFn fn) {
+    // This lambda gets bound later to form callbacks for the dialog's close
+    // methods (Accept, Cancel, Close). At most one of these three callbacks may
+    // be invoked, so it swaps this instance's controller pointer with nullptr,
+    // which inhibits a second callback to the controller in
+    // ~ChromeCleanerRebootDialog.
+    (std::exchange(*controller, nullptr)->*(fn))();
+  };
+
+  SetAcceptCallback(base::BindOnce(close_callback,
+                                   base::Unretained(&dialog_controller_),
+                                   &Controller::Accept));
+  SetCancelCallback(base::BindOnce(close_callback,
+                                   base::Unretained(&dialog_controller_),
+                                   &Controller::Cancel));
+  SetCloseCallback(base::BindOnce(close_callback,
+                                  base::Unretained(&dialog_controller_),
+                                  &Controller::Close));
+
   set_margins(ChromeLayoutProvider::Get()->GetDialogInsetsForContentType(
-      views::TEXT, views::TEXT));
+      views::DialogContentType::kText, views::DialogContentType::kText));
 }
 
 ChromeCleanerRebootDialog::~ChromeCleanerRebootDialog() {
-  // Make sure the controller is correctly notified in case the dialog widget is
-  // closed by some other means than the dialog buttons.
-  if (dialog_controller_) {
-    HandleDialogInteraction(DialogInteractionResult::kClosedOnDestruction);
-  }
+  // If the controller is still non-null, none of the dialog's closure methods
+  // have run - see this class's constructor. In that case, notify the
+  // controller that this dialog is going away.
+  if (dialog_controller_)
+    std::exchange(dialog_controller_, nullptr)->Close();
 }
 
 void ChromeCleanerRebootDialog::Show(Browser* browser) {
   DCHECK(browser);
   DCHECK(dialog_controller_);
 
-  views::Widget* widget = DialogDelegate::CreateDialogWidget(
-      this, nullptr, browser->window()->GetNativeWindow());
+  views::Widget* widget =
+      CreateDialogWidget(this, nullptr, browser->window()->GetNativeWindow());
   widget->SetBounds(GetDialogBounds(browser));
   widget->Show();
 }
 
 // WidgetDelegate overrides.
 
-ui::ModalType ChromeCleanerRebootDialog::GetModalType() const {
-  safe_browsing::RebootPromptType prompt_type =
-      safe_browsing::GetRebootPromptType();
-  DCHECK_NE(safe_browsing::REBOOT_PROMPT_TYPE_OPEN_SETTINGS_PAGE, prompt_type);
-  return prompt_type == safe_browsing::REBOOT_PROMPT_TYPE_SHOW_MODAL_DIALOG
-             ? ui::MODAL_TYPE_WINDOW
-             : ui::MODAL_TYPE_NONE;
-}
-
-base::string16 ChromeCleanerRebootDialog::GetWindowTitle() const {
+std::u16string ChromeCleanerRebootDialog::GetWindowTitle() const {
   DCHECK(dialog_controller_);
   return l10n_util::GetStringUTF16(IDS_CHROME_CLEANUP_REBOOT_PROMPT_TITLE);
 }
@@ -91,56 +109,7 @@ base::string16 ChromeCleanerRebootDialog::GetWindowTitle() const {
 views::View* ChromeCleanerRebootDialog::GetInitiallyFocusedView() {
   // Set focus away from the Restart/OK button to prevent accidental prompt
   // acceptance if the user is typing as the dialog appears.
-  return GetDialogClientView()->cancel_button();
-}
-
-// DialogDelegate overrides.
-
-base::string16 ChromeCleanerRebootDialog::GetDialogButtonLabel(
-    ui::DialogButton button) const {
-  DCHECK(button == ui::DIALOG_BUTTON_OK || button == ui::DIALOG_BUTTON_CANCEL);
-  DCHECK(dialog_controller_);
-
-  return button == ui::DIALOG_BUTTON_OK
-             ? l10n_util::GetStringUTF16(
-                   IDS_CHROME_CLEANUP_REBOOT_PROMPT_RESTART_BUTTON_LABEL)
-             : DialogDelegate::GetDialogButtonLabel(button);
-}
-
-bool ChromeCleanerRebootDialog::Accept() {
-  HandleDialogInteraction(DialogInteractionResult::kAccept);
-  return true;
-}
-
-bool ChromeCleanerRebootDialog::Cancel() {
-  HandleDialogInteraction(DialogInteractionResult::kCancel);
-  return true;
-}
-
-bool ChromeCleanerRebootDialog::Close() {
-  HandleDialogInteraction(DialogInteractionResult::kClose);
-  return true;
-}
-
-void ChromeCleanerRebootDialog::HandleDialogInteraction(
-    DialogInteractionResult result) {
-  if (!dialog_controller_)
-    return;
-
-  switch (result) {
-    case DialogInteractionResult::kAccept:
-      dialog_controller_->Accept();
-      break;
-    case DialogInteractionResult::kCancel:
-      dialog_controller_->Cancel();
-      break;
-    case DialogInteractionResult::kClose:
-    case DialogInteractionResult::kClosedOnDestruction:
-      // Fallthrough.
-      dialog_controller_->Close();
-      break;
-  }
-  dialog_controller_ = nullptr;
+  return GetCancelButton();
 }
 
 gfx::Rect ChromeCleanerRebootDialog::GetDialogBounds(Browser* browser) const {
@@ -149,3 +118,6 @@ gfx::Rect ChromeCleanerRebootDialog::GetDialogBounds(Browser* browser) const {
       browser_bounds.x() + (browser_bounds.width() - kDialogWidth) / 2,
       browser_bounds.y() + kDialogYOffset, kDialogWidth, kDialogHeight);
 }
+
+BEGIN_METADATA(ChromeCleanerRebootDialog, views::DialogDelegateView)
+END_METADATA

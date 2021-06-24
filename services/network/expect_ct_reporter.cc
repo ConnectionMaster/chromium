@@ -20,8 +20,10 @@
 #include "base/time/time.h"
 #include "base/time/time_to_iso8601.h"
 #include "base/values.h"
+#include "net/base/isolation_info.h"
 #include "net/base/load_flags.h"
 #include "net/cert/ct_serialization.h"
+#include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/report_sender.h"
 #include "net/url_request/url_request_context.h"
@@ -138,9 +140,10 @@ constexpr net::NetworkTrafficAnnotationTag kExpectCTReporterTrafficAnnotation =
 
 }  // namespace
 
-ExpectCTReporter::ExpectCTReporter(net::URLRequestContext* request_context,
-                                   const base::Closure& success_callback,
-                                   const base::Closure& failure_callback)
+ExpectCTReporter::ExpectCTReporter(
+    net::URLRequestContext* request_context,
+    const base::RepeatingClosure& success_callback,
+    const base::RepeatingClosure& failure_callback)
     : report_sender_(new net::ReportSender(request_context,
                                            kExpectCTReporterTrafficAnnotation)),
       request_context_(request_context),
@@ -156,7 +159,8 @@ void ExpectCTReporter::OnExpectCTFailed(
     const net::X509Certificate* validated_certificate_chain,
     const net::X509Certificate* served_certificate_chain,
     const net::SignedCertificateTimestampAndStatusList&
-        signed_certificate_timestamps) {
+        signed_certificate_timestamps,
+    const net::NetworkIsolationKey& network_isolation_key) {
   if (report_uri.is_empty())
     return;
 
@@ -191,7 +195,7 @@ void ExpectCTReporter::OnExpectCTFailed(
 
   UMA_HISTOGRAM_BOOLEAN("SSL.ExpectCTReportSendingAttempt", true);
 
-  SendPreflight(report_uri, serialized_report);
+  SendPreflight(report_uri, serialized_report, network_isolation_key);
 }
 
 void ExpectCTReporter::OnResponseStarted(net::URLRequest* request,
@@ -201,7 +205,7 @@ void ExpectCTReporter::OnResponseStarted(net::URLRequest* request,
   PreflightInProgress* preflight = preflight_it->second.get();
 
   const int response_code =
-      request->status().is_success() ? request->GetResponseCode() : -1;
+      net_error == net::OK ? request->GetResponseCode() : -1;
 
   // Check that the preflight succeeded: it must have an HTTP OK status code,
   // with the following headers:
@@ -210,8 +214,7 @@ void ExpectCTReporter::OnResponseStarted(net::URLRequest* request,
   // - Access-Control-Allow-Headers: Content-Type
 
   if (response_code == -1 || response_code < 200 || response_code > 299) {
-    OnReportFailure(preflight->report_uri, request->status().error(),
-                    response_code);
+    OnReportFailure(preflight->report_uri, net_error, response_code);
     inflight_preflights_.erase(request);
     // Do not use |preflight| after this point, since it has been erased above.
     return;
@@ -221,20 +224,21 @@ void ExpectCTReporter::OnResponseStarted(net::URLRequest* request,
       !HasHeaderValues(request, "Access-Control-Allow-Methods", {"post"}) ||
       !HasHeaderValues(request, "Access-Control-Allow-Headers",
                        {"content-type"})) {
-    OnReportFailure(preflight->report_uri, request->status().error(),
-                    response_code);
+    OnReportFailure(preflight->report_uri, net_error, response_code);
     inflight_preflights_.erase(request);
     // Do not use |preflight| after this point, since it has been erased above.
     return;
   }
 
-  report_sender_->Send(
-      preflight->report_uri, "application/expect-ct-report+json; charset=utf-8",
-      preflight->serialized_report, success_callback_,
-      // Since |this| owns the |report_sender_|, it's safe to
-      // use base::Unretained here: |report_sender_| will be
-      // destroyed before |this|.
-      base::Bind(&ExpectCTReporter::OnReportFailure, base::Unretained(this)));
+  report_sender_->Send(preflight->report_uri,
+                       "application/expect-ct-report+json; charset=utf-8",
+                       preflight->serialized_report,
+                       preflight->network_isolation_key, success_callback_,
+                       // Since |this| owns the |report_sender_|, it's safe to
+                       // use base::Unretained here: |report_sender_| will be
+                       // destroyed before |this|.
+                       base::BindRepeating(&ExpectCTReporter::OnReportFailure,
+                                           base::Unretained(this)));
   inflight_preflights_.erase(request);
 }
 
@@ -246,31 +250,39 @@ void ExpectCTReporter::OnReadCompleted(net::URLRequest* request,
 ExpectCTReporter::PreflightInProgress::PreflightInProgress(
     std::unique_ptr<net::URLRequest> request,
     const std::string& serialized_report,
-    const GURL& report_uri)
+    const GURL& report_uri,
+    const net::NetworkIsolationKey& network_isolation_key)
     : request(std::move(request)),
       serialized_report(serialized_report),
-      report_uri(report_uri) {}
+      report_uri(report_uri),
+      network_isolation_key(network_isolation_key) {}
 
 ExpectCTReporter::PreflightInProgress::~PreflightInProgress() {}
 
-void ExpectCTReporter::SendPreflight(const GURL& report_uri,
-                                     const std::string& serialized_report) {
+void ExpectCTReporter::SendPreflight(
+    const GURL& report_uri,
+    const std::string& serialized_report,
+    const net::NetworkIsolationKey& network_isolation_key) {
   std::unique_ptr<net::URLRequest> url_request =
       request_context_->CreateRequest(report_uri, net::DEFAULT_PRIORITY, this,
                                       kExpectCTReporterTrafficAnnotation);
   url_request->SetLoadFlags(net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE);
   url_request->set_allow_credentials(false);
-  url_request->set_method("OPTIONS");
+  url_request->set_method(net::HttpRequestHeaders::kOptionsMethod);
+  url_request->set_isolation_info(net::IsolationInfo::CreatePartial(
+      net::IsolationInfo::RequestType::kOther, network_isolation_key));
 
   net::HttpRequestHeaders extra_headers;
   extra_headers.SetHeader("Origin", "null");
-  extra_headers.SetHeader("Access-Control-Request-Method", "POST");
+  extra_headers.SetHeader("Access-Control-Request-Method",
+                          net::HttpRequestHeaders::kPostMethod);
   extra_headers.SetHeader("Access-Control-Request-Headers", "content-type");
   url_request->SetExtraRequestHeaders(extra_headers);
 
   net::URLRequest* raw_request = url_request.get();
   inflight_preflights_[raw_request] = std::make_unique<PreflightInProgress>(
-      std::move(url_request), serialized_report, report_uri);
+      std::move(url_request), serialized_report, report_uri,
+      network_isolation_key);
   raw_request->Start();
 }
 

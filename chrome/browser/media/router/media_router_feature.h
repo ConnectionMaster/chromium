@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_MEDIA_ROUTER_MEDIA_ROUTER_FEATURE_H_
 
 #include "base/feature_list.h"
+#include "build/build_config.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -19,7 +20,44 @@ namespace media_router {
 // Returns true if Media Router is enabled for |context|.
 bool MediaRouterEnabled(content::BrowserContext* context);
 
+// Clears stored prefs so they don't leak between tests running in the same
+// process.
+void ClearMediaRouterStoredPrefsForTesting();
+
 #if !defined(OS_ANDROID)
+
+// Enables the media router. Can be disabled in tests unrelated to
+// Media Router where it interferes. Can also be useful to disable for local
+// development on Mac because DIAL local discovery opens a local port
+// and triggers a permission prompt.
+extern const base::Feature kMediaRouter;
+
+// TODO(crbug.com/1028753): Remove default-enabled kDialMediaRouteProvider after
+// tests stop disabling it.
+extern const base::Feature kDialMediaRouteProvider;
+
+extern const base::Feature kCastMediaRouteProvider;
+
+// If enabled, allows Media Router to connect to Cast devices on all IP
+// addresses, not just RFC1918/RFC4193 private addresses. Workaround for
+// https://crbug.com/813974.
+extern const base::Feature kCastAllowAllIPsFeature;
+
+// Determine whether global media controls are used to start and stop casting.
+extern const base::Feature kGlobalMediaControlsCastStartStop;
+
+// If enabled, allows all websites to request to start mirroring via
+// Presentation API. If disabled, only the allowlisted sites can do so.
+extern const base::Feature kAllowAllSitesToInitiateMirroring;
+
+// If enabled, meetings appear as receivers in the Cast menu.
+extern const base::Feature kCastToMeetingFromCastDialog;
+
+// If enabled, users can submit Cast feedback via the chrome://cast-feedback
+// WebUI.
+// TODO(crbug.com/1173633): Remove this flag now that the feature is enabled by
+// default.
+extern const base::Feature kCastFeedbackDialog;
 
 namespace prefs {
 // Pref name for the enterprise policy for allowing Cast devices on all IPs.
@@ -37,11 +75,6 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 // Registers Media Router related preferences with per-profile pref |registry|.
 void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
-// If enabled, allows Media Router to connect to Cast devices on all IP
-// addresses, not just RFC1918/RFC4193 private addresses. Workaround for
-// https://crbug.com/813974.
-extern const base::Feature kCastAllowAllIPsFeature;
-
 // Returns true if CastMediaSinkService can connect to Cast devices on
 // all IPs, as determined by local state |pref_service| / feature flag.
 bool GetCastAllowAllIPsPref(PrefService* pref_service);
@@ -51,27 +84,15 @@ bool GetCastAllowAllIPsPref(PrefService* pref_service);
 // randomly generated string and stored in |pref_service|.
 std::string GetReceiverIdHashToken(PrefService* pref_service);
 
-extern const base::Feature kEnableDialSinkQuery;
-extern const base::Feature kEnableCastDiscovery;
-extern const base::Feature kCastMediaRouteProvider;
-
 // Returns true if browser side DIAL Media Route Provider is enabled.
 bool DialMediaRouteProviderEnabled();
-
-// Returns true if browser side Cast discovery is enabled.
-bool CastDiscoveryEnabled();
 
 // Returns true if browser side Cast Media Route Provider and sink query are
 // enabled.
 bool CastMediaRouteProviderEnabled();
 
-// Returns true if the Views implementation of the Cast dialog should be used.
-// Returns false if the WebUI implementation should be used.
-bool ShouldUseViewsDialog();
-
-// Returns true if Mirroring Service should be used for mirroring.
-bool ShouldUseMirroringService();
-
+// Returns true if global media controls are used to start and stop casting.
+bool GlobalMediaControlsCastStartStopEnabled();
 #endif  // !defined(OS_ANDROID)
 
 }  // namespace media_router

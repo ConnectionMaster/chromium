@@ -21,19 +21,25 @@ class WorkspaceLayoutManager;
 // container if its "AlwaysOnTop" property is false. Otherwise, put it in
 // |always_on_top_container_|.
 class ASH_EXPORT AlwaysOnTopController : public aura::WindowObserver,
-                                         wm::WindowStateObserver {
+                                         WindowStateObserver {
  public:
   explicit AlwaysOnTopController(aura::Window* always_on_top_container,
                                  aura::Window* pip_container);
   ~AlwaysOnTopController() override;
 
+  static void SetDisallowReparent(aura::Window* window);
+
   // Gets container for given |window| based on its "AlwaysOnTop" property.
   aura::Window* GetContainer(aura::Window* window) const;
 
+  // Clears the layout managers for |always_on_top_container_| and
+  // |pip_container_|. This should only be called when the RootWindowController
+  // is shutting down, to prevent the layout managers from doing unnecessary and
+  // complex work.
+  void ClearLayoutManagers();
+
   void SetLayoutManagerForTest(
       std::unique_ptr<WorkspaceLayoutManager> layout_manager);
-
-  static void SetDisallowReparent(aura::Window* window);
 
  private:
   void AddWindow(aura::Window* window);
@@ -47,9 +53,9 @@ class ASH_EXPORT AlwaysOnTopController : public aura::WindowObserver,
                                intptr_t old) override;
   void OnWindowDestroying(aura::Window* window) override;
 
-  // Overridden from wm::WindowStateObserver:
-  void OnPreWindowStateTypeChange(wm::WindowState* window_state,
-                                  mojom::WindowStateType old_type) override;
+  // Overridden from WindowStateObserver:
+  void OnPreWindowStateTypeChange(WindowState* window_state,
+                                  chromeos::WindowStateType old_type) override;
 
   aura::Window* always_on_top_container_;
   aura::Window* pip_container_;

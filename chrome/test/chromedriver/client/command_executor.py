@@ -4,7 +4,15 @@
 
 import httplib
 import json
+import os
+import sys
 from urlparse import urlparse
+
+_THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+_PARENT_DIR = os.path.join(_THIS_DIR, os.pardir)
+sys.path.insert(1, _PARENT_DIR)
+import util
+sys.path.remove(_PARENT_DIR)
 
 class _Method(object):
   GET = 'GET'
@@ -37,6 +45,8 @@ class Command(object):
   SCREENSHOT = (_Method.GET, '/session/:sessionId/screenshot')
   ELEMENT_SCREENSHOT = (
       _Method.GET, '/session/:sessionId/element/:id/screenshot')
+  FULL_PAGE_SCREENSHOT = (_Method.GET, '/session/:sessionId/screenshot/full')
+  PRINT = (_Method.POST, '/session/:sessionId/print')
   SET_BROWSER_VISIBLE = (_Method.POST, '/session/:sessionId/visible')
   IS_BROWSER_VISIBLE = (_Method.GET, '/session/:sessionId/visible')
   FIND_ELEMENT = (_Method.POST, '/session/:sessionId/element')
@@ -58,7 +68,6 @@ class Command(object):
   IS_ELEMENT_ENABLED = (_Method.GET, '/session/:sessionId/element/:id/enabled')
   IS_ELEMENT_DISPLAYED = (
       _Method.GET, '/session/:sessionId/element/:id/displayed')
-  HOVER_OVER_ELEMENT = (_Method.POST, '/session/:sessionId/element/:id/hover')
   GET_ELEMENT_LOCATION = (
       _Method.GET, '/session/:sessionId/element/:id/location')
   GET_ELEMENT_RECT = (
@@ -70,6 +79,10 @@ class Command(object):
       _Method.GET, '/session/:sessionId/element/:id/attribute/:name')
   GET_ELEMENT_PROPERTY = (
       _Method.GET, '/session/:sessionId/element/:id/property/:name')
+  GET_ELEMENT_COMPUTED_LABEL = (
+      _Method.GET, '/session/:sessionId/element/:id/computedlabel')
+  GET_ELEMENT_COMPUTED_ROLE = (
+      _Method.GET, '/session/:sessionId/element/:id/computedrole')
   ELEMENT_EQUALS = (
       _Method.GET, '/session/:sessionId/element/:id/equals/:other')
   GET_COOKIES = (_Method.GET, '/session/:sessionId/cookie')
@@ -83,6 +96,8 @@ class Command(object):
   GET_WINDOW_RECT = (_Method.GET, '/session/:sessionId/window/rect')
   GET_WINDOW_SIZE = (
       _Method.GET, '/session/:sessionId/window/:windowHandle/size')
+  NEW_WINDOW = (
+      _Method.POST, '/session/:sessionId/window/new')
   GET_WINDOW_POSITION = (
       _Method.GET, '/session/:sessionId/window/:windowHandle/position')
   SET_WINDOW_SIZE = (
@@ -141,10 +156,6 @@ class Command(object):
       _Method.DELETE, '/session/:sessionId/session_storage')
   GET_SESSION_STORAGE_SIZE = (
       _Method.GET, '/session/:sessionId/session_storage/size')
-  GET_SCREEN_ORIENTATION = (_Method.GET, '/session/:sessionId/orientation')
-  SET_SCREEN_ORIENTATION = (_Method.POST, '/session/:sessionId/orientation')
-  DELETE_SCREEN_ORIENTATION = (
-      _Method.DELETE, '/session/:sessionId/orientation')
   MOUSE_CLICK = (_Method.POST, '/session/:sessionId/click')
   MOUSE_DOUBLE_CLICK = (_Method.POST, '/session/:sessionId/doubleclick')
   MOUSE_BUTTON_DOWN = (_Method.POST, '/session/:sessionId/buttondown')
@@ -161,35 +172,58 @@ class Command(object):
   TOUCH_FLICK = (_Method.POST, '/session/:sessionId/touch/flick')
   PERFORM_ACTIONS = (_Method.POST, '/session/:sessionId/actions')
   RELEASE_ACTIONS = (_Method.DELETE, '/session/:sessionId/actions')
-  GET_LOG = (_Method.POST, '/session/:sessionId/log')
-  GET_AVAILABLE_LOG_TYPES = (_Method.GET, '/session/:sessionId/log/types')
-  IS_AUTO_REPORTING = (_Method.GET, '/session/:sessionId/autoreport')
-  SET_AUTO_REPORTING = (_Method.POST, '/session/:sessionId/autoreport')
+  GET_LOG = (_Method.POST, '/session/:sessionId/se/log')
+  GET_AVAILABLE_LOG_TYPES = (_Method.GET, '/session/:sessionId/se/log/types')
   GET_SESSION_LOGS = (_Method.POST, '/logs')
   STATUS = (_Method.GET, '/status')
   SET_NETWORK_CONNECTION = (
       _Method.POST, '/session/:sessionId/network_connection')
-  SEND_COMMAND = (
-      _Method.POST, '/session/:sessionId/chromium/send_command')
   SEND_COMMAND_AND_GET_RESULT = (
       _Method.POST, '/session/:sessionId/chromium/send_command_and_get_result')
   GENERATE_TEST_REPORT = (
       _Method.POST, '/session/:sessionId/reporting/generate_test_report')
+  SET_TIME_ZONE = (_Method.POST, '/session/:sessionId/time_zone')
+  ADD_VIRTUAL_AUTHENTICATOR = (
+      _Method.POST, '/session/:sessionId/webauthn/authenticator')
+  REMOVE_VIRTUAL_AUTHENTICATOR = (
+      _Method.DELETE,
+      '/session/:sessionId/webauthn/authenticator/:authenticatorId')
+  ADD_CREDENTIAL = (
+      _Method.POST,
+      '/session/:sessionId/webauthn/authenticator/:authenticatorId/credential')
+  GET_CREDENTIALS = (
+      _Method.GET,
+      '/session/:sessionId/webauthn/authenticator/:authenticatorId/credentials')
+  REMOVE_CREDENTIAL = (
+      _Method.DELETE,
+      '/session/:sessionId/webauthn/authenticator/:authenticatorId/credentials/'
+      ':credentialId')
+  REMOVE_ALL_CREDENTIALS = (
+      _Method.DELETE,
+      '/session/:sessionId/webauthn/authenticator/:authenticatorId/credentials')
+  SET_USER_VERIFIED = (
+      _Method.POST,
+      '/session/:sessionId/webauthn/authenticator/:authenticatorId/uv')
+  SET_PERMISSION = (
+      _Method.POST, '/session/:sessionId/permissions')
 
   # Custom Chrome commands.
   IS_LOADING = (_Method.GET, '/session/:sessionId/is_loading')
-  TOUCH_PINCH = (_Method.POST, '/session/:sessionId/touch/pinch')
-
 
 class CommandExecutor(object):
   def __init__(self, server_url):
     self._server_url = server_url
     parsed_url = urlparse(server_url)
+    timeout = 10
+    # see https://crbug.com/1045241: short timeout seems to introduce flakiness
+    if util.IsMac() or util.IsWindows():
+      timeout = 30
     self._http_client = httplib.HTTPConnection(
-        parsed_url.hostname, parsed_url.port, timeout=30)
+      parsed_url.hostname, parsed_url.port, timeout=timeout)
 
-  def Execute(self, command, params):
-    url_parts = command[1].split('/')
+  @staticmethod
+  def CreatePath(template_url_path, params):
+    url_parts = template_url_path.split('/')
     substituted_parts = []
     for part in url_parts:
       if part.startswith(':'):
@@ -198,11 +232,14 @@ class CommandExecutor(object):
         del params[key]
       else:
         substituted_parts += [part]
+    return '/'.join(substituted_parts)
 
+  def Execute(self, command, params):
+    url_path = self.CreatePath(command[1], params)
     body = None
     if command[0] == _Method.POST:
       body = json.dumps(params)
-    self._http_client.request(command[0], '/'.join(substituted_parts), body)
+    self._http_client.request(command[0], url_path, body)
     response = self._http_client.getresponse()
 
     if response.status == 303:

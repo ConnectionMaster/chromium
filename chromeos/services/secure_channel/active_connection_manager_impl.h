@@ -11,9 +11,8 @@
 #include "base/macros.h"
 #include "chromeos/services/secure_channel/active_connection_manager.h"
 #include "chromeos/services/secure_channel/connection_details.h"
-#include "chromeos/services/secure_channel/connection_medium.h"
 #include "chromeos/services/secure_channel/multiplexed_channel.h"
-#include "chromeos/services/secure_channel/public/mojom/secure_channel.mojom.h"
+#include "chromeos/services/secure_channel/public/cpp/shared/connection_medium.h"
 
 namespace chromeos {
 
@@ -27,11 +26,14 @@ class ActiveConnectionManagerImpl : public ActiveConnectionManager,
  public:
   class Factory {
    public:
-    static Factory* Get();
-    static void SetFactoryForTesting(Factory* test_factory);
-    virtual ~Factory();
-    virtual std::unique_ptr<ActiveConnectionManager> BuildInstance(
+    static std::unique_ptr<ActiveConnectionManager> Create(
         ActiveConnectionManager::Delegate* delegate);
+    static void SetFactoryForTesting(Factory* test_factory);
+
+   protected:
+    virtual ~Factory();
+    virtual std::unique_ptr<ActiveConnectionManager> CreateInstance(
+        ActiveConnectionManager::Delegate* delegate) = 0;
 
    private:
     static Factory* test_factory_;
@@ -40,7 +42,8 @@ class ActiveConnectionManagerImpl : public ActiveConnectionManager,
   ~ActiveConnectionManagerImpl() override;
 
  private:
-  ActiveConnectionManagerImpl(ActiveConnectionManager::Delegate* delegate);
+  explicit ActiveConnectionManagerImpl(
+      ActiveConnectionManager::Delegate* delegate);
 
   // ActiveConnectionManager:
   ConnectionState GetConnectionState(

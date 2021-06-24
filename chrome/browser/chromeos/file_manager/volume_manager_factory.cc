@@ -6,9 +6,9 @@
 
 #include "base/bind.h"
 #include "base/memory/singleton.h"
-#include "chrome/browser/chromeos/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/file_system_provider/service_factory.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
-#include "chrome/browser/chromeos/file_system_provider/service_factory.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/dbus/power/power_manager_client.h"
@@ -48,7 +48,7 @@ KeyedService* VolumeManagerFactory::BuildServiceInstanceFor(
       profile, drive::DriveIntegrationServiceFactory::GetForProfile(profile),
       chromeos::PowerManagerClient::Get(),
       chromeos::disks::DiskMountManager::GetInstance(),
-      chromeos::file_system_provider::ServiceFactory::Get(context),
+      ash::file_system_provider::ServiceFactory::Get(context),
       VolumeManager::GetMtpStorageInfoCallback());
   instance->Initialize();
   return instance;
@@ -59,7 +59,7 @@ VolumeManagerFactory::VolumeManagerFactory()
           "VolumeManagerFactory",
           BrowserContextDependencyManager::GetInstance()) {
   DependsOn(drive::DriveIntegrationServiceFactory::GetInstance());
-  DependsOn(chromeos::file_system_provider::ServiceFactory::GetInstance());
+  DependsOn(ash::file_system_provider::ServiceFactory::GetInstance());
 }
 
 VolumeManagerFactory::~VolumeManagerFactory() = default;

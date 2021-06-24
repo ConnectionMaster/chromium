@@ -24,6 +24,8 @@
 #include "ui/gfx/image/image_skia_source.h"
 #include "ui/gfx/skia_util.h"
 
+using extensions::mojom::ManifestLocation;
+
 namespace extensions {
 namespace {
 
@@ -84,12 +86,12 @@ class ExtensionIconImageTest : public ExtensionsTest,
   }
 
   scoped_refptr<Extension> CreateExtension(const char* name,
-                                           Manifest::Location location) {
+                                           ManifestLocation location) {
     // Create and load an extension.
     base::FilePath test_file;
     if (!base::PathService::Get(DIR_TEST_DATA, &test_file)) {
       EXPECT_FALSE(true);
-      return NULL;
+      return nullptr;
     }
     test_file = test_file.AppendASCII(name);
     int error_code = 0;
@@ -101,11 +103,11 @@ class ExtensionIconImageTest : public ExtensionsTest,
             deserializer.Deserialize(&error_code, &error));
     EXPECT_EQ(0, error_code) << error;
     if (error_code != 0)
-      return NULL;
+      return nullptr;
 
     EXPECT_TRUE(valid_value.get());
     if (!valid_value)
-      return NULL;
+      return nullptr;
 
     return Extension::Create(test_file, location, *valid_value,
                              Extension::NO_FLAGS, &error);
@@ -137,8 +139,8 @@ TEST_F(ExtensionIconImageTest, Basic) {
   supported_factors.push_back(ui::SCALE_FACTOR_200P);
   ui::test::ScopedSetSupportedScaleFactors scoped_supported(supported_factors);
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
 
@@ -211,8 +213,8 @@ TEST_F(ExtensionIconImageTest, FallbackToSmallerWhenNoBigger) {
   supported_factors.push_back(ui::SCALE_FACTOR_200P);
   ui::test::ScopedSetSupportedScaleFactors scoped_supported(supported_factors);
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
 
@@ -249,8 +251,8 @@ TEST_F(ExtensionIconImageTest, FallbackToSmallerWhenNoBigger) {
 // one. The bigger resource should be loaded.
 TEST_F(ExtensionIconImageTest, FallbackToBigger) {
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
 
@@ -286,8 +288,8 @@ TEST_F(ExtensionIconImageTest, FallbackToBigger) {
 // default icon, without notifying observer of image change.
 TEST_F(ExtensionIconImageTest, NoResources) {
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   ExtensionIconSet empty_icon_set;
   gfx::ImageSkia default_icon = GetDefaultIcon();
@@ -326,8 +328,8 @@ TEST_F(ExtensionIconImageTest, NoResources) {
 // return the default icon representation once image load is done.
 TEST_F(ExtensionIconImageTest, InvalidResource) {
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   const int kInvalidIconSize = 24;
   ExtensionIconSet invalid_icon_set;
@@ -363,8 +365,8 @@ TEST_F(ExtensionIconImageTest, InvalidResource) {
 // icon when IconImage returns synchronously.
 TEST_F(ExtensionIconImageTest, LazyDefaultIcon) {
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
   gfx::ImageSkia lazy_default_icon(
@@ -402,8 +404,8 @@ TEST_F(ExtensionIconImageTest, LazyDefaultIcon) {
 // icon when IconImage returns asynchronously.
 TEST_F(ExtensionIconImageTest, LazyDefaultIcon_AsyncIconImage) {
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
   gfx::ImageSkia lazy_default_icon(
@@ -444,8 +446,8 @@ TEST_F(ExtensionIconImageTest, LazyDefaultIcon_AsyncIconImage) {
 // representations should be returned.
 TEST_F(ExtensionIconImageTest, IconImageDestruction) {
   scoped_refptr<Extension> extension(CreateExtension(
-      "extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
 
@@ -470,7 +472,7 @@ TEST_F(ExtensionIconImageTest, IconImageDestruction) {
   // Stash loaded image skia, and destroy |image|.
   gfx::ImageSkia image_skia = image->image_skia();
   image.reset();
-  extension = NULL;
+  extension = nullptr;
 
   // Image skia should still be able to get previously loaded representation.
   representation = image_skia.GetRepresentation(1.0f);
@@ -493,9 +495,9 @@ TEST_F(ExtensionIconImageTest, IconImageDestruction) {
 // cached for future use.
 TEST_F(ExtensionIconImageTest, ImageCachesNewRepresentations) {
   // Load up an extension and create an icon image.
-  scoped_refptr<Extension> extension(
-      CreateExtension("extension_icon_image", Manifest::INVALID_LOCATION));
-  ASSERT_TRUE(extension.get() != NULL);
+  scoped_refptr<Extension> extension(CreateExtension(
+      "extension_icon_image", ManifestLocation::kInvalidLocation));
+  ASSERT_TRUE(extension.get() != nullptr);
   gfx::ImageSkia default_icon = GetDefaultIcon();
   std::unique_ptr<IconImage> icon_image(new IconImage(
       browser_context(), extension.get(), IconsInfo::GetIcons(extension.get()),

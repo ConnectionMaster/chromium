@@ -6,14 +6,14 @@
 
 #include <memory>
 
+#include "ash/constants/ash_paths.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/pattern.h"
 #include "base/task/post_task.h"
 #include "base/test/scoped_path_override.h"
-#include "base/test/scoped_task_environment.h"
-#include "chromeos/constants/chromeos_paths.h"
+#include "base/test/task_environment.h"
 #include "components/quirks/quirks_manager.h"
 #include "net/url_request/url_request_context_getter.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -39,8 +39,8 @@ class DisplayColorManagerForTest : public DisplayColorManager {
       display::DisplayConfigurator* configurator)
       : DisplayColorManager(configurator, nullptr /* display_to_observe */) {}
 
-  void SetOnFinishedForTest(base::Closure on_finished_for_test) {
-    on_finished_for_test_ = on_finished_for_test;
+  void SetOnFinishedForTest(base::OnceClosure on_finished_for_test) {
+    on_finished_for_test_ = std::move(on_finished_for_test);
   }
 
  private:
@@ -54,8 +54,8 @@ class DisplayColorManagerForTest : public DisplayColorManager {
         display_id, product_id, has_color_correction_matrix, type, path,
         file_downloaded);
     // If path is empty, there is no icc file, and the DCM's work is done.
-    if (path.empty() && !on_finished_for_test_.is_null()) {
-      on_finished_for_test_.Run();
+    if (path.empty() && on_finished_for_test_) {
+      std::move(on_finished_for_test_).Run();
       on_finished_for_test_.Reset();
     }
   }
@@ -66,13 +66,13 @@ class DisplayColorManagerForTest : public DisplayColorManager {
       std::unique_ptr<ColorCalibrationData> data) override {
     DisplayColorManager::UpdateCalibrationData(display_id, product_id,
                                                std::move(data));
-    if (!on_finished_for_test_.is_null()) {
-      on_finished_for_test_.Run();
+    if (on_finished_for_test_) {
+      std::move(on_finished_for_test_).Run();
       on_finished_for_test_.Reset();
     }
   }
 
-  base::Closure on_finished_for_test_;
+  base::OnceClosure on_finished_for_test_;
 
   DISALLOW_COPY_AND_ASSIGN(DisplayColorManagerForTest);
 };
@@ -105,7 +105,7 @@ class QuirksManagerDelegateTestImpl : public quirks::QuirksManager::Delegate {
 class DisplayColorManagerTest : public testing::Test {
  public:
   void SetUp() override {
-    log_.reset(new display::test::ActionLogger());
+    log_ = std::make_unique<display::test::ActionLogger>();
 
     native_display_delegate_ =
         new display::test::TestNativeDisplayDelegate(log_.get());
@@ -121,8 +121,8 @@ class DisplayColorManagerTest : public testing::Test {
     color_path_ = color_path_.Append(FILE_PATH_LITERAL("ash"))
                       .Append(FILE_PATH_LITERAL("display"))
                       .Append(FILE_PATH_LITERAL("test_data"));
-    path_override_.reset(new base::ScopedPathOverride(
-        chromeos::DIR_DEVICE_DISPLAY_PROFILES, color_path_));
+    path_override_ = std::make_unique<base::ScopedPathOverride>(
+        chromeos::DIR_DEVICE_DISPLAY_PROFILES, color_path_);
 
     quirks::QuirksManager::Initialize(
         std::unique_ptr<quirks::QuirksManager::Delegate>(
@@ -144,7 +144,7 @@ class DisplayColorManagerTest : public testing::Test {
   ~DisplayColorManagerTest() override = default;
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::unique_ptr<base::ScopedPathOverride> path_override_;
   base::FilePath color_path_;
   std::unique_ptr<display::test::ActionLogger> log_;
@@ -471,6 +471,81 @@ TEST_F(DisplayColorManagerTest, NoVCGT) {
   // there is no vcgt table.
   EXPECT_TRUE(
       base::MatchPattern(log_->GetActionsAndClear(), kResetGammaAction));
+}
+
+TEST_F(DisplayColorManagerTest, VpdCalibration) {
+  // Set the VPD-written ICC data of |product_id| to be the contents in
+  // |icc_path|.
+  int64_t product_id = 0x0;  // No matching product ID, so no Quirks ICC.
+  const base::FilePath& icc_path = color_path_.Append("06af5c10.icc");
+  auto vpd_dir_override = std::make_unique<base::ScopedPathOverride>(
+      chromeos::DIR_DEVICE_DISPLAY_PROFILES_VPD);
+  base::FilePath vpd_dir;
+  EXPECT_TRUE(base::PathService::Get(chromeos::DIR_DEVICE_DISPLAY_PROFILES_VPD,
+                                     &vpd_dir));
+  EXPECT_TRUE(base::CopyFile(icc_path,
+                             vpd_dir.Append(quirks::IdToFileName(product_id))));
+
+  std::unique_ptr<display::DisplaySnapshot> snapshot =
+      display::FakeDisplaySnapshot::Builder()
+          .SetId(123)
+          .SetNativeMode(kDisplaySize)
+          .SetCurrentMode(kDisplaySize)
+          .SetType(display::DISPLAY_CONNECTION_TYPE_INTERNAL)
+          .SetHasColorCorrectionMatrix(false)
+          .SetProductCode(product_id)
+          .Build();
+
+  std::vector<display::DisplaySnapshot*> outputs({snapshot.get()});
+  native_display_delegate_->set_outputs(outputs);
+
+  configurator_.OnConfigurationChanged();
+  EXPECT_TRUE(test_api_.TriggerConfigureTimeout());
+  // Clear initial configuration log.
+  log_->GetActionsAndClear();
+
+  WaitOnColorCalibration();
+  // There is no calibration for this product in Quirks, so confirm that the
+  // VPD-written data is applied.
+  EXPECT_TRUE(base::MatchPattern(log_->GetActionsAndClear(), kSetGammaAction));
+}
+
+TEST_F(DisplayColorManagerTest, VpdCalibrationWithQuirks) {
+  // Set the VPD-written ICC data of |product_id| to be the contents in
+  // |icc_path|.
+  int64_t product_id = 0x06af5c10;
+  const base::FilePath& icc_path = color_path_.Append("4c834a42.icc");
+  auto vpd_dir_override = std::make_unique<base::ScopedPathOverride>(
+      chromeos::DIR_DEVICE_DISPLAY_PROFILES_VPD);
+  base::FilePath vpd_dir;
+  EXPECT_TRUE(base::PathService::Get(chromeos::DIR_DEVICE_DISPLAY_PROFILES_VPD,
+                                     &vpd_dir));
+  EXPECT_TRUE(base::CopyFile(icc_path,
+                             vpd_dir.Append(quirks::IdToFileName(product_id))));
+
+  std::unique_ptr<display::DisplaySnapshot> snapshot =
+      display::FakeDisplaySnapshot::Builder()
+          .SetId(123)
+          .SetNativeMode(kDisplaySize)
+          .SetCurrentMode(kDisplaySize)
+          .SetType(display::DISPLAY_CONNECTION_TYPE_INTERNAL)
+          .SetHasColorCorrectionMatrix(false)
+          .SetProductCode(product_id)
+          .Build();
+
+  std::vector<display::DisplaySnapshot*> outputs({snapshot.get()});
+  native_display_delegate_->set_outputs(outputs);
+
+  configurator_.OnConfigurationChanged();
+  EXPECT_TRUE(test_api_.TriggerConfigureTimeout());
+  // Clear initial configuration log.
+  log_->GetActionsAndClear();
+
+  WaitOnColorCalibration();
+  // The VPD-written ICC has no vcgt table and would call
+  // DisplayColorManager::ResetDisplayColorCalibration().
+  // Confirm that the Quirks-fetched ICC, which does, is what is applied.
+  EXPECT_TRUE(base::MatchPattern(log_->GetActionsAndClear(), kSetGammaAction));
 }
 
 }  // namespace ash

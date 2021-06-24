@@ -15,33 +15,19 @@ DelegatedFrameHostClientAndroid::DelegatedFrameHostClientAndroid(
 
 DelegatedFrameHostClientAndroid::~DelegatedFrameHostClientAndroid() {}
 
-void DelegatedFrameHostClientAndroid::SetBeginFrameSource(
-    viz::BeginFrameSource* begin_frame_source) {
-  render_widget_host_view_->SetBeginFrameSource(begin_frame_source);
-}
-
-void DelegatedFrameHostClientAndroid::DidReceiveCompositorFrameAck(
-    const std::vector<viz::ReturnedResource>& resources) {
-  render_widget_host_view_->DidReceiveCompositorFrameAck(resources);
-}
-
-void DelegatedFrameHostClientAndroid::DidPresentCompositorFrames(
-    const viz::PresentationFeedbackMap& feedbacks) {
-  render_widget_host_view_->DidPresentCompositorFrames(feedbacks);
-}
-
-void DelegatedFrameHostClientAndroid::ReclaimResources(
-    const std::vector<viz::ReturnedResource>& resources) {
-  render_widget_host_view_->ReclaimResources(resources);
-}
-
 void DelegatedFrameHostClientAndroid::OnFrameTokenChanged(
-    uint32_t frame_token) {
-  render_widget_host_view_->OnFrameTokenChangedForView(frame_token);
+    uint32_t frame_token,
+    base::TimeTicks activation_time) {
+  render_widget_host_view_->OnFrameTokenChangedForView(frame_token,
+                                                       activation_time);
 }
 
 void DelegatedFrameHostClientAndroid::WasEvicted() {
   render_widget_host_view_->WasEvicted();
+}
+
+void DelegatedFrameHostClientAndroid::OnSurfaceIdChanged() {
+  render_widget_host_view_->OnSurfaceIdChanged();
 }
 
 }  // namespace content

@@ -72,8 +72,6 @@ class SyncEngineInitializer : public SyncTask {
   std::unique_ptr<MetadataDatabase> PassMetadataDatabase();
 
  private:
-  typedef base::Callback<void(const SyncStatusCallback& callback)> Task;
-
   void GetAboutResource(std::unique_ptr<SyncTaskToken> token);
   void DidGetAboutResource(
       std::unique_ptr<SyncTaskToken> token,
@@ -99,7 +97,7 @@ class SyncEngineInitializer : public SyncTask {
   SyncEngineContext* sync_context_;  // Not owned.
   leveldb::Env* env_override_;
 
-  google_apis::CancelCallback cancel_callback_;
+  google_apis::CancelCallbackOnce cancel_callback_;
   base::FilePath database_path_;
 
   int find_sync_root_retry_count_;
@@ -112,7 +110,7 @@ class SyncEngineInitializer : public SyncTask {
 
   std::unique_ptr<google_apis::FileResource> sync_root_folder_;
 
-  base::WeakPtrFactory<SyncEngineInitializer> weak_ptr_factory_;
+  base::WeakPtrFactory<SyncEngineInitializer> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SyncEngineInitializer);
 };

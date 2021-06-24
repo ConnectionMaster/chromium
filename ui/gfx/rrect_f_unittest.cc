@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 #include "ui/gfx/rrect_f.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/rrect_f_builder.h"
 
 namespace gfx {
 
@@ -61,6 +62,8 @@ TEST(RRectFTest, RRectTypes) {
   a = RRectF(40, 50, 60, 70, 5);
   EXPECT_EQ(a.GetType(), RRectF::Type::kSingle);
   a = RRectF(40, 50, 60, 70, 5, 5);
+  EXPECT_EQ(a.GetType(), RRectF::Type::kSingle);
+  a = RRectF(40, 50, 60, 60, 30, 30);
   EXPECT_EQ(a.GetType(), RRectF::Type::kSingle);
   a = RRectF(40, 50, 60, 70, 6, 3);
   EXPECT_EQ(a.GetType(), RRectF::Type::kSimple);
@@ -140,6 +143,25 @@ TEST(RRectFTest, FromSkRRect) {
   b = RRectF(40, 50, 60, 70, 15);
   c = RRectF(a);
   EXPECT_EQ(b, c);
+}
+
+TEST(RRectFTest, FromRoundedCornersF) {
+  constexpr RectF kRect(50.0f, 40.0f);
+  constexpr RoundedCornersF kCorners(1.5f, 2.5f, 3.5f, 4.5f);
+  const RRectF rrect_f(kRect, kCorners);
+
+  const auto upper_left = rrect_f.GetCornerRadii(RRectF::Corner::kUpperLeft);
+  EXPECT_EQ(kCorners.upper_left(), upper_left.x());
+  EXPECT_EQ(kCorners.upper_left(), upper_left.y());
+  const auto upper_right = rrect_f.GetCornerRadii(RRectF::Corner::kUpperRight);
+  EXPECT_EQ(kCorners.upper_right(), upper_right.x());
+  EXPECT_EQ(kCorners.upper_right(), upper_right.y());
+  const auto lower_right = rrect_f.GetCornerRadii(RRectF::Corner::kLowerRight);
+  EXPECT_EQ(kCorners.lower_right(), lower_right.x());
+  EXPECT_EQ(kCorners.lower_right(), lower_right.y());
+  const auto lower_left = rrect_f.GetCornerRadii(RRectF::Corner::kLowerLeft);
+  EXPECT_EQ(kCorners.lower_left(), lower_left.x());
+  EXPECT_EQ(kCorners.lower_left(), lower_left.y());
 }
 
 TEST(RRectFTest, ToString) {
@@ -249,6 +271,136 @@ TEST(RRectFTest, InsetOutset) {
   b = a;
   b.Outset(3);
   ASSERT_EQ(b, RRectF(37, 47, 66, 76, 8));
+}
+
+// The following tests(started with "Build*") are for RRectFBuilder. All
+// different tests are to make sure that existing RRectF definitions can be
+// implemented with RRectFBuilder.
+TEST(RRectFTest, BuildFromRectF) {
+  RectF a = RectF();
+  RRectF b(a);
+  RRectF c = RRectFBuilder().set_rect(a).Build();
+  EXPECT_EQ(b, c);
+
+  a = RectF(60, 70);
+  b = RRectF(a);
+  c = RRectFBuilder().set_rect(a).Build();
+  EXPECT_EQ(b, c);
+
+  a = RectF(40, 50, 60, 70);
+  b = RRectF(a);
+  c = RRectFBuilder().set_rect(a).Build();
+  EXPECT_EQ(b, c);
+}
+
+TEST(RRectFTest, BuildFromRadius) {
+  RRectF a(40, 50, 60, 70, 15);
+  RRectF b = RRectFBuilder()
+                 .set_origin(40, 50)
+                 .set_size(60, 70)
+                 .set_radius(15)
+                 .Build();
+  EXPECT_EQ(a, b);
+
+  a = RRectF(40, 50, 60, 70, 15, 25);
+  b = RRectFBuilder()
+          .set_origin(40, 50)
+          .set_size(60, 70)
+          .set_radius(15, 25)
+          .Build();
+  EXPECT_EQ(a, b);
+
+  const PointF p(40, 50);
+  const SizeF s(60, 70);
+  b = RRectFBuilder().set_origin(p).set_size(s).set_radius(15, 25).Build();
+  EXPECT_EQ(a, b);
+}
+
+TEST(RRectFTest, BuildFromRectFWithRadius) {
+  RectF a(40, 50, 60, 70);
+  RRectF b(a, 15);
+  RRectF c = RRectFBuilder().set_rect(a).set_radius(15).Build();
+  EXPECT_EQ(b, c);
+
+  b = RRectF(a, 15, 25);
+  c = RRectFBuilder().set_rect(a).set_radius(15, 25).Build();
+  EXPECT_EQ(b, c);
+}
+
+TEST(RRectFTest, BuildFromCorners) {
+  RRectF a(40, 50, 60, 70, 1, 2, 3, 4, 5, 6, 7, 8);
+  RRectF b = RRectFBuilder()
+                 .set_origin(40, 50)
+                 .set_size(60, 70)
+                 .set_upper_left(1, 2)
+                 .set_upper_right(3, 4)
+                 .set_lower_right(5, 6)
+                 .set_lower_left(7, 8)
+                 .Build();
+  EXPECT_EQ(a, b);
+}
+
+TEST(RRectFTest, BuildFromRectFWithCorners) {
+  RectF a(40, 50, 60, 70);
+  RRectF b(a, 1, 2, 3, 4, 5, 6, 7, 8);
+  RRectF c = RRectFBuilder()
+                 .set_rect(a)
+                 .set_upper_left(1, 2)
+                 .set_upper_right(3, 4)
+                 .set_lower_right(5, 6)
+                 .set_lower_left(7, 8)
+                 .Build();
+  EXPECT_EQ(b, c);
+}
+
+TEST(RRectFTest, BuildFromRoundedCornersF) {
+  RectF a(40, 50, 60, 70);
+  RoundedCornersF corners(1.5f, 2.5f, 3.5f, 4.5f);
+  RRectF b(a, corners);
+  RRectF c = RRectFBuilder().set_rect(a).set_corners(corners).Build();
+  EXPECT_EQ(b, c);
+}
+
+// In the following tests(*CornersHigherThanSize), we test whether the corner
+// radii gets truncated in case of being greater than the width/height.
+TEST(RRectFTest, BuildFromCornersHigherThanSize) {
+  RRectF a(0, 0, 20, 10, 12, 2, 8, 4, 14, 6, 6, 8);
+  RRectF b = RRectFBuilder()
+                 .set_origin(0, 0)
+                 .set_size(20, 10)
+                 .set_upper_left(48, 8)
+                 .set_upper_right(32, 16)
+                 .set_lower_right(56, 24)
+                 .set_lower_left(24, 32)
+                 .Build();
+  EXPECT_EQ(a, b);
+}
+
+TEST(RRectFTest, BuildFromRectFWithCornersHigherThanSize) {
+  RectF a(0, 0, 20, 10);
+  RRectF b(a, 12, 2, 8, 4, 14, 6, 6, 8);
+  RRectF c = RRectFBuilder()
+                 .set_rect(a)
+                 .set_upper_left(48, 8)
+                 .set_upper_right(32, 16)
+                 .set_lower_right(56, 24)
+                 .set_lower_left(24, 32)
+                 .Build();
+  EXPECT_EQ(b, c);
+}
+
+// In this test, we set the radius first but then change the value of the
+// corners.
+TEST(RRectFTest, BuildFromRadiusAndCorners) {
+  RRectF a(40, 50, 60, 70, 1, 2, 3, 4, 15, 25, 15, 25);
+  RRectF b = RRectFBuilder()
+                 .set_origin(40, 50)
+                 .set_size(60, 70)
+                 .set_radius(15, 25)
+                 .set_upper_left(1, 2)
+                 .set_upper_right(3, 4)
+                 .Build();
+  EXPECT_EQ(a, b);
 }
 
 }  // namespace gfx

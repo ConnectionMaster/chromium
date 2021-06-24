@@ -9,7 +9,9 @@
 #ifndef COMPONENTS_STORAGE_MONITOR_STORAGE_MONITOR_CHROMEOS_H_
 #define COMPONENTS_STORAGE_MONITOR_STORAGE_MONITOR_CHROMEOS_H_
 
-#if !defined(OS_CHROMEOS)
+#include "build/chromeos_buildflags.h"
+
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 #error "Should only be used on ChromeOS."
 #endif
 
@@ -21,8 +23,11 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chromeos/disks/disk_mount_manager.h"
 #include "components/storage_monitor/storage_monitor.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/device/public/mojom/mtp_manager.mojom.h"
 
 namespace storage_monitor {
@@ -43,7 +48,7 @@ class StorageMonitorCros : public StorageMonitor,
 
  protected:
   void SetMediaTransferProtocolManagerForTest(
-      device::mojom::MtpManagerPtr test_manager);
+      mojo::PendingRemote<device::mojom::MtpManager> test_manager);
 
   // chromeos::disks::DiskMountManager::Observer implementation.
   void OnBootDeviceDiskEvent(chromeos::disks::DiskMountManager::DiskEvent event,
@@ -57,7 +62,7 @@ class StorageMonitorCros : public StorageMonitor,
   bool GetStorageInfoForPath(const base::FilePath& path,
                              StorageInfo* device_info) const override;
   void EjectDevice(const std::string& device_id,
-                   base::Callback<void(EjectStatus)> callback) override;
+                   base::OnceCallback<void(EjectStatus)> callback) override;
   device::mojom::MtpManager* media_transfer_protocol_manager() override;
 
  private:
@@ -86,11 +91,11 @@ class StorageMonitorCros : public StorageMonitor,
   // Mapping of relevant mount points and their corresponding mount devices.
   MountMap mount_map_;
 
-  device::mojom::MtpManagerPtr mtp_device_manager_;
+  mojo::Remote<device::mojom::MtpManager> mtp_device_manager_;
 
   std::unique_ptr<MtpManagerClientChromeOS> mtp_manager_client_;
 
-  base::WeakPtrFactory<StorageMonitorCros> weak_ptr_factory_;
+  base::WeakPtrFactory<StorageMonitorCros> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(StorageMonitorCros);
 };

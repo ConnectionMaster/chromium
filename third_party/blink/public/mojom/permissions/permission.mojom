@@ -22,6 +22,15 @@ enum PermissionName {
   PAYMENT_HANDLER,
   BACKGROUND_FETCH,
   IDLE_DETECTION,
+  PERIODIC_BACKGROUND_SYNC,
+  SCREEN_WAKE_LOCK,
+  SYSTEM_WAKE_LOCK,
+  NFC,
+  STORAGE_ACCESS,
+  WINDOW_PLACEMENT,
+  FONT_ACCESS,
+  DISPLAY_CAPTURE,
+  FILE_HANDLING,
 };
 
 struct MidiPermissionDescriptor {
@@ -30,12 +39,18 @@ struct MidiPermissionDescriptor {
 
 struct ClipboardPermissionDescriptor {
   bool allowWithoutGesture;
+  bool allowWithoutSanitization;
+};
+
+struct CameraDevicePermissionDescriptor {
+  bool panTiltZoom;
 };
 
 // Union of possible extensions to the base PermissionDescriptor type.
 union PermissionDescriptorExtension {
   MidiPermissionDescriptor midi;
   ClipboardPermissionDescriptor clipboard;
+  CameraDevicePermissionDescriptor camera_device;
 };
 
 // This struct roughly corresponds to the PermissionDescriptor dictionary as
@@ -65,5 +80,5 @@ interface PermissionService {
   // access to |permission|. Closing the pipe will cancel the subscription.
   AddPermissionObserver(PermissionDescriptor permission,
                         PermissionStatus last_known_status,
-                        PermissionObserver observer);
+                        pending_remote<PermissionObserver> observer);
 };

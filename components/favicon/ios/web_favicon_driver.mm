@@ -9,11 +9,11 @@
 #include "components/favicon/core/favicon_url.h"
 #include "components/favicon/ios/favicon_url_util.h"
 #include "ios/web/public/browser_state.h"
-#include "ios/web/public/favicon_status.h"
-#include "ios/web/public/navigation_item.h"
-#include "ios/web/public/navigation_manager.h"
-#include "ios/web/public/web_state/navigation_context.h"
-#include "ios/web/public/web_state/web_state.h"
+#include "ios/web/public/favicon/favicon_status.h"
+#include "ios/web/public/navigation/navigation_context.h"
+#include "ios/web/public/navigation/navigation_item.h"
+#include "ios/web/public/navigation/navigation_manager.h"
+#import "ios/web/public/web_state.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "skia/ext/skia_utils_ios.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -23,19 +23,11 @@
 #error "This file requires ARC support."
 #endif
 
-// Callback for the download of favicon.
-using ImageDownloadCallback =
-    base::Callback<void(int image_id,
-                        int http_status_code,
-                        const GURL& image_url,
-                        const std::vector<SkBitmap>& bitmaps,
-                        const std::vector<gfx::Size>& sizes)>;
-
 namespace favicon {
 
 // static
 void WebFaviconDriver::CreateForWebState(web::WebState* web_state,
-                                         FaviconService* favicon_service) {
+                                         CoreFaviconService* favicon_service) {
   if (FromWebState(web_state))
     return;
 
@@ -79,10 +71,11 @@ int WebFaviconDriver::DownloadImage(const GURL& url,
         std::vector<SkBitmap> frames;
         std::vector<gfx::Size> sizes;
         if (data) {
-          frames = skia::ImageDataToSkBitmaps(data);
+          frames = skia::ImageDataToSkBitmapsWithMaxSize(data, max_image_size);
           for (const auto& frame : frames) {
             sizes.push_back(gfx::Size(frame.width(), frame.height()));
           }
+          DCHECK_EQ(frames.size(), sizes.size());
         }
         std::move(local_callback)
             .Run(local_download_id, metadata.http_response_code, local_url,
@@ -121,6 +114,7 @@ void WebFaviconDriver::OnFaviconUpdated(
   web::FaviconStatus& favicon_status = item->GetFavicon();
   favicon_status.valid = true;
   favicon_status.image = image;
+  favicon_status.url = icon_url;
 
   NotifyFaviconUpdatedObservers(notification_icon_type, icon_url,
                                 icon_url_changed, image);
@@ -146,7 +140,7 @@ void WebFaviconDriver::OnFaviconDeleted(
 }
 
 WebFaviconDriver::WebFaviconDriver(web::WebState* web_state,
-                                   FaviconService* favicon_service)
+                                   CoreFaviconService* favicon_service)
     : FaviconDriverImpl(favicon_service),
       image_fetcher_(web_state->GetBrowserState()->GetSharedURLLoaderFactory()),
       web_state_(web_state) {

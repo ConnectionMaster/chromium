@@ -25,46 +25,24 @@
 #include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
-#include "third_party/blink/renderer/core/dom/v0_insertion_point.h"
 #include "third_party/blink/renderer/core/dom/visited_link_state.h"
 
 namespace blink {
 
-ElementResolveContext::ElementResolveContext(const Document& document)
-    : element_(nullptr),
-      parent_node_(nullptr),
-      layout_parent_(nullptr),
-      root_element_style_(document.documentElement()
-                              ? document.documentElement()->GetComputedStyle()
-                              : document.GetComputedStyle()),
-      element_link_state_(EInsideLink::kNotInsideLink),
-      distributed_to_insertion_point_(false) {}
-
 ElementResolveContext::ElementResolveContext(Element& element)
     : element_(&element),
+      parent_node_(nullptr),
+      layout_parent_(nullptr),
       element_link_state_(
           element.GetDocument().GetVisitedLinkState().DetermineLinkState(
-              element)),
-      distributed_to_insertion_point_(false) {
-  LayoutTreeBuilderTraversal::ParentDetails parent_details;
-  if (element.CanParticipateInFlatTree()) {
-    parent_node_ = LayoutTreeBuilderTraversal::Parent(element);
-    layout_parent_ =
-        LayoutTreeBuilderTraversal::LayoutParent(element, &parent_details);
-  } else {
-    parent_node_ = nullptr;
-    layout_parent_ = nullptr;
-  }
-  distributed_to_insertion_point_ = parent_details.GetInsertionPoint();
+              element)) {
+  parent_node_ = LayoutTreeBuilderTraversal::Parent(element);
+  layout_parent_ = LayoutTreeBuilderTraversal::LayoutParent(element);
 
-  const Document& document = element.GetDocument();
-  Node* document_element = document.documentElement();
-  const ComputedStyle* document_style = document.GetComputedStyle();
-  root_element_style_ = document_element && element != document_element
-                            ? document_element->GetComputedStyle()
-                            : document_style;
-  if (!root_element_style_)
-    root_element_style_ = document_style;
+  if (auto* document_element = element.GetDocument().documentElement()) {
+    if (element != document_element)
+      root_element_style_ = document_element->GetComputedStyle();
+  }
 }
 
 }  // namespace blink

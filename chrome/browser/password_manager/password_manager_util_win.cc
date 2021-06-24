@@ -18,16 +18,19 @@
 #undef SECURITY_WIN32
 
 #include <memory>
+#include <utility>
 
 #include "chrome/browser/password_manager/password_manager_util_win.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/feature_list.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
+#include "base/threading/hang_watcher.h"
+#include "base/threading/scoped_thread_priority.h"
 #include "base/time/time.h"
 #include "base/win/win_util.h"
 #include "chrome/browser/browser_process.h"
@@ -59,13 +62,6 @@ enum OsPasswordStatus {
 };
 
 const unsigned kMaxPasswordRetries = 3;
-
-const unsigned kCredUiDefaultFlags =
-    CREDUI_FLAGS_GENERIC_CREDENTIALS |
-    CREDUI_FLAGS_EXCLUDE_CERTIFICATES |
-    CREDUI_FLAGS_KEEP_USERNAME |
-    CREDUI_FLAGS_ALWAYS_SHOW_UI |
-    CREDUI_FLAGS_DO_NOT_PERSIST;
 
 struct PasswordCheckPrefs {
   PasswordCheckPrefs() : pref_last_changed_(0), blank_password_(false) {}
@@ -188,11 +184,6 @@ std::unique_ptr<char[]> CredentialBufferValidator::GetTokenInformation(
   return token_info_buffer;
 }
 
-// TODO(crbug.com/574581) Remove this feature once this is confirmed to work
-// as expected.
-const base::Feature kCredUIPromptForWindowsCredentialsFeature{
-    "CredUIPromptForWindowsCredentials", base::FEATURE_ENABLED_BY_DEFAULT};
-
 void PasswordCheckPrefs::Read(PrefService* local_state) {
   blank_password_ =
       local_state->GetBoolean(password_manager::prefs::kOsPasswordBlank);
@@ -208,6 +199,10 @@ void PasswordCheckPrefs::Write(PrefService* local_state) {
 }
 
 int64_t GetPasswordLastChanged(const WCHAR* username) {
+  // Mitigate the issues caused by loading DLLs on a background thread
+  // (http://crbug/973868).
+  SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+
   LPUSER_INFO_1 user_info = NULL;
   DWORD age = 0;
 
@@ -251,6 +246,10 @@ bool CheckBlankPasswordWithPrefs(const WCHAR* username,
   }
 
   if (need_recheck) {
+    // Mitigate the issues caused by loading DLLs on a background thread
+    // (http://crbug/973868).
+    SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+
     HANDLE handle = INVALID_HANDLE_VALUE;
 
     // Attempt to login using blank password.
@@ -334,127 +333,17 @@ void GetOsPasswordStatus() {
   PasswordCheckPrefs* prefs_weak = prefs.get();
   OsPasswordStatus* status_weak = status.get();
   // This task calls ::LogonUser(), hence MayBlock().
-  base::PostTaskWithTraitsAndReply(
+  base::ThreadPool::PostTaskAndReply(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-      base::Bind(&GetOsPasswordStatusInternal, prefs_weak, status_weak),
-      base::Bind(&ReplyOsPasswordStatus, base::Passed(&prefs),
-                 base::Passed(&status)));
+      base::BindOnce(&GetOsPasswordStatusInternal, prefs_weak, status_weak),
+      base::BindOnce(&ReplyOsPasswordStatus, std::move(prefs),
+                     std::move(status)));
 }
 
-// Authenticate the user using the old Windows credential prompt.
-// TODO(crbug.com/574581) Remove this feature once this is confirmed to work
-// as expected.
-bool AuthenticateUserOld(gfx::NativeWindow window,
-                         password_manager::ReauthPurpose purpose) {
-  bool retval = false;
-  CREDUI_INFO cui = {};
-  WCHAR username[CREDUI_MAX_USERNAME_LENGTH+1] = {};
-  WCHAR displayname[CREDUI_MAX_USERNAME_LENGTH+1] = {};
-  WCHAR password[CREDUI_MAX_PASSWORD_LENGTH+1] = {};
-  DWORD username_length = CREDUI_MAX_USERNAME_LENGTH;
-  base::string16 product_name = l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
-  base::string16 password_prompt;
-  switch (purpose) {
-    case password_manager::ReauthPurpose::VIEW_PASSWORD:
-      password_prompt =
-          l10n_util::GetStringUTF16(IDS_PASSWORDS_PAGE_AUTHENTICATION_PROMPT);
-      break;
-    case password_manager::ReauthPurpose::EXPORT:
-      password_prompt = l10n_util::GetStringUTF16(
-          IDS_PASSWORDS_PAGE_EXPORT_AUTHENTICATION_PROMPT);
-      break;
-  }
-  HANDLE handle = INVALID_HANDLE_VALUE;
-  size_t tries = 0;
-  bool use_displayname = false;
-  bool use_principalname = false;
-  DWORD logon_result = 0;
+}  // namespace
 
-  // On a domain, we obtain the User Principal Name
-  // for domain authentication.
-  if (GetUserNameEx(NameUserPrincipal, username, &username_length)) {
-    use_principalname = true;
-  } else {
-    username_length = CREDUI_MAX_USERNAME_LENGTH;
-    // Otherwise, we're a workstation, use the plain local username.
-    if (!GetUserName(username, &username_length)) {
-      DLOG(ERROR) << "Unable to obtain username " << GetLastError();
-      return false;
-    } else {
-      // As we are on a workstation, it's possible the user
-      // has no password, so check here.
-      if (CheckBlankPassword(username))
-        return true;
-    }
-  }
-
-  // Try and obtain a friendly display name.
-  username_length = CREDUI_MAX_USERNAME_LENGTH;
-  if (GetUserNameEx(NameDisplay, displayname, &username_length))
-    use_displayname = true;
-
-  cui.cbSize = sizeof(CREDUI_INFO);
-  cui.hwndParent = NULL;
-  cui.hwndParent = window->GetHost()->GetAcceleratedWidget();
-
-  cui.pszMessageText = password_prompt.c_str();
-  cui.pszCaptionText = product_name.c_str();
-
-  cui.hbmBanner = NULL;
-  BOOL save_password = FALSE;
-  DWORD credErr = NO_ERROR;
-
-  do {
-    tries++;
-
-    // TODO(wfh) Make sure we support smart cards here.
-    credErr = CredUIPromptForCredentials(
-        &cui,
-        product_name.c_str(),
-        NULL,
-        0,
-        use_displayname ? displayname : username,
-        CREDUI_MAX_USERNAME_LENGTH+1,
-        password,
-        CREDUI_MAX_PASSWORD_LENGTH+1,
-        &save_password,
-        kCredUiDefaultFlags |
-        (tries > 1 ? CREDUI_FLAGS_INCORRECT_PASSWORD : 0));
-
-    if (credErr == NO_ERROR) {
-      logon_result = LogonUser(username,
-                               use_principalname ? NULL : L".",
-                               password,
-                               LOGON32_LOGON_INTERACTIVE,
-                               LOGON32_PROVIDER_DEFAULT,
-                               &handle);
-      if (logon_result) {
-        retval = true;
-        CloseHandle(handle);
-      } else {
-        if (GetLastError() == ERROR_ACCOUNT_RESTRICTION &&
-            wcslen(password) == 0) {
-          // Password is blank, so permit.
-          retval = true;
-        } else {
-          DLOG(WARNING) << "Unable to authenticate " << GetLastError();
-        }
-      }
-      SecureZeroMemory(password, sizeof(password));
-    }
-  } while (credErr == NO_ERROR &&
-           (retval == false && tries < kMaxPasswordRetries));
-  return retval;
-}
-
-// Authenticate the user using the new Windows credential prompt.  The new
-// prompt allows the user to authenticate using additional credential providers,
-// such as PINs, smartcards, fingerprint scanners, and so on.  It also still
-// allows the user to authenticate with their password.  This old prompt only
-// supported password authentication which is not enough for enterprise
-// environments.
-bool AuthenticateUserNew(gfx::NativeWindow window,
-                         password_manager::ReauthPurpose purpose) {
+bool AuthenticateUser(gfx::NativeWindow window,
+                      password_manager::ReauthPurpose purpose) {
   bool retval = false;
   WCHAR cur_username[CREDUI_MAX_USERNAME_LENGTH + 1] = {};
   DWORD cur_username_length = base::size(cur_username);
@@ -472,12 +361,20 @@ bool AuthenticateUserNew(gfx::NativeWindow window,
   // Build the strings to display in the credential UI.  If these strings are
   // left empty on domain joined machines, CredUIPromptForWindowsCredentials()
   // fails to run.
-  base::string16 product_name = l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
-  base::string16 password_prompt;
+  std::u16string product_name = l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
+  std::u16string password_prompt;
   switch (purpose) {
     case password_manager::ReauthPurpose::VIEW_PASSWORD:
       password_prompt =
           l10n_util::GetStringUTF16(IDS_PASSWORDS_PAGE_AUTHENTICATION_PROMPT);
+      break;
+    case password_manager::ReauthPurpose::COPY_PASSWORD:
+      password_prompt = l10n_util::GetStringUTF16(
+          IDS_PASSWORDS_PAGE_COPY_AUTHENTICATION_PROMPT);
+      break;
+    case password_manager::ReauthPurpose::EDIT_PASSWORD:
+      password_prompt = l10n_util::GetStringUTF16(
+          IDS_PASSWORDS_PAGE_EDIT_AUTHENTICATION_PROMPT);
       break;
     case password_manager::ReauthPurpose::EXPORT:
       password_prompt = l10n_util::GetStringUTF16(
@@ -487,9 +384,13 @@ bool AuthenticateUserNew(gfx::NativeWindow window,
   CREDUI_INFO cui;
   cui.cbSize = sizeof(cui);
   cui.hwndParent = window->GetHost()->GetAcceleratedWidget();
-  cui.pszMessageText = password_prompt.c_str();
-  cui.pszCaptionText = product_name.c_str();
+  cui.pszMessageText = base::as_wcstr(password_prompt);
+  cui.pszCaptionText = base::as_wcstr(product_name);
   cui.hbmBanner = nullptr;
+
+  // Disable hang watching until the end of the function since the user can take
+  // unbounded time to answer the password prompt. (http://crbug.com/806174)
+  base::IgnoreHangsInScope disabler;
 
   CredentialBufferValidator validator;
 
@@ -523,19 +424,10 @@ bool AuthenticateUserNew(gfx::NativeWindow window,
   return retval;
 }
 
-}  // namespace
-
 void DelayReportOsPassword() {
-  base::PostDelayedTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                                  base::BindOnce(&GetOsPasswordStatus),
-                                  base::TimeDelta::FromSeconds(40));
-}
-
-bool AuthenticateUser(gfx::NativeWindow window,
-                      password_manager::ReauthPurpose purpose) {
-  return base::FeatureList::IsEnabled(kCredUIPromptForWindowsCredentialsFeature)
-             ? AuthenticateUserNew(window, purpose)
-             : AuthenticateUserOld(window, purpose);
+  content::GetUIThreadTaskRunner({})->PostDelayedTask(
+      FROM_HERE, base::BindOnce(&GetOsPasswordStatus),
+      base::TimeDelta::FromSeconds(40));
 }
 
 }  // namespace password_manager_util_win

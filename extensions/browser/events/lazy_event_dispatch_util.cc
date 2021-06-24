@@ -8,7 +8,6 @@
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_prefs.h"
-#include "extensions/browser/extension_registry.h"
 
 namespace extensions {
 
@@ -27,8 +26,9 @@ const char kPrefPendingOnInstalledEventDispatchInfo[] =
 
 LazyEventDispatchUtil::LazyEventDispatchUtil(
     content::BrowserContext* browser_context)
-    : browser_context_(browser_context), extension_registry_observer_(this) {
-  extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context_));
+    : browser_context_(browser_context) {
+  extension_registry_observation_.Observe(
+      ExtensionRegistry::Get(browser_context_));
 }
 
 LazyEventDispatchUtil::~LazyEventDispatchUtil() {}

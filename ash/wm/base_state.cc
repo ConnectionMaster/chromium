@@ -6,20 +6,24 @@
 
 #include "ash/public/cpp/window_animation_types.h"
 #include "ash/public/cpp/window_properties.h"
-#include "ash/public/cpp/window_state_type.h"
 #include "ash/screen_util.h"
 #include "ash/shell.h"
+#include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/splitview/split_view_utils.h"
+#include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "ash/wm/window_positioning_utils.h"
 #include "ash/wm/wm_event.h"
+#include "chromeos/ui/base/window_state_type.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
+#include "ui/compositor/layer.h"
 
 namespace ash {
-namespace wm {
 
-BaseState::BaseState(mojom::WindowStateType initial_state_type)
+using ::chromeos::WindowStateType;
+
+BaseState::BaseState(WindowStateType initial_state_type)
     : state_type_(initial_state_type) {}
 BaseState::~BaseState() = default;
 
@@ -49,34 +53,33 @@ void BaseState::OnWMEvent(WindowState* window_state, const WMEvent* event) {
   HandleTransitionEvents(window_state, event);
 }
 
-mojom::WindowStateType BaseState::GetType() const {
+WindowStateType BaseState::GetType() const {
   return state_type_;
 }
 
 // static
-mojom::WindowStateType BaseState::GetStateForTransitionEvent(
-    const WMEvent* event) {
+WindowStateType BaseState::GetStateForTransitionEvent(const WMEvent* event) {
   switch (event->type()) {
     case WM_EVENT_NORMAL:
-      return mojom::WindowStateType::NORMAL;
+      return WindowStateType::kNormal;
     case WM_EVENT_MAXIMIZE:
-      return mojom::WindowStateType::MAXIMIZED;
+      return WindowStateType::kMaximized;
     case WM_EVENT_MINIMIZE:
-      return mojom::WindowStateType::MINIMIZED;
+      return WindowStateType::kMinimized;
     case WM_EVENT_FULLSCREEN:
-      return mojom::WindowStateType::FULLSCREEN;
-    case WM_EVENT_SNAP_LEFT:
-      return mojom::WindowStateType::LEFT_SNAPPED;
-    case WM_EVENT_SNAP_RIGHT:
-      return mojom::WindowStateType::RIGHT_SNAPPED;
+      return WindowStateType::kFullscreen;
+    case WM_EVENT_SNAP_PRIMARY:
+      return WindowStateType::kPrimarySnapped;
+    case WM_EVENT_SNAP_SECONDARY:
+      return WindowStateType::kSecondarySnapped;
     case WM_EVENT_SHOW_INACTIVE:
-      return mojom::WindowStateType::INACTIVE;
+      return WindowStateType::kInactive;
     case WM_EVENT_PIN:
-      return mojom::WindowStateType::PINNED;
+      return WindowStateType::kPinned;
     case WM_EVENT_PIP:
-      return mojom::WindowStateType::PIP;
+      return WindowStateType::kPip;
     case WM_EVENT_TRUSTED_PIN:
-      return mojom::WindowStateType::TRUSTED_PINNED;
+      return WindowStateType::kTrustedPinned;
     default:
       break;
   }
@@ -88,7 +91,7 @@ mojom::WindowStateType BaseState::GetStateForTransitionEvent(
   if (event->IsBoundsEvent())
     NOTREACHED() << "Can't get the state for Bounds event:" << event->type();
 #endif
-  return mojom::WindowStateType::NORMAL;
+  return WindowStateType::kNormal;
 }
 
 // static
@@ -110,8 +113,8 @@ void BaseState::CenterWindow(WindowState* window_state) {
     gfx::Rect center_in_parent =
         screen_util::GetDisplayWorkAreaBoundsInParent(window);
     center_in_parent.ClampToCenteredSize(window->bounds().size());
-    const wm::SetBoundsEvent event(wm::WM_EVENT_SET_BOUNDS, center_in_parent,
-                                   /*animate=*/true);
+    const SetBoundsWMEvent event(center_in_parent,
+                                 /*animate=*/true);
     window_state->OnWMEvent(&event);
   }
   // Centering window is treated as if a user moved and resized the window.
@@ -120,48 +123,67 @@ void BaseState::CenterWindow(WindowState* window_state) {
 
 // static
 void BaseState::CycleSnap(WindowState* window_state, WMEventType event) {
-  mojom::WindowStateType desired_snap_state =
-      event == WM_EVENT_CYCLE_SNAP_LEFT ? mojom::WindowStateType::LEFT_SNAPPED
-                                        : mojom::WindowStateType::RIGHT_SNAPPED;
+  // For tablet mode, use |TabletModeWindowState::CycleTabletSnap|.
+  DCHECK(!Shell::Get()->tablet_mode_controller()->InTabletMode());
 
+  WindowStateType desired_snap_state = event == WM_EVENT_CYCLE_SNAP_PRIMARY
+                                           ? WindowStateType::kPrimarySnapped
+                                           : WindowStateType::kSecondarySnapped;
+  aura::Window* window = window_state->window();
+  // If |window| can be snapped but is not currently in |desired_snap_state|,
+  // then snap |window| to the side that corresponds to |desired_snap_state|.
   if (window_state->CanSnap() &&
       window_state->GetStateType() != desired_snap_state) {
-    const wm::WMEvent event(desired_snap_state ==
-                                    mojom::WindowStateType::LEFT_SNAPPED
-                                ? wm::WM_EVENT_SNAP_LEFT
-                                : wm::WM_EVENT_SNAP_RIGHT);
-    window_state->OnWMEvent(&event);
+    if (Shell::Get()->overview_controller()->InOverviewSession()) {
+      // |window| must already be in split view, and so we do not need to check
+      // |SplitViewController::CanSnapWindow|, although in general it is more
+      // restrictive than |WindowState::CanSnap|.
+      DCHECK(SplitViewController::Get(window)->IsWindowInSplitView(window));
+      SplitViewController::Get(window)->SnapWindow(
+          window, desired_snap_state == WindowStateType::kPrimarySnapped
+                      ? SplitViewController::LEFT
+                      : SplitViewController::RIGHT);
+    } else {
+      const WMEvent event(desired_snap_state == WindowStateType::kPrimarySnapped
+                              ? WM_EVENT_SNAP_PRIMARY
+                              : WM_EVENT_SNAP_SECONDARY);
+      window_state->OnWMEvent(&event);
+    }
     return;
   }
-
+  // If |window| is already in |desired_snap_state|, then unsnap |window|.
   if (window_state->IsSnapped()) {
     window_state->Restore();
     return;
   }
-  ::wm::AnimateWindow(window_state->window(),
-                      ::wm::WINDOW_ANIMATION_TYPE_BOUNCE);
+  // If |window| cannot be snapped, then do a window bounce animation.
+  DCHECK(!window_state->CanSnap());
+  ::wm::AnimateWindow(window, ::wm::WINDOW_ANIMATION_TYPE_BOUNCE);
 }
 
-void BaseState::UpdateMinimizedState(
-    WindowState* window_state,
-    mojom::WindowStateType previous_state_type) {
+void BaseState::UpdateMinimizedState(WindowState* window_state,
+                                     WindowStateType previous_state_type) {
   aura::Window* window = window_state->window();
   if (window_state->IsMinimized()) {
     // Save the previous show state when it is not minimized so that we can
     // correctly restore it after exiting the minimized mode.
     if (!IsMinimizedWindowStateType(previous_state_type)) {
-      window->SetProperty(
-          aura::client::kPreMinimizedShowStateKey,
-          ToWindowShowState(
-              previous_state_type == mojom::WindowStateType::PIP
-                  ? window->GetProperty(ash::kPrePipWindowStateTypeKey)
-                  : previous_state_type));
+      // We must not save PIP to |kPreMinimizedShowStateKey|.
+      if (previous_state_type != WindowStateType::kPip)
+        window->SetProperty(aura::client::kPreMinimizedShowStateKey,
+                            ToWindowShowState(previous_state_type));
+      // We must not save MINIMIZED to |kPreMinimizedShowStateKey|.
+      else if (window->GetProperty(kPrePipWindowStateTypeKey) !=
+               WindowStateType::kMinimized)
+        window->SetProperty(
+            aura::client::kPreMinimizedShowStateKey,
+            ToWindowShowState(window->GetProperty(kPrePipWindowStateTypeKey)));
     }
     // Count minimizing a PIP window as dismissing it. Android apps in PIP mode
     // don't exit when they are dismissed, they just go back to being a regular
     // app, but minimized.
     ::wm::SetWindowVisibilityAnimationType(
-        window, previous_state_type == mojom::WindowStateType::PIP
+        window, previous_state_type == WindowStateType::kPip
                     ? WINDOW_VISIBILITY_ANIMATION_TYPE_FADE_IN_SLIDE_OUT
                     : WINDOW_VISIBILITY_ANIMATION_TYPE_MINIMIZE);
 
@@ -183,21 +205,34 @@ void BaseState::UpdateMinimizedState(
 
 gfx::Rect BaseState::GetSnappedWindowBoundsInParent(
     aura::Window* window,
-    const mojom::WindowStateType state_type) {
+    const WindowStateType state_type) {
   gfx::Rect bounds_in_parent;
   if (ShouldAllowSplitView()) {
     bounds_in_parent =
-        Shell::Get()->split_view_controller()->GetSnappedWindowBoundsInParent(
-            window, (state_type == mojom::WindowStateType::LEFT_SNAPPED)
-                        ? SplitViewController::LEFT
-                        : SplitViewController::RIGHT);
+        SplitViewController::Get(window)->GetSnappedWindowBoundsInParent(
+            (state_type == WindowStateType::kPrimarySnapped)
+                ? SplitViewController::LEFT
+                : SplitViewController::RIGHT,
+            window);
   } else {
-    bounds_in_parent = (state_type == mojom::WindowStateType::LEFT_SNAPPED)
+    bounds_in_parent = (state_type == WindowStateType::kPrimarySnapped)
                            ? GetDefaultLeftSnappedWindowBoundsInParent(window)
                            : GetDefaultRightSnappedWindowBoundsInParent(window);
   }
   return bounds_in_parent;
 }
 
-}  // namespace wm
+void BaseState::HandleWindowSnapping(WindowState* window_state,
+                                     WMEventType event_type) {
+  DCHECK(event_type == WM_EVENT_SNAP_PRIMARY ||
+         event_type == WM_EVENT_SNAP_SECONDARY);
+  DCHECK(window_state->CanSnap());
+
+  window_state->set_bounds_changed_by_user(true);
+  aura::Window* window = window_state->window();
+  // SplitViewController will decide if the window needs to be snapped in split
+  // view.
+  SplitViewController::Get(window)->OnWindowSnapWMEvent(window, event_type);
+}
+
 }  // namespace ash

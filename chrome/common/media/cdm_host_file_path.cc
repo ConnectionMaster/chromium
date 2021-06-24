@@ -4,20 +4,23 @@
 
 #include "chrome/common/media/cdm_host_file_path.h"
 
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/notreached.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_version.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/mac/bundle_locations.h"
-#include "chrome/common/chrome_constants.h"
 #endif
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 namespace {
 
@@ -43,9 +46,11 @@ void AddCdmHostFilePaths(
 #if defined(OS_WIN)
 
   static const base::FilePath::CharType* const kUnversionedFiles[] = {
-      FILE_PATH_LITERAL("chrome.exe")};
+      chrome::kBrowserProcessExecutableName};
+
   static const base::FilePath::CharType* const kVersionedFiles[] = {
-      FILE_PATH_LITERAL("chrome.dll"), FILE_PATH_LITERAL("chrome_child.dll")};
+    chrome::kBrowserResourcesDll
+  };
 
   // Find where chrome.exe is installed.
   base::FilePath chrome_exe_dir;
@@ -73,17 +78,14 @@ void AddCdmHostFilePaths(
     cdm_host_file_paths->emplace_back(file_path, GetSigFilePath(file_path));
   }
 
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
 
+  base::FilePath framework_dir = base::mac::FrameworkBundlePath();
   base::FilePath chrome_framework_path =
-      base::mac::FrameworkBundlePath().Append(chrome::kFrameworkExecutableName);
-
-  // Framework signature is in the "Widevine Resources.bundle" next to the
-  // framework directory, not next to the actual framework executable.
-  static const base::FilePath::CharType kWidevineResourcesPath[] =
-      FILE_PATH_LITERAL("Widevine Resources.bundle/Contents/Resources");
-  base::FilePath widevine_signature_path =
-      base::mac::FrameworkBundlePath().DirName().Append(kWidevineResourcesPath);
+      framework_dir.Append(chrome::kFrameworkExecutableName);
+  // The signature file lives inside
+  // Google Chrome Framework.framework/Versions/X/Resources/.
+  base::FilePath widevine_signature_path = framework_dir.Append("Resources");
   base::FilePath chrome_framework_sig_path = GetSigFilePath(
       widevine_signature_path.Append(chrome::kFrameworkExecutableName));
 
@@ -93,7 +95,7 @@ void AddCdmHostFilePaths(
   cdm_host_file_paths->emplace_back(chrome_framework_path,
                                     chrome_framework_sig_path);
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
 
   base::FilePath chrome_exe_dir;
   if (!base::PathService::Get(base::DIR_EXE, &chrome_exe_dir))
@@ -107,7 +109,7 @@ void AddCdmHostFilePaths(
 #endif  // defined(OS_WIN)
 }
 
-#else  // defined(GOOGLE_CHROME_BUILD)
+#else  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 void AddCdmHostFilePaths(
     std::vector<media::CdmHostFilePath>* cdm_host_file_paths) {
@@ -115,5 +117,4 @@ void AddCdmHostFilePaths(
                       "verify the host.";
 }
 
-#endif  // defined(GOOGLE_CHROME_BUILD)
-
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)

@@ -4,13 +4,13 @@
 
 #include "chrome/browser/ui/webui/chromeos/login/base_screen_handler.h"
 
-#include "chrome/browser/chromeos/login/screens/base_screen.h"
+#include "chrome/browser/ash/login/screens/base_screen.h"
 #include "chrome/browser/ui/webui/chromeos/login/base_webui_handler.h"
 #include "chrome/browser/ui/webui/chromeos/login/oobe_ui.h"
 
 namespace chromeos {
 
-BaseScreenHandler::BaseScreenHandler(OobeScreen oobe_screen,
+BaseScreenHandler::BaseScreenHandler(OobeScreenId oobe_screen,
                                      JSCallsContainer* js_calls_container)
     : BaseWebUIHandler(js_calls_container), oobe_screen_(oobe_screen) {}
 
@@ -32,7 +32,7 @@ void BaseScreenHandler::RegisterMessages() {
 
 void BaseScreenHandler::HandleUserAction(const std::string& action_id) {
   if (base_screen_)
-    base_screen_->OnUserAction(action_id);
+    base_screen_->HandleUserAction(action_id);
 }
 
 }  // namespace chromeos

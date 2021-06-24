@@ -14,7 +14,7 @@
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/synchronization/waitable_event.h"
-#include "chrome/chrome_cleaner/interfaces/zip_archiver.mojom.h"
+#include "chrome/chrome_cleaner/mojom/zip_archiver.mojom.h"
 #include "chrome/chrome_cleaner/logging/proto/removal_status.pb.h"
 #include "chrome/chrome_cleaner/os/disk_util.h"
 #include "chrome/chrome_cleaner/os/file_path_sanitization.h"
@@ -49,7 +49,7 @@ void DeleteEmptyDirectories(base::FilePath directory) {
     // folders list for the corresponding UwS, because they are not necessarily
     // matched by any rule by the scanner.
     LOG(INFO) << "Deleting empty directory " << SanitizePath(directory);
-    if (!base::DeleteFile(directory, /*recursive=*/false))
+    if (!base::DeleteFile(directory))
       break;
     directory = directory.DirName();
   }
@@ -62,15 +62,15 @@ bool IsSafeNameForDeletion(const base::FilePath& path) {
   if (path.empty())
     return false;
 
-  const base::string16& path_str = path.value();
+  const std::wstring& path_str = path.value();
   // Disallow anything with "\..\".
-  if (path_str.find(L"\\..\\") != base::string16::npos)
+  if (path_str.find(L"\\..\\") != std::wstring::npos)
     return false;
 
   // Ensure the path does not specify a drive root: require a character other
   // than \/:. after the last :
   size_t last_colon_pos = path_str.rfind(L':');
-  if (last_colon_pos == base::string16::npos)
+  if (last_colon_pos == std::wstring::npos)
     return true;
   for (size_t index = last_colon_pos + 1; index < path_str.size(); ++index) {
     wchar_t character = path_str[index];
@@ -101,13 +101,11 @@ void OnArchiveDone(FileRemover::QuarantineResultCallback archival_done_callback,
 }  // namespace
 
 FileRemover::FileRemover(scoped_refptr<DigestVerifier> digest_verifier,
-                         std::unique_ptr<SandboxedZipArchiver> archiver,
+                         std::unique_ptr<ZipArchiver> archiver,
                          const LayeredServiceProviderAPI& lsp,
-                         const FilePathSet& deletion_allowed_paths,
                          base::RepeatingClosure reboot_needed_callback)
     : digest_verifier_(digest_verifier),
       archiver_(std::move(archiver)),
-      deletion_allowed_paths_(deletion_allowed_paths),
       reboot_needed_callback_(reboot_needed_callback) {
   LSPPathToGUIDs providers;
   GetLayeredServiceProviders(lsp, &providers);
@@ -121,71 +119,30 @@ FileRemover::~FileRemover() = default;
 
 void FileRemover::RemoveNow(const base::FilePath& path,
                             DoneCallback callback) const {
-  FileRemovalStatusUpdater* removal_status_updater =
-      FileRemovalStatusUpdater::GetInstance();
-  switch (CanRemove(path)) {
-    case DeletionValidationStatus::FORBIDDEN:
-      removal_status_updater->UpdateRemovalStatus(
-          path, REMOVAL_STATUS_BLACKLISTED_FOR_REMOVAL);
-      std::move(callback).Run(false);
-      return;
-    case DeletionValidationStatus::INACTIVE:
-      removal_status_updater->UpdateRemovalStatus(
-          path, REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION);
-      std::move(callback).Run(true);
-      return;
-    case DeletionValidationStatus::ALLOWED:
-      // No-op. Proceed to removal.
-      break;
-  }
-
-  chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
-  if (!base::PathExists(path)) {
-    removal_status_updater->UpdateRemovalStatus(path, REMOVAL_STATUS_NOT_FOUND);
-    std::move(callback).Run(true);
-    return;
-  }
-
-  TryToQuarantine(
-      path, base::BindOnce(&FileRemover::RemoveFile, base::Unretained(this),
-                           path, base::Passed(&callback)));
+  ValidateAndQuarantineFile(
+      path, base::BindOnce(&FileRemover::RemoveFile, base::Unretained(this)),
+      std::move(callback));
 }
 
-void FileRemover::RegisterPostRebootRemoval(const base::FilePath& file_path,
+void FileRemover::RegisterPostRebootRemoval(const base::FilePath& path,
                                             DoneCallback callback) const {
-  FileRemovalStatusUpdater* removal_status_updater =
-      FileRemovalStatusUpdater::GetInstance();
-  switch (CanRemove(file_path)) {
-    case DeletionValidationStatus::FORBIDDEN:
-      removal_status_updater->UpdateRemovalStatus(
-          file_path, REMOVAL_STATUS_BLACKLISTED_FOR_REMOVAL);
-      std::move(callback).Run(false);
-      return;
-    case DeletionValidationStatus::INACTIVE:
-      removal_status_updater->UpdateRemovalStatus(
-          file_path, REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION);
-      std::move(callback).Run(true);
-      return;
-    case DeletionValidationStatus::ALLOWED:
-      // No-op. Proceed to removal.
-      break;
-  }
-
-  chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
-  if (!base::PathExists(file_path)) {
-    removal_status_updater->UpdateRemovalStatus(file_path,
-                                                REMOVAL_STATUS_NOT_FOUND);
-    std::move(callback).Run(true);
-    return;
-  }
-
-  TryToQuarantine(file_path, base::BindOnce(&FileRemover::ScheduleRemoval,
-                                            base::Unretained(this), file_path,
-                                            base::Passed(&callback)));
+  ValidateAndQuarantineFile(
+      path,
+      base::BindOnce(&FileRemover::ScheduleRemoval, base::Unretained(this)),
+      std::move(callback));
 }
 
 FileRemoverAPI::DeletionValidationStatus FileRemover::CanRemove(
     const base::FilePath& file) const {
+  if (!ValidateSandboxFilePath(file))
+    return DeletionValidationStatus::UNSAFE;
+
+  // Don't remove remote files. Do this before checking the digest so we don't
+  // read them unnecessarily.
+  if (base::PathExists(file) && !IsFilePresentLocally(file)) {
+    LOG(ERROR) << "Cannot remove remote file " << SanitizePath(file);
+    return DeletionValidationStatus::FORBIDDEN;
+  }
   // Allow removing of all files if |digest_verifier_| is unavailable.
   // Otherwise, allow removing only files unknown to |digest_verifier_|.
   if (digest_verifier_ && digest_verifier_->IsKnownFile(file)) {
@@ -210,36 +167,12 @@ FileRemoverAPI::DeletionValidationStatus FileRemover::CanRemove(
   if (base::DirectoryExists(file))
     return DeletionValidationStatus::FORBIDDEN;
 
-  // If the file was blacklisted, allow its deletion regardless of the extension
-  if (deletion_allowed_paths_.Contains(file))
-    return DeletionValidationStatus::ALLOWED;
-
-  // Allow deletion of files with active (i.e. executable) extensions, files
-  // with explicit alternate file streams specified and files with DOS
-  // executable headers regardless of the extension.
-  if (chrome_cleaner::PathHasActiveExtension(file) ||
-      chrome_cleaner::HasAlternateFileStream(file) ||
-      chrome_cleaner::HasDosExecutableHeader(file)) {
-    return DeletionValidationStatus::ALLOWED;
-  }
-
-  if (archiver_) {
-    // Quarantine is enabled. Allow deletion of "non-executable" files.
-    return DeletionValidationStatus::ALLOWED;
-    // TODO(veranika): enable quarantine for all runs and remove the concept
-    // of "inactive" files.
-  } else {
-    // If this line is reached, the file has a non-executable file extension.
-    LOG(ERROR) << "Cannot delete non-executable file with extension '"
-               << file.Extension() << "'. Full path '"
-               << chrome_cleaner::SanitizePath(file) << "'";
-    return DeletionValidationStatus::INACTIVE;
-  }
+  return DeletionValidationStatus::ALLOWED;
 }
 
 void FileRemover::TryToQuarantine(const base::FilePath& path,
                                   QuarantineResultCallback callback) const {
-  // The quarantine feature is disabled.
+  // Archiver may not be provided in tests.
   if (archiver_ == nullptr) {
     std::move(callback).Run(QUARANTINE_STATUS_DISABLED);
     return;
@@ -261,7 +194,7 @@ void FileRemover::RemoveFile(const base::FilePath& path,
     return;
   }
 
-  if (!base::DeleteFile(path, /*recursive=*/false)) {
+  if (!base::DeleteFile(path)) {
     // If the attempt to delete the file fails, propagate the failure as
     // normal so that the engine knows about it and can try a backup action,
     // but also register the file for post-reboot removal in case the engine
@@ -312,6 +245,50 @@ void FileRemover::ScheduleRemoval(
   removal_status_updater->UpdateRemovalStatus(
       file_path, REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL);
   std::move(removal_done_callback).Run(true);
+}
+
+void FileRemover::ValidateAndQuarantineFile(
+    const base::FilePath& path,
+    FileRemover::RemovalCallback removal_callback,
+    FileRemover::DoneCallback done_callback) const {
+  DeletionValidationStatus status = CanRemove(path);
+  if (status == DeletionValidationStatus::UNSAFE) {
+    // Can't record the status of this removal because it's not even safe to
+    // normalize the path.
+    std::move(done_callback).Run(false);
+    return;
+  }
+
+  const base::FilePath normalized_path = NormalizePath(path);
+
+  FileRemovalStatusUpdater* removal_status_updater =
+      FileRemovalStatusUpdater::GetInstance();
+  switch (status) {
+    case DeletionValidationStatus::UNSAFE:
+      // Should be handled above.
+      NOTREACHED();
+      break;
+    case DeletionValidationStatus::FORBIDDEN:
+      removal_status_updater->UpdateRemovalStatus(
+          normalized_path, REMOVAL_STATUS_BLACKLISTED_FOR_REMOVAL);
+      std::move(done_callback).Run(false);
+      return;
+    case DeletionValidationStatus::ALLOWED:
+      // No-op. Proceed to removal.
+      break;
+  }
+
+  chrome_cleaner::ScopedDisableWow64Redirection disable_wow64_redirection;
+  if (!base::PathExists(normalized_path)) {
+    removal_status_updater->UpdateRemovalStatus(normalized_path,
+                                                REMOVAL_STATUS_NOT_FOUND);
+    std::move(done_callback).Run(true);
+    return;
+  }
+
+  TryToQuarantine(normalized_path,
+                  base::BindOnce(std::move(removal_callback), normalized_path,
+                                 std::move(done_callback)));
 }
 
 }  // namespace chrome_cleaner

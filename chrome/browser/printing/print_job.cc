@@ -8,35 +8,68 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/printing/print_job_worker.h"
+#include "chrome/browser/printing/printer_query.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
+#include "printing/mojom/print.mojom.h"
 #include "printing/printed_document.h"
 
 #if defined(OS_WIN)
 #include "base/command_line.h"
 #include "chrome/browser/printing/pdf_to_emf_converter.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
+#include "components/prefs/pref_service.h"
+#include "content/public/browser/web_contents.h"
 #include "printing/pdf_render_settings.h"
 #include "printing/printed_page_win.h"
+#include "printing/printing_features.h"
 #endif
 
 using base::TimeDelta;
 
 namespace printing {
 
+namespace {
+
 // Helper function to ensure |job| is valid until at least |callback| returns.
 void HoldRefCallback(scoped_refptr<PrintJob> job, base::OnceClosure callback) {
   std::move(callback).Run();
 }
+
+#if defined(OS_WIN)
+// Those must be kept in sync with the values defined in policy_templates.json.
+enum class PrintRasterizationMode {
+  // Do full page rasterization if necessary. Default value when policy not set.
+  kFull = 0,
+  // Avoid rasterization if possible.
+  kFast = 1,
+  kMaxValue = kFast,
+};
+
+bool PrintWithReducedRasterization(PrefService* prefs) {
+  // Managed preference takes precedence over user preference and field trials.
+  if (prefs && prefs->IsManagedPreference(prefs::kPrintRasterizationMode)) {
+    int value = prefs->GetInteger(prefs::kPrintRasterizationMode);
+    return value == static_cast<int>(PrintRasterizationMode::kFast);
+  }
+
+  return base::FeatureList::IsEnabled(features::kPrintWithReducedRasterization);
+}
+#endif
+
+}  // namespace
 
 PrintJob::PrintJob() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -50,9 +83,9 @@ PrintJob::~PrintJob() {
   DCHECK(!worker_ || !worker_->IsRunning());
 }
 
-void PrintJob::Initialize(PrinterQuery* query,
-                          const base::string16& name,
-                          int page_count) {
+void PrintJob::Initialize(std::unique_ptr<PrinterQuery> query,
+                          const std::u16string& name,
+                          uint32_t page_count) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(!worker_);
   DCHECK(!is_job_pending_);
@@ -60,20 +93,20 @@ void PrintJob::Initialize(PrinterQuery* query,
   DCHECK(!document_);
   worker_ = query->DetachWorker();
   worker_->SetPrintJob(this);
-  settings_ = query->settings();
-
-  auto new_doc =
-      base::MakeRefCounted<PrintedDocument>(settings_, name, query->cookie());
-  new_doc->set_page_count(page_count);
-  UpdatePrintedDocument(new_doc);
+  std::unique_ptr<PrintSettings> settings = query->ExtractSettings();
 
 #if defined(OS_WIN)
-  pdf_page_mapping_ = PageRange::GetPages(settings_.ranges());
+  pdf_page_mapping_ = PageRange::GetPages(settings->ranges());
   if (pdf_page_mapping_.empty()) {
-    for (int i = 0; i < page_count; i++)
+    for (uint32_t i = 0; i < page_count; i++)
       pdf_page_mapping_.push_back(i);
   }
 #endif
+
+  auto new_doc = base::MakeRefCounted<PrintedDocument>(std::move(settings),
+                                                       name, query->cookie());
+  new_doc->set_page_count(page_count);
+  UpdatePrintedDocument(new_doc);
 
   // Don't forget to register to our own messages.
   registrar_.Add(this, chrome::NOTIFICATION_PRINT_JOB_EVENT,
@@ -82,19 +115,20 @@ void PrintJob::Initialize(PrinterQuery* query,
 
 #if defined(OS_WIN)
 // static
-std::vector<int> PrintJob::GetFullPageMapping(const std::vector<int>& pages,
-                                              int total_page_count) {
-  std::vector<int> mapping(total_page_count, -1);
-  for (int page_number : pages) {
+std::vector<uint32_t> PrintJob::GetFullPageMapping(
+    const std::vector<uint32_t>& pages,
+    uint32_t total_page_count) {
+  std::vector<uint32_t> mapping(total_page_count, kInvalidPageIndex);
+  for (uint32_t page_number : pages) {
     // Make sure the page is in range.
-    if (page_number >= 0 && page_number < total_page_count)
+    if (page_number < total_page_count)
       mapping[page_number] = page_number;
   }
   return mapping;
 }
 
 void PrintJob::StartConversionToNativeFormat(
-    const scoped_refptr<base::RefCountedMemory>& print_data,
+    scoped_refptr<base::RefCountedMemory> print_data,
     const gfx::Size& page_size,
     const gfx::Rect& content_area,
     const gfx::Point& physical_offsets) {
@@ -103,13 +137,12 @@ void PrintJob::StartConversionToNativeFormat(
   if (PrintedDocument::HasDebugDumpPath())
     document()->DebugDumpData(print_data.get(), FILE_PATH_LITERAL(".pdf"));
 
-  if (settings_.printer_is_textonly()) {
+  const PrintSettings& settings = document()->settings();
+  if (settings.printer_is_textonly()) {
     StartPdfToTextConversion(print_data, page_size);
-  } else if ((settings_.printer_is_ps2() || settings_.printer_is_ps3()) &&
-             !base::FeatureList::IsEnabled(
-                 features::kDisablePostScriptPrinting)) {
+  } else if (settings.printer_is_ps2() || settings.printer_is_ps3()) {
     StartPdfToPostScriptConversion(print_data, content_area, physical_offsets,
-                                   settings_.printer_is_ps2());
+                                   settings.printer_is_ps2());
   } else {
     StartPdfToEmfConversion(print_data, page_size, content_area);
   }
@@ -217,8 +250,8 @@ bool PrintJob::FlushJob(base::TimeDelta timeout) {
 
   base::RunLoop loop(base::RunLoop::Type::kNestableTasksAllowed);
   quit_closure_ = loop.QuitClosure();
-  base::PostDelayedTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                                  loop.QuitClosure(), timeout);
+  content::GetUIThreadTaskRunner({})->PostDelayedTask(
+      FROM_HERE, loop.QuitClosure(), timeout);
 
   loop.Run();
 
@@ -233,6 +266,26 @@ PrintedDocument* PrintJob::document() const {
   return document_.get();
 }
 
+const PrintSettings& PrintJob::settings() const {
+  return document()->settings();
+}
+
+#if defined(OS_CHROMEOS)
+void PrintJob::SetSource(PrintJob::Source source,
+                         const std::string& source_id) {
+  source_ = source;
+  source_id_ = source_id;
+}
+
+PrintJob::Source PrintJob::source() const {
+  return source_;
+}
+
+const std::string& PrintJob::source_id() const {
+  return source_id_;
+}
+#endif  // defined(OS_CHROMEOS)
+
 #if defined(OS_WIN)
 class PrintJob::PdfConversionState {
  public:
@@ -243,14 +296,14 @@ class PrintJob::PdfConversionState {
         page_size_(page_size),
         content_area_(content_area) {}
 
-  void Start(const scoped_refptr<base::RefCountedMemory>& data,
+  void Start(scoped_refptr<base::RefCountedMemory> data,
              const PdfRenderSettings& conversion_settings,
              PdfConverter::StartCallback start_callback) {
     converter_ = PdfConverter::StartPdfConverter(data, conversion_settings,
                                                  std::move(start_callback));
   }
 
-  void GetMorePages(const PdfConverter::GetPageCallback& get_page_callback) {
+  void GetMorePages(PdfConverter::GetPageCallback get_page_callback) {
     const int kMaxNumberOfTempFilesPerDocument = 3;
     while (pages_in_progress_ < kMaxNumberOfTempFilesPerDocument &&
            current_page_ < page_count_) {
@@ -259,7 +312,7 @@ class PrintJob::PdfConversionState {
     }
   }
 
-  void OnPageProcessed(const PdfConverter::GetPageCallback& get_page_callback) {
+  void OnPageProcessed(PdfConverter::GetPageCallback get_page_callback) {
     --pages_in_progress_;
     GetMorePages(get_page_callback);
     // Release converter if we don't need this any more.
@@ -267,13 +320,13 @@ class PrintJob::PdfConversionState {
       converter_.reset();
   }
 
-  void set_page_count(int page_count) { page_count_ = page_count; }
+  void set_page_count(uint32_t page_count) { page_count_ = page_count; }
   const gfx::Size& page_size() const { return page_size_; }
   const gfx::Rect& content_area() const { return content_area_; }
 
  private:
-  int page_count_;
-  int current_page_;
+  uint32_t page_count_;
+  uint32_t current_page_;
   int pages_in_progress_;
   gfx::Size page_size_;
   gfx::Rect content_area_;
@@ -281,7 +334,7 @@ class PrintJob::PdfConversionState {
 };
 
 void PrintJob::StartPdfToEmfConversion(
-    const scoped_refptr<base::RefCountedMemory>& bytes,
+    scoped_refptr<base::RefCountedMemory> bytes,
     const gfx::Size& page_size,
     const gfx::Rect& content_area) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -294,20 +347,40 @@ void PrintJob::StartPdfToEmfConversion(
   // Update : The missing letters seem to have been caused by the same
   // problem as https://crbug.com/659604 which was resolved. GDI printing
   // seems to work with the fix for this bug applied.
+  const PrintSettings& settings = document()->settings();
   bool print_text_with_gdi =
-      settings_.print_text_with_gdi() && !settings_.printer_is_xps() &&
-      base::FeatureList::IsEnabled(features::kGdiTextPrinting);
+      settings.print_text_with_gdi() && !settings.printer_is_xps() &&
+      base::FeatureList::IsEnabled(::features::kGdiTextPrinting);
+
+  // TODO(thestig): Figure out why crbug.com/1083911 occurred, which is likely
+  // because |web_contents| was null. As a result, this section has many more
+  // pointer checks to avoid crashing.
+  content::WebContents* web_contents = worker_->GetWebContents();
+  content::BrowserContext* context =
+      web_contents ? web_contents->GetBrowserContext() : nullptr;
+  PrefService* prefs =
+      context ? Profile::FromBrowserContext(context)->GetPrefs() : nullptr;
+  bool print_with_reduced_rasterization = PrintWithReducedRasterization(prefs);
+
+  using RenderMode = PdfRenderSettings::Mode;
+  RenderMode mode;
+  if (print_with_reduced_rasterization) {
+    mode = print_text_with_gdi
+               ? RenderMode::EMF_WITH_REDUCED_RASTERIZATION_AND_GDI_TEXT
+               : RenderMode::EMF_WITH_REDUCED_RASTERIZATION;
+  } else {
+    mode = print_text_with_gdi ? RenderMode::GDI_TEXT : RenderMode::NORMAL;
+  }
+
   PdfRenderSettings render_settings(
-      content_area, gfx::Point(0, 0), settings_.dpi_size(),
-      /*autorotate=*/true, settings_.color() == COLOR,
-      print_text_with_gdi ? PdfRenderSettings::Mode::GDI_TEXT
-                          : PdfRenderSettings::Mode::NORMAL);
+      content_area, gfx::Point(0, 0), settings.dpi_size(),
+      /*autorotate=*/true, settings.color() == mojom::ColorModel::kColor, mode);
   pdf_conversion_state_->Start(
       bytes, render_settings,
       base::BindOnce(&PrintJob::OnPdfConversionStarted, this));
 }
 
-void PrintJob::OnPdfConversionStarted(int page_count) {
+void PrintJob::OnPdfConversionStarted(uint32_t page_count) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   if (page_count <= 0) {
@@ -322,13 +395,13 @@ void PrintJob::OnPdfConversionStarted(int page_count) {
       base::BindRepeating(&PrintJob::OnPdfPageConverted, this));
 }
 
-void PrintJob::OnPdfPageConverted(int page_number,
+void PrintJob::OnPdfPageConverted(uint32_t page_number,
                                   float scale_factor,
                                   std::unique_ptr<MetafilePlayer> metafile) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(pdf_conversion_state_);
-  if (!document_ || !metafile || page_number < 0 ||
-      static_cast<size_t>(page_number) >= pdf_page_mapping_.size()) {
+  if (!document_ || !metafile || page_number == kInvalidPageIndex ||
+      page_number >= pdf_page_mapping_.size()) {
     // Be sure to live long enough.
     scoped_refptr<PrintJob> handle(this);
     pdf_conversion_state_.reset();
@@ -338,7 +411,7 @@ void PrintJob::OnPdfPageConverted(int page_number,
 
   // Add the page to the document if it is one of the pages requested by the
   // user. If it is not, ignore it.
-  if (pdf_page_mapping_[page_number] != -1) {
+  if (pdf_page_mapping_[page_number] != kInvalidPageIndex) {
     // Update the rendered document. It will send notifications to the listener.
     document_->SetPage(pdf_page_mapping_[page_number], std::move(metafile),
                        scale_factor, pdf_conversion_state_->page_size(),
@@ -346,19 +419,20 @@ void PrintJob::OnPdfPageConverted(int page_number,
   }
 
   pdf_conversion_state_->GetMorePages(
-      base::Bind(&PrintJob::OnPdfPageConverted, this));
+      base::BindRepeating(&PrintJob::OnPdfPageConverted, this));
 }
 
 void PrintJob::StartPdfToTextConversion(
-    const scoped_refptr<base::RefCountedMemory>& bytes,
+    scoped_refptr<base::RefCountedMemory> bytes,
     const gfx::Size& page_size) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(!pdf_conversion_state_);
   pdf_conversion_state_ =
       std::make_unique<PdfConversionState>(gfx::Size(), gfx::Rect());
   gfx::Rect page_area = gfx::Rect(0, 0, page_size.width(), page_size.height());
+  const PrintSettings& settings = document()->settings();
   PdfRenderSettings render_settings(
-      page_area, gfx::Point(0, 0), settings_.dpi_size(),
+      page_area, gfx::Point(0, 0), settings.dpi_size(),
       /*autorotate=*/true,
       /*use_color=*/true, PdfRenderSettings::Mode::TEXTONLY);
   pdf_conversion_state_->Start(
@@ -367,7 +441,7 @@ void PrintJob::StartPdfToTextConversion(
 }
 
 void PrintJob::StartPdfToPostScriptConversion(
-    const scoped_refptr<base::RefCountedMemory>& bytes,
+    scoped_refptr<base::RefCountedMemory> bytes,
     const gfx::Rect& content_area,
     const gfx::Point& physical_offsets,
     bool ps_level2) {
@@ -375,9 +449,10 @@ void PrintJob::StartPdfToPostScriptConversion(
   DCHECK(!pdf_conversion_state_);
   pdf_conversion_state_ = std::make_unique<PdfConversionState>(
       gfx::Size(), gfx::Rect());
+  const PrintSettings& settings = document()->settings();
   PdfRenderSettings render_settings(
-      content_area, physical_offsets, settings_.dpi_size(),
-      /*autorotate=*/true, settings_.color() == COLOR,
+      content_area, physical_offsets, settings.dpi_size(),
+      /*autorotate=*/true, settings.color() == mojom::ColorModel::kColor,
       ps_level2 ? PdfRenderSettings::Mode::POSTSCRIPT_LEVEL2
                 : PdfRenderSettings::Mode::POSTSCRIPT_LEVEL3);
   pdf_conversion_state_->Start(
@@ -424,7 +499,6 @@ void PrintJob::OnNotifyPrintJobEvent(const JobEventDetails& event_details) {
 
   switch (event_details.type()) {
     case JobEventDetails::FAILED: {
-      settings_.Clear();
       // No need to cancel since the worker already canceled itself.
       Stop();
       break;
@@ -443,16 +517,17 @@ void PrintJob::OnNotifyPrintJobEvent(const JobEventDetails& event_details) {
     }
     case JobEventDetails::DOC_DONE: {
       // This will call Stop() and broadcast a JOB_DONE message.
-      base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                               base::BindOnce(&PrintJob::OnDocumentDone, this));
+      content::GetUIThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce(&PrintJob::OnDocumentDone, this));
       break;
     }
 #if defined(OS_WIN)
     case JobEventDetails::PAGE_DONE:
       if (pdf_conversion_state_) {
         pdf_conversion_state_->OnPageProcessed(
-            base::Bind(&PrintJob::OnPdfPageConverted, this));
+            base::BindRepeating(&PrintJob::OnPdfPageConverted, this));
       }
+      document_->DropPage(event_details.page());
       break;
 #endif  // defined(OS_WIN)
     default: {
@@ -500,9 +575,8 @@ void PrintJob::ControlledWorkerShutdown() {
   // Delay shutdown until the worker terminates.  We want this code path
   // to wait on the thread to quit before continuing.
   if (worker_->IsRunning()) {
-    base::PostDelayedTaskWithTraits(
-        FROM_HERE, {content::BrowserThread::UI},
-        base::BindOnce(&PrintJob::ControlledWorkerShutdown, this),
+    content::GetUIThreadTaskRunner({})->PostDelayedTask(
+        FROM_HERE, base::BindOnce(&PrintJob::ControlledWorkerShutdown, this),
         base::TimeDelta::FromMilliseconds(100));
     return;
   }
@@ -510,7 +584,7 @@ void PrintJob::ControlledWorkerShutdown() {
 
   // Now make sure the thread object is cleaned up. Do this on a worker
   // thread because it may block.
-  base::PostTaskWithTraitsAndReply(
+  base::ThreadPool::PostTaskAndReply(
       FROM_HERE,
       {base::MayBlock(), base::WithBaseSyncPrimitives(),
        base::TaskPriority::BEST_EFFORT,
@@ -525,15 +599,11 @@ void PrintJob::ControlledWorkerShutdown() {
 
 bool PrintJob::PostTask(const base::Location& from_here,
                         base::OnceClosure task) {
-  return base::PostTaskWithTraits(from_here, {content::BrowserThread::UI},
-                                  std::move(task));
+  return content::GetUIThreadTaskRunner({})->PostTask(from_here,
+                                                      std::move(task));
 }
 
 void PrintJob::HoldUntilStopIsCalled() {
-}
-
-void PrintJob::set_settings(const PrintSettings& settings) {
-  settings_ = settings;
 }
 
 void PrintJob::set_job_pending(bool pending) {
@@ -561,4 +631,5 @@ PrintedDocument* JobEventDetails::document() const { return document_.get(); }
 #if defined(OS_WIN)
 PrintedPage* JobEventDetails::page() const { return page_.get(); }
 #endif
+
 }  // namespace printing

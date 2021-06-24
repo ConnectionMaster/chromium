@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Verify that breakpoints survive external editing.\n`);
-  await TestRunner.loadModule('sources_test_runner');
-  await TestRunner.loadModule('bindings_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
+  await TestRunner.loadTestModule('bindings_test_runner');
   await TestRunner.addScriptTag('resources/foo.js');
   await TestRunner.showPanel('sources');
 
@@ -23,7 +23,7 @@
       await BindingsTestRunner.waitForBinding('foo.js');
       var uiSourceCode = await TestRunner.waitForUISourceCode('foo.js', Workspace.projectTypes.FileSystem);
       var sourceFrame = await SourcesTestRunner.showUISourceCodePromise(uiSourceCode);
-      SourcesTestRunner.setBreakpoint(sourceFrame, 2, '', true);
+      await SourcesTestRunner.setBreakpoint(sourceFrame, 2, '', true);
       const debuggerPlugin = SourcesTestRunner.debuggerPlugin(sourceFrame);
       await TestRunner.addSnifferPromise(
           debuggerPlugin, '_breakpointDecorationsUpdatedForTest');

@@ -5,8 +5,9 @@
 package org.chromium.chrome.browser.ntp;
 
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.LargeTest;
-import android.support.test.filters.MediumTest;
+
+import androidx.test.filters.LargeTest;
+import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -17,12 +18,12 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.RetryOnFailure;
-import org.chromium.chrome.browser.ChromeSwitches;
-import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.net.test.EmbeddedTestServer;
 
 /**
@@ -30,7 +31,6 @@ import org.chromium.net.test.EmbeddedTestServer;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@RetryOnFailure
 public class NewTabPageNavigationTest {
     @Rule
     public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
@@ -38,13 +38,13 @@ public class NewTabPageNavigationTest {
     private EmbeddedTestServer mTestServer;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         mActivityTestRule.startMainActivityWithURL(null);
         mTestServer = EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         mTestServer.stopAndDestroyServer();
     }
 
@@ -57,7 +57,7 @@ public class NewTabPageNavigationTest {
     public void testNTPIsDefault() {
         Tab tab = mActivityTestRule.getActivity().getActivityTab();
         Assert.assertNotNull(tab);
-        String url = tab.getUrl();
+        String url = ChromeTabUtils.getUrlStringOnUiThread(tab);
         Assert.assertTrue("Unexpected url: " + url,
                 url.startsWith("chrome-native://newtab/")
                         || url.startsWith("chrome-native://bookmarks/")
@@ -70,10 +70,12 @@ public class NewTabPageNavigationTest {
     @Test
     @LargeTest
     @Feature({"NewTabPage"})
-    public void testNavigatingFromNTP() throws InterruptedException {
+    public void testNavigatingFromNTP() {
         String url = mTestServer.getURL("/chrome/test/data/android/google.html");
         mActivityTestRule.loadUrl(url);
-        Assert.assertEquals(url, mActivityTestRule.getActivity().getActivityTab().getUrl());
+        Assert.assertEquals(url,
+                ChromeTabUtils.getUrlStringOnUiThread(
+                        mActivityTestRule.getActivity().getActivityTab()));
     }
 
     /**
@@ -82,15 +84,17 @@ public class NewTabPageNavigationTest {
     @Test
     @MediumTest
     @Feature({"NewTabPage"})
-    public void testNavigateBackToNTPViaUrl() throws InterruptedException {
+    public void testNavigateBackToNTPViaUrl() {
         String url = mTestServer.getURL("/chrome/test/data/android/google.html");
         mActivityTestRule.loadUrl(url);
-        Assert.assertEquals(url, mActivityTestRule.getActivity().getActivityTab().getUrl());
+        Assert.assertEquals(url,
+                ChromeTabUtils.getUrlStringOnUiThread(
+                        mActivityTestRule.getActivity().getActivityTab()));
 
         mActivityTestRule.loadUrl(UrlConstants.NTP_URL);
         Tab tab = mActivityTestRule.getActivity().getActivityTab();
         Assert.assertNotNull(tab);
-        url = tab.getUrl();
+        url = ChromeTabUtils.getUrlStringOnUiThread(tab);
         Assert.assertEquals(UrlConstants.NTP_URL, url);
 
         // Check that the NTP is actually displayed.

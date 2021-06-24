@@ -4,6 +4,7 @@
 
 #include "chrome/browser/sync_file_system/drive_backend/sync_worker.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -23,7 +24,8 @@
 #include "chrome/browser/sync_file_system/sync_file_system_test_util.h"
 #include "components/drive/drive_uploader.h"
 #include "components/drive/service/fake_drive_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_set.h"
@@ -38,9 +40,9 @@ namespace {
 
 const char kAppID[] = "app_id";
 
-void EmptyTask(SyncStatusCode status, const SyncStatusCallback& callback) {
+void EmptyTask(SyncStatusCode status, SyncStatusCallback callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, status));
+      FROM_HERE, base::BindOnce(std::move(callback), status));
 }
 
 }  // namespace
@@ -52,8 +54,8 @@ class MockSyncTask : public ExclusiveTask {
   }
   ~MockSyncTask() override {}
 
-  void RunExclusive(const SyncStatusCallback& callback) override {
-    callback.Run(SYNC_STATUS_OK);
+  void RunExclusive(SyncStatusCallback callback) override {
+    std::move(callback).Run(SYNC_STATUS_OK);
   }
 
  private:
@@ -62,38 +64,35 @@ class MockSyncTask : public ExclusiveTask {
 
 class MockExtensionService : public TestExtensionService {
  public:
-  MockExtensionService() {}
+  MockExtensionService() : registry_(nullptr) {}
   ~MockExtensionService() override {}
 
   void AddExtension(const extensions::Extension* extension) override {
-    extensions_.Insert(base::WrapRefCounted(extension));
-  }
-
-  const extensions::Extension* GetInstalledExtension(
-      const std::string& extension_id) const override {
-    return extensions_.GetByID(extension_id);
+    registry_.AddEnabled(base::WrapRefCounted(extension));
   }
 
   bool IsExtensionEnabled(const std::string& extension_id) const override {
-    return extensions_.Contains(extension_id) &&
-        !disabled_extensions_.Contains(extension_id);
+    return registry_.enabled_extensions().Contains(extension_id);
   }
 
   void UninstallExtension(const std::string& extension_id) {
-    extensions_.Remove(extension_id);
-    disabled_extensions_.Remove(extension_id);
+    EXPECT_TRUE(registry_.RemoveEnabled(extension_id) ||
+                registry_.RemoveDisabled(extension_id));
   }
 
   void DisableExtension(const std::string& extension_id) {
     if (!IsExtensionEnabled(extension_id))
       return;
-    const extensions::Extension* extension = extensions_.GetByID(extension_id);
-    disabled_extensions_.Insert(base::WrapRefCounted(extension));
+    scoped_refptr<const extensions::Extension> extension =
+        registry_.GetInstalledExtension(extension_id);
+    EXPECT_TRUE(registry_.RemoveEnabled(extension_id));
+    registry_.AddDisabled(extension);
   }
 
+  extensions::ExtensionRegistry& registry() { return registry_; }
+
  private:
-  extensions::ExtensionSet extensions_;
-  extensions::ExtensionSet disabled_extensions_;
+  extensions::ExtensionRegistry registry_;
 
   DISALLOW_COPY_AND_ASSIGN(MockExtensionService);
 };
@@ -108,7 +107,7 @@ class SyncWorkerTest : public testing::Test,
     ASSERT_TRUE(profile_dir_.CreateUniqueTempDir());
     in_memory_env_ = leveldb_chrome::NewMemEnv("SyncWorkerTest");
 
-    extension_service_.reset(new MockExtensionService);
+    extension_service_ = std::make_unique<MockExtensionService>();
     std::unique_ptr<drive::DriveServiceInterface> fake_drive_service(
         new drive::FakeDriveService);
 
@@ -119,9 +118,9 @@ class SyncWorkerTest : public testing::Test,
             base::ThreadTaskRunnerHandle::Get() /* ui_task_runner */,
             base::ThreadTaskRunnerHandle::Get() /* worker_task_runner */));
 
-    sync_worker_.reset(new SyncWorker(profile_dir_.GetPath(),
-                                      extension_service_->AsWeakPtr(),
-                                      in_memory_env_.get()));
+    sync_worker_ = std::make_unique<SyncWorker>(
+        profile_dir_.GetPath(), extension_service_->AsWeakPtr(),
+        &extension_service_->registry(), in_memory_env_.get());
     sync_worker_->Initialize(std::move(sync_engine_context));
 
     sync_worker_->SetSyncEnabled(true);
@@ -157,7 +156,7 @@ class SyncWorkerTest : public testing::Test,
   }
 
  private:
-  content::TestBrowserThreadBundle browser_threads_;
+  content::BrowserTaskEnvironment task_environment_;
   base::ScopedTempDir profile_dir_;
   std::unique_ptr<leveldb::Env> in_memory_env_;
 
@@ -233,7 +232,7 @@ TEST_F(SyncWorkerTest, UpdateRegisteredApps) {
 
   extension_service()->DisableExtension("app_1");
   extension_service()->UninstallExtension("app_2");
-  ASSERT_FALSE(extension_service()->GetInstalledExtension("app_2"));
+  ASSERT_FALSE(extension_service()->registry().GetInstalledExtension("app_2"));
   UpdateRegisteredApps();
   base::RunLoop().RunUntilIdle();
 
@@ -284,97 +283,75 @@ TEST_F(SyncWorkerTest, UpdateServiceState) {
   EXPECT_EQ(REMOTE_SERVICE_OK, sync_worker()->GetCurrentState());
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_STATUS_AUTHENTICATION_FAILED),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_STATUS_AUTHENTICATION_FAILED),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_STATUS_AUTHENTICATION_FAILED,
-                 REMOTE_SERVICE_AUTHENTICATION_REQUIRED));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_AUTHENTICATION_FAILED,
+                     REMOTE_SERVICE_AUTHENTICATION_REQUIRED));
+
+  GetSyncTaskManager()->ScheduleTask(
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_STATUS_ACCESS_FORBIDDEN),
+      SyncTaskManager::PRIORITY_MED,
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_ACCESS_FORBIDDEN,
+                     REMOTE_SERVICE_ACCESS_FORBIDDEN));
 
   GetSyncTaskManager()->ScheduleTask(
       FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_STATUS_ACCESS_FORBIDDEN),
+      base::BindOnce(&EmptyTask, SYNC_STATUS_SERVICE_TEMPORARILY_UNAVAILABLE),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_STATUS_ACCESS_FORBIDDEN,
-                 REMOTE_SERVICE_ACCESS_FORBIDDEN));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_SERVICE_TEMPORARILY_UNAVAILABLE,
+                     REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_STATUS_SERVICE_TEMPORARILY_UNAVAILABLE),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_STATUS_NETWORK_ERROR),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_STATUS_SERVICE_TEMPORARILY_UNAVAILABLE,
-                 REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_NETWORK_ERROR,
+                     REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_STATUS_NETWORK_ERROR),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_STATUS_ABORT),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_STATUS_NETWORK_ERROR,
-                 REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_ABORT, REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_STATUS_ABORT),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_STATUS_FAILED),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_STATUS_ABORT,
-                 REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_FAILED, REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_STATUS_FAILED),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_DATABASE_ERROR_CORRUPTION),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_STATUS_FAILED,
-                 REMOTE_SERVICE_TEMPORARY_UNAVAILABLE));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_DATABASE_ERROR_CORRUPTION, REMOTE_SERVICE_DISABLED));
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_DATABASE_ERROR_CORRUPTION),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_DATABASE_ERROR_IO_ERROR),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_DATABASE_ERROR_CORRUPTION,
-                 REMOTE_SERVICE_DISABLED));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_DATABASE_ERROR_IO_ERROR, REMOTE_SERVICE_DISABLED));
 
   GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_DATABASE_ERROR_IO_ERROR),
+      FROM_HERE, base::BindOnce(&EmptyTask, SYNC_DATABASE_ERROR_FAILED),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_DATABASE_ERROR_IO_ERROR,
-                 REMOTE_SERVICE_DISABLED));
-
-  GetSyncTaskManager()->ScheduleTask(
-      FROM_HERE,
-      base::Bind(&EmptyTask, SYNC_DATABASE_ERROR_FAILED),
-      SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState,
-                 AsWeakPtr(),
-                 SYNC_DATABASE_ERROR_FAILED,
-                 REMOTE_SERVICE_DISABLED));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_DATABASE_ERROR_FAILED, REMOTE_SERVICE_DISABLED));
 
   GetSyncTaskManager()->ScheduleSyncTask(
       FROM_HERE, std::unique_ptr<SyncTask>(new MockSyncTask(false)),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
-                 SYNC_STATUS_OK, REMOTE_SERVICE_DISABLED));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_OK, REMOTE_SERVICE_DISABLED));
 
   GetSyncTaskManager()->ScheduleSyncTask(
       FROM_HERE, std::unique_ptr<SyncTask>(new MockSyncTask(true)),
       SyncTaskManager::PRIORITY_MED,
-      base::Bind(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
-                 SYNC_STATUS_OK, REMOTE_SERVICE_OK));
+      base::BindOnce(&SyncWorkerTest::CheckServiceState, AsWeakPtr(),
+                     SYNC_STATUS_OK, REMOTE_SERVICE_OK));
 
   base::RunLoop().RunUntilIdle();
 }

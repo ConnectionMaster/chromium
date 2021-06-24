@@ -7,21 +7,22 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/offline_pages/offline_page_model_factory.h"
 #include "chrome/browser/offline_pages/request_coordinator_factory.h"
 #include "chrome/browser/offline_pages/test_request_coordinator_builder.h"
+#include "chrome/common/offline_page_auto_fetcher.mojom.h"
 #include "components/offline_pages/core/auto_fetch.h"
 #include "components/offline_pages/core/background/request_coordinator.h"
 #include "components/offline_pages/core/background/request_coordinator_stub_taco.h"
 #include "components/offline_pages/core/background/test_request_queue_store.h"
 #include "components/offline_pages/core/client_namespace_constants.h"
 #include "components/offline_pages/core/stub_offline_page_model.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -42,9 +43,10 @@ SavePageRequest TestRequest(ClientId client_id = TestClientId()) {
 
 class MockDelegate : public OfflinePageAutoFetcherService::Delegate {
  public:
-  MOCK_METHOD4(ShowAutoFetchCompleteNotification,
-               void(const base::string16& pageTitle,
-                    const std::string& url,
+  MOCK_METHOD5(ShowAutoFetchCompleteNotification,
+               void(const std::u16string& pageTitle,
+                    const std::string& original_url,
+                    const std::string& final_url,
                     int android_tab_id,
                     int64_t offline_id));
 };
@@ -68,7 +70,7 @@ class OfflinePageAutoFetcherServiceTest : public testing::Test {
   }
 
   void TearDown() override {
-    thread_bundle_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     service_.reset();
   }
   RequestCoordinator* request_coordinator() {
@@ -88,13 +90,13 @@ class OfflinePageAutoFetcherServiceTest : public testing::Test {
           completed = true;
           result = std::move(requests);
         }));
-    thread_bundle_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
     CHECK(completed);
     return result;
   }
 
  protected:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   MockDelegate delegate_;
   TestOfflinePageModel offline_page_model_;
 
@@ -110,7 +112,7 @@ TEST_F(OfflinePageAutoFetcherServiceTest, TryScheduleSuccess) {
               Run(OfflinePageAutoFetcherScheduleResult::kScheduled));
   service_->TrySchedule(false, GURL("http://foo.com"), kTabId,
                         result_callback.Get());
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(1ul, GetRequestsSync().size());
 }
 
@@ -122,7 +124,7 @@ TEST_F(OfflinePageAutoFetcherServiceTest, AttemptInvalidURL) {
               Run(OfflinePageAutoFetcherScheduleResult::kOtherError));
   service_->TrySchedule(false, GURL("ftp://foo.com"), kTabId,
                         result_callback.Get());
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0ul, GetRequestsSync().size());
 }
 
@@ -141,7 +143,7 @@ TEST_F(OfflinePageAutoFetcherServiceTest, TryScheduleDuplicate) {
                         result_callback.Get());
   service_->TrySchedule(false, GURL("http://foo.com#Z"), kTabId,
                         result_callback.Get());
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(1ul, GetRequestsSync().size());
 }
 
@@ -176,7 +178,7 @@ TEST_F(OfflinePageAutoFetcherServiceTest, AttemptAutoScheduleMoreThanMaximum) {
   service_->TrySchedule(true, GURL("http://foo.com/5"), kTabId,
                         result_callback.Get());
 
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 TEST_F(OfflinePageAutoFetcherServiceTest,
@@ -195,30 +197,30 @@ TEST_F(OfflinePageAutoFetcherServiceTest,
                         result_callback.Get());
   service_->TrySchedule(true, GURL("http://foo.com/4"), kTabId,
                         result_callback.Get());
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 TEST_F(OfflinePageAutoFetcherServiceTest, CancelSuccess) {
   service_->TrySchedule(false, GURL("http://foo.com"), kTabId,
                         base::DoNothing());
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   service_->CancelSchedule(GURL("http://foo.com"));
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(0ul, GetRequestsSync().size());
 }
 
 TEST_F(OfflinePageAutoFetcherServiceTest, CancelNotExist) {
   service_->TrySchedule(false, GURL("http://foo.com"), kTabId,
                         base::DoNothing());
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   service_->CancelSchedule(GURL("http://NOT-FOO.com"));
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ(1ul, GetRequestsSync().size());
 }
 
 TEST_F(OfflinePageAutoFetcherServiceTest, CancelQueueEmpty) {
   service_->CancelSchedule(GURL("http://foo.com"));
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 // Simulate a completed auto fetch request, and verify that
@@ -229,16 +231,16 @@ TEST_F(OfflinePageAutoFetcherServiceTest, NotifyOnAutoFetchCompleted) {
   OfflinePageItem returned_item(kTestRequest.url(), kOfflineId,
                                 kTestRequest.client_id(), base::FilePath(),
                                 2000);
-  returned_item.title = base::ASCIIToUTF16("Cows");
+  returned_item.title = u"Cows";
   EXPECT_CALL(offline_page_model_,
               GetPageByOfflineId_(kTestRequest.request_id()))
       .WillOnce(testing::Return(&returned_item));
   EXPECT_CALL(delegate_, ShowAutoFetchCompleteNotification(
                              returned_item.title, kTestRequest.url().spec(),
-                             kTabId, kOfflineId));
+                             kTestRequest.url().spec(), kTabId, kOfflineId));
   service_->OnCompleted(kTestRequest,
                         RequestNotifier::BackgroundSavePageResult::SUCCESS);
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 // Simulate a failed auto-fetch request, and verify that
@@ -248,7 +250,7 @@ TEST_F(OfflinePageAutoFetcherServiceTest, DontNotifyOnAutoFetchFail) {
   EXPECT_CALL(offline_page_model_, GetPageByOfflineId_(_)).Times(0);
   service_->OnCompleted(
       kTestRequest, RequestNotifier::BackgroundSavePageResult::LOADING_FAILURE);
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 // Simulate a completed non-auto-fetch request, and verify that
@@ -260,7 +262,7 @@ TEST_F(OfflinePageAutoFetcherServiceTest, DontNotifyOnOtherRequestCompleted) {
   service_->OnCompleted(kTestRequest,
                         RequestNotifier::BackgroundSavePageResult::SUCCESS);
 
-  thread_bundle_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 }
 
 }  // namespace

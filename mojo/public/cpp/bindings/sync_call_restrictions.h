@@ -15,25 +15,33 @@
 #define ENABLE_SYNC_CALL_RESTRICTIONS 0
 #endif
 
-namespace sync_preferences {
-class PrefServiceSyncable;
-}
+namespace chromecast {
+class CastCdmOriginProvider;
+}  // namespace chromecast
 
-namespace leveldb {
-class LevelDBMojoProxy;
-}
+namespace content {
+class AndroidOverlaySyncHelper;
+class DesktopCapturerLacros;
+class StreamTextureFactory;
+}  // namespace content
 
-namespace prefs {
-class PersistentPrefStoreClient;
-}
+namespace crosapi {
+class ScopedAllowSyncCall;
+}  // namespace crosapi
+
+namespace gpu {
+class CommandBufferProxyImpl;
+class GpuChannelHost;
+}  // namespace gpu
 
 namespace ui {
-class ClipboardClient;
-class HostContextFactoryPrivate;
+class Compositor;
 }  // namespace ui
 
 namespace viz {
+class GpuHostImpl;
 class HostFrameSinkManager;
+class HostGpuMemoryBufferManager;
 }
 
 namespace mojo {
@@ -76,21 +84,31 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) SyncCallRestrictions {
   // BEGIN ALLOWED USAGE.
   // SynchronousCompositorHost is used for Android webview.
   friend class content::SynchronousCompositorHost;
-  // LevelDBMojoProxy makes same-process sync calls from the DB thread.
-  friend class leveldb::LevelDBMojoProxy;
-  // Pref service connection is sync at startup.
-  friend class prefs::PersistentPrefStoreClient;
-  // Incognito pref service instances are created synchronously.
-  friend class sync_preferences::PrefServiceSyncable;
+  // Lacros-chrome is allowed to make sync calls to ash-chrome to mimic
+  // cross-platform sync APIs.
+  friend class content::DesktopCapturerLacros;
+  friend class crosapi::ScopedAllowSyncCall;
   friend class mojo::ScopedAllowSyncCallForTesting;
-  // For synchronous system clipboard access.
-  friend class ui::ClipboardClient;
+  friend class viz::GpuHostImpl;
   // For destroying the GL context/surface that draw to a platform window before
   // the platform window is destroyed.
   friend class viz::HostFrameSinkManager;
+  friend class viz::HostGpuMemoryBufferManager;
   // For preventing frame swaps of wrong size during resize on Windows.
   // (https://crbug.com/811945)
-  friend class ui::HostContextFactoryPrivate;
+  friend class ui::Compositor;
+  // For calling sync mojo API to get cdm origin. The service and the client are
+  // running in the same process, so it won't block anything.
+  // TODO(159346933) Remove once the origin isolation logic is moved outside of
+  // cast media service.
+  friend class chromecast::CastCdmOriginProvider;
+  // Android requires synchronous processing when overlay surfaces are
+  // destroyed, else behavior is undefined.
+  friend class content::AndroidOverlaySyncHelper;
+  // GPU client code uses a few sync IPCs, grandfathered in from legacy IPC.
+  friend class gpu::GpuChannelHost;
+  friend class gpu::CommandBufferProxyImpl;
+  friend class content::StreamTextureFactory;
   // END ALLOWED USAGE.
 
 #if ENABLE_SYNC_CALL_RESTRICTIONS

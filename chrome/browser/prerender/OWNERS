@@ -1,10 +1,1 @@
-# New owners ramping up on prerender.
-tbansal@chromium.org
-bengr@chromium.org
-
-# Deprecated reviewers.
-lizeb@chromium.org
-mattcary@chromium.org
-pasko@chromium.org
-
-# COMPONENT: Internals>Preload
+file://content/browser/prerender/OWNERS

@@ -36,38 +36,27 @@
 
 namespace blink {
 
-WorkerNavigator::WorkerNavigator(const String& user_agent,
-                                 ExecutionContext* context)
-    : NavigatorLanguage(context), user_agent_(user_agent) {}
+WorkerNavigator::WorkerNavigator(ExecutionContext* execution_context)
+    : NavigatorBase(execution_context) {}
 
 WorkerNavigator::~WorkerNavigator() = default;
 
-String WorkerNavigator::userAgent() const {
-  return user_agent_;
-}
-
 String WorkerNavigator::GetAcceptLanguages() {
   WorkerOrWorkletGlobalScope* global_scope =
-      To<WorkerOrWorkletGlobalScope>(context_.Get());
-  WebWorkerFetchContext* worker_fetch_context =
+      To<WorkerOrWorkletGlobalScope>(GetExecutionContext());
+  auto* web_worker_fetch_context =
       static_cast<WorkerFetchContext*>(
           (&global_scope->EnsureFetcher()->Context()))
           ->GetWebWorkerFetchContext();
-  return worker_fetch_context->GetAcceptLanguages();
+  return web_worker_fetch_context->GetAcceptLanguages();
 }
 
 void WorkerNavigator::NotifyUpdate() {
   SetLanguagesDirty();
   WorkerOrWorkletGlobalScope* global_scope =
-      To<WorkerOrWorkletGlobalScope>(context_.Get());
+      To<WorkerOrWorkletGlobalScope>(GetExecutionContext());
   global_scope->DispatchEvent(
       *Event::Create(event_type_names::kLanguagechange));
-}
-
-void WorkerNavigator::Trace(blink::Visitor* visitor) {
-  ScriptWrappable::Trace(visitor);
-  NavigatorLanguage::Trace(visitor);
-  Supplementable<WorkerNavigator>::Trace(visitor);
 }
 
 }  // namespace blink

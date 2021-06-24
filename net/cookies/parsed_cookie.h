@@ -48,8 +48,13 @@ class NET_EXPORT ParsedCookie {
   const std::string& MaxAge() const { return pairs_[maxage_index_].second; }
   bool IsSecure() const { return secure_index_ != 0; }
   bool IsHttpOnly() const { return httponly_index_ != 0; }
-  CookieSameSite SameSite() const;
+  // Also spits out an enum value representing the string given as the SameSite
+  // attribute value, if |samesite_string| is non-null.
+  CookieSameSite SameSite(
+      CookieSameSiteString* samesite_string = nullptr) const;
   CookiePriority Priority() const;
+  bool IsSameParty() const { return same_party_index_ != 0; }
+  bool HasTruncatedNameOrValue() const { return truncated_name_or_value_; }
 
   // Returns the number of attributes, for example, returning 2 for:
   //   "BLAH=hah; path=/; domain=.google.com"
@@ -60,6 +65,11 @@ class NET_EXPORT ParsedCookie {
   // The functions return false in case an error occurred.
   // The cookie needs to be assigned a name/value before setting the other
   // attributes.
+  //
+  // These functions should only be used if you need to modify a response's
+  // Set-Cookie string. The resulting ParsedCookie and its Set-Cookie string
+  // should still go through the regular cookie parsing process before entering
+  // the cookie jar.
   bool SetName(const std::string& name);
   bool SetValue(const std::string& value);
   bool SetPath(const std::string& path);
@@ -70,6 +80,7 @@ class NET_EXPORT ParsedCookie {
   bool SetIsHttpOnly(bool is_http_only);
   bool SetSameSite(const std::string& same_site);
   bool SetPriority(const std::string& priority);
+  bool SetIsSameParty(bool is_same_party);
 
   // Returns the cookie description as it appears in a HTML response header.
   std::string ToCookieLine() const;
@@ -131,19 +142,27 @@ class NET_EXPORT ParsedCookie {
   // |index| refers to a position in |pairs_|.
   void ClearAttributePair(size_t index);
 
+  // Records metrics on cookie name+value and attribute value lengths.
+  // This is being recorded to evaluate whether to change length limits for
+  // cookies, such that limits are applied to name+value, and individual
+  // attribute lengths, rather than to the whole set-cookie line.
+  void RecordCookieAttributeValueLengthHistograms() const;
+
   PairList pairs_;
   // These will default to 0, but that should never be valid since the
-  // 0th index is the user supplied token/value, not an attribute.
-  // We're really never going to have more than like 8 attributes, so we
-  // could fit these into 3 bits each if we're worried about size...
-  size_t path_index_;
-  size_t domain_index_;
-  size_t expires_index_;
-  size_t maxage_index_;
-  size_t secure_index_;
-  size_t httponly_index_;
-  size_t same_site_index_;
-  size_t priority_index_;
+  // 0th index is the user supplied cookie name/value, not an attribute.
+  size_t path_index_ = 0;
+  size_t domain_index_ = 0;
+  size_t expires_index_ = 0;
+  size_t maxage_index_ = 0;
+  size_t secure_index_ = 0;
+  size_t httponly_index_ = 0;
+  size_t same_site_index_ = 0;
+  size_t priority_index_ = 0;
+  size_t same_party_index_ = 0;
+  // For metrics on cookie name/value truncation. See usage at the bottom of
+  // `ParseTokenValuePairs()` for more details.
+  bool truncated_name_or_value_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(ParsedCookie);
 };

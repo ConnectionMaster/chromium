@@ -29,7 +29,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_SCOPED_STYLE_RESOLVER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_SCOPED_STYLE_RESOLVER_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/css/active_style_sheets.h"
 #include "third_party/blink/renderer/core/css/element_rule_collector.h"
 #include "third_party/blink/renderer/core/css/rule_set.h"
@@ -39,76 +38,73 @@
 
 namespace blink {
 
+class CounterStyleMap;
 class PageRuleCollector;
 class PartNames;
 class StyleSheetContents;
 
 // ScopedStyleResolver collects the style sheets that occur within a TreeScope
 // and provides methods to collect the rules that apply to a given element,
-// broken down by what kind of scope they apply to (e.g. shadow host,
-// tree-boundary-crossing, etc).
-class ScopedStyleResolver final
-    : public GarbageCollectedFinalized<ScopedStyleResolver> {
-
+// broken down by what kind of scope they apply to (e.g. shadow host, slotted,
+// etc).
+class CORE_EXPORT ScopedStyleResolver final
+    : public GarbageCollected<ScopedStyleResolver> {
  public:
   explicit ScopedStyleResolver(TreeScope& scope) : scope_(scope) {}
+  ScopedStyleResolver(const ScopedStyleResolver&) = delete;
+  ScopedStyleResolver& operator=(const ScopedStyleResolver&) = delete;
 
   const TreeScope& GetTreeScope() const { return *scope_; }
   ScopedStyleResolver* Parent() const;
 
   StyleRuleKeyframes* KeyframeStylesForAnimation(
-      const StringImpl* animation_name);
+      const AtomicString& animation_name);
+
+  CounterStyleMap* GetCounterStyleMap() { return counter_style_map_; }
+  static void CounterStyleRulesChanged(TreeScope& scope);
 
   void AppendActiveStyleSheets(unsigned index, const ActiveStyleSheetVector&);
-  void CollectMatchingAuthorRules(ElementRuleCollector&,
-                                  ShadowV0CascadeOrder = kIgnoreCascadeOrder);
-  void CollectMatchingShadowHostRules(
-      ElementRuleCollector&,
-      ShadowV0CascadeOrder = kIgnoreCascadeOrder);
-  void CollectMatchingSlottedRules(ElementRuleCollector&,
-                                   ShadowV0CascadeOrder = kIgnoreCascadeOrder);
-  void CollectMatchingTreeBoundaryCrossingRules(
-      ElementRuleCollector&,
-      ShadowV0CascadeOrder = kIgnoreCascadeOrder);
-  void CollectMatchingPartPseudoRules(
-      ElementRuleCollector&,
-      PartNames& part_names,
-      ShadowV0CascadeOrder = kIgnoreCascadeOrder);
+  void CollectMatchingElementScopeRules(ElementRuleCollector&);
+  void CollectMatchingShadowHostRules(ElementRuleCollector&);
+  void CollectMatchingSlottedRules(ElementRuleCollector&);
+  void CollectMatchingPartPseudoRules(ElementRuleCollector&,
+                                      PartNames& part_names,
+                                      bool for_shadow_pseudo);
   void MatchPageRules(PageRuleCollector&);
   void CollectFeaturesTo(RuleFeatureSet&,
                          HeapHashSet<Member<const StyleSheetContents>>&
                              visited_shared_style_sheet_contents) const;
-  void ResetAuthorStyle();
-  bool HasDeepOrShadowSelector() const { return has_deep_or_shadow_selector_; }
+  void ResetStyle();
   void SetHasUnresolvedKeyframesRule() {
     has_unresolved_keyframes_rule_ = true;
   }
   bool NeedsAppendAllSheets() const { return needs_append_all_sheets_; }
   void SetNeedsAppendAllSheets() { needs_append_all_sheets_ = true; }
   static void KeyframesRulesAdded(const TreeScope&);
-  static ContainerNode& InvalidationRootForTreeScope(const TreeScope&);
-  void V0ShadowAddedOnV1Document();
+  static Element& InvalidationRootForTreeScope(const TreeScope&);
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
-  void AddTreeBoundaryCrossingRules(const RuleSet&,
-                                    CSSStyleSheet*,
-                                    unsigned sheet_index);
   void AddSlottedRules(const RuleSet&, CSSStyleSheet*, unsigned sheet_index);
-  void AddKeyframeRules(const RuleSet&);
   void AddFontFaceRules(const RuleSet&);
+  void AddCounterStyleRules(const RuleSet&);
+  void AddKeyframeRules(const RuleSet&);
   void AddKeyframeStyle(StyleRuleKeyframes*);
+
+  CounterStyleMap& EnsureCounterStyleMap();
 
   Member<TreeScope> scope_;
 
-  HeapVector<Member<CSSStyleSheet>> author_style_sheets_;
+  HeapVector<Member<CSSStyleSheet>> style_sheets_;
   MediaQueryResultList viewport_dependent_media_query_results_;
   MediaQueryResultList device_dependent_media_query_results_;
 
   using KeyframesRuleMap =
-      HeapHashMap<const StringImpl*, Member<StyleRuleKeyframes>>;
+      HeapHashMap<AtomicString, Member<StyleRuleKeyframes>>;
   KeyframesRuleMap keyframes_rule_map_;
+
+  Member<CounterStyleMap> counter_style_map_;
 
   class RuleSubSet final : public GarbageCollected<RuleSubSet> {
    public:
@@ -119,17 +115,14 @@ class ScopedStyleResolver final
     unsigned parent_index_;
     Member<RuleSet> rule_set_;
 
-    void Trace(blink::Visitor*);
+    void Trace(Visitor*) const;
   };
   using CSSStyleSheetRuleSubSet = HeapVector<Member<RuleSubSet>>;
 
-  Member<CSSStyleSheetRuleSubSet> tree_boundary_crossing_rule_set_;
   Member<CSSStyleSheetRuleSubSet> slotted_rule_set_;
 
-  bool has_deep_or_shadow_selector_ = false;
   bool has_unresolved_keyframes_rule_ = false;
   bool needs_append_all_sheets_ = false;
-  DISALLOW_COPY_AND_ASSIGN(ScopedStyleResolver);
 };
 
 }  // namespace blink

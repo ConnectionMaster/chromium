@@ -5,10 +5,7 @@
 #ifndef NET_BASE_NETWORK_CHANGE_NOTIFIER_POSIX_H_
 #define NET_BASE_NETWORK_CHANGE_NOTIFIER_POSIX_H_
 
-#include <memory>
-
 #include "base/gtest_prod_util.h"
-#include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -17,11 +14,6 @@
 #include "base/threading/thread_checker.h"
 #include "net/base/net_export.h"
 #include "net/base/network_change_notifier.h"
-
-namespace base {
-class SequencedTaskRunner;
-struct OnTaskRunnerDeleter;
-}  // namespace base
 
 namespace net {
 
@@ -34,6 +26,9 @@ class NET_EXPORT NetworkChangeNotifierPosix : public NetworkChangeNotifier {
   NetworkChangeNotifierPosix(
       NetworkChangeNotifier::ConnectionType initial_connection_type,
       NetworkChangeNotifier::ConnectionSubtype initial_connection_subtype);
+  NetworkChangeNotifierPosix(const NetworkChangeNotifierPosix&) = delete;
+  NetworkChangeNotifierPosix& operator=(const NetworkChangeNotifierPosix&) =
+      delete;
   ~NetworkChangeNotifierPosix() override;
 
   // These methods are used to notify this object that a network property has
@@ -57,13 +52,13 @@ class NET_EXPORT NetworkChangeNotifierPosix : public NetworkChangeNotifier {
  private:
   friend class NetworkChangeNotifierPosixTest;
 
-  class DnsConfigService;
-
-  // |dns_config_service_| will live on this runner.
-  scoped_refptr<base::SequencedTaskRunner> dns_config_service_runner_;
-  // DnsConfigService that lives on |dns_config_service_runner_|.
-  std::unique_ptr<DnsConfigService, base::OnTaskRunnerDeleter>
-      dns_config_service_;
+  // For testing purposes, allows specifying a SystemDnsConfigChangeNotifier.
+  // If |system_dns_config_notifier| is nullptr, NetworkChangeNotifier create a
+  // global one.
+  NetworkChangeNotifierPosix(
+      NetworkChangeNotifier::ConnectionType initial_connection_type,
+      NetworkChangeNotifier::ConnectionSubtype initial_connection_subtype,
+      SystemDnsConfigChangeNotifier* system_dns_config_notifier);
 
   // Calculates parameters used for network change notifier online/offline
   // signals.
@@ -76,8 +71,6 @@ class NET_EXPORT NetworkChangeNotifierPosix : public NetworkChangeNotifier {
   NetworkChangeNotifier::ConnectionType
       connection_type_;        // Guarded by |lock_|.
   double max_bandwidth_mbps_;  // Guarded by |lock_|.
-
-  DISALLOW_COPY_AND_ASSIGN(NetworkChangeNotifierPosix);
 };
 
 }  // namespace net

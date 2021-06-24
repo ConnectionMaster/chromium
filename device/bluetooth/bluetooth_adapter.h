@@ -16,13 +16,16 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/containers/queue.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "device/bluetooth/bluetooth_advertisement.h"
 #include "device/bluetooth/bluetooth_device.h"
+#include "device/bluetooth/bluetooth_discovery_filter.h"
 #include "device/bluetooth/bluetooth_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -85,6 +88,9 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
     virtual void DeviceAdded(BluetoothAdapter* adapter,
                              BluetoothDevice* device) {}
 
+    // Called when the adapter |DiscoveryChangeComplete| is finished
+    virtual void DiscoveryChangeCompletedForTesting() {}
+
     // Called when the result of one of the following methods of the device
     // |device| changes:
     //  * GetAddress()
@@ -128,26 +134,22 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
     // returns the raw values that have been parsed from EIR.
     virtual void DeviceAdvertisementReceived(
         const std::string& device_address,
-        const base::Optional<std::string>& device_name,
-        const base::Optional<std::string>& advertisement_name,
-        base::Optional<int8_t> rssi,
-        base::Optional<int8_t> tx_power,
-        base::Optional<uint16_t> appearance,
+        const absl::optional<std::string>& device_name,
+        const absl::optional<std::string>& advertisement_name,
+        absl::optional<int8_t> rssi,
+        absl::optional<int8_t> tx_power,
+        absl::optional<uint16_t> appearance,
         const BluetoothDevice::UUIDList& advertised_uuids,
         const BluetoothDevice::ServiceDataMap& service_data_map,
         const BluetoothDevice::ManufacturerDataMap& manufacturer_data_map) {}
 
-// TODO(crbug.com/732991): Update comment and fix redundant #ifs throughout.
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
-    // This function is implemented for ChromeOS only, and the support for
-    // Android, MaxOS and Windows should be added on demand in the future.
     // Called when paired property of the device |device| known to the adapter
     // |adapter| changed.
     virtual void DevicePairedChanged(BluetoothAdapter* adapter,
                                      BluetoothDevice* device,
                                      bool new_paired_status) {}
 
-    // This function is implemented for ChromeOS only.
     // Called when the MTU |mtu| (Bluetooth Spec Vol 3, Part F, 3.4.2) used in
     // ATT communication with device |device| known to the adapter |adapter|
     // changed.
@@ -155,7 +157,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
                                   BluetoothDevice* device,
                                   uint16_t mtu) {}
 
-    // This function is implemented for ChromeOS only.
     // Called when advertisement is received from |device|. |eir| is the
     // extended inquiry response specified in Bluetooth Core Spec, Vol 3,
     // Part C, Section 11.
@@ -168,12 +169,19 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
                                              int16_t rssi,
                                              const std::vector<uint8_t>& eir) {}
 
-    // This function is implemented for ChromeOS only.
     // Called when |device|'s state has changed from connected to not connected
     // or vice versa.
     virtual void DeviceConnectedStateChanged(BluetoothAdapter* adapter,
                                              BluetoothDevice* device,
                                              bool is_now_connected) {}
+#endif
+
+#if defined(OS_CHROMEOS) || defined(OS_LINUX)
+    // Called when the battery level of the device has been updated.
+    virtual void DeviceBatteryChanged(
+        BluetoothAdapter* adapter,
+        BluetoothDevice* device,
+        absl::optional<uint8_t> new_battery_percentage) {}
 #endif
 
     // Called when the device |device| is removed from the adapter |adapter|,
@@ -299,51 +307,72 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
         const std::vector<uint8_t>& value) {}
   };
 
-  // Used to configure a listening servie.
+  // Used to configure a listening service.
   struct DEVICE_BLUETOOTH_EXPORT ServiceOptions {
     ServiceOptions();
     ~ServiceOptions();
 
-    std::unique_ptr<int> channel;
-    std::unique_ptr<int> psm;
-    std::unique_ptr<std::string> name;
+    absl::optional<int> channel;
+    absl::optional<int> psm;
+    absl::optional<std::string> name;
+
+    // Clients can configure this option to choose if they want to enforce
+    // bonding with remote devices that connect to this device. Options:
+    //   * Unset: bonding is not enforced by the local device, and the remote
+    //     device can choose if they want to enforce bonding.
+    //   * Set to false: bonding is prevented by the local device. Clients which
+    //     use this are responsible for securing their communication at the
+    //     application level.
+    //   * Set to true: bonding is enforced by the local device.
+    absl::optional<bool> require_authentication;
   };
 
   // The ErrorCallback is used for methods that can fail in which case it is
   // called, in the success case the callback is simply not called.
-  using ErrorCallback = base::Closure;
-
-  // The InitCallback is used to trigger a callback after asynchronous
-  // initialization, if initialization is asynchronous on the platform.
-  using InitCallback = base::OnceClosure;
+  using ErrorCallback = base::OnceClosure;
 
   using DiscoverySessionCallback =
-      base::Callback<void(std::unique_ptr<BluetoothDiscoverySession>)>;
+      base::OnceCallback<void(std::unique_ptr<BluetoothDiscoverySession>)>;
   using DeviceList = std::vector<BluetoothDevice*>;
   using ConstDeviceList = std::vector<const BluetoothDevice*>;
   using UUIDList = std::vector<BluetoothUUID>;
   using CreateServiceCallback =
-      base::Callback<void(scoped_refptr<BluetoothSocket>)>;
+      base::OnceCallback<void(scoped_refptr<BluetoothSocket>)>;
   using CreateServiceErrorCallback =
-      base::Callback<void(const std::string& message)>;
+      base::OnceCallback<void(const std::string& message)>;
   using CreateAdvertisementCallback =
-      base::Callback<void(scoped_refptr<BluetoothAdvertisement>)>;
-  using AdvertisementErrorCallback =
-      base::Callback<void(BluetoothAdvertisement::ErrorCode)>;
+      base::OnceCallback<void(scoped_refptr<BluetoothAdvertisement>)>;
+  using AdvertisementErrorCallback = BluetoothAdvertisement::ErrorCallback;
+  using ConnectDeviceCallback = base::OnceCallback<void(BluetoothDevice*)>;
+  using DiscoverySessionErrorCallback =
+      base::OnceCallback<void(UMABluetoothDiscoverySessionOutcome)>;
+  // The is_error bool is a flag to indicate if the result is an error(true)
+  // or a success(false)
+  // The Session Outcome is the result which could be success or some sort of
+  // error.  However, this variable is ignored when the bool is false
+  using DiscoverySessionResultCallback =
+      base::OnceCallback<void(/*is_error*/ bool,
+                              UMABluetoothDiscoverySessionOutcome)>;
 
-  // Returns a weak pointer to a new adapter.  For platforms with asynchronous
-  // initialization, the returned adapter will run the |init_callback| once
-  // asynchronous initialization is complete.
-  // Caution: The returned pointer also transfers ownership of the adapter.  The
-  // caller is expected to call |AddRef()| on the returned pointer, typically by
-  // storing it into a |scoped_refptr|.
-  static base::WeakPtr<BluetoothAdapter> CreateAdapter(
-      InitCallback init_callback);
+  enum class DiscoveryState {
+    kStarting = 0,
+    kStopping,
+    kDiscovering,
+    kIdle,
+  };
+
+  enum class PermissionStatus { kUndetermined = 0, kDenied, kAllowed };
+
+  // Creates a new adapter. Initialize() must be called before the adapter can
+  // be used.
+  static scoped_refptr<BluetoothAdapter> CreateAdapter();
+
+  virtual void Initialize(base::OnceClosure callback) = 0;
 
   // Returns a weak pointer to an existing adapter for testing purposes only.
   base::WeakPtr<BluetoothAdapter> GetWeakPtrForTesting();
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   // Shutdown the adapter: tear down and clean up all objects owned by
   // BluetoothAdapter. After this call, the BluetoothAdapter will behave as if
   // no Bluetooth controller exists in the local system. |IsPresent| will return
@@ -365,11 +394,17 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // The name of the adapter.
   virtual std::string GetName() const = 0;
 
+  // The Bluetooth system name. Implementations may return an informational name
+  // "BlueZ 5.54" on Chrome OS.
+  virtual std::string GetSystemName() const;
+
   // Set the human-readable name of the adapter to |name|. On success,
   // |callback| will be called. On failure, |error_callback| will be called.
+  // TODO(crbug.com/1117654): Implement a mechanism to request this resource
+  // before being able to use it.
   virtual void SetName(const std::string& name,
-                       const base::Closure& callback,
-                       const ErrorCallback& error_callback) = 0;
+                       base::OnceClosure callback,
+                       ErrorCallback error_callback) = 0;
 
   // Indicates whether the adapter is initialized and ready to use.
   virtual bool IsInitialized() const = 0;
@@ -386,6 +421,9 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
 
   // Indicates whether the adapter radio is powered.
   virtual bool IsPowered() const = 0;
+
+  // Returns the status of the browser's Bluetooth permission status.
+  virtual PermissionStatus GetOsPermissionStatus() const;
 
   // Requests a change to the adapter radio power. Setting |powered| to true
   // will turn on the radio and false will turn it off. On success, |callback|
@@ -404,8 +442,11 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // SetPowered() don't work correctly when run from a x86 Chrome on a x64 CPU.
   // See https://github.com/Microsoft/cppwinrt/issues/47 for more details.
   virtual void SetPowered(bool powered,
-                          const base::Closure& callback,
-                          const ErrorCallback& error_callback);
+                          base::OnceClosure callback,
+                          ErrorCallback error_callback);
+
+  // Indicates whether the adapter support the LowEnergy peripheral role.
+  virtual bool IsPeripheralRoleSupported() const;
 
   // Indicates whether the adapter radio is discoverable.
   virtual bool IsDiscoverable() const = 0;
@@ -415,8 +456,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // devices. On successfully changing the adapter's discoverability, |callback|
   // will be called. On failure, |error_callback| will be called.
   virtual void SetDiscoverable(bool discoverable,
-                               const base::Closure& callback,
-                               const ErrorCallback& error_callback) = 0;
+                               base::OnceClosure callback,
+                               ErrorCallback error_callback) = 0;
 
   // Indicates whether the adapter is currently discovering new devices.
   virtual bool IsDiscovering() const = 0;
@@ -425,8 +466,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // being connected by Chromium, into |devices_|. This method is useful since
   // a discovery session cannot find devices that are already connected to the
   // computer.
-  // TODO(crbug.com/653032): Needs to be implemented for Android, ChromeOS and
-  // Windows.
+  // TODO(crbug.com/653032): Needs to be implemented for Android and Windows.
   virtual std::unordered_map<BluetoothDevice*, BluetoothDevice::UUIDSet>
   RetrieveGattConnectedDevicesWithDiscoveryFilter(
       const BluetoothDiscoveryFilter& discovery_filter);
@@ -448,21 +488,15 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // that have been discovered so far. Otherwise, clients can be notified of all
   // new and lost devices by implementing the Observer methods "DeviceAdded" and
   // "DeviceRemoved".
-  virtual void StartDiscoverySession(const DiscoverySessionCallback& callback,
-                                     const ErrorCallback& error_callback);
-  virtual void StartDiscoverySessionWithFilter(
+  void StartDiscoverySession(DiscoverySessionCallback callback,
+                             ErrorCallback error_callback);
+  void StartDiscoverySessionWithFilter(
       std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
-      const DiscoverySessionCallback& callback,
-      const ErrorCallback& error_callback);
+      DiscoverySessionCallback callback,
+      ErrorCallback error_callback);
 
   // Return all discovery filters assigned to this adapter merged together.
   std::unique_ptr<BluetoothDiscoveryFilter> GetMergedDiscoveryFilter() const;
-
-  // Works like GetMergedDiscoveryFilter, but doesn't take |masked_filter| into
-  // account. |masked_filter| is compared by pointer, and must be a member of
-  // active session.
-  std::unique_ptr<BluetoothDiscoveryFilter> GetMergedDiscoveryFilterMasked(
-      BluetoothDiscoveryFilter* masked_filter) const;
 
   // Requests the list of devices from the adapter. All devices are returned,
   // including those currently connected, those paired and all devices returned
@@ -518,8 +552,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   virtual void CreateRfcommService(
       const BluetoothUUID& uuid,
       const ServiceOptions& options,
-      const CreateServiceCallback& callback,
-      const CreateServiceErrorCallback& error_callback) = 0;
+      CreateServiceCallback callback,
+      CreateServiceErrorCallback error_callback) = 0;
 
   // Creates an L2CAP service on this adapter advertised with UUID |uuid|,
   // listening on PSM |options.psm|, which may be left null to automatically
@@ -531,8 +565,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   virtual void CreateL2capService(
       const BluetoothUUID& uuid,
       const ServiceOptions& options,
-      const CreateServiceCallback& callback,
-      const CreateServiceErrorCallback& error_callback) = 0;
+      CreateServiceCallback callback,
+      CreateServiceErrorCallback error_callback) = 0;
 
   // Creates and registers an advertisement for broadcast over the LE channel.
   // The created advertisement will be returned via the success callback. An
@@ -540,10 +574,10 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // function.
   virtual void RegisterAdvertisement(
       std::unique_ptr<BluetoothAdvertisement::Data> advertisement_data,
-      const CreateAdvertisementCallback& callback,
-      const AdvertisementErrorCallback& error_callback) = 0;
+      CreateAdvertisementCallback callback,
+      AdvertisementErrorCallback error_callback) = 0;
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   // Sets the interval between two consecutive advertisements. Valid ranges
   // for the interval are from 20ms to 10.24 seconds, with min <= max.
   // Note: This is a best effort. The actual interval may vary non-trivially
@@ -553,14 +587,24 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   virtual void SetAdvertisingInterval(
       const base::TimeDelta& min,
       const base::TimeDelta& max,
-      const base::Closure& callback,
-      const AdvertisementErrorCallback& error_callback) = 0;
+      base::OnceClosure callback,
+      AdvertisementErrorCallback error_callback) = 0;
 
   // Resets advertising on this adapter. This will unregister all existing
   // advertisements and will stop advertising them.
-  virtual void ResetAdvertising(
-      const base::Closure& callback,
-      const AdvertisementErrorCallback& error_callback) = 0;
+  virtual void ResetAdvertising(base::OnceClosure callback,
+                                AdvertisementErrorCallback error_callback) = 0;
+
+  // Connect to a device with |address| that is either undiscovered or not
+  // previously paired or connected. Callers are responsible for ensuring that
+  // the device with |address| is available and nearby via their own out-of-band
+  // mechanism, and should not call this method if GetDevice(address) returns
+  // a valid reference (in which case this method will fail).
+  virtual void ConnectDevice(
+      const std::string& address,
+      const absl::optional<BluetoothDevice::AddressType>& address_type,
+      ConnectDeviceCallback callback,
+      ErrorCallback error_callback) = 0;
 #endif
 
   // Returns the list of pending advertisements that are not registered yet.
@@ -573,15 +617,25 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
       const std::string& identifier) const = 0;
 
   // The following methods are used to send various events to observers.
+  void NotifyAdapterPresentChanged(bool present);
   void NotifyAdapterPoweredChanged(bool powered);
   void NotifyDeviceChanged(BluetoothDevice* device);
+  void NotifyAdapterDiscoveryChangeCompletedForTesting();
 
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
-  // This function is implemented for ChromeOS only, and the support on
-  // Android, MaxOS and Windows should be added on demand in the future.
   void NotifyDevicePairedChanged(BluetoothDevice* device,
                                  bool new_paired_status);
 #endif
+
+#if defined(OS_CHROMEOS) || defined(OS_LINUX)
+  void NotifyDeviceBatteryChanged(BluetoothDevice* device);
+#endif
+
+#if defined(OS_CHROMEOS)
+  void NotifyDeviceIsBlockedByPolicyChanged(BluetoothDevice* device,
+                                            bool new_blocked_status);
+#endif
+
   void NotifyGattServiceAdded(BluetoothRemoteGattService* service);
   void NotifyGattServiceRemoved(BluetoothRemoteGattService* service);
   void NotifyGattServiceChanged(BluetoothRemoteGattService* service);
@@ -600,11 +654,44 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
       BluetoothRemoteGattDescriptor* descriptor,
       const std::vector<uint8_t>& value);
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Set a service allowlist by specifying services UUIDs. When this is called,
+  // existing connections will be disconnected and services not in the allowlist
+  // will be blocked. Device property |IsBlockedByPolicy| will be True if some
+  // of the auto-connect services are blocked, False otherwise.
+  virtual void SetServiceAllowList(const UUIDList& uuids,
+                                   base::OnceClosure callback,
+                                   ErrorCallback error_callback) = 0;
+#endif
+
   // The timeout in seconds used by RemoveTimedOutDevices.
   static const base::TimeDelta timeoutSec;
 
+  // This struct is meant to hold any possible callback from a discovery
+  // request. The purpose of this is to consolidate all discovery request
+  // callbacks into one array that can be handled all at once when the state
+  // desired from all requests is achieved or an error is thrown.
+  struct StartOrStopDiscoveryCallback {
+    StartOrStopDiscoveryCallback(base::OnceClosure start_callback,
+                                 ErrorCallback start_error_callback);
+    StartOrStopDiscoveryCallback(
+        base::OnceClosure stop_callback,
+        DiscoverySessionErrorCallback stop_error_callback);
+    ~StartOrStopDiscoveryCallback();
+
+    // The success callback for a start discovery request.
+    base::OnceClosure start_callback;
+    // The success callback for a stop discovery request.
+    base::OnceClosure stop_callback;
+    // The error callback for a start discovery request.
+    ErrorCallback start_error_callback;
+    // The error callback for a stop discovery request.
+    DiscoverySessionErrorCallback stop_error_callback;
+  };
+
  protected:
   friend class base::RefCounted<BluetoothAdapter>;
+  friend class BluetoothAdapterFactory;
   friend class BluetoothDiscoverySession;
   friend class BluetoothTestBase;
 
@@ -612,8 +699,9 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
       std::unordered_map<std::string, std::unique_ptr<BluetoothDevice>>;
   using PairingDelegatePair =
       std::pair<BluetoothDevice::PairingDelegate*, PairingDelegatePriority>;
-  using DiscoverySessionErrorCallback =
-      base::OnceCallback<void(UMABluetoothDiscoverySessionOutcome)>;
+
+  using CallbackQueue =
+      base::queue<std::unique_ptr<StartOrStopDiscoveryCallback>>;
 
   // Implementations on Android and macOS need to store pending SetPowered()
   // callbacks until an appropriate event is received, due to a lack of blocking
@@ -631,6 +719,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   BluetoothAdapter();
   virtual ~BluetoothAdapter();
 
+  virtual base::WeakPtr<BluetoothAdapter> GetWeakPtr() = 0;
+
   // This method calls into platform specific logic on macOS and Android where
   // pending SetPowered() callbacks need to be stored explicitly.
   virtual bool SetPoweredImpl(bool powered) = 0;
@@ -645,50 +735,45 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // devices and retrieving information from them as long as there are clients
   // who have requested discovery. These methods behave in the following way:
   //
-  // On a call to AddDiscoverySession:
-  //    - If there is a pending request to the subsystem, queue this request to
-  //      execute once the pending requests are done.
-  //    - If the count is 0, issue a request to the subsystem to start
-  //      device discovery. On success, increment the count to 1.
-  //    - If the count is greater than 0, increment the count and return
-  //      success.
-  //    As long as the count is non-zero, the underlying controller will be
-  //    discovering for devices. This means that Chrome will restart device
-  //    scan and inquiry sessions if they ever end, unless these sessions
-  //    terminate due to an unexpected reason.
+  // On a call to StartScanWithFilter:
+  //    - This should only be called when we get the first request to start the
+  //      scan with only the initial filter in that request.
+  //    - This function should do the OS specific things to get the filter
+  //      started.
+  //    - When finished it should callback with success or the appropriate
+  //    Output for an error.
+  // On a call to UpdateFilter:
+  //    - The scan should already be started or at least starting.
+  //    - This function takes in a filter and should do all the OS specifics
+  //      needed to update the scan with the new filter.
+  //    - When finished it should call the callback with success or the
+  //      appropriate output for an error
   //
-  // On a call to RemoveDiscoverySession:
-  //    - If there is a pending request to the subsystem, queue this request to
-  //      execute once the pending requests are done.
-  //    - If the count is 0, return failure, as there is no active discovery
-  //      session.
-  //    - If the count is 1, issue a request to the subsystem to stop device
-  //      discovery and decrement the count to 0 on success.
-  //    - If the count is greater than 1, decrement the count and return
-  //      success.
-  //
-  // |discovery_filter| passed to AddDiscoverySession and RemoveDiscoverySession
-  // is owned by other objects and shall not be freed.  When the count is
-  // greater than 0 and AddDiscoverySession or RemoveDiscoverySession is called
-  // the filter being used by the underlying controller must be updated.
-  //
-  // These methods invoke |callback| for success and |error_callback| for
-  // failures.
-  virtual void AddDiscoverySession(
-      BluetoothDiscoveryFilter* discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) = 0;
-  virtual void RemoveDiscoverySession(
-      BluetoothDiscoveryFilter* discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) = 0;
+  // On a call to StopScan:
+  //    - Make a request to the physical adapter that we no longer needs to
+  //      be scanning
+  //    - When finished it should callback with success.  If an error is thrown
+  //      we still return success to the user and update our internal state to
+  //      say that we are not discovering.
 
-  // Used to set and update the discovery filter used by the underlying
-  // Bluetooth controller.
-  virtual void SetDiscoveryFilter(
+  virtual void StartScanWithFilter(
       std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
-      const base::Closure& callback,
-      DiscoverySessionErrorCallback error_callback) = 0;
+      DiscoverySessionResultCallback callback) = 0;
+  virtual void UpdateFilter(
+      std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
+      DiscoverySessionResultCallback callback) = 0;
+  virtual void StopScan(DiscoverySessionResultCallback callback) = 0;
+
+  // Removes the |discovery_session| from |discovery_sessions_| and updates
+  // accordingly
+  void RemoveDiscoverySession(BluetoothDiscoverySession* discovery_session,
+                              base::OnceClosure callback,
+                              DiscoverySessionErrorCallback error_callback);
+  // Helper function that short circuits a successful callback if the filter is
+  // the same as the current filter.
+  void MaybeUpdateFilter(
+      std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
+      DiscoverySessionResultCallback callback);
 
   // Called by RemovePairingDelegate() in order to perform any class-specific
   // internal functionality necessary to remove the pairing delegate, such as
@@ -696,26 +781,10 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   virtual void RemovePairingDelegateInternal(
       BluetoothDevice::PairingDelegate* pairing_delegate) = 0;
 
-  // Success callback passed to AddDiscoverySession by StartDiscoverySession.
-  void OnStartDiscoverySession(
-      std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
-      const DiscoverySessionCallback& callback);
-
-  // Error callback passed to AddDiscoverySession by StartDiscoverySession.
-  void OnStartDiscoverySessionError(
-      const ErrorCallback& callback,
-      UMABluetoothDiscoverySessionOutcome outcome);
-
   // Marks all known DiscoverySession instances as inactive. Called by
   // BluetoothAdapter in the event that the adapter unexpectedly stops
   // discovering. This should be called by all platform implementations.
   void MarkDiscoverySessionsAsInactive();
-
-  // Removes |discovery_session| from |discovery_sessions_|, if its in there.
-  // Called by DiscoverySession when an instance is destroyed or becomes
-  // inactive.
-  void DiscoverySessionBecameInactive(
-      BluetoothDiscoverySession* discovery_session);
 
   void DeleteDeviceForTesting(const std::string& address);
 
@@ -724,6 +793,11 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // this is only used by platforms where there is no notification of
   // lost devices.
   void RemoveTimedOutDevices();
+
+  int NumDiscoverySessions() const;
+
+  // Number of DiscoverySessions with the status of SCANNING.
+  int NumScanningDiscoverySessions() const;
 
   // UI thread task runner.
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
@@ -743,21 +817,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // SetPowered() callbacks, only relevant for macOS and Android.
   std::unique_ptr<SetPoweredCallbacks> set_powered_callbacks_;
 
- private:
-  // Histograms the result of StartDiscoverySession.
-  static void RecordBluetoothDiscoverySessionStartOutcome(
-      UMABluetoothDiscoverySessionOutcome outcome);
-
-  // Histograms the result of BluetoothDiscoverySession::Stop.
-  static void RecordBluetoothDiscoverySessionStopOutcome(
-      UMABluetoothDiscoverySessionOutcome outcome);
-
-  // Return all discovery filters assigned to this adapter merged together.
-  // If |omit| is true, |discovery_filter| will not be processed.
-  std::unique_ptr<BluetoothDiscoveryFilter> GetMergedDiscoveryFilterHelper(
-      const BluetoothDiscoveryFilter* discovery_filter,
-      bool omit) const;
-
   // List of active DiscoverySession objects. This is used to notify sessions to
   // become inactive in case of an unexpected change to the adapter discovery
   // state. We keep raw pointers, with the invariant that a DiscoverySession
@@ -766,9 +825,44 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // deallocated sessions are kept.
   std::set<BluetoothDiscoverySession*> discovery_sessions_;
 
-  // Note: This should remain the last member so it'll be destroyed and
-  // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<BluetoothAdapter> weak_ptr_factory_;
+ private:
+  // This is the callback for all OS level calls to StartScanWithFilter,
+  // UpdateFilter, and StopScan.  It updates the state accordingly, calls all
+  // appropriate callbacks, and calls ProcessDiscoveryQueue().
+  void OnDiscoveryChangeComplete(bool is_error,
+                                 UMABluetoothDiscoverySessionOutcome outcome);
+
+  // This method processes all queued requests that have been waiting for a
+  // process to finish.
+  void ProcessDiscoveryQueue();
+
+  // Utility method used to call all callbacks in the case of an error in a
+  // process
+  void NotifyDiscoveryError(CallbackQueue queue);
+
+  // Utility function to update our internal state after a process has
+  // completed(example: kStarting -> kDiscovering)
+  void UpdateDiscoveryState(bool is_error);
+
+  // List of callbacks for requests that have been queued up and are awaiting a
+  // process to finish before they can begin the request
+  CallbackQueue discovery_callback_queue_;
+  // List of callbacks whose requests are currently being processed by the OS
+  // level adapter
+  CallbackQueue callbacks_awaiting_response_;
+
+  // Discovery filter currently being used by the adapter
+  device::BluetoothDiscoveryFilter current_discovery_filter_;
+  // Discovery filter that is about to be set in the OS level adapter.  After
+  // the process that is implementing this feature is finished this will become
+  // the |current_discovery_filter_|.
+  device::BluetoothDiscoveryFilter filter_being_set_;
+
+  // True, if there is a pending request to start or stop discovery.
+  bool discovery_request_pending_ = false;
+
+  // enum used to track our internal discovery state.
+  DiscoveryState internal_discovery_state_ = DiscoveryState::kIdle;
 };
 
 }  // namespace device

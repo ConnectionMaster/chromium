@@ -6,8 +6,10 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "content/renderer/pepper/host_globals.h"
 #include "content/renderer/pepper/pepper_plugin_instance_impl.h"
 #include "content/renderer/pepper/plugin_module.h"
@@ -129,7 +131,8 @@ bool PPB_VideoDecoder_Impl::Init(PP_Resource graphics_context,
   // This is not synchronous, but subsequent IPC messages will be buffered, so
   // it is okay to immediately send IPC messages.
   if (command_buffer->channel()) {
-    decoder_.reset(new media::GpuVideoDecodeAcceleratorHost(command_buffer));
+    decoder_ = base::WrapUnique<media::VideoDecodeAccelerator>(
+        new media::GpuVideoDecodeAcceleratorHost(command_buffer));
     media::VideoDecodeAccelerator::Config config(PPToMediaProfile(profile));
     config.supported_output_formats.assign(
         {media::PIXEL_FORMAT_XRGB, media::PIXEL_FORMAT_ARGB});
@@ -162,14 +165,16 @@ int32_t PPB_VideoDecoder_Impl::Decode(
 
   PPB_Buffer_Impl* buffer = static_cast<PPB_Buffer_Impl*>(enter.object());
   DCHECK_GE(bitstream_buffer->id, 0);
+  // TODO(crbug.com/844456): The shared memory buffer probably can be read-only,
+  // but only after PPB_Buffer_Impl is updated to deal with that.
   media::BitstreamBuffer decode_buffer(bitstream_buffer->id,
-                                       buffer->shared_memory()->handle(),
+                                       buffer->shared_memory().Duplicate(),
                                        bitstream_buffer->size);
   if (!SetBitstreamBufferCallback(bitstream_buffer->id, callback))
     return PP_ERROR_BADARGUMENT;
 
   FlushCommandBuffer();
-  decoder_->Decode(decode_buffer);
+  decoder_->Decode(std::move(decode_buffer));
   return PP_OK_COMPLETIONPENDING;
 }
 

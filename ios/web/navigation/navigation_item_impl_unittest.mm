@@ -6,7 +6,6 @@
 
 #include <memory>
 
-#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ios/web/navigation/wk_navigation_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -52,18 +51,17 @@ TEST_F(NavigationItemTest, Dummy) {
 #ifndef NDEBUG
 // Tests that the debug description is as expected.
 TEST_F(NavigationItemTest, Description) {
-  item_->SetTitle(base::UTF8ToUTF16("Title"));
+  item_->SetTitle(u"Title");
   NSString* description = item_->GetDescription();
   EXPECT_TRUE([description containsString:@"url:http://init.test/"]);
   EXPECT_TRUE([description containsString:@"originalurl:http://init.test/"]);
   EXPECT_TRUE([description containsString:@"title:Title"]);
   EXPECT_TRUE([description containsString:@"transition:2"]);
-  EXPECT_TRUE([description containsString:@"userAgentType:MOBILE"]);
-  EXPECT_TRUE([description containsString:@"is_create_from_push_state: false"]);
-  EXPECT_TRUE([description containsString:@"has_state_been_replaced: false"]);
+  EXPECT_TRUE([description containsString:@"userAgent:NONE"]);
   EXPECT_TRUE(
       [description containsString:@"is_created_from_hash_change: false"]);
   EXPECT_TRUE([description containsString:@"navigation_initiation_type: 0"]);
+  EXPECT_TRUE([description containsString:@"is_upgraded_to_https: false"]);
 }
 #endif
 
@@ -161,9 +159,15 @@ TEST_F(NavigationItemTest, VirtualURLTest) {
   EXPECT_EQ(original_url, item_->GetURL());
 }
 
+// Tests setting title longer than kMaxTitleLength.
+TEST_F(NavigationItemTest, ExtraLongTitle) {
+  item_->SetTitle(base::UTF8ToUTF16(std::string(kMaxTitleLength + 1, 'i')));
+  EXPECT_EQ(kMaxTitleLength, item_->GetTitle().size());
+}
+
 // Tests NavigationItemImpl::GetDisplayTitleForURL method.
 TEST_F(NavigationItemTest, GetDisplayTitleForURL) {
-  base::string16 title;
+  std::u16string title;
 
   title = NavigationItemImpl::GetDisplayTitleForURL(GURL("http://foo.org/"));
   EXPECT_EQ("foo.org", base::UTF16ToUTF8(title));
@@ -173,6 +177,50 @@ TEST_F(NavigationItemTest, GetDisplayTitleForURL) {
 
   title = NavigationItemImpl::GetDisplayTitleForURL(GURL("file://foo/1.gz"));
   EXPECT_EQ("1.gz", base::UTF16ToUTF8(title));
+}
+
+// Tests NavigationItemImpl::GetTitleForDisplay method
+TEST_F(NavigationItemTest, GetTitleForDisplay) {
+  item_->SetURL(GURL("file://foo/test.pdf"));
+  item_->SetVirtualURL(GURL("testappspecific://foo/"));
+  EXPECT_EQ("test.pdf", base::UTF16ToUTF8(item_->GetTitleForDisplay()));
+
+  item_->SetURL(GURL("testappspecific://foo/test.pdf"));
+  item_->SetVirtualURL(GURL("testappspecific://foo/test.pdf"));
+  EXPECT_EQ("testappspecific://foo/test.pdf",
+            base::UTF16ToUTF8(item_->GetTitleForDisplay()));
+}
+
+// Tests that RestoreStateFromItem correctly restore the state.
+TEST_F(NavigationItemTest, RestoreState) {
+  NavigationItemImpl other_item;
+  other_item.SetUserAgentType(UserAgentType::DESKTOP);
+  PageDisplayState display_state;
+  display_state.set_scroll_state(
+      PageScrollState(CGPointMake(0, 10), UIEdgeInsetsMake(10, 10, 2, 2)));
+  other_item.SetPageDisplayState(display_state);
+  other_item.SetURL(GURL("www.otherurl.com"));
+  other_item.SetVirtualURL(GURL("www.virtual.com"));
+
+  ASSERT_NE(other_item.GetURL(), item_->GetURL());
+
+  // With a different URL, only the UserAgent should be restored.
+  item_->RestoreStateFromItem(&other_item);
+  EXPECT_EQ(other_item.GetUserAgentType(), item_->GetUserAgentType());
+  EXPECT_NE(other_item.GetPageDisplayState(), item_->GetPageDisplayState());
+  EXPECT_NE(other_item.GetVirtualURL(), item_->GetVirtualURL());
+
+  NavigationItemImpl other_item2;
+  other_item2.SetUserAgentType(UserAgentType::DESKTOP);
+  other_item2.SetPageDisplayState(display_state);
+  other_item2.SetURL(item_->GetURL());
+  other_item2.SetVirtualURL(GURL("www.virtual.com"));
+
+  // Same URL, everything is restored.
+  item_->RestoreStateFromItem(&other_item2);
+  EXPECT_EQ(other_item2.GetUserAgentType(), item_->GetUserAgentType());
+  EXPECT_EQ(other_item2.GetPageDisplayState(), item_->GetPageDisplayState());
+  EXPECT_EQ(other_item2.GetVirtualURL(), item_->GetVirtualURL());
 }
 
 }  // namespace

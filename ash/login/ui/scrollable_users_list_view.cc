@@ -7,17 +7,20 @@
 #include <limits>
 #include <memory>
 
+#include "ash/login/ui/login_constants.h"
 #include "ash/login/ui/login_display_style.h"
 #include "ash/login/ui/login_user_view.h"
 #include "ash/login/ui/non_accessible_view.h"
 #include "ash/login/ui/views_utils.h"
-#include "ash/public/cpp/login_constants.h"
-#include "ash/public/interfaces/login_user_info.mojom.h"
 #include "ash/shell.h"
-#include "ash/wallpaper/wallpaper_controller.h"
+#include "ash/style/ash_color_provider.h"
+#include "ash/style/default_color_constants.h"
+#include "ash/wallpaper/wallpaper_controller_impl.h"
 #include "base/bind.h"
 #include "base/numerics/ranges.h"
 #include "base/timer/timer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/canvas.h"
@@ -56,8 +59,6 @@ constexpr int kScrollThumbThicknessDp = 6;
 constexpr int kScrollThumbPaddingDp = 8;
 // Radius of the scroll bar thumb.
 constexpr int kScrollThumbRadiusDp = 8;
-// Alpha of scroll bar thumb (43/255 = 17%).
-constexpr int kScrollThumbAlpha = 43;
 // How long for the scrollbar to hide after no scroll events have been received?
 constexpr base::TimeDelta kScrollThumbHideTimeout =
     base::TimeDelta::FromMilliseconds(500);
@@ -102,10 +103,12 @@ class ScrollBarThumb : public views::BaseScrollBarThumb {
   gfx::Size CalculatePreferredSize() const override {
     return gfx::Size(kScrollThumbThicknessDp, kScrollThumbThicknessDp);
   }
+
   void OnPaint(gfx::Canvas* canvas) override {
     cc::PaintFlags fill_flags;
     fill_flags.setStyle(cc::PaintFlags::kFill_Style);
-    fill_flags.setColor(SkColorSetA(SK_ColorWHITE, kScrollThumbAlpha));
+    fill_flags.setColor(AshColorProvider::Get()->GetContentLayerColor(
+        AshColorProvider::ContentLayerType::kLoginScrollBarColor));
     canvas->DrawRoundRect(GetLocalBounds(), kScrollThumbRadiusDp, fill_flags);
   }
 
@@ -251,11 +254,9 @@ ScrollableUsersListView::GradientParams::BuildForStyle(
               color_utils::ColorProfile(color_utils::LumaRange::DARK,
                                         color_utils::SaturationRange::MUTED));
       SkColor tint_color = color_utils::GetResultingPaintColor(
-          SkColorSetA(login_constants::kDefaultBaseColor,
-                      login_constants::kTranslucentColorDarkenAlpha),
+          AshColorProvider::Get()->GetShieldLayerColor(
+              AshColorProvider::ShieldLayerType::kShield80),
           SkColorSetA(dark_muted_color, SK_AlphaOPAQUE));
-      tint_color =
-          SkColorSetA(tint_color, login_constants::kScrollTranslucentAlpha);
 
       GradientParams params;
       params.color_from = dark_muted_color;
@@ -286,7 +287,7 @@ ScrollableUsersListView::TestApi::user_views() const {
 }
 
 ScrollableUsersListView::ScrollableUsersListView(
-    const std::vector<mojom::LoginUserInfoPtr>& users,
+    const std::vector<LoginUserInfo>& users,
     const ActionWithUser& on_tap_user,
     LoginDisplayStyle display_style)
     : display_style_(display_style) {
@@ -296,20 +297,20 @@ ScrollableUsersListView::ScrollableUsersListView(
   user_view_host_ = new NonAccessibleView();
   user_view_host_layout_ =
       user_view_host_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-          views::BoxLayout::kVertical, gfx::Insets(),
+          views::BoxLayout::Orientation::kVertical, gfx::Insets(),
           layout_params.between_child_spacing));
   user_view_host_layout_->set_minimum_cross_axis_size(
       LoginUserView::WidthForLayoutStyle(display_style));
   user_view_host_layout_->set_main_axis_alignment(
-      views::BoxLayout::MAIN_AXIS_ALIGNMENT_CENTER);
+      views::BoxLayout::MainAxisAlignment::kCenter);
   user_view_host_layout_->set_cross_axis_alignment(
-      views::BoxLayout::CROSS_AXIS_ALIGNMENT_CENTER);
+      views::BoxLayout::CrossAxisAlignment::kCenter);
 
   for (std::size_t i = 1u; i < users.size(); ++i) {
-    auto* view = new LoginUserView(
-        display_style, false /*show_dropdown*/, false /*show_domain*/,
-        base::BindRepeating(on_tap_user, i - 1), base::RepeatingClosure(),
-        base::RepeatingClosure());
+    auto* view =
+        new LoginUserView(display_style, false /*show_dropdown*/,
+                          base::BindRepeating(on_tap_user, i - 1),
+                          base::RepeatingClosure(), base::RepeatingClosure());
     user_views_.push_back(view);
     view->UpdateForUser(users[i], false /*animate*/);
     user_view_host_->AddChildView(view);
@@ -327,18 +328,18 @@ ScrollableUsersListView::ScrollableUsersListView(
   // to be vertically centered when non-scrollable.
   auto ensure_min_height = std::make_unique<EnsureMinHeightView>();
   ensure_min_height
-      ->SetLayoutManager(
-          std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical))
-      ->set_main_axis_alignment(views::BoxLayout::MAIN_AXIS_ALIGNMENT_CENTER);
+      ->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical))
+      ->set_main_axis_alignment(views::BoxLayout::MainAxisAlignment::kCenter);
   ensure_min_height->AddChildView(user_view_host_);
   SetContents(std::move(ensure_min_height));
-  SetBackgroundColor(SK_ColorTRANSPARENT);
-  set_draw_overflow_indicator(false);
+  SetBackgroundColor(absl::nullopt);
+  SetDrawOverflowIndicator(false);
 
-  SetVerticalScrollBar(new UsersListScrollBar(false));
-  SetHorizontalScrollBar(new UsersListScrollBar(true));
+  SetVerticalScrollBar(std::make_unique<UsersListScrollBar>(false));
+  SetHorizontalScrollBar(std::make_unique<UsersListScrollBar>(true));
 
-  observer_.Add(Shell::Get()->wallpaper_controller());
+  observation_.Observe(Shell::Get()->wallpaper_controller());
 }
 
 ScrollableUsersListView::~ScrollableUsersListView() = default;
@@ -346,10 +347,20 @@ ScrollableUsersListView::~ScrollableUsersListView() = default;
 LoginUserView* ScrollableUsersListView::GetUserView(
     const AccountId& account_id) {
   for (auto* view : user_views_) {
-    if (view->current_user()->basic_user_info->account_id == account_id)
+    if (view->current_user().basic_user_info.account_id == account_id)
       return view;
   }
   return nullptr;
+}
+
+void ScrollableUsersListView::UpdateUserViewHostLayoutInsets() {
+  DCHECK(GetWidget());
+  bool should_show_landscape =
+      login_views_utils::ShouldShowLandscape(GetWidget());
+  LayoutParams layout_params = BuildLayoutForStyle(display_style_);
+  user_view_host_layout_->set_inside_border_insets(
+      should_show_landscape ? layout_params.insets_landscape
+                            : layout_params.insets_portrait);
 }
 
 void ScrollableUsersListView::Layout() {
@@ -363,13 +374,7 @@ void ScrollableUsersListView::Layout() {
       PreferredSizeChanged();
   }
 
-  // Update the user view layout.
-  bool should_show_landscape =
-      login_views_utils::ShouldShowLandscape(GetWidget());
-  LayoutParams layout_params = BuildLayoutForStyle(display_style_);
-  user_view_host_layout_->set_inside_border_insets(
-      should_show_landscape ? layout_params.insets_landscape
-                            : layout_params.insets_portrait);
+  UpdateUserViewHostLayoutInsets();
 
   // Layout everything.
   ScrollView::Layout();
@@ -388,11 +393,11 @@ void ScrollableUsersListView::OnPaintBackground(gfx::Canvas* canvas) {
 
   // Only draw a gradient if the wallpaper is blurred. Otherwise, draw a rounded
   // rectangle.
-  if (ash::Shell::Get()->wallpaper_controller()->IsWallpaperBlurred()) {
+  if (Shell::Get()->wallpaper_controller()->IsWallpaperBlurredForLockState()) {
     cc::PaintFlags flags;
 
     // Only draw a gradient if the content can be scrolled.
-    if (vertical_scroll_bar()->visible()) {
+    if (vertical_scroll_bar()->GetVisible()) {
       // Draws symmetrical linear gradient at the top and bottom of the view.
       SkScalar view_height = render_bounds.height();
       SkScalar gradient_height = gradient_params_.height;
@@ -423,13 +428,16 @@ void ScrollableUsersListView::OnPaintBackground(gfx::Canvas* canvas) {
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setStyle(cc::PaintFlags::kFill_Style);
-    flags.setColor(
-        SkColorSetA(login_constants::kDefaultBaseColor,
-                    login_constants::kNonBlurredWallpaperBackgroundAlpha));
-    canvas->DrawRoundRect(
-        render_bounds, login_constants::kNonBlurredWallpaperBackgroundRadiusDp,
-        flags);
+    flags.setColor(AshColorProvider::Get()->GetShieldLayerColor(
+        AshColorProvider::ShieldLayerType::kShield80));
+    canvas->DrawRoundRect(render_bounds,
+                          login::kNonBlurredWallpaperBackgroundRadiusDp, flags);
   }
+}
+
+void ScrollableUsersListView::OnThemeChanged() {
+  views::ScrollView::OnThemeChanged();
+  gradient_params_ = GradientParams::BuildForStyle(display_style_);
 }
 
 // When the active user is updated, the wallpaper changes. The gradient color

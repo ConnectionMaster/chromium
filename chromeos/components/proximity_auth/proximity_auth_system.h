@@ -10,7 +10,6 @@
 
 #include "base/macros.h"
 #include "chromeos/components/multidevice/remote_device_ref.h"
-#include "chromeos/components/proximity_auth/remote_device_life_cycle.h"
 #include "chromeos/components/proximity_auth/screenlock_bridge.h"
 #include "components/account_id/account_id.h"
 
@@ -23,6 +22,7 @@ class SecureChannelClient;
 namespace proximity_auth {
 
 class ProximityAuthClient;
+class RemoteDeviceLifeCycle;
 class UnlockManager;
 
 // This is the main entry point to start Proximity Auth, the underlying system
@@ -30,8 +30,7 @@ class UnlockManager;
 // phone) for each registered user, the system will handle the connection,
 // authentication, and messenging protocol when the screen is locked and the
 // registered user is focused.
-class ProximityAuthSystem : public RemoteDeviceLifeCycle::Observer,
-                            public ScreenlockBridge::Observer {
+class ProximityAuthSystem : public ScreenlockBridge::Observer {
  public:
   enum ScreenlockType { SESSION_LOCK, SIGN_IN };
 
@@ -55,7 +54,7 @@ class ProximityAuthSystem : public RemoteDeviceLifeCycle::Observer,
   void SetRemoteDevicesForUser(
       const AccountId& account_id,
       const chromeos::multidevice::RemoteDeviceRefList& remote_devices,
-      base::Optional<chromeos::multidevice::RemoteDeviceRef> local_device);
+      absl::optional<chromeos::multidevice::RemoteDeviceRef> local_device);
 
   // Returns the RemoteDevices registered for |account_id|. Returns an empty
   // list
@@ -64,7 +63,7 @@ class ProximityAuthSystem : public RemoteDeviceLifeCycle::Observer,
       const AccountId& account_id) const;
 
   // Called when the user clicks the user pod and attempts to unlock/sign-in.
-  void OnAuthAttempted(const AccountId& account_id);
+  void OnAuthAttempted();
 
   // Called when the system suspends.
   void OnSuspend();
@@ -89,11 +88,7 @@ class ProximityAuthSystem : public RemoteDeviceLifeCycle::Observer,
   // Exposed for testing.
   virtual std::unique_ptr<RemoteDeviceLifeCycle> CreateRemoteDeviceLifeCycle(
       chromeos::multidevice::RemoteDeviceRef remote_device,
-      base::Optional<chromeos::multidevice::RemoteDeviceRef> local_device);
-
-  // RemoteDeviceLifeCycle::Observer:
-  void OnLifeCycleStateChanged(RemoteDeviceLifeCycle::State old_state,
-                               RemoteDeviceLifeCycle::State new_state) override;
+      absl::optional<chromeos::multidevice::RemoteDeviceRef> local_device);
 
   // ScreenlockBridge::Observer:
   void OnScreenDidLock(

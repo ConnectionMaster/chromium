@@ -8,7 +8,7 @@
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/thread_checker.h"
+#include "base/sequence_checker.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_decoder.h"
 #include "media/base/video_decoder_config.h"
@@ -27,6 +27,16 @@ class CancellationHelper;
 // and Reset() does not need to wait for |reset_cb| to return.
 class MEDIA_EXPORT OffloadableVideoDecoder : public VideoDecoder {
  public:
+  enum class OffloadState {
+    kOffloaded,  // Indicates the VideoDecoder is being used with
+                 // OffloadingVideoDecoder and that callbacks provided to
+                 // VideoDecoder methods should not be bound to the current
+                 // loop.
+
+    kNormal,  // Indicates the VideoDecoder is being used as a normal
+              // VideoDecoder, meaning callbacks should always be asynchronous.
+  };
+
   ~OffloadableVideoDecoder() override {}
 
   // Called by the OffloadingVideoDecoder when closing the decoder and switching
@@ -78,16 +88,16 @@ class MEDIA_EXPORT OffloadingVideoDecoder : public VideoDecoder {
   ~OffloadingVideoDecoder() override;
 
   // VideoDecoder implementation.
-  std::string GetDisplayName() const override;
+  bool IsOptimizedForRTC() const override;
+  VideoDecoderType GetDecoderType() const override;
   void Initialize(const VideoDecoderConfig& config,
                   bool low_delay,
                   CdmContext* cdm_context,
-                  const InitCB& init_cb,
+                  InitCB init_cb,
                   const OutputCB& output_cb,
                   const WaitingCB& waiting_cb) override;
-  void Decode(scoped_refptr<DecoderBuffer> buffer,
-              const DecodeCB& decode_cb) override;
-  void Reset(const base::Closure& reset_cb) override;
+  void Decode(scoped_refptr<DecoderBuffer> buffer, DecodeCB decode_cb) override;
+  void Reset(base::OnceClosure reset_cb) override;
   int GetMaxDecodeRequests() const override;
 
  private:
@@ -101,7 +111,7 @@ class MEDIA_EXPORT OffloadingVideoDecoder : public VideoDecoder {
   // Indicates if Initialize() has been called.
   bool initialized_ = false;
 
-  THREAD_CHECKER(thread_checker_);
+  SEQUENCE_CHECKER(sequence_checker_);
 
   // A helper class for managing Decode() and Reset() calls to the offloaded
   // decoder; it owns the given OffloadableVideoDecoder and is always destructed
@@ -113,7 +123,7 @@ class MEDIA_EXPORT OffloadingVideoDecoder : public VideoDecoder {
   scoped_refptr<base::SequencedTaskRunner> offload_task_runner_;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
-  base::WeakPtrFactory<OffloadingVideoDecoder> weak_factory_;
+  base::WeakPtrFactory<OffloadingVideoDecoder> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(OffloadingVideoDecoder);
 };

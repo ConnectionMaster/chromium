@@ -86,7 +86,6 @@ class TabLayer : public Layer {
                      float content_width,
                      float content_height,
                      float view_width,
-                     float view_height,
                      bool show_toolbar,
                      int default_theme_color,
                      int toolbar_background_color,
@@ -95,9 +94,9 @@ class TabLayer : public Layer {
                      bool show_tab_title,
                      int toolbar_textbox_resource_id,
                      int toolbar_textbox_background_color,
-                     float toolbar_textbox_alpha,
                      float toolbar_alpha,
                      float toolbar_y_offset,
+                     float content_offset,
                      float side_border_scale,
                      bool inset_border);
 
@@ -155,9 +154,12 @@ class TabLayer : public Layer {
   scoped_refptr<cc::SolidColorLayer> side_padding_;
   scoped_refptr<cc::SolidColorLayer> bottom_padding_;
   scoped_refptr<cc::UIResourceLayer> close_button_;
+
   scoped_refptr<cc::NinePatchLayer> front_border_;
   scoped_refptr<cc::NinePatchLayer> front_border_inner_shadow_;
+
   scoped_refptr<cc::NinePatchLayer> contour_shadow_;
+
   scoped_refptr<cc::NinePatchLayer> shadow_;
   scoped_refptr<cc::UIResourceLayer> back_logo_;
   float brightness_;

@@ -20,15 +20,12 @@ namespace {
 
 const int64_t kTestOfflineID = 111;
 const int64_t kTestOfflineIDFailedToAdd = 223344;
-const GURL kTestURL("http://sample.org");
-const GURL kTestFinalURL("https://sample.org/foo");
+
 const ClientId kTestClientID("Foo", "C56A4180-65AA-42EC-A945-5FD21DEC0538");
-const base::string16 kTestTitle = base::UTF8ToUTF16("Hello");
+const std::u16string kTestTitle = u"Hello";
 const base::FilePath kTestFilePath(FILE_PATH_LITERAL("foo"));
 const int64_t kTestFileSize = 88888;
-GURL TestFaviconURL() {
-  return GURL("http://sample.org/favicon.png");
-}
+
 std::string TestSnippet() {
   return "test snippet";
 }
@@ -50,7 +47,7 @@ class TestOfflinePageModel : public StubOfflinePageModel {
         page.offline_id);
   }
 
-  const base::FilePath& GetInternalArchiveDirectory(
+  const base::FilePath& GetArchiveDirectory(
       const std::string& name_space) const override {
     return archive_dir_.GetPath();
   }
@@ -75,18 +72,21 @@ class PrefetchImporterImplTest : public testing::Test {
 
   void SetUp() override { ASSERT_TRUE(temp_dir_.CreateUniqueTempDir()); }
 
-  void ImportArchive(int64_t offline_id, const base::FilePath& file_path) {
+  void ImportArchive(int64_t offline_id,
+                     GURL url,
+                     GURL final_url,
+                     const base::FilePath& file_path) {
     PrefetchImporterImpl importer(dispatcher(), &model_, task_runner_);
 
     PrefetchArchiveInfo archive;
     archive.offline_id = offline_id;
     archive.client_id = kTestClientID;
-    archive.url = kTestURL;
-    archive.final_archived_url = kTestFinalURL;
+    archive.url = std::move(url);
+    archive.final_archived_url = std::move(final_url);
     archive.title = kTestTitle;
     archive.file_path = file_path;
     archive.file_size = kTestFileSize;
-    archive.favicon_url = TestFaviconURL();
+    archive.favicon_url = GURL("http://sample.org/favicon.png");
     archive.snippet = TestSnippet();
     archive.attribution = TestAttribution();
     importer.ImportArchive(archive);
@@ -110,9 +110,11 @@ class PrefetchImporterImplTest : public testing::Test {
 };
 
 TEST_F(PrefetchImporterImplTest, ImportSuccess) {
+  const GURL kUrl("http://sample.org");
+  const GURL kFinalUrl("https://sample.org/foo");
   base::FilePath path;
   base::CreateTemporaryFileInDir(temp_dir_path(), &path);
-  ImportArchive(kTestOfflineID, path);
+  ImportArchive(kTestOfflineID, kUrl, kFinalUrl, path);
 
   ASSERT_EQ(1u, dispatcher()->import_results.size());
   EXPECT_EQ(kTestOfflineID, dispatcher()->import_results[0].first);
@@ -121,8 +123,8 @@ TEST_F(PrefetchImporterImplTest, ImportSuccess) {
   EXPECT_TRUE(offline_page_model()->page_added());
   EXPECT_EQ(kTestOfflineID, offline_page_model()->last_added_page().offline_id);
   EXPECT_EQ(kTestClientID, offline_page_model()->last_added_page().client_id);
-  EXPECT_EQ(kTestFinalURL, offline_page_model()->last_added_page().url);
-  EXPECT_EQ(kTestURL,
+  EXPECT_EQ(kFinalUrl, offline_page_model()->last_added_page().url);
+  EXPECT_EQ(kUrl,
             offline_page_model()->last_added_page().original_url_if_different);
   EXPECT_EQ(kTestTitle, offline_page_model()->last_added_page().title);
   EXPECT_EQ(kTestFileSize, offline_page_model()->last_added_page().file_size);
@@ -133,7 +135,8 @@ TEST_F(PrefetchImporterImplTest, ImportSuccess) {
 }
 
 TEST_F(PrefetchImporterImplTest, MoveFileError) {
-  ImportArchive(kTestOfflineID, kTestFilePath);
+  ImportArchive(kTestOfflineID, GURL("http://sample.org"),
+                GURL("https://sample.org/foo"), kTestFilePath);
 
   ASSERT_EQ(1u, dispatcher()->import_results.size());
   EXPECT_EQ(kTestOfflineID, dispatcher()->import_results[0].first);
@@ -145,7 +148,8 @@ TEST_F(PrefetchImporterImplTest, MoveFileError) {
 TEST_F(PrefetchImporterImplTest, AddPageError) {
   base::FilePath path;
   base::CreateTemporaryFileInDir(temp_dir_path(), &path);
-  ImportArchive(kTestOfflineIDFailedToAdd, path);
+  ImportArchive(kTestOfflineIDFailedToAdd, GURL("http://sample.org"),
+                GURL("https://sample.org/foo"), path);
 
   ASSERT_EQ(1u, dispatcher()->import_results.size());
   EXPECT_EQ(kTestOfflineIDFailedToAdd, dispatcher()->import_results[0].first);

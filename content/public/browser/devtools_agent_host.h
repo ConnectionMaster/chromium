@@ -10,17 +10,22 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_agent_host_observer.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/network/public/mojom/network_context.mojom-forward.h"
+#include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace base {
+class RefCountedMemory;
 class SingleThreadTaskRunner;
-}
+}  // namespace base
 
 namespace net {
 class ServerSocket;
@@ -33,6 +38,7 @@ class DevToolsExternalAgentProxyDelegate;
 class DevToolsSocketFactory;
 class RenderFrameHost;
 class WebContents;
+class RenderProcessHost;
 
 // Describes interface for managing devtools agents from browser process.
 class CONTENT_EXPORT DevToolsAgentHost
@@ -62,7 +68,8 @@ class CONTENT_EXPORT DevToolsAgentHost
       WebContents* web_contents);
 
   // Returns true iff an instance of DevToolsAgentHost for the |web_contents|
-  // does exist.
+  // exists. This is equivalent to if a DevToolsAgentHost has ever been
+  // created for the |web_contents|.
   static bool HasFor(WebContents* web_contents);
 
   // Creates DevToolsAgentHost that communicates to the target by means of
@@ -73,7 +80,7 @@ class CONTENT_EXPORT DevToolsAgentHost
       std::unique_ptr<DevToolsExternalAgentProxyDelegate> delegate);
 
   using CreateServerSocketCallback =
-      base::Callback<std::unique_ptr<net::ServerSocket>(std::string*)>;
+      base::RepeatingCallback<std::unique_ptr<net::ServerSocket>(std::string*)>;
 
   // Creates DevToolsAgentHost for the browser, which works with browser-wide
   // debugging protocol.
@@ -106,17 +113,26 @@ class CONTENT_EXPORT DevToolsAgentHost
 
   // Starts remote debugging for browser target for the given fd=3
   // for reading and fd=4 for writing remote debugging messages.
-  static void StartRemoteDebuggingPipeHandler();
+  static void StartRemoteDebuggingPipeHandler(base::OnceClosure on_disconnect);
   static void StopRemoteDebuggingPipeHandler();
 
   // Observer is notified about changes in DevToolsAgentHosts.
   static void AddObserver(DevToolsAgentHostObserver*);
   static void RemoveObserver(DevToolsAgentHostObserver*);
 
+  // Create a DevTools IO Stream from data.
+  // Returns a DevTools IO Stream handle that can be used to read and close the
+  // stream.
+  virtual std::string CreateIOStreamFromData(
+      scoped_refptr<base::RefCountedMemory>) = 0;
+
   // Attaches |client| to this agent host to start debugging.
   // Returns |true| on success. Note that some policies defined by
   // embedder or |client| itself may prevent attaching.
   virtual bool AttachClient(DevToolsAgentHostClient* client) = 0;
+
+  // Same as the above, but does not acquire the WakeLock.
+  virtual bool AttachClientWithoutWakeLock(DevToolsAgentHostClient* client) = 0;
 
   // Already attached client detaches from this agent host to stop debugging it.
   // Returns true iff detach succeeded.
@@ -126,9 +142,8 @@ class CONTENT_EXPORT DevToolsAgentHost
   virtual bool IsAttached() = 0;
 
   // Sends |message| from |client| to the agent.
-  // Returns true if the message is dispatched and handled.
-  virtual bool DispatchProtocolMessage(DevToolsAgentHostClient* client,
-                                       const std::string& message) = 0;
+  virtual void DispatchProtocolMessage(DevToolsAgentHostClient* client,
+                                       base::span<const uint8_t> message) = 0;
 
   // Starts inspecting element at position (|x|, |y|) in the frame
   // represented by |frame_host|.
@@ -142,6 +157,14 @@ class CONTENT_EXPORT DevToolsAgentHost
 
   // Returns the id of the opener host, or empty string if no opener.
   virtual std::string GetOpenerId() = 0;
+
+  // Returns whether the opened window has access to its opener (can be false
+  // when using 'noopener' or with enabled COOP).
+  virtual bool CanAccessOpener() = 0;
+
+  // Returns the DevTools token of this window's opener, or empty string if no
+  // opener.
+  virtual std::string GetOpenerFrameId() = 0;
 
   // Returns web contents instance for this host if any.
   virtual WebContents* GetWebContents() = 0;
@@ -188,6 +211,8 @@ class CONTENT_EXPORT DevToolsAgentHost
 
   // Terminates all debugging sessions and detaches all clients.
   static void DetachAllClients();
+
+  virtual RenderProcessHost* GetProcessHost() = 0;
 
  protected:
   friend class base::RefCounted<DevToolsAgentHost>;

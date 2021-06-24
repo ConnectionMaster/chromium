@@ -4,6 +4,8 @@
 
 #include "media/formats/webm/webm_tracks_parser.h"
 
+#include <memory>
+
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -72,7 +74,7 @@ void WebMTracksParser::Reset() {
   detected_audio_track_count_ = 0;
   detected_video_track_count_ = 0;
   detected_text_track_count_ = 0;
-  media_tracks_.reset(new MediaTracks());
+  media_tracks_ = std::make_unique<MediaTracks>();
 }
 
 void WebMTracksParser::ResetTrackEntry() {
@@ -124,8 +126,8 @@ WebMParserClient* WebMTracksParser::OnListStart(int id) {
       return NULL;
     }
 
-    track_content_encodings_client_.reset(
-        new WebMContentEncodingsClient(media_log_));
+    track_content_encodings_client_ =
+        std::make_unique<WebMContentEncodingsClient>(media_log_);
     return track_content_encodings_client_->OnListStart(id);
   }
 
@@ -205,8 +207,9 @@ bool WebMTracksParser::OnListEnd(int id) {
           content_encodings()[0]->encryption_key_id();
     }
 
-    EncryptionScheme encryption_scheme =
-        encryption_key_id.empty() ? Unencrypted() : AesCtrEncryptionScheme();
+    EncryptionScheme encryption_scheme = encryption_key_id.empty()
+                                             ? EncryptionScheme::kUnencrypted
+                                             : EncryptionScheme::kCenc;
 
     if (track_type_ == kWebMTrackTypeAudio) {
       detected_audio_track_count_++;
@@ -229,8 +232,9 @@ bool WebMTracksParser::OnListEnd(int id) {
         }
         media_tracks_->AddAudioTrack(
             audio_decoder_config_,
-            static_cast<StreamParser::TrackId>(track_num_), "main", track_name_,
-            track_language_);
+            static_cast<StreamParser::TrackId>(track_num_),
+            MediaTrack::Kind("main"), MediaTrack::Label(track_name_),
+            MediaTrack::Language(track_language_));
       } else {
         MEDIA_LOG(DEBUG, media_log_) << "Ignoring audio track " << track_num_;
         ignored_tracks_.insert(track_num_);
@@ -256,8 +260,9 @@ bool WebMTracksParser::OnListEnd(int id) {
         }
         media_tracks_->AddVideoTrack(
             video_decoder_config_,
-            static_cast<StreamParser::TrackId>(track_num_), "main", track_name_,
-            track_language_);
+            static_cast<StreamParser::TrackId>(track_num_),
+            MediaTrack::Kind("main"), MediaTrack::Label(track_name_),
+            MediaTrack::Language(track_language_));
       } else {
         MEDIA_LOG(DEBUG, media_log_) << "Ignoring video track " << track_num_;
         ignored_tracks_.insert(track_num_);

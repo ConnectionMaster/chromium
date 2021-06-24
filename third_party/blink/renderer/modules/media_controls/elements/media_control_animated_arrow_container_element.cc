@@ -4,9 +4,12 @@
 
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_animated_arrow_container_element.h"
 
+#include "third_party/blink/renderer/core/css/css_property_names.h"
+#include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/html_style_element.h"
 #include "third_party/blink/renderer/modules/media_controls/media_controls_resource_loader.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 
 namespace blink {
 
@@ -33,7 +36,7 @@ void MediaControlAnimatedArrowContainerElement::AnimatedArrow::ShowInternal() {
     return;
   }
 
-  SetInnerHTMLFromString(MediaControlsResourceLoader::GetJumpSVGImage());
+  setInnerHTML(MediaControlsResourceLoader::GetJumpSVGImage());
 
   last_arrow_ = getElementById("arrow-3");
   svg_container_ = getElementById("jump");
@@ -63,7 +66,7 @@ Element& MediaControlAnimatedArrowContainerElement::AnimatedArrow::
 }
 
 void MediaControlAnimatedArrowContainerElement::AnimatedArrow::Trace(
-    Visitor* visitor) {
+    Visitor* visitor) const {
   MediaControlAnimationEventListener::Observer::Trace(visitor);
   HTMLDivElement::Trace(visitor);
   visitor->Trace(last_arrow_);
@@ -91,19 +94,20 @@ void MediaControlAnimatedArrowContainerElement::ShowArrowAnimation(
     // This stylesheet element and will contain rules that are specific to the
     // jump arrows. The shadow DOM protects these rules from the parent DOM
     // from bleeding across the shadow DOM boundary.
-    auto* style = HTMLStyleElement::Create(GetDocument(), CreateElementFlags());
+    auto* style = MakeGarbageCollected<HTMLStyleElement>(GetDocument(),
+                                                         CreateElementFlags());
     style->setTextContent(
         MediaControlsResourceLoader::GetAnimatedArrowStyleSheet());
     shadow_root->ParserAppendChild(style);
 
-    left_jump_arrow_ =
-        new MediaControlAnimatedArrowContainerElement::AnimatedArrow(
-            "left-arrow", GetDocument());
+    left_jump_arrow_ = MakeGarbageCollected<
+        MediaControlAnimatedArrowContainerElement::AnimatedArrow>(
+        "left-arrow", GetDocument());
     shadow_root->ParserAppendChild(left_jump_arrow_);
 
-    right_jump_arrow_ =
-        new MediaControlAnimatedArrowContainerElement::AnimatedArrow(
-            "right-arrow", GetDocument());
+    right_jump_arrow_ = MakeGarbageCollected<
+        MediaControlAnimatedArrowContainerElement::AnimatedArrow>(
+        "right-arrow", GetDocument());
     shadow_root->ParserAppendChild(right_jump_arrow_);
   }
 
@@ -117,7 +121,7 @@ void MediaControlAnimatedArrowContainerElement::ShowArrowAnimation(
   }
 }
 
-void MediaControlAnimatedArrowContainerElement::Trace(blink::Visitor* visitor) {
+void MediaControlAnimatedArrowContainerElement::Trace(Visitor* visitor) const {
   MediaControlDivElement::Trace(visitor);
   visitor->Trace(left_jump_arrow_);
   visitor->Trace(right_jump_arrow_);

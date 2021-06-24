@@ -63,7 +63,21 @@ namespace ime {
 // issued |request_id| (as returned by DownloadToFile()) and an |error_code| (as
 // defined at
 // https://cs.chromium.org/chromium/src/net/base/net_error_list.h?rcl=f9c935b73381772d508eebba1e216c437139d475).
-typedef void (*DownloadCallback)(int request_id, int status_code);
+typedef void (*ImeCrosDownloadCallback)(int request_id, int status_code);
+
+// A simple downloading callback.
+typedef void (*SimpleDownloadCallback)(int status_code, const char* file_path);
+
+// A simple downloading callback with the downloading URL as return.
+typedef void (*SimpleDownloadCallbackV2)(int status_code,
+                                         const char* url,
+                                         const char* file_path);
+
+// A function pointer of a sequenced task.
+typedef void (*ImeSequencedTask)(int task_id);
+
+// A logger function pointer from chrome.
+typedef void (*ChromeLoggerFunc)(int severity, const char* message);
 
 // Based on RequestPriority defined at
 // https://cs.chromium.org/chromium/src/net/base/request_priority.h?rcl=f9c935b73381772d508eebba1e216c437139d475
@@ -97,9 +111,9 @@ struct DownloadOptions {
 };
 
 // Provides CrOS network download service to the shared library.
-class Downloader {
+class ImeCrosDownloader {
  protected:
-  virtual ~Downloader() = default;
+  virtual ~ImeCrosDownloader() = default;
 
  public:
   // Download data from the given |url| and store into a file located at the
@@ -114,7 +128,7 @@ class Downloader {
   virtual int DownloadToFile(const char* url,
                              const DownloadOptions& options,
                              const char* file_path,
-                             DownloadCallback callback) = 0;
+                             ImeCrosDownloadCallback callback) = 0;
 
   // Cancel the download whose |request_id| is given (|request_id| is issued
   // in the return value of each DownloadToFile() call). The callback of a
@@ -124,14 +138,14 @@ class Downloader {
   virtual void Cancel(int request_id) = 0;
 };
 
-// This defines the `Platform` interface, which is used throughout the shared
-// library to manage platform-specific data/operations.
+// This defines the `ImeCrosPlatform` interface, which is used throughout the
+// shared library to manage platform-specific data/operations.
 //
 // This class should be provided by the IME service before creating an
 // `ImeEngineMainEntry` and be always owned by the IME service.
-class Platform {
+class ImeCrosPlatform {
  protected:
-  virtual ~Platform() = default;
+  virtual ~ImeCrosPlatform() = default;
 
  public:
   // The three methods below are Getters of the local data directories on the
@@ -154,8 +168,28 @@ class Platform {
   // Get the Downloader that provides CrOS network download service. Ownership
   // of the returned Downloader instance is never transferred, i.e. it remains
   // owned by the IME service / Platform at all times.
-  virtual Downloader* GetDownloader() = 0;
-  
+  virtual ImeCrosDownloader* GetDownloader() = 0;
+
+  // A shortcut for starting a downloading by the network |SimpleURLLoader|.
+  // Each SimpleDownloadToFile can only be used for a single request.
+  // Make a call after the previous task completes or cancels.
+  virtual int SimpleDownloadToFile(const char* url,
+                                   const char* file_path,
+                                   SimpleDownloadCallback callback) = 0;
+
+  // This is used for decoder to run some Mojo-specific operation which is
+  // required to run in the thread creating its remote.
+  virtual void RunInMainSequence(ImeSequencedTask task, int task_id) = 0;
+
+  // Returns whether a Chrome OS experimental feature is enabled or not.
+  virtual bool IsFeatureEnabled(const char* feature_name) = 0;
+
+  // Version 2 for |SimpleDownloadToFile|. Downloading URL is added into its
+  // callback.
+  virtual int SimpleDownloadToFileV2(const char* url,
+                                     const char* file_path,
+                                     SimpleDownloadCallbackV2 callback) = 0;
+
   // TODO(https://crbug.com/837156): Provide Logger for main entry.
 };
 
@@ -181,53 +215,39 @@ class ImeClientDelegate {
   virtual void Destroy() = 0;
 };
 
-// The main entry point of an IME shared library.
+// For use when bridging logs logged in IME shared library to Chrome logging.
+typedef void (*ImeEngineLoggerSetterFn)(ChromeLoggerFunc);
+
+// Functions blow are exported by the IME decoder shared library that we expose
+// through a loader.
+
+// Initialize the IME decoder.
 //
-// This class is implemented in the shared library and processes messages from
-// clients of the IME service. The shared library will exposes its create
-// function to the IME service.
-class ImeEngineMainEntry {
- protected:
-  virtual ~ImeEngineMainEntry() = default;
-
- public:
-  // Returns whether a specific IME is supported by this IME shared library.
-  // The argument is the specfiation name of an IME, and the caller should
-  // explicitly know the IME engine's naming rules.
-  virtual bool IsImeSupported(const char*) = 0;
-
-  // Activate an engine instance in the shared library with an IME specfiation
-  // name and a bound `ImeClientDelegate` which is used to create a channel from
-  // the engine instance to the IME client. The ownership of `ImeClientDelegate`
-  // will be passed to the Main Entry.
-  virtual bool ActivateIme(const char*, ImeClientDelegate*) = 0;
-
-  // Process data from an IME service in `ImeEngineMainEntry`.
-  // The data will be invalidated by IME service soon after this call.
-  virtual void Process(const uint8_t* data, size_t size) = 0;
-
-  // Destroy the `ImeEngineMainEntry` instance, which is called in IME service
-  // on demand.
-  virtual void Destroy() = 0;
-};
-
-// Create ImeEngineMainEntry instance from the IME engine shared library.
+// Any user of IME decoder must make a call on this function before any others.
 //
-// Applications using IME engines must call this function before any others.
-// The caller will take ownership of the returned pointer and is responsible for
-// deleting the ImeEngineMainEntry by calling `Destroy` on it when it's done.
-//
-// The provided `Platform` must remain valid until the `ImeEngineMainEntry`
-// is destroyed.
-//
-// IME engine shared library must implement this function and export it with the
-// name defined in IME_MAIN_ENTRY_CREATE_FN_NAME.
-//
-// Returns an instance of ImeEngineMainEntry from the IME shared library.
-typedef ImeEngineMainEntry* (*ImeMainEntryCreateFn)(Platform*);
+// The provided `ImeCrosPlatform` must remain valid during the whole life of
+// shared libraray
+typedef void (*ImeDecoderInitOnceFn)(ImeCrosPlatform*);
 
-// Defined name of ImeMainEntryCreateFn exported from shared library.
-#define IME_MAIN_ENTRY_CREATE_FN_NAME "CreateImeMainEntry"
+// Returns whether a specific IME is supported by this IME shared library.
+// The argument is the specfiation name of an IME, and the caller should
+// explicitly know the IME engine's naming rules.
+typedef bool (*ImeDecoderSupportsFn)(const char*);
+
+// Activate an IME instance in the shared library with an IME specfiation name
+// and a bound `ImeClientDelegate` which is a channel from the IME instance to
+// its client.
+//
+// The ownership of `ImeClientDelegate` will be passed to the IME instance.
+typedef bool (*ImeDecoderActivateImeFn)(const char*, ImeClientDelegate*);
+
+// Process IME events by the activated IME instance.
+// The data passed in  should be invalidated by the IME instance soon after it's
+// consumed.
+typedef void (*ImeDecoderProcessFn)(const uint8_t*, size_t);
+
+// Release resources used by the IME decoder.
+typedef void (*ImeDecoderCloseFn)();
 
 }  // namespace ime
 }  // namespace chromeos

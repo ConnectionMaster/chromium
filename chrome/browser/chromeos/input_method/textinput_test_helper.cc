@@ -23,9 +23,8 @@
 
 namespace chromeos {
 
-void TextInputTestBase::SetUpInProcessBrowserTestFixture() {
-  ui::SetUpInputMethodFactoryForTesting();
-}
+TextInputTestBase::TextInputTestBase() = default;
+TextInputTestBase::~TextInputTestBase() = default;
 
 ui::InputMethod* TextInputTestBase::GetInputMethod() const {
   return browser()->window()->GetNativeWindow()->GetHost()->GetInputMethod();
@@ -44,7 +43,7 @@ TextInputTestHelper::~TextInputTestHelper() {
   input_method_->RemoveObserver(this);
 }
 
-base::string16 TextInputTestHelper::GetSurroundingText() const {
+std::u16string TextInputTestHelper::GetSurroundingText() const {
   return surrounding_text_;
 }
 
@@ -116,24 +115,30 @@ void TextInputTestHelper::WaitForTextInputStateChanged(
     ui::TextInputType expected_type) {
   CHECK_EQ(NO_WAIT, waiting_type_);
   waiting_type_ = WAIT_ON_TEXT_INPUT_TYPE_CHANGED;
-  while (latest_text_input_type_ != expected_type)
-    content::RunMessageLoop();
+  while (latest_text_input_type_ != expected_type) {
+    base::RunLoop run_loop;
+    run_loop.Run();
+  }
   waiting_type_ = NO_WAIT;
 }
 
 void TextInputTestHelper::WaitForFocus() {
   CHECK_EQ(NO_WAIT, waiting_type_);
   waiting_type_ = WAIT_ON_FOCUS;
-  while (focus_state_)
-    content::RunMessageLoop();
+  while (focus_state_) {
+    base::RunLoop run_loop;
+    run_loop.Run();
+  }
   waiting_type_ = NO_WAIT;
 }
 
 void TextInputTestHelper::WaitForBlur() {
   CHECK_EQ(NO_WAIT, waiting_type_);
   waiting_type_ = WAIT_ON_BLUR;
-  while (!focus_state_)
-    content::RunMessageLoop();
+  while (!focus_state_) {
+    base::RunLoop run_loop;
+    run_loop.Run();
+  }
   waiting_type_ = NO_WAIT;
 }
 
@@ -142,18 +147,32 @@ void TextInputTestHelper::WaitForCaretBoundsChanged(
     const gfx::Rect& expected_composition_head) {
   waiting_type_ = WAIT_ON_CARET_BOUNDS_CHANGED;
   while (expected_caret_rect != caret_rect_ ||
-         expected_composition_head != composition_head_)
-    content::RunMessageLoop();
+         expected_composition_head != composition_head_) {
+    base::RunLoop run_loop;
+    run_loop.Run();
+  }
   waiting_type_ = NO_WAIT;
 }
 
 void TextInputTestHelper::WaitForSurroundingTextChanged(
-    const base::string16& expected_text,
+    const std::u16string& expected_text) {
+  waiting_type_ = WAIT_ON_CARET_BOUNDS_CHANGED;
+  while (expected_text != surrounding_text_) {
+    base::RunLoop run_loop;
+    run_loop.Run();
+  }
+  waiting_type_ = NO_WAIT;
+}
+
+void TextInputTestHelper::WaitForSurroundingTextChanged(
+    const std::u16string& expected_text,
     const gfx::Range& expected_selection) {
   waiting_type_ = WAIT_ON_CARET_BOUNDS_CHANGED;
   while (expected_text != surrounding_text_ ||
-         expected_selection != selection_range_)
-    content::RunMessageLoop();
+         expected_selection != selection_range_) {
+    base::RunLoop run_loop;
+    run_loop.Run();
+  }
   waiting_type_ = NO_WAIT;
 }
 
@@ -188,18 +207,19 @@ bool TextInputTestHelper::ConvertRectFromString(const std::string& str,
 // static
 bool TextInputTestHelper::ClickElement(const std::string& id,
                                        content::WebContents* tab) {
-  std::string coordinate;
-  if (!content::ExecuteScriptAndExtractString(
-      tab,
-      "textinput_helper.retrieveElementCoordinate('" + id + "')",
-      &coordinate))
-    return false;
+  std::string coordinate =
+      content::EvalJs(
+          tab, "textinput_helper.retrieveElementCoordinate('" + id + "')",
+          content::EXECUTE_SCRIPT_USE_MANUAL_REPLY)
+          .ExtractString();
+
   gfx::Rect rect;
   if (!ConvertRectFromString(coordinate, &rect))
     return false;
 
   blink::WebMouseEvent mouse_event(
-      blink::WebInputEvent::kMouseDown, blink::WebInputEvent::kNoModifiers,
+      blink::WebInputEvent::Type::kMouseDown,
+      blink::WebInputEvent::kNoModifiers,
       blink::WebInputEvent::GetStaticTimeStampForTests());
   mouse_event.button = blink::WebMouseEvent::Button::kLeft;
   mouse_event.SetPositionInWidget(rect.CenterPoint().x(),
@@ -207,7 +227,7 @@ bool TextInputTestHelper::ClickElement(const std::string& id,
   mouse_event.click_count = 1;
   tab->GetRenderViewHost()->GetWidget()->ForwardMouseEvent(mouse_event);
 
-  mouse_event.SetType(blink::WebInputEvent::kMouseUp);
+  mouse_event.SetType(blink::WebInputEvent::Type::kMouseUp);
   tab->GetRenderViewHost()->GetWidget()->ForwardMouseEvent(mouse_event);
   return true;
 }

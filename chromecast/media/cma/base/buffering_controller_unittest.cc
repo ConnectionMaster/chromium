@@ -8,9 +8,8 @@
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chromecast/media/cma/base/buffering_state.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -32,7 +31,7 @@ class BufferingControllerTest : public testing::Test {
  public:
   BufferingControllerTest();
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::unique_ptr<BufferingController> buffering_controller_;
 
   MockBufferingControllerClient client_;
@@ -61,8 +60,9 @@ BufferingControllerTest::BufferingControllerTest() {
       new BufferingConfig(low_level_threshold, high_level_threshold));
   buffering_controller_.reset(new BufferingController(
       buffering_config,
-      base::Bind(&MockBufferingControllerClient::OnBufferingNotification,
-                 base::Unretained(&client_))));
+      base::BindRepeating(
+          &MockBufferingControllerClient::OnBufferingNotification,
+          base::Unretained(&client_))));
 }
 
 TEST_F(BufferingControllerTest, OneStream_Typical) {

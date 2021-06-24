@@ -42,7 +42,7 @@ class PerSiteDataUsage;
 //
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: (
-//     org.chromium.chrome.browser.preferences.datareduction)
+//     org.chromium.chrome.browser.settings.datareduction)
 enum class DataReductionProxySavingsClearedReason {
   SYSTEM_CLOCK_MOVED_BACK,
   PREFS_PARSE_ERROR,
@@ -86,7 +86,6 @@ class DataReductionProxyCompressionStats {
       int64_t compressed_size,
       int64_t original_size,
       bool data_reduction_proxy_enabled,
-      DataReductionProxyRequestType request_type,
       const std::string& mime_type,
       bool is_user_traffic,
       data_use_measurement::DataUseUserData::DataUseContentType content_type,
@@ -135,7 +134,7 @@ class DataReductionProxyCompressionStats {
   // in-memory stats could be initialized from storage. Data usage is sorted
   // chronologically with the last entry corresponding to |base::Time::Now()|.
   void GetHistoricalDataUsage(
-      const HistoricalDataUsageCallback& get_data_usage_callback);
+      HistoricalDataUsageCallback get_data_usage_callback);
 
   // Deletes browsing history from storage and memory for the given time
   // range. Currently, this method deletes all data usage for the given range.
@@ -208,14 +207,12 @@ class DataReductionProxyCompressionStats {
 
   // Copies the values at each index of |from_list| to the same index in
   // |to_list|.
-  void TransferList(const base::ListValue& from_list,
-                    base::ListValue* to_list);
+  void TransferList(const base::Value& from_list, base::Value* to_list);
 
   // Records content length updates to prefs.
   void RecordRequestSizePrefs(int64_t compressed_size,
                               int64_t original_size,
                               bool with_data_reduction_proxy_enabled,
-                              DataReductionProxyRequestType request_type,
                               const std::string& mime_type,
                               const base::Time& now);
 
@@ -242,7 +239,7 @@ class DataReductionProxyCompressionStats {
   // Actual implementation of |GetHistoricalDataUsage|. This helper method
   // explicitly passes |base::Time::Now()| to make testing easier.
   void GetHistoricalDataUsageImpl(
-      const HistoricalDataUsageCallback& get_data_usage_callback,
+      HistoricalDataUsageCallback get_data_usage_callback,
       const base::Time& now);
 
   // Called when |prefs::kDataUsageReportingEnabled| pref values changes.
@@ -295,7 +292,7 @@ class DataReductionProxyCompressionStats {
   base::OneShotTimer pref_writer_timer_;
   base::ThreadChecker thread_checker_;
 
-  base::WeakPtrFactory<DataReductionProxyCompressionStats> weak_factory_;
+  base::WeakPtrFactory<DataReductionProxyCompressionStats> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DataReductionProxyCompressionStats);
 };

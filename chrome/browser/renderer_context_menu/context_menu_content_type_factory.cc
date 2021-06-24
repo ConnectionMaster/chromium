@@ -7,6 +7,8 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/memory/ptr_util.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/common/url_constants.h"
 #include "components/renderer_context_menu/context_menu_content_type.h"
 #include "content/public/browser/web_contents.h"
@@ -22,21 +24,17 @@
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/mojom/view_type.mojom.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "components/session_manager/core/session_manager.h"
 #endif
 
 namespace {
 
-bool CheckInternalResourcesURL(const GURL& url) {
-  return url.SchemeIs(content::kChromeUIScheme) &&
-         (url.host_piece() == chrome::kChromeUISyncResourcesHost);
-}
-
 bool IsUserSessionBlocked() {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (session_manager::SessionManager::Get() &&
       session_manager::SessionManager::Get()->IsUserSessionBlocked()) {
     return true;
@@ -74,17 +72,7 @@ std::unique_ptr<ContextMenuContentType> ContextMenuContentTypeFactory::Create(
   if (IsUserSessionBlocked())
     return std::make_unique<NullContextMenuContentType>(web_contents, params);
 
-  std::unique_ptr<ContextMenuContentType> content_type =
-      CreateInternal(web_contents, params);
-  SetInternalResourcesURLChecker(content_type.get());
-  return content_type;
-}
-
-// static.
-void ContextMenuContentTypeFactory::SetInternalResourcesURLChecker(
-    ContextMenuContentType* content_type) {
-  content_type->set_internal_resources_url_checker(
-      base::Bind(&CheckInternalResourcesURL));
+  return CreateInternal(web_contents, params);
 }
 
 // static
@@ -103,14 +91,15 @@ ContextMenuContentTypeFactory::CreateInternal(
         new ContextMenuContentTypeWebView(web_contents, params));
   }
 
-  const extensions::ViewType view_type = extensions::GetViewType(web_contents);
+  const extensions::mojom::ViewType view_type =
+      extensions::GetViewType(web_contents);
 
-  if (view_type == extensions::VIEW_TYPE_APP_WINDOW) {
+  if (view_type == extensions::mojom::ViewType::kAppWindow) {
     return base::WrapUnique(
         new ContextMenuContentTypePlatformApp(web_contents, params));
   }
 
-  if (view_type == extensions::VIEW_TYPE_EXTENSION_POPUP) {
+  if (view_type == extensions::mojom::ViewType::kExtensionPopup) {
     return base::WrapUnique(
         new ContextMenuContentTypeExtensionPopup(web_contents, params));
   }

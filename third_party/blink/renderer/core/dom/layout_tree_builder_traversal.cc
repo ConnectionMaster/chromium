@@ -30,52 +30,39 @@
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/layout/layout_view.h"
 
 namespace blink {
 
 inline static bool HasDisplayContentsStyle(const Node& node) {
-  return node.IsElementNode() && ToElement(node).HasDisplayContentsStyle();
+  auto* element = DynamicTo<Element>(node);
+  return element && element->HasDisplayContentsStyle();
 }
 
 static bool IsLayoutObjectReparented(const LayoutObject* layout_object) {
-  if (!layout_object->GetNode()->IsElementNode())
+  auto* element = DynamicTo<Element>(layout_object->GetNode());
+  if (!element)
     return false;
-  return ToElement(layout_object->GetNode())->IsInTopLayer();
+  return element->IsInTopLayer();
 }
 
-void LayoutTreeBuilderTraversal::ParentDetails::DidTraverseInsertionPoint(
-    const V0InsertionPoint* insertion_point) {
-  if (!insertion_point_) {
-    insertion_point_ = insertion_point;
-  }
-}
-
-inline static void AssertPseudoElementParent(
-    const PseudoElement& pseudo_element) {
-  DCHECK(pseudo_element.parentNode());
-  DCHECK(pseudo_element.parentNode()->CanParticipateInFlatTree());
-}
-
-ContainerNode* LayoutTreeBuilderTraversal::Parent(const Node& node,
-                                                  ParentDetails* details) {
+ContainerNode* LayoutTreeBuilderTraversal::Parent(const Node& node) {
   // TODO(hayato): Uncomment this once we can be sure
   // LayoutTreeBuilderTraversal::parent() is used only for a node which is
   // connected.
   // DCHECK(node.isConnected());
-  if (node.IsPseudoElement()) {
-    AssertPseudoElementParent(ToPseudoElement(node));
+  if (auto* element = DynamicTo<PseudoElement>(node)) {
+    DCHECK(node.parentNode());
     return node.parentNode();
   }
-  return FlatTreeTraversal::Parent(node, details);
+  return FlatTreeTraversal::Parent(node);
 }
 
-ContainerNode* LayoutTreeBuilderTraversal::LayoutParent(
-    const Node& node,
-    ParentDetails* details) {
-  ContainerNode* parent = LayoutTreeBuilderTraversal::Parent(node, details);
+ContainerNode* LayoutTreeBuilderTraversal::LayoutParent(const Node& node) {
+  ContainerNode* parent = LayoutTreeBuilderTraversal::Parent(node);
 
   while (parent && HasDisplayContentsStyle(*parent))
-    parent = LayoutTreeBuilderTraversal::Parent(*parent, details);
+    parent = LayoutTreeBuilderTraversal::Parent(*parent);
 
   return parent;
 }
@@ -86,55 +73,87 @@ LayoutObject* LayoutTreeBuilderTraversal::ParentLayoutObject(const Node& node) {
 }
 
 Node* LayoutTreeBuilderTraversal::NextSibling(const Node& node) {
-  if (node.IsBeforePseudoElement()) {
-    AssertPseudoElementParent(ToPseudoElement(node));
-    if (Node* next = FlatTreeTraversal::FirstChild(*node.parentNode()))
-      return next;
-  } else {
-    if (node.IsAfterPseudoElement())
-      return nullptr;
-    if (Node* next = FlatTreeTraversal::NextSibling(node))
-      return next;
+  PseudoId pseudo_id = node.GetPseudoId();
+  Element* parent_element;
+  if (pseudo_id != kPseudoIdNone) {
+    parent_element = DynamicTo<Element>(*node.parentNode());
+    DCHECK(parent_element);
   }
-
-  Node* parent = FlatTreeTraversal::Parent(node);
-  if (parent && parent->IsElementNode())
-    return ToElement(parent)->GetPseudoElement(kPseudoIdAfter);
-
-  return nullptr;
+  switch (pseudo_id) {
+    case kPseudoIdMarker:
+      if (Node* next = parent_element->GetPseudoElement(kPseudoIdBefore))
+        return next;
+      FALLTHROUGH;
+    case kPseudoIdBefore:
+      if (Node* next = FlatTreeTraversal::FirstChild(*parent_element))
+        return next;
+      FALLTHROUGH;
+    case kPseudoIdNone:
+      if (pseudo_id == kPseudoIdNone) {  // Not falling through
+        if (Node* next = FlatTreeTraversal::NextSibling(node))
+          return next;
+        parent_element = DynamicTo<Element>(FlatTreeTraversal::Parent(node));
+        if (!parent_element)
+          return nullptr;
+      }
+      if (Node* next = parent_element->GetPseudoElement(kPseudoIdAfter))
+        return next;
+      FALLTHROUGH;
+    case kPseudoIdAfter:
+      return nullptr;
+    default:
+      NOTREACHED();
+      return nullptr;
+  }
 }
 
 Node* LayoutTreeBuilderTraversal::PreviousSibling(const Node& node) {
-  if (node.IsAfterPseudoElement()) {
-    AssertPseudoElementParent(ToPseudoElement(node));
-    if (Node* previous = FlatTreeTraversal::LastChild(*node.parentNode()))
-      return previous;
-  } else {
-    if (node.IsBeforePseudoElement())
-      return nullptr;
-    if (Node* previous = FlatTreeTraversal::PreviousSibling(node))
-      return previous;
+  PseudoId pseudo_id = node.GetPseudoId();
+  Element* parent_element;
+  if (pseudo_id != kPseudoIdNone) {
+    parent_element = DynamicTo<Element>(*node.parentNode());
+    DCHECK(parent_element);
   }
-
-  Node* parent = FlatTreeTraversal::Parent(node);
-  if (parent && parent->IsElementNode())
-    return ToElement(parent)->GetPseudoElement(kPseudoIdBefore);
-
-  return nullptr;
+  switch (pseudo_id) {
+    case kPseudoIdAfter:
+      if (Node* previous = FlatTreeTraversal::LastChild(*parent_element))
+        return previous;
+      FALLTHROUGH;
+    case kPseudoIdNone:
+      if (pseudo_id == kPseudoIdNone) {  // Not falling through
+        if (Node* previous = FlatTreeTraversal::PreviousSibling(node))
+          return previous;
+        parent_element = DynamicTo<Element>(FlatTreeTraversal::Parent(node));
+        if (!parent_element)
+          return nullptr;
+      }
+      if (Node* previous = parent_element->GetPseudoElement(kPseudoIdBefore))
+        return previous;
+      FALLTHROUGH;
+    case kPseudoIdBefore:
+      if (Node* previous = parent_element->GetPseudoElement(kPseudoIdMarker))
+        return previous;
+      FALLTHROUGH;
+    case kPseudoIdMarker:
+      return nullptr;
+    default:
+      NOTREACHED();
+      return nullptr;
+  }
 }
 
 Node* LayoutTreeBuilderTraversal::LastChild(const Node& node) {
-  if (!node.IsElementNode())
+  const auto* current_element = DynamicTo<Element>(node);
+  if (!current_element)
     return FlatTreeTraversal::LastChild(node);
 
-  const Element& current_element = ToElement(node);
-  Node* last = current_element.GetPseudoElement(kPseudoIdAfter);
-  if (last)
+  if (Node* last = current_element->GetPseudoElement(kPseudoIdAfter))
     return last;
-  last = FlatTreeTraversal::LastChild(current_element);
-  if (!last)
-    last = current_element.GetPseudoElement(kPseudoIdBefore);
-  return last;
+  if (Node* last = FlatTreeTraversal::LastChild(*current_element))
+    return last;
+  if (Node* last = current_element->GetPseudoElement(kPseudoIdBefore))
+    return last;
+  return current_element->GetPseudoElement(kPseudoIdMarker);
 }
 
 Node* LayoutTreeBuilderTraversal::Previous(const Node& node,
@@ -151,17 +170,17 @@ Node* LayoutTreeBuilderTraversal::Previous(const Node& node,
 }
 
 Node* LayoutTreeBuilderTraversal::FirstChild(const Node& node) {
-  if (!node.IsElementNode())
+  const auto* current_element = DynamicTo<Element>(node);
+  if (!current_element)
     return FlatTreeTraversal::FirstChild(node);
 
-  const Element& current_element = ToElement(node);
-  Node* first = current_element.GetPseudoElement(kPseudoIdBefore);
-  if (first)
+  if (Node* first = current_element->GetPseudoElement(kPseudoIdMarker))
     return first;
-  first = FlatTreeTraversal::FirstChild(node);
-  if (!first)
-    first = current_element.GetPseudoElement(kPseudoIdAfter);
-  return first;
+  if (Node* first = current_element->GetPseudoElement(kPseudoIdBefore))
+    return first;
+  if (Node* first = FlatTreeTraversal::FirstChild(node))
+    return first;
+  return current_element->GetPseudoElement(kPseudoIdAfter);
 }
 
 static Node* NextAncestorSibling(const Node& node, const Node* stay_within) {
@@ -308,7 +327,7 @@ LayoutObject* LayoutTreeBuilderTraversal::NextInTopLayer(
     // If top_layer_elements[i] is not a LayoutView child, its LayoutObject is
     // not re-attached and not in the top layer yet, thus we can not use it as a
     // sibling LayoutObject.
-    if (layout_object && layout_object->Parent()->IsLayoutView())
+    if (layout_object && IsA<LayoutView>(layout_object->Parent()))
       return layout_object;
   }
   return nullptr;

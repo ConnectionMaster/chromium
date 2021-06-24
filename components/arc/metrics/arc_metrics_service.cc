@@ -7,47 +7,76 @@
 #include <string>
 #include <utility>
 
+#include "ash/public/cpp/app_types_util.h"
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/memory/singleton.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
-#include "base/system/sys_info.h"
-#include "base/time/default_clock.h"
-#include "base/time/default_tick_clock.h"
 #include "chromeos/dbus/power_manager/idle.pb.h"
 #include "chromeos/dbus/session_manager/session_manager_client.h"
-#include "components/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "components/arc/arc_prefs.h"
 #include "components/arc/arc_util.h"
-#include "components/arc/metrics/arc_metrics_constants.h"
 #include "components/arc/metrics/stability_metrics_manager.h"
 #include "components/arc/session/arc_bridge_service.h"
 #include "components/exo/wm_helper.h"
 #include "components/prefs/pref_service.h"
-#include "components/session_manager/core/session_manager.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
+#include "ui/events/ozone/gamepad/gamepad_provider_ozone.h"
 
 namespace arc {
 
 namespace {
 
+constexpr char kUmaPrefix[] = "Arc";
+
 constexpr base::TimeDelta kUmaMinTime = base::TimeDelta::FromMilliseconds(1);
 constexpr base::TimeDelta kUmaMaxTime = base::TimeDelta::FromSeconds(60);
 constexpr int kUmaNumBuckets = 50;
+constexpr int kUmaPriAbiMigMaxFailedAttempts = 10;
 
 constexpr base::TimeDelta kRequestProcessListPeriod =
     base::TimeDelta::FromMinutes(5);
 constexpr char kArcProcessNamePrefix[] = "org.chromium.arc.";
 constexpr char kGmsProcessNamePrefix[] = "com.google.android.gms";
 constexpr char kBootProgressEnableScreen[] = "boot_progress_enable_screen";
+constexpr char kBootProgressArcUpgraded[] = "boot_progress_arc_upgraded";
 
-constexpr base::TimeDelta kUpdateEngagementTimePeriod =
-    base::TimeDelta::FromMinutes(1);
-constexpr base::TimeDelta kSaveEngagementTimeToPrefsPeriod =
-    base::TimeDelta::FromMinutes(30);
+// App types to report.
+constexpr char kAppTypeArcAppLauncher[] = "ArcAppLauncher";
+constexpr char kAppTypeArcOther[] = "ArcOther";
+constexpr char kAppTypeFirstParty[] = "FirstParty";
+constexpr char kAppTypeGmsCore[] = "GmsCore";
+constexpr char kAppTypePlayStore[] = "PlayStore";
+constexpr char kAppTypeSystemServer[] = "SystemServer";
+constexpr char kAppTypeSystem[] = "SystemApp";
+constexpr char kAppTypeOther[] = "Other";
+
+std::string AnrSourceToTableName(mojom::AnrSource value) {
+  switch (value) {
+    case mojom::AnrSource::OTHER:
+      return kAppTypeOther;
+    case mojom::AnrSource::SYSTEM_SERVER:
+      return kAppTypeSystemServer;
+    case mojom::AnrSource::SYSTEM_APP:
+      return kAppTypeSystem;
+    case mojom::AnrSource::GMS_CORE:
+      return kAppTypeGmsCore;
+    case mojom::AnrSource::PLAY_STORE:
+      return kAppTypePlayStore;
+    case mojom::AnrSource::FIRST_PARTY:
+      return kAppTypeFirstParty;
+    case mojom::AnrSource::ARC_OTHER:
+      return kAppTypeArcOther;
+    case mojom::AnrSource::ARC_APP_LAUNCHER:
+      return kAppTypeArcAppLauncher;
+    default:
+      LOG(ERROR) << "Unrecognized source ANR " << value;
+      return kAppTypeOther;
+  }
+}
 
 std::string BootTypeToString(mojom::BootType boot_type) {
   switch (boot_type) {
@@ -64,60 +93,12 @@ std::string BootTypeToString(mojom::BootType boot_type) {
   return "";
 }
 
-inline int GetDayId(const base::Clock* clock) {
-  return clock->Now().LocalMidnight().since_origin().InDays();
-}
-
-class ArcWindowDelegateImpl : public ArcMetricsService::ArcWindowDelegate {
- public:
-  explicit ArcWindowDelegateImpl(ArcMetricsService* service)
-      : service_(service) {}
-
-  ~ArcWindowDelegateImpl() override = default;
-
-  bool IsArcAppWindow(const aura::Window* window) const override {
-    return arc::IsArcAppWindow(window);
-  }
-
-  void RegisterActivationChangeObserver() override {
-    // If WMHelper doesn't exist, do nothing. This occurs in tests.
-    if (exo::WMHelper::HasInstance())
-      exo::WMHelper::GetInstance()->AddActivationObserver(service_);
-  }
-
-  void UnregisterActivationChangeObserver() override {
-    // If WMHelper is already destroyed, do nothing.
-    // TODO(crbug.com/748380): Fix shutdown order.
-    if (exo::WMHelper::HasInstance())
-      exo::WMHelper::GetInstance()->RemoveActivationObserver(service_);
-  }
-
- private:
-  ArcMetricsService* const service_;  // Owned by ArcMetricsService
-
-  DISALLOW_COPY_AND_ASSIGN(ArcWindowDelegateImpl);
-};
-
-// Singleton factory for ArcMetricsService.
-class ArcMetricsServiceFactory
-    : public internal::ArcBrowserContextKeyedServiceFactoryBase<
-          ArcMetricsService,
-          ArcMetricsServiceFactory> {
- public:
-  // Factory name used by ArcBrowserContextKeyedServiceFactoryBase.
-  static constexpr const char* kName = "ArcMetricsServiceFactory";
-
-  static ArcMetricsServiceFactory* GetInstance() {
-    return base::Singleton<ArcMetricsServiceFactory>::get();
-  }
-
- private:
-  friend base::DefaultSingletonTraits<ArcMetricsServiceFactory>;
-  ArcMetricsServiceFactory() = default;
-  ~ArcMetricsServiceFactory() override = default;
-};
-
 }  // namespace
+
+// static
+ArcMetricsServiceFactory* ArcMetricsServiceFactory::GetInstance() {
+  return base::Singleton<ArcMetricsServiceFactory>::get();
+}
 
 // static
 ArcMetricsService* ArcMetricsService::GetForBrowserContext(
@@ -139,27 +120,22 @@ BrowserContextKeyedServiceFactory* ArcMetricsService::GetFactory() {
 ArcMetricsService::ArcMetricsService(content::BrowserContext* context,
                                      ArcBridgeService* bridge_service)
     : arc_bridge_service_(bridge_service),
-      arc_window_delegate_(std::make_unique<ArcWindowDelegateImpl>(this)),
+      guest_os_engagement_metrics_(user_prefs::UserPrefs::Get(context),
+                                   base::BindRepeating(ash::IsArcWindow),
+                                   prefs::kEngagementPrefsPrefix,
+                                   kUmaPrefix),
       process_observer_(this),
-      pref_service_(user_prefs::UserPrefs::Get(context)),
-      clock_(base::DefaultClock::GetInstance()),
-      tick_clock_(base::DefaultTickClock::GetInstance()),
-      last_update_ticks_(tick_clock_->NowTicks()),
-      weak_ptr_factory_(this) {
+      intent_helper_observer_(this, &arc_bridge_service_observer_),
+      app_launcher_observer_(this, &arc_bridge_service_observer_) {
+  arc_bridge_service_->AddObserver(&arc_bridge_service_observer_);
+  arc_bridge_service_->app()->AddObserver(&app_launcher_observer_);
+  arc_bridge_service_->intent_helper()->AddObserver(&intent_helper_observer_);
   arc_bridge_service_->metrics()->SetHost(this);
   arc_bridge_service_->process()->AddObserver(&process_observer_);
-  arc_window_delegate_->RegisterActivationChangeObserver();
-  session_manager::SessionManager::Get()->AddObserver(this);
-  chromeos::PowerManagerClient::Get()->AddObserver(this);
-
-  DCHECK(pref_service_);
-  RestoreEngagementTimeFromPrefs();
-  update_engagement_time_timer_.Start(FROM_HERE, kUpdateEngagementTimePeriod,
-                                      this,
-                                      &ArcMetricsService::UpdateEngagementTime);
-  save_engagement_time_to_prefs_timer_.Start(
-      FROM_HERE, kSaveEngagementTimeToPrefsPeriod, this,
-      &ArcMetricsService::SaveEngagementTimeToPrefs);
+  // If WMHelper doesn't exist, do nothing. This occurs in tests.
+  if (exo::WMHelper::HasInstance())
+    exo::WMHelper::GetInstance()->AddActivationObserver(this);
+  ui::GamepadProviderOzone::GetInstance()->AddGamepadObserver(this);
 
   StabilityMetricsManager::Get()->SetArcNativeBridgeType(
       NativeBridgeType::UNKNOWN);
@@ -167,29 +143,47 @@ ArcMetricsService::ArcMetricsService(content::BrowserContext* context,
 
 ArcMetricsService::~ArcMetricsService() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  save_engagement_time_to_prefs_timer_.Stop();
-  update_engagement_time_timer_.Stop();
-  UpdateEngagementTime();
-  SaveEngagementTimeToPrefs();
 
-  chromeos::PowerManagerClient::Get()->RemoveObserver(this);
-  session_manager::SessionManager::Get()->RemoveObserver(this);
-  arc_window_delegate_->UnregisterActivationChangeObserver();
+  ui::GamepadProviderOzone::GetInstance()->RemoveGamepadObserver(this);
+  // If WMHelper is already destroyed, do nothing.
+  // TODO(crbug.com/748380): Fix shutdown order.
+  if (exo::WMHelper::HasInstance())
+    exo::WMHelper::GetInstance()->RemoveActivationObserver(this);
   arc_bridge_service_->process()->RemoveObserver(&process_observer_);
   arc_bridge_service_->metrics()->SetHost(nullptr);
+  arc_bridge_service_->intent_helper()->RemoveObserver(
+      &intent_helper_observer_);
+  arc_bridge_service_->app()->RemoveObserver(&app_launcher_observer_);
+  arc_bridge_service_->RemoveObserver(&arc_bridge_service_observer_);
 }
 
-void ArcMetricsService::SetArcWindowDelegateForTesting(
-    std::unique_ptr<ArcWindowDelegate> delegate) {
-  arc_window_delegate_ = std::move(delegate);
+void ArcMetricsService::Shutdown() {
+  for (auto& obs : app_kill_observers_)
+    obs.OnArcMetricsServiceDestroyed();
+  app_kill_observers_.Clear();
 }
 
-void ArcMetricsService::SetClockForTesting(base::Clock* clock) {
-  clock_ = clock;
+// static
+void ArcMetricsService::RecordArcUserInteraction(
+    content::BrowserContext* context,
+    UserInteractionType type) {
+  DCHECK(context);
+  auto* service = GetForBrowserContext(context);
+  if (!service) {
+    LOG(WARNING) << "Cannot get ArcMetricsService for context " << context;
+    return;
+  }
+  service->RecordArcUserInteraction(type);
 }
 
-void ArcMetricsService::SetTickClockForTesting(base::TickClock* tick_clock) {
-  tick_clock_ = tick_clock;
+void ArcMetricsService::RecordArcUserInteraction(UserInteractionType type) {
+  UMA_HISTOGRAM_ENUMERATION("Arc.UserInteraction", type);
+  for (auto& obs : user_interaction_observers_)
+    obs.OnUserInteraction(type);
+}
+
+void ArcMetricsService::SetHistogramNamer(HistogramNamer histogram_namer) {
+  histogram_namer_ = histogram_namer;
 }
 
 void ArcMetricsService::OnProcessConnectionReady() {
@@ -242,7 +236,7 @@ void ArcMetricsService::ParseProcessList(
 void ArcMetricsService::OnArcStartTimeRetrieved(
     std::vector<mojom::BootProgressEventPtr> events,
     mojom::BootType boot_type,
-    base::Optional<base::TimeTicks> arc_start_time) {
+    absl::optional<base::TimeTicks> arc_start_time) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   if (!arc_start_time.has_value()) {
     LOG(ERROR) << "Failed to retrieve ARC start timeticks.";
@@ -281,12 +275,11 @@ void ArcMetricsService::ReportBootProgress(
 
   if (IsArcVmEnabled()) {
     // For VM builds, do not call into session_manager since we don't use it
-    // for the builds. Using base::TimeTicks() is fine for now because 1) the
-    // clocks in host and guest are not synchronized, and 2) the guest does not
-    // support mini container.
-    // TODO(yusukes): Once the guest supports mini container (details TBD), we
-    // should have the guest itself report the timing of the upgrade.
-    OnArcStartTimeRetrieved(std::move(events), boot_type, base::TimeTicks());
+    // for the builds. The upgrade time is included in the events vector so we
+    // can extract it here.
+    absl::optional<base::TimeTicks> arc_start_time =
+        GetArcStartTimeFromEvents(events);
+    OnArcStartTimeRetrieved(std::move(events), boot_type, arc_start_time);
     return;
   }
 
@@ -319,157 +312,190 @@ void ArcMetricsService::ReportNativeBridge(
   StabilityMetricsManager::Get()->SetArcNativeBridgeType(native_bridge_type);
 }
 
+void ArcMetricsService::ReportCompanionLibApiUsage(
+    mojom::CompanionLibApiId api_id) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  UMA_HISTOGRAM_ENUMERATION("Arc.CompanionLibraryApisCounter", api_id);
+}
+
+void ArcMetricsService::ReportAppKill(mojom::AppKillPtr app_kill) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  switch (app_kill->type) {
+    case mojom::AppKillType::LMKD_KILL:
+      NotifyLowMemoryKill();
+      break;
+    case mojom::AppKillType::OOM_KILL:
+      NotifyOOMKillCount(app_kill->count);
+      break;
+  }
+}
+
+void ArcMetricsService::NotifyLowMemoryKill() {
+  for (auto& obs : app_kill_observers_)
+    obs.OnArcLowMemoryKill();
+}
+
+void ArcMetricsService::NotifyOOMKillCount(unsigned long count) {
+  for (auto& obs : app_kill_observers_)
+    obs.OnArcOOMKillCount(count);
+}
+
+void ArcMetricsService::ReportArcCorePriAbiMigEvent(
+    mojom::ArcCorePriAbiMigEvent event_type) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  UMA_HISTOGRAM_ENUMERATION("Arc.AbiMigration.Event", event_type);
+}
+
+void ArcMetricsService::ReportArcCorePriAbiMigFailedTries(
+    uint32_t failed_attempts) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  UMA_HISTOGRAM_EXACT_LINEAR("Arc.AbiMigration.FailedAttempts", failed_attempts,
+                             kUmaPriAbiMigMaxFailedAttempts);
+}
+
+void ArcMetricsService::ReportArcCorePriAbiMigDowngradeDelay(
+    base::TimeDelta delay) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  base::UmaHistogramCustomTimes("Arc.AbiMigration.DowngradeDelay", delay,
+                                kUmaMinTime, kUmaMaxTime, kUmaNumBuckets);
+}
+
+void ArcMetricsService::OnArcStartTimeForPriAbiMigration(
+    base::TimeTicks durationTicks,
+    absl::optional<base::TimeTicks> arc_start_time) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (!arc_start_time.has_value()) {
+    LOG(ERROR) << "Failed to retrieve ARC start timeticks.";
+    return;
+  }
+  VLOG(2) << "ARC start for Primary Abi Migration @" << arc_start_time.value();
+
+  const base::TimeDelta elapsed_time = durationTicks - arc_start_time.value();
+  base::UmaHistogramCustomTimes("Arc.AbiMigration.BootTime", elapsed_time,
+                                kUmaMinTime, kUmaMaxTime, kUmaNumBuckets);
+}
+
+void ArcMetricsService::ReportArcCorePriAbiMigBootTime(
+    base::TimeDelta duration) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  // For VM builds, we are directly reporting the boot time duration from
+  // ARC Metrics code.
+  if (IsArcVmEnabled()) {
+    base::UmaHistogramCustomTimes("Arc.AbiMigration.BootTime", duration,
+                                  kUmaMinTime, kUmaMaxTime, kUmaNumBuckets);
+    return;
+  }
+
+  // For container builds, we report the time of boot_progress_enable_screen
+  // event, and boot time duration is calculated by subtracting the ARC start
+  // time, which is fetched from session manager.
+  const base::TimeTicks durationTicks = duration + base::TimeTicks();
+  // Retrieve ARC full container's start time from session manager.
+  chromeos::SessionManagerClient::Get()->GetArcStartTime(
+      base::BindOnce(&ArcMetricsService::OnArcStartTimeForPriAbiMigration,
+                     weak_ptr_factory_.GetWeakPtr(), durationTicks));
+}
+
+void ArcMetricsService::ReportArcSystemHealthUpgrade(base::TimeDelta duration,
+                                                     bool packages_deleted) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  base::UmaHistogramCustomTimes("Arc.SystemHealth.Upgrade.TimeDelta", duration,
+                                kUmaMinTime, kUmaMaxTime, kUmaNumBuckets);
+
+  base::UmaHistogramBoolean("Arc.SystemHealth.Upgrade.PackagesDeleted",
+                            packages_deleted);
+}
+
+void ArcMetricsService::ReportClipboardDragDropEvent(
+    mojom::ArcClipboardDragDropEvent event_type) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  base::UmaHistogramEnumeration("Arc.ClipboardDragDrop", event_type);
+}
+
+void ArcMetricsService::ReportAnr(mojom::AnrPtr anr) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  base::UmaHistogramEnumeration("Arc.Anr.Overall", anr->type);
+
+  base::UmaHistogramEnumeration("Arc.Anr." + AnrSourceToTableName(anr->source),
+                                anr->type);
+}
+
 void ArcMetricsService::OnWindowActivated(
     wm::ActivationChangeObserver::ActivationReason reason,
     aura::Window* gained_active,
     aura::Window* lost_active) {
-  UpdateEngagementTime();
-  was_arc_window_active_ = arc_window_delegate_->IsArcAppWindow(gained_active);
+  was_arc_window_active_ = ash::IsArcWindow(gained_active);
+  if (!was_arc_window_active_) {
+    gamepad_interaction_recorded_ = false;
+    return;
+  }
+  RecordArcUserInteraction(UserInteractionType::APP_CONTENT_WINDOW_INTERACTION);
+}
+
+void ArcMetricsService::OnGamepadEvent(const ui::GamepadEvent& event) {
   if (!was_arc_window_active_)
     return;
-  UMA_HISTOGRAM_ENUMERATION(
-      "Arc.UserInteraction",
-      UserInteractionType::APP_CONTENT_WINDOW_INTERACTION);
-}
-
-void ArcMetricsService::OnSessionStateChanged() {
-  UpdateEngagementTime();
-  was_session_active_ =
-      session_manager::SessionManager::Get()->session_state() ==
-      session_manager::SessionState::ACTIVE;
-}
-
-void ArcMetricsService::ScreenIdleStateChanged(
-    const power_manager::ScreenIdleState& proto) {
-  UpdateEngagementTime();
-  was_screen_dimmed_ = proto.dimmed();
+  if (gamepad_interaction_recorded_)
+    return;
+  gamepad_interaction_recorded_ = true;
+  RecordArcUserInteraction(UserInteractionType::GAMEPAD_INTERACTION);
 }
 
 void ArcMetricsService::OnTaskCreated(int32_t task_id,
                                       const std::string& package_name,
                                       const std::string& activity,
                                       const std::string& intent) {
-  UpdateEngagementTime();
   task_ids_.push_back(task_id);
+  guest_os_engagement_metrics_.SetBackgroundActive(true);
 }
 
 void ArcMetricsService::OnTaskDestroyed(int32_t task_id) {
-  UpdateEngagementTime();
   auto it = std::find(task_ids_.begin(), task_ids_.end(), task_id);
   if (it == task_ids_.end()) {
     LOG(WARNING) << "unknown task_id, background time might be undermeasured";
     return;
   }
   task_ids_.erase(it);
+  guest_os_engagement_metrics_.SetBackgroundActive(!task_ids_.empty());
 }
 
-void ArcMetricsService::RestoreEngagementTimeFromPrefs() {
-  // Restore accumulated results only if they were recorded on the same OS
-  // version.
-  if (pref_service_->GetString(prefs::kEngagementTimeOsVersion) ==
-      base::SysInfo::OperatingSystemVersion()) {
-    day_id_ = pref_service_->GetInteger(prefs::kEngagementTimeDayId);
-    engagement_time_total_ =
-        pref_service_->GetTimeDelta(prefs::kEngagementTimeTotal);
-    engagement_time_foreground_ =
-        pref_service_->GetTimeDelta(prefs::kEngagementTimeForeground);
-    engagement_time_background_ =
-        pref_service_->GetTimeDelta(prefs::kEngagementTimeBackground);
-  } else {
-    ResetEngagementTimePrefs();
-  }
-
-  RecordEngagementTimeToUmaIfNeeded();
-}
-
-void ArcMetricsService::SaveEngagementTimeToPrefs() {
+void ArcMetricsService::AddAppKillObserver(AppKillObserver* obs) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(pref_service_);
-
-  pref_service_->SetString(prefs::kEngagementTimeOsVersion,
-                           base::SysInfo::OperatingSystemVersion());
-  pref_service_->SetInteger(prefs::kEngagementTimeDayId, day_id_);
-  pref_service_->SetTimeDelta(prefs::kEngagementTimeTotal,
-                              engagement_time_total_);
-  pref_service_->SetTimeDelta(prefs::kEngagementTimeForeground,
-                              engagement_time_foreground_);
-  pref_service_->SetTimeDelta(prefs::kEngagementTimeBackground,
-                              engagement_time_background_);
+  app_kill_observers_.AddObserver(obs);
 }
 
-void ArcMetricsService::UpdateEngagementTime() {
-  VLOG(2) << "last state: dimmed=" << was_screen_dimmed_
-          << " active=" << was_session_active_
-          << " focus=" << was_arc_window_active_
-          << " #tasks=" << task_ids_.size();
+void ArcMetricsService::RemoveAppKillObserver(AppKillObserver* obs) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  app_kill_observers_.RemoveObserver(obs);
+}
 
-  base::TimeTicks now = tick_clock_->NowTicks();
-  base::TimeDelta elapsed = now - last_update_ticks_;
+void ArcMetricsService::AddUserInteractionObserver(
+    UserInteractionObserver* obs) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  user_interaction_observers_.AddObserver(obs);
+}
 
-  if (ShouldAccumulateEngagementTotalTime()) {
-    VLOG(2) << "accumulate to total time " << elapsed;
-    engagement_time_total_ += elapsed;
-    if (ShouldAccumulateEngagementForegroundTime()) {
-      VLOG(2) << "accumulate to foreground time " << elapsed;
-      engagement_time_foreground_ += elapsed;
-    } else if (ShouldAccumulateEngagementBackgroundTime()) {
-      VLOG(2) << "accumulate to background time " << elapsed;
-      engagement_time_background_ += elapsed;
+void ArcMetricsService::RemoveUserInteractionObserver(
+    UserInteractionObserver* obs) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  user_interaction_observers_.RemoveObserver(obs);
+}
+
+absl::optional<base::TimeTicks> ArcMetricsService::GetArcStartTimeFromEvents(
+    std::vector<mojom::BootProgressEventPtr>& events) {
+  mojom::BootProgressEventPtr arc_upgraded_event;
+  for (auto it = events.begin(); it != events.end(); ++it) {
+    if (!(*it)->event.compare(kBootProgressArcUpgraded)) {
+      arc_upgraded_event = std::move(*it);
+      events.erase(it);
+      return base::TimeDelta::FromMilliseconds(
+                 arc_upgraded_event->uptimeMillis) +
+             base::TimeTicks();
     }
   }
-
-  last_update_ticks_ = now;
-  RecordEngagementTimeToUmaIfNeeded();
+  return absl::nullopt;
 }
-
-void ArcMetricsService::RecordEngagementTimeToUmaIfNeeded() {
-  if (!ShouldRecordEngagementTimeToUma())
-    return;
-  VLOG(2) << "day changed, recording engagement time to UMA";
-  UMA_HISTOGRAM_CUSTOM_TIMES(
-      "Arc.EngagementTime.Total", engagement_time_total_,
-      base::TimeDelta::FromSeconds(1),
-      base::TimeDelta::FromDays(1) + kUpdateEngagementTimePeriod, 50);
-  UMA_HISTOGRAM_CUSTOM_TIMES(
-      "Arc.EngagementTime.ArcTotal",
-      engagement_time_foreground_ + engagement_time_background_,
-      base::TimeDelta::FromSeconds(1),
-      base::TimeDelta::FromDays(1) + kUpdateEngagementTimePeriod, 50);
-  UMA_HISTOGRAM_CUSTOM_TIMES(
-      "Arc.EngagementTime.Foreground", engagement_time_foreground_,
-      base::TimeDelta::FromSeconds(1),
-      base::TimeDelta::FromDays(1) + kUpdateEngagementTimePeriod, 50);
-  UMA_HISTOGRAM_CUSTOM_TIMES(
-      "Arc.EngagementTime.Background", engagement_time_background_,
-      base::TimeDelta::FromSeconds(1),
-      base::TimeDelta::FromDays(1) + kUpdateEngagementTimePeriod, 50);
-  ResetEngagementTimePrefs();
-}
-
-void ArcMetricsService::ResetEngagementTimePrefs() {
-  day_id_ = GetDayId(clock_);
-  engagement_time_total_ = base::TimeDelta();
-  engagement_time_foreground_ = base::TimeDelta();
-  engagement_time_background_ = base::TimeDelta();
-  SaveEngagementTimeToPrefs();
-}
-
-bool ArcMetricsService::ShouldAccumulateEngagementTotalTime() const {
-  return was_session_active_ && !was_screen_dimmed_;
-}
-
-bool ArcMetricsService::ShouldAccumulateEngagementForegroundTime() const {
-  return was_arc_window_active_;
-}
-
-bool ArcMetricsService::ShouldAccumulateEngagementBackgroundTime() const {
-  return task_ids_.size() > 0;
-}
-
-bool ArcMetricsService::ShouldRecordEngagementTimeToUma() const {
-  return day_id_ != GetDayId(clock_);
-}
-
 ArcMetricsService::ProcessObserver::ProcessObserver(
     ArcMetricsService* arc_metrics_service)
     : arc_metrics_service_(arc_metrics_service) {}
@@ -482,6 +508,53 @@ void ArcMetricsService::ProcessObserver::OnConnectionReady() {
 
 void ArcMetricsService::ProcessObserver::OnConnectionClosed() {
   arc_metrics_service_->OnProcessConnectionClosed();
+}
+
+ArcMetricsService::ArcBridgeServiceObserver::ArcBridgeServiceObserver() =
+    default;
+
+ArcMetricsService::ArcBridgeServiceObserver::~ArcBridgeServiceObserver() =
+    default;
+
+void ArcMetricsService::ArcBridgeServiceObserver::BeforeArcBridgeClosed() {
+  arc_bridge_closing_ = true;
+}
+void ArcMetricsService::ArcBridgeServiceObserver::AfterArcBridgeClosed() {
+  arc_bridge_closing_ = false;
+}
+
+ArcMetricsService::IntentHelperObserver::IntentHelperObserver(
+    ArcMetricsService* arc_metrics_service,
+    ArcBridgeServiceObserver* arc_bridge_service_observer)
+    : arc_metrics_service_(arc_metrics_service),
+      arc_bridge_service_observer_(arc_bridge_service_observer) {}
+
+ArcMetricsService::IntentHelperObserver::~IntentHelperObserver() = default;
+
+void ArcMetricsService::IntentHelperObserver::OnConnectionClosed() {
+  // Ignore closed connections due to the container shutting down.
+  if (!arc_bridge_service_observer_->arc_bridge_closing_) {
+    base::UmaHistogramEnumeration(arc_metrics_service_->histogram_namer_.Run(
+                                      "Arc.Session.MojoDisconnection"),
+                                  MojoConnectionType::INTENT_HELPER);
+  }
+}
+
+ArcMetricsService::AppLauncherObserver::AppLauncherObserver(
+    ArcMetricsService* arc_metrics_service,
+    ArcBridgeServiceObserver* arc_bridge_service_observer)
+    : arc_metrics_service_(arc_metrics_service),
+      arc_bridge_service_observer_(arc_bridge_service_observer) {}
+
+ArcMetricsService::AppLauncherObserver::~AppLauncherObserver() = default;
+
+void ArcMetricsService::AppLauncherObserver::OnConnectionClosed() {
+  // Ignore closed connections due to the container shutting down.
+  if (!arc_bridge_service_observer_->arc_bridge_closing_) {
+    base::UmaHistogramEnumeration(arc_metrics_service_->histogram_namer_.Run(
+                                      "Arc.Session.MojoDisconnection"),
+                                  MojoConnectionType::APP_LAUNCHER);
+  }
 }
 
 }  // namespace arc

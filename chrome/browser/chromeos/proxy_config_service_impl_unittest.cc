@@ -6,21 +6,19 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <utility>
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/format_macros.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/task/post_task.h"
-#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
-#include "chromeos/dbus/shill/shill_profile_client.h"
-#include "chromeos/dbus/shill/shill_service_client.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chromeos/network/network_handler.h"
+#include "chromeos/network/network_handler_test_helper.h"
 #include "chromeos/network/network_profile_handler.h"
 #include "chromeos/network/network_state.h"
 #include "chromeos/network/network_state_handler.h"
@@ -31,8 +29,8 @@
 #include "components/proxy_config/proxy_config_pref_names.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/browser_task_traits.h"
-#include "content/public/test/test_browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_task_environment.h"
 #include "net/proxy_resolution/proxy_config.h"
 #include "net/proxy_resolution/proxy_config_service_common_unittest.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -42,8 +40,6 @@
 // TODO(stevenjb): Refactor and move this to src/chromeos/network/proxy or
 // rename. This is really more of an integration test than a unit test at this
 // point and currently relies on some chrome specific components.
-
-using content::BrowserThread;
 
 namespace chromeos {
 
@@ -76,7 +72,7 @@ const struct TestParams {
 
   // Expected outputs from fields of net::ProxyConfig (via IO).
   bool auto_detect;
-  GURL pac_url;
+  const char* pac_url;
   net::ProxyRulesExpectation proxy_rules;
 } tests[] = {
     {
@@ -90,7 +86,7 @@ const struct TestParams {
 
         // Expected result.
         false,                                // auto_detect
-        GURL(),                               // pac_url
+        "",                                   // pac_url
         net::ProxyRulesExpectation::Empty(),  // proxy_rules
     },
 
@@ -105,7 +101,7 @@ const struct TestParams {
 
         // Expected result.
         true,                                 // auto_detect
-        GURL(),                               // pac_url
+        "",                                   // pac_url
         net::ProxyRulesExpectation::Empty(),  // proxy_rules
     },
 
@@ -121,7 +117,7 @@ const struct TestParams {
 
         // Expected result.
         false,                                // auto_detect
-        GURL("http://wpad/wpad.dat"),         // pac_url
+        "http://wpad/wpad.dat",               // pac_url
         net::ProxyRulesExpectation::Empty(),  // proxy_rules
     },
 
@@ -137,7 +133,7 @@ const struct TestParams {
 
         // Expected result.
         false,                                // auto_detect
-        GURL(),                               // pac_url
+        "",                                   // pac_url
         net::ProxyRulesExpectation::Empty(),  // proxy_rules
     },
 
@@ -154,7 +150,7 @@ const struct TestParams {
 
         // Expected result.
         false,                               // auto_detect
-        GURL(),                              // pac_url
+        "",                                  // pac_url
         net::ProxyRulesExpectation::Single(  // proxy_rules
             "www.google.com:80",             // single proxy
             "<local>"),                      // bypass rules
@@ -173,7 +169,7 @@ const struct TestParams {
 
         // Expected result.
         false,                               // auto_detect
-        GURL(),                              // pac_url
+        "",                                  // pac_url
         net::ProxyRulesExpectation::Single(  // proxy_rules
             "www.google.com:99",             // single
             "<local>"),                      // bypass rules
@@ -192,7 +188,7 @@ const struct TestParams {
 
         // Expected result.
         false,                               // auto_detect
-        GURL(),                              // pac_url
+        "",                                  // pac_url
         net::ProxyRulesExpectation::Single(  // proxy_rules
             "www.google.com:99",             // single proxy
             "<local>"),                      // bypass rules
@@ -212,7 +208,7 @@ const struct TestParams {
 
         // Expected result.
         false,                                           // auto_detect
-        GURL(),                                          // pac_url
+        "",                                              // pac_url
         net::ProxyRulesExpectation::PerSchemeWithSocks(  // proxy_rules
             "www.google.com:80",                         // http
             "https://www.foo.com:110",                   // https
@@ -236,7 +232,7 @@ const struct TestParams {
 
         // Expected result.
         false,                               // auto_detect
-        GURL(),                              // pac_url
+        "",                                  // pac_url
         net::ProxyRulesExpectation::Single(  // proxy_rules
             "www.google.com:80",             // single proxy
                                              // bypass_rules
@@ -264,9 +260,6 @@ class ProxyConfigServiceImplTest : public testing::Test {
   ProxyConfigServiceImplTest() = default;
 
   void SetUp() override {
-    DBusThreadManager::Initialize();
-    NetworkHandler::Initialize();
-
     PrefProxyConfigTrackerImpl::RegisterPrefs(pref_service_.registry());
     ::onc::RegisterPrefs(pref_service_.registry());
     PrefProxyConfigTrackerImpl::RegisterProfilePrefs(profile_prefs_.registry());
@@ -274,9 +267,8 @@ class ProxyConfigServiceImplTest : public testing::Test {
   }
 
   void SetUpProxyConfigService(PrefService* profile_prefs) {
-    config_service_impl_.reset(new ProxyConfigServiceImpl(
-        profile_prefs, &pref_service_,
-        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO})));
+    config_service_impl_ = std::make_unique<ProxyConfigServiceImpl>(
+        profile_prefs, &pref_service_, content::GetIOThreadTaskRunner({}));
     proxy_config_service_ =
         config_service_impl_->CreateTrackingProxyConfigService(
             std::unique_ptr<net::ProxyConfigService>());
@@ -289,9 +281,9 @@ class ProxyConfigServiceImplTest : public testing::Test {
 
   void SetUpPrivateWiFi() {
     ShillProfileClient::TestInterface* profile_test =
-        DBusThreadManager::Get()->GetShillProfileClient()->GetTestInterface();
+        network_handler_test_helper_.profile_test();
     ShillServiceClient::TestInterface* service_test =
-        DBusThreadManager::Get()->GetShillServiceClient()->GetTestInterface();
+        network_handler_test_helper_.service_test();
 
     // Process any pending notifications before clearing services.
     base::RunLoop().RunUntilIdle();
@@ -312,9 +304,9 @@ class ProxyConfigServiceImplTest : public testing::Test {
 
   void SetUpSharedEthernet() {
     ShillProfileClient::TestInterface* profile_test =
-        DBusThreadManager::Get()->GetShillProfileClient()->GetTestInterface();
+        network_handler_test_helper_.profile_test();
     ShillServiceClient::TestInterface* service_test =
-        DBusThreadManager::Get()->GetShillServiceClient()->GetTestInterface();
+        network_handler_test_helper_.service_test();
 
     // Process any pending notifications before clearing services.
     base::RunLoop().RunUntilIdle();
@@ -337,8 +329,6 @@ class ProxyConfigServiceImplTest : public testing::Test {
     base::RunLoop().RunUntilIdle();
     config_service_impl_.reset();
     proxy_config_service_.reset();
-    NetworkHandler::Shutdown();
-    DBusThreadManager::Shutdown();
   }
 
   base::Value InitConfigWithTestInput(const Input& input) {
@@ -367,11 +357,9 @@ class ProxyConfigServiceImplTest : public testing::Test {
         NetworkHandler::Get()->network_state_handler();
     const NetworkState* network = network_state_handler->DefaultNetwork();
     ASSERT_TRUE(network);
-    DBusThreadManager::Get()
-        ->GetShillServiceClient()
-        ->GetTestInterface()
-        ->SetServiceProperty(network->path(), shill::kProxyConfigProperty,
-                             base::Value(proxy_config));
+    network_handler_test_helper_.service_test()->SetServiceProperty(
+        network->path(), shill::kProxyConfigProperty,
+        base::Value(proxy_config));
   }
 
   // Synchronously gets the latest proxy config.
@@ -387,7 +375,8 @@ class ProxyConfigServiceImplTest : public testing::Test {
     EXPECT_EQ(net::ProxyConfigService::CONFIG_VALID, availability);
   }
 
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
+  NetworkHandlerTestHelper network_handler_test_helper_;
   std::unique_ptr<net::ProxyConfigService> proxy_config_service_;
   std::unique_ptr<ProxyConfigServiceImpl> config_service_impl_;
   TestingPrefServiceSimple pref_service_;
@@ -412,7 +401,7 @@ TEST_F(ProxyConfigServiceImplTest, NetworkProxy) {
     SyncGetLatestProxyConfig(&config);
 
     EXPECT_EQ(tests[i].auto_detect, config.value().auto_detect());
-    EXPECT_EQ(tests[i].pac_url, config.value().pac_url());
+    EXPECT_EQ(GURL(tests[i].pac_url), config.value().pac_url());
     EXPECT_TRUE(tests[i].proxy_rules.Matches(config.value().proxy_rules()));
   }
 }
@@ -471,7 +460,7 @@ TEST_F(ProxyConfigServiceImplTest, DynamicPrefsOverride) {
     net::ProxyConfigWithAnnotation actual_config;
     SyncGetLatestProxyConfig(&actual_config);
     EXPECT_EQ(managed_params.auto_detect, actual_config.value().auto_detect());
-    EXPECT_EQ(managed_params.pac_url, actual_config.value().pac_url());
+    EXPECT_EQ(GURL(managed_params.pac_url), actual_config.value().pac_url());
     EXPECT_TRUE(managed_params.proxy_rules.Matches(
         actual_config.value().proxy_rules()));
 
@@ -481,7 +470,8 @@ TEST_F(ProxyConfigServiceImplTest, DynamicPrefsOverride) {
     SyncGetLatestProxyConfig(&actual_config);
     EXPECT_EQ(recommended_params.auto_detect,
               actual_config.value().auto_detect());
-    EXPECT_EQ(recommended_params.pac_url, actual_config.value().pac_url());
+    EXPECT_EQ(GURL(recommended_params.pac_url),
+              actual_config.value().pac_url());
     EXPECT_TRUE(recommended_params.proxy_rules.Matches(
         actual_config.value().proxy_rules()));
 
@@ -489,7 +479,7 @@ TEST_F(ProxyConfigServiceImplTest, DynamicPrefsOverride) {
     SetUserConfigInShill(&network_config);
     SyncGetLatestProxyConfig(&actual_config);
     EXPECT_EQ(network_params.auto_detect, actual_config.value().auto_detect());
-    EXPECT_EQ(network_params.pac_url, actual_config.value().pac_url());
+    EXPECT_EQ(GURL(network_params.pac_url), actual_config.value().pac_url());
     EXPECT_TRUE(network_params.proxy_rules.Matches(
         actual_config.value().proxy_rules()));
 
@@ -498,7 +488,7 @@ TEST_F(ProxyConfigServiceImplTest, DynamicPrefsOverride) {
                                  managed_config.CreateDeepCopy());
     SyncGetLatestProxyConfig(&actual_config);
     EXPECT_EQ(managed_params.auto_detect, actual_config.value().auto_detect());
-    EXPECT_EQ(managed_params.pac_url, actual_config.value().pac_url());
+    EXPECT_EQ(GURL(managed_params.pac_url), actual_config.value().pac_url());
     EXPECT_TRUE(managed_params.proxy_rules.Matches(
         actual_config.value().proxy_rules()));
 
@@ -507,7 +497,7 @@ TEST_F(ProxyConfigServiceImplTest, DynamicPrefsOverride) {
     pref_service_.RemoveManagedPref(::proxy_config::prefs::kProxy);
     SyncGetLatestProxyConfig(&actual_config);
     EXPECT_EQ(network_params.auto_detect, actual_config.value().auto_detect());
-    EXPECT_EQ(network_params.pac_url, actual_config.value().pac_url());
+    EXPECT_EQ(GURL(network_params.pac_url), actual_config.value().pac_url());
     EXPECT_TRUE(network_params.proxy_rules.Matches(
         actual_config.value().proxy_rules()));
 
@@ -515,7 +505,7 @@ TEST_F(ProxyConfigServiceImplTest, DynamicPrefsOverride) {
     pref_service_.RemoveRecommendedPref(::proxy_config::prefs::kProxy);
     SyncGetLatestProxyConfig(&actual_config);
     EXPECT_EQ(network_params.auto_detect, actual_config.value().auto_detect());
-    EXPECT_EQ(network_params.pac_url, actual_config.value().pac_url());
+    EXPECT_EQ(GURL(network_params.pac_url), actual_config.value().pac_url());
     EXPECT_TRUE(network_params.proxy_rules.Matches(
         actual_config.value().proxy_rules()));
   }
@@ -528,7 +518,7 @@ TEST_F(ProxyConfigServiceImplTest, SharedEthernetAndUserPolicy) {
   SetUpSharedEthernet();
   SetUpProxyConfigService(&profile_prefs_);
 
-  std::unique_ptr<base::Value> ethernet_policy =
+  base::Value ethernet_policy =
       chromeos::onc::ReadDictionaryFromJson(kEthernetPolicy);
 
   std::unique_ptr<base::ListValue> network_configs(new base::ListValue);

@@ -4,7 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Tests that resources with JSON MIME types are previewed with the JSON viewer.\n`);
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
+  await TestRunner.loadLegacyModule('source_frame');
   await TestRunner.showPanel('network');
 
   async function testSearches(view, searches) {
@@ -73,11 +74,13 @@
 
 
   function trySearches(request, searches, callback) {
+    var networkPanel = UI.panels.network;
     TestRunner.addSniffer(Network.RequestPreviewView.prototype, '_doShowPreview', async function() {
       previewViewHandled(searches, callback, await this._contentViewPromise);
+      networkPanel._hideRequestPanel();
     });
-    var networkPanel = UI.panels.network;
-    networkPanel._showRequest(request);
+    networkPanel._onRequestSelected({data: request});
+    networkPanel._showRequestPanel();
     var itemView = networkPanel._networkItemView;
     itemView._selectTab('preview');
   }
@@ -99,7 +102,7 @@
       testType('application/json', '[533,3223]', ['533', '322'], next);
     },
     function jsonSpecialMimeTest(next) {
-      testType('application/vnd.document+json', '{foo0foo: 123}', ['foo'], next);
+      testType('application/vnd.document+json', '{"foo0foo": 123}', ['foo'], next);
     },
     function xmlMultipleSearchTest(next) {
       testType('text/xml', '<bar><foo/>test</bar>', ['bar', 'foo', 'bar', 'test'], next);
@@ -114,7 +117,7 @@
       testType('text/xml', '<a><![CDATA[GGG]]><g tee="gee">tee</g></a>', ['GGG', 'tee', 'CDATA'], next);
     },
     function xmlMimeTypeJsonTest(next) {
-      testType('text/xml', '{foo0: \'barr\', \'barr\': \'fooo\'}', ['fooo', 'bar'], next);
+      testType('text/xml', '{"foo0": "barr", "barr": "fooo"}', ['fooo', 'bar'], next);
     }
   ]);
 })();

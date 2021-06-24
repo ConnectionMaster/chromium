@@ -6,14 +6,13 @@
 
 #include <utility>
 
-#include "base/bind_helpers.h"
-#include "base/callback_forward.h"
+#include "base/callback_helpers.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/timer/mock_timer.h"
 #include "base/values.h"
 #include "components/history/core/browser/browsing_history_driver.h"
@@ -23,7 +22,6 @@
 #include "components/sync/driver/fake_sync_service.h"
 #include "components/sync/driver/sync_service_observer.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/url_request_context_getter.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -43,6 +41,7 @@ const char kUrl4[] = "http://www.four.com";
 const char kUrl5[] = "http://www.five.com";
 const char kUrl6[] = "http://www.six.com";
 const char kUrl7[] = "http://www.seven.com";
+const char kIconUrl1[] = "http://www.one.com/favicon.ico";
 
 const HistoryEntry::EntryType kLocal = HistoryEntry::LOCAL_ENTRY;
 const HistoryEntry::EntryType kRemote = HistoryEntry::REMOTE_ENTRY;
@@ -52,6 +51,7 @@ struct TestResult {
   std::string url;
   int64_t hour_offset;  // Visit time in hours past the baseline time.
   HistoryEntry::EntryType type;
+  std::string remote_icon_url_for_uma;
 };
 
 class TestSyncService : public syncer::FakeSyncService {
@@ -111,7 +111,7 @@ class TestBrowsingHistoryDriver : public BrowsingHistoryDriver {
   void ShouldShowNoticeAboutOtherFormsOfBrowsingHistory(
       const syncer::SyncService* sync_service,
       WebHistoryService* local_history,
-      base::Callback<void(bool)> callback) override {}
+      base::OnceCallback<void(bool)> callback) override {}
 
   int history_deleted_count_ = 0;
   std::vector<QueryResult> query_results_;
@@ -163,7 +163,7 @@ class TimeoutWebHistoryService : public TestWebHistoryService {
  private:
   // WebHistoryService implementation.
   Request* CreateRequest(const GURL& url,
-                         const CompletionCallback& callback,
+                         CompletionCallback callback,
                          const net::PartialNetworkTrafficAnnotationTag&
                              partial_traffic_annotation) override {
     return new TestWebHistoryService::TestRequest();
@@ -224,7 +224,8 @@ class BrowsingHistoryServiceTest : public ::testing::Test {
                                  OffsetToTime(entry.hour_offset),
                                  VisitSource::SOURCE_BROWSED);
       } else if (entry.type == kRemote) {
-        web_history->AddSyncedVisit(entry.url, OffsetToTime(entry.hour_offset));
+        web_history->AddSyncedVisit(entry.url, OffsetToTime(entry.hour_offset),
+                                    entry.remote_icon_url_for_uma);
       } else {
         NOTREACHED();
       }
@@ -240,6 +241,8 @@ class BrowsingHistoryServiceTest : public ::testing::Test {
     EXPECT_EQ(OffsetToTime(expected.hour_offset), actual.time);
     EXPECT_EQ(static_cast<int>(expected.type),
               static_cast<int>(actual.entry_type));
+    EXPECT_EQ(GURL(expected.remote_icon_url_for_uma),
+              actual.remote_icon_url_for_uma);
   }
 
   TestBrowsingHistoryDriver::QueryResult QueryHistory(size_t max_count = 0) {
@@ -251,7 +254,7 @@ class BrowsingHistoryServiceTest : public ::testing::Test {
   TestBrowsingHistoryDriver::QueryResult QueryHistory(
       const QueryOptions& options) {
     size_t previous_results_count = driver()->GetQueryResults().size();
-    service()->QueryHistory(base::string16(), options);
+    service()->QueryHistory(std::u16string(), options);
     BlockUntilHistoryProcessesPendingRequests();
     const std::vector<TestBrowsingHistoryDriver::QueryResult> all_results =
         driver()->GetQueryResults();
@@ -292,7 +295,7 @@ class BrowsingHistoryServiceTest : public ::testing::Test {
   }
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   // Duplicates on the same day in the local timezone are removed, so set a
   // baseline time in local time.
@@ -378,9 +381,9 @@ TEST_F(BrowsingHistoryServiceTest, QueryHistoryLocalTimeRanges) {
   QueryOptions options;
   options.begin_time = OffsetToTime(2);
   options.end_time = OffsetToTime(4);
-  // Having a |reached_beginning| value of false here seems
-  // counterintuitive. Seems to be for paging by |begin_time| instead of
-  // |count|. If the local history implementation changes, feel free to update
+  // Having a `reached_beginning` value of false here seems
+  // counterintuitive. Seems to be for paging by `begin_time` instead of
+  // `count`. If the local history implementation changes, feel free to update
   // this value, all this test cares about is that BrowsingHistoryService passes
   // the values through correctly.
   VerifyQueryResult(/*reached_beginning*/ false,
@@ -490,6 +493,18 @@ TEST_F(BrowsingHistoryServiceTest, MergeDuplicatesVerifyTimestamps) {
   EXPECT_EQ(1U, results.first[1].all_timestamps.size());
 }
 
+TEST_F(BrowsingHistoryServiceTest, MergeDuplicatesKeepNonEmptyIconUrl) {
+  AddHistory({{kUrl1, 0, kRemote, kIconUrl1}, {kUrl1, 1, kLocal}});
+  auto results = QueryHistory();
+  VerifyQueryResult(/*reached_beginning*/ true, /*has_synced_results*/ true,
+                    {{kUrl1, 1, kBoth, kIconUrl1}}, results);
+
+  AddHistory({{kUrl1, 0, kLocal}, {kUrl1, 1, kRemote, kIconUrl1}});
+  results = QueryHistory();
+  VerifyQueryResult(/*reached_beginning*/ true, /*has_synced_results*/ true,
+                    {{kUrl1, 1, kBoth, kIconUrl1}}, results);
+}
+
 TEST_F(BrowsingHistoryServiceTest, QueryHistoryMerge) {
   AddHistory({{kUrl1, 1, kRemote},
               {kUrl2, 2, kRemote},
@@ -526,7 +541,7 @@ TEST_F(BrowsingHistoryServiceTest, QueryHistoryFullLocalPending) {
       /*reached_beginning*/ false, /*has_synced_results*/ true,
       {{kUrl3, 3, kRemote}}, QueryHistory(1));
 
-  local_history()->DeleteURL(GURL(kUrl1));
+  local_history()->DeleteURLs({GURL(kUrl1)});
   VerifyQueryResult(/*reached_beginning*/ true, /*has_synced_results*/ true,
                     {{kUrl2, 2, kRemote}, {kUrl1, 1, kLocal}}, ContinueQuery());
 }
@@ -628,7 +643,7 @@ TEST_F(BrowsingHistoryServiceTest, WebHistoryTimeout) {
   driver()->SetWebHistory(&timeout);
   ResetService(driver(), local_history(), sync());
   EXPECT_EQ(0U, driver()->GetQueryResults().size());
-  service()->QueryHistory(base::string16(), QueryOptions());
+  service()->QueryHistory(std::u16string(), QueryOptions());
   EXPECT_EQ(0U, driver()->GetQueryResults().size());
   BlockUntilHistoryProcessesPendingRequests();
   timer()->Fire();
@@ -639,7 +654,7 @@ TEST_F(BrowsingHistoryServiceTest, WebHistoryTimeout) {
 
   // WebHistoryService will DCHECK if we destroy it before the observer in
   // BrowsingHistoryService is removed, so reset our first
-  // BrowsingHistoryService before |timeout| goes out of scope.
+  // BrowsingHistoryService before `timeout` goes out of scope.
   driver()->SetWebHistory(nullptr);
   ResetService(driver(), nullptr, nullptr);
 }
@@ -701,7 +716,7 @@ TEST_F(BrowsingHistoryServiceTest, IncorrectlyOrderedRemoteResults) {
 
   // WebHistoryService will DCHECK if we destroy it before the observer in
   // BrowsingHistoryService is removed, so reset our first
-  // BrowsingHistoryService before |reversed| goes out of scope.
+  // BrowsingHistoryService before `reversed` goes out of scope.
   driver()->SetWebHistory(nullptr);
   ResetService(driver(), nullptr, nullptr);
 }

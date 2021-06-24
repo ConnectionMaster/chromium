@@ -2,64 +2,70 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {assert} from 'chrome://resources/js/assert.m.js';
+
+import {str} from '../../../common/js/util.m.js';
+
+import {FileManagerDialogBase} from './file_manager_dialog_base.js';
+
+
 /**
  * InstallLinuxPackageDialog is used as the handler for .deb files.
  */
-cr.define('cr.filebrowser', () => {
   /**
    * Creates dialog in DOM tree.
-   *
-   * @param {HTMLElement} parentNode Node to be parent for this dialog.
-   * @constructor
-   * @extends {FileManagerDialogBase}
    */
-  function InstallLinuxPackageDialog(parentNode) {
-    FileManagerDialogBase.call(this, parentNode);
+export class InstallLinuxPackageDialog extends FileManagerDialogBase {
+  /**
+   * @param {HTMLElement} parentNode Node to be parent for this dialog.
+   */
+  constructor(parentNode) {
+    super(parentNode);
 
-    this.frame_.id = 'install-linux-package-dialog';
+    this.frame.id = 'install-linux-package-dialog';
 
     this.details_frame_ = this.document_.createElement('div');
     this.details_frame_.className = 'install-linux-package-details-frame';
-    this.frame_.insertBefore(this.details_frame_, this.buttons);
+    this.frame.insertBefore(this.details_frame_, this.buttons);
 
     this.details_label_ = this.document_.createElement('div');
-    this.details_label_.className = 'install-linux-package-details-label';
+    this.details_label_.classList.add(
+        'install-linux-package-details-label', 'button2');
     this.details_label_.textContent =
         str('INSTALL_LINUX_PACKAGE_DETAILS_LABEL');
 
     // The OK button normally dismisses the dialog, so add a button we can
     // customize.
-    this.installButton_ = this.okButton_.cloneNode(false /* deep */);
+    this.installButton_ = this.okButton.cloneNode(false /* deep */);
     this.installButton_.textContent =
         str('INSTALL_LINUX_PACKAGE_INSTALL_BUTTON');
     this.installButton_.addEventListener(
         'click', this.onInstallClick_.bind(this));
-    this.buttons.insertBefore(this.installButton_, this.okButton_);
+    this.buttons.insertBefore(this.installButton_, this.okButton);
     this.initialFocusElement_ = this.installButton_;
-  }
 
-  InstallLinuxPackageDialog.prototype = {
-    __proto__: FileManagerDialogBase.prototype,
-  };
+    /** @private {?Entry} */
+    this.entry_ = null;
+  }
 
   /**
    * Shows the dialog.
    *
    * @param {!Entry} entry
    */
-  InstallLinuxPackageDialog.prototype.showInstallLinuxPackageDialog = function(
-      entry) {
-    // We re-use the same object, so reset any visual state that may be changed.
+  showInstallLinuxPackageDialog(entry) {
+    // We re-use the same object, so reset any visual state that may be
+    // changed.
     this.installButton_.hidden = false;
-    this.okButton_.hidden = true;
-    this.cancelButton_.hidden = false;
+    this.installButton_.disabled = true;
+    this.okButton.hidden = true;
+    this.cancelButton.hidden = false;
 
     this.entry_ = entry;
 
     const title = str('INSTALL_LINUX_PACKAGE_TITLE');
     const message = str('INSTALL_LINUX_PACKAGE_DESCRIPTION');
-    const show = FileManagerDialogBase.prototype.showOkCancelDialog.call(
-        this, title, message, null, null);
+    const show = super.showOkCancelDialog(title, message, null, null);
 
     if (!show) {
       console.error('InstallLinuxPackageDialog can\'t be shown.');
@@ -69,24 +75,24 @@ cr.define('cr.filebrowser', () => {
     chrome.fileManagerPrivate.getLinuxPackageInfo(
         this.entry_, this.onGetLinuxPackageInfo_.bind(this));
     this.resetDetailsFrame_(str('INSTALL_LINUX_PACKAGE_DETAILS_LOADING'));
-  };
+  }
 
   /**
-   * Resets the state of the details frame to just contain the 'Details' label,
-   * then appends |message| if non-empty.
+   * Resets the state of the details frame to just contain the 'Details'
+   * label, then appends |message| if non-empty.
    *
    * @param {string|null} message The (optional) message to display.
    */
-  InstallLinuxPackageDialog.prototype.resetDetailsFrame_ = function(message) {
+  resetDetailsFrame_(message) {
     this.details_frame_.innerHTML = '';
     this.details_frame_.appendChild(this.details_label_);
     if (message) {
       const text = this.document_.createElement('div');
       text.textContent = message;
-      text.className = 'install-linux-package-detail-value';
+      text.classList.add('install-linux-package-detail-value', 'body2-primary');
       this.details_frame_.appendChild(text);
     }
-  };
+  }
 
   /**
    * Updates the dialog with the package info.
@@ -94,8 +100,7 @@ cr.define('cr.filebrowser', () => {
    * @param {(!chrome.fileManagerPrivate.LinuxPackageInfo|undefined)}
    *     linux_package_info The retrieved package info.
    */
-  InstallLinuxPackageDialog.prototype.onGetLinuxPackageInfo_ = function(
-      linux_package_info) {
+  onGetLinuxPackageInfo_(linux_package_info) {
     if (chrome.runtime.lastError) {
       this.resetDetailsFrame_(
           str('INSTALL_LINUX_PACKAGE_DETAILS_NOT_AVAILABLE'));
@@ -132,6 +137,18 @@ cr.define('cr.filebrowser', () => {
       ]);
     }
 
+    this.renderDetails_(details);
+
+    // Allow install now.
+    this.installButton_.disabled = false;
+  }
+
+  /**
+   * @param {!Array<!Array<string>>} details Array with pairs:
+   *    ['label', 'value'].
+   * @private
+   */
+  renderDetails_(details) {
     for (const detail of details) {
       const label = this.document_.createElement('div');
       label.textContent = detail[0] + ': ';
@@ -143,46 +160,42 @@ cr.define('cr.filebrowser', () => {
       this.details_frame_.appendChild(text);
       this.details_frame_.appendChild(this.document_.createElement('br'));
     }
-  };
+  }
 
   /**
    * Starts installing the Linux package.
    */
-  InstallLinuxPackageDialog.prototype.onInstallClick_ = function() {
+  onInstallClick_() {
     // Add the event listener first to avoid potential races.
     chrome.fileManagerPrivate.installLinuxPackage(
-        this.entry_, this.onInstallLinuxPackage_.bind(this));
+        assert(this.entry_), this.onInstallLinuxPackage_.bind(this));
 
     this.installButton_.hidden = true;
-    this.cancelButton_.hidden = true;
+    this.cancelButton.hidden = true;
 
-    this.okButton_.hidden = false;
-    this.okButton_.focus();
-  };
+    this.okButton.hidden = false;
+    this.okButton.focus();
+  }
 
   /**
    * The callback for installLinuxPackage(). Progress updates and completion
-   * for succesfully started installations will be displayed in a notification,
-   * rather than the file manager.
+   * for successfully started installations will be displayed in a
+   * notification, rather than the file manager.
    * @param {!chrome.fileManagerPrivate.InstallLinuxPackageResponse} response
    *     Whether the install successfully started or not.
    * @param {string} failure_reason A textual reason for the 'failed' case.
    */
-  InstallLinuxPackageDialog.prototype.onInstallLinuxPackage_ = function(
-      response, failure_reason) {
+  onInstallLinuxPackage_(response, failure_reason) {
     if (response == 'started') {
-      this.text_.textContent =
-          str('INSTALL_LINUX_PACKAGE_INSTALLATION_STARTED');
+      this.text.textContent = str('INSTALL_LINUX_PACKAGE_INSTALLATION_STARTED');
       return;
     }
 
     // Currently we always display a generic error message. Eventually we'll
     // want a different message for the 'install_already_active' case, and to
     // surface the provided failure reason if one is provided.
-    this.title_.textContent = str('INSTALL_LINUX_PACKAGE_ERROR_TITLE');
-    this.text_.textContent = str('INSTALL_LINUX_PACKAGE_ERROR_DESCRIPTION');
+    this.title.textContent = str('INSTALL_LINUX_PACKAGE_ERROR_TITLE');
+    this.text.textContent = str('INSTALL_LINUX_PACKAGE_ERROR_DESCRIPTION');
     console.error('Failed to begin package installation: ' + failure_reason);
-  };
-
-  return {InstallLinuxPackageDialog: InstallLinuxPackageDialog};
-});
+  }
+}

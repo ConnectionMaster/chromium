@@ -81,14 +81,14 @@ TEST_F(PlistWriterTest, NestedTypes) {
   // Writer unittests like empty list/dict nesting,
   // list list nesting, etc.
   base::DictionaryValue root_dict;
-  std::unique_ptr<base::ListValue> list(new base::ListValue());
+  base::ListValue list;
   std::unique_ptr<base::DictionaryValue> inner_dict(
       new base::DictionaryValue());
   inner_dict->SetInteger("inner int", 10);
-  list->Append(std::move(inner_dict));
-  list->Append(std::make_unique<base::ListValue>());
-  list->AppendBoolean(false);
-  root_dict.Set("list", std::move(list));
+  list.Append(std::move(inner_dict));
+  list.Append(std::make_unique<base::ListValue>());
+  list.AppendBoolean(false);
+  root_dict.SetKey("list", std::move(list));
 
   EXPECT_TRUE(PlistWrite(root_dict, &output_plist));
   EXPECT_EQ(base::StrCat({header_,       " <dict>",
@@ -115,7 +115,8 @@ TEST_F(PlistWriterTest, KeysWithPeriods) {
   std::unique_ptr<base::DictionaryValue> period_dict2(
       new base::DictionaryValue());
   period_dict2->SetKey("g.h.i.j", base::Value(1));
-  period_dict.SetWithoutPathExpansion("d.e.f", std::move(period_dict2));
+  period_dict.SetKey("d.e.f",
+                     base::Value::FromUniquePtrValue(std::move(period_dict2)));
   EXPECT_TRUE(PlistWrite(period_dict, &output_plist));
   EXPECT_EQ(base::StrCat({header_,       " <dict>",
                           PLIST_NEWLINE, "  <key>a.b</key>",

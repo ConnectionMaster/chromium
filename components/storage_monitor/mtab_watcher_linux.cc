@@ -11,7 +11,8 @@
 #include <stdio.h>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "base/logging.h"
 #include "base/threading/scoped_blocking_call.h"
 
 namespace {
@@ -37,12 +38,12 @@ namespace storage_monitor {
 
 MtabWatcherLinux::MtabWatcherLinux(const base::FilePath& mtab_path,
                                    const UpdateMtabCallback& callback)
-    : mtab_path_(mtab_path), callback_(callback), weak_ptr_factory_(this) {
+    : mtab_path_(mtab_path), callback_(callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   bool ret = file_watcher_.Watch(
-      mtab_path_, false,
-      base::Bind(&MtabWatcherLinux::OnFilePathChanged,
-                 weak_ptr_factory_.GetWeakPtr()));
+      mtab_path_, base::FilePathWatcher::Type::kNonRecursive,
+      base::BindRepeating(&MtabWatcherLinux::OnFilePathChanged,
+                          weak_ptr_factory_.GetWeakPtr()));
   if (!ret) {
     LOG(ERROR) << "Adding watch for " << mtab_path_.value() << " failed";
     return;

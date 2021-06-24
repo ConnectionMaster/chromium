@@ -5,20 +5,26 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_SELECT_FILE_DIALOG_EXTENSION_H_
 #define CHROME_BROWSER_UI_VIEWS_SELECT_FILE_DIALOG_EXTENSION_H_
 
+#include <memory>
+#include <string>
 #include <vector>
 
-#include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "chrome/browser/ui/views/extensions/extension_dialog_observer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/native_widget_types.h"  // gfx::NativeWindow
 #include "ui/shell_dialogs/select_file_dialog.h"
 
 class ExtensionDialog;
 class Profile;
 
+namespace aura {
+class Window;
+}
+
 namespace content {
-class RenderViewHost;
+class RenderFrameHost;
 class WebContents;
 }
 
@@ -34,10 +40,8 @@ class SelectFileDialogExtension
       public ExtensionDialogObserver {
  public:
   // Opaque ID type for identifying the tab spawned each dialog, unique for
-  // every WebContents.
-  typedef const void* RoutingID;
-  static RoutingID GetRoutingIDFromWebContents(
-      const content::WebContents* web_contents);
+  // every WebContents or every Android task ID.
+  typedef std::string RoutingID;
 
   static SelectFileDialogExtension* Create(
       ui::SelectFileDialog::Listener* listener,
@@ -61,22 +65,47 @@ class SelectFileDialogExtension
       const std::vector<ui::SelectedFileInfo>& files);
   static void OnFileSelectionCanceled(RoutingID routing_id);
 
-  // For testing, so we can inject JavaScript into the contained view.
-  content::RenderViewHost* GetRenderViewHost();
+  // Allows access to the extension's main frame for injecting javascript.
+  content::RenderFrameHost* GetMainFrame();
+
+  // Call SelectFile with params specific to Chrome OS file manager.
+  // |owner| specifies the window and app type that opened the dialog.
+  // |show_android_picker_apps| determines whether to show Android picker apps
+  //     in the select file dialog.
+  struct Owner {
+    Owner();
+    ~Owner();
+    // The native window that opened the dialog.
+    aura::Window* window = nullptr;
+    // Android task ID if the owner window is an Android app.
+    absl::optional<int> android_task_id;
+    // Lacros window ID if the owner window is a Lacros browser.
+    absl::optional<std::string> lacros_window_id;
+  };
+  void SelectFileWithFileManagerParams(Type type,
+                                       const std::u16string& title,
+                                       const base::FilePath& default_path,
+                                       const FileTypeInfo* file_types,
+                                       int file_type_index,
+                                       void* params,
+                                       const Owner& owner,
+                                       const std::string& search_query,
+                                       bool show_android_picker_apps);
 
  protected:
   // SelectFileDialog implementation.
   void SelectFileImpl(Type type,
-                      const base::string16& title,
+                      const std::u16string& title,
                       const base::FilePath& default_path,
                       const FileTypeInfo* file_types,
                       int file_type_index,
                       const base::FilePath::StringType& default_extension,
                       gfx::NativeWindow owning_window,
                       void* params) override;
+  bool HasMultipleFileTypeChoicesImpl() override;
 
  private:
-  friend class SelectFileDialogExtensionBrowserTest;
+  friend class BaseSelectFileDialogExtensionBrowserTest;
   friend class SelectFileDialogExtensionTest;
   friend class SelectFileDialogExtensionTestFactory;
 
@@ -95,14 +124,11 @@ class SelectFileDialogExtension
   // Check if the list of pending dialogs contains dialog for |routing_id|.
   static bool PendingExists(RoutingID routing_id);
 
-  // Returns true if the dialog has multiple file type choices.
-  bool HasMultipleFileTypeChoicesImpl() override;
-
   // Returns true if |extension_dialog_| is resizable; the dialog must be
   // non-null at the time of this call.
   bool IsResizeable() const;
 
-  bool has_multiple_file_type_choices_;
+  bool has_multiple_file_type_choices_ = false;
 
   // Host for the extension that implements this dialog.
   scoped_refptr<ExtensionDialog> extension_dialog_;
@@ -111,10 +137,10 @@ class SelectFileDialogExtension
   RoutingID routing_id_;
 
   // Pointer to the profile the dialog is running in.
-  Profile* profile_;
+  Profile* profile_ = nullptr;
 
   // The window that created the dialog.
-  gfx::NativeWindow owner_window_;
+  aura::Window* owner_window_ = nullptr;
 
   // We defer the callback into SelectFileDialog::Listener until the window
   // closes, to match the semantics of file selection on Windows and Mac.
@@ -124,10 +150,10 @@ class SelectFileDialogExtension
     SINGLE_FILE,
     MULTIPLE_FILES
   };
-  SelectionType selection_type_;
+  SelectionType selection_type_ = CANCEL;
   std::vector<ui::SelectedFileInfo> selection_files_;
-  int selection_index_;
-  void* params_;
+  int selection_index_ = 0;
+  void* params_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(SelectFileDialogExtension);
 };

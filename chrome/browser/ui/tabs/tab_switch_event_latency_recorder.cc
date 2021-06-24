@@ -4,7 +4,7 @@
 
 #include "chrome/browser/ui/tabs/tab_switch_event_latency_recorder.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/metrics/histogram_macros.h"
 
 TabSwitchEventLatencyRecorder::TabSwitchEventLatencyRecorder() {}
@@ -51,6 +51,6 @@ void TabSwitchEventLatencyRecorder::OnWillChangeActiveTab(
     case EventType::kOther:
       break;
   }
-  event_type_ = base::nullopt;
+  event_type_ = absl::nullopt;
   input_event_timestamp_ = base::TimeTicks();
 }

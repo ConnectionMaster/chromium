@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/core/paint/table_row_painter.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item_cache_skipper.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
+#include "third_party/blink/renderer/platform/graphics/paint/scoped_display_item_fragment.h"
 
 namespace blink {
 
@@ -43,11 +44,14 @@ void TableSectionPainter::Paint(const PaintInfo& paint_info) {
     return;
   }
 
+  unsigned fragment_index = 0;
   for (const auto* fragment = &layout_table_section_.FirstFragment(); fragment;
        fragment = fragment->NextFragment()) {
     PaintInfo fragment_paint_info = paint_info;
     fragment_paint_info.SetFragmentLogicalTopInFlowThread(
         fragment->LogicalTopInFlowThread());
+    ScopedDisplayItemFragment scoped_display_item_fragment(
+        fragment_paint_info.context, fragment_index++);
     PaintSection(fragment_paint_info);
   }
 }
@@ -102,20 +106,23 @@ void TableSectionPainter::PaintCollapsedBorders(const PaintInfo& paint_info) {
     return;
   }
 
+  unsigned fragment_index = 0;
   for (const auto* fragment = &layout_table_section_.FirstFragment(); fragment;
        fragment = fragment->NextFragment()) {
     PaintInfo fragment_paint_info = paint_info;
     fragment_paint_info.SetFragmentLogicalTopInFlowThread(
         fragment->LogicalTopInFlowThread());
+    ScopedDisplayItemFragment scoped_display_item_fragment(
+        fragment_paint_info.context, fragment_index++);
     PaintCollapsedSectionBorders(fragment_paint_info);
   }
 }
 
 LayoutRect TableSectionPainter::TableAlignedRect(
     const PaintInfo& paint_info,
-    const LayoutPoint& paint_offset) {
-  LayoutRect local_cull_rect = LayoutRect(paint_info.GetCullRect().Rect());
-  local_cull_rect.MoveBy(-paint_offset);
+    const PhysicalOffset& paint_offset) {
+  PhysicalRect local_cull_rect(paint_info.GetCullRect().Rect());
+  local_cull_rect.offset -= paint_offset;
 
   LayoutRect table_aligned_rect =
       layout_table_section_.LogicalRectForWritingModeAndDirection(
@@ -130,7 +137,7 @@ void TableSectionPainter::PaintCollapsedSectionBorders(
     return;
 
   ScopedPaintState paint_state(layout_table_section_, paint_info);
-  base::Optional<ScopedBoxContentsPaintState> contents_paint_state;
+  absl::optional<ScopedBoxContentsPaintState> contents_paint_state;
   if (paint_info.phase != PaintPhase::kMask)
     contents_paint_state.emplace(paint_state, layout_table_section_);
   const auto& local_paint_info = contents_paint_state
@@ -141,16 +148,9 @@ void TableSectionPainter::PaintCollapsedSectionBorders(
 
   CellSpan dirtied_rows;
   CellSpan dirtied_columns;
-  if (UNLIKELY(
-          layout_table_section_.Table()->ShouldPaintAllCollapsedBorders())) {
-    // Ignore paint cull rect to simplify paint invalidation in such rare case.
-    dirtied_rows = layout_table_section_.FullSectionRowSpan();
-    dirtied_columns = layout_table_section_.FullTableEffectiveColumnSpan();
-  } else {
-    layout_table_section_.DirtiedRowsAndEffectiveColumns(
-        TableAlignedRect(local_paint_info, paint_offset), dirtied_rows,
-        dirtied_columns);
-  }
+  layout_table_section_.DirtiedRowsAndEffectiveColumns(
+      TableAlignedRect(local_paint_info, paint_offset), dirtied_rows,
+      dirtied_columns);
 
   if (dirtied_columns.Start() >= dirtied_columns.End())
     return;
@@ -166,7 +166,7 @@ void TableSectionPainter::PaintCollapsedSectionBorders(
 }
 
 void TableSectionPainter::PaintObject(const PaintInfo& paint_info,
-                                      const LayoutPoint& paint_offset) {
+                                      const PhysicalOffset& paint_offset) {
   CellSpan dirtied_rows;
   CellSpan dirtied_columns;
   layout_table_section_.DirtiedRowsAndEffectiveColumns(
@@ -266,7 +266,7 @@ void TableSectionPainter::PaintObject(const PaintInfo& paint_info,
 
 void TableSectionPainter::PaintBoxDecorationBackground(
     const PaintInfo& paint_info,
-    const LayoutPoint& paint_offset,
+    const PhysicalOffset& paint_offset,
     const CellSpan& dirtied_rows,
     const CellSpan& dirtied_columns) {
   bool may_have_background = layout_table_section_.Table()->HasColElements() ||
@@ -288,9 +288,10 @@ void TableSectionPainter::PaintBoxDecorationBackground(
           DisplayItem::kBoxDecorationBackground))
     return;
 
-  DrawingRecorder recorder(paint_info.context, layout_table_section_,
-                           DisplayItem::kBoxDecorationBackground);
-  LayoutRect paint_rect(paint_offset, layout_table_section_.Size());
+  BoxDrawingRecorder recorder(paint_info.context, layout_table_section_,
+                              DisplayItem::kBoxDecorationBackground,
+                              paint_offset);
+  PhysicalRect paint_rect(paint_offset, layout_table_section_.Size());
 
   if (has_box_shadow) {
     BoxPainterBase::PaintNormalBoxShadow(paint_info, paint_rect,
@@ -300,11 +301,22 @@ void TableSectionPainter::PaintBoxDecorationBackground(
   if (may_have_background) {
     PaintInfo paint_info_for_cells = paint_info.ForDescendants();
     for (auto r = dirtied_rows.Start(); r < dirtied_rows.End(); r++) {
+      absl::optional<ScopedPaintState> row_paint_state;
       for (auto c = dirtied_columns.Start(); c < dirtied_columns.End(); c++) {
-        if (const auto* cell = layout_table_section_.OriginatingCellAt(r, c))
-          PaintBackgroundsBehindCell(*cell, paint_info_for_cells);
+        if (const auto* cell = layout_table_section_.OriginatingCellAt(r, c)) {
+          if (!row_paint_state)
+            row_paint_state.emplace(*cell->Row(), paint_info_for_cells);
+          PaintBackgroundsBehindCell(*cell, row_paint_state->GetPaintInfo());
+        }
       }
     }
+    uint64_t paint_area = base::saturated_cast<uint64_t>(
+        paint_rect.Width().ToUnsigned() * paint_rect.Height().ToUnsigned());
+    paint_info.context.GetPaintController().SetPossibleBackgroundColor(
+        layout_table_section_,
+        layout_table_section_.ResolveColor(GetCSSPropertyBackgroundColor())
+            .Rgb(),
+        paint_area);
   }
 
   if (has_box_shadow) {

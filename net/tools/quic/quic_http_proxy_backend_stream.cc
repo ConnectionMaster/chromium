@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/containers/contains.h"
 #include "base/strings/string_number_conversions.h"
 #include "net/base/elements_upload_data_stream.h"
 #include "net/base/net_errors.h"
@@ -12,6 +13,7 @@
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "net/ssl/ssl_info.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request_context.h"
 
@@ -52,8 +54,7 @@ QuicHttpProxyBackendStream::QuicHttpProxyBackendStream(
       buf_(base::MakeRefCounted<IOBuffer>(kBufferSize)),
       response_completed_(false),
       headers_set_(false),
-      quic_response_(new quic::QuicBackendResponse()),
-      weak_factory_(this) {}
+      quic_response_(new quic::QuicBackendResponse()) {}
 
 QuicHttpProxyBackendStream::~QuicHttpProxyBackendStream() {}
 
@@ -81,13 +82,13 @@ void QuicHttpProxyBackendStream::set_delegate(
 }
 
 bool QuicHttpProxyBackendStream::SendRequestToBackend(
-    const spdy::SpdyHeaderBlock* incoming_request_headers,
+    const spdy::Http2HeaderBlock* incoming_request_headers,
     const std::string& incoming_body) {
   DCHECK(proxy_context_->IsBackendInitialized())
       << " The quic-backend-proxy-context should be initialized";
 
   // Get Path From the Incoming Header Block
-  spdy::SpdyHeaderBlock::const_iterator it =
+  spdy::Http2HeaderBlock::const_iterator it =
       incoming_request_headers->find(":path");
 
   GURL url = proxy_context_->backend_url();
@@ -96,7 +97,7 @@ bool QuicHttpProxyBackendStream::SendRequestToBackend(
     if (url.path().compare("/") == 0) {
       backend_spec.pop_back();
     }
-    backend_spec.append(it->second.as_string());
+    backend_spec.append(std::string(it->second));
   }
 
   url_ = GURL(backend_spec.c_str());
@@ -110,7 +111,7 @@ bool QuicHttpProxyBackendStream::SendRequestToBackend(
   std::string method = "";
   it = incoming_request_headers->find(":method");
   if (it != incoming_request_headers->end()) {
-    method.append(it->second.as_string());
+    method.append(std::string(it->second));
   }
   if (ValidateHttpMethod(method) != true) {
     LOG(INFO) << "Unknown Request Type received from QUIC client " << method;
@@ -136,18 +137,18 @@ bool QuicHttpProxyBackendStream::SendRequestToBackend(
 }
 
 void QuicHttpProxyBackendStream::CopyHeaders(
-    const spdy::SpdyHeaderBlock* incoming_request_headers) {
+    const spdy::Http2HeaderBlock* incoming_request_headers) {
   // Set all the request headers
   // Add or append the X-Forwarded-For Header and X-Real-IP
-  for (spdy::SpdyHeaderBlock::const_iterator it =
+  for (spdy::Http2HeaderBlock::const_iterator it =
            incoming_request_headers->begin();
        it != incoming_request_headers->end(); ++it) {
-    std::string key = it->first.as_string();
-    std::string value = it->second.as_string();
+    auto key = std::string(it->first);
+    auto value = std::string(it->second);
     // Ignore the spdy headers
     if (!key.empty() && key[0] != ':') {
       // Remove hop-by-hop headers
-      if (base::ContainsKey(kHopHeaders, key)) {
+      if (base::Contains(kHopHeaders, key)) {
         LOG(INFO) << "QUIC Proxy Ignoring Hop-by-hop Request Header: " << key
                   << ":" << value;
       } else {
@@ -188,7 +189,7 @@ void QuicHttpProxyBackendStream::SetUpload(
 void QuicHttpProxyBackendStream::SendRequestOnBackendThread() {
   DCHECK(quic_proxy_task_runner_->BelongsToCurrentThread());
   url_request_ = proxy_context_->GetURLRequestContext()->CreateRequest(
-      url_, net::DEFAULT_PRIORITY, this);
+      url_, net::DEFAULT_PRIORITY, this, MISSING_TRAFFIC_ANNOTATION);
   url_request_->set_method(method_type_);
   url_request_->SetExtraRequestHeaders(request_headers_);
   if (upload_) {
@@ -197,7 +198,6 @@ void QuicHttpProxyBackendStream::SendRequestOnBackendThread() {
   url_request_->Start();
   VLOG(1) << "Quic Proxy Sending Request to Backend for quic_conn_id: "
           << quic_connection_id_ << " quic_stream_id: " << quic_stream_id_
-          << " backend_req_id: " << url_request_->identifier()
           << " url: " << url_;
 }
 
@@ -210,7 +210,7 @@ void QuicHttpProxyBackendStream::OnReceivedRedirect(
   // Do not defer redirect, retry again from the proxy with the new url
   *defer_redirect = false;
   LOG(ERROR) << "Received Redirect from Backend "
-             << " BackendReqId: " << request->identifier() << " redirectUrl: "
+             << " redirectUrl: "
              << redirect_info.new_url.possibly_invalid_spec().c_str()
              << " RespCode " << request->GetResponseCode();
 }
@@ -226,6 +226,7 @@ void QuicHttpProxyBackendStream::OnCertificateRequested(
 
 void QuicHttpProxyBackendStream::OnSSLCertificateError(
     net::URLRequest* request,
+    int net_error,
     const net::SSLInfo& ssl_info,
     bool fatal) {
   request->Cancel();
@@ -240,7 +241,7 @@ void QuicHttpProxyBackendStream::OnResponseStarted(net::URLRequest* request,
   DCHECK_NE(net::ERR_IO_PENDING, net_error);
   if (net_error != net::OK) {
     LOG(ERROR) << "OnResponseStarted Error from Backend "
-               << url_request_->identifier() << " url: "
+               << " url: "
                << url_request_->url().possibly_invalid_spec().c_str()
                << " RespError " << net::ErrorToString(net_error);
     OnResponseCompleted();
@@ -264,9 +265,9 @@ void QuicHttpProxyBackendStream::OnReadCompleted(net::URLRequest* unused,
                                                  int bytes_read) {
   DCHECK_EQ(url_request_.get(), unused);
   LOG(INFO) << "OnReadCompleted Backend with"
-            << " ReqId: " << url_request_->identifier() << " RespCode "
-            << url_request_->GetResponseCode() << " RcvdBytesCount "
-            << bytes_read << " RcvdTotalBytes " << data_received_.size();
+            << " RespCode " << url_request_->GetResponseCode()
+            << " RcvdBytesCount " << bytes_read << " RcvdTotalBytes "
+            << data_received_.size();
 
   if (bytes_read > 0) {
     data_received_.append(buf_->data(), bytes_read);
@@ -287,11 +288,10 @@ void QuicHttpProxyBackendStream::OnResponseCompleted() {
   DCHECK(!response_completed_);
   LOG(INFO) << "Quic Proxy Received Response from Backend for quic_conn_id: "
             << quic_connection_id_ << " quic_stream_id: " << quic_stream_id_
-            << " backend_req_id: " << url_request_->identifier()
             << " url: " << url_;
 
   // ToDo Stream the response
-  spdy::SpdyHeaderBlock response_headers;
+  spdy::Http2HeaderBlock response_headers;
   if (quic_response_->response_type() !=
       quic::QuicBackendResponse::BACKEND_ERR_RESPONSE) {
     response_headers = getAsQuicHeaders(url_request_->response_headers(),
@@ -320,9 +320,7 @@ void QuicHttpProxyBackendStream::OnResponseCompleted() {
 
 void QuicHttpProxyBackendStream::SendResponseOnDelegateThread() {
   DCHECK(delegate_ != nullptr);
-  // Proxy currently does not support push resources
-  std::list<quic::QuicBackendResponse::ServerPushInfo> empty_resources;
-  delegate_->OnResponseBackendComplete(quic_response_.get(), empty_resources);
+  delegate_->OnResponseBackendComplete(quic_response_.get());
 }
 
 void QuicHttpProxyBackendStream::CancelRequest() {
@@ -347,13 +345,13 @@ quic::QuicBackendResponse* QuicHttpProxyBackendStream::GetBackendResponse()
 }
 
 // Copy Backend Response headers to Quic response headers
-spdy::SpdyHeaderBlock QuicHttpProxyBackendStream::getAsQuicHeaders(
+spdy::Http2HeaderBlock QuicHttpProxyBackendStream::getAsQuicHeaders(
     net::HttpResponseHeaders* resp_headers,
     int response_code,
     uint64_t response_decoded_body_size) {
   DCHECK(!headers_set_);
   bool response_body_encoded = false;
-  spdy::SpdyHeaderBlock quic_response_headers;
+  spdy::Http2HeaderBlock quic_response_headers;
   // Add spdy headers: Status, version need : before the header
   quic_response_headers[":status"] = base::NumberToString(response_code);
   headers_set_ = true;
@@ -370,7 +368,7 @@ spdy::SpdyHeaderBlock QuicHttpProxyBackendStream::getAsQuicHeaders(
       if (header_name.compare("status") != 0) {
         if (header_name.compare("content-encoding") != 0) {
           // Remove hop-by-hop headers
-          if (base::ContainsKey(kHopHeaders, header_name)) {
+          if (base::Contains(kHopHeaders, header_name)) {
             LOG(INFO) << "Quic Proxy Ignoring Hop-by-hop Response Header: "
                       << header_name << ":" << header_value;
           } else {

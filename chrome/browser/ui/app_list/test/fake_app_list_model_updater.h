@@ -19,6 +19,8 @@ class ChromeAppListItem;
 class FakeAppListModelUpdater : public AppListModelUpdater {
  public:
   explicit FakeAppListModelUpdater(Profile* profile = nullptr);
+  FakeAppListModelUpdater(const FakeAppListModelUpdater&) = delete;
+  FakeAppListModelUpdater& operator=(const FakeAppListModelUpdater&) = delete;
   ~FakeAppListModelUpdater() override;
 
   // For AppListModel:
@@ -38,6 +40,7 @@ class FakeAppListModelUpdater : public AppListModelUpdater {
   void RemoveUninstalledItem(const std::string& id) override;
   void MoveItemToFolder(const std::string& id,
                         const std::string& folder_id) override;
+  void SetItemIcon(const std::string& id, const gfx::ImageSkia& icon) override;
   // For SearchModel:
   void SetSearchEngineIsGoogle(bool is_google) override;
   void PublishSearchResults(
@@ -53,6 +56,7 @@ class FakeAppListModelUpdater : public AppListModelUpdater {
   bool FindItemIndexForTest(const std::string& id, size_t* index) override;
   void GetIdToAppListIndexMap(GetIdToAppListIndexMapCallback callback) override;
   syncer::StringOrdinal GetFirstAvailablePosition() const override;
+  syncer::StringOrdinal GetPositionBeforeFirstItem() const override;
   void GetContextMenuModel(const std::string& id,
                            GetMenuModelCallback callback) override;
   size_t BadgedItemCount() override;
@@ -62,15 +66,20 @@ class FakeAppListModelUpdater : public AppListModelUpdater {
     return search_results_;
   }
 
-  void OnFolderCreated(ash::mojom::AppListItemMetadataPtr folder) override;
-  void OnFolderDeleted(ash::mojom::AppListItemMetadataPtr item) override {}
-  void OnItemUpdated(ash::mojom::AppListItemMetadataPtr item) override {}
-  void OnPageBreakItemAdded(const std::string& id,
-                            const syncer::StringOrdinal& position) override {}
+  void OnItemAdded(std::unique_ptr<ash::AppListItemMetadata> item) override;
+  void OnItemUpdated(std::unique_ptr<ash::AppListItemMetadata> item) override;
+  void OnFolderDeleted(
+      std::unique_ptr<ash::AppListItemMetadata> item) override {}
   void OnPageBreakItemDeleted(const std::string& id) override {}
 
   void AddObserver(AppListModelUpdaterObserver* observer) override;
   void RemoveObserver(AppListModelUpdaterObserver* observer) override;
+
+  void WaitForIconUpdates(size_t expected_updates);
+
+  size_t update_image_count() const { return update_image_count_; }
+
+  std::vector<ChromeAppListItem*> GetTopLevelItems() const;
 
  private:
   bool search_engine_is_google_ = false;
@@ -79,12 +88,14 @@ class FakeAppListModelUpdater : public AppListModelUpdater {
   base::ObserverList<AppListModelUpdaterObserver> observers_;
   Profile* profile_;
 
-  ash::mojom::AppListItemMetadataPtr FindOrCreateOemFolder(
+  size_t update_image_count_ = 0;
+  size_t expected_update_image_count_ = 0;
+  base::OnceClosure icon_updated_callback_;
+
+  void FindOrCreateOemFolder(
       const std::string& oem_folder_name,
       const syncer::StringOrdinal& preferred_oem_position);
   syncer::StringOrdinal GetOemFolderPos();
-
-  DISALLOW_COPY_AND_ASSIGN(FakeAppListModelUpdater);
 };
 
 #endif  // CHROME_BROWSER_UI_APP_LIST_TEST_FAKE_APP_LIST_MODEL_UPDATER_H_

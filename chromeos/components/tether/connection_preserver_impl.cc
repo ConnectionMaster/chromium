@@ -34,8 +34,7 @@ ConnectionPreserverImpl::ConnectionPreserverImpl(
       network_state_handler_(network_state_handler),
       active_host_(active_host),
       tether_host_response_recorder_(tether_host_response_recorder),
-      preserved_connection_timer_(std::make_unique<base::OneShotTimer>()),
-      weak_ptr_factory_(this) {
+      preserved_connection_timer_(std::make_unique<base::OneShotTimer>()) {
   active_host_->AddObserver(this);
 }
 
@@ -164,7 +163,7 @@ void ConnectionPreserverImpl::SetPreservedConnection(
 
   preserved_connection_device_id_ = device_id;
 
-  base::Optional<multidevice::RemoteDeviceRef> remote_device =
+  absl::optional<multidevice::RemoteDeviceRef> remote_device =
       GetRemoteDevice(preserved_connection_device_id_);
   if (!remote_device) {
     PA_LOG(ERROR) << "Given invalid remote device ID: "
@@ -174,15 +173,26 @@ void ConnectionPreserverImpl::SetPreservedConnection(
     return;
   }
 
+  absl::optional<multidevice::RemoteDeviceRef> local_device =
+      device_sync_client_->GetLocalDeviceMetadata();
+  if (!local_device) {
+    PA_LOG(ERROR) << "ConnectionPreserverImpl::" << __func__
+                  << ": Local device unexpectedly null.";
+    RemovePreservedConnectionIfPresent();
+    return;
+  }
+
   connection_attempt_ = secure_channel_client_->ListenForConnectionFromDevice(
-      *remote_device, *device_sync_client_->GetLocalDeviceMetadata(),
-      kTetherFeature, secure_channel::ConnectionPriority::kLow);
+      *remote_device, *local_device, kTetherFeature,
+      secure_channel::ConnectionMedium::kBluetoothLowEnergy,
+      secure_channel::ConnectionPriority::kLow);
   connection_attempt_->SetDelegate(this);
 
   preserved_connection_timer_->Start(
       FROM_HERE, base::TimeDelta::FromSeconds(kTimeoutSeconds),
-      base::Bind(&ConnectionPreserverImpl::RemovePreservedConnectionIfPresent,
-                 weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(
+          &ConnectionPreserverImpl::RemovePreservedConnectionIfPresent,
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ConnectionPreserverImpl::RemovePreservedConnectionIfPresent() {
@@ -201,13 +211,13 @@ void ConnectionPreserverImpl::RemovePreservedConnectionIfPresent() {
   preserved_connection_timer_->Stop();
 }
 
-base::Optional<multidevice::RemoteDeviceRef>
+absl::optional<multidevice::RemoteDeviceRef>
 ConnectionPreserverImpl::GetRemoteDevice(const std::string device_id) {
   for (const auto& remote_device : device_sync_client_->GetSyncedDevices()) {
     if (remote_device.GetDeviceId() == device_id)
       return remote_device;
   }
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 void ConnectionPreserverImpl::SetTimerForTesting(

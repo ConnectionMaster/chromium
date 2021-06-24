@@ -10,12 +10,12 @@ FakeLockHandler::FakeLockHandler() {}
 
 FakeLockHandler::~FakeLockHandler() {}
 
-void FakeLockHandler::ShowBannerMessage(const base::string16& message,
+void FakeLockHandler::ShowBannerMessage(const std::u16string& message,
                                         bool is_warning) {}
 
 void FakeLockHandler::ShowUserPodCustomIcon(
     const AccountId& account_id,
-    const ScreenlockBridge::UserPodCustomIconOptions& icon) {}
+    const ScreenlockBridge::UserPodCustomIconInfo& icon_info) {}
 
 void FakeLockHandler::HideUserPodCustomIcon(const AccountId& account_id) {}
 
@@ -23,7 +23,7 @@ void FakeLockHandler::EnableInput() {}
 
 void FakeLockHandler::SetAuthType(const AccountId& account_id,
                                   mojom::AuthType auth_type,
-                                  const base::string16& auth_value) {}
+                                  const std::u16string& auth_value) {}
 
 mojom::AuthType FakeLockHandler::GetAuthType(
     const AccountId& account_id) const {

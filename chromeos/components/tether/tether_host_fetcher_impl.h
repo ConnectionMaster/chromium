@@ -13,7 +13,6 @@
 #include "chromeos/components/tether/tether_host_fetcher.h"
 #include "chromeos/services/device_sync/public/cpp/device_sync_client.h"
 #include "chromeos/services/multidevice_setup/public/cpp/multidevice_setup_client.h"
-#include "chromeos/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
 
 namespace chromeos {
 
@@ -34,18 +33,18 @@ class TetherHostFetcherImpl
  public:
   class Factory {
    public:
-    static std::unique_ptr<TetherHostFetcher> NewInstance(
+    static std::unique_ptr<TetherHostFetcher> Create(
         device_sync::DeviceSyncClient* device_sync_client,
         chromeos::multidevice_setup::MultiDeviceSetupClient*
             multidevice_setup_client);
 
-    static void SetInstanceForTesting(Factory* factory);
+    static void SetFactoryForTesting(Factory* factory);
 
    protected:
-    virtual std::unique_ptr<TetherHostFetcher> BuildInstance(
+    virtual std::unique_ptr<TetherHostFetcher> CreateInstance(
         device_sync::DeviceSyncClient* device_sync_client,
         chromeos::multidevice_setup::MultiDeviceSetupClient*
-            multidevice_setup_client);
+            multidevice_setup_client) = 0;
 
    private:
     static Factory* factory_instance_;
@@ -55,9 +54,9 @@ class TetherHostFetcherImpl
 
   // TetherHostFetcher:
   bool HasSyncedTetherHosts() override;
-  void FetchAllTetherHosts(const TetherHostListCallback& callback) override;
+  void FetchAllTetherHosts(TetherHostListCallback callback) override;
   void FetchTetherHost(const std::string& device_id,
-                       const TetherHostCallback& callback) override;
+                       TetherHostCallback callback) override;
 
   // device_sync::DeviceSyncClient::Observer:
   void OnNewDevicesSynced() override;
@@ -85,7 +84,7 @@ class TetherHostFetcherImpl
       multidevice_setup_client_;
 
   multidevice::RemoteDeviceRefList current_remote_device_list_;
-  base::WeakPtrFactory<TetherHostFetcherImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<TetherHostFetcherImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TetherHostFetcherImpl);
 };

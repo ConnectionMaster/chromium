@@ -19,20 +19,24 @@
         box-shadow: 0 0 16px rgba(0, 0, 0, 0.12),
                     0 16px 16px rgba(0, 0, 0, 0.24);
         color: inherit;
+        max-height: initial;
+        max-width: initial;
         overflow-y: hidden;
         padding: 0;
+        position: absolute;
         top: 50%;
-        width: 512px;
-        @apply --cr-dialog-native;
+        width: var(--cr-dialog-width, 512px);
       }
 
-      :host-context([dark]) dialog {
-        --scroll-border-color: var(--google-grey-refresh-700);
-        background-color: var(--google-grey-900);
-        /* Note: the colors in linear-gradient() are intentionally the same to
-         * add a 4% white layer on top of the fully opaque background-color. */
-        background-image: linear-gradient(rgba(255, 255, 255, .04),
-                                          rgba(255, 255, 255, .04));
+      @media (prefers-color-scheme: dark) {
+        dialog {
+          --scroll-border-color: var(--google-grey-refresh-700);
+          background-color: var(--google-grey-900);
+          /* Note: the colors in linear-gradient() are intentionally the same to
+           * add a 4% white layer on top of the fully opaque background-color. */
+          background-image: linear-gradient(rgba(255, 255, 255, .04),
+                                            rgba(255, 255, 255, .04));
+        }
       }
 
       dialog[open] #content-wrapper {
@@ -41,7 +45,6 @@
         flex-direction: column;
         max-height: 100vh;
         overflow: auto;
-        @apply --cr-dialog-wrapper;
       }
 
       /* When needing to flex, force .body-container alone to shrink. */
@@ -60,59 +63,30 @@
         top: 0;
       }
 
-      /**
-       * When using mixins, avoid using padding shorthand. Using both the
-       * shorthand and top/bottom/start/end can lead to style override issues.
-       * This is only noticable when the |optimize_webui=true| build argument
-       * is used.
-       *
-       * See https://crbug.com/846254 and associated CL for more information.
-       */
       :host ::slotted([slot=body]) {
         color: var(--cr-secondary-text-color);
-        padding-bottom: 0;
-        padding-inline-end: 20px;
-        padding-inline-start: 20px;
-        padding-top: 0;
-        @apply --cr-dialog-body;
+        padding: 0 var(--cr-dialog-body-padding-horizontal, 20px);
       }
 
-      /**
-       * When using mixins, avoid using padding shorthand. Using both the
-       * shorthand and top/bottom/start/end can lead to style override issues.
-       * This is only noticable when the |optimize_webui=true| build argument
-       * is used.
-       *
-       * See https://crbug.com/846254 and associated CL for more information.
-       */
       :host ::slotted([slot=title]) {
         color: var(--cr-primary-text-color);
         flex: 1;
-        font-size: calc(15 / 13 * 100%);
+        font-family: var(--cr-dialog-font-family, inherit);
+        font-size: var(--cr-dialog-title-font-size, calc(15 / 13 * 100%));
         line-height: 1;
-        padding-bottom: 16px;
-        padding-inline-end: 20px;
-        padding-inline-start: 20px;
-        padding-top: 20px;
-        @apply --cr-dialog-title;
+        padding-bottom: var(--cr-dialog-title-slot-padding-bottom, 16px);
+        padding-inline-end:  var(--cr-dialog-title-slot-padding-end, 20px);
+        padding-inline-start: var(--cr-dialog-title-slot-padding-start, 20px);
+        padding-top: var(--cr-dialog-title-slot-padding-top, 20px);
       }
 
-      /**
-       * When using mixins, avoid using padding shorthand. Using both the
-       * shorthand and top/bottom/start/end can lead to style override issues.
-       * This is only noticable when the |optimize_webui=true| build argument
-       * is used.
-       *
-       * See https://crbug.com/846254 and associated CL for more information.
-       */
       :host ::slotted([slot=button-container]) {
         display: flex;
         justify-content: flex-end;
-        padding-bottom: 16px;
-        padding-inline-end: 16px;
-        padding-inline-start: 16px;
+        padding-bottom: var(--cr-dialog-button-container-padding-bottom, 16px);
+        padding-inline-end: var(--cr-dialog-button-container-padding-horizontal, 16px);
+        padding-inline-start: var(--cr-dialog-button-container-padding-horizontal, 16px);
         padding-top: 24px;
-        @apply --cr-dialog-button-container;
       }
 
       :host ::slotted([slot=footer]) {
@@ -123,8 +97,10 @@
         padding: 16px 20px;
       }
 
-      :host-context([dark]) ::slotted([slot=footer]) {
-        border-top-color: var(--cr-separator-color);
+      @media (prefers-color-scheme: dark) {
+        :host ::slotted([slot=footer]) {
+          border-top-color: var(--cr-separator-color);
+        }
       }
 
       .body-container {
@@ -133,17 +109,10 @@
         flex-direction: column;
         min-height: 1.375rem; /* Minimum reasonably usable height. */
         overflow: auto;
-
-        @apply --cr-dialog-body-container;
       }
 
       :host {
         --transparent-border: 1px solid transparent;
-        --cr-container-shadow: {
-          box-shadow: none;
-          height: 0;
-          margin: 0;
-        };
       }
 
       /* Cr Dialog uses borders instead of box-shadows. */
@@ -175,22 +144,22 @@
       }
 
       #close {
-        --layout-inline: {
-          display: flex;
-        };
-
         align-self: flex-start;
         margin-inline-end: 4px;
         margin-top: 4px;
       }
     </style>
+    <!-- TODO(crbug/1139958): Remove "not chromeos" block when chromeVox issue is fixed-->
+    <!--Update both "not chromeos" and "chromeos" blocks if either changes-->
+<if expr="not chromeos">
     <dialog id="dialog" on-close="onNativeDialogClose_"
-        on-cancel="onNativeDialogCancel_">
-      <!-- This wrapper is necessary, such that the "pulse" animation is not
+        on-cancel="onNativeDialogCancel_" part="dialog"
+        aria-labelledby="title">
+    <!-- This wrapper is necessary, such that the "pulse" animation is not
         erroneously played when the user clicks on the outer-most scrollbar. -->
-      <div id="content-wrapper">
+      <div id="content-wrapper" part="wrapper">
         <div class="top-container">
-          <div class="title-container" tabindex="-1">
+          <div id="title" class="title-container" tabindex="-1">
             <slot name="title"></slot>
           </div>
           <cr-icon-button id="close" class="icon-clear"
@@ -199,13 +168,40 @@
           </cr-icon-button>
         </div>
         <slot name="header"></slot>
-        <div class="body-container" id="container" show-bottom-shadow>
+        <div class="body-container" id="container" show-bottom-shadow
+            part="body-container">
           <slot name="body"></slot>
         </div>
         <slot name="button-container"></slot>
         <slot name="footer"></slot>
       </div>
     </dialog>
+</if>
+<if expr="chromeos">
+    <dialog id="dialog" on-close="onNativeDialogClose_"
+        on-cancel="onNativeDialogCancel_" part="dialog">
+    <!-- This wrapper is necessary, such that the "pulse" animation is not
+        erroneously played when the user clicks on the outer-most scrollbar. -->
+        <div id="content-wrapper" part="wrapper">
+          <div class="top-container">
+            <div id="title" class="title-container" tabindex="-1">
+              <slot name="title"></slot>
+            </div>
+            <cr-icon-button id="close" class="icon-clear"
+                hidden$="[[!showCloseButton]]" aria-label$="[[closeText]]"
+                on-click="cancel" on-keypress="onCloseKeypress_">
+            </cr-icon-button>
+          </div>
+          <slot name="header"></slot>
+          <div class="body-container" id="container" show-bottom-shadow
+              part="body-container">
+            <slot name="body"></slot>
+          </div>
+          <slot name="button-container"></slot>
+          <slot name="footer"></slot>
+        </div>
+    </dialog>
+</if>
   </template>
   <script src="cr_dialog.js"></script>
 </dom-module>

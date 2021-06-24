@@ -5,7 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/stl_util.h"
+#include <memory>
+
+#include "base/cxx17_backports.h"
 #include "gpu/command_buffer/client/client_test_helper.h"
 #include "gpu/command_buffer/service/error_state_mock.h"
 #include "gpu/command_buffer/service/feature_info.h"
@@ -17,6 +19,7 @@
 #include "gpu/command_buffer/service/service_discardable_manager.h"
 #include "gpu/command_buffer/service/test_helper.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/config/gpu_preferences.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gl/gl_mock.h"
 
@@ -44,15 +47,14 @@ class FramebufferManagerTest : public GpuServiceTest {
  public:
   FramebufferManagerTest()
       : manager_(1, 1, nullptr),
-        feature_info_(new FeatureInfo()) {
-    texture_manager_.reset(new TextureManager(
+        feature_info_(new FeatureInfo()),
+        discardable_manager_(GpuPreferences()) {
+    texture_manager_ = std::make_unique<TextureManager>(
         nullptr, feature_info_.get(), kMaxTextureSize, kMaxCubemapSize,
         kMaxRectangleTextureSize, kMax3DTextureSize, kMaxArrayTextureLayers,
-        kUseDefaultTextures, nullptr, &discardable_manager_));
-    renderbuffer_manager_.reset(new RenderbufferManager(nullptr,
-                                                        kMaxRenderbufferSize,
-                                                        kMaxSamples,
-                                                        feature_info_.get()));
+        kUseDefaultTextures, nullptr, &discardable_manager_);
+    renderbuffer_manager_ = std::make_unique<RenderbufferManager>(
+        nullptr, kMaxRenderbufferSize, kMaxSamples, feature_info_.get());
   }
   ~FramebufferManagerTest() override {
     manager_.Destroy(false);
@@ -123,15 +125,14 @@ class FramebufferInfoTestBase : public GpuServiceTest {
         manager_(kMaxDrawBuffers,
                  kMaxColorAttachments,
                  &framebuffer_completeness_cache_),
-        feature_info_(new FeatureInfo()) {
-    texture_manager_.reset(new TextureManager(
+        feature_info_(new FeatureInfo()),
+        discardable_manager_(GpuPreferences()) {
+    texture_manager_ = std::make_unique<TextureManager>(
         nullptr, feature_info_.get(), kMaxTextureSize, kMaxCubemapSize,
         kMaxRectangleTextureSize, kMax3DTextureSize, kMaxArrayTextureLayers,
-        kUseDefaultTextures, nullptr, &discardable_manager_));
-    renderbuffer_manager_.reset(new RenderbufferManager(nullptr,
-                                                        kMaxRenderbufferSize,
-                                                        kMaxSamples,
-                                                        feature_info_.get()));
+        kUseDefaultTextures, nullptr, &discardable_manager_);
+    renderbuffer_manager_ = std::make_unique<RenderbufferManager>(
+        nullptr, kMaxRenderbufferSize, kMaxSamples, feature_info_.get());
   }
   ~FramebufferInfoTestBase() override {
     manager_.Destroy(false);
@@ -154,10 +155,11 @@ class FramebufferInfoTestBase : public GpuServiceTest {
     TestHelper::SetupFeatureInfoInitExpectationsWithGLVersion(gl_.get(),
         extensions, "", gl_version, context_type_);
     feature_info_->InitializeForTesting(context_type_);
-    decoder_.reset(
-        new MockGLES2Decoder(&client_, &command_buffer_service_, &outputter_));
+    decoder_ = std::make_unique<MockGLES2Decoder>(
+        &client_, &command_buffer_service_, &outputter_);
     manager_.CreateFramebuffer(kClient1Id, kService1Id);
-    error_state_.reset(new ::testing::StrictMock<gles2::MockErrorState>());
+    error_state_ =
+        std::make_unique<::testing::StrictMock<gles2::MockErrorState>>();
     framebuffer_ = manager_.GetFramebuffer(kClient1Id);
     ASSERT_TRUE(framebuffer_ != nullptr);
   }
@@ -1250,25 +1252,15 @@ TEST_F(FramebufferInfoTest, DrawBufferMasks) {
   // Test ValidateAndAdjustDrawBuffers().
 
   // gl_FragColor situation.
-  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
-      .Times(1)
-      .RetiresOnSaturation();
-  EXPECT_TRUE(framebuffer_->ValidateAndAdjustDrawBuffers(0x3u, 0x3u));
+  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _)).Times(0);
+  EXPECT_FALSE(framebuffer_->ValidateAndAdjustDrawBuffers(0x3u, 0x3u));
   // gl_FragData situation.
   EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
       .Times(0);
   EXPECT_FALSE(
       framebuffer_->ValidateAndAdjustDrawBuffers(0xFFFFFFFFu, 0xFFFFFFFFu));
   // User defined output variables, fully match.
-  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
-      .Times(1)
-      .RetiresOnSaturation();
-  EXPECT_TRUE(
-      framebuffer_->ValidateAndAdjustDrawBuffers(0x31Bu, 0x33Fu));
-  // Call it a second time - this test is critical, making sure we don't
-  // call DrawBuffers() every draw call if program doesn't change.
-  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
-      .Times(0);
+  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _)).Times(0);
   EXPECT_TRUE(
       framebuffer_->ValidateAndAdjustDrawBuffers(0x31Bu, 0x33Fu));
   // User defined output variables, fully on, one type mismatch.
@@ -1277,23 +1269,12 @@ TEST_F(FramebufferInfoTest, DrawBufferMasks) {
   EXPECT_FALSE(
       framebuffer_->ValidateAndAdjustDrawBuffers(0x32Bu, 0x33Fu));
   // Empty output.
-  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
-      .Times(1)
-      .RetiresOnSaturation();
-  EXPECT_TRUE(
-      framebuffer_->ValidateAndAdjustDrawBuffers(0u, 0u));
+  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _)).Times(0);
+  EXPECT_FALSE(framebuffer_->ValidateAndAdjustDrawBuffers(0u, 0u));
   // User defined output variables, some active buffers have no corresponding
   // output variables, but if they do, types match.
-  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
-      .Times(1)
-      .RetiresOnSaturation();
-  EXPECT_TRUE(
-      framebuffer_->ValidateAndAdjustDrawBuffers(0x310u, 0x330u));
-  // Call it a second time - making sure DrawBuffers isn't triggered.
-  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _))
-      .Times(0);
-  EXPECT_TRUE(
-      framebuffer_->ValidateAndAdjustDrawBuffers(0x310u, 0x330u));
+  EXPECT_CALL(*gl_, DrawBuffersARB(kMaxDrawBuffers, _)).Times(0);
+  EXPECT_FALSE(framebuffer_->ValidateAndAdjustDrawBuffers(0x310u, 0x330u));
 }
 
 class FramebufferInfoFloatTest : public FramebufferInfoTestBase {

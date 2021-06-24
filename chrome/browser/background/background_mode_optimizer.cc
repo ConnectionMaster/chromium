@@ -30,10 +30,10 @@ std::unique_ptr<BackgroundModeOptimizer> BackgroundModeOptimizer::Create() {
           switches::kKeepAliveForTest))
     return nullptr;
 
-#if defined(OS_WIN) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
   if (base::FeatureList::IsEnabled(features::kBackgroundModeAllowRestart))
     return base::WrapUnique(new BackgroundModeOptimizer());
-#endif  // defined(OS_WIN) || defined(OS_LINUX)
+#endif  // defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
 
   return nullptr;
 }
@@ -76,7 +76,7 @@ void BackgroundModeOptimizer::TryBrowserRestart() {
 
   // If the application is already shutting down, do not turn it into a restart.
   if (browser_shutdown::IsTryingToQuit() ||
-      browser_shutdown::GetShutdownType() != browser_shutdown::NOT_VALID) {
+      browser_shutdown::HasShutdownStarted()) {
     DVLOG(1) << "TryBrowserRestart: Cancelled because we are shutting down.";
     return;
   }

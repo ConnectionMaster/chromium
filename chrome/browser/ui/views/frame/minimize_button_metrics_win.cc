@@ -4,8 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
 
+#include "base/check.h"
 #include "base/i18n/rtl.h"
-#include "base/logging.h"
 #include "base/win/windows_version.h"
 #include "dwmapi.h"
 #include "ui/base/win/shell.h"
@@ -27,9 +27,9 @@ using base::win::GetVersion;
 using display::win::ScreenWin;
 
 int GetDefaultButtonBoundsOffset() {
-  if (GetVersion() >= base::win::VERSION_WIN10)
+  if (GetVersion() >= base::win::Version::WIN10)
     return kWin10ButtonBoundsPositionOffset;
-  if (GetVersion() >= base::win::VERSION_WIN8)
+  if (GetVersion() >= base::win::Version::WIN8)
     return kWin8ButtonBoundsPositionOffset;
   return kWin7ButtonBoundsPositionOffset;
 }

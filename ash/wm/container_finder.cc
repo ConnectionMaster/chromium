@@ -7,30 +7,30 @@
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/root_window_controller.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/wm/always_on_top_controller.h"
-#include "ash/wm/root_window_finder.h"
 #include "ash/wm/window_state.h"
+#include "ash/wm/window_util.h"
+#include "components/full_restore/full_restore_utils.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
-namespace wm {
 namespace {
 
 aura::Window* FindContainerRoot(const gfx::Rect& bounds_in_screen) {
   if (bounds_in_screen == gfx::Rect())
     return Shell::GetRootWindowForNewWindows();
-  return GetRootWindowMatching(bounds_in_screen);
+  return window_util::GetRootWindowMatching(bounds_in_screen);
 }
 
 bool HasTransientParentWindow(const aura::Window* window) {
   const aura::Window* transient_parent = ::wm::GetTransientParent(window);
   return transient_parent &&
-         transient_parent->type() != aura::client::WINDOW_TYPE_UNKNOWN;
+         transient_parent->GetType() != aura::client::WINDOW_TYPE_UNKNOWN;
 }
 
 aura::Window* GetSystemModalContainer(aura::Window* root,
@@ -58,7 +58,7 @@ aura::Window* GetSystemModalContainer(aura::Window* root,
 
   // Otherwise those that originate from LockScreen container and above are
   // placed in the screen lock modal container.
-  int window_container_id = transient_parent->parent()->id();
+  int window_container_id = transient_parent->parent()->GetId();
   if (window_container_id < kShellWindowId_LockScreenContainer)
     return root->GetChildById(kShellWindowId_SystemModalContainer);
   return root->GetChildById(kShellWindowId_LockSystemModalContainer);
@@ -76,13 +76,13 @@ aura::Window* GetContainerFromAlwaysOnTopController(aura::Window* root,
 aura::Window* GetContainerForWindow(aura::Window* window) {
   aura::Window* parent = window->parent();
   // The first parent with an explicit shell window ID is the container.
-  while (parent && parent->id() == kShellWindowId_Invalid)
+  while (parent && parent->GetId() == kShellWindowId_Invalid)
     parent = parent->parent();
   return parent;
 }
 
-aura::Window* GetDefaultParent(aura::Window* window,
-                               const gfx::Rect& bounds_in_screen) {
+aura::Window* GetDefaultParentForWindow(aura::Window* window,
+                                        const gfx::Rect& bounds_in_screen) {
   aura::Window* target_root = nullptr;
   aura::Window* transient_parent = ::wm::GetTransientParent(window);
   if (transient_parent) {
@@ -92,7 +92,16 @@ aura::Window* GetDefaultParent(aura::Window* window,
     target_root = FindContainerRoot(bounds_in_screen);
   }
 
-  switch (window->type()) {
+  // For full restore, the window may be created before the associated full
+  // restore data can be retrieved. In this case, we will place it in a hidden
+  // container and will move it to a desk container when the full restore data
+  // can be retrieved. An example would be ARC windows, which can be created
+  // before their associated tasks are, which are required to retrieve full
+  // restore data.
+  if (window->GetProperty(full_restore::kParentToHiddenContainerKey))
+    return target_root->GetChildById(kShellWindowId_UnparentedContainer);
+
+  switch (window->GetType()) {
     case aura::client::WINDOW_TYPE_NORMAL:
     case aura::client::WINDOW_TYPE_POPUP:
       if (window->GetProperty(aura::client::kModalKey) == ui::MODAL_TYPE_SYSTEM)
@@ -101,22 +110,21 @@ aura::Window* GetDefaultParent(aura::Window* window,
         return GetContainerForWindow(transient_parent);
       return GetContainerFromAlwaysOnTopController(target_root, window);
     case aura::client::WINDOW_TYPE_CONTROL:
-      return target_root->GetChildById(
-          kShellWindowId_UnparentedControlContainer);
+      return target_root->GetChildById(kShellWindowId_UnparentedContainer);
     case aura::client::WINDOW_TYPE_MENU:
       return target_root->GetChildById(kShellWindowId_MenuContainer);
     case aura::client::WINDOW_TYPE_TOOLTIP:
       return target_root->GetChildById(
           kShellWindowId_DragImageAndTooltipContainer);
     default:
-      NOTREACHED() << "Window " << window->id() << " has unhandled type "
-                   << window->type();
+      NOTREACHED() << "Window " << window->GetId() << " has unhandled type "
+                   << window->GetType();
       break;
   }
   return nullptr;
 }
 
-aura::Window::Windows GetContainersFromAllRootWindows(
+aura::Window::Windows GetContainersForAllRootWindows(
     int container_id,
     aura::Window* priority_root) {
   aura::Window::Windows containers;
@@ -133,5 +141,4 @@ aura::Window::Windows GetContainersFromAllRootWindows(
   return containers;
 }
 
-}  // namespace wm
 }  // namespace ash

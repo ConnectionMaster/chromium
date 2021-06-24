@@ -12,11 +12,11 @@
 #include "base/metrics/field_trial.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/feature_engagement/internal/availability_model.h"
-#include "components/feature_engagement/internal/configuration.h"
 #include "components/feature_engagement/internal/event_model.h"
 #include "components/feature_engagement/internal/noop_display_lock_controller.h"
 #include "components/feature_engagement/internal/proto/feature_event.pb.h"
 #include "components/feature_engagement/internal/test/event_util.h"
+#include "components/feature_engagement/public/configuration.h"
 #include "components/feature_engagement/public/tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -61,7 +61,7 @@ class TestEventModel : public EventModel {
  public:
   TestEventModel() : ready_(true) {}
 
-  void Initialize(const OnModelInitializationFinished& callback,
+  void Initialize(OnModelInitializationFinished callback,
                   uint32_t current_day) override {}
 
   bool IsReady() const override { return ready_; }
@@ -74,6 +74,32 @@ class TestEventModel : public EventModel {
       return nullptr;
 
     return &search->second;
+  }
+
+  uint32_t GetEventCount(const std::string& event_name,
+                         uint32_t current_day,
+                         uint32_t window_size) const override {
+    // A same implementation for EventModelImpl.
+    const Event* event = GetEvent(event_name);
+    if (event == nullptr || window_size == 0u)
+      return 0;
+
+    DCHECK(window_size >= 0);
+
+    uint32_t oldest_accepted_day = current_day - window_size + 1;
+    if (window_size > current_day)
+      oldest_accepted_day = 0u;
+
+    // Calculate the number of events within the window.
+    uint32_t event_count = 0;
+    for (const auto& event_day : event->events()) {
+      if (event_day.day() < oldest_accepted_day)
+        continue;
+
+      event_count += event_day.count();
+    }
+
+    return event_count;
   }
 
   void SetEvent(const Event& event) { events_[event.name()] = event; }
@@ -97,24 +123,24 @@ class TestAvailabilityModel : public AvailabilityModel {
 
   void SetIsReady(bool ready) { ready_ = ready; }
 
-  base::Optional<uint32_t> GetAvailability(
+  absl::optional<uint32_t> GetAvailability(
       const base::Feature& feature) const override {
     auto search = availabilities_.find(feature.name);
     if (search == availabilities_.end())
-      return base::nullopt;
+      return absl::nullopt;
 
     return search->second;
   }
 
   void SetAvailability(const base::Feature* feature,
-                       base::Optional<uint32_t> availability) {
+                       absl::optional<uint32_t> availability) {
     availabilities_[feature->name] = availability;
   }
 
  private:
   bool ready_;
 
-  std::map<std::string, base::Optional<uint32_t>> availabilities_;
+  std::map<std::string, absl::optional<uint32_t>> availabilities_;
 
   DISALLOW_COPY_AND_ASSIGN(TestAvailabilityModel);
 };

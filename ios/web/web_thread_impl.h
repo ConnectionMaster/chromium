@@ -8,7 +8,7 @@
 #include "base/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/threading/thread.h"
-#include "ios/web/public/web_thread.h"
+#include "ios/web/public/thread/web_thread.h"
 
 namespace web {
 
@@ -23,7 +23,7 @@ class WebSubThread;
 // accepting tasks however).
 //
 // Very few users should use this directly. To mock WebThreads, tests should
-// use TestWebThreadBundle instead.
+// use WebTaskEnvironment instead.
 class WebThreadImpl : public WebThread {
  public:
   ~WebThreadImpl();

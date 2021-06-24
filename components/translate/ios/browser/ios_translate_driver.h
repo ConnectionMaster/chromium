@@ -14,9 +14,7 @@
 #include "components/translate/core/common/translate_errors.h"
 #include "components/translate/ios/browser/language_detection_controller.h"
 #include "components/translate/ios/browser/translate_controller.h"
-#include "ios/web/public/web_state/web_state_observer.h"
-
-@class CRWJSInjectionReceiver;
+#include "ios/web/public/web_state_observer.h"
 
 namespace web {
 class NavigationManager;
@@ -91,7 +89,7 @@ class IOSTranslateDriver
                               double load_time,
                               double ready_time) override;
   void OnTranslateComplete(TranslateErrors::Type error_type,
-                           const std::string& original_language,
+                           const std::string& source_language,
                            double translation_time) override;
 
   // Stops observing |web_state_| and sets it to null.
@@ -113,7 +111,7 @@ class IOSTranslateDriver
 
   // An ever-increasing sequence number of the current page, used to match up
   // translation requests with responses.
-  // This matches the similar field in TranslateHelper in the renderer on other
+  // This matches the similar field in TranslateAgent in the renderer on other
   // platforms.
   int page_seq_no_;
 

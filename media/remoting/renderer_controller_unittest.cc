@@ -5,20 +5,19 @@
 #include "media/remoting/renderer_controller.h"
 
 #include <memory>
+#include <string>
 
 #include "base/callback.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "media/base/audio_decoder_config.h"
-#include "media/base/cdm_config.h"
 #include "media/base/limits.h"
 #include "media/base/media_util.h"
 #include "media/base/test_helpers.h"
 #include "media/base/video_decoder_config.h"
 #include "media/remoting/fake_remoter.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -36,13 +35,12 @@ PipelineMetadata DefaultMetadata(VideoCodec codec) {
   return data;
 }
 
-const std::string kDefaultReceiver = "TestingChromeCast";
+const char kDefaultReceiver[] = "TestingChromeCast";
 
 mojom::RemotingSinkMetadata GetDefaultSinkMetadata(bool enable) {
   mojom::RemotingSinkMetadata metadata;
   if (enable) {
     metadata.features.push_back(mojom::RemotingSinkFeature::RENDERING);
-    metadata.features.push_back(mojom::RemotingSinkFeature::CONTENT_DECRYPTION);
   } else {
     metadata.features.clear();
   }
@@ -85,17 +83,13 @@ class RendererControllerTest : public ::testing::Test,
     sink_name_.clear();
   }
 
-  void ActivateViewportIntersectionMonitoring(bool activate) override {
-    activate_viewport_intersection_monitoring_ = activate;
-  }
-
   double Duration() const override { return duration_in_sec_; }
 
   unsigned DecodedFrameCount() const override { return decoded_frames_; }
 
-  void UpdateRemotePlaybackCompatibility(bool is_compatibe) override {}
-
-  void CreateCdm(bool is_remoting) { is_remoting_cdm_ = is_remoting; }
+  void UpdateRemotePlaybackCompatibility(bool is_compatible) override {
+    is_remote_playback_compatible_ = is_compatible;
+  }
 
   void InitializeControllerAndBecomeDominant(
       const PipelineMetadata& pipeline_metadata,
@@ -107,7 +101,6 @@ class RendererControllerTest : public ::testing::Test,
     controller_->SetClient(this);
     RunUntilIdle();
     EXPECT_FALSE(is_rendering_remotely_);
-    EXPECT_FALSE(activate_viewport_intersection_monitoring_);
     EXPECT_FALSE(disable_pipeline_suspend_);
     controller_->OnSinkAvailable(sink_metadata.Clone());
     RunUntilIdle();
@@ -146,7 +139,6 @@ class RendererControllerTest : public ::testing::Test,
     EXPECT_FALSE(disable_pipeline_suspend_);
     EXPECT_TRUE(sink_name_.empty());
     EXPECT_TRUE(IsInDelayedStart());
-    EXPECT_TRUE(activate_viewport_intersection_monitoring_);
   }
 
   void ExpectInRemoting() const {
@@ -154,7 +146,6 @@ class RendererControllerTest : public ::testing::Test,
     EXPECT_TRUE(disable_pipeline_suspend_);
     EXPECT_EQ(kDefaultReceiver, sink_name_);
     EXPECT_FALSE(IsInDelayedStart());
-    EXPECT_TRUE(activate_viewport_intersection_monitoring_);
   }
 
   void ExpectInLocalRendering() const {
@@ -164,13 +155,12 @@ class RendererControllerTest : public ::testing::Test,
     EXPECT_FALSE(IsInDelayedStart());
   }
 
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
  protected:
   bool is_rendering_remotely_ = false;
-  bool is_remoting_cdm_ = false;
-  bool activate_viewport_intersection_monitoring_ = false;
   bool disable_pipeline_suspend_ = false;
+  bool is_remote_playback_compatible_ = false;
   size_t decoded_bytes_ = 0;
   unsigned decoded_frames_ = 0;
   base::SimpleTestTickClock clock_;
@@ -231,7 +221,6 @@ TEST_F(RendererControllerTest, ToggleRendererOnSinkCapabilities) {
   // toggle remote rendering on.
   controller_->OnSinkAvailable(GetDefaultSinkMetadata(true).Clone());
   RunUntilIdle();
-  EXPECT_TRUE(activate_viewport_intersection_monitoring_);
   EXPECT_FALSE(is_rendering_remotely_);
   controller_->OnBecameDominantVisibleContent(true);
   RunUntilIdle();
@@ -288,7 +277,7 @@ TEST_F(RendererControllerTest, WithHEVCVideoCodec) {
 TEST_F(RendererControllerTest, WithAACAudioCodec) {
   const AudioDecoderConfig audio_config = AudioDecoderConfig(
       AudioCodec::kCodecAAC, kSampleFormatPlanarF32, CHANNEL_LAYOUT_STEREO,
-      44100, EmptyExtraData(), Unencrypted());
+      44100, EmptyExtraData(), EncryptionScheme::kUnencrypted);
   PipelineMetadata pipeline_metadata = DefaultMetadata(VideoCodec::kCodecVP8);
   pipeline_metadata.audio_decoder_config = audio_config;
   InitializeControllerAndBecomeDominant(pipeline_metadata,
@@ -316,7 +305,7 @@ TEST_F(RendererControllerTest, WithAACAudioCodec) {
 TEST_F(RendererControllerTest, WithOpusAudioCodec) {
   const AudioDecoderConfig audio_config = AudioDecoderConfig(
       AudioCodec::kCodecOpus, kSampleFormatPlanarF32, CHANNEL_LAYOUT_STEREO,
-      44100, EmptyExtraData(), Unencrypted());
+      44100, EmptyExtraData(), EncryptionScheme::kUnencrypted);
   PipelineMetadata pipeline_metadata = DefaultMetadata(VideoCodec::kCodecVP8);
   pipeline_metadata.audio_decoder_config = audio_config;
   InitializeControllerAndBecomeDominant(pipeline_metadata,
@@ -405,6 +394,25 @@ TEST_F(RendererControllerTest, SetClientNullptr) {
   RunUntilIdle();
   ExpectInLocalRendering();
 }
+
+#if defined(OS_ANDROID)
+TEST_F(RendererControllerTest, RemotePlaybackHlsCompatibility) {
+  controller_ = FakeRemoterFactory::CreateController(true);
+  controller_->SetClient(this);
+
+  controller_->OnDataSourceInitialized(GURL("http://example.com/foo.m3u8"));
+
+  PipelineMetadata incompatible_metadata;
+  incompatible_metadata.has_video = false;
+  incompatible_metadata.has_audio = false;
+  controller_->OnMetadataChanged(incompatible_metadata);
+  EXPECT_FALSE(is_remote_playback_compatible_);
+
+  // HLS is compatible with RemotePlayback regardless of the metadata we have.
+  controller_->OnHlsManifestDetected();
+  EXPECT_TRUE(is_remote_playback_compatible_);
+}
+#endif
 
 }  // namespace remoting
 }  // namespace media

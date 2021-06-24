@@ -9,18 +9,13 @@
 #include "base/values.h"
 #include "cc/base/math_util.h"
 #include "components/viz/common/traced_value.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkBlendMode.h"
 
 namespace viz {
 
-SharedQuadState::SharedQuadState()
-    : is_clipped(false),
-      opacity(0.f),
-      blend_mode(SkBlendMode::kSrcOver),
-      sorting_context_id(0) {}
-
+SharedQuadState::SharedQuadState() = default;
 SharedQuadState::SharedQuadState(const SharedQuadState& other) = default;
-
 SharedQuadState::~SharedQuadState() {
   TRACE_EVENT_OBJECT_DELETED_WITH_ID(TRACE_DISABLED_BY_DEFAULT("viz.quads"),
                                      "viz::SharedQuadState", this);
@@ -29,9 +24,8 @@ SharedQuadState::~SharedQuadState() {
 void SharedQuadState::SetAll(const gfx::Transform& quad_to_target_transform,
                              const gfx::Rect& quad_layer_rect,
                              const gfx::Rect& visible_quad_layer_rect,
-                             const gfx::RRectF& rounded_corner_bounds,
-                             const gfx::Rect& clip_rect,
-                             bool is_clipped,
+                             const gfx::MaskFilterInfo& mask_filter_info,
+                             const absl::optional<gfx::Rect>& clip_rect,
                              bool are_contents_opaque,
                              float opacity,
                              SkBlendMode blend_mode,
@@ -39,9 +33,8 @@ void SharedQuadState::SetAll(const gfx::Transform& quad_to_target_transform,
   this->quad_to_target_transform = quad_to_target_transform;
   this->quad_layer_rect = quad_layer_rect;
   this->visible_quad_layer_rect = visible_quad_layer_rect;
-  this->rounded_corner_bounds = rounded_corner_bounds;
+  this->mask_filter_info = mask_filter_info;
   this->clip_rect = clip_rect;
-  this->is_clipped = is_clipped;
   this->are_contents_opaque = are_contents_opaque;
   this->opacity = opacity;
   this->blend_mode = blend_mode;
@@ -53,11 +46,15 @@ void SharedQuadState::AsValueInto(base::trace_event::TracedValue* value) const {
   cc::MathUtil::AddToTracedValue("layer_content_rect", quad_layer_rect, value);
   cc::MathUtil::AddToTracedValue("layer_visible_content_rect",
                                  visible_quad_layer_rect, value);
-  cc::MathUtil::AddToTracedValue("rounded_corner_bounds", rounded_corner_bounds,
-                                 value);
+  cc::MathUtil::AddToTracedValue("mask_filter_bounds",
+                                 mask_filter_info.bounds(), value);
+  cc::MathUtil::AddCornerRadiiToTracedValue(
+      "mask_filter_rounded_corners_radii",
+      mask_filter_info.rounded_corner_bounds(), value);
 
-  value->SetBoolean("is_clipped", is_clipped);
-  cc::MathUtil::AddToTracedValue("clip_rect", clip_rect, value);
+  if (clip_rect) {
+    cc::MathUtil::AddToTracedValue("clip_rect", *clip_rect, value);
+  }
 
   value->SetBoolean("are_contents_opaque", are_contents_opaque);
   value->SetDouble("opacity", opacity);

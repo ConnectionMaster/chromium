@@ -1,4 +1,4 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// const  Copyright (c) 2012 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -9,7 +9,6 @@
 
 #include "base/base64.h"
 #include "base/bind.h"
-#include "base/callback_helpers.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "net/base/io_buffer.h"
@@ -24,18 +23,16 @@ namespace remoting {
 namespace protocol {
 
 FakeChannelAuthenticator::FakeChannelAuthenticator(bool accept, bool async)
-    : result_(accept ? net::OK : net::ERR_FAILED),
-      async_(async),
-      weak_factory_(this) {}
+    : result_(accept ? net::OK : net::ERR_FAILED), async_(async) {}
 
 FakeChannelAuthenticator::~FakeChannelAuthenticator() = default;
 
 void FakeChannelAuthenticator::SecureAndAuthenticate(
     std::unique_ptr<P2PStreamSocket> socket,
-    const DoneCallback& done_callback) {
+    DoneCallback done_callback) {
   socket_ = std::move(socket);
 
-  done_callback_ = done_callback;
+  done_callback_ = std::move(done_callback);
 
   if (async_) {
     if (result_ != net::OK) {
@@ -48,8 +45,8 @@ void FakeChannelAuthenticator::SecureAndAuthenticate(
       write_buf->data()[0] = 0;
       int result = socket_->Write(
           write_buf.get(), 1,
-          base::Bind(&FakeChannelAuthenticator::OnAuthBytesWritten,
-                     weak_factory_.GetWeakPtr()),
+          base::BindOnce(&FakeChannelAuthenticator::OnAuthBytesWritten,
+                         weak_factory_.GetWeakPtr()),
           TRAFFIC_ANNOTATION_FOR_TESTS);
       if (result != net::ERR_IO_PENDING) {
         // This will not call the callback because |did_read_bytes_| is
@@ -62,8 +59,8 @@ void FakeChannelAuthenticator::SecureAndAuthenticate(
         base::MakeRefCounted<net::IOBuffer>(1);
     int result =
         socket_->Read(read_buf.get(), 1,
-                      base::Bind(&FakeChannelAuthenticator::OnAuthBytesRead,
-                                 weak_factory_.GetWeakPtr()));
+                      base::BindOnce(&FakeChannelAuthenticator::OnAuthBytesRead,
+                                     weak_factory_.GetWeakPtr()));
     if (result != net::ERR_IO_PENDING)
       OnAuthBytesRead(result);
   } else {
@@ -90,7 +87,7 @@ void FakeChannelAuthenticator::OnAuthBytesRead(int result) {
 void FakeChannelAuthenticator::CallDoneCallback() {
   if (result_ != net::OK)
     socket_.reset();
-  base::ResetAndReturn(&done_callback_).Run(result_, std::move(socket_));
+  std::move(done_callback_).Run(result_, std::move(socket_));
 }
 
 FakeAuthenticator::Config::Config() = default;
@@ -120,7 +117,7 @@ void FakeAuthenticator::set_messages_till_started(int messages) {
 }
 
 void FakeAuthenticator::Resume() {
-  base::ResetAndReturn(&resume_closure_).Run();
+  std::move(resume_closure_).Run();
 }
 
 Authenticator::State FakeAuthenticator::state() const {
@@ -163,7 +160,7 @@ Authenticator::RejectionReason FakeAuthenticator::rejection_reason() const {
 }
 
 void FakeAuthenticator::ProcessMessage(const jingle_xmpp::XmlElement* message,
-                                       const base::Closure& resume_callback) {
+                                       base::OnceClosure resume_callback) {
   EXPECT_EQ(WAITING_MESSAGE, state());
   std::string id =
       message->TextNamed(jingle_xmpp::QName(kChromotingXmlNamespace, "id"));
@@ -184,10 +181,10 @@ void FakeAuthenticator::ProcessMessage(const jingle_xmpp::XmlElement* message,
 
   ++messages_;
   if (messages_ == pause_message_index_) {
-    resume_closure_ = resume_callback;
+    resume_closure_ = std::move(resume_callback);
     return;
   }
-  resume_callback.Run();
+  std::move(resume_callback).Run();
 }
 
 std::unique_ptr<jingle_xmpp::XmlElement> FakeAuthenticator::GetNextMessage() {

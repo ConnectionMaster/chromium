@@ -6,7 +6,8 @@
 #define COMPONENTS_ARC_TEST_FAKE_CLIPBOARD_INSTANCE_H_
 
 #include "base/macros.h"
-#include "components/arc/common/clipboard.mojom.h"
+#include "components/arc/mojom/clipboard.mojom.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace arc {
 
@@ -18,8 +19,10 @@ class FakeClipboardInstance : public mojom::ClipboardInstance {
   int num_host_clipboard_updated() const { return num_host_clipboard_updated_; }
 
   // mojom::ClipboardInstance overrides:
-  void Init(mojom::ClipboardHostPtr host_ptr, InitCallback callback) override;
-  void InitDeprecated(mojom::ClipboardHostPtr host_ptr) override;
+  void Init(mojo::PendingRemote<mojom::ClipboardHost> host_remote,
+            InitCallback callback) override;
+  void InitDeprecated(
+      mojo::PendingRemote<mojom::ClipboardHost> host_remote) override;
   void OnHostClipboardUpdated() override;
 
  private:

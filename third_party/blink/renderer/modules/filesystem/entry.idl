@@ -30,7 +30,7 @@
 
 // https://www.w3.org/TR/2012/WD-file-system-api-20120417/#idl-def-Entry
 [
-    NoInterfaceObject
+    LegacyNoInterfaceObject
 ] interface Entry {
     readonly attribute boolean isFile;
     readonly attribute boolean isDirectory;
@@ -52,11 +52,4 @@
     // TODO(crbug.com/841185): |successCallback| and |errorCallback| are not
     // nullable in the spec.
     [CallWith=ScriptState] void getParent(optional EntryCallback? successCallback, optional ErrorCallback? errorCallback);
-
-    // Primarily exposed for testing, to give script some way of getting new
-    // style handles.
-    // TODO(mek): Remove this method once API to get new-style file handles
-    // directly has been implemented.
-    [RuntimeEnabled=WritableFiles]
-    FileSystemBaseHandle asFileSystemHandle();
 };

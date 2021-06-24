@@ -4,20 +4,21 @@
 
 #include "content/common/service_worker/service_worker_utils.h"
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/string_util.h"
-#include "content/common/service_worker/service_worker_types.pb.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/origin_util.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_byte_range.h"
-#include "net/http/http_util.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/loader/resource_type_util.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
 
 namespace content {
@@ -44,19 +45,14 @@ bool PathContainsDisallowedCharacter(const GURL& url) {
 }  // namespace
 
 // static
-bool ServiceWorkerUtils::IsMainResourceType(ResourceType type) {
+bool ServiceWorkerUtils::IsMainRequestDestination(
+    network::mojom::RequestDestination destination) {
   // When PlzDedicatedWorker is enabled, a dedicated worker script is considered
   // to be a main resource.
-  if (type == RESOURCE_TYPE_WORKER)
-    return blink::features::IsPlzDedicatedWorkerEnabled();
-  return IsResourceTypeFrame(type) || type == RESOURCE_TYPE_SHARED_WORKER;
-}
-
-// static
-bool ServiceWorkerUtils::ScopeMatches(const GURL& scope, const GURL& url) {
-  DCHECK(!scope.has_ref());
-  return base::StartsWith(url.spec(), scope.spec(),
-                          base::CompareCase::SENSITIVE);
+  if (destination == network::mojom::RequestDestination::kWorker)
+    return base::FeatureList::IsEnabled(blink::features::kPlzDedicatedWorker);
+  return blink::IsRequestDestinationFrame(destination) ||
+         destination == network::mojom::RequestDestination::kSharedWorker;
 }
 
 // static
@@ -101,6 +97,13 @@ bool ServiceWorkerUtils::IsPathRestrictionSatisfiedInternal(
     GURL max_scope = script_url.Resolve(*service_worker_allowed_header_value);
     if (!max_scope.is_valid()) {
       *error_message = "An invalid Service-Worker-Allowed header value ('";
+      error_message->append(*service_worker_allowed_header_value);
+      error_message->append("') was received when fetching the script.");
+      return false;
+    }
+
+    if (max_scope.GetOrigin() != script_url.GetOrigin()) {
+      *error_message = "A cross-origin Service-Worker-Allowed header value ('";
       error_message->append(*service_worker_allowed_header_value);
       error_message->append("') was received when fetching the script.");
       return false;
@@ -166,8 +169,7 @@ bool ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
 
   // (B) Check if all origins are equal. Cross-origin access is permitted when
   // --disable-web-security is set.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisableWebSecurity)) {
+  if (IsWebSecurityDisabled()) {
     return true;
   }
   const GURL& first = urls.front();
@@ -176,21 +178,6 @@ bool ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
       return false;
   }
   return true;
-}
-
-bool ServiceWorkerUtils::ShouldBypassCacheDueToUpdateViaCache(
-    bool is_main_script,
-    blink::mojom::ServiceWorkerUpdateViaCache cache_mode) {
-  switch (cache_mode) {
-    case blink::mojom::ServiceWorkerUpdateViaCache::kImports:
-      return is_main_script;
-    case blink::mojom::ServiceWorkerUpdateViaCache::kNone:
-      return true;
-    case blink::mojom::ServiceWorkerUpdateViaCache::kAll:
-      return false;
-  }
-  NOTREACHED() << static_cast<int>(cache_mode);
-  return false;
 }
 
 // static
@@ -223,74 +210,6 @@ blink::mojom::FetchCacheMode ServiceWorkerUtils::GetCacheModeFromLoadFlags(
 }
 
 // static
-std::string ServiceWorkerUtils::SerializeFetchRequestToString(
-    const blink::mojom::FetchAPIRequest& request) {
-  proto::internal::ServiceWorkerFetchRequest request_proto;
-
-  request_proto.set_url(request.url.spec());
-  request_proto.set_method(request.method);
-  request_proto.mutable_headers()->insert(request.headers.begin(),
-                                          request.headers.end());
-  request_proto.mutable_referrer()->set_url(request.referrer->url.spec());
-  request_proto.mutable_referrer()->set_policy(
-      static_cast<int>(request.referrer->policy));
-  request_proto.set_is_reload(request.is_reload);
-  request_proto.set_mode(static_cast<int>(request.mode));
-  request_proto.set_is_main_resource_load(request.is_main_resource_load);
-  request_proto.set_request_context_type(
-      static_cast<int>(request.request_context_type));
-  request_proto.set_credentials_mode(
-      static_cast<int>(request.credentials_mode));
-  request_proto.set_cache_mode(static_cast<int>(request.cache_mode));
-  request_proto.set_redirect_mode(static_cast<int>(request.redirect_mode));
-  if (request.integrity)
-    request_proto.set_integrity(request.integrity.value());
-  request_proto.set_keepalive(request.keepalive);
-  request_proto.set_is_history_navigation(request.is_history_navigation);
-  return request_proto.SerializeAsString();
-}
-
-// static
-blink::mojom::FetchAPIRequestPtr
-ServiceWorkerUtils::DeserializeFetchRequestFromString(
-    const std::string& serialized) {
-  proto::internal::ServiceWorkerFetchRequest request_proto;
-  if (!request_proto.ParseFromString(serialized)) {
-    return blink::mojom::FetchAPIRequest::New();
-  }
-
-  auto request_ptr = blink::mojom::FetchAPIRequest::New();
-  request_ptr->mode =
-      static_cast<network::mojom::FetchRequestMode>(request_proto.mode());
-  request_ptr->is_main_resource_load = request_proto.is_main_resource_load();
-  request_ptr->request_context_type =
-      static_cast<blink::mojom::RequestContextType>(
-          request_proto.request_context_type());
-  request_ptr->frame_type = network::mojom::RequestContextFrameType::kNone;
-  request_ptr->url = GURL(request_proto.url());
-  request_ptr->method = request_proto.method();
-  request_ptr->headers = {request_proto.headers().begin(),
-                          request_proto.headers().end()};
-  request_ptr->referrer =
-      blink::mojom::Referrer::New(GURL(request_proto.referrer().url()),
-                                  static_cast<network::mojom::ReferrerPolicy>(
-                                      request_proto.referrer().policy()));
-  request_ptr->is_reload = request_proto.is_reload();
-  request_ptr->credentials_mode =
-      static_cast<network::mojom::FetchCredentialsMode>(
-          request_proto.credentials_mode());
-  request_ptr->cache_mode =
-      static_cast<blink::mojom::FetchCacheMode>(request_proto.cache_mode());
-  request_ptr->redirect_mode = static_cast<network::mojom::FetchRedirectMode>(
-      request_proto.redirect_mode());
-  if (request_proto.has_integrity())
-    request_ptr->integrity = request_proto.integrity();
-  request_ptr->keepalive = request_proto.keepalive();
-  request_ptr->is_history_navigation = request_proto.is_history_navigation();
-  return request_ptr;
-}
-
-// static
 const char* ServiceWorkerUtils::FetchResponseSourceToSuffix(
     network::mojom::FetchResponseSource source) {
   // Don't change these returned strings. They are used for recording UMAs.
@@ -308,14 +227,10 @@ const char* ServiceWorkerUtils::FetchResponseSourceToSuffix(
   return ".Unknown";
 }
 
-bool LongestScopeMatcher::MatchLongest(const GURL& scope) {
-  if (!ServiceWorkerUtils::ScopeMatches(scope, url_))
-    return false;
-  if (match_.is_empty() || match_.spec().size() < scope.spec().size()) {
-    match_ = scope;
-    return true;
-  }
-  return false;
+// static
+bool ServiceWorkerUtils::IsWebSecurityDisabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kDisableWebSecurity);
 }
 
 }  // namespace content

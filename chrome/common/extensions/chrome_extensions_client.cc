@@ -13,22 +13,21 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "chrome/common/chrome_resource_request_blocked_reason.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/api/extension_action/action_info.h"
 #include "chrome/common/extensions/chrome_extensions_api_provider.h"
 #include "chrome/common/extensions/manifest_handlers/theme_handler.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/chromium_strings.h"
-#include "components/version_info/version_info.h"
 #include "content/public/common/url_constants.h"
+#include "extensions/common/api/extension_action/action_info.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/core_extensions_api_provider.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_icon_set.h"
 #include "extensions/common/extension_urls.h"
-#include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
@@ -44,41 +43,13 @@ namespace extensions {
 
 namespace {
 
-// TODO(battre): Delete the HTTP URL once the blacklist is downloaded via HTTPS.
+// TODO(battre): Delete the HTTP URL once the blocklist is downloaded via HTTPS.
 const char kExtensionBlocklistUrlPrefix[] =
-    "http://www.gstatic.com/chrome/extensions/blacklist";
+    "http://www.gstatic.com/chrome/extensions/blocklist";
 const char kExtensionBlocklistHttpsUrlPrefix[] =
-    "https://www.gstatic.com/chrome/extensions/blacklist";
+    "https://www.gstatic.com/chrome/extensions/blocklist";
 
 const char kThumbsWhiteListedExtension[] = "khopmbdjffemhegeeobelklnbglcdgfh";
-
-// Mirrors version_info::Channel for histograms.
-enum ChromeChannelForHistogram {
-  CHANNEL_UNKNOWN,
-  CHANNEL_CANARY,
-  CHANNEL_DEV,
-  CHANNEL_BETA,
-  CHANNEL_STABLE,
-  NUM_CHANNELS_FOR_HISTOGRAM
-};
-
-ChromeChannelForHistogram GetChromeChannelForHistogram(
-    version_info::Channel channel) {
-  switch (channel) {
-    case version_info::Channel::UNKNOWN:
-      return CHANNEL_UNKNOWN;
-    case version_info::Channel::CANARY:
-      return CHANNEL_CANARY;
-    case version_info::Channel::DEV:
-      return CHANNEL_DEV;
-    case version_info::Channel::BETA:
-      return CHANNEL_BETA;
-    case version_info::Channel::STABLE:
-      return CHANNEL_STABLE;
-  }
-  NOTREACHED() << static_cast<int>(channel);
-  return CHANNEL_UNKNOWN;
-}
 
 }  // namespace
 
@@ -91,13 +62,13 @@ ChromeExtensionsClient::~ChromeExtensionsClient() {
 }
 
 void ChromeExtensionsClient::Initialize() {
-  // Set up the scripting whitelist.
-  // Whitelist ChromeVox, an accessibility extension from Google that needs
+  // Set up the scripting allowlist.
+  // Allowlist ChromeVox, an accessibility extension from Google that needs
   // the ability to script webui pages. This is temporary and is not
   // meant to be a general solution.
   // TODO(dmazzoni): remove this once we have an extension API that
   // allows any extension to request read-only access to webui pages.
-  scripting_whitelist_.push_back(extension_misc::kChromeVoxExtensionId);
+  scripting_allowlist_.push_back(extension_misc::kChromeVoxExtensionId);
   InitializeWebStoreUrls(base::CommandLine::ForCurrentProcess());
 }
 
@@ -140,27 +111,32 @@ void ChromeExtensionsClient::FilterHostPermissions(
       // We should not add any additional "host" here.
       if (GURL(chrome::kChromeUIFaviconURL).host() != i->host())
         continue;
-      permissions->insert(APIPermission::kFavicon);
+      permissions->insert(mojom::APIPermissionID::kFavicon);
     } else {
       new_hosts->AddPattern(*i);
     }
   }
 }
 
-void ChromeExtensionsClient::SetScriptingWhitelist(
-    const ExtensionsClient::ScriptingWhitelist& whitelist) {
-  scripting_whitelist_ = whitelist;
+void ChromeExtensionsClient::SetScriptingAllowlist(
+    const ExtensionsClient::ScriptingAllowlist& allowlist) {
+  scripting_allowlist_ = allowlist;
 }
 
-const ExtensionsClient::ScriptingWhitelist&
-ChromeExtensionsClient::GetScriptingWhitelist() const {
-  return scripting_whitelist_;
+const ExtensionsClient::ScriptingAllowlist&
+ChromeExtensionsClient::GetScriptingAllowlist() const {
+  return scripting_allowlist_;
 }
 
 URLPatternSet ChromeExtensionsClient::GetPermittedChromeSchemeHosts(
       const Extension* extension,
       const APIPermissionSet& api_permissions) const {
   URLPatternSet hosts;
+
+  // Do not allow any chrome-scheme hosts in MV3+ extensions.
+  if (extension->manifest_version() >= 3)
+    return hosts;
+
   // Regular extensions are only allowed access to chrome://favicon.
   hosts.AddPattern(URLPattern(URLPattern::SCHEME_CHROMEUI,
                               chrome::kChromeUIFaviconURL));
@@ -171,7 +147,7 @@ URLPatternSet ChromeExtensionsClient::GetPermittedChromeSchemeHosts(
   // See http://crbug.com/222856. A temporary hack is implemented here to
   // make chrome://thumbs available to NTP Russia extension as
   // non-experimental.
-  if ((api_permissions.find(APIPermission::kExperimental) !=
+  if ((api_permissions.find(mojom::APIPermissionID::kExperimental) !=
        api_permissions.end()) ||
       (extension->id() == kThumbsWhiteListedExtension &&
        extension->from_webstore())) {
@@ -197,19 +173,6 @@ bool ChromeExtensionsClient::IsScriptableURL(
   return true;
 }
 
-bool ChromeExtensionsClient::ShouldSuppressFatalErrors() const {
-  // Suppress fatal everywhere until the cause of bugs like http://crbug/471599
-  // are fixed. This would typically be:
-  // return GetCurrentChannel() > version_info::Channel::DEV;
-  return true;
-}
-
-void ChromeExtensionsClient::RecordDidSuppressFatalError() {
-  UMA_HISTOGRAM_ENUMERATION("Extensions.DidSuppressJavaScriptException",
-                            GetChromeChannelForHistogram(GetCurrentChannel()),
-                            NUM_CHANNELS_FOR_HISTOGRAM);
-}
-
 const GURL& ChromeExtensionsClient::GetWebstoreBaseURL() const {
   return webstore_base_url_;
 }
@@ -219,12 +182,12 @@ const GURL& ChromeExtensionsClient::GetWebstoreUpdateURL() const {
 }
 
 bool ChromeExtensionsClient::IsBlacklistUpdateURL(const GURL& url) const {
-  // The extension blacklist URL is returned from the update service and
-  // therefore not determined by Chromium. If the location of the blacklist file
+  // The extension blocklist URL is returned from the update service and
+  // therefore not determined by Chromium. If the location of the blocklist file
   // ever changes, we need to update this function. A DCHECK in the
   // ExtensionUpdater ensures that we notice a change. This is the full URL
   // of a blacklist:
-  // http://www.gstatic.com/chrome/extensions/blacklist/l_0_0_0_7.txt
+  // http://www.gstatic.com/chrome/extensions/blocklist/l_0_0_0_7.txt
   return base::StartsWith(url.spec(), kExtensionBlocklistUrlPrefix,
                           base::CompareCase::SENSITIVE) ||
          base::StartsWith(url.spec(), kExtensionBlocklistHttpsUrlPrefix,
@@ -241,27 +204,17 @@ std::set<base::FilePath> ChromeExtensionsClient::GetBrowserImagePaths(
   if (theme_images) {
     for (base::DictionaryValue::Iterator it(*theme_images); !it.IsAtEnd();
          it.Advance()) {
-      base::FilePath::StringType path;
+      std::string path;
       if (it.value().GetAsString(&path))
-        image_paths.insert(base::FilePath(path));
+        image_paths.insert(base::FilePath::FromUTF8Unsafe(path));
     }
   }
 
-  const ActionInfo* page_action = ActionInfo::GetPageActionInfo(extension);
-  if (page_action && !page_action->default_icon.empty())
-    page_action->default_icon.GetPaths(&image_paths);
-
-  const ActionInfo* browser_action =
-      ActionInfo::GetBrowserActionInfo(extension);
-  if (browser_action && !browser_action->default_icon.empty())
-    browser_action->default_icon.GetPaths(&image_paths);
+  const ActionInfo* action = ActionInfo::GetExtensionActionInfo(extension);
+  if (action && !action->default_icon.empty())
+    action->default_icon.GetPaths(&image_paths);
 
   return image_paths;
-}
-
-bool ChromeExtensionsClient::ExtensionAPIEnabledInExtensionServiceWorkers()
-    const {
-  return GetCurrentChannel() == version_info::Channel::UNKNOWN;
 }
 
 void ChromeExtensionsClient::AddOriginAccessPermissions(
@@ -280,8 +233,9 @@ void ChromeExtensionsClient::AddOriginAccessPermissions(
   if (extensions::Manifest::IsComponentLocation(extension.location()) &&
       is_extension_active) {
     origin_patterns->push_back(network::mojom::CorsOriginPattern::New(
-        content::kChromeUIScheme, chrome::kChromeUIThemeHost,
-        network::mojom::CorsOriginAccessMatchMode::kDisallowSubdomains,
+        content::kChromeUIScheme, chrome::kChromeUIThemeHost, /*port=*/0,
+        network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
+        network::mojom::CorsPortMatchMode::kAllowAnyPort,
         network::mojom::CorsOriginAccessMatchPriority::kMaxPriority));
   }
 
@@ -289,12 +243,18 @@ void ChromeExtensionsClient::AddOriginAccessPermissions(
   // whitelist entries need to be updated when the kManagement permission
   // changes.
   if (is_extension_active && extension.permissions_data()->HasAPIPermission(
-                                 extensions::APIPermission::kManagement)) {
+                                 mojom::APIPermissionID::kManagement)) {
     origin_patterns->push_back(network::mojom::CorsOriginPattern::New(
         content::kChromeUIScheme, chrome::kChromeUIExtensionIconHost,
-        network::mojom::CorsOriginAccessMatchMode::kDisallowSubdomains,
+        /*port=*/0, network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
+        network::mojom::CorsPortMatchMode::kAllowAnyPort,
         network::mojom::CorsOriginAccessMatchPriority::kDefaultPriority));
   }
+}
+
+absl::optional<int> ChromeExtensionsClient::GetExtensionExtendedErrorCode()
+    const {
+  return static_cast<int>(ChromeResourceRequestBlockedReason::kExtension);
 }
 
 }  // namespace extensions

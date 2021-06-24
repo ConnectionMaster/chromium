@@ -8,7 +8,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
 #include "base/path_service.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -143,7 +142,8 @@ TEST_F(ArchiveValidatorTest, GetSizeAndComputeDigestOnBigFile) {
 }
 
 #if defined(OS_ANDROID)
-TEST_F(ArchiveValidatorTest, GetSizeAndComputeDigestOnContentUri) {
+// Flaky. https://crbug.com/1022323
+TEST_F(ArchiveValidatorTest, DISABLED_GetSizeAndComputeDigestOnContentUri) {
   base::FilePath content_uri_path = GetContentUriPathForTest();
   std::pair<int64_t, std::string> actual_size_and_digest =
       ArchiveValidator::GetSizeAndComputeDigest(content_uri_path);
@@ -167,7 +167,8 @@ TEST_F(ArchiveValidatorTest, ValidateBigFile) {
 }
 
 #if defined(OS_ANDROID)
-TEST_F(ArchiveValidatorTest, ValidateContentUri) {
+// Flaky. https://crbug.com/1022322
+TEST_F(ArchiveValidatorTest, DISABLED_ValidateContentUri) {
   base::FilePath content_uri_path = GetContentUriPathForTest();
   EXPECT_TRUE(ArchiveValidator::ValidateFile(
       content_uri_path, kSizeForTestContentUri, kExpectedDigestForContentUri));

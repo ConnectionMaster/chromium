@@ -5,8 +5,6 @@
 #ifndef CONTENT_PUBLIC_BROWSER_RENDER_PROCESS_HOST_FACTORY_H_
 #define CONTENT_PUBLIC_BROWSER_RENDER_PROCESS_HOST_FACTORY_H_
 
-#include "content/common/content_export.h"
-
 namespace content {
 class BrowserContext;
 class RenderProcessHost;
@@ -19,7 +17,7 @@ class RenderProcessHostFactory {
   virtual ~RenderProcessHostFactory() {}
   virtual RenderProcessHost* CreateRenderProcessHost(
       BrowserContext* browser_context,
-      SiteInstance* site_instance) const = 0;
+      SiteInstance* site_instance) = 0;
 };
 
 }  // namespace content

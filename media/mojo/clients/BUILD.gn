@@ -2,10 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/jumbo.gni")
-
 # Implementations of media C++ interfaces using corresponding mojo services.
-jumbo_source_set("clients") {
+source_set("clients") {
   visibility = [
     "//chromecast/*",
 
@@ -14,7 +12,7 @@ jumbo_source_set("clients") {
 
     "//content/renderer:*",
 
-    # TODO(xhwang): Only allow //media/mojo/services:media_service_unittests
+    # TODO(xhwang): Only allow //media/mojo/services:unit_tests
     "//media/mojo/services:*",
 
     "//media/mojo:test_support",
@@ -23,10 +21,14 @@ jumbo_source_set("clients") {
 
     "//chrome/browser:*",
 
+    "//chrome/browser/thumbnail/generator",
+
     "//content/gpu:*",
 
     # TODO(liberato): can we avoid this?
     "//content/test/*",
+
+    "//third_party/blink/renderer/modules/webcodecs",
   ]
 
   sources = [
@@ -67,7 +69,7 @@ jumbo_source_set("clients") {
     "//base",
     "//media",
     "//media/mojo:buildflags",
-    "//media/mojo/interfaces",
+    "//media/mojo/mojom",
     "//mojo/public/cpp/bindings",
     "//mojo/public/cpp/system",
     "//services/service_manager/public/mojom",
@@ -86,23 +88,14 @@ jumbo_source_set("clients") {
       "//ui/gl:gl",
     ]
   }
-}
-
-source_set("jpeg_decode_accelerator") {
-  visibility = [
-    "//content/browser",
-    "//media/capture:capture_lib",
-  ]
-
-  sources = [
-    "mojo_mjpeg_decode_accelerator.cc",
-    "mojo_mjpeg_decode_accelerator.h",
-  ]
-
-  deps = [
-    "//base",
-    "//media/mojo/interfaces",
-  ]
+  if (is_win) {
+    sources += [
+      "win/media_foundation_renderer_client.cc",
+      "win/media_foundation_renderer_client.h",
+      "win/media_foundation_renderer_client_factory.cc",
+      "win/media_foundation_renderer_client_factory.h",
+    ]
+  }
 }
 
 source_set("unit_tests") {
@@ -129,7 +122,7 @@ source_set("unit_tests") {
     sources += [ "mojo_android_overlay_unittest.cc" ]
 
     deps += [
-      "//media/mojo/interfaces:test_interfaces",
+      "//media/mojo/mojom:test_interfaces",
       "//ui/gfx:test_support",
       "//ui/gl",
     ]

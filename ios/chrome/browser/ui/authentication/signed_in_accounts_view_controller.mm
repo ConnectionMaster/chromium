@@ -4,7 +4,12 @@
 
 #import "ios/chrome/browser/ui/authentication/signed_in_accounts_view_controller.h"
 
+#import <MaterialComponents/MaterialDialogs.h>
+#import <MaterialComponents/MaterialTypography.h>
+
 #import "base/mac/foundation_util.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/signin/authentication_service.h"
 #include "ios/chrome/browser/signin/authentication_service_factory.h"
@@ -16,19 +21,14 @@
 #import "ios/chrome/browser/ui/collection_view/collection_view_model.h"
 #import "ios/chrome/browser/ui/colors/MDCPalette+CrAdditions.h"
 #import "ios/chrome/browser/ui/commands/application_commands.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #import "ios/public/provider/chrome/browser/signin/chrome_identity.h"
 #import "ios/public/provider/chrome/browser/signin/chrome_identity_service.h"
 #include "ios/public/provider/chrome/browser/signin/signin_resources_provider.h"
-#import "ios/third_party/material_components_ios/src/components/Buttons/src/MaterialButtons.h"
-#import "ios/third_party/material_components_ios/src/components/Dialogs/src/MaterialDialogs.h"
-#import "ios/third_party/material_components_ios/src/components/Palettes/src/MaterialPalettes.h"
-#import "ios/third_party/material_components_ios/src/components/Typography/src/MaterialTypography.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#import "services/identity/public/objc/identity_manager_observer_bridge.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -63,7 +63,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 
 @interface SignedInAccountsCollectionViewController
     : CollectionViewController<ChromeIdentityServiceObserver> {
-  ios::ChromeBrowserState* _browserState;  // Weak.
+  ChromeBrowserState* _browserState;  // Weak.
   std::unique_ptr<ChromeIdentityServiceObserverBridge> _identityServiceObserver;
   ResizedAvatarCache* _avatarCache;
 
@@ -74,7 +74,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 
 @implementation SignedInAccountsCollectionViewController
 
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState {
+- (instancetype)initWithBrowserState:(ChromeBrowserState*)browserState {
   UICollectionViewLayout* layout = [[MDCCollectionViewFlowLayout alloc] init];
   self =
       [super initWithLayout:layout style:CollectionViewControllerStyleDefault];
@@ -94,7 +94,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
   [super viewDidLoad];
 
   self.styler.shouldHideSeparators = YES;
-  self.collectionView.backgroundColor = [UIColor clearColor];
+  self.collectionView.backgroundColor = UIColor.clearColor;
 
   // Add an inset at the bottom so the user can see whether it is possible to
   // scroll to see additional accounts.
@@ -113,12 +113,18 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
   NSMutableDictionary<NSString*, CollectionViewItem*>* mutableIdentityMap =
       [[NSMutableDictionary alloc] init];
 
-  identity::IdentityManager* identityManager =
+  signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForBrowserState(_browserState);
   for (const auto& account : identityManager->GetAccountsWithRefreshTokens()) {
     ChromeIdentity* identity = ios::GetChromeBrowserProvider()
                                    ->GetChromeIdentityService()
                                    ->GetIdentityWithGaiaID(account.gaia);
+
+    // If the account with a refresh token is invalidated during this operation
+    // then |identity| will be nil. Do not process it in this case.
+    if (!identity) {
+      continue;
+    }
     CollectionViewItem* item = [self accountItem:identity];
     [model addItem:item toSectionWithIdentifier:SectionIdentifierAccounts];
     [mutableIdentityMap setObject:item forKey:identity.gaiaID];
@@ -179,8 +185,8 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 
 @interface SignedInAccountsViewController () <
     IdentityManagerObserverBridgeDelegate> {
-  ios::ChromeBrowserState* _browserState;  // Weak.
-  std::unique_ptr<identity::IdentityManagerObserverBridge>
+  ChromeBrowserState* _browserState;  // Weak.
+  std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserver;
   MDCDialogTransitionController* _transitionController;
 
@@ -196,20 +202,20 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 @implementation SignedInAccountsViewController
 @synthesize dispatcher = _dispatcher;
 
-+ (BOOL)shouldBePresentedForBrowserState:
-    (ios::ChromeBrowserState*)browserState {
++ (BOOL)shouldBePresentedForBrowserState:(ChromeBrowserState*)browserState {
   if (!browserState || browserState->IsOffTheRecord()) {
     return NO;
   }
   AuthenticationService* authService =
       AuthenticationServiceFactory::GetForBrowserState(browserState);
   return !gSignedInAccountsViewControllerIsShown &&
-         authService->IsAuthenticated() && authService->HaveAccountsChanged();
+         authService->IsAuthenticated() &&
+         !authService->IsAccountListApprovedByUser();
 }
 
 #pragma mark Initialization
 
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState
+- (instancetype)initWithBrowserState:(ChromeBrowserState*)browserState
                           dispatcher:
                               (id<ApplicationSettingsCommands>)dispatcher {
   self = [super initWithNibName:nil bundle:nil];
@@ -217,7 +223,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
     _browserState = browserState;
     _dispatcher = dispatcher;
     _identityManagerObserver =
-        std::make_unique<identity::IdentityManagerObserverBridge>(
+        std::make_unique<signin::IdentityManagerObserverBridge>(
             IdentityManagerFactory::GetForBrowserState(_browserState), self);
     _transitionController = [[MDCDialogTransitionController alloc] init];
     self.modalPresentationStyle = UIModalPresentationCustom;
@@ -227,6 +233,9 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 }
 
 - (void)dismissWithCompletion:(ProceduralBlock)completion {
+  AuthenticationService* authService =
+      AuthenticationServiceFactory::GetForBrowserState(_browserState);
+  authService->ApproveAccountList();
   [self.presentingViewController dismissViewControllerAnimated:YES
                                                     completion:completion];
 }
@@ -246,7 +255,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
   CGFloat width = std::min(
       kDialogMaxWidth, self.presentingViewController.view.bounds.size.width -
                            2 * kMDCMinHorizontalPadding);
-  identity::IdentityManager* identityManager =
+  signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForBrowserState(_browserState);
   int shownAccounts =
       std::min(kMaxShownAccounts,
@@ -265,12 +274,12 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  self.view.backgroundColor = [UIColor whiteColor];
+  self.view.backgroundColor = [UIColor colorNamed:kBackgroundColor];
 
   _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
   _titleLabel.text =
       l10n_util::GetNSString(IDS_IOS_SIGNED_IN_ACCOUNTS_VIEW_TITLE);
-  _titleLabel.textColor = [[MDCPalette greyPalette] tint900];
+  _titleLabel.textColor = [UIColor colorNamed:kTextPrimaryColor];
   _titleLabel.font = [MDCTypography headlineFont];
   _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:_titleLabel];
@@ -286,7 +295,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
   _infoLabel.text =
       l10n_util::GetNSString(IDS_IOS_SIGNED_IN_ACCOUNTS_VIEW_INFO);
   _infoLabel.numberOfLines = 0;
-  _infoLabel.textColor = [[MDCPalette greyPalette] tint700];
+  _infoLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
   _infoLabel.font = [MDCTypography body1Font];
   _infoLabel.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:_infoLabel];
@@ -298,12 +307,12 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
   [_primaryButton
       setTitle:l10n_util::GetNSString(IDS_IOS_SIGNED_IN_ACCOUNTS_VIEW_OK_BUTTON)
       forState:UIControlStateNormal];
-  [_primaryButton setBackgroundColor:[[MDCPalette cr_bluePalette] tint500]
+  [_primaryButton setBackgroundColor:[UIColor colorNamed:kBlueColor]
                             forState:UIControlStateNormal];
-  [_primaryButton setTitleColor:[UIColor whiteColor]
+  [_primaryButton setTitleColor:[UIColor colorNamed:kSolidButtonTextColor]
                        forState:UIControlStateNormal];
-  _primaryButton.underlyingColorHint = [UIColor blackColor];
-  _primaryButton.inkColor = [UIColor colorWithWhite:1 alpha:0.2f];
+  _primaryButton.underlyingColorHint = [UIColor colorNamed:kBackgroundColor];
+  _primaryButton.inkColor = [UIColor colorNamed:kMDCInkColor];
   _primaryButton.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:_primaryButton];
 
@@ -315,12 +324,12 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
       setTitle:l10n_util::GetNSString(
                    IDS_IOS_SIGNED_IN_ACCOUNTS_VIEW_SETTINGS_BUTTON)
       forState:UIControlStateNormal];
-  [_secondaryButton setBackgroundColor:[UIColor whiteColor]
+  [_secondaryButton setBackgroundColor:UIColor.clearColor
                               forState:UIControlStateNormal];
-  [_secondaryButton setTitleColor:[[MDCPalette cr_bluePalette] tint500]
+  [_secondaryButton setTitleColor:[UIColor colorNamed:kBlueColor]
                          forState:UIControlStateNormal];
-  _secondaryButton.underlyingColorHint = [UIColor whiteColor];
-  _secondaryButton.inkColor = [UIColor colorWithWhite:0 alpha:0.06f];
+  _secondaryButton.underlyingColorHint = [UIColor colorNamed:kBackgroundColor];
+  _secondaryButton.inkColor = [UIColor colorNamed:kMDCSecondaryInkColor];
   _secondaryButton.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:_secondaryButton];
 
@@ -389,7 +398,7 @@ BOOL gSignedInAccountsViewControllerIsShown = NO;
 #pragma mark IdentityManagerObserverBridgeDelegate
 
 - (void)onEndBatchOfRefreshTokenStateChanges {
-  identity::IdentityManager* identityManager =
+  signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForBrowserState(_browserState);
   if (identityManager->GetAccountsWithRefreshTokens().empty()) {
     [self dismissWithCompletion:nil];

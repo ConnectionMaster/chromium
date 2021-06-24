@@ -11,12 +11,13 @@ for more details about the presubmit API built into depot_tools.
 import os
 import re
 
+USE_PYTHON3 = True
+
 # Some definitions don't follow all the conventions we want to enforce.
 # It's either difficult or impossible to fix this, so we ignore the problem(s).
 EXCEPTION_MODEL_TYPES = [
   # Grandfathered types:
   'UNSPECIFIED',  # Doesn't have a root tag or notification type.
-  'TOP_LEVEL_FOLDER',  # Doesn't have a root tag or notification type.
   'AUTOFILL_WALLET_DATA',  # Root tag and model type string lack DATA suffix.
   'APP_SETTINGS',  # Model type string has inconsistent capitalization.
   'EXTENSION_SETTINGS',  # Model type string has inconsistent capitalization.
@@ -24,21 +25,13 @@ EXCEPTION_MODEL_TYPES = [
   'NIGORI',  # Model type string is 'encryption keys'.
   'SUPERVISED_USER_SETTINGS',  # Root tag and model type string replace
                                # 'Supervised' with 'Managed'
-  'SUPERVISED_USER_WHITELISTS',  # See previous.
 
   # Deprecated types:
-  'DEPRECATED_APP_NOTIFICATIONS',
-  'DEPRECATED_ARTICLES',
-  'DEPRECATED_SUPERVISED_USERS',
-  'DEPRECATED_SUPERVISED_USER_SHARED_SETTINGS',
-  'DEPRECATED_SYNCED_NOTIFICATIONS',
-  'DEPRECATED_SYNCED_NOTIFICATION_APP_INFO',
-  'DEPRECATED_WIFI_CREDENTIALS',
-  'DEPRECATED_EXPERIMENTS']
+  'DEPRECATED_SUPERVISED_USER_ALLOWLISTS']
 
 # Root tags are used as prefixes when creating storage keys, so certain strings
-# are blacklisted in order to prevent prefix collision.
-BLACKLISTED_ROOT_TAGS = [
+# are blocklisted in order to prevent prefix collision.
+BLOCKLISTED_ROOT_TAGS = [
   '_mts_schema_descriptor'
 ]
 
@@ -70,10 +63,6 @@ PROTO_FILE_NAME = 'sync.proto'
 MODEL_TYPE_FILE_NAME = 'model_type.cc'
 
 SYNC_SOURCE_FILES = (r'^components[\\/]sync[\\/].*\.(cc|h)$',)
-
-# The wrapper around lint that is called below disables a set of filters if the
-# passed filter evaluates to false. Pass a junk filter to avoid this behavior.
-LINT_FILTERS = ['+fake/filter']
 
 def CheckModelTypeInfoMap(input_api, output_api, model_type_file):
   """Checks the kModelTypeInfoMap in model_type.cc follows conventions.
@@ -116,7 +105,7 @@ def CheckModelTypeInfoMap(input_api, output_api, model_type_file):
     entry_problems.extend(
       CheckNotificationTypeMatchesProtoMessageName(
         output_api, map_entry, proto_field_definitions))
-    entry_problems.extend(CheckRootTagNotInBlackList(output_api, map_entry))
+    entry_problems.extend(CheckRootTagNotInBlocklist(output_api, map_entry))
 
     if map_entry.model_type not in EXCEPTION_MODEL_TYPES:
       entry_problems.extend(
@@ -176,8 +165,8 @@ def ParseModelTypeEntries(input_api, model_type_cc_path):
   for line in file_contents.splitlines():
     current_line_number += 1
     if line.strip().startswith('//'):
-        # Ignore comments.
-        continue
+      # Ignore comments.
+      continue
     if start_pattern.match(line):
       inside_enum = True
       continue
@@ -349,17 +338,17 @@ def CheckRootTagMatchesModelType(output_api, map_entry):
         map_entry.affected_lines)]
   return []
 
-def CheckRootTagNotInBlackList(output_api, map_entry):
-  """ Checks that map_entry's root isn't a blacklisted string.
+def CheckRootTagNotInBlocklist(output_api, map_entry):
+  """ Checks that map_entry's root isn't a blocklisted string.
   Args:
     output_api: presubmit_support OutputAPI instance
     map_entry: ModelTypeEnumEntry object to check
   Returns:
     A list of PresubmitError objects for each violation
   """
-  if map_entry.root_tag in BLACKLISTED_ROOT_TAGS:
+  if map_entry.root_tag in BLOCKLISTED_ROOT_TAGS:
     return [FormatPresubmitError(
-        output_api,'root tag "%s" is a blacklisted root tag'
+        output_api,'root tag "%s" is a blocklisted root tag'
         % (map_entry.root_tag), map_entry.affected_lines)]
   return []
 
@@ -376,15 +365,13 @@ def FieldNumberToPrototypeString(field_number):
     => 'AppSpecifics'
   """
   return field_number.replace(FIELD_NUMBER_PREFIX, '').replace(
-    'FieldNumber', 'Specifics').replace(
-    'AppNotificationSpecifics', 'AppNotification')
+    'FieldNumber', 'Specifics')
 
 def CheckChangeLintsClean(input_api, output_api):
   source_filter = lambda x: input_api.FilterSourceFile(
-    x, white_list=SYNC_SOURCE_FILES, black_list=None)
+    x, files_to_check=SYNC_SOURCE_FILES, files_to_skip=None)
   return input_api.canned_checks.CheckChangeLintsClean(
-      input_api, output_api, source_filter, lint_filters=LINT_FILTERS,
-      verbose_level=1)
+      input_api, output_api, source_filter, lint_filters=[], verbose_level=1)
 
 def CheckChanges(input_api, output_api):
   results = []

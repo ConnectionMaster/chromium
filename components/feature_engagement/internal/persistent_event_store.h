@@ -28,15 +28,15 @@ class PersistentEventStore : public EventStore {
   ~PersistentEventStore() override;
 
   // EventStore implementation.
-  void Load(const OnLoadedCallback& callback) override;
+  void Load(OnLoadedCallback callback) override;
   bool IsReady() const override;
   void WriteEvent(const Event& event) override;
   void DeleteEvent(const std::string& event_name) override;
 
  private:
-  void OnInitComplete(const OnLoadedCallback& callback,
+  void OnInitComplete(OnLoadedCallback callback,
                       leveldb_proto::Enums::InitStatus status);
-  void OnLoadComplete(const OnLoadedCallback& callback,
+  void OnLoadComplete(OnLoadedCallback callback,
                       bool success,
                       std::unique_ptr<std::vector<Event>> entries);
 
@@ -48,7 +48,7 @@ class PersistentEventStore : public EventStore {
   // fails.
   bool ready_;
 
-  base::WeakPtrFactory<PersistentEventStore> weak_ptr_factory_;
+  base::WeakPtrFactory<PersistentEventStore> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PersistentEventStore);
 };

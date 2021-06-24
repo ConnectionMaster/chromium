@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_VIZ_COMMON_QUADS_CONTENT_DRAW_QUAD_BASE_H_
 #define COMPONENTS_VIZ_COMMON_QUADS_CONTENT_DRAW_QUAD_BASE_H_
 
-#include <memory>
-
 #include "components/viz/common/quads/draw_quad.h"
 #include "components/viz/common/viz_common_export.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -27,7 +25,6 @@ class VIZ_COMMON_EXPORT ContentDrawQuadBase : public DrawQuad {
               bool needs_blending,
               const gfx::RectF& tex_coord_rect,
               const gfx::Size& texture_size,
-              bool swizzle_contents,
               bool is_premultiplied,
               bool nearest_neighbor,
               bool force_anti_aliasing_off);
@@ -39,14 +36,12 @@ class VIZ_COMMON_EXPORT ContentDrawQuadBase : public DrawQuad {
               bool needs_blending,
               const gfx::RectF& tex_coord_rect,
               const gfx::Size& texture_size,
-              bool swizzle_contents,
               bool is_premultiplied,
               bool nearest_neighbor,
               bool force_anti_aliasing_off);
 
   gfx::RectF tex_coord_rect;
   gfx::Size texture_size;
-  bool swizzle_contents = false;
   bool is_premultiplied = false;
   bool nearest_neighbor = false;
   bool force_anti_aliasing_off = false;

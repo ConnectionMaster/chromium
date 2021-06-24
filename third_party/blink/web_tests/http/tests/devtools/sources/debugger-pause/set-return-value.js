@@ -4,8 +4,8 @@
 
 (async function() {
   TestRunner.addResult('Check that return value can be changed.');
-  await TestRunner.loadModule('console_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.evaluateInPagePromise(`
     function testFunction() {
@@ -18,7 +18,7 @@
   let sidebarUpdated = TestRunner.addSnifferPromise(
         Sources.ScopeChainSidebarPane.prototype, '_sidebarPaneUpdatedForTest');
   await Promise.all([SourcesTestRunner.runTestFunctionAndWaitUntilPausedPromise(), sidebarUpdated]);
-  let localScope = SourcesTestRunner.scopeChainSections()[0].objectTreeElement();
+  let localScope = SourcesTestRunner.scopeChainSections()[0];
 
   TestRunner.addResult('Dump current');
   await new Promise(resolve => SourcesTestRunner.expandProperties([localScope, ['Return value']], resolve));
@@ -45,7 +45,7 @@
   SourcesTestRunner.resumeExecution();
   await ConsoleTestRunner.waitUntilMessageReceivedPromise();
   TestRunner.addResult('Actual return value:');
-  ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
+  await ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
 
   SourcesTestRunner.completeDebuggerTest();
 })();

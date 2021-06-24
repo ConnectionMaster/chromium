@@ -8,7 +8,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <map>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
@@ -30,7 +33,7 @@ class StatsEventSubscriberTest;
 
 // A RawEventSubscriber implementation that subscribes to events,
 // and aggregates them into stats.
-class StatsEventSubscriber : public RawEventSubscriber {
+class StatsEventSubscriber final : public RawEventSubscriber {
  public:
   StatsEventSubscriber(EventMediaType event_media_type,
                        const base::TickClock* clock,

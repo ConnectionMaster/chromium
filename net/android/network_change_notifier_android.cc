@@ -59,20 +59,19 @@
 
 #include "net/android/network_change_notifier_android.h"
 
+#include <string>
 #include <unordered_set>
 
 #include "base/android/build_info.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/callback_helpers.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
 #include "net/base/address_tracker_linux.h"
-#include "net/dns/dns_config_service_posix.h"
 
 namespace net {
 
@@ -92,16 +91,17 @@ enum NetId {
 class NetworkChangeNotifierAndroid::BlockingThreadObjects {
  public:
   BlockingThreadObjects()
-      : address_tracker_(base::DoNothing(),
-                         base::DoNothing(),
-                         // We're only interested in tunnel interface changes.
-                         base::Bind(NotifyNetworkChangeNotifierObservers),
-                         std::unordered_set<std::string>()) {}
+      : address_tracker_(
+            base::DoNothing(),
+            base::DoNothing(),
+            // We're only interested in tunnel interface changes.
+            base::BindRepeating(NotifyNetworkChangeNotifierObservers),
+            std::unordered_set<std::string>()) {}
+  BlockingThreadObjects(const BlockingThreadObjects&) = delete;
+  BlockingThreadObjects& operator=(const BlockingThreadObjects&) = delete;
 
   void Init() {
     address_tracker_.Init();
-    dns_config_service_.WatchConfig(
-        base::Bind(&NetworkChangeNotifier::SetDnsConfig));
   }
 
   static void NotifyNetworkChangeNotifierObservers() {
@@ -110,15 +110,13 @@ class NetworkChangeNotifierAndroid::BlockingThreadObjects {
   }
 
  private:
-  internal::DnsConfigServicePosix dns_config_service_;
   // Used to detect tunnel state changes.
   internal::AddressTrackerLinux address_tracker_;
-
-  DISALLOW_COPY_AND_ASSIGN(BlockingThreadObjects);
 };
 
 NetworkChangeNotifierAndroid::~NetworkChangeNotifierAndroid() {
-  delegate_->RemoveObserver(this);
+  ClearGlobalPointer();
+  delegate_->UnregisterObserver(this);
 }
 
 NetworkChangeNotifier::ConnectionType
@@ -205,25 +203,33 @@ NetworkChangeNotifierAndroid::NetworkChangeNotifierAndroid(
     NetworkChangeNotifierDelegateAndroid* delegate)
     : NetworkChangeNotifier(NetworkChangeCalculatorParamsAndroid()),
       delegate_(delegate),
-      blocking_thread_runner_(
-          base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()})),
-      blocking_thread_objects_(
-          new BlockingThreadObjects(),
-          // Ensure |blocking_thread_objects_| lives on
-          // |blocking_thread_runner_| to prevent races where
-          // NetworkChangeNotifierAndroid outlives
-          // ScopedTaskEnvironment. https://crbug.com/938126
-          base::OnTaskRunnerDeleter(blocking_thread_runner_)),
+      blocking_thread_objects_(nullptr, base::OnTaskRunnerDeleter(nullptr)),
       force_network_handles_supported_for_testing_(false) {
   CHECK_EQ(NetId::INVALID, NetworkChangeNotifier::kInvalidNetworkHandle)
       << "kInvalidNetworkHandle doesn't match NetId::INVALID";
-  delegate_->AddObserver(this);
-  blocking_thread_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&BlockingThreadObjects::Init,
-                     // The Unretained pointer is safe here because it's
-                     // posted before the deleter can post.
-                     base::Unretained(blocking_thread_objects_.get())));
+  delegate_->RegisterObserver(this);
+  // Since Android P, ConnectivityManager's signals include VPNs so we don't
+  // need to use AddressTrackerLinux.
+  if (base::android::BuildInfo::GetInstance()->sdk_int() <
+      base::android::SDK_VERSION_P) {
+    // |blocking_thread_objects_| will live on this runner.
+    scoped_refptr<base::SequencedTaskRunner> blocking_thread_runner =
+        base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()});
+    blocking_thread_objects_ =
+        std::unique_ptr<BlockingThreadObjects, base::OnTaskRunnerDeleter>(
+            new BlockingThreadObjects(),
+            // Ensure |blocking_thread_objects_| lives on
+            // |blocking_thread_runner| to prevent races where
+            // NetworkChangeNotifierAndroid outlives
+            // TaskEnvironment. https://crbug.com/938126
+            base::OnTaskRunnerDeleter(blocking_thread_runner));
+    blocking_thread_runner->PostTask(
+        FROM_HERE,
+        base::BindOnce(&BlockingThreadObjects::Init,
+                       // The Unretained pointer is safe here because it's
+                       // posted before the deleter can post.
+                       base::Unretained(blocking_thread_objects_.get())));
+  }
 }
 
 // static

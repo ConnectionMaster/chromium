@@ -22,6 +22,7 @@
 #include "chromeos/network/onc/onc_signature.h"
 #include "chromeos/network/onc/onc_translation_tables.h"
 #include "chromeos/network/onc/onc_translator.h"
+#include "components/device_event_log/device_event_log.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace chromeos {
@@ -48,6 +49,13 @@ CellularScanResult::CellularScanResult(const CellularScanResult& other) =
     default;
 
 CellularScanResult::~CellularScanResult() = default;
+
+CellularSIMSlotInfo::CellularSIMSlotInfo() = default;
+
+CellularSIMSlotInfo::CellularSIMSlotInfo(const CellularSIMSlotInfo& other) =
+    default;
+
+CellularSIMSlotInfo::~CellularSIMSlotInfo() = default;
 
 namespace network_util {
 
@@ -133,7 +141,7 @@ bool ParseCellularScanResults(const base::ListValue& list,
                               std::vector<CellularScanResult>* scan_results) {
   scan_results->clear();
   scan_results->reserve(list.GetSize());
-  for (const auto& value : list) {
+  for (const auto& value : list.GetList()) {
     const base::DictionaryValue* dict;
     if (!value.GetAsDictionary(&dict))
       return false;
@@ -152,6 +160,37 @@ bool ParseCellularScanResults(const base::ListValue& list,
     dict->GetStringWithoutPathExpansion(shill::kTechnologyProperty,
                                         &scan_result.technology);
     scan_results->push_back(scan_result);
+  }
+  return true;
+}
+
+bool ParseCellularSIMSlotInfo(
+    const base::Value::ConstListView list,
+    std::vector<CellularSIMSlotInfo>* sim_slot_infos) {
+  sim_slot_infos->clear();
+  sim_slot_infos->reserve(list.size());
+  for (size_t i = 0; i < list.size(); i++) {
+    const auto& value = list[i];
+    if (!value.is_dict())
+      return false;
+
+    CellularSIMSlotInfo sim_slot_info;
+    // The |slot_id| should start with 1.
+    sim_slot_info.slot_id = i + 1;
+
+    const std::string* eid = value.FindStringKey(shill::kSIMSlotInfoEID);
+    if (eid)
+      sim_slot_info.eid = *eid;
+
+    const std::string* iccid = value.FindStringKey(shill::kSIMSlotInfoICCID);
+    if (iccid)
+      sim_slot_info.iccid = *iccid;
+
+    absl::optional<bool> primary =
+        value.FindBoolKey(shill::kSIMSlotInfoPrimary);
+    sim_slot_info.primary = primary.has_value() ? *primary : false;
+
+    sim_slot_infos->push_back(sim_slot_info);
   }
   return true;
 }
@@ -194,6 +233,15 @@ std::unique_ptr<base::DictionaryValue> TranslateNetworkStateToONC(
   std::unique_ptr<base::DictionaryValue> onc_dictionary =
       TranslateShillServiceToONCPart(*shill_dictionary, onc_source,
                                      &onc::kNetworkWithStateSignature, network);
+
+  // Remove IPAddressConfigType/NameServersConfigType as these were
+  // historically not provided by TranslateNetworkStateToONC.
+  // The source shill properties for those ONC properties are not provided by
+  // NetworkState::GetStateProperties, however since CL:2530330 these are
+  // assumed to have defaults that are always enforced during ONC translation.
+  onc_dictionary->RemoveKey(::onc::network_config::kIPAddressConfigType);
+  onc_dictionary->RemoveKey(::onc::network_config::kNameServersConfigType);
+
   return onc_dictionary;
 }
 

@@ -4,16 +4,20 @@
 
 #include <stdint.h>
 
-#include "ui/events/event_constants.h"
-
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/no_destructor.h"
+#include "base/notreached.h"
+#include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "base/win/windowsx_shim.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/keycodes/keyboard_code_conversion_win.h"
 #include "ui/events/keycodes/platform_key_map_win.h"
+#include "ui/events/types/event_type.h"
 #include "ui/events/win/events_win_utils.h"
 #include "ui/events/win/system_event_state_lookup.h"
 #include "ui/gfx/geometry/point.h"
@@ -152,6 +156,19 @@ int MouseStateFlags(const MSG& native_event) {
   return flags;
 }
 
+class GetTickCountClock : public base::TickClock {
+ public:
+  GetTickCountClock() = default;
+  ~GetTickCountClock() override = default;
+
+  base::TimeTicks NowTicks() const override {
+    return base::TimeTicks() +
+           base::TimeDelta::FromMilliseconds(::GetTickCount());
+  }
+};
+
+const base::TickClock* g_tick_count_clock = nullptr;
+
 }  // namespace
 
 EventType EventTypeFromMSG(const MSG& native_event) {
@@ -241,30 +258,85 @@ base::TimeTicks EventTimeFromMSG(const MSG& native_event) {
   return EventTimeForNow();
 }
 
+base::TimeTicks EventLatencyTimeFromTickClock(DWORD event_time,
+                                              base::TimeTicks current_time) {
+  static const base::NoDestructor<GetTickCountClock> default_tick_count_clock;
+  if (!g_tick_count_clock)
+    g_tick_count_clock = default_tick_count_clock.get();
+
+  base::TimeTicks time_stamp =
+      base::TimeTicks() + base::TimeDelta::FromMilliseconds(event_time);
+
+  base::TimeTicks current_tick_count = g_tick_count_clock->NowTicks();
+  // Check if the 32-bit tick count wrapped around after the event.
+  if (current_tick_count < time_stamp) {
+    // ::GetTickCount returns an unsigned 32-bit value, which will fit into the
+    // signed 64-bit base::TimeTicks.
+    current_tick_count +=
+        base::TimeDelta::FromMilliseconds(std::numeric_limits<DWORD>::max());
+  }
+
+  // |time_stamp| is from the GetTickCount clock, which has a different 0-point
+  // from |current_time| (which uses either the high-resolution timer or
+  // timeGetTime). Adjust it to be compatible.
+  //
+  // This offset will vary by up to ~16 msec because it depends on when exactly
+  // we sample the high-resolution clock. It would be more consistent to
+  // calculate one offset at the start of the program and apply it every time,
+  // but that consistency isn't needed for jank investigations and then we
+  // would have to adjust for clock drift.
+  const base::TimeDelta time_source_offset = current_time - current_tick_count;
+  time_stamp += time_source_offset;
+
+  ValidateEventTimeClock(&time_stamp);
+  return time_stamp;
+}
+
+base::TimeTicks EventLatencyTimeFromPerformanceCounter(UINT64 event_time) {
+  DCHECK(base::TimeTicks::IsHighResolution());
+  base::TimeTicks time_stamp = base::TimeTicks::FromQPCValue(event_time);
+  ValidateEventTimeClock(&time_stamp);
+  return time_stamp;
+}
+
 gfx::Point EventLocationFromMSG(const MSG& native_event) {
-  POINT native_point;
+  // This code may use GetCursorPos() to get a mouse location. This may
+  // fail in certain situations (see
+  // https://bugs.chromium.org/p/chromium/issues/detail?id=540840#c20 for
+  // details). To handle failure this code tracks the last known location so
+  // that it can use a reasonable value should GetCursorPos() fail.
+  static gfx::Point last_known_location;
+  gfx::Point event_location = last_known_location;
   if ((native_event.message == WM_MOUSELEAVE ||
        native_event.message == WM_NCMOUSELEAVE) ||
       IsScrollEvent(native_event)) {
     // These events have no coordinates. For sanity with rest of events grab
     // coordinates from the OS.
-    ::GetCursorPos(&native_point);
+    POINT native_point;
+    if (::GetCursorPos(&native_point)) {
+      ScreenToClient(native_event.hwnd, &native_point);
+      event_location = gfx::Point(native_point);
+    }
   } else if (IsClientMouseEvent(native_event) &&
              !IsMouseWheelEvent(native_event)) {
     // Note: Wheel events are considered client, but their position is in screen
     //       coordinates.
     // Client message. The position is contained in the LPARAM.
-    return gfx::Point(static_cast<DWORD>(native_event.lParam));
+    event_location = gfx::Point(static_cast<DWORD>(native_event.lParam));
   } else {
     DCHECK(IsNonClientMouseEvent(native_event) ||
            IsMouseWheelEvent(native_event) || IsScrollEvent(native_event));
     // Non-client message. The position is contained in a POINTS structure in
     // LPARAM, and is in screen coordinates so we have to convert to client.
+    POINT native_point;
     native_point.x = GET_X_LPARAM(native_event.lParam);
     native_point.y = GET_Y_LPARAM(native_event.lParam);
+    ScreenToClient(native_event.hwnd, &native_point);
+    event_location = gfx::Point(native_point);
   }
-  ScreenToClient(native_event.hwnd, &native_point);
-  return gfx::Point(native_point);
+
+  last_known_location = event_location;
+  return event_location;
 }
 
 gfx::Point EventSystemLocationFromMSG(const MSG& native_event) {
@@ -308,9 +380,9 @@ PointerDetails GetMousePointerDetailsFromMSG(const MSG& native_event) {
   // We should filter out all the mouse events Synthesized from touch events.
   // TODO(lanwei): Will set the pointer ID, see https://crbug.com/616771.
   if ((GetMessageExtraInfo() & SIGNATURE_MASK) != MOUSEEVENTF_FROMTOUCHPEN)
-    return PointerDetails(EventPointerType::POINTER_TYPE_MOUSE);
+    return PointerDetails(EventPointerType::kMouse);
 
-  return PointerDetails(EventPointerType::POINTER_TYPE_PEN);
+  return PointerDetails(EventPointerType::kPen);
 }
 
 gfx::Vector2d GetMouseWheelOffsetFromMSG(const MSG& native_event) {
@@ -338,7 +410,7 @@ int GetTouchIdFromMSG(const MSG& xev) {
 
 PointerDetails GetTouchPointerDetailsFromMSG(const MSG& native_event) {
   NOTIMPLEMENTED();
-  return PointerDetails(EventPointerType::POINTER_TYPE_TOUCH,
+  return PointerDetails(EventPointerType::kTouch,
                         /* pointer_id*/ 0,
                         /* radius_x */ 1.0,
                         /* radius_y */ 1.0,
@@ -399,7 +471,7 @@ bool IsMouseEventFromTouch(UINT message) {
 
 // Conversion scan_code and LParam each other.
 // uint16_t scan_code:
-//     ui/events/keycodes/dom/keycode_converter_data.inc
+//     ui/events/keycodes/dom/dom_code_data.inc
 // 0 - 15bits: represetns the scan code.
 // 28 - 30 bits (0xE000): represents whether this is an extended key or not.
 //
@@ -476,6 +548,10 @@ MouseWheelEvent MouseWheelEventFromMSG(const MSG& msg) {
 
   return MouseWheelEvent(offset, location, root_location, time_stamp, flags,
                          changed_button_flags);
+}
+
+void SetEventLatencyTickClockForTesting(const base::TickClock* clock) {
+  g_tick_count_clock = clock;
 }
 
 }  // namespace ui

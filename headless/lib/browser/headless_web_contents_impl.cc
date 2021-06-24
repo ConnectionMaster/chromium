@@ -10,22 +10,28 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/security_state/content/content_utils.h"
 #include "components/security_state/core/security_state.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_termination_info.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/renderer_preferences_util.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/bindings_policy.h"
@@ -37,8 +43,10 @@
 #include "headless/lib/browser/protocol/headless_handler.h"
 #include "headless/public/internal/headless_devtools_client_impl.h"
 #include "printing/buildflags/buildflags.h"
-#include "third_party/blink/public/mojom/renderer_preferences.mojom.h"
+#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/switches.h"
 
@@ -47,6 +55,23 @@
 #endif
 
 namespace headless {
+
+namespace {
+
+void UpdatePrefsFromSystemSettings(blink::RendererPreferences* prefs) {
+#if defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS) || defined(OS_WIN)
+  content::UpdateFontRendererPreferencesFromSystemSettings(prefs);
+#endif
+
+  // The values were copied from chrome/browser/renderer_preferences_util.cc.
+#if defined(OS_MAC)
+  prefs->focus_ring_color = SkColorSetRGB(0x00, 0x5F, 0xCC);
+#else
+  prefs->focus_ring_color = SkColorSetRGB(0x10, 0x10, 0x10);
+#endif
+}
+
+}  // namespace
 
 // static
 HeadlessWebContentsImpl* HeadlessWebContentsImpl::From(
@@ -70,10 +95,9 @@ class HeadlessWebContentsImpl::Delegate : public content::WebContentsDelegate {
   explicit Delegate(HeadlessWebContentsImpl* headless_web_contents)
       : headless_web_contents_(headless_web_contents) {}
 
-#if !defined(CHROME_MULTIPLE_DLL_CHILD)
   // Return the security style of the given |web_contents|, populating
   // |security_style_explanations| to explain why the SecurityStyle was chosen.
-  blink::WebSecurityStyle GetSecurityStyle(
+  blink::SecurityStyle GetSecurityStyle(
       content::WebContents* web_contents,
       content::SecurityStyleExplanations* security_style_explanations)
       override {
@@ -83,14 +107,18 @@ class HeadlessWebContentsImpl::Delegate : public content::WebContentsDelegate {
     return security_state::GetSecurityStyle(
         security_state::GetSecurityLevel(
             *visible_security_state.get(),
-            false /* used_policy_installed_certificate */,
-            base::BindRepeating(&content::IsOriginSecure)),
+            false /* used_policy_installed_certificate */),
         *visible_security_state.get(), security_style_explanations);
   }
-#endif  // !defined(CHROME_MULTIPLE_DLL_CHILD)
+
+  void BeforeUnloadFired(content::WebContents* web_contents,
+                         bool proceed,
+                         bool* proceed_to_fire_unload) override {
+    *proceed_to_fire_unload = proceed;
+  }
 
   void ActivateContents(content::WebContents* contents) override {
-    contents->GetRenderViewHost()->GetWidget()->Focus();
+    contents->GetMainFrame()->GetRenderViewHost()->GetWidget()->Focus();
   }
 
   void CloseContents(content::WebContents* source) override {
@@ -102,6 +130,7 @@ class HeadlessWebContentsImpl::Delegate : public content::WebContentsDelegate {
 
   void AddNewContents(content::WebContents* source,
                       std::unique_ptr<content::WebContents> new_contents,
+                      const GURL& target_url,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture,
@@ -154,45 +183,27 @@ class HeadlessWebContentsImpl::Delegate : public content::WebContentsDelegate {
         return nullptr;
     }
 
-    content::NavigationController::LoadURLParams load_url_params(params.url);
-    load_url_params.initiator_origin = params.initiator_origin;
-    load_url_params.source_site_instance = params.source_site_instance;
-    load_url_params.transition_type = params.transition;
-    load_url_params.frame_tree_node_id = params.frame_tree_node_id;
-    load_url_params.referrer = params.referrer;
-    load_url_params.redirect_chain = params.redirect_chain;
-    load_url_params.extra_headers = params.extra_headers;
-    load_url_params.is_renderer_initiated = params.is_renderer_initiated;
-    load_url_params.should_replace_current_entry =
-        params.should_replace_current_entry;
-    load_url_params.reload_type = params.reload_type;
-
-    if (params.uses_post) {
-      load_url_params.load_type =
-          content::NavigationController::LOAD_TYPE_HTTP_POST;
-      load_url_params.post_data = params.post_data;
-    }
-
-    target->GetController().LoadURLWithParams(load_url_params);
+    target->GetController().LoadURLWithParams(
+        content::NavigationController::LoadURLParams(params));
     return target;
   }
 
-  bool ShouldCreateWebContents(
-      content::WebContents* web_contents,
-      content::RenderFrameHost* opener,
+  bool IsWebContentsCreationOverridden(
       content::SiteInstance* source_site_instance,
-      int32_t route_id,
-      int32_t main_frame_route_id,
-      int32_t main_frame_widget_route_id,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,
       const std::string& frame_name,
-      const GURL& target_url,
-      const std::string& partition_id,
-      content::SessionStorageNamespace* session_storage_namespace) override {
-    return !headless_web_contents_->browser_context()
-                ->options()
-                ->block_new_web_contents();
+      const GURL& target_url) override {
+    return headless_web_contents_->browser_context()
+        ->options()
+        ->block_new_web_contents();
+  }
+
+  void RequestToLockMouse(content::WebContents* web_contents,
+                          bool user_gesture,
+                          bool last_unlocked_by_target) override {
+    web_contents->GotResponseToLockMouseRequest(
+        blink::mojom::PointerLockResult::kSuccess);
   }
 
  private:
@@ -202,26 +213,47 @@ class HeadlessWebContentsImpl::Delegate : public content::WebContentsDelegate {
   DISALLOW_COPY_AND_ASSIGN(Delegate);
 };
 
-struct HeadlessWebContentsImpl::PendingFrame {
- public:
-  PendingFrame() = default;
-  ~PendingFrame() = default;
+namespace {
+constexpr uint64_t kBeginFrameSourceId = viz::BeginFrameArgs::kManualSourceId;
+}
 
-  bool MaybeRunCallback() {
-    if (wait_for_copy_result || !display_did_finish_frame)
-      return false;
-    std::move(callback).Run(has_damage, std::move(bitmap));
-    return true;
+class HeadlessWebContentsImpl::PendingFrame
+    : public base::RefCounted<HeadlessWebContentsImpl::PendingFrame>,
+      public base::SupportsWeakPtr<HeadlessWebContentsImpl::PendingFrame> {
+ public:
+  PendingFrame(uint64_t sequence_number, FrameFinishedCallback callback)
+      : sequence_number_(sequence_number), callback_(std::move(callback)) {}
+
+  void OnFrameComplete(const viz::BeginFrameAck& ack) {
+    DCHECK_EQ(kBeginFrameSourceId, ack.frame_id.source_id);
+    DCHECK_EQ(sequence_number_, ack.frame_id.sequence_number);
+    has_damage_ = ack.has_damage;
   }
 
-  uint64_t sequence_number = 0;
-  bool wait_for_copy_result = false;
-  bool display_did_finish_frame = false;
-  bool has_damage = false;
-  std::unique_ptr<SkBitmap> bitmap;
-  FrameFinishedCallback callback;
+  void OnReadbackComplete(const SkBitmap& bitmap) {
+    TRACE_EVENT2(
+        "headless", "HeadlessWebContentsImpl::PendingFrame::OnReadbackComplete",
+        "sequence_number", sequence_number_, "success", !bitmap.drawsNothing());
+    if (bitmap.drawsNothing()) {
+      LOG(WARNING) << "Readback from surface failed.";
+      return;
+    }
+    bitmap_ = std::make_unique<SkBitmap>(bitmap);
+  }
 
  private:
+  friend class base::RefCounted<PendingFrame>;
+
+  ~PendingFrame() {
+    std::move(callback_).Run(has_damage_, std::move(bitmap_), "");
+  }
+
+  const uint64_t sequence_number_;
+
+  FrameFinishedCallback callback_;
+  bool has_damage_ = false;
+  std::unique_ptr<SkBitmap> bitmap_;
+
   DISALLOW_COPY_AND_ASSIGN(PendingFrame);
 };
 
@@ -230,12 +262,8 @@ std::unique_ptr<HeadlessWebContentsImpl> HeadlessWebContentsImpl::Create(
     HeadlessWebContents::Builder* builder) {
   content::WebContents::CreateParams create_params(builder->browser_context_,
                                                    nullptr);
-  create_params.initial_size = builder->window_size_;
-
-  std::unique_ptr<HeadlessWebContentsImpl> headless_web_contents =
-      base::WrapUnique(new HeadlessWebContentsImpl(
-          content::WebContents::Create(create_params),
-          builder->browser_context_));
+  auto headless_web_contents = base::WrapUnique(new HeadlessWebContentsImpl(
+      content::WebContents::Create(create_params), builder->browser_context_));
 
   headless_web_contents->begin_frame_control_enabled_ =
       builder->enable_begin_frame_control_ ||
@@ -261,8 +289,9 @@ HeadlessWebContentsImpl::CreateForChildContents(
 
   // There may already be frames, so make sure they also have our services.
   for (content::RenderFrameHost* frame_host :
-       child->web_contents_->GetAllFrames())
+       child->web_contents_->GetAllFrames()) {
     child->RenderFrameCreated(frame_host);
+  }
 
   return child;
 }
@@ -285,17 +314,17 @@ HeadlessWebContentsImpl::HeadlessWebContentsImpl(
     std::unique_ptr<content::WebContents> web_contents,
     HeadlessBrowserContextImpl* browser_context)
     : content::WebContentsObserver(web_contents.get()),
+      browser_context_(browser_context),
+      render_process_host_(web_contents->GetMainFrame()->GetProcess()),
       web_contents_delegate_(new HeadlessWebContentsImpl::Delegate(this)),
       web_contents_(std::move(web_contents)),
       agent_host_(
-          content::DevToolsAgentHost::GetOrCreateFor(web_contents_.get())),
-      browser_context_(browser_context),
-      render_process_host_(web_contents_->GetMainFrame()->GetProcess()),
-      weak_ptr_factory_(this) {
-#if BUILDFLAG(ENABLE_PRINTING) && !defined(CHROME_MULTIPLE_DLL_CHILD)
+          content::DevToolsAgentHost::GetOrCreateFor(web_contents_.get())) {
+#if BUILDFLAG(ENABLE_PRINTING)
   HeadlessPrintManager::CreateForWebContents(web_contents_.get());
 // TODO(weili): Add support for printing OOPIFs.
 #endif
+  UpdatePrefsFromSystemSettings(web_contents_->GetMutableRendererPrefs());
   web_contents_->GetMutableRendererPrefs()->accept_languages =
       browser_context->options()->accept_language();
   web_contents_->GetMutableRendererPrefs()->hinting =
@@ -306,9 +335,15 @@ HeadlessWebContentsImpl::HeadlessWebContentsImpl(
 }
 
 HeadlessWebContentsImpl::~HeadlessWebContentsImpl() {
+  for (auto& observer : observers_)
+    observer.HeadlessWebContentsDestroyed();
   agent_host_->RemoveObserver(this);
   if (render_process_host_)
     render_process_host_->RemoveObserver(this);
+  // Defer destruction of WindowTreeHost, as it does sync mojo calls
+  // in the destructor of ui::Compositor.
+  base::SequencedTaskRunnerHandle::Get()->DeleteSoon(
+      FROM_HERE, std::move(window_tree_host_));
 }
 
 void HeadlessWebContentsImpl::RenderFrameCreated(
@@ -411,6 +446,7 @@ void HeadlessWebContentsImpl::RenderProcessExited(
 void HeadlessWebContentsImpl::RenderProcessHostDestroyed(
     content::RenderProcessHost* host) {
   DCHECK_EQ(render_process_host_, host);
+  render_process_host_->RemoveObserver(this);
   render_process_host_ = nullptr;
 }
 
@@ -449,62 +485,6 @@ HeadlessBrowserContextImpl* HeadlessWebContentsImpl::browser_context() const {
   return browser_context_;
 }
 
-void HeadlessWebContentsImpl::OnDisplayDidFinishFrame(
-    const viz::BeginFrameAck& ack) {
-  TRACE_EVENT2("headless", "HeadlessWebContentsImpl::OnDisplayDidFinishFrame",
-               "source_id", ack.source_id, "sequence_number",
-               ack.sequence_number);
-
-  auto it = pending_frames_.begin();
-  while (it != pending_frames_.end()) {
-    if (begin_frame_source_id_ == ack.source_id &&
-        (*it)->sequence_number <= ack.sequence_number) {
-      (*it)->has_damage = ack.has_damage;
-      (*it)->display_did_finish_frame = true;
-      if ((*it)->MaybeRunCallback()) {
-        it = pending_frames_.erase(it);
-      } else {
-        ++it;
-      }
-    } else {
-      ++it;
-    }
-  }
-}
-
-void HeadlessWebContentsImpl::OnNeedsExternalBeginFrames(
-    bool needs_begin_frames) {
-  protocol::HeadlessHandler::OnNeedsBeginFrames(this, needs_begin_frames);
-  TRACE_EVENT1("headless",
-               "HeadlessWebContentsImpl::OnNeedsExternalBeginFrames",
-               "needs_begin_frames", needs_begin_frames);
-  needs_external_begin_frames_ = needs_begin_frames;
-}
-
-void HeadlessWebContentsImpl::PendingFrameReadbackComplete(
-    HeadlessWebContentsImpl::PendingFrame* pending_frame,
-    const SkBitmap& bitmap) {
-  TRACE_EVENT2("headless",
-               "HeadlessWebContentsImpl::PendingFrameReadbackComplete",
-               "sequence_number", pending_frame->sequence_number, "success",
-               !bitmap.drawsNothing());
-  if (bitmap.drawsNothing()) {
-    LOG(WARNING) << "Readback from surface failed.";
-  } else {
-    pending_frame->bitmap = std::make_unique<SkBitmap>(bitmap);
-  }
-
-  pending_frame->wait_for_copy_result = false;
-
-  // Run callback if the frame was already finished by the display.
-  if (pending_frame->MaybeRunCallback()) {
-    base::EraseIf(pending_frames_,
-                  [pending_frame](const std::unique_ptr<PendingFrame>& frame) {
-                    return frame.get() == pending_frame;
-                  });
-  }
-}
-
 void HeadlessWebContentsImpl::BeginFrame(
     const base::TimeTicks& frame_timeticks,
     const base::TimeTicks& deadline,
@@ -513,45 +493,40 @@ void HeadlessWebContentsImpl::BeginFrame(
     bool capture_screenshot,
     FrameFinishedCallback frame_finished_callback) {
   DCHECK(begin_frame_control_enabled_);
+  if (pending_frame_) {
+    std::move(frame_finished_callback)
+        .Run(false, nullptr, "Another frame is pending");
+    return;
+  }
   TRACE_EVENT2("headless", "HeadlessWebContentsImpl::BeginFrame", "frame_time",
                frame_timeticks, "capture_screenshot", capture_screenshot);
 
-  uint64_t sequence_number = begin_frame_sequence_number_++;
-
-  auto pending_frame = std::make_unique<PendingFrame>();
-  pending_frame->sequence_number = sequence_number;
-  pending_frame->callback = std::move(frame_finished_callback);
-  // Note: It's important to move |pending_frame| into |pending_frames_| now
-  // since the CopyFromSurface() call below can run its result callback
-  // synchronously on certain platforms/environments.
-  auto* const pending_frame_raw_ptr = pending_frame.get();
-  pending_frames_.emplace_back(std::move(pending_frame));
-
+  int64_t sequence_number = begin_frame_sequence_number_++;
+  auto pending_frame = base::MakeRefCounted<PendingFrame>(
+      sequence_number, std::move(frame_finished_callback));
+  pending_frame_ = pending_frame->AsWeakPtr();
   if (capture_screenshot) {
     content::RenderWidgetHostView* view =
         web_contents()->GetRenderWidgetHostView();
     if (view && view->IsSurfaceAvailableForCopy()) {
-      pending_frame_raw_ptr->wait_for_copy_result = true;
       view->CopyFromSurface(
           gfx::Rect(), gfx::Size(),
-          base::BindOnce(&HeadlessWebContentsImpl::PendingFrameReadbackComplete,
-                         weak_ptr_factory_.GetWeakPtr(),
-                         pending_frame_raw_ptr));
+          base::BindOnce(&PendingFrame::OnReadbackComplete, pending_frame));
     } else {
       LOG(WARNING) << "Surface not ready for screenshot.";
     }
   }
 
-  ui::Compositor* compositor = browser()->PlatformGetCompositor(this);
-  DCHECK(compositor);
-
   auto args = viz::BeginFrameArgs::Create(
-      BEGINFRAME_FROM_HERE, begin_frame_source_id_, sequence_number,
+      BEGINFRAME_FROM_HERE, kBeginFrameSourceId, sequence_number,
       frame_timeticks, deadline, interval, viz::BeginFrameArgs::NORMAL);
   args.animate_only = animate_only;
 
-  compositor->context_factory_private()->IssueExternalBeginFrame(compositor,
-                                                                 args);
+  ui::Compositor* compositor = browser()->PlatformGetCompositor(this);
+  CHECK(compositor);
+  compositor->IssueExternalBeginFrame(
+      args, /*force=*/true,
+      base::BindOnce(&PendingFrame::OnFrameComplete, pending_frame));
 }
 
 HeadlessWebContents::Builder::Builder(

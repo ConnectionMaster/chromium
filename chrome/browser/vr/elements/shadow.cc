@@ -6,7 +6,7 @@
 
 #include "base/numerics/ranges.h"
 #include "chrome/browser/vr/ui_element_renderer.h"
-#include "chrome/browser/vr/vr_gl_util.h"
+#include "device/vr/vr_gl_util.h"
 #include "ui/gfx/animation/tween.h"
 
 namespace vr {
@@ -151,7 +151,7 @@ void Shadow::LayOutContributingChildren() {
               gfx::Tween::FloatValueBetween(depth_, kYMinShadowGradientFactor,
                                             kYMaxShadowGradientFactor));
   if (shadow_caster_ || children().size() == 1u)
-    set_corner_radius(shadow_caster->corner_radii().MaxRadius());
+    SetCornerRadius(shadow_caster->corner_radii().MaxRadius());
 }
 
 Shadow::Renderer::Renderer()

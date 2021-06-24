@@ -4,8 +4,9 @@
 
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 
+#include "base/base64.h"
 #include "base/macros.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_refresh_scheduler.h"
@@ -64,7 +65,7 @@ class CloudPolicyCoreTest : public testing::Test,
       bad_callback_count_++;
   }
 
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   TestingPrefServiceSimple prefs_;
   MockCloudPolicyStore store_;
@@ -138,6 +139,13 @@ TEST_F(CloudPolicyCoreTest, RefreshScheduler) {
   EXPECT_EQ(1, refresh_scheduler_started_callback_count_);
   EXPECT_EQ(0, core_disconnecting_callback_count_);
   EXPECT_EQ(0, bad_callback_count_);
+}
+
+TEST_F(CloudPolicyCoreTest, DmProtocolBase64Constants) {
+  std::string encoded;
+  base::Base64Encode(dm_protocol::kChromeMachineLevelUserCloudPolicyType,
+                     &encoded);
+  EXPECT_EQ(encoded, dm_protocol::kChromeMachineLevelUserCloudPolicyTypeBase64);
 }
 
 }  // namespace policy

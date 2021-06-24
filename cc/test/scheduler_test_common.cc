@@ -7,8 +7,8 @@
 #include <stddef.h>
 
 #include <string>
+#include <utility>
 
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/time/tick_clock.h"
 #include "cc/debug/rendering_stats_instrumentation.h"
@@ -90,6 +90,11 @@ void FakeCompositorTimingHistory::SetDrawDurationEstimate(
   draw_duration_ = duration;
 }
 
+void FakeCompositorTimingHistory::SetBeginMainFrameSentTime(
+    base::TimeTicks time) {
+  begin_main_frame_sent_time_ = time;
+}
+
 base::TimeDelta
 FakeCompositorTimingHistory::BeginMainFrameQueueDurationCriticalEstimate()
     const {
@@ -135,12 +140,18 @@ TestScheduler::TestScheduler(
     const SchedulerSettings& scheduler_settings,
     int layer_tree_host_id,
     base::SingleThreadTaskRunner* task_runner,
-    std::unique_ptr<CompositorTimingHistory> compositor_timing_history)
+    std::unique_ptr<CompositorTimingHistory> compositor_timing_history,
+    CompositorFrameReportingController* compositor_frame_reporting_controller,
+    power_scheduler::PowerModeArbiter* power_mode_arbiter)
     : Scheduler(client,
                 scheduler_settings,
                 layer_tree_host_id,
                 task_runner,
-                std::move(compositor_timing_history)),
+                std::move(compositor_timing_history),
+                nullptr,
+                nullptr,
+                compositor_frame_reporting_controller,
+                power_mode_arbiter),
       now_src_(now_src) {}
 
 base::TimeTicks TestScheduler::Now() const {

@@ -130,16 +130,18 @@ const std::string& ComponentCloudPolicyStore::GetCachedHash(
   return it == cached_hashes_.end() ? base::EmptyString() : it->second;
 }
 
-void ComponentCloudPolicyStore::SetCredentials(const AccountId& account_id,
+void ComponentCloudPolicyStore::SetCredentials(const std::string& username,
+                                               const std::string& gaia_id,
                                                const std::string& dm_token,
                                                const std::string& device_id,
                                                const std::string& public_key,
                                                int public_key_version) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!account_id_.is_valid() || account_id == account_id_);
+  DCHECK(username_.empty() || username == username_);
   DCHECK(dm_token_.empty() || dm_token == dm_token_);
   DCHECK(device_id_.empty() || device_id == device_id_);
-  account_id_ = account_id;
+  username_ = username;
+  gaia_id_ = gaia_id;
   dm_token_ = dm_token;
   device_id_ = device_id;
   public_key_ = public_key;
@@ -315,7 +317,7 @@ bool ComponentCloudPolicyStore::ValidatePolicy(
     return false;
   }
 
-  if (!account_id_.is_valid() || dm_token_.empty() || device_id_.empty() ||
+  if (username_.empty() || dm_token_.empty() || device_id_.empty() ||
       public_key_.empty() || public_key_version_ == -1) {
     LOG(WARNING) << "Credentials are not loaded yet.";
     return false;
@@ -332,7 +334,7 @@ bool ComponentCloudPolicyStore::ValidatePolicy(
       std::move(proto), scoped_refptr<base::SequencedTaskRunner>());
   validator->ValidateTimestamp(time_not_before,
                                CloudPolicyValidatorBase::TIMESTAMP_VALIDATED);
-  validator->ValidateUser(account_id_);
+  validator->ValidateUsernameAndGaiaId(username_, gaia_id_);
   validator->ValidateDMToken(dm_token_,
                              ComponentCloudPolicyValidator::DM_TOKEN_REQUIRED);
   validator->ValidateDeviceId(device_id_,
@@ -393,18 +395,15 @@ bool ComponentCloudPolicyStore::ValidateData(const std::string& data,
 
 bool ComponentCloudPolicyStore::ParsePolicy(const std::string& data,
                                             PolicyMap* policy) {
-  std::string json_reader_error_message;
-  std::unique_ptr<base::Value> json =
-      base::JSONReader::ReadAndReturnErrorDeprecated(
-          data, base::JSON_PARSE_RFC, nullptr /* error_code_out */,
-          &json_reader_error_message);
-  base::DictionaryValue* dict = nullptr;
-  if (!json) {
-    LOG(ERROR) << "Invalid JSON blob: " << json_reader_error_message;
+  base::JSONReader::ValueWithError value_with_error =
+      base::JSONReader::ReadAndReturnValueWithError(
+          data, base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
+  if (!value_with_error.value) {
+    LOG(ERROR) << "Invalid JSON blob: " << value_with_error.error_message;
     return false;
   }
-
-  if (!json->GetAsDictionary(&dict)) {
+  base::Value json = std::move(value_with_error.value.value());
+  if (!json.is_dict()) {
     LOG(ERROR) << "The JSON blob is not a dictionary.";
     return false;
   }
@@ -414,15 +413,16 @@ bool ComponentCloudPolicyStore::ParsePolicy(const std::string& data,
   // Each description is an object that contains the policy value under the
   // "Value" key. The optional "Level" key is either "Mandatory" (default) or
   // "Recommended".
-  for (base::DictionaryValue::Iterator it(*dict); !it.IsAtEnd(); it.Advance()) {
-    base::DictionaryValue* description = nullptr;
-    if (!dict->GetDictionaryWithoutPathExpansion(it.key(), &description)) {
+  for (const auto& it : json.DictItems()) {
+    const std::string& policy_name = it.first;
+    base::Value description = std::move(it.second);
+    if (!description.is_dict()) {
       LOG(ERROR) << "The JSON blob dictionary value is not a dictionary.";
       return false;
     }
 
-    std::unique_ptr<base::Value> value;
-    if (!description->RemoveWithoutPathExpansion(kValue, &value)) {
+    absl::optional<base::Value> value = description.ExtractKey(kValue);
+    if (!value.has_value()) {
       LOG(ERROR)
           << "The JSON blob dictionary value doesn't contain the required "
           << kValue << " field.";
@@ -430,14 +430,12 @@ bool ComponentCloudPolicyStore::ParsePolicy(const std::string& data,
     }
 
     PolicyLevel level = POLICY_LEVEL_MANDATORY;
-    std::string level_string;
-    if (description->GetStringWithoutPathExpansion(kLevel, &level_string) &&
-        level_string == kRecommended) {
+    const std::string* level_string = description.FindStringKey(kLevel);
+    if (level_string && *level_string == kRecommended)
       level = POLICY_LEVEL_RECOMMENDED;
-    }
 
-    policy->Set(it.key(), level, domain_constants_->scope, policy_source_,
-                std::move(value), nullptr);
+    policy->Set(policy_name, level, domain_constants_->scope, policy_source_,
+                std::move(value.value()), nullptr);
   }
 
   return true;

@@ -4,20 +4,26 @@
 
 #include "chrome/browser/extensions/api/tabs/tabs_util.h"
 
-#include "ash/public/cpp/window_properties.h"
-#include "ash/public/interfaces/window_pin_type.mojom.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/assistant/assistant_state.h"
 #include "base/metrics/histogram_macros.h"
-#include "chrome/browser/chromeos/arc/arc_session_manager.h"
-#include "chrome/browser/chromeos/arc/arc_util.h"
+#include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/arc/arc_util.h"
+#include "chrome/browser/ash/arc/session/arc_session_manager.h"
+#include "chrome/browser/ash/assistant/assistant_util.h"
+#include "chrome/browser/chromeos/policy/dlp/dlp_content_manager.h"
+#include "chrome/browser/ui/ash/chrome_capture_mode_delegate.h"
 #include "chrome/browser/ui/ash/chrome_screenshot_grabber.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chromeos/ui/base/window_pin_type.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/aura/window.h"
 #include "ui/base/clipboard/clipboard.h"
-#include "ui/base/clipboard/clipboard_types.h"
-#include "ui/base/ui_base_features.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
 
 namespace extensions {
 namespace tabs_util {
@@ -28,22 +34,24 @@ void SetLockedFullscreenState(Browser* browser, bool locked) {
   aura::Window* window = browser->window()->GetNativeWindow();
   // TRUSTED_PINNED is used here because that one locks the window fullscreen
   // without allowing the user to exit (as opposed to regular PINNED).
-  window->SetProperty(ash::kWindowPinTypeKey,
-                      locked ? ash::mojom::WindowPinType::TRUSTED_PINNED
-                             : ash::mojom::WindowPinType::NONE);
+  window->SetProperty(chromeos::kWindowPinTypeKey,
+                      locked ? chromeos::WindowPinType::kTrustedPinned
+                             : chromeos::WindowPinType::kNone);
 
   // Update the set of available browser commands.
   browser->command_controller()->LockedFullscreenStateChanged();
 
   // Disallow screenshots in locked fullscreen mode.
-  // TODO(isandrk, 816900): ChromeScreenshotGrabber isn't implemented in Mash
-  // yet, remove this conditional when it becomes available.
-  if (!features::IsMultiProcessMash())
-    ChromeScreenshotGrabber::Get()->set_screenshots_allowed(!locked);
+  ChromeScreenshotGrabber::Get()->set_screenshots_allowed(!locked);
+
+  // Disable both screenshots and video screen captures via the capture mode
+  // feature.
+  if (ash::features::IsCaptureModeEnabled())
+    ChromeCaptureModeDelegate::Get()->SetIsScreenCaptureLocked(locked);
 
   // Reset the clipboard and kill dev tools when entering or exiting locked
   // fullscreen (security concerns).
-  ui::Clipboard::GetForCurrentThread()->Clear(ui::CLIPBOARD_TYPE_COPY_PASTE);
+  ui::Clipboard::GetForCurrentThread()->Clear(ui::ClipboardBuffer::kCopyPaste);
   content::DevToolsAgentHost::DetachAllClients();
 
   // Disable ARC while in the locked fullscreen mode.
@@ -60,6 +68,16 @@ void SetLockedFullscreenState(Browser* browser, bool locked) {
         arc_session_manager->RequestEnable();
     }
   }
+
+  if (assistant::IsAssistantAllowedForProfile(profile) ==
+      chromeos::assistant::AssistantAllowedState::ALLOWED) {
+    ash::AssistantState::Get()->NotifyLockedFullScreenStateChanged(locked);
+  }
+}
+
+bool IsScreenshotRestricted(content::WebContents* web_contents) {
+  return policy::DlpContentManager::Get()->IsScreenshotRestricted(
+      ScreenshotArea::CreateForWindow(web_contents->GetNativeView()));
 }
 
 }  // namespace tabs_util

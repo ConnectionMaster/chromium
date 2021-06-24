@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/core/script/dynamic_module_resolver.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/referrer_script_info.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
@@ -12,9 +14,11 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_fetch_request.h"
-#include "third_party/blink/renderer/core/script/module_script.h"
+#include "third_party/blink/renderer/core/script/js_module_script.h"
 #include "third_party/blink/renderer/core/testing/dummy_modulator.h"
+#include "third_party/blink/renderer/core/testing/module_test_base.h"
 #include "v8/include/v8.h"
 
 namespace blink {
@@ -23,6 +27,8 @@ namespace {
 
 constexpr const char* kTestReferrerURL = "https://example.com/referrer.js";
 constexpr const char* kTestDependencyURL = "https://example.com/dependency.js";
+constexpr const char* kTestDependencyURLJSON =
+    "https://example.com/dependency.json";
 
 const KURL TestReferrerURL() {
   return KURL(kTestReferrerURL);
@@ -30,11 +36,16 @@ const KURL TestReferrerURL() {
 const KURL TestDependencyURL() {
   return KURL(kTestDependencyURL);
 }
+const KURL TestDependencyURLJSON() {
+  return KURL(kTestDependencyURLJSON);
+}
 
 class DynamicModuleResolverTestModulator final : public DummyModulator {
  public:
   explicit DynamicModuleResolverTestModulator(ScriptState* script_state)
-      : script_state_(script_state) {}
+      : script_state_(script_state) {
+    Modulator::SetModulator(script_state, this);
+  }
   ~DynamicModuleResolverTestModulator() override = default;
 
   void ResolveTreeFetch(ModuleScript* module_script) {
@@ -45,18 +56,22 @@ class DynamicModuleResolverTestModulator final : public DummyModulator {
   void SetExpectedFetchTreeURL(const KURL& url) {
     expected_fetch_tree_url_ = url;
   }
+  void SetExpectedFetchTreeModuleType(const ModuleType& module_type) {
+    expected_fetch_tree_module_type_ = module_type;
+  }
   bool fetch_tree_was_called() const { return fetch_tree_was_called_; }
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
  private:
   // Implements Modulator:
   ScriptState* GetScriptState() final { return script_state_; }
 
-  ModuleScript* GetFetchedModuleScript(const KURL& url) final {
+  ModuleScript* GetFetchedModuleScript(const KURL& url,
+                                       ModuleType module_type) final {
     EXPECT_EQ(TestReferrerURL(), url);
     ModuleScript* module_script =
-        ModuleScript::CreateForTest(this, ModuleRecord(), url);
+        JSModuleScript::CreateForTest(this, v8::Local<v8::Module>(), url);
     return module_script;
   }
 
@@ -69,15 +84,18 @@ class DynamicModuleResolverTestModulator final : public DummyModulator {
     return KURL(base_url, module_request);
   }
 
-  void ClearIsAcquiringImportMaps() final {}
+  void SetAcquiringImportMapsState(AcquiringImportMapsState) final {}
 
   void FetchTree(const KURL& url,
+                 ModuleType module_type,
                  ResourceFetcher*,
-                 mojom::RequestContextType,
+                 mojom::blink::RequestContextType,
+                 network::mojom::RequestDestination,
                  const ScriptFetchOptions&,
                  ModuleScriptCustomFetchType custom_fetch_type,
                  ModuleTreeClient* client) final {
     EXPECT_EQ(expected_fetch_tree_url_, url);
+    EXPECT_EQ(expected_fetch_tree_module_type_, module_type);
 
     // Currently there are no usage of custom fetch hooks for dynamic import in
     // web specifications.
@@ -87,21 +105,14 @@ class DynamicModuleResolverTestModulator final : public DummyModulator {
     fetch_tree_was_called_ = true;
   }
 
-  ScriptValue ExecuteModule(ModuleScript* module_script,
-                            CaptureEvalErrorFlag capture_error) final {
-    EXPECT_EQ(CaptureEvalErrorFlag::kCapture, capture_error);
-
-    ScriptState::Scope scope(script_state_);
-    return module_script->Record().Evaluate(script_state_);
-  }
-
   Member<ScriptState> script_state_;
   Member<ModuleTreeClient> pending_client_;
   KURL expected_fetch_tree_url_;
+  ModuleType expected_fetch_tree_module_type_ = ModuleType::kJavaScript;
   bool fetch_tree_was_called_ = false;
 };
 
-void DynamicModuleResolverTestModulator::Trace(blink::Visitor* visitor) {
+void DynamicModuleResolverTestModulator::Trace(Visitor* visitor) const {
   visitor->Trace(script_state_);
   visitor->Trace(pending_client_);
   DummyModulator::Trace(visitor);
@@ -110,7 +121,7 @@ void DynamicModuleResolverTestModulator::Trace(blink::Visitor* visitor) {
 // CaptureExportedStringFunction implements a javascript function
 // with a single argument of type module namespace.
 // CaptureExportedStringFunction captures the exported string value
-// from the module namespace as a blink::String, exposed via CapturedValue().
+// from the module namespace as a WTF::String, exposed via CapturedValue().
 class CaptureExportedStringFunction final : public ScriptFunction {
  public:
   CaptureExportedStringFunction(ScriptState* script_state,
@@ -200,9 +211,17 @@ class DynamicModuleResolverTestNotReached final : public ScriptFunction {
   }
 };
 
+class DynamicModuleResolverTest : public testing::Test,
+                                  public ParametrizedModuleTest {
+ public:
+  void SetUp() override { ParametrizedModuleTest::SetUp(); }
+
+  void TearDown() override { ParametrizedModuleTest::TearDown(); }
+};
+
 }  // namespace
 
-TEST(DynamicModuleResolverTest, ResolveSuccess) {
+TEST_P(DynamicModuleResolverTest, ResolveSuccess) {
   V8TestingScope scope;
   auto* modulator = MakeGarbageCollected<DynamicModuleResolverTestModulator>(
       scope.GetScriptState());
@@ -219,19 +238,22 @@ TEST(DynamicModuleResolverTest, ResolveSuccess) {
                    scope.GetScriptState()));
 
   auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
-  resolver->ResolveDynamically("./dependency.js", TestReferrerURL(),
+  ModuleRequest module_request("./dependency.js",
+                               TextPosition::MinimumPosition(),
+                               Vector<ImportAssertion>());
+  resolver->ResolveDynamically(module_request, TestReferrerURL(),
                                ReferrerScriptInfo(), promise_resolver);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
   EXPECT_FALSE(capture->WasCalled());
 
-  ModuleRecord record = ModuleRecord::Compile(
-      scope.GetIsolate(), "export const foo = 'hello';", TestReferrerURL(),
-      TestReferrerURL(), ScriptFetchOptions(), TextPosition::MinimumPosition(),
-      ASSERT_NO_EXCEPTION);
+  v8::Local<v8::Module> record = ModuleTestBase::CompileModule(
+      scope.GetIsolate(), "export const foo = 'hello';", TestReferrerURL());
   ModuleScript* module_script =
-      ModuleScript::CreateForTest(modulator, record, TestDependencyURL());
-  EXPECT_TRUE(record.Instantiate(scope.GetScriptState()).IsEmpty());
+      JSModuleScript::CreateForTest(modulator, record, TestDependencyURL());
+  EXPECT_TRUE(ModuleRecord::Instantiate(scope.GetScriptState(), record,
+                                        TestReferrerURL())
+                  .IsEmpty());
   modulator->ResolveTreeFetch(module_script);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
@@ -239,7 +261,34 @@ TEST(DynamicModuleResolverTest, ResolveSuccess) {
   EXPECT_EQ("hello", capture->CapturedValue());
 }
 
-TEST(DynamicModuleResolverTest, ResolveSpecifierFailure) {
+TEST_P(DynamicModuleResolverTest, ResolveJSONModuleSuccess) {
+  V8TestingScope scope;
+  auto* modulator = MakeGarbageCollected<DynamicModuleResolverTestModulator>(
+      scope.GetScriptState());
+  modulator->SetExpectedFetchTreeURL(TestDependencyURLJSON());
+  modulator->SetExpectedFetchTreeModuleType(ModuleType::kJSON);
+
+  auto* promise_resolver =
+      MakeGarbageCollected<ScriptPromiseResolver>(scope.GetScriptState());
+  ScriptPromise promise = promise_resolver->Promise();
+
+  auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
+  Vector<ImportAssertion> import_assertions{
+      ImportAssertion("type", "json", TextPosition::MinimumPosition())};
+  ModuleRequest module_request(
+      "./dependency.json", TextPosition::MinimumPosition(), import_assertions);
+  resolver->ResolveDynamically(module_request, TestReferrerURL(),
+                               ReferrerScriptInfo(), promise_resolver);
+
+  // Instantiating and evaluating a JSON module requires a lot of
+  // machinery not currently available in this unit test suite. For
+  // the purposes of a DynamicModuleResolver unit test, it should be sufficient
+  // to validate that the correct arguments are passed from
+  // DynamicModuleResolver::ResolveDynamically to Modulator::FetchTree, which is
+  // validated during DynamicModuleResolverTestModulator::FetchTree.
+}
+
+TEST_P(DynamicModuleResolverTest, ResolveSpecifierFailure) {
   V8TestingScope scope;
   auto* modulator = MakeGarbageCollected<DynamicModuleResolverTestModulator>(
       scope.GetScriptState());
@@ -256,7 +305,10 @@ TEST(DynamicModuleResolverTest, ResolveSpecifierFailure) {
                capture->Bind());
 
   auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
-  resolver->ResolveDynamically("invalid-specifier", TestReferrerURL(),
+  ModuleRequest module_request("invalid-specifier",
+                               TextPosition::MinimumPosition(),
+                               Vector<ImportAssertion>());
+  resolver->ResolveDynamically(module_request, TestReferrerURL(),
                                ReferrerScriptInfo(), promise_resolver);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
@@ -265,7 +317,7 @@ TEST(DynamicModuleResolverTest, ResolveSpecifierFailure) {
   EXPECT_TRUE(capture->Message().StartsWith("Failed to resolve"));
 }
 
-TEST(DynamicModuleResolverTest, FetchFailure) {
+TEST_P(DynamicModuleResolverTest, ResolveModuleTypeFailure) {
   V8TestingScope scope;
   auto* modulator = MakeGarbageCollected<DynamicModuleResolverTestModulator>(
       scope.GetScriptState());
@@ -282,7 +334,40 @@ TEST(DynamicModuleResolverTest, FetchFailure) {
                capture->Bind());
 
   auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
-  resolver->ResolveDynamically("./dependency.js", TestReferrerURL(),
+  Vector<ImportAssertion> import_assertions{
+      ImportAssertion("type", "notARealType", TextPosition::MinimumPosition())};
+  ModuleRequest module_request(
+      "./dependency.js", TextPosition::MinimumPosition(), import_assertions);
+  resolver->ResolveDynamically(module_request, TestReferrerURL(),
+                               ReferrerScriptInfo(), promise_resolver);
+
+  v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
+  EXPECT_TRUE(capture->WasCalled());
+  EXPECT_EQ("TypeError", capture->Name());
+  EXPECT_EQ("\"notARealType\" is not a valid module type.", capture->Message());
+}
+
+TEST_P(DynamicModuleResolverTest, FetchFailure) {
+  V8TestingScope scope;
+  auto* modulator = MakeGarbageCollected<DynamicModuleResolverTestModulator>(
+      scope.GetScriptState());
+  modulator->SetExpectedFetchTreeURL(TestDependencyURL());
+
+  auto* promise_resolver =
+      MakeGarbageCollected<ScriptPromiseResolver>(scope.GetScriptState());
+  ScriptPromise promise = promise_resolver->Promise();
+
+  auto* capture =
+      MakeGarbageCollected<CaptureErrorFunction>(scope.GetScriptState());
+  promise.Then(DynamicModuleResolverTestNotReached::CreateFunction(
+                   scope.GetScriptState()),
+               capture->Bind());
+
+  auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
+  ModuleRequest module_request("./dependency.js",
+                               TextPosition::MinimumPosition(),
+                               Vector<ImportAssertion>());
+  resolver->ResolveDynamically(module_request, TestReferrerURL(),
                                ReferrerScriptInfo(), promise_resolver);
 
   EXPECT_FALSE(capture->WasCalled());
@@ -295,7 +380,7 @@ TEST(DynamicModuleResolverTest, FetchFailure) {
   EXPECT_TRUE(capture->Message().StartsWith("Failed to fetch"));
 }
 
-TEST(DynamicModuleResolverTest, ExceptionThrown) {
+TEST_P(DynamicModuleResolverTest, ExceptionThrown) {
   V8TestingScope scope;
   auto* modulator = MakeGarbageCollected<DynamicModuleResolverTestModulator>(
       scope.GetScriptState());
@@ -312,18 +397,21 @@ TEST(DynamicModuleResolverTest, ExceptionThrown) {
                capture->Bind());
 
   auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
-  resolver->ResolveDynamically("./dependency.js", TestReferrerURL(),
+  ModuleRequest module_request("./dependency.js",
+                               TextPosition::MinimumPosition(),
+                               Vector<ImportAssertion>());
+  resolver->ResolveDynamically(module_request, TestReferrerURL(),
                                ReferrerScriptInfo(), promise_resolver);
 
   EXPECT_FALSE(capture->WasCalled());
 
-  ModuleRecord record = ModuleRecord::Compile(
-      scope.GetIsolate(), "throw Error('bar')", TestReferrerURL(),
-      TestReferrerURL(), ScriptFetchOptions(), TextPosition::MinimumPosition(),
-      ASSERT_NO_EXCEPTION);
+  v8::Local<v8::Module> record = ModuleTestBase::CompileModule(
+      scope.GetIsolate(), "throw Error('bar')", TestReferrerURL());
   ModuleScript* module_script =
-      ModuleScript::CreateForTest(modulator, record, TestDependencyURL());
-  EXPECT_TRUE(record.Instantiate(scope.GetScriptState()).IsEmpty());
+      JSModuleScript::CreateForTest(modulator, record, TestDependencyURL());
+  EXPECT_TRUE(ModuleRecord::Instantiate(scope.GetScriptState(), record,
+                                        TestReferrerURL())
+                  .IsEmpty());
   modulator->ResolveTreeFetch(module_script);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
@@ -332,7 +420,7 @@ TEST(DynamicModuleResolverTest, ExceptionThrown) {
   EXPECT_EQ("bar", capture->Message());
 }
 
-TEST(DynamicModuleResolverTest, ResolveWithNullReferrerScriptSuccess) {
+TEST_P(DynamicModuleResolverTest, ResolveWithNullReferrerScriptSuccess) {
   V8TestingScope scope;
   scope.GetDocument().SetURL(KURL("https://example.com"));
 
@@ -351,19 +439,22 @@ TEST(DynamicModuleResolverTest, ResolveWithNullReferrerScriptSuccess) {
                    scope.GetScriptState()));
 
   auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
-  resolver->ResolveDynamically("./dependency.js", /* null referrer */ KURL(),
+  ModuleRequest module_request("./dependency.js",
+                               TextPosition::MinimumPosition(),
+                               Vector<ImportAssertion>());
+  resolver->ResolveDynamically(module_request, /* null referrer */ KURL(),
                                ReferrerScriptInfo(), promise_resolver);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
   EXPECT_FALSE(capture->WasCalled());
 
-  ModuleRecord record = ModuleRecord::Compile(
-      scope.GetIsolate(), "export const foo = 'hello';", TestDependencyURL(),
-      TestDependencyURL(), ScriptFetchOptions(),
-      TextPosition::MinimumPosition(), ASSERT_NO_EXCEPTION);
+  v8::Local<v8::Module> record = ModuleTestBase::CompileModule(
+      scope.GetIsolate(), "export const foo = 'hello';", TestDependencyURL());
   ModuleScript* module_script =
-      ModuleScript::CreateForTest(modulator, record, TestDependencyURL());
-  EXPECT_TRUE(record.Instantiate(scope.GetScriptState()).IsEmpty());
+      JSModuleScript::CreateForTest(modulator, record, TestDependencyURL());
+  EXPECT_TRUE(ModuleRecord::Instantiate(scope.GetScriptState(), record,
+                                        TestDependencyURL())
+                  .IsEmpty());
   modulator->ResolveTreeFetch(module_script);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
@@ -371,7 +462,7 @@ TEST(DynamicModuleResolverTest, ResolveWithNullReferrerScriptSuccess) {
   EXPECT_EQ("hello", capture->CapturedValue());
 }
 
-TEST(DynamicModuleResolverTest, ResolveWithReferrerScriptInfoBaseURL) {
+TEST_P(DynamicModuleResolverTest, ResolveWithReferrerScriptInfoBaseURL) {
   V8TestingScope scope;
   scope.GetDocument().SetURL(KURL("https://example.com"));
 
@@ -385,13 +476,23 @@ TEST(DynamicModuleResolverTest, ResolveWithReferrerScriptInfoBaseURL) {
   auto* resolver = MakeGarbageCollected<DynamicModuleResolver>(modulator);
   KURL wrong_base_url("https://example.com/wrong/bar.js");
   KURL correct_base_url("https://example.com/correct/baz.js");
+  ModuleRequest module_request("./dependency.js",
+                               TextPosition::MinimumPosition(),
+                               Vector<ImportAssertion>());
   resolver->ResolveDynamically(
-      "./dependency.js", wrong_base_url,
-      ReferrerScriptInfo(correct_base_url, ScriptFetchOptions()),
+      module_request, wrong_base_url,
+      ReferrerScriptInfo(correct_base_url, ScriptFetchOptions(),
+                         ReferrerScriptInfo::BaseUrlSource::kOther),
       promise_resolver);
 
   v8::MicrotasksScope::PerformCheckpoint(scope.GetIsolate());
   EXPECT_TRUE(modulator->fetch_tree_was_called());
 }
+
+// Instantiate tests once with TLA and once without:
+INSTANTIATE_TEST_SUITE_P(DynamicModuleResolverTestGroup,
+                         DynamicModuleResolverTest,
+                         testing::Bool(),
+                         ParametrizedModuleTestParamName());
 
 }  // namespace blink

@@ -28,13 +28,18 @@ class ErrorTolerantBleAdvertisementImpl
  public:
   class Factory {
    public:
-    static Factory* Get();
-    static void SetFactoryForTesting(Factory* test_factory);
-    virtual ~Factory();
-    virtual std::unique_ptr<ErrorTolerantBleAdvertisement> BuildInstance(
+    static std::unique_ptr<ErrorTolerantBleAdvertisement> Create(
         const DeviceIdPair& device_id_pair,
         std::unique_ptr<DataWithTimestamp> advertisement_data,
         BleSynchronizerBase* ble_synchronizer);
+    static void SetFactoryForTesting(Factory* test_factory);
+
+   protected:
+    virtual ~Factory();
+    virtual std::unique_ptr<ErrorTolerantBleAdvertisement> CreateInstance(
+        const DeviceIdPair& device_id_pair,
+        std::unique_ptr<DataWithTimestamp> advertisement_data,
+        BleSynchronizerBase* ble_synchronizer) = 0;
 
    private:
     static Factory* test_factory_;
@@ -51,7 +56,7 @@ class ErrorTolerantBleAdvertisementImpl
       BleSynchronizerBase* ble_synchronizer);
 
   // ErrorTolerantBleAdvertisement:
-  void Stop(const base::Closure& callback) override;
+  void Stop(base::OnceClosure callback) override;
   bool HasBeenStopped() override;
 
   // device::BluetoothAdvertisement::Observer
@@ -88,9 +93,11 @@ class ErrorTolerantBleAdvertisementImpl
 
   scoped_refptr<device::BluetoothAdvertisement> advertisement_;
 
-  base::Closure stop_callback_;
+  bool stopped_ = false;
+  base::OnceClosure stop_callback_;
 
-  base::WeakPtrFactory<ErrorTolerantBleAdvertisementImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<ErrorTolerantBleAdvertisementImpl> weak_ptr_factory_{
+      this};
 
   DISALLOW_COPY_AND_ASSIGN(ErrorTolerantBleAdvertisementImpl);
 };

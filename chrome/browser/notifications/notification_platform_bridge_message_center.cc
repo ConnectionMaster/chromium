@@ -7,10 +7,10 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/task/post_task.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/notifications/notification_display_service_impl.h"
 #include "chrome/browser/notifications/notification_ui_manager.h"
+#include "chrome/browser/notifications/profile_notification.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/message_center/public/cpp/notification.h"
@@ -32,13 +32,15 @@ class PassThroughDelegate : public message_center::NotificationDelegate {
         notification_type_(notification_type) {
     DCHECK_NE(notification_type, NotificationHandler::Type::TRANSIENT);
   }
+  PassThroughDelegate(const PassThroughDelegate&) = delete;
+  PassThroughDelegate& operator=(const PassThroughDelegate&) = delete;
 
   void SettingsClick() override {
     NotificationDisplayServiceImpl::GetForProfile(profile_)
         ->ProcessNotificationOperation(
             NotificationCommon::OPERATION_SETTINGS, notification_type_,
-            notification_.origin_url(), notification_.id(), base::nullopt,
-            base::nullopt, base::nullopt /* by_user */);
+            notification_.origin_url(), notification_.id(), absl::nullopt,
+            absl::nullopt, absl::nullopt /* by_user */);
   }
 
   void DisableNotification() override {
@@ -46,8 +48,8 @@ class PassThroughDelegate : public message_center::NotificationDelegate {
         ->ProcessNotificationOperation(
             NotificationCommon::OPERATION_DISABLE_PERMISSION,
             notification_type_, notification_.origin_url(), notification_.id(),
-            base::nullopt /* action_index */, base::nullopt /* reply */,
-            base::nullopt /* by_user */);
+            absl::nullopt /* action_index */, absl::nullopt /* reply */,
+            absl::nullopt /* by_user */);
   }
 
   void Close(bool by_user) override {
@@ -55,17 +57,17 @@ class PassThroughDelegate : public message_center::NotificationDelegate {
         ->ProcessNotificationOperation(
             NotificationCommon::OPERATION_CLOSE, notification_type_,
             notification_.origin_url(), notification_.id(),
-            base::nullopt /* action_index */, base::nullopt /* reply */,
+            absl::nullopt /* action_index */, absl::nullopt /* reply */,
             by_user);
   }
 
-  void Click(const base::Optional<int>& button_index,
-             const base::Optional<base::string16>& reply) override {
+  void Click(const absl::optional<int>& button_index,
+             const absl::optional<std::u16string>& reply) override {
     NotificationDisplayServiceImpl::GetForProfile(profile_)
         ->ProcessNotificationOperation(
             NotificationCommon::OPERATION_CLICK, notification_type_,
             notification_.origin_url(), notification_.id(), button_index, reply,
-            base::nullopt /* by_user */);
+            absl::nullopt /* by_user */);
   }
 
  protected:
@@ -75,8 +77,6 @@ class PassThroughDelegate : public message_center::NotificationDelegate {
   Profile* profile_;
   message_center::Notification notification_;
   NotificationHandler::Type notification_type_;
-
-  DISALLOW_COPY_AND_ASSIGN(PassThroughDelegate);
 };
 
 }  // namespace
@@ -125,7 +125,7 @@ void NotificationPlatformBridgeMessageCenter::Close(
     return;  // the process is shutting down
 
   ui_manager->CancelById(notification_id,
-                         NotificationUIManager::GetProfileID(profile_));
+                         ProfileNotification::GetProfileID(profile_));
 }
 
 void NotificationPlatformBridgeMessageCenter::GetDisplayed(
@@ -134,10 +134,10 @@ void NotificationPlatformBridgeMessageCenter::GetDisplayed(
   DCHECK_EQ(profile, profile_);
   auto displayed_notifications =
       g_browser_process->notification_ui_manager()->GetAllIdsByProfile(
-          NotificationUIManager::GetProfileID(profile_));
+          ProfileNotification::GetProfileID(profile_));
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(std::move(callback), std::move(displayed_notifications),
                      true /* supports_synchronization */));
 }

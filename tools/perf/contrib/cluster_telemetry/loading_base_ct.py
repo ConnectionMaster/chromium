@@ -15,7 +15,7 @@ class _LoadingBaseClusterTelemetry(loading._LoadingBase):
 
   options = {'upload_results': True}
 
-  _ALL_NET_CONFIGS = traffic_setting.NETWORK_CONFIGS.keys()
+  _ALL_NET_CONFIGS = list(traffic_setting.NETWORK_CONFIGS.keys())
   _ALL_CACHE_TEMPERATURES = cache_temperature_module.ALL_CACHE_TEMPERATURES
 
   @classmethod
@@ -35,6 +35,10 @@ class _LoadingBaseClusterTelemetry(loading._LoadingBase):
         default=cache_temperature_module.COLD,
         help='Cache temperature (string). Default to "%%default". Can be: %s' %
          ', '.join(cls._ALL_CACHE_TEMPERATURES))
+
+  @classmethod
+  def ProcessCommandLineArgs(cls, parser, args):
+    ct_benchmarks_util.ValidateCommandLineArgs(parser, args)
 
   def CreateStorySet(self, options):
     def Wait(action_runner):

@@ -6,17 +6,16 @@
 
 #include <memory>
 
+#include "base/command_line.h"
 #include "base/feature_list.h"
-#include "base/single_thread_task_runner.h"
+#include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
+#include "components/viz/common/gpu/raster_context_provider.h"
 #include "media/base/decoder_factory.h"
-#include "media/base/media_log.h"
 #include "media/base/media_switches.h"
-#include "media/filters/gpu_video_decoder.h"
 #include "media/media_buildflags.h"
 #include "media/video/gpu_video_accelerator_factories.h"
-#include "third_party/libaom/libaom_buildflags.h"
 
 #if !defined(OS_ANDROID)
 #include "media/filters/decrypting_audio_decoder.h"
@@ -25,10 +24,6 @@
 
 #if defined(OS_FUCHSIA)
 #include "media/filters/fuchsia/fuchsia_video_decoder.h"
-#endif
-
-#if BUILDFLAG(ENABLE_LIBAOM_DECODER)
-#include "media/filters/aom_video_decoder.h"
 #endif
 
 #if BUILDFLAG(ENABLE_DAV1D_DECODER)
@@ -47,6 +42,10 @@
 #include "media/filters/vpx_video_decoder.h"
 #endif
 
+#if BUILDFLAG(ENABLE_LIBGAV1_DECODER)
+#include "media/filters/gav1_video_decoder.h"
+#endif
+
 namespace media {
 
 DefaultDecoderFactory::DefaultDecoderFactory(
@@ -56,9 +55,13 @@ DefaultDecoderFactory::DefaultDecoderFactory(
 DefaultDecoderFactory::~DefaultDecoderFactory() = default;
 
 void DefaultDecoderFactory::CreateAudioDecoders(
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
     MediaLog* media_log,
     std::vector<std::unique_ptr<AudioDecoder>>* audio_decoders) {
+  base::AutoLock auto_lock(shutdown_lock_);
+  if (is_shutdown_)
+    return;
+
 #if !defined(OS_ANDROID)
   // DecryptingAudioDecoder is only needed in External Clear Key testing to
   // cover the audio decrypt-and-decode path.
@@ -79,13 +82,65 @@ void DefaultDecoderFactory::CreateAudioDecoders(
   }
 }
 
+SupportedVideoDecoderConfigs
+DefaultDecoderFactory::GetSupportedVideoDecoderConfigsForWebRTC() {
+  SupportedVideoDecoderConfigs supported_configs;
+
+  {
+    base::AutoLock auto_lock(shutdown_lock_);
+    if (external_decoder_factory_) {
+      SupportedVideoDecoderConfigs external_supported_configs =
+          external_decoder_factory_->GetSupportedVideoDecoderConfigsForWebRTC();
+      supported_configs.insert(supported_configs.end(),
+                               external_supported_configs.begin(),
+                               external_supported_configs.end());
+    }
+  }
+
+  if (!base::FeatureList::IsEnabled(media::kExposeSwDecodersToWebRTC))
+    return supported_configs;
+
+#if BUILDFLAG(ENABLE_LIBVPX)
+  // When the VpxVideoDecoder has been updated for RTC add
+  // `VpxVideoDecoder::SupportedConfigs()` to `supported_configs`.
+#endif
+
+#if BUILDFLAG(ENABLE_LIBGAV1_DECODER)
+  if (base::FeatureList::IsEnabled(kGav1VideoDecoder)) {
+    SupportedVideoDecoderConfigs gav1_configs =
+        Gav1VideoDecoder::SupportedConfigs();
+    supported_configs.insert(supported_configs.end(), gav1_configs.begin(),
+                             gav1_configs.end());
+  } else
+#endif
+  {
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
+    SupportedVideoDecoderConfigs dav1d_configs =
+        Dav1dVideoDecoder::SupportedConfigs();
+    supported_configs.insert(supported_configs.end(), dav1d_configs.begin(),
+                             dav1d_configs.end());
+#endif
+  }
+
+#if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
+  // When the FFmpegVideoDecoder has been updated for RTC add
+  // `FFmpegVideoDecoder::SupportedConfigsForWebRTC()` to `supported_configs`.
+#endif
+
+  return supported_configs;
+}
+
 void DefaultDecoderFactory::CreateVideoDecoders(
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
     GpuVideoAcceleratorFactories* gpu_factories,
     MediaLog* media_log,
-    const RequestOverlayInfoCB& request_overlay_info_cb,
+    RequestOverlayInfoCB request_overlay_info_cb,
     const gfx::ColorSpace& target_color_space,
     std::vector<std::unique_ptr<VideoDecoder>>* video_decoders) {
+  base::AutoLock auto_lock(shutdown_lock_);
+  if (is_shutdown_)
+    return;
+
 #if !defined(OS_ANDROID)
   video_decoders->push_back(
       std::make_unique<DecryptingVideoDecoder>(task_runner, media_log));
@@ -93,42 +148,65 @@ void DefaultDecoderFactory::CreateVideoDecoders(
 
   // Perfer an external decoder since one will only exist if it is hardware
   // accelerated.
-  if (gpu_factories && gpu_factories->IsGpuVideoAcceleratorEnabled()) {
+  if (external_decoder_factory_ && gpu_factories &&
+      gpu_factories->IsGpuVideoAcceleratorEnabled()) {
     // |gpu_factories_| requires that its entry points be called on its
     // |GetTaskRunner()|. Since |pipeline_| will own decoders created from the
     // factories, require that their message loops are identical.
     DCHECK_EQ(gpu_factories->GetTaskRunner(), task_runner);
 
-    // MojoVideoDecoder replaces any VDA for this platform when it's enabled.
-    if (external_decoder_factory_ &&
-        base::FeatureList::IsEnabled(kMojoVideoDecoder)) {
-      external_decoder_factory_->CreateVideoDecoders(
-          task_runner, gpu_factories, media_log, request_overlay_info_cb,
-          target_color_space, video_decoders);
-    } else {
-      video_decoders->push_back(std::make_unique<GpuVideoDecoder>(
-          gpu_factories, request_overlay_info_cb, target_color_space,
-          media_log));
-    }
+    external_decoder_factory_->CreateVideoDecoders(
+        task_runner, gpu_factories, media_log,
+        std::move(request_overlay_info_cb), target_color_space, video_decoders);
   }
 
 #if defined(OS_FUCHSIA)
-  video_decoders->push_back(CreateFuchsiaVideoDecoder());
+  // TODO(crbug.com/1122116): Minimize Fuchsia-specific code paths.
+  if (gpu_factories && gpu_factories->IsGpuVideoAcceleratorEnabled()) {
+    auto* context_provider = gpu_factories->GetMediaContextProvider();
+
+    // GetMediaContextProvider() may return nullptr when the context was lost
+    // (e.g. after GPU process crash). To handle this case RenderThreadImpl
+    // creates a new GpuVideoAcceleratorFactories with a new ContextProvider
+    // instance, but there is no way to get it here. For now just don't add
+    // FuchsiaVideoDecoder in that scenario.
+    //
+    // TODO(crbug.com/580386): Handle context loss properly.
+    if (context_provider) {
+      video_decoders->push_back(FuchsiaVideoDecoder::Create(context_provider));
+    } else {
+      DLOG(ERROR)
+          << "Can't create FuchsiaVideoDecoder due to GPU context loss.";
+    }
+  }
 #endif
 
 #if BUILDFLAG(ENABLE_LIBVPX)
   video_decoders->push_back(std::make_unique<OffloadingVpxVideoDecoder>());
 #endif
 
+#if BUILDFLAG(ENABLE_LIBGAV1_DECODER)
+  if (base::FeatureList::IsEnabled(kGav1VideoDecoder)) {
+    video_decoders->push_back(
+        std::make_unique<OffloadingGav1VideoDecoder>(media_log));
+  } else
+#endif  // BUILDFLAG(ENABLE_LIBGAV1_DECODER)
+  {
 #if BUILDFLAG(ENABLE_DAV1D_DECODER)
-  video_decoders->push_back(std::make_unique<Dav1dVideoDecoder>(media_log));
-#elif BUILDFLAG(ENABLE_LIBAOM_DECODER)
-  video_decoders->push_back(std::make_unique<AomVideoDecoder>(media_log));
+    video_decoders->push_back(
+        std::make_unique<OffloadingDav1dVideoDecoder>(media_log));
 #endif
+  }
 
 #if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
   video_decoders->push_back(std::make_unique<FFmpegVideoDecoder>(media_log));
 #endif
+}
+
+void DefaultDecoderFactory::Shutdown() {
+  base::AutoLock auto_lock(shutdown_lock_);
+  external_decoder_factory_.reset();
+  is_shutdown_ = true;
 }
 
 }  // namespace media

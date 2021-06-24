@@ -8,7 +8,8 @@
 
 #include <cmath>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "ui/events/gesture_detection/motion_event.h"
 
 using base::TimeDelta;
@@ -630,7 +631,7 @@ bool LeastSquaresVelocityTrackerStrategy::GetEstimator(
     degree = m - 1;
 
   if (degree >= 1) {
-    float xdet, ydet;
+    float xdet = 0, ydet = 0;
     uint32_t n = degree + 1;
     if (SolveLeastSquares(time, x, w, m, n, out_estimator->xcoeff, &xdet) &&
         SolveLeastSquares(time, y, w, m, n, out_estimator->ycoeff, &ydet)) {

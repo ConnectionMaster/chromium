@@ -8,7 +8,8 @@
 #include "base/guid.h"
 #include "content/browser/background_fetch/storage/database_helpers.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
-#include "content/common/service_worker/service_worker_utils.h"
+#include "content/common/fetch/fetch_api_request_proto.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace content {
 namespace background_fetch {
@@ -19,8 +20,7 @@ StartNextPendingRequestTask::StartNextPendingRequestTask(
     NextRequestCallback callback)
     : DatabaseTask(host),
       registration_id_(registration_id),
-      callback_(std::move(callback)),
-      weak_factory_(this) {
+      callback_(std::move(callback)) {
   DCHECK(!registration_id_.is_null());
 }
 
@@ -76,12 +76,12 @@ void StartNextPendingRequestTask::DidGetPendingRequests(
 
   service_worker_context()->StoreRegistrationUserData(
       registration_id_.service_worker_registration_id(),
-      registration_id_.origin().GetURL(),
+      registration_id_.storage_key(),
       {{ActiveRequestKey(active_request_.unique_id(),
                          active_request_.request_index()),
         active_request_.SerializeAsString()}},
-      base::BindRepeating(&StartNextPendingRequestTask::DidStoreActiveRequest,
-                          weak_factory_.GetWeakPtr()));
+      base::BindOnce(&StartNextPendingRequestTask::DidStoreActiveRequest,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void StartNextPendingRequestTask::DidStoreActiveRequest(
@@ -98,8 +98,7 @@ void StartNextPendingRequestTask::DidStoreActiveRequest(
 
   next_request_ = base::MakeRefCounted<BackgroundFetchRequestInfo>(
       active_request_.request_index(),
-      ServiceWorkerUtils::DeserializeFetchRequestFromString(
-          active_request_.serialized_request()),
+      DeserializeFetchRequestFromString(active_request_.serialized_request()),
       active_request_.request_body_size());
   next_request_->SetDownloadGuid(active_request_.download_guid());
 

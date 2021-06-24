@@ -18,20 +18,20 @@ class CastPermissionManager : public content::PermissionControllerDelegate {
   ~CastPermissionManager() override;
 
   // content::PermissionControllerDelegate implementation:
-  int RequestPermission(
+  void RequestPermission(
       content::PermissionType permission,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
       bool user_gesture,
-      const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
+      base::OnceCallback<void(blink::mojom::PermissionStatus)> callback)
       override;
-  int RequestPermissions(
+  void RequestPermissions(
       const std::vector<content::PermissionType>& permission,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
       bool user_gesture,
-      const base::Callback<
-          void(const std::vector<blink::mojom::PermissionStatus>&)>& callback)
+      base::OnceCallback<
+          void(const std::vector<blink::mojom::PermissionStatus>&)> callback)
       override;
   void ResetPermission(content::PermissionType permission,
                        const GURL& requesting_origin,
@@ -44,13 +44,14 @@ class CastPermissionManager : public content::PermissionControllerDelegate {
       content::PermissionType permission,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin) override;
-  int SubscribePermissionStatusChange(
+  SubscriptionId SubscribePermissionStatusChange(
       content::PermissionType permission,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
-      const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
+      base::RepeatingCallback<void(blink::mojom::PermissionStatus)> callback)
       override;
-  void UnsubscribePermissionStatusChange(int subscription_id) override;
+  void UnsubscribePermissionStatusChange(
+      SubscriptionId subscription_id) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CastPermissionManager);

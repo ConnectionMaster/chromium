@@ -26,8 +26,9 @@
 
 #include <unicode/brkiter.h>
 
-#include "base/macros.h"
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/text/character.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
@@ -43,28 +44,25 @@ typedef icu::BreakIterator TextBreakIterator;
 // platform UI conventions. One notable example where this can be different
 // from character break iterator is Thai prepend characters, see bug 24342.
 // Use this for insertion point and selection manipulations.
-PLATFORM_EXPORT TextBreakIterator* CursorMovementIterator(const UChar*,
-                                                          int length);
-
+PLATFORM_EXPORT TextBreakIterator* CursorMovementIterator(
+    base::span<const UChar>);
 PLATFORM_EXPORT TextBreakIterator* WordBreakIterator(const String&,
                                                      int start,
                                                      int length);
-PLATFORM_EXPORT TextBreakIterator* WordBreakIterator(const UChar*, int length);
+PLATFORM_EXPORT TextBreakIterator* WordBreakIterator(base::span<const UChar>);
 PLATFORM_EXPORT TextBreakIterator* AcquireLineBreakIterator(
-    const LChar*,
-    int length,
+    base::span<const LChar>,
     const AtomicString& locale,
     const UChar* prior_context,
     unsigned prior_context_length);
 PLATFORM_EXPORT TextBreakIterator* AcquireLineBreakIterator(
-    const UChar*,
-    int length,
+    base::span<const UChar>,
     const AtomicString& locale,
     const UChar* prior_context,
     unsigned prior_context_length);
 PLATFORM_EXPORT void ReleaseLineBreakIterator(TextBreakIterator*);
-PLATFORM_EXPORT TextBreakIterator* SentenceBreakIterator(const UChar*,
-                                                         int length);
+PLATFORM_EXPORT TextBreakIterator* SentenceBreakIterator(
+    base::span<const UChar>);
 
 // Before calling this, check if the iterator is not at the end. Otherwise,
 // it may not work as expected.
@@ -112,6 +110,11 @@ enum class BreakSpaceType {
   // opportunities between white spaces.
   // LayoutNG line breaker uses this type.
   kBeforeSpaceRun,
+
+  // Break after a run of white space characters.
+  // This mode enables the LazyLineBreakIterator to completely rely on
+  // ICU for determining the breaking opportunities.
+  kAfterSpaceRun,
 
   // white-spaces:break-spaces allows breaking after any preserved white-space,
   // even when these are leading spaces so that we can avoid breaking
@@ -218,6 +221,7 @@ class PLATFORM_EXPORT LazyLineBreakIterator final {
     ReleaseIterator();
   }
 
+  const AtomicString& Locale() const { return locale_; }
   void SetLocale(const AtomicString& locale) {
     if (locale == locale_)
       return;
@@ -299,17 +303,24 @@ class PLATFORM_EXPORT LazyLineBreakIterator final {
     cached_prior_context_ = prior_context;
     CHECK_LE(start_offset_, string_.length());
     if (string_.Is8Bit()) {
-      iterator_ =
-          AcquireLineBreakIterator(string_.Characters8() + start_offset_,
-                                   string_.length() - start_offset_, locale_,
-                                   prior_context.text, prior_context.length);
+      iterator_ = AcquireLineBreakIterator(
+          string_.Span8().subspan(start_offset_), locale_, prior_context.text,
+          prior_context.length);
     } else {
-      iterator_ =
-          AcquireLineBreakIterator(string_.Characters16() + start_offset_,
-                                   string_.length() - start_offset_, locale_,
-                                   prior_context.text, prior_context.length);
+      iterator_ = AcquireLineBreakIterator(
+          string_.Span16().subspan(start_offset_), locale_, prior_context.text,
+          prior_context.length);
     }
     return iterator_;
+  }
+
+  template <typename CharacterType>
+  bool IsOtherSpaceSeparator(UChar ch) const {
+    return Character::IsOtherSpaceSeparator(ch);
+  }
+  template <LChar>
+  bool IsOtherSpaceSeparator(UChar ch) const {
+    return false;
   }
 
   template <typename CharacterType, LineBreakType, BreakSpaceType>
@@ -344,6 +355,10 @@ class PLATFORM_EXPORT NonSharedCharacterBreakIterator final {
  public:
   explicit NonSharedCharacterBreakIterator(const StringView&);
   NonSharedCharacterBreakIterator(const UChar*, unsigned length);
+  NonSharedCharacterBreakIterator(const NonSharedCharacterBreakIterator&) =
+      delete;
+  NonSharedCharacterBreakIterator& operator=(
+      const NonSharedCharacterBreakIterator&) = delete;
   ~NonSharedCharacterBreakIterator();
 
   int Next();
@@ -385,8 +400,6 @@ class PLATFORM_EXPORT NonSharedCharacterBreakIterator final {
 
   // For 16 bit strings, we use a TextBreakIterator.
   TextBreakIterator* iterator_;
-
-  DISALLOW_COPY_AND_ASSIGN(NonSharedCharacterBreakIterator);
 };
 
 // Counts the number of grapheme clusters. A surrogate pair or a sequence
@@ -404,4 +417,4 @@ PLATFORM_EXPORT void GraphemesClusterList(const StringView& text,
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_TEXT_TEXT_BREAK_ITERATOR_H_

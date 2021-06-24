@@ -2,35 +2,37 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/browsing_data/core/counters/passwords_counter.h"
+#include <memory>
 
 #include "base/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
+#include "chrome/browser/password_manager/account_password_store_factory.h"
 #include "chrome/browser/password_manager/password_store_factory.h"
-#include "chrome/browser/sync/profile_sync_service_factory.h"
+#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/test/integration/passwords_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "components/autofill/core/common/password_form.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
+#include "components/browsing_data/core/counters/passwords_counter.h"
 #include "components/browsing_data/core/pref_names.h"
+#include "components/password_manager/core/browser/password_form.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_test.h"
 
 namespace {
 
-using autofill::PasswordForm;
 using browsing_data::BrowsingDataCounter;
+using password_manager::PasswordForm;
 
 class PasswordsCounterTest : public InProcessBrowserTest {
  public:
-  PasswordsCounterTest() {}
-
   void SetUpOnMainThread() override {
     finished_ = false;
     time_ = base::Time::Now();
+    times_used_ = 0;
     store_ = PasswordStoreFactory::GetForProfile(
         browser()->profile(), ServiceAccessType::IMPLICIT_ACCESS);
     SetPasswordsDeletionPref(true);
@@ -39,20 +41,20 @@ class PasswordsCounterTest : public InProcessBrowserTest {
 
   void AddLogin(const std::string& origin,
                 const std::string& username,
-                bool blacklisted) {
+                bool blocked_by_user) {
     // Add login and wait until the password store actually changes.
     // on the database thread.
     passwords_helper::AddLogin(
-        store_.get(), CreateCredentials(origin, username, blacklisted));
+        store_.get(), CreateCredentials(origin, username, blocked_by_user));
   }
 
   void RemoveLogin(const std::string& origin,
                    const std::string& username,
-                   bool blacklisted) {
+                   bool blocked_by_user) {
     // Remove login and wait until the password store actually changes
     // on the database thread.
     passwords_helper::RemoveLogin(
-        store_.get(), CreateCredentials(origin, username, blacklisted));
+        store_.get(), CreateCredentials(origin, username, blocked_by_user));
   }
 
   void SetPasswordsDeletionPref(bool value) {
@@ -69,6 +71,8 @@ class PasswordsCounterTest : public InProcessBrowserTest {
     time_ -= base::TimeDelta::FromDays(days);
   }
 
+  void SetTimesUsed(int occurrences) { times_used_ = occurrences; }
+
   void WaitForCounting() {
     // The counting takes place on the database thread. Wait until it finishes.
     base::WaitableEvent waitable_event(
@@ -81,7 +85,7 @@ class PasswordsCounterTest : public InProcessBrowserTest {
     // At this point, the calculation on DB thread should have finished, and
     // a callback should be scheduled on the UI thread. Process the tasks until
     // we get a finished result.
-    run_loop_.reset(new base::RunLoop());
+    run_loop_ = std::make_unique<base::RunLoop>();
     run_loop_->Run();
   }
 
@@ -90,14 +94,21 @@ class PasswordsCounterTest : public InProcessBrowserTest {
     return result_;
   }
 
+  std::vector<std::string> GetDomainExamples() {
+    DCHECK(finished_);
+    return domain_examples_;
+  }
+
   void Callback(std::unique_ptr<BrowsingDataCounter::Result> result) {
     DCHECK(result);
     finished_ = result->Finished();
 
     if (finished_) {
       auto* password_result =
-          static_cast<BrowsingDataCounter::SyncResult*>(result.get());
+          static_cast<browsing_data::PasswordsCounter::PasswordsResult*>(
+              result.get());
       result_ = password_result->Value();
+      domain_examples_ = password_result->domain_examples();
     }
     if (run_loop_ && finished_)
       run_loop_->Quit();
@@ -111,14 +122,15 @@ class PasswordsCounterTest : public InProcessBrowserTest {
  private:
   PasswordForm CreateCredentials(const std::string& origin,
                                  const std::string& username,
-                                 bool blacklisted) {
+                                 bool blocked_by_user) {
     PasswordForm result;
     result.signon_realm = origin;
-    result.origin = GURL(origin);
+    result.url = GURL(origin);
     result.username_value = base::ASCIIToUTF16(username);
-    result.password_value = base::ASCIIToUTF16("hunter2");
-    result.blacklisted_by_user = blacklisted;
+    result.password_value = u"hunter2";
+    result.blocked_by_user = blocked_by_user;
     result.date_created = time_;
+    result.times_used = times_used_;
     return result;
   }
 
@@ -126,9 +138,11 @@ class PasswordsCounterTest : public InProcessBrowserTest {
 
   std::unique_ptr<base::RunLoop> run_loop_;
   base::Time time_;
+  int times_used_;
 
   bool finished_;
   BrowsingDataCounter::ResultInt result_;
+  std::vector<std::string> domain_examples_;
 };
 
 // Tests that the counter correctly counts each individual credential on
@@ -145,18 +159,21 @@ IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, SameDomain) {
   browsing_data::PasswordsCounter counter(
       PasswordStoreFactory::GetForProfile(profile,
                                           ServiceAccessType::EXPLICIT_ACCESS),
-      ProfileSyncServiceFactory::GetForProfile(profile));
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&PasswordsCounterTest::Callback, base::Unretained(this)));
+      AccountPasswordStoreFactory::GetForProfile(
+          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      SyncServiceFactory::GetForProfile(profile));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&PasswordsCounterTest::Callback,
+                                   base::Unretained(this)));
   counter.Restart();
 
   WaitForCounting();
   EXPECT_EQ(5u, GetResult());
 }
 
-// Tests that the counter doesn't count blacklisted entries.
-IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, Blacklisted) {
+// Tests that the counter doesn't count blocklisted entries.
+IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, blocklisted) {
   AddLogin("https://www.google.com", "user1", false);
   AddLogin("https://www.google.com", "user2", true);
   AddLogin("https://www.chrome.com", "user3", true);
@@ -166,11 +183,14 @@ IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, Blacklisted) {
   browsing_data::PasswordsCounter counter(
       PasswordStoreFactory::GetForProfile(profile,
                                           ServiceAccessType::EXPLICIT_ACCESS),
-      ProfileSyncServiceFactory::GetForProfile(profile));
+      AccountPasswordStoreFactory::GetForProfile(
+          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      SyncServiceFactory::GetForProfile(profile));
 
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&PasswordsCounterTest::Callback, base::Unretained(this)));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&PasswordsCounterTest::Callback,
+                                   base::Unretained(this)));
   counter.Restart();
 
   WaitForCounting();
@@ -189,10 +209,13 @@ IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, PrefChanged) {
   browsing_data::PasswordsCounter counter(
       PasswordStoreFactory::GetForProfile(profile,
                                           ServiceAccessType::EXPLICIT_ACCESS),
-      ProfileSyncServiceFactory::GetForProfile(profile));
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&PasswordsCounterTest::Callback, base::Unretained(this)));
+      AccountPasswordStoreFactory::GetForProfile(
+          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      SyncServiceFactory::GetForProfile(profile));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&PasswordsCounterTest::Callback,
+                                   base::Unretained(this)));
   SetPasswordsDeletionPref(true);
 
   WaitForCounting();
@@ -209,10 +232,13 @@ IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, StoreChanged) {
   browsing_data::PasswordsCounter counter(
       PasswordStoreFactory::GetForProfile(profile,
                                           ServiceAccessType::EXPLICIT_ACCESS),
-      ProfileSyncServiceFactory::GetForProfile(profile));
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&PasswordsCounterTest::Callback, base::Unretained(this)));
+      AccountPasswordStoreFactory::GetForProfile(
+          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      SyncServiceFactory::GetForProfile(profile));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&PasswordsCounterTest::Callback,
+                                   base::Unretained(this)));
   counter.Restart();
 
   WaitForCounting();
@@ -243,10 +269,13 @@ IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, PeriodChanged) {
   browsing_data::PasswordsCounter counter(
       PasswordStoreFactory::GetForProfile(profile,
                                           ServiceAccessType::EXPLICIT_ACCESS),
-      ProfileSyncServiceFactory::GetForProfile(profile));
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&PasswordsCounterTest::Callback, base::Unretained(this)));
+      AccountPasswordStoreFactory::GetForProfile(
+          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      SyncServiceFactory::GetForProfile(profile));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&PasswordsCounterTest::Callback,
+                                   base::Unretained(this)));
 
   SetDeletionPeriodPref(browsing_data::TimePeriod::LAST_HOUR);
   WaitForCounting();
@@ -271,6 +300,37 @@ IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, PeriodChanged) {
   SetDeletionPeriodPref(browsing_data::TimePeriod::ALL_TIME);
   WaitForCounting();
   EXPECT_EQ(4u, GetResult());
+}
+
+// Tests that the two most commonly used domains are chosen as the listed domain
+// examples.
+IN_PROC_BROWSER_TEST_F(PasswordsCounterTest, MostCommonDomains) {
+  SetTimesUsed(3);
+  AddLogin("https://www.google.com", "user", false);
+  SetTimesUsed(4);
+  AddLogin("https://wwww.maps.google.com", "user", false);
+  SetTimesUsed(1);
+  AddLogin("https://www.example.com", "user", false);
+  SetTimesUsed(2);
+  AddLogin("https://www.chrome.com", "user", false);
+  WaitForUICallbacksFromAddingLogins();
+
+  Profile* profile = browser()->profile();
+  browsing_data::PasswordsCounter counter(
+      PasswordStoreFactory::GetForProfile(profile,
+                                          ServiceAccessType::EXPLICIT_ACCESS),
+      AccountPasswordStoreFactory::GetForProfile(
+          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      SyncServiceFactory::GetForProfile(profile));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&PasswordsCounterTest::Callback,
+                                   base::Unretained(this)));
+  counter.Restart();
+
+  WaitForCounting();
+  std::vector<std::string> domain_examples = {"google.com", "chrome.com"};
+  EXPECT_EQ(domain_examples, GetDomainExamples());
 }
 
 }  // namespace

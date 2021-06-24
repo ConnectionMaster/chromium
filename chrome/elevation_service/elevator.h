@@ -11,7 +11,6 @@
 #include <wrl/module.h>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "chrome/elevation_service/elevation_service_idl.h"
 
 namespace elevation_service {
@@ -31,13 +30,12 @@ class Elevator
   // Securely validates and runs the provided Chrome Recovery CRX elevated, by
   // first copying the CRX to a secure directory under %ProgramFiles% to
   // validate and unpack the CRX.
-  IFACEMETHOD(RunRecoveryCRXElevated)
-  (const base::char16* crx_path,
-   const base::char16* browser_appid,
-   const base::char16* browser_version,
-   const base::char16* session_id,
-   DWORD caller_proc_id,
-   ULONG_PTR* proc_handle);
+  IFACEMETHODIMP RunRecoveryCRXElevated(const wchar_t* crx_path,
+                                        const wchar_t* browser_appid,
+                                        const wchar_t* browser_version,
+                                        const wchar_t* session_id,
+                                        DWORD caller_proc_id,
+                                        ULONG_PTR* proc_handle) override;
 
  private:
   ~Elevator() override = default;

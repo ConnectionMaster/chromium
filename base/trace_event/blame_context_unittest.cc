@@ -5,7 +5,7 @@
 #include "base/trace_event/blame_context.h"
 
 #include "base/json/json_writer.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/trace_event_analyzer.h"
 #include "base/trace_event/traced_value.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -14,8 +14,8 @@ namespace base {
 namespace trace_event {
 namespace {
 
-const char kTestBlameContextCategory[] = "test";
-const char kDisabledTestBlameContextCategory[] = "disabled-by-default-test";
+const char kTestBlameContextCategory[] = "base";
+const char kDisabledTestBlameContextCategory[] = "disabled-by-default-base";
 const char kTestBlameContextName[] = "TestBlameContext";
 const char kTestBlameContextType[] = "TestBlameContextType";
 const char kTestBlameContextScope[] = "TestBlameContextScope";
@@ -58,7 +58,7 @@ class DisabledTestBlameContext : public BlameContext {
 
 class BlameContextTest : public testing::Test {
  protected:
-  test::ScopedTaskEnvironment scoped_task_environment_;
+  test::TaskEnvironment task_environment_;
 };
 
 TEST_F(BlameContextTest, EnterAndLeave) {
@@ -166,7 +166,7 @@ TEST_F(BlameContextTest, TakeSnapshot) {
       "}";
 
   std::string snapshot_json;
-  JSONWriter::Write(*events[2]->GetKnownArgAsValue("snapshot"), &snapshot_json);
+  JSONWriter::Write(events[2]->GetKnownArgAsValue("snapshot"), &snapshot_json);
   EXPECT_EQ(kExpectedSnapshotJson, snapshot_json);
 }
 

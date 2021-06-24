@@ -9,10 +9,15 @@
 
 #include "ash/test/ash_test_base.h"
 #include "base/macros.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "components/exo/test/exo_test_helper.h"
+
+namespace viz {
+class SurfaceManager;
+}
 
 namespace exo {
 class WMHelper;
+class ShellSurfaceBase;
 
 namespace test {
 class ExoTestHelper;
@@ -20,18 +25,29 @@ class ExoTestHelper;
 class ExoTestBase : public ash::AshTestBase {
  public:
   ExoTestBase();
+
+  // Constructs an ExoTestBase with |traits| being forwarded to its
+  // TaskEnvironment. See the corresponding |AshTestBase| constructor.
+  template <typename... TaskEnvironmentTraits>
+  NOINLINE explicit ExoTestBase(TaskEnvironmentTraits&&... traits)
+      : AshTestBase(std::forward<TaskEnvironmentTraits>(traits)...) {}
+
   ~ExoTestBase() override;
 
-  // Overridden from testing::Test:
+  // ash::AshTestBase:
   void SetUp() override;
   void TearDown() override;
 
-  ExoTestHelper* exo_test_helper() { return exo_test_helper_.get(); }
+  viz::SurfaceManager* GetSurfaceManager();
+
+  gfx::Point GetOriginOfShellSurface(const ShellSurfaceBase* shell_surface);
+
+  ExoTestHelper* exo_test_helper() { return &exo_test_helper_; }
+  WMHelper* wm_helper() { return wm_helper_.get(); }
 
  private:
-  std::unique_ptr<ExoTestHelper> exo_test_helper_;
+  ExoTestHelper exo_test_helper_;
   std::unique_ptr<WMHelper> wm_helper_;
-  ui::ScopedAnimationDurationScaleMode scale_mode_;
 
   DISALLOW_COPY_AND_ASSIGN(ExoTestBase);
 };

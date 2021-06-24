@@ -34,14 +34,19 @@ class TranslateBubbleModelImpl : public TranslateBubbleModel {
   void SetViewState(TranslateBubbleModel::ViewState view_state) override;
   void ShowError(translate::TranslateErrors::Type error_type) override;
   void GoBackFromAdvanced() override;
-  int GetNumberOfLanguages() const override;
-  base::string16 GetLanguageNameAt(int index) const override;
-  int GetOriginalLanguageIndex() const override;
-  void UpdateOriginalLanguageIndex(int index) override;
+  int GetNumberOfSourceLanguages() const override;
+  int GetNumberOfTargetLanguages() const override;
+  std::u16string GetSourceLanguageNameAt(int index) const override;
+  std::u16string GetTargetLanguageNameAt(int index) const override;
+  std::string GetSourceLanguageCode() const override;
+  int GetSourceLanguageIndex() const override;
+  void UpdateSourceLanguageIndex(int index) override;
   int GetTargetLanguageIndex() const override;
   void UpdateTargetLanguageIndex(int index) override;
   void DeclineTranslation() override;
+  bool ShouldNeverTranslateLanguage() override;
   void SetNeverTranslateLanguage(bool value) override;
+  bool ShouldNeverTranslateSite() override;
   void SetNeverTranslateSite(bool value) override;
   bool ShouldAlwaysTranslate() const override;
   bool ShouldAlwaysTranslateBeCheckedByDefault() const override;
@@ -51,7 +56,8 @@ class TranslateBubbleModelImpl : public TranslateBubbleModel {
   void RevertTranslation() override;
   void OnBubbleClosing() override;
   bool IsPageTranslatedInCurrentLanguages() const override;
-  bool CanBlacklistSite() override;
+  bool CanBlocklistSite() override;
+  void ReportUIInteraction(translate::UIInteraction ui_interaction) override;
 
  private:
   std::unique_ptr<translate::TranslateUIDelegate> ui_delegate_;

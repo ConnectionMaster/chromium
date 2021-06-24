@@ -17,12 +17,12 @@
 #include "base/sequenced_task_runner.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/download/public/common/mock_download_item.h"
-#include "components/safe_browsing/proto/csd.pb.h"
+#include "components/safe_browsing/core/proto/csd.pb.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_download_manager.h"
-#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -59,8 +59,8 @@ class DownloadDetailsGetter {
   virtual void OnDownloadDetails(
       ClientIncidentReport_DownloadDetails* details) = 0;
   DownloadMetadataManager::GetDownloadDetailsCallback GetCallback() {
-    return base::Bind(&DownloadDetailsGetter::DownloadDetailsCallback,
-                      base::Unretained(this));
+    return base::BindOnce(&DownloadDetailsGetter::DownloadDetailsCallback,
+                          base::Unretained(this));
   }
 
  private:
@@ -198,7 +198,7 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
   void AddDownloadItems() {
     ASSERT_NE(nullptr, dm_observer_);
     // Add the item under test.
-    test_item_.reset(new NiceMock<download::MockDownloadItem>);
+    test_item_ = std::make_unique<NiceMock<download::MockDownloadItem>>();
     ON_CALL(*test_item_, GetId())
         .WillByDefault(Return(kTestDownloadId));
     ON_CALL(*test_item_, GetEndTime())
@@ -210,7 +210,7 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
     dm_observer_->OnDownloadCreated(&download_manager_, test_item_.get());
 
     // Add another item.
-    other_item_.reset(new NiceMock<download::MockDownloadItem>);
+    other_item_ = std::make_unique<NiceMock<download::MockDownloadItem>>();
     ON_CALL(*other_item_, GetId())
         .WillByDefault(Return(kOtherDownloadId));
     ON_CALL(*other_item_, GetEndTime())
@@ -220,7 +220,7 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
     dm_observer_->OnDownloadCreated(&download_manager_, other_item_.get());
 
     // Add an item with an id of zero.
-    zero_item_.reset(new NiceMock<download::MockDownloadItem>);
+    zero_item_ = std::make_unique<NiceMock<download::MockDownloadItem>>();
     ON_CALL(*zero_item_, GetId())
         .WillByDefault(Return(0));
     ON_CALL(*zero_item_, GetEndTime())
@@ -248,7 +248,7 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
       downloads->push_back(zero_item_.get());
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   NiceMock<MockDownloadMetadataManager> manager_;
   TestingProfile profile_;
   NiceMock<content::MockDownloadManager> download_manager_;

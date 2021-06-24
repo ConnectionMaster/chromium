@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/views/status_bubble_views_browsertest_mac.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/test/browser_test.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/views/widget/widget.h"
 
@@ -45,23 +46,23 @@ IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, WidgetLifetime) {
   EXPECT_FALSE(GetWidget());
 
   // Setting status text shows the widget.
-  bubble->SetStatus(base::ASCIIToUTF16("test"));
+  bubble->SetStatus(u"test");
   views::Widget* widget = GetWidget();
   ASSERT_TRUE(widget);
   EXPECT_TRUE(widget->IsVisible());
 
   // Changing status text keeps the widget visible.
-  bubble->SetStatus(base::ASCIIToUTF16("foo"));
+  bubble->SetStatus(u"foo");
   EXPECT_TRUE(widget->IsVisible());
 
   // Setting the URL keeps the widget visible.
   bubble->SetURL(GURL("http://www.foo.com"));
   EXPECT_TRUE(widget->IsVisible());
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
   // Clearing the URL and status closes the widget on platforms other than Mac.
   EXPECT_FALSE(IsDestroyPopupTimerRunning());
-  bubble->SetStatus(base::string16());
+  bubble->SetStatus(std::u16string());
   bubble->SetURL(GURL());
   // The widget is not hidden immediately, instead a task is scheduled. Run that
   // now.
@@ -86,7 +87,7 @@ IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, WidgetLifetime) {
 
 // Mac does not delete the widget after a delay, so this test only runs on
 // non-mac platforms.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
 IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, ShowHideDestroyShow) {
   scoped_refptr<base::TestSimpleTaskRunner> task_runner =
       base::MakeRefCounted<base::TestSimpleTaskRunner>();
@@ -97,12 +98,12 @@ IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, ShowHideDestroyShow) {
   ASSERT_TRUE(bubble);
 
   // Setting status text shows the widget.
-  bubble->SetStatus(base::ASCIIToUTF16("test"));
+  bubble->SetStatus(u"test");
   views::Widget* widget = GetWidget();
   ASSERT_TRUE(widget);
   EXPECT_TRUE(widget->IsVisible());
 
-  bubble->SetStatus(base::string16());
+  bubble->SetStatus(std::u16string());
   // The widget is not hidden immediately, instead a task is scheduled. Run that
   // now.
   task_runner->RunPendingTasks();
@@ -122,7 +123,7 @@ IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, ShowHideDestroyShow) {
   EXPECT_FALSE(GetWidget());
 
   // Setting status text shows the widget.
-  bubble->SetStatus(base::ASCIIToUTF16("test"));
+  bubble->SetStatus(u"test");
   widget = GetWidget();
   ASSERT_TRUE(widget);
   EXPECT_TRUE(widget->IsVisible());
@@ -130,28 +131,3 @@ IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, ShowHideDestroyShow) {
   SetTaskRunner(base::ThreadTaskRunnerHandle::Get().get());
 }
 #endif
-
-// Ensure the status bubble does not close itself on Mac. Doing so can trigger
-// unwanted space switches due to rdar://9037452. See https://crbug.com/866760.
-IN_PROC_BROWSER_TEST_F(StatusBubbleViewsTest, NeverHideOrCloseOnMac) {
-  StatusBubble* bubble = GetBubble();
-  bubble->SetStatus(base::ASCIIToUTF16("test"));
-  views::Widget* widget = GetWidget();
-  EXPECT_TRUE(widget->IsVisible());
-
-#if defined(OS_MACOSX)
-  // Check alpha on Mac as well. On other platforms it is redundant.
-  EXPECT_EQ(1.f, test::GetNativeWindowAlphaValue(widget->GetNativeWindow()));
-  bubble->Hide();
-  // On Mac, the bubble widget remains visible so it can remain a child window.
-  // However, it is fully transparent.
-  EXPECT_TRUE(widget->IsVisible());
-  EXPECT_EQ(0.f, test::GetNativeWindowAlphaValue(widget->GetNativeWindow()));
-  EXPECT_FALSE(IsDestroyPopupTimerRunning());
-#else
-  EXPECT_FALSE(IsDestroyPopupTimerRunning());
-  bubble->Hide();
-  EXPECT_FALSE(widget->IsVisible());
-  EXPECT_TRUE(IsDestroyPopupTimerRunning());
-#endif
-}

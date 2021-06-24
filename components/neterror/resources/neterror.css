@@ -29,14 +29,13 @@ h1 span {
 }
 
 h2 {
-  color: #666;
+  color: var(--heading-color);
   font-size: 1.2em;
   font-weight: normal;
   margin: 10px 0;
 }
 
 a {
-  color: rgb(17, 85, 204);
   text-decoration: none;
 }
 
@@ -94,6 +93,10 @@ a {
   margin-top: 15px;
 }
 
+#suggestions-list a {
+  color: var(--google-blue-600);
+}
+
 #suggestions-list p {
   margin-block-end: 0;
 }
@@ -104,7 +107,7 @@ a {
 
 .single-suggestion {
   list-style-type: none;
-  padding-left: 0;
+  padding-inline-start: 0;
 }
 
 #short-suggestion {
@@ -121,7 +124,7 @@ a {
 .use-popup-container#error-information-popup-container
   #error-information-popup {
   align-items: center;
-  background-color: rgba(0,0,0,.65);
+  background-color: var(--popup-container-background-color);
   display: flex;
   height: 100%;
   left: 0;
@@ -143,7 +146,7 @@ a {
 
 .use-popup-container#error-information-popup-container
   #error-information-popup-box {
-  background-color: white;
+  background-color: var(--background-color);
   left: 5%;
   padding-bottom: 15px;
   padding-top: 15px;
@@ -166,7 +169,7 @@ a {
 }
 
 #error-information-popup-close {
-  margin-bottom: 0px;
+  margin-bottom: 0;
   margin-inline-end: 35px;
   margin-top: 15px;
   text-align: end;
@@ -206,7 +209,7 @@ a {
   flex-grow: 1;
   font-size: 1em;
   height: 26px;
-  margin-right: 0;
+  margin-inline-end: 0;
   padding: 1px 9px;
 }
 
@@ -261,8 +264,8 @@ a {
 
 .snackbar-show {
   -webkit-animation:
-    show-snackbar .25s cubic-bezier(0.0, 0.0, 0.2, 1) forwards,
-    hide-snackbar .25s cubic-bezier(0.4, 0.0, 1, 1) forwards 5s;
+    show-snackbar 250ms cubic-bezier(0, 0, 0.2, 1) forwards,
+    hide-snackbar 250ms cubic-bezier(0.4, 0, 1, 1) forwards 5s;
 }
 
 @-webkit-keyframes show-snackbar {
@@ -322,7 +325,8 @@ a {
   }
 }
 
-#download-link, #download-link-clicked {
+#download-link,
+#download-link-clicked {
   margin-bottom: 30px;
   margin-top: 30px;
 }
@@ -331,16 +335,17 @@ a {
   color: #BBB;
 }
 
-#download-link:before, #download-link-clicked:before {
+#download-link::before,
+#download-link-clicked::before {
   content: url(images/download-blue.svg);
   display: inline-block;
   margin-inline-end: 4px;
   vertical-align: -webkit-baseline-middle;
 }
 
-#download-link-clicked:before {
-  width: 0px;
+#download-link-clicked::before {
   opacity: 0;
+  width: 0;
 }
 
 #offline-content-list-visibility-card {
@@ -364,7 +369,8 @@ a {
   color: var(--google-gray-700);
 }
 
-#offline-content-list-show-text, #offline-content-list-hide-text {
+#offline-content-list-show-text,
+#offline-content-list-hide-text {
   color: rgb(66, 133, 244);
 }
 
@@ -386,8 +392,8 @@ a {
    * when the actual height is smaller then the animation is not as smooth.
    */
   max-height: 27em;
-  transition: max-height 0.2s ease-in, visibility 0s 0.2s,
-              opacity 0.2s 0.2s linear;
+  transition: max-height 200ms ease-in, visibility 0s 200ms,
+              opacity 200ms 200ms linear;
 }
 
 /* Controls the animation of the offline content list when it is
@@ -395,10 +401,10 @@ a {
  */
 #offline-content-list.list-hidden #offline-content-suggestions {
   max-height: 0;
-  visibility: hidden;
   opacity: 0;
-  transition: opacity 0.2s linear, visibility 0s 0.2s,
-              max-height 0.2s 0.2s ease-out;
+  transition: opacity 200ms linear, visibility 0s 200ms,
+              max-height 200ms 200ms ease-out;
+  visibility: hidden;
 }
 
 #offline-content-list {
@@ -423,29 +429,29 @@ a {
   }
 }
 
-.suggestion-with-image .offline-content-suggestion-visual {
+.suggestion-with-image .offline-content-suggestion-thumbnail {
   flex-basis: 8.2em;
   flex-shrink: 0;
 }
 
-.suggestion-with-image .offline-content-suggestion-visual > img {
+.suggestion-with-image .offline-content-suggestion-thumbnail > img {
   height: 100%;
   width: 100%;
 }
 
-#offline-content-list:not(.is-rtl) .suggestion-with-image
-.offline-content-suggestion-visual > img {
+.suggestion-with-image #offline-content-list:not(.is-rtl)
+.offline-content-suggestion-thumbnail > img {
   border-bottom-right-radius: 7px;
   border-top-right-radius: 7px;
 }
 
-#offline-content-list.is-rtl .suggestion-with-image
-.offline-content-suggestion-visual > img {
+.suggestion-with-image #offline-content-list.is-rtl
+.offline-content-suggestion-thumbnail > img {
   border-bottom-left-radius: 7px;
   border-top-left-radius: 7px;
 }
 
-.suggestion-with-icon .offline-content-suggestion-visual {
+.suggestion-with-icon .offline-content-suggestion-thumbnail {
   align-items: center;
   display: flex;
   justify-content: center;
@@ -453,7 +459,7 @@ a {
   min-width: 4.2em;
 }
 
-.suggestion-with-icon .offline-content-suggestion-visual > div {
+.suggestion-with-icon .offline-content-suggestion-thumbnail > div {
   align-items: center;
   background-color: rgb(241, 243, 244);
   border-radius: 50%;
@@ -463,9 +469,24 @@ a {
   width: 2.3em;
 }
 
-.suggestion-with-icon .offline-content-suggestion-visual > div > img {
+.suggestion-with-icon .offline-content-suggestion-thumbnail > div > img {
   height: 1.45em;
   width: 1.45em;
+}
+
+.offline-content-suggestion-favicon {
+  height: 1em;
+  margin-inline-end: 0.4em;
+  width: 1.4em;
+}
+
+.offline-content-suggestion-favicon > img {
+  height: 1.4em;
+  width: 1.4em;
+}
+
+.no-favicon .offline-content-suggestion-favicon {
+  display: none;
 }
 
 .image-video {
@@ -530,13 +551,14 @@ div.offline-content-suggestion {
 }
 
 .suggestion-with-icon .offline-content-suggestion-texts {
-  padding-inline-start: 0px;
+  padding-inline-start: 0;
 }
 
 .offline-content-suggestion-attribution-freshness {
   color: rgb(95, 99, 104);
   display: flex;
   font-size: .8em;
+  line-height: 1.7em;
 }
 
 .offline-content-suggestion-attribution {
@@ -544,8 +566,9 @@ div.offline-content-suggestion {
   -webkit-line-clamp: 1;
   display: -webkit-box;
   flex-shrink: 1;
-  overflow-wrap: break-word;
+  margin-inline-end: 0.3em;
   overflow: hidden;
+  overflow-wrap: break-word;
   text-overflow: ellipsis;
   word-break: break-all;
 }
@@ -554,7 +577,7 @@ div.offline-content-suggestion {
   display: none;
 }
 
-.offline-content-suggestion-freshness:before {
+.offline-content-suggestion-freshness::before {
   content: '-';
   display: inline-block;
   flex-shrink: 0;
@@ -562,7 +585,7 @@ div.offline-content-suggestion {
   margin-inline-start: .1em;
 }
 
-.no-attribution .offline-content-suggestion-freshness:before {
+.no-attribution .offline-content-suggestion-freshness::before {
   display: none;
 }
 
@@ -571,8 +594,8 @@ div.offline-content-suggestion {
 }
 
 .suggestion-with-image .offline-content-suggestion-pin-spacer {
-  flex-shrink: 1;
   flex-grow: 100;
+  flex-shrink: 1;
 }
 
 .suggestion-with-image .offline-content-suggestion-pin {
@@ -588,29 +611,47 @@ div.offline-content-suggestion {
  */
 #offline-content-list-action {
   text-align: center;
-  transition: visibility 0s 0.2s, opacity 0.2s 0.2s linear;
+  transition: visibility 0s 200ms, opacity 200ms 200ms linear;
 }
 
 /* Controls the animation of the launch-downloads-home action button when the
  * offline content list is collapsed/hidden.
  */
 #offline-content-list.list-hidden #offline-content-list-action {
-  visibility: hidden;
   opacity: 0;
-  transition: opacity 0.2s linear, visibility 0s 0.2s;
+  transition: opacity 200ms linear, visibility 0s 200ms;
+  visibility: hidden;
 }
 
 #cancel-save-page-button {
+  background-image: url(images/animated_offline_pin.svg);
+  background-position: right 27px center;
+  background-repeat: no-repeat;
   border: 1px solid var(--google-gray-300);
   border-radius: 5px;
   color: var(--google-gray-700);
-  padding: 16px;
-  text-align: center;
+  margin-bottom: 26px;
+  padding-bottom: 16px;
+  padding-inline-end: 88px;
+  padding-inline-start: 16px;
+  padding-top: 16px;
+  text-align: start;
+}
+
+html[dir='rtl'] #cancel-save-page-button {
+  background-position: left 27px center;
 }
 
 #save-page-for-later-button {
   display: flex;
-  justify-content: center;
+  justify-content: start;
+}
+
+#save-page-for-later-button a::before {
+  content: url(images/download-blue.svg);
+  display: inline-block;
+  margin-inline-end: 4px;
+  vertical-align: -webkit-baseline-middle;
 }
 
 .hidden#save-page-for-later-button {
@@ -624,16 +665,16 @@ html[subframe] body {
 
 #sub-frame-error {
   -webkit-align-items: center;
+  -webkit-flex-flow: column;
+  -webkit-justify-content: center;
   background-color: #DDD;
   display: -webkit-flex;
-  -webkit-flex-flow: column;
   height: 100%;
-  -webkit-justify-content: center;
   left: 0;
   position: absolute;
   text-align: center;
   top: 0;
-  transition: background-color .2s ease-in-out;
+  transition: background-color 200ms ease-in-out;
   width: 100%;
 }
 
@@ -692,7 +733,7 @@ html[subframe] body {
 }
 
 .suggested-left .secondary-button {
-  margin-inline-end: 0px;
+  margin-inline-end: 0;
   margin-inline-start: 16px;
 }
 
@@ -707,18 +748,18 @@ html[subframe] body {
   position: relative;
 }
 
-#download-button:before {
+#download-button::before {
   background: -webkit-image-set(
       url(../../resources/default_100_percent/neterror/download.png) 1x,
       url(../../resources/default_200_percent/neterror/download.png) 2x)
     no-repeat;
   content: '';
   display: inline-block;
-  width: 24px;
   height: 24px;
   margin-inline-end: 4px;
   margin-inline-start: -4px;
   vertical-align: middle;
+  width: 24px;
 }
 
 #download-button:disabled {
@@ -730,8 +771,8 @@ html[subframe] body {
 TODO(https://crbug.com/852872): UI for offline suggested content is incomplete.
 */
 .suggested-thumbnail {
-  width: 25vw;
   height: 25vw;
+  width: 25vw;
 }
 
 /* Alternate dino page button styles */
@@ -750,10 +791,17 @@ TODO(https://crbug.com/852872): UI for offline suggested content is incomplete.
 }
 
 /* Offline page */
+html[dir='rtl'] .runner-container,
+html[dir='rtl'].offline .icon-offline {
+  transform: scaleX(-1);
+}
+
 .offline {
   transition: filter 1.5s cubic-bezier(0.65, 0.05, 0.36, 1),
               background-color 1.5s cubic-bezier(0.65, 0.05, 0.36, 1);
+<if expr="not is_ios">
   will-change: filter, background-color;
+</if>
 }
 
 .offline body {
@@ -764,16 +812,9 @@ TODO(https://crbug.com/852872): UI for offline suggested content is incomplete.
   display: none;
 }
 
-/* iOS WKWebView inverts the background color set at the HTML level
-whereas Blink does not. */
 .offline.inverted {
-  filter: invert(1);
-<if expr="not is_ios">
-  background-color: #000;
-</if>
-<if expr="is_ios">
   background-color: #fff;
-</if>
+  filter: invert(1);
 }
 
 .offline.inverted body {
@@ -781,12 +822,13 @@ whereas Blink does not. */
 }
 
 .offline .interstitial-wrapper {
-  color: #2b2b2b;
+  color: var(--text-color);
   font-size: 1em;
   line-height: 1.55;
   margin: 0 auto;
   max-width: 600px;
   padding-top: 100px;
+  position: relative;
   width: 100%;
 }
 
@@ -800,6 +842,14 @@ whereas Blink does not. */
   width: 44px;
 }
 
+.offline .runner-container:focus {
+  outline: none;
+}
+
+.offline .runner-container:focus-visible {
+  outline: 3px solid var(--google-blue-300);
+}
+
 .offline .runner-canvas {
   height: 150px;
   max-width: 600px;
@@ -811,7 +861,6 @@ whereas Blink does not. */
 }
 
 .offline .controller {
-  background: rgba(247,247,247, .1);
   height: 100vh;
   left: 0;
   position: absolute;
@@ -822,6 +871,112 @@ whereas Blink does not. */
 
 #offline-resources {
   display: none;
+}
+
+#offline-instruction {
+  image-rendering: pixelated;
+  left: 0;
+  margin: auto;
+  position: absolute;
+  right: 0;
+  top: 60px;
+  width: fit-content;
+}
+
+.offline-runner-live-region {
+  bottom: 0;
+  clip-path: polygon(0 0, 0 0, 0 0);
+  color: var(--background-color);
+  display: block;
+  font-size: xx-small;
+  overflow: hidden;
+  position: absolute;
+  text-align: center;
+  transition: color 1.5s cubic-bezier(0.65, 0.05, 0.36, 1);
+  user-select: none;
+}
+
+/* Custom toggle */
+.slow-speed-toggle {
+  align-items: center;
+  background: var(--google-gray-50);
+  border-radius: 24px/50%;
+  bottom: 0;
+  color: var(--error-code-color);
+  display: inline-flex;
+  font-size: 1em;
+  left: 0;
+  line-height: 1.1em;
+  margin: 5px auto;
+  padding: 2px 12px 3px 20px;
+  position: absolute;
+  right: 0;
+  width: max-content;
+  z-index: 999;
+}
+
+.slow-speed-toggle.hidden {
+  display: none;
+}
+
+.slow-speed-toggle [type=checkbox] {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.slow-speed-toggle .slow-speed-toggle {
+  cursor: pointer;
+  margin-inline-start: 8px;
+  padding: 8px 4px;
+  position: relative;
+}
+
+.slow-speed-toggle [type=checkbox] {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.slow-speed-toggle .slow-speed-toggle::before,
+.slow-speed-toggle .slow-speed-toggle::after {
+  content: '';
+  display: block;
+  margin: 0 3px;
+  transition: all 100ms cubic-bezier(0.4, 0, 1, 1);
+}
+
+.slow-speed-toggle .slow-speed-toggle::before {
+  background: rgb(189,193,198);
+  border-radius: 0.65em;
+  height: 0.9em;
+  width: 2em;
+}
+
+.slow-speed-toggle .slow-speed-toggle::after {
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 40%);
+  height: 1.2em;
+  position: absolute;
+  top: 51%;
+  transform: translate(-20%, -50%);
+  width: 1.1em;
+}
+
+.slow-speed-toggle [type=checkbox]:focus + .slow-speed-toggle {
+  box-shadow: 0 0 8px rgb(94, 158, 214);
+  outline: 1px solid rgb(93, 157, 213);
+}
+
+.slow-speed-toggle [type=checkbox]:checked + .slow-speed-toggle::before {
+  background: var(--google-blue-600);
+  opacity: 0.5;
+}
+
+.slow-speed-toggle [type=checkbox]:checked + .slow-speed-toggle::after {
+  background: var(--google-blue-600);
+  transform: translate(calc(2em - 90%), -50%);
 }
 
 @media (max-width: 420px) {
@@ -836,10 +991,10 @@ whereas Blink does not. */
   }
 
   .snackbar {
-    left: 0;
-    bottom: 0;
-    width: 100%;
     border-radius: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
   }
 }
 
@@ -901,8 +1056,8 @@ whereas Blink does not. */
 
 @media (max-width: 240px) {
   button {
-    padding-left: 12px;
-    padding-right: 12px;
+    padding-inline-end: 12px;
+    padding-inline-start: 12px;
   }
 
   .interstitial-wrapper {
@@ -942,6 +1097,51 @@ whereas Blink does not. */
   margin: auto;
   right: 0;
   transform-origin: top center;
-  transition: transform 250ms cubic-bezier(0.4, 0.0, 1, 1) .4s;
+  transition: transform 250ms cubic-bezier(0.4, 0, 1, 1) 400ms;
   z-index: 2;
+}
+
+@media (prefers-color-scheme: dark) {
+  .icon {
+    filter: invert(1);
+  }
+
+  .offline .runner-canvas {
+    filter: invert(1);
+  }
+
+  .offline.inverted {
+    background-color: var(--background-color);
+    filter: invert(0);
+  }
+
+  .offline.inverted body {
+    background-color: #fff;
+  }
+
+  .offline.inverted .offline-runner-live-region {
+    color: #fff;
+  }
+
+  #suggestions-list a {
+    color: var(--link-color);
+  }
+
+  #error-information-button {
+    filter: invert(0.6);
+  }
+
+  .slow-speed-toggle {
+    background: var(--google-gray-800);
+    color: var(--google-gray-100);
+  }
+
+  .slow-speed-toggle .slow-speed-toggle::before {
+     background: rgb(189,193,198);
+  }
+
+  .slow-speed-toggle [type=checkbox]:checked + .slow-speed-toggle::after,
+  .slow-speed-toggle [type=checkbox]:checked + .slow-speed-toggle::before {
+    background: var(--google-blue-300);
+  }
 }

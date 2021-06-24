@@ -7,7 +7,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "base/test/scoped_task_environment.h"
+#include <memory>
+
+#include "base/test/task_environment.h"
 #include "base/threading/simple_thread.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -62,11 +64,11 @@ class DiscardableSharedMemoryManagerTest : public testing::Test {
  protected:
   // Overridden from testing::Test:
   void SetUp() override {
-    manager_.reset(new TestDiscardableSharedMemoryManager);
+    manager_ = std::make_unique<TestDiscardableSharedMemoryManager>();
   }
 
   // DiscardableSharedMemoryManager requires a message loop.
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<TestDiscardableSharedMemoryManager> manager_;
 };
 
@@ -237,10 +239,12 @@ class DiscardableSharedMemoryManagerScheduleEnforceMemoryPolicyTest
     : public testing::Test {
  protected:
   // Overridden from testing::Test:
-  void SetUp() override { manager_.reset(new DiscardableSharedMemoryManager); }
+  void SetUp() override {
+    manager_ = std::make_unique<DiscardableSharedMemoryManager>();
+  }
 
   // DiscardableSharedMemoryManager requires a message loop.
-  base::test::ScopedTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<DiscardableSharedMemoryManager> manager_;
 };
 

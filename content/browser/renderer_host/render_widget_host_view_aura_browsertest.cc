@@ -7,7 +7,10 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/test/test_timeouts.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "build/chromeos_buildflags.h"
+#include "content/browser/devtools/protocol/devtools_protocol_test_support.h"
 #include "content/browser/renderer_host/delegated_frame_host.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
@@ -15,15 +18,21 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/shell/browser/shell.h"
+#include "content/shell/common/shell_switches.h"
+#include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/events/event_utils.h"
+#include "ui/events/test/event_generator.h"
 
 namespace content {
 namespace {
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 const char kMinimalPageDataURL[] =
     "data:text/html,<html><head></head><body>Hello, world</body></html>";
 
@@ -36,7 +45,7 @@ void GiveItSomeTime() {
       base::TimeDelta::FromMilliseconds(250));
   run_loop.Run();
 }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 class FakeWebContentsDelegate : public WebContentsDelegate {
  public:
@@ -62,7 +71,8 @@ class FakeWebContentsDelegate : public WebContentsDelegate {
 class RenderWidgetHostViewAuraBrowserTest : public ContentBrowserTest {
  public:
   RenderViewHost* GetRenderViewHost() const {
-    RenderViewHost* const rvh = shell()->web_contents()->GetRenderViewHost();
+    RenderViewHost* const rvh =
+        shell()->web_contents()->GetMainFrame()->GetRenderViewHost();
     CHECK(rvh);
     return rvh;
   }
@@ -75,16 +85,21 @@ class RenderWidgetHostViewAuraBrowserTest : public ContentBrowserTest {
   DelegatedFrameHost* GetDelegatedFrameHost() const {
     return GetRenderWidgetHostView()->delegated_frame_host_.get();
   }
+
+  bool HasChildPopup() const {
+    return GetRenderWidgetHostView()->popup_child_host_view_;
+  }
 };
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
                        StaleFrameContentOnEvictionNormal) {
-  NavigateToURL(shell(), GURL(kMinimalPageDataURL));
+  EXPECT_TRUE(NavigateToURL(shell(), GURL(kMinimalPageDataURL)));
 
-  // Wait for first frame activation when a surface is embedded.
-  while (!GetDelegatedFrameHost()->HasSavedFrame())
-    GiveItSomeTime();
+  // Make sure the renderer submits at least one frame before hiding it.
+  RenderFrameSubmissionObserver submission_observer(shell()->web_contents());
+  if (!submission_observer.render_frame_count())
+    submission_observer.WaitForAnyFrameSubmission();
 
   FakeWebContentsDelegate delegate;
   delegate.SetShowStaleContentOnEviction(true);
@@ -120,7 +135,7 @@ IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
                        StaleFrameContentOnEvictionRejected) {
-  NavigateToURL(shell(), GURL(kMinimalPageDataURL));
+  EXPECT_TRUE(NavigateToURL(shell(), GURL(kMinimalPageDataURL)));
 
   // Wait for first frame activation when a surface is embedded.
   while (!GetDelegatedFrameHost()->HasSavedFrame())
@@ -160,7 +175,7 @@ IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
                        StaleFrameContentOnEvictionNone) {
-  NavigateToURL(shell(), GURL(kMinimalPageDataURL));
+  EXPECT_TRUE(NavigateToURL(shell(), GURL(kMinimalPageDataURL)));
 
   // Wait for first frame activation when a surface is embedded.
   while (!GetDelegatedFrameHost()->HasSavedFrame())
@@ -191,6 +206,305 @@ IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
   EXPECT_FALSE(
       GetDelegatedFrameHost()->stale_content_layer_->has_external_content());
 }
-#endif  // #if defined(OS_CHROMEOS)
+#endif  // #if BUILDFLAG(IS_CHROMEOS_ASH)
+
+// TODO(1126339): fix the way how exo creates accelerated widgets. At the
+// moment, they are created only after the client attaches a buffer to a
+// surface, which is incorrect and results in the "[destroyed object]: error 1:
+// popup parent not constructed" error.
+#if BUILDFLAG(IS_CHROMEOS_LACROS)
+#define MAYBE_SetKeyboardFocusOnTapAfterDismissingPopup \
+  DISABLED_SetKeyboardFocusOnTapAfterDismissingPopup
+#else
+#define MAYBE_SetKeyboardFocusOnTapAfterDismissingPopup \
+  SetKeyboardFocusOnTapAfterDismissingPopup
+#endif
+IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraBrowserTest,
+                       MAYBE_SetKeyboardFocusOnTapAfterDismissingPopup) {
+  GURL page(
+      "data:text/html;charset=utf-8,"
+      "<!DOCTYPE html>"
+      "<html>"
+      "<body>"
+      "<select id=\"ddlChoose\">"
+      " <option value=\"\">Choose</option>"
+      " <option value=\"A\">A</option>"
+      " <option value=\"B\">B</option>"
+      " <option value=\"C\">C</option>"
+      "</select>"
+      "<script type=\"text/javascript\">"
+      "  function focusSelectMenu() {"
+      "    document.getElementById('ddlChoose').focus();"
+      "  }"
+      "</script>"
+      "</body>"
+      "</html>");
+  EXPECT_TRUE(NavigateToURL(shell(), page));
+
+  auto* wc = shell()->web_contents();
+  ASSERT_TRUE(ExecJs(wc, "focusSelectMenu();"));
+  SimulateKeyPress(wc, ui::DomKey::FromCharacter(' '), ui::DomCode::SPACE,
+                   ui::VKEY_SPACE, false, false, false, false);
+
+  // Wait until popup is opened.
+  while (!HasChildPopup()) {
+    base::RunLoop().RunUntilIdle();
+    base::PlatformThread::Sleep(TestTimeouts::tiny_timeout());
+  }
+
+  // Page is focused to begin with.
+  ASSERT_TRUE(IsRenderWidgetHostFocused(GetRenderViewHost()->GetWidget()));
+
+  // Tap outside the page to dismiss the pop-up.
+  const gfx::Point kOutsidePointInRoot(1000, 300);
+  ASSERT_FALSE(GetRenderWidgetHostView()->GetNativeView()->bounds().Contains(
+      kOutsidePointInRoot));
+  ui::test::EventGenerator generator(
+      GetRenderWidgetHostView()->GetNativeView()->GetRootWindow());
+  generator.GestureTapAt(kOutsidePointInRoot);
+  RunUntilInputProcessed(GetRenderViewHost()->GetWidget());
+
+  // Tap on the page.
+  generator.GestureTapAt(
+      GetRenderWidgetHostView()->GetNativeView()->bounds().CenterPoint());
+  RunUntilInputProcessed(GetRenderViewHost()->GetWidget());
+
+  // Page should stay focused after the tap.
+  EXPECT_TRUE(IsRenderWidgetHostFocused(GetRenderViewHost()->GetWidget()));
+}
+
+class RenderWidgetHostViewAuraDevtoolsBrowserTest
+    : public content::DevToolsProtocolTest {
+ public:
+  RenderWidgetHostViewAuraDevtoolsBrowserTest() = default;
+
+ protected:
+  aura::Window* window() {
+    return static_cast<content::RenderWidgetHostViewAura*>(
+               shell()->web_contents()->GetRenderWidgetHostView())
+        ->window();
+  }
+
+  bool HasChildPopup() const {
+    return static_cast<content::RenderWidgetHostViewAura*>(
+               shell()->web_contents()->GetRenderWidgetHostView())
+        ->popup_child_host_view_;
+  }
+};
+
+// This test opens a select popup which inside breaks the debugger
+// which enters a nested event loop.
+IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraDevtoolsBrowserTest,
+                       NoCrashOnSelect) {
+  GURL page(
+      "data:text/html;charset=utf-8,"
+      "<!DOCTYPE html>"
+      "<html>"
+      "<body>"
+      "<select id=\"ddlChoose\">"
+      " <option value=\"\">Choose</option>"
+      " <option value=\"A\">A</option>"
+      " <option value=\"B\">B</option>"
+      " <option value=\"C\">C</option>"
+      "</select>"
+      "<script type=\"text/javascript\">"
+      "  document.getElementById('ddlChoose').addEventListener('change', "
+      "    function () {"
+      "      debugger;"
+      "    });"
+      "  function focusSelectMenu() {"
+      "    document.getElementById('ddlChoose').focus();"
+      "  }"
+      "  function noop() {"
+      "  }"
+      "</script>"
+      "</body>"
+      "</html>");
+
+  EXPECT_TRUE(NavigateToURL(shell(), page));
+  auto* wc = shell()->web_contents();
+  Attach();
+  SendCommand("Debugger.enable", nullptr);
+
+  ASSERT_TRUE(ExecJs(wc, "focusSelectMenu();"));
+  SimulateKeyPress(wc, ui::DomKey::FromCharacter(' '), ui::DomCode::SPACE,
+                   ui::VKEY_SPACE, false, false, false, false);
+
+  // Wait until popup is opened.
+  while (!HasChildPopup()) {
+    base::RunLoop().RunUntilIdle();
+    base::PlatformThread::Sleep(TestTimeouts::tiny_timeout());
+  }
+
+  // Send down and enter to select next item and cause change listener to fire.
+  // The event listener causes devtools to break (and enter a nested event
+  // loop).
+  ui::KeyEvent press_down(ui::ET_KEY_PRESSED, ui::VKEY_DOWN,
+                          ui::DomCode::ARROW_DOWN, ui::EF_NONE,
+                          ui::DomKey::ARROW_DOWN, ui::EventTimeForNow());
+  ui::KeyEvent release_down(ui::ET_KEY_RELEASED, ui::VKEY_DOWN,
+                            ui::DomCode::ARROW_DOWN, ui::EF_NONE,
+                            ui::DomKey::ARROW_DOWN, ui::EventTimeForNow());
+  ui::KeyEvent press_enter(ui::ET_KEY_PRESSED, ui::VKEY_RETURN,
+                           ui::DomCode::ENTER, ui::EF_NONE, ui::DomKey::ENTER,
+                           ui::EventTimeForNow());
+  ui::KeyEvent release_enter(ui::ET_KEY_RELEASED, ui::VKEY_RETURN,
+                             ui::DomCode::ENTER, ui::EF_NONE, ui::DomKey::ENTER,
+                             ui::EventTimeForNow());
+  auto* host_view_aura = static_cast<content::RenderWidgetHostViewAura*>(
+      wc->GetRenderWidgetHostView());
+  host_view_aura->OnKeyEvent(&press_down);
+  host_view_aura->OnKeyEvent(&release_down);
+  host_view_aura->OnKeyEvent(&press_enter);
+  host_view_aura->OnKeyEvent(&release_enter);
+  WaitForNotification("Debugger.paused");
+
+  // Close the widget window while inside the nested event loop.
+  // This will cause the RenderWidget to be destroyed while we are inside a
+  // method and used to cause UAF when the nested event loop unwinds.
+  window()->Hide();
+
+  // Disconnect devtools causes script to resume. This causes the unwind of the
+  // nested event loop. The RenderWidget that was entered has been destroyed,
+  // make sure that we detect this and don't touch any members in the class.
+  Detach();
+
+  // Try to access the renderer process, it would have died if
+  // crbug.com/1032984 wasn't fixed.
+  ASSERT_TRUE(ExecJs(wc, "noop();"));
+}
+
+// Used to verify features under the environment whose device scale factor is 2.
+class RenderWidgetHostViewAuraDSFBrowserTest
+    : public RenderWidgetHostViewAuraBrowserTest {
+ public:
+  // RenderWidgetHostViewAuraBrowserTest:
+  void SetUp() override {
+    EnablePixelOutput(scale());
+    RenderWidgetHostViewAuraBrowserTest::SetUp();
+  }
+
+  float scale() const { return 2.f; }
+};
+
+// Verifies the bounding box of the selection region.
+IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraDSFBrowserTest,
+                       SelectionRegionBoundingBox) {
+  GURL page(
+      "data:text/html;charset=utf-8,"
+      "<!DOCTYPE html>"
+      "<html>"
+      "<body>"
+      "<p id=\"text-content\">Gibbons are apes in the family Hylobatidae.</p>"
+      "<script>"
+      "  function selectText() {"
+      "    const input = document.getElementById('text-content');"
+      "    var range = document.createRange();"
+      "    range.selectNodeContents(input);"
+      "    var selection = window.getSelection();  "
+      "    selection.removeAllRanges();"
+      "    selection.addRange(range);"
+      "  }"
+      "  function getSelectionBounds() {"
+      "    var r = "
+      "document.getSelection().getRangeAt(0).getBoundingClientRect();"
+      "    return [r.x, r.right, r.y, r.bottom]; "
+      "  }"
+      "</script>"
+      "</body>"
+      "</html>");
+  EXPECT_TRUE(NavigateToURL(shell(), page));
+
+  // Select text and wait until the bounding box updates.
+  auto* wc = shell()->web_contents();
+  ASSERT_TRUE(ExecJs(wc, "selectText();"));
+  WaitForSelectionBoundingBoxUpdate(wc);
+
+  // Verify the device scale factor.
+  const float device_scale_factor =
+      GetRenderWidgetHostView()->GetDeviceScaleFactor();
+  ASSERT_EQ(scale(), device_scale_factor);
+
+  // Calculate the DIP size from the bounds in pixel. Follow exactly what is
+  // done in `WebFrameWidgetImpl`.
+  const base::ListValue eval_result =
+      EvalJs(wc, "getSelectionBounds();").ExtractList();
+  const int x = floor(eval_result.GetList()[0].GetDouble());
+  const int right = ceil(eval_result.GetList()[1].GetDouble());
+  const int y = floor(eval_result.GetList()[2].GetDouble());
+  const int bottom = ceil(eval_result.GetList()[3].GetDouble());
+  const int expected_dip_width = floor(right / scale()) - ceil(x / scale());
+  const int expected_dip_height = floor(bottom / scale()) - ceil(y / scale());
+
+  // Verify the DIP size of the bounding box.
+  const gfx::Rect selection_bounds =
+      GetRenderWidgetHostView()->GetSelectionBoundingBox();
+  EXPECT_EQ(expected_dip_width, selection_bounds.width());
+  EXPECT_EQ(expected_dip_height, selection_bounds.height());
+}
+
+class RenderWidgetHostViewAuraActiveWidgetTest : public ContentBrowserTest {
+ public:
+  RenderWidgetHostViewAuraActiveWidgetTest() = default;
+  ~RenderWidgetHostViewAuraActiveWidgetTest() override = default;
+
+  // Helper function to check |isActivated| for a given frame.
+  bool FrameIsActivated(content::RenderFrameHost* rfh) {
+    bool active = false;
+    EXPECT_TRUE(ExecuteScriptAndExtractBool(
+        rfh,
+        "window.domAutomationController.send(window.internals.isActivated())",
+        &active));
+    return active;
+  }
+
+ protected:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ContentBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kExposeInternalsForTesting);
+  }
+
+  void SetUpOnMainThread() override {
+    host_resolver()->AddRule("*", "127.0.0.1");
+
+    // Add content/test/data for cross_site_iframe_factory.html
+    embedded_test_server()->ServeFilesFromSourceDirectory("content/test/data");
+
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(RenderWidgetHostViewAuraActiveWidgetTest);
+};
+
+// In this test, toggling the value of 'active' state changes the
+// active state of frame on the renderer side.
+// SimulateActiveStateForWidget toggles the 'active' state of widget
+// over IPC.
+IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewAuraActiveWidgetTest,
+                       FocusIsInactive) {
+  GURL main_url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  content::WebContents* web_contents = shell()->web_contents();
+
+  // The main_frame_a should have a focus to start with.
+  // On renderer side, blink::FocusController's both 'active' and
+  //'focus' states are set to true.
+  content::RenderFrameHost* main_frame = web_contents->GetMainFrame();
+  EXPECT_TRUE(FrameIsActivated(main_frame));
+
+  // After changing the 'active' state of main_frame to false
+  // blink::FocusController's 'active' set to false.
+  content::SimulateActiveStateForWidget(main_frame, false);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(FrameIsActivated(main_frame));
+
+  // After changing the 'active' state of main_frame to true
+  // blink::FocusController's 'active' set to true.
+  content::SimulateActiveStateForWidget(main_frame, true);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(FrameIsActivated(main_frame));
+}
 
 }  // namespace content

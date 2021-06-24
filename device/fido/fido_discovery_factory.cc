@@ -4,10 +4,12 @@
 
 #include "device/fido/fido_discovery_factory.h"
 
-#include "base/logging.h"
-#include "build/build_config.h"
-#include "device/fido/ble/fido_ble_discovery.h"
+#include "base/notreached.h"
+#include "build/chromeos_buildflags.h"
+#include "device/bluetooth/bluetooth_adapter_factory.h"
+#include "device/fido/aoa/android_accessory_discovery.h"
 #include "device/fido/cable/fido_cable_discovery.h"
+#include "device/fido/cable/v2_discovery.h"
 #include "device/fido/features.h"
 #include "device/fido/fido_discovery_base.h"
 
@@ -22,136 +24,204 @@
 #include "device/fido/win/webauthn_api.h"
 #endif  // defined(OS_WIN)
 
+#if defined(OS_MAC)
+#include "device/fido/mac/discovery.h"
+#endif  // defined(OSMACOSX)
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "device/fido/cros/discovery.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
 namespace device {
 
-namespace {
+FidoDiscoveryFactory::FidoDiscoveryFactory() = default;
+FidoDiscoveryFactory::~FidoDiscoveryFactory() = default;
 
-std::unique_ptr<FidoDiscoveryBase> CreateUsbFidoDiscovery(
-    service_manager::Connector* connector) {
-#if defined(OS_ANDROID)
-  NOTREACHED() << "USB HID not supported on Android.";
-  return nullptr;
-#else
-
-  DCHECK(connector);
-  return std::make_unique<FidoHidDiscovery>(connector);
-#endif  // !defined(OS_ANDROID)
-}
-
-std::unique_ptr<FidoDiscoveryBase> CreateFidoDiscoveryImpl(
-    FidoTransportProtocol transport,
-    service_manager::Connector* connector) {
+std::vector<std::unique_ptr<FidoDiscoveryBase>> FidoDiscoveryFactory::Create(
+    FidoTransportProtocol transport) {
   switch (transport) {
     case FidoTransportProtocol::kUsbHumanInterfaceDevice:
-      return CreateUsbFidoDiscovery(connector);
+      return SingleDiscovery(
+          std::make_unique<FidoHidDiscovery>(hid_ignore_list_));
     case FidoTransportProtocol::kBluetoothLowEnergy:
-      return std::make_unique<FidoBleDiscovery>();
+      return {};
     case FidoTransportProtocol::kCloudAssistedBluetoothLowEnergy:
-      NOTREACHED() << "Cable discovery is constructed using the dedicated "
-                      "factory method.";
-      return nullptr;
+      if (device::BluetoothAdapterFactory::Get()->IsLowEnergySupported() &&
+          (cable_data_.has_value() || qr_generator_key_.has_value())) {
+        auto v1_discovery = std::make_unique<FidoCableDiscovery>(
+            cable_data_.value_or(std::vector<CableDiscoveryData>()));
+
+        std::vector<std::unique_ptr<FidoDiscoveryBase>> ret;
+        const bool have_v2_discovery_data =
+            cable_data_.has_value() &&
+            std::any_of(cable_data_->begin(), cable_data_->end(),
+                        [](const CableDiscoveryData& v) -> bool {
+                          return v.version == CableDiscoveryData::Version::V2;
+                        });
+        if (qr_generator_key_.has_value() || have_v2_discovery_data) {
+          ret.emplace_back(std::make_unique<cablev2::Discovery>(
+              request_type_.value(), network_context_, qr_generator_key_,
+              v1_discovery->GetV2AdvertStream(), std::move(v2_pairings_),
+              std::move(contact_device_stream_),
+              cable_data_.value_or(std::vector<CableDiscoveryData>()),
+              std::move(cable_pairing_callback_)));
+        }
+
+        ret.emplace_back(std::move(v1_discovery));
+        return ret;
+      }
+      return {};
     case FidoTransportProtocol::kNearFieldCommunication:
       // TODO(https://crbug.com/825949): Add NFC support.
-      return nullptr;
-    case FidoTransportProtocol::kInternal:
-      NOTREACHED() << "Internal authenticators should be handled separately.";
-      return nullptr;
+      return {};
+    case FidoTransportProtocol::kInternal: {
+#if defined(OS_MAC) || BUILDFLAG(IS_CHROMEOS_ASH)
+      std::unique_ptr<FidoDiscoveryBase> discovery =
+          MaybeCreatePlatformDiscovery();
+      if (discovery) {
+        return SingleDiscovery(std::move(discovery));
+      }
+      return {};
+#else
+      return {};
+#endif
+    }
+    case FidoTransportProtocol::kAndroidAccessory:
+      if (usb_device_manager_) {
+        auto ret = SingleDiscovery(std::make_unique<AndroidAccessoryDiscovery>(
+            std::move(usb_device_manager_.value()),
+            std::move(aoa_request_description_)));
+        usb_device_manager_.reset();
+        return ret;
+      }
+      return {};
   }
   NOTREACHED() << "Unhandled transport type";
-  return nullptr;
+  return {};
 }
 
-std::unique_ptr<FidoDiscoveryBase> CreateCableDiscoveryImpl(
-    std::vector<CableDiscoveryData> cable_data) {
-  return std::make_unique<FidoCableDiscovery>(std::move(cable_data));
+bool FidoDiscoveryFactory::IsTestOverride() {
+  return false;
 }
 
-}  // namespace
+void FidoDiscoveryFactory::set_cable_data(
+    FidoRequestType request_type,
+    std::vector<CableDiscoveryData> cable_data,
+    const absl::optional<std::array<uint8_t, cablev2::kQRKeySize>>&
+        qr_generator_key,
+    std::vector<std::unique_ptr<cablev2::Pairing>> v2_pairings) {
+  request_type_ = request_type;
+  cable_data_ = std::move(cable_data);
+  qr_generator_key_ = std::move(qr_generator_key);
+  v2_pairings_ = std::move(v2_pairings);
+}
+
+void FidoDiscoveryFactory::set_android_accessory_params(
+    mojo::Remote<device::mojom::UsbDeviceManager> usb_device_manager,
+    std::string aoa_request_description) {
+  usb_device_manager_.emplace(std::move(usb_device_manager));
+  aoa_request_description_ = std::move(aoa_request_description);
+}
+
+void FidoDiscoveryFactory::set_network_context(
+    network::mojom::NetworkContext* network_context) {
+  network_context_ = network_context;
+}
+
+void FidoDiscoveryFactory::set_cable_pairing_callback(
+    base::RepeatingCallback<void(cablev2::PairingEvent)> pairing_callback) {
+  cable_pairing_callback_.emplace(std::move(pairing_callback));
+}
+
+base::RepeatingCallback<void(size_t)>
+FidoDiscoveryFactory::get_cable_contact_callback() {
+  DCHECK(!contact_device_stream_);
+
+  base::RepeatingCallback<void(size_t)> ret;
+  std::tie(ret, contact_device_stream_) =
+      FidoDeviceDiscovery::EventStream<size_t>::New();
+  return ret;
+}
+
+void FidoDiscoveryFactory::set_hid_ignore_list(
+    base::flat_set<VidPid> hid_ignore_list) {
+  hid_ignore_list_ = std::move(hid_ignore_list);
+}
 
 // static
-FidoDiscoveryFactory::FactoryFuncPtr FidoDiscoveryFactory::g_factory_func_ =
-    &CreateFidoDiscoveryImpl;
+std::vector<std::unique_ptr<FidoDiscoveryBase>>
+FidoDiscoveryFactory::SingleDiscovery(
+    std::unique_ptr<FidoDiscoveryBase> discovery) {
+  if (!discovery) {
+    return {};
+  }
 
-// static
-FidoDiscoveryFactory::CableFactoryFuncPtr
-    FidoDiscoveryFactory::g_cable_factory_func_ = &CreateCableDiscoveryImpl;
-
-// static
-std::unique_ptr<FidoDiscoveryBase> FidoDiscoveryFactory::Create(
-    FidoTransportProtocol transport,
-    service_manager::Connector* connector) {
-  return (*g_factory_func_)(transport, connector);
+  std::vector<std::unique_ptr<FidoDiscoveryBase>> ret;
+  ret.emplace_back(std::move(discovery));
+  return ret;
 }
 
-//  static
-std::unique_ptr<FidoDiscoveryBase> FidoDiscoveryFactory::CreateCable(
-    std::vector<CableDiscoveryData> cable_data) {
-  return (*g_cable_factory_func_)(std::move(cable_data));
-}
-
-//  static
 #if defined(OS_WIN)
+void FidoDiscoveryFactory::set_win_webauthn_api(WinWebAuthnApi* api) {
+  win_webauthn_api_ = api;
+}
+
+WinWebAuthnApi* FidoDiscoveryFactory::win_webauthn_api() const {
+  return win_webauthn_api_;
+}
+
 std::unique_ptr<FidoDiscoveryBase>
 FidoDiscoveryFactory::MaybeCreateWinWebAuthnApiDiscovery() {
-  if (!base::FeatureList::IsEnabled(device::kWebAuthUseNativeWinApi) ||
-      !WinWebAuthnApi::GetDefault()->IsAvailable()) {
-    return nullptr;
-  }
-  return std::make_unique<WinWebAuthnApiAuthenticatorDiscovery>(
-      // TODO(martinkr): Inject the window from which the request
-      // originated. Windows uses this parameter to center the
-      // dialog over the parent. The dialog should be centered
-      // over the originating Chrome Window; the foreground window
-      // may have changed to something else since the request was
-      // issued.
-      GetForegroundWindow());
+  // TODO(martinkr): Inject the window from which the request originated.
+  // Windows uses this parameter to center the dialog over the parent. The
+  // dialog should be centered over the originating Chrome Window; the
+  // foreground window may have changed to something else since the request
+  // was issued.
+  return win_webauthn_api_ && win_webauthn_api_->IsAvailable()
+             ? std::make_unique<WinWebAuthnApiAuthenticatorDiscovery>(
+                   GetForegroundWindow(), win_webauthn_api_)
+             : nullptr;
 }
 #endif  // defined(OS_WIN)
 
-// ScopedFidoDiscoveryFactory -------------------------------------------------
-
-namespace internal {
-
-ScopedFidoDiscoveryFactory::ScopedFidoDiscoveryFactory() {
-  DCHECK(!g_current_factory);
-  g_current_factory = this;
-  original_factory_func_ =
-      std::exchange(FidoDiscoveryFactory::g_factory_func_,
-                    &ForwardCreateFidoDiscoveryToCurrentFactory);
-  original_cable_factory_func_ =
-      std::exchange(FidoDiscoveryFactory::g_cable_factory_func_,
-                    &ForwardCreateCableDiscoveryToCurrentFactory);
-}
-
-ScopedFidoDiscoveryFactory::~ScopedFidoDiscoveryFactory() {
-  g_current_factory = nullptr;
-  FidoDiscoveryFactory::g_factory_func_ = original_factory_func_;
-  FidoDiscoveryFactory::g_cable_factory_func_ = original_cable_factory_func_;
-}
-
-// static
+#if defined(OS_MAC)
 std::unique_ptr<FidoDiscoveryBase>
-ScopedFidoDiscoveryFactory::ForwardCreateFidoDiscoveryToCurrentFactory(
-    FidoTransportProtocol transport,
-    ::service_manager::Connector* connector) {
-  DCHECK(g_current_factory);
-  return g_current_factory->CreateFidoDiscovery(transport, connector);
+FidoDiscoveryFactory::MaybeCreatePlatformDiscovery() const {
+  return mac_touch_id_config_
+             ? std::make_unique<fido::mac::FidoTouchIdDiscovery>(
+                   *mac_touch_id_config_)
+             : nullptr;
 }
+#endif
 
-// static
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 std::unique_ptr<FidoDiscoveryBase>
-ScopedFidoDiscoveryFactory::ForwardCreateCableDiscoveryToCurrentFactory(
-    std::vector<CableDiscoveryData> cable_data) {
-  DCHECK(g_current_factory);
-  g_current_factory->set_last_cable_data(std::move(cable_data));
-  return g_current_factory->CreateFidoDiscovery(
-      FidoTransportProtocol::kCloudAssistedBluetoothLowEnergy,
-      nullptr /* connector */);
+FidoDiscoveryFactory::MaybeCreatePlatformDiscovery() const {
+  if (base::FeatureList::IsEnabled(kWebAuthCrosPlatformAuthenticator)) {
+    auto discovery = std::make_unique<FidoChromeOSDiscovery>(
+        generate_request_id_callback_,
+        std::move(get_assertion_request_for_legacy_credential_check_));
+    discovery->set_require_power_button_mode(
+        require_legacy_cros_authenticator_);
+    return discovery;
+  }
+  return nullptr;
 }
 
-// static
-ScopedFidoDiscoveryFactory* ScopedFidoDiscoveryFactory::g_current_factory =
-    nullptr;
+void FidoDiscoveryFactory::set_generate_request_id_callback(
+    base::RepeatingCallback<uint32_t()> callback) {
+  generate_request_id_callback_ = std::move(callback);
+}
 
-}  // namespace internal
+void FidoDiscoveryFactory::set_require_legacy_cros_authenticator(bool value) {
+  require_legacy_cros_authenticator_ = value;
+}
+
+void FidoDiscoveryFactory::
+    set_get_assertion_request_for_legacy_credential_check(
+        CtapGetAssertionRequest request) {
+  get_assertion_request_for_legacy_credential_check_ = std::move(request);
+}
+#endif
+
 }  // namespace device

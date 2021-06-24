@@ -6,7 +6,7 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "base/strings/string_util.h"
 
 namespace android_webview {
@@ -37,11 +37,20 @@ void ScopedAddFeatureFlags::DisableIfNotSet(const base::Feature& feature) {
   AddFeatureIfNotSet(feature, false /* enable */);
 }
 
+bool ScopedAddFeatureFlags::IsEnabled(const base::Feature& feature) {
+  const char* feature_name = feature.name;
+  if (base::Contains(disabled_features_, feature_name))
+    return false;
+  if (base::Contains(enabled_features_, feature_name))
+    return true;
+  return feature.default_state == base::FEATURE_ENABLED_BY_DEFAULT;
+}
+
 void ScopedAddFeatureFlags::AddFeatureIfNotSet(const base::Feature& feature,
                                                bool enable) {
   const char* feature_name = feature.name;
-  if (base::ContainsValue(enabled_features_, feature_name) ||
-      base::ContainsValue(disabled_features_, feature_name)) {
+  if (base::Contains(enabled_features_, feature_name) ||
+      base::Contains(disabled_features_, feature_name)) {
     return;
   }
   if (enable) {

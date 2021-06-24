@@ -9,7 +9,7 @@
 
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/chromeos/extensions/file_manager/private_api_util.h"
-#include "chrome/browser/extensions/chrome_extension_function_details.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/drive/event_logger.h"
 
 namespace extensions {
@@ -22,21 +22,20 @@ constexpr base::TimeDelta kDefaultVerySlowOperationThreshold =
 
 }  // namespace
 
-LoggedUIThreadExtensionFunction::LoggedUIThreadExtensionFunction()
+LoggedExtensionFunction::LoggedExtensionFunction()
     : log_on_completion_(false),
       slow_threshold_(kDefaultSlowOperationThreshold),
       very_slow_threshold_(kDefaultVerySlowOperationThreshold) {
   start_time_ = base::TimeTicks::Now();
 }
 
-LoggedUIThreadExtensionFunction::~LoggedUIThreadExtensionFunction() = default;
+LoggedExtensionFunction::~LoggedExtensionFunction() = default;
 
-void LoggedUIThreadExtensionFunction::OnResponded() {
+void LoggedExtensionFunction::OnResponded() {
   base::TimeDelta elapsed = base::TimeTicks::Now() - start_time_;
 
-  const ChromeExtensionFunctionDetails chrome_details(this);
-  drive::EventLogger* logger =
-      file_manager::util::GetLogger(chrome_details.GetProfile());
+  drive::EventLogger* logger = file_manager::util::GetLogger(
+      Profile::FromBrowserContext(browser_context()));
   if (logger && log_on_completion_) {
     DCHECK(response_type());
     bool success = *response_type() == SUCCEEDED;
@@ -61,10 +60,10 @@ void LoggedUIThreadExtensionFunction::OnResponded() {
                 "ms)",
                 name(), request_id(), elapsed.InMilliseconds());
   }
-  UIThreadExtensionFunction::OnResponded();
+  ExtensionFunction::OnResponded();
 }
 
-void LoggedUIThreadExtensionFunction::SetWarningThresholds(
+void LoggedExtensionFunction::SetWarningThresholds(
     base::TimeDelta slow_threshold,
     base::TimeDelta very_slow_threshold) {
   slow_threshold_ = slow_threshold;

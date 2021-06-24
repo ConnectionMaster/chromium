@@ -40,7 +40,7 @@ class DesktopBrowserFrameAura : public views::DesktopNativeWidgetAura,
 
   // Overridden from views::DesktopNativeWidgetAura:
   void OnHostClosed() override;
-  void InitNativeWidget(const views::Widget::InitParams& params) override;
+  void InitNativeWidget(views::Widget::InitParams params) override;
 
   // Overridden from NativeBrowserFrame:
   views::Widget::InitParams GetWidgetParams() override;
@@ -54,6 +54,7 @@ class DesktopBrowserFrameAura : public views::DesktopNativeWidgetAura,
       const content::NativeWebKeyboardEvent& event) override;
   bool HandleKeyboardEvent(
       const content::NativeWebKeyboardEvent& event) override;
+  bool ShouldRestorePreviousBrowserWidgetState() const override;
 
  private:
   // The BrowserView is our ClientView. This is a pointer to it.

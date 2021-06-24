@@ -9,8 +9,8 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread_task_runner_handle.h"
 
@@ -110,7 +110,7 @@ void WebDataRequestManager::RequestCompleted(
   if (task_runner)
     task_runner->PostTask(FROM_HERE, std::move(task));
   else
-    base::PostTask(FROM_HERE, std::move(task));
+    base::ThreadPool::PostTask(FROM_HERE, std::move(task));
 }
 
 WebDataRequestManager::~WebDataRequestManager() {

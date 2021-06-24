@@ -6,7 +6,6 @@ package org.chromium.webapk.lib.client;
 
 import android.content.ComponentName;
 import android.os.Bundle;
-import android.os.RemoteException;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -22,8 +21,8 @@ import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.components.webapk.lib.common.WebApkMetaDataKeys;
 import org.chromium.testing.local.LocalRobolectricTestRunner;
-import org.chromium.webapk.lib.common.WebApkMetaDataKeys;
 import org.chromium.webapk.lib.common.identity_service.IIdentityService;
 import org.chromium.webapk.test.WebApkTestHelper;
 
@@ -31,9 +30,9 @@ import org.chromium.webapk.test.WebApkTestHelper;
  * Unit tests for {@link org.chromium.webapk.lib.client.WebApkIdentityServiceClient}.
  */
 @RunWith(LocalRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, packageName = WebApkIdentityServiceClientTest.BROWSER_PACKAGE_NAME)
+@Config(manifest = Config.NONE)
 public class WebApkIdentityServiceClientTest {
-    static final String BROWSER_PACKAGE_NAME = "browser";
+    static final String BROWSER_PACKAGE_NAME = "org.chromium.test";
 
     private static final String WEBAPK_PACKAGE_NAME = "org.chromium.webapk.test_package";
     private static final String ANOTHER_BROWSER_PACKAGE_NAME = "another.browser";
@@ -46,7 +45,7 @@ public class WebApkIdentityServiceClientTest {
         private boolean mIsCalled;
 
         @Override
-        public void onChecked(boolean doesBrowserBackWebApk) {
+        public void onChecked(boolean doesBrowserBackWebApk, String browserPackageName) {
             mResult = doesBrowserBackWebApk;
             mIsCalled = true;
         }
@@ -61,7 +60,7 @@ public class WebApkIdentityServiceClientTest {
         }
 
         @Override
-        public String getRuntimeHostBrowserPackageName() throws RemoteException {
+        public String getRuntimeHostBrowserPackageName() {
             return mRuntimeHost;
         }
     }

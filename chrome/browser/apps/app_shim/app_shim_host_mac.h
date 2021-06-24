@@ -13,29 +13,73 @@
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/threading/thread_checker.h"
-#include "chrome/browser/apps/app_shim/app_shim_handler_mac.h"
 #include "chrome/common/mac/app_shim.mojom.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
-namespace content {
-class NSViewBridgeFactoryHost;
-}  // namespace content
+namespace apps {
+using ShimLaunchedCallback = base::OnceCallback<void(base::Process)>;
+using ShimTerminatedCallback = base::OnceClosure;
+}  // namespace apps
 
-namespace views {
-class BridgeFactoryHost;
-}  // namespace views
+namespace remote_cocoa {
+class ApplicationHost;
+}  // namespace remote_cocoa
 
 class AppShimHostBootstrap;
 
 // This is the counterpart to AppShimController in
-// chrome/app/chrome_main_app_mode_mac.mm. The AppShimHost owns itself, and is
-// destroyed when the app it corresponds to is closed or when the channel
-// connected to the app shim is closed.
+// chrome/app/chrome_main_app_mode_mac.mm. The AppShimHost is owned by the
+// AppShimManager, which implements its client interface.
 class AppShimHost : public chrome::mojom::AppShimHost {
  public:
-  AppShimHost(const std::string& app_id,
+  // The interface through which the AppShimHost interacts with
+  // AppShimManager.
+  class Client {
+   public:
+    // Request that the handler launch the app shim process.
+    virtual void OnShimLaunchRequested(
+        AppShimHost* host,
+        bool recreate_shims,
+        apps::ShimLaunchedCallback launched_callback,
+        apps::ShimTerminatedCallback terminated_callback) = 0;
+
+    // Invoked by the shim host when the connection to the shim process is
+    // closed. This is also called when we give up on trying to get a shim to
+    // connect.
+    virtual void OnShimProcessDisconnected(AppShimHost* host) = 0;
+
+    // Invoked by the shim host when the shim process receives a focus event.
+    virtual void OnShimFocus(AppShimHost* host) = 0;
+
+    // Invoked by the shim host when the shim process should reopen if needed.
+    virtual void OnShimReopen(AppShimHost* host) = 0;
+
+    // Invoked by the shim host when the shim opens a file, e.g, by dragging
+    // a file onto the dock icon.
+    virtual void OnShimOpenedFiles(
+        AppShimHost* host,
+        const std::vector<base::FilePath>& files) = 0;
+
+    // Invoked when a profile is selected from the menu bar.
+    virtual void OnShimSelectedProfile(AppShimHost* host,
+                                       const base::FilePath& profile_path) = 0;
+
+    // Invoked by the shim host when the shim opens a url, e.g, clicking a link
+    // in mail.
+    virtual void OnShimOpenedUrls(AppShimHost* host,
+                                  const std::vector<GURL>& urls) = 0;
+  };
+
+  AppShimHost(Client* client,
+              const std::string& app_id,
               const base::FilePath& profile_path,
               bool uses_remote_views);
+
+  AppShimHost(const AppShimHost&) = delete;
+  AppShimHost& operator=(const AppShimHost&) = delete;
+  ~AppShimHost() override;
 
   bool UsesRemoteViews() const { return uses_remote_views_; }
 
@@ -51,45 +95,19 @@ class AppShimHost : public chrome::mojom::AppShimHost {
   virtual void OnBootstrapConnected(
       std::unique_ptr<AppShimHostBootstrap> bootstrap);
 
-  // Invoked when the app is closed in the browser process.
-  void OnAppClosed();
-
-  // TODO(ccameron): The following three function should directly call the
-  // AppShim mojo interface (they only don't due to tests that could be changed
-  // to mock the AppShim mojo interface).
-  // Invoked when the app should be hidden.
-  void OnAppHide();
-  // Invoked when a window becomes visible while the app is hidden. Ensures
-  // the shim's "Hide/Show" state is updated correctly and the app can be
-  // re-hidden.
-  virtual void OnAppUnhideWithoutActivation();
-  // Invoked when the app is requesting user attention.
-  void OnAppRequestUserAttention(apps::AppShimAttentionType type);
-
   // Functions to allow the handler to determine which app this host corresponds
   // to.
   base::FilePath GetProfilePath() const;
   std::string GetAppId() const;
 
   // Return the factory to use to create new widgets in the same process.
-  views::BridgeFactoryHost* GetViewsBridgeFactoryHost() const;
+  remote_cocoa::ApplicationHost* GetRemoteCocoaApplicationHost() const;
 
-  // Return the app shim interface.
-  chrome::mojom::AppShim* GetAppShim() const;
+  // Return the app shim interface. Virtual for tests.
+  virtual chrome::mojom::AppShim* GetAppShim() const;
 
  protected:
-  // AppShimHost is owned by itself. It will delete itself in Close (called on
-  // channel error and OnAppClosed).
-  ~AppShimHost() override;
-
-  // Return the AppShimHandler for this app (virtual for tests).
-  virtual apps::AppShimHandler* GetAppShimHandler() const;
-
- private:
   void ChannelError(uint32_t custom_reason, const std::string& description);
-
-  // Closes the channel and destroys the AppShimHost.
-  void Close();
 
   // Helper function to launch the app shim process.
   void LaunchShimInternal(bool recreate_shims);
@@ -103,24 +121,27 @@ class AppShimHost : public chrome::mojom::AppShimHost {
   void OnShimProcessTerminated(bool recreate_shims_requested);
 
   // chrome::mojom::AppShimHost.
-  void FocusApp(apps::AppShimFocusType focus_type,
-                const std::vector<base::FilePath>& files) override;
-  void SetAppHidden(bool hidden) override;
-  void QuitApp() override;
+  void FocusApp() override;
+  void ReopenApp() override;
+  void FilesOpened(const std::vector<base::FilePath>& files) override;
+  void ProfileSelectedFromMenu(const base::FilePath& profile_path) override;
+  void UrlsOpened(const std::vector<GURL>& urls) override;
 
-  mojo::Binding<chrome::mojom::AppShimHost> host_binding_;
-  chrome::mojom::AppShimPtr app_shim_;
-  chrome::mojom::AppShimRequest app_shim_request_;
+  // Weak, owns |this|.
+  Client* const client_;
+
+  mojo::Receiver<chrome::mojom::AppShimHost> host_receiver_{this};
+  mojo::Remote<chrome::mojom::AppShim> app_shim_;
+  mojo::PendingReceiver<chrome::mojom::AppShim> app_shim_receiver_;
 
   // Only allow LaunchShim to have any effect on the first time it is called. If
   // that launch fails, it will re-launch (requesting that the shim be
   // re-created).
-  bool launch_shim_has_been_called_;
+  bool launch_shim_has_been_called_ = false;
 
   std::unique_ptr<AppShimHostBootstrap> bootstrap_;
 
-  std::unique_ptr<views::BridgeFactoryHost> views_bridge_factory_host_;
-  std::unique_ptr<content::NSViewBridgeFactoryHost> content_bridge_factory_;
+  std::unique_ptr<remote_cocoa::ApplicationHost> remote_cocoa_application_host_;
 
   std::string app_id_;
   base::FilePath profile_path_;
@@ -131,7 +152,6 @@ class AppShimHost : public chrome::mojom::AppShimHost {
 
   // This weak factory is used for launch callbacks only.
   base::WeakPtrFactory<AppShimHost> launch_weak_factory_;
-  DISALLOW_COPY_AND_ASSIGN(AppShimHost);
 };
 
 #endif  // CHROME_BROWSER_APPS_APP_SHIM_APP_SHIM_HOST_MAC_H_

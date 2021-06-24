@@ -5,8 +5,7 @@
 #ifndef ASH_PUBLIC_CPP_SHELL_WINDOW_IDS_H_
 #define ASH_PUBLIC_CPP_SHELL_WINDOW_IDS_H_
 
-#include <stddef.h>
-#include <stdint.h>
+#include <vector>
 
 #include "ash/public/cpp/ash_public_export.h"
 
@@ -18,13 +17,24 @@ enum ShellWindowId {
   // Used to indicate no shell window id.
   kShellWindowId_Invalid = -1,
 
-  // The screen rotation container in between root window and its children, used
-  // for screen rotation animation.
-  kShellWindowId_ScreenRotationContainer = 0,
+  // This container is used for animations which take a screenshot of the
+  // contents, place them on top of the root and animate the screenshot layer.
+  // We can't take a screenshot of the root itself, otherwise subsequent
+  // screenshots will screenshot previous screenshots.
+  kShellWindowId_ScreenAnimationContainer = 0,
+
+  // The magnified container which contains everything that would be magnified
+  // when docked magnifier is enabled.
+  kShellWindowId_MagnifiedContainer,
+
+  // The container for the Docked Magnifier viewport widget and the separator.
+  kShellWindowId_DockedMagnifierContainer,
 
   // A higher-level container that holds all of the containers stacked below
   // kShellWindowId_LockScreenContainer.  Only used by PowerButtonController for
-  // animating lower-level containers.
+  // animating lower-level containers and AccessibilityController for hiding
+  // non-lock screen windows from Accessibility when the user session is
+  // blocked.
   kShellWindowId_NonLockScreenContainersContainer,
 
   // A higher-level container that holds containers that hold lock-screen
@@ -36,24 +46,35 @@ enum ShellWindowId {
   // lock-screen-related windows (which are displayed regardless of the screen
   // lock state, effectively containers stacked above
   // kShellWindowId_LockSystemModalContainer). Used by the shelf, status area,
-  // virtual keyboard, settings bubble, menus, Docked Magnifier viewport, etc.
-  // Also used by the PowerButtonController for animating lower-level
-  // containers.
+  // virtual keyboard, settings bubble, menus, etc.  Also used by the
+  // PowerButtonController for animating lower-level containers.
   kShellWindowId_LockScreenRelatedContainersContainer,
 
-  // A container used for windows of WINDOW_TYPE_CONTROL that have no parent.
+  // A container used for windows that temporarily have no parent. It is
+  // expected the windows will get parented to another container shortly after.
   // This container is not visible.
-  kShellWindowId_UnparentedControlContainer,
+  kShellWindowId_UnparentedContainer,
 
   // The wallpaper (desktop background) window.
   kShellWindowId_WallpaperContainer,
 
   // The containers for standard top-level windows per active desks.
-  // Note: Do not use this container directly. Use
-  // `desks_util::GetActiveDeskContainerId()` instead.
+  // * Notes:
+  //   - There are no direct mapping between `kShellWindowId_DeskContainerA` and
+  //     Desk 1, or `kShellWindowId_DeskContainerB` and Desk 2. The containers
+  //     are reused as desks are created and deleted.
+  //   - **DO NOT** use these container IDs directly, instead use
+  //     `desks_util::GetActiveDeskContainerId()`.
   // TODO(afakhry): Rename this container, unexpose it, and add the rest of the
   // containers.
   kShellWindowId_DefaultContainerDeprecated,
+  kShellWindowId_DeskContainerB,
+  kShellWindowId_DeskContainerC,
+  kShellWindowId_DeskContainerD,
+  kShellWindowId_DeskContainerE,
+  kShellWindowId_DeskContainerF,
+  kShellWindowId_DeskContainerG,
+  kShellWindowId_DeskContainerH,
 
   // The container for top-level windows with the 'always-on-top' flag set.
   kShellWindowId_AlwaysOnTopContainer,
@@ -76,7 +97,8 @@ enum ShellWindowId {
   // The container for Virtual Keyboard from ARC IMEs.
   kShellWindowId_ArcVirtualKeyboardContainer,
 
-  // The container for the shelf.
+  // The container for UI on the shelf (shelf, navigation, hotseat,
+  // status area).
   kShellWindowId_ShelfContainer,
 
   // The container for bubbles which float over the shelf.
@@ -101,9 +123,6 @@ enum ShellWindowId {
 
   // The container for the lock screen modal windows.
   kShellWindowId_LockSystemModalContainer,
-
-  // The container for the status area.
-  kShellWindowId_StatusContainer,
 
   // A parent container that holds the virtual keyboard container and ime
   // windows if any. This is to ensure that the virtual keyboard or ime window
@@ -132,21 +151,25 @@ enum ShellWindowId {
   // TODO(jamescook): Consolidate this with DockedMagnifierContainer.
   kShellWindowId_AccessibilityPanelContainer,
 
-  // The container for the Autoclick bubble that overlays the work area and any
-  // menus and bubbles, but appears under the Autoclick mouse UX in
-  // kShellWindowId_OverlayContainer. Autoclick needs to work with dialogs and
-  // menus, so it must be shown above kShellWindowId_SettingBubbleContainer to
-  // allow the user to access these settings. However, the Autoclick bubble has
-  // buttons with tooltips which must be shown above the Autoclick bubble, so it
-  // must be under kShellWindowId_DragImageAndTooltipContainer.
-  kShellWindowId_AutoclickContainer,
+  // The container for accessibility bubbles that overlay the work area and any
+  // other menus and bubbles, but appear under the Autoclick mouse UX in
+  // kShellWindowId_OverlayContainer. Both Autoclick and Switch Access have
+  // bubbles that appear in this layer. These features need to work with dialogs
+  // and menus, so they must be shown above
+  // kShellWindowId_SettingBubbleContainer to allow the user to access these
+  // settings. However, these bubbles may have buttons with tooltips which must
+  // be shown above the bubbles, so it must be under
+  // kShellWindowId_DragImageAndTooltipContainer.
+  // TODO(crbug/1076973): Investigate merging this container with
+  // AccessibilityPanelContainer.
+  kShellWindowId_AccessibilityBubbleContainer,
 
   // The container for special components overlaid onscreen, such as the
   // region selector for partial screenshots.
   kShellWindowId_OverlayContainer,
 
-  // The container for the Docked Magnifier viewport widget and the separator.
-  kShellWindowId_DockedMagnifierContainer,
+  // The container for ambient mode screen saver.
+  kShellWindowId_AmbientModeContainer,
 
   // The container for mouse cursor.
   kShellWindowId_MouseCursorContainer,
@@ -158,67 +181,41 @@ enum ShellWindowId {
   // The topmost container, used for power off animation.
   kShellWindowId_PowerButtonAnimationContainer,
 
-  kShellWindowId_MinContainer = kShellWindowId_ScreenRotationContainer,
+  kShellWindowId_MinContainer = kShellWindowId_ScreenAnimationContainer,
   kShellWindowId_MaxContainer = kShellWindowId_PowerButtonAnimationContainer,
 };
 
 // Special shell windows that are not containers.
 enum NonContainerWindowId {
   // The window created by PhantomWindowController or DragWindowController.
-  kShellWindowId_PhantomWindow = kShellWindowId_MaxContainer + 1
-};
+  kShellWindowId_PhantomWindow = kShellWindowId_MaxContainer + 1,
 
-// A list of all the above valid container IDs. Add any new ID to this list.
-// This list is needed to validate we have no duplicate IDs.
-const int32_t kAllShellContainerIds[] = {
-    kShellWindowId_ScreenRotationContainer,
-    kShellWindowId_NonLockScreenContainersContainer,
-    kShellWindowId_LockScreenContainersContainer,
-    kShellWindowId_LockScreenRelatedContainersContainer,
-    kShellWindowId_UnparentedControlContainer,
-    kShellWindowId_WallpaperContainer,
-    kShellWindowId_VirtualKeyboardContainer,
-    kShellWindowId_DefaultContainerDeprecated,
-    kShellWindowId_AlwaysOnTopContainer,
-    kShellWindowId_AppListContainer,
-    kShellWindowId_HomeScreenContainer,
-    kShellWindowId_ArcImeWindowParentContainer,
-    kShellWindowId_ArcVirtualKeyboardContainer,
-    kShellWindowId_ShelfContainer,
-    kShellWindowId_ShelfBubbleContainer,
-    kShellWindowId_SystemModalContainer,
-    kShellWindowId_LockScreenWallpaperContainer,
-    kShellWindowId_LockScreenContainer,
-    kShellWindowId_LockActionHandlerContainer,
-    kShellWindowId_LockSystemModalContainer,
-    kShellWindowId_StatusContainer,
-    kShellWindowId_ImeWindowParentContainer,
-    kShellWindowId_MenuContainer,
-    kShellWindowId_DragImageAndTooltipContainer,
-    kShellWindowId_PowerMenuContainer,
-    kShellWindowId_SettingBubbleContainer,
-    kShellWindowId_AccessibilityPanelContainer,
-    kShellWindowId_AutoclickContainer,
-    kShellWindowId_OverlayContainer,
-    kShellWindowId_DockedMagnifierContainer,
-    kShellWindowId_MouseCursorContainer,
-    kShellWindowId_AlwaysOnTopWallpaperContainer,
-    kShellWindowId_PowerButtonAnimationContainer,
+  // The window that shows the Virtual Desks bar at the top of overview. There's
+  // only one such window on each display when overview mode is active.
+  kShellWindowId_DesksBarWindow,
+
+  // The window that shows a blue highlight on the edges of a selected display.
+  // Only one window exists whenever the display settings page is open with
+  // multiple displays connected.
+  kShellWindowId_DisplayIdentificationHighlightWindow,
 };
 
 // A list of system modal container IDs. The order of the list is important that
 // the more restrictive container appears before the less restrictive ones.
-const int32_t kSystemModalContainerIds[] = {
+constexpr int kSystemModalContainerIds[] = {
     kShellWindowId_LockSystemModalContainer,
     kShellWindowId_SystemModalContainer};
 
-// These are the list of container ids of containers which may contain windows
-// that need to be activated.
-ASH_PUBLIC_EXPORT extern const int32_t kActivatableShellWindowIds[];
-ASH_PUBLIC_EXPORT extern const size_t kNumActivatableShellWindowIds;
+// Returns the list of container ids of containers which may contain windows
+// that need to be activated. this list is ordered by the activation order; that
+// is, windows in containers appearing earlier in the list are activated before
+// windows in containers appearing later in the list. This list is used by
+// AshFocusRules to determine which container to start the search from when
+// looking for the next activatable window.
+ASH_PUBLIC_EXPORT std::vector<int> GetActivatableShellWindowIds();
 
-// Returns true if |id| is in |kActivatableShellWindowIds|.
-ASH_PUBLIC_EXPORT bool IsActivatableShellWindowId(int32_t id);
+// Returns true if |id| is in GetActivatableShellWindowIds.
+ASH_PUBLIC_EXPORT bool IsActivatableShellWindowId(int id);
 
 }  // namespace ash
 

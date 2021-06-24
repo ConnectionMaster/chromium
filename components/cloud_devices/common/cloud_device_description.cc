@@ -8,7 +8,6 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
 #include "base/values.h"
 #include "components/cloud_devices/common/cloud_device_description_consts.h"
 
@@ -22,11 +21,11 @@ CloudDeviceDescription::CloudDeviceDescription()
 CloudDeviceDescription::~CloudDeviceDescription() = default;
 
 bool CloudDeviceDescription::InitFromString(const std::string& json) {
-  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(json);
+  absl::optional<base::Value> value = base::JSONReader::Read(json);
   if (!value)
     return false;
 
-  return InitFromValue(base::Value::FromUniquePtrValue(std::move(value)));
+  return InitFromValue(std::move(*value));
 }
 
 bool CloudDeviceDescription::InitFromValue(base::Value ticket) {

@@ -10,9 +10,6 @@ import unittest
 
 import owners_file_tags
 
-SRC = os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir)
-sys.path.append(os.path.join(SRC, 'third_party', 'pymock'))
-
 import mock
 
 @contextmanager
@@ -85,16 +82,20 @@ class OwnersFileTagsTest(unittest.TestCase):
       self.assertEqual({
           '.': {},
           'dummydir1': {
-              'team': 'dummy-team@chromium.org',
               'component': 'Dummy>Component',
+              'team': 'dummy-team@chromium.org',
           },
           'dummydir1/innerdir1': {
+              'component': 'Dummy>Component',
               'team': 'dummy-specialist-team@chromium.org',
           },
           'dummydir1/innerdir2': {
-              'component': 'Dummy>Component>Subcomponent'
+              'component': 'Dummy>Component>Subcomponent',
+              'team': 'dummy-team@chromium.org',
           },
           'dummydir1/innerdir3': {
+              'component': 'Dummy>Component',
+              'team': 'dummy-team@chromium.org',
               'os': 'Mac'
           }
       }, scraped_data)
@@ -120,20 +121,24 @@ class OwnersFileTagsTest(unittest.TestCase):
       self.assertEqual({
           '.': {},
           'dummydir1': {
-              'team': 'dummy-team@chromium.org',
               'component': 'Dummy>Component',
+              'team': 'dummy-team@chromium.org',
           },
           'dummydir1/innerdir1': {
+              'component': 'Dummy>Component',
               'team': 'dummy-specialist-team@chromium.org',
           },
           'dummydir1/innerdir2': {
-              'component': 'Dummy>Component>Subcomponent'
+              'component': 'Dummy>Component>Subcomponent',
+              'team': 'dummy-team@chromium.org',
           },
           'dummydir1/innerdir3': {
+              'component': 'Dummy>Component',
+              'team': 'dummy-team@chromium.org',
               'os': 'Mac'
           },
           'dummydir1/innerdir4': {
-              'team': 'dummy-team@chromium.org',
               'component': 'Dummy>Component',
+              'team': 'dummy-team@chromium.org',
           },
-      }, scraped_data )
+      }, scraped_data)

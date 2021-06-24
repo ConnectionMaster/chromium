@@ -11,10 +11,16 @@
  * Event 'loaded' will be fired when the page has been successfully loaded.
  */
 
+/**
+ * Name of the screen.
+ * @type {string}
+ */
+const VALUE_PROP_SCREEN_ID = 'ValuePropScreen';
+
 Polymer({
   is: 'assistant-value-prop',
 
-  behaviors: [OobeDialogHostBehavior],
+  behaviors: [OobeI18nBehavior, OobeDialogHostBehavior],
 
   properties: {
     /**
@@ -26,21 +32,39 @@ Polymer({
     },
 
     /**
-     * System locale.
-     */
-    locale: {
-      type: String,
-    },
-
-    /**
      * Default url for locale en_us.
      */
     defaultUrl: {
       type: String,
-      value:
-          'https://www.gstatic.com/opa-android/oobe/a02187e41eed9e42/v2_omni_en_us.html',
+      value() {
+        return this.urlTemplate_.replace('$', 'en_us');
+      }
+    },
+
+    /**
+     * Whether new OOBE layout is enabled.
+     * @type {boolean}
+     */
+    newLayoutEnabled_: {
+      type: Boolean,
+      value() {
+        return loadTimeData.valueExists('newLayoutEnabled') &&
+            loadTimeData.getBoolean('newLayoutEnabled');
+      }
     },
   },
+
+  setUrlTemplateForTesting(url) {
+    this.urlTemplate_ = url;
+  },
+
+  /**
+   * The value prop URL template - loaded from loadTimeData.
+   * The template is expected to have '$' instead of the locale.
+   * @private {string}
+   */
+  urlTemplate_:
+      'https://www.gstatic.com/opa-android/oobe/a02187e41eed9e42/v3_omni_$.html',
 
   /**
    * Whether try to reload with the default url when a 404 error occurred.
@@ -78,13 +102,6 @@ Polymer({
   headerReceived_: false,
 
   /**
-   * Whether the webview has been successfully loaded.
-   * @type {boolean}
-   * @private
-   */
-  webViewLoaded_: false,
-
-  /**
    * Whether all the setting zippy has been successfully loaded.
    * @type {boolean}
    * @private
@@ -112,19 +129,20 @@ Polymer({
    */
   sanitizer_: new HtmlSanitizer(),
 
+  /** @private {?assistant.BrowserProxy} */
+  browserProxy_: null,
+
   /**
    * On-tap event handler for skip button.
    *
    * @private
    */
-  onSkipTap_: function() {
+  onSkipTap_() {
     if (this.buttonsDisabled) {
       return;
     }
     this.buttonsDisabled = true;
-    chrome.send(
-        'login.AssistantOptInFlowScreen.ValuePropScreen.userActed',
-        ['skip-pressed']);
+    this.browserProxy_.userActed(VALUE_PROP_SCREEN_ID, ['skip-pressed']);
   },
 
   /**
@@ -132,64 +150,74 @@ Polymer({
    *
    * @private
    */
-  onNextTap_: function() {
+  onNextTap_() {
     if (this.buttonsDisabled) {
       return;
     }
     this.buttonsDisabled = true;
-    chrome.send(
-        'login.AssistantOptInFlowScreen.ValuePropScreen.userActed',
-        ['next-pressed']);
+    this.browserProxy_.userActed(VALUE_PROP_SCREEN_ID, ['next-pressed']);
+  },
+
+  /** @override */
+  created() {
+    this.browserProxy_ = assistant.BrowserProxyImpl.getInstance();
   },
 
   /**
    * Sets learn more content text and shows it as overlay dialog.
    * @param {string} content HTML formatted text to show.
    */
-  showLearnMoreOverlay: function(title, additionalInfo) {
+  showLearnMoreOverlay(title, additionalInfo) {
     this.$['overlay-title-text'].innerHTML =
         this.sanitizer_.sanitizeHtml(title);
     this.$['overlay-additional-info-text'].innerHTML =
         this.sanitizer_.sanitizeHtml(additionalInfo);
+    this.$['learn-more-overlay'].setTitleAriaLabel(title);
 
-    var overlay = this.$['learn-more-overlay'];
-    overlay.hidden = false;
+    this.$['learn-more-overlay'].showModal();
+    this.$['overlay-close-button'].focus();
   },
 
   /**
    * Hides overlay dialog.
    */
-  hideOverlay: function() {
-    this.$['learn-more-overlay'].hidden = true;
+  hideOverlay() {
+    this.$['learn-more-overlay'].close();
+    if (this.lastFocusedElement) {
+      this.lastFocusedElement.focus();
+      this.lastFocusedElement = null;
+    }
   },
 
   /**
-   * Reloads value prop webview.
+   * Reloads value prop page by fetching setting zippy and consent string.
    */
-  reloadPage: function() {
+  reloadPage() {
     this.fire('loading');
 
     if (this.initialized_) {
-      chrome.send(
-          'login.AssistantOptInFlowScreen.ValuePropScreen.userActed',
-          ['reload-requested']);
+      this.browserProxy_.userActed(VALUE_PROP_SCREEN_ID, ['reload-requested']);
       this.settingZippyLoaded_ = false;
       this.consentStringLoaded_ = false;
     }
-
-    this.loadingError_ = false;
-    this.headerReceived_ = false;
-    this.valuePropView_.src =
-        'https://www.gstatic.com/opa-android/oobe/a02187e41eed9e42/v2_omni_' +
-        this.locale + '.html';
 
     this.buttonsDisabled = true;
   },
 
   /**
+   * Reloads value prop animation webview.
+   */
+  reloadWebView() {
+    this.loadingError_ = false;
+    this.headerReceived_ = false;
+    let locale = this.locale.replace('-', '_').toLowerCase();
+    this.valuePropView_.src = this.urlTemplate_.replace('$', locale);
+  },
+
+  /**
    * Handles event when value prop webview cannot be loaded.
    */
-  onWebViewErrorOccurred: function(details) {
+  onWebViewErrorOccurred(details) {
     this.fire('error');
     this.loadingError_ = true;
   },
@@ -197,7 +225,7 @@ Polymer({
   /**
    * Handles event when value prop webview is loaded.
    */
-  onWebViewContentLoad: function(details) {
+  onWebViewContentLoad(details) {
     if (details == null) {
       return;
     }
@@ -211,7 +239,6 @@ Polymer({
       return;
     }
 
-    this.webViewLoaded_ = true;
     if (this.settingZippyLoaded_ && this.consentStringLoaded_) {
       this.onPageLoaded();
     }
@@ -220,7 +247,7 @@ Polymer({
   /**
    * Handles event when webview request headers received.
    */
-  onWebViewHeadersReceived: function(details) {
+  onWebViewHeadersReceived(details) {
     if (details == null) {
       return;
     }
@@ -240,31 +267,33 @@ Polymer({
   /**
    * Reload the page with the given consent string text data.
    */
-  reloadContent: function(data) {
+  reloadContent(data) {
     this.$['value-prop-dialog'].setAttribute(
         'aria-label', data['valuePropTitle']);
-    this.$['user-image'].src = data['valuePropUserImage'];
     this.$['title-text'].textContent = data['valuePropTitle'];
     this.$['intro-text'].textContent = data['valuePropIntro'];
+    this.$['user-image'].src = data['valuePropUserImage'];
     this.$['user-name'].textContent = data['valuePropIdentity'];
+    this.$['next-button'].labelForAria = data['valuePropNextButton'];
     this.$['next-button-text'].textContent = data['valuePropNextButton'];
+    this.$['skip-button'].labelForAria = data['valuePropSkipButton'];
     this.$['skip-button-text'].textContent = data['valuePropSkipButton'];
     this.$['footer-text'].innerHTML =
         this.sanitizer_.sanitizeHtml(data['valuePropFooter']);
 
     this.consentStringLoaded_ = true;
-    if (this.webViewLoaded_ && this.settingZippyLoaded_) {
-      this.onPageLoaded();
+    if (this.settingZippyLoaded_) {
+      this.reloadWebView();
     }
   },
 
   /**
    * Add a setting zippy with the provided data.
    */
-  addSettingZippy: function(zippy_data) {
+  addSettingZippy(zippy_data) {
     if (this.settingZippyLoaded_) {
-      if (this.webViewLoaded_ && this.consentStringLoaded_) {
-        this.onPageLoaded();
+      if (this.consentStringLoaded_) {
+        this.reloadWebView();
       }
       return;
     }
@@ -275,27 +304,30 @@ Polymer({
       zippy.setAttribute(
           'icon-src',
           'data:text/html;charset=utf-8,' +
-              encodeURIComponent(zippy.getWrappedIcon(data['iconUri'])));
-      zippy.setAttribute('hide-line', true);
-      zippy.setAttribute('popup-style', true);
+              encodeURIComponent(
+                  zippy.getWrappedIcon(data['iconUri'], data['title'])));
+      if (!this.newLayoutEnabled_) {
+        zippy.setAttribute('hide-line', true);
+      }
 
       var title = document.createElement('div');
-      title.className = 'zippy-title';
+      title.slot = 'title';
       title.innerHTML = this.sanitizer_.sanitizeHtml(data['title']);
       zippy.appendChild(title);
 
       var description = document.createElement('div');
-      description.className = 'zippy-description';
+      description.slot = 'content';
       description.innerHTML = this.sanitizer_.sanitizeHtml(data['description']);
       description.innerHTML += '&ensp;';
 
       var learnMoreLink = document.createElement('a');
-      learnMoreLink.className = 'learn-more-link';
+      learnMoreLink.slot = 'content';
       learnMoreLink.textContent = data['popupLink'];
       learnMoreLink.setAttribute('href', 'javascript:void(0)');
-      learnMoreLink.onclick = function(title, additionalInfo) {
+      learnMoreLink.onclick = function(title, additionalInfo, focus) {
+        this.lastFocusedElement = focus;
         this.showLearnMoreOverlay(title, additionalInfo);
-      }.bind(this, data['title'], data['additionalInfo']);
+      }.bind(this, data['title'], data['additionalInfo'], learnMoreLink);
 
       description.appendChild(learnMoreLink);
       zippy.appendChild(description);
@@ -304,22 +336,22 @@ Polymer({
     }
 
     this.settingZippyLoaded_ = true;
-    if (this.webViewLoaded_ && this.consentStringLoaded_) {
-      this.onPageLoaded();
+    if (this.consentStringLoaded_) {
+      this.reloadWebView();
     }
   },
 
   /**
    * Handles event when all the page content has been loaded.
    */
-  onPageLoaded: function() {
+  onPageLoaded() {
     this.fire('loaded');
 
     this.buttonsDisabled = false;
     this.$['next-button'].focus();
 
     if (!this.hidden && !this.screenShown_) {
-      chrome.send('login.AssistantOptInFlowScreen.ValuePropScreen.screenShown');
+      this.browserProxy_.screenShown(VALUE_PROP_SCREEN_ID);
       this.screenShown_ = true;
     }
   },
@@ -327,35 +359,40 @@ Polymer({
   /**
    * Signal from host to show the screen.
    */
-  onShow: function() {
-    var requestFilter = {urls: ['<all_urls>'], types: ['main_frame']};
-
+  onShow() {
     this.$['overlay-close-button'].addEventListener(
         'click', this.hideOverlay.bind(this));
-    this.valuePropView_ = this.$['value-prop-view'];
-    this.locale =
-        loadTimeData.getString('locale').replace('-', '_').toLowerCase();
+
+    Polymer.RenderStatus.afterNextRender(
+        this, () => this.$['next-button'].focus());
 
     if (!this.initialized_) {
-      this.valuePropView_.request.onErrorOccurred.addListener(
-          this.onWebViewErrorOccurred.bind(this), requestFilter);
-      this.valuePropView_.request.onHeadersReceived.addListener(
-          this.onWebViewHeadersReceived.bind(this), requestFilter);
-      this.valuePropView_.addEventListener(
-          'contentload', this.onWebViewContentLoad.bind(this));
-
-      this.valuePropView_.addContentScripts([{
-        name: 'stripLinks',
-        matches: ['<all_urls>'],
-        js: {
-          code: 'document.querySelectorAll(\'a\').forEach(' +
-              'function(anchor){anchor.href=\'javascript:void(0)\';})'
-        },
-        run_at: 'document_end'
-      }]);
-
+      if (this.newLayoutEnabled_) {
+        this.valuePropView_ = this.$['value-prop-view'];
+      } else {
+        this.valuePropView_ = this.$['value-prop-view-old'];
+      }
+      this.initializeWebview_(this.valuePropView_);
       this.reloadPage();
       this.initialized_ = true;
     }
+  },
+
+  initializeWebview_(webview) {
+    const requestFilter = {urls: ['<all_urls>'], types: ['main_frame']};
+    webview.request.onErrorOccurred.addListener(
+        this.onWebViewErrorOccurred.bind(this), requestFilter);
+    webview.request.onHeadersReceived.addListener(
+        this.onWebViewHeadersReceived.bind(this), requestFilter);
+    webview.addEventListener(
+        'contentload', this.onWebViewContentLoad.bind(this));
+    webview.addContentScripts([webviewStripLinksContentScript]);
+  },
+
+  /**
+   * Returns the webview animation container.
+   */
+  getAnimationContainer() {
+    return this.$['animation-container'];
   },
 });

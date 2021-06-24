@@ -22,21 +22,25 @@ NoneAttestationStatement::NoneAttestationStatement()
 NoneAttestationStatement::~NoneAttestationStatement() = default;
 
 bool NoneAttestationStatement::
-    IsAttestationCertificateInappropriatelyIdentifying() {
+    IsAttestationCertificateInappropriatelyIdentifying() const {
   return false;
 }
 
-bool NoneAttestationStatement::IsSelfAttestation() {
+bool NoneAttestationStatement::IsSelfAttestation() const {
   return false;
 }
 
-base::Optional<base::span<const uint8_t>>
+absl::optional<base::span<const uint8_t>>
 NoneAttestationStatement::GetLeafCertificate() const {
-  return base::nullopt;
+  return absl::nullopt;
 }
 
-cbor::Value::MapValue NoneAttestationStatement::GetAsCBORMap() const {
-  return cbor::Value::MapValue();
+cbor::Value NoneAttestationStatement::AsCBOR() const {
+  return cbor::Value(cbor::Value::MapValue());
+}
+
+cbor::Value AsCBOR(const AttestationStatement& as) {
+  return as.AsCBOR();
 }
 
 }  // namespace device

@@ -26,11 +26,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_INSPECTOR_INSPECTOR_APPLICATION_CACHE_AGENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_INSPECTOR_INSPECTOR_APPLICATION_CACHE_AGENT_H_
 
-#include "base/macros.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/inspector/inspector_base_agent.h"
 #include "third_party/blink/renderer/core/inspector/protocol/ApplicationCache.h"
-#include "third_party/blink/renderer/core/loader/appcache/application_cache_host.h"
+#include "third_party/blink/renderer/core/loader/appcache/application_cache_host_for_frame.h"
 
 namespace blink {
 
@@ -40,15 +39,13 @@ class InspectedFrames;
 class CORE_EXPORT InspectorApplicationCacheAgent final
     : public InspectorBaseAgent<protocol::ApplicationCache::Metainfo> {
  public:
-  static InspectorApplicationCacheAgent* Create(
-      InspectedFrames* inspected_frames) {
-    return MakeGarbageCollected<InspectorApplicationCacheAgent>(
-        inspected_frames);
-  }
-
   explicit InspectorApplicationCacheAgent(InspectedFrames*);
+  InspectorApplicationCacheAgent(const InspectorApplicationCacheAgent&) =
+      delete;
+  InspectorApplicationCacheAgent& operator=(
+      const InspectorApplicationCacheAgent&) = delete;
   ~InspectorApplicationCacheAgent() override = default;
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
   // InspectorBaseAgent
   void Restore() override;
@@ -76,22 +73,22 @@ class CORE_EXPORT InspectorApplicationCacheAgent final
   void InnerEnable();
 
   std::unique_ptr<protocol::ApplicationCache::ApplicationCache>
-  BuildObjectForApplicationCache(const ApplicationCacheHost::ResourceInfoList&,
-                                 const ApplicationCacheHost::CacheInfo&);
+  BuildObjectForApplicationCache(
+      const Vector<mojom::blink::AppCacheResourceInfo>&,
+      const ApplicationCacheHost::CacheInfo&);
   std::unique_ptr<
       protocol::Array<protocol::ApplicationCache::ApplicationCacheResource>>
   BuildArrayForApplicationCacheResources(
-      const ApplicationCacheHost::ResourceInfoList&);
+      const Vector<mojom::blink::AppCacheResourceInfo>&);
   std::unique_ptr<protocol::ApplicationCache::ApplicationCacheResource>
   BuildObjectForApplicationCacheResource(
-      const ApplicationCacheHost::ResourceInfo&);
+      const mojom::blink::AppCacheResourceInfo&);
 
   protocol::Response AssertFrameWithDocumentLoader(String frame_id,
                                                    DocumentLoader*&);
 
   Member<InspectedFrames> inspected_frames_;
   InspectorAgentState::Boolean enabled_;
-  DISALLOW_COPY_AND_ASSIGN(InspectorApplicationCacheAgent);
 };
 
 }  // namespace blink

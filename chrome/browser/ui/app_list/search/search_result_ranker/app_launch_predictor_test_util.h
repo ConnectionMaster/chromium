@@ -7,12 +7,10 @@
 
 #include <string>
 
-#include "base/logging.h"
 #include "chrome/browser/ui/app_list/search/search_result_ranker/app_launch_predictor.pb.h"
 #include "chrome/browser/ui/app_list/search/search_result_ranker/frecency_store.pb.h"
 #include "chrome/browser/ui/app_list/search/search_result_ranker/recurrence_predictor.pb.h"
 #include "chrome/browser/ui/app_list/search/search_result_ranker/recurrence_ranker.pb.h"
-#include "third_party/protobuf/src/google/protobuf/stubs/mathutil.h"
 
 namespace app_list {
 
@@ -66,7 +64,8 @@ template <>
 class EquivToProtoLiteImpl<float> {
  public:
   bool operator()(const float p1, const float p2) {
-    return google::protobuf::MathUtil::AlmostEquals(p1, p2);
+    static float kTolerance = 1e-5;
+    return abs(p1 - p2) < kTolerance;
   }
 };
 
@@ -229,6 +228,12 @@ DEFINE_EQUIVTO_PROTO_LITE_3(FrecencyStoreProto_ValueData,
                             last_score,
                             last_num_updates);
 
+DEFINE_EQUIVTO_PROTO_LITE_1(HourBinPredictorProto, binned_frequency_table);
+
+DEFINE_EQUIVTO_PROTO_LITE_2(HourBinPredictorProto_FrequencyTable,
+                            total_counts,
+                            frequency);
+
 DEFINE_EQUIVTO_PROTO_LITE_1(HourAppLaunchPredictorProto,
                             binned_frequency_table);
 
@@ -238,7 +243,7 @@ DEFINE_EQUIVTO_PROTO_LITE_2(HourAppLaunchPredictorProto_FrequencyTable,
 
 DEFINE_EQUIVTO_PROTO_LITE_2(RecurrencePredictorProto,
                             fake_predictor,
-                            zero_state_frecency_predictor);
+                            frecency_predictor);
 
 DEFINE_EQUIVTO_PROTO_LITE_2(RecurrenceRankerProto, config_hash, predictor);
 
@@ -250,7 +255,11 @@ DEFINE_EQUIVTO_PROTO_LITE_2(SerializedMrfuAppLaunchPredictorProto_Score,
                             num_of_trains_at_last_update,
                             last_score);
 
-DEFINE_EQUIVTO_PROTO_LITE_1(ZeroStateFrecencyPredictorProto, targets);
+DEFINE_EQUIVTO_PROTO_LITE_2(FrecencyPredictorProto, targets, num_updates);
+
+DEFINE_EQUIVTO_PROTO_LITE_2(FrecencyPredictorProto_TargetData,
+                            last_score,
+                            last_num_updates);
 
 }  // namespace internal
 

@@ -20,6 +20,21 @@ constexpr base::FilePath::CharType kChromeProxyExecutable[] =
 
 }  // namespace
 
+// This binary is a workaround for Windows 10 start menu pinning icon bug:
+// https://crbug.com/732357.
+//
+// When a shortcut is pinned in the Windows 10 start menu Windows will follow
+// the shortcut, find the target executable, look for a <target>.manifest file
+// in the same directory and use the icon specified in there for the start menu
+// pin. Because bookmark app shortcuts are shortcuts to Chrome (plus a few
+// command line parameters) Windows ends up using the Chrome icon specified in
+// chrome.VisualElementsManifest.xml instead of the site's icon stored inside
+// the shortcut.
+//
+// The chrome_proxy.exe binary workaround "fixes" this by having bookmark app
+// shortcuts target chrome_proxy.exe instead of chrome.exe such that Windows
+// won't find a manifest and falls back to using the shortcut's icons as
+// originally intended.
 int WINAPI wWinMain(HINSTANCE instance,
                     HINSTANCE prev_instance,
                     wchar_t* /*command_line*/,
@@ -27,7 +42,8 @@ int WINAPI wWinMain(HINSTANCE instance,
   base::CommandLine::Init(0, nullptr);
 
   logging::LoggingSettings logging_settings;
-  logging_settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+  logging_settings.logging_dest =
+      logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   logging::InitLogging(logging_settings);
 
   base::FilePath chrome_dir;
@@ -35,7 +51,7 @@ int WINAPI wWinMain(HINSTANCE instance,
   base::CommandLine chrome_command_line(chrome_dir.Append(kChromeExecutable));
 
   // Forward all command line arguments.
-  const std::vector<base::string16>& argv =
+  const std::vector<std::wstring>& argv =
       base::CommandLine::ForCurrentProcess()->argv();
   // The first one is always the current executable path.
   CHECK(argv.size() > 0);

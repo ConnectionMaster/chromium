@@ -5,16 +5,20 @@
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_device_source.h"
+#include "base/task/single_thread_task_executor.h"
 #include "base/timer/hi_res_timer_manager.h"
+#if defined(OS_WIN)
+#include "base/win/win_util.h"
+#endif
 #include "build/build_config.h"
 #include "components/nacl/loader/nacl_listener.h"
 #include "components/nacl/loader/nacl_main_platform_delegate.h"
 #include "content/public/common/main_function_params.h"
 #include "mojo/core/embedder/embedder.h"
-#include "services/service_manager/sandbox/switches.h"
+#include "sandbox/policy/switches.h"
 
 // main() routine for the NaCl loader process.
 int NaClMain(const content::MainFunctionParams& parameters) {
@@ -24,19 +28,25 @@ int NaClMain(const content::MainFunctionParams& parameters) {
   mojo::core::Init();
 
   // The main thread of the plugin services IO.
-  base::MessageLoopForIO main_message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::IO);
   base::PlatformThread::SetName("CrNaClMain");
 
-  std::unique_ptr<base::PowerMonitorSource> power_monitor_source(
-      new base::PowerMonitorDeviceSource());
-  base::PowerMonitor power_monitor(std::move(power_monitor_source));
+  base::PowerMonitor::Initialize(
+      std::make_unique<base::PowerMonitorDeviceSource>());
   base::HighResolutionTimerManager hi_res_timer_manager;
 
-#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_LINUX) || \
-    defined(OS_ANDROID)
+#if defined(OS_WIN) || defined(OS_APPLE) || defined(OS_LINUX) || \
+    defined(OS_CHROMEOS) || defined(OS_ANDROID)
   NaClMainPlatformDelegate platform;
   bool no_sandbox =
-      parsed_command_line.HasSwitch(service_manager::switches::kNoSandbox);
+      parsed_command_line.HasSwitch(sandbox::policy::switches::kNoSandbox);
+
+#if defined(OS_WIN)
+  // NaCl processes exit differently from other Chromium processes (see NaClExit
+  // in native_client/src/shared/platform/win/nacl_exit.c) and so do not want
+  // default Chromium process exit behavior.
+  base::win::SetShouldCrashOnProcessDetach(false);
+#endif
 
 #if defined(OS_POSIX)
   // The number of cores must be obtained before the invocation of

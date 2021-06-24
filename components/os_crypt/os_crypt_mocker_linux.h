@@ -10,6 +10,7 @@
 #include "base/macros.h"
 #include "base/strings/string_piece.h"
 #include "components/os_crypt/key_storage_linux.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 // Holds and serves a password from memory.
 class OSCryptMockerLinux : public KeyStorageLinux {
@@ -29,7 +30,7 @@ class OSCryptMockerLinux : public KeyStorageLinux {
  protected:
   // KeyStorageLinux
   bool Init() override;
-  std::string GetKeyImpl() override;
+  absl::optional<std::string> GetKeyImpl() override;
 
  private:
   std::string key_;

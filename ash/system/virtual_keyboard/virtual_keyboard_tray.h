@@ -6,11 +6,11 @@
 #define ASH_SYSTEM_VIRTUAL_KEYBOARD_VIRTUAL_KEYBOARD_TRAY_H_
 
 #include "ash/accessibility/accessibility_observer.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/keyboard/keyboard_controller_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/shell_observer.h"
 #include "ash/system/tray/tray_background_view.h"
 #include "base/macros.h"
-#include "ui/keyboard/keyboard_controller_observer.h"
 
 namespace views {
 class ImageView;
@@ -21,7 +21,7 @@ namespace ash {
 // TODO(sky): make this visible on non-chromeos platforms.
 class VirtualKeyboardTray : public TrayBackgroundView,
                             public AccessibilityObserver,
-                            public keyboard::KeyboardControllerObserver,
+                            public KeyboardControllerObserver,
                             public ShellObserver,
                             public SessionObserver {
  public:
@@ -29,7 +29,9 @@ class VirtualKeyboardTray : public TrayBackgroundView,
   ~VirtualKeyboardTray() override;
 
   // TrayBackgroundView:
-  base::string16 GetAccessibleNameForTray() override;
+  void Initialize() override;
+  std::u16string GetAccessibleNameForTray() override;
+  void HandleLocaleChange() override;
   void HideBubbleWithView(const TrayBubbleView* bubble_view) override;
   void ClickedOutsideBubble() override;
   bool PerformAction(const ui::Event& event) override;
@@ -37,11 +39,14 @@ class VirtualKeyboardTray : public TrayBackgroundView,
   // AccessibilityObserver:
   void OnAccessibilityStatusChanged() override;
 
-  // keyboard::KeyboardControllerObserver:
-  void OnKeyboardVisibilityStateChanged(bool is_visible) override;
+  // KeyboardControllerObserver:
+  void OnKeyboardVisibilityChanged(bool is_visible) override;
 
   // SessionObserver:
   void OnSessionStateChanged(session_manager::SessionState state) override;
+
+  // views::View:
+  const char* GetClassName() const override;
 
  private:
   // Updates the icon UI.

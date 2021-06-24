@@ -4,13 +4,13 @@
 
 #include "ui/touch_selection/touch_handle_drawable_aura.h"
 
-#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_targeter.h"
 #include "ui/aura_extra/image_window_delegate.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/compositor/layer.h"
 #include "ui/events/event.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -65,11 +65,10 @@ TouchHandleDrawableAura::TouchHandleDrawableAura(aura::Window* parent)
       orientation_(TouchHandleOrientation::UNDEFINED) {
   window_delegate_->set_image_offset(gfx::Vector2d(kSelectionHandlePadding,
                                                    kSelectionHandlePadding));
-  window_delegate_->set_background_color(SK_ColorTRANSPARENT);
   window_->SetTransparent(true);
   window_->Init(LAYER_TEXTURED);
   window_->set_owned_by_parent(false);
-  window_->SetEventTargetingPolicy(ws::mojom::EventTargetingPolicy::NONE);
+  window_->SetEventTargetingPolicy(aura::EventTargetingPolicy::kNone);
   parent->AddChild(window_.get());
 }
 

@@ -26,7 +26,8 @@
 
 #include "third_party/blink/renderer/core/loader/resource/css_style_sheet_resource.h"
 
-#include "services/network/public/mojom/request_context_frame_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
+#include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
@@ -36,7 +37,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/text_resource_decoder_options.h"
 #include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
 
@@ -45,8 +45,9 @@ namespace blink {
 CSSStyleSheetResource* CSSStyleSheetResource::Fetch(FetchParameters& params,
                                                     ResourceFetcher* fetcher,
                                                     ResourceClient* client) {
-  params.SetRequestContext(mojom::RequestContextType::STYLE);
-  CSSStyleSheetResource* resource = ToCSSStyleSheetResource(
+  params.SetRequestContext(mojom::blink::RequestContextType::STYLE);
+  params.SetRequestDestination(network::mojom::RequestDestination::kStyle);
+  auto* resource = To<CSSStyleSheetResource>(
       fetcher->RequestResource(params, CSSStyleSheetResourceFactory(), client));
   return resource;
 }
@@ -55,8 +56,8 @@ CSSStyleSheetResource* CSSStyleSheetResource::CreateForTest(
     const KURL& url,
     const WTF::TextEncoding& encoding) {
   ResourceRequest request(url);
-  request.SetFetchCredentialsMode(network::mojom::FetchCredentialsMode::kOmit);
-  ResourceLoaderOptions options;
+  request.SetCredentialsMode(network::mojom::CredentialsMode::kOmit);
+  ResourceLoaderOptions options(nullptr /* world */);
   TextResourceDecoderOptions decoder_options(
       TextResourceDecoderOptions::kCSSContent, encoding);
   return MakeGarbageCollected<CSSStyleSheetResource>(request, options,
@@ -86,7 +87,7 @@ void CSSStyleSheetResource::SetParsedStyleSheetCache(
   UpdateDecodedSize();
 }
 
-void CSSStyleSheetResource::Trace(blink::Visitor* visitor) {
+void CSSStyleSheetResource::Trace(Visitor* visitor) const {
   visitor->Trace(parsed_style_sheet_cache_);
   TextResource::Trace(visitor);
 }
@@ -205,9 +206,9 @@ bool CSSStyleSheetResource::CanUseSheet(const CSSParserContext* parser_context,
     return true;
   AtomicString content_type = HttpContentType();
   return content_type.IsEmpty() ||
-         DeprecatedEqualIgnoringCase(content_type, "text/css") ||
-         DeprecatedEqualIgnoringCase(content_type,
-                                     "application/x-unknown-content-type");
+         EqualIgnoringASCIICase(content_type, "text/css") ||
+         EqualIgnoringASCIICase(content_type,
+                                "application/x-unknown-content-type");
 }
 
 StyleSheetContents* CSSStyleSheetResource::CreateParsedStyleSheetFromCache(

@@ -38,19 +38,13 @@
 
 namespace blink {
 
-void CharacterData::MakeParkableOrAtomize() {
+void CharacterData::MakeParkable() {
   if (is_parkable_)
     return;
 
-  // ParkableStrings have some overhead, don't pay it if we're not going to
-  // park a string at all.
-  if (ParkableStringManager::ShouldPark(*data_.Impl())) {
-    parkable_data_ = ParkableString(data_.ReleaseImpl());
-    data_ = String();
-    is_parkable_ = true;
-  } else {
-    data_ = AtomicString(data_);
-  }
+  parkable_data_ = ParkableString(data_.ReleaseImpl());
+  data_ = String();
+  is_parkable_ = true;
 }
 
 void CharacterData::setData(const String& data) {
@@ -209,12 +203,13 @@ void CharacterData::SetDataAndUpdate(const String& new_data,
   data_ = new_data;
 
   DCHECK(!GetLayoutObject() || IsTextNode());
-  if (IsTextNode())
-    ToText(this)->UpdateTextLayoutObject(offset_of_replaced_data, old_length);
+  if (auto* text_node = DynamicTo<Text>(this))
+    text_node->UpdateTextLayoutObject(offset_of_replaced_data, old_length);
 
   if (source != kUpdateFromParser) {
-    if (getNodeType() == kProcessingInstructionNode)
-      ToProcessingInstruction(this)->DidAttributeChanged();
+    if (auto* processing_instruction_node =
+            DynamicTo<ProcessingInstruction>(this))
+      processing_instruction_node->DidAttributeChanged();
 
     GetDocument().NotifyUpdateCharacterData(this, offset_of_replaced_data,
                                             old_length, new_length);
@@ -232,8 +227,15 @@ void CharacterData::DidModifyData(const String& old_data, UpdateSource source) {
 
   if (parentNode()) {
     ContainerNode::ChildrenChange change = {
-        ContainerNode::kTextChanged, this, previousSibling(), nextSibling(),
-        ContainerNode::kChildrenChangeSourceAPI};
+        ContainerNode::ChildrenChangeType::kTextChanged,
+        source == kUpdateFromParser
+            ? ContainerNode::ChildrenChangeSource::kParser
+            : ContainerNode::ChildrenChangeSource::kAPI,
+        this,
+        previousSibling(),
+        nextSibling(),
+        {},
+        old_data};
     parentNode()->ChildrenChanged(change);
   }
 

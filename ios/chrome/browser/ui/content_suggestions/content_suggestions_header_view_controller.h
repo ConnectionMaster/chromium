@@ -16,10 +16,11 @@
 @protocol BrowserCommands;
 @protocol ContentSuggestionsCollectionSynchronizing;
 @protocol ContentSuggestionsCommands;
+@protocol ContentSuggestionsHeaderCommands;
 @protocol ContentSuggestionsHeaderViewControllerDelegate;
 @protocol FakeboxFocuser;
 @protocol NewTabPageControllerDelegate;
-@protocol OmniboxFocuser;
+@protocol OmniboxCommands;
 @class PrimaryToolbarViewController;
 class ReadingListModel;
 
@@ -32,21 +33,17 @@ class ReadingListModel;
                        NTPHomeConsumer,
                        LogoAnimationControllerOwnerOwner>
 
-// Whether |voiceSearchIsEnabled|.
-- (instancetype)initWithVoiceSearchEnabled:(BOOL)voiceSearchIsEnabled
-    NS_DESIGNATED_INITIALIZER;
-
+- (instancetype)init NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithNibName:(NSString*)nibNameOrNil
                          bundle:(NSBundle*)nibBundleOrNil NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)aDecoder NS_UNAVAILABLE;
-- (instancetype)init NS_UNAVAILABLE;
 
 @property(nonatomic, weak)
-    id<ApplicationCommands, BrowserCommands, OmniboxFocuser, FakeboxFocuser>
+    id<ApplicationCommands, BrowserCommands, OmniboxCommands, FakeboxFocuser>
         dispatcher;
 @property(nonatomic, weak) id<ContentSuggestionsHeaderViewControllerDelegate>
     delegate;
-@property(nonatomic, weak) id<ContentSuggestionsCommands> commandHandler;
+@property(nonatomic, weak) id<ContentSuggestionsHeaderCommands> commandHandler;
 @property(nonatomic, assign) ReadingListModel* readingListModel;
 @property(nonatomic, weak) id<NewTabPageControllerDelegate> toolbarDelegate;
 
@@ -62,6 +59,11 @@ class ReadingListModel;
 // Animates the NTP fakebox to the focused position and focuses the real
 // omnibox.
 - (void)focusFakebox;
+
+// Identity disc shown in this ViewController.
+// TODO(crbug.com/1170995): Remove once the Feed header properly supports
+// ContentSuggestions.
+@property(nonatomic, strong, readonly) UIButton* identityDiscButton;
 
 @end
 

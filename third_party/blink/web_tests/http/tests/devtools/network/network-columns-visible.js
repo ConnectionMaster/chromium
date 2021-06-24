@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests to ensure column names are matching data.\n`);
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
   await TestRunner.showPanel('network');
   await TestRunner.evaluateInPagePromise(`
       function sendXHRRequest() {
@@ -30,7 +30,11 @@
   var xhrNode = await NetworkTestRunner.waitForNetworkLogViewNodeForRequest(request);
 
   UI.panels.network._networkLogView._refresh();
-  for (var columnName of columnsToTest)
-    TestRunner.addResult(columnName + ': ' + xhrNode.createCell(columnName).textContent);
+  for (var columnName of columnsToTest) {
+    const cell = xhrNode.createCell(columnName);
+    // Cell may contain live locations that are unresolved.
+    await TestRunner.waitForPendingLiveLocationUpdates();
+    TestRunner.addResult(columnName + ': ' + cell.textContent);
+  }
   TestRunner.completeTest();
 })();

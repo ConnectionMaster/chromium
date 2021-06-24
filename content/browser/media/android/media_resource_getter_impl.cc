@@ -8,10 +8,10 @@
 #include "base/macros.h"
 #include "base/path_service.h"
 #include "base/single_thread_task_runner.h"
-#include "base/task/post_task.h"
 #include "content/browser/child_process_security_policy_impl.h"
-#include "content/browser/fileapi/browser_file_system_helper.h"
-#include "content/browser/resource_context_impl.h"
+#include "content/browser/file_system/browser_file_system_helper.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -19,68 +19,77 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/url_constants.h"
+#include "ipc/ipc_message.h"
 #include "media/base/android/media_url_interceptor.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/auth.h"
-#include "net/cookies/canonical_cookie.h"
-#include "net/cookies/cookie_store.h"
+#include "net/base/isolation_info.h"
+#include "net/base/network_isolation_key.h"
 #include "net/http/http_auth.h"
-#include "net/http/http_transaction_factory.h"
+#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/restricted_cookie_manager.mojom.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace content {
 
 namespace {
 
-// Returns the cookie service for the |browser_context| at the client end of the
-// mojo pipe.
-network::mojom::CookieManager* GetCookieServiceForContext(
-    BrowserContext* browser_context) {
+// Returns the cookie manager for the |browser_context| at the client end of the
+// mojo pipe. This will be restricted to the origin of |url|, and will apply
+// policies from user and ContentBrowserClient to cookie operations.
+mojo::PendingRemote<network::mojom::RestrictedCookieManager>
+GetRestrictedCookieManagerForContext(
+    BrowserContext* browser_context,
+    const GURL& url,
+    const net::SiteForCookies& site_for_cookies,
+    const url::Origin& top_frame_origin,
+    RenderFrameHostImpl* render_frame_host) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return BrowserContext::GetDefaultStoragePartition(browser_context)
-      ->GetCookieManagerForBrowserProcess();
+
+  url::Origin request_origin = url::Origin::Create(url);
+  StoragePartition* storage_partition =
+      browser_context->GetDefaultStoragePartition();
+
+  // `request_origin` cannot be used to create `isolation_info` since it
+  // represents the media resource, not the frame origin. Here we use the
+  // `top_frame_origin` as the frame origin to ensure the consistency check
+  // passes when creating `isolation_info`. This is ok because
+  // `isolation_info.frame_origin` is unused in RestrictedCookieManager.
+  DCHECK(site_for_cookies.IsNull() ||
+         site_for_cookies.IsFirstParty(top_frame_origin.GetURL()));
+  net::IsolationInfo isolation_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther, top_frame_origin,
+      top_frame_origin, site_for_cookies, absl::nullopt);
+
+  mojo::PendingRemote<network::mojom::RestrictedCookieManager> pipe;
+  static_cast<StoragePartitionImpl*>(storage_partition)
+      ->CreateRestrictedCookieManager(
+          network::mojom::RestrictedCookieManagerRole::NETWORK, request_origin,
+          std::move(isolation_info),
+          /* is_service_worker = */ false,
+          render_frame_host ? render_frame_host->GetProcess()->GetID() : -1,
+          render_frame_host ? render_frame_host->GetRoutingID()
+                            : MSG_ROUTING_NONE,
+          pipe.InitWithNewPipeAndPassReceiver(),
+          render_frame_host ? render_frame_host->CreateCookieAccessObserver()
+                            : mojo::NullRemote());
+  return pipe;
 }
 
 void ReturnResultOnUIThread(
     base::OnceCallback<void(const std::string&)> callback,
     const std::string& result) {
-  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                           base::BindOnce(std::move(callback), result));
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), result));
 }
 
-// Checks the policy for get cookies and returns the cookie line if allowed.
-std::string GetCookiesOnIO(const GURL& url,
-                           const GURL& site_for_cookies,
-                           content::ResourceContext* resource_context,
-                           int render_process_id,
-                           int render_frame_id,
-                           const net::CookieList& cookie_list) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  if (!GetContentClient()->browser()->AllowGetCookie(
-          url, site_for_cookies, cookie_list, resource_context,
-          render_process_id, render_frame_id)) {
-    return std::string();
-  }
-
-  return net::CanonicalCookie::BuildCookieLine(cookie_list);
-}
-
-void CheckPolicyForCookies(const GURL& url,
-                           const GURL& site_for_cookies,
-                           content::ResourceContext* resource_context,
-                           int render_process_id,
-                           int render_frame_id,
-                           MediaResourceGetterImpl::GetCookieCB callback,
-                           const net::CookieList& cookie_list,
-                           const net::CookieStatusList& excluded_cookies) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-
-  // AllowGetCookie has to be called on IO thread.
-  base::PostTaskWithTraitsAndReplyWithResult(
-      FROM_HERE, {BrowserThread::IO},
-      base::BindOnce(&GetCookiesOnIO, url, site_for_cookies, resource_context,
-                     render_process_id, render_frame_id, cookie_list),
-      std::move(callback));
+void ReturnResultOnUIThreadAndClosePipe(
+    mojo::Remote<network::mojom::RestrictedCookieManager> pipe,
+    base::OnceCallback<void(const std::string&)> callback,
+    const std::string& result) {
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), result));
 }
 
 void OnSyncGetPlatformPathDone(
@@ -120,9 +129,7 @@ MediaResourceGetterImpl::MediaResourceGetterImpl(
     : browser_context_(browser_context),
       file_system_context_(file_system_context),
       render_process_id_(render_process_id),
-      render_frame_id_(render_frame_id),
-      weak_factory_(this) {
-}
+      render_frame_id_(render_frame_id) {}
 
 MediaResourceGetterImpl::~MediaResourceGetterImpl() {}
 
@@ -133,54 +140,65 @@ void MediaResourceGetterImpl::GetAuthCredentials(
   // Non-standard URLs, such as data, will not be found in HTTP auth cache
   // anyway, because they have no valid origin, so don't waste the time.
   if (!url.IsStandard()) {
-    GetAuthCredentialsCallback(std::move(callback), base::nullopt);
+    GetAuthCredentialsCallback(std::move(callback), absl::nullopt);
     return;
   }
 
-  BrowserContext::GetDefaultStoragePartition(browser_context_)
+  RenderFrameHostImpl* render_frame_host =
+      RenderFrameHostImpl::FromID(render_process_id_, render_frame_id_);
+  // Can't get a NetworkIsolationKey to get credentials if the RenderFrameHost
+  // has already been destroyed.
+  if (!render_frame_host) {
+    GetAuthCredentialsCallback(std::move(callback), absl::nullopt);
+    return;
+  }
+
+  browser_context_->GetDefaultStoragePartition()
       ->GetNetworkContext()
-      ->LookupBasicAuthCredentials(
-          url,
+      ->LookupServerBasicAuthCredentials(
+          url, render_frame_host->GetNetworkIsolationKey(),
           base::BindOnce(&MediaResourceGetterImpl::GetAuthCredentialsCallback,
                          weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void MediaResourceGetterImpl::GetCookies(const GURL& url,
-                                         const GURL& site_for_cookies,
+                                         const GURL& site_for_cookies_url,
+                                         const url::Origin& top_frame_origin,
                                          GetCookieCB callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  net::SiteForCookies site_for_cookies =
+      net::SiteForCookies::FromUrl(site_for_cookies_url);
 
   ChildProcessSecurityPolicyImpl* policy =
       ChildProcessSecurityPolicyImpl::GetInstance();
-  if (!policy->CanAccessDataForOrigin(render_process_id_, url)) {
+  if (!policy->CanAccessDataForOrigin(render_process_id_,
+                                      url::Origin::Create(url))) {
     // Running the callback asynchronously on the caller thread to avoid
     // reentrancy issues.
     ReturnResultOnUIThread(std::move(callback), std::string());
     return;
   }
 
-  net::CookieOptions options;
-  options.set_include_httponly();
-  options.set_same_site_cookie_context(
-      net::CookieOptions::SameSiteCookieContext::SAME_SITE_STRICT);
-  options.set_do_not_update_access_time();
-  GetCookieServiceForContext(browser_context_)
-      ->GetCookieList(
-          url, options,
-          base::BindOnce(&CheckPolicyForCookies, url, site_for_cookies,
-                         browser_context_->GetResourceContext(),
-                         render_process_id_, render_frame_id_,
-                         std::move(callback)));
+  mojo::Remote<network::mojom::RestrictedCookieManager> cookie_manager(
+      GetRestrictedCookieManagerForContext(
+          browser_context_, url, site_for_cookies, top_frame_origin,
+          RenderFrameHostImpl::FromID(render_process_id_, render_frame_id_)));
+  network::mojom::RestrictedCookieManager* cookie_manager_ptr =
+      cookie_manager.get();
+  cookie_manager_ptr->GetCookiesString(
+      url, site_for_cookies, top_frame_origin,
+      base::BindOnce(&ReturnResultOnUIThreadAndClosePipe,
+                     std::move(cookie_manager), std::move(callback)));
 }
 
 void MediaResourceGetterImpl::GetAuthCredentialsCallback(
     GetAuthCredentialsCB callback,
-    const base::Optional<net::AuthCredentials>& credentials) {
+    const absl::optional<net::AuthCredentials>& credentials) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (credentials)
     std::move(callback).Run(credentials->username(), credentials->password());
   else
-    std::move(callback).Run(base::string16(), base::string16());
+    std::move(callback).Run(std::u16string(), std::u16string());
 }
 
 void MediaResourceGetterImpl::GetPlatformPathFromURL(

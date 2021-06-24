@@ -5,17 +5,17 @@
 #ifndef CHROMEOS_SYSTEM_FACTORY_PING_EMBARGO_CHECK_H_
 #define CHROMEOS_SYSTEM_FACTORY_PING_EMBARGO_CHECK_H_
 
+#include "base/component_export.h"
 #include "base/time/time.h"
-#include "chromeos/chromeos_export.h"
 
 namespace chromeos {
 namespace system {
 
 class StatisticsProvider;
 
-// The RLZ embargo end date is considered invalid if it's more than this many
+// An embargo end date is considered invalid if it's more than this many
 // days in the future.
-constexpr base::TimeDelta kRlzEmbargoEndDateGarbageDateThreshold =
+constexpr base::TimeDelta kEmbargoEndDateGarbageDateThreshold =
     base::TimeDelta::FromDays(14);
 
 enum class FactoryPingEmbargoState {
@@ -33,8 +33,13 @@ enum class FactoryPingEmbargoState {
   kPassed
 };
 
-CHROMEOS_EXPORT FactoryPingEmbargoState
-GetFactoryPingEmbargoState(StatisticsProvider* statistics_provider);
+COMPONENT_EXPORT(CHROMEOS_SYSTEM)
+FactoryPingEmbargoState GetEnterpriseManagementPingEmbargoState(
+    StatisticsProvider* statistics_provider);
+
+COMPONENT_EXPORT(CHROMEOS_SYSTEM)
+FactoryPingEmbargoState GetRlzPingEmbargoState(
+    StatisticsProvider* statistics_provider);
 
 }  // namespace system
 }  // namespace chromeos

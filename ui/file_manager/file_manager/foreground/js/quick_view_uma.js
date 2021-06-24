@@ -2,25 +2,95 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {VolumeManager} from '../../externs/volume_manager.js';
+// #import {VolumeManagerCommon} from '../../common/js/volume_manager_types.m.js';
+// #import {metrics} from '../../common/js/metrics.m.js';
+// #import {DialogType} from './dialog_type.m.js';
+// #import {FileTasks} from './file_tasks.m.js';
+// #import {FileType} from '../../common/js/file_type.js';
+// #import {assert} from 'chrome://resources/js/assert.m.js';
+// clang-format on
+
 /**
  * UMA exporter for Quick View.
- *
- * @param {!VolumeManager} volumeManager
- * @param {!DialogType} dialogType
- *
- * @constructor
  */
-function QuickViewUma(volumeManager, dialogType) {
+/* #export */ class QuickViewUma {
   /**
-   * @type {!VolumeManager}
+   * @param {!VolumeManager} volumeManager
+   * @param {!DialogType} dialogType
+   */
+  constructor(volumeManager, dialogType) {
+    /**
+     * @type {!VolumeManager}
+     * @private
+     */
+    this.volumeManager_ = volumeManager;
+    /**
+     * @type {DialogType}
+     * @private
+     */
+    this.dialogType_ = dialogType;
+  }
+
+  /**
+   * Exports file type metric with the given |name|.
+   *
+   * @param {!FileEntry} entry
+   * @param {string} name The histogram name.
+   *
    * @private
    */
-  this.volumeManager_ = volumeManager;
+  exportFileType_(entry, name) {
+    let extension = FileType.getExtension(entry).toLowerCase();
+    if (entry.isDirectory) {
+      extension = 'directory';
+    } else if (extension === '') {
+      extension = 'no extension';
+    } else if (FileTasks.UMA_INDEX_KNOWN_EXTENSIONS.indexOf(extension) < 0) {
+      extension = 'unknown extension';
+    }
+    metrics.recordEnum(name, extension, FileTasks.UMA_INDEX_KNOWN_EXTENSIONS);
+  }
+
   /**
-   * @type {DialogType}
-   * @private
+   * Exports UMA based on the entry shown in Quick View.
+   *
+   * @param {!FileEntry} entry
    */
-  this.dialogType_ = dialogType;
+  onEntryChanged(entry) {
+    this.exportFileType_(entry, 'QuickView.FileType');
+  }
+
+  /**
+   * Exports UMA based on the entry selected when Quick View is opened.
+   *
+   * @param {!FileEntry} entry
+   * @param {QuickViewUma.WayToOpen} wayToOpen
+   */
+  onOpened(entry, wayToOpen) {
+    this.exportFileType_(entry, 'QuickView.FileTypeOnLaunch');
+    metrics.recordEnum(
+        'QuickView.WayToOpen', wayToOpen, QuickViewUma.WayToOpenValues_);
+
+    const volumeType = this.volumeManager_.getVolumeInfo(entry).volumeType;
+    if (QuickViewUma.VolumeType.includes(assert(volumeType))) {
+      metrics.recordEnum(
+          'QuickView.VolumeType', volumeType, QuickViewUma.VolumeType);
+    } else {
+      console.error('Unknown volume type: ' + volumeType);
+    }
+    // Record stats of dialog types. It must be in sync with
+    // FileDialogType enum in tools/metrics/histograms/histogram.xml.
+    metrics.recordEnum('QuickView.DialogType', this.dialogType_, [
+      DialogType.SELECT_FOLDER,
+      DialogType.SELECT_UPLOAD_FOLDER,
+      DialogType.SELECT_SAVEAS_FILE,
+      DialogType.SELECT_OPEN_FILE,
+      DialogType.SELECT_OPEN_MULTI_FILE,
+      DialogType.FULL_PAGE,
+    ]);
+  }
 }
 
 /**
@@ -64,63 +134,5 @@ QuickViewUma.VolumeType = [
   VolumeManagerCommon.VolumeType.CROSTINI,
   VolumeManagerCommon.VolumeType.ANDROID_FILES,
   VolumeManagerCommon.VolumeType.DOCUMENTS_PROVIDER,
+  VolumeManagerCommon.VolumeType.SMB,
 ];
-
-/**
- * Exports file type metric with the given |name|.
- *
- * @param {!FileEntry} entry
- * @param {string} name The histogram name.
- *
- * @private
- */
-QuickViewUma.prototype.exportFileType_ = (entry, name) => {
-  let extension = FileType.getExtension(entry).toLowerCase();
-  if (entry.isDirectory) {
-    extension = 'directory';
-  } else if (extension === '') {
-    extension = 'no extension';
-  } else if (FileTasks.UMA_INDEX_KNOWN_EXTENSIONS.indexOf(extension) < 0) {
-    extension = 'unknown extension';
-  }
-  metrics.recordEnum(name, extension, FileTasks.UMA_INDEX_KNOWN_EXTENSIONS);
-};
-
-/**
- * Exports UMA based on the entry shown in Quick View.
- *
- * @param {!FileEntry} entry
- */
-QuickViewUma.prototype.onEntryChanged = function(entry) {
-  this.exportFileType_(entry, 'QuickView.FileType');
-};
-
-/**
- * Exports UMA based on the entry selected when Quick View is opened.
- *
- * @param {!FileEntry} entry
- * @param {QuickViewUma.WayToOpen} wayToOpen
- */
-QuickViewUma.prototype.onOpened = function(entry, wayToOpen) {
-  this.exportFileType_(entry, 'QuickView.FileTypeOnLaunch');
-  metrics.recordEnum(
-      'QuickView.WayToOpen', wayToOpen, QuickViewUma.WayToOpenValues_);
-
-  const volumeType = this.volumeManager_.getVolumeInfo(entry).volumeType;
-  if (QuickViewUma.VolumeType.includes(volumeType)) {
-    metrics.recordEnum(
-        'QuickView.VolumeType', volumeType, QuickViewUma.VolumeType);
-  } else {
-    console.error('Unknown volume type: ' + volumeType);
-  }
-  // Record stats of dialog types. It must be in sync with
-  // FileDialogType enum in tools/metrics/histograms/histogram.xml.
-  metrics.recordEnum('QuickView.DialogType', this.dialogType_, [
-    DialogType.SELECT_FOLDER,
-    DialogType.SELECT_UPLOAD_FOLDER,
-    DialogType.SELECT_SAVEAS_FILE,
-    DialogType.SELECT_OPEN_FILE,
-    DialogType.SELECT_OPEN_MULTI_FILE,
-    DialogType.FULL_PAGE,
-  ]);
-};

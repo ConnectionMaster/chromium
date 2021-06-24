@@ -2,9 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//gpu/vulkan/features.gni")
 import("//build/config/ui.gni")
-import("//build/buildflag_header.gni")
+import("//gpu/vulkan/features.gni")
 
 assert(enable_vulkan)
 
@@ -12,9 +11,7 @@ assert(enable_vulkan)
 
 group("demo") {
   if (use_x11) {
-    deps = [
-      ":vulkan_demo",
-    ]
+    deps = [ ":vulkan_demo" ]
   }
 }
 
@@ -31,6 +28,7 @@ if (use_x11) {
       "//components/tracing:startup_tracing",
       "//components/viz/common",
       "//gpu/vulkan/init",
+      "//skia",
       "//ui/display/types",
       "//ui/events",
       "//ui/events/platform",
@@ -42,6 +40,5 @@ if (use_x11) {
     ]
 
     deps += [ "//ui/gfx/x" ]
-    configs += [ "//build/config/linux:x11" ]
   }
 }

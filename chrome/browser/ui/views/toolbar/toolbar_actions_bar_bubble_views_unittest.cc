@@ -25,22 +25,19 @@
 #include "ui/views/controls/link.h"
 #include "ui/views/test/test_widget_observer.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/dialog_client_view.h"
 
 namespace {
 const int kIconSize = 16;
 }
 
 class ToolbarActionsBarBubbleViewsTest : public ChromeViewsTestBase {
- public:
-  views::View* TestCreateExtraView() {
-    DCHECK(bubble_);
-    return bubble_->CreateExtraView();
-  }
-
  protected:
   ToolbarActionsBarBubbleViewsTest() {}
-  ~ToolbarActionsBarBubbleViewsTest() override {}
+  ToolbarActionsBarBubbleViewsTest(const ToolbarActionsBarBubbleViewsTest&) =
+      delete;
+  ToolbarActionsBarBubbleViewsTest& operator=(
+      const ToolbarActionsBarBubbleViewsTest&) = delete;
+  ~ToolbarActionsBarBubbleViewsTest() override = default;
 
   void TearDown() override {
     anchor_widget_.reset();
@@ -48,11 +45,8 @@ class ToolbarActionsBarBubbleViewsTest : public ChromeViewsTestBase {
   }
 
   std::unique_ptr<views::Widget> CreateAnchorWidget() {
-    std::unique_ptr<views::Widget> anchor_widget(new views::Widget());
-    views::Widget::InitParams params =
-        CreateParams(views::Widget::InitParams::TYPE_WINDOW);
-    params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-    anchor_widget->Init(params);
+    std::unique_ptr<views::Widget> anchor_widget =
+        CreateTestWidget(views::Widget::InitParams::TYPE_WINDOW);
     anchor_widget->Show();
     return anchor_widget;
   }
@@ -64,10 +58,10 @@ class ToolbarActionsBarBubbleViewsTest : public ChromeViewsTestBase {
     anchor_widget_ = CreateAnchorWidget();
     bool anchored_to_action = false;
     bubble_ = new ToolbarActionsBarBubbleViews(
-        anchor_widget_->GetContentsView(), gfx::Point(), anchored_to_action,
+        anchor_widget_->GetContentsView(), anchored_to_action,
         delegate->GetDelegate());
     bubble_widget_ = views::BubbleDialogDelegateView::CreateBubble(bubble_);
-    bubble_->Show();
+    bubble_widget_->Show();
   }
 
   void CloseBubble() {
@@ -79,7 +73,7 @@ class ToolbarActionsBarBubbleViewsTest : public ChromeViewsTestBase {
   }
 
   void ClickButton(views::Button* button) {
-    bubble()->GetDialogClientView()->ResetViewShownTimeStampForTesting();
+    bubble()->ResetViewShownTimeStampForTesting();
 
     ASSERT_TRUE(button);
     const gfx::Point point(10, 10);
@@ -91,14 +85,12 @@ class ToolbarActionsBarBubbleViewsTest : public ChromeViewsTestBase {
     base::RunLoop().RunUntilIdle();
   }
 
-  base::string16 HeadingString() { return base::ASCIIToUTF16("Heading"); }
-  base::string16 BodyString() { return base::ASCIIToUTF16("Body"); }
-  base::string16 ActionString() { return base::ASCIIToUTF16("Action"); }
-  base::string16 DismissString() { return base::ASCIIToUTF16("Dismiss"); }
-  base::string16 LearnMoreString() { return base::ASCIIToUTF16("Learn"); }
-  base::string16 ItemListString() {
-    return base::ASCIIToUTF16("Item 1\nItem2");
-  }
+  std::u16string HeadingString() { return u"Heading"; }
+  std::u16string BodyString() { return u"Body"; }
+  std::u16string ActionString() { return u"Action"; }
+  std::u16string DismissString() { return u"Dismiss"; }
+  std::u16string LearnMoreString() { return u"Learn"; }
+  std::u16string ItemListString() { return u"Item 1\nItem2"; }
 
   views::Widget* anchor_widget() { return anchor_widget_.get(); }
   views::Widget* bubble_widget() { return bubble_widget_; }
@@ -108,8 +100,6 @@ class ToolbarActionsBarBubbleViewsTest : public ChromeViewsTestBase {
   std::unique_ptr<views::Widget> anchor_widget_;
   views::Widget* bubble_widget_ = nullptr;
   ToolbarActionsBarBubbleViews* bubble_ = nullptr;
-
-  DISALLOW_COPY_AND_ASSIGN(ToolbarActionsBarBubbleViewsTest);
 };
 
 TEST_F(ToolbarActionsBarBubbleViewsTest, TestBubbleLayoutActionButton) {
@@ -117,10 +107,9 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestBubbleLayoutActionButton) {
                                                ActionString());
   ShowBubble(&delegate);
 
-  EXPECT_TRUE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_EQ(ActionString(),
-            bubble()->GetDialogClientView()->ok_button()->GetText());
-  EXPECT_FALSE(bubble()->GetDialogClientView()->cancel_button());
+  EXPECT_TRUE(bubble()->GetOkButton());
+  EXPECT_EQ(ActionString(), bubble()->GetOkButton()->GetText());
+  EXPECT_FALSE(bubble()->GetCancelButton());
 
   CloseBubble();
 }
@@ -132,13 +121,13 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestBubbleLayoutNoButtons) {
       extra_view_info =
           std::make_unique<ToolbarActionsBarBubbleDelegate::ExtraViewInfo>();
   delegate.set_extra_view_info(std::move(extra_view_info));
-  delegate.set_dismiss_button_text(base::string16());
-  delegate.set_action_button_text(base::string16());
+  delegate.set_dismiss_button_text(std::u16string());
+  delegate.set_action_button_text(std::u16string());
   ShowBubble(&delegate);
 
-  std::unique_ptr<views::View> extra_view(TestCreateExtraView());
-  EXPECT_FALSE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_FALSE(bubble()->GetDialogClientView()->cancel_button());
+  EXPECT_EQ(nullptr, bubble()->GetExtraView());
+  EXPECT_FALSE(bubble()->GetOkButton());
+  EXPECT_FALSE(bubble()->GetCancelButton());
   EXPECT_FALSE(bubble()->learn_more_button());
 
   CloseBubble();
@@ -151,12 +140,10 @@ TEST_F(ToolbarActionsBarBubbleViewsTest,
   delegate.set_dismiss_button_text(DismissString());
   ShowBubble(&delegate);
 
-  EXPECT_TRUE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_EQ(ActionString(),
-            bubble()->GetDialogClientView()->ok_button()->GetText());
-  EXPECT_TRUE(bubble()->GetDialogClientView()->cancel_button());
-  EXPECT_EQ(DismissString(),
-            bubble()->GetDialogClientView()->cancel_button()->GetText());
+  EXPECT_TRUE(bubble()->GetOkButton());
+  EXPECT_EQ(ActionString(), bubble()->GetOkButton()->GetText());
+  EXPECT_TRUE(bubble()->GetCancelButton());
+  EXPECT_EQ(DismissString(), bubble()->GetCancelButton()->GetText());
 
   EXPECT_FALSE(bubble()->learn_more_button());
   EXPECT_FALSE(bubble()->item_list());
@@ -178,12 +165,10 @@ TEST_F(ToolbarActionsBarBubbleViewsTest,
 
   ShowBubble(&delegate);
 
-  EXPECT_TRUE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_EQ(ActionString(),
-            bubble()->GetDialogClientView()->ok_button()->GetText());
-  EXPECT_TRUE(bubble()->GetDialogClientView()->cancel_button());
-  EXPECT_EQ(DismissString(),
-            bubble()->GetDialogClientView()->cancel_button()->GetText());
+  EXPECT_TRUE(bubble()->GetOkButton());
+  EXPECT_EQ(ActionString(), bubble()->GetOkButton()->GetText());
+  EXPECT_TRUE(bubble()->GetCancelButton());
+  EXPECT_EQ(DismissString(), bubble()->GetCancelButton()->GetText());
   EXPECT_TRUE(bubble()->learn_more_button());
   EXPECT_EQ(LearnMoreString(),
             bubble()->learn_more_button()->GetTooltipText(gfx::Point(0, 0)));
@@ -198,26 +183,24 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestBubbleLayoutListView) {
   delegate.set_item_list_text(ItemListString());
   ShowBubble(&delegate);
 
-  EXPECT_TRUE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_EQ(ActionString(),
-            bubble()->GetDialogClientView()->ok_button()->GetText());
-  EXPECT_FALSE(bubble()->GetDialogClientView()->cancel_button());
+  EXPECT_TRUE(bubble()->GetOkButton());
+  EXPECT_EQ(ActionString(), bubble()->GetOkButton()->GetText());
+  EXPECT_FALSE(bubble()->GetCancelButton());
   EXPECT_FALSE(bubble()->learn_more_button());
   EXPECT_TRUE(bubble()->item_list());
-  EXPECT_EQ(ItemListString(), bubble()->item_list()->text());
+  EXPECT_EQ(ItemListString(), bubble()->item_list()->GetText());
 
   CloseBubble();
 }
 
 TEST_F(ToolbarActionsBarBubbleViewsTest, TestBubbleLayoutNoBodyText) {
   TestToolbarActionsBarBubbleDelegate delegate(
-      HeadingString(), base::string16(), ActionString());
+      HeadingString(), std::u16string(), ActionString());
   ShowBubble(&delegate);
 
-  EXPECT_TRUE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_EQ(ActionString(),
-            bubble()->GetDialogClientView()->ok_button()->GetText());
-  EXPECT_FALSE(bubble()->GetDialogClientView()->cancel_button());
+  EXPECT_TRUE(bubble()->GetOkButton());
+  EXPECT_EQ(ActionString(), bubble()->GetOkButton()->GetText());
+  EXPECT_FALSE(bubble()->GetCancelButton());
   EXPECT_FALSE(bubble()->learn_more_button());
   EXPECT_FALSE(bubble()->body_text());
   EXPECT_FALSE(bubble()->item_list());
@@ -232,11 +215,11 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestBubbleDefaultDialogButtons) {
   delegate.set_default_dialog_button(ui::DIALOG_BUTTON_OK);
   ShowBubble(&delegate);
 
-  ASSERT_TRUE(bubble()->GetDialogClientView()->ok_button());
-  EXPECT_TRUE(bubble()->GetDialogClientView()->ok_button()->is_default());
+  ASSERT_TRUE(bubble()->GetOkButton());
+  EXPECT_TRUE(bubble()->GetOkButton()->GetIsDefault());
 
-  ASSERT_TRUE(bubble()->GetDialogClientView()->cancel_button());
-  EXPECT_FALSE(bubble()->GetDialogClientView()->cancel_button()->is_default());
+  ASSERT_TRUE(bubble()->GetCancelButton());
+  EXPECT_FALSE(bubble()->GetCancelButton()->GetIsDefault());
 
   CloseBubble();
 }
@@ -247,19 +230,18 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestShowAndCloseBubble) {
                                                ActionString());
   delegate.set_dismiss_button_text(DismissString());
   ToolbarActionsBarBubbleViews* bubble = new ToolbarActionsBarBubbleViews(
-      anchor_widget->GetContentsView(), gfx::Point(), false,
-      delegate.GetDelegate());
+      anchor_widget->GetContentsView(), false, delegate.GetDelegate());
 
   EXPECT_FALSE(delegate.shown());
   EXPECT_FALSE(delegate.close_action());
   views::Widget* bubble_widget =
       views::BubbleDialogDelegateView::CreateBubble(bubble);
   views::test::TestWidgetObserver bubble_observer(bubble_widget);
-  bubble->Show();
+  bubble_widget->Show();
   EXPECT_TRUE(delegate.shown());
   EXPECT_FALSE(delegate.close_action());
 
-  bubble->GetDialogClientView()->CancelWindow();
+  bubble->CancelDialog();
   base::RunLoop().RunUntilIdle();
   ASSERT_TRUE(delegate.close_action());
   EXPECT_EQ(ToolbarActionsBarBubbleDelegate::CLOSE_DISMISS_USER_ACTION,
@@ -277,7 +259,7 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestClickActionButton) {
 
   EXPECT_FALSE(delegate.close_action());
 
-  ClickButton(bubble()->GetDialogClientView()->ok_button());
+  ClickButton(bubble()->GetOkButton());
   ASSERT_TRUE(delegate.close_action());
   EXPECT_EQ(ToolbarActionsBarBubbleDelegate::CLOSE_EXECUTE,
             *delegate.close_action());
@@ -294,7 +276,7 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestClickDismissButton) {
 
   EXPECT_FALSE(delegate.close_action());
 
-  ClickButton(bubble()->GetDialogClientView()->cancel_button());
+  ClickButton(bubble()->GetCancelButton());
   ASSERT_TRUE(delegate.close_action());
   EXPECT_EQ(ToolbarActionsBarBubbleDelegate::CLOSE_DISMISS_USER_ACTION,
             *delegate.close_action());
@@ -352,8 +334,7 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestNullExtraView) {
   TestToolbarActionsBarBubbleDelegate delegate(HeadingString(), BodyString(),
                                                ActionString());
   ShowBubble(&delegate);
-  std::unique_ptr<views::View> extra_view(TestCreateExtraView());
-  ASSERT_FALSE(extra_view);
+  EXPECT_EQ(nullptr, bubble()->GetExtraView());
   CloseBubble();
 }
 
@@ -366,11 +347,11 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestCreateExtraViewIconOnly) {
   extra_view_info->resource = &vector_icons::kBusinessIcon;
   delegate.set_extra_view_info(std::move(extra_view_info));
   ShowBubble(&delegate);
-  std::unique_ptr<views::View> extra_view(TestCreateExtraView());
+  const views::View* const extra_view = bubble()->GetExtraView();
   ASSERT_TRUE(extra_view);
   ASSERT_EQ("ImageView", std::string(extra_view->GetClassName()));
   EXPECT_TRUE(gfx::test::AreImagesEqual(
-      gfx::Image(static_cast<views::ImageView*>(extra_view.get())->GetImage()),
+      gfx::Image(static_cast<const views::ImageView*>(extra_view)->GetImage()),
       gfx::Image(gfx::CreateVectorIcon(vector_icons::kBusinessIcon, kIconSize,
                                        gfx::kChromeIconGrey))));
   CloseBubble();
@@ -389,7 +370,7 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestCreateExtraViewLinkedTextOnly) {
 
   ShowBubble(&delegate);
 
-  std::unique_ptr<views::View> extra_view(TestCreateExtraView());
+  const views::View* const extra_view = bubble()->GetExtraView();
   ASSERT_TRUE(extra_view);
   ASSERT_EQ("ImageButton", std::string(extra_view->GetClassName()));
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_EXTENSIONS_INSTALLED_BY_ADMIN),
@@ -410,11 +391,11 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestCreateExtraViewLabelTextOnly) {
 
   ShowBubble(&delegate);
 
-  std::unique_ptr<views::View> extra_view(TestCreateExtraView());
+  const views::View* const extra_view = bubble()->GetExtraView();
   ASSERT_TRUE(extra_view);
   EXPECT_EQ("Label", std::string(extra_view->GetClassName()));
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_EXTENSIONS_INSTALLED_BY_ADMIN),
-            static_cast<views::Label*>(extra_view.get())->text());
+            static_cast<const views::Label*>(extra_view)->GetText());
   CloseBubble();
 }
 
@@ -432,19 +413,18 @@ TEST_F(ToolbarActionsBarBubbleViewsTest, TestCreateExtraViewImageAndText) {
 
   ShowBubble(&delegate);
 
-  std::unique_ptr<views::View> extra_view(TestCreateExtraView());
+  const views::View* const extra_view = bubble()->GetExtraView();
   ASSERT_TRUE(extra_view);
-  EXPECT_EQ("View", std::string(extra_view->GetClassName()));
-  EXPECT_EQ(2, extra_view->child_count());
+  EXPECT_STREQ("View", extra_view->GetClassName());
+  EXPECT_EQ(2u, extra_view->children().size());
 
-  for (int i = 0; i < 2; i++) {
-    const views::View* v = extra_view->child_at(i);
+  for (const views::View* v : extra_view->children()) {
     std::string class_name = v->GetClassName();
-    ASSERT_TRUE(class_name == "Label" || class_name == "ImageView");
     if (class_name == "Label") {
       EXPECT_EQ(l10n_util::GetStringUTF16(IDS_EXTENSIONS_INSTALLED_BY_ADMIN),
-                static_cast<const views::Label*>(v)->text());
+                static_cast<const views::Label*>(v)->GetText());
     } else {
+      ASSERT_EQ("ImageView", class_name);
       EXPECT_TRUE(gfx::test::AreImagesEqual(
           gfx::Image(static_cast<const views::ImageView*>(v)->GetImage()),
           gfx::Image(gfx::CreateVectorIcon(vector_icons::kBusinessIcon,

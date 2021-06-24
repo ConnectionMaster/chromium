@@ -2,34 +2,31 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/**
- * @fileoverview A helper object used from the "Google accounts" subsection of
- * the "People" section of Settings, to interact with the browser. Chrome OS
- * only.
- */
-cr.exportPath('settings');
+// clang-format off
+import {addSingletonGetter, sendWithPromise} from 'chrome://resources/js/cr.m.js';
+// clang-format on
 
-/**
- * Information for an account managed by Chrome OS AccountManager.
- * @typedef {{
- *   id: string,
- *   accountType: number,
- *   isDeviceAccount: boolean,
- *   isSignedIn: boolean,
- *   fullName: string,
- *   email: string,
- *   pic: string,
- *   organization: (string|undefined),
- * }}
- */
-settings.Account;
+  /**
+   * Information for an account managed by Chrome OS AccountManager.
+   * @typedef {{
+   *   id: string,
+   *   accountType: number,
+   *   isDeviceAccount: boolean,
+   *   isSignedIn: boolean,
+   *   unmigrated: boolean,
+   *   fullName: string,
+   *   email: string,
+   *   pic: string,
+   *   organization: (string|undefined),
+   * }}
+   */
+  export let Account;
 
-cr.define('settings', function() {
   /** @interface */
-  class AccountManagerBrowserProxy {
+  export class AccountManagerBrowserProxy {
     /**
      * Returns a Promise for the list of GAIA accounts held in AccountManager.
-     * @return {!Promise<!Array<settings.Account>>}
+     * @return {!Promise<!Array<Account>>}
      */
     getAccounts() {}
 
@@ -40,14 +37,21 @@ cr.define('settings', function() {
 
     /**
      * Triggers the re-authentication flow for the account pointed to by
-     * |account_email|.
-     * @param {!string} account_email
+     * |accountEmail|.
+     * @param {string} accountEmail
      */
-    reauthenticateAccount(account_email) {}
+    reauthenticateAccount(accountEmail) {}
+
+    /**
+     * Triggers the migration dialog for the account pointed to by
+     * |accountEmail|.
+     * @param {string} accountEmail
+     */
+    migrateAccount(accountEmail) {}
 
     /**
      * Removes |account| from Account Manager.
-     * @param {?settings.Account} account
+     * @param {?Account} account
      */
     removeAccount(account) {}
 
@@ -58,12 +62,12 @@ cr.define('settings', function() {
   }
 
   /**
-   * @implements {settings.AccountManagerBrowserProxy}
+   * @implements {AccountManagerBrowserProxy}
    */
-  class AccountManagerBrowserProxyImpl {
+  export class AccountManagerBrowserProxyImpl {
     /** @override */
     getAccounts() {
-      return cr.sendWithPromise('getAccounts');
+      return sendWithPromise('getAccounts');
     }
 
     /** @override */
@@ -72,8 +76,13 @@ cr.define('settings', function() {
     }
 
     /** @override */
-    reauthenticateAccount(account_email) {
-      chrome.send('reauthenticateAccount', [account_email]);
+    reauthenticateAccount(accountEmail) {
+      chrome.send('reauthenticateAccount', [accountEmail]);
+    }
+
+    /** @override */
+    migrateAccount(accountEmail) {
+      chrome.send('migrateAccount', [accountEmail]);
     }
 
     /** @override */
@@ -87,10 +96,5 @@ cr.define('settings', function() {
     }
   }
 
-  cr.addSingletonGetter(AccountManagerBrowserProxyImpl);
+  addSingletonGetter(AccountManagerBrowserProxyImpl);
 
-  return {
-    AccountManagerBrowserProxy: AccountManagerBrowserProxy,
-    AccountManagerBrowserProxyImpl: AccountManagerBrowserProxyImpl,
-  };
-});

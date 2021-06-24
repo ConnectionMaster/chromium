@@ -9,6 +9,8 @@
 
 #import "ios/chrome/browser/ui/omnibox/popup/autocomplete_suggestion.h"
 
+@protocol OmniboxIcon;
+
 // Fake class implementing AutocompleteSuggestion for Showcase.
 @interface FakeAutocompleteSuggestion : NSObject <AutocompleteSuggestion>
 
@@ -21,8 +23,9 @@
 @property(nonatomic) NSAttributedString* detailText;
 @property(nonatomic) NSInteger numberOfLines;
 @property(nonatomic) UIImage* suggestionTypeIcon;
-@property(nonatomic) GURL imageURL;
-@property(nonatomic) GURL faviconPageURL;
+@property(nonatomic) id<OmniboxIcon> icon;
+@property(nonatomic, assign) BOOL isTailSuggestion;
+@property(nonatomic, copy) NSString* commonPrefix;
 
 // Simple suggestion with text.
 + (instancetype)simpleSuggestion;
@@ -71,6 +74,9 @@
 
 // Suggestion for calculator.
 + (instancetype)calculatorSuggestion;
+
+// Suggestion for a rich entity (entity with image).
++ (instancetype)richEntitySuggestion;
 
 @end
 

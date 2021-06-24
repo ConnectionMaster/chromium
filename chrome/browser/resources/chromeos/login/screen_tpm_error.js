@@ -6,30 +6,26 @@
  * @fileoverview Offline message screen implementation.
  */
 
-login.createScreen('TPMErrorMessageScreen', 'tpm-error-message', function() {
-  return {
-    EXTERNAL_API: ['show'],
+Polymer({
+  is: 'tpm-error-message-element',
 
-    /**
-     * Buttons in oobe wizard's button strip.
-     * @type {array} Array of Buttons.
-     */
-    get buttons() {
-      var rebootButton = this.ownerDocument.createElement('button');
-      rebootButton.id = 'reboot-button';
-      rebootButton.textContent =
-          loadTimeData.getString('errorTpmFailureRebootButton');
-      rebootButton.addEventListener('click', function() {
-        chrome.send('rebootSystem');
-      });
-      return [rebootButton];
-    },
+  behaviors: [OobeI18nBehavior, OobeDialogHostBehavior, LoginScreenBehavior],
 
-    /**
-     * Show TPM screen.
-     */
-    show: function() {
-      Oobe.showScreen({id: SCREEN_TPM_ERROR});
-    }
-  };
+  ready() {
+    this.initializeLoginScreen('TPMErrorMessageScreen', {
+      resetAllowed: true,
+    });
+  },
+
+  onRestartTap_() {
+    this.userActed('reboot-system');
+  },
+
+  /**
+   * Returns default event target element.
+   * @type {Object}
+   */
+  get defaultControl() {
+    return this.$.errorDialog;
+  },
 });

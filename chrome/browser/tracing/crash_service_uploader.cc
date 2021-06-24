@@ -15,10 +15,10 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
+#include "build/chromeos_buildflags.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -32,7 +32,6 @@
 #include "net/proxy_resolution/proxy_config_service.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/cpp/resource_response.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/zlib/zlib.h"
@@ -102,9 +101,8 @@ void TraceCrashServiceUploader::OnSimpleURLLoaderComplete(
                base::NumberToString(response_code);
   }
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
-      base::BindOnce(std::move(done_callback_), success, feedback));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(std::move(done_callback_), success, feedback));
   simple_url_loader_.reset();
 }
 
@@ -117,8 +115,8 @@ void TraceCrashServiceUploader::OnURLLoaderUploadProgress(uint64_t current,
 
   if (progress_callback_.is_null())
     return;
-  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
-                           base::BindOnce(progress_callback_, current, total));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(progress_callback_, current, total));
 }
 
 void TraceCrashServiceUploader::DoUpload(
@@ -132,7 +130,7 @@ void TraceCrashServiceUploader::DoUpload(
   progress_callback_ = progress_callback;
   done_callback_ = std::move(done_callback);
 
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&TraceCrashServiceUploader::DoCompressOnBackgroundThread,
                      base::Unretained(this), file_contents, upload_mode,
@@ -153,13 +151,13 @@ void TraceCrashServiceUploader::DoCompressOnBackgroundThread(
 
 #if defined(OS_WIN)
   const char product[] = "Chrome";
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   const char product[] = "Chrome_Mac";
-#elif defined(OS_CHROMEOS)
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   // On ChromeOS, defined(OS_LINUX) also evalutes to true, so the
   // defined(OS_CHROMEOS) block must come first.
   const char product[] = "Chrome_ChromeOS";
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_CHROMEOS)
   const char product[] = "Chrome_Linux";
 #elif defined(OS_ANDROID)
   const char product[] = "Chrome_Android";
@@ -208,8 +206,8 @@ void TraceCrashServiceUploader::DoCompressOnBackgroundThread(
   SetupMultipart(product, version, std::move(metadata), "trace.json.gz",
                  compressed_contents, &post_data);
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&TraceCrashServiceUploader::CreateAndStartURLLoader,
                      base::Unretained(this), upload_url, post_data));
 }
@@ -217,8 +215,8 @@ void TraceCrashServiceUploader::DoCompressOnBackgroundThread(
 void TraceCrashServiceUploader::OnUploadError(
     const std::string& error_message) {
   LOG(ERROR) << error_message;
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(std::move(done_callback_), false, error_message));
 }
 
@@ -357,12 +355,8 @@ void TraceCrashServiceUploader::CreateAndStartURLLoader(
   resource_request->url = GURL(upload_url);
   resource_request->method = "POST";
   resource_request->enable_upload_progress = true;
-  resource_request->load_flags =
-      net::LOAD_DO_NOT_SEND_COOKIES | net::LOAD_DO_NOT_SAVE_COOKIES;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
-  // TODO(https://crbug.com/808498): Re-add data use measurement once
-  // SimpleURLLoader supports it.
-  // ID=data_use_measurement::DataUseUserData::TRACING_UPLOADER
   simple_url_loader_ = network::SimpleURLLoader::Create(
       std::move(resource_request), traffic_annotation);
   simple_url_loader_->AttachStringForUpload(post_data, content_type);

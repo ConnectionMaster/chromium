@@ -5,27 +5,27 @@
 #ifndef IOS_CHROME_BROWSER_UI_SETTINGS_CLEAR_BROWSING_DATA_CLEAR_BROWSING_DATA_MANAGER_H_
 #define IOS_CHROME_BROWSER_UI_SETTINGS_CLEAR_BROWSING_DATA_CLEAR_BROWSING_DATA_MANAGER_H_
 
-#import <Foundation/Foundation.h>
+#include "components/browsing_data/core/counters/browsing_data_counter.h"
+#import "ios/chrome/browser/ui/list_model/list_model.h"
 
-#import "ios/chrome/browser/browsing_data/browsing_data_remover_observer_bridge.h"
-#import "ios/chrome/browser/ui/settings/clear_browsing_data/clear_browsing_data_consumer.h"
-#import "ios/chrome/browser/ui/settings/clear_browsing_data/time_range_selector_table_view_controller.h"
+class Browser;
+class BrowsingDataRemover;
+enum class BrowsingDataRemoveMask;
+class ChromeBrowserState;
 
-@class ListModel;
 @class ActionSheetCoordinator;
+@class BrowsingDataCounterWrapperProducer;
+@protocol ClearBrowsingDataConsumer;
 @protocol CollectionViewFooterLinkDelegate;
 
 // Clear Browswing Data Section Identifiers.
 enum ClearBrowsingDataSectionIdentifier {
   // Section holding types of data that can be cleared.
   SectionIdentifierDataTypes = kSectionIdentifierEnumZero,
-  // Section containing button to clear browsing data.
-  SectionIdentifierClearBrowsingDataButton,
   // Section for informational footnote about user's Google Account data.
   SectionIdentifierGoogleAccount,
-  // Section for footnote about synced data being cleared.
-  SectionIdentifierClearSyncAndSavedSiteData,
-  // Section for informational footnote about site settings remaining.
+  // Section for footnote about synced data being cleared & site settings
+  // remaining.
   SectionIdentifierSavedSiteData,
   // Section containing cell displaying time range to remove data.
   SectionIdentifierTimeRange,
@@ -43,8 +43,6 @@ enum ClearBrowsingDataItemType {
   ItemTypeDataTypeSavedPasswords,
   // Items representing autofill data.
   ItemTypeDataTypeAutofill,
-  // Clear data button.
-  ItemTypeClearBrowsingDataButton,
   // Footer noting account will not be signed out.
   ItemTypeFooterGoogleAccount,
   // Footer noting user will not be signed out of chrome and other forms of
@@ -60,29 +58,22 @@ enum ClearBrowsingDataItemType {
   ItemTypeTimeRange,
 };
 
-// Differentiation between two types of view controllers that the
-// ClearBrowsingDataManager could be serving.
-enum class ClearBrowsingDataListType {
-  kListTypeTableView,
-  kListTypeCollectionView,
-};
-
 // Manager that serves as the bulk of the logic for
 // ClearBrowsingDataConsumer.
-@interface ClearBrowsingDataManager
-    : NSObject <BrowsingDataRemoverObserving,
-                TimeRangeSelectorTableViewControllerDelegate>
+@interface ClearBrowsingDataManager : NSObject
 
 // The manager's consumer.
-@property(nonatomic, assign) id<ClearBrowsingDataConsumer> consumer;
-// Reference to the LinkDelegate for CollectionViewFooterItem.
-@property(nonatomic, strong) id<CollectionViewFooterLinkDelegate> linkDelegate;
+@property(nonatomic, weak) id<ClearBrowsingDataConsumer> consumer;
 
-// Default init method. |browserState| can't be nil and
-// |managingList| determines what kind of items to populate model with.
-- (instancetype)initWithBrowserState:(ios::ChromeBrowserState*)browserState
-                            listType:(ClearBrowsingDataListType)listType
-    NS_DESIGNATED_INITIALIZER;
+// Default init method. |browserState| can't be nil.
+- (instancetype)initWithBrowserState:(ChromeBrowserState*)browserState;
+
+// Designated initializer to allow dependency injection (in tests).
+- (instancetype)initWithBrowserState:(ChromeBrowserState*)browserState
+                   browsingDataRemover:(BrowsingDataRemover*)remover
+    browsingDataCounterWrapperProducer:
+        (BrowsingDataCounterWrapperProducer*)producer NS_DESIGNATED_INITIALIZER;
+
 - (instancetype)init NS_UNAVAILABLE;
 
 // Fills |model| with appropriate sections and items.
@@ -94,20 +85,12 @@ enum class ClearBrowsingDataListType {
 
 // Returns a ActionSheetCoordinator that has action block to clear data of type
 // |dataTypeMaskToRemove|.
-// When action triggered by a UIButton.
 - (ActionSheetCoordinator*)
     actionSheetCoordinatorWithDataTypesToRemove:
         (BrowsingDataRemoveMask)dataTypeMaskToRemove
                              baseViewController:
                                  (UIViewController*)baseViewController
-                                     sourceRect:(CGRect)sourceRect
-                                     sourceView:(UIView*)sourceView;
-// When action triggered by a UIBarButtonItem.
-- (ActionSheetCoordinator*)
-    actionSheetCoordinatorWithDataTypesToRemove:
-        (BrowsingDataRemoveMask)dataTypeMaskToRemove
-                             baseViewController:
-                                 (UIViewController*)baseViewController
+                                        browser:(Browser*)browser
                             sourceBarButtonItem:
                                 (UIBarButtonItem*)sourceBarButtonItem;
 

@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/ui/toolbar/buttons/toolbar_button_visibility_configuration.h"
 
-#import "ios/chrome/browser/ui/toolbar/public/features.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -45,8 +44,8 @@
 - (ToolbarComponentVisibility)tabGridButtonVisibility {
   switch (self.type) {
     case PRIMARY:
-      return ToolbarComponentVisibilityCompactWidthCompactHeight |
-             ToolbarComponentVisibilityRegularWidthCompactHeight;
+      return ToolbarComponentVisibilityAlways &
+             ~ToolbarComponentVisibilitySplit;
     case SECONDARY:
       return ToolbarComponentVisibilitySplit;
   }
@@ -119,7 +118,7 @@
   }
 }
 
-- (ToolbarComponentVisibility)omniboxButtonVisibility {
+- (ToolbarComponentVisibility)searchButtonVisibility {
   switch (self.type) {
     case PRIMARY:
       return ToolbarComponentVisibilityNone;

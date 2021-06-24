@@ -1,5 +1,7 @@
 <!DOCTYPE html>
 <html>
+    <script src="../../resources/testdriver.js"></script>
+    <script src="../../resources/testdriver-vendor.js"></script>
     <body>
         <p>
             Test that a forwarded user gesture can be consumed by any timeout,
@@ -27,18 +29,10 @@
 
             if (window.testRunner) {
                 testRunner.dumpAsText();
-                testRunner.setCanOpenWindows();
-                testRunner.setPopupBlockingEnabled(true);
-                testRunner.setCloseRemainingWindowsWhenComplete(true);
                 testRunner.waitUntilDone();
 
                 var button = document.getElementById("button");
-
-                if (window.eventSender) {
-                    eventSender.mouseMoveTo(button.offsetLeft + button.offsetWidth / 2, button.offsetTop + button.offsetHeight / 2);
-                    eventSender.mouseDown();
-                    eventSender.mouseUp();
-                }
+                test_driver.click(button);
             }
         </script>
     </body>

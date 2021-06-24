@@ -12,6 +12,7 @@
 #include "ash/assistant/model/assistant_query_history.h"
 #include "base/component_export.h"
 #include "base/macros.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 
 namespace ash {
@@ -23,7 +24,6 @@ class AssistantResponse;
 // Enumeration of interaction input modalities.
 enum class InputModality {
   kKeyboard,
-  kStylus,
   kVoice,
 };
 
@@ -50,8 +50,8 @@ class COMPONENT_EXPORT(ASSISTANT_MODEL) AssistantInteractionModel {
   ~AssistantInteractionModel();
 
   // Adds/removes the specified interaction model |observer|.
-  void AddObserver(AssistantInteractionModelObserver* observer);
-  void RemoveObserver(AssistantInteractionModelObserver* observer);
+  void AddObserver(AssistantInteractionModelObserver* observer) const;
+  void RemoveObserver(AssistantInteractionModelObserver* observer) const;
 
   // Resets the interaction to its initial state.
   void ClearInteraction();
@@ -101,21 +101,24 @@ class COMPONENT_EXPORT(ASSISTANT_MODEL) AssistantInteractionModel {
   void ClearPendingQuery();
 
   // Sets the pending response for the interaction.
-  void SetPendingResponse(std::unique_ptr<AssistantResponse> response);
+  void SetPendingResponse(scoped_refptr<AssistantResponse> response);
 
   // Returns the pending response for the interaction.
   AssistantResponse* pending_response() { return pending_response_.get(); }
 
-  // Finalizes the pending response for the interaction.
-  void FinalizePendingResponse();
+  // Commits the pending response for the interaction. Note that this will cause
+  // the previously committed response, if one exists, to be animated off stage
+  // after which the newly committed response will begin rendering.
+  void CommitPendingResponse();
 
   // Clears the pending response for the interaction.
   void ClearPendingResponse();
 
-  // Returns the finalized response for the interaction.
+  // Returns the committed response for the interaction.
+  AssistantResponse* response() { return response_.get(); }
   const AssistantResponse* response() const { return response_.get(); }
 
-  // Clears the finalized response for the interaction.
+  // Clears the committed response for the interaction.
   void ClearResponse();
 
   // Updates the speech level in dB.
@@ -134,7 +137,7 @@ class COMPONENT_EXPORT(ASSISTANT_MODEL) AssistantInteractionModel {
   void NotifyCommittedQueryChanged();
   void NotifyCommittedQueryCleared();
   void NotifyPendingQueryChanged();
-  void NotifyPendingQueryCleared();
+  void NotifyPendingQueryCleared(bool due_to_commit);
   void NotifyResponseChanged();
   void NotifyResponseCleared();
   void NotifySpeechLevelChanged(float speech_level_db);
@@ -145,10 +148,10 @@ class COMPONENT_EXPORT(ASSISTANT_MODEL) AssistantInteractionModel {
   AssistantQueryHistory query_history_;
   std::unique_ptr<AssistantQuery> committed_query_;
   std::unique_ptr<AssistantQuery> pending_query_;
-  std::unique_ptr<AssistantResponse> pending_response_;
-  std::shared_ptr<AssistantResponse> response_;
+  scoped_refptr<AssistantResponse> pending_response_;
+  scoped_refptr<AssistantResponse> response_;
 
-  base::ObserverList<AssistantInteractionModelObserver> observers_;
+  mutable base::ObserverList<AssistantInteractionModelObserver> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(AssistantInteractionModel);
 };

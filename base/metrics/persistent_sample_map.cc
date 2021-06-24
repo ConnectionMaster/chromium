@@ -4,11 +4,12 @@
 
 #include "base/metrics/persistent_sample_map.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/persistent_histogram_allocator.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/stl_util.h"
 
 namespace base {
 
@@ -276,7 +277,7 @@ Count* PersistentSampleMap::ImportSamples(Sample until_value,
     DCHECK_EQ(id(), record->id);
 
     // Check if the record's value is already known.
-    if (!ContainsKey(sample_counts_, record->value)) {
+    if (!Contains(sample_counts_, record->value)) {
       // No: Add it to map of known values.
       sample_counts_[record->value] = &record->count;
     } else {

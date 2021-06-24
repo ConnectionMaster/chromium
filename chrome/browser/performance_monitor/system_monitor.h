@@ -13,17 +13,15 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/optional.h"
 #include "base/process/process_metrics.h"
 #include "base/sequence_checker.h"
 #include "base/task/post_task.h"
-#include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace performance_monitor {
 
 class MetricEvaluatorsHelper;
-class SystemMonitorMetricsLogger;
 
 // Monitors various various system metrics such as free memory, disk idle time,
 // etc.
@@ -56,6 +54,11 @@ class SystemMonitor {
   // with Get().
   static std::unique_ptr<SystemMonitor> Create();
 
+  // Test fixture that allows creating a global SystemMonitor instance that uses
+  // a custom metric evaluator helper.
+  static std::unique_ptr<SystemMonitor> CreateForTesting(
+      std::unique_ptr<MetricEvaluatorsHelper> helper);
+
   // Get the application-wide SystemMonitor (if not present, returns
   // nullptr).
   static SystemMonitor* Get();
@@ -71,21 +74,17 @@ class SystemMonitor {
       SamplingFrequency free_phys_memory_mb_frequency =
           SamplingFrequency::kNoSampling;
 
-      SamplingFrequency disk_idle_time_percent_frequency =
-          SamplingFrequency::kNoSampling;
-
       SamplingFrequency system_metrics_sampling_frequency =
           SamplingFrequency::kNoSampling;
+
+      // A builder used to create instances of this object.
+      class Builder;
     };
 
     ~SystemObserver() override;
 
     // Reports the amount of free physical memory, in MB.
     virtual void OnFreePhysicalMemoryMbSample(int free_phys_memory_mb);
-
-    // Reports the disk idle time during the last observation interval, in
-    // percent (between 0.0 and 1.0).
-    virtual void OnDiskIdleTimePercent(float disk_idle_time_percent);
 
     // Called when a new |base::SystemMetrics| sample is available.
     virtual void OnSystemMetricsStruct(
@@ -111,13 +110,9 @@ class SystemMonitor {
     return refresh_timer_;
   }
 
-  void SetMetricEvaluatorsHelperForTesting(
-      std::unique_ptr<MetricEvaluatorsHelper> helper) {
-    metric_evaluators_helper_.reset(helper.release());
-  }
-
  protected:
   friend class SystemMonitorTest;
+  friend class MetricEvaluatorsHelper;
 
   // Represents a metric. Overridden for each metric tracked by this monitor.
   class MetricEvaluator {
@@ -125,8 +120,6 @@ class SystemMonitor {
     enum class Type : size_t {
       // The amount of free physical memory, in megabytes.
       kFreeMemoryMb,
-      // The percentage of time the disk has been idle since the sample.
-      kDiskIdleTimePercent,
       // A |base::SystemMetrics| instance.
       // TODO(sebmarchand): Split this struct into some smaller ones.
       kSystemMetricsStruct,
@@ -165,7 +158,7 @@ class SystemMonitor {
 
     MetricEvaluatorImpl<T>(
         Type type,
-        base::OnceCallback<base::Optional<T>()> evaluate_function,
+        base::OnceCallback<absl::optional<T>()> evaluate_function,
         void (SystemObserver::*notify_function)(ObserverArgType));
     virtual ~MetricEvaluatorImpl();
 
@@ -174,7 +167,7 @@ class SystemMonitor {
 
     bool has_value() const override { return value_.has_value(); }
 
-    base::Optional<T> value() { return value_; }
+    absl::optional<T> value() { return value_; }
 
     void set_value_for_testing(T value) { value_ = value; }
 
@@ -182,14 +175,14 @@ class SystemMonitor {
     void NotifyObserver(SystemObserver* observer) override;
 
     // The callback that should be run to evaluate the metric value.
-    base::OnceCallback<base::Optional<T>()> evaluate_function_;
+    base::OnceCallback<absl::optional<T>()> evaluate_function_;
 
     // A function pointer to the SystemObserver function that should be called
     // to notify of a value refresh.
     void (SystemObserver::*notify_function_)(ObserverArgType);
 
     // The value, initialized in |Evaluate|.
-    base::Optional<T> value_;
+    absl::optional<T> value_;
 
     DISALLOW_COPY_AND_ASSIGN(MetricEvaluatorImpl);
   };
@@ -227,13 +220,6 @@ class SystemMonitor {
   const MetricSamplingFrequencyArray&
   GetMetricSamplingFrequencyArrayForTesting() {
     return metrics_refresh_frequencies_;
-  }
-
-  MetricMetadata* GetMetricEvaluatorMetadataForTesting(
-      MetricEvaluator::Type type) {
-    DCHECK_LT(static_cast<size_t>(type), metric_evaluators_metadata_.size());
-    return const_cast<MetricMetadata*>(
-        &metric_evaluators_metadata_[static_cast<size_t>(type)]);
   }
 
  private:
@@ -287,14 +273,29 @@ class SystemMonitor {
   // |MetricEvaluator::Type|.
   MetricMetadataArray metric_evaluators_metadata_;
 
-  // The logger responsible of logging the system metrics.
-  std::unique_ptr<SystemMonitorMetricsLogger> metrics_logger_;
-
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<SystemMonitor> weak_factory_;
+  base::WeakPtrFactory<SystemMonitor> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SystemMonitor);
+};
+
+// A builder class used to easily create a MetricRefreshFrequencies object.
+class SystemMonitor::SystemObserver::MetricRefreshFrequencies::Builder {
+ public:
+  Builder() = default;
+  ~Builder() = default;
+
+  Builder& SetFreePhysMemoryMbFrequency(SamplingFrequency freq);
+  Builder& SetSystemMetricsSamplingFrequency(SamplingFrequency freq);
+
+  // Returns the initialized MetricRefreshFrequencies instance.
+  MetricRefreshFrequencies Build();
+
+ private:
+  MetricRefreshFrequencies metrics_and_frequencies_ = {};
+
+  DISALLOW_COPY_AND_ASSIGN(Builder);
 };
 
 // An helper class used by the MetricEvaluator object to retrieve the info
@@ -305,17 +306,13 @@ class MetricEvaluatorsHelper {
   virtual ~MetricEvaluatorsHelper() = default;
 
   // Returns the free physical memory, in megabytes.
-  virtual base::Optional<int> GetFreePhysicalMemoryMb() = 0;
-
-  // Return the disk idle time, in percentage of time since the last call to
-  // this function (returns nullopt on the first call).
-  virtual base::Optional<float> GetDiskIdleTimePercent() = 0;
+  virtual absl::optional<int> GetFreePhysicalMemoryMb() = 0;
 
   // Return a |base::SystemMetrics| snapshot.
   //
   // NOTE: This function doesn't have to be virtual, the base::SystemMetrics
   // struct is an abstraction that already has a per-platform definition.
-  base::Optional<base::SystemMetrics> GetSystemMetricsStruct();
+  absl::optional<base::SystemMetrics> GetSystemMetricsStruct();
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MetricEvaluatorsHelper);

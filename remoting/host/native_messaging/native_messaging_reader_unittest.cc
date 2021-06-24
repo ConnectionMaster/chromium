@@ -9,8 +9,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/task_environment.h"
 #include "base/values.h"
 #include "remoting/host/setup/test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -50,7 +50,8 @@ class NativeMessagingReaderTest : public testing::Test {
  private:
   // MessageLoop declared here, since the NativeMessageReader ctor requires a
   // MessageLoop to have been created.
-  base::MessageLoopForIO message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO};
   std::unique_ptr<base::RunLoop> run_loop_;
 };
 
@@ -60,19 +61,20 @@ NativeMessagingReaderTest::~NativeMessagingReaderTest() = default;
 
 void NativeMessagingReaderTest::SetUp() {
   ASSERT_TRUE(MakePipe(&read_file_, &write_file_));
-  reader_.reset(new NativeMessagingReader(std::move(read_file_)));
-  run_loop_.reset(new base::RunLoop());
+  reader_ = std::make_unique<NativeMessagingReader>(std::move(read_file_));
+  run_loop_ = std::make_unique<base::RunLoop>();
 
   // base::Unretained is safe since no further tasks can run after
   // RunLoop::Run() returns.
-  reader_->Start(
-      base::Bind(&NativeMessagingReaderTest::OnMessage, base::Unretained(this)),
-      base::Bind(&NativeMessagingReaderTest::OnError, base::Unretained(this)));
+  reader_->Start(base::BindRepeating(&NativeMessagingReaderTest::OnMessage,
+                                     base::Unretained(this)),
+                 base::BindOnce(&NativeMessagingReaderTest::OnError,
+                                base::Unretained(this)));
 }
 
 void NativeMessagingReaderTest::RunAndWaitForOperationComplete() {
   run_loop_->Run();
-  run_loop_.reset(new base::RunLoop());
+  run_loop_ = std::make_unique<base::RunLoop>();
 }
 
 void NativeMessagingReaderTest::OnMessage(

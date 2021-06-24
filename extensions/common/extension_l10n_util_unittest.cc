@@ -19,7 +19,10 @@
 #include "extensions/common/message_bundle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/zlib/google/compression_utils.h"
 #include "ui/base/l10n/l10n_util.h"
+
+using extension_l10n_util::GzippedMessagesPermission;
 
 namespace extensions {
 
@@ -132,11 +135,42 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsValidFallback) {
 
   std::string error;
   std::unique_ptr<MessageBundle> bundle(
-      extension_l10n_util::LoadMessageCatalogs(install_dir, "sr", &error));
-  ASSERT_FALSE(NULL == bundle.get());
+      extension_l10n_util::LoadMessageCatalogs(
+          install_dir, "sr", GzippedMessagesPermission::kDisallow, &error));
+  ASSERT_TRUE(bundle);
   EXPECT_TRUE(error.empty());
   EXPECT_EQ("Color", bundle->GetL10nMessage("color"));
   EXPECT_EQ("Not in the US or GB.", bundle->GetL10nMessage("not_in_US_or_GB"));
+}
+
+TEST(ExtensionL10nUtil, LoadMessageCatalogsLowercaseLocales) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("en-US");
+  base::FilePath install_dir;
+  ASSERT_TRUE(base::PathService::Get(DIR_TEST_DATA, &install_dir));
+  install_dir = install_dir.AppendASCII("extension_with_lowercase_locales")
+                    .Append(kLocaleFolder);
+
+  std::string error;
+  std::unique_ptr<MessageBundle> bundle(
+      extension_l10n_util::LoadMessageCatalogs(
+          install_dir, "en-US", GzippedMessagesPermission::kDisallow, &error));
+  ASSERT_TRUE(bundle);
+  EXPECT_TRUE(error.empty());
+  const base::FilePath locale_uppercase_path = install_dir.AppendASCII("en_US");
+  const base::FilePath locale_lowercase_path = install_dir.AppendASCII("en_us");
+  if (base::PathExists(locale_uppercase_path) &&
+      base::PathExists(locale_lowercase_path)) {
+    // Path system is case-insensitive.
+    EXPECT_EQ("color lowercase", bundle->GetL10nMessage("color"));
+  } else {
+    EXPECT_EQ("", bundle->GetL10nMessage("color"));
+  }
+  std::set<std::string> all_locales;
+  extension_l10n_util::GetAllLocales(&all_locales);
+  EXPECT_FALSE(extension_l10n_util::ShouldSkipValidation(
+      install_dir, locale_uppercase_path, all_locales));
+  EXPECT_FALSE(extension_l10n_util::ShouldSkipValidation(
+      install_dir, locale_lowercase_path, all_locales));
 }
 
 TEST(ExtensionL10nUtil, LoadMessageCatalogsMissingFiles) {
@@ -150,8 +184,8 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsMissingFiles) {
   ASSERT_TRUE(base::CreateDirectory(src_path.AppendASCII("sr")));
 
   std::string error;
-  EXPECT_TRUE(NULL ==
-              extension_l10n_util::LoadMessageCatalogs(src_path, "en", &error));
+  EXPECT_FALSE(extension_l10n_util::LoadMessageCatalogs(
+      src_path, "en", GzippedMessagesPermission::kDisallow, &error));
   EXPECT_FALSE(error.empty());
 }
 
@@ -172,13 +206,13 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsBadJSONFormat) {
             base::WriteFile(messages_file, data.c_str(), data.length()));
 
   std::string error;
-  EXPECT_TRUE(NULL == extension_l10n_util::LoadMessageCatalogs(
-                          src_path, "en_US", &error));
-  EXPECT_EQ(ErrorUtils::FormatErrorMessage(
+  EXPECT_FALSE(extension_l10n_util::LoadMessageCatalogs(
+      src_path, "en_US", GzippedMessagesPermission::kDisallow, &error));
+  EXPECT_NE(std::string::npos,
+            error.find(ErrorUtils::FormatErrorMessage(
                 errors::kLocalesInvalidLocale,
                 base::UTF16ToUTF8(messages_file.LossyDisplayName()),
-                "Line: 1, column: 10, Unexpected token."),
-            error);
+                "Line: 1, column: 10,")));
 }
 
 TEST(ExtensionL10nUtil, LoadMessageCatalogsDuplicateKeys) {
@@ -210,9 +244,49 @@ TEST(ExtensionL10nUtil, LoadMessageCatalogsDuplicateKeys) {
   // JSON parser hides duplicates. We are going to get only one key/value
   // pair at the end.
   std::unique_ptr<MessageBundle> message_bundle(
-      extension_l10n_util::LoadMessageCatalogs(src_path, "en", &error));
-  EXPECT_TRUE(NULL != message_bundle.get());
+      extension_l10n_util::LoadMessageCatalogs(
+          src_path, "en", GzippedMessagesPermission::kDisallow, &error));
+  EXPECT_TRUE(message_bundle.get());
   EXPECT_TRUE(error.empty());
+}
+
+TEST(ExtensionL10nUtil, LoadMessageCatalogsCompressed) {
+  extension_l10n_util::ScopedLocaleForTest scoped_locale("sr");
+  base::ScopedTempDir temp;
+  ASSERT_TRUE(temp.CreateUniqueTempDir());
+
+  base::FilePath src_path = temp.GetPath().Append(kLocaleFolder);
+  ASSERT_TRUE(base::CreateDirectory(src_path));
+
+  base::FilePath locale = src_path.AppendASCII("en");
+  ASSERT_TRUE(base::CreateDirectory(locale));
+
+  // Create a compressed messages.json.gz file.
+  std::string data = "{ \"name\": { \"message\": \"something\" } }";
+  std::string compressed_data;
+  ASSERT_TRUE(compression::GzipCompress(data, &compressed_data));
+  ASSERT_EQ(static_cast<int>(compressed_data.length()),
+            base::WriteFile(locale.Append(kMessagesFilename)
+                                .AddExtension(FILE_PATH_LITERAL(".gz")),
+                            compressed_data.c_str(), compressed_data.length()));
+
+  // Test that LoadMessageCatalogs fails with gzip_permission = kDisallow.
+  std::string error;
+  std::unique_ptr<MessageBundle> message_bundle(
+      extension_l10n_util::LoadMessageCatalogs(
+          src_path, "en", GzippedMessagesPermission::kDisallow, &error));
+  EXPECT_FALSE(message_bundle.get());
+  EXPECT_FALSE(error.empty());
+
+  // Test that LoadMessageCatalogs succeeds with gzip_permission =
+  // kAllowForTrustedSource.
+  error.clear();
+  message_bundle.reset(extension_l10n_util::LoadMessageCatalogs(
+      src_path, "en", GzippedMessagesPermission::kAllowForTrustedSource,
+      &error));
+  EXPECT_TRUE(message_bundle.get());
+  EXPECT_TRUE(error.empty());
+  EXPECT_EQ("something", message_bundle->GetL10nMessage("name"));
 }
 
 // Caller owns the returned object.
@@ -439,7 +513,7 @@ TEST(ExtensionL10nUtil, LocalizeManifestWithNameDescriptionFileHandlerTitle) {
   base::DictionaryValue handler;
   handler.SetString(keys::kActionDefaultTitle, "__MSG_file_handler_title__");
   auto handlers = std::make_unique<base::ListValue>();
-  handlers->GetList().push_back(std::move(handler));
+  handlers->Append(std::move(handler));
   manifest.Set(keys::kFileBrowserHandlers, std::move(handlers));
 
   std::string error;

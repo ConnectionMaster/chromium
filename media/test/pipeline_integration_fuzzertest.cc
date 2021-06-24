@@ -8,7 +8,7 @@
 
 #include "base/at_exit.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -22,6 +22,7 @@
 #include "media/media_buildflags.h"
 #include "media/test/pipeline_integration_test_base.h"
 #include "media/test/test_media_source.h"
+#include "third_party/googletest/src/googletest/src/gtest-internal-inl.h"
 
 namespace {
 
@@ -200,7 +201,7 @@ class MediaSourcePipelineIntegrationFuzzerTest
     source.set_do_eos_after_next_append(true);
 
     source.set_encrypted_media_init_data_cb(
-        base::Bind(&OnEncryptedMediaInitData, this));
+        base::BindRepeating(&OnEncryptedMediaInitData, this));
 
     // Allow parsing to either pass or fail without emitting a gtest failure
     // from TestMediaSource.
@@ -227,7 +228,7 @@ struct Environment {
   Environment() {
     base::CommandLine::Init(0, nullptr);
 
-    // |test| instances uses ScopedTaskEnvironment, which needs TestTimeouts.
+    // |test| instances uses TaskEnvironment, which needs TestTimeouts.
     TestTimeouts::Initialize();
 
     media::InitializeMediaLibrary();
@@ -247,28 +248,20 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
   FuzzerVariant variant = PIPELINE_FUZZER_VARIANT;
 
+  // These tests use GoogleTest assertions without using the GoogleTest
+  // framework. While this is the case, tell GoogleTest's stack trace getter
+  // that GoogleTest is being left now so that there is a basis for traces
+  // collected upon assertion failure. TODO(https://crbug.com/1039559): use
+  // RUN_ALL_TESTS() and remove this code.
+  ::testing::internal::GetUnitTestImpl()
+      ->os_stack_trace_getter()
+      ->UponLeavingGTest();
   if (variant == SRC) {
-    {
-      media::ProgressivePipelineIntegrationFuzzerTest test;
-      test.RunTest(data, size);
-    }
+    media::ProgressivePipelineIntegrationFuzzerTest test;
+    test.RunTest(data, size);
   } else {
-    // Sequentially fuzz with new and old MSE buffering APIs.  See
-    // https://crbug.com/718641.
-    {
-      base::test::ScopedFeatureList features_with_buffering_api_forced;
-      features_with_buffering_api_forced.InitAndEnableFeature(
-          media::kMseBufferByPts);
-      media::MediaSourcePipelineIntegrationFuzzerTest test;
-      test.RunTest(data, size, MseFuzzerVariantEnumToMimeTypeString(variant));
-    }
-    {
-      base::test::ScopedFeatureList features_with_buffering_api_forced;
-      features_with_buffering_api_forced.InitAndDisableFeature(
-          media::kMseBufferByPts);
-      media::MediaSourcePipelineIntegrationFuzzerTest test;
-      test.RunTest(data, size, MseFuzzerVariantEnumToMimeTypeString(variant));
-    }
+    media::MediaSourcePipelineIntegrationFuzzerTest test;
+    test.RunTest(data, size, MseFuzzerVariantEnumToMimeTypeString(variant));
   }
 
   return 0;

@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.vr;
 
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
+import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
@@ -23,47 +24,60 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
+import androidx.annotation.VisibleForTesting;
+
 import com.google.vr.ndk.base.AndroidCompat;
 import com.google.vr.ndk.base.GvrLayout;
 
+import org.chromium.base.Function;
 import org.chromium.base.Log;
 import org.chromium.base.StrictModeContext;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.annotations.NativeMethods;
+import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.Supplier;
 import org.chromium.base.task.PostTask;
+import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.compositor.CompositorView;
-import org.chromium.chrome.browser.page_info.PageInfoController;
+import org.chromium.chrome.browser.compositor.CompositorViewHolder;
+import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
+import org.chromium.chrome.browser.fullscreen.FullscreenManager;
+import org.chromium.chrome.browser.page_info.ChromePageInfo;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
+import org.chromium.chrome.browser.tab.RedirectHandlerTabHelper;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabAssociatedApp;
-import org.chromium.chrome.browser.tab.TabBrowserControlsState;
+import org.chromium.chrome.browser.tab.TabBrowserControlsConstraintsHelper;
+import org.chromium.chrome.browser.tab.TabCreationState;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObserver;
-import org.chromium.chrome.browser.tab.TabRedirectHandler;
 import org.chromium.chrome.browser.tabmodel.ChromeTabCreator;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModelSelectorObserver;
-import org.chromium.chrome.browser.tabmodel.TabCreatorManager.TabCreator;
-import org.chromium.chrome.browser.tabmodel.TabLaunchType;
+import org.chromium.chrome.browser.tabmodel.TabCreator;
+import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
-import org.chromium.chrome.browser.toolbar.NewTabButton;
-import org.chromium.chrome.browser.util.FeatureUtilities;
+import org.chromium.chrome.browser.toolbar.ToolbarManager;
+import org.chromium.chrome.browser.util.VoiceRecognitionUtil;
 import org.chromium.chrome.browser.vr.keyboard.VrInputMethodManagerWrapper;
+import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
+import org.chromium.components.external_intents.RedirectHandler;
+import org.chromium.components.page_info.PageInfoController;
+import org.chromium.components.page_info.PageInfoController.OpenedFromSource;
 import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 import org.chromium.content_public.browser.ViewEventSink;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.content_public.common.BrowserControlsState;
 import org.chromium.ui.base.PermissionCallback;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
+import org.chromium.ui.display.DisplayAndroidManager;
 import org.chromium.ui.display.VirtualDisplayAndroid;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -81,16 +95,29 @@ public class VrShell extends GvrLayout
     private static final String TAG = "VrShellImpl";
     private static final float INCHES_TO_METERS = 0.0254f;
 
-    private final ChromeActivity mActivity;
-    private final CompositorView mCompositorView;
+    private final Activity mActivity;
     private final VrCompositorSurfaceManager mVrCompositorSurfaceManager;
     private final VrShellDelegate mDelegate;
     private final VirtualDisplayAndroid mContentVirtualDisplay;
-    private final TabRedirectHandler mTabRedirectHandler;
+    private final RedirectHandler mRedirectHandler;
     private final TabObserver mTabObserver;
     private final TabModelSelectorObserver mTabModelSelectorObserver;
     private final View.OnTouchListener mTouchListener;
     private final boolean mVrBrowsingEnabled;
+    private final TabModelSelector mTabModelSelector;
+    private final ToolbarManager mToolbarManager;
+    private final Supplier<ModalDialogManager> mModalDialogManagerSupplier;
+    private final Supplier<CompositorViewHolder> mCompositorViewHolderSupplier;
+    private final Supplier<Tab> mCurrentTabSupplier;
+    private final BrowserControlsManager mBrowserControlsManager;
+    private final TabCreatorManager mTabCreatorManager;
+    private final WindowAndroid mWindowAndroid;
+    private final Supplier<Boolean> mIsActivityFinishingOrDestroyedSupplier;
+    private final FullscreenManager mFullscreenManager;
+    private final Function<Tab, Boolean> mBackShouldCloseTabFunc;
+    private final Supplier<Boolean> mIsInOverviewModeSupplier;
+    private final MenuOrKeyboardActionController mMenuOrKeyboardActionController;
+    private final CompositorView mCompositorView;
 
     private TabModelSelectorTabObserver mTabModelSelectorTabObserver;
 
@@ -108,10 +135,9 @@ public class VrShell extends GvrLayout
 
     private boolean mReprojectedRendering;
 
-    private TabRedirectHandler mNonVrTabRedirectHandler;
+    private RedirectHandler mNonVrRedirectHandler;
     private UiWidgetFactory mNonVrUiWidgetFactory;
 
-    private TabModelSelector mTabModelSelector;
     private float mLastContentWidth;
     private float mLastContentHeight;
     private float mLastContentDpr;
@@ -156,13 +182,32 @@ public class VrShell extends GvrLayout
         public boolean visibility;
     }
 
-    public VrShell(
-            ChromeActivity activity, VrShellDelegate delegate, TabModelSelector tabModelSelector) {
+    public VrShell(Activity activity, VrShellDelegate delegate, TabModelSelector tabModelSelector,
+            ToolbarManager toolbarManager, Supplier<ModalDialogManager> modalDialogManagerSupplier,
+            Supplier<CompositorViewHolder> compositorViewHolderSupplier,
+            Supplier<Tab> currentTabSupplier, BrowserControlsManager browserControlsManager,
+            TabCreatorManager tabCreatorManager, WindowAndroid windowAndroid,
+            Supplier<Boolean> isActivityFinishingOrDestroyedSupplier,
+            FullscreenManager fullscreenManager, Function<Tab, Boolean> backShouldCloseTabFunc,
+            Supplier<Boolean> isInOverviewModeSupplier,
+            MenuOrKeyboardActionController menuOrKeyboardActionController) {
         super(activity);
         mActivity = activity;
         mDelegate = delegate;
         mTabModelSelector = tabModelSelector;
         mVrBrowsingEnabled = mDelegate.isVrBrowsingEnabled();
+        mToolbarManager = toolbarManager;
+        mModalDialogManagerSupplier = modalDialogManagerSupplier;
+        mCompositorViewHolderSupplier = compositorViewHolderSupplier;
+        mCurrentTabSupplier = currentTabSupplier;
+        mBrowserControlsManager = browserControlsManager;
+        mTabCreatorManager = tabCreatorManager;
+        mWindowAndroid = windowAndroid;
+        mIsActivityFinishingOrDestroyedSupplier = isActivityFinishingOrDestroyedSupplier;
+        mFullscreenManager = fullscreenManager;
+        mBackShouldCloseTabFunc = backShouldCloseTabFunc;
+        mIsInOverviewModeSupplier = isInOverviewModeSupplier;
+        mMenuOrKeyboardActionController = menuOrKeyboardActionController;
 
         mReprojectedRendering = setAsyncReprojectionEnabled(true);
         if (mReprojectedRendering) {
@@ -192,25 +237,23 @@ public class VrShell extends GvrLayout
             mPresentationView = surfaceView;
         }
 
-        mActivity.getToolbarManager().setProgressBarEnabled(false);
+        mToolbarManager.setProgressBarEnabled(false);
 
         DisplayAndroid primaryDisplay = DisplayAndroid.getNonMultiDisplay(activity);
         mContentVirtualDisplay = VirtualDisplayAndroid.createVirtualDisplay();
         mContentVirtualDisplay.setTo(primaryDisplay);
 
-        mContentVrWindowAndroid = new VrWindowAndroid(mActivity, mContentVirtualDisplay);
+        mContentVrWindowAndroid =
+                new VrWindowAndroid(mActivity, mContentVirtualDisplay, mModalDialogManagerSupplier);
         reparentAllTabs(mContentVrWindowAndroid);
 
-        mCompositorView = mActivity.getCompositorViewHolder().getCompositorView();
+        mCompositorView = mCompositorViewHolderSupplier.get().getCompositorView();
         mVrCompositorSurfaceManager = new VrCompositorSurfaceManager(mCompositorView);
         mCompositorView.replaceSurfaceManagerForVr(
                 mVrCompositorSurfaceManager, mContentVrWindowAndroid);
 
         if (mVrBrowsingEnabled) {
             injectVrRootView();
-
-            // Hide FindInPage toolbar.
-            mActivity.getFindToolbarManager().hideToolbar();
         }
 
         // This overrides the default intent created by GVR to return to Chrome when the DON flow
@@ -227,11 +270,11 @@ public class VrShell extends GvrLayout
 
         // This has to happen after VrModalDialogManager is created.
         mNonVrUiWidgetFactory = UiWidgetFactory.getInstance();
-        UiWidgetFactory.setInstance(new VrUiWidgetFactory(this, mActivity.getModalDialogManager()));
+        UiWidgetFactory.setInstance(new VrUiWidgetFactory(this, mModalDialogManagerSupplier.get()));
 
-        mTabRedirectHandler = new TabRedirectHandler(mActivity) {
+        mRedirectHandler = new RedirectHandler() {
             @Override
-            public boolean shouldStayInChrome(boolean hasExternalProtocol) {
+            public boolean shouldStayInApp(boolean hasExternalProtocol) {
                 return !hasExternalProtocol;
             }
         };
@@ -253,7 +296,7 @@ public class VrShell extends GvrLayout
                     mViewEventSink = ViewEventSink.from(tab.getWebContents());
                     if (mViewEventSink != null) mViewEventSink.onWindowFocusChanged(true);
                 }
-                nativeSwapContents(mNativeVrShell, tab);
+                VrShellJni.get().swapContents(mNativeVrShell, VrShell.this, tab);
                 updateHistoryButtonsVisibility();
             }
 
@@ -266,9 +309,9 @@ public class VrShell extends GvrLayout
             }
 
             @Override
-            public void onLoadProgressChanged(Tab tab, int progress) {
+            public void onLoadProgressChanged(Tab tab, float progress) {
                 if (mNativeVrShell == 0) return;
-                nativeOnLoadProgressChanged(mNativeVrShell, progress / 100.0);
+                VrShellJni.get().onLoadProgressChanged(mNativeVrShell, VrShell.this, progress);
             }
 
             @Override
@@ -294,16 +337,17 @@ public class VrShell extends GvrLayout
             }
         };
 
-        mTabModelSelectorObserver = new EmptyTabModelSelectorObserver() {
+        mTabModelSelectorObserver = new TabModelSelectorObserver() {
             @Override
             public void onChange() {
                 swapToForegroundTab();
             }
 
             @Override
-            public void onNewTabCreated(Tab tab) {
+            public void onNewTabCreated(Tab tab, @TabCreationState int creationState) {
                 if (mNativeVrShell == 0) return;
-                nativeOnTabUpdated(mNativeVrShell, tab.isIncognito(), tab.getId(), tab.getTitle());
+                VrShellJni.get().onTabUpdated(mNativeVrShell, VrShell.this, tab.isIncognito(),
+                        tab.getId(), tab.getTitle());
             }
         };
 
@@ -312,11 +356,11 @@ public class VrShell extends GvrLayout
             @SuppressLint("ClickableViewAccessibility")
             public boolean onTouch(View v, MotionEvent event) {
                 if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                    nativeOnTriggerEvent(mNativeVrShell, true);
+                    VrShellJni.get().onTriggerEvent(mNativeVrShell, VrShell.this, true);
                     return true;
                 } else if (event.getActionMasked() == MotionEvent.ACTION_UP
                         || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                    nativeOnTriggerEvent(mNativeVrShell, false);
+                    VrShellJni.get().onTriggerEvent(mNativeVrShell, VrShell.this, false);
                     return true;
                 }
                 return false;
@@ -343,12 +387,12 @@ public class VrShell extends GvrLayout
     }
 
     private void injectVrHostedUiView() {
-        mNonVrModalDialogManager = mActivity.getModalDialogManager();
+        mNonVrModalDialogManager = mModalDialogManagerSupplier.get();
         mNonVrModalDialogManager.dismissAllDialogs(DialogDismissalCause.UNKNOWN);
         mVrModalPresenter = new VrModalPresenter(mActivity, this);
         mVrModalDialogManager =
                 new ModalDialogManager(mVrModalPresenter, ModalDialogManager.ModalDialogType.APP);
-        mActivity.overrideModalDialogManager(mVrModalDialogManager);
+        setModalDialogManager(mVrModalDialogManager);
 
         ViewGroup decor = (ViewGroup) mActivity.getWindow().getDecorView();
         mUiView = new FrameLayout(decor.getContext());
@@ -357,6 +401,10 @@ public class VrShell extends GvrLayout
         decor.addView(mUiView, params);
         mVrUiViewContainer = new VrViewContainer(mActivity);
         mUiView.addView(mVrUiViewContainer);
+    }
+
+    private void setModalDialogManager(ModalDialogManager modalDialogManager) {
+        ((ObservableSupplierImpl) mModalDialogManagerSupplier).set(mVrModalDialogManager);
     }
 
     private void removeVrRootView() {
@@ -374,27 +422,27 @@ public class VrShell extends GvrLayout
         }
         // Ensure the omnibox doesn't get initial focus (as it would when re-attaching the views
         // to a window), and immediately bring up the keyboard.
-        if (mActivity.getCompositorViewHolder() != null) {
-            mActivity.getCompositorViewHolder().requestFocus();
+        if (mCompositorViewHolderSupplier.hasValue()) {
+            mCompositorViewHolderSupplier.get().requestFocus();
         }
     }
 
     @TargetApi(Build.VERSION_CODES.N)
     public void initializeNative(boolean forWebVr, boolean isStandaloneVrDevice) {
-        Tab tab = mActivity.getActivityTab();
-        if (mActivity.isInOverviewMode() || tab == null) {
-            launchNTP();
-            tab = mActivity.getActivityTab();
+        Tab tab = mCurrentTabSupplier.get();
+        if (mIsInOverviewModeSupplier.get() || tab == null) {
+            openNewTab(false /*incognito*/);
+            tab = mCurrentTabSupplier.get();
         }
 
         // Start with content rendering paused if the renderer-drawn controls are visible, as this
         // would cause the in-content omnibox to be shown to users.
-        boolean pauseContent = mActivity.getFullscreenManager().getContentOffset() > 0;
+        boolean pauseContent = mBrowserControlsManager.getContentOffset() > 0;
 
         // Get physical and pixel size of the display, which is needed by native
         // to dynamically calculate the content's resolution and window size.
         DisplayMetrics dm = new DisplayMetrics();
-        mActivity.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        DisplayAndroidManager.getDefaultDisplayForContext(mActivity).getRealMetrics(dm);
         // We're supposed to be in landscape at this point, but it's possible for us to get here
         // before the change has fully propagated. In this case, the width and height are swapped,
         // which causes an incorrect display size to be used, and the page to appear zoomed in.
@@ -420,16 +468,16 @@ public class VrShell extends GvrLayout
 
         boolean hasOrCanRequestRecordAudioPermission =
                 hasRecordAudioPermission() || canRequestRecordAudioPermission();
-        boolean supportsRecognition = FeatureUtilities.isRecognitionIntentPresent(mActivity, false);
-        mNativeVrShell = nativeInit(mDelegate, forWebVr, !mVrBrowsingEnabled,
-                hasOrCanRequestRecordAudioPermission && supportsRecognition,
+        boolean supportsRecognition = VoiceRecognitionUtil.isRecognitionIntentPresent(false);
+        mNativeVrShell = VrShellJni.get().init(VrShell.this, mDelegate, forWebVr,
+                !mVrBrowsingEnabled, hasOrCanRequestRecordAudioPermission && supportsRecognition,
                 getGvrApi().getNativeGvrContext(), mReprojectedRendering, displayWidthMeters,
                 displayHeightMeters, dm.widthPixels, dm.heightPixels, pauseContent, lowDensity,
                 isStandaloneVrDevice);
 
         swapToTab(tab);
         createTabList();
-        mActivity.getTabModelSelector().addObserver(mTabModelSelectorObserver);
+        mTabModelSelector.addObserver(mTabModelSelectorObserver);
         attachTabModelSelectorTabObserver();
         updateHistoryButtonsVisibility();
 
@@ -439,7 +487,8 @@ public class VrShell extends GvrLayout
             mAndroidUiGestureTarget = new AndroidUiGestureTarget(mNonVrViews.getInputTarget(),
                     mContentVrWindowAndroid.getDisplay().getDipScale(), getNativePageScrollRatio(),
                     getTouchSlop());
-            nativeSetAndroidGestureTarget(mNativeVrShell, mAndroidUiGestureTarget);
+            VrShellJni.get().setAndroidGestureTarget(
+                    mNativeVrShell, VrShell.this, mAndroidUiGestureTarget);
         }
     }
 
@@ -457,11 +506,11 @@ public class VrShell extends GvrLayout
         for (int i = 0; i < count; ++i) {
             incognitoTabs[i] = incognito.getTabAt(i);
         }
-        nativeOnTabListCreated(mNativeVrShell, mainTabs, incognitoTabs);
+        VrShellJni.get().onTabListCreated(mNativeVrShell, VrShell.this, mainTabs, incognitoTabs);
     }
 
     private void swapToForegroundTab() {
-        Tab tab = mActivity.getActivityTab();
+        Tab tab = mCurrentTabSupplier.get();
         if (tab == mTab) return;
         swapToTab(tab);
     }
@@ -476,7 +525,7 @@ public class VrShell extends GvrLayout
         if (mTab != null) {
             initializeTabForVR();
             mTab.addObserver(mTabObserver);
-            TabBrowserControlsState.get(mTab).update(BrowserControlsState.HIDDEN, false);
+            TabBrowserControlsConstraintsHelper.update(mTab, BrowserControlsState.HIDDEN, false);
         }
         mTabObserver.onContentChanged(mTab);
     }
@@ -497,23 +546,24 @@ public class VrShell extends GvrLayout
         ImeAdapter imeAdapter = ImeAdapter.fromWebContents(webContents);
         if (imeAdapter == null) return;
 
-        imeAdapter.setInputMethodManagerWrapper(
-                ImeAdapter.createDefaultInputMethodManagerWrapper(mActivity));
+        // Use application context here to avoid leaking the activity context.
+        imeAdapter.setInputMethodManagerWrapper(ImeAdapter.createDefaultInputMethodManagerWrapper(
+                mActivity.getApplicationContext(), mContentVrWindowAndroid, null));
         mInputMethodManagerWrapper = null;
     }
 
     private void initializeTabForVR() {
         if (mTab == null) return;
         // Make sure we are not redirecting to another app, i.e. out of VR mode.
-        mNonVrTabRedirectHandler = TabRedirectHandler.swapFor(mTab, mTabRedirectHandler);
+        mNonVrRedirectHandler = RedirectHandlerTabHelper.swapHandlerFor(mTab, mRedirectHandler);
         assert mTab.getWindowAndroid() == mContentVrWindowAndroid;
         configWebContentsImeForVr(mTab.getWebContents());
     }
 
     private void restoreTabFromVR() {
         if (mTab == null) return;
-        TabRedirectHandler.swapFor(mTab, mNonVrTabRedirectHandler);
-        mNonVrTabRedirectHandler = null;
+        RedirectHandlerTabHelper.swapHandlerFor(mTab, mNonVrRedirectHandler);
+        mNonVrRedirectHandler = null;
         restoreWebContentsImeFromVr(mTab.getWebContents());
     }
 
@@ -521,16 +571,16 @@ public class VrShell extends GvrLayout
         // Ensure new tabs are created with the correct window.
         boolean[] values = {true, false};
         for (boolean incognito : values) {
-            TabCreator tabCreator = mActivity.getTabCreator(incognito);
+            TabCreator tabCreator = mTabCreatorManager.getTabCreator(incognito);
             if (tabCreator instanceof ChromeTabCreator) {
                 ((ChromeTabCreator) tabCreator).setWindowAndroid(window);
             }
         }
 
         // Reparent all existing tabs.
-        for (TabModel model : mActivity.getTabModelSelector().getModels()) {
+        for (TabModel model : mTabModelSelector.getModels()) {
             for (int i = 0; i < model.getCount(); ++i) {
-                model.getTabAt(i).updateWindowAndroid(window);
+                model.getTabAt(i).updateAttachment(window, null);
             }
         }
     }
@@ -556,10 +606,10 @@ public class VrShell extends GvrLayout
     // Called when the user clicks on the security icon in the URL bar.
     @CalledByNative
     public void showPageInfo() {
-        Tab tab = mActivity.getActivityTab();
+        Tab tab = mCurrentTabSupplier.get();
         if (tab == null) return;
-
-        PageInfoController.show(mActivity, tab, null, PageInfoController.OpenedFromSource.VR);
+        new ChromePageInfo(mModalDialogManagerSupplier, null, OpenedFromSource.VR)
+                .show(tab, PageInfoController.NO_HIGHLIGHTED_PERMISSION);
     }
 
     // Called because showing audio permission dialog isn't supported in VR. This happens when
@@ -585,7 +635,8 @@ public class VrShell extends GvrLayout
                                 // doesn't happen, so we need to notify native
                                 // UI of the permission change immediately.
                                 if (mNativeVrShell != 0) {
-                                    nativeRequestRecordAudioPermissionResult(mNativeVrShell,
+                                    VrShellJni.get().requestRecordAudioPermissionResult(
+                                            mNativeVrShell, VrShell.this,
                                             grantResults[0] == PackageManager.PERMISSION_GRANTED);
                                 }
                             }
@@ -594,7 +645,7 @@ public class VrShell extends GvrLayout
                 };
                 String[] permissionArray = new String[1];
                 permissionArray[0] = android.Manifest.permission.RECORD_AUDIO;
-                mActivity.getWindowAndroid().requestPermissions(permissionArray, callback);
+                mWindowAndroid.requestPermissions(permissionArray, callback);
             }
 
             @Override
@@ -675,8 +726,8 @@ public class VrShell extends GvrLayout
         int overlayWidth = (int) Math.ceil(width * dip);
         int overlayHeight = (int) Math.ceil(height * dip);
 
-        nativeBufferBoundsChanged(
-                mNativeVrShell, contentWidth, contentHeight, overlayWidth, overlayHeight);
+        VrShellJni.get().bufferBoundsChanged(mNativeVrShell, VrShell.this, contentWidth,
+                contentHeight, overlayWidth, overlayHeight);
         if (mContentSurface != null) {
             if (surfaceUninitialized) {
                 mVrCompositorSurfaceManager.setSurface(
@@ -710,8 +761,9 @@ public class VrShell extends GvrLayout
 
     @CalledByNative
     public void dialogSurfaceCreated(Surface surface) {
-        if (mVrBrowsingEnabled && mVrUiViewContainer != null)
+        if (mVrBrowsingEnabled && mVrUiViewContainer != null) {
             mVrUiViewContainer.setSurface(surface);
+        }
     }
 
     @Override
@@ -749,8 +801,8 @@ public class VrShell extends GvrLayout
         if (mNativeVrShell != 0) {
             // Refreshing the viewer profile may accesses disk under some circumstances outside of
             // our control.
-            try (StrictModeContext smc = StrictModeContext.allowDiskWrites()) {
-                nativeOnResume(mNativeVrShell);
+            try (StrictModeContext ignored = StrictModeContext.allowDiskWrites()) {
+                VrShellJni.get().onResume(mNativeVrShell, VrShell.this);
             }
         }
     }
@@ -760,7 +812,13 @@ public class VrShell extends GvrLayout
         if (mPaused != null && mPaused) return;
         mPaused = true;
         super.onPause();
-        if (mNativeVrShell != 0) nativeOnPause(mNativeVrShell);
+        if (mNativeVrShell != 0) VrShellJni.get().onPause(mNativeVrShell, VrShell.this);
+    }
+
+    public void destroyWindowAndroid() {
+        reparentAllTabs(mWindowAndroid);
+        mCompositorView.onExitVr(mWindowAndroid);
+        mContentVrWindowAndroid.destroy();
     }
 
     @Override
@@ -768,7 +826,7 @@ public class VrShell extends GvrLayout
         if (mVrBrowsingEnabled) {
             if (mVrModalDialogManager != null) {
                 mVrModalDialogManager.dismissAllDialogs(DialogDismissalCause.UNKNOWN);
-                mActivity.overrideModalDialogManager(mNonVrModalDialogManager);
+                setModalDialogManager(mNonVrModalDialogManager);
                 mVrModalDialogManager = null;
             }
             mNonVrViews.destroy();
@@ -776,12 +834,12 @@ public class VrShell extends GvrLayout
             removeVrRootView();
         }
 
-        if (!mActivity.isActivityFinishingOrDestroyed()) {
-            mActivity.getFullscreenManager().exitPersistentFullscreenMode();
+        if (!mIsActivityFinishingOrDestroyedSupplier.get()) {
+            mFullscreenManager.exitPersistentFullscreenMode();
         }
-        reparentAllTabs(mActivity.getWindowAndroid());
+        reparentAllTabs(mWindowAndroid);
         if (mNativeVrShell != 0) {
-            nativeDestroy(mNativeVrShell);
+            VrShellJni.get().destroy(mNativeVrShell, VrShell.this);
             mNativeVrShell = 0;
         }
         mTabModelSelector.removeObserver(mTabModelSelectorObserver);
@@ -794,15 +852,16 @@ public class VrShell extends GvrLayout
                 View parent = mTab.getContentView();
                 mTab.getWebContents().setSize(parent.getWidth(), parent.getHeight());
             }
-            TabBrowserControlsState.get(mTab).update(BrowserControlsState.SHOWN, false);
+            TabBrowserControlsConstraintsHelper.update(mTab, BrowserControlsState.SHOWN, false);
         }
 
         mContentVirtualDisplay.destroy();
 
-        mCompositorView.onExitVr(mActivity.getWindowAndroid());
+        mCompositorView.onExitVr(mWindowAndroid);
+        mContentVrWindowAndroid.destroy();
 
-        if (mActivity.getToolbarManager() != null) {
-            mActivity.getToolbarManager().setProgressBarEnabled(true);
+        if (mToolbarManager != null) {
+            mToolbarManager.setProgressBarEnabled(true);
         }
 
         if (mNonVrUiWidgetFactory != null) UiWidgetFactory.setInstance(mNonVrUiWidgetFactory);
@@ -825,7 +884,7 @@ public class VrShell extends GvrLayout
     }
 
     public boolean hasUiFinishedLoading() {
-        return nativeHasUiFinishedLoading(mNativeVrShell);
+        return VrShellJni.get().hasUiFinishedLoading(mNativeVrShell, VrShell.this);
     }
 
     /**
@@ -843,7 +902,7 @@ public class VrShell extends GvrLayout
      */
     @Override
     public void closeVrDialog() {
-        nativeCloseAlertDialog(mNativeVrShell);
+        VrShellJni.get().closeAlertDialog(mNativeVrShell, VrShell.this);
         mVrUiViewContainer.removeAllViews();
         mVrDialogDismissHandler = null;
     }
@@ -853,8 +912,8 @@ public class VrShell extends GvrLayout
      */
     @Override
     public void setDialogSize(int width, int height) {
-        nativeSetDialogBufferSize(mNativeVrShell, width, height);
-        nativeSetAlertDialogSize(mNativeVrShell, width, height);
+        VrShellJni.get().setDialogBufferSize(mNativeVrShell, VrShell.this, width, height);
+        VrShellJni.get().setAlertDialogSize(mNativeVrShell, VrShell.this, width, height);
     }
 
     /**
@@ -867,12 +926,13 @@ public class VrShell extends GvrLayout
         float w = mLastContentWidth * dipScale;
         float h = mLastContentHeight * dipScale;
         float scale = mContentVrWindowAndroid.getDisplay().getAndroidUIScaling();
-        nativeSetDialogLocation(mNativeVrShell, x * scale / w, y * scale / h);
+        VrShellJni.get().setDialogLocation(
+                mNativeVrShell, VrShell.this, x * scale / w, y * scale / h);
     }
 
     @Override
     public void setDialogFloating(boolean floating) {
-        nativeSetDialogFloating(mNativeVrShell, floating);
+        VrShellJni.get().setDialogFloating(mNativeVrShell, VrShell.this, floating);
     }
 
     /**
@@ -880,11 +940,12 @@ public class VrShell extends GvrLayout
      */
     @Override
     public void initVrDialog(int width, int height) {
-        nativeSetAlertDialog(mNativeVrShell, width, height);
+        VrShellJni.get().setAlertDialog(mNativeVrShell, VrShell.this, width, height);
         mAndroidDialogGestureTarget =
                 new AndroidUiGestureTarget(mVrUiViewContainer.getInputTarget(), 1.0f,
                         getNativePageScrollRatio(), getTouchSlop());
-        nativeSetDialogGestureTarget(mNativeVrShell, mAndroidDialogGestureTarget);
+        VrShellJni.get().setDialogGestureTarget(
+                mNativeVrShell, VrShell.this, mAndroidDialogGestureTarget);
     }
 
     /**
@@ -892,7 +953,7 @@ public class VrShell extends GvrLayout
      */
     @Override
     public void showToast(CharSequence text) {
-        nativeShowToast(mNativeVrShell, text.toString());
+        VrShellJni.get().showToast(mNativeVrShell, VrShell.this, text.toString());
     }
 
     /**
@@ -900,11 +961,13 @@ public class VrShell extends GvrLayout
      */
     @Override
     public void cancelToast() {
-        nativeCancelToast(mNativeVrShell);
+        VrShellJni.get().cancelToast(mNativeVrShell, VrShell.this);
     }
 
     public void setWebVrModeEnabled(boolean enabled) {
-        if (mNativeVrShell != 0) nativeSetWebVrMode(mNativeVrShell, enabled);
+        if (mNativeVrShell != 0) {
+            VrShellJni.get().setWebVrMode(mNativeVrShell, VrShell.this, enabled);
+        }
         if (!enabled) {
             mContentVrWindowAndroid.setVSyncPaused(false);
             mPendingVSyncPause = false;
@@ -914,7 +977,7 @@ public class VrShell extends GvrLayout
         // before we pause VSync. Control heights may not be correct as the omnibox might
         // animate, but this is handled when exiting VR.
         mPendingVSyncPause = true;
-        mActivity.getCompositorViewHolder().getCompositorView().surfaceRedrawNeededAsync(() -> {
+        mCompositorView.surfaceRedrawNeededAsync(() -> {
             if (mPendingVSyncPause) {
                 mContentVrWindowAndroid.setVSyncPaused(true);
                 mPendingVSyncPause = false;
@@ -927,19 +990,20 @@ public class VrShell extends GvrLayout
 
     public boolean getWebVrModeEnabled() {
         if (mNativeVrShell == 0) return false;
-        return nativeGetWebVrMode(mNativeVrShell);
+        return VrShellJni.get().getWebVrMode(mNativeVrShell, VrShell.this);
     }
 
     public boolean isDisplayingUrlForTesting() {
         assert mNativeVrShell != 0;
-        return PostTask.runSynchronously(UiThreadTaskTraits.DEFAULT,
-                () -> { return nativeIsDisplayingUrlForTesting(mNativeVrShell); });
+        return PostTask.runSynchronously(UiThreadTaskTraits.DEFAULT, () -> {
+            return VrShellJni.get().isDisplayingUrlForTesting(mNativeVrShell, VrShell.this);
+        });
     }
 
     @VisibleForTesting
     public VrInputConnection getVrInputConnectionForTesting() {
         assert mNativeVrShell != 0;
-        return nativeGetVrInputConnectionForTesting(mNativeVrShell);
+        return VrShellJni.get().getVrInputConnectionForTesting(mNativeVrShell, VrShell.this);
     }
 
     public FrameLayout getContainer() {
@@ -949,15 +1013,17 @@ public class VrShell extends GvrLayout
     public void rawTopContentOffsetChanged(float topContentOffset) {
         if (topContentOffset != 0) return;
         // Wait until a new frame is definitely available.
-        mActivity.getCompositorViewHolder().getCompositorView().surfaceRedrawNeededAsync(() -> {
-            if (mNativeVrShell != 0) nativeResumeContentRendering(mNativeVrShell);
+        mCompositorView.surfaceRedrawNeededAsync(() -> {
+            if (mNativeVrShell != 0) {
+                VrShellJni.get().resumeContentRendering(mNativeVrShell, VrShell.this);
+            }
         });
     }
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         if (mNativeVrShell == 0) return;
-        nativeSetSurface(mNativeVrShell, holder.getSurface());
+        VrShellJni.get().setSurface(mNativeVrShell, VrShell.this, holder.getSurface());
     }
 
     @Override
@@ -978,56 +1044,55 @@ public class VrShell extends GvrLayout
             @Override
             public void onTitleUpdated(Tab tab) {
                 if (mNativeVrShell == 0) return;
-                nativeOnTabUpdated(mNativeVrShell, tab.isIncognito(), tab.getId(), tab.getTitle());
+                VrShellJni.get().onTabUpdated(mNativeVrShell, VrShell.this, tab.isIncognito(),
+                        tab.getId(), tab.getTitle());
             }
 
             @Override
             public void onClosingStateChanged(Tab tab, boolean closing) {
                 if (mNativeVrShell == 0) return;
                 if (closing) {
-                    nativeOnTabRemoved(mNativeVrShell, tab.isIncognito(), tab.getId());
+                    VrShellJni.get().onTabRemoved(
+                            mNativeVrShell, VrShell.this, tab.isIncognito(), tab.getId());
                 } else {
-                    nativeOnTabUpdated(
-                            mNativeVrShell, tab.isIncognito(), tab.getId(), tab.getTitle());
+                    VrShellJni.get().onTabUpdated(mNativeVrShell, VrShell.this, tab.isIncognito(),
+                            tab.getId(), tab.getTitle());
                 }
             }
 
             @Override
             public void onDestroyed(Tab tab) {
                 if (mNativeVrShell == 0) return;
-                nativeOnTabRemoved(mNativeVrShell, tab.isIncognito(), tab.getId());
+                VrShellJni.get().onTabRemoved(
+                        mNativeVrShell, VrShell.this, tab.isIncognito(), tab.getId());
             }
         };
     }
 
     @CalledByNative
     public boolean hasDaydreamSupport() {
-        return mDelegate.hasDaydreamSupport();
+        return VrCoreInstallUtils.hasDaydreamSupport();
     }
 
     public void requestToExitVr(@UiUnsupportedMode int reason, boolean showExitPromptBeforeDoff) {
         if (mNativeVrShell == 0) return;
         if (showExitPromptBeforeDoff) {
-            nativeRequestToExitVr(mNativeVrShell, reason);
+            VrShellJni.get().requestToExitVr(mNativeVrShell, VrShell.this, reason);
         } else {
-            nativeLogUnsupportedModeUserMetric(mNativeVrShell, reason);
             mDelegate.onExitVrRequestResult(true);
         }
     }
 
     @CalledByNative
-    private void onExitVrRequestResult(@UiUnsupportedMode int reason, boolean shouldExit) {
-        if (shouldExit) {
-            if (mNativeVrShell != 0) nativeLogUnsupportedModeUserMetric(mNativeVrShell, reason);
-        }
+    private void onExitVrRequestResult(boolean shouldExit) {
         mDelegate.onExitVrRequestResult(shouldExit);
     }
 
     @CalledByNative
     private void loadUrl(String url) {
         if (mTab == null) {
-            mActivity.getCurrentTabCreator().createNewTab(
-                    new LoadUrlParams(url), TabLaunchType.FROM_CHROME_UI, null);
+            mTabCreatorManager.getTabCreator(mTabModelSelector.isIncognitoSelected())
+                    .createNewTab(new LoadUrlParams(url), TabLaunchType.FROM_CHROME_UI, null);
         } else {
             mTab.loadUrl(new LoadUrlParams(url));
         }
@@ -1037,7 +1102,7 @@ public class VrShell extends GvrLayout
     @CalledByNative
     public void navigateForward() {
         if (!mCanGoForward) return;
-        mActivity.getToolbarManager().forward();
+        mToolbarManager.forward();
         updateHistoryButtonsVisibility();
     }
 
@@ -1050,7 +1115,7 @@ public class VrShell extends GvrLayout
             // is also expected to close tabs.
             ((ChromeTabbedActivity) mActivity).handleBackPressed();
         } else {
-            mActivity.getToolbarManager().back();
+            mToolbarManager.back();
         }
         updateHistoryButtonsVisibility();
     }
@@ -1062,37 +1127,37 @@ public class VrShell extends GvrLayout
 
     @CalledByNative
     public void openNewTab(boolean incognito) {
-        mActivity.getTabCreator(incognito).launchNTP();
+        mTabCreatorManager.getTabCreator(incognito).launchNTP();
     }
 
     @CalledByNative
     public void openBookmarks() {
-        mActivity.onMenuOrKeyboardAction(R.id.all_bookmarks_menu_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.all_bookmarks_menu_id, true);
     }
 
     @CalledByNative
     public void openRecentTabs() {
-        mActivity.onMenuOrKeyboardAction(R.id.recent_tabs_menu_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.recent_tabs_menu_id, true);
     }
 
     @CalledByNative
     public void openHistory() {
-        mActivity.onMenuOrKeyboardAction(R.id.open_history_menu_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.open_history_menu_id, true);
     }
 
     @CalledByNative
     public void openDownloads() {
-        mActivity.onMenuOrKeyboardAction(R.id.downloads_menu_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.downloads_menu_id, true);
     }
 
     @CalledByNative
     public void openShare() {
-        mActivity.onMenuOrKeyboardAction(R.id.share_menu_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.share_menu_id, true);
     }
 
     @CalledByNative
     public void openSettings() {
-        mActivity.onMenuOrKeyboardAction(R.id.preferences_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.preferences_id, true);
     }
 
     @CalledByNative
@@ -1103,7 +1168,7 @@ public class VrShell extends GvrLayout
 
     @CalledByNative
     public void openFeedback() {
-        mActivity.onMenuOrKeyboardAction(R.id.help_id, true);
+        mMenuOrKeyboardActionController.onMenuOrKeyboardAction(R.id.help_id, true);
     }
 
     private void updateHistoryButtonsVisibility() {
@@ -1111,14 +1176,15 @@ public class VrShell extends GvrLayout
         if (mTab == null) {
             mCanGoBack = false;
             mCanGoForward = false;
-            nativeSetHistoryButtonsEnabled(mNativeVrShell, mCanGoBack, mCanGoForward);
+            VrShellJni.get().setHistoryButtonsEnabled(
+                    mNativeVrShell, VrShell.this, mCanGoBack, mCanGoForward);
             return;
         }
         boolean willCloseTab = false;
         if (mActivity instanceof ChromeTabbedActivity) {
             // If hitting back would minimize Chrome, disable the back button.
             // See ChromeTabbedActivity#handleBackPressed().
-            willCloseTab = ChromeTabbedActivity.backShouldCloseTab(mTab)
+            willCloseTab = mBackShouldCloseTabFunc.apply(mTab)
                     && !TabAssociatedApp.isOpenedFromExternalApp(mTab);
         }
         boolean canGoBack = mTab.canGoBack() || willCloseTab;
@@ -1129,11 +1195,12 @@ public class VrShell extends GvrLayout
         }
         mCanGoBack = canGoBack;
         mCanGoForward = canGoForward;
-        nativeSetHistoryButtonsEnabled(mNativeVrShell, mCanGoBack, mCanGoForward);
+        VrShellJni.get().setHistoryButtonsEnabled(
+                mNativeVrShell, VrShell.this, mCanGoBack, mCanGoForward);
     }
 
     private float getNativePageScrollRatio() {
-        return mActivity.getWindowAndroid().getDisplay().getDipScale()
+        return mWindowAndroid.getDisplay().getDipScale()
                 / mContentVrWindowAndroid.getDisplay().getDipScale();
     }
 
@@ -1142,26 +1209,26 @@ public class VrShell extends GvrLayout
         return vc.getScaledTouchSlop();
     }
 
-    private void launchNTP() {
-        NewTabButton button = (NewTabButton) mActivity.findViewById(R.id.new_tab_button);
-        button.callOnClick();
-    }
-
     @Override
     public void onVrViewEmpty() {
-        if (mNativeVrShell != 0) nativeOnOverlayTextureEmptyChanged(mNativeVrShell, true);
+        if (mNativeVrShell != 0) {
+            VrShellJni.get().onOverlayTextureEmptyChanged(mNativeVrShell, VrShell.this, true);
+        }
     }
 
     @Override
     public void onVrViewNonEmpty() {
-        if (mNativeVrShell != 0) nativeOnOverlayTextureEmptyChanged(mNativeVrShell, false);
+        if (mNativeVrShell != 0) {
+            VrShellJni.get().onOverlayTextureEmptyChanged(mNativeVrShell, VrShell.this, false);
+        }
     }
 
     @Override
     protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         super.onSizeChanged(width, height, oldWidth, oldHeight);
-        if (width > height)
+        if (width > height) {
             VrModuleProvider.getDelegate().removeBlackOverlayView(mActivity, true /* animate */);
+        }
     }
 
     /**
@@ -1222,15 +1289,15 @@ public class VrShell extends GvrLayout
     @Override
     public void showSoftInput(boolean show) {
         assert mNativeVrShell != 0;
-        nativeShowSoftInput(mNativeVrShell, show);
+        VrShellJni.get().showSoftInput(mNativeVrShell, VrShell.this, show);
     }
 
     @Override
     public void updateIndices(
             int selectionStart, int selectionEnd, int compositionStart, int compositionEnd) {
         assert mNativeVrShell != 0;
-        nativeUpdateWebInputIndices(
-                mNativeVrShell, selectionStart, selectionEnd, compositionStart, compositionEnd);
+        VrShellJni.get().updateWebInputIndices(mNativeVrShell, VrShell.this, selectionStart,
+                selectionEnd, compositionStart, compositionEnd);
     }
 
     @VisibleForTesting
@@ -1239,18 +1306,19 @@ public class VrShell extends GvrLayout
     }
 
     public void acceptDoffPromptForTesting() {
-        nativeAcceptDoffPromptForTesting(mNativeVrShell);
+        VrShellJni.get().acceptDoffPromptForTesting(mNativeVrShell, VrShell.this);
     }
 
     public void performControllerActionForTesting(
             int elementName, int actionType, PointF position) {
-        nativePerformControllerActionForTesting(
-                mNativeVrShell, elementName, actionType, position.x, position.y);
+        VrShellJni.get().performControllerActionForTesting(
+                mNativeVrShell, VrShell.this, elementName, actionType, position.x, position.y);
     }
 
     public void performKeyboardInputForTesting(int inputType, String inputString) {
         PostTask.runSynchronously(UiThreadTaskTraits.DEFAULT, () -> {
-            nativePerformKeyboardInputForTesting(mNativeVrShell, inputType, inputString);
+            VrShellJni.get().performKeyboardInputForTesting(
+                    mNativeVrShell, VrShell.this, inputType, inputString);
         });
     }
 
@@ -1274,15 +1342,17 @@ public class VrShell extends GvrLayout
         // In the case of the UI activity quiescence callback type, we need to let the native UI
         // know how long to wait before timing out.
         if (actionType == UiTestOperationType.UI_ACTIVITY_RESULT) {
-            nativeSetUiExpectingActivityForTesting(mNativeVrShell, operationData.timeoutMs);
+            VrShellJni.get().setUiExpectingActivityForTesting(
+                    mNativeVrShell, VrShell.this, operationData.timeoutMs);
         } else if (actionType == UiTestOperationType.ELEMENT_VISIBILITY_STATUS) {
-            nativeWatchElementForVisibilityStatusForTesting(mNativeVrShell,
+            VrShellJni.get().watchElementForVisibilityStatusForTesting(mNativeVrShell, VrShell.this,
                     operationData.elementName, operationData.timeoutMs, operationData.visibility);
         }
     }
 
     public void saveNextFrameBufferToDiskForTesting(String filepathBase) {
-        nativeSaveNextFrameBufferToDiskForTesting(mNativeVrShell, filepathBase);
+        VrShellJni.get().saveNextFrameBufferToDiskForTesting(
+                mNativeVrShell, VrShell.this, filepathBase);
     }
 
     public int getLastUiOperationResultForTesting(int actionType) {
@@ -1296,63 +1366,64 @@ public class VrShell extends GvrLayout
         mUiOperationResultCallbacks.set(actionType, null);
     }
 
-    private native long nativeInit(VrShellDelegate delegate, boolean forWebVR,
-            boolean browsingDisabled, boolean hasOrCanRequestRecordAudioPermission, long gvrApi,
-            boolean reprojectedRendering, float displayWidthMeters, float displayHeightMeters,
-            int displayWidthPixels, int displayHeightPixels, boolean pauseContent,
-            boolean lowDensity, boolean isStandaloneVrDevice);
-    private native boolean nativeHasUiFinishedLoading(long nativeVrShell);
-    private native void nativeSetSurface(long nativeVrShell, Surface surface);
-    private native void nativeSwapContents(long nativeVrShell, Tab tab);
-    private native void nativeSetAndroidGestureTarget(
-            long nativeVrShell, AndroidUiGestureTarget androidUiGestureTarget);
-    private native void nativeSetDialogGestureTarget(
-            long nativeVrShell, AndroidUiGestureTarget dialogGestureTarget);
-    private native void nativeDestroy(long nativeVrShell);
-    private native void nativeOnTriggerEvent(long nativeVrShell, boolean touched);
-    private native void nativeOnPause(long nativeVrShell);
-    private native void nativeOnResume(long nativeVrShell);
-    private native void nativeOnLoadProgressChanged(long nativeVrShell, double progress);
-    private native void nativeBufferBoundsChanged(long nativeVrShell, int contentWidth,
-            int contentHeight, int overlayWidth, int overlayHeight);
-    private native void nativeSetWebVrMode(long nativeVrShell, boolean enabled);
-    private native boolean nativeGetWebVrMode(long nativeVrShell);
-    private native boolean nativeIsDisplayingUrlForTesting(long nativeVrShell);
-    private native void nativeOnTabListCreated(
-            long nativeVrShell, Tab[] mainTabs, Tab[] incognitoTabs);
-    private native void nativeOnTabUpdated(
-            long nativeVrShell, boolean incognito, int id, String title);
-    private native void nativeOnTabRemoved(long nativeVrShell, boolean incognito, int id);
-    private native void nativeCloseAlertDialog(long nativeVrShell);
-    private native void nativeSetAlertDialog(long nativeVrShell, float width, float height);
-    private native void nativeSetDialogBufferSize(long nativeVrShell, int width, int height);
-    private native void nativeSetAlertDialogSize(long nativeVrShell, float width, float height);
-    private native void nativeSetDialogLocation(long nativeVrShell, float x, float y);
-    private native void nativeSetDialogFloating(long nativeVrShell, boolean floating);
-    private native void nativeShowToast(long nativeVrShell, String text);
-    private native void nativeCancelToast(long nativeVrShell);
-    private native void nativeSetHistoryButtonsEnabled(
-            long nativeVrShell, boolean canGoBack, boolean canGoForward);
-    private native void nativeRequestToExitVr(long nativeVrShell, @UiUnsupportedMode int reason);
-    private native void nativeLogUnsupportedModeUserMetric(
-            long nativeVrShell, @UiUnsupportedMode int mode);
-    private native void nativeShowSoftInput(long nativeVrShell, boolean show);
-    private native void nativeUpdateWebInputIndices(long nativeVrShell, int selectionStart,
-            int selectionEnd, int compositionStart, int compositionEnd);
-    private native VrInputConnection nativeGetVrInputConnectionForTesting(long nativeVrShell);
-    private native void nativeAcceptDoffPromptForTesting(long nativeVrShell);
-    private native void nativePerformControllerActionForTesting(
-            long nativeVrShell, int elementName, int actionType, float x, float y);
-    private native void nativePerformKeyboardInputForTesting(
-            long nativeVrShell, int inputType, String inputString);
-    private native void nativeSetUiExpectingActivityForTesting(
-            long nativeVrShell, int quiescenceTimeoutMs);
-    private native void nativeSaveNextFrameBufferToDiskForTesting(
-            long nativeVrShell, String filepathBase);
-    private native void nativeWatchElementForVisibilityStatusForTesting(
-            long nativeVrShell, int elementName, int timeoutMs, boolean visibility);
-    private native void nativeResumeContentRendering(long nativeVrShell);
-    private native void nativeOnOverlayTextureEmptyChanged(long nativeVrShell, boolean empty);
-    private native void nativeRequestRecordAudioPermissionResult(
-            long nativeVrShell, boolean canRecordAudio);
+    @NativeMethods
+    interface Natives {
+        long init(VrShell caller, VrShellDelegate delegate, boolean forWebVR,
+                boolean browsingDisabled, boolean hasOrCanRequestRecordAudioPermission, long gvrApi,
+                boolean reprojectedRendering, float displayWidthMeters, float displayHeightMeters,
+                int displayWidthPixels, int displayHeightPixels, boolean pauseContent,
+                boolean lowDensity, boolean isStandaloneVrDevice);
+        boolean hasUiFinishedLoading(long nativeVrShell, VrShell caller);
+        void setSurface(long nativeVrShell, VrShell caller, Surface surface);
+        void swapContents(long nativeVrShell, VrShell caller, Tab tab);
+        void setAndroidGestureTarget(
+                long nativeVrShell, VrShell caller, AndroidUiGestureTarget androidUiGestureTarget);
+        void setDialogGestureTarget(
+                long nativeVrShell, VrShell caller, AndroidUiGestureTarget dialogGestureTarget);
+        void destroy(long nativeVrShell, VrShell caller);
+        void onTriggerEvent(long nativeVrShell, VrShell caller, boolean touched);
+        void onPause(long nativeVrShell, VrShell caller);
+        void onResume(long nativeVrShell, VrShell caller);
+        void onLoadProgressChanged(long nativeVrShell, VrShell caller, double progress);
+        void bufferBoundsChanged(long nativeVrShell, VrShell caller, int contentWidth,
+                int contentHeight, int overlayWidth, int overlayHeight);
+        void setWebVrMode(long nativeVrShell, VrShell caller, boolean enabled);
+        boolean getWebVrMode(long nativeVrShell, VrShell caller);
+        boolean isDisplayingUrlForTesting(long nativeVrShell, VrShell caller);
+        void onTabListCreated(
+                long nativeVrShell, VrShell caller, Tab[] mainTabs, Tab[] incognitoTabs);
+        void onTabUpdated(
+                long nativeVrShell, VrShell caller, boolean incognito, int id, String title);
+        void onTabRemoved(long nativeVrShell, VrShell caller, boolean incognito, int id);
+        void closeAlertDialog(long nativeVrShell, VrShell caller);
+        void setAlertDialog(long nativeVrShell, VrShell caller, float width, float height);
+        void setDialogBufferSize(long nativeVrShell, VrShell caller, int width, int height);
+        void setAlertDialogSize(long nativeVrShell, VrShell caller, float width, float height);
+        void setDialogLocation(long nativeVrShell, VrShell caller, float x, float y);
+        void setDialogFloating(long nativeVrShell, VrShell caller, boolean floating);
+        void showToast(long nativeVrShell, VrShell caller, String text);
+        void cancelToast(long nativeVrShell, VrShell caller);
+        void setHistoryButtonsEnabled(
+                long nativeVrShell, VrShell caller, boolean canGoBack, boolean canGoForward);
+        void requestToExitVr(long nativeVrShell, VrShell caller, @UiUnsupportedMode int reason);
+        void showSoftInput(long nativeVrShell, VrShell caller, boolean show);
+        void updateWebInputIndices(long nativeVrShell, VrShell caller, int selectionStart,
+                int selectionEnd, int compositionStart, int compositionEnd);
+        VrInputConnection getVrInputConnectionForTesting(long nativeVrShell, VrShell caller);
+        void acceptDoffPromptForTesting(long nativeVrShell, VrShell caller);
+        void performControllerActionForTesting(long nativeVrShell, VrShell caller, int elementName,
+                int actionType, float x, float y);
+        void performKeyboardInputForTesting(
+                long nativeVrShell, VrShell caller, int inputType, String inputString);
+        void setUiExpectingActivityForTesting(
+                long nativeVrShell, VrShell caller, int quiescenceTimeoutMs);
+        void saveNextFrameBufferToDiskForTesting(
+                long nativeVrShell, VrShell caller, String filepathBase);
+        void watchElementForVisibilityStatusForTesting(long nativeVrShell, VrShell caller,
+                int elementName, int timeoutMs, boolean visibility);
+        void resumeContentRendering(long nativeVrShell, VrShell caller);
+        void onOverlayTextureEmptyChanged(long nativeVrShell, VrShell caller, boolean empty);
+        void requestRecordAudioPermissionResult(
+                long nativeVrShell, VrShell caller, boolean canRecordAudio);
+    }
 }

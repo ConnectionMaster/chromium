@@ -32,8 +32,9 @@ class GLOzoneEglCast : public GLOzoneEGL {
       gfx::AcceleratedWidget widget) override;
   scoped_refptr<gl::GLSurface> CreateOffscreenGLSurface(
       const gfx::Size& size) override;
-  intptr_t GetNativeDisplay() override;
-  bool LoadGLES2Bindings(gl::GLImplementation implementation) override;
+  gl::EGLDisplayPlatform GetNativeDisplay() override;
+  bool LoadGLES2Bindings(
+      const gl::GLImplementationParts& implementation) override;
 
   intptr_t GetNativeWindow();
   bool ResizeDisplay(gfx::Size viewport_size);

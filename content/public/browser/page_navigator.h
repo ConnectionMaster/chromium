@@ -23,13 +23,17 @@
 #include "ipc/ipc_message.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "third_party/blink/public/web/web_triggering_event_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/navigation/impression.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace content {
 
+class NavigationHandle;
 class WebContents;
 
 struct CONTENT_EXPORT OpenURLParams {
@@ -53,12 +57,36 @@ struct CONTENT_EXPORT OpenURLParams {
   OpenURLParams(const OpenURLParams& other);
   ~OpenURLParams();
 
+  // Creates OpenURLParams that 1) preserve all applicable |handle| properties
+  // (URL, referrer, initiator, etc.) with OpenURLParams equivalents and 2) fill
+  // in reasonable defaults for other properties (like WindowOpenDisposition).
+  static OpenURLParams FromNavigationHandle(NavigationHandle* handle);
+
+#if DCHECK_IS_ON()
+  // Returns true if the contents of this struct are considered valid and
+  // satisfy dependencies between fields (e.g. about:blank URLs require
+  // |initiator_origin| and |source_site_instance| to be set).
+  bool Valid() const;
+#endif
+
   // The URL/referrer to be opened.
   GURL url;
   Referrer referrer;
 
+  // The frame token of the initiator of the navigation. This is best effort: it
+  // is only defined for some renderer-initiated navigations (e.g., not drag and
+  // drop), and the frame with the corresponding token may have been deleted
+  // before the navigation begins. This parameter is defined if and only if
+  // |initiator_process_id| below is.
+  absl::optional<blink::LocalFrameToken> initiator_frame_token;
+
+  // ID of the renderer process of the RenderFrameHost that initiated the
+  // navigation. This is defined if and only if |initiator_frame_token| above
+  // is, and it is only valid in conjunction with it.
+  int initiator_process_id = ChildProcessHost::kInvalidUniqueID;
+
   // The origin of the initiator of the navigation.
-  base::Optional<url::Origin> initiator_origin;
+  absl::optional<url::Origin> initiator_origin;
 
   // SiteInstance of the frame that initiated the navigation or null if we
   // don't know it.
@@ -66,9 +94,6 @@ struct CONTENT_EXPORT OpenURLParams {
 
   // Any redirect URLs that occurred for this navigation before |url|.
   std::vector<GURL> redirect_chain;
-
-  // Indicates whether this navigation will be sent using POST.
-  bool uses_post;
 
   // The post data when the navigation uses POST.
   scoped_refptr<network::ResourceRequestBody> post_data;
@@ -107,8 +132,7 @@ struct CONTENT_EXPORT OpenURLParams {
 
   // Whether the call to OpenURL was triggered by an Event, and what the
   // isTrusted flag of the event was.
-  blink::WebTriggeringEventInfo triggering_event_info =
-      blink::WebTriggeringEventInfo::kUnknown;
+  blink::mojom::TriggeringEventInfo triggering_event_info;
 
   // Indicates whether this navigation was started via context menu.
   bool started_from_context_menu;
@@ -128,8 +152,10 @@ struct CONTENT_EXPORT OpenURLParams {
   // Indicates if this navigation is a reload.
   ReloadType reload_type;
 
- private:
-  OpenURLParams();
+  // Optional impression associated with this navigation. Only set on
+  // navigations that originate from links with impression attributes. Used for
+  // conversion measurement.
+  absl::optional<blink::Impression> impression;
 };
 
 class PageNavigator {

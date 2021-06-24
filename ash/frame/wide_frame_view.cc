@@ -6,14 +6,17 @@
 
 #include "ash/frame/header_view.h"
 #include "ash/frame/non_client_frame_view_ash.h"
-#include "ash/public/cpp/caption_buttons/frame_caption_button_container_view.h"
-#include "ash/public/cpp/immersive/immersive_fullscreen_controller.h"
 #include "ash/public/cpp/window_properties.h"
+#include "ash/screen_util.h"
 #include "ash/shell.h"
 #include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_event.h"
+#include "base/bind.h"
 #include "base/metrics/user_metrics.h"
+#include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
+#include "chromeos/ui/frame/default_frame_header.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_targeter.h"
 #include "ui/display/display.h"
@@ -23,6 +26,8 @@
 
 namespace ash {
 namespace {
+
+using ::chromeos::ImmersiveFullscreenController;
 
 class WideFrameTargeter : public aura::WindowTargeter {
  public:
@@ -61,12 +66,11 @@ gfx::Rect WideFrameView::GetFrameBounds(views::Widget* target) {
       views::GetCaptionButtonLayoutSize(
           views::CaptionButtonLayoutSize::kNonBrowserCaption)
           .height();
-  display::Screen* screen = display::Screen::GetScreen();
   aura::Window* target_window = target->GetNativeWindow();
   gfx::Rect bounds =
-      target->IsFullscreen()
-          ? screen->GetDisplayNearestWindow(target_window).bounds()
-          : screen->GetDisplayNearestWindow(target_window).work_area();
+      screen_util::GetIdealBoundsForMaximizedOrFullscreenOrPinnedState(
+          target_window);
+
   bounds.set_height(kFrameHeight);
   return bounds;
 }
@@ -77,21 +81,28 @@ void WideFrameView::Init(ImmersiveFullscreenController* controller) {
 }
 
 void WideFrameView::SetCaptionButtonModel(
-    std::unique_ptr<CaptionButtonModel> model) {
+    std::unique_ptr<chromeos::CaptionButtonModel> model) {
   header_view_->caption_button_container()->SetModel(std::move(model));
   header_view_->UpdateCaptionButtons();
 }
 
 WideFrameView::WideFrameView(views::Widget* target)
-    : target_(target), widget_(std::make_unique<views::Widget>()) {
-  Shell::Get()->overview_controller()->AddObserver(this);
+    : target_(target),
+      frame_context_menu_controller_(
+          std::make_unique<FrameContextMenuController>(target_, this)) {
+  // WideFrameView is owned by its client, not by Views.
+  SetOwnedByWidget(false);
   display::Screen::GetScreen()->AddObserver(this);
 
   aura::Window* target_window = target->GetNativeWindow();
   target_window->AddObserver(this);
-  header_view_ = new HeaderView(target);
+  // Use the HeaderView itself as a frame view because WideFrameView is
+  // is the frame only.
+  header_view_ = new HeaderView(target, /*frame view=*/nullptr);
   AddChildView(header_view_);
   GetTargetHeaderView()->SetShouldPaintHeader(false);
+  header_view_->set_context_menu_controller(
+      frame_context_menu_controller_.get());
 
   views::Widget::InitParams params;
   params.type = views::Widget::InitParams::TYPE_POPUP;
@@ -100,35 +111,45 @@ WideFrameView::WideFrameView(views::Widget* target)
   params.name = "WideFrameView";
   params.parent = target->GetNativeWindow();
   params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
-
-  widget_->Init(params);
+  // Setup Opacity Control.
+  // WideFrame should be used only when the rounded corner is not necessary.
+  params.opacity = views::Widget::InitParams::WindowOpacity::kOpaque;
+  auto widget = std::make_unique<views::Widget>();
+  widget->Init(std::move(params));
+  widget_ = std::move(widget);
 
   aura::Window* window = widget_->GetNativeWindow();
+  // Overview normally clips the caption container which exists on the same
+  // window. But this WideFrameView exists as a separate window, which we hide
+  // in overview using the `kHideInOverviewKey` property. However, we still want
+  // to show it in the desks mini_views.
+  window->SetProperty(kHideInOverviewKey, true);
+  window->SetProperty(kForceVisibleInMiniViewKey, true);
   window->SetEventTargeter(std::make_unique<WideFrameTargeter>(header_view()));
   set_owned_by_client();
+  WindowState::Get(window)->set_allow_set_bounds_direct(true);
+
+  paint_as_active_subscription_ =
+      target_->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
+          &WideFrameView::PaintAsActiveChanged, base::Unretained(this)));
+  PaintAsActiveChanged();
 }
 
 WideFrameView::~WideFrameView() {
   if (widget_)
     widget_->CloseNow();
-  if (Shell::Get()->overview_controller())
-    Shell::Get()->overview_controller()->RemoveObserver(this);
   display::Screen::GetScreen()->RemoveObserver(this);
   if (target_) {
-    GetTargetHeaderView()->SetShouldPaintHeader(true);
+    HeaderView* target_header_view = GetTargetHeaderView();
+    target_header_view->SetShouldPaintHeader(true);
+    target_header_view->GetFrameHeader()->UpdateFrameHeaderKey();
     target_->GetNativeWindow()->RemoveObserver(this);
   }
 }
 
-void WideFrameView::DeleteDelegate() {
-  // WideFrameView is owned by a client, not its widget, so don't delete
-  // here.
-}
-
 void WideFrameView::Layout() {
   int onscreen_height = header_view_->GetPreferredOnScreenHeight();
-  if (onscreen_height == 0 || !visible()) {
+  if (onscreen_height == 0 || !GetVisible()) {
     header_view_->SetVisible(false);
   } else {
     const int height = header_view_->GetPreferredHeight();
@@ -142,8 +163,8 @@ void WideFrameView::OnMouseEvent(ui::MouseEvent* event) {
     if ((event->flags() & ui::EF_IS_DOUBLE_CLICK)) {
       base::RecordAction(
           base::UserMetricsAction("Caption_ClickTogglesMaximize"));
-      const wm::WMEvent wm_event(wm::WM_EVENT_TOGGLE_MAXIMIZE_CAPTION);
-      wm::GetWindowState(target_->GetNativeWindow())->OnWMEvent(&wm_event);
+      const WMEvent wm_event(WM_EVENT_TOGGLE_MAXIMIZE_CAPTION);
+      WindowState::Get(target_->GetNativeWindow())->OnWMEvent(&wm_event);
     }
     event->SetHandled();
   }
@@ -158,10 +179,20 @@ void WideFrameView::OnDisplayMetricsChanged(const display::Display& display,
                                             uint32_t changed_metrics) {
   display::Screen* screen = display::Screen::GetScreen();
   if (screen->GetDisplayNearestWindow(target_->GetNativeWindow()).id() !=
-      display.id()) {
+          display.id() ||
+      !widget_) {
     return;
   }
   DCHECK(target_);
+
+  // Ignore if this is called when the targe window state is nor proper
+  // state. This can happen when switching the state to other states, in which
+  // case, the wide frame will be removed.
+  if (!WindowState::Get(target_->GetNativeWindow())
+           ->IsMaximizedOrFullscreenOrPinned()) {
+    return;
+  }
+
   GetWidget()->SetBounds(GetFrameBounds(target_));
 }
 
@@ -175,12 +206,14 @@ void WideFrameView::OnImmersiveRevealEnded() {
 
 void WideFrameView::OnImmersiveFullscreenEntered() {
   header_view_->OnImmersiveFullscreenEntered();
+  widget_->GetNativeWindow()->SetTransparent(true);
   if (target_)
     GetTargetHeaderView()->OnImmersiveFullscreenEntered();
 }
 
 void WideFrameView::OnImmersiveFullscreenExited() {
   header_view_->OnImmersiveFullscreenExited();
+  widget_->GetNativeWindow()->SetTransparent(false);
   if (target_)
     GetTargetHeaderView()->OnImmersiveFullscreenExited();
   Layout();
@@ -194,18 +227,25 @@ std::vector<gfx::Rect> WideFrameView::GetVisibleBoundsInScreen() const {
   return header_view_->GetVisibleBoundsInScreen();
 }
 
-void WideFrameView::OnOverviewModeStarting() {
-  header_view_->SetShouldPaintHeader(false);
-}
-
-void WideFrameView::OnOverviewModeEnded() {
-  header_view_->SetShouldPaintHeader(true);
+bool WideFrameView::ShouldShowContextMenu(
+    View* source,
+    const gfx::Point& screen_coords_point) {
+  gfx::Point point_in_header_coords(screen_coords_point);
+  views::View::ConvertPointToTarget(this, header_view_,
+                                    &point_in_header_coords);
+  return header_view_->HitTestRect(
+      gfx::Rect(point_in_header_coords, gfx::Size(1, 1)));
 }
 
 HeaderView* WideFrameView::GetTargetHeaderView() {
   auto* frame_view = static_cast<NonClientFrameViewAsh*>(
       target_->non_client_view()->frame_view());
   return frame_view->GetHeaderView();
+}
+
+void WideFrameView::PaintAsActiveChanged() {
+  header_view_->GetFrameHeader()->SetPaintAsActive(
+      target_->ShouldPaintAsActive());
 }
 
 }  // namespace ash

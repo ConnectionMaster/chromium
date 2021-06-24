@@ -9,7 +9,6 @@
 #include "chrome/browser/extensions/api/image_writer_private/destroy_partitions_operation.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_messages.h"
 #include "content/public/browser/browser_thread.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace extensions {
 namespace image_writer {
@@ -21,17 +20,15 @@ const int kPartitionTableSize = 2 * 4096;
 
 DestroyPartitionsOperation::DestroyPartitionsOperation(
     base::WeakPtr<OperationManager> manager,
-    std::unique_ptr<service_manager::Connector> connector,
     const ExtensionId& extension_id,
     const std::string& storage_unit_id,
     const base::FilePath& download_folder)
     : Operation(manager,
-                std::move(connector),
                 extension_id,
                 storage_unit_id,
                 download_folder) {}
 
-DestroyPartitionsOperation::~DestroyPartitionsOperation() {}
+DestroyPartitionsOperation::~DestroyPartitionsOperation() = default;
 
 void DestroyPartitionsOperation::StartImpl() {
   DCHECK(IsRunningInCorrectSequence());
@@ -49,9 +46,9 @@ void DestroyPartitionsOperation::StartImpl() {
     return;
   }
 
-  PostTask(
-      base::BindOnce(&DestroyPartitionsOperation::Write, this,
-                     base::Bind(&DestroyPartitionsOperation::Finish, this)));
+  PostTask(base::BindOnce(
+      &DestroyPartitionsOperation::Write, this,
+      base::BindOnce(&DestroyPartitionsOperation::Finish, this)));
 }
 
 }  // namespace image_writer

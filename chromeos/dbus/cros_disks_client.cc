@@ -12,25 +12,29 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/task_runner_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "chromeos/dbus/constants/dbus_switches.h"
 #include "chromeos/dbus/fake_cros_disks_client.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "dbus/object_path.h"
 #include "dbus/object_proxy.h"
 #include "dbus/values_util.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace chromeos {
@@ -41,7 +45,6 @@ constexpr char kReadOnlyOption[] = "ro";
 constexpr char kReadWriteOption[] = "rw";
 constexpr char kRemountOption[] = "remount";
 constexpr char kMountLabelOption[] = "mountlabel";
-constexpr char kLazyUnmountOption[] = "lazy";
 
 // Checks if retrieved media type is in boundaries of DeviceMediaType.
 bool IsValidMediaType(uint32_t type) {
@@ -116,6 +119,8 @@ MountError CrosDisksMountErrorToChromeMountError(
     case cros_disks::MOUNT_ERROR_UNSUPPORTED_ARCHIVE:
       // TODO(amistry): Add MOUNT_ERROR_UNSUPPORTED_ARCHIVE.
       return MOUNT_ERROR_UNKNOWN;
+    case cros_disks::MOUNT_ERROR_NEED_PASSWORD:
+      return MOUNT_ERROR_NEED_PASSWORD;
     default:
       NOTREACHED() << "Unrecognised mount error code " << mount_error;
       return MOUNT_ERROR_UNKNOWN;
@@ -143,7 +148,7 @@ bool ReadMountEntryFromDbus(dbus::MessageReader* reader, MountEntry* entry) {
 // The CrosDisksClient implementation.
 class CrosDisksClientImpl : public CrosDisksClient {
  public:
-  CrosDisksClientImpl() : proxy_(nullptr), weak_ptr_factory_(this) {}
+  CrosDisksClientImpl() : proxy_(nullptr) {}
 
   // CrosDisksClient override.
   void AddObserver(Observer* observer) override {
@@ -179,7 +184,6 @@ class CrosDisksClientImpl : public CrosDisksClient {
 
   // CrosDisksClient override.
   void Unmount(const std::string& device_path,
-               UnmountOptions options,
                UnmountCallback callback) override {
     dbus::MethodCall method_call(cros_disks::kCrosDisksInterface,
                                  cros_disks::kUnmount);
@@ -187,9 +191,6 @@ class CrosDisksClientImpl : public CrosDisksClient {
     writer.AppendString(device_path);
 
     std::vector<std::string> unmount_options;
-    if (options == UNMOUNT_OPTIONS_LAZY)
-      unmount_options.push_back(kLazyUnmountOption);
-
     writer.AppendArrayOfStrings(unmount_options);
     proxy_->CallMethod(&method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
                        base::BindOnce(&CrosDisksClientImpl::OnUnmount,
@@ -223,19 +224,37 @@ class CrosDisksClientImpl : public CrosDisksClient {
   // CrosDisksClient override.
   void Format(const std::string& device_path,
               const std::string& filesystem,
+              const std::string& label,
               VoidDBusMethodCallback callback) override {
+    format_start_time_[device_path] = base::TimeTicks::Now();
     dbus::MethodCall method_call(cros_disks::kCrosDisksInterface,
                                  cros_disks::kFormat);
     dbus::MessageWriter writer(&method_call);
     writer.AppendString(device_path);
     writer.AppendString(filesystem);
-    // No format option is currently specified, but we can later use this
-    // argument to specify options for the format operation.
+
     std::vector<std::string> format_options;
+    format_options.push_back(cros_disks::kFormatLabelOption);
+    format_options.push_back(label);
     writer.AppendArrayOfStrings(format_options);
+
     proxy_->CallMethod(
         &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
         base::BindOnce(&CrosDisksClientImpl::OnVoidMethod,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  }
+
+  // CrosDisksClient override.
+  void SinglePartitionFormat(const std::string& device_path,
+                             PartitionCallback callback) override {
+    dbus::MethodCall method_call(cros_disks::kCrosDisksInterface,
+                                 cros_disks::kSinglePartitionFormat);
+    dbus::MessageWriter writer(&method_call);
+    writer.AppendString(device_path);
+
+    proxy_->CallMethod(
+        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+        base::BindOnce(&CrosDisksClientImpl::OnPartitionCompleted,
                        weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
   }
 
@@ -479,10 +498,38 @@ class CrosDisksClientImpl : public CrosDisksClient {
       return;
     }
 
+    if (base::Contains(format_start_time_, device_path)) {
+      base::UmaHistogramMediumTimes(
+          "CrosDisksClient.FormatTime",
+          base::TimeTicks::Now() - format_start_time_[device_path]);
+      format_start_time_.erase(device_path);
+    }
+
+    base::UmaHistogramEnumeration("CrosDisksClient.FormatCompletedError",
+                                  static_cast<FormatError>(error_code),
+                                  FORMAT_ERROR_COUNT);
+
     for (auto& observer : observer_list_) {
       observer.OnFormatCompleted(static_cast<FormatError>(error_code),
                                  device_path);
     }
+  }
+
+  void OnPartitionCompleted(PartitionCallback callback,
+                            dbus::Response* response) {
+    if (!response) {
+      std::move(callback).Run(PARTITION_ERROR_UNKNOWN);
+      return;
+    }
+    uint32_t status = PARTITION_ERROR_UNKNOWN;
+    dbus::MessageReader reader(response);
+    if (!reader.PopUint32(&status)) {
+      LOG(ERROR) << "Error reading SinglePartitionFormat response: "
+                 << response->ToString();
+      std::move(callback).Run(PARTITION_ERROR_UNKNOWN);
+      return;
+    }
+    std::move(callback).Run(static_cast<PartitionError>(status));
   }
 
   // Handles RenameCompleted signal and notifies observers.
@@ -511,11 +558,13 @@ class CrosDisksClientImpl : public CrosDisksClient {
 
   dbus::ObjectProxy* proxy_;
 
-  base::ObserverList<Observer>::Unchecked observer_list_;
+  base::ObserverList<Observer> observer_list_;
+
+  std::unordered_map<std::string, base::TimeTicks> format_start_time_;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<CrosDisksClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<CrosDisksClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(CrosDisksClientImpl);
 };
@@ -554,6 +603,10 @@ DiskInfo::~DiskInfo() = default;
 // reply_serial: 267
 //
 // array [
+//   dict entry {
+//     string "BusNumber"
+//     variant       int32 1
+//   }
 //   dict entry {
 //     string "DeviceFile"
 //     variant       string "/dev/sdb"
@@ -596,6 +649,10 @@ DiskInfo::~DiskInfo() = default;
 //       ]
 //   }
 //   dict entry {
+//     string "DeviceNumber"
+//     variant       int32 5
+//   }
+//   dict entry {
 //     string "DevicePresentationHide"
 //     variant       bool true
 //   }
@@ -636,7 +693,7 @@ DiskInfo::~DiskInfo() = default;
 //     variant       string ""
 //   }
 //   dict entry {
-//     string "NativePath"
+//     string "StorageDevicePath"
 //     variant       string "/sys/devices/pci0000:00/0000:00:1d.7/usb1/1-4/...
 //   }
 //   dict entry {
@@ -651,24 +708,25 @@ void DiskInfo::InitializeFromResponse(dbus::Response* response) {
   if (!value || !value->GetAsDictionary(&properties))
     return;
 
-  properties->GetBooleanWithoutPathExpansion(
-      cros_disks::kDeviceIsDrive, &is_drive_);
-  properties->GetBooleanWithoutPathExpansion(
-      cros_disks::kDeviceIsReadOnly, &is_read_only_);
-  properties->GetBooleanWithoutPathExpansion(
-      cros_disks::kDevicePresentationHide, &is_hidden_);
-  properties->GetBooleanWithoutPathExpansion(
-      cros_disks::kDeviceIsMediaAvailable, &has_media_);
-  properties->GetBooleanWithoutPathExpansion(
-      cros_disks::kDeviceIsOnBootDevice, &on_boot_device_);
-  properties->GetBooleanWithoutPathExpansion(
-      cros_disks::kDeviceIsOnRemovableDevice, &on_removable_device_);
-  properties->GetBooleanWithoutPathExpansion(cros_disks::kDeviceIsVirtual,
-                                             &is_virtual_);
-  properties->GetBooleanWithoutPathExpansion(cros_disks::kIsAutoMountable,
-                                             &is_auto_mountable_);
-  properties->GetStringWithoutPathExpansion(
-      cros_disks::kNativePath, &system_path_);
+  is_drive_ =
+      properties->FindBoolKey(cros_disks::kDeviceIsDrive).value_or(is_drive_);
+  is_read_only_ = properties->FindBoolKey(cros_disks::kDeviceIsReadOnly)
+                      .value_or(is_read_only_);
+  is_hidden_ = properties->FindBoolKey(cros_disks::kDevicePresentationHide)
+                   .value_or(is_hidden_);
+  has_media_ = properties->FindBoolKey(cros_disks::kDeviceIsMediaAvailable)
+                   .value_or(has_media_);
+  on_boot_device_ = properties->FindBoolKey(cros_disks::kDeviceIsOnBootDevice)
+                        .value_or(on_boot_device_);
+  on_removable_device_ =
+      properties->FindBoolKey(cros_disks::kDeviceIsOnRemovableDevice)
+          .value_or(on_removable_device_);
+  is_virtual_ = properties->FindBoolKey(cros_disks::kDeviceIsVirtual)
+                    .value_or(is_virtual_);
+  is_auto_mountable_ = properties->FindBoolKey(cros_disks::kIsAutoMountable)
+                           .value_or(is_auto_mountable_);
+  properties->GetStringWithoutPathExpansion(cros_disks::kStorageDevicePath,
+                                            &storage_device_path_);
   properties->GetStringWithoutPathExpansion(
       cros_disks::kDeviceFile, &file_path_);
   properties->GetStringWithoutPathExpansion(cros_disks::kVendorId, &vendor_id_);
@@ -685,20 +743,25 @@ void DiskInfo::InitializeFromResponse(dbus::Response* response) {
   properties->GetStringWithoutPathExpansion(cros_disks::kFileSystemType,
                                             &file_system_type_);
 
+  bus_number_ =
+      properties->FindIntKey(cros_disks::kBusNumber).value_or(bus_number_);
+  device_number_ = properties->FindIntKey(cros_disks::kDeviceNumber)
+                       .value_or(device_number_);
+
   // dbus::PopDataAsValue() pops uint64_t as double.
   // The top 11 bits of uint64_t are dropped by the use of double. But, this
   // works
   // unless the size exceeds 8 PB.
-  double device_size_double = 0;
-  if (properties->GetDoubleWithoutPathExpansion(cros_disks::kDeviceSize,
-                                                &device_size_double))
-    total_size_in_bytes_ = device_size_double;
+  absl::optional<double> device_size_double =
+      properties->FindDoubleKey(cros_disks::kDeviceSize);
+  if (device_size_double.has_value())
+    total_size_in_bytes_ = device_size_double.value();
 
   // dbus::PopDataAsValue() pops uint32_t as double.
-  double media_type_double = 0;
-  if (properties->GetDoubleWithoutPathExpansion(cros_disks::kDeviceMediaType,
-                                                &media_type_double))
-    device_type_ = DeviceMediaTypeToDeviceType(media_type_double);
+  absl::optional<double> media_type_double =
+      properties->FindDoubleKey(cros_disks::kDeviceMediaType);
+  if (media_type_double.has_value())
+    device_type_ = DeviceMediaTypeToDeviceType(media_type_double.value());
 
   base::ListValue* mount_paths = NULL;
   if (properties->GetListWithoutPathExpansion(cros_disks::kDeviceMountPaths,
@@ -714,11 +777,13 @@ CrosDisksClient::CrosDisksClient() = default;
 CrosDisksClient::~CrosDisksClient() = default;
 
 // static
-CrosDisksClient* CrosDisksClient::Create(DBusClientImplementationType type) {
-  if (type == REAL_DBUS_CLIENT_IMPLEMENTATION)
-    return new CrosDisksClientImpl();
-  DCHECK_EQ(FAKE_DBUS_CLIENT_IMPLEMENTATION, type);
-  return new FakeCrosDisksClient();
+std::unique_ptr<CrosDisksClient> CrosDisksClient::Create() {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kCrosDisksFake)) {
+    return std::make_unique<FakeCrosDisksClient>();
+  } else {
+    return std::make_unique<CrosDisksClientImpl>();
+  }
 }
 
 // static

@@ -16,17 +16,22 @@
 #include "ui/display/manager/display_layout_manager.h"
 #include "ui/display/manager/test/action_logger_util.h"
 #include "ui/display/manager/test/test_native_display_delegate.h"
+#include "ui/display/types/display_constants.h"
 
 namespace display {
 namespace test {
 
 namespace {
 
+// Non-zero generic connector IDs.
+constexpr uint64_t kEdpConnectorId = 71u;
+constexpr uint64_t kSecondConnectorId = kEdpConnectorId + 10u;
+
 class TestSoftwareMirroringController
     : public DisplayConfigurator::SoftwareMirroringController {
  public:
   TestSoftwareMirroringController() : is_enabled_(false) {}
-  ~TestSoftwareMirroringController() override {}
+  ~TestSoftwareMirroringController() override = default;
 
   // DisplayConfigurator::SoftwareMirroringController:
   void SetSoftwareMirroring(bool enabled) override { is_enabled_ = enabled; }
@@ -153,16 +158,20 @@ class UpdateDisplayConfigurationTaskTest : public testing::Test {
                        .SetId(123)
                        .SetNativeMode(small_mode_.Clone())
                        .SetCurrentMode(small_mode_.Clone())
+                       .SetType(DISPLAY_CONNECTION_TYPE_INTERNAL)
+                       .SetBaseConnectorId(kEdpConnectorId)
                        .Build();
 
     displays_[1] = FakeDisplaySnapshot::Builder()
                        .SetId(456)
                        .SetNativeMode(big_mode_.Clone())
                        .SetCurrentMode(big_mode_.Clone())
+                       .SetType(DISPLAY_CONNECTION_TYPE_DISPLAYPORT)
                        .AddMode(small_mode_.Clone())
+                       .SetBaseConnectorId(kSecondConnectorId)
                        .Build();
   }
-  ~UpdateDisplayConfigurationTaskTest() override {}
+  ~UpdateDisplayConfigurationTaskTest() override = default;
 
   void UpdateDisplays(size_t count) {
     std::vector<DisplaySnapshot*> displays;
@@ -217,8 +226,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, HeadlessConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_HEADLESS,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -236,8 +245,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, SingleConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_SINGLE,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -245,11 +254,11 @@ TEST_F(UpdateDisplayConfigurationTaskTest, SingleConfiguration) {
   EXPECT_TRUE(configuration_status_);
   EXPECT_EQ(MULTIPLE_DISPLAY_STATE_SINGLE, display_state_);
   EXPECT_EQ(chromeos::DISPLAY_POWER_ALL_ON, power_state_);
-  EXPECT_EQ(
-      JoinActions(
-          GetCrtcAction(*displays_[0], &small_mode_, gfx::Point()).c_str(),
-          nullptr),
-      log_.GetActionsAndClear());
+  EXPECT_EQ(JoinActions(GetCrtcAction({displays_[0]->display_id(), gfx::Point(),
+                                       &small_mode_})
+                            .c_str(),
+                        nullptr),
+            log_.GetActionsAndClear());
 }
 
 TEST_F(UpdateDisplayConfigurationTaskTest, ExtendedConfiguration) {
@@ -259,8 +268,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, ExtendedConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -269,12 +278,14 @@ TEST_F(UpdateDisplayConfigurationTaskTest, ExtendedConfiguration) {
   EXPECT_EQ(MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED, display_state_);
   EXPECT_EQ(chromeos::DISPLAY_POWER_ALL_ON, power_state_);
   EXPECT_EQ(
-      JoinActions(
-          GetCrtcAction(*displays_[0], &small_mode_, gfx::Point()).c_str(),
-          GetCrtcAction(*displays_[1], &big_mode_,
-                        gfx::Point(0, small_mode_.size().height()))
-              .c_str(),
-          nullptr),
+      JoinActions(GetCrtcAction(
+                      {displays_[0]->display_id(), gfx::Point(), &small_mode_})
+                      .c_str(),
+                  GetCrtcAction({displays_[1]->display_id(),
+                                 gfx::Point(0, small_mode_.size().height()),
+                                 &big_mode_})
+                      .c_str(),
+                  nullptr),
       log_.GetActionsAndClear());
 }
 
@@ -285,8 +296,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, MirrorConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_MIRROR,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -294,12 +305,14 @@ TEST_F(UpdateDisplayConfigurationTaskTest, MirrorConfiguration) {
   EXPECT_TRUE(configuration_status_);
   EXPECT_EQ(MULTIPLE_DISPLAY_STATE_MULTI_MIRROR, display_state_);
   EXPECT_EQ(chromeos::DISPLAY_POWER_ALL_ON, power_state_);
-  EXPECT_EQ(
-      JoinActions(
-          GetCrtcAction(*displays_[0], &small_mode_, gfx::Point()).c_str(),
-          GetCrtcAction(*displays_[1], &small_mode_, gfx::Point()).c_str(),
-          nullptr),
-      log_.GetActionsAndClear());
+  EXPECT_EQ(JoinActions(GetCrtcAction({displays_[0]->display_id(), gfx::Point(),
+                                       &small_mode_})
+                            .c_str(),
+                        GetCrtcAction({displays_[1]->display_id(), gfx::Point(),
+                                       &small_mode_})
+                            .c_str(),
+                        nullptr),
+            log_.GetActionsAndClear());
 }
 
 TEST_F(UpdateDisplayConfigurationTaskTest, FailMirrorConfiguration) {
@@ -310,8 +323,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, FailMirrorConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_MIRROR,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -328,8 +341,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, FailExtendedConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -337,12 +350,30 @@ TEST_F(UpdateDisplayConfigurationTaskTest, FailExtendedConfiguration) {
   EXPECT_FALSE(configuration_status_);
   EXPECT_EQ(
       JoinActions(
-          GetCrtcAction(*displays_[0], &small_mode_, gfx::Point()).c_str(),
-          GetCrtcAction(*displays_[1], &big_mode_,
-                        gfx::Point(0, small_mode_.size().height()))
+          // All displays will fail to modeset together. Initiate retry logic.
+          GetCrtcAction(
+              {displays_[0]->display_id(), gfx::Point(), &small_mode_})
               .c_str(),
-          GetCrtcAction(*displays_[1], &small_mode_,
-                        gfx::Point(0, small_mode_.size().height()))
+          GetCrtcAction({displays_[1]->display_id(),
+                         gfx::Point(0, small_mode_.size().height()),
+                         &big_mode_})
+              .c_str(),
+          // Retry logic fails to modeset internal display. Since internal
+          // displays are restricted to their preferred mode, there are no other
+          // modes to try. The configuration will fail, but the external display
+          // will still try to modeset.
+          GetCrtcAction(
+              {displays_[0]->display_id(), gfx::Point(), &small_mode_})
+              .c_str(),
+          // External display fail modeset, downgrade once, and then fail
+          // completely.
+          GetCrtcAction({displays_[1]->display_id(),
+                         gfx::Point(0, small_mode_.size().height()),
+                         &big_mode_})
+              .c_str(),
+          GetCrtcAction({displays_[1]->display_id(),
+                         gfx::Point(0, small_mode_.size().height()),
+                         &small_mode_})
               .c_str(),
           nullptr),
       log_.GetActionsAndClear());
@@ -355,8 +386,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, SingleChangePowerConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_SINGLE,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -364,29 +395,30 @@ TEST_F(UpdateDisplayConfigurationTaskTest, SingleChangePowerConfiguration) {
   EXPECT_TRUE(configuration_status_);
   EXPECT_EQ(MULTIPLE_DISPLAY_STATE_SINGLE, display_state_);
   EXPECT_EQ(chromeos::DISPLAY_POWER_ALL_ON, power_state_);
-  EXPECT_EQ(
-      JoinActions(
-          GetCrtcAction(*displays_[0], &small_mode_, gfx::Point()).c_str(),
-          nullptr),
-      log_.GetActionsAndClear());
+  EXPECT_EQ(JoinActions(GetCrtcAction({displays_[0]->display_id(), gfx::Point(),
+                                       &small_mode_})
+                            .c_str(),
+                        nullptr),
+            log_.GetActionsAndClear());
 
   // Turn power off
   {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_SINGLE,
         chromeos::DISPLAY_POWER_ALL_OFF, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
   EXPECT_TRUE(configuration_status_);
   EXPECT_EQ(MULTIPLE_DISPLAY_STATE_SINGLE, display_state_);
   EXPECT_EQ(chromeos::DISPLAY_POWER_ALL_OFF, power_state_);
-  EXPECT_EQ(
-      JoinActions(
-          GetCrtcAction(*displays_[0], nullptr, gfx::Point()).c_str(), nullptr),
-      log_.GetActionsAndClear());
+  EXPECT_EQ(JoinActions(GetCrtcAction(
+                            {displays_[0]->display_id(), gfx::Point(), nullptr})
+                            .c_str(),
+                        nullptr),
+            log_.GetActionsAndClear());
 }
 
 TEST_F(UpdateDisplayConfigurationTaskTest, NoopSoftwareMirrorConfiguration) {
@@ -399,8 +431,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, NoopSoftwareMirrorConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -410,8 +442,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest, NoopSoftwareMirrorConfiguration) {
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_MIRROR,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -433,8 +465,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest,
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,
         chromeos::DISPLAY_POWER_ALL_ON, 0, false,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -444,8 +476,8 @@ TEST_F(UpdateDisplayConfigurationTaskTest,
     UpdateDisplayConfigurationTask task(
         &delegate_, &layout_manager_, MULTIPLE_DISPLAY_STATE_MULTI_MIRROR,
         chromeos::DISPLAY_POWER_ALL_ON, 0, true /* force_configure */,
-        base::Bind(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
-                   base::Unretained(this)));
+        base::BindOnce(&UpdateDisplayConfigurationTaskTest::ResponseCallback,
+                       base::Unretained(this)));
     task.Run();
   }
 
@@ -454,12 +486,14 @@ TEST_F(UpdateDisplayConfigurationTaskTest,
   EXPECT_TRUE(layout_manager_.GetSoftwareMirroringController()
                   ->SoftwareMirroringEnabled());
   EXPECT_EQ(
-      JoinActions(
-          GetCrtcAction(*displays_[0], &small_mode_, gfx::Point()).c_str(),
-          GetCrtcAction(*displays_[1], &big_mode_,
-                        gfx::Point(0, small_mode_.size().height()))
-              .c_str(),
-          nullptr),
+      JoinActions(GetCrtcAction(
+                      {displays_[0]->display_id(), gfx::Point(), &small_mode_})
+                      .c_str(),
+                  GetCrtcAction({displays_[1]->display_id(),
+                                 gfx::Point(0, small_mode_.size().height()),
+                                 &big_mode_})
+                      .c_str(),
+                  nullptr),
       log_.GetActionsAndClear());
 }
 

@@ -17,17 +17,17 @@ class ShellFileSystemDelegate : public FileSystemDelegate {
   // FileSystemDelegate:
   base::FilePath GetDefaultDirectory() override;
   bool ShowSelectFileDialog(
-      scoped_refptr<UIThreadExtensionFunction> extension_function,
+      scoped_refptr<ExtensionFunction> extension_function,
       ui::SelectFileDialog::Type type,
       const base::FilePath& default_path,
       const ui::SelectFileDialog::FileTypeInfo* file_types,
       FileSystemDelegate::FilesSelectedCallback files_selected_callback,
       base::OnceClosure file_selection_canceled_callback) override;
   void ConfirmSensitiveDirectoryAccess(bool has_write_permission,
-                                       const base::string16& app_name,
+                                       const std::u16string& app_name,
                                        content::WebContents* web_contents,
-                                       const base::Closure& on_accept,
-                                       const base::Closure& on_cancel) override;
+                                       base::OnceClosure on_accept,
+                                       base::OnceClosure on_cancel) override;
   int GetDescriptionIdForAcceptType(const std::string& accept_type) override;
   SavedFilesServiceInterface* GetSavedFilesService(
       content::BrowserContext* browser_context) override;

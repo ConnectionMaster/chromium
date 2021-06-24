@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -15,26 +16,31 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/lazy_task_runner.h"
-#include "base/task/post_task.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/apps/user_type_filter.h"
-#include "chrome/browser/defaults.h"
-#include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sync/profile_sync_service_factory.h"
 #include "chrome/common/chrome_paths.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
+#include "extensions/browser/extension_file_task_runner.h"
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
+#include "ash/constants/ash_switches.h"
+#include "chrome/browser/prefs/pref_service_syncable_util.h"
+#include "chrome/browser/sync/sync_service_factory.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/sync/driver/sync_service.h"
 #include "components/sync/driver/sync_service_observer.h"
 #include "components/sync/driver/sync_user_settings.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "components/sync_preferences/pref_service_syncable_observer.h"
-#include "content/public/browser/browser_task_traits.h"
-#include "content/public/browser/browser_thread.h"
-#include "extensions/browser/extension_file_task_runner.h"
+#endif
 
 using content::BrowserThread;
 
@@ -43,8 +49,31 @@ namespace {
 constexpr base::FilePath::CharType kExternalExtensionJson[] =
     FILE_PATH_LITERAL("external_extensions.json");
 
+// Extension installations are skipped here as excluding these in the overlay
+// is a bit complicated.
+// TODO(crbug.com/1023268) This is a temporary measure and should be replaced.
+bool SkipInstallForChromeOSTablet(const base::FilePath& file_path) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  if (!chromeos::switches::IsTabletFormFactor())
+    return false;
+
+  constexpr char const* kIdsNotToBeInstalledOnTabletFormFactor[] = {
+      "blpcfgokakmgnkcojhhkbfbldkacnbeo.json",  // Youtube file name.
+      "ejjicmeblgpmajnghnpcppodonldlgfn.json",  // Calendar file name.
+      "hcglmfcclpfgljeaiahehebeoaiicbko.json",  // Google Photos file name.
+      "lneaknkopdijkpnocmklfnjbeapigfbh.json",  // Google Maps file name.
+      "pjkljhegncpnkpknbcohdijeoejaedia.json",  // Gmail file name.
+  };
+
+  return base::Contains(kIdsNotToBeInstalledOnTabletFormFactor,
+                        file_path.BaseName().value());
+#else
+  return false;
+#endif
+}
+
 std::set<base::FilePath> GetPrefsCandidateFilesFromFolder(
-      const base::FilePath& external_extension_search_path) {
+    const base::FilePath& external_extension_search_path) {
   std::set<base::FilePath> external_extension_paths;
 
   if (!base::PathExists(external_extension_search_path)) {
@@ -68,6 +97,8 @@ std::set<base::FilePath> GetPrefsCandidateFilesFromFolder(
     if (file.empty())
       break;
     if (file.MatchesExtension(extension)) {
+      if (SkipInstallForChromeOSTablet(file))
+        continue;
       external_extension_paths.insert(file.BaseName());
     } else {
       DVLOG(1) << "Not considering: " << file.LossyDisplayName()
@@ -82,17 +113,17 @@ std::set<base::FilePath> GetPrefsCandidateFilesFromFolder(
 
 namespace extensions {
 
-// Helper class to wait for priority sync to be ready.
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+// Helper class to wait for priority pref sync to be ready.
 class ExternalPrefLoader::PrioritySyncReadyWaiter
     : public sync_preferences::PrefServiceSyncableObserver,
       public syncer::SyncServiceObserver {
  public:
-  explicit PrioritySyncReadyWaiter(Profile* profile)
-      : profile_(profile),
-        syncable_pref_observer_(this),
-        sync_service_observer_(this) {}
+  explicit PrioritySyncReadyWaiter(Profile* profile) : profile_(profile) {
+    DCHECK(profile_);
+  }
 
-  ~PrioritySyncReadyWaiter() override {}
+  ~PrioritySyncReadyWaiter() override = default;
 
   void Start(base::OnceClosure done_closure) {
     if (IsPrioritySyncing()) {
@@ -100,20 +131,51 @@ class ExternalPrefLoader::PrioritySyncReadyWaiter
       // Note: |this| is deleted here.
       return;
     }
-    // Start observing sync changes.
-    DCHECK(profile_);
-    syncer::SyncService* service =
-        ProfileSyncServiceFactory::GetForProfile(profile_);
-    DCHECK(service);
-    if (service->CanSyncFeatureStart() &&
-        (service->GetUserSettings()->IsFirstSetupComplete() ||
-         browser_defaults::kSyncAutoStarts)) {
-      done_closure_ = std::move(done_closure);
-      AddObservers();
-    } else {
-      std::move(done_closure).Run();
-      // Note: |this| is deleted here.
+    DCHECK(!done_closure_);
+    done_closure_ = std::move(done_closure);
+    if (chromeos::features::IsSplitSettingsSyncEnabled()) {
+      // SplitSettingsSync lets users opt-out of sync during OOBE.
+      PrefService* prefs = profile_->GetPrefs();
+      if (!prefs->GetBoolean(chromeos::prefs::kSyncOobeCompleted)) {
+        // Need to wait for OOBE completion before checking if sync is enabled.
+        pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
+        pref_change_registrar_->Init(prefs);
+        // base::Unretained is safe because we own |pref_changed_registrar_|.
+        pref_change_registrar_->Add(
+            chromeos::prefs::kSyncOobeCompleted,
+            base::BindRepeating(&PrioritySyncReadyWaiter::OnSyncOobeCompleted,
+                                base::Unretained(this)));
+        return;
+      }
     }
+    MaybeObserveSyncStart();
+  }
+
+ private:
+  void OnSyncOobeCompleted() {
+    DCHECK(chromeos::features::IsSplitSettingsSyncEnabled());
+    DCHECK(
+        profile_->GetPrefs()->GetBoolean(chromeos::prefs::kSyncOobeCompleted));
+    pref_change_registrar_.reset();
+    syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile_);
+    if (!service->GetUserSettings()->IsOsSyncFeatureEnabled()) {
+      // User opted-out of OS sync, OS sync will never start, we're done here.
+      Finish();
+      // Note: |this| is deleted.
+      return;
+    }
+    MaybeObserveSyncStart();
+  }
+
+  void MaybeObserveSyncStart() {
+    syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile_);
+    DCHECK(service);
+    if (!service->CanSyncFeatureStart()) {
+      Finish();
+      // Note: |this| is deleted.
+      return;
+    }
+    AddObservers();
   }
 
   // sync_preferences::PrefServiceSyncableObserver:
@@ -132,24 +194,30 @@ class ExternalPrefLoader::PrioritySyncReadyWaiter
       Finish();
   }
 
- private:
+  void OnSyncShutdown(syncer::SyncService* sync) override {
+    DCHECK(sync_service_observation_.IsObservingSource(sync));
+    sync_service_observation_.Reset();
+  }
+
   bool IsPrioritySyncing() {
-    DCHECK(profile_);
     sync_preferences::PrefServiceSyncable* prefs =
         PrefServiceSyncableFromProfile(profile_);
     DCHECK(prefs);
-    return prefs->IsPrioritySyncing();
+    // SplitSettingsSync moves prefs like language and keyboard/mouse config to
+    // OS priority prefs.
+    return chromeos::features::IsSplitSettingsSyncEnabled()
+               ? prefs->AreOsPriorityPrefsSyncing()
+               : prefs->IsPrioritySyncing();
   }
 
   void AddObservers() {
     sync_preferences::PrefServiceSyncable* prefs =
         PrefServiceSyncableFromProfile(profile_);
     DCHECK(prefs);
-    syncable_pref_observer_.Add(prefs);
+    syncable_pref_observation_.Observe(prefs);
 
-    syncer::SyncService* service =
-        ProfileSyncServiceFactory::GetForProfile(profile_);
-    sync_service_observer_.Add(service);
+    syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile_);
+    sync_service_observation_.Observe(service);
   }
 
   void Finish() { std::move(done_closure_).Run(); }
@@ -158,15 +226,19 @@ class ExternalPrefLoader::PrioritySyncReadyWaiter
 
   base::OnceClosure done_closure_;
 
+  // Used with SplitSettingsSync to wait for OOBE sync dialog completion.
+  std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
+
   // Used for registering observer for sync_preferences::PrefServiceSyncable.
-  ScopedObserver<sync_preferences::PrefServiceSyncable,
-                 sync_preferences::PrefServiceSyncableObserver>
-      syncable_pref_observer_;
-  ScopedObserver<syncer::SyncService, syncer::SyncServiceObserver>
-      sync_service_observer_;
+  base::ScopedObservation<sync_preferences::PrefServiceSyncable,
+                          sync_preferences::PrefServiceSyncableObserver>
+      syncable_pref_observation_{this};
+  base::ScopedObservation<syncer::SyncService, syncer::SyncServiceObserver>
+      sync_service_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PrioritySyncReadyWaiter);
 };
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 ExternalPrefLoader::ExternalPrefLoader(int base_path_id,
                                        int options,
@@ -190,19 +262,23 @@ const base::FilePath ExternalPrefLoader::GetBaseCrxFilePath() {
 
 void ExternalPrefLoader::StartLoading() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   if ((options_ & DELAY_LOAD_UNTIL_PRIORITY_SYNC) &&
-      (profile_ && profile_->IsSyncAllowed())) {
+      (profile_ && SyncServiceFactory::IsSyncAllowed(profile_))) {
     pending_waiter_list_.push_back(
         std::make_unique<PrioritySyncReadyWaiter>(profile_));
     PrioritySyncReadyWaiter* waiter_ptr = pending_waiter_list_.back().get();
     waiter_ptr->Start(base::BindOnce(&ExternalPrefLoader::OnPrioritySyncReady,
                                      this, waiter_ptr));
-  } else {
-    GetExtensionFileTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(&ExternalPrefLoader::LoadOnFileThread, this));
+    return;
   }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  GetExtensionFileTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&ExternalPrefLoader::LoadOnFileThread, this));
 }
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 void ExternalPrefLoader::OnPrioritySyncReady(
     ExternalPrefLoader::PrioritySyncReadyWaiter* waiter) {
   // Delete |waiter| from |pending_waiter_list_|.
@@ -215,6 +291,7 @@ void ExternalPrefLoader::OnPrioritySyncReady(
   GetExtensionFileTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&ExternalPrefLoader::LoadOnFileThread, this));
 }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 // static.
 std::unique_ptr<base::DictionaryValue>
@@ -250,7 +327,7 @@ void ExternalPrefLoader::LoadOnFileThread() {
   if (base::PathService::Get(base_path_id_, &base_path_)) {
     ReadExternalExtensionPrefFile(prefs.get());
 
-    if (!prefs->empty())
+    if (!prefs->DictEmpty())
       LOG(WARNING) << "You are using an old-style extension deployment method "
                       "(external_extensions.json), which will soon be "
                       "deprecated. (see http://developer.chrome.com/"
@@ -260,17 +337,17 @@ void ExternalPrefLoader::LoadOnFileThread() {
   }
 
   if (base_path_id_ == chrome::DIR_EXTERNAL_EXTENSIONS)
-    UMA_HISTOGRAM_COUNTS_100("Extensions.ExternalJsonCount", prefs->size());
+    UMA_HISTOGRAM_COUNTS_100("Extensions.ExternalJsonCount", prefs->DictSize());
 
   // If we have any records to process, then we must have
   // read at least one .json file.  If so, then we should have
   // set |base_path_|.
-  if (!prefs->empty())
+  if (!prefs->DictEmpty())
     CHECK(!base_path_.empty());
 
-  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
-                           base::BindOnce(&ExternalPrefLoader::LoadFinished,
-                                          this, std::move(prefs)));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&ExternalPrefLoader::LoadFinished, this,
+                                std::move(prefs)));
 }
 
 void ExternalPrefLoader::ReadExternalExtensionPrefFile(
@@ -285,7 +362,7 @@ void ExternalPrefLoader::ReadExternalExtensionPrefFile(
   }
 
   if (IsOptionSet(ENSURE_PATH_CONTROLLED_BY_ADMIN)) {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     if (!base::VerifyPathControlledByAdmin(json_file)) {
       LOG(ERROR) << "Can not read external extensions source.  The file "
                  << json_file.value() << " and every directory in its path, "
@@ -300,7 +377,7 @@ void ExternalPrefLoader::ReadExternalExtensionPrefFile(
     // you need to implement base::VerifyPathControlledByAdmin() for
     // that platform.
     NOTREACHED();
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
   }
 
   JSONFileValueDeserializer deserializer(json_file);
@@ -315,8 +392,8 @@ void ExternalPrefLoader::ReadStandaloneExtensionPrefFiles(
   CHECK(NULL != prefs);
 
   // First list the potential .json candidates.
-  std::set<base::FilePath>
-      candidates = GetPrefsCandidateFilesFromFolder(base_path_);
+  std::set<base::FilePath> candidates =
+      GetPrefsCandidateFilesFromFolder(base_path_);
   if (candidates.empty()) {
     DVLOG(1) << "Extension candidates list empty";
     return;
@@ -326,8 +403,7 @@ void ExternalPrefLoader::ReadStandaloneExtensionPrefFiles(
   std::unique_ptr<base::ListValue> default_user_types;
   if (options_ & USE_USER_TYPE_PROFILE_FILTER) {
     default_user_types = std::make_unique<base::ListValue>();
-    default_user_types->GetList().push_back(
-        base::Value(apps::kUserTypeUnmanaged));
+    default_user_types->Append(base::Value(apps::kUserTypeUnmanaged));
   }
 
   // For each file read the json description & build the proper
@@ -337,7 +413,7 @@ void ExternalPrefLoader::ReadStandaloneExtensionPrefFiles(
 
     const std::string id =
 #if defined(OS_WIN)
-        base::UTF16ToASCII(
+        base::WideToASCII(
             extension_candidate_path.RemoveExtension().BaseName().value());
 #elif defined(OS_POSIX)
         extension_candidate_path.RemoveExtension().BaseName().value();

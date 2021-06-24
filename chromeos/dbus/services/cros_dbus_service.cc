@@ -10,7 +10,7 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
+#include "base/logging.h"
 #include "base/system/sys_info.h"
 #include "dbus/bus.h"
 #include "dbus/exported_object.h"
@@ -59,9 +59,10 @@ class CrosDBusServiceImpl : public CrosDBusService {
     // situation if we don't allow the new browser instance to replace the old
     // as the owner of |service_name_| as seen in http://crbug.com/234382.
     // Hence, REQUIRE_PRIMARY_ALLOW_REPLACEMENT.
-    bus_->RequestOwnership(
-        service_name_, dbus::Bus::REQUIRE_PRIMARY_ALLOW_REPLACEMENT,
-        base::Bind(&CrosDBusServiceImpl::OnOwnership, base::Unretained(this)));
+    bus_->RequestOwnership(service_name_,
+                           dbus::Bus::REQUIRE_PRIMARY_ALLOW_REPLACEMENT,
+                           base::BindOnce(&CrosDBusServiceImpl::OnOwnership,
+                                          base::Unretained(this)));
 
     service_started_ = true;
   }

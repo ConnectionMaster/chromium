@@ -21,6 +21,9 @@ class NET_EXPORT TrustStoreInMemory : public TrustStore {
   TrustStoreInMemory();
   ~TrustStoreInMemory() override;
 
+  // Returns whether the TrustStore is in the initial empty state.
+  bool IsEmpty() const;
+
   // Empties the trust store, resetting it to original state.
   void Clear();
 
@@ -45,7 +48,8 @@ class NET_EXPORT TrustStoreInMemory : public TrustStore {
   void SyncGetIssuersOf(const ParsedCertificate* cert,
                         ParsedCertificateList* issuers) override;
   void GetTrust(const scoped_refptr<ParsedCertificate>& cert,
-                CertificateTrust* trust) const override;
+                CertificateTrust* trust,
+                base::SupportsUserData* debug_data) const override;
 
   // Returns true if the trust store contains the given ParsedCertificate
   // (matches by DER).

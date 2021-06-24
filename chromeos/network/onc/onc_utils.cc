@@ -48,7 +48,7 @@
 #include "crypto/symmetric_key.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/proxy_server.h"
-#include "net/cert/pem_tokenizer.h"
+#include "net/cert/pem.h"
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util_nss.h"
 #include "net/proxy_resolution/proxy_bypass_rules.h"
@@ -56,8 +56,6 @@
 #include "third_party/cros_system_api/dbus/service_constants.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
-
-using namespace ::onc;
 
 namespace chromeos {
 namespace onc {
@@ -125,19 +123,17 @@ void ExpandField(const std::string& fieldname,
 // passphrases) in ONC.
 class OncMaskValues : public Mapper {
  public:
-  static std::unique_ptr<base::DictionaryValue> Mask(
-      const OncValueSignature& signature,
-      const base::DictionaryValue& onc_object,
-      const std::string& mask) {
+  static base::Value Mask(const OncValueSignature& signature,
+                          const base::Value& onc_object,
+                          const std::string& mask) {
     OncMaskValues masker(mask);
     bool unused_error;
-    return masker.MapObject(signature, onc_object, &unused_error);
+    return base::Value::FromUniquePtrValue(
+        masker.MapObject(signature, onc_object, &unused_error));
   }
 
  protected:
-  explicit OncMaskValues(const std::string& mask)
-      : mask_(mask) {
-  }
+  explicit OncMaskValues(const std::string& mask) : mask_(mask) {}
 
   std::unique_ptr<base::Value> MapField(
       const std::string& field_name,
@@ -148,12 +144,14 @@ class OncMaskValues : public Mapper {
     if (FieldIsCredential(object_signature, field_name)) {
       // If it's the password field and the substitution string is used, don't
       // mask it.
-      if (&object_signature == &kEAPSignature && field_name == eap::kPassword &&
-          onc_value.GetString() == substitutes::kPasswordPlaceholderVerbatim) {
+      if (&object_signature == &kEAPSignature &&
+          field_name == ::onc::eap::kPassword &&
+          onc_value.GetString() ==
+              ::onc::substitutes::kPasswordPlaceholderVerbatim) {
         return Mapper::MapField(field_name, object_signature, onc_value,
                                 found_unknown_field, error);
       }
-      return std::unique_ptr<base::Value>(new base::Value(mask_));
+      return std::make_unique<base::Value>(mask_);
     } else {
       return Mapper::MapField(field_name, object_signature, onc_value,
                               found_unknown_field, error);
@@ -169,21 +167,21 @@ class OncMaskValues : public Mapper {
 CertPEMsByGUIDMap GetServerAndCACertsByGUID(
     const base::ListValue& certificates) {
   CertPEMsByGUIDMap certs_by_guid;
-  for (const auto& entry : certificates) {
+  for (const auto& entry : certificates.GetList()) {
     const base::DictionaryValue* cert = nullptr;
     bool entry_is_dictionary = entry.GetAsDictionary(&cert);
     DCHECK(entry_is_dictionary);
 
     std::string guid;
-    cert->GetStringWithoutPathExpansion(certificate::kGUID, &guid);
+    cert->GetStringWithoutPathExpansion(::onc::certificate::kGUID, &guid);
     std::string cert_type;
-    cert->GetStringWithoutPathExpansion(certificate::kType, &cert_type);
-    if (cert_type != certificate::kServer &&
-        cert_type != certificate::kAuthority) {
+    cert->GetStringWithoutPathExpansion(::onc::certificate::kType, &cert_type);
+    if (cert_type != ::onc::certificate::kServer &&
+        cert_type != ::onc::certificate::kAuthority) {
       continue;
     }
     std::string x509_data;
-    cert->GetStringWithoutPathExpansion(certificate::kX509, &x509_data);
+    cert->GetStringWithoutPathExpansion(::onc::certificate::kX509, &x509_data);
 
     std::string der = DecodePEM(x509_data);
     std::string pem;
@@ -202,6 +200,12 @@ CertPEMsByGUIDMap GetServerAndCACertsByGUID(
 void FillInHexSSIDFieldsInNetworks(base::Value* network_configs) {
   for (auto& network : network_configs->GetList())
     FillInHexSSIDFieldsInOncObject(kNetworkConfigurationSignature, &network);
+}
+
+// Sets HiddenSSID fields in all entries in the |network_configs| list.
+void SetHiddenSSIDFieldsInNetworks(base::Value* network_configs) {
+  for (auto& network : network_configs->GetList())
+    SetHiddenSSIDFieldInOncObject(kNetworkConfigurationSignature, &network);
 }
 
 // Given a GUID->PEM certificate mapping |certs_by_guid|, looks up the PEM
@@ -242,7 +246,7 @@ bool ResolveSingleCertRef(const CertPEMsByGUIDMap& certs_by_guid,
   if (!GUIDRefToPEMEncoding(certs_by_guid, guid_ref, &pem_encoded))
     return false;
 
-  onc_object->RemoveWithoutPathExpansion(key_guid_ref, nullptr);
+  onc_object->RemoveKey(key_guid_ref);
   onc_object->SetKey(key_pem, base::Value(pem_encoded));
   return true;
 }
@@ -268,7 +272,7 @@ bool ResolveCertRefList(const CertPEMsByGUIDMap& certs_by_guid,
   }
 
   std::unique_ptr<base::ListValue> pem_list(new base::ListValue);
-  for (const auto& entry : *guid_ref_list) {
+  for (const auto& entry : guid_ref_list->GetList()) {
     std::string guid_ref;
     bool entry_is_string = entry.GetAsString(&guid_ref);
     DCHECK(entry_is_string);
@@ -280,8 +284,9 @@ bool ResolveCertRefList(const CertPEMsByGUIDMap& certs_by_guid,
     pem_list->AppendString(pem_encoded);
   }
 
-  onc_object->RemoveWithoutPathExpansion(key_guid_ref_list, nullptr);
-  onc_object->SetWithoutPathExpansion(key_pem_list, std::move(pem_list));
+  onc_object->RemoveKey(key_guid_ref_list);
+  onc_object->SetKey(key_pem_list,
+                     base::Value::FromUniquePtrValue(std::move(pem_list)));
   return true;
 }
 
@@ -301,8 +306,9 @@ bool ResolveSingleCertRefToList(const CertPEMsByGUIDMap& certs_by_guid,
 
   std::unique_ptr<base::ListValue> pem_list(new base::ListValue);
   pem_list->AppendString(pem_encoded);
-  onc_object->RemoveWithoutPathExpansion(key_guid_ref, nullptr);
-  onc_object->SetWithoutPathExpansion(key_pem_list, std::move(pem_list));
+  onc_object->RemoveKey(key_guid_ref);
+  onc_object->SetKey(key_pem_list,
+                     base::Value::FromUniquePtrValue(std::move(pem_list)));
   return true;
 }
 
@@ -318,15 +324,15 @@ bool ResolveCertRefsOrRefToList(const CertPEMsByGUIDMap& certs_by_guid,
     if (onc_object->HasKey(key_guid_ref)) {
       LOG(ERROR) << "Found both " << key_guid_refs << " and " << key_guid_ref
                  << ". Ignoring and removing the latter.";
-      onc_object->RemoveWithoutPathExpansion(key_guid_ref, nullptr);
+      onc_object->RemoveKey(key_guid_ref);
     }
-    return ResolveCertRefList(
-        certs_by_guid, key_guid_refs, key_pem_list, onc_object);
+    return ResolveCertRefList(certs_by_guid, key_guid_refs, key_pem_list,
+                              onc_object);
   }
 
   // Only resolve |key_guid_ref| if |key_guid_refs| isn't present.
-  return ResolveSingleCertRefToList(
-      certs_by_guid, key_guid_ref, key_pem_list, onc_object);
+  return ResolveSingleCertRefToList(certs_by_guid, key_guid_ref, key_pem_list,
+                                    onc_object);
 }
 
 // Resolve known server and authority certiifcate reference fields in
@@ -335,39 +341,30 @@ bool ResolveServerCertRefsInObject(const CertPEMsByGUIDMap& certs_by_guid,
                                    const OncValueSignature& signature,
                                    base::DictionaryValue* onc_object) {
   if (&signature == &kCertificatePatternSignature) {
-    if (!ResolveCertRefList(certs_by_guid,
-                            client_cert::kIssuerCARef,
-                            client_cert::kIssuerCAPEMs,
-                            onc_object)) {
+    if (!ResolveCertRefList(certs_by_guid, ::onc::client_cert::kIssuerCARef,
+                            ::onc::client_cert::kIssuerCAPEMs, onc_object)) {
       return false;
     }
   } else if (&signature == &kEAPSignature) {
-    if (!ResolveCertRefsOrRefToList(certs_by_guid,
-                                    eap::kServerCARefs,
-                                    eap::kServerCARef,
-                                    eap::kServerCAPEMs,
-                                    onc_object)) {
+    if (!ResolveCertRefsOrRefToList(certs_by_guid, ::onc::eap::kServerCARefs,
+                                    ::onc::eap::kServerCARef,
+                                    ::onc::eap::kServerCAPEMs, onc_object)) {
       return false;
     }
   } else if (&signature == &kIPsecSignature) {
-    if (!ResolveCertRefsOrRefToList(certs_by_guid,
-                                    ipsec::kServerCARefs,
-                                    ipsec::kServerCARef,
-                                    ipsec::kServerCAPEMs,
-                                    onc_object)) {
+    if (!ResolveCertRefsOrRefToList(certs_by_guid, ::onc::ipsec::kServerCARefs,
+                                    ::onc::ipsec::kServerCARef,
+                                    ::onc::ipsec::kServerCAPEMs, onc_object)) {
       return false;
     }
   } else if (&signature == &kIPsecSignature ||
              &signature == &kOpenVPNSignature) {
-    if (!ResolveSingleCertRef(certs_by_guid,
-                              openvpn::kServerCertRef,
-                              openvpn::kServerCertPEM,
-                              onc_object) ||
-        !ResolveCertRefsOrRefToList(certs_by_guid,
-                                    openvpn::kServerCARefs,
-                                    openvpn::kServerCARef,
-                                    openvpn::kServerCAPEMs,
-                                    onc_object)) {
+    if (!ResolveSingleCertRef(certs_by_guid, ::onc::openvpn::kServerCertRef,
+                              ::onc::openvpn::kServerCertPEM, onc_object) ||
+        !ResolveCertRefsOrRefToList(
+            certs_by_guid, ::onc::openvpn::kServerCARefs,
+            ::onc::openvpn::kServerCARef, ::onc::openvpn::kServerCAPEMs,
+            onc_object)) {
       return false;
     }
   }
@@ -384,9 +381,8 @@ bool ResolveServerCertRefsInObject(const CertPEMsByGUIDMap& certs_by_guid,
     if (!field_signature)
       continue;
 
-    if (!ResolveServerCertRefsInObject(certs_by_guid,
-                                       *field_signature->value_signature,
-                                       inner_object)) {
+    if (!ResolveServerCertRefsInObject(
+            certs_by_guid, *field_signature->value_signature, inner_object)) {
       return false;
     }
   }
@@ -500,7 +496,8 @@ void SetProxyForScheme(const net::ProxyConfig::ProxyRules& proxy_rules,
   url_dict->SetKey(::onc::proxy::kHost, base::Value(host));
   url_dict->SetKey(::onc::proxy::kPort,
                    base::Value(server.host_port_pair().port()));
-  dict->SetWithoutPathExpansion(onc_scheme, std::move(url_dict));
+  dict->SetKey(onc_scheme,
+               base::Value::FromUniquePtrValue(std::move(url_dict)));
 }
 
 // Returns the NetworkConfiugration with |guid| from |network_configs|, or
@@ -508,10 +505,9 @@ void SetProxyForScheme(const net::ProxyConfig::ProxyRules& proxy_rules,
 const base::DictionaryValue* GetNetworkConfigByGUID(
     const base::ListValue& network_configs,
     const std::string& guid) {
-  for (base::ListValue::const_iterator it = network_configs.begin();
-       it != network_configs.end(); ++it) {
-    const base::DictionaryValue* network = NULL;
-    it->GetAsDictionary(&network);
+  for (const auto& entry : network_configs.GetList()) {
+    const base::DictionaryValue* network = nullptr;
+    entry.GetAsDictionary(&network);
     DCHECK(network);
 
     std::string current_guid;
@@ -520,7 +516,7 @@ const base::DictionaryValue* GetNetworkConfigByGUID(
     if (current_guid == guid)
       return network;
   }
-  return NULL;
+  return nullptr;
 }
 
 // Returns the first Ethernet NetworkConfiguration from |network_configs| with
@@ -528,10 +524,9 @@ const base::DictionaryValue* GetNetworkConfigByGUID(
 const base::DictionaryValue* GetNetworkConfigForEthernetWithoutEAP(
     const base::ListValue& network_configs) {
   VLOG(2) << "Search for ethernet policy without EAP.";
-  for (base::ListValue::const_iterator it = network_configs.begin();
-       it != network_configs.end(); ++it) {
-    const base::DictionaryValue* network = NULL;
-    it->GetAsDictionary(&network);
+  for (const auto& entry : network_configs.GetList()) {
+    const base::DictionaryValue* network = nullptr;
+    entry.GetAsDictionary(&network);
     DCHECK(network);
 
     std::string type;
@@ -539,7 +534,7 @@ const base::DictionaryValue* GetNetworkConfigForEthernetWithoutEAP(
     if (type != ::onc::network_type::kEthernet)
       continue;
 
-    const base::DictionaryValue* ethernet = NULL;
+    const base::DictionaryValue* ethernet = nullptr;
     network->GetDictionaryWithoutPathExpansion(::onc::network_config::kEthernet,
                                                &ethernet);
 
@@ -549,7 +544,7 @@ const base::DictionaryValue* GetNetworkConfigForEthernetWithoutEAP(
     if (auth == ::onc::ethernet::kAuthenticationNone)
       return network;
   }
-  return NULL;
+  return nullptr;
 }
 
 // Returns the NetworkConfiguration object for |network| from
@@ -571,11 +566,11 @@ const base::DictionaryValue* GetNetworkConfigForNetworkFromOnc(
   // the respective ONC policy. The EthernetEAP service itself is however never
   // in state "connected". An EthernetEAP policy must be applied, if an Ethernet
   // service is connected using the EAP parameters.
-  const NetworkState* ethernet_eap = NULL;
+  const NetworkState* ethernet_eap = nullptr;
   if (NetworkHandler::IsInitialized()) {
     ethernet_eap =
         NetworkHandler::Get()->network_state_handler()->GetEAPForEthernet(
-            network.path());
+            network.path(), /*connected_only=*/true);
   }
 
   // The GUID associated with the EthernetEAP service refers to the ONC policy
@@ -657,20 +652,23 @@ const char kEmptyUnencryptedConfiguration[] =
     "{\"Type\":\"UnencryptedConfiguration\",\"NetworkConfigurations\":[],"
     "\"Certificates\":[]}";
 
-std::unique_ptr<base::Value> ReadDictionaryFromJson(const std::string& json) {
-  std::string error;
-  std::unique_ptr<base::Value> root =
-      base::JSONReader::ReadAndReturnErrorDeprecated(
-          json, base::JSON_ALLOW_TRAILING_COMMAS, nullptr, &error);
-  if (!root || !root->is_dict()) {
-    NET_LOG(ERROR) << "Invalid JSON Dictionary: " << error;
-    return nullptr;
+base::Value ReadDictionaryFromJson(const std::string& json) {
+  if (json.empty()) {
+    // Policy may contain empty values, just log a debug message.
+    NET_LOG(DEBUG) << "Empty json string";
+    return base::Value();
   }
-  return root;
+  base::JSONReader::ValueWithError parsed_json =
+      base::JSONReader::ReadAndReturnValueWithError(
+          json, base::JSON_ALLOW_TRAILING_COMMAS);
+  if (!parsed_json.value || !parsed_json.value->is_dict()) {
+    NET_LOG(ERROR) << "Invalid JSON Dictionary: " << parsed_json.error_message;
+    return base::Value();
+  }
+  return std::move(*parsed_json.value);
 }
 
-std::unique_ptr<base::Value> Decrypt(const std::string& passphrase,
-                                     const base::Value& root) {
+base::Value Decrypt(const std::string& passphrase, const base::Value& root) {
   const int kKeySizeInBits = 256;
   const int kMaxIterationCount = 500000;
   std::string onc_type;
@@ -683,42 +681,43 @@ std::unique_ptr<base::Value> Decrypt(const std::string& passphrase,
   int iterations;
   std::string ciphertext;
 
-  if (!GetString(root, encrypted::kCiphertext, &ciphertext) ||
-      !GetString(root, encrypted::kCipher, &cipher) ||
-      !GetString(root, encrypted::kHMAC, &hmac) ||
-      !GetString(root, encrypted::kHMACMethod, &hmac_method) ||
-      !GetString(root, encrypted::kIV, &initial_vector) ||
-      !GetInt(root, encrypted::kIterations, &iterations) ||
-      !GetString(root, encrypted::kSalt, &salt) ||
-      !GetString(root, encrypted::kStretch, &stretch_method) ||
-      !GetString(root, toplevel_config::kType, &onc_type) ||
-      onc_type != toplevel_config::kEncryptedConfiguration) {
+  if (!GetString(root, ::onc::encrypted::kCiphertext, &ciphertext) ||
+      !GetString(root, ::onc::encrypted::kCipher, &cipher) ||
+      !GetString(root, ::onc::encrypted::kHMAC, &hmac) ||
+      !GetString(root, ::onc::encrypted::kHMACMethod, &hmac_method) ||
+      !GetString(root, ::onc::encrypted::kIV, &initial_vector) ||
+      !GetInt(root, ::onc::encrypted::kIterations, &iterations) ||
+      !GetString(root, ::onc::encrypted::kSalt, &salt) ||
+      !GetString(root, ::onc::encrypted::kStretch, &stretch_method) ||
+      !GetString(root, ::onc::toplevel_config::kType, &onc_type) ||
+      onc_type != ::onc::toplevel_config::kEncryptedConfiguration) {
     NET_LOG(ERROR) << "Encrypted ONC malformed.";
-    return nullptr;
+    return base::Value();
   }
 
-  if (hmac_method != encrypted::kSHA1 || cipher != encrypted::kAES256 ||
-      stretch_method != encrypted::kPBKDF2) {
+  if (hmac_method != ::onc::encrypted::kSHA1 ||
+      cipher != ::onc::encrypted::kAES256 ||
+      stretch_method != ::onc::encrypted::kPBKDF2) {
     NET_LOG(ERROR) << "Encrypted ONC unsupported encryption scheme.";
-    return nullptr;
+    return base::Value();
   }
 
   // Make sure iterations != 0, since that's not valid.
   if (iterations == 0) {
     NET_LOG(ERROR) << kUnableToDecrypt;
-    return nullptr;
+    return base::Value();
   }
 
   // Simply a sanity check to make sure we can't lock up the machine
   // for too long with a huge number (or a negative number).
   if (iterations < 0 || iterations > kMaxIterationCount) {
     NET_LOG(ERROR) << "Too many iterations in encrypted ONC";
-    return nullptr;
+    return base::Value();
   }
 
   if (!base::Base64Decode(salt, &salt)) {
     NET_LOG(ERROR) << kUnableToDecode;
-    return nullptr;
+    return base::Value();
   }
 
   std::unique_ptr<crypto::SymmetricKey> key(
@@ -728,59 +727,57 @@ std::unique_ptr<base::Value> Decrypt(const std::string& passphrase,
 
   if (!base::Base64Decode(initial_vector, &initial_vector)) {
     NET_LOG(ERROR) << kUnableToDecode;
-    return nullptr;
+    return base::Value();
   }
   if (!base::Base64Decode(ciphertext, &ciphertext)) {
     NET_LOG(ERROR) << kUnableToDecode;
-    return nullptr;
+    return base::Value();
   }
   if (!base::Base64Decode(hmac, &hmac)) {
     NET_LOG(ERROR) << kUnableToDecode;
-    return nullptr;
+    return base::Value();
   }
 
   crypto::HMAC hmac_verifier(crypto::HMAC::SHA1);
   if (!hmac_verifier.Init(key.get()) ||
       !hmac_verifier.Verify(ciphertext, hmac)) {
     NET_LOG(ERROR) << kUnableToDecrypt;
-    return nullptr;
+    return base::Value();
   }
 
   crypto::Encryptor decryptor;
   if (!decryptor.Init(key.get(), crypto::Encryptor::CBC, initial_vector)) {
     NET_LOG(ERROR) << kUnableToDecrypt;
-    return nullptr;
+    return base::Value();
   }
 
   std::string plaintext;
   if (!decryptor.Decrypt(ciphertext, &plaintext)) {
     NET_LOG(ERROR) << kUnableToDecrypt;
-    return nullptr;
+    return base::Value();
   }
 
-  std::unique_ptr<base::Value> new_root = ReadDictionaryFromJson(plaintext);
-  if (!new_root) {
+  base::Value new_root = ReadDictionaryFromJson(plaintext);
+  if (new_root.is_none())
     NET_LOG(ERROR) << "Property dictionary malformed.";
-    return nullptr;
-  }
 
   return new_root;
 }
 
-std::string GetSourceAsString(ONCSource source) {
+std::string GetSourceAsString(::onc::ONCSource source) {
   switch (source) {
-    case ONC_SOURCE_UNKNOWN:
+    case ::onc::ONC_SOURCE_UNKNOWN:
       return "unknown";
-    case ONC_SOURCE_NONE:
+    case ::onc::ONC_SOURCE_NONE:
       return "none";
-    case ONC_SOURCE_DEVICE_POLICY:
+    case ::onc::ONC_SOURCE_DEVICE_POLICY:
       return "device policy";
-    case ONC_SOURCE_USER_POLICY:
+    case ::onc::ONC_SOURCE_USER_POLICY:
       return "user policy";
-    case ONC_SOURCE_USER_IMPORT:
+    case ::onc::ONC_SOURCE_USER_IMPORT:
       return "user import";
   }
-  NOTREACHED() << "unknown ONC source " << source;
+  NOTREACHED();
   return "unknown";
 }
 
@@ -788,11 +785,11 @@ void ExpandStringsInOncObject(const OncValueSignature& signature,
                               const VariableExpander& variable_expander,
                               base::DictionaryValue* onc_object) {
   if (&signature == &kEAPSignature) {
-    ExpandField(eap::kAnonymousIdentity, variable_expander, onc_object);
-    ExpandField(eap::kIdentity, variable_expander, onc_object);
+    ExpandField(::onc::eap::kAnonymousIdentity, variable_expander, onc_object);
+    ExpandField(::onc::eap::kIdentity, variable_expander, onc_object);
   } else if (&signature == &kL2TPSignature ||
              &signature == &kOpenVPNSignature) {
-    ExpandField(vpn::kUsername, variable_expander, onc_object);
+    ExpandField(::onc::vpn::kUsername, variable_expander, onc_object);
   }
 
   // Recurse into nested objects.
@@ -814,7 +811,7 @@ void ExpandStringsInOncObject(const OncValueSignature& signature,
 
 void ExpandStringsInNetworks(const VariableExpander& variable_expander,
                              base::ListValue* network_configs) {
-  for (auto& entry : *network_configs) {
+  for (auto& entry : network_configs->GetList()) {
     base::DictionaryValue* network = nullptr;
     entry.GetAsDictionary(&network);
     DCHECK(network);
@@ -861,10 +858,36 @@ void FillInHexSSIDField(base::Value* wifi_fields) {
       base::Value(base::HexEncode(ssid_string.c_str(), ssid_string.size())));
 }
 
-std::unique_ptr<base::DictionaryValue> MaskCredentialsInOncObject(
-    const OncValueSignature& signature,
-    const base::DictionaryValue& onc_object,
-    const std::string& mask) {
+void SetHiddenSSIDFieldInOncObject(const OncValueSignature& signature,
+                                   base::Value* onc_object) {
+  DCHECK(onc_object->is_dict());
+  if (&signature == &kWiFiSignature)
+    SetHiddenSSIDField(onc_object);
+
+  // Recurse into nested objects.
+  for (auto it : onc_object->DictItems()) {
+    if (!it.second.is_dict())
+      continue;
+
+    const OncFieldSignature* field_signature =
+        GetFieldSignature(signature, it.first);
+    if (!field_signature)
+      continue;
+
+    SetHiddenSSIDFieldInOncObject(*field_signature->value_signature,
+                                  &it.second);
+  }
+}
+
+void SetHiddenSSIDField(base::Value* wifi_fields) {
+  if (wifi_fields->FindKey(::onc::wifi::kHiddenSSID))
+    return;
+  wifi_fields->SetKey(::onc::wifi::kHiddenSSID, base::Value(false));
+}
+
+base::Value MaskCredentialsInOncObject(const OncValueSignature& signature,
+                                       const base::Value& onc_object,
+                                       const std::string& mask) {
   return OncMaskValues::Mask(signature, onc_object, mask);
 }
 
@@ -896,7 +919,7 @@ std::string DecodePEM(const std::string& pem_encoded) {
 }
 
 bool ParseAndValidateOncForImport(const std::string& onc_blob,
-                                  ONCSource onc_source,
+                                  ::onc::ONCSource onc_source,
                                   const std::string& passphrase,
                                   base::ListValue* network_configs,
                                   base::DictionaryValue* global_network_config,
@@ -910,27 +933,27 @@ bool ParseAndValidateOncForImport(const std::string& onc_blob,
   if (onc_blob.empty())
     return true;
 
-  std::unique_ptr<base::Value> toplevel_onc = ReadDictionaryFromJson(onc_blob);
-  if (!toplevel_onc) {
-    LOG(ERROR) << "ONC loaded from " << GetSourceAsString(onc_source)
-               << " is not a valid JSON dictionary.";
+  base::Value toplevel_onc = ReadDictionaryFromJson(onc_blob);
+  if (toplevel_onc.is_none()) {
+    NET_LOG(ERROR) << "Not a valid ONC JSON dictionary: "
+                   << GetSourceAsString(onc_source);
     return false;
   }
 
   // Check and see if this is an encrypted ONC file. If so, decrypt it.
   std::string onc_type;
-  if (GetString(*toplevel_onc, toplevel_config::kType, &onc_type) &&
-      onc_type == toplevel_config::kEncryptedConfiguration) {
-    toplevel_onc = Decrypt(passphrase, *toplevel_onc);
-    if (!toplevel_onc) {
-      LOG(ERROR) << "Couldn't decrypt the ONC from "
-                 << GetSourceAsString(onc_source);
+  if (GetString(toplevel_onc, ::onc::toplevel_config::kType, &onc_type) &&
+      onc_type == ::onc::toplevel_config::kEncryptedConfiguration) {
+    toplevel_onc = Decrypt(passphrase, toplevel_onc);
+    if (toplevel_onc.is_none()) {
+      NET_LOG(ERROR) << "Unable to decrypt ONC from "
+                     << GetSourceAsString(onc_source);
       return false;
     }
   }
 
-  bool from_policy = (onc_source == ONC_SOURCE_USER_POLICY ||
-                      onc_source == ONC_SOURCE_DEVICE_POLICY);
+  bool from_policy = (onc_source == ::onc::ONC_SOURCE_USER_POLICY ||
+                      onc_source == ::onc::ONC_SOURCE_DEVICE_POLICY);
 
   // Validate the ONC dictionary. We are liberal and ignore unknown field
   // names and ignore invalid field names in kRecommended arrays.
@@ -942,10 +965,9 @@ bool ParseAndValidateOncForImport(const std::string& onc_blob,
   validator.SetOncSource(onc_source);
 
   Validator::Result validation_result;
-  std::unique_ptr<base::DictionaryValue> toplevel_onc_dict =
-      base::DictionaryValue::From(std::move(toplevel_onc));
-  toplevel_onc = validator.ValidateAndRepairObject(
-      &kToplevelConfigurationSignature, *toplevel_onc_dict, &validation_result);
+  std::unique_ptr<base::DictionaryValue> validated_toplevel_onc =
+      validator.ValidateAndRepairObject(&kToplevelConfigurationSignature,
+                                        toplevel_onc, &validation_result);
 
   if (from_policy) {
     UMA_HISTOGRAM_BOOLEAN("Enterprise.ONC.PolicyValidation",
@@ -954,40 +976,44 @@ bool ParseAndValidateOncForImport(const std::string& onc_blob,
 
   bool success = true;
   if (validation_result == Validator::VALID_WITH_WARNINGS) {
-    LOG(WARNING) << "ONC from " << GetSourceAsString(onc_source)
-                 << " produced warnings.";
+    NET_LOG(DEBUG) << "ONC validation produced warnings: "
+                   << GetSourceAsString(onc_source);
     success = false;
-  } else if (validation_result == Validator::INVALID || !toplevel_onc) {
-    LOG(ERROR) << "ONC from " << GetSourceAsString(onc_source)
-               << " is invalid and couldn't be repaired.";
+  } else if (validation_result == Validator::INVALID ||
+             !validated_toplevel_onc) {
+    NET_LOG(ERROR) << "ONC is invalid and couldn't be repaired: "
+                   << GetSourceAsString(onc_source);
     return false;
   }
 
   if (certificates) {
-    base::Value* validated_certs = toplevel_onc->FindKeyOfType(
-        toplevel_config::kCertificates, base::Value::Type::LIST);
+    base::Value* validated_certs = validated_toplevel_onc->FindKeyOfType(
+        ::onc::toplevel_config::kCertificates, base::Value::Type::LIST);
     if (validated_certs)
-      certificates->GetList().swap(validated_certs->GetList());
+      *certificates = base::ListValue(validated_certs->TakeList());
   }
 
   // Note that this processing is performed even if |network_configs| is
   // nullptr, because ResolveServerCertRefsInNetworks could affect the return
   // value of the function (which is supposed to aggregate validation issues in
   // all segments of the ONC blob).
-  base::Value* validated_networks = toplevel_onc->FindKeyOfType(
-      toplevel_config::kNetworkConfigurations, base::Value::Type::LIST);
+  base::Value* validated_networks = validated_toplevel_onc->FindKeyOfType(
+      ::onc::toplevel_config::kNetworkConfigurations, base::Value::Type::LIST);
   base::ListValue* validated_networks_list;
   if (validated_networks &&
       validated_networks->GetAsList(&validated_networks_list)) {
     FillInHexSSIDFieldsInNetworks(validated_networks_list);
+    // Set HiddenSSID to default value to solve the issue crbug.com/1171837
+    SetHiddenSSIDFieldsInNetworks(validated_networks_list);
 
     CertPEMsByGUIDMap server_and_ca_certs =
         GetServerAndCACertsByGUID(*certificates);
 
     if (!ResolveServerCertRefsInNetworks(server_and_ca_certs,
                                          validated_networks_list)) {
-      LOG(ERROR) << "Some certificate references in the ONC policy for source "
-                 << GetSourceAsString(onc_source) << " could not be resolved.";
+      NET_LOG(ERROR) << "Some certificate references in the ONC policy could "
+                        "not be resolved: "
+                     << GetSourceAsString(onc_source);
       success = false;
     }
 
@@ -996,9 +1022,10 @@ bool ParseAndValidateOncForImport(const std::string& onc_blob,
   }
 
   if (global_network_config) {
-    base::Value* validated_global_config = toplevel_onc->FindKeyOfType(
-        toplevel_config::kGlobalNetworkConfiguration,
-        base::Value::Type::DICTIONARY);
+    base::Value* validated_global_config =
+        validated_toplevel_onc->FindKeyOfType(
+            ::onc::toplevel_config::kGlobalNetworkConfiguration,
+            base::Value::Type::DICTIONARY);
     if (validated_global_config) {
       base::DictionaryValue* validated_global_config_dict = nullptr;
       if (validated_global_config->GetAsDictionary(
@@ -1025,23 +1052,23 @@ net::ScopedCERTCertificate DecodePEMCertificate(
 bool ResolveServerCertRefsInNetworks(const CertPEMsByGUIDMap& certs_by_guid,
                                      base::ListValue* network_configs) {
   bool success = true;
-  for (base::ListValue::iterator it = network_configs->begin();
-       it != network_configs->end();) {
+  base::Value::ListStorage filtered_configs;
+  for (base::Value& config : network_configs->GetList()) {
     base::DictionaryValue* network = nullptr;
-    it->GetAsDictionary(&network);
+    config.GetAsDictionary(&network);
     if (!ResolveServerCertRefsInNetwork(certs_by_guid, network)) {
-      std::string guid;
-      network->GetStringWithoutPathExpansion(network_config::kGUID, &guid);
+      std::string* guid = network->FindStringKey(::onc::network_config::kGUID);
       // This might happen even with correct validation, if the referenced
       // certificate couldn't be imported.
       LOG(ERROR) << "Couldn't resolve some certificate reference of network "
-                 << guid;
-      it = network_configs->Erase(it, nullptr);
+                 << (guid ? *guid : "(unable to find GUID)");
       success = false;
       continue;
     }
-    ++it;
+
+    filtered_configs.push_back(std::move(config));
   }
+  *network_configs = base::ListValue(std::move(filtered_configs));
   return success;
 }
 
@@ -1064,11 +1091,9 @@ NetworkTypePattern NetworkTypePatternFromOncType(const std::string& type) {
     return NetworkTypePattern::VPN();
   if (type == ::onc::network_type::kWiFi)
     return NetworkTypePattern::WiFi();
-  if (type == ::onc::network_type::kWimax)
-    return NetworkTypePattern::Wimax();
   if (type == ::onc::network_type::kWireless)
     return NetworkTypePattern::Wireless();
-  NOTREACHED() << "Unrecognized ONC type: " << type;
+  NET_LOG(ERROR) << "Unrecognized ONC type: " << type;
   return NetworkTypePattern::Default();
 }
 
@@ -1091,6 +1116,10 @@ base::Value ConvertOncProxySettingsToProxyConfig(
   if (type == ::onc::proxy::kManual) {
     const base::Value* manual_dict =
         onc_proxy_settings.FindKey(::onc::proxy::kManual);
+    if (!manual_dict) {
+      NET_LOG(ERROR) << "Manual proxy missing dictionary";
+      return base::Value();
+    }
     std::string manual_spec;
     AppendProxyServerForScheme(*manual_dict, ::onc::proxy::kFtp, &manual_spec);
     AppendProxyServerForScheme(*manual_dict, ::onc::proxy::kHttp, &manual_spec);
@@ -1113,6 +1142,8 @@ base::Value ConvertOncProxySettingsToProxyConfig(
 
 base::Value ConvertProxyConfigToOncProxySettings(
     const base::Value& proxy_config_value) {
+  DCHECK(proxy_config_value.is_dict());
+
   // Create a ProxyConfigDictionary from the dictionary.
   ProxyConfigDictionary proxy_config(proxy_config_value.Clone());
 
@@ -1201,9 +1232,9 @@ void ExpandStringPlaceholdersInNetworksForUser(
   chromeos::onc::ExpandStringsInNetworks(variable_expander, network_configs);
 }
 
-void ImportNetworksForUser(const user_manager::User* user,
-                           const base::ListValue& network_configs,
-                           std::string* error) {
+int ImportNetworksForUser(const user_manager::User* user,
+                          const base::ListValue& network_configs,
+                          std::string* error) {
   error->clear();
 
   std::unique_ptr<base::ListValue> expanded_networks(
@@ -1214,15 +1245,15 @@ void ImportNetworksForUser(const user_manager::User* user,
       NetworkHandler::Get()->network_profile_handler()->GetProfileForUserhash(
           user->username_hash());
   if (!profile) {
-    *error = "User profile doesn't exist.";
-    return;
+    *error = "User profile doesn't exist for: " + user->display_email();
+    return 0;
   }
 
   bool ethernet_not_found = false;
-  for (base::ListValue::const_iterator it = expanded_networks->begin();
-       it != expanded_networks->end(); ++it) {
-    const base::DictionaryValue* network = NULL;
-    it->GetAsDictionary(&network);
+  int networks_created = 0;
+  for (const auto& entry : expanded_networks->GetList()) {
+    const base::DictionaryValue* network = nullptr;
+    entry.GetAsDictionary(&network);
     DCHECK(network);
 
     // Remove irrelevant fields.
@@ -1254,7 +1285,7 @@ void ImportNetworksForUser(const user_manager::User* user,
               NetworkTypePattern::Ethernet());
       if (ethernet) {
         config_handler->SetShillProperties(ethernet->path(), *shill_dict,
-                                           base::Closure(),
+                                           base::OnceClosure(),
                                            network_handler::ErrorCallback());
       } else {
         ethernet_not_found = true;
@@ -1264,11 +1295,13 @@ void ImportNetworksForUser(const user_manager::User* user,
       config_handler->CreateShillConfiguration(
           *shill_dict, network_handler::ServiceResultCallback(),
           network_handler::ErrorCallback());
+      ++networks_created;
     }
   }
 
   if (ethernet_not_found)
     *error = "No Ethernet available to configure.";
+  return networks_created;
 }
 
 const base::DictionaryValue* FindPolicyForActiveUser(
@@ -1288,11 +1321,10 @@ bool PolicyAllowsOnlyPolicyNetworksToAutoconnect(bool for_active_user) {
   if (!global_config)
     return false;  // By default, all networks are allowed to autoconnect.
 
-  bool only_policy_autoconnect = false;
-  global_config->GetBooleanWithoutPathExpansion(
-      ::onc::global_network_config::kAllowOnlyPolicyNetworksToAutoconnect,
-      &only_policy_autoconnect);
-  return only_policy_autoconnect;
+  return global_config
+      ->FindBoolKey(
+          ::onc::global_network_config::kAllowOnlyPolicyNetworksToAutoconnect)
+      .value_or(false);
 }
 
 const base::DictionaryValue* GetPolicyForNetwork(
@@ -1368,7 +1400,7 @@ bool HasUserPasswordSubsitutionVariable(const OncValueSignature& signature,
 }
 
 bool HasUserPasswordSubsitutionVariable(base::ListValue* network_configs) {
-  for (auto& entry : *network_configs) {
+  for (auto& entry : network_configs->GetList()) {
     base::DictionaryValue* network = nullptr;
     entry.GetAsDictionary(&network);
     DCHECK(network);

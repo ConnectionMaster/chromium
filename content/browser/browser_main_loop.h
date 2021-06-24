@@ -7,20 +7,21 @@
 
 #include <memory>
 
-#include "base/files/file_path.h"
+#include "base/callback_helpers.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/task/thread_pool/thread_pool.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "build/build_config.h"
-#include "content/browser/browser_process_sub_thread.h"
+#include "build/chromeos_buildflags.h"
+#include "content/browser/browser_process_io_thread.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "media/media_buildflags.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
-#include "services/viz/public/interfaces/compositing/compositing_mode_watcher.mojom.h"
+#include "services/viz/public/mojom/compositing/compositing_mode_watcher.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/buildflags.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "content/browser/media/keyboard_mic_registration.h"
 #endif
 
@@ -30,17 +31,23 @@ class Env;
 }
 #endif
 
+#if defined(USE_OZONE)
+#include "ui/ozone/buildflags.h"  // nogncheck
+#if BUILDFLAG(OZONE_PLATFORM_X11)
+#define USE_OZONE_PLATFORM_X11
+#endif
+#endif
+
 namespace base {
 class CommandLine;
 class HighResolutionTimerManager;
 class MemoryPressureMonitor;
-class PowerMonitor;
 class SingleThreadTaskRunner;
 class SystemMonitor;
 }  // namespace base
 
-namespace discardable_memory {
-class DiscardableSharedMemoryManager;
+namespace data_decoder {
+class ServiceProvider;
 }
 
 namespace gpu {
@@ -52,11 +59,11 @@ class AudioManager;
 class AudioSystem;
 #if defined(OS_WIN)
 class SystemMessageWindowWin;
-#elif defined(OS_LINUX) && defined(USE_UDEV)
+#elif (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)
 class DeviceMonitorLinux;
 #endif
 class UserInputMonitor;
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 class DeviceMonitorMac;
 #endif
 }  // namespace media
@@ -75,33 +82,22 @@ namespace net {
 class NetworkChangeNotifier;
 }  // namespace net
 
-#if defined(OS_MACOSX)
-namespace now_playing {
-class RemoteCommandCenterDelegate;
-}  // namespace now_playing
-#endif
-
 namespace viz {
 class CompositingModeReporterImpl;
-class FrameSinkManagerImpl;
 class HostFrameSinkManager;
-class ServerSharedBitmapManager;
-}
+}  // namespace viz
 
 namespace content {
 class BrowserMainParts;
 class BrowserOnlineStateObserver;
 class BrowserThreadImpl;
-class LoaderDelegateImpl;
 class MediaKeysListenerManagerImpl;
 class MediaStreamManager;
-class ResourceDispatcherHostImpl;
 class SaveFileManager;
 class ScreenlockMonitor;
-class ServiceManagerContext;
+class SmsProvider;
 class SpeechRecognitionManagerImpl;
 class StartupTaskRunner;
-class SwapMetricsDriver;
 class TracingControllerImpl;
 struct MainFunctionParams;
 
@@ -111,12 +107,6 @@ class Watcher;
 
 #if defined(OS_ANDROID)
 class ScreenOrientationDelegate;
-#endif
-
-#if defined(USE_X11)
-namespace internal {
-class GpuDataManagerVisualProxy;
-}
 #endif
 
 // Implements the main browser loop stages called from BrowserMainRunner.
@@ -129,11 +119,11 @@ class CONTENT_EXPORT BrowserMainLoop {
 
   static media::AudioManager* GetAudioManager();
 
-  // The ThreadPool instance must exist but not to be started when building
+  // The ThreadPoolInstance must exist but not to be started when building
   // BrowserMainLoop.
   explicit BrowserMainLoop(
       const MainFunctionParams& parameters,
-      std::unique_ptr<base::ThreadPool::ScopedExecutionFence> fence);
+      std::unique_ptr<base::ThreadPoolInstance::ScopedExecutionFence> fence);
   virtual ~BrowserMainLoop();
 
   void Init();
@@ -146,19 +136,24 @@ class CONTENT_EXPORT BrowserMainLoop {
   // successful or not.
   bool InitializeToolkit();
 
-  void PreMainMessageLoopStart();
-  void MainMessageLoopStart();
-  void PostMainMessageLoopStart();
-  void PreShutdown();
+  void PreCreateMainMessageLoop();
+  // Creates the main message loop, bringing APIs like
+  // ThreadTaskRunnerHandle::Get() online.
+  void CreateMainMessageLoop();
+  void PostCreateMainMessageLoop();
 
   // Create and start running the tasks we need to complete startup. Note that
   // this can be called more than once (currently only on Android) if we get a
   // request for synchronous startup while the tasks created by asynchronous
-  // startup are still running.
+  // startup are still running. Completes tasks synchronously as part of this
+  // method on non-Android platforms.
   void CreateStartupTasks();
 
-  // Perform the default message loop run logic.
-  void RunMainMessageLoopParts();
+  // Performs the default message loop run logic.
+  void RunMainMessageLoop();
+
+  // Performs the pre-shutdown steps.
+  void PreShutdown();
 
   // Performs the shutdown sequence, starting with PostMainMessageLoopRun
   // through stopping threads to PostDestroyThreads.
@@ -175,23 +170,21 @@ class CONTENT_EXPORT BrowserMainLoop {
   media::UserInputMonitor* user_input_monitor() const {
     return user_input_monitor_.get();
   }
-  net::NetworkChangeNotifier* network_change_notifier() const {
-    return network_change_notifier_.get();
-  }
   MediaKeysListenerManagerImpl* media_keys_listener_manager() const {
     return media_keys_listener_manager_.get();
   }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Only expose this on ChromeOS since it's only needed there. On Android this
+  // be null if this process started in reduced mode.
+  net::NetworkChangeNotifier* network_change_notifier() const {
+    return network_change_notifier_.get();
+  }
   KeyboardMicRegistration* keyboard_mic_registration() {
     return &keyboard_mic_registration_;
   }
 #endif
 
-  discardable_memory::DiscardableSharedMemoryManager*
-  discardable_shared_memory_manager() const {
-    return discardable_shared_memory_manager_.get();
-  }
   midi::MidiService* midi_service() const { return midi_service_.get(); }
 
   // Returns the task runner for tasks that that are critical to producing a new
@@ -218,31 +211,28 @@ class CONTENT_EXPORT BrowserMainLoop {
   viz::HostFrameSinkManager* host_frame_sink_manager() const {
     return host_frame_sink_manager_.get();
   }
-
-  // TODO(crbug.com/657959): This will be removed once there are no users, as
-  // SurfaceManager is being moved out of process.
-  viz::FrameSinkManagerImpl* GetFrameSinkManager() const;
-
-  // This returns null when the display compositor is out of process.
-  viz::ServerSharedBitmapManager* GetServerSharedBitmapManager() const;
 #endif
 
-  // Fulfills a mojo pointer to the singleton CompositingModeReporter.
+  // Binds a receiver to the singleton CompositingModeReporter.
   void GetCompositingModeReporter(
-      viz::mojom::CompositingModeReporterRequest request);
+      mojo::PendingReceiver<viz::mojom::CompositingModeReporter> receiver);
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
+#if defined(OS_MAC)
   media::DeviceMonitorMac* device_monitor_mac() const {
     return device_monitor_mac_.get();
   }
 #endif
 
+  SmsProvider* GetSmsProvider();
+  void SetSmsProviderForTesting(std::unique_ptr<SmsProvider>);
+
   BrowserMainParts* parts() { return parts_.get(); }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(BrowserMainLoopTest, CreateThreadsInSingleProcess);
-
-  void InitializeMainThread();
+  FRIEND_TEST_ALL_PREFIXES(
+      BrowserMainLoopTest,
+      PostTaskToIOThreadBeforeThreadCreationDoesNotRunTask);
 
   // Called just before creating the threads
   int PreCreateThreads();
@@ -252,9 +242,7 @@ class CONTENT_EXPORT BrowserMainLoop {
 
   // Called just after creating the threads.
   int PostCreateThreads();
-
-  // Called right after the browser threads have been started.
-  int BrowserThreadsStarted();
+  void PostCreateThreadsImpl();
 
   int PreMainMessageLoopRun();
 
@@ -273,17 +261,20 @@ class CONTENT_EXPORT BrowserMainLoop {
   // Init()
   // EarlyInitialization()
   // InitializeToolkit()
-  // PreMainMessageLoopStart()
-  // MainMessageLoopStart()
-  //   InitializeMainThread()
-  // PostMainMessageLoopStart()
+  // PreCreateMainMessageLoop()
+  // CreateMainMessageLoop()
+  // PostCreateMainMessageLoop()
   // CreateStartupTasks()
   //   PreCreateThreads()
+  //     InitializeMemoryManagementComponent()
   //   CreateThreads()
   //   PostCreateThreads()
-  //   BrowserThreadsStarted()
-  //     InitializeMojo()
-  //   PreMainMessageLoopRun()
+  //     PostCreateThreadsImpl()
+  //       InitializeMojo()
+  //       InitializeAudio()
+  // PreMainMessageLoopRun()
+  // MainMessageLoopRun()
+  //   OnFirstIdle()
 
   // Members initialized on construction ---------------------------------------
   const MainFunctionParams& parameters_;
@@ -295,41 +286,51 @@ class CONTENT_EXPORT BrowserMainLoop {
   // initialize-once happens-before relationship with all eventual content tasks
   // running on other threads. This ScopedExecutionFence ensures that no tasks
   // posted to ThreadPool gets to run before CreateThreads(); satisfying this
-  // requirement even though the ThreadPool is created and started before
-  // content is entered.
-  std::unique_ptr<base::ThreadPool::ScopedExecutionFence>
+  // requirement even though the ThreadPoolInstance is created and started
+  // before content is entered.
+  std::unique_ptr<base::ThreadPoolInstance::ScopedExecutionFence>
       scoped_execution_fence_;
 
-  // Members initialized in |MainMessageLoopStart()| ---------------------------
+  // BEST_EFFORT tasks are not allowed to run between //content initialization
+  // and startup completion.
+  //
+  // TODO(fdoray): Move this to a more elaborate class that prevents BEST_EFFORT
+  // tasks from running when resources are needed to respond to user actions.
+  absl::optional<base::ThreadPoolInstance::ScopedBestEffortExecutionFence>
+      scoped_best_effort_execution_fence_;
 
-  // Members initialized in |PostMainMessageLoopStart()| -----------------------
-  std::unique_ptr<BrowserProcessSubThread> io_thread_;
-  std::unique_ptr<base::SystemMonitor> system_monitor_;
-  std::unique_ptr<base::PowerMonitor> power_monitor_;
-  std::unique_ptr<base::HighResolutionTimerManager> hi_res_timer_manager_;
-  std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
-  std::unique_ptr<ScreenlockMonitor> screenlock_monitor_;
+  // Members initialized in |Init()| -------------------------------------------
+  std::unique_ptr<mojo::core::ScopedIPCSupport> mojo_ipc_support_;
 
-  // Per-process listener for online state changes.
-  std::unique_ptr<BrowserOnlineStateObserver> online_state_observer_;
-
+  // Members initialized in |InitializeToolkit()| ------------------------------
 #if defined(USE_AURA)
   std::unique_ptr<aura::Env> env_;
 #endif
 
+  // Members initialized in |PostCreateMainMessageLoop()| ----------------------
+  std::unique_ptr<base::SystemMonitor> system_monitor_;
+  std::unique_ptr<base::HighResolutionTimerManager> hi_res_timer_manager_;
+  std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
+  std::unique_ptr<ScreenlockMonitor> screenlock_monitor_;
+  // Per-process listener for online state changes.
+  std::unique_ptr<BrowserOnlineStateObserver> online_state_observer_;
 #if defined(OS_ANDROID)
   // Android implementation of ScreenOrientationDelegate
   std::unique_ptr<ScreenOrientationDelegate> screen_orientation_delegate_;
 #endif
 
-  // Members initialized in |Init()| -------------------------------------------
-  // Destroy |parts_| before |main_message_loop_| (required) and before other
-  // classes constructed in content (but after |main_thread_|).
+  // Destroy |parts_| before above members (except the ones that are explicitly
+  // reset() on shutdown) but after |main_thread_| and services below.
   std::unique_ptr<BrowserMainParts> parts_;
 
-  // Members initialized in |InitializeMainThread()| ---------------------------
+  // Members initialized in |CreateMainMessageLoop()| --------------------------
   // This must get destroyed before other threads that are created in |parts_|.
   std::unique_ptr<BrowserThreadImpl> main_thread_;
+
+  // Unregister UI thread from hang watching on destruction.
+  // NOTE: Hang watching should stop before the watched thread stops so this
+  // member must be after |main_thread_|.
+  base::ScopedClosureRunner unregister_thread_closure_;
 
   // Members initialized in |CreateStartupTasks()| -----------------------------
   std::unique_ptr<StartupTaskRunner> startup_task_runner_;
@@ -337,35 +338,25 @@ class CONTENT_EXPORT BrowserMainLoop {
   // Members initialized in |PreCreateThreads()| -------------------------------
   // Torn down in ShutdownThreadsAndCleanUp.
   std::unique_ptr<base::MemoryPressureMonitor> memory_pressure_monitor_;
-  std::unique_ptr<SwapMetricsDriver> swap_metrics_driver_;
-#if defined(USE_X11)
-  std::unique_ptr<internal::GpuDataManagerVisualProxy>
-      gpu_data_manager_visual_proxy_;
-#endif
 
-  ServiceManagerContext* service_manager_context_ = nullptr;
-  std::unique_ptr<ServiceManagerContext> owned_service_manager_context_;
+  // Members initialized in |CreateThreads()| ----------------------------------
+  std::unique_ptr<BrowserProcessIOThread> io_thread_;
 
-  // Members initialized in |BrowserThreadsStarted()| --------------------------
-  std::unique_ptr<mojo::core::ScopedIPCSupport> mojo_ipc_support_;
+  // BEGIN Members initialized in |PostCreateThreads()| ------------------------
+  // ***************************************************************************
   std::unique_ptr<MediaKeysListenerManagerImpl> media_keys_listener_manager_;
-#if defined(OS_MACOSX)
-  std::unique_ptr<now_playing::RemoteCommandCenterDelegate>
-      remote_command_center_delegate_;
-#endif
 
   // |user_input_monitor_| has to outlive |audio_manager_|, so declared first.
   std::unique_ptr<media::UserInputMonitor> user_input_monitor_;
+
+  // Support for out-of-process Data Decoder.
+  std::unique_ptr<data_decoder::ServiceProvider> data_decoder_service_provider_;
 
   // |audio_manager_| is not instantiated when the audio service runs out of
   // process.
   std::unique_ptr<media::AudioManager> audio_manager_;
 
   std::unique_ptr<media::AudioSystem> audio_system_;
-
-#if defined(OS_CHROMEOS)
-  KeyboardMicRegistration keyboard_mic_registration_;
-#endif
 
   std::unique_ptr<midi::MidiService> midi_service_;
 
@@ -374,33 +365,17 @@ class CONTENT_EXPORT BrowserMainLoop {
 
 #if defined(OS_WIN)
   std::unique_ptr<media::SystemMessageWindowWin> system_message_window_;
-#elif defined(OS_LINUX) && defined(USE_UDEV)
+#elif (defined(OS_LINUX) || defined(OS_CHROMEOS)) && defined(USE_UDEV)
   std::unique_ptr<media::DeviceMonitorLinux> device_monitor_linux_;
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
+#elif defined(OS_MAC)
   std::unique_ptr<media::DeviceMonitorMac> device_monitor_mac_;
 #endif
 
-  std::unique_ptr<LoaderDelegateImpl> loader_delegate_;
-  std::unique_ptr<ResourceDispatcherHostImpl> resource_dispatcher_host_;
   std::unique_ptr<MediaStreamManager> media_stream_manager_;
-  std::unique_ptr<discardable_memory::DiscardableSharedMemoryManager>
-      discardable_shared_memory_manager_;
   scoped_refptr<SaveFileManager> save_file_manager_;
   std::unique_ptr<content::TracingControllerImpl> tracing_controller_;
-  scoped_refptr<responsiveness::Watcher> responsiveness_watcher_;
 #if !defined(OS_ANDROID)
-  // A SharedBitmapManager used to sharing and mapping IDs to shared memory
-  // between processes for software compositing. When the display compositor is
-  // in the browser process, then |server_shared_bitmap_manager_| is set, and
-  // when it is in the viz process, then it is null.
-  std::unique_ptr<viz::ServerSharedBitmapManager> server_shared_bitmap_manager_;
   std::unique_ptr<viz::HostFrameSinkManager> host_frame_sink_manager_;
-  // This is owned here so that SurfaceManager will be accessible in process
-  // when display is in the same process. Other than using SurfaceManager,
-  // access to |in_process_frame_sink_manager_| should happen via
-  // |host_frame_sink_manager_| instead which uses Mojo. See
-  // http://crbug.com/657959.
-  std::unique_ptr<viz::FrameSinkManagerImpl> frame_sink_manager_impl_;
 
   // Reports on the compositing mode in the system for clients to submit
   // resources of the right type. This is null if the display compositor
@@ -408,6 +383,17 @@ class CONTENT_EXPORT BrowserMainLoop {
   std::unique_ptr<viz::CompositingModeReporterImpl>
       compositing_mode_reporter_impl_;
 #endif
+  // ***************************************************************************
+  // END Members initialized in |PostCreateThreads()| --------------------------
+
+  // Members initialized in |PreMainMessageLoopRun()| --------------------------
+  scoped_refptr<responsiveness::Watcher> responsiveness_watcher_;
+
+  // Members not associated with a specific phase.
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  KeyboardMicRegistration keyboard_mic_registration_;
+#endif
+  std::unique_ptr<SmsProvider> sms_provider_;
 
   // DO NOT add members here. Add them to the right categories above.
 

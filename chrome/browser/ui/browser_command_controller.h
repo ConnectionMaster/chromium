@@ -5,10 +5,9 @@
 #ifndef CHROME_BROWSER_UI_BROWSER_COMMAND_CONTROLLER_H_
 #define CHROME_BROWSER_UI_BROWSER_COMMAND_CONTROLLER_H_
 
-#include <vector>
-
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/command_updater.h"
 #include "chrome/browser/command_updater_delegate.h"
 #include "chrome/browser/command_updater_impl.h"
@@ -50,7 +49,7 @@ class BrowserCommandController : public CommandUpdater,
   void ZoomStateChanged();
   void ContentRestrictionsChanged();
   void FullscreenStateChanged();
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Called when the browser goes in or out of the special locked fullscreen
   // mode. In this mode the user is basically locked into the current browser
   // window and tab hence we disable most keyboard shortcuts and we also
@@ -60,7 +59,10 @@ class BrowserCommandController : public CommandUpdater,
 #endif
   void PrintingStateChanged();
   void LoadingStateChanged(bool is_loading, bool force);
+  void FindBarVisibilityChanged();
   void ExtensionStateChanged();
+  void TabKeyboardFocusChangedTo(absl::optional<int> index);
+  void WebContentsFocusChanged();
 
   // Overriden from CommandUpdater:
   bool SupportsCommand(int id) const override;
@@ -90,7 +92,6 @@ class BrowserCommandController : public CommandUpdater,
       Profile* profile);
 
  private:
-  class InterstitialObserver;
   FRIEND_TEST_ALL_PREFIXES(BrowserCommandControllerBrowserTest,
                            LockedFullscreen);
 
@@ -154,7 +155,7 @@ class BrowserCommandController : public CommandUpdater,
   // app windows.
   void UpdateCommandsForHostedAppAvailability();
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Update commands whose state depends on whether the window is in locked
   // fullscreen mode or not.
   void UpdateCommandsForLockedFullscreenMode();
@@ -182,13 +183,19 @@ class BrowserCommandController : public CommandUpdater,
   // Updates commands for find.
   void UpdateCommandsForFind();
 
+  // Updates the command to close find or stop loading.
+  void UpdateCloseFindOrStop();
+
   // Updates commands for Media Router.
   void UpdateCommandsForMediaRouter();
 
-  // Add/remove observers for interstitial attachment/detachment from
-  // |contents|.
-  void AddInterstitialObservers(content::WebContents* contents);
-  void RemoveInterstitialObservers(content::WebContents* contents);
+  // Updates commands for tab keyboard focus state. If |target_index| is
+  // populated, it is the index of the tab with focus; if it is not populated,
+  // no tab has keyboard focus.
+  void UpdateCommandsForTabKeyboardFocus(absl::optional<int> target_index);
+
+  // Updates commands that depend on whether web contents is focused or not.
+  void UpdateCommandsForWebContentsFocus();
 
   inline BrowserWindow* window();
   inline Profile* profile();
@@ -197,8 +204,6 @@ class BrowserCommandController : public CommandUpdater,
 
   // The CommandUpdaterImpl that manages the browser window commands.
   CommandUpdaterImpl command_updater_;
-
-  std::vector<InterstitialObserver*> interstitial_observers_;
 
   PrefChangeRegistrar profile_pref_registrar_;
   PrefChangeRegistrar local_pref_registrar_;

@@ -4,7 +4,8 @@
 
 (async function() {
   TestRunner.addResult(`Test that causes are correctly generated for various types of events.\n`);
-  await TestRunner.loadModule('performance_test_runner');
+  await TestRunner.loadModule('timeline'); await TestRunner.loadTestModule('performance_test_runner');
+  await TestRunner.loadLegacyModule('components');
   await TestRunner.showPanel('timeline');
   await TestRunner.loadHTML(`
       <div id="testElement"></div>
@@ -35,9 +36,10 @@
           PerformanceTestRunner.timelineModel().targetByEvent(event), linkifier, true);
       Timeline.TimelineUIUtils._generateCauses(
           event, PerformanceTestRunner.timelineModel().targetByEvent(event), null, contentHelper);
+      await TestRunner.waitForPendingLiveLocationUpdates();
       var causes = contentHelper.element.deepTextContent();
       TestRunner.check(causes, 'Should generate causes');
-      checkStringContains(causes, 'Timer Installed\nPromise @ setTimeoutFunction.js:');
+      checkStringContains(causes, 'Timer Installed\n(anonymous) @ setTimeoutFunction.js:');
       next();
     },
 
@@ -58,9 +60,10 @@
           PerformanceTestRunner.timelineModel().targetByEvent(event), linkifier, true);
       Timeline.TimelineUIUtils._generateCauses(
           event, PerformanceTestRunner.timelineModel().targetByEvent(event), null, contentHelper);
+      await TestRunner.waitForPendingLiveLocationUpdates();
       var causes = contentHelper.element.deepTextContent();
       TestRunner.check(causes, 'Should generate causes');
-      checkStringContains(causes, 'Animation Frame Requested\nPromise @ requestAnimationFrameFunction.js:');
+      checkStringContains(causes, 'Animation Frame Requested\n(anonymous) @ requestAnimationFrameFunction.js:');
       next();
     },
 
@@ -83,6 +86,7 @@
           PerformanceTestRunner.timelineModel().targetByEvent(event), linkifier, true);
       Timeline.TimelineUIUtils._generateCauses(
           event, PerformanceTestRunner.timelineModel().targetByEvent(event), null, contentHelper);
+      await TestRunner.waitForPendingLiveLocationUpdates();
       var causes = contentHelper.element.deepTextContent();
       TestRunner.check(causes, 'Should generate causes');
       checkStringContains(causes, 'First Invalidated\nstyleRecalcFunction @ styleRecalcFunction.js:');
@@ -108,6 +112,7 @@
           PerformanceTestRunner.timelineModel().targetByEvent(event), linkifier, true);
       Timeline.TimelineUIUtils._generateCauses(
           event, PerformanceTestRunner.timelineModel().targetByEvent(event), null, contentHelper);
+      await TestRunner.waitForPendingLiveLocationUpdates();
       var causes = contentHelper.element.deepTextContent();
       TestRunner.check(causes, 'Should generate causes');
       checkStringContains(causes, 'Layout Forced\nlayoutFunction @ layoutFunction.js:');

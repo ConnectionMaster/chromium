@@ -11,10 +11,11 @@
 
 #include <memory>
 #include <set>
+#include <string>
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "base/scoped_native_library.h"
-#include "base/strings/string16.h"
 #include "base/win/pe_image.h"
 #include "base/win/windows_version.h"
 #include "sandbox/win/src/interception_internal.h"
@@ -33,6 +34,13 @@ namespace {
 // Standard allocation granularity and page size for Windows.
 const size_t kAllocGranularity = 65536;
 const size_t kPageSize = 4096;
+
+// Rounds up the size of a given buffer, considering alignment (padding).
+// value is the current size of the buffer, and alignment is specified in
+// bytes.
+inline size_t RoundUpToMultiple(size_t value, size_t alignment) {
+  return ((value + alignment - 1) / alignment) * alignment;
+}
 
 }  // namespace
 
@@ -73,14 +81,10 @@ InterceptionManager::InterceptionData::InterceptionData(
 
 InterceptionManager::InterceptionData::~InterceptionData() {}
 
-InterceptionManager::InterceptionManager(TargetProcess* child_process,
+InterceptionManager::InterceptionManager(TargetProcess& child_process,
                                          bool relaxed)
-    : child_(child_process), names_used_(false), relaxed_(relaxed) {
-  child_->AddRef();
-}
-InterceptionManager::~InterceptionManager() {
-  child_->Release();
-}
+    : child_(child_process), names_used_(false), relaxed_(relaxed) {}
+InterceptionManager::~InterceptionManager() {}
 
 bool InterceptionManager::AddToPatchedFunctions(
     const wchar_t* dll_name,
@@ -142,26 +146,24 @@ ResultCode InterceptionManager::InitializeInterceptions() {
     return SBOX_ERROR_CANNOT_SETUP_INTERCEPTION_CONFIG_BUFFER;
 
   void* remote_buffer;
-  ResultCode rc =
-      CopyDataToChild(local_buffer.get(), buffer_bytes, &remote_buffer);
-
-  if (rc != SBOX_ALL_OK)
-    return rc;
+  if (!CopyToChildMemory(child_.Process(), local_buffer.get(), buffer_bytes,
+                         &remote_buffer))
+    return SBOX_ERROR_CANNOT_COPY_DATA_TO_CHILD;
 
   bool hot_patch_needed = (0 != buffer_bytes);
-  rc = PatchNtdll(hot_patch_needed);
+  ResultCode rc = PatchNtdll(hot_patch_needed);
 
   if (rc != SBOX_ALL_OK)
     return rc;
 
   g_interceptions = reinterpret_cast<SharedMemory*>(remote_buffer);
-  rc = child_->TransferVariable("g_interceptions", &g_interceptions,
-                                sizeof(g_interceptions));
+  rc = child_.TransferVariable("g_interceptions", &g_interceptions,
+                               sizeof(g_interceptions));
   return rc;
 }
 
 size_t InterceptionManager::GetBufferSize() const {
-  std::set<base::string16> dlls;
+  std::set<std::wstring> dlls;
   size_t buffer_bytes = 0;
 
   for (const auto& interception : interceptions_) {
@@ -209,8 +211,7 @@ bool InterceptionManager::SetupConfigBuffer(void* buffer, size_t buffer_bytes) {
   DllPatchInfo* dll_info = shared_memory->dll_list;
   int num_dlls = 0;
 
-  shared_memory->interceptor_base =
-      names_used_ ? child_->MainModule() : nullptr;
+  shared_memory->interceptor_base = names_used_ ? child_.MainModule() : nullptr;
 
   buffer_bytes -= offsetof(SharedMemory, dll_list);
   buffer = dll_info;
@@ -223,7 +224,7 @@ bool InterceptionManager::SetupConfigBuffer(void* buffer, size_t buffer_bytes) {
       continue;
     }
 
-    const base::string16 dll = it->dll;
+    const std::wstring dll = it->dll;
     if (!SetupDllInfo(*it, &buffer, &buffer_bytes))
       return false;
 
@@ -333,36 +334,6 @@ bool InterceptionManager::SetupInterceptionInfo(const InterceptionData& data,
   return true;
 }
 
-ResultCode InterceptionManager::CopyDataToChild(const void* local_buffer,
-                                                size_t buffer_bytes,
-                                                void** remote_buffer) const {
-  DCHECK(remote_buffer);
-  if (0 == buffer_bytes) {
-    *remote_buffer = nullptr;
-    return SBOX_ALL_OK;
-  }
-
-  HANDLE child = child_->Process();
-
-  // Allocate memory on the target process without specifying the address
-  void* remote_data = ::VirtualAllocEx(child, nullptr, buffer_bytes, MEM_COMMIT,
-                                       PAGE_READWRITE);
-  if (!remote_data)
-    return SBOX_ERROR_NO_SPACE;
-
-  SIZE_T bytes_written;
-  bool success = ::WriteProcessMemory(child, remote_data, local_buffer,
-                                      buffer_bytes, &bytes_written);
-  if (!success || bytes_written != buffer_bytes) {
-    ::VirtualFreeEx(child, remote_data, 0, MEM_RELEASE);
-    return SBOX_ERROR_CANNOT_COPY_DATA_TO_CHILD;
-  }
-
-  *remote_buffer = remote_data;
-
-  return SBOX_ALL_OK;
-}
-
 // Only return true if the child should be able to perform this interception.
 bool InterceptionManager::IsInterceptionPerformedByChild(
     const InterceptionData& data) const {
@@ -375,7 +346,7 @@ bool InterceptionManager::IsInterceptionPerformedByChild(
   if (data.type >= INTERCEPTION_LAST)
     return false;
 
-  base::string16 ntdll(kNtdllName);
+  std::wstring ntdll(kNtdllName);
   if (ntdll == data.dll)
     return false;  // ntdll has to be intercepted from the parent
 
@@ -388,22 +359,12 @@ ResultCode InterceptionManager::PatchNtdll(bool hot_patch_needed) {
     return SBOX_ALL_OK;
 
   if (hot_patch_needed) {
-#if defined(SANDBOX_EXPORTS)
-// Make sure the functions are not excluded by the linker.
-#if defined(_WIN64)
-#pragma comment(linker, "/include:TargetNtMapViewOfSection64")
-#pragma comment(linker, "/include:TargetNtUnmapViewOfSection64")
-#else
-#pragma comment(linker, "/include:_TargetNtMapViewOfSection@44")
-#pragma comment(linker, "/include:_TargetNtUnmapViewOfSection@12")
-#endif
-#endif  // defined(SANDBOX_EXPORTS)
     ADD_NT_INTERCEPTION(NtMapViewOfSection, MAP_VIEW_OF_SECTION_ID, 44);
     ADD_NT_INTERCEPTION(NtUnmapViewOfSection, UNMAP_VIEW_OF_SECTION_ID, 12);
   }
 
   // Reserve a full 64k memory range in the child process.
-  HANDLE child = child_->Process();
+  HANDLE child = child_.Process();
   BYTE* thunk_base = reinterpret_cast<BYTE*>(::VirtualAllocEx(
       child, nullptr, kAllocGranularity, MEM_RESERVE, PAGE_NOACCESS));
 
@@ -454,7 +415,7 @@ ResultCode InterceptionManager::PatchNtdll(bool hot_patch_needed) {
                      &old_protection);
 
   ResultCode ret =
-      child_->TransferVariable("g_originals", g_originals, sizeof(g_originals));
+      child_.TransferVariable("g_originals", g_originals, sizeof(g_originals));
   return ret;
 }
 
@@ -469,60 +430,36 @@ ResultCode InterceptionManager::PatchClientFunctions(
   if (!ntdll_base)
     return SBOX_ERROR_NO_HANDLE;
 
-  char* interceptor_base = nullptr;
-
-#if defined(SANDBOX_EXPORTS)
-  interceptor_base = reinterpret_cast<char*>(child_->MainModule());
-  base::ScopedNativeLibrary local_interceptor(::LoadLibrary(child_->Name()));
-#endif  // defined(SANDBOX_EXPORTS)
-
   std::unique_ptr<ServiceResolverThunk> thunk;
 #if defined(_WIN64)
-  thunk.reset(new ServiceResolverThunk(child_->Process(), relaxed_));
+  thunk = std::make_unique<ServiceResolverThunk>(child_.Process(), relaxed_);
 #else
   base::win::OSInfo* os_info = base::win::OSInfo::GetInstance();
+  base::win::Version real_os_version = os_info->Kernel32Version();
   if (os_info->wow64_status() == base::win::OSInfo::WOW64_ENABLED) {
-    if (os_info->version() >= base::win::VERSION_WIN10)
-      thunk.reset(new Wow64W10ResolverThunk(child_->Process(), relaxed_));
-    else if (os_info->version() >= base::win::VERSION_WIN8)
-      thunk.reset(new Wow64W8ResolverThunk(child_->Process(), relaxed_));
+    if (real_os_version >= base::win::Version::WIN10)
+      thunk.reset(new Wow64W10ResolverThunk(child_.Process(), relaxed_));
+    else if (real_os_version >= base::win::Version::WIN8)
+      thunk.reset(new Wow64W8ResolverThunk(child_.Process(), relaxed_));
     else
-      thunk.reset(new Wow64ResolverThunk(child_->Process(), relaxed_));
-  } else if (os_info->version() >= base::win::VERSION_WIN8) {
-    thunk.reset(new Win8ResolverThunk(child_->Process(), relaxed_));
+      thunk.reset(new Wow64ResolverThunk(child_.Process(), relaxed_));
+  } else if (real_os_version >= base::win::Version::WIN8) {
+    thunk.reset(new Win8ResolverThunk(child_.Process(), relaxed_));
   } else {
-    thunk.reset(new ServiceResolverThunk(child_->Process(), relaxed_));
+    thunk.reset(new ServiceResolverThunk(child_.Process(), relaxed_));
   }
 #endif
 
   for (auto interception : interceptions_) {
-    const base::string16 ntdll(kNtdllName);
+    const std::wstring ntdll(kNtdllName);
     if (interception.dll != ntdll)
       return SBOX_ERROR_BAD_PARAMS;
 
     if (INTERCEPTION_SERVICE_CALL != interception.type)
       return SBOX_ERROR_BAD_PARAMS;
 
-#if defined(SANDBOX_EXPORTS)
-    // We may be trying to patch by function name.
-    if (!interception.interceptor_address) {
-      const char* address;
-      NTSTATUS ret = thunk->ResolveInterceptor(
-          local_interceptor.get(), interception.interceptor.c_str(),
-          reinterpret_cast<const void**>(&address));
-      if (!NT_SUCCESS(ret)) {
-        ::SetLastError(GetLastErrorFromNtStatus(ret));
-        return SBOX_ERROR_CANNOT_RESOLVE_INTERCEPTION_THUNK;
-      }
-
-      // Translate the local address to an address on the child.
-      interception.interceptor_address =
-          interceptor_base +
-          (address - reinterpret_cast<char*>(local_interceptor.get()));
-    }
-#endif  // defined(SANDBOX_EXPORTS)
     NTSTATUS ret = thunk->Setup(
-        ntdll_base, interceptor_base, interception.function.c_str(),
+        ntdll_base, nullptr, interception.function.c_str(),
         interception.interceptor.c_str(), interception.interceptor_address,
         &thunks->thunks[dll_data->num_thunks],
         thunk_bytes - dll_data->used_bytes, nullptr);

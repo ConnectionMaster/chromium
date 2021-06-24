@@ -7,7 +7,7 @@
 #include <memory>
 #include <utility>
 
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "device/fido/authenticator_make_credential_response.h"
 #include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/fido_constants.h"
@@ -38,10 +38,11 @@ CtapMakeCredentialRequest CreateRegisterRequestWithRegisteredKeys(
       test_data::kClientDataJson, std::move(rp), std::move(user),
       PublicKeyCredentialParams(
           std::vector<PublicKeyCredentialParams::CredentialInfo>(1)));
-  request.SetExcludeList(std::move(registered_keys));
-  if (is_individual_attestation)
-    request.set_attestation_preference(
-        AttestationConveyancePreference::ENTERPRISE);
+  request.exclude_list = std::move(registered_keys);
+  if (is_individual_attestation) {
+    request.attestation_preference =
+        AttestationConveyancePreference::kEnterpriseApprovedByBrowser;
+  }
 
   return request;
 }
@@ -55,7 +56,7 @@ CtapMakeCredentialRequest CreateRegisterRequest(
 
 using TestRegisterCallback = ::device::test::StatusAndValueCallbackReceiver<
     CtapDeviceResponseCode,
-    base::Optional<AuthenticatorMakeCredentialResponse>>;
+    absl::optional<AuthenticatorMakeCredentialResponse>>;
 
 }  // namespace
 
@@ -66,7 +67,7 @@ class U2fRegisterOperationTest : public ::testing::Test {
   }
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   TestRegisterCallback register_callback_receiver_;
 };
 
@@ -74,6 +75,7 @@ TEST_F(U2fRegisterOperationTest, TestRegisterSuccess) {
   auto request = CreateRegisterRequest();
   auto device = std::make_unique<MockFidoDevice>();
   EXPECT_CALL(*device, GetId()).WillRepeatedly(testing::Return("device"));
+  device->ExpectWinkedAtLeastOnce();
   device->ExpectRequestAndRespondWith(
       test_data::kU2fRegisterCommandApdu,
       test_data::kApduEncodedNoErrorRegisterResponse);
@@ -87,7 +89,10 @@ TEST_F(U2fRegisterOperationTest, TestRegisterSuccess) {
   EXPECT_EQ(CtapDeviceResponseCode::kSuccess,
             register_callback_receiver().status());
   ASSERT_TRUE(register_callback_receiver().value());
-  EXPECT_THAT(register_callback_receiver().value()->raw_credential_id(),
+  EXPECT_THAT(register_callback_receiver()
+                  .value()
+                  ->attestation_object()
+                  .GetCredentialId(),
               ::testing::ElementsAreArray(test_data::kU2fSignKeyHandle));
 }
 
@@ -105,8 +110,11 @@ TEST_F(U2fRegisterOperationTest, TestRegisterSuccessWithFake) {
             register_callback_receiver().status());
   // We don't verify the response from the fake, but do a quick sanity check.
   ASSERT_TRUE(register_callback_receiver().value());
-  EXPECT_EQ(32ul,
-            register_callback_receiver().value()->raw_credential_id().size());
+  EXPECT_EQ(32ul, register_callback_receiver()
+                      .value()
+                      ->attestation_object()
+                      .GetCredentialId()
+                      .size());
 }
 
 TEST_F(U2fRegisterOperationTest, TestDelayedSuccess) {
@@ -114,6 +122,7 @@ TEST_F(U2fRegisterOperationTest, TestDelayedSuccess) {
 
   auto device = std::make_unique<MockFidoDevice>();
   EXPECT_CALL(*device, GetId()).WillRepeatedly(testing::Return("device"));
+  device->ExpectWinkedAtLeastOnce();
 
   // Device error out once waiting for user presence before retrying.
   ::testing::InSequence s;
@@ -134,7 +143,10 @@ TEST_F(U2fRegisterOperationTest, TestDelayedSuccess) {
   EXPECT_EQ(CtapDeviceResponseCode::kSuccess,
             register_callback_receiver().status());
   ASSERT_TRUE(register_callback_receiver().value());
-  EXPECT_THAT(register_callback_receiver().value()->raw_credential_id(),
+  EXPECT_THAT(register_callback_receiver()
+                  .value()
+                  ->attestation_object()
+                  .GetCredentialId(),
               ::testing::ElementsAreArray(test_data::kU2fSignKeyHandle));
 }
 
@@ -152,17 +164,20 @@ TEST_F(U2fRegisterOperationTest, TestRegistrationWithExclusionList) {
 
   auto device = std::make_unique<MockFidoDevice>();
   EXPECT_CALL(*device, GetId()).WillRepeatedly(::testing::Return("device"));
-  // DeviceTransact() will be called three times including two check only sign-
-  // in calls and one registration call. For the first two calls, device will
-  // invoke MockFidoDevice::WrongData/WrongLength as the authenticator did not
-  // create the two key handles provided in the exclude list. At the third call,
-  // MockFidoDevice::NoErrorRegister will be invoked after registration.
+  device->ExpectWinkedAtLeastOnce();
+  // DeviceTransact() will be called three times including two sign-in calls
+  // with bogus challenges and one registration call. For the first two calls,
+  // device will invoke MockFidoDevice::WrongData/WrongLength as the
+  // authenticator did not create the two key handles provided in the exclude
+  // list. At the third call, MockFidoDevice::NoErrorRegister will be invoked
+  // after registration.
   ::testing::InSequence s;
   device->ExpectRequestAndRespondWith(
-      test_data::kU2fSignCommandApduWithKeyAlpha,
+      test_data::kU2fSignCommandApduWithKeyAlphaAndBogusChallenge,
       test_data::kU2fWrongDataApduResponse);
-  device->ExpectRequestAndRespondWith(test_data::kU2fSignCommandApduWithKeyBeta,
-                                      test_data::kU2fWrongLengthApduResponse);
+  device->ExpectRequestAndRespondWith(
+      test_data::kU2fSignCommandApduWithKeyBetaAndBogusChallenge,
+      test_data::kU2fWrongLengthApduResponse);
   device->ExpectRequestAndRespondWith(
       test_data::kU2fRegisterCommandApdu,
       test_data::kApduEncodedNoErrorRegisterResponse);
@@ -176,7 +191,10 @@ TEST_F(U2fRegisterOperationTest, TestRegistrationWithExclusionList) {
   ASSERT_TRUE(register_callback_receiver().value());
   EXPECT_EQ(CtapDeviceResponseCode::kSuccess,
             register_callback_receiver().status());
-  EXPECT_THAT(register_callback_receiver().value()->raw_credential_id(),
+  EXPECT_THAT(register_callback_receiver()
+                  .value()
+                  ->attestation_object()
+                  .GetCredentialId(),
               ::testing::ElementsAreArray(test_data::kU2fSignKeyHandle));
 }
 
@@ -200,19 +218,22 @@ TEST_F(U2fRegisterOperationTest, TestRegistrationWithDuplicateHandle) {
 
   auto device = std::make_unique<MockFidoDevice>();
   EXPECT_CALL(*device, GetId()).WillRepeatedly(::testing::Return("device"));
-  // For three keys in exclude list, the first two keys will invoke
-  // MockFidoDevice::WrongData and the final duplicate key handle will invoke
-  // MockFidoDevice::NoErrorSign. Once duplicate key handle is found, bogus
-  // registration is called to confirm user presence. This invokes
-  // MockFidoDevice::NoErrorRegister.
+  device->ExpectWinkedAtLeastOnce();
+  // For three keys in exclude list, the first two keys will return
+  // SW_WRONG_DATA and the final duplicate key handle will invoke
+  // SW_NO_ERROR. This means user presence has already been collected, so the
+  // request is concluded with Ctap2ErrCredentialExcluded.
   ::testing::InSequence s;
   device->ExpectRequestAndRespondWith(
-      test_data::kU2fSignCommandApduWithKeyAlpha,
+      test_data::kU2fSignCommandApduWithKeyAlphaAndBogusChallenge,
       test_data::kU2fWrongDataApduResponse);
-  device->ExpectRequestAndRespondWith(test_data::kU2fSignCommandApduWithKeyBeta,
-                                      test_data::kU2fWrongDataApduResponse);
   device->ExpectRequestAndRespondWith(
-      test_data::kU2fSignCommandApduWithKeyGamma,
+      test_data::kU2fSignCommandApduWithKeyBetaAndBogusChallenge,
+      test_data::kU2fWrongDataApduResponse);
+  // The signature in the response is intentionally incorrect since nothing
+  // should depend on it being correct.
+  device->ExpectRequestAndRespondWith(
+      test_data::kU2fSignCommandApduWithKeyGammaAndBogusChallenge,
       test_data::kApduEncodedNoErrorSignResponse);
 
   auto u2f_register = std::make_unique<U2fRegisterOperation>(
@@ -240,6 +261,7 @@ TEST_F(U2fRegisterOperationTest, TestIndividualAttestation) {
 
     auto device = std::make_unique<MockFidoDevice>();
     EXPECT_CALL(*device, GetId()).WillRepeatedly(::testing::Return("device"));
+    device->ExpectWinkedAtLeastOnce();
 
     device->ExpectRequestAndRespondWith(
         individual_attestation
@@ -254,7 +276,7 @@ TEST_F(U2fRegisterOperationTest, TestIndividualAttestation) {
 
     EXPECT_EQ(CtapDeviceResponseCode::kSuccess, cb.status());
     ASSERT_TRUE(cb.value());
-    EXPECT_THAT(cb.value()->raw_credential_id(),
+    EXPECT_THAT(cb.value()->attestation_object().GetCredentialId(),
                 ::testing::ElementsAreArray(test_data::kU2fSignKeyHandle));
   }
 }

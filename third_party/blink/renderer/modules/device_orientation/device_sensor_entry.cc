@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/modules/device_orientation/device_sensor_entry.h"
 
+#include "services/device/public/cpp/generic_sensor/sensor_reading.h"
 #include "services/device/public/cpp/generic_sensor/sensor_reading_shared_buffer_reader.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/device_orientation/device_sensor_event_pump.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -12,12 +14,12 @@
 namespace blink {
 
 DeviceSensorEntry::DeviceSensorEntry(DeviceSensorEventPump* event_pump,
+                                     ExecutionContext* context,
                                      device::mojom::blink::SensorType type)
-    : event_pump_(event_pump), type_(type) {}
-
-void DeviceSensorEntry::Dispose() {
-  client_binding_.Close();
-}
+    : event_pump_(event_pump),
+      sensor_remote_(context),
+      client_receiver_(this, context),
+      type_(type) {}
 
 DeviceSensorEntry::~DeviceSensorEntry() = default;
 
@@ -29,7 +31,7 @@ void DeviceSensorEntry::Start(
                                WTF::Bind(&DeviceSensorEntry::OnSensorCreated,
                                          WrapWeakPersistent(this)));
   } else if (state_ == State::SUSPENDED) {
-    sensor_->Resume();
+    sensor_remote_->Resume();
     state_ = State::ACTIVE;
     event_pump_->DidStartIfPossible();
   } else if (state_ == State::SHOULD_SUSPEND) {
@@ -45,8 +47,8 @@ void DeviceSensorEntry::Start(
 }
 
 void DeviceSensorEntry::Stop() {
-  if (sensor_) {
-    sensor_->Suspend();
+  if (sensor_remote_.is_bound()) {
+    sensor_remote_->Suspend();
     state_ = State::SUSPENDED;
   } else if (state_ == State::INITIALIZING) {
     // When the sensor needs to be suspended, and it is still in the
@@ -60,7 +62,7 @@ void DeviceSensorEntry::Stop() {
 }
 
 bool DeviceSensorEntry::IsConnected() const {
-  return sensor_.is_bound();
+  return sensor_remote_.is_bound();
 }
 
 bool DeviceSensorEntry::ReadyOrErrored() const {
@@ -70,13 +72,12 @@ bool DeviceSensorEntry::ReadyOrErrored() const {
 }
 
 bool DeviceSensorEntry::GetReading(device::SensorReading* reading) {
-  if (!sensor_)
+  if (!sensor_remote_.is_bound())
     return false;
 
-  DCHECK(shared_buffer_);
+  DCHECK(shared_buffer_reader_);
 
-  if (!shared_buffer_handle_->is_valid() ||
-      !shared_buffer_reader_->GetReading(reading)) {
+  if (!shared_buffer_reader_->GetReading(reading)) {
     HandleSensorError();
     return false;
   }
@@ -84,8 +85,10 @@ bool DeviceSensorEntry::GetReading(device::SensorReading* reading) {
   return true;
 }
 
-void DeviceSensorEntry::Trace(Visitor* visitor) {
+void DeviceSensorEntry::Trace(Visitor* visitor) const {
   visitor->Trace(event_pump_);
+  visitor->Trace(sensor_remote_);
+  visitor->Trace(client_receiver_);
 }
 
 void DeviceSensorEntry::RaiseError() {
@@ -118,24 +121,17 @@ void DeviceSensorEntry::OnSensorCreated(
 
   DCHECK_EQ(0u, params->buffer_offset % kReadBufferSize);
 
-  sensor_.Bind(std::move(params->sensor));
-  client_binding_.Bind(std::move(params->client_request));
+  sensor_remote_.Bind(std::move(params->sensor), event_pump_->task_runner_);
+  client_receiver_.Bind(std::move(params->client_receiver),
+                        event_pump_->task_runner_);
 
-  shared_buffer_handle_ = std::move(params->memory);
-  DCHECK(!shared_buffer_);
-  shared_buffer_ = shared_buffer_handle_->MapAtOffset(kReadBufferSize,
-                                                      params->buffer_offset);
-  if (!shared_buffer_) {
+  shared_buffer_reader_ = device::SensorReadingSharedBufferReader::Create(
+      std::move(params->memory), params->buffer_offset);
+  if (!shared_buffer_reader_) {
     HandleSensorError();
     event_pump_->DidStartIfPossible();
     return;
   }
-
-  const device::SensorReadingSharedBuffer* buffer =
-      static_cast<const device::SensorReadingSharedBuffer*>(
-          shared_buffer_.get());
-  shared_buffer_reader_.reset(
-      new device::SensorReadingSharedBufferReader(buffer));
 
   device::mojom::blink::SensorConfigurationPtr config =
       std::move(params->default_configuration);
@@ -143,10 +139,10 @@ void DeviceSensorEntry::OnSensorCreated(
       static_cast<double>(DeviceSensorEventPump::kDefaultPumpFrequencyHz),
       params->maximum_frequency);
 
-  sensor_.set_connection_error_handler(WTF::Bind(
+  sensor_remote_.set_disconnect_handler(WTF::Bind(
       &DeviceSensorEntry::HandleSensorError, WrapWeakPersistent(this)));
-  sensor_->ConfigureReadingChangeNotifications(/*enabled=*/false);
-  sensor_->AddConfiguration(
+  sensor_remote_->ConfigureReadingChangeNotifications(/*enabled=*/false);
+  sensor_remote_->AddConfiguration(
       std::move(config), WTF::Bind(&DeviceSensorEntry::OnSensorAddConfiguration,
                                    WrapWeakPersistent(this)));
 }
@@ -159,17 +155,16 @@ void DeviceSensorEntry::OnSensorAddConfiguration(bool success) {
     state_ = State::ACTIVE;
     event_pump_->DidStartIfPossible();
   } else if (state_ == State::SHOULD_SUSPEND) {
-    sensor_->Suspend();
+    sensor_remote_->Suspend();
     state_ = State::SUSPENDED;
   }
 }
 
 void DeviceSensorEntry::HandleSensorError() {
-  sensor_.reset();
+  sensor_remote_.reset();
   state_ = State::NOT_INITIALIZED;
-  shared_buffer_handle_.reset();
-  shared_buffer_.reset();
-  client_binding_.Close();
+  shared_buffer_reader_.reset();
+  client_receiver_.reset();
 }
 
 }  // namespace blink

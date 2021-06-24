@@ -11,7 +11,7 @@
 
 #include "base/bind.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromeos/cryptohome/cryptohome_parameters.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
@@ -72,7 +72,7 @@ class ArcDataRemoverTest : public testing::Test {
  private:
   TestingPrefServiceSimple prefs_;
   const cryptohome::Identification cryptohome_id_{EmptyAccountId()};
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
   std::unique_ptr<TestUpstartClient> test_upstart_client_;
 
   DISALLOW_COPY_AND_ASSIGN(ArcDataRemoverTest);
@@ -83,8 +83,8 @@ TEST_F(ArcDataRemoverTest, NotScheduled) {
 
   base::RunLoop loop;
   data_remover.Run(base::BindOnce(
-      [](base::RunLoop* loop, base::Optional<bool> result) {
-        EXPECT_EQ(result, base::nullopt);
+      [](base::RunLoop* loop, absl::optional<bool> result) {
+        EXPECT_EQ(result, absl::nullopt);
         loop->Quit();
       },
       &loop));
@@ -99,8 +99,8 @@ TEST_F(ArcDataRemoverTest, Success) {
 
   base::RunLoop loop;
   data_remover.Run(base::BindOnce(
-      [](base::RunLoop* loop, base::Optional<bool> result) {
-        EXPECT_EQ(result, base::make_optional(true));
+      [](base::RunLoop* loop, absl::optional<bool> result) {
+        EXPECT_EQ(result, absl::make_optional(true));
         loop->Quit();
       },
       &loop));
@@ -113,8 +113,8 @@ TEST_F(ArcDataRemoverTest, Fail) {
 
   base::RunLoop loop;
   data_remover.Run(base::BindOnce(
-      [](base::RunLoop* loop, base::Optional<bool> result) {
-        EXPECT_EQ(result, base::make_optional(false));
+      [](base::RunLoop* loop, absl::optional<bool> result) {
+        EXPECT_EQ(result, absl::make_optional(false));
         loop->Quit();
       },
       &loop));

@@ -28,6 +28,8 @@ class NET_EXPORT MappedHostResolver : public HostResolver {
   explicit MappedHostResolver(std::unique_ptr<HostResolver> impl);
   ~MappedHostResolver() override;
 
+  void OnShutdown() override;
+
   // Adds a rule to this mapper. The format of the rule can be one of:
   //
   //   "MAP" <hostname_pattern> <replacement_host> [":" <replacement_port>]
@@ -50,26 +52,17 @@ class NET_EXPORT MappedHostResolver : public HostResolver {
   // HostResolver methods:
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
+      const NetworkIsolationKey& network_isolation_key,
       const NetLogWithSource& net_log,
-      const base::Optional<ResolveHostParameters>& optional_parameters)
+      const absl::optional<ResolveHostParameters>& optional_parameters)
       override;
-  void SetDnsClientEnabled(bool enabled) override;
+  std::unique_ptr<ProbeRequest> CreateDohProbeRequest() override;
   HostCache* GetHostCache() override;
-  bool HasCached(base::StringPiece hostname,
-                 HostCache::Entry::Source* source_out,
-                 HostCache::EntryStaleness* stale_out,
-                 bool* secure_out) const override;
-  std::unique_ptr<base::Value> GetDnsConfigAsValue() const override;
-  void SetNoIPv6OnWifi(bool no_ipv6_on_wifi) override;
-  bool GetNoIPv6OnWifi() override;
-  void SetDnsConfigOverrides(const DnsConfigOverrides& overrides) override;
+  base::Value GetDnsConfigAsValue() const override;
   void SetRequestContext(URLRequestContext* request_context) override;
-  const std::vector<DnsConfig::DnsOverHttpsServerConfig>*
-  GetDnsOverHttpsServersForTesting() const override;
+  HostResolverManager* GetManagerForTesting() override;
 
  private:
-  class AlwaysErrorRequestImpl;
-
   std::unique_ptr<HostResolver> impl_;
 
   HostMappingRules rules_;

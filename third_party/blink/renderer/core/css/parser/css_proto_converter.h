@@ -8,7 +8,7 @@
 #include <string>
 
 #include "third_party/blink/renderer/core/css/parser/css.pb.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace css_proto_converter {
 
@@ -105,11 +105,11 @@ class Converter {
   void Visit(const AtRuleOrRuleset&, int depth);
 
   void Reset();
-  template <class T, size_t TableSize>
+  template <size_t EnumSize, class T, size_t TableSize>
   void AppendPropertyAndValue(T property_and_value,
                               const std::string (&lookup_table)[TableSize],
                               bool append_semicolon = true);
-  template <size_t TableSize>
+  template <size_t EnumSize, size_t TableSize>
   void AppendTableValue(int id, const std::string (&lookup_table)[TableSize]);
 };
 }  // namespace css_proto_converter

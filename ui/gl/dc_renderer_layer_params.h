@@ -5,14 +5,18 @@
 #ifndef UI_GL_DC_RENDERER_LAYER_PARAMS_H_
 #define UI_GL_DC_RENDERER_LAYER_PARAMS_H_
 
-#include <vector>
+#include <array>
 
+#include "base/callback.h"
 #include "base/memory/ref_counted.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/hdr_metadata.h"
 #include "ui/gfx/transform.h"
+#include "ui/gfx/video_types.h"
 #include "ui/gl/gl_export.h"
 
 namespace gl {
@@ -21,23 +25,16 @@ class GLImage;
 
 namespace ui {
 
-enum class ProtectedVideoType : uint32_t {
-  kClear = 0,
-  kSoftwareProtected = 1,
-  kHardwareProtected = 2,
-  kMaxValue = kHardwareProtected,
-};
-
 struct GL_EXPORT DCRendererLayerParams {
   DCRendererLayerParams();
-  DCRendererLayerParams(const DCRendererLayerParams& other);
-  DCRendererLayerParams& operator=(const DCRendererLayerParams& other);
   ~DCRendererLayerParams();
 
-  // Images to display in overlay.  There can either be one NV12 GPU buffer with
-  // both Y and UV planes, or two software buffers one each for Y and UV planes.
-  scoped_refptr<gl::GLImage> y_image;
-  scoped_refptr<gl::GLImage> uv_image;
+  // Images to display in overlay.  There can either be two software video
+  // buffers for Y and UV planes, an NV12 hardware video image, or a swap chain
+  // image.  If a single image is specified, the second one must be nullptr.
+  enum : size_t { kNumImages = 2 };
+  using OverlayImages = std::array<scoped_refptr<gl::GLImage>, kNumImages>;
+  OverlayImages images;
 
   // Stacking order relative to backbuffer which has z-order 0.
   int z_order = 1;
@@ -52,11 +49,16 @@ struct GL_EXPORT DCRendererLayerParams {
   // after applying the |quad_rect.origin()| as an offset.
   gfx::Transform transform;
 
-  // If |is_clipped| is true, then clip to |clip_rect| in root target space.
-  bool is_clipped = false;
-  gfx::Rect clip_rect;
+  // If present, then clip to |clip_rect| in root target space.
+  absl::optional<gfx::Rect> clip_rect;
 
-  ProtectedVideoType protected_video_type = ProtectedVideoType::kClear;
+  gfx::ProtectedVideoType protected_video_type =
+      gfx::ProtectedVideoType::kClear;
+
+  gfx::HDRMetadata hdr_metadata;
+
+  // Ends access should this get accesssed from a shared image.
+  std::array<base::OnceClosure, kNumImages> release_image_cb;
 };
 
 }  // namespace ui

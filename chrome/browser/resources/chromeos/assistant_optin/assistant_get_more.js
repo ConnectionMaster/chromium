@@ -10,10 +10,16 @@
  * Event 'loaded' will be fired when the page has been successfully loaded.
  */
 
+/**
+ * Name of the screen.
+ * @type {string}
+ */
+const GET_MORE_SCREEN_ID = 'GetMoreScreen';
+
 Polymer({
   is: 'assistant-get-more',
 
-  behaviors: [OobeDialogHostBehavior],
+  behaviors: [OobeI18nBehavior, OobeDialogHostBehavior],
 
   properties: {
     /**
@@ -46,43 +52,38 @@ Polymer({
    */
   screenShown_: false,
 
-  /**
-   * Whether voice match has been enabled.
-   * @type {boolean}
-   * @private
-   */
-  voiceMatchEnabled_: false,
+  /** @private {?assistant.BrowserProxy} */
+  browserProxy_: null,
 
   /**
    * On-tap event handler for next button.
    *
    * @private
    */
-  onNextTap_: function() {
+  onNextTap_() {
     if (this.buttonsDisabled) {
       return;
     }
     this.buttonsDisabled = true;
 
-    if (!this.voiceMatchEnabled_) {
-      var hotword = this.$$('#toggle-hotword').hasAttribute('checked');
-      chrome.send('login.AssistantOptInFlowScreen.hotwordResult', [hotword]);
-    }
     var screenContext = this.$$('#toggle-context').hasAttribute('checked');
     var toggleEmail = this.$$('#toggle-email');
     var emailOptedIn =
         toggleEmail != null && toggleEmail.hasAttribute('checked');
 
-    // TODO(updowndota): Wrap chrome.send() calls with a proxy object.
-    chrome.send(
-        'login.AssistantOptInFlowScreen.GetMoreScreen.userActed',
-        [screenContext, emailOptedIn]);
+    this.browserProxy_.userActed(
+        GET_MORE_SCREEN_ID, [screenContext, emailOptedIn]);
+  },
+
+  /** @override */
+  created() {
+    this.browserProxy_ = assistant.BrowserProxyImpl.getInstance();
   },
 
   /**
    * Reloads the page.
    */
-  reloadPage: function() {
+  reloadPage() {
     this.fire('loading');
     this.buttonsDisabled = true;
   },
@@ -90,9 +91,7 @@ Polymer({
   /**
    * Reload the page with the given consent string text data.
    */
-  reloadContent: function(data) {
-    this.voiceMatchEnabled_ = data['voiceMatchEnabled'];
-
+  reloadContent(data) {
     this.consentStringLoaded_ = true;
     if (this.settingZippyLoaded_) {
       this.onPageLoaded();
@@ -102,7 +101,7 @@ Polymer({
   /**
    * Add a setting zippy with the provided data.
    */
-  addSettingZippy: function(zippy_data) {
+  addSettingZippy(zippy_data) {
     assert(zippy_data.length <= 3);
 
     if (this.settingZippyLoaded_) {
@@ -118,18 +117,23 @@ Polymer({
       zippy.setAttribute(
           'icon-src',
           'data:text/html;charset=utf-8,' +
-              encodeURIComponent(zippy.getWrappedIcon(data['iconUri'])));
+              encodeURIComponent(
+                  zippy.getWrappedIcon(data['iconUri'], data['title'])));
       zippy.setAttribute('hide-line', true);
       zippy.setAttribute('toggle-style', true);
       zippy.id = 'zippy-' + data['id'];
       var title = document.createElement('div');
-      title.className = 'zippy-title';
+      title.id = 'title-' + data['id'];
+      title.slot = 'title';
       title.textContent = data['title'];
+      title.setAttribute('aria-hidden', 'true');
       zippy.appendChild(title);
 
       var toggle = document.createElement('cr-toggle');
-      toggle.className = 'zippy-toggle';
+      toggle.slot = 'toggle';
       toggle.id = 'toggle-' + data['id'];
+      toggle.setAttribute('aria-labelledby', 'title-' + data['id']);
+      toggle.setAttribute('aria-describedby', 'description-' + data['id']);
       if (data['defaultEnabled']) {
         toggle.setAttribute('checked', '');
       }
@@ -139,8 +143,10 @@ Polymer({
       zippy.appendChild(toggle);
 
       var description = document.createElement('div');
-      description.className = 'zippy-description';
+      description.id = 'description-' + data['id'];
+      description.slot = 'content';
       description.textContent = data['description'];
+      description.setAttribute('aria-hidden', 'true');
       if (data['legalText']) {
         var legalText = document.createElement('p');
         legalText.textContent = data['legalText'];
@@ -160,12 +166,12 @@ Polymer({
   /**
    * Handles event when all the page content has been loaded.
    */
-  onPageLoaded: function() {
+  onPageLoaded() {
     this.fire('loaded');
     this.buttonsDisabled = false;
     this.$['next-button'].focus();
     if (!this.hidden && !this.screenShown_) {
-      chrome.send('login.AssistantOptInFlowScreen.GetMoreScreen.screenShown');
+      this.browserProxy_.screenShown(GET_MORE_SCREEN_ID);
       this.screenShown_ = true;
     }
   },
@@ -173,12 +179,13 @@ Polymer({
   /**
    * Signal from host to show the screen.
    */
-  onShow: function() {
+  onShow() {
     if (!this.settingZippyLoaded_ || !this.consentStringLoaded_) {
       this.reloadPage();
     } else {
-      this.$['next-button'].focus();
-      chrome.send('login.AssistantOptInFlowScreen.GetMoreScreen.screenShown');
+      Polymer.RenderStatus.afterNextRender(
+          this, () => this.$['next-button'].focus());
+      this.browserProxy_.screenShown(GET_MORE_SCREEN_ID);
       this.screenShown_ = true;
     }
   },

@@ -5,7 +5,9 @@
 #include "third_party/blink/renderer/modules/accessibility/ax_relation_cache.h"
 
 #include "base/memory/ptr_util.h"
+#include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/html/forms/html_label_element.h"
+#include "ui/accessibility/ax_common.h"
 
 namespace blink {
 
@@ -14,7 +16,51 @@ AXRelationCache::AXRelationCache(AXObjectCacheImpl* object_cache)
 
 AXRelationCache::~AXRelationCache() = default;
 
+void AXRelationCache::DoInitialDocumentScan() {
+  // Init the relation cache with elements already in the document.
+  Document& document = object_cache_->GetDocument();
+  for (Element& element :
+       ElementTraversal::DescendantsOf(*document.documentElement())) {
+    const auto& id = element.FastGetAttribute(html_names::kForAttr);
+    if (!id.IsEmpty())
+      all_previously_seen_label_target_ids_.insert(id);
+
+    // Ensure correct ancestor chains even when not all AXObject's in the
+    // document are created, e.g. in the devtools accessibility panel.
+    // Defers adding aria-owns targets as children of their new parents,
+    // and to the relation cache, until the appropriate document lifecycle.
+#if DCHECK_IS_ON()
+    DCHECK(document.Lifecycle().GetState() >= DocumentLifecycle::kLayoutClean)
+        << "Unclean document at lifecycle " << document.Lifecycle().ToString();
+#endif
+    if (element.FastHasAttribute(html_names::kAriaOwnsAttr)) {
+      if (AXObject* owner = GetOrCreate(&element, nullptr)) {
+        owner_ids_to_update_.insert(owner->AXObjectID());
+      }
+    }
+  }
+
+  initialized_ = true;
+}
+
+void AXRelationCache::ProcessUpdatesWithCleanLayout() {
+  if (!initialized_)
+    DoInitialDocumentScan();
+
+  for (AXID aria_owns_obj_id : owner_ids_to_update_) {
+    AXObject* obj = ObjectFromAXID(aria_owns_obj_id);
+    if (obj)
+      UpdateAriaOwnsWithCleanLayout(obj);
+  }
+
+  owner_ids_to_update_.clear();
+}
+
 bool AXRelationCache::IsAriaOwned(const AXObject* child) const {
+  if (!child)
+    return false;
+  DCHECK(!child->IsDetached())
+      << "Child was detached: " << child->ToString(true, true);
   return aria_owned_child_to_owner_mapping_.Contains(child->AXObjectID());
 }
 
@@ -29,6 +75,7 @@ AXObject* AXRelationCache::GetAriaOwnedParent(const AXObject* child) const {
 }
 
 // Update reverse relation map, where relation_source is related to target_ids.
+// TODO Support when HasExplicitlySetAttrAssociatedElement() == true.
 void AXRelationCache::UpdateReverseRelations(const AXObject* relation_source,
                                              const Vector<String>& target_ids) {
   AXID relation_source_axid = relation_source->AXObjectID();
@@ -53,19 +100,63 @@ static bool ContainsCycle(AXObject* owner, AXObject* child) {
 
 bool AXRelationCache::IsValidOwnsRelation(AXObject* owner,
                                           AXObject* child) const {
-  if (!child)
+  if (!IsValidOwner(owner) || !IsValidOwnedChild(child))
     return false;
 
   // If this child is already aria-owned by a different owner, continue.
   // It's an author error if this happens and we don't worry about which of
-  // the two owners wins ownership of the child, as long as only one of them
-  // does.
+  // the two owners wins ownership, as long as only one of them does.
   if (IsAriaOwned(child) && GetAriaOwnedParent(child) != owner)
     return false;
 
   // You can't own yourself or an ancestor!
   if (ContainsCycle(owner, child))
     return false;
+
+  return true;
+}
+
+bool AXRelationCache::IsValidOwner(AXObject* owner) {
+  if (!owner->GetNode()) {
+    NOTREACHED() << "Cannot use aria-owns without a node on both ends";
+    return false;
+  }
+
+  // Can't have children.
+  if (!owner->CanHaveChildren())
+    return false;
+
+  // An aria-owns is disallowed on editable roots and atomic text fields, such
+  // as <input>, <textarea> and content editables, otherwise the result would be
+  // unworkable and totally unexpected on the browser side.
+  if (owner->IsTextField())
+    return false;
+
+  // Images can only use <img usemap> to "own" <area> children.
+  // This requires special parenting logic, and aria-owns is prevented here in
+  // order to keep things from getting too complex.
+  if (owner->RoleValue() == ax::mojom::blink::Role::kImage)
+    return false;
+
+  // Many types of nodes cannot be used as parent in normal situations.
+  // These rules also apply to allowing aria-owns.
+  if (!AXObject::CanComputeAsNaturalParent(owner->GetNode()))
+    return false;
+
+  return true;
+}
+
+bool AXRelationCache::IsValidOwnedChild(AXObject* child) {
+  if (!child)
+    return false;
+
+  if (!child->GetNode()) {
+    NOTREACHED() << "Cannot use aria-owns without a node on both ends";
+    return false;
+  }
+
+  if (child->IsImageMapLink())
+    return false;  // An area can't be owned, only parented by <img usemap>.
 
   return true;
 }
@@ -90,15 +181,14 @@ void AXRelationCache::UnmapOwnedChildren(const AXObject* owner,
       // back to its real parent in the tree by detaching it from its current
       // parent and calling childrenChanged on its real parent.
       removed_child->DetachFromParent();
-      AXID real_parent_id =
-          aria_owned_child_to_real_parent_mapping_.at(removed_child_id);
-      AXObject* real_parent = ObjectFromAXID(real_parent_id);
-      ChildrenChanged(real_parent);
+      // Recompute the real parent and cache it.
+      AXObject* real_parent = removed_child->ParentObject();
+      SANITIZER_CHECK(real_parent) << "No parent to restore for object with "
+                                      "unmapped aria-owns, child is: "
+                                   << removed_child->ToString(true, true);
+      if (real_parent)
+        ChildrenChanged(real_parent);
     }
-
-    // Remove the child -> original parent mapping too since this object has
-    // now been reparented back to its original parent.
-    aria_owned_child_to_real_parent_mapping_.erase(removed_child_id);
   }
 }
 
@@ -110,51 +200,157 @@ void AXRelationCache::MapOwnedChildren(const AXObject* owner,
     // Add this child to the mapping from child to owner.
     aria_owned_child_to_owner_mapping_.Set(added_child_id, owner->AXObjectID());
 
-    // Add its parent object to a mapping from child to real parent. If later
-    // this owner doesn't own this child anymore, we need to return it to its
-    // original parent.
-    AXObject* original_parent = added_child->ParentObject();
-    aria_owned_child_to_real_parent_mapping_.Set(added_child_id,
-                                                 original_parent->AXObjectID());
-
     // Now detach the object from its original parent and call childrenChanged
     // on the original parent so that it can recompute its list of children.
-    added_child->DetachFromParent();
-    ChildrenChanged(original_parent);
+    AXObject* original_parent = added_child->CachedParentObject();
+    if (original_parent != owner) {
+      added_child->DetachFromParent();
+      added_child->SetParent(const_cast<AXObject*>(owner));
+      if (original_parent)
+        ChildrenChanged(original_parent);
+    }
   }
 }
 
-void AXRelationCache::UpdateAriaOwns(
-    const AXObject* owner,
-    const Vector<String>& owned_id_vector,
-    HeapVector<Member<AXObject>>& validated_owned_children_result) {
+void AXRelationCache::UpdateAriaOwnsFromAttrAssociatedElementsWithCleanLayout(
+    AXObject* owner,
+    const HeapVector<Member<Element>>& attr_associated_elements,
+    HeapVector<Member<AXObject>>& validated_owned_children_result,
+    bool force) {
+  // attr-associated elements have already had their scope validated, but they
+  // need to be further validated to determine if they introduce a cycle or are
+  // already owned by another element.
+
+  Vector<String> owned_id_vector;
+  for (const auto& element : attr_associated_elements) {
+    // Pass in owner parent assuming that the owns relationship will be valid.
+    // It will be cleared below if the owns relationship is found to be invalid.
+    AXObject* child = GetOrCreate(element, owner);
+
+    // TODO(meredithl): Determine how to update reverse relations for elements
+    // without an id.
+    if (element->GetIdAttribute())
+      owned_id_vector.push_back(element->GetIdAttribute());
+    if (IsValidOwnsRelation(const_cast<AXObject*>(owner), child)) {
+      validated_owned_children_result.push_back(child);
+    } else if (child) {
+      // Invalid owns relation: repair the parent that was set above.
+      child->SetParent(child->ComputeParent());
+    }
+  }
+
   // Track reverse relations for future tree updates.
   UpdateReverseRelations(owner, owned_id_vector);
 
-  //
-  // Figure out the ids that actually correspond to children that exist
-  // and that we can legally own (not cyclical, not already owned, etc.) and
-  // update the maps and |validated_owned_children_result| based on that.
-  //
-  // Figure out the children that are owned by this object and are in the
-  // tree.
-  TreeScope& scope = owner->GetNode()->GetTreeScope();
-  Vector<AXID> validated_owned_child_axids;
-  for (const String& id_name : owned_id_vector) {
-    Element* element = scope.getElementById(AtomicString(id_name));
-    AXObject* child = GetOrCreate(element);
-    if (IsValidOwnsRelation(const_cast<AXObject*>(owner), child)) {
-      validated_owned_child_axids.push_back(child->AXObjectID());
+  // Update the internal mappings of owned children.
+  UpdateAriaOwnerToChildrenMappingWithCleanLayout(
+      owner, validated_owned_children_result, force);
+}
+
+void AXRelationCache::GetAriaOwnedChildren(
+    const AXObject* owner,
+    HeapVector<Member<AXObject>>& validated_owned_children_result) {
+  if (!aria_owner_to_children_mapping_.Contains(owner->AXObjectID()))
+    return;
+  Vector<AXID> current_child_axids =
+      aria_owner_to_children_mapping_.at(owner->AXObjectID());
+  for (AXID child_id : current_child_axids) {
+    AXObject* child = ObjectFromAXID(child_id);
+    if (child) {
       validated_owned_children_result.push_back(child);
+      DCHECK(IsAriaOwned(child)) << "Owned child not in owned child map";
     }
   }
+}
+
+void AXRelationCache::UpdateAriaOwnsWithCleanLayout(AXObject* owner,
+                                                    bool force) {
+  DCHECK(owner);
+  Element* element = owner->GetElement();
+  if (!element)
+    return;
+
+  DCHECK(!element->GetDocument().NeedsLayoutTreeUpdateForNode(*element));
+
+  // A refresh can occur even if not a valid owner, because the old object
+  // that |owner| is replacing may have previously been a valid owner. In this
+  // case, the old owned child mappings will need to be removed.
+  bool is_valid_owner = IsValidOwner(owner);
+  if (!force && !is_valid_owner)
+    return;
+
+  HeapVector<Member<AXObject>> owned_children;
+
+  // We first check if the element has an explicitly set aria-owns association.
+  // Explicitly set elements are validated when they are read (that they are in
+  // a valid scope etc). The content attribute can contain ids that are not
+  // legally ownable.
+  if (!is_valid_owner) {
+    DCHECK(force) << "Should not reach here except when an AXObject was "
+                     "invalidated and is being refreshed: "
+                  << owner->ToString(true, true);
+  } else if (element && element->HasExplicitlySetAttrAssociatedElements(
+                            html_names::kAriaOwnsAttr)) {
+    UpdateAriaOwnsFromAttrAssociatedElementsWithCleanLayout(
+        owner,
+        element->GetElementArrayAttribute(html_names::kAriaOwnsAttr).value(),
+        owned_children, force);
+  } else {
+    // Figure out the ids that actually correspond to children that exist
+    // and that we can legally own (not cyclical, not already owned, etc.) and
+    // update the maps and |validated_owned_children_result| based on that.
+    //
+    // Figure out the children that are owned by this object and are in the
+    // tree.
+    TreeScope& scope = element->GetTreeScope();
+    Vector<String> owned_id_vector;
+    owner->TokenVectorFromAttribute(element, owned_id_vector,
+                                    html_names::kAriaOwnsAttr);
+    // Track reverse relations for future tree updates.
+    UpdateReverseRelations(owner, owned_id_vector);
+    for (const String& id_name : owned_id_vector) {
+      Element* child_element = scope.getElementById(AtomicString(id_name));
+      // Pass in owner parent assuming that the owns relationship will be valid.
+      // It will be cleared below if the owns relationship is found to be
+      // invalid.
+      AXObject* child = GetOrCreate(child_element, owner);
+      if (IsValidOwnsRelation(const_cast<AXObject*>(owner), child)) {
+        owned_children.push_back(child);
+      } else if (child) {
+        // Invalid owns relation: repair the parent that was set above.
+        child->SetParent(child->ComputeParent());
+      }
+    }
+  }
+
+  // Update the internal validated mapping of owned children. This will
+  // fire an event if the mapping has changed.
+  UpdateAriaOwnerToChildrenMappingWithCleanLayout(owner, owned_children, force);
+}
+
+void AXRelationCache::UpdateAriaOwnerToChildrenMappingWithCleanLayout(
+    AXObject* owner,
+    HeapVector<Member<AXObject>>& validated_owned_children_result,
+    bool force) {
+  DCHECK(owner);
+  if (!owner->CanHaveChildren())
+    return;
+
+  Vector<AXID> validated_owned_child_axids;
+  for (auto& child : validated_owned_children_result)
+    validated_owned_child_axids.push_back(child->AXObjectID());
 
   // Compare this to the current list of owned children, and exit early if
   // there are no changes.
   Vector<AXID> current_child_axids =
       aria_owner_to_children_mapping_.at(owner->AXObjectID());
-  if (current_child_axids == validated_owned_child_axids)
+
+  // Only force the refresh if there was or will be owned children; otherwise,
+  // there is nothing to refresh even for a new AXObject replacing an old owner.
+  if (current_child_axids == validated_owned_child_axids &&
+      (!force || current_child_axids.IsEmpty())) {
     return;
+  }
 
   // The list of owned children has changed. Even if they were just reordered,
   // to be safe and handle all cases we remove all of the current owned
@@ -162,19 +358,44 @@ void AXRelationCache::UpdateAriaOwns(
   UnmapOwnedChildren(owner, current_child_axids);
   MapOwnedChildren(owner, validated_owned_child_axids);
 
+#if DCHECK_IS_ON()
+  // Owned children must be in tree to avoid serialization issues.
+  for (AXObject* child : validated_owned_children_result) {
+    DCHECK(IsAriaOwned(child));
+    DCHECK(child->AccessibilityIsIncludedInTree())
+        << "Owned child not in tree: " << child->ToString(true, false)
+        << "\nRecompute included in tree: "
+        << child->ComputeAccessibilityIsIgnoredButIncludedInTree();
+  }
+#endif
+
   // Finally, update the mapping from the owner to the list of child IDs.
-  aria_owner_to_children_mapping_.Set(owner->AXObjectID(),
-                                      validated_owned_child_axids);
+  if (validated_owned_child_axids.IsEmpty()) {
+    aria_owner_to_children_mapping_.erase(owner->AXObjectID());
+  } else {
+    aria_owner_to_children_mapping_.Set(owner->AXObjectID(),
+                                        validated_owned_child_axids);
+  }
+
+  ChildrenChanged(owner);
+}
+
+bool AXRelationCache::MayHaveHTMLLabelViaForAttribute(
+    const HTMLElement& labelable) {
+  const AtomicString& id = labelable.GetIdAttribute();
+  if (id.IsEmpty())
+    return false;
+  return all_previously_seen_label_target_ids_.Contains(id);
 }
 
 // Fill source_objects with AXObjects for relations pointing to target.
 void AXRelationCache::GetReverseRelated(
     Node* target,
     HeapVector<Member<AXObject>>& source_objects) {
-  if (!target || !target->IsElementNode())
+  auto* element = DynamicTo<Element>(target);
+  if (!element)
     return;
 
-  Element* element = ToElement(target);
   if (!element->HasID())
     return;
 
@@ -189,22 +410,34 @@ void AXRelationCache::GetReverseRelated(
   }
 }
 
-void AXRelationCache::UpdateRelatedTree(Node* node) {
+void AXRelationCache::UpdateRelatedTree(Node* node, AXObject* obj) {
   HeapVector<Member<AXObject>> related_sources;
-  AXObject* related_target = Get(node);
-  // If it's already owned, call childrenChanged on the owner to make sure
-  // it's still an owner.
+#if DCHECK_IS_ON()
+  DCHECK(node);
+  if (obj)
+    DCHECK(!obj->IsDetached());
+  AXObject* obj_for_node = object_cache_->GetWithoutInvalidation(node);
+  DCHECK(!obj || obj_for_node == obj)
+      << "Object and node did not match:"
+      << "\n* node = " << node << "\n* obj = " << obj->ToString(true, true)
+      << "\n* obj_for_node = "
+      << (obj_for_node ? obj_for_node->ToString(true, true) : "null");
+#endif
+  AXObject* related_target = obj ? obj : Get(node);
+  // If it's already owned, schedule an update on the owner.
   if (related_target && IsAriaOwned(related_target)) {
     AXObject* owned_parent = GetAriaOwnedParent(related_target);
     DCHECK(owned_parent);
-    ChildrenChanged(owned_parent);
+    owner_ids_to_update_.insert(owned_parent->AXObjectID());
   }
 
   // Ensure children are updated if there is a change.
   GetReverseRelated(node, related_sources);
   for (AXObject* related : related_sources) {
-    if (related)
+    if (related) {
+      owner_ids_to_update_.insert(related->AXObjectID());
       ChildrenChanged(related);
+    }
   }
 
   UpdateRelatedText(node);
@@ -212,31 +445,63 @@ void AXRelationCache::UpdateRelatedTree(Node* node) {
 
 void AXRelationCache::UpdateRelatedText(Node* node) {
   // Walk up ancestor chain from node and refresh text of any related content.
-  while (node) {
+  // TODO(crbug.com/1109265): It's very likely this loop should only walk the
+  // unignored AXObject chain, but doing so breaks a number of tests related to
+  // name or description computation / invalidation.
+  for (Node* current_node = node; current_node;
+       current_node = current_node->parentNode()) {
     // Reverse relations via aria-labelledby, aria-describedby, aria-owns.
     HeapVector<Member<AXObject>> related_sources;
-    GetReverseRelated(node, related_sources);
+    GetReverseRelated(current_node, related_sources);
     for (AXObject* related : related_sources) {
-      if (related)
-        TextChanged(related);
+      if (related) {
+        object_cache_->MarkAXObjectDirtyWithCleanLayout(related,
+                                                        /*subtree=*/false);
+      }
+    }
+
+    // Ancestors that may derive their accessible name from descendant content
+    // should also handle text changed events when descendant content changes.
+    if (current_node != node) {
+      AXObject* obj = Get(current_node);
+      if (obj && obj->SupportsNameFromContents(/*recursive=*/false))
+        object_cache_->MarkAXObjectDirtyWithCleanLayout(obj, /*subtree=*/false);
     }
 
     // Forward relation via <label for="[id]">.
-    if (IsHTMLLabelElement(*node))
-      LabelChanged(node);
-
-    node = node->parentNode();
+    if (IsA<HTMLLabelElement>(*current_node))
+      LabelChanged(current_node);
   }
 }
 
 void AXRelationCache::RemoveAXID(AXID obj_id) {
+  // Need to remove from maps.
+  // There are maps from children to their owners, and owners to their children.
+  // In addition, the removed id may be an owner, or be owned, or both.
+
+  // |obj_id| owned others:
   if (aria_owner_to_children_mapping_.Contains(obj_id)) {
+    // |obj_id| longer owns anything.
     Vector<AXID> child_axids = aria_owner_to_children_mapping_.at(obj_id);
     aria_owned_child_to_owner_mapping_.RemoveAll(child_axids);
+    // Owned children are no longer owned by |obj_id|
     aria_owner_to_children_mapping_.erase(obj_id);
   }
-  aria_owned_child_to_owner_mapping_.erase(obj_id);
-  aria_owned_child_to_real_parent_mapping_.erase(obj_id);
+
+  // Another id owned |obj_id|:
+  if (aria_owned_child_to_owner_mapping_.Contains(obj_id)) {
+    // Previous owner no longer relevant to this child.
+    // Also, remove |obj_id| from previous owner's owned child list:
+    AXID owner_id = aria_owned_child_to_owner_mapping_.Take(obj_id);
+    const Vector<AXID>& owners_owned_children =
+        aria_owner_to_children_mapping_.at(owner_id);
+    for (wtf_size_t index = 0; index < owners_owned_children.size(); index++) {
+      if (owners_owned_children[index] == obj_id) {
+        aria_owner_to_children_mapping_.at(owner_id).EraseAt(index);
+        break;
+      }
+    }
+  }
 }
 
 AXObject* AXRelationCache::ObjectFromAXID(AXID axid) const {
@@ -247,21 +512,24 @@ AXObject* AXRelationCache::Get(Node* node) {
   return object_cache_->Get(node);
 }
 
-AXObject* AXRelationCache::GetOrCreate(Node* node) {
-  return object_cache_->GetOrCreate(node);
+AXObject* AXRelationCache::GetOrCreate(Node* node, const AXObject* owner) {
+  return object_cache_->GetOrCreate(node, const_cast<AXObject*>(owner));
 }
 
 void AXRelationCache::ChildrenChanged(AXObject* object) {
-  object_cache_->ChildrenChanged(object);
-}
-
-void AXRelationCache::TextChanged(AXObject* object) {
-  object_cache_->TextChanged(object);
+  object->ChildrenChangedWithCleanLayout();
 }
 
 void AXRelationCache::LabelChanged(Node* node) {
-  if (HTMLElement* control = ToHTMLLabelElement(node)->control())
-    TextChanged(Get(control));
+  const auto& id =
+      To<HTMLElement>(node)->FastGetAttribute(html_names::kForAttr);
+  if (!id.IsEmpty()) {
+    all_previously_seen_label_target_ids_.insert(id);
+    if (auto* control = To<HTMLLabelElement>(node)->control()) {
+      if (AXObject* obj = Get(control))
+        object_cache_->MarkAXObjectDirtyWithCleanLayout(obj, /*subtree=*/false);
+    }
+  }
 }
 
 }  // namespace blink

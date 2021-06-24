@@ -28,55 +28,33 @@
 
 namespace blink {
 
-LayoutTextControlMultiLine::LayoutTextControlMultiLine(
-    HTMLTextAreaElement* element)
-    : LayoutTextControl(element) {
-  DCHECK(element);
+LayoutTextControlMultiLine::LayoutTextControlMultiLine(Element* element)
+    : LayoutTextControl(To<TextControlElement>(element)) {
+  DCHECK(IsA<HTMLTextAreaElement>(element));
 }
 
 LayoutTextControlMultiLine::~LayoutTextControlMultiLine() = default;
 
 bool LayoutTextControlMultiLine::NodeAtPoint(
     HitTestResult& result,
-    const HitTestLocation& location_in_container,
-    const LayoutPoint& accumulated_offset,
+    const HitTestLocation& hit_test_location,
+    const PhysicalOffset& accumulated_offset,
     HitTestAction hit_test_action) {
-  if (!LayoutTextControl::NodeAtPoint(result, location_in_container,
+  NOT_DESTROYED();
+  if (!LayoutTextControl::NodeAtPoint(result, hit_test_location,
                                       accumulated_offset, hit_test_action))
     return false;
 
+  const LayoutObject* stop_node = result.GetHitTestRequest().GetStopNode();
+  if (stop_node && stop_node->NodeForHitTest() == result.InnerNode())
+    return true;
+
   if (result.InnerNode() == GetNode() ||
-      result.InnerNode() == InnerEditorElement())
-    HitInnerEditorElement(result, location_in_container.Point(),
-                          accumulated_offset);
-
+      result.InnerNode() == InnerEditorElement()) {
+    HitInnerEditorElement(*this, *InnerEditorElement(), result,
+                          hit_test_location, accumulated_offset);
+  }
   return true;
-}
-
-float LayoutTextControlMultiLine::GetAvgCharWidth(
-    const AtomicString& family) const {
-  // Match the default system font to the width of MS Shell Dlg, the default
-  // font for textareas in Firefox, Safari Win and IE for some encodings (in
-  // IE, the default font is encoding specific). 1229 is the avgCharWidth
-  // value in the OS/2 table for Courier New.
-  if (LayoutTheme::GetTheme().NeedsHackForTextControlWithFontFamily(family))
-    return ScaleEmToUnits(1229);
-
-  return LayoutTextControl::GetAvgCharWidth(family);
-}
-
-LayoutUnit LayoutTextControlMultiLine::PreferredContentLogicalWidth(
-    float char_width) const {
-  int factor = ToHTMLTextAreaElement(GetNode())->cols();
-  return static_cast<LayoutUnit>(ceilf(char_width * factor)) +
-         ScrollbarThickness();
-}
-
-LayoutUnit LayoutTextControlMultiLine::ComputeControlLogicalHeight(
-    LayoutUnit line_height,
-    LayoutUnit non_content_height) const {
-  return line_height * ToHTMLTextAreaElement(GetNode())->rows() +
-         non_content_height;
 }
 
 LayoutUnit LayoutTextControlMultiLine::BaselinePosition(
@@ -84,6 +62,7 @@ LayoutUnit LayoutTextControlMultiLine::BaselinePosition(
     bool first_line,
     LineDirectionMode direction,
     LinePositionMode line_position_mode) const {
+  NOT_DESTROYED();
   return LayoutBox::BaselinePosition(baseline_type, first_line, direction,
                                      line_position_mode);
 }
@@ -91,6 +70,7 @@ LayoutUnit LayoutTextControlMultiLine::BaselinePosition(
 LayoutObject* LayoutTextControlMultiLine::LayoutSpecialExcludedChild(
     bool relayout_children,
     SubtreeLayoutScope& layout_scope) {
+  NOT_DESTROYED();
   LayoutObject* placeholder_layout_object =
       LayoutTextControl::LayoutSpecialExcludedChild(relayout_children,
                                                     layout_scope);
@@ -98,7 +78,7 @@ LayoutObject* LayoutTextControlMultiLine::LayoutSpecialExcludedChild(
     return nullptr;
   if (!placeholder_layout_object->IsBox())
     return placeholder_layout_object;
-  LayoutBox* placeholder_box = ToLayoutBox(placeholder_layout_object);
+  auto* placeholder_box = To<LayoutBox>(placeholder_layout_object);
   placeholder_box->LayoutIfNeeded();
   placeholder_box->SetX(BorderLeft() + PaddingLeft());
   placeholder_box->SetY(BorderTop() + PaddingTop());

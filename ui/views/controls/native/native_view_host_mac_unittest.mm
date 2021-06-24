@@ -8,7 +8,7 @@
 
 #include <memory>
 
-#import "base/mac/scoped_nsautorelease_pool.h"
+#include "base/mac/mac_util.h"
 #import "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
 #import "testing/gtest_mac.h"
@@ -36,6 +36,9 @@ class TestViewsHostable : public ui::ViewsHostableView {
       gfx::NativeViewAccessible parent_accessibility_element) override {
     parent_accessibility_element_ = parent_accessibility_element;
   }
+  gfx::NativeViewAccessible ViewsHostableGetParentAccessible() override {
+    return parent_accessibility_element_;
+  }
   gfx::NativeViewAccessible ViewsHostableGetAccessibilityElement() override {
     return nil;
   }
@@ -47,7 +50,7 @@ class TestViewsHostable : public ui::ViewsHostableView {
 @property(nonatomic, assign) ui::ViewsHostableView* viewsHostableView;
 @end
 @implementation TestViewsHostableView
-@synthesize viewsHostableView = viewsHostableView_;
+@synthesize viewsHostableView = _viewsHostableView;
 @end
 
 namespace views {
@@ -126,6 +129,8 @@ TEST_F(NativeViewHostMacTest, Attach) {
   EXPECT_TRUE([native_view_ superview]);
   EXPECT_TRUE([native_view_ window]);
 
+  // Layout() is normally async, call it now to ensure bounds have been applied.
+  host()->Layout();
   // Expect the top-left to be 10 pixels below the titlebar.
   int bottom = toplevel()->GetClientAreaBoundsInScreen().height() - 10 - 60;
   EXPECT_NSEQ(NSMakeRect(10, bottom, 80, 60), [native_view_ frame]);
@@ -160,13 +165,17 @@ TEST_F(NativeViewHostMacTest, ContentViewPositionAndSize) {
   CreateHost();
   toplevel()->SetBounds(gfx::Rect(0, 0, 100, 100));
 
-  // TODO(amp): Update expect rect after Mac native size is implemented.
-  // For now the native size is ignored on mac.
+  // The new visual style on macOS 11 (and presumably later) has slightly taller
+  // titlebars, which means the window rect has to leave a bit of extra space
+  // for the titlebar.
+  int titlebar_extra = base::mac::IsAtLeastOS11() ? 6 : 0;
+
   native_host()->ShowWidget(5, 10, 100, 100, 200, 200);
-  EXPECT_NSEQ(NSMakeRect(5, -32, 100, 100), [native_view_ frame]);
+  EXPECT_NSEQ(NSMakeRect(5, -32 - titlebar_extra, 100, 100),
+              [native_view_ frame]);
 
   native_host()->ShowWidget(10, 25, 50, 50, 50, 50);
-  EXPECT_NSEQ(NSMakeRect(10, 3, 50, 50), [native_view_ frame]);
+  EXPECT_NSEQ(NSMakeRect(10, 3 - titlebar_extra, 50, 50), [native_view_ frame]);
 
   DestroyHost();
 }
@@ -198,6 +207,9 @@ TEST_F(NativeViewHostMacTest, NativeViewHidden) {
   host()->SetVisible(true);
   EXPECT_TRUE([native_view_ isHidden]);  // Stays hidden.
   host()->Attach(native_view_.get());
+  // Layout() updates visibility, and is normally async, call it now to ensure
+  // visibility updated.
+  host()->Layout();
   EXPECT_FALSE([native_view_ isHidden]);  // Made visible when attached.
 
   EXPECT_TRUE([native_view_ superview]);
@@ -215,8 +227,7 @@ TEST_F(NativeViewHostMacTest, NativeViewHidden) {
 // Check that we can destroy cleanly even if the native view has already been
 // released.
 TEST_F(NativeViewHostMacTest, NativeViewReleased) {
-  {
-    base::mac::ScopedNSAutoreleasePool pool;
+  @autoreleasepool {
     CreateHost();
     // In practice the native view is a WebContentsViewCocoa which is retained
     // by its superview (a TabContentsContainerView) and by WebContentsViewMac.

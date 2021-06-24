@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_SCRIPT_WRAPPABLE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_SCRIPT_WRAPPABLE_H_
 
-#include "base/macros.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/bindings/name_client.h"
 #include "third_party/blink/renderer/platform/bindings/trace_wrapper_v8_reference.h"
@@ -43,21 +42,36 @@
 
 namespace blink {
 
+class ScriptState;
+
 // ScriptWrappable provides a way to map from/to C++ DOM implementation to/from
 // JavaScript object (platform object).  ToV8() converts a ScriptWrappable to
 // a v8::Object and toScriptWrappable() converts a v8::Object back to
 // a ScriptWrappable.  v8::Object as platform object is called "wrapper object".
 // The wrapper object for the main world is stored in ScriptWrappable.  Wrapper
-// objects for other worlds are stored in DOMWrapperMap.
+// objects for other worlds are stored in DOMDataStore.
 class PLATFORM_EXPORT ScriptWrappable
-    : public GarbageCollectedFinalized<ScriptWrappable>,
+    : public GarbageCollected<ScriptWrappable>,
       public NameClient {
  public:
-  virtual ~ScriptWrappable() = default;
+  ScriptWrappable(const ScriptWrappable&) = delete;
+  ScriptWrappable& operator=(const ScriptWrappable&) = delete;
+  ~ScriptWrappable() override = default;
 
-  virtual void Trace(blink::Visitor*);
+  // The following methods may override lifetime of ScriptWrappable objects when
+  // needed. In particular if |HasPendingActivity| or |HasEventListeners|
+  // returns true *and* the child type also inherits from
+  // |ActiveScriptWrappable|, the objects will not be reclaimed by the GC, even
+  // if they are otherwise unreachable.
+  //
+  // Note: These methods are queried during garbage collection and *must not*
+  // allocate any new objects.
+  virtual bool HasPendingActivity() const { return false; }
+  virtual bool HasEventListeners() const { return false; }
 
   const char* NameInHeapSnapshot() const override;
+
+  virtual void Trace(Visitor*) const;
 
   template <typename T>
   T* ToImpl() {
@@ -67,16 +81,14 @@ class PLATFORM_EXPORT ScriptWrappable
         sizeof(T) && WTF::IsGarbageCollectedType<T>::value,
         "Classes implementing ScriptWrappable must be garbage collected.");
 
-// Check if T* is castable to ScriptWrappable*, which means T doesn't
-// have two or more ScriptWrappable as superclasses. If T has two
-// ScriptWrappable as superclasses, conversions from T* to
-// ScriptWrappable* are ambiguous.
-#if !defined(COMPILER_MSVC)
-    // MSVC 2013 doesn't support static_assert + constexpr well.
+    // Check if T* is castable to ScriptWrappable*, which means T doesn't
+    // have two or more ScriptWrappable as superclasses. If T has two
+    // ScriptWrappable as superclasses, conversions from T* to
+    // ScriptWrappable* are ambiguous.
     static_assert(!static_cast<ScriptWrappable*>(static_cast<T*>(nullptr)),
                   "Class T must not have two or more ScriptWrappable as its "
                   "superclasses.");
-#endif
+
     return static_cast<T*>(this);
   }
 
@@ -86,8 +98,7 @@ class PLATFORM_EXPORT ScriptWrappable
   virtual const WrapperTypeInfo* GetWrapperTypeInfo() const = 0;
 
   // Creates and returns a new wrapper object.
-  virtual v8::Local<v8::Object> Wrap(v8::Isolate*,
-                                     v8::Local<v8::Object> creation_context);
+  virtual v8::MaybeLocal<v8::Value> Wrap(ScriptState*);
 
   // Associates the instance with the given |wrapper| if this instance is not
   // yet associated with any wrapper.  Returns the wrapper already associated
@@ -97,11 +108,6 @@ class PLATFORM_EXPORT ScriptWrappable
       v8::Isolate*,
       const WrapperTypeInfo*,
       v8::Local<v8::Object> wrapper);
-
-  // Returns true if the instance needs to be kept alive even when the
-  // instance is unreachable from JavaScript.
-  virtual bool HasPendingActivity() const { return false; }
-  virtual bool HasEventListeners() const { return false; }
 
   // Associates this instance with the given |wrapper| if this instance is not
   // yet associated with any wrapper.  Returns true if the given wrapper is
@@ -122,14 +128,6 @@ class PLATFORM_EXPORT ScriptWrappable
     return true;
   }
 
-  // Dissociates the wrapper, if any, from this instance.
-  void UnsetWrapperIfAny() {
-    if (ContainsWrapper()) {
-      main_world_wrapper_.Get().Reset();
-      WrapperTypeInfo::WrapperDestroyed();
-    }
-  }
-
   bool IsEqualTo(const v8::Local<v8::Object>& other) const {
     return main_world_wrapper_.Get() == other;
   }
@@ -145,20 +143,38 @@ class PLATFORM_EXPORT ScriptWrappable
   ScriptWrappable() = default;
 
  private:
-  // These classes are exceptionally allowed to use MainWorldWrapper().
-  friend class DOMDataStore;
-  friend class HeapSnaphotWrapperVisitor;
-  friend class V8HiddenValue;
-  friend class V8PrivateProperty;
-
   v8::Local<v8::Object> MainWorldWrapper(v8::Isolate* isolate) const {
     return main_world_wrapper_.NewLocal(isolate);
   }
 
+  // Clear the main world wrapper if it is set to |handle|.
+  bool UnsetMainWorldWrapperIfSet(
+      const v8::TracedReference<v8::Object>& handle);
+
+  static_assert(
+      std::is_trivially_destructible<
+          TraceWrapperV8Reference<v8::Object>>::value,
+      "TraceWrapperV8Reference<v8::Object> should be trivially destructible.");
+
   TraceWrapperV8Reference<v8::Object> main_world_wrapper_;
 
-  DISALLOW_COPY_AND_ASSIGN(ScriptWrappable);
+  // These classes are exceptionally allowed to directly interact with the main
+  // world wrapper.
+  friend class DOMDataStore;
+  friend class DOMWrapperWorld;
+  friend class HeapSnaphotWrapperVisitor;
+  friend class V8HiddenValue;
+  friend class V8PrivateProperty;
 };
+
+inline bool ScriptWrappable::UnsetMainWorldWrapperIfSet(
+    const v8::TracedReference<v8::Object>& handle) {
+  if (main_world_wrapper_.Get() == handle) {
+    main_world_wrapper_.Clear();
+    return true;
+  }
+  return false;
+}
 
 // Defines |GetWrapperTypeInfo| virtual method which returns the WrapperTypeInfo
 // of the instance. Also declares a static member of type WrapperTypeInfo, of
@@ -170,6 +186,9 @@ class PLATFORM_EXPORT ScriptWrappable
 #define DEFINE_WRAPPERTYPEINFO()                               \
  public:                                                       \
   const WrapperTypeInfo* GetWrapperTypeInfo() const override { \
+    return &wrapper_type_info_;                                \
+  }                                                            \
+  static const WrapperTypeInfo* GetStaticWrapperTypeInfo() {   \
     return &wrapper_type_info_;                                \
   }                                                            \
                                                                \

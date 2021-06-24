@@ -29,7 +29,7 @@ class BackgroundFetchJobController;
 class BackgroundFetchRegistrationId;
 class BackgroundFetchRegistrationNotifier;
 class BackgroundFetchRequestInfo;
-class DevToolsBackgroundServicesContext;
+class DevToolsBackgroundServicesContextImpl;
 
 // Maintains a list of Controllers and chooses which ones should launch new
 // downloads.
@@ -42,7 +42,7 @@ class CONTENT_EXPORT BackgroundFetchScheduler
       BackgroundFetchDataManager* data_manager,
       BackgroundFetchRegistrationNotifier* registration_notifier,
       BackgroundFetchDelegateProxy* delegate_proxy,
-      DevToolsBackgroundServicesContext* devtools_context,
+      DevToolsBackgroundServicesContextImpl* devtools_context,
       scoped_refptr<ServiceWorkerContextWrapper> service_worker_context);
   ~BackgroundFetchScheduler() override;
 
@@ -140,10 +140,11 @@ class CONTENT_EXPORT BackgroundFetchScheduler
 
   void DispatchClickEvent(const std::string& unique_id);
 
-  // Information needed to send over to the DevToolsBackgroundServicesContext.
-  // |event| is an enum describing the stage of the fetch. |request_info| is
-  // nullptr if not available at the moment. Any additional data to log can be
-  // passed through the |metadata| map.
+  // Information needed to send over to the
+  // DevToolsBackgroundServicesContextImpl. |event| is an enum describing the
+  // stage of the fetch. |request_info| is nullptr if not available at the
+  // moment. Any additional data to log can be passed through the |metadata|
+  // map.
   void LogBackgroundFetchEventForDevTools(
       Event event,
       const BackgroundFetchRegistrationId& registration_id,
@@ -154,7 +155,7 @@ class CONTENT_EXPORT BackgroundFetchScheduler
   BackgroundFetchDataManager* data_manager_;
   BackgroundFetchRegistrationNotifier* registration_notifier_;
   BackgroundFetchDelegateProxy* delegate_proxy_;
-  DevToolsBackgroundServicesContext* devtools_context_;
+  DevToolsBackgroundServicesContextImpl* devtools_context_;
 
   BackgroundFetchEventDispatcher event_dispatcher_;
 
@@ -170,14 +171,23 @@ class CONTENT_EXPORT BackgroundFetchScheduler
   // The current fetch job controllers that are being processed.
   base::circular_deque<BackgroundFetchJobController*> active_controllers_;
 
-  // Map from |unique_id|s to {|registration_id|, |registration|}.
+  struct RegistrationData {
+    RegistrationData(
+        const BackgroundFetchRegistrationId& registration_id,
+        blink::mojom::BackgroundFetchRegistrationDataPtr registration);
+    ~RegistrationData();
+
+    BackgroundFetchRegistrationId registration_id;
+    blink::mojom::BackgroundFetchRegistrationDataPtr registration;
+    // Wheter all processing is completed and this data is safe to erase now.
+    bool processing_completed = false;
+  };
+
+  // Map from |unique_id|s to the registration data.
   // An entry in here means the fetch has completed. This information is needed
   // after the fetch has completed to dispatch the backgroundfetchclick event.
   // TODO(crbug.com/857122): Clean this up when the UI is no longer showing.
-  std::map<std::string,
-           std::pair<BackgroundFetchRegistrationId,
-                     blink::mojom::BackgroundFetchRegistrationDataPtr>>
-      completed_fetches_;
+  std::map<std::string, std::unique_ptr<RegistrationData>> completed_fetches_;
 
   // Scheduling params - Finch configurable.
   int max_running_downloads_;
@@ -185,7 +195,7 @@ class CONTENT_EXPORT BackgroundFetchScheduler
   int num_active_registrations_ = 0;
   int num_running_downloads_ = 0;
 
-  base::WeakPtrFactory<BackgroundFetchScheduler> weak_ptr_factory_;
+  base::WeakPtrFactory<BackgroundFetchScheduler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundFetchScheduler);
 };

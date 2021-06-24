@@ -8,23 +8,46 @@
 #include "components/exo/surface.h"
 #include "components/exo/wm_helper.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
+#include "ui/aura/window_occlusion_tracker.h"
 #include "ui/aura/window_targeter.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/compositor.h"
-#include "ui/compositor/dip_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/window_util.h"
 
 namespace exo {
 
-FullscreenShellSurface::FullscreenShellSurface(Surface* surface)
+class FullscreenShellSurface::FullscreenShellView : public views::View {
+ public:
+  METADATA_HEADER(FullscreenShellView);
+  FullscreenShellView() = default;
+  FullscreenShellView(const FullscreenShellView&) = delete;
+  FullscreenShellView& operator=(const FullscreenShellView&) = delete;
+  ~FullscreenShellView() override = default;
+
+  // views::View:
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
+    node_data->role = ax::mojom::Role::kClient;
+  }
+
+  void SetChildAxTreeId(ui::AXTreeID child_ax_tree_id) {
+    GetViewAccessibility().OverrideChildTreeID(child_ax_tree_id);
+  }
+};
+
+BEGIN_METADATA(FullscreenShellSurface, FullscreenShellView, views::View)
+END_METADATA
+
+FullscreenShellSurface::FullscreenShellSurface()
     : SurfaceTreeHost("FullscreenShellSurfaceHost") {
-  surface->AddSurfaceObserver(this);
-  SetRootSurface(surface);
-  host_window()->Show();
-  set_owned_by_client();
   CreateFullscreenShellSurfaceWidget(ui::SHOW_STATE_FULLSCREEN);
+  SetCanResize(false);
   widget_->SetFullscreen(true);
 }
 
@@ -64,6 +87,21 @@ void FullscreenShellSurface::SetStartupId(const char* startup_id) {
 
   if (widget_ && widget_->GetNativeWindow())
     SetShellStartupId(widget_->GetNativeWindow(), startup_id_);
+}
+
+void FullscreenShellSurface::SetSurface(Surface* surface) {
+  if (root_surface())
+    root_surface()->RemoveSurfaceObserver(this);
+  SetRootSurface(surface);
+  SetShellRootSurface(widget_->GetNativeWindow(), root_surface());
+  if (surface) {
+    surface->AddSurfaceObserver(this);
+    host_window()->Show();
+    widget_->Show();
+  } else {
+    host_window()->Hide();
+    widget_->Hide();
+  }
 }
 
 void FullscreenShellSurface::Maximize() {
@@ -117,7 +155,7 @@ void FullscreenShellSurface::OnSurfaceDestroying(Surface* surface) {
   SetRootSurface(nullptr);
 
   if (widget_)
-    SetShellMainSurface(widget_->GetNativeWindow(), nullptr);
+    SetShellRootSurface(widget_->GetNativeWindow(), nullptr);
 
   // Hide widget before surface is destroyed. This allows hide animations to
   // run using the current surface contents.
@@ -135,10 +173,6 @@ void FullscreenShellSurface::OnSurfaceDestroying(Surface* surface) {
   std::move(surface_destroyed_callback_).Run();
 }
 
-bool FullscreenShellSurface::CanResize() const {
-  return false;
-}
-
 bool FullscreenShellSurface::CanMaximize() const {
   return true;
 }
@@ -152,7 +186,8 @@ bool FullscreenShellSurface::ShouldShowWindowTitle() const {
 }
 
 void FullscreenShellSurface::WindowClosing() {
-  SetEnabled(false);
+  contents_view_->SetEnabled(false);
+  contents_view_ = nullptr;
   widget_ = nullptr;
 }
 
@@ -165,7 +200,9 @@ const views::Widget* FullscreenShellSurface::GetWidget() const {
 }
 
 views::View* FullscreenShellSurface::GetContentsView() {
-  return this;
+  if (!contents_view_)
+    contents_view_ = new FullscreenShellView();
+  return contents_view_;
 }
 
 bool FullscreenShellSurface::WidgetHasHitTestMask() const {
@@ -195,24 +232,44 @@ void FullscreenShellSurface::OnWindowDestroying(aura::Window* window) {
   window->RemoveObserver(this);
 }
 
+void FullscreenShellSurface::SetChildAxTreeId(ui::AXTreeID child_ax_tree_id) {
+  DCHECK(contents_view_);
+  contents_view_->SetChildAxTreeId(child_ax_tree_id);
+}
+
+void FullscreenShellSurface::SetEnabled(bool enabled) {
+  DCHECK(contents_view_);
+  contents_view_->SetEnabled(enabled);
+}
+
+void FullscreenShellSurface::UpdateHostWindowBounds() {
+  // This method applies multiple changes to the window tree. Use ScopedPause
+  // to ensure that occlusion isn't recomputed before all changes have been
+  // applied.
+  aura::WindowOcclusionTracker::ScopedPause pause_occlusion;
+
+  host_window()->SetBounds(
+      gfx::Rect(root_surface()->window()->bounds().size()));
+  host_window()->SetTransparent(!root_surface()->FillsBoundsOpaquely());
+}
+
 void FullscreenShellSurface::CreateFullscreenShellSurfaceWidget(
     ui::WindowShowState show_state) {
-  DCHECK(enabled());
   DCHECK(!widget_);
 
   views::Widget::InitParams params;
   params.type = views::Widget::InitParams::TYPE_WINDOW_FRAMELESS;
   params.ownership = views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET;
   params.delegate = this;
-  params.shadow_type = views::Widget::InitParams::SHADOW_TYPE_NONE;
-  params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
+  params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.show_state = show_state;
-  params.activatable = views::Widget::InitParams::ACTIVATABLE_YES;
+  params.activatable = views::Widget::InitParams::Activatable::kYes;
   params.parent = WMHelper::GetInstance()->GetRootWindowForNewWindows();
   params.bounds = gfx::Rect(params.parent->bounds().size());
 
   widget_ = new views::Widget();
-  widget_->Init(params);
+  widget_->Init(std::move(params));
 
   aura::Window* window = widget_->GetNativeWindow();
   window->SetName("FullscreenShellSurface");
@@ -220,7 +277,7 @@ void FullscreenShellSurface::CreateFullscreenShellSurfaceWidget(
 
   SetShellApplicationId(window, application_id_);
   SetShellStartupId(window, startup_id_);
-  SetShellMainSurface(window, root_surface());
+  SetShellRootSurface(window, root_surface());
 
   window->AddObserver(this);
 }
@@ -237,8 +294,12 @@ void FullscreenShellSurface::CommitWidget() {
 }
 
 bool FullscreenShellSurface::OnPreWidgetCommit() {
-  if (!widget_ && enabled() && host_window()->bounds().IsEmpty())
+  // If we have a |widget_|, then we must have a |contents_view_| as both are
+  // created together.
+  if (!widget_ && contents_view_->GetEnabled() &&
+      host_window()->bounds().IsEmpty()) {
     return false;
+  }
 
   return true;
 }

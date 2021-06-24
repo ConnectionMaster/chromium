@@ -5,9 +5,10 @@
 #include <algorithm>
 #include <vector>
 
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/vr/test/multi_class_browser_test.h"
 #include "chrome/browser/vr/test/ui_utils.h"
 #include "chrome/browser/vr/test/webxr_vr_browser_test.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
@@ -53,7 +54,7 @@ std::vector<TestContentSettings> ExtractFrom(
 }
 
 void SetMultipleContentSetting(
-    WebXrVrBrowserTestStandard* t,
+    WebXrVrBrowserTestBase* t,
     const std::vector<TestContentSettings>& test_settings) {
   HostContentSettingsMap* host_content_settings_map =
       HostContentSettingsMapFactory::GetForProfile(Profile::FromBrowserContext(
@@ -62,14 +63,13 @@ void SetMultipleContentSetting(
     host_content_settings_map->SetContentSettingDefaultScope(
         t->GetCurrentWebContents()->GetLastCommittedURL(),
         t->GetCurrentWebContents()->GetLastCommittedURL(),
-        s.content_setting_type, std::string(), s.content_setting);
+        s.content_setting_type, s.content_setting);
 }
 
 void LoadGenericPageChangeDefaultPermissionAndEnterVr(
-    WebXrVrBrowserTestStandard* t,
+    WebXrVrBrowserTestBase* t,
     const std::vector<TestContentSettings>& test_settings) {
-  t->LoadUrlAndAwaitInitialization(
-      t->GetEmbeddedServerUrlForHtmlTestFile("generic_webxr_page"));
+  t->LoadFileAndAwaitInitialization("generic_webxr_page");
   SetMultipleContentSetting(t, test_settings);
   t->EnterSessionWithUserGestureOrFail();
 }
@@ -77,7 +77,7 @@ void LoadGenericPageChangeDefaultPermissionAndEnterVr(
 // Tests that indicators are displayed in the headset when a device becomes
 // in-use.
 void TestIndicatorOnAccessForContentType(
-    WebXrVrBrowserTestStandard* t,
+    WebXrVrBrowserTestBase* t,
     ContentSettingsType content_setting_type,
     const std::string& script,
     UserFriendlyElementName element_name) {
@@ -101,7 +101,7 @@ void TestIndicatorOnAccessForContentType(
 
 // Tests indicators on entering immersive session.
 void TestForInitialIndicatorForContentType(
-    WebXrVrBrowserTestStandard* t,
+    WebXrVrBrowserTestBase* t,
     const std::vector<TestIndicatorSetting>& test_indicator_settings) {
   DCHECK(!test_indicator_settings.empty());
   // Enter VR while the content setting is CONTENT_SETTING_ASK to suppress
@@ -121,111 +121,104 @@ void TestForInitialIndicatorForContentType(
 }  // namespace
 
 // Tests for indicators when they become in-use
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard, TestLocationInUseIndicator) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(TestLocationInUseIndicator) {
   // Asking for location seems to work without any hardware/machine specific
   // enabling/capability (unlike microphone, camera). Hence, this test.
   TestIndicatorOnAccessForContentType(
-      this, CONTENT_SETTINGS_TYPE_GEOLOCATION,
+      t, ContentSettingsType::GEOLOCATION,
       "navigator.geolocation.getCurrentPosition( ()=>{}, ()=>{} )",
       UserFriendlyElementName::kWebXrLocationPermissionIndicator);
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       DISABLED_TestMicrophoneInUseIndicator) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(DISABLED_TestMicrophoneInUseIndicator) {
   TestIndicatorOnAccessForContentType(
-      this, CONTENT_SETTINGS_TYPE_MEDIASTREAM_MIC,
+      t, ContentSettingsType::MEDIASTREAM_MIC,
       "navigator.getUserMedia( {audio : true},  ()=>{}, ()=>{} )",
       UserFriendlyElementName::kWebXrAudioIndicator);
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       DISABLED_TestCameraInUseIndicator) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(DISABLED_TestCameraInUseIndicator) {
   TestIndicatorOnAccessForContentType(
-      this, CONTENT_SETTINGS_TYPE_MEDIASTREAM_CAMERA,
+      t, ContentSettingsType::MEDIASTREAM_CAMERA,
       "navigator.getUserMedia( {video : true},  ()=>{}, ()=>{} )",
       UserFriendlyElementName::kWebXrVideoPermissionIndicator);
 }
 
 // Single indicator tests on entering immersive session
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestLocationIndicatorWhenPermissionInitiallyAllowed) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestLocationIndicatorWhenPermissionInitiallyAllowed) {
   TestForInitialIndicatorForContentType(
-      this,
-      {{CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_ALLOW,
-        UserFriendlyElementName::kWebXrLocationPermissionIndicator, true}});
+      t, {{ContentSettingsType::GEOLOCATION, CONTENT_SETTING_ALLOW,
+           UserFriendlyElementName::kWebXrLocationPermissionIndicator, true}});
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestLocationIndicatorWhenPermissionInitiallyBlocked) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestLocationIndicatorWhenPermissionInitiallyBlocked) {
   TestForInitialIndicatorForContentType(
-      this,
-      {{CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_BLOCK,
-        UserFriendlyElementName::kWebXrLocationPermissionIndicator, false}});
+      t, {{ContentSettingsType::GEOLOCATION, CONTENT_SETTING_BLOCK,
+           UserFriendlyElementName::kWebXrLocationPermissionIndicator, false}});
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestLocationIndicatorWhenUserAskedToPrompt) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestLocationIndicatorWhenUserAskedToPrompt) {
   TestForInitialIndicatorForContentType(
-      this,
-      {{CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_ASK,
-        UserFriendlyElementName::kWebXrLocationPermissionIndicator, false}});
+      t, {{ContentSettingsType::GEOLOCATION, CONTENT_SETTING_ASK,
+           UserFriendlyElementName::kWebXrLocationPermissionIndicator, false}});
 }
 
 // Indicator combination tests on entering immersive session
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestMultipleInitialIndicators_NoDevicesAllowed) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestMultipleInitialIndicators_NoDevicesAllowed) {
   TestForInitialIndicatorForContentType(
-      this,
+      t,
       {
-          {CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_ASK,
+          {ContentSettingsType::GEOLOCATION, CONTENT_SETTING_ASK,
            UserFriendlyElementName::kWebXrLocationPermissionIndicator, false},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_MIC, CONTENT_SETTING_ASK,
+          {ContentSettingsType::MEDIASTREAM_MIC, CONTENT_SETTING_ASK,
            UserFriendlyElementName::kWebXrAudioIndicator, false},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_CAMERA, CONTENT_SETTING_BLOCK,
+          {ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_BLOCK,
            UserFriendlyElementName::kWebXrVideoPermissionIndicator, false},
       });
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestMultipleInitialIndicators_OneDeviceAllowed) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestMultipleInitialIndicators_OneDeviceAllowed) {
   TestForInitialIndicatorForContentType(
-      this,
+      t,
       {
-          {CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_ASK,
+          {ContentSettingsType::GEOLOCATION, CONTENT_SETTING_ASK,
            UserFriendlyElementName::kWebXrLocationPermissionIndicator, false},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_MIC, CONTENT_SETTING_ALLOW,
+          {ContentSettingsType::MEDIASTREAM_MIC, CONTENT_SETTING_ALLOW,
            UserFriendlyElementName::kWebXrAudioIndicator, true},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_CAMERA, CONTENT_SETTING_BLOCK,
+          {ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_BLOCK,
            UserFriendlyElementName::kWebXrVideoPermissionIndicator, false},
       });
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestMultipleInitialIndicators_TwoDevicesAllowed) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestMultipleInitialIndicators_TwoDevicesAllowed) {
   TestForInitialIndicatorForContentType(
-      this,
-      {
-          {CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_ALLOW,
-           UserFriendlyElementName::kWebXrLocationPermissionIndicator, true},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_MIC, CONTENT_SETTING_BLOCK,
-           UserFriendlyElementName::kWebXrAudioIndicator, false},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW,
-           UserFriendlyElementName::kWebXrVideoPermissionIndicator, true},
-      });
+      t, {
+             {ContentSettingsType::GEOLOCATION, CONTENT_SETTING_ALLOW,
+              UserFriendlyElementName::kWebXrLocationPermissionIndicator, true},
+             {ContentSettingsType::MEDIASTREAM_MIC, CONTENT_SETTING_BLOCK,
+              UserFriendlyElementName::kWebXrAudioIndicator, false},
+             {ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW,
+              UserFriendlyElementName::kWebXrVideoPermissionIndicator, true},
+         });
 }
 
-IN_PROC_BROWSER_TEST_F(WebXrVrBrowserTestStandard,
-                       TestMultipleInitialIndicators_ThreeDevicesAllowed) {
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(
+    TestMultipleInitialIndicators_ThreeDevicesAllowed) {
   TestForInitialIndicatorForContentType(
-      this,
-      {
-          {CONTENT_SETTINGS_TYPE_GEOLOCATION, CONTENT_SETTING_ALLOW,
-           UserFriendlyElementName::kWebXrLocationPermissionIndicator, true},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_MIC, CONTENT_SETTING_ALLOW,
-           UserFriendlyElementName::kWebXrAudioIndicator, true},
-          {CONTENT_SETTINGS_TYPE_MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW,
-           UserFriendlyElementName::kWebXrVideoPermissionIndicator, true},
-      });
+      t, {
+             {ContentSettingsType::GEOLOCATION, CONTENT_SETTING_ALLOW,
+              UserFriendlyElementName::kWebXrLocationPermissionIndicator, true},
+             {ContentSettingsType::MEDIASTREAM_MIC, CONTENT_SETTING_ALLOW,
+              UserFriendlyElementName::kWebXrAudioIndicator, true},
+             {ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW,
+              UserFriendlyElementName::kWebXrVideoPermissionIndicator, true},
+         });
 }
 
 }  // namespace vr

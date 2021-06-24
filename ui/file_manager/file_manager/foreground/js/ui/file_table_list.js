@@ -2,6 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {assert} from 'chrome://resources/js/assert.m.js';
+import {isMac} from 'chrome://resources/js/cr.m.js';
+import {List} from 'chrome://resources/js/cr/ui/list.m.js';
+import {ListItem} from 'chrome://resources/js/cr/ui/list_item.m.js';
+import {ListSelectionController} from 'chrome://resources/js/cr/ui/list_selection_controller.m.js';
+import {ListSelectionModel} from 'chrome://resources/js/cr/ui/list_selection_model.m.js';
+
+import {FileType} from '../../../common/js/file_type.js';
+import {str, strf, util} from '../../../common/js/util.m.js';
+import {EntryLocation} from '../../../externs/entry_location.js';
+import {FilesAppEntry} from '../../../externs/files_app_entry_interfaces.js';
+import {MetadataModel} from '../metadata/metadata_model.js';
+
+import {A11yAnnounce} from './a11y_announce.js';
+import {FileListSelectionModel, FileListSingleSelectionModel} from './file_list_selection_model.js';
+import {FileTapHandler} from './file_tap_handler.js';
+import {TableList} from './table/table_list.js';
+
 /**
  * Namespace for utility functions.
  */
@@ -10,7 +28,7 @@ const filelist = {};
 /**
  * File table list.
  */
-class FileTableList extends cr.ui.table.TableList {
+export class FileTableList extends TableList {
   constructor() {
     // To silence closure compiler.
     super();
@@ -33,7 +51,7 @@ class FileTableList extends cr.ui.table.TableList {
 
   /** @override */
   mergeItems(beginIndex, endIndex) {
-    cr.ui.table.TableList.prototype.mergeItems.call(this, beginIndex, endIndex);
+    super.mergeItems(beginIndex, endIndex);
 
     // Make sure that list item's selected attribute is updated just after the
     // mergeItems operation is done. This prevents checkmarks on selected items
@@ -44,7 +62,7 @@ class FileTableList extends cr.ui.table.TableList {
         continue;
       }
       const isSelected = this.selectionModel.getIndexSelected(i);
-      if (item.selected != isSelected) {
+      if (item.selected !== isSelected) {
         item.selected = isSelected;
       }
     }
@@ -56,36 +74,51 @@ class FileTableList extends cr.ui.table.TableList {
 
   /** @override */
   createSelectionController(sm) {
-    return new FileListSelectionController(assert(sm));
+    return new FileListSelectionController(assert(sm), this);
+  }
+
+  /** @return {A11yAnnounce} */
+  get a11y() {
+    return this.table.a11y;
+  }
+
+  /**
+   * @param {number} index Index of the list item.
+   * @return {string}
+   */
+  getItemLabel(index) {
+    return this.table.getItemLabel(index);
   }
 }
 
 /**
  * Decorates TableList as FileTableList.
- * @param {!cr.ui.table.TableList} self A tabel list element.
+ * @param {!TableList} self A table list element.
  */
 FileTableList.decorate = self => {
   self.__proto__ = FileTableList.prototype;
   self.setAttribute('aria-multiselectable', true);
-  self.onMergeItems_ = null;
+  self.setAttribute('aria-describedby', 'more-actions-info');
+  /** @type {FileTableList} */ (self).onMergeItems_ = null;
 };
 
 /**
  * Selection controller for the file table list.
  */
-class FileListSelectionController extends cr.ui.ListSelectionController {
+class FileListSelectionController extends ListSelectionController {
   /**
-   * @param {!cr.ui.ListSelectionModel} selectionModel The selection model to
+   * @param {!ListSelectionModel} selectionModel The selection model to
    *     interact with.
+   * @param {!FileTableList} tableList
    */
-  constructor(selectionModel) {
+  constructor(selectionModel, tableList) {
     super(selectionModel);
 
-    /**
-     * @type {!FileTapHandler}
-     * @const
-     */
+    /** @const @private {!FileTapHandler} */
     this.tapHandler_ = new FileTapHandler();
+
+    /** @const @private {!FileTableList} */
+    this.tableList_ = tableList;
   }
 
   /** @override */
@@ -96,7 +129,7 @@ class FileListSelectionController extends cr.ui.ListSelectionController {
   /** @override */
   handleTouchEvents(e, index) {
     if (this.tapHandler_.handleTouchEvents(
-            e, index, filelist.handleTap.bind(this))) {
+            assert(e), index, filelist.handleTap.bind(this))) {
       // If a tap event is processed, FileTapHandler cancels the event to
       // prevent triggering click events. Then it results not moving the focus
       // to the list. So we do that here explicitly.
@@ -108,11 +141,16 @@ class FileListSelectionController extends cr.ui.ListSelectionController {
   handleKeyDown(e) {
     filelist.handleKeyDown.call(this, e);
   }
+
+  /** @return {!FileTableList} */
+  get filesView() {
+    return this.tableList_;
+  }
 }
 
 /**
  * Common item decoration for table's and grid's items.
- * @param {cr.ui.ListItem} li List item.
+ * @param {ListItem} li List item.
  * @param {Entry|FilesAppEntry} entry The entry.
  * @param {!MetadataModel} metadataModel Cache to
  *     retrieve metadada.
@@ -124,7 +162,7 @@ filelist.decorateListItem = (li, entry, metadataModel) => {
   // not on an external backend, externalProps is not available.
   const externalProps = metadataModel.getCache([entry], [
     'hosted', 'availableOffline', 'customIconUrl', 'shared', 'isMachineRoot',
-    'isExternalMedia'
+    'isExternalMedia', 'pinned'
   ])[0];
   filelist.updateListItemExternalProps(
       li, externalProps, util.isTeamDriveRoot(entry));
@@ -132,11 +170,10 @@ filelist.decorateListItem = (li, entry, metadataModel) => {
   // Overriding the default role 'list' to 'listbox' for better
   // accessibility on ChromeOS.
   li.setAttribute('role', 'option');
-  li.setAttribute('aria-describedby', 'more-actions-info');
 
   Object.defineProperty(li, 'selected', {
     /**
-     * @this {cr.ui.ListItem}
+     * @this {ListItem}
      * @return {boolean} True if the list item is selected.
      */
     get: function() {
@@ -144,7 +181,7 @@ filelist.decorateListItem = (li, entry, metadataModel) => {
     },
 
     /**
-     * @this {cr.ui.ListItem}
+     * @this {ListItem}
      */
     set: function(v) {
       if (v) {
@@ -194,27 +231,29 @@ filelist.renderFileNameLabel = (doc, entry, locationInfo) => {
 };
 
 /**
+ * Renders the Drive pinned marker in the detail table.
+ * @return {!HTMLDivElement} Created element.
+ */
+filelist.renderPinned = (doc) => {
+  const icon = /** @type {!HTMLDivElement} */ (doc.createElement('div'));
+  icon.className = 'detail-pinned';
+  icon.setAttribute('aria-label', str('OFFLINE_COLUMN_LABEL'));
+  return icon;
+};
+
+/**
  * Updates grid item or table row for the externalProps.
- * @param {cr.ui.ListItem} li List item.
+ * @param {ListItem} li List item.
  * @param {Object} externalProps Metadata.
  */
 filelist.updateListItemExternalProps = (li, externalProps, isTeamDriveRoot) => {
   if (li.classList.contains('file')) {
-    if (externalProps.availableOffline === false) {
-      li.classList.add('dim-offline');
-    } else {
-      li.classList.remove('dim-offline');
-    }
-    // TODO(mtomasz): Consider adding some vidual indication for files which
-    // are not cached on LTE. Currently we show them as normal files.
-    // crbug.com/246611.
-
-    if (externalProps.hosted === true) {
-      li.classList.add('dim-hosted');
-    } else {
-      li.classList.remove('dim-hosted');
-    }
+    li.classList.toggle(
+        'dim-offline', externalProps.availableOffline === false);
+    li.classList.toggle('dim-hosted', !!externalProps.hosted);
   }
+
+  li.classList.toggle('pinned', !!externalProps.pinned);
 
   const iconDiv = li.querySelector('.detail-icon');
   if (!iconDiv) {
@@ -245,22 +284,25 @@ filelist.updateListItemExternalProps = (li, externalProps, isTeamDriveRoot) => {
  * @param {!FileTapHandler.TapEvent} eventType
  * @return True if conducted any action. False when if did nothing special for
  *     tap.
- * @this {cr.ui.ListSelectionController}
+ * @this {ListSelectionController} either FileListSelectionController or
+ *     FileGridSelectionController.
  */
 filelist.handleTap = function(e, index, eventType) {
   const sm = /**
                 @type {!FileListSelectionModel|!FileListSingleSelectionModel}
                   */
       (this.selectionModel);
-  if (eventType == FileTapHandler.TapEvent.TWO_FINGER_TAP) {
+
+  if (eventType === FileTapHandler.TapEvent.TWO_FINGER_TAP) {
     // Prepare to open the context menu in the same manner as the right click.
     // If the target is any of the selected files, open a one for those files.
     // If the target is a non-selected file, cancel current selection and open
     // context menu for the single file.
     // Otherwise (when the target is the background), for the current folder.
-    if (index == -1) {
+    if (index === -1) {
       // Two-finger tap outside the list should be handled here because it does
       // not produce mousedown/click events.
+      this.filesView.a11y.speakA11yMessage(str('SELECTION_ALL_ENTRIES'));
       sm.unselectAll();
     } else {
       const indexSelected = sm.getIndexSelected(index);
@@ -274,6 +316,7 @@ filelist.handleTap = function(e, index, eventType) {
         sm.beginChange();
         sm.selectedIndex = index;
         sm.endChange();
+        const name = this.filesView.getItemLabel(index);
       }
     }
 
@@ -281,35 +324,48 @@ filelist.handleTap = function(e, index, eventType) {
     // 'contextmenu' event.
     return false;
   }
-  if (index == -1) {
+
+  if (index === -1) {
     return false;
   }
-  const isTap = eventType == FileTapHandler.TapEvent.TAP ||
-      eventType == FileTapHandler.TapEvent.LONG_TAP;
-  // Revert to click handling for single tap on checkbox or tap during rename.
-  // Single tap on the checkbox in the list view mode should toggle select.
-  // Single tap on input for rename should focus on input.
-  const isCheckbox = e.target.classList.contains('detail-checkmark');
-  const isRename = e.target.localName == 'input';
-  if (eventType == FileTapHandler.TapEvent.TAP && (isCheckbox || isRename)) {
+
+  // Single finger tap.
+  const isTap = eventType === FileTapHandler.TapEvent.TAP ||
+      eventType === FileTapHandler.TapEvent.LONG_TAP;
+  // Revert to click handling for single tap on the checkmark or rename input.
+  // Single tap on the item checkmark should toggle select the item.
+  // Single tap on rename input should focus on input.
+  const isCheckmark = e.target.classList.contains('detail-checkmark') ||
+      e.target.classList.contains('detail-icon');
+  const isRename = e.target.localName === 'input';
+  if (eventType === FileTapHandler.TapEvent.TAP && (isCheckmark || isRename)) {
     return false;
   }
+
   if (sm.multiple && sm.getCheckSelectMode() && isTap && !e.shiftKey) {
     // toggle item selection. Equivalent to mouse click on checkbox.
     sm.beginChange();
+
+    const name = this.filesView.getItemLabel(index);
+    const msgId = sm.getIndexSelected(index) ? 'SELECTION_ADD_SINGLE_ENTRY' :
+                                               'SELECTION_REMOVE_SINGLE_ENTRY';
+    this.filesView.a11y.speakA11yMessage(strf(msgId, name));
+
     sm.setIndexSelected(index, !sm.getIndexSelected(index));
     // Toggle the current one and make it anchor index.
     sm.leadIndex = index;
     sm.anchorIndex = index;
     sm.endChange();
     return true;
-  } else if (sm.multiple && (eventType == FileTapHandler.TapEvent.LONG_PRESS)) {
+  } else if (
+      sm.multiple && (eventType === FileTapHandler.TapEvent.LONG_PRESS)) {
     sm.beginChange();
     if (!sm.getCheckSelectMode()) {
       // Make sure to unselect the leading item that was not the touch target.
       sm.unselectAll();
       sm.setCheckSelectMode(true);
     }
+    const name = this.filesView.getItemLabel(index);
     sm.setIndexSelected(index, true);
     sm.leadIndex = index;
     sm.anchorIndex = index;
@@ -317,11 +373,12 @@ filelist.handleTap = function(e, index, eventType) {
     return true;
     // Do not toggle selection yet, so as to avoid unselecting before drag.
   } else if (
-      eventType == FileTapHandler.TapEvent.TAP && !sm.getCheckSelectMode()) {
+      eventType === FileTapHandler.TapEvent.TAP && !sm.getCheckSelectMode()) {
     // Single tap should open the item with default action.
     // Select the item, so that MainWindowComponent will execute action of it.
     sm.beginChange();
     sm.unselectAll();
+    const name = this.filesView.getItemLabel(index);
     sm.setIndexSelected(index, true);
     sm.leadIndex = index;
     sm.anchorIndex = index;
@@ -334,7 +391,7 @@ filelist.handleTap = function(e, index, eventType) {
  * Handles mouseup/mousedown events on file list to change the selection state.
  *
  * Basically the content of this function is identical to
- * cr.ui.ListSelectionController's handlePointerDownUp(), but following
+ * ListSelectionController's handlePointerDownUp(), but following
  * handlings are inserted to control the check-select mode.
  *
  * 1) When checkmark area is clicked, toggle item selection and enable the
@@ -345,15 +402,17 @@ filelist.handleTap = function(e, index, eventType) {
  * @param {!Event} e The browser mouse event.
  * @param {number} index The index that was under the mouse pointer, -1 if
  *     none.
- * @this {cr.ui.ListSelectionController}
+ * @this {ListSelectionController} either FileListSelectionController or
+ *     FileGridSelectionController.
  */
 filelist.handlePointerDownUp = function(e, index) {
   const sm = /**
                 @type {!FileListSelectionModel|!FileListSingleSelectionModel}
                   */
       (this.selectionModel);
+
   const anchorIndex = sm.anchorIndex;
-  const isDown = (e.type == 'mousedown');
+  const isDown = (e.type === 'mousedown');
 
   const isTargetCheckmark = e.target.classList.contains('detail-checkmark') ||
       e.target.classList.contains('checkmark');
@@ -361,12 +420,13 @@ filelist.handlePointerDownUp = function(e, index) {
   // modifiers(Ctrl/Shift), the click should toggle the item's selection.
   // (i.e. same behavior as Ctrl+Click)
   const isClickOnCheckmark =
-      (isTargetCheckmark && sm.multiple && index != -1 && !e.shiftKey &&
-       !e.ctrlKey && e.button == 0);
+      (isTargetCheckmark && sm.multiple && index !== -1 && !e.shiftKey &&
+       !e.ctrlKey && e.button === 0);
 
   sm.beginChange();
 
-  if (index == -1) {
+  if (index === -1) {
+    this.filesView.a11y.speakA11yMessage(str('SELECTION_CANCELLATION'));
     sm.leadIndex = sm.anchorIndex = -1;
     sm.unselectAll();
   } else {
@@ -387,24 +447,35 @@ filelist.handlePointerDownUp = function(e, index) {
         sm.setCheckSelectMode(true);
 
         // Toggle the current one and make it anchor index.
+        const name = this.filesView.getItemLabel(index);
+        const msgId = sm.getIndexSelected(index) ?
+            'SELECTION_REMOVE_SINGLE_ENTRY' :
+            'SELECTION_ADD_SINGLE_ENTRY';
+        this.filesView.a11y.speakA11yMessage(strf(msgId, name));
         sm.setIndexSelected(index, !sm.getIndexSelected(index));
         sm.leadIndex = index;
         sm.anchorIndex = index;
       }
-    } else if (e.shiftKey && anchorIndex != -1 && anchorIndex != index) {
+    } else if (e.shiftKey && anchorIndex !== -1 && anchorIndex !== index) {
       // Shift is done in mousedown.
       if (isDown) {
         sm.unselectAll();
         sm.leadIndex = index;
         if (sm.multiple) {
           sm.selectRange(anchorIndex, index);
+          const nameStart = this.filesView.getItemLabel(anchorIndex);
+          const nameEnd = this.filesView.getItemLabel(index);
+          const count = Math.abs(index - anchorIndex) + 1;
+          const msg = strf('SELECTION_ADD_RANGE', count, nameStart, nameEnd);
+          this.filesView.a11y.speakA11yMessage(msg);
         } else {
+          const name = this.filesView.getItemLabel(index);
           sm.setIndexSelected(index, true);
         }
       }
     } else {
       // Right click for a context menu needs to not clear the selection.
-      const isRightClick = e.button == 2;
+      const isRightClick = e.button === 2;
 
       // If the index is selected this is handled in mouseup.
       const indexSelected = sm.getIndexSelected(index);
@@ -419,6 +490,11 @@ filelist.handlePointerDownUp = function(e, index) {
           sm.unselectAll();
           sm.beginChange();
         }
+        // This event handler is called for mouseup and mousedown, let's
+        // announce the selection only in one of them.
+        if (isDown) {
+          const name = this.filesView.getItemLabel(index);
+        }
         sm.selectedIndex = index;
       }
     }
@@ -430,14 +506,15 @@ filelist.handlePointerDownUp = function(e, index) {
  * Handles key events on file list to change the selection state.
  *
  * Basically the content of this function is identical to
- * cr.ui.ListSelectionController's handleKeyDown(), but following handlings is
+ * ListSelectionController's handleKeyDown(), but following handlings is
  * inserted to control the check-select mode.
  *
  * 1) When pressing direction key results in a single selection, the
  *    check-select mode should be terminated.
  *
  * @param {Event} e The keydown event.
- * @this {cr.ui.ListSelectionController}
+ * @this {ListSelectionController} either FileListSelectionController or
+ *     FileGridSelectionController.
  */
 filelist.handleKeyDown = function(e) {
   const tagName = e.target.tagName;
@@ -445,20 +522,20 @@ filelist.handleKeyDown = function(e) {
   // If focus is in an input field of some kind, only handle navigation keys
   // that aren't likely to conflict with input interaction (e.g., text
   // editing, or changing the value of a checkbox or select).
-  if (tagName == 'INPUT') {
+  if (tagName === 'INPUT') {
     const inputType = e.target.type;
     // Just protect space (for toggling) for checkbox and radio.
-    if (inputType == 'checkbox' || inputType == 'radio') {
-      if (e.key == ' ') {
+    if (inputType === 'checkbox' || inputType === 'radio') {
+      if (e.key === ' ') {
         return;
       }
       // Protect all but the most basic navigation commands in anything else.
-    } else if (e.key != 'ArrowUp' && e.key != 'ArrowDown') {
+    } else if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') {
       return;
     }
   }
   // Similarly, don't interfere with select element handling.
-  if (tagName == 'SELECT') {
+  if (tagName === 'SELECT') {
     return;
   }
 
@@ -470,9 +547,12 @@ filelist.handleKeyDown = function(e) {
   const leadIndex = sm.leadIndex;
   let prevent = true;
 
-  // Ctrl/Meta+A
-  if (sm.multiple && e.keyCode == 65 &&
-      (cr.isMac && e.metaKey || !cr.isMac && e.ctrlKey)) {
+  // Ctrl/Meta+A. Use keyCode=65 to use the same shortcut key regardless of
+  // keyboard layout.
+  const pressedKeyA = e.keyCode === 65 || e.key === 'a';
+  if (sm.multiple && pressedKeyA &&
+      (isMac && e.metaKey || !isMac && e.ctrlKey)) {
+    this.filesView.a11y.speakA11yMessage(str('SELECTION_ALL_ENTRIES'));
     sm.setCheckSelectMode(true);
     sm.selectAll();
     e.preventDefault();
@@ -481,14 +561,16 @@ filelist.handleKeyDown = function(e) {
 
   // Esc
   if (e.key === 'Escape' && !e.ctrlKey && !e.shiftKey) {
+    this.filesView.a11y.speakA11yMessage(str('SELECTION_CANCELLATION'));
     sm.unselectAll();
     e.preventDefault();
     return;
   }
 
-  // Space
-  if (e.code == 'Space') {
-    if (leadIndex != -1) {
+  // Space: Note ChromeOS and ChromeOS on Linux can generate KeyDown Space
+  // events differently the |key| attribute might be set to 'Unidentified'.
+  if (e.code === 'Space' || e.key === ' ') {
+    if (leadIndex !== -1) {
       const selected = sm.getIndexSelected(leadIndex);
       if (e.ctrlKey) {
         sm.beginChange();
@@ -500,9 +582,16 @@ filelist.handleKeyDown = function(e) {
           // It needs to go back/forth to trigger the 'change' event.
           sm.setIndexSelected(leadIndex, false);
           sm.setIndexSelected(leadIndex, true);
+          const name = this.filesView.getItemLabel(leadIndex);
+          this.filesView.a11y.speakA11yMessage(
+              strf('SELECTION_SINGLE_ENTRY', name));
         } else {
           // Toggle the current one and make it anchor index.
           sm.setIndexSelected(leadIndex, !selected);
+          const name = this.filesView.getItemLabel(leadIndex);
+          const msgId = selected ? 'SELECTION_REMOVE_SINGLE_ENTRY' :
+                                   'SELECTION_ADD_SINGLE_ENTRY';
+          this.filesView.a11y.speakA11yMessage(strf(msgId, name));
         }
 
         // Force check-select, FileListSelectionModel.onChangeEvent_ resets it
@@ -526,22 +615,22 @@ filelist.handleKeyDown = function(e) {
       newIndex = this.getLastIndex();
       break;
     case 'ArrowUp':
-      newIndex =
-          leadIndex == -1 ? this.getLastIndex() : this.getIndexAbove(leadIndex);
+      newIndex = leadIndex === -1 ? this.getLastIndex() :
+                                    this.getIndexAbove(leadIndex);
       break;
     case 'ArrowDown':
-      newIndex = leadIndex == -1 ? this.getFirstIndex() :
-                                   this.getIndexBelow(leadIndex);
+      newIndex = leadIndex === -1 ? this.getFirstIndex() :
+                                    this.getIndexBelow(leadIndex);
       break;
     case 'ArrowLeft':
     case 'MediaTrackPrevious':
-      newIndex = leadIndex == -1 ? this.getLastIndex() :
-                                   this.getIndexBefore(leadIndex);
+      newIndex = leadIndex === -1 ? this.getLastIndex() :
+                                    this.getIndexBefore(leadIndex);
       break;
     case 'ArrowRight':
     case 'MediaTrackNext':
-      newIndex = leadIndex == -1 ? this.getFirstIndex() :
-                                   this.getIndexAfter(leadIndex);
+      newIndex = leadIndex === -1 ? this.getFirstIndex() :
+                                    this.getIndexAfter(leadIndex);
       break;
     default:
       prevent = false;
@@ -556,10 +645,16 @@ filelist.handleKeyDown = function(e) {
       if (sm.multiple) {
         sm.unselectAll();
       }
-      if (anchorIndex == -1) {
+      if (anchorIndex === -1) {
+        const name = this.filesView.getItemLabel(newIndex);
         sm.setIndexSelected(newIndex, true);
         sm.anchorIndex = newIndex;
       } else {
+        const nameStart = this.filesView.getItemLabel(anchorIndex);
+        const nameEnd = this.filesView.getItemLabel(newIndex);
+        const count = Math.abs(newIndex - anchorIndex) + 1;
+        const msg = strf('SELECTION_ADD_RANGE', count, nameStart, nameEnd);
+        this.filesView.a11y.speakA11yMessage(msg);
         sm.selectRange(anchorIndex, newIndex);
       }
     } else if (e.ctrlKey) {
@@ -573,6 +668,7 @@ filelist.handleKeyDown = function(e) {
       if (sm.multiple) {
         sm.unselectAll();
       }
+      const name = this.filesView.getItemLabel(newIndex);
       sm.setIndexSelected(newIndex, true);
       sm.anchorIndex = newIndex;
     }
@@ -591,10 +687,12 @@ filelist.handleKeyDown = function(e) {
  */
 filelist.focusParentList = event => {
   let element = event.target;
-  while (element && !(element instanceof cr.ui.List)) {
+  while (element && !(element instanceof List)) {
     element = element.parentElement;
   }
   if (element) {
     element.focus();
   }
 };
+
+export {filelist};

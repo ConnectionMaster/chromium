@@ -5,9 +5,6 @@
 #ifndef SERVICES_SERVICE_MANAGER_SERVICE_PROCESS_LAUNCHER_H_
 #define SERVICES_SERVICE_MANAGER_SERVICE_PROCESS_LAUNCHER_H_
 
-#include <memory>
-#include <string>
-
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
@@ -15,8 +12,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/sequenced_task_runner.h"
-#include "services/service_manager/public/mojom/service_factory.mojom.h"
-#include "services/service_manager/sandbox/sandbox_type.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "sandbox/policy/sandbox_type.h"
+#include "services/service_manager/public/mojom/service.mojom.h"
 #include "services/service_manager/service_process_launcher_delegate.h"
 
 namespace mojo {
@@ -47,9 +45,10 @@ class ServiceProcessLauncher {
 
   // |Start()|s the child process; calls |DidStart()| (on the thread on which
   // |Start()| was called) when the child has been started (or failed to start).
-  mojom::ServicePtr Start(const Identity& target,
-                          SandboxType sandbox_type,
-                          ProcessReadyCallback callback);
+  mojo::PendingRemote<mojom::Service> Start(
+      const Identity& target,
+      sandbox::policy::SandboxType sandbox_type,
+      ProcessReadyCallback callback);
 
   // Exposed publicly for use in tests. Creates a new Service pipe, passing the
   // ServiceRequest end through |*invitation| with an identifier stashed in
@@ -57,7 +56,7 @@ class ServiceProcessLauncher {
   // from the invitation.
   //
   // Returns the corresponding ServicePtr endpoint.
-  static mojom::ServicePtr PassServiceRequestOnCommandLine(
+  static mojo::PendingRemote<mojom::Service> PassServiceRequestOnCommandLine(
       mojo::OutgoingInvitation* invitation,
       base::CommandLine* command_line);
 

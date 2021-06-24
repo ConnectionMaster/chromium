@@ -5,55 +5,68 @@
 #include "ash/app_list/views/ghost_image_view.h"
 
 #include <algorithm>
-#include <vector>
+#include <memory>
 
 #include "ash/app_list/model/app_list_folder_item.h"
 #include "ash/app_list/model/app_list_item_list.h"
 #include "ash/app_list/views/app_list_item_view.h"
+#include "ash/public/cpp/app_list/app_list_config.h"
+#include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/color_palette.h"
 
-namespace app_list {
+namespace ash {
 
 namespace {
 
 constexpr int kGhostCircleStrokeWidth = 2;
-constexpr int kGhostColor = SkColorSetARGB(0x4C, 232, 234, 237);
-constexpr int kFolderGhostColor = SkColorSetARGB(0x4C, 95, 99, 104);
+constexpr int kGhostColorOpacity = 0x4D;  // 30% opacity.
+constexpr int kRootGridGhostColor = gfx::kGoogleGrey200;
+constexpr int kInFolderGhostColor = gfx::kGoogleGrey700;
 constexpr base::TimeDelta kGhostFadeInOutLength =
     base::TimeDelta::FromMilliseconds(180);
-constexpr int kInnerFolderGhostIconRadius = 14;
 constexpr gfx::Tween::Type kGhostTween = gfx::Tween::FAST_OUT_SLOW_IN;
 
 }  // namespace
 
-GhostImageView::GhostImageView(AppListItemView* drag_view,
-                               bool is_folder,
-                               bool is_in_folder,
-                               const gfx::Rect& drop_target_bounds,
-                               int page)
+GhostImageView::GhostImageView(bool is_folder, bool is_in_folder, int page)
     : is_hiding_(false),
       is_in_folder_(is_in_folder),
       is_folder_(is_folder),
-      page_(page),
-      drop_target_bounds_(drop_target_bounds),
-      icon_bounds_(drag_view->GetIconBounds()) {
+      page_(page) {}
+
+GhostImageView::~GhostImageView() {
+  StopObservingImplicitAnimations();
+}
+
+void GhostImageView::Init(AppListItemView* drag_view,
+                          const gfx::Rect& drop_target_bounds) {
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
   layer()->SetOpacity(0.0f);
   SetBoundsRect(drop_target_bounds);
+  icon_bounds_ = drag_view->GetIconBounds();
 
   if (is_folder_) {
+    inner_icon_radius_ =
+        drag_view->GetAppListConfig().item_icon_in_folder_icon_size().width() /
+        2;
+
     AppListFolderItem* folder_item =
         static_cast<AppListFolderItem*>(drag_view->item());
     num_items_ = std::min(FolderImage::kNumFolderTopItems,
                           folder_item->item_list()->item_count());
-  }
-}
 
-GhostImageView::~GhostImageView() {
-  StopObservingImplicitAnimations();
+    std::vector<gfx::Rect> top_icon_bounds = FolderImage::GetTopIconsBounds(
+        drag_view->GetAppListConfig(), icon_bounds_, num_items_.value());
+
+    // Push back the position for each app to be shown within the folder icon.
+    for (size_t i = 0; i < num_items_.value(); i++) {
+      inner_folder_icon_origins_.push_back(top_icon_bounds[i].CenterPoint());
+    }
+  }
 }
 
 void GhostImageView::FadeOut() {
@@ -69,7 +82,11 @@ void GhostImageView::FadeIn() {
 
 void GhostImageView::SetTransitionOffset(
     const gfx::Vector2d& transition_offset) {
-  SetPosition(drop_target_bounds_.origin() + transition_offset);
+  SetPosition(bounds().origin() + transition_offset);
+}
+
+const char* GhostImageView::GetClassName() const {
+  return "GhostImageView";
 }
 
 void GhostImageView::DoAnimation(bool hide) {
@@ -89,14 +106,19 @@ void GhostImageView::DoAnimation(bool hide) {
 
 void GhostImageView::OnPaint(gfx::Canvas* canvas) {
   const gfx::PointF circle_center(icon_bounds_.CenterPoint());
-  const float ghost_radius = icon_bounds_.width() / 2;
 
   // Draw a circle to represent the ghost image icon.
   cc::PaintFlags circle_flags;
   circle_flags.setAntiAlias(true);
-  circle_flags.setColor(is_in_folder_ ? kFolderGhostColor : kGhostColor);
+  circle_flags.setColor(is_in_folder_ ? kInFolderGhostColor
+                                      : kRootGridGhostColor);
+  circle_flags.setAlpha(kGhostColorOpacity);
   circle_flags.setStyle(cc::PaintFlags::kStroke_Style);
   circle_flags.setStrokeWidth(kGhostCircleStrokeWidth);
+
+  const float ghost_radius = icon_bounds_.width() / 2;
+
+  // Draw a circle to represent an app or folder outline.
   canvas->DrawCircle(circle_center, ghost_radius, circle_flags);
 
   if (is_folder_) {
@@ -106,14 +128,10 @@ void GhostImageView::OnPaint(gfx::Canvas* canvas) {
                                 ghost_radius - kGhostCircleStrokeWidth / 2);
     canvas->ClipPath(outer_circle_mask, true);
 
-    // Returns the bounds for each inner icon in the folder icon.
-    std::vector<gfx::Rect> top_icon_bounds =
-        FolderImage::GetTopIconsBounds(icon_bounds_, num_items_.value());
-
     // Draw ghost items within the ghost folder circle.
-    for (gfx::Rect bounds : top_icon_bounds) {
-      canvas->DrawCircle(gfx::PointF(bounds.CenterPoint()),
-                         kInnerFolderGhostIconRadius, circle_flags);
+    for (size_t i = 0; i < num_items_.value(); i++) {
+      canvas->DrawCircle(inner_folder_icon_origins_[i], inner_icon_radius_,
+                         circle_flags);
     }
   }
   ImageView::OnPaint(canvas);
@@ -124,4 +142,4 @@ void GhostImageView::OnImplicitAnimationsCompleted() {
   delete this;
 }
 
-}  // namespace app_list
+}  // namespace ash

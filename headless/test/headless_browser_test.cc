@@ -10,9 +10,9 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/task/current_thread.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
@@ -42,10 +42,10 @@ class SynchronousLoadObserver {
       : web_contents_(web_contents),
         devtools_client_(HeadlessDevToolsClient::Create()) {
     web_contents_->GetDevToolsTarget()->AttachClient(devtools_client_.get());
-    load_observer_.reset(new LoadObserver(
+    load_observer_ = std::make_unique<LoadObserver>(
         devtools_client_.get(),
-        base::Bind(&HeadlessBrowserTest::FinishAsynchronousTest,
-                   base::Unretained(browser_test))));
+        base::BindOnce(&HeadlessBrowserTest::FinishAsynchronousTest,
+                       base::Unretained(browser_test)));
   }
 
   ~SynchronousLoadObserver() {
@@ -130,14 +130,14 @@ void LoadObserver::OnResponseReceived(
 }
 
 HeadlessBrowserTest::HeadlessBrowserTest() {
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // On Mac the source root is not set properly. We override it by assuming
   // that is two directories up from the execution test file.
   base::FilePath dir_exe_path;
   CHECK(base::PathService::Get(base::DIR_EXE, &dir_exe_path));
   dir_exe_path = dir_exe_path.Append("../../");
   CHECK(base::PathService::Override(base::DIR_SOURCE_ROOT, dir_exe_path));
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
   base::FilePath headless_test_data(FILE_PATH_LITERAL("headless/test/data"));
   CreateTestServer(headless_test_data);
 }
@@ -172,6 +172,8 @@ void HeadlessBrowserTest::PostRunTestOnMainThread() {
        !i.IsAtEnd(); i.Advance()) {
     i.GetCurrentValue()->FastShutdownIfPossible();
   }
+  // Pump tasks produced during shutdown.
+  base::RunLoop().RunUntilIdle();
 }
 
 HeadlessBrowser* HeadlessBrowserTest::browser() const {
@@ -182,12 +184,17 @@ HeadlessBrowser::Options* HeadlessBrowserTest::options() const {
   return HeadlessContentMainDelegate::GetInstance()->browser()->options();
 }
 
-bool HeadlessBrowserTest::WaitForLoad(HeadlessWebContents* web_contents) {
+bool HeadlessBrowserTest::WaitForLoad(HeadlessWebContents* web_contents,
+                                      net::Error* error) {
   HeadlessWebContentsImpl* web_contents_impl =
       HeadlessWebContentsImpl::From(web_contents);
   content::TestNavigationObserver observer(web_contents_impl->web_contents(),
                                            1);
   observer.Wait();
+
+  if (error)
+    *error = observer.last_net_error_code();
+
   return observer.last_navigation_succeeded();
 }
 
@@ -214,12 +221,10 @@ std::unique_ptr<runtime::EvaluateResult> HeadlessBrowserTest::EvaluateScript(
 }
 
 void HeadlessBrowserTest::RunAsynchronousTest() {
-  base::MessageLoopCurrent::ScopedNestableTaskAllower nestable_allower;
   EXPECT_FALSE(run_loop_);
-  run_loop_ = std::make_unique<base::RunLoop>();
-  PreRunAsynchronousTest();
+  run_loop_ = std::make_unique<base::RunLoop>(
+      base::RunLoop::Type::kNestableTasksAllowed);
   run_loop_->Run();
-  PostRunAsynchronousTest();
   run_loop_ = nullptr;
 }
 
@@ -238,7 +243,7 @@ HeadlessAsyncDevTooledBrowserTest::~HeadlessAsyncDevTooledBrowserTest() =
 void HeadlessAsyncDevTooledBrowserTest::DevToolsTargetReady() {
   EXPECT_TRUE(web_contents_->GetDevToolsTarget());
   web_contents_->GetDevToolsTarget()->AttachClient(devtools_client_.get());
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   devtools_client_->GetEmulation()->SetDeviceMetricsOverride(
       emulation::SetDeviceMetricsOverrideParams::Builder()
           .SetWidth(0)
@@ -264,7 +269,8 @@ void HeadlessAsyncDevTooledBrowserTest::RenderProcessExited(
 
   FinishAsynchronousTest();
   render_process_exited_ = true;
-  FAIL() << "Abnormal renderer termination";
+  FAIL() << "Abnormal renderer termination "
+         << "(status=" << status << ", exit_code=" << exit_code << ")";
 }
 
 void HeadlessAsyncDevTooledBrowserTest::RunTest() {
@@ -297,6 +303,9 @@ void HeadlessAsyncDevTooledBrowserTest::RunTest() {
   browser()->GetDevToolsTarget()->DetachClient(browser_devtools_client_.get());
   browser_context_->Close();
   browser_context_ = nullptr;
+  // Let the tasks that might have beein scheduled during web contents
+  // being closed run (see https://crbug.com/1036627 for details).
+  base::RunLoop().RunUntilIdle();
 }
 
 bool HeadlessAsyncDevTooledBrowserTest::GetEnableBeginFrameControl() {

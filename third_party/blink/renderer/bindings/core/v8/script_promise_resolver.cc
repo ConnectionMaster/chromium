@@ -17,17 +17,20 @@
 namespace blink {
 
 ScriptPromiseResolver::ScriptPromiseResolver(ScriptState* script_state)
-    : ContextLifecycleObserver(ExecutionContext::From(script_state)),
+    : ExecutionContextLifecycleObserver(ExecutionContext::From(script_state)),
       state_(kPending),
       script_state_(script_state),
-      resolver_(script_state) {
+      resolver_(script_state),
+      keep_alive_(PERSISTENT_FROM_HERE) {
   if (GetExecutionContext()->IsContextDestroyed()) {
     state_ = kDetached;
     resolver_.Clear();
   }
 }
 
-ScriptPromiseResolver::~ScriptPromiseResolver() {
+ScriptPromiseResolver::~ScriptPromiseResolver() = default;
+
+void ScriptPromiseResolver::Dispose() {
 #if DCHECK_IS_ON()
   // This assertion fails if:
   //  - promise() is called at least once and
@@ -38,7 +41,7 @@ ScriptPromiseResolver::~ScriptPromiseResolver() {
       state_ == kDetached || !is_promise_called_ ||
       !GetScriptState()->ContextIsValid() || !GetExecutionContext() ||
       GetExecutionContext()->IsContextDestroyed();
-  if (!is_properly_detached) {
+  if (!is_properly_detached && !suppress_detach_check_) {
     // This is here to make it easier to track down which promise resolvers are
     // being abandoned. See https://crbug.com/873980.
     static crash_reporter::CrashKeyString<1024> trace_key(
@@ -50,6 +53,7 @@ ScriptPromiseResolver::~ScriptPromiseResolver() {
         << create_stack_trace_.ToString();
   }
 #endif
+  deferred_resolve_task_.Cancel();
 }
 
 void ScriptPromiseResolver::Reject(ExceptionState& exception_state) {
@@ -112,9 +116,11 @@ void ScriptPromiseResolver::ResolveOrRejectDeferred() {
   ResolveOrRejectImmediately();
 }
 
-void ScriptPromiseResolver::Trace(blink::Visitor* visitor) {
+void ScriptPromiseResolver::Trace(Visitor* visitor) const {
   visitor->Trace(script_state_);
-  ContextLifecycleObserver::Trace(visitor);
+  visitor->Trace(resolver_);
+  visitor->Trace(value_);
+  ExecutionContextLifecycleObserver::Trace(visitor);
 }
 
 }  // namespace blink

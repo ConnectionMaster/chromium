@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/memory/ptr_util.h"
+#include "base/notreached.h"
 #include "base/values.h"
 #include "components/prefs/in_memory_pref_store.h"
 
@@ -63,7 +64,7 @@ void OverlayUserPrefStore::RemoveObserver(PrefStore::Observer* observer) {
 }
 
 bool OverlayUserPrefStore::HasObservers() const {
-  return observers_.might_have_observers();
+  return !observers_.empty();
 }
 
 bool OverlayUserPrefStore::IsInitializationComplete() const {
@@ -95,7 +96,7 @@ std::unique_ptr<base::DictionaryValue> OverlayUserPrefStore::GetValues() const {
     std::unique_ptr<base::Value> out_value;
     persistent_values->Remove(key, &out_value);
     if (out_value) {
-      values->Set(key, std::move(out_value));
+      values->SetPath(key, std::move(*out_value));
     }
   }
   return values;
@@ -116,7 +117,7 @@ bool OverlayUserPrefStore::GetMutableValue(const std::string& key,
     return false;
 
   ephemeral_user_pref_store_->SetValue(
-      key, persistent_value->CreateDeepCopy(),
+      key, base::Value::ToUniquePtrValue(persistent_value->Clone()),
       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   ephemeral_user_pref_store_->GetMutableValue(key, result);
   return true;
@@ -159,6 +160,11 @@ void OverlayUserPrefStore::RemoveValue(const std::string& key, uint32_t flags) {
   ephemeral_user_pref_store_->RemoveValue(key, flags);
 }
 
+void OverlayUserPrefStore::RemoveValuesByPrefixSilently(
+    const std::string& prefix) {
+  NOTIMPLEMENTED();
+}
+
 bool OverlayUserPrefStore::ReadOnly() const {
   return false;
 }
@@ -186,6 +192,12 @@ void OverlayUserPrefStore::CommitPendingWrite(
   persistent_user_pref_store_->CommitPendingWrite(
       std::move(reply_callback), std::move(synchronous_done_callback));
   // We do not write our content intentionally.
+}
+
+void OverlayUserPrefStore::CommitPendingWriteSynchronously() {
+  // This function was added for one very specific use case and is intentionally
+  // not implemented for other pref stores.
+  NOTREACHED();
 }
 
 void OverlayUserPrefStore::SchedulePendingLossyWrites() {

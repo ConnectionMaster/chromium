@@ -5,8 +5,9 @@
 #ifndef UI_VIEWS_CONTROLS_BUTTON_RADIO_BUTTON_H_
 #define UI_VIEWS_CONTROLS_BUTTON_RADIO_BUTTON_H_
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/focus_ring.h"
 
@@ -16,18 +17,18 @@ namespace views {
 // platform specific objects to replicate the native platforms looks and feel.
 class VIEWS_EXPORT RadioButton : public Checkbox {
  public:
-  // The button's class name.
-  static const char kViewClassName[];
+  METADATA_HEADER(RadioButton);
 
-  RadioButton(const base::string16& label, int group_id);
+  explicit RadioButton(const std::u16string& label = std::u16string(),
+                       int group_id = 0);
   ~RadioButton() override;
 
   // Overridden from View:
-  const char* GetClassName() const override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   View* GetSelectedViewForGroup(int group) override;
   bool IsGroupFocusTraversable() const override;
   void OnFocus() override;
+  void OnThemeChanged() override;
 
   // Overridden from Button:
   void RequestFocusFromEvent() override;

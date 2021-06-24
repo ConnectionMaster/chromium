@@ -5,13 +5,20 @@
 #include "components/arc/intent_helper/arc_intent_helper_bridge.h"
 
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "base/memory/ptr_util.h"
-#include "components/arc/common/intent_helper.mojom.h"
+#include "base/test/scoped_feature_list.h"
+#include "components/arc/arc_features.h"
+#include "components/arc/intent_helper/intent_constants.h"
 #include "components/arc/intent_helper/open_url_delegate.h"
+#include "components/arc/mojom/intent_helper.mojom.h"
 #include "components/arc/session/arc_bridge_service.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace arc {
 
@@ -23,8 +30,11 @@ IntentFilter GetIntentFilter(const std::string& host,
                              const std::string& pkg_name) {
   std::vector<IntentFilter::AuthorityEntry> authorities;
   authorities.emplace_back(host, /*port=*/-1);
-  return IntentFilter(pkg_name, std::move(authorities),
-                      std::vector<IntentFilter::PatternMatcher>());
+  return IntentFilter(pkg_name, /*actions=*/std::vector<std::string>(),
+                      std::move(authorities),
+                      std::vector<IntentFilter::PatternMatcher>(),
+                      /*schemes=*/std::vector<std::string>(),
+                      /*mime_types=*/std::vector<std::string>());
 }
 
 }  // namespace
@@ -32,6 +42,8 @@ IntentFilter GetIntentFilter(const std::string& host,
 class ArcIntentHelperTest : public testing::Test {
  protected:
   ArcIntentHelperTest() = default;
+  ArcIntentHelperTest(const ArcIntentHelperTest&) = delete;
+  ArcIntentHelperTest& operator=(const ArcIntentHelperTest&) = delete;
 
   class TestOpenUrlDelegate : public OpenUrlDelegate {
    public:
@@ -43,10 +55,14 @@ class ArcIntentHelperTest : public testing::Test {
     void OpenArcCustomTab(
         const GURL& url,
         int32_t task_id,
-        int32_t surface_id,
-        int32_t top_margin,
         mojom::IntentHelperHost::OnOpenCustomTabCallback callback) override {
-      std::move(callback).Run(nullptr);
+      std::move(callback).Run(mojo::NullRemote());
+    }
+    void OpenChromePageFromArc(mojom::ChromePage chrome_page) override {}
+    void OpenAppWithIntent(const GURL& url,
+                           mojom::LaunchIntentPtr intent) override {
+      last_opened_url_ = url;
+      last_opened_intent_ = std::move(intent);
     }
 
     GURL TakeLastOpenedUrl() {
@@ -55,8 +71,15 @@ class ArcIntentHelperTest : public testing::Test {
       return result;
     }
 
+    mojom::LaunchIntentPtr TakeLastOpenedIntent() {
+      auto result = std::move(last_opened_intent_);
+      last_opened_intent_.reset();
+      return result;
+    }
+
    private:
     GURL last_opened_url_;
+    mojom::LaunchIntentPtr last_opened_intent_;
   };
 
   std::unique_ptr<ArcBridgeService> arc_bridge_service_;
@@ -78,8 +101,6 @@ class ArcIntentHelperTest : public testing::Test {
     test_open_url_delegate_.reset();
     arc_bridge_service_.reset();
   }
-
-  DISALLOW_COPY_AND_ASSIGN(ArcIntentHelperTest);
 };
 
 // Tests if IsIntentHelperPackage works as expected. Probably too trivial
@@ -174,29 +195,64 @@ TEST_F(ArcIntentHelperTest, TestFilterOutIntentHelper) {
 
 // Tests if observer works as expected.
 TEST_F(ArcIntentHelperTest, TestObserver) {
-  class FakeObserver : public ArcIntentHelperObserver {
+  class MockObserver : public ArcIntentHelperObserver {
    public:
-    FakeObserver() = default;
-    void OnIntentFiltersUpdated() override { updated_ = true; }
-    bool IsUpdated() { return updated_; }
-    void Reset() { updated_ = false; }
-
-   private:
-    bool updated_ = false;
+    MOCK_METHOD(void,
+                OnArcDownloadAdded,
+                (const base::FilePath& relative_path,
+                 const std::string& owner_package_name),
+                (override));
+    MOCK_METHOD(void,
+                OnIntentFiltersUpdated,
+                (const absl::optional<std::string>& package_name),
+                (override));
+    MOCK_METHOD(void, OnPreferredAppsChanged, (), (override));
   };
 
-  // Observer should be called when intent filter is updated.
-  auto observer = std::make_unique<FakeObserver>();
-  instance_->AddObserver(observer.get());
-  EXPECT_FALSE(observer->IsUpdated());
-  instance_->OnIntentFiltersUpdated(std::vector<IntentFilter>());
-  EXPECT_TRUE(observer->IsUpdated());
+  // Create and add observer.
+  testing::StrictMock<MockObserver> observer;
+  instance_->AddObserver(&observer);
+
+  {
+    // Observer should be called when a download is added.
+    std::string relative_path("Download/foo/bar.pdf");
+    std::string owner_package_name("owner_package_name");
+    EXPECT_CALL(observer,
+                OnArcDownloadAdded(testing::Eq(base::FilePath(relative_path)),
+                                   testing::Ref(owner_package_name)));
+    instance_->OnDownloadAdded(relative_path, owner_package_name);
+    testing::Mock::VerifyAndClearExpectations(&observer);
+  }
+
+  {
+    // Observer should *not* be called when a download is added outside of the
+    // Download/ folder. This would be an unexpected event coming from ARC but
+    // we protect against it because ARC is treated as an untrusted source.
+    instance_->OnDownloadAdded(/*relative_path=*/"Download/../foo/bar.pdf",
+                               /*owner_package_name=*/"owner_package_name");
+    testing::Mock::VerifyAndClearExpectations(&observer);
+  }
+
+  {
+    // Observer should be called when an intent filter is updated.
+    EXPECT_CALL(observer, OnIntentFiltersUpdated(testing::Eq(absl::nullopt)));
+    instance_->OnIntentFiltersUpdated(/*filters=*/std::vector<IntentFilter>());
+    testing::Mock::VerifyAndClearExpectations(&observer);
+  }
+
+  {
+    // Observer should be called when preferred apps change.
+    EXPECT_CALL(observer, OnPreferredAppsChanged);
+    instance_->OnPreferredAppsChanged(/*added=*/{}, /*deleted=*/{});
+    testing::Mock::VerifyAndClearExpectations(&observer);
+  }
 
   // Observer should not be called after it's removed.
-  observer->Reset();
-  instance_->RemoveObserver(observer.get());
-  instance_->OnIntentFiltersUpdated(std::vector<IntentFilter>());
-  EXPECT_FALSE(observer->IsUpdated());
+  instance_->RemoveObserver(&observer);
+  instance_->OnDownloadAdded(/*relative_path=*/"Download/foo/bar.pdf",
+                             /*owner_package_name=*/"owner_package_name");
+  instance_->OnIntentFiltersUpdated(/*filters=*/{});
+  instance_->OnPreferredAppsChanged(/*added=*/{}, /*removed=*/{});
 }
 
 // Tests that ShouldChromeHandleUrl returns true by default.
@@ -295,7 +351,11 @@ TEST_F(ArcIntentHelperTest, TestIntentHelperAppIsNotAValidCandidate) {
       "www.google.com", ArcIntentHelperBridge::kArcIntentHelperPackageName));
   array.emplace_back(GetIntentFilter(
       "www.android.com", ArcIntentHelperBridge::kArcIntentHelperPackageName));
-  array.emplace_back(GetIntentFilter("dev.chromium.org", kPackageName));
+  // Let the package name start with "z" to ensure the intent helper package
+  // is not always the last package checked in the ShouldChromeHandleUrl
+  // filter matching logic. This is to ensure this unit test tests the package
+  // name checking logic properly.
+  array.emplace_back(GetIntentFilter("dev.chromium.org", "z.package.name"));
   instance_->OnIntentFiltersUpdated(std::move(array));
 
   EXPECT_TRUE(instance_->ShouldChromeHandleUrl(GURL("http://www.google.com")));
@@ -349,139 +409,53 @@ TEST_F(ArcIntentHelperTest, TestOnOpenUrl_ChromeScheme) {
   EXPECT_FALSE(test_open_url_delegate_->TakeLastOpenedUrl().is_valid());
 }
 
-// Tests that OnOpenChromePage opens the specified settings section in the
-// Chrome browser.
-TEST_F(ArcIntentHelperTest, TestOnOpenChromePage) {
-  instance_->OnOpenChromePage(mojom::ChromePage::MAIN);
-  EXPECT_EQ(GURL("chrome://settings"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
+// Tests that OnOpenAppWithIntents opens only HTTPS URLs.
+TEST_F(ArcIntentHelperTest, TestOnOpenAppWithIntent) {
+  {
+    // When the feature is enabled, open the Intent through the delegate.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(arc::kEnableWebAppShareFeature);
 
-  instance_->OnOpenChromePage(mojom::ChromePage::MULTIDEVICE);
-  EXPECT_EQ(GURL("chrome://settings/multidevice"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
+    auto intent = mojom::LaunchIntent::New();
+    intent->action = arc::kIntentActionSend;
+    intent->extra_text = "Foo";
+    instance_->OnOpenAppWithIntent(GURL("https://www.google.com"),
+                                   std::move(intent));
+    EXPECT_EQ(GURL("https://www.google.com"),
+              test_open_url_delegate_->TakeLastOpenedUrl());
+    EXPECT_EQ("Foo",
+              test_open_url_delegate_->TakeLastOpenedIntent()->extra_text);
 
-  instance_->OnOpenChromePage(mojom::ChromePage::WIFI);
-  EXPECT_EQ(GURL("chrome://settings/networks/?type=WiFi"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
+    instance_->OnOpenAppWithIntent(GURL("http://www.google.com"),
+                                   mojom::LaunchIntent::New());
+    EXPECT_FALSE(test_open_url_delegate_->TakeLastOpenedUrl().is_valid());
+    EXPECT_TRUE(test_open_url_delegate_->TakeLastOpenedIntent().is_null());
 
-  instance_->OnOpenChromePage(mojom::ChromePage::POWER);
-  EXPECT_EQ(GURL("chrome://settings/power"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
+    instance_->OnOpenAppWithIntent(GURL("chrome://settings"),
+                                   mojom::LaunchIntent::New());
+    EXPECT_FALSE(test_open_url_delegate_->TakeLastOpenedUrl().is_valid());
+    EXPECT_TRUE(test_open_url_delegate_->TakeLastOpenedIntent().is_null());
+  }
+  {
+    // When the feature is disabled, open the Intent's URL through the delegate.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(arc::kEnableWebAppShareFeature);
 
-  instance_->OnOpenChromePage(mojom::ChromePage::BLUETOOTH);
-  EXPECT_EQ(GURL("chrome://settings/bluetoothDevices"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
+    auto intent = mojom::LaunchIntent::New();
+    intent->data = GURL("https://www.google.com/maps");
+    instance_->OnOpenAppWithIntent(GURL("https://www.google.com"),
+                                   std::move(intent));
+    EXPECT_EQ(GURL("https://www.google.com/maps"),
+              test_open_url_delegate_->TakeLastOpenedUrl());
+    EXPECT_TRUE(test_open_url_delegate_->TakeLastOpenedIntent().is_null());
 
-  instance_->OnOpenChromePage(mojom::ChromePage::DATETIME);
-  EXPECT_EQ(GURL("chrome://settings/dateTime"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::DISPLAY);
-  EXPECT_EQ(GURL("chrome://settings/display"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::PRIVACY);
-  EXPECT_EQ(GURL("chrome://settings/privacy"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::HELP);
-  EXPECT_EQ(GURL("chrome://settings/help"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::ACCOUNTS);
-  EXPECT_EQ(GURL("chrome://settings/accounts"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::APPEARANCE);
-  EXPECT_EQ(GURL("chrome://settings/appearance"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::AUTOFILL);
-  EXPECT_EQ(GURL("chrome://settings/autofill"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::BLUETOOTHDEVICES);
-  EXPECT_EQ(GURL("chrome://settings/bluetoothDevices"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::CHANGEPICTURE);
-  EXPECT_EQ(GURL("chrome://settings/changePicture"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::CLEARBROWSERDATA);
-  EXPECT_EQ(GURL("chrome://settings/clearBrowserData"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::CLOUDPRINTERS);
-  EXPECT_EQ(GURL("chrome://settings/cloudPrinters"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::CUPSPRINTERS);
-  EXPECT_EQ(GURL("chrome://settings/cupsPrinters"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::DOWNLOADS);
-  EXPECT_EQ(GURL("chrome://settings/downloads"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::ABOUTDOWNLOADS);
-  EXPECT_EQ(GURL("about:downloads"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::ABOUTHISTORY);
-  EXPECT_EQ(GURL("about:history"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::KEYBOARDOVERLAY);
-  EXPECT_EQ(GURL("chrome://settings/keyboard-overlay"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::LANGUAGES);
-  EXPECT_EQ(GURL("chrome://settings/languages"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::LOCKSCREEN);
-  EXPECT_EQ(GURL("chrome://settings/lockScreen"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::MANAGEACCESSIBILITY);
-  EXPECT_EQ(GURL("chrome://settings/manageAccessibility"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::NETWORKSTYPEVPN);
-  EXPECT_EQ(GURL("chrome://settings/networks?type=VPN"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::ONSTARTUP);
-  EXPECT_EQ(GURL("chrome://settings/onStartup"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::PASSWORDS);
-  EXPECT_EQ(GURL("chrome://settings/passwords"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::POINTEROVERLAY);
-  EXPECT_EQ(GURL("chrome://settings/pointer-overlay"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::RESET);
-  EXPECT_EQ(GURL("chrome://settings/reset"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::SEARCH);
-  EXPECT_EQ(GURL("chrome://settings/search"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::STORAGE);
-  EXPECT_EQ(GURL("chrome://settings/storage"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::SYNCSETUP);
-  EXPECT_EQ(GURL("chrome://settings/syncSetup"),
-            test_open_url_delegate_->TakeLastOpenedUrl());
-
-  instance_->OnOpenChromePage(mojom::ChromePage::ABOUTBLANK);
-  EXPECT_EQ(GURL("about:blank"), test_open_url_delegate_->TakeLastOpenedUrl());
+    intent = mojom::LaunchIntent::New();
+    intent->data = GURL("chrome://settings");
+    instance_->OnOpenAppWithIntent(GURL("https://www.google.com"),
+                                   std::move(intent));
+    EXPECT_FALSE(test_open_url_delegate_->TakeLastOpenedUrl().is_valid());
+    EXPECT_TRUE(test_open_url_delegate_->TakeLastOpenedIntent().is_null());
+  }
 }
 
 // Tests that AppendStringToIntentHelperPackageName works.

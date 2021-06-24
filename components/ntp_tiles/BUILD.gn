@@ -10,13 +10,13 @@ static_library("ntp_tiles") {
   sources = [
     "constants.cc",
     "constants.h",
-    "country_code_ios.h",
-    "country_code_ios.mm",
     "custom_links_manager.h",
     "custom_links_manager_impl.cc",
     "custom_links_manager_impl.h",
     "custom_links_store.cc",
     "custom_links_store.h",
+    "features.cc",
+    "features.h",
     "icon_cacher.h",
     "icon_cacher_impl.cc",
     "icon_cacher_impl.h",
@@ -51,38 +51,31 @@ static_library("ntp_tiles") {
     "//components/suggestions",
   ]
   deps = [
-    "//components/data_use_measurement/core",
+    "//build:branding_buildflags",
     "//components/favicon/core",
     "//components/favicon_base",
-    "//components/google/core/browser",
+    "//components/google/core/common",
     "//components/image_fetcher/core",
     "//components/pref_registry",
     "//components/prefs",
-    "//components/rappor/public",
     "//components/resources",
+    "//components/search",
     "//components/search_engines",
+    "//components/strings",
     "//components/url_formatter",
     "//components/variations",
     "//components/variations/service",
+    "//services/data_decoder/public/cpp",
     "//services/network/public/cpp",
     "//ui/base",
   ]
-}
 
-# If you want to use this, let us (ntp-dev@chromium.org) know. In that case, it
-# should be moved to a more common location as it has 2+ callers already.
-# Note that you probably shouldn't be using it outside of ios or tests.
-source_set("json_unsafe_parser") {
-  testonly = !is_ios
-
-  sources = [
-    "json_unsafe_parser.cc",
-    "json_unsafe_parser.h",
-  ]
-
-  public_deps = [
-    "//base",
-  ]
+  if (is_ios) {
+    sources += [
+      "country_code_ios.h",
+      "country_code_ios.mm",
+    ]
+  }
 }
 
 source_set("unit_tests") {
@@ -97,18 +90,19 @@ source_set("unit_tests") {
   ]
 
   deps = [
-    ":json_unsafe_parser",
     ":ntp_tiles",
     "//base/test:test_support",
+    "//build:branding_buildflags",
     "//components/favicon/core",
+    "//components/favicon/core:history_implementation",
     "//components/favicon_base",
     "//components/history/core/test",
     "//components/image_fetcher/core",
     "//components/image_fetcher/core:test_support",
     "//components/pref_registry:pref_registry",
-    "//components/rappor:test_support",
     "//components/sync_preferences:test_support",
     "//net:test_support",
+    "//services/data_decoder/public/cpp:test_support",
     "//services/network:test_support",
     "//services/network/public/cpp",
     "//testing/gmock",

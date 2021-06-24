@@ -3,19 +3,22 @@
 // found in the LICENSE file.
 
 #include <stddef.h>
+
+#include <memory>
 #include <utility>
 
+#include "ash/constants/ash_switches.h"
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/feature_list.h"
+#include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
-#include "base/task/post_task.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_core_service.h"
 #include "chrome/browser/download/download_core_service_factory.h"
@@ -31,25 +34,25 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "chromeos/constants/chromeos_switches.h"
 #include "components/download/public/common/download_item.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/common/network_service_util.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "net/http/http_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "net/test/url_request/url_request_slow_download_job.h"
-#include "services/identity/public/cpp/identity_manager.h"
-#include "services/identity/public/cpp/identity_test_utils.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 
@@ -100,22 +103,22 @@ class TestChromeDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
   bool opened_;
 };
 
-// A Network Service based implementation of net::URLRequestSlowDownloadJob.
+// Simulates a slow download.
 class SlowDownloadInterceptor {
  public:
-  static const char* kUnknownSizeUrl;
-  static const char* kKnownSizeUrl;
-  static const char* kFinishDownloadUrl;
-  static const char* kErrorDownloadUrl;
+  static const char kUnknownSizeUrl[];
+  static const char kKnownSizeUrl[];
+  static const char kFinishDownloadUrl[];
+  static const char kErrorDownloadUrl[];
 
   SlowDownloadInterceptor()
-      : interceptor_(base::BindRepeating(&SlowDownloadInterceptor::OnIntercept,
-                                         base::Unretained(this))),
-        handlers_(
+      : handlers_(
             {{kKnownSizeUrl, &SlowDownloadInterceptor::HandleKnownSize},
              {kUnknownSizeUrl, &SlowDownloadInterceptor::HandleUnknownSize},
              {kFinishDownloadUrl, &SlowDownloadInterceptor::HandleFinish},
-             {kErrorDownloadUrl, &SlowDownloadInterceptor::HandleError}}) {}
+             {kErrorDownloadUrl, &SlowDownloadInterceptor::HandleError}}),
+        interceptor_(base::BindRepeating(&SlowDownloadInterceptor::OnIntercept,
+                                         base::Unretained(this))) {}
 
  private:
   using Handler = void (SlowDownloadInterceptor::*)(
@@ -202,53 +205,58 @@ class SlowDownloadInterceptor {
   static void SendHead(content::URLLoaderInterceptor::RequestParams* params,
                        std::string mime_type,
                        int64_t content_length) {
-    network::ResourceResponseHead head;
+    auto head = network::mojom::URLResponseHead::New();
     std::string headers =
         "HTTP/1.1 200 OK\n"
         "Cache-Control: max-age=0\n";
     headers += base::StringPrintf("Content-type: %s\n", mime_type.c_str());
     if (content_length >= 0) {
-      headers += base::StringPrintf("Content-Length: %ld\n", content_length);
-      head.content_length = content_length;
+      headers +=
+          base::StringPrintf("Content-Length: %" PRId64 "\n", content_length);
+      head->content_length = content_length;
     }
-    head.headers = new net::HttpResponseHeaders(
-        net::HttpUtil::AssembleRawHeaders(headers.c_str(), headers.length()));
-    head.headers->GetMimeType(&head.mime_type);
-    params->client->OnReceiveResponse(head);
+    head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(headers));
+    head->headers->GetMimeType(&head->mime_type);
+    params->client->OnReceiveResponse(std::move(head));
   }
 
   static void SendBody(content::URLLoaderInterceptor::RequestParams* params,
                        std::string data) {
-    mojo::DataPipe pipe(data.size());
-    ASSERT_TRUE(pipe.producer_handle.is_valid());
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    ASSERT_EQ(
+        mojo::CreateDataPipe(data.size(), producer_handle, consumer_handle),
+        MOJO_RESULT_OK);
+
     uint32_t write_size = data.size();
-    MojoResult result = pipe.producer_handle->WriteData(
-        data.c_str(), &write_size, MOJO_WRITE_DATA_FLAG_NONE);
+    MojoResult result = producer_handle->WriteData(data.c_str(), &write_size,
+                                                   MOJO_WRITE_DATA_FLAG_NONE);
     ASSERT_EQ(MOJO_RESULT_OK, result);
     ASSERT_EQ(data.size(), write_size);
-    ASSERT_TRUE(pipe.consumer_handle.is_valid());
-    params->client->OnStartLoadingResponseBody(std::move(pipe.consumer_handle));
+    ASSERT_TRUE(consumer_handle.is_valid());
+    params->client->OnStartLoadingResponseBody(std::move(consumer_handle));
   }
 
-  content::URLLoaderInterceptor interceptor_;
   const std::map<std::string, Handler> handlers_;
   base::Lock lock_;
   std::vector<PendingRequest*> pending_requests_ GUARDED_BY(lock_);
+  content::URLLoaderInterceptor interceptor_;
 };
 
-const char* SlowDownloadInterceptor::kUnknownSizeUrl =
-    net::URLRequestSlowDownloadJob::kUnknownSizeUrl;
-const char* SlowDownloadInterceptor::kKnownSizeUrl =
-    net::URLRequestSlowDownloadJob::kKnownSizeUrl;
-const char* SlowDownloadInterceptor::kFinishDownloadUrl =
-    net::URLRequestSlowDownloadJob::kFinishDownloadUrl;
-const char* SlowDownloadInterceptor::kErrorDownloadUrl =
-    net::URLRequestSlowDownloadJob::kErrorDownloadUrl;
+const char SlowDownloadInterceptor::kUnknownSizeUrl[] =
+    "http://url.handled.by.slow.download/download-unknown-size";
+const char SlowDownloadInterceptor::kKnownSizeUrl[] =
+    "http://url.handled.by.slow.download/download-known-size";
+const char SlowDownloadInterceptor::kFinishDownloadUrl[] =
+    "http://url.handled.by.slow.download/download-finish";
+const char SlowDownloadInterceptor::kErrorDownloadUrl[] =
+    "http://url.handled.by.slow.download/download-error";
 
 // Utility method to retrieve a notification object by id. Warning: this will
 // check the last display service that was created. If there's a normal and an
 // incognito one, you may want to be explicit.
-base::Optional<message_center::Notification> GetNotification(
+absl::optional<message_center::Notification> GetNotification(
     const std::string& id) {
   return NotificationDisplayServiceTester::Get()->GetNotification(id);
 }
@@ -277,14 +285,7 @@ class DownloadNotificationTestBase : public InProcessBrowserTest {
     display_service_ = std::make_unique<NotificationDisplayServiceTester>(
         browser()->profile());
 
-    if (base::FeatureList::IsEnabled(network::features::kNetworkService) &&
-        !content::IsInProcessNetworkService()) {
-      interceptor_ = std::make_unique<SlowDownloadInterceptor>();
-    } else {
-      base::PostTaskWithTraits(
-          FROM_HERE, {content::BrowserThread::IO},
-          base::BindOnce(&net::URLRequestSlowDownloadJob::AddUrlHandler));
-    }
+    interceptor_ = std::make_unique<SlowDownloadInterceptor>();
   }
 
   void TearDownOnMainThread() override {
@@ -295,7 +296,7 @@ class DownloadNotificationTestBase : public InProcessBrowserTest {
 
  protected:
   content::DownloadManager* GetDownloadManager(Browser* browser) {
-    return content::BrowserContext::GetDownloadManager(browser->profile());
+    return browser->profile()->GetDownloadManager();
   }
 
   // Requests to complete the download and wait for it.
@@ -329,7 +330,8 @@ class DownloadNotificationTest : public DownloadNotificationTestBase {
     Profile* profile = browser()->profile();
 
     std::unique_ptr<TestChromeDownloadManagerDelegate> test_delegate;
-    test_delegate.reset(new TestChromeDownloadManagerDelegate(profile));
+    test_delegate =
+        std::make_unique<TestChromeDownloadManagerDelegate>(profile);
     test_delegate->GetDownloadIdReceiverCallback().Run(
         download::DownloadItem::kInvalidId + 1);
     DownloadCoreServiceFactory::GetForBrowserContext(profile)
@@ -349,8 +351,8 @@ class DownloadNotificationTest : public DownloadNotificationTestBase {
     Profile* incognito_profile = incognito_browser_->profile();
 
     std::unique_ptr<TestChromeDownloadManagerDelegate> incognito_test_delegate;
-    incognito_test_delegate.reset(
-        new TestChromeDownloadManagerDelegate(incognito_profile));
+    incognito_test_delegate =
+        std::make_unique<TestChromeDownloadManagerDelegate>(incognito_profile);
     DownloadCoreServiceFactory::GetForBrowserContext(incognito_profile)
         ->SetDownloadManagerDelegateForTesting(
             std::move(incognito_test_delegate));
@@ -444,7 +446,7 @@ class DownloadNotificationTest : public DownloadNotificationTestBase {
 
   download::DownloadItem* download_item() const { return download_item_; }
   std::string notification_id() const { return notification_id_; }
-  base::Optional<message_center::Notification> notification() const {
+  absl::optional<message_center::Notification> notification() const {
     return GetNotification(notification_id_);
   }
   Browser* incognito_browser() const { return incognito_browser_; }
@@ -495,8 +497,8 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest, DownloadFile) {
   // Try to open the downloaded item by clicking the notification.
   EXPECT_FALSE(GetDownloadManagerDelegate()->opened());
   display_service_->SimulateClick(NotificationHandler::Type::TRANSIENT,
-                                  notification_id(), base::nullopt,
-                                  base::nullopt);
+                                  notification_id(), absl::nullopt,
+                                  absl::nullopt);
   EXPECT_TRUE(GetDownloadManagerDelegate()->opened());
 
   EXPECT_FALSE(GetNotification(notification_id()));
@@ -524,7 +526,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   // Clicks the "keep" button.
   display_service_->SimulateClick(NotificationHandler::Type::TRANSIENT,
                                   notification_id(), 1,  // 2nd button: "Keep"
-                                  base::nullopt);
+                                  absl::nullopt);
 
   // The notification is closed and re-shown.
   EXPECT_TRUE(notification());
@@ -571,7 +573,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   display_service_->SimulateClick(NotificationHandler::Type::TRANSIENT,
                                   notification_id(),
                                   0,  // 1st button: "Discard"
-                                  base::nullopt);
+                                  absl::nullopt);
 
   EXPECT_FALSE(notification());
 
@@ -830,7 +832,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest, CancelDownload) {
 
   // Cancels the notification by clicking the "cancel" button.
   display_service_->SimulateClick(NotificationHandler::Type::TRANSIENT,
-                                  notification_id(), 1, base::nullopt);
+                                  notification_id(), 1, absl::nullopt);
   EXPECT_FALSE(notification());
   EXPECT_EQ(0u, GetDownloadNotifications().size());
 
@@ -893,8 +895,8 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   EXPECT_TRUE(incognito_display_service_->GetNotification(notification_id()));
   EXPECT_FALSE(GetIncognitoDownloadManagerDelegate()->opened());
   incognito_display_service_->SimulateClick(
-      NotificationHandler::Type::TRANSIENT, notification_id(), base::nullopt,
-      base::nullopt);
+      NotificationHandler::Type::TRANSIENT, notification_id(), absl::nullopt,
+      absl::nullopt);
   EXPECT_TRUE(GetIncognitoDownloadManagerDelegate()->opened());
   EXPECT_FALSE(GetDownloadManagerDelegate()->opened());
 
@@ -1047,10 +1049,11 @@ class MultiProfileDownloadNotificationTest
     Profile* profile =
         chromeos::ProfileHelper::GetProfileByUserIdHashForTest(info.hash);
 
-    identity::IdentityManager* identity_manager =
+    signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(profile);
-    if (!identity_manager->HasPrimaryAccount())
-      identity::MakePrimaryAccountAvailable(identity_manager, info.email);
+    if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync))
+      signin::MakePrimaryAccountAvailable(identity_manager, info.email,
+                                          signin::ConsentLevel::kSync);
   }
 
   std::unique_ptr<NotificationDisplayServiceTester> display_service1_;
@@ -1065,9 +1068,8 @@ IN_PROC_BROWSER_TEST_F(MultiProfileDownloadNotificationTest,
   AddAllUsers();
 }
 
-// TODO(crbug.com/933963): Flaky with network service.
 IN_PROC_BROWSER_TEST_F(MultiProfileDownloadNotificationTest,
-                       DISABLED_DownloadMultipleFiles) {
+                       DownloadMultipleFiles) {
   AddAllUsers();
 
   GURL url(SlowDownloadInterceptor::kUnknownSizeUrl);

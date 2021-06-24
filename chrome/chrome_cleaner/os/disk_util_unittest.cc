@@ -9,14 +9,16 @@
 #include <shlobj.h>
 
 #include "base/bind.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
+#include "base/containers/contains.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/logging.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
-#include "base/stl_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -24,6 +26,7 @@
 #include "base/test/scoped_path_override.h"
 #include "base/test/test_shortcut_win.h"
 #include "base/test/test_timeouts.h"
+#include "base/unguessable_token.h"
 #include "base/win/windows_version.h"
 #include "chrome/chrome_cleaner/os/file_path_sanitization.h"
 #include "chrome/chrome_cleaner/os/layered_service_provider_wrapper.h"
@@ -130,10 +133,10 @@ bool LaunchTestProcess(const wchar_t* executable,
 }
 
 bool DoesVolumeSupportNamedStreams(const base::FilePath& path) {
-  std::vector<base::string16> components;
+  std::vector<std::wstring> components;
   path.GetComponents(&components);
   DCHECK(!components.empty());
-  base::string16& drive = components[0];
+  std::wstring& drive = components[0];
   drive += L'\\';
   DWORD system_flags = 0;
   if (::GetVolumeInformation(drive.c_str(), nullptr, 0, nullptr, nullptr,
@@ -171,10 +174,10 @@ void CreateProgramPathsAndFiles(const base::FilePath& temp_dir_path,
 // and passes the result to ExtractExecutablePathFromRegistryContent to get a
 // file path. Returns success if every file path matches |expected_path|.
 ::testing::AssertionResult ExtractExecutablePathFromMockRegistryAndExpect(
-    const base::string16& registry_path,
+    const std::wstring& registry_path,
     const base::FilePath& expected_path) {
-  for (const base::string16& registry_content : kMockRegistryContents) {
-    base::string16 full_registry_content =
+  for (const std::wstring& registry_content : kMockRegistryContents) {
+    std::wstring full_registry_content =
         base::StringPrintf(registry_content.c_str(), registry_path.c_str());
     base::FilePath extracted_path =
         ExtractExecutablePathFromRegistryContent(full_registry_content);
@@ -388,7 +391,7 @@ TEST(DiskUtilTests, CollectMatchingPathsNoWildcards) {
   base::FilePath no_wildcard_path(sub_dir.GetPath());
   CollectMatchingPaths(no_wildcard_path, &matches);
   EXPECT_EQ(1UL, matches.size());
-  EXPECT_TRUE(base::ContainsValue(matches, sub_dir.GetPath()));
+  EXPECT_TRUE(base::Contains(matches, sub_dir.GetPath()));
 }
 
 TEST(DiskUtilTests, CollectExecutableMatchingPaths) {
@@ -541,31 +544,6 @@ TEST(DiskUtilTests, PathHasActiveExtension) {
   EXPECT_FALSE(PathHasActiveExtension(base::FilePath(L"C:\\uws\\file.jpg")));
   EXPECT_FALSE(PathHasActiveExtension(base::FilePath(L"C:\\uws\\file.jpg ")));
   EXPECT_FALSE(PathHasActiveExtension(base::FilePath(L"C:\\file.txt::$DATA")));
-}
-
-TEST(DiskUtilTests, HasDosExecutableHeader) {
-  base::ScopedTempDir temp;
-  ASSERT_TRUE(temp.CreateUniqueTempDir());
-  base::FilePath executable = temp.GetPath().Append(L"executable.txt");
-  const char kExecutableFileContents[] = "MZ I am executable";
-  chrome_cleaner::CreateFileWithContent(executable, kExecutableFileContents,
-                                        sizeof(kExecutableFileContents));
-  EXPECT_TRUE(HasDosExecutableHeader(executable));
-
-  base::FilePath non_executable = temp.GetPath().Append(L"text.exe");
-  const char kTextFileContents[] = "I am benign text";
-  chrome_cleaner::CreateFileWithContent(non_executable, kTextFileContents,
-                                        sizeof(kTextFileContents));
-  EXPECT_FALSE(HasDosExecutableHeader(non_executable));
-}
-
-TEST(DiskUtilTests, HasAlternateFileStream) {
-  EXPECT_FALSE(HasAlternateFileStream(base::FilePath(L"C:\\file.txt")));
-  EXPECT_FALSE(HasAlternateFileStream(base::FilePath(L"C:\\file.txt::$DATA")));
-
-  EXPECT_TRUE(HasAlternateFileStream(base::FilePath(L"C:\\file.txt:stream")));
-  EXPECT_TRUE(
-      HasAlternateFileStream(base::FilePath(L"C:\\file.txt:stream:$TYPE")));
 }
 
 TEST(DiskUtilTests, ExpandEnvPath) {
@@ -811,9 +789,7 @@ TEST(DiskUtilTests, GetAppDataProductDirectory) {
   EXPECT_TRUE(PathEqual(appdata_dir, product_folder.DirName().DirName()));
 }
 
-// TODO(crbug.com/867550): This does not work in component builds because
-// test_process.exe depends on DLL's that don't get copied. Fix and re-enable.
-TEST(DiskUtilTests, DISABLED_ZoneIdentifier) {
+TEST(DiskUtilTests, ZoneIdentifier) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
   base::FilePath path(temp_dir.GetPath().Append(kTestProcessExecutableName));
@@ -842,33 +818,35 @@ TEST(DiskUtilTests, DISABLED_ZoneIdentifier) {
   EXPECT_EQ("[ZoneTransfer]\r\nZoneId=0\r\n", content);
 }
 
-// TODO(crbug.com/867550): This does not work in component builds because
-// test_process.exe depends on DLL's that don't get copied. Fix and re-enable.
-TEST(DiskUtilTests, DISABLED_ZoneIdentifierWhenProcessIsRunning) {
-  base::ScopedTempDir temp_dir;
-  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+TEST(DiskUtilTests, ZoneIdentifierWhenProcessIsRunning) {
+  base::FilePath executable_path;
+  ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &executable_path));
 
-  if (!DoesVolumeSupportNamedStreams(temp_dir.GetPath())) {
+  if (!DoesVolumeSupportNamedStreams(executable_path)) {
     LOG(ERROR) << "Skip ZoneIdentifier : alternate streams not supported.";
     return;
   }
 
-  // Copy the test_process executable in a temporary folder.
-  base::FilePath executable_path;
-  ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &executable_path));
+  // Copy the test_process executable to a temporary name. We don't use a
+  // ScopedTempDir here because in a component build, the executable depends on
+  // DLL's that would have to be copied into the folder too.
   base::FilePath source_exe_path(
       executable_path.Append(kTestProcessExecutableName));
-  base::FilePath target_exe_path(
-      temp_dir.GetPath().Append(kTestProcessExecutableName));
+  std::wstring target_exe_name = base::StrCat(
+      {base::UTF8ToWide(base::UnguessableToken::Create().ToString()), L".exe"});
+  base::FilePath target_exe_path(executable_path.Append(target_exe_name));
+
   ASSERT_TRUE(base::CopyFile(source_exe_path, target_exe_path));
+  base::ScopedClosureRunner delete_temp_file(
+      base::BindOnce(base::GetDeleteFileCallback(), target_exe_path));
 
   // Launch the test_process and wait it's completion. The process must set its
   // zone identifier.
   EXPECT_FALSE(HasZoneIdentifier(target_exe_path));
-  ASSERT_FALSE(IsProcessRunning(kTestProcessExecutableName));
+  ASSERT_FALSE(IsProcessRunning(target_exe_name.c_str()));
   ASSERT_TRUE(LaunchTestProcess(target_exe_path.value().c_str(),
                                 kTestForceOverwriteZoneIdentifier, false));
-  EXPECT_TRUE(WaitForProcessesStopped(kTestProcessExecutableName));
+  EXPECT_TRUE(WaitForProcessesStopped(target_exe_name.c_str()));
   EXPECT_TRUE(HasZoneIdentifier(target_exe_path));
 
   // Validate the content of the Zone.Identifier stream.
@@ -910,7 +888,7 @@ TEST(DiskUtilTests,
 TEST(DiskUtilTests, ExtractExecutablePathFromRegistryContentWithEnvVariable) {
   // This test expects files to be placed in %TEMP% and not anywhere else
   // ScopedTempDir might decide to put them.
-  base::string16 temp_str;
+  std::wstring temp_str;
   ASSERT_NE(0U, ::GetEnvironmentVariableW(
                     L"TEMP", ::base::WriteInto(&temp_str, MAX_PATH), MAX_PATH))
       << logging::SystemErrorCodeToString(logging::GetLastSystemErrorCode());
@@ -994,7 +972,7 @@ TEST(DiskUtilTests, RetrieveDetailedFileInformation) {
 
   EXPECT_FALSE(whitelisted);
 
-  base::string16 sanitized_path = SanitizePath(temp_file);
+  std::wstring sanitized_path = SanitizePath(temp_file);
 
   EXPECT_EQ(sanitized_path, file_information.path);
   EXPECT_FALSE(file_information.creation_date.empty());
@@ -1129,7 +1107,7 @@ TEST(DiskUtilTests, RetrieveBasicFileInformationNoFile) {
 }
 
 TEST(DiskUtilTests, FileInformationToString) {
-  base::string16 display_str = FileInformationToString(kFileInformation1);
+  std::wstring display_str = FileInformationToString(kFileInformation1);
   EXPECT_EQ(kFileInformation1ExpectedString, display_str);
 }
 

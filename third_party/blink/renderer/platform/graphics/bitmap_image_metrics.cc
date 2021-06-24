@@ -5,84 +5,84 @@
 #include "third_party/blink/renderer/platform/graphics/bitmap_image_metrics.h"
 
 #include "base/metrics/histogram_base.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
+#include "media/media_buildflags.h"
+#include "third_party/blink/public/common/buildflags.h"
+#include "third_party/blink/public/mojom/web_feature/web_feature.mojom-blink.h"
 #include "third_party/blink/renderer/platform/geometry/int_size.h"
 #include "third_party/blink/renderer/platform/graphics/color_space_gamut.h"
-#include "third_party/blink/renderer/platform/histogram.h"
+#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
-#include "third_party/skia/third_party/skcms/skcms.h"
 
 namespace blink {
 
+BitmapImageMetrics::DecodedImageType
+BitmapImageMetrics::StringToDecodedImageType(const String& type) {
+  if (type == "jpg")
+    return BitmapImageMetrics::DecodedImageType::kJPEG;
+  if (type == "png")
+    return BitmapImageMetrics::DecodedImageType::kPNG;
+  if (type == "gif")
+    return BitmapImageMetrics::DecodedImageType::kGIF;
+  if (type == "webp")
+    return BitmapImageMetrics::DecodedImageType::kWebP;
+  if (type == "ico")
+    return BitmapImageMetrics::DecodedImageType::kICO;
+  if (type == "bmp")
+    return BitmapImageMetrics::DecodedImageType::kBMP;
+#if BUILDFLAG(ENABLE_AV1_DECODER)
+  if (type == "avif")
+    return BitmapImageMetrics::DecodedImageType::kAVIF;
+#endif
+#if BUILDFLAG(ENABLE_JXL_DECODER)
+  if (type == "jxl")
+    return BitmapImageMetrics::DecodedImageType::kJXL;
+#endif
+  return BitmapImageMetrics::DecodedImageType::kUnknown;
+}
+
 void BitmapImageMetrics::CountDecodedImageType(const String& type) {
-  DecodedImageType decoded_image_type =
-      type == "jpg"
-          ? kImageJPEG
-          : type == "png"
-                ? kImagePNG
-                : type == "gif"
-                      ? kImageGIF
-                      : type == "webp"
-                            ? kImageWebP
-                            : type == "ico"
-                                  ? kImageICO
-                                  : type == "bmp"
-                                        ? kImageBMP
-                                        : DecodedImageType::kImageUnknown;
-
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      EnumerationHistogram, decoded_image_type_histogram,
-      ("Blink.DecodedImageType", kDecodedImageTypeEnumEnd));
-  decoded_image_type_histogram.Count(decoded_image_type);
+  UMA_HISTOGRAM_ENUMERATION("Blink.DecodedImageType",
+                            StringToDecodedImageType(type));
 }
 
-void BitmapImageMetrics::CountImageOrientation(
-    const ImageOrientationEnum orientation) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      EnumerationHistogram, orientation_histogram,
-      ("Blink.DecodedImage.Orientation", kImageOrientationEnumEnd));
-  orientation_histogram.Count(orientation);
-}
-
-void BitmapImageMetrics::CountImageJpegDensity(int image_min_side,
-                                               uint64_t density_centi_bpp) {
-  // Values are reported in the range 0.01 to 10 bpp, in different metrics
-  // depending on the image category (small, medium, large).
-  if (image_min_side >= 1000) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(
-        CustomCountHistogram, density_histogram,
-        ("Blink.DecodedImage.JpegDensity.1000px", 1, 1000, 100));
-    density_histogram.Count(
-        base::saturated_cast<base::Histogram::Sample>(density_centi_bpp));
-  } else if (image_min_side >= 400) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(
-        CustomCountHistogram, density_histogram,
-        ("Blink.DecodedImage.JpegDensity.400px", 1, 1000, 100));
-    density_histogram.Count(
-        base::saturated_cast<base::Histogram::Sample>(density_centi_bpp));
-  } else if (image_min_side >= 100) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(
-        CustomCountHistogram, density_histogram,
-        ("Blink.DecodedImage.JpegDensity.100px", 1, 1000, 100));
-    density_histogram.Count(
-        base::saturated_cast<base::Histogram::Sample>(density_centi_bpp));
-  } else {
-    // We don't report for images with 0 to 99px on the smallest dimension.
+void BitmapImageMetrics::CountDecodedImageType(const String& type,
+                                               UseCounter* use_counter) {
+  if (use_counter) {
+    if (type == "webp") {
+      use_counter->CountUse(WebFeature::kWebPImage);
+#if BUILDFLAG(ENABLE_AV1_DECODER)
+    } else if (type == "avif") {
+      use_counter->CountUse(WebFeature::kAVIFImage);
+#endif
+    }
   }
 }
 
-void BitmapImageMetrics::CountImageGammaAndGamut(
-    const skcms_ICCProfile* color_profile) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(EnumerationHistogram, gamma_named_histogram,
-                                  ("Blink.ColorSpace.Source", kGammaEnd));
-  gamma_named_histogram.Count(GetColorSpaceGamma(color_profile));
+void BitmapImageMetrics::CountImageJpegDensity(int image_min_side,
+                                               uint64_t density_centi_bpp,
+                                               size_t image_size_bytes) {
+  // All bpp samples are reported in the range 0.01 to 10 bpp as integer number
+  // of 0.01 bpp. We don't report for any sample for small images (0 to 99px on
+  // the smallest dimension).
+  //
+  // The histogram JpegDensity.KiBWeighted reports the number of KiB decoded for
+  // a given bpp value.
 
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      EnumerationHistogram, gamut_named_histogram,
-      ("Blink.ColorGamut.Source", static_cast<int>(ColorSpaceGamut::kEnd)));
-  gamut_named_histogram.Count(static_cast<int>(
-      color_space_utilities::GetColorSpaceGamut(color_profile)));
+  if (image_min_side >= 100) {
+    DEFINE_THREAD_SAFE_STATIC_LOCAL(
+        CustomCountHistogram, density_histogram,
+        ("Blink.DecodedImage.JpegDensity.KiBWeighted", 1, 1000, 100));
+    int image_size_kib = (image_size_bytes + 512) / 1024;
+    if (image_size_kib > 0) {
+      density_histogram.CountMany(
+          base::saturated_cast<base::Histogram::Sample>(density_centi_bpp),
+          image_size_kib);
+    }
+  }
 }
 
 void BitmapImageMetrics::CountJpegArea(const IntSize& size) {
@@ -97,27 +97,7 @@ void BitmapImageMetrics::CountJpegArea(const IntSize& size) {
 }
 
 void BitmapImageMetrics::CountJpegColorSpace(JpegColorSpace color_space) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      EnumerationHistogram, color_space_histogram,
-      ("Blink.ImageDecoders.Jpeg.ColorSpace", JpegColorSpace::kMaxValue));
-  color_space_histogram.Count(color_space);
-}
-
-BitmapImageMetrics::Gamma BitmapImageMetrics::GetColorSpaceGamma(
-    const skcms_ICCProfile* color_profile) {
-  Gamma gamma = kGammaNull;
-  if (color_profile) {
-    if (skcms_TRCs_AreApproximateInverse(
-            color_profile, skcms_sRGB_Inverse_TransferFunction())) {
-      gamma = kGammaSRGB;
-    } else if (skcms_TRCs_AreApproximateInverse(
-                   color_profile, skcms_Identity_TransferFunction())) {
-      gamma = kGammaLinear;
-    } else {
-      gamma = kGammaNonStandard;
-    }
-  }
-  return gamma;
+  UMA_HISTOGRAM_ENUMERATION("Blink.ImageDecoders.Jpeg.ColorSpace", color_space);
 }
 
 }  // namespace blink

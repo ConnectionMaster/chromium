@@ -8,54 +8,44 @@
 
 #include "testing/gtest/include/gtest/gtest.h"
 
-FakeMojoPasswordManagerDriver::FakeMojoPasswordManagerDriver()
-    : binding_(this) {}
+FakeMojoPasswordManagerDriver::FakeMojoPasswordManagerDriver() = default;
 
-FakeMojoPasswordManagerDriver::~FakeMojoPasswordManagerDriver() {}
+FakeMojoPasswordManagerDriver::~FakeMojoPasswordManagerDriver() = default;
 
-void FakeMojoPasswordManagerDriver::BindRequest(
-    autofill::mojom::PasswordManagerDriverAssociatedRequest request) {
-  binding_.Bind(std::move(request));
+void FakeMojoPasswordManagerDriver::BindReceiver(
+    mojo::PendingAssociatedReceiver<autofill::mojom::PasswordManagerDriver>
+        receiver) {
+  receiver_.Bind(std::move(receiver));
 }
 
 void FakeMojoPasswordManagerDriver::Flush() {
-  binding_.FlushForTesting();
+  receiver_.FlushForTesting();
 }
 
 // mojom::PasswordManagerDriver:
 void FakeMojoPasswordManagerDriver::PasswordFormsParsed(
-    const std::vector<autofill::PasswordForm>& forms) {
+    const std::vector<autofill::FormData>& forms_data) {
   called_password_forms_parsed_ = true;
-  password_forms_parsed_ = forms;
+  form_data_parsed_ = forms_data;
 }
 
 void FakeMojoPasswordManagerDriver::PasswordFormsRendered(
-    const std::vector<autofill::PasswordForm>& visible_forms,
+    const std::vector<autofill::FormData>& visible_forms_data,
     bool did_stop_loading) {
   called_password_forms_rendered_ = true;
-  password_forms_rendered_ = visible_forms;
+  form_data_rendered_ = visible_forms_data;
 }
 
 void FakeMojoPasswordManagerDriver::PasswordFormSubmitted(
-    const autofill::PasswordForm& password_form) {
+    const autofill::FormData& form_data) {
   called_password_form_submitted_ = true;
-  password_form_submitted_ = password_form;
+  form_data_submitted_ = form_data;
 }
 
-void FakeMojoPasswordManagerDriver::SameDocumentNavigation(
-    const autofill::PasswordForm& password_form) {
-  called_same_document_navigation_ = true;
-  password_form_same_document_navigation_ = password_form;
-}
-
-void FakeMojoPasswordManagerDriver::ShowPasswordSuggestions(
-    base::i18n::TextDirection text_direction,
-    const base::string16& typed_username,
-    int options,
-    const gfx::RectF& bounds) {
-  called_show_pw_suggestions_ = true;
-  show_pw_suggestions_username_ = typed_username;
-  show_pw_suggestions_options_ = options;
+void FakeMojoPasswordManagerDriver::DynamicFormSubmission(
+    autofill::mojom::SubmissionIndicatorEvent submission_indication_event) {
+  called_dynamic_form_submission_ = true;
+  form_data_maybe_submitted_->submission_event = submission_indication_event;
 }
 
 void FakeMojoPasswordManagerDriver::RecordSavePasswordProgress(
@@ -67,24 +57,26 @@ void FakeMojoPasswordManagerDriver::UserModifiedPasswordField() {
   called_user_modified_password_field_ = true;
 }
 
+void FakeMojoPasswordManagerDriver::UserModifiedNonPasswordField(
+    autofill::FieldRendererId renderer_id,
+    const std::u16string& field_name,
+    const std::u16string& value) {}
+
 void FakeMojoPasswordManagerDriver::CheckSafeBrowsingReputation(
     const GURL& form_action,
     const GURL& frame_url) {
   called_check_safe_browsing_reputation_cnt_++;
 }
 
-void FakeMojoPasswordManagerDriver::ShowManualFallbackForSaving(
-    const autofill::PasswordForm& password_form) {
-  called_show_manual_fallback_for_saving_count_++;
-}
-
-void FakeMojoPasswordManagerDriver::HideManualFallbackForSaving() {
-  called_show_manual_fallback_for_saving_count_ = 0;
+void FakeMojoPasswordManagerDriver::InformAboutUserInput(
+    const autofill::FormData& form_data) {
+  called_inform_about_user_input_count_++;
+  form_data_maybe_submitted_ = form_data;
 }
 
 void FakeMojoPasswordManagerDriver::FocusedInputChanged(
-    bool is_fillable,
-    bool is_password_field) {
-  last_focused_element_was_fillable_ = is_fillable;
-  last_focused_input_was_password_ = is_password_field;
+    autofill::FieldRendererId focused_field_id,
+    autofill::mojom::FocusedFieldType focused_field_type) {
+  last_focused_field_id_ = focused_field_id;
+  last_focused_field_type_ = focused_field_type;
 }

@@ -6,6 +6,7 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread_task_runner_handle.h"
+#import "ios/chrome/browser/sessions/session_ios_factory.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -13,19 +14,23 @@
 
 @implementation TestSessionService
 
-@synthesize performIO = _performIO;
-
 - (instancetype)init {
   return [super initWithTaskRunner:base::ThreadTaskRunnerHandle::Get()];
 }
 
-- (void)saveSession:(SessionIOSFactory)factory
-          directory:(NSString*)directory
+- (void)saveSession:(__weak SessionIOSFactory*)factory
+          sessionID:(NSString*)sessionID
+          directory:(const base::FilePath&)directory
         immediately:(BOOL)immediately {
-  NSString* sessionPath = [[self class] sessionPathForDirectory:directory];
-  NSData* data = [NSKeyedArchiver archivedDataWithRootObject:factory()];
+  NSString* sessionPath = [[self class] sessionPathForSessionID:sessionID
+                                                      directory:directory];
+  NSData* data =
+      [NSKeyedArchiver archivedDataWithRootObject:[factory sessionForSaving]
+                            requiringSecureCoding:NO
+                                            error:nil];
   if (self.performIO)
     [self performSaveSessionData:data sessionPath:sessionPath];
+  _saveSessionCallsCount++;
 }
 
 @end

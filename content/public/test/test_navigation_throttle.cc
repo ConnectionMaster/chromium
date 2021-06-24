@@ -5,16 +5,15 @@
 #include "content/public/test/test_navigation_throttle.h"
 
 #include "base/bind.h"
-#include "base/optional.h"
-#include "base/task/post_task.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace content {
 
 TestNavigationThrottle::TestNavigationThrottle(NavigationHandle* handle)
-    : NavigationThrottle(handle), weak_ptr_factory_(this) {}
+    : NavigationThrottle(handle) {}
 
 TestNavigationThrottle::~TestNavigationThrottle() {}
 
@@ -71,7 +70,7 @@ void TestNavigationThrottle::SetResponseForAllMethods(
 }
 
 void TestNavigationThrottle::SetCallback(ThrottleMethod method,
-                                         base::Closure callback) {
+                                         base::RepeatingClosure callback) {
   method_properties_[method].callback = std::move(callback);
 }
 
@@ -87,8 +86,8 @@ NavigationThrottle::ThrottleCheckResult TestNavigationThrottle::ProcessMethod(
       method_properties_[method].result;
   if (method_properties_[method].synchrony == ASYNCHRONOUS) {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&TestNavigationThrottle::TestNavigationThrottle::
                            CancelAsynchronously,
                        weak_ptr_factory_.GetWeakPtr(), result));

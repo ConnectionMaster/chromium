@@ -9,7 +9,6 @@
 #include <set>
 
 #include "base/containers/flat_map.h"
-#include "base/containers/flat_set.h"
 #include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
 #include "chrome/browser/media/router/discovery/dial/device_description_service.h"
@@ -17,16 +16,11 @@
 #include "chrome/browser/media/router/discovery/dial/dial_media_sink_service.h"
 #include "chrome/browser/media/router/discovery/dial/dial_registry.h"
 #include "chrome/browser/media/router/discovery/media_sink_discovery_metrics.h"
-#include "chrome/common/media_router/discovery/media_sink_service_base.h"
-#include "chrome/common/media_router/discovery/media_sink_service_util.h"
-
-namespace service_manager {
-class Connector;
-}
+#include "components/media_router/common/discovery/media_sink_service_base.h"
+#include "components/media_router/common/discovery/media_sink_service_util.h"
 
 namespace media_router {
 
-class DataDecoder;
 class DeviceDescriptionService;
 class DialRegistry;
 
@@ -42,22 +36,17 @@ class DialMediaSinkServiceImpl : public MediaSinkServiceBase,
   // |app_name|: app name, e.g. YouTube.
   // TODO(imcheng): Move sink query logic into DialAppDiscoveryService and
   // have it use MediaSinkServiceBase::Observer to observe sinks.
-  using SinkQueryByAppFunc = void(const std::string& app_name);
-  using SinkQueryByAppCallback = base::RepeatingCallback<SinkQueryByAppFunc>;
-  using SinkQueryByAppCallbackList = base::CallbackList<SinkQueryByAppFunc>;
-  using SinkQueryByAppSubscription =
-      std::unique_ptr<SinkQueryByAppCallbackList::Subscription>;
+  using SinkQueryByAppCallbackList =
+      base::RepeatingCallbackList<void(const std::string&)>;
+  using SinkQueryByAppCallback = SinkQueryByAppCallbackList::CallbackType;
 
   // Represents DIAL app status on receiver device.
   enum SinkAppStatus { kUnknown = 0, kAvailable, kUnavailable };
 
-  // |connector|: connector to the ServiceManager suitable to use on
-  // |task_runner|.
   // |on_sinks_discovered_cb|: Callback for MediaSinkServiceBase.
   // Note that both callbacks are invoked on |task_runner|.
   // |task_runner|: The SequencedTaskRunner this class runs in.
   DialMediaSinkServiceImpl(
-      service_manager::Connector* connector,
       const OnSinksDiscoveredCallback& on_sinks_discovered_cb,
       const scoped_refptr<base::SequencedTaskRunner>& task_runner);
   ~DialMediaSinkServiceImpl() override;
@@ -76,11 +65,10 @@ class DialMediaSinkServiceImpl : public MediaSinkServiceBase,
   virtual DialAppDiscoveryService* app_discovery_service();
 
   // Registers |callback| to callback list entry in |sink_queries_|, with the
-  // key |app_name|. Returns a unique_ptr of callback list subscription. Caller
-  // owns the returned subscription and is responsible for destroying when it
-  // wants to unregister |callback|.
-  // Marked virtual for tests.
-  virtual SinkQueryByAppSubscription StartMonitoringAvailableSinksForApp(
+  // key |app_name|. Caller owns the returned subscription and is responsible
+  // for destroying when it wants to unregister |callback|. Marked virtual for
+  // tests.
+  virtual base::CallbackListSubscription StartMonitoringAvailableSinksForApp(
       const std::string& app_name,
       const SinkQueryByAppCallback& callback);
 
@@ -91,6 +79,8 @@ class DialMediaSinkServiceImpl : public MediaSinkServiceBase,
   // Marked virtual for tests.
   virtual std::vector<MediaSinkInternal> GetAvailableSinks(
       const std::string& app_name) const;
+
+  void BindLogger(mojo::PendingRemote<mojom::Logger> pending_remote);
 
  protected:
   // Does not take ownership of |dial_registry|.
@@ -172,10 +162,6 @@ class DialMediaSinkServiceImpl : public MediaSinkServiceBase,
   void OnDiscoveryComplete() override;
   void RecordDeviceCounts() override;
 
-  // Used for parsing XML. Shared by |description_service_| and
-  // |app_discovery_service_|.
-  std::unique_ptr<DataDecoder> data_decoder_;
-
   // Initialized in |Start()|.
   std::unique_ptr<DeviceDescriptionService> description_service_;
 
@@ -202,6 +188,11 @@ class DialMediaSinkServiceImpl : public MediaSinkServiceBase,
   // Set of sink queries keyed by app name.
   base::flat_map<std::string, std::unique_ptr<SinkQueryByAppCallbackList>>
       sink_queries_;
+
+  // Mojo Remote to the logger owned by the Media Router. The Remote is not
+  // bound until |BindLogger()| is called. Always check if |logger_.is_bound()|
+  // is true before using.
+  mojo::Remote<mojom::Logger> logger_;
 
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
 

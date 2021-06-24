@@ -5,7 +5,8 @@
 #ifndef CHROME_BROWSER_BROWSING_DATA_BROWSING_DATA_HISTORY_OBSERVER_SERVICE_H_
 #define CHROME_BROWSER_BROWSING_DATA_BROWSING_DATA_HISTORY_OBSERVER_SERVICE_H_
 
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
+#include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -15,7 +16,11 @@ class Profile;
 namespace base {
 template <typename T>
 struct DefaultSingletonTraits;
-}
+}  // namespace base
+
+namespace content {
+class StoragePartition;
+}  // namespace content
 
 // BrowsingDataHistoryObserverService is listening for history deletions to
 // remove navigation, session and recent tab entries.
@@ -46,11 +51,16 @@ class BrowsingDataHistoryObserverService
     bool ServiceIsCreatedWithBrowserContext() const override;
   };
 
+  void OverrideStoragePartitionForTesting(content::StoragePartition* partition);
+
  private:
   Profile* profile_;
 
-  ScopedObserver<history::HistoryService, history::HistoryServiceObserver>
-      history_observer_;
+  content::StoragePartition* storage_partition_for_testing_ = nullptr;
+
+  base::ScopedObservation<history::HistoryService,
+                          history::HistoryServiceObserver>
+      history_observation_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BrowsingDataHistoryObserverService);
 };

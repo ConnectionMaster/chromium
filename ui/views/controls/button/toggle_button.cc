@@ -4,19 +4,28 @@
 
 #include "ui/views/controls/button/toggle_button.h"
 
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "base/bind.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkDrawLooper.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/shadow_value.h"
 #include "ui/gfx/skia_paint_util.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_impl.h"
-#include "ui/views/animation/ink_drop_mask.h"
 #include "ui/views/animation/ink_drop_ripple.h"
 #include "ui/views/border.h"
+#include "ui/views/controls/focus_ring.h"
+#include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/painter.h"
 
 namespace views {
@@ -24,8 +33,7 @@ namespace views {
 namespace {
 
 // Constants are measured in dip.
-constexpr int kTrackHeight = 12;
-constexpr int kTrackWidth = 28;
+constexpr gfx::Size kTrackSize = gfx::Size(28, 12);
 // Margins from edge of track to edge of view.
 constexpr int kTrackVerticalMargin = 5;
 constexpr int kTrackHorizontalMargin = 6;
@@ -34,10 +42,23 @@ constexpr int kThumbInset = 2;
 
 }  // namespace
 
-// Class representing the thumb (the circle that slides horizontally).
-class ToggleButton::ThumbView : public InkDropHostView {
+class ToggleButton::FocusRingHighlightPathGenerator
+    : public views::HighlightPathGenerator {
  public:
-  ThumbView() = default;
+  SkPath GetHighlightPath(const views::View* view) override {
+    return static_cast<const ToggleButton*>(view)->GetFocusRingPath();
+  }
+};
+
+// Class representing the thumb (the circle that slides horizontally).
+class ToggleButton::ThumbView : public View {
+ public:
+  ThumbView() {
+    // Make the thumb behave as part of the parent for event handling.
+    SetCanProcessEventsWithinSubtree(false);
+  }
+  ThumbView(const ThumbView&) = delete;
+  ThumbView& operator=(const ThumbView&) = delete;
   ~ThumbView() override = default;
 
   void Update(const gfx::Rect& bounds, float color_ratio) {
@@ -53,11 +74,12 @@ class ToggleButton::ThumbView : public InkDropHostView {
         .Offset(gfx::Vector2d(kShadowOffsetX, kShadowOffsetY));
   }
 
- protected:
-  // views::View:
-  bool CanProcessEventsWithinSubtree() const override {
-    // Make the thumb behave as part of the parent for event handling.
-    return false;
+  void SetThumbColor(bool is_on, const absl::optional<SkColor>& thumb_color) {
+    (is_on ? thumb_on_color_ : thumb_off_color_) = thumb_color;
+  }
+
+  absl::optional<SkColor> GetThumbColor(bool is_on) const {
+    return is_on ? thumb_on_color_ : thumb_off_color_;
   }
 
  private:
@@ -66,26 +88,24 @@ class ToggleButton::ThumbView : public InkDropHostView {
   static constexpr int kShadowBlur = 2;
 
   // views::View:
-  const char* GetClassName() const override {
-    return "ToggleButton::ThumbView";
-  }
-
   void OnPaint(gfx::Canvas* canvas) override {
     const float dsf = canvas->UndoDeviceScaleFactor();
+    const ui::NativeTheme* theme = GetNativeTheme();
     std::vector<gfx::ShadowValue> shadows;
     gfx::ShadowValue shadow(
         gfx::Vector2d(kShadowOffsetX, kShadowOffsetY), 2 * kShadowBlur,
-        SkColorSetA(GetNativeTheme()->GetSystemColor(
-                        ui::NativeTheme::kColorId_LabelEnabledColor),
-                    0x99));
+        theme->GetSystemColor(
+            ui::NativeTheme::kColorId_ToggleButtonShadowColor));
     shadows.push_back(shadow.Scale(dsf));
     cc::PaintFlags thumb_flags;
     thumb_flags.setLooper(gfx::CreateShadowDrawLooper(shadows));
     thumb_flags.setAntiAlias(true);
-    const SkColor thumb_on_color = GetNativeTheme()->GetSystemColor(
-        ui::NativeTheme::kColorId_ProminentButtonColor);
-    const SkColor thumb_off_color = GetNativeTheme()->GetSystemColor(
-        ui::NativeTheme::kColorId_DialogBackground);
+    const SkColor thumb_on_color =
+        thumb_on_color_.value_or(theme->GetSystemColor(
+            ui::NativeTheme::kColorId_ToggleButtonThumbColorOn));
+    const SkColor thumb_off_color =
+        thumb_off_color_.value_or(theme->GetSystemColor(
+            ui::NativeTheme::kColorId_ToggleButtonThumbColorOff));
     thumb_flags.setColor(
         color_utils::AlphaBlend(thumb_on_color, thumb_off_color, color_ratio_));
 
@@ -100,52 +120,132 @@ class ToggleButton::ThumbView : public InkDropHostView {
                        thumb_flags);
   }
 
-  std::unique_ptr<InkDropMask> CreateInkDropMask() const override {
-    return nullptr;
-  }
+  // Colors used for the thumb, defaults to NativeTheme if not set explicitly.
+  absl::optional<SkColor> thumb_on_color_;
+  absl::optional<SkColor> thumb_off_color_;
 
   // Color ratio between 0 and 1 that controls the thumb color.
   float color_ratio_ = 0.0f;
-
-  DISALLOW_COPY_AND_ASSIGN(ThumbView);
 };
 
-// static
-const char ToggleButton::kViewClassName[] = "ToggleButton";
-
-ToggleButton::ToggleButton(ButtonListener* listener)
-    : Button(listener), thumb_view_(new ThumbView()) {
-  slide_animation_.SetSlideDuration(80 /* ms */);
+ToggleButton::ToggleButton(PressedCallback callback)
+    : Button(std::move(callback)) {
+  slide_animation_.SetSlideDuration(base::TimeDelta::FromMilliseconds(80));
   slide_animation_.SetTweenType(gfx::Tween::LINEAR);
-  AddChildView(thumb_view_);
-  SetInkDropMode(InkDropMode::ON);
-  SetFocusForPlatform();
-  set_has_ink_drop_action_on_click(true);
+  thumb_view_ = AddChildView(std::make_unique<ThumbView>());
+  InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
+  // Do not set a clip, allow the ink drop to burst out.
+  // TODO(pbos): Consider an explicit InkDrop API to not use a clip rect / mask.
+  views::InstallEmptyHighlightPathGenerator(this);
+  // InkDrop event triggering is handled in NotifyClick().
+  SetHasInkDropActionOnClick(false);
+  InkDrop::UseInkDropForSquareRipple(InkDrop::Get(this),
+                                     /*highlight_on_hover=*/false);
+  InkDrop::Get(this)->SetCreateRippleCallback(base::BindRepeating(
+      [](ToggleButton* host) {
+        gfx::Rect rect = host->thumb_view_->GetLocalBounds();
+        rect.Inset(-ThumbView::GetShadowOutsets());
+        return InkDrop::Get(host)->CreateSquareRipple(rect.CenterPoint());
+      },
+      this));
+  InkDrop::Get(this)->SetBaseColorCallback(base::BindRepeating(
+      [](ToggleButton* host) {
+        return host->GetTrackColor(host->GetIsOn() || host->HasFocus());
+      },
+      this));
+
+  SetInstallFocusRingOnFocus(true);
+  FocusRing::Get(this)->SetPathGenerator(
+      std::make_unique<FocusRingHighlightPathGenerator>());
 }
 
 ToggleButton::~ToggleButton() {
-  // Destroying ink drop early allows ink drop layer to be properly removed,
-  SetInkDropMode(InkDropMode::OFF);
+  // TODO(pbos): Revisit explicit removal of InkDrop for classes that override
+  // Add/RemoveLayerBeneathView(). This is done so that the InkDrop doesn't
+  // access the non-override versions in ~View.
+  views::InkDrop::Remove(this);
 }
 
-void ToggleButton::SetIsOn(bool is_on, bool animate) {
-  if (is_on_ == is_on)
+void ToggleButton::AnimateIsOn(bool is_on) {
+  if (GetIsOn() == is_on)
     return;
-
-  is_on_ = is_on;
-  if (!animate) {
-    slide_animation_.Reset(is_on_ ? 1.0 : 0.0);
-    UpdateThumb();
-    SchedulePaint();
-  } else if (is_on_) {
+  if (is_on)
     slide_animation_.Show();
-  } else {
+  else
     slide_animation_.Hide();
-  }
+  OnPropertyChanged(&slide_animation_, kPropertyEffectsNone);
+}
+
+void ToggleButton::SetIsOn(bool is_on) {
+  if ((GetIsOn() == is_on) && !slide_animation_.is_animating())
+    return;
+  slide_animation_.Reset(is_on ? 1.0 : 0.0);
+  UpdateThumb();
+  OnPropertyChanged(&slide_animation_, kPropertyEffectsPaint);
+}
+
+bool ToggleButton::GetIsOn() const {
+  return slide_animation_.IsShowing();
+}
+
+void ToggleButton::SetThumbOnColor(
+    const absl::optional<SkColor>& thumb_on_color) {
+  thumb_view_->SetThumbColor(true /* is_on */, thumb_on_color);
+}
+
+absl::optional<SkColor> ToggleButton::GetThumbOnColor() const {
+  return thumb_view_->GetThumbColor(true);
+}
+
+void ToggleButton::SetThumbOffColor(
+    const absl::optional<SkColor>& thumb_off_color) {
+  thumb_view_->SetThumbColor(false /* is_on */, thumb_off_color);
+}
+
+absl::optional<SkColor> ToggleButton::GetThumbOffColor() const {
+  return thumb_view_->GetThumbColor(false);
+}
+
+void ToggleButton::SetTrackOnColor(
+    const absl::optional<SkColor>& track_on_color) {
+  track_on_color_ = track_on_color;
+}
+
+absl::optional<SkColor> ToggleButton::GetTrackOnColor() const {
+  return track_on_color_;
+}
+
+void ToggleButton::SetTrackOffColor(
+    const absl::optional<SkColor>& track_off_color) {
+  track_off_color_ = track_off_color;
+}
+
+absl::optional<SkColor> ToggleButton::GetTrackOffColor() const {
+  return track_off_color_;
+}
+
+void ToggleButton::SetAcceptsEvents(bool accepts_events) {
+  if (GetAcceptsEvents() == accepts_events)
+    return;
+  accepts_events_ = accepts_events;
+  OnPropertyChanged(&accepts_events_, kPropertyEffectsNone);
+}
+
+bool ToggleButton::GetAcceptsEvents() const {
+  return accepts_events_;
+}
+
+void ToggleButton::AddLayerBeneathView(ui::Layer* layer) {
+  // Ink-drop layers should go underneath the ThumbView.
+  thumb_view_->AddLayerBeneathView(layer);
+}
+
+void ToggleButton::RemoveLayerBeneathView(ui::Layer* layer) {
+  thumb_view_->RemoveLayerBeneathView(layer);
 }
 
 gfx::Size ToggleButton::CalculatePreferredSize() const {
-  gfx::Rect rect(kTrackWidth, kTrackHeight);
+  gfx::Rect rect(kTrackSize);
   rect.Inset(gfx::Insets(-kTrackVerticalMargin, -kTrackHorizontalMargin));
   if (border())
     rect.Inset(-border()->GetInsets());
@@ -154,7 +254,7 @@ gfx::Size ToggleButton::CalculatePreferredSize() const {
 
 gfx::Rect ToggleButton::GetTrackBounds() const {
   gfx::Rect track_bounds(GetContentsBounds());
-  track_bounds.ClampToCenteredSize(gfx::Size(kTrackWidth, kTrackHeight));
+  track_bounds.ClampToCenteredSize(kTrackSize);
   return track_bounds;
 }
 
@@ -173,63 +273,81 @@ gfx::Rect ToggleButton::GetThumbBounds() const {
 void ToggleButton::UpdateThumb() {
   thumb_view_->Update(GetThumbBounds(),
                       static_cast<float>(slide_animation_.GetCurrentValue()));
+  if (FocusRing::Get(this)) {
+    // Updating the thumb changes the result of GetFocusRingPath(), make sure
+    // the focus ring gets updated to match this new state.
+    FocusRing::Get(this)->InvalidateLayout();
+    FocusRing::Get(this)->SchedulePaint();
+  }
 }
 
 SkColor ToggleButton::GetTrackColor(bool is_on) const {
-  const SkAlpha kTrackAlpha = 0x66;
-  ui::NativeTheme::ColorId color_id =
-      is_on ? ui::NativeTheme::kColorId_ProminentButtonColor
-            : ui::NativeTheme::kColorId_LabelEnabledColor;
-  return SkColorSetA(GetNativeTheme()->GetSystemColor(color_id), kTrackAlpha);
-}
-
-const char* ToggleButton::GetClassName() const {
-  return kViewClassName;
+  absl::optional<SkColor> color = is_on ? track_on_color_ : track_off_color_;
+  return color.value_or(GetNativeTheme()->GetSystemColor(
+      is_on ? ui::NativeTheme::kColorId_ToggleButtonTrackColorOn
+            : ui::NativeTheme::kColorId_ToggleButtonTrackColorOff));
 }
 
 bool ToggleButton::CanAcceptEvent(const ui::Event& event) {
-  return accepts_events_ && Button::CanAcceptEvent(event);
+  return GetAcceptsEvents() && Button::CanAcceptEvent(event);
 }
 
 void ToggleButton::OnBoundsChanged(const gfx::Rect& previous_bounds) {
   UpdateThumb();
 }
 
-void ToggleButton::OnNativeThemeChanged(const ui::NativeTheme* theme) {
+void ToggleButton::OnThemeChanged() {
+  Button::OnThemeChanged();
   SchedulePaint();
+}
+
+SkPath ToggleButton::GetFocusRingPath() const {
+  SkPath path;
+  const gfx::Point center = GetThumbBounds().CenterPoint();
+  const int kFocusRingRadius = 16;
+  path.addCircle(center.x(), center.y(), kFocusRingRadius);
+  return path;
 }
 
 void ToggleButton::GetAccessibleNodeData(ui::AXNodeData* node_data) {
   Button::GetAccessibleNodeData(node_data);
 
   node_data->role = ax::mojom::Role::kSwitch;
-  node_data->SetCheckedState(is_on_ ? ax::mojom::CheckedState::kTrue
-                                    : ax::mojom::CheckedState::kFalse);
+  node_data->SetCheckedState(GetIsOn() ? ax::mojom::CheckedState::kTrue
+                                       : ax::mojom::CheckedState::kFalse);
 }
 
 void ToggleButton::OnFocus() {
   Button::OnFocus();
-  AnimateInkDrop(views::InkDropState::ACTION_PENDING, nullptr);
+  InkDrop::Get(this)->AnimateToState(views::InkDropState::ACTION_PENDING,
+                                     nullptr);
+  SchedulePaint();
 }
 
 void ToggleButton::OnBlur() {
   Button::OnBlur();
 
   // The ink drop may have already gone away if the user clicked after focusing.
-  if (GetInkDrop()->GetTargetInkDropState() ==
+  if (InkDrop::Get(this)->GetInkDrop()->GetTargetInkDropState() ==
       views::InkDropState::ACTION_PENDING) {
-    AnimateInkDrop(views::InkDropState::ACTION_TRIGGERED, nullptr);
+    InkDrop::Get(this)->AnimateToState(views::InkDropState::ACTION_TRIGGERED,
+                                       nullptr);
   }
+  SchedulePaint();
 }
 
 void ToggleButton::NotifyClick(const ui::Event& event) {
-  SetIsOn(!is_on(), true);
+  AnimateIsOn(!GetIsOn());
 
-  // Skip over Button::NotifyClick, to customize the ink drop animation.
-  // Leave the ripple in place when the button is activated via the keyboard.
-  if (!event.IsKeyEvent()) {
-    AnimateInkDrop(InkDropState::ACTION_TRIGGERED,
-                   ui::LocatedEvent::FromIfValid(&event));
+  // Only trigger the action when we don't have focus. This lets the InkDrop
+  // remain and match the focus ring.
+  // TODO(pbos): Investigate triggering the ripple but returning back to the
+  // focused state correctly. This is set up to highlight on focus, but the
+  // highlight does not come back after the ripple is triggered. Then remove
+  // this and add back SetHasInkDropActionOnClick(true) in the constructor.
+  if (!HasFocus()) {
+    InkDrop::Get(this)->AnimateToState(InkDropState::ACTION_TRIGGERED,
+                                       ui::LocatedEvent::FromIfValid(&event));
   }
 
   Button::NotifyClick(event);
@@ -253,36 +371,6 @@ void ToggleButton::PaintButtonContents(gfx::Canvas* canvas) {
   canvas->Restore();
 }
 
-void ToggleButton::AddInkDropLayer(ui::Layer* ink_drop_layer) {
-  thumb_view_->AddInkDropLayer(ink_drop_layer);
-}
-
-void ToggleButton::RemoveInkDropLayer(ui::Layer* ink_drop_layer) {
-  thumb_view_->RemoveInkDropLayer(ink_drop_layer);
-}
-
-std::unique_ptr<InkDrop> ToggleButton::CreateInkDrop() {
-  std::unique_ptr<InkDropImpl> ink_drop = Button::CreateDefaultInkDropImpl();
-  ink_drop->SetShowHighlightOnHover(false);
-  ink_drop->SetAutoHighlightMode(
-      InkDropImpl::AutoHighlightMode::HIDE_ON_RIPPLE);
-  return std::move(ink_drop);
-}
-
-std::unique_ptr<InkDropMask> ToggleButton::CreateInkDropMask() const {
-  return nullptr;
-}
-
-std::unique_ptr<InkDropRipple> ToggleButton::CreateInkDropRipple() const {
-  gfx::Rect rect = thumb_view_->GetLocalBounds();
-  rect.Inset(-ThumbView::GetShadowOutsets());
-  return CreateDefaultInkDropRipple(rect.CenterPoint());
-}
-
-SkColor ToggleButton::GetInkDropBaseColor() const {
-  return GetTrackColor(is_on() || HasFocus());
-}
-
 void ToggleButton::AnimationProgressed(const gfx::Animation* animation) {
   if (animation == &slide_animation_) {
     // TODO(varkha, estade): The thumb is using its own view. Investigate if
@@ -293,5 +381,14 @@ void ToggleButton::AnimationProgressed(const gfx::Animation* animation) {
   }
   Button::AnimationProgressed(animation);
 }
+
+BEGIN_METADATA(ToggleButton, Button)
+ADD_PROPERTY_METADATA(bool, IsOn)
+ADD_PROPERTY_METADATA(bool, AcceptsEvents)
+ADD_PROPERTY_METADATA(absl::optional<SkColor>, ThumbOnColor)
+ADD_PROPERTY_METADATA(absl::optional<SkColor>, ThumbOffColor)
+ADD_PROPERTY_METADATA(absl::optional<SkColor>, TrackOnColor)
+ADD_PROPERTY_METADATA(absl::optional<SkColor>, TrackOffColor)
+END_METADATA
 
 }  // namespace views

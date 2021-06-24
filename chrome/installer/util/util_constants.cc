@@ -11,11 +11,14 @@ namespace switches {
 // Allow an update of Chrome from a higher version to a lower version.
 // Ordinarily, such downgrades are disallowed. An administrator may wish to
 // allow them in circumstances where the potential loss of user data is
-// permissable.
+// permissible.
 const char kAllowDowngrade[] = "allow-downgrade";
 
-// Run the installer for Chrome SxS.
-const char kChromeSxS[] = "chrome-sxs";
+// A channel name specified via administrative policy. This switch sets the
+// channel both of the installer and of the version of Chrome being installed.
+// This switch has no effect for secondary install modes (i.e., installs that
+// use --chrome-sxs or another mode switch).
+const char kChannel[] = "channel";
 
 // Create shortcuts for this user to point to a system-level install (which
 // must already be installed on the machine). The shortcuts created will
@@ -55,7 +58,7 @@ const char kDoNotRemoveSharedItems[] = "do-not-remove-shared-items";
 const char kEnableLogging[] = "enable-logging";
 
 // Same as kConfigureUserSettings above; except the checks to know whether
-// first run already occured are bypassed and shortcuts are created either way
+// first run already occurred are bypassed and shortcuts are created either way
 // (kConfigureUserSettings also needs to be on the command-line for this to have
 // any effect).
 const char kForceConfigureUserSettings[] = "force-configure-user-settings";
@@ -64,13 +67,16 @@ const char kForceConfigureUserSettings[] = "force-configure-user-settings";
 // confirmation from user.
 const char kForceUninstall[] = "force-uninstall";
 
+// See description for kPatch.
+const char kInputFile[] = "input-file";
+
 // Specify the path to the compressed Chrome archive for install. If not
 // specified, chrome.packed.7z or chrome.7z in the same directory as setup.exe
 // is used (the packed file is preferred; see kUncompressedArchive to force use
 // of an uncompressed archive).
 const char kInstallArchive[] = "install-archive";
 
-// Specify the file path of Chrome master preference file.
+// Specify the file path of Chrome initial preference file.
 const char kInstallerData[] = "installerdata";
 
 // If present, specify file path to write logging info.
@@ -91,6 +97,14 @@ const char kNewSetupExe[] = "new-setup-exe";
 
 // Notify the installer that the OS has been upgraded.
 const char kOnOsUpgrade[] = "on-os-upgrade";
+
+// Applies a binary patch to a file. The input, patch, and the output file are
+// specified as command line arguments following the --patch switch.
+// Ex: --patch=courgette --input_file='input' --patch_file='patch'
+//        --output_file='output'
+const char kOutputFile[] = "output-file";
+const char kPatch[] = "patch";
+const char kPatchFile[] = "patch-file";
 
 // Provide the previous version that patch is for.
 const char kPreviousVersion[] = "previous-version";
@@ -119,29 +133,41 @@ const char kRegisterDevChrome[] = "register-dev-chrome";
 // in addition to the standard set of protocols.
 const char kRegisterURLProtocol[] = "register-url-protocol";
 
-// Renames chrome.exe to old_chrome.exe and renames new_chrome.exe to chrome.exe
-// to support in-use updates. Also deletes opv key.
-const char kRenameChromeExe[] = "rename-chrome-exe";
+// Specifies a comma-separated list of protocols to add as protocol associations
+// for a web application, preceded by the prog_id of that web application.
+// --register-web-app-url-protocols=<progid>:<protocol>,<protocol>,<protocol>..]
+const char kRegisterWebAppURLProtocols[] = "register-web-app-url-protocols";
 
 // Removes Chrome registration from current machine. Requires admin rights.
 const char kRemoveChromeRegistration[] = "remove-chrome-registration";
+
+// Renames chrome.exe to old_chrome.exe and renames new_chrome.exe to chrome.exe
+// to support in-use updates. Also deletes opv key.
+const char kRenameChromeExe[] = "rename-chrome-exe";
 
 // When we try to relaunch setup.exe as admin on Vista, we append this command
 // line flag so that we try the launch only once.
 const char kRunAsAdmin[] = "run-as-admin";
 
-// Saves the specified device management token to the registry.
-const char kStoreDMToken[] = "store-dmtoken";
-
 // Combined with --uninstall, signals to setup.exe that this uninstall was
 // triggered by a self-destructing Chrome.
 const char kSelfDestruct[] = "self-destruct";
+
+// Show the embedded EULA dialog.
+const char kShowEula[] = "show-eula";
+
+// Saves the specified device management token to the registry.
+const char kStoreDMToken[] = "store-dmtoken";
 
 // Install Chrome to system wise location. The default is per user install.
 const char kSystemLevel[] = "system-level";
 
 // Signals to setup.exe that it should trigger the active setup command.
 const char kTriggerActiveSetup[] = "trigger-active-setup";
+
+// Use the given uncompressed chrome.7z archive as the source of files to
+// install.
+const char kUncompressedArchive[] = "uncompressed-archive";
 
 // If present, setup will uninstall chrome.
 const char kUninstall[] = "uninstall";
@@ -151,24 +177,12 @@ const char kUninstall[] = "uninstall";
 // path given by --new-setup-exe.
 const char kUpdateSetupExe[] = "update-setup-exe";
 
-// Use the given uncompressed chrome.7z archive as the source of files to
-// install.
-const char kUncompressedArchive[] = "uncompressed-archive";
+// Switch to pass the ProdId of a web application to be unregistered for
+// protocol handling.
+const char kUnregisterWebAppProgId[] = "unregister-web-app-prog-id";
 
 // Enable verbose logging (info level).
 const char kVerboseLogging[] = "verbose-logging";
-
-// Show the embedded EULA dialog.
-const char kShowEula[] = "show-eula";
-
-// Applies a binary patch to a file. The input, patch, and the output file are
-// specified as command line arguments following the --patch switch.
-// Ex: --patch=courgette --input_file='input' --patch_file='patch'
-//        --output_file='output'
-const char kPatch[] = "patch";
-const char kInputFile[] = "input-file";
-const char kPatchFile[] = "patch-file";
-const char kOutputFile[] = "output-file";
 
 }  // namespace switches
 
@@ -192,7 +206,6 @@ const char kGoogleUpdateIsMachineEnvVar[] = "GoogleUpdateIsMachine";
 // Active Setup.
 const wchar_t kActiveSetupExe[] = L"chrmstp.exe";
 const wchar_t kChromeDll[] = L"chrome.dll";
-const wchar_t kChromeChildDll[] = L"chrome_child.dll";
 const wchar_t kChromeExe[] = L"chrome.exe";
 const wchar_t kChromeNewExe[] = L"new_chrome.exe";
 const wchar_t kChromeOldExe[] = L"old_chrome.exe";
@@ -208,6 +221,13 @@ const wchar_t kInstallTempDir[] = L"Temp";
 const wchar_t kLnkExt[] = L".lnk";
 const wchar_t kNaClExe[] = L"nacl64.exe";
 const wchar_t kNotificationHelperExe[] = L"notification_helper.exe";
+
+// DowngradeVersion holds the version from which Chrome was downgraded. In case
+// of multiple downgrades (e.g., 75->74->73), it retains the highest version
+// installed prior to any downgrades. DowngradeVersion is deleted on upgrade
+// once Chrome reaches the version from which it was downgraded.
+const wchar_t kRegDowngradeVersion[] = L"DowngradeVersion";
+
 const wchar_t kSetupExe[] = L"setup.exe";
 const wchar_t kUninstallStringField[] = L"UninstallString";
 const wchar_t kUninstallArgumentsField[] = L"UninstallArguments";

@@ -67,6 +67,7 @@ class NET_EXPORT TransportSecurityPersister
   // Called by the TransportSecurityState when it changes its state.
   void StateIsDirty(TransportSecurityState*) override;
   // Called when the TransportSecurityState should be written immediately.
+  // |callback| is called after data is persisted.
   void WriteNow(TransportSecurityState* state,
                 base::OnceClosure callback) override;
 
@@ -105,23 +106,15 @@ class NET_EXPORT TransportSecurityPersister
 
   // Clears any existing non-static entries, and then re-populates
   // |transport_security_state_|.
-  //
-  // Sets |*dirty| to true if the new state differs from the persisted
-  // state; false otherwise.
-  bool LoadEntries(const std::string& serialized, bool* dirty);
+  void LoadEntries(const std::string& serialized);
 
  private:
-  // Populates |state| from the JSON string |serialized|. Returns true if
-  // all entries were parsed and deserialized correctly.
-  //
-  // Sets |*dirty| to true if the new state differs from the persisted
-  // state; false otherwise.
-  static bool Deserialize(const std::string& serialized,
-                          bool* dirty,
+  // Populates |state| from the JSON string |serialized|.
+  static void Deserialize(const std::string& serialized,
                           TransportSecurityState* state);
 
   void CompleteLoad(const std::string& state);
-  void OnWriteFinished(base::OnceClosure callback, bool result);
+  void OnWriteFinished(base::OnceClosure callback);
 
   TransportSecurityState* transport_security_state_;
 
@@ -131,7 +124,7 @@ class NET_EXPORT TransportSecurityPersister
   scoped_refptr<base::SequencedTaskRunner> foreground_runner_;
   scoped_refptr<base::SequencedTaskRunner> background_runner_;
 
-  base::WeakPtrFactory<TransportSecurityPersister> weak_ptr_factory_;
+  base::WeakPtrFactory<TransportSecurityPersister> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TransportSecurityPersister);
 };

@@ -7,15 +7,14 @@
 
 #include <array>
 #include <map>
+#include <vector>
 
 #include "base/base_export.h"
-#include "base/logging.h"
-#include "base/macros.h"
+#include "base/check_op.h"
 #include "base/task/common/intrusive_heap.h"
 #include "base/task/sequence_manager/sequence_manager.h"
 #include "base/task/sequence_manager/task_queue_impl.h"
 #include "base/task/sequence_manager/work_queue.h"
-#include "base/trace_event/traced_value.h"
 
 namespace base {
 namespace sequence_manager {
@@ -41,6 +40,8 @@ class BASE_EXPORT WorkQueueSets {
   WorkQueueSets(const char* name,
                 Observer* observer,
                 const SequenceManager::Settings& settings);
+  WorkQueueSets(const WorkQueueSets&) = delete;
+  WorkQueueSets& operator=(const WorkQueueSets&) = delete;
   ~WorkQueueSets();
 
   // O(log num queues)
@@ -95,6 +96,12 @@ class BASE_EXPORT WorkQueueSets {
 
   const char* GetName() const { return name_; }
 
+  // Collects ready tasks which where skipped over when |selected_work_queue|
+  // was selected. Note this is somewhat expensive.
+  void CollectSkippedOverLowerPriorityTasks(
+      const internal::WorkQueue* selected_work_queue,
+      std::vector<const Task*>* result) const;
+
  private:
   struct OldestTaskEnqueueOrder {
     EnqueueOrder key;
@@ -111,6 +118,8 @@ class BASE_EXPORT WorkQueueSets {
     void ClearHeapHandle() {
       value->set_heap_handle(base::internal::HeapHandle());
     }
+
+    HeapHandle GetHeapHandle() const { return value->heap_handle(); }
   };
 
   const char* const name_;
@@ -143,8 +152,6 @@ class BASE_EXPORT WorkQueueSets {
 #endif
 
   Observer* const observer_;
-
-  DISALLOW_COPY_AND_ASSIGN(WorkQueueSets);
 };
 
 }  // namespace internal

@@ -4,19 +4,24 @@
 
 #import "ios/chrome/browser/ui/popup_menu/popup_menu_coordinator.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
+#include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/feature_engagement/tracker_factory.h"
+#import "ios/chrome/browser/main/browser.h"
+#import "ios/chrome/browser/overlays/public/overlay_presenter.h"
 #include "ios/chrome/browser/reading_list/reading_list_model_factory.h"
 #import "ios/chrome/browser/search_engines/template_url_service_factory.h"
+#import "ios/chrome/browser/ui/browser_container/browser_container_mediator.h"
 #import "ios/chrome/browser/ui/bubble/bubble_presenter.h"
 #import "ios/chrome/browser/ui/bubble/bubble_view_controller_presenter.h"
 #import "ios/chrome/browser/ui/commands/browser_commands.h"
 #import "ios/chrome/browser/ui/commands/command_dispatcher.h"
+#import "ios/chrome/browser/ui/commands/find_in_page_commands.h"
 #import "ios/chrome/browser/ui/commands/popup_menu_commands.h"
 #import "ios/chrome/browser/ui/popup_menu/popup_menu_action_handler.h"
 #import "ios/chrome/browser/ui/popup_menu/popup_menu_constants.h"
@@ -26,6 +31,7 @@
 #import "ios/chrome/browser/ui/popup_menu/public/popup_menu_table_view_controller.h"
 #import "ios/chrome/browser/ui/presenters/contained_presenter_delegate.h"
 #import "ios/chrome/browser/ui/util/layout_guide_names.h"
+#import "ios/chrome/browser/web/web_navigation_browser_agent.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -47,6 +53,9 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
 @property(nonatomic, strong) PopupMenuPresenter* presenter;
 // Mediator for the popup menu.
 @property(nonatomic, strong) PopupMenuMediator* mediator;
+// Mediator to that alerts the main |mediator| when the web content area
+// is blocked by an overlay.
+@property(nonatomic, strong) BrowserContainerMediator* contentBlockerMediator;
 // ViewController for this mediator.
 @property(nonatomic, strong) PopupMenuTableViewController* viewController;
 // Handles user interaction with the popup menu items.
@@ -58,20 +67,19 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
 
 @implementation PopupMenuCoordinator
 
-@synthesize dispatcher = _dispatcher;
 @synthesize mediator = _mediator;
 @synthesize presenter = _presenter;
 @synthesize requestStartTime = _requestStartTime;
 @synthesize UIUpdater = _UIUpdater;
-@synthesize webStateList = _webStateList;
 @synthesize bubblePresenter = _bubblePresenter;
 @synthesize viewController = _viewController;
 
 #pragma mark - ChromeCoordinator
 
 - (void)start {
-  [self.dispatcher startDispatchingToTarget:self
-                                forProtocol:@protocol(PopupMenuCommands)];
+  [self.browser->GetCommandDispatcher()
+      startDispatchingToTarget:self
+                   forProtocol:@protocol(PopupMenuCommands)];
   NSNotificationCenter* defaultCenter = [NSNotificationCenter defaultCenter];
   [defaultCenter addObserver:self
                     selector:@selector(applicationDidEnterBackground:)
@@ -80,7 +88,7 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
 }
 
 - (void)stop {
-  [self.dispatcher stopDispatchingToTarget:self];
+  [self.browser->GetCommandDispatcher() stopDispatchingToTarget:self];
   [self.mediator disconnect];
   self.mediator = nil;
   self.viewController = nil;
@@ -120,16 +128,10 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
             fromNamedGuide:kTabSwitcherGuide];
 }
 
-- (void)showSearchButtonPopup {
-  base::RecordAction(base::UserMetricsAction("MobileToolbarShowSearchMenu"));
-  [self presentPopupOfType:PopupMenuTypeSearch
-            fromNamedGuide:kSearchButtonGuide];
-}
-
-- (void)showTabStripTabGridButtonPopup {
-  base::RecordAction(base::UserMetricsAction("MobileTabStripShowTabGridMenu"));
-  [self presentPopupOfType:PopupMenuTypeTabStripTabGrid
-            fromNamedGuide:kTabStripTabSwitcherGuide];
+- (void)showNewTabButtonPopup {
+  base::RecordAction(base::UserMetricsAction("MobileToolbarShowNewTabMenu"));
+  [self presentPopupOfType:PopupMenuTypeNewTab
+            fromNamedGuide:kNewTabButtonGuide];
 }
 
 - (void)dismissPopupMenuAnimated:(BOOL)animated {
@@ -167,10 +169,6 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
   }
 }
 
-- (void)containedPresenterDidDismiss:(id<ContainedPresenter>)presenter {
-  // No-op.
-}
-
 #pragma mark - PopupMenuPresenterDelegate
 
 - (void)popupMenuPresenterWillDismiss:(PopupMenuPresenter*)presenter {
@@ -192,8 +190,10 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
   if (self.presenter)
     [self dismissPopupMenuAnimated:YES];
 
+  // TODO(crbug.com/1045047): Use HandlerForProtocol after commands protocol
+  // clean up.
   id<BrowserCommands> callableDispatcher =
-      static_cast<id<BrowserCommands>>(self.dispatcher);
+      static_cast<id<BrowserCommands>>(self.browser->GetCommandDispatcher());
   [callableDispatcher
       prepareForPopupMenuPresentation:CommandTypeFromPopupType(type)];
 
@@ -209,6 +209,9 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
              type == PopupMenuTypeNavigationForward) {
     tableViewController.tableView.accessibilityIdentifier =
         kPopupMenuNavigationTableViewId;
+  } else if (type == PopupMenuTypeTabGrid) {
+    tableViewController.tableView.accessibilityIdentifier =
+        kPopupMenuTabGridMenuTableViewId;
   }
 
   self.viewController = tableViewController;
@@ -224,28 +227,44 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
 
   self.mediator = [[PopupMenuMediator alloc]
                    initWithType:type
-                    isIncognito:self.browserState->IsOffTheRecord()
+                    isIncognito:self.browser->GetBrowserState()
+                                    ->IsOffTheRecord()
                readingListModel:ReadingListModelFactory::GetForBrowserState(
-                                    self.browserState)
-      triggerNewIncognitoTabTip:triggerNewIncognitoTabTip];
+                                    self.browser->GetBrowserState())
+      triggerNewIncognitoTabTip:triggerNewIncognitoTabTip
+         browserPolicyConnector:GetApplicationContext()
+                                    ->GetBrowserPolicyConnector()];
   self.mediator.engagementTracker =
-      feature_engagement::TrackerFactory::GetForBrowserState(self.browserState);
-  self.mediator.webStateList = self.webStateList;
-  self.mediator.dispatcher = static_cast<id<BrowserCommands>>(self.dispatcher);
-  self.mediator.bookmarkModel =
-      ios::BookmarkModelFactory::GetForBrowserState(self.browserState);
+      feature_engagement::TrackerFactory::GetForBrowserState(
+          self.browser->GetBrowserState());
+  self.mediator.webStateList = self.browser->GetWebStateList();
+  self.mediator.dispatcher =
+      static_cast<id<BrowserCommands>>(self.browser->GetCommandDispatcher());
+  self.mediator.bookmarkModel = ios::BookmarkModelFactory::GetForBrowserState(
+      self.browser->GetBrowserState());
+  self.mediator.prefService = self.browser->GetBrowserState()->GetPrefs();
   self.mediator.templateURLService =
-      ios::TemplateURLServiceFactory::GetForBrowserState(self.browserState);
+      ios::TemplateURLServiceFactory::GetForBrowserState(
+          self.browser->GetBrowserState());
   self.mediator.popupMenu = tableViewController;
+  OverlayPresenter* overlayPresenter = OverlayPresenter::FromBrowser(
+      self.browser, OverlayModality::kWebContentArea);
+  self.mediator.webContentAreaOverlayPresenter = overlayPresenter;
+
+  self.contentBlockerMediator = [[BrowserContainerMediator alloc]
+                initWithWebStateList:self.browser->GetWebStateList()
+      webContentAreaOverlayPresenter:overlayPresenter];
+  self.contentBlockerMediator.consumer = self.mediator;
 
   self.actionHandler = [[PopupMenuActionHandler alloc] init];
-  self.actionHandler.engagementTracker =
-      feature_engagement::TrackerFactory::GetForBrowserState(self.browserState);
   self.actionHandler.baseViewController = self.baseViewController;
   self.actionHandler.dispatcher =
-      static_cast<id<ApplicationCommands, BrowserCommands, LoadQueryCommands>>(
-          self.dispatcher);
-  self.actionHandler.commandHandler = self.mediator;
+      static_cast<id<ApplicationCommands, BrowserCommands, FindInPageCommands,
+                     LoadQueryCommands, TextZoomCommands>>(
+          self.browser->GetCommandDispatcher());
+  self.actionHandler.delegate = self.mediator;
+  self.actionHandler.navigationAgent =
+      WebNavigationBrowserAgent::FromBrowser(self.browser);
   tableViewController.delegate = self.actionHandler;
 
   self.presenter = [[PopupMenuPresenter alloc] init];
@@ -258,7 +277,6 @@ PopupMenuCommandType CommandTypeFromPopupType(PopupMenuType type) {
 
   [self.presenter prepareForPresentation];
   [self.presenter presentAnimated:YES];
-  return;
 }
 
 @end

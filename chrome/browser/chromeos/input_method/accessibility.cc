@@ -4,7 +4,7 @@
 
 #include "chrome/browser/chromeos/input_method/accessibility.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/aura/accessibility/automation_manager_aura.h"
@@ -13,29 +13,24 @@
 namespace chromeos {
 namespace input_method {
 
-Accessibility::Accessibility(InputMethodManager* imm)
-    : imm_(imm) {
-  DCHECK(imm_);
-  imm_->AddObserver(this);
+Accessibility::Accessibility(InputMethodManager* imm) {
+  DCHECK(imm);
+  observed_input_method_manager_.Observe(imm);
 }
 
-Accessibility::~Accessibility() {
-  DCHECK(imm_);
-  imm_->RemoveObserver(this);
-}
+Accessibility::~Accessibility() = default;
 
 void Accessibility::InputMethodChanged(InputMethodManager* imm,
                                        Profile* profile,
                                        bool show_message) {
-  DCHECK_EQ(imm, imm_);
   if (!show_message)
     return;
 
-  // Get the medium name of the changed input method (e.g. US, INTL, etc.)
+  // Get the localized display name of the changed input method.
   const InputMethodDescriptor descriptor =
-      imm_->GetActiveIMEState()->GetCurrentInputMethod();
-  const std::string medium_name = base::UTF16ToUTF8(
-      imm_->GetInputMethodUtil()->GetInputMethodMediumName(descriptor));
+      imm->GetActiveIMEState()->GetCurrentInputMethod();
+  const std::string medium_name =
+      imm->GetInputMethodUtil()->GetLocalizedDisplayName(descriptor);
 
   AutomationManagerAura::GetInstance()->HandleAlert(medium_name);
 }

@@ -25,7 +25,9 @@
 
 #include "third_party/blink/renderer/core/editing/commands/apply_style_command.h"
 
+#include "mojo/public/mojom/base/text_direction.mojom-blink.h"
 #include "third_party/blink/renderer/core/css/css_computed_style_declaration.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
@@ -42,25 +44,24 @@
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/iterators/text_iterator.h"
 #include "third_party/blink/renderer/core/editing/plain_text_range.h"
+#include "third_party/blink/renderer/core/editing/relocatable_position.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/serializers/html_interchange.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
-#include "third_party/blink/renderer/core/editing/writing_direction.h"
-#include "third_party/blink/renderer/core/frame/use_counter.h"
 #include "third_party/blink/renderer/core/html/html_font_element.h"
 #include "third_party/blink/renderer/core/html/html_span_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
-
-using namespace html_names;
 
 static bool HasNoAttributeOrOnlyStyleAttribute(
     const HTMLElement* element,
@@ -70,7 +71,7 @@ static bool HasNoAttributeOrOnlyStyleAttribute(
     return true;
 
   unsigned matched_attributes = 0;
-  if (element->hasAttribute(kStyleAttr) &&
+  if (element->hasAttribute(html_names::kStyleAttr) &&
       (should_style_attribute_be_empty == kAllowNonEmptyStyleAttribute ||
        !element->InlineStyle() || element->InlineStyle()->IsEmpty()))
     matched_attributes++;
@@ -80,7 +81,7 @@ static bool HasNoAttributeOrOnlyStyleAttribute(
 }
 
 bool IsStyleSpanOrSpanWithOnlyStyleAttribute(const Element* element) {
-  if (auto* span = ToHTMLSpanElementOrNull(element)) {
+  if (auto* span = DynamicTo<HTMLSpanElement>(element)) {
     return HasNoAttributeOrOnlyStyleAttribute(span,
                                               kAllowNonEmptyStyleAttribute);
   }
@@ -89,7 +90,7 @@ bool IsStyleSpanOrSpanWithOnlyStyleAttribute(const Element* element) {
 
 static inline bool IsSpanWithoutAttributesOrUnstyledStyleSpan(
     const Node* node) {
-  if (auto* span = ToHTMLSpanElementOrNull(node)) {
+  if (auto* span = DynamicTo<HTMLSpanElement>(node)) {
     return HasNoAttributeOrOnlyStyleAttribute(span,
                                               kStyleAttributeShouldBeEmpty);
   }
@@ -99,7 +100,7 @@ static inline bool IsSpanWithoutAttributesOrUnstyledStyleSpan(
 bool IsEmptyFontTag(
     const Element* element,
     ShouldStyleAttributeBeEmpty should_style_attribute_be_empty) {
-  if (auto* font = ToHTMLFontElementOrNull(element)) {
+  if (auto* font = DynamicTo<HTMLFontElement>(element)) {
     return HasNoAttributeOrOnlyStyleAttribute(font,
                                               should_style_attribute_be_empty);
   }
@@ -107,8 +108,8 @@ bool IsEmptyFontTag(
 }
 
 static bool OffsetIsBeforeLastNodeOffset(int offset, Node* anchor_node) {
-  if (anchor_node->IsCharacterDataNode())
-    return offset < static_cast<int>(ToCharacterData(anchor_node)->length());
+  if (auto* character_data = DynamicTo<CharacterData>(anchor_node))
+    return offset < static_cast<int>(character_data->length());
   int current_offset = 0;
   for (Node* node = NodeTraversal::FirstChild(*anchor_node);
        node && current_offset < offset;
@@ -180,7 +181,7 @@ void ApplyStyleCommand::UpdateStartEnd(const EphemeralRange& range) {
   if (!use_ending_selection_ &&
       (range.StartPosition() != start_ || range.EndPosition() != end_))
     use_ending_selection_ = true;
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   const bool was_base_first =
       StartingSelection().IsBaseFirst() || !SelectionIsDirectional();
   SelectionInDOMTree::Builder builder;
@@ -216,7 +217,8 @@ void ApplyStyleCommand::DoApply(EditingState* editing_state) {
   switch (property_level_) {
     case kPropertyDefault: {
       // Apply the block-centric properties of the style.
-      EditingStyle* block_style = style_->ExtractAndRemoveBlockProperties();
+      EditingStyle* block_style = style_->ExtractAndRemoveBlockProperties(
+          GetDocument().GetExecutionContext());
       if (!block_style->IsEmpty()) {
         ApplyBlockStyle(block_style, editing_state);
         if (editing_state->IsAborted())
@@ -250,7 +252,7 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
   // update document layout once before removing styles
   // so that we avoid the expense of updating before each and every call
   // to check a computed style
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   // get positions we want to use for applying style
   Position start = StartPosition();
@@ -288,16 +290,18 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
   const int end_index = TextIterator::RangeLength(end_range, behavior);
 
   VisiblePosition paragraph_start(StartOfParagraph(visible_start));
-  VisiblePosition next_paragraph_start(
-      NextPositionOf(EndOfParagraph(paragraph_start)));
-  Position beyond_end =
-      NextPositionOf(EndOfParagraph(visible_end)).DeepEquivalent();
-  // TODO(editing-dev): Use a saner approach (e.g., temporary Ranges) to keep
-  // these positions in document instead of iteratively performing orphan checks
-  // and recalculating them when they become orphans.
-  while (paragraph_start.IsNotNull() &&
-         paragraph_start.DeepEquivalent() != beyond_end) {
-    DCHECK(!paragraph_start.IsOrphan()) << paragraph_start;
+  RelocatablePosition relocatable_beyond_end(
+      NextPositionOf(EndOfParagraph(visible_end)).DeepEquivalent());
+  while (paragraph_start.IsNotNull()) {
+    DCHECK(paragraph_start.IsValidFor(GetDocument())) << paragraph_start;
+    const Position& beyond_end = relocatable_beyond_end.GetPosition();
+    DCHECK(beyond_end.IsValidFor(GetDocument())) << beyond_end;
+    if (beyond_end.IsNotNull() &&
+        beyond_end <= paragraph_start.DeepEquivalent())
+      break;
+
+    RelocatablePosition next_paragraph_start(
+        NextPositionOf(EndOfParagraph(paragraph_start)).DeepEquivalent());
     StyleChange style_change(style, paragraph_start.DeepEquivalent());
     if (style_change.CssStyle().length() || remove_only_) {
       Element* block =
@@ -309,61 +313,36 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
             paragraph_start_to_move, editing_state);
         if (editing_state->IsAborted())
           return;
-        if (new_block) {
+        if (new_block)
           block = new_block;
-          if (paragraph_start.IsOrphan()) {
-            GetDocument().UpdateStyleAndLayout();
-            paragraph_start = CreateVisiblePosition(
-                Position::FirstPositionInNode(*new_block));
-          }
-        }
-        DCHECK(!paragraph_start.IsOrphan()) << paragraph_start;
       }
-      if (block && block->IsHTMLElement()) {
-        RemoveCSSStyle(style, ToHTMLElement(block), editing_state);
+      if (auto* html_element = DynamicTo<HTMLElement>(block)) {
+        RemoveCSSStyle(style, html_element, editing_state);
         if (editing_state->IsAborted())
           return;
-        DCHECK(!paragraph_start.IsOrphan()) << paragraph_start;
-        if (!remove_only_) {
-          AddBlockStyle(style_change, ToHTMLElement(block));
-          DCHECK(!paragraph_start.IsOrphan()) << paragraph_start;
-        }
+        if (!remove_only_)
+          AddBlockStyle(style_change, html_element);
       }
 
-      GetDocument().UpdateStyleAndLayout();
-
-      // Make the VisiblePositions valid again after style changes.
-      // TODO(editing-dev): We shouldn't store VisiblePositions and inspect
-      // their properties after they have been invalidated by mutations. See
-      // crbug.com/648949 for details.
-      DCHECK(!paragraph_start.IsOrphan()) << paragraph_start;
-      paragraph_start =
-          CreateVisiblePosition(paragraph_start.ToPositionWithAffinity());
-      if (next_paragraph_start.IsOrphan()) {
-        next_paragraph_start = NextPositionOf(EndOfParagraph(paragraph_start));
-      } else {
-        next_paragraph_start = CreateVisiblePosition(
-            next_paragraph_start.ToPositionWithAffinity());
-      }
+      GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
     }
 
-    DCHECK(!next_paragraph_start.IsOrphan()) << next_paragraph_start;
-    paragraph_start = next_paragraph_start;
-    next_paragraph_start = NextPositionOf(EndOfParagraph(paragraph_start));
+    paragraph_start = CreateVisiblePosition(next_paragraph_start.GetPosition());
   }
 
   // Update style and layout again, since added or removed styles could have
   // affected the layout. We need clean layout in order to compute
   // plain-text ranges below.
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   EphemeralRange start_ephemeral_range =
       PlainTextRange(start_index)
-          .CreateRangeForSelection(ToContainerNode(scope));
+          .CreateRangeForSelection(To<ContainerNode>(scope));
   if (start_ephemeral_range.IsNull())
     return;
   EphemeralRange end_ephemeral_range =
-      PlainTextRange(end_index).CreateRangeForSelection(ToContainerNode(scope));
+      PlainTextRange(end_index).CreateRangeForSelection(
+          To<ContainerNode>(scope));
   if (end_ephemeral_range.IsNull())
     return;
   UpdateStartEnd(EphemeralRange(start_ephemeral_range.StartPosition(),
@@ -373,7 +352,7 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
 static MutableCSSPropertyValueSet* CopyStyleOrCreateEmpty(
     const CSSPropertyValueSet* style) {
   if (!style)
-    return MutableCSSPropertyValueSet::Create(kHTMLQuirksMode);
+    return MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLQuirksMode);
   return style->MutableCopy();
 }
 
@@ -469,20 +448,19 @@ void ApplyStyleCommand::ApplyRelativeFontStyleChange(
   while (node != beyond_end) {
     DCHECK(node);
     Node* const next_node = NodeTraversal::Next(*node);
-    HTMLElement* element = nullptr;
-    if (node->IsHTMLElement()) {
+    auto* element = DynamicTo<HTMLElement>(node);
+    if (element) {
       // Only work on fully selected nodes.
-      if (!ElementFullySelected(ToHTMLElement(*node), start, end)) {
+      if (!ElementFullySelected(*element, start, end)) {
         node = next_node;
         continue;
       }
-      element = ToHTMLElement(node);
     } else if (node->IsTextNode() && node->GetLayoutObject() &&
                node->parentNode() != last_styled_node) {
       // Last styled node was not parent node of this text node, but we wish to
       // style this text node. To make this possible, add a style span to
       // surround this text node.
-      HTMLSpanElement* span = HTMLSpanElement::Create(GetDocument());
+      auto* span = MakeGarbageCollected<HTMLSpanElement>(GetDocument());
       SurroundNodeRangeWithElement(node, node, span, editing_state);
       if (editing_state->IsAborted())
         return;
@@ -509,14 +487,14 @@ void ApplyStyleCommand::ApplyRelativeFontStyleChange(
     if (current_font_size != desired_font_size) {
       inline_style->SetProperty(
           CSSPropertyID::kFontSize,
-          *CSSPrimitiveValue::Create(desired_font_size,
-                                     CSSPrimitiveValue::UnitType::kPixels),
+          *CSSNumericLiteralValue::Create(desired_font_size,
+                                          CSSPrimitiveValue::UnitType::kPixels),
           false);
-      SetNodeAttribute(element, kStyleAttr,
+      SetNodeAttribute(element, html_names::kStyleAttr,
                        AtomicString(inline_style->AsText()));
     }
     if (inline_style->IsEmpty()) {
-      RemoveElementAttribute(element, kStyleAttr);
+      RemoveElementAttribute(element, html_names::kStyleAttr);
       if (IsSpanWithoutAttributesOrUnstyledStyleSpan(element))
         unstyled_spans.push_back(element);
     }
@@ -531,11 +509,14 @@ void ApplyStyleCommand::ApplyRelativeFontStyleChange(
 }
 
 static ContainerNode* DummySpanAncestorForNode(const Node* node) {
-  while (node && (!node->IsElementNode() ||
-                  !IsStyleSpanOrSpanWithOnlyStyleAttribute(ToElement(node))))
-    node = node->parentNode();
+  if (!node)
+    return nullptr;
 
-  return node ? node->parentNode() : nullptr;
+  for (Node& current : NodeTraversal::InclusiveAncestorsOf(*node)) {
+    if (IsStyleSpanOrSpanWithOnlyStyleAttribute(DynamicTo<Element>(current)))
+      return current.parentNode();
+  }
+  return nullptr;
 }
 
 void ApplyStyleCommand::CleanupUnstyledAppleStyleSpans(
@@ -562,7 +543,7 @@ void ApplyStyleCommand::CleanupUnstyledAppleStyleSpans(
 HTMLElement* ApplyStyleCommand::SplitAncestorsWithUnicodeBidi(
     Node* node,
     bool before,
-    WritingDirection allowed_direction) {
+    mojo_base::mojom::blink::TextDirection allowed_direction) {
   // We are allowed to leave the highest ancestor with unicode-bidi unsplit if
   // it is unicode-bidi: embed and direction: allowedDirection. In that case, we
   // return the unsplit ancestor. Otherwise, we return 0.
@@ -593,18 +574,21 @@ HTMLElement* ApplyStyleCommand::SplitAncestorsWithUnicodeBidi(
 
   HTMLElement* unsplit_ancestor = nullptr;
 
-  WritingDirection highest_ancestor_direction;
-  if (allowed_direction != WritingDirection::kNatural &&
+  mojo_base::mojom::blink::TextDirection highest_ancestor_direction;
+  auto* highest_ancestor_html_element =
+      DynamicTo<HTMLElement>(highest_ancestor_with_unicode_bidi);
+  if (allowed_direction !=
+          mojo_base::mojom::blink::TextDirection::UNKNOWN_DIRECTION &&
       highest_ancestor_unicode_bidi != CSSValueID::kBidiOverride &&
-      highest_ancestor_with_unicode_bidi->IsHTMLElement() &&
+      highest_ancestor_html_element &&
       MakeGarbageCollected<EditingStyle>(highest_ancestor_with_unicode_bidi,
                                          EditingStyle::kAllProperties)
           ->GetTextDirection(highest_ancestor_direction) &&
       highest_ancestor_direction == allowed_direction) {
     if (!next_highest_ancestor_with_unicode_bidi)
-      return ToHTMLElement(highest_ancestor_with_unicode_bidi);
+      return highest_ancestor_html_element;
 
-    unsplit_ancestor = ToHTMLElement(highest_ancestor_with_unicode_bidi);
+    unsplit_ancestor = highest_ancestor_html_element;
     highest_ancestor_with_unicode_bidi =
         next_highest_ancestor_with_unicode_bidi;
   }
@@ -612,7 +596,7 @@ HTMLElement* ApplyStyleCommand::SplitAncestorsWithUnicodeBidi(
   // Split every ancestor through highest ancestor with embedding.
   Node* current_node = node;
   while (current_node) {
-    Element* parent = ToElement(current_node->parentNode());
+    auto* parent = To<Element>(current_node->parentNode());
     if (before ? current_node->previousSibling() : current_node->nextSibling())
       SplitElement(parent, before ? current_node : current_node->nextSibling());
     if (parent == highest_ancestor_with_unicode_bidi)
@@ -636,7 +620,7 @@ void ApplyStyleCommand::RemoveEmbeddingUpToEnclosingBlock(
     if (!runner.IsStyledElement())
       continue;
 
-    Element* element = ToElement(&runner);
+    auto* element = To<Element>(&runner);
     CSSValueID unicode_bidi = GetIdentifierValue(
         MakeGarbageCollected<CSSComputedStyleDeclaration>(element),
         CSSPropertyID::kUnicodeBidi);
@@ -649,17 +633,17 @@ void ApplyStyleCommand::RemoveEmbeddingUpToEnclosingBlock(
     // it assumes that if the 'dir' attribute is present, then removing it will
     // suffice, and otherwise it sets the property in the inline style
     // declaration.
-    if (element->hasAttribute(kDirAttr)) {
+    if (element->FastHasAttribute(html_names::kDirAttr)) {
       // FIXME: If this is a BDO element, we should probably just remove it if
       // it has no other attributes, like we (should) do with B and I elements.
-      RemoveElementAttribute(element, kDirAttr);
+      RemoveElementAttribute(element, html_names::kDirAttr);
     } else {
       MutableCSSPropertyValueSet* inline_style =
           CopyStyleOrCreateEmpty(element->InlineStyle());
       inline_style->SetProperty(CSSPropertyID::kUnicodeBidi,
                                 CSSValueID::kNormal);
       inline_style->RemoveProperty(CSSPropertyID::kDirection);
-      SetNodeAttribute(element, kStyleAttr,
+      SetNodeAttribute(element, html_names::kStyleAttr,
                        AtomicString(inline_style->AsText()));
       if (IsSpanWithoutAttributesOrUnstyledStyleSpan(element)) {
         RemoveNodePreservingChildren(element, editing_state);
@@ -673,11 +657,12 @@ void ApplyStyleCommand::RemoveEmbeddingUpToEnclosingBlock(
 static HTMLElement* HighestEmbeddingAncestor(Node* start_node,
                                              Node* enclosing_node) {
   for (Node* n = start_node; n && n != enclosing_node; n = n->parentNode()) {
-    if (n->IsHTMLElement() &&
+    auto* html_element = DynamicTo<HTMLElement>(n);
+    if (html_element &&
         EditingStyleUtilities::IsEmbedOrIsolate(GetIdentifierValue(
             MakeGarbageCollected<CSSComputedStyleDeclaration>(n),
             CSSPropertyID::kUnicodeBidi))) {
-      return ToHTMLElement(n);
+      return html_element;
     }
   }
 
@@ -692,7 +677,7 @@ void ApplyStyleCommand::ApplyInlineStyle(EditingStyle* style,
   // update document layout once before removing styles
   // so that we avoid the expense of updating before each and every call
   // to check a computed style
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   // adjust to the positions we want to use for applying style
   Position start = StartPosition();
@@ -743,7 +728,8 @@ void ApplyStyleCommand::ApplyInlineStyle(EditingStyle* style,
   // selection and prevent us from adding redundant ones, as described in:
   // <rdar://problem/3724344> Bolding and unbolding creates extraneous tags
   Position remove_start = MostBackwardCaretPosition(start);
-  WritingDirection text_direction = WritingDirection::kNatural;
+  mojo_base::mojom::blink::TextDirection text_direction =
+      mojo_base::mojom::blink::TextDirection::UNKNOWN_DIRECTION;
   bool has_text_direction = style->GetTextDirection(text_direction);
   EditingStyle* style_without_embedding = nullptr;
   EditingStyle* embedding_style = nullptr;
@@ -780,7 +766,7 @@ void ApplyStyleCommand::ApplyInlineStyle(EditingStyle* style,
     if (embedding_remove_end != remove_start || embedding_remove_end != end) {
       style_without_embedding = style->Copy();
       embedding_style = style_without_embedding->ExtractAndRemoveTextDirection(
-          GetDocument().GetSecureContextMode());
+          GetDocument().GetExecutionContext()->GetSecureContextMode());
 
       if (ComparePositions(embedding_remove_start, embedding_remove_end) <= 0) {
         RemoveInlineStyle(
@@ -824,7 +810,7 @@ void ApplyStyleCommand::ApplyInlineStyle(EditingStyle* style,
   // update document layout once before running the rest of the function
   // so that we avoid the expense of updating before each and every call
   // to check a computed style
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   EditingStyle* style_to_apply = style;
   if (has_text_direction) {
@@ -851,7 +837,7 @@ void ApplyStyleCommand::ApplyInlineStyle(EditingStyle* style,
         style_without_embedding = style->Copy();
         embedding_style =
             style_without_embedding->ExtractAndRemoveTextDirection(
-                GetDocument().GetSecureContextMode());
+                GetDocument().GetExecutionContext()->GetSecureContextMode());
       }
       FixRangeAndApplyInlineStyle(embedding_style, embedding_apply_start,
                                   embedding_apply_end, editing_state);
@@ -862,7 +848,7 @@ void ApplyStyleCommand::ApplyInlineStyle(EditingStyle* style,
     }
   }
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   FixRangeAndApplyInlineStyle(style_to_apply, start, end, editing_state);
   if (editing_state->IsAborted())
     return;
@@ -896,7 +882,7 @@ void ApplyStyleCommand::FixRangeAndApplyInlineStyle(
 
   // FIXME: Callers should perform this operation on a Range that includes the
   // br if they want style applied to the empty line.
-  if (start == end && IsHTMLBRElement(*start.AnchorNode()))
+  if (start == end && IsA<HTMLBRElement>(*start.AnchorNode()))
     past_end_node = NodeTraversal::Next(*start.AnchorNode());
 
   // Start from the highest fully selected ancestor so that we can modify the
@@ -949,7 +935,7 @@ class InlineRunToApplyStyle {
     return start && end && start->isConnected() && end->isConnected();
   }
 
-  void Trace(Visitor* visitor) {
+  void Trace(Visitor* visitor) const {
     visitor->Trace(start);
     visitor->Trace(end);
     visitor->Trace(past_end_node);
@@ -979,7 +965,7 @@ void ApplyStyleCommand::ApplyInlineStyleToNodeRange(
   if (remove_only_)
     return;
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   HeapVector<InlineRunToApplyStyle> runs;
   Node* node = start_node;
@@ -989,8 +975,8 @@ void ApplyStyleCommand::ApplyInlineStyleToNodeRange(
     if (!node->GetLayoutObject() || !HasEditableStyle(*node))
       continue;
 
-    if (!HasRichlyEditableStyle(*node) && node->IsHTMLElement()) {
-      HTMLElement* element = ToHTMLElement(node);
+    auto* element = DynamicTo<HTMLElement>(node);
+    if (!HasRichlyEditableStyle(*node) && element) {
       // This is a plaintext-only region. Only proceed if it's fully selected.
       // pastEndNode is the node after the last fully selected node, so if it's
       // inside node then node isn't fully selected.
@@ -1003,7 +989,7 @@ void ApplyStyleCommand::ApplyInlineStyleToNodeRange(
       MutableCSSPropertyValueSet* inline_style =
           CopyStyleOrCreateEmpty(element->InlineStyle());
       inline_style->MergeAndOverrideOnConflict(style->Style());
-      SetNodeAttribute(element, kStyleAttr,
+      SetNodeAttribute(element, html_names::kStyleAttr,
                        AtomicString(inline_style->AsText()));
       continue;
     }
@@ -1026,7 +1012,7 @@ void ApplyStyleCommand::ApplyInlineStyleToNodeRange(
     Node* sibling = node->nextSibling();
     while (sibling && sibling != past_end_node &&
            !sibling->contains(past_end_node) &&
-           (!IsEnclosingBlock(sibling) || IsHTMLBRElement(*sibling)) &&
+           (!IsEnclosingBlock(sibling) || IsA<HTMLBRElement>(*sibling)) &&
            !ContainsNonEditableRegion(*sibling)) {
       run_end = sibling;
       sibling = run_end->nextSibling();
@@ -1034,11 +1020,12 @@ void ApplyStyleCommand::ApplyInlineStyleToNodeRange(
     DCHECK(run_end);
     next = NodeTraversal::NextSkippingChildren(*run_end);
 
-    Node* past_end_node = NodeTraversal::NextSkippingChildren(*run_end);
-    if (!ShouldApplyInlineStyleToRun(style, run_start, past_end_node))
+    Node* past_run_end_node = NodeTraversal::NextSkippingChildren(*run_end);
+    if (!ShouldApplyInlineStyleToRun(style, run_start, past_run_end_node))
       continue;
 
-    runs.push_back(InlineRunToApplyStyle(run_start, run_end, past_end_node));
+    runs.push_back(
+        InlineRunToApplyStyle(run_start, run_end, past_run_end_node));
   }
 
   for (auto& run : runs) {
@@ -1054,7 +1041,7 @@ void ApplyStyleCommand::ApplyInlineStyleToNodeRange(
     }
   }
 
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   for (auto& run : runs) {
     if (run.position_for_style_computation.IsNotNull())
@@ -1122,23 +1109,24 @@ void ApplyStyleCommand::RemoveConflictingInlineStyleFromRun(
     } else {
       next = NodeTraversal::Next(*node);
     }
-    if (!node->IsHTMLElement())
+
+    auto* element = DynamicTo<HTMLElement>(*node);
+    if (!element)
       continue;
 
-    HTMLElement& element = ToHTMLElement(*node);
-    Node* previous_sibling = element.previousSibling();
-    Node* next_sibling = element.nextSibling();
-    ContainerNode* parent = element.parentNode();
-    RemoveInlineStyleFromElement(style, &element, editing_state, kRemoveAlways);
+    Node* previous_sibling = element->previousSibling();
+    Node* next_sibling = element->nextSibling();
+    ContainerNode* parent = element->parentNode();
+    RemoveInlineStyleFromElement(style, element, editing_state, kRemoveAlways);
     if (editing_state->IsAborted())
       return;
-    if (!element.isConnected()) {
+    if (!element->isConnected()) {
       // FIXME: We might need to update the start and the end of current
       // selection here but need a test.
-      if (run_start == element)
+      if (run_start == *element)
         run_start = previous_sibling ? previous_sibling->nextSibling()
                                      : parent->firstChild();
-      if (run_end == element)
+      if (run_end == *element)
         run_end = next_sibling ? next_sibling->previousSibling()
                                : parent->lastChild();
     }
@@ -1278,7 +1266,7 @@ static Element* UnsplittableElementForPosition(const Position& p) {
   // Since enclosingNodeOfType won't search beyond the highest root editable
   // node, this code works even if the closest table cell was outside of the
   // root editable node.
-  Element* enclosing_cell = ToElement(EnclosingNodeOfType(p, &IsTableCell));
+  auto* enclosing_cell = To<Element>(EnclosingNodeOfType(p, &IsTableCell));
   if (enclosing_cell)
     return enclosing_cell;
 
@@ -1291,14 +1279,13 @@ HTMLElement* ApplyStyleCommand::HighestAncestorWithConflictingInlineStyle(
   if (!node)
     return nullptr;
 
-  HTMLElement* result = nullptr;
   Node* unsplittable_element =
       UnsplittableElementForPosition(FirstPositionInOrBeforeNode(*node));
-
+  HTMLElement* result = nullptr;
   for (Node* n = node; n; n = n->parentNode()) {
-    if (n->IsHTMLElement() &&
-        ShouldRemoveInlineStyleFromElement(style, ToHTMLElement(n)))
-      result = ToHTMLElement(n);
+    auto* html_element = DynamicTo<HTMLElement>(n);
+    if (html_element && ShouldRemoveInlineStyleFromElement(style, html_element))
+      result = html_element;
     // Should stop at the editable root (cannot cross editing boundary) and
     // also stop at the unsplittable element to be consistent with other UAs
     if (n == unsplittable_element)
@@ -1317,28 +1304,30 @@ void ApplyStyleCommand::ApplyInlineStyleToPushDown(
   node->GetDocument().UpdateStyleAndLayoutTree();
 
   if (!style || style->IsEmpty() || !node->GetLayoutObject() ||
-      IsHTMLIFrameElement(*node))
+      IsA<HTMLIFrameElement>(*node))
     return;
 
   EditingStyle* new_inline_style = style;
-  if (node->IsHTMLElement() && ToHTMLElement(node)->InlineStyle()) {
+  auto* html_element = DynamicTo<HTMLElement>(node);
+  if (html_element && html_element->InlineStyle()) {
     new_inline_style = style->Copy();
-    new_inline_style->MergeInlineStyleOfElement(ToHTMLElement(node),
+    new_inline_style->MergeInlineStyleOfElement(html_element,
                                                 EditingStyle::kOverrideValues);
   }
 
+  const auto* layout_object = node->GetLayoutObject();
   // Since addInlineStyleIfNeeded can't add styles to block-flow layout objects,
   // add style attribute instead.
   // FIXME: applyInlineStyleToRange should be used here instead.
-  if ((node->GetLayoutObject()->IsLayoutBlockFlow() || node->hasChildren()) &&
-      node->IsHTMLElement()) {
-    SetNodeAttribute(ToHTMLElement(node), kStyleAttr,
+  if ((layout_object->IsLayoutBlockFlow() || node->hasChildren()) &&
+      html_element) {
+    SetNodeAttribute(html_element, html_names::kStyleAttr,
                      AtomicString(new_inline_style->Style()->AsText()));
     return;
   }
 
-  if (node->GetLayoutObject()->IsText() &&
-      ToLayoutText(node->GetLayoutObject())->IsAllCollapsibleWhitespace())
+  if (layout_object->IsText() &&
+      To<LayoutText>(layout_object)->IsAllCollapsibleWhitespace())
     return;
 
   // We can't wrap node with the styled element here because new styled element
@@ -1368,17 +1357,17 @@ void ApplyStyleCommand::PushDownInlineStyleAroundNode(
   HeapVector<Member<Element>> elements_to_push_down;
   while (current && current != target_node && current->contains(target_node)) {
     NodeVector current_children;
-    GetChildNodes(ToContainerNode(*current), current_children);
+    GetChildNodes(To<ContainerNode>(*current), current_children);
     Element* styled_element = nullptr;
     if (current->IsStyledElement() &&
-        IsStyledInlineElementToRemove(ToElement(current))) {
-      styled_element = ToElement(current);
+        IsStyledInlineElementToRemove(To<Element>(current))) {
+      styled_element = To<Element>(current);
       elements_to_push_down.push_back(styled_element);
     }
 
     EditingStyle* style_to_push_down = MakeGarbageCollected<EditingStyle>();
-    if (current->IsHTMLElement()) {
-      RemoveInlineStyleFromElement(style, ToHTMLElement(current), editing_state,
+    if (auto* html_element = DynamicTo<HTMLElement>(current)) {
+      RemoveInlineStyleFromElement(style, html_element, editing_state,
                                    kRemoveIfNeeded, style_to_push_down);
       if (editing_state->IsAborted())
         return;
@@ -1394,11 +1383,11 @@ void ApplyStyleCommand::PushDownInlineStyleAroundNode(
       if (!child->contains(target_node) && elements_to_push_down.size()) {
         for (const auto& element : elements_to_push_down) {
           Element& wrapper = element->CloneWithoutChildren();
-          wrapper.removeAttribute(kStyleAttr);
+          wrapper.removeAttribute(html_names::kStyleAttr);
           // Delete id attribute from the second element because the same id
           // cannot be used for more than one element
           element->removeAttribute(html_names::kIdAttr);
-          if (IsHTMLAnchorElement(element))
+          if (IsA<HTMLAnchorElement>(element.Get()))
             element->removeAttribute(html_names::kNameAttr);
           SurroundNodeRangeWithElement(child, child, &wrapper, editing_state);
           if (editing_state->IsAborted())
@@ -1427,15 +1416,15 @@ void ApplyStyleCommand::PushDownInlineStyleAroundNode(
 void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
                                           const EphemeralRange& range,
                                           EditingState* editing_state) {
-  const Position& start = range.StartPosition();
-  const Position& end = range.EndPosition();
+  Position start = range.StartPosition();
+  Position end = range.EndPosition();
   DCHECK(Position::CommonAncestorTreeScope(start, end)) << start << " " << end;
   // FIXME: We should assert that start/end are not in the middle of a text
   // node.
 
   // TODO(editing-dev): Use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   Position push_down_start = MostForwardCaretPosition(start);
   // If the pushDownStart is at the end of a text node, then this node is not
@@ -1445,15 +1434,15 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
   // Position("world", 0) instead.
   const unsigned push_down_start_offset =
       push_down_start.ComputeOffsetInContainerNode();
-  Node* push_down_start_container = push_down_start.ComputeContainerNode();
-  if (push_down_start_container && push_down_start_container->IsTextNode() &&
-      push_down_start_offset ==
-          ToText(push_down_start_container)->length())
+  auto* push_down_start_container =
+      DynamicTo<Text>(push_down_start.ComputeContainerNode());
+  if (push_down_start_container &&
+      push_down_start_offset == push_down_start_container->length())
     push_down_start = NextVisuallyDistinctCandidate(push_down_start);
 
   // TODO(editing-dev): Use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
-  GetDocument().UpdateStyleAndLayout();
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   Position push_down_end = MostBackwardCaretPosition(end);
   // If pushDownEnd is at the start of a text node, then this node is not fully
@@ -1473,34 +1462,37 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
   if (editing_state->IsAborted())
     return;
 
-  // The s and e variables store the positions used to set the ending selection
-  // after style removal takes place. This will help callers to recognize when
-  // either the start node or the end node are removed from the document during
-  // the work of this function.
   // If pushDownInlineStyleAroundNode has pruned start.anchorNode() or
   // end.anchorNode(), use pushDownStart or pushDownEnd instead, which
   // pushDownInlineStyleAroundNode won't prune.
-  Position s = start.IsNull() || start.IsOrphan() ? push_down_start : start;
-  Position e = end.IsNull() || end.IsOrphan() ? push_down_end : end;
+  if (start.IsNull() || start.IsOrphan())
+    start = push_down_start;
+  if (end.IsNull() || end.IsOrphan())
+    end = push_down_end;
 
   // Current ending selection resetting algorithm assumes |start| and |end|
   // are in a same DOM tree even if they are not in document.
   if (!Position::CommonAncestorTreeScope(start, end))
     return;
 
+  // The s and e variables store the positions used to set the ending selection
+  // after style removal takes place. This will help callers to recognize when
+  // either the start node or the end node are removed from the document during
+  // the work of this function.
+  Position s = start;
+  Position e = end;
   Node* node = start.AnchorNode();
   while (node) {
-    Node* next = nullptr;
+    Node* next_to_process = nullptr;
     if (EditingIgnoresContent(*node)) {
       DCHECK(node == end.AnchorNode() || !node->contains(end.AnchorNode()))
           << node << " " << end;
-      next = NodeTraversal::NextSkippingChildren(*node);
+      next_to_process = NodeTraversal::NextSkippingChildren(*node);
     } else {
-      next = NodeTraversal::Next(*node);
+      next_to_process = NodeTraversal::Next(*node);
     }
-    if (node->IsHTMLElement() &&
-        ElementFullySelected(ToHTMLElement(*node), start, end)) {
-      HTMLElement* elem = ToHTMLElement(node);
+    auto* elem = DynamicTo<HTMLElement>(node);
+    if (elem && ElementFullySelected(*elem, start, end)) {
       Node* prev = NodeTraversal::PreviousPostOrder(*elem);
       Node* next = NodeTraversal::Next(*elem);
       EditingStyle* style_to_push_down = nullptr;
@@ -1546,7 +1538,7 @@ void ApplyStyleCommand::RemoveInlineStyle(EditingStyle* style,
     }
     if (node == end.AnchorNode())
       break;
-    node = next;
+    node = next_to_process;
   }
 
   UpdateStartEnd(EphemeralRange(s, e));
@@ -1557,7 +1549,7 @@ bool ApplyStyleCommand::ElementFullySelected(const HTMLElement& element,
                                              const Position& end) const {
   // The tree may have changed and Position::upstream() relies on an up-to-date
   // layout.
-  element.GetDocument().UpdateStyleAndLayout();
+  element.GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   return ComparePositions(FirstPositionInOrBeforeNode(element), start) >= 0 &&
          ComparePositions(
@@ -1578,7 +1570,7 @@ void ApplyStyleCommand::SplitTextAtStart(const Position& start,
   else
     new_end = end;
 
-  Text* text = ToText(start.ComputeContainerNode());
+  auto* text = To<Text>(start.ComputeContainerNode());
   SplitTextNode(text, start.OffsetInContainerNode());
   UpdateStartEnd(EphemeralRange(Position::FirstPositionInNode(*text), new_end));
 }
@@ -1590,19 +1582,19 @@ void ApplyStyleCommand::SplitTextAtEnd(const Position& start,
   bool should_update_start =
       start.IsOffsetInAnchor() &&
       start.ComputeContainerNode() == end.ComputeContainerNode();
-  Text* text = ToText(end.AnchorNode());
+  auto* text = To<Text>(end.AnchorNode());
   SplitTextNode(text, end.OffsetInContainerNode());
 
-  Node* prev_node = text->previousSibling();
-  if (!prev_node || !prev_node->IsTextNode())
+  auto* prev_text_node = DynamicTo<Text>(text->previousSibling());
+  if (!prev_text_node)
     return;
 
   Position new_start =
       should_update_start
-          ? Position(ToText(prev_node), start.OffsetInContainerNode())
+          ? Position(prev_text_node, start.OffsetInContainerNode())
           : start;
   UpdateStartEnd(
-      EphemeralRange(new_start, Position::LastPositionInNode(*prev_node)));
+      EphemeralRange(new_start, Position::LastPositionInNode(*prev_text_node)));
 }
 
 void ApplyStyleCommand::SplitTextElementAtStart(const Position& start,
@@ -1617,7 +1609,7 @@ void ApplyStyleCommand::SplitTextElementAtStart(const Position& start,
   else
     new_end = end;
 
-  SplitTextNodeContainingElement(ToText(start.ComputeContainerNode()),
+  SplitTextNodeContainingElement(To<Text>(start.ComputeContainerNode()),
                                  start.OffsetInContainerNode());
   UpdateStartEnd(EphemeralRange(
       Position::BeforeNode(*start.ComputeContainerNode()), new_end));
@@ -1629,19 +1621,21 @@ void ApplyStyleCommand::SplitTextElementAtEnd(const Position& start,
 
   bool should_update_start =
       start.ComputeContainerNode() == end.ComputeContainerNode();
-  SplitTextNodeContainingElement(ToText(end.ComputeContainerNode()),
+  SplitTextNodeContainingElement(To<Text>(end.ComputeContainerNode()),
                                  end.OffsetInContainerNode());
 
   Node* parent_element = end.ComputeContainerNode()->parentNode();
   if (!parent_element || !parent_element->previousSibling())
     return;
-  Node* first_text_node = parent_element->previousSibling()->lastChild();
-  if (!first_text_node || !first_text_node->IsTextNode())
+
+  auto* first_text_node =
+      DynamicTo<Text>(parent_element->previousSibling()->lastChild());
+  if (!first_text_node)
     return;
 
   Position new_start =
       should_update_start
-          ? Position(ToText(first_text_node), start.OffsetInContainerNode())
+          ? Position(first_text_node, start.OffsetInContainerNode())
           : start;
   UpdateStartEnd(
       EphemeralRange(new_start, Position::AfterNode(*first_text_node)));
@@ -1649,10 +1643,11 @@ void ApplyStyleCommand::SplitTextElementAtEnd(const Position& start,
 
 bool ApplyStyleCommand::ShouldSplitTextElement(Element* element,
                                                EditingStyle* style) {
-  if (!element || !element->IsHTMLElement())
+  auto* html_element = DynamicTo<HTMLElement>(element);
+  if (!html_element)
     return false;
 
-  return ShouldRemoveInlineStyleFromElement(style, ToHTMLElement(element));
+  return ShouldRemoveInlineStyleFromElement(style, html_element);
 }
 
 bool ApplyStyleCommand::IsValidCaretPositionInTextNode(
@@ -1692,8 +1687,8 @@ bool ApplyStyleCommand::MergeStartWithPreviousIfIdentical(
 
   if (previous_sibling &&
       AreIdenticalElements(*start_node, *previous_sibling)) {
-    Element* previous_element = ToElement(previous_sibling);
-    Element* element = ToElement(start_node);
+    auto* previous_element = To<Element>(previous_sibling);
+    auto* element = To<Element>(start_node);
     Node* start_child = element->firstChild();
     DCHECK(start_child);
     MergeIdenticalElements(previous_element, element, editing_state);
@@ -1730,13 +1725,13 @@ bool ApplyStyleCommand::MergeEndWithNextIfIdentical(
     end_node = end.AnchorNode()->parentNode();
   }
 
-  if (!end_node->IsElementNode() || IsHTMLBRElement(*end_node))
+  if (!end_node->IsElementNode() || IsA<HTMLBRElement>(*end_node))
     return false;
 
   Node* next_sibling = end_node->nextSibling();
   if (next_sibling && AreIdenticalElements(*end_node, *next_sibling)) {
-    Element* next_element = ToElement(next_sibling);
-    Element* element = ToElement(end_node);
+    auto* next_element = To<Element>(next_sibling);
+    auto* element = To<Element>(end_node);
     Node* next_child = next_element->firstChild();
 
     MergeIdenticalElements(element, next_element, editing_state);
@@ -1790,22 +1785,22 @@ void ApplyStyleCommand::SurroundNodeRangeWithElement(
 
   Node* next_sibling = element->nextSibling();
   Node* previous_sibling = element->previousSibling();
-  if (next_sibling && next_sibling->IsElementNode() &&
-      HasEditableStyle(*next_sibling) &&
-      AreIdenticalElements(*element, ToElement(*next_sibling))) {
-    MergeIdenticalElements(element, ToElement(next_sibling), editing_state);
+  auto* next_sibling_element = DynamicTo<Element>(next_sibling);
+  if (next_sibling_element && HasEditableStyle(*next_sibling) &&
+      AreIdenticalElements(*element, *next_sibling_element)) {
+    MergeIdenticalElements(element, next_sibling_element, editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
-  if (previous_sibling && previous_sibling->IsElementNode() &&
-      HasEditableStyle(*previous_sibling)) {
-    Node* merged_element = previous_sibling->nextSibling();
-    if (merged_element->IsElementNode() && HasEditableStyle(*merged_element) &&
-        AreIdenticalElements(ToElement(*previous_sibling),
-                             ToElement(*merged_element))) {
-      MergeIdenticalElements(ToElement(previous_sibling),
-                             ToElement(merged_element), editing_state);
+  auto* previous_sibling_element = DynamicTo<Element>(previous_sibling);
+  if (previous_sibling_element && HasEditableStyle(*previous_sibling)) {
+    auto* merged_element = DynamicTo<Element>(previous_sibling->nextSibling());
+    if (merged_element &&
+        HasEditableStyle(*(previous_sibling->nextSibling())) &&
+        AreIdenticalElements(*previous_sibling_element, *merged_element)) {
+      MergeIdenticalElements(previous_sibling_element, merged_element,
+                             editing_state);
       if (editing_state->IsAborted())
         return;
     }
@@ -1831,7 +1826,7 @@ void ApplyStyleCommand::AddBlockStyle(const StyleChange& style_change,
       css_text.Append(' ');
     css_text.Append(decl->AsText());
   }
-  SetNodeAttribute(block, kStyleAttr, css_text.ToAtomicString());
+  SetNodeAttribute(block, html_names::kStyleAttr, css_text.ToAtomicString());
 }
 
 void ApplyStyleCommand::AddInlineStyleIfNeeded(EditingStyle* style,
@@ -1867,7 +1862,7 @@ Position ApplyStyleCommand::PositionToComputeInlineStyleChange(
   // It's okay to obtain the style at the startNode because we've removed all
   // relevant styles from the current run.
   if (!start_node->IsElementNode()) {
-    dummy_element = HTMLSpanElement::Create(GetDocument());
+    dummy_element = MakeGarbageCollected<HTMLSpanElement>(GetDocument());
     InsertNodeAt(dummy_element, Position::BeforeNode(*start_node),
                  editing_state);
     if (editing_state->IsAborted())
@@ -1894,14 +1889,14 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
   HTMLElement* style_container = nullptr;
   for (Node* container = start_node; container && start_node == end_node;
        container = container->firstChild()) {
-    if (auto* font = ToHTMLFontElementOrNull(container))
+    if (auto* font = DynamicTo<HTMLFontElement>(container))
       font_container = font;
-    bool style_container_is_not_span = !IsHTMLSpanElement(style_container);
-    if (container->IsHTMLElement()) {
-      HTMLElement* container_element = ToHTMLElement(container);
-      if (IsHTMLSpanElement(*container_element) ||
+    bool style_container_is_not_span = !IsA<HTMLSpanElement>(style_container);
+    auto* container_element = DynamicTo<HTMLElement>(container);
+    if (container_element) {
+      if (IsA<HTMLSpanElement>(*container_element) ||
           (style_container_is_not_span && container_element->HasChildren()))
-        style_container = ToHTMLElement(container);
+        style_container = container_element;
     }
     if (!container->hasChildren())
       break;
@@ -1915,24 +1910,24 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
       style_change.ApplyFontSize()) {
     if (font_container) {
       if (style_change.ApplyFontColor())
-        SetNodeAttribute(font_container, kColorAttr,
+        SetNodeAttribute(font_container, html_names::kColorAttr,
                          AtomicString(style_change.FontColor()));
       if (style_change.ApplyFontFace())
-        SetNodeAttribute(font_container, kFaceAttr,
+        SetNodeAttribute(font_container, html_names::kFaceAttr,
                          AtomicString(style_change.FontFace()));
       if (style_change.ApplyFontSize())
-        SetNodeAttribute(font_container, kSizeAttr,
+        SetNodeAttribute(font_container, html_names::kSizeAttr,
                          AtomicString(style_change.FontSize()));
     } else {
-      HTMLFontElement* font_element = HTMLFontElement::Create(GetDocument());
+      auto* font_element = MakeGarbageCollected<HTMLFontElement>(GetDocument());
       if (style_change.ApplyFontColor())
-        font_element->setAttribute(kColorAttr,
+        font_element->setAttribute(html_names::kColorAttr,
                                    AtomicString(style_change.FontColor()));
       if (style_change.ApplyFontFace())
-        font_element->setAttribute(kFaceAttr,
+        font_element->setAttribute(html_names::kFaceAttr,
                                    AtomicString(style_change.FontFace()));
       if (style_change.ApplyFontSize())
-        font_element->setAttribute(kSizeAttr,
+        font_element->setAttribute(html_names::kSizeAttr,
                                    AtomicString(style_change.FontSize()));
       SurroundNodeRangeWithElement(start_node, end_node, font_element,
                                    editing_state);
@@ -1951,15 +1946,16 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
         if (!existing_text.IsEmpty())
           css_text.Append(' ');
         css_text.Append(style_change.CssStyle());
-        SetNodeAttribute(style_container, kStyleAttr,
+        SetNodeAttribute(style_container, html_names::kStyleAttr,
                          css_text.ToAtomicString());
       } else {
-        SetNodeAttribute(style_container, kStyleAttr,
+        SetNodeAttribute(style_container, html_names::kStyleAttr,
                          AtomicString(style_change.CssStyle()));
       }
     } else {
-      HTMLSpanElement* style_element = HTMLSpanElement::Create(GetDocument());
-      style_element->setAttribute(kStyleAttr,
+      auto* style_element =
+          MakeGarbageCollected<HTMLSpanElement>(GetDocument());
+      style_element->setAttribute(html_names::kStyleAttr,
                                   AtomicString(style_change.CssStyle()));
       SurroundNodeRangeWithElement(start_node, end_node, style_element,
                                    editing_state);
@@ -1969,47 +1965,53 @@ void ApplyStyleCommand::ApplyInlineStyleChange(
   }
 
   if (style_change.ApplyBold()) {
-    SurroundNodeRangeWithElement(start_node, end_node,
-                                 HTMLElement::Create(kBTag, GetDocument()),
-                                 editing_state);
+    SurroundNodeRangeWithElement(
+        start_node, end_node,
+        MakeGarbageCollected<HTMLElement>(html_names::kBTag, GetDocument()),
+        editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
   if (style_change.ApplyItalic()) {
-    SurroundNodeRangeWithElement(start_node, end_node,
-                                 HTMLElement::Create(kITag, GetDocument()),
-                                 editing_state);
+    SurroundNodeRangeWithElement(
+        start_node, end_node,
+        MakeGarbageCollected<HTMLElement>(html_names::kITag, GetDocument()),
+        editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
   if (style_change.ApplyUnderline()) {
-    SurroundNodeRangeWithElement(start_node, end_node,
-                                 HTMLElement::Create(kUTag, GetDocument()),
-                                 editing_state);
+    SurroundNodeRangeWithElement(
+        start_node, end_node,
+        MakeGarbageCollected<HTMLElement>(html_names::kUTag, GetDocument()),
+        editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
   if (style_change.ApplyLineThrough()) {
     SurroundNodeRangeWithElement(start_node, end_node,
-                                 HTMLElement::Create(kStrikeTag, GetDocument()),
+                                 MakeGarbageCollected<HTMLElement>(
+                                     html_names::kStrikeTag, GetDocument()),
                                  editing_state);
     if (editing_state->IsAborted())
       return;
   }
 
   if (style_change.ApplySubscript()) {
-    SurroundNodeRangeWithElement(start_node, end_node,
-                                 HTMLElement::Create(kSubTag, GetDocument()),
-                                 editing_state);
+    SurroundNodeRangeWithElement(
+        start_node, end_node,
+        MakeGarbageCollected<HTMLElement>(html_names::kSubTag, GetDocument()),
+        editing_state);
     if (editing_state->IsAborted())
       return;
   } else if (style_change.ApplySuperscript()) {
-    SurroundNodeRangeWithElement(start_node, end_node,
-                                 HTMLElement::Create(kSupTag, GetDocument()),
-                                 editing_state);
+    SurroundNodeRangeWithElement(
+        start_node, end_node,
+        MakeGarbageCollected<HTMLElement>(html_names::kSupTag, GetDocument()),
+        editing_state);
     if (editing_state->IsAborted())
       return;
   }
@@ -2030,12 +2032,12 @@ float ApplyStyleCommand::ComputedFontSize(Node* node) {
     return 0;
 
   const auto* value = To<CSSPrimitiveValue>(
-      style->GetPropertyCSSValue(GetCSSPropertyFontSize()));
+      style->GetPropertyCSSValue(CSSPropertyID::kFontSize));
   if (!value)
     return 0;
 
   // TODO(yosin): We should have printer for |CSSPrimitiveValue::UnitType|.
-  DCHECK(value->TypeWithCalcResolved() == CSSPrimitiveValue::UnitType::kPixels);
+  DCHECK(value->IsPx());
   return value->GetFloatValue();
 }
 
@@ -2049,20 +2051,18 @@ void ApplyStyleCommand::JoinChildTextNodes(ContainerNode* node,
   Position new_end = end;
 
   HeapVector<Member<Text>> text_nodes;
-  for (Node* curr = node->firstChild(); curr; curr = curr->nextSibling()) {
-    if (!curr->IsTextNode())
-      continue;
-
-    text_nodes.push_back(ToText(curr));
+  for (Node& child : NodeTraversal::ChildrenOf(*node)) {
+    if (auto* child_text = DynamicTo<Text>(child))
+      text_nodes.push_back(child_text);
   }
 
   for (const auto& text_node : text_nodes) {
     Text* child_text = text_node;
     Node* next = child_text->nextSibling();
-    if (!next || !next->IsTextNode())
+    auto* next_text = DynamicTo<Text>(next);
+    if (!next_text)
       continue;
 
-    Text* next_text = ToText(next);
     if (start.IsOffsetInAnchor() && next == start.ComputeContainerNode())
       new_start = Position(
           child_text, child_text->length() + start.OffsetInContainerNode());
@@ -2079,7 +2079,7 @@ void ApplyStyleCommand::JoinChildTextNodes(ContainerNode* node,
   UpdateStartEnd(EphemeralRange(new_start, new_end));
 }
 
-void ApplyStyleCommand::Trace(Visitor* visitor) {
+void ApplyStyleCommand::Trace(Visitor* visitor) const {
   visitor->Trace(style_);
   visitor->Trace(start_);
   visitor->Trace(end_);

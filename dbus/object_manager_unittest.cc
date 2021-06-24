@@ -7,13 +7,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "dbus/bus.h"
@@ -56,8 +58,8 @@ class ObjectManagerTest
                                 const std::string& interface_name) override {
     Properties* properties = new Properties(
         object_proxy, interface_name,
-        base::Bind(&ObjectManagerTest::OnPropertyChanged,
-                   base::Unretained(this), object_path));
+        base::BindRepeating(&ObjectManagerTest::OnPropertyChanged,
+                            base::Unretained(this), object_path));
     return static_cast<PropertySet*>(properties);
   }
 
@@ -66,15 +68,15 @@ class ObjectManagerTest
     base::ThreadRestrictions::SetIOAllowed(false);
 
     // Start the D-Bus thread.
-    dbus_thread_.reset(new base::Thread("D-Bus Thread"));
+    dbus_thread_ = std::make_unique<base::Thread>("D-Bus Thread");
     base::Thread::Options thread_options;
-    thread_options.message_loop_type = base::MessageLoop::TYPE_IO;
-    ASSERT_TRUE(dbus_thread_->StartWithOptions(thread_options));
+    thread_options.message_pump_type = base::MessagePumpType::IO;
+    ASSERT_TRUE(dbus_thread_->StartWithOptions(std::move(thread_options)));
 
     // Start the test service, using the D-Bus thread.
     TestService::Options options;
     options.dbus_task_runner = dbus_thread_->task_runner();
-    test_service_.reset(new TestService(options));
+    test_service_ = std::make_unique<TestService>(options);
     ASSERT_TRUE(test_service_->StartService());
     test_service_->WaitUntilServiceIsStarted();
     ASSERT_TRUE(test_service_->HasDBusThread());
@@ -164,7 +166,7 @@ class ObjectManagerTest
   void WaitForObject() {
     while (added_objects_.size() < kExpectedObjects ||
            updated_properties_.size() < kExpectedProperties) {
-      run_loop_.reset(new base::RunLoop);
+      run_loop_ = std::make_unique<base::RunLoop>();
       run_loop_->Run();
     }
     for (size_t i = 0; i < kExpectedObjects; ++i)
@@ -175,7 +177,7 @@ class ObjectManagerTest
 
   void WaitForRemoveObject() {
     while (removed_objects_.size() < kExpectedObjects) {
-      run_loop_.reset(new base::RunLoop);
+      run_loop_ = std::make_unique<base::RunLoop>();
       run_loop_->Run();
     }
     for (size_t i = 0; i < kExpectedObjects; ++i)
@@ -183,7 +185,7 @@ class ObjectManagerTest
   }
 
   void WaitForMethodCallback() {
-    run_loop_.reset(new base::RunLoop);
+    run_loop_ = std::make_unique<base::RunLoop>();
     run_loop_->Run();
     method_callback_called_ = false;
   }
@@ -198,14 +200,13 @@ class ObjectManagerTest
     writer.AppendString(action);
     writer.AppendObjectPath(object_path);
 
-    object_proxy->CallMethod(&method_call,
-                             ObjectProxy::TIMEOUT_USE_DEFAULT,
-                             base::Bind(&ObjectManagerTest::MethodCallback,
-                                        base::Unretained(this)));
+    object_proxy->CallMethod(&method_call, ObjectProxy::TIMEOUT_USE_DEFAULT,
+                             base::BindOnce(&ObjectManagerTest::MethodCallback,
+                                            base::Unretained(this)));
     WaitForMethodCallback();
   }
 
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   std::unique_ptr<base::RunLoop> run_loop_;
   std::unique_ptr<base::Thread> dbus_thread_;
   scoped_refptr<Bus> bus_;
@@ -383,10 +384,11 @@ TEST_F(ObjectManagerTest, OwnershipLostAndRegained) {
   ASSERT_EQ(1U, object_paths.size());
 }
 
-TEST_F(ObjectManagerTest, PropertiesChangedAsObjectsReceived) {
+// Flaky: crbug.com/1174515
+TEST_F(ObjectManagerTest, DISABLED_PropertiesChangedAsObjectsReceived) {
   // Remove the existing object manager.
   object_manager_->UnregisterInterface("org.chromium.TestInterface");
-  run_loop_.reset(new base::RunLoop);
+  run_loop_ = std::make_unique<base::RunLoop>();
   EXPECT_TRUE(bus_->RemoveObjectManager(
       test_service_->service_name(),
       ObjectPath("/org/chromium/TestService"),
@@ -405,14 +407,14 @@ TEST_F(ObjectManagerTest, PropertiesChangedAsObjectsReceived) {
   // after setting up the match rule for PropertiesChanged. We should process
   // the PropertiesChanged event right after that. If we don't receive it within
   // 2 seconds, then fail the test.
-  message_loop_.task_runner()->PostDelayedTask(
+  task_environment_.GetMainThreadTaskRunner()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&ObjectManagerTest::PropertiesChangedTestTimeout,
                      base::Unretained(this)),
       base::TimeDelta::FromSeconds(2));
 
   while (last_name_value_ != "ChangedTestServiceName" && !timeout_expired_) {
-    run_loop_.reset(new base::RunLoop);
+    run_loop_ = std::make_unique<base::RunLoop>();
     run_loop_->Run();
   }
 }

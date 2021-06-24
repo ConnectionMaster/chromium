@@ -1,0 +1,12 @@
+<style include="common-style"></style>
+<iron-list items="[[tiles_]]" grid>
+  <template>
+    <div class="photo-container" data-id$="[[item.id]]"
+      on-click="onCollectionClicked_">
+      <template is="dom-if" if="[[item.preview]]">
+        <img src="[[item.preview.url]]">
+      </template>
+      <p class="collection-name">[[item.name]]</p>
+    </div>
+  </template>
+</iron-list>

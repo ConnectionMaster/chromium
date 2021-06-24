@@ -13,7 +13,10 @@ class ConfirmInfoBarDelegate;
 @interface InfobarConfirmCoordinator : InfobarCoordinator
 
 - (instancetype)initWithInfoBarDelegate:
-    (ConfirmInfoBarDelegate*)confirmInfoBarDelegate NS_DESIGNATED_INITIALIZER;
+                    (ConfirmInfoBarDelegate*)confirmInfoBarDelegate
+                           badgeSupport:(BOOL)badgeSupport
+                                   type:(InfobarType)infobarType
+    NS_DESIGNATED_INITIALIZER;
 
 @end
 

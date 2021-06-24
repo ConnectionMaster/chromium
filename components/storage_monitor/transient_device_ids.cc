@@ -6,9 +6,9 @@
 
 #include "components/storage_monitor/transient_device_ids.h"
 
+#include "base/check.h"
+#include "base/containers/contains.h"
 #include "base/guid.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
 #include "components/storage_monitor/storage_info.h"
 
 namespace storage_monitor {
@@ -21,11 +21,11 @@ std::string TransientDeviceIds::GetTransientIdForDeviceId(
     const std::string& device_id) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  if (!base::ContainsKey(device_id_map_, device_id)) {
+  if (!base::Contains(device_id_map_, device_id)) {
     std::string transient_id;
     do {
       transient_id = base::GenerateGUID();
-    } while (base::ContainsKey(transient_id_map_, transient_id));
+    } while (base::Contains(transient_id_map_, transient_id));
 
     device_id_map_[device_id] = transient_id;
     transient_id_map_[transient_id] = device_id;

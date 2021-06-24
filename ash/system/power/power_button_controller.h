@@ -9,23 +9,21 @@
 
 #include "ash/accelerometer/accelerometer_reader.h"
 #include "ash/ash_export.h"
+#include "ash/public/cpp/session/session_observer.h"
+#include "ash/public/cpp/tablet_mode_observer.h"
 #include "ash/system/power/backlights_forced_off_setter.h"
 #include "ash/wm/lock_state_observer.h"
-#include "ash/wm/tablet_mode/tablet_mode_observer.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "ui/display/manager/display_configurator.h"
+#include "ui/views/widget/widget.h"
 
 namespace base {
 class TickClock;
 class TimeTicks;
 }  // namespace base
-
-namespace views {
-class Widget;
-}  // namespace views
 
 namespace ash {
 
@@ -43,9 +41,10 @@ class ASH_EXPORT PowerButtonController
     : public display::DisplayConfigurator::Observer,
       public chromeos::PowerManagerClient::Observer,
       public AccelerometerReader::Observer,
-      public BacklightsForcedOffSetter::Observer,
+      public ScreenBacklightObserver,
       public TabletModeObserver,
-      public LockStateObserver {
+      public LockStateObserver,
+      public SessionObserver {
  public:
   enum class ButtonType {
     // Indicates normal power button type.
@@ -124,26 +123,28 @@ class ASH_EXPORT PowerButtonController
   // chromeos::PowerManagerClient::Observer:
   void ScreenBrightnessChanged(
       const power_manager::BacklightBrightnessChange& change) override;
-  void PowerButtonEventReceived(bool down,
-                                const base::TimeTicks& timestamp) override;
+  void PowerButtonEventReceived(bool down, base::TimeTicks timestamp) override;
   void SuspendImminent(power_manager::SuspendImminent::Reason reason) override;
-  void SuspendDone(const base::TimeDelta& sleep_duration) override;
+  void SuspendDone(base::TimeDelta sleep_duration) override;
+
+  // SessionObserver:
+  void OnLoginStatusChanged(LoginStatus status) override;
 
   // Initializes |screenshot_controller_| according to the tablet mode switch in
   // |result|.
   void OnGetSwitchStates(
-      base::Optional<chromeos::PowerManagerClient::SwitchStates> result);
+      absl::optional<chromeos::PowerManagerClient::SwitchStates> result);
 
   // TODO(minch): Remove this if/when all applicable devices expose a tablet
   // mode switch: https://crbug.com/798646.
   // AccelerometerReader::Observer:
-  void OnAccelerometerUpdated(
-      scoped_refptr<const AccelerometerUpdate> update) override;
+  void OnECLidAngleDriverStatusChanged(bool is_supported) override {}
+  void OnAccelerometerUpdated(const AccelerometerUpdate& update) override;
 
   // BacklightsForcedOffSetter::Observer:
   void OnBacklightsForcedOffChanged(bool forced_off) override;
-  void OnScreenStateChanged(
-      BacklightsForcedOffSetter::ScreenState screen_state) override;
+  void OnScreenBacklightStateChanged(
+      ScreenBacklightState screen_backlight_state) override;
 
   // TabletModeObserver:
   void OnTabletModeStarted() override;
@@ -153,7 +154,6 @@ class ASH_EXPORT PowerButtonController
   void OnLockStateEvent(LockStateObserver::EventType event) override;
 
  private:
-  class ActiveWindowWidgetController;
   friend class PowerButtonControllerTestApi;
 
   // Returns true if tablet power button behavior (i.e. tapping the button turns
@@ -217,16 +217,9 @@ class ASH_EXPORT PowerButtonController
   // Saves the button type for this power button.
   ButtonType button_type_ = ButtonType::NORMAL;
 
-  // True if the device should observe accelerometer events to enter tablet
-  // mode.
-  bool observe_accelerometer_events_ = false;
-
   // True if the kForceTabletPowerButton flag is set. This forces tablet power
   // button behavior even while in laptop mode.
   bool force_tablet_power_button_ = false;
-
-  // True if the device has tablet mode switch.
-  bool has_tablet_mode_switch_ = false;
 
   // True if the screen was off when the power button was pressed.
   bool screen_off_when_power_button_down_ = false;
@@ -280,15 +273,15 @@ class ASH_EXPORT PowerButtonController
   // display's height or width, respectively.
   double power_button_offset_percentage_ = 0.f;
 
-  ScopedObserver<BacklightsForcedOffSetter, BacklightsForcedOffSetter::Observer>
-      backlights_forced_off_observer_;
+  base::ScopedObservation<BacklightsForcedOffSetter, ScreenBacklightObserver>
+      backlights_forced_off_observation_{this};
 
   // Used to maintain active state of the active window that exists before
   // showing menu.
-  std::unique_ptr<ActiveWindowWidgetController>
-      active_window_widget_controller_;
+  std::unique_ptr<views::Widget::PaintAsActiveLock>
+      active_window_paint_as_active_lock_;
 
-  base::WeakPtrFactory<PowerButtonController> weak_factory_;
+  base::WeakPtrFactory<PowerButtonController> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PowerButtonController);
 };

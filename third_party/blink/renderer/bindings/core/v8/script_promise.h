@@ -35,7 +35,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "v8/include/v8.h"
 
@@ -43,6 +43,7 @@ namespace blink {
 
 class DOMException;
 class ExceptionState;
+class NewScriptFunction;
 
 // ScriptPromise is the class for representing Promise values in C++ world.
 // ScriptPromise holds a Promise.
@@ -57,7 +58,7 @@ class CORE_EXPORT ScriptPromise final {
 
  public:
   // Constructs an empty promise.
-  ScriptPromise();
+  ScriptPromise() = default;
 
   // Constructs a ScriptPromise from |promise|.
   // If |promise| is not a Promise object, throws a v8 TypeError.
@@ -65,10 +66,12 @@ class CORE_EXPORT ScriptPromise final {
 
   ScriptPromise(const ScriptPromise&);
 
-  ~ScriptPromise();
+  ~ScriptPromise() = default;
 
   ScriptPromise Then(v8::Local<v8::Function> on_fulfilled,
                      v8::Local<v8::Function> on_rejected = {});
+  ScriptPromise Then(NewScriptFunction* on_fulfilled,
+                     NewScriptFunction* on_rejected = nullptr);
 
   bool IsObject() const { return promise_.IsObject(); }
 
@@ -78,11 +81,16 @@ class CORE_EXPORT ScriptPromise final {
     return promise_.IsUndefined() || promise_.IsNull();
   }
 
-  ScriptValue GetScriptValue() const { return promise_; }
+  ScriptValue AsScriptValue() const { return promise_; }
 
   v8::Local<v8::Value> V8Value() const { return promise_.V8Value(); }
+  v8::Local<v8::Promise> V8Promise() const {
+    // This is safe because `promise_` always stores a promise value as long
+    // as it's non-empty.
+    return V8Value().As<v8::Promise>();
+  }
 
-  v8::Isolate* GetIsolate() const { return promise_.GetIsolate(); }
+  v8::Isolate* GetIsolate() const { return script_state_->GetIsolate(); }
 
   bool IsEmpty() const { return promise_.IsEmpty(); }
 
@@ -121,7 +129,13 @@ class CORE_EXPORT ScriptPromise final {
   // Constructs and returns a ScriptPromise to be resolved when all |promises|
   // are resolved. If one of |promises| is rejected, the returned
   // ScriptPromise is rejected.
-  static ScriptPromise All(ScriptState*, const Vector<ScriptPromise>& promises);
+  static ScriptPromise All(ScriptState*,
+                           const HeapVector<ScriptPromise>& promises);
+
+  void Trace(Visitor* visitor) const {
+    visitor->Trace(promise_);
+    visitor->Trace(script_state_);
+  }
 
   // This is a utility class intended to be used internally.
   // ScriptPromiseResolver is for general purpose.
@@ -135,21 +149,40 @@ class CORE_EXPORT ScriptPromise final {
     void Resolve(v8::Local<v8::Value>);
     void Reject(v8::Local<v8::Value>);
     void Clear() { resolver_.Clear(); }
+    ScriptState* GetScriptState() const { return script_state_; }
+    void Trace(Visitor* visitor) const {
+      visitor->Trace(script_state_);
+      visitor->Trace(resolver_);
+    }
 
    private:
+    Member<ScriptState> script_state_;
     ScriptValue resolver_;
   };
+
+  bool IsAssociatedWith(ScriptState* script_state) const {
+    return script_state == script_state_;
+  }
 
  private:
   static void IncreaseInstanceCount();
   static void DecreaseInstanceCount();
 
-  // TODO(peria): Move ScriptPromise to Oilpan heap.
-  GC_PLUGIN_IGNORE("813731")
-  Persistent<ScriptState> script_state_;
+  Member<ScriptState> script_state_;
   ScriptValue promise_;
 };
 
 }  // namespace blink
+
+namespace WTF {
+
+template <>
+struct VectorTraits<blink::ScriptPromise>
+    : VectorTraitsBase<blink::ScriptPromise> {
+  STATIC_ONLY(VectorTraits);
+  static constexpr bool kCanClearUnusedSlotsWithMemset = true;
+};
+
+}  // namespace WTF
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_PROMISE_H_

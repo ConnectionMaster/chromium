@@ -6,15 +6,18 @@
 
 #include <fontconfig/fontconfig.h>
 
+#include "base/check_op.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/logging.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/fontconfig_util_linux.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/font.h"
+#include "ui/gfx/linux/fontconfig_util.h"
 #include "ui/gfx/skia_font_delegate.h"
 
 namespace gfx {
@@ -61,9 +64,10 @@ class TestFontDelegate : public SkiaFontDelegate {
 
 // Loads XML-formatted |data| into the current font configuration.
 bool LoadConfigDataIntoFontconfig(const std::string& data) {
+  FcConfig* config = GetGlobalFontConfig();
+  constexpr FcBool kComplain = FcTrue;
   return FcConfigParseAndLoadFromMemory(
-      FcConfigGetCurrent(), reinterpret_cast<const FcChar8*>(data.c_str()),
-      FcTrue);
+      config, reinterpret_cast<const FcChar8*>(data.c_str()), kComplain);
 }
 
 // Returns a Fontconfig <edit> stanza.
@@ -108,11 +112,26 @@ class FontRenderParamsTest : public testing::Test {
     original_font_delegate_ = SkiaFontDelegate::instance();
     SkiaFontDelegate::SetInstance(&test_font_delegate_);
     ClearFontRenderParamsCacheForTest();
-    FcInit();
+
+    // Create a new fontconfig configuration and load the default fonts
+    // configuration. The default test config file is produced in the build
+    // folder under <build_dir>/etc/fonts/fonts.conf and the loaded tests fonts
+    // are under <build_dir>/test_fonts.
+    override_config_ = FcConfigCreate();
+    FcBool parse_success =
+        FcConfigParseAndLoad(override_config_, nullptr, FcTrue);
+    DCHECK_NE(parse_success, FcFalse);
+    FcBool load_success = FcConfigBuildFonts(override_config_);
+    DCHECK_NE(load_success, FcFalse);
+
+    original_config_ = GetGlobalFontConfig();
+    OverrideGlobalFontConfigForTesting(override_config_);
   }
 
   ~FontRenderParamsTest() override {
-    FcFini();
+    OverrideGlobalFontConfigForTesting(original_config_);
+    FcConfigDestroy(override_config_);
+
     SkiaFontDelegate::SetInstance(
         const_cast<SkiaFontDelegate*>(original_font_delegate_));
   }
@@ -120,6 +139,9 @@ class FontRenderParamsTest : public testing::Test {
  protected:
   const SkiaFontDelegate* original_font_delegate_;
   TestFontDelegate test_font_delegate_;
+
+  FcConfig* override_config_ = nullptr;
+  FcConfig* original_config_ = nullptr;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(FontRenderParamsTest);
@@ -342,12 +364,12 @@ TEST_F(FontRenderParamsTest, ForceSubpixelPositioning) {
     FontRenderParams params =
         GetFontRenderParams(FontRenderParamsQuery(), nullptr);
     EXPECT_TRUE(params.antialiasing);
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
     EXPECT_TRUE(params.subpixel_positioning);
 #else
     // Integral scale factor does not require subpixel positioning.
     EXPECT_FALSE(params.subpixel_positioning);
-#endif  // !defined(OS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
     SetFontRenderParamsDeviceScaleFactor(1.0f);
   }
 }
@@ -374,7 +396,8 @@ TEST_F(FontRenderParamsTest, OnlySetConfiguredValues) {
 
 TEST_F(FontRenderParamsTest, NoFontconfigMatch) {
   // A default configuration was set up globally.  Reset it to a blank config.
-  FcConfigSetCurrent(FcConfigCreate());
+  FcConfig* blank = FcConfigCreate();
+  OverrideGlobalFontConfigForTesting(blank);
 
   FontRenderParams system_params;
   system_params.antialiasing = true;
@@ -395,7 +418,8 @@ TEST_F(FontRenderParamsTest, NoFontconfigMatch) {
   EXPECT_EQ(system_params.subpixel_rendering, params.subpixel_rendering);
   EXPECT_EQ(query.families[0], suggested_family);
 
-  FcConfigDestroy(FcConfigGetCurrent());
+  OverrideGlobalFontConfigForTesting(override_config_);
+  FcConfigDestroy(blank);
 }
 
 TEST_F(FontRenderParamsTest, MissingFamily) {

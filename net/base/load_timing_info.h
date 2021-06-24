@@ -26,6 +26,7 @@ namespace net {
 //
 // The general order for events is:
 // request_start
+// service_worker_start_time
 // proxy_start
 // proxy_end
 // dns_start
@@ -36,7 +37,12 @@ namespace net {
 // connect_end
 // send_start
 // send_end
+// service_worker_ready_time
+// service_worker_fetch_start
+// service_worker_respond_with_settled
+// first_early_hints_time
 // receive_headers_start
+// receive_non_informational_headers_start
 // receive_headers_end
 //
 // Times represent when a request starts/stops blocking on an event(*), not the
@@ -134,7 +140,29 @@ struct NET_EXPORT LoadTimingInfo {
   // (http://www.w3.org/TR/resource-timing/) for Web-surfacing requests.
   base::TimeTicks request_start;
 
-  // The time spent determing which proxy to use.  Null when there is no PAC.
+  // The time immediately before starting ServiceWorker. If the response is not
+  // provided by the ServiceWorker, kept empty.
+  // Corresponds to |workerStart| in
+  // ResourceTiming (http://www.w3.org/TR/resource-timing/) for Web-surfacing
+  base::TimeTicks service_worker_start_time;
+
+  // The time immediately before dispatching fetch event in ServiceWorker.
+  // If the response is not provided by the ServiceWorker, kept empty.
+  // This value will be used for |fetchStart| (or |redirectStart|) in
+  // ResourceTiming (http://www.w3.org/TR/resource-timing/) for Web-surfacing
+  // if this is greater than |request_start|.
+  base::TimeTicks service_worker_ready_time;
+
+  // The time when serviceworker fetch event was popped off the event queue
+  // and fetch event handler started running.
+  // If the response is not provided by the ServiceWorker, kept empty.
+  base::TimeTicks service_worker_fetch_start;
+
+  // The time when serviceworker's fetch event's respondWith promise was
+  // settled. If the response is not provided by the ServiceWorker, kept empty.
+  base::TimeTicks service_worker_respond_with_settled;
+
+  // The time spent determining which proxy to use.  Null when there is no PAC.
   base::TimeTicks proxy_resolve_start;
   base::TimeTicks proxy_resolve_end;
 
@@ -147,10 +175,22 @@ struct NET_EXPORT LoadTimingInfo {
   base::TimeTicks send_end;
 
   // The time at which the first / last byte of the HTTP headers were received.
+  //
   // |receive_headers_start| corresponds to |responseStart| in ResourceTiming
-  // (http://www.w3.org/TR/resource-timing/) for Web-surfacing requests.
+  // (http://www.w3.org/TR/resource-timing/) for Web-surfacing requests. This
+  // can be the time at which the first byte of the HTTP headers for
+  // informational responses (1xx) as per the ResourceTiming spec (see note at
+  // https://www.w3.org/TR/resource-timing-2/#dom-performanceresourcetiming-responsestart).
   base::TimeTicks receive_headers_start;
   base::TimeTicks receive_headers_end;
+
+  // The time at which the first byte of the HTTP headers for the
+  // non-informational response (non-1xx). See also comments on
+  // |receive_headers_start|.
+  base::TimeTicks receive_non_informational_headers_start;
+
+  // The time that the first 103 Early Hints response is received.
+  base::TimeTicks first_early_hints_time;
 
   // In case the resource was proactively pushed by the server, these are
   // the times that push started and ended. Note that push_end will be null

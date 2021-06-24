@@ -10,48 +10,21 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "net/base/hex_utils.h"
-#include "net/third_party/quiche/src/spdy/platform/api/spdy_export.h"
-#include "net/third_party/quiche/src/spdy/platform/api/spdy_string.h"
-#include "net/third_party/quiche/src/spdy/platform/api/spdy_string_piece.h"
+#include "net/third_party/quiche/src/common/quiche_text_utils.h"
+#include "third_party/abseil-cpp/absl/strings/string_view.h"
 
 namespace spdy {
-
-template <typename... Args>
-inline SpdyString SpdyStrCatImpl(const Args&... args) {
-  std::ostringstream oss;
-  int dummy[] = {1, (oss << args, 0)...};
-  static_cast<void>(dummy);
-  return oss.str();
-}
-
-template <typename... Args>
-inline void SpdyStrAppendImpl(SpdyString* output, Args... args) {
-  output->append(SpdyStrCatImpl(args...));
-}
 
 inline char SpdyHexDigitToIntImpl(char c) {
   return base::HexDigitToInt(c);
 }
 
-inline SpdyString SpdyHexDecodeImpl(SpdyStringPiece data) {
-  return net::HexDecode(data);
-}
-
-NET_EXPORT_PRIVATE bool SpdyHexDecodeToUInt32Impl(SpdyStringPiece data,
+NET_EXPORT_PRIVATE bool SpdyHexDecodeToUInt32Impl(absl::string_view data,
                                                   uint32_t* out);
 
-inline SpdyString SpdyHexEncodeImpl(const char* bytes, size_t size) {
-  return base::ToLowerASCII(base::HexEncode(bytes, size));
-}
-
-inline SpdyString SpdyHexEncodeUInt32AndTrimImpl(uint32_t data) {
-  return base::StringPrintf("%x", data);
-}
-
-inline SpdyString SpdyHexDumpImpl(SpdyStringPiece data) {
-  return net::HexDump(data);
+inline std::string SpdyHexDumpImpl(absl::string_view data) {
+  return quiche::QuicheTextUtils::HexDump(data);
 }
 
 }  // namespace spdy

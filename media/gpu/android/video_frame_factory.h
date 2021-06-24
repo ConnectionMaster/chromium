@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef MEDIA_GPU_ANDROID_VIDEO_FRAME_FACTORY_
-#define MEDIA_GPU_ANDROID_VIDEO_FRAME_FACTORY_
+#ifndef MEDIA_GPU_ANDROID_VIDEO_FRAME_FACTORY_H_
+#define MEDIA_GPU_ANDROID_VIDEO_FRAME_FACTORY_H_
 
 #include <memory>
 
@@ -15,25 +15,19 @@
 #include "media/gpu/media_gpu_export.h"
 #include "ui/gfx/geometry/size.h"
 
-namespace gpu {
-class CommandBufferStub;
-}  // namespace gpu
-
 namespace media {
 
-struct AVDASurfaceBundle;
 class CodecOutputBuffer;
-class TextureOwner;
+class CodecSurfaceBundle;
 class VideoFrame;
 
 // VideoFrameFactory creates CodecOutputBuffer backed VideoFrames. Not thread
 // safe. Virtual for testing; see VideoFrameFactoryImpl.
 class MEDIA_GPU_EXPORT VideoFrameFactory {
  public:
-  using GetStubCb = base::Callback<gpu::CommandBufferStub*()>;
-  using InitCb = base::RepeatingCallback<void(scoped_refptr<TextureOwner>)>;
-  using OnceOutputCb =
-      base::OnceCallback<void(const scoped_refptr<VideoFrame>&)>;
+  using InitCB =
+      base::RepeatingCallback<void(scoped_refptr<gpu::TextureOwner>)>;
+  using OnceOutputCB = base::OnceCallback<void(scoped_refptr<VideoFrame>)>;
 
   VideoFrameFactory() = default;
   virtual ~VideoFrameFactory() = default;
@@ -56,12 +50,12 @@ class MEDIA_GPU_EXPORT VideoFrameFactory {
     kSurfaceControlSecure,
     kSurfaceControlInsecure
   };
-  virtual void Initialize(OverlayMode overlay_mode, InitCb init_cb) = 0;
+  virtual void Initialize(OverlayMode overlay_mode, InitCB init_cb) = 0;
 
   // Notify us about the current surface bundle that subsequent video frames
   // should use.
   virtual void SetSurfaceBundle(
-      scoped_refptr<AVDASurfaceBundle> surface_bundle) = 0;
+      scoped_refptr<CodecSurfaceBundle> surface_bundle) = 0;
 
   // Creates a new VideoFrame backed by |output_buffer|.  Runs |output_cb| on
   // the calling sequence to return the frame.
@@ -70,7 +64,7 @@ class MEDIA_GPU_EXPORT VideoFrameFactory {
       base::TimeDelta timestamp,
       gfx::Size natural_size,
       PromotionHintAggregator::NotifyPromotionHintCB promotion_hint_cb,
-      OnceOutputCb output_cb) = 0;
+      OnceOutputCB output_cb) = 0;
 
   // Runs |closure| on the calling sequence after all previous
   // CreateVideoFrame() calls have completed.
@@ -79,4 +73,4 @@ class MEDIA_GPU_EXPORT VideoFrameFactory {
 
 }  // namespace media
 
-#endif  // MEDIA_GPU_ANDROID_VIDEO_FRAME_FACTORY_
+#endif  // MEDIA_GPU_ANDROID_VIDEO_FRAME_FACTORY_H_

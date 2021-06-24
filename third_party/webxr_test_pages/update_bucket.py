@@ -7,6 +7,7 @@ from __future__ import print_function
 
 import argparse
 import logging
+import mimetypes
 import os
 import re
 import subprocess
@@ -22,6 +23,7 @@ import jinja2
 FIRST_REVISION = '08a37e09f110ab9cb2af3180f054f26a2fd274d6'
 TEST_SUBDIR = 'webxr-samples'
 INDEX_TEMPLATE = 'bucket_index.html'
+LATEST_TEMPLATE = 'bucket_latest.html'
 
 # Google Cloud storage bucket destination.
 BUCKET = 'gs://chromium-webxr-test'
@@ -38,6 +40,12 @@ BUCKET_COPY_RE = re.compile(r'^r(\d+)')
 WINDOWS_EXES = {
   'git': 'git.bat',
   'gsutil.py': 'gsutil.py.bat',
+}
+
+SUFFIX_TYPES = {
+  'js': 'application/javascript',
+  'css': 'text/css',
+  'html': 'text/html',
 }
 
 g_flags = None
@@ -126,6 +134,30 @@ def write_to_bucket(cr_position):
   run_modify('gsutil.py', '-m', 'rsync', '-x', 'media', '-r', './' + TEST_SUBDIR,
           destination)
 
+  # The copy used mime types based on system-local mappings which may be
+  # misconfigured. Sanity check and fix if needed.
+  check_and_fix_content_types(destination)
+
+def direct_publish_samples(source, dest_subfolder):
+  destination = 'gs://chromium-webxr-samples' + '/' + dest_subfolder
+  run_modify('gsutil.py', '-m', 'rsync', '-x', 'media', '-r', './' + source,
+          destination)
+
+  # The copy used mime types based on system-local mappings which may be
+  # misconfigured. Sanity check and fix if needed.
+  check_and_fix_content_types(destination)
+
+def check_and_fix_content_types(destination):
+  mimetypes.init()
+  for suffix, content_type in SUFFIX_TYPES.iteritems():
+    configured_type = mimetypes.types_map.get('.' + suffix)
+    if configured_type != content_type:
+      logging.info('Fixing content type mismatch for .%s: found %s, '
+                   'expected %s.' % (suffix, configured_type, content_type))
+      run_modify('gsutil.py', '-m', 'setmeta', '-h',
+                 'Content-type:' + content_type,
+                 destination + '/**.' + suffix)
+
 def write_index():
   """Updates Cloud Storage index.html based on available test copies"""
   cr_positions = get_bucket_copies()
@@ -162,6 +194,32 @@ def write_index():
     finally:
       os.unlink(temp.name)
 
+def write_latest():
+  """Updates Cloud Storage latest.html based on available test copies, pointing
+  to the latest copy."""
+  cr_positions = get_bucket_copies()
+  cr_positions.sort(key=int, reverse=True)
+  logging.debug('Index: %s', cr_positions)
+
+  if not cr_positions:
+    logging.debug('No cr_positions found, skipping generation of latest.html')
+    return
+
+  logging.debug('Latest cr position: %s', cr_positions[0])
+
+  template = jinja2.Template(open(LATEST_TEMPLATE).read())
+  content = template.render({'revisionString' : cr_positions[0]})
+  logging.debug('latest.html content:\n%s', content)
+
+  with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp:
+    try:
+      temp.write(content)
+      temp.seek(0)
+      temp.close()
+      run_modify('gsutil.py', 'cp', temp.name, BUCKET + '/latest.html')
+    finally:
+      os.unlink(temp.name)
+
 def update_test_copies():
   """Uploads a new test copy if available"""
 
@@ -175,7 +233,7 @@ def update_test_copies():
 
   latest_cr_position = cr_positions[0]
   if latest_cr_position is None and not g_flags.force_destination_cr_position:
-    raise Exception('Top commit has no Cr-Commit-Position. Sync to master?')
+    raise Exception('Top commit has no Cr-Commit-Position. Sync to tip of tree?')
 
   existing_copies = get_bucket_copies()
   logging.debug('Found bucket copies: %s', existing_copies)
@@ -191,6 +249,14 @@ def update_test_copies():
     need_index_update = True
 
   return need_index_update
+
+def numeric_string(value):
+  """Ensure value is a string containing an integer."""
+  # This is used for validating flag values - the usual idiom would be to use
+  # "type=int", but that would convert the value to an integer, and it's more
+  # convenient to keep it string-valued for use in concatenation elsewhere.
+  # Throws an exception if the integer conversion fails.
+  return str(int(value))
 
 def main():
   parser = argparse.ArgumentParser(
@@ -230,7 +296,8 @@ content from failed uploads using the cloud console before retrying.
   parser.add_argument('--ignore-unclean-status', action="store_true",
                       help=("Proceed with copy even if there are uncommitted "
                             "local changes in the git working directory"))
-  parser.add_argument('--force-destination-cr-position',
+  parser.add_argument('--force-destination-cr-position', metavar='NUMBER',
+                      type=numeric_string,
                       help=("Force writing current content to the specified "
                             "destination CR position instead of determining "
                             "the name based on local git history, bypassing "
@@ -238,6 +305,12 @@ content from failed uploads using the cloud console before retrying.
   parser.add_argument('--bucket', default=BUCKET,
                       help=("Destination Cloud Storage location, including "
                             "'gs://' prefix"))
+  parser.add_argument('--direct-publish-samples-source', default=None,
+                      help=("Publish samples from this folder directly to a "
+                            "bucket."))
+  parser.add_argument('--direct-publish-samples-dest', default=None,
+                      help=("Publish samples directly to this subfolder in the "
+                            "chromium-webxr-samples bucket."))
 
   global g_flags
   g_flags = parser.parse_args()
@@ -252,6 +325,12 @@ content from failed uploads using the cloud console before retrying.
   if os.path.isdir(node_modules):
     raise Exception('Please delete the obsolete directory "%s"' % node_modules)
 
+  if g_flags.direct_publish_samples_source and g_flags.direct_publish_samples_dest:
+    direct_publish_samples(
+      g_flags.direct_publish_samples_source,
+      g_flags.direct_publish_samples_dest)
+    return
+
   need_index_update = False
   if g_flags.update_index_only:
     need_index_update = True
@@ -261,8 +340,9 @@ content from failed uploads using the cloud console before retrying.
   # Create an index.html file covering all found test copies.
   if need_index_update:
     write_index()
+    write_latest()
   else:
-    logging.info('No changes, skipping index update.')
+    logging.info('No changes, skipping index.html and latest.html update.')
 
 
 if __name__ == '__main__':

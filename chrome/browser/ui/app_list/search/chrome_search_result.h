@@ -11,52 +11,68 @@
 
 #include "ash/public/cpp/app_list/app_list_metrics.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
-#include "ash/public/interfaces/app_list.mojom.h"
 #include "base/macros.h"
 #include "chrome/browser/ui/app_list/app_list_model_updater.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "ui/base/models/simple_menu_model.h"
 
 namespace app_list {
 class AppContextMenu;
-class TokenizedString;
-class TokenizedStringMatch;
 }  // namespace app_list
+
+namespace ui {
+class ImageModel;
+}
 
 // ChromeSearchResult consists of an icon, title text and details text. Title
 // and details text can have tagged ranges that are displayed differently from
 // default style.
 class ChromeSearchResult {
  public:
-  using ResultType = ash::SearchResultType;
+  using ResultType = ash::AppListSearchResultType;
   using DisplayType = ash::SearchResultDisplayType;
+  using MetricsType = ash::SearchResultType;
   using Tag = ash::SearchResultTag;
   using Tags = ash::SearchResultTags;
   using Action = ash::SearchResultAction;
   using Actions = ash::SearchResultActions;
+  using DisplayIndex = ash::SearchResultDisplayIndex;
+  using OmniboxType = ash::SearchResultOmniboxDisplayType;
 
   ChromeSearchResult();
   virtual ~ChromeSearchResult();
 
-  const base::string16& title() const { return metadata_->title; }
+  const std::u16string& title() const { return metadata_->title; }
   const Tags& title_tags() const { return metadata_->title_tags; }
-  const base::string16& details() const { return metadata_->details; }
+  const std::u16string& details() const { return metadata_->details; }
   const Tags& details_tags() const { return metadata_->details_tags; }
+  const std::u16string& accessible_name() const {
+    return metadata_->accessible_name;
+  }
   float rating() const { return metadata_->rating; }
-  const base::string16& formatted_price() const {
+  const std::u16string& formatted_price() const {
     return metadata_->formatted_price;
   }
   const std::string& id() const { return metadata_->id; }
   DisplayType display_type() const { return metadata_->display_type; }
-  ResultType result_type() const { return metadata_->result_type; }
+  ash::AppListSearchResultType result_type() const {
+    return metadata_->result_type;
+  }
+  MetricsType metrics_type() const { return metadata_->metrics_type; }
+  DisplayIndex display_index() const { return metadata_->display_index; }
+  OmniboxType omnibox_type() const { return metadata_->omnibox_type; }
+  float position_priority() const { return metadata_->position_priority; }
   const Actions& actions() const { return metadata_->actions; }
   double display_score() const { return metadata_->display_score; }
   bool is_installing() const { return metadata_->is_installing; }
-  const base::Optional<GURL>& query_url() const { return metadata_->query_url; }
-  const base::Optional<std::string>& equivalent_result_id() const {
+  bool is_recommendation() const { return metadata_->is_recommendation; }
+  const absl::optional<GURL>& query_url() const { return metadata_->query_url; }
+  const absl::optional<std::string>& equivalent_result_id() const {
     return metadata_->equivalent_result_id;
   }
   const gfx::ImageSkia& icon() const { return metadata_->icon; }
   const gfx::ImageSkia& chip_icon() const { return metadata_->chip_icon; }
-  const gfx::ImageSkia& badge_icon() const { return metadata_->badge_icon; }
+  const ui::ImageModel& badge_icon() const { return metadata_->badge_icon; }
 
   bool notify_visibility_change() const {
     return metadata_->notify_visibility_change;
@@ -64,35 +80,39 @@ class ChromeSearchResult {
 
   // The following methods set Chrome side data here, and call model updater
   // interface to update Ash.
-  void SetTitle(const base::string16& title);
+  void SetTitle(const std::u16string& title);
   void SetTitleTags(const Tags& tags);
-  void SetDetails(const base::string16& details);
+  void SetDetails(const std::u16string& details);
   void SetDetailsTags(const Tags& tags);
-  void SetAccessibleName(const base::string16& name);
+  void SetAccessibleName(const std::u16string& name);
   void SetRating(float rating);
-  void SetFormattedPrice(const base::string16& formatted_price);
+  void SetFormattedPrice(const std::u16string& formatted_price);
   void SetDisplayType(DisplayType display_type);
   void SetResultType(ResultType result_type);
+  void SetMetricsType(MetricsType metrics_type);
+  void SetDisplayIndex(DisplayIndex display_index);
+  void SetOmniboxType(OmniboxType omnibox_type);
+  void SetPositionPriority(float position_priority);
   void SetDisplayScore(double display_score);
   void SetActions(const Actions& actions);
   void SetIsOmniboxSearch(bool is_omnibox_search);
+  void SetIsRecommendation(bool is_recommendation);
   void SetIsInstalling(bool is_installing);
   void SetQueryUrl(const GURL& url);
   void SetEquivalentResutlId(const std::string& equivlanet_result_id);
   void SetIcon(const gfx::ImageSkia& icon);
   void SetChipIcon(const gfx::ImageSkia& icon);
-  void SetBadgeIcon(const gfx::ImageSkia& badge_icon);
+  void SetBadgeIcon(const ui::ImageModel& badge_icon);
+  void SetUseBadgeIconBackground(bool use_badge_icon_background);
   void SetNotifyVisibilityChange(bool notify_visibility_change);
 
-  // The following methods call model updater to update Ash.
-  void SetPercentDownloaded(int percent_downloaded);
-  void NotifyItemInstalled();
+  void SetSearchResultMetadata();
 
-  void SetMetadata(ash::mojom::SearchResultMetadataPtr metadata) {
+  void SetMetadata(std::unique_ptr<ash::SearchResultMetadata> metadata) {
     metadata_ = std::move(metadata);
   }
-  ash::mojom::SearchResultMetadataPtr CloneMetadata() const {
-    return metadata_.Clone();
+  std::unique_ptr<ash::SearchResultMetadata> CloneMetadata() const {
+    return std::make_unique<ash::SearchResultMetadata>(*metadata_);
   }
 
   void set_model_updater(AppListModelUpdater* model_updater) {
@@ -103,8 +123,20 @@ class ChromeSearchResult {
   double relevance() const { return relevance_; }
   void set_relevance(double relevance) { relevance_ = relevance; }
 
+  const base::flat_map<std::string, double>& ranker_scores() const {
+    return ranker_scores_;
+  }
+  void set_ranker_score(std::string ranking_method, double score) {
+    ranker_scores_[ranking_method] = score;
+  }
+
+  bool dismiss_view_on_open() const { return dismiss_view_on_open_; }
+  void set_dismiss_view_on_open(bool dismiss_view_on_open) {
+    dismiss_view_on_open_ = dismiss_view_on_open;
+  }
+
   // Invokes a custom action on the result. It does nothing by default.
-  virtual void InvokeAction(int action_index, int event_flags);
+  virtual void InvokeAction(int action_index);
 
   // Opens the result. Clients should use AppListViewDelegate::OpenSearchResult.
   virtual void Open(int event_flags) = 0;
@@ -112,31 +144,12 @@ class ChromeSearchResult {
   // Called if set visible/hidden.
   virtual void OnVisibilityChanged(bool visibility);
 
-  // Updates the result's relevance score, and sets its title and title tags,
-  // based on a string match result.
-  void UpdateFromMatch(const app_list::TokenizedString& title,
-                       const app_list::TokenizedStringMatch& match);
-
   // Returns the context menu model for this item, or NULL if there is currently
   // no menu for the item (e.g. during install). |callback| takes the ownership
   // of the returned menu model.
   using GetMenuModelCallback =
-      base::OnceCallback<void(std::unique_ptr<ui::MenuModel>)>;
+      base::OnceCallback<void(std::unique_ptr<ui::SimpleMenuModel>)>;
   virtual void GetContextMenuModel(GetMenuModelCallback callback);
-
-  // Invoked when a context menu item of this search result is selected.
-  void ContextMenuItemSelected(int command_id, int event_flags);
-
-  static std::string TagsDebugStringForTest(const std::string& text,
-                                            const Tags& tags);
-
-  // Subtype of a search result. -1 means no sub type. Derived class
-  // can use this to return useful values for rankers etc. Currently,
-  // OmniboxResult overrides it to return AutocompleteMatch::Type.
-  virtual int GetSubType() const;
-
-  // Get the type of the result, used in metrics.
-  virtual app_list::SearchResultType GetSearchResultType() const = 0;
 
  protected:
   // These id setters should be called in derived class constructors only.
@@ -153,7 +166,19 @@ class ChromeSearchResult {
   // sorted order, group multiplier and group boost.
   double relevance_ = 0;
 
-  ash::mojom::SearchResultMetadataPtr metadata_;
+  // Relevance scores keyed by a string describing the ranking method it was
+  // obtained from. These can include scores from intermediate ranking steps, as
+  // well as prototype scores to be inspected for experimentation.
+  base::flat_map<std::string, double> ranker_scores_;
+
+  // More often than not, calling Open() on a ChromeSearchResult will cause the
+  // app list view to be closed as a side effect. Because opening apps can take
+  // some time, the app list view is eagerly dismissed by default after invoking
+  // Open() for added polish. Some ChromeSearchResults may not appreciate this
+  // behavior so it can be disabled as needed.
+  bool dismiss_view_on_open_ = true;
+
+  std::unique_ptr<ash::SearchResultMetadata> metadata_;
 
   AppListModelUpdater* model_updater_ = nullptr;
 

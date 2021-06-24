@@ -5,20 +5,22 @@
 package org.chromium.chrome.browser.dependency_injection;
 
 import static org.chromium.chrome.browser.dependency_injection.ChromeCommonQualifiers.APP_CONTEXT;
-import static org.chromium.chrome.browser.dependency_injection.ChromeCommonQualifiers.LAST_USED_PROFILE;
+import static org.chromium.chrome.browser.dependency_injection.ChromeCommonQualifiers.LAST_USED_REGULAR_PROFILE;
 
 import android.content.Context;
-import android.support.customtabs.trusted.TrustedWebActivityServiceConnectionManager;
+
+import androidx.browser.trusted.TrustedWebActivityServiceConnectionPool;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.chrome.browser.WarmupManager;
+import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.browserservices.permissiondelegation.TrustedWebActivityPermissionStore;
-import org.chromium.chrome.browser.contextual_suggestions.EnabledStateMonitor;
-import org.chromium.chrome.browser.contextual_suggestions.EnabledStateMonitorImpl;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
+import org.chromium.chrome.browser.night_mode.SystemNightModeMonitor;
 import org.chromium.chrome.browser.notifications.channels.SiteChannelsManager;
-import org.chromium.chrome.browser.preferences.ChromePreferenceManager;
+import org.chromium.chrome.browser.preferences.SharedPreferencesManager;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.AsyncTabParamsManager;
 import org.chromium.chrome.browser.webapps.WebappRegistry;
 
 import javax.inject.Named;
@@ -36,20 +38,14 @@ public class ChromeAppModule {
     public interface Factory { ChromeAppModule create(); }
 
     @Provides
-    @Named(LAST_USED_PROFILE)
-    public Profile provideLastUsedProfile() {
-        return Profile.getLastUsedProfile();
+    @Named(LAST_USED_REGULAR_PROFILE)
+    public Profile provideLastUsedRegularProfile() {
+        return Profile.getLastUsedRegularProfile();
     }
 
     @Provides
-    @Singleton
-    public EnabledStateMonitor provideEnabledStateMonitor() {
-        return new EnabledStateMonitorImpl();
-    }
-
-    @Provides
-    public ChromePreferenceManager providesChromePreferenceManager() {
-        return ChromePreferenceManager.getInstance();
+    public SharedPreferencesManager providesSharedPreferencesManager() {
+        return SharedPreferencesManager.getInstance();
     }
 
     @Provides
@@ -81,10 +77,20 @@ public class ChromeAppModule {
 
     @Provides
     @Singleton
-    public TrustedWebActivityServiceConnectionManager providesTwaServiceConnectionManager(
+    public TrustedWebActivityServiceConnectionPool providesTwaServiceConnectionManager(
             @Named(APP_CONTEXT) Context context) {
-        // TrustedWebActivityServiceConnectionManager comes from the Custom Tabs Support Library
+        // TrustedWebActivityServiceConnectionManager comes from AndroidX Browser
         // so we can't make it injectable.
-        return new TrustedWebActivityServiceConnectionManager(context);
+        return TrustedWebActivityServiceConnectionPool.create(context);
+    }
+
+    @Provides
+    public SystemNightModeMonitor provideSystemNightModeMonitor() {
+        return SystemNightModeMonitor.getInstance();
+    }
+
+    @Provides
+    public AsyncTabParamsManager provideAsyncTabParamsManager() {
+        return AsyncTabParamsManagerSingleton.getInstance();
     }
 }

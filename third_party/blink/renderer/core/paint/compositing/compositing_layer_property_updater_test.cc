@@ -11,46 +11,110 @@
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
-#include "third_party/blink/renderer/core/testing/use_mock_scrollbar_settings.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_layer.h"
+#include "third_party/blink/renderer/platform/testing/paint_property_test_helpers.h"
 
 namespace blink {
 
 class CompositingLayerPropertyUpdaterTest : public RenderingTest {
  private:
   void SetUp() override {
-    RenderingTest::SetUp();
     EnableCompositing();
+    RenderingTest::SetUp();
   }
 };
 
 TEST_F(CompositingLayerPropertyUpdaterTest, MaskLayerState) {
   SetBodyInnerHTML(R"HTML(
-    <div id=target style="position: absolute;
-        clip-path: polygon(-1px -1px, 86px 400px);
-        clip: rect(9px, -1px, -1px, 96px); will-change: transform">
+    <svg width="0" height="0">
+      <defs>
+        <clipPath id="text">
+          <text>Text</text>
+        </clipPath>
+      </defs>
+    </svg>
+    <style>
+      .clip-path-mask { clip-path: url(#text); }
+      .clip-path-path { clip-path: circle(50%); }
+      .mask-image { -webkit-mask-image: linear-gradient(black, transparent); }
+    </style>
+    <div id=target class="clip-path-mask"
+         style="position: absolute; will-change: transform;
+                clip: rect(9px, -1px, -1px, 96px)">
     </div>
     )HTML");
 
-  PaintLayer* target =
-      ToLayoutBoxModelObject(GetLayoutObjectByElementId("target"))->Layer();
+  auto* target_element = GetDocument().getElementById("target");
+  auto* target = target_element->GetLayoutBoxModelObject();
   EXPECT_EQ(kPaintsIntoOwnBacking, target->GetCompositingState());
-  auto* mapping = target->GetCompositedLayerMapping();
+  auto* mapping = target->Layer()->GetCompositedLayerMapping();
   auto* mask_layer = mapping->MaskLayer();
 
-  auto* paint_properties =
-      target->GetLayoutObject().FirstFragment().PaintProperties();
+  auto* paint_properties = target->FirstFragment().PaintProperties();
   EXPECT_TRUE(paint_properties->CssClip());
   EXPECT_TRUE(paint_properties->MaskClip());
   EXPECT_EQ(paint_properties->MaskClip(),
-            &mask_layer->layer_state_->state.Clip());
+            &mask_layer->GetPropertyTreeState().Clip());
+  EXPECT_FALSE(paint_properties->Mask());
+  EXPECT_EQ(paint_properties->ClipPathMask(),
+            &mask_layer->GetPropertyTreeState().Effect());
+
+  target_element->setAttribute(html_names::kClassAttr,
+                               "clip-path-mask mask-image");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(mapping, target->Layer()->GetCompositedLayerMapping());
+  ASSERT_EQ(mask_layer, mapping->MaskLayer());
+  ASSERT_EQ(paint_properties, target->FirstFragment().PaintProperties());
+  EXPECT_FALSE(paint_properties->ClipPathClip());
+  EXPECT_EQ(paint_properties->MaskClip(),
+            &mask_layer->GetPropertyTreeState().Clip());
+  EXPECT_TRUE(paint_properties->ClipPathMask());
+  EXPECT_EQ(paint_properties->Mask(),
+            &mask_layer->GetPropertyTreeState().Effect());
+
+  target_element->setAttribute(html_names::kClassAttr, "mask-image");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(mapping, target->Layer()->GetCompositedLayerMapping());
+  ASSERT_EQ(mask_layer, mapping->MaskLayer());
+  ASSERT_EQ(paint_properties, target->FirstFragment().PaintProperties());
+  EXPECT_EQ(paint_properties->MaskClip(),
+            &mask_layer->GetPropertyTreeState().Clip());
+  EXPECT_FALSE(paint_properties->ClipPathMask());
+  EXPECT_EQ(paint_properties->Mask(),
+            &mask_layer->GetPropertyTreeState().Effect());
+
+  target_element->setAttribute(html_names::kClassAttr,
+                               "clip-path-path mask-image");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(mapping, target->Layer()->GetCompositedLayerMapping());
+  ASSERT_EQ(mask_layer, mapping->MaskLayer());
+  ASSERT_EQ(paint_properties, target->FirstFragment().PaintProperties());
+  EXPECT_TRUE(paint_properties->ClipPathClip());
+  EXPECT_EQ(paint_properties->MaskClip(),
+            &mask_layer->GetPropertyTreeState().Clip());
+  EXPECT_FALSE(paint_properties->ClipPathMask());
+  EXPECT_EQ(paint_properties->Mask(),
+            &mask_layer->GetPropertyTreeState().Effect());
+
+  target_element->setAttribute(html_names::kClassAttr, "clip-path-path");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(mapping, target->Layer()->GetCompositedLayerMapping());
+  EXPECT_FALSE(mapping->MaskLayer());
+  ASSERT_EQ(paint_properties, target->FirstFragment().PaintProperties());
+  EXPECT_TRUE(paint_properties->ClipPathClip());
+  EXPECT_FALSE(paint_properties->ClipPathMask());
+  EXPECT_FALSE(paint_properties->Mask());
 }
 
 TEST_F(CompositingLayerPropertyUpdaterTest,
        EnsureOverlayScrollbarLayerHasEffectNode) {
   GetDocument().GetFrame()->GetSettings()->SetPreferCompositingToLCDTextEnabled(
       true);
-  UseMockScrollbarSettings mock_scrollbar(false, true);
+  ASSERT_TRUE(GetDocument()
+                  .GetFrame()
+                  ->GetPage()
+                  ->GetScrollbarTheme()
+                  .UsesOverlayScrollbars());
   SetBodyInnerHTML(R"HTML(
     <style>
       #scroller {
@@ -68,18 +132,15 @@ TEST_F(CompositingLayerPropertyUpdaterTest,
     </div>
   )HTML");
 
-  ASSERT_TRUE(
-      GetDocument().GetPage()->GetScrollbarTheme().UsesOverlayScrollbars());
-
-  PaintLayer* scroller_layer =
-      ToLayoutBoxModelObject(GetLayoutObjectByElementId("scroller"))->Layer();
+  PaintLayer* scroller_layer = GetPaintLayerByElementId("scroller");
   PaintLayerScrollableArea* scrollable_area =
       scroller_layer->GetScrollableArea();
   ASSERT_TRUE(scrollable_area);
 
   auto* horizontal_scrollbar_layer =
-      scrollable_area->LayerForHorizontalScrollbar();
-  auto* vertical_scrollbar_layer = scrollable_area->LayerForVerticalScrollbar();
+      scrollable_area->GraphicsLayerForHorizontalScrollbar();
+  auto* vertical_scrollbar_layer =
+      scrollable_area->GraphicsLayerForVerticalScrollbar();
   ASSERT_TRUE(horizontal_scrollbar_layer);
   ASSERT_TRUE(vertical_scrollbar_layer);
 
@@ -94,83 +155,71 @@ TEST_F(CompositingLayerPropertyUpdaterTest,
             &vertical_scrollbar_layer->GetPropertyTreeState().Effect());
   EXPECT_NE(&horizontal_scrollbar_layer->GetPropertyTreeState().Effect(),
             &vertical_scrollbar_layer->GetPropertyTreeState().Effect());
-  EXPECT_NE(horizontal_scrollbar_layer->GetPropertyTreeState()
-                .Effect()
-                .GetCompositorElementId(),
-            vertical_scrollbar_layer->GetPropertyTreeState()
-                .Effect()
-                .GetCompositorElementId());
-  EXPECT_EQ(horizontal_scrollbar_layer->GetPropertyTreeState()
-                .Effect()
-                .GetCompositorElementId(),
-            horizontal_scrollbar_layer->ContentsLayer()->element_id());
-  EXPECT_EQ(vertical_scrollbar_layer->GetPropertyTreeState()
-                .Effect()
-                .GetCompositorElementId(),
-            vertical_scrollbar_layer->ContentsLayer()->element_id());
+  EXPECT_NE(
+      ToUnaliased(horizontal_scrollbar_layer->GetPropertyTreeState().Effect())
+          .GetCompositorElementId(),
+      ToUnaliased(vertical_scrollbar_layer->GetPropertyTreeState().Effect())
+          .GetCompositorElementId());
+  EXPECT_EQ(
+      ToUnaliased(horizontal_scrollbar_layer->GetPropertyTreeState().Effect())
+          .GetCompositorElementId(),
+      horizontal_scrollbar_layer->ContentsLayer()->element_id());
+  EXPECT_EQ(
+      ToUnaliased(vertical_scrollbar_layer->GetPropertyTreeState().Effect())
+          .GetCompositorElementId(),
+      vertical_scrollbar_layer->ContentsLayer()->element_id());
 }
 
-TEST_F(CompositingLayerPropertyUpdaterTest,
-       RootScrollbarShouldUseParentOfOverscrollNodeAsTransformNode) {
-  auto& document = GetDocument();
-  document.GetFrame()->GetSettings()->SetPreferCompositingToLCDTextEnabled(
-      true);
-  document.SetBaseURLOverride(KURL("http://test.com"));
+TEST_F(CompositingLayerPropertyUpdaterTest, OverflowControlsClip) {
   SetBodyInnerHTML(R"HTML(
     <style>
-    ::-webkit-scrollbar {
-      width: 12px;
-      background: darkblue;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: white;
-    }
-    #scroller {
-      height: 100px;
-      overflow-y: scroll;
-    }
-    .big {
-      height: 1000px;
-    }
+      ::-webkit-scrollbar { width: 20px; }
+      #container {
+        width: 5px;
+        height: 100px;
+      }
+      #target {
+        overflow: scroll;
+        will-change: transform;
+        width: 100%;
+        height: 100%;
+      }
     </style>
-
-    <div class='big'></div>
-    <div id='scroller'>
-      <div class='big'></div>
+    <div id="container">
+      <div id="target"></div>
     </div>
   )HTML");
 
-  {
-    const auto* root_scrollable = document.View()->LayoutViewport();
-    const auto& visual_viewport =
-        document.View()->GetPage()->GetVisualViewport();
+  // Initially the vertical scrollbar overflows the narrow border box.
+  auto* container = GetDocument().getElementById("container");
+  auto* target = GetLayoutBoxByElementId("target");
+  auto* scrollbar_layer =
+      target->GetScrollableArea()->GraphicsLayerForVerticalScrollbar();
+  auto target_state = target->FirstFragment().LocalBorderBoxProperties();
+  auto scrollbar_state = target_state;
+  auto* overflow_controls_clip =
+      target->FirstFragment().PaintProperties()->OverflowControlsClip();
+  ASSERT_TRUE(overflow_controls_clip);
+  scrollbar_state.SetClip(*overflow_controls_clip);
+  EXPECT_EQ(scrollbar_state, scrollbar_layer->GetPropertyTreeState());
 
-    auto* vertical_scrollbar_layer =
-        root_scrollable->LayerForVerticalScrollbar();
-    ASSERT_TRUE(vertical_scrollbar_layer);
-    EXPECT_EQ(&vertical_scrollbar_layer->GetPropertyTreeState().Transform(),
-              visual_viewport.GetOverscrollElasticityTransformNode()->Parent());
-  }
+  // Widen target to make the vertical scrollbar contained by the border box.
+  container->setAttribute(html_names::kStyleAttr, "width: 100px");
+  UpdateAllLifecyclePhasesForTest();
+  LOG(ERROR) << target->Size();
+  EXPECT_FALSE(
+      target->FirstFragment().PaintProperties()->OverflowControlsClip());
+  EXPECT_EQ(target_state, scrollbar_layer->GetPropertyTreeState());
 
-  // Non root scrollbar should use scroller's transform node.
-  {
-    PaintLayer* scroller_layer =
-        ToLayoutBoxModelObject(GetLayoutObjectByElementId("scroller"))->Layer();
-    PaintLayerScrollableArea* scrollable_area =
-        scroller_layer->GetScrollableArea();
-    ASSERT_TRUE(scrollable_area);
-
-    auto* vertical_scrollbar_layer =
-        scrollable_area->LayerForVerticalScrollbar();
-    ASSERT_TRUE(vertical_scrollbar_layer);
-
-    auto paint_properties = scroller_layer->GetLayoutObject()
-                                .FirstFragment()
-                                .LocalBorderBoxProperties();
-
-    EXPECT_EQ(&vertical_scrollbar_layer->GetPropertyTreeState().Transform(),
-              &paint_properties.Transform());
-  }
+  // Narrow down target back.
+  container->removeAttribute(html_names::kStyleAttr);
+  UpdateAllLifecyclePhasesForTest();
+  scrollbar_state = target_state;
+  overflow_controls_clip =
+      target->FirstFragment().PaintProperties()->OverflowControlsClip();
+  ASSERT_TRUE(overflow_controls_clip);
+  scrollbar_state.SetClip(*overflow_controls_clip);
+  EXPECT_EQ(scrollbar_state, scrollbar_layer->GetPropertyTreeState());
 }
 
 }  // namespace blink

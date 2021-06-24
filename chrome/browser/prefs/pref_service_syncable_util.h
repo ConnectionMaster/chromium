@@ -23,11 +23,9 @@ class PrefServiceSyncable;
 //
 // For this reason, Profile does not expose an accessor for the
 // sync_preferences::PrefServiceSyncable type. Instead, you can use the
-// utilities below to retrieve the sync_preferences::PrefServiceSyncable (or its
-// incognito version) from a Profile.
+// utilities below to retrieve the sync_preferences::PrefServiceSyncable from a
+// Profile.
 sync_preferences::PrefServiceSyncable* PrefServiceSyncableFromProfile(
-    Profile* profile);
-sync_preferences::PrefServiceSyncable* PrefServiceSyncableIncognitoFromProfile(
     Profile* profile);
 
 // Creates an incognito copy of |pref_service| that shares most prefs but uses
@@ -37,7 +35,6 @@ sync_preferences::PrefServiceSyncable* PrefServiceSyncableIncognitoFromProfile(
 std::unique_ptr<sync_preferences::PrefServiceSyncable>
 CreateIncognitoPrefServiceSyncable(
     sync_preferences::PrefServiceSyncable* pref_service,
-    PrefStore* incognito_extension_pref_store,
-    std::unique_ptr<PrefValueStore::Delegate> delegate);
+    PrefStore* incognito_extension_pref_store);
 
 #endif  // CHROME_BROWSER_PREFS_PREF_SERVICE_SYNCABLE_UTIL_H_

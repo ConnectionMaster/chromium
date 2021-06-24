@@ -7,13 +7,12 @@
 
 #include "ash/ash_export.h"
 
-namespace ash {
-
-namespace mojom {
+namespace chromeos {
 enum class WindowStateType;
 }
 
-namespace wm {
+namespace ash {
+
 class WindowState;
 
 class ASH_EXPORT WindowStateObserver {
@@ -30,16 +29,16 @@ class ASH_EXPORT WindowStateObserver {
   // This is used to update the shell state such as work area so
   // that the window can use the correct environment to update its bounds.
   virtual void OnPreWindowStateTypeChange(WindowState* window_state,
-                                          mojom::WindowStateType old_type) {}
+                                          chromeos::WindowStateType old_type) {}
 
   // Called after the window's state has been updated.
   // This is used to update the shell state that depends on the updated
   // window bounds, such as shelf visibility.
   virtual void OnPostWindowStateTypeChange(WindowState* window_state,
-                                           mojom::WindowStateType old_type) {}
+                                           chromeos::WindowStateType old_type) {
+  }
 };
 
-}  // namespace wm
 }  // namespace ash
 
 #endif  // ASH_WM_WINDOW_STATE_OBSERVER_H_

@@ -6,13 +6,13 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "net/base/address_list.h"
 #include "net/base/net_errors.h"
 #include "net/base/request_priority.h"
+#include "net/dns/public/resolve_error_info.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_util.h"
 #include "net/socket/connect_job_test_util.h"
@@ -63,9 +63,13 @@ class TestConnectJob : public ConnectJob {
   // From ConnectJob:
   LoadState GetLoadState() const override { return LOAD_STATE_IDLE; }
   bool HasEstablishedConnection() const override { return false; }
+  ResolveErrorInfo GetResolveErrorInfo() const override {
+    return ResolveErrorInfo(net::OK);
+  }
   int ConnectInternal() override {
     SetSocket(std::unique_ptr<StreamSocket>(new MockTCPClientSocket(
-        AddressList(), net_log().net_log(), &socket_data_provider_)));
+                  AddressList(), net_log().net_log(), &socket_data_provider_)),
+              absl::nullopt /* dns_aliases */);
     return socket()->Connect(base::BindOnce(
         &TestConnectJob::NotifyDelegateOfCompletion, base::Unretained(this)));
   }
@@ -89,8 +93,7 @@ class TestConnectJob : public ConnectJob {
 class ConnectJobTest : public testing::Test {
  public:
   ConnectJobTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::MOCK_TIME),
+      : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME),
         common_connect_job_params_(
             nullptr /* client_socket_factory */,
             nullptr /* host_resolver */,
@@ -101,8 +104,7 @@ class ConnectJobTest : public testing::Test {
             nullptr /* quic_stream_factory */,
             nullptr /* proxy_delegate */,
             nullptr /* http_user_agent_settings */,
-            SSLClientSocketContext(),
-            SSLClientSocketContext(),
+            nullptr /* ssl_client_context */,
             nullptr /* socket_performance_watcher_factory */,
             nullptr /* network_quality_estimator */,
             &net_log_,
@@ -110,8 +112,8 @@ class ConnectJobTest : public testing::Test {
   ~ConnectJobTest() override = default;
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
-  TestNetLog net_log_;
+  base::test::TaskEnvironment task_environment_;
+  RecordingTestNetLog net_log_;
   const CommonConnectJobParams common_connect_job_params_;
   TestConnectJobDelegate delegate_;
 };
@@ -140,7 +142,7 @@ TEST_F(ConnectJobTest, NoTimeoutWithNoTimeDelta) {
   TestConnectJob job(TestConnectJob::JobType::kHung, base::TimeDelta(),
                      &common_connect_job_params_, &delegate_);
   ASSERT_THAT(job.Connect(), test::IsError(ERR_IO_PENDING));
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_FALSE(delegate_.has_result());
 }
 
@@ -172,20 +174,19 @@ TEST_F(ConnectJobTest, TimedOut) {
   ASSERT_THAT(job->Connect(), test::IsError(ERR_IO_PENDING));
 
   // Nothing should happen before the specified time.
-  scoped_task_environment_.FastForwardBy(kTimeout -
-                                         base::TimeDelta::FromMilliseconds(1));
+  task_environment_.FastForwardBy(kTimeout -
+                                  base::TimeDelta::FromMilliseconds(1));
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(delegate_.has_result());
 
   // At which point the job should time out.
-  scoped_task_environment_.FastForwardBy(base::TimeDelta::FromMilliseconds(1));
+  task_environment_.FastForwardBy(base::TimeDelta::FromMilliseconds(1));
   EXPECT_THAT(delegate_.WaitForResult(), test::IsError(ERR_TIMED_OUT));
 
   // Have to delete the job for it to log the end event.
   job.reset();
 
-  TestNetLogEntry::List entries;
-  net_log_.GetEntries(&entries);
+  auto entries = net_log_.GetEntries();
 
   EXPECT_EQ(6u, entries.size());
   EXPECT_TRUE(LogContainsBeginEvent(entries, 0, NetLogEventType::CONNECT_JOB));
@@ -210,19 +211,19 @@ TEST_F(ConnectJobTest, TimedOutWithRestartedTimer) {
   ASSERT_THAT(job.Connect(), test::IsError(ERR_IO_PENDING));
 
   // Nothing should happen before the specified time.
-  scoped_task_environment_.FastForwardBy(kTimeout -
-                                         base::TimeDelta::FromMilliseconds(1));
+  task_environment_.FastForwardBy(kTimeout -
+                                  base::TimeDelta::FromMilliseconds(1));
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(delegate_.has_result());
 
   // Make sure restarting the timer is respected.
   job.ResetTimer(kTimeout);
-  scoped_task_environment_.FastForwardBy(kTimeout -
-                                         base::TimeDelta::FromMilliseconds(1));
+  task_environment_.FastForwardBy(kTimeout -
+                                  base::TimeDelta::FromMilliseconds(1));
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(delegate_.has_result());
 
-  scoped_task_environment_.FastForwardBy(base::TimeDelta::FromMilliseconds(1));
+  task_environment_.FastForwardBy(base::TimeDelta::FromMilliseconds(1));
   EXPECT_THAT(delegate_.WaitForResult(), test::IsError(ERR_TIMED_OUT));
 }
 

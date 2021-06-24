@@ -9,7 +9,7 @@
 
 #include "base/strings/string_util.h"
 #include "base/values.h"
-#include "third_party/libxml/chromium/libxml_utils.h"
+#include "third_party/libxml/chromium/xml_reader.h"
 
 namespace data_decoder {
 
@@ -19,7 +19,7 @@ using NamespaceMap = std::map<std::string, std::string>;
 namespace {
 
 void ReportError(XmlParser::ParseCallback callback, const std::string& error) {
-  std::move(callback).Run(/*result=*/base::nullopt, base::make_optional(error));
+  std::move(callback).Run(/*result=*/absl::nullopt, absl::make_optional(error));
 }
 
 enum class TextNodeType { kText, kCData };
@@ -69,7 +69,7 @@ base::Value* AddChildToElement(base::Value* element, base::Value child) {
   if (!children)
     children = element->SetKey(mojom::XmlParser::kChildrenKey,
                                base::Value(base::Value::Type::LIST));
-  children->GetList().push_back(std::move(child));
+  children->Append(std::move(child));
   return &children->GetList().back();
 }
 
@@ -103,9 +103,7 @@ void PopulateAttributes(base::Value* node_value, XmlReader* xml_reader) {
 
 }  // namespace
 
-XmlParser::XmlParser(
-    std::unique_ptr<service_manager::ServiceContextRef> service_ref)
-    : service_ref_(std::move(service_ref)) {}
+XmlParser::XmlParser() = default;
 
 XmlParser::~XmlParser() = default;
 
@@ -172,14 +170,12 @@ void XmlParser::Parse(const std::string& xml, ParseCallback callback) {
     ReportError(std::move(callback), "Invalid XML: unbalanced elements");
     return;
   }
-  base::DictionaryValue* dictionary = nullptr;
-  root_element.GetAsDictionary(&dictionary);
-  if (!dictionary || dictionary->empty()) {
+  if (!root_element.is_dict() || root_element.DictEmpty()) {
     ReportError(std::move(callback), "Invalid XML: bad content");
     return;
   }
-  std::move(callback).Run(base::make_optional(std::move(root_element)),
-                          base::Optional<std::string>());
+  std::move(callback).Run(absl::make_optional(std::move(root_element)),
+                          absl::optional<std::string>());
 }
 
 }  // namespace data_decoder

@@ -20,19 +20,15 @@ TEST(DBusThreadManagerTest, Initialize) {
   EXPECT_TRUE(manager->IsUsingFakes());
 
   // Clients were created.
+  EXPECT_TRUE(manager->GetAnomalyDetectorClient());
   EXPECT_TRUE(manager->GetArcMidisClient());
   EXPECT_TRUE(manager->GetArcObbMounterClient());
-  EXPECT_TRUE(manager->GetArcOemCryptoClient());
-  EXPECT_TRUE(manager->GetCiceroneClient());
-  EXPECT_TRUE(manager->GetConciergeClient());
   EXPECT_TRUE(manager->GetCrosDisksClient());
   EXPECT_TRUE(manager->GetDebugDaemonClient());
   EXPECT_TRUE(manager->GetEasyUnlockClient());
-  EXPECT_TRUE(manager->GetGsmSMSClient());
   EXPECT_TRUE(manager->GetImageBurnerClient());
   EXPECT_TRUE(manager->GetLorgnetteManagerClient());
   EXPECT_TRUE(manager->GetModemMessagingClient());
-  EXPECT_TRUE(manager->GetSeneschalClient());
   EXPECT_TRUE(manager->GetShillDeviceClient());
   EXPECT_TRUE(manager->GetShillIPConfigClient());
   EXPECT_TRUE(manager->GetShillManagerClient());
@@ -53,7 +49,6 @@ TEST(DBusThreadManagerTest, InitializeForBrowser) {
   ASSERT_TRUE(manager);
 
   // Common clients were created.
-  EXPECT_TRUE(manager->GetGsmSMSClient());
   EXPECT_TRUE(manager->GetModemMessagingClient());
   EXPECT_TRUE(manager->GetShillDeviceClient());
   EXPECT_TRUE(manager->GetShillIPConfigClient());
@@ -65,17 +60,14 @@ TEST(DBusThreadManagerTest, InitializeForBrowser) {
   EXPECT_TRUE(manager->GetUpdateEngineClient());
 
   // Clients for the browser were created.
+  EXPECT_TRUE(manager->GetAnomalyDetectorClient());
   EXPECT_TRUE(manager->GetArcMidisClient());
   EXPECT_TRUE(manager->GetArcObbMounterClient());
-  EXPECT_TRUE(manager->GetArcOemCryptoClient());
-  EXPECT_TRUE(manager->GetCiceroneClient());
-  EXPECT_TRUE(manager->GetConciergeClient());
   EXPECT_TRUE(manager->GetCrosDisksClient());
   EXPECT_TRUE(manager->GetDebugDaemonClient());
   EXPECT_TRUE(manager->GetEasyUnlockClient());
   EXPECT_TRUE(manager->GetImageBurnerClient());
   EXPECT_TRUE(manager->GetLorgnetteManagerClient());
-  EXPECT_TRUE(manager->GetSeneschalClient());
 
   DBusThreadManager::Shutdown();
 }
@@ -87,7 +79,6 @@ TEST(DBusThreadManagerTest, InitializeForAsh) {
   ASSERT_TRUE(manager);
 
   // Common clients were created.
-  EXPECT_TRUE(manager->GetGsmSMSClient());
   EXPECT_TRUE(manager->GetModemMessagingClient());
   EXPECT_TRUE(manager->GetShillDeviceClient());
   EXPECT_TRUE(manager->GetShillIPConfigClient());
@@ -98,17 +89,14 @@ TEST(DBusThreadManagerTest, InitializeForAsh) {
   EXPECT_TRUE(manager->GetSMSClient());
 
   // Clients for other processes were not created.
+  EXPECT_FALSE(manager->GetAnomalyDetectorClient());
   EXPECT_FALSE(manager->GetArcMidisClient());
   EXPECT_FALSE(manager->GetArcObbMounterClient());
-  EXPECT_FALSE(manager->GetArcOemCryptoClient());
-  EXPECT_FALSE(manager->GetCiceroneClient());
-  EXPECT_FALSE(manager->GetConciergeClient());
   EXPECT_FALSE(manager->GetCrosDisksClient());
   EXPECT_FALSE(manager->GetDebugDaemonClient());
   EXPECT_FALSE(manager->GetEasyUnlockClient());
   EXPECT_FALSE(manager->GetImageBurnerClient());
   EXPECT_FALSE(manager->GetLorgnetteManagerClient());
-  EXPECT_FALSE(manager->GetSeneschalClient());
   EXPECT_FALSE(manager->GetUpdateEngineClient());
 
   DBusThreadManager::Shutdown();

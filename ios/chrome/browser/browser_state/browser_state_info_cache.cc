@@ -10,9 +10,10 @@
 #include <memory>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/i18n/case_conversion.h"
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/notreached.h"
 #include "base/values.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -45,7 +46,7 @@ BrowserStateInfoCache::~BrowserStateInfoCache() {}
 void BrowserStateInfoCache::AddBrowserState(
     const base::FilePath& browser_state_path,
     const std::string& gaia_id,
-    const base::string16& user_name) {
+    const std::u16string& user_name) {
   std::string key = CacheKeyFromBrowserStatePath(browser_state_path);
   DictionaryPrefUpdate update(prefs_, prefs::kBrowserStateInfoCache);
   base::DictionaryValue* cache = update.Get();
@@ -104,9 +105,9 @@ size_t BrowserStateInfoCache::GetIndexOfBrowserStateWithPath(
   return std::string::npos;
 }
 
-base::string16 BrowserStateInfoCache::GetUserNameOfBrowserStateAtIndex(
+std::u16string BrowserStateInfoCache::GetUserNameOfBrowserStateAtIndex(
     size_t index) const {
-  base::string16 user_name;
+  std::u16string user_name;
   GetInfoForBrowserStateAtIndex(index)->GetString(kUserNameKey, &user_name);
   return user_name;
 }
@@ -142,7 +143,7 @@ bool BrowserStateInfoCache::BrowserStateIsAuthErrorAtIndex(size_t index) const {
 void BrowserStateInfoCache::SetAuthInfoOfBrowserStateAtIndex(
     size_t index,
     const std::string& gaia_id,
-    const base::string16& user_name) {
+    const std::u16string& user_name) {
   // If both gaia_id and username are unchanged, abort early.
   if (gaia_id == GetGAIAIdOfBrowserStateAtIndex(index) &&
       user_name == GetUserNameOfBrowserStateAtIndex(index)) {

@@ -4,16 +4,17 @@
 
 #include "chrome/browser/extensions/api/file_system/chrome_file_system_delegate.h"
 
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "apps/saved_files_service.h"
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/check.h"
 #include "base/files/file_path.h"
-#include "base/logging.h"
 #include "base/path_service.h"
-#include "base/strings/string16.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/file_system/file_entry_picker.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
 #include "chrome/browser/profiles/profile.h"
@@ -36,23 +37,25 @@
 #include "extensions/browser/extension_util.h"
 #include "extensions/common/api/file_system.h"
 #include "extensions/common/extension.h"
-#include "storage/browser/fileapi/external_mount_points.h"
-#include "storage/browser/fileapi/isolated_context.h"
-#include "storage/common/fileapi/file_system_types.h"
-#include "storage/common/fileapi/file_system_util.h"
+#include "storage/browser/file_system/external_mount_points.h"
+#include "storage/browser/file_system/isolated_context.h"
+#include "storage/common/file_system/file_system_types.h"
+#include "storage/common/file_system/file_system_util.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include <CoreFoundation/CoreFoundation.h>
 #include "base/mac/foundation_util.h"
 #endif
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
 #include "chrome/browser/extensions/api/file_system/consent_provider.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/constants.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 #include "url/url_constants.h"
 #endif
 
@@ -60,7 +63,7 @@ namespace extensions {
 
 namespace file_system = api::file_system;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 using file_system_api::ConsentProvider;
 using file_system_api::ConsentProviderDelegate;
 
@@ -104,31 +107,30 @@ bool GetVolumeListForExtension(
 }
 
 // Callback called when consent is granted or denied.
-void OnConsentReceived(
-    content::BrowserContext* browser_context,
-    scoped_refptr<UIThreadExtensionFunction> requester,
-    const FileSystemDelegate::FileSystemCallback& success_callback,
-    const FileSystemDelegate::ErrorCallback& error_callback,
-    const std::string& extension_id,
-    const base::WeakPtr<file_manager::Volume>& volume,
-    bool writable,
-    ConsentProvider::Consent result) {
+void OnConsentReceived(content::BrowserContext* browser_context,
+                       scoped_refptr<ExtensionFunction> requester,
+                       FileSystemDelegate::FileSystemCallback success_callback,
+                       FileSystemDelegate::ErrorCallback error_callback,
+                       const std::string& extension_id,
+                       const base::WeakPtr<file_manager::Volume>& volume,
+                       bool writable,
+                       ConsentProvider::Consent result) {
   using file_manager::VolumeManager;
   using file_manager::Volume;
 
   // Render frame host can be gone before this callback method is executed.
   if (!requester->render_frame_host()) {
-    error_callback.Run(std::string());
+    std::move(error_callback).Run(std::string());
     return;
   }
 
   switch (result) {
     case ConsentProvider::CONSENT_REJECTED:
-      error_callback.Run(kSecurityError);
+      std::move(error_callback).Run(kSecurityError);
       return;
 
     case ConsentProvider::CONSENT_IMPOSSIBLE:
-      error_callback.Run(kConsentImpossible);
+      std::move(error_callback).Run(kConsentImpossible);
       return;
 
     case ConsentProvider::CONSENT_GRANTED:
@@ -136,13 +138,12 @@ void OnConsentReceived(
   }
 
   if (!volume.get()) {
-    error_callback.Run(kVolumeNotFoundError);
+    std::move(error_callback).Run(kVolumeNotFoundError);
     return;
   }
 
-  const GURL site = util::GetSiteForExtensionId(extension_id, browser_context);
   scoped_refptr<storage::FileSystemContext> file_system_context =
-      content::BrowserContext::GetStoragePartitionForSite(browser_context, site)
+      util::GetStoragePartitionForExtensionId(extension_id, browser_context)
           ->GetFileSystemContext();
   storage::ExternalFileSystemBackend* const backend =
       file_system_context->external_backend();
@@ -150,7 +151,7 @@ void OnConsentReceived(
 
   base::FilePath virtual_path;
   if (!backend->GetVirtualPath(volume->mount_path(), &virtual_path)) {
-    error_callback.Run(kSecurityError);
+    std::move(error_callback).Run(kSecurityError);
     return;
   }
 
@@ -160,20 +161,21 @@ void OnConsentReceived(
 
   const storage::FileSystemURL original_url =
       file_system_context->CreateCrackedFileSystemURL(
-          GURL(std::string(kExtensionScheme) + url::kStandardSchemeSeparator +
-               extension_id),
+          url::Origin::Create(GURL(std::string(kExtensionScheme) +
+                                   url::kStandardSchemeSeparator +
+                                   extension_id)),
           storage::kFileSystemTypeExternal, virtual_path);
 
   // Set a fixed register name, as the automatic one would leak the mount point
   // directory.
   std::string register_name = "fs";
-  const std::string file_system_id =
+  const storage::IsolatedContext::ScopedFSHandle file_system =
       isolated_context->RegisterFileSystemForPath(
-          storage::kFileSystemTypeNativeForPlatformApp,
+          storage::kFileSystemTypeLocalForPlatformApp,
           std::string() /* file_system_id */, original_url.path(),
           &register_name);
-  if (file_system_id.empty()) {
-    error_callback.Run(kSecurityError);
+  if (!file_system.is_valid()) {
+    std::move(error_callback).Run(kSecurityError);
     return;
   }
 
@@ -184,21 +186,21 @@ void OnConsentReceived(
       content::ChildProcessSecurityPolicy::GetInstance();
   DCHECK(policy);
 
-  const auto process_id = requester->render_frame_host()->GetProcess()->GetID();
+  const auto process_id = requester->source_process_id();
   // Read-only permisisons.
   policy->GrantReadFile(process_id, volume->mount_path());
-  policy->GrantReadFileSystem(process_id, file_system_id);
+  policy->GrantReadFileSystem(process_id, file_system.id());
 
   // Additional write permissions.
   if (writable) {
     policy->GrantCreateReadWriteFile(process_id, volume->mount_path());
     policy->GrantCopyInto(process_id, volume->mount_path());
-    policy->GrantWriteFileSystem(process_id, file_system_id);
-    policy->GrantDeleteFromFileSystem(process_id, file_system_id);
-    policy->GrantCreateFileForFileSystem(process_id, file_system_id);
+    policy->GrantWriteFileSystem(process_id, file_system.id());
+    policy->GrantDeleteFromFileSystem(process_id, file_system.id());
+    policy->GrantCreateFileForFileSystem(process_id, file_system.id());
   }
 
-  success_callback.Run(file_system_id, register_name);
+  std::move(success_callback).Run(file_system.id(), register_name);
 }
 
 }  // namespace
@@ -239,7 +241,7 @@ void DispatchVolumeListChangeEvent(content::BrowserContext* browser_context) {
 }
 
 }  // namespace file_system_api
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 ChromeFileSystemDelegate::ChromeFileSystemDelegate() {}
 
@@ -252,7 +254,7 @@ base::FilePath ChromeFileSystemDelegate::GetDefaultDirectory() {
 }
 
 bool ChromeFileSystemDelegate::ShowSelectFileDialog(
-    scoped_refptr<UIThreadExtensionFunction> extension_function,
+    scoped_refptr<ExtensionFunction> extension_function,
     ui::SelectFileDialog::Type type,
     const base::FilePath& default_path,
     const ui::SelectFileDialog::FileTypeInfo* file_types,
@@ -266,7 +268,7 @@ bool ChromeFileSystemDelegate::ShowSelectFileDialog(
     return false;
 
   // TODO(asargent/benwells) - As a short term remediation for
-  // crbug.com/179010 we're adding the ability for a whitelisted extension to
+  // crbug.com/179010 we're adding the ability for a allowlisted extension to
   // use this API since chrome.fileBrowserHandler.selectFile is ChromeOS-only.
   // Eventually we'd like a better solution and likely this code will go back
   // to being platform-app only.
@@ -275,14 +277,14 @@ bool ChromeFileSystemDelegate::ShowSelectFileDialog(
   // platform apps cannot open the file picker from a background page.
   // TODO(michaelpg): As a workaround for https://crbug.com/736930, allow this
   // to work from a background page for non-platform apps (which, in practice,
-  // is restricted to whitelisted extensions).
+  // is restricted to allowlisted extensions).
   if (extension->is_platform_app() &&
       !AppWindowRegistry::Get(extension_function->browser_context())
            ->GetAppWindowForWebContents(web_contents)) {
     return false;
   }
 
-  // The file picker will hold a reference to the UIThreadExtensionFunction
+  // The file picker will hold a reference to the ExtensionFunction
   // instance, preventing its destruction (and subsequent sending of the
   // function response) until the user has selected a file or cancelled the
   // picker. At that point, the picker will delete itself, which will also free
@@ -295,12 +297,13 @@ bool ChromeFileSystemDelegate::ShowSelectFileDialog(
 
 void ChromeFileSystemDelegate::ConfirmSensitiveDirectoryAccess(
     bool has_write_permission,
-    const base::string16& app_name,
+    const std::u16string& app_name,
     content::WebContents* web_contents,
-    const base::Closure& on_accept,
-    const base::Closure& on_cancel) {
+    base::OnceClosure on_accept,
+    base::OnceClosure on_cancel) {
   CreateDirectoryAccessConfirmationDialog(has_write_permission, app_name,
-                                          web_contents, on_accept, on_cancel);
+                                          web_contents, std::move(on_accept),
+                                          std::move(on_cancel));
 }
 
 int ChromeFileSystemDelegate::GetDescriptionIdForAcceptType(
@@ -314,14 +317,14 @@ int ChromeFileSystemDelegate::GetDescriptionIdForAcceptType(
   return 0;
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 FileSystemDelegate::GrantVolumesMode
 ChromeFileSystemDelegate::GetGrantVolumesMode(
     content::BrowserContext* browser_context,
     content::RenderFrameHost* render_frame_host,
     const Extension& extension) {
   // Only kiosk apps in kiosk sessions can use this API.
-  // Additionally it is enabled for whitelisted component extensions and apps.
+  // Additionally it is enabled for allowlisted component extensions and apps.
   ConsentProviderDelegate consent_provider_delegate(
       Profile::FromBrowserContext(browser_context));
   return ConsentProvider(&consent_provider_delegate)
@@ -330,12 +333,12 @@ ChromeFileSystemDelegate::GetGrantVolumesMode(
 
 void ChromeFileSystemDelegate::RequestFileSystem(
     content::BrowserContext* browser_context,
-    scoped_refptr<UIThreadExtensionFunction> requester,
+    scoped_refptr<ExtensionFunction> requester,
     const Extension& extension,
     std::string volume_id,
     bool writable,
-    const FileSystemCallback& success_callback,
-    const ErrorCallback& error_callback) {
+    FileSystemCallback success_callback,
+    ErrorCallback error_callback) {
   ConsentProviderDelegate consent_provider_delegate(
       Profile::FromBrowserContext(browser_context));
   ConsentProvider consent_provider(&consent_provider_delegate);
@@ -347,13 +350,13 @@ void ChromeFileSystemDelegate::RequestFileSystem(
 
   if (writable &&
       !app_file_handler_util::HasFileSystemWritePermission(&extension)) {
-    error_callback.Run(kRequiresFileSystemWriteError);
+    std::move(error_callback).Run(kRequiresFileSystemWriteError);
     return;
   }
 
   if (consent_provider.GetGrantVolumesMode(extension) ==
       FileSystemDelegate::kGrantNone) {
-    error_callback.Run(kNotSupportedOnNonKioskSessionError);
+    std::move(error_callback).Run(kNotSupportedOnNonKioskSessionError);
     return;
   }
 
@@ -361,14 +364,12 @@ void ChromeFileSystemDelegate::RequestFileSystem(
       volume_manager->FindVolumeById(volume_id);
   if (!volume.get() ||
       !consent_provider.IsGrantableForVolume(extension, volume)) {
-    error_callback.Run(kVolumeNotFoundError);
+    std::move(error_callback).Run(kVolumeNotFoundError);
     return;
   }
 
-  const GURL site =
-      util::GetSiteForExtensionId(extension.id(), browser_context);
   scoped_refptr<storage::FileSystemContext> file_system_context =
-      content::BrowserContext::GetStoragePartitionForSite(browser_context, site)
+      util::GetStoragePartitionForExtensionId(extension.id(), browser_context)
           ->GetFileSystemContext();
   storage::ExternalFileSystemBackend* const backend =
       file_system_context->external_backend();
@@ -376,28 +377,29 @@ void ChromeFileSystemDelegate::RequestFileSystem(
 
   base::FilePath virtual_path;
   if (!backend->GetVirtualPath(volume->mount_path(), &virtual_path)) {
-    error_callback.Run(kSecurityError);
+    std::move(error_callback).Run(kSecurityError);
     return;
   }
 
   if (writable && (volume->is_read_only())) {
-    error_callback.Run(kSecurityError);
+    std::move(error_callback).Run(kSecurityError);
     return;
   }
 
-  const ConsentProvider::ConsentCallback& callback = base::Bind(
-      &OnConsentReceived, browser_context, requester, success_callback,
-      error_callback, extension.id(), volume, writable);
+  ConsentProvider::ConsentCallback callback =
+      base::BindOnce(&OnConsentReceived, browser_context, requester,
+                     std::move(success_callback), std::move(error_callback),
+                     extension.id(), volume, writable);
 
   consent_provider.RequestConsent(extension, requester->render_frame_host(),
-                                  volume, writable, callback);
+                                  volume, writable, std::move(callback));
 }
 
 void ChromeFileSystemDelegate::GetVolumeList(
     content::BrowserContext* browser_context,
     const Extension& extension,
-    const VolumeListCallback& success_callback,
-    const ErrorCallback& error_callback) {
+    VolumeListCallback success_callback,
+    ErrorCallback error_callback) {
   ConsentProviderDelegate consent_provider_delegate(
       Profile::FromBrowserContext(browser_context));
   ConsentProvider consent_provider(&consent_provider_delegate);
@@ -408,10 +410,10 @@ void ChromeFileSystemDelegate::GetVolumeList(
 
   GetVolumeListForExtension(volume_list, &consent_provider, extension,
                             &result_volume_list);
-  success_callback.Run(result_volume_list);
+  std::move(success_callback).Run(result_volume_list);
 }
 
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 SavedFilesServiceInterface* ChromeFileSystemDelegate::GetSavedFilesService(
     content::BrowserContext* browser_context) {

@@ -50,7 +50,7 @@ const char kElementJs[] =
     "  return {"
     "    isAvailable: function() { return true; },"
     "    restore: function() {},"
-    "    translatePage: function(originalLang, targetLang, cb) {"
+    "    translatePage: function(sourceLang, targetLang, cb) {"
     "      if (window['throwUnexpectedScriptError']) {"
     "        throw 'all your base are belong to us';"
     "      }"
@@ -79,11 +79,9 @@ class TranslateScriptBrowserTest : public ChromeRenderViewTest {
 
  protected:
   void InjectElementLibrary() {
-    std::string script;
-    base::StringPiece translate_js =
-        ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
+    std::string script =
+        ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
             IDR_TRANSLATE_JS);
-    translate_js.CopyToString(&script);
     script += kElementJs;
     ExecuteScript(script);
   }
@@ -116,7 +114,7 @@ class TranslateScriptBrowserTest : public ChromeRenderViewTest {
     if (result.IsEmpty() || !result->IsNumber()) {
       NOTREACHED();
       // TODO(toyoshim): Return NaN here and the real implementation in
-      // TranslateHelper::ExecuteScriptAndGetDoubleResult().
+      // TranslateAgent::ExecuteScriptAndGetDoubleResult().
       return 0.0;
     }
     return result.As<v8::Number>()->Value();

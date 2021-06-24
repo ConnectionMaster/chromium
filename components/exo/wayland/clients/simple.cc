@@ -5,15 +5,16 @@
 #include "components/exo/wayland/clients/simple.h"
 
 #include <presentation-time-client-protocol.h>
+#include <iostream>
 
 #include "base/command_line.h"
 #include "base/containers/circular_deque.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/time/time.h"
 #include "components/exo/wayland/clients/client_helper.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkSurface.h"
-#include "third_party/skia/include/gpu/GrContext.h"
+#include "third_party/skia/include/gpu/GrDirectContext.h"
 #include "ui/gl/gl_bindings.h"
 
 namespace exo {
@@ -77,14 +78,49 @@ void FeedbackDiscarded(void* data, struct wp_presentation_feedback* feedback) {
   presentation->submitted_frames.erase(it);
 }
 
+void VSyncTimingUpdate(void* data,
+                       struct zcr_vsync_timing_v1* zcr_vsync_timing_v1,
+                       uint32_t timebase_l,
+                       uint32_t timebase_h,
+                       uint32_t interval_l,
+                       uint32_t interval_h) {
+  uint64_t timebase = static_cast<uint64_t>(timebase_h) << 32 | timebase_l;
+  uint64_t interval = static_cast<uint64_t>(interval_h) << 32 | interval_l;
+  std::cout << "Received new VSyncTimingUpdate. Timebase: " << timebase
+            << ". Interval: " << interval << std::endl;
+}
+
 }  // namespace
 
 Simple::Simple() = default;
 
-void Simple::Run(int frames, PresentationFeedback* feedback) {
+void Simple::Run(int frames,
+                 const bool log_vsync_timing_updates,
+                 PresentationFeedback* feedback) {
+  wl_display_roundtrip(display_.get());
+  // We always send this bug fix ID as a sanity check.
+  DCHECK(bug_fix_ids_.find(1151508) != bug_fix_ids_.end());
+
   wl_callback_listener frame_listener = {FrameCallback};
   wp_presentation_feedback_listener feedback_listener = {
       FeedbackSyncOutput, FeedbackPresented, FeedbackDiscarded};
+
+  std::unique_ptr<zcr_vsync_timing_v1> vsync_timing;
+  if (log_vsync_timing_updates) {
+    if (globals_.vsync_feedback) {
+      vsync_timing.reset(zcr_vsync_feedback_v1_get_vsync_timing(
+          globals_.vsync_feedback.get(), globals_.output.get()));
+      DCHECK(vsync_timing);
+      static zcr_vsync_timing_v1_listener vsync_timing_listener = {
+          VSyncTimingUpdate};
+      zcr_vsync_timing_v1_add_listener(vsync_timing.get(),
+                                       &vsync_timing_listener, this);
+    } else {
+      LOG(WARNING)
+          << "VSync timing updates requested but zcr_vsync_feedback_v1 "
+             "protocol is not available on the server.";
+    }
+  }
 
   Presentation presentation;
   int frame_count = 0;
@@ -108,7 +144,7 @@ void Simple::Run(int frames, PresentationFeedback* feedback) {
     canvas->clear(kColors[++frame_count % base::size(kColors)]);
 
     if (gr_context_) {
-      gr_context_->flush();
+      gr_context_->flushAndSubmit();
       glFinish();
     }
 

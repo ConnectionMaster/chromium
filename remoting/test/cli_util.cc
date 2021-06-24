@@ -10,6 +10,7 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 
 namespace {
 
@@ -76,6 +77,11 @@ std::string ReadString() {
   return str;
 }
 
+bool ReadYNBool(bool default_value) {
+  std::string result = test::ReadString();
+  return result == "y" || result == "Y" || (default_value && result.empty());
+}
+
 std::string ReadStringFromCommandLineOrStdin(const std::string& switch_name,
                                              const std::string& read_prompt) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -87,9 +93,9 @@ std::string ReadStringFromCommandLineOrStdin(const std::string& switch_name,
 }
 
 void WaitForEnterKey(base::OnceClosure on_done) {
-  base::PostTaskWithTraitsAndReply(FROM_HERE, {base::MayBlock()},
-                                   base::BindOnce([]() { getchar(); }),
-                                   std::move(on_done));
+  base::ThreadPool::PostTaskAndReply(FROM_HERE, {base::MayBlock()},
+                                     base::BindOnce([]() { getchar(); }),
+                                     std::move(on_done));
 }
 
 }  // namespace test

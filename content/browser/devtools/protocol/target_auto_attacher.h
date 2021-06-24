@@ -13,63 +13,77 @@ namespace content {
 
 class DevToolsAgentHostImpl;
 class DevToolsRendererChannel;
-class NavigationHandleImpl;
+class NavigationRequest;
 class RenderFrameHostImpl;
 
 namespace protocol {
 
-class TargetAutoAttacher : public ServiceWorkerDevToolsManager::Observer {
+class TargetAutoAttacher {
  public:
-  // Second parameter is |waiting_for_debugger|, returns whether it succeeded.
-  using AttachCallback =
-      base::RepeatingCallback<void(DevToolsAgentHost*, bool)>;
-  using DetachCallback = base::RepeatingCallback<void(DevToolsAgentHost*)>;
+  class Delegate {
+   public:
+    virtual void AutoAttach(DevToolsAgentHost* host,
+                            bool waiting_for_debugger) = 0;
+    virtual void AutoDetach(DevToolsAgentHost* host) = 0;
 
-  TargetAutoAttacher(AttachCallback attach_callback,
-                     DetachCallback detach_callback,
-                     DevToolsRendererChannel* renderer_channel);
-  ~TargetAutoAttacher() override;
+   protected:
+    virtual ~Delegate() = default;
+  };
 
-  void SetRenderFrameHost(RenderFrameHostImpl* host);
+  static std::unique_ptr<TargetAutoAttacher> CreateForBrowser();
+  static std::unique_ptr<TargetAutoAttacher> CreateForServiceWorker(
+      DevToolsRendererChannel* channel);
+  static std::unique_ptr<TargetAutoAttacher> CreateForWorker(
+      DevToolsRendererChannel* channel);
+  static std::unique_ptr<TargetAutoAttacher> CreateForFrame(
+      DevToolsRendererChannel* channel);
+
+  virtual ~TargetAutoAttacher();
+
+  void SetDelegate(Delegate* delegate);
+  virtual void SetRenderFrameHost(RenderFrameHostImpl* host);
   void SetAutoAttach(bool auto_attach,
                      bool wait_for_debugger_on_start,
                      base::OnceClosure callback);
 
-  void UpdateServiceWorkers();
   void AgentHostClosed(DevToolsAgentHost* host);
-
-  bool ShouldThrottleFramesNavigation();
-  DevToolsAgentHost* AutoAttachToFrame(NavigationHandleImpl* navigation_handle);
+  bool ShouldThrottleFramesNavigation() const;
+  void AttachToAgentHost(DevToolsAgentHost* host);
+  DevToolsAgentHost* AutoAttachToFrame(NavigationRequest* navigation_request);
   void ChildWorkerCreated(DevToolsAgentHostImpl* agent_host,
                           bool waiting_for_debugger);
+  virtual void UpdatePortals();
+  virtual void DidFinishNavigation(NavigationRequest* navigation_handle);
 
- private:
+ protected:
   using Hosts = base::flat_set<scoped_refptr<DevToolsAgentHost>>;
 
-  void ReattachServiceWorkers(bool waiting_for_debugger);
+  TargetAutoAttacher();
+
+  bool auto_attach() const { return auto_attach_; }
+  bool wait_for_debugger_on_start() const {
+    return wait_for_debugger_on_start_;
+  }
+  Delegate* delegate() { return delegate_; }
+
+  DevToolsAgentHost* AutoAttachToFrame(NavigationRequest* navigation_request,
+                                       bool wait_for_debugger_on_start);
   void ReattachTargetsOfType(const Hosts& new_hosts,
                              const std::string& type,
                              bool waiting_for_debugger);
 
-  // ServiceWorkerDevToolsManager::Observer implementation.
-  void WorkerCreated(ServiceWorkerDevToolsAgentHost* host,
-                     bool* should_pause_on_start) override;
-  void WorkerVersionInstalled(ServiceWorkerDevToolsAgentHost* host) override;
-  void WorkerVersionDoomed(ServiceWorkerDevToolsAgentHost* host) override;
-  void WorkerDestroyed(ServiceWorkerDevToolsAgentHost* host) override;
-
-  void UpdateFrames();
-
-  AttachCallback attach_callback_;
-  DetachCallback detach_callback_;
-  DevToolsRendererChannel* renderer_channel_;
-  RenderFrameHostImpl* render_frame_host_;
-
-  bool auto_attach_;
-  bool wait_for_debugger_on_start_;
-  bool auto_attaching_service_workers_ = false;
+  virtual void UpdateAutoAttach(base::OnceClosure callback);
 
   Hosts auto_attached_hosts_;
+
+ private:
+  void AttachToAgentHost(DevToolsAgentHost* host,
+                         bool wait_for_debugger_on_start);
+
+  Delegate* delegate_ = nullptr;
+
+  bool auto_attach_ = false;
+  bool wait_for_debugger_on_start_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(TargetAutoAttacher);
 };

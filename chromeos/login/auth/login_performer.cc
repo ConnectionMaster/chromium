@@ -20,24 +20,17 @@
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_names.h"
 #include "google_apis/gaia/gaia_auth_util.h"
-#include "net/cookies/cookie_monster.h"
-#include "net/cookies/cookie_store.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_context_getter.h"
 
 using base::UserMetricsAction;
 
 namespace chromeos {
 
-LoginPerformer::LoginPerformer(scoped_refptr<base::TaskRunner> task_runner,
-                               Delegate* delegate)
+LoginPerformer::LoginPerformer(
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
+    Delegate* delegate)
     : delegate_(delegate),
-      task_runner_(task_runner),
-      last_login_failure_(AuthFailure::AuthFailureNone()),
-      password_changed_(false),
-      password_changed_callback_count_(0),
-      auth_mode_(AUTH_MODE_INTERNAL),
-      weak_factory_(this) {}
+      task_runner_(std::move(task_runner)),
+      last_login_failure_(AuthFailure::AuthFailureNone()) {}
 
 LoginPerformer::~LoginPerformer() {
   DVLOG(1) << "Deleting LoginPerformer";
@@ -63,15 +56,13 @@ void LoginPerformer::OnAuthFailure(const AuthFailure& failure) {
 
   last_login_failure_ = failure;
   if (delegate_) {
-    delegate_->SetAuthFlowOffline(user_context_.GetAuthFlow() ==
-                                  UserContext::AUTH_FLOW_OFFLINE);
     delegate_->OnAuthFailure(failure);
     return;
-  } else {
-    // COULD_NOT_MOUNT_CRYPTOHOME, COULD_NOT_MOUNT_TMPFS:
-    // happens during offline auth only.
-    NOTREACHED();
   }
+
+  // COULD_NOT_MOUNT_CRYPTOHOME, COULD_NOT_MOUNT_TMPFS:
+  // happens during offline auth only.
+  NOTREACHED();
 }
 
 void LoginPerformer::OnAuthSuccess(const UserContext& user_context) {
@@ -100,11 +91,11 @@ void LoginPerformer::OnOffTheRecordAuthSuccess() {
     NOTREACHED();
 }
 
-void LoginPerformer::OnPasswordChangeDetected() {
+void LoginPerformer::OnPasswordChangeDetected(const UserContext& user_context) {
   password_changed_ = true;
   password_changed_callback_count_++;
   if (delegate_) {
-    delegate_->OnPasswordChangeDetected();
+    delegate_->OnPasswordChangeDetected(user_context);
   } else {
     NOTREACHED();
   }
@@ -123,9 +114,9 @@ void LoginPerformer::OnOldEncryptionDetected(const UserContext& user_context,
 ////////////////////////////////////////////////////////////////////////////////
 // LoginPerformer, public:
 
-void LoginPerformer::NotifyWhitelistCheckFailure() {
+void LoginPerformer::NotifyAllowlistCheckFailure() {
   if (delegate_)
-    delegate_->WhiteListCheckFailed(
+    delegate_->AllowlistCheckFailed(
         user_context_.GetAccountId().GetUserEmail());
   else
     NOTREACHED();
@@ -136,10 +127,9 @@ void LoginPerformer::PerformLogin(const UserContext& user_context,
   auth_mode_ = auth_mode;
   user_context_ = user_context;
 
-  if (RunTrustedCheck(base::Bind(&LoginPerformer::DoPerformLogin,
-                                 weak_factory_.GetWeakPtr(),
-                                 user_context_,
-                                 auth_mode))) {
+  if (RunTrustedCheck(base::BindOnce(&LoginPerformer::DoPerformLogin,
+                                     weak_factory_.GetWeakPtr(), user_context_,
+                                     auth_mode))) {
     return;
   }
   DoPerformLogin(user_context_, auth_mode);
@@ -150,8 +140,9 @@ void LoginPerformer::DoPerformLogin(const UserContext& user_context,
   bool wildcard_match = false;
 
   const AccountId& account_id = user_context.GetAccountId();
-  if (!IsUserWhitelisted(account_id, &wildcard_match)) {
-    NotifyWhitelistCheckFailure();
+  if (!IsUserAllowlisted(account_id, &wildcard_match,
+                         user_context.GetUserType())) {
+    NotifyAllowlistCheckFailure();
     return;
   }
 
@@ -159,66 +150,18 @@ void LoginPerformer::DoPerformLogin(const UserContext& user_context,
     SetupEasyUnlockUserFlow(user_context.GetAccountId());
 
   switch (auth_mode_) {
-    case AUTH_MODE_EXTENSION: {
-      RunOnlineWhitelistCheck(
+    case AuthorizationMode::kExternal: {
+      RunOnlineAllowlistCheck(
           account_id, wildcard_match, user_context.GetRefreshToken(),
-          base::Bind(&LoginPerformer::StartLoginCompletion,
-                     weak_factory_.GetWeakPtr()),
-          base::Bind(&LoginPerformer::NotifyWhitelistCheckFailure,
-                     weak_factory_.GetWeakPtr()));
+          base::BindOnce(&LoginPerformer::StartLoginCompletion,
+                         weak_factory_.GetWeakPtr()),
+          base::BindOnce(&LoginPerformer::NotifyAllowlistCheckFailure,
+                         weak_factory_.GetWeakPtr()));
       break;
     }
-    case AUTH_MODE_INTERNAL:
+    case AuthorizationMode::kInternal:
       StartAuthentication();
       break;
-  }
-}
-
-void LoginPerformer::LoginAsSupervisedUser(const UserContext& user_context) {
-  DCHECK_EQ(
-      user_manager::kSupervisedUserDomain,
-      gaia::ExtractDomainName(user_context.GetAccountId().GetUserEmail()));
-
-  user_context_ = user_context;
-  if (user_context_.GetUserType() != user_manager::USER_TYPE_SUPERVISED) {
-    LOG(FATAL) << "Incorrect supervised user type "
-               << user_context_.GetUserType();
-  }
-
-  if (RunTrustedCheck(base::Bind(&LoginPerformer::TrustedLoginAsSupervisedUser,
-                                 weak_factory_.GetWeakPtr(),
-                                 user_context_))) {
-    return;
-  }
-  TrustedLoginAsSupervisedUser(user_context_);
-}
-
-void LoginPerformer::TrustedLoginAsSupervisedUser(
-    const UserContext& user_context) {
-  if (!AreSupervisedUsersAllowed()) {
-    LOG(ERROR) << "Login attempt of supervised user detected.";
-    delegate_->WhiteListCheckFailed(user_context.GetAccountId().GetUserEmail());
-    return;
-  }
-
-  SetupSupervisedUserFlow(user_context.GetAccountId());
-  UserContext user_context_copy = TransformSupervisedKey(user_context);
-
-  if (UseExtendedAuthenticatorForSupervisedUser(user_context)) {
-    EnsureExtendedAuthenticator();
-    // TODO(antrim) : Replace empty callback with explicit method.
-    // http://crbug.com/351268
-    task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&ExtendedAuthenticator::AuthenticateToMount,
-                       extended_authenticator_.get(), user_context_copy,
-                       ExtendedAuthenticator::ResultCallback()));
-
-  } else {
-    EnsureAuthenticator();
-    task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&Authenticator::LoginAsSupervisedUser,
-                                  authenticator_.get(), user_context_copy));
   }
 }
 
@@ -260,6 +203,14 @@ void LoginPerformer::LoginAsArcKioskAccount(
                                 authenticator_.get(), arc_app_account_id));
 }
 
+void LoginPerformer::LoginAsWebKioskAccount(
+    const AccountId& web_app_account_id) {
+  EnsureAuthenticator();
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&Authenticator::LoginAsWebKioskAccount,
+                                authenticator_.get(), web_app_account_id));
+}
+
 void LoginPerformer::RecoverEncryptedData(const std::string& old_password) {
   task_runner_->PostTask(FROM_HERE,
                          base::BindOnce(&Authenticator::RecoverEncryptedData,
@@ -284,12 +235,10 @@ void LoginPerformer::EnsureExtendedAuthenticator() {
 void LoginPerformer::StartLoginCompletion() {
   VLOG(1) << "Online login completion started.";
   chromeos::LoginEventRecorder::Get()->AddLoginTimeMarker("AuthStarted", false);
-  content::BrowserContext* browser_context = GetSigninContext();
   EnsureAuthenticator();
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&chromeos::Authenticator::CompleteLogin,
-                     authenticator_.get(), browser_context, user_context_));
+  task_runner_->PostTask(FROM_HERE,
+                         base::BindOnce(&chromeos::Authenticator::CompleteLogin,
+                                        authenticator_.get(), user_context_));
   user_context_.ClearSecrets();
 }
 
@@ -298,12 +247,9 @@ void LoginPerformer::StartAuthentication() {
   chromeos::LoginEventRecorder::Get()->AddLoginTimeMarker("AuthStarted", false);
   if (delegate_) {
     EnsureAuthenticator();
-    content::BrowserContext* browser_context = GetSigninContext();
-    task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&Authenticator::AuthenticateToLogin,
-                       authenticator_.get(), base::Unretained(browser_context),
-                       user_context_));
+    task_runner_->PostTask(FROM_HERE,
+                           base::BindOnce(&Authenticator::AuthenticateToLogin,
+                                          authenticator_.get(), user_context_));
   } else {
     NOTREACHED();
   }

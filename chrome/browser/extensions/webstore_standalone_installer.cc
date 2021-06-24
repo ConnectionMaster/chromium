@@ -4,15 +4,18 @@
 
 #include "chrome/browser/extensions/webstore_standalone_installer.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/install_tracker.h"
+#include "chrome/browser/extensions/scoped_active_install.h"
 #include "chrome/browser/extensions/webstore_data_fetcher.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/crx_file/id_util.h"
@@ -63,12 +66,12 @@ void WebstoreStandaloneInstaller::BeginInstall() {
   // Use the requesting page as the referrer both since that is more correct
   // (it is the page that caused this request to happen) and so that we can
   // track top sites that trigger inline install requests.
-  webstore_data_fetcher_.reset(new WebstoreDataFetcher(this, GURL(), id_));
+  webstore_data_fetcher_ =
+      std::make_unique<WebstoreDataFetcher>(this, GURL(), id_);
 
-  webstore_data_fetcher_->Start(
-      content::BrowserContext::GetDefaultStoragePartition(profile_)
-          ->GetURLLoaderFactoryForBrowserProcess()
-          .get());
+  webstore_data_fetcher_->Start(profile_->GetDefaultStoragePartition()
+                                    ->GetURLLoaderFactoryForBrowserProcess()
+                                    .get());
 }
 
 //
@@ -110,7 +113,8 @@ bool WebstoreStandaloneInstaller::EnsureUniqueInstall(
   }
 
   ActiveInstallData install_data(id_);
-  scoped_active_install_.reset(new ScopedActiveInstall(tracker, install_data));
+  scoped_active_install_ =
+      std::make_unique<ScopedActiveInstall>(tracker, install_data);
   return true;
 }
 
@@ -138,7 +142,7 @@ WebstoreStandaloneInstaller::GetLocalizedExtensionForDisplay() {
   if (!localized_extension_for_display_.get()) {
     DCHECK(manifest_.get());
     if (!manifest_.get())
-      return NULL;
+      return nullptr;
 
     std::string error;
     localized_extension_for_display_ =
@@ -192,20 +196,21 @@ void WebstoreStandaloneInstaller::OnInstallPromptDone(
 
   std::unique_ptr<WebstoreInstaller::Approval> approval = CreateApproval();
 
-  ExtensionService* extension_service =
-      ExtensionSystem::Get(profile_)->extension_service();
+  ExtensionRegistry* extension_registry = ExtensionRegistry::Get(profile_);
   const Extension* installed_extension =
-      extension_service->GetExtensionById(id_, true /* include disabled */);
+      extension_registry->GetExtensionById(id_, ExtensionRegistry::EVERYTHING);
   if (installed_extension) {
     std::string install_message;
     webstore_install::Result install_result = webstore_install::SUCCESS;
 
-    if (ExtensionPrefs::Get(profile_)->IsExtensionBlacklisted(id_)) {
-      // Don't install a blacklisted extension.
-      install_result = webstore_install::BLACKLISTED;
-      install_message = webstore_install::kExtensionIsBlacklisted;
+    ExtensionService* extension_service =
+        ExtensionSystem::Get(profile_)->extension_service();
+    if (ExtensionPrefs::Get(profile_)->IsExtensionBlocklisted(id_)) {
+      // Don't install a blocklisted extension.
+      install_result = webstore_install::BLOCKLISTED;
+      install_message = webstore_install::kExtensionIsBlocklisted;
     } else if (!extension_service->IsExtensionEnabled(id_)) {
-      // If the extension is installed but disabled, and not blacklisted,
+      // If the extension is installed but disabled, and not blocklisted,
       // enable it.
       extension_service->EnableExtension(id_);
     }  // else extension is installed and enabled; no work to be done.
@@ -214,19 +219,21 @@ void WebstoreStandaloneInstaller::OnInstallPromptDone(
     return;
   }
 
-  scoped_refptr<WebstoreInstaller> installer =
-      new WebstoreInstaller(profile_, this, GetWebContents(), id_,
-                            std::move(approval), install_source_);
+  auto installer = base::MakeRefCounted<WebstoreInstaller>(
+      profile_, this, GetWebContents(), id_, std::move(approval),
+      install_source_);
   installer->Start();
 }
 
-void WebstoreStandaloneInstaller::OnWebstoreRequestFailure() {
+void WebstoreStandaloneInstaller::OnWebstoreRequestFailure(
+    const std::string& extension_id) {
   OnWebStoreDataFetcherDone();
   CompleteInstall(webstore_install::WEBSTORE_REQUEST_ERROR,
                   webstore_install::kWebstoreRequestError);
 }
 
 void WebstoreStandaloneInstaller::OnWebstoreResponseParseSuccess(
+    const std::string& extension_id,
     std::unique_ptr<base::DictionaryValue> webstore_data) {
   OnWebStoreDataFetcherDone();
 
@@ -290,16 +297,17 @@ void WebstoreStandaloneInstaller::OnWebstoreResponseParseSuccess(
   // Assume ownership of webstore_data.
   webstore_data_ = std::move(webstore_data);
 
-  scoped_refptr<WebstoreInstallHelper> helper =
-      new WebstoreInstallHelper(this, id_, manifest, icon_url);
+  auto helper = base::MakeRefCounted<WebstoreInstallHelper>(this, id_, manifest,
+                                                            icon_url);
   // The helper will call us back via OnWebstoreParseSuccess() or
   // OnWebstoreParseFailure().
-  helper->Start(content::BrowserContext::GetDefaultStoragePartition(profile_)
+  helper->Start(profile_->GetDefaultStoragePartition()
                     ->GetURLLoaderFactoryForBrowserProcess()
                     .get());
 }
 
 void WebstoreStandaloneInstaller::OnWebstoreResponseParseFailure(
+    const std::string& extension_id,
     const std::string& error) {
   OnWebStoreDataFetcherDone();
   CompleteInstall(webstore_install::INVALID_WEBSTORE_RESPONSE, error);
@@ -380,7 +388,7 @@ void WebstoreStandaloneInstaller::ShowInstallUI() {
 
   install_ui_ = CreateInstallUI();
   install_ui_->ShowDialog(
-      base::Bind(&WebstoreStandaloneInstaller::OnInstallPromptDone, this),
+      base::BindOnce(&WebstoreStandaloneInstaller::OnInstallPromptDone, this),
       localized_extension.get(), &icon_, std::move(install_prompt_),
       ExtensionInstallPrompt::GetDefaultShowDialogCallback());
 }

@@ -10,10 +10,14 @@
 #include "base/stl_util.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/browser/prerender/prerender_contents.h"
+#include "chrome/browser/prefetch/no_state_prefetch/chrome_no_state_prefetch_contents_delegate.h"
 #include "chrome/browser/profiles/profile.h"
+#include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
+#include "components/site_engagement/content/engagement_type.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+
+namespace site_engagement {
 
 namespace {
 
@@ -84,7 +88,7 @@ void SiteEngagementService::Helper::PeriodicTracker::StartTimer(
     base::TimeDelta delay) {
   pause_timer_->Start(
       FROM_HERE, delay,
-      base::Bind(
+      base::BindOnce(
           &SiteEngagementService::Helper::PeriodicTracker::TrackingStarted,
           base::Unretained(this)));
 }
@@ -108,28 +112,29 @@ void SiteEngagementService::Helper::InputTracker::TrackingStopped() {
 // Once the timer finishes running, the callbacks detecting user input will be
 // registered again.
 void SiteEngagementService::Helper::InputTracker::DidGetUserInteraction(
-    const blink::WebInputEvent::Type type) {
+    const blink::WebInputEvent& event) {
   // Only respond to raw key down to avoid multiple triggering on a single input
   // (e.g. keypress is a key down then key up).
   if (!is_tracking_)
     return;
 
+  const blink::WebInputEvent::Type type = event.GetType();
+
   // This switch has a default NOTREACHED case because it will not test all
   // of the values of the WebInputEvent::Type enum (hence it won't require the
   // compiler verifying that all cases are covered).
   switch (type) {
-    case blink::WebInputEvent::kRawKeyDown:
-      helper()->RecordUserInput(SiteEngagementService::ENGAGEMENT_KEYPRESS);
+    case blink::WebInputEvent::Type::kRawKeyDown:
+      helper()->RecordUserInput(EngagementType::kKeypress);
       break;
-    case blink::WebInputEvent::kMouseDown:
-      helper()->RecordUserInput(SiteEngagementService::ENGAGEMENT_MOUSE);
+    case blink::WebInputEvent::Type::kMouseDown:
+      helper()->RecordUserInput(EngagementType::kMouse);
       break;
-    case blink::WebInputEvent::kTouchStart:
-      helper()->RecordUserInput(
-          SiteEngagementService::ENGAGEMENT_TOUCH_GESTURE);
+    case blink::WebInputEvent::Type::kTouchStart:
+      helper()->RecordUserInput(EngagementType::kTouchGesture);
       break;
-    case blink::WebInputEvent::kGestureScrollBegin:
-      helper()->RecordUserInput(SiteEngagementService::ENGAGEMENT_SCROLL);
+    case blink::WebInputEvent::Type::kGestureScrollBegin:
+      helper()->RecordUserInput(EngagementType::kScroll);
       break;
     default:
       NOTREACHED();
@@ -160,7 +165,7 @@ void SiteEngagementService::Helper::MediaTracker::DidFinishNavigation(
     content::NavigationHandle* handle) {
   // Ignore subframe navigation to avoid clearing main frame active media
   // players when they navigate.
-  if (!handle->HasCommitted() || !handle->IsInMainFrame() ||
+  if (!handle->HasCommitted() || !handle->IsInPrimaryMainFrame() ||
       handle->IsSameDocument()) {
     return;
   }
@@ -192,8 +197,7 @@ SiteEngagementService::Helper::Helper(content::WebContents* web_contents)
       service_(SiteEngagementService::Get(
           Profile::FromBrowserContext(web_contents->GetBrowserContext()))) {}
 
-void SiteEngagementService::Helper::RecordUserInput(
-    SiteEngagementService::EngagementType type) {
+void SiteEngagementService::Helper::RecordUserInput(EngagementType type) {
   TRACE_EVENT0("SiteEngagement", "RecordUserInput");
   content::WebContents* contents = web_contents();
   if (contents)
@@ -209,7 +213,7 @@ void SiteEngagementService::Helper::RecordMediaPlaying(bool is_hidden) {
 void SiteEngagementService::Helper::DidFinishNavigation(
     content::NavigationHandle* handle) {
   // Ignore uncommitted, non main-frame, same page, or error page navigations.
-  if (!handle->HasCommitted() || !handle->IsInMainFrame() ||
+  if (!handle->HasCommitted() || !handle->IsInPrimaryMainFrame() ||
       handle->IsSameDocument() || handle->IsErrorPage()) {
     return;
   }
@@ -217,20 +221,21 @@ void SiteEngagementService::Helper::DidFinishNavigation(
   input_tracker_.Stop();
   media_tracker_.Stop();
 
-  // Ignore prerender loads. This means that prerenders will not receive
-  // navigation engagement. The implications are as follows:
+  // Ignore no-state prefetcher loads. This means that no-state prefetchers will
+  // not receive navigation engagement. The implications are as follows:
   //
-  // - Instant search prerenders from the omnibox trigger DidFinishNavigation
-  //   twice: once for the prerender, and again when the page swaps in. The
+  // - Instant search prefetchers from the omnibox trigger DidFinishNavigation
+  //   twice: once for the prefetcher, and again when the page swaps in. The
   //   second trigger has transition GENERATED and receives navigation
   //   engagement.
-  // - Prerenders initiated by <link rel="prerender"> (e.g. search results) are
+  // - Prefetchers initiated by <link rel="prerender"> (e.g. search results) are
   //   always assigned the LINK transition, which is ignored for navigation
   //   engagement.
   //
-  // Prerenders trigger WasShown() when they are swapped in, so input engagement
-  // will activate even if navigation engagement is not scored.
-  if (prerender::PrerenderContents::FromWebContents(web_contents()) != nullptr)
+  // Prefetchers trigger WasShown() when they are swapped in, so input
+  // engagement will activate even if navigation engagement is not scored.
+  if (prerender::ChromeNoStatePrefetchContentsDelegate::FromWebContents(
+          web_contents()) != nullptr)
     return;
 
   service_->HandleNavigation(web_contents(), handle->GetPageTransition());
@@ -258,3 +263,5 @@ void SiteEngagementService::Helper::OnVisibilityChanged(
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(SiteEngagementService::Helper)
+
+}  // namespace site_engagement

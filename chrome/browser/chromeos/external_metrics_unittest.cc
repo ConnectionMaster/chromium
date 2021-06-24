@@ -6,15 +6,15 @@
 
 #include <memory>
 
+#include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chromeos/constants/chromeos_switches.h"
 #include "components/metrics/serialization/metric_sample.h"
 #include "components/metrics/serialization/serialization_utils.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {  // Need this because of the FRIEND_TEST
@@ -32,7 +32,7 @@ class ExternalMetricsTest : public testing::Test {
 
   base::ScopedTempDir dir_;
   scoped_refptr<ExternalMetrics> external_metrics_;
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 };
 
 TEST_F(ExternalMetricsTest, CustomInterval) {
@@ -46,8 +46,8 @@ TEST_F(ExternalMetricsTest, CustomInterval) {
 
 TEST_F(ExternalMetricsTest, HandleMissingFile) {
   Init();
-  ASSERT_TRUE(base::DeleteFile(
-      base::FilePath(external_metrics_->uma_events_file_), false));
+  ASSERT_TRUE(
+      base::DeleteFile(base::FilePath(external_metrics_->uma_events_file_)));
 
   EXPECT_EQ(0, external_metrics_->CollectEvents());
 }

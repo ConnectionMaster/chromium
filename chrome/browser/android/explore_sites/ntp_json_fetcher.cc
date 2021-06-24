@@ -11,16 +11,12 @@
 #include "base/memory/ptr_util.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/values.h"
-#include "chrome/browser/android/chrome_feature_list.h"
 #include "chrome/browser/android/explore_sites/url_util_experimental.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
-#include "content/public/common/service_manager_connection.h"
 #include "net/base/load_flags.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_status.h"
-#include "services/data_decoder/public/cpp/safe_json_parser.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
@@ -35,7 +31,7 @@ const int kMaxJsonSize = 1000000;  // 1Mb
 }  // namespace
 
 NTPJsonFetcher::NTPJsonFetcher(content::BrowserContext* browser_context)
-    : browser_context_(browser_context), weak_factory_(this) {}
+    : browser_context_(browser_context) {}
 
 NTPJsonFetcher::~NTPJsonFetcher() {}
 
@@ -70,7 +66,7 @@ void NTPJsonFetcher::Start(Callback callback) {
   simple_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
                                                     traffic_annotation);
   network::mojom::URLLoaderFactory* loader_factory =
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_)
+      browser_context_->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess()
           .get();
   simple_loader_->SetRetryOptions(
@@ -97,25 +93,24 @@ void NTPJsonFetcher::OnSimpleLoaderComplete(
   }
 
   // The parser will call us back via one of the callbacks.
-  data_decoder::SafeJsonParser::Parse(
-      content::ServiceManagerConnection::GetForProcess()->GetConnector(),
+  data_decoder::DataDecoder::ParseJsonIsolated(
       *response_body,
-      base::BindRepeating(&NTPJsonFetcher::OnJsonParseSuccess,
-                          weak_factory_.GetWeakPtr()),
-      base::BindRepeating(&NTPJsonFetcher::OnJsonParseError,
-                          weak_factory_.GetWeakPtr()));
+      base::BindOnce(&NTPJsonFetcher::OnJsonParse, weak_factory_.GetWeakPtr()));
 }
 
-void NTPJsonFetcher::OnJsonParseSuccess(
-    std::unique_ptr<base::Value> parsed_json) {
-  if (!parsed_json || !parsed_json->is_dict()) {
+void NTPJsonFetcher::OnJsonParse(
+    data_decoder::DataDecoder::ValueOrError result) {
+  if (!result.value) {
+    OnJsonParseError(*result.error);
+    return;
+  }
+
+  if (!result.value->is_dict()) {
     OnJsonParseError("Parsed JSON is not a dictionary.");
     return;
   }
 
-  auto catalog = NTPCatalog::create(
-      static_cast<base::DictionaryValue*>(parsed_json.get()));
-  std::move(callback_).Run(std::move(catalog));
+  std::move(callback_).Run(NTPCatalog::create(*result.value));
 }
 
 void NTPJsonFetcher::OnJsonParseError(const std::string& error) {

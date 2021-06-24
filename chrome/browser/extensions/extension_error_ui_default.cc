@@ -4,27 +4,143 @@
 
 #include "chrome/browser/extensions/extension_error_ui_default.h"
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/extensions/extension_service.h"
+#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/extensions/blocklist_extension_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/global_error/global_error_bubble_view_base.h"
+#include "chrome/grit/generated_resources.h"
+#include "extensions/browser/blocklist_state.h"
+#include "extensions/browser/disable_reason.h"
+#include "extensions/browser/extension_prefs.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/extension_set.h"
+#include "ui/base/l10n/l10n_util.h"
 
 namespace extensions {
 
-ExtensionErrorUIDefault::ExtensionErrorUIDefault(
-    ExtensionErrorUI::Delegate* delegate)
-    : ExtensionErrorUI(delegate),
-      profile_(Profile::FromBrowserContext(delegate->GetContext())),
-      browser_(NULL),
-      global_error_(new ExtensionGlobalError(this)) {
+namespace {
+
+std::u16string GenerateTitle(const ExtensionSet& forbidden) {
+  int app_count = 0;
+  int extension_count = 0;
+  for (const auto& extension : forbidden) {
+    if (extension->is_app())
+      app_count++;
+    else
+      extension_count++;
+  }
+
+  if ((app_count > 0) && (extension_count > 0)) {
+    return l10n_util::GetStringUTF16(IDS_EXTENSION_AND_APP_ALERT_TITLE);
+  }
+  if (app_count > 0) {
+    return l10n_util::GetPluralStringFUTF16(IDS_APP_ALERT_TITLE, app_count);
+  }
+  return l10n_util::GetPluralStringFUTF16(IDS_EXTENSION_ALERT_TITLE,
+                                          extension_count);
 }
 
-ExtensionErrorUIDefault::~ExtensionErrorUIDefault() {
+std::vector<std::u16string> GenerateMessage(
+    const ExtensionSet& forbidden,
+    content::BrowserContext* browser_context) {
+  std::vector<std::u16string> message;
+  message.reserve(forbidden.size());
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context);
+  for (const auto& extension : forbidden) {
+    BitMapBlocklistState blocklist_state =
+        blocklist_prefs::GetExtensionBlocklistState(extension->id(), prefs);
+    bool disable_remotely_for_malware = prefs->HasDisableReason(
+        extension->id(), disable_reason::DISABLE_REMOTELY_FOR_MALWARE);
+    int id = 0;
+    if (disable_remotely_for_malware ||
+        (blocklist_state == BitMapBlocklistState::BLOCKLISTED_MALWARE)) {
+      id = IDS_EXTENSION_ALERT_ITEM_BLOCKLISTED_MALWARE;
+    } else {
+      id = extension->is_app() ? IDS_APP_ALERT_ITEM_BLOCKLISTED_OTHER
+                               : IDS_EXTENSION_ALERT_ITEM_BLOCKLISTED_OTHER;
+    }
+    message.push_back(
+        l10n_util::GetStringFUTF16(id, base::UTF8ToUTF16(extension->name())));
+  }
+  return message;
 }
+
+}  // namespace
+
+class ExtensionGlobalError : public GlobalErrorWithStandardBubble {
+ public:
+  explicit ExtensionGlobalError(ExtensionErrorUI::Delegate* delegate)
+      : delegate_(delegate) {}
+
+ private:
+  // GlobalError overrides:
+  bool HasMenuItem() override { return false; }
+
+  int MenuItemCommandID() override {
+    NOTREACHED();
+    return 0;
+  }
+
+  std::u16string MenuItemLabel() override {
+    NOTREACHED();
+    return {};
+  }
+
+  void ExecuteMenuItem(Browser* browser) override { NOTREACHED(); }
+
+  std::u16string GetBubbleViewTitle() override {
+    return GenerateTitle(delegate_->GetBlocklistedExtensions());
+  }
+
+  std::vector<std::u16string> GetBubbleViewMessages() override {
+    return GenerateMessage(delegate_->GetBlocklistedExtensions(),
+                           delegate_->GetContext());
+  }
+
+  std::u16string GetBubbleViewAcceptButtonLabel() override {
+    return l10n_util::GetStringUTF16(IDS_EXTENSION_ALERT_ITEM_OK);
+  }
+
+  std::u16string GetBubbleViewCancelButtonLabel() override { return {}; }
+
+  std::u16string GetBubbleViewDetailsButtonLabel() override {
+    return l10n_util::GetStringUTF16(IDS_EXTENSION_ALERT_ITEM_DETAILS);
+  }
+
+  void OnBubbleViewDidClose(Browser* browser) override {
+    delegate_->OnAlertClosed();
+  }
+
+  void BubbleViewAcceptButtonPressed(Browser* browser) override {
+    delegate_->OnAlertAccept();
+  }
+
+  void BubbleViewCancelButtonPressed(Browser* browser) override {
+    NOTREACHED();
+  }
+
+  void BubbleViewDetailsButtonPressed(Browser* browser) override {
+    delegate_->OnAlertDetails();
+  }
+
+  ExtensionErrorUI::Delegate* delegate_;
+
+  ExtensionGlobalError(const ExtensionGlobalError&) = delete;
+  ExtensionGlobalError& operator=(const ExtensionGlobalError&) = delete;
+};
+
+ExtensionErrorUIDefault::ExtensionErrorUIDefault(
+    ExtensionErrorUI::Delegate* delegate)
+    : profile_(Profile::FromBrowserContext(delegate->GetContext())),
+      global_error_(std::make_unique<ExtensionGlobalError>(delegate)) {}
+
+ExtensionErrorUIDefault::~ExtensionErrorUIDefault() = default;
 
 bool ExtensionErrorUIDefault::ShowErrorInBubbleView() {
   Browser* browser = chrome::FindLastActiveWithProfile(profile_);
@@ -49,73 +165,8 @@ void ExtensionErrorUIDefault::Close() {
   }
 }
 
-ExtensionErrorUIDefault::ExtensionGlobalError::ExtensionGlobalError(
-    ExtensionErrorUIDefault* error_ui)
-    : error_ui_(error_ui) {
-}
-
-bool ExtensionErrorUIDefault::ExtensionGlobalError::HasMenuItem() {
-  return false;
-}
-
-int ExtensionErrorUIDefault::ExtensionGlobalError::MenuItemCommandID() {
-  NOTREACHED();
-  return 0;
-}
-
-base::string16 ExtensionErrorUIDefault::ExtensionGlobalError::MenuItemLabel() {
-  NOTREACHED();
-  return NULL;
-}
-
-void ExtensionErrorUIDefault::ExtensionGlobalError::ExecuteMenuItem(
-    Browser* browser) {
-  NOTREACHED();
-}
-
-base::string16
-ExtensionErrorUIDefault::ExtensionGlobalError::GetBubbleViewTitle() {
-  return error_ui_->GetBubbleViewTitle();
-}
-
-std::vector<base::string16>
-ExtensionErrorUIDefault::ExtensionGlobalError::GetBubbleViewMessages() {
-  return error_ui_->GetBubbleViewMessages();
-}
-
-base::string16 ExtensionErrorUIDefault::ExtensionGlobalError::
-    GetBubbleViewAcceptButtonLabel() {
-  return error_ui_->GetBubbleViewAcceptButtonLabel();
-}
-
-base::string16 ExtensionErrorUIDefault::ExtensionGlobalError::
-    GetBubbleViewCancelButtonLabel() {
-  return error_ui_->GetBubbleViewCancelButtonLabel();
-}
-
-void ExtensionErrorUIDefault::ExtensionGlobalError::OnBubbleViewDidClose(
-    Browser* browser) {
-  error_ui_->BubbleViewDidClose();
-}
-
-void ExtensionErrorUIDefault::ExtensionGlobalError::
-      BubbleViewAcceptButtonPressed(Browser* browser) {
-  error_ui_->BubbleViewAcceptButtonPressed();
-}
-
-void ExtensionErrorUIDefault::ExtensionGlobalError::
-    BubbleViewCancelButtonPressed(Browser* browser) {
-  error_ui_->BubbleViewCancelButtonPressed();
-}
-
-bool ExtensionErrorUIDefault::ExtensionGlobalError::ShouldUseExtraView() const {
-  return true;
-}
-
-// static
-ExtensionErrorUI* ExtensionErrorUI::Create(
-    ExtensionErrorUI::Delegate* delegate) {
-  return new ExtensionErrorUIDefault(delegate);
+GlobalErrorWithStandardBubble* ExtensionErrorUIDefault::GetErrorForTesting() {
+  return global_error_.get();
 }
 
 }  // namespace extensions

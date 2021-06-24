@@ -2,18 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/os_crypt/key_storage_keyring.h"
+
 #include <cstdarg>  // Needed to mock ellipsis
 #include <string>
 
 #include "base/macros.h"
 #include "base/test/test_simple_task_runner.h"
-#include "components/os_crypt/key_storage_keyring.h"
+#include "build/branding_buildflags.h"
 #include "components/os_crypt/keyring_util_linux.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
 
-#if defined(GOOGLE_CHROME_BUILD)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 const char kApplicationName[] = "chrome";
 #else
 const char kApplicationName[] = "chromium";
@@ -128,7 +130,7 @@ class GnomeKeyringTest : public testing::Test {
 };
 
 GnomeKeyringTest::GnomeKeyringTest()
-    : task_runner_(new base::TestSimpleTaskRunner()), keyring_(task_runner_) {
+    : task_runner_(new base::TestSimpleTaskRunner()), keyring_(task_runner_, "chromium") {
   MockGnomeKeyringLoader::ResetForOSCrypt();
 }
 
@@ -137,17 +139,21 @@ GnomeKeyringTest::~GnomeKeyringTest() {
 }
 
 TEST_F(GnomeKeyringTest, KeyringRepeats) {
-  std::string password = keyring_.GetKey();
-  EXPECT_FALSE(password.empty());
-  std::string password_repeat = keyring_.GetKey();
-  EXPECT_EQ(password, password_repeat);
+  absl::optional<std::string> password = keyring_.GetKey();
+  EXPECT_TRUE(password.has_value());
+  EXPECT_FALSE(password.value().empty());
+  absl::optional<std::string> password_repeat = keyring_.GetKey();
+  EXPECT_TRUE(password_repeat.has_value());
+  EXPECT_EQ(password.value(), password_repeat.value());
 }
 
 TEST_F(GnomeKeyringTest, KeyringCreatesRandomised) {
-  std::string password = keyring_.GetKey();
+  absl::optional<std::string> password = keyring_.GetKey();
   MockGnomeKeyringLoader::ResetForOSCrypt();
-  std::string password_new = keyring_.GetKey();
-  EXPECT_NE(password, password_new);
+  absl::optional<std::string> password_new = keyring_.GetKey();
+  EXPECT_TRUE(password.has_value());
+  EXPECT_TRUE(password_new.has_value());
+  EXPECT_NE(password.value(), password_new.value());
 }
 
 }  // namespace

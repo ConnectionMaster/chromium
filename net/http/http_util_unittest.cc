@@ -5,48 +5,44 @@
 #include <algorithm>
 #include <limits>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_util.h"
 #include "net/http/http_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
 
-namespace {
-class HttpUtilTest : public testing::Test {};
-}
-
 TEST(HttpUtilTest, IsSafeHeader) {
   static const char* const unsafe_headers[] = {
-    "sec-",
-    "sEc-",
-    "sec-foo",
-    "sEc-FoO",
-    "proxy-",
-    "pRoXy-",
-    "proxy-foo",
-    "pRoXy-FoO",
-    "accept-charset",
-    "accept-encoding",
-    "access-control-request-headers",
-    "access-control-request-method",
-    "connection",
-    "content-length",
-    "cookie",
-    "cookie2",
-    "content-transfer-encoding",
-    "date",
-    "expect",
-    "host",
-    "keep-alive",
-    "origin",
-    "referer",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-    "user-agent",
-    "via",
+      "sec-",
+      "sEc-",
+      "sec-foo",
+      "sEc-FoO",
+      "proxy-",
+      "pRoXy-",
+      "proxy-foo",
+      "pRoXy-FoO",
+      "accept-charset",
+      "accept-encoding",
+      "access-control-request-headers",
+      "access-control-request-method",
+      "connection",
+      "content-length",
+      "cookie",
+      "cookie2",
+      "date",
+      "dnt",
+      "expect",
+      "host",
+      "keep-alive",
+      "origin",
+      "referer",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "upgrade",
+      "user-agent",
+      "via",
   };
   for (size_t i = 0; i < base::size(unsafe_headers); ++i) {
     EXPECT_FALSE(HttpUtil::IsSafeHeader(unsafe_headers[i]))
@@ -55,44 +51,45 @@ TEST(HttpUtilTest, IsSafeHeader) {
         << unsafe_headers[i];
   }
   static const char* const safe_headers[] = {
-    "foo",
-    "x-",
-    "x-foo",
-    "content-disposition",
-    "update",
-    "accept-charseta",
-    "accept_charset",
-    "accept-encodinga",
-    "accept_encoding",
-    "access-control-request-headersa",
-    "access-control-request-header",
-    "access_control_request_header",
-    "access-control-request-methoda",
-    "access_control_request_method",
-    "connectiona",
-    "content-lengtha",
-    "content_length",
-    "cookiea",
-    "cookie2a",
-    "cookie3",
-    "content-transfer-encodinga",
-    "content_transfer_encoding",
-    "datea",
-    "expecta",
-    "hosta",
-    "keep-alivea",
-    "keep_alive",
-    "origina",
-    "referera",
-    "referrer",
-    "tea",
-    "trailera",
-    "transfer-encodinga",
-    "transfer_encoding",
-    "upgradea",
-    "user-agenta",
-    "user_agent",
-    "viaa",
+      "foo",
+      "x-",
+      "x-foo",
+      "content-disposition",
+      "update",
+      "accept-charseta",
+      "accept_charset",
+      "accept-encodinga",
+      "accept_encoding",
+      "access-control-request-headersa",
+      "access-control-request-header",
+      "access_control_request_header",
+      "access-control-request-methoda",
+      "access_control_request_method",
+      "connectiona",
+      "content-lengtha",
+      "content_length",
+      "content-transfer-encoding",
+      "cookiea",
+      "cookie2a",
+      "cookie3",
+      "content-transfer-encodinga",
+      "content_transfer_encoding",
+      "datea",
+      "expecta",
+      "hosta",
+      "keep-alivea",
+      "keep_alive",
+      "origina",
+      "referera",
+      "referrer",
+      "tea",
+      "trailera",
+      "transfer-encodinga",
+      "transfer_encoding",
+      "upgradea",
+      "user-agenta",
+      "user_agent",
+      "viaa",
   };
   for (size_t i = 0; i < base::size(safe_headers); ++i) {
     EXPECT_TRUE(HttpUtil::IsSafeHeader(safe_headers[i])) << safe_headers[i];
@@ -691,7 +688,7 @@ TEST(HttpUtilTest, AssembleRawHeaders) {
   for (size_t i = 0; i < base::size(tests); ++i) {
     std::string input = tests[i].input;
     std::replace(input.begin(), input.end(), '|', '\0');
-    std::string raw = HttpUtil::AssembleRawHeaders(input.data(), input.size());
+    std::string raw = HttpUtil::AssembleRawHeaders(input);
     std::replace(raw.begin(), raw.end(), '\0', '|');
     EXPECT_EQ(tests[i].expected_result, raw);
   }
@@ -736,13 +733,6 @@ TEST(HttpUtilTest, RequestUrlSanitize) {
 
     EXPECT_EQ(expected_spec, HttpUtil::SpecForRequest(url));
   }
-}
-
-// Test SpecForRequest() for "ftp" scheme.
-TEST(HttpUtilTest, SpecForRequestForUrlWithFtpScheme) {
-  GURL ftp_url("ftp://user:pass@google.com/pub/chromium/");
-  EXPECT_EQ("ftp://google.com/pub/chromium/",
-            HttpUtil::SpecForRequest(ftp_url));
 }
 
 TEST(HttpUtilTest, GenerateAcceptLanguageHeader) {
@@ -985,6 +975,17 @@ TEST(HttpUtilTest, ParseContentType) {
       true,
       ""
     },
+    // Empty subtype should be accepted.
+    { "text/",
+      "text/",
+      "",
+      false,
+      ""
+    },
+    // "*/*" is ignored unless it has params, or is not an exact match.
+    { "*/*", "", "", false, "" },
+    { "*/*; charset=utf-8", "*/*", "utf-8", true, "" },
+    { "*/* ", "*/*", "", false, "" },
     // TODO(abarth): Add more interesting test cases.
   };
   // clang-format on
@@ -1080,21 +1081,21 @@ TEST(HttpUtilTest, ParseRetryAfterHeader) {
     const char* retry_after_string;
     bool expected_return_value;
     base::TimeDelta expected_retry_after;
-  } tests[] = {
-    { "", false, base::TimeDelta() },
-    { "-3", false, base::TimeDelta() },
-    { "-2", false, base::TimeDelta() },
-    { "-1", false, base::TimeDelta() },
-    { "0", true, base::TimeDelta::FromSeconds(0) },
-    { "1", true, base::TimeDelta::FromSeconds(1) },
-    { "2", true, base::TimeDelta::FromSeconds(2) },
-    { "3", true, base::TimeDelta::FromSeconds(3) },
-    { "60", true, base::TimeDelta::FromSeconds(60) },
-    { "3600", true, base::TimeDelta::FromSeconds(3600) },
-    { "86400", true, base::TimeDelta::FromSeconds(86400) },
-    { "Thu, 1 Jan 2015 12:34:56 GMT", true, later - now },
-    { "Mon, 1 Jan 1900 12:34:56 GMT", false, base::TimeDelta() }
-  };
+  } tests[] = {{"", false, base::TimeDelta()},
+               {"-3", false, base::TimeDelta()},
+               {"-2", false, base::TimeDelta()},
+               {"-1", false, base::TimeDelta()},
+               {"+0", false, base::TimeDelta()},
+               {"+1", false, base::TimeDelta()},
+               {"0", true, base::TimeDelta::FromSeconds(0)},
+               {"1", true, base::TimeDelta::FromSeconds(1)},
+               {"2", true, base::TimeDelta::FromSeconds(2)},
+               {"3", true, base::TimeDelta::FromSeconds(3)},
+               {"60", true, base::TimeDelta::FromSeconds(60)},
+               {"3600", true, base::TimeDelta::FromSeconds(3600)},
+               {"86400", true, base::TimeDelta::FromSeconds(86400)},
+               {"Thu, 1 Jan 2015 12:34:56 GMT", true, later - now},
+               {"Mon, 1 Jan 1900 12:34:56 GMT", false, base::TimeDelta()}};
 
   for (size_t i = 0; i < base::size(tests); ++i) {
     base::TimeDelta retry_after;
@@ -1541,6 +1542,24 @@ TEST(HttpUtilTest, IsLWS) {
   EXPECT_TRUE(HttpUtil::IsLWS(' '));
 }
 
+TEST(HttpUtilTest, IsControlChar) {
+  EXPECT_FALSE(HttpUtil::IsControlChar('1'));
+  EXPECT_FALSE(HttpUtil::IsControlChar('a'));
+  EXPECT_FALSE(HttpUtil::IsControlChar('.'));
+  EXPECT_FALSE(HttpUtil::IsControlChar('$'));
+  EXPECT_FALSE(HttpUtil::IsControlChar('\x7E'));
+  EXPECT_FALSE(HttpUtil::IsControlChar('\x80'));
+  EXPECT_FALSE(HttpUtil::IsControlChar('\xFF'));
+
+  EXPECT_TRUE(HttpUtil::IsControlChar('\0'));
+  EXPECT_TRUE(HttpUtil::IsControlChar('\v'));
+  EXPECT_TRUE(HttpUtil::IsControlChar('\n'));
+  EXPECT_TRUE(HttpUtil::IsControlChar('\r'));
+  EXPECT_TRUE(HttpUtil::IsControlChar('\t'));
+  EXPECT_TRUE(HttpUtil::IsControlChar('\x01'));
+  EXPECT_TRUE(HttpUtil::IsControlChar('\x7F'));
+}
+
 TEST(HttpUtilTest, ParseAcceptEncoding) {
   const struct {
     const char* const value;
@@ -1643,6 +1662,12 @@ TEST(HttpUtilTest, ExpandLanguageList) {
             HttpUtil::ExpandLanguageList("en-US,fr-CA,it,fr,es-AR,it-IT"));
   // Trims a whitespace.
   EXPECT_EQ("en-US,en,fr", HttpUtil::ExpandLanguageList("en-US, fr"));
+
+  // Do not expand the single character subtag 'x' as a language.
+  EXPECT_EQ("x-private-agreement-subtags",
+            HttpUtil::ExpandLanguageList("x-private-agreement-subtags"));
+  // Do not expand the single character subtag 'i' as a language.
+  EXPECT_EQ("i-klingon", HttpUtil::ExpandLanguageList("i-klingon"));
 }
 
 }  // namespace net

@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#import "build/branding_buildflags.h"
 #import "ios/chrome/browser/memory/memory_metrics.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
@@ -116,7 +117,7 @@ const CGFloat kPadding = 10;
 // official builds.
 // TODO(lliabraa): Figure out how to support memory warnings (or something
 // like them) in official builds.
-#if CHROMIUM_BUILD
+#if BUILDFLAG(CHROMIUM_BRANDING)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wundeclared-selector"
   [self addButtonWithTitle:@"Trigger Memory Warning"
@@ -124,7 +125,7 @@ const CGFloat kPadding = 10;
                     action:@selector(_performMemoryWarning)
                 withOrigin:[self originForSubviewAtIndex:index++]];
 #pragma clang diagnostic pop
-#endif  // CHROMIUM_BUILD
+#endif  // BUILDFLAG(CHROMIUM_BRANDING)
 
   // Display a text input to set the amount of artificial memory bloat and a
   // button to reset the bloat to zero.
@@ -144,7 +145,7 @@ const CGFloat kPadding = 10;
 // official builds.
 // TODO(lliabraa): Figure out how to support memory warnings (or something
 // like them) in official builds.
-#if CHROMIUM_BUILD
+#if BUILDFLAG(CHROMIUM_BRANDING)
   // Display a text input to control the rate of continuous memory warnings.
   _continuousMemoryWarningField =
       [[UITextField alloc] initWithFrame:CGRectZero];
@@ -154,7 +155,7 @@ const CGFloat kPadding = 10;
              inputAction:@selector(updateMemoryWarningInterval)
                  atIndex:index++];
   [_continuousMemoryWarningField setText:@"0.0"];
-#endif  // CHROMIUM_BUILD
+#endif  // BUILDFLAG(CHROMIUM_BRANDING)
 
   // Display a text input to control the refresh rate of the memory debugger.
   _refreshField = [[UITextField alloc] initWithFrame:CGRectZero];
@@ -399,17 +400,19 @@ const CGFloat kPadding = 10;
   // convert the UIKeyboardAnimationCurveUserInfoKey's value from a
   // UIViewAnimationCurve to a UIViewAnimationOption. Awesome!
   NSDictionary* userInfo = [notification userInfo];
-  [UIView beginAnimations:nil context:nullptr];
-  [UIView setAnimationDuration:
-              [userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue]];
-  NSInteger animationCurveKeyValue =
-      [userInfo[UIKeyboardAnimationCurveUserInfoKey] integerValue];
-  UIViewAnimationCurve animationCurve =
-      (UIViewAnimationCurve)animationCurveKeyValue;
-  [UIView setAnimationCurve:animationCurve];
-  [UIView setAnimationBeginsFromCurrentState:YES];
-  self.frame = CGRectOffset(self.frame, offset.x, offset.y);
-  [UIView commitAnimations];
+  NSTimeInterval duration =
+      [userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+
+  // The keyboard notification contains a UIViewAnimationCurve, but there is no
+  // function to convert that to UIViewAnimationOptions. Use the default
+  // instead, even if it doesn't exactly match the keyboard's curve.
+  [UIView animateWithDuration:duration
+                        delay:0
+                      options:UIViewAnimationOptionBeginFromCurrentState
+                   animations:^{
+                     self.frame = CGRectOffset(self.frame, offset.x, offset.y);
+                   }
+                   completion:nil];
 }
 
 #pragma mark Artificial memory bloat methods
@@ -475,7 +478,7 @@ const CGFloat kPadding = 10;
 // official builds.
 // TODO(lliabraa): Figure out how to support memory warnings (or something
 // like them) in official builds.
-#if CHROMIUM_BUILD
+#if BUILDFLAG(CHROMIUM_BRANDING)
 - (void)updateMemoryWarningInterval {
   [_memoryWarningTimer invalidate];
   double timerValue;
@@ -511,7 +514,7 @@ const CGFloat kPadding = 10;
                                       repeats:YES];
 #pragma clang diagnostic push
 }
-#endif  // CHROMIUM_BUILD
+#endif  // BUILDFLAG(CHROMIUM_BRANDING)
 
 #pragma mark UITextViewDelegate methods
 
@@ -544,10 +547,9 @@ const CGFloat kPadding = 10;
   [alert addAction:[UIAlertAction actionWithTitle:@"OK"
                                             style:UIAlertActionStyleDefault
                                           handler:nil]];
-  [[[[UIApplication sharedApplication] keyWindow] rootViewController]
-      presentViewController:alert
-                   animated:YES
-                 completion:nil];
+  [[self.window rootViewController] presentViewController:alert
+                                                 animated:YES
+                                               completion:nil];
 }
 
 @end

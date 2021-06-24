@@ -14,7 +14,9 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "build/chromeos_buildflags.h"
 #include "cc/base/region.h"
+#include "components/exo/buffer.h"
 #include "components/exo/layer_tree_frame_sink_holder.h"
 #include "components/exo/surface_delegate.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
@@ -27,14 +29,20 @@
 
 class SkPath;
 
+namespace ash {
+class OutputProtectionDelegate;
+}
+
 namespace base {
 namespace trace_event {
 class TracedValue;
 }
-}
+}  // namespace base
 
 namespace gfx {
+class ColorSpace;
 class GpuFence;
+struct PresentationFeedback;
 }
 
 namespace viz {
@@ -53,25 +61,45 @@ class PropertyHelper;
 // Counter-clockwise rotations.
 enum class Transform { NORMAL, ROTATE_90, ROTATE_180, ROTATE_270 };
 
+// A property key to store the surface Id set by the client.
+extern const ui::ClassProperty<std::string*>* const kClientSurfaceIdKey;
+
+// A property key to store the window session Id set by client or full_restore
+// component.
+extern const ui::ClassProperty<int32_t>* const kWindowSessionId;
+
 // This class represents a rectangular area that is displayed on the screen.
 // It has a location, size and pixel contents.
 class Surface final : public ui::PropertyHandler {
  public:
   using PropertyDeallocator = void (*)(int64_t value);
-
-  using CommitCallback = base::RepeatingCallback<void(Surface*)>;
+  using LeaveEnterCallback = base::RepeatingCallback<void(int64_t, int64_t)>;
 
   Surface();
-  ~Surface();
+  ~Surface() override;
 
   // Type-checking downcast routine.
   static Surface* AsSurface(const aura::Window* window);
 
   aura::Window* window() { return window_.get(); }
 
+  void set_leave_enter_callback(LeaveEnterCallback callback) {
+    leave_enter_callback_ = callback;
+  }
+
+  // Called when the display the surface is on has changed.
+  void UpdateDisplay(int64_t old_id, int64_t new_id);
+
+  // Called when the output is added for new display.
+  void OnNewOutputAdded();
+
   // Set a buffer as the content of this surface. A buffer can only be attached
   // to one surface at a time.
   void Attach(Buffer* buffer);
+  void Attach(Buffer* buffer, gfx::Vector2d offset);
+
+  gfx::Vector2d GetBufferOffset();
+
   // Returns whether the surface has an uncommitted attached buffer.
   bool HasPendingAttachedBuffer() const;
 
@@ -82,13 +110,14 @@ class Surface final : public ui::PropertyHandler {
 
   // Request notification when it's a good time to produce a new frame. Useful
   // for throttling redrawing operations, and driving animations.
-  using FrameCallback = base::Callback<void(base::TimeTicks frame_time)>;
+  using FrameCallback =
+      base::RepeatingCallback<void(base::TimeTicks frame_time)>;
   void RequestFrameCallback(const FrameCallback& callback);
 
   // Request notification when the next frame is displayed. Useful for
   // throttling redrawing operations, and driving animations.
   using PresentationCallback =
-      base::Callback<void(const gfx::PresentationFeedback&)>;
+      base::RepeatingCallback<void(const gfx::PresentationFeedback&)>;
   void RequestPresentationCallback(const PresentationCallback& callback);
 
   // This sets the region of the surface that contains opaque content.
@@ -145,6 +174,9 @@ class Surface final : public ui::PropertyHandler {
   // Request that surface should have the specified frame type.
   void SetFrame(SurfaceFrameType type);
 
+  // Request that the server should start resize on this surface.
+  void SetServerStartResize();
+
   // Request that surface should use a specific set of frame colors.
   void SetFrameColors(SkColor active_color, SkColor inactive_color);
 
@@ -154,18 +186,56 @@ class Surface final : public ui::PropertyHandler {
   // Request that surface should have a specific application ID string.
   void SetApplicationId(const char* application_id);
 
+  // Whether to show/hide the shelf when fullscreen. If true, the titlebar/shelf
+  // will show when the mouse moves to the top/bottom of the screen. If false
+  // (plain fullscreen), the titlebar and shelf are always hidden.
+  void SetUseImmersiveForFullscreen(bool value);
+
+  // Called to show the snap preview to the right or left, or to hide it.
+  void ShowSnapPreviewToRight();
+  void ShowSnapPreviewToLeft();
+  void HideSnapPreview();
+
+  // Called when the client was snapped to right or left, or reset.
+  void SetSnappedToRight();
+  void SetSnappedToLeft();
+  void UnsetSnap();
+
+  // Whether the current client window can go back, as per its navigation list.
+  void SetCanGoBack();
+  void UnsetCanGoBack();
+
+  // This sets the color space for the buffer for this surface.
+  void SetColorSpace(gfx::ColorSpace color_space);
+
   // Request "parent" for surface.
   void SetParent(Surface* parent, const gfx::Point& position);
 
   // Request that surface should have a specific ID assigned by client.
-  void SetClientSurfaceId(int32_t client_surface_id);
-  int32_t GetClientSurfaceId() const;
+  void SetClientSurfaceId(const char* client_surface_id);
+  std::string GetClientSurfaceId() const;
+
+  // Enable embedding of an arbitrary viz surface in this exo surface.
+  // If the callback is valid, a SurfaceDrawQuad will be emitted targeting
+  // the returned SurfaceId each frame.
+  void SetEmbeddedSurfaceId(
+      base::RepeatingCallback<viz::SurfaceId()> surface_id_callback);
+
+  // Set the size of the embedded surface, to allow proper scaling.
+  void SetEmbeddedSurfaceSize(const gfx::Size& size);
 
   // Request that the attached surface buffer at the next commit is associated
   // with a gpu fence to be signaled when the buffer is ready for use.
   void SetAcquireFence(std::unique_ptr<gfx::GpuFence> gpu_fence);
   // Returns whether the surface has an uncommitted acquire fence.
   bool HasPendingAcquireFence() const;
+
+  // Request a callback when the buffer attached at the next commit is
+  // no longer used by that commit.
+  void SetPerCommitBufferReleaseCallback(
+      Buffer::PerCommitExplicitReleaseCallback callback);
+  // Whether the surface has an uncommitted per-commit buffer release callback.
+  bool HasPendingPerCommitBufferReleaseCallback() const;
 
   // Surface state (damage regions, attached buffers, etc.) is double-buffered.
   // A Commit() call atomically applies all pending state, replacing the
@@ -219,9 +289,6 @@ class Surface final : public ui::PropertyHandler {
   void RemoveSurfaceObserver(SurfaceObserver* observer);
   bool HasSurfaceObserver(const SurfaceObserver* observer) const;
 
-  // Sets/resets commit callback. Used by |ArcGraphicsTracingHandler|.
-  void SetCommitCallback(CommitCallback callback);
-
   // Returns a trace value representing the state of the surface.
   std::unique_ptr<base::trace_event::TracedValue> AsTracedValue() const;
 
@@ -251,7 +318,7 @@ class Surface final : public ui::PropertyHandler {
   bool FillsBoundsOpaquely() const;
 
   bool HasPendingDamageForTesting(const gfx::Rect& damage) const {
-    return pending_damage_.Contains(damage);
+    return pending_state_.damage.Contains(damage);
   }
 
   // Set occlusion tracking region for surface.
@@ -260,8 +327,24 @@ class Surface final : public ui::PropertyHandler {
   // Triggers sending an occlusion update to observers.
   void OnWindowOcclusionChanged();
 
+  // Triggers sending a locking status to observers.
+  // true : lock a frame to normal or restore state
+  // false : unlock the previously locked frame
+  void SetFrameLocked(bool lock);
+
   // True if the window for this surface has its occlusion tracked.
-  bool is_tracking_occlusion() const { return is_tracking_occlusion_; }
+  bool IsTrackingOcclusion();
+
+  // Sets the |surface_hierarchy_content_bounds_|.
+  void SetSurfaceHierarchyContentBoundsForTest(const gfx::Rect& content_bounds);
+
+  // Requests that this surface should be made active (i.e. foregrounded).
+  void RequestActivation();
+
+  // Requests that surface my have a window session ID assigned by client or
+  // full_restore component.
+  void SetWindowSessionId(int32_t window_session_id);
+  int32_t GetWindowSessionId();
 
  private:
   struct State {
@@ -272,7 +355,7 @@ class Surface final : public ui::PropertyHandler {
     bool operator!=(const State& other) const { return !(*this == other); }
 
     cc::Region opaque_region;
-    base::Optional<cc::Region> input_region;
+    absl::optional<cc::Region> input_region;
     int input_outset = 0;
     float buffer_scale = 1.0f;
     Transform buffer_transform = Transform::NORMAL;
@@ -281,6 +364,9 @@ class Surface final : public ui::PropertyHandler {
     bool only_visible_on_secure_output = false;
     SkBlendMode blend_mode = SkBlendMode::kSrcOver;
     float alpha = 1.0f;
+    gfx::Vector2d offset;
+    gfx::ColorSpace color_space;
+    bool is_tracking_occlusion = false;
   };
   class BufferAttachment {
    public:
@@ -299,6 +385,31 @@ class Surface final : public ui::PropertyHandler {
     gfx::Size size_;
 
     DISALLOW_COPY_AND_ASSIGN(BufferAttachment);
+  };
+
+  struct ExtendedState {
+    ExtendedState();
+    ~ExtendedState();
+
+    State basic_state;
+
+    // The buffer that will become the content of surface.
+    BufferAttachment buffer;
+    // The damage region to schedule paint for.
+    cc::Region damage;
+    // These lists contain the callbacks to notify the client when it is a good
+    // time to start producing a new frame.
+    std::list<FrameCallback> frame_callbacks;
+    // These lists contain the callbacks to notify the client when surface
+    // contents have been presented.
+    std::list<PresentationCallback> presentation_callbacks;
+    // The acquire gpu fence to associate with the surface buffer.
+    std::unique_ptr<gfx::GpuFence> acquire_fence;
+    // Callback to notify about the per-commit buffer release. The wayland
+    // Exo backend uses this callback to implement the immediate_release
+    // event of the explicit sync protocol.
+    Buffer::PerCommitExplicitReleaseCallback
+        per_commit_explicit_release_callback_;
   };
 
   friend class subtle::PropertyHelper;
@@ -322,7 +433,7 @@ class Surface final : public ui::PropertyHandler {
   void UpdateContentSize();
 
   // This returns true when the surface has some contents assigned to it.
-  bool has_contents() const { return !current_buffer_.size().IsEmpty(); }
+  bool has_contents() const { return !state_.buffer.size().IsEmpty(); }
 
   // This window has the layer which contains the Surface contents.
   std::unique_ptr<aura::Window> window_;
@@ -336,43 +447,19 @@ class Surface final : public ui::PropertyHandler {
   // This is the bounds of the last committed surface hierarchy contents.
   gfx::Rect surface_hierarchy_content_bounds_;
 
-  // This is true when Attach() has been called and new contents should take
-  // effect next time Commit() is called.
+  // This is true when Attach() has been called and new contents should be
+  // cached next time Commit() is called.
   bool has_pending_contents_ = false;
+  // This is true when new contents are cached and should take effect next time
+  // synchronized CommitSurfaceHierarchy() is called.
+  bool has_cached_contents_ = false;
 
-  // The buffer that will become the content of surface when Commit() is called.
-  BufferAttachment pending_buffer_;
-
-  // The damage region to schedule paint for when Commit() is called.
-  cc::Region pending_damage_;
-
-  // The damage region which will be used by
-  // AppendSurfaceHierarchyContentsToFrame() to generate frame.
-  cc::Region damage_;
-
-  // These lists contains the callbacks to notify the client when it is a good
-  // time to start producing a new frame. These callbacks move to
-  // |frame_callbacks_| when Commit() is called. Later they are moved to
-  // |active_frame_callbacks_| when the effect of the Commit() is scheduled to
-  // be drawn. They fire at the first begin frame notification after this.
-  std::list<FrameCallback> pending_frame_callbacks_;
-  std::list<FrameCallback> frame_callbacks_;
-
-  // These lists contains the callbacks to notify the client when surface
-  // contents have been presented. These callbacks move to
-  // |presentation_callbacks_| when Commit() is called. Later they are moved to
-  // |swapping_presentation_callbacks_| when the effect of the Commit() is
-  // scheduled to be drawn and then moved to |swapped_presentation_callbacks_|
-  // after receiving VSync parameters update for the previous frame. They fire
-  // at the next VSync parameters update after that.
-  std::list<PresentationCallback> pending_presentation_callbacks_;
-  std::list<PresentationCallback> presentation_callbacks_;
-
+  // This is the state that has yet to be cached.
+  ExtendedState pending_state_;
   // This is the state that has yet to be committed.
-  State pending_state_;
-
+  ExtendedState cached_state_;
   // This is the state that has been committed.
-  State state_;
+  ExtendedState state_;
 
   // Cumulative input region of surface and its sub-surfaces.
   cc::Region hit_test_region_;
@@ -385,20 +472,11 @@ class Surface final : public ui::PropertyHandler {
   SubSurfaceEntryList pending_sub_surfaces_;
   SubSurfaceEntryList sub_surfaces_;
 
-  // The buffer that is currently set as content of surface.
-  BufferAttachment current_buffer_;
-
   // The last resource that was sent to a surface.
   viz::TransferableResource current_resource_;
 
   // Whether the last resource that was sent to a surface has an alpha channel.
   bool current_resource_has_alpha_ = false;
-
-  // The acquire gpu fence to associate with the surface buffer when Commit()
-  // is called.
-  std::unique_ptr<gfx::GpuFence> pending_acquire_fence_;
-  // The acquire gpu fence that is currently associated with the surface buffer.
-  std::unique_ptr<gfx::GpuFence> acquire_fence_;
 
   // This is true if a call to Commit() as been made but
   // CommitSurfaceHierarchy() has not yet been called.
@@ -422,13 +500,35 @@ class Surface final : public ui::PropertyHandler {
 
   // Surface observer list. Surface does not own the observers.
   base::ObserverList<SurfaceObserver, true>::Unchecked observers_;
-  // Called on each commit. May not be set.
-  CommitCallback commit_callback_;
 
-  // Whether this surface is tracking occlusion for the client.
-  bool is_tracking_occlusion_ = false;
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  std::unique_ptr<ash::OutputProtectionDelegate> output_protection_;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
+  viz::SurfaceId first_embedded_surface_id_;
+  viz::SurfaceId latest_embedded_surface_id_;
+  base::RepeatingCallback<viz::SurfaceId()> get_current_surface_id_;
+
+  // The embedded surface is actually |embedded_surface_size_|. This is used
+  // for calculating clipping and scaling.
+  gfx::Size embedded_surface_size_;
+
+  LeaveEnterCallback leave_enter_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(Surface);
+};
+
+class ScopedSurface {
+ public:
+  ScopedSurface(Surface* surface, SurfaceObserver* observer);
+  virtual ~ScopedSurface();
+  Surface* get() { return surface_; }
+
+ private:
+  Surface* const surface_;
+  SurfaceObserver* const observer_;
+
+  DISALLOW_COPY_AND_ASSIGN(ScopedSurface);
 };
 
 }  // namespace exo

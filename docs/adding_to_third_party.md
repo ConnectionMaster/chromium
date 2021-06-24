@@ -18,6 +18,17 @@ situations and need explicit approval; don't assume that because there's some
 other directory with third_party in the name it's okay to put new things
 there.
 
+## Before you start
+
+To make sure the inclusion of a new third_party project makes sense for the
+Chromium project, you should first obtain Chrome Eng Review approval.
+Googlers should see go/chrome-eng-review and review existing topics in
+g/chrome-eng-review. Please include information about the additional checkout
+size, build times, and binary size increase of
+[official](https://www.chromium.org/developers/gn-build-configuration) builds
+on Android and one desktop platform. Please also make sure that the motivation
+for your project is clear, e.g., a design doc has been circulated.
+
 ## Get the code
 
 There are two common ways to depend on third-party code: you can reference a
@@ -26,6 +37,14 @@ snapshot. The former is preferable if you are actively developing in it or need
 access to the history; the latter is better if you don't need the full history
 of the repo or don't need to pick up every single change. And, of course, if
 the code you need isn't in a Git repo, you have to do the latter.
+
+### Node packages
+
+To include a Node package, add the dependency to the
+[Node package.json](../third_party/node/package.json). Make sure to update
+the corresponding [`npm_exclude.txt`](../third_party/node/npm_exclude.txt)
+and [`npm_include.txt`](../third_party/node/npm_include.txt) to make the code
+available during checkout.
 
 ### Pulling the code via DEPS
 
@@ -47,8 +66,9 @@ you have a wrong path in DEPS and want to change the path of the existing
 library in DEPS, please ask the infrastructure team before committing the
 change.
 
-Lastly, add the new directory to Chromium's `//.gitignore`, so that it won't
-show up as untracked files when you run `git status` on the main repository.
+Lastly, add the new directory to Chromium's `//third_party/.gitignore`, so that
+it won't show up as untracked files when you run `git status` on the main
+repository.
 
 ### Checking in the code directly
 
@@ -62,7 +82,7 @@ README.chromium and Change List. The SHA-512 hash can be computed via
 repository, please list the revision that the code was pulled from.
 
 If you are checking the files in directly, you do not need an entry in DEPS
-and do not need to modify `//.gitignore`.
+and do not need to modify `//third_party/.gitignore`.
 
 ### Checking in large files
 
@@ -75,7 +95,9 @@ See [Moving large files to Google Storage](https://goto.google.com/checking-in-l
 
 ### Add OWNERS
 
-Your OWNERS file must include 2 Chromium developer accounts. This will ensure
+Your OWNERS file must either list two Chromium developer accounts as the first
+two lines or include a `file:` directive to an OWNERS file within the
+`third_party` directory that itself conforms to this criterion. This will ensure
 accountability for maintenance of the code over time. While there isn't always
 an ideal or obvious set of people that should go in OWNERS, this is critical for
 first-line triage of any issues that crop up in the code.
@@ -106,6 +128,26 @@ into the product and does any of the following:
 * Collects new data
 * Influences or sets security-related policy (including the user experience)
 
+One of the fields is CPEPrefix. This is used by Chromium and Google systems to
+spot known upstream security vulnerabilities, and ensure we merge the fixes
+into our third-party copy. These systems are not foolproof, so as the OWNER,
+it's up to you to keep an eye out rather than solely relying on these
+automated systems. But, adding CPEs decreases the chances of us missing
+vulnerabilities, so they should always be added if possible.
+
+The CPE is a common format shared across the industry; you can look up the CPE
+for your package [here](https://nvd.nist.gov/products/cpe/search). Please use
+CPE format 2.2. When searching for a CPE, you may find that there is not yet
+a CPE for the specific upstream version you're using. This is normal, as CPEs
+are typically allocated only when a vulnerability is found. You should follow
+the version number convention such that, when that does occur in future, we'll
+be notified. If no CPE is available, please specify "unknown".
+
+If you're using a patched or modified version which is halfway between two
+public versions, please "round downwards" to the lower of the public versions
+(it's better for us to be notified of false-positive vulnerabilities than
+false-negatives).
+
 ### Add a LICENSE file and run related checks
 
 You need a LICENSE file. Example:
@@ -126,10 +168,8 @@ following sign-offs. Some of these are accessible to Googlers only.
 Non-Googlers can email one of the people in
 [//third_party/OWNERS](../third_party/OWNERS) for help.
 
-* Get Chrome Eng Review approval. Googlers should see
-  go/chrome-eng-review. Please include information about the additional
-  checkout size, build times, and binary sizes. Please also make sure that the
-  motivation for your project is clear, e.g., a design doc has been circulated.
+* Make sure you have the approval from Chrome Eng Review as mentioned
+  [above](#before-you-start).
 * Get security@chromium.org approval. Email the list with relevant details and
   a link to the CL. Third party code is a hot spot for security vulnerabilities.
   When adding a new package that could potentially carry security risk, make
@@ -140,7 +180,9 @@ Non-Googlers can email one of the people in
   licensing matters. These reviewers may not be able to +1 a change so look for
   verbal approval in the comments. (This list does not receive or deliver
   email, so only use it as a reviewer, not for other communication. Internally,
-  see cl/221704656 for details about how this is configured.)
+  see [cl/221704656](https://cl/221704656) for details about how
+  this is configured.). If you have questions about the third-party process,
+  ask one of the [//third_party/OWNERS](../third_party/OWNERS) instead.
 * Lastly, if all other steps are complete, get a positive code review from a
   member of [//third_party/OWNERS](../third_party/OWNERS) to land the change.
 

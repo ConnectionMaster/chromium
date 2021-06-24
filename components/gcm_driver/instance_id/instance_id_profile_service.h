@@ -10,8 +10,6 @@
 #include "base/macros.h"
 #include "components/keyed_service/core/keyed_service.h"
 
-class PrefService;
-
 namespace gcm {
 class GCMDriver;
 }
@@ -23,9 +21,6 @@ class InstanceIDDriver;
 // Providing Instance ID support, via InstanceIDDriver, to a profile.
 class InstanceIDProfileService : public KeyedService {
  public:
-  // Returns whether InstanceID is enabled for |profile|.
-  static bool IsInstanceIDEnabled(PrefService* prefs);
-
   InstanceIDProfileService(gcm::GCMDriver* driver, bool is_off_the_record);
 
   ~InstanceIDProfileService() override;

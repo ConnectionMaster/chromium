@@ -5,15 +5,18 @@
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_STRUCT_PTR_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_STRUCT_PTR_H_
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <new>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
-#include "base/optional.h"
+#include "base/template_util.h"
 #include "mojo/public/cpp/bindings/lib/hash_util.h"
 #include "mojo/public/cpp/bindings/type_converter.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 
 namespace mojo {
 namespace internal {
@@ -34,12 +37,16 @@ class StructPtr {
  public:
   using Struct = S;
 
+  // Exposing StructPtr<S>::element_type allows gmock's Pointee matcher to
+  // dereference StructPtr's.
+  using element_type = S;
+
   StructPtr() = default;
-  StructPtr(decltype(nullptr)) {}
+  StructPtr(std::nullptr_t) {}
 
   ~StructPtr() = default;
 
-  StructPtr& operator=(decltype(nullptr)) {
+  StructPtr& operator=(std::nullptr_t) {
     reset();
     return *this;
   }
@@ -55,8 +62,13 @@ class StructPtr {
       : ptr_(new Struct(std::forward<Args>(args)...)) {}
 
   template <typename U>
-  U To() const {
+  U To() const& {
     return TypeConverter<U, StructPtr>::Convert(*this);
+  }
+
+  template <typename U>
+  U To() && {
+    return TypeConverter<U, StructPtr>::Convert(std::move(*this));
   }
 
   void reset() { ptr_.reset(); }
@@ -98,8 +110,11 @@ class StructPtr {
 
   explicit operator bool() const { return !is_null(); }
 
-  bool operator<(const StructPtr& other) const {
-    return Hash(internal::kHashSeed) < other.Hash(internal::kHashSeed);
+  // If T is serialisable into trace, StructPtr<T> is also serialisable.
+  template <class U = S>
+  typename perfetto::check_traced_value_support<U>::type WriteIntoTrace(
+      perfetto::TracedValue&& context) const {
+    perfetto::WriteIntoTracedValue(std::move(context), ptr_);
   }
 
  private:
@@ -114,33 +129,28 @@ class StructPtr {
   DISALLOW_COPY_AND_ASSIGN(StructPtr);
 };
 
-template <typename T>
-bool operator==(const StructPtr<T>& lhs, const StructPtr<T>& rhs) {
-  return lhs.Equals(rhs);
-}
-template <typename T>
-bool operator!=(const StructPtr<T>& lhs, const StructPtr<T>& rhs) {
-  return !(lhs == rhs);
-}
-
 // Designed to be used when Struct is small and copyable.
 template <typename S>
 class InlinedStructPtr {
  public:
   using Struct = S;
 
-  InlinedStructPtr() : state_(NIL) {}
-  InlinedStructPtr(decltype(nullptr)) : state_(NIL) {}
+  // Exposing InlinedStructPtr<S>::element_type allows gmock's Pointee matcher
+  // to dereference InlinedStructPtr's.
+  using element_type = S;
 
-  ~InlinedStructPtr() {}
+  InlinedStructPtr() = default;
+  InlinedStructPtr(std::nullptr_t) {}
 
-  InlinedStructPtr& operator=(decltype(nullptr)) {
+  ~InlinedStructPtr() = default;
+
+  InlinedStructPtr& operator=(std::nullptr_t) {
     reset();
     return *this;
   }
 
-  InlinedStructPtr(InlinedStructPtr&& other) : state_(NIL) { Take(&other); }
-  InlinedStructPtr& operator=(InlinedStructPtr&& other) {
+  InlinedStructPtr(InlinedStructPtr&& other) noexcept { Take(&other); }
+  InlinedStructPtr& operator=(InlinedStructPtr&& other) noexcept {
     Take(&other);
     return *this;
   }
@@ -170,7 +180,11 @@ class InlinedStructPtr {
     DCHECK(state_ == VALID);
     return &value_;
   }
-  Struct* get() const { return &value_; }
+  Struct* get() const {
+    if (state_ == NIL)
+      return nullptr;
+    return &value_;
+  }
 
   void Swap(InlinedStructPtr* other) {
     std::swap(value_, other->value_);
@@ -197,8 +211,11 @@ class InlinedStructPtr {
 
   explicit operator bool() const { return !is_null(); }
 
-  bool operator<(const InlinedStructPtr& other) const {
-    return Hash(internal::kHashSeed) < other.Hash(internal::kHashSeed);
+  // If T is serialisable into trace, StructPtr<T> is also serialisable.
+  template <class U = S>
+  typename perfetto::check_traced_value_support<U>::type WriteIntoTrace(
+      perfetto::TracedValue&& context) const {
+    perfetto::WriteIntoTracedValue(std::move(context), get());
   }
 
  private:
@@ -209,27 +226,16 @@ class InlinedStructPtr {
   }
 
   enum State {
-    VALID,
     NIL,
+    VALID,
     DELETED,  // For use in WTF::HashMap only
   };
 
   mutable Struct value_;
-  State state_;
+  State state_ = NIL;
 
   DISALLOW_COPY_AND_ASSIGN(InlinedStructPtr);
 };
-
-template <typename T>
-bool operator==(const InlinedStructPtr<T>& lhs,
-                const InlinedStructPtr<T>& rhs) {
-  return lhs.Equals(rhs);
-}
-template <typename T>
-bool operator!=(const InlinedStructPtr<T>& lhs,
-                const InlinedStructPtr<T>& rhs) {
-  return !(lhs == rhs);
-}
 
 namespace internal {
 
@@ -268,7 +274,56 @@ class InlinedStructPtrWTFHelper {
   }
 };
 
+// Convenience type trait so that we can get away with defining the comparison
+// operators only once.
+template <typename T>
+struct IsStructPtrImpl : std::false_type {};
+
+template <typename S>
+struct IsStructPtrImpl<StructPtr<S>> : std::true_type {};
+
+template <typename S>
+struct IsStructPtrImpl<InlinedStructPtr<S>> : std::true_type {};
+
 }  // namespace internal
+
+template <typename T>
+constexpr bool IsStructPtrV = internal::IsStructPtrImpl<std::decay_t<T>>::value;
+
+template <typename Ptr, std::enable_if_t<IsStructPtrV<Ptr>>* = nullptr>
+bool operator==(const Ptr& lhs, const Ptr& rhs) {
+  return lhs.Equals(rhs);
+}
+
+template <typename Ptr, std::enable_if_t<IsStructPtrV<Ptr>>* = nullptr>
+bool operator!=(const Ptr& lhs, const Ptr& rhs) {
+  return !(lhs == rhs);
+}
+
+// Perform a deep comparison if possible. Otherwise treat null pointers less
+// than valid pointers.
+template <typename Ptr, std::enable_if_t<IsStructPtrV<Ptr>>* = nullptr>
+bool operator<(const Ptr& lhs, const Ptr& rhs) {
+  if (!lhs || !rhs)
+    return bool{lhs} < bool{rhs};
+  return *lhs < *rhs;
+}
+
+template <typename Ptr, std::enable_if_t<IsStructPtrV<Ptr>>* = nullptr>
+bool operator<=(const Ptr& lhs, const Ptr& rhs) {
+  return !(rhs < lhs);
+}
+
+template <typename Ptr, std::enable_if_t<IsStructPtrV<Ptr>>* = nullptr>
+bool operator>(const Ptr& lhs, const Ptr& rhs) {
+  return rhs < lhs;
+}
+
+template <typename Ptr, std::enable_if_t<IsStructPtrV<Ptr>>* = nullptr>
+bool operator>=(const Ptr& lhs, const Ptr& rhs) {
+  return !(lhs < rhs);
+}
+
 }  // namespace mojo
 
 namespace std {

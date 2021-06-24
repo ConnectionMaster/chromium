@@ -24,12 +24,17 @@ class CoreTabHelper : public content::WebContentsObserver,
   ~CoreTabHelper() override;
 
   // Initial title assigned to NavigationEntries from Navigate.
-  static base::string16 GetDefaultTitle();
+  static std::u16string GetDefaultTitle();
 
   // Returns a human-readable description the tab's loading state.
-  base::string16 GetStatusText() const;
+  std::u16string GetStatusText() const;
 
   void UpdateContentRestrictions(int content_restrictions);
+
+  // Open the Lens standalone experience for the image that triggered the
+  // context menu.
+  void SearchWithLensInNewTab(content::RenderFrameHost* render_frame_host,
+                              const GURL& src_url);
 
   // Perform an image search for the image that triggered the context menu.  The
   // |src_url| is passed to the search request and is not used directly to fetch
@@ -44,23 +49,41 @@ class CoreTabHelper : public content::WebContentsObserver,
   base::TimeTicks new_tab_start_time() const { return new_tab_start_time_; }
   int content_restrictions() const { return content_restrictions_; }
 
+  std::unique_ptr<content::WebContents> SwapWebContents(
+      std::unique_ptr<content::WebContents> new_contents,
+      bool did_start_load,
+      bool did_finish_load);
+
  private:
   explicit CoreTabHelper(content::WebContents* web_contents);
   friend class content::WebContentsUserData<CoreTabHelper>;
 
-  static bool GetStatusTextForWebContents(base::string16* status_text,
+  static bool GetStatusTextForWebContents(std::u16string* status_text,
                                           content::WebContents* source);
 
   // content::WebContentsObserver overrides:
   void DidStartLoading() override;
   void OnVisibilityChanged(content::Visibility visibility) override;
   void NavigationEntriesDeleted() override;
+  void OnWebContentsFocused(content::RenderWidgetHost*) override;
+  void OnWebContentsLostFocus(content::RenderWidgetHost*) override;
 
   void DoSearchByImageInNewTab(
-      chrome::mojom::ChromeRenderFrameAssociatedPtr chrome_render_frame,
+      mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame>
+          chrome_render_frame,
       const GURL& src_url,
       const std::vector<uint8_t>& thumbnail_data,
-      const gfx::Size& original_size);
+      const gfx::Size& original_size,
+      const std::string& image_extension);
+
+  // Create a thumbnail to POST to search engine for the image that triggered
+  // the context menu.  The |src_url| is passed to the search request and is
+  // not used directly to fetch the image resources.
+  void SearchByImageInNewTabImpl(content::RenderFrameHost* render_frame_host,
+                                 const GURL& src_url,
+                                 int thumbnail_min_size,
+                                 int thumbnail_max_width,
+                                 int thumbnail_max_height);
 
   // The time when we started to create the new tab page.  This time is from
   // before we created this WebContents.
@@ -70,7 +93,7 @@ class CoreTabHelper : public content::WebContentsObserver,
   // (full-page plugins for now only) permissions.
   int content_restrictions_;
 
-  base::WeakPtrFactory<CoreTabHelper> weak_factory_;
+  base::WeakPtrFactory<CoreTabHelper> weak_factory_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

@@ -39,7 +39,7 @@ SyncValueStoreCache::SyncValueStoreCache(
     scoped_refptr<ValueStoreFactory> factory,
     scoped_refptr<SettingsObserverList> observers,
     const base::FilePath& profile_path)
-    : initialized_(false), weak_ptr_factory_(this) {
+    : initialized_(false) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   // This post is safe since the destructor can only be invoked from the
@@ -76,13 +76,13 @@ syncer::SyncableService* SyncValueStoreCache::GetSyncableService(
 }
 
 void SyncValueStoreCache::RunWithValueStoreForExtension(
-    const StorageCallback& callback,
+    StorageCallback callback,
     scoped_refptr<const Extension> extension) {
   DCHECK(IsOnBackendSequence());
   DCHECK(initialized_);
   SyncStorageBackend* backend =
       extension->is_app() ? app_backend_.get() : extension_backend_.get();
-  callback.Run(backend->GetStorage(extension->id()));
+  std::move(callback).Run(backend->GetStorage(extension->id()));
 }
 
 void SyncValueStoreCache::DeleteStorageSoon(const std::string& extension_id) {

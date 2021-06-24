@@ -4,23 +4,76 @@
 
 #include <stddef.h>
 
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
-#include "base/stl_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/file_select_helper.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/browser/file_select_listener.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/shell_dialogs/selected_file_info.h"
 
 using blink::mojom::FileChooserParams;
+
+#if BUILDFLAG(FULL_SAFE_BROWSING)
+namespace {
+
+// A listener that remembers the list of files chosen.  The |files| argument
+// to the ctor must outlive the listener.
+class TestFileSelectListener : public content::FileSelectListener {
+ public:
+  explicit TestFileSelectListener(
+      std::vector<blink::mojom::FileChooserFileInfoPtr>* files)
+      : files_(files) {}
+
+ private:
+  ~TestFileSelectListener() override = default;
+  // content::FileSelectListener overrides.
+  void FileSelected(std::vector<blink::mojom::FileChooserFileInfoPtr> files,
+                    const base::FilePath& base_dir,
+                    blink::mojom::FileChooserParams::Mode mode) override {
+    *files_ = std::move(files);
+  }
+  void FileSelectionCanceled() override {}
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr>* files_;
+};
+
+// Fill in the arguments to be passed to the ContentAnalysisCompletionCallback()
+// method based on a list of paths and the desired result for each path.
+// This function simulates a path either passing the deep scan (status of true)
+// or failing (status of false).
+void PrepareContentAnalysisCompletionCallbackArgs(
+    std::vector<base::FilePath> paths,
+    std::vector<bool> status,
+    std::vector<blink::mojom::FileChooserFileInfoPtr>* orig_files,
+    enterprise_connectors::ContentAnalysisDelegate::Data* data,
+    enterprise_connectors::ContentAnalysisDelegate::Result* result) {
+  DCHECK_EQ(status.size(), paths.size());
+
+  for (auto& path : paths) {
+    orig_files->push_back(blink::mojom::FileChooserFileInfo::NewNativeFile(
+        blink::mojom::NativeFileInfo::New(path,
+                                          path.BaseName().AsUTF16Unsafe())));
+  }
+
+  data->paths = std::move(paths);
+  result->paths_results = std::move(status);
+}
+
+}  // namespace
+#endif  // BUILDFLAG(FULL_SAFE_BROWSING)
 
 class FileSelectHelperTest : public testing::Test {
  public:
@@ -53,7 +106,7 @@ TEST_F(FileSelectHelperTest, IsAcceptTypeValid) {
   EXPECT_FALSE(FileSelectHelper::IsAcceptTypeValid("abc/def "));
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 TEST_F(FileSelectHelperTest, ZipPackage) {
   // Zip the package.
   const char app_name[] = "CalculatorFake.app";
@@ -86,7 +139,7 @@ TEST_F(FileSelectHelperTest, ZipPackage) {
     EXPECT_TRUE(base::ContentsEqual(orig_file, final_file));
   }
 }
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
 TEST_F(FileSelectHelperTest, GetSanitizedFileName) {
   // The empty path should be preserved.
@@ -121,7 +174,7 @@ TEST_F(FileSelectHelperTest, GetSanitizedFileName) {
 }
 
 TEST_F(FileSelectHelperTest, LastSelectedDirectory) {
-  content::TestBrowserThreadBundle browser_thread_bundle;
+  content::BrowserTaskEnvironment task_environment;
   TestingProfile profile;
   scoped_refptr<FileSelectHelper> file_select_helper =
       new FileSelectHelper(&profile);
@@ -182,3 +235,168 @@ TEST_F(FileSelectHelperTest, LastSelectedDirectory) {
   file_select_helper->MultiFilesSelected(dirs, params);
   EXPECT_EQ(dir_path_1, profile.last_selected_directory());
 }
+
+// The following tests depend on the full safe browsing feature set.
+#if BUILDFLAG(FULL_SAFE_BROWSING)
+
+TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_NoFiles) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+  file_select_helper->SetFileSelectListenerForTesting(std::move(listener));
+  file_select_helper->DontAbortOnMissingWebContentsForTesting();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> orig_files;
+  enterprise_connectors::ContentAnalysisDelegate::Data data;
+  enterprise_connectors::ContentAnalysisDelegate::Result result;
+  file_select_helper->AddRef();  // Normally called by RunFileChooser().
+  file_select_helper->ContentAnalysisCompletionCallback(std::move(orig_files),
+                                                        data, result);
+
+  EXPECT_EQ(0u, files.size());
+}
+
+TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_OneOKFile) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+  file_select_helper->SetFileSelectListenerForTesting(std::move(listener));
+  file_select_helper->DontAbortOnMissingWebContentsForTesting();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> orig_files;
+  enterprise_connectors::ContentAnalysisDelegate::Data data;
+  enterprise_connectors::ContentAnalysisDelegate::Result result;
+  PrepareContentAnalysisCompletionCallbackArgs(
+      {data_dir_.AppendASCII("foo.doc")}, {true}, &orig_files, &data, &result);
+
+  file_select_helper->AddRef();  // Normally called by RunFileChooser().
+  file_select_helper->ContentAnalysisCompletionCallback(std::move(orig_files),
+                                                        data, result);
+
+  EXPECT_EQ(1u, files.size());
+}
+
+TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_TwoOKFiles) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+  file_select_helper->SetFileSelectListenerForTesting(std::move(listener));
+  file_select_helper->DontAbortOnMissingWebContentsForTesting();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> orig_files;
+  enterprise_connectors::ContentAnalysisDelegate::Data data;
+  enterprise_connectors::ContentAnalysisDelegate::Result result;
+  PrepareContentAnalysisCompletionCallbackArgs(
+      {data_dir_.AppendASCII("foo.doc"), data_dir_.AppendASCII("bar.doc")},
+      {true, true}, &orig_files, &data, &result);
+
+  file_select_helper->AddRef();  // Normally called by RunFileChooser().
+  file_select_helper->ContentAnalysisCompletionCallback(std::move(orig_files),
+                                                        data, result);
+
+  EXPECT_EQ(2u, files.size());
+}
+
+TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_TwoBadFiles) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+  file_select_helper->SetFileSelectListenerForTesting(std::move(listener));
+  file_select_helper->DontAbortOnMissingWebContentsForTesting();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> orig_files;
+  enterprise_connectors::ContentAnalysisDelegate::Data data;
+  enterprise_connectors::ContentAnalysisDelegate::Result result;
+  PrepareContentAnalysisCompletionCallbackArgs(
+      {data_dir_.AppendASCII("foo.doc"), data_dir_.AppendASCII("bar.doc")},
+      {false, false}, &orig_files, &data, &result);
+
+  file_select_helper->AddRef();  // Normally called by RunFileChooser().
+  file_select_helper->ContentAnalysisCompletionCallback(std::move(orig_files),
+                                                        data, result);
+
+  EXPECT_EQ(0u, files.size());
+}
+
+TEST_F(FileSelectHelperTest, ContentAnalysisCompletionCallback_OKBadFiles) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
+  auto listener = base::MakeRefCounted<TestFileSelectListener>(&files);
+  file_select_helper->SetFileSelectListenerForTesting(std::move(listener));
+  file_select_helper->DontAbortOnMissingWebContentsForTesting();
+
+  std::vector<blink::mojom::FileChooserFileInfoPtr> orig_files;
+  enterprise_connectors::ContentAnalysisDelegate::Data data;
+  enterprise_connectors::ContentAnalysisDelegate::Result result;
+  PrepareContentAnalysisCompletionCallbackArgs(
+      {data_dir_.AppendASCII("foo.doc"), data_dir_.AppendASCII("bar.doc")},
+      {false, true}, &orig_files, &data, &result);
+
+  file_select_helper->AddRef();  // Normally called by RunFileChooser().
+  file_select_helper->ContentAnalysisCompletionCallback(std::move(orig_files),
+                                                        data, result);
+
+  ASSERT_EQ(1u, files.size());
+  EXPECT_EQ(data_dir_.AppendASCII("bar.doc"),
+            files[0]->get_native_file()->file_path);
+}
+
+TEST_F(FileSelectHelperTest, GetFileTypesFromAcceptType) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfile profile;
+  scoped_refptr<FileSelectHelper> file_select_helper =
+      new FileSelectHelper(&profile);
+
+  std::vector<std::u16string> accept_types{
+      // normal file extension
+      std::u16string{0x2e, 'm', 'p', '4'},
+      // file extension with some chinese
+      std::u16string{0x2e, 0x65a4, 0x62f7, 0x951f},
+      // file extension with fire emoji
+      std::u16string{0x2e, 55357, 56613},
+      // mime type
+      std::u16string({'i', 'm', 'a', 'g', 'e', '/', 'p', 'n', 'g'}),
+      // non-ascii mime type which should be ignored
+      std::u16string({'t', 'e', 'x', 't', '/', 0x65a4, 0x62f7, 0x951f})};
+
+  std::unique_ptr<ui::SelectFileDialog::FileTypeInfo> file_type_info =
+      file_select_helper->GetFileTypesFromAcceptType(accept_types);
+
+  std::vector<std::vector<base::FilePath::StringType>> expected_extensions{
+      std::vector<base::FilePath::StringType>{
+#if defined(OS_WIN)
+          L"mp4",
+          {0x65a4, 0x62f7, 0x951f},  // some chinese
+          {55357, 56613},            // fire emoji
+          L"png"}};
+#else
+          "mp4",
+          {0xe6, 0x96, 0xa4, 0xe6, 0x8b, 0xb7, 0xe9, 0x94,
+           0x9f},                    // some chinese
+          {0xf0, 0x9f, 0x94, 0xa5},  // fire emoji
+          "png"}};
+#endif
+  ASSERT_EQ(expected_extensions, file_type_info->extensions);
+}
+
+#endif  // BUILDFLAG(FULL_SAFE_BROWSING)

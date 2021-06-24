@@ -10,7 +10,7 @@
 #include "base/values.h"
 #include "components/ui_metrics/canonical_url_share_metrics_types.h"
 #import "ios/chrome/browser/procedural_block_types.h"
-#import "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/web_state.h"
 #include "url/gurl.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -19,11 +19,11 @@
 
 namespace {
 // Script to access the canonical URL from a web page.
-const char kCanonicalURLScript[] =
-    "(function() {"
-    "  var linkNode = document.querySelector(\"link[rel='canonical']\");"
-    "  return linkNode ? linkNode.getAttribute(\"href\") : \"\";"
-    "})()";
+const char16_t kCanonicalURLScript[] =
+    u"(function() {"
+    u"  var linkNode = document.querySelector(\"link[rel='canonical']\");"
+    u"  return linkNode ? linkNode.getAttribute(\"href\") : \"\";"
+    u"})()";
 
 // Logs |result| in the Mobile.CanonicalURLResult histogram.
 void LogCanonicalUrlResultHistogram(ui_metrics::CanonicalURLResult result) {
@@ -94,7 +94,7 @@ void RetrieveCanonicalUrl(web::WebState* web_state,
         completion(canonical_url);
       };
 
-  web_state->ExecuteJavaScript(base::UTF8ToUTF16(kCanonicalURLScript),
+  web_state->ExecuteJavaScript(kCanonicalURLScript,
                                base::BindOnce(javascript_completion));
 }
 }  // namespace activity_services

@@ -25,17 +25,17 @@
 #include "net/http/http_auth_handler_factory.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_network_transaction.h"
-#include "net/http/http_server_properties_impl.h"
+#include "net/http/http_server_properties.h"
 #include "net/http/http_transaction_test_util.h"
 #include "net/http/transport_security_state.h"
 #include "net/log/net_log_with_source.h"
-#include "net/proxy_resolution/proxy_resolution_service.h"
+#include "net/proxy_resolution/configured_proxy_resolution_service.h"
+#include "net/quic/quic_context.h"
 #include "net/ssl/ssl_config_service_defaults.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/gtest_util.h"
 #include "net/test/test_data_directory.h"
-#include "net/test/test_with_scoped_task_environment.h"
-#include "net/third_party/quiche/src/quic/platform/api/quic_string_piece.h"
+#include "net/test/test_with_task_environment.h"
 #include "net/third_party/quiche/src/quic/test_tools/crypto_test_utils.h"
 #include "net/third_party/quiche/src/quic/test_tools/quic_test_utils.h"
 #include "net/third_party/quiche/src/quic/tools/quic_memory_cache_backend.h"
@@ -68,7 +68,7 @@ class TestTransactionFactory : public HttpTransactionFactory {
   // HttpTransactionFactory methods
   int CreateTransaction(RequestPriority priority,
                         std::unique_ptr<HttpTransaction>* trans) override {
-    trans->reset(new HttpNetworkTransaction(priority, session_.get()));
+    *trans = std::make_unique<HttpNetworkTransaction>(priority, session_.get());
     return OK;
   }
 
@@ -80,32 +80,16 @@ class TestTransactionFactory : public HttpTransactionFactory {
   std::unique_ptr<HttpNetworkSession> session_;
 };
 
-struct TestParams {
-  explicit TestParams(bool use_stateless_rejects)
-      : use_stateless_rejects(use_stateless_rejects) {}
-
-  friend std::ostream& operator<<(std::ostream& os, const TestParams& p) {
-    os << "{ use_stateless_rejects: " << p.use_stateless_rejects << " }";
-    return os;
-  }
-  bool use_stateless_rejects;
-};
-
-std::vector<TestParams> GetTestParams() {
-  return std::vector<TestParams>{TestParams(true), TestParams(false)};
-}
-
 }  // namespace
 
-class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
-                         public WithScopedTaskEnvironment {
+class QuicEndToEndTest : public ::testing::Test, public WithTaskEnvironment {
  protected:
   QuicEndToEndTest()
       : host_resolver_impl_(CreateResolverImpl()),
         host_resolver_(std::move(host_resolver_impl_)),
-        cert_transparency_verifier_(new MultiLogCTVerifier()),
         ssl_config_service_(new SSLConfigServiceDefaults),
-        proxy_resolution_service_(ProxyResolutionService::CreateDirect()),
+        proxy_resolution_service_(
+            ConfiguredProxyResolutionService::CreateDirect()),
         auth_handler_factory_(HttpAuthHandlerFactory::CreateDefault()),
         strike_register_no_startup_period_(false) {
     request_.method = "GET";
@@ -115,16 +99,11 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
         net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
 
     session_params_.enable_quic = true;
-    if (GetParam().use_stateless_rejects) {
-      session_params_.quic_connection_options.push_back(quic::kSREJ);
-    }
 
-    session_context_.quic_random = nullptr;
+    session_context_.quic_context = &quic_context_;
     session_context_.host_resolver = &host_resolver_;
     session_context_.cert_verifier = &cert_verifier_;
     session_context_.transport_security_state = &transport_security_state_;
-    session_context_.cert_transparency_verifier =
-        cert_transparency_verifier_.get();
     session_context_.ct_policy_enforcer = &ct_policy_enforcer_;
     session_context_.proxy_resolution_service = proxy_resolution_service_.get();
     session_context_.ssl_config_service = ssl_config_service_.get();
@@ -159,11 +138,11 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
 
     // To simplify the test, and avoid the race with the HTTP request, we force
     // QUIC for these requests.
-    session_params_.origins_to_force_quic_on.insert(
+    quic_context_.params()->origins_to_force_quic_on.insert(
         HostPortPair::FromString("test.example.com:443"));
 
-    transaction_factory_.reset(
-        new TestTransactionFactory(session_params_, session_context_));
+    transaction_factory_ = std::make_unique<TestTransactionFactory>(
+        session_params_, session_context_);
   }
 
   void TearDown() override {}
@@ -175,10 +154,10 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
         quic::test::kInitialStreamFlowControlWindowForTest);
     server_config_.SetInitialSessionFlowControlWindowToSend(
         quic::test::kInitialSessionFlowControlWindowForTest);
-    server_.reset(new QuicSimpleServer(
+    server_ = std::make_unique<QuicSimpleServer>(
         quic::test::crypto_test_utils::ProofSourceForTesting(), server_config_,
         server_config_options_, quic::AllSupportedVersions(),
-        &memory_cache_backend_));
+        &memory_cache_backend_);
     server_->Listen(server_address_);
     server_address_ = server_->server_address();
     server_->StartReading();
@@ -187,10 +166,10 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
 
   // Adds an entry to the cache used by the QUIC server to serve
   // responses.
-  void AddToCache(quic::QuicStringPiece path,
+  void AddToCache(absl::string_view path,
                   int response_code,
-                  quic::QuicStringPiece response_detail,
-                  quic::QuicStringPiece body) {
+                  absl::string_view response_detail,
+                  absl::string_view body) {
     memory_cache_backend_.AddSimpleResponse("test.example.com", path,
                                             response_code, body);
   }
@@ -210,8 +189,8 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
     std::vector<std::unique_ptr<UploadElementReader>> element_readers;
     element_readers.push_back(std::make_unique<UploadBytesElementReader>(
         request_body_.data(), request_body_.length()));
-    upload_data_stream_.reset(
-        new ElementsUploadDataStream(std::move(element_readers), 0));
+    upload_data_stream_ = std::make_unique<ElementsUploadDataStream>(
+        std::move(element_readers), 0);
     request_.method = "POST";
     request_.url = GURL("https://test.example.com/");
     request_.upload_data_stream = upload_data_stream_.get();
@@ -230,16 +209,16 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
     EXPECT_EQ(body, consumer.content());
   }
 
+  QuicContext quic_context_;
   std::unique_ptr<MockHostResolver> host_resolver_impl_;
   MappedHostResolver host_resolver_;
   MockCertVerifier cert_verifier_;
   TransportSecurityState transport_security_state_;
-  std::unique_ptr<CTVerifier> cert_transparency_verifier_;
   DefaultCTPolicyEnforcer ct_policy_enforcer_;
   std::unique_ptr<SSLConfigServiceDefaults> ssl_config_service_;
   std::unique_ptr<ProxyResolutionService> proxy_resolution_service_;
   std::unique_ptr<HttpAuthHandlerFactory> auth_handler_factory_;
-  HttpServerPropertiesImpl http_server_properties_;
+  HttpServerProperties http_server_properties_;
   HttpNetworkSession::Params session_params_;
   HttpNetworkSession::Context session_context_;
   std::unique_ptr<TestTransactionFactory> transaction_factory_;
@@ -256,11 +235,7 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams>,
   bool strike_register_no_startup_period_;
 };
 
-INSTANTIATE_TEST_SUITE_P(Tests,
-                         QuicEndToEndTest,
-                         ::testing::ValuesIn(GetTestParams()));
-
-TEST_P(QuicEndToEndTest, LargeGetWithNoPacketLoss) {
+TEST_F(QuicEndToEndTest, LargeGetWithNoPacketLoss) {
   std::string response(10 * 1024, 'x');
 
   AddToCache(request_.url.PathForRequest(), 200, "OK", response);
@@ -277,9 +252,9 @@ TEST_P(QuicEndToEndTest, LargeGetWithNoPacketLoss) {
 
 // crbug.com/559173
 #if defined(THREAD_SANITIZER)
-TEST_P(QuicEndToEndTest, DISABLED_LargePostWithNoPacketLoss) {
+TEST_F(QuicEndToEndTest, DISABLED_LargePostWithNoPacketLoss) {
 #else
-TEST_P(QuicEndToEndTest, LargePostWithNoPacketLoss) {
+TEST_F(QuicEndToEndTest, LargePostWithNoPacketLoss) {
 #endif
   InitializePostRequest(1024 * 1024);
 
@@ -297,9 +272,9 @@ TEST_P(QuicEndToEndTest, LargePostWithNoPacketLoss) {
 
 // crbug.com/559173
 #if defined(THREAD_SANITIZER)
-TEST_P(QuicEndToEndTest, DISABLED_LargePostWithPacketLoss) {
+TEST_F(QuicEndToEndTest, DISABLED_LargePostWithPacketLoss) {
 #else
-TEST_P(QuicEndToEndTest, LargePostWithPacketLoss) {
+TEST_F(QuicEndToEndTest, LargePostWithPacketLoss) {
 #endif
   // FLAGS_fake_packet_loss_percentage = 30;
   InitializePostRequest(1024 * 1024);
@@ -319,9 +294,9 @@ TEST_P(QuicEndToEndTest, LargePostWithPacketLoss) {
 
 // crbug.com/536845
 #if defined(THREAD_SANITIZER)
-TEST_P(QuicEndToEndTest, DISABLED_UberTest) {
+TEST_F(QuicEndToEndTest, DISABLED_UberTest) {
 #else
-TEST_P(QuicEndToEndTest, UberTest) {
+TEST_F(QuicEndToEndTest, UberTest) {
 #endif
   // FLAGS_fake_packet_loss_percentage = 30;
 

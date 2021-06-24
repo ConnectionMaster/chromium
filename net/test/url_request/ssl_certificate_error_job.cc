@@ -27,10 +27,9 @@ class MockJobInterceptor : public URLRequestInterceptor {
   ~MockJobInterceptor() override = default;
 
   // URLRequestJobFactory::ProtocolHandler implementation:
-  URLRequestJob* MaybeInterceptRequest(
-      URLRequest* request,
-      NetworkDelegate* network_delegate) const override {
-    return new SSLCertificateErrorJob(request, network_delegate);
+  std::unique_ptr<URLRequestJob> MaybeInterceptRequest(
+      URLRequest* request) const override {
+    return std::make_unique<SSLCertificateErrorJob>(request);
   }
 
  private:
@@ -39,11 +38,10 @@ class MockJobInterceptor : public URLRequestInterceptor {
 
 }  // namespace
 
-SSLCertificateErrorJob::SSLCertificateErrorJob(
-    URLRequest* request,
-    NetworkDelegate* network_delegate)
-    : URLRequestJob(request, network_delegate), weak_factory_(this) {
-}
+SSLCertificateErrorJob::SSLCertificateErrorJob(URLRequest* request)
+    : URLRequestJob(request) {}
+
+SSLCertificateErrorJob::~SSLCertificateErrorJob() = default;
 
 void SSLCertificateErrorJob::Start() {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
@@ -62,12 +60,10 @@ GURL SSLCertificateErrorJob::GetMockUrl() {
   return GURL(base::StringPrintf("https://%s", kMockHostname));
 }
 
-SSLCertificateErrorJob::~SSLCertificateErrorJob() = default;
-
 void SSLCertificateErrorJob::NotifyError() {
   SSLInfo info;
   info.cert_status = CERT_STATUS_DATE_INVALID;
-  NotifySSLCertificateError(info, true);
+  NotifySSLCertificateError(net::ERR_CERT_DATE_INVALID, info, true);
 }
 
 }  // namespace net

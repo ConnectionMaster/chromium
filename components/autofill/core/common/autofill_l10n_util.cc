@@ -16,10 +16,10 @@ namespace autofill {
 namespace l10n {
 
 std::unique_ptr<icu::Collator> GetCollatorForLocale(const icu::Locale& locale) {
-  UErrorCode ignored = U_ZERO_ERROR;
+  UErrorCode error_code = U_ZERO_ERROR;
   std::unique_ptr<icu::Collator> collator(
-      icu::Collator::createInstance(locale, ignored));
-  if (!collator) {
+      icu::Collator::createInstance(locale, error_code));
+  if (!collator || !U_SUCCESS(error_code)) {
     // On some systems, the default locale is invalid to the eyes of the ICU
     // library. This could be due to a device-specific issue (has been seen in
     // the wild on Android and iOS devices). In the failure case, |collator|
@@ -32,14 +32,15 @@ std::unique_ptr<icu::Collator> GetCollatorForLocale(const icu::Locale& locale) {
 
     // Attempt to load the English locale.
     collator.reset(
-        icu::Collator::createInstance(icu::Locale::getEnglish(), ignored));
-    if (!collator) {
+        icu::Collator::createInstance(icu::Locale::getEnglish(), error_code));
+    if (!collator || !U_SUCCESS(error_code)) {
       LOG(ERROR) << "Failed to initialize the ICU Collator with the English "
                  << "locale.";
     }
   }
 
-  UMA_HISTOGRAM_BOOLEAN("Autofill.IcuCollatorCreationSuccess", !!collator);
+  UMA_HISTOGRAM_BOOLEAN("Autofill.IcuCollatorCreationSuccess",
+                        (!!collator && U_SUCCESS(error_code)));
   return collator;
 }
 
@@ -55,8 +56,8 @@ CaseInsensitiveCompare::CaseInsensitiveCompare(const icu::Locale& locale)
 CaseInsensitiveCompare::~CaseInsensitiveCompare() {
 }
 
-bool CaseInsensitiveCompare::StringsEqual(const base::string16& lhs,
-                                          const base::string16& rhs) const {
+bool CaseInsensitiveCompare::StringsEqual(const std::u16string& lhs,
+                                          const std::u16string& rhs) const {
   if (collator_) {
     return base::i18n::CompareString16WithCollator(*collator_, lhs, rhs) ==
            UCOL_EQUAL;

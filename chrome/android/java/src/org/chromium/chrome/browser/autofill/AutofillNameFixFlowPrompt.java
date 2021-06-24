@@ -4,9 +4,8 @@
 
 package org.chromium.chrome.browser.autofill;
 
+import android.app.Activity;
 import android.content.Context;
-import android.support.v4.text.TextUtilsCompat;
-import android.support.v4.view.ViewCompat;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.LayoutInflater;
@@ -18,8 +17,11 @@ import android.widget.PopupWindow;
 import android.widget.TextView;
 import android.widget.TextView.BufferType;
 
+import androidx.annotation.Nullable;
+import androidx.core.text.TextUtilsCompat;
+import androidx.core.view.ViewCompat;
+
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -36,7 +38,7 @@ public class AutofillNameFixFlowPrompt implements TextWatcher, ModalDialogProper
      */
     public interface AutofillNameFixFlowPromptDelegate {
         /**
-         * Called when dialog is dismissed.
+         * Called whenever the dialog is dismissed.
          */
         void onPromptDismissed();
 
@@ -73,23 +75,29 @@ public class AutofillNameFixFlowPrompt implements TextWatcher, ModalDialogProper
         mNameFixFlowTooltipIcon = (ImageView) mDialogView.findViewById(R.id.cc_name_tooltip_icon);
         mNameFixFlowTooltipIcon.setOnClickListener((view) -> onTooltipIconClicked());
 
-        mDialogModel = new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
-                               .with(ModalDialogProperties.CONTROLLER, this)
-                               .with(ModalDialogProperties.TITLE, title)
-                               .with(ModalDialogProperties.TITLE_ICON, context, drawableId)
-                               .with(ModalDialogProperties.CUSTOM_VIEW, mDialogView)
-                               .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, confirmButtonLabel)
-                               .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT,
-                                       context.getResources(), R.string.cancel)
-                               .with(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE, false)
-                               .with(ModalDialogProperties.POSITIVE_BUTTON_DISABLED,
-                                       inferredName.isEmpty())
-                               .build();
+        PropertyModel.Builder builder =
+                new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
+                        .with(ModalDialogProperties.CONTROLLER, this)
+                        .with(ModalDialogProperties.TITLE, title)
+                        .with(ModalDialogProperties.CUSTOM_VIEW, mDialogView)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, confirmButtonLabel)
+                        .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT, context.getResources(),
+                                R.string.cancel)
+                        .with(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE, false)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_DISABLED,
+                                inferredName.isEmpty());
+        if (drawableId != 0) {
+            builder.with(ModalDialogProperties.TITLE_ICON, context, drawableId);
+        }
+        mDialogModel = builder.build();
 
-        // Hitting the "submit" button on the software keyboard should submit.
+        // Hitting the "submit" button on the software keyboard should submit, unless the name field
+        // is empty.
         mUserNameInput.setOnEditorActionListener((view, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE) {
-                onClick(mDialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                if (mUserNameInput.getText().toString().trim().length() != 0) {
+                    onClick(mDialogModel, ModalDialogProperties.ButtonType.POSITIVE);
+                }
                 return true;
             }
             return false;
@@ -97,13 +105,16 @@ public class AutofillNameFixFlowPrompt implements TextWatcher, ModalDialogProper
     }
 
     /**
-     * Show the dialog. If activity is null this method will not do anything.
+     * Show the dialog.
+     *
+     * @param activity The current activity, used for context. When null, the method does nothing.
+     * @param modalDialogManager Used to display modal dialogs. When null, the method does nothing.
      */
-    public void show(ChromeActivity activity) {
-        if (activity == null) return;
+    public void show(@Nullable Activity activity, @Nullable ModalDialogManager modalDialogManager) {
+        if (activity == null || modalDialogManager == null) return;
 
         mContext = activity;
-        mModalDialogManager = activity.getModalDialogManager();
+        mModalDialogManager = modalDialogManager;
         mModalDialogManager.showDialog(mDialogModel, ModalDialogManager.ModalDialogType.APP);
         mUserNameInput.addTextChangedListener(this);
     }
@@ -169,11 +180,6 @@ public class AutofillNameFixFlowPrompt implements TextWatcher, ModalDialogProper
 
     @Override
     public void onDismiss(PropertyModel model, int dismissalCause) {
-        // Do not call dismissed on the delegate if dialog was dismissed either because the user
-        // accepted to save the card or was dismissed by native code.
-        if (dismissalCause != DialogDismissalCause.POSITIVE_BUTTON_CLICKED
-                && dismissalCause != DialogDismissalCause.DISMISSED_BY_NATIVE) {
-            mDelegate.onPromptDismissed();
-        }
+        mDelegate.onPromptDismissed();
     }
 }

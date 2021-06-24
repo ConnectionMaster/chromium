@@ -7,8 +7,6 @@
 
 #include <windows.h>
 
-#include <string>
-
 #include "base/compiler_specific.h"
 #include "base/component_export.h"
 #include "base/macros.h"
@@ -62,19 +60,6 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) InputMethodWinBase
       ui::KeyEvent* event,
       const std::vector<MSG>* char_msgs);
 
-  // Update composition bounds for Chromium IME extension.
-  void UpdateCompositionBoundsForEngine(const TextInputClient* client);
-
-  // Reset composition status for Chromium IME extension.
-  void ResetEngine();
-
-  // Cancel composition for Chromium IME extension.
-  void CancelCompositionForEngine();
-
-  // Update focus state for Chromium IME extension and update input context in
-  // ui::IMEBridge.
-  void UpdateEngineFocusAndInputContext();
-
   // The toplevel window handle.
   const HWND toplevel_window_handle_;
 
@@ -90,7 +75,14 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN) InputMethodWinBase
   base::i18n::TextDirection pending_requested_direction_;
 
   // Used for making callbacks.
-  base::WeakPtrFactory<InputMethodWinBase> weak_ptr_factory_;
+  base::WeakPtrFactory<InputMethodWinBase> weak_ptr_factory_{this};
+
+ private:
+  // Return false if |this| is destroyed during |PeekMessage| call.
+  bool HandlePeekMessage(HWND hwnd,
+                         UINT msg_filter_min,
+                         UINT msg_filter_max,
+                         std::vector<MSG>* char_msgs);
 
   DISALLOW_COPY_AND_ASSIGN(InputMethodWinBase);
 };

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
@@ -182,8 +183,7 @@ FakePacketSocketFactory::FakePacketSocketFactory(
       dispatcher_(dispatcher),
       address_(dispatcher_->AllocateAddress()),
       out_of_order_rate_(0.0),
-      next_port_(kPortRangeStart),
-      weak_factory_(this) {
+      next_port_(kPortRangeStart) {
   dispatcher_->AddNode(this);
 }
 
@@ -202,7 +202,7 @@ void FakePacketSocketFactory::SetBandwidth(int bandwidth, int max_buffer) {
   if (bandwidth <= 0) {
     leaky_bucket_.reset();
   } else {
-    leaky_bucket_.reset(new LeakyBucket(max_buffer, bandwidth));
+    leaky_bucket_ = std::make_unique<LeakyBucket>(max_buffer, bandwidth);
   }
 }
 
@@ -243,8 +243,8 @@ rtc::AsyncPacketSocket* FakePacketSocketFactory::CreateUdpSocket(
       new FakeUdpSocket(this, dispatcher_,
                         rtc::SocketAddress(local_address.ipaddr(), port));
 
-  udp_sockets_[port] =
-      base::Bind(&FakeUdpSocket::ReceivePacket, base::Unretained(result));
+  udp_sockets_[port] = base::BindRepeating(&FakeUdpSocket::ReceivePacket,
+                                           base::Unretained(result));
 
   return result;
 }
@@ -262,7 +262,7 @@ rtc::AsyncPacketSocket* FakePacketSocketFactory::CreateClientTcpSocket(
     const rtc::SocketAddress& remote_address,
     const rtc::ProxyInfo& proxy_info,
     const std::string& user_agent,
-    int opts) {
+    const rtc::PacketSocketTcpOptions& opts) {
   return nullptr;
 }
 

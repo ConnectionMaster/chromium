@@ -7,7 +7,7 @@
 
 namespace content {
 
-enum IsolatedWorldIDs {
+enum IsolatedWorldIDs : int32_t {
   // Chrome cannot use ID 0 for an isolated world because 0 represents the main
   // world.
   ISOLATED_WORLD_ID_GLOBAL = 0,
@@ -20,4 +20,4 @@ enum IsolatedWorldIDs {
 
 }  // namespace content
 
-#endif  // COTENT_PUBLIC_COMMON_ISOLATED_WORLD_IDS_H_
+#endif  // CONTENT_PUBLIC_COMMON_ISOLATED_WORLD_IDS_H_

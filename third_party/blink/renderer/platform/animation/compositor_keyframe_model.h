@@ -7,13 +7,14 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "cc/animation/keyframe_model.h"
 #include "third_party/blink/renderer/platform/animation/compositor_target_property.h"
 #include "third_party/blink/renderer/platform/graphics/compositor_element_id.h"
+#include "third_party/blink/renderer/platform/graphics/platform_paint_worklet_layer_painter.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace cc {
 class KeyframeModel;
@@ -23,6 +24,7 @@ namespace blink {
 
 class CompositorAnimationCurve;
 class CompositorFloatAnimationCurve;
+class CompositorColorAnimationCurve;
 
 // A compositor driven animation.
 class PLATFORM_EXPORT CompositorKeyframeModel {
@@ -36,6 +38,20 @@ class PLATFORM_EXPORT CompositorKeyframeModel {
                           compositor_target_property::Type,
                           int keyframe_model_id,
                           int group_id);
+  // The |custom_property_name| is the name of animated custom property.
+  CompositorKeyframeModel(const CompositorAnimationCurve&,
+                          compositor_target_property::Type,
+                          int keyframe_model_id,
+                          int group_id,
+                          const AtomicString& custom_property_name);
+  CompositorKeyframeModel(
+      const CompositorAnimationCurve&,
+      compositor_target_property::Type,
+      int keyframe_model_id,
+      int group_id,
+      CompositorPaintWorkletInput::NativePropertyType native_property_type);
+  CompositorKeyframeModel(const CompositorKeyframeModel&) = delete;
+  CompositorKeyframeModel& operator=(const CompositorKeyframeModel&) = delete;
   ~CompositorKeyframeModel();
 
   // An id must be unique.
@@ -54,9 +70,10 @@ class PLATFORM_EXPORT CompositorKeyframeModel {
 
   double StartTime() const;
   void SetStartTime(double monotonic_time);
+  void SetStartTime(base::TimeTicks);
 
   double TimeOffset() const;
-  void SetTimeOffset(double monotonic_time);
+  void SetTimeOffset(base::TimeDelta monotonic_time);
 
   Direction GetDirection() const;
   void SetDirection(Direction);
@@ -73,11 +90,19 @@ class PLATFORM_EXPORT CompositorKeyframeModel {
   std::unique_ptr<cc::KeyframeModel> ReleaseCcKeyframeModel();
 
   std::unique_ptr<CompositorFloatAnimationCurve> FloatCurveForTesting() const;
+  std::unique_ptr<CompositorColorAnimationCurve> ColorCurveForTesting() const;
+
+  const std::string& GetCustomPropertyNameForTesting() const {
+    return keyframe_model_->custom_property_name();
+  }
 
  private:
-  std::unique_ptr<cc::KeyframeModel> keyframe_model_;
+  CompositorKeyframeModel(const CompositorAnimationCurve& curve,
+                          int keyframe_model_id,
+                          int group_id,
+                          const cc::KeyframeModel::TargetPropertyId& id);
 
-  DISALLOW_COPY_AND_ASSIGN(CompositorKeyframeModel);
+  std::unique_ptr<cc::KeyframeModel> keyframe_model_;
 };
 
 }  // namespace blink

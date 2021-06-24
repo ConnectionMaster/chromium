@@ -21,7 +21,7 @@ OpaqueAttestationStatement::OpaqueAttestationStatement(
 OpaqueAttestationStatement::~OpaqueAttestationStatement() = default;
 
 // Returns the deep copied cbor map value of |attestation_statement_map_|.
-Value::MapValue OpaqueAttestationStatement::GetAsCBORMap() const {
+Value OpaqueAttestationStatement::AsCBOR() const {
   DCHECK(attestation_statement_map_.is_map());
   Value::MapValue new_map;
   new_map.reserve(attestation_statement_map_.GetMap().size());
@@ -29,10 +29,10 @@ Value::MapValue OpaqueAttestationStatement::GetAsCBORMap() const {
     new_map.try_emplace(new_map.end(), map_it.first.Clone(),
                         map_it.second.Clone());
   }
-  return new_map;
+  return cbor::Value(std::move(new_map));
 }
 
-bool OpaqueAttestationStatement::IsSelfAttestation() {
+bool OpaqueAttestationStatement::IsSelfAttestation() const {
   DCHECK(attestation_statement_map_.is_map());
   const Value::MapValue& m(attestation_statement_map_.GetMap());
   const Value alg("alg");
@@ -43,23 +43,23 @@ bool OpaqueAttestationStatement::IsSelfAttestation() {
 }
 
 bool OpaqueAttestationStatement::
-    IsAttestationCertificateInappropriatelyIdentifying() {
+    IsAttestationCertificateInappropriatelyIdentifying() const {
   return false;
 }
 
-base::Optional<base::span<const uint8_t>>
+absl::optional<base::span<const uint8_t>>
 OpaqueAttestationStatement::GetLeafCertificate() const {
   DCHECK(attestation_statement_map_.is_map());
   const Value::MapValue& m(attestation_statement_map_.GetMap());
   const Value x5c("x5c");
   const auto it = m.find(x5c);
   if (it == m.end() || !it->second.is_array()) {
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   const Value::ArrayValue& certs = it->second.GetArray();
   if (certs.empty() || !certs[0].is_bytestring()) {
-    return base::nullopt;
+    return absl::nullopt;
   }
 
   return certs[0].GetBytestring();

@@ -15,15 +15,17 @@
 #include "base/test/scoped_command_line.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/crx_file/id_util.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/common/extension.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/layout.h"
 #include "ui/display/display_list.h"
 #include "ui/display/display_switches.h"
+#include "ui/display/test/scoped_screen_override.h"
 #include "ui/display/test/test_screen.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/image/image.h"
@@ -44,16 +46,17 @@ class ScopedSetDeviceScaleFactor {
         switches::kForceDeviceScaleFactor, base::StringPrintf("%3.2f", scale));
     // This has to be inited after fiddling with the command line.
     test_screen_ = std::make_unique<display::test::TestScreen>();
-    display::Screen::SetScreenInstance(test_screen_.get());
+    screen_override_ = std::make_unique<display::test::ScopedScreenOverride>(
+        test_screen_.get());
   }
 
   ~ScopedSetDeviceScaleFactor() {
     display::Display::ResetForceDeviceScaleFactorForTesting();
-    display::Screen::SetScreenInstance(nullptr);
   }
 
  private:
   std::unique_ptr<display::test::TestScreen> test_screen_;
+  std::unique_ptr<display::test::ScopedScreenOverride> screen_override_;
   base::test::ScopedCommandLine command_line_;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedSetDeviceScaleFactor);
@@ -66,7 +69,7 @@ class ExtensionIconManagerTest : public testing::Test,
  public:
   ExtensionIconManagerTest() : unwaited_image_loads_(0), waiting_(false) {}
 
-  ~ExtensionIconManagerTest() override {}
+  ~ExtensionIconManagerTest() override = default;
 
   void OnImageLoaded(const std::string& extension_id) override {
     unwaited_image_loads_++;
@@ -86,7 +89,7 @@ class ExtensionIconManagerTest : public testing::Test,
   }
 
  private:
-  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
 
   // The number of observed image loads that have not been waited for.
   int unwaited_image_loads_;
@@ -121,9 +124,9 @@ TEST_F(ExtensionIconManagerTest, LoadRemoveLoad) {
   ASSERT_TRUE(manifest.get() != NULL);
 
   std::string error;
-  scoped_refptr<Extension> extension(
-      Extension::Create(manifest_path.DirName(), Manifest::INVALID_LOCATION,
-                        *manifest, Extension::NO_FLAGS, &error));
+  scoped_refptr<Extension> extension(Extension::Create(
+      manifest_path.DirName(), mojom::ManifestLocation::kInvalidLocation,
+      *manifest, Extension::NO_FLAGS, &error));
   ASSERT_TRUE(extension.get());
   ExtensionIconManager icon_manager;
   icon_manager.set_observer(this);
@@ -147,7 +150,7 @@ TEST_F(ExtensionIconManagerTest, LoadRemoveLoad) {
   EXPECT_TRUE(gfx::test::AreImagesEqual(first_icon, second_icon));
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 // Tests loading an icon for a component extension.
 TEST_F(ExtensionIconManagerTest, LoadComponentExtensionResource) {
   std::unique_ptr<Profile> profile(new TestingProfile());
@@ -165,8 +168,8 @@ TEST_F(ExtensionIconManagerTest, LoadComponentExtensionResource) {
 
   std::string error;
   scoped_refptr<Extension> extension(Extension::Create(
-      manifest_path.DirName(), Manifest::COMPONENT, *manifest.get(),
-      Extension::NO_FLAGS, &error));
+      manifest_path.DirName(), mojom::ManifestLocation::kComponent,
+      *manifest.get(), Extension::NO_FLAGS, &error));
   ASSERT_TRUE(extension.get());
 
   ExtensionIconManager icon_manager;
@@ -208,9 +211,9 @@ TEST_F(ExtensionIconManagerTest, ScaleFactors) {
   ASSERT_TRUE(manifest);
 
   std::string error;
-  scoped_refptr<Extension> extension(
-      Extension::Create(manifest_path.DirName(), Manifest::INVALID_LOCATION,
-                        *manifest, Extension::NO_FLAGS, &error));
+  scoped_refptr<Extension> extension(Extension::Create(
+      manifest_path.DirName(), mojom::ManifestLocation::kInvalidLocation,
+      *manifest, Extension::NO_FLAGS, &error));
   ASSERT_TRUE(extension);
 
   constexpr int kMaxIconSizeInManifest = 32;
@@ -219,9 +222,6 @@ TEST_F(ExtensionIconManagerTest, ScaleFactors) {
       {ui::SCALE_FACTOR_100P},
       // Two scale factors.
       {ui::SCALE_FACTOR_100P, ui::SCALE_FACTOR_200P},
-      // A scale factor that is in between two of the provided icon sizes
-      // (should use the larger one and scale down).
-      {ui::SCALE_FACTOR_125P},
       // One scale factor for which we have an icon, one scale factor for which
       // we don't.
       {ui::SCALE_FACTOR_100P, ui::SCALE_FACTOR_300P},
@@ -279,7 +279,6 @@ TEST_F(ExtensionIconManagerTest, ScaleFactors) {
 
   // Now check that the scale factors for active displays are respected, even
   // when it's not a supported scale.
-  EXPECT_FALSE(ui::IsSupportedScale(ui::SCALE_FACTOR_150P));
   ScopedSetDeviceScaleFactor scoped_dsf(1.5f);
   ExtensionIconManager icon_manager;
   icon_manager.set_observer(this);

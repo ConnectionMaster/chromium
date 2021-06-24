@@ -9,8 +9,10 @@
 #include <windows.h>
 #endif
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "base/command_line.h"
@@ -22,17 +24,35 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/vsync_provider.h"
 #include "ui/gl/egl_timestamps.h"
-#include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_export.h"
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_surface_overlay.h"
 
 namespace gl {
 
+class EGLDisplayPlatform {
+ public:
+  constexpr EGLDisplayPlatform()
+      : display_(EGL_DEFAULT_DISPLAY), platform_(0), valid_(false) {}
+  explicit constexpr EGLDisplayPlatform(EGLNativeDisplayType display,
+                                        int platform = 0)
+      : display_(display), platform_(platform), valid_(true) {}
+
+  bool Valid() const { return valid_; }
+  int GetPlatform() const { return platform_; }
+  EGLNativeDisplayType GetDisplay() const { return display_; }
+
+ private:
+  EGLNativeDisplayType display_;
+  // 0 for default, or EGL_PLATFORM_* enum.
+  int platform_;
+  bool valid_;
+};
+
 class GLSurfacePresentationHelper;
 
 // If adding a new type, also add it to EGLDisplayType in
-// tools/metrics/histograms/histograms.xml. Don't remove or reorder entries.
+// tools/metrics/histograms/enums.xml. Don't remove or reorder entries.
 enum DisplayType {
   DEFAULT = 0,
   SWIFT_SHADER = 1,
@@ -47,13 +67,22 @@ enum DisplayType {
   ANGLE_OPENGLES_NULL = 10,
   ANGLE_VULKAN = 11,
   ANGLE_VULKAN_NULL = 12,
-  DISPLAY_TYPE_MAX = 13,
+  ANGLE_D3D11on12 = 13,
+  ANGLE_SWIFTSHADER = 14,
+  ANGLE_OPENGL_EGL = 15,
+  ANGLE_OPENGLES_EGL = 16,
+  ANGLE_METAL = 17,
+  ANGLE_METAL_NULL = 18,
+  DISPLAY_TYPE_MAX = 19,
 };
 
 GL_EXPORT void GetEGLInitDisplays(bool supports_angle_d3d,
                                   bool supports_angle_opengl,
                                   bool supports_angle_null,
                                   bool supports_angle_vulkan,
+                                  bool supports_angle_swiftshader,
+                                  bool supports_angle_egl,
+                                  bool supports_angle_metal,
                                   const base::CommandLine* command_line,
                                   std::vector<DisplayType>* init_displays);
 
@@ -67,20 +96,24 @@ class GL_EXPORT GLSurfaceEGL : public GLSurface {
   EGLConfig GetConfig() override;
   GLSurfaceFormat GetFormat() override;
 
-  static bool InitializeOneOff(EGLNativeDisplayType native_display);
+  static bool InitializeOneOff(EGLDisplayPlatform native_display);
   static bool InitializeOneOffForTesting();
   static bool InitializeExtensionSettingsOneOff();
   static void ShutdownOneOff();
   static EGLDisplay GetHardwareDisplay();
-  static EGLDisplay InitializeDisplay(EGLNativeDisplayType native_display);
+  static EGLDisplay InitializeDisplay(EGLDisplayPlatform native_display);
   static EGLNativeDisplayType GetNativeDisplay();
+  static DisplayType GetDisplayType();
 
   // These aren't particularly tied to surfaces, but since we already
   // have the static InitializeOneOff here, it's easiest to reuse its
   // initialization guards.
+  static const char* GetEGLClientExtensions();
   static const char* GetEGLExtensions();
+  static bool HasEGLClientExtension(const char* name);
   static bool HasEGLExtension(const char* name);
   static bool IsCreateContextRobustnessSupported();
+  static bool IsRobustnessVideoMemoryPurgeSupported();
   static bool IsCreateContextBindGeneratesResourceSupported();
   static bool IsCreateContextWebGLCompatabilitySupported();
   static bool IsEGLSurfacelessContextSupported();
@@ -88,8 +121,13 @@ class GL_EXPORT GLSurfaceEGL : public GLSurface {
   static bool IsEGLFlexibleSurfaceCompatibilitySupported();
   static bool IsRobustResourceInitSupported();
   static bool IsDisplayTextureShareGroupSupported();
+  static bool IsDisplaySemaphoreShareGroupSupported();
   static bool IsCreateContextClientArraysSupported();
   static bool IsAndroidNativeFenceSyncSupported();
+  static bool IsPixelFormatFloatSupported();
+  static bool IsANGLEFeatureControlSupported();
+  static bool IsANGLEPowerPreferenceSupported();
+  static bool IsANGLEExternalContextAndSurfaceSupported();
 
  protected:
   ~GLSurfaceEGL() override;
@@ -114,11 +152,10 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL,
   bool Initialize(GLSurfaceFormat format) override;
   bool SupportsSwapTimestamps() const override;
   void SetEnableSwapTimestamps() override;
-  bool SupportsPresentationCallback() override;
   void Destroy() override;
   bool Resize(const gfx::Size& size,
               float scale_factor,
-              ColorSpace color_space,
+              const gfx::ColorSpace& color_space,
               bool has_alpha) override;
   bool Recreate() override;
   bool IsOffscreen() override;
@@ -143,7 +180,7 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL,
                             const gfx::RectF& crop_rect,
                             bool enable_blend,
                             std::unique_ptr<gfx::GpuFence> gpu_fence) override;
-  bool FlipsVertically() const override;
+  gfx::SurfaceOrigin GetOrigin() const override;
   EGLTimestampClient* GetEGLTimestampClient() override;
 
   // EGLTimestampClient implementation.
@@ -151,6 +188,7 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL,
 
   bool GetFrameTimestampInfoIfAvailable(base::TimeTicks* presentation_time,
                                         base::TimeDelta* composite_interval,
+                                        base::TimeTicks* writes_done_time,
                                         uint32_t* presentation_flags,
                                         int frame_id) override;
 
@@ -179,14 +217,13 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL,
   void UpdateSwapEvents(EGLuint64KHR newFrameId, bool newFrameIdIsValid);
   void TraceSwapEvents(EGLuint64KHR oldFrameId);
 
+  // Some platforms may provide a custom implementation of vsync provider.
+  virtual std::unique_ptr<gfx::VSyncProvider> CreateVsyncProviderInternal();
+
   EGLSurface surface_ = nullptr;
   bool supports_post_sub_buffer_ = false;
   bool supports_swap_buffer_with_damage_ = false;
-  bool flips_vertically_ = false;
-
-#if defined(USE_X11)
-  bool has_swapped_buffers_ = false;
-#endif
+  gfx::SurfaceOrigin surface_origin_ = gfx::SurfaceOrigin::kBottomLeft;
 
   std::unique_ptr<gfx::VSyncProvider> vsync_provider_external_;
   std::unique_ptr<gfx::VSyncProvider> vsync_provider_internal_;
@@ -201,6 +238,8 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL,
 
   // PresentationFeedback support.
   int presentation_feedback_index_ = -1;
+  int composition_start_index_ = -1;
+  int writes_done_index_ = -1;
   uint32_t presentation_flags_ = 0;
 
   base::queue<SwapInfo> swap_info_queue_;
@@ -224,7 +263,7 @@ class GL_EXPORT PbufferGLSurfaceEGL : public GLSurfaceEGL {
   gfx::Size GetSize() override;
   bool Resize(const gfx::Size& size,
               float scale_factor,
-              ColorSpace color_space,
+              const gfx::ColorSpace& color_space,
               bool has_alpha) override;
   EGLSurface GetHandle() override;
   void* GetShareHandle() override;
@@ -255,7 +294,7 @@ class GL_EXPORT SurfacelessEGL : public GLSurfaceEGL {
   gfx::Size GetSize() override;
   bool Resize(const gfx::Size& size,
               float scale_factor,
-              ColorSpace color_space,
+              const gfx::ColorSpace& color_space,
               bool has_alpha) override;
   EGLSurface GetHandle() override;
   void* GetShareHandle() override;

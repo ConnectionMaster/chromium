@@ -8,7 +8,8 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
-#include "chrome/browser/ui/android/infobars/infobar_android.h"
+#include "components/infobars/android/infobar_android.h"
+#include "components/translate/content/android/translate_utils.h"
 #include "components/translate/core/browser/translate_infobar_delegate.h"
 #include "components/translate/core/browser/translate_step.h"
 #include "components/translate/core/common/translate_errors.h"
@@ -18,7 +19,7 @@ class TranslateInfoBarDelegate;
 }
 
 class TranslateCompactInfoBar
-    : public InfoBarAndroid,
+    : public infobars::InfoBarAndroid,
       public translate::TranslateInfoBarDelegate::Observer {
  public:
   explicit TranslateCompactInfoBar(
@@ -48,9 +49,16 @@ class TranslateCompactInfoBar
   jboolean IsIncognito(JNIEnv* env,
                        const base::android::JavaParamRef<jobject>& obj);
 
+  // Returns codes of the content languages in Java format.
+  base::android::ScopedJavaLocalRef<jobjectArray> GetContentLanguagesCodes(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
   // TranslateInfoBarDelegate::Observer implementation.
   void OnTranslateStepChanged(translate::TranslateStep step,
                     translate::TranslateErrors::Type error_type) override;
+  void OnTargetLanguageChanged(
+      const std::string& target_language_code) override;
   // Returns true if the user didn't take any affirmative action.
   // The function will be called when the translate infobar is dismissed.
   // If it's true, we will record a declined event.
@@ -59,9 +67,10 @@ class TranslateCompactInfoBar
       translate::TranslateInfoBarDelegate* delegate) override;
 
  private:
-  // InfoBarAndroid:
+  // infobars::InfoBarAndroid:
   base::android::ScopedJavaLocalRef<jobject> CreateRenderInfoBar(
-      JNIEnv* env) override;
+      JNIEnv* env,
+      const ResourceIdMapper& resource_id_mapper) override;
   void ProcessButton(int action) override;
   void SetJavaInfoBar(
       const base::android::JavaRef<jobject>& java_info_bar) override;
@@ -89,7 +98,6 @@ class TranslateCompactInfoBar
     FLAG_NEVER_SITE = 1 << 4,
     FLAG_EXPAND_MENU = 1 << 5,
   };
-
   DISALLOW_COPY_AND_ASSIGN(TranslateCompactInfoBar);
 };
 

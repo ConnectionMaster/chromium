@@ -2,8 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+import 'chrome://settings/lazy_load.js';
+
+import {webUIListenerCallback} from 'chrome://resources/js/cr.m.js';
+import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {PrivacyPageBrowserProxyImpl} from 'chrome://settings/settings.js';
+import {TestPrivacyPageBrowserProxy} from 'chrome://test/settings/test_privacy_page_browser_proxy.js';
+import {flushTasks} from 'chrome://test/test_util.m.js';
+
+// clang-format on
+
 suite('metrics reporting', function() {
-  /** @type {settings.TestPrivacyPageBrowserProxy} */
+  /** @type {TestPrivacyPageBrowserProxy} */
   let testBrowserProxy;
 
   /** @type {SettingsPrivacyPageElement} */
@@ -11,9 +22,9 @@ suite('metrics reporting', function() {
 
   setup(function() {
     testBrowserProxy = new TestPrivacyPageBrowserProxy();
-    settings.PrivacyPageBrowserProxyImpl.instance_ = testBrowserProxy;
+    PrivacyPageBrowserProxyImpl.instance_ = testBrowserProxy;
     PolymerTest.clearBody();
-    page = document.createElement('settings-privacy-page');
+    page = document.createElement('settings-personalization-options');
     document.body.appendChild(page);
   });
 
@@ -25,11 +36,10 @@ suite('metrics reporting', function() {
     let toggled;
     return testBrowserProxy.whenCalled('getMetricsReporting')
         .then(function() {
-          return PolymerTest.flushTasks();
+          return flushTasks();
         })
         .then(function() {
-          const control = page.$$('settings-personalization-options')
-                              .$.metricsReportingControl;
+          const control = page.$.metricsReportingControl;
           assertEquals(
               testBrowserProxy.metricsReporting.enabled, control.checked);
           assertEquals(
@@ -40,8 +50,8 @@ suite('metrics reporting', function() {
             enabled: !testBrowserProxy.metricsReporting.enabled,
             managed: !testBrowserProxy.metricsReporting.managed,
           };
-          cr.webUIListenerCallback('metrics-reporting-change', changedMetrics);
-          Polymer.dom.flush();
+          webUIListenerCallback('metrics-reporting-change', changedMetrics);
+          flush();
 
           assertEquals(changedMetrics.enabled, control.checked);
           assertEquals(changedMetrics.managed, !!control.pref.controlledBy);
@@ -59,47 +69,47 @@ suite('metrics reporting', function() {
 
   test('metrics reporting restart button', function() {
     return testBrowserProxy.whenCalled('getMetricsReporting').then(function() {
-      Polymer.dom.flush();
+      flush();
 
       // Restart button should be hidden by default (in any state).
-      assertFalse(!!page.$$('settings-personalization-options').$$('#restart'));
+      assertFalse(!!page.$$('#restart'));
 
       // Simulate toggling via policy.
-      cr.webUIListenerCallback('metrics-reporting-change', {
+      webUIListenerCallback('metrics-reporting-change', {
         enabled: false,
         managed: true,
       });
 
       // No restart button should show because the value is managed.
-      assertFalse(!!page.$$('settings-personalization-options').$$('#restart'));
+      assertFalse(!!page.$$('#restart'));
 
-      cr.webUIListenerCallback('metrics-reporting-change', {
+      webUIListenerCallback('metrics-reporting-change', {
         enabled: true,
         managed: true,
       });
-      Polymer.dom.flush();
+      flush();
 
       // Changes in policy should not show the restart button because the value
       // is still managed.
-      assertFalse(!!page.$$('settings-personalization-options').$$('#restart'));
+      assertFalse(!!page.$$('#restart'));
 
       // Remove the policy and toggle the value.
-      cr.webUIListenerCallback('metrics-reporting-change', {
+      webUIListenerCallback('metrics-reporting-change', {
         enabled: false,
         managed: false,
       });
-      Polymer.dom.flush();
+      flush();
 
       // Now the restart button should be showing.
-      assertTrue(!!page.$$('settings-personalization-options').$$('#restart'));
+      assertTrue(!!page.$$('#restart'));
 
       // Receiving the same values should have no effect.
-      cr.webUIListenerCallback('metrics-reporting-change', {
+      webUIListenerCallback('metrics-reporting-change', {
         enabled: false,
         managed: false,
       });
-      Polymer.dom.flush();
-      assertTrue(!!page.$$('settings-personalization-options').$$('#restart'));
+      flush();
+      assertTrue(!!page.$$('#restart'));
     });
   });
 });

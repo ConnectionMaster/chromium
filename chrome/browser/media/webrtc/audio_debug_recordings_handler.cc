@@ -11,17 +11,16 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "components/webrtc_logging/browser/text_log_list.h"
+#include "content/public/browser/audio_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/common/service_manager_connection.h"
 #include "media/audio/audio_debug_recording_session.h"
 #include "services/audio/public/cpp/debug_recording_session_factory.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 using content::BrowserThread;
 
@@ -62,47 +61,48 @@ AudioDebugRecordingsHandler::AudioDebugRecordingsHandler(
   DCHECK(browser_context_);
 }
 
-AudioDebugRecordingsHandler::~AudioDebugRecordingsHandler() {}
+AudioDebugRecordingsHandler::~AudioDebugRecordingsHandler() = default;
 
 void AudioDebugRecordingsHandler::StartAudioDebugRecordings(
     content::RenderProcessHost* host,
     base::TimeDelta delay,
-    const RecordingDoneCallback& callback,
-    const RecordingErrorCallback& error_callback) {
+    RecordingDoneCallback callback,
+    RecordingErrorCallback error_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&GetLogDirectoryAndEnsureExists, browser_context_),
       base::BindOnce(&AudioDebugRecordingsHandler::DoStartAudioDebugRecordings,
-                     this, host, delay, callback, error_callback));
+                     this, host, delay, std::move(callback),
+                     std::move(error_callback)));
 }
 
 void AudioDebugRecordingsHandler::StopAudioDebugRecordings(
     content::RenderProcessHost* host,
-    const RecordingDoneCallback& callback,
-    const RecordingErrorCallback& error_callback) {
+    RecordingDoneCallback callback,
+    RecordingErrorCallback error_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   const bool is_manual_stop = true;
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&GetLogDirectoryAndEnsureExists, browser_context_),
       base::BindOnce(&AudioDebugRecordingsHandler::DoStopAudioDebugRecordings,
                      this, host, is_manual_stop,
-                     current_audio_debug_recordings_id_, callback,
-                     error_callback));
+                     current_audio_debug_recordings_id_, std::move(callback),
+                     std::move(error_callback)));
 }
 
 void AudioDebugRecordingsHandler::DoStartAudioDebugRecordings(
     content::RenderProcessHost* host,
     base::TimeDelta delay,
-    const RecordingDoneCallback& callback,
-    const RecordingErrorCallback& error_callback,
+    RecordingDoneCallback callback,
+    RecordingErrorCallback error_callback,
     const base::FilePath& log_directory) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   if (audio_debug_recording_session_) {
-    error_callback.Run("Audio debug recordings already in progress");
+    std::move(error_callback).Run("Audio debug recordings already in progress");
     return;
   }
 
@@ -110,24 +110,26 @@ void AudioDebugRecordingsHandler::DoStartAudioDebugRecordings(
       log_directory, ++current_audio_debug_recordings_id_);
   host->EnableAudioDebugRecordings(prefix_path);
 
+  mojo::PendingRemote<audio::mojom::DebugRecording> debug_recording;
+  content::GetAudioService().BindDebugRecording(
+      debug_recording.InitWithNewPipeAndPassReceiver());
   audio_debug_recording_session_ = audio::CreateAudioDebugRecordingSession(
-      prefix_path, content::ServiceManagerConnection::GetForProcess()
-                       ->GetConnector()
-                       ->Clone());
+      prefix_path, std::move(debug_recording));
 
   if (delay.is_zero()) {
     const bool is_stopped = false, is_manual_stop = false;
-    callback.Run(prefix_path.AsUTF8Unsafe(), is_stopped, is_manual_stop);
+    std::move(callback).Run(prefix_path.AsUTF8Unsafe(), is_stopped,
+                            is_manual_stop);
     return;
   }
 
   const bool is_manual_stop = false;
-  base::PostDelayedTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  content::GetUIThreadTaskRunner({})->PostDelayedTask(
+      FROM_HERE,
       base::BindOnce(&AudioDebugRecordingsHandler::DoStopAudioDebugRecordings,
                      this, host, is_manual_stop,
-                     current_audio_debug_recordings_id_, callback,
-                     error_callback, log_directory),
+                     current_audio_debug_recordings_id_, std::move(callback),
+                     std::move(error_callback), log_directory),
       delay);
 }
 
@@ -135,8 +137,8 @@ void AudioDebugRecordingsHandler::DoStopAudioDebugRecordings(
     content::RenderProcessHost* host,
     bool is_manual_stop,
     uint64_t audio_debug_recordings_id,
-    const RecordingDoneCallback& callback,
-    const RecordingErrorCallback& error_callback,
+    RecordingDoneCallback callback,
+    RecordingErrorCallback error_callback,
     const base::FilePath& log_directory) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK_LE(audio_debug_recordings_id, current_audio_debug_recordings_id_);
@@ -150,12 +152,13 @@ void AudioDebugRecordingsHandler::DoStopAudioDebugRecordings(
   //   Start(20);  // Start dump 2. Posted Stop() for 1 should not stop dump 2.
   if (audio_debug_recordings_id < current_audio_debug_recordings_id_) {
     const bool is_stopped = false;
-    callback.Run(prefix_path.AsUTF8Unsafe(), is_stopped, is_manual_stop);
+    std::move(callback).Run(prefix_path.AsUTF8Unsafe(), is_stopped,
+                            is_manual_stop);
     return;
   }
 
   if (!audio_debug_recording_session_) {
-    error_callback.Run("No audio debug recording in progress");
+    std::move(error_callback).Run("No audio debug recording in progress");
     return;
   }
 
@@ -164,5 +167,6 @@ void AudioDebugRecordingsHandler::DoStopAudioDebugRecordings(
   host->DisableAudioDebugRecordings();
 
   const bool is_stopped = true;
-  callback.Run(prefix_path.AsUTF8Unsafe(), is_stopped, is_manual_stop);
+  std::move(callback).Run(prefix_path.AsUTF8Unsafe(), is_stopped,
+                          is_manual_stop);
 }

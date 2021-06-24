@@ -9,12 +9,13 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_frame_host.h"
@@ -69,7 +70,7 @@ constexpr char kImeWindowMissingPermission[] =
     "Extensions require the \"app.window.ime\" permission to create windows.";
 constexpr char kImeOptionIsNotSupported[] =
     "The \"ime\" option is not supported for platform app.";
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 constexpr char kImeWindowUnsupportedPlatform[] =
     "The \"ime\" option can only be used on ChromeOS.";
 #else
@@ -152,7 +153,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
   // TODO(devlin): Investigate if this is still used. If not, kill it dead!
   GURL absolute = GURL(params->url);
   if (absolute.has_scheme()) {
-    if (extension()->location() == Manifest::COMPONENT) {
+    if (extension()->location() == mojom::ManifestLocation::kComponent) {
       url = absolute;
     } else {
       // Show error when url passed isn't local.
@@ -190,8 +191,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
           content::RenderFrameHost* existing_frame =
               existing_window->web_contents()->GetMainFrame();
           int frame_id = MSG_ROUTING_NONE;
-          if (render_frame_host()->GetProcess()->GetID() ==
-              existing_frame->GetProcess()->GetID()) {
+          if (source_process_id() == existing_frame->GetProcess()->GetID()) {
             frame_id = existing_frame->GetRoutingID();
           }
 
@@ -207,14 +207,26 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
           result->SetInteger("frameId", frame_id);
           existing_window->GetSerializedState(result.get());
           result->SetBoolean("existingWindow", true);
-          return RespondNow(OneArgument(std::move(result)));
+          // We should not return the window until that window is properly
+          // initialized. Hence, adding a callback for window first navigation
+          // completion.
+          if (existing_window->DidFinishFirstNavigation())
+            return RespondNow(OneArgument(
+                base::Value::FromUniquePtrValue(std::move(result))));
+
+          existing_window->AddOnDidFinishFirstNavigationCallback(base::BindOnce(
+              &AppWindowCreateFunction::
+                  OnAppWindowFinishedFirstNavigationOrClosed,
+              this,
+              OneArgument(base::Value::FromUniquePtrValue(std::move(result)))));
+          return RespondLater();
         }
       }
     }
 
     std::string error;
     if (!GetBoundsSpec(*options, &create_params, &error))
-      return RespondNow(Error(error));
+      return RespondNow(Error(std::move(error)));
 
     if (options->type == app_window::WINDOW_TYPE_PANEL) {
       WriteToConsole(blink::mojom::ConsoleMessageLevel::kWarning,
@@ -222,18 +234,18 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
     }
 
     if (!GetFrameOptions(*options, &create_params, &error))
-      return RespondNow(Error(error));
+      return RespondNow(Error(std::move(error)));
 
     if (extension()->GetType() == Manifest::TYPE_EXTENSION) {
       // Whitelisted IME extensions are allowed to use this API to create IME
       // specific windows to show accented characters or suggestions.
       if (!extension()->permissions_data()->HasAPIPermission(
-              APIPermission::kImeWindowEnabled)) {
+              mojom::APIPermissionID::kImeWindowEnabled)) {
         return RespondNow(
             Error(app_window_constants::kImeWindowMissingPermission));
       }
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
       // IME window is only supported on ChromeOS.
       return RespondNow(
           Error(app_window_constants::kImeWindowUnsupportedPlatform));
@@ -247,7 +259,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
         return RespondNow(
             Error(app_window_constants::kImeWindowMustBeImeWindow));
       }
-#endif  // OS_CHROMEOS
+#endif  // IS_CHROMEOS_ASH
     } else {
       if (options->ime.get()) {
         return RespondNow(
@@ -257,7 +269,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
 
     if (options->alpha_enabled.get()) {
       const char* const kWhitelist[] = {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
         "B58B99751225318C7EB8CF4688B5434661083E07",  // http://crbug.com/410550
         "06BE211D5F014BAB34BC22D9DDA09C63A81D828E",  // http://crbug.com/425539
         "F94EE6AB36D6C6588670B2B01EB65212D9C64E33",
@@ -280,7 +292,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
             Error(app_window_constants::kAlphaEnabledWrongChannel));
       }
       if (!extension()->permissions_data()->HasAPIPermission(
-              APIPermission::kAlphaEnabled)) {
+              mojom::APIPermissionID::kAlphaEnabled)) {
         return RespondNow(
             Error(app_window_constants::kAlphaEnabledMissingPermission));
       }
@@ -307,7 +319,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
 
       if (create_params.always_on_top &&
           !extension()->permissions_data()->HasAPIPermission(
-              APIPermission::kAlwaysOnTopWindows)) {
+              mojom::APIPermissionID::kAlwaysOnTopWindows)) {
         return RespondNow(Error(app_window_constants::kAlwaysOnTopPermission));
       }
     }
@@ -365,7 +377,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
     }
 
     if (!extension()->permissions_data()->HasAPIPermission(
-            APIPermission::kLockScreen)) {
+            mojom::APIPermissionID::kLockScreen)) {
       return RespondNow(Error(
           app_window_constants::kLockScreenActionRequiresLockScreenPermission));
     }
@@ -374,8 +386,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
     create_params.show_on_lock_screen = true;
   }
 
-  create_params.creator_process_id =
-      render_frame_host()->GetProcess()->GetID();
+  create_params.creator_process_id = source_process_id();
 
   AppWindow* app_window = nullptr;
   if (action_type == api::app_runtime::ACTION_TYPE_NONE) {
@@ -410,33 +421,34 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
   result->SetInteger("frameId", frame_id);
   result->SetString("id", app_window->window_key());
   app_window->GetSerializedState(result.get());
-  ResponseValue result_arg = OneArgument(std::move(result));
+  ResponseValue result_arg =
+      OneArgument(base::Value::FromUniquePtrValue(std::move(result)));
 
   if (AppWindowRegistry::Get(browser_context())
           ->HadDevToolsAttached(app_window->web_contents())) {
     AppWindowClient::Get()->OpenDevToolsWindow(
         app_window->web_contents(),
-        base::Bind(&AppWindowCreateFunction::Respond, this,
-                   base::Passed(&result_arg)));
+        base::BindOnce(&AppWindowCreateFunction::Respond, this,
+                       std::move(result_arg)));
     // OpenDevToolsWindow might have already responded.
     return did_respond() ? AlreadyResponded() : RespondLater();
   }
 
-  // Delay sending the response until the newly created window has been told to
-  // navigate, and blink has been correctly initialized in the renderer.
-  // SetOnFirstCommitOrWindowClosedCallback() will respond asynchronously.
-  app_window->SetOnFirstCommitOrWindowClosedCallback(base::Bind(
-      &AppWindowCreateFunction::OnAppWindowReadyToCommitFirstNavigationOrClosed,
-      this, base::Passed(&result_arg)));
+  // Delay sending the response until the newly created window has finished its
+  // navigation or was closed during that process.
+  // AddOnDidFinishFirstNavigationCallback() will respond asynchronously.
+  app_window->AddOnDidFinishFirstNavigationCallback(base::BindOnce(
+      &AppWindowCreateFunction::OnAppWindowFinishedFirstNavigationOrClosed,
+      this, std::move(result_arg)));
   return RespondLater();
 }
 
-void AppWindowCreateFunction::OnAppWindowReadyToCommitFirstNavigationOrClosed(
+void AppWindowCreateFunction::OnAppWindowFinishedFirstNavigationOrClosed(
     ResponseValue result_arg,
-    bool ready_to_commit) {
+    bool did_finish) {
   DCHECK(!did_respond());
 
-  if (!ready_to_commit) {
+  if (!did_finish) {
     Respond(Error(app_window_constants::kPrematureWindowClose));
     return;
   }

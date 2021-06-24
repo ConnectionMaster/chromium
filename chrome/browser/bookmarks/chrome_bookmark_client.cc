@@ -4,8 +4,8 @@
 
 #include "chrome/browser/bookmarks/chrome_bookmark_client.h"
 
-#include "base/logging.h"
 #include "base/metrics/user_metrics.h"
+#include "base/notreached.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -15,6 +15,7 @@
 #include "components/bookmarks/managed/managed_bookmark_service.h"
 #include "components/bookmarks/managed/managed_bookmark_util.h"
 #include "components/favicon/core/favicon_util.h"
+#include "components/favicon_base/favicon_types.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/offline_pages/buildflags/buildflags.h"
@@ -47,20 +48,15 @@ void ChromeBookmarkClient::Init(bookmarks::BookmarkModel* model) {
 #endif
 }
 
-bool ChromeBookmarkClient::PreferTouchIcon() {
-  return false;
-}
-
 base::CancelableTaskTracker::TaskId
 ChromeBookmarkClient::GetFaviconImageForPageURL(
     const GURL& page_url,
-    favicon_base::IconType type,
-    const favicon_base::FaviconImageCallback& callback,
+    favicon_base::FaviconImageCallback callback,
     base::CancelableTaskTracker* tracker) {
   return favicon::GetFaviconImageForPageURL(
       FaviconServiceFactory::GetForProfile(profile_,
                                            ServiceAccessType::EXPLICIT_ACCESS),
-      page_url, type, callback, tracker);
+      page_url, favicon_base::IconType::kFavicon, std::move(callback), tracker);
 }
 
 bool ChromeBookmarkClient::SupportsTypedCountForUrls() {
@@ -89,27 +85,41 @@ void ChromeBookmarkClient::GetTypedCountForUrls(
   }
 }
 
-bool ChromeBookmarkClient::IsPermanentNodeVisible(
-    const bookmarks::BookmarkPermanentNode* node) {
-  DCHECK(bookmarks::IsPermanentNode(node, managed_bookmark_service_));
-  if (bookmarks::IsManagedNode(node, managed_bookmark_service_))
-    return false;
+bool ChromeBookmarkClient::IsPermanentNodeVisibleWhenEmpty(
+    bookmarks::BookmarkNode::Type type) {
 #if defined(OS_ANDROID)
-  return node->type() == bookmarks::BookmarkNode::MOBILE;
+  const bool is_mobile = true;
 #else
-  return node->type() != bookmarks::BookmarkNode::MOBILE;
+  const bool is_mobile = false;
 #endif
+
+  switch (type) {
+    case bookmarks::BookmarkNode::URL:
+      NOTREACHED();
+      return false;
+    case bookmarks::BookmarkNode::FOLDER:
+      // Managed node.
+      return false;
+    case bookmarks::BookmarkNode::BOOKMARK_BAR:
+    case bookmarks::BookmarkNode::OTHER_NODE:
+      return !is_mobile;
+    case bookmarks::BookmarkNode::MOBILE:
+      return is_mobile;
+  }
+
+  return false;
 }
 
 void ChromeBookmarkClient::RecordAction(const base::UserMetricsAction& action) {
   base::RecordAction(action);
 }
 
-bookmarks::LoadExtraCallback ChromeBookmarkClient::GetLoadExtraNodesCallback() {
+bookmarks::LoadManagedNodeCallback
+ChromeBookmarkClient::GetLoadManagedNodeCallback() {
   if (!managed_bookmark_service_)
-    return bookmarks::LoadExtraCallback();
+    return bookmarks::LoadManagedNodeCallback();
 
-  return managed_bookmark_service_->GetLoadExtraNodesCallback();
+  return managed_bookmark_service_->GetLoadManagedNodeCallback();
 }
 
 bool ChromeBookmarkClient::CanSetPermanentNodeTitle(

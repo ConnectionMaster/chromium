@@ -5,14 +5,13 @@
 package org.chromium.chrome.browser.datareduction;
 
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.chrome.browser.util.ConversionUtils;
+import org.chromium.components.browser_ui.util.ConversionUtils;
 
 /**
  * Centralizes UMA data collection for the Data Reduction Proxy.
  */
 public class DataReductionProxyUma {
     public static final String UI_ACTION_HISTOGRAM_NAME = "DataReductionProxy.UIAction";
-    public static final String PREVIEWS_HISTOGRAM_NAME = "Previews.ContextMenuAction.LoFi";
 
     public static final String USER_VIEWED_ORIGINAL_SIZE_HISTOGRAM_NAME =
             "DataReductionProxy.UserViewedOriginalSize";
@@ -54,20 +53,16 @@ public class DataReductionProxyUma {
     public static final int ACTION_INFOBAR_OFF_TO_ON = 29;
     public static final int ACTION_INFOBAR_ON_TO_OFF = 30;
     public static final int ACTION_INFOBAR_ON_TO_ON = 31;
-    public static final int ACTION_INDEX_BOUNDARY = 32;
-
-    // Represent the possible Lo-Fi context menu user actions. This must remain in sync with
-    // Previews.ContextMenuAction.LoFi in tools/metrics/histograms/histograms.xml.
-    public static final int ACTION_LOFI_LOAD_IMAGE_CONTEXT_MENU_SHOWN = 0;
-    public static final int ACTION_LOFI_LOAD_IMAGE_CONTEXT_MENU_CLICKED = 1;
-    public static final int ACTION_LOFI_LOAD_IMAGE_CONTEXT_MENU_CLICKED_ON_PAGE = 2;
-    // Deprecated: ACTION_LOFI_LOAD_IMAGES_CONTEXT_MENU_SHOWN = 3;
-    // Deprecated: ACTION_LOFI_LOAD_IMAGES_CONTEXT_MENU_CLICKED = 4;
-    public static final int ACTION_LOFI_CONTEXT_MENU_INDEX_BOUNDARY = 5;
+    public static final int ACTION_HTTPS_IMAGE_COMPRESSION_INFOBAR_OFF_TO_OFF = 32;
+    public static final int ACTION_HTTPS_IMAGE_COMPRESSION_INFOBAR_OFF_TO_ON = 33;
+    public static final int ACTION_HTTPS_IMAGE_COMPRESSION_INFOBAR_ON_TO_OFF = 34;
+    public static final int ACTION_HTTPS_IMAGE_COMPRESSION_INFOBAR_ON_TO_ON = 35;
+    public static final int ACTION_INDEX_BOUNDARY = 36;
 
     /**
      * Record the DataReductionProxy.UIAction histogram.
-     * @param action User action at the promo, first run experience, or settings screen
+     * @param action User action at the promo, first run experience, or settings screen, or https
+     *         image compression infobar
      */
     public static void dataReductionProxyUIAction(int action) {
         assert action >= 0 && action < ACTION_INDEX_BOUNDARY;
@@ -104,15 +99,5 @@ public class DataReductionProxyUma {
                 USER_VIEWED_USAGE_DIFFERENCE_HISTOGRAM_NAME, usedDifference);
         RecordHistogram.recordPercentageHistogram(
                 USER_VIEWED_SAVINGS_DIFFERENCE_HISTOGRAM_NAME, savedDifference);
-    }
-
-    /**
-     * Record the Previews.ContextMenuAction.LoFi histogram.
-     * @param action Lo-Fi user action on the context menu
-     */
-    public static void previewsLoFiContextMenuAction(int action) {
-        assert action >= 0 && action < ACTION_LOFI_CONTEXT_MENU_INDEX_BOUNDARY;
-        RecordHistogram.recordEnumeratedHistogram(
-                PREVIEWS_HISTOGRAM_NAME, action, ACTION_LOFI_CONTEXT_MENU_INDEX_BOUNDARY);
     }
 }

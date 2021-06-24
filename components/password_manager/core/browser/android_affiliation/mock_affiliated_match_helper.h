@@ -15,16 +15,14 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
-namespace autofill {
-struct PasswordForm;
-}
-
 namespace password_manager {
+
+struct PasswordForm;
 
 class MockAffiliatedMatchHelper : public AffiliatedMatchHelper {
  public:
   // This struct mirrors the corresponding affiliation and branding information
-  // related fields from autofill::PasswordForm.
+  // related fields from PasswordForm.
   struct AffiliationAndBrandingInformation {
     std::string affiliated_web_realm;
     std::string app_display_name;
@@ -34,18 +32,18 @@ class MockAffiliatedMatchHelper : public AffiliatedMatchHelper {
   MockAffiliatedMatchHelper();
   ~MockAffiliatedMatchHelper() override;
 
-  // Expects GetAffiliatedAndroidRealms() to be called with the
+  // Expects GetAffiliatedAndroidAndWebRealms() to be called with the
   // |expected_observed_form|, and will cause the result callback supplied to
-  // GetAffiliatedAndroidRealms() to be invoked with |results_to_return|.
+  // GetAffiliatedAndroidAndWebRealms() to be invoked with |results_to_return|.
   void ExpectCallToGetAffiliatedAndroidRealms(
-      const PasswordStore::FormDigest& expected_observed_form,
+      const PasswordFormDigest& expected_observed_form,
       const std::vector<std::string>& results_to_return);
 
   // Expects GetAffiliatedWebRealms() to be called with the
   // |expected_android_form|, and will cause the result callback supplied to
   // GetAffiliatedWebRealms() to be invoked with |results_to_return|.
   void ExpectCallToGetAffiliatedWebRealms(
-      const PasswordStore::FormDigest& expected_android_form,
+      const PasswordFormDigest& expected_android_form,
       const std::vector<std::string>& results_to_return);
 
   void ExpectCallToInjectAffiliationAndBrandingInformation(
@@ -53,21 +51,22 @@ class MockAffiliatedMatchHelper : public AffiliatedMatchHelper {
 
  private:
   MOCK_METHOD1(OnGetAffiliatedAndroidRealmsCalled,
-               std::vector<std::string>(const PasswordStore::FormDigest&));
+               std::vector<std::string>(const PasswordFormDigest&));
   MOCK_METHOD1(OnGetAffiliatedWebRealmsCalled,
-               std::vector<std::string>(const PasswordStore::FormDigest&));
+               std::vector<std::string>(const PasswordFormDigest&));
   MOCK_METHOD0(OnInjectAffiliationAndBrandingInformationCalled,
                std::vector<AffiliationAndBrandingInformation>());
 
-  void GetAffiliatedAndroidRealms(
-      const PasswordStore::FormDigest& observed_form,
+  void GetAffiliatedAndroidAndWebRealms(
+      const PasswordFormDigest& observed_form,
       AffiliatedRealmsCallback result_callback) override;
   void GetAffiliatedWebRealms(
-      const PasswordStore::FormDigest& android_form,
+      const PasswordFormDigest& android_form,
       AffiliatedRealmsCallback result_callback) override;
 
   void InjectAffiliationAndBrandingInformation(
-      std::vector<std::unique_ptr<autofill::PasswordForm>> forms,
+      std::vector<std::unique_ptr<PasswordForm>> forms,
+      AndroidAffiliationService::StrategyOnCacheMiss strategy_on_cache_miss,
       PasswordFormsCallback result_callback) override;
 
   DISALLOW_COPY_AND_ASSIGN(MockAffiliatedMatchHelper);

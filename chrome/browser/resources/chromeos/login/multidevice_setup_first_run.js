@@ -14,9 +14,9 @@ cr.define('multidevice_setup', function() {
     constructor() {
       /**
        * @private {?chromeos.multideviceSetup.mojom.
-       *               PrivilegedHostDeviceSetterProxy}
+       *               PrivilegedHostDeviceSetterRemote}
        */
-      this.proxy_ = null;
+      this.remote_ = null;
     }
 
     /** @override */
@@ -25,18 +25,18 @@ cr.define('multidevice_setup', function() {
     }
 
     /** @override */
-    setHostDevice(hostDeviceId, opt_authToken) {
+    setHostDevice(hostInstanceIdOrLegacyDeviceId, opt_authToken) {
       // An authentication token is not expected since a password is not
       // required.
       assert(!opt_authToken);
 
-      if (!this.proxy_) {
-        this.proxy_ = chromeos.multideviceSetup.mojom.PrivilegedHostDeviceSetter
-                          .getProxy();
+      if (!this.remote_) {
+        this.remote_ = chromeos.multideviceSetup.mojom
+                           .PrivilegedHostDeviceSetter.getRemote();
       }
 
       return /** @type {!Promise<{success: boolean}>} */ (
-          this.proxy_.setHostDevice(hostDeviceId));
+          this.remote_.setHostDevice(hostInstanceIdOrLegacyDeviceId));
     }
 
     /** @override */
@@ -53,19 +53,18 @@ cr.define('multidevice_setup', function() {
   const MultiDeviceSetupFirstRun = Polymer({
     is: 'multidevice-setup-first-run',
 
-    behaviors: [I18nBehavior, WebUIListenerBehavior],
+    behaviors: [OobeI18nBehavior, WebUIListenerBehavior],
 
     properties: {
       /** @private {!multidevice_setup.MultiDeviceSetupDelegate} */
       delegate_: Object,
 
       /**
-       * Text to be shown on the forward navigation button.
+       * ID of loadTimeData string to be shown on the forward navigation button.
        * @private {string|undefined}
        */
-      forwardButtonText_: {
+      forwardButtonTextId_: {
         type: String,
-        value: '',
       },
 
       /**
@@ -78,18 +77,23 @@ cr.define('multidevice_setup', function() {
       },
 
       /**
-       * Text to be shown on the cancel button.
+       * ID of loadTimeData string to be shown on the cancel button.
        * @private {string|undefined}
        */
-      cancelButtonText_: {
+      cancelButtonTextId_: {
         type: String,
-        value: '',
       },
 
       /** Whether the webview overlay should be hidden. */
       webviewOverlayHidden_: {
         type: Boolean,
         value: true,
+      },
+
+      /** Whether the webview is currently loading. */
+      isWebviewLoading_: {
+        type: Boolean,
+        value: false,
       },
 
       /**
@@ -107,19 +111,33 @@ cr.define('multidevice_setup', function() {
     },
 
     /** @override */
-    attached: function() {
+    attached() {
       this.delegate_ = new MultiDeviceSetupFirstRunDelegate();
+      this.$.multideviceHelpOverlayWebview.addEventListener(
+          'contentload', () => {
+            this.isWebviewLoading_ = false;
+          });
     },
 
-    onForwardButtonFocusRequested_: function() {
-      this.$$('#next-button').focus();
+    /** @override */
+    ready() {
+      this.updateLocalizedContent();
+    },
+
+    updateLocalizedContent() {
+      this.i18nUpdateLocale();
+      this.$.multideviceSetup.updateLocalizedContent();
+    },
+
+    onForwardButtonFocusRequested_() {
+      this.$.nextButton.focus();
     },
 
     /**
      * @param {!CustomEvent<!{didUserCompleteSetup: boolean}>} event
      * @private
      */
-    onExitRequested_: function(event) {
+    onExitRequested_(event) {
       if (event.detail.didUserCompleteSetup) {
         chrome.send(
             'login.MultiDeviceSetupScreen.userActed', ['setup-accepted']);
@@ -129,35 +147,19 @@ cr.define('multidevice_setup', function() {
       }
     },
 
-    /**
-     * @param {boolean} shouldShow
-     * @param {string=} opt_url
-     * @private
-     */
-    setWebviewOverlayVisibility_: function(shouldShow, opt_url) {
-      if (opt_url) {
-        this.webviewSrc_ = opt_url;
-      }
-      this.webviewOverlayHidden_ = !shouldShow;
-    },
-
     /** @private */
-    hideWebviewOverlay_: function() {
-      this.setWebviewOverlayVisibility_(false /* shouldShow */);
+    hideWebviewOverlay_() {
+      this.webviewOverlayHidden_ = true;
     },
 
     /**
      * @param {!CustomEvent<string>} event
      * @private
      */
-    onOpenLearnMoreWebviewRequested_: function(event) {
-      this.setWebviewOverlayVisibility_(
-          true /* shouldShow */, event.detail /* url */);
-    },
-
-    /** @private */
-    getOverlayCloseTopTitle_: function() {
-      return this.i18n('arcOverlayClose');
+    onOpenLearnMoreWebviewRequested_(event) {
+      this.isWebviewLoading_ = true;
+      this.webviewSrc_ = event.detail;
+      this.webviewOverlayHidden_ = false;
     },
   });
 

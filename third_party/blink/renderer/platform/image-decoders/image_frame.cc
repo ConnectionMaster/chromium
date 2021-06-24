@@ -122,6 +122,10 @@ bool ImageFrame::AllocatePixelData(int new_width,
                                    sk_sp<SkColorSpace> color_space) {
   // AllocatePixelData() should only be called once.
   DCHECK(!Width() && !Height());
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+  if (new_width > 1000 || new_height > 1000)
+    return false;
+#endif
 
   SkImageInfo info = SkImageInfo::MakeN32(
       new_width, new_height,
@@ -129,12 +133,13 @@ bool ImageFrame::AllocatePixelData(int new_width,
       std::move(color_space));
   if (pixel_format_ == kRGBA_F16)
     info = info.makeColorType(kRGBA_F16_SkColorType);
-  bitmap_.setInfo(info);
-  bool allocated = bitmap_.tryAllocPixels(allocator_);
-  if (allocated)
+  bool success = bitmap_.setInfo(info);
+  DCHECK(success);
+  success = bitmap_.tryAllocPixels(allocator_);
+  if (success)
     status_ = kFrameInitialized;
 
-  return allocated;
+  return success;
 }
 
 sk_sp<SkImage> ImageFrame::FinalizePixelsAndGetImage() {
@@ -190,7 +195,7 @@ static void BlendRGBAF16Buffer(ImageFrame::PixelDataF16* dst,
       SkImage::MakeFromRaster(src_pixmap, nullptr, nullptr);
 
   surface->getCanvas()->drawImage(src_image, 0, 0);
-  surface->flush();
+  surface->flushAndSubmit();
 }
 
 void ImageFrame::BlendRGBARawF16Buffer(PixelDataF16* dst,

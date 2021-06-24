@@ -1,5 +1,6 @@
 kbr@chromium.org
-piman@chromium.org
 zmo@chromium.org
 
-# COMPONENT: Internals>GPU>Internals
+# Gpu info collection
+per-file *info*=magchen@chromium.org
+per-file *dx_diag*=magchen@chromium.org

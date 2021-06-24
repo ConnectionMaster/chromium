@@ -4,27 +4,13 @@
 
 #include "content/browser/renderer_host/render_view_host_delegate.h"
 
-#include "content/public/common/web_preferences.h"
-#include "url/gurl.h"
-
 namespace content {
 
 RenderViewHostDelegateView* RenderViewHostDelegate::GetDelegateView() {
   return nullptr;
 }
 
-bool RenderViewHostDelegate::OnMessageReceived(
-    RenderViewHostImpl* render_view_host,
-    const IPC::Message& message) {
-  return false;
-}
-
 WebContents* RenderViewHostDelegate::GetAsWebContents() {
-  return nullptr;
-}
-
-SessionStorageNamespace* RenderViewHostDelegate::GetSessionStorageNamespace(
-    SiteInstance* instance) {
   return nullptr;
 }
 
@@ -33,15 +19,7 @@ RenderViewHostDelegate::GetSessionStorageNamespaceMap() {
   return SessionStorageNamespaceMap();
 }
 
-FrameTree* RenderViewHostDelegate::GetFrameTree() {
-  return nullptr;
-}
-
-bool RenderViewHostDelegate::IsNeverVisible() {
-  return false;
-}
-
-bool RenderViewHostDelegate::IsOverridingUserAgent() {
+bool RenderViewHostDelegate::IsNeverComposited() {
   return false;
 }
 
@@ -53,20 +31,16 @@ bool RenderViewHostDelegate::ShouldIgnoreUnresponsiveRenderer() {
   return false;
 }
 
-bool RenderViewHostDelegate::HideDownloadUI() const {
+bool RenderViewHostDelegate::IsGuest() {
   return false;
 }
 
-bool RenderViewHostDelegate::HasPersistentVideo() const {
+bool RenderViewHostDelegate::IsPortal() {
   return false;
 }
 
-RenderFrameHost* RenderViewHostDelegate::GetPendingMainFrame() {
-  return nullptr;
-}
-
-bool RenderViewHostDelegate::IsPortal() const {
-  return false;
+absl::optional<SkColor> RenderViewHostDelegate::GetBaseBackgroundColor() {
+  return absl::nullopt;
 }
 
 }  // namespace content

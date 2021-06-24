@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -13,7 +13,7 @@ def GetWriter(config):
   See the constructor of TemplateWriter for description of
   arguments.
   '''
-  return RegWriter(['win'], config)
+  return RegWriter(['win', 'win7'], config)
 
 
 class RegWriter(template_writer.TemplateWriter):

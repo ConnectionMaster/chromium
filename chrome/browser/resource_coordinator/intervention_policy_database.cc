@@ -6,7 +6,9 @@
 
 #include "base/bind.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner_util.h"
 #include "base/values.h"
 #include "chrome/browser/resource_coordinator/utils.h"
@@ -18,8 +20,7 @@ InterventionPolicyDatabase::OriginInterventionPolicies::
                                InterventionPolicy freezing_policy)
     : discarding_policy(discarding_policy), freezing_policy(freezing_policy) {}
 
-InterventionPolicyDatabase::InterventionPolicyDatabase()
-    : weak_factory_(this) {}
+InterventionPolicyDatabase::InterventionPolicyDatabase() {}
 InterventionPolicyDatabase::~InterventionPolicyDatabase() = default;
 
 InterventionPolicyDatabase::InterventionPolicy
@@ -44,7 +45,7 @@ void InterventionPolicyDatabase::InitializeDatabaseWithProtoFile(
     const base::Version& version,
     std::unique_ptr<base::DictionaryValue> manifest) {
   // TODO(sebmarchand): Validate the version and the manifest?
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
       {base::TaskPriority::BEST_EFFORT,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN, base::MayBlock()},

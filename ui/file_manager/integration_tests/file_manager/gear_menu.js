@@ -2,84 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-'use strict';
+import {addEntries, ENTRIES, RootPath, sendTestMessage, TestEntryInfo} from '../test_util.js';
+import {testcase} from '../testcase.js';
 
-/**
- * Expected files shown in Downloads with hidden disabled
- *
- * @type {!Array<!TestEntryInfo>}
- */
-const BASIC_LOCAL_ENTRY_SET_WITHOUT_HIDDEN = [
-  ENTRIES.hello,
-  ENTRIES.world,
-  ENTRIES.desktop,
-  ENTRIES.beautiful,
-  ENTRIES.photos,
-  ENTRIES.crdownload,
-];
-
-/**
- * Expected files shown in Downloads with hidden enabled
- *
- * @type {!Array<!TestEntryInfo>}
- */
-const BASIC_LOCAL_ENTRY_SET_WITH_HIDDEN = [
-  ENTRIES.hello,
-  ENTRIES.world,
-  ENTRIES.desktop,
-  ENTRIES.beautiful,
-  ENTRIES.photos,
-  ENTRIES.crdownload,
-  ENTRIES.hiddenFile,
-];
-
-/**
- * Expected files shown in Drive with hidden enabled
- *
- * @type {!Array<!TestEntryInfo>}
- */
-const BASIC_DRIVE_ENTRY_SET_WITH_HIDDEN = [
-  ENTRIES.hello,
-  ENTRIES.world,
-  ENTRIES.desktop,
-  ENTRIES.beautiful,
-  ENTRIES.photos,
-  ENTRIES.unsupported,
-  ENTRIES.testDocument,
-  ENTRIES.testSharedDocument,
-  ENTRIES.hiddenFile,
-];
-
-const BASIC_ANDROID_ENTRY_SET = [
-  ENTRIES.directoryDocuments,
-  ENTRIES.directoryMovies,
-  ENTRIES.directoryMusic,
-  ENTRIES.directoryPictures,
-];
-
-const BASIC_ANDROID_ENTRY_SET_WITH_HIDDEN = [
-  ENTRIES.directoryDocuments,
-  ENTRIES.directoryMovies,
-  ENTRIES.directoryMusic,
-  ENTRIES.directoryPictures,
-  ENTRIES.hello,
-  ENTRIES.world,
-  ENTRIES.directoryA,
-];
-
-/**
- * Expected files shown in Drive with Google Docs disabled
- *
- * @type {!Array<!TestEntryInfo>}
- */
-const BASIC_DRIVE_ENTRY_SET_WITHOUT_GDOCS = [
-  ENTRIES.hello,
-  ENTRIES.world,
-  ENTRIES.desktop,
-  ENTRIES.beautiful,
-  ENTRIES.photos,
-  ENTRIES.unsupported,
-];
+import {isSinglePartitionFormat, navigateWithDirectoryTree, openNewWindow, remoteCall, setupAndWaitUntilReady} from './background.js';
+import {BASIC_ANDROID_ENTRY_SET, BASIC_ANDROID_ENTRY_SET_WITH_HIDDEN, BASIC_DRIVE_ENTRY_SET, BASIC_DRIVE_ENTRY_SET_WITH_HIDDEN, BASIC_LOCAL_ENTRY_SET, BASIC_LOCAL_ENTRY_SET_WITH_HIDDEN, COMPLEX_DOCUMENTS_PROVIDER_ENTRY_SET} from './test_data.js';
 
 /**
  * Gets the common steps to toggle hidden files in the Files app
@@ -170,8 +97,7 @@ testcase.showHiddenFilesDownloads = async () => {
       RootPath.DOWNLOADS, BASIC_LOCAL_ENTRY_SET_WITH_HIDDEN, []);
 
   await runHiddenFilesTest(
-      appId, BASIC_LOCAL_ENTRY_SET_WITHOUT_HIDDEN,
-      BASIC_LOCAL_ENTRY_SET_WITH_HIDDEN);
+      appId, BASIC_LOCAL_ENTRY_SET, BASIC_LOCAL_ENTRY_SET_WITH_HIDDEN);
 };
 
 /**
@@ -196,13 +122,15 @@ testcase.showToggleHiddenAndroidFoldersGearMenuItemsInMyFiles = async () => {
 
   // Wait for the file list to appear.
   await remoteCall.waitForElement(appId, '#file-list');
-
-  // Wait for the gear menu button to appear.
-  await remoteCall.waitForElement(appId, '#gear-button:not([hidden])');
+  await remoteCall.waitForFiles(
+      appId, TestEntryInfo.getExpectedRows(BASIC_ANDROID_ENTRY_SET));
 
   // Click the gear menu button.
-  chrome.test.assertTrue(await remoteCall.callRemoteTestUtil(
-      'fakeMouseClick', appId, ['#gear-button']));
+  const gearButton =
+      await remoteCall.waitAndClickElement(appId, '#gear-button:not([hidden])');
+
+  // Check: gear-button has aria-haspopup set to true
+  chrome.test.assertEq(gearButton.attributes['aria-haspopup'], 'true');
 
   // Wait for the gear menu to appear.
   await remoteCall.waitForElement(appId, '#gear-menu:not([hidden])');
@@ -266,13 +194,11 @@ testcase.hideCurrentDirectoryByTogglingHiddenAndroidFolders = async () => {
 
   // Wait for the file list to appear.
   await remoteCall.waitForElement(appId, '#file-list');
+  await remoteCall.waitForFiles(
+      appId, TestEntryInfo.getExpectedRows(BASIC_ANDROID_ENTRY_SET));
 
   // Wait for the gear menu button to appear.
-  await remoteCall.waitForElement(appId, '#gear-button:not([hidden])');
-
-  // Open the gear menu by clicking the gear button.
-  chrome.test.assertTrue(await remoteCall.callRemoteTestUtil(
-      'fakeMouseClick', appId, ['#gear-button']));
+  await remoteCall.waitAndClickElement(appId, '#gear-button:not([hidden])');
 
   // Wait for menu to not be hidden.
   await remoteCall.waitForElement(appId, '#gear-menu:not([hidden])');
@@ -512,4 +438,174 @@ testcase.showSendFeedbackAction = async () => {
       '#gear-menu:not([hidden]) cr-menu-item' +
           '[command=\'#send-feedback\']' +
           ':not([disabled]):not([hidden])');
+};
+
+/**
+ * Tests that the link of the volume space info item in the gear menu is
+ * disabled when the files app is opened on the Google Drive section, and active
+ * otherwise. The volume space info item should only link to the storage
+ * settings page when the user is navigating within local folders.
+ */
+testcase.enableDisableStorageSettingsLink = async () => {
+  const appId = await setupAndWaitUntilReady(
+      RootPath.DRIVE, [], BASIC_DRIVE_ENTRY_SET_WITH_HIDDEN);
+
+  // Click the gear menu button.
+  chrome.test.assertTrue(await remoteCall.callRemoteTestUtil(
+      'fakeMouseClick', appId, ['#gear-button']));
+
+  // Check: volume space info should be disabled for Drive.
+  await remoteCall.waitForElement(appId, '#volume-space-info[disabled]');
+
+  // Navigate to Android files.
+  await remoteCall.waitAndClickElement(
+      appId, '#directory-tree [entry-label="Play files"]');
+
+  // Click the gear menu button.
+  chrome.test.assertTrue(await remoteCall.callRemoteTestUtil(
+      'fakeMouseClick', appId, ['#gear-button']));
+
+  // Check: volume space info should be enabled for Play files.
+  await remoteCall.waitForElement(appId, '#volume-space-info:not([disabled])');
+
+  // Mount empty USB volume.
+  await sendTestMessage({name: 'mountFakeUsbEmpty'});
+
+  // Wait for the USB mount.
+  await remoteCall.waitAndClickElement(
+      appId, '#directory-tree [volume-type-icon="removable"]');
+
+  // Click the gear menu button.
+  chrome.test.assertTrue(await remoteCall.callRemoteTestUtil(
+      'fakeMouseClick', appId, ['#gear-button']));
+
+  // Check: volume space info should be disabled for external volume.
+  await remoteCall.waitForElement(appId, '#volume-space-info[disabled]');
+};
+
+/**
+ * Tests that the "xGB available" message appears in the gear menu for
+ * the "My Files" volume.
+ */
+testcase.showAvailableStorageMyFiles = async () => {
+  // Open Files app on Downloads containing ENTRIES.photos.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DOWNLOADS, [ENTRIES.photos], []);
+
+  // Wait for the gear menu button to appear and click it.
+  await remoteCall.waitAndClickElement(appId, '#gear-button');
+
+  // Wait for the gear menu to appear.
+  await remoteCall.waitForElement(appId, '#gear-menu:not([hidden])');
+
+  // Check #volume-storage is shown and it's enabled.
+  await remoteCall.waitForElement(
+      appId,
+      '#gear-menu:not([hidden]) cr-menu-item' +
+          '[command=\'#volume-storage\']' +
+          ':not([disabled]):not([hidden])');
+};
+
+/**
+ * Tests that the "xGB available message appears in the gear menu for
+ * the "Google Drive" volume.
+ */
+testcase.showAvailableStorageDrive = async () => {
+  // Open Files app on Drive containing ENTRIES.hello.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DRIVE, [], [ENTRIES.hello]);
+
+  // Wait for the gear menu button to appear and click it.
+  await remoteCall.waitAndClickElement(appId, '#gear-button');
+
+  // Wait for the gear menu to appear.
+  await remoteCall.waitForElement(appId, '#gear-menu:not([hidden])');
+
+  // Check #volume-storage is shown and disabled (can't manage Drive
+  // storage).
+  await remoteCall.waitForElement(
+      appId,
+      '#gear-menu:not([hidden]) cr-menu-item' +
+          '[command=\'#volume-storage\']' +
+          ':not([hidden])');
+};
+
+/**
+ * Tests that the "xGB available message appears in the gear menu for
+ * an SMB volume.
+ */
+testcase.showAvailableStorageSmbfs = async () => {
+  // Populate Smbfs with some files.
+  await addEntries(['smbfs'], BASIC_LOCAL_ENTRY_SET);
+
+  // Mount Smbfs volume.
+  await sendTestMessage({name: 'mountSmbfs'});
+
+  // Open Files app on Downloads containing ENTRIES.photos.
+  const appId =
+      await setupAndWaitUntilReady(RootPath.DOWNLOADS, [ENTRIES.photos], []);
+
+  await navigateWithDirectoryTree(appId, '/SMB Share');
+
+  // Wait for the volume's file list to appear.
+  const files = TestEntryInfo.getExpectedRows(BASIC_LOCAL_ENTRY_SET);
+  await remoteCall.waitForFiles(appId, files, {ignoreLastModifiedTime: true});
+
+  // Wait for the gear menu button to appear and click it.
+  await remoteCall.waitAndClickElement(appId, '#gear-button');
+
+  // Wait for the gear menu to appear.
+  await remoteCall.waitForElement(appId, '#gear-menu:not([hidden])');
+
+  // Check #volume-storage is shown and disabled (can't manage SMB
+  // storage).
+  await remoteCall.waitForElement(
+      appId,
+      '#gear-menu:not([hidden]) cr-menu-item' +
+          '[command=\'#volume-storage\']' +
+          ':not([hidden])');
+};
+
+/**
+ * Tests that the "xGB available message appears in the gear menu for
+ * the DocumentsProvider volume.
+ */
+testcase.showAvailableStorageDocProvider = async () => {
+  const documentsProviderVolumeQuery =
+      '[has-children="true"] [volume-type-icon="documents_provider"]';
+
+  // Open Files app.
+  const appId = await openNewWindow(RootPath.DOWNLOADS);
+
+  // Add files to the DocumentsProvider volume.
+  await addEntries(
+      ['documents_provider'], COMPLEX_DOCUMENTS_PROVIDER_ENTRY_SET);
+
+  // Wait for the DocumentsProvider volume to mount.
+  await remoteCall.waitForElement(appId, documentsProviderVolumeQuery);
+
+  // Click to open the DocumentsProvider volume.
+  chrome.test.assertTrue(
+      !!await remoteCall.callRemoteTestUtil(
+          'fakeMouseClick', appId, [documentsProviderVolumeQuery]),
+      'fakeMouseClick failed');
+
+  // Check: the DocumentsProvider files should appear in the file list.
+  const files =
+      TestEntryInfo.getExpectedRows(COMPLEX_DOCUMENTS_PROVIDER_ENTRY_SET);
+  await remoteCall.waitForFiles(appId, files, {ignoreLastModifiedTime: true});
+
+  // Wait for the gear menu button to appear and click it.
+  await remoteCall.waitAndClickElement(appId, '#gear-button');
+
+  // Wait for the gear menu to appear.
+  await remoteCall.waitForElement(appId, '#gear-menu:not([hidden])');
+
+  // Check #volume-storage is shown and disabled (can't manage DocumentsProvider
+  // storage).
+  await remoteCall.waitForElement(
+      appId,
+      '#gear-menu:not([hidden]) cr-menu-item' +
+          '[command=\'#volume-storage\']' +
+          ':not([hidden])');
 };

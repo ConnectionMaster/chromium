@@ -6,7 +6,7 @@
 
 GEN_INCLUDE([
   'accessibility_audit_rules.js',
-  '../../../../../third_party/axe-core/axe.js',
+  '//third_party/axe-core/axe.js',
 ]);
 
 /**
@@ -87,7 +87,7 @@ AccessibilityTest.runAudit_ = function(testDef) {
  * @return {!Array<axe.Result>} List of filtered violations.
  */
 AccessibilityTest.filterViolations_ = function(violations, filter) {
-  if (Object.keys(filter).length == 0) {
+  if (Object.keys(filter).length === 0) {
     return violations;
   }
 

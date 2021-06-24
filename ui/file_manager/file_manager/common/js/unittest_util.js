@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// #import {assertTrue, assertEquals} from 'chrome://test/chai_assert.js';
+
 /**
  * Asserts that two lists contain the same set of Entries.  Entries are deemed
  * to be the same if they point to the same full path.
@@ -9,7 +11,7 @@
  * @param {!Array<!FileEntry>} expected
  * @param {!Array<!FileEntry>} actual
  */
-function assertFileEntryListEquals(expected, actual) {
+/* #export */ function assertFileEntryListEquals(expected, actual) {
   const entryToPath = entry => {
     assertTrue(entry.isFile);
     return entry.fullPath;
@@ -24,7 +26,7 @@ function assertFileEntryListEquals(expected, actual) {
  * @param {!Array<string>} expectedPaths
  * @param {!Array<!FileEntry>} fileEntries
  */
-function assertFileEntryPathsEqual(expectedPaths, fileEntries) {
+/* #export */ function assertFileEntryPathsEqual(expectedPaths, fileEntries) {
   assertEquals(expectedPaths.length, fileEntries.length);
 
   const entryToPath = entry => {
@@ -52,55 +54,56 @@ function assertFileEntryPathsEqual(expectedPaths, fileEntries) {
  *   recorder.assertCallCount(1);
  *   assertEquals(recorder.getListCall()[0], 'hammy');
  * </pre>
- * @constructor
  */
-function TestCallRecorder() {
-  /** @private {!Array<!Arguments>} */
-  this.calls_ = [];
+/* #export */ class TestCallRecorder {
+  constructor() {
+    /** @private {!Array<!Arguments>} */
+    this.calls_ = [];
+
+    /**
+     * The recording function. Bound in our constructor to ensure we always
+     * return the same object. This is necessary as some clients may make use
+     * of object equality.
+     *
+     * @type {function(*)}
+     */
+    this.callback = this.recordArguments_.bind(this);
+  }
 
   /**
-   * The recording function. Bound in our constructor to ensure we always
-   * return the same object. This is necessary as some clients may make use
-   * of object equality.
-   *
-   * @type {function(*)}
+   * Records the magic {@code arguments} value for later inspection.
+   * @private
    */
-  this.callback = this.recordArguments_.bind(this);
+  recordArguments_() {
+    this.calls_.push(arguments);
+  }
+
+  /**
+   * Asserts that the recorder was called {@code expected} times.
+   * @param {number} expected The expected number of calls.
+   */
+  assertCallCount(expected) {
+    const actual = this.calls_.length;
+    assertEquals(
+        expected, actual,
+        'Expected ' + expected + ' call(s), but was ' + actual + '.');
+  }
+
+  /**
+   * @return {?Arguments} Returns the {@code Arguments} for the last call,
+   *    or null if the recorder hasn't been called.
+   */
+  getLastArguments() {
+    return (this.calls_.length === 0) ? null :
+                                        this.calls_[this.calls_.length - 1];
+  }
+
+  /**
+   * @param {number} index Index of which args to return.
+   * @return {?Arguments} Returns the {@code Arguments} for the call specified
+   *    by indexd.
+   */
+  getArguments(index) {
+    return (index < this.calls_.length) ? this.calls_[index] : null;
+  }
 }
-
-/**
- * Records the magic {@code arguments} value for later inspection.
- * @private
- */
-TestCallRecorder.prototype.recordArguments_ = function() {
-  this.calls_.push(arguments);
-};
-
-/**
- * Asserts that the recorder was called {@code expected} times.
- * @param {number} expected The expected number of calls.
- */
-TestCallRecorder.prototype.assertCallCount = function(expected) {
-  const actual = this.calls_.length;
-  assertEquals(
-      expected, actual,
-      'Expected ' + expected + ' call(s), but was ' + actual + '.');
-};
-
-/**
- * @return {?Arguments} Returns the {@code Arguments} for the last call,
- *    or null if the recorder hasn't been called.
- */
-TestCallRecorder.prototype.getLastArguments = function() {
-  return (this.calls_.length === 0) ? null :
-                                      this.calls_[this.calls_.length - 1];
-};
-
-/**
- * @param {number} index Index of which args to return.
- * @return {?Arguments} Returns the {@code Arguments} for the call specified
- *    by indexd.
- */
-TestCallRecorder.prototype.getArguments = function(index) {
-  return (index < this.calls_.length) ? this.calls_[index] : null;
-};

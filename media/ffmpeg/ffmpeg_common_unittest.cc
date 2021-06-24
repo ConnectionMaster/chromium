@@ -8,9 +8,9 @@
 #include <cstring>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/media.h"
 #include "media/base/media_util.h"
@@ -35,7 +35,7 @@ template <typename T>
 void TestConfigConvertExtraData(
     AVStream* stream,
     T* decoder_config,
-    const base::Callback<bool(const AVStream*, T*)>& converter_fn) {
+    const base::RepeatingCallback<bool(const AVStream*, T*)>& converter_fn) {
   // Should initially convert.
   EXPECT_TRUE(converter_fn.Run(stream, decoder_config));
 
@@ -104,15 +104,17 @@ TEST_F(FFmpegCommonTest, AVStreamToDecoderConfig) {
         continue;
       found_audio = true;
       AudioDecoderConfig audio_config;
-      TestConfigConvertExtraData(stream, &audio_config,
-                                 base::Bind(&AVStreamToAudioDecoderConfig));
+      TestConfigConvertExtraData(
+          stream, &audio_config,
+          base::BindRepeating(&AVStreamToAudioDecoderConfig));
     } else if (codec_type == AVMEDIA_TYPE_VIDEO) {
       if (found_video)
         continue;
       found_video = true;
       VideoDecoderConfig video_config;
-      TestConfigConvertExtraData(stream, &video_config,
-                                 base::Bind(&AVStreamToVideoDecoderConfig));
+      TestConfigConvertExtraData(
+          stream, &video_config,
+          base::BindRepeating(&AVStreamToVideoDecoderConfig));
     } else {
       // Only process audio/video.
       continue;

@@ -7,9 +7,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 #include "components/device_event_log/device_event_log.h"
-#include "device/fido/ctap_empty_authenticator_request.h"
 #include "device/fido/device_response_converter.h"
 #include "device/fido/fido_constants.h"
 
@@ -18,17 +17,27 @@ namespace device {
 FidoDevice::FidoDevice() = default;
 FidoDevice::~FidoDevice() = default;
 
-base::string16 FidoDevice::GetDisplayName() const {
-  const auto id = GetId();
-  return base::string16(id.begin(), id.end());
+void FidoDevice::TryWink(base::OnceClosure callback) {
+  std::move(callback).Run();
+}
+
+std::string FidoDevice::GetDisplayName() const {
+  return GetId();
 }
 
 bool FidoDevice::IsInPairingMode() const {
+  NOTREACHED();
   return false;
 }
 
 bool FidoDevice::IsPaired() const {
+  NOTREACHED();
   return false;
+}
+
+bool FidoDevice::RequiresBlePairingPin() const {
+  NOTREACHED();
+  return true;
 }
 
 void FidoDevice::DiscoverSupportedProtocolAndDeviceInfo(
@@ -36,35 +45,37 @@ void FidoDevice::DiscoverSupportedProtocolAndDeviceInfo(
   // Set the protocol version to CTAP2 for the purpose of sending the GetInfo
   // request. The correct value will be set in the callback based on the
   // device response.
-  supported_protocol_ = ProtocolVersion::kCtap;
+  supported_protocol_ = ProtocolVersion::kCtap2;
   FIDO_LOG(DEBUG)
       << "Sending CTAP2 AuthenticatorGetInfo request to authenticator.";
-  DeviceTransact(AuthenticatorGetInfoRequest().Serialize(),
-                 base::BindOnce(&FidoDevice::OnDeviceInfoReceived, GetWeakPtr(),
-                                std::move(done)));
+  DeviceTransact(
+      {static_cast<uint8_t>(CtapRequestCommand::kAuthenticatorGetInfo)},
+      base::BindOnce(&FidoDevice::OnDeviceInfoReceived, GetWeakPtr(),
+                     std::move(done)));
 }
 
 bool FidoDevice::SupportedProtocolIsInitialized() {
   return (supported_protocol_ == ProtocolVersion::kU2f && !device_info_) ||
-         (supported_protocol_ == ProtocolVersion::kCtap && device_info_);
+         (supported_protocol_ == ProtocolVersion::kCtap2 && device_info_);
 }
 
 void FidoDevice::OnDeviceInfoReceived(
     base::OnceClosure done,
-    base::Optional<std::vector<uint8_t>> response) {
+    absl::optional<std::vector<uint8_t>> response) {
   // TODO(hongjunchoi): Add tests that verify this behavior.
   if (state_ == FidoDevice::State::kDeviceError)
     return;
 
   state_ = FidoDevice::State::kReady;
-  base::Optional<AuthenticatorGetInfoResponse> get_info_response =
-      response ? ReadCTAPGetInfoResponse(*response) : base::nullopt;
-  if (!get_info_response || !base::ContainsKey(get_info_response->versions(),
-                                               ProtocolVersion::kCtap)) {
+  absl::optional<AuthenticatorGetInfoResponse> get_info_response =
+      response ? ReadCTAPGetInfoResponse(*response) : absl::nullopt;
+  if (!get_info_response ||
+      !base::Contains(get_info_response->versions, ProtocolVersion::kCtap2)) {
     supported_protocol_ = ProtocolVersion::kU2f;
+    needs_explicit_wink_ = true;
     FIDO_LOG(DEBUG) << "The device only supports the U2F protocol.";
   } else {
-    supported_protocol_ = ProtocolVersion::kCtap;
+    supported_protocol_ = ProtocolVersion::kCtap2;
     device_info_ = std::move(*get_info_response);
     FIDO_LOG(DEBUG) << "The device supports the CTAP2 protocol.";
   }
@@ -73,6 +84,22 @@ void FidoDevice::OnDeviceInfoReceived(
 
 void FidoDevice::SetDeviceInfo(AuthenticatorGetInfoResponse device_info) {
   device_info_ = std::move(device_info);
+}
+
+bool FidoDevice::NoSilentRequests() const {
+  // caBLE devices do not support silent requests.
+  const auto transport = DeviceTransport();
+  return transport == FidoTransportProtocol::kCloudAssistedBluetoothLowEnergy ||
+         transport == FidoTransportProtocol::kAndroidAccessory;
+}
+
+// static
+bool FidoDevice::IsStatusForUnrecognisedCredentialID(
+    CtapDeviceResponseCode status) {
+  return status == CtapDeviceResponseCode::kCtap2ErrInvalidCredential ||
+         status == CtapDeviceResponseCode::kCtap2ErrNoCredentials ||
+         status == CtapDeviceResponseCode::kCtap2ErrLimitExceeded ||
+         status == CtapDeviceResponseCode::kCtap2ErrRequestTooLarge;
 }
 
 }  // namespace device

@@ -6,13 +6,14 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
-#include "base/stl_util.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/task_environment.h"
 #include "base/timer/mock_timer.h"
 #include "remoting/proto/video.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -28,8 +29,8 @@ class CaptureSchedulerTest : public testing::Test {
   CaptureSchedulerTest() : capture_called_(false) {}
 
   void InitScheduler() {
-    scheduler_.reset(new CaptureScheduler(
-        base::Bind(&CaptureSchedulerTest::DoCapture, base::Unretained(this))));
+    scheduler_ = std::make_unique<CaptureScheduler>(base::BindRepeating(
+        &CaptureSchedulerTest::DoCapture, base::Unretained(this)));
     scheduler_->set_minimum_interval(
         base::TimeDelta::FromMilliseconds(kMinumumFrameIntervalMs));
     scheduler_->SetTickClockForTest(&tick_clock_);
@@ -73,7 +74,7 @@ class CaptureSchedulerTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 
   std::unique_ptr<CaptureScheduler> scheduler_;
 

@@ -5,15 +5,17 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_ANIMATION_TIME_DELTA_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_ANIMATION_TIME_DELTA_H_
 
+#include "third_party/blink/renderer/core/animation/buildflags.h"
+
+#if BUILDFLAG(BLINK_ANIMATION_USE_TIME_DELTA)
+#include "base/time/time.h"
+#endif
+
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 #include <limits>
 #include <ostream>
-
-#if defined(BLINK_ANIMATION_USE_TIME_DELTA)
-#include "third_party/blink/renderer/platform/wtf/time.h"
-#endif
 
 namespace blink {
 
@@ -27,7 +29,7 @@ namespace blink {
 // double-precision. The second mode uses base::TimeDelta to represent time
 // instead.
 
-#if !defined(BLINK_ANIMATION_USE_TIME_DELTA)
+#if !BUILDFLAG(BLINK_ANIMATION_USE_TIME_DELTA)
 
 // The double-based version of AnimationTimeDelta. Internally, time is stored as
 // double-precision seconds.
@@ -39,6 +41,8 @@ class CORE_EXPORT AnimationTimeDelta {
 
  public:
   constexpr AnimationTimeDelta() : delta_(0) {}
+  constexpr explicit AnimationTimeDelta(base::TimeDelta time_delta)
+      : delta_(time_delta.InSecondsF()) {}
 
   static AnimationTimeDelta FromSecondsD(double time_s) {
     DCHECK(!std::isnan(time_s));
@@ -59,6 +63,9 @@ class CORE_EXPORT AnimationTimeDelta {
   bool is_max() const {
     return delta_ == std::numeric_limits<double>::infinity();
   }
+
+  bool is_inf() const { return std::isinf(delta_); }
+
   bool is_zero() const { return delta_ == 0; }
 
   AnimationTimeDelta operator+(AnimationTimeDelta other) const {
@@ -67,13 +74,30 @@ class CORE_EXPORT AnimationTimeDelta {
   AnimationTimeDelta& operator+=(AnimationTimeDelta other) {
     return *this = (*this + other);
   }
+  AnimationTimeDelta operator-(AnimationTimeDelta other) const {
+    return AnimationTimeDelta(delta_ - other.delta_);
+  }
+  AnimationTimeDelta operator-() { return AnimationTimeDelta(-delta_); }
   template <typename T>
   AnimationTimeDelta operator*(T a) const {
     return AnimationTimeDelta(delta_ * a);
   }
-  template <typename V>
-  AnimationTimeDelta& operator*=(V a) {
+  template <typename T>
+  AnimationTimeDelta& operator*=(T a) {
     return *this = (*this * a);
+  }
+  template <typename T>
+  AnimationTimeDelta operator/(T a) const {
+    return AnimationTimeDelta(delta_ / a);
+  }
+  template <typename T>
+  AnimationTimeDelta& operator/=(T a) {
+    return *this = (*this / a);
+  }
+  double operator/(AnimationTimeDelta a) const {
+    CHECK(!a.is_zero());
+    CHECK(!is_inf() || !a.is_inf());
+    return delta_ / a.delta_;
   }
 
  protected:
@@ -96,6 +120,8 @@ bool CORE_EXPORT operator!=(const AnimationTimeDelta& lhs,
                             const AnimationTimeDelta& rhs);
 bool CORE_EXPORT operator>(const AnimationTimeDelta& lhs,
                            const AnimationTimeDelta& rhs);
+bool CORE_EXPORT operator<(const AnimationTimeDelta& lhs,
+                           const AnimationTimeDelta& rhs);
 bool CORE_EXPORT operator>=(const AnimationTimeDelta& lhs,
                             const AnimationTimeDelta& rhs);
 bool CORE_EXPORT operator<=(const AnimationTimeDelta& lhs,
@@ -105,11 +131,11 @@ bool CORE_EXPORT operator<=(const AnimationTimeDelta& lhs,
 CORE_EXPORT std::ostream& operator<<(std::ostream& os,
                                      const AnimationTimeDelta& time);
 
-#else  // !defined(BLINK_ANIMATION_USE_TIME_DELTA)
+#else  // !BUILDFLAG(BLINK_ANIMATION_USE_TIME_DELTA)
 
 // When compiling in TimeDelta-based mode, AnimationTimeDelta is equivalent to
 // base::TimeDelta.
-using AnimationTimeDelta = TimeDelta;
+using AnimationTimeDelta = base::TimeDelta;
 
 #endif
 

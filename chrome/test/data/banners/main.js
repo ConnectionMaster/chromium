@@ -16,6 +16,8 @@ const Action = {
   CANCEL_PROMPT_AND_NAVIGATE: 'cancel_prompt_and_navigate',
   CANCEL_PROMPT: 'cancel_prompt',
   STASH_EVENT: 'stash_event',
+  STASH_EVENT_AND_PREVENT_DEFAULT: 'stash_event_and_prevent_default',
+  FULLSCREEN_ON_CLICK: 'fullscreen_on_click',
 };
 
 const LISTENER = "listener";
@@ -60,6 +62,18 @@ function callStashedPrompt() {
   callPrompt(stashedEvent);
 }
 
+function isBodyFullscreen() {
+  return document.fullscreenElement == document.body;
+}
+
+function toggleFullscreen() {
+  if (isBodyFullscreen()) {
+    document.exitFullscreen();
+  } else {
+    document.body.requestFullscreen();
+  }
+}
+
 function addClickListener(action) {
   switch (action) {
     case Action.CALL_STASHED_PROMPT_ON_CLICK:
@@ -69,43 +83,51 @@ function addClickListener(action) {
       window.addEventListener('click', callStashedPrompt);
       verifyEvents("appinstalled");
       break;
+    case Action.FULLSCREEN_ON_CLICK:
+      window.addEventListener('click', toggleFullscreen);
+      break;
   }
 }
 
 function addPromptListener(action) {
   window.addEventListener('beforeinstallprompt', function(e) {
-    e.preventDefault();
-
     switch (action) {
       case Action.VERIFY_APPINSTALLED_STASH_EVENT:
         stashedEvent = e;
         verifyEvents('appinstalled');
         break;
       case Action.CALL_PROMPT_DELAYED:
+        e.preventDefault();
         setTimeout(callPrompt, 0, e);
         break;
       case Action.CALL_PROMPT_IN_HANDLER:
         callPrompt(e);
         break;
       case Action.CALL_PROMPT_NO_USERCHOICE:
+        e.preventDefault();
         setTimeout(() => e.prompt(), 0);
         break;
       case Action.CANCEL_PROMPT_AND_NAVIGATE:
+        e.preventDefault();
         // Navigate the window to trigger cancellation in the renderer.
-        window.location.href = "/";
+        setTimeout(function() { window.location.href = "/" }, 0);
         break;
       case Action.STASH_EVENT:
         stashedEvent = e;
+        break;
+      case Action.STASH_EVENT_AND_PREVENT_DEFAULT:
+        stashedEvent = e;
+        e.preventDefault();
         break;
     }
   });
 }
 
-function addManifestLinkTag() {
+function addManifestLinkTag(optionalCustomUrl) {
   const url = new URL(window.location.href);
   let manifestUrl = url.searchParams.get('manifest');
   if (!manifestUrl) {
-    manifestUrl = 'manifest.json';
+    manifestUrl = optionalCustomUrl || 'manifest.json';
   }
 
   var linkTag = document.createElement("link");
@@ -113,6 +135,14 @@ function addManifestLinkTag() {
   linkTag.rel = "manifest";
   linkTag.href = manifestUrl;
   document.head.append(linkTag);
+}
+
+function removeAllManifestTags() {
+  for (let i = 0; i < document.head.children.length; ++i) {
+    let child = document.head.children[i];
+    if (child.rel == "manifest")
+      child.parentElement.removeChild(child);
+  }
 }
 
 function initialize() {
@@ -138,6 +168,10 @@ function initialize() {
       addPromptListener(Action.STASH_EVENT);
       addClickListener(action);
       break;
+    case Action.STASH_EVENT_AND_PREVENT_DEFAULT:
+      addPromptListener(action);
+      addClickListener(Action.CALL_STASHED_PROMPT_ON_CLICK);
+      break;
     case Action.VERIFY_APPINSTALLED_STASH_EVENT:
     case Action.CALL_PROMPT_DELAYED:
     case Action.CALL_PROMPT_IN_HANDLER:
@@ -146,6 +180,9 @@ function initialize() {
     case Action.CANCEL_PROMPT:
     case Action.STASH_EVENT:
       addPromptListener(action);
+      break;
+    case Action.FULLSCREEN_ON_CLICK:
+      addClickListener(action);
       break;
     default:
       throw new Error("Unrecognised action: " + action);

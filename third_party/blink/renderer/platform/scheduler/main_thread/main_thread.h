@@ -6,7 +6,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_SCHEDULER_MAIN_THREAD_MAIN_THREAD_H_
 
 #include "base/memory/scoped_refptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
@@ -25,9 +24,7 @@ class PLATFORM_EXPORT MainThread : public Thread {
   ~MainThread() override;
 
   // Thread implementation.
-  void Init() override;
   ThreadScheduler* Scheduler() override;
-  PlatformThreadId ThreadId() const override;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner() const override;
 
   void AddTaskTimeObserver(base::sequence_manager::TaskTimeObserver*) override;
@@ -37,7 +34,6 @@ class PLATFORM_EXPORT MainThread : public Thread {
  private:
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   MainThreadSchedulerImpl* scheduler_;  // Not owned.
-  PlatformThreadId thread_id_;
 };
 
 }  // namespace scheduler

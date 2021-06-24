@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include <string>
-
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
@@ -51,7 +49,8 @@ class MEDIA_EXPORT AudioOutputStreamSink
                  base::TimeTicks delay_timestamp,
                  int prior_frames_skipped,
                  AudioBus* dest) override;
-  void OnError() override;
+  void OnError(ErrorType type) override;
+  void Flush() override;
 
  private:
   ~AudioOutputStreamSink() override;
@@ -61,6 +60,7 @@ class MEDIA_EXPORT AudioOutputStreamSink
   void DoStart(const AudioParameters& params);
   void DoStop();
   void DoPause();
+  void DoFlush();
   void DoPlay();
   void DoSetVolume(double volume);
 

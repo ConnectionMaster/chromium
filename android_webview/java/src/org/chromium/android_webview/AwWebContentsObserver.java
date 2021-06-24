@@ -6,6 +6,8 @@ package org.chromium.android_webview;
 
 import org.chromium.android_webview.AwContents.VisualStateCallback;
 import org.chromium.base.task.PostTask;
+import org.chromium.content_public.browser.GlobalRenderFrameHostId;
+import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 import org.chromium.content_public.browser.WebContents;
@@ -13,6 +15,7 @@ import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.net.NetError;
 import org.chromium.ui.base.PageTransition;
+import org.chromium.url.GURL;
 
 import java.lang.ref.WeakReference;
 
@@ -52,34 +55,61 @@ public class AwWebContentsObserver extends WebContentsObserver {
     }
 
     @Override
-    public void didFinishLoad(long frameId, String validatedUrl, boolean isMainFrame) {
+    public void didFinishLoad(GlobalRenderFrameHostId rfhId, GURL url, boolean isKnownValid,
+            boolean isMainFrame, @LifecycleState int rfhLifecycleState) {
+        if (rfhLifecycleState != LifecycleState.ACTIVE) return;
+        String validatedUrl = isKnownValid ? url.getSpec() : url.getPossiblyInvalidSpec();
         if (isMainFrame && getClientIfNeedToFireCallback(validatedUrl) != null) {
             mLastDidFinishLoadUrl = validatedUrl;
         }
     }
 
     @Override
-    public void didStopLoading(String validatedUrl) {
-        if (validatedUrl.length() == 0) validatedUrl = ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL;
-        AwContentsClient client = getClientIfNeedToFireCallback(validatedUrl);
-        if (client != null && validatedUrl.equals(mLastDidFinishLoadUrl)) {
-            client.getCallbackHelper().postOnPageFinished(validatedUrl);
+    public void didStopLoading(GURL gurl, boolean isKnownValid) {
+        String url = isKnownValid ? gurl.getSpec() : gurl.getPossiblyInvalidSpec();
+        if (url.length() == 0) url = ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL;
+        AwContentsClient client = getClientIfNeedToFireCallback(url);
+        if (client != null && url.equals(mLastDidFinishLoadUrl)) {
+            client.getCallbackHelper().postOnPageFinished(url);
             mLastDidFinishLoadUrl = null;
         }
     }
 
     @Override
-    public void didFailLoad(
-            boolean isMainFrame, int errorCode, String description, String failingUrl) {
+    public void loadProgressChanged(float progress) {
+        AwContentsClient client = mAwContentsClient.get();
+        if (client == null) return;
+        client.getCallbackHelper().postOnProgressChanged(Math.round(progress * 100));
+    }
+
+    @Override
+    public void didFailLoad(boolean isMainFrame, @NetError int errorCode, GURL failingGurl,
+            @LifecycleState int frameLifecycleState) {
+        processFailedLoad(isMainFrame && frameLifecycleState == LifecycleState.ACTIVE, errorCode,
+                failingGurl);
+    }
+
+    private void processFailedLoad(
+            boolean isPrimaryMainFrame, @NetError int errorCode, GURL failingGurl) {
+        String failingUrl = failingGurl.getPossiblyInvalidSpec();
         AwContentsClient client = mAwContentsClient.get();
         if (client == null) return;
         String unreachableWebDataUrl = AwContentsStatics.getUnreachableWebDataUrl();
         boolean isErrorUrl =
                 unreachableWebDataUrl != null && unreachableWebDataUrl.equals(failingUrl);
-        if (isMainFrame && !isErrorUrl && errorCode == NetError.ERR_ABORTED) {
-            // Need to call onPageFinished for backwards compatibility with the classic webview.
-            // See also AwContents.IoThreadClientImpl.onReceivedError.
-            client.getCallbackHelper().postOnPageFinished(failingUrl);
+        if (isPrimaryMainFrame && !isErrorUrl) {
+            if (errorCode == NetError.ERR_ABORTED) {
+                // Need to call onPageFinished for backwards compatibility with the classic webview.
+                // See also AwContentsClientBridge.onReceivedError.
+                client.getCallbackHelper().postOnPageFinished(failingUrl);
+            } else if (errorCode == NetError.ERR_HTTP_RESPONSE_CODE_FAILURE) {
+                // This is a HTTP error that results in an error page. We need to call onPageStarted
+                // and onPageFinished to have the same behavior with HTTP error navigations that
+                // don't result in an error page. See also
+                // AwContentsClientBridge.onReceivedHttpError.
+                client.getCallbackHelper().postOnPageStarted(failingUrl);
+                client.getCallbackHelper().postOnPageFinished(failingUrl);
+            }
         }
     }
 
@@ -92,17 +122,17 @@ public class AwWebContentsObserver extends WebContentsObserver {
 
     @Override
     public void didFinishNavigation(NavigationHandle navigation) {
-        String url = navigation.getUrl();
-        if (navigation.errorCode() != 0 && !navigation.isDownload()) {
-            didFailLoad(navigation.isInMainFrame(), navigation.errorCode(),
-                    navigation.errorDescription(), url);
+        String url = navigation.getUrl().getPossiblyInvalidSpec();
+        if (navigation.errorCode() != NetError.OK && !navigation.isDownload()) {
+            processFailedLoad(
+                    navigation.isInPrimaryMainFrame(), navigation.errorCode(), navigation.getUrl());
         }
 
         if (!navigation.hasCommitted()) return;
 
         mCommittedNavigation = true;
 
-        if (!navigation.isInMainFrame()) return;
+        if (!navigation.isInPrimaryMainFrame()) return;
 
         AwContentsClient client = mAwContentsClient.get();
         if (client != null) {

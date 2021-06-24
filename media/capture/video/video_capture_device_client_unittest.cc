@@ -9,33 +9,41 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "media/base/limits.h"
+#include "media/base/video_frame.h"
 #include "media/capture/video/mock_gpu_memory_buffer_manager.h"
 #include "media/capture/video/mock_video_frame_receiver.h"
 #include "media/capture/video/video_capture_buffer_pool_impl.h"
 #include "media/capture/video/video_capture_buffer_tracker_factory_impl.h"
-#include "media/capture/video/video_capture_jpeg_decoder.h"
 #include "media/capture/video/video_frame_receiver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "media/capture/video/chromeos/video_capture_jpeg_decoder.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+
 using ::testing::_;
 using ::testing::AtLeast;
-using ::testing::Mock;
 using ::testing::InSequence;
 using ::testing::Invoke;
+using ::testing::Mock;
+using ::testing::NiceMock;
 using ::testing::SaveArg;
 
 namespace media {
 
 namespace {
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 std::unique_ptr<VideoCaptureJpegDecoder> ReturnNullPtrAsJpecDecoder() {
   return nullptr;
 }
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace
 
@@ -48,20 +56,26 @@ class VideoCaptureDeviceClientTest : public ::testing::Test {
  public:
   VideoCaptureDeviceClientTest() {
     scoped_refptr<VideoCaptureBufferPoolImpl> buffer_pool(
-        new VideoCaptureBufferPoolImpl(
-            std::make_unique<VideoCaptureBufferTrackerFactoryImpl>(), 2));
-    auto controller = std::make_unique<MockVideoFrameReceiver>();
+        new VideoCaptureBufferPoolImpl(VideoCaptureBufferType::kSharedMemory,
+                                       2));
+    auto controller = std::make_unique<NiceMock<MockVideoFrameReceiver>>();
     receiver_ = controller.get();
     gpu_memory_buffer_manager_ =
         std::make_unique<unittest_internal::MockGpuMemoryBufferManager>();
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     device_client_ = std::make_unique<VideoCaptureDeviceClient>(
         VideoCaptureBufferType::kSharedMemory, std::move(controller),
         buffer_pool, base::BindRepeating(&ReturnNullPtrAsJpecDecoder));
+#else
+    device_client_ = std::make_unique<VideoCaptureDeviceClient>(
+        VideoCaptureBufferType::kSharedMemory, std::move(controller),
+        buffer_pool);
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
   }
   ~VideoCaptureDeviceClientTest() override = default;
 
  protected:
-  MockVideoFrameReceiver* receiver_;
+  NiceMock<MockVideoFrameReceiver>* receiver_;
   std::unique_ptr<unittest_internal::MockGpuMemoryBufferManager>
       gpu_memory_buffer_manager_;
   std::unique_ptr<VideoCaptureDeviceClient> device_client_;
@@ -77,6 +91,7 @@ TEST_F(VideoCaptureDeviceClientTest, Minimal) {
   unsigned char data[kScratchpadSizeInBytes] = {};
   const VideoCaptureFormat kFrameFormat(gfx::Size(10, 10), 30.0f /*frame_rate*/,
                                         PIXEL_FORMAT_I420);
+  const gfx::ColorSpace kColorSpace = gfx::ColorSpace::CreateREC601();
   DCHECK(device_client_.get());
   {
     InSequence s;
@@ -85,9 +100,10 @@ TEST_F(VideoCaptureDeviceClientTest, Minimal) {
     EXPECT_CALL(*receiver_, MockOnNewBufferHandle(expected_buffer_id));
     EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer(expected_buffer_id, _, _));
   }
-  device_client_->OnIncomingCapturedData(data, kScratchpadSizeInBytes,
-                                         kFrameFormat, 0 /*clockwise rotation*/,
-                                         base::TimeTicks(), base::TimeDelta());
+  device_client_->OnIncomingCapturedData(
+      data, kScratchpadSizeInBytes, kFrameFormat, kColorSpace,
+      0 /* clockwise rotation */, false /* flip_y */, base::TimeTicks(),
+      base::TimeDelta());
 
   const gfx::Size kBufferDimensions(10, 10);
   const VideoCaptureFormat kFrameFormatNV12(
@@ -95,7 +111,8 @@ TEST_F(VideoCaptureDeviceClientTest, Minimal) {
   std::unique_ptr<gfx::GpuMemoryBuffer> buffer =
       gpu_memory_buffer_manager_->CreateFakeGpuMemoryBuffer(
           kBufferDimensions, gfx::BufferFormat::YUV_420_BIPLANAR,
-          gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE, gpu::kNullSurfaceHandle);
+          gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE,
+          gpu::kNullSurfaceHandle, nullptr);
   {
     InSequence s;
     const int expected_buffer_id = 0;
@@ -119,13 +136,15 @@ TEST_F(VideoCaptureDeviceClientTest, FailsSilentlyGivenInvalidFrameFormat) {
   const VideoCaptureFormat kFrameFormat(
       gfx::Size(limits::kMaxDimension + 1, limits::kMaxDimension),
       limits::kMaxFramesPerSecond + 1, VideoPixelFormat::PIXEL_FORMAT_I420);
+  const gfx::ColorSpace kColorSpace = gfx::ColorSpace::CreateREC601();
   DCHECK(device_client_.get());
   // Expect the the call to fail silently inside the VideoCaptureDeviceClient.
   EXPECT_CALL(*receiver_, OnLog(_)).Times(AtLeast(1));
   EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer(_, _, _)).Times(0);
-  device_client_->OnIncomingCapturedData(data, kScratchpadSizeInBytes,
-                                         kFrameFormat, 0 /*clockwise rotation*/,
-                                         base::TimeTicks(), base::TimeDelta());
+  device_client_->OnIncomingCapturedData(
+      data, kScratchpadSizeInBytes, kFrameFormat, kColorSpace,
+      0 /* clockwise rotation */, false /* flip_y */, base::TimeTicks(),
+      base::TimeDelta());
 
   const gfx::Size kBufferDimensions(10, 10);
   const VideoCaptureFormat kFrameFormatNV12(
@@ -133,7 +152,8 @@ TEST_F(VideoCaptureDeviceClientTest, FailsSilentlyGivenInvalidFrameFormat) {
   std::unique_ptr<gfx::GpuMemoryBuffer> buffer =
       gpu_memory_buffer_manager_->CreateFakeGpuMemoryBuffer(
           kBufferDimensions, gfx::BufferFormat::YUV_420_BIPLANAR,
-          gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE, gpu::kNullSurfaceHandle);
+          gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE, gpu::kNullSurfaceHandle,
+          nullptr);
   EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer(_, _, _)).Times(0);
   device_client_->OnIncomingCapturedGfxBuffer(
       buffer.get(), kFrameFormat, 0 /*clockwise rotation*/, base::TimeTicks(),
@@ -148,6 +168,7 @@ TEST_F(VideoCaptureDeviceClientTest, DropsFrameIfNoBuffer) {
   unsigned char data[kScratchpadSizeInBytes] = {};
   const VideoCaptureFormat kFrameFormat(gfx::Size(10, 10), 30.0f /*frame_rate*/,
                                         PIXEL_FORMAT_I420);
+  const gfx::ColorSpace kColorSpace = gfx::ColorSpace::CreateREC601();
   EXPECT_CALL(*receiver_, OnLog(_)).Times(1);
   // Simulate that receiver still holds |buffer_read_permission| for the first
   // two buffers when the third call to OnIncomingCapturedData comes in.
@@ -168,15 +189,18 @@ TEST_F(VideoCaptureDeviceClientTest, DropsFrameIfNoBuffer) {
             read_permission.push_back(std::move(*buffer_read_permission));
           }));
   // Pass three frames. The third will be dropped.
-  device_client_->OnIncomingCapturedData(data, kScratchpadSizeInBytes,
-                                         kFrameFormat, 0 /*clockwise rotation*/,
-                                         base::TimeTicks(), base::TimeDelta());
-  device_client_->OnIncomingCapturedData(data, kScratchpadSizeInBytes,
-                                         kFrameFormat, 0 /*clockwise rotation*/,
-                                         base::TimeTicks(), base::TimeDelta());
-  device_client_->OnIncomingCapturedData(data, kScratchpadSizeInBytes,
-                                         kFrameFormat, 0 /*clockwise rotation*/,
-                                         base::TimeTicks(), base::TimeDelta());
+  device_client_->OnIncomingCapturedData(
+      data, kScratchpadSizeInBytes, kFrameFormat, kColorSpace,
+      0 /* clockwise rotation */, false /* flip_y */, base::TimeTicks(),
+      base::TimeDelta());
+  device_client_->OnIncomingCapturedData(
+      data, kScratchpadSizeInBytes, kFrameFormat, kColorSpace,
+      0 /* clockwise rotation */, false /* flip_y */, base::TimeTicks(),
+      base::TimeDelta());
+  device_client_->OnIncomingCapturedData(
+      data, kScratchpadSizeInBytes, kFrameFormat, kColorSpace,
+      0 /* clockwise rotation */, false /* flip_y */, base::TimeTicks(),
+      base::TimeDelta());
   Mock::VerifyAndClearExpectations(receiver_);
 }
 
@@ -205,13 +229,13 @@ TEST_F(VideoCaptureDeviceClientTest, DataCaptureGoodPixelFormats) {
     PIXEL_FORMAT_NV21,
     PIXEL_FORMAT_YUY2,
     PIXEL_FORMAT_UYVY,
-#if defined(OS_WIN) || defined(OS_LINUX)
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
     PIXEL_FORMAT_RGB24,
 #endif
-    PIXEL_FORMAT_RGB32,
     PIXEL_FORMAT_ARGB,
     PIXEL_FORMAT_Y16,
   };
+  const gfx::ColorSpace kColorSpace = gfx::ColorSpace::CreateSRGB();
 
   for (VideoPixelFormat format : kSupportedFormats) {
     params.requested_format.pixel_format = format;
@@ -219,9 +243,11 @@ TEST_F(VideoCaptureDeviceClientTest, DataCaptureGoodPixelFormats) {
     EXPECT_CALL(*receiver_, OnLog(_)).Times(1);
     EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer(_, _, _)).Times(1);
     device_client_->OnIncomingCapturedData(
-        data, params.requested_format.ImageAllocationSize(),
-        params.requested_format, 0 /* clockwise_rotation */, base::TimeTicks(),
-        base::TimeDelta());
+        data,
+        media::VideoFrame::AllocationSize(params.requested_format.pixel_format,
+                                          params.requested_format.frame_size),
+        params.requested_format, kColorSpace, 0 /* clockwise_rotation */,
+        false /* flip_y */, base::TimeTicks(), base::TimeDelta());
     Mock::VerifyAndClearExpectations(receiver_);
   }
 }
@@ -259,9 +285,11 @@ TEST_F(VideoCaptureDeviceClientTest, CheckRotationsAndCrops) {
         .Times(1)
         .WillOnce(SaveArg<2>(&coded_size));
     device_client_->OnIncomingCapturedData(
-        data, params.requested_format.ImageAllocationSize(),
-        params.requested_format, size_and_rotation.rotation, base::TimeTicks(),
-        base::TimeDelta());
+        data,
+        media::VideoFrame::AllocationSize(params.requested_format.pixel_format,
+                                          params.requested_format.frame_size),
+        params.requested_format, gfx::ColorSpace(), size_and_rotation.rotation,
+        false /* flip_y */, base::TimeTicks(), base::TimeDelta());
 
     EXPECT_EQ(coded_size.width(), size_and_rotation.output_resolution.width());
     EXPECT_EQ(coded_size.height(),
@@ -284,7 +312,7 @@ TEST_F(VideoCaptureDeviceClientTest, CheckRotationsAndCrops) {
             size_and_rotation.input_resolution,
             gfx::BufferFormat::YUV_420_BIPLANAR,
             gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE,
-            gpu::kNullSurfaceHandle);
+            gpu::kNullSurfaceHandle, nullptr);
 
     gfx::Size coded_size;
     EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer(_, _, _))

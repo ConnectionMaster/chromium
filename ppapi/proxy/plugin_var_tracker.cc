@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <limits>
+
 #include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
 #include "ipc/ipc_message.h"
@@ -79,6 +81,7 @@ PP_Var PluginVarTracker::ReceiveObjectPassRef(const PP_Var& host_var,
     SendReleaseObjectMsg(*object.get());
   }
   info.ref_count++;
+  CHECK(info.ref_count != std::numeric_limits<decltype(info.ref_count)>::max());
   return ret;
 }
 
@@ -310,8 +313,8 @@ ArrayBufferVar* PluginVarTracker::CreateArrayBuffer(uint32_t size_in_bytes) {
 
 ArrayBufferVar* PluginVarTracker::CreateShmArrayBuffer(
     uint32_t size_in_bytes,
-    base::SharedMemoryHandle handle) {
-  return new PluginArrayBufferVar(size_in_bytes, handle);
+    base::UnsafeSharedMemoryRegion region) {
+  return new PluginArrayBufferVar(size_in_bytes, std::move(region));
 }
 
 void PluginVarTracker::PluginImplementedObjectCreated(
@@ -497,17 +500,18 @@ scoped_refptr<ProxyObjectVar> PluginVarTracker::FindOrMakePluginVarFromHostVar(
   return scoped_refptr<ProxyObjectVar>(ret->second.var->AsProxyObjectVar());
 }
 
-int PluginVarTracker::TrackSharedMemoryHandle(PP_Instance instance,
-                                              base::SharedMemoryHandle handle,
-                                              uint32_t size_in_bytes) {
+int PluginVarTracker::TrackSharedMemoryRegion(
+    PP_Instance instance,
+    base::UnsafeSharedMemoryRegion region,
+    uint32_t size_in_bytes) {
   NOTREACHED();
   return -1;
 }
 
-bool PluginVarTracker::StopTrackingSharedMemoryHandle(
+bool PluginVarTracker::StopTrackingSharedMemoryRegion(
     int id,
     PP_Instance instance,
-    base::SharedMemoryHandle* handle,
+    base::UnsafeSharedMemoryRegion* region,
     uint32_t* size_in_bytes) {
   NOTREACHED();
   return false;

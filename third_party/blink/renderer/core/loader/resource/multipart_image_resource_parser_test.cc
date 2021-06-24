@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -22,10 +22,8 @@ String ToString(const Vector<char>& data) {
   return String(data.data(), data.size());
 }
 
-class MockClient final : public GarbageCollectedFinalized<MockClient>,
+class MockClient final : public GarbageCollected<MockClient>,
                          public MultipartImageResourceParser::Client {
-  USING_GARBAGE_COLLECTED_MIXIN(MockClient);
-
  public:
   void OnePartInMultipartReceived(const ResourceResponse& response) override {
     responses_.push_back(response);

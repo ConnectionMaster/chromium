@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef DEVICE_GENERIC_PLATFORM_SENSOR_AMBIENT_LIGHT_SENSOR_MAC_H_
-#define DEVICE_GENERIC_PLATFORM_SENSOR_AMBIENT_LIGHT_SENSOR_MAC_H_
+#ifndef SERVICES_DEVICE_GENERIC_SENSOR_PLATFORM_SENSOR_AMBIENT_LIGHT_MAC_H_
+#define SERVICES_DEVICE_GENERIC_SENSOR_PLATFORM_SENSOR_AMBIENT_LIGHT_MAC_H_
 
 #include <IOKit/IOKitLib.h>
 
@@ -15,8 +15,8 @@ namespace device {
 
 // Implementation of PlatformSensor for macOS to query the ambient light sensor.
 // This is a single instance object per browser process which is created by
-// The singleton PlatformSensorProviderMac. If there are no clients, this
-// instance is not created.
+// PlatformSensorProviderMac. If there are no clients, this instance is not
+// created.
 class PlatformSensorAmbientLightMac : public PlatformSensor {
  public:
   // Construct a platform sensor of AMBIENT_LIGHT, given a buffer |mapping|
@@ -60,4 +60,4 @@ class PlatformSensorAmbientLightMac : public PlatformSensor {
 
 }  // namespace device
 
-#endif  // DEVICE_GENERIC_PLATFORM_SENSOR_AMBIENT_LIGHT_SENSOR_MAC_H_
+#endif  // SERVICES_DEVICE_GENERIC_SENSOR_PLATFORM_SENSOR_AMBIENT_LIGHT_MAC_H_

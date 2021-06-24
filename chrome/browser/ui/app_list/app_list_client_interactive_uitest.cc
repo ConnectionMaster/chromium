@@ -6,6 +6,7 @@
 
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/test/browser_test.h"
 
 // Interactive UI Test for AppListClientImpl that runs on all platforms
 // supporting app_list. Interactive because the app list uses focus changes to
@@ -18,9 +19,7 @@ IN_PROC_BROWSER_TEST_F(AppListClientInteractiveTest, ShowAndDismiss) {
   AppListClientImpl* client = AppListClientImpl::GetInstance();
   ASSERT_FALSE(client->app_list_visible());
   client->ShowAppList();
-  client->FlushMojoForTesting();
   ASSERT_TRUE(client->app_list_visible());
   client->DismissView();
-  client->FlushMojoForTesting();
   ASSERT_FALSE(client->app_list_target_visibility());
 }

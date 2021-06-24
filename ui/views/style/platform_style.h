@@ -9,6 +9,7 @@
 
 #include "base/macros.h"
 #include "ui/views/controls/button/button.h"
+#include "ui/views/view.h"
 #include "ui/views/views_export.h"
 
 namespace gfx {
@@ -18,21 +19,17 @@ class Range;
 namespace views {
 
 class Border;
-class Label;
 class LabelButton;
 class ScrollBar;
 
 // Cross-platform API for providing platform-specific styling for toolkit-views.
 class VIEWS_EXPORT PlatformStyle {
  public:
-  // Type used by LabelButton to map button states to text colors.
-  using ButtonColorByState = SkColor[Button::STATE_COUNT];
-
   // Whether the ok button is in the leading position (left in LTR) in a
   // typical Cancel/OK button group.
   static const bool kIsOkButtonLeading;
 
-  // Minimum size for platform-styled buttons (Button::STYLE_BUTTON).
+  // Minimum size for platform-styled buttons.
   static const int kMinLabelButtonWidth;
   static const int kMinLabelButtonHeight;
 
@@ -44,9 +41,6 @@ class VIEWS_EXPORT PlatformStyle {
 
   // Whether right clicking inside an unfocused text view selects all the text.
   static const bool kSelectAllOnRightClickWhenUnfocused;
-
-  // The menu button's action to show the menu.
-  static const Button::NotifyAction kMenuNotifyActivationAction;
 
   // Whether the Space key clicks a button on key press or key release.
   static const Button::KeyClickAction kKeyClickActionOnSpace;
@@ -67,10 +61,6 @@ class VIEWS_EXPORT PlatformStyle {
   // Whether ripples should be used for visual feedback on control activation.
   static const bool kUseRipples;
 
-  // Whether to scroll text fields to the beginning when they gain or lose
-  // focus.
-  static const bool kTextfieldScrollsToStartOnFocusChange;
-
   // Whether text fields should use a "drag" cursor when not actually
   // dragging but available to do so.
   static const bool kTextfieldUsesDragCursorWhenDraggable;
@@ -79,22 +69,18 @@ class VIEWS_EXPORT PlatformStyle {
   static const float kFocusHaloThickness;
   static const float kFocusHaloInset;
 
-  // Whether "button-like" (for example, buttons in the top chrome or Omnibox
-  // decorations) UI elements should use a focus ring, rather than show
-  // hover state on focus.
-  static const bool kPreferFocusRings;
-
   // Whether controls in inactive widgets appear disabled.
   static const bool kInactiveWidgetControlsAppearDisabled;
 
+  // Default setting at bubble creation time for whether arrow will be adjusted
+  // for bubbles going off-screen to bring more bubble area into view.
+  static const bool kAdjustBubbleIfOffscreen;
+
+  // Default focus behavior on the platform.
+  static const View::FocusBehavior kDefaultFocusBehavior;
+
   // Creates the default scrollbar for the given orientation.
   static std::unique_ptr<ScrollBar> CreateScrollBar(bool is_horizontal);
-
-  // Applies platform styles to |label| and fills |color_by_state| with the text
-  // colors for normal, pressed, hovered, and disabled states, if the colors for
-  // Button::STYLE_BUTTON buttons differ from those provided by ui::NativeTheme.
-  static void ApplyLabelButtonTextStyle(Label* label,
-                                        ButtonColorByState* color_by_state);
 
   // Applies the current system theme to the default border created by |button|.
   static std::unique_ptr<Border> CreateThemedLabelButtonBorder(
@@ -109,7 +95,7 @@ class VIEWS_EXPORT PlatformStyle {
   // This is to support deleting entire graphemes instead of individual
   // characters when necessary on Mac, and code points made from surrogate
   // pairs on other platforms.
-  static gfx::Range RangeToDeleteBackwards(const base::string16& text,
+  static gfx::Range RangeToDeleteBackwards(const std::u16string& text,
                                            size_t cursor_position);
 
  private:

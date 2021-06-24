@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
 #include "base/trace_event/memory_usage_estimator.h"
 #include "net/base/io_buffer.h"
@@ -95,11 +95,6 @@ void SpdyBuffer::Consume(size_t consume_size) {
 
 scoped_refptr<IOBuffer> SpdyBuffer::GetIOBufferForRemainingData() {
   return base::MakeRefCounted<SharedFrameIOBuffer>(shared_frame_, offset_);
-}
-
-size_t SpdyBuffer::EstimateMemoryUsage() const {
-  // TODO(xunjieli): Estimate |consume_callbacks_|. https://crbug.com/669108.
-  return base::trace_event::EstimateMemoryUsage(shared_frame_->data);
 }
 
 void SpdyBuffer::ConsumeHelper(size_t consume_size,

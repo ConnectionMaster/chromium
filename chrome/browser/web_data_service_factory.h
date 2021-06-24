@@ -8,8 +8,8 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
-#include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/service_access_type.h"
+#include "components/webdata_services/web_data_service_wrapper_factory.h"
 
 namespace base {
 template <typename T>
@@ -21,17 +21,14 @@ class Profile;
 class TokenWebData;
 class WebDataServiceWrapper;
 
-namespace payments {
-class PaymentManifestWebDataService;
-}
-
 namespace autofill {
 class AutofillWebDataService;
 }
 
 // Singleton that owns all WebDataServiceWrappers and associates them with
 // Profiles.
-class WebDataServiceFactory : public BrowserContextKeyedServiceFactory {
+class WebDataServiceFactory
+    : public webdata_services::WebDataServiceWrapperFactory {
  public:
   // Returns the WebDataServiceWrapper associated with the |profile|.
   static WebDataServiceWrapper* GetForProfile(Profile* profile,
@@ -60,10 +57,6 @@ class WebDataServiceFactory : public BrowserContextKeyedServiceFactory {
       Profile* profile,
       ServiceAccessType access_type);
 
-  static scoped_refptr<payments::PaymentManifestWebDataService>
-  GetPaymentManifestWebDataForProfile(Profile* profile,
-                                      ServiceAccessType access_type);
-
   static WebDataServiceFactory* GetInstance();
 
  private:
@@ -72,7 +65,7 @@ class WebDataServiceFactory : public BrowserContextKeyedServiceFactory {
   WebDataServiceFactory();
   ~WebDataServiceFactory() override;
 
-  // |BrowserContextKeyedBaseFactory| methods:
+  // |BrowserContextKeyedServiceFactory| methods:
   content::BrowserContext* GetBrowserContextToUse(
       content::BrowserContext* context) const override;
   KeyedService* BuildServiceInstanceFor(

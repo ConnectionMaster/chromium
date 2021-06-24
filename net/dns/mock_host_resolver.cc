@@ -4,6 +4,8 @@
 
 #include "net/dns/mock_host_resolver.h"
 
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -15,8 +17,8 @@
 #include "base/memory/ref_counted.h"
 #include "base/no_destructor.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/pattern.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/threading/platform_thread.h"
@@ -28,7 +30,10 @@
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
+#include "net/dns/dns_alias_utility.h"
 #include "net/dns/host_cache.h"
+#include "net/dns/public/resolve_error_info.h"
+#include "net/dns/public/secure_dns_policy.h"
 #include "net/url_request/url_request_context.h"
 
 #if defined(OS_WIN)
@@ -44,18 +49,27 @@ const unsigned kMaxCacheEntries = 100;
 // TTL for the successful resolutions. Failures are not cached.
 const unsigned kCacheEntryTTLSeconds = 60;
 
+RuleBasedHostResolverProc* CreateMockHostResolverProc(bool add_catchall) {
+  if (add_catchall) {
+    return CreateCatchAllHostResolverProc();
+  }
+
+  return new RuleBasedHostResolverProc(/*previous=*/nullptr,
+                                       /*allow_fallback=*/false);
+}
+
 }  // namespace
 
 int ParseAddressList(const std::string& host_list,
-                     const std::string& canonical_name,
+                     const std::vector<std::string>& dns_aliases,
                      AddressList* addrlist) {
   *addrlist = AddressList();
-  addrlist->set_canonical_name(canonical_name);
+  addrlist->SetDnsAliases(dns_aliases);
   for (const base::StringPiece& address : base::SplitStringPiece(
            host_list, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
     IPAddress ip_address;
     if (!ip_address.AssignFromIPLiteral(address)) {
-      LOG(WARNING) << "Not a supported IP literal: " << address.as_string();
+      LOG(WARNING) << "Not a supported IP literal: " << address;
       return ERR_UNEXPECTED;
     }
     addrlist->push_back(IPEndPoint(ip_address, 0));
@@ -67,13 +81,16 @@ class MockHostResolverBase::RequestImpl
     : public HostResolver::ResolveHostRequest {
  public:
   RequestImpl(const HostPortPair& request_host,
-              const base::Optional<ResolveHostParameters>& optional_parameters,
+              const NetworkIsolationKey& network_isolation_key,
+              const absl::optional<ResolveHostParameters>& optional_parameters,
               base::WeakPtr<MockHostResolverBase> resolver)
       : request_host_(request_host),
+        network_isolation_key_(network_isolation_key),
         parameters_(optional_parameters ? optional_parameters.value()
                                         : ResolveHostParameters()),
         priority_(parameters_.initial_priority),
         host_resolver_flags_(ParametersToHostResolverFlags(parameters_)),
+        resolve_error_info_(ResolveErrorInfo(ERR_IO_PENDING)),
         id_(0),
         resolver_(resolver),
         complete_(false) {}
@@ -85,6 +102,11 @@ class MockHostResolverBase::RequestImpl
       id_ = 0;
       resolver_ = nullptr;
     }
+  }
+
+  void DetachFromResolver() {
+    id_ = 0;
+    resolver_ = nullptr;
   }
 
   int Start(CompletionOnceCallback callback) override {
@@ -109,28 +131,39 @@ class MockHostResolverBase::RequestImpl
     return rv;
   }
 
-  const base::Optional<AddressList>& GetAddressResults() const override {
+  const absl::optional<AddressList>& GetAddressResults() const override {
     DCHECK(complete_);
     return address_results_;
   }
 
-  const base::Optional<std::vector<std::string>>& GetTextResults()
+  const absl::optional<std::vector<std::string>>& GetTextResults()
       const override {
     DCHECK(complete_);
-    static const base::NoDestructor<base::Optional<std::vector<std::string>>>
+    static const base::NoDestructor<absl::optional<std::vector<std::string>>>
         nullopt_result;
     return *nullopt_result;
   }
 
-  const base::Optional<std::vector<HostPortPair>>& GetHostnameResults()
+  const absl::optional<std::vector<HostPortPair>>& GetHostnameResults()
       const override {
     DCHECK(complete_);
-    static const base::NoDestructor<base::Optional<std::vector<HostPortPair>>>
+    static const base::NoDestructor<absl::optional<std::vector<HostPortPair>>>
         nullopt_result;
     return *nullopt_result;
   }
 
-  const base::Optional<HostCache::EntryStaleness>& GetStaleInfo()
+  const absl::optional<std::vector<std::string>>& GetDnsAliasResults()
+      const override {
+    DCHECK(complete_);
+    return sanitized_dns_alias_results_;
+  }
+
+  net::ResolveErrorInfo GetResolveErrorInfo() const override {
+    DCHECK(complete_);
+    return resolve_error_info_;
+  }
+
+  const absl::optional<HostCache::EntryStaleness>& GetStaleInfo()
       const override {
     DCHECK(complete_);
     return staleness_;
@@ -140,9 +173,14 @@ class MockHostResolverBase::RequestImpl
     priority_ = priority;
   }
 
-  void set_address_results(
-      const AddressList& address_results,
-      base::Optional<HostCache::EntryStaleness> staleness) {
+  void SetError(int error) {
+    // Should only be called before request is marked completed.
+    DCHECK(!complete_);
+    resolve_error_info_ = ResolveErrorInfo(error);
+  }
+
+  void SetAddressResults(const AddressList& address_results,
+                         absl::optional<HostCache::EntryStaleness> staleness) {
     // Should only be called at most once and before request is marked
     // completed.
     DCHECK(!complete_);
@@ -150,12 +188,19 @@ class MockHostResolverBase::RequestImpl
     DCHECK(!parameters_.is_speculative);
 
     address_results_ = address_results;
+    sanitized_dns_alias_results_ =
+        dns_alias_utility::SanitizeDnsAliases(address_results_->dns_aliases());
     staleness_ = std::move(staleness);
   }
 
   void OnAsyncCompleted(size_t id, int error) {
     DCHECK_EQ(id_, id);
     id_ = 0;
+
+    // Check that error information has been set and that the top-level error
+    // code is valid.
+    DCHECK(resolve_error_info_.error != ERR_IO_PENDING);
+    DCHECK(error == OK || error == ERR_NAME_NOT_RESOLVED);
 
     DCHECK(!complete_);
     complete_ = true;
@@ -165,6 +210,10 @@ class MockHostResolverBase::RequestImpl
   }
 
   const HostPortPair& request_host() const { return request_host_; }
+
+  const NetworkIsolationKey& network_isolation_key() const {
+    return network_isolation_key_;
+  }
 
   const ResolveHostParameters& parameters() const { return parameters_; }
 
@@ -185,12 +234,15 @@ class MockHostResolverBase::RequestImpl
 
  private:
   const HostPortPair request_host_;
+  const NetworkIsolationKey network_isolation_key_;
   const ResolveHostParameters parameters_;
   RequestPriority priority_;
   int host_resolver_flags_;
 
-  base::Optional<AddressList> address_results_;
-  base::Optional<HostCache::EntryStaleness> staleness_;
+  absl::optional<AddressList> address_results_;
+  absl::optional<std::vector<std::string>> sanitized_dns_alias_results_;
+  absl::optional<HostCache::EntryStaleness> staleness_;
+  ResolveErrorInfo resolve_error_info_;
 
   // Used while stored with the resolver for async resolution.  Otherwise 0.
   size_t id_;
@@ -202,6 +254,33 @@ class MockHostResolverBase::RequestImpl
   bool complete_;
 
   DISALLOW_COPY_AND_ASSIGN(RequestImpl);
+};
+
+class MockHostResolverBase::ProbeRequestImpl
+    : public HostResolver::ProbeRequest {
+ public:
+  explicit ProbeRequestImpl(base::WeakPtr<MockHostResolverBase> resolver)
+      : resolver_(std::move(resolver)) {}
+
+  ProbeRequestImpl(const ProbeRequestImpl&) = delete;
+  ProbeRequestImpl& operator=(const ProbeRequestImpl&) = delete;
+
+  ~ProbeRequestImpl() override {
+    if (resolver_ && resolver_->doh_probe_request_ == this)
+      resolver_->doh_probe_request_ = nullptr;
+  }
+
+  int Start() override {
+    DCHECK(resolver_);
+    DCHECK(!resolver_->doh_probe_request_);
+
+    resolver_->doh_probe_request_ = this;
+
+    return ERR_IO_PENDING;
+  }
+
+ private:
+  base::WeakPtr<MockHostResolverBase> resolver_;
 };
 
 class MockHostResolverBase::MdnsListenerImpl
@@ -269,15 +348,41 @@ class MockHostResolverBase::MdnsListenerImpl
 
 MockHostResolverBase::~MockHostResolverBase() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  // Sanity check that pending requests are always cleaned up, by waiting for
+  // completion, manually cancelling, or calling OnShutdown().
   DCHECK(requests_.empty());
+}
+
+void MockHostResolverBase::OnShutdown() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  // Cancel all pending requests.
+  for (auto& request : requests_) {
+    request.second->DetachFromResolver();
+  }
+  requests_.clear();
+
+  // Prevent future requests by clearing resolution rules and the cache.
+  rules_map_.clear();
+  cache_ = nullptr;
+
+  doh_probe_request_ = nullptr;
 }
 
 std::unique_ptr<HostResolver::ResolveHostRequest>
 MockHostResolverBase::CreateRequest(
     const HostPortPair& host,
+    const NetworkIsolationKey& network_isolation_key,
     const NetLogWithSource& source_net_log,
-    const base::Optional<ResolveHostParameters>& optional_parameters) {
-  return std::make_unique<RequestImpl>(host, optional_parameters, AsWeakPtr());
+    const absl::optional<ResolveHostParameters>& optional_parameters) {
+  return std::make_unique<RequestImpl>(host, network_isolation_key,
+                                       optional_parameters, AsWeakPtr());
+}
+
+std::unique_ptr<HostResolver::ProbeRequest>
+MockHostResolverBase::CreateDohProbeRequest() {
+  return std::make_unique<ProbeRequestImpl>(AsWeakPtr());
 }
 
 std::unique_ptr<HostResolver::MdnsListener>
@@ -290,23 +395,10 @@ HostCache* MockHostResolverBase::GetHostCache() {
   return cache_.get();
 }
 
-bool MockHostResolverBase::HasCached(base::StringPiece hostname,
-                                     HostCache::Entry::Source* source_out,
-                                     HostCache::EntryStaleness* stale_out,
-                                     bool* secure_out) const {
-  if (!cache_)
-    return false;
-
-  const HostCache::Key* key =
-      cache_->GetMatchingKey(hostname, source_out, stale_out);
-  if (key && secure_out != nullptr)
-    *secure_out = key->secure;
-  return !!key;
-}
-
 int MockHostResolverBase::LoadIntoCache(
     const HostPortPair& host,
-    const base::Optional<ResolveHostParameters>& optional_parameters) {
+    const NetworkIsolationKey& network_isolation_key,
+    const absl::optional<ResolveHostParameters>& optional_parameters) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(cache_);
 
@@ -314,9 +406,9 @@ int MockHostResolverBase::LoadIntoCache(
       optional_parameters.value_or(ResolveHostParameters());
 
   AddressList addresses;
-  base::Optional<HostCache::EntryStaleness> stale_info;
+  absl::optional<HostCache::EntryStaleness> stale_info;
   int rv = ResolveFromIPLiteralOrCache(
-      host, parameters.dns_query_type,
+      host, network_isolation_key, parameters.dns_query_type,
       ParametersToHostResolverFlags(parameters), parameters.source,
       parameters.cache_usage, &addresses, &stale_info);
   if (rv != ERR_DNS_CACHE_MISS) {
@@ -329,9 +421,10 @@ int MockHostResolverBase::LoadIntoCache(
   if (!IsValidDNSDomain(host.host()))
     return ERR_NAME_NOT_RESOLVED;
 
-  return ResolveProc(
-      host, DnsQueryTypeToAddressFamily(parameters.dns_query_type),
-      ParametersToHostResolverFlags(parameters), parameters.source, &addresses);
+  return ResolveProc(host, network_isolation_key,
+                     DnsQueryTypeToAddressFamily(parameters.dns_query_type),
+                     ParametersToHostResolverFlags(parameters),
+                     parameters.source, &addresses);
 }
 
 void MockHostResolverBase::ResolveAllPending() {
@@ -360,12 +453,13 @@ void MockHostResolverBase::ResolveNow(size_t id) {
 
   AddressList addresses;
   int error = ResolveProc(
-      req->request_host(),
+      req->request_host(), req->network_isolation_key(),
       DnsQueryTypeToAddressFamily(req->parameters().dns_query_type),
       req->host_resolver_flags(), req->parameters().source, &addresses);
+  req->SetError(error);
   if (error == OK && !req->parameters().is_speculative)
-    req->set_address_results(addresses, base::nullopt);
-  req->OnAsyncCompleted(id, error);
+    req->SetAddressResults(addresses, absl::nullopt);
+  req->OnAsyncCompleted(id, SquashErrorCode(error));
 }
 
 void MockHostResolverBase::DetachRequest(size_t id) {
@@ -374,15 +468,20 @@ void MockHostResolverBase::DetachRequest(size_t id) {
   requests_.erase(it);
 }
 
-MockHostResolverBase::RequestImpl* MockHostResolverBase::request(size_t id) {
-  RequestMap::iterator request = requests_.find(id);
-  DCHECK(request != requests_.end());
-  return (*request).second;
+const std::string& MockHostResolverBase::request_host(size_t id) {
+  DCHECK(request(id));
+  return request(id)->request_host().host();
 }
 
 RequestPriority MockHostResolverBase::request_priority(size_t id) {
   DCHECK(request(id));
   return request(id)->priority();
+}
+
+const NetworkIsolationKey& MockHostResolverBase::request_network_isolation_key(
+    size_t id) {
+  DCHECK(request(id));
+  return request(id)->network_isolation_key();
 }
 
 void MockHostResolverBase::ResolveOnlyRequestNow() {
@@ -433,10 +532,18 @@ void MockHostResolverBase::TriggerMdnsListeners(
   }
 }
 
+MockHostResolverBase::RequestImpl* MockHostResolverBase::request(size_t id) {
+  RequestMap::iterator request = requests_.find(id);
+  DCHECK(request != requests_.end());
+  return (*request).second;
+}
+
 // start id from 1 to distinguish from NULL RequestHandle
 MockHostResolverBase::MockHostResolverBase(bool use_caching,
-                                           int cache_invalidation_num)
+                                           int cache_invalidation_num,
+                                           bool require_matching_rule)
     : last_request_priority_(DEFAULT_PRIORITY),
+      last_secure_dns_policy_(SecureDnsPolicy::kAllow),
       synchronous_mode_(false),
       ondemand_mode_(false),
       initial_cache_invalidation_num_(cache_invalidation_num),
@@ -445,14 +552,17 @@ MockHostResolverBase::MockHostResolverBase(bool use_caching,
       num_resolve_from_cache_(0),
       num_non_local_resolves_(0),
       tick_clock_(base::DefaultTickClock::GetInstance()) {
-  rules_map_[HostResolverSource::ANY] = CreateCatchAllHostResolverProc();
-  rules_map_[HostResolverSource::SYSTEM] = CreateCatchAllHostResolverProc();
-  rules_map_[HostResolverSource::DNS] = CreateCatchAllHostResolverProc();
+  rules_map_[HostResolverSource::ANY] =
+      CreateMockHostResolverProc(/*add_catchall=*/!require_matching_rule);
+  rules_map_[HostResolverSource::SYSTEM] =
+      CreateMockHostResolverProc(/*add_catchall=*/!require_matching_rule);
+  rules_map_[HostResolverSource::DNS] =
+      CreateMockHostResolverProc(/*add_catchall=*/!require_matching_rule);
   rules_map_[HostResolverSource::MULTICAST_DNS] =
-      CreateCatchAllHostResolverProc();
+      CreateMockHostResolverProc(/*add_catchall=*/!require_matching_rule);
 
   if (use_caching)
-    cache_.reset(new HostCache(kMaxCacheEntries));
+    cache_ = std::make_unique<HostCache>(kMaxCacheEntries);
   else
     DCHECK_GE(0, cache_invalidation_num);
 }
@@ -461,34 +571,43 @@ int MockHostResolverBase::Resolve(RequestImpl* request) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   last_request_priority_ = request->parameters().initial_priority;
+  last_request_network_isolation_key_ = request->network_isolation_key();
+  last_secure_dns_policy_ = request->parameters().secure_dns_policy;
   num_resolve_++;
   AddressList addresses;
-  base::Optional<HostCache::EntryStaleness> stale_info;
+  absl::optional<HostCache::EntryStaleness> stale_info;
   int rv = ResolveFromIPLiteralOrCache(
-      request->request_host(), request->parameters().dns_query_type,
-      request->host_resolver_flags(), request->parameters().source,
-      request->parameters().cache_usage, &addresses, &stale_info);
+      request->request_host(), request->network_isolation_key(),
+      request->parameters().dns_query_type, request->host_resolver_flags(),
+      request->parameters().source, request->parameters().cache_usage,
+      &addresses, &stale_info);
+
+  request->SetError(rv);
   if (rv == OK && !request->parameters().is_speculative)
-    request->set_address_results(addresses, std::move(stale_info));
+    request->SetAddressResults(addresses, std::move(stale_info));
   if (rv != ERR_DNS_CACHE_MISS ||
       request->parameters().source == HostResolverSource::LOCAL_ONLY) {
-    return rv;
+    return SquashErrorCode(rv);
   }
 
   // Just like the real resolver, refuse to do anything with invalid
   // hostnames.
-  if (!IsValidDNSDomain(request->request_host().host()))
+  if (!IsValidDNSDomain(request->request_host().host())) {
+    request->SetError(ERR_NAME_NOT_RESOLVED);
     return ERR_NAME_NOT_RESOLVED;
+  }
 
   if (synchronous_mode_) {
     int rv = ResolveProc(
-        request->request_host(),
+        request->request_host(), request->network_isolation_key(),
         DnsQueryTypeToAddressFamily(request->parameters().dns_query_type),
         request->host_resolver_flags(), request->parameters().source,
         &addresses);
+
+    request->SetError(rv);
     if (rv == OK && !request->parameters().is_speculative)
-      request->set_address_results(addresses, base::nullopt);
-    return rv;
+      request->SetAddressResults(addresses, absl::nullopt);
+    return SquashErrorCode(rv);
   }
 
   // Store the request for asynchronous resolution
@@ -507,15 +626,16 @@ int MockHostResolverBase::Resolve(RequestImpl* request) {
 
 int MockHostResolverBase::ResolveFromIPLiteralOrCache(
     const HostPortPair& host,
+    const NetworkIsolationKey& network_isolation_key,
     DnsQueryType dns_query_type,
     HostResolverFlags flags,
     HostResolverSource source,
     HostResolver::ResolveHostParameters::CacheUsage cache_usage,
     AddressList* addresses,
-    base::Optional<HostCache::EntryStaleness>* out_stale_info) {
+    absl::optional<HostCache::EntryStaleness>* out_stale_info) {
   DCHECK(addresses);
   DCHECK(out_stale_info);
-  *out_stale_info = base::nullopt;
+  *out_stale_info = absl::nullopt;
 
   IPAddress ip_address;
   if (ip_address.AssignFromIPLiteral(host.host())) {
@@ -541,7 +661,8 @@ int MockHostResolverBase::ResolveFromIPLiteralOrCache(
     HostResolverSource effective_source =
         source == HostResolverSource::LOCAL_ONLY ? HostResolverSource::ANY
                                                  : source;
-    HostCache::Key key(host.host(), dns_query_type, flags, effective_source);
+    HostCache::Key key(host.host(), dns_query_type, flags, effective_source,
+                       network_isolation_key);
     const std::pair<const HostCache::Key, HostCache::Entry>* cache_result;
     HostCache::EntryStaleness stale_info = HostCache::kNotStale;
     if (cache_usage ==
@@ -576,11 +697,13 @@ int MockHostResolverBase::ResolveFromIPLiteralOrCache(
   return rv;
 }
 
-int MockHostResolverBase::ResolveProc(const HostPortPair& host,
-                                      AddressFamily requested_address_family,
-                                      HostResolverFlags flags,
-                                      HostResolverSource source,
-                                      AddressList* addresses) {
+int MockHostResolverBase::ResolveProc(
+    const HostPortPair& host,
+    const NetworkIsolationKey& network_isolation_key,
+    AddressFamily requested_address_family,
+    HostResolverFlags flags,
+    HostResolverSource source,
+    AddressList* addresses) {
   DCHECK(rules_map_.find(source) != rules_map_.end());
   ++num_non_local_resolves_;
 
@@ -590,7 +713,7 @@ int MockHostResolverBase::ResolveProc(const HostPortPair& host,
   if (cache_.get()) {
     HostCache::Key key(host.host(),
                        AddressFamilyToDnsQueryType(requested_address_family),
-                       flags, source);
+                       flags, source, network_isolation_key);
     // Storing a failure with TTL 0 so that it overwrites previous value.
     base::TimeDelta ttl;
     if (rv == OK) {
@@ -627,12 +750,14 @@ MockHostResolverFactory::~MockHostResolverFactory() = default;
 
 std::unique_ptr<HostResolver> MockHostResolverFactory::CreateResolver(
     HostResolverManager* manager,
-    base::StringPiece host_mapping_rules) {
+    base::StringPiece host_mapping_rules,
+    bool enable_caching) {
   DCHECK(host_mapping_rules.empty());
 
   // Explicit new to access private constructor.
-  auto resolver = base::WrapUnique(
-      new MockHostResolverBase(use_caching_, cache_invalidation_num_));
+  auto resolver = base::WrapUnique(new MockHostResolverBase(
+      enable_caching && use_caching_, cache_invalidation_num_,
+      /*require_matching_rule=*/true));
   if (rules_)
     resolver->set_rules(rules_.get());
   return resolver;
@@ -640,9 +765,10 @@ std::unique_ptr<HostResolver> MockHostResolverFactory::CreateResolver(
 
 std::unique_ptr<HostResolver> MockHostResolverFactory::CreateStandaloneResolver(
     NetLog* net_log,
-    const HostResolver::Options& options,
-    base::StringPiece host_mapping_rules) {
-  return CreateResolver(nullptr, host_mapping_rules);
+    const HostResolver::ManagerOptions& options,
+    base::StringPiece host_mapping_rules,
+    bool enable_caching) {
+  return CreateResolver(nullptr, host_mapping_rules, enable_caching);
 }
 
 //-----------------------------------------------------------------------------
@@ -652,20 +778,26 @@ RuleBasedHostResolverProc::Rule::Rule(ResolverType resolver_type,
                                       AddressFamily address_family,
                                       HostResolverFlags host_resolver_flags,
                                       const std::string& replacement,
-                                      const std::string& canonical_name,
+                                      std::vector<std::string> dns_aliases,
                                       int latency_ms)
     : resolver_type(resolver_type),
       host_pattern(host_pattern),
       address_family(address_family),
       host_resolver_flags(host_resolver_flags),
       replacement(replacement),
-      canonical_name(canonical_name),
-      latency_ms(latency_ms) {}
+      dns_aliases(std::move(dns_aliases)),
+      latency_ms(latency_ms) {
+  DCHECK(dns_aliases != std::vector<std::string>({""}));
+}
 
 RuleBasedHostResolverProc::Rule::Rule(const Rule& other) = default;
 
-RuleBasedHostResolverProc::RuleBasedHostResolverProc(HostResolverProc* previous)
-    : HostResolverProc(previous), modifications_allowed_(true) {}
+RuleBasedHostResolverProc::Rule::~Rule() = default;
+
+RuleBasedHostResolverProc::RuleBasedHostResolverProc(HostResolverProc* previous,
+                                                     bool allow_fallback)
+    : HostResolverProc(previous, allow_fallback),
+      modifications_allowed_(true) {}
 
 void RuleBasedHostResolverProc::AddRule(const std::string& host_pattern,
                                         const std::string& replacement) {
@@ -678,10 +810,9 @@ void RuleBasedHostResolverProc::AddRuleForAddressFamily(
     AddressFamily address_family,
     const std::string& replacement) {
   DCHECK(!replacement.empty());
-  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY |
-                            HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
+  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY;
   Rule rule(Rule::kResolverTypeSystem, host_pattern, address_family, flags,
-            replacement, std::string(), 0);
+            replacement, {} /* dns_aliases */, 0);
   AddRuleInternal(rule);
 }
 
@@ -689,10 +820,10 @@ void RuleBasedHostResolverProc::AddRuleWithFlags(
     const std::string& host_pattern,
     const std::string& replacement,
     HostResolverFlags flags,
-    const std::string& canonical_name) {
+    std::vector<std::string> dns_aliases) {
   DCHECK(!replacement.empty());
   Rule rule(Rule::kResolverTypeSystem, host_pattern, ADDRESS_FAMILY_UNSPECIFIED,
-            flags, replacement, canonical_name, 0);
+            flags, replacement, std::move(dns_aliases), 0);
   AddRuleInternal(rule);
 }
 
@@ -704,13 +835,34 @@ void RuleBasedHostResolverProc::AddIPLiteralRule(
   // consequently we do not support remapping them.
   IPAddress ip_address;
   DCHECK(!ip_address.AssignFromIPLiteral(host_pattern));
-  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY |
-                            HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
-  if (!canonical_name.empty())
+  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY;
+  std::vector<std::string> aliases;
+  if (!canonical_name.empty()) {
+    flags |= HOST_RESOLVER_CANONNAME;
+    aliases.emplace_back(canonical_name);
+  }
+
+  Rule rule(Rule::kResolverTypeIPLiteral, host_pattern,
+            ADDRESS_FAMILY_UNSPECIFIED, flags, ip_literal, std::move(aliases),
+            0);
+  AddRuleInternal(rule);
+}
+
+void RuleBasedHostResolverProc::AddIPLiteralRuleWithDnsAliases(
+    const std::string& host_pattern,
+    const std::string& ip_literal,
+    std::vector<std::string> dns_aliases) {
+  // Literals are always resolved to themselves by HostResolverImpl,
+  // consequently we do not support remapping them.
+  IPAddress ip_address;
+  DCHECK(!ip_address.AssignFromIPLiteral(host_pattern));
+  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY;
+  if (!dns_aliases.empty())
     flags |= HOST_RESOLVER_CANONNAME;
 
   Rule rule(Rule::kResolverTypeIPLiteral, host_pattern,
-            ADDRESS_FAMILY_UNSPECIFIED, flags, ip_literal, canonical_name, 0);
+            ADDRESS_FAMILY_UNSPECIFIED, flags, ip_literal,
+            std::move(dns_aliases), 0);
   AddRuleInternal(rule);
 }
 
@@ -719,28 +871,34 @@ void RuleBasedHostResolverProc::AddRuleWithLatency(
     const std::string& replacement,
     int latency_ms) {
   DCHECK(!replacement.empty());
-  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY |
-                            HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
+  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY;
   Rule rule(Rule::kResolverTypeSystem, host_pattern, ADDRESS_FAMILY_UNSPECIFIED,
-            flags, replacement, std::string(), latency_ms);
+            flags, replacement, {} /* dns_aliases */, latency_ms);
   AddRuleInternal(rule);
 }
 
 void RuleBasedHostResolverProc::AllowDirectLookup(
     const std::string& host_pattern) {
-  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY |
-                            HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
+  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY;
   Rule rule(Rule::kResolverTypeSystem, host_pattern, ADDRESS_FAMILY_UNSPECIFIED,
-            flags, std::string(), std::string(), 0);
+            flags, std::string(), {} /* dns_aliases */, 0);
   AddRuleInternal(rule);
 }
 
 void RuleBasedHostResolverProc::AddSimulatedFailure(
-    const std::string& host_pattern) {
-  HostResolverFlags flags = HOST_RESOLVER_LOOPBACK_ONLY |
-                            HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
+    const std::string& host_pattern,
+    HostResolverFlags flags) {
   Rule rule(Rule::kResolverTypeFail, host_pattern, ADDRESS_FAMILY_UNSPECIFIED,
-            flags, std::string(), std::string(), 0);
+            flags, std::string(), {} /* dns_aliases */, 0);
+  AddRuleInternal(rule);
+}
+
+void RuleBasedHostResolverProc::AddSimulatedTimeoutFailure(
+    const std::string& host_pattern,
+    HostResolverFlags flags) {
+  Rule rule(Rule::kResolverTypeFailTimeout, host_pattern,
+            ADDRESS_FAMILY_UNSPECIFIED, flags, std::string(),
+            {} /* dns_aliases */, 0);
   AddRuleInternal(rule);
 }
 
@@ -774,9 +932,10 @@ int RuleBasedHostResolverProc::Resolve(const std::string& host,
     bool matches_address_family =
         r->address_family == ADDRESS_FAMILY_UNSPECIFIED ||
         r->address_family == address_family;
-    // Ignore HOST_RESOLVER_SYSTEM_ONLY, since it should have no impact on
-    // whether a rule matches.
-    HostResolverFlags flags = host_resolver_flags & ~HOST_RESOLVER_SYSTEM_ONLY;
+    // Ignore HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6, since it should
+    // have no impact on whether a rule matches.
+    HostResolverFlags flags =
+        host_resolver_flags & ~HOST_RESOLVER_DEFAULT_FAMILY_SET_DUE_TO_NO_IPV6;
     // Flags match if all of the bitflags in host_resolver_flags are enabled
     // in the rule's host_resolver_flags. However, the rule may have additional
     // flags specified, in which case the flags should still be considered a
@@ -797,6 +956,8 @@ int RuleBasedHostResolverProc::Resolve(const std::string& host,
       switch (r->resolver_type) {
         case Rule::kResolverTypeFail:
           return ERR_NAME_NOT_RESOLVED;
+        case Rule::kResolverTypeFailTimeout:
+          return ERR_DNS_TIMED_OUT;
         case Rule::kResolverTypeSystem:
 #if defined(OS_WIN)
           EnsureWinsockInit();
@@ -806,10 +967,12 @@ int RuleBasedHostResolverProc::Resolve(const std::string& host,
                                         os_error);
         case Rule::kResolverTypeIPLiteral: {
           AddressList raw_addr_list;
-          int result = ParseAddressList(
-              effective_host,
-              !r->canonical_name.empty() ? r->canonical_name : host,
-              &raw_addr_list);
+          std::vector<std::string> aliases;
+          aliases = (!r->dns_aliases.empty())
+                        ? r->dns_aliases
+                        : std::vector<std::string>({host});
+          int result =
+              ParseAddressList(effective_host, aliases, &raw_addr_list);
           // Filter out addresses with the wrong family.
           *addrlist = AddressList();
           for (const auto& address : raw_addr_list) {
@@ -818,7 +981,7 @@ int RuleBasedHostResolverProc::Resolve(const std::string& host,
               addrlist->push_back(address);
             }
           }
-          addrlist->set_canonical_name(raw_addr_list.canonical_name());
+          addrlist->SetDnsAliases(raw_addr_list.dns_aliases());
 
           if (result == OK && addrlist->empty())
             return ERR_NAME_NOT_RESOLVED;
@@ -830,6 +993,7 @@ int RuleBasedHostResolverProc::Resolve(const std::string& host,
       }
     }
   }
+
   return ResolveUsingPrevious(host, address_family, host_resolver_flags,
                               addrlist, os_error);
 }
@@ -861,12 +1025,14 @@ void RuleBasedHostResolverProc::AddRuleInternal(const Rule& rule) {
 }
 
 RuleBasedHostResolverProc* CreateCatchAllHostResolverProc() {
-  RuleBasedHostResolverProc* catchall = new RuleBasedHostResolverProc(nullptr);
+  RuleBasedHostResolverProc* catchall =
+      new RuleBasedHostResolverProc(/*previous=*/nullptr,
+                                    /*allow_fallback=*/false);
   // Note that IPv6 lookups fail.
   catchall->AddIPLiteralRule("*", "127.0.0.1", "localhost");
 
-  // Next add a rules-based layer the use controls.
-  return new RuleBasedHostResolverProc(catchall);
+  // Next add a rules-based layer that the test controls.
+  return new RuleBasedHostResolverProc(catchall, /*allow_fallback=*/false);
 }
 
 //-----------------------------------------------------------------------------
@@ -874,55 +1040,51 @@ RuleBasedHostResolverProc* CreateCatchAllHostResolverProc() {
 // Implementation of ResolveHostRequest that tracks cancellations when the
 // request is destroyed after being started.
 class HangingHostResolver::RequestImpl
-    : public HostResolver::ResolveHostRequest {
+    : public HostResolver::ResolveHostRequest,
+      public HostResolver::ProbeRequest {
  public:
-  RequestImpl(base::WeakPtr<HangingHostResolver> resolver, bool is_local_only)
-      : resolver_(resolver),
-        is_running_(false),
-        is_local_only_(is_local_only) {}
+  explicit RequestImpl(base::WeakPtr<HangingHostResolver> resolver)
+      : resolver_(resolver) {}
 
   ~RequestImpl() override {
     if (is_running_ && resolver_)
       resolver_->num_cancellations_++;
   }
 
-  int Start(CompletionOnceCallback callback) override {
-    DCHECK(resolver_);
-    if (is_local_only_)
-      return ERR_DNS_CACHE_MISS;
+  int Start(CompletionOnceCallback callback) override { return Start(); }
 
+  int Start() override {
+    DCHECK(resolver_);
     is_running_ = true;
     return ERR_IO_PENDING;
   }
 
-  const base::Optional<AddressList>& GetAddressResults() const override {
-    DCHECK(is_local_only_);
-    static const base::NoDestructor<base::Optional<AddressList>> nullopt_result;
-    return *nullopt_result;
+  const absl::optional<AddressList>& GetAddressResults() const override {
+    IMMEDIATE_CRASH();
   }
 
-  const base::Optional<std::vector<std::string>>& GetTextResults()
+  const absl::optional<std::vector<std::string>>& GetTextResults()
       const override {
-    DCHECK(is_local_only_);
-    static const base::NoDestructor<base::Optional<std::vector<std::string>>>
-        nullopt_result;
-    return *nullopt_result;
+    IMMEDIATE_CRASH();
   }
 
-  const base::Optional<std::vector<HostPortPair>>& GetHostnameResults()
+  const absl::optional<std::vector<HostPortPair>>& GetHostnameResults()
       const override {
-    DCHECK(is_local_only_);
-    static const base::NoDestructor<base::Optional<std::vector<HostPortPair>>>
-        nullopt_result;
-    return *nullopt_result;
+    IMMEDIATE_CRASH();
   }
 
-  const base::Optional<HostCache::EntryStaleness>& GetStaleInfo()
+  const absl::optional<std::vector<std::string>>& GetDnsAliasResults()
       const override {
-    DCHECK(is_local_only_);
-    static const base::NoDestructor<base::Optional<HostCache::EntryStaleness>>
-        nullopt_result;
-    return *nullopt_result;
+    IMMEDIATE_CRASH();
+  }
+
+  net::ResolveErrorInfo GetResolveErrorInfo() const override {
+    IMMEDIATE_CRASH();
+  }
+
+  const absl::optional<HostCache::EntryStaleness>& GetStaleInfo()
+      const override {
+    IMMEDIATE_CRASH();
   }
 
   void ChangeRequestPriority(RequestPriority priority) override {}
@@ -931,8 +1093,7 @@ class HangingHostResolver::RequestImpl
   // Use a WeakPtr as the resolver may be destroyed while there are still
   // outstanding request objects.
   base::WeakPtr<HangingHostResolver> resolver_;
-  bool is_running_;
-  bool is_local_only_;
+  bool is_running_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(RequestImpl);
 };
@@ -941,24 +1102,36 @@ HangingHostResolver::HangingHostResolver() = default;
 
 HangingHostResolver::~HangingHostResolver() = default;
 
+void HangingHostResolver::OnShutdown() {
+  shutting_down_ = true;
+}
+
 std::unique_ptr<HostResolver::ResolveHostRequest>
 HangingHostResolver::CreateRequest(
     const HostPortPair& host,
+    const NetworkIsolationKey& network_isolation_key,
     const NetLogWithSource& source_net_log,
-    const base::Optional<ResolveHostParameters>& optional_parameters) {
-  bool is_local_only =
-      optional_parameters
-          ? optional_parameters.value().source == HostResolverSource::LOCAL_ONLY
-          : false;
-  return std::make_unique<RequestImpl>(weak_ptr_factory_.GetWeakPtr(),
-                                       is_local_only);
+    const absl::optional<ResolveHostParameters>& optional_parameters) {
+  last_host_ = host;
+  last_network_isolation_key_ = network_isolation_key;
+
+  if (shutting_down_)
+    return CreateFailingRequest(ERR_CONTEXT_SHUT_DOWN);
+
+  if (optional_parameters &&
+      optional_parameters.value().source == HostResolverSource::LOCAL_ONLY) {
+    return CreateFailingRequest(ERR_DNS_CACHE_MISS);
+  }
+
+  return std::make_unique<RequestImpl>(weak_ptr_factory_.GetWeakPtr());
 }
 
-bool HangingHostResolver::HasCached(base::StringPiece hostname,
-                                    HostCache::Entry::Source* source_out,
-                                    HostCache::EntryStaleness* stale_out,
-                                    bool* secure_out) const {
-  return false;
+std::unique_ptr<HostResolver::ProbeRequest>
+HangingHostResolver::CreateDohProbeRequest() {
+  if (shutting_down_)
+    return CreateFailingProbeRequest(ERR_CONTEXT_SHUT_DOWN);
+
+  return std::make_unique<RequestImpl>(weak_ptr_factory_.GetWeakPtr());
 }
 
 //-----------------------------------------------------------------------------

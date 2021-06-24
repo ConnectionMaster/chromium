@@ -9,10 +9,12 @@
 #include <memory>
 #include <vector>
 
+#import <MaterialComponents/MaterialSnackbar.h>
+
+#include "base/check.h"
 #include "base/hash/hash.h"
 #include "base/i18n/string_compare.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/stl_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -23,8 +25,8 @@
 #include "ios/chrome/browser/ui/bookmarks/undo_manager_wrapper.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/colors/UIColor+cr_semantic_colors.h"
 #include "ios/chrome/grit/ios_strings.h"
-#import "ios/third_party/material_components_ios/src/components/Snackbar/src/MaterialSnackbar.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/l10n/l10n_util_mac.h"
@@ -38,32 +40,45 @@ using bookmarks::BookmarkNode;
 
 namespace bookmark_utils_ios {
 
-namespace {
-const SkColor colors[] = {
-    0xE64A19, 0xF09300, 0xAFB42B, 0x689F38,
-    0x0B8043, 0x0097A7, 0x7B1FA2, 0xC2185B,
-};
+NSString* const kBookmarksSnackbarCategory = @"BookmarksSnackbarCategory";
 
-UIColor* ColorFromSkColor(SkColor color) {
-  return [UIColor colorWithRed:SkColorGetR(color) / 255.0f
-                         green:SkColorGetG(color) / 255.0f
-                          blue:SkColorGetB(color) / 255.0f
-                         alpha:1.0];
+absl::optional<NodeSet> FindNodesByIds(bookmarks::BookmarkModel* model,
+                                       const std::set<int64_t>& ids) {
+  DCHECK(model);
+  NodeSet nodes;
+  ui::TreeNodeIterator<const BookmarkNode> iterator(model->root_node());
+  while (iterator.has_next()) {
+    const BookmarkNode* node = iterator.Next();
+    if (ids.find(node->id()) == ids.end())
+      continue;
+
+    nodes.insert(node);
+    if (ids.size() == nodes.size())
+      break;
+  }
+
+  if (ids.size() != nodes.size())
+    return absl::nullopt;
+
+  return nodes;
 }
 
-}  // namespace
+const BookmarkNode* FindNodeById(bookmarks::BookmarkModel* model, int64_t id) {
+  DCHECK(model);
+  ui::TreeNodeIterator<const BookmarkNode> iterator(model->root_node());
+  while (iterator.has_next()) {
+    const BookmarkNode* node = iterator.Next();
+    if (node->id() == id)
+      return node;
+  }
 
-NSString* const kBookmarksSnackbarCategory = @"BookmarksSnackbarCategory";
+  return nullptr;
+}
 
 const BookmarkNode* FindFolderById(bookmarks::BookmarkModel* model,
                                    int64_t id) {
-  ui::TreeNodeIterator<const BookmarkNode> iterator(model->root_node());
-  while (iterator.has_next()) {
-    const BookmarkNode* bookmark = iterator.Next();
-    if (bookmark->id() == id && bookmark->is_folder())
-      return bookmark;
-  }
-  return NULL;
+  const BookmarkNode* node = FindNodeById(model, id);
+  return node && node->is_folder() ? node : nullptr;
 }
 
 NSString* TitleForBookmarkNode(const BookmarkNode* node) {
@@ -86,12 +101,6 @@ NSString* TitleForBookmarkNode(const BookmarkNode* node) {
   return title;
 }
 
-UIColor* DefaultColor(const GURL& url) {
-  uint32_t hash = base::Hash(url.possibly_invalid_spec());
-  SkColor color = colors[hash % base::size(colors)];
-  return ColorFromSkColor(color);
-}
-
 NSString* subtitleForBookmarkNode(const BookmarkNode* node) {
   if (node->is_url())
     return base::SysUTF8ToNSString(node->url().host());
@@ -111,179 +120,25 @@ NSString* subtitleForBookmarkNode(const BookmarkNode* node) {
   return subtitle;
 }
 
-UIColor* mainBackgroundColor() {
-  if (IsIPadIdiom()) {
-    return [UIColor whiteColor];
-  } else {
-    return [UIColor colorWithWhite:242 / 255.0 alpha:1.0];
-  }
-}
-
-UIColor* menuBackgroundColor() {
-  if (bookmarkMenuIsInSlideInPanel()) {
-    return [UIColor whiteColor];
-  } else {
-    return [UIColor clearColor];
-  }
-}
-
-UIColor* darkTextColor() {
-  return [UIColor colorWithWhite:33 / 255.0 alpha:1.0];
-}
-
-UIColor* lightTextColor() {
-  return [UIColor colorWithWhite:118 / 255.0 alpha:1.0];
-}
-
-UIColor* highlightedDarkTextColor() {
-  return [UIColor colorWithWhite:102 / 255.0 alpha:1.0];
-}
-
-UIColor* blueColor() {
-  return [UIColor colorWithRed:66 / 255.0
-                         green:129 / 255.0
-                          blue:244 / 255.0
-                         alpha:1];
-}
-
-UIColor* GrayColor() {
-  return [UIColor colorWithWhite:242 / 255.0 alpha:1.0];
-}
-
-UIColor* separatorColor() {
-  return [UIColor colorWithWhite:214 / 255.0 alpha:1.0];
-}
-
-UIColor* FolderLabelColor() {
-  return [UIColor colorWithWhite:38 / 255.0 alpha:0.8];
-}
-
-CGFloat StatusBarHeight() {
-  CGRect statusBarFrame = [UIApplication sharedApplication].statusBarFrame;
-  CGRect statusBarWindowRect =
-      [[UIApplication sharedApplication].keyWindow convertRect:statusBarFrame
-                                                    fromWindow:nil];
-  if (UIInterfaceOrientationIsPortrait(
-          [UIApplication sharedApplication].statusBarOrientation)) {
-    return CGRectGetHeight(statusBarWindowRect);
-  } else {
-    return CGRectGetWidth(statusBarWindowRect);
-  }
-}
-
-BOOL bookmarkMenuIsInSlideInPanel() {
-  return !IsIPadIdiom() || IsCompactTablet();
-}
-
-UIView* dropShadowWithWidth(CGFloat width) {
-  UIImage* shadowImage = [UIImage imageNamed:@"bookmark_bar_shadow"];
-  UIImageView* shadow = [[UIImageView alloc] initWithImage:shadowImage];
-  CGRect shadowFrame = CGRectMake(0, 0, width, 4);
-  shadow.frame = shadowFrame;
-  shadow.autoresizingMask =
-      UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
-  return shadow;
-}
-
 #pragma mark - Updating Bookmarks
 
 // Deletes all subnodes of |node|, including |node|, that are in |bookmarks|.
 void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
                      bookmarks::BookmarkModel* model,
-                     const BookmarkNode* node);
+                     const BookmarkNode* node) {
+  // Delete children in reverse order, so that the index remains valid.
+  for (size_t i = node->children().size(); i > 0; --i)
+    DeleteBookmarks(bookmarks, model, node->children()[i - 1].get());
 
-// Presents a toast which will undo the changes made to the bookmark model if
+  if (bookmarks.find(node) != bookmarks.end())
+    model->Remove(node);
+}
+
+// Creates a toast which will undo the changes made to the bookmark model if
 // the user presses the undo button, and the UndoManagerWrapper allows the undo
 // to go through.
-void PresentUndoToastWithWrapper(UndoManagerWrapper* wrapper, NSString* text);
-
-void CreateOrUpdateBookmarkWithUndoToast(
-    const BookmarkNode* node,
-    NSString* title,
-    const GURL& url,
-    const BookmarkNode* folder,
-    bookmarks::BookmarkModel* bookmark_model,
-    ios::ChromeBrowserState* browser_state) {
-  DCHECK(!node || node->is_url());
-  base::string16 titleString = base::SysNSStringToUTF16(title);
-
-  // If the bookmark has no changes supporting Undo, just bail out.
-  if (node && node->GetTitle() == titleString && node->url() == url &&
-      node->parent() == folder) {
-    return;
-  }
-
-  // Secondly, create an Undo group for all undoable actions.
-  UndoManagerWrapper* wrapper =
-      [[UndoManagerWrapper alloc] initWithBrowserState:browser_state];
-
-  // Create or update the bookmark.
-  [wrapper startGroupingActions];
-
-  // Save the bookmark information.
-  if (!node) {  // Create a new bookmark.
-    bookmark_model->client()->RecordAction(
-        base::UserMetricsAction("BookmarkAdded"));
-    node =
-        bookmark_model->AddURL(folder, folder->child_count(), titleString, url);
-  } else {  // Update the information.
-    bookmark_model->SetTitle(node, titleString);
-    bookmark_model->SetURL(node, url);
-
-    DCHECK(folder);
-    DCHECK(!folder->HasAncestor(node));
-    if (node->parent() != folder) {
-      bookmark_model->Move(node, folder, folder->child_count());
-    }
-    DCHECK(node->parent() == folder);
-  }
-
-  [wrapper stopGroupingActions];
-  [wrapper resetUndoManagerChanged];
-
-  NSString* text =
-      l10n_util::GetNSString((node) ? IDS_IOS_BOOKMARK_NEW_BOOKMARK_UPDATED
-                                    : IDS_IOS_BOOKMARK_NEW_BOOKMARK_CREATED);
-  PresentUndoToastWithWrapper(wrapper, text);
-}
-
-void UpdateBookmarkPositionWithUndoToast(
-    const bookmarks::BookmarkNode* node,
-    const bookmarks::BookmarkNode* folder,
-    int position,
-    bookmarks::BookmarkModel* bookmark_model,
-    ios::ChromeBrowserState* browser_state) {
-  DCHECK(node);
-  DCHECK(folder);
-  DCHECK(!folder->HasAncestor(node));
-  // Early return if node is not valid.
-  if (!node && !folder) {
-    return;
-  }
-
-  int old_index = node->parent()->GetIndexOf(node);
-  // Early return if no change in position.
-  if (node->parent() == folder && old_index == position) {
-    return;
-  }
-
-  // Secondly, create an Undo group for all undoable actions.
-  UndoManagerWrapper* wrapper =
-      [[UndoManagerWrapper alloc] initWithBrowserState:browser_state];
-
-  // Update the bookmark.
-  [wrapper startGroupingActions];
-  bookmark_model->Move(node, folder, position);
-
-  [wrapper stopGroupingActions];
-  [wrapper resetUndoManagerChanged];
-
-  NSString* text =
-      l10n_util::GetNSString(IDS_IOS_BOOKMARK_NEW_BOOKMARK_UPDATED);
-  PresentUndoToastWithWrapper(wrapper, text);
-}
-
-void PresentUndoToastWithWrapper(UndoManagerWrapper* wrapper, NSString* text) {
+MDCSnackbarMessage* CreateUndoToastWithWrapper(UndoManagerWrapper* wrapper,
+                                               NSString* text) {
   // Create the block that will be executed if the user taps the undo button.
   MDCSnackbarMessageAction* action = [[MDCSnackbarMessageAction alloc] init];
   action.handler = ^{
@@ -299,7 +154,120 @@ void PresentUndoToastWithWrapper(UndoManagerWrapper* wrapper, NSString* text) {
   MDCSnackbarMessage* message = [MDCSnackbarMessage messageWithText:text];
   message.action = action;
   message.category = kBookmarksSnackbarCategory;
-  [MDCSnackbarManager showMessage:message];
+  return message;
+}
+
+MDCSnackbarMessage* CreateOrUpdateBookmarkWithUndoToast(
+    const BookmarkNode* node,
+    NSString* title,
+    const GURL& url,
+    const BookmarkNode* folder,
+    bookmarks::BookmarkModel* bookmark_model,
+    ChromeBrowserState* browser_state) {
+  DCHECK(!node || node->is_url());
+  std::u16string titleString = base::SysNSStringToUTF16(title);
+
+  // If the bookmark has no changes supporting Undo, just bail out.
+  if (node && node->GetTitle() == titleString && node->url() == url &&
+      node->parent() == folder) {
+    return nil;
+  }
+
+  // Secondly, create an Undo group for all undoable actions.
+  UndoManagerWrapper* wrapper =
+      [[UndoManagerWrapper alloc] initWithBrowserState:browser_state];
+
+  // Create or update the bookmark.
+  [wrapper startGroupingActions];
+
+  // Save the bookmark information.
+  if (!node) {  // Create a new bookmark.
+    bookmark_model->client()->RecordAction(
+        base::UserMetricsAction("BookmarkAdded"));
+    node = bookmark_model->AddURL(folder, folder->children().size(),
+                                  titleString, url);
+  } else {  // Update the information.
+    bookmark_model->SetTitle(node, titleString);
+    bookmark_model->SetURL(node, url);
+
+    DCHECK(folder);
+    DCHECK(!folder->HasAncestor(node));
+    if (node->parent() != folder) {
+      bookmark_model->Move(node, folder, folder->children().size());
+    }
+    DCHECK(node->parent() == folder);
+  }
+
+  [wrapper stopGroupingActions];
+  [wrapper resetUndoManagerChanged];
+
+  NSString* text =
+      l10n_util::GetNSString((node) ? IDS_IOS_BOOKMARK_NEW_BOOKMARK_UPDATED
+                                    : IDS_IOS_BOOKMARK_NEW_BOOKMARK_CREATED);
+  return CreateUndoToastWithWrapper(wrapper, text);
+}
+
+MDCSnackbarMessage* CreateBookmarkAtPositionWithUndoToast(
+    NSString* title,
+    const GURL& url,
+    const bookmarks::BookmarkNode* folder,
+    int position,
+    bookmarks::BookmarkModel* bookmark_model,
+    ChromeBrowserState* browser_state) {
+  std::u16string titleString = base::SysNSStringToUTF16(title);
+
+  UndoManagerWrapper* wrapper =
+      [[UndoManagerWrapper alloc] initWithBrowserState:browser_state];
+  [wrapper startGroupingActions];
+
+  bookmark_model->client()->RecordAction(
+      base::UserMetricsAction("BookmarkAdded"));
+  const bookmarks::BookmarkNode* node = bookmark_model->AddURL(
+      folder, folder->children().size(), titleString, url);
+  bookmark_model->Move(node, folder, position);
+
+  [wrapper stopGroupingActions];
+  [wrapper resetUndoManagerChanged];
+
+  NSString* text =
+      l10n_util::GetNSString(IDS_IOS_BOOKMARK_NEW_BOOKMARK_CREATED);
+  return CreateUndoToastWithWrapper(wrapper, text);
+}
+
+MDCSnackbarMessage* UpdateBookmarkPositionWithUndoToast(
+    const bookmarks::BookmarkNode* node,
+    const bookmarks::BookmarkNode* folder,
+    int position,
+    bookmarks::BookmarkModel* bookmark_model,
+    ChromeBrowserState* browser_state) {
+  DCHECK(node);
+  DCHECK(folder);
+  DCHECK(!folder->HasAncestor(node));
+  // Early return if node is not valid.
+  if (!node && !folder) {
+    return nil;
+  }
+
+  int old_index = node->parent()->GetIndexOf(node);
+  // Early return if no change in position.
+  if (node->parent() == folder && old_index == position) {
+    return nil;
+  }
+
+  // Secondly, create an Undo group for all undoable actions.
+  UndoManagerWrapper* wrapper =
+      [[UndoManagerWrapper alloc] initWithBrowserState:browser_state];
+
+  // Update the bookmark.
+  [wrapper startGroupingActions];
+  bookmark_model->Move(node, folder, position);
+
+  [wrapper stopGroupingActions];
+  [wrapper resetUndoManagerChanged];
+
+  NSString* text =
+      l10n_util::GetNSString(IDS_IOS_BOOKMARK_NEW_BOOKMARK_UPDATED);
+  return CreateUndoToastWithWrapper(wrapper, text);
 }
 
 void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
@@ -308,21 +276,10 @@ void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
   DeleteBookmarks(bookmarks, model, model->root_node());
 }
 
-void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
-                     bookmarks::BookmarkModel* model,
-                     const BookmarkNode* node) {
-  // Delete children in reverse order, so that the index remains valid.
-  for (int i = node->child_count() - 1; i >= 0; --i) {
-    DeleteBookmarks(bookmarks, model, node->GetChild(i));
-  }
-
-  if (bookmarks.find(node) != bookmarks.end())
-    model->Remove(node);
-}
-
-void DeleteBookmarksWithUndoToast(const std::set<const BookmarkNode*>& nodes,
-                                  bookmarks::BookmarkModel* model,
-                                  ios::ChromeBrowserState* browser_state) {
+MDCSnackbarMessage* DeleteBookmarksWithUndoToast(
+    const std::set<const BookmarkNode*>& nodes,
+    bookmarks::BookmarkModel* model,
+    ChromeBrowserState* browser_state) {
   size_t nodeCount = nodes.size();
   DCHECK_GT(nodeCount, 0u);
 
@@ -346,7 +303,7 @@ void DeleteBookmarksWithUndoToast(const std::set<const BookmarkNode*>& nodes,
                                 base::SysNSStringToUTF16(countString));
   }
 
-  PresentUndoToastWithWrapper(wrapper, text);
+  return CreateUndoToastWithWrapper(wrapper, text);
 }
 
 bool MoveBookmarks(const std::set<const BookmarkNode*>& bookmarks,
@@ -364,17 +321,18 @@ bool MoveBookmarks(const std::set<const BookmarkNode*>& bookmarks,
     if (folder->HasAncestor(node))
       continue;
     if (node->parent() != folder) {
-      model->Move(node, folder, folder->child_count());
+      model->Move(node, folder, folder->children().size());
       didPerformMove = true;
     }
   }
   return didPerformMove;
 }
 
-void MoveBookmarksWithUndoToast(const std::set<const BookmarkNode*>& nodes,
-                                bookmarks::BookmarkModel* model,
-                                const BookmarkNode* folder,
-                                ios::ChromeBrowserState* browser_state) {
+MDCSnackbarMessage* MoveBookmarksWithUndoToast(
+    const std::set<const BookmarkNode*>& nodes,
+    bookmarks::BookmarkModel* model,
+    const BookmarkNode* folder,
+    ChromeBrowserState* browser_state) {
   size_t nodeCount = nodes.size();
   DCHECK_GT(nodeCount, 0u);
 
@@ -388,7 +346,7 @@ void MoveBookmarksWithUndoToast(const std::set<const BookmarkNode*>& nodes,
   [wrapper resetUndoManagerChanged];
 
   if (!didPerformMove)
-    return;  // Don't present a snackbar when no real move as happened.
+    return nil;  // Don't return a snackbar when no real move as happened.
 
   NSString* text = nil;
   if (nodeCount == 1) {
@@ -399,7 +357,7 @@ void MoveBookmarksWithUndoToast(const std::set<const BookmarkNode*>& nodes,
                                    base::SysNSStringToUTF16(countString));
   }
 
-  PresentUndoToastWithWrapper(wrapper, text);
+  return CreateUndoToastWithWrapper(wrapper, text);
 }
 
 const BookmarkNode* defaultMoveFolder(
@@ -541,12 +499,9 @@ void UpdateFoldersFromNode(const BookmarkNode* folder,
                            NodeVector* results,
                            const NodeSet& obstructions) {
   std::vector<const BookmarkNode*> directDescendants;
-  for (int i = 0; i < folder->child_count(); ++i) {
-    const BookmarkNode* subfolder = folder->GetChild(i);
-    if (IsObstructed(subfolder, obstructions))
-      continue;
-
-    directDescendants.push_back(subfolder);
+  for (const auto& subfolder : folder->children()) {
+    if (!IsObstructed(subfolder.get(), obstructions))
+      directDescendants.push_back(subfolder.get());
   }
 
   bookmark_utils_ios::SortFolders(&directDescendants);

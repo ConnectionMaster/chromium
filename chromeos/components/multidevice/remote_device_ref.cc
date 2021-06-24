@@ -4,25 +4,14 @@
 
 #include "chromeos/components/multidevice/remote_device_ref.h"
 
+#include <sstream>
+
 #include "base/base64.h"
-#include "base/stl_util.h"
+#include "base/containers/contains.h"
 
 namespace chromeos {
 
 namespace multidevice {
-
-// static
-std::string RemoteDeviceRef::GenerateDeviceId(const std::string& public_key) {
-  return RemoteDevice::GenerateDeviceId(public_key);
-}
-
-// static
-std::string RemoteDeviceRef::DerivePublicKey(const std::string& device_id) {
-  std::string public_key;
-  if (base::Base64Decode(device_id, &public_key))
-    return public_key;
-  return std::string();
-}
 
 // static
 std::string RemoteDeviceRef::TruncateDeviceIdForLogs(
@@ -44,7 +33,7 @@ RemoteDeviceRef::~RemoteDeviceRef() = default;
 
 SoftwareFeatureState RemoteDeviceRef::GetSoftwareFeatureState(
     const SoftwareFeature& software_feature) const {
-  if (!base::ContainsKey(remote_device_->software_features, software_feature))
+  if (!base::Contains(remote_device_->software_features, software_feature))
     return SoftwareFeatureState::kNotSupported;
 
   return remote_device_->software_features.at(software_feature);
@@ -56,6 +45,16 @@ std::string RemoteDeviceRef::GetDeviceId() const {
 
 std::string RemoteDeviceRef::GetTruncatedDeviceIdForLogs() const {
   return RemoteDeviceRef::TruncateDeviceIdForLogs(GetDeviceId());
+}
+
+std::string RemoteDeviceRef::GetInstanceIdDeviceIdForLogs() const {
+  std::stringstream ss;
+  ss << "{Instance ID: " << (instance_id().empty() ? "[empty]" : instance_id())
+     << ", Device ID: "
+     << (GetTruncatedDeviceIdForLogs().empty() ? "[empty]"
+                                               : GetTruncatedDeviceIdForLogs())
+     << "}";
+  return ss.str();
 }
 
 bool RemoteDeviceRef::operator==(const RemoteDeviceRef& other) const {

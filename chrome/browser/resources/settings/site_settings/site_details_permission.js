@@ -7,8 +7,28 @@
  * 'site-details-permission' handles showing the state of one permission, such
  * as Geolocation, for a given origin.
  */
+import 'chrome://resources/cr_elements/md_select_css.m.js';
+import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
+import '../settings_shared_css.js';
+import '../settings_vars_css.js';
+
+import {assert, assertNotReached} from 'chrome://resources/js/assert.m.js';
+import {I18nBehavior} from 'chrome://resources/js/i18n_behavior.m.js';
+import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.m.js';
+import {WebUIListenerBehavior} from 'chrome://resources/js/web_ui_listener_behavior.m.js';
+import {html, Polymer} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+import {routes} from '../route.js';
+
+import {ContentSetting, ContentSettingsTypes, SiteSettingSource} from './constants.js';
+import {SiteSettingsBehavior} from './site_settings_behavior.js';
+import {RawSiteException} from './site_settings_prefs_browser_proxy.js';
+
 Polymer({
   is: 'site-details-permission',
+
+  _template: html`{__html_template__}`,
 
   behaviors: [I18nBehavior, SiteSettingsBehavior, WebUIListenerBehavior],
 
@@ -21,14 +41,15 @@ Polymer({
     useAutomaticLabel: {type: Boolean, value: false},
 
     /**
-     * The site that this widget is showing details for.
+     * The site that this widget is showing details for, or null if this widget
+     * should be hidden.
      * @type {RawSiteException}
      */
     site: Object,
 
     /**
      * The default setting for this permission category.
-     * @type {settings.ContentSetting}
+     * @type {ContentSetting}
      * @private
      */
     defaultSetting_: String,
@@ -41,25 +62,26 @@ Polymer({
   observers: ['siteChanged_(site)'],
 
   /** @override */
-  attached: function() {
+  attached() {
     this.addWebUIListener(
         'contentSettingCategoryChanged',
         this.onDefaultSettingChanged_.bind(this));
   },
 
-  shouldHideCategory_: function(category) {
-    return !this.getCategoryList().includes(category);
-  },
-
   /**
-   * Updates the drop-down value after |site| has changed.
-   * @param {!RawSiteException} site The site to display.
+   * Updates the drop-down value after |site| has changed. If |site| is null,
+   * this element will hide.
+   * @param {?RawSiteException} site The site to display.
    * @private
    */
-  siteChanged_: function(site) {
-    if (site.source == settings.SiteSettingSource.DEFAULT) {
+  siteChanged_(site) {
+    if (!site) {
+      return;
+    }
+
+    if (site.source === SiteSettingSource.DEFAULT) {
       this.defaultSetting_ = site.setting;
-      this.$.permission.value = settings.ContentSetting.DEFAULT;
+      this.$.permission.value = ContentSetting.DEFAULT;
     } else {
       // The default setting is unknown, so consult the C++ backend for it.
       this.updateDefaultPermission_(site);
@@ -68,11 +90,7 @@ Polymer({
 
     if (this.isNonDefaultAsk_(site.setting, site.source)) {
       assert(
-          this.$.permission.disabled,
-          'The \'Ask\' entry is for display-only and cannot be set by the ' +
-              'user.');
-      assert(
-          this.$.permission.value == settings.ContentSetting.ASK,
+          this.$.permission.value === ContentSetting.ASK,
           '\'Ask\' should only show up when it\'s currently selected.');
     }
   },
@@ -82,7 +100,7 @@ Polymer({
    * @param {!RawSiteException} site The site to display.
    * @private
    */
-  updateDefaultPermission_: function(site) {
+  updateDefaultPermission_(site) {
     this.browserProxy.getDefaultValueForContentType(this.category)
         .then((defaultValue) => {
           this.defaultSetting_ = defaultValue.setting;
@@ -91,12 +109,12 @@ Polymer({
 
   /**
    * Handles the category permission changing for this origin.
-   * @param {!settings.ContentSettingsTypes} category The permission category
+   * @param {!ContentSettingsTypes} category The permission category
    *     that has changed default permission.
    * @private
    */
-  onDefaultSettingChanged_: function(category) {
-    if (category == this.category) {
+  onDefaultSettingChanged_(category) {
+    if (category === this.category) {
       this.updateDefaultPermission_(this.site);
     }
   },
@@ -105,47 +123,46 @@ Polymer({
    * Handles the category permission changing for this origin.
    * @private
    */
-  onPermissionSelectionChange_: function() {
+  onPermissionSelectionChange_() {
     this.browserProxy.setOriginPermissions(
-        this.site.origin, [this.category], this.$.permission.value);
+        this.site.origin, this.category, this.$.permission.value);
   },
 
   /**
    * Returns if we should use the custom labels for the sound type.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
+   * @param {!ContentSettingsTypes} category The permission type.
    * @return {boolean}
    * @private
    */
-  useCustomSoundLabels_: function(category) {
-    return category == settings.ContentSettingsTypes.SOUND &&
-        loadTimeData.getBoolean('enableAutoplayWhitelistContentSetting');
+  useCustomSoundLabels_(category) {
+    return category === ContentSettingsTypes.SOUND;
   },
 
   /**
    * Updates the string used for this permission category's default setting.
-   * @param {!settings.ContentSetting} defaultSetting Value of the default
+   * @param {!ContentSetting} defaultSetting Value of the default
    *     setting for this permission category.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
+   * @param {!ContentSettingsTypes} category The permission type.
    * @param {boolean} useAutomaticLabel Whether to use the automatic label
    *     if the default setting value is allow.
    * @return {string}
    * @private
    */
-  defaultSettingString_: function(defaultSetting, category, useAutomaticLabel) {
-    if (defaultSetting == undefined || category == undefined ||
-        useAutomaticLabel == undefined) {
+  defaultSettingString_(defaultSetting, category, useAutomaticLabel) {
+    if (defaultSetting === undefined || category === undefined ||
+        useAutomaticLabel === undefined) {
       return '';
     }
 
-    if (defaultSetting == settings.ContentSetting.ASK ||
-        defaultSetting == settings.ContentSetting.IMPORTANT_CONTENT) {
+    if (defaultSetting === ContentSetting.ASK ||
+        defaultSetting === ContentSetting.IMPORTANT_CONTENT) {
       return this.i18n('siteSettingsActionAskDefault');
-    } else if (defaultSetting == settings.ContentSetting.ALLOW) {
+    } else if (defaultSetting === ContentSetting.ALLOW) {
       if (this.useCustomSoundLabels_(category) && useAutomaticLabel) {
         return this.i18n('siteSettingsActionAutomaticDefault');
       }
       return this.i18n('siteSettingsActionAllowDefault');
-    } else if (defaultSetting == settings.ContentSetting.BLOCK) {
+    } else if (defaultSetting === ContentSetting.BLOCK) {
       if (this.useCustomSoundLabels_(category)) {
         return this.i18n('siteSettingsActionMuteDefault');
       }
@@ -157,13 +174,13 @@ Polymer({
 
   /**
    * Updates the string used for this permission category's block setting.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
+   * @param {!ContentSettingsTypes} category The permission type.
    * @param {string} blockString 'Block' label.
    * @param {string} muteString 'Mute' label.
    * @return {string}
    * @private
    */
-  blockSettingString_: function(category, blockString, muteString) {
+  blockSettingString_(category, blockString, muteString) {
     if (this.useCustomSoundLabels_(category)) {
       return muteString;
     }
@@ -171,80 +188,107 @@ Polymer({
   },
 
   /**
+   * Returns true if |this| should be hidden.
+   * @private
+   */
+  shouldHideCategory_() {
+    return !this.site;
+  },
+
+  /**
    * Returns true if there's a string to display that provides more information
    * about this permission's setting. Currently, this only gets called when
    * |this.site| is updated.
-   * @param {!settings.SiteSettingSource} source The source of the permission.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
-   * @param {!settings.ContentSetting} setting The permission setting.
+   * @param {!SiteSettingSource} source The source of the permission.
+   * @param {!ContentSettingsTypes} category The permission type.
+   * @param {!ContentSetting} setting The permission setting.
+   * @param {?string} settingDetail A sublabel for the permission.
    * @return {boolean} Whether the permission will have a source string to
    *     display.
    * @private
    */
-  hasPermissionInfoString_: function(source, category, setting) {
+  hasPermissionInfoString_(source, category, setting, settingDetail) {
     // This method assumes that an empty string will be returned for categories
     // that have no permission info string.
     return this.permissionInfoString_(
-               source, category, setting,
+               source, category, setting, settingDetail,
                // Set all permission info string arguments as null. This is OK
                // because there is no need to know what the information string
                // will be, just whether there is one or not.
                null, null, null, null, null, null, null, null, null, null, null,
-               null) != '';
+               null) !== '';
   },
 
   /**
    * Checks if there's a additional information to display, and returns the
    * class name to apply to permissions if so.
-   * @param {!settings.SiteSettingSource} source The source of the permission.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
-   * @param {!settings.ContentSetting} setting The permission setting.
+   * @param {!SiteSettingSource} source The source of the permission.
+   * @param {!ContentSettingsTypes} category The permission type.
+   * @param {!ContentSetting} setting The permission setting.
+   * @param {?string} settingDetail A sublabel for the permission.
    * @return {string} CSS class applied when there is an additional description
    *     string.
    * @private
    */
-  permissionInfoStringClass_: function(source, category, setting) {
-    return this.hasPermissionInfoString_(source, category, setting) ?
+  permissionInfoStringClass_(source, category, setting, settingDetail) {
+    return this.hasPermissionInfoString_(
+               source, category, setting, settingDetail) ?
         'two-line' :
         '';
   },
 
   /**
    * Returns true if this permission can be controlled by the user.
-   * @param {!settings.SiteSettingSource} source The source of the permission.
+   * @param {!SiteSettingSource} source The source of the permission.
    * @return {boolean}
    * @private
    */
-  isPermissionUserControlled_: function(source) {
+  isPermissionUserControlled_(source) {
     return !(
-        source == settings.SiteSettingSource.DRM_DISABLED ||
-        source == settings.SiteSettingSource.POLICY ||
-        source == settings.SiteSettingSource.EXTENSION ||
-        source == settings.SiteSettingSource.KILL_SWITCH ||
-        source == settings.SiteSettingSource.INSECURE_ORIGIN);
+        source === SiteSettingSource.ALLOWLIST ||
+        source === SiteSettingSource.POLICY ||
+        source === SiteSettingSource.EXTENSION ||
+        source === SiteSettingSource.KILL_SWITCH ||
+        source === SiteSettingSource.INSECURE_ORIGIN);
   },
 
   /**
    * Returns true if the 'allow' option should be shown.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
+   * @param {!ContentSettingsTypes} category The permission type.
    * @return {boolean}
    * @private
    */
-  showAllowedSetting_: function(category) {
-    return category != settings.ContentSettingsTypes.USB_DEVICES;
+  showAllowedSetting_(category) {
+    return !(
+        category === ContentSettingsTypes.SERIAL_PORTS ||
+        category === ContentSettingsTypes.USB_DEVICES ||
+        category === ContentSettingsTypes.BLUETOOTH_SCANNING ||
+        category === ContentSettingsTypes.FILE_SYSTEM_WRITE ||
+        category === ContentSettingsTypes.HID_DEVICES ||
+        category === ContentSettingsTypes.BLUETOOTH_DEVICES);
   },
 
   /**
    * Returns true if the 'ask' option should be shown.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
-   * @param {!settings.ContentSetting} setting The setting of the permission.
-   * @param {!settings.SiteSettingSource} source The source of the permission.
+   * @param {!ContentSettingsTypes} category The permission type.
+   * @param {!ContentSetting} setting The setting of the permission.
+   * @param {!SiteSettingSource} source The source of the permission.
    * @return {boolean}
    * @private
    */
-  showAskSetting_: function(category, setting, source) {
+  showAskSetting_(category, setting, source) {
     // For chooser-based permissions 'ask' takes the place of 'allow'.
-    if (category == settings.ContentSettingsTypes.USB_DEVICES) {
+    if (category === ContentSettingsTypes.SERIAL_PORTS ||
+        category === ContentSettingsTypes.USB_DEVICES ||
+        category === ContentSettingsTypes.HID_DEVICES ||
+        category === ContentSettingsTypes.BLUETOOTH_DEVICES) {
+      return true;
+    }
+
+    // For Bluetooth scanning permission and File System write permission
+    // 'ask' takes the place of 'allow'.
+    if (category === ContentSettingsTypes.BLUETOOTH_SCANNING ||
+        category === ContentSettingsTypes.FILE_SYSTEM_WRITE) {
       return true;
     }
 
@@ -254,29 +298,37 @@ Polymer({
   /**
    * Returns true if the permission is set to a non-default 'ask'. Currently,
    * this only gets called when |this.site| is updated.
-   * @param {!settings.ContentSetting} setting The setting of the permission.
-   * @param {!settings.SiteSettingSource} source The source of the permission.
+   * @param {!ContentSetting} setting The setting of the permission.
+   * @param {!SiteSettingSource} source The source of the permission.
    * @private
    */
-  isNonDefaultAsk_: function(setting, source) {
-    if (setting != settings.ContentSetting.ASK ||
-        source == settings.SiteSettingSource.DEFAULT) {
+  isNonDefaultAsk_(setting, source) {
+    if (setting !== ContentSetting.ASK ||
+        source === SiteSettingSource.DEFAULT) {
       return false;
     }
 
     assert(
-        source == settings.SiteSettingSource.EXTENSION ||
-            source == settings.SiteSettingSource.POLICY,
-        'Only extensions or enterprise policy can change the setting to ASK.');
+        source === SiteSettingSource.EXTENSION ||
+            source === SiteSettingSource.POLICY ||
+            source === SiteSettingSource.PREFERENCE,
+        'Only extensions, enterprise policy or preferences can change ' +
+            'the setting to ASK.');
     return true;
   },
 
   /**
    * Updates the information string for the current permission.
    * Currently, this only gets called when |this.site| is updated.
-   * @param {!settings.SiteSettingSource} source The source of the permission.
-   * @param {!settings.ContentSettingsTypes} category The permission type.
-   * @param {!settings.ContentSetting} setting The permission setting.
+   * @param {!SiteSettingSource} source The source of the permission.
+   * @param {!ContentSettingsTypes} category The permission type.
+   * @param {!ContentSetting} setting The permission setting.
+   * @param {?string} settingDetail If non-empty, the string to display as the
+   *     permission info. This overrides other calculations made by this
+   *     function, and is used for situations where extra data about the
+   *     permission is required to compose the substring.
+   * @param {?string} allowlistString The string to show if the permission is
+   *     allowlisted.
    * @param {?string} adsBlacklistString The string to show if the site is
    *     blacklisted for showing bad ads.
    * @param {?string} adsBlockString The string to show if ads are blocked, but
@@ -290,76 +342,73 @@ Polymer({
    * @param {?string} policyAllowString
    * @param {?string} policyBlockString
    * @param {?string} policyAskString
-   * @param {?string} drmDisabledString
    * @return {?string} The permission information string to display in the HTML.
    * @private
    */
-  permissionInfoString_: function(
-      source, category, setting, adsBlacklistString, adsBlockString,
-      embargoString, insecureOriginString, killSwitchString,
-      extensionAllowString, extensionBlockString, extensionAskString,
-      policyAllowString, policyBlockString, policyAskString,
-      drmDisabledString) {
-    if (source == undefined || category == undefined || setting == undefined) {
+  permissionInfoString_(
+      source, category, setting, settingDetail, allowlistString,
+      adsBlacklistString, adsBlockString, embargoString, insecureOriginString,
+      killSwitchString, extensionAllowString, extensionBlockString,
+      extensionAskString, policyAllowString, policyBlockString,
+      policyAskString) {
+    if (source === undefined || category === undefined ||
+        setting === undefined) {
       return null;
     }
 
-    /** @type {Object<!settings.ContentSetting, ?string>} */
+    if (settingDetail) {
+      // For now, settingDetail is only used for file extensions.
+      // TODO(estade): assert in the other direction as well: the FILE_HANDLING
+      // category should always have detail text.
+      assert(category === ContentSettingsTypes.FILE_HANDLING);
+      return settingDetail;
+    }
+
+    /** @type {Object<!ContentSetting, ?string>} */
     const extensionStrings = {};
-    extensionStrings[settings.ContentSetting.ALLOW] = extensionAllowString;
-    extensionStrings[settings.ContentSetting.BLOCK] = extensionBlockString;
-    extensionStrings[settings.ContentSetting.ASK] = extensionAskString;
+    extensionStrings[ContentSetting.ALLOW] = extensionAllowString;
+    extensionStrings[ContentSetting.BLOCK] = extensionBlockString;
+    extensionStrings[ContentSetting.ASK] = extensionAskString;
 
-    /** @type {Object<!settings.ContentSetting, ?string>} */
+    /** @type {Object<!ContentSetting, ?string>} */
     const policyStrings = {};
-    policyStrings[settings.ContentSetting.ALLOW] = policyAllowString;
-    policyStrings[settings.ContentSetting.BLOCK] = policyBlockString;
-    policyStrings[settings.ContentSetting.ASK] = policyAskString;
+    policyStrings[ContentSetting.ALLOW] = policyAllowString;
+    policyStrings[ContentSetting.BLOCK] = policyBlockString;
+    policyStrings[ContentSetting.ASK] = policyAskString;
 
-    if (source == settings.SiteSettingSource.ADS_FILTER_BLACKLIST) {
+    if (source === SiteSettingSource.ALLOWLIST) {
+      return allowlistString;
+    } else if (source === SiteSettingSource.ADS_FILTER_BLACKLIST) {
       assert(
-          settings.ContentSettingsTypes.ADS == category,
+          ContentSettingsTypes.ADS === category,
           'The ads filter blacklist only applies to Ads.');
       return adsBlacklistString;
     } else if (
-        category == settings.ContentSettingsTypes.ADS &&
-        setting == settings.ContentSetting.BLOCK) {
+        category === ContentSettingsTypes.ADS &&
+        setting === ContentSetting.BLOCK) {
       return adsBlockString;
-    } else if (source == settings.SiteSettingSource.DRM_DISABLED) {
+    } else if (source === SiteSettingSource.EMBARGO) {
       assert(
-          settings.ContentSetting.BLOCK == setting,
-          'If DRM is disabled, Protected Content must be blocked.');
-      assert(
-          settings.ContentSettingsTypes.PROTECTED_CONTENT == category,
-          'The DRM disabled source only applies to Protected Content.');
-      if (!drmDisabledString) {
-        return null;
-      }
-      return loadTimeData.sanitizeInnerHtml(loadTimeData.substituteString(
-          drmDisabledString,
-          settings.routes.SITE_SETTINGS_PROTECTED_CONTENT.getAbsolutePath()));
-    } else if (source == settings.SiteSettingSource.EMBARGO) {
-      assert(
-          settings.ContentSetting.BLOCK == setting,
+          ContentSetting.BLOCK === setting,
           'Embargo is only used to block permissions.');
       return embargoString;
-    } else if (source == settings.SiteSettingSource.EXTENSION) {
+    } else if (source === SiteSettingSource.EXTENSION) {
       return extensionStrings[setting];
-    } else if (source == settings.SiteSettingSource.INSECURE_ORIGIN) {
+    } else if (source === SiteSettingSource.INSECURE_ORIGIN) {
       assert(
-          settings.ContentSetting.BLOCK == setting,
+          ContentSetting.BLOCK === setting,
           'Permissions can only be blocked due to insecure origins.');
       return insecureOriginString;
-    } else if (source == settings.SiteSettingSource.KILL_SWITCH) {
+    } else if (source === SiteSettingSource.KILL_SWITCH) {
       assert(
-          settings.ContentSetting.BLOCK == setting,
+          ContentSetting.BLOCK === setting,
           'The permissions kill switch can only be used to block permissions.');
       return killSwitchString;
-    } else if (source == settings.SiteSettingSource.POLICY) {
+    } else if (source === SiteSettingSource.POLICY) {
       return policyStrings[setting];
     } else if (
-        source == settings.SiteSettingSource.DEFAULT ||
-        source == settings.SiteSettingSource.PREFERENCE) {
+        source === SiteSettingSource.DEFAULT ||
+        source === SiteSettingSource.PREFERENCE) {
       return '';
     }
     assertNotReached(`No string for ${category} setting source '${source}'`);

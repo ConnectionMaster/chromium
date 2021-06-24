@@ -8,12 +8,11 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "chromeos/services/secure_channel/ble_initiator_failure_type.h"
 #include "chromeos/services/secure_channel/connection_attempt_details.h"
 #include "chromeos/services/secure_channel/connection_details.h"
-#include "chromeos/services/secure_channel/connection_medium.h"
 #include "chromeos/services/secure_channel/connection_role.h"
 #include "chromeos/services/secure_channel/device_id_pair.h"
 #include "chromeos/services/secure_channel/fake_authenticated_channel.h"
@@ -23,6 +22,7 @@
 #include "chromeos/services/secure_channel/fake_connection_delegate.h"
 #include "chromeos/services/secure_channel/fake_pending_connection_request.h"
 #include "chromeos/services/secure_channel/pending_connection_request_delegate.h"
+#include "chromeos/services/secure_channel/public/cpp/shared/connection_medium.h"
 #include "chromeos/services/secure_channel/public/cpp/shared/connection_priority.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -40,7 +40,7 @@ const char kTestLocalDeviceId[] = "testLocalDeviceId";
 class TestConnectionAttempt
     : public ConnectionAttemptBase<BleInitiatorFailureType> {
  public:
-  TestConnectionAttempt(FakeConnectionAttemptDelegate* delegate)
+  explicit TestConnectionAttempt(FakeConnectionAttemptDelegate* delegate)
       : ConnectionAttemptBase<BleInitiatorFailureType>(
             delegate,
             ConnectionAttemptDetails(kTestRemoteDeviceId,
@@ -215,7 +215,7 @@ class SecureChannelConnectionAttemptBaseTest : public testing::Test {
     was_operation_canceled_in_tear_down_ = true;
   }
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   std::unique_ptr<FakeConnectionAttemptDelegate> fake_delegate_;
 

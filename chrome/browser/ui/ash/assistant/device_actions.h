@@ -5,33 +5,62 @@
 #ifndef CHROME_BROWSER_UI_ASH_ASSISTANT_DEVICE_ACTIONS_H_
 #define CHROME_BROWSER_UI_ASH_ASSISTANT_DEVICE_ACTIONS_H_
 
-#include "chromeos/services/assistant/public/mojom/assistant.mojom.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include <memory>
+#include <string>
+#include <vector>
 
-class DeviceActions : public chromeos::assistant::mojom::DeviceActions {
+#include "ash/public/cpp/android_intent_helper.h"
+#include "base/scoped_multi_source_observation.h"
+#include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
+#include "chrome/browser/ui/ash/assistant/device_actions_delegate.h"
+#include "chromeos/services/assistant/public/cpp/assistant_service.h"
+#include "chromeos/services/assistant/public/cpp/device_actions.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote_set.h"
+
+class DeviceActions : public ash::AndroidIntentHelper,
+                      public chromeos::assistant::DeviceActions,
+                      public ArcAppListPrefs::Observer {
  public:
-  DeviceActions();
+  explicit DeviceActions(std::unique_ptr<DeviceActionsDelegate> delegate);
   ~DeviceActions() override;
 
-  chromeos::assistant::mojom::DeviceActionsPtr AddBinding();
-
-  // mojom::DeviceActions overrides:
+  // chromeos::assistant::DeviceActions overrides:
   void SetWifiEnabled(bool enabled) override;
   void SetBluetoothEnabled(bool enabled) override;
   void GetScreenBrightnessLevel(
       GetScreenBrightnessLevelCallback callback) override;
   void SetScreenBrightnessLevel(double level, bool gradual) override;
   void SetNightLightEnabled(bool enabled) override;
-  void OpenAndroidApp(chromeos::assistant::mojom::AndroidAppInfoPtr app_info,
-                      OpenAndroidAppCallback callback) override;
-  void VerifyAndroidApp(
-      std::vector<chromeos::assistant::mojom::AndroidAppInfoPtr> apps_info,
-      VerifyAndroidAppCallback callback) override;
+  void SetSwitchAccessEnabled(bool enabled) override;
+  bool OpenAndroidApp(
+      const chromeos::assistant::AndroidAppInfo& app_info) override;
+  chromeos::assistant::AppStatus GetAndroidAppStatus(
+      const chromeos::assistant::AndroidAppInfo& app_info) override;
   void LaunchAndroidIntent(const std::string& intent) override;
+  void AddAndFireAppListEventSubscriber(
+      chromeos::assistant::AppListEventSubscriber* subscriber) override;
+  void RemoveAppListEventSubscriber(
+      chromeos::assistant::AppListEventSubscriber* subscriber) override;
+
+  // ash::AndroidIntentHelper overrides:
+  absl::optional<std::string> GetAndroidAppLaunchIntent(
+      const chromeos::assistant::AndroidAppInfo& app_info) override;
 
  private:
-  mojo::BindingSet<chromeos::assistant::mojom::DeviceActions> bindings_;
+  // ArcAppListPrefs::Observer overrides.
+  void OnPackageListInitialRefreshed() override;
+  void OnAppRegistered(const std::string& app_id,
+                       const ArcAppListPrefs::AppInfo& app_info) override;
+  void OnAppRemoved(const std::string& id) override;
 
+  std::unique_ptr<DeviceActionsDelegate> delegate_;
+
+  base::ScopedMultiSourceObservation<ArcAppListPrefs, ArcAppListPrefs::Observer>
+      scoped_prefs_observations_{this};
+  base::ObserverList<chromeos::assistant::AppListEventSubscriber>
+      app_list_subscribers_;
   DISALLOW_COPY_AND_ASSIGN(DeviceActions);
 };
 

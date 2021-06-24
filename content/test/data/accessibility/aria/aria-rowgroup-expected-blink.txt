@@ -1,4 +1,7 @@
 rootWebArea
-++grid
-++++row selected=false
-++++row selected=false
+++genericContainer ignored
+++++genericContainer ignored
+++++++grid
+++++++++rowGroup
+++++++++++row
+++++++++++row

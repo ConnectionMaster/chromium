@@ -41,10 +41,13 @@ bool ProcessSnapshotFuchsia::Initialize(const zx::process& process) {
   InitializeThreads();
   InitializeModules();
 
-  for (const auto& entry : process_reader_.MemoryMap()->Entries()) {
-    if (entry.type == ZX_INFO_MAPS_TYPE_MAPPING) {
-      memory_map_.push_back(
-          std::make_unique<internal::MemoryMapRegionSnapshotFuchsia>(entry));
+  const MemoryMapFuchsia* memory_map = process_reader_.MemoryMap();
+  if (memory_map) {
+    for (const auto& entry : memory_map->Entries()) {
+      if (entry.type == ZX_INFO_MAPS_TYPE_MAPPING) {
+        memory_map_.push_back(
+            std::make_unique<internal::MemoryMapRegionSnapshotFuchsia>(entry));
+      }
     }
   }
 
@@ -56,9 +59,14 @@ bool ProcessSnapshotFuchsia::InitializeException(
     zx_koid_t thread_id,
     const zx_exception_report_t& report) {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
-  exception_.reset(new internal::ExceptionSnapshotFuchsia());
-  exception_->Initialize(&process_reader_, thread_id, report);
-  return true;
+
+  std::unique_ptr<internal::ExceptionSnapshotFuchsia> exception(
+      new internal::ExceptionSnapshotFuchsia());
+  if (exception->Initialize(&process_reader_, thread_id, report)) {
+    exception_.swap(exception);
+    return true;
+  }
+  return false;
 }
 
 void ProcessSnapshotFuchsia::GetCrashpadOptions(
@@ -98,12 +106,12 @@ void ProcessSnapshotFuchsia::GetCrashpadOptions(
   *options = local_options;
 }
 
-pid_t ProcessSnapshotFuchsia::ProcessID() const {
+crashpad::ProcessID ProcessSnapshotFuchsia::ProcessID() const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
   return GetKoidForHandle(*zx::process::self());
 }
 
-pid_t ProcessSnapshotFuchsia::ParentProcessID() const {
+crashpad::ProcessID ProcessSnapshotFuchsia::ParentProcessID() const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
   NOTREACHED();  // TODO(scottmg): https://crashpad.chromium.org/bug/196
   return 0;
@@ -223,7 +231,8 @@ void ProcessSnapshotFuchsia::InitializeModules() {
         std::make_unique<internal::ModuleSnapshotElf>(reader_module.name,
                                                       reader_module.reader,
                                                       reader_module.type,
-                                                      &memory_range_);
+                                                      &memory_range_,
+                                                      process_reader_.Memory());
     if (module->Initialize()) {
       modules_.push_back(std::move(module));
     }

@@ -19,7 +19,7 @@
 #include "net/nqe/network_id.h"
 #include "net/nqe/network_quality_estimator_test_util.h"
 #include "net/nqe/network_quality_store.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -34,7 +34,7 @@ class TestPrefDelegate : public NetworkQualitiesPrefsManager::PrefDelegate {
   ~TestPrefDelegate() override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     value_->Clear();
-    EXPECT_EQ(0U, value_->size());
+    EXPECT_EQ(0U, value_->DictSize());
   }
 
   void SetDictionaryValue(const base::DictionaryValue& value) override {
@@ -42,7 +42,7 @@ class TestPrefDelegate : public NetworkQualitiesPrefsManager::PrefDelegate {
 
     write_count_++;
     value_.reset(value.DeepCopy());
-    ASSERT_EQ(value.size(), value_->size());
+    ASSERT_EQ(value.DictSize(), value_->DictSize());
   }
 
   std::unique_ptr<base::DictionaryValue> GetDictionaryValue() override {
@@ -75,7 +75,7 @@ class TestPrefDelegate : public NetworkQualitiesPrefsManager::PrefDelegate {
   DISALLOW_COPY_AND_ASSIGN(TestPrefDelegate);
 };
 
-using NetworkQualitiesPrefManager = TestWithScopedTaskEnvironment;
+using NetworkQualitiesPrefManager = TestWithTaskEnvironment;
 
 TEST_F(NetworkQualitiesPrefManager, Write) {
   // Force set the ECT to Slow 2G so that the ECT does not match the default

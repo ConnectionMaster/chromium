@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/core/layout/ng/ng_block_break_token.h"
 
 #include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_break_token.h"
+#include "third_party/blink/renderer/core/layout/ng/ng_box_fragment_builder.h"
+#include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -12,40 +14,48 @@ namespace blink {
 namespace {
 
 struct SameSizeAsNGBlockBreakToken : NGBreakToken {
-  unsigned numbers[2];
+  unsigned numbers[4];
 };
 
-static_assert(sizeof(NGBlockBreakToken) == sizeof(SameSizeAsNGBlockBreakToken),
-              "NGBlockBreakToken should stay small");
+ASSERT_SIZE(NGBlockBreakToken, SameSizeAsNGBlockBreakToken);
 
 }  // namespace
 
-NGBlockBreakToken::NGBlockBreakToken(
-    NGLayoutInputNode node,
-    LayoutUnit used_block_size,
-    const NGBreakTokenVector& child_break_tokens,
-    bool has_last_resort_break)
-    : NGBreakToken(kBlockBreakToken, kUnfinished, node),
-      used_block_size_(used_block_size),
-      num_children_(child_break_tokens.size()) {
-  has_last_resort_break_ = has_last_resort_break;
-  for (wtf_size_t i = 0; i < child_break_tokens.size(); ++i) {
-    child_break_tokens_[i] = child_break_tokens[i].get();
+scoped_refptr<NGBlockBreakToken> NGBlockBreakToken::Create(
+    const NGBoxFragmentBuilder& builder) {
+  // We store the children list inline in the break token as a flexible
+  // array. Therefore, we need to make sure to allocate enough space for that
+  // array here, which requires a manual allocation + placement new.
+  void* data = ::WTF::Partitions::FastMalloc(
+      sizeof(NGBlockBreakToken) +
+          builder.child_break_tokens_.size() * sizeof(NGBreakToken*),
+      ::WTF::GetStringWithTypeName<NGBlockBreakToken>());
+  new (data) NGBlockBreakToken(PassKey(), builder);
+  return base::AdoptRef(static_cast<NGBlockBreakToken*>(data));
+}
+
+NGBlockBreakToken::NGBlockBreakToken(PassKey key,
+                                     const NGBoxFragmentBuilder& builder)
+    : NGBreakToken(kBlockBreakToken, builder.node_),
+      consumed_block_size_(builder.consumed_block_size_),
+      consumed_block_size_legacy_adjustment_(
+          builder.consumed_block_size_legacy_adjustment_),
+      sequence_number_(builder.sequence_number_),
+      num_children_(builder.child_break_tokens_.size()) {
+  break_appeal_ = builder.break_appeal_;
+  has_seen_all_children_ = builder.has_seen_all_children_;
+  is_caused_by_column_spanner_ = builder.FoundColumnSpanner();
+  is_at_block_end_ = builder.is_at_block_end_;
+  has_unpositioned_list_marker_ =
+      static_cast<bool>(builder.UnpositionedListMarker());
+  for (wtf_size_t i = 0; i < builder.child_break_tokens_.size(); ++i) {
+    child_break_tokens_[i] = builder.child_break_tokens_[i].get();
     child_break_tokens_[i]->AddRef();
   }
 }
 
-NGBlockBreakToken::NGBlockBreakToken(NGLayoutInputNode node,
-                                     LayoutUnit used_block_size,
-                                     bool has_last_resort_break)
-    : NGBreakToken(kBlockBreakToken, kFinished, node),
-      used_block_size_(used_block_size),
-      num_children_(0) {
-  has_last_resort_break_ = has_last_resort_break;
-}
-
-NGBlockBreakToken::NGBlockBreakToken(NGLayoutInputNode node)
-    : NGBreakToken(kBlockBreakToken, kUnfinished, node), num_children_(0) {}
+NGBlockBreakToken::NGBlockBreakToken(PassKey key, NGLayoutInputNode node)
+    : NGBreakToken(kBlockBreakToken, node), num_children_(0) {}
 
 const NGInlineBreakToken* NGBlockBreakToken::InlineBreakTokenFor(
     const NGLayoutInputNode& node) const {
@@ -73,17 +83,24 @@ const NGInlineBreakToken* NGBlockBreakToken::InlineBreakTokenFor(
   return nullptr;
 }
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
 
 String NGBlockBreakToken::ToString() const {
   StringBuilder string_builder;
   string_builder.Append(NGBreakToken::ToString());
-  string_builder.Append(" used:");
-  string_builder.Append(used_block_size_.ToString());
+  string_builder.Append(" consumed:");
+  string_builder.Append(consumed_block_size_.ToString());
   string_builder.Append("px");
+
+  if (consumed_block_size_legacy_adjustment_) {
+    string_builder.Append(" legacy adjustment:");
+    string_builder.Append(consumed_block_size_legacy_adjustment_.ToString());
+    string_builder.Append("px");
+  }
+
   return string_builder.ToString();
 }
 
-#endif  // NDEBUG
+#endif  // DCHECK_IS_ON()
 
 }  // namespace blink

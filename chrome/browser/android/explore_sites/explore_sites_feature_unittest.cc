@@ -9,7 +9,7 @@
 
 #include "base/feature_list.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/android/chrome_feature_list.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chrome {
@@ -36,6 +36,32 @@ TEST(ExploreSitesFeatureTest, ExploreSitesEnabledWithExperiment) {
   scoped_feature_list.InitAndEnableFeatureWithParameters(kExploreSites,
                                                          parameters);
   EXPECT_EQ(ExploreSitesVariation::EXPERIMENT, GetExploreSitesVariation());
+}
+
+TEST(ExploreSitesFeatureTest, ExploreSitesEnabledWithDenseTitleBottom) {
+  std::map<std::string, std::string> parameters;
+  parameters[kExploreSitesDenseVariationParameterName] =
+      kExploreSitesDenseVariationDenseTitleBottom;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(kExploreSites,
+                                                         parameters);
+  EXPECT_EQ(DenseVariation::DENSE_TITLE_BOTTOM, GetDenseVariation());
+}
+
+TEST(ExploreSitesFeatureTest, ExploreSitesEnabledWithDenseTitleRight) {
+  std::map<std::string, std::string> parameters;
+  parameters[kExploreSitesDenseVariationParameterName] =
+      kExploreSitesDenseVariationDenseTitleRight;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(kExploreSites,
+                                                         parameters);
+  EXPECT_EQ(DenseVariation::DENSE_TITLE_RIGHT, GetDenseVariation());
+}
+
+TEST(ExploreSitesFeatureTest, ExploreSitesDenseVariationOriginal) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kExploreSites);
+  EXPECT_EQ(DenseVariation::ORIGINAL, GetDenseVariation());
 }
 
 TEST(ExploreSitesFeatureTest, ExploreSitesEnabledWithBogus) {

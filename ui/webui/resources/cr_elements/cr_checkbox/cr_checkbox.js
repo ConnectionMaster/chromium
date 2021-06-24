@@ -34,14 +34,10 @@ Polymer({
 
     ariaDescription: String,
 
-    ariaLabel: {
-      type: String,
-      observer: 'onAriaLabelChanged_',
-    },
-
     tabIndex: {
       type: Number,
       value: 0,
+      observer: 'onTabIndexChanged_',
     },
   },
 
@@ -53,16 +49,21 @@ Polymer({
   },
 
   /** @override */
-  ready: function() {
+  ready() {
     this.removeAttribute('unresolved');
   },
 
-  focus: function() {
+  focus() {
     this.$.checkbox.focus();
   },
 
+  /** @return {!Element} */
+  getFocusableElement() {
+    return this.$.checkbox;
+  },
+
   /** @private */
-  checkedChanged_: function() {
+  checkedChanged_() {
     this.$.checkbox.setAttribute(
         'aria-checked', this.checked ? 'true' : 'false');
   },
@@ -72,7 +73,7 @@ Polymer({
    * @param {boolean} previous
    * @private
    */
-  disabledChanged_: function(current, previous) {
+  disabledChanged_(current, previous) {
     if (previous === undefined && !this.disabled) {
       return;
     }
@@ -83,27 +84,21 @@ Polymer({
   },
 
   /** @private */
-  showRipple_: function() {
-    this.getRipple().holdDown = true;
+  showRipple_() {
+    this.getRipple().showAndHoldDown();
   },
 
   /** @private */
-  hideRipple_: function() {
-    this.getRipple().holdDown = false;
-  },
-
-  /** @private */
-  onAriaLabelChanged_: function() {
-    this.$.checkbox.setAttribute(
-        'aria-labelledby', this.ariaLabel ? 'ariaLabel' : 'label-container');
+  hideRipple_() {
+    this.getRipple().clear();
   },
 
   /**
    * @param {!Event} e
    * @private
    */
-  onClick_: function(e) {
-    if (this.disabled || e.target.tagName == 'A') {
+  onClick_(e) {
+    if (this.disabled || e.target.tagName === 'A') {
       return;
     }
 
@@ -120,8 +115,8 @@ Polymer({
    * @param {!KeyboardEvent} e
    * @private
    */
-  onKeyDown_: function(e) {
-    if (e.key != ' ' && e.key != 'Enter') {
+  onKeyDown_(e) {
+    if (e.key !== ' ' && e.key !== 'Enter') {
       return;
     }
 
@@ -131,11 +126,34 @@ Polymer({
       return;
     }
 
-    this.click();
+    if (e.key === 'Enter') {
+      this.click();
+    }
+  },
+
+  /**
+   * @param {!KeyboardEvent} e
+   * @private
+   */
+  onKeyUp_(e) {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    if (e.key === ' ') {
+      this.click();
+    }
+  },
+
+  /** @private */
+  onTabIndexChanged_() {
+    // :host shouldn't have a tabindex because it's set on #checkbox.
+    this.removeAttribute('tabindex');
   },
 
   // customize the element's ripple
-  _createRipple: function() {
+  _createRipple() {
     this._rippleContainer = this.$.checkbox;
     const ripple = Polymer.PaperRippleBehavior._createRipple();
     ripple.id = 'ink';
@@ -144,3 +162,4 @@ Polymer({
     return ripple;
   },
 });
+/* #ignore */ console.warn('crbug/1173575, non-JS module files deprecated.');

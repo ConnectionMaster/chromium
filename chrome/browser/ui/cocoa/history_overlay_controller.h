@@ -21,15 +21,15 @@ enum HistoryOverlayMode {
 // navigation gestures.
 @interface HistoryOverlayController : NSViewController {
  @private
-  HistoryOverlayMode mode_;
+  HistoryOverlayMode _mode;
   // Strongly typed reference of self.view.
-  base::scoped_nsobject<HistoryOverlayView> contentView_;
+  base::scoped_nsobject<HistoryOverlayView> _contentView;
   // The view above which self.view is inserted as a subview.
-  base::scoped_nsobject<NSView> parent_;
+  base::scoped_nsobject<NSView> _parent;
 }
 
 // Designated initializer.
-- (id)initForMode:(HistoryOverlayMode)mode;
+- (instancetype)initForMode:(HistoryOverlayMode)mode;
 
 // Shows the shield above |view|.
 - (void)showPanelForView:(NSView*)view;

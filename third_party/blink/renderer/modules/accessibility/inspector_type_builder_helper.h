@@ -12,7 +12,10 @@
 
 namespace blink {
 
-using namespace protocol::Accessibility;
+using protocol::Accessibility::AXProperty;
+using protocol::Accessibility::AXValue;
+using protocol::Accessibility::AXValueSource;
+namespace AXValueTypeEnum = protocol::Accessibility::AXValueTypeEnum;
 
 std::unique_ptr<AXProperty> CreateProperty(const String& name,
                                            std::unique_ptr<AXValue>);
@@ -44,4 +47,4 @@ std::unique_ptr<AXValueSource> CreateValueSource(NameSource&);
 
 }  // namespace blink
 
-#endif  // InspectorAccessibilityAgent_h
+#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_ACCESSIBILITY_INSPECTOR_TYPE_BUILDER_HELPER_H_

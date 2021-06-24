@@ -7,6 +7,7 @@
 
 #include "base/compiler_specific.h"
 #include "content/browser/appcache/appcache_service_impl.h"
+#include "content/browser/appcache/mock_appcache_policy.h"
 #include "content/browser/appcache/mock_appcache_storage.h"
 #include "storage/browser/quota/quota_manager.h"
 
@@ -15,12 +16,14 @@ namespace content {
 // For use by unit tests.
 class MockAppCacheService : public AppCacheServiceImpl {
  public:
-  MockAppCacheService()
-    : AppCacheServiceImpl(NULL),
-      mock_delete_appcaches_for_origin_result_(net::OK),
-      delete_called_count_(0) {
-    storage_.reset(new MockAppCacheStorage(this));
+  explicit MockAppCacheService(base::WeakPtr<StoragePartitionImpl> partition)
+      : AppCacheServiceImpl(nullptr, std::move(partition)),
+        mock_delete_appcaches_for_origin_result_(net::OK),
+        delete_called_count_(0) {
+    storage_ = std::make_unique<MockAppCacheStorage>(this);
+    set_appcache_policy(&mock_policy_);
   }
+  MockAppCacheService() : MockAppCacheService(nullptr) {}
 
   // Just returns a canned completion code without actually
   // removing groups and caches in our mock storage instance.
@@ -38,6 +41,8 @@ class MockAppCacheService : public AppCacheServiceImpl {
   int delete_called_count() const { return delete_called_count_; }
 
  private:
+  MockAppCachePolicy mock_policy_;
+
   int mock_delete_appcaches_for_origin_result_;
   int delete_called_count_;
 };

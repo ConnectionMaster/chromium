@@ -7,16 +7,16 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
-#include "base/callback_forward.h"
+#include "base/callback_helpers.h"
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_current.h"
+#include "base/task/current_thread.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/test/test_pending_task.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,7 +24,7 @@ namespace base {
 namespace {
 
 TaskRunner* GetCurrentTaskRunner() {
-  return MessageLoopCurrent::Get()->task_runner().get();
+  return ThreadTaskRunnerHandle::Get().get();
 }
 
 void AssignTrue(bool* out) {
@@ -42,7 +42,7 @@ class ScopedMockTimeMessageLoopTaskRunnerTest : public testing::Test {
  public:
   ScopedMockTimeMessageLoopTaskRunnerTest()
       : original_task_runner_(new TestMockTimeTaskRunner()) {
-    MessageLoopCurrent::Get()->SetTaskRunner(original_task_runner_);
+    CurrentThread::Get()->SetTaskRunner(original_task_runner_);
   }
 
  protected:
@@ -53,7 +53,7 @@ class ScopedMockTimeMessageLoopTaskRunnerTest : public testing::Test {
  private:
   scoped_refptr<TestMockTimeTaskRunner> original_task_runner_;
 
-  MessageLoop message_loop_;
+  test::SingleThreadTaskEnvironment task_environment_;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedMockTimeMessageLoopTaskRunnerTest);
 };

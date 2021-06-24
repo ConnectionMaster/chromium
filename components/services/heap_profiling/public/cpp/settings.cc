@@ -102,6 +102,8 @@ mojom::StackMode GetStackModeForStartup() {
   } else {
     stack_mode = base::GetFieldTrialParamValueByFeature(
         kOOPHeapProfilingFeature, kOOPHeapProfilingFeatureStackMode);
+    if (stack_mode.empty())
+      stack_mode = kMemlogStackModeNative;
   }
 
   return ConvertStringToStackMode(stack_mode);
@@ -112,10 +114,6 @@ mojom::StackMode ConvertStringToStackMode(const std::string& input) {
     return mojom::StackMode::NATIVE_WITHOUT_THREAD_NAMES;
   if (input == kMemlogStackModeNativeWithThreadNames)
     return mojom::StackMode::NATIVE_WITH_THREAD_NAMES;
-  if (input == kMemlogStackModePseudo)
-    return mojom::StackMode::PSEUDO;
-  if (input == kMemlogStackModeMixed)
-    return mojom::StackMode::MIXED;
   DLOG(ERROR) << "Unsupported value: \"" << input << "\" passed to --"
               << kMemlogStackMode;
   return mojom::StackMode::NATIVE_WITHOUT_THREAD_NAMES;
@@ -143,11 +141,6 @@ uint32_t GetSamplingRateForStartup() {
   return base::GetFieldTrialParamByFeatureAsInt(
       kOOPHeapProfilingFeature, kOOPHeapProfilingFeatureSamplingRate,
       kDefaultSamplingRate);
-}
-
-bool IsInProcessModeEnabled() {
-  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-             kMemlogInProcess) != kMemlogInProcessDisabled;
 }
 
 bool IsBackgroundHeapProfilingEnabled() {

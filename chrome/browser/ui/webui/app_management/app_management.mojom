@@ -4,7 +4,7 @@
 
 module app_management.mojom;
 
-import "chrome/services/app_service/public/mojom/types.mojom";
+import "components/services/app_service/public/mojom/types.mojom";
 
 struct App {
   string id;
@@ -17,9 +17,17 @@ struct App {
 
   string? description;
   apps.mojom.OptionalBool is_pinned;
+  apps.mojom.OptionalBool is_policy_pinned;
   string? version;
   string? size;
   map<uint32, apps.mojom.Permission> permissions;
+  apps.mojom.InstallSource install_source;
+  bool hide_more_settings;
+  bool hide_pin_to_shelf;
+  bool is_preferred_app;
+  apps.mojom.WindowMode window_mode;
+  bool resize_locked;
+  bool hide_resize_locked;
 };
 
 // Extension-based apps primarily use install-time permissions that cannot be
@@ -31,7 +39,8 @@ struct ExtensionAppPermissionMessage {
 };
 
 interface PageHandlerFactory {
-  CreatePageHandler(Page page, PageHandler& handler);
+  CreatePageHandler(pending_remote<Page> page,
+                    pending_receiver<PageHandler> handler);
 };
 
 // Browser interface.
@@ -42,8 +51,10 @@ interface PageHandler {
   SetPinned(string app_id, apps.mojom.OptionalBool pinned);
   SetPermission(string app_id,
                 apps.mojom.Permission permission);
+  SetResizeLocked(string app_id, bool locked);
   Uninstall(string app_id);
   OpenNativeSettings(string app_id);
+  SetPreferredApp(string app_id, bool is_preferred_app);
 };
 
 // Frontend interface.
@@ -65,13 +76,22 @@ enum ArcPermissionType {
   LOCATION        = 1,
   MICROPHONE      = 2,
   NOTIFICATIONS   = 3,
+  CONTACTS        = 4,
+  STORAGE         = 5,
 };
 
 // This enum takes the important permission values from the
 // contents_settings_type.h ContentSettingsType enum.
 enum PwaPermissionType {
-  CONTENT_SETTINGS_TYPE_GEOLOCATION = 5,
-  CONTENT_SETTINGS_TYPE_NOTIFICATIONS = 6,
-  CONTENT_SETTINGS_TYPE_MEDIASTREAM_MIC = 9,
-  CONTENT_SETTINGS_TYPE_MEDIASTREAM_CAMERA = 10,
+  GEOLOCATION = 4,
+  NOTIFICATIONS = 5,
+  MEDIASTREAM_MIC = 8,
+  MEDIASTREAM_CAMERA = 9,
+};
+
+// The Plugin VM app publisher uses this enum directly.
+enum PluginVmPermissionType {
+  PRINTING = 0,
+  CAMERA = 1,
+  MICROPHONE = 2,
 };

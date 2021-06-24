@@ -7,8 +7,8 @@
 #include <algorithm>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/numerics/safe_math.h"
 #include "base/single_thread_task_runner.h"
@@ -77,8 +77,7 @@ PepperMediaStreamAudioTrackHost::AudioSink::AudioSink(
       number_of_buffers_(kDefaultNumberOfAudioBuffers),
       bytes_per_second_(0),
       bytes_per_frame_(0),
-      user_buffer_duration_(kDefaultDuration),
-      weak_factory_(this) {}
+      user_buffer_duration_(kDefaultDuration) {}
 
 PepperMediaStreamAudioTrackHost::AudioSink::~AudioSink() {
   DCHECK_EQ(main_task_runner_, base::ThreadTaskRunnerHandle::Get());

@@ -9,9 +9,9 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check_op.h"
+#include "base/containers/contains.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
-#include "base/task/post_task.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
@@ -20,7 +20,6 @@
 #include "extensions/browser/api/declarative_webrequest/webrequest_rules_registry.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/web_request/web_request_api.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
@@ -28,15 +27,6 @@
 namespace extensions {
 
 namespace {
-
-// Registers |web_request_rules_registry| on the IO thread.
-void RegisterToExtensionWebRequestEventRouterOnIO(
-    content::BrowserContext* browser_context,
-    int rules_registry_id,
-    scoped_refptr<WebRequestRulesRegistry> web_request_rules_registry) {
-  ExtensionWebRequestEventRouter::GetInstance()->RegisterRulesRegistry(
-      browser_context, rules_registry_id, web_request_rules_registry);
-}
 
 void NotifyWithExtensionSafe(
     scoped_refptr<const Extension> extension,
@@ -52,11 +42,11 @@ const int RulesRegistryService::kInvalidRulesRegistryID = -1;
 
 RulesRegistryService::RulesRegistryService(content::BrowserContext* context)
     : current_rules_registry_id_(kDefaultRulesRegistryID),
-      content_rules_registry_(NULL),
-      extension_registry_observer_(this),
+      content_rules_registry_(nullptr),
       browser_context_(context) {
   if (browser_context_) {
-    extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context_));
+    extension_registry_observation_.Observe(
+        ExtensionRegistry::Get(browser_context_));
     EnsureDefaultRulesRegistriesRegistered();
   }
 }
@@ -68,18 +58,11 @@ int RulesRegistryService::GetNextRulesRegistryID() {
 }
 
 void RulesRegistryService::Shutdown() {
-  // Release the references to all registries. This would happen soon during
-  // destruction of |*this|, but we need the ExtensionWebRequestEventRouter to
-  // be the last to reference the WebRequestRulesRegistry objects, so that
-  // the posted task below causes their destruction on the IO thread, not on UI
-  // where the destruction of |*this| takes place.
+  // Release the references to all registries, and remove the default registry
+  // from ExtensionWebRequestEventRouter.
   rule_registries_.clear();
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::IO},
-      base::BindOnce(&RegisterToExtensionWebRequestEventRouterOnIO,
-                     browser_context_,
-                     RulesRegistryService::kDefaultRulesRegistryID,
-                     scoped_refptr<WebRequestRulesRegistry>(NULL)));
+  ExtensionWebRequestEventRouter::GetInstance()->RegisterRulesRegistry(
+      browser_context_, RulesRegistryService::kDefaultRulesRegistryID, nullptr);
 }
 
 static base::LazyInstance<BrowserContextKeyedAPIFactory<RulesRegistryService>>::
@@ -130,7 +113,7 @@ scoped_refptr<RulesRegistry> RulesRegistryService::GetRulesRegistry(
 
   scoped_refptr<RulesRegistry> registry = RegisterWebRequestRulesRegistry(
       rules_registry_id, RulesCacheDelegate::Type::kEphemeral);
-  DCHECK(ContainsKey(rule_registries_, key));
+  DCHECK(base::Contains(rule_registries_, key));
   return registry;
 }
 
@@ -184,7 +167,7 @@ RulesRegistryService::RegisterWebRequestRulesRegistry(
     int rules_registry_id,
     RulesCacheDelegate::Type cache_delegate_type) {
   DCHECK(browser_context_);
-  DCHECK(!ContainsKey(
+  DCHECK(!base::Contains(
       rule_registries_,
       RulesRegistryKey(declarative_webrequest_constants::kOnRequest,
                        rules_registry_id)));
@@ -198,17 +181,14 @@ RulesRegistryService::RegisterWebRequestRulesRegistry(
   web_request_cache_delegate->AddObserver(this);
   cache_delegates_.push_back(std::move(web_request_cache_delegate));
   RegisterRulesRegistry(web_request_rules_registry);
-  base::PostTaskWithTraits(
-      FROM_HERE, {content::BrowserThread::IO},
-      base::BindOnce(&RegisterToExtensionWebRequestEventRouterOnIO,
-                     browser_context_, rules_registry_id,
-                     web_request_rules_registry));
+  ExtensionWebRequestEventRouter::GetInstance()->RegisterRulesRegistry(
+      browser_context_, rules_registry_id, web_request_rules_registry);
   return web_request_rules_registry;
 }
 
 void RulesRegistryService::EnsureDefaultRulesRegistriesRegistered() {
   DCHECK(browser_context_);
-  DCHECK(!ContainsKey(
+  DCHECK(!base::Contains(
       rule_registries_,
       RulesRegistryKey(declarative_webrequest_constants::kOnRequest,
                        kDefaultRulesRegistryID)));
@@ -250,10 +230,11 @@ void RulesRegistryService::NotifyRegistriesHelper(
     if (content::BrowserThread::CurrentlyOn(registry->owner_thread())) {
       (registry.get()->*notification_callback)(extension);
     } else {
-      base::PostTaskWithTraits(FROM_HERE, {registry->owner_thread()},
-                               base::BindOnce(&NotifyWithExtensionSafe,
-                                              base::WrapRefCounted(extension),
-                                              notification_callback, registry));
+      content::BrowserThread::GetTaskRunnerForThread(registry->owner_thread())
+          ->PostTask(FROM_HERE,
+                     base::BindOnce(&NotifyWithExtensionSafe,
+                                    base::WrapRefCounted(extension),
+                                    notification_callback, registry));
     }
   }
 }

@@ -31,7 +31,7 @@ Example: base::kDCheckIsFatalFeature
 
 These are implemented via creating a [base::Feature][base-feature] anywhere.
 These can be enabled via server-side experimentation or via the command-line
-using --enable-feature.  Which features are in use is tracked by UMA metrics,
+using "--enable-features".  Which features are in use is tracked by UMA metrics,
 and is visible in chrome://version as the "Variations" field. Do note that in
 release builds, only a series of hashes show up in chrome://version rather than
 the string names of the variations, but these hashes can be turned back into
@@ -76,7 +76,7 @@ value.
 
 ## Flags
 
-Example: chrome://flags/#ignore-gpu-blacklist
+Example: chrome://flags/#ignore-gpu-blocklist
 
 These are implemented by adding an entry in [about_flags.cc][about-flags]
 describing the flag, as well as metadata in [flag-metadata][flag-metadata].
@@ -90,7 +90,7 @@ Flags should usually be temporary, to allow for pre-launch testing of a feature.
 Permanent flags (those with expiration -1) should only be used when either:
 
 * The flag is regularly used for support/debugging purposes, by asking users to
-  flip it to eliminate a possible problem (such as ignore-gpu-blacklist)
+  flip it to eliminate a possible problem (such as ignore-gpu-blocklist)
 * The flag is used for ongoing QA/test purposes in environments where command-line
   switches can't be used (e.g. on mobile)
 

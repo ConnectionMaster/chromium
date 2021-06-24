@@ -8,7 +8,10 @@
 
 #include <vector>
 
+#include "base/bits.h"
 #include "base/logging.h"
+#include "base/notreached.h"
+#include "base/strings/string_piece.h"
 #include "crypto/openssl_util.h"
 #include "crypto/sha2.h"
 #include "net/cert/ct_log_verifier_util.h"
@@ -28,10 +31,6 @@ const unsigned char kSHA256EmptyStringHash[ct::kSthRootHashLength] = {
     0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4,
     0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b,
     0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55};
-
-bool IsPowerOfTwo(uint64_t n) {
-  return n != 0 && (n & (n - 1)) == 0;
-}
 
 const EVP_MD* GetEvpAlg(ct::DigitallySigned::HashAlgorithm alg) {
   switch (alg) {
@@ -59,23 +58,19 @@ const EVP_MD* GetEvpAlg(ct::DigitallySigned::HashAlgorithm alg) {
 // static
 scoped_refptr<const CTLogVerifier> CTLogVerifier::Create(
     const base::StringPiece& public_key,
-    std::string description,
-    std::string dns_domain) {
+    std::string description) {
   scoped_refptr<CTLogVerifier> result(
-      new CTLogVerifier(std::move(description), std::move(dns_domain)));
+      new CTLogVerifier(std::move(description)));
   if (!result->Init(public_key))
     return nullptr;
   return result;
 }
 
-CTLogVerifier::CTLogVerifier(std::string description, std::string dns_domain)
+CTLogVerifier::CTLogVerifier(std::string description)
     : description_(std::move(description)),
-      dns_domain_(std::move(dns_domain)),
       hash_algorithm_(ct::DigitallySigned::HASH_ALGO_NONE),
       signature_algorithm_(ct::DigitallySigned::SIG_ALGO_ANONYMOUS),
-      public_key_(nullptr) {
-  DCHECK(!dns_domain_.empty());
-}
+      public_key_(nullptr) {}
 
 bool CTLogVerifier::Verify(const ct::SignedEntryData& entry,
                            const ct::SignedCertificateTimestamp& sct) const {
@@ -180,7 +175,7 @@ bool CTLogVerifier::VerifyConsistencyProof(
   // "consistency_path" array.
   base::StringPiece first_proof_node = old_tree_hash;
   auto iter = proof.nodes.begin();
-  if (!IsPowerOfTwo(proof.first_tree_size)) {
+  if (!base::bits::IsPowerOfTwo(proof.first_tree_size)) {
     if (iter == proof.nodes.end())
       return false;
     first_proof_node = *iter;
@@ -201,8 +196,8 @@ bool CTLogVerifier::VerifyConsistencyProof(
 
   // 4. Set both "fr" and "sr" to the first value in the "consistency_path"
   // array.
-  std::string fr = first_proof_node.as_string();
-  std::string sr = first_proof_node.as_string();
+  std::string fr(first_proof_node);
+  std::string sr(first_proof_node);
 
   // 5. For each subsequent value "c" in the "consistency_path" array:
   for (; iter != proof.nodes.end(); ++iter) {

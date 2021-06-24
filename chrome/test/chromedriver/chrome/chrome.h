@@ -16,7 +16,25 @@ class WebView;
 
 class Chrome {
  public:
-  virtual ~Chrome() {}
+  enum class WindowType {
+    kWindow,
+    kTab,
+  };
+
+  enum class PermissionState {
+    kGranted,
+    kDenied,
+    kPrompt,
+  };
+
+  struct WindowRect {
+    int x;
+    int y;
+    int width;
+    int height;
+  };
+
+  virtual ~Chrome() = default;
 
   virtual Status GetAsDesktop(ChromeDesktopImpl** desktop) = 0;
 
@@ -37,29 +55,17 @@ class Chrome {
   // Return the WebView for the given id.
   virtual Status GetWebViewById(const std::string& id, WebView** web_view) = 0;
 
-  // Gets the size of the specified WebView.
-  virtual Status GetWindowSize(const std::string& id,
-                               int* width,
-                               int* height) = 0;
+  // Makes new window or tab.
+  virtual Status NewWindow(const std::string& target_id,
+                           WindowType type,
+                           std::string* window_handle) = 0;
+
+  // Gets the rect of the specified WebView
+  virtual Status GetWindowRect(const std::string& id, WindowRect* rect) = 0;
 
   // Sets the rect of the specified WebView
   virtual Status SetWindowRect(const std::string& target_id,
                                const base::DictionaryValue& params) = 0;
-
-  // Sets the size of the specified WebView.
-  virtual Status SetWindowSize(const std::string& target_id,
-                               int width,
-                               int height) = 0;
-
-  // Gets the on-screen position of the specified WebView.
-  virtual Status GetWindowPosition(const std::string& target_id,
-                                   int* x,
-                                   int* y) = 0;
-
-  // Sets the on-screen position of the specified WebView.
-  virtual Status SetWindowPosition(const std::string& target_id,
-                                   int x,
-                                   int y) = 0;
 
   // Maximizes specified WebView.
   virtual Status MaximizeWindow(const std::string& target_id) = 0;
@@ -78,6 +84,13 @@ class Chrome {
 
   // Enables acceptInsecureCerts mode for the browser.
   virtual Status SetAcceptInsecureCerts() = 0;
+
+  // Requests altering permission setting for given permission.
+  virtual Status SetPermission(
+      std::unique_ptr<base::DictionaryValue> permission_descriptor,
+      PermissionState desired_state,
+      bool one_realm,
+      WebView* current_view) = 0;
 
   // Get the operation system where Chrome is running.
   virtual std::string GetOperatingSystemName() = 0;

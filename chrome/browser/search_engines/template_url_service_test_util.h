@@ -11,16 +11,15 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/string16.h"
+#include "base/time/time.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service_observer.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 
-class GURL;
 class KeywordWebDataService;
 class TemplateURLService;
 class TestingProfile;
-class TestingSearchTermsData;
 
 // Sets the managed preferences for the default search provider.
 // enabled arg enables/disables use of managed engine by DefaultSearchManager.
@@ -30,6 +29,17 @@ void SetManagedDefaultSearchPreferences(const TemplateURLData& managed_data,
 
 // Removes all the managed preferences for the default search provider.
 void RemoveManagedDefaultSearchPreferences(TestingProfile* profile);
+
+// Creates a TemplateURL with some test values. The caller owns the returned
+// TemplateURL*.
+std::unique_ptr<TemplateURL> CreateTestTemplateURL(
+    const std::u16string& keyword,
+    const std::string& url,
+    const std::string& guid = std::string(),
+    base::Time last_modified = base::Time::FromTimeT(100),
+    bool safe_for_autoreplace = false,
+    bool created_by_policy = false,
+    int prepopulate_id = 999999);
 
 class TemplateURLServiceTestUtil : public TemplateURLServiceObserver {
  public:
@@ -44,6 +54,11 @@ class TemplateURLServiceTestUtil : public TemplateURLServiceObserver {
 
   // Sets the observer count to 0.
   void ResetObserverCount();
+
+  // Gets the number of times the DSP has been set to Google.
+  int dsp_set_to_google_callback_count() const {
+    return dsp_set_to_google_callback_count_;
+  }
 
   // Makes sure the load was successful and sent the correct notification.
   void VerifyLoad();
@@ -61,10 +76,7 @@ class TemplateURLServiceTestUtil : public TemplateURLServiceObserver {
 
   // Returns the search term from the last invocation of
   // TemplateURLService::SetKeywordSearchTermsForURL and clears the search term.
-  base::string16 GetAndClearSearchTerm();
-
-  // Sets the google base url.  |base_url| must be valid.
-  void SetGoogleBaseURL(const GURL& base_url);
+  std::u16string GetAndClearSearchTerm();
 
   // Adds extension controlled TemplateURL to the model and overrides default
   // search pref in an extension controlled preferences, if extension wants to
@@ -84,11 +96,12 @@ class TemplateURLServiceTestUtil : public TemplateURLServiceObserver {
  private:
   std::unique_ptr<TestingProfile> profile_;
   base::ScopedTempDir temp_dir_;
-  int changed_count_;
-  base::string16 search_term_;
+  int changed_count_ = 0;
+  std::u16string search_term_;
+  int dsp_set_to_google_callback_count_ = 0;
   scoped_refptr<KeywordWebDataService> web_data_service_;
-  TestingSearchTermsData* search_terms_data_;
   std::unique_ptr<TemplateURLService> model_;
+  data_decoder::test::InProcessDataDecoder data_decoder_;
 
   DISALLOW_COPY_AND_ASSIGN(TemplateURLServiceTestUtil);
 };

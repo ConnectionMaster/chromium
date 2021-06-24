@@ -17,8 +17,9 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/result_codes.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/widget/widget.h"
 
 namespace test {
@@ -79,7 +80,7 @@ class SadTabViewInteractiveUITest : public InProcessBrowserTest {
   views::View* GetFocusedView() { return GetFocusManager()->GetFocusedView(); }
 
   const char* ActionButtonClassName() {
-    return views::LabelButton::kViewClassName;
+    return views::MdTextButton::kViewClassName;
   }
 
   bool IsFocusedViewInsideViewClass(const char* view_class) {
@@ -97,7 +98,10 @@ class SadTabViewInteractiveUITest : public InProcessBrowserTest {
   }
 
   bool IsFocusedViewInsideBrowserToolbar() {
-    return IsFocusedViewInsideViewClass(ToolbarView::kViewClassName);
+    return IsFocusedViewInsideViewClass(
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->toolbar()
+            ->GetClassName());
   }
 
   bool IsFocusedViewOnActionButtonInSadTab() {
@@ -125,7 +129,7 @@ class SadTabViewInteractiveUITest : public InProcessBrowserTest {
   DISALLOW_COPY_AND_ASSIGN(SadTabViewInteractiveUITest);
 };
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 // Focusing or input is not completely working on Mac: http://crbug.com/824418
 #define MAYBE_SadTabKeyboardAccessibility DISABLED_SadTabKeyboardAccessibility
 #else
@@ -145,7 +149,7 @@ IN_PROC_BROWSER_TEST_F(SadTabViewInteractiveUITest,
   // Kill the renderer process, resulting in a sad tab.
   KillRendererForActiveWebContentsSync();
 
-  // Focus should now be on a label button inside the sad tab.
+  // Focus should now be on a MdText button inside the sad tab.
   ASSERT_STREQ(GetFocusedView()->GetClassName(), ActionButtonClassName());
   ASSERT_TRUE(IsFocusedViewInsideSadTab());
   ASSERT_FALSE(IsFocusedViewInsideBrowserToolbar());
@@ -166,17 +170,9 @@ IN_PROC_BROWSER_TEST_F(SadTabViewInteractiveUITest,
   ASSERT_TRUE(IsFocusedViewInsideBrowserToolbar());
 }
 
-#if defined(OS_MACOSX)
-// Focusing or input is not completely working on Mac: http://crbug.com/824418
-#define MAYBE_ReloadMultipleSadTabs DISABLED_ReloadMultipleSadTabs
-#elif defined(OS_WIN) && defined(OFFICIAL_BUILD)
-// Test seems to fail only in official Windows builds: http://crbug.com/848049
-#define MAYBE_ReloadMultipleSadTabs DISABLED_ReloadMultipleSadTabs
-#else
-#define MAYBE_ReloadMultipleSadTabs ReloadMultipleSadTabs
-#endif
+// TODO(crbug.com/1184132): flaky test.
 IN_PROC_BROWSER_TEST_F(SadTabViewInteractiveUITest,
-                       MAYBE_ReloadMultipleSadTabs) {
+                       DISABLED_ReloadMultipleSadTabs) {
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL url(embedded_test_server()->GetURL("/links.html"));
   ui_test_utils::NavigateToURL(browser(), url);
@@ -203,7 +199,7 @@ IN_PROC_BROWSER_TEST_F(SadTabViewInteractiveUITest,
   ClickOnActionButtonInSadTab();
 
   // Ensure the first WebContents reloads.
-  content::WaitForLoadStop(web_contents);
+  EXPECT_TRUE(content::WaitForLoadStop(web_contents));
   EXPECT_FALSE(web_contents->IsCrashed());
 
   // Switch to the second tab, reload it too.
@@ -211,6 +207,6 @@ IN_PROC_BROWSER_TEST_F(SadTabViewInteractiveUITest,
   web_contents = tab_strip_model->GetActiveWebContents();
   EXPECT_TRUE(web_contents->IsCrashed());
   ClickOnActionButtonInSadTab();
-  content::WaitForLoadStop(web_contents);
+  EXPECT_TRUE(content::WaitForLoadStop(web_contents));
   EXPECT_FALSE(web_contents->IsCrashed());
 }

@@ -5,10 +5,9 @@
 #ifndef GPU_IPC_SERVICE_GPU_MEMORY_BUFFER_FACTORY_DXGI_H_
 #define GPU_IPC_SERVICE_GPU_MEMORY_BUFFER_FACTORY_DXGI_H_
 
-#include <utility>
-
-#include <D3D11.h>
-#include <DXGI.h>
+#include <d3d11_1.h>
+#include <dxgi.h>
+#include <wrl/client.h>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -30,18 +29,26 @@ class GPU_IPC_SERVICE_EXPORT GpuMemoryBufferFactoryDXGI
       public ImageFactory {
  public:
   GpuMemoryBufferFactoryDXGI();
+  GpuMemoryBufferFactoryDXGI(const GpuMemoryBufferFactoryDXGI&) = delete;
+  GpuMemoryBufferFactoryDXGI& operator=(const GpuMemoryBufferFactoryDXGI&) =
+      delete;
+
   ~GpuMemoryBufferFactoryDXGI() override;
 
   // Overridden from GpuMemoryBufferFactory:
   gfx::GpuMemoryBufferHandle CreateGpuMemoryBuffer(
       gfx::GpuMemoryBufferId id,
       const gfx::Size& size,
+      const gfx::Size& framebuffer_size,
       gfx::BufferFormat format,
       gfx::BufferUsage usage,
       int client_id,
       SurfaceHandle surface_handle) override;
   void DestroyGpuMemoryBuffer(gfx::GpuMemoryBufferId id,
                               int client_id) override;
+  bool FillSharedMemoryRegionWithBufferContents(
+      gfx::GpuMemoryBufferHandle buffer_handle,
+      base::UnsafeSharedMemoryRegion shared_memory) override;
   ImageFactory* AsImageFactory() override;
 
   // Overridden from ImageFactory:
@@ -49,13 +56,14 @@ class GPU_IPC_SERVICE_EXPORT GpuMemoryBufferFactoryDXGI
       gfx::GpuMemoryBufferHandle handle,
       const gfx::Size& size,
       gfx::BufferFormat format,
+      gfx::BufferPlane plane,
       int client_id,
       SurfaceHandle surface_handle) override;
   unsigned RequiredTextureType() override;
   bool SupportsFormatRGB() override;
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(GpuMemoryBufferFactoryDXGI);
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_texture_;
 };
 
 }  // namespace gpu

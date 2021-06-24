@@ -5,11 +5,11 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_GENERATION_FRAME_HELPER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_GENERATION_FRAME_HELPER_H_
 
+#include <string>
 #include <vector>
 
 #include "base/macros.h"
-#include "base/strings/string16.h"
-#include "components/autofill/core/common/signatures_util.h"
+#include "components/autofill/core/common/signatures.h"
 #include "url/gurl.h"
 
 namespace autofill {
@@ -45,12 +45,6 @@ class PasswordGenerationFrameHelper {
   void ProcessPasswordRequirements(
       const std::vector<autofill::FormStructure*>& forms);
 
-  // Detect account creation forms from forms with autofill type annotated.
-  // Will send a message to the renderer if we find a correctly annotated form
-  // and the feature is enabled.
-  void DetectFormsEligibleForGeneration(
-      const std::vector<autofill::FormStructure*>& forms);
-
   // Determines current state of password generation
   // |log_debug_data| determines whether log entries are sent to the
   // autofill::SavePasswordProgressLogger.
@@ -68,12 +62,11 @@ class PasswordGenerationFrameHelper {
   // Virtual for testing
   //
   // TODO(crbug.com/855595): Add a stub for this class to facilitate testing.
-  virtual base::string16 GeneratePassword(
+  virtual std::u16string GeneratePassword(
       const GURL& last_committed_url,
       autofill::FormSignature form_signature,
       autofill::FieldSignature field_signature,
-      uint32_t max_length,
-      uint32_t* spec_priority);
+      uint32_t max_length);
 
  private:
   friend class PasswordGenerationFrameHelperTest;

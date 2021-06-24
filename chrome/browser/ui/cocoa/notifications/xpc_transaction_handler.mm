@@ -5,39 +5,43 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
+#include "base/notreached.h"
 #import "chrome/browser/ui/cocoa/notifications/xpc_transaction_handler.h"
 
 @class NSUserNotificationCenter;
 
 @implementation XPCTransactionHandler {
-  bool transactionOpen_;
+  BOOL _transactionOpen;
+  BOOL _useUNNotification;
 }
 
-- (instancetype)init {
-  if ((self = [super init])) {
-    transactionOpen_ = false;
-  }
-  return self;
+- (void)setUseUNNotification:(BOOL)useUNNotification {
+  _useUNNotification = useUNNotification;
 }
 
 - (void)openTransactionIfNeeded {
   @synchronized(self) {
-    if (transactionOpen_) {
+    if (_transactionOpen) {
       return;
     }
     xpc_transaction_begin();
-    transactionOpen_ = true;
+    _transactionOpen = YES;
   }
 }
 
 - (void)closeTransactionIfNeeded {
   @synchronized(self) {
+    if (_useUNNotification) {
+      NOTIMPLEMENTED();
+      return;
+    }
+
     NSUserNotificationCenter* notificationCenter =
         [NSUserNotificationCenter defaultUserNotificationCenter];
     NSUInteger showing = [[notificationCenter deliveredNotifications] count];
-    if (showing == 0 && transactionOpen_) {
+    if (showing == 0 && _transactionOpen) {
       xpc_transaction_end();
-      transactionOpen_ = false;
+      _transactionOpen = NO;
     }
   }
 }

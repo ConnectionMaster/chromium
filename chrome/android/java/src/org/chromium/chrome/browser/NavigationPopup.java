@@ -7,9 +7,6 @@ package org.chromium.chrome.browser;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
-import android.support.annotation.IntDef;
-import android.support.annotation.Nullable;
-import android.support.annotation.VisibleForTesting;
 import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -22,19 +19,29 @@ import android.widget.ListPopupWindow;
 import android.widget.PopupWindow;
 import android.widget.TextView;
 
+import androidx.annotation.IntDef;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
+import androidx.appcompat.content.res.AppCompatResources;
+
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.supplier.Supplier;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.favicon.FaviconHelper;
-import org.chromium.chrome.browser.favicon.FaviconHelper.DefaultFaviconHelper;
-import org.chromium.chrome.browser.favicon.FaviconHelper.FaviconImageCallback;
 import org.chromium.chrome.browser.history.HistoryManagerUtils;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabUtils;
+import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
+import org.chromium.chrome.browser.ui.favicon.FaviconHelper.DefaultFaviconHelper;
+import org.chromium.chrome.browser.ui.favicon.FaviconHelper.FaviconImageCallback;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationEntry;
 import org.chromium.content_public.browser.NavigationHistory;
+import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -67,6 +74,7 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
     private final int mFaviconSize;
     @Nullable
     private final OnLayoutChangeListener mAnchorViewLayoutChangeListener;
+    private final Supplier<Tab> mCurrentTabSupplier;
 
     private DefaultFaviconHelper mDefaultFaviconHelper;
 
@@ -85,22 +93,26 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
      * @param context The context used for building the popup.
      * @param navigationController The controller which takes care of page navigations.
      * @param type The type of navigation popup being triggered.
+     * @param currentTabSupplier Supplies the current tab.
      */
     public NavigationPopup(Profile profile, Context context,
-            NavigationController navigationController, @Type int type) {
+            NavigationController navigationController, @Type int type,
+            Supplier<Tab> currentTabSupplier) {
         mProfile = profile;
         mContext = context;
         Resources resources = mContext.getResources();
         mNavigationController = navigationController;
         mType = type;
+        mCurrentTabSupplier = currentTabSupplier;
 
         boolean isForward = type == Type.TABLET_FORWARD;
         boolean anchorToBottom = type == Type.ANDROID_SYSTEM_BACK;
 
         mHistory = mNavigationController.getDirectedNavigationHistory(
                 isForward, MAXIMUM_HISTORY_ITEMS);
-        mHistory.addEntry(new NavigationEntry(FULL_HISTORY_ENTRY_INDEX, UrlConstants.HISTORY_URL,
-                null, null, null, resources.getString(R.string.show_full_history), null, 0, 0));
+        mHistory.addEntry(new NavigationEntry(FULL_HISTORY_ENTRY_INDEX,
+                new GURL(UrlConstants.HISTORY_URL), GURL.emptyGURL(), GURL.emptyGURL(),
+                GURL.emptyGURL(), resources.getString(R.string.show_full_history), null, 0, 0));
 
         mAdapter = new NavigationAdapter();
 
@@ -200,11 +212,11 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
         mInitialized = true;
         mFaviconHelper = new FaviconHelper();
 
-        Set<String> requestedUrls = new HashSet<String>();
+        Set<GURL> requestedUrls = new HashSet<>();
         for (int i = 0; i < mHistory.getEntryCount(); i++) {
             NavigationEntry entry = mHistory.getEntryAtIndex(i);
             if (entry.getFavicon() != null) continue;
-            final String pageUrl = entry.getUrl();
+            final GURL pageUrl = entry.getUrl();
             if (!requestedUrls.contains(pageUrl)) {
                 FaviconImageCallback imageCallback =
                         (bitmap, iconUrl) -> NavigationPopup.this.onFaviconAvailable(pageUrl,
@@ -221,14 +233,15 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
      * @param pageUrl the page for which the favicon was retrieved.
      * @param favicon the favicon data.
      */
-    private void onFaviconAvailable(String pageUrl, Bitmap favicon) {
+    private void onFaviconAvailable(GURL pageUrl, Bitmap favicon) {
         if (favicon == null) {
             if (mDefaultFaviconHelper == null) mDefaultFaviconHelper = new DefaultFaviconHelper();
-            favicon = mDefaultFaviconHelper.getDefaultFaviconBitmap(mContext, pageUrl, true);
+            favicon = mDefaultFaviconHelper.getDefaultFaviconBitmap(
+                    mContext.getResources(), pageUrl, true);
         }
         for (int i = 0; i < mHistory.getEntryCount(); i++) {
             NavigationEntry entry = mHistory.getEntryAtIndex(i);
-            if (TextUtils.equals(pageUrl, entry.getUrl())) entry.updateFavicon(favicon);
+            if (pageUrl.equals(entry.getUrl())) entry.updateFavicon(favicon);
         }
         mAdapter.notifyDataSetChanged();
     }
@@ -238,9 +251,10 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
         NavigationEntry entry = (NavigationEntry) parent.getItemAtPosition(position);
         if (entry.getIndex() == FULL_HISTORY_ENTRY_INDEX) {
             RecordUserAction.record(buildComputedAction("ShowFullHistory"));
-            assert mContext instanceof ChromeActivity;
-            ChromeActivity activity = (ChromeActivity) mContext;
-            HistoryManagerUtils.showHistoryManager(activity, activity.getActivityTab());
+            Tab currentTab = mCurrentTabSupplier.get();
+            HistoryManagerUtils.showHistoryManager(TabUtils.getActivity(currentTab), currentTab,
+                    /* isIncognitoSelected= */ currentTab == null ? false
+                                                                  : currentTab.isIncognito());
         } else {
             // 1-based index to keep in line with Desktop implementation.
             RecordUserAction.record(buildComputedAction("HistoryClick" + (position + 1)));
@@ -291,6 +305,14 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
             setViewText(entry, viewHolder.mTextView);
             viewHolder.mImageView.setImageBitmap(entry.getFavicon());
 
+            if (entry.getIndex() == FULL_HISTORY_ENTRY_INDEX) {
+                ApiCompatibilityUtils.setImageTintList(viewHolder.mImageView,
+                        AppCompatResources.getColorStateList(
+                                mContext, R.color.default_icon_color_blue));
+            } else {
+                ApiCompatibilityUtils.setImageTintList(viewHolder.mImageView, null);
+            }
+
             if (mType == Type.ANDROID_SYSTEM_BACK) {
                 View container = viewHolder.mContainer;
                 if (mTopPadding == null) {
@@ -307,9 +329,12 @@ public class NavigationPopup implements AdapterView.OnItemClickListener {
 
         private void setViewText(NavigationEntry entry, TextView view) {
             String entryText = entry.getTitle();
-            if (TextUtils.isEmpty(entryText)) entryText = entry.getVirtualUrl();
-            if (TextUtils.isEmpty(entryText)) entryText = entry.getUrl();
-
+            if (TextUtils.isEmpty(entryText)) {
+                entryText = entry.getVirtualUrl().getSpec();
+            }
+            if (TextUtils.isEmpty(entryText)) {
+                entryText = entry.getUrl().getSpec();
+            }
             view.setText(entryText);
         }
     }

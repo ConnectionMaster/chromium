@@ -17,14 +17,15 @@
 #include "content/browser/child_process_launcher_helper_posix.h"
 #include "content/browser/posix_file_descriptor_info_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/android/content_jni_headers/ChildProcessLauncherHelperImpl_jni.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_launcher_utils.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/site_isolation_policy.h"
 #include "content/public/common/content_descriptors.h"
 #include "content/public/common/content_switches.h"
-#include "jni/ChildProcessLauncherHelperImpl_jni.h"
-#include "services/service_manager/sandbox/switches.h"
+#include "sandbox/policy/switches.h"
 
 using base::android::AttachCurrentThread;
 using base::android::JavaParamRef;
@@ -57,12 +58,12 @@ void ChildProcessLauncherHelper::BeforeLaunchOnClientThread() {
 
   // Non-sandboxed utility or renderer process are currently not supported.
   DCHECK(process_type == switches::kGpuProcess ||
-         !command_line()->HasSwitch(service_manager::switches::kNoSandbox));
+         !command_line()->HasSwitch(sandbox::policy::switches::kNoSandbox));
 }
 
-base::Optional<mojo::NamedPlatformChannel>
+absl::optional<mojo::NamedPlatformChannel>
 ChildProcessLauncherHelper::CreateNamedPlatformChannelOnClientThread() {
-  return base::nullopt;
+  return absl::nullopt;
 }
 
 std::unique_ptr<PosixFileDescriptorInfo>
@@ -74,22 +75,27 @@ ChildProcessLauncherHelper::GetFilesToMap() {
   CHECK(!command_line()->HasSwitch(switches::kSingleProcess));
 
   std::unique_ptr<PosixFileDescriptorInfo> files_to_register =
-      CreateDefaultPosixFilesToMap(child_process_id(),
-                                   mojo_channel_->remote_endpoint(),
-                                   true /* include_service_required_files */,
-                                   GetProcessType(), command_line());
+      CreateDefaultPosixFilesToMap(
+          child_process_id(), mojo_channel_->remote_endpoint(),
+          files_to_preload_, GetProcessType(), command_line());
 
 #if ICU_UTIL_DATA_IMPL == ICU_UTIL_DATA_FILE
   base::MemoryMappedFile::Region icu_region;
   int fd = base::i18n::GetIcuDataFileHandle(&icu_region);
   files_to_register->ShareWithRegion(kAndroidICUDataDescriptor, fd, icu_region);
+  base::MemoryMappedFile::Region icu_extra_region;
+  int extra_fd = base::i18n::GetIcuExtraDataFileHandle(&icu_extra_region);
+  if (extra_fd != -1) {
+    files_to_register->ShareWithRegion(kAndroidICUExtraDataDescriptor, extra_fd,
+                                       icu_extra_region);
+  }
 #endif  // ICU_UTIL_DATA_IMPL == ICU_UTIL_DATA_FILE
 
   return files_to_register;
 }
 
 bool ChildProcessLauncherHelper::BeforeLaunchOnLauncherThread(
-    const PosixFileDescriptorInfo& files_to_register,
+    PosixFileDescriptorInfo& files_to_register,
     base::LaunchOptions* options) {
   return true;
 }
@@ -140,8 +146,8 @@ ChildProcessLauncherHelper::LaunchProcessOnLauncherThread(
       env, reinterpret_cast<intptr_t>(this), j_argv, j_file_infos,
       can_use_warm_up_connection));
   AddRef();  // Balanced by OnChildProcessStarted.
-  base::PostTaskWithTraits(
-      FROM_HERE, {client_thread_id_},
+  client_task_runner_->PostTask(
+      FROM_HERE,
       base::BindOnce(
           &ChildProcessLauncherHelper::set_java_peer_available_on_client_thread,
           this));
@@ -188,14 +194,17 @@ static void JNI_ChildProcessLauncherHelperImpl_SetTerminationInfo(
     jint binding_state,
     jboolean killed_by_us,
     jboolean clean_exit,
+    jboolean exception_during_init,
     jint remaining_process_with_strong_binding,
     jint remaining_process_with_moderate_binding,
-    jint remaining_process_with_waived_binding) {
+    jint remaining_process_with_waived_binding,
+    jint reverse_rank) {
   ChildProcessTerminationInfo* info =
       reinterpret_cast<ChildProcessTerminationInfo*>(termination_info_ptr);
   info->binding_state =
       static_cast<base::android::ChildBindingState>(binding_state);
   info->was_killed_intentionally_by_browser = killed_by_us;
+  info->threw_exception_during_init = exception_during_init;
   info->clean_exit = clean_exit;
   info->remaining_process_with_strong_binding =
       remaining_process_with_strong_binding;
@@ -203,6 +212,16 @@ static void JNI_ChildProcessLauncherHelperImpl_SetTerminationInfo(
       remaining_process_with_moderate_binding;
   info->remaining_process_with_waived_binding =
       remaining_process_with_waived_binding;
+  info->best_effort_reverse_rank = reverse_rank;
+}
+
+static jboolean
+JNI_ChildProcessLauncherHelperImpl_ServiceGroupImportanceEnabled(JNIEnv* env) {
+  // Not this is called on the launcher thread, not UI thread.
+  return SiteIsolationPolicy::AreIsolatedOriginsEnabled() ||
+         SiteIsolationPolicy::UseDedicatedProcessesForAllSites() ||
+         SiteIsolationPolicy::AreDynamicIsolatedOriginsEnabled() ||
+         SiteIsolationPolicy::ArePreloadedIsolatedOriginsEnabled();
 }
 
 // static
@@ -235,18 +254,6 @@ void ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread(
 }
 
 // static
-void ChildProcessLauncherHelper::SetRegisteredFilesForService(
-    const std::string& service_name,
-    std::map<std::string, base::FilePath> required_files) {
-  SetFilesToShareForServicePosix(service_name, std::move(required_files));
-}
-
-// static
-void ChildProcessLauncherHelper::ResetRegisteredFilesForTesting() {
-  ResetFilesToShareForTestingPosix();
-}
-
-// static
 base::File OpenFileToShare(const base::FilePath& path,
                            base::MemoryMappedFile::Region* region) {
   return base::File(base::android::OpenApkAsset(path.value(), region));
@@ -265,7 +272,6 @@ void ChildProcessLauncherHelper::DumpProcessStack(
 // the ChildProcess could not be created.
 void ChildProcessLauncherHelper::OnChildProcessStarted(
     JNIEnv*,
-    const base::android::JavaParamRef<jobject>& obj,
     jint handle) {
   DCHECK(CurrentlyOnProcessLauncherTaskRunner());
   scoped_refptr<ChildProcessLauncherHelper> ref(this);

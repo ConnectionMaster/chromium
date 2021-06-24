@@ -17,7 +17,7 @@
 #include "components/browsing_data/core/pref_names.h"
 #include "components/crx_file/id_util.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/value_builder.h"
@@ -31,7 +31,7 @@ using extensions::ListBuilder;
 class HostedAppsCounterTest : public testing::Test {
  public:
   void SetUp() override {
-    profile_.reset(new TestingProfile());
+    profile_ = std::make_unique<TestingProfile>();
     extension_registry_ = extensions::ExtensionRegistry::Get(profile_.get());
 
     SetHostedAppsDeletionPref(true);
@@ -139,7 +139,7 @@ class HostedAppsCounterTest : public testing::Test {
   }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
   extensions::ExtensionRegistry* extension_registry_;
 
@@ -152,9 +152,10 @@ class HostedAppsCounterTest : public testing::Test {
 TEST_F(HostedAppsCounterTest, Count) {
   Profile* profile = GetProfile();
   HostedAppsCounter counter(profile);
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&HostedAppsCounterTest::Callback, base::Unretained(this)));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&HostedAppsCounterTest::Callback,
+                                   base::Unretained(this)));
   counter.Restart();
   EXPECT_EQ(0u, GetNumHostedApps());
 
@@ -179,9 +180,10 @@ TEST_F(HostedAppsCounterTest, Count) {
 TEST_F(HostedAppsCounterTest, OnlyHostedApps) {
   Profile* profile = GetProfile();
   HostedAppsCounter counter(profile);
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&HostedAppsCounterTest::Callback, base::Unretained(this)));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&HostedAppsCounterTest::Callback,
+                                   base::Unretained(this)));
 
   AddHostedApp();  // 1
   AddExtension();
@@ -217,9 +219,10 @@ TEST_F(HostedAppsCounterTest, OnlyHostedApps) {
 TEST_F(HostedAppsCounterTest, Examples) {
   Profile* profile = GetProfile();
   HostedAppsCounter counter(profile);
-  counter.Init(
-      profile->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-      base::Bind(&HostedAppsCounterTest::Callback, base::Unretained(this)));
+  counter.Init(profile->GetPrefs(),
+               browsing_data::ClearBrowsingDataTab::ADVANCED,
+               base::BindRepeating(&HostedAppsCounterTest::Callback,
+                                   base::Unretained(this)));
   counter.Restart();
   EXPECT_EQ(0u, GetExamples().size());
 

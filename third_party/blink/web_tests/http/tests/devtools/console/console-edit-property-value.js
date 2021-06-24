@@ -5,7 +5,7 @@
 (async function() {
   TestRunner.addResult(`Tests that property values can be edited inline in the console via double click.\n`);
 
-  await TestRunner.loadModule('console_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
 
   await TestRunner.evaluateInPagePromise(`
@@ -46,8 +46,8 @@
     ConsoleTestRunner.waitForRemoteObjectsConsoleMessages(step6);
   }
 
-  function step6() {
-    ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
+  async function step6() {
+    await ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
     TestRunner.completeTest();
   }
 

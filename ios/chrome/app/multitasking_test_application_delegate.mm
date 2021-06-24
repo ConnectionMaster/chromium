@@ -2,10 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/logging.h"
+#import "ios/chrome/app/multitasking_test_application_delegate.h"
+
+#include <ostream>
+
+#include "base/notreached.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/chrome_overlay_window.h"
-#import "ios/chrome/app/multitasking_test_application_delegate.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -38,16 +41,14 @@ const CGFloat kWidthLandscapeSplitViewOnLargeIPad = 678.0;
 
 - (BOOL)application:(UIApplication*)application
     didFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
-  // Configure application window size for multitasking tests.
+  BOOL returnValue = [super application:application
+          didFinishLaunchingWithOptions:launchOptions];
+  // Adjust window size for multitasking tests.
   CGSize newWindowSize = [self windowSize];
-  self.window = [[ChromeOverlayWindow alloc]
-      initWithFrame:CGRectMake(0, 0, newWindowSize.width,
-                               newWindowSize.height)];
+  self.window.frame =
+      CGRectMake(0, 0, newWindowSize.width, newWindowSize.height);
 
-  BOOL inBackground =
-      [application applicationState] == UIApplicationStateBackground;
-  return [[self appState] requiresHandlingAfterLaunchWithOptions:launchOptions
-                                                 stateBackground:inBackground];
+  return returnValue;
 }
 
 // Returns true if test is running on 12.9 inch iPad Pro. Otherwise, it's

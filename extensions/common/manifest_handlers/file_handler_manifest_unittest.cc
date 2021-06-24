@@ -4,7 +4,8 @@
 
 #include <vector>
 
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "components/services/app_service/public/cpp/file_handler_info.h"
 #include "extensions/common/install_warning.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
@@ -52,7 +53,7 @@ TEST_F(FileHandlersManifestTest, ValidFileHandlers) {
   ASSERT_TRUE(handlers != NULL);
   ASSERT_EQ(3U, handlers->size());
 
-  FileHandlerInfo handler = handlers->at(0);
+  apps::FileHandlerInfo handler = handlers->at(0);
   EXPECT_EQ("directories", handler.id);
   EXPECT_EQ(0U, handler.types.size());
   EXPECT_EQ(1U, handler.extensions.size());
@@ -88,8 +89,9 @@ TEST_F(FileHandlersManifestTest, NotPlatformApp) {
 
 TEST_F(FileHandlersManifestTest, HostedNotBookmarkApp) {
   // This should load successfully but have the file handlers ignored.
-  scoped_refptr<const Extension> extension = LoadAndExpectSuccess(
-      "file_handlers_valid_hosted_app.json", extensions::Manifest::INTERNAL);
+  scoped_refptr<const Extension> extension =
+      LoadAndExpectSuccess("file_handlers_valid_hosted_app.json",
+                           extensions::mojom::ManifestLocation::kInternal);
 
   ASSERT_TRUE(extension);
 
@@ -110,7 +112,7 @@ TEST_F(FileHandlersManifestTest, HostedBookmarkApp) {
   // This should load successfully with file handlers.
   scoped_refptr<const Extension> extension =
       LoadAndExpectSuccess("file_handlers_valid_hosted_app.json",
-                           extensions::Manifest::Location::INTERNAL,
+                           extensions::mojom::ManifestLocation::kInternal,
                            extensions::Extension::FROM_BOOKMARK);
 
   ASSERT_TRUE(extension);

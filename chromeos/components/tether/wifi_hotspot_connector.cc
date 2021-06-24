@@ -32,8 +32,7 @@ WifiHotspotConnector::WifiHotspotConnector(
       network_connect_(network_connect),
       timer_(std::make_unique<base::OneShotTimer>()),
       clock_(base::DefaultClock::GetInstance()),
-      task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      weak_ptr_factory_(this) {
+      task_runner_(base::ThreadTaskRunnerHandle::Get()) {
   network_state_handler_->AddObserver(this, FROM_HERE);
 }
 
@@ -50,11 +49,11 @@ void WifiHotspotConnector::ConnectToWifiHotspot(
     const std::string& ssid,
     const std::string& password,
     const std::string& tether_network_guid,
-    const WifiConnectionCallback& callback) {
+    WifiConnectionCallback callback) {
   DCHECK(!ssid.empty());
   // Note: |password| can be empty in some cases.
 
-  if (!callback_.is_null()) {
+  if (callback_) {
     DCHECK(timer_->IsRunning());
 
     // If another connection attempt was underway but had not yet completed,
@@ -81,11 +80,11 @@ void WifiHotspotConnector::ConnectToWifiHotspot(
   password_ = password;
   tether_network_guid_ = tether_network_guid;
   wifi_network_guid_ = base::GenerateGUID();
-  callback_ = callback;
+  callback_ = std::move(callback);
   timer_->Start(FROM_HERE,
                 base::TimeDelta::FromSeconds(kConnectionTimeoutSeconds),
-                base::Bind(&WifiHotspotConnector::OnConnectionTimeout,
-                           weak_ptr_factory_.GetWeakPtr()));
+                base::BindOnce(&WifiHotspotConnector::OnConnectionTimeout,
+                               weak_ptr_factory_.GetWeakPtr()));
   connection_attempt_start_time_ = clock_->Now();
 
   // If Wi-Fi is enabled, continue with creating the configuration of the
@@ -103,8 +102,8 @@ void WifiHotspotConnector::ConnectToWifiHotspot(
     // Once Wi-Fi is enabled, UpdateWaitingForWifi will be called.
     network_state_handler_->SetTechnologyEnabled(
         NetworkTypePattern::WiFi(), true /*enabled */,
-        base::Bind(&WifiHotspotConnector::OnEnableWifiError,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindRepeating(&WifiHotspotConnector::OnEnableWifiError,
+                            weak_ptr_factory_.GetWeakPtr()));
   }
 }
 
@@ -248,8 +247,7 @@ void WifiHotspotConnector::CompleteActiveConnectionAttempt(bool success) {
     connection_attempt_start_time_ = base::Time();
   }
 
-  callback_.Run(wifi_guid_for_callback);
-  callback_.Reset();
+  std::move(callback_).Run(wifi_guid_for_callback);
 }
 
 void WifiHotspotConnector::CreateWifiConfiguration() {

@@ -5,19 +5,23 @@
 #import "ios/web/public/test/web_test_with_web_state.h"
 
 #include "base/ios/ios_util.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/run_loop.h"
-#include "base/scoped_observer.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/task/current_thread.h"
 #import "base/test/ios/wait_util.h"
+#include "ios/web/common/features.h"
+#import "ios/web/js_messaging/crw_js_injector.h"
+#import "ios/web/navigation/crw_wk_navigation_states.h"
 #import "ios/web/navigation/navigation_manager_impl.h"
 #import "ios/web/navigation/wk_navigation_util.h"
+#include "ios/web/public/deprecated/url_verification_constants.h"
+#import "ios/web/public/test/js_test_util.h"
 #import "ios/web/public/web_client.h"
-#include "ios/web/public/web_state/url_verification_constants.h"
-#include "ios/web/public/web_state/web_state_observer.h"
+#include "ios/web/public/web_state_observer.h"
 #import "ios/web/web_state/ui/crw_web_controller.h"
 #import "ios/web/web_state/ui/wk_web_view_configuration_provider.h"
 #import "ios/web/web_state/web_state_impl.h"
+#include "url/url_constants.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -39,12 +43,12 @@ CRWWebController* GetWebController(web::WebState* web_state) {
 
 namespace web {
 
-WebTestWithWebState::WebTestWithWebState(TestWebThreadBundle::Options options)
+WebTestWithWebState::WebTestWithWebState(WebTaskEnvironment::Options options)
     : WebTest(options) {}
 
 WebTestWithWebState::WebTestWithWebState(
     std::unique_ptr<web::WebClient> web_client,
-    TestWebThreadBundle::Options options)
+    WebTaskEnvironment::Options options)
     : WebTest(std::move(web_client), options) {}
 
 WebTestWithWebState::~WebTestWithWebState() {}
@@ -71,13 +75,8 @@ void WebTestWithWebState::AddPendingItem(const GURL& url,
       .webStateImpl->GetNavigationManagerImpl()
       .AddPendingItem(url, Referrer(), transition,
                       web::NavigationInitiationType::BROWSER_INITIATED,
-                      web::NavigationManager::UserAgentOverrideOption::INHERIT);
-}
-
-void WebTestWithWebState::AddTransientItem(const GURL& url) {
-  GetWebController(web_state())
-      .webStateImpl->GetNavigationManagerImpl()
-      .AddTransientItem(url);
+                      /*is_post_navigation=*/false,
+                      /*is_using_https_as_default_scheme=*/false);
 }
 
 bool WebTestWithWebState::LoadHtmlWithoutSubresources(const std::string& html) {
@@ -128,30 +127,44 @@ bool WebTestWithWebState::LoadHtmlWithoutSubresources(const std::string& html) {
 void WebTestWithWebState::LoadHtml(NSString* html, const GURL& url) {
   // Initiate asynchronous HTML load.
   CRWWebController* web_controller = GetWebController(web_state());
-  ASSERT_EQ(PAGE_LOADED, web_controller.loadPhase);
+  ASSERT_EQ(web::WKNavigationState::FINISHED, web_controller.navigationState);
 
   // If the underlying WKWebView is empty, first load a placeholder to create a
   // WKBackForwardListItem to store the NavigationItem associated with the
   // |-loadHTML|.
   // TODO(crbug.com/777884): consider changing |-loadHTML| to match WKWebView's
   // |-loadHTMLString:baseURL| that doesn't create a navigation entry.
-  if (web::GetWebClient()->IsSlimNavigationManagerEnabled() &&
-      !web_state()->GetNavigationManager()->GetItemCount()) {
-    GURL placeholder_url = wk_navigation_util::CreatePlaceholderUrlForUrl(url);
+  if (!web_state()->GetNavigationManager()->GetItemCount()) {
+    GURL placeholder_url(url::kAboutBlankURL);
+    if (!base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage))
+      placeholder_url = wk_navigation_util::CreatePlaceholderUrlForUrl(url);
+
     NavigationManager::WebLoadParams params(placeholder_url);
     web_state()->GetNavigationManager()->LoadURLWithParams(params);
+
+    if (!base::FeatureList::IsEnabled(web::features::kUseJSForErrorPage)) {
+      // Set NoNavigationError so the placeHolder doesn't trigger a
+      // kNavigatingToFailedNavigationItem.
+      web::WebStateImpl* web_state_impl =
+          static_cast<web::WebStateImpl*>(web_state());
+      web_state_impl->GetNavigationManagerImpl()
+          .GetCurrentItemImpl()
+          ->error_retry_state_machine()
+          .SetIgnorePlaceholderNavigation();
+    }
+
     ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{
-      return web_controller.loadPhase == PAGE_LOADED;
+      return web_controller.navigationState == web::WKNavigationState::FINISHED;
     }));
   }
 
   [web_controller loadHTML:html forURL:url];
-  ASSERT_EQ(LOAD_REQUESTED, web_controller.loadPhase);
+  ASSERT_EQ(web::WKNavigationState::REQUESTED, web_controller.navigationState);
 
   // Wait until the page is loaded.
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{
     base::RunLoop().RunUntilIdle();
-    return web_controller.loadPhase == PAGE_LOADED;
+    return web_controller.navigationState == web::WKNavigationState::FINISHED;
   }));
 
   // Wait until the script execution is possible. Script execution will fail if
@@ -176,7 +189,7 @@ void WebTestWithWebState::WaitForBackgroundTasks() {
   // Because tasks can add new tasks to either queue, the loop continues until
   // the first pass where no activity is seen from either queue.
   bool activitySeen = false;
-  base::MessageLoopCurrent messageLoop = base::MessageLoopCurrent::Get();
+  base::CurrentThread messageLoop = base::CurrentThread::Get();
   messageLoop->AddTaskObserver(this);
   do {
     activitySeen = false;
@@ -202,27 +215,55 @@ void WebTestWithWebState::WaitForCondition(ConditionBlock condition) {
                                       base::TimeDelta::FromSeconds(1000));
 }
 
+bool WebTestWithWebState::WaitUntilLoaded() {
+  return WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{
+    WaitForBackgroundTasks();
+    return !web_state()->IsLoading();
+  });
+}
+
 id WebTestWithWebState::ExecuteJavaScript(NSString* script) {
   __block id execution_result = nil;
   __block bool execution_completed = false;
   SCOPED_TRACE(base::SysNSStringToUTF8(script));
-  [GetWebController(web_state())
+  [GetWebController(web_state()).jsInjector
       executeJavaScript:script
       completionHandler:^(id result, NSError* error) {
         // Most of executed JS does not return the result, and there is no need
         // to log WKErrorJavaScriptResultTypeIsUnsupported error code.
         if (error && error.code != WKErrorJavaScriptResultTypeIsUnsupported) {
-          DLOG(WARNING) << base::SysNSStringToUTF8(error.localizedDescription);
+          DLOG(WARNING) << "Script execution of:"
+                        << base::SysNSStringToUTF8(script)
+                        << "\nfailed with error: "
+                        << base::SysNSStringToUTF8(error.description);
         }
         execution_result = [result copy];
         execution_completed = true;
       }];
-  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
-    return execution_completed;
-  }));
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout,
+                                          ^{
+                                            return execution_completed;
+                                          }))
+      << "Timed out trying to execute: " << script;
 
   return execution_result;
 }
+
+#if defined(__IPHONE_14_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_14_0
+// Synchronously executes |script| in |content_world| and returns result.
+id WebTestWithWebState::ExecuteJavaScript(WKContentWorld* content_world,
+                                          NSString* script) {
+  DCHECK(base::ios::IsRunningOnIOS14OrLater());
+
+  WKWebView* web_view = [GetWebController(web_state()) ensureWebViewCreated];
+
+  if (@available(ios 14, *)) {
+    return web::test::ExecuteJavaScript(web_view, content_world, script);
+  }
+
+  return nil;
+}
+#endif  // defined(__IPHONE14_0)
 
 void WebTestWithWebState::DestroyWebState() {
   web_state_.reset();
@@ -241,7 +282,7 @@ const web::WebState* WebTestWithWebState::web_state() const {
   return web_state_.get();
 }
 
-void WebTestWithWebState::WillProcessTask(const base::PendingTask&) {
+void WebTestWithWebState::WillProcessTask(const base::PendingTask&, bool) {
   // Nothing to do.
 }
 

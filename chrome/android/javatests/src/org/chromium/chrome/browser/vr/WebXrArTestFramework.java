@@ -21,8 +21,8 @@ public class WebXrArTestFramework extends WebXrTestFramework {
     }
 
     /**
-     * Requests an AR session, automatically accepting the Camera permission prompt if necessary.
-     * Causes a test failure if it is unable to do so.
+     * Requests an AR session, automatically granting permission when prompted.
+     * Causes a test failure if it is unable to do so, or if the permission prompt is missing.
      *
      * @param webContents The Webcontents to start the AR session in.
      */
@@ -30,16 +30,16 @@ public class WebXrArTestFramework extends WebXrTestFramework {
     public void enterSessionWithUserGestureOrFail(WebContents webContents) {
         runJavaScriptOrFail(
                 "sessionTypeToRequest = sessionTypes.AR", POLL_TIMEOUT_LONG_MS, webContents);
-        // Requesting an AR session for the first time on a page will always prompt for camera
-        // permissions, but not on subsequent requests, so check to see if we'll need to accept it
-        // after requesting the session.
-        boolean expectPermissionPrompt = permissionRequestWouldTriggerPrompt("camera", webContents);
-        // TODO(bsheedy): Rename enterPresentation since it's used for both presentation and AR?
+
         enterSessionWithUserGesture(webContents);
-        if (expectPermissionPrompt) {
+
+        // We expect a session permissiom prompt (in this case the AR-specific one), but should not
+        // get prompted for page camera permission.
+        if (shouldExpectPermissionPrompt()) {
             PermissionUtils.waitForPermissionPrompt();
             PermissionUtils.acceptPermissionPrompt();
         }
+
         pollJavaScriptBooleanOrFail("sessionInfos[sessionTypes.AR].currentSession != null",
                 POLL_TIMEOUT_LONG_MS, webContents);
     }
@@ -51,7 +51,26 @@ public class WebXrArTestFramework extends WebXrTestFramework {
      */
     @Override
     public void endSession(WebContents webContents) {
+        // Use a long timeout for session.end(), this can unexpectedly take more than
+        // a second. TODO(https://crbug.com/1014159): investigate why.
         runJavaScriptOrFail("sessionInfos[sessionTypes.AR].currentSession.end()",
-                POLL_TIMEOUT_SHORT_MS, webContents);
+                POLL_TIMEOUT_LONG_MS, webContents);
+
+        // Wait for the session to end before proceeding with followup tests.
+        pollJavaScriptBooleanOrFail("sessionInfos[sessionTypes.AR].currentSession == null",
+                POLL_TIMEOUT_LONG_MS, webContents);
+    }
+
+    /**
+     * Checks whether an immersive AR session would trigger the permission prompt.
+     *
+     * @param webContents The WebContents to check in.
+     * @return True if an immersive AR session request would trigger the permission prompt,
+     *         otherwise
+     *     false.
+     */
+    @Override
+    public boolean shouldExpectPermissionPrompt(WebContents webContents) {
+        return shouldExpectPermissionPrompt("sessionTypes.AR", webContents);
     }
 }

@@ -5,9 +5,13 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_ROOT_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_ROOT_VIEW_H_
 
-#include "base/macros.h"
+#include <memory>
+
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/widget/root_view.h"
+
+class ToolbarView;
 
 namespace ui {
 class OSExchangeData;
@@ -20,6 +24,8 @@ class OSExchangeData;
 // TabStrip.
 class BrowserRootView : public views::internal::RootView {
  public:
+  METADATA_HEADER(BrowserRootView);
+
   struct DropIndex {
     // The index within the tabstrip to drop on/before (see
     // |insert_before_index| below).
@@ -29,32 +35,37 @@ class BrowserRootView : public views::internal::RootView {
     // If false, the dropped item should replace the tab at |tab_index|.
     bool drop_before = false;
 
+    // If |drop_before| is true, and |value| is the first tab in a tab
+    // group, determines whether to drop in the group or just before it.
+    // This disambiguates a drop before or after a group header.
+    bool drop_in_group = false;
+
     bool operator==(const DropIndex& other) const {
-      return value == other.value && drop_before == other.drop_before;
+      return value == other.value && drop_before == other.drop_before &&
+             drop_in_group == other.drop_in_group;
     }
   };
 
   class DropTarget {
    public:
+    DropTarget(const DropTarget&) = delete;
+    DropTarget& operator=(const DropTarget&) = delete;
+
     virtual DropIndex GetDropIndex(const ui::DropTargetEvent& event) = 0;
     virtual views::View* GetViewForDrop() = 0;
 
-    virtual void HandleDragUpdate(const base::Optional<DropIndex>& index) {}
+    virtual void HandleDragUpdate(const absl::optional<DropIndex>& index) {}
     virtual void HandleDragExited() {}
 
    protected:
     DropTarget() = default;
     virtual ~DropTarget() = default;
-
-   private:
-    DISALLOW_COPY_AND_ASSIGN(DropTarget);
   };
-
-  // Internal class name.
-  static const char kViewClassName[];
 
   // You must call set_tabstrip before this class will accept drops.
   BrowserRootView(BrowserView* browser_view, views::Widget* widget);
+  BrowserRootView(const BrowserRootView&) = delete;
+  BrowserRootView& operator=(const BrowserRootView&) = delete;
   ~BrowserRootView() override;
 
   // views::View:
@@ -65,8 +76,9 @@ class BrowserRootView : public views::internal::RootView {
   void OnDragEntered(const ui::DropTargetEvent& event) override;
   int OnDragUpdated(const ui::DropTargetEvent& event) override;
   void OnDragExited() override;
-  int OnPerformDrop(const ui::DropTargetEvent& event) override;
-  const char* GetClassName() const override;
+  ui::mojom::DragOperation OnPerformDrop(
+      const ui::DropTargetEvent& event) override;
+  DropCallback GetDropCallback(const ui::DropTargetEvent& event) override;
   bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
   void OnMouseExited(const ui::MouseEvent& event) override;
 
@@ -85,7 +97,7 @@ class BrowserRootView : public views::internal::RootView {
     DropTarget* target = nullptr;
 
     // Where to drop the url.
-    base::Optional<DropIndex> index;
+    absl::optional<DropIndex> index;
 
     // The URL for the drop event.
     GURL url;
@@ -117,6 +129,11 @@ class BrowserRootView : public views::internal::RootView {
   // desired destination.
   bool GetPasteAndGoURL(const ui::OSExchangeData& data, GURL* url);
 
+  // Navigates to the dropped URL.
+  void NavigateToDropUrl(std::unique_ptr<DropInfo> drop_info,
+                         const ui::DropTargetEvent& event,
+                         ui::mojom::DragOperation& output_drag_op);
+
   // The BrowserView.
   BrowserView* browser_view_ = nullptr;
 
@@ -127,9 +144,7 @@ class BrowserRootView : public views::internal::RootView {
 
   std::unique_ptr<DropInfo> drop_info_;
 
-  base::WeakPtrFactory<BrowserRootView> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(BrowserRootView);
+  base::WeakPtrFactory<BrowserRootView> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_ROOT_VIEW_H_

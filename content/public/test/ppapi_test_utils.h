@@ -8,6 +8,8 @@
 #include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/network/public/mojom/udp_socket.mojom.h"
 
 namespace base {
@@ -35,12 +37,8 @@ bool RegisterTestPluginWithExtraParameters(
     const base::FilePath::StringType& extra_registration_parameters)
     WARN_UNUSED_RESULT;
 
-// Registers the Flash-imitating CORB-testing plugin.
+// Registers the PDF-imitating CORB-testing plugin.
 bool RegisterCorbTestPlugin(base::CommandLine* command_line) WARN_UNUSED_RESULT;
-
-// Registers the Flash-imitating Power-Saver-testing plugin.
-bool RegisterFlashTestPlugin(base::CommandLine* command_line)
-    WARN_UNUSED_RESULT;
 
 // Registers the Blink test plugin to application/x-blink-test-plugin.
 bool RegisterBlinkTestPlugin(base::CommandLine* command_line)
@@ -48,8 +46,8 @@ bool RegisterBlinkTestPlugin(base::CommandLine* command_line)
 
 using CreateUDPSocketCallback = base::RepeatingCallback<void(
     network::mojom::NetworkContext* network_context,
-    network::mojom::UDPSocketRequest socket_request,
-    network::mojom::UDPSocketReceiverPtr socket_receiver)>;
+    mojo::PendingReceiver<network::mojom::UDPSocket> socket_receiver,
+    mojo::PendingRemote<network::mojom::UDPSocketListener> socket_listener)>;
 
 // Sets a NetworkContext to be used by the Pepper TCP classes for testing.
 // Passed in NetworkContext must remain valid until the method is called again

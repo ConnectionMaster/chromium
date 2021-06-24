@@ -4,11 +4,13 @@
 
 #include "third_party/blink/public/platform/scheduler/test/web_fake_thread_scheduler.h"
 
-#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "third_party/blink/public/common/input/web_input_event_attribution.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
-#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/scheduler/test/fake_agent_group_scheduler_scheduler.h"
+#include "third_party/blink/renderer/platform/scheduler/test/web_fake_widget_scheduler.h"
 
 namespace blink {
 namespace scheduler {
@@ -23,21 +25,26 @@ std::unique_ptr<Thread> WebFakeThreadScheduler::CreateMainThread() {
 
 scoped_refptr<base::SingleThreadTaskRunner>
 WebFakeThreadScheduler::DefaultTaskRunner() {
-  return nullptr;
+  return base::ThreadTaskRunnerHandle::Get();
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
 WebFakeThreadScheduler::CompositorTaskRunner() {
-  return nullptr;
+  return base::ThreadTaskRunnerHandle::Get();
 }
 
-scoped_refptr<base::SingleThreadTaskRunner>
-WebFakeThreadScheduler::InputTaskRunner() {
-  return nullptr;
+std::unique_ptr<WebAgentGroupScheduler>
+WebFakeThreadScheduler::CreateAgentGroupScheduler() {
+  return std::make_unique<FakeAgentGroupScheduler>(*this);
 }
 
-scoped_refptr<base::SingleThreadTaskRunner>
-WebFakeThreadScheduler::IPCTaskRunner() {
+std::unique_ptr<WebWidgetScheduler>
+WebFakeThreadScheduler::CreateWidgetScheduler() {
+  return std::make_unique<WebFakeWidgetScheduler>();
+}
+
+WebAgentGroupScheduler*
+WebFakeThreadScheduler::GetCurrentAgentGroupScheduler() {
   return nullptr;
 }
 
@@ -60,16 +67,21 @@ void WebFakeThreadScheduler::DidHandleInputEventOnCompositorThread(
     InputEventState event_state) {}
 
 void WebFakeThreadScheduler::WillPostInputEventToMainThread(
-    WebInputEvent::Type web_input_event_type) {}
+    WebInputEvent::Type web_input_event_type,
+    const WebInputEventAttribution& attribution) {}
 
 void WebFakeThreadScheduler::WillHandleInputEventOnMainThread(
-    WebInputEvent::Type web_input_event_type) {}
+    WebInputEvent::Type web_input_event_type,
+    const WebInputEventAttribution& attribution) {}
 
 void WebFakeThreadScheduler::DidHandleInputEventOnMainThread(
     const blink::WebInputEvent& web_input_event,
     WebInputEventResult result) {}
 
 void WebFakeThreadScheduler::DidAnimateForInputOnCompositorThread() {}
+
+void WebFakeThreadScheduler::DidScheduleBeginMainFrame() {}
+void WebFakeThreadScheduler::DidRunBeginMainFrame() {}
 
 bool WebFakeThreadScheduler::IsHighPriorityWorkAnticipated() {
   return false;
@@ -101,14 +113,6 @@ void WebFakeThreadScheduler::SetRendererProcessType(
     WebRendererProcessType type) {}
 
 void WebFakeThreadScheduler::OnMainFrameRequestedForInput() {}
-
-WebScopedVirtualTimePauser
-WebFakeThreadScheduler::CreateWebScopedVirtualTimePauser(
-    const char* name,
-    WebScopedVirtualTimePauser::VirtualTaskDuration duration) {
-  return WebScopedVirtualTimePauser(nullptr, duration,
-                                    WebString(WTF::String(name)));
-}
 
 }  // namespace scheduler
 }  // namespace blink

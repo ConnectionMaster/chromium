@@ -6,15 +6,15 @@
 
 #include "base/values.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/public/browser/browser_context.h"
-#include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/extension_host_delegate.h"
 #include "extensions/browser/test_runtime_api_delegate.h"
 #include "extensions/browser/updater/null_extension_cache.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chromeos/login/login_state/login_state.h"
 #endif
 
@@ -24,12 +24,7 @@ namespace extensions {
 
 TestExtensionsBrowserClient::TestExtensionsBrowserClient(
     BrowserContext* main_context)
-    : main_context_(nullptr),
-      incognito_context_(nullptr),
-      lock_screen_context_(nullptr),
-      process_manager_delegate_(nullptr),
-      extension_system_factory_(nullptr),
-      extension_cache_(std::make_unique<NullExtensionCache>()) {
+    : extension_cache_(std::make_unique<NullExtensionCache>()) {
   if (main_context)
     SetMainContext(main_context);
 }
@@ -37,11 +32,11 @@ TestExtensionsBrowserClient::TestExtensionsBrowserClient(
 TestExtensionsBrowserClient::TestExtensionsBrowserClient()
     : TestExtensionsBrowserClient(nullptr) {}
 
-TestExtensionsBrowserClient::~TestExtensionsBrowserClient() {}
+TestExtensionsBrowserClient::~TestExtensionsBrowserClient() = default;
 
 void TestExtensionsBrowserClient::SetUpdateClientFactory(
-    const base::Callback<update_client::UpdateClient*(void)>& factory) {
-  update_client_factory_ = factory;
+    base::RepeatingCallback<update_client::UpdateClient*(void)> factory) {
+  update_client_factory_ = std::move(factory);
 }
 
 void TestExtensionsBrowserClient::SetMainContext(
@@ -97,7 +92,7 @@ BrowserContext* TestExtensionsBrowserClient::GetOriginalContext(
   return main_context_;
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 std::string TestExtensionsBrowserClient::GetUserIdHashFromContext(
     content::BrowserContext* context) {
   if (context != main_context_ || !chromeos::LoginState::IsInitialized())
@@ -123,39 +118,28 @@ bool TestExtensionsBrowserClient::CanExtensionCrossIncognito(
   return false;
 }
 
-net::URLRequestJob*
-TestExtensionsBrowserClient::MaybeCreateResourceBundleRequestJob(
-    net::URLRequest* request,
-    net::NetworkDelegate* network_delegate,
-    const base::FilePath& directory_path,
-    const std::string& content_security_policy,
-    bool send_cors_header) {
-  return nullptr;
-}
-
 base::FilePath TestExtensionsBrowserClient::GetBundleResourcePath(
     const network::ResourceRequest& request,
     const base::FilePath& extension_resources_path,
-    ComponentExtensionResourceInfo* resource_info) const {
-  *resource_info = {};
+    int* resource_id) const {
+  *resource_id = 0;
   return base::FilePath();
 }
 
 void TestExtensionsBrowserClient::LoadResourceFromResourceBundle(
     const network::ResourceRequest& request,
-    network::mojom::URLLoaderRequest loader,
+    mojo::PendingReceiver<network::mojom::URLLoader> loader,
     const base::FilePath& resource_relative_path,
-    const ComponentExtensionResourceInfo& resource_info,
-    const std::string& content_security_policy,
-    network::mojom::URLLoaderClientPtr client,
-    bool send_cors_header) {
+    int resource_id,
+    scoped_refptr<net::HttpResponseHeaders> headers,
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
   // Should not be called because GetBundleResourcePath() returned empty path.
   NOTREACHED() << "Resource is not from a bundle.";
 }
 
 bool TestExtensionsBrowserClient::AllowCrossRendererResourceLoad(
-    const GURL& url,
-    content::ResourceType resource_type,
+    const network::ResourceRequest& request,
+    network::mojom::RequestDestination destination,
     ui::PageTransition page_transition,
     int child_id,
     bool is_incognito,
@@ -172,7 +156,7 @@ PrefService* TestExtensionsBrowserClient::GetPrefServiceForContext(
 
 void TestExtensionsBrowserClient::GetEarlyExtensionPrefsObservers(
     content::BrowserContext* context,
-    std::vector<ExtensionPrefsObserver*>* observers) const {}
+    std::vector<EarlyExtensionPrefsObserver*>* observers) const {}
 
 ProcessManagerDelegate* TestExtensionsBrowserClient::GetProcessManagerDelegate()
     const {
@@ -181,7 +165,7 @@ ProcessManagerDelegate* TestExtensionsBrowserClient::GetProcessManagerDelegate()
 
 std::unique_ptr<ExtensionHostDelegate>
 TestExtensionsBrowserClient::CreateExtensionHostDelegate() {
-  return std::unique_ptr<ExtensionHostDelegate>();
+  return nullptr;
 }
 
 bool TestExtensionsBrowserClient::DidVersionUpdate(BrowserContext* context) {
@@ -217,9 +201,8 @@ TestExtensionsBrowserClient::GetExtensionSystemFactory() {
   return extension_system_factory_;
 }
 
-void TestExtensionsBrowserClient::RegisterExtensionInterfaces(
-    service_manager::BinderRegistryWithArgs<content::RenderFrameHost*>*
-        registry,
+void TestExtensionsBrowserClient::RegisterBrowserInterfaceBindersForFrame(
+    mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
     content::RenderFrameHost* render_frame_host,
     const Extension* extension) const {}
 
@@ -237,11 +220,8 @@ TestExtensionsBrowserClient::GetComponentExtensionResourceManager() {
 void TestExtensionsBrowserClient::BroadcastEventToRenderers(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    std::unique_ptr<base::ListValue> args) {}
-
-net::NetLog* TestExtensionsBrowserClient::GetNetLog() {
-  return nullptr;
-}
+    std::unique_ptr<base::ListValue> args,
+    bool dispatch_to_off_the_record_profiles) {}
 
 ExtensionCache* TestExtensionsBrowserClient::GetExtensionCache() {
   return extension_cache_.get();

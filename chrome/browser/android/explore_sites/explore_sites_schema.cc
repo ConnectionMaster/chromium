@@ -13,6 +13,9 @@ namespace explore_sites {
 constexpr int ExploreSitesSchema::kCurrentVersion;
 constexpr int ExploreSitesSchema::kCompatibleVersion;
 
+const char ExploreSitesSchema::kCurrentCatalogKey[] = "current_catalog";
+const char ExploreSitesSchema::kDownloadingCatalogKey[] = "downloading_catalog";
+
 // Schema versions changelog:
 // * 1: Initial version.
 // * 2: Version with ntp shown count.
@@ -68,13 +71,13 @@ bool CreateActivityTable(sql::Database* db) {
   return db->Execute(kActivityTableCreationSql);
 }
 
-static const char kSiteBlacklistTableCreationSql[] =
-    "CREATE TABLE IF NOT EXISTS site_blacklist ("
+static const char kSiteBlocklistTableCreationSql[] =
+    "CREATE TABLE IF NOT EXISTS site_blocklist ("
     "url TEXT NOT NULL UNIQUE, "
     "date_removed INTEGER NOT NULL);";  // stored as unix timestamp
 
-bool CreateSiteBlacklistTable(sql::Database* db) {
-  return db->Execute(kSiteBlacklistTableCreationSql);
+bool CreateSiteBlocklistTable(sql::Database* db) {
+  return db->Execute(kSiteBlocklistTableCreationSql);
 }
 
 bool CreateLatestSchema(sql::Database* db) {
@@ -83,7 +86,7 @@ bool CreateLatestSchema(sql::Database* db) {
     return false;
 
   if (!CreateCategoriesTable(db) || !CreateSitesTable(db) ||
-      !CreateSiteBlacklistTable(db) || !CreateActivityTable(db)) {
+      !CreateSiteBlocklistTable(db) || !CreateActivityTable(db)) {
     return false;
   }
 
@@ -102,6 +105,19 @@ int MigrateFrom1To2(sql::Database* db, sql::MetaTable* meta_table) {
     return target_version;
   }
   return 1;
+}
+
+int MigrateFrom2To3(sql::Database* db, sql::MetaTable* meta_table) {
+  // Version 3 renames a table.
+  const int target_version = 3;
+  static const char k2To3Sql[] =
+      "ALTER TABLE site_blacklist RENAME TO site_blocklist;";
+  sql::Transaction transaction(db);
+  if (transaction.Begin() && db->Execute(k2To3Sql) && transaction.Commit()) {
+    meta_table->SetVersionNumber(target_version);
+    return target_version;
+  }
+  return 2;
 }
 
 }  // namespace
@@ -153,7 +169,25 @@ bool ExploreSitesSchema::CreateOrUpgradeIfNeeded(sql::Database* db) {
   if (current_version == 1)
     current_version = MigrateFrom1To2(db, &meta_table);
 
+  if (current_version == 2)
+    current_version = MigrateFrom2To3(db, &meta_table);
+
   return current_version == kCurrentVersion;
+}
+
+// static
+std::pair<std::string, std::string> ExploreSitesSchema::GetVersionTokens(
+    sql::Database* db) {
+  sql::MetaTable meta_table;
+  if (!InitMetaTable(db, &meta_table))
+    return std::make_pair("", "");
+
+  std::string current_version_token, downloading_version_token;
+
+  meta_table.GetValue(kCurrentCatalogKey, &current_version_token);
+  meta_table.GetValue(kDownloadingCatalogKey, &downloading_version_token);
+
+  return std::make_pair(current_version_token, downloading_version_token);
 }
 
 }  // namespace explore_sites

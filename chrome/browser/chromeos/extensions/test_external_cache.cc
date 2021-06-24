@@ -35,7 +35,7 @@ void TestExternalCache::UpdateExtensionsList(
   configured_extensions_ = std::move(prefs);
   cached_extensions_.Clear();
 
-  if (configured_extensions_->empty()) {
+  if (configured_extensions_->DictEmpty()) {
     delegate_->OnExtensionListsUpdated(&cached_extensions_);
     return;
   }
@@ -124,9 +124,7 @@ void TestExternalCache::UpdateCachedExtensions() {
           entry.first,
           GetExtensionValueToCache(entry.second, crx_cache_[entry.first].path,
                                    crx_cache_[entry.first].version));
-    } else if (ShouldCacheImmediately(
-                   entry.second,
-                   delegate_->GetInstalledExtensionVersion(entry.first))) {
+    } else if (ShouldCacheImmediately(entry.second)) {
       cached_extensions_.SetKey(entry.first, entry.second.Clone());
     }
   }

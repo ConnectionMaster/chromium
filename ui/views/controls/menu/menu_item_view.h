@@ -5,32 +5,26 @@
 #ifndef UI_VIEWS_CONTROLS_MENU_MENU_ITEM_VIEW_H_
 #define UI_VIEWS_CONTROLS_MENU_MENU_ITEM_VIEW_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/models/menu_separator_types.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/native_theme/themed_vector_icon.h"
 #include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/menu/menu_types.h"
 #include "ui/views/view.h"
 
 #if defined(OS_WIN)
 #include <windows.h>
-
-#include "ui/native_theme/native_theme.h"
 #endif
-
-namespace gfx {
-struct VectorIcon;
-}
 
 namespace views {
 
@@ -41,8 +35,9 @@ class MenuRunnerImpl;
 namespace test {
 class TestMenuItemViewShown;
 class TestMenuItemViewNotShown;
-}
+}  // namespace test
 
+class ImageView;
 class MenuController;
 class MenuDelegate;
 class Separator;
@@ -73,10 +68,9 @@ class SubmenuView;
 
 class VIEWS_EXPORT MenuItemView : public View {
  public:
-  friend class MenuController;
+  METADATA_HEADER(MenuItemView);
 
-  // The menu item view's class name.
-  static const char kViewClassName[];
+  friend class MenuController;
 
   // ID used to identify menu items.
   static const int kMenuItemViewID;
@@ -85,29 +79,26 @@ class VIEWS_EXPORT MenuItemView : public View {
   static const int kEmptyMenuItemViewID;
 
   // Different types of menu items.
-  enum Type {
-    NORMAL,              // Performs an action when selected.
-    SUBMENU,             // Presents a submenu within another menu.
-    ACTIONABLE_SUBMENU,  // A SUBMENU that is also a COMMAND.
-    CHECKBOX,            // Can be selected/checked to toggle a boolean state.
-    RADIO,               // Can be selected/checked among a group of choices.
-    SEPARATOR,           // Shows a horizontal line separator.
-    HIGHLIGHTED,         // Performs an action when selected, and has a
+  enum class Type {
+    kNormal,             // Performs an action when selected.
+    kSubMenu,            // Presents a submenu within another menu.
+    kActionableSubMenu,  // A SubMenu that is also a COMMAND.
+    kCheckbox,           // Can be selected/checked to toggle a boolean state.
+    kRadio,              // Can be selected/checked among a group of choices.
+    kSeparator,          // Shows a horizontal line separator.
+    kHighlighted,        // Performs an action when selected, and has a
                          // different colored background that merges with the
                          // menu's rounded corners when placed at the bottom.
-    EMPTY,  // EMPTY is a special type for empty menus that is only used
-            // internally.
+    kTitle,              // Title text, does not perform any action.
+    kEmpty,              // kEmpty is a special type for empty menus that is
+                         // only used internally.
   };
 
   // Where the menu should be drawn, above or below the bounds (when
-  // the bounds is non-empty).  POSITION_BEST_FIT (default) positions
+  // the bounds is non-empty).  MenuPosition::kBestFit (default) positions
   // the menu below the bounds unless the menu does not fit on the
   // screen and the re is more space above.
-  enum MenuPosition {
-    POSITION_BEST_FIT,
-    POSITION_ABOVE_BOUNDS,
-    POSITION_BELOW_BOUNDS
-  };
+  enum class MenuPosition { kBestFit, kAboveBounds, kBelowBounds };
 
   // The data structure which is used for the menu size
   struct MenuItemDimensions {
@@ -125,12 +116,13 @@ class VIEWS_EXPORT MenuItemView : public View {
 
   // Constructor for use with the top level menu item. This menu is never
   // shown to the user, rather its use as the parent for all menu items.
-  explicit MenuItemView(MenuDelegate* delegate);
+  explicit MenuItemView(MenuDelegate* delegate = nullptr);
 
   // Overridden from View:
-  base::string16 GetTooltipText(const gfx::Point& p) const override;
+  std::u16string GetTooltipText(const gfx::Point& p) const override;
   void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   bool HandleAccessibleAction(const ui::AXActionData& action_data) override;
+  FocusBehavior GetFocusBehavior() const override;
 
   // Returns the preferred height of menu items. This is only valid when the
   // menu is about to be shown.
@@ -144,8 +136,10 @@ class VIEWS_EXPORT MenuItemView : public View {
 
   // Returns the accessible name to be used with screen readers. Mnemonics are
   // removed and the menu item accelerator text is appended.
-  static base::string16 GetAccessibleNameForMenuItem(
-      const base::string16& item_text, const base::string16& accelerator_text);
+  static std::u16string GetAccessibleNameForMenuItem(
+      const std::u16string& item_text,
+      const std::u16string& accelerator_text,
+      bool is_new_feature);
 
   // Hides and cancels the menu. This does nothing if the menu is not open.
   void Cancel();
@@ -154,53 +148,39 @@ class VIEWS_EXPORT MenuItemView : public View {
   // called after adding menu items if the menu may be active.
   MenuItemView* AddMenuItemAt(int index,
                               int item_id,
-                              const base::string16& label,
-                              const base::string16& sublabel,
-                              const base::string16& minor_text,
-                              const gfx::VectorIcon* minor_icon,
-                              const gfx::ImageSkia& icon,
+                              const std::u16string& label,
+                              const std::u16string& secondary_label,
+                              const std::u16string& minor_text,
+                              const ui::ImageModel& minor_icon,
+                              const ui::ImageModel& icon,
                               Type type,
                               ui::MenuSeparatorType separator_style);
 
-  // Remove an item from the menu at a specified index. The removed MenuItemView
-  // is deleted when ChildrenChanged() is invoked.
-  void RemoveMenuItemAt(int index);
+  // Remove the specified item from the menu. |item| will be deleted when
+  // ChildrenChanged() is invoked.
+  void RemoveMenuItem(View* item);
 
   // Removes all items from the menu.  The removed MenuItemViews are deleted
   // when ChildrenChanged() is invoked.
   void RemoveAllMenuItems();
 
-  // Appends an item to this menu.
+  // Appends a normal item to this menu.
   // item_id    The id of the item, used to identify it in delegate callbacks
   //            or (if delegate is NULL) to identify the command associated
   //            with this item with the controller specified in the ctor. Note
   //            that this value should not be 0 as this has a special meaning
   //            ("NULL command, no item selected")
   // label      The text label shown.
-  // type       The type of item.
+  // icon       The icon.
   MenuItemView* AppendMenuItem(int item_id,
-                               const base::string16& label,
-                               Type type);
+                               const std::u16string& label = std::u16string(),
+                               const gfx::ImageSkia& icon = gfx::ImageSkia());
 
   // Append a submenu to this menu.
   // The returned pointer is owned by this menu.
   MenuItemView* AppendSubMenu(int item_id,
-                              const base::string16& label);
-
-  // Append a submenu with an icon to this menu.
-  // The returned pointer is owned by this menu.
-  MenuItemView* AppendSubMenuWithIcon(int item_id,
-                                      const base::string16& label,
-                                      const gfx::ImageSkia& icon);
-
-  // This is a convenience for standard text label menu items where the label
-  // is provided with this call.
-  MenuItemView* AppendMenuItemWithLabel(int item_id,
-                                        const base::string16& label);
-
-  // This is a convenience for text label menu items where the label is
-  // provided by the delegate.
-  MenuItemView* AppendDelegateMenuItem(int item_id);
+                              const std::u16string& label,
+                              const gfx::ImageSkia& icon = gfx::ImageSkia());
 
   // Adds a separator to this menu
   void AppendSeparator();
@@ -208,52 +188,43 @@ class VIEWS_EXPORT MenuItemView : public View {
   // Adds a separator to this menu at the specified position.
   void AddSeparatorAt(int index);
 
-  // Appends a menu item with an icon. This is for the menu item which
-  // needs an icon. Calling this function forces the Menu class to draw
-  // the menu, instead of relying on Windows.
-  MenuItemView* AppendMenuItemWithIcon(int item_id,
-                                       const base::string16& label,
-                                       const gfx::ImageSkia& icon);
-
   // All the AppendXXX methods funnel into this.
   MenuItemView* AppendMenuItemImpl(int item_id,
-                                   const base::string16& label,
-                                   const base::string16& sublabel,
-                                   const base::string16& minor_text,
-                                   const gfx::VectorIcon* minor_icon,
+                                   const std::u16string& label,
                                    const gfx::ImageSkia& icon,
-                                   Type type,
-                                   ui::MenuSeparatorType separator_style);
+                                   Type type);
 
   // Returns the view that contains child menu items. If the submenu has
-  // not been creates, this creates it.
-  virtual SubmenuView* CreateSubmenu();
+  // not been created, this creates it.
+  SubmenuView* CreateSubmenu();
 
   // Returns true if this menu item has a submenu.
-  virtual bool HasSubmenu() const;
+  bool HasSubmenu() const;
 
   // Returns the view containing child menu items.
-  virtual SubmenuView* GetSubmenu() const;
+  SubmenuView* GetSubmenu() const;
 
   // Returns true if this menu item has a submenu and it is showing
-  virtual bool SubmenuIsShowing() const;
+  bool SubmenuIsShowing() const;
 
   // Returns the parent menu item.
   MenuItemView* GetParentMenuItem() { return parent_menu_item_; }
   const MenuItemView* GetParentMenuItem() const { return parent_menu_item_; }
 
   // Sets/Gets the title.
-  void SetTitle(const base::string16& title);
-  const base::string16& title() const { return title_; }
+  void SetTitle(const std::u16string& title);
+  const std::u16string& title() const { return title_; }
 
-  // Sets the subtitle.
-  void SetSubtitle(const base::string16& subtitle);
+  // Sets/Gets the secondary title. When not empty, they are shown in the line
+  // below the title.
+  void SetSecondaryTitle(const std::u16string& secondary_title);
+  const std::u16string& secondary_title() const { return secondary_title_; }
 
   // Sets the minor text.
-  void SetMinorText(const base::string16& minor_text);
+  void SetMinorText(const std::u16string& minor_text);
 
   // Sets the minor icon.
-  void SetMinorIcon(const gfx::VectorIcon* minor_icon);
+  void SetMinorIcon(const ui::ImageModel& minor_icon);
 
   // Returns the type of this menu.
   const Type& GetType() const { return type_; }
@@ -265,6 +236,11 @@ class VIEWS_EXPORT MenuItemView : public View {
   // Returns true if the item is selected.
   bool IsSelected() const { return selected_; }
 
+  // Adds a callback subscription associated with the above selected property.
+  // The callback will be invoked whenever the selected property changes.
+  base::CallbackListSubscription AddSelectedChangedCallback(
+      PropertyChangedCallback callback) WARN_UNUSED_RESULT;
+
   // Sets whether the submenu area of an ACTIONABLE_SUBMENU is selected.
   void SetSelectionOfActionableSubmenu(
       bool submenu_area_of_actionable_submenu_selected);
@@ -275,24 +251,28 @@ class VIEWS_EXPORT MenuItemView : public View {
   }
 
   // Sets the |tooltip| for a menu item view with |item_id| identifier.
-  void SetTooltip(const base::string16& tooltip, int item_id);
-
-  // Sets the icon for the descendant identified by item_id.
-  void SetIcon(const gfx::ImageSkia& icon, int item_id);
+  void SetTooltip(const std::u16string& tooltip, int item_id);
 
   // Sets the icon of this menu item.
-  void SetIcon(const gfx::ImageSkia& icon);
+  void SetIcon(const ui::ImageModel& icon);
 
   // Sets the view used to render the icon. This clobbers any icon set via
   // SetIcon(). MenuItemView takes ownership of |icon_view|.
-  void SetIconView(View* icon_view);
-  View* icon_view() { return icon_view_; }
+  void SetIconView(std::unique_ptr<ImageView> icon_view);
 
   // Sets the command id of this menu item.
   void SetCommand(int command) { command_ = command; }
 
   // Returns the command id of this item.
   int GetCommand() const { return command_; }
+
+  void set_is_new(bool is_new) { is_new_ = is_new; }
+  bool is_new() const { return is_new_; }
+
+  void set_may_have_mnemonics(bool may_have_mnemonics) {
+    may_have_mnemonics_ = may_have_mnemonics;
+  }
+  bool may_have_mnemonics() const { return may_have_mnemonics_; }
 
   // Paints the menu item.
   void OnPaint(gfx::Canvas* canvas) override;
@@ -326,13 +306,11 @@ class VIEWS_EXPORT MenuItemView : public View {
 
   // Returns the mnemonic for this MenuItemView, or 0 if this MenuItemView
   // doesn't have a mnemonic.
-  base::char16 GetMnemonic();
+  char16_t GetMnemonic();
 
   // Do we have icons? This only has effect on the top menu. Turning this on
   // makes the menus slightly wider and taller.
-  void set_has_icons(bool has_icons) {
-    has_icons_ = has_icons;
-  }
+  void set_has_icons(bool has_icons) { has_icons_ = has_icons; }
   bool has_icons() const { return has_icons_; }
 
   // Returns the descendant with the specified command.
@@ -374,6 +352,14 @@ class VIEWS_EXPORT MenuItemView : public View {
   void SetAlerted();
   bool is_alerted() const { return is_alerted_; }
 
+  // Returns whether or not a "new" badge should be shown on this menu item.
+  // Takes into account whether the badging feature is enabled.
+  bool ShouldShowNewBadge() const;
+
+  // Returns whether keyboard navigation through the menu should stop on this
+  // item.
+  bool IsTraversableByKeyboard() const;
+
  protected:
   // Creates a MenuItemView. This is used by the various AddXXX methods.
   MenuItemView(MenuItemView* parent, int command, Type type);
@@ -383,7 +369,6 @@ class VIEWS_EXPORT MenuItemView : public View {
 
   // View:
   void ChildPreferredSizeChanged(View* child) override;
-  const char* GetClassName() const override;
 
   // Returns the preferred size (and padding) of any children.
   virtual gfx::Size GetChildPreferredSize() const;
@@ -393,12 +378,12 @@ class VIEWS_EXPORT MenuItemView : public View {
   int GetBottomMargin() const;
 
  private:
-  friend class internal::MenuRunnerImpl;  // For access to ~MenuItemView.
-  friend class test::TestMenuItemViewShown;  // for access to |submenu_|;
+  friend class internal::MenuRunnerImpl;        // For access to ~MenuItemView.
+  friend class test::TestMenuItemViewShown;     // for access to |submenu_|;
   friend class test::TestMenuItemViewNotShown;  // for access to |submenu_|;
-  friend class TestMenuItemView;             // For access to AddEmptyMenus();
+  friend class TestMenuItemView;  // For access to AddEmptyMenus();
 
-  enum PaintButtonMode { PB_NORMAL, PB_FOR_DRAG };
+  enum class PaintButtonMode { kNormal, kForDrag };
 
   // Calculates all sizes that we can from the OS.
   //
@@ -406,10 +391,7 @@ class VIEWS_EXPORT MenuItemView : public View {
   void UpdateMenuPartSizes();
 
   // Called by the two constructors to initialize this menu item.
-  void Init(MenuItemView* parent,
-            int command,
-            MenuItemView::Type type,
-            MenuDelegate* delegate);
+  void Init(MenuItemView* parent, int command, MenuItemView::Type type);
 
   // The RunXXX methods call into this to set up the necessary state before
   // running. |is_first_menu| is true if no menus are currently showing.
@@ -435,8 +417,8 @@ class VIEWS_EXPORT MenuItemView : public View {
   // necessary.
   void AdjustBoundsForRTLUI(gfx::Rect* rect) const;
 
-  // Actual paint implementation. If mode is PB_FOR_DRAG, portions of the menu
-  // are not rendered.
+  // Actual paint implementation. If mode is kForDrag, portions of the menu are
+  // not rendered.
   void PaintButton(gfx::Canvas* canvas, PaintButtonMode mode);
 
   // Helper function for PaintButton(), draws the background for the button if
@@ -454,11 +436,11 @@ class VIEWS_EXPORT MenuItemView : public View {
   void DestroyAllMenuHosts();
 
   // Returns the text that should be displayed on the end (right) of the menu
-  // item. This will be the accelerator (if one exists), otherwise |subtitle_|.
-  base::string16 GetMinorText() const;
+  // item. This will be the accelerator (if one exists).
+  std::u16string GetMinorText() const;
 
   // Returns the icon that should be displayed to the left of the minor text.
-  const gfx::VectorIcon* GetMinorIcon() const;
+  ui::ImageModel GetMinorIcon() const;
 
   // Returns the text color for the current state.  |minor| specifies if the
   // minor text or the normal text is desired.
@@ -512,63 +494,66 @@ class VIEWS_EXPORT MenuItemView : public View {
   void invalidate_dimensions() { dimensions_.height = 0; }
   bool is_dimensions_valid() const { return dimensions_.height > 0; }
 
+  SkColor GetMinorIconColor(
+      const MenuDelegate::LabelStyle& default_style) const;
+
   // The delegate. This is only valid for the root menu item. You shouldn't
   // use this directly, instead use GetDelegate() which walks the tree as
   // as necessary.
-  MenuDelegate* delegate_;
+  MenuDelegate* delegate_ = nullptr;
 
   // The controller for the run operation, or NULL if the menu isn't showing.
   base::WeakPtr<MenuController> controller_;
 
   // Used to detect when Cancel was invoked.
-  bool canceled_;
+  bool canceled_ = false;
 
   // Our parent.
-  MenuItemView* parent_menu_item_;
+  MenuItemView* parent_menu_item_ = nullptr;
 
   // Type of menu. NOTE: MenuItemView doesn't itself represent SEPARATOR,
   // that is handled by an entirely different view class.
-  Type type_;
+  Type type_ = Type::kSubMenu;
 
   // Whether we're selected.
-  bool selected_;
+  bool selected_ = false;
 
   // Whether the submenu area of an ACTIONABLE_SUBMENU is selected.
-  bool submenu_area_of_actionable_submenu_selected_;
+  bool submenu_area_of_actionable_submenu_selected_ = false;
 
   // Command id.
-  int command_;
+  int command_ = 0;
+
+  // Whether the menu item should be badged as "New" (if badging is enabled) as
+  // a way to highlight a new feature for users.
+  bool is_new_ = false;
+
+  // Whether the menu item contains user-created text.
+  bool may_have_mnemonics_ = true;
 
   // Submenu, created via CreateSubmenu.
-  SubmenuView* submenu_;
+  SubmenuView* submenu_ = nullptr;
 
-  // Title.
-  base::string16 title_;
-
-  // Subtitle/sublabel.
-  base::string16 subtitle_;
-
-  // Minor text.
-  base::string16 minor_text_;
-
-  // Minor icon.
-  const gfx::VectorIcon* minor_icon_ = nullptr;
+  std::u16string title_;
+  std::u16string secondary_title_;
+  std::u16string minor_text_;
+  ui::ImageModel minor_icon_;
 
   // Does the title have a mnemonic? Only useful on the root menu item.
-  bool has_mnemonics_;
+  bool has_mnemonics_ = false;
 
   // Should we show the mnemonic? Mnemonics are shown if this is true or
   // MenuConfig says mnemonics should be shown. Only used on the root menu item.
-  bool show_mnemonics_;
+  bool show_mnemonics_ = false;
 
   // Set if menu has icons or icon_views (applies to root menu item only).
-  bool has_icons_;
+  bool has_icons_ = false;
 
   // Pointer to a view with a menu icon.
-  View* icon_view_;
+  ImageView* icon_view_ = nullptr;
 
   // The tooltip to show on hover for this menu item.
-  base::string16 tooltip_;
+  std::u16string tooltip_;
 
   // Width of a menu icon area.
   static int icon_area_width_;
@@ -590,39 +575,34 @@ class VIEWS_EXPORT MenuItemView : public View {
   std::vector<View*> removed_items_;
 
   // Margins in pixels.
-  int top_margin_;
-  int bottom_margin_;
+  int top_margin_ = -1;
+  int bottom_margin_ = -1;
 
   // Corner radius in pixels, for HIGHLIGHTED items placed at the end of a menu.
-  int corner_radius_;
-
-  // Horizontal icon margins in pixels, which can differ between MenuItems.
-  // These values will be set in the layout process.
-  mutable int left_icon_margin_;
-  mutable int right_icon_margin_;
+  int corner_radius_ = 0;
 
   // |menu_position_| is the requested position with respect to the bounds.
   // |actual_menu_position_| is used by the controller to cache the
   // position of the menu being shown.
-  MenuPosition requested_menu_position_;
-  MenuPosition actual_menu_position_;
+  MenuPosition requested_menu_position_ = MenuPosition::kBestFit;
+  MenuPosition actual_menu_position_ = MenuPosition::kBestFit;
 
   // If set to false, the right margin will be removed for menu lines
   // containing other elements.
-  bool use_right_margin_;
+  bool use_right_margin_ = true;
 
   // Contains an image for the checkbox or radio icon.
-  ImageView* radio_check_image_view_;
+  ImageView* radio_check_image_view_ = nullptr;
 
   // The submenu indicator arrow icon in case the menu item has a Submenu.
-  ImageView* submenu_arrow_image_view_;
+  ImageView* submenu_arrow_image_view_ = nullptr;
 
   // The forced visual selection state of this item, if any.
-  base::Optional<bool> forced_visual_selection_;
+  absl::optional<bool> forced_visual_selection_;
 
   // The vertical separator that separates the actionable and submenu regions of
   // an ACTIONABLE_SUBMENU.
-  Separator* vertical_separator_;
+  Separator* vertical_separator_ = nullptr;
 
   // Whether this menu item is rendered differently to draw attention to it.
   bool is_alerted_ = false;

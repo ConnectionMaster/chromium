@@ -14,11 +14,13 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/guid.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/stl_util.h"
+#include "base/numerics/ranges.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_checker.h"
@@ -104,8 +106,8 @@ const wchar_t kSecurityLayerValueName[] = L"SecurityLayer";
 
 webrtc::DesktopSize GetBoundedRdpDesktopSize(int width, int height) {
   return webrtc::DesktopSize(
-      std::min(kMaxRdpScreenWidth, std::max(kMinRdpScreenWidth, width)),
-      std::min(kMaxRdpScreenHeight, std::max(kMinRdpScreenHeight, height)));
+      base::ClampToRange(width, kMinRdpScreenWidth, kMaxRdpScreenWidth),
+      base::ClampToRange(height, kMinRdpScreenHeight, kMaxRdpScreenHeight));
 }
 
 // DesktopSession implementation which attaches to the host's physical console.
@@ -210,7 +212,7 @@ class RdpSession : public DesktopSessionWin {
   // Used to match |rdp_desktop_session_| with the session it is attached to.
   std::string terminal_id_;
 
-  base::WeakPtrFactory<RdpSession> weak_factory_;
+  base::WeakPtrFactory<RdpSession> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(RdpSession);
 };
@@ -244,16 +246,16 @@ void ConsoleSession::InjectSas() {
     LOG(ERROR) << "Failed to inject Secure Attention Sequence.";
 }
 
-RdpSession::RdpSession(
-    scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
-    scoped_refptr<AutoThreadTaskRunner> io_task_runner,
-    DaemonProcess* daemon_process,
-    int id,
-    WtsTerminalMonitor* monitor)
-    : DesktopSessionWin(caller_task_runner, io_task_runner, daemon_process, id,
-                        monitor),
-      weak_factory_(this) {
-}
+RdpSession::RdpSession(scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
+                       scoped_refptr<AutoThreadTaskRunner> io_task_runner,
+                       DaemonProcess* daemon_process,
+                       int id,
+                       WtsTerminalMonitor* monitor)
+    : DesktopSessionWin(caller_task_runner,
+                        io_task_runner,
+                        daemon_process,
+                        id,
+                        monitor) {}
 
 RdpSession::~RdpSession() {
 }
@@ -306,11 +308,10 @@ bool RdpSession::Initialize(const ScreenResolution& resolution) {
   Microsoft::WRL::ComPtr<IRdpDesktopSessionEventHandler> event_handler(
       new EventHandler(weak_factory_.GetWeakPtr()));
   terminal_id_ = base::GenerateGUID();
-  base::win::ScopedBstr terminal_id(base::UTF8ToUTF16(terminal_id_));
-  result = rdp_desktop_session_->Connect(host_size.width(), host_size.height(),
-                                         kDefaultRdpDpi, kDefaultRdpDpi,
-                                         terminal_id, server_port,
-                                         event_handler.Get());
+  base::win::ScopedBstr terminal_id(base::UTF8ToWide(terminal_id_));
+  result = rdp_desktop_session_->Connect(
+      host_size.width(), host_size.height(), kDefaultRdpDpi, kDefaultRdpDpi,
+      terminal_id.Get(), server_port, event_handler.Get());
   if (FAILED(result)) {
     LOG(ERROR) << "RdpSession::Create() failed, 0x"
                << std::hex << result << std::dec << ".";
@@ -614,7 +615,7 @@ void DesktopSessionWin::OnSessionAttached(uint32_t session_id) {
   ReportElapsedTime("attached");
 
   // Launch elevated on Win8+ to enable injection of Alt+Tab and Ctrl+Alt+Del.
-  bool launch_elevated = base::win::GetVersion() >= base::win::VERSION_WIN8;
+  bool launch_elevated = base::win::GetVersion() >= base::win::Version::WIN8;
 
   // Get the name of the executable to run. |kDesktopBinaryName| specifies
   // uiAccess="true" in its manifest.
@@ -651,7 +652,8 @@ void DesktopSessionWin::OnSessionAttached(uint32_t session_id) {
   }
 
   // Create a launcher for the desktop process, using the per-session delegate.
-  launcher_.reset(new WorkerProcessLauncher(std::move(delegate), this));
+  launcher_ =
+      std::make_unique<WorkerProcessLauncher>(std::move(delegate), this);
   session_id_ = session_id;
 }
 

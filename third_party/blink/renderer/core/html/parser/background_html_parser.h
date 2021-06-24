@@ -28,23 +28,21 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/core/dom/document_encoding_data.h"
 #include "third_party/blink/renderer/core/html/parser/background_html_input_stream.h"
 #include "third_party/blink/renderer/core/html/parser/compact_html_token.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_options.h"
 #include "third_party/blink/renderer/core/html/parser/html_preload_scanner.h"
-#include "third_party/blink/renderer/core/html/parser/html_source_tracker.h"
 #include "third_party/blink/renderer/core/html/parser/html_tree_builder_simulator.h"
 #include "third_party/blink/renderer/core/html/parser/text_resource_decoder.h"
-#include "third_party/blink/renderer/core/html/parser/xss_auditor_delegate.h"
+#include "third_party/blink/renderer/core/page/viewport_description.h"
 
 namespace blink {
 
 class HTMLDocumentParser;
-class XSSAuditor;
 
 class BackgroundHTMLParser {
   USING_FAST_MALLOC(BackgroundHTMLParser);
@@ -56,8 +54,7 @@ class BackgroundHTMLParser {
    public:
     Configuration();
     HTMLParserOptions options;
-    base::WeakPtr<HTMLDocumentParser> parser;
-    std::unique_ptr<XSSAuditor> xss_auditor;
+    WeakPersistent<HTMLDocumentParser> parser;
     std::unique_ptr<TextResourceDecoder> decoder;
   };
 
@@ -71,11 +68,14 @@ class BackgroundHTMLParser {
             const MediaValuesCached::MediaValuesCachedData&,
             bool priority_hints_origin_trial_enabled);
 
+  BackgroundHTMLParser(const BackgroundHTMLParser&) = delete;
+  BackgroundHTMLParser& operator=(const BackgroundHTMLParser&) = delete;
+
   struct Checkpoint {
     USING_FAST_MALLOC(Checkpoint);
 
    public:
-    base::WeakPtr<HTMLDocumentParser> parser;
+    WeakPersistent<HTMLDocumentParser> parser;
     std::unique_ptr<HTMLToken> token;
     std::unique_ptr<HTMLTokenizer> tokenizer;
     HTMLTreeBuilderSimulator::State tree_builder_state;
@@ -94,6 +94,8 @@ class BackgroundHTMLParser {
 
   void ForcePlaintextForTextDocument();
 
+  void ClearParser();
+
  private:
   BackgroundHTMLParser(std::unique_ptr<Configuration>,
                        scoped_refptr<base::SingleThreadTaskRunner>);
@@ -107,19 +109,15 @@ class BackgroundHTMLParser {
   void UpdateDocument(const String& decoded_data);
 
   BackgroundHTMLInputStream input_;
-  HTMLSourceTracker source_tracker_;
   std::unique_ptr<HTMLToken> token_;
   std::unique_ptr<HTMLTokenizer> tokenizer_;
   HTMLTreeBuilderSimulator tree_builder_simulator_;
   HTMLParserOptions options_;
-  base::WeakPtr<HTMLDocumentParser> parser_;
+  WeakPersistent<HTMLDocumentParser> parser_;
 
   CompactHTMLTokenStream pending_tokens_;
   PreloadRequestStream pending_preloads_;
-  ViewportDescriptionWrapper viewport_description_;
-  XSSInfoStream pending_xss_infos_;
-
-  std::unique_ptr<XSSAuditor> xss_auditor_;
+  absl::optional<ViewportDescription> viewport_description_;
   std::unique_ptr<TokenPreloadScanner> preload_scanner_;
   std::unique_ptr<TextResourceDecoder> decoder_;
   DocumentEncodingData last_seen_encoding_data_;
@@ -131,11 +129,9 @@ class BackgroundHTMLParser {
 
   bool starting_script_;
 
-  base::WeakPtrFactory<BackgroundHTMLParser> weak_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(BackgroundHTMLParser);
+  base::WeakPtrFactory<BackgroundHTMLParser> weak_factory_{this};
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_PARSER_BACKGROUND_HTML_PARSER_H_

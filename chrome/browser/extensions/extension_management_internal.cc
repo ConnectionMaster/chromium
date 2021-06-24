@@ -10,6 +10,7 @@
 #include "base/values.h"
 #include "base/version.h"
 #include "chrome/browser/extensions/extension_management_constants.h"
+#include "extensions/common/extension_urls.h"
 #include "extensions/common/url_pattern_set.h"
 #include "url/gurl.h"
 
@@ -33,10 +34,14 @@ IndividualSettings::IndividualSettings() {
 IndividualSettings::IndividualSettings(
     const IndividualSettings* default_settings) {
   installation_mode = default_settings->installation_mode;
-  update_url = default_settings->installation_mode;
-  blocked_permissions = default_settings->blocked_permissions.Clone();
-  // We are not initializing |minimum_version_required| from |default_settings|
+  update_url = default_settings->update_url;
+  // We are not initializing `minimum_version_required` from `default_settings`
   // here since it's not applicable to default settings.
+  //
+  // We also do not inherit `blocked_permissions`, `runtime_allowed_hosts` or
+  // `runtime_blocked_hosts` from default either. It's likely not a behavior by
+  // design but fixing these issues may break users that rely on them. For
+  // now, we will keep it as is until there is a long term plan.
 }
 
 IndividualSettings::~IndividualSettings() {
@@ -55,6 +60,8 @@ bool IndividualSettings::Parse(const base::DictionaryValue* dict,
       installation_mode = ExtensionManagement::INSTALLATION_FORCED;
     } else if (installation_mode_str == schema_constants::kNormalInstalled) {
       installation_mode = ExtensionManagement::INSTALLATION_RECOMMENDED;
+    } else if (installation_mode_str == schema_constants::kRemoved) {
+      installation_mode = ExtensionManagement::INSTALLATION_REMOVED;
     } else {
       // Invalid value for 'installation_mode'.
       LOG(WARNING) << kMalformedPreferenceWarning;
@@ -66,7 +73,8 @@ bool IndividualSettings::Parse(const base::DictionaryValue* dict,
     if (installation_mode == ExtensionManagement::INSTALLATION_FORCED ||
         installation_mode == ExtensionManagement::INSTALLATION_RECOMMENDED) {
       if (scope != SCOPE_INDIVIDUAL) {
-        // Only individual extensions are allowed to be automatically installed.
+        // Only individual extensions are allowed to be automatically
+        // installed.
         LOG(WARNING) << kMalformedPreferenceWarning;
         return false;
       }
@@ -83,11 +91,35 @@ bool IndividualSettings::Parse(const base::DictionaryValue* dict,
     }
   }
 
+  bool is_policy_installed =
+      installation_mode == ExtensionManagement::INSTALLATION_FORCED ||
+      installation_mode == ExtensionManagement::INSTALLATION_RECOMMENDED;
+  // Note: We ignore the override update URL policy when the update URL is from
+  // the webstore.
+  if (is_policy_installed &&
+      !extension_urls::IsWebstoreUpdateUrl(GURL(update_url))) {
+    const absl::optional<bool> is_update_url_overridden =
+        dict->FindBoolKey(schema_constants::kOverrideUpdateUrl);
+    if (is_update_url_overridden)
+      override_update_url = is_update_url_overridden.value();
+  }
+
   // Parses the blocked permission settings.
   const base::ListValue* list_value = nullptr;
-  base::string16 error;
+  std::u16string error;
 
-  // Set default blocked permissions, or replace with extension specific blocks.
+  // Parse the blocked and allowed permissions.
+  // Note that we currently don't use default permission settings for
+  // per-update-url or per-id settings at all even though they are not set.
+  // For example:
+  // {"*" : {blocked_permissions:["audio"]}, "id1":{}}
+  // {"*" : {blocked_permissions:["audio"]}}
+  // Extension id1 is able to get the audio permission with the first config but
+  // not the second one.
+  // It's against the intuition but we will NOT change this behavior until we
+  // find a good way to fix this issue as external users may rely on it anyway.
+  // This also makes the "allowed_permissions" attribute meaningless. However,
+  // for the same reason, we keep the code for now.
   APIPermissionSet parsed_blocked_permissions;
   APIPermissionSet explicitly_allowed_permissions;
   if (dict->GetListWithoutPathExpansion(schema_constants::kAllowedPermissions,
@@ -123,22 +155,20 @@ bool IndividualSettings::Parse(const base::DictionaryValue* dict,
         LOG(WARNING) << "Exceeded maximum number of URL match patterns ("
                      << schema_constants::kMaxItemsURLPatternSet
                      << ") for attribute '" << key << "'";
-        return false;
       }
 
       out_value->ClearPatterns();
       const int extension_scheme_mask =
           URLPattern::GetValidSchemeMaskForExtensions();
-      for (size_t i = 0; i < host_list_value->GetSize(); ++i) {
+      auto numItems = std::min(host_list_value->GetSize(),
+                               schema_constants::kMaxItemsURLPatternSet);
+      for (size_t i = 0; i < numItems; ++i) {
         std::string unparsed_str;
         host_list_value->GetString(i, &unparsed_str);
         URLPattern pattern(extension_scheme_mask);
         if (unparsed_str != URLPattern::kAllUrlsPattern)
           unparsed_str.append("/*");
-        // TODO(nrpeter): Remove effective TLD wildcard capability from
-        // URLPattern.
-        URLPattern::ParseResult parse_result = pattern.Parse(
-            unparsed_str, URLPattern::DENY_WILDCARD_FOR_EFFECTIVE_TLD);
+        URLPattern::ParseResult parse_result = pattern.Parse(unparsed_str);
         if (parse_result != URLPattern::ParseResult::kSuccess) {
           LOG(WARNING) << kMalformedPreferenceWarning;
           LOG(WARNING) << "Invalid URL pattern '" + unparsed_str +
@@ -181,6 +211,20 @@ bool IndividualSettings::Parse(const base::DictionaryValue* dict,
       LOG(WARNING) << "Truncated blocked install message to 1000 characters";
       blocked_install_message.erase(kBlockedInstallMessageMaxLength,
                                     std::string::npos);
+    }
+  }
+
+  std::string toolbar_pin_str;
+  if (dict->GetStringWithoutPathExpansion(schema_constants::kToolbarPin,
+                                          &toolbar_pin_str)) {
+    if (toolbar_pin_str == schema_constants::kDefaultUnpinned) {
+      toolbar_pin = ExtensionManagement::ToolbarPinMode::kDefaultUnpinned;
+    } else if (toolbar_pin_str == schema_constants::kForcePinned) {
+      toolbar_pin = ExtensionManagement::ToolbarPinMode::kForcePinned;
+    } else {
+      // Invalid value for 'toolbar_pin'.
+      LOG(WARNING) << kMalformedPreferenceWarning;
+      return false;
     }
   }
 

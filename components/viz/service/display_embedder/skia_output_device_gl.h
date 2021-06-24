@@ -6,21 +6,26 @@
 #define COMPONENTS_VIZ_SERVICE_DISPLAY_EMBEDDER_SKIA_OUTPUT_DEVICE_GL_H_
 
 #include <memory>
+#include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "components/viz/service/display_embedder/skia_output_device.h"
-#include "gpu/config/gpu_preferences.h"
-#include "gpu/ipc/common/surface_handle.h"
-
-class GrContext;
+#include "gpu/command_buffer/service/shared_image_representation.h"
 
 namespace gl {
-class GLContext;
+class GLImage;
 class GLSurface;
 }  // namespace gl
 
 namespace gpu {
+class MailboxManager;
+class SharedContextState;
+class SharedImageRepresentationFactory;
+
 namespace gles2 {
 class FeatureInfo;
 }  // namespace gles2
@@ -31,38 +36,84 @@ namespace viz {
 class SkiaOutputDeviceGL final : public SkiaOutputDevice {
  public:
   SkiaOutputDeviceGL(
-      gpu::SurfaceHandle surface_handle,
+      gpu::MailboxManager* mailbox_manager,
+      gpu::SharedImageRepresentationFactory*
+          shared_image_representation_factory,
+      gpu::SharedContextState* context_state,
+      scoped_refptr<gl::GLSurface> gl_surface,
       scoped_refptr<gpu::gles2::FeatureInfo> feature_info,
-      const DidSwapBufferCompleteCallback& did_swap_buffer_complete_callback);
+      gpu::MemoryTracker* memory_tracker,
+      DidSwapBufferCompleteCallback did_swap_buffer_complete_callback);
   ~SkiaOutputDeviceGL() override;
 
-  scoped_refptr<gl::GLSurface> gl_surface();
-  void Initialize(GrContext* gr_context, gl::GLContext* gl_context);
-  bool supports_alpha() {
-    DCHECK(gr_context_);
-    return supports_alpha_;
-  }
-
   // SkiaOutputDevice implementation:
-  void Reshape(const gfx::Size& size,
+  bool Reshape(const gfx::Size& size,
                float device_scale_factor,
                const gfx::ColorSpace& color_space,
-               bool has_alpha) override;
-  gfx::SwapResponse SwapBuffers(BufferPresentedCallback feedback) override;
-  gfx::SwapResponse PostSubBuffer(const gfx::Rect& rect,
-                                  BufferPresentedCallback feedback) override;
+               gfx::BufferFormat format,
+               gfx::OverlayTransform transform) override;
+  void SwapBuffers(BufferPresentedCallback feedback,
+                   OutputSurfaceFrame frame) override;
+  void PostSubBuffer(const gfx::Rect& rect,
+                     BufferPresentedCallback feedback,
+                     OutputSurfaceFrame frame) override;
+  void CommitOverlayPlanes(BufferPresentedCallback feedback,
+                           OutputSurfaceFrame frame) override;
+  bool SetDrawRectangle(const gfx::Rect& draw_rectangle) override;
+  void SetGpuVSyncEnabled(bool enabled) override;
+  void SetEnableDCLayers(bool enable) override;
+  void ScheduleOverlays(SkiaOutputSurface::OverlayList overlays) override;
   void EnsureBackbuffer() override;
   void DiscardBackbuffer() override;
+  SkSurface* BeginPaint(
+      bool allocate_frame_buffer,
+      std::vector<GrBackendSemaphore>* end_semaphores) override;
+  void EndPaint() override;
 
  private:
-  const gpu::SurfaceHandle surface_handle_;
-  scoped_refptr<gpu::gles2::FeatureInfo> feature_info_;
-  gpu::GpuPreferences gpu_preferences_;
+  class OverlayData;
 
-  GrContext* gr_context_ = nullptr;
+  // Use instead of calling FinishSwapBuffers() directly. On Windows this cleans
+  // up old entries in |overlays_|.
+  void DoFinishSwapBuffers(const gfx::Size& size,
+                           OutputSurfaceFrame frame,
+                           gfx::SwapCompletionResult result);
+  // Used as callback for SwapBuffersAsync and PostSubBufferAsync to finish
+  // operation
+  void DoFinishSwapBuffersAsync(const gfx::Size& size,
+                                OutputSurfaceFrame frame,
+                                gfx::SwapCompletionResult result);
+
+  using ScopedOverlayAccess =
+      gpu::SharedImageRepresentationOverlay::ScopedReadAccess;
+
+  scoped_refptr<gl::GLImage> GetGLImageForMailbox(
+      const gpu::Mailbox& mailbox,
+      std::unique_ptr<ScopedOverlayAccess>* access);
+
+  static void EndOverlayAccess(
+      std::unique_ptr<ScopedOverlayAccess> overlay_access);
+
+  gpu::MailboxManager* const mailbox_manager_;
+
+  gpu::SharedImageRepresentationFactory* const
+      shared_image_representation_factory_;
+
+  gpu::SharedContextState* const context_state_;
   scoped_refptr<gl::GLSurface> gl_surface_;
+  const bool supports_async_swap_;
 
-  bool supports_alpha_ = false;
+  sk_sp<SkSurface> sk_surface_;
+
+  // Mailboxes of overlays scheduled in the current frame.
+  base::flat_set<gpu::Mailbox> scheduled_overlay_mailboxes_;
+
+  // Holds references to overlay textures so they aren't destroyed while in use.
+  base::flat_map<gpu::Mailbox, OverlayData> overlays_;
+
+  uint64_t backbuffer_estimated_size_ = 0;
+
+  base::WeakPtrFactory<SkiaOutputDeviceGL> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SkiaOutputDeviceGL);
 };

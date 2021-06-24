@@ -11,6 +11,7 @@
 #include <wrl/event.h>
 
 #include "base/lazy_instance.h"
+#include "base/logging.h"
 #include "base/strings/string_piece.h"
 #include "base/threading/thread_checker.h"
 #include "base/win/core_winrt_util.h"
@@ -90,7 +91,7 @@ class UwpTextScaleFactorImpl : public UwpTextScaleFactor {
       : text_scale_factor_changed_token_(kInvalidEventRegistrationToken) {
     // There's no point in doing this initialization if we're earlier than
     // Windows 10, since UWP is a Win10 feature.
-    if (base::win::GetVersion() < base::win::VERSION_WIN10)
+    if (base::win::GetVersion() < base::win::Version::WIN10)
       return;
 
     // We want to bracket all use of our COM object with COM initialization
@@ -162,7 +163,7 @@ class UwpTextScaleFactorImpl : public UwpTextScaleFactor {
     // equal to 1. Let's make sure that's the case - if we don't, we could get
     // bizarre behavior and divide-by-zeros later on.
     DCHECK_GE(result, 1.0);
-    return float{result};
+    return static_cast<float>(result);
   }
 
  private:

@@ -27,6 +27,7 @@ class VulkanImplementationGbm : public gpu::VulkanImplementation {
       const std::vector<VkQueueFamilyProperties>& queue_family_properties,
       uint32_t queue_family_index) override;
   std::vector<const char*> GetRequiredDeviceExtensions() override;
+  std::vector<const char*> GetOptionalDeviceExtensions() override;
   VkFence CreateVkFenceForGpuFence(VkDevice vk_device) override;
   std::unique_ptr<gfx::GpuFence> ExportVkFenceToGpuFence(
       VkDevice vk_device,
@@ -37,6 +38,13 @@ class VulkanImplementationGbm : public gpu::VulkanImplementation {
   gpu::SemaphoreHandle GetSemaphoreHandle(VkDevice vk_device,
                                           VkSemaphore vk_semaphore) override;
   VkExternalMemoryHandleTypeFlagBits GetExternalImageHandleType() override;
+  bool CanImportGpuMemoryBuffer(
+      gfx::GpuMemoryBufferType memory_buffer_type) override;
+  std::unique_ptr<gpu::VulkanImage> CreateImageFromGpuMemoryHandle(
+      gpu::VulkanDeviceQueue* device_queue,
+      gfx::GpuMemoryBufferHandle gmb_handle,
+      gfx::Size size,
+      VkFormat vk_formae) override;
 
  private:
   gpu::VulkanInstance vulkan_instance_;

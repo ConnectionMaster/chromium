@@ -12,134 +12,209 @@
 #include <string>
 
 #include "base/files/file_util.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_piece.h"
 #include "base/synchronization/lock.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "printing/backend/cups_helper.h"
 #include "printing/backend/print_backend_consts.h"
+#include "printing/mojom/print.mojom.h"
 #include "url/gurl.h"
+
+#if defined(OS_MAC)
+#include "base/feature_list.h"
+#include "printing/backend/cups_connection.h"
+#include "printing/backend/cups_ipp_utils.h"
+#include "printing/backend/print_backend_cups_ipp.h"
+#include "printing/printing_features.h"
+#endif  // defined(OS_MAC)
 
 namespace printing {
 
-namespace {
+PrintBackendCUPS::PrintBackendCUPS(const GURL& print_server_url,
+                                   http_encryption_t encryption,
+                                   bool blocking,
+                                   const std::string& locale)
+    : PrintBackend(locale),
+      print_server_url_(print_server_url),
+      cups_encryption_(encryption),
+      blocking_(blocking) {}
 
-const char kCUPSPrinterInfoOpt[] = "printer-info";
-const char kCUPSPrinterStateOpt[] = "printer-state";
-const char kCUPSPrinterTypeOpt[] = "printer-type";
+PrintBackendCUPS::~PrintBackendCUPS() = default;
 
-bool PrinterBasicInfoFromCUPS(const cups_dest_t& printer,
-                              PrinterBasicInfo* printer_info) {
-  // CUPS can have 'printers' that are actually scanners. (not MFC)
-  // At least on Mac. Check for scanners and skip them.
+// static
+mojom::ResultCode PrintBackendCUPS::PrinterBasicInfoFromCUPS(
+    const cups_dest_t& printer,
+    PrinterBasicInfo* printer_info) {
   const char* type_str =
-      cupsGetOption(kCUPSPrinterTypeOpt, printer.num_options, printer.options);
+      cupsGetOption(kCUPSOptPrinterType, printer.num_options, printer.options);
   if (type_str) {
-    int type;
-    if (base::StringToInt(type_str, &type) && (type & CUPS_PRINTER_SCANNER))
-      return false;
+    cups_ptype_t type;
+    if (base::StringToUint(type_str, &type)) {
+      // Exclude fax and scanner devices.
+      // Also exclude discovered printers that have not been added locally.
+      // On macOS, AirPrint destinations show up even if they're not added to
+      // the system, and their capabilities cannot be read in that situation.
+      // (crbug.com/1027834)
+      constexpr cups_ptype_t kMask =
+          CUPS_PRINTER_FAX | CUPS_PRINTER_SCANNER | CUPS_PRINTER_DISCOVERED;
+      if (type & kMask)
+        return mojom::ResultCode::kFailed;
+    }
   }
 
   printer_info->printer_name = printer.name;
   printer_info->is_default = printer.is_default;
 
   const char* info =
-      cupsGetOption(kCUPSPrinterInfoOpt, printer.num_options, printer.options);
-  if (info)
-    printer_info->printer_description = info;
+      cupsGetOption(kCUPSOptPrinterInfo, printer.num_options, printer.options);
 
   const char* state =
-      cupsGetOption(kCUPSPrinterStateOpt, printer.num_options, printer.options);
+      cupsGetOption(kCUPSOptPrinterState, printer.num_options, printer.options);
   if (state)
     base::StringToInt(state, &printer_info->printer_status);
 
-  const char* drv_info = cupsGetOption(kDriverNameTagName,
+  const char* drv_info = cupsGetOption(kCUPSOptPrinterMakeAndModel,
                                        printer.num_options, printer.options);
   if (drv_info)
-    printer_info->options[kDriverInfoTagName] = *drv_info;
+    printer_info->options[kDriverInfoTagName] = drv_info;
 
   // Store printer options.
   for (int opt_index = 0; opt_index < printer.num_options; ++opt_index) {
     printer_info->options[printer.options[opt_index].name] =
         printer.options[opt_index].value;
   }
-  return true;
+
+#if defined(OS_MAC)
+  // On Mac, "printer-info" option specifies the printer name and
+  // "printer-make-and-model" specifies the printer description.
+  if (info)
+    printer_info->display_name = info;
+  if (drv_info)
+    printer_info->printer_description = drv_info;
+#else
+  // On Linux destination name specifies the printer name and "printer-info"
+  // specifies the printer description.
+  printer_info->display_name = printer.name;
+  if (info)
+    printer_info->printer_description = info;
+#endif
+  return mojom::ResultCode::kSuccess;
 }
 
-}  // namespace
-
-PrintBackendCUPS::PrintBackendCUPS(const GURL& print_server_url,
-                                   http_encryption_t encryption,
-                                   bool blocking)
-    : print_server_url_(print_server_url),
-      cups_encryption_(encryption),
-      blocking_(blocking) {
+// static
+std::string PrintBackendCUPS::PrinterDriverInfoFromCUPS(
+    const cups_dest_t& printer) {
+  // base::StringPiece will correctly handle nullptrs from cupsGetOption(),
+  // whereas std::string will not. Thus do not directly assign to `result`.
+  base::StringPiece info(
+      cupsGetOption(kDriverNameTagName, printer.num_options, printer.options));
+  return std::string(info);
 }
 
-bool PrintBackendCUPS::EnumeratePrinters(PrinterList* printer_list) {
+void PrintBackendCUPS::DestinationDeleter::operator()(cups_dest_t* dest) const {
+  cupsFreeDests(1, dest);
+}
+
+mojom::ResultCode PrintBackendCUPS::EnumeratePrinters(
+    PrinterList* printer_list) {
   DCHECK(printer_list);
   printer_list->clear();
 
   cups_dest_t* destinations = nullptr;
   int num_dests = GetDests(&destinations);
-  if (!num_dests && cupsLastError() > IPP_OK_EVENTS_COMPLETE) {
-    VLOG(1) << "CUPS: Error getting printers from CUPS server"
-            << ", server: " << print_server_url_
-            << ", error: " << static_cast<int>(cupsLastError());
-    return false;
+  DCHECK_GE(num_dests, 0);
+  if (!num_dests) {
+    // No destinations could mean the operation failed or that there are simply
+    // no printer drivers installed.  Rely upon CUPS error code to distinguish
+    // between these.
+    DCHECK(!destinations);
+    const ipp_status_t last_error = cupsLastError();
+    if (last_error != IPP_STATUS_ERROR_NOT_FOUND) {
+      VLOG(1) << "CUPS: Error getting printers from CUPS server"
+              << ", server: " << print_server_url_
+              << ", error: " << static_cast<int>(last_error) << " - "
+              << cupsLastErrorString();
+      return mojom::ResultCode::kFailed;
+    }
+    VLOG(1) << "CUPS: No printers found for CUPS server: " << print_server_url_;
+    return mojom::ResultCode::kSuccess;
   }
 
   for (int printer_index = 0; printer_index < num_dests; ++printer_index) {
     const cups_dest_t& printer = destinations[printer_index];
 
     PrinterBasicInfo printer_info;
-    if (PrinterBasicInfoFromCUPS(printer, &printer_info))
+    if (PrinterBasicInfoFromCUPS(printer, &printer_info) ==
+        mojom::ResultCode::kSuccess) {
       printer_list->push_back(printer_info);
+    }
   }
 
   cupsFreeDests(num_dests, destinations);
 
   VLOG(1) << "CUPS: Enumerated printers, server: " << print_server_url_
           << ", # of printers: " << printer_list->size();
-  return true;
+  return mojom::ResultCode::kSuccess;
 }
 
-std::string PrintBackendCUPS::GetDefaultPrinterName() {
+mojom::ResultCode PrintBackendCUPS::GetDefaultPrinterName(
+    std::string& default_printer) {
   // Not using cupsGetDefault() because it lies about the default printer.
   cups_dest_t* dests;
   int num_dests = GetDests(&dests);
   cups_dest_t* dest = cupsGetDest(nullptr, nullptr, num_dests, dests);
-  std::string name = dest ? std::string(dest->name) : std::string();
+  mojom::ResultCode result = mojom::ResultCode::kSuccess;
+  if (dest) {
+    default_printer = std::string(dest->name);
+  } else if (cupsLastError() <= IPP_OK_EVENTS_COMPLETE) {
+    // No default printer found.
+    default_printer.clear();
+  } else {
+    LOG(ERROR) << "CUPS: Error getting default printer: "
+               << cupsLastErrorString();
+    result = mojom::ResultCode::kFailed;
+  }
+
   cupsFreeDests(num_dests, dests);
-  return name;
+  return result;
 }
 
-bool PrintBackendCUPS::GetPrinterBasicInfo(const std::string& printer_name,
-                                           PrinterBasicInfo* printer_info) {
-  cups_dest_t* dest = GetNamedDest(printer_name);
+mojom::ResultCode PrintBackendCUPS::GetPrinterBasicInfo(
+    const std::string& printer_name,
+    PrinterBasicInfo* printer_info) {
+  ScopedDestination dest = GetNamedDest(printer_name);
   if (!dest)
-    return false;
+    return mojom::ResultCode::kFailed;
 
   DCHECK_EQ(printer_name, dest->name);
-  bool ret = PrinterBasicInfoFromCUPS(*dest, printer_info);
-  cupsFreeDests(1, dest);
-  return ret;
+  return PrinterBasicInfoFromCUPS(*dest, printer_info);
 }
 
-bool PrintBackendCUPS::GetPrinterSemanticCapsAndDefaults(
+mojom::ResultCode PrintBackendCUPS::GetPrinterSemanticCapsAndDefaults(
     const std::string& printer_name,
     PrinterSemanticCapsAndDefaults* printer_info) {
   PrinterCapsAndDefaults info;
-  if (!GetPrinterCapsAndDefaults(printer_name, &info) )
-    return false;
+  if (!IsValidPrinter(printer_name))
+    return mojom::ResultCode::kFailed;
 
-  return ParsePpdCapabilities(
-      printer_name, info.printer_capabilities, printer_info);
+  mojom::ResultCode result_code =
+      GetPrinterCapsAndDefaults(printer_name, &info);
+  if (result_code != mojom::ResultCode::kSuccess)
+    return result_code;
+
+  ScopedDestination dest = GetNamedDest(printer_name);
+  return ParsePpdCapabilities(dest.get(), locale(), info.printer_capabilities,
+                              printer_info)
+             ? mojom::ResultCode::kSuccess
+             : mojom::ResultCode::kFailed;
 }
 
-bool PrintBackendCUPS::GetPrinterCapsAndDefaults(
+mojom::ResultCode PrintBackendCUPS::GetPrinterCapsAndDefaults(
     const std::string& printer_name,
     PrinterCapsAndDefaults* printer_info) {
   DCHECK(printer_info);
@@ -150,78 +225,81 @@ bool PrintBackendCUPS::GetPrinterCapsAndDefaults(
   // In some cases CUPS failed to get ppd file.
   if (ppd_path.empty()) {
     LOG(ERROR) << "CUPS: Failed to get PPD, printer name: " << printer_name;
-    return false;
+    return mojom::ResultCode::kFailed;
   }
 
   std::string content;
   bool res = base::ReadFileToString(ppd_path, &content);
 
-  base::DeleteFile(ppd_path, false);
+  base::DeleteFile(ppd_path);
 
-  if (res) {
-    printer_info->printer_capabilities.swap(content);
-    printer_info->caps_mime_type = "application/pagemaker";
-    // In CUPS, printer defaults is a part of PPD file. Nothing to upload here.
-    printer_info->printer_defaults.clear();
-    printer_info->defaults_mime_type.clear();
-  }
+  if (!res)
+    return mojom::ResultCode::kFailed;
 
-  return res;
+  printer_info->printer_capabilities.swap(content);
+  printer_info->caps_mime_type = "application/pagemaker";
+  // In CUPS, printer defaults is a part of PPD file. Nothing to upload here.
+  printer_info->printer_defaults.clear();
+  printer_info->defaults_mime_type.clear();
+
+  return mojom::ResultCode::kSuccess;
 }
 
 std::string PrintBackendCUPS::GetPrinterDriverInfo(
     const std::string& printer_name) {
   std::string result;
 
-  cups_dest_t* dest = GetNamedDest(printer_name);
-  if (!dest)
-    return result;
+  ScopedDestination dest = GetNamedDest(printer_name);
+  if (dest) {
+    DCHECK_EQ(printer_name, dest->name);
+    result = PrinterDriverInfoFromCUPS(*dest);
+  }
 
-  DCHECK_EQ(printer_name, dest->name);
-  const char* info =
-      cupsGetOption(kDriverNameTagName, dest->num_options, dest->options);
-  if (info)
-    result = *info;
-  cupsFreeDests(1, dest);
   return result;
 }
 
 bool PrintBackendCUPS::IsValidPrinter(const std::string& printer_name) {
-  cups_dest_t* dest = GetNamedDest(printer_name);
-  if (!dest)
-    return false;
-
-  cupsFreeDests(1, dest);
-  return true;
+  return !!GetNamedDest(printer_name);
 }
 
 #if !defined(OS_CHROMEOS)
 scoped_refptr<PrintBackend> PrintBackend::CreateInstanceImpl(
-    const base::DictionaryValue* print_backend_settings) {
+    const base::DictionaryValue* print_backend_settings,
+    const std::string& locale,
+    bool for_cloud_print) {
+#if defined(OS_MAC)
+  if (!for_cloud_print &&
+      base::FeatureList::IsEnabled(features::kCupsIppPrintingBackend)) {
+    return base::MakeRefCounted<PrintBackendCupsIpp>(
+        CreateConnection(print_backend_settings), locale);
+  }
+#endif  // defined(OS_MAC)
   std::string print_server_url_str, cups_blocking;
   int encryption = HTTP_ENCRYPT_NEVER;
   if (print_backend_settings) {
     print_backend_settings->GetString(kCUPSPrintServerURL,
                                       &print_server_url_str);
 
-    print_backend_settings->GetString(kCUPSBlocking,
-                                      &cups_blocking);
+    print_backend_settings->GetString(kCUPSBlocking, &cups_blocking);
 
     print_backend_settings->GetInteger(kCUPSEncryption, &encryption);
   }
   GURL print_server_url(print_server_url_str);
-  return new PrintBackendCUPS(print_server_url,
-                              static_cast<http_encryption_t>(encryption),
-                              cups_blocking == kValueTrue);
+  return base::MakeRefCounted<PrintBackendCUPS>(
+      print_server_url, static_cast<http_encryption_t>(encryption),
+      cups_blocking == kValueTrue, locale);
 }
 #endif  // !defined(OS_CHROMEOS)
 
 int PrintBackendCUPS::GetDests(cups_dest_t** dests) {
-  if (print_server_url_.is_empty())  // Use default (local) print server.
-    return cupsGetDests(dests);
+  // Default to the local print server (CUPS scheduler)
+  if (print_server_url_.is_empty())
+    return cupsGetDests2(CUPS_HTTP_DEFAULT, dests);
 
-  HttpConnectionCUPS http(print_server_url_, cups_encryption_);
-  http.SetBlocking(blocking_);
+  HttpConnectionCUPS http(print_server_url_, cups_encryption_, blocking_);
+
+  // This call must be made in the same scope as `http` because its destructor
+  // closes the connection.
   return cupsGetDests2(http.http(), dests);
 }
 
@@ -244,8 +322,7 @@ base::FilePath PrintBackendCUPS::GetPPD(const char* name) {
     // connection will timeout after 10 seconds of no data period. And it will
     // return the same way as if data was completely and successfully
     // downloaded.
-    HttpConnectionCUPS http(print_server_url_, cups_encryption_);
-    http.SetBlocking(blocking_);
+    HttpConnectionCUPS http(print_server_url_, cups_encryption_, blocking_);
     ppd_file_path = cupsGetPPD2(http.http(), name);
     // Check if the get full PPD, since non-blocking call may simply return
     // normally after timeout expired.
@@ -266,7 +343,7 @@ base::FilePath PrintBackendCUPS::GetPPD(const char* name) {
         LOG(ERROR) << "Error downloading PPD file, name: " << name
                    << ", CUPS error: " << static_cast<int>(error_code)
                    << ", HTTP error: " << http_error;
-        base::DeleteFile(ppd_path, false);
+        base::DeleteFile(ppd_path);
         ppd_path.clear();
       }
     }
@@ -274,14 +351,17 @@ base::FilePath PrintBackendCUPS::GetPPD(const char* name) {
   return ppd_path;
 }
 
-cups_dest_t* PrintBackendCUPS::GetNamedDest(const std::string& printer_name) {
-  // Use default (local) print server.
-  if (print_server_url_.is_empty())
-    return cupsGetNamedDest(CUPS_HTTP_DEFAULT, printer_name.c_str(), nullptr);
-
-  HttpConnectionCUPS http(print_server_url_, cups_encryption_);
-  http.SetBlocking(blocking_);
-  return cupsGetNamedDest(http.http(), printer_name.c_str(), nullptr);
+PrintBackendCUPS::ScopedDestination PrintBackendCUPS::GetNamedDest(
+    const std::string& printer_name) {
+  cups_dest_t* dest;
+  if (print_server_url_.is_empty()) {
+    // Use default (local) print server.
+    dest = cupsGetNamedDest(CUPS_HTTP_DEFAULT, printer_name.c_str(), nullptr);
+  } else {
+    HttpConnectionCUPS http(print_server_url_, cups_encryption_, blocking_);
+    dest = cupsGetNamedDest(http.http(), printer_name.c_str(), nullptr);
+  }
+  return ScopedDestination(dest);
 }
 
 }  // namespace printing

@@ -56,4 +56,10 @@ typedef DOMString PartialString;
     void partialVoidMethodPartialCallbackTypeArg(PartialCallbackType partialCallbackTypeArg);
 
     [SecureContext] attribute long partialSecureContextLongAttribute;
+    [CrossOriginIsolated] attribute long partialCrossOriginIsolatedLongAttribute;
+    [DirectSocketEnabled] attribute long partialDirectSocketEnabledLongAttribute;
+
+    attribute DOMString -dashed-attribute;
+    attribute DOMString -webkit-cased-attribute;
+    attribute DOMString underline_attribute;
 };

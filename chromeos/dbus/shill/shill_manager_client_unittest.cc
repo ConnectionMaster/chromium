@@ -71,17 +71,17 @@ class ShillManagerClientTest : public ShillClientUnittestBase {
 
 TEST_F(ShillManagerClientTest, PropertyChanged) {
   // Create a signal.
-  base::Value kOfflineMode(true);
+  base::Value kArpGateway(true);
   dbus::Signal signal(shill::kFlimflamManagerInterface,
                       shill::kMonitorPropertyChanged);
   dbus::MessageWriter writer(&signal);
-  writer.AppendString(shill::kOfflineModeProperty);
-  dbus::AppendBasicTypeValueData(&writer, kOfflineMode);
+  writer.AppendString(shill::kArpGatewayProperty);
+  dbus::AppendBasicTypeValueData(&writer, kArpGateway);
 
   // Set expectations.
   MockPropertyChangeObserver observer;
-  EXPECT_CALL(observer, OnPropertyChanged(shill::kOfflineModeProperty,
-                                          ValueEq(ByRef(kOfflineMode))))
+  EXPECT_CALL(observer, OnPropertyChanged(shill::kArpGatewayProperty,
+                                          ValueEq(ByRef(kArpGateway))))
       .Times(1);
 
   // Add the observer
@@ -108,19 +108,19 @@ TEST_F(ShillManagerClientTest, GetProperties) {
   writer.OpenArray("{sv}", &array_writer);
   dbus::MessageWriter entry_writer(NULL);
   array_writer.OpenDictEntry(&entry_writer);
-  entry_writer.AppendString(shill::kOfflineModeProperty);
+  entry_writer.AppendString(shill::kArpGatewayProperty);
   entry_writer.AppendVariantOfBool(true);
   array_writer.CloseContainer(&entry_writer);
   writer.CloseContainer(&array_writer);
 
   // Create the expected value.
-  base::DictionaryValue value;
-  value.SetKey(shill::kOfflineModeProperty, base::Value(true));
+  base::Value value(base::Value::Type::DICTIONARY);
+  value.SetKey(shill::kArpGatewayProperty, base::Value(true));
   // Set expectations.
   PrepareForMethodCall(shill::kGetPropertiesFunction,
-                       base::Bind(&ExpectNoArgument), response.get());
+                       base::BindRepeating(&ExpectNoArgument), response.get());
   // Call method.
-  client_->GetProperties(base::Bind(&ExpectDictionaryValueResult, &value));
+  client_->GetProperties(base::BindOnce(&ExpectValueResult, &value));
   // Run the message loop.
   base::RunLoop().RunUntilIdle();
 }
@@ -153,20 +153,20 @@ TEST_F(ShillManagerClientTest, GetNetworksForGeolocation) {
   writer.CloseContainer(&type_dict_writer);
 
   // Create the expected value.
-  auto property_dict_value = std::make_unique<base::DictionaryValue>();
-  property_dict_value->SetKey(shill::kGeoMacAddressProperty,
-                              base::Value("01:23:45:67:89:AB"));
-  auto type_entry_value = std::make_unique<base::ListValue>();
-  type_entry_value->Append(std::move(property_dict_value));
-  base::DictionaryValue type_dict_value;
-  type_dict_value.SetWithoutPathExpansion("wifi", std::move(type_entry_value));
+  base::Value property_dict_value(base::Value::Type::DICTIONARY);
+  property_dict_value.SetKey(shill::kGeoMacAddressProperty,
+                             base::Value("01:23:45:67:89:AB"));
+  base::Value type_entry_value(base::Value::Type::LIST);
+  type_entry_value.Append(std::move(property_dict_value));
+  base::Value type_dict_value(base::Value::Type::DICTIONARY);
+  type_dict_value.SetKey("wifi", std::move(type_entry_value));
 
   // Set expectations.
   PrepareForMethodCall(shill::kGetNetworksForGeolocation,
-                       base::Bind(&ExpectNoArgument), response.get());
+                       base::BindRepeating(&ExpectNoArgument), response.get());
   // Call method.
   client_->GetNetworksForGeolocation(
-      base::Bind(&ExpectDictionaryValueResult, &type_dict_value));
+      base::BindOnce(&ExpectValueResult, &type_dict_value));
 
   // Run the message loop.
   base::RunLoop().RunUntilIdle();
@@ -177,12 +177,13 @@ TEST_F(ShillManagerClientTest, SetProperty) {
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());
   // Set expectations.
   base::Value value("portal list");
-  PrepareForMethodCall(shill::kSetPropertyFunction,
-                       base::Bind(ExpectStringAndValueArguments,
-                                  shill::kCheckPortalListProperty, &value),
-                       response.get());
+  PrepareForMethodCall(
+      shill::kSetPropertyFunction,
+      base::BindRepeating(ExpectStringAndValueArguments,
+                          shill::kCheckPortalListProperty, &value),
+      response.get());
   // Call method.
-  base::MockCallback<base::Closure> mock_closure;
+  base::MockCallback<base::OnceClosure> mock_closure;
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   client_->SetProperty(shill::kCheckPortalListProperty, value,
                        mock_closure.Get(), mock_error_callback.Get());
@@ -197,11 +198,12 @@ TEST_F(ShillManagerClientTest, RequestScan) {
   // Create response.
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());
   // Set expectations.
-  PrepareForMethodCall(shill::kRequestScanFunction,
-                       base::Bind(&ExpectStringArgument, shill::kTypeWifi),
-                       response.get());
+  PrepareForMethodCall(
+      shill::kRequestScanFunction,
+      base::BindRepeating(&ExpectStringArgument, shill::kTypeWifi),
+      response.get());
   // Call method.
-  base::MockCallback<base::Closure> mock_closure;
+  base::MockCallback<base::OnceClosure> mock_closure;
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   client_->RequestScan(shill::kTypeWifi, mock_closure.Get(),
                        mock_error_callback.Get());
@@ -216,11 +218,12 @@ TEST_F(ShillManagerClientTest, EnableTechnology) {
   // Create response.
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());
   // Set expectations.
-  PrepareForMethodCall(shill::kEnableTechnologyFunction,
-                       base::Bind(&ExpectStringArgument, shill::kTypeWifi),
-                       response.get());
+  PrepareForMethodCall(
+      shill::kEnableTechnologyFunction,
+      base::BindRepeating(&ExpectStringArgument, shill::kTypeWifi),
+      response.get());
   // Call method.
-  base::MockCallback<base::Closure> mock_closure;
+  base::MockCallback<base::OnceClosure> mock_closure;
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   client_->EnableTechnology(shill::kTypeWifi, mock_closure.Get(),
                             mock_error_callback.Get());
@@ -239,11 +242,11 @@ TEST_F(ShillManagerClientTest, NetworkThrottling) {
   const uint32_t upload_rate = 1200;
   const uint32_t download_rate = 2000;
   PrepareForMethodCall(shill::kSetNetworkThrottlingFunction,
-                       base::Bind(&ExpectThrottlingArguments, enabled,
-                                  upload_rate, download_rate),
+                       base::BindRepeating(&ExpectThrottlingArguments, enabled,
+                                           upload_rate, download_rate),
                        response.get());
   // Call method.
-  base::MockCallback<base::Closure> mock_closure;
+  base::MockCallback<base::OnceClosure> mock_closure;
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   EXPECT_CALL(mock_closure, Run()).Times(1);
   EXPECT_CALL(mock_error_callback, Run(_, _)).Times(0);
@@ -259,11 +262,12 @@ TEST_F(ShillManagerClientTest, DisableTechnology) {
   // Create response.
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());
   // Set expectations.
-  PrepareForMethodCall(shill::kDisableTechnologyFunction,
-                       base::Bind(&ExpectStringArgument, shill::kTypeWifi),
-                       response.get());
+  PrepareForMethodCall(
+      shill::kDisableTechnologyFunction,
+      base::BindRepeating(&ExpectStringArgument, shill::kTypeWifi),
+      response.get());
   // Call method.
-  base::MockCallback<base::Closure> mock_closure;
+  base::MockCallback<base::OnceClosure> mock_closure;
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   client_->DisableTechnology(shill::kTypeWifi, mock_closure.Get(),
                              mock_error_callback.Get());
@@ -281,18 +285,18 @@ TEST_F(ShillManagerClientTest, ConfigureService) {
   dbus::MessageWriter writer(response.get());
   writer.AppendObjectPath(object_path);
   // Create the argument dictionary.
-  std::unique_ptr<base::DictionaryValue> arg(CreateExampleServiceProperties());
+  base::Value arg = CreateExampleServiceProperties();
   // Use a variant valued dictionary rather than a string valued one.
   const bool string_valued = false;
   // Set expectations.
   PrepareForMethodCall(
       shill::kConfigureServiceFunction,
-      base::Bind(&ExpectDictionaryValueArgument, arg.get(), string_valued),
+      base::BindRepeating(&ExpectValueDictionaryArgument, &arg, string_valued),
       response.get());
   // Call method.
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   client_->ConfigureService(
-      *arg, base::Bind(&ExpectObjectPathResultWithoutStatus, object_path),
+      arg, base::BindOnce(&ExpectObjectPathResultWithoutStatus, object_path),
       mock_error_callback.Get());
   EXPECT_CALL(mock_error_callback, Run(_, _)).Times(0);
 
@@ -307,18 +311,18 @@ TEST_F(ShillManagerClientTest, GetService) {
   dbus::MessageWriter writer(response.get());
   writer.AppendObjectPath(object_path);
   // Create the argument dictionary.
-  std::unique_ptr<base::DictionaryValue> arg(CreateExampleServiceProperties());
+  base::Value arg = CreateExampleServiceProperties();
   // Use a variant valued dictionary rather than a string valued one.
   const bool string_valued = false;
   // Set expectations.
   PrepareForMethodCall(
       shill::kGetServiceFunction,
-      base::Bind(&ExpectDictionaryValueArgument, arg.get(), string_valued),
+      base::BindRepeating(&ExpectValueDictionaryArgument, &arg, string_valued),
       response.get());
   // Call method.
   base::MockCallback<ShillManagerClient::ErrorCallback> mock_error_callback;
   client_->GetService(
-      *arg, base::Bind(&ExpectObjectPathResultWithoutStatus, object_path),
+      arg, base::BindOnce(&ExpectObjectPathResultWithoutStatus, object_path),
       mock_error_callback.Get());
   EXPECT_CALL(mock_error_callback, Run(_, _)).Times(0);
 

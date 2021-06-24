@@ -15,9 +15,9 @@
 #import "ios/chrome/browser/ui/commands/popup_menu_commands.h"
 #import "ios/chrome/browser/ui/commands/qr_scanner_commands.h"
 #import "ios/chrome/browser/ui/commands/snackbar_commands.h"
+#import "ios/chrome/browser/ui/commands/whats_new_commands.h"
 
 class GURL;
-@class OpenNewTabCommand;
 @class ReadingListAddCommand;
 
 // Protocol for commands that will generally be handled by the "current tab",
@@ -31,25 +31,15 @@ class GURL;
                            PageInfoCommands,
                            PopupMenuCommands,
                            QRScannerCommands,
-                           SnackbarCommands>
+                           SnackbarCommands,
+                           DefaultPromoCommands>
 
 // Closes the current tab.
 - (void)closeCurrentTab;
 
-// Navigates backwards in the current tab's history.
-- (void)goBack;
-
-// Navigates forwards in the current tab's history.
-- (void)goForward;
-
-// Stops loading the current web page.
-- (void)stopLoading;
-
-// Reloads the current web page
-- (void)reload;
-
 // Bookmarks the current page.
-- (void)bookmarkPage;
+// TODO(crbug.com/1134586): Reuse BookmarksCommands' bookmarkPage instead.
+- (void)bookmarkCurrentPage;
 
 // Adds a page to the reading list using data in |command|.
 - (void)addToReadingList:(ReadingListAddCommand*)command;
@@ -68,27 +58,14 @@ class GURL;
 // Shows the translate infobar.
 - (void)showTranslate;
 
-// Shows the Find In Page bar.
-- (void)showFindInPage;
-
-// Close and disable Find In Page bar.
-- (void)closeFindInPage;
-
-// Search the current tab for the query string in the Find In Page bar.
-- (void)searchFindInPage;
-
-// Go to the next location of the Find In Page query string in the current tab.
-- (void)findNextStringInPage;
-
-// Go to the previous location of the Find In Page query string in the current
-// tab.
-- (void)findPreviousStringInPage;
-
 // Shows the online help page in a tab.
 - (void)showHelpPage;
 
 // Shows the bookmarks manager.
 - (void)showBookmarksManager;
+
+// Shows the dialog for sending the current tab between a user's devices.
+- (void)showSendTabToSelfUI;
 
 // Requests the "desktop" version of the current page in the active tab.
 - (void)requestDesktopSite;
@@ -105,6 +82,10 @@ class GURL;
 
 // Searches for an image in the current tab.
 - (void)searchByImage:(UIImage*)image;
+
+// Shows/Hides the activity indicator overlay that appears over the view to
+// prevent interaction with the web page.
+- (void)showActivityOverlay:(BOOL)show;
 
 @end
 

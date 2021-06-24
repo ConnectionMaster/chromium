@@ -5,9 +5,10 @@
 #include "chrome/browser/ui/views/download/download_shelf_context_menu_view.h"
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/i18n/rtl.h"
-#include "base/logging.h"
 #include "chrome/browser/download/download_item_model.h"
+#include "chrome/browser/ui/views/download/download_item_view.h"
 #include "components/download/public/common/download_item.h"
 #include "content/public/browser/page_navigator.h"
 #include "ui/gfx/geometry/point.h"
@@ -15,26 +16,31 @@
 
 DownloadShelfContextMenuView::DownloadShelfContextMenuView(
     DownloadItemView* download_item_view)
-    : DownloadShelfContextMenu(download_item_view->model()),
+    : DownloadShelfContextMenu(download_item_view->model()->GetWeakPtr()),
       download_item_view_(download_item_view) {}
 
-DownloadShelfContextMenuView::~DownloadShelfContextMenuView() {}
+DownloadShelfContextMenuView::DownloadShelfContextMenuView(
+    base::WeakPtr<DownloadUIModel> download_ui_model)
+    : DownloadShelfContextMenu(download_ui_model) {}
+
+DownloadShelfContextMenuView::~DownloadShelfContextMenuView() = default;
 
 void DownloadShelfContextMenuView::Run(
     views::Widget* parent_widget,
     const gfx::Rect& rect,
     ui::MenuSourceType source_type,
-    const base::Closure& on_menu_closed_callback) {
+    base::RepeatingClosure on_menu_closed_callback) {
   using Position = views::MenuAnchorPosition;
   ui::MenuModel* menu_model = GetMenuModel();
   // Run() should not be getting called if the DownloadItem was destroyed.
   DCHECK(menu_model);
 
-  menu_runner_.reset(new views::MenuRunner(
+  menu_runner_ = std::make_unique<views::MenuRunner>(
       menu_model,
       views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU,
       base::BindRepeating(&DownloadShelfContextMenuView::OnMenuClosed,
-                          base::Unretained(this), on_menu_closed_callback)));
+                          base::Unretained(this),
+                          std::move(on_menu_closed_callback)));
 
   // The menu's alignment is determined based on the UI layout.
   Position position;
@@ -43,11 +49,16 @@ void DownloadShelfContextMenuView::Run(
   else
     position = Position::kTopLeft;
 
-  menu_runner_->RunMenuAt(parent_widget, NULL, rect, position, source_type);
+  menu_runner_->RunMenuAt(parent_widget, nullptr, rect, position, source_type);
+}
+
+void DownloadShelfContextMenuView::SetOnMenuWillShowCallback(
+    base::OnceClosure on_menu_will_show_callback) {
+  on_menu_will_show_callback_ = std::move(on_menu_will_show_callback);
 }
 
 void DownloadShelfContextMenuView::OnMenuClosed(
-    const base::Closure& on_menu_closed_callback) {
+    base::RepeatingClosure on_menu_closed_callback) {
   close_time_ = base::TimeTicks::Now();
 
   // This must be run before clearing |menu_runner_| who owns the reference.
@@ -57,13 +68,20 @@ void DownloadShelfContextMenuView::OnMenuClosed(
   menu_runner_.reset();
 }
 
+void DownloadShelfContextMenuView::OnMenuWillShow(ui::SimpleMenuModel* source) {
+  if (on_menu_will_show_callback_)
+    std::move(on_menu_will_show_callback_).Run();
+}
+
 void DownloadShelfContextMenuView::ExecuteCommand(int command_id,
                                                   int event_flags) {
   DownloadCommands::Command command =
       static_cast<DownloadCommands::Command>(command_id);
-  DCHECK_NE(command, DownloadCommands::DISCARD);
 
-  if (command == DownloadCommands::KEEP) {
+  if (command == DownloadCommands::KEEP && download_item_view_) {
+    // TODO(kerenzhu): We will need SBER in WebUI download shelf.
+    // Refactor this feature out of DownloadItemView so that it can be used in
+    // WebUI.
     download_item_view_->MaybeSubmitDownloadToFeedbackService(
         DownloadCommands::KEEP);
   } else {

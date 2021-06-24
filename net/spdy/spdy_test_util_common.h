@@ -27,7 +27,7 @@
 #include "net/http/http_auth_handler_factory.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_response_info.h"
-#include "net/http/http_server_properties_impl.h"
+#include "net/http/http_server_properties.h"
 #include "net/http/transport_security_state.h"
 #include "net/proxy_resolution/proxy_resolution_service.h"
 #include "net/socket/socket_test_util.h"
@@ -48,11 +48,11 @@ class GURL;
 
 namespace net {
 
-class CTVerifier;
 class CTPolicyEnforcer;
 class HashValue;
 class HostPortPair;
 class HostResolver;
+class QuicContext;
 class HttpUserAgentSettings;
 class NetLogWithSource;
 class SpdySessionKey;
@@ -84,7 +84,7 @@ std::unique_ptr<MockWrite[]> ChopWriteFrame(
 // |headers| gets filled in from |extra_headers|.
 void AppendToHeaderBlock(const char* const extra_headers[],
                          int extra_header_count,
-                         spdy::SpdyHeaderBlock* headers);
+                         spdy::Http2HeaderBlock* headers);
 
 // Create an async MockWrite from the given spdy::SpdySerializedFrame.
 MockWrite CreateMockWrite(const spdy::SpdySerializedFrame& req);
@@ -209,14 +209,14 @@ struct SpdySessionDependencies {
   std::unique_ptr<HostResolver> alternate_host_resolver;
   std::unique_ptr<CertVerifier> cert_verifier;
   std::unique_ptr<TransportSecurityState> transport_security_state;
-  std::unique_ptr<CTVerifier> cert_transparency_verifier;
   std::unique_ptr<CTPolicyEnforcer> ct_policy_enforcer;
   std::unique_ptr<ProxyResolutionService> proxy_resolution_service;
   std::unique_ptr<HttpUserAgentSettings> http_user_agent_settings;
   std::unique_ptr<SSLConfigService> ssl_config_service;
   std::unique_ptr<MockClientSocketFactory> socket_factory;
   std::unique_ptr<HttpAuthHandlerFactory> http_auth_handler_factory;
-  std::unique_ptr<HttpServerPropertiesImpl> http_server_properties;
+  std::unique_ptr<HttpServerProperties> http_server_properties;
+  std::unique_ptr<QuicContext> quic_context;
 #if BUILDFLAG(ENABLE_REPORTING)
   std::unique_ptr<ReportingService> reporting_service;
   std::unique_ptr<NetworkErrorLoggingService> network_error_logging_service;
@@ -227,15 +227,18 @@ struct SpdySessionDependencies {
   bool enable_quic;
   bool enable_server_push_cancellation;
   size_t session_max_recv_window_size;
+  int session_max_queued_capped_frames;
   spdy::SettingsMap http2_settings;
   SpdySession::TimeFunc time_func;
   bool enable_http2_alternative_service;
   bool enable_websocket_over_http2;
-  base::Optional<SpdySessionPool::GreasedHttp2Frame> greased_http2_frame;
+  absl::optional<SpdySessionPool::GreasedHttp2Frame> greased_http2_frame;
+  bool http2_end_stream_with_data_frame;
   NetLog* net_log;
-  bool http_09_on_non_default_ports_enabled;
   bool disable_idle_sockets_close_on_memory_pressure;
   bool enable_early_data;
+  bool key_auth_cache_server_entries_by_network_isolation_key;
+  bool enable_priority_update;
 };
 
 class SpdyURLRequestContext : public URLRequestContext {
@@ -261,13 +264,6 @@ base::WeakPtr<SpdySession> CreateSpdySession(HttpNetworkSession* http_session,
                                              const SpdySessionKey& key,
                                              const NetLogWithSource& net_log);
 
-// Like CreateSpdySession(), but the host is considered a trusted proxy and
-// allowed to push cross-origin resources.
-base::WeakPtr<SpdySession> CreateTrustedSpdySession(
-    HttpNetworkSession* http_session,
-    const SpdySessionKey& key,
-    const NetLogWithSource& net_log);
-
 // Like CreateSpdySession(), but does not fail if there is already an IP
 // pooled session for |key|.
 base::WeakPtr<SpdySession> CreateSpdySessionWithIpBasedPoolingDisabled(
@@ -275,21 +271,11 @@ base::WeakPtr<SpdySession> CreateSpdySessionWithIpBasedPoolingDisabled(
     const SpdySessionKey& key,
     const NetLogWithSource& net_log);
 
-// Creates an insecure SPDY session for the given key and puts it in
-// |pool|. The returned session will neither receive nor send any
-// data. A SPDY session for |key| must not already exist.
+// Creates a SPDY session for the given key and puts it in |pool|.
+// The returned session will neither receive nor send any data.
+// A SPDY session for |key| must not already exist.
 base::WeakPtr<SpdySession> CreateFakeSpdySession(SpdySessionPool* pool,
                                                  const SpdySessionKey& key);
-
-// Tries to create an insecure SPDY session for the given key but
-// expects the attempt to fail with the given error. The session will
-// neither receive nor send any data. A SPDY session for |key| must
-// not already exist. The session will be created but close in the
-// next event loop iteration.
-base::WeakPtr<SpdySession> TryCreateFakeSpdySessionExpectingFailure(
-    SpdySessionPool* pool,
-    const SpdySessionKey& key,
-    Error expected_status);
 
 class SpdySessionPoolPeer {
  public:
@@ -311,21 +297,23 @@ class SpdyTestUtil {
 
   // Add the appropriate headers to put |url| into |block|.
   void AddUrlToHeaderBlock(base::StringPiece url,
-                           spdy::SpdyHeaderBlock* headers) const;
+                           spdy::Http2HeaderBlock* headers) const;
 
-  static spdy::SpdyHeaderBlock ConstructGetHeaderBlock(base::StringPiece url);
-  static spdy::SpdyHeaderBlock ConstructGetHeaderBlockForProxy(
+  static spdy::Http2HeaderBlock ConstructGetHeaderBlock(base::StringPiece url);
+  static spdy::Http2HeaderBlock ConstructGetHeaderBlockForProxy(
       base::StringPiece url);
-  static spdy::SpdyHeaderBlock ConstructHeadHeaderBlock(base::StringPiece url,
+  static spdy::Http2HeaderBlock ConstructHeadHeaderBlock(
+      base::StringPiece url,
+      int64_t content_length);
+  static spdy::Http2HeaderBlock ConstructPostHeaderBlock(
+      base::StringPiece url,
+      int64_t content_length);
+  static spdy::Http2HeaderBlock ConstructPutHeaderBlock(base::StringPiece url,
                                                         int64_t content_length);
-  static spdy::SpdyHeaderBlock ConstructPostHeaderBlock(base::StringPiece url,
-                                                        int64_t content_length);
-  static spdy::SpdyHeaderBlock ConstructPutHeaderBlock(base::StringPiece url,
-                                                       int64_t content_length);
 
   // Construct an expected SPDY reply string from the given headers.
   std::string ConstructSpdyReplyString(
-      const spdy::SpdyHeaderBlock& headers) const;
+      const spdy::Http2HeaderBlock& headers) const;
 
   // Construct an expected SPDY SETTINGS frame.
   // |settings| are the settings to set.
@@ -416,7 +404,7 @@ class SpdyTestUtil {
   spdy::SpdySerializedFrame ConstructSpdyPushPromise(
       spdy::SpdyStreamId associated_stream_id,
       spdy::SpdyStreamId stream_id,
-      spdy::SpdyHeaderBlock headers);
+      spdy::Http2HeaderBlock headers);
 
   spdy::SpdySerializedFrame ConstructSpdyPushHeaders(
       int stream_id,
@@ -427,19 +415,19 @@ class SpdyTestUtil {
   // END_STREAM flag set to |fin|.
   spdy::SpdySerializedFrame ConstructSpdyResponseHeaders(
       int stream_id,
-      spdy::SpdyHeaderBlock headers,
+      spdy::Http2HeaderBlock headers,
       bool fin);
 
   // Construct a HEADERS frame carrying exactly the given headers and priority.
   spdy::SpdySerializedFrame ConstructSpdyHeaders(int stream_id,
-                                                 spdy::SpdyHeaderBlock headers,
+                                                 spdy::Http2HeaderBlock headers,
                                                  RequestPriority priority,
                                                  bool fin);
 
   // Construct a reply HEADERS frame carrying exactly the given headers and the
   // default priority.
   spdy::SpdySerializedFrame ConstructSpdyReply(int stream_id,
-                                               spdy::SpdyHeaderBlock headers);
+                                               spdy::Http2HeaderBlock headers);
 
   // Constructs a standard SPDY HEADERS frame to match the SPDY GET.
   // |extra_headers| are the extra header-value pairs, which typically
@@ -516,9 +504,9 @@ class SpdyTestUtil {
  private:
   // |content_length| may be NULL, in which case the content-length
   // header will be omitted.
-  static spdy::SpdyHeaderBlock ConstructHeaderBlock(base::StringPiece method,
-                                                    base::StringPiece url,
-                                                    int64_t* content_length);
+  static spdy::Http2HeaderBlock ConstructHeaderBlock(base::StringPiece method,
+                                                     base::StringPiece url,
+                                                     int64_t* content_length);
 
   // Multiple SpdyFramers are required to keep track of header compression
   // state.

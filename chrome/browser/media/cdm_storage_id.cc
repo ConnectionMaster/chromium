@@ -7,6 +7,7 @@
 #include "base/callback.h"
 #include "base/logging.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/media/cdm_storage_id_key.h"
 #include "chrome/browser/media/media_storage_id_salt.h"
 #include "crypto/secure_hash.h"
@@ -15,19 +16,19 @@
 #include "rlz/buildflags/buildflags.h"
 #include "url/origin.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "base/bind.h"
 #include "chromeos/cryptohome/system_salt_getter.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #endif
 
-#if defined(OS_WIN) || defined(OS_MACOSX)
+#if defined(OS_WIN) || defined(OS_MAC)
 #if BUILDFLAG(ENABLE_RLZ)
 #include "rlz/lib/machine_id.h"
 #else
 #error "RLZ must be enabled on Windows/Mac"
 #endif  // BUILDFLAG(ENABLE_RLZ)
-#endif  // defined(OS_WIN) || defined(OS_MACOSX)
+#endif  // defined(OS_WIN) || defined(OS_MAC)
 
 namespace {
 
@@ -80,7 +81,7 @@ std::vector<uint8_t> CalculateStorageId(
   return result;
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 void ComputeAndReturnStorageId(const std::vector<uint8_t>& profile_salt,
                                const url::Origin& origin,
                                CdmStorageIdCallback callback,
@@ -89,27 +90,27 @@ void ComputeAndReturnStorageId(const std::vector<uint8_t>& profile_salt,
   std::move(callback).Run(
       CalculateStorageId(storage_id_key, profile_salt, origin, machine_id));
 }
-#endif  // defined(OS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 }  // namespace
 
 void ComputeStorageId(const std::vector<uint8_t>& profile_salt,
                       const url::Origin& origin,
                       CdmStorageIdCallback callback) {
-#if defined(OS_WIN) || defined(OS_MACOSX)
+#if defined(OS_WIN) || defined(OS_MAC)
   std::string machine_id;
   std::string storage_id_key = GetCdmStorageIdKey();
   rlz_lib::GetMachineId(&machine_id);
   std::move(callback).Run(
       CalculateStorageId(storage_id_key, profile_salt, origin, machine_id));
 
-#elif defined(OS_CHROMEOS)
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   CdmStorageIdCallback scoped_callback =
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback),
                                                   std::vector<uint8_t>());
   chromeos::SystemSaltGetter::Get()->GetSystemSalt(
-      base::Bind(&ComputeAndReturnStorageId, profile_salt, origin,
-                 base::Passed(&scoped_callback)));
+      base::BindOnce(&ComputeAndReturnStorageId, profile_salt, origin,
+                     std::move(scoped_callback)));
 
 #else
 #error Storage ID enabled but not implemented for this platform.

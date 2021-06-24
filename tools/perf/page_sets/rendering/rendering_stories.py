@@ -22,6 +22,7 @@ class RenderingStorySet(story.StorySet):
         cloud_storage_bucket=story.PARTNER_BUCKET)
 
     assert platform in platforms.ALL_PLATFORMS
+    self._platform = platform
 
     if platform == platforms.MOBILE:
       shared_page_state_class = shared_state.MobileRenderingSharedState
@@ -41,6 +42,7 @@ class RenderingStorySet(story.StorySet):
         continue
 
       required_args = []
+      name_suffix = ''
       if (story_class.TAGS and
           story_tags.USE_FAKE_CAMERA_DEVICE in story_class.TAGS):
         required_args += [
@@ -56,22 +58,39 @@ class RenderingStorySet(story.StorySet):
         # 'backdrop-filter' CSS property to work.
         required_args.append('--enable-experimental-web-platform-features')
 
-      self.AddStory(story_class(
-          page_set=self,
-          shared_page_state_class=shared_page_state_class,
-          extra_browser_args=required_args))
-
-      if (platform == platforms.MOBILE and
-          story_class.TAGS and
-          story_tags.IMAGE_DECODING in story_class.TAGS):
+      # TODO(crbug.com/968125): We must run without out-of-process rasterization
+      # until that branch is implemented for YUV decoding.
+      if (story_class.TAGS and
+          story_tags.IMAGE_DECODING in story_class.TAGS and
+          story_tags.GPU_RASTERIZATION in story_class.TAGS):
+        required_args += ['--enable-gpu-rasterization']
+        # Run RGB decoding with GPU rasterization (to be most comparable to YUV)
         self.AddStory(story_class(
             page_set=self,
+            extra_browser_args=required_args +
+                ['--disable-yuv-image-decoding'],
             shared_page_state_class=shared_page_state_class,
-            name_suffix='_gpu_rasterization_and_decoding',
-            extra_browser_args=required_args + [
-                '--force-gpu-rasterization',
-                '--enable-accelerated-jpeg-decoding',
-            ]))
+            name_suffix='_rgb_and_gpu_rasterization'))
+        # Also run YUV decoding story with GPU rasterization.
+        name_suffix = '_yuv_and_gpu_rasterization'
+
+      self.AddStory(story_class(
+          page_set=self,
+          extra_browser_args=required_args,
+          shared_page_state_class=shared_page_state_class,
+          name_suffix=name_suffix))
+
+  def GetAbridgedStorySetTagFilter(self):
+    if self._platform == platforms.DESKTOP:
+      if os.name == 'nt':
+        return 'representative_win_desktop'
+      else:
+        # There is no specific tag for linux, cros, etc,
+        # so just use mac's.
+        return 'representative_mac_desktop'
+    elif self._platform == platforms.MOBILE:
+      return 'representative_mobile'
+    raise RuntimeError('Platform {} is not in the list of expected platforms.')
 
 
 class DesktopRenderingStorySet(RenderingStorySet):
@@ -93,5 +112,5 @@ def _IterAllRenderingStoryClasses():
   for _, cls in sorted(discover.DiscoverClasses(
       start_dir=start_dir,
       top_level_dir=os.path.dirname(start_dir),
-      base_class=rendering_story.RenderingStory).iteritems()):
+      base_class=rendering_story.RenderingStory).items()):
     yield cls

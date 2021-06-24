@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/grit/generated_resources.h"
+#include "content/public/test/browser_test.h"
 #include "net/cert/x509_certificate.h"
 #include "net/ssl/client_cert_identity_test_util.h"
 #include "net/test/cert_test_util.h"
@@ -26,7 +27,7 @@ class TestCertificateSelector : public chrome::CertificateSelector {
       : chrome::CertificateSelector(std::move(identities), web_contents) {
     std::unique_ptr<views::Label> label =
         std::make_unique<views::Label>(l10n_util::GetStringFUTF16(
-            IDS_CLIENT_CERT_DIALOG_TEXT, base::ASCIIToUTF16("example.com")));
+            IDS_CLIENT_CERT_DIALOG_TEXT, u"example.com"));
     label->SetMultiLine(true);
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SizeToFit(chrome::CertificateSelector::kTableViewWidth);

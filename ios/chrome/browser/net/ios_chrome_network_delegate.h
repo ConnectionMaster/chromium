@@ -7,7 +7,6 @@
 
 #include <stdint.h>
 
-#include <memory>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -50,21 +49,20 @@ class IOSChromeNetworkDelegate : public net::NetworkDelegateImpl {
   int OnBeforeURLRequest(net::URLRequest* request,
                          net::CompletionOnceCallback callback,
                          GURL* new_url) override;
-  void OnCompleted(net::URLRequest* request,
-                   bool started,
-                   int net_error) override;
-  bool OnCanGetCookies(const net::URLRequest& request,
-                       const net::CookieList& cookie_list,
-                       bool allowed_from_caller) override;
+  bool OnAnnotateAndMoveUserBlockedCookies(
+      const net::URLRequest& request,
+      net::CookieAccessResultList& maybe_included_cookies,
+      net::CookieAccessResultList& excluded_cookies,
+      bool allowed_from_caller) override;
   bool OnCanSetCookie(const net::URLRequest& request,
                       const net::CanonicalCookie& cookie,
                       net::CookieOptions* options,
                       bool allowed_from_caller) override;
-  bool OnCanAccessFile(const net::URLRequest& request,
-                       const base::FilePath& original_path,
-                       const base::FilePath& absolute_path) const override;
   bool OnForcePrivacyMode(const GURL& url,
-                          const GURL& site_for_cookies) const override;
+                          const net::SiteForCookies& site_for_cookies,
+                          const absl::optional<url::Origin>& top_frame_origin,
+                          net::CookieOptions::SamePartyCookieContextType
+                              same_party_cookie_context_type) const override;
   bool OnCancelURLRequestWithPolicyViolatingReferrerHeader(
       const net::URLRequest& request,
       const GURL& target_url,

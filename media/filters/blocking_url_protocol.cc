@@ -7,7 +7,7 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
 #include "base/threading/thread_restrictions.h"
 #include "media/base/data_source.h"
 #include "media/ffmpeg/ffmpeg_common.h"
@@ -15,7 +15,7 @@
 namespace media {
 
 BlockingUrlProtocol::BlockingUrlProtocol(DataSource* data_source,
-                                         const base::Closure& error_cb)
+                                         const base::RepeatingClosure& error_cb)
     : data_source_(data_source),
       error_cb_(error_cb),
       is_streaming_(data_source_->IsStreaming()),
@@ -46,18 +46,23 @@ int BlockingUrlProtocol::Read(int size, uint8_t* data) {
       return AVERROR(EIO);
     }
 
-    // Even though FFmpeg defines AVERROR_EOF, it's not to be used with I/O
-    // routines. Instead return 0 for any read at or past EOF.
+    // Not sure this can happen, but it's unclear from the ffmpeg code, so guard
+    // against it.
+    if (size < 0)
+      return AVERROR(EIO);
+    if (!size)
+      return 0;
+
     int64_t file_size;
     if (data_source_->GetSize(&file_size) && read_position_ >= file_size)
-      return 0;
+      return AVERROR_EOF;
 
     // Blocking read from data source until either:
     //   1) |last_read_bytes_| is set and |read_complete_| is signalled
     //   2) |aborted_| is signalled
     data_source_->Read(read_position_, size, data,
-                       base::Bind(&BlockingUrlProtocol::SignalReadCompleted,
-                                  base::Unretained(this)));
+                       base::BindOnce(&BlockingUrlProtocol::SignalReadCompleted,
+                                      base::Unretained(this)));
   }
 
   base::WaitableEvent* events[] = { &aborted_, &read_complete_ };

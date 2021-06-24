@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_SYNC_TEST_INTEGRATION_MIGRATION_WAITER_H_
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_MIGRATION_WAITER_H_
 
-#include <string>
-
 #include "base/macros.h"
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 #include "components/sync/base/model_type.h"
@@ -27,8 +25,7 @@ class MigrationWaiter : public StatusChangeChecker {
   ~MigrationWaiter() override;
 
   // StatusChangeChecker implementation .
-  bool IsExitConditionSatisfied() override;
-  std::string GetDebugMessage() const override;
+  bool IsExitConditionSatisfied(std::ostream* os) override;
 
   // Callback invoked by our associated waiter when migration state changes.
   void OnMigrationStateChange();

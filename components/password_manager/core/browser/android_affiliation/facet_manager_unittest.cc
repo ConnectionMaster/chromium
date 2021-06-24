@@ -10,11 +10,11 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/cxx17_backports.h"
 #include "base/location.h"
 #include "base/memory/ref_counted.h"
 #include "base/rand_util.h"
-#include "base/stl_util.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/time/clock.h"
@@ -83,9 +83,7 @@ class TestFacetManagerNotifier {
 class MockFacetManagerHost : public FacetManagerHost {
  public:
   explicit MockFacetManagerHost(TestFacetManagerNotifier* notifier)
-      : notifier_(notifier), signaled_need_network_request_(false) {}
-
-  ~MockFacetManagerHost() override {}
+      : notifier_(notifier) {}
 
   // Sets the |facet_uri| that will be expected to appear in calls coming from
   // the FacetManager under test.
@@ -144,7 +142,7 @@ class MockFacetManagerHost : public FacetManagerHost {
 
   FacetURI expected_facet_uri_;
   AffiliatedFacetsWithUpdateTime fake_database_content_;
-  bool signaled_need_network_request_;
+  bool signaled_need_network_request_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(MockFacetManagerHost);
 };

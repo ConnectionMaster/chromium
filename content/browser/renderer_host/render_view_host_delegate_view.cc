@@ -17,16 +17,33 @@ int RenderViewHostDelegateView::GetTopControlsHeight() const {
   return 0;
 }
 
+int RenderViewHostDelegateView::GetTopControlsMinHeight() const {
+  return 0;
+}
+
 int RenderViewHostDelegateView::GetBottomControlsHeight() const {
   return 0;
+}
+
+int RenderViewHostDelegateView::GetBottomControlsMinHeight() const {
+  return 0;
+}
+
+bool RenderViewHostDelegateView::ShouldAnimateBrowserControlsHeightChanges()
+    const {
+  return false;
 }
 
 bool RenderViewHostDelegateView::DoBrowserControlsShrinkRendererSize() const {
   return false;
 }
 
+bool RenderViewHostDelegateView::OnlyExpandTopControlsAtPageTop() const {
+  return false;
+}
+
 void RenderViewHostDelegateView::GestureEventAck(
     const blink::WebGestureEvent& event,
-    InputEventAckState ack_result) {}
+    blink::mojom::InputEventResultState ack_result) {}
 
 }  //  namespace content

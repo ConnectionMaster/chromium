@@ -9,29 +9,27 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/containers/contains.h"
 #include "base/lazy_instance.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/values.h"
-#include "content/public/browser/resource_request_info.h"
 #include "extensions/browser/api/declarative/deduping_factory.h"
 #include "extensions/browser/api/declarative_webrequest/request_stage.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_condition.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_constants.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/web_request/web_request_api_helpers.h"
+#include "extensions/browser/api/web_request/web_request_info.h"
 #include "extensions/browser/api/web_request/web_request_resource_type.h"
 #include "extensions/common/error_utils.h"
 #include "net/base/net_errors.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "net/base/static_cookie_policy.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_util.h"
-#include "net/url_request/url_request.h"
 
 using base::CaseInsensitiveCompareASCII;
 using base::DictionaryValue;
@@ -84,11 +82,6 @@ struct WebRequestConditionAttributeFactory {
         &WebRequestConditionAttributeResponseHeaders::Create);
 
     factory.RegisterFactoryMethod(
-        keys::kThirdPartyKey,
-        DedupingFactory<WebRequestConditionAttribute>::IS_PARAMETERIZED,
-        &WebRequestConditionAttributeThirdParty::Create);
-
-    factory.RegisterFactoryMethod(
         keys::kStagesKey,
         DedupingFactory<WebRequestConditionAttribute>::IS_PARAMETERIZED,
         &WebRequestConditionAttributeStages::Create);
@@ -119,7 +112,7 @@ WebRequestConditionAttribute::Create(
     const std::string& name,
     const base::Value* value,
     std::string* error) {
-  CHECK(value != NULL && error != NULL);
+  CHECK(value != nullptr && error != nullptr);
   bool bad_message = false;
   return g_web_request_condition_attribute_factory.Get().factory.Instantiate(
       name, value, error, &bad_message);
@@ -145,11 +138,11 @@ WebRequestConditionAttributeResourceType::Create(
     std::string* error,
     bool* bad_message) {
   DCHECK(instance_type == keys::kResourceTypeKey);
-  const base::ListValue* value_as_list = NULL;
+  const base::ListValue* value_as_list = nullptr;
   if (!value->GetAsList(&value_as_list)) {
     *error = ErrorUtils::FormatErrorMessage(kInvalidValue,
                                             keys::kResourceTypeKey);
-    return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+    return nullptr;
   }
 
   size_t number_types = value_as_list->GetSize();
@@ -164,7 +157,7 @@ WebRequestConditionAttributeResourceType::Create(
                                      &passed_types.back())) {
       *error = ErrorUtils::FormatErrorMessage(kInvalidValue,
                                               keys::kResourceTypeKey);
-      return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+      return nullptr;
     }
   }
 
@@ -182,7 +175,7 @@ bool WebRequestConditionAttributeResourceType::IsFulfilled(
     const WebRequestData& request_data) const {
   if (!(request_data.stage & GetStages()))
     return false;
-  return base::ContainsValue(types_, request_data.request->web_request_type);
+  return base::Contains(types_, request_data.request->web_request_type);
 }
 
 WebRequestConditionAttribute::Type
@@ -226,17 +219,16 @@ WebRequestConditionAttributeContentType::Create(
       bool* bad_message) {
   DCHECK(name == keys::kContentTypeKey || name == keys::kExcludeContentTypeKey);
 
-  const base::ListValue* value_as_list = NULL;
-  if (!value->GetAsList(&value_as_list)) {
+  if (!value->is_list()) {
     *error = ErrorUtils::FormatErrorMessage(kInvalidValue, name);
-    return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+    return nullptr;
   }
   std::vector<std::string> content_types;
-  for (auto it = value_as_list->begin(); it != value_as_list->end(); ++it) {
+  for (const auto& entry : value->GetList()) {
     std::string content_type;
-    if (!it->GetAsString(&content_type)) {
+    if (!entry.GetAsString(&content_type)) {
       *error = ErrorUtils::FormatErrorMessage(kInvalidValue, name);
-      return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+      return nullptr;
     }
     content_types.push_back(content_type);
   }
@@ -261,13 +253,13 @@ bool WebRequestConditionAttributeContentType::IsFulfilled(
   std::string mime_type;
   std::string charset;
   bool had_charset = false;
-  net::HttpUtil::ParseContentType(
-      content_type, &mime_type, &charset, &had_charset, NULL);
+  net::HttpUtil::ParseContentType(content_type, &mime_type, &charset,
+                                  &had_charset, nullptr);
 
   if (inclusive_) {
-    return base::ContainsValue(content_types_, mime_type);
+    return base::Contains(content_types_, mime_type);
   } else {
-    return !base::ContainsValue(content_types_, mime_type);
+    return !base::Contains(content_types_, mime_type);
   }
 }
 
@@ -341,7 +333,7 @@ class HeaderMatcher {
     ~HeaderMatchTest();
 
     // Gets the test group description in |tests| and creates the corresponding
-    // HeaderMatchTest. On failure returns NULL.
+    // HeaderMatchTest. On failure returns null.
     static std::unique_ptr<const HeaderMatchTest> Create(
         const base::DictionaryValue* tests);
 
@@ -378,15 +370,15 @@ HeaderMatcher::~HeaderMatcher() {}
 std::unique_ptr<const HeaderMatcher> HeaderMatcher::Create(
     const base::ListValue* tests) {
   std::vector<std::unique_ptr<const HeaderMatchTest>> header_tests;
-  for (auto it = tests->begin(); it != tests->end(); ++it) {
-    const base::DictionaryValue* tests = NULL;
-    if (!it->GetAsDictionary(&tests))
-      return std::unique_ptr<const HeaderMatcher>();
+  for (const auto& entry : tests->GetList()) {
+    const base::DictionaryValue* tests = nullptr;
+    if (!entry.GetAsDictionary(&tests))
+      return nullptr;
 
     std::unique_ptr<const HeaderMatchTest> header_test(
         HeaderMatchTest::Create(tests));
-    if (header_test.get() == NULL)
-      return std::unique_ptr<const HeaderMatcher>();
+    if (header_test.get() == nullptr)
+      return nullptr;
     header_tests.push_back(std::move(header_test));
   }
 
@@ -494,7 +486,7 @@ HeaderMatcher::HeaderMatchTest::Create(const base::DictionaryValue* tests) {
       match_type = StringMatchTest::kEquals;
     } else {
       NOTREACHED();  // JSON schema type checking should prevent this.
-      return std::unique_ptr<const HeaderMatchTest>();
+      return nullptr;
     }
     const base::Value* content = &it.value();
 
@@ -502,9 +494,9 @@ HeaderMatcher::HeaderMatchTest::Create(const base::DictionaryValue* tests) {
         is_name ? &name_match : &value_match;
     switch (content->type()) {
       case base::Value::Type::LIST: {
-        const base::ListValue* list = NULL;
+        const base::ListValue* list = nullptr;
         CHECK(content->GetAsList(&list));
-        for (const auto& it : *list) {
+        for (const auto& it : list->GetList()) {
           tests->push_back(StringMatchTest::Create(it, match_type, !is_name));
         }
         break;
@@ -516,7 +508,7 @@ HeaderMatcher::HeaderMatchTest::Create(const base::DictionaryValue* tests) {
       }
       default: {
         NOTREACHED();  // JSON schema type checking should prevent this.
-        return std::unique_ptr<const HeaderMatchTest>();
+        return nullptr;
       }
     }
   }
@@ -559,15 +551,15 @@ std::unique_ptr<const HeaderMatcher> PrepareHeaderMatcher(
     const std::string& name,
     const base::Value* value,
     std::string* error) {
-  const base::ListValue* value_as_list = NULL;
+  const base::ListValue* value_as_list = nullptr;
   if (!value->GetAsList(&value_as_list)) {
     *error = ErrorUtils::FormatErrorMessage(kInvalidValue, name);
-    return std::unique_ptr<const HeaderMatcher>();
+    return nullptr;
   }
 
   std::unique_ptr<const HeaderMatcher> header_matcher(
       HeaderMatcher::Create(value_as_list));
-  if (header_matcher.get() == NULL)
+  if (header_matcher.get() == nullptr)
     *error = ErrorUtils::FormatErrorMessage(kInvalidValue, name);
   return header_matcher;
 }
@@ -586,8 +578,8 @@ WebRequestConditionAttributeRequestHeaders::Create(
 
   std::unique_ptr<const HeaderMatcher> header_matcher(
       PrepareHeaderMatcher(name, value, error));
-  if (header_matcher.get() == NULL)
-    return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+  if (!header_matcher)
+    return nullptr;
 
   return scoped_refptr<const WebRequestConditionAttribute>(
       new WebRequestConditionAttributeRequestHeaders(
@@ -659,8 +651,8 @@ WebRequestConditionAttributeResponseHeaders::Create(
 
   std::unique_ptr<const HeaderMatcher> header_matcher(
       PrepareHeaderMatcher(name, value, error));
-  if (header_matcher.get() == NULL)
-    return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+  if (!header_matcher)
+    return nullptr;
 
   return scoped_refptr<const WebRequestConditionAttribute>(
       new WebRequestConditionAttributeResponseHeaders(
@@ -678,7 +670,7 @@ bool WebRequestConditionAttributeResponseHeaders::IsFulfilled(
 
   const net::HttpResponseHeaders* headers =
       request_data.original_response_headers;
-  if (headers == NULL) {
+  if (headers == nullptr) {
     // Each header of an empty set satisfies (the negation of) everything;
     // OTOH, there is no header to satisfy even the most permissive test.
     return !positive_;
@@ -714,76 +706,6 @@ bool WebRequestConditionAttributeResponseHeaders::Equals(
 }
 
 //
-// WebRequestConditionAttributeThirdParty
-//
-
-WebRequestConditionAttributeThirdParty::
-WebRequestConditionAttributeThirdParty(bool match_third_party)
-    : match_third_party_(match_third_party) {}
-
-WebRequestConditionAttributeThirdParty::
-~WebRequestConditionAttributeThirdParty() {}
-
-// static
-scoped_refptr<const WebRequestConditionAttribute>
-WebRequestConditionAttributeThirdParty::Create(
-    const std::string& name,
-    const base::Value* value,
-    std::string* error,
-    bool* bad_message) {
-  DCHECK(name == keys::kThirdPartyKey);
-
-  bool third_party = false;  // Dummy value, gets overwritten.
-  if (!value->GetAsBoolean(&third_party)) {
-    *error = ErrorUtils::FormatErrorMessage(kInvalidValue,
-                                                     keys::kThirdPartyKey);
-    return scoped_refptr<const WebRequestConditionAttribute>(NULL);
-  }
-
-  return scoped_refptr<const WebRequestConditionAttribute>(
-      new WebRequestConditionAttributeThirdParty(third_party));
-}
-
-int WebRequestConditionAttributeThirdParty::GetStages() const {
-  return ON_BEFORE_REQUEST | ON_BEFORE_SEND_HEADERS | ON_SEND_HEADERS |
-      ON_HEADERS_RECEIVED | ON_AUTH_REQUIRED | ON_BEFORE_REDIRECT |
-      ON_RESPONSE_STARTED | ON_COMPLETED | ON_ERROR;
-}
-
-bool WebRequestConditionAttributeThirdParty::IsFulfilled(
-    const WebRequestData& request_data) const {
-  if (!(request_data.stage & GetStages()))
-    return false;
-
-  // Request is "1st party" if it gets cookies under 3rd party-blocking policy.
-  const net::StaticCookiePolicy block_third_party_policy(
-      net::StaticCookiePolicy::BLOCK_ALL_THIRD_PARTY_COOKIES);
-  const int can_get_cookies = block_third_party_policy.CanAccessCookies(
-      request_data.request->url, request_data.request->site_for_cookies);
-  const bool is_first_party = (can_get_cookies == net::OK);
-
-  return match_third_party_ ? !is_first_party : is_first_party;
-}
-
-WebRequestConditionAttribute::Type
-WebRequestConditionAttributeThirdParty::GetType() const {
-  return CONDITION_THIRD_PARTY;
-}
-
-std::string WebRequestConditionAttributeThirdParty::GetName() const {
-  return keys::kThirdPartyKey;
-}
-
-bool WebRequestConditionAttributeThirdParty::Equals(
-    const WebRequestConditionAttribute* other) const {
-  if (!WebRequestConditionAttribute::Equals(other))
-    return false;
-  const WebRequestConditionAttributeThirdParty* casted_other =
-      static_cast<const WebRequestConditionAttributeThirdParty*>(other);
-  return match_third_party_ == casted_other->match_third_party_;
-}
-
-//
 // WebRequestConditionAttributeStages
 //
 
@@ -800,14 +722,13 @@ namespace {
 // sets corresponding bits (see RequestStage) in |out_stages|. Returns true on
 // success, false otherwise.
 bool ParseListOfStages(const base::Value& value, int* out_stages) {
-  const base::ListValue* list = NULL;
-  if (!value.GetAsList(&list))
+  if (!value.is_list())
     return false;
 
   int stages = 0;
   std::string stage_name;
-  for (auto it = list->begin(); it != list->end(); ++it) {
-    if (!(it->GetAsString(&stage_name)))
+  for (const auto& entry : value.GetList()) {
+    if (!entry.GetAsString(&stage_name))
       return false;
     if (stage_name == keys::kOnBeforeRequestEnum) {
       stages |= ON_BEFORE_REQUEST;
@@ -841,7 +762,7 @@ WebRequestConditionAttributeStages::Create(const std::string& name,
   if (!ParseListOfStages(*value, &allowed_stages)) {
     *error = ErrorUtils::FormatErrorMessage(kInvalidValue,
                                                      keys::kStagesKey);
-    return scoped_refptr<const WebRequestConditionAttribute>(NULL);
+    return nullptr;
   }
 
   return scoped_refptr<const WebRequestConditionAttribute>(

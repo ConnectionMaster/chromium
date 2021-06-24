@@ -7,18 +7,23 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/resources/grit/blink_resources.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/page_popup_client.h"
+#include "third_party/blink/renderer/platform/data_resource_helper.h"
 #include "third_party/blink/renderer/platform/graphics/paint/cull_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record_builder.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
 
@@ -31,21 +36,24 @@ class ValidationMessageChromeClient : public EmptyChromeClient {
                                          LocalFrameView* anchor_view)
       : main_chrome_client_(main_chrome_client), anchor_view_(anchor_view) {}
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(main_chrome_client_);
     visitor->Trace(anchor_view_);
     EmptyChromeClient::Trace(visitor);
   }
 
-  void ScheduleAnimation(const LocalFrameView*) override {
+  void ScheduleAnimation(const LocalFrameView*,
+                         base::TimeDelta delay = base::TimeDelta()) override {
     // Need to pass LocalFrameView for the anchor element because the Frame for
     // this overlay doesn't have an associated WebFrameWidget, which schedules
     // animation.
-    main_chrome_client_->ScheduleAnimation(anchor_view_);
+    main_chrome_client_->ScheduleAnimation(anchor_view_, delay);
   }
 
-  float WindowToViewportScalar(const float scalar_value) const override {
-    return main_chrome_client_->WindowToViewportScalar(scalar_value);
+  float WindowToViewportScalar(LocalFrame* local_frame,
+                               const float scalar_value) const override {
+    return main_chrome_client_->WindowToViewportScalar(local_frame,
+                                                       scalar_value);
   }
 
  private:
@@ -93,7 +101,8 @@ void ValidationMessageOverlayDelegate::PaintFrameOverlay(
   if (DrawingRecorder::UseCachedDrawingIfPossible(context, overlay,
                                                   DisplayItem::kFrameOverlay))
     return;
-  DrawingRecorder recorder(context, overlay, DisplayItem::kFrameOverlay);
+  DrawingRecorder recorder(context, overlay, DisplayItem::kFrameOverlay,
+                           IntRect(IntPoint(), view_size));
 
   const_cast<ValidationMessageOverlayDelegate*>(this)->UpdateFrameViewState(
       overlay, view_size);
@@ -104,11 +113,16 @@ void ValidationMessageOverlayDelegate::PaintFrameOverlay(
     // The overlay frame is has a standalone paint property tree. Paint it in
     // its root space into a paint record, then draw the record into the proper
     // target space in the overlaid frame.
-    PaintRecordBuilder paint_record_builder(nullptr, &context);
+    PaintRecordBuilder paint_record_builder(context);
     FrameView().PaintOutsideOfLifecycle(paint_record_builder.Context(),
                                         kGlobalPaintNormalPhase);
     context.DrawRecord(paint_record_builder.EndRecording());
   }
+}
+
+void ValidationMessageOverlayDelegate::ServiceScriptedAnimations(
+    base::TimeTicks monotonic_frame_begin_time) {
+  page_->Animator().ServiceScriptedAnimations(monotonic_frame_begin_time);
 }
 
 void ValidationMessageOverlayDelegate::UpdateFrameViewState(
@@ -126,8 +140,7 @@ void ValidationMessageOverlayDelegate::UpdateFrameViewState(
   // FindVisualRectNeedingUpdateScopeBase::CheckVisualRect().
   FrameView().GetLayoutView()->SetSubtreeShouldCheckForPaintInvalidation();
 
-  FrameView().UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kOther);
+  FrameView().UpdateAllLifecyclePhases(DocumentUpdateReason::kOverlay);
 }
 
 void ValidationMessageOverlayDelegate::CreatePage(const FrameOverlay& overlay) {
@@ -136,21 +149,22 @@ void ValidationMessageOverlayDelegate::CreatePage(const FrameOverlay& overlay) {
   // TODO(tkent): Can we share code with WebPagePopupImpl and
   // InspectorOverlayAgent?
   IntSize view_size = overlay.Size();
-  Page::PageClients page_clients;
-  FillWithEmptyClients(page_clients);
   chrome_client_ = MakeGarbageCollected<ValidationMessageChromeClient>(
       main_page_->GetChromeClient(), anchor_->GetDocument().View());
-  page_clients.chrome_client = chrome_client_;
   Settings& main_settings = main_page_->GetSettings();
-  page_ = Page::CreateNonOrdinary(page_clients);
+  page_ = Page::CreateNonOrdinary(
+      *chrome_client_,
+      main_page_->GetPageScheduler()->GetAgentGroupScheduler());
   page_->GetSettings().SetMinimumFontSize(main_settings.GetMinimumFontSize());
   page_->GetSettings().SetMinimumLogicalFontSize(
       main_settings.GetMinimumLogicalFontSize());
 
-  auto* frame = LocalFrame::Create(
-      MakeGarbageCollected<EmptyLocalFrameClient>(), *page_, nullptr);
-  frame->SetView(LocalFrameView::Create(*frame, view_size));
-  frame->Init();
+  auto* frame = MakeGarbageCollected<LocalFrame>(
+      MakeGarbageCollected<EmptyLocalFrameClient>(), *page_, nullptr, nullptr,
+      nullptr, FrameInsertType::kInsertInConstructor, LocalFrameToken(),
+      nullptr, nullptr);
+  frame->SetView(MakeGarbageCollected<LocalFrameView>(*frame, view_size));
+  frame->Init(/*opener=*/nullptr, /*policy_container=*/nullptr);
   frame->View()->SetCanHaveScrollbars(false);
   frame->View()->SetBaseBackgroundColor(Color::kTransparent);
   page_->GetVisualViewport().SetSize(view_size);
@@ -179,8 +193,7 @@ void ValidationMessageOverlayDelegate::CreatePage(const FrameOverlay& overlay) {
   }
   // Get the size to decide position later.
   // TODO(schenney): This says get size, so we only need to update to layout.
-  FrameView().UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kOther);
+  FrameView().UpdateAllLifecyclePhases(DocumentUpdateReason::kOverlay);
   bubble_size_ = container.VisibleBoundsInVisualViewport().Size();
   // Add one because the content sometimes exceeds the exact width due to
   // rounding errors.
@@ -189,14 +202,13 @@ void ValidationMessageOverlayDelegate::CreatePage(const FrameOverlay& overlay) {
                                    bubble_size_.Width() / zoom_factor,
                                    CSSPrimitiveValue::UnitType::kPixels);
   container.setAttribute(html_names::kClassAttr, "shown-initially");
-  FrameView().UpdateAllLifecyclePhases(
-      DocumentLifecycle::LifecycleUpdateReason::kOther);
+  FrameView().UpdateAllLifecyclePhases(DocumentUpdateReason::kOverlay);
 }
 
 void ValidationMessageOverlayDelegate::WriteDocument(SharedBuffer* data) {
   DCHECK(data);
   PagePopupClient::AddString("<!DOCTYPE html><html><head><style>", data);
-  data->Append(Platform::Current()->GetDataResource("validation_bubble.css"));
+  data->Append(UncompressResourceAsBinary(IDR_VALIDATION_BUBBLE_CSS));
   PagePopupClient::AddString("</style></head>", data);
   PagePopupClient::AddString(
       Locale::DefaultLocale().IsRTL() ? "<body dir=rtl>" : "<body dir=ltr>",
@@ -208,7 +220,7 @@ void ValidationMessageOverlayDelegate::WriteDocument(SharedBuffer* data) {
       "<div id=spacer-top></div>"
       "<main id=bubble-body>",
       data);
-  data->Append(Platform::Current()->GetDataResource("input_alert.svg"));
+  data->Append(UncompressResourceAsBinary(IDR_VALIDATION_BUBBLE_ICON));
   PagePopupClient::AddString(message_dir_ == TextDirection::kLtr
                                  ? "<div dir=ltr id=main-message></div>"
                                  : "<div dir=rtl id=main-message></div>",

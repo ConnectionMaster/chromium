@@ -5,7 +5,6 @@
 #ifndef UI_WM_CORE_WINDOW_ANIMATIONS_H_
 #define UI_WM_CORE_WINDOW_ANIMATIONS_H_
 
-#include <vector>
 
 #include "base/macros.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
@@ -95,7 +94,7 @@ WM_CORE_EXPORT bool AnimateWindow(aura::Window* window,
                                   WindowAnimationType type);
 
 // Returns true if window animations are disabled for |window|. Window
-// animations are enabled by default. If |window| is NULL, this just checks
+// animations are enabled by default. If |window| is nullptr, this just checks
 // if the global flag disabling window animations is present.
 WM_CORE_EXPORT bool WindowAnimationsDisabled(aura::Window* window);
 

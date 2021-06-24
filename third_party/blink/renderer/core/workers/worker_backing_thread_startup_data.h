@@ -5,8 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_WORKER_BACKING_THREAD_STARTUP_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_WORKER_BACKING_THREAD_STARTUP_DATA_H_
 
-#include "base/optional.h"
-#include "third_party/blink/renderer/platform/cross_thread_copier.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 
 namespace blink {
 
@@ -31,13 +31,24 @@ struct WorkerBackingThreadStartupData {
   AtomicsWaitMode atomics_wait_mode;
 };
 
-// This allows to pass base::Optional<WorkerBackingThreadStartupData> across
+}  // namespace blink
+
+namespace WTF {
+
+// This allows to pass absl::optional<WorkerBackingThreadStartupData> across
 // threads by PostTask().
 template <>
-struct CrossThreadCopier<base::Optional<WorkerBackingThreadStartupData>>
+struct CrossThreadCopier<absl::optional<blink::WorkerBackingThreadStartupData>>
     : public CrossThreadCopierPassThrough<
-          base::Optional<WorkerBackingThreadStartupData>> {};
+          absl::optional<blink::WorkerBackingThreadStartupData>> {};
 
-}  // namespace blink
+// This allows to pass WorkerBackingThreadStartupData across threads by
+// PostTask().
+template <>
+struct CrossThreadCopier<blink::WorkerBackingThreadStartupData>
+    : public CrossThreadCopierPassThrough<
+          blink::WorkerBackingThreadStartupData> {};
+
+}  // namespace WTF
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_WORKER_BACKING_THREAD_STARTUP_DATA_H_

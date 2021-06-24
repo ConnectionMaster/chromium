@@ -6,9 +6,10 @@ package org.chromium.chrome.browser.omaha;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.support.annotation.IntDef;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
+
+import androidx.annotation.IntDef;
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -22,7 +23,6 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.omaha.MockRequestGenerator;
 import org.chromium.chrome.test.omaha.MockRequestGenerator.DeviceType;
-import org.chromium.chrome.test.omaha.MockRequestGenerator.SignedInStatus;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -88,8 +88,8 @@ public class OmahaBaseTest {
 
         @Override
         protected RequestGenerator createRequestGenerator(Context context) {
-            mMockGenerator = new MockRequestGenerator(context,
-                    mIsOnTablet ? DeviceType.TABLET : DeviceType.HANDSET, SignedInStatus.FALSE);
+            mMockGenerator = new MockRequestGenerator(
+                    context, mIsOnTablet ? DeviceType.TABLET : DeviceType.HANDSET);
             return mMockGenerator;
         }
 
@@ -168,20 +168,6 @@ public class OmahaBaseTest {
         int TIMES_OUT = 1;
     }
 
-    @IntDef({InstallEvent.SEND, InstallEvent.DONT_SEND})
-    @Retention(RetentionPolicy.SOURCE)
-    private @interface InstallEvent {
-        int SEND = 0;
-        int DONT_SEND = 1;
-    }
-
-    @IntDef({PostStatus.DUE, PostStatus.NOT_DUE})
-    @Retention(RetentionPolicy.SOURCE)
-    private @interface PostStatus {
-        int DUE = 0;
-        int NOT_DUE = 1;
-    }
-
     private AdvancedMockContext mContext;
     private MockOmahaDelegate mDelegate;
     private MockOmahaBase mOmahaBase;
@@ -198,14 +184,14 @@ public class OmahaBaseTest {
     }
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         Context targetContext = InstrumentationRegistry.getTargetContext();
         OmahaBase.setIsDisabledForTesting(false);
         mContext = new AdvancedMockContext(targetContext);
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         OmahaBase.setIsDisabledForTesting(true);
     }
 
@@ -216,12 +202,17 @@ public class OmahaBaseTest {
         private final boolean mConnectionTimesOut;
         private final boolean mIsOnTablet;
 
+        private String mUpdateVersion;
+        private String mInstalledVersion;
+
         public MockOmahaBase(OmahaDelegate delegate, @ServerResponse int serverResponse,
                 @ConnectionStatus int connectionStatus, DeviceType deviceType) {
             super(delegate);
             mSendValidResponse = serverResponse == ServerResponse.SUCCESS;
             mConnectionTimesOut = connectionStatus == ConnectionStatus.TIMES_OUT;
             mIsOnTablet = deviceType == DeviceType.TABLET;
+            mUpdateVersion = "1.2.3.4";
+            mInstalledVersion = "1.2.3.4";
         }
 
         /**
@@ -253,18 +244,31 @@ public class OmahaBaseTest {
             mSendInstallEvent = state;
         }
 
+        public void setUpdateVersion(String version) {
+            mUpdateVersion = version;
+        }
+
+        public void setInstalledVersion(String version) {
+            mInstalledVersion = version;
+        }
+
         @Override
-        protected HttpURLConnection createConnection() throws RequestFailureException {
+        protected HttpURLConnection createConnection() {
             MockConnection connection = null;
             try {
                 URL url = new URL(mDelegate.getRequestGenerator().getServerUrl());
                 connection = new MockConnection(url, mIsOnTablet, mSendValidResponse,
-                        mSendInstallEvent, mConnectionTimesOut);
+                        mSendInstallEvent, mConnectionTimesOut, mUpdateVersion);
                 mMockConnections.addLast(connection);
             } catch (MalformedURLException e) {
                 Assert.fail("Caught a malformed URL exception: " + e);
             }
             return connection;
+        }
+
+        @Override
+        protected String getInstalledVersion() {
+            return mInstalledVersion;
         }
     }
 
@@ -307,7 +311,7 @@ public class OmahaBaseTest {
         mDelegate.getScheduler().setCurrentTime(now);
 
         // Record that an install event has already been sent and that we're due for a new request.
-        SharedPreferences.Editor editor = OmahaBase.getSharedPreferences(mContext).edit();
+        SharedPreferences.Editor editor = OmahaBase.getSharedPreferences().edit();
         editor.putBoolean(OmahaBase.PREF_SEND_INSTALL_EVENT, false);
         editor.putLong(OmahaBase.PREF_TIMESTAMP_FOR_NEW_REQUEST, now);
         editor.putLong(OmahaBase.PREF_TIMESTAMP_FOR_NEXT_POST_ATTEMPT, now);
@@ -334,6 +338,65 @@ public class OmahaBaseTest {
     @Test
     @SmallTest
     @Feature({"Omaha"})
+    public void testPipelineFreshInstallUpdatedAvailable_crbug_1095755() {
+        final long now = 11684;
+        final String updateVersion = "10.0.0.0";
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+
+        // Trigger Omaha.
+        mOmahaBase = createOmahaBase();
+        mOmahaBase.setUpdateVersion(updateVersion);
+        mOmahaBase.run();
+
+        Assert.assertEquals(2, mDelegate.mGenerateAndPostRequestResults.size());
+        Assert.assertTrue(mDelegate.mGenerateAndPostRequestResults.get(0));
+        Assert.assertTrue(mDelegate.mGenerateAndPostRequestResults.get(1));
+
+        SharedPreferences sharedPreferences = OmahaBase.getSharedPreferences();
+        String storedLastVersion = sharedPreferences.getString(OmahaBase.PREF_LATEST_VERSION, null);
+        String storedMarketURL = sharedPreferences.getString(OmahaBase.PREF_MARKET_URL, null);
+        Assert.assertEquals(updateVersion, storedLastVersion);
+        Assert.assertEquals(MockConnection.STRIPPED_MARKET_URL, storedMarketURL);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
+    public void testPipelineRegularPingUpdateAvailable_crbug_1095755() {
+        final long now = 11684;
+        String updateVersion = "10.0.0.0";
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+
+        // Record that an install event has already been sent and that we're due for a new request.
+        SharedPreferences.Editor editor = OmahaBase.getSharedPreferences().edit();
+        editor.putBoolean(OmahaBase.PREF_SEND_INSTALL_EVENT, false);
+        editor.putLong(OmahaBase.PREF_TIMESTAMP_FOR_NEW_REQUEST, now);
+        editor.putLong(OmahaBase.PREF_TIMESTAMP_FOR_NEXT_POST_ATTEMPT, now);
+        editor.apply();
+
+        // Trigger Omaha.
+        mOmahaBase = createOmahaBase();
+        mOmahaBase.setUpdateVersion(updateVersion);
+        mOmahaBase.run();
+
+        // Only the regular ping should have been sent.
+        Assert.assertEquals(1, mDelegate.mGenerateAndPostRequestResults.size());
+        Assert.assertTrue(mDelegate.mGenerateAndPostRequestResults.get(0));
+
+        SharedPreferences sharedPreferences = OmahaBase.getSharedPreferences();
+        String storedLastVersion = sharedPreferences.getString(OmahaBase.PREF_LATEST_VERSION, null);
+        String storedMarketURL = sharedPreferences.getString(OmahaBase.PREF_MARKET_URL, null);
+        Assert.assertEquals(updateVersion, storedLastVersion);
+        Assert.assertEquals(MockConnection.STRIPPED_MARKET_URL, storedMarketURL);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
     public void testTooEarlyToPing() {
         final long now = 0;
         final long later = 10000;
@@ -342,7 +405,7 @@ public class OmahaBaseTest {
         mDelegate.getScheduler().setCurrentTime(now);
 
         // Put the time for the next request in the future.
-        SharedPreferences prefs = OmahaBase.getSharedPreferences(mContext);
+        SharedPreferences prefs = OmahaBase.getSharedPreferences();
         prefs.edit().putLong(OmahaBase.PREF_TIMESTAMP_FOR_NEW_REQUEST, later).apply();
 
         // Trigger Omaha.
@@ -372,7 +435,7 @@ public class OmahaBaseTest {
         mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
         mDelegate.getScheduler().setCurrentTime(now);
 
-        SharedPreferences prefs = OmahaBase.getSharedPreferences(mContext);
+        SharedPreferences prefs = OmahaBase.getSharedPreferences();
         SharedPreferences.Editor editor = prefs.edit();
 
         // Make it so that a request was generated and is just waiting to be sent.
@@ -415,7 +478,7 @@ public class OmahaBaseTest {
         mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
         mDelegate.getScheduler().setCurrentTime(now);
 
-        SharedPreferences prefs = OmahaBase.getSharedPreferences(mContext);
+        SharedPreferences prefs = OmahaBase.getSharedPreferences();
         SharedPreferences.Editor editor = prefs.edit();
 
         // Make it so that a regular <ping> was generated and is just waiting to be sent.
@@ -460,7 +523,7 @@ public class OmahaBaseTest {
         mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
         mDelegate.getScheduler().setCurrentTime(now);
 
-        SharedPreferences prefs = OmahaBase.getSharedPreferences(mContext);
+        SharedPreferences prefs = OmahaBase.getSharedPreferences();
         SharedPreferences.Editor editor = prefs.edit();
 
         // Make it so that a regular <ping> was generated and is just waiting to be sent.
@@ -505,7 +568,7 @@ public class OmahaBaseTest {
         mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
         mDelegate.getScheduler().setCurrentTime(now);
 
-        SharedPreferences prefs = OmahaBase.getSharedPreferences(mContext);
+        SharedPreferences prefs = OmahaBase.getSharedPreferences();
         SharedPreferences.Editor editor = prefs.edit();
 
         // Indicate that the next request should be generated way past an expected timeframe.
@@ -548,7 +611,7 @@ public class OmahaBaseTest {
 
         // Record that a regular <ping> was generated, but not sent, then assign it an invalid
         // timestamp and try to send it now.
-        SharedPreferences prefs = OmahaBase.getSharedPreferences(mContext);
+        SharedPreferences prefs = OmahaBase.getSharedPreferences();
         SharedPreferences.Editor editor = prefs.edit();
         editor.putBoolean(OmahaBase.PREF_SEND_INSTALL_EVENT, false);
         editor.putLong(OmahaBase.PREF_TIMESTAMP_FOR_NEW_REQUEST, timeRegisterNewRequest);
@@ -578,6 +641,97 @@ public class OmahaBaseTest {
                 mDelegate.mTimestampsOnSaveState);
     }
 
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
+    public void testCheckForUpdatesConnectionTimesOut() {
+        final long now = 10000L;
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+        mOmahaBase = createOmahaBase(
+                ServerResponse.FAILURE, ConnectionStatus.TIMES_OUT, DeviceType.HANDSET);
+
+        @OmahaBase.UpdateStatus
+        int status = mOmahaBase.checkForUpdates();
+        Assert.assertEquals(OmahaBase.UpdateStatus.OFFLINE, status);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
+    public void testCheckForUpdatesUpdated() {
+        final long now = 10000L;
+        final String version = "89.0.12.5342";
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+        mOmahaBase = createOmahaBase();
+        mOmahaBase.setInstalledVersion(version);
+        mOmahaBase.setUpdateVersion(version);
+
+        @OmahaBase.UpdateStatus
+        int status = mOmahaBase.checkForUpdates();
+        Assert.assertEquals(OmahaBase.UpdateStatus.UPDATED, status);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
+    public void testCheckForUpdatesOutdated() {
+        final long now = 10000L;
+        final String oldVersion = "89.0.12.5342";
+        final String newVersion = "89.0.13.1242";
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+        mOmahaBase = createOmahaBase();
+        mOmahaBase.setInstalledVersion(oldVersion);
+        mOmahaBase.setUpdateVersion(newVersion);
+
+        @OmahaBase.UpdateStatus
+        int status = mOmahaBase.checkForUpdates();
+        Assert.assertEquals(OmahaBase.UpdateStatus.OUTDATED, status);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
+    public void testCheckForUpdatesFailedIncorrectNewVersion() {
+        final long now = 10000L;
+        final String oldVersion = "89.0.12.5342";
+        final String newVersion = "Unknown";
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+        mOmahaBase = createOmahaBase();
+        mOmahaBase.setInstalledVersion(oldVersion);
+        mOmahaBase.setUpdateVersion(newVersion);
+
+        @OmahaBase.UpdateStatus
+        int status = mOmahaBase.checkForUpdates();
+        Assert.assertEquals(OmahaBase.UpdateStatus.FAILED, status);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Omaha"})
+    public void testCheckForUpdatesFailedIncorrectOldVersion() {
+        final long now = 10000L;
+        final String oldVersion = "Unknown";
+        final String newVersion = "89.0.13.1242";
+
+        mDelegate = new MockOmahaDelegate(mContext, DeviceType.HANDSET, InstallSource.ORGANIC);
+        mDelegate.getScheduler().setCurrentTime(now);
+        mOmahaBase = createOmahaBase();
+        mOmahaBase.setInstalledVersion(oldVersion);
+        mOmahaBase.setUpdateVersion(newVersion);
+
+        @OmahaBase.UpdateStatus
+        int status = mOmahaBase.checkForUpdates();
+        Assert.assertEquals(OmahaBase.UpdateStatus.FAILED, status);
+    }
+
     private void checkTimestamps(
             long expectedRequestTimestamp, long expectedPostTimestamp, TimestampPair timestamps) {
         Assert.assertEquals(expectedRequestTimestamp, timestamps.timestampNextRequest);
@@ -593,13 +747,12 @@ public class OmahaBaseTest {
                 "https://market.android.com/details?id=com.google.android.apps.chrome";
         private static final String MARKET_URL = STRIPPED_MARKET_URL + "/";
 
-        private static final String UPDATE_VERSION = "1.2.3.4";
-
         // Parameters.
         private final boolean mConnectionTimesOut;
         private final ByteArrayInputStream mServerResponse;
         private final ByteArrayOutputStream mOutputStream;
         private final int mHTTPResponseCode;
+        private final String mUpdateVersion;
 
         // Result variables.
         private int mContentLength;
@@ -610,10 +763,11 @@ public class OmahaBaseTest {
         private String mRequestPropertyValue;
 
         MockConnection(URL url, boolean usingTablet, boolean sendValidResponse,
-                boolean sendInstallEvent, boolean connectionTimesOut) {
+                boolean sendInstallEvent, boolean connectionTimesOut, String updateVersion) {
             super(url);
             Assert.assertEquals(MockRequestGenerator.SERVER_URL, url.toString());
 
+            mUpdateVersion = updateVersion;
             String mockResponse = buildServerResponseString(usingTablet, sendInstallEvent);
             mOutputStream = new ByteArrayOutputStream();
             mServerResponse =
@@ -635,7 +789,7 @@ public class OmahaBaseTest {
             String response = "";
             response += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
             response += "<response protocol=\"3.0\" server=\"prod\">";
-            response += "<daystart elapsed_seconds=\"12345\"/>";
+            response += "<daystart elapsed_days=\"4088\" elapsed_seconds=\"12345\"/>";
             response += "<app appid=\"";
             response += (isOnTablet ? MockRequestGenerator.UUID_TABLET
                                     : MockRequestGenerator.UUID_PHONE);
@@ -645,7 +799,7 @@ public class OmahaBaseTest {
             } else {
                 response += "<updatecheck status=\"ok\">";
                 response += "<urls><url codebase=\"" + MARKET_URL + "\"/></urls>";
-                response += "<manifest version=\"" + UPDATE_VERSION + "\">";
+                response += "<manifest version=\"" + mUpdateVersion + "\">";
                 response += "<packages>";
                 response += "<package hash=\"0\" name=\"dummy.apk\" required=\"true\" size=\"0\"/>";
                 response += "</packages>";

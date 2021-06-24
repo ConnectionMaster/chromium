@@ -6,10 +6,11 @@
 
 #include <algorithm>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
@@ -19,7 +20,8 @@
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/post_task.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/task/thread_pool.h"
+#include "base/test/task_environment.h"
 #include "base/threading/thread_restrictions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -28,7 +30,10 @@ namespace {
 
 class PrioritizedTaskRunnerTest : public testing::Test {
  public:
-  PrioritizedTaskRunnerTest() {}
+  PrioritizedTaskRunnerTest() = default;
+  PrioritizedTaskRunnerTest(const PrioritizedTaskRunnerTest&) = delete;
+  PrioritizedTaskRunnerTest& operator=(const PrioritizedTaskRunnerTest&) =
+      delete;
 
   void PushName(const std::string& task_name) {
     base::AutoLock auto_lock(callback_names_lock_);
@@ -95,35 +100,31 @@ class PrioritizedTaskRunnerTest : public testing::Test {
   void ReleaseTaskRunner() { waitable_event_.Signal(); }
 
  protected:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   std::vector<std::string> callback_names_;
   base::Lock callback_names_lock_;
   base::WaitableEvent waitable_event_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(PrioritizedTaskRunnerTest);
 };
 
 TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyThreadCheck) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
   base::RunLoop run_loop;
 
-  auto thread_check = [](scoped_refptr<base::TaskRunner> expected_task_runner,
-                         base::OnceClosure callback) {
-    EXPECT_TRUE(expected_task_runner->RunsTasksInCurrentSequence());
-    std::move(callback).Run();
-  };
+  auto thread_check =
+      [](scoped_refptr<base::SequencedTaskRunner> expected_task_runner,
+         base::OnceClosure callback) {
+        EXPECT_TRUE(expected_task_runner->RunsTasksInCurrentSequence());
+        std::move(callback).Run();
+      };
 
   prioritized_task_runner->PostTaskAndReply(
       FROM_HERE,
       base::BindOnce(thread_check, task_runner, base::DoNothing::Once()),
-      base::BindOnce(thread_check,
-                     scoped_task_environment_.GetMainThreadTaskRunner(),
+      base::BindOnce(thread_check, task_environment_.GetMainThreadTaskRunner(),
                      run_loop.QuitClosure()),
       0);
 
@@ -131,8 +132,7 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyThreadCheck) {
 }
 
 TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyRunsBothTasks) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -145,13 +145,12 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyRunsBothTasks) {
       0);
 
   // Run the TaskRunner and both the Task and Reply should run.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ((std::vector<std::string>{"Task", "Reply"}), callback_names_);
 }
 
 TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyTestPriority) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -183,7 +182,7 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyTestPriority) {
 
   // Run the TaskRunner and all of the tasks and replies should have run, in
   // priority order.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ((std::vector<std::string>{"Task0", "Task5", "Task7"}), TaskOrder());
   EXPECT_EQ((std::vector<std::string>{"Reply0", "Reply5", "Reply7"}),
             ReplyOrder());
@@ -191,8 +190,7 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyTestPriority) {
 
 // Ensure that replies are run in priority order.
 TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyTestReplyPriority) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -230,7 +228,7 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyTestReplyPriority) {
   ProcessTaskRunner(task_runner.get());
 
   // Run the replies.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   EXPECT_EQ((std::vector<std::string>{"Task1", "Task2", "Task0"}), TaskOrder());
   EXPECT_EQ((std::vector<std::string>{"Reply0", "Reply1", "Reply2"}),
@@ -238,8 +236,7 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyTestReplyPriority) {
 }
 
 TEST_F(PrioritizedTaskRunnerTest, PriorityOverflow) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -273,7 +270,7 @@ TEST_F(PrioritizedTaskRunnerTest, PriorityOverflow) {
 
   // Run the TaskRunner and all of the tasks and replies should have run, in
   // priority order.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ((std::vector<std::string>{"TaskMaxPlus1", "TaskMinus1", "TaskMax"}),
             TaskOrder());
   EXPECT_EQ(
@@ -282,8 +279,7 @@ TEST_F(PrioritizedTaskRunnerTest, PriorityOverflow) {
 }
 
 TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyWithResultRunsBothTasks) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -296,13 +292,12 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyWithResultRunsBothTasks) {
       0);
 
   // Run the TaskRunner and both the Task and Reply should run.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ((std::vector<std::string>{"Task", "Reply"}), callback_names_);
 }
 
 TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyWithResultTestPriority) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -333,15 +328,14 @@ TEST_F(PrioritizedTaskRunnerTest, PostTaskAndReplyWithResultTestPriority) {
   ReleaseTaskRunner();
 
   // Run the TaskRunner and both the Task and Reply should run.
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
   EXPECT_EQ((std::vector<std::string>{"Task0", "Task3", "Task7"}), TaskOrder());
   EXPECT_EQ((std::vector<std::string>{"Reply0", "Reply3", "Reply7"}),
             ReplyOrder());
 }
 
 TEST_F(PrioritizedTaskRunnerTest, OrderSamePriorityByPostOrder) {
-  auto task_runner =
-      base::CreateSequencedTaskRunnerWithTraits(base::TaskTraits());
+  auto task_runner = base::ThreadPool::CreateSequencedTaskRunner({});
   auto prioritized_task_runner =
       base::MakeRefCounted<PrioritizedTaskRunner>(task_runner);
 
@@ -366,7 +360,7 @@ TEST_F(PrioritizedTaskRunnerTest, OrderSamePriorityByPostOrder) {
   // This is the order the tasks should run on the queue.
   std::sort(expected.begin(), expected.end());
 
-  scoped_task_environment_.RunUntilIdle();
+  task_environment_.RunUntilIdle();
 
   // This is the order that the tasks ran on the queue.
   std::vector<int> results;

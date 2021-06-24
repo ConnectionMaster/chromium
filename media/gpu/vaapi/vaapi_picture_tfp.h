@@ -11,6 +11,7 @@
 #include "base/memory/ref_counted.h"
 #include "media/gpu/vaapi/vaapi_picture.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gl/gl_bindings.h"
 
 namespace gl {
@@ -25,11 +26,12 @@ class VaapiWrapper;
 // extension.
 class VaapiTFPPicture : public VaapiPicture {
  public:
-  VaapiTFPPicture(const scoped_refptr<VaapiWrapper>& vaapi_wrapper,
+  VaapiTFPPicture(scoped_refptr<VaapiWrapper> vaapi_wrapper,
                   const MakeGLContextCurrentCallback& make_context_current_cb,
                   const BindGLImageCallback& bind_image_cb,
                   int32_t picture_buffer_id,
                   const gfx::Size& size,
+                  const gfx::Size& visible_size,
                   uint32_t texture_id,
                   uint32_t client_texture_id,
                   uint32_t texture_target);
@@ -37,18 +39,18 @@ class VaapiTFPPicture : public VaapiPicture {
   ~VaapiTFPPicture() override;
 
   // VaapiPicture implementation.
-  bool Allocate(gfx::BufferFormat format) override;
+  Status Allocate(gfx::BufferFormat format) override;
   bool ImportGpuMemoryBufferHandle(
       gfx::BufferFormat format,
       gfx::GpuMemoryBufferHandle gpu_memory_buffer_handle) override;
-  bool DownloadFromSurface(const scoped_refptr<VASurface>& va_surface) override;
+  bool DownloadFromSurface(scoped_refptr<VASurface> va_surface) override;
 
  private:
-  bool Initialize();
+  Status Initialize();
 
-  Display* x_display_;
+  x11::Connection* const connection_;
 
-  Pixmap x_pixmap_;
+  x11::Pixmap x_pixmap_;
   scoped_refptr<gl::GLImageGLX> glx_image_;
 
   DISALLOW_COPY_AND_ASSIGN(VaapiTFPPicture);

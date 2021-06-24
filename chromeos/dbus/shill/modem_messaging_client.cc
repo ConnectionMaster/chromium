@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
@@ -35,13 +36,12 @@ class ModemMessagingProxy {
                       const std::string& service_name,
                       const dbus::ObjectPath& object_path)
       : proxy_(bus->GetObjectProxy(service_name, object_path)),
-        service_name_(service_name),
-        weak_ptr_factory_(this) {
+        service_name_(service_name) {
     proxy_->ConnectToSignal(
         modemmanager::kModemManager1MessagingInterface,
         modemmanager::kSMSAddedSignal,
-        base::Bind(&ModemMessagingProxy::OnSmsAdded,
-                   weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(&ModemMessagingProxy::OnSmsAdded,
+                            weak_ptr_factory_.GetWeakPtr()),
         base::BindOnce(&ModemMessagingProxy::OnSignalConnected,
                        weak_ptr_factory_.GetWeakPtr()));
   }
@@ -102,14 +102,14 @@ class ModemMessagingProxy {
   // Handles responses of List method calls.
   void OnList(ListCallback callback, dbus::Response* response) {
     if (!response) {
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
     dbus::MessageReader reader(response);
     std::vector<dbus::ObjectPath> sms_paths;
     if (!reader.PopArrayOfObjectPaths(&sms_paths)) {
       LOG(WARNING) << "Invalid response: " << response->ToString();
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
     std::move(callback).Run(std::move(sms_paths));
@@ -129,7 +129,7 @@ class ModemMessagingProxy {
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.
-  base::WeakPtrFactory<ModemMessagingProxy> weak_ptr_factory_;
+  base::WeakPtrFactory<ModemMessagingProxy> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ModemMessagingProxy);
 };
@@ -163,6 +163,8 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) ModemMessagingClientImpl
             ListCallback callback) override {
     GetProxy(service_name, object_path)->List(std::move(callback));
   }
+
+  TestInterface* GetTestInterface() override { return nullptr; }
 
  private:
   using ProxyMap = std::map<std::pair<std::string, std::string>,

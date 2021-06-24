@@ -13,7 +13,7 @@
 #include "base/macros.h"
 #include "base/values.h"
 #include "components/viz/common/surfaces/surface_info.h"
-#include "content/common/resource_messages.h"
+#include "content/common/content_param_traits.h"
 #include "content/public/common/content_constants.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_utils.h"
@@ -89,7 +89,7 @@ TEST(IPCMessageTest, Bitmap) {
 
 TEST(IPCMessageTest, ListValue) {
   base::ListValue input;
-  input.AppendDouble(42.42);
+  input.Append(42.42);
   input.AppendString("forty");
   input.Append(std::make_unique<base::Value>());
 
@@ -120,7 +120,7 @@ TEST(IPCMessageTest, DictionaryValue) {
   subdict->SetBoolean("bool", false);
 
   auto sublist = std::make_unique<base::ListValue>();
-  sublist->AppendDouble(42.42);
+  sublist->Append(42.42);
   sublist->AppendString("forty");
   sublist->AppendString("two");
   subdict->Set("list", std::move(sublist));
@@ -244,41 +244,6 @@ TEST(IPCMessageTest, SSLInfo) {
 
   ASSERT_EQ(in.ct_policy_compliance, out.ct_policy_compliance);
   ASSERT_EQ(in.ocsp_result, out.ocsp_result);
-}
-
-TEST(IPCMessageTest, RenderWidgetSurfaceProperties) {
-  content::RenderWidgetSurfaceProperties input;
-  input.size = gfx::Size(23, 45);
-  input.device_scale_factor = 0.8;
-  input.top_controls_height = 16.5;
-  input.top_controls_shown_ratio = 0.4;
-#ifdef OS_ANDROID
-  input.bottom_controls_height = 23.4;
-  input.bottom_controls_shown_ratio = 0.8;
-  input.selection.start.set_type(gfx::SelectionBound::Type::CENTER);
-  input.has_transparent_background = true;
-#endif
-
-  IPC::Message msg(1, 2, IPC::Message::PRIORITY_NORMAL);
-  IPC::ParamTraits<content::RenderWidgetSurfaceProperties>::Write(&msg, input);
-
-  content::RenderWidgetSurfaceProperties output;
-  base::PickleIterator iter(msg);
-  EXPECT_TRUE(IPC::ParamTraits<content::RenderWidgetSurfaceProperties>::Read(
-      &msg, &iter, &output));
-
-  EXPECT_EQ(input.size, output.size);
-  EXPECT_EQ(input.device_scale_factor, output.device_scale_factor);
-  EXPECT_EQ(input.top_controls_height, output.top_controls_height);
-  EXPECT_EQ(input.top_controls_shown_ratio, output.top_controls_shown_ratio);
-#ifdef OS_ANDROID
-  EXPECT_EQ(input.bottom_controls_height, output.bottom_controls_height);
-  EXPECT_EQ(input.bottom_controls_shown_ratio,
-            output.bottom_controls_shown_ratio);
-  EXPECT_EQ(input.selection, output.selection);
-  EXPECT_EQ(input.has_transparent_background,
-            output.has_transparent_background);
-#endif
 }
 
 static constexpr viz::FrameSinkId kArbitraryFrameSinkId(1, 1);

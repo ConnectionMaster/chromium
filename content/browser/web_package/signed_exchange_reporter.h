@@ -8,17 +8,14 @@
 #include <memory>
 #include <string>
 
-#include "base/callback.h"
 #include "base/macros.h"
 #include "content/browser/web_package/signed_exchange_error.h"
 #include "content/common/content_export.h"
 #include "net/base/ip_address.h"
+#include "net/base/network_isolation_key.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "url/gurl.h"
-
-namespace network {
-struct ResourceResponseHead;
-}  // namespace network
 
 namespace content {
 
@@ -30,8 +27,9 @@ class CONTENT_EXPORT SignedExchangeReporter {
   static std::unique_ptr<SignedExchangeReporter> MaybeCreate(
       const GURL& outer_url,
       const std::string& referrer,
-      const network::ResourceResponseHead& response,
-      base::OnceCallback<int(void)> frame_tree_node_id_getter);
+      const network::mojom::URLResponseHead& response,
+      const net::NetworkIsolationKey& network_isolation_key,
+      int frame_tree_node_id);
 
   ~SignedExchangeReporter();
 
@@ -41,18 +39,21 @@ class CONTENT_EXPORT SignedExchangeReporter {
 
   // Queues the signed exchange report. This method must be called at the last
   // method to be called on |this|, and must be called only once.
-  void ReportResultAndFinish(SignedExchangeLoadResult result);
+  void ReportLoadResultAndFinish(SignedExchangeLoadResult result);
+
+  void ReportHeaderIntegrityMismatch();
 
  private:
-  SignedExchangeReporter(
-      const GURL& outer_url,
-      const std::string& referrer,
-      const network::ResourceResponseHead& response,
-      base::OnceCallback<int(void)> frame_tree_node_id_getter);
+  SignedExchangeReporter(const GURL& outer_url,
+                         const std::string& referrer,
+                         const network::mojom::URLResponseHead& response,
+                         const net::NetworkIsolationKey& network_isolation_key,
+                         int frame_tree_node_id);
 
   network::mojom::SignedExchangeReportPtr report_;
   const base::TimeTicks request_start_;
-  base::OnceCallback<int(void)> frame_tree_node_id_getter_;
+  const net::NetworkIsolationKey network_isolation_key_;
+  const int frame_tree_node_id_;
   net::IPAddress cert_server_ip_address_;
 
   DISALLOW_COPY_AND_ASSIGN(SignedExchangeReporter);

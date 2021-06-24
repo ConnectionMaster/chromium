@@ -14,9 +14,10 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread_collision_warner.h"
+#include "build/chromeos_buildflags.h"
 #include "media/capture/capture_export.h"
-#include "media/capture/mojom/video_capture_types.mojom.h"
 #include "media/capture/video/video_capture_device.h"
+#include "media/capture/video/video_frame_receiver.h"
 
 namespace media {
 class VideoCaptureBufferPool;
@@ -43,11 +44,17 @@ using VideoCaptureJpegDecoderFactoryCB =
 class CAPTURE_EXPORT VideoCaptureDeviceClient
     : public VideoCaptureDevice::Client {
  public:
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   VideoCaptureDeviceClient(
       VideoCaptureBufferType target_buffer_type,
       std::unique_ptr<VideoFrameReceiver> receiver,
       scoped_refptr<VideoCaptureBufferPool> buffer_pool,
-      VideoCaptureJpegDecoderFactoryCB optional_jpeg_decoder_factory_callback);
+      VideoCaptureJpegDecoderFactoryCB jpeg_decoder_factory_callback);
+#else
+  VideoCaptureDeviceClient(VideoCaptureBufferType target_buffer_type,
+                           std::unique_ptr<VideoFrameReceiver> receiver,
+                           scoped_refptr<VideoCaptureBufferPool> buffer_pool);
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
   ~VideoCaptureDeviceClient() override;
 
   static Buffer MakeBufferStruct(
@@ -56,19 +63,28 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient
       int frame_feedback_id);
 
   // VideoCaptureDevice::Client implementation.
+  // TODO(crbug.com/978143): remove |frame_feedback_id| default value.
   void OnIncomingCapturedData(const uint8_t* data,
                               int length,
                               const VideoCaptureFormat& frame_format,
+                              const gfx::ColorSpace& color_space,
                               int clockwise_rotation,
+                              bool flip_y,
                               base::TimeTicks reference_time,
                               base::TimeDelta timestamp,
                               int frame_feedback_id = 0) override;
+  // TODO(crbug.com/978143): remove |frame_feedback_id| default value.
   void OnIncomingCapturedGfxBuffer(gfx::GpuMemoryBuffer* buffer,
                                    const VideoCaptureFormat& frame_format,
                                    int clockwise_rotation,
                                    base::TimeTicks reference_time,
                                    base::TimeDelta timestamp,
                                    int frame_feedback_id = 0) override;
+  void OnIncomingCapturedExternalBuffer(
+      CapturedExternalVideoBuffer buffer,
+      std::vector<CapturedExternalVideoBuffer> scaled_buffers,
+      base::TimeTicks reference_time,
+      base::TimeDelta timestamp) override;
   ReserveResult ReserveOutputBuffer(const gfx::Size& dimensions,
                                     VideoPixelFormat format,
                                     int frame_feedback_id,
@@ -94,6 +110,11 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient
   double GetBufferPoolUtilization() const override;
 
  private:
+  ReadyFrameInBuffer CreateReadyFrameFromExternalBuffer(
+      CapturedExternalVideoBuffer buffer,
+      base::TimeTicks reference_time,
+      base::TimeDelta timestamp);
+
   // A branch of OnIncomingCapturedData for Y16 frame_format.pixel_format.
   void OnIncomingCapturedY16Data(const uint8_t* data,
                                  int length,
@@ -108,9 +129,11 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient
   const std::unique_ptr<VideoFrameReceiver> receiver_;
   std::vector<int> buffer_ids_known_by_receiver_;
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   VideoCaptureJpegDecoderFactoryCB optional_jpeg_decoder_factory_callback_;
   std::unique_ptr<VideoCaptureJpegDecoder> external_jpeg_decoder_;
   base::OnceClosure on_started_using_gpu_cb_;
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
   // The pool of shared-memory buffers used for capturing.
   const scoped_refptr<VideoCaptureBufferPool> buffer_pool_;

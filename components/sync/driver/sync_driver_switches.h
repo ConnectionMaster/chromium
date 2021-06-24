@@ -6,6 +6,8 @@
 #define COMPONENTS_SYNC_DRIVER_SYNC_DRIVER_SWITCHES_H_
 
 #include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
 
 namespace switches {
 
@@ -15,6 +17,11 @@ namespace switches {
 // assume it's running on the UI thread.
 bool IsSyncAllowedByFlag();
 
+#if defined(OS_IOS)
+// Returns whether RPC is enabled.
+bool IsSyncTrustedVaultPassphraseiOSRPCEnabled();
+#endif  // defined(OS_IOS)
+
 // Defines all the command-line switches used by sync driver. All switches in
 // alphabetical order. The switches should be documented alongside the
 // definition of their values in the .cc file.
@@ -22,33 +29,25 @@ extern const char kDisableSync[];
 extern const char kSyncDeferredStartupTimeoutSeconds[];
 extern const char kSyncDisableDeferredStartup[];
 extern const char kSyncIncludeSpecificsInProtocolLog[];
-extern const char kSyncServiceURL[];
 extern const char kSyncShortInitialRetryOverride[];
 extern const char kSyncShortNudgeDelayForTest[];
 
-extern const base::Feature kStopSyncInPausedState;
 extern const base::Feature
     kSyncAllowWalletDataInTransportModeWithCustomPassphrase;
-extern const base::Feature kSyncPseudoUSSAppList;
-extern const base::Feature kSyncPseudoUSSApps;
-extern const base::Feature kSyncPseudoUSSArcPackage;
-extern const base::Feature kSyncPseudoUSSDictionary;
-extern const base::Feature kSyncPseudoUSSExtensionSettings;
-extern const base::Feature kSyncPseudoUSSExtensions;
-extern const base::Feature kSyncPseudoUSSFavicons;
-extern const base::Feature kSyncPseudoUSSHistoryDeleteDirectives;
-extern const base::Feature kSyncPseudoUSSPreferences;
-extern const base::Feature kSyncPseudoUSSPriorityPreferences;
-extern const base::Feature kSyncPseudoUSSSearchEngines;
-extern const base::Feature kSyncPseudoUSSSupervisedUsers;
-extern const base::Feature kSyncPseudoUSSThemes;
-extern const base::Feature kSyncSendTabToSelf;
-extern const base::Feature kSyncSupportSecondaryAccount;
-extern const base::Feature kSyncUSSBookmarks;
-extern const base::Feature kSyncUSSPasswords;
-extern const base::Feature kSyncUSSAutofillProfile;
-extern const base::Feature kSyncUSSAutofillWalletData;
-extern const base::Feature kSyncUSSAutofillWalletMetadata;
+extern const base::Feature kSyncAutofillWalletOfferData;
+extern const base::Feature kSyncWifiConfigurations;
+extern const base::Feature kDecoupleSyncFromAndroidMasterSync;
+
+extern const base::Feature kSyncRequiresPoliciesLoaded;
+extern const base::FeatureParam<base::TimeDelta> kSyncPolicyLoadTimeout;
+
+#if defined(OS_IOS)
+extern const base::Feature kSyncTrustedVaultPassphraseiOSRPC;
+#endif  // defined(OS_IOS)
+
+extern const base::Feature kSyncTrustedVaultPassphraseRecovery;
+
+extern const base::Feature kSyncTrustedVaultPassphrasePromo;
 
 }  // namespace switches
 

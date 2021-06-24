@@ -4,42 +4,77 @@
 
 #include "chrome/browser/ui/ash/ash_test_util.h"
 
-#include "ash/public/interfaces/constants.mojom.h"
-#include "ash/public/interfaces/shell_test_api.test-mojom.h"
 #include "base/run_loop.h"
-#include "content/public/common/service_manager_connection.h"
-#include "services/service_manager/public/cpp/connector.h"
-#include "ui/aura/test/mus/change_completion_waiter.h"
+#include "chromeos/ui/base/window_properties.h"
+#include "chromeos/ui/base/window_state_type.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "ui/aura/window.h"
+#include "ui/aura/window_observer.h"
+#include "ui/base/test/ui_controls.h"
+#include "ui/wm/core/window_util.h"
 
 namespace test {
+namespace {
 
-ash::mojom::ShellTestApiPtr GetShellTestApi() {
-  ash::mojom::ShellTestApiPtr shell_test_api;
-  content::ServiceManagerConnection::GetForProcess()
-      ->GetConnector()
-      ->BindInterface(ash::mojom::kServiceName, &shell_test_api);
+// Wait until the window's state changes to given the snapped state.
+// The window should stay alive, so no need to observer destroying.
+class SnapWaiter : public aura::WindowObserver {
+ public:
+  SnapWaiter(aura::Window* window, chromeos::WindowStateType type)
+      : window_(window), type_(type) {
+    window->AddObserver(this);
+  }
+  ~SnapWaiter() override { window_->RemoveObserver(this); }
 
-  return shell_test_api;
-}
+  // aura::WindowObserver:
+  void OnWindowPropertyChanged(aura::Window* window,
+                               const void* key,
+                               intptr_t old) override {
+    if (key == chromeos::kWindowStateTypeKey && IsSnapped())
+      run_loop_.Quit();
+  }
 
-void WaitForNoPointerHoldLock(bool wait_for_changes) {
-  ash::mojom::ShellTestApiPtr shell_test_api = GetShellTestApi();
+  void Wait() { run_loop_.Run(); }
 
-  // Allow nestable tasks because this is called within a move loop.
-  base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
-  shell_test_api->WaitForNoPointerHoldLock(run_loop.QuitClosure());
-  run_loop.Run();
+  bool IsSnapped() const {
+    return window_->GetProperty(chromeos::kWindowStateTypeKey) == type_;
+  }
 
-  if (wait_for_changes)
-    aura::test::WaitForAllChangesToComplete();
-}
+ private:
+  aura::Window* window_;
+  chromeos::WindowStateType type_;
+  base::RunLoop run_loop_;
 
-void WaitForOverviewAnimationState(ash::mojom::OverviewAnimationState state) {
-  ash::mojom::ShellTestApiPtr shell_test_api = GetShellTestApi();
+  DISALLOW_COPY_AND_ASSIGN(SnapWaiter);
+};
 
-  base::RunLoop run_loop;
-  shell_test_api->WaitForOverviewAnimationState(state, run_loop.QuitClosure());
-  run_loop.Run();
+}  // namespace
+
+void ActivateAndSnapWindow(aura::Window* window,
+                           chromeos::WindowStateType type) {
+  DCHECK(window);
+  if (!wm::IsActiveWindow(window))
+    wm::ActivateWindow(window);
+
+  ASSERT_TRUE(wm::IsActiveWindow(window));
+
+  SnapWaiter snap_waiter(window, type);
+  ASSERT_TRUE(type == chromeos::WindowStateType::kSecondarySnapped ||
+              type == chromeos::WindowStateType::kPrimarySnapped);
+
+  // Early return if it's already snapped.
+  if (snap_waiter.IsSnapped())
+    return;
+
+  ui_controls::SendKeyPress(window,
+                            type == chromeos::WindowStateType::kPrimarySnapped
+                                ? ui::VKEY_OEM_4
+                                : ui::VKEY_OEM_6,
+                            /*control=*/false,
+                            /*shift=*/false,
+                            /*alt=*/true,
+                            /*command=*/false);
+  snap_waiter.Wait();
 }
 
 }  // namespace test

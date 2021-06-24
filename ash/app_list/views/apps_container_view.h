@@ -7,28 +7,29 @@
 
 #include <stddef.h>
 
-#include <vector>
-
 #include "ash/app_list/model/app_list_folder_item.h"
-#include "ash/app_list/views/horizontal_page.h"
+#include "ash/app_list/views/app_list_page.h"
+#include "ash/ash_export.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 
-namespace app_list {
+namespace ash {
 
-class AppsGridView;
 class ApplicationDragAndDropHost;
 class AppListFolderItem;
 class AppListFolderView;
 class AppListModel;
 class ContentsView;
 class FolderBackgroundView;
+class PagedAppsGridView;
 class PageSwitcher;
 class SuggestionChipContainerView;
 
 // AppsContainerView contains a root level AppsGridView to render the root level
 // app items, and a AppListFolderView to render the app items inside the
 // active folder.
-class APP_LIST_EXPORT AppsContainerView : public HorizontalPage {
+class ASH_EXPORT AppsContainerView : public AppListPage {
  public:
   AppsContainerView(ContentsView* contents_view, AppListModel* model);
   ~AppsContainerView() override;
@@ -37,7 +38,8 @@ class APP_LIST_EXPORT AppsContainerView : public HorizontalPage {
   void ShowActiveFolder(AppListFolderItem* folder_item);
 
   // Shows the root level apps list. This is called when UI navigate back from
-  // a folder view with |folder_item|. If |folder_item| is NULL skips animation.
+  // a folder view with |folder_item|. If |folder_item| is nullptr skips
+  // animation.
   void ShowApps(AppListFolderItem* folder_item);
 
   // Resets the app list to a state where it shows the main grid view. This is
@@ -63,42 +65,79 @@ class APP_LIST_EXPORT AppsContainerView : public HorizontalPage {
 
   // Updates the visibility of the items in this view according to
   // |app_list_state| and |is_in_drag|.
-  void UpdateControlVisibility(ash::mojom::AppListViewState app_list_state,
+  void UpdateControlVisibility(AppListViewState app_list_state,
                                bool is_in_drag);
-
-  // Updates y position and opacity of the items in this view during dragging.
-  void UpdateYPositionAndOpacity();
 
   // Called when tablet mode starts and ends.
   void OnTabletModeChanged(bool started);
+
+  // Calculates the apps container or apps grid margin depending on the
+  // available content bounds, and search box size.
+  // |available_bounds| - The bounds available to lay out either full apps
+  //      container or apps grid (depending on |for_full_contaier_bounds|).
+  // |search_box_size| - The expected search box size. Used to determine the
+  //      the amount of space in apps container available to the apps grid
+  //      (if calaulating margins for apps grid, |available_bounds| should
+  //      not contain the search box, so this value will not be used in that
+  //      case).
+  //
+  // NOTE: This should not call into ContentsView::GetSearchBoxBounds*()
+  // methods, as CalculateMarginsForAvailableBounds is used to calculate the
+  // search box bounds.
+  const gfx::Insets& CalculateMarginsForAvailableBounds(
+      const gfx::Rect& available_bounds,
+      const gfx::Size& search_box_size);
 
   // views::View overrides:
   void Layout() override;
   bool OnKeyPressed(const ui::KeyEvent& event) override;
   const char* GetClassName() const override;
   void OnGestureEvent(ui::GestureEvent* event) override;
-  gfx::Size GetMinimumSize() const override;
 
-  // HorizontalPage overrides:
+  // AppListPage overrides:
+  void OnShown() override;
   void OnWillBeHidden() override;
+  void OnHidden() override;
+  void OnAnimationStarted(AppListState from_state,
+                          AppListState to_state) override;
+  void UpdatePageOpacityForState(AppListState state,
+                                 float search_box_opacity,
+                                 bool restore_opacity) override;
+  void UpdatePageBoundsForState(AppListState state,
+                                const gfx::Rect& contents_bounds,
+                                const gfx::Rect& search_box_bounds) override;
+  gfx::Rect GetPageBoundsForState(
+      AppListState state,
+      const gfx::Rect& contents_bounds,
+      const gfx::Rect& search_box_bounds) const override;
   views::View* GetFirstFocusableView() override;
-  gfx::Rect GetPageBoundsForState(ash::AppListState state) const override;
-
-  // Returns the expected search box bounds based on the current height of app
-  // list.
-  gfx::Rect GetSearchBoxExpectedBounds() const;
+  views::View* GetLastFocusableView() override;
+  void AnimateOpacity(float current_progress,
+                      AppListViewState target_view_state,
+                      const OpacityAnimator& animator) override;
+  void AnimateYPosition(AppListViewState target_view_state,
+                        const TransformAnimator& animator,
+                        float default_offset) override;
 
   SuggestionChipContainerView* suggestion_chip_container_view_for_test() {
     return suggestion_chip_container_view_;
   }
-  AppsGridView* apps_grid_view() { return apps_grid_view_; }
+  PagedAppsGridView* apps_grid_view() { return apps_grid_view_; }
   FolderBackgroundView* folder_background_view() {
     return folder_background_view_;
   }
   AppListFolderView* app_list_folder_view() { return app_list_folder_view_; }
+  PageSwitcher* page_switcher() { return page_switcher_; }
+
+  // Called by app list view when the app list config changes.
+  void OnAppListConfigUpdated();
 
   // Updates suggestion chips from app list model.
   void UpdateSuggestionChips();
+
+  // Temporarily disables blur on suggestion chips view background. The blur
+  // will remained disabled until the returned closure runner goes out of scope.
+  base::ScopedClosureRunner DisableSuggestionChipsBlur();
 
  private:
   enum ShowState {
@@ -108,7 +147,26 @@ class APP_LIST_EXPORT AppsContainerView : public HorizontalPage {
     SHOW_ITEM_REPARENT,
   };
 
+  // Returns the AppListConfig for the app list view this AppsContainerView
+  // belongs to.
+  const AppListConfig& GetAppListConfig() const;
+
   void SetShowState(ShowState show_state, bool show_apps_with_animation);
+
+  // Updates the whole container opacity to match the app list state.
+  void UpdateContainerOpacityForState(AppListState state);
+
+  // Updates the opacity of the apps container elements for the current app list
+  // view position.
+  // |progress| - The current app list view drag progress.
+  // |restore_opacity| - Whether the opacity should be restored to the non-drag
+  //     state.
+  void UpdateContentsOpacity(float progress, bool restore_opacity);
+
+  // Updates the y position of the apps container elements for the current app
+  // list view position.
+  // |progress| - The current app list view drag progress.
+  void UpdateContentsYPosition(float progress);
 
   // Suggestion chips and apps grid view become unfocusable if |disabled| is
   // true. This is used to trap focus within the folder when it is opened.
@@ -118,15 +176,25 @@ class APP_LIST_EXPORT AppsContainerView : public HorizontalPage {
   // list transition progress.
   int GetExpectedSuggestionChipY(float progress);
 
-  // Returns true if columns and rows number of |apps_grid_view_| should be
-  // switched.
-  bool ShouldSwitchColsAndRows() const;
+  struct GridLayout {
+    int columns;
+    int rows;
+  };
+  // Returns the number of columns and rows |apps_grid_view_| should display,
+  // depending on the current display work area size.
+  GridLayout CalculateGridLayout() const;
+
+  // Callback returned by DisableBlur().
+  void OnSuggestionChipsBlurDisablerReleased();
 
   ContentsView* contents_view_;  // Not owned.
 
+  // The number of active requests to disable blur.
+  size_t suggestion_chips_blur_disabler_count_ = 0;
+
   // The views below are owned by views hierarchy.
   SuggestionChipContainerView* suggestion_chip_container_view_ = nullptr;
-  AppsGridView* apps_grid_view_ = nullptr;
+  PagedAppsGridView* apps_grid_view_ = nullptr;
   AppListFolderView* app_list_folder_view_ = nullptr;
   PageSwitcher* page_switcher_ = nullptr;
   FolderBackgroundView* folder_background_view_ = nullptr;
@@ -138,9 +206,22 @@ class APP_LIST_EXPORT AppsContainerView : public HorizontalPage {
   // view's y position.
   int chip_grid_y_distance_ = 0;
 
+  struct CachedContainerMargins {
+    gfx::Size bounds_size;
+    gfx::Size search_box_size;
+    gfx::Insets margins;
+  };
+  // The last result returned by CalculateMarginsForAvailableBounds() -
+  // subsequent calls to that method will return the result cached in
+  // |cached_container_margins_|, provided the method arguments match the cached
+  // arguments (otherwise the margins will be recalculated).
+  CachedContainerMargins cached_container_margins_;
+
+  base::WeakPtrFactory<AppsContainerView> weak_ptr_factory_{this};
+
   DISALLOW_COPY_AND_ASSIGN(AppsContainerView);
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_VIEWS_APPS_CONTAINER_VIEW_H_

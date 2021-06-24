@@ -11,6 +11,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/win_util.h"
+#include "chrome/browser/extensions/system_display/display_info_provider.h"
 #include "extensions/common/api/system_display.h"
 #include "ui/display/display.h"
 #include "ui/display/win/dpi.h"
@@ -32,8 +33,7 @@ BOOL CALLBACK EnumMonitorCallback(HMONITOR monitor,
 
   DisplayUnitInfo unit;
 
-  MONITORINFOEX monitor_info;
-  ZeroMemory(&monitor_info, sizeof(MONITORINFOEX));
+  MONITORINFOEX monitor_info = {};
   monitor_info.cbSize = sizeof(monitor_info);
   GetMonitorInfo(monitor, &monitor_info);
 
@@ -42,8 +42,8 @@ BOOL CALLBACK EnumMonitorCallback(HMONITOR monitor,
   if (!EnumDisplayDevices(monitor_info.szDevice, 0, &device, 0))
     return FALSE;
 
-  unit.id =
-      base::NumberToString(base::Hash(base::WideToUTF8(monitor_info.szDevice)));
+  unit.id = base::NumberToString(
+      base::PersistentHash(base::WideToUTF8(monitor_info.szDevice)));
   unit.name = base::WideToUTF8(device.DeviceString);
   all_displays->push_back(std::move(unit));
 
@@ -72,9 +72,8 @@ void DisplayInfoProviderWin::UpdateDisplayUnitInfoForPlatform(
   }
 }
 
-// static
-DisplayInfoProvider* DisplayInfoProvider::Create() {
-  return new DisplayInfoProviderWin();
+std::unique_ptr<DisplayInfoProvider> CreateChromeDisplayInfoProvider() {
+  return std::make_unique<DisplayInfoProviderWin>();
 }
 
 }  // namespace extensions

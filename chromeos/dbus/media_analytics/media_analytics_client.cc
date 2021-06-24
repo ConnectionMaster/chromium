@@ -99,8 +99,9 @@ class MediaAnalyticsClientImpl : public MediaAnalyticsClient {
     dbus_proxy_->ConnectToSignal(
         media_perception::kMediaPerceptionInterface,
         media_perception::kDetectionSignal,
-        base::Bind(&MediaAnalyticsClientImpl::OnDetectionSignalReceived,
-                   weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(
+            &MediaAnalyticsClientImpl::OnDetectionSignalReceived,
+            weak_ptr_factory_.GetWeakPtr()),
         base::BindOnce(&MediaAnalyticsClientImpl::OnSignalConnected,
                        weak_ptr_factory_.GetWeakPtr()));
   }
@@ -136,7 +137,7 @@ class MediaAnalyticsClientImpl : public MediaAnalyticsClient {
                dbus::Response* response) {
     if (!response) {
       LOG(ERROR) << "Call to State failed to get response.";
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
 
@@ -144,7 +145,7 @@ class MediaAnalyticsClientImpl : public MediaAnalyticsClient {
     dbus::MessageReader reader(response);
     if (!reader.PopArrayOfBytesAsProto(&state)) {
       LOG(ERROR) << "Invalid D-Bus response: " << response->ToString();
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
 
@@ -155,7 +156,7 @@ class MediaAnalyticsClientImpl : public MediaAnalyticsClient {
                         dbus::Response* response) {
     if (!response) {
       LOG(ERROR) << "Call to GetDiagnostics failed to get response.";
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
 
@@ -163,7 +164,7 @@ class MediaAnalyticsClientImpl : public MediaAnalyticsClient {
     dbus::MessageReader reader(response);
     if (!reader.PopArrayOfBytesAsProto(&diagnostics)) {
       LOG(ERROR) << "Invalid GetDiagnostics response: " << response->ToString();
-      std::move(callback).Run(base::nullopt);
+      std::move(callback).Run(absl::nullopt);
       return;
     }
 

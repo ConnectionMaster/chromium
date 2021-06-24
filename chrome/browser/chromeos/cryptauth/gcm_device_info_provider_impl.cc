@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string>
 
+#include "ash/constants/ash_features.h"
 #include "base/hash/md5.h"
 #include "base/linux_util.h"
 #include "base/no_destructor.h"
@@ -15,7 +16,6 @@
 #include "base/version.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/chromeos/cryptauth/cryptauth_device_id_provider_impl.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/version_info/version_info.h"
 
 namespace chromeos {
@@ -87,6 +87,24 @@ const cryptauth::GcmDeviceInfo& GcmDeviceInfoProviderImpl::GetGcmDeviceInfo()
     if (base::FeatureList::IsEnabled(features::kInstantTethering)) {
       gcm_device_info.add_supported_software_features(
           cryptauth::SoftwareFeature::MAGIC_TETHER_CLIENT);
+    }
+
+    // Phone Hub is only supported if the associated flag is enabled.
+    if (features::IsPhoneHubEnabled()) {
+      gcm_device_info.add_supported_software_features(
+          cryptauth::SoftwareFeature::PHONE_HUB_CLIENT);
+    }
+
+    // Wifi Sync Android is only supported if the associated flag is enabled.
+    if (features::IsWifiSyncAndroidEnabled()) {
+      gcm_device_info.add_supported_software_features(
+          cryptauth::SoftwareFeature::WIFI_SYNC_CLIENT);
+    }
+
+    // Eche is only supported if the associated flag is enabled.
+    if (features::IsEcheSWAEnabled()) {
+      gcm_device_info.add_supported_software_features(
+          cryptauth::SoftwareFeature::ECHE_CLIENT);
     }
 
     return gcm_device_info;

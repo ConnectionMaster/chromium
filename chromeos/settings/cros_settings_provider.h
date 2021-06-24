@@ -20,7 +20,8 @@ class COMPONENT_EXPORT(CHROMEOS_SETTINGS) CrosSettingsProvider {
  public:
   // The callback type that is called to notify the CrosSettings observers
   // about a setting change.
-  typedef base::Callback<void(const std::string&)> NotifyObserversCallback;
+  using NotifyObserversCallback =
+      base::RepeatingCallback<void(const std::string&)>;
 
   // Possible results of a trusted check.
   enum TrustedStatus {
@@ -47,11 +48,11 @@ class COMPONENT_EXPORT(CHROMEOS_SETTINGS) CrosSettingsProvider {
   // Requests the provider to fetch its values from a trusted store, if it
   // hasn't done so yet. Returns TRUSTED if the values returned by this provider
   // are trusted during the current loop cycle. Otherwise returns
-  // TEMPORARILY_UNTRUSTED, and |callback| will be invoked later when trusted
-  // values become available, PrepareTrustedValues() should be tried again in
-  // that case. Returns PERMANENTLY_UNTRUSTED if a permanent error has occurred.
-  virtual TrustedStatus PrepareTrustedValues(
-      const base::Closure& callback) = 0;
+  // TEMPORARILY_UNTRUSTED, takes ownership of |callback|, and will invoke it
+  // later when trusted values become available. PrepareTrustedValues() should
+  // be tried again in that case. Returns PERMANENTLY_UNTRUSTED if a permanent
+  // error has occurred.
+  virtual TrustedStatus PrepareTrustedValues(base::OnceClosure* callback) = 0;
 
   // Gets the namespace prefix provided by this provider.
   virtual bool HandlesSetting(const std::string& path) const = 0;
@@ -68,5 +69,10 @@ class COMPONENT_EXPORT(CHROMEOS_SETTINGS) CrosSettingsProvider {
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when moved to ash.
+namespace ash {
+using ::chromeos::CrosSettingsProvider;
+}
 
 #endif  // CHROMEOS_SETTINGS_CROS_SETTINGS_PROVIDER_H_

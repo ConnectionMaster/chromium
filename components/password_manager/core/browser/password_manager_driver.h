@@ -6,20 +6,21 @@
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_MANAGER_DRIVER_H_
 
 #include <map>
+#include <string>
 #include <vector>
 
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
-#include "components/autofill/core/common/filling_status.h"
-#include "components/autofill/core/common/password_form_field_prediction_map.h"
+#include "base/types/strong_alias.h"
+#include "components/autofill/core/common/unique_ids.h"
+
+class GURL;
 
 namespace autofill {
 class AutofillDriver;
 struct FormData;
-struct NewPasswordFormGenerationData;
-struct PasswordForm;
+struct ParsingResult;
 struct PasswordFormGenerationData;
 struct PasswordFormFillData;
 }  // namespace autofill
@@ -35,8 +36,14 @@ class PasswordManager;
 class PasswordManagerDriver
     : public base::SupportsWeakPtr<PasswordManagerDriver> {
  public:
-  PasswordManagerDriver() {}
-  virtual ~PasswordManagerDriver() {}
+  using ShowVirtualKeyboard =
+      base::StrongAlias<class ShowVirtualKeyboardTag, bool>;
+
+  PasswordManagerDriver() = default;
+  virtual ~PasswordManagerDriver() = default;
+
+  // Returns driver id which is unique in the current tab.
+  virtual int GetId() const = 0;
 
   // Fills forms matching |form_data|.
   virtual void FillPasswordForm(
@@ -44,52 +51,47 @@ class PasswordManagerDriver
 
   // Informs the driver that there are no saved credentials in the password
   // store for the current page.
+  // |should_show_popup_without_passwords| instructs the driver that the popup
+  // should be shown even without password suggestions. This is set to true if
+  // the popup will include another item that the driver doesn't know about
+  // (e.g. a promo to unlock passwords from the user's Google Account).
   // TODO(https://crbug.com/621355): Remove and observe FormFetcher instead.
-  virtual void InformNoSavedCredentials() {}
-
-  // Informs the driver that |form| can be used for password generation.
-  virtual void AllowPasswordGenerationForForm(
-      const autofill::PasswordForm& form) = 0;
-
-  // Notifies the driver that |forms| were found on which password can be
-  // generated.
-  virtual void FormsEligibleForGenerationFound(
-      const std::vector<autofill::PasswordFormGenerationData>& forms) = 0;
+  virtual void InformNoSavedCredentials(
+      bool should_show_popup_without_passwords) {}
 
   // Notifies the driver that a password can be generated on the fields
   // identified by |form|.
   virtual void FormEligibleForGenerationFound(
-      const autofill::NewPasswordFormGenerationData& form) {}
-
-  // Notifies the driver that username and password predictions from autofill
-  // have been received.
-  virtual void AutofillDataReceived(
-      const std::map<autofill::FormData,
-                     autofill::PasswordFormFieldPredictionMap>& predictions) {}
+      const autofill::PasswordFormGenerationData& form) {}
 
   // Notifies the driver that the user has accepted a generated password.
-  virtual void GeneratedPasswordAccepted(const base::string16& password) = 0;
+  // TODO(crbug/936011): delete this method. The UI should call the one below.
+  virtual void GeneratedPasswordAccepted(const std::u16string& password) = 0;
+
+  // Notifies the password manager that the user has accepted a generated
+  // password. The password manager can bring up some disambiguation UI in
+  // response.
+  virtual void GeneratedPasswordAccepted(
+      const autofill::FormData& form_data,
+      autofill::FieldRendererId generation_element_id,
+      const std::u16string& password) {}
+
+  virtual void TouchToFillClosed(ShowVirtualKeyboard show_virtual_keyboard) {}
 
   // Tells the driver to fill the form with the |username| and |password|.
-  virtual void FillSuggestion(const base::string16& username,
-                              const base::string16& password) = 0;
+  virtual void FillSuggestion(const std::u16string& username,
+                              const std::u16string& password) = 0;
 
   // Tells the renderer to fill the given credential into the focused element.
   // Always calls |completed_callback| with a status indicating success/error.
   virtual void FillIntoFocusedField(
       bool is_password,
-      const base::string16& user_provided_credential,
-      base::OnceCallback<void(autofill::FillingStatus)> compeleted_callback) {}
+      const std::u16string& user_provided_credential) {}
 
   // Tells the driver to preview filling form with the |username| and
   // |password|.
-  virtual void PreviewSuggestion(const base::string16& username,
-                                 const base::string16& password) = 0;
-
-  // Tells the driver to show an initial set of accounts to suggest for the
-  // form.
-  virtual void ShowInitialPasswordAccountSuggestions(
-      const autofill::PasswordFormFillData& form_data) = 0;
+  virtual void PreviewSuggestion(const std::u16string& username,
+                                 const std::u16string& password) = 0;
 
   // Tells the driver to clear previewed password and username fields.
   virtual void ClearPreviewedForm() = 0;
@@ -113,8 +115,17 @@ class PasswordManagerDriver
   // Return true iff the driver corresponds to the main frame.
   virtual bool IsMainFrame() const = 0;
 
+  // Returns true iff a popup can be shown on the behalf of the associated
+  // frame.
+  virtual bool CanShowAutofillUi() const = 0;
+
   // Returns the last committed URL of the frame.
-  virtual GURL GetLastCommittedURL() const = 0;
+  virtual const GURL& GetLastCommittedURL() const = 0;
+
+  // Annotate password related (username, password) DOM input elements with
+  // corresponding HTML attributes. It is used only for debugging.
+  virtual void AnnotateFieldsWithParsingResult(
+      const autofill::ParsingResult& parsing_result) {}
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PasswordManagerDriver);

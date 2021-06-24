@@ -27,32 +27,34 @@
 #include "base/format_macros.h"
 #include "base/memory/platform_shared_memory_region.h"
 #include "base/memory/read_only_shared_memory_region.h"
-#include "base/memory/shared_memory_handle.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/writable_shared_memory_region.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/optional.h"
-#include "base/strings/string16.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
+#include "base/util/type_safety/id_type.h"
 #include "build/build_config.h"
-#include "ipc/ipc_message_start.h"
 #include "ipc/ipc_param_traits.h"
 #include "ipc/ipc_sync_message.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/scoped_hardware_buffer_handle.h"
+#endif
+
+#if defined(OS_FUCHSIA)
+#include <lib/zx/channel.h>
+#include <lib/zx/vmo.h>
 #endif
 
 namespace base {
 class DictionaryValue;
 class FilePath;
 class ListValue;
-class NullableString16;
 class Time;
 class TimeDelta;
 class TimeTicks;
 class UnguessableToken;
+class Value;
 struct FileDescriptor;
 }
 
@@ -106,21 +108,21 @@ struct CheckedTuple {
 //    time_t, suseconds_t (including typedefs to)
 // 3. Any template referencing types above (e.g. std::vector<size_t>)
 template <class P>
-static inline void WriteParam(base::Pickle* m, const P& p) {
+inline void WriteParam(base::Pickle* m, const P& p) {
   typedef typename SimilarTypeTraits<P>::Type Type;
   ParamTraits<Type>::Write(m, static_cast<const Type& >(p));
 }
 
 template <class P>
-static inline bool WARN_UNUSED_RESULT ReadParam(const base::Pickle* m,
-                                                base::PickleIterator* iter,
-                                                P* p) {
+inline bool WARN_UNUSED_RESULT ReadParam(const base::Pickle* m,
+                                         base::PickleIterator* iter,
+                                         P* p) {
   typedef typename SimilarTypeTraits<P>::Type Type;
   return ParamTraits<Type>::Read(m, iter, reinterpret_cast<Type* >(p));
 }
 
 template <class P>
-static inline void LogParam(const P& p, std::string* l) {
+inline void LogParam(const P& p, std::string* l) {
   typedef typename SimilarTypeTraits<P>::Type Type;
   ParamTraits<Type>::Log(static_cast<const Type& >(p), l);
 }
@@ -204,8 +206,8 @@ struct ParamTraits<unsigned int> {
 //   3) Android 64 bit and Fuchsia also have int64_t typedef'd to long.
 // Since we want to support Android 32<>64 bit IPC, as long as we don't have
 // these traits for 32 bit ARM then that'll catch any errors.
-#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_FUCHSIA) || \
-    (defined(OS_ANDROID) && defined(ARCH_CPU_64_BITS))
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS) || \
+    defined(OS_FUCHSIA) || (defined(OS_ANDROID) && defined(ARCH_CPU_64_BITS))
 template <>
 struct ParamTraits<long> {
   typedef long param_type;
@@ -328,8 +330,8 @@ struct ParamTraits<std::string> {
 };
 
 template <>
-struct ParamTraits<base::string16> {
-  typedef base::string16 param_type;
+struct ParamTraits<std::u16string> {
+  typedef std::u16string param_type;
   static void Write(base::Pickle* m, const param_type& p) {
     m->WriteString16(p);
   }
@@ -340,6 +342,20 @@ struct ParamTraits<base::string16> {
   }
   COMPONENT_EXPORT(IPC) static void Log(const param_type& p, std::string* l);
 };
+
+#if defined(OS_WIN)
+template <>
+struct COMPONENT_EXPORT(IPC) ParamTraits<std::wstring> {
+  typedef std::wstring param_type;
+  static void Write(base::Pickle* m, const param_type& p) {
+    m->WriteString16(base::AsStringPiece16(p));
+  }
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* r);
+  static void Log(const param_type& p, std::string* l);
+};
+#endif
 
 template <>
 struct COMPONENT_EXPORT(IPC) ParamTraits<std::vector<char>> {
@@ -602,15 +618,39 @@ struct COMPONENT_EXPORT(IPC) ParamTraits<base::ScopedFD> {
 
 #endif  // defined(OS_POSIX) || defined(OS_FUCHSIA)
 
+#if defined(OS_WIN)
 template <>
-struct COMPONENT_EXPORT(IPC) ParamTraits<base::SharedMemoryHandle> {
-  typedef base::SharedMemoryHandle param_type;
+struct COMPONENT_EXPORT(IPC) ParamTraits<base::win::ScopedHandle> {
+  using param_type = base::win::ScopedHandle;
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
                    param_type* r);
   static void Log(const param_type& p, std::string* l);
 };
+#endif
+
+#if defined(OS_FUCHSIA)
+template <>
+struct COMPONENT_EXPORT(IPC) ParamTraits<zx::vmo> {
+  typedef zx::vmo param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* r);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <>
+struct COMPONENT_EXPORT(IPC) ParamTraits<zx::channel> {
+  typedef zx::channel param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* r);
+  static void Log(const param_type& p, std::string* l);
+};
+#endif  // defined(OS_FUCHSIA)
 
 #if defined(OS_ANDROID)
 template <>
@@ -710,8 +750,8 @@ struct COMPONENT_EXPORT(IPC) ParamTraits<base::ListValue> {
 };
 
 template <>
-struct COMPONENT_EXPORT(IPC) ParamTraits<base::NullableString16> {
-  typedef base::NullableString16 param_type;
+struct COMPONENT_EXPORT(IPC) ParamTraits<base::Value> {
+  typedef base::Value param_type;
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -945,7 +985,7 @@ struct ParamTraits<base::flat_map<Key, Mapped, Compare>> {
         return false;
     }
 
-    *r = param_type(std::move(vect), base::KEEP_FIRST_OF_DUPES);
+    *r = param_type(std::move(vect));
     return true;
   }
   static void Log(const param_type& p, std::string* l) {
@@ -990,8 +1030,8 @@ struct ParamTraits<std::unique_ptr<P>> {
 };
 
 template <class P>
-struct ParamTraits<base::Optional<P>> {
-  typedef base::Optional<P> param_type;
+struct ParamTraits<absl::optional<P>> {
+  typedef absl::optional<P> param_type;
   static void Write(base::Pickle* m, const param_type& p) {
     const bool is_set = static_cast<bool>(p);
     WriteParam(m, is_set);
@@ -1017,6 +1057,48 @@ struct ParamTraits<base::Optional<P>> {
       LogParam(p.value(), l);
     else
       l->append("(unset)");
+  }
+};
+
+// base/util types ParamTraits
+
+template <typename TypeMarker, typename WrappedType, WrappedType kInvalidValue>
+struct ParamTraits<util::IdType<TypeMarker, WrappedType, kInvalidValue>> {
+  using param_type = util::IdType<TypeMarker, WrappedType, kInvalidValue>;
+  static void Write(base::Pickle* m, const param_type& p) {
+    WriteParam(m, p.GetUnsafeValue());
+  }
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* r) {
+    WrappedType value;
+    if (!ReadParam(m, iter, &value))
+      return false;
+    *r = param_type::FromUnsafeValue(value);
+    return true;
+  }
+  static void Log(const param_type& p, std::string* l) {
+    LogParam(p.GetUnsafeValue(), l);
+  }
+};
+
+template <typename TagType, typename UnderlyingType>
+struct ParamTraits<base::StrongAlias<TagType, UnderlyingType>> {
+  using param_type = base::StrongAlias<TagType, UnderlyingType>;
+  static void Write(base::Pickle* m, const param_type& p) {
+    WriteParam(m, p.value());
+  }
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* r) {
+    UnderlyingType value;
+    if (!ReadParam(m, iter, &value))
+      return false;
+    *r = param_type(value);
+    return true;
+  }
+  static void Log(const param_type& p, std::string* l) {
+    LogParam(p.value(), l);
   }
 };
 

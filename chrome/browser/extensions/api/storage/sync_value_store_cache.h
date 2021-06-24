@@ -43,7 +43,7 @@ class SyncValueStoreCache : public ValueStoreCache {
 
   // ValueStoreCache implementation:
   void RunWithValueStoreForExtension(
-      const StorageCallback& callback,
+      StorageCallback callback,
       scoped_refptr<const Extension> extension) override;
   void DeleteStorageSoon(const std::string& extension_id) override;
 
@@ -55,7 +55,7 @@ class SyncValueStoreCache : public ValueStoreCache {
   bool initialized_;
   std::unique_ptr<SyncStorageBackend> app_backend_;
   std::unique_ptr<SyncStorageBackend> extension_backend_;
-  base::WeakPtrFactory<SyncValueStoreCache> weak_ptr_factory_;
+  base::WeakPtrFactory<SyncValueStoreCache> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SyncValueStoreCache);
 };

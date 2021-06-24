@@ -6,13 +6,16 @@
 
 #include <utility>
 
+#include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/api/storage/settings_sync_processor.h"
 #include "chrome/browser/extensions/api/storage/settings_sync_util.h"
+#include "components/sync/model/model_error.h"
 #include "components/sync/model/sync_data.h"
+#include "components/sync/model/sync_error.h"
 #include "components/sync/protocol/extension_setting_specifics.pb.h"
 #include "extensions/browser/api/storage/backend_task_runner.h"
-#include "extensions/browser/api/storage/settings_namespace.h"
+#include "extensions/browser/api/storage/storage_area_namespace.h"
 
 namespace extensions {
 
@@ -136,8 +139,9 @@ void SyncableSettingsStorage::SyncResultIfEnabled(
     return;
 
   if (sync_processor_.get()) {
-    syncer::SyncError error = sync_processor_->SendChanges(result.changes());
-    if (error.IsSet())
+    absl::optional<syncer::ModelError> error =
+        sync_processor_->SendChanges(result.changes());
+    if (error.has_value())
       StopSyncing();
   } else {
     // Tell sync to try and start soon, because syncable changes to sync_type_
@@ -149,7 +153,7 @@ void SyncableSettingsStorage::SyncResultIfEnabled(
 
 // Sync-related methods.
 
-syncer::SyncError SyncableSettingsStorage::StartSyncing(
+absl::optional<syncer::ModelError> SyncableSettingsStorage::StartSyncing(
     std::unique_ptr<base::DictionaryValue> sync_state,
     std::unique_ptr<SettingsSyncProcessor> sync_processor) {
   DCHECK(IsOnBackendSequence());
@@ -161,46 +165,47 @@ syncer::SyncError SyncableSettingsStorage::StartSyncing(
 
   ReadResult maybe_settings = delegate_->Get();
   if (!maybe_settings.status().ok()) {
-    return syncer::SyncError(
-        FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
-        base::StringPrintf("Failed to get settings: %s",
-                           maybe_settings.status().message.c_str()),
-        sync_processor_->type());
+    return syncer::ModelError(
+        FROM_HERE, base::StringPrintf("Failed to get settings: %s",
+                                      maybe_settings.status().message.c_str()));
   }
 
   std::unique_ptr<base::DictionaryValue> current_settings =
       maybe_settings.PassSettings();
-  return sync_state->empty()
+  return sync_state->DictEmpty()
              ? SendLocalSettingsToSync(std::move(current_settings))
              : OverwriteLocalSettingsWithSync(std::move(sync_state),
                                               std::move(current_settings));
 }
 
-syncer::SyncError SyncableSettingsStorage::SendLocalSettingsToSync(
+absl::optional<syncer::ModelError>
+SyncableSettingsStorage::SendLocalSettingsToSync(
     std::unique_ptr<base::DictionaryValue> local_state) {
   DCHECK(IsOnBackendSequence());
 
-  if (local_state->empty())
-    return syncer::SyncError();
+  if (local_state->DictEmpty())
+    return absl::nullopt;
 
   // Transform the current settings into a list of sync changes.
   ValueStoreChangeList changes;
-  while (!local_state->empty()) {
+  while (!local_state->DictEmpty()) {
     // It's not possible to iterate over a DictionaryValue and modify it at the
     // same time, so hack around that restriction.
     std::string key = base::DictionaryValue::Iterator(*local_state).key();
     std::unique_ptr<base::Value> value;
     local_state->RemoveWithoutPathExpansion(key, &value);
-    changes.push_back(ValueStoreChange(key, nullptr, std::move(value)));
+    changes.push_back(ValueStoreChange(key, absl::nullopt, std::move(*value)));
   }
 
-  syncer::SyncError error = sync_processor_->SendChanges(changes);
-  if (error.IsSet())
+  absl::optional<syncer::ModelError> error =
+      sync_processor_->SendChanges(std::move(changes));
+  if (error.has_value())
     StopSyncing();
   return error;
 }
 
-syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
+absl::optional<syncer::ModelError>
+SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
     std::unique_ptr<base::DictionaryValue> sync_state,
     std::unique_ptr<base::DictionaryValue> local_state) {
   DCHECK(IsOnBackendSequence());
@@ -212,7 +217,7 @@ syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
        it.Advance()) {
     std::unique_ptr<base::Value> sync_value;
     if (sync_state->RemoveWithoutPathExpansion(it.key(), &sync_value)) {
-      if (sync_value->Equals(&it.value())) {
+      if (*sync_value == it.value()) {
         // Sync and local values are the same, no changes to send.
       } else {
         // Sync value is different, update local setting with new value.
@@ -229,7 +234,7 @@ syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
   }
 
   // Add all new settings to local settings.
-  while (!sync_state->empty()) {
+  while (!sync_state->DictEmpty()) {
     // It's not possible to iterate over a DictionaryValue and modify it at the
     // same time, so hack around that restriction.
     std::string key = base::DictionaryValue::Iterator(*sync_state).key();
@@ -240,7 +245,7 @@ syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
   }
 
   if (changes->empty())
-    return syncer::SyncError();
+    return absl::nullopt;
   return ProcessSyncChanges(std::move(changes));
 }
 
@@ -249,17 +254,14 @@ void SyncableSettingsStorage::StopSyncing() {
   sync_processor_.reset();
 }
 
-syncer::SyncError SyncableSettingsStorage::ProcessSyncChanges(
+absl::optional<syncer::ModelError> SyncableSettingsStorage::ProcessSyncChanges(
     std::unique_ptr<SettingSyncDataList> sync_changes) {
   DCHECK(IsOnBackendSequence());
   DCHECK(!sync_changes->empty()) << "No sync changes for " << extension_id_;
 
   if (!sync_processor_.get()) {
-    return syncer::SyncError(
-        FROM_HERE,
-        syncer::SyncError::DATATYPE_ERROR,
-        std::string("Sync is inactive for ") + extension_id_,
-        syncer::UNSPECIFIED);
+    return syncer::ModelError(
+        FROM_HERE, std::string("Sync is inactive for ") + extension_id_);
   }
 
   std::vector<syncer::SyncError> errors;
@@ -287,7 +289,9 @@ syncer::SyncError SyncableSettingsStorage::ProcessSyncChanges(
 
     syncer::SyncError error;
 
-    switch (sync_change->change_type()) {
+    DCHECK(sync_change->change_type().has_value());
+
+    switch (*sync_change->change_type()) {
       case syncer::SyncChange::ACTION_ADD:
         if (!current_value.get()) {
           error = OnSyncAdd(key, std::move(change_value), &changes);
@@ -322,9 +326,6 @@ syncer::SyncError SyncableSettingsStorage::ProcessSyncChanges(
               extension_id_ << "/" << key;
         }
         break;
-
-      default:
-        NOTREACHED();
     }
 
     if (error.IsSet()) {
@@ -335,11 +336,13 @@ syncer::SyncError SyncableSettingsStorage::ProcessSyncChanges(
   sync_processor_->NotifyChanges(changes);
 
   observers_->Notify(FROM_HERE, &SettingsObserver::OnSettingsChanged,
-                     extension_id_, settings_namespace::SYNC,
-                     ValueStoreChange::ToJson(changes));
+                     extension_id_, StorageAreaNamespace::kSync,
+                     ValueStoreChange::ToValue(std::move(changes)));
 
   // TODO(kalman): Something sensible with multiple errors.
-  return errors.empty() ? syncer::SyncError() : errors[0];
+  if (errors.empty())
+    return absl::nullopt;
+  return syncer::ConvertToModelError(errors[0]);
 }
 
 syncer::SyncError SyncableSettingsStorage::OnSyncAdd(
@@ -356,7 +359,8 @@ syncer::SyncError SyncableSettingsStorage::OnSyncAdd(
                            result.status().message.c_str()),
         sync_processor_->type());
   }
-  changes->push_back(ValueStoreChange(key, nullptr, std::move(new_value)));
+  changes->push_back(
+      ValueStoreChange(key, absl::nullopt, std::move(*new_value)));
   return syncer::SyncError();
 }
 
@@ -377,7 +381,7 @@ syncer::SyncError SyncableSettingsStorage::OnSyncUpdate(
         sync_processor_->type());
   }
   changes->push_back(
-      ValueStoreChange(key, std::move(old_value), std::move(new_value)));
+      ValueStoreChange(key, std::move(*old_value), std::move(*new_value)));
   return syncer::SyncError();
 }
 
@@ -394,7 +398,8 @@ syncer::SyncError SyncableSettingsStorage::OnSyncDelete(
                            result.status().message.c_str()),
         sync_processor_->type());
   }
-  changes->push_back(ValueStoreChange(key, std::move(old_value), nullptr));
+  changes->push_back(
+      ValueStoreChange(key, std::move(*old_value), absl::nullopt));
   return syncer::SyncError();
 }
 

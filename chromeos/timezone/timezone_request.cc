@@ -9,10 +9,10 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/json/json_reader.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
@@ -21,9 +21,7 @@
 #include "net/base/escape.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/url_request_status.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/cpp/resource_response.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 
@@ -181,23 +179,23 @@ bool ParseServerResponse(const GURL& server_url,
           << response_body;
 
   // Parse the response, ignoring comments.
-  std::string error_msg;
-  std::unique_ptr<base::Value> response_value =
-      base::JSONReader::ReadAndReturnErrorDeprecated(
-          response_body, base::JSON_PARSE_RFC, NULL, &error_msg);
-  if (response_value == NULL) {
-    PrintTimeZoneError(server_url, "JSONReader failed: " + error_msg, timezone);
+  base::JSONReader::ValueWithError parsed_json =
+      base::JSONReader::ReadAndReturnValueWithError(response_body);
+  if (!parsed_json.value) {
+    PrintTimeZoneError(server_url,
+                       "JSONReader failed: " + parsed_json.error_message,
+                       timezone);
     RecordUmaEvent(TIMEZONE_REQUEST_EVENT_RESPONSE_MALFORMED);
     return false;
   }
 
   const base::DictionaryValue* response_object = NULL;
-  if (!response_value->GetAsDictionary(&response_object)) {
+  if (!parsed_json.value->GetAsDictionary(&response_object)) {
     PrintTimeZoneError(
         server_url,
         "Unexpected response type : " +
             base::StringPrintf(
-                "%u", static_cast<unsigned int>(response_value->type())),
+                "%u", static_cast<unsigned int>(parsed_json.value->type())),
         timezone);
     RecordUmaEvent(TIMEZONE_REQUEST_EVENT_RESPONSE_MALFORMED);
     return false;
@@ -230,17 +228,21 @@ bool ParseServerResponse(const GURL& server_url,
 
   const bool status_ok = (timezone->status == TimeZoneResponseData::OK);
 
-  if (!response_object->GetDoubleWithoutPathExpansion(kDstOffsetString,
-                                                      &timezone->dstOffset) &&
-      status_ok) {
+  absl::optional<double> dst_offset =
+      response_object->FindDoubleKey(kDstOffsetString);
+  if (dst_offset.has_value()) {
+    timezone->dstOffset = dst_offset.value();
+  } else if (status_ok) {
     PrintTimeZoneError(server_url, "Missing dstOffset attribute.", timezone);
     RecordUmaEvent(TIMEZONE_REQUEST_EVENT_RESPONSE_MALFORMED);
     return false;
   }
 
-  if (!response_object->GetDoubleWithoutPathExpansion(kRawOffsetString,
-                                                      &timezone->rawOffset) &&
-      status_ok) {
+  absl::optional<double> raw_offset =
+      response_object->FindDoubleKey(kRawOffsetString);
+  if (raw_offset.has_value()) {
+    timezone->rawOffset = raw_offset.value();
+  } else if (status_ok) {
     PrintTimeZoneError(server_url, "Missing rawOffset attribute.", timezone);
     RecordUmaEvent(TIMEZONE_REQUEST_EVENT_RESPONSE_MALFORMED);
     return false;
@@ -344,7 +346,7 @@ void TimeZoneRequest::StartRequest() {
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = request_url_;
   request->load_flags = net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE;
-  request->allow_credentials = false;
+  request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   url_loader_ = network::SimpleURLLoader::Create(std::move(request),
                                                  NO_TRAFFIC_ANNOTATION_YET);
 
@@ -355,7 +357,7 @@ void TimeZoneRequest::StartRequest() {
 }
 
 void TimeZoneRequest::MakeRequest(TimeZoneResponseCallback callback) {
-  callback_ = callback;
+  callback_ = std::move(callback);
   request_url_ =
       TimeZoneRequestURL(service_url_, geoposition_, false /* sensor */);
   StartRequest();
@@ -403,14 +405,14 @@ void TimeZoneRequest::OnSimpleLoaderComplete(
                                : TIMEZONE_REQUEST_RESULT_FAILURE));
   RecordUmaResult(result, retries_);
 
-  TimeZoneResponseCallback callback = callback_;
+  TimeZoneResponseCallback callback = std::move(callback_);
 
   // Empty callback is used to identify "completed or not yet started request".
   callback_.Reset();
 
   // callback.Run() usually destroys TimeZoneRequest, because this is the way
   // callback is implemented in TimeZoneProvider.
-  callback.Run(std::move(timezone), server_error);
+  std::move(callback).Run(std::move(timezone), server_error);
   // "this" is already destroyed here.
 }
 

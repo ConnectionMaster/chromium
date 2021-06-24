@@ -9,12 +9,12 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/string16.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/models/menu_model.h"
-#include "ui/gfx/image/image.h"
 
 namespace ui {
 
@@ -24,11 +24,14 @@ class ButtonMenuItemModel;
 // items. This makes it easy to construct fixed menus. Menus populated by
 // dynamic data sources may be better off implementing MenuModel directly.
 // The breadth of MenuModel is not exposed through this API.
-class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
+class COMPONENT_EXPORT(UI_BASE) SimpleMenuModel : public MenuModel {
  public:
-  class UI_BASE_EXPORT Delegate : public AcceleratorProvider {
+  // Default icon size to be used for context menus.
+  static constexpr int kDefaultIconSize = 16;
+
+  class COMPONENT_EXPORT(UI_BASE) Delegate : public AcceleratorProvider {
    public:
-    ~Delegate() override {}
+    ~Delegate() override = default;
 
     // Makes |command_id| appear toggled true if it's a "check" or "radio" type
     // menu item. This has no effect for menu items with no boolean state.
@@ -40,16 +43,15 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
     // Delegate should return true if |command_id| should be visible.
     virtual bool IsCommandIdVisible(int command_id) const;
 
-    // Some command ids have labels, sublabels, minor text and icons that change
-    // over time.
+    // Determines if |command_id| should be rendered with an alert for
+    // in-product help.
+    virtual bool IsCommandIdAlerted(int command_id) const;
+
+    // Some command ids have labels and icons that change over time.
     virtual bool IsItemForCommandIdDynamic(int command_id) const;
-    virtual base::string16 GetLabelForCommandId(int command_id) const;
-    virtual base::string16 GetSublabelForCommandId(int command_id) const;
-    virtual base::string16 GetMinorTextForCommandId(int command_id) const;
-    // Gets the icon for the item with the specified id, returning true if there
-    // is an icon, false otherwise.
-    virtual bool GetIconForCommandId(int command_id,
-                                     gfx::Image* icon) const;
+    virtual std::u16string GetLabelForCommandId(int command_id) const;
+    // Gets the icon for the item with the specified id.
+    virtual ImageModel GetIconForCommandId(int command_id) const;
 
     // Performs the action associates with the specified command id.
     // The passed |event_flags| are the flags from the event which issued this
@@ -78,21 +80,22 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
   ~SimpleMenuModel() override;
 
   // Methods for adding items to the model.
-  void AddItem(int command_id, const base::string16& label);
+  void AddItem(int command_id, const std::u16string& label);
   void AddItemWithStringId(int command_id, int string_id);
   void AddItemWithIcon(int command_id,
-                       const base::string16& label,
-                       const gfx::ImageSkia& icon);
+                       const std::u16string& label,
+                       const ui::ImageModel& icon);
   void AddItemWithStringIdAndIcon(int command_id,
                                   int string_id,
-                                  const gfx::ImageSkia& icon);
-  void AddCheckItem(int command_id, const base::string16& label);
+                                  const ui::ImageModel& icon);
+  void AddCheckItem(int command_id, const std::u16string& label);
   void AddCheckItemWithStringId(int command_id, int string_id);
-  void AddRadioItem(int command_id, const base::string16& label, int group_id);
+  void AddRadioItem(int command_id, const std::u16string& label, int group_id);
   void AddRadioItemWithStringId(int command_id, int string_id, int group_id);
-  void AddHighlightedItemWithStringIdAndIcon(int command_id,
-                                             int string_id,
-                                             const gfx::ImageSkia& icon);
+  void AddHighlightedItemWithIcon(int command_id,
+                                  const std::u16string& label,
+                                  const ui::ImageModel& icon);
+  void AddTitle(const std::u16string& label);
 
   // Adds a separator of the specified type to the model.
   // - Adding a separator after another separator is always invalid if they
@@ -105,34 +108,42 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
   // owned by the same owner of this SimpleMenuModel.
   void AddButtonItem(int command_id, ButtonMenuItemModel* model);
   void AddSubMenu(int command_id,
-                  const base::string16& label,
+                  const std::u16string& label,
                   MenuModel* model);
   void AddSubMenuWithStringId(int command_id, int string_id, MenuModel* model);
+  void AddSubMenuWithIcon(int command_id,
+                          const std::u16string& label,
+                          MenuModel* model,
+                          const ImageModel& icon);
+  void AddSubMenuWithStringIdAndIcon(int command_id,
+                                     int string_id,
+                                     MenuModel* model,
+                                     const ui::ImageModel& icon);
   void AddActionableSubMenu(int command_id,
-                            const base::string16& label,
+                            const std::u16string& label,
                             MenuModel* model);
   void AddActionableSubmenuWithStringIdAndIcon(int command_id,
                                                int string_id,
                                                MenuModel* model,
-                                               const gfx::ImageSkia& icon);
+                                               const ui::ImageModel& icon);
 
   // Methods for inserting items into the model.
-  void InsertItemAt(int index, int command_id, const base::string16& label);
+  void InsertItemAt(int index, int command_id, const std::u16string& label);
   void InsertItemWithStringIdAt(int index, int command_id, int string_id);
   void InsertSeparatorAt(int index, MenuSeparatorType separator_type);
   void InsertCheckItemAt(int index,
                          int command_id,
-                         const base::string16& label);
+                         const std::u16string& label);
   void InsertCheckItemWithStringIdAt(int index, int command_id, int string_id);
   void InsertRadioItemAt(int index,
                          int command_id,
-                         const base::string16& label,
+                         const std::u16string& label,
                          int group_id);
   void InsertRadioItemWithStringIdAt(
       int index, int command_id, int string_id, int group_id);
   void InsertSubMenuAt(int index,
                        int command_id,
-                       const base::string16& label,
+                       const std::u16string& label,
                        MenuModel* model);
   void InsertSubMenuWithStringIdAt(
       int index, int command_id, int string_id, MenuModel* model);
@@ -141,25 +152,31 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
   void RemoveItemAt(int index);
 
   // Sets the icon for the item at |index|.
-  void SetIcon(int index, const gfx::Image& icon);
+  void SetIcon(int index, const ui::ImageModel& icon);
 
   // Sets the label for the item at |index|.
-  void SetLabel(int index, const base::string16& label);
-
-  // Sets the sublabel for the item at |index|.
-  void SetSublabel(int index, const base::string16& sublabel);
+  void SetLabel(int index, const std::u16string& label);
 
   // Sets the minor text for the item at |index|.
-  void SetMinorText(int index, const base::string16& minor_text);
+  void SetMinorText(int index, const std::u16string& minor_text);
 
   // Sets the minor icon for the item at |index|.
-  void SetMinorIcon(int index, const gfx::VectorIcon& minor_icon);
+  void SetMinorIcon(int index, const ui::ImageModel& minor_icon);
 
   // Sets whether the item at |index| is enabled.
   void SetEnabledAt(int index, bool enabled);
 
   // Sets whether the item at |index| is visible.
   void SetVisibleAt(int index, bool visible);
+
+  // Sets whether the item at |index| is new.
+  void SetIsNewFeatureAt(int index, bool is_new_feature);
+
+  // Sets whether the item at |index| is may have mnemonics.
+  void SetMayHaveMnemonicsAt(int index, bool may_have_mnemonics);
+  // Sets an application-window unique identifier associated with this menu item
+  // allowing it to be tracked without knowledge of menu-specific command IDs.
+  void SetElementIdentifierAt(int index, ElementIdentifier unique_id);
 
   // Clears all items. Note that it does not free MenuModel of submenu.
   void Clear();
@@ -174,28 +191,26 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
   ItemType GetTypeAt(int index) const override;
   ui::MenuSeparatorType GetSeparatorTypeAt(int index) const override;
   int GetCommandIdAt(int index) const override;
-  base::string16 GetLabelAt(int index) const override;
-  base::string16 GetSublabelAt(int index) const override;
-  base::string16 GetMinorTextAt(int index) const override;
-  const gfx::VectorIcon* GetMinorIconAt(int index) const override;
+  std::u16string GetLabelAt(int index) const override;
+  std::u16string GetMinorTextAt(int index) const override;
+  ImageModel GetMinorIconAt(int index) const override;
   bool IsItemDynamicAt(int index) const override;
   bool GetAcceleratorAt(int index, ui::Accelerator* accelerator) const override;
   bool IsItemCheckedAt(int index) const override;
   int GetGroupIdAt(int index) const override;
-  bool GetIconAt(int index, gfx::Image* icon) override;
+  ImageModel GetIconAt(int index) const override;
   ui::ButtonMenuItemModel* GetButtonMenuItemAt(int index) const override;
   bool IsEnabledAt(int index) const override;
   bool IsVisibleAt(int index) const override;
+  bool IsAlertedAt(int index) const override;
+  bool IsNewFeatureAt(int index) const override;
+  bool MayHaveMnemonicsAt(int index) const override;
+  ElementIdentifier GetElementIdentifierAt(int index) const override;
   void ActivatedAt(int index) override;
   void ActivatedAt(int index, int event_flags) override;
   MenuModel* GetSubmenuModelAt(int index) const override;
   void MenuWillShow() override;
   void MenuWillClose() override;
-
-  // Sets |histogram_name_|.
-  void set_histogram_name(const std::string& histogram_name) {
-    histogram_name_ = histogram_name;
-  }
 
  protected:
   void set_delegate(Delegate* delegate) { delegate_ = delegate; }
@@ -208,29 +223,28 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
  private:
   struct Item {
     Item(Item&&);
-    Item(int command_id, ItemType type, base::string16 label);
+    Item(int command_id, ItemType type, std::u16string label);
     Item& operator=(Item&&);
     ~Item();
 
     int command_id = 0;
     ItemType type = TYPE_COMMAND;
-    base::string16 label;
-    base::string16 sublabel;
-    base::string16 minor_text;
-    const gfx::VectorIcon* minor_icon = nullptr;
-    gfx::Image icon;
+    std::u16string label;
+    std::u16string minor_text;
+    ImageModel minor_icon;
+    ImageModel icon;
     int group_id = -1;
     MenuModel* submenu = nullptr;
     ButtonMenuItemModel* button_model = nullptr;
     MenuSeparatorType separator_type = NORMAL_SEPARATOR;
     bool enabled = true;
     bool visible = true;
+    bool is_new_feature = false;
+    bool may_have_mnemonics = true;
+    ElementIdentifier unique_id;
   };
 
   typedef std::vector<Item> ItemVector;
-
-  // Records the command for UMA.
-  void RecordHistogram(int command_id) const;
 
   // Returns |index|.
   int ValidateItemIndex(int index) const;
@@ -247,10 +261,7 @@ class UI_BASE_EXPORT SimpleMenuModel : public MenuModel {
 
   Delegate* delegate_;
 
-  // The UMA histogram name that is be used to log command ids.
-  std::string histogram_name_;
-
-  base::WeakPtrFactory<SimpleMenuModel> method_factory_;
+  base::WeakPtrFactory<SimpleMenuModel> method_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SimpleMenuModel);
 };

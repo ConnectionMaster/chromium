@@ -5,30 +5,68 @@
 #ifndef COMPONENTS_VIZ_COMMON_FEATURES_H_
 #define COMPONENTS_VIZ_COMMON_FEATURES_H_
 
-#include "components/viz/common/viz_common_export.h"
-
 #include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
+#include "components/viz/common/viz_common_export.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace features {
 
-VIZ_COMMON_EXPORT extern const base::Feature kEnableSurfaceSynchronization;
-VIZ_COMMON_EXPORT extern const base::Feature kEnableVizHitTest;
-VIZ_COMMON_EXPORT extern const base::Feature kEnableVizHitTestDrawQuad;
-VIZ_COMMON_EXPORT extern const base::Feature kEnableVizHitTestSurfaceLayer;
+VIZ_COMMON_EXPORT extern const base::Feature kAdpf;
+VIZ_COMMON_EXPORT extern const base::Feature kEnableOverlayPrioritization;
 VIZ_COMMON_EXPORT extern const base::Feature kUseSkiaRenderer;
-VIZ_COMMON_EXPORT extern const base::Feature kUseSkiaRendererNonDDL;
 VIZ_COMMON_EXPORT extern const base::Feature kRecordSkPicture;
-VIZ_COMMON_EXPORT extern const base::Feature kVizDisplayCompositor;
+VIZ_COMMON_EXPORT extern const base::Feature kDisableDeJelly;
+#if defined(OS_ANDROID)
+VIZ_COMMON_EXPORT extern const base::Feature kDynamicColorGamut;
+#endif
+VIZ_COMMON_EXPORT extern const base::Feature kDynamicBufferQueueAllocation;
+VIZ_COMMON_EXPORT extern const base::Feature kFastSolidColorDraw;
+VIZ_COMMON_EXPORT extern const base::Feature kVizFrameSubmissionForWebView;
+VIZ_COMMON_EXPORT extern const base::Feature kUsePreferredIntervalForVideo;
+VIZ_COMMON_EXPORT extern const base::Feature kUseRealBuffersForPageFlipTest;
+#if defined(OS_FUCHSIA)
+VIZ_COMMON_EXPORT extern const base::Feature kUseSkiaOutputDeviceBufferQueue;
+#endif
+VIZ_COMMON_EXPORT extern const base::Feature kWebRtcLogCapturePipeline;
+#if defined(OS_WIN)
+VIZ_COMMON_EXPORT extern const base::Feature kUseSetPresentDuration;
+#endif  // OS_WIN
+#if defined(USE_X11)
+VIZ_COMMON_EXPORT extern const base::Feature kUseX11Present;
+#endif
+VIZ_COMMON_EXPORT extern const base::Feature kWebViewVulkanIntermediateBuffer;
+VIZ_COMMON_EXPORT extern const base::Feature kUsePlatformDelegatedInk;
+#if defined(OS_ANDROID)
+VIZ_COMMON_EXPORT extern const base::Feature kUseSurfaceLayerForVideoDefault;
+#endif
+VIZ_COMMON_EXPORT extern const base::Feature kSurfaceSyncThrottling;
 
-VIZ_COMMON_EXPORT bool IsSurfaceSynchronizationEnabled();
-VIZ_COMMON_EXPORT bool IsVizDisplayCompositorEnabled();
-VIZ_COMMON_EXPORT bool IsVizHitTestingDebugEnabled();
-VIZ_COMMON_EXPORT bool IsVizHitTestingDrawQuadEnabled();
-VIZ_COMMON_EXPORT bool IsVizHitTestingEnabled();
-VIZ_COMMON_EXPORT bool IsVizHitTestingSurfaceLayerEnabled();
+VIZ_COMMON_EXPORT bool IsAdpfEnabled();
+VIZ_COMMON_EXPORT bool IsSimpleFrameRateThrottlingEnabled();
+#if defined(OS_ANDROID)
+VIZ_COMMON_EXPORT bool IsDynamicColorGamutEnabled();
+#endif
+VIZ_COMMON_EXPORT bool IsOverlayPrioritizationEnabled();
+VIZ_COMMON_EXPORT bool IsDelegatedCompositingEnabled();
+VIZ_COMMON_EXPORT bool IsSyncWindowDestructionEnabled();
+VIZ_COMMON_EXPORT bool IsUsingFastPathForSolidColorQuad();
 VIZ_COMMON_EXPORT bool IsUsingSkiaRenderer();
-VIZ_COMMON_EXPORT bool IsUsingSkiaRendererNonDDL();
-VIZ_COMMON_EXPORT bool IsRecordingSkPicture();
+VIZ_COMMON_EXPORT bool IsUsingVizFrameSubmissionForWebView();
+VIZ_COMMON_EXPORT bool IsUsingPreferredIntervalForVideo();
+VIZ_COMMON_EXPORT bool IsVizHitTestingDebugEnabled();
+VIZ_COMMON_EXPORT bool ShouldUseRealBuffersForPageFlipTest();
+VIZ_COMMON_EXPORT bool ShouldWebRtcLogCapturePipeline();
+#if defined(OS_WIN)
+VIZ_COMMON_EXPORT bool ShouldUseSetPresentDuration();
+#endif  // OS_WIN
+VIZ_COMMON_EXPORT absl::optional<int> ShouldDrawPredictedInkPoints();
+VIZ_COMMON_EXPORT bool ShouldUsePlatformDelegatedInk();
+#if defined(OS_ANDROID)
+VIZ_COMMON_EXPORT bool UseSurfaceLayerForVideo();
+#endif
+VIZ_COMMON_EXPORT bool IsSurfaceSyncThrottling();
 
 }  // namespace features
 

@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/jumbo.gni")
+import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/ui.gni")
 
 if (is_android) {
@@ -10,40 +10,58 @@ if (is_android) {
   import("//build/config/android/rules.gni")
 }
 
-jumbo_component("animation") {
+component("animation") {
   sources = [
     "animation.cc",
     "animation.h",
-    "animation_android.cc",
     "animation_container.cc",
     "animation_container.h",
     "animation_container_element.h",
     "animation_container_observer.h",
     "animation_delegate.h",
+    "animation_delegate_notifier.h",
     "animation_export.h",
-    "animation_mac.mm",
-    "animation_win.cc",
+    "animation_runner.cc",
+    "animation_runner.h",
     "linear_animation.cc",
     "linear_animation.h",
     "multi_animation.cc",
     "multi_animation.h",
     "slide_animation.cc",
     "slide_animation.h",
-    "throb_animation.cc",
-    "throb_animation.h",
     "tween.cc",
     "tween.h",
   ]
 
   if (is_android) {
-    sources -= [
+    sources += [ "animation_android.cc" ]
+  }
+
+  if (is_mac) {
+    sources += [ "animation_mac.mm" ]
+  }
+
+  if (is_win) {
+    sources += [ "animation_win.cc" ]
+  }
+
+  if (is_linux || is_chromeos_lacros) {
+    sources += [
+      "animation_linux.cc",
+      "animation_settings_provider_linux.cc",
+      "animation_settings_provider_linux.h",
+    ]
+  }
+
+  if (!is_android) {
+    sources += [
       "throb_animation.cc",
       "throb_animation.h",
     ]
   }
 
   if (is_mac) {
-    libs = [
+    frameworks = [
       "AppKit.framework",
       "CoreFoundation.framework",
       "CoreGraphics.framework",
@@ -54,9 +72,11 @@ jumbo_component("animation") {
 
   deps = [
     "//base",
+    "//build:chromeos_buildflags",
     "//skia",
     "//ui/gfx:geometry_skia",
     "//ui/gfx:gfx_export",
+    "//ui/gfx:gfx_switches",
     "//ui/gfx/geometry",
   ]
 

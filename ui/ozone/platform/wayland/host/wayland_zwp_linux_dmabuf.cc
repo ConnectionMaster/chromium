@@ -7,7 +7,7 @@
 #include <drm_fourcc.h>
 #include <linux-dmabuf-unstable-v1-client-protocol.h>
 
-#include "ui/ozone/common/linux/drm_util_linux.h"
+#include "ui/gfx/linux/drm_util_linux.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 
 namespace ui {
@@ -25,12 +25,12 @@ WaylandZwpLinuxDmabuf::WaylandZwpLinuxDmabuf(
 
   // A roundtrip after binding guarantees that the client has received all
   // supported formats.
-  wl_display_roundtrip(connection_->display());
+  connection_->RoundTripQueue();
 }
 
 WaylandZwpLinuxDmabuf::~WaylandZwpLinuxDmabuf() = default;
 
-void WaylandZwpLinuxDmabuf::CreateBuffer(base::File file,
+void WaylandZwpLinuxDmabuf::CreateBuffer(base::ScopedFD fd,
                                          const gfx::Size& size,
                                          const std::vector<uint32_t>& strides,
                                          const std::vector<uint32_t>& offsets,
@@ -45,46 +45,55 @@ void WaylandZwpLinuxDmabuf::CreateBuffer(base::File file,
   struct zwp_linux_buffer_params_v1* params =
       zwp_linux_dmabuf_v1_create_params(zwp_linux_dmabuf_.get());
 
-  // Store the |params| with the corresponding |callback| to identify newly
-  // created buffer and notify the client about it via the |callback|.
-  pending_params_.insert(std::make_pair(params, std::move(callback)));
-
-  base::ScopedFD fd(file.TakePlatformFile());
-
   for (size_t i = 0; i < planes_count; i++) {
-    uint32_t modifier_lo = 0;
-    uint32_t modifier_hi = 0;
-    if (modifiers[i] != DRM_FORMAT_MOD_INVALID) {
-      modifier_lo = modifiers[i] & UINT32_MAX;
-      modifier_hi = modifiers[i] >> 32;
-    } else {
-      DCHECK_EQ(planes_count, 1u) << "Invalid modifier may be passed only in "
-                                     "case of single plane format being used";
-    }
     zwp_linux_buffer_params_v1_add(params, fd.get(), i /* plane id */,
-                                   offsets[i], strides[i], modifier_hi,
-                                   modifier_lo);
+                                   offsets[i], strides[i], modifiers[i] >> 32,
+                                   modifiers[i] & UINT32_MAX);
   }
-  zwp_linux_buffer_params_v1_add_listener(params, &params_listener, this);
-  zwp_linux_buffer_params_v1_create(params, size.width(), size.height(), format,
-                                    0);
 
+  // It's possible to avoid waiting until the buffer is created and have it
+  // immediately. This method is only available since the protocol version 2.
+  if (wl::get_version_of_object(zwp_linux_dmabuf_.get()) >=
+      ZWP_LINUX_BUFFER_PARAMS_V1_CREATE_IMMED_SINCE_VERSION) {
+    wl::Object<wl_buffer> buffer(zwp_linux_buffer_params_v1_create_immed(
+        params, size.width(), size.height(), format, 0));
+    std::move(callback).Run(std::move(buffer));
+  } else {
+    // Store the |params| with the corresponding |callback| to identify newly
+    // created buffer and notify the client about it via the |callback|.
+    pending_params_.emplace(params, std::move(callback));
+
+    zwp_linux_buffer_params_v1_add_listener(params, &params_listener, this);
+    zwp_linux_buffer_params_v1_create(params, size.width(), size.height(),
+                                      format, 0);
+  }
   connection_->ScheduleFlush();
 }
 
-void WaylandZwpLinuxDmabuf::AddSupportedFourCCFormat(uint32_t fourcc_format) {
-  // Return on not the supported fourcc format.
+void WaylandZwpLinuxDmabuf::AddSupportedFourCCFormatAndModifier(
+    uint32_t fourcc_format,
+    absl::optional<uint64_t> modifier) {
+  // Return on not supported fourcc formats.
   if (!IsValidBufferFormat(fourcc_format))
     return;
 
-  // It can happen that ::Format or ::Modifiers call can have already added
-  // such a format. Thus, we can ignore that format.
+  uint64_t format_modifier = modifier.value_or(DRM_FORMAT_MOD_INVALID);
+
+  // If the buffer format has already been stored, it must be another supported
+  // modifier sent by the Wayland compositor.
   gfx::BufferFormat format = GetBufferFormatFromFourCCFormat(fourcc_format);
-  auto it = std::find(supported_buffer_formats_.begin(),
-                      supported_buffer_formats_.end(), format);
-  if (it != supported_buffer_formats_.end())
+  auto it = supported_buffer_formats_with_modifiers_.find(format);
+  if (it != supported_buffer_formats_with_modifiers_.end()) {
+    if (format_modifier != DRM_FORMAT_MOD_INVALID)
+      it->second.emplace_back(format_modifier);
     return;
-  supported_buffer_formats_.push_back(format);
+  } else {
+    std::vector<uint64_t> modifiers;
+    if (format_modifier != DRM_FORMAT_MOD_INVALID)
+      modifiers.emplace_back(format_modifier);
+    supported_buffer_formats_with_modifiers_.emplace(format,
+                                                     std::move(modifiers));
+  }
 }
 
 void WaylandZwpLinuxDmabuf::NotifyRequestCreateBufferDone(
@@ -109,8 +118,10 @@ void WaylandZwpLinuxDmabuf::Modifiers(
     uint32_t modifier_hi,
     uint32_t modifier_lo) {
   WaylandZwpLinuxDmabuf* self = static_cast<WaylandZwpLinuxDmabuf*>(data);
-  if (self)
-    self->AddSupportedFourCCFormat(format);
+  if (self) {
+    uint64_t modifier = static_cast<uint64_t>(modifier_hi) << 32 | modifier_lo;
+    self->AddSupportedFourCCFormatAndModifier(format, {modifier});
+  }
 }
 
 // static
@@ -119,7 +130,7 @@ void WaylandZwpLinuxDmabuf::Format(void* data,
                                    uint32_t format) {
   WaylandZwpLinuxDmabuf* self = static_cast<WaylandZwpLinuxDmabuf*>(data);
   if (self)
-    self->AddSupportedFourCCFormat(format);
+    self->AddSupportedFourCCFormatAndModifier(format, absl::nullopt);
 }
 
 // static

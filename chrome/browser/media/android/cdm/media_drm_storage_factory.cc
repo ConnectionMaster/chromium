@@ -9,7 +9,7 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/logging.h"
-#include "base/optional.h"
+#include "base/metrics/histogram_functions.h"
 #include "chrome/browser/media/android/cdm/media_drm_origin_id_manager.h"
 #include "chrome/browser/media/android/cdm/media_drm_origin_id_manager_factory.h"
 #include "chrome/browser/media/android/cdm/per_device_provisioning_permission.h"
@@ -22,13 +22,54 @@
 #include "content/public/browser/web_contents.h"
 #include "media/base/android/media_drm_bridge.h"
 #include "media/base/media_switches.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace {
 
 using MediaDrmOriginId = media::MediaDrmStorage::MediaDrmOriginId;
+using GetOriginIdStatus = MediaDrmOriginIdManager::GetOriginIdStatus;
 using OriginIdReadyCB =
     base::OnceCallback<void(bool success, const MediaDrmOriginId& origin_id)>;
+
+// These values are reported to UMA. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class GetOriginIdResult {
+  kSuccessWithPreProvisionedOriginId = 0,
+  kSuccessWithNewlyProvisionedOriginId = 1,
+  kSuccessWithUnprovisionedOriginId = 2,
+  kFailureOnPerAppProvisioningDevice = 3,
+  kFailureOnNonPerAppProvisioningDevice = 4,
+  kFailureWithNoFactory = 5,
+  kMaxValue = kFailureWithNoFactory,
+};
+
+GetOriginIdResult ConvertGetOriginIdStatusToResult(GetOriginIdStatus status) {
+  switch (status) {
+    case GetOriginIdStatus::kSuccessWithPreProvisionedOriginId:
+      return GetOriginIdResult::kSuccessWithPreProvisionedOriginId;
+    case GetOriginIdStatus::kSuccessWithNewlyProvisionedOriginId:
+      return GetOriginIdResult::kSuccessWithNewlyProvisionedOriginId;
+    case GetOriginIdStatus::kFailure:
+      break;
+  }
+
+  return media::MediaDrmBridge::IsPerApplicationProvisioningSupported()
+             ? GetOriginIdResult::kFailureOnPerAppProvisioningDevice
+             : GetOriginIdResult::kFailureOnNonPerAppProvisioningDevice;
+}
+
+// Update UMA with |result|.
+void ReportResultToUma(GetOriginIdResult result) {
+  base::UmaHistogramEnumeration("Media.EME.MediaDrm.GetOriginIdResult", result);
+}
+
+// Update UMA with |status|, and then pass |origin_id| to |callback|.
+void ReportStatusToUmaAndNotifyCaller(OriginIdReadyCB callback,
+                                      GetOriginIdStatus status,
+                                      const MediaDrmOriginId& origin_id) {
+  ReportResultToUma(ConvertGetOriginIdStatusToResult(status));
+  std::move(callback).Run(status != GetOriginIdStatus::kFailure, origin_id);
+}
 
 void CreateOriginIdWithMediaDrmOriginIdManager(Profile* profile,
                                                OriginIdReadyCB callback) {
@@ -38,11 +79,13 @@ void CreateOriginIdWithMediaDrmOriginIdManager(Profile* profile,
   auto* origin_id_manager =
       MediaDrmOriginIdManagerFactory::GetForProfile(profile);
   if (!origin_id_manager) {
-    std::move(callback).Run(false, base::nullopt);
+    ReportResultToUma(GetOriginIdResult::kFailureWithNoFactory);
+    std::move(callback).Run(false, absl::nullopt);
     return;
   }
 
-  origin_id_manager->GetOriginId(std::move(callback));
+  origin_id_manager->GetOriginId(
+      base::BindOnce(&ReportStatusToUmaAndNotifyCaller, std::move(callback)));
 }
 
 void CreateOriginId(OriginIdReadyCB callback) {
@@ -52,6 +95,7 @@ void CreateOriginId(OriginIdReadyCB callback) {
   auto origin_id = base::UnguessableToken::Create();
   DVLOG(2) << __func__ << ": origin_id = " << origin_id;
 
+  ReportResultToUma(GetOriginIdResult::kSuccessWithUnprovisionedOriginId);
   std::move(callback).Run(true, origin_id);
 }
 
@@ -73,8 +117,9 @@ void AllowEmptyOriginId(content::RenderFrameHost* render_frame_host,
 
 }  // namespace
 
-void CreateMediaDrmStorage(content::RenderFrameHost* render_frame_host,
-                           media::mojom::MediaDrmStorageRequest request) {
+void CreateMediaDrmStorage(
+    content::RenderFrameHost* render_frame_host,
+    mojo::PendingReceiver<media::mojom::MediaDrmStorage> receiver) {
   DVLOG(1) << __func__;
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(render_frame_host);
@@ -106,9 +151,9 @@ void CreateMediaDrmStorage(content::RenderFrameHost* render_frame_host,
           : base::BindRepeating(&CreateOriginId);
 
   // The object will be deleted on connection error, or when the frame navigates
-  // away. See FrameServiceBase for details.
+  // away. See DocumentServiceBase for details.
   new cdm::MediaDrmStorageImpl(
       render_frame_host, pref_service, get_origin_id_cb,
       base::BindRepeating(&AllowEmptyOriginId, render_frame_host),
-      std::move(request));
+      std::move(receiver));
 }

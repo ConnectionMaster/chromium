@@ -11,20 +11,20 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_helpers.h"
+#include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/unique_ptr_adapters.h"
-#include "base/logging.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_piece.h"
 #include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "components/viz/common/constants.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "components/viz/service/frame_sinks/compositor_frame_sink_impl.h"
 #include "components/viz/service/frame_sinks/frame_sink_observer.h"
-#include "components/viz/service/frame_sinks/primary_begin_frame_source.h"
 #include "components/viz/service/frame_sinks/root_compositor_frame_sink_impl.h"
 #include "components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_manager.h"
 #include "components/viz/service/frame_sinks/video_detector.h"
@@ -35,16 +35,20 @@
 #include "components/viz/service/surfaces/surface_observer.h"
 #include "components/viz/service/viz_service_export.h"
 #include "gpu/ipc/common/surface_handle.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "services/viz/privileged/interfaces/compositing/frame_sink_manager.mojom.h"
-#include "services/viz/privileged/interfaces/compositing/frame_sink_video_capture.mojom.h"
-#include "services/viz/public/interfaces/compositing/video_detector_observer.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/viz/privileged/mojom/compositing/frame_sink_manager.mojom.h"
+#include "services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom.h"
+#include "services/viz/public/mojom/compositing/video_detector_observer.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace viz {
 
 class CapturableFrameSink;
 class CompositorFrameSinkSupport;
-class DisplayProvider;
+class OutputSurfaceProvider;
 class SharedBitmapManager;
 
 // FrameSinkManagerImpl manages BeginFrame hierarchy. This is the implementation
@@ -56,23 +60,38 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
       public HitTestAggregatorDelegate,
       public SurfaceManagerDelegate {
  public:
-  explicit FrameSinkManagerImpl(
+  struct VIZ_SERVICE_EXPORT InitParams {
+    InitParams();
+    InitParams(SharedBitmapManager* shared_bitmap_manager,
+               OutputSurfaceProvider* output_surface_provider);
+    InitParams(InitParams&& other);
+    ~InitParams();
+    InitParams& operator=(InitParams&& other);
+
+    SharedBitmapManager* shared_bitmap_manager = nullptr;
+    absl::optional<uint32_t> activation_deadline_in_frames =
+        kDefaultActivationDeadlineInFrames;
+    OutputSurfaceProvider* output_surface_provider = nullptr;
+    uint32_t restart_id = BeginFrameSource::kNotRestartableId;
+    bool run_all_compositor_stages_before_draw = false;
+    bool log_capture_pipeline_in_webrtc = false;
+    DebugRendererSettings debug_renderer_settings;
+    gfx::RenderingPipeline* gpu_pipeline = nullptr;
+  };
+  explicit FrameSinkManagerImpl(const InitParams& params);
+  // TODO(kylechar): Cleanup tests and remove this constructor.
+  FrameSinkManagerImpl(
       SharedBitmapManager* shared_bitmap_manager,
-      base::Optional<uint32_t> activation_deadline_in_frames =
-          kDefaultActivationDeadlineInFrames,
-      DisplayProvider* display_provider = nullptr);
+      OutputSurfaceProvider* output_surface_provider = nullptr);
   ~FrameSinkManagerImpl() override;
 
-  // Performs cleanup needed to force shutdown from the GPU process. Stops all
-  // incoming IPCs and destroys all [Root]CompositorFrameSinkImpls.
-  void ForceShutdown();
-
-  // Binds |this| as a FrameSinkManagerImpl for |request| on |task_runner|. On
+  // Binds |this| as a FrameSinkManagerImpl for |receiver| on |task_runner|. On
   // Mac |task_runner| will be the resize helper task runner. May only be called
   // once.
-  void BindAndSetClient(mojom::FrameSinkManagerRequest request,
-                        scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-                        mojom::FrameSinkManagerClientPtr client);
+  void BindAndSetClient(
+      mojo::PendingReceiver<mojom::FrameSinkManager> receiver,
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+      mojo::PendingRemote<mojom::FrameSinkManagerClient> client);
 
   // Sets up a direction connection to |client| without using Mojo.
   void SetLocalClient(
@@ -83,17 +102,14 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void RegisterFrameSinkId(const FrameSinkId& frame_sink_id,
                            bool report_activation) override;
   void InvalidateFrameSinkId(const FrameSinkId& frame_sink_id) override;
-  void EnableSynchronizationReporting(
-      const FrameSinkId& frame_sink_id,
-      const std::string& reporting_label) override;
   void SetFrameSinkDebugLabel(const FrameSinkId& frame_sink_id,
                               const std::string& debug_label) override;
   void CreateRootCompositorFrameSink(
       mojom::RootCompositorFrameSinkParamsPtr params) override;
   void CreateCompositorFrameSink(
       const FrameSinkId& frame_sink_id,
-      mojom::CompositorFrameSinkRequest request,
-      mojom::CompositorFrameSinkClientPtr client) override;
+      mojo::PendingReceiver<mojom::CompositorFrameSink> receiver,
+      mojo::PendingRemote<mojom::CompositorFrameSinkClient> client) override;
   void DestroyCompositorFrameSink(
       const FrameSinkId& frame_sink_id,
       DestroyCompositorFrameSinkCallback callback) override;
@@ -104,9 +120,9 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
       const FrameSinkId& parent_frame_sink_id,
       const FrameSinkId& child_frame_sink_id) override;
   void AddVideoDetectorObserver(
-      mojom::VideoDetectorObserverPtr observer) override;
+      mojo::PendingRemote<mojom::VideoDetectorObserver> observer) override;
   void CreateVideoCapturer(
-      mojom::FrameSinkVideoCapturerRequest request) override;
+      mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver) override;
   void EvictSurfaces(const std::vector<SurfaceId>& surface_ids) override;
   void RequestCopyOfOutput(const SurfaceId& surface_id,
                            std::unique_ptr<CopyOutputRequest> request) override;
@@ -114,17 +130,17 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
       const FrameSinkId& root_frame_sink_id,
       const std::vector<FrameSinkId>& hit_test_async_queried_debug_queue)
       override;
+  void CacheBackBuffer(uint32_t cache_id,
+                       const FrameSinkId& root_frame_sink_id) override;
+  void EvictBackBuffer(uint32_t cache_id,
+                       EvictBackBufferCallback callback) override;
+  void UpdateDebugRendererSettings(
+      const DebugRendererSettings& debug_settings) override;
+  void Throttle(const std::vector<FrameSinkId>& ids,
+                base::TimeDelta interval) override;
 
   // SurfaceObserver implementation.
   void OnFirstSurfaceActivation(const SurfaceInfo& surface_info) override;
-  void OnSurfaceActivated(const SurfaceId& surface_id,
-                          base::Optional<base::TimeDelta> duration) override;
-  bool OnSurfaceDamaged(const SurfaceId& surface_id,
-                        const BeginFrameAck& ack) override;
-  void OnSurfaceDestroyed(const SurfaceId& surface_id) override;
-  void OnSurfaceMarkedForDestruction(const SurfaceId& surface_id) override;
-  void OnSurfaceDamageExpected(const SurfaceId& surface_id,
-                               const BeginFrameArgs& args) override;
 
   // HitTestAggregatorDelegate implementation:
   void OnAggregatedHitTestRegionListUpdated(
@@ -134,6 +150,7 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // SurfaceManagerDelegate implementation:
   base::StringPiece GetFrameSinkDebugLabel(
       const FrameSinkId& frame_sink_id) const override;
+  void AggregatedFrameSinksChanged() override;
 
   // CompositorFrameSinkSupport, hierarchy, and BeginFrameSource can be
   // registered and unregistered in any order with respect to each other.
@@ -156,10 +173,6 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
                                 const FrameSinkId& frame_sink_id);
   void UnregisterBeginFrameSource(BeginFrameSource* source);
 
-  // Returns a stable BeginFrameSource that forwards BeginFrames from the first
-  // available BeginFrameSource.
-  BeginFrameSource* GetPrimaryBeginFrameSource();
-
   SurfaceManager* surface_manager() { return &surface_manager_; }
   const HitTestManager* hit_test_manager() { return &hit_test_manager_; }
   SharedBitmapManager* shared_bitmap_manager() {
@@ -169,7 +182,7 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void SubmitHitTestRegionList(
       const SurfaceId& surface_id,
       uint64_t frame_index,
-      base::Optional<HitTestRegionList> hit_test_region_list);
+      absl::optional<HitTestRegionList> hit_test_region_list);
 
   // Instantiates |video_detector_| for tests where we simulate the passage of
   // time.
@@ -178,11 +191,17 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
       scoped_refptr<base::SequencedTaskRunner> task_runner);
 
   void OnFrameTokenChangedDirect(const FrameSinkId& frame_sink_id,
-                                 uint32_t frame_token);
+                                 uint32_t frame_token,
+                                 base::TimeTicks activation_time);
 
   // Called when |frame_token| is changed on a submitted CompositorFrame.
   void OnFrameTokenChanged(const FrameSinkId& frame_sink_id,
                            uint32_t frame_token);
+
+  void DidBeginFrame(const FrameSinkId& frame_sink_id,
+                     const BeginFrameArgs& args);
+  void DidFinishFrame(const FrameSinkId& frame_sink_id,
+                      const BeginFrameArgs& args);
 
   void AddObserver(FrameSinkObserver* obs);
   void RemoveObserver(FrameSinkObserver* obs);
@@ -197,6 +216,22 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   const CompositorFrameSinkSupport* GetFrameSinkForId(
       const FrameSinkId& frame_sink_id) const;
 
+  base::TimeDelta GetPreferredFrameIntervalForFrameSinkId(
+      const FrameSinkId& id,
+      mojom::CompositorFrameSinkType* type) const;
+
+  // This cancels pending output requests owned by the frame sinks associated
+  // with the specified BeginFrameSource.
+  // The requets callback will be fired as part of request destruction.
+  // This may be used in case we know a frame can't be produced any time soon,
+  // so there's no point for caller to wait for the copy of output.
+  void DiscardPendingCopyOfOutputRequests(const BeginFrameSource* source);
+
+  // Called when video capture starts on the target frame sink with |id|.
+  void OnCaptureStarted(const FrameSinkId& id);
+  // Called when video capture stops on the target frame sink with |id|.
+  void OnCaptureStopped(const FrameSinkId& id);
+
  private:
   friend class FrameSinkManagerTest;
 
@@ -209,9 +244,6 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
 
     // A label to identify frame sink.
     std::string debug_label;
-
-    // Record synchronization events for this FrameSinkId if not empty.
-    std::string synchronization_label;
 
     // Indicates whether the client wishes to receive FirstSurfaceActivation
     // notification.
@@ -252,19 +284,45 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   bool ChildContains(const FrameSinkId& child_frame_sink_id,
                      const FrameSinkId& search_frame_sink_id) const;
 
+  // Updates throttling recursively on a frame sink specified by its |id|
+  // and all its descendants to send BeginFrames at |interval|.
+  void UpdateThrottlingRecursively(const FrameSinkId& id,
+                                   base::TimeDelta interval);
+
+  // Called when throttling needs to be updated. Some examples can trigger such
+  // an update include: starting of video capturing requires throttling on the
+  // frame sink being captured to be stopped; a frame sink hierarchical change
+  // requires throttling on affected frame sinks to be started or stopped.
+  void UpdateThrottling();
+
+  // Clears throttling operation on the frame sink with |id| and all its
+  // descendants.
+  void ClearThrottling(const FrameSinkId& id);
+
   // SharedBitmapManager for the viz display service for receiving software
   // resources in CompositorFrameSinks.
   SharedBitmapManager* const shared_bitmap_manager_;
-  // Provides a Display for CreateRootCompositorFrameSink().
-  DisplayProvider* const display_provider_;
 
-  PrimaryBeginFrameSource primary_source_;
+  // Provides an output surface for CreateRootCompositorFrameSink().
+  OutputSurfaceProvider* const output_surface_provider_;
 
-  // Must be created after and destroyed before |primary_source_|.
   SurfaceManager surface_manager_;
 
   // Must be created after and destroyed before |surface_manager_|.
   HitTestManager hit_test_manager_;
+
+  // Restart id to generate unique begin frames across process restarts.  Used
+  // for creating a BeginFrameSource for RootCompositorFrameSink.
+  const uint32_t restart_id_;
+
+  // Whether display scheduler should wait for all pipeline stages before draw.
+  const bool run_all_compositor_stages_before_draw_;
+
+  // Whether capture pipeline should emit log messages to webrtc log.
+  const bool log_capture_pipeline_in_webrtc_;
+
+  // This is viz-global instance of DebugRendererSettings.
+  DebugRendererSettings debug_settings_;
 
   // Contains registered frame sink ids, debug labels and synchronization
   // labels. Map entries will be created when frame sink is registered and
@@ -293,6 +351,18 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
                  base::UniquePtrComparator>
       video_capturers_;
 
+  // The ids of the frame sinks that are currently being captured.
+  // These frame sinks should not be throttled.
+  base::flat_set<FrameSinkId> captured_frame_sink_ids_;
+
+  // Ids of the frame sinks that have been requested to throttle.
+  std::vector<FrameSinkId> frame_sink_ids_to_throttle_;
+
+  // The throttling interval which defines how often BeginFrames are sent.
+  base::TimeDelta throttle_interval_ = BeginFrameArgs::DefaultInterval();
+
+  base::flat_map<uint32_t, base::ScopedClosureRunner> cached_back_buffers_;
+
   THREAD_CHECKER(thread_checker_);
 
   // |video_detector_| is instantiated lazily in order to avoid overhead on
@@ -300,23 +370,26 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   std::unique_ptr<VideoDetector> video_detector_;
 
   // There are three states this can be in:
-  //  1. Mojo client: |client_| will point to |client_ptr_|, the Mojo client,
+  //  1. Mojo client: |client_| will point to |client_remote_|, the Mojo client,
   //     and |ui_task_runner_| will not be used. Calls to OnFrameTokenChanged()
   //     will go through Mojo. This is the normal state.
   //  2. Local (directly connected) client, *with* task runner: |client_| will
-  //     point to the client, |client_ptr_| will be nullptr, and calls to
-  //     OnFrameTokenChanged() will be PostTasked using |ui_task_runner_|. Used
-  //     mostly for layout tests.
+  //     point to the client, |client_remote_| will not be bound to any remote
+  //     client, and calls to OnFrameTokenChanged() will be PostTasked using
+  //     |ui_task_runner_|. Used mostly for layout tests.
   //  3. Local (directly connected) client, *without* task runner: |client_|
-  //     will point to the client, |client_ptr_| and |ui_task_runner_| will be
-  //     nullptr, and calls to OnFrameTokenChanged() will be directly called
-  //     (without PostTask) on |client_|. Used for some unit tests.
+  //     will point to the client, |client_remote_| will not be bound to any
+  //     remote client and |ui_task_runner_| will be nullptr, and calls to
+  //     OnFrameTokenChanged() will be directly called (without PostTask) on
+  //     |client_|. Used for some unit tests.
   mojom::FrameSinkManagerClient* client_ = nullptr;
-  scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_ = nullptr;
-  mojom::FrameSinkManagerClientPtr client_ptr_;
-  mojo::Binding<mojom::FrameSinkManager> binding_;
+  scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
+  mojo::Remote<mojom::FrameSinkManagerClient> client_remote_;
+  mojo::Receiver<mojom::FrameSinkManager> receiver_{this};
 
   base::ObserverList<FrameSinkObserver>::Unchecked observer_list_;
+
+  gfx::RenderingPipeline* gpu_pipeline_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(FrameSinkManagerImpl);
 };

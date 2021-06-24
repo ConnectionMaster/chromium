@@ -6,18 +6,46 @@
 #define EXTENSIONS_BROWSER_EXTENSION_REGISTRY_OBSERVER_H_
 
 #include "extensions/browser/uninstall_reason.h"
-#include "extensions/common/extension.h"
 
 namespace content {
 class BrowserContext;
 }
 
 namespace extensions {
-
+class Extension;
 class ExtensionRegistry;
+enum class UnloadedExtensionReason;
 
 // Observer for ExtensionRegistry. Exists in a separate header file to reduce
 // the include file burden for typical clients of ExtensionRegistry.
+//
+// There are separate event categories for loading (the OnExtensionLoaded,
+// OnExtensionReady and OnExtensionUnloaded events) and installing (the
+// OnExtensionWillBeInstalled, OnExtensionInstalled and OnExtensionUninstalled)
+// extensions.
+//
+// For example, comparing OnExtensionLoaded and OnExtensionInstalled,
+// OnExtensionLoaded is called whenever an extension is added to the "enabled"
+// set of the extension registry. This includes:
+//
+//  - Extensions being loaded at Chrome startup.
+//  - Extensions being reloaded:
+//    * as part of an update.
+//    * from a crash.
+//    * from a disabled state (if the user toggled disabled -> enabled).
+//    * as part of internal bookkeeping (we reload extensions on file access
+//      being granted, for instance).
+//    * if the extension requested it (chrome.runtime.reload()).
+//    * probably others.
+//  - New extensions being loaded for the first time (as part of installation).
+//
+// OnExtensionInstalled is called when a *new* extension is added, *or* when an
+// extension is updated to a *new* version. It is not called for existing
+// extensions being loaded at startup, etc. In a common run of Chrome, you
+// probably won't get many "OnInstalled" events.
+//
+// As a general rule, most sites should observe OnExtensionLoaded, because they
+// want to see "what are the enabled extensions".
 class ExtensionRegistryObserver {
  public:
   virtual ~ExtensionRegistryObserver() {}
@@ -35,7 +63,7 @@ class ExtensionRegistryObserver {
 
   // Called after an extension is unloaded. The extension no longer exists in
   // the set |ExtensionRegistry::enabled_extensions()|, but it can still be a
-  // member of one of the other sets, like disabled, blacklisted or terminated.
+  // member of one of the other sets, like disabled, blocklisted or terminated.
   virtual void OnExtensionUnloaded(content::BrowserContext* browser_context,
                                    const Extension* extension,
                                    UnloadedExtensionReason reason) {}
@@ -45,7 +73,7 @@ class ExtensionRegistryObserver {
   // the name of the extension's previous version.
   // The ExtensionRegistry will not be tracking |extension| at the time this
   // event is fired, but will be immediately afterwards (note: not necessarily
-  // enabled; it might be installed in the disabled or even blacklisted sets,
+  // enabled; it might be installed in the disabled or even blocklisted sets,
   // for example).
   // Note that it's much more common to care about extensions being loaded
   // (OnExtensionLoaded).
@@ -71,6 +99,11 @@ class ExtensionRegistryObserver {
   virtual void OnExtensionUninstalled(content::BrowserContext* browser_context,
                                       const Extension* extension,
                                       UninstallReason reason) {}
+
+  // Called after the uninstallation of an extension is denied.
+  virtual void OnExtensionUninstallationDenied(
+      content::BrowserContext* browser_context,
+      const Extension* extension) {}
 
   // Notifies observers that the observed object is going away.
   virtual void OnShutdown(ExtensionRegistry* registry) {}

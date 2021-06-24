@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// https://github.com/gpuweb/gpuweb/blob/master/design/sketch.webidl
+// https://gpuweb.github.io/gpuweb/
 
 dictionary GPUColorStateDescriptor {
     required GPUTextureFormat format;
-
-    required GPUBlendDescriptor alphaBlend;
-    required GPUBlendDescriptor colorBlend;
-    GPUColorWriteFlags writeMask = 15;  // GPUColorWriteFlags.ALL
+    GPUBlendComponent alphaBlend = {};
+    GPUBlendComponent colorBlend = {};
+    GPUColorWriteFlags writeMask = 15;  // GPUColorWrite.ALL
 };

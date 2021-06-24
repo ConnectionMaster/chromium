@@ -6,10 +6,13 @@
 
 #include <memory>
 
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/events/before_print_event.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -23,6 +26,8 @@
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_stream.h"
 #include "third_party/skia/include/core/SkCanvas.h"
+
+using testing::_;
 
 namespace blink {
 
@@ -44,6 +49,10 @@ class MockPageContextCanvas : public SkCanvas {
   void onDrawAnnotation(const SkRect& rect,
                         const char key[],
                         SkData* value) override {
+    // Ignore PDF node key annotations, defined in SkPDFDocument.cpp.
+    if (0 == strcmp(key, "PDF_Node_Key"))
+      return;
+
     if (rect.width() == 0 && rect.height() == 0) {
       SkPoint point = getTotalMatrix().mapXY(rect.x(), rect.y());
       Operation operation = {kDrawPoint,
@@ -59,6 +68,27 @@ class MockPageContextCanvas : public SkCanvas {
   const Vector<Operation>& RecordedOperations() const {
     return recorded_operations_;
   }
+
+  MOCK_METHOD2(onDrawRect, void(const SkRect&, const SkPaint&));
+  MOCK_METHOD1(DrawPicture, void(const SkPicture*));
+  MOCK_METHOD1(OnDrawPicture, void(const SkPicture*));
+  MOCK_METHOD3(OnDrawPicture,
+               void(const SkPicture*, const SkMatrix*, const SkPaint*));
+  MOCK_METHOD3(DrawPicture,
+               void(const SkPicture*, const SkMatrix*, const SkPaint*));
+  MOCK_METHOD5(onDrawImage2,
+               void(const SkImage*,
+                    SkScalar,
+                    SkScalar,
+                    const SkSamplingOptions&,
+                    const SkPaint*));
+  MOCK_METHOD6(onDrawImageRect2,
+               void(const SkImage*,
+                    const SkRect&,
+                    const SkRect&,
+                    const SkSamplingOptions&,
+                    const SkPaint*,
+                    SrcRectConstraint));
 
  private:
   Vector<Operation> recorded_operations_;
@@ -77,22 +107,30 @@ class PrintContextTest : public PaintTestConfigurations, public RenderingTest {
                                            /*use_printing_layout=*/true);
   }
 
+  void TearDown() override {
+    RenderingTest::TearDown();
+    CanvasRenderingContext::GetCanvasPerformanceMonitor().ResetForTesting();
+  }
+
   PrintContext& GetPrintContext() { return *print_context_.Get(); }
 
   void SetBodyInnerHTML(String body_content) {
     GetDocument().body()->setAttribute(html_names::kStyleAttr, "margin: 0");
-    GetDocument().body()->SetInnerHTMLFromString(body_content);
+    GetDocument().body()->setInnerHTML(body_content);
   }
 
-  void PrintSinglePage(MockPageContextCanvas& canvas) {
+  void PrintSinglePage(SkCanvas& canvas) {
     IntRect page_rect(0, 0, kPageWidth, kPageHeight);
+    GetDocument().SetPrinting(Document::kBeforePrinting);
+    Event* event = MakeGarbageCollected<BeforePrintEvent>();
+    GetPrintContext().GetFrame()->DomWindow()->DispatchEvent(*event);
     GetPrintContext().BeginPrintMode(page_rect.Width(), page_rect.Height());
     UpdateAllLifecyclePhasesForTest();
     PaintRecordBuilder builder;
     GraphicsContext& context = builder.Context();
     context.SetPrinting(true);
     GetDocument().View()->PaintContentsOutsideOfLifecycle(
-        context, kGlobalPaintPrinting, CullRect(page_rect));
+        context, kGlobalPaintAddUrlMetadata, CullRect(page_rect));
     {
       DrawingRecorder recorder(
           context, *GetDocument().GetLayoutView(),
@@ -107,8 +145,8 @@ class PrintContextTest : public PaintTestConfigurations, public RenderingTest {
                                          int y,
                                          int width,
                                          int height,
-                                         const char* url,
-                                         const char* children = nullptr) {
+                                         String url,
+                                         String children = String()) {
     WTF::TextStream ts;
     ts << "<a style='position: absolute; left: " << x << "px; top: " << y
        << "px; width: " << width << "px; height: " << height << "px' href='"
@@ -116,17 +154,13 @@ class PrintContextTest : public PaintTestConfigurations, public RenderingTest {
     return ts.Release();
   }
 
-  static String InlineHtmlForLink(const char* url,
-                                  const char* children = nullptr) {
+  static String InlineHtmlForLink(String url, String children = String()) {
     WTF::TextStream ts;
     ts << "<a href='" << url << "'>" << (children ? children : url) << "</a>";
     return ts.Release();
   }
 
-  static String HtmlForAnchor(int x,
-                              int y,
-                              const char* name,
-                              const char* text_content) {
+  static String HtmlForAnchor(int x, int y, String name, String text_content) {
     WTF::TextStream ts;
     ts << "<a name='" << name << "' style='position: absolute; left: " << x
        << "px; top: " << y << "px'>" << text_content << "</a>";
@@ -260,26 +294,60 @@ TEST_P(PrintContextTest, LinkTargetSvg) {
 TEST_P(PrintContextTest, LinkedTarget) {
   MockPageContextCanvas canvas;
   GetDocument().SetBaseURLOverride(KURL("http://a.com/"));
+  // Careful about locations, the page is 800x600 and only one page is printed.
   SetBodyInnerHTML(
       AbsoluteBlockHtmlForLink(
-          50, 60, 70, 80,
+          50, 60, 10, 10,
           "#fragment")  // Generates a Link_Named_Dest_Key annotation
-      + AbsoluteBlockHtmlForLink(150, 160, 170, 180,
+      + AbsoluteBlockHtmlForLink(50, 160, 10, 10,
                                  "#not-found")  // Generates no annotation
+      + AbsoluteBlockHtmlForLink(
+            50, 260, 10, 10,
+            u"#\u00F6")  // Generates a Link_Named_Dest_Key annotation
+      + AbsoluteBlockHtmlForLink(
+            50, 360, 10, 10,
+            "#")  // Generates a Link_Named_Dest_Key annotation
+      + AbsoluteBlockHtmlForLink(
+            50, 460, 10, 10,
+            "#t%6Fp")  // Generates a Link_Named_Dest_Key annotation
       +
-      HtmlForAnchor(250, 260, "fragment",
+      HtmlForAnchor(450, 60, "fragment",
                     "fragment")  // Generates a Define_Named_Dest_Key annotation
-      + HtmlForAnchor(350, 360, "fragment-not-used",
-                      "fragment-not-used"));  // Generates no annotation
+      + HtmlForAnchor(450, 160, "fragment-not-used",
+                      "fragment-not-used")  // Generates no annotation
+      + HtmlForAnchor(450, 260, u"\u00F6",
+                      "O")  // Generates a Define_Named_Dest_Key annotation
+      // TODO(1117212): The escaped version currently takes precedence.
+      //+ HtmlForAnchor(450, 360, "%C3%B6",
+      //                "O2")  // Generates a Define_Named_Dest_Key annotation
+  );
   PrintSinglePage(canvas);
 
   const Vector<MockPageContextCanvas::Operation>& operations =
       canvas.RecordedOperations();
-  ASSERT_EQ(2u, operations.size());
+  for (const auto& operation : operations) {
+    LOG(INFO) << (operation.type ? "Point" : "Rect") << operation.rect;
+  }
+  ASSERT_EQ(8u, operations.size());
+  // The DrawRect operations come from a stable iterator.
   EXPECT_EQ(MockPageContextCanvas::kDrawRect, operations[0].type);
-  EXPECT_SKRECT_EQ(50, 60, 70, 80, operations[0].rect);
-  EXPECT_EQ(MockPageContextCanvas::kDrawPoint, operations[1].type);
-  EXPECT_SKRECT_EQ(250, 260, 0, 0, operations[1].rect);
+  EXPECT_SKRECT_EQ(50, 60, 10, 10, operations[0].rect);
+  EXPECT_EQ(MockPageContextCanvas::kDrawRect, operations[1].type);
+  EXPECT_SKRECT_EQ(50, 260, 10, 10, operations[1].rect);
+  EXPECT_EQ(MockPageContextCanvas::kDrawRect, operations[2].type);
+  EXPECT_SKRECT_EQ(50, 360, 10, 10, operations[2].rect);
+  EXPECT_EQ(MockPageContextCanvas::kDrawRect, operations[3].type);
+  EXPECT_SKRECT_EQ(50, 460, 10, 10, operations[3].rect);
+
+  // The DrawPoint operations come from an unstable iterator.
+  EXPECT_EQ(MockPageContextCanvas::kDrawPoint, operations[4].type);
+  EXPECT_SKRECT_EQ(450, 260, 0, 0, operations[4].rect);
+  EXPECT_EQ(MockPageContextCanvas::kDrawPoint, operations[5].type);
+  EXPECT_SKRECT_EQ(0, 0, 0, 0, operations[5].rect);
+  EXPECT_EQ(MockPageContextCanvas::kDrawPoint, operations[6].type);
+  EXPECT_SKRECT_EQ(0, 0, 0, 0, operations[6].rect);
+  EXPECT_EQ(MockPageContextCanvas::kDrawPoint, operations[7].type);
+  EXPECT_SKRECT_EQ(450, 60, 0, 0, operations[7].rect);
 }
 
 TEST_P(PrintContextTest, EmptyLinkedTarget) {
@@ -394,6 +462,46 @@ TEST_P(PrintContextFrameTest, BasicPrintPageLayout) {
   EXPECT_EQ(node->OffsetWidth(), 440);
   GetDocument().GetFrame()->EndPrinting();
   EXPECT_EQ(node->OffsetWidth(), 800);
+}
+
+TEST_P(PrintContextTest, Canvas2DBeforePrint) {
+  MockPageContextCanvas canvas;
+  SetBodyInnerHTML("<canvas id='c' width=100 height=100></canvas>");
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  Element* const script_element =
+      GetDocument().CreateRawElement(html_names::kScriptTag);
+  script_element->setTextContent(
+      "window.addEventListener('beforeprint', (ev) => {"
+      "const ctx = document.getElementById('c').getContext('2d');"
+      "ctx.fillRect(0, 0, 10, 10);"
+      "ctx.fillRect(50, 50, 10, 10);"
+      "});");
+  GetDocument().body()->AppendChild(script_element);
+
+  EXPECT_CALL(canvas, onDrawRect(_, _)).Times(testing::AtLeast(2));
+
+  PrintSinglePage(canvas);
+}
+
+TEST_P(PrintContextTest, Canvas2DPixelated) {
+  MockPageContextCanvas canvas;
+  SetBodyInnerHTML(
+      "<canvas id='c' style='image-rendering: pixelated' "
+      "width=100 height=100></canvas>");
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  Element* const script_element =
+      GetDocument().CreateRawElement(html_names::kScriptTag);
+  script_element->setTextContent(
+      "window.addEventListener('beforeprint', (ev) => {"
+      "const ctx = document.getElementById('c').getContext('2d');"
+      "ctx.fillRect(0, 0, 10, 10);"
+      "ctx.fillRect(50, 50, 10, 10);"
+      "});");
+  GetDocument().body()->AppendChild(script_element);
+
+  EXPECT_CALL(canvas, onDrawImageRect2(_, _, _, _, _, _));
+
+  PrintSinglePage(canvas);
 }
 
 // This tests that we don't resize or re-layout subframes in printed content.

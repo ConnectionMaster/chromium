@@ -1,3 +1,5 @@
-per-file multidevice_handler*=file://chromeos/components/multidevice/OWNERS
+file://chrome/browser/resources/settings/chromeos/OWNERS
 
-# COMPONENT: UI>Settings
+per-file languages_section*=myy@chromium.org
+per-file multidevice_handler*=file://chromeos/components/multidevice/OWNERS
+per-file account_manager_*=file://ash/components/account_manager/OWNERS

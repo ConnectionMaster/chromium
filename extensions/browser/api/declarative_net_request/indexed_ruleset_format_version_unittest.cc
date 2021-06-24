@@ -20,21 +20,71 @@ namespace {
 const char* kFlatbufferSchemaExpected = R"(
 include "components/url_pattern_index/flat/url_pattern_index.fbs";
 namespace extensions.declarative_net_request.flat;
-table UrlRuleMetadata {
-  id : uint (key);
-  redirect_url : string;
-}
-enum ActionIndex : ubyte {
-  block = 0,
+enum ActionType : ubyte {
+  block,
   allow,
   redirect,
-  remove_cookie_header,
-  remove_referer_header,
-  remove_set_cookie_header,
+  upgrade_scheme,
+  modify_headers,
+  allow_all_requests,
   count
+}
+table QueryKeyValue {
+  key : string (required);
+  value : string (required);
+}
+table UrlTransform {
+   scheme : string;
+   host : string;
+   clear_port : bool = false;
+   port : string;
+   clear_path : bool = false;
+   path : string;
+   clear_query : bool = false;
+   query : string;
+   remove_query_params : [string];
+   add_or_replace_query_params : [QueryKeyValue];
+   clear_fragment : bool = false;
+   fragment : string;
+   username : string;
+   password : string;
+}
+table UrlRuleMetadata {
+  id : uint (key);
+  action : ActionType;
+  redirect_url : string;
+  transform : UrlTransform;
+  request_headers: [ModifyHeaderInfo];
+  response_headers: [ModifyHeaderInfo];
+}
+table EmbedderConditions {
+  tab_ids_included : [int];
+  tab_ids_excluded : [int];
+}
+enum IndexType : ubyte {
+  before_request_except_allow_all_requests = 0,
+  allow_all_requests,
+  modify_headers,
+  count
+}
+enum HeaderOperation : ubyte {
+  append,
+  set,
+  remove
+}
+table ModifyHeaderInfo {
+  operation: HeaderOperation;
+  header: string;
+  value: string;
+}
+table RegexRule {
+  url_rule: url_pattern_index.flat.UrlRule;
+  action_type: ActionType;
+  regex_substitution: string;
 }
 table ExtensionIndexedRuleset {
   index_list : [url_pattern_index.flat.UrlPatternIndex];
+  regex_rules: [RegexRule];
   extension_metadata : [UrlRuleMetadata];
 }
 root_type ExtensionIndexedRuleset;
@@ -103,7 +153,7 @@ TEST_F(IndexedRulesetFormatVersionTest, CheckVersionUpdated) {
   EXPECT_EQ(StripCommentsAndWhitespace(kFlatbufferSchemaExpected),
             StripCommentsAndWhitespace(flatbuffer_schema))
       << "Schema change detected; update this test and the schema version.";
-  EXPECT_EQ(7, GetIndexedRulesetFormatVersionForTesting())
+  EXPECT_EQ(22, GetIndexedRulesetFormatVersionForTesting())
       << "Update this test if you update the schema version.";
 }
 

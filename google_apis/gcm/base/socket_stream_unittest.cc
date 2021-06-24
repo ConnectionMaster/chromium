@@ -12,13 +12,15 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/cxx17_backports.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
-#include "base/test/bind_test_util.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/bind.h"
+#include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/ip_address.h"
+#include "net/base/network_isolation_key.h"
 #include "net/log/net_log_source.h"
 #include "net/socket/socket_test_util.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -27,6 +29,7 @@
 #include "services/network/network_service.h"
 #include "services/network/public/mojom/proxy_resolving_socket.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/origin.h"
 
 namespace gcm {
 namespace {
@@ -68,7 +71,7 @@ class GCMSocketStreamTest : public testing::Test {
   SocketInputStream* input_stream() { return socket_input_stream_.get(); }
   SocketOutputStream* output_stream() { return socket_output_stream_.get(); }
 
-  network::mojom::ProxyResolvingSocketPtr mojo_socket_ptr_;
+  mojo::Remote<network::mojom::ProxyResolvingSocket> mojo_socket_remote_;
 
   void set_socket_output_stream(std::unique_ptr<SocketOutputStream> stream) {
     socket_output_stream_ = std::move(stream);
@@ -79,7 +82,7 @@ class GCMSocketStreamTest : public testing::Test {
   void ResetInputStream();
   void ResetOutputStream();
 
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
   // SocketStreams and their data providers.
   ReadList mock_reads_;
@@ -93,19 +96,20 @@ class GCMSocketStreamTest : public testing::Test {
   net::AddressList address_list_;
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
   std::unique_ptr<network::NetworkService> network_service_;
-  network::mojom::NetworkContextPtr network_context_ptr_;
+  mojo::Remote<network::mojom::NetworkContext> network_context_remote_;
   net::MockClientSocketFactory socket_factory_;
   net::TestURLRequestContext url_request_context_;
   std::unique_ptr<network::NetworkContext> network_context_;
-  network::mojom::ProxyResolvingSocketFactoryPtr mojo_socket_factory_ptr_;
+  mojo::Remote<network::mojom::ProxyResolvingSocketFactory>
+      mojo_socket_factory_remote_;
   mojo::ScopedDataPipeConsumerHandle receive_pipe_handle_;
   mojo::ScopedDataPipeProducerHandle send_pipe_handle_;
 };
 
 GCMSocketStreamTest::GCMSocketStreamTest()
-    : scoped_task_environment_(
-          base::test::ScopedTaskEnvironment::MainThreadType::IO),
-      network_change_notifier_(net::NetworkChangeNotifier::CreateMock()),
+    : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
+      network_change_notifier_(
+          net::NetworkChangeNotifier::CreateMockIfNeeded()),
       network_service_(network::NetworkService::CreateForTesting()),
       url_request_context_(true /* delay_initialization */) {
   address_list_ = net::AddressList::CreateFromIPAddress(
@@ -115,7 +119,8 @@ GCMSocketStreamTest::GCMSocketStreamTest()
   url_request_context_.Init();
 
   network_context_ = std::make_unique<network::NetworkContext>(
-      network_service_.get(), mojo::MakeRequest(&network_context_ptr_),
+      network_service_.get(),
+      network_context_remote_.BindNewPipeAndPassReceiver(),
       &url_request_context_,
       /*cors_exempt_header_list=*/std::vector<std::string>());
 }
@@ -221,20 +226,25 @@ void GCMSocketStreamTest::WaitForData(int msg_size) {
 
 void GCMSocketStreamTest::OpenConnection() {
   network_context_->CreateProxyResolvingSocketFactory(
-      mojo::MakeRequest(&mojo_socket_factory_ptr_));
+      mojo_socket_factory_remote_.BindNewPipeAndPassReceiver());
   base::RunLoop run_loop;
   int net_error = net::ERR_FAILED;
   const GURL kDestination("https://example.com");
   network::mojom::ProxyResolvingSocketOptionsPtr options =
       network::mojom::ProxyResolvingSocketOptions::New();
   options->use_tls = true;
-  mojo_socket_factory_ptr_->CreateProxyResolvingSocket(
-      kDestination, std::move(options),
+  const url::Origin kOrigin = url::Origin::Create(kDestination);
+  mojo_socket_factory_remote_->CreateProxyResolvingSocket(
+      kDestination,
+      net::NetworkIsolationKey(kOrigin /* top_frame_origin */,
+                               kOrigin /* frame_origin */),
+      std::move(options),
       net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
-      mojo::MakeRequest(&mojo_socket_ptr_), nullptr /* observer */,
+      mojo_socket_remote_.BindNewPipeAndPassReceiver(),
+      mojo::NullRemote() /* observer */,
       base::BindLambdaForTesting(
-          [&](int result, const base::Optional<net::IPEndPoint>& local_addr,
-              const base::Optional<net::IPEndPoint>& peer_addr,
+          [&](int result, const absl::optional<net::IPEndPoint>& local_addr,
+              const absl::optional<net::IPEndPoint>& peer_addr,
               mojo::ScopedDataPipeConsumerHandle receive_pipe_handle,
               mojo::ScopedDataPipeProducerHandle send_pipe_handle) {
             net_error = result;
@@ -248,13 +258,13 @@ void GCMSocketStreamTest::OpenConnection() {
 }
 
 void GCMSocketStreamTest::ResetInputStream() {
-  DCHECK(mojo_socket_ptr_);
+  DCHECK(mojo_socket_remote_);
   socket_input_stream_ =
       std::make_unique<SocketInputStream>(std::move(receive_pipe_handle_));
 }
 
 void GCMSocketStreamTest::ResetOutputStream() {
-  DCHECK(mojo_socket_ptr_);
+  DCHECK(mojo_socket_remote_);
   socket_output_stream_ =
       std::make_unique<SocketOutputStream>(std::move(send_pipe_handle_));
 }
@@ -371,7 +381,7 @@ TEST_F(GCMSocketStreamTest, ReadError) {
 TEST_F(GCMSocketStreamTest, ReadDisconnected) {
   BuildSocket(ReadList(1, net::MockRead(net::SYNCHRONOUS, net::ERR_IO_PENDING)),
               WriteList());
-  mojo_socket_ptr_.reset();
+  mojo_socket_remote_.reset();
   WaitForData(kReadDataSize);
   ASSERT_EQ(SocketInputStream::CLOSED, input_stream()->GetState());
   ASSERT_EQ(net::ERR_FAILED, input_stream()->last_error());
@@ -412,11 +422,12 @@ TEST_F(GCMSocketStreamTest, WritePartialWithLengthChecking) {
   // |kWriteDataSize|. This is so that the first write is a partial write
   // of |prefix_data|, and the second write is a complete write of kWriteData.
   // The 1 byte shortage is to simulate the partial write.
-  mojo::DataPipe pipe(kWriteDataSize + prefix_data.size() - 1 /* size */);
-  mojo::ScopedDataPipeConsumerHandle consumer_handle =
-      std::move(pipe.consumer_handle);
-  mojo::ScopedDataPipeProducerHandle producer_handle =
-      std::move(pipe.producer_handle);
+  mojo::ScopedDataPipeProducerHandle producer_handle;
+  mojo::ScopedDataPipeConsumerHandle consumer_handle;
+  ASSERT_EQ(
+      mojo::CreateDataPipe(kWriteDataSize + prefix_data.size() - 1 /* size */,
+                           producer_handle, consumer_handle),
+      MOJO_RESULT_OK);
 
   // Prepopulate |producer_handle| of |prefix_data|, now the pipe's capacity is
   // less than |kWriteDataSize|.
@@ -553,7 +564,7 @@ TEST_F(GCMSocketStreamTest, WriteError) {
 TEST_F(GCMSocketStreamTest, WriteDisconnected) {
   BuildSocket(ReadList(1, net::MockRead(net::SYNCHRONOUS, net::ERR_IO_PENDING)),
               WriteList());
-  mojo_socket_ptr_.reset();
+  mojo_socket_remote_.reset();
   DoOutputStreamWrite(base::StringPiece(kWriteData, kWriteDataSize));
   ASSERT_EQ(SocketOutputStream::CLOSED, output_stream()->GetState());
   ASSERT_EQ(net::ERR_FAILED, output_stream()->last_error());

@@ -26,7 +26,7 @@ class BackoffTimer {
   void Start(const base::Location& posted_from,
              base::TimeDelta delay,
              base::TimeDelta max_delay,
-             const base::Closure& user_task);
+             const base::RepeatingClosure& user_task);
 
   // Prevents the user task from being invoked again.
   void Stop();
@@ -34,14 +34,12 @@ class BackoffTimer {
   // Returns true if the user task may be invoked in the future.
   bool IsRunning() const { return !!backoff_entry_; }
 
-  void SetTimerForTest(std::unique_ptr<base::OneShotTimer> timer);
-
  private:
   void StartTimer();
   void OnTimerFired();
 
-  std::unique_ptr<base::OneShotTimer> timer_;
-  base::Closure user_task_;
+  base::OneShotTimer timer_;
+  base::RepeatingClosure user_task_;
   base::Location posted_from_;
   net::BackoffEntry::Policy backoff_policy_ = {};
   std::unique_ptr<net::BackoffEntry> backoff_entry_;

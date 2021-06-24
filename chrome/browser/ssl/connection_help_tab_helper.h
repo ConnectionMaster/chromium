@@ -23,19 +23,9 @@ class ConnectionHelpTabHelper
     : public content::WebContentsObserver,
       public content::WebContentsUserData<ConnectionHelpTabHelper> {
  public:
-  // Used to record the SSL.CertificateErrorLearnMoreLinkClicked histogram,
-  // do not reorder. Exposed for testing.
-  enum LearnMoreClickResult {
-    kSucceeded = 0,
-    kFailedWithInterstitial = 1,
-    kFailedOther = 2,
-    kLearnMoreResultCount = kFailedOther
-  };
-
   ~ConnectionHelpTabHelper() override;
 
   // WebContentsObserver:
-  void DidAttachInterstitialPage() override;
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
 

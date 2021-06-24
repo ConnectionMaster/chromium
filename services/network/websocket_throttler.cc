@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/rand_util.h"
+#include "services/network/public/mojom/network_context.mojom-forward.h"
 
 namespace network {
 
@@ -39,8 +40,7 @@ void WebSocketPerProcessThrottler::PendingConnection::OnCompleteHandshake() {
   throttler_ = nullptr;
 }
 
-WebSocketPerProcessThrottler::WebSocketPerProcessThrottler()
-    : weak_factory_(this) {}
+WebSocketPerProcessThrottler::WebSocketPerProcessThrottler() {}
 WebSocketPerProcessThrottler::~WebSocketPerProcessThrottler() {}
 
 base::TimeDelta WebSocketPerProcessThrottler::CalculateDelay() const {
@@ -94,8 +94,13 @@ base::TimeDelta WebSocketThrottler::CalculateDelay(int process_id) const {
   return it->second->CalculateDelay();
 }
 
-WebSocketThrottler::PendingConnection
+absl::optional<WebSocketThrottler::PendingConnection>
 WebSocketThrottler::IssuePendingConnectionTracker(int process_id) {
+  if (process_id == mojom::kBrowserProcessId) {
+    // The browser process is not throttled.
+    return absl::nullopt;
+  }
+
   auto it = per_process_throttlers_.find(process_id);
   if (it == per_process_throttlers_.end()) {
     it = per_process_throttlers_

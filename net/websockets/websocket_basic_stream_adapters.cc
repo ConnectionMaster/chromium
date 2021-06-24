@@ -57,8 +57,7 @@ WebSocketSpdyStreamAdapter::WebSocketSpdyStreamAdapter(
       stream_error_(ERR_CONNECTION_CLOSED),
       delegate_(delegate),
       write_length_(0),
-      net_log_(net_log),
-      weak_factory_(this) {
+      net_log_(net_log) {
   stream_->SetDelegate(this);
 }
 
@@ -131,15 +130,32 @@ void WebSocketSpdyStreamAdapter::OnHeadersSent() {
     delegate_->OnHeadersSent();
 }
 
+void WebSocketSpdyStreamAdapter::OnEarlyHintsReceived(
+    const spdy::Http2HeaderBlock& headers) {
+  // This callback should not be called for a WebSocket handshake.
+  NOTREACHED();
+}
+
 void WebSocketSpdyStreamAdapter::OnHeadersReceived(
-    const spdy::SpdyHeaderBlock& response_headers,
-    const spdy::SpdyHeaderBlock* pushed_request_headers) {
+    const spdy::Http2HeaderBlock& response_headers,
+    const spdy::Http2HeaderBlock* pushed_request_headers) {
   if (delegate_)
     delegate_->OnHeadersReceived(response_headers);
 }
 
 void WebSocketSpdyStreamAdapter::OnDataReceived(
     std::unique_ptr<SpdyBuffer> buffer) {
+  if (!buffer) {
+    // This is slightly wrong semantically, as it's still possible to write to
+    // the stream at this point. However, if the server closes the stream
+    // without waiting for a close frame from us, that means it is not
+    // interested in a clean shutdown. In which case we don't need to worry
+    // about sending any remaining data we might have buffered. This results in
+    // a call to OnClose() which then informs our delegate.
+    stream_->Close();
+    return;
+  }
+
   read_data_.Enqueue(std::move(buffer));
   if (read_callback_)
     std::move(read_callback_).Run(CopySavedReadDataIntoBuffer());
@@ -152,10 +168,15 @@ void WebSocketSpdyStreamAdapter::OnDataSent() {
 }
 
 void WebSocketSpdyStreamAdapter::OnTrailers(
-    const spdy::SpdyHeaderBlock& trailers) {}
+    const spdy::Http2HeaderBlock& trailers) {}
 
 void WebSocketSpdyStreamAdapter::OnClose(int status) {
-  DCHECK_GT(ERR_IO_PENDING, status);
+  DCHECK_NE(ERR_IO_PENDING, status);
+  DCHECK_LE(status, 0);
+
+  if (status == OK) {
+    status = ERR_CONNECTION_CLOSED;
+  }
 
   stream_error_ = status;
   stream_ = nullptr;
@@ -181,6 +202,10 @@ void WebSocketSpdyStreamAdapter::OnClose(int status) {
     // Might destroy |this|.
     delegate_->OnClose(status);
   }
+}
+
+bool WebSocketSpdyStreamAdapter::CanGreaseFrameType() const {
+  return false;
 }
 
 NetLogSource WebSocketSpdyStreamAdapter::source_dependency() const {

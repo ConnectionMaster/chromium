@@ -7,9 +7,6 @@
 #ifndef COMPONENTS_CRONET_NATIVE_GENERATED_CRONET_IDL_IMPL_INTERFACE_H_
 #define COMPONENTS_CRONET_NATIVE_GENERATED_CRONET_IDL_IMPL_INTERFACE_H_
 
-#include <string>
-#include <vector>
-
 #include "base/macros.h"
 #include "components/cronet/native/generated/cronet.idl_c.h"
 
@@ -239,8 +236,9 @@ struct Cronet_RequestFinishedInfoListener {
   }
   Cronet_ClientContext client_context() const { return client_context_; }
 
-  virtual void OnRequestFinished(
-      Cronet_RequestFinishedInfoPtr request_info) = 0;
+  virtual void OnRequestFinished(Cronet_RequestFinishedInfoPtr request_info,
+                                 Cronet_UrlResponseInfoPtr response_info,
+                                 Cronet_ErrorPtr error) = 0;
 
  private:
   Cronet_ClientContext client_context_ = nullptr;

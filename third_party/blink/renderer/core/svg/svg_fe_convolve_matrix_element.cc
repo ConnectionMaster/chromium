@@ -21,6 +21,13 @@
 
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/svg/graphics/filters/svg_filter_builder.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_boolean.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_integer.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_integer_optional_integer.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_number.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_number_list.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_number_optional_number.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_string.h"
 #include "third_party/blink/renderer/core/svg/svg_enumeration_map.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/geometry/int_point.h"
@@ -30,11 +37,12 @@
 namespace blink {
 
 template <>
-const SVGEnumerationMap& GetEnumerationMap<EdgeModeType>() {
+CORE_EXPORT const SVGEnumerationMap&
+GetEnumerationMap<FEConvolveMatrix::EdgeModeType>() {
   static const SVGEnumerationMap::Entry enum_items[] = {
-      {EDGEMODE_DUPLICATE, "duplicate"},
-      {EDGEMODE_WRAP, "wrap"},
-      {EDGEMODE_NONE, "none"},
+      {FEConvolveMatrix::EDGEMODE_DUPLICATE, "duplicate"},
+      {FEConvolveMatrix::EDGEMODE_WRAP, "wrap"},
+      {FEConvolveMatrix::EDGEMODE_NONE, "none"},
   };
   static const SVGEnumerationMap entries(enum_items);
   return entries;
@@ -42,10 +50,6 @@ const SVGEnumerationMap& GetEnumerationMap<EdgeModeType>() {
 
 class SVGAnimatedOrder : public SVGAnimatedIntegerOptionalInteger {
  public:
-  static SVGAnimatedOrder* Create(SVGElement* context_element) {
-    return MakeGarbageCollected<SVGAnimatedOrder>(context_element);
-  }
-
   SVGAnimatedOrder(SVGElement* context_element)
       : SVGAnimatedIntegerOptionalInteger(context_element,
                                           svg_names::kOrderAttr,
@@ -75,8 +79,7 @@ SVGParsingError SVGAnimatedOrder::AttributeChanged(const String& value) {
   return parse_status;
 }
 
-inline SVGFEConvolveMatrixElement::SVGFEConvolveMatrixElement(
-    Document& document)
+SVGFEConvolveMatrixElement::SVGFEConvolveMatrixElement(Document& document)
     : SVGFilterPrimitiveStandardAttributes(svg_names::kFEConvolveMatrixTag,
                                            document),
       bias_(MakeGarbageCollected<SVGAnimatedNumber>(this,
@@ -86,10 +89,11 @@ inline SVGFEConvolveMatrixElement::SVGFEConvolveMatrixElement(
                                                        svg_names::kDivisorAttr,
                                                        1)),
       in1_(MakeGarbageCollected<SVGAnimatedString>(this, svg_names::kInAttr)),
-      edge_mode_(MakeGarbageCollected<SVGAnimatedEnumeration<EdgeModeType>>(
+      edge_mode_(MakeGarbageCollected<
+                 SVGAnimatedEnumeration<FEConvolveMatrix::EdgeModeType>>(
           this,
           svg_names::kEdgeModeAttr,
-          EDGEMODE_DUPLICATE)),
+          FEConvolveMatrix::EDGEMODE_DUPLICATE)),
       kernel_matrix_(MakeGarbageCollected<SVGAnimatedNumberList>(
           this,
           svg_names::kKernelMatrixAttr)),
@@ -121,7 +125,23 @@ inline SVGFEConvolveMatrixElement::SVGFEConvolveMatrixElement(
   AddToPropertyMap(target_y_);
 }
 
-void SVGFEConvolveMatrixElement::Trace(blink::Visitor* visitor) {
+SVGAnimatedNumber* SVGFEConvolveMatrixElement::kernelUnitLengthX() {
+  return kernel_unit_length_->FirstNumber();
+}
+
+SVGAnimatedNumber* SVGFEConvolveMatrixElement::kernelUnitLengthY() {
+  return kernel_unit_length_->SecondNumber();
+}
+
+SVGAnimatedInteger* SVGFEConvolveMatrixElement::orderX() const {
+  return order_->FirstInteger();
+}
+
+SVGAnimatedInteger* SVGFEConvolveMatrixElement::orderY() const {
+  return order_->SecondInteger();
+}
+
+void SVGFEConvolveMatrixElement::Trace(Visitor* visitor) const {
   visitor->Trace(bias_);
   visitor->Trace(divisor_);
   visitor->Trace(in1_);
@@ -134,8 +154,6 @@ void SVGFEConvolveMatrixElement::Trace(blink::Visitor* visitor) {
   visitor->Trace(target_y_);
   SVGFilterPrimitiveStandardAttributes::Trace(visitor);
 }
-
-DEFINE_NODE_FACTORY(SVGFEConvolveMatrixElement)
 
 IntSize SVGFEConvolveMatrixElement::MatrixOrder() const {
   if (!order_->IsSpecified())
@@ -173,8 +191,7 @@ bool SVGFEConvolveMatrixElement::SetFilterEffectAttribute(
     const QualifiedName& attr_name) {
   FEConvolveMatrix* convolve_matrix = static_cast<FEConvolveMatrix*>(effect);
   if (attr_name == svg_names::kEdgeModeAttr)
-    return convolve_matrix->SetEdgeMode(
-        edge_mode_->CurrentValue()->EnumValue());
+    return convolve_matrix->SetEdgeMode(edge_mode_->CurrentEnumValue());
   if (attr_name == svg_names::kDivisorAttr)
     return convolve_matrix->SetDivisor(ComputeDivisor());
   if (attr_name == svg_names::kBiasAttr)
@@ -190,7 +207,8 @@ bool SVGFEConvolveMatrixElement::SetFilterEffectAttribute(
 }
 
 void SVGFEConvolveMatrixElement::SvgAttributeChanged(
-    const QualifiedName& attr_name) {
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   if (attr_name == svg_names::kEdgeModeAttr ||
       attr_name == svg_names::kDivisorAttr ||
       attr_name == svg_names::kBiasAttr ||
@@ -209,7 +227,7 @@ void SVGFEConvolveMatrixElement::SvgAttributeChanged(
     return;
   }
 
-  SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(attr_name);
+  SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(params);
 }
 
 FilterEffect* SVGFEConvolveMatrixElement::Build(
@@ -221,7 +239,7 @@ FilterEffect* SVGFEConvolveMatrixElement::Build(
 
   auto* effect = MakeGarbageCollected<FEConvolveMatrix>(
       filter, MatrixOrder(), ComputeDivisor(), bias_->CurrentValue()->Value(),
-      TargetPoint(), edge_mode_->CurrentValue()->EnumValue(),
+      TargetPoint(), edge_mode_->CurrentEnumValue(),
       preserve_alpha_->CurrentValue()->Value(),
       kernel_matrix_->CurrentValue()->ToFloatVector());
   effect->InputEffects().push_back(input1);

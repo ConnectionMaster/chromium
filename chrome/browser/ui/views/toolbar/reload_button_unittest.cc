@@ -10,10 +10,14 @@
 #include "chrome/test/views/chrome_test_views_delegate.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event_utils.h"
+#include "ui/views/test/button_test_api.h"
 
 class ReloadButtonTest : public ChromeRenderViewHostTestHarness {
  public:
   ReloadButtonTest();
+
+  ReloadButtonTest(const ReloadButtonTest&) = delete;
+  ReloadButtonTest& operator=(const ReloadButtonTest&) = delete;
 
   void CheckState(bool enabled,
                   ReloadButton::Mode intended_mode,
@@ -31,10 +35,8 @@ class ReloadButtonTest : public ChromeRenderViewHostTestHarness {
   ReloadButton* reload() { return &reload_; }
 
  private:
-  ChromeTestViewsDelegate views_delegate_;
+  ChromeTestViewsDelegate<> views_delegate_;
   ReloadButton reload_;
-
-  DISALLOW_COPY_AND_ASSIGN(ReloadButtonTest);
 };
 
 ReloadButtonTest::ReloadButtonTest() : reload_(nullptr) {
@@ -49,7 +51,7 @@ void ReloadButtonTest::CheckState(bool enabled,
                                   ReloadButton::Mode visible_mode,
                                   bool double_click_timer_running,
                                   bool mode_switch_timer_running) {
-  EXPECT_EQ(enabled, reload_.enabled());
+  EXPECT_EQ(enabled, reload_.GetEnabled());
   EXPECT_EQ(intended_mode, reload_.intended_mode_);
   EXPECT_EQ(visible_mode, reload_.visible_mode_);
   EXPECT_EQ(double_click_timer_running,
@@ -66,7 +68,8 @@ TEST_F(ReloadButtonTest, Basic) {
   // Press the button.  This should start the double-click timer.
   ui::MouseEvent e(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
                    ui::EventTimeForNow(), 0, 0);
-  reload()->ButtonPressed(reload(), e);
+  views::test::ButtonTestApi test_api(reload());
+  test_api.NotifyClick(e);
   CheckState(true, ReloadButton::Mode::kReload, ReloadButton::Mode::kReload,
              true, false);
 
@@ -77,7 +80,7 @@ TEST_F(ReloadButtonTest, Basic) {
              false);
 
   // Press the button again.  This should change back to reload.
-  reload()->ButtonPressed(reload(), e);
+  test_api.NotifyClick(e);
   CheckState(true, ReloadButton::Mode::kReload, ReloadButton::Mode::kReload,
              false, false);
 }
@@ -86,12 +89,13 @@ TEST_F(ReloadButtonTest, DoubleClickTimer) {
   // Start by pressing the button.
   ui::MouseEvent e(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
                    ui::EventTimeForNow(), 0, 0);
-  reload()->ButtonPressed(reload(), e);
+  views::test::ButtonTestApi test_api(reload());
+  test_api.NotifyClick(e);
 
   // Try to press the button again.  This should do nothing because the timer is
   // running.
   int original_reload_count = reload_count();
-  reload()->ButtonPressed(reload(), e);
+  test_api.NotifyClick(e);
   CheckState(true, ReloadButton::Mode::kReload, ReloadButton::Mode::kReload,
              true, false);
   EXPECT_EQ(original_reload_count, reload_count());
@@ -113,7 +117,7 @@ TEST_F(ReloadButtonTest, DisableOnHover) {
   // Change to stop and hover.
   ui::MouseEvent e(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
                    ui::EventTimeForNow(), 0, 0);
-  reload()->ButtonPressed(reload(), e);
+  views::test::ButtonTestApi(reload()).NotifyClick(e);
   reload()->ChangeMode(ReloadButton::Mode::kStop, false);
   set_mouse_hovered(true);
 
@@ -136,13 +140,14 @@ TEST_F(ReloadButtonTest, ResetOnClick) {
   // Change to stop and hover.
   ui::MouseEvent e(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
                    ui::EventTimeForNow(), 0, 0);
-  reload()->ButtonPressed(reload(), e);
+  views::test::ButtonTestApi test_api(reload());
+  test_api.NotifyClick(e);
   reload()->ChangeMode(ReloadButton::Mode::kStop, false);
   set_mouse_hovered(true);
 
   // Press the button.  This should change back to reload despite the hover,
   // because it's a direct user action.
-  reload()->ButtonPressed(reload(), e);
+  test_api.NotifyClick(e);
   CheckState(true, ReloadButton::Mode::kReload, ReloadButton::Mode::kReload,
              false, false);
 }
@@ -151,7 +156,7 @@ TEST_F(ReloadButtonTest, ResetOnTimer) {
   // Change to stop, hover, and change back to reload.
   ui::MouseEvent e(ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(),
                    ui::EventTimeForNow(), 0, 0);
-  reload()->ButtonPressed(reload(), e);
+  views::test::ButtonTestApi(reload()).NotifyClick(e);
   reload()->ChangeMode(ReloadButton::Mode::kStop, false);
   set_mouse_hovered(true);
   reload()->ChangeMode(ReloadButton::Mode::kReload, false);

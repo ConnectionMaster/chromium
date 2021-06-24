@@ -10,11 +10,14 @@
 #include <utility>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/macros.h"
+#include "content/browser/bad_message.h"
 #include "content/browser/media/media_devices_util.h"
 #include "content/browser/renderer_host/media/media_devices_manager.h"
 #include "content/common/content_export.h"
 #include "media/capture/video/video_capture_device_descriptor.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "third_party/blink/public/mojom/mediastream/media_devices.mojom.h"
 #include "url/origin.h"
 
@@ -30,10 +33,11 @@ class CONTENT_EXPORT MediaDevicesDispatcherHost
                              MediaStreamManager* media_stream_manager);
   ~MediaDevicesDispatcherHost() override;
 
-  static void Create(int render_process_id,
-                     int render_frame_id,
-                     MediaStreamManager* media_stream_manager,
-                     blink::mojom::MediaDevicesDispatcherHostRequest request);
+  static void Create(
+      int render_process_id,
+      int render_frame_id,
+      MediaStreamManager* media_stream_manager,
+      mojo::PendingReceiver<blink::mojom::MediaDevicesDispatcherHost> receiver);
 
   // blink::mojom::MediaDevicesDispatcherHost implementation.
   void EnumerateDevices(bool request_audio_input,
@@ -56,9 +60,14 @@ class CONTENT_EXPORT MediaDevicesDispatcherHost
       bool subscribe_audio_input,
       bool subscribe_video_input,
       bool subscribe_audio_output,
-      blink::mojom::MediaDevicesListenerPtr listener) override;
+      mojo::PendingRemote<blink::mojom::MediaDevicesListener> listener)
+      override;
+  void SetCaptureHandleConfig(
+      blink::mojom::CaptureHandleConfigPtr config) override;
 
  private:
+  friend class MediaDevicesDispatcherHostTest;
+
   using GetVideoInputDeviceFormatsCallback =
       GetAllVideoInputDeviceFormatsCallback;
 
@@ -88,7 +97,7 @@ class CONTENT_EXPORT MediaDevicesDispatcherHost
 
   void GotAudioInputParameters(
       size_t index,
-      const base::Optional<media::AudioParameters>& parameters);
+      const absl::optional<media::AudioParameters>& parameters);
 
   void FinalizeGetAudioInputCapabilities();
 
@@ -109,6 +118,17 @@ class CONTENT_EXPORT MediaDevicesDispatcherHost
       const url::Origin& security_origin,
       const media::VideoCaptureDeviceDescriptors& device_descriptors);
 
+  void ReceivedBadMessage(int render_process_id,
+                          bad_message::BadMessageReason reason);
+
+  void SetBadMessageCallbackForTesting(
+      base::RepeatingCallback<void(int, bad_message::BadMessageReason)>
+          callback);
+
+  void SetCaptureHandleConfigCallbackForTesting(
+      base::RepeatingCallback<
+          void(int, int, blink::mojom::CaptureHandleConfigPtr)> callback);
+
   // The following const fields can be accessed on any thread.
   const int render_process_id_;
   const int render_frame_id_;
@@ -126,7 +146,13 @@ class CONTENT_EXPORT MediaDevicesDispatcherHost
 
   std::vector<uint32_t> subscription_ids_;
 
-  base::WeakPtrFactory<MediaDevicesDispatcherHost> weak_factory_;
+  base::RepeatingCallback<void(int, bad_message::BadMessageReason)>
+      bad_message_callback_for_testing_;
+
+  base::RepeatingCallback<void(int, int, blink::mojom::CaptureHandleConfigPtr)>
+      capture_handle_config_callback_for_testing_;
+
+  base::WeakPtrFactory<MediaDevicesDispatcherHost> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(MediaDevicesDispatcherHost);
 };

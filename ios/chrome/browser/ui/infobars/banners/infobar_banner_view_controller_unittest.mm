@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/ui/infobars/banners/infobar_banner_view_controller.h"
 
+#import "ios/chrome/browser/infobars/infobar_type.h"
 #import "ios/chrome/browser/ui/infobars/banners/infobar_banner_delegate.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #include "testing/gtest_mac.h"
@@ -27,7 +28,9 @@ class InfobarBannerViewControllerTest : public PlatformTest {
   InfobarBannerViewControllerTest()
       : banner_delegate_(OCMProtocolMock(@protocol(InfobarBannerDelegate))),
         view_controller_([[InfobarBannerViewController alloc]
-            initWithDelegate:banner_delegate_]) {}
+            initWithDelegate:banner_delegate_
+               presentsModal:YES
+                        type:InfobarType::kInfobarTypeConfirm]) {}
   id banner_delegate_;
   InfobarBannerViewController* view_controller_;
   ScopedKeyWindow scoped_key_window_;
@@ -44,15 +47,18 @@ TEST_F(InfobarBannerViewControllerTest, TestBannerButtonPressed) {
 }
 
 TEST_F(InfobarBannerViewControllerTest, TestTextConfiguration) {
-  view_controller_.titleText = @"title";
-  view_controller_.subTitleText = @"subtitle";
-  view_controller_.buttonText = @"buttonText";
+  NSString* const kTitle = @"title";
+  NSString* const kSubtitleText = @"subtitle";
+  NSString* const kButtonText = @"buttonText";
+  [view_controller_ setTitleText:kTitle];
+  [view_controller_ setSubtitleText:kSubtitleText];
+  [view_controller_ setButtonText:kButtonText];
   // Add view_controller_ to the UI Hierarchy to make sure views are created and
   // retained correctly.
   [scoped_key_window_.Get() setRootViewController:view_controller_];
-  ASSERT_EQ(view_controller_.titleLabel.text, @"title");
-  ASSERT_EQ(view_controller_.subTitleLabel.text, @"subtitle");
-  ASSERT_EQ(view_controller_.infobarButton.titleLabel.text, @"buttonText");
+  ASSERT_EQ(view_controller_.titleLabel.text, kTitle);
+  ASSERT_EQ(view_controller_.subTitleLabel.text, kSubtitleText);
+  ASSERT_EQ(view_controller_.infobarButton.titleLabel.text, kButtonText);
 }
 
 TEST_F(InfobarBannerViewControllerTest, TestSubtitleLabelHidden) {

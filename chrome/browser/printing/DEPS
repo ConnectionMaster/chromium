@@ -1,4 +1,9 @@
 include_rules = [
-  "+chrome_elf/third_party_dlls/public_api.h",
   "+pdf/pdf.h",  # Test only.
 ]
+
+specific_include_rules = {
+  "print_backend_service_test_impl.h": [
+    "+chrome/services/printing/print_backend_service_impl.h",
+  ]
+}

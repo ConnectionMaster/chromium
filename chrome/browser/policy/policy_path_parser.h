@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_POLICY_POLICY_PATH_PARSER_H_
 #define CHROME_BROWSER_POLICY_POLICY_PATH_PARSER_H_
 
-#include <string>
-
 #include "base/files/file_path.h"
 
 namespace policy {
@@ -63,13 +61,6 @@ base::FilePath::StringType ExpandPathVariables(
 // profile path is not read from the PathService which already takes this into
 // account.
 void CheckUserDataDirPolicy(base::FilePath* user_data_dir);
-
-// A helper function used to read the DiskCacheDir path policy without relying
-// on any policy infrastructure. This is required because this policy may be
-// needed much earlier before the PrefService is initialized on Windows.
-// The function will fill |disk_cache_dir| if the policy "DiskCacheDir" is set
-// and leave it intact if the policy is missing.
-void CheckDiskCacheDirPolicy(base::FilePath* disk_cache_dir);
 
 }  // namespace path_parser
 

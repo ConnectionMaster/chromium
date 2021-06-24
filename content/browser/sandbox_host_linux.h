@@ -6,9 +6,8 @@
 #define CONTENT_BROWSER_SANDBOX_HOST_LINUX_H_
 
 #include <memory>
-#include <string>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/macros.h"
 #include "base/threading/simple_thread.h"
 #include "content/browser/sandbox_ipc_linux.h"
@@ -62,4 +61,4 @@ class CONTENT_EXPORT SandboxHostLinux {
 
 }  // namespace content
 
-#endif  // CONTENT_BROWSER_RENDERER_HOST_RENDER_SANDBOX_HOST_LINUX_H_
+#endif  // CONTENT_BROWSER_SANDBOX_HOST_LINUX_H_

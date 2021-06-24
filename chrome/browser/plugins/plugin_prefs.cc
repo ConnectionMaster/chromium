@@ -11,15 +11,12 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/plugins/plugin_finder.h"
 #include "chrome/browser/plugins/plugin_metadata.h"
 #include "chrome/browser/plugins/plugin_prefs_factory.h"
@@ -28,33 +25,21 @@
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
-#include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/common/content_settings.h"
-#include "components/content_settings/core/common/pref_names.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
 #include "content/public/browser/plugin_service.h"
-#include "content/public/common/content_constants.h"
 #include "content/public/common/webplugininfo.h"
 
 using content::BrowserThread;
 
 namespace {
 
-bool IsPDFViewerPlugin(const base::string16& plugin_name) {
+bool IsPDFViewerPlugin(const std::u16string& plugin_name) {
   return (plugin_name ==
           base::ASCIIToUTF16(ChromeContentClient::kPDFExtensionPluginName)) ||
          (plugin_name ==
           base::ASCIIToUTF16(ChromeContentClient::kPDFInternalPluginName));
-}
-
-bool IsAdobeFlashPlayerPlugin(const base::string16& plugin_name) {
-  return (plugin_name == base::ASCIIToUTF16(content::kFlashPluginName) ||
-          plugin_name == base::ASCIIToUTF16(
-              PluginMetadata::kAdobeFlashPlayerGroupName));
 }
 
 }  // namespace
@@ -76,9 +61,7 @@ scoped_refptr<PluginPrefs> PluginPrefs::GetForTestingProfile(
 }
 
 PluginPrefs::PolicyStatus PluginPrefs::PolicyStatusForPlugin(
-    const base::string16& name) const {
-  base::AutoLock auto_lock(lock_);
-
+    const std::u16string& name) const {
   // Special handling for PDF based on its specific policy.
   if (IsPDFViewerPlugin(name) && always_open_pdf_externally_)
     return POLICY_DISABLED;
@@ -89,7 +72,7 @@ PluginPrefs::PolicyStatus PluginPrefs::PolicyStatusForPlugin(
 bool PluginPrefs::IsPluginEnabled(const content::WebPluginInfo& plugin) const {
   std::unique_ptr<PluginMetadata> plugin_metadata(
       PluginFinder::GetInstance()->GetPluginMetadata(plugin));
-  base::string16 group_name = plugin_metadata->name();
+  std::u16string group_name = plugin_metadata->name();
 
   // Check if the plugin or its group is enabled by policy.
   PolicyStatus plugin_status = PolicyStatusForPlugin(plugin.name);
@@ -106,17 +89,18 @@ bool PluginPrefs::IsPluginEnabled(const content::WebPluginInfo& plugin) const {
 }
 
 void PluginPrefs::UpdatePdfPolicy(const std::string& pref_name) {
-  base::AutoLock auto_lock(lock_);
   always_open_pdf_externally_ =
       prefs_->GetBoolean(prefs::kPluginsAlwaysOpenPdfExternally);
 
-  NotifyPluginStatusChanged();
+  content::PluginService::GetInstance()->PurgePluginListCache(profile_, false);
+  std::vector<Profile*> otr_profiles = profile_->GetAllOffTheRecordProfiles();
+  for (Profile* otr : otr_profiles)
+    content::PluginService::GetInstance()->PurgePluginListCache(otr, false);
 }
 
 void PluginPrefs::SetPrefs(PrefService* prefs) {
   prefs_ = prefs;
   bool update_internal_dir = false;
-  bool plugins_migrated = false;
   base::FilePath last_internal_dir =
       prefs_->GetFilePath(prefs::kPluginsLastInternalDirectory);
   base::FilePath cur_internal_dir;
@@ -131,38 +115,19 @@ void PluginPrefs::SetPrefs(PrefService* prefs) {
     ListPrefUpdate update(prefs_, prefs::kPluginsPluginsList);
     base::ListValue* saved_plugins_list = update.Get();
     if (saved_plugins_list && !saved_plugins_list->empty()) {
-      for (auto& plugin_value : *saved_plugins_list) {
+      for (auto& plugin_value : saved_plugins_list->GetList()) {
         base::DictionaryValue* plugin;
         if (!plugin_value.GetAsDictionary(&plugin)) {
           LOG(WARNING) << "Invalid entry in " << prefs::kPluginsPluginsList;
           continue;  // Oops, don't know what to do with this item.
         }
 
-        bool enabled = true;
-        if (plugin->GetBoolean("enabled", &enabled))
-          plugin->Remove("enabled", nullptr);
-
-        // Migrate disabled plugins and re-enable them all internally.
-        // TODO(http://crbug.com/662006): Remove migration eventually.
-        if (!enabled) {
-          base::string16 name;
-          plugin->GetString("name", &name);
-          if (IsPDFViewerPlugin(name))
-            prefs->SetBoolean(prefs::kPluginsAlwaysOpenPdfExternally, true);
-          if (IsAdobeFlashPlayerPlugin(name)) {
-            HostContentSettingsMapFactory::GetForProfile(profile_)
-                ->SetDefaultContentSetting(CONTENT_SETTINGS_TYPE_PLUGINS,
-                                           CONTENT_SETTING_BLOCK);
-          }
-          plugins_migrated = true;
-        }
-
-        base::FilePath::StringType path;
+        std::string path;
         // The plugin list constains all the plugin files in addition to the
         // plugin groups.
         if (plugin->GetString("path", &path)) {
           // Files have a path attribute, groups don't.
-          base::FilePath plugin_path(path);
+          base::FilePath plugin_path = base::FilePath::FromUTF8Unsafe(path);
 
           // The path to the internal plugin directory changes everytime Chrome
           // is auto-updated, since it contains the current version number. For
@@ -198,7 +163,7 @@ void PluginPrefs::SetPrefs(PrefService* prefs) {
             // |last_internal_dir|. We don't need to update it.
             if (!relative_path.empty()) {
               plugin_path = cur_internal_dir.Append(relative_path);
-              path = plugin_path.value();
+              path = plugin_path.AsUTF8Unsafe();
               plugin->SetString("path", path);
             }
           }
@@ -207,46 +172,22 @@ void PluginPrefs::SetPrefs(PrefService* prefs) {
     }
   }  // Scoped update of prefs::kPluginsPluginsList.
 
-  UMA_HISTOGRAM_BOOLEAN("Plugin.EnabledStatusMigrationDone", plugins_migrated);
-
-  always_open_pdf_externally_ =
-      prefs_->GetBoolean(prefs::kPluginsAlwaysOpenPdfExternally);
-
+  UpdatePdfPolicy(prefs::kPluginsAlwaysOpenPdfExternally);
   registrar_.Init(prefs_);
-
-  // Because pointers to our own members will remain unchanged for the
-  // lifetime of |registrar_| (which we also own), we can bind their
-  // pointer values directly in the callbacks to avoid string-based
-  // lookups at notification time.
   registrar_.Add(prefs::kPluginsAlwaysOpenPdfExternally,
-                 base::Bind(&PluginPrefs::UpdatePdfPolicy,
-                 base::Unretained(this)));
-
-  NotifyPluginStatusChanged();
+                 base::BindRepeating(&PluginPrefs::UpdatePdfPolicy,
+                                     base::Unretained(this)));
 }
 
 void PluginPrefs::ShutdownOnUIThread() {
-  prefs_ = NULL;
+  prefs_ = nullptr;
   registrar_.RemoveAll();
 }
 
-PluginPrefs::PluginPrefs() : always_open_pdf_externally_(false),
-                             profile_(NULL),
-                             prefs_(NULL) {
-}
-
-PluginPrefs::~PluginPrefs() {
-}
+PluginPrefs::PluginPrefs() = default;
+PluginPrefs::~PluginPrefs() = default;
 
 void PluginPrefs::SetAlwaysOpenPdfExternallyForTests(
     bool always_open_pdf_externally) {
   always_open_pdf_externally_ = always_open_pdf_externally;
-}
-
-void PluginPrefs::NotifyPluginStatusChanged() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  content::NotificationService::current()->Notify(
-      chrome::NOTIFICATION_PLUGIN_ENABLE_STATUS_CHANGED,
-      content::Source<Profile>(profile_),
-      content::NotificationService::NoDetails());
 }

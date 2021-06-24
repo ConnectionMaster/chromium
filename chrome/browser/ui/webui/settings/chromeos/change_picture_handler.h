@@ -6,9 +6,10 @@
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_CHROMEOS_CHANGE_PICTURE_HANDLER_H_
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
+#include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/chromeos/camera_presence_notifier.h"
-#include "chrome/browser/image_decoder.h"
+#include "chrome/browser/image_decoder/image_decoder.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/gfx/image/image_skia.h"
@@ -37,6 +38,9 @@ class ChangePictureHandler : public ::settings::SettingsPageUIHandler,
   ChangePictureHandler();
   ~ChangePictureHandler() override;
 
+  // The name of the histogram that records when a user changes a device image.
+  static const char kUserImageChangedHistogramName[];
+
   // WebUIMessageHandler implementation.
   void RegisterMessages() override;
   void OnJavascriptAllowed() override;
@@ -46,6 +50,8 @@ class ChangePictureHandler : public ::settings::SettingsPageUIHandler,
   void OnCameraPresenceCheckDone(bool is_camera_present) override;
 
  private:
+  friend class ChangePictureHandlerTest;
+
   // Sends list of available default images to the page.
   void SendDefaultImages();
 
@@ -60,11 +66,14 @@ class ChangePictureHandler : public ::settings::SettingsPageUIHandler,
   // if any, on the page. Shouldn't be called before |SendProfileImage|.
   void UpdateProfileImage();
 
+  // Sends the previous user image to the page.
+  void SendOldImage(std::string&& image_url);
+
   // Sends the previous user image to the page. Also sends |image_index| which
   // is either the index of the previous user image (if it was from an older
   // default image set) or -1 otherwise. This allows the WebUI to show credits
   // for older default images.
-  void SendOldImage(const std::string& image_url, int image_index);
+  void SendOldImageWithIndex(std::string&& image_url, int image_index);
 
   // Starts camera presence check.
   void CheckCameraPresence();
@@ -108,7 +117,7 @@ class ChangePictureHandler : public ::settings::SettingsPageUIHandler,
                           base::RefCountedBytes* image_bytes);
 
   // Returns handle to browser window or NULL if it can't be found.
-  gfx::NativeWindow GetBrowserWindow() const;
+  gfx::NativeWindow GetBrowserWindow();
 
   // Overriden from ImageDecoder::ImageRequest:
   void OnImageDecoded(const SkBitmap& decoded_image) override;
@@ -116,7 +125,7 @@ class ChangePictureHandler : public ::settings::SettingsPageUIHandler,
 
   // Returns user related to current WebUI. If this user doesn't exist,
   // returns active user.
-  const user_manager::User* GetUser() const;
+  const user_manager::User* GetUser();
 
   scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
 
@@ -135,9 +144,14 @@ class ChangePictureHandler : public ::settings::SettingsPageUIHandler,
   // Data for |user_photo_|.
   scoped_refptr<base::RefCountedBytes> user_photo_data_;
 
-  ScopedObserver<user_manager::UserManager, ChangePictureHandler>
-      user_manager_observer_;
-  ScopedObserver<CameraPresenceNotifier, ChangePictureHandler> camera_observer_;
+  base::ScopedObservation<user_manager::UserManager,
+                          user_manager::UserManager::Observer>
+      user_manager_observation_{this};
+  base::ScopedObservation<CameraPresenceNotifier,
+                          CameraPresenceNotifier::Observer>
+      camera_observation_{this};
+
+  base::WeakPtrFactory<ChangePictureHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ChangePictureHandler);
 };

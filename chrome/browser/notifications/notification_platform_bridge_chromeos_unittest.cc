@@ -7,14 +7,16 @@
 #include "base/bind.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
 
 // Regression test for https://crbug.com/840105
 TEST(NotificationPlatformBridgeChromeOsTest, Update) {
-  content::TestBrowserThreadBundle thread_bundle;
+  message_center::MessageCenter::Initialize();
+  content::BrowserTaskEnvironment task_environment;
   TestingProfile profile;
   NotificationPlatformBridgeChromeOs bridge;
 
@@ -25,11 +27,11 @@ TEST(NotificationPlatformBridgeChromeOsTest, Update) {
   auto initial_delegate =
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(
-              [](int* clicks, base::Optional<int> button_index) { ++*clicks; },
+              [](int* clicks, absl::optional<int> button_index) { ++*clicks; },
               &initial_delegate_clicks));
   message_center::Notification initial_notification(
-      message_center::NOTIFICATION_TYPE_SIMPLE, id, base::string16(),
-      base::string16(), gfx::Image(), base::string16(), GURL(),
+      message_center::NOTIFICATION_TYPE_SIMPLE, id, std::u16string(),
+      std::u16string(), gfx::Image(), std::u16string(), GURL(),
       message_center::NotifierId(), {}, initial_delegate);
   bridge.Display(NotificationHandler::Type::TRANSIENT, &profile,
                  initial_notification, nullptr);
@@ -44,11 +46,11 @@ TEST(NotificationPlatformBridgeChromeOsTest, Update) {
   auto updated_delegate =
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(
-              [](int* clicks, base::Optional<int> button_index) { ++*clicks; },
+              [](int* clicks, absl::optional<int> button_index) { ++*clicks; },
               &updated_delegate_clicks));
   message_center::Notification updated_notification(
-      message_center::NOTIFICATION_TYPE_SIMPLE, id, base::string16(),
-      base::string16(), gfx::Image(), base::string16(), GURL(),
+      message_center::NOTIFICATION_TYPE_SIMPLE, id, std::u16string(),
+      std::u16string(), gfx::Image(), std::u16string(), GURL(),
       message_center::NotifierId(), {}, updated_delegate);
   bridge.Display(NotificationHandler::Type::TRANSIENT, &profile,
                  updated_notification, nullptr);
@@ -57,4 +59,6 @@ TEST(NotificationPlatformBridgeChromeOsTest, Update) {
   bridge.HandleNotificationClicked(permuted_notification.notification().id());
   EXPECT_EQ(1, initial_delegate_clicks);
   EXPECT_EQ(1, updated_delegate_clicks);
+
+  message_center::MessageCenter::Shutdown();
 }

@@ -18,13 +18,17 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/gtest_prod_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
 #include "base/win/atl.h"
 #include "third_party/iaccessible2/ia2_api_all.h"
+#include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_export.h"
 #include "ui/accessibility/ax_text_utils.h"
 #include "ui/accessibility/platform/ax_platform_node_base.h"
+#include "ui/accessibility/platform/ax_platform_text_boundary.h"
+#include "ui/accessibility/platform/ichromeaccessible.h"
 #include "ui/gfx/range/range.h"
 
 // IMPORTANT!
@@ -277,6 +281,16 @@ enum {
   UMA_API_WINDOW_GET_WINDOWVISUALSTATE = 243,
   UMA_API_WINDOW_GET_WINDOWINTERACTIONSTATE = 244,
   UMA_API_WINDOW_GET_ISTOPMOST = 245,
+  UMA_API_ELEMENT_PROVIDER_FROM_POINT = 246,
+  UMA_API_GET_FOCUS = 247,
+  UMA_API_ADVISE_EVENT_ADDED = 248,
+  UMA_API_ADVISE_EVENT_REMOVED = 249,
+  UMA_API_ITEMCONTAINER_FINDITEMBYPROPERTY = 250,
+  UMA_API_ANNOTATION_GET_ANNOTATIONTYPEID = 251,
+  UMA_API_ANNOTATION_GET_ANNOTATIONTYPENAME = 252,
+  UMA_API_ANNOTATION_GET_AUTHOR = 253,
+  UMA_API_ANNOTATION_GET_DATETIME = 254,
+  UMA_API_ANNOTATION_GET_TARGET = 255,
 
   // This must always be the last enum. It's okay for its value to
   // increase, but none of the other enum values may change.
@@ -285,6 +299,10 @@ enum {
 
 #define WIN_ACCESSIBILITY_API_HISTOGRAM(enum_value) \
   UMA_HISTOGRAM_ENUMERATION("Accessibility.WinAPIs", enum_value, UMA_API_MAX)
+
+#define WIN_ACCESSIBILITY_API_PERF_HISTOGRAM(enum_value) \
+  SCOPED_UMA_HISTOGRAM_TIMER_MICROS(                     \
+      "Accessibility.Performance.WinAPIs." #enum_value)
 
 //
 // Macros to use at the top of any AXPlatformNodeWin (or derived class) method
@@ -302,28 +320,44 @@ enum {
     return E_INVALIDARG;                  \
   *arg = {};
 
+namespace base {
+namespace win {
+class VariantVector;
+}  // namespace win
+}  // namespace base
+
 namespace ui {
+
 class AXPlatformNodeWin;
 class AXPlatformRelationWin;
 
-// A simple interface for a class that wants to be notified when IAccessible2
-// is used by a client, a strong indication that full accessibility support
-// should be enabled.
-//
-// TODO(dmazzoni): Rename this to something more general.
-class AX_EXPORT IAccessible2UsageObserver {
+// A simple interface for a class that wants to be notified when Windows
+// accessibility APIs are used by a client, a strong indication that full
+// accessibility support should be enabled.
+class AX_EXPORT WinAccessibilityAPIUsageObserver {
  public:
-  IAccessible2UsageObserver();
-  virtual ~IAccessible2UsageObserver();
+  WinAccessibilityAPIUsageObserver();
+  virtual ~WinAccessibilityAPIUsageObserver();
   virtual void OnIAccessible2Used() = 0;
   virtual void OnScreenReaderHoneyPotQueried() = 0;
   virtual void OnAccNameCalled() = 0;
+  virtual void OnUIAutomationUsed() = 0;
+  virtual void StartFiringUIAEvents() = 0;
+  virtual void EndFiringUIAEvents() = 0;
 };
 
 // Get an observer list that allows modules across the codebase to
-// listen to when usage of IAccessible2 is detected.
-extern AX_EXPORT base::ObserverList<IAccessible2UsageObserver>::Unchecked&
-GetIAccessible2UsageObserverList();
+// listen to when usage of Windows accessibility APIs is detected.
+extern AX_EXPORT
+    base::ObserverList<WinAccessibilityAPIUsageObserver>::Unchecked&
+    GetWinAccessibilityAPIUsageObserverList();
+
+// Used to simplify calling StartFiringUIAEvents and EndFiringEvents
+class AX_EXPORT WinAccessibilityAPIUsageScopedUIAEventsNotifier {
+ public:
+  WinAccessibilityAPIUsageScopedUIAEventsNotifier();
+  ~WinAccessibilityAPIUsageScopedUIAEventsNotifier();
+};
 
 // TODO(nektar): Remove multithread superclass since we don't support it.
 class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
@@ -332,10 +366,12 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
                                              &IID_IAccessible2_4,
                                              &LIBID_IAccessible2Lib>,
                         public IAccessibleEx,
-                        public IAccessibleText,
+                        public IAccessibleHypertext,
                         public IAccessibleTable,
                         public IAccessibleTable2,
                         public IAccessibleTableCell,
+                        public IAccessibleValue,
+                        public IAnnotationProvider,
                         public IExpandCollapseProvider,
                         public IGridItemProvider,
                         public IGridProvider,
@@ -353,6 +389,7 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
                         public IToggleProvider,
                         public IValueProvider,
                         public IWindowProvider,
+                        public IChromeAccessible,
                         public AXPlatformNodeBase {
   using IDispatchImpl::Invoke;
 
@@ -371,9 +408,13 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
     COM_INTERFACE_ENTRY(IAccessible2_4)
     COM_INTERFACE_ENTRY(IAccessibleEx)
     COM_INTERFACE_ENTRY(IAccessibleText)
+    COM_INTERFACE_ENTRY(IAccessibleHypertext)
     COM_INTERFACE_ENTRY(IAccessibleTable)
     COM_INTERFACE_ENTRY(IAccessibleTable2)
     COM_INTERFACE_ENTRY(IAccessibleTableCell)
+    COM_INTERFACE_ENTRY(IAccessibleValue)
+    COM_INTERFACE_ENTRY(IChromeAccessible)
+    COM_INTERFACE_ENTRY(IAnnotationProvider)
     COM_INTERFACE_ENTRY(IExpandCollapseProvider)
     COM_INTERFACE_ENTRY(IGridItemProvider)
     COM_INTERFACE_ENTRY(IGridProvider)
@@ -407,23 +448,23 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
 
   // AXPlatformNodeBase overrides.
   void Destroy() override;
-  int GetIndexInParent() override;
-  base::string16 GetValue() const override;
-  base::string16 GetText() const override;
+  bool IsPlatformCheckable() const override;
 
   //
   // IAccessible methods.
   //
 
   // Retrieves the child element or child object at a given point on the screen.
-  IFACEMETHODIMP accHitTest(LONG x_left, LONG y_top, VARIANT* child) override;
+  IFACEMETHODIMP accHitTest(LONG screen_physical_pixel_x,
+                            LONG screen_physical_pixel_y,
+                            VARIANT* child) override;
 
   // Performs the object's default action.
   IFACEMETHODIMP accDoDefaultAction(VARIANT var_id) override;
 
   // Retrieves the specified object's current screen location.
-  IFACEMETHODIMP accLocation(LONG* x_left,
-                             LONG* y_top,
+  IFACEMETHODIMP accLocation(LONG* physical_pixel_left,
+                             LONG* physical_pixel_top,
                              LONG* width,
                              LONG* height,
                              VARIANT var_id) override;
@@ -540,13 +581,13 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   // IAccessible2_3 methods.
   //
 
-  IFACEMETHODIMP get_selectionRanges(IA2Range** ranges, LONG* nRanges);
+  IFACEMETHODIMP get_selectionRanges(IA2Range** ranges, LONG* nRanges) override;
 
   //
   // IAccessible2_4 methods.
   //
 
-  IFACEMETHODIMP setSelectionRanges(LONG nRanges, IA2Range* ranges);
+  IFACEMETHODIMP setSelectionRanges(LONG nRanges, IA2Range* ranges) override;
 
   //
   // IAccessibleEx methods.
@@ -557,6 +598,20 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
 
   IFACEMETHODIMP GetIAccessiblePair(IAccessible** accessible,
                                     LONG* child_id) override;
+
+  //
+  // IAnnotationProvider methods.
+  //
+
+  IFACEMETHODIMP get_AnnotationTypeId(int* type_id) override;
+
+  IFACEMETHODIMP get_AnnotationTypeName(BSTR* type_name) override;
+
+  IFACEMETHODIMP get_Author(BSTR* author) override;
+
+  IFACEMETHODIMP get_DateTime(BSTR* date_time) override;
+
+  IFACEMETHODIMP get_Target(IRawElementProviderSimple** target) override;
 
   //
   // IExpandCollapseProvider methods.
@@ -921,6 +976,18 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   IFACEMETHODIMP get_table(IUnknown** table) override;
 
   //
+  // IAccessibleHypertext methods not implemented.
+  //
+
+  IFACEMETHODIMP get_nHyperlinks(LONG* hyperlink_count) override;
+
+  IFACEMETHODIMP
+  get_hyperlink(LONG index, IAccessibleHyperlink** hyperlink) override;
+
+  IFACEMETHODIMP
+  get_hyperlinkIndex(LONG char_index, LONG* hyperlink_index) override;
+
+  //
   // IAccessibleText methods not implemented.
   //
 
@@ -952,6 +1019,18 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
                                         LONG y) override;
 
   //
+  // IAccessibleValue methods.
+  //
+
+  IFACEMETHODIMP get_currentValue(VARIANT* value) override;
+
+  IFACEMETHODIMP get_minimumValue(VARIANT* value) override;
+
+  IFACEMETHODIMP get_maximumValue(VARIANT* value) override;
+
+  IFACEMETHODIMP setCurrentValue(VARIANT new_value) override;
+
+  //
   // IRawElementProviderFragment methods.
   //
 
@@ -959,7 +1038,8 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
       NavigateDirection direction,
       IRawElementProviderFragment** element_provider) override;
   IFACEMETHODIMP GetRuntimeId(SAFEARRAY** runtime_id) override;
-  IFACEMETHODIMP get_BoundingRectangle(UiaRect* bounding_rectangle) override;
+  IFACEMETHODIMP get_BoundingRectangle(
+      UiaRect* screen_physical_pixel_bounds) override;
   IFACEMETHODIMP GetEmbeddedFragmentRoots(
       SAFEARRAY** embedded_fragment_roots) override;
   IFACEMETHODIMP SetFocus() override;
@@ -989,6 +1069,19 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   IFACEMETHODIMP ShowContextMenu() override;
 
   //
+  // IChromeAccessible methods.
+  //
+
+  IFACEMETHODIMP get_bulkFetch(BSTR input_json,
+                               LONG request_id,
+                               IChromeAccessibleDelegate* delegate) override;
+
+  IFACEMETHODIMP get_hitTest(LONG screen_physical_pixel_x,
+                             LONG screen_physical_pixel_y,
+                             LONG request_id,
+                             IChromeAccessibleDelegate* delegate) override;
+
+  //
   // IServiceProvider methods.
   //
 
@@ -996,52 +1089,110 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
                               REFIID riid,
                               void** object) override;
 
- public:
-  // Support method for ITextRangeProvider::GetAttributeValue
-  HRESULT GetTextAttributeValue(TEXTATTRIBUTEID attribute_id, VARIANT* result);
+  //
+  // Methods used by the ATL COM map.
+  //
+
+  // Called by BEGIN_COM_MAP() / END_COM_MAP().
+  static STDMETHODIMP InternalQueryInterface(void* this_ptr,
+                                             const _ATL_INTMAP_ENTRY* entries,
+                                             REFIID riid,
+                                             void** object);
+
+  // Support method for ITextRangeProvider::GetAttributeValue.
+  // If either |start_offset| or |end_offset| are not provided then the
+  // endpoint is treated as the start or end of the node respectively.
+  HRESULT GetTextAttributeValue(TEXTATTRIBUTEID attribute_id,
+                                const absl::optional<int>& start_offset,
+                                const absl::optional<int>& end_offset,
+                                base::win::VariantVector* result);
 
   // IRawElementProviderSimple support method.
   bool IsPatternProviderSupported(PATTERNID pattern_id);
 
+  // Prefer GetPatternProviderImpl when calling internally. We should avoid
+  // calling external APIs internally as it will cause the histograms to become
+  // innaccurate.
+  HRESULT GetPatternProviderImpl(PATTERNID pattern_id, IUnknown** result);
+
+  // Prefer GetPropertyValueImpl when calling internally. We should avoid
+  // calling external APIs internally as it will cause the histograms to become
+  // innaccurate.
+  HRESULT GetPropertyValueImpl(PROPERTYID property_id, VARIANT* result);
+
   // Helper to return the runtime id (without going through a SAFEARRAY)
-  using RuntimeIdArray = std::array<int, 2>;
+  using RuntimeIdArray = std::array<int, 4>;
   void GetRuntimeIdArray(RuntimeIdArray& runtime_id);
 
-  // Notifies accessibility about active composition.
-  void OnActiveComposition(const gfx::Range& range);
+  // Updates the active composition range and fires UIA text edit event about
+  // composition (active or committed)
+  void OnActiveComposition(const gfx::Range& range,
+                           const std::u16string& active_composition_text,
+                           bool is_composition_committed);
   // Returns true if there is an active composition
   bool HasActiveComposition() const;
   // Returns the start/end offsets of the active composition
   gfx::Range GetActiveCompositionOffsets() const;
 
+  // Helper to recursively find live-regions and fire a change event on them
+  void FireLiveRegionChangeRecursive();
+
+  // Returns the parent node that makes this node inaccessible.
+  AXPlatformNodeWin* GetLowestAccessibleElement();
+
+  // Returns the first |IsTextOnlyObject| descendant using
+  // depth-first pre-order traversal.
+  AXPlatformNodeWin* GetFirstTextOnlyDescendant();
+
+  // Convert a mojo event to an MSAA event. Exposed for testing.
+  static absl::optional<DWORD> MojoEventToMSAAEvent(ax::mojom::Event event);
+
+  // Convert a mojo event to a UIA event. Exposed for testing.
+  static absl::optional<EVENTID> MojoEventToUIAEvent(ax::mojom::Event event);
+
+  // Convert a mojo event to a UIA property id. Exposed for testing.
+  static absl::optional<PROPERTYID> MojoEventToUIAProperty(
+      ax::mojom::Event event);
+
  protected:
   // This is hard-coded; all products based on the Chromium engine will have the
   // same framework name, so that assistive technology can detect any
   // Chromium-based product.
-  static constexpr const base::char16* FRAMEWORK_ID = L"Chrome";
+  static constexpr const wchar_t* FRAMEWORK_ID = L"Chrome";
 
   AXPlatformNodeWin();
 
   int MSAAState() const;
 
   int MSAARole();
-  std::string StringOverrideForMSAARole();
 
   int32_t ComputeIA2State();
 
   int32_t ComputeIA2Role();
 
-  std::vector<base::string16> ComputeIA2Attributes();
+  std::vector<std::wstring> ComputeIA2Attributes();
 
-  base::string16 UIAAriaRole();
+  std::wstring UIAAriaRole();
 
-  base::string16 ComputeUIAProperties();
+  std::wstring ComputeUIAProperties();
 
   LONG ComputeUIAControlType();
 
+  AXPlatformNodeWin* ComputeUIALabeledBy();
+
+  bool CanHaveUIALabeledBy();
+
+  bool IsNameExposed() const;
+
   bool IsUIAControl() const;
 
-  base::Optional<LONG> ComputeUIALandmarkType() const;
+  absl::optional<LONG> ComputeUIALandmarkType() const;
+
+  bool IsInaccessibleDueToAncestor() const;
+
+  bool ShouldHideChildrenForUIA() const;
+
+  ExpandCollapseState ComputeExpandCollapseState() const;
 
   // AXPlatformNodeBase overrides.
   void Dispose() override;
@@ -1049,7 +1200,7 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   // Relationships between this node and other nodes.
   std::vector<Microsoft::WRL::ComPtr<AXPlatformRelationWin>> relations_;
 
-  AXHypertext old_hypertext_;
+  AXLegacyHypertext old_hypertext_;
 
   // These protected methods are still used by BrowserAccessibilityComWin. At
   // some point post conversion, we can probably move these to be private
@@ -1070,20 +1221,26 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   // value of offset and returns, otherwise offset remains unchanged.
   void HandleSpecialTextOffset(LONG* offset);
 
-  // Convert from a IA2TextBoundaryType to a TextBoundaryType.
-  TextBoundaryType IA2TextBoundaryToTextBoundary(IA2TextBoundaryType type);
-
   // A helper to add the given string value to |attributes|.
   void AddAttributeToList(const char* name,
                           const char* value,
                           PlatformAttributeList* attributes) override;
 
- private:
-  base::Optional<DWORD> MSAAEvent(ax::mojom::Event event);
-  base::Optional<EVENTID> UIAEvent(ax::mojom::Event event);
-  bool IsWebAreaForPresentationalIframe();
-  bool ShouldNodeHaveFocusableState(const AXNodeData& data) const;
+  // Escape special characters as specified by the IA2 spec.
+  void SanitizeTextAttributeValue(const std::string& input,
+                                  std::string* output) const override;
 
+  // Escapes characters in string attributes as required by the IA2 Spec.
+  // It's okay for input to be the same as output.
+  static void SanitizeStringAttributeForIA2(const std::string& input,
+                                            std::string* output);
+  FRIEND_TEST_ALL_PREFIXES(AXPlatformNodeWinTest,
+                           SanitizeStringAttributeForIA2);
+
+ private:
+  bool IsWebAreaForPresentationalIframe();
+  bool ShouldNodeHaveFocusableState() const;
+  int GetAnnotationTypeImpl() const;
   // Get the value attribute as a Bstr, this means something different depending
   // on the type of element being queried. (e.g. kColorWell uses kColorValue).
   static BSTR GetValueAttributeAsBstr(AXPlatformNodeWin* target);
@@ -1091,49 +1248,53 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   HRESULT GetStringAttributeAsBstr(ax::mojom::StringAttribute attribute,
                                    BSTR* value_bstr) const;
 
+  HRESULT GetNameAsBstr(BSTR* value_bstr) const;
+
+  HRESULT ComputeListItemNameAsBstr(BSTR* value_bstr) const;
+
   // Sets the selection given a start and end offset in IA2 Hypertext.
   void SetIA2HypertextSelection(LONG start_offset, LONG end_offset);
 
   // Escapes characters in string attributes as required by the UIA Aria
   // Property Spec. It's okay for input to be the same as output.
   static void SanitizeStringAttributeForUIAAriaProperty(
-      const base::string16& input,
-      base::string16* output);
+      const std::wstring& input,
+      std::wstring* output);
 
   // If the string attribute |attribute| is present, add its value as a
   // UIA AriaProperties Property with the name |uia_aria_property|.
-  void StringAttributeToUIAAriaProperty(std::vector<base::string16>& properties,
+  void StringAttributeToUIAAriaProperty(std::vector<std::wstring>& properties,
                                         ax::mojom::StringAttribute attribute,
                                         const char* uia_aria_property);
 
   // If the bool attribute |attribute| is present, add its value as a
   // UIA AriaProperties Property with the name |uia_aria_property|.
-  void BoolAttributeToUIAAriaProperty(std::vector<base::string16>& properties,
+  void BoolAttributeToUIAAriaProperty(std::vector<std::wstring>& properties,
                                       ax::mojom::BoolAttribute attribute,
                                       const char* uia_aria_property);
 
   // If the int attribute |attribute| is present, add its value as a
   // UIA AriaProperties Property with the name |uia_aria_property|.
-  void IntAttributeToUIAAriaProperty(std::vector<base::string16>& properties,
+  void IntAttributeToUIAAriaProperty(std::vector<std::wstring>& properties,
                                      ax::mojom::IntAttribute attribute,
                                      const char* uia_aria_property);
 
   // If the float attribute |attribute| is present, add its value as a
   // UIA AriaProperties Property with the name |uia_aria_property|.
-  void FloatAttributeToUIAAriaProperty(std::vector<base::string16>& properties,
+  void FloatAttributeToUIAAriaProperty(std::vector<std::wstring>& properties,
                                        ax::mojom::FloatAttribute attribute,
                                        const char* uia_aria_property);
 
   // If the state |state| exists, set the
   // UIA AriaProperties Property with the name |uia_aria_property| to "true".
   // Otherwise set the AriaProperties Property to "false".
-  void StateToUIAAriaProperty(std::vector<base::string16>& properties,
+  void StateToUIAAriaProperty(std::vector<std::wstring>& properties,
                               ax::mojom::State state,
                               const char* uia_aria_property);
 
   // If the Html attribute |html_attribute_name| is present, add its value as a
   // UIA AriaProperties Property with the name |uia_aria_property|.
-  void HtmlAttributeToUIAAriaProperty(std::vector<base::string16>& properties,
+  void HtmlAttributeToUIAAriaProperty(std::vector<std::wstring>& properties,
                                       const char* html_attribute_name,
                                       const char* uia_aria_property);
 
@@ -1144,14 +1305,30 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   SAFEARRAY* CreateUIAElementsArrayForRelation(
       const ax::mojom::IntListAttribute& attribute);
 
+  // Return an array of automation elements based on the attribute
+  // IntList::kControlsIds for web content and IntAttribute::kViewPopupId. These
+  // two attributes denote the controllees, web content elements and view popup
+  // element respectively.
+  // The function will skip over any ids that cannot be resolved.
+  SAFEARRAY* CreateUIAControllerForArray();
+
   // Return an unordered array of automation elements which reference this node
   // for the given attribute.
   SAFEARRAY* CreateUIAElementsArrayForReverseRelation(
       const ax::mojom::IntListAttribute& attribute);
 
-  // Return an array of automation elements given a vector
-  // of |AXNode| ids.
-  SAFEARRAY* CreateUIAElementsArrayFromIdVector(std::vector<int32_t>& ids);
+  // Return a vector of AXPlatformNodeWin referenced by the ids in function
+  // argument. The function will skip over any ids that cannot be resolved as
+  // valid relation target.
+  std::vector<AXPlatformNodeWin*> CreatePlatformNodeVectorFromRelationIdVector(
+      std::vector<int32_t>& relation_id_list);
+
+  // Create a safearray of automation elements from a vector of
+  // AXPlatformNodeWin.
+  // The caller should validate that all of the given ax platform nodes are
+  // valid relation targets.
+  SAFEARRAY* CreateUIAElementsSafeArray(
+      std::vector<AXPlatformNodeWin*>& platform_node_list);
 
   // Return an array that contains the center x, y coordinates of the
   // clickable point.
@@ -1166,16 +1343,24 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
   void AddAlertTarget();
   void RemoveAlertTarget();
 
-  // Return the text to use for IAccessibleText.
-  base::string16 TextForIAccessibleText();
+  // Enum used to specify whether IAccessibleText is requesting text
+  // At, Before, or After a specified offset.
+  enum class TextOffsetType { kAtOffset, kBeforeOffset, kAfterOffset };
 
-  // Search forwards (direction == 1) or backwards (direction == -1)
-  // from the given offset until the given boundary is found, and
-  // return the offset of that boundary.
-  LONG FindBoundary(const base::string16& text,
-                    IA2TextBoundaryType ia2_boundary,
+  // Helper for implementing IAccessibleText::get_text{At|Before|After}Offset.
+  HRESULT IAccessibleTextGetTextForOffsetType(
+      TextOffsetType text_offset_type,
+      LONG offset,
+      enum IA2TextBoundaryType boundary_type,
+      LONG* start_offset,
+      LONG* end_offset,
+      BSTR* text);
+
+  // Search forwards or backwards from the given offset until the given IA2
+  // text boundary is found, and return the offset of that boundary.
+  LONG FindBoundary(IA2TextBoundaryType ia2_boundary,
                     LONG start_offset,
-                    TextBoundaryDirection direction);
+                    ax::mojom::MoveDirection direction);
 
   // Many MSAA methods take a var_id parameter indicating that the operation
   // should be performed on a particular child ID, rather than this object.
@@ -1195,7 +1380,64 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
                                      LONG* n_selected);
 
   // Helper method for mutating the ISelectionItemProvider selected state
-  HRESULT ISelectionItemProviderSetSelected(bool selected);
+  HRESULT ISelectionItemProviderSetSelected(bool selected) const;
+
+  // Helper method getting the selected status.
+  bool ISelectionItemProviderIsSelected() const;
+
+  //
+  // Getters for UIA GetTextAttributeValue
+  //
+
+  // Computes the AnnotationObjects Attribute for the current node.
+  void GetAnnotationObjectsAttribute(base::win::VariantVector* result);
+  // Computes the AnnotationTypes Attribute for the current node.
+  HRESULT GetAnnotationTypesAttribute(const absl::optional<int>& start_offset,
+                                      const absl::optional<int>& end_offset,
+                                      base::win::VariantVector* result);
+  // Lookup the LCID for the language this node is using.
+  // Returns absl::nullopt if there was an error.
+  absl::optional<LCID> GetCultureAttributeAsLCID() const;
+  // Converts an int attribute to a COLORREF
+  COLORREF GetIntAttributeAsCOLORREF(ax::mojom::IntAttribute attribute) const;
+  // Converts the ListStyle to UIA BulletStyle
+  BulletStyle ComputeUIABulletStyle() const;
+  // Helper to get the UIA StyleId enumeration for this node
+  LONG ComputeUIAStyleId() const;
+  // Convert mojom TextAlign to UIA HorizontalTextAlignment enumeration
+  static absl::optional<HorizontalTextAlignment>
+  AXTextAlignToUIAHorizontalTextAlignment(ax::mojom::TextAlign text_align);
+  // Converts IntAttribute::kHierarchicalLevel to UIA StyleId enumeration
+  static LONG AXHierarchicalLevelToUIAStyleId(int32_t hierarchical_level);
+  // Converts a ListStyle to UIA StyleId enumeration
+  static LONG AXListStyleToUIAStyleId(ax::mojom::ListStyle list_style);
+  // Convert mojom TextDirection to UIA FlowDirections enumeration
+  static FlowDirections TextDirectionToFlowDirections(
+      ax::mojom::WritingDirection);
+
+  // Helper method for |GetMarkerTypeFromRange| which aggregates all
+  // of the ranges for |marker_type| attached to |node|.
+  static void AggregateRangesForMarkerType(
+      AXPlatformNodeBase* node,
+      ax::mojom::MarkerType marker_type,
+      int offset_ranges_amount,
+      std::vector<std::pair<int, int>>* ranges);
+
+  enum class MarkerTypeRangeResult {
+    // The MarkerType does not overlap the range.
+    kNone,
+    // The MarkerType overlaps the entire range.
+    kMatch,
+    // The MarkerType partially overlaps the range.
+    kMixed,
+  };
+
+  // Determine if a text range overlaps a |marker_type|, and whether
+  // the overlap is a partial or or complete match.
+  MarkerTypeRangeResult GetMarkerTypeFromRange(
+      const absl::optional<int>& start_offset,
+      const absl::optional<int>& end_offset,
+      ax::mojom::MarkerType marker_type);
 
   bool IsAncestorComboBox();
 
@@ -1217,11 +1459,20 @@ class AX_EXPORT __declspec(uuid("26f5641a-246d-457b-a96d-07f3fae6acf2"))
 
   // IRawElementProviderSimple support methods.
 
-  using PatternProviderFactoryMethod = HRESULT (*)(AXPlatformNodeWin*,
-                                                   IUnknown**);
+  using PatternProviderFactoryMethod = void (*)(AXPlatformNodeWin*, IUnknown**);
 
   PatternProviderFactoryMethod GetPatternProviderFactoryMethod(
       PATTERNID pattern_id);
+
+  // Fires UIA text edit event about composition (active or committed)
+  void FireUiaTextEditTextChangedEvent(
+      const gfx::Range& range,
+      const std::wstring& active_composition_text,
+      bool is_composition_committed);
+
+  // Return true if the given element is valid enough to be returned as a value
+  // for a UIA relation property (e.g. ControllerFor).
+  static bool IsValidUiaRelationTarget(AXPlatformNode* ax_platform_node);
 
   // Start and end offsets of an active composition
   gfx::Range active_composition_range_;

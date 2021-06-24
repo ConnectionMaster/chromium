@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/locks/lock_manager.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/heap/heap.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -38,7 +39,7 @@ class Lock::ThenFunction final : public ScriptFunction {
   ThenFunction(ScriptState* script_state, Lock* lock, ResolveType type)
       : ScriptFunction(script_state), lock_(lock), resolve_type_(type) {}
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(lock_);
     ScriptFunction::Trace(visitor);
   }
@@ -60,27 +61,23 @@ class Lock::ThenFunction final : public ScriptFunction {
   ResolveType resolve_type_;
 };
 
-// static
-Lock* Lock::Create(ScriptState* script_state,
-                   const String& name,
-                   mojom::blink::LockMode mode,
-                   mojom::blink::LockHandleAssociatedPtr handle,
-                   LockManager* manager) {
-  return MakeGarbageCollected<Lock>(script_state, name, mode, std::move(handle),
-                                    manager);
-}
-
 Lock::Lock(ScriptState* script_state,
            const String& name,
            mojom::blink::LockMode mode,
-           mojom::blink::LockHandleAssociatedPtr handle,
+           mojo::PendingAssociatedRemote<mojom::blink::LockHandle> handle,
+           mojo::PendingRemote<mojom::blink::ObservedFeature> lock_lifetime,
            LockManager* manager)
-    : ContextLifecycleObserver(ExecutionContext::From(script_state)),
+    : ExecutionContextLifecycleObserver(ExecutionContext::From(script_state)),
       name_(name),
       mode_(mode),
-      handle_(std::move(handle)),
+      handle_(ExecutionContext::From(script_state)),
+      lock_lifetime_(ExecutionContext::From(script_state)),
       manager_(manager) {
-  handle_.set_connection_error_handler(
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner =
+      ExecutionContext::From(script_state)->GetTaskRunner(TaskType::kWebLocks);
+  handle_.Bind(std::move(handle), task_runner);
+  lock_lifetime_.Bind(std::move(lock_lifetime), task_runner);
+  handle_.set_disconnect_handler(
       WTF::Bind(&Lock::OnConnectionError, WrapWeakPersistent(this)));
 }
 
@@ -91,8 +88,13 @@ String Lock::mode() const {
 }
 
 void Lock::HoldUntil(ScriptPromise promise, ScriptPromiseResolver* resolver) {
-  DCHECK(handle_.is_bound());
   DCHECK(!resolver_);
+
+  // Note that it is possible for the ExecutionContext that this Lock lives in
+  // to have already been destroyed by the time this method is called. In that
+  // case `handle_` will have been reset, and the lock would have already been
+  // released. This is harmless, as nothing in this class uses `handle_` without
+  // first making sure it is still bound.
 
   ScriptState* script_state = resolver->GetScriptState();
   resolver_ = resolver;
@@ -123,21 +125,28 @@ String Lock::ModeToString(mojom::blink::LockMode mode) {
   return g_empty_string;
 }
 
-void Lock::ContextDestroyed(ExecutionContext* context) {
+void Lock::ContextDestroyed() {
+  // This is kind of redundant, as `handle_` will reset itself as well when the
+  // context is destroyed, thereby releasing the lock. Explicitly releasing here
+  // as well doesn't hurt though.
   ReleaseIfHeld();
 }
 
-void Lock::Trace(blink::Visitor* visitor) {
-  ContextLifecycleObserver::Trace(visitor);
+void Lock::Trace(Visitor* visitor) const {
+  ExecutionContextLifecycleObserver::Trace(visitor);
   ScriptWrappable::Trace(visitor);
   visitor->Trace(resolver_);
+  visitor->Trace(handle_);
+  visitor->Trace(lock_lifetime_);
   visitor->Trace(manager_);
 }
 
 void Lock::ReleaseIfHeld() {
-  if (handle_) {
+  if (handle_.is_bound()) {
     // Drop the mojo pipe; this releases the lock on the back end.
     handle_.reset();
+
+    lock_lifetime_.reset();
 
     // Let the lock manager know that this instance can be collected.
     manager_->OnLockReleased(this);
@@ -145,7 +154,8 @@ void Lock::ReleaseIfHeld() {
 }
 
 void Lock::OnConnectionError() {
-  resolver_->Reject(DOMException::Create(
+  ReleaseIfHeld();
+  resolver_->Reject(MakeGarbageCollected<DOMException>(
       DOMExceptionCode::kAbortError,
       "Lock broken by another request with the 'steal' option."));
 }

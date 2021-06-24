@@ -11,16 +11,16 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_path_watcher.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
-
-#if !defined(OS_CHROMEOS)
+#include "build/chromecast_buildflags.h"
+#include "third_party/icu/source/i18n/unicode/timezone.h"
 
 namespace device {
 
@@ -34,7 +34,28 @@ class TimeZoneMonitorLinux : public TimeZoneMonitor {
       scoped_refptr<base::SequencedTaskRunner> file_task_runner);
   ~TimeZoneMonitorLinux() override;
 
-  void NotifyClientsFromImpl() { NotifyClients(); }
+  void NotifyClientsFromImpl() {
+#if BUILDFLAG(IS_CHROMECAST)
+    // On Chromecast, ICU's default time zone is already set to a new zone. No
+    // need to redetect it with detectHostTimeZone() or to update ICU.
+    // See http://b/112498903 and http://b/113344065.
+    std::unique_ptr<icu::TimeZone> new_zone(icu::TimeZone::createDefault());
+    NotifyClients(GetTimeZoneId(*new_zone));
+#else
+    std::unique_ptr<icu::TimeZone> new_zone(DetectHostTimeZoneFromIcu());
+
+    // We get here multiple times on Linux per a single tz change, but
+    // want to update the ICU default zone and notify renderer only once.
+    // The timezone must have previously been populated. See InitializeICU().
+    std::unique_ptr<icu::TimeZone> current_zone(icu::TimeZone::createDefault());
+    if (*current_zone == *new_zone) {
+      VLOG(1) << "timezone already updated";
+      return;
+    }
+
+    UpdateIcuAndNotifyClients(std::move(new_zone));
+#endif  // defined(IS_CHROMECAST)
+  }
 
  private:
   scoped_refptr<TimeZoneMonitorLinuxImpl> impl_;
@@ -64,7 +85,7 @@ class TimeZoneMonitorLinuxImpl
 
   void StopWatching() {
     DCHECK(main_task_runner_->RunsTasksInCurrentSequence());
-    owner_ = NULL;
+    owner_ = nullptr;
     file_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&TimeZoneMonitorLinuxImpl::StopWatchingOnFileThread,
@@ -108,8 +129,9 @@ class TimeZoneMonitorLinuxImpl
     };
     for (size_t index = 0; index < base::size(kFilesToWatch); ++index) {
       file_path_watchers_.push_back(std::make_unique<base::FilePathWatcher>());
-      file_path_watchers_.back()->Watch(base::FilePath(kFilesToWatch[index]),
-                                        false, callback);
+      file_path_watchers_.back()->Watch(
+          base::FilePath(kFilesToWatch[index]),
+          base::FilePathWatcher::Type::kNonRecursive, callback);
     }
   }
 
@@ -180,5 +202,3 @@ std::unique_ptr<TimeZoneMonitor> TimeZoneMonitor::Create(
 }
 
 }  // namespace device
-
-#endif  // !OS_CHROMEOS

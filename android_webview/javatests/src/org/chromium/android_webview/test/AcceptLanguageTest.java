@@ -8,7 +8,8 @@ import android.annotation.SuppressLint;
 import android.os.Build;
 import android.os.LocaleList;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -40,7 +41,7 @@ public class AcceptLanguageTest {
     private EmbeddedTestServer mTestServer;
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         mContentsClient = new TestAwContentsClient();
         mAwContents = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient)
                               .getAwContents();
@@ -50,7 +51,7 @@ public class AcceptLanguageTest {
     }
 
     @After
-    public void tearDown() throws Exception {
+    public void tearDown() {
         mTestServer.stopAndDestroyServer();
     }
 
@@ -121,8 +122,11 @@ public class AcceptLanguageTest {
         mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
 
         // Note that we extend the base language from language-region pair.
-        String[] acceptLanguages = getAcceptLanguages(
-                mActivityTestRule.getJavaScriptResultBodyTextContent(mAwContents, mContentsClient));
+        String rawAcceptLanguages =
+                mActivityTestRule.getJavaScriptResultBodyTextContent(mAwContents, mContentsClient);
+        Assert.assertTrue("Accept-Language header should contain at least 1 q-value",
+                rawAcceptLanguages.contains(";q="));
+        String[] acceptLanguages = getAcceptLanguages(rawAcceptLanguages);
         Assert.assertArrayEquals(new String[] {"en-US", "en"}, acceptLanguages);
 
         // Our accept language list in user agent is different from navigator.languages, which is

@@ -4,12 +4,15 @@
 
 #include "third_party/blink/renderer/platform/fonts/win/font_unique_name_lookup_win.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/files/file_path.h"
+#include "base/metrics/histogram_macros.h"
 #include "mojo/public/mojom/base/shared_memory.mojom-blink.h"
+#include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/dwrite_font_proxy/dwrite_font_proxy.mojom-blink.h"
-#include "third_party/blink/public/platform/interface_provider.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/renderer/platform/histogram.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/skia/include/ports/SkTypeface_win.h"
 
@@ -18,11 +21,11 @@ namespace {
 // These enum values correspond to the
 // "Blink.Fonts.WindowsUniqueLocalFontInstantiationResult" histogram, new values
 // can be added, but old values should never be reused.
-enum WindowsUniqueLocalFontInstantiationResult {
+enum class InstantiationResult {
   kSuccess = 0,
   kErrorOutsideWindowsFontsDirectory = 1,
   kErrorOther = 2,
-  kMaxWindowsUniqueLocalFontInstantiationResult = 3
+  kMaxValue = kErrorOther,
 };
 
 }  // namespace
@@ -65,8 +68,8 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::MatchUniqueNameLookupTable(
   if (!IsFontUniqueNameLookupReadyForSyncLookup())
     return nullptr;
 
-  base::Optional<FontTableMatcher::MatchResult> match_result =
-      font_table_matcher_->MatchName(font_unique_name.Utf8().data());
+  absl::optional<FontTableMatcher::MatchResult> match_result =
+      font_table_matcher_->MatchName(font_unique_name.Utf8());
   if (!match_result)
     return nullptr;
 
@@ -85,7 +88,7 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::InstantiateFromPathAndTtcIndex(
   sk_sp<SkTypeface> local_typeface = SkTypeface::MakeFromFile(
       font_file_path.AsUTF8Unsafe().c_str(), ttc_index);
 
-  WindowsUniqueLocalFontInstantiationResult result = kSuccess;
+  InstantiationResult result = InstantiationResult::kSuccess;
 
   // There is a chance that some systems have managed to register fonts into the
   // Windows system font collection outside the C:\Windows\Fonts directory. For
@@ -96,16 +99,13 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::InstantiateFromPathAndTtcIndex(
   if (!local_typeface) {
     base::FilePath windows_fonts_path(L"C:\\WINDOWS\\FONTS");
     if (!windows_fonts_path.IsParent(font_file_path))
-      result = kErrorOutsideWindowsFontsDirectory;
+      result = InstantiationResult::kErrorOutsideWindowsFontsDirectory;
     else
-      result = kErrorOther;
+      result = InstantiationResult::kErrorOther;
   }
 
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      EnumerationHistogram, windows_unique_local_font_instantiation_histogram,
-      ("Blink.Fonts.WindowsUniqueLocalFontInstantiationResult",
-       kMaxWindowsUniqueLocalFontInstantiationResult));
-  windows_unique_local_font_instantiation_histogram.Count(result);
+  UMA_HISTOGRAM_ENUMERATION(
+      "Blink.Fonts.WindowsUniqueLocalFontInstantiationResult", result);
 
   return local_typeface;
 }
@@ -160,8 +160,10 @@ bool FontUniqueNameLookupWin::IsFontUniqueNameLookupReadyForSyncLookup() {
 }
 
 void FontUniqueNameLookupWin::EnsureServiceConnected() {
-  Platform::Current()->GetInterfaceProvider()->GetInterface(
-      mojo::MakeRequest(&service_));
+  if (service_)
+    return;
+  Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
+      service_.BindNewPipeAndPassReceiver());
 }
 
 void FontUniqueNameLookupWin::PrepareFontUniqueNameLookup(
@@ -181,7 +183,7 @@ void FontUniqueNameLookupWin::PrepareFontUniqueNameLookup(
 
   EnsureServiceConnected();
 
-  service_->GetUniqueNameLookupTable(base::BindRepeating(
+  service_->GetUniqueNameLookupTable(base::BindOnce(
       &FontUniqueNameLookupWin::ReceiveReadOnlySharedMemoryRegion,
       base::Unretained(this)));
 }

@@ -4,10 +4,11 @@
 
 package org.chromium.chrome.browser.download.items;
 
-import android.support.annotation.Nullable;
-import android.support.annotation.VisibleForTesting;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
-import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.base.annotations.NativeMethods;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.offline_items_collection.OfflineContentProvider;
 
@@ -40,14 +41,14 @@ public class OfflineContentAggregatorFactory {
     }
 
     /**
-     * Used to get access to the {@link OfflineContentProvider} associated with {@code profile}.
-     * The same {@link OfflineContentProvider} will be returned for the same {@link Profile}.
-     * @param profile The {@link Profile} that owns the {@link OfflineContentProvider}.
-     * @return An {@link OfflineContentProvider} instance.
+     * Used to get access to the offline content aggregator.
+     * @return An {@link OfflineContentProvider} instance representing the offline content
+     *         aggregator.
      */
-    public static OfflineContentProvider forProfile(Profile profile) {
+    public static OfflineContentProvider get() {
         if (sProvider == null) {
-            sProvider = getProvider(nativeGetOfflineContentAggregatorForProfile(profile));
+            sProvider = getProvider(
+                    OfflineContentAggregatorFactoryJni.get().getOfflineContentAggregator());
         }
         return sProvider;
     }
@@ -60,6 +61,8 @@ public class OfflineContentAggregatorFactory {
         }
     }
 
-    private static native OfflineContentProvider nativeGetOfflineContentAggregatorForProfile(
-            Profile profile);
+    @NativeMethods
+    interface Natives {
+        OfflineContentProvider getOfflineContentAggregator();
+    }
 }

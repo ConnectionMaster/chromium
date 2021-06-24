@@ -5,12 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TEXT_PAINTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TEXT_PAINTER_H_
 
-#include "third_party/blink/renderer/core/content_capture/content_holder.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/paint/text_painter_base.h"
+#include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
 
 namespace blink {
 
+class TextDecorationOffsetBase;
 class TextRun;
 struct TextRunPaintInfo;
 class LayoutTextCombine;
@@ -23,17 +24,19 @@ class CORE_EXPORT TextPainter : public TextPainterBase {
   TextPainter(GraphicsContext& context,
               const Font& font,
               const TextRun& run,
-              const LayoutPoint& text_origin,
-              const LayoutRect& text_bounds,
+              const PhysicalOffset& text_origin,
+              const PhysicalRect& text_frame_rect,
               bool horizontal)
-      : TextPainterBase(context, font, text_origin, text_bounds, horizontal),
-        run_(run),
-        combined_text_(nullptr) {}
+      : TextPainterBase(context,
+                        font,
+                        text_origin,
+                        text_frame_rect,
+                        horizontal),
+        run_(run) {}
   ~TextPainter() = default;
 
   void SetCombinedText(LayoutTextCombine* combined_text) {
     combined_text_ = combined_text;
-    has_combined_text_ = combined_text_ ? true : false;
   }
 
   void ClipDecorationsStripe(float upper,
@@ -43,25 +46,34 @@ class CORE_EXPORT TextPainter : public TextPainterBase {
              unsigned end_offset,
              unsigned length,
              const TextPaintStyle&,
-             const NodeHolder& node_holder);
+             DOMNodeId node_id);
+
+  void PaintDecorationsExceptLineThrough(const TextDecorationOffsetBase&,
+                                         TextDecorationInfo&,
+                                         const PaintInfo&,
+                                         const Vector<AppliedTextDecoration>&,
+                                         const TextPaintStyle& text_style,
+                                         bool* has_line_through_decoration);
+  void PaintDecorationsOnlyLineThrough(TextDecorationInfo&,
+                                       const PaintInfo&,
+                                       const Vector<AppliedTextDecoration>&,
+                                       const TextPaintStyle&);
 
  private:
   template <PaintInternalStep step>
   void PaintInternalRun(TextRunPaintInfo&,
                         unsigned from,
                         unsigned to,
-                        const NodeHolder& node_holder);
+                        DOMNodeId node_id);
 
   template <PaintInternalStep step>
   void PaintInternal(unsigned start_offset,
                      unsigned end_offset,
                      unsigned truncation_point,
-                     const NodeHolder& node_holder);
-
-  void PaintEmphasisMarkForCombinedText();
+                     DOMNodeId node_id);
 
   const TextRun& run_;
-  LayoutTextCombine* combined_text_;
+  LayoutTextCombine* combined_text_ = nullptr;
 };
 
 }  // namespace blink

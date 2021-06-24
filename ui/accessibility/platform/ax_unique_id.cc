@@ -7,8 +7,9 @@
 #include <memory>
 #include <unordered_set>
 
+#include "base/containers/contains.h"
 #include "base/lazy_instance.h"
-#include "base/stl_util.h"
+#include "base/logging.h"
 
 namespace ui {
 
@@ -36,7 +37,7 @@ bool AXUniqueId::operator!=(const AXUniqueId& other) const {
 }
 
 bool AXUniqueId::IsAssigned(const int32_t id) const {
-  return base::ContainsKey(g_assigned_ids.Get(), id);
+  return base::Contains(g_assigned_ids.Get(), id);
 }
 
 int32_t AXUniqueId::GetNextAXUniqueId(const int32_t max_id) {
@@ -45,7 +46,7 @@ int32_t AXUniqueId::GetNextAXUniqueId(const int32_t max_id) {
 
   const int32_t prev_id = current_id;
   do {
-    if (current_id == max_id) {
+    if (current_id >= max_id) {
       current_id = 1;
       has_wrapped = true;
     } else {

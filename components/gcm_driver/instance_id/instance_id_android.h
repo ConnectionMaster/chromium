@@ -7,7 +7,6 @@
 
 #include <jni.h>
 
-#include <map>
 #include <string>
 
 #include "base/android/scoped_java_ref.h"
@@ -41,21 +40,21 @@ class InstanceIDAndroid : public InstanceID {
   ~InstanceIDAndroid() override;
 
   // InstanceID implementation:
-  void GetID(const GetIDCallback& callback) override;
-  void GetCreationTime(const GetCreationTimeCallback& callback) override;
+  void GetID(GetIDCallback callback) override;
+  void GetCreationTime(GetCreationTimeCallback callback) override;
   void GetToken(const std::string& audience,
                 const std::string& scope,
-                const std::map<std::string, std::string>& options,
-                bool is_lazy,
-                const GetTokenCallback& callback) override;
+                base::TimeDelta time_to_live,
+                std::set<Flags> flags,
+                GetTokenCallback callback) override;
   void ValidateToken(const std::string& authorized_entity,
                      const std::string& scope,
                      const std::string& token,
-                     const ValidateTokenCallback& callback) override;
+                     ValidateTokenCallback callback) override;
   void DeleteTokenImpl(const std::string& audience,
                        const std::string& scope,
-                       const DeleteTokenCallback& callback) override;
-  void DeleteIDImpl(const DeleteIDCallback& callback) override;
+                       DeleteTokenCallback callback) override;
+  void DeleteIDImpl(DeleteIDCallback callback) override;
 
   // Methods called from Java via JNI:
   void DidGetID(JNIEnv* env,

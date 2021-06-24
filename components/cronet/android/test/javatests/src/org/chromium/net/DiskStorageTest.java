@@ -10,7 +10,9 @@ import static org.junit.Assert.assertTrue;
 import static org.chromium.net.CronetTestRule.getContext;
 import static org.chromium.net.CronetTestRule.getTestStorage;
 
-import android.support.test.filters.SmallTest;
+import android.support.test.runner.AndroidJUnit4;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -20,7 +22,6 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.FileUtils;
 import org.chromium.base.PathUtils;
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.net.CronetTestRule.OnlyRunNativeCronet;
 
@@ -34,7 +35,7 @@ import java.util.Arrays;
 /**
  * Test CronetEngine disk storage.
  */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class DiskStorageTest {
     @Rule
     public final CronetTestRule mTestRule = new CronetTestRule();
@@ -50,7 +51,7 @@ public class DiskStorageTest {
     @After
     public void tearDown() throws Exception {
         if (mReadOnlyStoragePath != null) {
-            FileUtils.recursivelyDeleteFile(new File(mReadOnlyStoragePath));
+            FileUtils.recursivelyDeleteFile(new File(mReadOnlyStoragePath), FileUtils.DELETE_ALL);
         }
         NativeTestServer.shutdownNativeTestServer();
     }

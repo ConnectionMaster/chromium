@@ -6,14 +6,13 @@
 #define STORAGE_BROWSER_QUOTA_QUOTA_SETTINGS_H_
 
 #include <stdint.h>
-#include <memory>
 
 #include "base/callback.h"
 #include "base/component_export.h"
 #include "base/files/file_path.h"
-#include "base/optional.h"
 #include "base/time/time.h"
-#include "storage/browser/quota/quota_disk_info_helper.h"
+#include "storage/browser/quota/quota_device_info_helper.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace storage {
 
@@ -61,9 +60,9 @@ struct QuotaSettings {
 
 // Function type used to return the settings in response to a
 // GetQuotaSettingsFunc invocation. If the embedder cannot
-// produce a settings values, base::nullopt can be returned.
+// produce a settings values, absl::nullopt can be returned.
 using OptionalQuotaSettingsCallback =
-    base::OnceCallback<void(base::Optional<QuotaSettings>)>;
+    base::OnceCallback<void(absl::optional<QuotaSettings>)>;
 
 // Function type used to query the embedder about the quota manager settings.
 // This function is invoked on the UI thread.
@@ -79,8 +78,10 @@ using GetQuotaSettingsFunc =
 COMPONENT_EXPORT(STORAGE_BROWSER)
 void GetNominalDynamicSettings(const base::FilePath& partition_path,
                                bool is_incognito,
-                               QuotaDiskInfoHelper* diskInfoHelper,
+                               QuotaDeviceInfoHelper* deviceInfoHelper,
                                OptionalQuotaSettingsCallback callback);
+
+COMPONENT_EXPORT(STORAGE_BROWSER)
 
 // Returns settings with a poolsize of zero and no per host quota.
 inline QuotaSettings GetNoQuotaSettings() {
@@ -94,10 +95,15 @@ inline QuotaSettings GetHardCodedSettings(int64_t per_host_quota) {
                        per_host_quota, per_host_quota);
 }
 
+COMPONENT_EXPORT(STORAGE_BROWSER)
+double GetIncognitoQuotaRatioLowerBound_ForTesting();
+COMPONENT_EXPORT(STORAGE_BROWSER)
+double GetIncognitoQuotaRatioUpperBound_ForTesting();
+
 // Returns object that can fetch actual total disk space; instance lives
 // as long as the process is a live.
 COMPONENT_EXPORT(STORAGE_BROWSER)
-QuotaDiskInfoHelper* GetDefaultDiskInfoHelper();
+QuotaDeviceInfoHelper* GetDefaultDeviceInfoHelper();
 }  // namespace storage
 
-#endif  // STORAGE_BROWSER_QUOTA_QUOTA_MANAGER_H_
+#endif  // STORAGE_BROWSER_QUOTA_QUOTA_SETTINGS_H_

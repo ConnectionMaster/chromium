@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
@@ -131,7 +132,7 @@ std::string ForegroundEidGenerator::IdentifyRemoteDeviceByAdvertisement(
   for (const auto& device_id : device_ids) {
     std::vector<std::string> possible_advertisements =
         GeneratePossibleAdvertisements(
-            multidevice::RemoteDeviceRef::DerivePublicKey(device_id),
+            multidevice::RemoteDevice::DerivePublicKey(device_id),
             scanning_device_beacon_seeds);
     for (const auto& possible_advertisement : possible_advertisements) {
       if (service_data_without_flags == possible_advertisement) {

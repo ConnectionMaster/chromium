@@ -2,15 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/run_loop.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
-#include "chromeos/dbus/shill/shill_device_client.h"
 #include "chromeos/dbus/shill/shill_service_client.h"
 #include "content/public/browser/network_service_instance.h"
+#include "content/public/test/browser_test.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/network_change_notifier.h"
-#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
+#include "services/network/public/mojom/network_service_test.mojom.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
 namespace chromeos {
@@ -30,7 +33,7 @@ class NetObserver : public net::NetworkChangeNotifier::NetworkChangeObserver {
 
   void WaitForConnectionType(net::NetworkChangeNotifier::ConnectionType type) {
     while (last_connection_type_ != type) {
-      run_loop_.reset(new base::RunLoop());
+      run_loop_ = std::make_unique<base::RunLoop>();
       run_loop_->Run();
       run_loop_.reset();
     }
@@ -55,7 +58,7 @@ class NetObserver : public net::NetworkChangeNotifier::NetworkChangeObserver {
 class NetworkServiceObserver
     : public network::NetworkConnectionTracker::NetworkConnectionObserver {
  public:
-  NetworkServiceObserver() : weak_factory_(this) {
+  NetworkServiceObserver() {
     content::GetNetworkConnectionTracker()->AddNetworkConnectionObserver(this);
     content::GetNetworkConnectionTracker()->GetConnectionType(
         &last_connection_type_,
@@ -70,7 +73,7 @@ class NetworkServiceObserver
 
   void WaitForConnectionType(network::mojom::ConnectionType type) {
     while (last_connection_type_ != type) {
-      run_loop_.reset(new base::RunLoop());
+      run_loop_ = std::make_unique<base::RunLoop>();
       run_loop_->Run();
       run_loop_.reset();
     }
@@ -89,7 +92,7 @@ class NetworkServiceObserver
 
  private:
   std::unique_ptr<base::RunLoop> run_loop_;
-  base::WeakPtrFactory<NetworkServiceObserver> weak_factory_;
+  base::WeakPtrFactory<NetworkServiceObserver> weak_factory_{this};
 };
 
 }  // namespace
@@ -101,6 +104,12 @@ class NetworkChangeManagerClientBrowserTest : public InProcessBrowserTest {
     service_client_ =
         DBusThreadManager::Get()->GetShillServiceClient()->GetTestInterface();
     service_client_->ClearServices();
+
+    // Make sure everyone thinks we have an ethernet connection.
+    NetObserver().WaitForConnectionType(
+        net::NetworkChangeNotifier::CONNECTION_ETHERNET);
+    NetworkServiceObserver().WaitForConnectionType(
+        network::mojom::ConnectionType::CONNECTION_ETHERNET);
   }
 
   ShillServiceClient::TestInterface* service_client() {
@@ -113,9 +122,8 @@ class NetworkChangeManagerClientBrowserTest : public InProcessBrowserTest {
 
 // Tests that network changes from shill are received by both the
 // NetworkChangeNotifier and NetworkConnectionTracker.
-// TODO(crbug.com/934583): Fix the flakiness.
 IN_PROC_BROWSER_TEST_F(NetworkChangeManagerClientBrowserTest,
-                       DISABLED_ReceiveNotifications) {
+                       ReceiveNotifications) {
   NetObserver net_observer;
   NetworkServiceObserver network_service_observer;
 
@@ -139,42 +147,26 @@ IN_PROC_BROWSER_TEST_F(NetworkChangeManagerClientBrowserTest,
 
 // Tests that the NetworkChangeManagerClient reconnects to the network service
 // after it gets disconnected.
-// TODO(crbug.com/934583): Fix the flakiness.
 IN_PROC_BROWSER_TEST_F(NetworkChangeManagerClientBrowserTest,
-                       DISABLED_ReconnectToNetworkService) {
-  if (!base::FeatureList::IsEnabled(network::features::kNetworkService))
-    return;
-
-  {
-    // Make sure everyone thinks we have an ethernet connection.
-    NetObserver net_observer;
-    NetworkServiceObserver network_service_observer;
-    net_observer.WaitForConnectionType(
-        net::NetworkChangeNotifier::CONNECTION_ETHERNET);
-    network_service_observer.WaitForConnectionType(
-        network::mojom::ConnectionType::CONNECTION_ETHERNET);
-  }
-
-  NetObserver net_observer;
+                       ReconnectToNetworkService) {
   NetworkServiceObserver network_service_observer;
 
-  SimulateNetworkServiceCrash();
+  // Manually call SimulateCrash instead of
+  // BrowserTestBase::SimulateNetworkServiceCrash to avoid the cleanup and
+  // reconnection work it does for you.
+  mojo::Remote<network::mojom::NetworkServiceTest> network_service_test;
+  content::GetNetworkService()->BindTestInterface(
+      network_service_test.BindNewPipeAndPassReceiver());
+  network_service_test->SimulateCrash();
+
   service_client()->AddService("wifi", "wifi", "wifi", shill::kTypeWifi,
                                shill::kStateOnline, true);
 
-  net_observer.WaitForConnectionType(
+  NetObserver().WaitForConnectionType(
       net::NetworkChangeNotifier::CONNECTION_WIFI);
-  // NetworkChangeNotifier will send a CONNECTION_NONE notification before
-  // the CONNECTION_WIFI one.
-  EXPECT_EQ(2, net_observer.change_count_);
-  EXPECT_EQ(net::NetworkChangeNotifier::CONNECTION_WIFI,
-            net_observer.last_connection_type_);
-
   network_service_observer.WaitForConnectionType(
       network::mojom::ConnectionType::CONNECTION_WIFI);
   EXPECT_EQ(2, network_service_observer.change_count_);
-  EXPECT_EQ(network::mojom::ConnectionType::CONNECTION_WIFI,
-            network_service_observer.last_connection_type_);
 }
 
 }  // namespace chromeos

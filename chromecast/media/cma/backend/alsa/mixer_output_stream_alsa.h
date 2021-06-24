@@ -5,13 +5,13 @@
 #ifndef CHROMECAST_MEDIA_CMA_BACKEND_ALSA_MIXER_OUTPUT_STREAM_ALSA_H_
 #define CHROMECAST_MEDIA_CMA_BACKEND_ALSA_MIXER_OUTPUT_STREAM_ALSA_H_
 
+#include <alsa/asoundlib.h>
+
 #include <cstdint>
 #include <vector>
 
 #include "base/macros.h"
 #include "chromecast/public/media/mixer_output_stream.h"
-
-#include <alsa/asoundlib.h>
 
 namespace chromecast {
 namespace media {
@@ -28,6 +28,7 @@ class MixerOutputStreamAlsa : public MixerOutputStream {
 
   // MixerOutputStream implementation:
   bool Start(int requested_sample_rate, int channels) override;
+  int GetNumChannels() override;
   int GetSampleRate() override;
   MediaPipelineBackend::AudioDecoder::RenderingDelay GetRenderingDelay()
       override;
@@ -78,6 +79,7 @@ class MixerOutputStreamAlsa : public MixerOutputStream {
   snd_pcm_uframes_t alsa_start_threshold_ = 0;
   snd_pcm_uframes_t alsa_avail_min_ = 0;
 
+  bool first_write_ = false;
   MediaPipelineBackend::AudioDecoder::RenderingDelay rendering_delay_;
 
   std::vector<uint8_t> output_buffer_;

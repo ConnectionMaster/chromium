@@ -14,9 +14,12 @@
 #include "base/macros.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/native_widget_types.h"
-#include "ui/gfx/x/x11_types.h"
+#include "ui/gfx/x/event.h"
+#include "ui/gfx/x/glx.h"
 #include "ui/gl/gl_export.h"
 #include "ui/gl/gl_surface.h"
+
+using GLXFBConfig = struct __GLXFBConfigRec*;
 
 namespace gfx {
 class VSyncProvider;
@@ -38,10 +41,12 @@ class GL_EXPORT GLSurfaceGLX : public GLSurface {
   // These aren't particularly tied to surfaces, but since we already
   // have the static InitializeOneOff here, it's easiest to reuse its
   // initialization guards.
+  static std::string QueryGLXExtensions();
   static const char* GetGLXExtensions();
   static bool HasGLXExtension(const char* name);
   static bool IsCreateContextSupported();
   static bool IsCreateContextRobustnessSupported();
+  static bool IsRobustnessVideoMemoryPurgeSupported();
   static bool IsCreateContextProfileSupported();
   static bool IsCreateContextES2ProfileSupported();
   static bool IsTextureFromPixmapSupported();
@@ -54,8 +59,6 @@ class GL_EXPORT GLSurfaceGLX : public GLSurface {
   // Get the FB config that the surface was created with or NULL if it is not
   // a GLX drawable.
   void* GetConfig() override = 0;
-
-  unsigned long GetCompatibilityKey() override = 0;
 
  protected:
   ~GLSurfaceGLX() override;
@@ -75,17 +78,15 @@ class GL_EXPORT NativeViewGLSurfaceGLX : public GLSurfaceGLX {
   void Destroy() override;
   bool Resize(const gfx::Size& size,
               float scale_factor,
-              ColorSpace color_space,
+              const gfx::ColorSpace& color_space,
               bool has_alpha) override;
   bool IsOffscreen() override;
   gfx::SwapResult SwapBuffers(PresentationCallback callback) override;
   gfx::Size GetSize() override;
   void* GetHandle() override;
-  bool SupportsPresentationCallback() override;
   bool SupportsPostSubBuffer() override;
   void* GetConfig() override;
   GLSurfaceFormat GetFormat() override;
-  unsigned long GetCompatibilityKey() override;
   gfx::SwapResult PostSubBuffer(int x,
                                 int y,
                                 int width,
@@ -103,25 +104,27 @@ class GL_EXPORT NativeViewGLSurfaceGLX : public GLSurfaceGLX {
   virtual void UnregisterEvents() = 0;
 
   // Forwards Expose event to child window.
-  void ForwardExposeEvent(XEvent* xevent);
+  void ForwardExposeEvent(const x11::Event& xevent);
 
   // Checks if event is Expose for child window.
-  bool CanHandleEvent(XEvent* xevent);
+  bool CanHandleEvent(const x11::Event& xevent);
 
-  gfx::AcceleratedWidget window() const { return window_; }
+  gfx::AcceleratedWidget window() const {
+    return static_cast<gfx::AcceleratedWidget>(window_);
+  }
 
  private:
   // The handle for the drawable to make current or swap.
-  GLXDrawable GetDrawableHandle() const;
+  uint32_t GetDrawableHandle() const;
 
   // Window passed in at creation. Always valid.
   gfx::AcceleratedWidget parent_window_;
 
   // Child window, used to control resizes so that they're in-order with GL.
-  gfx::AcceleratedWidget window_;
+  x11::Window window_;
 
   // GLXDrawable for the window.
-  GLXWindow glx_window_;
+  x11::Glx::Window glx_window_;
 
   GLXFBConfig config_;
   gfx::Size size_;
@@ -149,7 +152,6 @@ class GL_EXPORT UnmappedNativeViewGLSurfaceGLX : public GLSurfaceGLX {
   void* GetHandle() override;
   void* GetConfig() override;
   GLSurfaceFormat GetFormat() override;
-  unsigned long GetCompatibilityKey() override;
 
  protected:
   ~UnmappedNativeViewGLSurfaceGLX() override;
@@ -158,10 +160,10 @@ class GL_EXPORT UnmappedNativeViewGLSurfaceGLX : public GLSurfaceGLX {
   gfx::Size size_;
   GLXFBConfig config_;
   // Unmapped dummy window, used to provide a compatible surface.
-  gfx::AcceleratedWidget window_;
+  x11::Window window_;
 
   // GLXDrawable for the window.
-  GLXWindow glx_window_;
+  x11::Glx::Window glx_window_;
 
   DISALLOW_COPY_AND_ASSIGN(UnmappedNativeViewGLSurfaceGLX);
 };

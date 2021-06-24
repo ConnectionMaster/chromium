@@ -6,7 +6,7 @@
 
 #include "base/strings/sys_string_conversions.h"
 #include "components/autofill/core/browser/autofill_type.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -20,9 +20,13 @@ NSString* GetCreditCardName(const CreditCard& credit_card,
       autofill::AutofillType(autofill::CREDIT_CARD_NAME_FULL), locale));
 }
 
-NSString* GetCreditCardObfuscatedNumber(const CreditCard& credit_card) {
+NSString* GetCreditCardIdentifierString(const CreditCard& credit_card) {
   return base::SysUTF16ToNSString(
-      credit_card.NetworkOrBankNameAndLastFourDigits());
+      credit_card.CardIdentifierStringForAutofillDisplay());
+}
+
+NSString* GetCreditCardNicknameString(const CreditCard& credit_card) {
+  return base::SysUTF16ToNSString(credit_card.nickname());
 }
 
 NSDateComponents* GetCreditCardExpirationDate(const CreditCard& credit_card) {

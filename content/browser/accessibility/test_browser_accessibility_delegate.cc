@@ -14,16 +14,17 @@ TestBrowserAccessibilityDelegate::TestBrowserAccessibilityDelegate()
 void TestBrowserAccessibilityDelegate::AccessibilityPerformAction(
     const ui::AXActionData& data) {}
 
-bool TestBrowserAccessibilityDelegate::AccessibilityViewHasFocus() const {
+bool TestBrowserAccessibilityDelegate::AccessibilityViewHasFocus() {
   return false;
 }
 
-gfx::Rect TestBrowserAccessibilityDelegate::AccessibilityGetViewBounds() const {
+void TestBrowserAccessibilityDelegate::AccessibilityViewSetFocus() {}
+
+gfx::Rect TestBrowserAccessibilityDelegate::AccessibilityGetViewBounds() {
   return gfx::Rect();
 }
 
-float TestBrowserAccessibilityDelegate::AccessibilityGetDeviceScaleFactor()
-    const {
+float TestBrowserAccessibilityDelegate::AccessibilityGetDeviceScaleFactor() {
   return 1.0f;
 }
 
@@ -46,8 +47,24 @@ gfx::NativeViewAccessible TestBrowserAccessibilityDelegate::
   return nullptr;
 }
 
+WebContents* TestBrowserAccessibilityDelegate::AccessibilityWebContents() {
+  return nullptr;
+}
+
 bool TestBrowserAccessibilityDelegate::AccessibilityIsMainFrame() {
   return is_root_frame_;
+}
+
+void TestBrowserAccessibilityDelegate::AccessibilityHitTest(
+    const gfx::Point& point_in_frame_pixels,
+    ax::mojom::Event opt_event_to_fire,
+    int opt_request_id,
+    base::OnceCallback<void(BrowserAccessibilityManager* hit_manager,
+                            int hit_node_id)> opt_callback) {}
+
+WebContentsAccessibility*
+TestBrowserAccessibilityDelegate::AccessibilityGetWebContentsAccessibility() {
+  return nullptr;
 }
 
 bool TestBrowserAccessibilityDelegate::got_fatal_error() const {

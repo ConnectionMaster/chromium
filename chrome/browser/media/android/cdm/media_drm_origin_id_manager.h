@@ -10,11 +10,11 @@
 #include "base/callback.h"
 #include "base/containers/queue.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/threading/thread_checker.h"
 #include "base/unguessable_token.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "media/base/android/media_drm_storage.h"
+#include "media/base/media_drm_storage.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class MediaDrmOriginIdManagerFactory;
 class PrefRegistrySimple;
@@ -32,12 +32,19 @@ class PrefService;
 // destroyed when the Profile goes away.
 class MediaDrmOriginIdManager : public KeyedService {
  public:
+  enum class GetOriginIdStatus {
+    kSuccessWithPreProvisionedOriginId = 0,
+    kSuccessWithNewlyProvisionedOriginId = 1,
+    kFailure = 2,
+  };
+
   using MediaDrmOriginId = media::MediaDrmStorage::MediaDrmOriginId;
 
   // |success| is true if an origin ID was obtained and |origin_id| is
   // not null, false otherwise.
   using ProvisionedOriginIdCB =
-      base::OnceCallback<void(bool success, const MediaDrmOriginId& origin_id)>;
+      base::OnceCallback<void(GetOriginIdStatus status,
+                              const MediaDrmOriginId& origin_id)>;
   using ProvisioningResultCB = base::RepeatingCallback<bool()>;
 
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
@@ -78,6 +85,9 @@ class MediaDrmOriginIdManager : public KeyedService {
   // |origin_id| was successful if |success| is true.
   void OriginIdProvisioned(bool success, const MediaDrmOriginId& origin_id);
 
+  // If called, record the current number of pre-provisioned origin IDs to UMA.
+  void RecordCountOfPreprovisionedOriginIds();
+
   PrefService* const pref_service_;
 
   // Callback to be used when the next origin ID is provisioned.
@@ -99,7 +109,7 @@ class MediaDrmOriginIdManager : public KeyedService {
   THREAD_CHECKER(thread_checker_);
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
-  base::WeakPtrFactory<MediaDrmOriginIdManager> weak_factory_;
+  base::WeakPtrFactory<MediaDrmOriginIdManager> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_MEDIA_ANDROID_CDM_MEDIA_DRM_ORIGIN_ID_MANAGER_H_

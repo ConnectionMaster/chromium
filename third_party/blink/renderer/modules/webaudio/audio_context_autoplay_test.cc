@@ -12,8 +12,8 @@
 #include "third_party/blink/public/platform/web_audio_device.h"
 #include "third_party/blink/public/platform/web_audio_latency_hint.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_audio_context_options.h"
 #include "third_party/blink/renderer/core/dom/document.h"
-#include "third_party/blink/renderer/core/dom/user_gesture_indicator.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/frame/frame_types.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -21,10 +21,9 @@
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/media/autoplay_policy.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
-#include "third_party/blink/renderer/modules/webaudio/audio_context_options.h"
-#include "third_party/blink/renderer/modules/webaudio/audio_worklet_thread.h"
 #include "third_party/blink/renderer/platform/testing/histogram_tester.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
+#include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 
 namespace blink {
 
@@ -32,22 +31,6 @@ namespace {
 
 const char* const kAutoplayMetric = "WebAudio.Autoplay";
 const char* const kAutoplayCrossOriginMetric = "WebAudio.Autoplay.CrossOrigin";
-
-class MockCrossOriginLocalFrameClient final : public EmptyLocalFrameClient {
- public:
-  explicit MockCrossOriginLocalFrameClient(Frame* parent) : parent_(parent) {}
-
-  void Trace(blink::Visitor* visitor) override {
-    visitor->Trace(parent_);
-    EmptyLocalFrameClient::Trace(visitor);
-  }
-
-  Frame* Parent() const override { return parent_.Get(); }
-  Frame* Top() const override { return parent_.Get(); }
-
- private:
-  Member<Frame> parent_;
-};
 
 class MockWebAudioDeviceForAutoplayTest : public WebAudioDevice {
  public:
@@ -93,15 +76,12 @@ class AudioContextAutoplayTest
 
   void SetUp() override {
     helper_.Initialize();
-    frame_test_helpers::LoadFrame(helper_.LocalMainFrame(),
-                                  "data:text/html,<iframe></iframe>");
-
-    GetDocument().UpdateSecurityOrigin(
-        SecurityOrigin::Create("https", "example.com", 80));
-
-    ChildDocument().UpdateSecurityOrigin(
-        SecurityOrigin::Create("https", "cross-origin.com", 80));
-
+    frame_test_helpers::LoadHTMLString(helper_.LocalMainFrame(),
+                                       "<iframe></iframe>",
+                                       WebURL(KURL("https://example.com")));
+    frame_test_helpers::LoadHTMLString(
+        To<WebLocalFrameImpl>(helper_.LocalMainFrame()->FirstChild()), "",
+        WebURL(KURL("https://cross-origin.com")));
     GetDocument().GetSettings()->SetAutoplayPolicy(GetParam());
     ChildDocument().GetSettings()->SetAutoplayPolicy(GetParam());
 
@@ -135,9 +115,9 @@ class AudioContextAutoplayTest
   }
 
  private:
+  ScopedTestingPlatformSupport<AudioContextAutoplayTestPlatform> platform_;
   frame_test_helpers::WebViewHelper helper_;
   std::unique_ptr<HistogramTester> histogram_tester_;
-  ScopedTestingPlatformSupport<AudioContextAutoplayTestPlatform> platform_;
 };
 
 // Creates an AudioContext without a gesture inside a x-origin child frame.
@@ -154,10 +134,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateNoGesture_Child) {
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kFailed), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayCrossOriginMetric, static_cast<int>(AutoplayStatus::kFailed),
+          1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -177,7 +158,7 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateNoGesture_Main) {
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kFailed), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -192,7 +173,8 @@ TEST_P(AudioContextAutoplayTest,
 
   AudioContext* audio_context = AudioContext::Create(
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
-  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()));
+  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -204,10 +186,11 @@ TEST_P(AudioContextAutoplayTest,
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kFailed), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayCrossOriginMetric, static_cast<int>(AutoplayStatus::kFailed),
+          1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -219,7 +202,8 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeNoGesture_Main) {
 
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
-  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()));
+  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -231,7 +215,7 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeNoGesture_Main) {
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kFailed), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -240,9 +224,8 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeNoGesture_Main) {
 
 // Creates an AudioContext with a user gesture inside a x-origin child frame.
 TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateGesture_Child) {
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
 
   AudioContext* audio_context = AudioContext::Create(
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
@@ -256,11 +239,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateGesture_Child) {
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusSucceeded,
-          1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -268,9 +251,8 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateGesture_Child) {
 
 // Creates an AudioContext with a user gesture inside a main frame.
 TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateGesture_Main) {
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(GetDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      GetDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
 
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
@@ -284,7 +266,7 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CreateGesture_Main) {
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -299,11 +281,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeGesture_Child) {
   AudioContext* audio_context = AudioContext::Create(
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
 
-  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()));
+  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -315,11 +297,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeGesture_Child) {
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusSucceeded,
-          1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -333,11 +315,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeGesture_Main) {
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(GetDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      GetDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
 
-  audio_context->resumeContext(GetScriptStateFrom(GetDocument()));
+  audio_context->resumeContext(GetScriptStateFrom(GetDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -349,7 +331,7 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_CallResumeGesture_Main) {
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -372,10 +354,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_NodeStartNoGesture_Child) {
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kFailed), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayCrossOriginMetric, static_cast<int>(AutoplayStatus::kFailed),
+          1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -397,7 +380,7 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_NodeStartNoGesture_Main) {
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kFailed), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -410,9 +393,8 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_NodeStartGesture_Child) {
   AudioContext* audio_context = AudioContext::Create(
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
   audio_context->NotifySourceNodeStart();
   RecordAutoplayStatus(audio_context);
 
@@ -424,11 +406,11 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_NodeStartGesture_Child) {
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusSucceeded,
-          1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -440,9 +422,8 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_NodeStartGesture_Main) {
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(GetDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      GetDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
   audio_context->NotifySourceNodeStart();
   RecordAutoplayStatus(audio_context);
 
@@ -454,7 +435,7 @@ TEST_P(AudioContextAutoplayTest, AutoplayMetrics_NodeStartGesture_Main) {
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -471,10 +452,10 @@ TEST_P(AudioContextAutoplayTest,
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
   audio_context->NotifySourceNodeStart();
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
-  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()));
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
+  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -486,11 +467,11 @@ TEST_P(AudioContextAutoplayTest,
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusSucceeded,
-          1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -506,10 +487,10 @@ TEST_P(AudioContextAutoplayTest,
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
   audio_context->NotifySourceNodeStart();
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(GetDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
-  audio_context->resumeContext(GetScriptStateFrom(GetDocument()));
+  LocalFrame::NotifyUserActivation(
+      GetDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
+  audio_context->resumeContext(GetScriptStateFrom(GetDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -521,7 +502,7 @@ TEST_P(AudioContextAutoplayTest,
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -537,11 +518,11 @@ TEST_P(AudioContextAutoplayTest,
   AudioContext* audio_context = AudioContext::Create(
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
   audio_context->NotifySourceNodeStart();
-  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()));
+  audio_context->resumeContext(GetScriptStateFrom(ChildDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -553,11 +534,11 @@ TEST_P(AudioContextAutoplayTest,
     case AutoplayPolicy::Type::kUserGestureRequired:
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusSucceeded,
-          1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -572,11 +553,11 @@ TEST_P(AudioContextAutoplayTest,
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
 
-  std::unique_ptr<UserGestureIndicator> user_gesture_scope =
-      LocalFrame::NotifyUserActivation(GetDocument().GetFrame(),
-                                       UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      GetDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
   audio_context->NotifySourceNodeStart();
-  audio_context->resumeContext(GetScriptStateFrom(GetDocument()));
+  audio_context->resumeContext(GetScriptStateFrom(GetDocument()),
+                               ASSERT_NO_EXCEPTION);
   RejectPendingResolvers(audio_context);
   RecordAutoplayStatus(audio_context);
 
@@ -588,7 +569,7 @@ TEST_P(AudioContextAutoplayTest,
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -599,8 +580,8 @@ TEST_P(AudioContextAutoplayTest,
 // document previous received a user gesture.
 TEST_P(AudioContextAutoplayTest,
        AutoplayMetrics_DocumentReceivedGesture_Child) {
-  LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                   UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
 
   AudioContext* audio_context = AudioContext::Create(
       ChildDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
@@ -613,19 +594,20 @@ TEST_P(AudioContextAutoplayTest,
       break;
     case AutoplayPolicy::Type::kUserGestureRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusFailed, 1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayCrossOriginMetric, AutoplayStatus::kAutoplayStatusSucceeded,
-          1);
+          kAutoplayCrossOriginMetric,
+          static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 1);
       break;
   }
@@ -635,8 +617,8 @@ TEST_P(AudioContextAutoplayTest,
 // document previous received a user gesture.
 TEST_P(AudioContextAutoplayTest,
        AutoplayMetrics_DocumentReceivedGesture_Main) {
-  LocalFrame::NotifyUserActivation(ChildDocument().GetFrame(),
-                                   UserGestureToken::kNewGesture);
+  LocalFrame::NotifyUserActivation(
+      ChildDocument().GetFrame(), mojom::UserActivationNotificationType::kTest);
 
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
@@ -650,7 +632,7 @@ TEST_P(AudioContextAutoplayTest,
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;
@@ -661,8 +643,7 @@ TEST_P(AudioContextAutoplayTest,
 // document received a user gesture before navigation.
 TEST_P(AudioContextAutoplayTest,
        AutoplayMetrics_DocumentReceivedGesture_BeforeNavigation) {
-  GetDocument().GetFrame()->SetDocumentHasReceivedUserGestureBeforeNavigation(
-      true);
+  GetDocument().GetFrame()->SetHadStickyUserActivationBeforeNavigation(true);
 
   AudioContext* audio_context = AudioContext::Create(
       GetDocument(), AudioContextOptions::Create(), ASSERT_NO_EXCEPTION);
@@ -676,7 +657,7 @@ TEST_P(AudioContextAutoplayTest,
       break;
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       GetHistogramTester()->ExpectBucketCount(
-          kAutoplayMetric, AutoplayStatus::kAutoplayStatusSucceeded, 1);
+          kAutoplayMetric, static_cast<int>(AutoplayStatus::kSucceeded), 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayMetric, 1);
       GetHistogramTester()->ExpectTotalCount(kAutoplayCrossOriginMetric, 0);
       break;

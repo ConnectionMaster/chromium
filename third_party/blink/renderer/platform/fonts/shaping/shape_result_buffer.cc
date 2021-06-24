@@ -25,40 +25,13 @@ unsigned CharactersInShapeResult(
 
 }  // namespace
 
-// TODO(eae): This is a bit of a hack to allow reuse of the implementation
-// for both ShapeResultBuffer and single ShapeResult use cases. Ideally the
-// logic should move into ShapeResult itself and then the ShapeResultBuffer
-// implementation may wrap that.
 CharacterRange ShapeResultBuffer::GetCharacterRange(
-    scoped_refptr<const ShapeResult> result,
-    const StringView& text,
-    TextDirection direction,
-    float total_width,
-    unsigned from,
-    unsigned to) {
-  Vector<scoped_refptr<const ShapeResult>, 64> results;
-  results.push_back(result);
-  return GetCharacterRangeInternal(results, text, direction, total_width, from,
-                                   to);
-}
-
-CharacterRange ShapeResultBuffer::GetCharacterRange(const StringView& text,
-                                                    TextDirection direction,
-                                                    float total_width,
-                                                    unsigned from,
-                                                    unsigned to) const {
-  return GetCharacterRangeInternal(results_, text, direction, total_width, from,
-                                   to);
-}
-
-CharacterRange ShapeResultBuffer::GetCharacterRangeInternal(
-    const Vector<scoped_refptr<const ShapeResult>, 64>& results,
     const StringView& text,
     TextDirection direction,
     float total_width,
     unsigned absolute_from,
-    unsigned absolute_to) {
-  DCHECK_EQ(CharactersInShapeResult(results), text.length());
+    unsigned absolute_to) const {
+  DCHECK_EQ(CharactersInShapeResult(results_), text.length());
 
   float current_x = 0;
   float from_x = 0;
@@ -78,8 +51,8 @@ CharacterRange ShapeResultBuffer::GetCharacterRangeInternal(
   int to = absolute_to;
 
   unsigned total_num_characters = 0;
-  for (unsigned j = 0; j < results.size(); j++) {
-    const scoped_refptr<const ShapeResult> result = results[j];
+  for (unsigned j = 0; j < results_.size(); j++) {
+    const scoped_refptr<const ShapeResult> result = results_[j];
     result->EnsureGraphemes(
         StringView(text, total_num_characters, result->NumCharacters()));
     if (direction == TextDirection::kRtl) {
@@ -96,7 +69,7 @@ CharacterRange ShapeResultBuffer::GetCharacterRangeInternal(
     for (unsigned i = 0; i < result->runs_.size(); i++) {
       if (!result->runs_[i])
         continue;
-      DCHECK_EQ(direction == TextDirection::kRtl, result->runs_[i]->Rtl());
+      DCHECK_EQ(direction == TextDirection::kRtl, result->runs_[i]->IsRtl());
       int num_characters = result->runs_[i]->num_characters_;
       if (!found_from_x && from >= 0 && from < num_characters) {
         from_x = result->runs_[i]->XPositionForVisualOffset(
@@ -117,8 +90,8 @@ CharacterRange ShapeResultBuffer::GetCharacterRangeInternal(
       }
 
       if (found_from_x || found_to_x) {
-        min_y = std::min(min_y, result->Bounds().Y());
-        max_y = std::max(max_y, result->Bounds().MaxY());
+        min_y = std::min(min_y, result->DeprecatedInkBounds().Y());
+        max_y = std::max(max_y, result->DeprecatedInkBounds().MaxY());
       }
 
       if (found_from_x && found_to_x)
@@ -157,7 +130,7 @@ Vector<CharacterRange> ShapeResultBuffer::IndividualCharacterRanges(
     float total_width) const {
   Vector<CharacterRange> ranges;
   float current_x = direction == TextDirection::kRtl ? total_width : 0;
-  for (const scoped_refptr<const ShapeResult> result : results_)
+  for (const scoped_refptr<const ShapeResult>& result : results_)
     current_x = result->IndividualCharacterRanges(&ranges, current_x);
   return ranges;
 }
@@ -168,14 +141,14 @@ void ShapeResultBuffer::AddRunInfoAdvances(const ShapeResult::RunInfo& run_info,
   const unsigned num_glyphs = run_info.glyph_data_.size();
   const unsigned num_chars = run_info.num_characters_;
 
-  if (run_info.Rtl())
+  if (run_info.IsRtl())
     offset += run_info.width_;
 
   double current_width = 0;
   for (unsigned glyph_id = 0; glyph_id < num_glyphs; glyph_id++) {
-    unsigned gid = run_info.Rtl() ? num_glyphs - glyph_id - 1 : glyph_id;
+    unsigned gid = run_info.IsRtl() ? num_glyphs - glyph_id - 1 : glyph_id;
     unsigned next_gid =
-        run_info.Rtl() ? num_glyphs - glyph_id - 2 : glyph_id + 1;
+        run_info.IsRtl() ? num_glyphs - glyph_id - 2 : glyph_id + 1;
     const HarfBuzzRunGlyphData& glyph = run_info.glyph_data_[gid];
 
     unsigned char_id = glyph.character_index;
@@ -192,19 +165,19 @@ void ShapeResultBuffer::AddRunInfoAdvances(const ShapeResult::RunInfo& run_info,
     unsigned num_graphemes = run_info.NumGraphemes(char_id, next_char_id);
 
     for (unsigned i = char_id; i < next_char_id; i++) {
-      if (run_info.Rtl()) {
+      if (run_info.IsRtl()) {
         advances.push_back(offset - (current_width / num_graphemes));
       } else {
         advances.push_back(offset);
       }
 
       if (num_graphemes == next_char_id - char_id) {
-        offset += (current_width / num_graphemes) * (run_info.Rtl() ? -1 : 1);
+        offset += (current_width / num_graphemes) * (run_info.IsRtl() ? -1 : 1);
       }
     }
 
     if (num_graphemes != next_char_id - char_id) {
-      offset += current_width * (run_info.Rtl() ? -1 : 1);
+      offset += current_width * (run_info.IsRtl() ? -1 : 1);
     }
 
     current_width = 0;
@@ -219,13 +192,13 @@ Vector<double> ShapeResultBuffer::IndividualCharacterAdvances(
   Vector<double> advances;
   double current_x = direction == TextDirection::kRtl ? total_width : 0;
 
-  for (const scoped_refptr<const ShapeResult> result : results_) {
+  for (const scoped_refptr<const ShapeResult>& result : results_) {
     unsigned run_count = result->runs_.size();
 
     result->EnsureGraphemes(
         StringView(text, character_offset, result->NumCharacters()));
 
-    if (result->Rtl()) {
+    if (result->IsRtl()) {
       for (int index = run_count - 1; index >= 0; index--) {
         current_x -= result->runs_[index]->width_;
         AddRunInfoAdvances(*result->runs_[index], current_x, advances);

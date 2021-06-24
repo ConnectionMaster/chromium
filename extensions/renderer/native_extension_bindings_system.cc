@@ -8,6 +8,7 @@
 #include "base/callback.h"
 #include "base/command_line.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_piece.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/common/content_switches.h"
@@ -15,9 +16,12 @@
 #include "extensions/common/event_filtering_info.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_messages.h"
+#include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
 #include "extensions/common/manifest_constants.h"
+#include "extensions/common/manifest_handlers/content_capabilities_handler.h"
 #include "extensions/common/manifest_handlers/externally_connectable.h"
+#include "extensions/common/mojom/frame.mojom.h"
 #include "extensions/renderer/api_activity_logger.h"
 #include "extensions/renderer/bindings/api_binding_bridge.h"
 #include "extensions/renderer/bindings/api_binding_hooks.h"
@@ -27,7 +31,9 @@
 #include "extensions/renderer/console.h"
 #include "extensions/renderer/content_setting.h"
 #include "extensions/renderer/declarative_content_hooks_delegate.h"
+#include "extensions/renderer/dom_hooks_delegate.h"
 #include "extensions/renderer/extension_frame_helper.h"
+#include "extensions/renderer/extension_interaction_provider.h"
 #include "extensions/renderer/extension_js_runner.h"
 #include "extensions/renderer/get_script_context.h"
 #include "extensions/renderer/i18n_hooks_delegate.h"
@@ -36,8 +42,10 @@
 #include "extensions/renderer/renderer_extension_registry.h"
 #include "extensions/renderer/runtime_hooks_delegate.h"
 #include "extensions/renderer/script_context.h"
+#include "extensions/renderer/script_context_set_iterable.h"
 #include "extensions/renderer/storage_area.h"
 #include "extensions/renderer/web_request_hooks.h"
+#include "extensions/renderer/worker_thread_util.h"
 #include "gin/converter.h"
 #include "gin/handle.h"
 #include "gin/per_context_data.h"
@@ -45,7 +53,6 @@
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_local_frame.h"
-#include "third_party/blink/public/web/web_user_gesture_indicator.h"
 
 namespace extensions {
 
@@ -188,6 +195,15 @@ bool IsAPIFeatureAvailable(v8::Local<v8::Context> context,
   return script_context->GetAvailability(name).is_available();
 }
 
+// Returns true if the specified |context| is allowed to use promise based
+// returns from APIs.
+bool ArePromisesAllowed(v8::Local<v8::Context> context) {
+  ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
+  const Extension* extension = script_context->extension();
+  return (extension && extension->manifest_version() >= 3) ||
+         script_context->context_type() == Feature::WEBUI_CONTEXT;
+}
+
 // Instantiates the binding object for the given |name|. |name| must specify a
 // specific feature.
 v8::Local<v8::Object> CreateRootBinding(v8::Local<v8::Context> context,
@@ -305,7 +321,7 @@ v8::Local<v8::Object> CreateFullBinding(
 
     v8::Local<v8::Object> nested_binding =
         CreateFullBinding(context, script_context, bindings_system,
-                          api_feature_provider, binding_name.as_string());
+                          api_feature_provider, std::string(binding_name));
     // It's possible that we don't create a binding if no features or
     // prefixed features are available to the context.
     if (nested_binding.IsEmpty())
@@ -356,71 +372,6 @@ bool IsRuntimeAvailableToContext(ScriptContext* context) {
   return false;
 }
 
-// Logs the amount of time taken to update the bindings for a given context
-// (i.e., UpdateBindingsForContext()).
-void LogUpdateBindingsForContextTime(Feature::Context context_type,
-                                     base::TimeDelta elapsed) {
-  constexpr int kHistogramBucketCount = 50;
-  static const int kTenSecondsInMicroseconds = 10000000;
-  switch (context_type) {
-    case Feature::UNSPECIFIED_CONTEXT:
-      break;
-    case Feature::WEB_PAGE_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime.WebPageContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::BLESSED_WEB_PAGE_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime."
-          "BlessedWebPageContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::SERVICE_WORKER_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime."
-          "ServiceWorkerContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::BLESSED_EXTENSION_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime."
-          "BlessedExtensionContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::LOCK_SCREEN_EXTENSION_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime."
-          "LockScreenExtensionContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::UNBLESSED_EXTENSION_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime."
-          "UnblessedExtensionContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::CONTENT_SCRIPT_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime."
-          "ContentScriptContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-      break;
-    case Feature::WEBUI_CONTEXT:
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Extensions.Bindings.UpdateBindingsForContextTime.WebUIContext",
-          elapsed.InMicroseconds(), 1, kTenSecondsInMicroseconds,
-          kHistogramBucketCount);
-  }
-}
-
 // The APIs that could potentially be available to webpage-like contexts.
 // This is the list of possible features; most web pages will not have access
 // to these APIs.
@@ -438,31 +389,33 @@ NativeExtensionBindingsSystem::NativeExtensionBindingsSystem(
       api_system_(
           base::BindRepeating(&GetAPISchema),
           base::BindRepeating(&IsAPIFeatureAvailable),
+          base::BindRepeating(&ArePromisesAllowed),
           base::BindRepeating(&NativeExtensionBindingsSystem::SendRequest,
                               base::Unretained(this)),
-          base::BindRepeating(
-              &NativeExtensionBindingsSystem::GetUserActivationState,
-              base::Unretained(this)),
+          std::make_unique<ExtensionInteractionProvider>(),
           base::BindRepeating(
               &NativeExtensionBindingsSystem::OnEventListenerChanged,
               base::Unretained(this)),
           base::BindRepeating(&GetContextOwner),
-          base::BindRepeating(&APIActivityLogger::LogAPICall),
+          base::BindRepeating(&APIActivityLogger::LogAPICall,
+                              ipc_message_sender_.get()),
           base::BindRepeating(&AddConsoleError),
-          APILastError(base::Bind(&GetLastErrorParents),
-                       base::Bind(&AddConsoleError))),
-      messaging_service_(this),
-      weak_factory_(this) {
-  api_system_.RegisterCustomType("storage.StorageArea",
-                                 base::Bind(&StorageArea::CreateStorageArea));
+          APILastError(base::BindRepeating(&GetLastErrorParents),
+                       base::BindRepeating(&AddConsoleError))),
+      messaging_service_(this) {
+  api_system_.RegisterCustomType(
+      "storage.StorageArea",
+      base::BindRepeating(&StorageArea::CreateStorageArea));
   api_system_.RegisterCustomType("types.ChromeSetting",
-                                 base::Bind(&ChromeSetting::Create));
+                                 base::BindRepeating(&ChromeSetting::Create));
   api_system_.RegisterCustomType("contentSettings.ContentSetting",
-                                 base::Bind(&ContentSetting::Create));
+                                 base::BindRepeating(&ContentSetting::Create));
   api_system_.GetHooksForAPI("webRequest")
       ->SetDelegate(std::make_unique<WebRequestHooks>());
   api_system_.GetHooksForAPI("declarativeContent")
       ->SetDelegate(std::make_unique<DeclarativeContentHooksDelegate>());
+  api_system_.GetHooksForAPI("dom")->SetDelegate(
+      std::make_unique<DOMHooksDelegate>());
   api_system_.GetHooksForAPI("i18n")->SetDelegate(
       std::make_unique<I18nHooksDelegate>());
   api_system_.GetHooksForAPI("runtime")->SetDelegate(
@@ -502,8 +455,10 @@ void NativeExtensionBindingsSystem::DidCreateScriptContext(
   context->module_system()->SetGetInternalAPIHook(
       get_internal_api_.Get(isolate));
   context->module_system()->SetJSBindingUtilGetter(
-      base::Bind(&NativeExtensionBindingsSystem::GetJSBindingUtil,
-                 weak_factory_.GetWeakPtr()));
+      base::BindRepeating(&NativeExtensionBindingsSystem::GetJSBindingUtil,
+                          weak_factory_.GetWeakPtr()));
+
+  UpdateBindingsForContext(context);
 }
 
 void NativeExtensionBindingsSystem::WillReleaseScriptContext(
@@ -518,7 +473,6 @@ void NativeExtensionBindingsSystem::WillReleaseScriptContext(
 
 void NativeExtensionBindingsSystem::UpdateBindingsForContext(
     ScriptContext* context) {
-  base::ElapsedTimer timer;
   v8::Isolate* isolate = context->isolate();
   v8::HandleScope handle_scope(isolate);
   v8::Local<v8::Context> v8_context = context->v8_context();
@@ -544,15 +498,12 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
     case Feature::BLESSED_WEB_PAGE_CONTEXT:
       is_webpage = true;
       break;
-    case Feature::SERVICE_WORKER_CONTEXT:
-      DCHECK(ExtensionsClient::Get()
-                 ->ExtensionAPIEnabledInExtensionServiceWorkers());
-      FALLTHROUGH;
     case Feature::BLESSED_EXTENSION_CONTEXT:
     case Feature::LOCK_SCREEN_EXTENSION_CONTEXT:
     case Feature::UNBLESSED_EXTENSION_CONTEXT:
     case Feature::CONTENT_SCRIPT_CONTEXT:
     case Feature::WEBUI_CONTEXT:
+    case Feature::WEBUI_UNTRUSTED_CONTEXT:
       is_webpage = false;
   }
 
@@ -576,7 +527,7 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
     if (IsRuntimeAvailableToContext(context) && !set_accessor("runtime"))
       LOG(ERROR) << "Failed to create API on Chrome object.";
 
-    LogUpdateBindingsForContextTime(context->context_type(), timer.Elapsed());
+    UpdateContentCapabilities(context);
     return;
   }
 
@@ -608,8 +559,6 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
       return;
     }
   }
-
-  LogUpdateBindingsForContextTime(context->context_type(), timer.Elapsed());
 }
 
 void NativeExtensionBindingsSystem::DispatchEventInContext(
@@ -645,21 +594,22 @@ void NativeExtensionBindingsSystem::HandleResponse(
   ipc_message_sender_->SendOnRequestResponseReceivedIPC(request_id);
 }
 
-RequestSender* NativeExtensionBindingsSystem::GetRequestSender() {
-  return nullptr;
-}
-
 IPCMessageSender* NativeExtensionBindingsSystem::GetIPCMessageSender() {
   return ipc_message_sender_.get();
 }
 
-RendererMessagingService* NativeExtensionBindingsSystem::GetMessagingService() {
-  return &messaging_service_;
-}
-
-void NativeExtensionBindingsSystem::OnExtensionPermissionsUpdated(
-    const ExtensionId& id) {
-  feature_cache_.InvalidateExtension(id);
+void NativeExtensionBindingsSystem::UpdateBindings(
+    const ExtensionId& extension_id,
+    bool permissions_changed,
+    ScriptContextSetIterable* script_context_set) {
+  if (permissions_changed)
+    InvalidateFeatureCache(extension_id);
+  script_context_set->ForEach(
+      extension_id,
+      base::BindRepeating(
+          &NativeExtensionBindingsSystem::UpdateBindingsForContext,
+          // Called synchronously.
+          base::Unretained(this)));
 }
 
 void NativeExtensionBindingsSystem::OnExtensionRemoved(const ExtensionId& id) {
@@ -836,9 +786,10 @@ void NativeExtensionBindingsSystem::SendRequest(
   else
     url = script_context->url();
 
-  auto params = std::make_unique<ExtensionHostMsg_Request_Params>();
+  auto params = mojom::RequestParams::New();
   params->name = request->method_name;
-  params->arguments.Swap(request->arguments.get());
+  base::Value args(request->arguments_list->TakeList());
+  params->arguments = std::move(args);
   params->extension_id = script_context->GetExtensionID();
   params->source_url = url;
   params->request_id = request->request_id;
@@ -849,15 +800,7 @@ void NativeExtensionBindingsSystem::SendRequest(
   params->service_worker_version_id =
       blink::mojom::kInvalidServiceWorkerVersionId;
 
-  ipc_message_sender_->SendRequestIPC(script_context, std::move(params),
-                                      request->thread);
-}
-
-bool NativeExtensionBindingsSystem::GetUserActivationState(
-    v8::Local<v8::Context> context) {
-  ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
-  return blink::WebUserGestureIndicator::IsProcessingUserGestureThreadSafe(
-      script_context->web_frame());
+  ipc_message_sender_->SendRequestIPC(script_context, std::move(params));
 }
 
 void NativeExtensionBindingsSystem::OnEventListenerChanged(
@@ -871,10 +814,9 @@ void NativeExtensionBindingsSystem::OnEventListenerChanged(
   // manually by the extension and the context is a lazy context.
   // Note: Check context_type() first to avoid accessing ExtensionFrameHelper on
   // a worker thread.
-  bool is_lazy =
-      update_lazy_listeners &&
-      (script_context->context_type() == Feature::SERVICE_WORKER_CONTEXT ||
-       ExtensionFrameHelper::IsContextForEventPage(script_context));
+  bool is_lazy = update_lazy_listeners &&
+                 (script_context->IsForServiceWorker() ||
+                  ExtensionFrameHelper::IsContextForEventPage(script_context));
 
   switch (change) {
     case binding::EventListenersChanged::
@@ -943,6 +885,44 @@ void NativeExtensionBindingsSystem::GetJSBindingUtil(
           api_system_.type_reference_map(), api_system_.request_handler(),
           api_system_.event_handler(), api_system_.exception_handler()));
   *binding_util_out = handle.ToV8();
+}
+
+void NativeExtensionBindingsSystem::UpdateContentCapabilities(
+    ScriptContext* context) {
+  Feature::Context context_type = context->context_type();
+  if (context_type != Feature::WEB_PAGE_CONTEXT &&
+      context_type != Feature::BLESSED_WEB_PAGE_CONTEXT) {
+    return;
+  }
+
+  // Must be called on main thread.
+  DCHECK(!worker_thread_util::IsWorkerThread());
+
+  APIPermissionSet permissions;
+  for (const auto& extension :
+       *RendererExtensionRegistry::Get()->GetMainThreadExtensionSet()) {
+    blink::WebLocalFrame* web_frame = context->web_frame();
+    GURL url = context->url();
+    // We allow about:blank pages to take on the privileges of their parents if
+    // they aren't sandboxed.
+    if (web_frame && !web_frame->GetSecurityOrigin().IsOpaque()) {
+      url = ScriptContext::GetEffectiveDocumentURLForContext(web_frame, url,
+                                                             true);
+    }
+    const ContentCapabilitiesInfo& info =
+        ContentCapabilitiesInfo::Get(extension.get());
+    if (info.url_patterns.MatchesURL(url)) {
+      APIPermissionSet new_permissions;
+      APIPermissionSet::Union(permissions, info.permissions, &new_permissions);
+      permissions = std::move(new_permissions);
+    }
+  }
+  context->set_content_capabilities(std::move(permissions));
+}
+
+void NativeExtensionBindingsSystem::InvalidateFeatureCache(
+    const ExtensionId& extension_id) {
+  feature_cache_.InvalidateExtension(extension_id);
 }
 
 }  // namespace extensions

@@ -9,15 +9,16 @@
 #include "extensions/renderer/bindings/api_binding_hooks.h"
 #include "extensions/renderer/bindings/api_binding_util.h"
 #include "extensions/renderer/bindings/api_response_validator.h"
+#include "extensions/renderer/bindings/interaction_provider.h"
 
 namespace extensions {
 
 APIBindingsSystem::APIBindingsSystem(
     GetAPISchemaMethod get_api_schema,
-    BindingAccessChecker::AvailabilityCallback is_available,
+    BindingAccessChecker::APIAvailabilityCallback api_available,
+    BindingAccessChecker::PromiseAvailabilityCallback promises_available,
     APIRequestHandler::SendRequestMethod send_request,
-    APIRequestHandler::GetUserActivationState
-        get_user_activation_state_callback,
+    std::unique_ptr<InteractionProvider> interaction_provider,
     APIEventListeners::ListenersUpdated event_listeners_changed,
     APIEventHandler::ContextOwnerIdGetter context_owner_getter,
     APIBinding::OnSilentRequest on_silent_request,
@@ -27,14 +28,15 @@ APIBindingsSystem::APIBindingsSystem(
           base::BindRepeating(&APIBindingsSystem::InitializeType,
                               base::Unretained(this))),
       exception_handler_(std::move(add_console_error)),
+      interaction_provider_(std::move(interaction_provider)),
       request_handler_(std::move(send_request),
                        std::move(last_error),
                        &exception_handler_,
-                       std::move(get_user_activation_state_callback)),
+                       interaction_provider_.get()),
       event_handler_(std::move(event_listeners_changed),
                      std::move(context_owner_getter),
                      &exception_handler_),
-      access_checker_(std::move(is_available)),
+      access_checker_(std::move(api_available), std::move(promises_available)),
       get_api_schema_(std::move(get_api_schema)),
       on_silent_request_(std::move(on_silent_request)) {
   if (binding::IsResponseValidationEnabled()) {

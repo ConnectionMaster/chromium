@@ -6,13 +6,9 @@
 #define MOJO_CORE_PLATFORM_HANDLE_IN_TRANSIT_H_
 
 #include "base/macros.h"
+#include "base/process/process.h"
 #include "build/build_config.h"
-#include "mojo/core/scoped_process_handle.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
-
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-#include <mach/mach.h>
-#endif
 
 #if defined(OS_WIN)
 #include <windows.h>
@@ -38,13 +34,13 @@ class PlatformHandleInTransit {
 
   // Accessor for the owned handle. Must be owned by the calling process.
   const PlatformHandle& handle() const {
-    DCHECK(!owning_process_.is_valid());
+    DCHECK(!owning_process_.IsValid());
     return handle_;
   }
 
   // Returns the process which owns this handle. If this is invalid, the handle
   // is owned by the current process.
-  const ScopedProcessHandle& owning_process() const { return owning_process_; }
+  const base::Process& owning_process() const { return owning_process_; }
 
   // Takes ownership of the held handle as-is. The handle must belong to the
   // current process.
@@ -57,7 +53,7 @@ class PlatformHandleInTransit {
   void CompleteTransit();
 
   // Transfers ownership of this (local) handle to |target_process|.
-  bool TransferToProcess(ScopedProcessHandle target_process);
+  bool TransferToProcess(base::Process target_process);
 
 #if defined(OS_WIN)
   HANDLE remote_handle() const { return remote_handle_; }
@@ -89,19 +85,6 @@ class PlatformHandleInTransit {
       base::ProcessHandle owning_process);
 #endif
 
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-  // Creates a special wrapper holding an unowned Mach port name. This may refer
-  // to a send or receive right in a remote task (process), and is used for
-  // cases where message must retain such an object as one of its attached
-  // handles. We're OK for now with leaking in any scenario where a lack of
-  // strict ownership could cause leakage. See https://crbug.com/855930 for more
-  // details.
-  static PlatformHandleInTransit CreateForMachPortName(mach_port_t name);
-
-  bool is_mach_port_name() const { return mach_port_name_ != MACH_PORT_NULL; }
-  mach_port_t mach_port_name() const { return mach_port_name_; }
-#endif
-
  private:
 #if defined(OS_WIN)
   // We don't use a ScopedHandle (or, by extension, PlatformHandle) here because
@@ -112,11 +95,7 @@ class PlatformHandleInTransit {
 #endif
 
   PlatformHandle handle_;
-  ScopedProcessHandle owning_process_;
-
-#if defined(OS_MACOSX) && !defined(OS_IOS)
-  mach_port_t mach_port_name_ = MACH_PORT_NULL;
-#endif
+  base::Process owning_process_;
 
   DISALLOW_COPY_AND_ASSIGN(PlatformHandleInTransit);
 };

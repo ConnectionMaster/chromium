@@ -22,12 +22,11 @@
 #include "base/environment.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/rand_util.h"
+#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "extensions/renderer/extension_throttle_entry.h"
 #include "extensions/renderer/extension_throttle_test_support.h"
-#include "net/base/load_flags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::TimeDelta;
@@ -394,18 +393,14 @@ class Requester : public DiscreteTimeSimulation::Actor {
   }
 
   void PerformAction() override {
-    TimeDelta effective_delay = time_between_requests_;
-    TimeDelta current_jitter = TimeDelta::FromMilliseconds(
-        request_jitter_.InMilliseconds() * base::RandDouble());
-    if (base::RandInt(0, 1)) {
-      effective_delay -= current_jitter;
-    } else {
-      effective_delay += current_jitter;
-    }
+    const TimeDelta current_jitter = request_jitter_ * base::RandDouble();
+    const TimeDelta effective_delay =
+        time_between_requests_ +
+        (base::RandInt(0, 1) ? -current_jitter : current_jitter);
 
     if (throttler_entry_->ImplGetTimeNow() - time_of_last_attempt_ >
         effective_delay) {
-      if (!throttler_entry_->ShouldRejectRequest(net::LOAD_NORMAL)) {
+      if (!throttler_entry_->ShouldRejectRequest()) {
         int status_code = server_->HandleRequest();
         throttler_entry_->UpdateWithResponse(status_code);
 
@@ -459,7 +454,7 @@ class Requester : public DiscreteTimeSimulation::Actor {
   bool last_attempt_was_failure_;
   TimeDelta last_downtime_duration_;
   Server* const server_;
-  RequesterResults* const results_;  // May be NULL.
+  RequesterResults* const results_;  // May be nullptr.
 
   DISALLOW_COPY_AND_ASSIGN(Requester);
 };
@@ -507,7 +502,8 @@ void SimulateAttack(Server* server,
 }
 
 TEST(URLRequestThrottlerSimulation, HelpsInAttack) {
-  base::MessageLoopForIO message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment(
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO);
   Server unprotected_server(30, 1.0);
   RequesterResults unprotected_attacker_results;
   RequesterResults unprotected_client_results;
@@ -571,7 +567,7 @@ double SimulateDowntime(const TimeDelta& duration,
     throttler_entry->DisableBackoffThrottling();
 
   Requester requester(std::move(throttler_entry), average_client_interval,
-                      &server, NULL);
+                      &server, nullptr);
   requester.SetStartupJitter(duration / 3);
   requester.SetRequestJitter(average_client_interval);
 
@@ -587,7 +583,8 @@ double SimulateDowntime(const TimeDelta& duration,
 }
 
 TEST(URLRequestThrottlerSimulation, PerceivedDowntimeRatio) {
-  base::MessageLoopForIO message_loop;
+  base::test::SingleThreadTaskEnvironment task_environment(
+      base::test::SingleThreadTaskEnvironment::MainThreadType::IO);
   struct Stats {
     // Expected interval that we expect the ratio of downtime when anti-DDoS
     // is enabled and downtime when anti-DDoS is not enabled to fall within.
@@ -637,10 +634,10 @@ TEST(URLRequestThrottlerSimulation, PerceivedDowntimeRatio) {
     Stats stats;
 
     void PrintTrialDescription() {
-      double duration_minutes =
-          static_cast<double>(duration.InSeconds()) / 60.0;
-      double interval_minutes =
-          static_cast<double>(average_client_interval.InSeconds()) / 60.0;
+      const double duration_minutes =
+          duration / base::TimeDelta::FromMinutes(1);
+      const double interval_minutes =
+          average_client_interval / base::TimeDelta::FromMinutes(1);
       VerboseOut("Trial with %.2f min downtime, avg. interval %.2f min.\n",
                  duration_minutes, interval_minutes);
     }

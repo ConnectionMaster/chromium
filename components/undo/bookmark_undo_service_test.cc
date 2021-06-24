@@ -44,7 +44,7 @@ void BookmarkUndoServiceTest::SetUp() {
   DCHECK(!bookmark_model_);
   DCHECK(!bookmark_undo_service_);
   bookmark_model_ = bookmarks::TestBookmarkClient::CreateModel();
-  bookmark_undo_service_.reset(new BookmarkUndoService);
+  bookmark_undo_service_ = std::make_unique<BookmarkUndoService>();
   bookmark_undo_service_->Start(bookmark_model_.get());
   bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model_.get());
 }
@@ -70,16 +70,16 @@ TEST_F(BookmarkUndoServiceTest, AddBookmark) {
   BookmarkUndoService* undo_service = GetUndoService();
 
   const BookmarkNode* parent = model->other_node();
-  model->AddURL(parent, 0, ASCIIToUTF16("foo"), GURL("http://www.bar.com"));
+  model->AddURL(parent, 0, u"foo", GURL("http://www.bar.com"));
 
   // Undo bookmark creation and test for no bookmarks.
   undo_service->undo_manager()->Undo();
-  EXPECT_EQ(0, model->other_node()->child_count());
+  EXPECT_EQ(0u, model->other_node()->children().size());
 
   // Redo bookmark creation and ensure bookmark information is valid.
   undo_service->undo_manager()->Redo();
-  const BookmarkNode* node = parent->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  const BookmarkNode* node = parent->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 }
 
@@ -89,17 +89,17 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkRemove) {
   BookmarkUndoService* undo_service = GetUndoService();
 
   const BookmarkNode* parent = model->other_node();
-  model->AddURL(parent, 0, ASCIIToUTF16("foo"), GURL("http://www.bar.com"));
-  model->Remove(parent->GetChild(0));
+  model->AddURL(parent, 0, u"foo", GURL("http://www.bar.com"));
+  model->Remove(parent->children().front().get());
 
   EXPECT_EQ(2U, undo_service->undo_manager()->undo_count());
   EXPECT_EQ(0U, undo_service->undo_manager()->redo_count());
 
   // Undo the deletion of the only bookmark and check the bookmark values.
   undo_service->undo_manager()->Undo();
-  EXPECT_EQ(1, model->other_node()->child_count());
-  const BookmarkNode* node = parent->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  EXPECT_EQ(1u, model->other_node()->children().size());
+  const BookmarkNode* node = parent->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 
   EXPECT_EQ(1U, undo_service->undo_manager()->undo_count());
@@ -107,7 +107,7 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkRemove) {
 
   // Redo the deletion and check that there are no bookmarks left.
   undo_service->undo_manager()->Redo();
-  EXPECT_EQ(0, model->other_node()->child_count());
+  EXPECT_EQ(0u, model->other_node()->children().size());
 
   EXPECT_EQ(2U, undo_service->undo_manager()->undo_count());
   EXPECT_EQ(0U, undo_service->undo_manager()->redo_count());
@@ -119,12 +119,10 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkGroupedAction) {
   BookmarkModel* model = GetModel();
   BookmarkUndoService* undo_service = GetUndoService();
 
-  const BookmarkNode* n1 = model->AddURL(model->other_node(),
-                                        0,
-                                        ASCIIToUTF16("foo"),
-                                        GURL("http://www.foo.com"));
+  const BookmarkNode* n1 =
+      model->AddURL(model->other_node(), 0, u"foo", GURL("http://www.foo.com"));
   undo_service->undo_manager()->StartGroupingActions();
-  model->SetTitle(n1, ASCIIToUTF16("bar"));
+  model->SetTitle(n1, u"bar");
   model->SetURL(n1, GURL("http://www.bar.com"));
   undo_service->undo_manager()->EndGroupingActions();
 
@@ -133,16 +131,16 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkGroupedAction) {
 
   // Undo the modification of the bookmark and check for the original values.
   undo_service->undo_manager()->Undo();
-  EXPECT_EQ(1, model->other_node()->child_count());
-  const BookmarkNode* node = model->other_node()->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  EXPECT_EQ(1u, model->other_node()->children().size());
+  const BookmarkNode* node = model->other_node()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.foo.com"));
 
   // Redo the modifications and ensure the newer values are present.
   undo_service->undo_manager()->Redo();
-  EXPECT_EQ(1, model->other_node()->child_count());
-  node = model->other_node()->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  EXPECT_EQ(1u, model->other_node()->children().size());
+  node = model->other_node()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 
   EXPECT_EQ(2U, undo_service->undo_manager()->undo_count());
@@ -154,31 +152,25 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkMoveWithinFolder) {
   BookmarkModel* model = GetModel();
   BookmarkUndoService* undo_service = GetUndoService();
 
-  const BookmarkNode* n1 = model->AddURL(model->other_node(),
-                                        0,
-                                        ASCIIToUTF16("foo"),
-                                        GURL("http://www.foo.com"));
-  const BookmarkNode* n2 = model->AddURL(model->other_node(),
-                                        1,
-                                        ASCIIToUTF16("moo"),
-                                        GURL("http://www.moo.com"));
-  const BookmarkNode* n3 = model->AddURL(model->other_node(),
-                                        2,
-                                        ASCIIToUTF16("bar"),
-                                        GURL("http://www.bar.com"));
+  const BookmarkNode* n1 =
+      model->AddURL(model->other_node(), 0, u"foo", GURL("http://www.foo.com"));
+  const BookmarkNode* n2 =
+      model->AddURL(model->other_node(), 1, u"moo", GURL("http://www.moo.com"));
+  const BookmarkNode* n3 =
+      model->AddURL(model->other_node(), 2, u"bar", GURL("http://www.bar.com"));
   model->Move(n1, model->other_node(), 3);
 
   // Undo the move and check that the nodes are in order.
   undo_service->undo_manager()->Undo();
-  EXPECT_EQ(model->other_node()->GetChild(0), n1);
-  EXPECT_EQ(model->other_node()->GetChild(1), n2);
-  EXPECT_EQ(model->other_node()->GetChild(2), n3);
+  EXPECT_EQ(model->other_node()->children()[0].get(), n1);
+  EXPECT_EQ(model->other_node()->children()[1].get(), n2);
+  EXPECT_EQ(model->other_node()->children()[2].get(), n3);
 
   // Redo the move and check that the first node is in the last position.
   undo_service->undo_manager()->Redo();
-  EXPECT_EQ(model->other_node()->GetChild(0), n2);
-  EXPECT_EQ(model->other_node()->GetChild(1), n3);
-  EXPECT_EQ(model->other_node()->GetChild(2), n1);
+  EXPECT_EQ(model->other_node()->children()[0].get(), n2);
+  EXPECT_EQ(model->other_node()->children()[1].get(), n3);
+  EXPECT_EQ(model->other_node()->children()[2].get(), n1);
 }
 
 // Test undo of a bookmark moved to a different folder.
@@ -186,39 +178,32 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkMoveToOtherFolder) {
   BookmarkModel* model = GetModel();
   BookmarkUndoService* undo_service = GetUndoService();
 
-  const BookmarkNode* n1 = model->AddURL(model->other_node(),
-                                        0,
-                                        ASCIIToUTF16("foo"),
-                                        GURL("http://www.foo.com"));
-  const BookmarkNode* n2 = model->AddURL(model->other_node(),
-                                        1,
-                                        ASCIIToUTF16("moo"),
-                                        GURL("http://www.moo.com"));
-  const BookmarkNode* n3 = model->AddURL(model->other_node(),
-                                        2,
-                                        ASCIIToUTF16("bar"),
-                                        GURL("http://www.bar.com"));
-  const BookmarkNode* f1 =
-      model->AddFolder(model->other_node(), 3, ASCIIToUTF16("folder"));
+  const BookmarkNode* n1 =
+      model->AddURL(model->other_node(), 0, u"foo", GURL("http://www.foo.com"));
+  const BookmarkNode* n2 =
+      model->AddURL(model->other_node(), 1, u"moo", GURL("http://www.moo.com"));
+  const BookmarkNode* n3 =
+      model->AddURL(model->other_node(), 2, u"bar", GURL("http://www.bar.com"));
+  const BookmarkNode* f1 = model->AddFolder(model->other_node(), 3, u"folder");
   model->Move(n3, f1, 0);
 
   // Undo the move and check that the bookmark and folder are in place.
   undo_service->undo_manager()->Undo();
-  ASSERT_EQ(4, model->other_node()->child_count());
-  EXPECT_EQ(model->other_node()->GetChild(0), n1);
-  EXPECT_EQ(model->other_node()->GetChild(1), n2);
-  EXPECT_EQ(model->other_node()->GetChild(2), n3);
-  EXPECT_EQ(model->other_node()->GetChild(3), f1);
-  EXPECT_EQ(0, f1->child_count());
+  ASSERT_EQ(4u, model->other_node()->children().size());
+  EXPECT_EQ(model->other_node()->children()[0].get(), n1);
+  EXPECT_EQ(model->other_node()->children()[1].get(), n2);
+  EXPECT_EQ(model->other_node()->children()[2].get(), n3);
+  EXPECT_EQ(model->other_node()->children()[3].get(), f1);
+  EXPECT_EQ(0u, f1->children().size());
 
   // Redo the move back into the folder and check validity.
   undo_service->undo_manager()->Redo();
-  ASSERT_EQ(3, model->other_node()->child_count());
-  EXPECT_EQ(model->other_node()->GetChild(0), n1);
-  EXPECT_EQ(model->other_node()->GetChild(1), n2);
-  EXPECT_EQ(model->other_node()->GetChild(2), f1);
-  ASSERT_EQ(1, f1->child_count());
-  EXPECT_EQ(f1->GetChild(0), n3);
+  ASSERT_EQ(3u, model->other_node()->children().size());
+  EXPECT_EQ(model->other_node()->children()[0].get(), n1);
+  EXPECT_EQ(model->other_node()->children()[1].get(), n2);
+  EXPECT_EQ(model->other_node()->children()[2].get(), f1);
+  ASSERT_EQ(1u, f1->children().size());
+  EXPECT_EQ(f1->children().front().get(), n3);
 }
 
 // Tests the handling of multiple modifications that include renumbering of the
@@ -227,52 +212,50 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkRenameDelete) {
   BookmarkModel* model = GetModel();
   BookmarkUndoService* undo_service = GetUndoService();
 
-  const BookmarkNode* f1 = model->AddFolder(model->other_node(),
-                                           0,
-                                           ASCIIToUTF16("folder"));
-  model->AddURL(f1, 0, ASCIIToUTF16("foo"), GURL("http://www.foo.com"));
-  model->SetTitle(f1, ASCIIToUTF16("Renamed"));
-  model->Remove(model->other_node()->GetChild(0));
+  const BookmarkNode* f1 = model->AddFolder(model->other_node(), 0, u"folder");
+  model->AddURL(f1, 0, u"foo", GURL("http://www.foo.com"));
+  model->SetTitle(f1, u"Renamed");
+  model->Remove(model->other_node()->children().front().get());
 
   // Undo the folder removal and ensure the folder and bookmark were restored.
   undo_service->undo_manager()->Undo();
-  ASSERT_EQ(1, model->other_node()->child_count());
-  ASSERT_EQ(1, model->other_node()->GetChild(0)->child_count());
-  const BookmarkNode* node = model->other_node()->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("Renamed"));
+  ASSERT_EQ(1u, model->other_node()->children().size());
+  ASSERT_EQ(1u, model->other_node()->children().front()->children().size());
+  const BookmarkNode* node = model->other_node()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"Renamed");
 
-  node = model->other_node()->GetChild(0)->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  node = model->other_node()->children().front()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.foo.com"));
 
   // Undo the title change and ensure the folder was updated even though the
   // id has changed.
   undo_service->undo_manager()->Undo();
-  node = model->other_node()->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("folder"));
+  node = model->other_node()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"folder");
 
   // Undo bookmark creation and test for removal of bookmark.
   undo_service->undo_manager()->Undo();
-  ASSERT_EQ(0, model->other_node()->GetChild(0)->child_count());
+  ASSERT_EQ(0u, model->other_node()->children().front()->children().size());
 
   // Undo folder creation and confirm the bookmark model is empty.
   undo_service->undo_manager()->Undo();
-  ASSERT_EQ(0, model->other_node()->child_count());
+  ASSERT_EQ(0u, model->other_node()->children().size());
 
   // Redo all the actions and ensure the folder and bookmark are restored.
   undo_service->undo_manager()->Redo(); // folder creation
   undo_service->undo_manager()->Redo(); // bookmark creation
   undo_service->undo_manager()->Redo(); // bookmark title change
-  ASSERT_EQ(1, model->other_node()->child_count());
-  ASSERT_EQ(1, model->other_node()->GetChild(0)->child_count());
-  node = model->other_node()->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("Renamed"));
-  node = model->other_node()->GetChild(0)->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  ASSERT_EQ(1u, model->other_node()->children().size());
+  ASSERT_EQ(1u, model->other_node()->children().front()->children().size());
+  node = model->other_node()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"Renamed");
+  node = model->other_node()->children().front()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.foo.com"));
 
   undo_service->undo_manager()->Redo(); // folder deletion
-  EXPECT_EQ(0, model->other_node()->child_count());
+  EXPECT_EQ(0u, model->other_node()->children().size());
 }
 
 // Test the undo of SortChildren and ReorderChildren.
@@ -281,37 +264,37 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkReorder) {
   BookmarkUndoService* undo_service = GetUndoService();
 
   const BookmarkNode* parent = model->other_node();
-  model->AddURL(parent, 0, ASCIIToUTF16("foo"), GURL("http://www.foo.com"));
-  model->AddURL(parent, 1, ASCIIToUTF16("moo"), GURL("http://www.moo.com"));
-  model->AddURL(parent, 2, ASCIIToUTF16("bar"), GURL("http://www.bar.com"));
+  model->AddURL(parent, 0, u"foo", GURL("http://www.foo.com"));
+  model->AddURL(parent, 1, u"moo", GURL("http://www.moo.com"));
+  model->AddURL(parent, 2, u"bar", GURL("http://www.bar.com"));
   model->SortChildren(parent);
 
   // Test the undo of SortChildren.
   undo_service->undo_manager()->Undo();
-  const BookmarkNode* node = parent->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  const BookmarkNode* node = parent->children()[0].get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.foo.com"));
 
-  node = parent->GetChild(1);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("moo"));
+  node = parent->children()[1].get();
+  EXPECT_EQ(node->GetTitle(), u"moo");
   EXPECT_EQ(node->url(), GURL("http://www.moo.com"));
 
-  node = parent->GetChild(2);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  node = parent->children()[2].get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 
   // Test the redo of SortChildren.
   undo_service->undo_manager()->Redo();
-  node = parent->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  node = parent->children()[0].get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 
-  node = parent->GetChild(1);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  node = parent->children()[1].get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.foo.com"));
 
-  node = parent->GetChild(2);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("moo"));
+  node = parent->children()[2].get();
+  EXPECT_EQ(node->GetTitle(), u"moo");
   EXPECT_EQ(node->url(), GURL("http://www.moo.com"));
 
 }
@@ -323,14 +306,14 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkRemoveAll) {
   // Setup bookmarks in the Other Bookmarks and the Bookmark Bar.
   const BookmarkNode* new_folder;
   const BookmarkNode* parent = model->other_node();
-  model->AddURL(parent, 0, ASCIIToUTF16("foo"), GURL("http://www.google.com"));
-  new_folder= model->AddFolder(parent, 1, ASCIIToUTF16("folder"));
-  model->AddURL(new_folder, 0, ASCIIToUTF16("bar"), GURL("http://www.bar.com"));
+  model->AddURL(parent, 0, u"foo", GURL("http://www.google.com"));
+  new_folder = model->AddFolder(parent, 1, u"folder");
+  model->AddURL(new_folder, 0, u"bar", GURL("http://www.bar.com"));
 
   parent = model->bookmark_bar_node();
-  model->AddURL(parent, 0, ASCIIToUTF16("a"), GURL("http://www.a.com"));
-  new_folder = model->AddFolder(parent, 1, ASCIIToUTF16("folder"));
-  model->AddURL(new_folder, 0, ASCIIToUTF16("b"), GURL("http://www.b.com"));
+  model->AddURL(parent, 0, u"a", GURL("http://www.a.com"));
+  new_folder = model->AddFolder(parent, 1, u"folder");
+  model->AddURL(new_folder, 0, u"b", GURL("http://www.b.com"));
 
   model->RemoveAllUserBookmarks();
 
@@ -338,22 +321,23 @@ TEST_F(BookmarkUndoServiceTest, UndoBookmarkRemoveAll) {
   // bookmarks.
   undo_service->undo_manager()->Undo();
 
-  ASSERT_EQ(2, model->other_node()->child_count());
-  EXPECT_EQ(1, model->other_node()->GetChild(1)->child_count());
-  const BookmarkNode* node = model->other_node()->GetChild(1)->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  ASSERT_EQ(2u, model->other_node()->children().size());
+  EXPECT_EQ(1u, model->other_node()->children()[1]->children().size());
+  const BookmarkNode* node =
+      model->other_node()->children()[1]->children()[0].get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 
-  ASSERT_EQ(2, model->bookmark_bar_node()->child_count());
-  EXPECT_EQ(1, model->bookmark_bar_node()->GetChild(1)->child_count());
-  node = model->bookmark_bar_node()->GetChild(1)->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("b"));
+  ASSERT_EQ(2u, model->bookmark_bar_node()->children().size());
+  EXPECT_EQ(1u, model->bookmark_bar_node()->children()[1]->children().size());
+  node = model->bookmark_bar_node()->children()[1]->children()[0].get();
+  EXPECT_EQ(node->GetTitle(), u"b");
   EXPECT_EQ(node->url(), GURL("http://www.b.com"));
 
   // Test that the redo removes all folders and bookmarks.
   undo_service->undo_manager()->Redo();
-  EXPECT_EQ(0, model->other_node()->child_count());
-  EXPECT_EQ(0, model->bookmark_bar_node()->child_count());
+  EXPECT_EQ(0u, model->other_node()->children().size());
+  EXPECT_EQ(0u, model->bookmark_bar_node()->children().size());
 }
 
 TEST_F(BookmarkUndoServiceTest, UndoRemoveFolderWithBookmarks) {
@@ -363,34 +347,34 @@ TEST_F(BookmarkUndoServiceTest, UndoRemoveFolderWithBookmarks) {
   // Setup bookmarks in the Other Bookmarks.
   const BookmarkNode* new_folder;
   const BookmarkNode* parent = model->other_node();
-  new_folder = model->AddFolder(parent, 0, ASCIIToUTF16("folder"));
-  model->AddURL(new_folder, 0, ASCIIToUTF16("bar"), GURL("http://www.bar.com"));
+  new_folder = model->AddFolder(parent, 0, u"folder");
+  model->AddURL(new_folder, 0, u"bar", GURL("http://www.bar.com"));
 
-  model->Remove(parent->GetChild(0));
+  model->Remove(parent->children().front().get());
 
   // Test that the undo restores the bookmark and folder.
   undo_service->undo_manager()->Undo();
 
-  ASSERT_EQ(1, model->other_node()->child_count());
-  new_folder = model->other_node()->GetChild(0);
-  EXPECT_EQ(1, new_folder->child_count());
-  const BookmarkNode* node = new_folder->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  ASSERT_EQ(1u, model->other_node()->children().size());
+  new_folder = model->other_node()->children().front().get();
+  EXPECT_EQ(1u, new_folder->children().size());
+  const BookmarkNode* node = new_folder->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 
   // Test that the redo restores the bookmark and folder.
   undo_service->undo_manager()->Redo();
 
-  ASSERT_EQ(0, model->other_node()->child_count());
+  ASSERT_EQ(0u, model->other_node()->children().size());
 
   // Test that the undo after a redo restores the bookmark and folder.
   undo_service->undo_manager()->Undo();
 
-  ASSERT_EQ(1, model->other_node()->child_count());
-  new_folder = model->other_node()->GetChild(0);
-  EXPECT_EQ(1, new_folder->child_count());
-  node = new_folder->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  ASSERT_EQ(1u, model->other_node()->children().size());
+  new_folder = model->other_node()->children().front().get();
+  EXPECT_EQ(1u, new_folder->children().size());
+  node = new_folder->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 }
 
@@ -407,33 +391,34 @@ TEST_F(BookmarkUndoServiceTest, UndoRemoveFolderWithSubfolders) {
   // is designed specifically to ensure we do not crash in this scenario and
   // that bookmarks are restored to the proper subfolder. See crbug.com/474123.
   const BookmarkNode* parent = model->other_node();
-  const BookmarkNode* new_folder = model->AddFolder(
-      parent, 0, ASCIIToUTF16("folder"));
-  model->AddFolder(new_folder, 0, ASCIIToUTF16("subfolder1"));
-  const BookmarkNode* sub_folder2 = model->AddFolder(
-      new_folder, 1, ASCIIToUTF16("subfolder2"));
-  model->AddURL(sub_folder2, 0, ASCIIToUTF16("bar"),
-                GURL("http://www.bar.com"));
+  const BookmarkNode* new_folder = model->AddFolder(parent, 0, u"folder");
+  model->AddFolder(new_folder, 0, u"subfolder1");
+  const BookmarkNode* sub_folder2 =
+      model->AddFolder(new_folder, 1, u"subfolder2");
+  model->AddURL(sub_folder2, 0, u"bar", GURL("http://www.bar.com"));
 
-  model->Remove(parent->GetChild(0));
+  model->Remove(parent->children()[0].get());
 
   // Test that the undo restores the subfolders and their contents.
   undo_service->undo_manager()->Undo();
 
-  ASSERT_EQ(1, model->other_node()->child_count());
-  const BookmarkNode* restored_new_folder = model->other_node()->GetChild(0);
-  EXPECT_EQ(2, restored_new_folder->child_count());
+  ASSERT_EQ(1u, model->other_node()->children().size());
+  const BookmarkNode* restored_new_folder =
+      model->other_node()->children()[0].get();
+  EXPECT_EQ(2u, restored_new_folder->children().size());
 
-  const BookmarkNode* restored_sub_folder1 = restored_new_folder->GetChild(0);
-  EXPECT_EQ(ASCIIToUTF16("subfolder1"), restored_sub_folder1->GetTitle());
-  EXPECT_EQ(0, restored_sub_folder1->child_count());
+  const BookmarkNode* restored_sub_folder1 =
+      restored_new_folder->children()[0].get();
+  EXPECT_EQ(u"subfolder1", restored_sub_folder1->GetTitle());
+  EXPECT_EQ(0u, restored_sub_folder1->children().size());
 
-  const BookmarkNode* restored_sub_folder2 = restored_new_folder->GetChild(1);
-  EXPECT_EQ(ASCIIToUTF16("subfolder2"), restored_sub_folder2->GetTitle());
-  EXPECT_EQ(1, restored_sub_folder2->child_count());
+  const BookmarkNode* restored_sub_folder2 =
+      restored_new_folder->children()[1].get();
+  EXPECT_EQ(u"subfolder2", restored_sub_folder2->GetTitle());
+  EXPECT_EQ(1u, restored_sub_folder2->children().size());
 
-  const BookmarkNode* node = restored_sub_folder2->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("bar"));
+  const BookmarkNode* node = restored_sub_folder2->children()[0].get();
+  EXPECT_EQ(node->GetTitle(), u"bar");
   EXPECT_EQ(node->url(), GURL("http://www.bar.com"));
 }
 
@@ -445,9 +430,9 @@ TEST_F(BookmarkUndoServiceTest, TestUpperLimit) {
   const size_t kMaxUndoGroups = 100;
 
   const BookmarkNode* parent = model->other_node();
-  model->AddURL(parent, 0, ASCIIToUTF16("foo"), GURL("http://www.foo.com"));
+  model->AddURL(parent, 0, u"foo", GURL("http://www.foo.com"));
   for (size_t i = 1; i < kMaxUndoGroups + 1; ++i)
-    model->AddURL(parent, i, ASCIIToUTF16("bar"), GURL("http://www.bar.com"));
+    model->AddURL(parent, i, u"bar", GURL("http://www.bar.com"));
 
   EXPECT_EQ(kMaxUndoGroups, undo_service->undo_manager()->undo_count());
 
@@ -455,9 +440,9 @@ TEST_F(BookmarkUndoServiceTest, TestUpperLimit) {
   while (undo_service->undo_manager()->undo_count())
     undo_service->undo_manager()->Undo();
 
-  EXPECT_EQ(1, parent->child_count());
-  const BookmarkNode* node = model->other_node()->GetChild(0);
-  EXPECT_EQ(node->GetTitle(), ASCIIToUTF16("foo"));
+  EXPECT_EQ(1u, parent->children().size());
+  const BookmarkNode* node = model->other_node()->children().front().get();
+  EXPECT_EQ(node->GetTitle(), u"foo");
   EXPECT_EQ(node->url(), GURL("http://www.foo.com"));
 }
 
